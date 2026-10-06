@@ -51,12 +51,13 @@ assert.match(materials, /chooseFolder/);
 assert.ok(fs.existsSync('components/mixcut/MaterialStep.tsx'));
 assert.doesNotMatch(read('components/mixcut/MaterialStep.tsx'), /chooseMediaFiles|chooseFolder/);
 
-// Phase 3: close hides; explicit quit owns shutdown; descendants are reaped.
-assert.match(windowSource, /window\.hide\(\)/);
-assert.match(windowSource, /首次|仍在运行/);
+// Phase 3: window close and menu quit share shutdown; descendants are reaped.
+assert.doesNotMatch(windowSource, /window\.hide\(\)/);
+assert.match(windowSource, /if \(!host\.isQuitRequested\(\)\) app\.quit\(\)/);
 assert.match(main, /app\.on\('before-quit'/);
-assert.match(main, /confirmQuitAndShutdown/);
-assert.doesNotMatch(main, /app\.on\('window-all-closed',[\s\S]{0,300}app\.quit\(\)/);
+assert.match(main, /webContents\.send\(CHANNELS\.quitRequested\)/);
+assert.doesNotMatch(windowSource, /confirmQuitAndShutdown|activeWorkState/);
+assert.match(main, /app\.on\('window-all-closed',[\s\S]{0,100}app\.quit\(\)/);
 assert.match(serviceSpawn, /detached: process\.platform !== 'win32'/);
 assert.match(serviceShutdown, /process\.kill\(-pid, signal\)/);
 assert.match(serviceShutdown, /taskkill\.exe/);

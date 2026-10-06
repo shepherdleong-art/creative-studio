@@ -160,6 +160,48 @@ try {
     return new Set(arrangements.map((arrangement) => arrangement.cover.assetId)).size === arrangements.length;
   }
 
+  // 存量不同分镜组的视频补齐权威同源来源后，「换一批」也只能自动选一个版本。
+  db.exec(`
+    CREATE TABLE shot_sets (id TEXT, projectId TEXT);
+    CREATE TABLE shots (id TEXT, shotSetId TEXT, sourceImageId TEXT);
+    CREATE TABLE video_jobs (id TEXT, shotId TEXT);
+  `);
+  const sameSourcePool = db.prepare('SELECT assetId, analysisId FROM batch_asset_pool_items WHERE batchVersionId = ?')
+    .all(histVersionId) as Array<{ assetId: string; analysisId: string }>;
+  for (const [index, item] of sameSourcePool.entries()) {
+    const setId = `same-source-set-${index}`;
+    const shotId = `same-source-shot-${index}`;
+    const jobId = `same-source-job-${index}`;
+    db.prepare('INSERT INTO shot_sets VALUES (?, ?)').run(setId, 'project-1');
+    db.prepare('INSERT INTO shots VALUES (?, ?, ?)').run(shotId, setId, 'original-image');
+    db.prepare('INSERT INTO video_jobs VALUES (?, ?)').run(jobId, shotId);
+    db.prepare(`INSERT INTO batch_asset_sources (id,assetId,sourceKind,locationJson,health,createdAt)
+      VALUES (?,?,'module4',?,'healthy',?)`).run(jobId, item.assetId,
+        JSON.stringify({ kind: 'module4', videoJobId: jobId, shotSetId: setId, relativePath: `videos/${jobId}.mp4` }), '2026-09-29');
+  }
+  const sourceReallocation = persistOutputReallocation(db, 'project-1', histVersionId, histPlans[0], '同源排片');
+  assert.equal(sourceReallocation.ruleVersion, 'batch-allocation-v4');
+  assert.equal(sourceReallocation.result.outputs.find(o => o.planId === histPlans[0])?.status, 'available');
+  assert.equal(new Set(currentArrangementOf(histPlans[0]).clips.map(c => c.assetId)).size, 1,
+    '跨组同原图的视频不能被自动放入同一成片');
+  const pointerBeforeShortage = (db.prepare('SELECT currentVersionId FROM batch_output_plans WHERE id = ?')
+    .get(histPlans[0]) as { currentVersionId: string }).currentVersionId;
+  const countBeforeShortage = (db.prepare('SELECT count(*) AS n FROM batch_output_versions WHERE planId = ?')
+    .get(histPlans[0]) as { n: number }).n;
+  for (const item of sameSourcePool) {
+    db.prepare('UPDATE batch_asset_analysis SET analysisJson = ? WHERE id = ?').run(JSON.stringify({
+      durationUs: 2_000_000, usableRanges: [{ startUs: 0, endUs: 2_000_000, qualityScore: 1 }],
+    }), item.analysisId);
+  }
+  const shortage = persistOutputReallocation(db, 'project-1', histVersionId, histPlans[0], '素材不足');
+  assert.equal(shortage.result.outputs.find(o => o.planId === histPlans[0])?.status, 'blocked');
+  assert.ok(shortage.result.blockers.some(message => message.includes('不同原图')));
+  assert.equal((db.prepare('SELECT currentVersionId FROM batch_output_plans WHERE id = ?')
+    .get(histPlans[0]) as { currentVersionId: string }).currentVersionId, pointerBeforeShortage,
+    '自动排不满时保留用户原有成片');
+  assert.equal((db.prepare('SELECT count(*) AS n FROM batch_output_versions WHERE planId = ?')
+    .get(histPlans[0]) as { n: number }).n, countBeforeShortage, '不得保存缺画面的半成品');
+
   console.log('batch allocation store tests passed');
 } finally {
   db.close();

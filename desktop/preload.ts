@@ -14,6 +14,16 @@ const RELOCATE_LINKED_SOURCE_CHANNEL = 'desktop:relocate-linked-source';
 const OPEN_FOLDER_CHANNEL = 'desktop:open-folder';
 const LINKED_IMPORT_PROGRESS_CHANNEL = 'desktop:linked-import-progress';
 const SET_THEME_PREFERENCE_CHANNEL = 'desktop:set-theme-preference';
+const QUIT_REQUESTED_CHANNEL = 'desktop:quit-requested';
+
+// Remember an early close click until React has mounted the shared dialog.
+// No Electron event or payload crosses into the renderer.
+let quitRequested = false;
+let quitListener: (() => void) | null = null;
+ipcRenderer.on(QUIT_REQUESTED_CHANNEL, () => {
+  if (quitListener) quitListener();
+  else quitRequested = true;
+});
 
 function isLinkedImportProgress(value: unknown): value is { requestId: string; completed: number; total: number } {
   if (!value || typeof value !== 'object') return false;
@@ -47,6 +57,16 @@ const desktopBridge: DesktopBridge = Object.freeze({
     SET_THEME_PREFERENCE_CHANNEL,
     preference,
   ),
+  onQuitRequested: (callback: () => void) => {
+    quitListener = callback;
+    if (quitRequested) {
+      quitRequested = false;
+      callback();
+    }
+    return () => {
+      if (quitListener === callback) quitListener = null;
+    };
+  },
 });
 
 contextBridge.exposeInMainWorld('desktopBridge', desktopBridge);

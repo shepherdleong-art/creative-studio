@@ -92,7 +92,8 @@ try {
   const exactLedger = db.prepare('SELECT * FROM usage_ledger').get() as Record<string, unknown>;
   assert.equal(exactLedger.category, 'llm_text');
   assert.equal(exactLedger.model, 'GPT-5-6-Luna-Standard');
-  assert.equal(exactLedger.quantity, 17);
+  assert.equal(exactLedger.quantity, 1);
+  assert.equal(exactLedger.costMicros, 20_000);
   assert.equal(exactLedger.callCount, 1);
   assert.equal(exactLedger.projectId, '');
   assert.equal(exactLedger.refType, 'llm_call');
@@ -193,7 +194,8 @@ try {
   assert.equal(estimatedDetail.cachedReadTokens, 0);
   assert.equal(estimatedDetail.uncachedInputTokens, Array.from(serializedPrompt).length);
   assert.equal(estimatedDetail.outputTokens, Array.from(invalidJsonOutput).length);
-  assert.equal(estimatedLedger.quantity, Array.from(serializedPrompt).length + Array.from(invalidJsonOutput).length);
+  assert.equal(estimatedLedger.quantity, 1);
+  assert.equal(estimatedLedger.costMicros, 20_000);
 
   // A successful HTTP response whose transport body is not JSON must still
   // leave an estimated usage row before the adapter reports the malformed body.

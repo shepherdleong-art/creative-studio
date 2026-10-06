@@ -39,8 +39,10 @@ export async function PUT(
     const existing = db.prepare(`SELECT * FROM video_providers WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
     if (!existing) return NextResponse.json({ error: 'Video provider not found' }, { status: 404 });
     const durationSec = parseVideoDuration(body.defaultDurationSec === undefined ? existing.defaultDurationSec : body.defaultDurationSec);
-    if (body.defaultDurationSec !== undefined || body.defaultModel !== undefined) {
-      const durationError = videoDurationError(String(body.defaultModel ?? existing.defaultModel ?? ''), durationSec);
+    if (body.defaultDurationSec !== undefined || body.defaultModel !== undefined || body.type !== undefined) {
+      const durationError = videoDurationError(
+        String(body.type ?? existing.type ?? ''), String(body.defaultModel ?? existing.defaultModel ?? ''), durationSec,
+      );
       if (durationError) return NextResponse.json({ error: durationError }, { status: 400 });
     }
     if (body.type === 'openai-video') {

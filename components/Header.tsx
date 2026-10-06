@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { Icon } from '@/components/ui/Icon';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -22,6 +22,10 @@ export default function Header() {
     readDesktopShell,
     readDesktopShellOnServer,
   );
+
+  useEffect(() => window.desktopBridge?.onQuitRequested?.(() => {
+    setShowStopConfirm(true);
+  }), []);
 
   const handleStop = async () => {
     setStopping(true);

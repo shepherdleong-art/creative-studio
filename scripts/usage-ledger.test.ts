@@ -1,3 +1,5 @@
+import { queryUsageDashboard, listUsageRecords } from '../lib/usage-query.ts';
+import { BILLING_MODEL_PRICES } from '../lib/usage-pricing.ts';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -202,14 +204,14 @@ function insertVideoProvider(db: Database.Database, input: {
   };
   assert.equal(row.quantity, 2);
   assert.equal(row.callCount, 2);
-  assert.equal(row.costMicros, 2_100_000);
+  assert.equal(row.costMicros, 3_160_000);
   assert.deepEqual(JSON.parse(row.detailJson).priceComponents, [{
     key: 'image',
     unit: 'image',
     quantity: 2,
-    unitPriceMicros: 1_050_000,
+    unitPriceMicros: 1_580_000,
     priceScale: 1,
-    componentCostMicros: 2_100_000,
+    componentCostMicros: 3_160_000,
   }]);
   db.close();
 }
@@ -262,6 +264,12 @@ function insertVideoProvider(db: Database.Database, input: {
     configuredModel: 'GPT-5-6-Luna-Standard',
     requestModel: 'GPT-5-6-Luna-Standard',
   }, { refType: 'script', refId: 'call-gpt' });
+  gptSnapshot.pricingVersion = 'core-usage-pricing-v1';
+  gptSnapshot.priceComponents = [
+    { key: 'input_token', unit: 'token', unitPriceMicros: 2_887_800, priceScale: 1_000_000 },
+    { key: 'output_token', unit: 'token', unitPriceMicros: 12_995_200, priceScale: 1_000_000 },
+    { key: 'cached_input_token', unit: 'token', unitPriceMicros: 288_780, priceScale: 1_000_000 },
+  ];
   recordUsage(db, {
     eventKey: 'llm-call:call-gpt',
     snapshot: gptSnapshot,
@@ -423,7 +431,7 @@ function insertVideoProvider(db: Database.Database, input: {
   assert.deepEqual(db.prepare(`SELECT quantity, callCount, costMicros, createdAt FROM usage_ledger WHERE eventKey='image-job:image-reconcile:succeeded'`).get(), {
     quantity: 3,
     callCount: 3,
-    costMicros: 3_150_000,
+    costMicros: 4_740_000,
     createdAt: '2026-08-18T01:02:03.000Z',
   });
   assert.deepEqual(db.prepare(`SELECT costMicros, quantity, callCount FROM usage_ledger WHERE eventKey='video-job:video-kling-reconcile:succeeded'`).get(), {
@@ -553,9 +561,9 @@ function insertVideoProvider(db: Database.Database, input: {
     quantity: 5,
     callCount: 1,
     unit: 'second',
-    unitPriceMicros: 2_720_000,
+    unitPriceMicros: 3_000_000,
     priceScale: 5,
-    costMicros: 2_720_000,
+    costMicros: 3_000_000,
     createdAt: '2026-08-18T01:02:03.000Z',
   });
   assert.deepEqual(JSON.parse((db.prepare(`SELECT detailJson FROM usage_ledger WHERE eventKey='video-job:video-legacy-kling:succeeded'`).get() as { detailJson: string }).detailJson), {
@@ -610,6 +618,56 @@ function insertVideoProvider(db: Database.Database, input: {
   assert.match(instrumentation, /startBatchSchedulerAfterReadiness/);
   assert.match(instrumentation, /catch/);
   assert.doesNotMatch(instrumentation, /error\.message|String\(error\)/, '启动告警不得拼接异常上下文');
+}
+
+// Newly priced tasks without snapshots backfill once, retaining project/time attribution.
+{
+  const db = setupDb();
+  setupCoreTables(db);
+  for (const entry of BILLING_MODEL_PRICES) {
+    if (entry.category === 'llm_text') {
+      const provider = { providerTable: 'script_providers' as const, providerId: entry.id,
+        providerName: entry.model, providerType: 'openai-compatible', executionScope: 'company' as const,
+        apiStyle: 'openai-compatible', configuredModel: entry.model, requestModel: entry.model };
+      const plan = resolveCoreUsagePlan(provider)!;
+      const frozen = createCoreUsageSnapshot(provider, plan, { refType: 'script', refId: entry.key });
+      assert.equal(recordUsage(db, { eventKey: entry.key, snapshot: frozen,
+        usage: { callCount: 1, quantity: { uncachedInputTokens: 200, outputTokens: 100, cachedReadTokens: 0 },
+          detail: { promptTokens: 200, completionTokens: 100 } }, createdAt: '2026-08-18T01:00:00.000Z' }).ok, true);
+      assert.deepEqual(db.prepare('SELECT costMicros, callCount, unit FROM usage_ledger WHERE eventKey = ?').get(entry.key),
+        { costMicros: entry.micros, callCount: 1, unit: 'request' });
+      continue;
+    }
+    if (entry.category === 'image') {
+      insertCoreProvider(db, { id: entry.id, model: entry.model });
+      insertImageJob(db, { id: entry.key, providerId: entry.id, model: entry.model });
+      insertImageJob(db, { id: `${entry.key}-failed`, providerId: entry.id, model: entry.model, status: 'failed' });
+    } else {
+      insertVideoProvider(db, { id: entry.id, defaultModel: entry.model });
+      insertVideoJob(db, { id: entry.key, providerId: entry.id, model: entry.model, durationSec: 10 });
+      insertVideoJob(db, { id: `${entry.key}-running`, providerId: entry.id, model: entry.model, status: 'running' });
+    }
+  }
+  // A lookalike public host must not pass the loopback gate during backfill.
+  insertVideoProvider(db, { id: 'external', defaultModel: 'kling-2.5', baseUrl: 'http://127.0.0.1.evil.example' });
+  insertVideoJob(db, { id: 'external', providerId: 'external', model: 'kling-2.5' });
+  assert.equal(reconcileUsageLedger(db).ok, true);
+  const count = (db.prepare('SELECT COUNT(*) AS n FROM usage_ledger').get() as { n: number }).n;
+  assert.equal(count, BILLING_MODEL_PRICES.length);
+  for (const entry of BILLING_MODEL_PRICES.filter((entry) => entry.category !== 'llm_text')) {
+    const row = db.prepare('SELECT costMicros, projectId, createdAt FROM usage_ledger WHERE refId = ?').get(entry.key);
+    assert.deepEqual(row, { costMicros: entry.micros * (entry.category === 'video' ? 2 : 1),
+      projectId: 'project-1', createdAt: '2026-08-18T01:02:03.000Z' });
+    const dashboard = queryUsageDashboard(db, { coreModelKey: entry.key, now: new Date('2026-08-18T12:00:00Z') });
+    assert.equal(dashboard.totals.callCount, 1);
+    assert.equal(dashboard.trend.at(-1)?.totalCostMicros, dashboard.totals.costMicros);
+    assert.equal(listUsageRecords(db, { coreModelKey: entry.key }).total, 1);
+  }
+  assert.equal(reconcileUsageLedger(db).recorded, 0);
+  db.prepare("UPDATE video_jobs SET status = 'succeeded' WHERE id = 'company-kling-2-5-running'").run();
+  assert.equal(reconcileUsageLedger(db).recorded, 1, 'a task finishing after the initial backfill is still recorded');
+  assert.equal(reconcileUsageLedger(db).recorded, 0);
+  db.close();
 }
 
 console.log('usage-ledger tests passed');

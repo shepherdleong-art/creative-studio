@@ -113,7 +113,7 @@ export const jimengAdapter: VideoProviderAdapter = {
 
     const seedance2 = isSeedance2(request.model);
     if (seedance2) {
-      const durationError = videoDurationError(request.model, request.durationSec);
+      const durationError = videoDurationError('jimeng', request.model, request.durationSec);
       if (durationError) throw new Error(durationError);
     }
     const content: Array<Record<string, unknown>> = [

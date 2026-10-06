@@ -282,6 +282,14 @@ function resolveAssetId(
       now: () => new Date(createdAt),
     });
     insertSource(db, assetId, sourceKind, location, createdAt);
+    if (mediaJson && typeof mediaJson === 'object' && 'role' in mediaJson && (mediaJson as Record<string, unknown>).role) {
+      const role = (mediaJson as Record<string, unknown>).role;
+      db.prepare(`
+        UPDATE batch_assets
+        SET mediaJson = json_set(mediaJson, '$.role', ?)
+        WHERE id = ? AND (json_extract(mediaJson, '$.role') IS NULL OR json_extract(mediaJson, '$.role') != ?)
+      `).run(role, assetId, role);
+    }
     return assetId;
   }).immediate();
 }
@@ -376,12 +384,22 @@ export async function registerModule4Video(
     shotId: row.shotId ?? null,
     relativePath: toStorageRelativePath(storageRootOf(), absolutePath),
   };
+  const role: 'opening' | 'body' = (() => {
+    if (!row.shotId) return 'body';
+    try {
+      const shot = db.prepare(`SELECT indexNum FROM shots WHERE id = ?`).get(row.shotId) as { indexNum: number } | undefined;
+      return shot && shot.indexNum === 1 ? 'opening' : 'body';
+    } catch {
+      return 'body';
+    }
+  })();
   const assetId = resolveAssetId(db, row.projectId, 'module4', location, fingerprint, {
     durationSec: media.durationUs / 1_000_000,
     filename: row.filename ?? row.id,
     width: media.width,
     height: media.height,
     format: media.format ?? '',
+    role,
   }, createdAt);
   // 记录本次核验的文件身份,供后续 prepare 快速路径跳过重复 ffprobe 与哈希。
   try {
@@ -406,6 +424,7 @@ export async function registerLinkedSource(
   input: {
     filePath: string;
     displayName?: string;
+    role?: 'opening' | 'body';
     now?: () => Date;
   },
 ): Promise<string> {
@@ -422,6 +441,7 @@ export async function registerLinkedSource(
     width: media.width,
     height: media.height,
     format: media.format ?? '',
+    ...(input.role ? { role: input.role } : {}),
   }, createdAt);
 }
 
@@ -437,6 +457,7 @@ export async function registerManagedCopy(
     sourcePath: string;
     /** 供批量素材区展示;不参与素材身份计算。 */
     displayName?: string;
+    role?: 'opening' | 'body';
     now?: () => Date;
   },
 ): Promise<string> {
@@ -466,6 +487,7 @@ export async function registerManagedCopy(
     width: media.width,
     height: media.height,
     format: media.format ?? '',
+    ...(input.role ? { role: input.role } : {}),
   }, createdAt);
 }
 

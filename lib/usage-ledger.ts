@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
+  BILLING_MODEL_PRICES,
+  createCoreUsageSnapshot,
   calculateComponentCostMicros,
   calculateUsageCostMicros,
   CORE_USAGE_PRICING,
@@ -156,6 +158,7 @@ interface LegacyVideoBackfillRow {
 }
 
 const CORE_CATEGORIES: Readonly<Record<string, CoreUsageCategory>> = {
+  ...Object.fromEntries(BILLING_MODEL_PRICES.map((entry) => [entry.key, entry.category])),
   'company-image2-medium': 'image',
   'company-qiniuyun-gpt-image-2-medium': 'image',
   'company-kling-3-0': 'video',
@@ -167,6 +170,7 @@ const CORE_CATEGORIES: Readonly<Record<string, CoreUsageCategory>> = {
 };
 
 const COMPONENT_KEYS_BY_CORE_MODEL: Readonly<Record<string, readonly string[]>> = {
+  ...Object.fromEntries(BILLING_MODEL_PRICES.map((entry) => [entry.key, [entry.category === 'image' ? 'image' : entry.category === 'video' ? 'second' : 'request']])),
   'company-image2-medium': ['image'],
   'company-qiniuyun-gpt-image-2-medium': ['image'],
   'company-kling-3-0': ['second'],
@@ -178,6 +182,7 @@ const COMPONENT_KEYS_BY_CORE_MODEL: Readonly<Record<string, readonly string[]>> 
 };
 
 const COMPONENT_UNITS_BY_KEY: Readonly<Record<string, string>> = {
+  request: 'request',
   image: 'image',
   second: 'second',
   input_token: 'token',
@@ -306,7 +311,8 @@ export function parseUsageSnapshot(value: unknown): { ok: true; parsed: ParsedSn
     return { ok: false, error: 'usage snapshot is missing required fields' };
   }
   const category = CORE_CATEGORIES[coreModelKey];
-  const expectedKeys = COMPONENT_KEYS_BY_CORE_MODEL[coreModelKey];
+  const expectedKeys = coreModelKey === 'company-gpt-5-6-luna' && components.length === 1
+    ? ['request'] : COMPONENT_KEYS_BY_CORE_MODEL[coreModelKey];
   if (!category || !expectedKeys || components.length !== expectedKeys.length) {
     return { ok: false, error: 'usage snapshot core model is unsupported' };
   }
@@ -416,7 +422,7 @@ function usageLedgerFields(
   const { snapshot: usageSnapshot, category: snapshotCategory } = parsed;
   const components = usageSnapshot.priceComponents;
   const componentDetails = components.map((component, index) => {
-    const quantity = quantityForComponent(measurement.quantity, component, index);
+    const quantity = component.key === 'request' ? measurement.callCount : quantityForComponent(measurement.quantity, component, index);
     const componentCost = calculateUsageCostMicros([component], quantity);
     return {
       key: component.key,
@@ -429,7 +435,7 @@ function usageLedgerFields(
   });
   const quantity = componentDetails.reduce((sum, component) => sum + component.quantity, 0);
   const costMicros = componentDetails.reduce((sum, component) => sum + component.componentCostMicros, 0);
-  const isGpt = usageSnapshot.coreModelKey === 'company-gpt-5-6-luna';
+  const isGpt = components.length > 1;
   const detailJson = JSON.stringify({
     ...measurement.detail,
     priceComponents: componentDetails,
@@ -1053,6 +1059,64 @@ function runLegacyVideoBackfill(db: Database.Database): LegacyBackfillResult {
   }
 }
 
+/** Missing successful tasks are estimated with the newly supplied prices.
+ * Never overwrite a frozen snapshot or a ledger row; event keys make repeats safe.
+ * Scan on reconciliation so tasks still running during the upgrade are included later.
+ */
+function backfillNewBillingModels(db: Database.Database): { ok: boolean; inserted: number } {
+  let inserted = 0;
+  try {
+    db.transaction(() => {
+      for (const kind of ['image', 'video'] as const) {
+        const table = kind === 'image' ? 'jobs' : 'video_jobs';
+        const providerTable = kind === 'image' ? 'providers' : 'video_providers';
+        const modelColumn = kind === 'image' ? 'model' : 'defaultModel';
+        const quantityColumn = kind === 'image' ? 'attempt' : 'durationSec';
+        if (!tableExists(db, table) || !tableExists(db, providerTable)
+          || !requiredColumnsExist(db, table, ['usageSnapshotJson', quantityColumn])
+          || !requiredColumnsExist(db, providerTable, [modelColumn])) continue;
+        const entries = BILLING_MODEL_PRICES.filter((entry) => entry.category === kind);
+        const baseUrl = requiredColumnsExist(db, providerTable, ['baseUrl']) ? 'p.baseUrl' : "''";
+        const rows = db.prepare(`
+          SELECT j.id, j.projectId, j.model, j.${quantityColumn} AS quantity,
+                 j.finishedAt, j.startedAt, p.id AS providerId, p.name AS providerName,
+                 p.type AS providerType, p.${modelColumn} AS configuredModel, ${baseUrl} AS baseUrl
+          FROM ${table} j JOIN ${providerTable} p ON p.id = j.providerId
+          LEFT JOIN usage_ledger l ON l.eventKey = ? || j.id || ':succeeded'
+          WHERE j.status = 'succeeded' AND j.model IN (${entries.map(() => '?').join(',')})
+            AND (j.usageSnapshotJson IS NULL OR TRIM(j.usageSnapshotJson) = '')
+            AND l.eventKey IS NULL
+        `).all(`${kind}-job:`, ...entries.map((entry) => entry.model)) as Array<{
+          id: string; projectId: string | null; model: string; quantity: number | null;
+          finishedAt: string | null; startedAt: string | null; providerId: string;
+          providerName: string; providerType: string; configuredModel: string; baseUrl: string;
+        }>;
+        for (const row of rows) {
+          const provider: CoreUsageSnapshotV1['provider'] = { providerTable, providerId: row.providerId, providerName: row.providerName,
+            providerType: row.providerType, configuredModel: row.configuredModel,
+            requestModel: row.model, baseUrl: row.baseUrl };
+          const plan = resolveCoreUsagePlan(provider);
+          if (!plan) continue;
+          if (kind === 'video' && (!Number.isFinite(row.quantity) || Number(row.quantity) <= 0)) continue;
+          const quantity = kind === 'image' ? positiveAttempt(row.quantity) : Number(row.quantity);
+          const createdAt = preferredLedgerTimestamp(row.finishedAt, row.startedAt);
+          const snapshot = createCoreUsageSnapshot(provider, plan, { startedAt: createdAt,
+            projectId: row.projectId ?? undefined, refType: kind === 'image' ? 'job' : 'video-job', refId: row.id });
+          const result = recordUsage(db, { eventKey: `${kind}-job:${row.id}:succeeded`, snapshot,
+            usage: { quantity, callCount: kind === 'image' ? quantity : 1,
+              detail: { source: 'billing-model-backfill-2026-09-30', estimated: true } }, createdAt });
+          if (!result.ok) throw new Error('billing backfill write failed');
+          if (result.inserted) inserted += 1;
+        }
+      }
+    })();
+    return { ok: true, inserted };
+  } catch {
+    console.error('[usage-ledger] billing model backfill failed; retry on reconciliation');
+    return { ok: false, inserted: 0 };
+  }
+}
+
 /**
  * Recover abandoned call evidence, drain billable calls, replay successful
  * async jobs from their frozen snapshots, and perform the one-time legacy
@@ -1109,6 +1173,9 @@ export function reconcileUsageLedger(db: Database.Database, currentOwner = USAGE
   const videoBackfill = runLegacyVideoBackfill(db);
   if (!videoBackfill.ok) failed += 1;
   recorded += videoBackfill.inserted;
+  const billingBackfill = backfillNewBillingModels(db);
+  recorded += billingBackfill.inserted;
+  if (!billingBackfill.ok) failed += 1;
   const uncertain = recoveredResult.uncertain + drainedResult.uncertain;
   return {
     ok: failed === 0,

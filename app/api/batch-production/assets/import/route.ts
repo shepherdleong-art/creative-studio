@@ -133,11 +133,14 @@ export async function POST(request: NextRequest) {
           continue;
         }
         const temporaryPath = path.join(temporaryDirectory, `upload-${index}${extension}`);
+        const rawRole = formData.get('role');
+        const role = rawRole === 'opening' || rawRole === 'body' ? rawRole : undefined;
         try {
           await stageUploadedFile(file, temporaryPath, request.signal);
           const assetId = await registerManagedCopy(db, projectId, {
             sourcePath: temporaryPath,
             displayName: filename,
+            role,
           });
           if (!assetIds.includes(assetId)) assetIds.push(assetId);
         } catch (error) {

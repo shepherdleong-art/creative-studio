@@ -70,7 +70,7 @@ export const klingAdapter: VideoProviderAdapter = {
     baseUrl: string,
     signal?: AbortSignal
   ): Promise<SubmitVideoResult> {
-    const durationError = videoDurationError(request.model, request.durationSec);
+    const durationError = videoDurationError('kling', request.model, request.durationSec);
     if (durationError) throw new Error(durationError);
     const cleanBase = baseUrl.replace(/\/$/, '');
     const url = `${cleanBase}/v1/videos/image2video`;

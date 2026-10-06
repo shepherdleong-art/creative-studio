@@ -3,10 +3,10 @@
  *
  * The dashboard deliberately does not read a provider's editable cost fields.
  * A provider is eligible only when its complete runtime identity matches one
- * of the eight entries below, and every amount is kept in integer micros.
+ * of the entries below, and every amount is kept in integer micros.
  */
 
-export const CORE_USAGE_PRICING_VERSION = 'core-usage-pricing-v1';
+export const CORE_USAGE_PRICING_VERSION = 'core-usage-pricing-2026-09-30';
 export const PRICING_VERSION = CORE_USAGE_PRICING_VERSION;
 
 export type CoreUsageProviderTable =
@@ -25,6 +25,11 @@ export type CoreUsageModelKey =
   | 'company-seedance-fast'
   | 'company-seedance-2-5'
   | 'company-gpt-5-6-luna'
+  | 'company-seedream-5-0-pro'
+  | 'company-nano-banana-3-0'
+  | 'company-nano-banana-3-1'
+  | 'company-kling-2-5'
+  | 'company-seedance-2-0'
   | 'doubao-seed-tts-2';
 
 export type CoreUsagePriceComponentKey =
@@ -68,7 +73,7 @@ export interface CoreUsagePlan {
   displayModel: string;
   pricingVersion: string;
   priceComponents: readonly CoreUsagePriceComponentV1[];
-  /** A single-component convenience value; GPT intentionally uses 0/1. */
+  /** A single-component convenience value. */
   unit: CoreUsageUnit;
   unitPriceMicros: number;
   priceScale: number;
@@ -109,14 +114,14 @@ export interface NormalizedGptTokenUsage {
 const IMAGE_COMPONENT: CoreUsagePriceComponentV1 = {
   key: 'image',
   unit: 'image',
-  unitPriceMicros: 1_050_000,
+  unitPriceMicros: 1_580_000,
   priceScale: 1,
 };
-// qiniuyun/gpt-image-2-medium：真实定价未公布，2026-08-21 与用户确认的粗略估算 ¥0.5/张
+// 2026-09-29 账单均价，用户于 2026-09-30 提供；视频确认均为 5 秒。
 const QINIUYUN_IMAGE_COMPONENT: CoreUsagePriceComponentV1 = {
   key: 'image',
   unit: 'image',
-  unitPriceMicros: 500_000,
+  unitPriceMicros: 250_000,
   priceScale: 1,
 };
 const KLING_COMPONENT: CoreUsagePriceComponentV1 = {
@@ -125,11 +130,11 @@ const KLING_COMPONENT: CoreUsagePriceComponentV1 = {
   unitPriceMicros: 2_990_000,
   priceScale: 5,
 };
-// qiniuyun/kling-3.0：2026-09-14 与用户确认的公司结算价 ¥2.72/5 秒（约 ¥0.544/秒）
+// qiniuyun/kling-3.0：账单均价 ¥3.00/5 秒。
 const QINIUYUN_KLING_COMPONENT: CoreUsagePriceComponentV1 = {
   key: 'second',
   unit: 'second',
-  unitPriceMicros: 2_720_000,
+  unitPriceMicros: 3_000_000,
   priceScale: 5,
 };
 const SEEDANCE_COMPONENT: CoreUsagePriceComponentV1 = {
@@ -138,15 +143,14 @@ const SEEDANCE_COMPONENT: CoreUsagePriceComponentV1 = {
   unitPriceMicros: 11_730_000,
   priceScale: 5,
 };
-// doubao-seedance-2-5-260628：默认出 1080p（2026-09-08 起），对齐火山官网刊例
-// （1080p 约 ¥3.75/秒 → ¥18.75/5 秒；2026-09-17 前限时 72 折约 ¥2.7/秒未计入）。
-// 公司网关实际账单可能有出入，待真实任务账单校准。
+// doubao-seedance-2-5-260628：账单均价 ¥9.45/5 秒。
 const SEEDANCE_2_5_COMPONENT: CoreUsagePriceComponentV1 = {
   key: 'second',
   unit: 'second',
-  unitPriceMicros: 18_750_000,
+  unitPriceMicros: 9_450_000,
   priceScale: 5,
 };
+// 保留旧 token 计价工具的兼容口径；新调用的 plan 按账单均价计次。
 const GPT_COMPONENTS: readonly CoreUsagePriceComponentV1[] = [
   { key: 'input_token', unit: 'token', unitPriceMicros: 2_887_800, priceScale: 1_000_000 },
   { key: 'output_token', unit: 'token', unitPriceMicros: 12_995_200, priceScale: 1_000_000 },
@@ -162,6 +166,16 @@ const TTS_COMPONENT: CoreUsagePriceComponentV1 = {
 function cloneComponents(components: readonly CoreUsagePriceComponentV1[]): readonly CoreUsagePriceComponentV1[] {
   return Object.freeze(components.map((component) => Object.freeze({ ...component })));
 }
+
+/** 已接入工作台的模型使用用户提供的账单均价估算。 */
+export const BILLING_MODEL_PRICES = [
+  { key: 'company-seedream-5-0-pro', id: 'company-gateway-seedream-5-0-pro', model: 'doubao-seedream-5-0-pro-image', category: 'image', micros: 610_000 },
+  { key: 'company-nano-banana-3-0', id: 'company-gateway-nano-banana-pro', model: 'nano-banana-3.0', category: 'image', micros: 1_270_000 },
+  { key: 'company-nano-banana-3-1', id: 'company-gateway-nano-banana-2', model: 'nano-banana-3.1', category: 'image', micros: 820_000 },
+  { key: 'company-kling-2-5', id: 'company-kling-2-5', model: 'kling-2.5', category: 'video', micros: 1_510_000 },
+  { key: 'company-seedance-2-0', id: 'company-seedance-2-0', model: 'doubao-seedance-2-0-260128', category: 'video', micros: 2_520_000 },
+  { key: 'company-gpt-5-6-luna', id: 'gpt', model: 'GPT-5-6-Luna-Standard', category: 'llm_text', micros: 20_000 },
+] as const;
 
 function createPlan(
   coreModelKey: CoreUsageModelKey,
@@ -316,6 +330,19 @@ export function resolveCoreUsagePlan(
   if (!providerSnapshot || typeof providerSnapshot !== 'object') return null;
   const provider = providerSnapshot as Partial<CoreUsageProviderSnapshot>;
 
+  for (const entry of BILLING_MODEL_PRICES) {
+    const identity = { configuredModel: entry.model, requestModel: entry.model };
+    const matches = entry.category === 'image'
+      ? matchesIdentity(provider, { ...identity, providerTable: 'providers', providerId: entry.id, providerType: 'gateway-task-image' })
+      : entry.category === 'video'
+        ? matchesVideoIdentity(provider, { ...identity, canonicalProviderId: entry.id, providerType: 'openai-video' })
+        : matchesScriptIdentity(provider, { ...identity, canonicalProviderId: entry.id, providerType: 'openai-compatible', executionScope: 'company', apiStyle: 'openai-compatible' });
+    if (matches) {
+      const unit = entry.category === 'image' ? 'image' : entry.category === 'video' ? 'second' : 'request';
+      return createPlan(entry.key, entry.category, entry.model, [{ key: unit, unit, unitPriceMicros: entry.micros, priceScale: unit === 'second' ? 5 : 1 }]);
+    }
+  }
+
   if (matchesIdentity(provider, {
     providerTable: 'providers',
     providerId: 'company-gateway-image2-medium',
@@ -389,23 +416,6 @@ export function resolveCoreUsagePlan(
       'video',
       'doubao-seedance-2-5-260628',
       [SEEDANCE_2_5_COMPONENT],
-    );
-  }
-
-  if (matchesScriptIdentity(provider, {
-    canonicalProviderId: 'gpt',
-    providerType: 'openai-compatible',
-    executionScope: 'company',
-    apiStyle: 'openai-compatible',
-    configuredModel: 'GPT-5-6-Luna-Standard',
-    requestModel: 'GPT-5-6-Luna-Standard',
-  })) {
-    return createPlan(
-      'company-gpt-5-6-luna',
-      'llm_text',
-      'GPT-5-6-Luna-Standard',
-      GPT_COMPONENTS,
-      { unitPriceMicros: 0, priceScale: 1 },
     );
   }
 

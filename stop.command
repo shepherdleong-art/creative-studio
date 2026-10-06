@@ -9,14 +9,39 @@ PROJECT_ROOT="$(pwd -P)"
 
 # 端口探测与进程归属校验委托给共享 Node 工具；工具不可用时必须明确报错并退出，
 # 绝不静默继续。
-NODE_BIN="${CREATIVE_STUDIO_NODE:-node}"
+# Node 定位:CREATIVE_STUDIO_NODE 约定优先;未设置时探测常见安装位置
+# (Homebrew / workbuddy current 指针等),双击启动的 shell 未必有开发终端的 PATH。
+locate_node() {
+    if command -v node >/dev/null 2>&1; then command -v node; return 0; fi
+    local candidate wb_root wb_version
+    for candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+        if [ -x "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+    done
+    wb_root="$HOME/.workbuddy/binaries/node/versions"
+    if [ -f "$wb_root/current" ]; then
+        wb_version="$(cat "$wb_root/current" 2>/dev/null)"
+        if [ -n "$wb_version" ] && [ -x "$wb_root/$wb_version/bin/node" ]; then
+            printf '%s\n' "$wb_root/$wb_version/bin/node"; return 0
+        fi
+    fi
+    for candidate in "$wb_root"/*/bin/node; do
+        if [ -x "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+    done
+    return 1
+}
+
 RUNTIME_TOOLS="$PROJECT_ROOT/scripts/runtime"
 
-if ! command -v "$NODE_BIN" >/dev/null 2>&1; then
+NODE_BIN="${CREATIVE_STUDIO_NODE:-}"
+if [ -z "$NODE_BIN" ]; then
+    NODE_BIN="$(locate_node)" || NODE_BIN=""
+fi
+if [ -z "$NODE_BIN" ] || ! command -v "$NODE_BIN" >/dev/null 2>&1; then
     echo "❌ 未找到 Node.js，无法调用共享停机工具；未对任何进程执行停止操作。" >&2
     read -p "按回车键退出..."
     exit 1
 fi
+export CREATIVE_STUDIO_NODE="$NODE_BIN"
 
 # 查找并关闭 Next.js dev server 进程（只结束确属本项目的进程；
 # 端口上的未知属主只报告，绝不误杀）。

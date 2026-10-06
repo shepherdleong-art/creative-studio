@@ -160,9 +160,13 @@ export function resolveCoverContract(
   if (!asset) throw new Error(`素材 ${assetId} 不存在`);
 
   const poolItem = db.prepare(`SELECT colorJson FROM batch_asset_pool_items WHERE batchVersionId = ? AND assetId = ?`).get(row.batchVersionId, assetId) as { colorJson: string } | undefined;
-  if (!poolItem) throw new Error(`素材 ${assetId} 不在批次版本素材池中`);
+  let colorJsonStr = poolItem?.colorJson;
+  if (!colorJsonStr) {
+    const analysis = db.prepare(`SELECT colorJson FROM batch_asset_analysis WHERE assetId = ? ORDER BY createdAt DESC LIMIT 1`).get(assetId) as { colorJson: string } | undefined;
+    colorJsonStr = analysis?.colorJson ?? '{"lutId":null}';
+  }
 
-  const colorSnapshot = upgradeColorSnapshot(JSON.parse(poolItem.colorJson));
+  const colorSnapshot = upgradeColorSnapshot(JSON.parse(colorJsonStr));
   const lutFingerprint = colorSnapshot.lutFingerprint ?? null;
 
   const frozenTitleConfig = loadFrozenCoverTitleConfig(db, row.planId);

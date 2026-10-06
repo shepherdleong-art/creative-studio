@@ -36,7 +36,10 @@ export default function MixcutWorkspace(props: MixcutWorkspaceProps) {
         <p className="px-2 text-xs text-ink-tertiary">两种模式数据隔离；切换不会启动任务。</p>
       </div>
 
-      <div className={mode === 'single' ? '' : 'hidden'} aria-hidden={mode !== 'single'}>
+      {/* 单条面板保持挂载以保留会话状态;隐藏必须内联 display:none ——
+          Tailwind 的 hidden 工具类会被未分层全局样式压过,导致批量模式下
+          单条内容仍参与排版、把统一审片同屏工作台顶出视口(实测页面溢出 171px)。 */}
+      <div style={{ display: mode === 'single' ? undefined : 'none' }} aria-hidden={mode !== 'single'}>
         <MixcutPanel {...props} />
       </div>
       {mode === 'batch' && <BatchPreparationPanel projectId={props.projectId} />}

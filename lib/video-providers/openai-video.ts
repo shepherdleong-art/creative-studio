@@ -118,7 +118,8 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     const cleanBase = baseUrl.replace(/\/$/, '');
     const url = `${cleanBase}/v1/videos`;
     const isQiniuKling = request.model === 'qiniuyun/kling-3.0';
-    const durationError = videoDurationError(request.model, request.durationSec);
+    const isCompanyKling25 = request.model === 'kling-2.5';
+    const durationError = videoDurationError('openai-video', request.model, request.durationSec);
     if (durationError) throw new Error(durationError);
 
     const hasTailImagePath = request.tailImagePath !== undefined;
@@ -239,10 +240,10 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
         // （2026-08-18 实测落缺省 5s），而 OutputConfig 字段会原样透传给腾讯
         // （腾讯 Kling Duration 3-15，默认 5）；同日首尾帧真实任务验证
         // Duration=10 产出 10.042s 生效。
-        const outputConfig: Record<string, unknown> = { Duration: request.durationSec };
+        // Kling 2.5 首尾帧要求 1080P；即使尺寸探测失败，也不能落回默认 720P。
+        const outputConfig: Record<string, unknown> = { Duration: request.durationSec, Resolution: '1080P' };
         if (aspectRatio) {
           outputConfig.AspectRatio = aspectRatio;
-          outputConfig.Resolution = '1080P';
         }
         body.OutputConfig = outputConfig;
       } else {
@@ -250,6 +251,10 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
           ? snapCompanyVideoSize(sourceDims.width, sourceDims.height, companyCaps)
           : null;
         if (snappedSize) body.size = snappedSize;
+        if (isCompanyKling25) {
+          // VOD 默认为 720P，不能只凭 size 假定是 1080P；单首帧也显式送原生参数。
+          body.OutputConfig = { Resolution: '1080P', Duration: request.durationSec };
+        }
       }
       // Seedance 单双图均按方舟像素表送 size：2.0 标准版 / 2.5 为 1080p，Fast 为 720p。
       // 2.5 双图实测未进官网首尾帧强校验（2026-09-08：不送 size 落 720p

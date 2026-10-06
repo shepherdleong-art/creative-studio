@@ -72,7 +72,25 @@ assert.equal(snapCompanyImageSize('1024x1024', seedreamLiteCaps), '1440x1440');
 assert.equal(snapCompanyImageSize('1440x2560', seedreamLiteCaps), '1440x2560');
 // seedream-pro 最高 2K：应用 4K 预设被钳制到 2K
 const seedreamProCaps = companyImageCapsForModel('doubao-seedream-5-0-pro-image')!;
-assert.equal(snapCompanyImageSize('2880x2880', seedreamProCaps), '1440x1440');
+assert.equal(snapCompanyImageSize('2880x2880', seedreamProCaps), '2048x2048');
+assert.equal(snapCompanyImageSize('2560x1440', seedreamProCaps), '2848x1600');
+assert.equal(snapCompanyImageSize('1456x624', seedreamProCaps), '1512x648');
+for (const sizes of Object.values(seedreamProCaps.imageSizeTable!)) {
+  for (const size of Object.values(sizes)) {
+    const [w, h] = size.split('x').map(Number);
+    assert.ok(w * h >= 921600 && w * h <= 4624220, `Seedream 官方像素预算: ${size}`);
+  }
+}
+for (const model of ['nano-banana-3.0', 'nano-banana-3.1']) {
+  const caps = companyImageCapsForModel(model)!;
+  assert.deepEqual(caps.tiers, ['1K', '2K', '4K']);
+  assert.equal(caps.nativeDelivery, true);
+  assert.equal(snapCompanyImageSize('1280x720', caps), '1820x1024');
+  assert.equal(snapCompanyImageSize('2560x1440', caps), '2560x1440');
+  assert.equal(snapCompanyImageSize('3840x2160', caps), '3840x2160');
+}
+assert.equal(companyImageCapsForModel('nano-banana-3.0-other'), null);
+assert.deepEqual(companyVideoCapsForModel('kling-2.5')?.tiers, ['1K']);
 
 // qiniuyun/gpt-image-2-medium：逐格实测放行 2K×{1:1,3:4,4:3,16:9,9:16} + 4K×{1:1,4:3,16:9,9:16}
 // （1K 档被网关映射成 1080 类坏尺寸、3K 与 3:2/2:3/21:9 被拒、4K 3:4 映射坏被单格排除）

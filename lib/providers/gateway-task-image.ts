@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { resolvePublicImageUrl } from '../local-image-url.ts';
 import { isCosMediaConfigured, tryUploadToCosAndSign, compressImageToBudget } from '../cos-media.ts';
-import { companyImageCapsForModel, snapCompanyImageSize } from '../company-gateway-size.ts';
+import { companyImageCapsForModel, snapCompanyImageSize, companyImageOutputConfig } from '../company-gateway-size.ts';
 import {
   normalizeGatewayResultUrl,
   downloadGatewayMedia,
@@ -203,7 +203,8 @@ function withTimeoutSignal(
   const timer = setTimeout(() => controller.abort(new DOMException('Timeout', 'TimeoutError')), ms);
 
   const onAbort = () => controller.abort();
-  parent?.addEventListener('abort', onAbort, { once: true });
+  if (parent?.aborted) onAbort();
+  else parent?.addEventListener('abort', onAbort, { once: true });
 
   return {
     signal: controller.signal,
@@ -217,9 +218,18 @@ function withTimeoutSignal(
 export async function submitGatewayTaskImage(
   request: GatewayTaskImageRequest,
   apiKey: string,
-  baseUrl: string
+  baseUrl: string,
+  options: { onProgress?: (message: string) => void; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<GatewayTaskSubmitResult> {
   const cleanBase = baseUrl.replace(/\/$/, '');
+  const isSeedreamPro = request.model === 'doubao-seedream-5-0-pro-image';
+  const isNanoBanana = request.model === 'nano-banana-3.0' || request.model === 'nano-banana-3.1';
+  if ((isSeedreamPro || isNanoBanana) && request.referenceImagePaths.length + 1 > 14) {
+    throw new Error('该模型最多支持 14 张输入图片（含待编辑底图），请减少参考图');
+  }
+  if (isNanoBanana && !isCosMediaConfigured()) {
+    throw new Error('公司 Nano Banana 参考图需要配置 CREATIVE_STUDIO_COS_* 公网中转');
+  }
 
   // 与 packy-images / openai-compatible 一致的图片顺序约定：待编辑底图在前（图1），参考图在后（图2-N）。
   // 项目默认提示词与存量项目提示词均按「图1=底图、图2=参考图」书写。
@@ -235,6 +245,9 @@ export async function submitGatewayTaskImage(
       await toGatewayImageRefAsync(request.referenceImagePaths[i], request.referenceMimeTypes[i] || 'image/png', request.model)
     );
   }
+  if (isNanoBanana && imageTransports.some(t => t !== 'cos-url')) {
+    throw new Error('公司 Nano Banana 参考图上传 COS 失败，任务未提交');
+  }
 
   let prompt = request.prompt;
   const shouldUseSubjectGuidance =
@@ -242,6 +255,51 @@ export async function submitGatewayTaskImage(
   if (shouldUseSubjectGuidance) {
     const refRange = request.referenceImagePaths.length === 1 ? '图2' : `图2-${request.referenceImagePaths.length + 1}`;
     prompt = `图1是需要编辑的原图，${refRange}是风格/场景参考图。保持图1的产品主体、比例、材质不变，参考后面的图片调整场景、光线和布置。\n${request.prompt}`;
+  }
+
+  // 公司 Seedream 5.0 Pro 下游为方舟同步 JSON 图片接口：image（单数）接收
+  // 按顺序排列的底图和参考图。沿用 immediateImageUrl 合同，不改队列或轮询逻辑。
+  if (isSeedreamPro) {
+    const caps = companyImageCapsForModel(request.model)!;
+    const output = companyImageOutputConfig(request.size, caps);
+    // 同步生图等待完整生成结果，应沿用项目超时；未提供时默认 10 分钟。
+    const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs! > 0
+      ? options.timeoutMs! : 600_000;
+    const requestTimeout = withTimeoutSignal(options.signal, timeoutMs);
+    const startedAt = Date.now();
+    const elapsedSeconds = () => Math.round((Date.now() - startedAt) / 1000);
+    const reportWaiting = () => options.onProgress?.(`Seedream 5.0 Pro 等待生成响应（已等待 ${elapsedSeconds()} 秒，超时上限 ${Math.round(timeoutMs / 1000)} 秒）`);
+    reportWaiting();
+    // 同步接口没有远端任务 ID；这里只记录本地等待时间，不额外提交或伪造轮询。
+    const progressTimer = options.onProgress ? setInterval(reportWaiting, 5000) : undefined;
+    try {
+      // 方舟推荐档位 + 提示词宽高比。公司链路传具体像素会回落到默认 2K，
+      // 2026-09-29 实测 size=1K 才能正确得到 1K 产物。
+      const response = await fetch(`${cleanBase}/v1/images/generations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: request.model,
+          prompt: `${prompt}\n输出画幅为${output.AspectRatio}，清晰度为${output.Resolution}。`, image: imageUrls,
+          size: output.Resolution, n: 1, response_format: 'url' }),
+        signal: requestTimeout.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Seedream 图片生成失败 ${response.status}: ${sanitizeGatewayMediaDiagnostic(await response.text(), apiKey).slice(0, 500)}`);
+      }
+      const data = await response.json() as { data?: Array<{ url?: string; error?: { message?: string } }>; error?: { message?: string }; usage?: unknown };
+      const immediateImageUrl = normalizeGatewayResultUrl(data.data?.[0]?.url, cleanBase);
+      if (!immediateImageUrl) {
+        throw new Error(`Seedream 未返回图片 URL: ${sanitizeGatewayMediaDiagnostic(data.error?.message || data.data?.[0]?.error?.message || '响应缺少 data[0].url', apiKey)}`);
+      }
+      options.onProgress?.(`Seedream 5.0 Pro 生成响应已返回（耗时 ${elapsedSeconds()} 秒），开始下载图片`);
+      return { immediateImageUrl, imageTransports, rawResponse: { status: 'completed', usage: data.usage } };
+    } catch (error) {
+      options.onProgress?.(`Seedream 5.0 Pro 请求异常结束（已等待 ${elapsedSeconds()} 秒）`);
+      throw error;
+    } finally {
+      clearInterval(progressTimer);
+      requestTimeout.cleanup();
+    }
   }
 
   const body: Record<string, unknown> = {
@@ -257,6 +315,7 @@ export async function submitGatewayTaskImage(
   if (companyCaps) {
     body.size = snapCompanyImageSize(request.size, companyCaps);
     body.response_format = PNG_RESPONSE_FORMAT_MODEL.test(request.model) ? 'png' : 'jpeg';
+    if (isNanoBanana) body.OutputConfig = companyImageOutputConfig(request.size, companyCaps);
   } else if (request.size) {
     body.size = request.size;
   }

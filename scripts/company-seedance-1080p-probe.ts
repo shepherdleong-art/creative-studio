@@ -91,13 +91,19 @@ for (;;) {
   await new Promise((r) => setTimeout(r, 15_000));
   const pollRes = await fetch(`${base}/v1/videos/${taskId}`, { headers: { Authorization: headers.Authorization } });
   const pollText = await pollRes.text();
-  let data: Record<string, any> = {};
-  try { data = JSON.parse(pollText); } catch { /* keep raw */ }
-  const status = data.status || 'unknown';
+  let data: Record<string, unknown> = {};
+  try { data = JSON.parse(pollText) as Record<string, unknown>; } catch { /* keep raw */ }
+  const status = typeof data.status === 'string' ? data.status : 'unknown';
   console.log(`轮询：${status}`);
   if (status === 'completed') {
-    videoUrl = data?.metadata?.url ?? data?.output?.url ?? data?.video?.url
-      ?? data?.result?.video_url ?? data?.result?.url ?? data?.video_url ?? data?.url
+    const d = data as Record<string, Record<string, string> | string | undefined>;
+    videoUrl = (d?.metadata as Record<string, string> | undefined)?.url
+      ?? (d?.output as Record<string, string> | undefined)?.url
+      ?? (d?.video as Record<string, string> | undefined)?.url
+      ?? (d?.result as Record<string, string> | undefined)?.video_url
+      ?? (d?.result as Record<string, string> | undefined)?.url
+      ?? (typeof d?.video_url === 'string' ? d.video_url : undefined)
+      ?? (typeof d?.url === 'string' ? d.url : undefined)
       ?? `${base}/v1/videos/${taskId}/content`;
     break;
   }

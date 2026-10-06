@@ -20,6 +20,8 @@ const eslintConfig = defineConfig([
     "python-runtime/**",
     // 本地构建缓存（runtime 归档、安装器中间产物）：
     ".cache/**",
+    // 阶段性规格、测试清单、交付记录、冻结基线等产物目录，不参与 lint：
+    "outputs/**",
     // 本仓库约定 git worktree 放在 .worktrees/ 下（各自带 .next 构建缓存），不参与 lint：
     ".worktrees/**",
   ]),

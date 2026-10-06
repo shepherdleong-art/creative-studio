@@ -266,7 +266,7 @@ for (const [name, provider, requestModel] of [
     eventKey: 'image-job:ledger-job:succeeded',
     callCount: 3,
     quantity: 3,
-    costMicros: 3_150_000,
+    costMicros: 4_740_000,
     createdAt: finishedAt,
   });
   db.close();

@@ -14,6 +14,7 @@ import {
   type LlmUsageContext,
 } from '../usage-llm.ts';
 import { readSseStream } from './sse.ts';
+import { safeProviderErrorHint } from './error-diagnostics.ts';
 
 const DEFAULT_CHAT_TIMEOUT_MS = 120_000;
 
@@ -156,7 +157,7 @@ export async function chatCompletion(
     let res = firstResponse.response;
     let usageAttempt = firstResponse.usageAttempt;
     if (!res.ok) {
-      const errText = await res.text();
+      let errText = await res.text();
       const temperatureRejected = res.status === 400
         && 'temperature' in body
         && /temperature/i.test(errText)
@@ -169,10 +170,10 @@ export async function chatCompletion(
         usageAttempt = fallbackResponse.usageAttempt;
       }
       if (!res.ok) {
-        if (temperatureRejected) await res.text();
-        // The upstream body may echo prompts or credentials. Keep it out of
-        // thrown errors because project-level callers persist these messages.
-        throw new Error(`${config.name} (openai-compatible) 请求失败（HTTP ${res.status}）`);
+        if (temperatureRejected) errText = await res.text();
+        // Only local diagnostic labels may enter persisted errors, never the
+        // upstream body (which can echo prompts, credentials or signed URLs).
+        throw new Error(`${config.name} (openai-compatible) 请求失败（HTTP ${res.status}）：${safeProviderErrorHint(errText)}`);
       }
     }
 

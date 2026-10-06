@@ -14,7 +14,7 @@ import { BATCH_NARRATION_SCHEMA_VERSION } from './narration.ts';
  * 不同历史快照上渐进迁移。
  */
 
-export const BATCH_ALLOCATION_RULE_VERSION = 'batch-allocation-v3';
+export const BATCH_ALLOCATION_RULE_VERSION = 'batch-allocation-v4';
 export const BATCH_ALLOCATION_SCHEMA_VERSION = 'batch-arrangement-v1';
 
 /**
@@ -23,16 +23,6 @@ export const BATCH_ALLOCATION_SCHEMA_VERSION = 'batch-arrangement-v1';
  * 候选被同等惩罚、相对排序不变,自然回退复用,不会卡死。
  */
 const REALLOCATION_AVOID_PENALTY = 150;
-
-/**
- * 同源素材(同一分镜位的不同版次,如 V01/V02)进入同一条成片的软互斥惩罚。
- * 量级与 REALLOCATION_AVOID_PENALTY 相同:有非同组替代时同源素材必然让位;
- * 池子耗尽时相对排序不变、自然回退并显式 warning(same-shot-reused)。
- * 只罚「同组不同素材」——同一素材复用不同窗口仍走 reuseCount 轻罚,
- * stitch 兜底把一条长素材切成多 chunk 的设计行为不受影响。
- * v1 → v2:新增本惩罚(ruleVersion 是分配 run 幂等键之一,旧 run 不复用)。
- */
-const SAME_SHOT_GROUP_PENALTY = 150;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -70,6 +60,8 @@ export interface AllocationAssetInput {
   usableRanges?: AllocationRangeInput[] | Array<[number, number]>;
   coverFrameTimesUs?: number[];
   colorSnapshot?: unknown;
+  role?: 'opening' | 'body';
+  mediaJson?: unknown;
   excluded?: boolean;
 }
 
@@ -320,6 +312,7 @@ interface NormalizedAsset {
   coverFrameTimesUs: number[];
   analysisFallback: boolean;
   colorSnapshot: unknown;
+  role: 'opening' | 'body';
 }
 
 interface NormalizedSegment {
@@ -517,6 +510,10 @@ function normalizeAsset(rawAsset: AllocationAssetInput): NormalizedAsset {
       .filter((value, index, values) => values.indexOf(value) === index),
     analysisFallback,
     colorSnapshot: colorIdentity(rawAsset.colorSnapshot ?? raw.colorSnapshot),
+    role: (() => {
+      const media = asRecord(parseJson(rawAsset.mediaJson));
+      return rawAsset.role === 'opening' || media?.role === 'opening' ? 'opening' : 'body';
+    })(),
   };
 }
 
@@ -766,15 +763,13 @@ function usedShotGroupsInPlan(
   return { usedGroupKeys, usedAssetIds };
 }
 
-/** 同组不同素材才受重罚;同一素材复用不同窗口仍只走 reuseCount 轻罚。 */
-function sameShotGroupPenalty(
+/** 自动排片每张原图只选一个视频版本，同一视频的剪开片段不算新版本。 */
+function conflictsWithUsedSource(
   asset: NormalizedAsset,
   usedGroupKeys: Set<string>,
   usedAssetIds: Set<string>,
-): number {
-  return usedGroupKeys.has(asset.groupKey) && !usedAssetIds.has(asset.assetId)
-    ? SAME_SHOT_GROUP_PENALTY
-    : 0;
+): boolean {
+  return usedGroupKeys.has(asset.groupKey) && !usedAssetIds.has(asset.assetId);
 }
 
 /** 场景范围内未被已用区间占用的空闲子区间(按起点升序)。 */
@@ -924,8 +919,8 @@ interface StitchCandidate {
 /**
  * 句段内拼接兜底:单区间装不下句段时,用语义最佳的场景 chunk 连续填满句段
  * 时间线(与单条混剪的多镜头拼接一致)。打分沿用单区间公式;空闲区间耗尽
- * 后允许一轮重叠兜底,与单区间路径的容忍语义一致。只在素材池有场景时调用,
- * 因此总能填满;填满后登记 stitched-segment 警告。
+ * 后外部素材允许重叠兜底。已知原图的素材保持同源互斥且不循环已用窗口；
+ * 自动排不满则报告素材不足，手动编辑仍可继续。
  */
 function stitchSegment(
   normalized: NormalizedInput,
@@ -937,26 +932,30 @@ function stitchSegment(
   usedOpeningAssets: Set<string>,
   clips: AllocationClip[],
   warnings: string[],
+  blockers: string[],
+  reservedIntervals: UsedInterval[],
 ): void {
   const durationUs = Math.max(1, segment.endUs - segment.startUs);
   const stitchAssetById = new Map(normalized.assets.map((asset) => [asset.assetId, asset]));
   let filledUs = 0;
   let part = 0;
   let overlapFallbackUsed = false;
-  let sameShotFallbackUsed = false;
   while (filledUs < durationUs) {
     const remainingUs = durationUs - filledUs;
     // 每轮重建:上一 chunk 已登记占用,同源组集合随之收紧。
     const { usedGroupKeys, usedAssetIds } = usedShotGroupsInPlan(usedIntervals, plan.planId, stitchAssetById);
     const candidates: StitchCandidate[] = [];
-    // 先避开全批区间，再允许跨片复用，最后才允许本片区间重叠。
-    // 全批存在空窗也不能提前退出：那些空窗可能全是本片已经用过的同源版次。
+    // 先避开全批区间，再允许跨片复用；仅未知原图的外部素材可重叠兜底。
     for (const scope of ['batch', 'plan', 'none'] as const) {
       const scopedCandidates: StitchCandidate[] = [];
       for (const asset of availableAssets) {
+        if (conflictsWithUsedSource(asset, usedGroupKeys, usedAssetIds)) continue;
         for (const scene of asset.scenes) {
-          const used = usedIntervals.filter((entry) => entry.assetId === asset.assetId
-            && (scope === 'batch' || (scope === 'plan' && entry.planId === plan.planId && !entry.historical)));
+          const used = [
+            ...usedIntervals.filter((entry) => entry.assetId === asset.assetId
+              && (scope === 'batch' || ((scope === 'plan' || !asset.groupKey.startsWith('asset:')) && entry.planId === plan.planId && !entry.historical))),
+            ...reservedIntervals.filter(entry => entry.assetId === asset.assetId),
+          ];
           for (const [subStartUs, subEndUs] of freeSubIntervals(scene, used)) {
             const lengthUs = Math.min(remainingUs, subEndUs - subStartUs);
             if (lengthUs <= 0) continue;
@@ -965,26 +964,24 @@ function stitchSegment(
             const semantic = semanticScore(segment, asset, scene);
             const hook = segmentIndex === 0 && part === 0 ? hookScore(segment, asset, scene) : 0;
             const sameOpening = segmentIndex === 0 && part === 0 && usedOpeningAssets.has(asset.assetId);
+            const openingBonus = segmentIndex === 0 && part === 0 && asset.role === 'opening' ? 50 : 0;
+            const openingPenalty = segmentIndex > 0 && asset.role === 'opening' ? 20 : 0;
             const reuseCount = usedIntervals.filter((entry) => entry.assetId === asset.assetId).length;
             scopedCandidates.push({
               asset,
               scene,
               startUs: subStartUs,
               lengthUs,
-              score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, remainingUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0) - sameShotGroupPenalty(asset, usedGroupKeys, usedAssetIds),
+              score: semantic * 100 + hook * 8 + scene.qualityScore * 2 + openingBonus - openingPenalty - reuseCount * 3 - overlap / Math.max(1, remainingUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0),
               tie: stableHash(`${normalized.seed}:${plan.planId}:${segment.id}:${asset.assetId}:${scene.index}:part:${part}`),
             });
           }
         }
       }
-      const preferred = scopedCandidates.filter((entry) => !sameShotGroupPenalty(entry.asset, usedGroupKeys, usedAssetIds));
-      if (scope !== 'none' && preferred.length) {
-        candidates.splice(0, candidates.length, ...preferred);
+      if (scopedCandidates.length) {
+        candidates.push(...scopedCandidates);
         break;
       }
-      if (!candidates.length) candidates.push(...scopedCandidates);
-      // 有不重叠窗口时仍保留同源回退，不为避免同源而重复本片相同区间。
-      if (scope === 'plan' && candidates.length) break;
     }
     if (!candidates.length) break;
     candidates.sort((a, b) => b.score - a.score || b.lengthUs - a.lengthUs || a.tie - b.tie || a.asset.assetId.localeCompare(b.asset.assetId) || a.startUs - b.startUs);
@@ -992,7 +989,6 @@ function stitchSegment(
     if (intervalOverlaps({ assetId: chunk.asset.assetId, startUs: chunk.startUs, endUs: chunk.startUs + chunk.lengthUs }, usedIntervals).length) {
       overlapFallbackUsed = true;
     }
-    if (sameShotGroupPenalty(chunk.asset, usedGroupKeys, usedAssetIds)) sameShotFallbackUsed = true;
     part += 1;
     const clip: AllocationClip = {
       clipId: `${plan.planId}:clip:${segment.id}:part:${part}`,
@@ -1015,7 +1011,7 @@ function stitchSegment(
     filledUs += chunk.lengthUs;
   }
   if (overlapFallbackUsed) warnings.push(`source-overlap:${segment.id}`);
-  if (sameShotFallbackUsed) warnings.push(`same-shot-reused:${segment.id}`);
+  if (filledUs < durationUs) blockers.push('不同原图的可用画面不足，自动排片未完成；请补充素材、缩短脚本或手动调整');
   if (filledUs >= durationUs) warnings.push(`stitched-segment:${segment.id}`);
 }
 
@@ -1155,6 +1151,22 @@ function assignOne(
   }
 
   const units = buildPlanMatchUnits(plan, normalized);
+  // 提前保留人工锁定的版本和源区间；自动部分不能抢用或补入其同源兄弟。
+  const reservedAssets = units.flatMap(unit => {
+    const lock = lockForSegment(plan, unit.segment, normalized.locks);
+    const asset = assetById.get(lock?.assetId ?? lock?.assetKey ?? '');
+    return asset ? [asset] : [];
+  });
+  const allocatableAssets = availableAssets.filter(asset => !reservedAssets.some(reserved => (
+    reserved.groupKey === asset.groupKey && reserved.assetId !== asset.assetId
+  )));
+  const reservedIntervals: UsedInterval[] = units.flatMap(unit => {
+    const lock = lockForSegment(plan, unit.segment, normalized.locks);
+    return lock ? [{ assetId: lock.assetId ?? lock.assetKey ?? '',
+      startUs: finite(lock.sourceStartUs ?? lock.startUs, -1),
+      endUs: finite(lock.sourceEndUs ?? lock.endUs, -1),
+      planId: plan.planId, segmentId: unit.segment.id }] : [];
+  });
   // 有单元匹配失败的母句回退整句拼接:先清掉该句已产出的单元镜头,
   // 再按既有 stitchSegment 整句兜底(与 T8 前行为一致,不修改拼接逻辑)。
   const stitchFallbackSegmentIndexes = new Set<number>();
@@ -1210,7 +1222,8 @@ function assignOne(
     const candidates: Array<{ asset: NormalizedAsset; scene: NormalizedScene; startUs: number; endUs: number; score: number; overlap: number; sameOpening: boolean; tie: number }> = [];
     // 每个单元重建:上一单元选中已登记占用,同源组集合随之收紧。
     const { usedGroupKeys, usedAssetIds } = usedShotGroupsInPlan(usedIntervals, plan.planId, assetById);
-    for (const asset of availableAssets) {
+    for (const asset of allocatableAssets) {
+      if (conflictsWithUsedSource(asset, usedGroupKeys, usedAssetIds)) continue;
       for (const scene of asset.scenes) {
         if (scene.endUs - scene.startUs < durationUs || asset.durationUs < durationUs) continue;
         const maxStart = scene.endUs - durationUs;
@@ -1218,18 +1231,22 @@ function assignOne(
         const starts = [scene.startUs, base, maxStart, scene.startUs + (stableHash(`${normalized.seed}:${plan.planId}:${unit.unitId}:${asset.assetId}:${scene.index}`) % Math.max(1, Math.floor(maxStart - scene.startUs + 1)))];
         for (const startUs of [...new Set(starts.map((value) => Math.max(scene.startUs, Math.min(maxStart, Math.round(value)))))]) {
           const endUs = startUs + durationUs;
+          if (intervalOverlaps({ assetId: asset.assetId, startUs, endUs }, reservedIntervals).length) continue;
           const overlaps = intervalOverlaps({ assetId: asset.assetId, startUs, endUs }, usedIntervals);
+          if (!asset.groupKey.startsWith('asset:') && overlaps.some(entry => entry.planId === plan.planId && !entry.historical)) continue;
           const overlap = overlaps.reduce((sum, entry) => sum + overlapLength(startUs, endUs, entry.startUs, entry.endUs), 0);
           const semantic = semanticScore(segment, asset, scene);
           const hook = segmentIndex === 0 ? hookScore(segment, asset, scene) : 0;
           const sameOpening = segmentIndex === 0 && usedOpeningAssets.has(asset.assetId);
+          const openingBonus = segmentIndex === 0 && asset.role === 'opening' ? 50 : 0;
+          const openingPenalty = segmentIndex > 0 && asset.role === 'opening' ? 20 : 0;
           const reuseCount = usedIntervals.filter((entry) => entry.assetId === asset.assetId).length;
           candidates.push({
             asset,
             scene,
             startUs,
             endUs,
-            score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, durationUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0) - sameShotGroupPenalty(asset, usedGroupKeys, usedAssetIds),
+            score: semantic * 100 + hook * 8 + scene.qualityScore * 2 + openingBonus - openingPenalty - reuseCount * 3 - overlap / Math.max(1, durationUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0),
             overlap,
             sameOpening,
             tie: stableHash(`${normalized.seed}:${plan.planId}:${unit.unitId}:${asset.assetId}:${scene.index}:${startUs}`),
@@ -1238,8 +1255,7 @@ function assignOne(
       }
     }
     candidates.sort((a, b) => b.score - a.score || a.overlap - b.overlap || a.tie - b.tie || a.asset.assetId.localeCompare(b.asset.assetId) || a.startUs - b.startUs);
-    const preferred = candidates.filter((entry) => !sameShotGroupPenalty(entry.asset, usedGroupKeys, usedAssetIds)
-      && !intervalOverlaps({ assetId: entry.asset.assetId, startUs: entry.startUs, endUs: entry.endUs }, usedIntervals)
+    const preferred = candidates.filter((entry) => !intervalOverlaps({ assetId: entry.asset.assetId, startUs: entry.startUs, endUs: entry.endUs }, usedIntervals)
         .some((used) => used.planId === plan.planId && !used.historical));
     const ranked = preferred.length ? preferred : candidates;
     const candidate = ranked.find((entry) => entry.overlap === 0) ?? ranked[0];
@@ -1268,7 +1284,6 @@ function assignOne(
     if (avoided) warnings.push(`previous-version-reused:${unit.unitId}`);
     if (semantic < 0.35) warnings.push(`semantic-degraded:${unit.unitId}`);
     if (candidate.sameOpening) warnings.push(`opening-reused:${unit.unitId}`);
-    if (sameShotGroupPenalty(candidate.asset, usedGroupKeys, usedAssetIds)) warnings.push(`same-shot-reused:${unit.unitId}`);
     const clip: AllocationClip = {
       clipId: `${plan.planId}:clip:${unit.unitId}`,
       segmentId: unit.unitId,
@@ -1291,8 +1306,14 @@ function assignOne(
 
   for (const segmentIndex of stitchFallbackSegmentIndexes) {
     const segment = plan.segments[segmentIndex];
+    const removedIds = new Set(clips.filter(clip => clip.sourceSegmentId === segment.sourceSegmentId).map(clip => clip.segmentId));
     clips = clips.filter((clip) => clip.sourceSegmentId !== segment.sourceSegmentId);
-    stitchSegment(normalized, plan, segment, segmentIndex, availableAssets, usedIntervals, usedOpeningAssets, clips, warnings);
+    // 撤下的子句不能继续占用本片可用的源区间。
+    for (let index = usedIntervals.length - 1; index >= 0; index--) {
+      const used = usedIntervals[index];
+      if (used.planId === plan.planId && !used.historical && removedIds.has(used.segmentId)) usedIntervals.splice(index, 1);
+    }
+    stitchSegment(normalized, plan, segment, segmentIndex, allocatableAssets, usedIntervals, usedOpeningAssets, clips, warnings, blockers, reservedIntervals);
   }
 
   const coverCandidates = plan.coverAssetIds.length ? plan.coverAssetIds : availableAssets.map((asset) => asset.assetId);

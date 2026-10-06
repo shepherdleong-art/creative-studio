@@ -15,7 +15,7 @@ export interface BatchProgressView {
 
 export interface BatchProductionProgressCardProps {
   progress: BatchProgressView;
-  variant?: 'full' | 'compact';
+  variant?: 'full' | 'compact' | 'inline';
   /** 批次控制态;与 onControl 一起传入后,卡片头部显示 暂停/继续/停止 批次按钮。 */
   controlState?: 'running' | 'paused' | 'stopped';
   controlBusy?: boolean;
@@ -75,6 +75,18 @@ export default function BatchProductionProgressCard({
       <p className="mt-1 text-right text-[11px] text-ink-tertiary">{percent}%</p>
     </div>
   );
+
+  if (variant === 'inline') {
+    return (
+      <section className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs text-ink-secondary" aria-label="批量生产进度">
+        <span>
+          生产进度 · {progress.finished ? anyFailed ? '已完成 · 部分失败' : '已完成' : stopped ? '已停止' : paused ? '已暂停' : '生产中'}
+          {` · ${percent}% · ${progress.finished ? '总用时' : '已用时'} ${minutes} 分 ${seconds} 秒`}
+        </span>
+        {controlButtons}
+      </section>
+    );
+  }
 
   if (variant === 'compact') {
     return (

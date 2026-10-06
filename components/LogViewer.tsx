@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useState, useRef, useCallback } from 'react';
 import { Icon } from '@/components/ui/Icon';
 
 interface LogEntry {
@@ -71,12 +71,13 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
     return () => { clearTimeout(timeout); clearInterval(interval); };
   }, [autoRefresh, loadLogs, refreshMs]);
 
-  // Auto-scroll to bottom when new logs arrive
-  useEffect(() => {
+  // The API returns a sliding window of 300 rows, so length stops changing.
+  // Follow each committed snapshot/filter, including the first mounted list.
+  useLayoutEffect(() => {
     if (autoScroll && containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [logs.length, autoScroll]);
+  }, [logs, filter, loading, autoScroll]);
 
   const filteredLogs = filter === 'all' ? logs : logs.filter((l) => l.level === filter);
 
@@ -156,6 +157,7 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
               type="checkbox"
               checked={autoScroll}
               onChange={(e) => setAutoScroll(e.target.checked)}
+              title="持续跟随最新日志；取消勾选后可停留查看历史日志"
               className="w-3 h-3"
             />
             自动滚动
@@ -178,11 +180,6 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
         <div
           ref={containerRef}
           className={`${fill ? 'min-h-0 flex-1' : 'max-h-96'} overflow-y-auto rounded-lg border border-hairline bg-gray-900 font-mono text-xs text-gray-100`}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
-            if (!isAtBottom) setAutoScroll(false);
-          }}
         >
           <table className="w-full">
             <tbody>

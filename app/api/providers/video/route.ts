@@ -80,7 +80,7 @@ export async function POST(request: Request) {
     const id = uuidv4();
     const type = body.type || 'jimeng';
     const durationSec = parseVideoDuration(body.defaultDurationSec);
-    const durationError = videoDurationError(body.defaultModel || '', durationSec);
+    const durationError = videoDurationError(type, body.defaultModel || '', durationSec);
     if (durationError) return NextResponse.json({ error: durationError }, { status: 400 });
     if (type === 'openai-video') {
       const readiness = await getVideoProviderGatewayReadiness();

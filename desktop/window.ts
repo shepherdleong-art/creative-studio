@@ -10,8 +10,6 @@ import { applyThemePreference } from './theme';
 const LINKED_MEDIA_EXTENSIONS = new Set(['.mp4', '.mov', '.avi', '.webm']);
 const MAX_LINKED_IMPORT_FILES = 500;
 
-let closeNoticeShown = false;
-
 interface LinkedImportResponse {
   assetIds: string[];
   errors: Array<{ index: number; message: string }>;
@@ -22,7 +20,7 @@ interface RelocateLinkedSourceResponse {
 }
 
 // Everything the window needs from the shell process. Window creation and the
-// quit confirmation live here; the shell owns service/secret/dataRoot state
+// native integration live here; the shell owns service/secret/dataRoot state
 // and hands it over as a snapshot plus callbacks, so this module never
 // reaches back into main.ts.
 export interface DesktopWindowHost {
@@ -32,7 +30,6 @@ export interface DesktopWindowHost {
   readonly desktopSecret: string;
   readonly dataRoot: string;
   isQuitRequested(): boolean;
-  cancelQuitRequest(): void;
   setIpcHandlerRemover(remover: (() => void) | null): void;
   clearIpcHandlers(): void;
   onWindowClosed(): void;
@@ -299,16 +296,10 @@ export function createWindow(host: DesktopWindowHost): BrowserWindow {
   });
 
   window.on('close', (event) => {
-    if (host.isQuitRequested()) return;
+    // Keep the window alive until the shared quit flow has finished (or the
+    // user cancels). Repeated close clicks must not bypass confirmation.
     event.preventDefault();
-    window.hide();
-    if (closeNoticeShown) return;
-    closeNoticeShown = true;
-    void dialog.showMessageBox({
-      type: 'info',
-      title: '产品素材工作台仍在运行',
-      message: '窗口已隐藏，后台任务会继续运行。点击程序图标可恢复窗口；请使用“退出”结束任务并关闭服务。',
-    });
+    if (!host.isQuitRequested()) app.quit();
   });
 
   installIpcHandlers(window, host);
@@ -320,63 +311,4 @@ export function createWindow(host: DesktopWindowHost): BrowserWindow {
   });
   void window.loadURL(host.origin);
   return window;
-}
-
-async function activeWorkState(
-  currentService: DesktopService,
-  currentSecret: string,
-): Promise<boolean | null> {
-  try {
-    const response = await fetch(`${currentService.origin}/api/desktop/activity`, {
-      method: 'GET',
-      headers: { 'x-creative-studio-desktop-secret': currentSecret },
-      redirect: 'error',
-    });
-    if (!response.ok) return null;
-    const payload: unknown = await response.json().catch(() => null);
-    if (!payload || typeof payload !== 'object' || typeof (payload as { active?: unknown }).active !== 'boolean') {
-      return null;
-    }
-    return (payload as { active: boolean }).active;
-  } catch {
-    return null;
-  }
-}
-
-export async function confirmQuitAndShutdown(
-  host: DesktopWindowHost | null,
-  window: BrowserWindow | null,
-  shutdown: () => Promise<void>,
-): Promise<void> {
-  // Freeze new desktop operations while the quit decision and shutdown
-  // orchestration are in flight. If the user cancels, restore the same
-  // handlers against the still-running window and service.
-  host?.clearIpcHandlers();
-  const active = host
-    ? await activeWorkState(host.service, host.desktopSecret)
-    : null;
-  if (active !== false) {
-    const options = {
-      type: 'warning' as const,
-      title: '确认退出产品素材工作台',
-      message: active === true
-        ? '当前仍有任务在后台运行。退出会停止当前运行，已持久化的任务可在下次启动后恢复。'
-        : '无法确认任务状态。若仍有任务，退出后会由持久化状态在下次启动时恢复。',
-      buttons: ['暂停任务并退出', '取消'],
-      defaultId: 1,
-      cancelId: 1,
-      noLink: true,
-    };
-    const result = window && !window.isDestroyed()
-      ? await dialog.showMessageBox(window, options)
-      : await dialog.showMessageBox(options);
-    if (result.response !== 0) {
-      host?.cancelQuitRequest();
-      if (host && window && !window.isDestroyed()) {
-        installIpcHandlers(window, host);
-      }
-      return;
-    }
-  }
-  await shutdown();
 }

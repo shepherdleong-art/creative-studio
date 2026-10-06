@@ -46,6 +46,14 @@ const DEFAULT_CAPABILITIES: ImageModelCapabilities = {
 };
 
 export function getImageModelCapabilities(model: string): ImageModelCapabilities {
+  const companyLabels: Record<string, string> = {
+    'nano-banana-3.0': 'Nano Banana Pro',
+    'nano-banana-3.1': 'Nano Banana 2',
+    'doubao-seedream-5-0-pro-image': 'Seedream 5.0 Pro',
+  };
+  if (companyLabels[model]) {
+    return { model, label: companyLabels[model], supportsQuality: false, recommendedTimeoutMs: 600000 };
+  }
   return PACKY_IMAGE_MODEL_OPTIONS.find((option) => option.model === model) || {
     ...DEFAULT_CAPABILITIES,
     model,

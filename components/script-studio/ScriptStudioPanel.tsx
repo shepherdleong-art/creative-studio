@@ -12,6 +12,7 @@ import {
   SCRIPT_TARGET_DURATION_OPTIONS,
 } from '@/lib/script-studio/generation-contract';
 import TemplateRewritePicker from './TemplateRewritePicker';
+import ScriptTemplateSwitchDialog from './ScriptTemplateSwitchDialog';
 import SellingPointEvidence from './SellingPointEvidence';
 import { diffMarkWords } from '@/lib/script-studio/diff-mark';
 
@@ -426,12 +427,13 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const [libraryRevisionId, setLibraryRevisionId] = useState('');
   const [scripts, setScripts] = useState<ScriptView[]>([]);
   const [task, setTask] = useState<ScriptStudioTaskSnapshot | null>(null);
-  const [productionMode, setProductionMode] = useState<ScriptProductionMode>('standard');
+  const [productionMode, setProductionMode] = useState<ScriptProductionMode>('template_rewrite');
   const [regenerateMode, setRegenerateMode] = useState<ScriptProductionMode>('standard');
   const [targetDurationSec, setTargetDurationSec] = useState(15);
   const [requestedCount, setRequestedCount] = useState(3);
   /** 爆文模板改写：勾选的模板条目 ID（选择顺序即生成顺序；数量=勾选数）。 */
   const [templateEntryIds, setTemplateEntryIds] = useState<string[]>([]);
+  const [templateSwitchScript, setTemplateSwitchScript] = useState<{ scriptId: string; targetDurationSec: number } | null>(null);
   /** 「再生成一组」本次专用参数:与第 1 页表单不共享隐式状态,切换结果组时按 inputSnapshot 初始化一次。 */
   const [regenerateDuration, setRegenerateDuration] = useState(15);
   const [regenerateCount, setRegenerateCount] = useState(3);
@@ -969,6 +971,13 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     setError('');
     if (!libraryRevisionId) {
       setError('当前项目没有可复用的卖点库');
+      return;
+    }
+    if (content?.productionMode === 'template_rewrite' || content?.templateRewrite) {
+      setTemplateSwitchScript({
+        scriptId: script.id,
+        targetDurationSec: script.currentRevision?.targetDurationSec || content?.targetDurationSec || 15,
+      });
       return;
     }
     if (!providerId) {
@@ -1752,7 +1761,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                       <div className="flex flex-none flex-wrap justify-end gap-1.5">
                         <button type="button" onClick={() => toggleCollapsed(script.id)} className="btn-secondary btn-sm">{collapsed ? '完整脚本' : '收起脚本'}</button>
                         <button type="button" onClick={() => void copyScript(content?.fullScript || '')} className="btn-secondary btn-sm">复制</button>
-                        {!content?.painSolving && <button type="button" onClick={() => void switchRecommendation(script, content)} disabled={taskRunning} className="btn-secondary btn-sm" title="排除当前框架/钩子组合后重新推荐">换一个框架/钩子</button>}
+                        {!content?.painSolving && <button type="button" onClick={() => void switchRecommendation(script, content)} disabled={taskRunning || submitting} className="btn-secondary btn-sm" title={content?.templateRewrite ? '选择新的爆文模板，为这条脚本生成新版本' : '排除当前框架/钩子组合后重新推荐'}>{content?.productionMode === 'template_rewrite' || content?.templateRewrite ? '更换爆文模板' : '换一个框架/钩子'}</button>}
                         <button type="button" onClick={() => void regenerateOne(script.id)} disabled={taskRunning} className="btn-secondary btn-sm">再生成一版</button>
                         <button type="button" onClick={() => void loadHistory(script.id)} className="btn-secondary btn-sm">版本历史</button>
                       </div>
@@ -1829,6 +1838,24 @@ export default function ScriptStudioPanel({ projectId }: Props) {
           </div>
         )}
       </div>
+
+      {templateSwitchScript && (
+        <ScriptTemplateSwitchDialog
+          projectId={projectId}
+          scriptId={templateSwitchScript.scriptId}
+          targetDurationSec={templateSwitchScript.targetDurationSec}
+          libraryRevisionId={libraryRevisionId}
+          providerId={providerId}
+          onClose={() => setTemplateSwitchScript(null)}
+          onCreated={(nextTask) => {
+            setTemplateSwitchScript(null);
+            setProductionMode('template_rewrite');
+            setTask(nextTask);
+            setStep(2);
+            startPolling(nextTask.id);
+          }}
+        />
+      )}
 
       {historyScript && (
         <div className="fixed inset-0 z-50">

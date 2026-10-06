@@ -16,6 +16,8 @@
  */
 
 import assert from 'node:assert/strict';
+import { videoTrimRange } from '../components/batch-production/review/video-trim.ts';
+import { materialDropInGap } from '../components/batch-production/review/material-drop.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -41,6 +43,7 @@ import { scheduleRenderAfterCoverChange } from '../lib/batch-production/phase-e.
 import { resolveCoverContractHash } from '../lib/batch-production/cover-contract.ts';
 import { resolveBatchOutputNarrationAudio } from '../lib/batch-production/output-media.ts';
 import { BatchDomainError } from '../lib/batch-production/errors.ts';
+import { batchSourceWarnings } from '../lib/batch-production/source-conflicts.ts';
 
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-clip-edit-'));
 
@@ -887,6 +890,93 @@ try {
   assert.deepEqual(currentArrangement(plans[0]), beforeExtension);
   console.log('✓ 13. trim_variable 不得覆盖后续片段');
 
+  // Regression: UI outward drags stop at the neighbour; inward drags still save.
+  {
+    const view = () => getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+    const trim = (clipId: string, edge: 'start' | 'end', atUs: number) => {
+      const current = view();
+      const clip = current.clips.find(c => c.clipId === clipId)!;
+      const range = videoTrimRange(clip, current.clips, edge, atUs, 8_000_000);
+      return applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+        type: 'trim_variable', clipId, sourceStartUs: range.sourceStartUs, sourceEndUs: range.sourceEndUs,
+      });
+    };
+    assert.equal(trim('clip-1', 'end', 3_000_000).changed, false, 'neighbour blocks extension without an error');
+    assert.equal(trim('clip-1', 'end', 1_000_000).changed, true);
+    assert.equal(view().clips[0].timelineEndUs, 1_000_000);
+    assert.equal(trim('clip-1', 'end', 9_000_000).changed, true);
+    assert.equal(view().clips[0].timelineEndUs, 2_000_000, 'expands into gap, stops at neighbour');
+    assert.equal(trim('clip-2', 'start', 0).changed, false, 'left neighbour also blocks extension');
+    assert.equal(trim('clip-2', 'start', 3_000_000).changed, true);
+    assert.equal(view().clips[1].timelineStartUs, 3_000_000);
+    assert.equal(trim('clip-2', 'start', 0).changed, true);
+    assert.equal(view().clips[1].timelineStartUs, 2_000_000);
+    assert.equal(trim('clip-1', 'end', 0).changed, true);
+    assert.equal(view().clips[0].timelineEndUs, 500_000, 'minimum duration is enforced before sending');
+    const partialFrameClip = { clipId: 'partial', sourceStartUs: 3_883_667, sourceEndUs: 5_040_000, timelineStartUs: 1_291_667, timelineEndUs: 2_448_000, playbackRate: 1 };
+    const partial = videoTrimRange(partialFrameClip, [partialFrameClip], 'start', 1_625_000, 5_040_000);
+    assert.ok(partial.timelineStartUs > partialFrameClip.timelineStartUs, 'a non-frame-aligned asset end must not disable the start handle');
+    assert.ok(partial.sourceEndUs <= 5_040_000);
+    assert.deepEqual(videoTrimRange(partialFrameClip, [partialFrameClip], 'end', 9_000_000, null), {
+      sourceStartUs: partialFrameClip.sourceStartUs, sourceEndUs: partialFrameClip.sourceEndUs,
+      timelineStartUs: partialFrameClip.timelineStartUs, timelineEndUs: partialFrameClip.timelineEndUs,
+    }, 'unknown duration must not invent extra source footage');
+
+    // Real command validation at fractional rates and non-frame-aligned source offsets.
+    for (const rate of [0.5, 0.75, 1.25, 1.5, 2]) {
+      for (const edge of ['start', 'end'] as const) {
+        for (const requestedUs of [-1_000_000, 0, 600_000, 1_250_000, 2_000_000, 4_000_000]) {
+          resetPlan0Arrangement();
+          const arrangement = currentArrangement(plans[0]);
+          const clips = arrangement.clips as Array<Record<string, unknown>>;
+          clips[0].sourceStartUs = 1_010_333;
+          clips[0].sourceEndUs = 1_010_333 + 2_000_000 * rate;
+          clips[0].playbackRate = rate;
+          db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = (SELECT currentVersionId FROM batch_output_plans WHERE id = ?)').run(JSON.stringify(arrangement), plans[0]);
+          trim('clip-1', edge, requestedUs); // Must never throw a validation error.
+          const after = view();
+          assert.ok(after.clips[0].timelineStartUs >= 0);
+          assert.ok(after.clips[0].timelineEndUs <= after.clips[1].timelineStartUs);
+          assert.equal(after.clips[1].timelineStartUs, 2_000_000);
+          assert.equal(after.clips[1].timelineEndUs, 4_000_000);
+        }
+      }
+    }
+    console.log('✓ UI video trim planning accepted on both edges, gaps and fractional playback rates');
+  }
+
+  // An off-grid join produced by allocation/insertion must not lock the right
+  // handle. Preview and persistence must preserve the opposite edge exactly.
+  for (const rate of [0.75, 1, 1.25, 2]) {
+    for (const edge of ['start', 'end'] as const) {
+      resetPlan0Arrangement();
+      const arrangement = currentArrangement(plans[0]);
+      arrangement.clips = [
+        makeClip('before', 'segment-1', assetA, 0, 3_000_000, 10_433_667, 13_433_667),
+        { ...makeClip('middle', 'segment-2', assetB, 489_849, 489_849 + 3_000_000 * rate, 13_433_667, 16_433_667), playbackRate: rate },
+        makeClip('after', 'segment-3', assetA, 0, 3_000_000, 16_433_667, 19_433_667),
+      ];
+      db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = (SELECT currentVersionId FROM batch_output_plans WHERE id = ?)').run(JSON.stringify(arrangement), plans[0]);
+      const before = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+      const original = before.clips[1];
+      const range = videoTrimRange(original, before.clips, edge,
+        edge === 'end' ? original.timelineEndUs - 500_000 : original.timelineStartUs + 500_000, 8_000_000);
+      assert.ok(range.timelineEndUs - range.timelineStartUs < 3_000_000, '两端都能缩短');
+      const changed = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+        type: 'trim_variable', clipId: original.clipId, sourceStartUs: range.sourceStartUs, sourceEndUs: range.sourceEndUs,
+      });
+      assert.equal(changed.changed, true);
+      const after = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+      for (const key of ['sourceStartUs', 'sourceEndUs', 'timelineStartUs', 'timelineEndUs'] as const) {
+        assert.equal(after.clips[1][key], range[key], '保存结果必须与拖动预览一致');
+      }
+      assert.equal(after.clips[1][edge === 'end' ? 'timelineStartUs' : 'timelineEndUs'], original[edge === 'end' ? 'timelineStartUs' : 'timelineEndUs']);
+      assert.deepEqual(after.clips[0], before.clips[0]);
+      assert.deepEqual(after.clips[2], before.clips[2]);
+    }
+  }
+  console.log('✓ fractional joins preserve the opposite edge across preview and persistence');
+
   // 14. trim_variable 缩短成功;越素材时长/短于 0.5s 拒绝
   resetPlan0Arrangement();
   const shorter = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
@@ -1087,6 +1177,49 @@ try {
   );
   console.log('✓ 16. insert 三位置连续性/默认窗口/非法素材拒绝');
 
+  // 从空白轨道落点到正式保存：中间/片头/片尾、缩放、顺延与隔离。
+  const otherPlanBeforeDrop = currentArrangement(plans[1]);
+  for (const [afterClipId, dropSec, durationUs, expected] of [
+    ['clip-1', 3, 1_000_000, [[0, 2_000_000], [3_000_000, 4_000_000], [6_000_000, 8_000_000]]],
+    ['clip-1', 5, 3_000_000, [[0, 2_000_000], [5_000_000, 8_000_000], [8_000_000, 10_000_000]]],
+    [null, 1, 1_000_000, [[1_000_000, 2_000_000], [2_000_000, 4_000_000], [6_000_000, 8_000_000]]],
+    ['clip-2', 9, 1_000_000, [[0, 2_000_000], [6_000_000, 8_000_000], [9_000_000, 10_000_000]]],
+  ] as const) {
+    resetPlan0Arrangement();
+    const before = currentArrangement(plans[0]);
+    const gapClips = [
+      makeClip('clip-1', 'segment-1', assetA, 1_000_000, 3_000_000, afterClipId === null ? 2_000_000 : 0, afterClipId === null ? 4_000_000 : 2_000_000),
+      makeClip('clip-2', 'segment-2', assetB, 0, 2_000_000, 6_000_000, 8_000_000),
+    ];
+    db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?').run(JSON.stringify({ ...before, clips: gapClips }), outputVersionId);
+    for (const zoom of [30, 60, 120]) {
+      const target = materialDropInGap(gapClips, dropSec * zoom, zoom);
+      assert.equal(target?.afterClipId, afterClipId);
+      assert.equal(target?.timelineStartUs, dropSec * 1e6);
+    }
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+      type: 'insert', afterClipId, assetId: assetC, timelineStartUs: dropSec * 1e6, durationUs,
+    });
+    const saved = currentArrangement(plans[0]);
+    assert.deepEqual((saved.clips as Array<Record<string, unknown>>).map(c => [c.timelineStartUs, c.timelineEndUs]), expected);
+    for (const field of ['subtitle', 'narration', 'audio', 'music']) assert.deepEqual(saved[field], before[field]);
+    assert.equal(saved.preserveGaps, true);
+    assert.equal(saved.editRevision, 1);
+    assert.deepEqual(currentArrangement(plans[1]), otherPlanBeforeDrop);
+  }
+  resetPlan0Arrangement();
+  for (const timelineStartUs of [-1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 1, 1_000_000, 3_000_000]) {
+    const before = currentArrangement(plans[0]);
+    assertDomainError(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+      type: 'insert', afterClipId: 'clip-1', assetId: assetC, timelineStartUs,
+    }), 'invalid_input', /插入/);
+    assert.deepEqual(currentArrangement(plans[0]), before, '非法落点不应写入安排');
+  }
+  assert.equal(materialDropInGap([{ clipId: 'c', timelineStartUs: 0, timelineEndUs: 2_000_000 }], 60, 60), null);
+  assert.deepEqual(materialDropInGap([], 0, 60), { type: 'append', afterClipId: null, timelineStartUs: 0 });
+  assert.equal(materialDropInGap([], 61, 60)?.timelineStartUs, 1_000_000, '落点按24fps取整');
+  console.log('✓ 16b. 空白落点插入/缩放/仅顺延必要视频/音轨与其他成片隔离/非法位置拒绝');
+
   // 17. split 源连续、时间线连续、总长不变、后续不动;不递增 revision/不清 review/不重做封面
   resetPlan0Arrangement();
   setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
@@ -1257,6 +1390,58 @@ try {
   assert.equal(noopTrimB4.changed, false);
   assert.equal(noopTrimB4.reviewCleared, false, '无变化提交不得返回 reviewCleared');
   console.log('✓ 20. 审核重置提示(reviewCleared:片段/封面/字幕/BGM/口播为 true,split/无变化/无审核为 false)');
+
+  // 跨分镜组、不同运镜的同源视频：编辑成功并返回提醒，不拦截操作。
+  db.exec(`
+    CREATE TABLE shot_sets (id TEXT PRIMARY KEY, projectId TEXT);
+    CREATE TABLE shots (id TEXT PRIMARY KEY, shotSetId TEXT, sourceImageId TEXT);
+    CREATE TABLE video_jobs (id TEXT PRIMARY KEY, shotId TEXT, shotSetId TEXT, sourceImageId TEXT,
+      templateId TEXT, displayName TEXT DEFAULT '测试视频', createdAt TEXT);
+    INSERT INTO shot_sets VALUES ('source-set-1', 'project-1'), ('source-set-2', 'project-1');
+    INSERT INTO shots VALUES ('source-shot-a', 'source-set-1', 'original-image'), ('source-shot-c', 'source-set-2', 'original-image');
+    INSERT INTO video_jobs (id, shotId) VALUES ('source-job-a', 'source-shot-a'), ('source-job-c', 'source-shot-c');
+  `);
+  for (const [assetId, jobId] of [[assetA, 'source-job-a'], [assetC, 'source-job-c']]) {
+    db.prepare(`INSERT INTO batch_asset_sources (id, assetId, sourceKind, locationJson, health, createdAt)
+      VALUES (?, ?, 'module4', ?, 'healthy', '2026-09-29')`)
+      .run(jobId, assetId, JSON.stringify({ videoJobId: jobId }));
+  }
+  for (const edit of [
+    { type: 'replace', clipId: 'clip-2', assetId: assetC },
+    { type: 'insert', afterClipId: 'clip-2', assetId: assetC, durationUs: 1_000_000 },
+  ] as const) {
+    resetPlan0Arrangement();
+    const result = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], edit);
+    assert.equal(result.changed, true);
+    assert.ok(result.warnings.some(message => message.includes('同源图')));
+    assert.deepEqual(new Set(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).sourceConflictAssetIds), new Set([assetA, assetC]));
+    assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).sourceConflictGroups?.[0].key, 'image:project-1:original-image');
+  }
+  resetPlan0Arrangement();
+  // 更换本片唯一使用的版本是合法的。
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'replace', clipId: 'clip-1', assetId: assetC });
+  assert.equal(batchSourceWarnings(db, currentArrangement(plans[0])).length, 0);
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'split', clipId: 'clip-1', offsetUs: 1_000_000 });
+  assert.equal(batchSourceWarnings(db, currentArrangement(plans[0])).length, 0, '同一视频分割不误报');
+  assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).sourceConflictAssetIds, []);
+
+  resetPlan0Arrangement();
+  const legacyConflict = currentArrangement(plans[0]);
+  (legacyConflict.clips as Array<Record<string, unknown>>)[1].assetId = assetC;
+  legacyConflict.review = { decision: 'approved' };
+  db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?').run(JSON.stringify(legacyConflict), outputVersionId);
+  assert.match(batchSourceWarnings(db, legacyConflict).join(), /同源图/);
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  assert.equal(readBatchPlanReview(db, projectId, batchId, plans[0]).decision, 'approved', '有提醒仍允许确认');
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'replace', clipId: 'clip-2', assetId: assetB });
+  assert.equal(batchSourceWarnings(db, currentArrangement(plans[0])).length, 0, '替换后即时清除同源提醒');
+  assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).sourceConflictAssetIds, []);
+  const restoreResult = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'restore_arrangement', snapshot: { clips: legacyConflict.clips },
+  });
+  assert.ok(restoreResult.warnings.some(message => message.includes('同源图')), '允许撤销恢复同源片段，并重新提醒');
+  assert.deepEqual(new Set(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).sourceConflictAssetIds), new Set([assetA, assetC]));
+  console.log('✓ 21. 同源提醒：替换/插入/撤销成功仍提醒，分割不误报，允许确认');
 
   console.log('batch output clip edit tests passed');
 } finally {

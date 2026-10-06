@@ -1,3 +1,5 @@
+import { parseUsageSnapshot } from './usage-ledger.ts';
+import { calculateUsageCostMicros } from './usage-pricing.ts';
 import { getDb } from './db';
 import { editImage as editImageOpenAI, EditImageRequest } from './providers/openai-compatible';
 import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json';
@@ -484,7 +486,7 @@ async function runJob(
           return;
         }
       }
-      logInfo('提交任务到网关（异步任务协议）...');
+      logInfo('提交图片生成请求到网关...');
       const submitResult = await submitGatewayTaskImage(
         {
           model: job.model,
@@ -498,7 +500,8 @@ async function runJob(
           referenceGuidanceMode: (job.referenceGuidanceMode || 'preserve_subject') as 'preserve_subject' | 'none',
         },
         apiKey,
-        provider.baseUrl
+        provider.baseUrl,
+        { onProgress: logInfo, timeoutMs, signal: reqAbort.signal },
       );
       if (submitResult.imageTransports?.length) {
         logInfo(`图片传输方式: ${submitResult.imageTransports.map((t, i) => `图${i + 1}=${t}`).join(', ')}`);
@@ -765,7 +768,10 @@ async function runJob(
     ).run(outputImageId, job.projectId, outputFilename, outputPath, outputMimeType, outputUsage, normalizedImage.width, normalizedImage.height);
 
     const finishedAt = new Date().toISOString();
-    const estimatedCost = calculateEstimatedCost(provider.defaultCostPerImage, attempt - 1);
+    const frozenPrice = parseUsageSnapshot(usageSnapshot);
+    const estimatedCost = frozenPrice.ok
+      ? calculateUsageCostMicros(frozenPrice.parsed.snapshot.priceComponents, attempt) / 1_000_000
+      : calculateEstimatedCost(provider.defaultCostPerImage, attempt - 1);
 
     // ── Atomic completion: only mark succeeded if still running ──
     const completeResult = db.prepare(

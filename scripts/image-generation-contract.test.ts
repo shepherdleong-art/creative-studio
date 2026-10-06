@@ -7,6 +7,8 @@ import {
 import {
   getSupportedImageAspectRatios,
   validateImageAspectRatio,
+  getSupportedImageResolutions,
+  validateImageResolution,
 } from '../lib/image-generation-settings.ts';
 
 // 比例选择必须落成目标尺寸，不能退回默认 1:1。
@@ -24,6 +26,12 @@ assert.equal(getSupportedImageAspectRatios('image2-medium').includes('9:16'), fa
 assert.equal(validateImageAspectRatio('image2-medium', '3:4'), null);
 assert.match(validateImageAspectRatio('image2-medium', '9:16') || '', /不支持/);
 assert.equal(validateImageAspectRatio('custom-image-model', '9:16'), null);
+assert.deepEqual(getSupportedImageResolutions('doubao-seedream-5-0-pro-image', '3:4'), ['1k', '2k']);
+assert.match(validateImageResolution('doubao-seedream-5-0-pro-image', '3:4', '4k') || '', /不支持/);
+assert.deepEqual(getSupportedImageResolutions('nano-banana-3.0', '9:16'), ['1k', '2k', '4k']);
+assert.deepEqual(getSupportedImageResolutions('nano-banana-3.1', '16:9'), ['1k', '2k', '4k']);
+assert.deepEqual(getSupportedImageResolutions('qiniuyun/gpt-image-2-medium', '3:4'), ['2k', '4k']);
+assert.equal(validateImageResolution('custom-model', '16:9', '4k'), null);
 
 // 成功结果的产出名优先，避免 UUID 输入名占据结果标题；未完成任务仍保留输入名。
 assert.equal(

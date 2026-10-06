@@ -16,7 +16,7 @@ const excludedDirectories = new Set([
 // from the implementation under test.
 const expectedBridgeMethods = [
   'platform', 'chooseMediaFiles', 'chooseFolder', 'getAppVersion', 'relocateLinkedSource', 'openFolder',
-  'setThemePreference',
+  'setThemePreference', 'onQuitRequested',
 ];
 const expectedChannels = [
   'desktop:platform',
@@ -27,6 +27,7 @@ const expectedChannels = [
   'desktop:open-folder',
   'desktop:linked-import-progress',
   'desktop:set-theme-preference',
+  'desktop:quit-requested',
 ];
 
 function read(relativePath) {
@@ -161,8 +162,8 @@ for (const [name, pattern] of [
   assert.match(preferences.source, pattern, `webPreferences 必须显式包含 ${name}`);
 }
 
-// C. The bridge exposes exactly the seven named methods. Progress is a
-// separately fixed main→preload event and never becomes a renderer method.
+// C. Seven commands and one narrow quit subscription. Main→preload events
+// never expose Electron event objects or arbitrary IPC channels.
 const typeBlock = braceBlock(bridgeTypes, 'interface DesktopBridge');
 const typeMethods = [...typeBlock.source.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*\(/gm)].map(
   (match) => match[1],
@@ -182,7 +183,8 @@ assert.match(preload, /contextBridge\.exposeInMainWorld\(\s*['"]desktopBridge['"
 assert.doesNotMatch(preload, /contextBridge\.exposeInMainWorld\([^)]*,\s*ipcRenderer\b/);
 assert.doesNotMatch(preload, /\b(?:fs|path|child_process)\b/);
 assert.doesNotMatch(preload, /\bipcRenderer\.(?:once|send|sendSync|postMessage|removeListener)\b/);
-assert.equal((preload.match(/\bipcRenderer\.on\(/g) ?? []).length, 1);
+assert.equal((preload.match(/\bipcRenderer\.on\(/g) ?? []).length, 2);
+assert.match(preload, /ipcRenderer\.on\(\s*QUIT_REQUESTED_CHANNEL\s*, \(\) =>/);
 assert.match(preload, /ipcRenderer\.on\(\s*LINKED_IMPORT_PROGRESS_CHANNEL\s*,/);
 assert.match(preload, /creative-studio:linked-import-progress/);
 assert.doesNotMatch(preload, /\bipcRenderer\.invoke\(\s*channel\b/);

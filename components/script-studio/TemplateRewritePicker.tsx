@@ -85,12 +85,14 @@ export default function TemplateRewritePicker({
   selectedIds,
   onChange,
   disabled,
+  maxCount = 6,
 }: {
   projectId: string;
   libraryRevisionId: string;
   selectedIds: string[];
   onChange: (ids: string[]) => void;
   disabled?: boolean;
+  maxCount?: 1 | 6;
 }) {
   const [recommendations, setRecommendations] = useState<RecommendationView[]>([]);
   const [usableCount, setUsableCount] = useState(0);
@@ -150,7 +152,9 @@ export default function TemplateRewritePicker({
     if (disabled) return;
     if (selectedIds.includes(id)) {
       onChange(selectedIds.filter((item) => item !== id));
-    } else if (selectedIds.length < 6) {
+    } else if (maxCount === 1) {
+      onChange([id]);
+    } else if (selectedIds.length < maxCount) {
       onChange([...selectedIds, id]);
     }
   };
@@ -159,7 +163,7 @@ export default function TemplateRewritePicker({
   const setCount = (id: string, nextCount: number) => {
     if (disabled) return;
     const othersTotal = selectedIds.filter((item) => item !== id).length;
-    if (nextCount < 1 || othersTotal + nextCount > 6) return;
+    if (nextCount < 1 || othersTotal + nextCount > maxCount) return;
     const next: string[] = [];
     let placed = false;
     for (const item of selectedIds) {
@@ -204,7 +208,7 @@ export default function TemplateRewritePicker({
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs text-ink-secondary">
-          已选 <strong className={selectedGroups.length > 0 ? 'text-accent' : ''}>{selectedGroups.length}</strong> 个模板 · 共 <strong className={selectedIds.length > 0 ? 'text-accent' : ''}>{selectedIds.length}</strong> / 6 条（同一模板多条生成不同变体）
+          已选 <strong className={selectedGroups.length > 0 ? 'text-accent' : ''}>{selectedGroups.length}</strong> 个模板 · 共 <strong className={selectedIds.length > 0 ? 'text-accent' : ''}>{selectedIds.length}</strong> / {maxCount} 条{maxCount === 1 ? '（为当前脚本生成一个新版本）' : '（同一模板多条生成不同变体）'}
         </p>
         <label className="flex items-center gap-1.5 text-xs text-ink-secondary">
           <input type="checkbox" checked={expandBeyond} onChange={(event) => setExpandBeyond(event.target.checked)} disabled={disabled} />
@@ -236,7 +240,7 @@ export default function TemplateRewritePicker({
                   <button
                     type="button"
                     className="flex h-6 w-6 items-center justify-center text-ink-secondary disabled:opacity-35"
-                    disabled={disabled || selectedIds.length >= 6}
+                    disabled={disabled || selectedIds.length >= maxCount}
                     onClick={() => setCount(group.entry.id, group.count + 1)}
                     aria-label={`增加「${group.entry.name || group.entry.title}」条数`}
                   >
@@ -270,7 +274,7 @@ export default function TemplateRewritePicker({
                   entry={item.entry}
                   reasons={item.reasons}
                   checked={selectedIds.includes(item.entry.id)}
-                  disabled={Boolean(disabled) || (selectedIds.length >= 6 && !selectedIds.includes(item.entry.id))}
+                  disabled={Boolean(disabled) || (maxCount > 1 && selectedIds.length >= maxCount && !selectedIds.includes(item.entry.id))}
                   onToggle={() => toggle(item.entry.id)}
                 />
               ))}
@@ -292,7 +296,7 @@ export default function TemplateRewritePicker({
               entry={entry}
               reasons={recommendedIds.has(entry.id) ? recommendations.find((item) => item.entry.id === entry.id)?.reasons : undefined}
               checked={selectedIds.includes(entry.id)}
-              disabled={Boolean(disabled) || (selectedIds.length >= 6 && !selectedIds.includes(entry.id))}
+              disabled={Boolean(disabled) || (maxCount > 1 && selectedIds.length >= maxCount && !selectedIds.includes(entry.id))}
               onToggle={() => toggle(entry.id)}
             />
           ))}

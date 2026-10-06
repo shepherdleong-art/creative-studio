@@ -1,3 +1,4 @@
+import { resolveCoreUsagePlan } from './usage-pricing.ts';
 import { getDb } from './db.ts';
 import { GPTGE_GPT_IMAGE_2_PROVIDER } from './image-provider-presets.ts';
 import { isPlaceholderValue } from './video-auth.ts';
@@ -107,7 +108,7 @@ export function seedProviders() {
 /**
  * 公司图片供应商（经本机 LiteLLM）开箱即用补种。
  * 只在 canonical ID 缺失时插入；同模型的手工/公网配置仍可并存，且已有
- * canonical 行的用户配置不会被覆盖。
+ * canonical 行的连接、模型与启用状态不会被覆盖；固定图片价格跟随计价表同步。
  */
 function ensureCompanyImageProviders(db: ReturnType<typeof getDb>) {
   const providers = [
@@ -115,13 +116,31 @@ function ensureCompanyImageProviders(db: ReturnType<typeof getDb>) {
       id: 'company-gateway-image2-medium',
       name: '公司网关 image2-medium',
       model: 'image2-medium',
-      defaultCostPerImage: 1.05,
+      defaultCostPerImage: 1.58,
     },
     {
       id: 'company-gateway-qiniuyun-gpt-image-2-medium',
       name: '公司网关 七牛云 GPT Image 2 Medium',
       model: 'qiniuyun/gpt-image-2-medium',
-      defaultCostPerImage: 0.5,
+      defaultCostPerImage: 0.25,
+    },
+    {
+      id: 'company-gateway-seedream-5-0-pro',
+      name: '公司 Seedream 5.0 Pro',
+      model: 'doubao-seedream-5-0-pro-image',
+      defaultCostPerImage: 0.61,
+    },
+    {
+      id: 'company-gateway-nano-banana-pro',
+      name: '公司 Nano Banana Pro',
+      model: 'nano-banana-3.0',
+      defaultCostPerImage: 1.27,
+    },
+    {
+      id: 'company-gateway-nano-banana-2',
+      name: '公司 Nano Banana 2',
+      model: 'nano-banana-3.1',
+      defaultCostPerImage: 0.82,
     },
   ];
   const insert = db.prepare(`
@@ -144,6 +163,8 @@ function ensureCompanyImageProviders(db: ReturnType<typeof getDb>) {
       provider.defaultCostPerImage,
       provider.id,
     );
+    const plan = resolveCoreUsagePlan({ providerTable: 'providers', providerId: provider.id, providerName: provider.name, providerType: 'gateway-task-image', configuredModel: provider.model, requestModel: provider.model });
+    if (plan) db.prepare(`UPDATE providers SET defaultCostPerImage = ? WHERE id = ? AND type = 'gateway-task-image' AND model = ?`).run(plan.unitPriceMicros / 1_000_000, provider.id, provider.model);
   }
 }
 
@@ -336,6 +357,12 @@ export function seedVideoProviders() {
  */
 function ensureCompanyVideoProviders(db: ReturnType<typeof getDb>) {
   const companyProviders = [
+    {
+      id: 'company-kling-2-5',
+      name: '公司可灵 2.5 · 1080p',
+      modelEnv: 'COMPANY_KLING_2_5_VIDEO_MODEL',
+      defaultModel: 'kling-2.5',
+    },
     {
       id: 'company-kling-3-0',
       name: '公司可灵 3.0',

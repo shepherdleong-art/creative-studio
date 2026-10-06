@@ -266,17 +266,39 @@ assert.ok(
   '有替代时不应出现同源回退告警',
 );
 
-// 池子耗尽(只剩同源素材)才回退,并显式告警
+// 自动排片不再回退到同源的另一个视频，也不能循环相同窗口凑时长。
 const sameShotOnly = allocateBatch({ ...sameShotInput, assets: sameShotInput.assets!.filter((asset) => asset.assetId !== 'other') });
 assert.deepEqual(
   sameShotOnly.outputs[0]!.arrangement.clips.map((clip) => clip.assetId),
-  ['v01', 'v02'],
-  '素材耗尽时允许同源回退,不阻塞出片',
+  ['v01'],
+  '素材耗尽时也不自动放入同源视频',
 );
 assert.ok(
-  sameShotOnly.outputs[0]!.warnings.includes('same-shot-reused:s2'),
-  '同源回退必须显式告警',
+  sameShotOnly.outputs[0]!.status === 'blocked',
+  '无法自动排满时明确报告素材不足',
 );
+
+const sameSourceStitch = allocateBatch({ ...sameShotInput,
+  assets: sameShotInput.assets!.filter((asset) => asset.assetId !== 'other'),
+  plans: [{ planId: 'plan-shot-1', segments: [{ id: 'long', text: '长句', startUs: 0, endUs: 4_000_000 }] }],
+});
+assert.equal(new Set(sameSourceStitch.outputs[0]!.arrangement.clips.map(c => c.assetId)).size, 1,
+  '长句拼接也不能自动放入不同同源视频');
+assert.equal(sameSourceStitch.outputs[0]!.status, 'blocked');
+
+const futureLock = allocateBatch({ ...sameShotInput, locks: [
+  { planId: 'plan-shot-1', segmentId: 's2', assetId: 'v02', sourceStartUs: 0, sourceEndUs: 2_000_000 },
+] });
+assert.ok(!futureLock.outputs[0]!.arrangement.clips.some(c => c.assetId === 'v01'),
+  '前面自动排入的镜头必须避开后面已锁定的视频的同源兄弟');
+assert.ok(futureLock.outputs[0]!.arrangement.clips.some(c => c.locked && c.assetId === 'v02'));
+
+const manualSameSourceLocks = allocateBatch({ ...sameShotInput, locks: [
+  { planId: 'plan-shot-1', segmentId: 's1', assetId: 'v01', sourceStartUs: 0, sourceEndUs: 2_000_000 },
+  { planId: 'plan-shot-1', segmentId: 's2', assetId: 'v02', sourceStartUs: 0, sourceEndUs: 2_000_000 },
+] });
+assert.deepEqual(manualSameSourceLocks.outputs[0]!.arrangement.clips.map(c => c.assetId), ['v01', 'v02'],
+  '手动明确锁定的同源镜头保留，不能静默改写人工选择');
 
 // 同一素材复用不同窗口不受重罚(与 stitch 同素材多 chunk 同规则)
 const singleAsset = allocateBatch({

@@ -112,7 +112,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   getVideoTailFrameCapability('openai-video', 'kling-2.5'),
-  { supported: false, reason: 'contract_unverified' },
+  { supported: true, protocol: 'company-gateway-kling' },
 );
 
 const noTail = validateVideoTailFrameAsset({

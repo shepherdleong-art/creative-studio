@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { bgmGainAtTime, expectedVideoTimeSec, getVideoSlotPlan, narrationGainAtTime, paintDecodedVideoFrame, previewAudioLevelsAtTime, shouldIssueSeek } from '../components/final-edit/preview-playback.ts';
+import { activeClipIndexAtBodyFrame, bgmGainAtTime, expectedVideoTimeSec, getVideoSlotPlan, narrationGainAtTime, paintDecodedVideoFrame, previewAudioLevelsAtTime, shouldIssueSeek } from '../components/final-edit/preview-playback.ts';
 
 assert.deepEqual(
   getVideoSlotPlan(-1, 4),
@@ -86,5 +86,36 @@ assert.equal(
   true,
   '空闲且容差外必须真的写 currentTime',
 );
+
+// 次帧级空隙(修剪边缘帧对齐 4.9167s vs 自动分配非整帧邻界 4.944s,27ms<1 帧):
+// 夹在中间的帧由后续片段前探覆盖,不能退化成无片段黑帧。
+{
+  const clips = [
+    { timelineStartUs: 0, timelineEndUs: 4_916_667 },
+    { timelineStartUs: 4_944_000, timelineEndUs: 7_392_000 },
+  ];
+  assert.equal(activeClipIndexAtBodyFrame(clips, 117, 24), 0);
+  assert.equal(activeClipIndexAtBodyFrame(clips, 118, 24), 1, '27ms 次帧空隙由后续片段覆盖,不播黑帧');
+  assert.equal(activeClipIndexAtBodyFrame(clips, 119, 24), 1);
+}
+// 整帧相邻边界行为不变:不重帧、不漏帧。
+{
+  const clips = [
+    { timelineStartUs: 0, timelineEndUs: 2_000_000 },
+    { timelineStartUs: 2_000_000, timelineEndUs: 4_000_000 },
+  ];
+  assert.equal(activeClipIndexAtBodyFrame(clips, 47, 24), 0);
+  assert.equal(activeClipIndexAtBodyFrame(clips, 48, 24), 1, '整帧边界不得双占或漏帧');
+}
+// 真实空位(≥1 帧)仍无片段,按设计播黑场。
+{
+  const clips = [
+    { timelineStartUs: 0, timelineEndUs: 4_916_667 },
+    { timelineStartUs: 5_416_667, timelineEndUs: 7_000_000 },
+  ];
+  assert.equal(activeClipIndexAtBodyFrame(clips, 118, 24), -1, '0.5s 真实空位仍呈现黑场');
+  assert.equal(activeClipIndexAtBodyFrame(clips, 129, 24), -1);
+  assert.equal(activeClipIndexAtBodyFrame(clips, 130, 24), 1);
+}
 
 console.log('final-edit preview playback tests passed');

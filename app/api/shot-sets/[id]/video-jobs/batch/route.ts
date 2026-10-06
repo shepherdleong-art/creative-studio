@@ -84,8 +84,9 @@ export async function POST(
       providerCache.set(pid, { model, type: prov.type });
     }
     for (const [index, item] of items.entries()) {
-      const error = videoDurationError(providerCache.get(item.providerId)!.model, item.durationSec);
-      if (error) return NextResponse.json({ error: `第 ${index + 1} 条运镜：${error}` }, { status: 400 });
+      const provider = providerCache.get(item.providerId)!;
+      const durationError = videoDurationError(provider.type, provider.model, item.durationSec);
+      if (durationError) return NextResponse.json({ error: `第 ${index + 1} 条运镜：${durationError}` }, { status: 400 });
     }
 
     // Get project ID from shot set

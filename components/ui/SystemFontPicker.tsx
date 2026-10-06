@@ -65,7 +65,7 @@ export default function SystemFontPicker({
   /** 扩容后落焦点的统一通路：End / 边界 ArrowDown 先扩容再聚焦，经 state 触发渲染后的 effect。 */
   const [pendingFocus, setPendingFocus] = useState<{ index: number; control: 'select' | 'star' } | null>(null);
   const [position, setPosition] = useState<{ top: number; left: number; width: number; upward: boolean } | null>(null);
-  const { favorites, toggleFavorite } = useFontFavorites();
+  const { favorites, toggleFavorite, error: favoritesError, refreshFavorites } = useFontFavorites();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -138,6 +138,7 @@ export default function SystemFontPicker({
 
   const refresh = useCallback(async () => {
     setRefreshError('');
+    void refreshFavorites();
     try {
       const options = await requestFontOptions(true);
       setFonts((current) => {
@@ -150,7 +151,7 @@ export default function SystemFontPicker({
     } catch {
       setRefreshError('刷新失败，已保留现有列表');
     }
-  }, []);
+  }, [refreshFavorites]);
 
   const close = useCallback((refocus: boolean) => {
     setOpen(false);
@@ -402,6 +403,7 @@ export default function SystemFontPicker({
         <span>{visibleRows.length}{hasMore ? '+' : ''} 个字体</span>
         <button type="button" className={styles.refreshButton} onClick={() => void refresh()}>刷新字体</button>
         {refreshError && <span className={styles.refreshError}>{refreshError}</span>}
+        {favoritesError && <span role="status" className={styles.refreshError}>{favoritesError}</span>}
       </div>
     </div>,
     portalRoot ?? document.body,
@@ -420,7 +422,7 @@ export default function SystemFontPicker({
         aria-controls={open ? 'system-font-picker-overlay' : undefined}
         aria-label={ariaLabel}
         disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => { if (!open) void refreshFavorites(); setOpen((current) => !current); }}
       >
         <span className={styles.triggerLabel} style={value ? { fontFamily: `"${value.replace(/"/gu, '\\"')}", sans-serif` } : undefined}>{triggerDisplayName || '选择字体'}</span>
         <Icon name="chevron-down" size={14} className={styles.triggerChevron} />

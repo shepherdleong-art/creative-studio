@@ -50,7 +50,7 @@ export async function POST(
       );
     }
     const model = (provider.defaultModel || '').trim();
-    const durationError = videoDurationError(model, durationSec);
+    const durationError = videoDurationError(provider.type, model, durationSec);
     if (durationError) return NextResponse.json({ error: durationError }, { status: 400 });
 
     // Use latest generated image, fallback to source image

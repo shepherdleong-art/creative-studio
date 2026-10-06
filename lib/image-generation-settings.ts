@@ -1,5 +1,17 @@
 import { companyImageCapsForModel } from './company-gateway-size.ts';
-import { GPT_IMAGE_2_ASPECT_RATIOS } from './gpt-image-2-size-presets.ts';
+import { GPT_IMAGE_2_ASPECT_RATIOS, GPT_IMAGE_2_SIZE_MAP } from './gpt-image-2-size-presets.ts';
+
+/** 清晰度同样受模型能力限制，不能在 UI 提供随后被静默降档的 4K。 */
+export function getSupportedImageResolutions(model: string, aspectRatio: string): string[] {
+  const caps = companyImageCapsForModel(model);
+  return Object.keys(GPT_IMAGE_2_SIZE_MAP[aspectRatio] || {}).filter(r => !caps || caps.tiers.includes(r.toUpperCase()));
+}
+
+export function validateImageResolution(model: string, aspectRatio: string, resolution: string): string | null {
+  if (aspectRatio === 'auto') return null;
+  return getSupportedImageResolutions(model, aspectRatio).includes(resolution)
+    ? null : `模型 ${model} 不支持 ${aspectRatio} 的 ${resolution.toUpperCase()} 清晰度`;
+}
 
 /**
  * 返回当前模型真正可提交的图片画幅。

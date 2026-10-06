@@ -1,11 +1,12 @@
 'use client';
 
+import { resolveCoreUsagePlan } from '@/lib/usage-pricing';
 import { useEffect, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import ProxyCacheSettingsSection from '@/components/batch-production/ProxyCacheSettingsSection';
 import MotionTemplateSettings from '@/components/MotionTemplateSettings';
 import VideoDurationInput from '@/components/VideoDurationInput';
-import { clampVideoDuration, videoDurationRange } from '@/lib/video-duration';
+import { describeVideoDurationOptions, normalizeVideoDraftDuration, videoDurationOptions } from '@/lib/video-duration';
 import CompanyProviderRuntimeStatus from '@/components/company-provider/CompanyProviderRuntimeStatus';
 import ScriptKnowledgeSettings from '@/components/script-studio/ScriptKnowledgeSettings';
 import {
@@ -78,7 +79,6 @@ type ProviderFormState = {
 };
 
 const KEY_PLACEHOLDER = '••••••••';
-const FIXED_IMAGE_PROVIDER_ID = 'company-gateway-image2-medium';
 const FIXED_GPT_PROVIDER_ID = 'gpt';
 const FIXED_GPT_MODEL = 'GPT-5-6-Luna-Standard';
 const FIXED_TTS_PROVIDER_ID = 'doubao-seed-tts-2';
@@ -88,9 +88,8 @@ function isFixedImageProvider(
   type: string,
   model: string,
 ): boolean {
-  return providerId === FIXED_IMAGE_PROVIDER_ID
-    && type.trim() === 'gateway-task-image'
-    && model.trim() === 'image2-medium';
+  return resolveCoreUsagePlan({ providerTable: 'providers', providerId: providerId ?? '',
+    providerName: '', providerType: type, configuredModel: model, requestModel: model }) !== null;
 }
 
 function isFixedCompanyLuna(
@@ -533,7 +532,9 @@ function ProviderForm({
 
       {category !== 'script' && (
         <Field label="接口类型">
-          <select value={form.type} onChange={(e) => onChange({ ...form, type: e.target.value })} className="input-field">
+          <select value={form.type} onChange={(e) => onChange({ ...form, type: e.target.value,
+            ...(category === 'video' ? { defaultDurationSec: normalizeVideoDraftDuration(form.defaultDurationSec, videoDurationOptions(e.target.value, form.model)) } : {}),
+          })} className="input-field">
             {category === 'image' && (
               <>
                 <option value="geekai-json">GeekAI (JSON + async polling)</option>
@@ -604,7 +605,7 @@ function ProviderForm({
 
       <Field label={category === 'video' ? '默认模型' : '模型名'}>
         <input value={form.model} onChange={(e) => onChange({ ...form, model: e.target.value,
-          ...(category === 'video' ? { defaultDurationSec: clampVideoDuration(form.defaultDurationSec, videoDurationRange(e.target.value)) } : {}),
+          ...(category === 'video' ? { defaultDurationSec: normalizeVideoDraftDuration(form.defaultDurationSec, videoDurationOptions(form.type, e.target.value)) } : {}),
         })} className="input-field" placeholder="gpt-4o / kling-v3" />
       </Field>
 
@@ -638,8 +639,8 @@ function ProviderForm({
       )}
 
       {category === 'video' && (
-        <Field label={`默认时长（${videoDurationRange(form.model).min}–${videoDurationRange(form.model).max} 秒）`}>
-          <VideoDurationInput range={videoDurationRange(form.model)} value={form.defaultDurationSec} onChange={(value) => onChange({ ...form, defaultDurationSec: value })} className="input-field" />
+        <Field label={`默认时长（${describeVideoDurationOptions(videoDurationOptions(form.type, form.model))}）`}>
+          <VideoDurationInput options={videoDurationOptions(form.type, form.model)} value={form.defaultDurationSec} onChange={(value) => onChange({ ...form, defaultDurationSec: value })} className="input-field" />
         </Field>
       )}
 
