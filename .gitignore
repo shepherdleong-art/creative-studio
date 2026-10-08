@@ -65,6 +65,7 @@ next-env.d.ts
 # local Claude Code / skills tooling (not project source)
 /.claude/
 /.agents/
+/.codebuddy/
 /.omo/
 /.trae/
 /skills-lock.json
