@@ -541,6 +541,7 @@ function ProviderForm({
                 <option value="gateway-task-image">网关异步任务（/v1/videos 协议）</option>
                 <option value="packy-images">Packy Images API</option>
                 <option value="packy-gemini-image">Gemini Image API</option>
+                <option value="ark-images">火山方舟图片直连（Seedream）</option>
                 <option value="openai-compatible">OpenAI-compatible</option>
               </>
             )}

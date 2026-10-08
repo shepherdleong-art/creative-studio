@@ -123,7 +123,7 @@ const SEEDANCE_2_0_FAST_CAPS: CompanyModelCaps = {
 
 /** 返回图片模型在公司网关的能力约束；非公司图片模型返回 null */
 export function companyImageCapsForModel(model: string): CompanyModelCaps | null {
-  if (model === 'doubao-seedream-5-0-pro-image') return SEEDREAM_5_PRO_CAPS;
+  if (model === 'doubao-seedream-5-0-pro-image' || model === 'doubao-seedream-5-0-pro-260628') return SEEDREAM_5_PRO_CAPS;
   if (model === 'nano-banana-3.0' || model === 'nano-banana-3.1') return NANO_BANANA_CAPS;
   const m = model.toLowerCase();
   if (m.startsWith('qiniuyun/gpt-image-2')) return QINIUYUN_GPT_IMAGE_2_CAPS;

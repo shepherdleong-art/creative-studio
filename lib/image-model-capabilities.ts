@@ -50,6 +50,7 @@ export function getImageModelCapabilities(model: string): ImageModelCapabilities
     'nano-banana-3.0': 'Nano Banana Pro',
     'nano-banana-3.1': 'Nano Banana 2',
     'doubao-seedream-5-0-pro-image': 'Seedream 5.0 Pro',
+    'doubao-seedream-5-0-pro-260628': 'Seedream 5.0 Pro（方舟直连）',
   };
   if (companyLabels[model]) {
     return { model, label: companyLabels[model], supportsQuality: false, recommendedTimeoutMs: 600000 };

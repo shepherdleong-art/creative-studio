@@ -15,6 +15,8 @@ import { SEEDANCE_25, SeedanceRequestError } from '../../video-providers/seedanc
  */
 
 import fs from 'node:fs';
+import { buildArkImageBody } from '../../providers/ark-images.ts';
+import { SEEDREAM_5_PRO, seedreamImageEndpoint } from '../../seedream-image.ts';
 import sharp from 'sharp';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
@@ -217,7 +219,7 @@ function candidateSizes(parameters: Record<string, string | number | boolean>): 
 }
 
 function imageInputsOf(context: CanvasTaskContext) {
-  return context.inputs.filter((input) => input.kind === 'image');
+  return context.inputs.filter((input) => input.kind === 'image').slice().sort((a, b) => a.orderIndex - b.orderIndex);
 }
 
 function linkedTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
@@ -448,9 +450,28 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
           throw new CanvasAdapterError('submit', '提交在生成请求前已中止，任务未提交。', { code: 'submit_aborted' });
         }
         const size = candidateSizes(context.parameters);
+        let arkBody: Awaited<ReturnType<typeof buildArkImageBody>> | undefined;
+        if (capability.modelAlias === SEEDREAM_5_PRO) {
+          if (route.type !== 'ark-images') throw new CanvasAdapterError('prepare', 'Seedream 直连需使用方舟图片接口类型', { code: 'provider_channel_mismatch' });
+          try {
+            arkBody = await buildArkImageBody({
+              model: capability.modelAlias, prompt: context.prompt, size,
+              images: imageInputs.map(input => ({ absolutePath: input.absolutePath!, mimeType: input.mimeType! })),
+            });
+          } catch (error) {
+            throw new CanvasAdapterError('prepare', error instanceof Error ? error.message : 'Seedream 输入无效', { code: 'seedream_request_invalid' });
+          }
+        }
         let response: Response;
         try {
-          if (imageInputs.length === 0) {
+          if (arkBody) {
+            response = await fetchImpl(seedreamImageEndpoint(route.baseUrl), {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${route.apiKey}` },
+              body: JSON.stringify(arkBody),
+              signal: linkedTimeoutSignal(signal, options.submitTimeoutMs ?? 600_000),
+            });
+          } else if (imageInputs.length === 0) {
             // 文生图：不伪造占位底图
             response = await fetchImpl(`${route.baseUrl}/v1/images/generations`, {
               method: 'POST',

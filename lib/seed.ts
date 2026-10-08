@@ -1,3 +1,4 @@
+import { SEEDREAM_5_PRO, SEEDREAM_PROVIDER_ID, SEEDREAM_BASE_URL } from './seedream-image.ts';
 import { resolveCoreUsagePlan } from './usage-pricing.ts';
 import { getDb } from './db.ts';
 import { GPTGE_GPT_IMAGE_2_PROVIDER } from './image-provider-presets.ts';
@@ -103,6 +104,11 @@ export function seedProviders() {
   ensurePackyImageProviders(db);
   ensureGptGeImageProvider(db);
   ensureCompanyImageProviders(db);
+  // 仅补缺；Key 由设置页配置，不从其他供应商自动复制，不编造计价。
+  db.prepare(`INSERT OR IGNORE INTO providers
+    (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
+    VALUES (?, ?, ?, '', '', ?, 'ark-images', 0, NULL)`)
+    .run(SEEDREAM_PROVIDER_ID, 'Seedream 5.0 Pro（方舟直连）', SEEDREAM_BASE_URL, SEEDREAM_5_PRO);
 }
 
 /**

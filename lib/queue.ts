@@ -1,6 +1,7 @@
 import { parseUsageSnapshot } from './usage-ledger.ts';
 import { calculateUsageCostMicros } from './usage-pricing.ts';
 import { getDb } from './db';
+import { editImageArk } from './providers/ark-images';
 import { editImage as editImageOpenAI, EditImageRequest } from './providers/openai-compatible';
 import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json';
 import { submitGatewayTaskImage, pollGatewayTaskImage, downloadGatewayTaskImage, summarizeGatewayTaskResponse } from './providers/gateway-task-image';
@@ -666,12 +667,13 @@ async function runJob(
       // Do not normalize or overwrite Packy baseUrl here.
       // Existing provider rows may contain the user-tested working URL.
       const providerName = provider.name || 'provider';
-      const providerLabel = `${providerName} (openai-compatible)`;
+      const providerLabel = `${providerName} (${providerType})`;
+      const editImage = providerType === 'ark-images' ? editImageArk : editImageOpenAI;
       logInfo(`${providerLabel} 同步请求已开始，等待服务端返回...`);
       const stopHeartbeat = startRequestHeartbeat(`${providerLabel} 同步请求`, logInfo);
       try {
         result = await withTimeout(
-          editImageOpenAI(
+          editImage(
             {
               provider: {
                 id: provider.id,
@@ -679,7 +681,7 @@ async function runJob(
                 baseUrl: provider.baseUrl,
                 apiKeyEnv: provider.apiKeyEnv,
                 model: provider.model,
-                type: 'openai-compatible',
+                type: providerType === 'ark-images' ? 'ark-images' : 'openai-compatible',
                 enabled: true,
                 defaultCostPerImage: provider.defaultCostPerImage,
               },

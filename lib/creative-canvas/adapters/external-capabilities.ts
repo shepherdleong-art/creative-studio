@@ -1,3 +1,4 @@
+import { SEEDREAM_5_PRO, SEEDREAM_PROVIDER_ID, SEEDREAM_RATIOS } from '../../seedream-image.ts';
 import { directSeedanceCapability } from './seedance-capabilities.ts';
 import { SEEDANCE_20, SEEDANCE_25 } from '../../video-providers/seedance-contract.ts';
 /**
@@ -18,6 +19,27 @@ interface ExternalModelSpec {
 }
 
 const EXTERNAL_MODEL_SPECS: ReadonlyArray<ExternalModelSpec> = [
+  {
+    providerId: SEEDREAM_PROVIDER_ID,
+    table: 'providers',
+    capability: {
+      key: 'external-ark-seedream-5-0-pro', displayName: 'Seedream 5.0 Pro（方舟直连）',
+      providerKind: 'external', providerIdentity: SEEDREAM_PROVIDER_ID, modelAlias: SEEDREAM_5_PRO,
+      mediaKind: 'image', modes: ['text-to-image', 'image-to-image'],
+      mediaInputMinimums: [{ modes: ['image-to-image'], min: 1, kinds: ['image'] }],
+      inputs: [
+        { kind: 'image', roles: ['subject', 'product', 'style', 'scene', 'reference'], min: 0, max: 10,
+          mimeTypes: ['image/png', 'image/jpeg', 'image/webp'], maxBytes: 30 * 1024 * 1024 },
+        { kind: 'text', roles: ['reference'], min: 0, max: 1 },
+      ],
+      parameters: [
+        { key: 'aspectRatio', label: '比例', type: 'enum', options: SEEDREAM_RATIOS, default: '1:1' },
+        { key: 'resolution', label: '清晰度', type: 'enum', options: ['1K', '2K'], default: '2K' },
+      ],
+      cancellation: false, evidence: 'mapped',
+      evidenceNote: '2026-10-07 按方舟官方 images/generations 协议接入；本地请求与恢复测试覆盖，未调用真实模型。',
+    },
+  },
   {
     providerId: 'packy-gpt-image-2',
     table: 'providers',
@@ -56,10 +78,11 @@ export function registerExternalCanvasCapabilities(
   for (const spec of EXTERNAL_MODEL_SPECS) {
     try {
       const row = spec.table === 'providers'
-        ? db.prepare(`SELECT enabled, apiKey FROM providers WHERE id = ?`).get(spec.providerId)
+        ? db.prepare(`SELECT enabled, apiKey, type, model FROM providers WHERE id = ?`).get(spec.providerId)
         : db.prepare(`SELECT enabled, apiKey FROM video_providers WHERE id = ?`).get(spec.providerId);
-      const typed = row as { enabled?: number; apiKey?: string } | undefined;
+      const typed = row as { enabled?: number; apiKey?: string; type?: string; model?: string } | undefined;
       if (!typed || Number(typed.enabled) !== 1 || !String(typed.apiKey ?? '').trim()) continue;
+      if (spec.providerId === SEEDREAM_PROVIDER_ID && (typed.type !== 'ark-images' || typed.model !== SEEDREAM_5_PRO)) continue;
       register(spec.capability);
       registered.push(spec.capability.key);
     } catch {

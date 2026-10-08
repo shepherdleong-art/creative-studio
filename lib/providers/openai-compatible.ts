@@ -7,7 +7,7 @@ export interface Provider {
   baseUrl: string;
   apiKeyEnv: string;
   model: string;
-  type: 'openai-compatible';
+  type: 'openai-compatible' | 'ark-images';
   enabled: boolean;
   defaultCostPerImage?: number;
 }

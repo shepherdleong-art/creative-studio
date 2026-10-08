@@ -19,6 +19,16 @@ try {
 
   const db = getDb();
 
+  const arkId = 'ark-seedream-5-0-pro';
+  assert.deepEqual(db.prepare('SELECT type, model, apiKey, enabled, defaultCostPerImage FROM providers WHERE id = ?').get(arkId), {
+    type: 'ark-images', model: 'doubao-seedream-5-0-pro-260628', apiKey: '', enabled: 0, defaultCostPerImage: null,
+  });
+  db.prepare('UPDATE providers SET apiKey = ?, enabled = 1 WHERE id = ?').run('user-configured-key', arkId);
+  seedProviders();
+  assert.deepEqual(db.prepare('SELECT apiKey, enabled FROM providers WHERE id = ?').get(arkId), {
+    apiKey: 'user-configured-key', enabled: 1,
+  }, '直连供应商补种不得覆盖用户配置');
+
   // 图片：公司网关 image2-medium 开箱即用
   const image = db.prepare(`SELECT * FROM providers WHERE id = 'company-gateway-image2-medium'`).get() as Record<string, unknown>;
   assert.equal(image.type, 'gateway-task-image');
