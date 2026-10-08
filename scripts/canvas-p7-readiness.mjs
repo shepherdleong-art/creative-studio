@@ -170,51 +170,70 @@ async function probeProxy() {
 await probeProxy();
 
 // 4.5 公司网关可达性：光有本地代理不够，公司网关不可达时任何真实样本都会 500
-const GATEWAY_HOST = 'llm-gateway-idc.linshimuye.com';
-try {
-  const dns = await import('node:dns/promises');
-  const net = await import('node:net');
-  const addresses = await dns.lookup(GATEWAY_HOST, { all: true });
-  const reachable = await new Promise((resolve) => {
-    const socket = net.connect({ host: GATEWAY_HOST, port: 443 });
-    const done = (value) => { socket.destroy(); resolve(value); };
-    socket.setTimeout(4_000);
-    socket.once('connect', () => done(true));
-    socket.once('timeout', () => done(false));
-    socket.once('error', () => done(false));
-  });
-  // TCP 通不等于 HTTPS 通：代理客户端 TUN／全局路由会在 TLS 层截流，
-  // 只报 TCP 会得到「可达」的假象（本次 R01 就是这样失败的）。
-  let httpsResult = '未测试';
-  if (reachable) {
-    try {
-      const response = await fetch(`https://${GATEWAY_HOST}/`, {
-        method: 'HEAD',
-        signal: AbortSignal.timeout(6_000),
-      });
-      httpsResult = `HTTPS ${response.status}`;
-    } catch (error) {
-      httpsResult = `HTTPS 失败（${error instanceof Error ? error.message : error}）`;
-    }
+// 网关域名不写进仓库：优先读 CREATIVE_STUDIO_GATEWAY_HOST，否则取本机 config.yaml 第一个 api_base 的主机名。
+function resolveGatewayHost() {
+  if (process.env.CREATIVE_STUDIO_GATEWAY_HOST) return process.env.CREATIVE_STUDIO_GATEWAY_HOST;
+  if (!fs.existsSync(configPath)) return null;
+  const match = fs.readFileSync(configPath, 'utf8').match(/^\s*api_base:\s*["']?(https?:\/\/[^\s"']+)/m);
+  try {
+    return match ? new URL(match[1]).hostname : null;
+  } catch {
+    return null;
   }
-  line('公司网关', reachable ? `TCP 可达（${addresses.length} 个地址）；${httpsResult}` : `TCP 不可达（DNS ${addresses.length} 个地址）`);
-  if (reachable && httpsResult !== '未测试' && !httpsResult.startsWith('HTTPS 2') && !httpsResult.startsWith('HTTPS 3') && !httpsResult.startsWith('HTTPS 4')) {
-    blockers.push(
-      `公司网关 HTTPS 不可用（${httpsResult}）：本机代理客户端或路由层可能截流了公司网关请求；`
-      + '真实样本会在提交阶段 500，P7 不具备执行条件（本次 R01 实测已证实）。',
-    );
-  }
-  if (!reachable) {
-    blockers.push(
-      '公司网关不可达：当前不在公司内网或网关未开放，任何真实样本都会在提交阶段 500，'
-      + 'P7 不具备执行条件（本次实测已证实，见执行记录 R01 尝试）。',
-    );
-  }
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  line('公司网关', `DNS 解析失败（${message}）`);
-  blockers.push(`公司网关域名解析失败：${message}；P7 不具备执行条件`);
 }
+async function probeGateway() {
+  const GATEWAY_HOST = resolveGatewayHost();
+  if (!GATEWAY_HOST) {
+    line('公司网关', '未找到网关地址（config.yaml 里没有 api_base，也没设 CREATIVE_STUDIO_GATEWAY_HOST）');
+    blockers.push('找不到公司网关地址：检查 config.yaml 的 api_base，或设置 CREATIVE_STUDIO_GATEWAY_HOST');
+    return;
+  }
+  try {
+    const dns = await import('node:dns/promises');
+    const net = await import('node:net');
+    const addresses = await dns.lookup(GATEWAY_HOST, { all: true });
+    const reachable = await new Promise((resolve) => {
+      const socket = net.connect({ host: GATEWAY_HOST, port: 443 });
+      const done = (value) => { socket.destroy(); resolve(value); };
+      socket.setTimeout(4_000);
+      socket.once('connect', () => done(true));
+      socket.once('timeout', () => done(false));
+      socket.once('error', () => done(false));
+    });
+    // TCP 通不等于 HTTPS 通：代理客户端 TUN／全局路由会在 TLS 层截流，
+    // 只报 TCP 会得到「可达」的假象（本次 R01 就是这样失败的）。
+    let httpsResult = '未测试';
+    if (reachable) {
+      try {
+        const response = await fetch(`https://${GATEWAY_HOST}/`, {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(6_000),
+        });
+        httpsResult = `HTTPS ${response.status}`;
+      } catch (error) {
+        httpsResult = `HTTPS 失败（${error instanceof Error ? error.message : error}）`;
+      }
+    }
+    line('公司网关', reachable ? `TCP 可达（${addresses.length} 个地址）；${httpsResult}` : `TCP 不可达（DNS ${addresses.length} 个地址）`);
+    if (reachable && httpsResult !== '未测试' && !httpsResult.startsWith('HTTPS 2') && !httpsResult.startsWith('HTTPS 3') && !httpsResult.startsWith('HTTPS 4')) {
+      blockers.push(
+        `公司网关 HTTPS 不可用（${httpsResult}）：本机代理客户端或路由层可能截流了公司网关请求；`
+        + '真实样本会在提交阶段 500，P7 不具备执行条件（本次 R01 实测已证实）。',
+      );
+    }
+    if (!reachable) {
+      blockers.push(
+        '公司网关不可达：当前不在公司内网或网关未开放，任何真实样本都会在提交阶段 500，'
+        + 'P7 不具备执行条件（本次实测已证实，见执行记录 R01 尝试）。',
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    line('公司网关', `DNS 解析失败（${message}）`);
+    blockers.push(`公司网关域名解析失败：${message}；P7 不具备执行条件`);
+  }
+}
+await probeGateway();
 
 // 5. 结论
 console.log('\n=== 结论 ===');
