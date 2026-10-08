@@ -1,0 +1,8 @@
+{
+  "musicLibrary": "P:\\06 品牌部\\14 X美工策划盘\\【16】内容摄制组\\后期组\\音乐文件\\premiumbeat音乐",
+  "musicIndex": "outputs/music-library/premiumbeat-index.json",
+  "licenseBasis": "2026-10-08 用户确认此目录音乐均有授权，可调用。",
+  "concurrency": 50,
+  "pools": { "image": 50, "video": 50, "seedance": 50 },
+  "capYuan": 40
+}
