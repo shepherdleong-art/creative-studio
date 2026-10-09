@@ -852,6 +852,7 @@ export default function MixcutPanel({
         activeStep === 2 ? (
           preparedGroup ? (
             <PreviewStep
+              key={preparedGroup.id}
               group={preparedGroup}
               active
               onGroupChange={setPreparedGroup}

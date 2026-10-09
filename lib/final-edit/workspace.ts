@@ -279,6 +279,7 @@ export type FinalEditCommand =
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'move_subtitle_cue'; cueId: string; startUs: number; endUs: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'trim_subtitle_cue'; cueId: string; startUs: number; endUs: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'insert_subtitle_cue'; segmentId: string; text: string; startUs: number; endUs: number }
+  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'restore_subtitle_revision'; revision: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'restore_automatic_subtitles' }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'normalize_automatic_subtitles' }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'split_subtitle_cue'; cueId: string; splitUs: number; leftText: string; rightText: string }
@@ -319,6 +320,7 @@ export interface FinalEditWorkspace {
   start(input: StartFinalEditInput): Promise<JobRef>;
   ensureMixcutDraft(input: EnsureMixcutDraftInput): FinalEditGroupView;
   load(groupId: string): FinalEditGroupView;
+  reanalyzeAsset(groupId: string, videoJobId: string): Promise<FinalEditGroupView>;
   apply(command: FinalEditCommand): MutationResult;
   enqueueRender(input: EnqueueRenderInput): Promise<RenderJobRef>;
   resolveDuration(input: DurationResolutionInput): Promise<JobRef>;
@@ -2107,6 +2109,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       if (startUs < 0 || endUs > Number(row.narrationDurationUs) || endUs - startUs < minimumUs) throw new FinalEditError('subtitle_out_of_range', '字幕时间超出正文或短于一帧');
       if (cues.some((item) => item.id !== cueId && startUs < item.endUs && endUs > item.startUs)) throw new FinalEditError('subtitle_overlap', '字幕时间不能重叠');
     };
+    if (command.type === 'restore_subtitle_revision') {
+      const historical = db.prepare(`SELECT stateJson FROM final_edit_revisions WHERE scopeKind='group' AND scopeId=? AND revision=?`).get(command.groupId, command.revision) as { stateJson: string } | undefined;
+      const state = historical ? parseJson<{ cues?: SubtitleCue[] }>(historical.stateJson, {}) : {};
+      if (!Array.isArray(state.cues)) throw new FinalEditError('revision_not_found', '要恢复的字幕版本不存在', 404);
+      cues.splice(0, cues.length, ...state.cues);
+      for (const cue of cues) validateCueRange(cue.id, cue.startUs, cue.endUs);
+    }
     if (command.type === 'set_subtitle_cue_text') {
       const cue = cues.find((item) => item.id === command.cueId);
       if (!cue) throw new FinalEditError('subtitle_not_found', '字幕不存在', 404);
@@ -2218,6 +2227,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     }
     const revision = Number(row.revision) + 1;
     db.transaction(() => {
+      db.prepare(`INSERT INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('group', ?, ?, ?, '{"type":"before_edit"}', ?) ON CONFLICT(scopeKind, scopeId, revision) DO UPDATE SET stateJson=json_set(final_edit_revisions.stateJson, '$.cues', json_extract(excluded.stateJson, '$.cues')) WHERE json_type(final_edit_revisions.stateJson, '$.cues') IS NULL`).run(command.groupId, Number(row.revision), JSON.stringify({ cues: parseJson(String(row.subtitleStateJson), []) }), now());
       db.prepare(`INSERT INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('group', ?, ?, ?, ?, ?)`).run(command.groupId, revision, JSON.stringify({ cues, coverTitle, textStyles, scriptSnapshot: mixcutScriptSnapshot, narrationConfig, selectedMaterialKeys }), JSON.stringify(command), now());
       if (command.type === 'set_mixcut_script_state') {
         db.prepare(`UPDATE final_edit_groups SET scriptDraftId=?, analysisProviderId=?, subtitleStateJson=?, coverTitleJson=?, textStylesJson=?, scriptSnapshotJson=?, editedNarrationText=?, scriptSyncState=?, sourceScriptUpdatedAt=?, narrationConfigJson=?, selectedMaterialKeysJson=?, revision=?, updatedAt=? WHERE id=?`).run(mixcutScriptSnapshot.sourceDraftId || '', analysisProviderId, JSON.stringify(cues), JSON.stringify(coverTitle), JSON.stringify(textStyles), JSON.stringify(mixcutScriptSnapshot), mixcutScriptSnapshot.editedNarrationText, mixcutScriptSnapshot.scriptSyncState, mixcutScriptSnapshot.sourceScriptUpdatedAt, JSON.stringify(narrationConfig), JSON.stringify(selectedMaterialKeys), revision, now(), command.groupId);
@@ -2339,6 +2349,32 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     };
   };
 
+  const reanalyzeAsset = async (groupId: string, videoJobId: string) => {
+    const group = load(groupId);
+    const asset = group.assets.find(item => item.videoJobId === videoJobId);
+    if (!asset) throw new FinalEditError('material_not_ready', '素材不属于当前成片', 404);
+    const row = selectedAssets(db, storageRoot, group.projectId, group.shotSetId, [asset.assetKey || `module4:${videoJobId}`])[0];
+    const providerId = String((db.prepare('SELECT analysisProviderId FROM final_edit_groups WHERE id=?').get(groupId) as { analysisProviderId: string }).analysisProviderId || '');
+    if (deps.validateAnalysisProvider && !deps.validateAnalysisProvider(providerId)) {
+      throw new FinalEditError('vision_provider_unavailable', '原素材分析模型不可用，请在智能创作中检查配置', 409);
+    }
+    const fingerprint = sha256(fs.readFileSync(row.localVideoPath));
+    const media = await deps.probeVideo({ filePath: row.localVideoPath, videoJobId });
+    const analysis = await deps.analyzeVideo({ filePath: row.localVideoPath, videoJobId, shotSetId: row.shotSetId, providerId });
+    if (!isVideoAnalysisResult(analysis)) throw new FinalEditError('analysis_failed', '视频分析结果结构无效');
+    let analysisModel = '';
+    try { analysisModel = String((db.prepare(`SELECT COALESCE(NULLIF(model, ''), defaultModel, '') AS model FROM script_providers WHERE id=?`).get(providerId) as { model?: string } | undefined)?.model || ''); } catch { /* isolated tests omit provider tables */ }
+    db.prepare(`
+      INSERT INTO final_edit_asset_analysis
+        (videoJobId, shotSetId, fileFingerprint, providerId, model, analyzerVersion, status, mediaJson, generatedJson, updatedAt, analyzedAt)
+      VALUES (?, ?, ?, ?, ?, ?, 'succeeded', ?, ?, ?, ?)
+      ON CONFLICT(videoJobId) DO UPDATE SET shotSetId=excluded.shotSetId, fileFingerprint=excluded.fileFingerprint,
+        providerId=excluded.providerId, model=excluded.model, analyzerVersion=excluded.analyzerVersion, status='succeeded', mediaJson=excluded.mediaJson, generatedJson=excluded.generatedJson,
+        errorCode=NULL, errorMessage=NULL, analyzedAt=excluded.analyzedAt, updatedAt=excluded.updatedAt
+    `).run(row.videoJobId, row.shotSetId, fingerprint, providerId, analysisModel, FINAL_EDIT_ANALYZER_VERSION, JSON.stringify(media), JSON.stringify(analysis), now(), now());
+    return load(groupId);
+  };
+
   const getMixcutContext = async (projectId: string, requestedShotSetId?: string | null): Promise<MixcutContextResponse> => {
     // Query/aggregation logic lives in ./mixcut-context.ts so it can be
     // exercised directly by scripts/final-edit-mixcut-flow.test.ts against an
@@ -2371,7 +2407,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   };
 
   return {
-    preflight, start, ensureMixcutDraft, load, apply, enqueueRender, resolveDuration, resumePrepareJob, getMixcutContext,
+    preflight, start, ensureMixcutDraft, load, apply, reanalyzeAsset, enqueueRender, resolveDuration, resumePrepareJob, getMixcutContext,
     listShotSetExternalAssets, importShotSetExternalAssets, resolveShotSetExternalAssetMedia, deleteShotSetExternalAsset,
   };
 }

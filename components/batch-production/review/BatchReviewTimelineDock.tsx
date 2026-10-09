@@ -1,6 +1,7 @@
 'use client';
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useTimelineZoom } from '@/components/timeline/use-timeline-zoom';
 import { Icon } from '@/components/ui/Icon';
 import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
 import { audioClips } from '@/lib/media-core/audio-edit';
@@ -11,6 +12,7 @@ import BatchReviewSubtitleChip from './BatchReviewSubtitleChip';
 import AudioWaveform from '@/components/audio/AudioWaveform';
 import { subtitleSplitEdit } from './subtitle-edit';
 import { videoTrimRange, type VideoTrimRange } from './video-trim';
+import { snapMovingClip } from '@/lib/media-core/timeline-snap';
 import { materialDropInGap } from './material-drop';
 import { buildVideoUsage, type ReviewUsageGroup } from './video-usage';
 
@@ -22,7 +24,6 @@ function groupStyle(group?: ReviewUsageGroup): CSSProperties {
 }
 
 const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
-const FRAME_US = Math.round(1_000_000 / FINAL_EDIT_FPS);
 const MIN_CLIP_US = 500_000;
 const SNAP_THRESHOLD_PX = 9;
 
@@ -125,7 +126,6 @@ export default function BatchReviewTimelineDock({
   onRefreshFilm,
   onOpenCoverEditor,
 }: BatchReviewTimelineDockProps) {
-  const [zoom, setZoom] = useState(60); // px per second
   const scrollRef = useRef<HTMLDivElement>(null);
   const [snapLinePx, setSnapLinePx] = useState<number | null>(null);
   const [snapLineLabel, setSnapLineLabel] = useState<string>('');
@@ -166,6 +166,10 @@ export default function BatchReviewTimelineDock({
 
   // Keyboard shortcut dialog modal state
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const { zoom, changeZoom, inputRef: zoomInputRef } = useTimelineZoom({
+    scrollRef, playheadSec, leadingWidth: 284, minimum: 30, maximum: 180, step: 10,
+    shortcutsEnabled: !shortcutsOpen,
+  });
 
   // Maximum duration across all films
   const maxFilmDurationSec = useMemo(() => {
@@ -236,22 +240,22 @@ export default function BatchReviewTimelineDock({
 
   // 磁吸候选:0、共同播放头、所有可见成片的视频/字幕/音频边界(T-06)
   const snapCandidates = useMemo(() => {
-    const secs: number[] = [0, playheadSec];
+    const secs: { sec: number; owner?: string }[] = [{ sec: 0 }, { sec: playheadSec }];
     for (const film of films) {
       if (!film.visible) continue;
       const arrangement = film.arrangement;
       if (!arrangement) continue;
       for (const c of arrangement.clips ?? []) {
-        secs.push(c.timelineStartUs / 1e6, c.timelineEndUs / 1e6);
+        secs.push({ sec: c.timelineStartUs / 1e6, owner: `${film.planId}:${c.clipId}` }, { sec: c.timelineEndUs / 1e6, owner: `${film.planId}:${c.clipId}` });
       }
       for (const cue of arrangement.subtitleCues ?? []) {
-        secs.push(cue.startUs / 1e6, cue.endUs / 1e6);
+        secs.push({ sec: cue.startUs / 1e6 }, { sec: cue.endUs / 1e6 });
       }
       const narration = audioTrackInfo(arrangement, 'narration', film.durationSec * 1e6);
-      for (const ac of narration.clips) secs.push(ac.timelineStartUs / 1e6, ac.timelineEndUs / 1e6);
+      for (const ac of narration.clips) secs.push({ sec: ac.timelineStartUs / 1e6 }, { sec: ac.timelineEndUs / 1e6 });
       if (arrangement.music?.trackId) {
         const bgm = audioTrackInfo(arrangement, 'bgm', film.durationSec * 1e6);
-        for (const ac of bgm.clips) secs.push(ac.timelineStartUs / 1e6, ac.timelineEndUs / 1e6);
+        for (const ac of bgm.clips) secs.push({ sec: ac.timelineStartUs / 1e6 }, { sec: ac.timelineEndUs / 1e6 });
       }
     }
     return secs;
@@ -264,7 +268,7 @@ export default function BatchReviewTimelineDock({
       const threshold = SNAP_THRESHOLD_PX / zoom;
       let best: number | null = null;
       let bestDiff = threshold;
-      for (const s of snapCandidates) {
+      for (const { sec: s } of snapCandidates) {
         const diff = Math.abs(s - targetSec);
         if (diff < bestDiff) {
           bestDiff = diff;
@@ -415,15 +419,17 @@ export default function BatchReviewTimelineDock({
     let finalStartSec = originStartSec;
 
     const computeStartSec = (clientX: number, altKey: boolean): number => {
-      const rawSec = Math.max(0, originStartSec + (clientX - startX) / zoom);
-      const snapped = findSnap(rawSec, altKey);
-      if (snapped) {
-        setSnapLinePx(snapped.sec * zoom);
-        setSnapLineLabel(snapped.label);
-        return snapped.sec;
-      }
-      setSnapLinePx(null);
-      return rawSec;
+      const result = snapMovingClip({
+        startSec: Math.max(0, originStartSec + (clientX - startX) / zoom),
+        durationSec: (clip.timelineEndUs - clip.timelineStartUs) / 1e6,
+        candidates: snapCandidates.filter(candidate => candidate.owner !== `${film.planId}:${clipId}`).map(candidate => candidate.sec),
+        preferredCandidates: film.arrangement!.clips.filter(item => item.clipId !== clipId)
+          .flatMap(item => [item.timelineStartUs / 1e6, item.timelineEndUs / 1e6]),
+        pxPerSecond: zoom, enabled: snapEnabled && !altKey, fps: FINAL_EDIT_FPS,
+      });
+      setSnapLinePx(result.snapSec === null ? null : result.snapSec * zoom);
+      setSnapLineLabel(result.snapSec === null ? '' : `${result.snapSec.toFixed(2)}s`);
+      return result.startSec;
     };
 
     const finishClick = (clickX: number) => {
@@ -456,6 +462,8 @@ export default function BatchReviewTimelineDock({
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('keydown', onKeyCancel, true);
+      window.removeEventListener('blur', cancel);
+      window.removeEventListener('pointercancel', cancel);
     };
 
     const onUp = async (upEvent: PointerEvent) => {
@@ -465,13 +473,14 @@ export default function BatchReviewTimelineDock({
         return;
       }
       setMoveDraft(null);
-      const snappedUs = Math.round(finalStartSec * 1e6 / FRAME_US) * FRAME_US;
+      const snappedUs = Math.round(finalStartSec * 1e6);
       if (snappedUs !== clip.timelineStartUs) {
         await onMediaEdit(film.planId, { type: 'move_clip', clipId, startUs: snappedUs });
         await onRefreshFilm(film.planId);
       }
     };
 
+    const cancel = () => { cleanup(); setMoveDraft(null); };
     const onKeyCancel = (keyEvent: KeyboardEvent) => {
       if (keyEvent.key !== 'Escape' || !dragged) return;
       keyEvent.stopPropagation();
@@ -479,6 +488,8 @@ export default function BatchReviewTimelineDock({
       setMoveDraft(null);
     };
 
+    window.addEventListener('blur', cancel);
+    window.addEventListener('pointercancel', cancel);
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp, { once: true });
     window.addEventListener('keydown', onKeyCancel, true);
@@ -758,7 +769,7 @@ export default function BatchReviewTimelineDock({
     : null;
   const focusSelectedClip = () => {
     if (!selectedVideoClip) return;
-    setZoom(180);
+    changeZoom(180);
     requestAnimationFrame(() => {
       const scroll = scrollRef.current;
       if (!scroll) return;
@@ -948,15 +959,16 @@ export default function BatchReviewTimelineDock({
             <span>缩放</span>
             <input
               type="range"
+              ref={zoomInputRef}
               className={styles.zoomSlider}
               min={30}
               max={180}
               step={1}
               value={zoom}
-              onChange={(event) => setZoom(Number(event.currentTarget.value))}
+              onChange={(event) => changeZoom(Number(event.currentTarget.value))}
               aria-label="时间轴缩放"
               aria-valuetext={`${Math.round((zoom / 60) * 100)}%`}
-              title="向左缩小，向右放大时间轴"
+              title="围绕播放头缩放；播放头不可见时围绕可视区中心（+ / −）"
             />
           </label>
           <button

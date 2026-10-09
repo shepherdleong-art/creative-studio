@@ -1206,6 +1206,47 @@ assert.equal(await waitForFinalEditJobsIdle(100), 0, 'prepare 收尾后必须从
 }
 
 
+// Recovery in the editing page must update usable source metadata without rebuilding edits.
+{
+  const before = workspace.load(group.id);
+  const assetId = before.assets[0].videoJobId;
+  db.prepare("UPDATE final_edit_asset_analysis SET status='failed', mediaJson='{}' WHERE videoJobId=?").run(assetId);
+  const recovered = await workspace.reanalyzeAsset(group.id, assetId);
+  assert.equal(recovered.assets.find(asset => asset.videoJobId === assetId)?.analysisStatus, 'succeeded');
+  assert.equal(recovered.assets.find(asset => asset.videoJobId === assetId)?.durationUs, 12_000_000);
+  assert.deepEqual(recovered.variants, before.variants, '重新分析不能重排或覆盖手动剪辑');
+  assert.deepEqual(recovered.subtitleCues, before.subtitleCues);
+  const calls = analyzeVideoCalls;
+  await assert.rejects(workspace.reanalyzeAsset(group.id, 'other-project-video'), /不属于当前成片/);
+  assert.equal(analyzeVideoCalls, calls, '跨上下文素材不能发出分析请求');
+  analysisFailures.add(assetId);
+  await assert.rejects(workspace.reanalyzeAsset(group.id, assetId), /模拟素材分析失败/);
+  assert.deepEqual(workspace.load(group.id), recovered, '重新分析失败应保留已有结果和编辑');
+  analysisFailures.delete(assetId);
+
+  const externalBefore = workspace.load(externalGroup.id);
+  const externalRecovered = await workspace.reanalyzeAsset(externalGroup.id, 'external-asset-external-a');
+  assert.equal(externalRecovered.assets[0].analysisStatus, 'succeeded');
+  assert.deepEqual(externalRecovered.variants, externalBefore.variants);
+  const recoveredVariant = externalRecovered.variants[0];
+  const recoveredClip = recoveredVariant.timeline.clips[0];
+  const deletedVideo = workspace.apply({ scope: 'variant', variantId: recoveredVariant.id, expectedRevision: recoveredVariant.revision, type: 'delete_clip', clipId: recoveredClip.id }).view as FinalEditVariantView;
+  const insertedVideo = workspace.apply({ scope: 'variant', variantId: recoveredVariant.id, expectedRevision: deletedVideo.revision, type: 'insert_clip', videoJobId: externalRecovered.assets[0].videoJobId, sourceFingerprint: externalRecovered.assets[0].fingerprint, sourceInFrame: recoveredClip.sourceInFrame, sourceOutFrame: recoveredClip.sourceOutFrame, timelineInFrame: recoveredClip.timelineInFrame, timelineOutFrame: recoveredClip.timelineOutFrame }).view as FinalEditVariantView;
+  assert.equal(insertedVideo.timeline.clips.length, recoveredVariant.timeline.clips.length, '重新分析后素材可实际插入时间轴');
+  const insertedClip = insertedVideo.timeline.clips.find(clip => clip.timelineInFrame === recoveredClip.timelineInFrame)!;
+  assert.doesNotThrow(() => workspace.apply({ scope: 'variant', variantId: recoveredVariant.id, expectedRevision: insertedVideo.revision, type: 'replace_clip', clipId: insertedClip.id, videoJobId: externalRecovered.assets[0].videoJobId, sourceFingerprint: externalRecovered.assets[0].fingerprint, sourceInFrame: insertedClip.sourceInFrame, sourceOutFrame: insertedClip.sourceOutFrame }));
+  await assert.rejects(workspace.reanalyzeAsset(externalGroup.id, 'external-asset-external-b'), /不属于当前成片/);
+
+  const cue = recovered.subtitleCues[0];
+  assert.ok(cue);
+  const deleted = workspace.apply({ scope: 'group', groupId: group.id, expectedRevision: recovered.revision, type: 'delete_subtitle_cue', cueId: cue.id }).view;
+  const restored = workspace.apply({ scope: 'group', groupId: group.id, expectedRevision: deleted.revision, type: 'restore_subtitle_revision', revision: recovered.revision }).view;
+  assert.deepEqual((restored as typeof recovered).subtitleCues, recovered.subtitleCues, '字幕删除可撤销');
+  const redone = workspace.apply({ scope: 'group', groupId: group.id, expectedRevision: restored.revision, type: 'restore_subtitle_revision', revision: deleted.revision }).view;
+  assert.deepEqual((redone as typeof recovered).subtitleCues, (deleted as typeof recovered).subtitleCues, '字幕删除可重做');
+  assert.throws(() => workspace.apply({ scope: 'group', groupId: group.id, expectedRevision: recovered.revision, type: 'restore_subtitle_revision', revision: deleted.revision }), (error: unknown) => error instanceof FinalEditError && error.code === 'revision_conflict');
+}
+
 db.close();
 fs.rmSync(root, { recursive: true, force: true });
 console.log('final-edit workspace tests passed');

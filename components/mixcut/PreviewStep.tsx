@@ -67,7 +67,19 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [auditionStopRequestId, setAuditionStopRequestId] = useState(0);
   const [coverOpen, setCoverOpen] = useState(false);
   const [trimClip, setTrimClip] = useState<TimelineClip | null>(null);
+  const [analyzingKey, setAnalyzingKey] = useState('');
+  type HistoryEntry = { scope: 'variant' | 'group'; id: string; before: number; after: number };
+  const historyRef = useRef<{ undo: HistoryEntry[]; redo: HistoryEntry[] }>({ undo: [], redo: [] });
+  const [historyAvailable, setHistoryAvailable] = useState({ undo: false, redo: false });
+  const syncHistory = () => setHistoryAvailable({ undo: historyRef.current.undo.length > 0, redo: historyRef.current.redo.length > 0 });
   const groupRef = useRef(group);
+  const previewRootRef = useRef<HTMLElement>(null);
+  const clearHistory = () => { historyRef.current = { undo: [], redo: [] }; syncHistory(); };
+  const recordHistory = (entry: HistoryEntry) => {
+    historyRef.current.undo.push(entry);
+    historyRef.current.redo = [];
+    syncHistory();
+  };
   const queueRef = useRef<Promise<void>>(Promise.resolve());
   const previewTabRefs = useRef<Record<PreviewMode, HTMLButtonElement | null>>({ output: null, material: null });
   const pendingRef = useRef(0);
@@ -123,7 +135,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     });
   };
 
-  const applyVariantNow = async (request: VariantCommandRequest): Promise<boolean> => {
+  const applyVariantNow = async (request: VariantCommandRequest, record = true): Promise<boolean> => {
     const currentGroup = groupRef.current;
     const currentVariant = currentGroup.variants.find((item) => item.id === selectedVariantId) || currentGroup.variants[0];
     if (!currentVariant) return false;
@@ -136,9 +148,11 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       }));
       const latest = groupRef.current;
       if (latest.id === currentGroup.id) publishGroup({ ...latest, variants: latest.variants.map((item) => item.id === result.view.id ? result.view : item) });
+      if (record) recordHistory({ scope: 'variant', id: currentVariant.id, before: currentVariant.revision, after: result.view.revision });
       if (mountedRef.current) setMessage('已自动保存');
       return true;
     } catch (error) {
+      clearHistory();
       await reloadGroup(currentGroup.id).catch(() => undefined);
       if (mountedRef.current) setMessage(`保存失败，已恢复服务端版本：${error instanceof Error ? error.message : String(error)}`);
       // 源校验失败时后端 details 会给出 clipId，直接定位到出问题的片段
@@ -207,7 +221,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     }).then((result) => result, () => ({ outcome: 'failed' as const, announcement: '添加失败，请重试', details: '' }));
   };
 
-  const applyGroup = (request: GroupCommandRequest): Promise<boolean> => {
+  const applyGroup = (request: GroupCommandRequest, record = true): Promise<boolean> => {
     const targetGroupId = groupRef.current.id;
     return enqueue(async () => {
       const currentGroup = groupRef.current;
@@ -220,9 +234,13 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           body: JSON.stringify({ expectedRevision: currentGroup.revision, ...command }),
         }));
         if (groupRef.current.id === currentGroup.id) publishGroup(result.view);
+        if (record && /subtitle/.test(command.type) && command.type !== 'normalize_automatic_subtitles') {
+          recordHistory({ scope: 'group', id: currentGroup.id, before: currentGroup.revision, after: result.view.revision });
+        } else if (record) clearHistory();
         if (mountedRef.current) setMessage('已自动保存');
         return true;
       } catch (error) {
+        clearHistory();
         await reloadGroup(currentGroup.id).catch(() => undefined);
         if (mountedRef.current) setMessage(`保存失败，已恢复服务端版本：${error instanceof Error ? error.message : String(error)}`);
         return false;
@@ -242,6 +260,42 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       if (!accepted) automaticSubtitleNormalizationRef.current.delete(requestKey);
     });
   }, [group.id, group.revision, group.subtitleCues]);
+
+  const restoreHistory = async (redo: boolean) => {
+    if (busy) return;
+    const history = historyRef.current;
+    const entry = (redo ? history.redo : history.undo).at(-1);
+    if (!entry) return;
+    if (entry.scope === 'variant' && entry.id !== variant?.id) return;
+    const revision = redo ? entry.after : entry.before;
+    const accepted = entry.scope === 'variant'
+      ? await enqueue(() => applyVariantNow({ type: 'restore_revision', revision }, false))
+      : await applyGroup({ type: 'restore_subtitle_revision', revision }, false);
+    if (!accepted) return;
+    (redo ? history.redo : history.undo).pop();
+    (redo ? history.undo : history.redo).push(entry);
+    syncHistory();
+    setSelectedClipId(''); setSelectedCueId('');
+    setMessage(redo ? '已重做' : '已撤销');
+  };
+
+  const reanalyzeMaterial = (asset: FinalEditAssetView) => {
+    if (busy) return;
+    const groupId = groupRef.current.id;
+    setAnalyzingKey(asset.assetKey || asset.videoJobId);
+    setMessage('正在重新分析素材…');
+    void enqueue(async () => {
+      try {
+        const next = await responseBody<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${groupId}/assets/${encodeURIComponent(asset.videoJobId)}/reanalyze`, { method: 'POST' }));
+        if (groupRef.current.id === groupId) {
+          publishGroup(next);
+          setMessage('素材分析完成，可以添加或替换片段');
+        }
+      } catch (error) {
+        if (groupRef.current.id === groupId) setMessage(`素材分析失败，可再次重试：${error instanceof Error ? error.message : String(error)}`);
+      } finally { if (mountedRef.current) setAnalyzingKey(''); }
+    });
+  };
 
   const previewSubtitleStyle = (style: FinalEditGroupView['textStyles']['3x4']['subtitle']) => {
     const current = groupRef.current;
@@ -398,20 +452,20 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                 : '单击下方素材会高亮选中，点击“预览”查看视频；选中时间轴片段后可替换，右键片段可删除并腾出缺口。'}</div>
           <div className={styles.replaceSelection} aria-live="polite">
             <span className={styles.replaceSelectionName} title={materialName(selectedMaterial)}>
-              {selectedMaterial ? `已选：${materialName(selectedMaterial)}` : '尚未选择素材'}
+              {selectedMaterial ? `已选：${materialName(selectedMaterial)}${selectedMaterial.analysisStatus !== 'succeeded' ? '（请先重新分析）' : ''}` : '尚未选择素材'}
             </span>
             <div className={styles.replaceActions}>
               <button
                 type="button"
                 className={`${styles.btn} ${styles.small}`}
-                disabled={busy || !selectedMaterial || !selectedClip}
+                disabled={busy || !selectedMaterial || selectedMaterial.analysisStatus !== 'succeeded' || !selectedClip}
                 title={!selectedClip ? '先在时间轴单击选中要替换的片段' : !selectedMaterial ? '先在下方选择素材' : undefined}
                 onClick={() => selectedMaterial && replaceClipAsset(selectedMaterial)}
               >替换当前片段</button>
               <button
                 type="button"
                 className={`${styles.btn} ${styles.small} ${styles.primary}`}
-                disabled={busy || !selectedMaterial || !firstInsertableGap}
+                disabled={busy || !selectedMaterial || selectedMaterial.analysisStatus !== 'succeeded' || !firstInsertableGap}
                 title={!firstInsertableGap ? '时间轴当前没有可插入的缺口' : !selectedMaterial ? '先在下方选择素材' : undefined}
                 onClick={() => selectedMaterial && insertClipAsset(selectedMaterial)}
               ><Icon name="plus" size={12} />添加到缺口</button>
@@ -436,19 +490,25 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                     </span>
                     <span className={styles.repInfo}>
                       <span className={styles.repN}>{materialName(asset)}</span>
-                      <span className={styles.repM}>{(asset.durationUs / 1_000_000).toFixed(1)}s · {asset.source === 'external' ? '外部导入' : '模块 4'}</span>
+                      <span className={styles.repM}>{(asset.durationUs / 1_000_000).toFixed(1)}s · {asset.source === 'external' ? '外部导入' : '模块 4'} · {asset.analysisStatus === 'succeeded' ? '已分析' : asset.analysisStatus === 'failed' ? '分析失败' : '待分析'}</span>
                     </span>
                     {materialSelected
                       ? <span className={`${styles.chip} ${styles.chipBlue}`}><Icon name="check" size={10} />已选</span>
                       : usedVideoJobIds.has(asset.videoJobId) && <span className={`${styles.chip} ${styles.chipGreen}`}>已用</span>}
                   </button>
-                  <button
-                    type="button"
-                    className={`${styles.btn} ${styles.small} ${styles.replacePreviewButton}`}
-                    aria-label={`预览素材 ${materialName(asset)}`}
-                    disabled={!asset.previewUrl && !asset.thumbnailUrl}
-                    onClick={() => openMaterialPreview(materialKey)}
-                  >预览</button>
+                  <div className={styles.replaceItemActions}>
+                    <button
+                      type="button"
+                      className={`${styles.btn} ${styles.small} ${styles.replacePreviewButton}`}
+                      aria-label={`预览素材 ${materialName(asset)}`}
+                      disabled={!asset.previewUrl && !asset.thumbnailUrl}
+                      onClick={() => openMaterialPreview(materialKey)}
+                    >预览</button>
+                    <button type="button" className={`${styles.btn} ${styles.small}`} disabled={busy}
+                      aria-label={`重新分析素材 ${materialName(asset)}`} onClick={() => reanalyzeMaterial(asset)}>
+                      {analyzingKey === materialKey ? '分析中…' : '重新分析'}
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -458,7 +518,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       <div className={styles.rz} role="separator" aria-orientation="vertical" title="拖拽调整宽度" onPointerDown={onResizeStart('rep')} />
 
       {/* 主区：工具行 + 大纸 */}
-      <main className={styles.mainCol}>
+      <main ref={previewRootRef} className={styles.mainCol}>
         <div className={styles.t3Toolbar}>
           <span className={styles.t3Title}>预览调整</span>
           <span className={`${styles.chip} ${styles.chipGrey}`}>{orderedClips.length} 片段</span>
@@ -471,7 +531,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           <span className={styles.spacer} />
           <span className={styles.flowHint} aria-live="polite">{busy ? '正在保存…' : message}</span>
           {group.variants.length > 1 && (
-            <select aria-label="选择成片草稿" value={variant.id} onChange={(event) => { setSelectedVariantId(event.target.value); setSelectedClipId(''); setSelectedMaterialKey(''); setPreviewMaterialKey(''); setPreviewMode('output'); setTrimClip(null); setPlayheadSec(0); }}>
+            <select aria-label="选择成片草稿" value={variant.id} onChange={(event) => { setSelectedVariantId(event.target.value); clearHistory(); setSelectedCueId(''); setSelectedClipId(''); setSelectedMaterialKey(''); setPreviewMaterialKey(''); setPreviewMode('output'); setTrimClip(null); setPlayheadSec(0); }}>
               {group.variants.map((item) => <option key={item.id} value={item.id}>成片 {item.indexNum} · {item.outputPreset.replace('x', ':')}</option>)}
             </select>
           )}
@@ -610,6 +670,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           )}
 
           <MixcutTimeline
+            key={variant.id}
             variant={variant}
             cues={group.subtitleCues}
             assets={group.assets}
@@ -617,13 +678,20 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             selectedCueId={timelineSelectedCueId}
             playheadSec={effectivePlayheadSec}
             disabled={busy}
+            active={active && !coverOpen && previewMode === 'output'}
+            onTogglePlay={() => previewRootRef.current?.querySelector<HTMLButtonElement>('[data-mixcut-toggle-play]')?.click()}
+            onUndo={() => void restoreHistory(false)}
+            onRedo={() => void restoreHistory(true)}
+            canUndo={historyAvailable.undo}
+            canRedo={historyAvailable.redo}
             onSeek={seek}
             onSelectClip={(clipId) => {
               setSelectedClipId(clipId);
+              setSelectedCueId('');
               const clip = variant.timeline.clips.find((item) => item.id === clipId);
               if (clip) { setPreviewMode('output'); seek((20 + clip.timelineInFrame) / FPS); }
             }}
-            onSelectCue={setSelectedCueId}
+            onSelectCue={(cueId) => { setSelectedCueId(cueId); setSelectedClipId(''); }}
             onVariantCommand={(command) => applyVariant(command)}
             onGroupCommand={applyGroup}
             onTrimClip={openTrim}

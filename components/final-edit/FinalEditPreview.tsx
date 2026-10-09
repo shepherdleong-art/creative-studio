@@ -535,7 +535,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
         </div>
       </div>
       <div className={styles.playbackBar}>
-        <button type="button" className={styles.playButton} aria-label={playing ? '暂停' : '播放成片'} onClick={() => void togglePlayback()}>{playing ? 'Ⅱ' : '▶'}</button>
+        <button type="button" className={styles.playButton} data-mixcut-toggle-play aria-label={playing ? '暂停' : '播放成片'} onClick={() => void togglePlayback()}>{playing ? 'Ⅱ' : '▶'}</button>
         <span className={styles.timecode}>{formatTime(playheadSec)} / {formatTime(totalSec)}</span>
         <input aria-label="播放位置" type="range" min={0} max={totalSec} step={1 / FPS} value={playheadSec} onChange={(event) => seek(Number(event.target.value))} />
         <button
