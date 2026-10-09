@@ -37,15 +37,41 @@ for (const consumer of ['nextStandaloneExcludes', 'standaloneSyncPurge']) {
 // next.config.ts 的生效 excludes 必须等于 core+nextStandaloneExcludes.extra 的渲染结果
 const nextConfigSource = readFileSync(path.join(repositoryRoot, 'next.config.ts'), 'utf8');
 assert.match(nextConfigSource, /scripts', 'packaging', 'forbidden-paths\.json'/, 'next.config.ts 必须读取共享禁入清单 JSON');
+const instrumentationTrace = path.join(fixtureRoot, '.next', 'server', 'instrumentation.js.nft.json');
+mkdirSync(path.dirname(instrumentationTrace), { recursive: true });
+const traceLeaks = [
+  ...forbiddenSpec.core,
+  ...forbiddenSpec.consumers.nextStandaloneExcludes.extra,
+].map((entry) => `../../${entry.replace('*', 'local')}${forbiddenSpec.fileEntries.includes(entry) ? '' : '/nested/missing.bin'}`);
+const traceRuntimeFiles = [
+  'instrumentation.js',
+  'chunks/runtime.js',
+  '../../node_modules/better-sqlite3/build/Release/better_sqlite3.node',
+  '../../node_modules/next/dist/server/next-server.js',
+  '../../app/api/batch-production/outputs/route.js',
+  '../../outputs-backup/keep.txt',
+];
+writeFileSync(instrumentationTrace, JSON.stringify({ version: 1, files: [...traceLeaks, ...traceRuntimeFiles] }));
 const nextConfigProbe = spawnSync(
   process.execPath,
   ['--experimental-strip-types', '--input-type=module', '-e', `
     import(${JSON.stringify(pathToFileURL(path.join(repositoryRoot, 'next.config.ts')).href)})
-      .then((m) => console.log(JSON.stringify(m.default.outputFileTracingExcludes['*'])))
+      .then(async (m) => {
+        await m.default.compiler?.runAfterProductionCompile?.({
+          projectDir: ${JSON.stringify(fixtureRoot)},
+          distDir: ${JSON.stringify(path.join(fixtureRoot, '.next'))},
+        });
+        console.log(JSON.stringify(m.default.outputFileTracingExcludes['*']));
+      })
   `],
   { cwd: repositoryRoot, encoding: 'utf8' },
 );
 assert.equal(nextConfigProbe.status, 0, `next.config.ts 加载失败：\n${nextConfigProbe.stderr}`);
+assert.deepEqual(
+  JSON.parse(readFileSync(instrumentationTrace, 'utf8')),
+  { version: 1, files: traceRuntimeFiles },
+  '复制 standalone 前必须过滤 instrumentation trace 的本地目录；不得要求被排除的源文件存在或误删运行依赖',
+);
 const renderForbidden = (entry) =>
   forbiddenSpec.fileEntries.includes(entry) ? `./${entry}` : `./${entry}/**/*`;
 const expectedExcludes = [
