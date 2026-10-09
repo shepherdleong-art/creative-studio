@@ -402,7 +402,7 @@ export function createSemanticScoreExecutor(options: SemanticScoreExecutorOption
       });
       assertNotAborted(signal);
       if (outcome.fallback) {
-        throw new BatchExecutorError('semantic_fallback', '语义矩阵打分未得到有效结果，可重试；分配将使用关键词兜底');
+        throw new BatchExecutorError('semantic_fallback', `AI 语义匹配不可用：${outcome.diagnostic ?? '未得到有效评分结果'}；分配将使用素材描述关键词兜底`);
       }
       return {
         commit: () => {

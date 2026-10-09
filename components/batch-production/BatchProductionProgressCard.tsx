@@ -7,7 +7,7 @@ export interface BatchProgressView {
   finished: boolean;
   stages: Array<{
     label: string;
-    status: 'waiting' | 'running' | 'done' | 'failed';
+    status: 'waiting' | 'running' | 'done' | 'warning' | 'failed';
     detail?: string;
     percent?: number;
   }>;
@@ -138,10 +138,11 @@ export default function BatchProductionProgressCard({
             <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold ${
               stage.status === 'done' ? 'bg-ok/15 text-ok'
                 : stage.status === 'failed' ? 'bg-fail/15 text-fail'
+                  : stage.status === 'warning' ? 'bg-warn/15 text-warn'
                   : stage.status === 'running' && !stopped ? 'bg-accent text-white'
                     : 'bg-surface-subtle text-ink-tertiary'
             }`}>
-              {stage.status === 'done' ? '✓' : stage.status === 'failed' ? '!' : ''}
+              {stage.status === 'done' ? '✓' : stage.status === 'failed' || stage.status === 'warning' ? '!' : ''}
             </span>
             <span className={`flex-1 font-medium ${stage.status === 'running' && !stopped ? 'text-accent' : stage.status === 'failed' ? 'text-fail' : stage.status === 'waiting' ? 'text-ink-tertiary' : 'text-ink'}`}>
               {stage.label}
@@ -149,10 +150,10 @@ export default function BatchProductionProgressCard({
             {typeof stage.percent === 'number' && stage.status === 'running' && !stopped && (
               <span className="shrink-0 text-ink-tertiary">{Math.round(stage.percent * 100)}%</span>
             )}
-            <span className={`shrink-0 ${stage.status === 'failed' ? 'text-fail' : stage.status === 'waiting' ? 'text-ink-tertiary' : 'text-ink-secondary'}`}>
+            <span className={`min-w-0 text-right ${stage.status === 'warning' ? 'text-warn' : stage.status === 'failed' ? 'text-fail' : stage.status === 'waiting' ? 'text-ink-tertiary' : 'text-ink-secondary'}`}>
               {stopped && (stage.status === 'running' || stage.status === 'waiting')
                 ? '已停止'
-                : stage.status === 'waiting' ? '等待' : stage.status === 'failed' ? '失败' : stage.status === 'running' ? '进行中' : '已完成'}
+                : stage.status === 'waiting' ? '等待' : stage.status === 'failed' ? '失败' : stage.status === 'warning' ? '关键词兜底' : stage.status === 'running' ? '进行中' : '已完成'}
               {stage.detail ? ` · ${stage.detail}` : ''}
             </span>
           </li>

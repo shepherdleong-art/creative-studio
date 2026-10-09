@@ -190,6 +190,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   onRelocateLinkedSource,
   relocatingSourceId,
   analyzeBusy,
+  analysisDisabled,
   onPreview,
   previewBadge,
 }: {
@@ -211,6 +212,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   onRelocateLinkedSource?: (sourceId: string) => void;
   relocatingSourceId?: string | null;
   analyzeBusy?: boolean;
+  analysisDisabled?: boolean;
   onPreview?: () => void;
   /** 预览来源信息(低清预览片/原片/不可用等) */
   previewBadge?: React.ReactNode;
@@ -261,8 +263,8 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p>当前只有媒体参数；提取文件名描述或补充内容分析后，可按内容匹配。</p>
               {onAnalyzeContent && (
-                <button type="button" className="text-accent underline" disabled={analyzeBusy} onClick={onAnalyzeContent}>
-                  {analyzeBusy ? '分析中…' : '补充内容分析'}
+                <button type="button" className="text-accent underline" disabled={analyzeBusy || analysisDisabled} onClick={onAnalyzeContent}>
+                  {analyzeBusy ? 'AI 分析中…' : '补充 AI 画面分析'}
                 </button>
               )}
             </div>
@@ -285,7 +287,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
         <div className="mt-3 space-y-2 rounded-xl bg-fail/10 px-3 py-2 text-xs text-fail" role="alert">
           <p className="font-medium">分析失败</p>
           <p>{taskError || '未能完成媒体探测，请重试。'}</p>
-          {onRetryAnalyze && <button type="button" className="underline" disabled={analyzeBusy} onClick={onRetryAnalyze}>{analyzeBusy ? '重试中…' : '重试'}</button>}
+          {onRetryAnalyze && <button type="button" className="underline" disabled={analyzeBusy || analysisDisabled} onClick={onRetryAnalyze}>{analyzeBusy ? '重试中…' : '重试'}</button>}
         </div>
       );
     }
@@ -295,7 +297,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
     return (
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-warn-tint px-3 py-2 text-xs text-ink-secondary">
         <span>未分析，暂不可选。</span>
-        {onAnalyzeContent && <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={analyzeBusy} onClick={onAnalyzeContent}>{analyzeBusy ? '分析中…' : '开始内容分析'}</button>}
+        {onAnalyzeContent && <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={analyzeBusy || analysisDisabled} onClick={onAnalyzeContent}>{analyzeBusy ? 'AI 分析中…' : '开始 AI 画面分析'}</button>}
       </div>
     );
   }

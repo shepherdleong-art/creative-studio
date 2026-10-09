@@ -22,6 +22,7 @@ import {
   readBatchSemanticMatrix,
 } from '../lib/batch-production/semantic-match.ts';
 import type { ClaimedBatchTask } from '../lib/batch-production/tasks.ts';
+import { runPendingOnce } from '../lib/batch-production/runner.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-batch-semantic-executor-'));
 const db = new Database(path.join(root, 'workbench.db'));
@@ -229,6 +230,20 @@ try {
     );
   }
 
+  // 真正经过领取/执行/落账：保留失败尝试供重试，项目日志应为可降级警告。
+  db.prepare("UPDATE batch_tasks SET status = 'cancelled'").run();
+  const logged = setupBatch(contentAnalysis);
+  const logs: Array<{ level: string; message: string }> = [];
+  await runPendingOnce({ db, workerId: 'logging-test', concurrency: 1,
+    log: entry => logs.push(entry),
+    executors: [createSemanticScoreExecutor({ listProviders: () => providers,
+      scoreBatch: async () => ({ fallback: true, diagnostic: '模型返回的 JSON 无效或不完整' }) })],
+  });
+  assert.ok(logs.some(entry => entry.level === 'info' && entry.message.includes('语义矩阵打分')));
+  assert.ok(logs.some(entry => entry.level === 'warn' && entry.message.includes('JSON 无效') && entry.message.includes('关键词')));
+  assert.equal(logs.filter(entry => entry.level === 'error').length, 0);
+  assert.equal((db.prepare('SELECT status FROM batch_tasks WHERE id = ?').get(logged.taskId) as { status: string }).status, 'failed',
+    '日志降级不改变任务审计和重试合同');
   console.log('batch semantic score executor tests passed');
 } finally {
   db.close();

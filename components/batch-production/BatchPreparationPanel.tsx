@@ -5,13 +5,14 @@ import { Icon } from '@/components/ui/Icon';
 import MixcutShell, { type MixcutStepDef } from '@/components/mixcut/MixcutShell';
 import shellStyles from '@/components/mixcut/mixcut-shell.module.css';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
-import type { FilenameAnalysisResult } from '@/lib/batch-production/filename-analysis';
+import type { FilenameAnalysisProgress, FilenameAnalysisResult } from '@/lib/batch-production/filename-analysis';
+import { readFilenameAnalysisStream } from '@/lib/batch-production/filename-analysis-stream';
 import type { BatchSnapshotDetail, BatchSnapshotResult } from '@/lib/batch-production/batch-flow';
 import type { BatchProductionStatus } from '@/lib/batch-production/versions';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 import type { BatchTasksView } from '@/lib/batch-production/tasks';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
-import { batchAllocationProgress, batchExportElapsedSec, splitBatchRenderTasks } from '@/lib/batch-production/progress-summary';
+import { batchAllocationProgress, batchExportElapsedSec, batchSemanticProgress, splitBatchRenderTasks } from '@/lib/batch-production/progress-summary';
 import type { DesktopBridge } from '@/desktop/bridge-types';
 import {
   type AssetPrepareTaskView,
@@ -181,6 +182,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [proxyTasks, setProxyTasks] = useState<BatchTasksView['tasks']>([]);
   const [assetPrepareTasks, setAssetPrepareTasks] = useState<AssetPrepareTaskView[]>([]);
   const [analysisBusy, setAnalysisBusy] = useState<string | null>(null);
+  const [filenameProgress, setFilenameProgress] = useState<FilenameAnalysisProgress | null>(null);
+  const filenameControllerRef = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    filenameControllerRef.current?.abort();
+    filenameControllerRef.current = null;
+  }, [projectId]);
   const [previewAsset, setPreviewAsset] = useState<PreviewAsset | null>(null);
   const [visionProviders, setVisionProviders] = useState<VisionProviderView[]>([]);
   const [visionProviderId, setVisionProviderId] = useState('');
@@ -679,10 +686,8 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     const narrationSucceeded = narration.filter((task) => task.status === 'succeeded').length;
     const narrationFailed = narration.filter((task) => task.status === 'failed').length;
     const narrationActive = narration.filter((task) => task.status === 'running' || task.status === 'queued').length;
-    const semanticSucceeded = semantic.filter((task) => task.status === 'succeeded').length;
-    const semanticFailed = semantic.filter((task) => task.status === 'failed').length;
-    const semanticActive = semantic.filter((task) => task.status === 'running' || task.status === 'queued').length;
     const allocationProgress = batchAllocationProgress(batchTasks, workspace);
+    const semanticProgress = batchSemanticProgress(semantic, allocationProgress.status === 'done');
     const startedAtMs = productionTasks.length > 0
       ? Math.min(...productionTasks.map((task) => new Date(task.createdAt).getTime()))
       : null;
@@ -708,9 +713,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         stage('锁定设置', 'done'),
         stage(
           '匹配画面语义',
-          semantic.length === 0 ? 'waiting' : semanticFailed > 0 ? 'failed' : semanticActive > 0 ? 'running' : 'done',
-          semantic.length > 0 ? `${semanticSucceeded}/${semantic.length}` : undefined,
-          semantic.length > 0 ? semanticSucceeded / semantic.length : undefined,
+          semanticProgress.status,
+          semanticProgress.detail,
+          semanticProgress.percent,
         ),
         stage(
           '生成口播',
@@ -904,14 +909,14 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }
 
   async function extractFilenames(assetIds: string[]): Promise<void> {
+    if (filenameControllerRef.current) return;
+    const controller = new AbortController();
+    filenameControllerRef.current = controller;
     setAnalysisBusy('__filename__');
+    setFilenameProgress(null);
     setFeedback(null);
-    try {
-      const result = await readJson<FilenameAnalysisResult>(await fetch(
-        `/api/batch-production/assets/filename-description?projectId=${encodeURIComponent(projectId)}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assetIds }) },
-      ));
-      const byId = new Map(result.items.map((item) => [item.assetId, item]));
+    const applyItems = (items: FilenameAnalysisResult['items']) => {
+      const byId = new Map(items.map((item) => [item.assetId, item]));
       setPreparation((current) => current ? {
         ...current,
         assets: current.assets.map((asset) => {
@@ -919,11 +924,23 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           return item ? { ...asset, currentAnalysisId: item.analysisId, analysisLevel: 'content', analysisSource: 'filename', filenameDescription: item.description } : asset;
         }),
       } : current);
-      // 已勾选的技术分析素材必须改用新描述版本，否则确认输入仍会冻结旧版本。
+      // 每条回执立即更新选择，连接中断也不能丢掉已落库的描述版本。
       setSelectedAssets((current) => Object.fromEntries(Object.entries(current).map(([id, selection]) => [
         id, byId.has(id) ? { ...selection, analysisId: byId.get(id)!.analysisId } : selection,
       ])));
-      if (result.items.length) setInputConfirmed(false);
+      if (items.length) setInputConfirmed(false);
+    };
+    try {
+      const result = await readFilenameAnalysisStream(await fetch(
+        `/api/batch-production/assets/filename-description?projectId=${encodeURIComponent(projectId)}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' }, body: JSON.stringify({ assetIds }), signal: controller.signal },
+      ), (progress) => {
+        if (controller.signal.aborted) return;
+        setFilenameProgress(progress);
+        if (progress.item) applyItems([progress.item]);
+      });
+      if (controller.signal.aborted) return;
+      applyItems(result.items);
       const failures = result.errors.map(({ assetId, message }) => {
         const asset = preparation?.assets.find((entry) => entry.id === assetId);
         return `${asset?.media.displayName || asset?.media.filename || '素材'}：${message}`;
@@ -933,9 +950,13 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         message: `已提取 ${result.items.length} 条文件名描述，未调用画面识别。${failures.length ? `未提取 ${failures.length} 条：${failures.join('；')}` : '可勾选素材继续匹配与剪辑。'}`,
       });
     } catch (error) {
+      if (controller.signal.aborted) return;
       setFeedback({ kind: 'error', message: error instanceof Error ? error.message : '文件名描述提取失败' });
     } finally {
-      setAnalysisBusy(null);
+      if (filenameControllerRef.current === controller) {
+        filenameControllerRef.current = null;
+        setAnalysisBusy(null);
+      }
     }
   }
 
@@ -2116,6 +2137,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               luts={luts}
               previewInfos={previewInfos}
               analysisBusy={analysisBusy}
+              filenameProgress={filenameProgress}
               assetPrepareTasks={assetPrepareTasks}
               analysisTaskByAsset={analysisTaskByAsset}
               visionProviderId={visionProviderId}

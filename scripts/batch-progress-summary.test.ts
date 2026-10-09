@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { batchAllocationProgress, batchExportElapsedSec, splitBatchRenderTasks } from '../lib/batch-production/progress-summary.ts';
+import { batchAllocationProgress, batchExportElapsedSec, batchSemanticProgress, splitBatchRenderTasks } from '../lib/batch-production/progress-summary.ts';
 import type { BatchTaskView } from '../lib/batch-production/tasks.ts';
 
 const groups = splitBatchRenderTasks([
@@ -62,4 +62,14 @@ assert.equal(batchAllocationProgress(spoken, { ...allocated, allocationReport: {
 assert.equal(batchAllocationProgress([{ workType: 'narration', status: 'failed' }], planned).status,
   'running', '口播失败后的静音预览分配仍可推进');
 
+const semanticFailed = { ...task(0, 1), status: 'failed' as const, attemptCount: 3 };
+semanticFailed.attempts[0].errorCode = 'semantic_fallback';
+assert.equal(batchSemanticProgress([semanticFailed], true).status, 'warning', '关键词兜底不能把整批进度显示成失败');
+assert.match(batchSemanticProgress([semanticFailed], true).detail!, /已使用.*关键词/);
+assert.match(batchSemanticProgress([semanticFailed], false).detail!, /将使用/);
+assert.equal(batchSemanticProgress([{ ...semanticFailed, attemptCount: 1 }], false).status, 'waiting', '尚待自动重试时不得谎称已经降级');
+assert.equal(batchSemanticProgress([semanticFailed, { ...semanticFailed, status: 'running' }], false).status, 'running', '部分失败不能盖住仍在匹配的任务');
+const realFailure = { ...semanticFailed, attempts: [{ ...semanticFailed.attempts[0], errorCode: 'executor_error' }] };
+assert.equal(batchSemanticProgress([realFailure], true).status, 'failed', '未知错误不得隐藏为正常降级');
+assert.equal(batchSemanticProgress([{ ...semanticFailed, status: 'succeeded' }], true).status, 'done', '成功重试后不显示历史失败');
 console.log('batch progress summary tests passed');

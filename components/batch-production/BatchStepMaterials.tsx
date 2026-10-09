@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { DesktopBridge } from '@/desktop/bridge-types';
+import type { FilenameAnalysisProgress } from '@/lib/batch-production/filename-analysis';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
@@ -34,6 +35,7 @@ export interface BatchStepMaterialsProps {
   luts: BatchLutRow[];
   previewInfos: Record<string, PreviewInfoLike>;
   analysisBusy: string | null;
+  filenameProgress?: FilenameAnalysisProgress | null;
   assetPrepareTasks: AssetPrepareTaskView[];
   analysisTaskByAsset: Map<string, AssetPrepareTaskView>;
   visionProviderId: string;
@@ -319,7 +321,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
               当前在线 {onlineAssetCount} 条，可用（已分析）{selectableAssets} 条{unanalyzedCount > 0 ? `，${unanalyzedCount} 条待分析` : ''}。
             </p>
             {!frozen && (
-              <p className="mt-1 text-xs text-ink-tertiary">勾选进入本批次的素材；未完成分析的素材不可勾选，请先发起分析。</p>
+              <p className="mt-1 text-xs text-ink-tertiary">先提取文件名描述或进行 AI 画面分析，再勾选进入本批次的素材。</p>
             )}
             {!frozen && (
               <p className="mt-1 text-xs text-ink-tertiary">文件名已写明内容时，可点击“提取文件名描述”跳过 AI 画面识别。提取后整条视频按一个镜头匹配，后续文字语义匹配仍可能产生调用费用。</p>
@@ -331,6 +333,16 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                   {analysisFailed > 0 ? ` · 失败 ${analysisFailed} 条` : ''}
                 </p>
                 <progress max={analysisTotal} value={analysisDone} className="mt-1 h-1.5 w-full" />
+              </div>
+            )}
+            {!frozen && (analysisBusy === '__filename__' || props.filenameProgress) && (
+              <div className="mt-3 rounded-xl bg-surface-subtle px-3 py-2 text-xs text-ink-secondary" role="status" aria-live="polite">
+                <p>{analysisBusy === '__filename__' ? '正在提取文件名描述' : '文件名提取已结束'} · 已处理 {props.filenameProgress?.completed ?? 0}/{props.filenameProgress?.total ?? filenameCandidates.length}</p>
+                <progress aria-label="文件名描述提取进度" max={props.filenameProgress?.total || filenameCandidates.length || 1} value={props.filenameProgress?.completed ?? 0} className="mt-2 h-2 w-full accent-accent" />
+                <p className="mt-1">成功 {props.filenameProgress?.succeeded ?? 0} 条 · 失败 {props.filenameProgress?.failed ?? 0} 条 · 本地处理，不调用 AI</p>
+                {analysisBusy === '__filename__' && props.filenameProgress?.status === 'processing' && (
+                  <p className="mt-1 break-all">正在核验：{props.filenameProgress.displayName}</p>
+                )}
               </div>
             )}
             {!frozen && analysisActive === 0 && analysisFailed > 0 && (
@@ -362,7 +374,8 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                 className="btn-primary"
                 disabled={!visionProviderId || visionProviderMissing || contentAnalysisCandidates.length === 0 || analysisBusy !== null || analysisActive > 0}
                 onClick={() => props.onAnalyzeContent(contentAnalysisCandidates.map((asset) => asset.id))}
-              >{analysisBusy === '__all__' ? '分析中…' : analysisActive > 0 ? `分析中 ${analysisDone}/${analysisTotal}` : `内容分析（${contentAnalysisCandidates.length}）`}</button>
+                title="调用视觉模型识别真实画面；文件名已写明内容时可选择提取文件名描述"
+              >{analysisBusy === '__all__' ? 'AI 分析中…' : analysisActive > 0 ? `AI 分析中 ${analysisDone}/${analysisTotal}` : `AI 画面分析（${contentAnalysisCandidates.length}）`}</button>
               <button
                 type="button"
                 className="btn-secondary"
@@ -500,8 +513,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                 const analysisTask = analysisTaskByAsset.get(asset.id);
                 const assetAnalysisBusy = analysisBusy === asset.id
                   || analysisBusy === analysisTask?.id
-                  || analysisBusy === '__all__'
-                  || analysisBusy === '__filename__';
+                  || analysisBusy === '__all__';
                 return (
                   <BatchAssetSelectionCard
                     key={asset.id}
@@ -525,6 +537,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                       : undefined}
                     relocatingSourceId={linkedRelocateBusy?.startsWith(`${asset.id}:`) ? linkedRelocateBusy.slice(asset.id.length + 1) : null}
                     analyzeBusy={assetAnalysisBusy}
+                    analysisDisabled={analysisBusy === '__filename__'}
                     onPreview={() => props.onPreviewAsset(asset)}
                     previewBadge={previewBadges[asset.id]}
                   />

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { semanticScoreFailureHint } from '../lib/batch-production/semantic-score-policy.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -106,7 +107,17 @@ const fallbackOutcome = await scoreBatchSemanticMatrix({
   score: async () => ({ unexpected: true }),
   sleep: async () => undefined,
 });
-assert.deepEqual(fallbackOutcome, { fallback: true }, '无效矩阵必须收敛为 fallback');
+assert.equal(fallbackOutcome.fallback, true, '无效矩阵必须收敛为 fallback');
+assert.ok(fallbackOutcome.fallback && fallbackOutcome.diagnostic?.includes('矩阵维度或分数格式不符合要求'), '必须保留有效的失败分类，不能只留下笼统 fallback');
+const failedRequest = await scoreBatchSemanticMatrix({
+  sentences: sentences.slice(0, 2), scenes: scoreScenes, providerId: 'prov-fake',
+  score: async () => { throw new Error('请求失败 HTTP 401 Bearer secret-key https://private.example'); },
+  sleep: async () => undefined,
+});
+assert.ok(failedRequest.fallback && failedRequest.diagnostic?.includes('鉴权或访问被拒绝'));
+assert.doesNotMatch(JSON.stringify(failedRequest), /secret-key|private.example|Bearer/);
+assert.equal(semanticScoreFailureHint(new Error('返回了无效 JSON。原始回复: secret-prompt')), '模型返回的 JSON 无效或不完整');
+assert.equal(semanticScoreFailureHint(new Error('LiteLLM 本机健康检查失败')), '本机 LiteLLM 代理不可用，请检查公司供应商连接');
 
 // ---------- 数据库:持久化、最新读取、触发排队 ----------
 

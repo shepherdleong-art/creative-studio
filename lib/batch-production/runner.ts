@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { writeLog } from '../logger.ts';
+import { semanticFallbackMessage } from './semantic-score-policy.ts';
 import { findExecutor, type BatchTaskExecutor, type BatchTaskProgress } from './executors.ts';
 import {
   claimNextTask,
@@ -57,6 +58,8 @@ export interface SchedulerRunOptions {
   db: Database.Database;
   workerId: string;
   executors: BatchTaskExecutor[];
+  /** 默认写入项目日志；测试可捕获生命周期与降级日志。 */
+  log?: typeof writeLog;
   /** 全局同时运行的任务数上限(资源保护) */
   concurrency?: number;
   leaseDurationMs?: number;
@@ -142,6 +145,7 @@ export async function runPendingOnce(options: SchedulerRunOptions): Promise<numb
         db,
         workerId,
         executors,
+        log: options.log,
         leaseDurationMs,
         heartbeatMs,
         progressThrottleMs,
@@ -165,6 +169,7 @@ interface ExecuteOneOptions {
   db: Database.Database;
   workerId: string;
   executors: BatchTaskExecutor[];
+  log?: typeof writeLog;
   leaseDurationMs: number;
   heartbeatMs: number;
   progressThrottleMs: number;
@@ -179,9 +184,13 @@ async function executeOne(
   options: ExecuteOneOptions,
 ): Promise<ExecuteOneOutcome> {
   const { db, workerId, executors, leaseDurationMs, heartbeatMs, progressThrottleMs, now } = options;
+  const log = options.log ?? writeLog;
   activeBatchTaskControllers.add(controller);
   const executor = findExecutor(executors, claim.task.workType);
   let lastProgressWrite = 0;
+  let lastLoggedPhase = '';
+  const analysisLabel = claim.task.workType === 'asset_prepare' ? '素材分析'
+    : claim.task.workType === 'semantic_score' ? 'AI 语义匹配' : null;
   const lastProgress: BatchTaskProgress = { phase: 'starting' };
   let interruptionReason: InterruptionReason | null = null;
   let discardUnacceptedResult: (() => Promise<void> | void) | undefined;
@@ -191,6 +200,13 @@ async function executeOne(
   };
   const reportProgress = (progress: BatchTaskProgress): void => {
     Object.assign(lastProgress, progress);
+    // 只记录分析阶段切换，不把百分比更新/心跳刷进项目日志。
+    if (analysisLabel && progress.phase !== lastLoggedPhase) {
+      lastLoggedPhase = progress.phase;
+      log({ projectId: claim.task.projectId, jobId: claim.task.id, level: 'info',
+        attempt: claim.attempt.attemptNumber,
+        message: `[批量生产] ${analysisLabel}：${progress.description || '开始处理'}` });
+    }
     const nowMs = Date.now();
     if (nowMs - lastProgressWrite < progressThrottleMs) {
       return;
@@ -347,6 +363,10 @@ async function executeOne(
       });
     }).immediate();
     discardUnacceptedResult = undefined;
+    if (analysisLabel) {
+      log({ projectId: claim.task.projectId, jobId: claim.task.id, level: 'info',
+        attempt: claim.attempt.attemptNumber, message: `[批量生产] ${analysisLabel}完成：${lastProgress.skipped ? lastProgress.description : '结果已保存'}` });
+    }
     return 'completed';
   } catch (error) {
     if (discardUnacceptedResult) {
@@ -388,11 +408,13 @@ async function executeOne(
       });
       // 批量任务失败同步进项目日志:此前只落在 batch_task_attempts,
       // 界面上完全不可见。
-      writeLog({
+      log({
         jobId: claim.task.id,
         projectId: claim.task.projectId,
-        level: 'error',
-        message: `[批量生产] ${claim.task.workType} 任务失败（第 ${claim.attempt.attemptNumber} 次）: ${failureMessage}`,
+        level: claim.task.workType === 'semantic_score' && executorErrorCode === 'semantic_fallback' ? 'warn' : 'error',
+        message: claim.task.workType === 'semantic_score' && executorErrorCode === 'semantic_fallback'
+          ? `[批量生产] ${semanticFallbackMessage(claim.attempt.attemptNumber)}（第 ${claim.attempt.attemptNumber} 次）原因：${failureMessage}`
+          : `[批量生产] ${claim.task.workType} 任务失败（第 ${claim.attempt.attemptNumber} 次）: ${failureMessage}`,
         attempt: claim.attempt.attemptNumber,
       });
     }

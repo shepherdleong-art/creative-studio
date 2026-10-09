@@ -1,4 +1,30 @@
 import type { BatchTaskTargetKind, BatchTaskWorkType, BatchTaskView } from './tasks.ts';
+import { SEMANTIC_SCORE_MAX_AUTO_ATTEMPTS } from './semantic-score-policy.ts';
+
+/** 分开展示可降级的语义匹配与真正的任务错误，不改任务的重试/审计状态。 */
+export function batchSemanticProgress(
+  tasks: readonly Pick<BatchTaskView, 'status' | 'attemptCount' | 'attempts'>[],
+  allocated: boolean,
+): { status: 'waiting' | 'running' | 'done' | 'warning' | 'failed'; detail?: string; percent?: number } {
+  if (!tasks.length) return { status: 'waiting' };
+  const succeeded = tasks.filter(task => task.status === 'succeeded').length;
+  const failed = tasks.filter(task => task.status === 'failed');
+  const fallback = failed.filter(task => task.attempts.at(-1)?.errorCode === 'semantic_fallback');
+  if (tasks.some(task => task.status === 'running' || task.status === 'queued')) {
+    return { status: 'running', detail: `${succeeded}/${tasks.length}，匹配或重试中`, percent: succeeded / tasks.length };
+  }
+  if (failed.length > fallback.length) return { status: 'failed', detail: '匹配任务异常，请查看日志' };
+  if (tasks.some(task => task.status === 'cancelled')) {
+    return { status: 'waiting', detail: '匹配尚未完成' };
+  }
+  if (fallback.length) {
+    if (!allocated && fallback.some(task => task.attemptCount < SEMANTIC_SCORE_MAX_AUTO_ATTEMPTS)) {
+      return { status: 'waiting', detail: 'AI 匹配暂不可用，等待自动重试' };
+    }
+    return { status: 'warning', detail: `${fallback.length} 份${allocated ? '已' : '将'}使用素材描述关键词匹配，生产可继续`, percent: 1 };
+  }
+  return { status: 'done', detail: `${succeeded}/${tasks.length}`, percent: 1 };
+}
 
 /** 计划卡在确认输入时就存在；只有分配结果或实际成片版本才能证明已配画面。 */
 export function batchAllocationProgress(

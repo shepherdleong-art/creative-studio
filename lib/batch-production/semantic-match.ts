@@ -10,6 +10,7 @@ import {
   type SemanticSentence,
 } from '../media-core/semantic-matrix.ts';
 import { createBatchTask } from './tasks.ts';
+import { SEMANTIC_SCORE_MAX_AUTO_ATTEMPTS, semanticScoreFailureHint } from './semantic-score-policy.ts';
 
 /**
  * 批量“语义矩阵打分”的装配层:句段/场景构造、内容指纹键、矩阵持久化与
@@ -201,7 +202,7 @@ export function persistBatchSemanticMatrix(
 }
 
 export type BatchSemanticScoreOutcome =
-  | { fallback: true }
+  | { fallback: true; diagnostic?: string }
   | { fallback: false; scores: BatchSemanticScoreMap; hooks: BatchSemanticHookMap; model: string };
 
 /**
@@ -231,13 +232,17 @@ export async function scoreBatchSemanticMatrix(input: {
       maxTokens: 8000,
     });
   });
+  let diagnostic: string | undefined;
   const result = await scoreSemanticMatrixWithRetry({
     sentenceCount: input.sentences.length,
     sceneCount: input.scenes.length,
     score,
     sleep: input.sleep,
+    onFailure: (error, attempts) => {
+      diagnostic = `${semanticScoreFailureHint(error)}（${input.sentences.length} 句 × ${input.scenes.length} 场景，本轮请求 ${attempts} 次）`;
+    },
   });
-  if (result.semanticFallback) return { fallback: true };
+  if (result.semanticFallback) return { fallback: true, diagnostic };
   const scores: BatchSemanticScoreMap = {};
   const hooks: BatchSemanticHookMap = {};
   input.scenes.forEach((scene, sceneIndex) => {
@@ -314,7 +319,7 @@ export interface QueueBatchSemanticScoreResult {
  * 没有上限时供应商持续失败会形成无限重试循环。手动「重新生成语义匹配」
  * 不受此限(用户在显式动作里已经知道自己在重试)。
  */
-export const SEMANTIC_SCORE_MAX_AUTO_ATTEMPTS = 3;
+export { SEMANTIC_SCORE_MAX_AUTO_ATTEMPTS } from './semantic-score-policy.ts';
 
 /**
  * 对一个批次版本的每份脚本快照幂等创建 semantic_score 任务。

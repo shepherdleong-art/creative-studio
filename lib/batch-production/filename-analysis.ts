@@ -27,12 +27,25 @@ export interface FilenameAnalysisResult {
   errors: Array<{ assetId: string; message: string }>;
 }
 
+export interface FilenameAnalysisProgress {
+  completed: number;
+  total: number;
+  succeeded: number;
+  failed: number;
+  assetId: string;
+  displayName: string;
+  status: 'processing' | 'succeeded' | 'failed';
+  message?: string;
+  item?: FilenameAnalysisResult['items'][number];
+}
+
 /** 项目素材级本地操作：发布新的分析版本，历史批次引用的分析版本保持不变。 */
 export async function extractAssetFilenameDescriptions(
   db: Database.Database,
   projectId: string,
   assetIds: string[],
   signal?: AbortSignal,
+  onProgress?: (progress: FilenameAnalysisProgress) => void,
 ): Promise<FilenameAnalysisResult> {
   if (!Array.isArray(assetIds) || !assetIds.length || assetIds.length > 500
     || assetIds.some((id) => typeof id !== 'string' || !id.trim())) {
@@ -47,12 +60,19 @@ export async function extractAssetFilenameDescriptions(
   const result: FilenameAnalysisResult = { items: [], errors: [] };
   for (const asset of assets) {
     signal?.throwIfAborted();
+    const media = asset.mediaJson as { displayName?: string; filename?: string };
+    const displayName = (media.displayName || media.filename || '未命名素材').replaceAll('\\', '/').split('/').at(-1)!;
+    const report = (status: FilenameAnalysisProgress['status'], extra: Partial<FilenameAnalysisProgress> = {}) => {
+      onProgress?.({ completed: result.items.length + result.errors.length, total: assets.length,
+        succeeded: result.items.length, failed: result.errors.length, assetId: asset.id, displayName, status, ...extra });
+    };
+    report('processing');
+    let outcome: Pick<FilenameAnalysisProgress, 'status' | 'message' | 'item'>;
     try {
       if (asset.status !== 'online') throw new BatchDomainError('conflict', '素材已离线或归档');
       if (!listAssetSources(db, asset.id).some((source) => source.sourceKind !== 'module4')) {
         throw new BatchDomainError('invalid_input', '文件名提取仅用于外部导入素材');
       }
-      const media = asset.mediaJson as { displayName?: string; filename?: string };
       const parsed = parseFilenameDescription(media.displayName || media.filename || '');
       const verified = await resolveVerifiedProjectAssetMedia(db, projectId, asset.id);
       signal?.throwIfAborted();
@@ -94,11 +114,15 @@ export async function extractAssetFilenameDescriptions(
         return { assetId: asset.id, analysisId, description: parsed.description, reused: false };
       }).immediate();
       result.items.push(item);
+      outcome = { status: 'succeeded', item };
     } catch (error) {
       signal?.throwIfAborted();
-      result.errors.push({ assetId: asset.id, message: error instanceof BatchDomainError
-        ? error.message : '素材文件核验失败，请确认原片在线且可正常播放' });
+      const message = error instanceof BatchDomainError
+        ? error.message : '素材文件核验失败，请确认原片在线且可正常播放';
+      result.errors.push({ assetId: asset.id, message });
+      outcome = { status: 'failed', message };
     }
+    report(outcome.status, outcome);
   }
   return result;
 }

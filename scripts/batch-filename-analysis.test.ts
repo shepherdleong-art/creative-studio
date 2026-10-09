@@ -49,7 +49,12 @@ try {
   await assert.rejects(() => extractAssetFilenameDescriptions(db, 'p1', [id, foreign]), /素材不存在/);
   assert.equal(getAsset(db, 'p1', id)?.currentAnalysisId, oldAnalysisId, '跨项目请求不能部分写入');
 
-  const result = await extractAssetFilenameDescriptions(db, 'p1', [id, id]);
+  const progress: Array<{ completed: number; total: number; status: string }> = [];
+  const result = await extractAssetFilenameDescriptions(db, 'p1', [id, id], undefined, (event) => progress.push(event));
+  assert.deepEqual(progress.map(({ completed, total, status }) => ({ completed, total, status })), [
+    { completed: 0, total: 1, status: 'processing' },
+    { completed: 1, total: 1, status: 'succeeded' },
+  ], '核验前应报告当前素材，落库后报告真实完成数；重复素材只计一次');
   assert.deepEqual(result.errors, []);
   assert.equal(result.items.length, 1);
   const analysis = getCurrentAssetAnalysis(db, 'p1', id)!;
@@ -90,8 +95,12 @@ try {
   assert.match((await extractAssetFilenameDescriptions(db, 'p1', [blueId])).errors[0].message, /任务尚未结束/);
   assert.equal(getAsset(db, 'p1', blueId)?.currentAnalysisId, null, '不与正在执行的分析争抢当前版本');
   db.prepare("UPDATE batch_tasks SET status = 'cancelled' WHERE id = ?").run(pending.items[0].taskId);
-  const partial = await extractAssetFilenameDescriptions(db, 'p1', [id, blueId]);
+  const partialProgress: Array<{ completed: number; succeeded: number; failed: number; status: string }> = [];
+  const partial = await extractAssetFilenameDescriptions(db, 'p1', [id, blueId], undefined, event => partialProgress.push(event));
   assert.equal(partial.errors.length, 1);
+  assert.deepEqual(partialProgress.map(event => [event.completed, event.succeeded, event.failed, event.status]), [
+    [0, 0, 0, 'processing'], [1, 0, 1, 'failed'], [1, 0, 1, 'processing'], [2, 1, 1, 'succeeded'],
+  ], '失败也计入已处理数量，不能假装成功或阻塞后续进度');
   assert.equal(partial.items[0].assetId, blueId, '单条失败不阻塞其余素材');
   const aborted = new AbortController();
   aborted.abort();
