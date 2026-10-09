@@ -500,7 +500,7 @@ try {
   assert.equal(capturedBody?.size, '1366x1024');
   assert.equal(capturedBody?.generate_audio, true);
   assert.equal(capturedBody?.multi_shot, true);
-  assert.equal(capturedBody?.shot_type, 'intelligent');
+  assert.equal(capturedBody?.shot_type, 'intelligence', '七牛可灵智能分镜必须使用上游接受的枚举值');
   assert.equal(capturedBody?.multi_prompt, undefined);
   await openaiVideoAdapter.submit({
     model: 'qiniuyun/kling-3.0', prompt: '单镜头',

@@ -192,7 +192,7 @@ export const COMPANY_CANVAS_SEEDANCE_2_0_CANDIDATE: CanvasModelCapability = {
 
 /** 必须走 COS 预签名交付的公司模型（缺 COS 时 fail closed，不回退本机 URL）。 */
 export function companyCanvasModelRequiresCos(modelAlias: string): boolean {
-  return modelAlias.startsWith('qiniuyun/');
+  return modelAlias.startsWith('qiniuyun/') || modelAlias === 'nano-banana-3.0' || modelAlias === 'nano-banana-3.1';
 }
 
 /** 公司尾帧协议按精确别名判定（与 company-gateway-tail-frame 的 allowlist 保持一致）。 */

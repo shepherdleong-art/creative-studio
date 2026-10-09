@@ -63,6 +63,7 @@ function jimengDuration(model: string, durationSec: number): number {
 const SEEDANCE_2_TAIL_FRAME_MODELS: ReadonlyArray<string> = [
   'doubao-seedance-2-0-260128',
   'doubao-seedance-2-5-260628',
+  'doubao-seedance-2-0-fast-260128',
 ];
 
 function getTailFrameCapability(model: string): TailFrameCapability {
@@ -132,9 +133,11 @@ async function postGenerationTask(params: {
   body: Record<string, unknown>;
   signal?: AbortSignal;
   errorLabel: string;
+  fetchImpl?: typeof fetch;
+  taskPath?: string;
 }): Promise<SubmitVideoResult> {
   const cleanBase = params.baseUrl.replace(/\/$/, '');
-  const url = `${cleanBase}/contents/generations/tasks`;
+  const url = `${cleanBase}${params.taskPath ?? '/contents/generations/tasks'}`;
 
   const serialized = assertArkRequestSize(params.body);
   const controller = new AbortController();
@@ -144,7 +147,7 @@ async function postGenerationTask(params: {
   else params.signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
-    const res = await fetch(url, {
+    const res = await (params.fetchImpl ?? fetch)(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -167,9 +170,14 @@ async function postGenerationTask(params: {
   }
 }
 
-export const jimengAdapter: VideoProviderAdapter = {
+/** 请求合同共用；公司渠道只替换 HTTP 传输，不复制模式/参数映射。 */
+export function createJimengAdapter(options: { fetchImpl?: typeof fetch; taskPath?: string } = {}): VideoProviderAdapter {
+const fetchImpl: typeof fetch = options.fetchImpl ?? ((input, init) => fetch(input, init));
+const taskPath = options.taskPath ?? '/contents/generations/tasks';
+const postTask = (params: Parameters<typeof postGenerationTask>[0]) => postGenerationTask({ ...params, fetchImpl, taskPath });
+return {
   async submitFinal(request, apiKey, baseUrl, signal) {
-    return postGenerationTask({ apiKey, baseUrl, signal, body: seedanceFinalBody(request), errorLabel: 'Jimeng final-from-draft' });
+    return postTask({ apiKey, baseUrl, signal, body: seedanceFinalBody(request), errorLabel: 'Jimeng final-from-draft' });
   },
   tailFrameCapability(model) {
     return getTailFrameCapability(model);
@@ -198,11 +206,11 @@ export const jimengAdapter: VideoProviderAdapter = {
     }
 
     const duration = jimengDuration(request.model, request.durationSec);
-    const imageDataUrl = fileToBase64DataUrl(request.sourceImagePath, request.sourceMimeType);
+    const imageDataUrl = request.sourceImageUrl ?? fileToBase64DataUrl(request.sourceImagePath, request.sourceMimeType);
 
     // Seedance accepts public HTTPS/TOS/asset URLs. We use a data URL here because
     // the desktop app works with local files; if Ark rejects it, serve images publicly.
-    console.warn('[Jimeng] Using Base64 data URL for source image. Seedance docs recommend public HTTPS URLs. If this fails, serve images publicly.');
+    if (!request.sourceImageUrl) console.warn('[Jimeng] Using Base64 data URL for source image. Seedance docs recommend public HTTPS URLs. If this fails, serve images publicly.');
 
     const seedance2 = isSeedance2(request.model);
     const content: Array<Record<string, unknown>> = [
@@ -217,7 +225,7 @@ export const jimengAdapter: VideoProviderAdapter = {
       },
     ];
     if (hasTailImagePath) {
-      const tailImageDataUrl = fileToBase64DataUrl(request.tailImagePath!, request.tailMimeType!);
+      const tailImageDataUrl = request.tailImageUrl ?? fileToBase64DataUrl(request.tailImagePath!, request.tailMimeType!);
       content.push({
         type: 'image_url',
         image_url: { url: tailImageDataUrl },
@@ -234,7 +242,7 @@ export const jimengAdapter: VideoProviderAdapter = {
     };
     if (!seedance2) body.camera_fixed = false;
 
-    return postGenerationTask({
+    return postTask({
       apiKey,
       baseUrl,
       body,
@@ -263,7 +271,7 @@ export const jimengAdapter: VideoProviderAdapter = {
     };
     if (!seedance2) body.camera_fixed = false;
 
-    return postGenerationTask({
+    return postTask({
       apiKey,
       baseUrl,
       body,
@@ -307,7 +315,7 @@ export const jimengAdapter: VideoProviderAdapter = {
       body.omni_reference_task_type = request.omniReferenceTaskType ?? 'reference';
     }
 
-    return postGenerationTask({
+    return postTask({
       apiKey,
       baseUrl,
       body,
@@ -323,15 +331,16 @@ export const jimengAdapter: VideoProviderAdapter = {
     signal?: AbortSignal
   ): Promise<PollVideoResult> {
     const cleanBase = baseUrl.replace(/\/$/, '');
-    const url = `${cleanBase}/contents/generations/tasks/${taskId}`;
+    const url = `${cleanBase}${taskPath}/${encodeURIComponent(taskId)}`;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), POLL_TIMEOUT_MS);
     const onAbort = () => controller.abort();
-    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
 
     try {
-      const res = await fetch(url, {
+      const res = await fetchImpl(url, {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
@@ -370,3 +379,6 @@ export const jimengAdapter: VideoProviderAdapter = {
     }
   },
 };
+}
+
+export const jimengAdapter = createJimengAdapter();

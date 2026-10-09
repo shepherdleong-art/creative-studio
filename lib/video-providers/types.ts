@@ -17,8 +17,11 @@ export interface SubmitVideoRequest extends SeedanceOutputOptions {
   prompt: string;
   sourceImagePath: string;
   sourceMimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  /** 已由交付层提供的公网地址；公司画布禁止回退成本机路径。 */
+  sourceImageUrl?: string;
   tailImagePath?: string;
   tailMimeType?: 'image/png' | 'image/jpeg' | 'image/webp';
+  tailImageUrl?: string;
   durationSec: number;
   /** Company Tencent/Qiniu Kling 3.0 intelligent storyboard; omitted for other jobs. */
   multiShot?: boolean;

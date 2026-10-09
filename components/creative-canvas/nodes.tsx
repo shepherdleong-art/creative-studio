@@ -821,6 +821,9 @@ export const GenerationNode = memo(function GenerationNode({
           }}
         >
           <option value="">未选择</option>
+          {data.modelKey && !available.some((candidate) => candidate.key === data.modelKey) ? (
+            <option value={data.modelKey}>原模型配置已更新，请重新选择模型</option>
+          ) : null}
           {available.map((candidate) => (
             <option key={candidate.key} value={candidate.key}>
               {candidate.displayName}

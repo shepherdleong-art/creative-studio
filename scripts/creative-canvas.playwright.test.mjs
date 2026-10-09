@@ -28,6 +28,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 import sharp from 'sharp';
+import Database from 'better-sqlite3';
+import { configuredCanvasImages } from '../lib/creative-canvas/adapters/configured-images.ts';
+import { configuredCanvasVideos } from '../lib/creative-canvas/adapters/configured-videos.ts';
 import { runFfmpeg } from '../lib/ffmpeg.ts';
 import { directSeedanceCapability } from '../lib/creative-canvas/adapters/seedance-capabilities.ts';
 import { SEEDANCE_20, SEEDANCE_25 } from '../lib/video-providers/seedance-contract.ts';
@@ -654,11 +657,24 @@ async function interactionSuite(page) {
 }
 
 async function seedanceSuite(page) {
+  const providerDb = new Database(':memory:');
+  providerDb.exec(`CREATE TABLE providers (id TEXT, name TEXT, model TEXT, type TEXT, baseUrl TEXT, apiKey TEXT, enabled INTEGER);
+    CREATE TABLE video_providers (id TEXT, name TEXT, defaultModel TEXT, type TEXT, baseUrl TEXT, apiKey TEXT, enabled INTEGER);`);
+  for (const model of ['image2-medium', 'qiniuyun/gpt-image-2-medium', 'doubao-seedream-5-0-pro-image', 'nano-banana-3.0', 'nano-banana-3.1']) {
+    providerDb.prepare(`INSERT INTO providers VALUES (?, ?, ?, 'gateway-task-image', 'http://127.0.0.1:1', 'test-key', 1)`).run(model, model, model);
+  }
+  for (const model of ['doubao-seedance-2-0-260128', 'doubao-seedance-2-5-260628', 'doubao-seedance-2-0-fast-260128']) {
+    providerDb.prepare(`INSERT INTO video_providers VALUES (?, ?, ?, 'openai-video', 'http://127.0.0.1:1', 'test-key', 1)`).run(model, model, model);
+  }
+  const companyImages = configuredCanvasImages(providerDb);
+  const companyVideos = configuredCanvasVideos(providerDb);
+  providerDb.close();
+  let imageOptions = companyImages;
   // UI-only capabilities over the fixture server. No generation API is exercised here.
   await page.route('**/api/canvas/models', async (route) => {
     const response = await route.fetch();
     const value = await response.json();
-    await route.fulfill({ response, json: { ...value, models: [...value.models, directSeedanceCapability(SEEDANCE_20), directSeedanceCapability(SEEDANCE_25)] } });
+    await route.fulfill({ response, json: { ...value, models: [...value.models, directSeedanceCapability(SEEDANCE_20), directSeedanceCapability(SEEDANCE_25), ...imageOptions, ...companyVideos] } });
   });
   await createCanvas(page, 'Seedance 参数验收');
   const id = await addNode(page, 'video-generation');
@@ -683,6 +699,24 @@ async function seedanceSuite(page) {
   await selectModel(page, id, 'external-jimeng-seedance-2-5');
   assert.equal(await node.getByLabel('分辨率', { exact: true }).inputValue(), '1080p');
   assert.match(await node.locator('[role="status"]').textContent(), /1080p/);
+  for (const capability of companyVideos) {
+    await selectModel(page, id, capability.key);
+    const companyModes = await node.locator('[data-testid="mode-select"] option').allTextContents();
+    assert.equal(companyModes.length, 6);
+    assert.ok(companyModes.includes('全能参考') && companyModes.includes('智能编辑') && companyModes.includes('视频延长'));
+    const resolutions = await node.getByLabel('分辨率', { exact: true }).locator('option').evaluateAll((options) => options.map((option) => option.value));
+    assert.deepEqual(resolutions, capability.parameters.find((parameter) => parameter.key === 'resolution').options);
+  }
+  const imageId = await addNode(page, 'image-generation');
+  const imageNode = page.locator(`.react-flow__node[data-id="${imageId}"]`);
+  for (const capability of companyImages) {
+    await selectModel(page, imageId, capability.key);
+    assert.equal(await imageNode.locator('[data-testid="model-select"]').inputValue(), capability.key);
+  }
+  imageOptions = companyImages.slice(0, -1);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.waitForFunction((key) => ![...document.querySelectorAll('[data-testid="model-select"] option')].some((option) => option.value === key && !option.textContent.includes('重新选择')), companyImages.at(-1).key);
+  assert.match(await imageNode.locator('[data-testid="model-select"] option:checked').textContent(), /重新选择模型/);
   assert.equal(runPosts.length, 0);
   await waitSaved(page);
   const movPath = path.join(fixtureDir, '播放验证.mov');
@@ -704,7 +738,7 @@ async function seedanceSuite(page) {
   fs.mkdirSync(path.dirname(screenshot), { recursive: true });
   await page.screenshot({ path: screenshot });
   await page.unroute('**/api/canvas/models');
-  return { sixModes: true, newAudioEnabled: true, draftResolutionLocked: true, directPreferenceRestored: true, modelSwitchExplained: true, movPlaybackProgress: true, originalMovDownloadPreserved: true, generationRequests: 0, screenshot };
+  return { sixModes: true, companySixModes: true, configuredImages: 5, refreshOnFocus: true, newAudioEnabled: true, draftResolutionLocked: true, directPreferenceRestored: true, modelSwitchExplained: true, movPlaybackProgress: true, originalMovDownloadPreserved: true, generationRequests: 0, screenshot };
 }
 
 async function editorSuite(page) {

@@ -41,10 +41,10 @@ function rowToRoute(
  */
 export function resolveCompanyCanvasRoute(
   db: Database.Database,
-  params: { providerIdentity: string; modelAlias: string; mediaKind: 'image' | 'video' },
+  params: { providerIdentity: string; modelAlias: string; mediaKind: 'image' | 'video'; expectedType?: string; exactModel?: boolean },
 ): CanvasProviderRoute {
   const { providerIdentity, modelAlias, mediaKind } = params;
-  const expectedVideoType = providerIdentity === 'jimeng-2-0' ? 'jimeng' : providerIdentity.startsWith('company-') ? 'openai-video' : null;
+  const expectedVideoType = params.expectedType ?? (providerIdentity === 'jimeng-2-0' ? 'jimeng' : providerIdentity.startsWith('company-') ? 'openai-video' : null);
   // 两张核心表的模型列名不同：视频表是 defaultModel，图片表是 model。
   const query = mediaKind === 'video'
     ? `SELECT id, name, type, baseUrl, apiKey, enabled, defaultModel AS modelColumn FROM video_providers
@@ -74,6 +74,9 @@ export function resolveCompanyCanvasRoute(
     );
   }
   const route = rowToRoute(row, modelAlias, providerIdentity);
+  if ((params.exactModel && (row.modelColumn !== modelAlias || row.id !== providerIdentity)) || (params.expectedType && route.type !== params.expectedType)) {
+    throw new CanvasAdapterError('prepare', '供应商模型或协议已变更，请在画布中重新选择模型。', { code: 'provider_channel_mismatch' });
+  }
   if (mediaKind === 'video' && expectedVideoType && route.type !== expectedVideoType) {
     throw new CanvasAdapterError('prepare', '供应商类型与固定渠道不一致，请恢复来源渠道配置', { code: 'provider_channel_mismatch' });
   }

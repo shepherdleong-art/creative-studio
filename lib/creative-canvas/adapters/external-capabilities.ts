@@ -79,10 +79,15 @@ export function registerExternalCanvasCapabilities(
     try {
       const row = spec.table === 'providers'
         ? db.prepare(`SELECT enabled, apiKey, type, model FROM providers WHERE id = ?`).get(spec.providerId)
-        : db.prepare(`SELECT enabled, apiKey FROM video_providers WHERE id = ?`).get(spec.providerId);
+        : db.prepare(`SELECT enabled, apiKey, type FROM video_providers WHERE id = ?`).get(spec.providerId);
       const typed = row as { enabled?: number; apiKey?: string; type?: string; model?: string } | undefined;
       if (!typed || Number(typed.enabled) !== 1 || !String(typed.apiKey ?? '').trim()) continue;
-      if (spec.providerId === SEEDREAM_PROVIDER_ID && (typed.type !== 'ark-images' || typed.model !== SEEDREAM_5_PRO)) continue;
+      if (spec.table === 'video_providers' && typed.type !== 'jimeng') continue;
+      if (spec.table === 'providers') {
+        const supportedTypes = spec.providerId === SEEDREAM_PROVIDER_ID
+          ? ['ark-images'] : ['packy-images', 'openai-compatible'];
+        if (typed.model !== spec.capability.modelAlias || !supportedTypes.includes(typed.type ?? '')) continue;
+      }
       register(spec.capability);
       registered.push(spec.capability.key);
     } catch {

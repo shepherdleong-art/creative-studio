@@ -106,11 +106,14 @@ export function createDefaultCanvasDeliverer(): CanvasMediaDeliverer {
       } else if (request.requireCos) {
         throw new CanvasAdapterError(
           'prepare',
-          '该渠道要求公司尾帧／七牛素材走 COS 预签名 URL，但未配置 CREATIVE_STUDIO_COS_*，任务未提交。',
+          '该渠道要求参考素材走 COS 预签名 URL，但未配置 CREATIVE_STUDIO_COS_*，任务未提交。',
           { code: 'cos_not_configured' },
         );
       }
 
+      if (request.requireCos) {
+        throw new CanvasAdapterError('prepare', '素材上传 COS 未返回有效地址，任务未提交。', { code: 'cos_upload_failed' });
+      }
       if (request.kind !== 'image') {
         // 视频／音频参考没有本机 URL 回退通道：缺 COS 直接 fail closed
         throw new CanvasAdapterError(

@@ -13,6 +13,7 @@ import { clearCanvasCapabilities, registerCanvasCapability } from '../lib/creati
 import { COMPANY_CANVAS_CAPABILITIES, COMPANY_CANVAS_QINIUYUN_KLING_CAPABILITY } from '../lib/creative-canvas/adapters/company-capabilities.ts';
 import { createCanvasExecutorAdapter } from '../lib/creative-canvas/adapters/index.ts';
 import { registerExternalCanvasCapabilities } from '../lib/creative-canvas/adapters/external-capabilities.ts';
+import { ensureCanvasCapabilitiesRegistered } from '../lib/creative-canvas/capabilities-bootstrap.ts';
 import { createDefaultCanvasDeliverer, type CanvasMediaDeliverer } from '../lib/creative-canvas/adapters/media-delivery.ts';
 import { canvasStorageRoot, importCanvasAsset } from '../lib/creative-canvas/assets.ts';
 import { createCanvas, saveCanvasGraph } from '../lib/creative-canvas/repository.ts';
@@ -91,6 +92,7 @@ const resultMp4 = Buffer.concat([
 
 let rejectFinal = false;
 const arkResponses = new Map<string, Record<string, unknown>>();
+const companyArkResponses = new Map<string, Record<string, unknown>>();
 const server = http.createServer((request, response) => {
   const chunks: Buffer[] = [];
   request.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -103,6 +105,14 @@ const server = http.createServer((request, response) => {
       authorization: request.headers.authorization,
     });
     if (request.method === 'POST' && request.url === '/v1/videos') {
+      const parsed = JSON.parse(body);
+      if (Array.isArray(parsed.content)) {
+        const id = `company-ark-${companyArkResponses.size + 1}`;
+        companyArkResponses.set(id, { ...parsed, created_at: Math.floor(Date.now() / 1000) });
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ id, status: 'queued' }));
+        return;
+      }
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ id: 'gateway-task-1', status: 'queued' }));
       return;
@@ -110,7 +120,8 @@ const server = http.createServer((request, response) => {
     // 外部图片供应商：OpenAI 风格同步出图
     if (request.method === 'POST' && (request.url === '/v1/images/generations' || request.url === '/v1/images/edits')) {
       response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ created: 1, data: [{ b64_json: resultPng.toString('base64') }] }));
+      const seedream = request.url === '/v1/images/generations' && JSON.parse(body).model === 'doubao-seedream-5-0-pro-image';
+      response.end(JSON.stringify({ created: 1, data: [seedream ? { url: '/files/result' } : { b64_json: resultPng.toString('base64') }] }));
       return;
     }
     // 方舟直连：文生／图生视频的任务创建与查询
@@ -133,6 +144,14 @@ const server = http.createServer((request, response) => {
       return;
     }
     if (request.method === 'GET' && /^\/v1\/videos\/[^/]+$/.test(request.url ?? '')) {
+      const companyArk = companyArkResponses.get(request.url!.split('/').at(-1)!);
+      if (companyArk) {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ ...companyArk, status: 'completed',
+          content: { video_url: `http://127.0.0.1:${port}/files/result`, last_frame_url: `http://127.0.0.1:${port}/files/tail` },
+        }));
+        return;
+      }
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({
         id: 'gateway-task-1',
@@ -286,6 +305,10 @@ function save(nodes: CanvasGraphNode[], edges: CanvasGraphEdge[]) {
   });
 }
 
+function edge(id: string, source: string, target: string): CanvasGraphEdge {
+  return { id, source, target };
+}
+
 function currentRevision(): number {
   const row = db.prepare(`SELECT graphRevision FROM creative_canvases WHERE id = ?`).get(canvas.id) as { graphRevision: number };
   return Number(row.graphRevision);
@@ -383,6 +406,15 @@ async function runOnce(
   // 每张参考图都走了 COS 预签名交付
   const delivererCalls = captured.filter((entry) => entry.url.startsWith('/files/'));
   void delivererCalls;
+
+  // 开启智能分镜时，上游只接受 intelligence / customize，拒绝 intelligent。
+  node.data.parameters.multiShot = true;
+  saveCanvasGraph({ db, canvasId: canvas.id, expectedGraphRevision: currentRevision(), graph });
+  const multiShotResult = await runOnce('v-qiniu');
+  assert.equal(multiShotResult.posts, 1);
+  assert.equal(multiShotResult.phase, 'succeeded');
+  assert.equal(multiShotResult.body?.multi_shot, true);
+  assert.equal(multiShotResult.body?.shot_type, 'intelligence');
 }
 
 // --- 2. Seedance 2.5：双图参考 + 1080p size -----------------------------------
@@ -1158,6 +1190,111 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
   const expired = planCanvasRun(db, { canvasId: canvas.id, mode: 'single', targetNodeId: 'final', requestKey: 'expired' });
   assert.equal(expired.ok, false);
   if (!expired.ok) assert.match(expired.problems[0].message, /7 天/);
+}
+
+// 设置模型 -> 注册 -> planner -> 执行器 -> 产物发布，全链路使用本地模拟网关。
+for (const [id, model] of [
+  ['company-gateway-qiniuyun-gpt-image-2-medium', 'qiniuyun/gpt-image-2-medium'],
+  ['company-gateway-seedream-5-0-pro', 'doubao-seedream-5-0-pro-image'],
+  ['company-gateway-nano-banana-pro', 'nano-banana-3.0'],
+  ['company-gateway-nano-banana-2', 'nano-banana-3.1'],
+]) {
+  db.prepare(`INSERT INTO providers (id, name, type, model, baseUrl, apiKey, enabled) VALUES (?, ?, 'gateway-task-image', ?, ?, 'image-key', 1)`).run(id, model, model, baseUrl);
+  const capability = ensureCanvasCapabilitiesRegistered(db).find((entry) => entry.providerIdentity === id)!;
+  assert.ok(capability);
+  for (const withImages of [false, true]) {
+    const nodeId = 'configured-image';
+    const seedream = model === 'doubao-seedream-5-0-pro-image';
+    save([
+      ...(withImages ? [material('cfg-ref-1', firstFrameAsset), material('cfg-ref-2', lastFrameAsset)] : []),
+      imageNode(nodeId, capability.key, { aspectRatio: '16:9', resolution: seedream ? '1K' : '4K' }),
+    ], withImages ? [edge('cfg-e1', 'cfg-ref-1', nodeId), edge('cfg-e2', 'cfg-ref-2', nodeId)] : []);
+    const result = await runOnce(nodeId);
+    assert.equal(result.phase, 'succeeded', `${model}: ${result.errorMessage}`);
+    assert.equal(result.posts, 1);
+    assert.equal(result.body?.model, model);
+    if (seedream) {
+      assert.equal(result.body?.size, '1K');
+      assert.equal(result.body?.response_format, 'url');
+      assert.match(String(result.body?.prompt), /输出画幅为16:9，清晰度为1K/);
+      assert.equal((result.body?.image as string[] | undefined)?.length ?? 0, withImages ? 2 : 0);
+    } else if (model.startsWith('nano-banana')) {
+      assert.deepEqual(result.body?.OutputConfig, { Resolution: '4K', AspectRatio: '16:9' });
+    } else assert.equal(result.body?.response_format, 'png');
+  }
+  if (model.startsWith('nano-banana')) {
+    const failure = await runOnce('configured-image', companyAdapter(createDefaultCanvasDeliverer()));
+    assert.equal(failure.posts, 0, 'Banana 缺 COS 必须在 POST 前失败');
+  }
+}
+for (const [id, model] of [['company-seedance-2-0', 'doubao-seedance-2-0-260128'], ['company-kling-2-5', 'kling-2.5']]) {
+  insertVideoProvider.run(id, model, model, baseUrl, 'video-key');
+  const capability = ensureCanvasCapabilitiesRegistered(db).find((entry) => entry.providerIdentity === id)!;
+  for (const withImages of [false, true]) {
+    save([
+      ...(withImages ? [material('cfg-first', firstFrameAsset), material('cfg-last', lastFrameAsset)] : []),
+      videoNode('configured-video', capability.key, { durationSec: 10, aspectRatio: '3:4' }, withImages ? 'image-to-video' : 'text-to-video'),
+    ], withImages ? [edge('cfg-first-e', 'cfg-first', 'configured-video'), edge('cfg-last-e', 'cfg-last', 'configured-video')] : []);
+    const result = await runOnce('configured-video');
+    assert.equal(result.phase, 'succeeded', `${model}: ${result.errorMessage}`);
+    assert.equal(result.posts, 1);
+    if (model === 'kling-2.5') {
+      assert.deepEqual(result.body?.OutputConfig, { Duration: 10, Resolution: '1080P', AspectRatio: '3:4' });
+      assert.equal((result.body?.images as string[] | undefined)?.length ?? 0, withImages ? 1 : 0);
+      assert.equal(Boolean(result.body?.LastFrameUrl), withImages);
+    } else {
+      assert.equal(result.body?.resolution, '1080p');
+      assert.equal((result.body?.content as unknown[]).length, withImages ? 3 : 1);
+    }
+  }
+}
+
+// 公司方舟透传：两代 + Fast 六模式；每个任务只发一次 /v1/videos。
+const companyAudio = await makeAudioAsset('company-reference.wav', 3);
+for (const alias of ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-5-260628']) {
+  const capability = ensureCanvasCapabilitiesRegistered(db).find((entry) => entry.providerKind === 'company' && entry.modelAlias === alias)!;
+  assert.ok(capability.key.endsWith(':ark-v1'));
+  for (const mode of ['text-to-video', 'reference-to-video', 'image-to-video', 'frames-to-video', 'video-edit', 'video-extend'] as const) {
+    const node = videoNode('company-native', capability.key, { durationSec: -1, withAudio: false }, mode);
+    assert.ok(node.kind === 'video-generation');
+    node.data.prompt = mode === 'video-edit' ? '修改参考视频的背景' : mode === 'video-extend' ? '继续延长视频' : '蓝色立方体缓慢旋转';
+    const sources = mode === 'text-to-video' ? []
+      : mode === 'video-edit' || mode === 'video-extend' ? [material('native-video', videoRefAsset, 'video')]
+      : mode === 'reference-to-video' ? [material('native-img', firstFrameAsset), material('native-video', videoRefAsset, 'video'), material('native-audio', companyAudio, 'audio')]
+      : [material('native-first', firstFrameAsset), material('native-last', lastFrameAsset)];
+    save([...sources, node], sources.map((source, index) => edge(`native-e${index}`, source.id, node.id)));
+    const result = await runOnce(node.id);
+    assert.equal(result.phase, 'succeeded', `${alias}/${mode}: ${result.errorMessage}`);
+    assert.equal(result.posts, 1);
+    assert.equal(captured.filter((entry) => entry.method === 'POST').at(-1)?.url, '/v1/videos');
+    assert.equal(result.body?.duration, -1);
+    assert.equal(result.body?.seconds, '-1');
+    assert.equal(result.body?.generate_audio, false);
+    assert.equal(result.body?.resolution, alias.includes('fast') ? '720p' : '1080p');
+    const content = result.body?.content as Array<{ type: string; role?: string; image_url?: { url: string }; video_url?: { url: string }; audio_url?: { url: string } }>;
+    for (const item of content.slice(1)) assert.match(String((item.image_url ?? item.video_url ?? item.audio_url)?.url), /^https:\/\/cos\.test\//);
+    if (mode === 'reference-to-video') assert.deepEqual(content.slice(1).map((item) => item.role), ['reference_image', 'reference_video', 'reference_audio']);
+    if (mode === 'image-to-video') assert.deepEqual(content.slice(1).map((item) => item.role), ['first_frame', 'last_frame']);
+    if (alias.includes('2-5') && ['reference-to-video', 'frames-to-video', 'video-edit', 'video-extend'].includes(mode)) {
+      assert.equal(result.body?.omni_reference_task_type, mode === 'video-edit' ? 'edit' : mode === 'video-extend' ? 'extend' : 'reference');
+    } else assert.equal(result.body?.omni_reference_task_type, undefined);
+  }
+  const noCos = await runOnce('company-native', companyAdapter(createDefaultCanvasDeliverer()));
+  assert.equal(noCos.posts, 0, '公司原生多模态缺 COS 不得提交');
+}
+{
+  const capability = ensureCanvasCapabilitiesRegistered(db).find((entry) => entry.providerKind === 'company' && entry.modelAlias === 'doubao-seedance-2-5-260628')!;
+  save([videoNode('company-draft', capability.key, { generationStage: 'draft', durationSec: 4, returnLastFrame: true }, 'text-to-video')], []);
+  const draft = await runOnce('company-draft');
+  assert.equal(draft.phase, 'succeeded', draft.errorMessage ?? '');
+  assert.equal(draft.body?.resolution, '480p');
+  assert.equal(draft.body?.draft, true);
+  const task = listCanvasTasks(db, { canvasId: canvas.id }).find((entry) => entry.nodeId === 'company-draft')!;
+  const source = requireCanvasDraftSource(db, canvas.id, task.outputAssetId!);
+  save([videoNode('company-final', capability.key, { generationStage: 'final-from-draft', draftAssetId: source.assetId, outputFormat: 'mov', watermark: true }, 'text-to-video')], []);
+  const final = await runOnce('company-final');
+  assert.equal(final.phase, 'succeeded', final.errorMessage ?? '');
+  assert.deepEqual(final.body, { model: capability.modelAlias, content: [{ type: 'draft_task', draft_task: { id: source.providerTaskId } }], resolution: '1080p', output_format: 'mov', watermark: true, return_last_frame: false, prompt: '' });
 }
 
 server.close();

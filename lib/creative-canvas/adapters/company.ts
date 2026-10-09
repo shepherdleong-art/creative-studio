@@ -24,6 +24,7 @@ import {
   companySeedanceResolutionOptions,
 } from './company-capabilities.ts';
 import { resolveCompanyCanvasRoute, type CanvasProviderRoute } from './company-providers.ts';
+import { companyCanvasImageOutput } from './company-image-output.ts';
 import { precheckCanvasDeliveryMedia, type CanvasMediaDeliverer } from './media-delivery.ts';
 import {
   CanvasAdapterError,
@@ -161,6 +162,8 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
     providerIdentity: context.providerIdentity,
     modelAlias: context.modelAlias,
     mediaKind: context.mediaKind,
+    expectedType: context.mediaKind === 'image' ? 'gateway-task-image' : 'openai-video',
+    exactModel: true,
   });
 
   /** 组合外部停机信号与本地超时；任一触发都会中止请求。 */
@@ -265,7 +268,7 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
       // 可灵渠道尾帧走专用字段：尾帧不能同时留在 images 里（会被下游当参考图且比例落回默认值）
       const dedicatedTailField = lastFrameRef !== null
         && (lastFrameInput?.deliveryRef !== null)
-        && (capability.modelAlias.startsWith('qiniuyun/kling') || capability.modelAlias === 'kling-3.0');
+        && (capability.modelAlias.startsWith('qiniuyun/kling') || capability.modelAlias === 'kling-3.0' || capability.modelAlias === 'kling-2.5');
       const bodyImageInputs = dedicatedTailField
         ? imageInputs.filter((input) => input !== lastFrameInput)
         : imageInputs;
@@ -287,6 +290,9 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         if (companyModel) {
           body.response_format = capability.modelAlias.startsWith('qiniuyun/') ? 'png' : 'jpeg';
         }
+        if (capability.modelAlias === 'nano-banana-3.0' || capability.modelAlias === 'nano-banana-3.1') {
+          body.OutputConfig = { Resolution: requestedResolution, AspectRatio: requestedRatio };
+        }
         // 无图输入时不发送 images：文生图不伪造占位底图
         if (bodyImageRefs.length > 0) body.images = bodyImageRefs;
       } else {
@@ -298,6 +304,8 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         const isSeedance = companyModel && capability.modelAlias.startsWith('doubao-seedance');
         const companyCaps = companyModel ? companyVideoCapsForModel(capability.modelAlias) : null;
         const durationSec = Number(context.parameters.durationSec ?? 5);
+        const durationProblem = videoDurationError('openai-video', capability.modelAlias, durationSec);
+        if (durationProblem) throw new CanvasAdapterError('prepare', durationProblem, { code: 'invalid_duration' });
         if (isSeedance) {
           const problem = videoDurationError('openai-video', capability.modelAlias, durationSec);
           if (problem) throw new CanvasAdapterError('prepare', problem, { code: 'invalid_duration' });
@@ -328,7 +336,7 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         if (lastFrameRef) {
           if (isQiniuKling) {
             body.end_image_url = lastFrameRef;
-          } else if (capability.modelAlias === 'kling-3.0') {
+          } else if (capability.modelAlias === 'kling-3.0' || capability.modelAlias === 'kling-2.5') {
             body.LastFrameUrl = lastFrameRef;
           } else if (isSeedance && capability.modelAlias !== COMPANY_CANVAS_SEEDANCE_2_5_CAPABILITY.modelAlias) {
             body.images = [imageRefs[0], lastFrameRef];
@@ -341,8 +349,8 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
           body.generate_audio = true;
           const multiShot = context.parameters.multiShot === true;
           body.multi_shot = multiShot;
-          if (multiShot) body.shot_type = 'intelligent';
-        } else if (capability.modelAlias === 'kling-3.0') {
+          if (multiShot) body.shot_type = 'intelligence';
+        } else if (capability.modelAlias === 'kling-3.0' || capability.modelAlias === 'kling-2.5') {
           body.response_format = 'mp4';
         }
         if (context.parameters.withAudio !== undefined) {
@@ -350,9 +358,9 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         }
 
         if (companyModel && companyCaps) {
-          if (lastFrameRef && capability.modelAlias === 'kling-3.0') {
+          if ((lastFrameRef && capability.modelAlias === 'kling-3.0') || capability.modelAlias === 'kling-2.5') {
             // 腾讯可灵尾帧分支：网关忽略 size，比例与时长走 OutputConfig
-            const outputConfig: Record<string, unknown> = { Duration: durationSec };
+            const outputConfig: Record<string, unknown> = { Duration: durationSec, Resolution: '1080P' };
             const snappedAspect = sourceDims && companyCaps
               ? snapCompanyVideoSize(sourceDims.width, sourceDims.height, companyCaps)
               : null;
@@ -485,9 +493,10 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
           { code: 'gateway_download_failed' },
         );
       }
+      if (context.mediaKind === 'image') return companyCanvasImageOutput(downloaded.buffer, context.modelAlias, context.parameters);
       return {
         bytes: downloaded.buffer,
-        mimeType: context.mediaKind === 'image' ? 'image/png' : 'video/mp4',
+        mimeType: 'video/mp4',
       } satisfies CanvasDownloadOutcome;
     },
   };

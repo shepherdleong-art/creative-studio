@@ -342,7 +342,7 @@ export function createCanvasRun(
           prompt: taskPlan.prompt,
           parameters: taskPlan.parameters,
         }),
-        taskPlan.capabilityKey === 'external-jimeng-seedance-2-0' && taskPlan.parameters.resolution === '4k' ? 'seedance20-4k' : taskPlan.capabilityKey,
+        taskPlan.modelAlias === 'doubao-seedance-2-0-260128' && taskPlan.parameters.resolution === '4k' ? 'seedance20-4k' : taskPlan.capabilityKey,
         // 变体编号：branch（每节点一任务）与历史任务恒为 0
         plan.mode === 'single' ? planIndex : 0,
         at,

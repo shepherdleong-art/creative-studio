@@ -127,15 +127,26 @@ function EditorInner({ canvasId }: { canvasId: string }) {
   }, [controller]);
 
   useEffect(() => {
-    void (async () => {
+    let disposed = false;
+    const refreshModels = async () => {
       try {
         const payload = await canvasApi.models();
+        if (disposed) return;
         setCapabilities(payload.models as CanvasModelCapabilityDto[]);
         setExecutor(payload.executor);
       } catch {
-        setCapabilities([]);
+        // 临时请求失败不清空已经加载的模型。
       }
-    })();
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') void refreshModels(); };
+    void refreshModels();
+    window.addEventListener('focus', onVisible);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      disposed = true;
+      window.removeEventListener('focus', onVisible);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   const onMoveEnd = useCallback(() => {

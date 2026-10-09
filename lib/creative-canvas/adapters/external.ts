@@ -21,8 +21,10 @@ import sharp from 'sharp';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { resolveGptImage2Size } from '../../gpt-image-2-size-presets.ts';
-import { downloadGatewayMedia, sanitizeGatewayMediaDiagnostic } from '../../gateway-media-url.ts';
+import { downloadGatewayMedia, normalizeGatewayResultUrl, sanitizeGatewayMediaDiagnostic } from '../../gateway-media-url.ts';
 import { getVideoAdapter } from '../../video-providers/index.ts';
+import { createCompanySeedanceVideoAdapter } from './company-seedance-video.ts';
+import { companyCanvasImageOutput } from './company-image-output.ts';
 import type { ReferenceVideoInput, SubmitVideoRequest } from '../../video-providers/types.ts';
 import { findCanvasCapability, type CanvasInputRule, type CanvasModelCapability } from '../capabilities.ts';
 import type { CanvasGenerationMode } from '../types.ts';
@@ -43,6 +45,7 @@ export interface ExternalCanvasAdapterOptions {
   deliverer?: CanvasMediaDeliverer;
   fetchImpl?: typeof fetch;
   submitTimeoutMs?: number;
+  companySeedance?: boolean;
 }
 
 /** 多模态参考的入口：全能参考／智能多帧／智能编辑／超长视频（及 2.0 的两个参考模式），素材按角色进方舟 content 数组，不走首帧合同。 */
@@ -288,6 +291,8 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
   const deliverer = options.deliverer ?? createDefaultCanvasDeliverer();
   const fetchImpl = options.fetchImpl ?? fetch;
   const submitTimeoutMs = options.submitTimeoutMs ?? 180_000;
+  const companyVideo = options.companySeedance ? createCompanySeedanceVideoAdapter(fetchImpl) : null;
+  const videoAdapter = (type: string) => companyVideo ?? getVideoAdapter(type);
 
   const capabilityFor = (key: string): CanvasModelCapability => {
     const capability = findCanvasCapability(key);
@@ -303,6 +308,8 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
     providerIdentity: context.providerIdentity,
     modelAlias: context.modelAlias,
     mediaKind: context.mediaKind,
+    ...(options.companySeedance ? { expectedType: 'openai-video', exactModel: true } : {}),
+    ...(context.modelAlias === 'doubao-seedream-5-0-pro-image' ? { expectedType: 'gateway-task-image', exactModel: true } : {}),
   });
 
   return {
@@ -356,6 +363,14 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
           );
         }
 
+        if (options.companySeedance) {
+          input.deliveryRef = await deliverer.deliver({
+            kind: input.kind as 'image' | 'video' | 'audio', absolutePath: input.absolutePath,
+            mimeType: input.mimeType, byteSize: input.byteSize, durationSec: input.durationSec,
+            role: input.role, requireCos: true, isFrameImage: input.role === 'first-frame' || input.role === 'last-frame',
+          }, signal);
+          continue;
+        }
         if (!referenceMode) {
           // 首帧／尾帧图片按本机文件读取（提交时转 data URL），不经交付层
           input.deliveryRef = input.absolutePath;
@@ -420,7 +435,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
       const route = routeFor(context);
       const imageInputs = imageInputsOf(context);
       if (generationStage(context.parameters) === 'final-from-draft') {
-        const adapter = getVideoAdapter(route.type);
+        const adapter = videoAdapter(route.type);
         if (!adapter?.submitFinal) throw new CanvasAdapterError('prepare', '该渠道未验证样片转正式', { code: 'draft_channel_unverified' });
         let source;
         try {
@@ -469,6 +484,20 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
               method: 'POST',
               headers: { 'content-type': 'application/json', authorization: `Bearer ${route.apiKey}` },
               body: JSON.stringify(arkBody),
+              signal: linkedTimeoutSignal(signal, options.submitTimeoutMs ?? 600_000),
+            });
+          } else if (capability.providerKind === 'company' && capability.modelAlias === 'doubao-seedream-5-0-pro-image') {
+            const resolution = String(context.parameters.resolution ?? '2K');
+            const ratio = String(context.parameters.aspectRatio ?? '1:1');
+            response = await fetchImpl(`${route.baseUrl}/v1/images/generations`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${route.apiKey}` },
+              body: JSON.stringify({
+                model: capability.modelAlias,
+                prompt: `${context.prompt}\n输出画幅为${ratio}，清晰度为${resolution}。`,
+                ...(imageInputs.length ? { image: imageInputs.map(localFileDataUrl) } : {}),
+                size: resolution, n: 1, response_format: 'url',
+              }),
               signal: linkedTimeoutSignal(signal, options.submitTimeoutMs ?? 600_000),
             });
           } else if (imageInputs.length === 0) {
@@ -523,7 +552,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
       }
 
       // 视频：复用仓库里按供应商类型选择的适配器（当前配置的是即梦直连）
-      const adapter = getVideoAdapter(route.type);
+      const adapter = videoAdapter(route.type);
       if (!adapter) {
         throw new CanvasAdapterError('prepare', `没有 ${route.type} 类型的视频适配器，任务未提交。`, {
           code: 'video_adapter_missing',
@@ -634,11 +663,13 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
         prompt: context.prompt,
         sourceImagePath: firstFrame.absolutePath,
         sourceMimeType: firstFrame.mimeType as SubmitVideoRequest['sourceMimeType'],
+        ...(options.companySeedance ? { sourceImageUrl: firstFrame.deliveryRef! } : {}),
         durationSec: Number(context.parameters.durationSec ?? 5),
         ...(lastFrame?.absolutePath && lastFrame.mimeType
           ? {
             tailImagePath: lastFrame.absolutePath,
             tailMimeType: lastFrame.mimeType as NonNullable<SubmitVideoRequest['tailMimeType']>,
+            ...(options.companySeedance ? { tailImageUrl: lastFrame.deliveryRef! } : {}),
           }
           : {}),
       };
@@ -664,7 +695,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
         return { status: 'succeeded' };
       }
       const route = routeFor(context);
-      const adapter = getVideoAdapter(route.type);
+      const adapter = videoAdapter(route.type);
       if (!adapter) {
         throw new CanvasAdapterError('poll', `没有 ${route.type} 类型的视频适配器。`, {
           code: 'video_adapter_missing',
@@ -681,14 +712,27 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
     async download(context, signal) {
       if (context.providerTaskId.startsWith('external-image:')) {
         const tempPath = syncImageTempPath(storageRoot, context.task.canvasId, context.task.id);
+        const companyImage = context.modelAlias === 'doubao-seedream-5-0-pro-image';
+        const imageResult = async (bytes: Buffer) => {
+          return companyImage ? companyCanvasImageOutput(bytes, context.modelAlias, context.parameters) : { bytes, mimeType: 'image/png' };
+        };
         if (fs.existsSync(tempPath)) {
-          return { bytes: fs.readFileSync(tempPath), mimeType: 'image/png' };
+          return imageResult(fs.readFileSync(tempPath));
         }
         const resultUrl = readSyncImageUrlReceipt(storageRoot, context.task.canvasId, context.task.id);
         if (!resultUrl) {
           throw new CanvasAdapterError('download', '本地图片产物已不存在，请重新生成。', {
             code: 'external_result_file_missing',
           });
+        }
+        if (companyImage) {
+          const route = routeFor(context);
+          const url = normalizeGatewayResultUrl(resultUrl, route.baseUrl);
+          if (!url) throw new CanvasAdapterError('download', '公司图片产物地址无效', { code: 'gateway_result_url_missing' });
+          const downloaded = await downloadGatewayMedia(url, route.baseUrl, route.apiKey);
+          if (!downloaded.ok) throw new CanvasAdapterError('download', '公司图片产物下载失败，可重试下载', { code: 'external_result_download_failed' });
+          writeAtomic(tempPath, downloaded.buffer);
+          return imageResult(downloaded.buffer);
         }
         let response: Response;
         try {
@@ -721,7 +765,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
         return { bytes: Buffer.from(bytes), mimeType: 'image/png' };
       }
       const route = routeFor(context);
-      const adapter = getVideoAdapter(route.type);
+      const adapter = videoAdapter(route.type);
       if (!adapter) {
         throw new CanvasAdapterError('download', `没有 ${route.type} 类型的视频适配器。`, {
           code: 'video_adapter_missing',
@@ -764,7 +808,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
 
 function videoOutputOptions(context: CanvasTaskContext) {
   return {
-    resolution: generationStage(context.parameters) === 'draft' ? '480p' : String(context.parameters.resolution ?? '1080p'),
+    resolution: generationStage(context.parameters) === 'draft' ? '480p' : String(context.parameters.resolution ?? (context.modelAlias === 'doubao-seedance-2-0-fast-260128' ? '720p' : '1080p')),
     ...(generationStage(context.parameters) === 'draft' ? { draft: true } : {}),
     generateAudio: Boolean(context.parameters.withAudio ?? true),
     ...(context.parameters.outputFormat ? { outputFormat: context.parameters.outputFormat as 'mp4' | 'mov' } : {}),

@@ -1,9 +1,9 @@
 import type { CanvasModelCapability } from '../capabilities.ts';
 import type { CanvasGenerationMode } from '../types.ts';
-import { SEEDANCE_20, SEEDANCE_25, seedanceContract } from '../../video-providers/seedance-contract.ts';
+import { SEEDANCE_20, SEEDANCE_25, SEEDANCE_FAST, seedanceContract } from '../../video-providers/seedance-contract.ts';
 
 /** Direct Ark only. Company capability publication requires gateway evidence. */
-export function directSeedanceCapability(model: typeof SEEDANCE_20 | typeof SEEDANCE_25): CanvasModelCapability {
+export function directSeedanceCapability(model: typeof SEEDANCE_20 | typeof SEEDANCE_25 | typeof SEEDANCE_FAST): CanvasModelCapability {
   const v25 = model === SEEDANCE_25;
   const contract = seedanceContract(model)!;
   const imageMimeTypes = v25 ? ['image/jpeg', 'image/png', 'image/webp', 'image/bmp', 'image/tiff', 'image/gif', 'image/heic', 'image/heif'] : ['image/jpeg', 'image/png', 'image/webp'];
@@ -34,7 +34,7 @@ export function directSeedanceCapability(model: typeof SEEDANCE_20 | typeof SEED
         { key: 'draftAssetId', label: '固定样片', type: 'string' as const },
         { key: 'directResolution', label: '直接生成分辨率偏好', type: 'enum' as const, options: contract.resolutions },
       ] : []),
-      { key: 'resolution', label: '分辨率', type: 'enum', options: contract.resolutions, default: '1080p' },
+      { key: 'resolution', label: '分辨率', type: 'enum', options: contract.resolutions, default: model === SEEDANCE_FAST ? '720p' : '1080p' },
       { key: 'durationSec', label: '时长（秒）', type: 'integer', min: 4, max: contract.maxDuration, specialValues: [-1], default: 5,
         ...(v25 ? { modes: ['text-to-video', 'image-to-video', 'reference-to-video', 'frames-to-video', 'video-extend', 'video-to-video'] as CanvasGenerationMode[] } : {}) },
       { key: 'aspectRatio', label: '比例', type: 'enum', options: ['16:9','9:16','1:1','4:3','3:4','21:9','adaptive'], default: '16:9', modes: freeModes },

@@ -61,8 +61,11 @@ export function createCanvasExecutorAdapter(
   const deliverer = options.deliverer ?? createDefaultCanvasDeliverer();
   const company = createCompanyCanvasAdapter({ db: deps.db, deliverer });
   const external = createExternalCanvasAdapter({ db: deps.db, storageRoot: deps.storageRoot, deliverer });
-  const pick = (context: { capabilityKey: string }) => (
-    findCanvasCapability(context.capabilityKey)?.providerKind === 'external' ? external : company
+  const companySeedance = createExternalCanvasAdapter({ db: deps.db, storageRoot: deps.storageRoot, deliverer, companySeedance: true });
+  const pick = (context: { capabilityKey: string; modelAlias: string }) => context.capabilityKey.endsWith(':ark-v1') ? companySeedance : (
+    // Seedream 是同步图片协议，复用同步结果持久化/补下载，不伪造远端轮询。
+    context.modelAlias === 'doubao-seedream-5-0-pro-image'
+      || findCanvasCapability(context.capabilityKey)?.providerKind === 'external' ? external : company
   );
   return {
     kind: 'company-or-external',

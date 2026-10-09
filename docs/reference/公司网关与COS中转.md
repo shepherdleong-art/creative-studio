@@ -43,7 +43,9 @@ Seedream 5.0 Pro 同步生图的应用超时单独沿用项目 `timeoutMs`，默
 
 ## 红线（这几条同时留在 AGENTS.md）
 
-七牛可灵 `qiniuyun/kling-3.0` 通过本机 LiteLLM + 公司 `/v1/videos`：`images[0]` 首帧、`end_image_url` 尾帧；Pro 默认配公司 1K 名义 `size`（3:4 实测 `1024x1366` → `1244x1660`），单提示词智能分镜用 `multi_shot=true` + `shot_type=intelligent`，关闭显式 false，不传 `multi_prompt`。精确分支与首尾帧/清晰度证据见 [2026-09-10 验证记录](../2026-09-10-七牛Kling-v3公司通道首尾帧验证.md)。
+2026-10-09 七牛可灵智能分镜出现上游兼容问题：本地适配器经 LiteLLM 已确认发送 `intelligence`，但新建真实任务仍回 `modelink_task_failed` 并报告 `intelligent` 无效。单条授权对照关闭智能分镜后成功；旧任务重试保留原开关。不要将本地请求测试通过等同于真实恢复，见 [排查与对照证据](../2026-10-09-七牛可灵智能分镜上游排查.md)。
+
+七牛可灵 `qiniuyun/kling-3.0` 通过本机 LiteLLM + 公司 `/v1/videos`：`images[0]` 首帧、`end_image_url` 尾帧；Pro 默认配公司 1K 名义 `size`（3:4 实测 `1024x1366` → `1244x1660`），单提示词智能分镜用 `multi_shot=true` + `shot_type=intelligence`，关闭显式 false，不传 `multi_prompt`。上游枚举为 `intelligence` / `customize`，`intelligent` 会被拒绝。首尾帧/清晰度证据见 [2026-09-10 验证记录](../2026-09-10-七牛Kling-v3公司通道首尾帧验证.md)。
 
 - 本机服务（app 与 LiteLLM 代理）**不得暴露到公网**，公网交付只走 COS。
 - COS 密钥只在 `.env.local`，签名参数绝不进日志。

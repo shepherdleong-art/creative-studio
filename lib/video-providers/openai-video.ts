@@ -212,7 +212,7 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     // 网关协议里 multi_shot 是 JSON boolean（原生直连接口是字符串 "true"）。
     if (shouldInjectCompanyKlingMultiShot(request.model, request.multiShot)) {
       body.multi_shot = true;
-      body.shot_type = isQiniuKling ? 'intelligent' : 'intelligence';
+      body.shot_type = 'intelligence';
     }
 
     // 公司网关可灵要求 response_format=mp4，size 取文档白名单内的像素组合

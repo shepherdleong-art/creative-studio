@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { listCanvasCapabilities } from '@/lib/creative-canvas/capabilities';
+import { ensureCanvasCapabilitiesRegistered } from '@/lib/creative-canvas/capabilities-bootstrap';
+import { getDb } from '@/lib/db';
 import { readCanvasRuntimeConfig } from '@/lib/creative-canvas/config';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
 
@@ -11,7 +12,7 @@ export async function GET() {
     await assertCanvasApiReady();
     const config = readCanvasRuntimeConfig();
     return NextResponse.json({
-      models: listCanvasCapabilities().map((capability) => ({
+      models: ensureCanvasCapabilitiesRegistered(getDb()).map((capability) => ({
         key: capability.key,
         displayName: capability.displayName,
         mediaKind: capability.mediaKind,

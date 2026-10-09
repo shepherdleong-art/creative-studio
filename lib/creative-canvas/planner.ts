@@ -492,7 +492,7 @@ function buildTaskPlan(
     effectiveParameters[key] = value;
   }
 
-  if (capability.providerIdentity === 'jimeng-2-0') {
+  if (capability.providerIdentity === 'jimeng-2-0' || capability.key.endsWith(':ark-v1')) {
     for (const parameter of capability.parameters) {
       if ((!parameter.modes || parameter.modes.includes(node.data.generationMode)) && effectiveParameters[parameter.key] === undefined && parameter.default !== undefined) effectiveParameters[parameter.key] = parameter.default;
     }
@@ -517,7 +517,7 @@ function buildTaskPlan(
     });
   }
 
-  if (capability.providerIdentity === 'jimeng-2-0') {
+  if (capability.providerIdentity === 'jimeng-2-0' || capability.key.endsWith(':ark-v1')) {
     if (node.data.generationMode === 'image-to-video') effectiveParameters.aspectRatio = 'adaptive';
     if (capability.modelAlias === 'doubao-seedance-2-5-260628') {
       if (node.data.generationMode === 'video-edit') effectiveParameters.durationSec = -1;
