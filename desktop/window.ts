@@ -1,5 +1,6 @@
 import { app, dialog, shell, BrowserWindow } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 
@@ -243,6 +244,27 @@ function createDesktopIpcHandlers(
       }
       const failure = await shell.openPath(absolute);
       return failure ? { opened: false, message: failure } : { opened: true };
+    },
+    revealItem: async (relativePath) => {
+      // 与 openFolder 同款守卫：只接受工作台存储目录内的相对路径；文件定位还
+      // 必须指向真实存在的文件，避免把资源管理器落到任意路径。
+      if (
+        typeof relativePath !== 'string'
+        || relativePath.length === 0
+        || isAbsolute(relativePath)
+        || relativePath.split(/[\\/]+/).includes('..')
+        || !(relativePath === 'storage' || relativePath.startsWith('storage/') || relativePath.startsWith('storage\\'))
+      ) {
+        throw new Error('只允许定位工作台存储目录内的文件');
+      }
+      const absolute = resolve(host.dataRoot, relativePath);
+      const contained = relative(host.dataRoot, absolute);
+      if (contained === '' || contained.startsWith('..') || isAbsolute(contained)) {
+        throw new Error('只允许定位工作台存储目录内的文件');
+      }
+      if (!existsSync(absolute)) throw new Error('文件不存在或已被移动');
+      shell.showItemInFolder(absolute);
+      return { revealed: true };
     },
     setThemePreference: (preference) => {
       applyThemePreference(preference);

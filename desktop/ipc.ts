@@ -9,6 +9,7 @@ export const CHANNELS = {
   getAppVersion: 'desktop:get-app-version',
   relocateLinkedSource: 'desktop:relocate-linked-source',
   openFolder: 'desktop:open-folder',
+  revealItem: 'desktop:reveal-item',
   linkedImportProgress: 'desktop:linked-import-progress',
   setThemePreference: 'desktop:set-theme-preference',
   quitRequested: 'desktop:quit-requested',
@@ -27,6 +28,9 @@ export type RelocateLinkedSourceResult = Awaited<
 export type OpenFolderResult = Awaited<
   ReturnType<DesktopBridge['openFolder']>
 >;
+export type RevealItemResult = Awaited<
+  ReturnType<DesktopBridge['revealItem']>
+>;
 
 export interface DesktopIpcHandlers {
   platform(): DesktopPlatform;
@@ -35,6 +39,7 @@ export interface DesktopIpcHandlers {
   getAppVersion(): string;
   relocateLinkedSource(assetId: string, sourceId: string): Promise<RelocateLinkedSourceResult>;
   openFolder(relativePath: string): Promise<OpenFolderResult>;
+  revealItem(relativePath: string): Promise<RevealItemResult>;
   setThemePreference(preference: ThemePreference): void;
 }
 
@@ -104,6 +109,10 @@ export function registerIpcHandlers(options: RegisterIpcOptions): () => void {
   ipcMain.handle(
     CHANNELS.openFolder,
     protectedHandler((relativePath: string) => options.handlers.openFolder(relativePath)),
+  );
+  ipcMain.handle(
+    CHANNELS.revealItem,
+    protectedHandler((relativePath: string) => options.handlers.revealItem(relativePath)),
   );
   ipcMain.handle(
     CHANNELS.setThemePreference,

@@ -5,6 +5,7 @@ import { Icon } from '@/components/ui/Icon';
 import { ProjectInfoDialog, type ProjectInfoDialogIntent, type ProjectInfoValue } from '@/components/ProjectInfoDialog';
 import { createOverlayBundlePayload, TextOverflowError } from '@/components/final-edit/text-canvas-renderer';
 import { previewExportBaseName } from '@/lib/final-edit/export-identity';
+import type { DesktopBridge } from '@/desktop/bridge-types';
 import { OUTPUT_PRESETS, type ExportTargetView, type FinalEditGroupView, type MixcutContextResponse, type RenderJobRef } from '@/lib/final-edit/types';
 import styles from './mixcut-content.module.css';
 
@@ -16,6 +17,7 @@ type ExportOutput = {
   videoDownloadUrl: string;
   coverUrl: string;
   coverDownloadUrl: string;
+  publishedVideoRelativePath?: string;
 };
 
 type ExportJob = {
@@ -65,6 +67,7 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
   const [restoringJob, setRestoringJob] = useState(true);
   const [message, setMessage] = useState('');
   const [revealAvailable, setRevealAvailable] = useState(false);
+  const [revealError, setRevealError] = useState('');
   const [projectInfoIntent, setProjectInfoIntent] = useState<ProjectInfoDialogIntent | null>(null);
   const pollTokenRef = useRef<symbol | null>(null);
   const variant = group.variants.find((item) => item.id === selectedVariantId) || group.variants[0] || null;
@@ -206,9 +209,21 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
 
   const reveal = async () => {
     if (!job) return;
+    setRevealError('');
     try {
+      // 桌面版优先走 Electron 主进程 showItemInFolder：资源管理器会前台弹出；
+      // 服务端 reveal 端点是后台 spawn，窗口可能被压在工作台窗口下面，留作兜底。
+      const bridge = (window as Window & { desktopBridge?: DesktopBridge }).desktopBridge;
+      const publishedRelativePath = job.output?.publishedVideoRelativePath;
+      if (bridge && publishedRelativePath) {
+        const result = await bridge.revealItem(`storage/${publishedRelativePath}`);
+        if (!result.revealed) throw new Error(result.message || '打开文件夹失败');
+        return;
+      }
       await readJson(await fetch(`/api/final-edit-jobs/${encodeURIComponent(job.id)}/reveal`, { method: 'POST', headers: { 'X-Creative-Studio-Action': 'reveal' } }));
-    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    } catch (error) {
+      setRevealError(error instanceof Error ? error.message : String(error));
+    }
   };
 
   const effectiveTarget = target || {
@@ -353,6 +368,7 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
                 {revealAvailable && <button type="button" className={styles.secondaryButton} onClick={() => void reveal()}><Icon name="folder" size={15} />在文件夹中查看</button>}
               </div>
             )}
+            {currentRevisionExported && revealError && <p className={styles.exportBlocker} role="alert">{revealError}</p>}
             {historicalSucceededJob && !currentRevisionExported && (
               <div className={styles.dlRow} data-testid="mixcut-previous-export-downloads">
                 <span className={styles.flowHint}>上一版可下载：</span>

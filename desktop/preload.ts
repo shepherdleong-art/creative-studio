@@ -12,6 +12,7 @@ const CHOOSE_FOLDER_CHANNEL = 'desktop:choose-folder';
 const GET_APP_VERSION_CHANNEL = 'desktop:get-app-version';
 const RELOCATE_LINKED_SOURCE_CHANNEL = 'desktop:relocate-linked-source';
 const OPEN_FOLDER_CHANNEL = 'desktop:open-folder';
+const REVEAL_ITEM_CHANNEL = 'desktop:reveal-item';
 const LINKED_IMPORT_PROGRESS_CHANNEL = 'desktop:linked-import-progress';
 const SET_THEME_PREFERENCE_CHANNEL = 'desktop:set-theme-preference';
 const QUIT_REQUESTED_CHANNEL = 'desktop:quit-requested';
@@ -53,6 +54,7 @@ const desktopBridge: DesktopBridge = Object.freeze({
     sourceId,
   ),
   openFolder: (relativePath: string) => ipcRenderer.invoke(OPEN_FOLDER_CHANNEL, relativePath),
+  revealItem: (relativePath: string) => ipcRenderer.invoke(REVEAL_ITEM_CHANNEL, relativePath),
   setThemePreference: (preference: 'light' | 'dark' | 'system') => ipcRenderer.invoke(
     SET_THEME_PREFERENCE_CHANNEL,
     preference,

@@ -16,7 +16,7 @@ const excludedDirectories = new Set([
 // from the implementation under test.
 const expectedBridgeMethods = [
   'platform', 'chooseMediaFiles', 'chooseFolder', 'getAppVersion', 'relocateLinkedSource', 'openFolder',
-  'setThemePreference', 'onQuitRequested',
+  'revealItem', 'setThemePreference', 'onQuitRequested',
 ];
 const expectedChannels = [
   'desktop:platform',
@@ -25,6 +25,7 @@ const expectedChannels = [
   'desktop:get-app-version',
   'desktop:relocate-linked-source',
   'desktop:open-folder',
+  'desktop:reveal-item',
   'desktop:linked-import-progress',
   'desktop:set-theme-preference',
   'desktop:quit-requested',
@@ -162,7 +163,7 @@ for (const [name, pattern] of [
   assert.match(preferences.source, pattern, `webPreferences 必须显式包含 ${name}`);
 }
 
-// C. Seven commands and one narrow quit subscription. Main→preload events
+// C. Eight commands and one narrow quit subscription. Main→preload events
 // never expose Electron event objects or arbitrary IPC channels.
 const typeBlock = braceBlock(bridgeTypes, 'interface DesktopBridge');
 const typeMethods = [...typeBlock.source.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*\(/gm)].map(
@@ -188,7 +189,7 @@ assert.match(preload, /ipcRenderer\.on\(\s*QUIT_REQUESTED_CHANNEL\s*, \(\) =>/);
 assert.match(preload, /ipcRenderer\.on\(\s*LINKED_IMPORT_PROGRESS_CHANNEL\s*,/);
 assert.match(preload, /creative-studio:linked-import-progress/);
 assert.doesNotMatch(preload, /\bipcRenderer\.invoke\(\s*channel\b/);
-assert.equal((preload.match(/ipcRenderer\.invoke\(/g) ?? []).length, 7);
+assert.equal((preload.match(/ipcRenderer\.invoke\(/g) ?? []).length, 8);
 assert.equal(
   [...preload.matchAll(/ipcRenderer\.invoke\(\s*([A-Z][A-Z0-9_]*_CHANNEL)\s*\)/g)].length,
   4,
@@ -204,17 +205,22 @@ assert.match(
   /ipcRenderer\.invoke\(\s*OPEN_FOLDER_CHANNEL\s*,\s*relativePath\s*,?\s*\)/,
   '打开文件夹 bridge 必须精确传递 relativePath',
 );
+assert.match(
+  preload,
+  /ipcRenderer\.invoke\(\s*REVEAL_ITEM_CHANNEL\s*,\s*relativePath\s*,?\s*\)/,
+  '文件定位 bridge 必须精确传递 relativePath',
+);
 
-// D. All seven handlers use the one protected wrapper and validate frame/origin.
+// D. All eight handlers use the one protected wrapper and validate frame/origin.
 const allHandlers = production.flatMap((file) => {
   const source = fs.readFileSync(file.absolutePath, 'utf8');
   return [...source.matchAll(/ipcMain\.handle\(/g)].map(() => file);
 });
-assert.equal(allHandlers.length, 7, '生产源码必须恰好注册七个 ipcMain.handle');
+assert.equal(allHandlers.length, 8, '生产源码必须恰好注册八个 ipcMain.handle');
 assert.ok(allHandlers.every((file) => file.relativePath === path.join('desktop', 'ipc.ts')));
 assert.equal(
   (ipc.match(/ipcMain\.handle\(\s*[^,]+,\s*protectedHandler\(/g) ?? []).length,
-  7,
+  8,
   '每个 ipcMain.handle 必须直接通过 protectedHandler',
 );
 assert.match(ipc, /const\s+senderFrame\s*=\s*event\.senderFrame/);

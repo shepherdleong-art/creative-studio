@@ -1068,17 +1068,25 @@ try {
     await subtitleFontDialog.getByRole('button', { name: /^AaHouDiHei/ }).waitFor({ timeout: 4000 })
       .catch(() => { assert.fail('字幕样式字体选择器必须自动合并 queryLocalFonts 的 OS 注册字体'); });
     await page.keyboard.press('Escape');
-    const expectedOptions = ['PingFang SC', ...fontListBody, 'AaHouDiHei'];
+    // 期望列表只包含测试可控的桩字体：真实 queryLocalFonts 在部分机器上会把
+    // 系统字体并入目录（如作者 macOS 机的 PingFang SC），机器相关行不作精确断言。
+    const expectedOptions = [...fontListBody, 'AaHouDiHei'];
+    const assertRowsCover = async (scope, required, label) => {
+      const rows = [...(await fontFamiliesIn(scope))].sort();
+      for (const family of required) {
+        assert.ok(rows.includes(family), `${label}：字体列表缺少 ${family}（实际 ${rows.join(', ')}）`);
+      }
+    };
     // 封面抽屉打开的首帧就必须是全量字体（服务端 + 本机合并，进入步骤时已预取）。
     await page.getByRole('button', { name: /视频封面设置/ }).click();
     let coverFontDialog = await openCoverFontDialog();
-    assert.deepEqual([...(await fontFamiliesIn(coverFontDialog))].sort(), [...expectedOptions].sort(), '封面抽屉打开的首帧就必须是全量字体（服务端 + 本机合并，进入步骤时已预取）');
+    await assertRowsCover(coverFontDialog, expectedOptions, '封面抽屉打开的首帧就必须是全量字体（服务端 + 本机合并，进入步骤时已预取）');
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: '关闭封面精调' }).click();
     // 重开抽屉首帧同样必须是全量字体（会话缓存）。
     await page.getByRole('button', { name: /视频封面设置/ }).click();
     coverFontDialog = await openCoverFontDialog();
-    assert.deepEqual([...(await fontFamiliesIn(coverFontDialog))].sort(), [...expectedOptions].sort(), '重开抽屉首帧同样必须是全量字体（会话缓存）');
+    await assertRowsCover(coverFontDialog, expectedOptions, '重开抽屉首帧同样必须是全量字体（会话缓存）');
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: '关闭封面精调' }).click();
     // 会话缓存不得冻结列表：模拟新装字体（服务端重扫会返回更多），重开抽屉
@@ -1086,8 +1094,9 @@ try {
     fontListBody = [...fontListBody, 'SimHei', 'Consolas'];
     await page.getByRole('button', { name: /视频封面设置/ }).click();
     coverFontDialog = await openCoverFontDialog();
-    assert.deepEqual([...(await fontFamiliesIn(coverFontDialog))].sort(), [...expectedOptions].sort(), '重开首帧仍先显示会话缓存（不闪跳）');
-    await page.waitForFunction((expected) => document.querySelectorAll('[data-font-control="select"]').length === expected, expectedOptions.length + 2, { timeout: 4000 })
+    await assertRowsCover(coverFontDialog, expectedOptions, '重开首帧仍先显示会话缓存（不闪跳）');
+    // 重校验后必须至少出现新装的两项；真实 queryLocalFonts 可能并入机器相关字体，只设下界。
+    await page.waitForFunction((minRows) => document.querySelectorAll('[data-font-control="select"]').length >= minRows, expectedOptions.length + 2, { timeout: 4000 })
       .catch(() => { assert.fail('新装字体后，重开抽屉必须自动重校验到最新列表，不能等用户点「刷新字体」'); });
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: '关闭封面精调' }).click();
@@ -1177,7 +1186,16 @@ try {
     await expectEventually(async () => (await fontDlgG.locator('[data-font-control="select"]').count()) >= 92, 'End 必须加载完整列表', 3000);
     const totalRowsG1 = await fontDlgG.locator('[data-font-control="select"]').count();
     await expectEventually(async () => (await activeFontRow()) === String(totalRowsG1 - 1), 'End 必须聚焦扩容后的真正末项', 3000);
-    assert.ok((await page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? '')).startsWith('PingFang SC'), '末项应为排序结果末尾');
+    // 末项语义自洽即可：End 聚焦的行必须是当前列表的最后一行（机器相关字体行
+    // 不参与断言，具体名字因 queryLocalFonts 并入的系统字体而异）。
+    const lastRowLabelG1 = await fontDlgG.locator('[data-font-control="select"]').evaluateAll((els) => {
+      const last = els[els.length - 1];
+      return (last?.getAttribute('aria-label') || '').replace(/[（(].*$/u, '');
+    });
+    assert.ok(
+      (await page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? '')).startsWith(lastRowLabelG1),
+      '末项应为排序结果末尾',
+    );
     // ArrowUp 回退一行；Home 回第一行；ArrowRight/Left 在选择↔星标间切换。
     await page.keyboard.press('ArrowUp');
     await expectEventually(async () => (await activeFontRow()) === String(totalRowsG1 - 2), 'ArrowUp 必须回到倒数第二项', 3000);
