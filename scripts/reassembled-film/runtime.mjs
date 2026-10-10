@@ -4,7 +4,18 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 export const OPENINGS = ['carton-explosion', 'bare-shell-renovation', 'giant-hand-place', 'magic-growth'];
-export const PRICES = { 'qiniuyun/gpt-image-2-medium': .25, 'doubao-seedream-5-0-pro-image': .61, 'kling-2.5': 1.52, 'doubao-seedance-2-0-260128': 2, 'doubao-seedance-2-5-260628': 7.6 };
+export const PRICES = { 'qiniuyun/gpt-image-2-medium': .25, 'doubao-seedream-5-0-pro-image': .61, 'kling-2.5': 1.52, 'qiniuyun/kling-3.0': 3, 'doubao-seedance-2-0-260128': 2, 'doubao-seedance-2-5-260628': 7.6 };
+// Keep this tool's existing estimates: Kling prices are per 5s; Seedance per 4s.
+const VIDEO_PRICE_SECONDS = { 'kling-2.5': 5, 'qiniuyun/kling-3.0': 5, 'doubao-seedance-2-0-260128': 4, 'doubao-seedance-2-5-260628': 4 };
+function estimateJobYuan(job) {
+  const price = PRICES[job.model];
+  if (!Number.isFinite(price)) return NaN;
+  if (job.kind === 'image') return price;
+  const seconds = VIDEO_PRICE_SECONDS[job.model];
+  if (!Number.isFinite(seconds)) return NaN;
+  return Math.round(price * job.durationSec / seconds * 1_000_000) / 1_000_000;
+}
+const mediaInputs = job => [job.input, ...(job.references || []), ...(job.tailInput ? [job.tailInput] : [])];
 export const now = () => new Date().toISOString();
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export const canonical = value => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);
@@ -49,6 +60,7 @@ export function validateJob(job) {
   if (!job || !/^[a-zA-Z0-9_-]+$/.test(job.id) || !['image', 'video'].includes(job.kind)) throw new Error('Invalid job id/kind');
   for (const key of ['input', 'prompt', 'output', 'model', 'providerId']) if (typeof job[key] !== 'string' || !job[key]) throw new Error(`Missing ${key}`);
   if (job.references && (!Array.isArray(job.references) || job.references.some(v => typeof v !== 'string'))) throw new Error('Invalid references');
+  if (job.tailInput !== undefined && (job.kind !== 'video' || typeof job.tailInput !== 'string' || !job.tailInput.trim())) throw new Error('Invalid tailInput');
   if (job.kind === 'video' && !(Number.isFinite(job.durationSec) && job.durationSec > 0)) throw new Error('Invalid video duration');
 }
 export const poolFor = job => job.kind === 'image' ? 'image' : job.model.startsWith('doubao-seedance-') ? 'seedance' : 'video';
@@ -61,7 +73,7 @@ export function enqueue(project, input) {
     for (const field of ['dependsOn', 'requiresReview']) if (entry[field] && (!Array.isArray(entry[field]) || entry[field].some(id => typeof id !== 'string'))) throw new Error(`Invalid ${field}`);
     if (entry.openingEffectId && !OPENINGS.includes(entry.openingEffectId)) throw new Error('Opening must use one of the four approved effects');
     const promptHash = hashFile(local(project, entry.job.prompt));
-    for (const f of [entry.job.input, entry.job.output, ...(entry.job.references || [])]) local(project, f);
+    for (const f of [...mediaInputs(entry.job), entry.job.output]) local(project, f);
     return { ...entry, promptHash, enqueuedAt: now() };
   });
   // Writers never touch the worker's ledger or lock. A unique, atomic inbox packet.
@@ -126,7 +138,7 @@ export class FilmQueue {
   }
   dependencies(entry) {
     if (this.legacy) return [];
-    const files = [entry.job.input, ...(entry.job.references || [])];
+    const files = mediaInputs(entry.job);
     const inferred = files.map(f => this.outputs.get(local(this.project, f))).filter(Boolean);
     return [...new Set([...(entry.dependsOn || []), ...(entry.requiresReview || []), ...inferred])];
   }
@@ -146,7 +158,7 @@ export class FilmQueue {
     return null;
   }
   fingerprint(job) {
-    const files = [job.prompt, job.input, ...(job.references || [])];
+    const files = [job.prompt, ...mediaInputs(job)];
     return crypto.createHash('sha256').update(canonical({ job, files: files.map(f => [f, hashFile(local(this.project, f))]) })).digest('hex');
   }
   async execute(entry) {
@@ -172,9 +184,9 @@ export class FilmQueue {
     if (record?.remoteFailed) throw new Error('Remote task failed; a reviewed, versioned rework is required');
     let mediaUrl;
     if (!record) {
-      const estimate = PRICES[job.model];
+      const estimate = estimateJobYuan(job);
       const total = Object.values(this.ledger).reduce((sum, r) => sum + r.estimateYuan, 0);
-      if (!Number.isFinite(total) || estimate === undefined || total + estimate > this.cap + 1e-8) throw new Error('Unknown estimate or generation budget cap reached');
+      if (!Number.isFinite(total) || !Number.isFinite(estimate) || total + estimate > this.cap + 1e-8) throw new Error('Unknown estimate or generation budget cap reached');
       record = this.ledger[job.id] = { job, fingerprint, estimateYuan: estimate, enqueuedAt: entry.enqueuedAt || now(), readyAt: now(), startedAt: now(), status: 'submitting' };
       this.save(); // Reserve budget and mark ambiguous submission before any await / paid request.
       this.log(`${job.id}: submitting ${job.model}`);

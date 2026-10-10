@@ -12,7 +12,8 @@ export function companyAdapter(project) {
   try { process.loadEnvFile(path.join(process.cwd(), '.env.local')); } catch {}
   const realFetch = globalThis.fetch;
   globalThis.fetch = (url, init) => {
-    if (init?.method === 'POST' && String(url).startsWith('http://127.0.0.1:4000/v1/')) {
+    const u = new URL(String(url));
+    if (init?.method === 'POST' && u.hostname === '127.0.0.1' && u.pathname.startsWith('/v1/')) {
       const body = JSON.parse(init.body), values = body.image || body.images || [];
       const refs = Array.isArray(values) ? values : [values];
       if (refs.some(ref => !String(ref).startsWith('https://') && !(body.model.startsWith('qiniuyun/') && String(ref).startsWith('data:image/')))) throw new Error('COS delivery failed; local reference fallback blocked before submission');
@@ -26,7 +27,8 @@ export function companyAdapter(project) {
       const db = new Database(path.join(dataRoot(), 'data/workbench.db'), { readonly: true, fileMustExist: true });
       let row;
       try { row = db.prepare(`SELECT apiKey, baseUrl FROM ${job.kind === 'image' ? 'providers' : 'video_providers'} WHERE id = ?`).get(job.providerId); } finally { db.close(); }
-      if (!row || row.baseUrl.replace(/\/$/, '') !== 'http://127.0.0.1:4000') throw new Error('Expected configured loopback company provider');
+      const u = row && new URL(row.baseUrl);
+      if (!row || u.hostname !== '127.0.0.1' || u.protocol !== 'http:') throw new Error('Expected configured loopback company provider');
       credentials.set(id, row);
     }
     return credentials.get(id);
@@ -44,7 +46,7 @@ export function companyAdapter(project) {
         const r = await submitGatewayTaskImage({ model: job.model, prompt, inputImagePath: local(project, job.input), inputMimeType: mime(job.input), referenceImagePaths: refs, referenceMimeTypes: refs.map(mime), size: '1728x2304', quality: 'medium' }, p.apiKey, p.baseUrl, { timeoutMs: 600000 });
         return { taskId: r.taskId, mediaUrl: r.immediateImageUrl, transports: r.imageTransports };
       }
-      const r = await openaiVideoAdapter.submit({ model: job.model, prompt, sourceImagePath: local(project, job.input), sourceMimeType: mime(job.input), durationSec: job.durationSec, multiShot: false }, p.apiKey, p.baseUrl);
+      const r = await openaiVideoAdapter.submit({ model: job.model, prompt, sourceImagePath: local(project, job.input), sourceMimeType: mime(job.input), durationSec: job.durationSec, multiShot: false, ...(job.tailInput ? { tailImagePath: local(project, job.tailInput), tailMimeType: mime(job.tailInput) } : {}) }, p.apiKey, p.baseUrl);
       return { taskId: r.providerTaskId, mediaUrl: r.immediateVideoUrl };
     }),
     poll: (job, id) => safe(job, async p => {
