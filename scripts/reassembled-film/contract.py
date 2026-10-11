@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+from callouts import validate_callouts
 
 OPENINGS = {'carton-explosion', 'bare-shell-renovation', 'giant-hand-place', 'magic-growth'}
 
@@ -28,6 +29,7 @@ def validate(project, variant):
         cursor = shot['endFrame']; files.add(file)
     if cursor != timeline['frames']:
         raise ValueError('Timeline tail mismatch')
+    validate_callouts(timeline)
     first = timeline['shots'][0]
     reviews = json.loads((project/'review/opening-effects.json').read_text(encoding='utf8'))['variants']
     item = next((v for v in reviews if v['variant'] == variant), None)
