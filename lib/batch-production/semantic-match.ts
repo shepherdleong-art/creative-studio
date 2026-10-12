@@ -205,6 +205,11 @@ export type BatchSemanticScoreOutcome =
   | { fallback: true; diagnostic?: string }
   | { fallback: false; scores: BatchSemanticScoreMap; hooks: BatchSemanticHookMap; model: string };
 
+export interface BatchSemanticScoreChunk {
+  sentences: readonly BatchSemanticSentence[];
+  scenes: readonly BatchSemanticScene[];
+}
+
 /**
  * 调 LLM 对 句段 × 场景 打分。fallback(0.6 均匀矩阵)直接返回 {fallback:true},
  * 由调用方决定不落库;成功时把按 prompt 顺序的矩阵转成
@@ -215,12 +220,16 @@ export async function scoreBatchSemanticMatrix(input: {
   scenes: readonly BatchSemanticScene[];
   providerId: string;
   /** 测试注入;默认 buildSemanticMatrixPrompt + completeJson(纯文本,无 COS 门禁)。 */
-  score?: () => Promise<unknown>;
+  score?: (chunk: BatchSemanticScoreChunk) => Promise<unknown>;
   model?: string;
   sleep?: (delayMs: number) => Promise<void>;
+  signal?: AbortSignal;
+  onProgress?: (completed: number, total: number) => void;
 }): Promise<BatchSemanticScoreOutcome> {
-  const score = input.score ?? (async () => {
-    const prompts = buildSemanticMatrixPrompt({ sentences: [...input.sentences], scenes: [...input.scenes] });
+  input.signal?.throwIfAborted();
+  if (!input.sentences.length || !input.scenes.length) return { fallback: true, diagnostic: '缺少句段或场景' };
+  const score = input.score ?? (async (chunk: BatchSemanticScoreChunk) => {
+    const prompts = buildSemanticMatrixPrompt({ sentences: [...chunk.sentences], scenes: [...chunk.scenes] });
     const { completeJson } = await import('../script-providers/index.ts');
     return completeJson({
       providerId: input.providerId,
@@ -230,31 +239,47 @@ export async function scoreBatchSemanticMatrix(input: {
       // 推理型模型（GPT-5-5 等）的思考过程会吃 max_tokens 预算：1500 会被
       // 思考占满、可见输出为空（finish_reason=length），矩阵解析必败。
       maxTokens: 8000,
+      signal: input.signal,
     });
   });
-  let diagnostic: string | undefined;
-  const result = await scoreSemanticMatrixWithRetry({
-    sentenceCount: input.sentences.length,
-    sceneCount: input.scenes.length,
-    score,
-    sleep: input.sleep,
-    onFailure: (error, attempts) => {
-      diagnostic = `${semanticScoreFailureHint(error)}（${input.sentences.length} 句 × ${input.scenes.length} 场景，本轮请求 ${attempts} 次）`;
-    },
-  });
-  if (result.semanticFallback) return { fallback: true, diagnostic };
   const scores: BatchSemanticScoreMap = {};
   const hooks: BatchSemanticHookMap = {};
-  input.scenes.forEach((scene, sceneIndex) => {
-    hooks[`${scene.assetKey}:${scene.sceneIndex}`] = result.hookScores[sceneIndex] ?? 0;
-  });
-  input.sentences.forEach((sentence, sentenceIndex) => {
-    const row: Record<string, number> = {};
-    input.scenes.forEach((scene, sceneIndex) => {
-      row[`${scene.assetKey}:${scene.sceneIndex}`] = result.semanticScores[sentenceIndex]?.[sceneIndex] ?? 0;
-    });
-    scores[sentence.id] = row;
-  });
+  // Luna 在 4 句 × 247 场景时实测耗尽输出预算且返回空正文；只提高预算无效。
+  // 限制每次矩阵尺寸，顺序执行并保留全部场景。只有完整矩阵成功才交给调用方落库。
+  const sentenceLimit = 4;
+  const sceneLimit = 32;
+  const total = Math.ceil(input.sentences.length / sentenceLimit) * Math.ceil(input.scenes.length / sceneLimit);
+  let completed = 0;
+  for (let sentenceOffset = 0; sentenceOffset < input.sentences.length; sentenceOffset += sentenceLimit) {
+    const sentences = input.sentences.slice(sentenceOffset, sentenceOffset + sentenceLimit);
+    for (let sceneOffset = 0; sceneOffset < input.scenes.length; sceneOffset += sceneLimit) {
+      const scenes = input.scenes.slice(sceneOffset, sceneOffset + sceneLimit);
+      let diagnostic: string | undefined;
+      const result = await scoreSemanticMatrixWithRetry({
+        sentenceCount: sentences.length,
+        sceneCount: scenes.length,
+        score: () => {
+          input.signal?.throwIfAborted();
+          return score({ sentences, scenes });
+        },
+        sleep: input.sleep,
+        onFailure: (error, attempts) => {
+          diagnostic = `${semanticScoreFailureHint(error)}（${sentences.length} 句 × ${scenes.length} 场景，本轮请求 ${attempts} 次；分块 ${completed + 1}/${total}）`;
+        },
+      });
+      input.signal?.throwIfAborted();
+      if (result.semanticFallback) return { fallback: true, diagnostic };
+      scenes.forEach((scene, sceneIndex) => {
+        const key = `${scene.assetKey}:${scene.sceneIndex}`;
+        // 首镜头吸引力按场景评分；后续句段分块不覆盖第一组的开场分。
+        if (sentenceOffset === 0) hooks[key] = result.hookScores[sceneIndex]!;
+        sentences.forEach((sentence, sentenceIndex) => {
+          (scores[sentence.id] ??= {})[key] = result.semanticScores[sentenceIndex]![sceneIndex]!;
+        });
+      });
+      input.onProgress?.(++completed, total);
+    }
+  }
   return { fallback: false, scores, hooks, model: input.model ?? '' };
 }
 

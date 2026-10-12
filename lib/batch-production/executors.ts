@@ -399,6 +399,12 @@ export function createSemanticScoreExecutor(options: SemanticScoreExecutorOption
         scenes,
         providerId: provider.providerId,
         model: provider.model,
+        signal,
+        onProgress: (completed, total) => context.reportProgress({
+          phase: 'semantic_score',
+          description: `语义矩阵打分（${sentences.length} 句 × ${scenes.length} 场景，已完成 ${completed}/${total} 组）`,
+          percent: completed / total,
+        }),
       });
       assertNotAborted(signal);
       if (outcome.fallback) {
