@@ -52,7 +52,11 @@ next-env.d.ts
 /data/
 /storage/
 /outputs/
+/output/
 !/storage/.gitkeep
+
+# local playwright CLI/QA artifacts (screenshots, page snapshots, console logs)
+/.playwright-cli/
 
 # 免安装包内置的便携 Node 运行时（87MB 二进制，不进仓库）
 /node-runtime/
