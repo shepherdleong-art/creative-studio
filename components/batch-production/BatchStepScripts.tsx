@@ -81,6 +81,7 @@ async function readJson<T>(response: Response): Promise<T> {
 export const BATCH_PROGRESS_ANCHOR_ID = 'batch-production-progress';
 
 export interface BatchStepScriptsProps {
+  batchSelected: boolean;
   prep: BatchPreparationResult;
   selectedScripts: Record<string, number>;
   onToggleScript: (scriptId: string, selected: boolean) => void;
@@ -250,17 +251,19 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   const scriptCount = Object.keys(selectedScripts).length;
   const onlineAssets = prep.assets.filter(({ status }) => status === 'online').length;
 
-  const startDisabledReason = !scriptCount
-    ? '请先勾选至少一份脚本'
-    : outputPlans.length === 0
-      ? '请先确认整体输入'
-      : batchStatus !== 'draft'
-        ? '批次已开始生产'
-        : !ttsConfigured
-          ? '尚未配置口播配音供应商，请在设置中配置'
-          : bgmLibrary.length === 0
-            ? '背景音乐曲库为空，请先放入音频并重新扫描'
-            : undefined;
+  const startDisabledReason = !props.batchSelected
+    ? '请先在左侧创建或选择一个批次'
+    : !scriptCount
+      ? '请先勾选至少一份脚本'
+      : outputPlans.length === 0
+        ? '请先确认整体输入'
+        : batchStatus !== 'draft'
+          ? '批次已开始生产'
+          : !ttsConfigured
+            ? '尚未配置口播配音供应商，请在设置中配置'
+            : bgmLibrary.length === 0
+              ? '背景音乐曲库为空，请先放入音频并重新扫描'
+              : undefined;
 
   function formatDuration(durationUs: number): string {
     const totalSec = Math.max(0, Math.round(durationUs / 1_000_000));
@@ -1161,7 +1164,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
         </div>
 
         <p className="text-xs text-ink-tertiary">
-          标题文字来自各脚本的封面标题（第 3 步生成）。样式与位置按脚本单独设置：预览下拉选择当前调整的脚本，未单独调整的脚本沿用整批基准；应用预设会把整批重置为预设样式。确认整体输入后随版本冻结，改样式会形成批次新版本。
+          标题文字来自各脚本的封面标题，自定义脚本使用导入时填写的标题。样式与位置按脚本单独设置：预览下拉选择当前调整的脚本，未单独调整的脚本沿用整批基准；应用预设会把整批重置为预设样式。确认整体输入后随版本冻结，改样式会形成批次新版本。
         </p>
 
         {hasTitle && coverStyles && (
@@ -1365,7 +1368,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
 
       {!frozen && (
         <section aria-label="脚本与口播">
-          <div className="mb-3 flex items-end justify-between gap-3">
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
             <div>
               <h3 className="font-semibold text-ink">脚本</h3>
               <p className="mt-1 text-sm text-ink-secondary">每份脚本是一个独立创作单元：各自份数出 N 条成片，共用同一条配音，只有画面不同。时长来自脚本自身设定，此处只读。</p>
@@ -1475,7 +1478,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               })}
             </div>
           ) : (
-            <div className="tile p-6 text-sm text-ink-secondary">暂无可用项目脚本，请先在第 3 步生成并保存脚本。</div>
+            <div className="tile p-6 text-sm text-ink-secondary">暂无可用项目脚本。点击「导入自定义脚本」上传文件或粘贴文案，也可以使用第 3 步生成并保存的脚本。</div>
           )}
         </section>
       )}
@@ -1498,7 +1501,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
             <div>
               <h3 className="font-semibold text-ink">输出设置</h3>
               <p className="mt-1 text-sm text-ink-secondary">
-                画幅 {outputPreset.label}（顶栏统一设置）；背景音乐在上方卡片中设置。时长不提供修改 —— 脚本在第 3 步生成时已按档位约束字数。
+                画幅 {outputPreset.label}（顶栏统一设置）；背景音乐在上方卡片中设置。自定义脚本的目标时长可在「编辑」中修改。
               </p>
               {inputChangedWarning && (
                 <p className="mt-1 text-xs text-warn">输入已修改，重新确认后才会覆盖当前批次版本。</p>
@@ -1509,7 +1512,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                 <button
                   type="button"
                   className={`btn-secondary ${startDisabledReason === '请先确认整体输入' ? 'btn-callout' : ''}`}
-                  disabled={busy !== null}
+                  disabled={busy !== null || !props.batchSelected}
                   onClick={onConfirmSnapshot}
                 >
                   {busy === 'snapshot' ? '确认中…' : '确认整体输入'}

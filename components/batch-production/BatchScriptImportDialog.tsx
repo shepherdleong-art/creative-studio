@@ -9,6 +9,7 @@ import {
   MANUAL_SCRIPT_TITLE_MAX,
   splitPastedScripts,
 } from '@/lib/batch-production/manual-script-import';
+import { readManualScriptFiles, type UploadedScriptDraft } from '@/lib/batch-production/manual-script-files';
 
 /** 编辑场景预填的脚本内容(来自准备区的 PrepareScriptView)。 */
 export interface ManualScriptDraft {
@@ -53,7 +54,7 @@ function BatchScriptImportDialogContent({
   onUpdated,
 }: BatchScriptImportDialogProps) {
   const editing = Boolean(editScript);
-  const [tab, setTab] = useState<'single' | 'batch'>('single');
+  const [tab, setTab] = useState<'single' | 'batch' | 'files'>('single');
   const [title, setTitle] = useState(editScript?.title ?? '');
   const [bodyText, setBodyText] = useState(editScript?.bodyText ?? '');
   const [durationSec, setDurationSec] = useState(String(editScript?.targetDurationSec ?? 15));
@@ -61,22 +62,40 @@ function BatchScriptImportDialogContent({
   const [pasteDurationSec, setPasteDurationSec] = useState('15');
   const [pastePreviewOpen, setPastePreviewOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [readingFiles, setReadingFiles] = useState(false);
+  const [fileDrafts, setFileDrafts] = useState<UploadedScriptDraft[]>([]);
   const [error, setError] = useState('');
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pending = saving || readingFiles;
 
   // 焦点/Escape 处理照 BatchStepMaterials.tsx 的画质弹窗:打开时聚焦关闭钮,
   // Escape 关闭(保存中不关,避免请求落地后状态丢失)。
   useEffect(() => {
     const timer = window.setTimeout(() => closeButtonRef.current?.focus(), 0);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !saving) onClose();
+      if (event.key === 'Escape' && !pending) onClose();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => {
       window.clearTimeout(timer);
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [onClose, saving]);
+  }, [onClose, pending]);
+
+  async function selectFiles(files: File[]): Promise<void> {
+    if (files.length === 0) return;
+    setReadingFiles(true);
+    setError('');
+    setFileDrafts([]);
+    try {
+      setFileDrafts(await readManualScriptFiles(files));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '脚本文件读取失败');
+    } finally {
+      setReadingFiles(false);
+    }
+  }
 
   const parsedPaste = useMemo(
     () => (tab === 'batch' && !editing ? splitPastedScripts(pasteText) : []),
@@ -92,15 +111,15 @@ function BatchScriptImportDialogContent({
   function validateEntry(entry: { title: string; bodyText: string }, index?: number): string | null {
     const where = index === undefined ? '' : `第 ${index + 1} 条`;
     if (!entry.title.trim()) return `${where}标题不能为空`;
-    if (entry.title.trim().length > MANUAL_SCRIPT_TITLE_MAX) return `${where}标题不能超过 ${MANUAL_SCRIPT_TITLE_MAX} 字`;
+    if (Array.from(entry.title.trim()).length > MANUAL_SCRIPT_TITLE_MAX) return `${where}标题不能超过 ${MANUAL_SCRIPT_TITLE_MAX} 字`;
     if (!entry.bodyText.trim()) return `${where}正文不能为空`;
-    if (entry.bodyText.trim().length > MANUAL_SCRIPT_BODY_MAX) return `${where}正文不能超过 ${MANUAL_SCRIPT_BODY_MAX} 字`;
+    if (Array.from(entry.bodyText.trim()).length > MANUAL_SCRIPT_BODY_MAX) return `${where}正文不能超过 ${MANUAL_SCRIPT_BODY_MAX} 字`;
     return null;
   }
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (saving) return;
+    if (pending) return;
 
     let scripts: Array<{ title: string; bodyText: string; targetDurationSec: number }>;
     if (editing || tab === 'single') {
@@ -110,6 +129,15 @@ function BatchScriptImportDialogContent({
       if (invalid) { setError(invalid); return; }
       if (duration === null) { setError('目标时长必须是 1-600 的整数秒'); return; }
       scripts = [{ ...entry, targetDurationSec: duration }];
+    } else if (tab === 'files') {
+      if (fileDrafts.length === 0) { setError('请先选择脚本文件'); return; }
+      const duration = parseDuration(pasteDurationSec);
+      if (duration === null) { setError('统一时长必须是 1-600 的整数秒'); return; }
+      for (const [index, entry] of fileDrafts.entries()) {
+        const invalid = validateEntry(entry, index);
+        if (invalid) { setError(invalid); return; }
+      }
+      scripts = fileDrafts.map(({ title, bodyText }) => ({ title: title.trim(), bodyText: bodyText.trim(), targetDurationSec: duration }));
     } else {
       if (pasteText.length > MANUAL_SCRIPT_PASTE_CHARS_MAX) {
         setError(`粘贴内容不能超过 ${MANUAL_SCRIPT_PASTE_CHARS_MAX.toLocaleString()} 字`);
@@ -174,7 +202,7 @@ function BatchScriptImportDialogContent({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !saving) onClose();
+        if (event.target === event.currentTarget && !pending) onClose();
       }}
     >
       <section
@@ -192,7 +220,7 @@ function BatchScriptImportDialogContent({
               <p className="mt-1 text-sm text-ink-secondary">
                 {editing
                   ? '修改标题、正文或目标时长；若该脚本已在本批次选中，保存后需要重新确认输入。'
-                  : '在别处写好的文案粘贴进来，导入后本项目的所有批次都能勾选。'}
+                  : '上传脚本文件或粘贴文案，导入后可勾选脚本、设置份数和配音，继续批量生产。'}
               </p>
             </div>
             <button
@@ -200,7 +228,7 @@ function BatchScriptImportDialogContent({
               type="button"
               aria-label="关闭自定义脚本弹窗"
               className="icon-btn -mr-1 -mt-1 shrink-0"
-              disabled={saving}
+              disabled={pending}
               onClick={onClose}
             >
               <Icon name="close" size={17} />
@@ -209,24 +237,64 @@ function BatchScriptImportDialogContent({
 
           {!editing && (
             <div className="flex gap-2 px-5 pb-4" role="tablist" aria-label="导入方式">
-              {(['single', 'batch'] as const).map((value) => (
+              {(['single', 'batch', 'files'] as const).map((value) => (
                 <button
                   key={value}
                   type="button"
                   role="tab"
                   aria-selected={tab === value}
-                  aria-label={value === 'single' ? '单条导入' : '批量粘贴'}
+                  aria-label={value === 'single' ? '单条导入' : value === 'batch' ? '批量粘贴' : '上传文件'}
+                  disabled={pending}
                   className={`h-8 rounded-full px-4 text-xs transition ${tab === value ? 'bg-ink text-white' : 'bg-surface-subtle text-ink-secondary hover:text-ink'}`}
                   onClick={() => { setTab(value); setError(''); }}
                 >
-                  {value === 'single' ? '单条' : '批量粘贴'}
+                  {value === 'single' ? '单条' : value === 'batch' ? '批量粘贴' : '上传文件'}
                 </button>
               ))}
             </div>
           )}
 
           <div className="space-y-4 px-5 pb-5">
-            {!batchTab ? (
+            {!editing && tab === 'files' ? (
+              <>
+                <div className="grid gap-2 text-sm text-ink">
+                  <span>选择脚本文件（TXT / Markdown）</span>
+                  <button type="button" className="btn-secondary justify-self-start" disabled={pending} onClick={() => fileInputRef.current?.click()}>
+                    <Icon name="upload" size={14} />{fileDrafts.length > 0 ? '重新选择文件' : '选择文件'}
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    className="hidden"
+                    type="file"
+                    accept=".txt,.md,text/plain,text/markdown"
+                    multiple
+                    aria-label="选择脚本文件"
+                    disabled={pending}
+                    onChange={(event) => {
+                      const files = Array.from(event.target.files ?? []);
+                      event.target.value = '';
+                      void selectFiles(files);
+                    }}
+                  />
+                  <span className="text-xs text-ink-secondary">每个文件导入为一条脚本，文件名作标题，全文作口播正文（保留段落）。最多 {MANUAL_SCRIPT_BATCH_MAX} 个，每个不超过 64 KB，正文不超过 {MANUAL_SCRIPT_BODY_MAX} 字；请在下方核对并移除不需要朗读的标记。</span>
+                </div>
+                <p className="text-xs text-ink-secondary" aria-live="polite">{readingFiles ? '正在读取文件…' : `已读取 ${fileDrafts.length} 条脚本，可修改后导入`}</p>
+                {fileDrafts.map((entry, index) => (
+                  <div key={index} className="space-y-2 rounded-xl border border-hairline p-3">
+                    <div className="flex items-center justify-between gap-2 text-xs text-ink-secondary">
+                      <span className="min-w-0 break-all">{entry.filename}</span>
+                      <button type="button" className="text-fail" disabled={pending} aria-label={`移除文件 ${entry.filename}`} onClick={() => setFileDrafts((current) => current.filter((_, at) => at !== index))}>移除</button>
+                    </div>
+                    <input className={inputClass} aria-label={`文件 ${index + 1} 标题`} value={entry.title} maxLength={MANUAL_SCRIPT_TITLE_MAX} disabled={pending} onChange={(event) => setFileDrafts((current) => current.map((draft, at) => at === index ? { ...draft, title: event.target.value } : draft))} />
+                    <textarea className={textareaClass} aria-label={`文件 ${index + 1} 正文`} rows={5} value={entry.bodyText} disabled={pending} onChange={(event) => setFileDrafts((current) => current.map((draft, at) => at === index ? { ...draft, bodyText: event.target.value } : draft))} />
+                  </div>
+                ))}
+                <label className="grid gap-1.5 text-[13px] font-medium text-ink">
+                  <span>统一目标时长（秒）</span>
+                  <input type="number" className={inputClass} aria-label="统一目标时长（秒）" min={1} max={600} step={1} value={pasteDurationSec} disabled={pending} onChange={(event) => setPasteDurationSec(event.target.value)} />
+                </label>
+              </>
+            ) : !batchTab ? (
               <>
                 <label className="grid gap-1.5 text-[13px] font-medium text-ink">
                   <span>标题 <span className="text-fail">*</span></span>
@@ -329,11 +397,11 @@ function BatchScriptImportDialogContent({
           </div>
 
           <footer className="flex items-center justify-end gap-3 border-t border-hairline px-5 py-4">
-            <button type="button" className="btn-secondary" disabled={saving} onClick={onClose}>
+            <button type="button" className="btn-secondary" disabled={pending} onClick={onClose}>
               取消
             </button>
-            <button type="submit" className="btn-primary" disabled={saving}>
-              {saving ? '提交中…' : editing ? '保存' : batchTab ? `导入 ${parsedPaste.length} 条` : '导入'}
+            <button type="submit" className="btn-primary" disabled={pending}>
+              {saving ? '提交中…' : editing ? '保存' : tab === 'files' ? `导入 ${fileDrafts.length} 条` : batchTab ? `导入 ${parsedPaste.length} 条` : '导入'}
             </button>
           </footer>
         </form>
