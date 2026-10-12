@@ -3,8 +3,9 @@
 export interface BatchProgressView {
   overallPercent: number;
   elapsedSec: number;
-  /** 终态(全部生产任务结束)时置 true,组件停表并固定进度条 */
+  /** 已有实际版本且当前生产阶段成功，不能仅按任务是否结束判断。 */
   finished: boolean;
+  needsAttention?: boolean;
   stages: Array<{
     label: string;
     status: 'waiting' | 'running' | 'done' | 'warning' | 'failed';
@@ -80,7 +81,7 @@ export default function BatchProductionProgressCard({
     return (
       <section className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs text-ink-secondary" aria-label="批量生产进度">
         <span>
-          生产进度 · {progress.finished ? anyFailed ? '已完成 · 部分失败' : '已完成' : stopped ? '已停止' : paused ? '已暂停' : '生产中'}
+          生产进度 · {progress.finished ? anyFailed ? '已完成 · 部分失败' : '已完成' : stopped ? '已停止' : paused ? '已暂停' : progress.needsAttention ? '生产尚未完成' : '生产中'}
           {` · ${percent}% · ${progress.finished ? '总用时' : '已用时'} ${minutes} 分 ${seconds} 秒`}
         </span>
         {controlButtons}
@@ -100,7 +101,7 @@ export default function BatchProductionProgressCard({
                 ? '已暂停'
                 : progress.finished
                   ? anyFailed ? '已完成 · 部分失败' : '已完成'
-                  : '生产中'}
+                  : progress.needsAttention ? '生产尚未完成' : '生产中'}
             {progress.finished || stopped ? ` · 总用时 ${minutes} 分 ${seconds} 秒` : ` · 已用时 ${minutes} 分 ${seconds} 秒`}
           </p>
         </div>
@@ -124,7 +125,9 @@ export default function BatchProductionProgressCard({
                 ? `已暂停 · 已用时 ${minutes} 分 ${seconds} 秒`
                 : progress.finished
                   ? `已完成 · 总用时 ${minutes} 分 ${seconds} 秒`
-                  : `已用时 ${minutes} 分 ${seconds} 秒 · 刷新页面不丢失进度`}
+                  : progress.needsAttention
+                    ? `生产尚未完成 · 已用时 ${minutes} 分 ${seconds} 秒`
+                    : `已用时 ${minutes} 分 ${seconds} 秒 · 刷新页面不丢失进度`}
           </p>
         </div>
         <div className="flex items-center gap-3">

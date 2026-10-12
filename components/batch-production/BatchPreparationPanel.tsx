@@ -275,8 +275,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           `/api/batch-production/prepare?projectId=${encodeURIComponent(projectId)}`,
           { cache: 'no-store' },
         )),
+        // 归档显示由侧栏本地筛选，刷新时也必须保留可恢复的记录。
         readJson<BatchListResponse>(await fetch(
-          `/api/batch-production/batches?projectId=${encodeURIComponent(projectId)}`,
+          `/api/batch-production/batches?projectId=${encodeURIComponent(projectId)}&includeArchived=1`,
           { cache: 'no-store' },
         )),
         readJson<VisionProviderView[]>(await fetch('/api/providers/script', { cache: 'no-store' }))
@@ -312,7 +313,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         setAssetPrepareTasks([]);
       }
       setSelectedBatchId((current) => (
-        batchResult.batches.some(({ id }) => id === current) ? current : batchResult.batches[0]?.id ?? ''
+        batchResult.batches.some(({ id }) => id === current)
+          ? current
+          : batchResult.batches.find((batch) => !batch.archivedAt)?.id ?? ''
       ));
     } catch (loadError) {
       setPreparation(null);
@@ -691,24 +694,29 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     const startedAtMs = productionTasks.length > 0
       ? Math.min(...productionTasks.map((task) => new Date(task.createdAt).getTime()))
       : null;
-    // 终态停表:没有活跃任务且已有生产任务时,用最后一条生产尝试的完成时刻,
-    // 而不是 Date.now()——否则"做完了还在计时"。
-    const finished = !hasActiveBatchTask && productionTasks.length > 0;
-    const finishedAtMs = finished
+    // 任务暂时为空/全部失败不代表完成；每张计划须有实际版本且当前渲染阶段成功。
+    const progressRenders = fullRenders.length > 0 ? fullRenders : coverRenders;
+    const allVersionsReady = Boolean(workspace?.cards.length && workspace.cards.every(card => card.versionId));
+    const finished = !hasActiveBatchTask && allVersionsReady
+      && allocationProgress.status === 'done'
+      && narration.length > 0 && narrationSucceeded === narration.length
+      && progressRenders.length > 0 && progressRenders.every(task => task.status === 'succeeded');
+    const idle = !hasActiveBatchTask && productionTasks.length > 0;
+    const finishedAtMs = idle
       ? Math.max(...productionTasks.flatMap((task) =>
         task.attempts.map((attempt) => (attempt.finishedAt ? new Date(attempt.finishedAt).getTime() : 0))))
       : 0;
-    const endMs = finished && finishedAtMs > 0 ? finishedAtMs : nowMs;
+    const endMs = idle && finishedAtMs > 0 ? finishedAtMs : nowMs;
     // 没有正式导出任务时，整体进度以封面准备为准；一旦进入第 4 步，
     // 进度切换到整片渲染。封面与整片任务只参与总进度，不再作为阶段行展示。
-    const progressRenders = fullRenders.length > 0 ? fullRenders : coverRenders;
     const progressSucceeded = fullRenders.length > 0 ? fullSucceeded : coverSucceeded;
     const progressTotal = progressRenders.length;
     const stage = (label: string, status: BatchProgressView['stages'][number]['status'], detail?: string, percent?: number) => ({ label, status, detail, percent });
     return {
-      overallPercent: progressTotal > 0 ? progressSucceeded / progressTotal : 0,
+      overallPercent: progressTotal > 0 ? Math.min(finished ? 1 : 0.99, progressSucceeded / progressTotal) : 0,
       elapsedSec: startedAtMs ? Math.max(0, Math.floor((endMs - startedAtMs) / 1000)) : 0,
       finished,
+      needsAttention: idle && !finished,
       stages: [
         stage('锁定设置', 'done'),
         stage(
@@ -719,7 +727,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         ),
         stage(
           '生成口播',
-          narration.length === 0 ? 'waiting' : narrationFailed > 0 ? 'failed' : narrationActive > 0 ? 'running' : 'done',
+          narration.length === 0 ? 'waiting' : narrationFailed > 0 ? 'failed' : narrationActive > 0 ? 'running' : narrationSucceeded === narration.length ? 'done' : 'waiting',
           narration.length > 0 ? `${narrationSucceeded}/${narration.length}` : undefined,
           narration.length > 0 ? narrationSucceeded / narration.length : undefined,
         ),
@@ -1085,7 +1093,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       setBatches((current) => current.map((batch) => batch.id === batchId
         ? { ...batch, archivedAt: archived ? new Date().toISOString() : null }
         : batch));
-      setFeedback({ kind: 'success', message: archived ? '批次已归档，成片与导出文件完好保留。' : '批次已恢复。' });
+      if (archived && selectedBatchId === batchId) {
+        selectBatch('');
+        setWorkspace(null);
+        setBatchTasks([]);
+      }
+      setFeedback({ kind: 'success', message: archived ? '批次已归档，成片与导出文件完好保留。勾选「显示已归档」即可查看和恢复。' : '批次已恢复。' });
       void load();
     } catch (archiveError) {
       setFeedback({ kind: 'error', message: archiveError instanceof Error ? archiveError.message : '批次归档失败' });
@@ -1962,8 +1975,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       activeStep={activeStep}
       onStepSelect={(index) => setActiveStep(index as 0 | 1 | 2 | 3)}
       stepDisabled={(index) => (
-        !selectedBatchId
-        || (index === 1 && Object.keys(selectedAssets).length === 0)
+        (index >= 2 && !selectedBatchId)
         || (index === 2 && outputPlans.length === 0)
         || (index === 3 && (!workspace || workspace.cards.length === 0))
       )}
@@ -2123,6 +2135,15 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 </section>
               );
             })()}
+            {activeStep === 0 && !frozen && (
+              <div className="card mx-2 flex flex-wrap items-center justify-between gap-3 p-4">
+                <div>
+                  <p className="text-sm font-medium text-ink">已有写好的脚本？</p>
+                  <p className="mt-1 text-xs text-ink-secondary">可先上传 TXT / Markdown 或粘贴文案，再选择素材、设置配音继续生产。</p>
+                </div>
+                <button type="button" className="btn-secondary" onClick={() => setActiveStep(1)}>导入自己的脚本</button>
+              </div>
+            )}
             {content}
           </main>
         );
@@ -2213,6 +2234,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         if (activeStep === 1) {
           return commonMain(
             <BatchStepScripts
+              batchSelected={Boolean(selectedBatchId)}
               prep={prep}
               selectedScripts={selectedScripts}
               onToggleScript={(scriptId, selected) => {

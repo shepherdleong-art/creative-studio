@@ -80,7 +80,11 @@ export default function BatchProductionSidebar({
         />
         <div className={`${shellStyles.panelList} mt-2 space-y-1`}>
           {visibleBatches.length === 0 && (
-            <p className={shellStyles.hintLine}>没有匹配的批次{batches.length === 0 ? '，点击顶栏「新建批次」开始' : ''}。</p>
+            <p className={shellStyles.hintLine}>
+              {!showArchived && !query.trim() && batches.some((batch) => batch.archivedAt)
+                ? '批次已归档，勾选下方「显示已归档」即可查看和恢复。'
+                : `没有匹配的批次${batches.length === 0 ? '，点击顶栏「新建批次」开始' : ''}。`}
+            </p>
           )}
           {visibleBatches.map((batch) => (
             <div key={batch.id} className="group relative">
@@ -101,8 +105,9 @@ export default function BatchProductionSidebar({
               </button>
               <button
                 type="button"
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md px-1.5 py-0.5 text-[11px] text-ink-tertiary opacity-0 transition group-hover:opacity-100 hover:text-ink"
+                className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-md px-1.5 py-0.5 text-[11px] text-ink-tertiary transition ${batch.archivedAt ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'} hover:text-ink`}
                 title={batch.archivedAt ? '恢复批次' : '归档批次（不删除成片与导出文件）'}
+                disabled={busy}
                 onClick={() => onArchive(batch.id, !batch.archivedAt)}
               >
                 {batch.archivedAt ? '恢复' : '归档'}
