@@ -10,6 +10,10 @@ import type { FrozenBatchCoverTitleConfig } from '@/lib/batch-production/cover-t
 import type { BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
 import BatchCoverDraftPreview from './BatchCoverDraftPreview';
 import BatchTextStyleEditor from './BatchTextStyleEditor';
+import BatchPackagingEditor from './BatchPackagingEditor';
+import BatchCoverPackagingPreview from './BatchCoverPackagingPreview';
+import type { FinalEditPackagingConfig } from '@/lib/media-core/packaging-vars';
+import mergedStyles from './batch-cover-editor.module.css';
 import styles from '../mixcut/mixcut-content.module.css';
 
 export interface BatchCoverEditorTitleDraft {
@@ -23,6 +27,10 @@ export interface BatchCoverEditorDraft {
   timeUs: number;
   framing: CoverFraming;
   title: BatchCoverEditorTitleDraft;
+  titleEdited?: boolean;
+  packaging?: FinalEditPackagingConfig;
+  expectedEditRevision?: number;
+  expectedOutputVersionId?: string;
 }
 
 interface BatchCoverEditorDrawerProps {
@@ -33,6 +41,9 @@ interface BatchCoverEditorDrawerProps {
   title: FrozenBatchCoverTitleConfig | null;
   framing?: CoverFraming | null;
   outputPreset: OutputPresetId;
+  packaging?: FinalEditPackagingConfig;
+  packagingPreviewUrl?: string;
+  version?: { editRevision: number; outputVersionId: string };
   busy: boolean;
   onClose: () => void;
   onApply: (draft: BatchCoverEditorDraft) => Promise<boolean>;
@@ -67,18 +78,23 @@ function createDraft(
   timeUs: number,
   outputWidth: number,
   asset: BatchOutputPoolAssetView | null,
+  packaging?: FinalEditPackagingConfig,
+  version?: { editRevision: number; outputVersionId: string },
 ): BatchCoverEditorDraft {
   return {
     assetId,
     timeUs: clampTimeUs(timeUs, asset),
     framing: { ...(framing ?? title?.framing ?? DEFAULT_FRAMING) },
     title: cloneTitle(title, outputWidth),
+    packaging: packaging ? structuredClone(packaging) : undefined,
+    expectedEditRevision: version?.editRevision,
+    expectedOutputVersionId: version?.outputVersionId,
   };
 }
 
 /**
- * 批量成片的封面精调抽屉：交互结构和单条剪辑保持一致，支持来源/截帧、
- * 画面构图、两段标题文字与完整文字样式；应用时只覆盖当前成片计划。
+ * 批量封面的统一草稿编辑器：来源/截帧、画面构图与真实包装文字叠加编辑；
+ * 未开启包装时保留原生标题样式，应用时只覆盖当前成片计划。
  */
 export default function BatchCoverEditorDrawer({
   active,
@@ -88,22 +104,29 @@ export default function BatchCoverEditorDrawer({
   title,
   framing,
   outputPreset,
-  busy,
+  packaging,
+  packagingPreviewUrl,
+  version,
+  busy: externalBusy,
   onClose,
   onApply,
 }: BatchCoverEditorDrawerProps) {
   const outputWidth = outputPreset === '16x9' ? 1920 : 1080;
+  const [applying, setApplying] = useState(false);
+  const [message, setMessage] = useState('');
+  const applyingRef = useRef(false);
+  const busy = externalBusy || applying;
+  const [canvasMode, setCanvasMode] = useState<'text' | 'image'>('text');
   const [draft, setDraft] = useState<BatchCoverEditorDraft>(() => {
     const initialAsset = assets.find((asset) => asset.assetId === initialAssetId) ?? null;
-    return createDraft(title, framing, initialAssetId, initialTimeUs, outputWidth, initialAsset);
+    return createDraft(title, framing, initialAssetId, initialTimeUs, outputWidth, initialAsset, packaging, version);
   });
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   // 字体浮层 host 由 BatchTextStyleEditor 自托管（紧跟各自触发器），抽屉不再管 host。
   const previousFocusRef = useRef<HTMLElement | null>(null);
-  const busyRef = useRef(busy);
   const onCloseRef = useRef(onClose);
-  const initialSnapshotRef = useRef({ title, framing, assets });
+  const initialSnapshotRef = useRef({ title, framing, assets, packaging, version, initialAssetId, initialTimeUs });
   const selectedAsset = draft.assetId ? assets.find((asset) => asset.assetId === draft.assetId) ?? null : null;
   const selectedDurationUs = durationUsOf(selectedAsset);
   const selectedTimeUs = clampTimeUs(draft.timeUs, selectedAsset);
@@ -112,24 +135,23 @@ export default function BatchCoverEditorDrawer({
     framing: draft.framing,
   };
 
-  useEffect(() => { busyRef.current = busy; }, [busy]);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   useEffect(() => {
-    initialSnapshotRef.current = { title, framing, assets };
+    initialSnapshotRef.current = { title, framing, assets, packaging, version, initialAssetId, initialTimeUs };
   });
 
-  // 草稿初始化:只在真正「打开这个 drawer / 换了目标封面」时重置。
-  // title/framing/assets 每次 loadView 都换引用,不能进依赖,否则应用一次就把草稿冲掉。
+  // 只在打开抽屉时冻结草稿与版本。目标成片由调用方 key 隔离，后台刷新不能覆盖未提交修改。
   useEffect(() => {
     if (!active) return;
     const snapshot = initialSnapshotRef.current;
-    const selectedInitialAsset = snapshot.assets.find((asset) => asset.assetId === initialAssetId) ?? null;
+    const selectedInitialAsset = snapshot.assets.find((asset) => asset.assetId === snapshot.initialAssetId) ?? null;
     const timer = window.setTimeout(() => {
-      setDraft(createDraft(snapshot.title, snapshot.framing, initialAssetId, initialTimeUs, outputWidth, selectedInitialAsset));
+      setDraft(createDraft(snapshot.title, snapshot.framing, snapshot.initialAssetId, snapshot.initialTimeUs, outputWidth, selectedInitialAsset, snapshot.packaging, snapshot.version));
+      setMessage(''); setCanvasMode('text');
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [active, initialAssetId, initialTimeUs, outputWidth]);
+  }, [active, outputWidth]);
 
   // 焦点陷阱 / 滚动锁 / ESC:只跟 active 走。
   useEffect(() => {
@@ -143,7 +165,7 @@ export default function BatchCoverEditorDrawer({
         // 字体面板在 document 捕获阶段先 preventDefault + stopPropagation 并关闭面板；
         // 已被面板消费的 Esc（defaultPrevented）直接放行，不再重复关抽屉。
         if (event.defaultPrevented) return;
-        if (!busyRef.current) onCloseRef.current();
+        if (!applyingRef.current) onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -185,10 +207,12 @@ export default function BatchCoverEditorDrawer({
   const patchFraming = (patch: Partial<CoverFraming>) => setDraft((current) => ({ ...current, framing: { ...current.framing, ...patch } }));
   const patchTitle = (part: 'primary' | 'secondary', text: string) => setDraft((current) => ({
     ...current,
+    titleEdited: true,
     title: { ...current.title, [part]: text.replace(/[\r\n]+/gu, '') },
   }));
   const patchTitleStyle = (part: 'primary' | 'secondary', value: TextStyle) => setDraft((current) => ({
     ...current,
+    titleEdited: true,
     title: { ...current.title, styles: { ...current.title.styles, [part]: value } },
   }));
 
@@ -196,11 +220,11 @@ export default function BatchCoverEditorDrawer({
     <div
       className={styles.coverDrawerBackdrop}
       data-testid="batch-cover-editor-drawer"
-      onPointerDown={(event) => { if (!busy && event.target === event.currentTarget) onClose(); }}
+      onPointerDown={(event) => { if (!applying && event.target === event.currentTarget) onClose(); }}
     >
       <section
         ref={dialogRef}
-        className={styles.coverDrawer}
+        className={`${styles.coverDrawer} ${mergedStyles.unifiedDrawer}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="batch-cover-editor-title"
@@ -211,14 +235,14 @@ export default function BatchCoverEditorDrawer({
           <div>
             <p className={styles.eyebrow}>BATCH COVER</p>
             <h2 id="batch-cover-editor-title">精调封面</h2>
-            <span>{outputPreset.replace('x', ':')} · 可调整画面、标题与截帧</span>
+            <span>{outputPreset.replace('x', ':')} · 包装文字、画面构图、素材与截帧统一调整</span>
           </div>
-          <button ref={closeButtonRef} type="button" aria-label="关闭封面精调" disabled={busy} onClick={onClose}>
+          <button ref={closeButtonRef} type="button" aria-label="关闭封面精调" disabled={applying} onClick={onClose}>
             <Icon name="close" size={18} />
           </button>
         </header>
 
-        <fieldset className={styles.coverDrawerBody} disabled={busy} aria-label="视频封面设置">
+        <fieldset className={`${styles.coverDrawerBody} ${mergedStyles.unifiedBody}`} disabled={busy} aria-label="视频封面设置">
           <aside className={styles.coverSourcePanel}>
             <h3>来源片段</h3>
             <div className={styles.coverSourceList}>
@@ -259,38 +283,27 @@ export default function BatchCoverEditorDrawer({
           </aside>
 
           <main className={styles.coverCanvasPanel}>
-            <div className={styles.coverCanvasWrap} data-output-preset={outputPreset}>
+            {draft.packaging?.enabled && <div className="flex gap-2" aria-label="封面画布工具">
+              <button type="button" className={canvasMode === 'text' ? 'btn-primary' : 'btn-secondary'} aria-pressed={canvasMode === 'text'} onClick={() => setCanvasMode('text')}>编辑文字</button>
+              <button type="button" className={canvasMode === 'image' ? 'btn-primary' : 'btn-secondary'} aria-pressed={canvasMode === 'image'} onClick={() => setCanvasMode('image')}>移动画面</button>
+            </div>}
+            <div className={`${styles.coverCanvasWrap} ${mergedStyles.unifiedCanvas}`} data-output-preset={outputPreset}>
               <BatchCoverDraftPreview
                 asset={selectedAsset}
                 timeUs={selectedTimeUs}
-                title={previewTitle}
+                title={draft.packaging?.enabled ? null : previewTitle}
                 framing={draft.framing}
                 outputPreset={outputPreset}
+                onFramingChange={!busy && (!draft.packaging?.enabled || canvasMode === 'image') ? framing => setDraft(current => ({ ...current, framing })) : undefined}
               />
+              {draft.packaging?.enabled && packagingPreviewUrl && <BatchCoverPackagingPreview url={packagingPreviewUrl} config={draft.packaging} assetId={draft.assetId}
+                editable={!busy && canvasMode === 'text'} onChange={packaging => setDraft(current => ({ ...current, packaging }))} />}
               <div className={styles.coverSafeArea} aria-label="4% 导出安全区" />
             </div>
-            <p>右侧可调整画面构图、标题文字和样式；标题位置按 X/Y 调整，虚线框为四边 4% 导出安全区。</p>
+            <p>{draft.packaging?.enabled ? '双击文字修改，拖动调整文字位置，角点可缩放或旋转；切换「移动画面」拖动底图。' : '拖动画面调整构图；右侧可调整标题文字和样式。'} 虚线框为四边 4% 导出安全区。</p>
           </main>
 
           <aside className={styles.coverControlsPanel}>
-            <section>
-              <h3>当前封面</h3>
-              <dl className="space-y-2 text-[11px]">
-                <div className="flex items-start justify-between gap-3">
-                  <dt className="text-ink-tertiary">来源</dt>
-                  <dd className="min-w-0 truncate text-right text-ink" title={selectedAsset?.displayName}>{selectedAsset?.displayName || '未选择'}</dd>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="text-ink-tertiary">截帧</dt>
-                  <dd className="tabular-nums text-ink">{(selectedTimeUs / 1_000_000).toFixed(2)} 秒</dd>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="text-ink-tertiary">画幅</dt>
-                  <dd className="text-ink">{outputPreset.replace('x', ':')}</dd>
-                </div>
-              </dl>
-            </section>
-
             <section>
               <h3>画面构图</h3>
               <div className="space-y-3">
@@ -300,7 +313,10 @@ export default function BatchCoverEditorDrawer({
               </div>
             </section>
 
-            {(['primary', 'secondary'] as const).map((part) => {
+            {draft.packaging && packagingPreviewUrl && <BatchPackagingEditor draft view={{ packaging: draft.packaging, editable: !busy }}
+              onSave={async packaging => { setDraft(current => ({ ...current, packaging })); return true; }} />}
+
+            {!draft.packaging?.enabled && (['primary', 'secondary'] as const).map((part) => {
               const label = part === 'primary' ? '主标题' : '副标题';
               return (
                 <section key={part} aria-label={label + '设置'}>
@@ -324,23 +340,27 @@ export default function BatchCoverEditorDrawer({
               );
             })}
 
-            <section>
-              <h3>操作说明</h3>
-              <p className="text-[11px] leading-5 text-ink-tertiary">取消不会保存本次调整；点击应用后，只更新当前成片计划，其他批量成片不受影响。</p>
-            </section>
           </aside>
         </fieldset>
 
         <footer className={styles.coverDrawerFooter}>
-          <span aria-live="polite">{selectedAsset ? selectedAsset.displayName + ' · ' + (selectedTimeUs / 1_000_000).toFixed(2) + ' 秒' : '请选择封面素材'}</span>
+          <span aria-live="polite" role={message ? 'alert' : undefined}>{message || (selectedAsset ? selectedAsset.displayName + ' · ' + (selectedTimeUs / 1_000_000).toFixed(2) + ' 秒' : '请选择封面素材')}</span>
           <div>
-            <button type="button" className={styles.secondaryButton} disabled={busy} onClick={onClose}>取消</button>
+            <button type="button" className={styles.secondaryButton} disabled={applying} onClick={onClose}>取消</button>
             <button
               type="button"
               className={styles.primaryButton}
               disabled={busy || !selectedAsset || selectedDurationUs == null}
-              onClick={() => void onApply({ ...draft, timeUs: selectedTimeUs }).then((accepted) => { if (accepted) onClose(); })}
-            >{busy ? '正在应用…' : '应用封面'}</button>
+              onClick={async () => {
+                if (applyingRef.current) return;
+                applyingRef.current = true; setApplying(true); setMessage('');
+                try {
+                  if (await onApply({ ...draft, timeUs: Math.round(selectedTimeUs) })) onClose();
+                  else setMessage('封面未保存，请检查错误后重试；本次草稿仍保留。');
+                } catch (error) { setMessage(error instanceof Error ? error.message : '封面保存失败'); }
+                finally { applyingRef.current = false; setApplying(false); }
+              }}
+            >{applying ? '正在应用…' : externalBusy ? '暂不可编辑' : '应用封面'}</button>
           </div>
         </footer>
       </section>

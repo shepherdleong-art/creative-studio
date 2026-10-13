@@ -200,8 +200,9 @@
     const gap = rootRect.width * 0.02;
     const boundary = Math.min(rootRect.right - 2, brandLeft - gap); // 主标题右缘不可逾越的 x 坐标（locked 时=画布右缘）
     const leftEdge = rootRect.left + rootRect.width * 0.05; // title left:5%
-    if (!el.dataset.baseFs) el.dataset.baseFs = String(parseFloat(getComputedStyle(el).fontSize));
-    const base = parseFloat(el.dataset.baseFs);
+    // 从当前画幅的 CSS 比例字号重算，不能缓存旧视口的 px，也不能累乘上次 fit 结果。
+    el.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(el).fontSize);
     if (!base) return;
     el.style.whiteSpace = "nowrap";
     el.style.maxWidth = "";
@@ -250,9 +251,9 @@
   }
   function fitToCanvas(el) {
     if (!el || el.style.display === "none") return;
-    // dataset.baseFs 基准还原（防 fonts.ready 前 fallback 测量复利收缩，2026-10-10 实锤）
-    if (!el.dataset.baseFs) el.dataset.baseFs = String(parseFloat(getComputedStyle(el).fontSize));
-    const base = parseFloat(el.dataset.baseFs);
+    // 从当前画幅的 CSS 比例字号重算，不能缓存旧视口的 px，也不能累乘上次 fit 结果。
+    el.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(el).fontSize);
     if (!base) return;
     let size = base;
     el.style.fontSize = size.toFixed(2) + "px";
@@ -280,12 +281,12 @@
     el.innerHTML = `<span class="check">${CHECK_SVG}</span><span class="ptxt">${String(text || "")}</span>`;
     return el;
   }
-  /* 标签过宽纯缩字号（不截断）：maxW 为根宽占比；dataset.baseFs 基准还原（防 fonts.ready 前 fallback 测量复利收缩） */
+  /* 标签过宽纯缩字号（不截断）：maxW 为根宽占比；每次还原 CSS 比例字号，避免重复缩小或缓存旧 px */
   function fitTag(el, maxW) {
     const txt = el.querySelector(".ptxt");
     if (!txt) return;
-    if (!el.dataset.baseFs) el.dataset.baseFs = String(parseFloat(getComputedStyle(txt).fontSize));
-    const base = parseFloat(el.dataset.baseFs);
+    txt.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(txt).fontSize);
     if (!base) return;
     let size = base;
     txt.style.fontSize = size.toFixed(2) + "px";
@@ -355,7 +356,8 @@
       fitTag(el, 0.44);
       const inAt = clamp(Number(cue.startSec) || coverSec, coverSec + 0.15, Math.max(coverSec + 0.2, totalSec - 0.1));
       const outAt = clamp((Number(cue.endSec) || inAt + 1.2) + 0.3, inAt + 1.2, totalSec);
-      gsap.set(el, { opacity: 0, scale: 0.5 });
+      // 显式保留百分比居中，避免 GSAP 把初始 translateY(-50%) 缓存为旧高度的 px。
+      gsap.set(el, { x: 0, y: 0, xPercent: -50, yPercent: -50, opacity: 0, scale: 0.5 });
       tl.to(el, { opacity: 1, scale: 1, duration: 0.3, ease: "back.out(1.5)" }, inAt)
         .to(el, { opacity: 0, scale: 0.7, duration: 0.3, ease: "back.in(1.2)" }, outAt - 0.3);
     });

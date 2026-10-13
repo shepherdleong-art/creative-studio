@@ -1,0 +1,14 @@
+.unifiedDrawer[role='dialog'] { width: 94vw; max-width: 1600px; }
+fieldset.unifiedBody { grid-template-columns: 180px minmax(0, 1fr) 290px; }
+.unifiedBody .unifiedCanvas[data-output-preset='3x4'] { width: min(100%, 520px, calc((100dvh - 270px) * .75)); }
+.unifiedBody .unifiedCanvas[data-output-preset='9x16'] { width: min(100%, 520px, calc((100dvh - 270px) * .5625)); }
+.unifiedBody .unifiedCanvas[data-output-preset='16x9'] { width: min(100%, 720px, calc((100dvh - 270px) * 1.777778)); }
+@media (max-width: 1100px) {
+  .unifiedDrawer[role='dialog'] { width: 100vw; }
+  fieldset.unifiedBody { grid-template-columns: 140px minmax(0, 1fr) 260px; }
+}
+@media (max-width: 760px) {
+  fieldset.unifiedBody { grid-template-columns: 1fr; overflow-y: auto; }
+  .unifiedBody > aside, .unifiedBody > main { overflow: visible; }
+  .unifiedBody > main { order: -1; }
+}

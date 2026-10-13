@@ -27,9 +27,14 @@ export interface BatchReviewInspectorDockProps {
   onMediaEdit: (planId: string, edit: Record<string, unknown>) => Promise<boolean>;
   onJumpToCover: (planId: string) => void;
   onRefreshFilm: (planId: string) => Promise<void>;
+  coverEditorOpen: boolean;
+  onOpenCoverEditor: () => void;
+  onCloseCoverEditor: () => void;
 }
 
 export default function BatchReviewInspectorDock({
+  projectId,
+  batchId,
   outputPreset,
   film,
   selection,
@@ -39,6 +44,9 @@ export default function BatchReviewInspectorDock({
   onMediaEdit,
   onRefreshFilm,
   onJumpToCover,
+  coverEditorOpen,
+  onOpenCoverEditor,
+  onCloseCoverEditor,
 }: BatchReviewInspectorDockProps) {
   const arrangement = film?.arrangement;
   const planId = film?.planId;
@@ -78,7 +86,6 @@ export default function BatchReviewInspectorDock({
   const canResetSubtitleStyle = !!arrangement?.subtitleStyleOverride;
 
   // Cover Drawer state
-  const [coverEditorOpen, setCoverEditorOpen] = useState(false);
   const poolAssetsById = useMemo(() => new Map(poolAssets.map((a) => [a.assetId, a])), [poolAssets]);
   const coverAsset = arrangement?.coverAssetId ? (poolAssetsById.get(arrangement.coverAssetId) ?? null) : null;
 
@@ -182,7 +189,7 @@ export default function BatchReviewInspectorDock({
         <button
           type="button"
           className={`${styles.inspectorTabBtn} ${inspectorTab === 'cover' ? styles.inspectorTabActive : ''}`}
-          onClick={() => onTabChange('cover')}
+          onClick={() => { onTabChange('cover'); onOpenCoverEditor(); }}
         >
           封面
         </button>
@@ -344,7 +351,7 @@ export default function BatchReviewInspectorDock({
                 <BatchCoverDraftPreview
                   asset={coverAsset}
                   timeUs={arrangement.coverTimeUs}
-                  title={arrangement.coverTitle}
+                  title={arrangement.packaging?.enabled ? null : arrangement.coverTitle}
                   framing={arrangement.coverFraming}
                   outputPreset={outputPreset}
                 />
@@ -360,7 +367,7 @@ export default function BatchReviewInspectorDock({
                 <button
                   type="button"
                   className="btn-secondary mt-1 inline-flex h-7 items-center gap-1 px-2.5 text-xs text-accent"
-                  onClick={() => setCoverEditorOpen(true)}
+                  onClick={onOpenCoverEditor}
                 >
                   <span>封面精调</span>
                   <Icon name="chevron-right" size={11} />
@@ -369,6 +376,7 @@ export default function BatchReviewInspectorDock({
             </div>
 
             <BatchCoverEditorDrawer
+              key={film.planId}
               active={coverEditorOpen}
               assets={poolAssets}
               initialAssetId={arrangement.coverAssetId}
@@ -376,15 +384,21 @@ export default function BatchReviewInspectorDock({
               title={arrangement.coverTitle}
               framing={arrangement.coverFraming}
               outputPreset={outputPreset}
-              busy={false}
-              onClose={() => setCoverEditorOpen(false)}
+              packaging={arrangement.packaging}
+              packagingPreviewUrl={`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(film.planId)}/packaging-preview?projectId=${encodeURIComponent(projectId)}`}
+              version={arrangement.outputVersionId ? { editRevision: arrangement.editRevision, outputVersionId: arrangement.outputVersionId } : undefined}
+              busy={!arrangement.editable}
+              onClose={onCloseCoverEditor}
               onApply={async (draft: BatchCoverEditorDraft) => {
                 const ok = await onMediaEdit(film.planId, {
                   type: 'set_cover',
                   assetId: draft.assetId,
                   timeUs: draft.timeUs,
                   framing: draft.framing,
-                  title: draft.title,
+                  title: !draft.packaging?.enabled || draft.titleEdited ? draft.title : undefined,
+                  packaging: draft.packaging,
+                  expectedEditRevision: draft.expectedEditRevision,
+                  expectedOutputVersionId: draft.expectedOutputVersionId,
                 });
                 if (ok) await onRefreshFilm(film.planId);
                 return ok;

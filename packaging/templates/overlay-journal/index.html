@@ -138,12 +138,13 @@
   });
 
   /* 画幅边界保护：主/副标题含旋转后的包围盒不得超出画布，超出则纯缩字号（min 60%）。
-     dataset.baseFs 基准：每次先还原基准再量——fonts.ready 前 fallback 字体测量偏宽会误缩，
+     CSS 比例字号基准：每次先还原基准再量——fonts.ready 前 fallback 字体测量偏宽会误缩，
      无基准的迭代缩减在多次加载/RO 间复利衰减（2026-10-10 G077 标题 0.19px 实锤） */
   function fitToCanvas(el) {
     if (!el || el.style.display === "none") return;
-    if (!el.dataset.baseFs) el.dataset.baseFs = String(parseFloat(getComputedStyle(el).fontSize));
-    const base = parseFloat(el.dataset.baseFs);
+    // 从当前画幅的 CSS 比例字号重算，不能缓存旧视口的 px，也不能累乘上次 fit 结果。
+    el.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(el).fontSize);
     if (!base) return;
     let size = base;
     el.style.fontSize = size.toFixed(2) + "px";

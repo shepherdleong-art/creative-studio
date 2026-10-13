@@ -44,6 +44,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const body = await request.json().catch(() => ({})) as {
       type?: unknown;
       config?: unknown;
+      packaging?: unknown;
       reextract?: unknown;
       expectedOutputVersionId?: unknown;
       clipId?: unknown;
@@ -224,7 +225,17 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
         timeUs: body.timeUs,
         ...(body.framing === undefined ? {} : { framing: body.framing as CoverFraming | null }),
         ...(body.title === undefined ? {} : { title: body.title }),
+        expectedEditRevision: body.expectedEditRevision as number | undefined,
+        expectedOutputVersionId: body.expectedOutputVersionId as string | undefined,
       };
+      if (body.packaging !== undefined) {
+        if (!body.packaging || typeof body.packaging !== 'object' || Array.isArray(body.packaging)) return NextResponse.json({ error: 'invalid_clip_edit', message: '封面包装配置无效' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+        const view = getBatchOutputArrangementView(getDb(), projectId, id, planId);
+        const config = { ...body.packaging } as Record<string, unknown>;
+        // 合并封面只保存草稿，沿用正片卖点；不能在应用封面时触发外部提取或改写时序。
+        if (config.pointCues === undefined) config.pointCues = view.packaging?.pointCues ?? [];
+        edit.packaging = await prepareBatchPackagingConfig(getDb(), projectId, view, config);
+      }
     } else if (body.type === 'set_music_track') {
       const trackId = body.trackId === null
         ? null

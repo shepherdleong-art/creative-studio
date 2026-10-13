@@ -362,7 +362,10 @@ export default function BatchOutputEditor({
       assetId: draft.assetId,
       timeUs: draft.timeUs,
       framing: draft.framing,
-      title: draft.title,
+      title: !draft.packaging?.enabled || draft.titleEdited ? draft.title : undefined,
+      packaging: draft.packaging,
+      expectedEditRevision: draft.expectedEditRevision,
+      expectedOutputVersionId: draft.expectedOutputVersionId,
     });
   };
 
@@ -803,6 +806,7 @@ export default function BatchOutputEditor({
         </aside>
       </div>
       <BatchCoverEditorDrawer
+        key={view.planId}
         active={coverEditorOpen}
         assets={poolAssets}
         initialAssetId={view.coverAssetId}
@@ -810,6 +814,9 @@ export default function BatchOutputEditor({
         title={view.coverTitle}
         framing={view.coverFraming}
         outputPreset={outputPreset}
+        packaging={view.packaging}
+        packagingPreviewUrl={`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/packaging-preview?projectId=${encodeURIComponent(projectId)}`}
+        version={view.outputVersionId ? { editRevision: view.editRevision, outputVersionId: view.outputVersionId } : undefined}
         busy={editLocked}
         onClose={() => setCoverEditorOpen(false)}
         onApply={applyCover}

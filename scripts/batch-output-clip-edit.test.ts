@@ -1438,6 +1438,33 @@ try {
   assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).packaging?.enabled, true, '撤销恢复包装配置');
   console.log('✓ 22. 包装保存/审核失效/内容身份/跨成片隔离/过期修订和版本/幂等/撤销');
   resetPlan0Arrangement();
+  const beforeCombinedCover = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  const otherBeforeCombinedCover = JSON.stringify(currentArrangement(plans[1]));
+  const combinedCoverEdit = { type: 'set_cover' as const, assetId: assetC, timeUs: 1_000_000,
+    framing: { scale: 1.5, offsetX: -.2, offsetY: .3 }, packaging: packagingConfig,
+    expectedEditRevision: beforeCombinedCover.editRevision, expectedOutputVersionId: outputVersionId };
+  const combinedCoverResult = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], combinedCoverEdit);
+  const afterCombinedCover = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  assert.equal(afterCombinedCover.coverAssetId, assetC);
+  assert.equal(afterCombinedCover.coverTimeUs, 1_000_000);
+  assert.deepEqual(afterCombinedCover.coverFraming, combinedCoverEdit.framing);
+  assert.equal(afterCombinedCover.packaging?.varsOverrides.title, '实木餐边柜');
+  assert.equal(combinedCoverResult.editRevision, beforeCombinedCover.editRevision + 1, '封面和包装原子提交，只递增一次修订');
+  assert.equal(currentArrangement(plans[0]).review, undefined);
+  assert.equal(JSON.stringify(currentArrangement(plans[1])), otherBeforeCombinedCover);
+  const combinedJson = JSON.stringify(currentArrangement(plans[0]));
+  assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], combinedCoverEdit), /重新打开/);
+  assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { ...combinedCoverEdit, expectedEditRevision: combinedCoverResult.editRevision, expectedOutputVersionId: 'stale' }), /重新打开/);
+  assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { ...combinedCoverEdit, expectedEditRevision: combinedCoverResult.editRevision, assetId: assetNotInPool, packaging: { ...packagingConfig, varsOverrides: { title: '不能部分保存' } } }), /封面素材/);
+  assert.equal(JSON.stringify(currentArrangement(plans[0])), combinedJson, '版本冲突或换图失败，不得只保存包装');
+  assert.equal(applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { ...combinedCoverEdit, expectedEditRevision: combinedCoverResult.editRevision }).changed, false);
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'restore_arrangement', expectedEditRevision: combinedCoverResult.editRevision,
+    snapshot: { clips: beforeCombinedCover.clips, coverAssetId: beforeCombinedCover.coverAssetId, coverTimeUs: beforeCombinedCover.coverTimeUs, coverFraming: beforeCombinedCover.coverFraming, coverTitle: beforeCombinedCover.coverTitle, packaging: beforeCombinedCover.packaging } });
+  const undoneCombinedCover = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  assert.equal(undoneCombinedCover.coverAssetId, beforeCombinedCover.coverAssetId);
+  assert.deepEqual(undoneCombinedCover.packaging, beforeCombinedCover.packaging, '一次撤销同时恢复封面和包装');
+  console.log('✓ 合并封面：构图/选帧/包装原子保存、冲突、幂等、隔离和整包撤销');
+  resetPlan0Arrangement();
   const beforeSource = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
   const beforeSourceHash = resolveFullRenderContractHash(db, outputVersionId);
   const sourceEdit = { type: 'set_source_range' as const, clipId: 'clip-1', sourceStartUs: 4_000_000, sourceEndUs: 5_000_000,

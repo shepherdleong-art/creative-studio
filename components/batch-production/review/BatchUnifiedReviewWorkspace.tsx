@@ -124,6 +124,7 @@ export default function BatchUnifiedReviewWorkspace({
   const [tool, setTool] = useState<TimelineTool>('select');
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('subtitle');
+  const [coverEditorOpen, setCoverEditorOpen] = useState(false);
 
   // Selection
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(() => workspace.cards[0]?.planId ?? null);
@@ -458,7 +459,7 @@ export default function BatchUnifiedReviewWorkspace({
   // Global Keyboard Shortcuts (PRD T-06)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (sourceSession || e.defaultPrevented || e.isComposing) return;
+      if (coverEditorOpen || sourceSession || e.defaultPrevented || e.isComposing) return;
       // Ignore if focus is in input / textarea
       const target = e.target as HTMLElement | null;
       if (
@@ -566,7 +567,7 @@ export default function BatchUnifiedReviewWorkspace({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [sourceSession, selection, selectedPlanId, films, playheadSec, handleMediaEdit, handleUndo, handleRedo]);
+  }, [coverEditorOpen, sourceSession, selection, selectedPlanId, films, playheadSec, handleMediaEdit, handleUndo, handleRedo]);
 
   const approvedCount = films.filter((f) => f.approved).length;
 
@@ -658,6 +659,12 @@ export default function BatchUnifiedReviewWorkspace({
             film={activeFilm}
             selection={selection}
             inspectorTab={inspectorTab}
+            coverEditorOpen={coverEditorOpen}
+            onOpenCoverEditor={() => {
+              setPreviewAsset(null); setSourceSession(null); setPlayheadSec(-10 / 24);
+              setCoverPreviewRequest(value => value + 1); setCoverEditorOpen(true);
+            }}
+            onCloseCoverEditor={() => setCoverEditorOpen(false)}
             onTabChange={setInspectorTab}
             poolAssets={poolAssets}
             onMediaEdit={handleMediaEdit}
@@ -718,6 +725,9 @@ export default function BatchUnifiedReviewWorkspace({
             onOpenCoverEditor={(planId) => {
               setSelectedPlanId(planId);
               setInspectorTab('cover');
+              setPreviewAsset(null); setSourceSession(null); setPlayheadSec(-10 / 24);
+              setCoverPreviewRequest(value => value + 1);
+              setCoverEditorOpen(true);
             }}
           />
         </div>

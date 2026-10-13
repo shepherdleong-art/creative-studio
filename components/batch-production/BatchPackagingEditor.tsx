@@ -9,10 +9,11 @@ import styles from '@/components/mixcut/mixcut-content.module.css';
 
 const fallback: FinalEditPackagingConfig = { enabled: false, template: 'overlay-poster', varsOverrides: {} };
 
-export default function BatchPackagingEditor({ view, onSave, onJumpToCover }: {
-  view: BatchOutputClipEditView;
+export default function BatchPackagingEditor({ view, onSave, onJumpToCover, draft = false }: {
+  view: Pick<BatchOutputClipEditView, 'packaging' | 'editable'>;
   onSave: (config: FinalEditPackagingConfig, reextract?: boolean) => Promise<boolean>;
-  onJumpToCover: () => void;
+  onJumpToCover?: () => void;
+  draft?: boolean;
 }) {
   const config = view.packaging ?? fallback;
   const [busy, setBusy] = useState(false);
@@ -44,7 +45,7 @@ export default function BatchPackagingEditor({ view, onSave, onJumpToCover }: {
       <div className={styles.pkFontRows}>
         {(['title', 'subtitle', 'point'] as const).map((slot, i) => <div key={slot} className={styles.pkFontRow}>
           <span className={styles.pkFontLabel}>{['主标题字体', '副标题字体', '卖点字体'][i]}</span>
-          <FontPicker slot={slot} current={config[`${slot}Font`] ?? null} onSelect={(font, file) => void save({ ...config, [`${slot}Font`]: { family: font.family, file } })} onSelectNone={() => void save({ ...config, [`${slot}Font`]: undefined })} disabled={disabled} />
+          <FontPicker slot={slot} inlinePanel={draft} current={config[`${slot}Font`] ?? null} onSelect={(font, file) => void save({ ...config, [`${slot}Font`]: { family: font.family, file } })} onSelectNone={() => void save({ ...config, [`${slot}Font`]: undefined })} disabled={disabled} />
           {slot === 'point' && <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => fileInput.current?.click()}>上传字体</button>}
         </div>)}
       </div>
@@ -59,14 +60,14 @@ export default function BatchPackagingEditor({ view, onSave, onJumpToCover }: {
         } catch (error) { setMessage(error instanceof Error ? error.message : '字体上传失败'); }
         finally { saving.current = false; setBusy(false); }
       }} />
-      <p className="text-ink-tertiary">双击中央预览中的标题或卖点直接改字；拖动调整位置。正片卖点在时间轴上调整时间。</p>
+      <p className="text-ink-tertiary">{draft ? '双击封面中的标题或卖点直接改字；拖动调整文字位置，角点可缩放和旋转。' : '双击中央预览中的标题或卖点直接改字；拖动调整位置。正片卖点在时间轴上调整时间。'}</p>
       <div className="flex flex-wrap gap-2">
-        <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={onJumpToCover}>跳到封面</button>
-        <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => void save({ ...config, layouts: { ...config.layouts, [config.template]: {} } })}>恢复默认版式</button>
-        <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => void save(config, true)}>重新提取卖点</button>
+        {onJumpToCover && <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={onJumpToCover}>跳到封面</button>}
+        <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => void save({ ...config, layouts: { ...config.layouts, [config.template]: draft ? { ...config.layouts?.[config.template], cover: {} } : {} } })}>恢复默认版式</button>
+        {!draft && <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => void save(config, true)}>重新提取卖点</button>}
         <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => void save({ ...config, varsOverrides: {} })}>恢复默认文案</button>
       </div>
-      <p className="text-ink-tertiary">修改自动保存；预览为近似效果，最终以导出渲染为准。</p>
+      <p className="text-ink-tertiary">{draft ? '点击「应用封面」一起保存。模板与字体也作用于正片；正片卖点时序保持不变。' : '修改自动保存；预览为近似效果，最终以导出渲染为准。'}</p>
     </>}
     {message && <p role="alert" className="text-fail">{message}</p>}
   </section>;

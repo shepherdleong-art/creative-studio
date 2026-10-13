@@ -168,12 +168,13 @@
   });
 
   /* 溢出保护：主标题/小字行不得超出色块宽（左 6.2% 起，右留 6%），超出纯缩字号（min 60%）。
-     以首次字号为基准幂等计算（防止字体加载后反复测量越缩越小） */
+     以当前画幅的 CSS 比例字号为基准幂等计算（防止重复测量或缩放沿用旧字号） */
   function fitLine(el, maxRatio) {
     if (!el || el.style.display === "none") return;
     const rootW = rootEl.getBoundingClientRect().width;
-    if (!el.dataset.baseFs) el.dataset.baseFs = parseFloat(getComputedStyle(el).fontSize);
-    const base = parseFloat(el.dataset.baseFs);
+    // 先还原 cqw 基准再测量，窗口缩放与字体加载都从同一比例起算。
+    el.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(el).fontSize);
     if (!base) return;
     const curSize = parseFloat(getComputedStyle(el).fontSize);
     const w = el.getBoundingClientRect().width;
@@ -197,9 +198,9 @@
   function fitTag(el, maxW) {
     const txt = el.querySelector(".ptxt");
     if (!txt) return;
-    // dataset.baseFs 基准还原（防 fonts.ready 前 fallback 测量复利收缩，2026-10-10 实锤）
-    if (!el.dataset.baseFs) el.dataset.baseFs = String(parseFloat(getComputedStyle(txt).fontSize));
-    const base = parseFloat(el.dataset.baseFs);
+    // 还原 CSS 比例字号（避免字体加载或预览缩放后沿用旧 px）
+    txt.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(txt).fontSize);
     if (!base) return;
     let size = base;
     txt.style.fontSize = size.toFixed(2) + "px";

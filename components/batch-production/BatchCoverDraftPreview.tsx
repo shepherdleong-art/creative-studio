@@ -28,6 +28,7 @@ interface BatchCoverDraftPreviewProps {
   outputPreset: OutputPresetId;
   className?: string;
   fill?: boolean;
+  onFramingChange?: (framing: CoverFraming) => void;
 }
 
 /**
@@ -42,8 +43,10 @@ export default function BatchCoverDraftPreview({
   outputPreset,
   className = '',
   fill = false,
+  onFramingChange,
 }: BatchCoverDraftPreviewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const drag = useRef<{ x: number; y: number; overflowX: number; overflowY: number; framing: CoverFraming } | null>(null);
   const [sourceDimensions, setSourceDimensions] = useState<SourceDimensions | null>(null);
   const outputSize = OUTPUT_PRESETS[outputPreset];
   const sourceKey = asset ? `${asset.assetId}:${asset.previewUrl ?? asset.thumbnailUrl ?? ''}` : '';
@@ -105,8 +108,27 @@ export default function BatchCoverDraftPreview({
       className={fill
         ? `absolute inset-0 h-full w-full overflow-hidden bg-ink ${className}`
         : `relative mx-auto w-full max-w-full overflow-hidden rounded-xl bg-ink ${className}`}
-      style={fill ? undefined : { aspectRatio: `${outputSize.width} / ${outputSize.height}` }}
+      style={{ ...(fill ? {} : { aspectRatio: `${outputSize.width} / ${outputSize.height}` }), touchAction: onFramingChange ? 'none' : undefined, cursor: onFramingChange ? 'grab' : undefined }}
       aria-label="封面实时预览"
+      onPointerDown={event => {
+        if (!onFramingChange || !frameGeometry || event.button !== 0) return;
+        event.preventDefault();
+        const rect = event.currentTarget.getBoundingClientRect();
+        drag.current = { x: event.clientX, y: event.clientY, framing: resolvedFraming,
+          overflowX: (frameGeometry.resizedWidth / outputSize.width - 1) * rect.width,
+          overflowY: (frameGeometry.resizedHeight / outputSize.height - 1) * rect.height };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={event => {
+        const start = drag.current;
+        if (!start || !onFramingChange) return;
+        const clamp = (value: number) => Math.max(-1, Math.min(1, value));
+        onFramingChange({ ...start.framing,
+          offsetX: start.overflowX > 0 ? clamp(start.framing.offsetX - 2 * (event.clientX - start.x) / start.overflowX) : start.framing.offsetX,
+          offsetY: start.overflowY > 0 ? clamp(start.framing.offsetY - 2 * (event.clientY - start.y) / start.overflowY) : start.framing.offsetY });
+      }}
+      onPointerUp={() => { drag.current = null; }}
+      onPointerCancel={() => { if (drag.current) onFramingChange?.(drag.current.framing); drag.current = null; }}
     >
       {asset.previewUrl ? (
         <video

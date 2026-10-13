@@ -143,7 +143,7 @@ export type BatchOutputClipEdit =
   | { type: 'move_audio_clip'; track: AudioTrackKind; clipId: string; timelineStartUs: number }
   | { type: 'insert'; afterClipId: string | null; assetId: string; durationUs?: number; timelineStartUs?: number }
   | { type: 'split'; clipId: string; offsetUs: number }
-  | { type: 'set_cover'; assetId: string; timeUs: number; framing?: CoverFraming | null; title?: unknown }
+  | { type: 'set_cover'; assetId: string; timeUs: number; framing?: CoverFraming | null; title?: unknown; packaging?: FinalEditPackagingConfig; expectedEditRevision?: number; expectedOutputVersionId?: string }
   | { type: 'set_music_track'; trackId: string | null }
   | { type: 'set_music_params'; gainDb: number; fadeInSec: number; fadeOutSec: number }
   /** 原子 BGM 编辑：一次校验曲目并写入全部参数，只递增一次 editRevision。 */
@@ -859,6 +859,10 @@ export function applyBatchOutputClipEdit(
       }
       break;
     case 'set_cover':
+      if (edit.packaging !== undefined && (!edit.packaging || typeof edit.packaging !== 'object' || Array.isArray(edit.packaging)
+        || !Number.isSafeInteger(edit.expectedEditRevision) || !nonEmptyString(edit.expectedOutputVersionId))) {
+        throw new BatchDomainError('invalid_input', '合并封面设置缺少有效的内容版本');
+      }
       if (!nonEmptyString(edit.assetId)) throw new BatchDomainError('invalid_input', '封面编辑需要 assetId');
       if (!Number.isSafeInteger(edit.timeUs) || edit.timeUs < 0) {
         throw new BatchDomainError('invalid_input', '封面时间点必须是非负安全整数(微秒)');
@@ -1229,6 +1233,10 @@ export function applyBatchOutputClipEdit(
       clips.splice(index, 1, first, second);
       splitChanged = true;
     } else if (edit.type === 'set_cover') {
+      if ((edit.expectedEditRevision !== undefined && edit.expectedEditRevision !== editRevision)
+        || (edit.expectedOutputVersionId !== undefined && edit.expectedOutputVersionId !== outputVersionId)) {
+        throw new BatchDomainError('conflict', '成片已被修改，请重新打开封面编辑器');
+      }
       const target = readAvailableEditingAsset(db, projectId, lineage.batchVersionId, edit.assetId.trim());
       if (!target) throw new BatchDomainError('invalid_input', '封面素材不在本批次冻结素材池或项目可用素材中');
       if (target.excluded === 1) throw new BatchDomainError('conflict', '封面素材已被排除出本批次分配');
@@ -1268,10 +1276,13 @@ export function applyBatchOutputClipEdit(
         && currentEffectiveTitle?.secondary === nextEffectiveTitle?.secondary
         && JSON.stringify(currentEffectiveTitle?.styles ?? null) === JSON.stringify(nextEffectiveTitle?.styles ?? null)
         && JSON.stringify(currentEffectiveTitle?.framing ?? null) === JSON.stringify(nextEffectiveTitle?.framing ?? null);
+      const nextPackaging = edit.packaging === undefined ? undefined : parsePackagingConfig(edit.packaging);
+      const samePackaging = nextPackaging === undefined || JSON.stringify(nextPackaging) === JSON.stringify(parsePackagingConfig(arrangement.packaging));
       if (currentAssetId === edit.assetId.trim() && currentTimeUs === timeUs
         && !('clipId' in currentCover) && !('segmentId' in currentCover)
-        && sameEffectiveTitle) return unchanged;
+        && sameEffectiveTitle && samePackaging) return unchanged;
       arrangement.cover = nextCover;
+      if (nextPackaging !== undefined) arrangement.packaging = nextPackaging;
       visualChanged = true;
     } else if (edit.type === 'set_music_track') {
       const currentMusic = asRecord(arrangement.music) ?? {};

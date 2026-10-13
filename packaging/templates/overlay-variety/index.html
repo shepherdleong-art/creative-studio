@@ -255,6 +255,7 @@
   function scaleToWidth(el, measure, targetRatio, minRatio) {
     if (!el || el.style.display === "none") return;
     const rootW = rootEl.getBoundingClientRect().width;
+    el.style.fontSize = "";
     const base = parseFloat(getComputedStyle(el).fontSize);
     if (!base) return;
     const w = measure();
@@ -287,9 +288,9 @@
   function fitTag(el, maxW) {
     const txt = el.querySelector(".ptxt");
     if (!txt) return;
-    // dataset.baseFs 基准还原（防 fonts.ready 前 fallback 测量复利收缩，2026-10-10 实锤）
-    if (!el.dataset.baseFs) el.dataset.baseFs = String(parseFloat(getComputedStyle(txt).fontSize));
-    const base = parseFloat(el.dataset.baseFs);
+    // 还原 CSS 比例字号（避免字体加载或预览缩放后沿用旧 px）
+    txt.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(txt).fontSize);
     if (!base) return;
     let size = base;
     txt.style.fontSize = size.toFixed(2) + "px";

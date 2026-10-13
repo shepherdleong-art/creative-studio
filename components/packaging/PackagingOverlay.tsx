@@ -6,8 +6,8 @@ import type { PackagingPointLayout } from '@/lib/media-core/packaging-vars';
 type PreviewWindow = Window & { __timelines?: { overlay?: { pause: () => void; seek: (time: number) => void } }; __editMode?: { active: boolean; only: null } };
 export type PackagingTextEditTarget = { pointId: string; rect: { left: number; top: number; width: number; height: number }; frame: { left: number; top: number } };
 
-export default function PackagingOverlay({ src, timeSec, editable = false, onLayout, onText }: {
-  src: string; timeSec: number; editable?: boolean;
+export default function PackagingOverlay({ src, srcDoc, timeSec, editable = false, onLayout, onText }: {
+  src?: string; srcDoc?: string; timeSec: number; editable?: boolean;
   onLayout?: (id: string, layout: PackagingPointLayout | null) => void;
   onText?: (target: PackagingTextEditTarget) => void;
 }) {
@@ -31,7 +31,7 @@ export default function PackagingOverlay({ src, timeSec, editable = false, onLay
       if (++tries > 100) { setError('包装预览加载失败，请重新打开'); window.clearInterval(timer); }
     }, 100);
     return () => window.clearInterval(timer);
-  }, [src, seek]);
+  }, [src, srcDoc, seek]);
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (!editable || event.origin !== window.location.origin || event.source !== frame.current?.contentWindow) return;
@@ -47,7 +47,7 @@ export default function PackagingOverlay({ src, timeSec, editable = false, onLay
     return () => window.removeEventListener('message', receive);
   }, [editable, onLayout, onText]);
   return <>
-    <iframe ref={frame} src={src} title={editable ? '包装版式编辑' : '包装效果叠加层'} onLoad={() => { setError(''); seek(); }} className="absolute inset-0 h-full w-full border-0" style={{ pointerEvents: editable ? 'auto' : 'none' }} />
+    <iframe ref={frame} src={src} srcDoc={srcDoc} title={editable ? '包装版式编辑' : '包装效果叠加层'} onLoad={() => { setError(''); seek(); }} className="absolute inset-0 h-full w-full border-0" style={{ pointerEvents: editable ? 'auto' : 'none' }} />
     {error && <p role="alert" className="absolute inset-x-0 bottom-0 bg-surface p-2 text-xs text-fail">{error}</p>}
   </>;
 }

@@ -40,13 +40,15 @@ function displayName(entry: SystemFontItem): string {
   return entry.nameZh ? `${entry.nameZh}（${entry.family}）` : entry.family;
 }
 
-export function FontPicker({ current, slot, onSelect, onSelectNone, disabled, noneLabel = NONE_LABEL }: {
+export function FontPicker({ current, slot, onSelect, onSelectNone, disabled, noneLabel = NONE_LABEL, inlinePanel = false }: {
   current: { family: string; file: string } | null;
   slot: FontSlotName;
   onSelect: (entry: SystemFontItem, materializedFile: string) => void;
   onSelectNone: () => void;
   disabled?: boolean;
   noneLabel?: string;
+  /** 窄栏抽屉内展开到文档流，避免字体列表被滚动容器裁切。 */
+  inlinePanel?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -157,12 +159,13 @@ export function FontPicker({ current, slot, onSelect, onSelectNone, disabled, no
   );
 
   return (
-    <div className={styles.pkFontPicker}>
-      <button type="button" className={styles.btn} disabled={disabled} onClick={() => setOpen((value) => !value)}>
+    <div className={styles.pkFontPicker} style={inlinePanel && open ? { width: '100%' } : undefined}
+      onKeyDown={event => { if (open && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setOpen(false); } }}>
+      <button type="button" className={styles.btn} aria-expanded={open} disabled={disabled} onClick={() => setOpen((value) => !value)}>
         {current ? current.family : noneLabel}
       </button>
       {open && (
-        <div className={styles.pkFontPop}>
+        <div className={styles.pkFontPop} style={inlinePanel ? { position: 'static', width: '100%', maxHeight: 320, marginTop: 6 } : undefined}>
           <div className={styles.pkFontSearchRow}>
             <input
               type="search"
