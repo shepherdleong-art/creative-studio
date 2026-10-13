@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTimelineZoom } from '@/components/timeline/use-timeline-zoom';
+import { TimelineShortcutsDialog } from '@/components/timeline/TimelineShortcutsDialog';
 import { Icon } from '@/components/ui/Icon';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, type FinalEditAssetView, type FinalEditVariantView, type SubtitleCue, type TimelineClip } from '@/lib/final-edit/types';
 import type { PointCue } from '@/lib/final-edit/packaging-cues';
@@ -332,14 +333,10 @@ export function MixcutTimeline({
         <button type="button" className={styles.tlToolButton} disabled={disabled || !canRedo} onClick={onRedo} title="重做 (⌘/Ctrl+Shift+Z)">重做</button>
         <button type="button" className={styles.tlToolButton} aria-pressed={snapEnabled} onClick={() => setSnapEnabled(value => !value)} title="视频磁吸 (N)，Alt 临时关闭">磁吸{snapEnabled ? '开' : '关'}</button>
         <label>缩放 <input ref={zoomInputRef} aria-label="时间轴缩放" type="range" min={40} max={240} step={10} value={pxPerSecond} onChange={event => changeZoom(Number(event.target.value))} /></label>
-        <button type="button" className={styles.tlToolButton} onClick={() => setShortcutsOpen(value => !value)} aria-expanded={shortcutsOpen}>快捷键</button>
+        <button type="button" className={styles.tlToolButton} onClick={() => setShortcutsOpen(true)} aria-haspopup="dialog" aria-expanded={shortcutsOpen}>快捷键说明</button>
         <span role="status" className={styles.tlToolHint} data-testid="mixcut-timeline-tool-hint">{tool === 'split' ? splitMessage || '点击视频、音频或字幕的目标位置切开；视频两侧至少保留 0.5 秒，右键删除' : '拖动字幕块移动，拖两侧修剪，双击改字；选中视频可在右侧调整倍速和画面，音频用分割工具裁切，右键删除'}</span>
       </div>
-      {shortcutsOpen && <div role="dialog" aria-label="时间轴快捷键" className={styles.panel} onKeyDown={event => { if (event.key === 'Escape') setShortcutsOpen(false); }}>
-        <p>Space 播放/暂停 · V 选择 · B 分割工具 · ⌘/Ctrl+B 播放头分割 · Delete/Backspace 删除选中片段</p>
-        <p>⌘/Ctrl+Z 撤销 · ⌘/Ctrl+Shift+Z 重做 · ←/→ 逐帧 · Shift+←/→ 十帧 · +/− 缩放 · N 视频磁吸 · Alt 临时关闭磁吸 · Esc 取消拖动</p>
-        <button type="button" autoFocus onClick={() => setShortcutsOpen(false)}>关闭</button>
-      </div>}
+      {shortcutsOpen && <TimelineShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
       <section className={styles.tl} aria-label="智能混剪时间轴" aria-busy={disabled} data-mutations-disabled={disabled || undefined} data-tool={tool}>
       <div className={styles.tlLabels}>
         <div className={styles.tlLab} style={{ height: 20 }} />

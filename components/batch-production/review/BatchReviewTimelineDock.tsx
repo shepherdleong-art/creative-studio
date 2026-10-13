@@ -3,6 +3,7 @@
 import BatchPackagingTrack from './BatchPackagingTrack';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useTimelineZoom } from '@/components/timeline/use-timeline-zoom';
+import { TimelineShortcutsDialog } from '@/components/timeline/TimelineShortcutsDialog';
 import { Icon } from '@/components/ui/Icon';
 import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
 import { audioClips } from '@/lib/media-core/audio-edit';
@@ -1634,53 +1635,7 @@ export default function BatchReviewTimelineDock({
         <span>主视频秒尺 · 封面独立，不计复用</span>
       </div>
 
-      {/* Shortcuts modal dialog */}
-      {shortcutsOpen && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-          onClick={() => setShortcutsOpen(false)}
-        >
-          <div
-            className="w-full max-w-md rounded-2xl bg-surface p-5 shadow-xl space-y-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-hairline pb-3">
-              <h3 className="font-semibold text-ink">时间轴快捷键</h3>
-              <button
-                type="button"
-                className="btn-secondary h-7 w-7 p-0"
-                onClick={() => setShortcutsOpen(false)}
-              >
-                ×
-              </button>
-            </div>
-            <dl className="grid grid-cols-2 gap-2 text-xs">
-              <dt className="text-ink-secondary">空格 (Space)</dt>
-              <dd className="font-medium text-ink">播放 / 暂停</dd>
-              <dt className="text-ink-secondary">V / B</dt>
-              <dd className="font-medium text-ink">选择工具 / 分割工具</dd>
-              <dt className="text-ink-secondary">⌘B / Ctrl+B</dt>
-              <dd className="font-medium text-ink">在播放头分割选中片段</dd>
-              <dt className="text-ink-secondary">Delete / Backspace</dt>
-              <dd className="font-medium text-ink">删除选中片段</dd>
-              <dt className="text-ink-secondary">⌘Z / ⌘⇧Z</dt>
-              <dd className="font-medium text-ink">撤销 / 重做</dd>
-              <dt className="text-ink-secondary">← / →</dt>
-              <dd className="font-medium text-ink">后退 / 前进 1 帧</dd>
-              <dt className="text-ink-secondary">⇧+← / ⇧+→</dt>
-              <dd className="font-medium text-ink">后退 / 前进 10 帧</dd>
-              <dt className="text-ink-secondary">N</dt>
-              <dd className="font-medium text-ink">开启 / 关闭磁吸</dd>
-              <dt className="text-ink-secondary">Alt(按住)</dt>
-              <dd className="font-medium text-ink">临时关闭磁吸</dd>
-              <dt className="text-ink-secondary">+ / -</dt>
-              <dd className="font-medium text-ink">时间轴缩放</dd>
-            </dl>
-          </div>
-        </div>
-      )}
+      {shortcutsOpen && <TimelineShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
     </section>
   );
 }
