@@ -84,6 +84,7 @@ export interface BatchStepScriptsProps {
   batchSelected: boolean;
   prep: BatchPreparationResult;
   selectedScripts: Record<string, number>;
+  onSetScriptsSelected: (scriptIds: string[], selected: boolean) => void;
   onToggleScript: (scriptId: string, selected: boolean) => void;
   onCopyCountChange: (scriptId: string, copyCount: number) => void;
   plannedCount: number;
@@ -114,7 +115,7 @@ export interface BatchStepScriptsProps {
   /** 手动脚本导入/编辑/删除后通知容器刷新准备区(容器决定是否强制重新确认) */
   onScriptCreated: () => void;
   onScriptUpdated: (scriptId: string) => void;
-  onScriptDeleted: (scriptId: string) => void;
+  onScriptsDeleted: (scriptIds: string[]) => void;
   inputChangedWarning: boolean;
   /** 开跑后的分阶段进度;未开跑时为 null。渲染在本步内容栈末尾(BGM 之下),
       点开跑后由容器滚进视野——置顶会落在「开始」按钮的视线之外。 */
@@ -161,6 +162,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     prep,
     selectedScripts,
     onToggleScript,
+    onSetScriptsSelected,
     onCopyCountChange,
     plannedCount,
     outputPreset,
@@ -187,7 +189,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     onStartBatch,
     onScriptCreated,
     onScriptUpdated,
-    onScriptDeleted,
+    onScriptsDeleted,
     inputChangedWarning,
     progress,
     controlState,
@@ -249,6 +251,9 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   }, []);
 
   const scriptCount = Object.keys(selectedScripts).length;
+  const selectedListedScripts = prep.scripts.filter(script => selectedScripts[script.id] !== undefined);
+  const allScriptsSelected = prep.scripts.length > 0 && selectedListedScripts.length === prep.scripts.length;
+  const scriptActionsDisabled = busy !== null || deletingScriptId !== null;
   const onlineAssets = prep.assets.filter(({ status }) => status === 'online').length;
 
   const startDisabledReason = !props.batchSelected
@@ -451,27 +456,22 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     }
   }
 
-  async function deleteManualScript(script: BatchPreparationResult['scripts'][number]): Promise<void> {
-    const title = script.title || '未命名脚本';
-    const selected = selectedScripts[script.id] !== undefined;
-    // 已勾选的脚本删除后会改变批次输入,必须二次确认并说明后果。
-    const message = selected
-      ? `确定删除手动脚本「${title}」吗？该脚本已在本批次选中，删除后需要重新确认输入。`
-      : `确定删除手动脚本「${title}」吗？`;
-    if (!confirm(message)) return;
-    setDeletingScriptId(script.id);
+  async function deleteScripts(scripts: BatchPreparationResult['scripts']): Promise<void> {
+    if (scriptActionsDisabled || frozen || scripts.length === 0) return;
+    const description = scripts.length === 1 ? '「' + (scripts[0].title || '未命名脚本') + '」' : '已选的 ' + scripts.length + ' 条脚本';
+    const changesInput = scripts.some(script => selectedScripts[script.id] !== undefined);
+    if (!confirm('确定从批量脚本列表删除' + description + '吗？\n第 3 步原脚本和历史批次会保留。' + (changesInput ? '当前批次需要重新确认输入。' : ''))) return;
+    setDeletingScriptId(scripts.length === 1 ? scripts[0].id : 'bulk');
     setScriptActionError('');
     try {
-      await readJson<unknown>(await fetch(
-        `/api/batch-production/scripts/${encodeURIComponent(script.id)}?projectId=${encodeURIComponent(prep.project.id)}`,
-        { method: 'DELETE' },
-      ));
-      onScriptDeleted(script.id);
-    } catch (deleteError) {
-      setScriptActionError(deleteError instanceof Error ? deleteError.message : '脚本删除失败');
-    } finally {
-      setDeletingScriptId(null);
-    }
+      const result = await readJson<{ deletedIds: string[] }>(await fetch('/api/batch-production/scripts', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: prep.project.id, scriptIds: scripts.map(script => script.id) }),
+      }));
+      onScriptsDeleted(result.deletedIds);
+    } catch (error) {
+      setScriptActionError(error instanceof Error ? error.message : '脚本删除失败');
+    } finally { setDeletingScriptId(null); }
   }
 
   function openEditScriptDialog(script: BatchPreparationResult['scripts'][number]): void {
@@ -1374,10 +1374,16 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               <p className="mt-1 text-sm text-ink-secondary">每份脚本是一个独立创作单元：各自份数出 N 条成片，共用同一条配音，只有画面不同。时长来自脚本自身设定，此处只读。</p>
             </div>
             <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
+              <span className="text-xs text-ink-secondary" role="status">已选 {selectedListedScripts.length} / {prep.scripts.length} 条</span>
+              <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={scriptActionsDisabled || prep.scripts.length === 0}
+                onClick={() => onSetScriptsSelected(prep.scripts.map(script => script.id), !allScriptsSelected)}>{allScriptsSelected ? '取消全选' : '全选脚本'}</button>
+              <button type="button" className="btn-secondary h-8 px-3 text-xs text-fail" disabled={scriptActionsDisabled || selectedListedScripts.length === 0}
+                onClick={() => void deleteScripts(selectedListedScripts)}>{deletingScriptId === 'bulk' ? '删除中…' : '删除已选（' + selectedListedScripts.length + '）'}</button>
               <button
                 type="button"
                 className="btn-secondary h-8 px-3 text-xs"
                 aria-label="导入自定义脚本"
+                disabled={scriptActionsDisabled}
                 onClick={() => { setScriptActionError(''); setEditingScript(null); setScriptDialogOpen(true); }}
               >+ 导入自定义脚本</button>
               <span className="text-sm text-ink-secondary">已选 {scriptCount} 份 · 目标成片 {plannedCount} 条</span>
@@ -1396,6 +1402,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                       <input
                         type="checkbox"
                         aria-label={`选择脚本 ${title}`}
+                        disabled={scriptActionsDisabled}
                         checked={selected}
                         onChange={(event) => onToggleScript(script.id, event.target.checked)}
                         className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
@@ -1420,17 +1427,18 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                                   type="button"
                                   className="text-xs text-accent underline"
                                   aria-label={`编辑手动脚本 ${title}`}
+                                  disabled={scriptActionsDisabled}
                                   onClick={() => openEditScriptDialog(script)}
                                 >编辑</button>
+                              </>
+                            )}
                                 <button
                                   type="button"
                                   className="text-xs text-fail underline"
-                                  aria-label={`删除手动脚本 ${title}`}
-                                  disabled={deletingScriptId === script.id}
-                                  onClick={() => void deleteManualScript(script)}
+                                  aria-label={`删除脚本 ${title}`}
+                                  disabled={scriptActionsDisabled}
+                                  onClick={() => void deleteScripts([script])}
                                 >{deletingScriptId === script.id ? '删除中…' : '删除'}</button>
-                              </>
-                            )}
                           </div>
                         </div>
                         <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-ink-secondary">{script.bodyText}</p>
@@ -1456,6 +1464,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                     key={script.id}
                     type="button"
                     className="flex items-center gap-3 rounded-2xl border border-hairline bg-surface px-4 py-3 text-left shadow-sm transition hover:border-accent/40"
+                    disabled={scriptActionsDisabled}
                     onClick={() => onToggleScript(script.id, true)}
                   >
                     <input
@@ -1512,7 +1521,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                 <button
                   type="button"
                   className={`btn-secondary ${startDisabledReason === '请先确认整体输入' ? 'btn-callout' : ''}`}
-                  disabled={busy !== null || !props.batchSelected}
+                  disabled={scriptActionsDisabled || !props.batchSelected}
                   onClick={onConfirmSnapshot}
                 >
                   {busy === 'snapshot' ? '确认中…' : '确认整体输入'}
@@ -1520,7 +1529,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                 <button
                   type="button"
                   className="btn-primary"
-                  disabled={busy !== null || Boolean(startDisabledReason)}
+                  disabled={scriptActionsDisabled || Boolean(startDisabledReason)}
                   onClick={onStartBatch}
                 >{busy === 'start' ? '启动中…' : '开始批量生产'}</button>
               </div>

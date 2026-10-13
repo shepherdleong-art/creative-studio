@@ -94,7 +94,7 @@ export function createProjectScript(
     db.prepare(`
       UPDATE batch_scripts
       SET title = ?, bodyText = ?, sourceVersion = ?, coverTitleJson = ?, shotSetId = ?, contentRevision = ?,
-          targetDurationSec = ?, narrationConfigJson = ?, sourceAvailable = 1, catalogManaged = ?, updatedAt = ?
+          targetDurationSec = ?, narrationConfigJson = ?, sourceAvailable = CASE WHEN catalogDeleted = 1 THEN 0 ELSE 1 END, catalogManaged = ?, updatedAt = ?
       WHERE id = ?
     `).run(input.title, input.bodyText, input.sourceVersion, coverTitleJson, shotSetId, contentRevision, targetDurationSec, narrationConfigJson, catalogManaged, updatedAt, existing.id);
     return existing.id;
@@ -277,6 +277,26 @@ export function deleteManualProjectScript(
       UPDATE batch_scripts SET sourceAvailable = 0, updatedAt = ? WHERE id = ?
     `).run(nowIso(), scriptId);
     return { mode: 'soft' as const };
+  }).immediate();
+}
+
+/** 从批量脚本目录删除，保留上游正文和历史快照；整批校验通过后原子生效。 */
+export function deleteProjectScripts(db: Database.Database, projectId: string, scriptIds: unknown): string[] {
+  if (!Array.isArray(scriptIds) || scriptIds.length === 0 || scriptIds.length > 1000
+    || scriptIds.some(id => typeof id !== 'string' || !id.trim())) {
+    throw new BatchDomainError('invalid_input', '请选择 1–1000 条脚本');
+  }
+  const ids = [...new Set(scriptIds as string[])];
+  return db.transaction(() => {
+    const find = db.prepare(`SELECT id FROM batch_scripts WHERE id=? AND projectId=?
+      AND sourceKind='script_draft' AND ownerBatchVersionId IS NULL`);
+    for (const id of ids) {
+      if (!find.get(id, projectId)) throw new BatchDomainError('not_found', '所选脚本不存在或不属于当前项目，请刷新后重试');
+    }
+    const update = db.prepare('UPDATE batch_scripts SET catalogDeleted=1, sourceAvailable=0, updatedAt=? WHERE id=? AND projectId=?');
+    const now = nowIso();
+    for (const id of ids) update.run(now, id, projectId);
+    return ids;
   }).immediate();
 }
 

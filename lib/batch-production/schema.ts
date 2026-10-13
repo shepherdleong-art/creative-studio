@@ -1238,6 +1238,12 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
         ON batch_asset_analysis_requests(batchId, createdAt);
     `,
   },
+  {
+    version: 26,
+    sql: `
+      ALTER TABLE batch_scripts ADD COLUMN catalogDeleted INTEGER NOT NULL DEFAULT 0 CHECK(catalogDeleted IN (0, 1));
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =
@@ -2543,11 +2549,17 @@ const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateAssetAnalysisExecutionScope,
 ];
 
+function validateScriptCatalogDeletion(db: Database.Database): void {
+  const columns = db.prepare('PRAGMA table_info(batch_scripts)').all() as Array<{ name: string; notnull: number }>;
+  if (columns.find(column => column.name === 'catalogDeleted')?.notnull !== 1) throw new Error('脚本目录缺少删除状态列');
+}
+
 function validateBatchSchema(db: Database.Database): void {
   for (const validate of SCHEMA_VALIDATORS) {
     validate(db);
   }
   validateV25BatchBindings(db);
+  validateScriptCatalogDeletion(db);
   assertIntegrity(db);
 }
 
@@ -2558,6 +2570,7 @@ function validateBatchSchemaUpTo(db: Database.Database, version: number): void {
   if (version >= 25) {
     validateV25BatchBindings(db);
   }
+  if (version >= 26) validateScriptCatalogDeletion(db);
   assertIntegrity(db);
 }
 

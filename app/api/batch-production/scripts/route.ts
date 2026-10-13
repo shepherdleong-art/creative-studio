@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { normalizeManualScriptBatch, type ManualScriptDraftInput } from '@/lib/batch-production/manual-script-import';
-import { createManualProjectScript } from '@/lib/batch-production/scripts';
+import { createManualProjectScript, deleteProjectScripts } from '@/lib/batch-production/scripts';
 import { BATCH_NO_STORE_HEADERS, batchRouteErrorResponse } from '../batches/response';
 
 export const runtime = 'nodejs';
@@ -58,5 +58,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ created }, { status: 201, headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'manual_script_create_failed', '自定义脚本导入失败');
+  }
+}
+
+/** 批量目录删除：一次提交、一次事务，历史批次与第 3 步原脚本保持不变。 */
+export async function DELETE(request: NextRequest) {
+  const body = await request.json().catch(() => null);
+  const projectId = typeof body?.projectId === 'string' ? body.projectId.trim() : '';
+  if (!projectId || !Array.isArray(body?.scriptIds)) {
+    return NextResponse.json({ error: 'invalid_input', message: '缺少项目或脚本列表' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+  }
+  try {
+    await assertBatchApiReady();
+    const deletedIds = deleteProjectScripts(getDb(), projectId, body.scriptIds);
+    return NextResponse.json({ deletedIds }, { headers: BATCH_NO_STORE_HEADERS });
+  } catch (error) {
+    return batchRouteErrorResponse(error, 'script_delete_failed', '脚本删除失败');
   }
 }

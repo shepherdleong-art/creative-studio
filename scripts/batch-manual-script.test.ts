@@ -16,6 +16,7 @@ import {
   createManualProjectScript,
   createProjectScript,
   deleteManualProjectScript,
+  deleteProjectScripts,
   getProjectScript,
   getScriptSnapshot,
   listProjectScripts,
@@ -420,8 +421,26 @@ try {
     '多行正文按换行保留',
   );
 
+  // 批量删除：40 条一次提交、项目隔离、原子失败、同步不复活、历史快照保留。
+  const bulkIds = Array.from({ length: 40 }, (_, i) => createManualProjectScript(db, 'project-1', { title: '批量删除 ' + i, bodyText: '实木收纳床', targetDurationSec: 15 }));
+  assert.throws(() => deleteProjectScripts(db, 'project-1', [bulkIds[0], 'missing']), /不存在/);
+  assert.ok(getProjectScript(db, 'project-1', bulkIds[0]), '整批校验失败不能删除前面的合法项');
+  assert.throws(() => deleteProjectScripts(db, 'project-other', [bulkIds[0]]), /不属于/);
+  assert.throws(() => deleteProjectScripts(db, 'project-1', []), /请选择/);
+  assert.throws(() => deleteProjectScripts(db, 'project-1', [123]), /请选择/);
+  assert.deepEqual(deleteProjectScripts(db, 'project-1', bulkIds), bulkIds);
+  assert.ok(bulkIds.every(id => !getProjectScript(db, 'project-1', id)));
+  assert.deepEqual(deleteProjectScripts(db, 'project-1', [bulkIds[0], bulkIds[0]]), [bulkIds[0]], '重试与重复 ID 幂等');
+  const syncedId = syncProjectScripts(db, 'project-1').scripts[0];
+  const historyBefore = db.prepare('SELECT * FROM batch_script_snapshots ORDER BY id').all();
+  deleteProjectScripts(db, 'project-1', [syncedId]);
+  syncProjectScripts(db, 'project-1');
+  assert.equal(getProjectScript(db, 'project-1', syncedId), undefined, '同步不能重新激活已删除的目录脚本');
+  assert.ok(db.prepare("SELECT id FROM script_drafts WHERE id='draft-real'").get(), '删除目录脚本不删除上游');
+  assert.deepEqual(db.prepare('SELECT * FROM batch_script_snapshots ORDER BY id').all(), historyBefore, '历史批次快照保持原样');
+
   db.close();
-  console.log('batch manual script tests passed');
+  console.log('batch manual script and bulk catalog deletion tests passed');
 } finally {
   try { openedDb?.close(); } catch { /* 已关闭则忽略 */ }
   fs.rmSync(root, { recursive: true, force: true });

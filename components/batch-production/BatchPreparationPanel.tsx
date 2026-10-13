@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { requestPackagingExport } from '@/components/packaging/request-packaging-export';
 import MixcutShell, { type MixcutStepDef } from '@/components/mixcut/MixcutShell';
 import shellStyles from '@/components/mixcut/mixcut-shell.module.css';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
@@ -848,20 +849,14 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     }
   }
 
-  function handleScriptDeleted(scriptId: string): void {
+  function handleScriptsDeleted(scriptIds: string[]): void {
+    const deleted = new Set(scriptIds);
+    const wasSelected = scriptIds.some(id => selectedScripts[id] !== undefined);
+    setSelectedScripts(current => Object.fromEntries(Object.entries(current).filter(([id]) => !deleted.has(id))));
+    setPreparation(current => current ? { ...current, scripts: current.scripts.filter(script => !deleted.has(script.id)) } : current);
     void reloadPreparation();
-    // markInputChanged 不碰 selectedScripts,必须无条件移除该 ID,
-    // 否则卡片消失后野 ID 仍会随确认提交。
-    const wasSelected = selectedScripts[scriptId] !== undefined;
-    setSelectedScripts((current) => (
-      Object.fromEntries(Object.entries(current).filter(([id]) => id !== scriptId))
-    ));
-    if (wasSelected) {
-      markInputChanged();
-      setFeedback({ kind: 'success', message: '脚本已删除；它此前已在本批次选中，请重新确认整体输入。' });
-    } else {
-      setFeedback({ kind: 'success', message: '脚本已删除。' });
-    }
+    if (wasSelected) markInputChanged();
+    setFeedback({ kind: 'success', message: '已从批量列表删除 ' + scriptIds.length + ' 条脚本。' + (wasSelected ? '请重新确认整体输入。' : '') });
   }
 
   useEffect(() => {
@@ -1691,6 +1686,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     setFeedback(null);
     setExportResult(null);
     try {
+      const response = await requestPackagingExport(
+        `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/exports?projectId=${encodeURIComponent(projectId)}`,
+        { planIds: uniquePlanIds },
+      );
+      if (!response) { pendingAutoExportRef.current = []; return; }
       const result = await readJson<{
         published: number;
         alreadyPublished?: number;
@@ -1704,14 +1704,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           taskId?: string;
           videoRelativePath?: string;
         }>;
-      }>(await fetch(
-        `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/exports?projectId=${encodeURIComponent(projectId)}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ planIds: uniquePlanIds }),
-        },
-      ));
+      }>(response);
       const cardsById = new Map((workspace?.cards ?? []).map((card) => [card.planId, card]));
       const describe = (planId: string): { seq: number | null; title: string } => {
         const card = cardsById.get(planId);
@@ -2237,6 +2230,14 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               batchSelected={Boolean(selectedBatchId)}
               prep={prep}
               selectedScripts={selectedScripts}
+              onSetScriptsSelected={(ids, selected) => {
+                markInputChanged();
+                setSelectedScripts(current => {
+                  const next = { ...current };
+                  for (const id of ids) { if (selected) next[id] ??= 1; else delete next[id]; }
+                  return next;
+                });
+              }}
               onToggleScript={(scriptId, selected) => {
                 markInputChanged();
                 setSelectedScripts((current) => {
@@ -2283,7 +2284,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               onNarrationConfigTouched={markInputChanged}
               onScriptCreated={handleScriptCreated}
               onScriptUpdated={handleScriptUpdated}
-              onScriptDeleted={handleScriptDeleted}
+              onScriptsDeleted={handleScriptsDeleted}
               onConfirmSnapshot={() => void confirmSnapshot()}
               onStartBatch={() => void startBatch()}
               inputChangedWarning={!inputConfirmed && hasConfirmedVersion}
