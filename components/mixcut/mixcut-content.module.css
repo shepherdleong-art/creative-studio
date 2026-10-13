@@ -267,6 +267,11 @@
 .pipeSt { color: var(--sub); font-size: 12px; }
 .pipeDoing .pipeSt { color: var(--blue); }
 .pipeDone .pipeSt { color: var(--green-ink); }
+/* 处理明细滚动日志（单条 prepare）：全走设计令牌，深/浅两态通用 */
+.prepareLog { margin-top: 12px; border: .5px solid var(--line); border-radius: 10px; background: var(--seg); }
+.prepareLogBody { display: grid; max-height: 132px; gap: 4px; overflow-y: auto; padding: 9px 12px; }
+.prepareLogLine { color: var(--sub); font-size: 12px; font-variant-numeric: tabular-nums; line-height: 1.5; }
+.prepareLogCurrent { color: var(--blue); font-weight: 500; }
 
 /* ===== 第 3 步：工具行 + 大纸 ===== */
 .t3Toolbar { display: flex; min-height: 36px; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 10px; padding: 0 2px; }

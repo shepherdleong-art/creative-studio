@@ -200,6 +200,14 @@ export const FINAL_EDIT_MIGRATIONS: ReadonlyArray<{ version: number; sql: string
       ALTER TABLE final_edit_groups ADD COLUMN packagingJson TEXT NOT NULL DEFAULT '{}';
     `,
   },
+  {
+    // 单条 prepare 任务的处理明细（{lines: string[], current: string}）：逐条素材分析/逐句口播进度，
+    // 供创作页像批量模式一样看到「分析到第几条」，只写最近窗口，属展示层派生数据。
+    version: 12,
+    sql: `
+      ALTER TABLE final_edit_jobs ADD COLUMN detailJson TEXT;
+    `,
+  },
 ];
 
 export function initFinalEditSchema(db: Database.Database): void {

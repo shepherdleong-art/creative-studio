@@ -11,7 +11,8 @@ function safeJsonParse(text: string): unknown {
   try { return JSON.parse(text); } catch { return null; }
 }
 
-function loadProjectSellingPoints(db: Database.Database, projectId: string): string[] {
+/** 读取项目 AI 卖点库（projects.sellingPointsJson 的 title 数组）。 */
+export function loadProjectSellingPoints(db: Database.Database, projectId: string): string[] {
   const row = db.prepare(`SELECT sellingPointsJson FROM projects WHERE id=?`).get(projectId) as { sellingPointsJson: string | null } | undefined;
   if (!row?.sellingPointsJson) return [];
   try {
@@ -102,10 +103,13 @@ export async function ensurePackagingPointCues(db: Database.Database, groupId: s
   return persistPointCues(db, groupId, built.pointCues, key, built.mode);
 }
 
-function persistPointCues(db: Database.Database, groupId: string, drafts: PointCueDraft[], key: string, mode: 'timed' | 'even' | 'none'): EnsurePointCuesResult {
-  const row = db.prepare(`SELECT packagingJson FROM final_edit_groups WHERE id=?`).get(groupId) as { packagingJson: string | null } | undefined;
-  const config = parsePackagingConfig(row?.packagingJson ?? '');
-  // 重提取按「规范化文本」匹配旧 cues 保留旧 id，保住 layouts.*.cues 的布局引用（§7）
+/**
+ * 把新提取的卖点合并进既有包装配置：保留模板/字体/layouts/编辑标志；
+ * 重提取按「规范化文本」匹配旧 cues 保留旧 id，保住 layouts.*.cues 的布局引用（§7）。
+ * 纯函数，供 persistPointCues 与 prepare 收尾事务共用。
+ */
+export function mergePointCuesIntoPackagingJson(packagingJsonText: string | null | undefined, drafts: PointCueDraft[], key: string, mode: 'timed' | 'even' | 'none'): { pointCues: PointCue[]; packagingJson: string } {
+  const config = parsePackagingConfig(packagingJsonText ?? '');
   const oldIdByText = new Map<string, string>();
   for (const old of config.pointCues ?? []) {
     const textKey = normalizeForMatch(old.text);
@@ -133,6 +137,12 @@ function persistPointCues(db: Database.Database, groupId: string, drafts: PointC
     ...(config.pointCuesEdited ? { pointCuesEdited: true } : {}),
     ...(config.layouts && Object.keys(config.layouts).length > 0 ? { layouts: config.layouts } : {}),
   };
-  db.prepare(`UPDATE final_edit_groups SET packagingJson=? WHERE id=?`).run(JSON.stringify(next), groupId);
-  return { pointCues, mode, pointCuesKey: key };
+  return { pointCues, packagingJson: JSON.stringify(next) };
+}
+
+function persistPointCues(db: Database.Database, groupId: string, drafts: PointCueDraft[], key: string, mode: 'timed' | 'even' | 'none'): EnsurePointCuesResult {
+  const row = db.prepare(`SELECT packagingJson FROM final_edit_groups WHERE id=?`).get(groupId) as { packagingJson: string | null } | undefined;
+  const merged = mergePointCuesIntoPackagingJson(row?.packagingJson, drafts, key, mode);
+  db.prepare(`UPDATE final_edit_groups SET packagingJson=? WHERE id=?`).run(merged.packagingJson, groupId);
+  return { pointCues: merged.pointCues, mode, pointCuesKey: key };
 }

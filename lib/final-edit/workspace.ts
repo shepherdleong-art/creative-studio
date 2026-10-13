@@ -40,7 +40,7 @@ import {
 } from './material-import.ts';
 import { assertNarrationPlaybackRate, assertTtsSpeed } from './tts-speed.ts';
 import { buildPackagingVars, DEFAULT_PACKAGING_TEMPLATE, loadProjectPackagingData, mergePackagingLayouts, PACKAGING_TEMPLATE_IDS, parsePackagingConfig, sanitizePackagingVarsOverrides, sanitizePointCues, type PackagingLayouts, type PackagingLayoutsPatch, type PackagingPointLayout, type PackagingTemplateId } from './packaging-vars.ts';
-import { ensurePackagingPointCues, type PointCue } from './packaging-cues.ts';
+import { buildPointCues, computePointCuesKey, ensurePackagingPointCues, extractSellingPointsWithLLM, loadProjectSellingPoints, mergePointCuesIntoPackagingJson, type PointCue } from './packaging-cues.ts';
 import { preparePreviewCacheKey } from './prepare-preview.ts';
 import { normalizeCoverPreset } from './title-presets.ts';
 import { CoverFrameError, materializeCoverFrame, resolveCoverFrameSource } from './cover-frame.ts';
@@ -1181,13 +1181,22 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         db.prepare(`UPDATE final_edit_groups SET phase=?, updatedAt=? WHERE id=?`).run(phase, now(), groupId);
       })();
     };
+    // 处理明细（detailJson）：给创作页看的逐行日志——逐条素材分析/逐句口播，只保留最近窗口。
+    const detailLines: string[] = [];
+    const pushDetail = (line: string | null, current?: string) => {
+      if (line) detailLines.push(line);
+      db.prepare(`UPDATE final_edit_jobs SET detailJson=? WHERE id=? AND status='running'`).run(JSON.stringify({ lines: detailLines.slice(-40), current: current ?? '' }), jobId);
+    };
     try {
       assertNotAborted(signal);
       updateJob('analyzing', 0);
       const rows = selectedAssets(db, storageRoot, input.projectId, script.shotSetId, input.selectedMaterialKeys);
+      pushDetail(`文案拆分完成：共 ${script.segments.length} 句`, `正在分析素材 1/${rows.length}…`);
       const prepared: PreparedAsset[] = [];
       for (const row of rows) {
         assertNotAborted(signal);
+        const assetName = row.displayName || row.filename || row.videoJobId;
+        pushDetail(null, `正在分析素材 ${prepared.length + 1}/${rows.length}：${assetName}`);
         const fingerprint = sha256(fs.readFileSync(row.localVideoPath));
         const media = await deps.probeVideo({ filePath: row.localVideoPath, videoJobId: row.videoJobId });
         let analysis: VideoAnalysisResult;
@@ -1196,6 +1205,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         try { analysisModel = String((db.prepare(`SELECT COALESCE(NULLIF(model, ''), defaultModel, '') AS model FROM script_providers WHERE id=?`).get(analysisProviderId) as { model?: string } | undefined)?.model || ''); } catch { /* isolated domain tests omit provider tables */ }
         const cached = db.prepare(`SELECT fileFingerprint, providerId, model, analyzerVersion, status, mediaJson, generatedJson FROM final_edit_asset_analysis WHERE videoJobId=?`).get(row.videoJobId) as { fileFingerprint: string; providerId: string; model: string; analyzerVersion: string; status: string; mediaJson: string; generatedJson: string } | undefined;
         let analysisSucceeded = false;
+        let analysisNote = '分析失败，已降级';
         try {
           const cachedGenerated = cached ? parseJson<unknown>(cached.generatedJson, null) : null;
           const cacheHit = cached?.fileFingerprint === fingerprint
@@ -1209,6 +1219,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             : await deps.analyzeVideo({ filePath: row.localVideoPath, videoJobId: row.videoJobId, shotSetId: row.shotSetId, providerId: analysisProviderId });
           if (!isVideoAnalysisResult(analysis)) throw new Error('视频分析结果结构无效');
           analysisSucceeded = true;
+          analysisNote = cacheHit ? '缓存命中' : '分析成功';
           db.prepare(`
             INSERT INTO final_edit_asset_analysis
               (videoJobId, shotSetId, fileFingerprint, providerId, model, analyzerVersion, status, mediaJson, generatedJson, updatedAt, analyzedAt)
@@ -1247,6 +1258,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           existingUsageCount: Number(usage?.count || 0),
           analysisSucceeded,
         });
+        pushDetail(`素材分析 ${prepared.length}/${rows.length}：${assetName}（${analysisNote}）`);
         updateJob('analyzing', prepared.length / Math.max(1, rows.length) * 0.3);
       }
       if (prepared.length === 0) throw new FinalEditError('no_succeeded_videos', '没有可读取的视频素材');
@@ -1259,6 +1271,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const storedTimings = parseStoredNarrationTimings(existingNarration.wordTimingsJson);
       const existingCues = parseJson<SubtitleCue[]>(existingNarration.subtitleStateJson, []);
       const reusingNarration = Boolean(existingNarration.narrationAudioPath && existingNarration.narrationDurationUs > 0 && storedTimings.words.length > 0);
+      pushDetail(null, reusingNarration ? '正在校验已有口播音频…' : `正在生成口播 0/${normalizedSegments.length}…`);
       const narration = reusingNarration
         ? {
             relativePath: existingNarration.narrationAudioPath!,
@@ -1275,8 +1288,12 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             scriptDraftId: String(input.scriptDraftId || ''), segments: normalizedSegments,
             providerId: input.providerId, voice: input.voice, speed: input.speed, narrationHash,
             signal,
-            onSegmentComplete: (completed, total) => updateJob('synthesizing', 0.3 + completed / Math.max(1, total) * 0.25),
+            onSegmentComplete: (completed, total) => {
+              updateJob('synthesizing', 0.3 + completed / Math.max(1, total) * 0.25);
+              pushDetail(null, `正在生成口播 ${completed}/${total}…`);
+            },
           });
+      pushDetail(reusingNarration ? '复用已有口播音频' : `口播生成完成：共 ${normalizedSegments.length} 句`);
       assertNotAborted(signal);
       if (!(narration.alignmentDegradedSegmentIds || []).length) {
         validateNarrationAlignment(narration, script.segments.map((segment) => segment.narration).join(''));
@@ -1549,8 +1566,42 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         }
         updateJob('previewing', 0.82 + ((index + 1) / variants.length) * 0.17);
       }
+      // 生成收尾即备好对时卖点：与 ensurePackagingPointCues 同规则（口播哈希一致复用 / §7 编辑保护跳过），
+      // 但直接用内存中的词级时间戳一次算清并随收尾事务原子落库——用户进入预览时时间轴即有卖点，
+      // 不再依赖预览端点事后静默补提取（前端组视图感知不到，曾导致屏幕有卖点、时间轴空）。
+      let packagingJsonWithPoints: string | null = null;
+      let extractedPointCount = 0;
+      try {
+        const packagingRow = db.prepare(`SELECT packagingJson, narrationConfigJson FROM final_edit_groups WHERE id=?`).get(groupId) as { packagingJson: string | null; narrationConfigJson: string | null } | undefined;
+        const packagingConfig = parsePackagingConfig(packagingRow?.packagingJson ?? '');
+        if (packagingConfig.enabled) {
+          const pointCuesKey = computePointCuesKey(script.editedNarrationText);
+          const upToDate = Boolean(packagingConfig.pointCues?.length && packagingConfig.pointCuesKey === pointCuesKey);
+          const editProtected = Boolean(packagingConfig.pointCues?.length && packagingConfig.pointCuesEdited === true);
+          if (!upToDate && !editProtected) {
+            const rawRate = Number(parseJson<{ playbackRate?: unknown }>(String(packagingRow?.narrationConfigJson ?? ''), {}).playbackRate);
+            const playbackRate = Number.isFinite(rawRate) ? Math.max(0.5, Math.min(2, rawRate)) : 1;
+            const coverSec = FINAL_EDIT_INTRO_DURATION_US / 1e6;
+            pushDetail(null, '正在提取卖点…');
+            const built = await buildPointCues({
+              narrationText: script.editedNarrationText,
+              words: narration.wordTimings,
+              subtitleCues: cues,
+              sellingPoints: loadProjectSellingPoints(db, input.projectId),
+              totalSec: coverSec + narration.durationUs / 1e6 / playbackRate,
+              coverSec,
+              narrationPlaybackRate: playbackRate,
+              extractPoints: (text) => extractSellingPointsWithLLM(text, input.analysisProviderId || undefined),
+            });
+            packagingJsonWithPoints = mergePointCuesIntoPackagingJson(packagingRow?.packagingJson, built.pointCues, pointCuesKey, built.mode).packagingJson;
+            extractedPointCount = built.pointCues.length;
+            pushDetail(`卖点提取完成：${extractedPointCount} 条`);
+          }
+        }
+      } catch { /* 卖点预提取失败不阻塞生成：预览/导出端点会按需重提取 */ }
       const transaction = db.transaction(() => {
         db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, durationGateJson=?, status=?, phase='ready', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, serializeNarrationTimings(narration), JSON.stringify(cues), JSON.stringify(durationGateForRun), variants.some((variant) => variant.issues.some((issue) => issue.severity === 'blocking')) ? 'partial' : 'ready', now(), groupId);
+        if (packagingJsonWithPoints) db.prepare(`UPDATE final_edit_groups SET packagingJson=? WHERE id=?`).run(packagingJsonWithPoints, groupId);
         for (let index = 0; index < variants.length; index += 1) {
           const variant = variants[index];
           db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, issuesJson, matchDiagnosticsJson, overlapJson, revision, previewRelativePath, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, ?, ?, ?)`).run(variant.id, groupId, variant.indexNum, variant.outputPreset, JSON.stringify(variant.timeline), JSON.stringify(variant.bgm), JSON.stringify(variant.cover), JSON.stringify(variant.issues), JSON.stringify(variant.matchDiagnostics || {}), previewPaths.get(variant.id) || null, now(), now());
@@ -1568,6 +1619,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         }
         db.prepare(`UPDATE final_edit_jobs SET status='succeeded', phase='succeeded', progress=1, outputJson=?, errorCode=NULL, errorMessage=NULL, finishedAt=? WHERE id=? AND status='running'`).run(JSON.stringify({ groupId, variantIds: variants.map((variant) => variant.id), previewRelativePaths: Object.fromEntries(previewPaths) }), now(), jobId);
       });
+      pushDetail(null, '');
       transaction();
     } catch (error) {
       if (signal?.aborted || isAbortError(error)) {
@@ -1811,7 +1863,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       db.prepare(`UPDATE final_edit_jobs SET status='failed', errorCode='prepare_snapshot_invalid', errorMessage='准备任务快照损坏', finishedAt=? WHERE id=? AND status='queued'`).run(now(), jobId);
       return;
     }
-    const claimed = db.prepare(`UPDATE final_edit_jobs SET status='running', phase='analyzing', progress=0, attempt=attempt+1, startedAt=?, finishedAt=NULL WHERE id=? AND kind='prepare' AND status='queued'`).run(now(), jobId);
+    const claimed = db.prepare(`UPDATE final_edit_jobs SET status='running', phase='analyzing', progress=0, attempt=attempt+1, detailJson=NULL, startedAt=?, finishedAt=NULL WHERE id=? AND kind='prepare' AND status='queued'`).run(now(), jobId);
     if (!claimed.changes) return;
     db.prepare(`UPDATE final_edit_groups SET status='running', phase='analyzing', updatedAt=? WHERE id=?`).run(now(), row.groupId);
     const registration = deps.createJobController?.() || (() => {

@@ -8,8 +8,20 @@ import { countScriptContentCharacters, estimateNarrationDurationSec } from '@/li
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const row = getDb().prepare(`SELECT id, projectId, groupId, variantId, kind, status, phase, progress, estimatedCost, costCurrency, inputSnapshotJson, outputJson, errorCode, errorMessage, attempt, startedAt, finishedAt, createdAt FROM final_edit_jobs WHERE id=?`).get(id) as Record<string, unknown> | undefined;
+    const row = getDb().prepare(`SELECT id, projectId, groupId, variantId, kind, status, phase, progress, estimatedCost, costCurrency, inputSnapshotJson, outputJson, errorCode, errorMessage, attempt, startedAt, finishedAt, createdAt, detailJson FROM final_edit_jobs WHERE id=?`).get(id) as Record<string, unknown> | undefined;
     if (!row) return NextResponse.json({ error: 'job_not_found', message: '任务不存在' }, { status: 404 });
+    // prepare 任务的处理明细（逐条素材分析/逐句口播日志），失败/旧任务缺省为 null
+    let detail: { lines: string[]; current: string } | null = null;
+    if (typeof row.detailJson === 'string' && row.detailJson) {
+      try {
+        const parsed = JSON.parse(row.detailJson) as { lines?: unknown; current?: unknown };
+        detail = {
+          lines: Array.isArray(parsed.lines) ? parsed.lines.filter((line): line is string => typeof line === 'string') : [],
+          current: typeof parsed.current === 'string' ? parsed.current : '',
+        };
+      } catch { detail = null; }
+    }
+    delete row.detailJson;
     let output: Record<string, unknown> | null = null;
     let target: Record<string, string> | null = null;
     let renderRevision: { groupRevision: number; variantRevision: number } | null = null;
@@ -63,6 +75,6 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         };
       }
     }
-    return NextResponse.json({ ...publicRow, target, output, renderRevision, durationReview });
+    return NextResponse.json({ ...publicRow, detail, target, output, renderRevision, durationReview });
   } catch (error) { return finalEditErrorResponse(error); }
 }

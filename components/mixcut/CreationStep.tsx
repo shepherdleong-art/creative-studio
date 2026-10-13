@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { MixcutContextResponse } from '@/lib/final-edit/types';
 import type { ScriptSwitchResolution } from '@/lib/final-edit/mixcut-creation-state';
@@ -40,6 +40,8 @@ export interface MixcutPrepareJobView {
   startedAt: string | null;
   finishedAt: string | null;
   errorMessage: string | null;
+  /** 处理明细：逐条素材分析/逐句口播的滚动日志（detailJson），旧任务为 null。 */
+  detail?: { lines: string[]; current: string } | null;
   durationReview?: MixcutDurationReviewView | null;
 }
 
@@ -93,6 +95,23 @@ function stageState(job: MixcutPrepareJobView | null, index: number): 'waiting' 
   }
   if (currentIndex === index) return 'running';
   return currentIndex > index ? 'done' : 'waiting';
+}
+
+/** 处理明细滚动日志：逐条素材分析/逐句口播，新增行自动滚到底部（运行中当前行高亮）。 */
+function PrepareDetailLog({ detail, running }: { detail: { lines: string[]; current: string }; running: boolean }) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [detail]);
+  return (
+    <div className={styles.prepareLog} aria-label="处理明细" aria-live="polite">
+      <div ref={bodyRef} className={styles.prepareLogBody}>
+        {detail.lines.map((line, index) => <div key={index} className={styles.prepareLogLine}>{line}</div>)}
+        {detail.current && running && <div className={`${styles.prepareLogLine} ${styles.prepareLogCurrent}`}>{detail.current}</div>}
+      </div>
+    </div>
+  );
 }
 
 // V2 第 2 步（规格 §5）：单列卡片流——口播文案卡 → 音色卡 → CTA 区 → 进度卡。
@@ -327,6 +346,9 @@ export function CreationStep({
               </div>
             );
           })}
+          {job?.detail && (job.detail.lines.length > 0 || job.detail.current) && (
+            <PrepareDetailLog detail={job.detail} running={job.status === 'running' || job.status === 'queued'} />
+          )}
           {job?.errorMessage && <div className={styles.errorNotice}><Icon name="alert" size={15} />{job.errorMessage}</div>}
           {job?.status === 'succeeded' && <div className={styles.successNotice}><Icon name="check" size={15} />准备任务已完成，脚本和进度已保存到本地。</div>}
         </section>

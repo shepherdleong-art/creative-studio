@@ -142,6 +142,9 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     if (groupRef.current.id === groupId) publishGroup(current);
     return current;
   };
+  // 供预览 JSON 副作用使用（effect 依赖不含函数本体，沿用 applyGroupRef 同款持法）
+  const reloadGroupRef = useRef(reloadGroup);
+  useEffect(() => { reloadGroupRef.current = reloadGroup; });
 
   const enqueue = <T,>(work: () => Promise<T>): Promise<T> => {
     pendingRef.current += 1;
@@ -700,6 +703,14 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
         if (!controller.signal.aborted) {
           setPackagingPreview(next);
           setPackagingPreviewError('');
+          // 预览端点会按需补提取卖点并静默落库（派生缓存不 bump revision，组视图感知不到）：
+          // 比对预览时间轴与组视图卖点，不一致即重拉组视图同步时间轴卖点轨——
+          // 覆盖重新生成、异步重新提取等所有静默落库路径（屏幕有、时间轴无的断链实锤）。
+          const cueKey = (cues: Array<{ id?: string; text: string; startSec: number; endSec: number }>) =>
+            cues.map((cue) => `${cue.id ?? ''}${cue.text}${cue.startSec}${cue.endSec}`).join('~');
+          if (cueKey(next.timeline?.pointCues ?? []) !== cueKey(groupRef.current.packaging.pointCues ?? [])) {
+            void reloadGroupRef.current(groupRef.current.id).catch(() => undefined);
+          }
         }
       } catch (error) {
         if (!controller.signal.aborted) {
