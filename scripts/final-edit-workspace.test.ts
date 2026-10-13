@@ -63,6 +63,7 @@ db.exec(`
   CREATE TABLE projects (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, model TEXT NOT NULL DEFAULT '',
     productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL,
+    productName TEXT NOT NULL DEFAULT '', sellingPointsJson TEXT NOT NULL DEFAULT '[]',
     exportDirName TEXT NOT NULL DEFAULT '',
     storeCode TEXT NOT NULL DEFAULT '', productSubmodel TEXT NOT NULL DEFAULT '',
     productionType TEXT NOT NULL DEFAULT '', editorName TEXT NOT NULL DEFAULT '',
@@ -225,6 +226,7 @@ assert.equal((db.prepare(`SELECT estimatedCost FROM final_edit_jobs WHERE id=?`)
 assert.equal(semanticScoreCalls, 1, '一次 prepare 只能生成一次句段 × 场景语义矩阵');
 
 const group = workspace.load(job.groupId);
+assert.equal(group.coverTitle.enabled, false, '新混剪组默认关闭旧封面标题，避免与包装标题叠加');
 assert.equal(group.status, 'ready');
 assert.equal(group.narrationDurationUs, 18_500_000);
 assert.equal(group.totalDurationUs, 19_333_333);
@@ -386,6 +388,7 @@ const editingDraft = workspace.ensureMixcutDraft({
   providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 0.5, analysisProviderId: 'vision',
 });
 assert.equal(editingDraft.status, 'editing');
+assert.equal(editingDraft.packaging.enabled, true, '新建混剪默认开启视频包装');
 assert.equal(editingDraft.script.editedNarrationText, '');
 assert.deepEqual(editingDraft.script.selectedMaterialKeys, []);
 assert.equal(workspace.load(editingDraft.id).id, editingDraft.id, '首次保存后刷新必须能 load 同一草稿');
@@ -395,6 +398,7 @@ const editingWithScript = workspace.apply({
   providerId: 'vapi-qwen3-tts', analysisProviderId: 'vision', voice: 'Cherry', speed: 2,
 }).view as typeof editingDraft;
 assert.equal(editingWithScript.script.sourceDraftId, 'script-1');
+assert.equal(editingWithScript.coverTitle.primary.text, '温柔包裹', '选择脚本后封面标题自动联动');
 const foreignScript = { ...script, shotSetId: 'set-b', segments: [{ ...script.segments[0], shotId: 's3' }] };
 db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson) VALUES ('script-b', 'p1', 'fake', 'fake', '{}', ?)`).run(JSON.stringify(foreignScript));
 assert.throws(
@@ -660,6 +664,14 @@ db.prepare(`UPDATE final_edit_variants SET coverJson=? WHERE id=?`).run(JSON.str
 db.prepare(`INSERT INTO final_edit_overlay_bundles (id, groupId, outputPreset, groupRevision, specHash, manifestJson, relativeDir, status, createdAt) VALUES ('export-identity-bundle', ?, '3x4', ?, 'export-identity', '{}', 'final-edits/test/export-overlays', 'ready', datetime('now'))`).run(group.id, group.revision);
 const exportReady = workspace.load(group.id);
 const exportReadyVariant = exportReady.variants.find((variant) => variant.id === restoredVariant.id)!;
+// A rejected placeholder export must not leave a job or consume the next filename.
+const originalPackaging = (db.prepare('SELECT packagingJson FROM final_edit_groups WHERE id=?').get(group.id) as { packagingJson: string }).packagingJson;
+db.prepare('UPDATE final_edit_groups SET packagingJson=? WHERE id=?').run(JSON.stringify({ enabled: true, template: 'overlay-poster', varsOverrides: { title: '实木餐边柜', subtitle: '' }, pointCues: [], pointCuesEdited: true }), group.id);
+const beforePlaceholderJobs = (db.prepare('SELECT COUNT(*) AS n FROM final_edit_jobs').get() as { n: number }).n;
+await assert.rejects(workspace.enqueueRender({ groupId: group.id, variantId: exportReadyVariant.id, expectedGroupRevision: exportReady.revision, expectedVariantRevision: exportReadyVariant.revision, overlayBundleId: 'export-identity-bundle' }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'packaging_placeholder' && error.status === 409);
+assert.equal((db.prepare('SELECT COUNT(*) AS n FROM final_edit_jobs').get() as { n: number }).n, beforePlaceholderJobs);
+db.prepare('UPDATE final_edit_groups SET packagingJson=? WHERE id=?').run(originalPackaging, group.id);
 db.prepare(`UPDATE video_jobs SET rejectedAt='2026-08-30 13:05:00', rejectReason='画面重复' WHERE id='v1'`).run();
 const renderJob = await workspace.enqueueRender({ groupId: group.id, variantId: exportReadyVariant.id, expectedGroupRevision: exportReady.revision, expectedVariantRevision: exportReadyVariant.revision, overlayBundleId: 'export-identity-bundle' });
 assert.equal(renderJob.status, 'queued', '已在时间轴中的素材被剔除后，仍必须允许创建导出任务');
@@ -982,6 +994,7 @@ const coverApplied = workspace.apply({
     sourceKey: coverSource.videoJobId,
     frameTimeUs: 400_000,
     framing: { scale: 1.4, offsetX: 0.2, offsetY: -0.3 },
+    coverTitleEnabled: true,
     primary: { text: '主标题\n单行', style: { ...beforeCoverApply.textStyles['3x4'].coverPrimary, italic: true, x: 0.42, stroke: { enabled: true, color: '#ff0000', widthPx: 6 } } },
     secondary: { text: '副标题', style: { ...beforeCoverApply.textStyles['3x4'].coverSecondary, italic: false, x: 0.61, stroke: { enabled: true, color: '#00ff00', widthPx: 2 } } },
   },
@@ -1005,6 +1018,7 @@ assert.throws(() => workspace.apply({
   type: 'apply_cover_editor', variantId: coverVariant.id, expectedVariantRevision: coverVariant.revision,
   draft: {
     sourceKey: coverSource.videoJobId, frameTimeUs: 800_000, framing: { scale: 1, offsetX: 0, offsetY: 0 },
+    coverTitleEnabled: true,
     primary: { text: '不应写入', style: beforeCoverApply.textStyles['3x4'].coverPrimary },
     secondary: { text: '不应写入', style: beforeCoverApply.textStyles['3x4'].coverSecondary },
   },
@@ -1042,6 +1056,7 @@ assert.throws(() => workspace.apply({
   type: 'apply_cover_editor', variantId: changedSourceVariant.id, expectedVariantRevision: changedSourceVariant.revision,
   draft: {
     sourceKey: 'module4:v1', frameTimeUs: 500_000, framing: { scale: 1, offsetX: 0, offsetY: 0 },
+    coverTitleEnabled: true,
     primary: { text: '文件变化后不能保存', style: beforeChangedCoverSource.textStyles['3x4'].coverPrimary },
     secondary: { text: '仍应保持原状态', style: beforeChangedCoverSource.textStyles['3x4'].coverSecondary },
   },

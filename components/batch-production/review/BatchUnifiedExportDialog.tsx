@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { UnifiedFilmState } from './types';
+import { requestPackagingExport } from '@/components/packaging/request-packaging-export';
 
 export interface BatchUnifiedExportDialogProps {
   open: boolean;
@@ -62,11 +63,8 @@ export default function BatchUnifiedExportDialog({
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/api/batch-production/batches/${encodeURIComponent(batchId)}/exports?projectId=${encodeURIComponent(projectId)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, planIds: selectedPlanIds }),
-      });
+      const response = await requestPackagingExport(`/api/batch-production/batches/${encodeURIComponent(batchId)}/exports?projectId=${encodeURIComponent(projectId)}`, { projectId, planIds: selectedPlanIds });
+      if (!response) return;
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.message || `导出失败 (${response.status})`);

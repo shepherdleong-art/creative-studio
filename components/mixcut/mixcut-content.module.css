@@ -348,6 +348,17 @@
 .tl[data-tool='split'] .tlPlayhead { pointer-events: none; }
 .tl[data-tool='split'] .tlPlayhead::before { pointer-events: auto; }
 .subtitleSplitPreview { position: absolute; z-index: 5; top: 0; bottom: 0; width: 2px; transform: translateX(-1px); background: var(--orange); box-shadow: 0 0 0 1px rgba(255,255,255,.72); pointer-events: none; }
+/* §5 卖点轨：模板主题色渐变底 + 左侧 🏷，与字幕块（白底描边）明显区分 */
+.tlTrackPoint { height: 28px; }
+.pointBlock { position: absolute; top: 3px; display: flex; height: 22px; align-items: center; gap: 3px; overflow: hidden; padding: 0 8px 0 5px; border: .5px solid rgba(0, 0, 0, .14); border-radius: 6px; background: linear-gradient(135deg, #f59e0b, #ef4444); box-shadow: var(--sh-sm); color: #fff; font-size: 11px; white-space: nowrap; cursor: grab; touch-action: none; }
+.pointBlock[data-template='overlay-poster'] { background: linear-gradient(135deg, #ff7a18, #ff3d68); }
+.pointBlock[data-template='overlay-journal'] { background: linear-gradient(135deg, #b08954, #8a683c); }
+.pointBlock[data-template='overlay-minimal'] { background: linear-gradient(135deg, #6b7280, #374151); }
+.pointBlock[data-template='overlay-variety'] { background: linear-gradient(135deg, #7c3aed, #db2777); }
+.pointBlockDim { opacity: .5; }
+.pointBlockSel { z-index: 2; box-shadow: 0 0 0 1.5px #fff, 0 0 0 3.5px var(--blue); filter: brightness(1.08); }
+.pointTag { flex-shrink: 0; font-size: 10px; line-height: 1; }
+.pointTrackEmpty { position: absolute; top: 50%; left: 8px; transform: translateY(-50%); color: var(--faint); font-size: 10px; pointer-events: none; }
 .wf { position: absolute; inset: 0; display: flex; align-items: center; gap: 2px; overflow: hidden; padding: 0 2px; pointer-events: none; }
 .wf span { flex-shrink: 0; width: 2.5px; border-radius: 2px; background: currentColor; opacity: .22; }
 .wf span[data-played] { opacity: .95; }
@@ -394,16 +405,29 @@
 .narrationSpeedPresets button:disabled { cursor: not-allowed; opacity: .55; }
 
 /* Trim 截取条 */
-.trim { flex-shrink: 0; margin-bottom: 10px; }
-.trimHead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; color: var(--sub); font-size: 12px; }
+.trim { --ink: var(--color-ink); --sub: var(--color-ink-secondary); --blue: var(--color-accent); --blue-hover: var(--color-accent-hover); --seg: var(--color-surface-subtle); flex-shrink: 0; margin-bottom: 10px; padding: 10px; border: 1px solid var(--color-hairline); border-radius: 12px; background: var(--color-surface); color: var(--color-ink); }
+.trimHead { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; color: var(--sub); font-size: 12px; }
+.trimHead .btn { flex-shrink: 0; border: 1px solid var(--color-hairline); }
+.trimHead .btn:hover { background: var(--color-surface-hover); }
+.trimHead .primary:hover { background: var(--color-accent-hover); }
+.trimRuler { display: flex; justify-content: space-between; margin-top: 4px; font-size: 10px; color: var(--color-ink-secondary); }
+.trimSel:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -5px; }
 .trimTitle { display: flex; align-items: center; gap: 7px; color: var(--ink); font-size: 13px; font-weight: 600; }
-.trimStrip { position: relative; display: flex; height: 72px; overflow-x: auto; border-radius: 10px; background: #111; box-shadow: var(--sh-sm); }
-.trimFrame { flex: 0 0 45px; height: 100%; border-right: 1px solid rgba(0, 0, 0, .25); background-position: center; background-size: cover; }
+.trimStrip { position: relative; display: flex; height: 72px; overflow: hidden; touch-action: none; border-radius: 10px; background: #111; box-shadow: var(--sh-sm); }
+.trimFrame { flex: 1 1 0; min-width: 0; height: 100%; border-right: 1px solid rgba(0, 0, 0, .25); background-position: center; background-size: cover; }
 .trimDim { position: absolute; z-index: 2; top: 0; bottom: 0; background: rgba(8, 8, 12, .62); pointer-events: none; }
 .trimSel { position: absolute; z-index: 3; top: 0; bottom: 0; border: 2px solid var(--blue); border-radius: 8px; cursor: ew-resize; }
 .trimHandle { position: absolute; top: 50%; display: grid; width: 12px; height: 26px; place-items: center; border-radius: 4px; background: var(--blue); color: #fff; font-size: 10px; transform: translateY(-50%); }
 .trimHandleL { left: -7px; }
 .trimHandleR { right: -7px; }
+.trimCompact { margin-bottom: 0; padding: 6px 8px; border-radius: 9px; }
+.trimCompact .trimHead { flex-wrap: nowrap; gap: 8px; margin-bottom: 4px; font-size: 11px; }
+.trimCompact .trimTitle { flex-shrink: 0; gap: 4px; font-size: 12px; white-space: nowrap; }
+.trimCompact .trimDescription { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trimCompact .trimHead .btn { height: 24px; padding: 0 10px; font-size: 11px; }
+.trimCompact .trimStrip { height: 36px; border-radius: 6px; }
+.trimCompact .trimHandle { height: 24px; }
+.trimCompact .trimRuler { margin-top: 2px; line-height: 12px; }
 
 /* ===== 第 4 步：导出 ===== */
 .readyBanner { display: flex; flex-shrink: 0; align-items: center; gap: 14px; padding: 16px 20px; border: .5px solid rgba(52, 199, 89, .3); border-radius: 16px; background: rgba(52, 199, 89, .09); }
@@ -477,6 +501,7 @@
 .coverInlineControls label { display: flex; flex-direction: column; gap: 4px; color: var(--sub); font-size: 11px; }
 .coverInlineControls input { box-sizing: border-box; width: 100%; height: 30px; border: .5px solid var(--line); border-radius: 7px; background: #fff; }
 .coverCheck { display: inline-flex; align-items: center; gap: 5px; margin: 8px 12px 0 0; font-size: 11px; }
+.coverCheckHint { margin: 6px 0 0; color: var(--faint); font-size: 11px; line-height: 1.45; }
 .coverPresetButton { width: 100%; min-height: 30px; border: .5px solid var(--line); border-radius: 8px; background: var(--blue-wash); color: var(--blue); font-size: 12px; cursor: pointer; }
 .coverPresetSave { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
 .coverPresetSave button, .coverPresetRow button { border: 0; background: transparent; color: var(--blue); font-size: 11px; cursor: pointer; }
@@ -567,3 +592,118 @@
 :global(html[data-theme='dark']) .coverPresetRow button:last-child { color: #ff6961; }
 :global(html[data-theme='dark']) .coverTextOverflow { border-color: rgba(255, 105, 97, .4) !important; background: rgba(255, 105, 97, .12) !important; }
 :global(html[data-theme='dark']) .coverDrawerFooter { background: var(--paper); box-shadow: 0 -8px 24px rgba(0, 0, 0, .3); }
+/* ---- 包装 v2 配置（PackagingCard / FontPicker） ---- */
+.pkSwitch { display: inline-flex; flex-shrink: 0; align-items: center; gap: 8px; height: 34px; padding: 0 8px 0 14px; border: .5px solid var(--line); border-radius: 99px; background: var(--seg); color: var(--sub); font-size: 12px; font-weight: 500; cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
+.pkSwitch:disabled { opacity: .5; cursor: default; }
+.pkSwitchKnob { position: relative; display: block; width: 34px; height: 20px; border-radius: 99px; background: var(--color-surface); box-shadow: inset 0 0 0 1.5px var(--line); transition: background .15s, box-shadow .15s; }
+.pkSwitchKnob::after { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--sub); content: ''; transition: transform .18s, background .15s; }
+.pkSwitchOn { border-color: rgba(52, 199, 89, .45); background: rgba(52, 199, 89, .12); color: var(--green-ink); }
+.pkSwitchOn .pkSwitchKnob { background: var(--green); box-shadow: none; }
+.pkSwitchOn .pkSwitchKnob::after { transform: translateX(14px); background: var(--color-surface); }
+
+.tplGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.tplGridCompact { grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.tplCard { display: flex; flex-direction: column; gap: 4px; padding: 6px 5px; border: 1.5px solid var(--line); border-radius: 12px; background: var(--color-surface); cursor: pointer; text-align: left; transition: border-color .15s, box-shadow .15s, transform .1s; }
+.tplCard:hover { border-color: rgba(0, 113, 227, .4); }
+.tplCard:active { transform: scale(.98); }
+.tplCard:disabled { opacity: .55; cursor: default; }
+.tplCardActive { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(0, 113, 227, .12); }
+.tplName { color: var(--ink); font-size: 10.5px; font-weight: 600; line-height: 1.25; text-align: center; }
+
+/* 悬停放大预览卡：fixed 定位（rightCol 是滚动容器，absolute 向左越界会被 overflow 裁掉） */
+.tplPreview { position: fixed; z-index: 60; display: flex; width: 210px; padding: 12px; border: .5px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: var(--sh-lg); flex-direction: column; gap: 8px; pointer-events: none; animation: tplPreviewIn .15s ease-out; }
+@keyframes tplPreviewIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.tplPreviewName { color: var(--ink); font-size: 13px; font-weight: 600; }
+.tplPreviewDesc { color: var(--faint); font-size: 11px; line-height: 1.5; }
+
+/* §B 画面内文字直改浮框 */
+.pkTextEditor { display: flex; flex-direction: column; gap: 5px; padding: 10px; border: .5px solid var(--line); border-radius: 12px; background: var(--paper); box-shadow: var(--sh-lg); animation: tplPreviewIn .12s ease-out; }
+.pkTextEditor input { width: 100%; height: 32px; padding: 0 10px; border: .5px solid var(--line); border-radius: 8px; background: var(--seg); color: var(--ink); font-size: 13px; outline: none; }
+.pkTextEditor input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(0, 113, 227, .12); }
+.pkTextEditorHint { color: var(--faint); font-size: 10px; padding-left: 2px; }
+
+/* 模板缩略示意（纯 CSS 近似，非真实渲染） */
+.tplThumb { position: relative; display: block; width: 100%; aspect-ratio: 3/4; overflow: hidden; border-radius: 8px; background: linear-gradient(155deg, #565962, #23252b); }
+.tpHero { position: absolute; top: 9%; left: 8%; width: 58%; height: 11%; border-radius: 3px; background: var(--color-surface); box-shadow: 0 1px 0 #222, 0 2px 5px rgba(0, 0, 0, .35); transform: rotate(-3deg); }
+.tpSub { position: absolute; top: 23%; left: 9%; width: 34%; height: 5%; border-radius: 2px; background: #ff3d7f; transform: rotate(-2deg); }
+.tpPill { position: absolute; left: 8%; height: 8%; border-radius: 99px; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
+.tpPill1 { top: 66%; width: 62%; background: #ff3d7f; transform: rotate(-3deg); }
+.tpPill2 { top: 76%; width: 54%; left: 16%; background: #ffe135; transform: rotate(2deg); }
+.tpPill3 { top: 86%; width: 58%; background: #3ed598; transform: rotate(-1.5deg); }
+.tplThumbJournal { background: linear-gradient(160deg, #f6efe0, #e9dfc8); }
+.tpTape { position: absolute; top: 10%; left: 26%; width: 48%; height: 7%; background: rgba(214, 168, 116, .65); transform: rotate(-4deg); }
+.tpNote { position: absolute; top: 15%; left: 12%; width: 66%; height: 15%; background: #fffdf6; border-radius: 3px; box-shadow: 0 2px 6px rgba(120, 100, 60, .25); transform: rotate(2deg); }
+.tpSticker { position: absolute; width: 58%; height: 9%; border: 1.5px dashed #b3865c; border-radius: 4px; background: rgba(255, 253, 246, .92); }
+.tpSticker1 { top: 62%; left: 8%; transform: rotate(-2.5deg); }
+.tpSticker2 { top: 75%; left: 18%; transform: rotate(1.5deg); }
+.tplThumbMinimal { background: linear-gradient(170deg, #fafafa, #ececec); }
+.tpThinTitle { position: absolute; top: 12%; left: 10%; width: 52%; height: 4%; background: #1d1d1f; opacity: .82; }
+.tpCap { position: absolute; left: 10%; width: 44%; height: 7%; border: 1px solid rgba(0, 0, 0, .3); border-radius: 99px; background: rgba(255, 255, 255, .7); }
+.tplThumbMinimal .tpCap:nth-of-type(2) { top: 66%; }
+.tplThumbMinimal .tpCap:nth-of-type(3) { top: 76%; }
+.tplThumbMinimal .tpCap:nth-of-type(4) { top: 86%; }
+.tplThumbVariety { background: linear-gradient(150deg, #8a3524, #401d14); }
+.tpGold { position: absolute; top: 9%; left: 9%; width: 56%; height: 10%; border-radius: 4px; background: #f5b942; box-shadow: 0 0 0 1.5px #7c2314, 0 2px 6px rgba(0, 0, 0, .4); transform: rotate(-2deg); }
+.tpGold2 { position: absolute; top: 21%; left: 14%; width: 48%; height: 10%; border-radius: 4px; background: #f5b942; box-shadow: 0 0 0 1.5px #7c2314, 0 2px 6px rgba(0, 0, 0, .4); transform: rotate(1.5deg); }
+.tpBanner { position: absolute; top: 35%; left: 6%; width: 70%; height: 5.5%; background: #7c2314; border-radius: 2px; transform: rotate(-1deg); }
+/* v4 搜索框卖点：圆角长条 + 右端放大镜 */
+.tpSearch { position: absolute; width: 62%; height: 8%; border-radius: 99px; background: #f7f1e3; box-shadow: 0 1px 4px rgba(0, 0, 0, .35); }
+.tpSearch::after { content: ''; position: absolute; top: 50%; right: 7%; width: 9%; aspect-ratio: 1; border: 1.5px solid #8a6d4a; border-radius: 50%; transform: translateY(-58%); }
+.tpSearch1 { top: 64%; left: 8%; transform: rotate(-1.5deg); }
+.tpSearch2 { top: 76%; left: 16%; transform: rotate(1deg); }
+
+.pkFrame { position: relative; width: 100%; max-width: 340px; margin: 0 auto; aspect-ratio: 3/4; overflow: hidden; border-radius: 12px; background: var(--color-media-background); box-shadow: var(--sh-md); }
+.pkFrame[data-preset='9x16'] { aspect-ratio: 9/16; }
+.pkFrame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+
+/* ---- 包装 v3 时序预览：进度条 + 卖点清单 ---- */
+.pkTimeline { margin-top: 14px; padding-top: 12px; border-top: .5px solid var(--line-soft); }
+.pkTimelineRow { display: flex; align-items: center; gap: 10px; }
+.pkTimelineRow input[type='range'] { flex: 1; min-width: 0; accent-color: var(--blue); }
+.pkCues { margin-top: 12px; }
+.pkCueList { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 168px; overflow-y: auto; }
+.pkCueList li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; border: .5px solid var(--line); border-radius: 8px; background: var(--seg); }
+.pkCueText { font-size: 13px; color: var(--ink); }
+
+/* ---- 包装 §8 ⑤ 用户卖点字体 ---- */
+.pkFontRow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; position: relative; }
+.pkFontRows { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.pkFontLabel { width: 88px; flex-shrink: 0; font-size: 13px; color: var(--sub); }
+.pkFontEmpty { padding: 6px 10px; font-size: 12px; color: var(--faint); list-style: none; }
+
+/* ---- 包装 §9 ② 字体下拉三版块 ---- */
+.pkFontPicker {
+  position: relative;
+  --bg: var(--color-surface); --paper: var(--color-surface); --seg: var(--color-surface-subtle);
+  --line: var(--color-hairline); --line-soft: var(--color-hairline-soft);
+  --ink: var(--color-ink); --sub: var(--color-ink-secondary); --faint: var(--color-ink-tertiary);
+  --blue: var(--color-accent); --green: var(--color-ok);
+  --sh-lg: 0 8px 32px color-mix(in srgb, var(--color-ink) 16%, transparent);
+}
+.pkFontPop {
+  position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; width: min(420px, 90vw);
+  background: var(--bg); border: .5px solid var(--line); border-radius: 12px; box-shadow: var(--sh-lg);
+  padding: 12px; display: flex; flex-direction: column; gap: 10px; max-height: 70vh;
+}
+.pkFontSearchRow { display: flex; align-items: center; gap: 8px; }
+.pkFontSearch { flex: 1; min-width: 0; height: 32px; padding: 0 10px; border: .5px solid var(--line); border-radius: 8px; font-size: 13px; background: var(--seg); color: var(--ink); }
+.pkFontSections { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+.pkFontSectionTitle { margin: 0; font-size: 11px; font-weight: 600; color: var(--sub); letter-spacing: .4px; border-bottom: .5px solid var(--line-soft); padding-bottom: 4px; }
+.pkFontList { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.pkFontItem { display: flex; align-items: center; gap: 6px; }
+.pkFontPick {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; text-align: left;
+  padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; font-size: 14px; color: var(--ink);
+}
+.pkFontPick:hover { background: var(--seg); }
+.pkFontPickActive { background: rgba(52, 199, 89, .12); color: var(--ink); }
+.pkFontName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.pkFontStar { border: 0; background: transparent; cursor: pointer; font-size: 16px; color: var(--faint); padding: 4px 8px; border-radius: 6px; line-height: 1; }
+.pkFontStar:hover { color: #f5a623; background: var(--seg); }
+.pkFontStarOn { color: #f5a623; }
+
+@media (max-width: 1120px) {
+  .tplGrid:not(.tplGridCompact) { grid-template-columns: repeat(2, 1fr); }
+}
+
+.trimRuler { display: flex; justify-content: space-between; font-size: 10px; color: var(--color-ink-tertiary); margin-top: 4px; }

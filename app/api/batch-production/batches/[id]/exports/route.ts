@@ -26,7 +26,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       headers: BATCH_NO_STORE_HEADERS,
     });
   }
-  const body = await request.json().catch(() => null) as { planIds?: unknown } | null;
+  const body = await request.json().catch(() => null) as { planIds?: unknown; allowPackagingPlaceholder?: unknown } | null;
   if (!Array.isArray(body?.planIds) || !body.planIds.every((value) => typeof value === 'string')) {
     return NextResponse.json({ error: 'invalid_plan_ids', message: 'planIds 必须是成片计划 ID 数组' }, {
       status: 400,
@@ -35,7 +35,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   }
   try {
     await assertBatchApiReady();
-    const result = await orchestrateBatchExport(getDb(), projectId, batchId, body.planIds as string[]);
+    const result = await orchestrateBatchExport(getDb(), projectId, batchId, body.planIds as string[], {
+      allowPackagingPlaceholder: body.allowPackagingPlaceholder === true,
+    });
     return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'batch_export_failed', '批次正式导出失败');

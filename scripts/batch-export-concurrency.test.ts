@@ -427,6 +427,18 @@ try {
   assert.equal(currentTaskWins.items[0]?.status, 'rendering', '编排状态必须来自当前完整渲染契约');
   assert.equal(currentTaskWins.items[0]?.taskId, currentQueuedTaskId, '必须返回当前契约已有任务，而非旧失败任务');
 
+  const beforePackaging = db.prepare('SELECT arrangementJson FROM batch_output_versions WHERE id=?').get(outputVersionId) as { arrangementJson: string };
+  const packagingArrangement = JSON.parse(beforePackaging.arrangementJson);
+  packagingArrangement.packaging = { enabled: true, template: 'overlay-poster', varsOverrides: { title: '实木餐边柜', subtitle: '' }, pointCues: [] };
+  db.prepare('UPDATE batch_output_versions SET arrangementJson=? WHERE id=?').run(JSON.stringify(packagingArrangement), outputVersionId);
+  const taskCount = (db.prepare('SELECT COUNT(*) AS n FROM batch_tasks').get() as { n: number }).n;
+  await assert.rejects(orchestrateBatchExport(db, projectId, batchId, [planId], { storageRoot, wakeScheduler: () => undefined }),
+    (error: unknown) => error instanceof Error && 'code' in error && error.code === 'packaging_placeholder');
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM batch_tasks').get() as { n: number }).n, taskCount, '取消占位导出时不得排队或预留产物');
+  const allowed = await orchestrateBatchExport(db, projectId, batchId, [planId], { storageRoot, wakeScheduler: () => undefined, allowPackagingPlaceholder: true });
+  assert.equal(allowed.items.length, 1, '显式确认后进入原有导出流程');
+  db.prepare('UPDATE batch_output_versions SET arrangementJson=? WHERE id=?').run(beforePackaging.arrangementJson, outputVersionId);
+
   db.close();
   db = null;
   console.log('batch-export-concurrency.test.ts: ok');

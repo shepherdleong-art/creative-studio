@@ -2,6 +2,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync,
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeBuildStamp } from './runtime/build-stamp.mjs';
+import { syncPackagingAssets } from './sync-packaging-assets.mjs';
 
 const root = process.cwd();
 const standaloneDir = join(root, '.next', 'standalone');
@@ -48,6 +49,7 @@ for (const pkg of ['ffmpeg-static', 'ffprobe-static']) {
 // sharp 的原生运行时在 @img/ 下：.node 依赖同目录的 libvips DLL，
 // Next 文件追踪只收录 .node 会漏掉 DLL（ERR_DLOPEN_FAILED），整个 @img 目录强制拷入
 copyDirectory(join(root, 'node_modules', '@img'), join(standaloneDir, 'node_modules', '@img'));
+syncPackagingAssets(root, standaloneDir);
 
 // Next output tracing can conservatively copy the project root when a route has
 // dynamic filesystem access. Strip local data, credentials and development

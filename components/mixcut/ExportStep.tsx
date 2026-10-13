@@ -10,14 +10,17 @@ import { OUTPUT_PRESETS, type ExportTargetView, type FinalEditGroupView, type Mi
 import styles from './mixcut-content.module.css';
 
 type ExportOutput = {
-  videoFilename: string;
-  coverFilename: string;
-  displayDirectory: string;
+  videoFilename?: string;
+  coverFilename?: string;
+  displayDirectory?: string;
   videoUrl: string;
   videoDownloadUrl: string;
   coverUrl: string;
   coverDownloadUrl: string;
   publishedVideoRelativePath?: string;
+  /** 包装联动：渲染只发布封面，视频由包装任务发布（目录唯一成片）。 */
+  packagingDeferred?: boolean;
+  packagingJobId?: string;
 };
 
 type ExportJob = {
@@ -33,6 +36,16 @@ type ExportJob = {
   renderRevision?: { groupRevision: number; variantRevision: number } | null;
 };
 
+type PackagingJobView = {
+  id: string;
+  variantId: string | null;
+  status: string;
+  phase: string;
+  progress: number;
+  errorMessage?: string | null;
+  output?: { videoFilename: string; displayDirectory: string; videoUrl: string; videoDownloadUrl: string; publishedVideoRelativePath?: string } | null;
+};
+
 const PHASE_LABELS: Record<string, string> = {
   queued: '等待渲染',
   preflight: '正在检查',
@@ -41,13 +54,26 @@ const PHASE_LABELS: Record<string, string> = {
   succeeded: '导出完成',
 };
 
+const PACKAGING_PHASE_LABELS: Record<string, string> = {
+  queued: '等待包装',
+  preflight: '正在检查',
+  packaging: '正在渲染包装层',
+  publishing: '正在发布成片',
+  succeeded: '包装完成',
+  skipped: '已跳过包装',
+};
+
 const EXPORT_ERROR_MESSAGES: Record<string, string> = {
   overlay_measurement_mismatch: '文字图层与当前样式不一致，请返回预览刷新后重试',
 };
 
 async function readJson<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.message || EXPORT_ERROR_MESSAGES[body.error] || body.error || `HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(body.message || EXPORT_ERROR_MESSAGES[body.error] || body.error || `HTTP ${response.status}`) as Error & { code?: string };
+    if (typeof body.error === 'string') error.code = body.error;
+    throw error;
+  }
   return body as T;
 }
 
@@ -69,8 +95,12 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
   const [revealAvailable, setRevealAvailable] = useState(false);
   const [revealError, setRevealError] = useState('');
   const [projectInfoIntent, setProjectInfoIntent] = useState<ProjectInfoDialogIntent | null>(null);
+  const [packagingJob, setPackagingJob] = useState<PackagingJobView | null>(null);
+  const [skipping, setSkipping] = useState(false);
   const pollTokenRef = useRef<symbol | null>(null);
+  const packagingPollTokenRef = useRef<symbol | null>(null);
   const variant = group.variants.find((item) => item.id === selectedVariantId) || group.variants[0] || null;
+  const packagingEnabled = group.packaging?.enabled === true;
   const predictedBaseName = useMemo(() => previewExportBaseName(project.productCode, project.taskDate), [project.productCode, project.taskDate]);
   const blockingIssue = variant?.issues.find((issue) => issue.severity === 'blocking');
   const warningIssues = variant?.issues.filter((issue) => issue.severity === 'warning') ?? [];
@@ -173,6 +203,63 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
     };
   }, [active, fetchJob, group.id, job?.id, job?.status, job?.variantId, onGroupChange]);
 
+  // 包装联动：渲染任务成功且 output.packagingDeferred → 跟踪包装任务（第二阶段进度）。
+  // packagingJobId 不落 state，直接由渲染任务 output 派生，避免 effect 内 setState 同步。
+  const deferredPackagingJobId = job?.status === 'succeeded' && job.output?.packagingDeferred ? job.output.packagingJobId || '' : '';
+
+  useEffect(() => {
+    if (!active || !deferredPackagingJobId) return;
+    // 终态且任务匹配时不再轮询（重试/跳过后由 handler 更新状态再触发）
+    if (packagingJob?.id === deferredPackagingJobId && !['queued', 'running'].includes(packagingJob.status)) return;
+    const token = Symbol(deferredPackagingJobId);
+    packagingPollTokenRef.current = token;
+    const poll = async () => {
+      try {
+        const next = await readJson<PackagingJobView>(await fetch(`/api/final-edit-jobs/${encodeURIComponent(deferredPackagingJobId)}`));
+        if (packagingPollTokenRef.current !== token) return;
+        setPackagingJob(next);
+        if (next.status === 'succeeded') {
+          const refreshed = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${encodeURIComponent(group.id)}`));
+          if (packagingPollTokenRef.current === token) onGroupChange(refreshed);
+        }
+      } catch (error) {
+        if (packagingPollTokenRef.current === token) setMessage(error instanceof Error ? error.message : String(error));
+      }
+    };
+    const immediate = window.setTimeout(() => void poll(), 0);
+    const polling = packagingJob?.id !== deferredPackagingJobId || ['queued', 'running'].includes(packagingJob?.status || 'queued');
+    const timer = polling ? window.setInterval(() => void poll(), 1500) : null;
+    return () => {
+      packagingPollTokenRef.current = null;
+      window.clearTimeout(immediate);
+      if (timer) window.clearInterval(timer);
+    };
+  }, [active, deferredPackagingJobId, group.id, onGroupChange, packagingJob?.id, packagingJob?.status]);
+
+  const retryPackaging = async () => {
+    if (!deferredPackagingJobId || busy) return;
+    setBusy(true);
+    try {
+      await readJson<{ id: string; status: string }>(await fetch(`/api/final-edit-jobs/${encodeURIComponent(deferredPackagingJobId)}/retry`, { method: 'POST' }));
+      setPackagingJob((current) => current ? { ...current, status: 'queued', phase: 'queued', progress: 0, errorMessage: null } : current);
+      setMessage('已重新加入包装队列');
+    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setBusy(false); }
+  };
+
+  const skipPackaging = async () => {
+    if (!deferredPackagingJobId || busy || skipping) return;
+    setSkipping(true);
+    try {
+      const result = await readJson<{ videoFilename: string }>(await fetch(`/api/final-edit-jobs/${encodeURIComponent(deferredPackagingJobId)}/publish-original`, { method: 'POST' }));
+      setPackagingJob((current) => current ? { ...current, status: 'skipped', phase: 'skipped' } : current);
+      setMessage(`已跳过包装，无包装原片已发布：${result.videoFilename}`);
+      const refreshed = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${encodeURIComponent(group.id)}`));
+      onGroupChange(refreshed);
+    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setSkipping(false); }
+  };
+
   const startExport = async (productCode = project.productCode) => {
     if (!variant || busy || blockingIssue || !productCode.trim()) return;
     setBusy(true);
@@ -182,11 +269,26 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
       const bundle = await readJson<{ id: string }>(await fetch(`/api/final-edit-groups/${encodeURIComponent(group.id)}/overlay-bundles/${variant.outputPreset}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
       }));
-      const created = await readJson<RenderJobRef>(await fetch(`/api/final-edit-variants/${encodeURIComponent(variant.id)}/render`, {
+      const renderBody: Record<string, unknown> = { groupId: group.id, expectedGroupRevision: group.revision, expectedVariantRevision: variant.revision, overlayBundleId: bundle.id };
+      const postRender = async () => readJson<RenderJobRef>(await fetch(`/api/final-edit-variants/${encodeURIComponent(variant.id)}/render`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ groupId: group.id, expectedGroupRevision: group.revision, expectedVariantRevision: variant.revision, overlayBundleId: bundle.id }),
+        body: JSON.stringify(renderBody),
       }));
+      let created: RenderJobRef;
+      try {
+        created = await postRender();
+      } catch (renderError) {
+        // 包装占位标题拦截（2026-10-12 定稿）：主/副标题抓取失败仍是占位文字——确定=继续导出（该元素不显示），取消=返回修改
+        if ((renderError as { code?: string }).code !== 'packaging_placeholder') throw renderError;
+        const placeholderMessage = renderError instanceof Error ? renderError.message : String(renderError);
+        if (!window.confirm(`${placeholderMessage}\n\n确定 = 继续导出（占位元素不显示）\n取消 = 返回修改`)) {
+          setMessage('已取消导出，可回预览调整双击包装标题补文案');
+          return;
+        }
+        renderBody.allowPackagingPlaceholder = true;
+        created = await postRender();
+      }
       setTarget(created.target);
       setJob({ id: created.id, groupId: created.groupId, variantId: created.variantId, status: created.status, phase: 'queued', progress: 0, output: null });
       setRestoringJob(false);
@@ -211,16 +313,20 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
     if (!job) return;
     setRevealError('');
     try {
+      // 联动导出的正式视频归属包装任务；同时校验关联 ID，避免使用上一次导出的包装结果。
+      const publishedJob = job.output?.packagingJobId === packagingJob?.id && packagingJob?.status === 'succeeded'
+        ? packagingJob
+        : job;
       // 桌面版优先走 Electron 主进程 showItemInFolder：资源管理器会前台弹出；
       // 服务端 reveal 端点是后台 spawn，窗口可能被压在工作台窗口下面，留作兜底。
       const bridge = (window as Window & { desktopBridge?: DesktopBridge }).desktopBridge;
-      const publishedRelativePath = job.output?.publishedVideoRelativePath;
+      const publishedRelativePath = publishedJob.output?.publishedVideoRelativePath;
       if (bridge && publishedRelativePath) {
         const result = await bridge.revealItem(`storage/${publishedRelativePath}`);
         if (!result.revealed) throw new Error(result.message || '打开文件夹失败');
         return;
       }
-      await readJson(await fetch(`/api/final-edit-jobs/${encodeURIComponent(job.id)}/reveal`, { method: 'POST', headers: { 'X-Creative-Studio-Action': 'reveal' } }));
+      await readJson(await fetch(`/api/final-edit-jobs/${encodeURIComponent(publishedJob.id)}/reveal`, { method: 'POST', headers: { 'X-Creative-Studio-Action': 'reveal' } }));
     } catch (error) {
       setRevealError(error instanceof Error ? error.message : String(error));
     }
@@ -234,8 +340,23 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
     coverFilename: predictedBaseName ? `${predictedBaseName}-封面.jpg` : '填写产品型号后自动生成',
     displayDirectory: `工作台/${project.name}/成片/`,
   };
-  const progress = Math.max(0, Math.min(1, Number(job?.progress || 0)));
-  const statusText = activeRenderJobInFlight && job
+  const renderProgress = Math.max(0, Math.min(1, Number(job?.progress || 0)));
+  const packagingLinked = Boolean(deferredPackagingJobId);
+  const packagingRunning = packagingLinked && (packagingJob?.id !== deferredPackagingJobId || ['queued', 'running'].includes(packagingJob?.status ?? 'queued'));
+  const packagingSucceeded = packagingJob?.status === 'succeeded';
+  const packagingFailed = packagingJob?.status === 'failed';
+  const packagingSkipped = packagingJob?.status === 'skipped';
+  const packagingProgress = Math.max(0, Math.min(1, Number(packagingJob?.progress || 0)));
+  const progress = packagingLinked && (packagingRunning || packagingSucceeded) ? packagingProgress : renderProgress;
+  const statusText = packagingLinked && packagingRunning
+    ? `渲染完成 · ${PACKAGING_PHASE_LABELS[packagingJob?.phase || 'queued'] || packagingJob?.phase || '正在包装'} · ${Math.round(packagingProgress * 100)}%`
+    : packagingSucceeded
+      ? '导出完成（含包装）'
+      : packagingFailed
+        ? '包装失败（原片尚未发布）'
+        : packagingSkipped
+          ? '导出完成（已跳过包装）'
+          : activeRenderJobInFlight && job
     ? `${PHASE_LABELS[job.phase] || job.phase} · ${Math.round(progress * 100)}%`
     : job?.status === 'failed'
       ? '上次导出失败'
@@ -244,6 +365,7 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
         : job?.status === 'succeeded'
           ? '上一版可下载'
           : '尚未开始';
+
   const canExport = !blockingIssue && Boolean(project.productCode.trim());
   const canStartExport = Boolean(variant) && !blockingIssue;
   const checks = variant ? [
@@ -257,12 +379,12 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
     <>
       <header className={styles.stepHead}>
         <div>
-          <p className={`${styles.eyebrow} ${styles.stepTitle}`} style={{ fontSize: 11 }}>STEP 04</p>
+          <p className={`${styles.eyebrow} ${styles.stepTitle}`} style={{ fontSize: 11 }}>STEP 05</p>
           <h1 className={styles.stepTitle} id="mixcut-export-heading">导出并写回项目</h1>
           <p className={styles.stepSub}>成片和封面会保留渲染副本，并原子写入当前项目的成片目录。</p>
         </div>
         <div className={styles.stepActions}>
-          <button type="button" className={styles.btn} onClick={onBack}><Icon name="chevron-left" size={14} />返回预览修复</button>
+          <button type="button" className={styles.btn} onClick={onBack}><Icon name="chevron-left" size={14} />返回包装</button>
         </div>
       </header>
 
@@ -310,7 +432,7 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
             <div className={styles.cardHead}><div className={styles.cardTitle}>渲染设置</div></div>
             <label className={styles.field}>
               <span>成片草稿</span>
-              <select aria-label="选择导出草稿" value={variant?.id || ''} disabled={busy || restoringJob || activeRenderJobInFlight} onChange={(event) => { setSelectedVariantId(event.target.value); setJob(null); setTarget(null); setRestoringJob(true); setMessage(''); }}>
+              <select aria-label="选择导出草稿" value={variant?.id || ''} disabled={busy || restoringJob || activeRenderJobInFlight} onChange={(event) => { setSelectedVariantId(event.target.value); setJob(null); setTarget(null); setPackagingJob(null); setRestoringJob(true); setMessage(''); }}>
                 {group.variants.map((item) => <option key={item.id} value={item.id}>成片 {item.indexNum} · {item.outputPreset.replace('x', ':')}</option>)}
               </select>
             </label>
@@ -339,12 +461,23 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
           <div className={styles.cardHead}>
             <div>
               <div className={styles.cardTitle}>{restoringJob ? '正在恢复导出任务' : statusText}</div>
-              <div className={styles.cardSub}>{job?.status === 'succeeded' ? '文件已写回项目' : message || '准备好后开始本地渲染'}</div>
+              <div className={styles.cardSub}>
+                {packagingSucceeded
+                  ? '包装版已作为唯一成片写回项目目录'
+                  : packagingSkipped
+                    ? '已按你的选择跳过包装，无包装原片已写回项目目录'
+                    : packagingFailed
+                      ? message || '包装任务失败，可重试或跳过包装直接发布原片'
+                      : job?.status === 'succeeded'
+                        ? packagingLinked ? '渲染完成，正在自动包装' : '文件已写回项目'
+                        : message || (packagingEnabled ? '渲染完成后将自动叠加包装层并发布包装版成片' : '准备好后开始本地渲染')}
+              </div>
             </div>
-            <span className={styles.flowHint}>导出在本地串行队列渲染，可离开页面后再回来查看。</span>
+            {packagingEnabled ? <span className={`${styles.chip} ${styles.chipBlue}`}>自动包装已启用</span> : <span className={styles.flowHint}>导出在本地串行队列渲染，可离开页面后再回来查看。</span>}
           </div>
           <div className={styles.progBar} role="progressbar" aria-label="导出进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)} style={{ marginBottom: 14 }}><i style={{ width: `${progress * 100}%` }} /></div>
           {job?.status === 'failed' && <p className={styles.exportBlocker}>{job.errorMessage || '渲染失败'}</p>}
+          {packagingFailed && packagingJob?.errorMessage && <p className={styles.exportBlocker}><Icon name="alert" size={14} />包装失败：{packagingJob.errorMessage}</p>}
           <div className={styles.ctaZone}>
             {!restoringJob && !currentRevisionExported && !activeRenderJobInFlight ? (
               <button
@@ -357,14 +490,29 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
                 }}
               >
                 <Icon name="download" size={16} />
-                {project.productCode.trim() ? (historicalSucceededJob ? '重新导出当前修改' : '开始导出') : '填写信息并导出'}
+                {project.productCode.trim() ? (historicalSucceededJob ? '重新导出当前修改' : packagingEnabled ? '开始导出（含自动包装）' : '开始导出') : '填写信息并导出'}
               </button>
             ) : null}
             {job?.status === 'failed' && <button type="button" className={`${styles.btn} ${styles.primary}`} disabled={busy} onClick={() => void retry()}><Icon name="retry" size={15} />重试导出</button>}
-            {currentRevisionExported && job?.output && (
+            {packagingFailed && (
+              <>
+                <button type="button" className={`${styles.btn} ${styles.primary}`} disabled={busy} onClick={() => void retryPackaging()}><Icon name="retry" size={15} />重试包装</button>
+                <button type="button" className={styles.secondaryButton} disabled={busy || skipping} onClick={() => void skipPackaging()}><Icon name="skip-forward" size={15} />{skipping ? '正在发布原片…' : '跳过包装，发布原片'}</button>
+              </>
+            )}
+            {currentRevisionExported && job?.output && !packagingRunning && !packagingFailed && (
               <div className={styles.dlRow}>
-                <a className={styles.primaryButton} href={job.output.videoDownloadUrl}><Icon name="download" size={15} />下载视频</a>
-                <a className={styles.secondaryButton} href={job.output.coverDownloadUrl}><Icon name="image" size={15} />下载封面</a>
+                {packagingSucceeded && packagingJob?.output ? (
+                  <>
+                    <a className={styles.primaryButton} href={packagingJob.output.videoDownloadUrl}><Icon name="download" size={15} />下载成片（包装版）</a>
+                    {job.output.coverDownloadUrl && <a className={styles.secondaryButton} href={job.output.coverDownloadUrl}><Icon name="image" size={15} />下载封面</a>}
+                  </>
+                ) : (
+                  <>
+                    <a className={styles.primaryButton} href={job.output.videoDownloadUrl}><Icon name="download" size={15} />{packagingSkipped ? '下载成片（无包装）' : '下载视频'}</a>
+                    {job.output.coverDownloadUrl && <a className={styles.secondaryButton} href={job.output.coverDownloadUrl}><Icon name="image" size={15} />下载封面</a>}
+                  </>
+                )}
                 {revealAvailable && <button type="button" className={styles.secondaryButton} onClick={() => void reveal()}><Icon name="folder" size={15} />在文件夹中查看</button>}
               </div>
             )}
@@ -383,7 +531,12 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
           </div>
         </section>
 
-        {job?.status === 'succeeded' && job.output && <section className={styles.exportResult} aria-label="导出结果"><video controls preload="metadata" src={job.output.videoUrl} /><img src={job.output.coverUrl} alt="导出封面" /></section>}
+        {job?.status === 'succeeded' && job.output && !packagingRunning && !packagingFailed && (
+          <section className={styles.exportResult} aria-label="导出结果">
+            <video controls preload="metadata" src={packagingSucceeded && packagingJob?.output ? packagingJob.output.videoUrl : job.output.videoUrl} />
+            {job.output.coverUrl && <img src={job.output.coverUrl} alt="导出封面" />}
+          </section>
+        )}
       </div>
 
       <ProjectInfoDialog

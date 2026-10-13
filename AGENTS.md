@@ -96,6 +96,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 | `docs/reference/打包与桌面运行.md` | 改打包脚本、快启脚本、Electron 桌面壳 |
 | `docs/reference/详情页智能脚本生成.md` | 改 `lib/script-studio/` 任何东西 |
 | `docs/reference/创作画布.md` | 改 `lib/creative-canvas/`、`app/api/canvas/`、`components/creative-canvas/`、`app/canvas/` 任何东西 |
+| `docs/reference/视频包装.md` | 改共享包装、四套模板、单条或批量包装入口、离线包装运行资源 |
 
 ### `lib/` 核心模块
 

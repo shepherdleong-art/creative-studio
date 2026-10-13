@@ -1,3 +1,6 @@
+import { buildPointCandidates } from '../media-core/packaging-cues.ts';
+import { extractSellingPointsWithLLM } from '../media-core/packaging-extraction.ts';
+import { loadProjectPackagingData } from '../media-core/packaging-vars.ts';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -42,6 +45,7 @@ export interface BatchNarrationSynthesisResult {
 
 export interface BatchNarrationExecutorOptions {
   storageRoot?: string;
+  extractPackagingPoints?: (text: string, signal: AbortSignal) => Promise<string[]>;
   /** 测试用:替换真实 TTS 适配器调用。 */
   synthesize?: (providerId: string, input: TtsAdapterInput) => Promise<BatchNarrationSynthesisResult>;
 }
@@ -328,6 +332,22 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
         },
         timingSource,
       });
+      context.reportProgress({ phase: 'content_analyzing', description: '提炼包装卖点', percent: null });
+      const previousNarration = db.prepare('SELECT narrationJson FROM batch_script_narrations WHERE scriptSnapshotId=?').get(snapshot.id) as { narrationJson: string } | undefined;
+      let cachedPoints: string[] | undefined;
+      try {
+        const saved = JSON.parse(previousNarration?.narrationJson ?? '{}').packagingPoints;
+        if (Array.isArray(saved) && saved.every(point => typeof point === 'string')) cachedPoints = saved;
+      } catch { /* Old narration snapshots are re-extracted once. */ }
+      const points = await buildPointCandidates({
+        narrationText: snapshot.bodyText,
+        sellingPoints: loadProjectPackagingData(db, claim.task.projectId).sellingPoints ?? [],
+        extractPoints: text => cachedPoints ? Promise.resolve(cachedPoints) : options.extractPackagingPoints
+          ? options.extractPackagingPoints(text, signal)
+          : extractSellingPointsWithLLM(text, undefined, signal),
+      });
+      if (signal.aborted) throw new Error('任务已中止');
+      narrationSnapshot.packagingPoints = points.candidates;
       const snapshotJson = JSON.stringify(narrationSnapshot);
       context.reportProgress({ phase: 'verified', description: '口播核验完成，正在发布', percent: null });
       return {

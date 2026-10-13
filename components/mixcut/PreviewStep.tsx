@@ -9,8 +9,10 @@ import type { GroupCommandInput, VariantCommandInput } from '@/components/final-
 import { drawFramedImage } from '@/lib/final-edit/cover-framing';
 import { timelineGaps } from '@/lib/final-edit/domain';
 import { hasLegacyAutomaticSubtitleCuesToNormalize } from '@/lib/final-edit/subtitle-cue-normalize';
-import { FINAL_EDIT_FPS, FINAL_EDIT_MIN_CLIP_FRAMES, OUTPUT_PRESETS, type CoverEditorDraft, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView, type TimelineClip } from '@/lib/final-edit/types';
+import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, FINAL_EDIT_MIN_CLIP_FRAMES, OUTPUT_PRESETS, type CoverEditorDraft, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView, type TimelineClip } from '@/lib/final-edit/types';
 import { NARRATION_GAIN_DB_DEFAULT } from '@/lib/media-core/audio-gain';
+import type { PackagingLayoutsPatch, PackagingPointLayout, PackagingVars } from '@/lib/final-edit/packaging-vars';
+import type { PointCue } from '@/lib/final-edit/packaging-cues';
 import { MixcutTimeline } from './MixcutTimeline';
 import { NarrationPlaybackRateControl } from './NarrationPlaybackRateControl';
 import { NarrationGainControl } from './NarrationGainControl';
@@ -20,6 +22,9 @@ import { ClipFramingControl } from './ClipFramingControl';
 import { CoverEditorDrawer } from './CoverEditorDrawer';
 import { preloadSystemFonts } from '@/components/system-fonts';
 import { BgmCard, type BgmImportUiResult } from './BgmCard';
+import { PackagingCard, type PackagingPreviewData } from './PackagingCard';
+import { PackagingTextEditPopover } from '@/components/packaging/PackagingTextEditor';
+import { PackagingOverlaySync } from './packaging-overlay-sync';
 import type { BgmImportResponse } from '@/lib/final-edit/types';
 import styles from './mixcut-content.module.css';
 
@@ -40,7 +45,17 @@ async function responseBody<T>(response: Response): Promise<T> {
 type VariantCommandRequest = VariantCommandInput | ((variant: FinalEditVariantView) => VariantCommandInput);
 type GroupCommandRequest = GroupCommandInput | ((group: FinalEditGroupView) => GroupCommandInput);
 
+/** Partial<PackagingVars>（值可缺省）→ 命令要求的 Record<string, string>（与 PackagingCard.overridesRecord 同逻辑）。 */
+function packagingVarsOverridesRecord(overrides: Partial<PackagingVars>): Record<string, string> {
+  const record: Record<string, string> = {};
+  for (const [key, value] of Object.entries(overrides)) {
+    if (typeof value === 'string') record[key] = value;
+  }
+  return record;
+}
+
 // V2 第 3 步（规格 §6）：直接渲染网格子节点——素材替换列 / Resizer / 主区（工具行+大纸）/ Resizer / 右栏三卡。
+
 // 列宽与折叠由 MixcutPanel 通过 CSS 变量与 body class 驱动。
 export function PreviewStep({ group, active, onGroupChange, onExport, onRepCollapse, onRgtCollapse, onResizeStart }: {
   group: FinalEditGroupView;
@@ -57,6 +72,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [previewMode, setPreviewMode] = useState<PreviewMode>('output');
   const [previewMaterialKey, setPreviewMaterialKey] = useState('');
   const [selectedCueId, setSelectedCueId] = useState(group.subtitleCues[0]?.id || '');
+  const [selectedPointId, setSelectedPointId] = useState('');
   const [playheadSec, setPlayheadSec] = useState(0);
   const [seekRequestId, setSeekRequestId] = useState(0);
   const [message, setMessage] = useState('已从本地草稿恢复');
@@ -93,6 +109,9 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   // 用户可见名称一律走 displayName（D5）；filename 只服务播放 URL/物理路径。
   const materialName = (asset: FinalEditAssetView | null) => (asset ? asset.displayName || asset.filename : '');
   const timelineSelectedCueId = group.subtitleCues.some((cue) => cue.id === selectedCueId) ? selectedCueId : '';
+  // 卖点选中态：与 selectedCueId 同级；选中 id 可能因删除/重提取失效，下游一律用校验后的 timelineSelectedPointId
+  const selectedPointIdRef = useRef('');
+  const timelineSelectedPointId = group.packaging.pointCues?.some((cue) => cue.id === selectedPointId) ? selectedPointId : '';
   const orderedClips = useMemo(() => variant ? [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame) : [], [variant]);
   const trimClipIndex = trimClip ? orderedClips.findIndex((clip) => clip.id === trimClip.id) : -1;
   const trimAsset = trimClip ? group.assets.find((asset) => asset.videoJobId === trimClip.videoJobId) ?? null : null;
@@ -313,6 +332,170 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     setSeekRequestId((value) => value + 1);
   };
 
+  // 播放头上报降频：播放中 FinalEditPreview 每 rAF（60fps）回调一次，全量重渲 PreviewStep+时间线成本不小；
+  // 降到 30fps 提交（UI 足够流畅），尾随定时器保证暂停时的精确值 33ms 内到达。弱机收益显著（①修复配套）。
+  const playheadCommitRef = useRef({ latest: 0, lastAt: 0, timer: 0 });
+  const handlePlayheadChange = useCallback((timeSec: number) => {
+    const s = playheadCommitRef.current;
+    s.latest = timeSec;
+    const now = performance.now();
+    const elapsed = now - s.lastAt;
+    if (elapsed >= 33) {
+      s.lastAt = now;
+      setPlayheadSec(timeSec);
+      return;
+    }
+    if (!s.timer) {
+      s.timer = window.setTimeout(() => {
+        s.timer = 0;
+        s.lastAt = performance.now();
+        setPlayheadSec(playheadCommitRef.current.latest);
+      }, 33 - elapsed);
+    }
+  }, []);
+  useEffect(() => () => {
+    const s = playheadCommitRef.current;
+    if (s.timer) window.clearTimeout(s.timer);
+  }, []);
+
+  const [packagingPreview, setPackagingPreview] = useState<PackagingPreviewData | null>(null);
+  const [packagingPreviewError, setPackagingPreviewError] = useState('');
+  const [packagingPreviewRefreshId, setPackagingPreviewRefreshId] = useState(0);
+  // §B 画面内文字直改：桥 dblclick 上报打开的浮框状态（rect=元素在 iframe 内的视口 rect，frame=iframe 自身视口左上）
+  const [packagingTextEdit, setPackagingTextEdit] = useState<{
+    pointId: string;
+    rect: { left: number; top: number; width: number; height: number };
+    frame: { left: number; top: number };
+  } | null>(null);
+  const packagingTextEditRef = useRef<typeof packagingTextEdit>(null);
+  const packagingPreviewRef = useRef(packagingPreview);
+  useEffect(() => { packagingPreviewRef.current = packagingPreview; }, [packagingPreview]);
+  const openPackagingTextEdit = (edit: typeof packagingTextEdit) => {
+    packagingTextEditRef.current = edit;
+    setPackagingTextEdit(edit);
+  };
+
+  const packagingIframeRef = useRef<HTMLIFrameElement | null>(null);
+  // ---- §5/§6 卖点选中与卖点轨变更 ----
+  const setPointSelection = (pointId: string) => {
+    selectedPointIdRef.current = pointId;
+    setSelectedPointId(pointId);
+  };
+  // 卖点数据变更（重新提取/删除）后选中 id 可能已失效：失效即清除——
+  // 否则桥 only 过滤会拿失效 id 把全部气泡挡在门外，编辑整体锁死（2026-10-09 实锤）
+  useEffect(() => {
+    if (selectedPointId && !(group.packaging.pointCues ?? []).some((cue) => cue.id === selectedPointId)) {
+      const timer = window.setTimeout(() => setPointSelection(''), 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [group.packaging.pointCues, selectedPointId]);
+  // 卖点选中取消出口（§18.5 摩擦项）：父页面捕获阶段 Esc 清选中——卖点文本框聚焦时 Esc 会被输入框吞掉，
+  // 桥内 Esc 只覆盖 iframe 聚焦场景，这里兜底；blur 一并放下输入框焦点。
+  // 包装文字浮框打开时 Esc 归浮框自己（取消编辑），不清卖点选中。
+  useEffect(() => {
+    if (!timelineSelectedPointId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (packagingTextEditRef.current) return;
+      setPointSelection('');
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [timelineSelectedPointId]);
+  // 卖点块单击（含拖动手势起始）：选中；新选中时 seek 到弹出中点（自动暂停，§5）
+  const handleSelectPoint = (pointId: string) => {
+    const previous = selectedPointIdRef.current;
+    setPointSelection(pointId);
+    if (pointId && pointId !== previous) {
+      const cue = groupRef.current.packaging.pointCues?.find((item) => item.id === pointId);
+      if (cue) seek((cue.startSec + cue.endSec) / 2);
+    }
+  };
+
+  // ⑤ 正片卖点直点：编辑模式关闭（正片段未选中）时叠加层 iframe pointer-events 为 none，点击穿透到本层——
+  // 父页代做命中探测：命中可见 cue 气泡即选中（与时间线点选同效），随后 only 模式自动激活可拖可改。
+  // 封面元素此时因 .stage 退场不可见但自身 opacity 为 1，故只探测 cue:*（封面段编辑由桥内 cover 态负责）。
+  const probePackagingCueHit = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (packagingEditModeKey !== 'off') return;
+    const iframe = packagingIframeRef.current;
+    const win = iframe?.contentWindow;
+    const doc = iframe?.contentDocument;
+    if (!iframe || !win || !doc) return;
+    const rect = iframe.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
+    const stack = doc.elementsFromPoint(x, y);
+    for (const node of stack) {
+      const el = (node as Element).closest?.('[data-point-id^="cue:"]');
+      if (!el) continue;
+      const cs = win.getComputedStyle(el);
+      const opacity = parseFloat(cs.opacity);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || (isFinite(opacity) ? opacity : 1) < 0.05) continue;
+      handleSelectPoint(el.getAttribute('data-point-id')!.slice('cue:'.length));
+      break;
+    }
+  };
+  // 卖点轨增/删/改字/移动/修剪：enabled/template/varsOverrides 必须携带现值（省略即重置），pointCues 整体替换
+  const applyPointCues = (next: PointCue[]) => {
+    void applyGroup((current) => ({
+      type: 'set_packaging_config',
+      config: {
+        enabled: current.packaging.enabled,
+        template: current.packaging.template,
+        varsOverrides: packagingVarsOverridesRecord(current.packaging.varsOverrides),
+        pointCues: next,
+      },
+    }));
+  };
+
+  // §B 画面内文字直改提交：cover:* → varsOverrides（与默认值相同删键）；cue:* → pointCues 文本替换
+  // （空文本拒绝，与时间线改字同规则）。提交后叠加层经既有重载键刷新，模板 refitAll 自动重排。
+  const commitPackagingTextEdit = (pointId: string, rawText: string) => {
+    openPackagingTextEdit(null);
+    const value = rawText.trim().slice(0, 40);
+    if (pointId.startsWith('cover:')) {
+      const key = pointId.slice('cover:'.length);
+      if (!['title', 'subtitle', 'point1', 'point2', 'point3'].includes(key)) return;
+      void applyGroupRef.current((current): GroupCommandInput => {
+        const defaults = packagingPreviewRef.current?.defaults;
+        const defaultValue = defaults && typeof defaults[key as keyof PackagingVars] === 'string' ? String(defaults[key as keyof PackagingVars]) : null;
+        const nextOverrides = packagingVarsOverridesRecord(current.packaging.varsOverrides);
+        if (defaultValue !== null && value === defaultValue) delete nextOverrides[key];
+        else nextOverrides[key] = value;
+        return {
+          type: 'set_packaging_config',
+          config: {
+            enabled: current.packaging.enabled,
+            template: current.packaging.template,
+            varsOverrides: nextOverrides,
+          },
+        };
+      }).then((accepted) => {
+        if (accepted) mergePackagingPreviewVars({ [key]: value });
+      });
+      return;
+    }
+    if (pointId.startsWith('cue:')) {
+      const cueId = pointId.slice('cue:'.length);
+      const cues = groupRef.current.packaging.pointCues ?? [];
+      const cue = cues.find((item) => item.id === cueId);
+      if (!cue || !value || value === cue.text) return;
+      applyPointCues(cues.map((item) => (item.id === cueId ? { ...item, text: value } : item)));
+    }
+  };
+
+  // §B 浮框预填文案：父页自有数据（封面 ← preview.vars，正片 ← pointCues），桥不传文本
+  const resolvePackagingTextEditInitial = (pointId: string): string => {
+    if (pointId.startsWith('cover:')) {
+      const value = (packagingPreview?.vars as Record<string, unknown> | undefined)?.[pointId.slice('cover:'.length)];
+      return typeof value === 'string' ? value : '';
+    }
+    const cueId = pointId.slice('cue:'.length);
+    return group.packaging.pointCues?.find((item) => item.id === cueId)?.text ?? '';
+  };
+
   const previewNarrationPlaybackRate = (playbackRate: number) => {
     const current = groupRef.current;
     publishGroup({
@@ -404,6 +587,203 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const bodySec = variant ? variant.timeline.bodyFrames / FPS : 0;
   const narrationMatch = Math.abs(narrationSec - bodySec) < 1;
   const coverSourceIndex = variant ? orderedClips.findIndex((clip) => clip.videoJobId === variant.cover.sourceKey) : -1;
+
+  // ---- §3 包装叠加层 + §2 右栏包装卡 ----
+  const packagingConfig = group.packaging;
+  const packagingEnabled = packagingConfig.enabled;
+  const packagingTemplate = packagingConfig.template;
+  const previewVariantId = variant?.id ?? '';
+  // 叠加层同步控制器：构造函数无副作用（visibilitychange 监听首次 attach 才绑定），可安全惰性初始化
+  const packagingSyncRef = useRef<PackagingOverlaySync | null>(null);
+  packagingSyncRef.current ??= new PackagingOverlaySync();
+  // §6 编辑模式：iframe 元素引用（写 __editMode 用）；布局提交防抖队列（瞬态值入 ref，不新增渲染订阅）
+  const packagingLayoutPendingRef = useRef<Map<string, PackagingPointLayout | null> | null>(null);
+  const packagingLayoutTimerRef = useRef(0);
+  // 叠加层 iframe 挂载态（入 __editMode effect 依赖：iframe 挂载前 effect 落空须重跑，2026-10-10 竞态实锤）
+  const [overlayMounted, setOverlayMounted] = useState(false);
+
+  useEffect(() => {
+    const sync = packagingSyncRef.current;
+    return () => {
+      sync?.destroy();
+      if (packagingSyncRef.current === sync) packagingSyncRef.current = null;
+    };
+  }, []);
+
+  // §6 编辑桥接线：__packagingEditCommit 实实现（pointId 解析 + 防抖 500ms 合并连续提交后经 applyGroup 写 layouts）、
+  // __packagingEditExit（ESC → 清卖点选中）。layouts 合并语义（workspace/packaging-vars）：段级并入、叶子 null=删除该键。
+  const flushPackagingLayoutCommits = useCallback(() => {
+    const pending = packagingLayoutPendingRef.current;
+    packagingLayoutPendingRef.current = null;
+    if (!pending || pending.size === 0) return;
+    const entries = [...pending].filter(([pointId]) => pointId.startsWith('cover:') || pointId.startsWith('cue:'));
+    if (entries.length === 0) return;
+    void applyGroupRef.current((current): GroupCommandInput => {
+      const template = current.packaging.template;
+      const section: { cover?: Record<string, PackagingPointLayout | null>; cues?: Record<string, PackagingPointLayout | null> } = {};
+      for (const [pointId, layout] of entries) {
+        if (pointId.startsWith('cover:')) {
+          section.cover = section.cover ?? {};
+          section.cover[pointId.slice('cover:'.length)] = layout; // cover:pointN → layouts.<模板>.cover.pointN
+        } else {
+          section.cues = section.cues ?? {};
+          section.cues[pointId.slice('cue:'.length)] = layout; // cue:<id> → layouts.<模板>.cues.<id>
+        }
+      }
+      const layouts: PackagingLayoutsPatch = { [template]: section };
+      return {
+        type: 'set_packaging_config',
+        config: {
+          enabled: current.packaging.enabled,
+          template: current.packaging.template,
+          varsOverrides: packagingVarsOverridesRecord(current.packaging.varsOverrides),
+          layouts,
+        },
+      };
+    });
+  }, []);
+
+  const schedulePackagingLayoutCommit = useCallback((pointId: string, layout: PackagingPointLayout | null) => {
+    const pending = packagingLayoutPendingRef.current ?? new Map<string, PackagingPointLayout | null>();
+    packagingLayoutPendingRef.current = pending;
+    pending.set(pointId, layout); // 同键后写覆盖先写（拖拽连续提交只留终态）
+    if (packagingLayoutTimerRef.current) window.clearTimeout(packagingLayoutTimerRef.current);
+    packagingLayoutTimerRef.current = window.setTimeout(() => {
+      packagingLayoutTimerRef.current = 0;
+      flushPackagingLayoutCommits();
+    }, 500);
+  }, [flushPackagingLayoutCommits]);
+
+  const packagingBridgeHandlersRef = useRef({ handleSelectPoint, openPackagingTextEdit });
+  useEffect(() => { packagingBridgeHandlersRef.current = { handleSelectPoint, openPackagingTextEdit }; });
+
+  useEffect(() => {
+    const target = window as Window & {
+      __packagingEditCommit?: (pointId: string, layout: PackagingPointLayout | null, numeric: PackagingPointLayout | null) => void;
+      __packagingEditExit?: () => void;
+      __packagingEditText?: (pointId: string, rect: { left: number; top: number; width: number; height: number }) => void;
+      __packagingEditCueSelect?: (cueId: string) => void;
+    };
+    target.__packagingEditCommit = (pointId, layout) => schedulePackagingLayoutCommit(pointId, layout);
+    target.__packagingEditExit = () => setPointSelection('');
+    // ⑤ 桥内直点另一条正片卖点气泡的上报通道：与时间线点选同效（选中+跳中点暂停，only 模式随后自动激活）
+    target.__packagingEditCueSelect = (cueId) => packagingBridgeHandlersRef.current.handleSelectPoint(cueId);
+    // §B 桥 dblclick 上报：换算 iframe 视口坐标后开浮框（元素 rect 冻结于打开时刻，提交后叠加层经重载键刷新）
+    target.__packagingEditText = (pointId, rect) => {
+      const iframe = packagingIframeRef.current;
+      if (!iframe) return;
+      const frameRect = iframe.getBoundingClientRect();
+      packagingBridgeHandlersRef.current.openPackagingTextEdit({ pointId, rect, frame: { left: frameRect.left, top: frameRect.top } });
+    };
+    return () => {
+      delete target.__packagingEditCommit;
+      delete target.__packagingEditExit;
+      delete target.__packagingEditText;
+      delete target.__packagingEditCueSelect;
+      if (packagingLayoutTimerRef.current) {
+        window.clearTimeout(packagingLayoutTimerRef.current);
+        packagingLayoutTimerRef.current = 0;
+      }
+    };
+  }, [schedulePackagingLayoutCommit]);
+
+  // 预览 JSON：进入/换模板/换草稿/重新提取后拉取（供包装卡表单默认值、「跳到封面」coverSec 与叠加层加载闸门）
+  useEffect(() => {
+    if (!active || !packagingEnabled || !previewVariantId) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const query = new URLSearchParams({ variantId: previewVariantId, template: packagingTemplate });
+        const next = await responseBody<PackagingPreviewData>(
+          await fetch(`/api/final-edit-groups/${encodeURIComponent(group.id)}/packaging-preview?${query}`, { signal: controller.signal }),
+        );
+        if (!controller.signal.aborted) {
+          setPackagingPreview(next);
+          setPackagingPreviewError('');
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setPackagingPreview(null);
+          setPackagingPreviewError(error instanceof Error ? error.message : String(error));
+        }
+      }
+    })();
+    return () => controller.abort();
+  }, [active, packagingEnabled, packagingTemplate, group.id, previewVariantId, packagingPreviewRefreshId]);
+
+  // 播放头转发（暂停态 rAF 节流 seek；播放态仅更新漂移基准）——沿用既有 playheadSec state，不新增订阅
+  useEffect(() => {
+    packagingSyncRef.current?.setPlayhead(effectivePlayheadSec);
+  }, [effectivePlayheadSec]);
+
+  const handlePreviewPlayingChange = useCallback((playing: boolean) => {
+    packagingSyncRef.current?.setPlaying(playing);
+  }, []);
+
+  const attachPackagingOverlay = useCallback((element: HTMLIFrameElement | null) => {
+    packagingIframeRef.current = element;
+    packagingSyncRef.current?.attach(element);
+    setOverlayMounted(Boolean(element));
+  }, []);
+
+  const mergePackagingPreviewVars = useCallback((saved: Partial<PackagingVars>) => {
+    setPackagingPreview((current) => (current ? { ...current, vars: { ...current.vars, ...saved } } : current));
+  }, []);
+
+  const refreshPackagingPreview = useCallback(() => {
+    setPackagingPreviewRefreshId((value) => value + 1);
+  }, []);
+
+  // iframe 重载键：模板/三槽字体/文案覆盖层/草稿/卖点数组任一变化即重载（不含 layouts——拖拽保存不重载，§6）。
+  // pointCues 入键：卖点增删改后 iframe 重载，同步控制器 load 后自动 seek 回当前播放头（§3 恢复逻辑）。
+  const packagingOverlayKey = `${packagingTemplate}|${JSON.stringify(packagingConfig.varsOverrides)}|${packagingConfig.titleFont?.file ?? ''}|${packagingConfig.subtitleFont?.file ?? ''}|${packagingConfig.pointFont?.file ?? ''}|${previewVariantId}|${JSON.stringify(packagingConfig.pointCues ?? [])}`;
+  const packagingOverlaySrc = packagingEnabled && previewVariantId && packagingPreview
+    ? `/api/final-edit-groups/${encodeURIComponent(group.id)}/packaging-preview?variantId=${encodeURIComponent(previewVariantId)}&template=${encodeURIComponent(packagingTemplate)}&format=html&sync=1&edit=1`
+    : '';
+
+  // §6 编辑模式三态：封面段（播放头 < coverSec）封面 point1-3 可拖（only=null）——封面段正片气泡本就不可见，
+  // 封面编辑必须优先于选中态（否则选中过正片卖点后封面全部被 only 过滤锁死，2026-10-09 实锤）；
+  // 正片段且选中卖点 → 仅该条可拖（only=cue:<id>）；其余关闭。
+  const packagingCoverSec = packagingPreview?.timeline.coverSec ?? FINAL_EDIT_INTRO_FRAMES / FPS;
+  const packagingEditModeKey = !packagingEnabled
+    ? 'off'
+    : effectivePlayheadSec < packagingCoverSec
+      ? 'cover'
+      : timelineSelectedPointId
+        ? `cue:${timelineSelectedPointId}`
+        : 'off';
+  const packagingEditActive = packagingEditModeKey !== 'off';
+
+  // iframe load 后与三态变化时写 contentWindow.__editMode（同源可用；跨域/文档销毁静默降级——桥内读不到即不激活）。
+  // overlayMounted 入依赖：预览 JSON 到达前 iframe 未挂载，effect 首跑必落空——F5 且播放头在封面段时
+  // modeKey/overlayKey 此后均不再变化，__editMode 永远写不进（2026-10-10 验收竞态实锤：点击全放行选不中）
+  useEffect(() => {
+    const mode: { active: boolean; only: string | null } = packagingEditModeKey === 'off'
+      ? { active: false, only: null }
+      : packagingEditModeKey === 'cover'
+        ? { active: true, only: null }
+        : { active: true, only: packagingEditModeKey };
+    const iframe = packagingIframeRef.current;
+    if (!iframe) return;
+    const apply = () => {
+      try {
+        const win = iframe.contentWindow as (Window & { __editMode?: { active: boolean; only: string | null } }) | null;
+        if (win) win.__editMode = mode;
+      } catch { /* 跨域或文档已销毁：静默降级 */ }
+    };
+    apply();
+    iframe.addEventListener('load', apply);
+    return () => iframe.removeEventListener('load', apply);
+  }, [packagingEditModeKey, packagingOverlayKey, overlayMounted]);
+
+  // 「+ 卖点」默认文案：当前播放头处字幕句（与 FinalEditPreview 同口径：bodyTimeUs=(playhead-INTRO)*1e6*rate）
+  const playbackRateForCueLookup = group.script.narrationConfig.playbackRate;
+  const activeCueText = useMemo(() => {
+    if (effectivePlayheadSec < packagingCoverSec) return '';
+    const bodyTimeUs = (effectivePlayheadSec - packagingCoverSec) * 1_000_000 * playbackRateForCueLookup;
+    return group.subtitleCues.find((cue) => bodyTimeUs >= cue.startUs && bodyTimeUs < cue.endUs)?.text ?? '';
+  }, [effectivePlayheadSec, packagingCoverSec, playbackRateForCueLookup, group.subtitleCues]);
+
   // 匹配诊断必须在第 3 步第一眼可见：blocking 解释真实缺口，warning
   // 解释语义或短素材兜底，避免用户把降级结果误认为预览故障。
   const blockingIssues = variant.issues.filter((issue) => issue.severity === 'blocking');
@@ -606,7 +986,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             className={styles.previewModePanel}
           >
             <div className={styles.previewWrap}>
-              <div className={styles.previewFrame} data-output-preset={variant.outputPreset}>
+              <div className={styles.previewFrame} data-output-preset={variant.outputPreset} onPointerDown={probePackagingCueHit}>
                 {previewMode === 'material' ? (
                   <div className={styles.materialPreview} data-testid="mixcut-material-preview">
                     {previewMaterial?.previewUrl ? (
@@ -642,14 +1022,37 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                     textTarget={null}
                     narrationGainDb={effectiveNarrationGainDb}
                     bgmGainDb={effectiveBgmGainDb}
+                overlay={packagingOverlaySrc ? (
+                  <iframe
+                    key={packagingOverlayKey}
+                    ref={attachPackagingOverlay}
+                    data-packaging-overlay=""
+                    src={packagingOverlaySrc}
+                    title="包装效果叠加层"
+                    aria-hidden="true"
+                    tabIndex={-1}
+                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, pointerEvents: packagingEditActive ? 'auto' : 'none' }}
+                  />
+                ) : null}
                     onPlaybackStart={() => setAuditionStopRequestId((value) => value + 1)}
-                    onPlayheadChange={setPlayheadSec}
+                    onPlayheadChange={handlePlayheadChange}
+                    onPlayingChange={handlePreviewPlayingChange}
                     onTextPositionChange={() => undefined}
                   />
                 )}
               </div>
             </div>
           </div>
+
+          {/* §B 画面内文字直改浮框（桥 dblclick 上报打开） */}
+          {packagingTextEdit && (
+            <PackagingTextEditPopover
+              textEdit={packagingTextEdit}
+              initialText={resolvePackagingTextEditInitial(packagingTextEdit.pointId)}
+              onCommit={(value) => commitPackagingTextEdit(packagingTextEdit.pointId, value)}
+              onCancel={() => openPackagingTextEdit(null)}
+            />
+          )}
 
           {trimClip && (
             <TrimEditor
@@ -701,6 +1104,14 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             onNarrationPlaybackRatePreview={previewNarrationPlaybackRate}
             onNarrationPlaybackRateCommit={(playbackRate) => void applyGroup({ type: 'set_narration_playback_rate', playbackRate })}
             bgmTrackName={selectedBgmTrack?.filename ?? null}
+            pointCues={group.packaging.pointCues ?? []}
+            coverSec={packagingCoverSec}
+            selectedPointId={timelineSelectedPointId}
+            packagingEnabled={packagingEnabled}
+            packagingTemplate={packagingTemplate}
+            activeCueText={activeCueText}
+            onSelectPoint={handleSelectPoint}
+            onPointsChange={applyPointCues}
           />
         </div>
       </main>
@@ -721,6 +1132,17 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           }}
           onCommit={(framing) => void applyVariant({ type: 'set_framing', clipId: selectedClip.id, ...framing })}
         />}
+        <PackagingCard
+          group={group}
+          variantId={variant.id}
+          preview={packagingPreview}
+          previewError={packagingPreviewError}
+          busy={busy}
+          onApplyGroup={applyGroup}
+          onSeek={seek}
+          onPreviewVarsMerge={mergePackagingPreviewVars}
+          onPreviewRefresh={refreshPackagingPreview}
+        />
 
         <section className={styles.rcard}>
           <h4><Icon name="text" size={15} />字幕样式</h4>
@@ -838,12 +1260,14 @@ function CoverThumbnail({ group, variant }: { group: FinalEditGroupView; variant
       ]).catch(() => undefined).then(() => {
         if (cancelled) return;
         drawFramedImage(context, image, variant.cover.framing);
+        // §4 封面标题点选启用：关闭时缩略图不画主/副标题
+        if (!group.coverTitle.enabled) return;
         drawText(context, group.coverTitle.primary.text, primary);
         drawText(context, group.coverTitle.secondary.text, secondary);
       });
     };
     image.src = variant.cover.sourceUrl;
     return () => { cancelled = true; };
-  }, [group.coverTitle.primary.text, group.coverTitle.secondary.text, group.textStyles, output.height, output.width, variant.cover.framing, variant.cover.sourceUrl, variant.outputPreset]);
+  }, [group.coverTitle.enabled, group.coverTitle.primary.text, group.coverTitle.secondary.text, group.textStyles, output.height, output.width, variant.cover.framing, variant.cover.sourceUrl, variant.outputPreset]);
   return <canvas ref={canvasRef} width={output.width} height={output.height} aria-label="当前真实封面" />;
 }

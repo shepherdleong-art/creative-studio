@@ -1,3 +1,5 @@
+import { parsePackagingConfig, type FinalEditPackagingConfig } from '../media-core/packaging-vars.ts';
+import { sourceClipRange } from '../media-core/source-clip-range.ts';
 import { planClipPosition } from '../media-core/clip-position.ts';
 import { resolveVideoTrimRange } from '../media-core/video-trim-range.ts';
 import { editAudioClip, parseAudioEdits, trimAudioClip, moveAudioClip, type AudioEdits, type AudioTrackKind } from '../media-core/audio-edit.ts';
@@ -91,6 +93,7 @@ export interface BatchOutputMusicTrackView {
 }
 
 export interface BatchOutputClipEditView {
+  packaging?: FinalEditPackagingConfig;
   planId: string;
   batchVersionId: string;
   outputVersionId: string | null;
@@ -125,8 +128,10 @@ export interface BatchOutputClipEditView {
 }
 
 export type BatchOutputClipEdit =
+  | { type: 'set_source_range'; clipId: string; sourceStartUs: number; sourceEndUs: number; expectedEditRevision: number; expectedOutputVersionId: string }
+  | { type: 'set_packaging'; config: FinalEditPackagingConfig; expectedEditRevision: number; expectedOutputVersionId: string }
   | { type: 'move_clip'; clipId: string; startUs: number }
-  | { type: 'trim'; clipId: string; sourceStartUs: number; sourceEndUs: number }
+  | { type: 'trim'; clipId: string; sourceStartUs: number; sourceEndUs: number; expectedEditRevision?: number; expectedOutputVersionId?: string }
   | { type: 'replace'; clipId: string; assetId: string }
   | { type: 'trim_variable'; clipId: string; sourceStartUs: number; sourceEndUs: number }
   | { type: 'delete'; clipId: string }
@@ -164,6 +169,7 @@ export type BatchOutputClipEdit =
  * 缺省字段按「无覆盖/默认值」恢复;clips 恒为完整列表。
  */
 export interface BatchOutputRestoreSnapshot {
+  packaging?: unknown;
   clips?: unknown;
   audio?: unknown;
   preserveGaps?: unknown;
@@ -736,6 +742,7 @@ export function getBatchOutputArrangementView(
     audio: parseAudioEdits(arrangement?.audio),
     narration,
     subtitleCues,
+    packaging: parsePackagingConfig(arrangement?.packaging),
     subtitleOverride: hasManualSubtitleOverride(arrangement),
     subtitleStyle: resolveBatchSubtitleStyleOverride(frozenSubtitleStyle, arrangement?.subtitle),
     subtitleStyleDefault: frozenSubtitleStyle,
@@ -782,6 +789,7 @@ export function applyBatchOutputClipEdit(
       break;
     case 'trim':
     case 'trim_variable':
+    case 'set_source_range':
       if (!nonEmptyString(edit.clipId)) {
         throw new BatchDomainError('invalid_input', '缺少片段 ID');
       }
@@ -790,6 +798,10 @@ export function applyBatchOutputClipEdit(
       }
       if (edit.sourceStartUs < 0 || edit.sourceEndUs <= edit.sourceStartUs) {
         throw new BatchDomainError('invalid_input', '截取区间无效');
+      }
+      if (edit.type === 'trim' && (edit.expectedEditRevision !== undefined || edit.expectedOutputVersionId !== undefined)
+        && (!Number.isSafeInteger(edit.expectedEditRevision) || edit.expectedEditRevision! < 0 || !nonEmptyString(edit.expectedOutputVersionId))) {
+        throw new BatchDomainError('invalid_input', '截取缺少有效的内容版本');
       }
       break;
     case 'replace':
@@ -913,6 +925,9 @@ export function applyBatchOutputClipEdit(
     case 'delete_subtitle_cue':
       if (!nonEmptyString(edit.cueId)) throw new BatchDomainError('invalid_input', '字幕删除缺少 cueId');
       break;
+    case 'set_packaging':
+      if (!edit.config || typeof edit.config !== 'object' || !Number.isSafeInteger(edit.expectedEditRevision) || !edit.expectedOutputVersionId) throw new BatchDomainError('invalid_input', '包装配置缺少有效的内容版本');
+      break;
     case 'restore_automatic_subtitles':
       break;
     case 'restore_arrangement':
@@ -972,7 +987,30 @@ export function applyBatchOutputClipEdit(
     let splitChanged = false;
     let deleted = false;
 
-    if (edit.type === 'move_clip') {
+    if (edit.type === 'set_packaging') {
+      if (edit.expectedEditRevision !== editRevision || edit.expectedOutputVersionId !== outputVersionId) throw new BatchDomainError('conflict', '成片已被修改，请刷新后再保存包装');
+      const next = parsePackagingConfig(edit.config);
+      if (JSON.stringify(next) === JSON.stringify(parsePackagingConfig(arrangement.packaging))) return unchanged;
+      arrangement.packaging = next;
+      visualChanged = true;
+    } else if (edit.type === 'set_source_range') {
+      if (edit.expectedEditRevision !== editRevision || edit.expectedOutputVersionId !== outputVersionId) throw new BatchDomainError('conflict', '成片已被修改，请重新打开素材后设置出入点');
+      const index = clipIndex(edit.clipId);
+      if (index < 0) throw new BatchDomainError('not_found', '片段不存在');
+      const clip = clips[index];
+      const asset = readAvailableEditingAsset(db, projectId, lineage.batchVersionId, String(clip.assetId));
+      const durationUs = asset ? poolAssetDurationUs(asset) : null;
+      if (durationUs === null) throw new BatchDomainError('invalid_input', '素材缺少有效时长');
+      try {
+        const range = sourceClipRange({ ...edit, sourceDurationUs: durationUs,
+          timelineStartUs: Number(clip.timelineStartUs), nextTimelineStartUs: index + 1 < clips.length ? Number(clips[index + 1].timelineStartUs) : undefined,
+          playbackRate: finiteNumber(clip.playbackRate) ?? (Number(clip.sourceEndUs) - Number(clip.sourceStartUs)) / (Number(clip.timelineEndUs) - Number(clip.timelineStartUs)) });
+        if (sameClipRange(clip, range.sourceStartUs, range.sourceEndUs)) return unchanged;
+        Object.assign(clip, range);
+      } catch (error) { throw new BatchDomainError('invalid_input', error instanceof Error ? error.message : '出入点无效'); }
+      arrangement.preserveGaps = true;
+      visualChanged = true;
+    } else if (edit.type === 'move_clip') {
       if (clipIndex(edit.clipId) < 0) throw new BatchDomainError('not_found', '片段不存在');
       const positions = clips.map((clip) => ({ id: String(clip.clipId), startUs: Number(clip.timelineStartUs), endUs: Number(clip.timelineEndUs) }));
       const bodyEndUs = Math.max(visualDurationUs(clips), finiteNumber(asRecord(arrangement.narration)?.durationUs) ?? 0);
@@ -995,6 +1033,10 @@ export function applyBatchOutputClipEdit(
       const sourceLengthUs = current.endUs - current.startUs;
 
       if (edit.type === 'trim') {
+        if ((edit.expectedEditRevision !== undefined && edit.expectedEditRevision !== editRevision)
+          || (edit.expectedOutputVersionId !== undefined && edit.expectedOutputVersionId !== outputVersionId)) {
+          throw new BatchDomainError('conflict', '成片已被修改，请重新打开素材后截取');
+        }
         const requestedLengthUs = edit.sourceEndUs - edit.sourceStartUs;
         if (Math.abs(requestedLengthUs - sourceLengthUs) > FRAME_TOLERANCE_US) {
           throw new BatchDomainError('invalid_input', '截取必须保持原片段时长不变(只允许移动出入点)');
@@ -1579,7 +1621,9 @@ export function applyBatchOutputClipEdit(
         parseJson(lineage.defaultsJson),
         currentMusic as { trackId?: unknown; gainDb?: unknown; fadeInSec?: unknown; fadeOutSec?: unknown },
       );
+      const nextPackaging = parsePackagingConfig(edit.snapshot.packaging);
       const otherEqual =
+        JSON.stringify(parsePackagingConfig(arrangement.packaging)) === JSON.stringify(nextPackaging) &&
         audioEditsKey(arrangement.audio) === audioEditsKey(nextAudio)
         && currentSubtitleManual === subtitleManual
         && cuesKey(currentSubtitleManual ? readSubtitleCueRecords(arrangement) : null) === cuesKey(nextCues)
@@ -1593,6 +1637,7 @@ export function applyBatchOutputClipEdit(
         && normalizeNarrationGainDb(currentNarration.gainDb) === nextNarrationGainDb
         && Boolean(arrangement.preserveGaps) === nextPreserveGaps;
 
+      arrangement.packaging = nextPackaging;
       // 应用恢复结果(写回由尾部统一处理:实质变化走 visualChanged,纯结构走 splitChanged)
       clips.splice(0, clips.length, ...restoredClips);
       if (nextAudio === undefined) delete arrangement.audio;

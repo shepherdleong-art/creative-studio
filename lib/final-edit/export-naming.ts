@@ -211,3 +211,47 @@ export async function restorePublishedExportReservation(storageRoot: string, tar
   try { await fs.promises.writeFile(reservationPath, '', { flag: 'wx' }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
 }
+
+/**
+ * 单文件发布（封面/视频分开）：与 publishReservedExportTarget 同款 临时复制→校验→硬链 模式，
+ * 但只发布一个文件且**不删除预留锁**（锁在两半都完成后由调用方释放）。
+ * 用于包装联动：渲染任务发布封面、包装任务发布视频，预留生命周期横跨两个任务。
+ */
+export async function publishReservedSingleFile(input: {
+  storageRoot: string;
+  sourceRelativePath: string;
+  targetRelativePath: string;
+  reservationRelativePath: string;
+  invalidCode: string;
+}): Promise<void> {
+  const source = storagePath(input.storageRoot, input.sourceRelativePath);
+  const target = storagePath(input.storageRoot, input.targetRelativePath);
+  const reservation = storagePath(input.storageRoot, input.reservationRelativePath);
+  const sourceStat = await fs.promises.stat(source);
+  if (!sourceStat.isFile() || sourceStat.size <= 0) throw new FinalEditError(input.invalidCode, '发布源文件缺失或为空');
+  const targetReady = () => {
+    try { return fs.lstatSync(target).isFile() && fs.statSync(target).size === sourceStat.size; }
+    catch { return false; }
+  };
+  if (!fs.existsSync(reservation) && targetReady()) return;
+  if (!fs.existsSync(reservation)) throw new FinalEditError('export_reservation_lost', '导出路径预留已失效');
+
+  const temporary = `${target}.${crypto.randomUUID()}.tmp`;
+  let published = false;
+  try {
+    await fs.promises.copyFile(source, temporary, fs.constants.COPYFILE_EXCL);
+    if ((await fs.promises.stat(temporary)).size !== sourceStat.size) throw new FinalEditError(input.invalidCode, '发布产物大小校验失败');
+    await fs.promises.link(temporary, target);
+    published = true;
+    await fs.promises.unlink(temporary);
+  } catch (error) {
+    await fs.promises.unlink(temporary).catch(() => undefined);
+    if (published) await fs.promises.unlink(target).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** 释放预留锁：两半发布都完成后调用（包装联动的视频半完成时）。 */
+export function completeExportReservation(storageRoot: string, reservationRelativePath: string): void {
+  releaseReservedExportTarget(storageRoot, { reservationRelativePath } as ReservedProjectExportTarget);
+}

@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
+import { isSameOriginRequest } from '@/lib/same-origin-request';
 import { resolveProjectExportDirName } from '@/lib/project-export-dir';
 import { getCurrentExportDirName } from '@/lib/project-export-identity';
 import { assertNoStorageSymlink } from '@/lib/final-edit/storage-path';
@@ -49,8 +50,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       headers: BATCH_NO_STORE_HEADERS,
     });
   }
-  const origin = request.headers.get('origin');
-  if (origin && new URL(origin).host !== new URL(request.url).host) {
+  if (!isSameOriginRequest(request)) {
     return NextResponse.json({ error: 'cross_origin_reveal_denied', message: '不允许跨站触发文件定位' }, {
       status: 403,
       headers: BATCH_NO_STORE_HEADERS,

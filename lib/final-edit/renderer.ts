@@ -7,16 +7,18 @@ import { runExportVideo } from '../media-core/export-video-encoder.ts';
 import { FINAL_EDIT_INTRO_DURATION_US, OUTPUT_PRESETS, type FinalEditVariantView, type OutputPresetId, type SubtitleCue, type TextStyle } from './types.ts';
 import { resolveStoragePath } from './storage-path.ts';
 import { resolveImportedExternalAssetVideoPath } from './material-import.ts';
-import { coverFramingGeometry } from './cover-framing.ts';
+import { composeCoverJpg } from './cover-compose.ts';
 import type { ReservedProjectExportTarget } from './export-naming.ts';
 import type { ExportIdentity } from './types.ts';
 import { normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
 import { audioCutFilter, videoPlaybackRate } from './clip-edit.ts';
+import type { PointCue } from './packaging-cues.ts';
+import type { PackagingLayouts } from './packaging-vars.ts';
 
 export interface FinalEditRenderSnapshot {
   groupRevision: number;
   variantRevision: number;
-  group: { narrationDurationUs: number; narrationPlaybackRate?: number; narrationGainDb?: number; subtitleCues: SubtitleCue[] };
+  group: { narrationDurationUs: number; narrationPlaybackRate?: number; narrationGainDb?: number; subtitleCues: SubtitleCue[]; coverTitleEnabled?: boolean; coverTitle?: { primary: { text: string }; secondary: { text: string } } };
   variant: FinalEditVariantView;
   sources: Array<{ videoJobId: string; relativePath: string; fingerprint: string; externalScope?: { projectId: string; shotSetId: string } }>;
   coverRelativePath: string;
@@ -29,6 +31,13 @@ export interface FinalEditRenderSnapshot {
   exportTarget?: ReservedProjectExportTarget;
   /** §10.5 字体审计：记录渲染所用文字样式（含 fontFamily）；旧快照恢复时可能缺失。 */
   textStyles?: { coverPrimary: TextStyle; coverSecondary: TextStyle; subtitle: TextStyle };
+  /**
+   * 包装 v2/v3 导出联动：混剪组包装配置（final_edit_groups.packagingJson）在入队时写入。
+   * 启用时渲染任务只发布封面，视频由包装任务以正常成片名发布（目录唯一成片）。
+   * v3 追加 pointCues / pointCuesMode：对时卖点在入队时冻结，渲染/包装零推理。
+   * §7 追加 layouts / pointCuesEdited：手动布局与编辑保护标志随快照冻结。
+   */
+  packaging?: { enabled: boolean; template?: string; varsOverrides?: Record<string, string>; pointCues?: PointCue[]; pointCuesMode?: 'timed' | 'even' | 'none'; layouts?: PackagingLayouts; pointCuesEdited?: boolean; pointFont?: { family: string; file: string }; titleFont?: { family: string; file: string }; subtitleFont?: { family: string; file: string } };
 }
 
 async function fileSha256(filePath: string): Promise<string> {
@@ -104,18 +113,16 @@ export async function renderFinalEditSnapshot(input: {
 
   const coverPng = path.join(jobDir, 'cover.png');
   const coverJpg = path.join(jobDir, 'cover.jpg');
-  const coverFraming = snapshot.variant.cover.framing || { scale: 1, offsetX: 0, offsetY: 0 };
-  const source = sharp(coverSource).rotate();
-  const metadata = await source.metadata();
-  if (!metadata.width || !metadata.height) throw new Error('封面底图尺寸无效');
-  const { resizedWidth, resizedHeight, left, top } = coverFramingGeometry({ sourceWidth: metadata.width, sourceHeight: metadata.height, outputWidth: output.width, outputHeight: output.height, framing: coverFraming });
-  await source
-    .resize(resizedWidth, resizedHeight, { fit: 'fill' })
-    .extract({ left, top, width: output.width, height: output.height })
-    .composite([{ input: path.join(overlayDir, 'title.png') }])
-    .png()
-    .toFile(coverPng);
-  await sharp(coverPng).jpeg({ quality: 92 }).toFile(coverJpg);
+  // §4 封面标题开关：显式为 false 时跳过 title.png 合成（封面/片头即无旧标题；未定义/true 保持现状）
+  const coverTitleEnabled = snapshot.group.coverTitleEnabled !== false;
+  await composeCoverJpg({
+    coverSourcePath: coverSource,
+    framing: snapshot.variant.cover.framing,
+    output: { width: output.width, height: output.height },
+    overlays: coverTitleEnabled ? [path.join(overlayDir, 'title.png')] : [],
+    pngPath: coverPng,
+    jpgPath: coverJpg,
+  });
 
   const clips = [...snapshot.variant.timeline.clips].sort((a, b) => a.timelineInFrame - b.timelineInFrame);
   const args: string[] = ['-loop', '1', '-framerate', '24', '-i', coverPng];

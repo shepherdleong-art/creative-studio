@@ -1,0 +1,167 @@
+// Run: node scripts/review-packaging-source.playwright.test.mjs
+// Real timeline + CSS in an isolated browser fixture; no app service or user DB.
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import http from 'node:http';
+import os from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import ts from 'typescript';
+import { chromium } from 'playwright';
+import postcss from 'postcss';
+import tailwind from '@tailwindcss/postcss';
+
+const root = process.cwd();
+const modules = new Map();
+const styles = [];
+function bundle(filename) {
+  if (modules.has(filename)) return modules.get(filename).id;
+  const entry = { id: modules.size, source: '', deps: {} };
+  modules.set(filename, entry);
+  const raw = fs.readFileSync(filename, 'utf8');
+  if (filename.endsWith('.css')) {
+    styles.push(raw);
+    entry.source = 'module.exports = ' + JSON.stringify(Object.fromEntries(
+      [...raw.matchAll(/\.([a-zA-Z_][\w-]*)/g)].map(match => [match[1], match[1]]),
+    ));
+    return entry.id;
+  }
+  entry.source = /\.tsx?$/.test(filename) ? ts.transpileModule(raw, {
+    fileName: filename,
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+  }).outputText : raw;
+  const require = createRequire(filename);
+  for (const [, request] of entry.source.matchAll(/require\(["']([^"']+)["']\)/g)) {
+    const local = request.startsWith('@/') ? path.join(root, request.slice(2))
+      : request.startsWith('.') ? path.resolve(path.dirname(filename), request) : null;
+    const resolved = local && ['', '.ts', '.tsx', '.js'].map(ext => local + ext).find(p => fs.existsSync(p) && fs.statSync(p).isFile());
+    entry.deps[request] = bundle(resolved || require.resolve(request));
+  }
+  return entry.id;
+}
+
+const overlayId = bundle(path.join(root, 'components/batch-production/BatchPackagingOverlay.tsx'));
+const menuId = bundle(path.join(root, 'components/batch-production/BatchPackagingEditor.tsx'));
+const trimId = bundle(path.join(root, 'components/mixcut/TrimEditor.tsx'));
+const timelineId = bundle(path.join(root, 'components/batch-production/review/BatchReviewTimelineDock.tsx'));
+const monitorId = bundle(path.join(root, 'components/batch-production/review/BatchSourceMonitor.tsx'));
+const previewId = bundle(path.join(root, 'components/final-edit/FinalEditPreview.tsx'));
+const mixcutId = bundle(path.join(root, 'components/mixcut/MixcutTimeline.tsx'));
+const require = createRequire(import.meta.url);
+const reactId = bundle(require.resolve('react'));
+const domId = bundle(require.resolve('react-dom/client'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'review-source-monitor-'));
+const media = path.join(tmp, 'source.mp4');
+const generated = spawnSync(require('ffmpeg-static'), ['-y','-f','lavfi','-i','testsrc2=size=320x240:rate=24','-f','lavfi','-i','sine=frequency=440:sample_rate=48000','-t','8','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-movflags','+faststart',media], { windowsHide:true });
+assert.equal(generated.status, 0, generated.stderr?.toString());
+const script = `
+const process={env:{NODE_ENV:'production'}};
+const modules={${[...modules.values()].map(m=>`${m.id}:[function(require,module,exports){${m.source}\n},${JSON.stringify(m.deps)}]`).join(',')}};
+const cache={};function load(id){if(cache[id])return cache[id].exports;const m=cache[id]={exports:{}};const [fn,deps]=modules[id];fn(r=>load(deps[r]),m,m.exports);return m.exports;}
+const React=load(${reactId}),Timeline=load(${timelineId}).default,Monitor=load(${monitorId}).default,Preview=load(${previewId}).FinalEditPreview,Mixcut=load(${mixcutId}).MixcutTimeline;
+const asset={assetId:'asset',displayName:'完整素材测试',durationSec:8,previewUrl:'/source.mp4'};
+const clip={clipId:'clip',assetId:'asset',sourceStartUs:1000000,sourceEndUs:3000000,timelineStartUs:0,timelineEndUs:2000000,playbackRate:1};
+if(new URLSearchParams(location.search).has('precise')){clip.sourceStartUs=333333;clip.sourceEndUs=3981607;clip.playbackRate=1.824137;}
+const view={planId:'one',outputVersionId:'version',editRevision:0,editable:true,clips:[clip],visualDurationUs:6000000,poolAssets:[asset],subtitleCues:[],narration:{durationUs:6000000},music:{trackId:null},musicLibrary:[],packaging:{enabled:true,template:'overlay-poster',varsOverrides:{},pointCues:[{id:'p_one',text:'实木稳固',startSec:1.833333,endSec:3.833333}]}};
+window.edits=[];window.sourceCloseCount=0;window.mainKeyCalls=0;
+function App(){
+ const [current,setCurrent]=React.useState(view),[source,setSource]=React.useState(null),[selection,setSelection]=React.useState(null);
+ const film={planId:'one',seq:1,scriptTitle:'包装轨道测试',status:'reviewable',approved:false,approvable:true,visible:true,durationSec:6,warnings:[],blockers:[],arrangement:current};
+ const save=async(plan,edit)=>{if(window.failSave)throw new Error('模拟保存失败');window.edits.push({plan,...edit});if(edit.type==='set_packaging')setCurrent(v=>({...v,packaging:edit.config,editRevision:v.editRevision+1}));return true;};
+ const props={films:[film],projectId:'test',batchId:'test',selection,selectedPlanId:'one',focusedAssetId:null,playheadSec:0,tool:'select',snapEnabled:false,canUndo:false,canRedo:false,poolAssets:[asset],selectedPlanIds:[],rowFilter:'all',batchControlState:'running',phaseEBusy:null};
+ for(const name of ['onSelectFocusedAsset','onSeek','onToolChange','onToggleSnap','onUndo','onRedo','onToggleEye','onTogglePlanSelect','onSelectAll','onReview','onRowFilterChange','onShowAll','onReallocate','onRetryNarration','onRetryRender','onRefreshFilm','onOpenCoverEditor','onSelectFilm'])props[name]=()=>{};
+ props.onSelectTarget=setSelection;props.onMediaEdit=save;props.onOpenSource=(planId,clipId)=>setSource({view:current,clipId,asset});
+ return React.createElement(React.Fragment,null,source&&React.createElement('div',{style:{height:460,width:800}},React.createElement(Monitor,{session:source,projectId:'test',onApply:save,onClose:()=>{window.sourceCloseCount++;setSource(null)}})),React.createElement(Timeline,props));
+}
+const group={id:'group',narrationDurationUs:6000000,script:{narrationConfig:{gainDb:0,playbackRate:1}},subtitleCues:[],coverTitle:{enabled:false,primary:{text:''},secondary:{text:''}},textStyles:{'3x4':{},'9x16':{},'16x9':{}}};
+const variant={id:'v',outputPreset:new URLSearchParams(location.search).get('ratio')||'3x4',cover:{sourceUrl:''},timeline:{clips:[{id:'one',videoJobId:'single',sourceInFrame:0,sourceOutFrame:144,timelineInFrame:0,timelineOutFrame:144,playbackRate:1}],bodyFrames:144},bgm:{trackId:null,gainDb:0,fadeInSec:0,fadeOutSec:0}};
+function Single(){const [t,setT]=React.useState(1.2);return React.createElement('div',{style:{height:650,width:800,display:'flex',flexDirection:'column'}},React.createElement(Preview,{group,variant,assets:[{videoJobId:'single',previewUrl:'/source.mp4',durationUs:8000000}],selectedAsset:null,playheadSec:t,textTarget:null,onPlayheadChange:setT,onTextPositionChange:()=>{}}));}
+function SingleTimeline(){const props={variant,cues:[],assets:[],selectedClipId:'',selectedCueId:'',playheadSec:0,disabled:false,narrationPlaybackRate:1,narrationDurationSec:6,pointCues:[],coverSec:20/24,selectedPointId:'',packagingEnabled:true,packagingTemplate:'overlay-poster',activeCueText:''};for(const name of ['onSeek','onSelectClip','onSelectCue','onVariantCommand','onGroupCommand','onTrimClip','onEditCueText','onNarrationPlaybackRatePreview','onNarrationPlaybackRateCommit','onSelectPoint','onPointsChange'])props[name]=()=>{};return React.createElement(Mixcut,props);}
+function Overlay(){const [v,setV]=React.useState({...view,packaging:{...view.packaging,varsOverrides:{title:'原标题'}}});return React.createElement('div',{style:{width:400,height:400,position:'relative'}},React.createElement(load(${overlayId}).default,{key:v.editRevision,view:v,src:'/overlay',timeSec:.4,editable:true,onSave:async(plan,edit)=>{window.edits.push(edit);setV(x=>({...x,packaging:edit.config,editRevision:x.editRevision+1}));return true;}}));}
+function Menu(){const [v,setV]=React.useState(view);return React.createElement(load(${menuId}).default,{view:v,onJumpToCover:()=>{window.jumpCount=(window.jumpCount||0)+1},onSave:async(config,reextract)=>{window.edits.push({config,reextract});setV(x=>({...x,packaging:config,editRevision:x.editRevision+1}));return true;}});}
+function Trim(){return React.createElement('div',{style:{width:760}},React.createElement(load(${trimId}).TrimEditor,{clip:{sourceInFrame:70,sourceOutFrame:118},clipIndex:0,asset:{durationUs:5100000},disabled:false,onCommit:async(a,b)=>{window.trimSaved=[a,b];return true;},onClose:()=>{}}));}
+const mode=new URLSearchParams(location.search).get('mode');
+load(${domId}).createRoot(document.getElementById('root')).render(React.createElement(mode==='overlay'?Overlay:mode==='menu'?Menu:mode==='trim'?Trim:mode==='single'?Single:mode==='tracks'?SingleTimeline:App));
+`;
+const globalCss=(await postcss([tailwind()]).process(fs.readFileSync(path.join(root,'app/globals.css'),'utf8'),{from:path.join(root,'app/globals.css')})).css;
+const css = `${globalCss}*{box-sizing:border-box}body{margin:0}button,input{font:inherit}video{max-height:100%;max-width:100%}.h-full{height:100%}.w-full{width:100%}.min-h-0{min-height:0}.flex{display:flex}.flex-col{flex-direction:column}.flex-1{flex:1}.shrink-0{flex-shrink:0}.object-contain{object-fit:contain}.previewColumn{flex:1}${styles.join('\n')}`;
+const server=http.createServer((req,res)=>{
+ if(req.url==='/overlay'){res.setHeader('Content-Type','text/html; charset=utf-8');res.end('<html><body><button ondblclick="parent.postMessage({type:\'packaging:text\',id:\'cover:title\',rect:{left:10,top:10,width:100,height:30}},location.origin)">封面标题</button><script>window.__timelines={overlay:{pause(){},seek(){}}}</script></body></html>');}
+ else if(req.url==='/fixture.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');res.end(script);}
+ else if(req.url.startsWith('/api/batch-production/assets/')||req.url==='/source.mp4'){
+   const stat=fs.statSync(media);const match=/bytes=(\d+)-(\d*)/.exec(req.headers.range||'');
+   const start=match?Number(match[1]):0,end=match&&match[2]?Math.min(stat.size-1,Number(match[2])):stat.size-1;
+   res.writeHead(match?206:200,{'Content-Type':'video/mp4','Accept-Ranges':'bytes','Content-Length':end-start+1,...(match?{'Content-Range':`bytes ${start}-${end}/${stat.size}`}:{})});fs.createReadStream(media,{start,end}).pipe(res);
+ }else if(req.url.startsWith('/api/')){res.statusCode=404;res.end();}
+ else res.end(`<html><head><meta charset="utf-8"><style>${css}</style></head><body><div id="root"></div><script src="/fixture.js"></script></body></html>`);
+});
+await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+let browser;
+try{
+ browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:1440,height:900}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ const origin=`http://127.0.0.1:${server.address().port}`;await page.goto(origin+'/?mode=trim');
+ await page.locator('.trimStrip').waitFor();
+ const strip=await page.locator('.trimStrip').boundingBox();
+ const filmEnd=await page.locator('.trimFrame').last().boundingBox();
+ assert.ok(Math.abs(filmEnd.x+filmEnd.width-strip.x-strip.width)<2,'完整素材必须铺满截取条，尾部不能留出无法选择的黑区');
+ const trimSelection=await page.locator('.trimSel').boundingBox();
+ await page.mouse.move(trimSelection.x+trimSelection.width/2,trimSelection.y+30);await page.mouse.down();await page.mouse.move(strip.x+strip.width+100,trimSelection.y+30,{steps:6});await page.mouse.up();
+ const atTail=await page.locator('.trimSel').boundingBox();assert.ok(Math.abs(atTail.x+atTail.width-strip.x-strip.width)<2,'拖动选框能抵达素材条最右侧');
+ await page.getByRole('button',{name:'完成',exact:true}).click();assert.deepEqual(await page.evaluate(()=>window.trimSaved),[74,122],'选框能准确截取素材尾部的两秒');
+ await page.goto(origin+'/?mode=overlay');
+ await page.frameLocator('iframe').getByRole('button',{name:'封面标题'}).dblclick();
+ await page.getByPlaceholder('留空则该元素不显示').fill('中央预览改标题');await page.getByPlaceholder('留空则该元素不显示').press('Enter');
+ await page.waitForFunction(()=>window.edits.length===1);assert.equal(await page.evaluate(()=>window.edits[0].config.varsOverrides.title),'中央预览改标题');assert.equal(await page.evaluate(()=>window.edits[0].expectedEditRevision),0);
+ await page.goto(origin+'/?mode=menu');
+ await page.getByRole('switch',{name:'启用视频包装'}).waitFor();
+ assert.equal(await page.getByRole('radio').count(),4);assert.equal(await page.locator('input:not([type=file]),select').count(),0,'包装菜单不再包含重复文字表单');
+ await page.getByRole('radio',{name:'B 手账拼贴'}).click();assert.equal(await page.evaluate(()=>window.edits.at(-1).config.template),'overlay-journal');
+ await page.getByRole('button',{name:'跳到封面',exact:true}).click();assert.equal(await page.evaluate(()=>window.jumpCount),1);
+ await page.getByRole('button',{name:'重新提取卖点',exact:true}).click();assert.equal(await page.evaluate(()=>window.edits.at(-1).reextract),true);
+ await page.goto(origin);
+ const point=page.locator('[data-point-cue="p_one"]');await point.waitFor();
+ const p=await point.boundingBox(),v=await page.locator('.clipBlock').boundingBox();assert.ok(p.y<v.y,'卖点在视频上方');
+ await point.dblclick({position:{x:20,y:10}});await page.getByLabel('卖点文字').fill('双击修改卖点');await page.getByLabel('卖点文字').press('Enter');
+ await page.waitForFunction(()=>window.edits.length===1);assert.equal(await page.evaluate(()=>window.edits[0].config.pointCues[0].text),'双击修改卖点');
+ const drag=async(locator,dx,cancel=false)=>{const b=await locator.boundingBox();await page.mouse.move(b.x+b.width/2,b.y+b.height/2);await page.mouse.down();await page.mouse.move(b.x+b.width/2+dx,b.y+b.height/2,{steps:5});if(cancel)await page.keyboard.press('Escape');await page.mouse.up();};
+ await drag(point,60);await page.waitForFunction(()=>window.edits.length===2);const moved=await page.evaluate(()=>window.edits[1].config.pointCues[0]);assert.ok(moved.startSec>2.5);assert.ok(Math.abs(moved.endSec-moved.startSec-2)<0.001);
+ await drag(point.locator('.pointHandleRight'),30);await page.waitForFunction(()=>window.edits.length===3);assert.ok((await page.evaluate(()=>window.edits[2].config.pointCues[0].endSec))>moved.endSec);
+ await drag(point,30,true);assert.equal(await page.evaluate(()=>window.edits.length),3);
+ await point.focus();await page.keyboard.press('Delete');await page.waitForFunction(()=>window.edits.length===4);assert.deepEqual(await page.evaluate(()=>window.edits[3].config.pointCues),[]);
+ await page.getByRole('button',{name:'＋卖点',exact:true}).click();await page.waitForFunction(()=>window.edits.length===5);assert.ok((await page.evaluate(()=>window.edits[4].config.pointCues[0].startSec))>=20/24-0.000001);
+ await page.locator('.clipBlock').dblclick({position:{x:40,y:24}});await page.locator('[data-source-monitor]').waitFor();
+ const video=page.locator('[data-source-monitor] video');await page.waitForFunction(()=>document.querySelector('[data-source-monitor] video')?.readyState>=2);
+ assert.ok((await video.evaluate(v=>v.duration))>7.9,'完整源视频而非时间轴两秒选段');
+ const selection=page.getByRole('slider',{name:'移动截取选框'});
+ assert.equal(await page.getByLabel('源视频入点',{exact:true}).count(),0,'取消独立出入点表单');
+ const before=await selection.boundingBox();await drag(selection,80);
+ assert.ok((await selection.boundingBox()).x>before.x,'与单条共用的胶片选框可拖动');
+ assert.ok(Math.abs((await selection.boundingBox()).width-before.width)<1,'拖动保持选段长度');
+ assert.ok((await video.evaluate(v=>v.currentTime))>1,'拖动同步预览入点画面');
+ await selection.focus();await page.keyboard.press('End');
+ assert.ok(Math.abs((await video.evaluate(v=>v.currentTime))-6)<0.002,'可截取素材最后两秒');
+ await page.keyboard.press('ArrowLeft');assert.ok(Math.abs((await video.evaluate(v=>v.currentTime))-(6-1/24))<0.002);
+ await page.keyboard.press('End');
+ await video.evaluate(v=>v.play());await page.waitForFunction(()=>document.querySelector('[data-source-monitor] video').currentTime>6.15);await video.evaluate(v=>v.pause());
+ fs.mkdirSync(path.join(root,'outputs/review-packaging-acceptance'),{recursive:true});await page.locator('[data-source-monitor]').screenshot({path:path.join(root,'outputs/review-packaging-acceptance/shared-trim.png')});
+ await page.evaluate(()=>window.failSave=true);await page.getByRole('button',{name:'完成',exact:true}).click();
+ await page.getByRole('alert').filter({hasText:'模拟保存失败'}).waitFor();assert.equal(await page.evaluate(()=>window.sourceCloseCount),0);
+ await page.evaluate(()=>window.failSave=false);await selection.focus();await page.keyboard.press('Enter');await page.waitForFunction(()=>window.sourceCloseCount===1);
+ const applied=await page.evaluate(()=>window.edits.at(-1));assert.equal(applied.type,'trim');assert.equal(applied.sourceStartUs,6000000);assert.equal(applied.sourceEndUs,8000000);assert.equal(applied.expectedOutputVersionId,'version');
+ await page.locator('.clipBlock').dblclick({position:{x:40,y:24}});await page.getByRole('slider',{name:'移动截取选框'}).focus();await page.keyboard.press('Escape');await page.waitForFunction(()=>window.sourceCloseCount===2);
+ assert.equal(await page.evaluate(()=>window.edits.length),6,'取消截取不提交');
+ assert.ok((await video.count())===0);
+ await page.goto(origin+'/?precise');await page.locator('.clipBlock').dblclick({position:{x:40,y:24}});
+ await page.waitForFunction(()=>document.querySelector('[data-source-monitor] video')?.readyState>=2);
+ await page.getByRole('slider',{name:'移动截取选框'}).focus();await page.keyboard.press('End');
+ assert.ok((await page.locator('[data-source-monitor] video').boundingBox()).height>230,'800px 预览区域中视频保留足够高度');
+ await page.getByRole('button',{name:'完成',exact:true}).click();await page.waitForFunction(()=>window.sourceCloseCount===1);
+ const preciseEdit=await page.evaluate(()=>window.edits.at(-1));assert.equal(preciseEdit.sourceEndUs-preciseEdit.sourceStartUs,3648274);assert.ok(preciseEdit.sourceEndUs<=8000000,'尾部截取不越素材时长');
+ await page.goto(origin+'/?mode=tracks');await page.locator('[data-track=video]').waitFor();assert.deepEqual(await page.locator('[data-track]').evaluateAll(els=>els.map(el=>el.dataset.track)),['subtitle','point','video','narration','bgm']);await page.goto(origin+'/?mode=single');await page.getByLabel('全屏预览').click();await page.waitForFunction(()=>!!document.fullscreenElement);
+ const stage=await page.locator('.previewStage').boundingBox();assert.ok(stage.height>750,`全屏画面必须适配窗口，而非锁在500px: ${stage.height}`);assert.ok(Math.abs(stage.width/stage.height-0.75)<0.005);
+ fs.mkdirSync(path.join(root,'outputs/review-packaging-acceptance'),{recursive:true});await page.screenshot({path:path.join(root,'outputs/review-packaging-acceptance/fullscreen.png')});
+ await page.getByLabel('退出全屏').click();await page.waitForFunction(()=>!document.fullscreenElement);
+ for(const [ratio,expected] of [['9x16',9/16],['16x9',16/9]]){await page.goto(origin+'/?mode=single&ratio='+ratio);await page.getByLabel('全屏预览').click();await page.waitForFunction(()=>!!document.fullscreenElement);const box=await page.locator('.previewStage').boundingBox();assert.ok(Math.abs(box.width/box.height-expected)<0.005);assert.ok(box.width>1400||box.height>750);await page.getByLabel('退出全屏').click();}
+ assert.deepEqual(errors,[]);console.log('packaging track gestures, full source playback, shared fixed-duration trim, preview/frame shortcuts, saved range and responsive fullscreen passed');
+}catch(error){console.error(error);throw error;}finally{await browser?.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));fs.rmSync(tmp,{recursive:true,force:true});}

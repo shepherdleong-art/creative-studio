@@ -193,6 +193,13 @@ export const FINAL_EDIT_MIGRATIONS: ReadonlyArray<{ version: number; sql: string
       ALTER TABLE final_edit_groups ADD COLUMN durationGateJson TEXT NOT NULL DEFAULT '{}';
     `,
   },
+  {
+    // 包装 v2：混剪组的包装配置（{enabled, template, varsOverrides}），导出渲染时联动
+    version: 11,
+    sql: `
+      ALTER TABLE final_edit_groups ADD COLUMN packagingJson TEXT NOT NULL DEFAULT '{}';
+    `,
+  },
 ];
 
 export function initFinalEditSchema(db: Database.Database): void {

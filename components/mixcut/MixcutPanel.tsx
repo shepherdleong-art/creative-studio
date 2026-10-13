@@ -40,8 +40,8 @@ async function readJson<T>(response: Response): Promise<T> {
 const STEPS: MixcutStepDef[] = [
   { label: '导入素材', hint: '选择当前分镜组', icon: 'folder', enabled: true },
   { label: 'AI 智能创作', hint: '脚本·音色·真实进度', icon: 'sparkle', enabled: true },
-  { label: '预览调整', hint: '完整时间轴·自动保存', icon: 'play-circle', enabled: true },
-  { label: '导出渲染', hint: '写回项目成片目录', icon: 'download', enabled: true },
+  { label: '预览调整', hint: '完整时间轴·包装·自动保存', icon: 'play-circle', enabled: true },
+  { label: '导出渲染', hint: '渲染成片·自动包装·写回项目', icon: 'download', enabled: true },
 ];
 
 interface VisionProviderView { id: string; name: string; model: string; configured: boolean; supportsVision?: boolean }
@@ -861,6 +861,7 @@ export default function MixcutPanel({
               onRgtCollapse={controls.onRgtCollapse}
               onResizeStart={controls.onResizeStart}
             />
+
           ) : (
             <main className={styles.mainCol}>
               {message && <div className={styles.errorBanner}><Icon name="alert" size={15} />{message}</div>}

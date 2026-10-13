@@ -177,7 +177,7 @@ export default function BatchReviewPoolDock({
           return (
             <article
               key={asset.assetId}
-              className={`${styles.poolCard} ${isFocused ? 'ring-2 ring-accent' : ''}`}
+              className={`${styles.poolCard} ${isFocused ? styles.poolCardFocused : ''}`}
               draggable
               onDragStart={(e) => {
                 const item: MaterialDragItem = {
@@ -263,9 +263,10 @@ export default function BatchReviewPoolDock({
                     type="button"
                     className={styles.poolCardButton}
                     aria-pressed={isFocused}
+                    title={isFocused ? '取消时间轴上的红色高亮' : '用红色高亮时间轴中使用此素材的所有片段'}
                     onClick={() => onSelectFocusedAsset(isFocused ? null : asset.assetId)}
                   >
-                    {isFocused ? '取消定位' : '定位用法'}
+                    {isFocused ? '取消高亮' : '高亮定位'}
                   </button>
                 </div>
               </div>

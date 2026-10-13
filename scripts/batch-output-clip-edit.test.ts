@@ -40,7 +40,7 @@ import {
   type BatchBgmDraft,
 } from '../components/batch-production/bgm-draft.ts';
 import { scheduleRenderAfterCoverChange } from '../lib/batch-production/phase-e.ts';
-import { resolveCoverContractHash } from '../lib/batch-production/cover-contract.ts';
+import { resolveCoverContractHash, resolveFullRenderContractHash } from '../lib/batch-production/cover-contract.ts';
 import { resolveBatchOutputNarrationAudio } from '../lib/batch-production/output-media.ts';
 import { BatchDomainError } from '../lib/batch-production/errors.ts';
 import { batchSourceWarnings } from '../lib/batch-production/source-conflicts.ts';
@@ -1416,6 +1416,69 @@ try {
   assert.deepEqual(new Set(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).sourceConflictAssetIds), new Set([assetA, assetC]));
   console.log('✓ 21. 同源提醒：替换/插入/撤销成功仍提醒，分割不误报，允许确认');
 
+  resetPlan0Arrangement();
+  const beforePackaging = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  const otherBeforePackaging = JSON.stringify(currentArrangement(plans[1]));
+  const unpackagedHash = resolveFullRenderContractHash(db, outputVersionId);
+  const packagingConfig = { enabled: true, template: 'overlay-journal' as const, varsOverrides: { title: '实木餐边柜' }, pointCues: [], pointCuesEdited: true, pointCuesMode: 'none' as const };
+  const packagingEdit = { type: 'set_packaging' as const, config: packagingConfig, expectedEditRevision: beforePackaging.editRevision, expectedOutputVersionId: outputVersionId };
+  const savedPackaging = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], packagingEdit);
+  assert.equal(savedPackaging.editRevision, beforePackaging.editRevision + 1);
+  assert.equal(savedPackaging.visualChanged, true);
+  assert.equal(currentArrangement(plans[0]).review, undefined);
+  assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).packaging?.pointCues, [], '显式清空卖点不被自动补回');
+  assert.notEqual(resolveFullRenderContractHash(db, outputVersionId), unpackagedHash, '包装纳入正式导出内容身份');
+  assert.equal(JSON.stringify(currentArrangement(plans[1])), otherBeforePackaging, '不改其他成片');
+  assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], packagingEdit), /刷新/);
+  assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { ...packagingEdit, expectedEditRevision: savedPackaging.editRevision, expectedOutputVersionId: 'old-version' }), /刷新/);
+  assert.equal(applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { ...packagingEdit, expectedEditRevision: savedPackaging.editRevision }).changed, false, '同配置保存幂等');
+  const enabledSnapshot = currentArrangement(plans[0]);
+  const disabled = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { ...packagingEdit, expectedEditRevision: savedPackaging.editRevision, config: { ...packagingConfig, enabled: false } });
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'restore_arrangement', snapshot: { clips: enabledSnapshot.clips, packaging: enabledSnapshot.packaging }, expectedEditRevision: disabled.editRevision });
+  assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).packaging?.enabled, true, '撤销恢复包装配置');
+  console.log('✓ 22. 包装保存/审核失效/内容身份/跨成片隔离/过期修订和版本/幂等/撤销');
+  resetPlan0Arrangement();
+  const beforeSource = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  const beforeSourceHash = resolveFullRenderContractHash(db, outputVersionId);
+  const sourceEdit = { type: 'set_source_range' as const, clipId: 'clip-1', sourceStartUs: 4_000_000, sourceEndUs: 5_000_000,
+    expectedEditRevision: beforeSource.editRevision, expectedOutputVersionId: outputVersionId };
+  const sourceResult = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], sourceEdit);
+  const afterSource = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  assert.deepEqual([afterSource.clips[0].sourceStartUs, afterSource.clips[0].sourceEndUs, afterSource.clips[0].timelineStartUs, afterSource.clips[0].timelineEndUs], [4_000_000, 5_000_000, 0, 1_000_000]);
+  assert.equal(afterSource.clips[1].timelineStartUs, 2_000_000, '缩短选段保留后续片段和空位');
+  assert.equal(sourceResult.visualChanged, true);
+  assert.notEqual(resolveFullRenderContractHash(db, outputVersionId), beforeSourceHash, '出入点参与正式渲染身份');
+  assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], sourceEdit), /重新打开/);
+  const currentSourceEdit = { ...sourceEdit, expectedEditRevision: afterSource.editRevision };
+  assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { ...currentSourceEdit, sourceEndUs: 7_000_000 }), /相邻片段/);
+  assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { ...currentSourceEdit, sourceEndUs: 90_000_000 }), /素材范围/);
+  assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { ...currentSourceEdit, sourceEndUs: 4_100_000 }), /0.5/);
+  assert.equal(applyBatchOutputClipEdit(db, projectId, batchId, plans[0], currentSourceEdit).changed, false);
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'restore_arrangement', snapshot: { clips: beforeSource.clips }, expectedEditRevision: afterSource.editRevision });
+  assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).clips, beforeSource.clips, '出入点可撤销重读');
+  console.log('✓ 23. 源视频选段：新源窗口/固定起点/空位/修订冲突/越界/渲染身份/撤销');
+  resetPlan0Arrangement();
+  const precise = currentArrangement(plans[0]);
+  const preciseClips = precise.clips as Array<Record<string, unknown>>;
+  preciseClips[0].sourceEndUs = 4_648_274;
+  preciseClips[0].playbackRate = 1.824137;
+  db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?').run(JSON.stringify(precise), outputVersionId);
+  const preciseView = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  const preciseTrim = { type: 'trim' as const, clipId: 'clip-1', sourceStartUs: 4_000_000, sourceEndUs: 7_648_274,
+    expectedEditRevision: preciseView.editRevision, expectedOutputVersionId: outputVersionId };
+  const preciseResult = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], preciseTrim);
+  const preciseAfter = clipOf(plans[0], 'clip-1');
+  assert.equal(Number(preciseAfter.sourceEndUs) - Number(preciseAfter.sourceStartUs), 3_648_274, '微秒长度不因帧舍入改变');
+  assert.equal(preciseAfter.timelineStartUs, 0);
+  assert.equal(preciseAfter.timelineEndUs, 2_000_000, '相邻片段紧贴也能等长换窗');
+  assert.equal(preciseAfter.playbackRate, 1.824137);
+  assert.deepEqual(clipOf(plans[0], 'clip-2'), preciseClips[1], '不挤动相邻片段');
+  assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], preciseTrim), /重新打开素材/);
+  assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { ...preciseTrim, expectedEditRevision: preciseResult.editRevision, expectedOutputVersionId: 'stale' }), /重新打开素材/);
+  assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { ...preciseTrim, expectedEditRevision: -1 }), /有效的内容版本/);
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'restore_arrangement', snapshot: { clips: preciseClips }, expectedEditRevision: preciseResult.editRevision });
+  assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).clips, preciseView.clips, '等长截取可完整撤销');
+  console.log('✓ 24. 共用截取：微秒时长/倍速/邻片位置/版本门禁/撤销');
   console.log('batch output clip edit tests passed');
 } finally {
   db.close();

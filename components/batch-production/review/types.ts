@@ -3,7 +3,7 @@
 import type { BatchOutputClipEditView } from '@/lib/batch-production/output-arrangement';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
 
-export type InspectorTab = 'subtitle' | 'picture' | 'cover' | 'audio';
+export type InspectorTab = 'subtitle' | 'picture' | 'cover' | 'audio' | 'packaging';
 export type TimelineTool = 'select' | 'split';
 
 export interface UnifiedFilmState {

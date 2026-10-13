@@ -6,6 +6,7 @@ import { FINAL_EDIT_FPS } from '@/lib/media-core/render-contract';
 import { audioClips } from '@/lib/media-core/audio-edit';
 import type { OutputPresetId } from '@/lib/media-core/cover-types';
 import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
+import type { SourceMonitorSession } from './BatchSourceMonitor';
 import BatchReviewPoolDock from './BatchReviewPoolDock';
 import BatchReviewPreviewDock from './BatchReviewPreviewDock';
 import BatchReviewInspectorDock from './BatchReviewInspectorDock';
@@ -27,6 +28,7 @@ interface EditHistoryEntry {
 function buildRestoreSnapshot(view: BatchOutputClipEditView): Record<string, unknown> {
   return {
     clips: view.clips,
+    packaging: view.packaging,
     ...(view.audio !== undefined ? { audio: view.audio } : {}),
     preserveGaps: view.preserveGaps === true,
     subtitleOverride: view.subtitleOverride,
@@ -128,6 +130,8 @@ export default function BatchUnifiedReviewWorkspace({
   const [selection, setSelection] = useState<SelectionTarget | null>(null);
   const [focusedAssetId, setFocusedAssetId] = useState<string | null>(null);
   const [previewAsset, setPreviewAsset] = useState<BatchOutputPoolAssetView | null>(null);
+
+  const [sourceSession, setSourceSession] = useState<SourceMonitorSession | null>(null);
 
   // Arrangements cache: planId -> BatchOutputClipEditView
   const [arrangements, setArrangements] = useState<Record<string, BatchOutputClipEditView>>({});
@@ -335,10 +339,13 @@ export default function BatchUnifiedReviewWorkspace({
   const latestFilmsRef = useRef(films);
   useEffect(() => { latestFilmsRef.current = films; }, [films]);
 
+  const [coverPreviewRequest, setCoverPreviewRequest] = useState(0);
+
   // Preview film: the FIRST film in `films` where visible === true
   const previewFilm = useMemo(() => {
+    if (inspectorTab === 'packaging') return films.find(f => f.planId === selectedPlanId) ?? films.find(f => f.visible) ?? null;
     return films.find((f) => f.visible) ?? null;
-  }, [films]);
+  }, [films, inspectorTab, selectedPlanId]);
 
   // Selected film for inspector
   const activeFilm = useMemo(() => {
@@ -451,6 +458,7 @@ export default function BatchUnifiedReviewWorkspace({
   // Global Keyboard Shortcuts (PRD T-06)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (sourceSession || e.defaultPrevented || e.isComposing) return;
       // Ignore if focus is in input / textarea
       const target = e.target as HTMLElement | null;
       if (
@@ -558,7 +566,7 @@ export default function BatchUnifiedReviewWorkspace({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selection, selectedPlanId, films, playheadSec, handleMediaEdit, handleUndo, handleRedo]);
+  }, [sourceSession, selection, selectedPlanId, films, playheadSec, handleMediaEdit, handleUndo, handleRedo]);
 
   const approvedCount = films.filter((f) => f.approved).length;
 
@@ -613,7 +621,7 @@ export default function BatchUnifiedReviewWorkspace({
             poolAssets={poolAssets}
             focusedAssetId={focusedAssetId}
             onSelectFocusedAsset={setFocusedAssetId}
-            onPreviewAsset={(asset) => setPreviewAsset(asset)}
+            onPreviewAsset={(asset) => { setSourceSession(null); setPreviewAsset(asset); }}
             onAssetImported={loadAllArrangements}
           />
         </div>
@@ -625,8 +633,12 @@ export default function BatchUnifiedReviewWorkspace({
             batchId={batchId}
             outputPreset={outputPreset}
             previewFilm={previewFilm}
-            previewAsset={previewAsset}
-            onClearPreviewAsset={() => setPreviewAsset(null)}
+            previewAsset={sourceSession?.asset ?? previewAsset}
+            sourceSession={sourceSession}
+            onSourceApply={handleMediaEdit}
+            packagingEditable={inspectorTab === 'packaging'}
+            coverPreviewRequest={coverPreviewRequest}
+            onClearPreviewAsset={() => { setPreviewAsset(null); setSourceSession(null); }}
             playheadSec={playheadSec}
             onSeek={setPlayheadSec}
             poolAssets={poolAssets}
@@ -639,6 +651,7 @@ export default function BatchUnifiedReviewWorkspace({
         {/* Zone 3: Inspector Dock (Right, spanning rows 1 & 2) */}
         <div style={{ gridColumn: 3, gridRow: '1 / 3' }} className="min-h-0 min-w-0">
           <BatchReviewInspectorDock
+            onJumpToCover={planId => { setSelectedPlanId(planId); setPreviewAsset(null); setSourceSession(null); setPlayheadSec(-10 / 24); setCoverPreviewRequest(value => value + 1); }}
             projectId={projectId}
             batchId={batchId}
             outputPreset={outputPreset}
@@ -693,6 +706,14 @@ export default function BatchUnifiedReviewWorkspace({
             onMediaEdit={handleMediaEdit}
             onRefreshFilm={async (planId) => {
               await refreshFilmArrangement(planId);
+            }}
+            onOpenSource={(planId, clipId) => {
+              const view = arrangements[planId];
+              const clip = view?.clips.find(item => item.clipId === clipId);
+              const asset = clip && poolAssets.find(item => item.assetId === clip.assetId);
+              if (!view || !asset) return;
+              setSelectedPlanId(planId); setSelection({ planId, kind: 'clip', clipId });
+              setPreviewAsset(null); setSourceSession({ view: structuredClone(view), clipId, asset });
             }}
             onOpenCoverEditor={(planId) => {
               setSelectedPlanId(planId);

@@ -93,8 +93,8 @@ body {
   }
   .btn-primary { background: var(--color-accent); color: #fff; }
   .btn-primary:hover { background: var(--color-accent-hover); }
-  .btn-secondary { background: var(--color-surface-subtle); color: var(--color-ink); }
-  .btn-secondary:hover { background: #ececf0; }
+  .btn-secondary { background: var(--color-surface-subtle); color: var(--color-ink); border: 1px solid var(--color-hairline); }
+  .btn-secondary:hover { background: color-mix(in srgb, var(--color-surface-subtle), var(--color-ink) 5%); }
   .btn-danger { background: transparent; color: var(--color-fail); border: 1px solid var(--color-hairline); }
   .btn-danger:hover { background: var(--color-fail-tint); border-color: var(--color-fail-tint); }
   .btn-primary:disabled, .btn-secondary:disabled, .btn-danger:disabled { opacity: .45; cursor: not-allowed; }

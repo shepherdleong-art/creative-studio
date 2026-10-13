@@ -21,7 +21,7 @@ import type { AllocationSegmentInput } from '../lib/batch-production/allocator.t
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-batch-semantic-allocation-input-'));
 const db = new Database(path.join(root, 'workbench.db'));
 db.pragma('foreign_keys = ON');
-db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL); INSERT INTO projects (id, name) VALUES ('project-1', '测试项目');`);
+db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, productName TEXT, sellingPointsJson TEXT, name TEXT NOT NULL); INSERT INTO projects (id, name) VALUES ('project-1', '测试项目');`);
 
 const BODY_TEXT = '开场介绍产品。细节展示卖点！';
 

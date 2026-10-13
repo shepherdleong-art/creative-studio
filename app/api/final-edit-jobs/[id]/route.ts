@@ -29,15 +29,17 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         };
       } catch { /* older non-export snapshot */ }
     }
-    if (row.kind === 'render' && row.status === 'succeeded' && typeof row.outputJson === 'string' && row.outputJson) {
+    if ((row.kind === 'render' || row.kind === 'packaging') && row.status === 'succeeded' && typeof row.outputJson === 'string' && row.outputJson) {
       try {
         const parsed = JSON.parse(row.outputJson) as Record<string, unknown>;
         output = {
           ...parsed,
           videoUrl: `/api/final-edit-jobs/${encodeURIComponent(id)}/video`,
           videoDownloadUrl: `/api/final-edit-jobs/${encodeURIComponent(id)}/video?download=1`,
-          coverUrl: `/api/final-edit-jobs/${encodeURIComponent(id)}/cover`,
-          coverDownloadUrl: `/api/final-edit-jobs/${encodeURIComponent(id)}/cover?download=1`,
+          ...(parsed.coverRelativePath ? {
+            coverUrl: `/api/final-edit-jobs/${encodeURIComponent(id)}/cover`,
+            coverDownloadUrl: `/api/final-edit-jobs/${encodeURIComponent(id)}/cover?download=1`,
+          } : {}),
         };
       } catch { /* keep legacy/corrupt output visible through outputJson only */ }
     }

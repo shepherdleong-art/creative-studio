@@ -1,3 +1,4 @@
+import { initialBatchPackagingConfig } from './packaging.ts';
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
@@ -507,8 +508,10 @@ function persistResult(
     : [];
   for (const output of planOutputs) {
     const plan = db.prepare(`
-      SELECT id, batchVersionId FROM batch_output_plans WHERE id = ? AND batchVersionId = ?
-    `).get(output.planId, batchVersionId) as { id: string; batchVersionId: string } | undefined;
+      SELECT p.id, p.batchVersionId, o.arrangementJson AS previousArrangementJson
+      FROM batch_output_plans p LEFT JOIN batch_output_versions o ON o.id=p.currentVersionId
+      WHERE p.id = ? AND p.batchVersionId = ?
+    `).get(output.planId, batchVersionId) as { id: string; batchVersionId: string; previousArrangementJson: string | null } | undefined;
     if (!plan) throw new BatchDomainError('invalid_input', '分配结果引用了不属于该批次版本的成片计划');
     const existing = db.prepare(`
       SELECT MAX(versionNumber) AS maxVersion FROM batch_output_versions WHERE planId = ?
@@ -522,6 +525,14 @@ function persistResult(
     `).run(id, output.planId, versionNumber, JSON.stringify(output.arrangement), createdAt, runId);
     // 这里只更新“当前候选”指针;不接触 currentArtifactId,旧正式产物保持可见。
     db.prepare(`UPDATE batch_output_plans SET currentVersionId = ? WHERE id = ? AND batchVersionId = ?`).run(id, output.planId, batchVersionId);
+    const scope = db.prepare(`SELECT b.id AS batchId, b.projectId FROM batch_production_versions v
+      JOIN batch_productions b ON b.id=v.batchId WHERE v.id=?`).get(batchVersionId) as { batchId: string; projectId: string };
+    const view = { planId: output.planId, coverTitle: null, coverTitleOverride: false,
+      subtitleCues: output.arrangement.subtitle.cues, narration: output.arrangement.narration,
+      visualDurationUs: Math.max(0, ...output.arrangement.clips.map(clip => clip.timelineEndUs)) };
+    const previous = plan.previousArrangementJson ? asRecord(parseJson(plan.previousArrangementJson)).packaging : undefined;
+    const packaging = initialBatchPackagingConfig(db, scope.projectId, view, previous);
+    db.prepare(`UPDATE batch_output_versions SET arrangementJson=? WHERE id=?`).run(JSON.stringify({ ...output.arrangement, packaging }), id);
     outputVersionIds[output.planId] = id;
   }
   activateAllocationRun(db, batchVersionId, runId);

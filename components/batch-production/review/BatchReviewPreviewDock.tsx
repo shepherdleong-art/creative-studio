@@ -1,5 +1,7 @@
 'use client';
 
+import BatchSourceMonitor, { type SourceMonitorSession } from './BatchSourceMonitor';
+import BatchPackagingOverlay from '../BatchPackagingOverlay';
 import { useCallback, useMemo, useRef } from 'react';
 import type { OutputPresetId } from '@/lib/final-edit/types';
 import type { BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
@@ -13,6 +15,10 @@ import styles from './batch-unified-review.module.css';
 const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS;
 
 export interface BatchReviewPreviewDockProps {
+  packagingEditable?: boolean;
+  coverPreviewRequest?: number;
+  sourceSession?: SourceMonitorSession | null;
+  onSourceApply?: (planId: string, edit: Record<string, unknown>) => Promise<boolean>;
   projectId: string;
   batchId: string;
   outputPreset: OutputPresetId;
@@ -28,6 +34,10 @@ export interface BatchReviewPreviewDockProps {
 }
 
 export default function BatchReviewPreviewDock({
+  packagingEditable = false,
+  coverPreviewRequest = 0,
+  sourceSession,
+  onSourceApply,
   projectId,
   batchId,
   outputPreset,
@@ -179,7 +189,10 @@ export default function BatchReviewPreviewDock({
         <p role="status" className="shrink-0 bg-warn/10 px-3 py-2 text-xs text-warn">{previewFilm.sourceWarnings.join('；')}</p>
       )}
       <div className={styles.previewStageArea}>
-        {previewAsset ? (
+        {sourceSession && onSourceApply ? (
+          <BatchSourceMonitor key={`${sourceSession.view.outputVersionId}:${sourceSession.view.editRevision}:${sourceSession.clipId}`}
+            session={sourceSession} projectId={projectId} onApply={onSourceApply} onClose={onClearPreviewAsset} />
+        ) : previewAsset ? (
           <div className="flex h-full w-full flex-col items-center justify-center p-2">
             {previewAsset.previewUrl ? (
               <LutVideoPlayer
@@ -232,7 +245,10 @@ export default function BatchReviewPreviewDock({
         ) : arrangement ? (
           <div className={styles.previewScreen}>
             <BatchTimelinePreview
-              key={previewFilm.planId}
+              key={`${previewFilm.planId}:${packagingEditable}:${coverPreviewRequest}`}
+              overlay={arrangement.packaging?.enabled ? <BatchPackagingOverlay key={`${previewFilm.planId}:${arrangement.editRevision}`} view={arrangement} editable={packagingEditable} onSave={onSourceApply}
+                src={`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(previewFilm.planId)}/packaging-preview?projectId=${encodeURIComponent(projectId)}&format=html&edit=1&revision=${arrangement.editRevision}`}
+                timeSec={playheadSec + INTRO_SEC} /> : null}
               clips={clips}
               narrationDurationUs={arrangement.narration?.durationUs}
               preserveGaps={arrangement.preserveGaps}
@@ -242,7 +258,7 @@ export default function BatchReviewPreviewDock({
               coverDraft={{
                 asset: coverAsset,
                 timeUs: arrangement.coverTimeUs,
-                title: arrangement.coverTitle,
+                title: arrangement.packaging?.enabled ? null : arrangement.coverTitle,
                 framing: arrangement.coverFraming,
               }}
               subtitleCues={arrangement.subtitleCues}

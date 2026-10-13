@@ -1,7 +1,7 @@
 'use client';
 
 import { audioAudibleAt, type AudioEdits } from '@/lib/media-core/audio-edit';
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type Ref } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type Ref, type ReactNode } from 'react';
 import {
   activeClipIndexAtBodyFrame,
   expectedVideoTimeSec,
@@ -72,6 +72,7 @@ export interface BatchTimelinePreviewHandle {
 }
 
 export interface BatchTimelinePreviewProps {
+  overlay?: ReactNode;
   playbackRef?: Ref<BatchTimelinePreviewHandle>;
   clips: BatchTimelinePreviewClip[];
   narrationDurationUs?: number | null;
@@ -138,7 +139,7 @@ function seekMedia(element: HTMLMediaElement | null, timeSec: number): void {
  * 字幕顶层 SVG、口播片头结束后起播、BGM 音量包络;但不依赖 final-edit 的路由与类型。
  */
 export default function BatchTimelinePreview({
-  playbackRef,
+  playbackRef, overlay,
   clips,
   narrationDurationUs, preserveGaps, audio,
   assetsById,
@@ -881,6 +882,7 @@ export default function BatchTimelinePreview({
             aria-label={activeCue?.text ? `字幕：${activeCue.text}` : '字幕预览'}
             dangerouslySetInnerHTML={{ __html: subtitleSvg }}
           />
+          {overlay}
           {showSafeArea && <div className="pointer-events-none absolute inset-[4%] rounded-md border border-dashed border-surface/55" aria-label="4% 预览安全区" />}
           {sortedClips.length === 0 && (
             <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">没有可预览的片段</div>

@@ -28,7 +28,7 @@ function setupDb(dbPath: string): Database.Database {
   const db = new Database(dbPath);
   db.pragma('foreign_keys = ON');
   db.exec(`
-    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT DEFAULT '');
+    CREATE TABLE projects (id TEXT PRIMARY KEY, productName TEXT, sellingPointsJson TEXT, name TEXT NOT NULL, productCode TEXT DEFAULT '');
     CREATE TABLE shot_sets (
       id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL,
       FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE
@@ -174,6 +174,7 @@ try {
 
   const synthesizeCalls: Array<{ providerId: string; voice: string; speed: number; segmentCount: number }> = [];
   const executor = createBatchNarrationExecutor({
+    extractPackagingPoints: async () => ['贵妃位放腿'],
     storageRoot,
     synthesize: async (providerId, input) => {
       synthesizeCalls.push({ providerId, voice: input.voice, speed: input.speed, segmentCount: input.segments.length });

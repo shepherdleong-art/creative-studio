@@ -39,6 +39,8 @@ export interface BatchLocalNarrationSnapshot extends BatchNarrationBase {
   audioFingerprint: string;
   /** 词级时间戳(可选):TTS 适配器返回时随快照落库;老快照没有该字段 */
   wordTimings?: BatchNarrationWordTiming[];
+  /** 口播准备时提炼一次，后续分配复用。 */
+  packagingPoints?: string[];
 }
 
 export type BatchNarrationSnapshot = BatchSilentNarrationSnapshot | BatchLocalNarrationSnapshot;

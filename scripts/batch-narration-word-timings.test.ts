@@ -57,7 +57,7 @@ try {
   const db = new Database(path.join(root, 'workbench.db'));
   db.pragma('foreign_keys = ON');
   db.exec(`
-    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT DEFAULT '');
+    CREATE TABLE projects (id TEXT PRIMARY KEY, productName TEXT, sellingPointsJson TEXT, name TEXT NOT NULL, productCode TEXT DEFAULT '');
     INSERT INTO projects (id, name, productCode) VALUES ('project-1', '测试项目', 'SKU');
   `);
   await ensureBatchSchemaReady({ db, backupRoot: path.join(root, 'backups') });
@@ -99,7 +99,9 @@ try {
 
   let synthesizeCount = 0;
   let lastProviderIdentity: Record<string, unknown> = {};
+  let extractionCount = 0;
   const executor = createBatchNarrationExecutor({
+    extractPackagingPoints: async () => { extractionCount++; return ['贵妃位放腿']; },
     storageRoot,
     synthesize: async (providerId, input) => {
       synthesizeCount += 1;
@@ -138,7 +140,7 @@ try {
   assert.equal(lastProviderIdentity.requestModel, 'qwen3-tts-flash', '批量 TTS 必须透传请求模型');
   assert.equal(lastProviderIdentity.baseUrl, 'https://api.v3.cm', '批量 TTS 必须透传 base URL');
   const stored = db.prepare(`SELECT narrationJson FROM batch_script_narrations WHERE scriptSnapshotId = ?`).get(snapshotId) as { narrationJson: string };
-  const storedSnap = JSON.parse(stored.narrationJson) as { schemaVersion: string; wordTimings?: Array<{ text: string; startUs: number; endUs: number }>; segments: Array<{ startUs: number; endUs: number; timingSource: string }> };
+  const storedSnap = JSON.parse(stored.narrationJson) as { schemaVersion: string; packagingPoints?: string[]; wordTimings?: Array<{ text: string; startUs: number; endUs: number }>; segments: Array<{ startUs: number; endUs: number; timingSource: string }> };
   assert.equal(storedSnap.schemaVersion, BATCH_NARRATION_SCHEMA_VERSION);
   assert.deepEqual(storedSnap.wordTimings, WORD_TIMINGS, '词级时间戳必须随快照落库');
   assert.ok(storedSnap.segments.every((segment) => segment.timingSource === 'aligned'));
@@ -147,6 +149,8 @@ try {
   const second = await executor.execute({ db, claim, signal, reportProgress: () => undefined });
   second.commit?.();
   assert.equal(synthesizeCount, 1, '命中音频缓存时不得重复调用 TTS');
+  assert.equal(extractionCount, 1, '已有提炼结果时重试不重复调用 AI');
+  assert.deepEqual(storedSnap.packagingPoints, ['贵妃位放腿'], '口播保存共享 AI 提炼结果，供所有成片复用');
   const storedAfterReuse = db.prepare(`SELECT narrationJson FROM batch_script_narrations WHERE scriptSnapshotId = ?`).get(snapshotId) as { narrationJson: string };
   const reusedSnap = JSON.parse(storedAfterReuse.narrationJson) as {
     wordTimings?: Array<{ text: string; startUs: number; endUs: number }>;

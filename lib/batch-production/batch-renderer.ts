@@ -26,6 +26,8 @@ import type { TextStyle } from '../media-core/cover-types.ts';
 import { NARRATION_GAIN_DB_DEFAULT, normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
 import { resolveCoverContractHash } from './cover-contract.ts';
 import { BATCH_OUTPUT_PRESETS, type BatchOutputPreset } from './output-presets.ts';
+import { parsePackagingConfig } from '../media-core/packaging-vars.ts';
+import { renderVideoPackaging } from '../media-core/packaging-render.ts';
 
 export { BATCH_OUTPUT_PRESETS, type BatchOutputPreset } from './output-presets.ts';
 export type BatchRenderAudioMode = 'narration' | 'silent_placeholder';
@@ -58,6 +60,7 @@ export interface BatchRenderCoverInput {
 }
 
 export interface BatchRenderArrangementInput {
+  packaging?: unknown;
   clips: BatchRenderClipInput[];
   /** 就地片段编辑的修订号;旧 arrangement 缺省即 0。 */
   editRevision?: number;
@@ -820,6 +823,7 @@ async function generateCoverFrameAndTitle(params: {
   coverClip: ResolvedClip;
   coverTimeUs: number;
   arrangementCover?: BatchRenderCoverInput;
+  suppressTitle?: boolean;
   outputSize: { width: number; height: number };
   outputPath: string;
   signal: AbortSignal;
@@ -838,7 +842,9 @@ async function generateCoverFrameAndTitle(params: {
       'fps=24', 'setsar=1', ...coverColorFragments, 'format=yuv420p',
     ].join(','), '-q:v', '2', '-f', 'image2', '-y', outputPath,
   ], { signal });
-  await applyFrozenCoverTitleToFile(db, planId, outputPath, outputSize, arrangementCover);
+  await applyFrozenCoverTitleToFile(db, planId, outputPath, outputSize, params.suppressTitle
+    ? { ...arrangementCover, title: { primary: '', secondary: '' } }
+    : arrangementCover);
 }
 
 /**
@@ -926,6 +932,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
       coverClip: first,
       coverTimeUs: coverFrameTimeUs,
       arrangementCover: cover,
+      suppressTitle: parsePackagingConfig(snapshot.arrangement.packaging).enabled,
       outputSize,
       outputPath: coverTemp,
       signal,
@@ -1064,6 +1071,11 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
       },
     });
     await fsp.rm(subtitleDir, { recursive: true, force: true });
+    const packaging = parsePackagingConfig(snapshot.arrangement.packaging);
+    if (packaging.enabled) {
+      report({ phase: 'rendering', completed: null, total: null, percent: null, description: '渲染视频包装与封面' });
+      await renderVideoPackaging({ videoPath: videoTemp, coverPath: coverTemp, config: packaging, totalSec: totalDurationSec, signal });
+    }
     report({ phase: 'verifying', completed: null, total: null, percent: null, description: '校验正式渲染产物' });
     assertSignal(signal);
     const probe = await probeVideoMedia(videoTemp);

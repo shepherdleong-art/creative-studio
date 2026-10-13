@@ -123,7 +123,7 @@ try {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-narration-timing-'));
   const db = new Database(path.join(root, 'workbench.db'));
   db.pragma('foreign_keys = ON');
-  db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL); INSERT INTO projects (id, name) VALUES ('project-1', '测试项目');`);
+  db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, productName TEXT, sellingPointsJson TEXT, name TEXT NOT NULL); INSERT INTO projects (id, name) VALUES ('project-1', '测试项目');`);
   await ensureBatchSchemaReady({ db, backupRoot: path.join(root, 'backups') });
   const batchId = createBatchProduction(db, 'project-1', '口播时间批次');
   const versionId = createBatchProductionVersion(db, batchId, { copyCount: 1, defaultsJson: { outputPreset: '3:4', preset: '3:4', fps: 24, targetDurationSec: 15 } });

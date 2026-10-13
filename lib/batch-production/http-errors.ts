@@ -29,7 +29,7 @@ export function batchErrorResponse(error: unknown, fallback: BatchHttpErrorFallb
     let status: number;
     if (error.code === 'not_found') {
       status = 404;
-    } else if (error.code === 'conflict') {
+    } else if (error.code === 'conflict' || error.code === 'packaging_placeholder') {
       status = 409;
     } else {
       status = 400;

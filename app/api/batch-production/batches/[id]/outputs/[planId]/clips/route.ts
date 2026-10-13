@@ -1,3 +1,5 @@
+import { prepareBatchPackagingConfig } from '@/lib/batch-production/packaging';
+import { getBatchOutputArrangementView } from '@/lib/batch-production/output-arrangement';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
@@ -41,6 +43,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     await assertBatchApiReady();
     const body = await request.json().catch(() => ({})) as {
       type?: unknown;
+      config?: unknown;
+      reextract?: unknown;
+      expectedOutputVersionId?: unknown;
       clipId?: unknown;
       sourceStartUs?: unknown;
       sourceEndUs?: unknown;
@@ -76,7 +81,13 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
 
     let edit: BatchOutputClipEdit;
 
-    if (body.type === 'move_clip') {
+    if (body.type === 'set_packaging') {
+      const view = getBatchOutputArrangementView(getDb(), projectId, id, planId);
+      edit = { type: 'set_packaging', config: await prepareBatchPackagingConfig(getDb(), projectId, view, body.config, body.reextract === true), expectedEditRevision: body.expectedEditRevision as number, expectedOutputVersionId: body.expectedOutputVersionId as string };
+    } else if (body.type === 'set_source_range') {
+      edit = { type: 'set_source_range', clipId, sourceStartUs: body.sourceStartUs as number, sourceEndUs: body.sourceEndUs as number,
+        expectedEditRevision: body.expectedEditRevision as number, expectedOutputVersionId: body.expectedOutputVersionId as string };
+    } else if (body.type === 'move_clip') {
       if (!clipId || typeof body.startUs !== 'number' || !Number.isSafeInteger(body.startUs) || body.startUs < 0) {
         return NextResponse.json({ error: 'invalid_clip_edit', message: '移动片段需要有效的片段 ID 和时间位置' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
       }
@@ -141,6 +152,10 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
         }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
       }
       edit = { type: body.type, clipId, sourceStartUs: body.sourceStartUs, sourceEndUs: body.sourceEndUs };
+      if (edit.type === 'trim') {
+        edit.expectedEditRevision = body.expectedEditRevision as number | undefined;
+        edit.expectedOutputVersionId = body.expectedOutputVersionId as string | undefined;
+      }
     } else if (body.type === 'replace') {
       const assetId = typeof body.assetId === 'string' ? body.assetId.trim() : '';
       if (!clipId || !assetId) {

@@ -19,7 +19,7 @@ import {
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-batch-allocation-store-'));
 const db = new Database(path.join(root, 'workbench.db'));
 db.pragma('foreign_keys = ON');
-db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL); INSERT INTO projects (id, name) VALUES ('project-1', '测试项目');`);
+db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, productName TEXT, sellingPointsJson TEXT, name TEXT NOT NULL); INSERT INTO projects (id, name) VALUES ('project-1', '测试项目');`);
 
 try {
   const ready = await ensureBatchSchemaReady({ db, backupRoot: path.join(root, 'backups'), now: () => new Date('2026-08-03T00:00:00.000Z') });
@@ -50,6 +50,11 @@ try {
 
   const first = persistBatchAllocation(db, 'project-1', versionId, { seed: 'store-seed', now: () => new Date('2026-08-03T01:00:00.000Z') });
   assert.equal(first.created, true);
+  const packaged = JSON.parse((db.prepare('SELECT arrangementJson FROM batch_output_versions WHERE id=?').get(first.outputVersionIds[plans[0]]) as { arrangementJson: string }).arrangementJson);
+  assert.equal(packaged.packaging.enabled, true, '新分配成片默认开启包装');
+  assert.equal(packaged.packaging.varsOverrides.title, '稳定', '包装封面读取冻结脚本主标题');
+  assert.equal(packaged.packaging.varsOverrides.subtitle, '标题', '包装副标题联动');
+  assert.ok(Array.isArray(packaged.packaging.pointCues), '默认包装卖点已持久化，预览和导出共用');
   assert.equal(Object.keys(first.outputVersionIds).length, 2);
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM batch_output_versions`).get() as { n: number }).n, 2);
   assert.equal((db.prepare(`SELECT currentArtifactId FROM batch_output_plans WHERE id = ?`).get(plans[0]) as { currentArtifactId: string }).currentArtifactId, 'artifact-sentinel');

@@ -1,5 +1,6 @@
 import type { MatchDiagnostics } from './audio-first-matcher.ts';
 import type { FinalEditDurationGateStateV1 } from './duration-gate.ts';
+import type { FinalEditPackagingConfig } from './packaging-vars.ts';
 
 export { OUTPUT_PRESETS } from '../media-core/cover-types.ts';
 export type { OutputPresetId, TextStyle, CoverFraming, CoverPresetV2 } from '../media-core/cover-types.ts';
@@ -50,6 +51,8 @@ export interface CoverEditorDraft {
   sourceKey: string;
   frameTimeUs: number;
   framing: CoverFraming;
+  /** §4：封面标题开关（点选启用，默认关闭）；关闭时渲染端跳过 title.png 合成。 */
+  coverTitleEnabled: boolean;
   primary: { text: string; style: TextStyle };
   secondary: { text: string; style: TextStyle };
 }
@@ -147,6 +150,8 @@ export interface FinalEditGroupView {
   totalDurationUs: number;
   durationGate: FinalEditDurationGateStateV1 | null;
   coverTitle: {
+    /** §4：封面标题开关；旧数据无此字段时按「主/副标题任一文字非空」迁移为 true。 */
+    enabled: boolean;
     primary: { id: 'primary'; text: string; textSource: 'script' | 'manual' };
     secondary: { id: 'secondary'; text: string; textSource: 'script' | 'manual' };
   };
@@ -154,6 +159,8 @@ export interface FinalEditGroupView {
   textStyles: Record<OutputPresetId, { coverPrimary: TextStyle; coverSecondary: TextStyle; subtitle: TextStyle }>;
   variants: FinalEditVariantView[];
   assets: FinalEditAssetView[];
+  /** 包装 v2 配置（final_edit_groups.packagingJson）：导出渲染时联动。 */
+  packaging: FinalEditPackagingConfig;
   bgmTracks: FinalEditBgmTrackView[];
   coverCandidates: Array<{ coverKey: string; sourceUrl: string; kind: 'storyboard_image' | 'video_keyframe' }>;
   jobs: Array<{ id: string; variantId: string | null; kind: string; status: string; phase: string; progress: number; estimatedCost: number | null; costCurrency: string; errorCode: string | null; errorMessage: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string; renderRevision: { groupRevision: number; variantRevision: number } | null }>;

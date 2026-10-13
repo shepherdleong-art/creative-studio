@@ -1,5 +1,6 @@
 'use client';
 
+import BatchPackagingTrack from './BatchPackagingTrack';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useTimelineZoom } from '@/components/timeline/use-timeline-zoom';
 import { Icon } from '@/components/ui/Icon';
@@ -72,6 +73,7 @@ export interface BatchReviewTimelineDockProps {
   onMediaEdit: (planId: string, edit: Record<string, unknown>) => Promise<boolean>;
   onRefreshFilm: (planId: string) => Promise<void>;
   onOpenCoverEditor: (planId: string) => void;
+  onOpenSource?: (planId: string, clipId: string) => void;
 }
 
 /** 取某成片指定音轨的片段列表与源音频总时长。 */
@@ -125,6 +127,7 @@ export default function BatchReviewTimelineDock({
   onMediaEdit,
   onRefreshFilm,
   onOpenCoverEditor,
+  onOpenSource,
 }: BatchReviewTimelineDockProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [snapLinePx, setSnapLinePx] = useState<number | null>(null);
@@ -1119,21 +1122,26 @@ export default function BatchReviewTimelineDock({
         )}
         {repeatStats ? (
           <div className="flex items-center gap-2 text-xs text-ink">
-            <span className={styles.focusGroup} style={groupStyle(videoUsage.repeatGroups.get(activeAssetId!))}>
-              {videoUsage.repeatGroups.get(activeAssetId!)?.label ?? '定位'}
+            <span
+              className={`${styles.focusGroup} ${focusedAssetId ? styles.focusGroupLocated : ''}`}
+              style={focusedAssetId ? undefined : groupStyle(videoUsage.repeatGroups.get(activeAssetId!))}
+            >
+              {focusedAssetId ? '红色高亮' : videoUsage.repeatGroups.get(activeAssetId!)?.label ?? '素材'}
             </span>
             <span>
-              已定位素材：<strong className="text-ink">{repeatStats.displayName}</strong> · 在{' '}
+              {focusedAssetId ? '已定位素材' : '已选素材'}：<strong className="text-ink">{repeatStats.displayName}</strong> · 在{' '}
               <strong className="text-[#99570f]">{repeatStats.filmCount}</strong> 条成片中被使用{' '}
               <strong className="text-[#99570f]">{repeatStats.totalCount}</strong> 次
             </span>
-            <button
-              type="button"
-              className="text-xs text-accent underline ml-2 cursor-pointer"
-              onClick={() => onSelectFocusedAsset(null)}
-            >
-              取消定位
-            </button>
+            {focusedAssetId && (
+              <button
+                type="button"
+                className="text-xs text-accent underline ml-2 cursor-pointer"
+                onClick={() => onSelectFocusedAsset(null)}
+              >
+                取消高亮
+              </button>
+            )}
           </div>
         ) : (
           <span className="text-xs text-ink-tertiary">
@@ -1409,6 +1417,12 @@ export default function BatchReviewTimelineDock({
                     ))}
                   </div>
 
+                  {arrangement?.packaging?.enabled && <BatchPackagingTrack
+                    key={`${arrangement.outputVersionId}:${arrangement.editRevision}`}
+                    view={arrangement} zoom={zoom} playheadSec={playheadSec}
+                    onSelect={() => { onSelectFilm(film.planId); onSelectTarget(null); }}
+                    onSeek={onSeek} onEdit={edit => onMediaEdit(film.planId, edit)} />}
+
                   {/* Track 2: Video Clips */}
                   <div
                     className={styles.trackVideo}
@@ -1430,6 +1444,7 @@ export default function BatchReviewTimelineDock({
                       const startSec = isDraftClip ? moveDraft.startSec : range.timelineStartUs / 1e6;
                       const widthPx = Math.max(1, (range.timelineEndUs - range.timelineStartUs) / 1e6 * zoom);
                       const isSelected = selection?.kind === 'clip' && selection.planId === film.planId && selection.clipId === clip.clipId;
+                      const isLocated = focusedAssetId === clip.assetId;
                       const usage = videoUsage.byPlan.get(film.planId)?.get(clip.clipId);
                       const isRepeat = (usage?.totalUses ?? 0) > 1;
                       const hasSourceConflict = usage?.hasSourceConflict ?? false;
@@ -1457,17 +1472,19 @@ export default function BatchReviewTimelineDock({
                               isRepeat ? styles.clipRepeat : ''
                             } ${hasSourceConflict ? styles.clipSourceConflict : ''} ${isDropTarget ? styles.dropTargetActive : ''} ${isDraftClip ? styles.blockMoving : ''} ${
                               isDimmedByOverlapFilter ? styles.clipDim : ''
-                            }`}
+                            } ${isLocated ? styles.clipLocated : ''}`}
                             style={{
                               left: startSec * zoom,
                               width: widthPx,
                               ...groupStyle(displayGroup),
                             }}
                             title={[
+                              isLocated ? '红色定位：正在查找的素材' : '',
                               usage?.repeatGroup ? `素材 ${usage.repeatGroup.label}：同编号、同色的片段使用同一视频` : '',
                               usage?.sourceGroup ? `同源图 ${usage.sourceGroup.label}：同编号的片段来自同一原图` : '',
                             ].filter(Boolean).join('；') || undefined}
                             onPointerDown={(e) => beginClipBodyPointer(e, film, clip.clipId)}
+                            onDoubleClick={event => { event.stopPropagation(); if (tool === 'select') onOpenSource?.(film.planId, clip.clipId); }}
                             onDragOver={(e) => {
                               e.stopPropagation();
                               const rect = e.currentTarget.getBoundingClientRect();
@@ -1610,9 +1627,10 @@ export default function BatchReviewTimelineDock({
 
       {/* 6. Legend (v14) */}
       <div className={styles.legend}>
+        <span><i className={styles.legendLocated} />红色框：素材池定位</span>
         <span><i className={styles.legendSwatch} />A/B… 同一素材 · S1/S2… 同源图；按颜色和编号找对应</span>
         <span><i className={styles.legendStripe} />源区间重叠</span>
-        <span>字幕 → 视频 → 口播 TTS → BGM</span>
+        <span>字幕 → 卖点 → 视频 → 口播 TTS → BGM</span>
         <span>主视频秒尺 · 封面独立，不计复用</span>
       </div>
 

@@ -92,3 +92,7 @@ next-env.d.ts
 /config.yaml.bak-*
 /litellm-config.yaml
 /.venv-litellm/
+packaging/node_modules/
+packaging/runtime/
+packaging/renders/
+packaging/.font-scan-cache.json

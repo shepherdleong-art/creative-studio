@@ -105,6 +105,11 @@ try {
   writeFixture('node_modules/ffprobe-static/package.json', '{}\n');
   writeFixture('node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64.node');
   writeFixture('node_modules/@img/sharp-win32-x64/lib/libvips-42.dll');
+  for (const file of ['package.json', 'package-lock.json', 'package-video.mjs', 'win-hide-spawn.cjs', 'templates/overlay-poster/index.html', 'fonts/default.ttf', 'node_modules/hyperframes/package.json', 'runtime/chrome-headless-shell/chrome-headless-shell.exe']) {
+    writeFixture(`packaging/${file}`);
+  }
+  writeFixture('packaging/fonts/user/private.ttf');
+  writeFixture('packaging/renders/private.mp4');
   // 知识/模板目录导入的 XLSX 依赖（纯 JS，Next 文件追踪会随服务端路由收进
   // .next/standalone/node_modules）。sync 不得把已追踪的 node_modules 清掉。
   writeFixture('.next/standalone/node_modules/exceljs/package.json', '{}\n');
@@ -125,6 +130,9 @@ try {
     { cwd: fixtureRoot, encoding: 'utf8' },
   );
   assert.equal(sync.status, 0, `standalone 资源同步失败：\n${sync.stderr}\n${sync.stdout}`);
+  assert.ok(existsSync(path.join(standalone, 'packaging/templates/overlay-poster/index.html')));
+  assert.equal(existsSync(path.join(standalone, 'packaging/fonts/user')), false);
+  assert.equal(existsSync(path.join(standalone, 'packaging/renders')), false);
 
   for (const entry of syncPurge) {
     if (entry.includes('*')) continue;

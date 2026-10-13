@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { drawFramedImage } from '@/lib/final-edit/cover-framing';
 import { audioAudibleAt, videoPlaybackRate } from '@/lib/final-edit/clip-edit';
 import { OUTPUT_PRESETS, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView } from '@/lib/final-edit/types';
@@ -36,7 +36,7 @@ function seekMedia(element: HTMLMediaElement | null, timeSec: number) {
   }
 }
 
-export function FinalEditPreview({ group, variant, assets, selectedAsset, playheadSec, seekRequestId, stopRequestId, active = true, textTarget, narrationGainDb: narrationGainDbOverride, bgmGainDb: bgmGainDbOverride, onPlaybackStart, onPlayheadChange, onTextPositionChange }: {
+export function FinalEditPreview({ group, variant, assets, selectedAsset, playheadSec, seekRequestId, stopRequestId, active = true, textTarget, overlay, narrationGainDb: narrationGainDbOverride, bgmGainDb: bgmGainDbOverride, onPlaybackStart, onPlayheadChange, onPlayingChange, onTextPositionChange }: {
   group: FinalEditGroupView;
   variant: FinalEditVariantView;
   assets: FinalEditAssetView[];
@@ -48,11 +48,22 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   textTarget: StyleTarget | null;
   narrationGainDb?: number;
   bgmGainDb?: number;
+  /** 叠加层（如包装透明 iframe）：渲染在字幕画布之后、安全区/角标之前（后两者 z-index 更高保持在上层）；调用方保证 absolute inset:0。 */
+  overlay?: ReactNode;
   onPlaybackStart?: () => void;
   onPlayheadChange: (timeSec: number) => void;
+  /** 播放状态变化上报（开始/暂停/停止/播完自然结束均覆盖）。 */
+  onPlayingChange?: (playing: boolean) => void;
   onTextPositionChange: (target: StyleTarget, x: number, y: number, commit: boolean) => void;
 }) {
   const previewRootRef = useRef<HTMLElement>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenError, setFullscreenError] = useState('');
+  useEffect(() => {
+    const update = () => setFullscreen(document.fullscreenElement === previewRootRef.current);
+    document.addEventListener('fullscreenchange', update);
+    return () => document.removeEventListener('fullscreenchange', update);
+  }, []);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const coverImageCanvasRef = useRef<HTMLCanvasElement>(null);
   const foregroundCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -192,7 +203,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const showTitle = playheadSec < INTRO_SEC && !showSelectedMaterial;
+    const showTitle = playheadSec < INTRO_SEC && !showSelectedMaterial && group.coverTitle.enabled;
     const cue = showSelectedMaterial ? null : activeCue;
     const styles = group.textStyles[variant.outputPreset];
     const fonts = showTitle
@@ -359,6 +370,11 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
     pauseAllMedia();
   }, [pauseAllMedia, playing]);
 
+  // 播放状态统一上报：start/pause/stop/播完自然结束都经 playing state 收敛，此处单点覆盖
+  useEffect(() => {
+    onPlayingChange?.(playing);
+  }, [playing, onPlayingChange]);
+
   useEffect(() => {
     if (active) return;
     pauseAllMedia();
@@ -491,8 +507,12 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
 
   const enterFullscreen = async () => {
     const root = previewRootRef.current;
-    if (!root || document.fullscreenElement === root) return;
-    await root.requestFullscreen().catch(() => undefined);
+    if (!root) return;
+    setFullscreenError('');
+    try {
+      if (document.fullscreenElement === root) await document.exitFullscreen();
+      else await root.requestFullscreen();
+    } catch { setFullscreenError('无法进入全屏，请重试'); }
   };
 
   const previewClass = variant.outputPreset === '16x9' ? styles.preview169 : variant.outputPreset === '9x16' ? styles.preview916 : styles.preview34;
@@ -530,6 +550,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
           <canvas ref={foregroundCanvasRef} width={previewSize.width} height={previewSize.height} className={`${styles.previewMedia} ${showSelectedMaterial || playheadSec < INTRO_SEC || !activeAsset ? styles.previewInactive : ''}`} />
           {!showSelectedMaterial && playheadSec >= INTRO_SEC && !activeAsset && <div className={styles.previewGap} style={{ background: 'black' }} aria-label="视频空位" />}
           <canvas ref={canvasRef} className={`${styles.previewCanvas} ${canDragText ? styles.draggableOverlay : ''}`} onPointerDown={beginTextDrag} />
+          {overlay}
           {showSafeArea && <div className={styles.previewSafeArea} aria-label="4% 预览安全区" />}
           <span className={styles.previewBadge}>{showSelectedMaterial ? '选中素材' : '成片时间线'}</span>
         </div>
@@ -545,8 +566,9 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
           aria-pressed={showSafeArea}
           onClick={() => setShowSafeArea((visible) => !visible)}
         >安全区</button>
-        <button type="button" className={styles.actionButton} aria-label="全屏预览" onClick={() => void enterFullscreen()}>全屏</button>
+        <button type="button" className={styles.actionButton} aria-label={fullscreen ? "退出全屏" : "全屏预览"} onClick={() => void enterFullscreen()}>{fullscreen ? "退出全屏" : "全屏"}</button>
       </div>
+      {fullscreenError && <p role="alert">{fullscreenError}</p>}
       <audio ref={narrationRef} preload="metadata" src={`/api/final-edit-groups/${group.id}/narration`} />
       <audio ref={bgmRef} preload="metadata" loop src={variant.bgm.trackId ? `/api/final-edit-bgm/${variant.bgm.trackId}/file` : undefined} />
     </main>

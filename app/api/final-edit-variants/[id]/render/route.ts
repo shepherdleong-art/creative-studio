@@ -6,8 +6,8 @@ import { wakeFinalEditWorker } from '@/lib/final-edit/worker';
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: variantId } = await params;
-    const body = await request.json() as { groupId?: string; expectedGroupRevision?: number; expectedVariantRevision?: number; overlayBundleId?: string };
-    const result = await getFinalEditWorkspace().enqueueRender({ groupId: String(body.groupId || ''), variantId, expectedGroupRevision: Number(body.expectedGroupRevision), expectedVariantRevision: Number(body.expectedVariantRevision), overlayBundleId: String(body.overlayBundleId || '') });
+    const body = await request.json() as { groupId?: string; expectedGroupRevision?: number; expectedVariantRevision?: number; overlayBundleId?: string; allowPackagingPlaceholder?: boolean };
+    const result = await getFinalEditWorkspace().enqueueRender({ groupId: String(body.groupId || ''), variantId, expectedGroupRevision: Number(body.expectedGroupRevision), expectedVariantRevision: Number(body.expectedVariantRevision), overlayBundleId: String(body.overlayBundleId || ''), allowPackagingPlaceholder: body.allowPackagingPlaceholder === true });
     wakeFinalEditWorker();
     return NextResponse.json(result, { status: 202 });
   } catch (error) { return finalEditErrorResponse(error); }

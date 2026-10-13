@@ -24,6 +24,7 @@ function cloneDraft(group: FinalEditGroupView, variant: FinalEditVariantView): C
     sourceKey,
     frameTimeUs: selectedSource ? variant.cover.frameTimeUs || 0 : 0,
     framing: { ...variant.cover.framing },
+    coverTitleEnabled: group.coverTitle.enabled,
     primary: { text: group.coverTitle.primary.text, style: structuredClone(group.textStyles[variant.outputPreset].coverPrimary) },
     secondary: { text: group.coverTitle.secondary.text, style: structuredClone(group.textStyles[variant.outputPreset].coverSecondary) },
   };
@@ -171,6 +172,8 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
     ]).catch(() => undefined).then(() => {
       if (cancelled) return;
       drawFramedImage(context, loadedFrame.image, draft.framing);
+      // §4 点选启用：关闭封面标题时画布不画主/副标题
+      if (!draft.coverTitleEnabled) return;
       drawText(context, draft.primary.text, draft.primary.style);
       drawText(context, draft.secondary.text, draft.secondary.style);
     });
@@ -178,6 +181,8 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
   }, [draft, frameUrl, loadedFrame, output.height, output.width]);
 
   useEffect(() => {
+    // §4 点选启用：关闭封面标题时跳过溢出检测（渲染侧经 effectiveOverflow 视为无溢出，不阻塞「应用封面」）
+    if (!draft.coverTitleEnabled) return;
     let frame = 0;
     let cancelled = false;
     void Promise.all([
@@ -199,8 +204,11 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
   const patchPart = (part: 'primary' | 'secondary', patch: Partial<CoverEditorDraft['primary']>) => setDraft((current) => ({ ...current, [part]: { ...current[part], ...patch } }));
   const patchStyle = (part: 'primary' | 'secondary', patch: Partial<TextStyle>) => setDraft((current) => ({ ...current, [part]: { ...current[part], style: { ...current[part].style, ...patch } } }));
   const patchFraming = (patch: Partial<CoverEditorDraft['framing']>) => setDraft((current) => ({ ...current, framing: { ...current.framing, ...patch } }));
+  // 派生态：标题未启用时溢出视为 false（effect 跳过测量，overflow 可能是启用时的遗留值）
+  const effectiveOverflow = draft.coverTitleEnabled ? overflow : { primary: false, secondary: false };
 
   const textTargetAtPoint = (clientX: number, clientY: number): 'primary' | 'secondary' | null => {
+    if (!draft.coverTitleEnabled) return null; // §4：标题未启用时画布不响应标题拖拽
     const canvas = canvasRef.current;
     const context = canvas?.getContext('2d');
     if (!canvas || !context) return null;
@@ -319,15 +327,18 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
           </main>
           <aside className={styles.coverControlsPanel}>
             <section><h3>画面</h3><Range label="缩放" value={draft.framing.scale} min={1} max={3} step={0.05} onChange={(scale) => patchFraming({ scale })} /><Range label="水平" value={draft.framing.offsetX} min={-1} max={1} step={0.02} onChange={(offsetX) => patchFraming({ offsetX })} /><Range label="垂直" value={draft.framing.offsetY} min={-1} max={1} step={0.02} onChange={(offsetY) => patchFraming({ offsetY })} /></section>
+            <section><label className={styles.coverCheck}><input type="checkbox" checked={draft.coverTitleEnabled} onChange={(event) => setDraft((current) => ({ ...current, coverTitleEnabled: event.target.checked }))} />启用封面标题</label></section>
+            {draft.coverTitleEnabled && <>
             <section><div className={styles.coverControlHeading}><h3>共享字体</h3></div><SystemFontPicker value={draft.primary.style.fontFamily} ariaLabel="封面共享字体" onChange={(fontFamily) => { patchStyle('primary', { fontFamily, fontPostscriptName: undefined }); patchStyle('secondary', { fontFamily, fontPostscriptName: undefined }); }} portalRoot={fontOverlayHost} /></section>
             {/* 字体浮层挂载点：紧跟「共享字体」触发器所在 section，浮层控件按 DOM 顺序进入抽屉焦点陷阱；浮层仍用 fixed 坐标。 */}
             <div ref={setFontOverlayHostRef} />
-            {(['primary', 'secondary'] as const).map((part) => <section key={part} className={overflow[part] ? styles.coverTextOverflow : ''}><div className={styles.coverControlHeading}><h3>{part === 'primary' ? '主标题' : '副标题'}</h3>{overflow[part] && <button type="button" onClick={() => fitPart(part)}>适配单行</button>}</div><input aria-label={`${part === 'primary' ? '主' : '副'}标题文字`} value={draft[part].text} onChange={(event) => patchPart(part, { text: event.target.value.replace(/[\r\n]+/g, '') })} /><div className={styles.coverInlineControls}><label>颜色<input type="color" value={draft[part].style.color} onChange={(event) => patchStyle(part, { color: event.target.value })} /></label><label>字号<input type="number" min={12} max={180} value={draft[part].style.fontSizePx} onChange={(event) => patchStyle(part, { fontSizePx: Number(event.target.value) })} /></label></div><label className={styles.coverCheck}><input type="checkbox" checked={draft[part].style.italic} onChange={(event) => patchStyle(part, { italic: event.target.checked })} />斜体</label><label className={styles.coverCheck}><input type="checkbox" checked={draft[part].style.stroke.enabled} onChange={(event) => patchStyle(part, { stroke: { ...draft[part].style.stroke, enabled: event.target.checked } })} />描边</label><div className={styles.coverInlineControls}><label>描边色<input type="color" value={draft[part].style.stroke.color} onChange={(event) => patchStyle(part, { stroke: { ...draft[part].style.stroke, color: event.target.value } })} /></label><label>粗细<input type="number" min={0} max={16} step={0.5} value={draft[part].style.stroke.widthPx} onChange={(event) => patchStyle(part, { stroke: { ...draft[part].style.stroke, widthPx: Number(event.target.value) } })} /></label></div></section>)}
+            {(['primary', 'secondary'] as const).map((part) => <section key={part} className={effectiveOverflow[part] ? styles.coverTextOverflow : ''}><div className={styles.coverControlHeading}><h3>{part === 'primary' ? '主标题' : '副标题'}</h3>{effectiveOverflow[part] && <button type="button" onClick={() => fitPart(part)}>适配单行</button>}</div><input aria-label={`${part === 'primary' ? '主' : '副'}标题文字`} value={draft[part].text} onChange={(event) => patchPart(part, { text: event.target.value.replace(/[\r\n]+/g, '') })} /><div className={styles.coverInlineControls}><label>颜色<input type="color" value={draft[part].style.color} onChange={(event) => patchStyle(part, { color: event.target.value })} /></label><label>字号<input type="number" min={12} max={180} value={draft[part].style.fontSizePx} onChange={(event) => patchStyle(part, { fontSizePx: Number(event.target.value) })} /></label></div><label className={styles.coverCheck}><input type="checkbox" checked={draft[part].style.italic} onChange={(event) => patchStyle(part, { italic: event.target.checked })} />斜体</label><label className={styles.coverCheck}><input type="checkbox" checked={draft[part].style.stroke.enabled} onChange={(event) => patchStyle(part, { stroke: { ...draft[part].style.stroke, enabled: event.target.checked } })} />描边</label><div className={styles.coverInlineControls}><label>描边色<input type="color" value={draft[part].style.stroke.color} onChange={(event) => patchStyle(part, { stroke: { ...draft[part].style.stroke, color: event.target.value } })} /></label><label>粗细<input type="number" min={0} max={16} step={0.5} value={draft[part].style.stroke.widthPx} onChange={(event) => patchStyle(part, { stroke: { ...draft[part].style.stroke, widthPx: Number(event.target.value) } })} /></label></div></section>)}
             <section><h3>内置样式</h3><button type="button" className={styles.coverPresetButton} onClick={() => { patchStyle('primary', { color: '#ffffff', italic: false, stroke: { enabled: true, color: '#101010', widthPx: 4 } }); patchStyle('secondary', { color: '#61a8ff', italic: true, stroke: { enabled: true, color: '#0b1d35', widthPx: 2 } }); }}>清爽蓝白</button></section>
             <section><h3>自定义预设</h3><div className={styles.coverPresetSave}><input aria-label="预设名称" placeholder="输入名称" value={presetName} onChange={(event) => setPresetName(event.target.value)} /><button type="button" onClick={() => void savePreset()}>保存</button></div>{presets.map((preset) => <div key={preset.id} className={styles.coverPresetRow}><button type="button" onClick={() => applyPreset(preset)}>{preset.name}</button><button type="button" aria-label={`删除预设 ${preset.name}`} onClick={() => void deletePreset(preset)}>删除</button></div>)}</section>
+            </>}
           </aside>
         </fieldset>
-        <footer className={styles.coverDrawerFooter}><span aria-live="polite">{frameReady ? message : '正在读取真实视频帧…'}</span><div><button type="button" className={styles.secondaryButton} disabled={busy} onClick={onClose}>取消</button><button type="button" className={styles.primaryButton} disabled={busy || !source || !frameReady || overflow.primary || overflow.secondary} onClick={() => void onApply(draft).then((accepted) => { if (accepted) onClose(); })}>{busy ? '正在应用…' : '应用封面'}</button></div></footer>
+        <footer className={styles.coverDrawerFooter}><span aria-live="polite">{frameReady ? message : '正在读取真实视频帧…'}</span><div><button type="button" className={styles.secondaryButton} disabled={busy} onClick={onClose}>取消</button><button type="button" className={styles.primaryButton} disabled={busy || !source || !frameReady || effectiveOverflow.primary || effectiveOverflow.secondary} onClick={() => void onApply(draft).then((accepted) => { if (accepted) onClose(); })}>{busy ? '正在应用…' : '应用封面'}</button></div></footer>
       </section>
     </div>,
     document.body,

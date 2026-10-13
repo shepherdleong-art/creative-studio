@@ -1,4 +1,5 @@
 'use client';
+import BatchPackagingEditor from '../BatchPackagingEditor';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
@@ -24,6 +25,7 @@ export interface BatchReviewInspectorDockProps {
   onTabChange: (tab: InspectorTab) => void;
   poolAssets: BatchOutputPoolAssetView[];
   onMediaEdit: (planId: string, edit: Record<string, unknown>) => Promise<boolean>;
+  onJumpToCover: (planId: string) => void;
   onRefreshFilm: (planId: string) => Promise<void>;
 }
 
@@ -36,6 +38,7 @@ export default function BatchReviewInspectorDock({
   poolAssets,
   onMediaEdit,
   onRefreshFilm,
+  onJumpToCover,
 }: BatchReviewInspectorDockProps) {
   const arrangement = film?.arrangement;
   const planId = film?.planId;
@@ -161,6 +164,7 @@ export default function BatchReviewInspectorDock({
       </div>
 
       <div className={styles.inspectorTabs}>
+        <button type="button" className={`${styles.inspectorTabBtn} ${inspectorTab === 'packaging' ? styles.inspectorTabActive : ''}`} onClick={() => onTabChange('packaging')}>包装</button>
         <button
           type="button"
           className={`${styles.inspectorTabBtn} ${inspectorTab === 'subtitle' ? styles.inspectorTabActive : ''}`}
@@ -192,6 +196,8 @@ export default function BatchReviewInspectorDock({
       </div>
 
       <div className={styles.inspectorScroll}>
+        {inspectorTab === 'packaging' && <BatchPackagingEditor key={`${film.planId}:${arrangement.outputVersionId}`} view={arrangement} onJumpToCover={() => onJumpToCover(film.planId)}
+          onSave={(config, reextract) => onMediaEdit(film.planId, { type: 'set_packaging', config, reextract, expectedEditRevision: arrangement.editRevision, expectedOutputVersionId: arrangement.outputVersionId })} />}
         {/* TAB 1: 字幕 */}
         {inspectorTab === 'subtitle' && (
           <div className="space-y-4">

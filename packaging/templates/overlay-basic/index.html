@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- 本地化 GSAP：不依赖 CDN，满足离线/本地化部署 -->
+    <script src="./gsap.min.js"></script>
+    <style>
+      @font-face {
+        font-family: "HF-YaHei";
+        src: local("Microsoft YaHei"), local("微软雅黑");
+        font-weight: 400;
+      }
+      @font-face {
+        font-family: "HF-YaHei";
+        src: local("Microsoft YaHei Bold"), local("Microsoft YaHei"), local("微软雅黑");
+        font-weight: 700;
+      }
+
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+
+      /* 关键：透明背景，只输出包装层。
+         尺寸由管线按真实视频规格注入（data-width/height），
+         布局采用锚点式（bottom 锚定），任意高度自适应。 */
+      html, body {
+        width: 1080px;
+        height: 1440px;
+        overflow: hidden;
+        background: transparent;
+      }
+      body { font-family: "HF-YaHei", sans-serif; }
+
+      /* ---- 顶部角标（顶锚定，百分比防溢出） ---- */
+      #badge {
+        position: absolute;
+        top: 3.2%;
+        left: 60px;
+        padding: 16px 36px;
+        border-radius: 999px;
+        background: rgba(255, 61, 127, 0.95);
+        color: #fff;
+        font-size: 40px;
+        font-weight: 700;
+        letter-spacing: 2px;
+        box-shadow: 0 8px 28px rgba(255, 61, 127, 0.35);
+      }
+
+      /* ---- 卖点卡（底锚定：贴在价格条上方） ---- */
+      #card {
+        position: absolute;
+        bottom: 220px;
+        left: 60px;
+        right: 60px;
+        padding: 44px 42px;
+        border-radius: 32px;
+        background: rgba(18, 16, 24, 0.82);
+        border: 3px solid rgba(255, 255, 255, 0.16);
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+      }
+      #card-title {
+        font-size: 72px;
+        font-weight: 700;
+        color: #fff;
+        letter-spacing: 3px;
+        line-height: 1.15;
+      }
+      #card-rule {
+        margin-top: 22px;
+        width: 160px;
+        height: 7px;
+        border-radius: 4px;
+        background: linear-gradient(90deg, #ff8a3d, #ff3d7f);
+      }
+      .point {
+        margin-top: 24px;
+        display: flex;
+        align-items: center;
+        font-size: 44px;
+        color: #f2f2f2;
+        letter-spacing: 1px;
+      }
+      .point .dot {
+        flex: 0 0 auto;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #ffd166;
+        margin-right: 20px;
+        box-shadow: 0 0 14px rgba(255, 209, 102, 0.8);
+      }
+
+      /* ---- 底部价格条 + CTA（底锚定） ---- */
+      #price-bar {
+        position: absolute;
+        bottom: 56px;
+        left: 60px;
+        right: 60px;
+        height: 120px;
+        border-radius: 22px;
+        background: linear-gradient(90deg, #ff8a3d, #ff3d7f);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 36px;
+        box-shadow: 0 16px 44px rgba(255, 61, 127, 0.4);
+      }
+      #price {
+        font-size: 68px;
+        font-weight: 700;
+        color: #fff;
+        letter-spacing: 2px;
+      }
+      #cta {
+        font-size: 42px;
+        font-weight: 700;
+        color: #fff;
+        letter-spacing: 4px;
+        padding: 12px 30px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.22);
+      }
+    </style>
+  </head>
+  <body>
+    <!-- data-width/height/fps/duration 由 package-video.mjs 按真实视频规格注入 -->
+    <div
+      id="root"
+      data-composition-id="overlay"
+      data-start="0"
+      data-duration="3"
+      data-fps="24"
+      data-width="1080"
+      data-height="1440"
+      data-composition-variables='{"badge":{"type":"string","default":"实拍"},"title":{"type":"string","default":"商品标题"},"point1":{"type":"string","default":"卖点一"},"point2":{"type":"string","default":"卖点二"},"point3":{"type":"string","default":"卖点三"},"price":{"type":"string","default":"¥0"},"cta":{"type":"string","default":"立即查看"}}'
+    >
+      <div id="badge" data-track-index="1">实拍</div>
+
+      <div id="card" data-track-index="1">
+        <div id="card-title">商品标题</div>
+        <div id="card-rule"></div>
+        <div class="point" id="p1"><span class="dot"></span><span class="txt">卖点一</span></div>
+        <div class="point" id="p2"><span class="dot"></span><span class="txt">卖点二</span></div>
+        <div class="point" id="p3"><span class="dot"></span><span class="txt">卖点三</span></div>
+      </div>
+
+      <div id="price-bar" data-track-index="1">
+        <div id="price">¥0</div>
+        <div id="cta">立即查看</div>
+      </div>
+    </div>
+
+    <script>
+      // 1) 读取 hyperframes 注入的变量（--variables-file），合并默认值
+      const V = (window.__hyperframes && window.__hyperframes.getVariables
+        ? window.__hyperframes.getVariables()
+        : {}) || {};
+      // raw() 区分「未提供」与「空字符串」：未提供 = 用默认值；空字符串 = 显式隐藏该元素
+      // （自动组装没有价格/卖点数据时不出空壳）。
+      const raw = (k) => (V[k] !== undefined && V[k] !== null ? String(V[k]) : undefined);
+      const get = (k, d) => { const v = raw(k); return v !== undefined && v.trim() !== "" ? v : d; };
+
+      document.getElementById("badge").textContent = get("badge", "实拍");
+      document.getElementById("card-title").textContent = get("title", "商品标题");
+      [["p1", "point1", "卖点一"], ["p2", "point2", "卖点二"], ["p3", "point3", "卖点三"]].forEach(([id, key, fallback]) => {
+        const el = document.getElementById(id);
+        const v = raw(key);
+        if (v !== undefined && v.trim() === "") { el.style.display = "none"; return; }
+        el.querySelector(".txt").textContent = get(key, fallback);
+      });
+      const priceEl = document.getElementById("price");
+      if (raw("price") !== undefined && raw("price").trim() === "") { priceEl.style.display = "none"; }
+      else { priceEl.textContent = get("price", "¥0"); }
+      document.getElementById("cta").textContent = get("cta", "立即查看");
+
+      // 2) GSAP 时间线（必须 paused，由 hyperframes 逐帧 seek）
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      gsap.set("#badge", { opacity: 0, y: -30, scale: 0.9 });
+      gsap.set("#card", { opacity: 0, x: -80 });
+      gsap.set("#card-rule", { scaleX: 0, transformOrigin: "left center" });
+      gsap.set([".point"], { opacity: 0, x: 40 });
+      gsap.set("#price-bar", { opacity: 0, y: 60, scale: 0.94 });
+
+      tl.to("#badge", { opacity: 1, y: 0, scale: 1, duration: 0.5, ease: "back.out(2)" }, 0.0)
+        .to("#card", { opacity: 1, x: 0, duration: 0.6, ease: "power3.out" }, 0.15)
+        .to("#card-rule", { scaleX: 1, duration: 0.45, ease: "power2.out" }, 0.75)
+        .to("#p1", { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 0.9)
+        .to("#p2", { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 1.1)
+        .to("#p3", { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 1.3)
+        .to("#price-bar", { opacity: 1, y: 0, scale: 1, duration: 0.55, ease: "back.out(1.6)" }, 1.6)
+        // 入场后保持至终（包装常驻，符合电商带货惯例）
+        .to("#price-bar", { scale: 1.03, duration: 0.22, yoyo: true, repeat: 1 }, 2.55);
+
+      window.__timelines["overlay"] = tl;
+    </script>
+  </body>
+</html>

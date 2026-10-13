@@ -53,6 +53,14 @@
 .preview34 { height: 100%; aspect-ratio: 3/4; }
 .preview916 { height: 100%; aspect-ratio: 9/16; }
 .preview169 { width: 100%; aspect-ratio: 16/9; }
+.previewColumn:fullscreen { width: 100vw; height: 100vh; background: var(--color-surface); }
+.previewColumn:fullscreen .previewToolbar,
+.previewColumn:fullscreen .playbackBar { flex-shrink: 0; }
+.previewColumn:fullscreen .previewStageWrap { container-type: size; padding: 0; overflow: hidden; }
+.previewColumn:fullscreen .previewStage { max-height: none; max-width: none; border: 0; border-radius: 0; box-shadow: none; }
+.previewColumn:fullscreen .preview34 { width: min(100cqw, 75cqh); height: min(100cqh, 133.333333cqw); }
+.previewColumn:fullscreen .preview916 { width: min(100cqw, 56.25cqh); height: min(100cqh, 177.777778cqw); }
+.previewColumn:fullscreen .preview169 { width: min(100cqw, 177.777778cqh); height: min(100cqh, 56.25cqw); }
 .previewMedia { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .previewContain { object-fit: contain; }
 .previewBlurred { object-fit: cover; filter: blur(24px); transform: scale(1.08); }

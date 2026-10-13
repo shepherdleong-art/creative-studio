@@ -21,8 +21,8 @@
   "notes": "Single source of truth for packaging forbidden-path lists. fileEntries are file/pattern names (e.g. config.yaml, .env.*): next.config renders them as ./<path> instead of ./<path>/**/*; all other entries are treated as recursive directories. core is forbidden by every consumer; consumers.*.extra is the legal per-consumer difference. Keep this file ASCII-only: Windows PowerShell 5.1 reads BOM-less files with the ANSI codepage, and non-ASCII bytes would corrupt JSON.parse.",
   "consumers": {
     "nextStandaloneExcludes": {
-      "extra": [".cache", "dist", "dist-desktop", "runtime"],
-      "notes": "next.config.ts outputFileTracingExcludes['*']: core+extra rendered as ./<path>/**/* (fileEntries as ./<path>). runtime is special: Next tracing excludes runtime/ and sync-standalone-assets.mjs then explicitly copies runtime/server-entry.js in."
+      "extra": [".cache", "dist", "dist-desktop", "runtime", "packaging"],
+      "notes": "next.config.ts outputFileTracingExcludes['*']: core+extra rendered as ./<path>/**/* (fileEntries as ./<path>). runtime/server-entry.js and allowlisted packaging resources are explicitly copied by sync-standalone-assets.mjs."
     },
     "standaloneSyncPurge": {
       "extra": [".cache", "dist", "dist-desktop", "node-runtime"],

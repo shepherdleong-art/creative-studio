@@ -1,3 +1,4 @@
+import { parsePackagingConfig } from '../media-core/packaging-vars.ts';
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { upgradeColorSnapshot, type ColorSnapshotV1 } from './color-pipeline.ts';
@@ -31,6 +32,7 @@ export interface CoverContractInput {
 }
 
 export interface FullRenderContractInput {
+  packaging?: unknown;
   outputVersionId: string;
   editRevision: number;
   audio?: unknown;
@@ -279,6 +281,7 @@ export function resolveFullRenderContract(
     outputVersionId: row.outputVersionId,
     editRevision,
     adapterVersion: BATCH_FULL_RENDER_ADAPTER_VERSION,
+    ...(parsePackagingConfig(arrangement.packaging).enabled ? { packaging: parsePackagingConfig(arrangement.packaging) } : {}),
     ...(arrangement.audio ? { audio: arrangement.audio } : {}),
     ...(arrangement.preserveGaps === true ? { preserveGaps: true } : {}),
     preset,

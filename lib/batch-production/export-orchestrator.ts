@@ -6,6 +6,7 @@ import { BatchDomainError } from './errors.ts';
 import { checkFormalExportPreflight } from './export-preflight.ts';
 import { publishSelectedBatchOutputs } from './phase-e.ts';
 import { createBatchTask, type BatchTaskStatus } from './tasks.ts';
+import { buildPackagingVars, parsePackagingConfig } from '../media-core/packaging-vars.ts';
 import {
   buildFullRenderTaskRequestKey,
   parseRenderTaskRequestKey,
@@ -255,6 +256,7 @@ export async function orchestrateBatchExport(
   batchId: string,
   planIds: string[],
   options: {
+    allowPackagingPlaceholder?: boolean;
     storageRoot?: string;
     now?: () => Date;
     /** 依赖注入 seam:默认唤醒进程内批量调度器;测试传空操作。 */
@@ -280,6 +282,20 @@ export async function orchestrateBatchExport(
     throw new BatchDomainError('conflict', '批次还没有冻结输入快照,不能正式导出');
   }
 
+  // Check the entire selection before reserving files or queuing any render.
+  // Batch packaging text is frozen in varsOverrides when saved.
+  if (!options.allowPackagingPlaceholder) {
+    for (const planId of uniquePlanIds) {
+      const lineage = readPlanLineage(db, projectId, batchId, planId);
+      const arrangement = asRecord(parseJson(lineage.arrangementJson));
+      const packaging = parsePackagingConfig(arrangement?.packaging);
+      if (!packaging.enabled) continue;
+      const vars = buildPackagingVars({ project: {}, subtitleCues: [], overrides: packaging.varsOverrides });
+      if (!vars.title.trim() || !vars.subtitle.trim()) {
+        throw new BatchDomainError('packaging_placeholder', '所选成片的包装主标题或副标题仍是占位文字。');
+      }
+    }
+  }
   const items: BatchExportOrchestrateItem[] = [];
   for (const planId of uniquePlanIds) {
     items.push(await orchestrateOne(db, projectId, batchId, planId, {

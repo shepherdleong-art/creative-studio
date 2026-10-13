@@ -32,6 +32,30 @@ export function buildPublishedJobOutput(input: {
   };
 }
 
+/** 单条产物登记（包装联动：渲染任务只发布封面、包装任务发布视频时分别使用）。 */
+export function registerSingleArtifact(db: Database.Database, input: {
+  id: string;
+  projectId: string;
+  kind: string;
+  displayName: string;
+  relativePath: string;
+  mimeType: string;
+  sourceJobId: string;
+  createdAt: string;
+}): void {
+  db.prepare(`DELETE FROM project_artifacts WHERE projectId=? AND relativePath=? AND COALESCE(sourceJobId, '')<>?`).run(input.projectId, input.relativePath, input.sourceJobId);
+  db.prepare(`
+    INSERT INTO project_artifacts
+      (id, projectId, kind, displayName, relativePath, mimeType, sourceJobId, createdAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(sourceJobId, kind) DO UPDATE SET
+      projectId=excluded.projectId,
+      displayName=excluded.displayName,
+      relativePath=excluded.relativePath,
+      mimeType=excluded.mimeType
+  `).run(input.id, input.projectId, input.kind, input.displayName, input.relativePath, input.mimeType, input.sourceJobId, input.createdAt);
+}
+
 export function registerPublishedArtifacts(db: Database.Database, input: {
   projectId: string;
   sourceJobId: string;
