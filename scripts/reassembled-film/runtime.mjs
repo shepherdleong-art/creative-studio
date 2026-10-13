@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 export const OPENINGS = ['carton-explosion', 'bare-shell-renovation', 'giant-hand-place', 'magic-growth'];
-export const PRICES = { 'qiniuyun/gpt-image-2-medium': .25, 'doubao-seedream-5-0-pro-image': .61, 'kling-2.5': 1.52, 'qiniuyun/kling-3.0': 3, 'doubao-seedance-2-0-260128': 2, 'doubao-seedance-2-5-260628': 7.6 };
+export const PRICES = { 'qiniuyun/gpt-image-2-medium': .25, 'image2-medium': .25, 'doubao-seedream-5-0-pro-image': .61, 'kling-2.5': 1.52, 'qiniuyun/kling-3.0': 3, 'doubao-seedance-2-0-260128': 2, 'doubao-seedance-2-5-260628': 7.6 };
 export const now = () => new Date().toISOString();
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export const canonical = value => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);
