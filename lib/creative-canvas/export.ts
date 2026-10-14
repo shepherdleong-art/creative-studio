@@ -19,6 +19,7 @@ import { CanvasError } from './errors.ts';
 import { canvasAssetAbsolutePath, getCanvasAsset } from './assets.ts';
 import { getCanvasNodeState, requireCanvas } from './repository.ts';
 import { findGraphNode } from './graph.ts';
+import { canvasNamedDirectory, canvasNamedFilename, sanitizeCanvasFilename } from './asset-naming.ts';
 
 export interface CanvasExportManifestItem {
   videoMetadata?: CanvasVideoMetadata;
@@ -76,13 +77,7 @@ const EXTENSION_BY_MIME: Record<string, string> = {
 
 /** 清洗文件名：去掉路径分隔符与控制字符，保留可读的中文与扩展名。 */
 export function sanitizeCanvasExportFilename(input: string): string {
-  const base = input
-    .replace(/[\\/]/g, '_')
-    .replace(/[\u0000-\u001f\u007f]/g, '')
-    .replace(/^\.+/, '')
-    .trim();
-  const safe = base.length > 0 ? base : 'result';
-  return safe.slice(0, 120);
+  return sanitizeCanvasFilename(input, 'result', 120);
 }
 
 /** 解决重名：追加 -2、-3 … 直到唯一，保留扩展名。 */
@@ -206,7 +201,8 @@ export async function createCanvasExport(params: CreateCanvasExportParams): Prom
     VALUES (?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?)
   `).run(exportId, canvasId, JSON.stringify(manifest), createdAt, createdAt);
 
-  const relativeZipPath = path.posix.join('canvas', canvasId, 'exports', `${exportId}.zip`);
+  const relativeZipPath = path.posix.join(canvasNamedDirectory(db, canvasId), '导出打包',
+    canvasNamedFilename(canvas.name, exportId, 'zip', new Date(createdAt)));
   const absoluteZipPath = path.join(storageRoot, relativeZipPath);
   try {
     await fsPromises.mkdir(path.dirname(absoluteZipPath), { recursive: true });

@@ -17,6 +17,7 @@ import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storag
 import { probeVideoMedia, probeDurationSec } from '../ffmpeg.ts';
 import { CanvasError } from './errors.ts';
 import type { CanvasMediaKind } from './types.ts';
+import { canvasNamedDirectory, canvasNamedFilename, canvasResultName } from './asset-naming.ts';
 
 export interface CanvasAssetRecord {
   id: string;
@@ -221,8 +222,11 @@ export async function importCanvasAsset(params: ImportCanvasAssetParams): Promis
 
   const dimensions = mediaKind === 'image' ? await probeImage(data, storageRoot) : { width: null, height: null };
   const assetId = randomUUID();
-  const assetDirectory = canvasAssetDirectory(canvasId);
-  const relativePath = path.posix.join(assetDirectory, `${assetId}.${extension}`);
+  const assetDirectory = path.posix.join(canvasNamedDirectory(db, canvasId), '导入素材');
+  const sourceName = path.win32.basename(path.posix.basename(filename));
+  const createdAt = now().toISOString();
+  const relativePath = path.posix.join(assetDirectory,
+    canvasNamedFilename(path.parse(sourceName).name, assetId, extension, new Date(createdAt)));
   const absoluteDirectory = resolveStoragePath(storageRoot, assetDirectory);
   const absolutePath = resolveStoragePath(storageRoot, relativePath);
   fs.mkdirSync(absoluteDirectory, { recursive: true });
@@ -231,7 +235,6 @@ export async function importCanvasAsset(params: ImportCanvasAssetParams): Promis
   await fsPromises.writeFile(temporaryPath, data, { flag: 'wx' });
   await fsPromises.rename(temporaryPath, absolutePath);
 
-  const createdAt = now().toISOString();
   // 视频／音频尽力探测时长：探测失败不阻塞导入，Seedance 交付前会重新探测，仍未知则拒绝提交。
   const durationSec = mediaKind === 'image' ? null : await probeDurationSafe(absolutePath);
   db.prepare(`
@@ -315,8 +318,10 @@ export async function registerCanvasResultAsset(
     : mimeType === 'video/quicktime' ? 'mov' : 'mp4';
 
   const assetId = randomUUID();
-  const resultDirectory = canvasResultDirectory(canvasId);
-  const relativePath = path.posix.join(resultDirectory, `${assetId}.${extension}`);
+  const resultDirectory = path.posix.join(canvasNamedDirectory(db, canvasId), '生成结果');
+  const createdAt = now().toISOString();
+  const name = canvasResultName(db, canvasId, taskId, mediaKind === 'video' ? '生成视频' : '生成图片');
+  const relativePath = path.posix.join(resultDirectory, canvasNamedFilename(name, assetId, extension, new Date(createdAt)));
   const absoluteDirectory = resolveStoragePath(storageRoot, resultDirectory);
   const absolutePath = resolveStoragePath(storageRoot, relativePath);
   fs.mkdirSync(absoluteDirectory, { recursive: true });
@@ -356,7 +361,7 @@ export async function registerCanvasResultAsset(
         dimensions.width,
         dimensions.height,
         taskId,
-        now().toISOString(),
+        createdAt,
       );
 
       if (videoProbe) db.prepare(`UPDATE creative_canvas_assets SET width = ?, height = ?, durationSec = ?, videoCodec = ?, pixelFormat = ? WHERE id = ?`)

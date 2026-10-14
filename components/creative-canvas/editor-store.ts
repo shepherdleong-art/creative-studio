@@ -252,6 +252,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
       nextNodes.push({
         id,
         type: 'material',
+        style: { width: nodeKindSpec('material').defaultWidth },
         position: findOpenPosition(desired, nextNodes, 'material'),
         data: {
           title: sourceTitle ? `${sourceTitle} · 结果` : '生成结果',
@@ -377,7 +378,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     const id = `n-${crypto.randomUUID()}`;
     // 默认 data 来自注册表（node-kinds.ts 单一事实源）
     const data = nodeKindSpec(kind).defaultData() as CanvasFlowNodeData;
-    const node: CanvasFlowNode = { id, type: kind, position, data };
+    const node: CanvasFlowNode = { id, type: kind, position, data, style: { width: nodeKindSpec(kind).defaultWidth } };
     let nextEdges = edgesRef.current;
     if (options?.connectFrom) {
       const edgeId = `e-${crypto.randomUUID()}`;

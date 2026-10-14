@@ -414,7 +414,7 @@ export const MaterialNode = memo(function MaterialNode({ id, data, selected, pos
               <img
                 src={canvasAssetUrl(assetId)}
                 alt="素材"
-                className="nodrag block w-full cursor-zoom-in rounded-lg"
+                className="nodrag mx-auto block h-auto max-h-80 w-auto max-w-full cursor-zoom-in rounded-lg"
                 data-testid="material-image"
                 onClick={() => setZoomed(true)}
               />

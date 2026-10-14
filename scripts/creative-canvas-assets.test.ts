@@ -13,8 +13,12 @@ import {
   parseCanvasByteRange,
   readCanvasAsset,
   requireCanvasAsset,
+  registerCanvasResultAsset,
 } from '../lib/creative-canvas/assets.ts';
-import { createCanvas, requireCanvas } from '../lib/creative-canvas/repository.ts';
+import { createCanvas, requireCanvas, renameCanvas, saveCanvasGraph } from '../lib/creative-canvas/repository.ts';
+import { canvasAssetDownloadFilename, sanitizeCanvasFilename } from '../lib/creative-canvas/asset-naming.ts';
+import { registerFixtureCanvasCapabilities } from '../lib/creative-canvas/adapters/fixture-capabilities.ts';
+import { startCanvasRun } from '../lib/creative-canvas/runs.ts';
 import {
   CANVAS_DELIVERY_LIMITS,
   createDefaultCanvasDeliverer,
@@ -24,6 +28,8 @@ import {
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-canvas-assets-'));
 const storageRoot = canvasStorageRoot(root);
 const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-canvas-source-'));
+process.env.CREATIVE_STUDIO_CANVAS_EXECUTOR = 'fixture';
+process.env.CREATIVE_STUDIO_CANVAS_TEST_ROOT = '1';
 
 const db = new Database(path.join(root, 'workbench.db'));
 db.pragma('journal_mode = WAL');
@@ -67,7 +73,8 @@ let pngAssetId = '';
   assert.equal(asset.width, 12);
   assert.equal(asset.height, 8);
   assert.equal(asset.ready, true);
-  assert.match(asset.relativePath, new RegExp(`^canvas/${canvas.id}/assets/[0-9a-f-]+\\.png$`));
+  assert.match(asset.relativePath, /^canvas\/沙发场景探索__[\da-f-]+\/导入素材\/沙发_[\d-]+_[\da-f]+\.png$/,
+    '目录保留画布名称，素材保留原文件名');
 
   const absolutePath = path.join(storageRoot, asset.relativePath);
   assert.equal(fs.existsSync(absolutePath), true);
@@ -90,7 +97,7 @@ let pngAssetId = '';
   });
   assert.equal(second.id, asset.id);
   assert.equal(
-    fs.readdirSync(path.join(storageRoot, 'canvas', canvas.id, 'assets')).length,
+    fs.readdirSync(path.dirname(absolutePath)).length,
     1,
   );
 
@@ -103,9 +110,55 @@ let pngAssetId = '';
     mimeType: 'image/png',
     data: await sharp({ create: { width: 4, height: 4, channels: 3, background: '#ff0000' } }).png().toBuffer(),
   });
-  assert.match(traversal.relativePath, new RegExp(`^canvas/${canvas.id}/assets/`));
+  assert.equal(path.dirname(traversal.relativePath), path.dirname(asset.relativePath));
   assert.equal(fs.existsSync(path.join(storageRoot, 'evil.png')), false);
   assert.equal(fs.existsSync(path.join(root, 'evil.png')), false);
+}
+
+// --- 可读产物名称：多变体不覆盖、改名不拆目录、旧文件仍可读取 -------------------
+
+{
+  assert.equal(sanitizeCanvasFilename('床/卧室:*?<>|\\ . '), '床_卧室_______');
+  assert.equal(sanitizeCanvasFilename('CON'), '_CON');
+  assert.equal(sanitizeCanvasFilename('LPT1.png'), '_LPT1.png');
+  assert.equal(sanitizeCanvasFilename('...'), '未命名');
+  registerFixtureCanvasCapabilities();
+  const graph = { schemaVersion: 1 as const, nodes: [{
+    id: 'g1', kind: 'image-generation' as const, position: { x: 0, y: 0 },
+    data: { title: '床边特写', modelKey: 'fixture-image-edit', generationMode: 'text-to-image' as const,
+      prompt: '暖光卧室里的孩子', parameters: {}, references: [], referenceLabelCounter: 0 },
+  }], edges: [] };
+  saveCanvasGraph({ db, canvasId: canvas.id, expectedGraphRevision: 0, graph });
+  const { tasks } = startCanvasRun({ db, request: {
+    canvasId: canvas.id, targetNodeId: 'g1', mode: 'single', variantCount: 2, requestKey: 'names',
+  } });
+  const results = await Promise.all(tasks.map((task) => registerCanvasResultAsset({
+    db, canvasId: canvas.id, storageRoot, taskId: task.id, mediaKind: 'image', mimeType: 'image/png',
+    data: pngBuffer, now: () => new Date('2026-10-14T07:30:00.000Z'),
+  })));
+  for (const result of results) {
+    assert.match(result.relativePath, /^canvas\/沙发场景探索__[\da-f]+\/生成结果\/床边特写_/);
+    assert.deepEqual(readCanvasAsset({ db, storageRoot, assetId: result.id }).body, pngBuffer);
+    assert.equal(canvasAssetDownloadFilename(db, result), path.posix.basename(result.relativePath));
+  }
+  assert.notEqual(results[0].relativePath, results[1].relativePath, '同名、同毫秒、同内容的多变体不能覆盖');
+  renameCanvas(db, { canvasId: canvas.id, name: '改名后的画布' });
+  const imported = await importCanvasAsset({ db, canvasId: canvas.id, storageRoot, filename: '新素材.png',
+    mimeType: 'image/png', data: await sharp({ create: { width: 7, height: 7, channels: 3, background: '#880000' } }).png().toBuffer() });
+  assert.equal(imported.relativePath.split('/')[1], results[0].relativePath.split('/')[1], '画布改名后仍放进已有可读目录');
+  renameCanvas(db, { canvasId: canvas.id, name: '沙发场景探索' });
+
+  graph.nodes[0].data.title = '图片生成';
+  saveCanvasGraph({ db, canvasId: canvas.id, expectedGraphRevision: 1, graph });
+  // 构造历史 UUID 路径：不迁移文件、不修改资产身份也能给出可读下载名称。
+  const legacy = `canvas/${canvas.id}/results/${results[0].id}.png`;
+  const legacyPath = path.join(storageRoot, legacy);
+  fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+  fs.copyFileSync(path.join(storageRoot, results[0].relativePath), legacyPath);
+  db.prepare('UPDATE creative_canvas_assets SET relativePath = ? WHERE id = ?').run(legacy, results[0].id);
+  const legacyAsset = requireCanvasAsset(db, results[0].id);
+  assert.match(canvasAssetDownloadFilename(db, legacyAsset), /^暖光卧室里的孩子_/);
+  assert.deepEqual(readCanvasAsset({ db, storageRoot, assetId: legacyAsset.id }).body, pngBuffer);
 }
 
 // --- 导入校验 ---------------------------------------------------------------

@@ -4,6 +4,7 @@ import { dataRoot } from '@/lib/data-root';
 import { getDb } from '@/lib/db';
 import { canvasExportAbsolutePath, requireCanvasExport } from '@/lib/creative-canvas/export';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
+import { canvasAttachmentHeader, sanitizeCanvasFilename } from '@/lib/creative-canvas/asset-naming';
 
 export const runtime = 'nodejs';
 
@@ -33,12 +34,12 @@ export async function GET(
     }
     const absolutePath = canvasExportAbsolutePath(record, `${dataRoot()}/storage`);
     const body = fs.readFileSync(absolutePath);
-    const safeName = record.manifest.canvasName.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || 'canvas';
+    const safeName = sanitizeCanvasFilename(record.manifest.canvasName, '画布成果', 80);
     return new NextResponse(new Uint8Array(body), {
       headers: {
         'Content-Type': 'application/zip',
         'Content-Length': String(body.byteLength),
-        'Content-Disposition': `attachment; filename="${encodeURIComponent(safeName)}.zip"`,
+        'Content-Disposition': canvasAttachmentHeader(`${safeName}.zip`),
       },
     });
   } catch (error) {

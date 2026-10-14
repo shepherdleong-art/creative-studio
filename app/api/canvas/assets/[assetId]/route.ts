@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 import { dataRoot } from '@/lib/data-root';
 import { getDb } from '@/lib/db';
 import { CanvasError } from '@/lib/creative-canvas/errors';
-import { canvasStorageRoot, readCanvasAsset, readCanvasAssetPreview } from '@/lib/creative-canvas/assets';
+import { canvasStorageRoot, readCanvasAsset, readCanvasAssetPreview, requireCanvasAsset } from '@/lib/creative-canvas/assets';
+import { canvasAssetDownloadFilename, canvasAttachmentHeader } from '@/lib/creative-canvas/asset-naming';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
 
 export const runtime = 'nodejs';
@@ -28,8 +29,7 @@ export async function GET(
     const headers = { ...result.headers };
     if (new URL(request.url).searchParams.get('download') === '1') {
       // 单文件下载：文件名按节点当前结果的真实媒体类型给出，不用缩略图代替成品
-      const extension = result.filePath.slice(result.filePath.lastIndexOf('.'));
-      headers['Content-Disposition'] = `attachment; filename="${encodeURIComponent(assetId)}${extension}"`;
+      headers['Content-Disposition'] = canvasAttachmentHeader(canvasAssetDownloadFilename(getDb(), requireCanvasAsset(getDb(), assetId)));
     }
     return new NextResponse(new Uint8Array(result.body), {
       status: result.status,

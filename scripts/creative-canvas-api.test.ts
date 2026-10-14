@@ -298,6 +298,13 @@ const assetBytes = await sharp({ create: { width: 16, height: 16, channels: 3, b
   assert.equal(full.headers.get('accept-ranges'), 'bytes');
   assert.deepEqual(Buffer.from(await full.arrayBuffer()), assetBytes);
 
+  const download = await canvasAssetItemRoute.GET(
+    new Request(`http://127.0.0.1/api/canvas/assets/${assetId}?download=1`), params({ assetId }),
+  );
+  assert.equal(download.status, 200);
+  assert.match(decodeURIComponent(download.headers.get('content-disposition') ?? ''), /filename\*=UTF-8''沙发_/);
+  assert.deepEqual(Buffer.from(await download.arrayBuffer()), assetBytes);
+
   const ranged = await canvasAssetItemRoute.GET(
     new Request(`http://127.0.0.1/api/canvas/assets/${assetId}`, { headers: { range: 'bytes=0-7' } }),
     params({ assetId }),

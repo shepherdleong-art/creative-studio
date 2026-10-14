@@ -3,6 +3,7 @@
  * 创作画布浏览器验收（验收清单 T3）。
  *
  * 用法：
+ *   node scripts/creative-canvas.playwright.test.mjs --suite assets
  *   node scripts/creative-canvas.playwright.test.mjs --suite editor
  *   node scripts/creative-canvas.playwright.test.mjs --suite execution
  *   node scripts/creative-canvas.playwright.test.mjs --suite all
@@ -35,8 +36,8 @@ import { runFfmpeg } from '../lib/ffmpeg.ts';
 import { directSeedanceCapability } from '../lib/creative-canvas/adapters/seedance-capabilities.ts';
 import { SEEDANCE_20, SEEDANCE_25 } from '../lib/video-providers/seedance-contract.ts';
 
-const SUITES = ['interaction', 'editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance', 'all'];
-const IMPLEMENTED_SUITES = ['interaction', 'editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance'];
+const SUITES = ['assets', 'interaction', 'editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance', 'all'];
+const IMPLEMENTED_SUITES = ['assets', 'interaction', 'editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance'];
 
 const suiteArgIndex = process.argv.indexOf('--suite');
 const suite = suiteArgIndex >= 0 ? process.argv[suiteArgIndex + 1] : 'all';
@@ -339,6 +340,58 @@ async function addMaterialWithImage(page, fixturePath) {
 
 async function selectModel(page, nodeId, capabilityKey) {
   await page.selectOption(`.react-flow__node[data-id="${nodeId}"] [data-testid="model-select"]`, capabilityKey);
+}
+
+async function assetsSuite(page) {
+  const png = path.join(fixtureDir, '大尺寸产品图.png');
+  const tall = path.join(fixtureDir, '超长详情图.png');
+  fs.writeFileSync(png, await sharp({ create: { width: 4096, height: 3072, channels: 3, background: '#8a6f4e' } }).png().toBuffer());
+  fs.writeFileSync(tall, await sharp({ create: { width: 600, height: 9000, channels: 3, background: '#4e6f8a' } }).png().toBuffer());
+  await createCanvas(page, '素材尺寸与下载命名');
+  await page.click('[data-testid="add-material"]');
+  await page.waitForSelector('.react-flow__node:has([data-node-kind="material"])');
+  const id = await soleNodeId(page, 'material');
+  const viewport = await readViewportTransform(page);
+  const material = page.locator(`.react-flow__node[data-id="${id}"]`);
+  await material.locator('[data-testid="material-file-input"]').setInputFiles(png);
+  await page.waitForFunction((id) => document.querySelector(`.react-flow__node[data-id="${id}"] img`)?.naturalWidth === 4096, id);
+  assert.equal(await material.evaluate((node) => node.offsetWidth), 200, '刚导入的 4K 图片必须使用默认卡片宽度，无需刷新或手动缩放');
+  assertViewportClose(await readViewportTransform(page), viewport, '导入不改变用户视口');
+  const downloading = page.waitForEvent('download');
+  await material.locator('[data-testid="download-material"]').evaluate((a) => a.click());
+  const download = await downloading;
+  assert.ok(download.suggestedFilename().startsWith('大尺寸产品图_'), download.suggestedFilename());
+  const downloaded = await download.path();
+  assert.deepEqual(fs.readFileSync(downloaded), fs.readFileSync(png), '下载保留完整原图');
+  await material.locator('[data-testid="material-file-input"]').setInputFiles(tall);
+  await page.waitForFunction((id) => document.querySelector(`.react-flow__node[data-id="${id}"] img`)?.naturalHeight === 9000, id);
+  const metrics = await material.evaluate((node) => {
+    const img = node.querySelector('img');
+    return { width: node.offsetWidth, height: img.clientHeight, ratio: img.clientWidth / img.clientHeight };
+  });
+  assert.equal(metrics.width, 200);
+  assert.ok(metrics.height <= 320, `长图预览不能撑满画布：${JSON.stringify(metrics)}`);
+  assert.ok(Math.abs(metrics.ratio - 600 / 9000) < 0.01, '长图完整等比缩小');
+  await waitSaved(page);
+  await page.reload();
+  await material.locator('img').waitFor();
+  assert.equal(await material.evaluate((node) => node.offsetWidth), 200, '刷新前后宽度一致');
+  const generation = await addNode(page, 'image-generation');
+  await selectModel(page, generation, 'fixture-image-edit');
+  await page.selectOption(`.react-flow__node[data-id="${generation}"] [data-testid="mode-select"]`, 'text-to-image');
+  await fillPrompt(page, generation, '暖光卧室里的孩子');
+  await page.locator(`.react-flow__node[data-id="${generation}"] [data-testid="run-node"]`)
+    .evaluate((button) => button.click());
+  await waitForResult(page, generation);
+  const resultAssetId = await nodeAttribute(page, generation, 'data-canvas-result');
+  const resultNode = page.locator(`.react-flow__node:has(img[src*="${resultAssetId}"])`);
+  assert.equal(await resultNode.evaluate((node) => node.offsetWidth), 200, '自动生成的结果节点也不能按图片原尺寸撑开');
+  const resultDownload = page.waitForEvent('download');
+  await resultNode.locator('[data-testid="download-material"]').evaluate((a) => a.click());
+  assert.ok((await resultDownload).suggestedFilename().startsWith('暖光卧室里的孩子_'));
+  const screenshot = path.join(repoRoot, 'outputs', 'canvas-validation', 'assets.png');
+  await page.screenshot({ path: screenshot });
+  return { screenshot, metrics };
 }
 
 async function fillPrompt(page, nodeId, text) {
@@ -1933,6 +1986,7 @@ try {
   const evidence = {};
   for (const name of requested) {
     runPosts.length = 0;
+    if (name === 'assets') evidence.assets = await assetsSuite(page);
     if (name === 'interaction') evidence.interaction = await interactionSuite(page);
     if (name === 'seedance') evidence.seedance = await seedanceSuite(page);
     if (name === 'editor') evidence.editor = await editorSuite(page);
