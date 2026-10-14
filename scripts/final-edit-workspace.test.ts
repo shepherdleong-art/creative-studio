@@ -109,7 +109,11 @@ for (const [id, setId, shotId] of [['v1', 'set-a', 's1'], ['v2', 'set-a', 's2'],
 // C5（D5）：旧任务（displayName NULL）补来源图身份，派生名走真实链路。
 db.prepare(`UPDATE video_jobs SET sourceImageId = 'img-' || shotId WHERE id IN ('v1', 'v2')`).run();
 
+db.exec('ALTER TABLE video_jobs ADD COLUMN openingCode TEXT');
+db.prepare("UPDATE video_jobs SET openingCode='K2' WHERE id IN ('v1', 'v2')").run();
+
 const script = {
+  templateRewrite: { scriptCode: 'J1' },
   version: 2,
   title: '温柔包裹，慢享生活',
   coverTitleParts: { primary: '温柔包裹', secondary: '慢享生活' },
@@ -679,14 +683,15 @@ db.prepare(`UPDATE video_jobs SET rejectedAt=NULL, rejectReason=NULL WHERE id='v
 assert.equal(renderJob.target.taskName, '沙发任务');
 assert.equal(renderJob.target.productCode, 'SF-A1');
 assert.equal(renderJob.target.taskDate, '20260724');
-assert.equal(renderJob.target.videoFilename, '成片-SF-A1-20260724.mp4');
+assert.equal(renderJob.target.videoFilename, '成片-SF-A1-20260724-J1K2A.mp4');
 assert.equal(renderJob.target.displayDirectory, '工作台/沙发任务/成片/');
 const renderSnapshot = JSON.parse((db.prepare(`SELECT inputSnapshotJson FROM final_edit_jobs WHERE id=?`).get(renderJob.id) as { inputSnapshotJson: string }).inputSnapshotJson) as {
-  exportIdentity: { productCode: string; taskDate: string };
+  exportIdentity: { productCode: string; taskDate: string; productionCodes: { scriptCode: string; openingCode: string; packagingCode: string } };
   exportTarget: ReservedProjectExportTarget;
 };
 assert.equal(renderSnapshot.exportIdentity.productCode, 'SF-A1', '不可把 projects.model 当作型号写入快照');
 assert.equal(renderSnapshot.exportIdentity.taskDate, '20260724');
+assert.deepEqual(renderSnapshot.exportIdentity.productionCodes, { scriptCode: 'J1', openingCode: 'K2', packagingCode: 'A' });
 releaseReservedExportTarget(storageRoot, renderSnapshot.exportTarget);
 db.prepare(`UPDATE projects SET productCode='' WHERE id='p1'`).run();
 await assert.rejects(

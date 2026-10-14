@@ -108,7 +108,7 @@ async function run(): Promise<void> {
 
   const symlinkDir = path.join(storageRoot, 'projects', 'project-symlink', '成片');
   fs.mkdirSync(path.dirname(symlinkDir), { recursive: true });
-  fs.symlinkSync(root, symlinkDir, 'dir');
+  fs.symlinkSync(root, symlinkDir, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(
     Promise.resolve().then(() => reserveBatchExportTarget({
       storageRoot, projectId: 'project-symlink', batchId: 'batch-1', productCode: 'safe',

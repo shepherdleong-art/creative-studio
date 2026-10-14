@@ -40,6 +40,7 @@ export interface ViralTemplateEntryRecord {
   id: string;
   revisionId: string;
   sourceTemplateId: string;
+  scriptCode?: string;
   category: string;
   subCategory: string;
   name: string;
@@ -104,6 +105,7 @@ export async function importViralTemplateLibrary(
   const workbook = await loadWorkbook(buffer);
   const sheets = workbook.worksheets.map((worksheet) => sheetToWorkbookSheet(worksheet));
   const parsed = parseViralTemplateWorkbook(sheets);
+  if (!parsed.report.canActivate) throw new ScriptStudioError('invalid_input', parsed.report.issues.map(issue => issue.message).join('；') || '没有可导入的模板');
   const library = getOrCreateViralTemplateLibrary(db, now);
   const sourceSha256 = createHash('sha256').update(buffer).digest('hex');
 
@@ -215,13 +217,13 @@ export function listViralTemplateEntries(
     params.push(options.category.trim(), options.category.trim());
   }
   if (options.q?.trim()) {
-    conditions.push('(name LIKE ? OR title LIKE ? OR refText LIKE ? OR category LIKE ? OR subCategory LIKE ?)');
+    conditions.push(`(name LIKE ? OR title LIKE ? OR refText LIKE ? OR category LIKE ? OR subCategory LIKE ? OR json_extract(rawColumnsJson, '$.scriptCode') LIKE ?)`);
     const like = `%${options.q.trim()}%`;
-    params.push(like, like, like, like, like);
+    params.push(like, like, like, like, like, like);
   }
   const limit = Math.max(1, Math.min(500, Math.floor(options.limit ?? 200) || 200));
   return db.prepare(`
-    SELECT * FROM script_studio_viral_tpl_entries
+    SELECT *, COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '') AS scriptCode FROM script_studio_viral_tpl_entries
     WHERE ${conditions.join(' AND ')}
     ORDER BY category, subCategory, sourceRow LIMIT ?
   `).all(...params, limit) as ViralTemplateEntryRecord[];
@@ -231,7 +233,7 @@ export function getViralTemplateEntriesByIds(db: Database.Database, entryIds: st
   if (!entryIds.length) return [];
   const placeholders = entryIds.map(() => '?').join(', ');
   const rows = db.prepare(`
-    SELECT * FROM script_studio_viral_tpl_entries WHERE id IN (${placeholders})
+    SELECT *, COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '') AS scriptCode FROM script_studio_viral_tpl_entries WHERE id IN (${placeholders})
   `).all(...entryIds) as ViralTemplateEntryRecord[];
   const byId = new Map(rows.map((row) => [row.id, row]));
   // 按调用方给定的选择顺序返回（选择顺序是任务身份的一部分）。
@@ -245,7 +247,7 @@ export function updateViralTemplateEntryStatus(
   status: ViralTemplateStatus,
   reason: string,
 ): ViralTemplateEntryRecord {
-  const entry = db.prepare(`SELECT * FROM script_studio_viral_tpl_entries WHERE id = ?`).get(entryId) as ViralTemplateEntryRecord | undefined;
+  const entry = db.prepare(`SELECT *, COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '') AS scriptCode FROM script_studio_viral_tpl_entries WHERE id = ?`).get(entryId) as ViralTemplateEntryRecord | undefined;
   if (!entry) throw new ScriptStudioError('not_found', '模板条目不存在');
   if (!['usable', 'unusable', 'review'].includes(status)) {
     throw new ScriptStudioError('invalid_input', '无效的模板状态');
@@ -253,7 +255,7 @@ export function updateViralTemplateEntryStatus(
   db.prepare(`
     UPDATE script_studio_viral_tpl_entries SET status = ?, statusReason = ?, statusUpdatedBy = 'manual' WHERE id = ?
   `).run(status, reason.trim().slice(0, 200), entryId);
-  return db.prepare(`SELECT * FROM script_studio_viral_tpl_entries WHERE id = ?`).get(entryId) as ViralTemplateEntryRecord;
+  return db.prepare(`SELECT *, COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '') AS scriptCode FROM script_studio_viral_tpl_entries WHERE id = ?`).get(entryId) as ViralTemplateEntryRecord;
 }
 
 // ---------------------------------------------------------------------------

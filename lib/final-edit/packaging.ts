@@ -13,7 +13,9 @@ import { writeLog } from '../logger.ts';
 import { FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
 import { OUTPUT_PRESETS } from '../media-core/cover-types.ts';
 import { FinalEditError } from './errors.ts';
-import { completeExportReservation, publishReservedSingleFile, type ReservedProjectExportTarget } from './export-naming.ts';
+import { completeExportReservation, publishReservedSingleFile, reserveProjectExportTarget, releaseReservedExportTarget, type ReservedProjectExportTarget } from './export-naming.ts';
+import { packagingCode } from '../media-core/production-codes.ts';
+import type { ExportIdentity } from './types.ts';
 import { ensurePackagingPointCues, type PointCue } from './packaging-cues.ts';
 import { extractAccentColors } from './packaging-color.ts';
 import { safeFontFilename } from './packaging-font.ts';
@@ -84,6 +86,7 @@ interface RenderJobRecord {
   snapshot: FinalEditRenderSnapshot;
   output: {
     videoRelativePath: string;
+    coverRelativePath?: string;
     publishedVideoRelativePath?: string;
     videoFilename?: string;
     displayDirectory?: string;
@@ -142,20 +145,28 @@ export async function publishPackagedResult(input: {
   exportTarget?: ReservedProjectExportTarget;
   renderVideoRelativePath: string;
   displayDirectory?: string;
+  exportIdentity?: ExportIdentity;
 }): Promise<PackagedPublishTarget> {
-  if (input.exportTarget) {
-    await publishReservedSingleFile({
-      storageRoot: input.storageRoot,
-      sourceRelativePath: input.internalVideoRelativePath,
-      targetRelativePath: input.exportTarget.videoRelativePath,
-      reservationRelativePath: input.exportTarget.reservationRelativePath,
-      invalidCode: 'packaging_output_invalid',
-    });
-    completeExportReservation(input.storageRoot, input.exportTarget.reservationRelativePath);
+  const target = input.exportTarget || (input.exportIdentity
+    ? reserveProjectExportTarget(input.storageRoot, input.exportIdentity) : undefined);
+  if (target) {
+    try {
+      await publishReservedSingleFile({
+        storageRoot: input.storageRoot,
+        sourceRelativePath: input.internalVideoRelativePath,
+        targetRelativePath: target.videoRelativePath,
+        reservationRelativePath: target.reservationRelativePath,
+        invalidCode: 'packaging_output_invalid',
+      });
+      completeExportReservation(input.storageRoot, target.reservationRelativePath);
+    } catch (error) {
+      if (!input.exportTarget) releaseReservedExportTarget(input.storageRoot, target);
+      throw error;
+    }
     return {
-      videoRelativePath: input.exportTarget.videoRelativePath,
-      videoFilename: input.exportTarget.videoFilename,
-      displayDirectory: input.exportTarget.displayDirectory,
+      videoRelativePath: target.videoRelativePath,
+      videoFilename: target.videoFilename,
+      displayDirectory: target.displayDirectory,
     };
   }
   return publishPackagedVideo(input);
@@ -358,6 +369,10 @@ export async function executePackagingJob(input: {
     exportTarget: input.snapshot.exportTarget,
     renderVideoRelativePath: renderOutput.publishedVideoRelativePath || renderOutput.videoRelativePath,
     displayDirectory: renderOutput.displayDirectory,
+    exportIdentity: renderSnapshot.exportIdentity ? {
+      ...renderSnapshot.exportIdentity,
+      productionCodes: { ...renderSnapshot.exportIdentity.productionCodes, packagingCode: packagingCode({ enabled: true, template: templateName }) },
+    } : undefined,
   });
   if (packagedCoverTmp && input.snapshot.exportTarget) {
     try {

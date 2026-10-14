@@ -1,3 +1,5 @@
+import { readBatchProductionCodes } from './production-codes.ts';
+import type { ProductionCodes } from '../media-core/production-codes.ts';
 import { audioCutFilter, parseAudioEdits, isAudioClipsMoved, normalizeAudioClip, type AudioEdits, type AudioClip } from '../media-core/audio-edit.ts';
 import type { CoverFraming } from '../media-core/cover-types.ts';
 import crypto from 'node:crypto';
@@ -200,6 +202,7 @@ export interface BatchRenderInput {
 }
 
 export interface BatchRenderResult {
+  productionCodes?: ProductionCodes;
   projectId: string;
   batchId: string;
   batchVersionId: string;
@@ -864,6 +867,10 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
   report({ phase: 'preflight', completed: null, total: null, percent: null, description: '重新核验冻结谱系、原片与 LUT' });
   assertSignal(signal);
   const snapshot = await loadSnapshot(input);
+  const productionCodes = readBatchProductionCodes(input.db, {
+    projectId: snapshot.projectId, planId: snapshot.planId, outputVersionId: snapshot.outputVersionId,
+    firstAssetId: snapshot.clips[0].assetId, packaging: parsePackagingConfig(snapshot.arrangement.packaging),
+  });
   const normalizedPreset = snapshot.clips[0].preset;
   const presetSize = BATCH_OUTPUT_PRESETS[normalizedPreset];
   const outputSize = input.outputSize ?? presetSize;
@@ -1107,6 +1114,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
       outputVersionNumber: snapshot.outputVersionNumber, editRevision: snapshot.editRevision, coverTimeUs: snapshot.coverTimeUs,
       preset: normalizedPreset,
       width: outputSize.width, height: outputSize.height, fps: 24, durationUs: probe.durationUs,
+      productionCodes,
       audioMode, productionReady: audioMode === 'narration',
       subtitleCues,
       videoAbsolutePath: videoFinal, coverAbsolutePath: coverFinal,

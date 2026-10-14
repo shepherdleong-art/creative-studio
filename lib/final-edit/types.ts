@@ -1,3 +1,4 @@
+import type { ProductionCodes } from '../media-core/production-codes.ts';
 import type { MatchDiagnostics } from './audio-first-matcher.ts';
 import type { FinalEditDurationGateStateV1 } from './duration-gate.ts';
 import type { FinalEditPackagingConfig } from './packaging-vars.ts';
@@ -104,6 +105,7 @@ export interface FinalEditExternalAssetView {
 }
 
 export interface FinalEditVariantView {
+  productionCodes?: ProductionCodes;
   id: string;
   indexNum: number;
   outputPreset: OutputPresetId;
@@ -135,6 +137,7 @@ export interface FinalEditGroupView {
   phase: string;
   revision: number;
   script: {
+    scriptCode?: string;
     sourceDraftId: string | null;
     title: string;
     importedNarrationText: string;
@@ -202,6 +205,7 @@ export interface RenderJobRef extends JobRef {
 
 export interface MixcutContextResponse {
   project: {
+    exportBaseName?: string;
     id: string;
     name: string;
     productName: string;
@@ -225,6 +229,7 @@ export interface MixcutContextResponse {
   }>;
   currentShotSetId: string | null;
   drafts: Array<{
+    scriptCode?: string;
     id: string;
     version: 2 | 3;
     shotSetId: string;
@@ -257,6 +262,7 @@ export interface MixcutContextResponse {
 }
 
 export interface ExportIdentity {
+  productionCodes?: ProductionCodes;
   projectId: string;
   taskName: string;
   /**

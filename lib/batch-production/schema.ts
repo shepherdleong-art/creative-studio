@@ -1244,6 +1244,13 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
       ALTER TABLE batch_scripts ADD COLUMN catalogDeleted INTEGER NOT NULL DEFAULT 0 CHECK(catalogDeleted IN (0, 1));
     `,
   },
+  {
+    version: 27,
+    sql: `
+      ALTER TABLE batch_scripts ADD COLUMN scriptCode TEXT NOT NULL DEFAULT '';
+      ALTER TABLE batch_script_snapshots ADD COLUMN scriptCode TEXT NOT NULL DEFAULT '';
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =

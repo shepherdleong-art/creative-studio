@@ -1,3 +1,4 @@
+import { normalizeProductionCode } from './media-core/production-codes.ts';
 /**
  * 自定义运镜模板的输入校验。
  *
@@ -14,6 +15,7 @@ const HEAD_FRAME_HINT = '以当前图片为首帧';
 const NO_TEXT_HINT = '不要添加文字';
 
 export interface VideoPromptTemplateInput {
+  openingCode?: string;
   name: string;
   description: string;
   prompt: string;
@@ -39,6 +41,9 @@ export function normalizeVideoPromptTemplateInput(raw: unknown): NormalizeResult
   if (!raw || typeof raw !== 'object') return { ok: false, error: '请求内容不是有效对象' };
   const body = raw as Record<string, unknown>;
 
+  if (body.openingCode !== undefined && typeof body.openingCode !== 'string') return { ok: false, error: '开头编号必须是文本' };
+  const openingCode = normalizeProductionCode(body.openingCode, 'K');
+  if (readString(body, 'openingCode') && !openingCode) return { ok: false, error: '开头编号请填写 K1、K2 等（最多 6 位数字）' };
   const name = readString(body, 'name');
   const description = readString(body, 'description');
   const prompt = readString(body, 'prompt');
@@ -67,6 +72,7 @@ export function normalizeVideoPromptTemplateInput(raw: unknown): NormalizeResult
     ok: true,
     warnings,
     value: {
+      ...(body.openingCode !== undefined ? { openingCode } : {}),
       name,
       description,
       prompt,

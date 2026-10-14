@@ -137,4 +137,8 @@ export const CORE_DB_MIGRATIONS = [
     favorite INTEGER NOT NULL CHECK(favorite IN (0, 1)),
     updatedAt INTEGER NOT NULL
   )`,
+  // 开头提示词编号；NULL 表示升级前的视频，空串表示生成时明确未使用开头编号。
+  `ALTER TABLE video_prompt_templates ADD COLUMN openingCode TEXT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_video_prompt_opening_code ON video_prompt_templates(openingCode) WHERE openingCode IS NOT NULL AND openingCode <> ''`,
+  `ALTER TABLE video_jobs ADD COLUMN openingCode TEXT`,
 ];

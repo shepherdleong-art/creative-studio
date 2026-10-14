@@ -191,6 +191,7 @@ try {
     '保存为项目文案后外部文案进入项目脚本列表',
   );
 
+  db.prepare('UPDATE batch_scripts SET scriptCode=? WHERE id=?').run('J1', scriptId);
   const snapshotId = snapshotScriptIntoBatch(db, version1, {
     scriptId,
     copyCount: 2,
@@ -200,6 +201,7 @@ try {
   const snapshot = getScriptSnapshot(db, version1, snapshotId);
   assert.equal(snapshot?.bodyText, '第二版正文', '快照必须记录开始生产时的正文');
   assert.equal(snapshot?.title, '口播第二版');
+  assert.equal(snapshot?.scriptCode, 'J1');
   assert.equal(snapshot?.sourceVersion, 'v2');
   assert.equal(snapshot?.copyCount, 2, '快照必须记录生成份数');
 
@@ -210,9 +212,11 @@ try {
     sourceVersion: 'v3',
     now: () => new Date('2026-08-01T11:00:00.000Z'),
   });
+  db.prepare('UPDATE batch_scripts SET scriptCode=? WHERE id=?').run('J9', scriptId);
   const snapshotAfterChange = getScriptSnapshot(db, version1, snapshotId);
   assert.equal(snapshotAfterChange?.bodyText, '第二版正文', '上游脚本修改不得静默改写已开始的批次快照');
   assert.equal(snapshotAfterChange?.title, '口播第二版');
+  assert.equal(snapshotAfterChange?.scriptCode, 'J1', '模板编号修改不得改变批次快照');
   assert.equal(snapshotAfterChange?.sourceVersion, 'v2');
 
   // 同一脚本不能在同一批次版本重复快照

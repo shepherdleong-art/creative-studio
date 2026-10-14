@@ -1,3 +1,4 @@
+import { withProductionCodes } from '../media-core/production-codes.ts';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -45,20 +46,21 @@ function storagePath(storageRoot: string, relativePath: string): string {
 
 export function buildExportBaseName(identity: ExportIdentity): string {
   // 生产身份冻结后直接使用其基础名（无「成片-」前缀）；旧任务快照缺省时回退旧命名。
-  if (identity.baseName) return identity.baseName;
+  if (identity.baseName) return withProductionCodes(identity.baseName, identity.productionCodes);
   if (!identity.productCode.trim()) throw new FinalEditError('product_code_required', '请先填写商品编码');
   const baseName = previewExportBaseName(identity.productCode, identity.taskDate);
   if (!baseName) {
     if (!/^\d{8}$/.test(identity.taskDate)) throw new FinalEditError('invalid_task_date', '任务日期格式无效');
     throw new FinalEditError('product_code_required', '请先填写商品编码');
   }
-  return baseName;
+  return withProductionCodes(baseName, identity.productionCodes);
 }
 
 /** 生产身份基础名统一入口：优先冻结身份 baseName，否则回退旧 `成片-<型号>-<YYYYMMDD>`。 */
 export function previewExportIdentityBaseName(identity: ExportIdentity): string | null {
-  if (identity.baseName) return identity.baseName;
-  return previewExportBaseName(identity.productCode, identity.taskDate);
+  if (identity.baseName) return withProductionCodes(identity.baseName, identity.productionCodes);
+  const base = previewExportBaseName(identity.productCode, identity.taskDate);
+  return base ? withProductionCodes(base, identity.productionCodes) : null;
 }
 
 export function reserveExportPath(storageRoot: string, identity: ExportIdentity, extension: string): ReservedPath {

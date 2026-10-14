@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { resolveScriptCode } from '../media-core/production-code-reader.ts';
 import { ScriptStudioError } from './errors.ts';
 import { getScriptStudioLimits } from './limits.ts';
 import type { ScriptTitleSummary } from './title-policy.ts';
@@ -28,7 +29,13 @@ export interface ProjectScriptRevisionInput {
 }
 
 export interface ProjectScriptWithRevision extends ProjectScriptRecord {
+  scriptCode?: string;
   currentRevision: ProjectScriptRevisionRecord | null;
+}
+
+function revisionScriptCode(db: Database.Database, revision: ProjectScriptRevisionRecord | null): string {
+  try { return resolveScriptCode(db, JSON.parse(revision?.contentJson || '{}')); }
+  catch { return ''; }
 }
 
 function nowIso(now?: () => Date): string {
@@ -173,7 +180,7 @@ export function getProjectScript(
           SELECT * FROM project_script_revisions WHERE id = ? AND scriptId = ?
         `).get(script.currentRevisionId, scriptId) as ProjectScriptRevisionRecord | undefined ?? null
       : null;
-  return { ...script, currentRevision };
+  return { ...script, scriptCode: revisionScriptCode(db, currentRevision), currentRevision };
 }
 
 export function getProjectScriptRevision(
@@ -215,7 +222,7 @@ export function listProjectScripts(
           SELECT * FROM project_script_revisions WHERE id = ? AND scriptId = ?
         `).get(script.currentRevisionId, script.id) as ProjectScriptRevisionRecord | undefined ?? null
       : null;
-    return { ...script, currentRevision };
+    return { ...script, scriptCode: revisionScriptCode(db, currentRevision), currentRevision };
   });
   return {
     scripts,

@@ -1,3 +1,4 @@
+import { scriptCodeFromContent } from '../media-core/production-codes.ts';
 import { normalizeAutomaticSubtitleText } from '../subtitle-display.ts';
 
 export type MixcutScriptSyncState = 'synced' | 'modified';
@@ -16,6 +17,8 @@ export interface MixcutSourceSegment {
 }
 
 export interface MixcutSourceScript {
+  scriptCode?: string;
+  templateRewrite?: { scriptCode?: string };
   version: number;
   title?: string;
   coverTitleParts?: { primary: string; secondary: string; source?: 'model' | 'system_split' | 'system_composed' };
@@ -36,6 +39,7 @@ export interface MixcutTaskScriptSegment {
 }
 
 export interface MixcutTaskScriptSnapshot {
+  scriptCode?: string;
   version: 2;
   source: 'module3' | 'manual';
   sourceDraftId: string | null;
@@ -270,6 +274,7 @@ export function buildMixcutTaskScriptSnapshot(input: {
     sourceScriptRevisionNumber: source ? (input.sourceScriptRevisionNumber ?? null) : null,
     sourceScriptVersion: source?.version || null,
     title: source?.title || '手工混剪文案',
+    scriptCode: scriptCodeFromContent(source),
     ...(source?.coverTitleParts ? { coverTitleParts: source.coverTitleParts } : {}),
     targetDurationSec: Math.max(1, Number(source?.targetDurationSec || 15)),
     shotSetId: input.shotSetId,
@@ -308,6 +313,7 @@ export function buildMixcutEditingScriptSnapshot(input: {
     sourceScriptRevisionNumber: source ? (input.sourceScriptRevisionNumber ?? null) : null,
     sourceScriptVersion: source?.version || null,
     title: source?.title || '手工混剪文案',
+    scriptCode: scriptCodeFromContent(source),
     ...(source?.coverTitleParts ? { coverTitleParts: source.coverTitleParts } : {}),
     targetDurationSec: Math.max(1, Number(source?.targetDurationSec || 15)),
     shotSetId: input.shotSetId,

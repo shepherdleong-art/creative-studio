@@ -102,7 +102,7 @@ export default function BatchStepExport(props: BatchStepExportProps) {
         {productCodeMissing && (
           <div className="rounded-xl bg-warn/10 px-4 py-3 text-xs leading-5 text-warn" role="alert">
             <strong className="font-medium">还差一步：本项目还没有产品编码。</strong>
-            <span className="ml-1">正式导出的文件名是「产品编码-日期-脚本-plan序号-版本」，缺了它服务端会拒绝整批导出。请回到项目信息补上产品编码后再来导出。</span>
+            <span className="ml-1">导出文件名会包含产品编码及脚本、开头、包装编号。请回到项目信息补上产品编码后再来导出。</span>
           </div>
         )}
         {awaitingReview > 0 && (

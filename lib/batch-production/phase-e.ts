@@ -705,6 +705,7 @@ export async function publishSelectedBatchOutputs(
         productCode: frozenBatchIdentity?.productCode || project.productCode || '',
         taskDate: frozenBatchIdentity?.taskDate || taskDate || options.now?.() || new Date(),
         planSeq: row.seq,
+        productionCodes: render.productionCodes,
         outputVersion: row.versionNumber,
         exportDirName,
         ...(frozenIdentity ? { baseName: frozenIdentity.baseName } : {}),

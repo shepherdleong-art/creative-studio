@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { BUILTIN_OPENING_CODES } from '@/lib/media-core/production-codes';
 import { Icon } from '@/components/ui/Icon';
 import {
   TEMPLATE_DESCRIPTION_MAX,
@@ -9,6 +10,7 @@ import {
 } from '@/lib/video-prompt-template';
 
 interface MotionTemplate {
+  openingCode?: string | null;
   id: string;
   name: string;
   description: string;
@@ -18,13 +20,14 @@ interface MotionTemplate {
 }
 
 interface FormState {
+  openingCode: string;
   name: string;
   description: string;
   prompt: string;
   inRandomPool: boolean;
 }
 
-const emptyForm: FormState = { name: '', description: '', prompt: '', inRandomPool: true };
+const emptyForm: FormState = { openingCode: '', name: '', description: '', prompt: '', inRandomPool: true };
 
 async function fetchTemplates(): Promise<MotionTemplate[]> {
   const res = await fetch('/api/video-prompt-templates');
@@ -87,6 +90,7 @@ export default function MotionTemplateSettings() {
     setEditingId(null);
     setCreating(true);
     setForm({
+      openingCode: '',
       name: `${template.name} 副本`.slice(0, TEMPLATE_NAME_MAX),
       description: template.description,
       prompt: template.prompt,
@@ -100,6 +104,7 @@ export default function MotionTemplateSettings() {
     setCreating(false);
     setEditingId(template.id);
     setForm({
+      openingCode: template.openingCode || '',
       name: template.name,
       description: template.description,
       prompt: template.prompt,
@@ -152,6 +157,19 @@ export default function MotionTemplateSettings() {
     }
   };
 
+  const saveOpeningCode = async (template: MotionTemplate, value: string) => {
+    if (value.trim().toUpperCase() === (template.openingCode || '')) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/video-prompt-templates/${template.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ openingCode: value }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || '保存编号失败'); return; }
+      await reload();
+    } catch (err) { setError(String(err)); }
+  };
+
   const remove = async (template: MotionTemplate) => {
     if (!window.confirm(`删除模板「${template.name}」？`)) return;
     setError(null);
@@ -175,6 +193,10 @@ export default function MotionTemplateSettings() {
     <div className="card border-accent/30 bg-accent/[0.04] p-5">
       <h3 className="mb-4 font-semibold">{editingId ? '编辑模板' : '新建模板'}</h3>
       <div className="space-y-3">
+        <div>
+          <label className="label" htmlFor="opening-template-code">开头编号（仅开头提示词填写）</label>
+          <input id="opening-template-code" className="input-field" value={form.openingCode} maxLength={7} placeholder="例如 K5，普通运镜留空" onChange={(e) => setForm({ ...form, openingCode: e.target.value })} />
+        </div>
         <div>
           <label className="label">名称</label>
           <input
@@ -237,8 +259,12 @@ export default function MotionTemplateSettings() {
       <div key={template.id} className="card p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-ink">{template.name}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-ink">{template.openingCode ? `${template.openingCode} · ` : ''}{template.name}</span>
+              {(BUILTIN_OPENING_CODES[template.id] || template.isBuiltin !== 1) && <label className="flex items-center gap-2 text-xs text-ink-secondary">
+                <span className="whitespace-nowrap">开头编号</span>
+                <input key={`${template.id}:${template.openingCode || ''}`} aria-label={`${template.name}开头编号`} className="input-field w-24" defaultValue={template.openingCode || ''} maxLength={7} placeholder="K1" onBlur={(e) => void saveOpeningCode(template, e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+              </label>}
               <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
                 builtin ? 'bg-ink/[0.06] text-ink-tertiary' : 'bg-accent-tint/20 text-accent'
               }`}>
@@ -293,7 +319,7 @@ export default function MotionTemplateSettings() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-ink-secondary">
           共 {templates.length} 条，其中 <strong className="text-ink">{pooled}</strong> 条参与「一键随机填充」。
-          内置模板不可修改，需要改先复制一份。
+          内置提示词需复制后修改；开头编号可直接编辑，离开输入框时保存。
         </p>
         <button onClick={beginCreate} className="btn-primary btn-sm shrink-0">
           <Icon name="plus" size={14} /> 新建模板

@@ -94,7 +94,7 @@ export function BatchScriptSelectionCard({
   onCopyCountChange: (copyCount: number) => void;
 }) {
   const cover = script.coverTitle;
-  const title = script.title || '未命名脚本';
+  const title = `${script.scriptCode ? `${script.scriptCode} · ` : ''}${script.title || '未命名脚本'}`;
   return (
     <article className={`rounded-2xl border bg-surface p-4 shadow-sm transition ${selected ? 'border-accent ring-2 ring-accent/10' : 'border-hairline'}`}>
       <div className="flex items-start gap-3">
@@ -149,7 +149,7 @@ export function BatchFrozenScriptCard({
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs font-medium text-accent">已锁定的脚本快照</p>
-          <h3 className="mt-1 font-semibold text-ink">{snapshot.title || '未命名脚本'}</h3>
+          <h3 className="mt-1 font-semibold text-ink">{snapshot.scriptCode ? `${snapshot.scriptCode} · ` : ''}{snapshot.title || '未命名脚本'}</h3>
         </div>
         <span className="rounded-full bg-surface-subtle px-2 py-1 text-[11px] text-ink-secondary">
           V{snapshot.sourceVersion} · {snapshot.copyCount} 份

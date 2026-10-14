@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 // 内置模板排在前面（seed 维护、界面只读），自建的按创建时间跟在后面。
 const LIST_SQL = `
-  SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, createdAt
+  SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, openingCode, createdAt
   FROM video_prompt_templates
   ORDER BY isBuiltin DESC, createdAt
 `;
@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
     }
 
     const db = getDb();
-    const { name, description, prompt, inRandomPool } = normalized.value;
+    const { name, description, prompt, inRandomPool, openingCode = '' } = normalized.value;
 
     // 同名会让批量检查列表里的下拉完全没法分辨，直接挡掉。
     const duplicate = db.prepare(
@@ -38,15 +38,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: `已有同名模板「${name}」` }, { status: 409 });
     }
 
+    if (openingCode && db.prepare('SELECT 1 FROM video_prompt_templates WHERE openingCode=?').get(openingCode)) {
+      return NextResponse.json({ error: `开头编号 ${openingCode} 已被其他模板使用` }, { status: 409 });
+    }
     const id = uuidv4();
     db.prepare(`
       INSERT INTO video_prompt_templates
-        (id, name, description, prompt, category, isBuiltin, inRandomPool)
-      VALUES (?, ?, ?, ?, 'camera_motion', 0, ?)
-    `).run(id, name, description, prompt, inRandomPool ? 1 : 0);
+        (id, name, description, prompt, category, isBuiltin, inRandomPool, openingCode)
+      VALUES (?, ?, ?, ?, 'camera_motion', 0, ?, ?)
+    `).run(id, name, description, prompt, inRandomPool ? 1 : 0, openingCode);
 
     const created = db.prepare(`
-      SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, createdAt
+      SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, openingCode, createdAt
       FROM video_prompt_templates WHERE id = ?
     `).get(id);
     return NextResponse.json({ template: created, warnings: normalized.warnings }, { status: 201 });

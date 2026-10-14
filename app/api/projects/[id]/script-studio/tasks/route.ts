@@ -116,6 +116,7 @@ export async function POST(
         entryId: entry.id,
         revisionId: entry.revisionId,
         sourceTemplateId: entry.sourceTemplateId,
+        scriptCode: entry.scriptCode || '',
         name: entry.name,
         title: entry.title,
         category: entry.category,

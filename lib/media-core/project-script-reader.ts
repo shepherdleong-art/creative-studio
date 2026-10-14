@@ -1,3 +1,4 @@
+import { resolveScriptCode } from './production-code-reader.ts';
 import type Database from 'better-sqlite3';
 
 export interface ReadableProjectScriptRow {
@@ -80,7 +81,13 @@ export function listReadableProjectScripts(
     FROM script_drafts d
     WHERE d.projectId = ?
   `).all(projectId) as ReadableProjectScriptRow[];
-  return [...newRows, ...legacyRows];
+  return [...newRows, ...legacyRows].map(row => {
+    try {
+      const content = JSON.parse(row.outputJson);
+      const scriptCode = resolveScriptCode(db, content);
+      return scriptCode ? { ...row, outputJson: JSON.stringify({ ...content, scriptCode }) } : row;
+    } catch { return row; }
+  });
 }
 
 export function readableScriptShotSetId(row: ReadableProjectScriptRow): string {

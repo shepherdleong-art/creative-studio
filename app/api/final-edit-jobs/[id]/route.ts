@@ -44,6 +44,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     if ((row.kind === 'render' || row.kind === 'packaging') && row.status === 'succeeded' && typeof row.outputJson === 'string' && row.outputJson) {
       try {
         const parsed = JSON.parse(row.outputJson) as Record<string, unknown>;
+        // 跳过包装可能换成无包装编号的发布目标；已发布文件名优先于最初预留名。
+        if (target && typeof parsed.videoFilename === 'string') {
+          target = { ...target, videoFilename: parsed.videoFilename,
+            coverFilename: typeof parsed.coverFilename === 'string' ? parsed.coverFilename : target.coverFilename,
+            displayDirectory: typeof parsed.displayDirectory === 'string' ? parsed.displayDirectory : target.displayDirectory };
+        }
         output = {
           ...parsed,
           videoUrl: `/api/final-edit-jobs/${encodeURIComponent(id)}/video`,

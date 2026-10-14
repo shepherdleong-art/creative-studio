@@ -1,3 +1,4 @@
+import { productionCodeSuffix, withProductionCodes, type ProductionCodes } from '../media-core/production-codes.ts';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -8,6 +9,7 @@ import { computeFingerprintFromFile } from './fingerprint.ts';
 
 /** Export metadata supplied by the batch integration layer. */
 export interface BatchExportIdentity {
+  productionCodes?: ProductionCodes;
   projectId: string;
   batchId: string;
   productCode: string;
@@ -36,6 +38,7 @@ export interface BatchExportTarget {
 }
 
 export interface BatchExportRenderContract {
+  productionCodes?: ProductionCodes;
   audioMode: 'narration' | 'silent_placeholder';
   productionReady: boolean;
   /** 渲染时冻结的成片编辑修订号;旧候选允许缺省并按 0 处理。 */
@@ -138,6 +141,10 @@ function buildBaseName(identity: BatchExportIdentity): string {
   if (!Number.isInteger(identity.planSeq) || identity.planSeq < 1) throw new Error('plan 序号必须是正整数');
   if (!Number.isInteger(identity.outputVersion) || identity.outputVersion < 1) throw new Error('output version 必须是正整数');
   const sequenceSuffix = String(identity.planSeq).padStart(2, '0');
+  if (productionCodeSuffix(identity.productionCodes)) {
+    const base = identity.baseName || `成片-${safeFilenameSegment(identity.productCode, 'productCode')}-${dateInShanghai(identity.taskDate)}`;
+    return withProductionCodes(base, identity.productionCodes);
+  }
   if (identity.baseName) {
     return `${identity.baseName}-${sequenceSuffix}`;
   }

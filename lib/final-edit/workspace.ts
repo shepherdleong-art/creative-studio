@@ -1,3 +1,5 @@
+import { packagingCode } from '../media-core/production-codes.ts';
+import { resolveRevisionScriptCode, resolveVideoOpeningCode } from '../media-core/production-code-reader.ts';
 import crypto from 'node:crypto';
 import { planVideoClipSplit } from './clip-split.ts';
 import fs from 'node:fs';
@@ -1011,6 +1013,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         : null,
     } satisfies FinalEditVariantView));
     const script = parseJson<ScriptSnapshot>(String(group.scriptSnapshotJson), {} as ScriptSnapshot);
+    const scriptCode = script.scriptCode ?? resolveRevisionScriptCode(db, String(group.projectId), script.sourceScriptRevisionId);
     const selectedKeys = parseJson<unknown[]>(String(group.selectedMaterialKeysJson || '[]'), []).map(String);
     const selectedKeySet = new Set(selectedKeys);
     const module4Assets = assetsForScript(db, storageRoot, String(group.projectId), String(group.shotSetId))
@@ -1106,6 +1109,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       script: {
         sourceDraftId: String(group.scriptDraftId || '') || null,
         title: script.title || '',
+        scriptCode,
         importedNarrationText: script.sourceNarrationText || '',
         editedNarrationText: String(group.editedNarrationText || script.editedNarrationText || script.fullScript || ''),
         syncState: group.scriptSyncState === 'modified' ? 'modified' : 'synced',
@@ -1121,7 +1125,14 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       coverTitle: parseCoverTitleState(String(group.coverTitleJson), script.coverTitleParts || splitCoverTitle(script.title || '')),
       subtitleCues: parseJson<SubtitleCue[]>(String(group.subtitleStateJson), []),
       textStyles: normalizeTextStyles(parseJson(String(group.textStylesJson), buildStyles())),
-      variants, assets, packaging: parsePackagingConfig(group.packagingJson), bgmTracks,
+      variants: variants.map((variant) => {
+        const firstClip = [...variant.timeline.clips].sort((a, b) => a.timelineInFrame - b.timelineInFrame)[0];
+        return { ...variant, productionCodes: {
+          scriptCode,
+          openingCode: firstClip ? resolveVideoOpeningCode(db, String(group.projectId), firstClip.videoJobId, String(group.shotSetId)) : '',
+          packagingCode: packagingCode(parsePackagingConfig(group.packagingJson)),
+        } };
+      }), assets, packaging: parsePackagingConfig(group.packagingJson), bgmTracks,
       coverCandidates: [
         ...imageCoverCandidates.map((candidate) => ({ kind: 'storyboard_image' as const, coverKey: `image:${candidate.id}`, sourceUrl: `/api/final-edit-groups/${String(group.id)}/cover-candidates/${encodeURIComponent(`image:${candidate.id}`)}` })),
         ...videoCoverCandidates.map((candidate) => {
@@ -1758,6 +1769,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         ? {
             version: script.sourceScriptVersion || 2,
             title: script.title,
+            scriptCode: script.scriptCode,
             coverTitleParts: script.coverTitleParts,
             targetDurationSec: script.targetDurationSec,
             shotSetId: String(row.shotSetId),
@@ -2293,6 +2305,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         ? {
             version: mixcutScriptSnapshot.sourceScriptVersion || 2,
             title: mixcutScriptSnapshot.title,
+            scriptCode: mixcutScriptSnapshot.scriptCode,
             coverTitleParts: mixcutScriptSnapshot.coverTitleParts,
             targetDurationSec: mixcutScriptSnapshot.targetDurationSec,
             shotSetId: String(row.shotSetId),
@@ -2458,6 +2471,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       ? getOrCreateCurrentExportIdentity(db, group.projectId, { ...identityFields, namingDate })
       : null;
     const exportIdentity = {
+      productionCodes: variant.productionCodes,
       projectId: group.projectId,
       taskName: project.name,
       productCode: project.productCode || '',

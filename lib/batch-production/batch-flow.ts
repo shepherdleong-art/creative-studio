@@ -309,7 +309,7 @@ function matchesCurrentInput(
 
   const snapshots = db.prepare(`
     SELECT sourceScriptId, copyCount, title, bodyText, sourceVersion,
-           targetDurationSec, narrationConfigJson, coverTitleJson, shotSetId, contentRevision
+           targetDurationSec, narrationConfigJson, coverTitleJson, shotSetId, contentRevision, scriptCode
     FROM batch_script_snapshots WHERE batchVersionId = ?
   `).all(batchVersionId) as Array<{
     sourceScriptId: string;
@@ -322,6 +322,7 @@ function matchesCurrentInput(
     coverTitleJson: string;
     shotSetId: string;
     contentRevision: string;
+    scriptCode?: string;
   }>;
   if (snapshots.length !== input.scriptSelections.length) return false;
   const snapshotBySource = new Map(snapshots.map((snapshot) => [snapshot.sourceScriptId, snapshot]));
@@ -330,7 +331,7 @@ function matchesCurrentInput(
     if (!snapshot || snapshot.copyCount !== selection.copyCount) return false;
     const source = db.prepare(`
       SELECT title, bodyText, sourceVersion, targetDurationSec, narrationConfigJson,
-             coverTitleJson, shotSetId, contentRevision, sourceAvailable
+             coverTitleJson, shotSetId, contentRevision, scriptCode, sourceAvailable
       FROM batch_scripts WHERE id = ?
     `).get(selection.scriptId) as {
       title: string;
@@ -341,6 +342,7 @@ function matchesCurrentInput(
       coverTitleJson: string;
       shotSetId: string;
       contentRevision: string;
+      scriptCode?: string;
       sourceAvailable: number;
     } | undefined;
     if (!source || source.sourceAvailable !== 1) return false;
@@ -353,6 +355,7 @@ function matchesCurrentInput(
       || canonicalJson(parseJsonOrRaw(snapshot.coverTitleJson)) !== canonicalJson(parseJsonOrRaw(source.coverTitleJson))
       || snapshot.shotSetId !== source.shotSetId
       || snapshot.contentRevision !== source.contentRevision
+      || (snapshot.scriptCode || '') !== (source.scriptCode || '')
     ) return false;
   }
 
@@ -596,7 +599,7 @@ export function startBatchProduction(
              scripts.projectId, scripts.sourceKind, scripts.ownerBatchVersionId,
              scripts.title, scripts.bodyText, scripts.sourceVersion,
              scripts.targetDurationSec, scripts.narrationConfigJson,
-             scripts.coverTitleJson, scripts.shotSetId, scripts.contentRevision,
+             scripts.coverTitleJson, scripts.shotSetId, scripts.contentRevision, scripts.scriptCode,
              scripts.sourceAvailable
       FROM batch_script_snapshots snapshots
       JOIN batch_scripts scripts ON scripts.id = snapshots.sourceScriptId
@@ -614,6 +617,7 @@ export function startBatchProduction(
       coverTitleJson: string;
       shotSetId: string;
       contentRevision: string;
+      scriptCode?: string;
       sourceAvailable: number;
     }>;
     if (snapshotSources.length !== snapshotSummary.n) {
@@ -632,7 +636,7 @@ export function startBatchProduction(
       db.prepare(`
         UPDATE batch_script_snapshots
         SET title = ?, bodyText = ?, sourceVersion = ?, targetDurationSec = ?,
-            narrationConfigJson = ?, coverTitleJson = ?, shotSetId = ?, contentRevision = ?
+            narrationConfigJson = ?, coverTitleJson = ?, shotSetId = ?, contentRevision = ?, scriptCode = ?
         WHERE id = ? AND batchVersionId = ?
       `).run(
         source.title,
@@ -643,6 +647,7 @@ export function startBatchProduction(
         source.coverTitleJson,
         source.shotSetId,
         source.contentRevision,
+        source.scriptCode || '',
         source.snapshotId,
         batch.currentVersionId,
       );
@@ -679,6 +684,7 @@ export interface BatchSnapshotDetail {
     copyCount: number;
     shotSetId: string;
     contentRevision: string;
+    scriptCode?: string;
   }>;
   assetPool: Array<{
     id: string;
@@ -722,7 +728,7 @@ export function getBatchSnapshotDetail(
   };
   const scriptSnapshotRows = db.prepare(`
     SELECT id, sourceScriptId, title, bodyText, sourceVersion, coverTitleJson,
-           copyCount, shotSetId, contentRevision
+           copyCount, shotSetId, contentRevision, scriptCode
     FROM batch_script_snapshots WHERE batchVersionId = ? ORDER BY createdAt, id
   `).all(currentVersionId) as Array<{
     id: string;
@@ -734,6 +740,7 @@ export function getBatchSnapshotDetail(
     copyCount: number;
     shotSetId: string;
     contentRevision: string;
+    scriptCode?: string;
   }>;
   const scriptSnapshots = scriptSnapshotRows.map(({ coverTitleJson, ...snapshot }) => {
     let primary = '';

@@ -37,6 +37,7 @@ export async function POST(
             entryId: rewrite.entryId,
             revisionId: rewrite.revisionId,
             sourceTemplateId: rewrite.sourceTemplateId,
+            ...(rewrite.scriptCode !== undefined ? { scriptCode: rewrite.scriptCode } : {}),
             name: rewrite.templateName,
             title: rewrite.templateTitle,
             category: rewrite.category,

@@ -1,3 +1,4 @@
+import { normalizeProductionCode } from '../../media-core/production-codes.ts';
 import { createHash } from 'node:crypto';
 import { cellText, normalizeText } from './normalize.ts';
 import { effectiveValue, type WorkbookSheet } from './workbook.ts';
@@ -22,6 +23,7 @@ export type ViralTemplateStatus = 'usable' | 'unusable' | 'review';
 
 export interface ViralTemplateEntryParsed {
   sourceTemplateId: string;
+  scriptCode?: string;
   category: string;
   subCategory: string;
   name: string;
@@ -63,6 +65,7 @@ export interface ViralTemplateParseResult {
 }
 
 const HEADERS = {
+  scriptCode: ['脚本编号'],
   category: ['类目'],
   subCategory: ['子类目', '子类'],
   name: ['模板名称', '名称'],
@@ -168,6 +171,7 @@ function parseSheetEntries(
     const title = read(row.rowNumber, 'title');
     entries.push({
       sourceTemplateId,
+      scriptCode: read(row.rowNumber, 'scriptCode').normalize('NFKC').toUpperCase(),
       category,
       subCategory,
       name,
@@ -178,6 +182,7 @@ function parseSheetEntries(
       structure,
       structureOrigin: structureRaw || structureSummary ? 'source' : 'fallback',
       rawColumns: {
+        scriptCode: read(row.rowNumber, 'scriptCode').normalize('NFKC').toUpperCase(),
         assetType: read(row.rowNumber, 'assetType'),
         useCount: read(row.rowNumber, 'useCount'),
         itemId: read(row.rowNumber, 'itemId'),
@@ -295,6 +300,16 @@ export function parseViralTemplateWorkbook(sheets: WorkbookSheet[]): ViralTempla
     }
   }
 
+  const codes = new Set<string>();
+  for (const entry of deduped) {
+    if (!entry.scriptCode) continue;
+    if (!normalizeProductionCode(entry.scriptCode, 'J')) {
+      issues.push({ code: 'invalid_script_code', message: `第 ${entry.sourceRow} 行脚本编号无效，请使用 J1、J2 等编号` });
+    } else if (codes.has(entry.scriptCode)) {
+      issues.push({ code: 'duplicate_script_code', message: `脚本编号 ${entry.scriptCode} 重复，请为不同模板填写不同编号` });
+    }
+    codes.add(entry.scriptCode);
+  }
   const statusCounts = { usable: 0, unusable: 0, review: 0 };
   for (const entry of deduped) {
     statusCounts[entry.status] += 1;
@@ -313,7 +328,7 @@ export function parseViralTemplateWorkbook(sheets: WorkbookSheet[]): ViralTempla
       validRows: statusCounts.usable,
       mergedModelCount: 0,
       issues,
-      canActivate: deduped.length > 0,
+      canActivate: deduped.length > 0 && !issues.some(issue => ['invalid_script_code', 'duplicate_script_code'].includes(issue.code)),
       sheetCounts,
       statusCounts,
       mergedCategorySheets,

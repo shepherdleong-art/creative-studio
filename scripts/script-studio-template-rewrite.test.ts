@@ -110,6 +110,7 @@ function makeTemplate(overrides: Partial<FrozenViralTemplateSpec> = {}): FrozenV
     entryId: 'entry-1',
     revisionId: 'vtpl-rev-1',
     sourceTemplateId: 'tpl-src-1',
+    scriptCode: 'J1',
     name: '小户型餐桌爆款',
     title: '小户型也能用上大餐桌',
     category: '餐桌椅',
@@ -354,6 +355,7 @@ async function freshEnv(name: string): Promise<{ db: Database.Database; root: st
     '模板改写应保留生成的封面钩子和卖点，不能覆盖成商品名加空副标题',
   );
   const meta = first.templateRewrite!;
+  assert.equal(meta.scriptCode, 'J1', '冻结编号必须穿过完整生成链路');
   assert.equal(meta.whitelistPointIds.length, 2, '白名单为筛选后的两个 verified 卖点');
   assert.equal(meta.targetChars, 120, '20 秒目标 120 中文字');
   assert.equal(meta.structureOrigin, 'fallback', '缺失结构如实标 fallback');

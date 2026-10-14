@@ -8,6 +8,7 @@ import { assertBatchVersionEditable } from './versions.ts';
 export type BatchScriptSourceKind = 'script_draft' | 'external';
 
 export interface BatchScriptRow {
+  scriptCode?: string;
   id: string;
   projectId: string;
   sourceKind: BatchScriptSourceKind;
@@ -29,6 +30,7 @@ export interface BatchScriptRow {
 }
 
 export interface BatchScriptSnapshotRow {
+  scriptCode?: string;
   id: string;
   batchVersionId: string;
   sourceScriptId: string;
@@ -46,6 +48,7 @@ export interface BatchScriptSnapshotRow {
 
 /** 脚本同步元数据:结构化封面标题、分镜组归属、内容修订身份与目标时长 */
 export interface BatchScriptMetadata {
+  scriptCode?: string;
   coverTitleJson?: unknown;
   shotSetId?: string;
   contentRevision?: string;
@@ -79,6 +82,7 @@ export function createProjectScript(
   const updatedAt = nowIso(input.now);
   const coverTitleJson = JSON.stringify(input.metadata?.coverTitleJson ?? {});
   const shotSetId = input.metadata?.shotSetId ?? '';
+  const scriptCode = input.metadata?.scriptCode ?? '';
   const contentRevision = input.metadata?.contentRevision ?? '';
   const targetDurationSec = Math.max(1, Math.round(input.metadata?.targetDurationSec ?? 15));
   const narrationConfigJson = JSON.stringify(input.metadata?.narrationConfigJson ?? {});
@@ -93,20 +97,21 @@ export function createProjectScript(
   if (existing) {
     db.prepare(`
       UPDATE batch_scripts
-      SET title = ?, bodyText = ?, sourceVersion = ?, coverTitleJson = ?, shotSetId = ?, contentRevision = ?,
+      SET scriptCode = ?, title = ?, bodyText = ?, sourceVersion = ?, coverTitleJson = ?, shotSetId = ?, contentRevision = ?,
           targetDurationSec = ?, narrationConfigJson = ?, sourceAvailable = CASE WHEN catalogDeleted = 1 THEN 0 ELSE 1 END, catalogManaged = ?, updatedAt = ?
       WHERE id = ?
-    `).run(input.title, input.bodyText, input.sourceVersion, coverTitleJson, shotSetId, contentRevision, targetDurationSec, narrationConfigJson, catalogManaged, updatedAt, existing.id);
+    `).run(scriptCode, input.title, input.bodyText, input.sourceVersion, coverTitleJson, shotSetId, contentRevision, targetDurationSec, narrationConfigJson, catalogManaged, updatedAt, existing.id);
     return existing.id;
   }
   const id = randomUUID();
   db.prepare(`
     INSERT INTO batch_scripts
-      (id, projectId, sourceKind, sourceId, title, bodyText, sourceVersion,
+      (scriptCode, id, projectId, sourceKind, sourceId, title, bodyText, sourceVersion,
        targetDurationSec, narrationConfigJson, coverTitleJson, shotSetId, contentRevision,
        sourceAvailable, catalogManaged, ownerBatchVersionId, externalSourceId, createdAt, updatedAt)
-    VALUES (?, ?, 'script_draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, ?)
+    VALUES (?, ?, ?, 'script_draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, ?)
   `).run(
+    scriptCode,
     id,
     projectId,
     input.sourceId,
@@ -503,14 +508,14 @@ export function snapshotScriptIntoBatch(
     const owner = assertBatchVersionEditable(db, batchVersionId);
     const script = db.prepare(`
       SELECT id, projectId, sourceKind, ownerBatchVersionId, title, bodyText, sourceVersion,
-             targetDurationSec, narrationConfigJson, coverTitleJson, shotSetId, contentRevision, sourceAvailable
+             targetDurationSec, narrationConfigJson, coverTitleJson, shotSetId, contentRevision, sourceAvailable, scriptCode
       FROM batch_scripts WHERE id = ?
     `).get(input.scriptId) as Pick<
       BatchScriptRow,
       | 'id' | 'projectId' | 'sourceKind' | 'ownerBatchVersionId' | 'title'
       | 'bodyText' | 'sourceVersion' | 'targetDurationSec' | 'narrationConfigJson'
       | 'coverTitleJson' | 'shotSetId' | 'contentRevision'
-      | 'sourceAvailable'
+      | 'sourceAvailable' | 'scriptCode'
     > | undefined;
     if (!script) {
       throw new Error('项目脚本不存在');
@@ -533,10 +538,11 @@ export function snapshotScriptIntoBatch(
     const id = randomUUID();
     db.prepare(`
       INSERT INTO batch_script_snapshots
-        (id, batchVersionId, sourceScriptId, title, bodyText, sourceVersion,
+        (scriptCode, id, batchVersionId, sourceScriptId, title, bodyText, sourceVersion,
          targetDurationSec, narrationConfigJson, coverTitleJson, shotSetId, contentRevision, copyCount, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
+      script.scriptCode || '',
       id,
       batchVersionId,
       script.id,

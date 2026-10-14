@@ -1,3 +1,6 @@
+import { scriptCodeFromContent } from '../media-core/production-codes.ts';
+import { getCurrentExportIdentity } from '../project-export-identity.ts';
+import { buildProjectBaseName, deriveProjectNamingDate, readProductionIdentityFields } from '../project-production-identity.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
@@ -283,6 +286,7 @@ export async function buildMixcutContext(
       version: script.version,
       shotSetId: readableScriptShotSetId(row) || script.shotSetId || '',
       title: script.title || '',
+      scriptCode: scriptCodeFromContent(script),
       narrationText,
       targetDurationSec: Number(script.targetDurationSec) || 0,
       provider: row.provider || '',
@@ -344,8 +348,13 @@ export async function buildMixcutContext(
     });
   }
 
+  const fields = readProductionIdentityFields({ ...projectRow });
+  const exportBaseName = getCurrentExportIdentity(db, projectId)?.baseName
+    || (fields.storeCode && fields.productCode && fields.productionType && fields.editorName
+      ? buildProjectBaseName({ ...fields, namingDate: deriveProjectNamingDate({ namingDate: projectRow.namingDate || '', createdAt: projectRow.createdAt }) }) : undefined);
   return {
     project: {
+      exportBaseName,
       id: projectRow.id,
       name: projectRow.name,
       productName: projectRow.productName || '',

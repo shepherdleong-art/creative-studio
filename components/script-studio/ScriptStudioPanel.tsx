@@ -49,6 +49,7 @@ function providerOptionLabel(provider: ScriptProviderView): string {
 
 interface ScriptView {
   id: string;
+  scriptCode?: string;
   projectId: string;
   shotSetId: string | null;
   currentRevisionId: string | null;
@@ -1734,7 +1735,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                         </div>
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <h4 className="text-sm font-semibold">方案 {index + 1} · {content?.title || '未命名方案'}</h4>
+                            <h4 className="text-sm font-semibold">方案 {index + 1} · {script.scriptCode ? `${script.scriptCode} · ` : ''}{content?.title || '未命名方案'}</h4>
                             <span className="rounded-full bg-accent-tint px-2 py-0.5 text-[0.65rem] font-semibold text-accent">{content?.template || revision?.templateId || '模板'}</span>
                             <span className="rounded-full bg-surface-subtle px-2 py-0.5 text-[0.65rem] font-semibold text-ink-secondary">V{revision?.revisionNumber || 1}</span>
                             {task?.parentTaskId && script.generationTaskId === task.id && <span className="rounded-full bg-ok-tint px-2 py-0.5 text-[0.65rem] font-semibold text-ok">补跑</span>}
@@ -1939,7 +1940,7 @@ function TemplateRewriteBlock({ content }: { content: ScriptStudioScriptContent 
   return (
     <div className="mt-2 space-y-2 rounded-[14px] bg-surface-subtle p-3 text-xs text-ink-secondary">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="font-semibold text-ink">爆文模板：{meta.templateName || meta.templateTitle}</span>
+        <span className="font-semibold text-ink">爆文模板：{meta.scriptCode ? `${meta.scriptCode} · ` : ''}{meta.templateName || meta.templateTitle}</span>
         {meta.category && <span>{meta.category}{meta.subCategory ? ` · ${meta.subCategory}` : ''}</span>}
         {meta.stylePresetName && <span>文风：{meta.stylePresetName}</span>}
         <span title={meta.structureOrigin === 'fallback' ? '表格未提供结构，使用默认结构' : '结构来自模板表格'}>

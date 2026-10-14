@@ -1,3 +1,4 @@
+import { scriptCodeFromContent } from '../media-core/production-codes.ts';
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { splitCoverTitle } from '../media-core/cover-domain.ts';
@@ -101,6 +102,7 @@ export function syncProjectScripts(
         bodyText: narrationText,
         sourceVersion: String(script.version),
         metadata: {
+          scriptCode: scriptCodeFromContent(script),
           coverTitleJson: coverTitleOf(script),
           shotSetId,
           contentRevision: contentRevisionOf(row.outputJson),

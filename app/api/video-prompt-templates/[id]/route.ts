@@ -1,9 +1,10 @@
+import { normalizeProductionCode } from '@/lib/media-core/production-codes';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { normalizeVideoPromptTemplateInput } from '@/lib/video-prompt-template';
 
 const SELECT_ONE = `
-  SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, createdAt
+  SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, openingCode, createdAt
   FROM video_prompt_templates WHERE id = ?
 `;
 
@@ -11,14 +12,16 @@ interface TemplateRow {
   id: string;
   name: string;
   isBuiltin: number;
+  inRandomPool: number;
+  openingCode: string | null;
 }
 
 /**
  * 改一条模板。
  *
  * 内置模板由 seed 维护、每次启动都会被写回官方措辞，所以界面上是只读的——
- * 想改先「复制一份」。唯一的例外是 inRandomPool：seed 只在 INSERT 时给初始值、
- * 不在 upsert 的更新列里，用户对内置模板的入池选择能安全地存活到下次播种，因此允许单独改。
+ * 想改先「复制一份」。inRandomPool 与 openingCode 允许单独维护，
+ * seed 只补初始值，保留用户已修改的入池选择和开头编号（含主动清空）。
  */
 export async function PATCH(
   request: NextRequest,
@@ -27,7 +30,7 @@ export async function PATCH(
   try {
     const { id } = await params;
     const db = getDb();
-    const row = db.prepare(`SELECT id, name, isBuiltin FROM video_prompt_templates WHERE id = ?`)
+    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode FROM video_prompt_templates WHERE id = ?`)
       .get(id) as TemplateRow | undefined;
     if (!row) return NextResponse.json({ error: '模板不存在' }, { status: 404 });
 
@@ -37,6 +40,14 @@ export async function PATCH(
     const touchesContent = ['name', 'description', 'prompt']
       .some((key) => body[key] !== undefined);
 
+    const openingCode = body.openingCode === undefined ? (row.openingCode ?? '') : normalizeProductionCode(body.openingCode, 'K');
+    if (body.openingCode !== undefined && (typeof body.openingCode !== 'string' || (body.openingCode.trim() && !openingCode))) {
+      return NextResponse.json({ error: '开头编号请填写 K1、K2 等（最多 6 位数字）' }, { status: 400 });
+    }
+    if (openingCode && db.prepare('SELECT id FROM video_prompt_templates WHERE openingCode=? AND id<>?').get(openingCode, id)) {
+      return NextResponse.json({ error: `开头编号 ${openingCode} 已被其他模板使用` }, { status: 409 });
+    }
+    const inPool = body.inRandomPool === undefined ? row.inRandomPool : (body.inRandomPool ? 1 : 0);
     if (row.isBuiltin === 1) {
       if (touchesContent) {
         return NextResponse.json(
@@ -44,15 +55,15 @@ export async function PATCH(
           { status: 400 },
         );
       }
-      db.prepare(`UPDATE video_prompt_templates SET inRandomPool = ? WHERE id = ?`)
-        .run(body.inRandomPool ? 1 : 0, id);
+      db.prepare(`UPDATE video_prompt_templates SET inRandomPool = ?, openingCode = ? WHERE id = ?`)
+        .run(inPool, openingCode, id);
       return NextResponse.json({ template: db.prepare(SELECT_ONE).get(id), warnings: [] });
     }
 
     // 只翻开关、不动内容时不必跑内容校验，否则前端得把全部字段回传一遍。
     if (!touchesContent) {
-      db.prepare(`UPDATE video_prompt_templates SET inRandomPool = ? WHERE id = ?`)
-        .run(body.inRandomPool ? 1 : 0, id);
+      db.prepare(`UPDATE video_prompt_templates SET inRandomPool = ?, openingCode = ? WHERE id = ?`)
+        .run(inPool, openingCode, id);
       return NextResponse.json({ template: db.prepare(SELECT_ONE).get(id), warnings: [] });
     }
 
@@ -71,9 +82,9 @@ export async function PATCH(
 
     db.prepare(`
       UPDATE video_prompt_templates
-      SET name = ?, description = ?, prompt = ?, inRandomPool = ?
+      SET name = ?, description = ?, prompt = ?, inRandomPool = ?, openingCode = ?
       WHERE id = ?
-    `).run(name, description, prompt, inRandomPool ? 1 : 0, id);
+    `).run(name, description, prompt, inRandomPool ? 1 : 0, openingCode, id);
 
     return NextResponse.json({
       template: db.prepare(SELECT_ONE).get(id),
@@ -98,7 +109,7 @@ export async function DELETE(
   try {
     const { id } = await params;
     const db = getDb();
-    const row = db.prepare(`SELECT id, name, isBuiltin FROM video_prompt_templates WHERE id = ?`)
+    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode FROM video_prompt_templates WHERE id = ?`)
       .get(id) as TemplateRow | undefined;
     if (!row) return NextResponse.json({ error: '模板不存在' }, { status: 404 });
 

@@ -216,7 +216,7 @@ export default function ViralTemplateSettings() {
             </button>
           </div>
           {!preview.report.canActivate && (
-            <p className="mt-2 text-xs text-fail">内容不完整（未解析到有效模板），不能保存。</p>
+            <p className="mt-2 text-xs text-fail">请先修正导入报告中的问题，不能保存。</p>
           )}
         </div>
       )}

@@ -1,3 +1,4 @@
+import { BUILTIN_OPENING_CODES } from './media-core/production-codes.ts';
 import { SEEDREAM_5_PRO, SEEDREAM_PROVIDER_ID, SEEDREAM_BASE_URL } from './seedream-image.ts';
 import { resolveCoreUsagePlan } from './usage-pricing.ts';
 import { getDb } from './db.ts';
@@ -596,6 +597,8 @@ export function seedMotionTemplates() {
      WHERE video_prompt_templates.isBuiltin = 1`
   );
 
+
+
   // 退役的内置模板：措辞和别的条目撞脸（detail-push 是推进、横移和左右摇
   // 分不开、升降和上下摇分不开），留着只会让批量填充洗出重复画面。
   const retiredBuiltinIds = [
@@ -631,6 +634,10 @@ export function seedMotionTemplates() {
         prompt: t.prompt,
         inRandomPool: t.inRandomPool === false ? 0 : 1,
       });
+    }
+    for (const [id, code] of Object.entries(BUILTIN_OPENING_CODES)) {
+      db.prepare(`UPDATE video_prompt_templates SET openingCode=? WHERE id=? AND isBuiltin=1 AND openingCode IS NULL
+        AND NOT EXISTS (SELECT 1 FROM video_prompt_templates WHERE openingCode=?)`).run(code, id, code);
     }
     for (const id of retiredBuiltinIds) retire.run(id, id);
   });

@@ -39,6 +39,7 @@ assert.ok(realShortMaterialSegments.every((segment) => {
 }), '逗号切分后必须合并过短子句，且单段不得继续接近原来的 38–40 字');
 
 const source = {
+  templateRewrite: { scriptCode: 'J1' },
   version: 2,
   title: '原始标题',
   targetDurationSec: 20,
@@ -54,6 +55,7 @@ const synced = buildMixcutTaskScriptSnapshot({
   sourceScript: source, shotSetId: 'set-a', editedNarrationText: '第一句。\n第二句！',
 });
 assert.equal(synced.scriptSyncState, 'synced');
+assert.equal(synced.scriptCode, 'J1');
 assert.deepEqual(synced.segments.map((segment) => [segment.id, segment.shotId]), [['source-1', 'shot-1'], ['source-2', 'shot-2']]);
 
 const realSynced = buildMixcutTaskScriptSnapshot({

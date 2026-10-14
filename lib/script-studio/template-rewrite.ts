@@ -557,6 +557,7 @@ export function parseFrozenTemplatePlan(value: unknown): FrozenViralTemplateSpec
       entryId: asStr(t.entryId),
       revisionId: asStr(t.revisionId),
       sourceTemplateId: asStr(t.sourceTemplateId),
+      ...(t.scriptCode !== undefined ? { scriptCode: asStr(t.scriptCode) } : {}),
       name: asStr(t.name),
       title: asStr(t.title),
       category: asStr(t.category),

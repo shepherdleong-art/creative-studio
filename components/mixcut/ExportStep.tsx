@@ -5,6 +5,7 @@ import { Icon } from '@/components/ui/Icon';
 import { ProjectInfoDialog, type ProjectInfoDialogIntent, type ProjectInfoValue } from '@/components/ProjectInfoDialog';
 import { createOverlayBundlePayload, TextOverflowError } from '@/components/final-edit/text-canvas-renderer';
 import { previewExportBaseName } from '@/lib/final-edit/export-identity';
+import { withProductionCodes } from '@/lib/media-core/production-codes';
 import type { DesktopBridge } from '@/desktop/bridge-types';
 import { OUTPUT_PRESETS, type ExportTargetView, type FinalEditGroupView, type MixcutContextResponse, type RenderJobRef } from '@/lib/final-edit/types';
 import styles from './mixcut-content.module.css';
@@ -101,7 +102,10 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
   const packagingPollTokenRef = useRef<symbol | null>(null);
   const variant = group.variants.find((item) => item.id === selectedVariantId) || group.variants[0] || null;
   const packagingEnabled = group.packaging?.enabled === true;
-  const predictedBaseName = useMemo(() => previewExportBaseName(project.productCode, project.taskDate), [project.productCode, project.taskDate]);
+  const predictedBaseName = useMemo(() => {
+    const base = project.exportBaseName || previewExportBaseName(project.productCode, project.taskDate);
+    return base ? withProductionCodes(base, variant?.productionCodes) : null;
+  }, [project.exportBaseName, project.productCode, project.taskDate, variant?.productionCodes]);
   const blockingIssue = variant?.issues.find((issue) => issue.severity === 'blocking');
   const warningIssues = variant?.issues.filter((issue) => issue.severity === 'warning') ?? [];
 
@@ -254,6 +258,11 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
       const result = await readJson<{ videoFilename: string }>(await fetch(`/api/final-edit-jobs/${encodeURIComponent(deferredPackagingJobId)}/publish-original`, { method: 'POST' }));
       setPackagingJob((current) => current ? { ...current, status: 'skipped', phase: 'skipped' } : current);
       setMessage(`已跳过包装，无包装原片已发布：${result.videoFilename}`);
+      if (job) {
+        const published = await fetchJob(job.id);
+        setJob(published);
+        setTarget(published.target || null);
+      }
       const refreshed = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${encodeURIComponent(group.id)}`));
       onGroupChange(refreshed);
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }

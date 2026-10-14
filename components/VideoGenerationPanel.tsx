@@ -53,6 +53,7 @@ interface VideoProvider {
 }
 
 interface MotionTemplate {
+  openingCode?: string | null;
   id: string;
   name: string;
   description: string;
@@ -1602,7 +1603,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         disabled={creating}
                       >
                         <option value="">自定义</option>
-                        {templates.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                        {templates.map((t) => (<option key={t.id} value={t.id}>{t.openingCode ? `${t.openingCode} · ` : ''}{t.name}</option>))}
                       </select>
                       <select
                         value={getRowDuration(row)}
@@ -1847,7 +1848,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                             >
                               <option value="">自定义</option>
                               {templates.map((template) => (
-                                <option key={template.id} value={template.id}>{template.name}</option>
+                                <option key={template.id} value={template.id}>{template.openingCode ? `${template.openingCode} · ` : ''}{template.name}</option>
                               ))}
                             </select>
                             <textarea

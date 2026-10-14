@@ -1,3 +1,4 @@
+import { resolveTemplateOpeningCode } from '@/lib/media-core/production-code-reader';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
@@ -100,8 +101,8 @@ export async function POST(
 
     const insert = db.prepare(`
       INSERT INTO video_jobs
-        (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec, multiShot, createdAt, displayName)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec, multiShot, createdAt, displayName, openingCode)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const videoJobIds: string[] = [];
     const createAll = db.transaction(() => {
@@ -138,7 +139,7 @@ export async function POST(
         insert.run(
           videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, item.tailImageId,
           item.providerId, p.model, item.templateId, item.prompt, item.durationSec, multiShot,
-          batchCreatedAt, displayName,
+          batchCreatedAt, displayName, resolveTemplateOpeningCode(db, item.templateId),
         );
         videoJobIds.push(videoJobId);
       });

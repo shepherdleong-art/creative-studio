@@ -26,7 +26,7 @@ import {
  * - 推荐排序稳定、原因真实、同类目优先。
  */
 
-const HEADER = ['类目', '子类目', '模板名称', '标题', '参考文案', '结构拆解', '结构摘要', '素材类型', '使用次数', '逛逛ID', '商品链接', '模板ID', '是否私有'];
+const HEADER = ['类目', '子类目', '模板名称', '标题', '参考文案', '结构拆解', '结构摘要', '素材类型', '使用次数', '逛逛ID', '商品链接', '模板ID', '是否私有', '脚本编号'];
 
 function tplRow(overrides: Record<string, string>): string[] {
   const row: Record<string, string> = {
@@ -69,7 +69,7 @@ for (const table of ['script_studio_viral_tpl_libraries', 'script_studio_viral_t
 
 // ---- 1. 主表 + 分类表副本：只按主表导入，绝不双倍（A01） ----
 const mainRows = [
-  tplRow({ 模板ID: 'tpl-a', 模板名称: '实木床爆款', 标题: '实木床真香', 参考文案: '标题：实木床真香\n正文：这张床用料真的很扎实，整块实木框架，睡十年都不塌。', 结构摘要: '钩子>痛点>卖点>逼单' }),
+  tplRow({ 模板ID: 'tpl-a', 脚本编号: 'J1', 模板名称: '实木床爆款', 标题: '实木床真香', 参考文案: '标题：实木床真香\n正文：这张床用料真的很扎实，整块实木框架，睡十年都不塌。', 结构摘要: '钩子>痛点>卖点>逼单' }),
   tplRow({ 模板ID: 'tpl-b', 模板名称: '占位模板', 参考文案: '测试文本' }),
   tplRow({ 模板ID: 'tpl-c', 模板名称: '空正文模板', 参考文案: '标题：简单一拉一放\n正文：无' }),
   tplRow({ 模板ID: 'tpl-d', 模板名称: '语气词模板', 参考文案: '标题：展示\n正文：哎耶耶耶' }),
@@ -99,6 +99,8 @@ const entries = listViralTemplateEntries(db, { status: 'all' });
 const byId = new Map(entries.map((entry) => [entry.sourceTemplateId, entry]));
 const usable = byId.get('tpl-a')!;
 assert.equal(usable.status, 'usable');
+assert.equal(usable.scriptCode, 'J1');
+assert.equal(listViralTemplateEntries(db, { q: 'J1', status: 'all' })[0]?.sourceTemplateId, 'tpl-a');
 assert.equal(usable.refText.includes('整块实木框架'), true, '原始参考全文不丢');
 assert.equal(usable.structure, '钩子>痛点>卖点>逼单');
 assert.equal(usable.structureOrigin, 'source', '表里有结构摘要时标 source');
@@ -123,7 +125,7 @@ assert.equal(reimport.revisionId, outcome.revisionId);
 assert.equal(getViralTemplateLibraryView(db).revisions.length, 1);
 
 const changedRows = mainRows.map((row) => [...row]);
-changedRows[0] = tplRow({ 模板ID: 'tpl-a', 模板名称: '实木床爆款', 标题: '实木床真香', 参考文案: '标题：实木床真香\n正文：这张床用料升级，整块实木框架加静音床板。', 结构摘要: '钩子>痛点>卖点>逼单' });
+changedRows[0] = tplRow({ 模板ID: 'tpl-a', 脚本编号: 'J1', 模板名称: '实木床爆款', 标题: '实木床真香', 参考文案: '标题：实木床真香\n正文：这张床用料升级，整块实木框架加静音床板。', 结构摘要: '钩子>痛点>卖点>逼单' });
 const changedBuffer = await buildBuffer(changedRows, categoryCopy);
 const changed = await importViralTemplateLibrary(db, changedBuffer, '种草爆文库v2.xlsx', () => new Date('2026-09-17T00:03:00.000Z'));
 assert.equal(changed.created, true, '内容变更产生新库修订');
@@ -194,4 +196,28 @@ const noHit = recommendViralTemplates(db, { sellingPointTexts: ['完全不相关
 assert.equal(noHit.recommendations.length, 0, '无命中不杜撰推荐理由');
 assert.ok(noHit.usableCount > 0, '可用模板数如实上报（供扩大搜索入口）');
 
+// 编号的格式/唯一性验证必须阻止错误导入，旧无编号表仍兼容。
+const priorRevision = getViralTemplateLibraryView(db).current!.id;
+for (const [rows, issue] of [
+  [[tplRow({ 模板ID: 'code-a', 脚本编号: 'J1' }), tplRow({ 模板ID: 'code-b', 脚本编号: 'j1' })], 'duplicate_script_code'],
+  [[tplRow({ 模板ID: 'code-a', 脚本编号: 'J01' })], 'invalid_script_code'],
+] as const) {
+  const invalid = await buildBuffer([...rows]);
+  const report = await previewViralTemplateImport(invalid);
+  assert.equal(report.canActivate, false);
+  assert.ok(report.issues.some(item => item.code === issue));
+  await assert.rejects(importViralTemplateLibrary(db, invalid, '错误编号.xlsx'));
+  assert.equal(getViralTemplateLibraryView(db).current!.id, priorRevision);
+}
+const legacyWorkbook = new ExcelJS.Workbook();
+const legacySheet = legacyWorkbook.addWorksheet('全部模板');
+legacySheet.addRow(HEADER.slice(0, -1));
+legacySheet.addRow(mainRows[0].slice(0, -1));
+const legacy = await previewViralTemplateImport(Buffer.from(await legacyWorkbook.xlsx.writeBuffer()));
+assert.equal(legacy.canActivate, true);
+assert.equal(legacy.entries[0].scriptCode || '', '');
+const recoded = await importViralTemplateLibrary(db, await buildBuffer([tplRow({ 模板ID: 'tpl-a', 脚本编号: 'J9' })]), '编号更新.xlsx');
+assert.equal(recoded.created, true);
+assert.equal(listViralTemplateEntries(db, { status: 'all' })[0].scriptCode, 'J9');
+assert.equal(getViralTemplateEntriesByIds(db, [usable.id])[0].scriptCode, 'J1', '历史模板修订保留原编号');
 console.log('script-studio-viral-template-import tests passed');

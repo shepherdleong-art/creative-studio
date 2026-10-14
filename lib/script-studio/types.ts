@@ -173,6 +173,7 @@ export interface FrozenViralTemplateSpec {
   entryId: string;
   revisionId: string;
   sourceTemplateId: string;
+  scriptCode?: string;
   name: string;
   title: string;
   category: string;
@@ -190,6 +191,7 @@ export interface TemplateRewriteScriptMeta {
   entryId: string;
   revisionId: string;
   sourceTemplateId: string;
+  scriptCode?: string;
   templateName: string;
   templateTitle: string;
   category: string;

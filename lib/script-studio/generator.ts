@@ -1126,6 +1126,7 @@ export function createScriptGenerator(
           entryId: template.entryId,
           revisionId: template.revisionId,
           sourceTemplateId: template.sourceTemplateId,
+          ...(template.scriptCode !== undefined ? { scriptCode: template.scriptCode } : {}),
           templateName: template.name,
           templateTitle: template.title,
           category: template.category,

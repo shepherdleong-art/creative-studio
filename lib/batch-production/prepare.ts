@@ -21,6 +21,7 @@ import { getCurrentAssetAnalysis, type AssetAnalysisLevel } from './asset-prepar
 import { videoJobNotRejectedSql } from '../media-core/video-job-rejection.ts';
 
 export interface PrepareScriptView {
+  scriptCode?: string;
   id: string;
   title: string;
   bodyText: string;
@@ -154,6 +155,7 @@ export async function prepareBatchProductionInputs(
   const scripts: PrepareScriptView[] = listProjectScripts(db, projectId).map((row) => ({
     id: row.id,
     title: row.title,
+    scriptCode: row.scriptCode || '',
     bodyText: row.bodyText,
     coverTitle: parseCoverTitle(row.coverTitleJson),
     shotSetId: row.shotSetId,
