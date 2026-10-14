@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { ensureCanvasCapabilitiesRegistered } from './capabilities-bootstrap.ts';
+import { ensureCanvasSchedulerStarted } from './bootstrap.ts';
 import { getDb } from '../db.ts';
 import { canvasFeatureEnabled } from './config.ts';
 import { CanvasError, canvasErrorStatus } from './errors.ts';
@@ -20,6 +21,9 @@ export async function assertCanvasApiReady(): Promise<void> {
     throw new CanvasError('canvas_unavailable', unavailable.message, { reason: unavailable.code });
   }
   ensureCanvasCapabilitiesRegistered(getDb());
+  // 启动时可能因其他模块持有升级锁而跳过 worker；API 闸门恢复后必须同时补启动。
+  // 内部单例合并并发请求，重复轮询不会反复恢复任务或创建调度器。
+  await ensureCanvasSchedulerStarted();
 }
 
 export function canvasErrorResponse(error: unknown): { status: number; body: Record<string, unknown> } {
