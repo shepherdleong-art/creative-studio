@@ -4,6 +4,7 @@ import type { ClassicComposition } from '../types.ts';
 import { htmlEscape as esc, pyFloat as f, pyFixed, pyJson } from '../python-format.ts';
 import { classicTemplateDir, CLASSIC_ASSETS, createOutputDirectory, projectFile, verifyClassicAssets } from '../files.ts';
 import { renderClassicCallouts } from './classic-callouts-v1.ts';
+import { validateClassicComposition } from '../spec.ts';
 
 /** Frozen HTML implementation of scripts/reassembled-film/packaging.py. */
 export function classicDocuments(spec: ClassicComposition, projectCss: string) {
@@ -59,6 +60,7 @@ export function classicDocuments(spec: ClassicComposition, projectCss: string) {
 }
 
 export function buildClassic(spec: ClassicComposition, outDir: string): void {
+  validateClassicComposition(spec);
   const template = classicTemplateDir();
   verifyClassicAssets(template);
   const css = fs.readFileSync(projectFile(spec.project.root, spec.classic.projectCss), 'utf8');

@@ -48,6 +48,7 @@ try {
     fs.copyFileSync(path.join(dir, 'style.css'), path.join(root, 'style.css'));
     fs.copyFileSync(path.join(dir, 'DESIGN.md'), path.join(root, 'DESIGN.md'));
     fs.writeFileSync(path.join(root, 'cover.png'), 'fixture');
+    for (const shot of spec.shots) fs.writeFileSync(path.join(root, shot.file), 'fixture');
     const output = path.join(root, name);
     buildClassic(spec, output);
     for (const file of Object.keys(docs)) assert.deepEqual(fs.readFileSync(path.join(output, file)), fs.readFileSync(path.join(dir, file)));
