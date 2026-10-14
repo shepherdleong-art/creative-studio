@@ -50,6 +50,8 @@ const trimId = bundle(path.join(root, 'components/mixcut/TrimEditor.tsx'));
 const timelineId = bundle(path.join(root, 'components/batch-production/review/BatchReviewTimelineDock.tsx'));
 const monitorId = bundle(path.join(root, 'components/batch-production/review/BatchSourceMonitor.tsx'));
 const previewId = bundle(path.join(root, 'components/final-edit/FinalEditPreview.tsx'));
+const previewStepId = bundle(path.join(root, 'components/mixcut/PreviewStep.tsx'));
+const textStyleId = bundle(path.join(root, 'lib/media-core/cover-domain.ts'));
 const mixcutId = bundle(path.join(root, 'components/mixcut/MixcutTimeline.tsx'));
 const inspectorId = bundle(path.join(root, 'components/batch-production/review/BatchReviewInspectorDock.tsx'));
 const require = createRequire(import.meta.url);
@@ -86,12 +88,23 @@ function App(){
 const group={id:'group',narrationDurationUs:6000000,script:{narrationConfig:{gainDb:0,playbackRate:1}},subtitleCues:[],coverTitle:{enabled:false,primary:{text:''},secondary:{text:''}},textStyles:{'3x4':{},'9x16':{},'16x9':{}}};
 const variant={id:'v',outputPreset:new URLSearchParams(location.search).get('ratio')||'3x4',cover:{sourceUrl:''},timeline:{clips:[{id:'one',videoJobId:'single',sourceInFrame:0,sourceOutFrame:144,timelineInFrame:0,timelineOutFrame:144,playbackRate:1}],bodyFrames:144},bgm:{trackId:null,gainDb:0,fadeInSec:0,fadeOutSec:0}};
 function Single(){const [t,setT]=React.useState(1.2);return React.createElement('div',{style:{height:650,width:800,display:'flex',flexDirection:'column'}},React.createElement(Preview,{group,variant,assets:[{videoJobId:'single',previewUrl:'/source.mp4',durationUs:8000000}],selectedAsset:null,playheadSec:t,textTarget:null,onPlayheadChange:setT,onTextPositionChange:()=>{}}));}
+function SingleEditor(){
+ const [current,setCurrent]=React.useState(()=>({...group,revision:0,bgmTracks:[],packaging:{enabled:false,template:'overlay-poster',varsOverrides:{},pointCues:[]},
+   textStyles:{'3x4':Object.fromEntries(['coverPrimary','coverSecondary','subtitle'].map(kind=>[kind,load(${textStyleId}).defaultTextStyle(kind,1080)]))},
+   assets:[{assetKey:'single',videoJobId:'single',filename:'source.mp4',previewUrl:'/source.mp4',durationUs:8000000}],
+   variants:[{...variant,indexNum:1,revision:0,issues:[],timeline:{...variant.timeline,clips:[
+     {...variant.timeline.clips[0],id:'first',sourceOutFrame:48,timelineOutFrame:48,framing:{scale:1,offsetX:0,offsetY:0}},
+     {...variant.timeline.clips[0],id:'second',sourceInFrame:24,sourceOutFrame:96,timelineInFrame:48,timelineOutFrame:96,playbackRate:1.5,framing:{scale:1,offsetX:0,offsetY:0}},
+   ]}}]}));
+ window.singleGroup=current;
+ return React.createElement('div',{'data-layout':'preview',style:{display:'grid',gridTemplateColumns:'220px 6px minmax(0,1fr) 6px 270px',height:900}},React.createElement(load(${previewStepId}).PreviewStep,{group:current,active:true,onGroupChange:setCurrent,onExport:()=>{},onRepCollapse:()=>{},onRgtCollapse:()=>{},onResizeStart:()=>()=>{}}));
+}
 function SingleTimeline(){const props={variant,cues:[],assets:[],selectedClipId:'',selectedCueId:'',playheadSec:0,disabled:false,narrationPlaybackRate:1,narrationDurationSec:6,pointCues:[],coverSec:20/24,selectedPointId:'',packagingEnabled:true,packagingTemplate:'overlay-poster',activeCueText:''};for(const name of ['onSeek','onSelectClip','onSelectCue','onVariantCommand','onGroupCommand','onTrimClip','onEditCueText','onNarrationPlaybackRatePreview','onNarrationPlaybackRateCommit','onSelectPoint','onPointsChange'])props[name]=()=>{};return React.createElement(Mixcut,props);}
 function Overlay(){const [v,setV]=React.useState({...view,packaging:{...view.packaging,varsOverrides:{title:'原标题'}}});return React.createElement('div',{style:{width:400,height:400,position:'relative'}},React.createElement(load(${overlayId}).default,{key:v.editRevision,view:v,src:'/overlay',timeSec:.4,editable:true,onSave:async(plan,edit)=>{window.edits.push(edit);setV(x=>({...x,packaging:edit.config,editRevision:x.editRevision+1}));return true;}}));}
 function Menu(){const [v,setV]=React.useState(view);return React.createElement(load(${menuId}).default,{view:v,onJumpToCover:()=>{window.jumpCount=(window.jumpCount||0)+1},onSave:async(config,reextract)=>{window.edits.push({config,reextract});setV(x=>({...x,packaging:config,editRevision:x.editRevision+1}));return true;}});}
 function Trim(){return React.createElement('div',{style:{width:760}},React.createElement(load(${trimId}).TrimEditor,{clip:{sourceInFrame:70,sourceOutFrame:118},clipIndex:0,asset:{durationUs:5100000},disabled:false,onCommit:async(a,b)=>{window.trimSaved=[a,b];return true;},onClose:()=>{}}));}
 const mode=new URLSearchParams(location.search).get('mode');
-load(${domId}).createRoot(document.getElementById('root')).render(React.createElement(mode==='overlay'?Overlay:mode==='menu'?Menu:mode==='trim'?Trim:mode==='single'?Single:mode==='tracks'?SingleTimeline:App));
+load(${domId}).createRoot(document.getElementById('root')).render(React.createElement(mode==='overlay'?Overlay:mode==='menu'?Menu:mode==='trim'?Trim:mode==='single'?Single:mode==='single-editor'?SingleEditor:mode==='tracks'?SingleTimeline:App));
 `;
 const globalCss=(await postcss([tailwind()]).process(fs.readFileSync(path.join(root,'app/globals.css'),'utf8'),{from:path.join(root,'app/globals.css')})).css;
 const css = `${globalCss}*{box-sizing:border-box}body{margin:0}button,input{font:inherit}video{max-height:100%;max-width:100%}.h-full{height:100%}.w-full{width:100%}.min-h-0{min-height:0}.flex{display:flex}.flex-col{flex-direction:column}.flex-1{flex:1}.shrink-0{flex-shrink:0}.object-contain{object-fit:contain}.previewColumn{flex:1}${styles.join('\n')}`;
@@ -126,7 +139,70 @@ let browser;
 try{
  browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:1440,height:900}});const errors=[];page.on('pageerror',e=>{errors.push(e.message);console.error('Browser:',e.message)});
  const origin=`http://127.0.0.1:${server.address().port}`;
+ const frameSignature=locator=>locator.evaluate(element=>{
+   const canvas=document.createElement('canvas');canvas.width=80;canvas.height=60;
+   canvas.getContext('2d').drawImage(element,0,0,80,60);return canvas.toDataURL();
+ });
+ const waitForTrimFrame=async(video)=>{
+   const target=Number(await page.getByRole('slider',{name:'移动截取选框'}).getAttribute('aria-valuenow'));
+   await video.evaluate(async(v,target)=>{
+     const deadline=performance.now()+5000;
+     while(v.seeking||v.readyState<2||Math.abs(v.currentTime-target)>0.002){
+       if(performance.now()>deadline)throw new Error('预览未追上截取入点 '+target+'，实际 '+v.currentTime);
+       await new Promise(resolve=>requestAnimationFrame(resolve));
+     }
+     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+   },target);
+   assert.equal(await video.evaluate(v=>v.paused),true,'拖动入点时暂停播放');
+ };
  if(!process.argv.includes('--shortcuts-only')&&!process.argv.includes('--cover-only')){
+ const singleSaves=[];
+ await page.route('**/api/final-edit-variants/v',async route=>{
+   const edit=route.request().postDataJSON();singleSaves.push(edit);
+   const current=await page.evaluate(()=>window.singleGroup.variants[0]);
+   const next={...current,revision:current.revision+1,timeline:{...current.timeline,clips:current.timeline.clips.map(clip=>clip.id===edit.clipId?{...clip,sourceInFrame:edit.sourceInFrame,sourceOutFrame:edit.sourceOutFrame}:clip)}};
+   await route.fulfill({json:{view:next}});
+ });
+ await page.goto(origin+'/?mode=single-editor');
+ page.setDefaultTimeout(10000);
+ await page.locator('[data-clip-id="second"]').dblclick();
+ const singleSelection=page.getByRole('slider',{name:'移动截取选框'});
+ const singleVideo=page.locator('.previewStage video').nth(1);
+ const singleCanvas=page.locator('.previewStage canvas.previewMedia:not(.previewInactive)');
+ await waitForTrimFrame(singleVideo);
+ const initialSingleFrame=await frameSignature(singleCanvas);
+ const singleOriginal=await page.evaluate(()=>window.singleGroup.variants[0].timeline.clips);
+ const singleBox=await singleSelection.boundingBox();
+ const singleFrames=[];
+ await page.mouse.move(singleBox.x+singleBox.width/2,singleBox.y+singleBox.height/2);await page.mouse.down();
+ for(const delta of [45,110,160,25]){
+   await page.mouse.move(singleBox.x+singleBox.width/2+delta,singleBox.y+singleBox.height/2,{steps:6});
+   await waitForTrimFrame(singleVideo);singleFrames.push(await frameSignature(singleCanvas));
+ }
+ assert.equal(new Set([initialSingleFrame,...singleFrames]).size,5,'单条混剪在鼠标未松开时持续显示不同真实帧');
+ assert.equal(singleSaves.length,0,'拖动预览不发送保存请求');
+ assert.deepEqual(await page.evaluate(()=>window.singleGroup.variants[0].timeline.clips),singleOriginal,'临时预览不改正式草稿');
+ await page.mouse.up();
+ await page.getByRole('button',{name:'取消',exact:true}).click();
+ await page.waitForFunction(()=>{const v=document.querySelectorAll('.previewStage video')[1];return v&&!v.seeking&&Math.abs(v.currentTime-1)<.002;});
+ assert.equal(singleSaves.length,0,'取消不保存');
+ await page.locator('[data-clip-id="first"]').dblclick();
+ assert.equal(Number(await singleSelection.getAttribute('aria-valuenow')),0,'切换片段重置截取草稿');
+ await page.locator('[data-clip-id="second"]').dblclick();
+ assert.equal(Number(await singleSelection.getAttribute('aria-valuenow')),1);
+ await singleSelection.focus();await page.keyboard.press('End');await waitForTrimFrame(singleVideo);
+ assert.equal(Number(await singleSelection.getAttribute('aria-valuenow')),5,'倍速片段按源长度抵达素材尾部');
+ await page.keyboard.press('ArrowLeft');await waitForTrimFrame(singleVideo);
+ const chosenIn=Number(await singleSelection.getAttribute('aria-valuenow'));
+ await page.keyboard.press('Enter');await page.waitForFunction(()=>!document.querySelector('.trimSel'));
+ assert.equal(singleSaves.length,1,'完成只保存一次');
+ assert.equal(singleSaves[0].sourceInFrame,Math.round(chosenIn*24));
+ assert.equal(singleSaves[0].sourceOutFrame-singleSaves[0].sourceInFrame,72,'源片段时长保持不变');
+ const singleSaved=await page.evaluate(()=>window.singleGroup.variants[0].timeline.clips);
+ assert.deepEqual(singleSaved[0],singleOriginal[0],'其他片段不受影响');
+ assert.equal(singleSaved[1].playbackRate,1.5);
+ assert.equal(singleSaved[1].timelineInFrame,48);assert.equal(singleSaved[1].timelineOutFrame,96);
+ await page.unroute('**/api/final-edit-variants/v');
  await page.goto(origin+'/?mode=trim');
  await page.locator('.trimStrip').waitFor();
  const strip=await page.locator('.trimStrip').boundingBox();
@@ -162,14 +238,25 @@ try{
  assert.ok((await video.evaluate(v=>v.duration))>7.9,'完整源视频而非时间轴两秒选段');
  const selection=page.getByRole('slider',{name:'移动截取选框'});
  assert.equal(await page.getByLabel('源视频入点',{exact:true}).count(),0,'取消独立出入点表单');
- const before=await selection.boundingBox();await drag(selection,80);
+ await waitForTrimFrame(video);
+ const before=await selection.boundingBox(),batchFrames=[await frameSignature(video)];
+ const batchEditsBefore=await page.evaluate(()=>window.edits.length);
+ await page.mouse.move(before.x+before.width/2,before.y+before.height/2);await page.mouse.down();
+ for(const delta of [40,120,200,80]){
+   await page.mouse.move(before.x+before.width/2+delta,before.y+before.height/2,{steps:6});
+   await waitForTrimFrame(video);batchFrames.push(await frameSignature(video));
+ }
+ assert.equal(new Set(batchFrames).size,5,'批量截取在鼠标未松开时持续显示不同真实帧');
+ assert.equal(await page.evaluate(()=>window.edits.length),batchEditsBefore,'批量拖动预览不保存');
+ await page.mouse.up();
  assert.ok((await selection.boundingBox()).x>before.x,'与单条共用的胶片选框可拖动');
  assert.ok(Math.abs((await selection.boundingBox()).width-before.width)<1,'拖动保持选段长度');
  assert.ok((await video.evaluate(v=>v.currentTime))>1,'拖动同步预览入点画面');
  await selection.focus();await page.keyboard.press('End');
+ await waitForTrimFrame(video);
  assert.ok(Math.abs((await video.evaluate(v=>v.currentTime))-6)<0.002,'可截取素材最后两秒');
- await page.keyboard.press('ArrowLeft');assert.ok(Math.abs((await video.evaluate(v=>v.currentTime))-(6-1/24))<0.002);
- await page.keyboard.press('End');
+ await page.keyboard.press('ArrowLeft');await waitForTrimFrame(video);assert.ok(Math.abs((await video.evaluate(v=>v.currentTime))-(6-1/24))<0.002);
+ await page.keyboard.press('End');await waitForTrimFrame(video);
  await video.evaluate(v=>v.play());await page.waitForFunction(()=>document.querySelector('[data-source-monitor] video').currentTime>6.15);await video.evaluate(v=>v.pause());
  fs.mkdirSync(path.join(root,'outputs/review-packaging-acceptance'),{recursive:true});await page.locator('[data-source-monitor]').screenshot({path:path.join(root,'outputs/review-packaging-acceptance/shared-trim.png')});
  await page.evaluate(()=>window.failSave=true);await page.getByRole('button',{name:'完成',exact:true}).click();

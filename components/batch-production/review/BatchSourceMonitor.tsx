@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
 import { FINAL_EDIT_FPS as FPS } from '@/lib/media-core/render-contract';
 import { TrimEditor } from '@/components/mixcut/TrimEditor';
@@ -23,9 +23,29 @@ export default function BatchSourceMonitor({ session, projectId, onApply, onClos
   const videoRef = useRef<HTMLVideoElement>(null);
   const [duration, setDuration] = useState(asset.durationSec ?? 0);
   const [error, setError] = useState('');
-  const seek = (sec: number) => {
+  const pendingSeekRef = useRef<number | null>(clip.sourceStartUs / 1e6);
+  const flushSeek = useCallback(() => {
     const video = videoRef.current;
-    if (video) { video.pause(); video.currentTime = sec; }
+    const target = pendingSeekRef.current;
+    if (!video || target === null || video.readyState === 0 || video.seeking) return;
+    pendingSeekRef.current = null;
+    if (Math.abs(video.currentTime - target) > 1e-6) video.currentTime = target;
+  }, []);
+  useEffect(() => {
+    const video = videoRef.current;
+    // 先让正在解码的帧上屏，再追上最新入点；连续拖动不反复取消在途 seek。
+    let frame = 0;
+    const onSeeked = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(flushSeek); };
+    video?.addEventListener('seeked', onSeeked);
+    return () => {
+      cancelAnimationFrame(frame);
+      video?.removeEventListener('seeked', onSeeked);
+    };
+  }, [flushSeek]);
+  const seek = (sec: number) => {
+    pendingSeekRef.current = sec;
+    videoRef.current?.pause();
+    flushSeek();
   };
 
   return <div className="flex h-full min-h-0 w-full flex-col gap-1" data-source-monitor>
@@ -33,7 +53,7 @@ export default function BatchSourceMonitor({ session, projectId, onApply, onClos
       <LutVideoPlayer src={`/api/batch-production/assets/${encodeURIComponent(asset.assetId)}/preview?projectId=${encodeURIComponent(projectId)}`}
         videoRef={videoRef} ariaLabel={`完整素材：${asset.displayName}`} className="h-full w-full" poster={asset.thumbnailUrl}
         lut={asset.lutId ? { lutId: asset.lutId, url: `/api/batch-production/luts/${encodeURIComponent(asset.lutId)}/file?projectId=${encodeURIComponent(projectId)}` } : null}
-        onLoadedMetadata={event => { setDuration(event.currentTarget.duration); event.currentTarget.currentTime = clip.sourceStartUs / 1e6; }}
+        onLoadedMetadata={event => { setDuration(event.currentTarget.duration); flushSeek(); }}
         onError={() => setError('源视频加载失败，请检查素材是否可用')} />
     </div>
     <TrimEditor compact clip={{ sourceInFrame: clip.sourceStartUs * FPS / 1e6, sourceOutFrame: clip.sourceEndUs * FPS / 1e6 }}

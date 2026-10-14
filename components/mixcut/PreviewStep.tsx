@@ -83,6 +83,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [auditionStopRequestId, setAuditionStopRequestId] = useState(0);
   const [coverOpen, setCoverOpen] = useState(false);
   const [trimClip, setTrimClip] = useState<TimelineClip | null>(null);
+  const [trimPreviewInFrame, setTrimPreviewInFrame] = useState(0);
   const [analyzingKey, setAnalyzingKey] = useState('');
   type HistoryEntry = { scope: 'variant' | 'group'; id: string; before: number; after: number };
   const historyRef = useRef<{ undo: HistoryEntry[]; redo: HistoryEntry[] }>({ undo: [], redo: [] });
@@ -115,6 +116,21 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const orderedClips = useMemo(() => variant ? [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame) : [], [variant]);
   const trimClipIndex = trimClip ? orderedClips.findIndex((clip) => clip.id === trimClip.id) : -1;
   const trimAsset = trimClip ? group.assets.find((asset) => asset.videoJobId === trimClip.videoJobId) ?? null : null;
+  // 截取草稿只交给播放器；点击“完成”前不改时间轴数据或保存历史。
+  const trimPreviewVariant = useMemo(() => {
+    if (!variant || !trimClip) return variant;
+    return {
+      ...variant,
+      timeline: {
+        ...variant.timeline,
+        clips: variant.timeline.clips.map((clip) => clip.id === trimClip.id ? {
+          ...clip,
+          sourceInFrame: trimPreviewInFrame,
+          sourceOutFrame: trimPreviewInFrame + trimClip.sourceOutFrame - trimClip.sourceInFrame,
+        } : clip),
+      },
+    };
+  }, [variant, trimClip, trimPreviewInFrame]);
   const usedVideoJobIds = useMemo(() => new Set(variant?.timeline.clips.map((clip) => clip.videoJobId) ?? []), [variant]);
   const firstInsertableGap = useMemo(() => variant
     ? timelineGaps(variant.timeline.bodyFrames, variant.timeline.clips)
@@ -331,6 +347,9 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   };
 
   const seek = (seconds: number) => {
+    // 丢弃播放中的尾随上报，避免它把截取预览拉回拖动前的位置。
+    window.clearTimeout(playheadCommitRef.current.timer);
+    playheadCommitRef.current.timer = 0;
     setPlayheadSec(seconds);
     setSeekRequestId((value) => value + 1);
   };
@@ -582,6 +601,9 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const openTrim = (clip: TimelineClip) => {
     setSelectedClipId(clip.id);
     setTrimClip(clip);
+    setTrimPreviewInFrame(clip.sourceInFrame);
+    setPreviewMode('output');
+    seek((FINAL_EDIT_INTRO_FRAMES + clip.timelineInFrame) / FPS);
   };
 
   const narrationSec = group.narrationDurationUs / 1_000_000 / group.script.narrationConfig.playbackRate;
@@ -1023,7 +1045,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                 ) : (
                   <FinalEditPreview
                     group={group}
-                    variant={variant}
+                    variant={trimPreviewVariant ?? variant}
                     assets={group.assets}
                     selectedAsset={null}
                     playheadSec={effectivePlayheadSec}
@@ -1067,10 +1089,16 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
 
           {trimClip && (
             <TrimEditor
+              key={trimClip.id}
               clip={trimClip}
               clipIndex={Math.max(0, trimClipIndex)}
               asset={trimAsset}
               disabled={busy}
+              onPreview={(sourceInSec) => {
+                setTrimPreviewInFrame(Math.round(sourceInSec * FPS));
+                setPreviewMode('output');
+                seek((FINAL_EDIT_INTRO_FRAMES + trimClip.timelineInFrame) / FPS);
+              }}
               onCommit={(sourceInFrame, sourceOutFrame) => applyVariant({
                 type: 'trim_clip',
                 clipId: trimClip.id,
