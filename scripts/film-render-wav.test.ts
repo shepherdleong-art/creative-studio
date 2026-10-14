@@ -1,0 +1,24 @@
+import assert from 'node:assert/strict';
+import { encodePcmWav, parsePcmWav } from '../lib/film-render/wav.ts';
+import { roundEven } from '../lib/film-render/python-format.ts';
+
+const pcm = Buffer.from([0, 0, 255, 127, 0, 128, 1, 0]);
+const standard = encodePcmWav(pcm);
+assert.deepEqual(parsePcmWav(standard), { channels: 1, sampleRate: 48000, bitsPerSample: 16, sampleFrames: 4, pcm });
+const extra = Buffer.alloc(12);
+extra.write('LIST'); extra.writeUInt32LE(3, 4); extra.write('abc', 8);
+const extended = Buffer.concat([standard.subarray(0, 36), extra, standard.subarray(36)]);
+extended.writeUInt32LE(extended.length - 8, 4);
+assert.deepEqual(parsePcmWav(extended), parsePcmWav(standard));
+const junk = Buffer.from(extra); junk.write('JUNK');
+const after = Buffer.concat([standard, junk]); after.writeUInt32LE(after.length - 8, 4);
+assert.deepEqual(parsePcmWav(after), parsePcmWav(standard));
+assert.throws(() => parsePcmWav(extended.subarray(0, -1)), /RIFF/);
+const corrupt = Buffer.from(extended); corrupt.writeUInt32LE(99999, 40);
+assert.throws(() => parsePcmWav(corrupt), /截断/);
+const floating = Buffer.from(standard); floating.writeUInt16LE(3, 20);
+assert.throws(() => parsePcmWav(floating), /PCM16/);
+const misaligned = Buffer.from(standard); misaligned.writeUInt16LE(4, 32);
+assert.throws(() => parsePcmWav(misaligned), /不合法/);
+for (const [value, expected] of [[.5, 0], [1.5, 2], [2.5, 2], [3.5, 4], [-.5, 0]]) assert.equal(roundEven(value), expected);
+console.log('film-render WAV passed: RIFF chunks, odd padding, truncation, PCM16 and ties-to-even');

@@ -18,6 +18,7 @@ import {
   type ExecFileSyncOptionsWithBufferEncoding,
   type ExecFileSyncOptionsWithStringEncoding,
   type SpawnOptionsWithoutStdio,
+  type SpawnOptions,
   type SpawnSyncOptions,
   type SpawnSyncOptionsWithBufferEncoding,
   type SpawnSyncOptionsWithStringEncoding,
@@ -35,10 +36,12 @@ function assertWindowsHideDeclared(options: unknown, api: string): void {
   }
 }
 
-/** spawn（默认 stdio=pipe 形态）。需要自定义 stdio 的调用请先评估是否确有必要，再扩展本签名。 */
-export function spawnHidden(command: string, args?: readonly string[], options?: SpawnOptionsWithoutStdio): ChildProcessWithoutNullStreams {
+/** 默认 pipe 保留非空流类型；文件描述符重定向返回可空流的 ChildProcess。 */
+export function spawnHidden(command: string, args?: readonly string[], options?: SpawnOptionsWithoutStdio): ChildProcessWithoutNullStreams;
+export function spawnHidden(command: string, args: readonly string[], options: SpawnOptions): ChildProcess;
+export function spawnHidden(command: string, args: readonly string[] = [], options?: SpawnOptions): ChildProcess {
   assertWindowsHideDeclared(options, 'spawn');
-  return spawn(command, args ?? [], { ...(options as SpawnOptionsWithoutStdio | undefined), windowsHide: true } as SpawnOptionsWithoutStdio);
+  return spawn(command, args, { ...options, windowsHide: true });
 }
 
 export function spawnSyncHidden(command: string, args: readonly string[], options: SpawnSyncOptionsWithStringEncoding): SpawnSyncReturns<string>;
