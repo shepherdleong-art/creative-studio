@@ -15,7 +15,7 @@ function deliveryBaseName(root: string, variant: string): string {
   if (!fs.existsSync(path.join(root, 'review/delivery.json'))) return variant;
   const delivery = object(readProjectJson(root, 'review/delivery.json'), 'delivery');
   // Only an explicit variant mapping is evidence. Never infer membership from a filename.
-  const variants = delivery.variants;
+  const variants = delivery.variants ?? delivery.files;
   let entry: unknown;
   if (Array.isArray(variants)) entry = variants.find(v => v && typeof v === 'object' && v.variant === variant);
   else if (variants && typeof variants === 'object') entry = (variants as Record<string, unknown>)[variant];
@@ -27,10 +27,10 @@ function deliveryBaseName(root: string, variant: string): string {
   return name.slice(0, -4);
 }
 
-/** Read-only legacy adapter. Audio paths follow reassembled-film-render.py (project-relative).
- * RC2C-specific conversion and delivery schema must be checked against Appendix A on Windows.
+/** Read-only adapter for the audited RC2C / BS619 variant timelines.
+ * Audio and media paths are variant-relative; the returned spec is project-relative.
  */
-export function renderSpecFromProject(projectRoot: string, variant: string, options: { baseName?: string } = {}): RenderSpec {
+export function renderSpecFromProject(projectRoot: string, variant: string, options: { baseName?: string; musicInSec?: number; coverFrame?: number } = {}): RenderSpec {
   identifier(variant, 'variant');
   const root = fs.realpathSync(projectRoot);
   const variantDir = `variants/${variant}`;
@@ -42,7 +42,8 @@ export function renderSpecFromProject(projectRoot: string, variant: string, opti
   const fileAtVariant = (v: unknown) => path.relative(root, projectFile(root, path.resolve(root, variantDir, string(v, 'variant file'))));
   const shots = array(timeline.shots, 'timeline.shots').map(value => {
     const s = object(value, 'shot');
-    return { id: s.id, file: fileAtVariant(s.file), startFrame: s.startFrame, endFrame: s.endFrame, inSec: s.inSec, rate: s.rate };
+    return { id: s.id, file: fileAtVariant(s.file), startFrame: s.startFrame, endFrame: s.endFrame, inSec: s.inSec, rate: s.rate,
+      ...(s.approvedSourceRangeSec === undefined ? {} : { approvedSourceRangeSec: s.approvedSourceRangeSec }) };
   });
   requireInput(timeline.voices !== undefined && timeline.music !== undefined, 'AUDIO_SOURCE_MISSING',
     '时间线缺少 voices/music；需核对现场脚本，不能猜测配音或配乐');
@@ -62,10 +63,13 @@ export function renderSpecFromProject(projectRoot: string, variant: string, opti
     template: { id: 'classic', version: '1' },
     shots, subtitles: timeline.subtitles,
     audio: {
-      voices: timeline.voices,
-      music: { file: timeline.music, gainDb: -14, fadeInSec: .35, fadeOutSec: 1,
+      voices: array(timeline.voices, 'voices').map(value => {
+        const voice = object(value, 'voice');
+        return { ...voice, file: fileAtVariant(voice.file) };
+      }),
+      music: { file: fileAtVariant(timeline.music), inSec: options.musicInSec ?? 0, gainDb: -14, fadeInSec: .25, fadeOutSec: 1,
         ducking: { threshold: .025, ratio: 8, attackMs: 15, releaseMs: 250 } },
-      loudness: { integratedLufs: -16, truePeakDb: -1.5, lra: 11 },
+      loudness: { integratedLufs: -16, truePeakDb: -1.6, lra: 11 },
     },
     classic: {
       projectCss: 'tools/style.css', designDoc: 'DESIGN.md', theme: timeline.theme,
@@ -74,6 +78,6 @@ export function renderSpecFromProject(projectRoot: string, variant: string, opti
         brand: config.brand, model: config.model, productName: config.productName },
       labels, callouts: timeline.callouts === undefined ? [] : timeline.callouts, outro: { title: timeline.endtitle },
     },
-    output: { coverFrame: 10 },
+    output: { coverFrame: options.coverFrame ?? 16 },
   });
 }

@@ -10,9 +10,9 @@ import type { RenderSpec } from './types.ts';
 
 export interface TechnicalCheck { code: string; ok: boolean; message: string; details?: unknown }
 export interface VerifyResult { ok: boolean; checks: TechnicalCheck[]; checksPath: string }
-// Provisional fallback thresholds, to be checked against RC2C validate_final.py in Appendix A.
+// Windows references: RC2C media_pipeline.py:51–52; finish_variant.py:31–35.
 export const VERIFY_THRESHOLDS = {
-  coverMeanAbsoluteDifference: .15,
+  coverMeanAbsoluteDifference: .8,
   firstFrameBlackFraction: .98,
   coverJpegSsim: .98,
   edgeBlackLuma: 8,
@@ -107,14 +107,19 @@ export async function verifyFilm(args: {
   });
   await phase('LOUDNESS_FAILED', async () => {
     const measured = await measureLoudness(video, spec.audio.loudness, options);
-    check('AUDIO_LOUDNESS', measured.integratedLufs >= -17 && measured.integratedLufs <= -15 && measured.truePeakDb <= -1,
-      '整体响度 −17 至 −15 LUFS，真峰值不高于 −1 dBTP', measured);
+    check('AUDIO_LOUDNESS', measured.integratedLufs > -17 && measured.integratedLufs < -15 && measured.truePeakDb <= -1.4,
+      '整体响度 −17 至 −15 LUFS，真峰值不高于 −1.4 dBTP', measured);
+  });
+  await phase('BLACK_FRAMES_CHECK_FAILED', async () => {
+    const { stderr } = await runCaptured(resolveFfmpegPath(), ['-nostdin', '-hide_banner', '-i', video,
+      '-vf', 'blackdetect=d=0.1:pix_th=0.02', '-an', '-f', 'null', '-'], options);
+    check('BLACK_FRAMES', !stderr.includes('black_start:'), '无连续 0.1 秒以上黑帧');
   });
   await phase('COVER_CHECK_FAILED', async () => {
-    const raw = path.join(workDir, 'cover-frames.gray');
-    await runFfmpeg(['-nostdin', '-hide_banner', '-n', '-i', video, '-frames:v', '20', '-pix_fmt', 'gray', '-f', 'rawvideo', '-threads', '1', raw], options);
+    const raw = path.join(workDir, 'cover-frames.rgb');
+    await runFfmpeg(['-nostdin', '-hide_banner', '-n', '-i', video, '-frames:v', '20', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-threads', '1', raw], options);
     const bytes = fs.readFileSync(raw);
-    const size = 1080 * 1440;
+    const size = 1080 * 1440 * 3;
     if (bytes.length !== 20 * size) throw new FilmRenderError('COVER_FRAMES_MISSING', '封面不足 20 帧或尺寸不符', 4);
     const differences: number[] = [];
     let black = 0;
@@ -124,7 +129,7 @@ export async function verifyFilm(args: {
       for (let i = 0; i < size; i++) difference += Math.abs(bytes[frame * size + i] - bytes[i]);
       differences.push(difference / size);
     }
-    check('COVER_STATIC', differences.every(d => d <= VERIFY_THRESHOLDS.coverMeanAbsoluteDifference),
+    check('COVER_STATIC', differences.every(d => d < VERIFY_THRESHOLDS.coverMeanAbsoluteDifference),
       '第 0–19 帧接近完全静止', { meanAbsoluteDifferencesFromFirst: differences, threshold: VERIFY_THRESHOLDS.coverMeanAbsoluteDifference });
     check('COVER_FIRST_FRAME', black / size < VERIFY_THRESHOLDS.firstFrameBlackFraction, '首帧不是黑帧（完整文案仍需视觉检查）', { blackFraction: black / size });
     const reference = path.join(workDir, 'cover-reference.png');

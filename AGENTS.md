@@ -97,6 +97,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 | `docs/reference/详情页智能脚本生成.md` | 改 `lib/script-studio/` 任何东西 |
 | `docs/reference/创作画布.md` | 改 `lib/creative-canvas/`、`app/api/canvas/`、`components/creative-canvas/`、`app/canvas/` 任何东西 |
 | `docs/reference/视频包装.md` | 改共享包装、四套模板、单条或批量包装入口、离线包装运行资源 |
+| `docs/reference/固定渲染命令.md` | 改 `lib/film-render/`、`scripts/film-render.ts` 或 classic 渲染验收 |
 
 ### `lib/` 核心模块
 
@@ -133,6 +134,8 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - 红线：**本机服务（app 与代理）不得暴露到公网，公网交付只走 COS**；COS 密钥只在 `.env.local`，签名参数绝不进日志；公司尾帧两帧都必须走 COS 预签名 URL，任一 gate 失败在 POST 前 fail closed。
 
 **成片与媒体**
+
+- `film-render/` — 源码工程的 classic 固定渲染核心与 CLI；不读工作台数据库，只依赖 `media-core` 和底层媒体工具。输出只写新 `renders/<runId>`，classic/1 构建器与金样冻结，详见 `docs/reference/固定渲染命令.md`。
 
 - `final-edit/` — “智能混剪”第五步的后端：版本化 schema、时间线/字幕领域模型、ffmpeg 渲染、渲染 worker（重启把 running 恢复为 queued）、工作区/提案/BGM，以及视频分析、TTS、对齐等 `adapters/`。共享媒体基础（存储路径、匹配、封面标题、场景检测、TTS 与对齐、`render-contract.ts` 的 24fps / 20 帧片头常量）在 `media-core/`，旧路径只做兼容再导出。**混剪上下文与外部素材按 `projectId + shotSetId` 隔离，不许从文件名或时间戳推断归属。**
 - `ffmpeg.ts` — 解析 ffmpeg/ffprobe（`CREATIVE_STUDIO_FFMPEG`/`_FFPROBE` → static 包 → PATH），封装带进度回调、超时、stderr 尾部报错和 AbortSignal 的 `runFfmpeg`，并提供直接子进程的停机广播/等待；`probeDurationSec` 在 ffprobe 失败时回退 ffmpeg 解析。

@@ -16,4 +16,5 @@ const browser = await install({ browser: Browser.CHROMEHEADLESSSHELL, buildId: '
 const target = path.join(packaging, 'runtime', 'chrome-headless-shell');
 fs.mkdirSync(target, { recursive: true });
 fs.cpSync(path.dirname(browser.executablePath), target, { recursive: true });
-console.log('包装运行时已安装（HyperFrames 0.8.21 / Chrome 152.0.7977.30）');
+const hyperframesVersion = JSON.parse(fs.readFileSync(path.join(packaging, 'node_modules/hyperframes/package.json'), 'utf8')).version;
+console.log(`包装运行时已安装（HyperFrames ${hyperframesVersion} / Chrome 152.0.7977.30）`);

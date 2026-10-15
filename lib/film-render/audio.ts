@@ -60,7 +60,8 @@ export async function mixFilmAudio(spec: RenderSpec, audioDir: string, options: 
   requireInput(Number.isFinite(musicDuration) && musicDuration > 0, 'MUSIC_DURATION', '配乐时长必须大于零');
   // ffmpeg 6.0 on macOS can hang at teardown with -stream_loop -1. A finite
   // repetition count emits the same samples through the fixed atrim boundary.
-  const repeats = Math.max(0, Math.ceil(seconds / musicDuration) - 1);
+  requireInput(m.inSec < musicDuration, 'MUSIC_OFFSET', '配乐入点必须小于源文件时长');
+  const repeats = Math.max(0, Math.ceil((seconds + m.inSec) / musicDuration) - 1);
   stitchNarration(spec, narration, options.signal);
   const narrationDuration = await assertAudioDuration(narration, seconds, audioDir, options);
   const filters = [
@@ -69,7 +70,7 @@ export async function mixFilmAudio(spec: RenderSpec, audioDir: string, options: 
     `[bgm][duck]sidechaincompress=threshold=${d.threshold}:ratio=${d.ratio}:attack=${d.attackMs}:release=${d.releaseMs}[music]`,
     '[vo][music]amix=inputs=2:normalize=0[mix]',
   ];
-  await runFfmpeg(['-nostdin', '-hide_banner', '-n', '-i', narration, '-stream_loop', String(repeats),
+  await runFfmpeg(['-nostdin', '-hide_banner', '-n', '-i', narration, '-ss', String(m.inSec), '-stream_loop', String(repeats),
     '-i', musicFile, '-filter_complex', filters.join(';'), '-map', '[mix]', '-t', String(seconds),
     '-c:a', 'pcm_s16le', premix], { ...options, timeoutMs: options.timeoutMs ?? 300_000 });
   const premixDuration = await assertAudioDuration(premix, seconds, audioDir, options);
@@ -80,7 +81,7 @@ export async function mixFilmAudio(spec: RenderSpec, audioDir: string, options: 
     { ...options, timeoutMs: options.timeoutMs ?? 300_000 });
   const finalDuration = await assertAudioDuration(final, seconds, audioDir, options);
   const measured = await measureLoudness(final, spec.audio.loudness, options);
-  if (measured.integratedLufs < -17 || measured.integratedLufs > -15 || measured.truePeakDb > -1) {
+  if (measured.integratedLufs <= -17 || measured.integratedLufs >= -15 || measured.truePeakDb > -1.4) {
     throw new FilmRenderError('AUDIO_LOUDNESS', `混音响度/峰值不合格: ${JSON.stringify(measured)}`, 4);
   }
   return { narration, premix, final, firstPass: first, measured, durations: { narration: narrationDuration, premix: premixDuration, final: finalDuration } };

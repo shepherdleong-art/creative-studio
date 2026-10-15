@@ -6,6 +6,8 @@ export interface Shot {
   endFrame: number;
   inSec: number;
   rate: number;
+  /** Approved interval in source seconds, including transition handles. */
+  approvedSourceRangeSec?: [number, number];
 }
 export interface Subtitle { text: string; startFrame: number; endFrame: number }
 export interface Callout {
@@ -25,6 +27,8 @@ export interface FilmAudio {
   voices: Voice[];
   music: {
     file: string;
+    /** Source offset, before looping the music bed. */
+    inSec: number;
     gainDb: number;
     fadeInSec: number;
     fadeOutSec: number;

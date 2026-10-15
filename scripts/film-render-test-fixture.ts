@@ -13,8 +13,8 @@ export function fixtureProject(root: string, name = 'tracking') {
   fs.mkdirSync(path.join(root, 'tools'), { recursive: true });
   fs.mkdirSync(path.join(root, 'review'), { recursive: true });
   const timeline = parsePythonJson(fs.readFileSync(path.join(dir, 'timeline.json'), 'utf8')) as Record<string, unknown>;
-  timeline.voices = [{ file: 'voice.wav', trimStart: 0, trimEnd: 1, atFrame: 24 }];
-  timeline.music = 'music.wav';
+  timeline.voices = [{ file: '../../voice.wav', trimStart: 0, trimEnd: 1, atFrame: 24 }];
+  timeline.music = '../../music.wav';
   fs.writeFileSync(path.join(root, 'variants/01/timeline.json'), pyJson(timeline, false));
   for (const name of ['opening.mp4', 'detail.mp4', 'outro.mp4', 'cover.png']) fs.writeFileSync(path.join(root, 'variants/01', name), 'fixture');
   fs.copyFileSync(path.join(dir, 'style.css'), path.join(root, 'tools/style.css'));

@@ -18,6 +18,15 @@ try {
   const pending = runCaptured(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { outputFiles: files('abort'), signal: active.signal });
   const timer = setTimeout(() => active.abort(), 100);
   try { await assert.rejects(pending, { name: 'AbortError' }); } finally { clearTimeout(timer); }
+  const treeAbort = new AbortController();
+  let descendant = 0;
+  const tree = runCaptured(process.execPath, ['-e', `const {spawn}=require('node:child_process'); const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{windowsHide:true}); console.log(child.pid); setInterval(()=>{},1000);`],
+    { signal: treeAbort.signal, killTree: true, timeoutMs: 10_000, onOutput: text => {
+      descendant = Number(text.trim()); if (descendant > 0) treeAbort.abort();
+    } });
+  await assert.rejects(tree, { name: 'AbortError' });
+  assert.ok(descendant > 0, 'child process started');
+  assert.throws(() => process.kill(descendant, 0), 'cancellation must terminate the descendant before returning');
   await assert.rejects(probeMedia(path.join(root, 'missing-file.mp4'), root), /PROCESS|No such file|不存在/i);
   assert.ok(fs.readdirSync(root).every(name => !name.startsWith('probe-')), 'probe scratch files are cleaned after failure');
   // On Windows these removals also establish that the parent file handles were closed.

@@ -7,8 +7,8 @@ import { projectFile } from './files.ts';
 import { runCaptured, type ProcessOptions } from './process.ts';
 import type { RenderSpec, Shot } from './types.ts';
 
-// Provisional until Appendix A is checked: reassembled-film-render.py:22-41, 68-74.
-export const LEGACY_VIDEO_ARGS = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-threads', '2'];
+// Windows production reference: RC2C tools/media_pipeline.py:20,45 (Appendix A).
+export const LEGACY_VIDEO_ARGS = ['-c:v', 'libx264', '-crf', '16', '-preset', 'fast', '-threads', '2', '-pix_fmt', 'yuv420p'];
 export const CLASSIC_BASE_FILTER = 'scale=1080:1440:force_original_aspect_ratio=increase,crop=1080:1440,setsar=1,fps=24';
 export interface MediaStream {
   codec_type?: string; codec_name?: string; width?: number; height?: number;
@@ -60,7 +60,9 @@ export async function prepareShot(spec: RenderSpec, shot: Shot, output: string, 
   const video = meta.streams.find(s => s.codec_type === 'video');
   const sourceDuration = Number(video?.duration ?? meta.format.duration);
   const required = shot.inSec + frames / 24 * shot.rate;
-  requireInput(video && Number.isFinite(sourceDuration) && required <= sourceDuration + .05,
+  if (shot.approvedSourceRangeSec) requireInput(shot.inSec >= shot.approvedSourceRangeSec[0] && required <= shot.approvedSourceRangeSec[1],
+    'SOURCE_RANGE', `镜头 ${shot.id}（含转场余量）越出已审核源片区间`);
+  requireInput(video && Number.isFinite(sourceDuration) && required <= sourceDuration + .02,
     'SOURCE_TOO_SHORT', `镜头 ${shot.id} 需源片至 ${required}s（含转场余量），仅有 ${sourceDuration}s`);
   await runFfmpeg(['-nostdin', '-hide_banner', '-n', '-ss', String(shot.inSec), '-i', file,
     '-vf', `setpts=(PTS-STARTPTS)/${shot.rate},${CLASSIC_BASE_FILTER}`, '-an', '-frames:v', String(frames),
@@ -81,7 +83,7 @@ export async function prepareShots(spec: RenderSpec, mediaDir: string, options: 
   return files;
 }
 
-/** Final picture is already encoded; edge correction awaits Appendix A and step 6. */
+/** Mux an already encoded picture. renderFilm handles the audited edge-correction branch. */
 export async function muxFilm(spec: RenderSpec, picture: string, audio: string, output: string, options: ProcessOptions = {}): Promise<void> {
   assertNewFile(output);
   await runFfmpeg(['-nostdin', '-hide_banner', '-n', '-i', picture, '-i', audio,

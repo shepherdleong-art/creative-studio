@@ -33,8 +33,16 @@ export function validateClassicComposition(input: unknown): asserts input is Cla
     requireInput(!files.has(file), 'DUPLICATE_CLIP', `单条内素材重复: ${file}`); files.add(file);
     requireInput(integer(shot.startFrame, 'shot.startFrame') === cursor, 'TIMELINE_GAP', '镜头时间线必须从第 20 帧连续');
     const end = integer(shot.endFrame, 'shot.endFrame', cursor + 1, frames);
-    numeric(shot.rate, 'shot.rate', Number.MIN_VALUE);
-    numeric(shot.inSec, 'shot.inSec', 0);
+    const rate = numeric(shot.rate, 'shot.rate', Number.MIN_VALUE);
+    const inSec = numeric(shot.inSec, 'shot.inSec', 0);
+    if (shot.approvedSourceRangeSec !== undefined) {
+      const range = array(shot.approvedSourceRangeSec, 'approvedSourceRangeSec');
+      requireInput(range.length === 2, 'SOURCE_RANGE', '已审核源片区间必须包含起止秒数');
+      const low = numeric(range[0], 'approvedSourceRangeSec[0]', 0), high = numeric(range[1], 'approvedSourceRangeSec[1]', low);
+      const tail = end === frames ? 0 : 4;
+      requireInput(low < high && inSec >= low && inSec + (end - cursor + tail) / 24 * rate <= high,
+        'SOURCE_RANGE', `镜头 ${id}（含转场余量）越出已审核源片区间`);
+    }
     cursor = end;
   }
   requireInput(cursor === frames, 'TIMELINE_TAIL', '镜头时间线终点与 canvas.frames 不符');
@@ -101,6 +109,7 @@ export function parseRenderSpec(input: unknown): RenderSpec {
   }
   const music = object(audio.music, 'audio.music');
   projectFile(spec.project.root, string(music.file, 'audio.music.file'));
+  numeric(music.inSec, 'music.inSec', 0);
   numeric(music.gainDb, 'music.gainDb', -120, 24);
   numeric(music.fadeInSec, 'music.fadeInSec', 0, spec.canvas.frames / 24);
   numeric(music.fadeOutSec, 'music.fadeOutSec', 0, spec.canvas.frames / 24);

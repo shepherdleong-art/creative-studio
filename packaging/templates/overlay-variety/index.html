@@ -359,7 +359,7 @@
       fitTag(el, 0.46);
       const inAt = clamp(Number(cue.startSec) || coverSec, coverSec + 0.15, Math.max(coverSec + 0.2, totalSec - 0.1));
       const outAt = clamp((Number(cue.endSec) || inAt + 1.2) + 0.3, inAt + 1.2, totalSec);
-      gsap.set(el, { opacity: 0, scale: 0.5 });
+      gsap.set(el, { opacity: 0, scale: 0.5, x: 0, y: 0, xPercent: -50, yPercent: -50 });
       tl.to(el, { opacity: 1, scale: 1, duration: 0.3, ease: "back.out(1.5)" }, inAt)
         .to(el, { opacity: 0, scale: 0.7, duration: 0.3, ease: "back.in(1.2)" }, outAt - 0.3);
     });
