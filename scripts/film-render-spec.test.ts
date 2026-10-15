@@ -41,8 +41,13 @@ try {
   reject(s => { s.shots[0].file = '../outside.mp4'; }, 'PATH_OUTSIDE_PROJECT');
   fs.writeFileSync(path.join(outside, 'clip.mp4'), 'outside');
   reject(s => { s.shots[0].file = path.join(outside, 'clip.mp4'); }, 'PATH_OUTSIDE_PROJECT');
-  fs.symlinkSync(path.join(outside, 'clip.mp4'), path.join(project, 'linked.mp4'));
-  reject(s => { s.shots[0].file = 'linked.mp4'; }, 'PATH_OUTSIDE_PROJECT');
+  try {
+    fs.symlinkSync(path.join(outside, 'clip.mp4'), path.join(project, 'linked.mp4'));
+    reject(s => { s.shots[0].file = 'linked.mp4'; }, 'PATH_OUTSIDE_PROJECT');
+  } catch (e) {
+    // Windows 未开开发者模式且非管理员时无法创建 symlink（EPERM），跳过该负例
+    if (!(e instanceof Error) || (e as NodeJS.ErrnoException).code !== 'EPERM') throw e;
+  }
   reject(s => { s.shots[0].file = 'missing.mp4'; }, 'INPUT_MISSING');
   reject(s => { s.shots[1].startFrame++; }, 'TIMELINE_GAP');
   reject(s => { s.shots[2].endFrame--; }, 'TIMELINE_TAIL');
