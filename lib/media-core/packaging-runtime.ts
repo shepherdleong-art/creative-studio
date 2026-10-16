@@ -57,6 +57,8 @@ export function buildTimelineVars(input: {
   vars: PackagingVars;
   totalSec: number;
   coverSec: number;
+  /** Fixed renderer: keep the cover fully visible until the exact frame boundary. */
+  staticCover?: boolean;
   /** PointCue（含 id）与提取期草稿（无 id）都接受，写 vars.json 时原样透传。 */
   pointCues: Array<PointCue | PointCueDraft>;
   pointCuesMode: 'timed' | 'even' | 'none';
@@ -66,7 +68,8 @@ export function buildTimelineVars(input: {
 }): Record<string, unknown> {
   return {
     ...input.vars,
-    coverSec: Number(input.coverSec.toFixed(3)),
+    coverSec: input.staticCover ? input.coverSec : Number(input.coverSec.toFixed(3)),
+    ...(input.staticCover ? { staticCover: true } : {}),
     totalSec: Number(Math.max(input.totalSec, input.coverSec + 0.2).toFixed(3)),
     pointCues: input.pointCues,
     pointCuesMode: input.pointCuesMode,

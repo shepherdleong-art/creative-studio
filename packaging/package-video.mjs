@@ -253,7 +253,9 @@ run(FFMPEG, [
   "-y",
   "-i", roughAbs,
   "-c:v", "libvpx-vp9", "-i", overlayWebm,
-  "-filter_complex", "[0:v][1:v]overlay=0:0:format=auto",
+  // The rough cut owns the duration. WebM timestamps can extend the overlay;
+  // stop repeating frames at EOF and pass the base through if the overlay ends first.
+  "-filter_complex", "[0:v][1:v]overlay=0:0:format=auto:eof_action=pass:repeatlast=0",
   "-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
   "-c:a", "copy",
   "-movflags", "+faststart",

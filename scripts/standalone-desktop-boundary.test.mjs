@@ -103,6 +103,8 @@ try {
   writeFixture('runtime/server-entry.js', 'module.exports = "fixture-runtime";\n');
   writeFixture('node_modules/ffmpeg-static/package.json', '{}\n');
   writeFixture('node_modules/ffprobe-static/package.json', '{}\n');
+  writeFixture('node_modules/@ffprobe-installer/ffprobe/package.json', '{}\n');
+  writeFixture(`node_modules/@ffprobe-installer/${process.platform}-${process.arch}/ffprobe.exe`, 'pinned-probe');
   writeFixture('node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64.node');
   writeFixture('node_modules/@img/sharp-win32-x64/lib/libvips-42.dll');
   for (const file of ['package.json', 'package-lock.json', 'package-video.mjs', 'win-hide-spawn.cjs', 'templates/overlay-poster/index.html', 'fonts/default.ttf', 'node_modules/hyperframes/package.json', 'runtime/chrome-headless-shell/chrome-headless-shell.exe']) {
@@ -130,6 +132,10 @@ try {
     { cwd: fixtureRoot, encoding: 'utf8' },
   );
   assert.equal(sync.status, 0, `standalone 资源同步失败：\n${sync.stderr}\n${sync.stdout}`);
+  if (process.platform === 'win32') {
+    assert.ok(existsSync(path.join(standalone, 'node_modules/@ffprobe-installer/ffprobe/package.json')));
+    assert.equal(readFileSync(path.join(standalone, `node_modules/@ffprobe-installer/${process.platform}-${process.arch}/ffprobe.exe`), 'utf8'), 'pinned-probe');
+  }
   assert.ok(existsSync(path.join(standalone, 'packaging/templates/overlay-poster/index.html')));
   assert.equal(existsSync(path.join(standalone, 'packaging/fonts/user')), false);
   assert.equal(existsSync(path.join(standalone, 'packaging/renders')), false);

@@ -1740,7 +1740,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       });
       const exported = result.items.find(({ status }) => status === 'published');
       if (exported?.videoRelativePath) {
-        const folder = exported.videoRelativePath.split('/').slice(0, -1).join('/');
+        const folder = exported.videoRelativePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
         setFolderRelativePath(`storage/${folder}`);
       } else {
         setFolderRelativePath(null);

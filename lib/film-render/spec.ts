@@ -7,8 +7,9 @@ import { parsePythonJson, pyJson, roundEven } from './python-format.ts';
 import { validateClassicCallouts } from './templates/classic-callouts-v1.ts';
 import { readPcmWav } from './wav.ts';
 import { array, identifier, integer, numeric, object, string } from './validation.ts';
+import { validateOverlayComposition } from './overlay-spec.ts';
 
-export function validateClassicComposition(input: unknown): asserts input is ClassicComposition {
+export function validateFilmComposition(input: unknown, transitionFrames: number): void {
   const s = object(input, '渲染单');
   const project = object(s.project, 'project');
   const root = string(project.root, 'project.root');
@@ -19,7 +20,7 @@ export function validateClassicComposition(input: unknown): asserts input is Cla
     !/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name), 'INVALID_FIELD', 'baseName 必须是跨平台安全文件名');
   const canvas = object(s.canvas, 'canvas');
   requireInput(canvas.width === 1080 && canvas.height === 1440 && canvas.fps === 24 && canvas.introFrames === 20,
-    'CANVAS_UNSUPPORTED', 'classic/1 只支持 1080×1440 / 24fps / 20 帧封面');
+    'CANVAS_UNSUPPORTED', '只支持 1080×1440 / 24fps / 20 帧封面');
   const frames = integer(canvas.frames, 'canvas.frames', 360);
   const shots = array(s.shots, 'shots');
   requireInput(shots.length > 0, 'INVALID_TIMELINE', 'shots 不能为空');
@@ -39,7 +40,7 @@ export function validateClassicComposition(input: unknown): asserts input is Cla
       const range = array(shot.approvedSourceRangeSec, 'approvedSourceRangeSec');
       requireInput(range.length === 2, 'SOURCE_RANGE', '已审核源片区间必须包含起止秒数');
       const low = numeric(range[0], 'approvedSourceRangeSec[0]', 0), high = numeric(range[1], 'approvedSourceRangeSec[1]', low);
-      const tail = end === frames ? 0 : 4;
+      const tail = end === frames ? 0 : transitionFrames;
       requireInput(low < high && inSec >= low && inSec + (end - cursor + tail) / 24 * rate <= high,
         'SOURCE_RANGE', `镜头 ${id}（含转场余量）越出已审核源片区间`);
     }
@@ -52,6 +53,13 @@ export function validateClassicComposition(input: unknown): asserts input is Cla
     const start = integer(sub.startFrame, 'subtitle.startFrame', 20, frames - 1);
     integer(sub.endFrame, 'subtitle.endFrame', start + 1, frames);
   }
+}
+
+export function validateClassicComposition(input: unknown): asserts input is ClassicComposition {
+  validateFilmComposition(input, 4);
+  const s = object(input, '渲染单');
+  const root = string(object(s.project, 'project').root, 'project.root');
+  const frames = integer(object(s.canvas, 'canvas').frames, 'canvas.frames');
   const c = object(s.classic, 'classic');
   projectFile(root, string(c.projectCss, 'classic.projectCss'));
   projectFile(root, string(c.designDoc, 'classic.designDoc'));
@@ -85,11 +93,15 @@ export function parseRenderSpec(input: unknown): RenderSpec {
     try { value = parsePythonJson(input); }
     catch (error) { throw new FilmRenderError('INVALID_JSON', `渲染单 JSON 不合法: ${String(error)}`); }
   }
-  validateClassicComposition(value);
   const s = object(value, '渲染单');
   requireInput(s.schemaVersion === 1, 'SCHEMA_UNSUPPORTED', '仅支持 schemaVersion: 1');
   const template = object(s.template, 'template');
-  requireInput(template.id === 'classic' && template.version === '1', 'TEMPLATE_UNSUPPORTED', '本阶段仅支持 classic/1');
+  requireInput(template.version === '1', 'TEMPLATE_UNSUPPORTED', '仅支持模板版本 1');
+  if (template.id === 'classic') validateClassicComposition(value);
+  else {
+    validateFilmComposition(value, 0);
+    validateOverlayComposition(value);
+  }
   const spec = value as RenderSpec;
   const audio = object(s.audio, 'audio');
   const voices = array(audio.voices, 'audio.voices');

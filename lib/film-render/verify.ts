@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import sharp from 'sharp';
 import { resolveFfmpegPath, runFfmpeg } from '../ffmpeg.ts';
 import { FilmRenderError } from './errors.ts';
 import { createOutputDirectory, projectFile } from './files.ts';
 import { measureLoudness } from './audio.ts';
 import { CLASSIC_BASE_FILTER, probeMedia } from './media.ts';
 import { runCaptured, type ProcessOptions } from './process.ts';
-import type { RenderSpec } from './types.ts';
+import { isClassicSpec, type RenderSpec } from './types.ts';
 
 export interface TechnicalCheck { code: string; ok: boolean; message: string; details?: unknown }
 export interface VerifyResult { ok: boolean; checks: TechnicalCheck[]; checksPath: string }
@@ -140,6 +141,13 @@ export async function verifyFilm(args: {
   await phase('RIGHT_EDGE_CHECK_FAILED', async () => {
     const samples = await inspectRightEdge(spec, video, workDir, options);
     check('RIGHT_EDGE', samples.every(s => !s.artificial), '右侧没有源片之外的渲染黑条', { samples });
+  });
+  if (!isClassicSpec(spec)) await phase('PACKAGING_CHECK_FAILED', async () => {
+    const bare = path.join(workDir, 'bare-cover.png'), packaged = path.join(workDir, 'packaged-frame-10.png');
+    await sharp(projectFile(spec.project.root, spec.cover.image)).rotate().resize(1080, 1440, { fit: 'cover' }).removeAlpha().png().toFile(bare);
+    await runFfmpeg(['-nostdin', '-hide_banner', '-n', '-i', video, '-vf', 'select=eq(n\\,10)', '-frames:v', '1', '-threads', '1', packaged], options);
+    const similarity = await imageSsim(bare, packaged, options);
+    check('PACKAGING_VISIBLE', similarity < .98, '第 10 帧与无包装封面明显不同', { ssim: similarity, threshold: .98 });
   });
   const checksPath = path.join(workDir, 'checks.json');
   const result = { ok: checks.every(c => c.ok), checks, checksPath };

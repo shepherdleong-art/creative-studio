@@ -11,7 +11,9 @@ import { doctor } from './runtime-info.ts';
 import { inputHashes, templateHashes, writeNewJson } from './manifest.ts';
 import { FilmRenderError, requireInput } from './errors.ts';
 import { runFfmpeg } from '../ffmpeg.ts';
-import type { RenderSpec } from './types.ts';
+import { isClassicSpec, type RenderSpec } from './types.ts';
+import { renderOverlayBase } from './overlay-base.ts';
+import { renderVideoPackaging } from '../media-core/packaging-render.ts';
 
 export interface StageEvent { stage: string; status: 'start' | 'done' | 'failed'; elapsedMs: number }
 export async function renderFilm(input: { spec: RenderSpec; runDir: string; signal?: AbortSignal; onStage?: (event: StageEvent) => void }) {
@@ -23,6 +25,7 @@ export async function renderFilm(input: { spec: RenderSpec; runDir: string; sign
   requireInput(isInside(expectedParent, path.resolve(input.runDir)) && path.dirname(path.resolve(input.runDir)) === expectedParent,
     'OUTPUT_LOCATION', '输出必须是该片号 renders 下的新目录');
   const hashes = inputHashes(spec);
+  const template = templateHashes(spec);
   const runDir = createOutputDirectory(spec.project.root, input.runDir);
   fs.writeFileSync(path.join(runDir, 'spec.json'), serializeRenderSpec(spec), { flag: 'wx' });
   for (const folder of ['prepared-media', 'audio', 'review', 'edge-check']) fs.mkdirSync(path.join(runDir, folder));
@@ -40,20 +43,39 @@ export async function renderFilm(input: { spec: RenderSpec; runDir: string; sign
   };
   const prepared = await stage('prepare', () => prepareShots(spec, path.join(runDir, 'prepared-media'), { signal }));
   const hf = path.join(runDir, 'hf');
-  await stage('composition', () => {
-    buildClassic(spec, hf);
-    prepared.forEach(file => fs.copyFileSync(file, path.join(hf, 'media', path.basename(file)), fs.constants.COPYFILE_EXCL));
-  });
-  const rendered = await stage('hyperframes', () => renderHyperframes(hf, spec.canvas.frames, { signal }));
+  let rendered: { picture: string }, composition: string;
+  let baseCover: string | undefined;
+  if (isClassicSpec(spec)) {
+    await stage('composition', () => {
+      buildClassic(spec, hf);
+      prepared.forEach(file => fs.copyFileSync(file, path.join(hf, 'media', path.basename(file)), fs.constants.COPYFILE_EXCL));
+    });
+    rendered = await stage('hyperframes', () => renderHyperframes(hf, spec.canvas.frames, { signal }));
+    composition = path.join(hf, 'index.html');
+  } else {
+    const base = await stage('composition', () => renderOverlayBase(spec, prepared, runDir, { signal }));
+    rendered = base; composition = base.composition; baseCover = base.cover;
+  }
   const edges = await stage('edge', () => inspectRightEdge(spec, rendered.picture, path.join(runDir, 'edge-check'), { signal }));
   const correctEdge = edges.some(e => e.artificial);
   const mixed = await stage('audio', () => mixFilmAudio(spec, path.join(runDir, 'audio'), { signal }));
   const video = path.join(runDir, `${spec.project.baseName}.mp4`), cover = path.join(runDir, `${spec.project.baseName}-封面.jpg`);
+  // The shared packager owns temporary names in its input directory. Keep the
+  // requested delivery name separate (it may itself be "packaged.mp4").
+  const muxed = isClassicSpec(spec) ? video : path.join(runDir, 'base/unpackaged.mp4');
   await stage('mux', async () => {
-    if (!correctEdge) { await muxFilm(spec, rendered.picture, mixed.final, video, { signal }); return; }
+    if (!correctEdge) { await muxFilm(spec, rendered.picture, mixed.final, muxed, { signal }); return; }
     await runFfmpeg(['-nostdin', '-hide_banner', '-n', '-i', rendered.picture, '-i', mixed.final, '-map', '0:v:0', '-map', '1:a:0',
-      '-vf', 'crop=1072:1440:0:0,scale=1080:1440,setsar=1', ...LEGACY_VIDEO_ARGS, '-c:a', 'aac', '-b:a', '192k',
-      '-t', String(spec.canvas.frames / 24), '-movflags', '+faststart', video], { signal, timeoutMs: 300_000 });
+      '-vf', 'crop=1072:1440:0:0,scale=1080:1440,setsar=1', ...LEGACY_VIDEO_ARGS,
+      ...(isClassicSpec(spec) ? [] : ['-crf', '12']), '-c:a', 'aac', '-b:a', '192k',
+      '-t', String(spec.canvas.frames / 24), '-movflags', '+faststart', muxed], { signal, timeoutMs: 300_000 });
+  });
+  if (!isClassicSpec(spec)) await stage('packaging', async () => {
+    const packagingCover = path.join(runDir, 'base/packaging-cover-source.png');
+    fs.copyFileSync(baseCover!, packagingCover, fs.constants.COPYFILE_EXCL);
+    await renderVideoPackaging({ videoPath: muxed, coverPath: packagingCover, config: spec.packaging,
+      totalSec: spec.canvas.frames / 24, staticCover: true, signal });
+    fs.renameSync(muxed, video);
   });
   await stage('cover', () => extractCover(spec, video, cover, path.join(runDir, 'review/cover.png'), { signal }));
   const checked = await stage('verify', async () => {
@@ -65,12 +87,13 @@ export async function renderFilm(input: { spec: RenderSpec; runDir: string; sign
   return await stage('manifest', () => {
     const manifestStart = Date.now();
     requireInput(JSON.stringify(inputHashes(spec)) === JSON.stringify(hashes), 'INPUT_CHANGED', '渲染期间输入文件发生变化');
+    requireInput(JSON.stringify(templateHashes(spec)) === JSON.stringify(template), 'TEMPLATE_CHANGED', '渲染期间模板发生变化');
     const manifestPath = path.join(runDir, 'render-manifest.json');
     const manifest = { ok: true, schemaVersion: 1, manifestPath, specSha256: sha256(path.join(runDir, 'spec.json')),
-      template: templateHashes(), tools: runtime, inputs: hashes,
+      template, tools: runtime, inputs: hashes,
       stages: [...stages, { stage: 'manifest', status: 'done', elapsedMs: Date.now() - manifestStart }],
       edgeCorrection: { applied: correctEdge, cropPixels: correctEdge ? 8 : 0, samples: edges },
-      compositionSha256: sha256(path.join(hf, 'index.html')), audio: mixed,
+      compositionSha256: sha256(composition), audio: mixed,
       outputs: { video, cover, videoSha256: sha256(video), coverSha256: sha256(cover), frames: spec.canvas.frames, duration: spec.canvas.frames / 24 },
       checks: { ok: checked.ok, path: path.join(runDir, 'checks.json') } };
     writeNewJson(manifestPath, manifest); return manifest;

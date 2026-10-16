@@ -60,7 +60,7 @@ const nextConfig: NextConfig = {
   // Allow 127.0.0.1 (used by launcher.html) — otherwise Next.js treats it as cross-origin
   // and blocks HMR / dev resources.
   allowedDevOrigins: ['127.0.0.1'],
-  serverExternalPackages: ['ffmpeg-static', 'ffprobe-static'],
+  serverExternalPackages: ['ffmpeg-static', 'ffprobe-static', '@ffprobe-installer/ffprobe'],
 };
 
 export default nextConfig;

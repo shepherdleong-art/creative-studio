@@ -236,8 +236,9 @@
   const dynHost = document.getElementById("dyn");
   const tl = gsap.timeline({ paused: true });
 
-  // 封面：0 帧静态挂载，coverSec 前 0.18s 统一退场
-  tl.to(".stage", { opacity: 0, y: -18, duration: 0.18, ease: "power2.in" }, Math.max(0, coverSec - 0.18));
+  // 固定渲染命令保持完整静帧；工作台默认保留原有退场动画。
+  if (V.staticCover === true) tl.set(".stage", { opacity: 0 }, coverSec);
+  else tl.to(".stage", { opacity: 0, y: -18, duration: 0.18, ease: "power2.in" }, Math.max(0, coverSec - 0.18));
 
   // 正片卖点联动
   if (mode !== "none") {

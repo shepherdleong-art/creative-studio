@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fixtureProject, goldenRoot, repo, treeHash } from './film-render-test-fixture.ts';
 import { encodePcmWav } from '../lib/film-render/wav.ts';
-import type { RenderSpec } from '../lib/film-render/types.ts';
+import { isClassicSpec, type ClassicRenderSpec } from '../lib/film-render/types.ts';
 
 process.env.CREATIVE_STUDIO_PACKAGING_DIR = path.join(repo, 'packaging');
 const { renderSpecFromProject } = await import('../lib/film-render/from-project.ts');
@@ -19,6 +19,7 @@ try {
     const before = treeHash(project);
     const spec = renderSpecFromProject(project, '01');
     const reparsed = parseRenderSpec(serializeRenderSpec(spec));
+    assert.ok(isClassicSpec(reparsed));
     assert.equal(treeHash(project), before, 'spec conversion must be read-only');
     const output = path.join(project, 'hf');
     buildClassic(reparsed, output);
@@ -29,8 +30,9 @@ try {
   const project = path.join(root, 'negative');
   fixtureProject(project);
   const base = renderSpecFromProject(project, '01');
+  assert.ok(isClassicSpec(base));
   let count = 0;
-  const reject = (edit: (s: RenderSpec) => void, code: string) => {
+  const reject = (edit: (s: ClassicRenderSpec) => void, code: string) => {
     const spec = structuredClone(base);
     edit(spec);
     assert.throws(() => parseRenderSpec(spec), (e: unknown) => e instanceof Error && 'code' in e && e.code === code, code);

@@ -15,7 +15,8 @@ try {
   assert.equal(invoke(['unknown']).status, 2);
   assert.equal(invoke(['render', 'missing.json']).status, 2);
   assert.equal(invoke(['--not-an-option']).status, 2);
-  assert.equal(invoke(['templates']).data[0].id, 'classic');
+  assert.deepEqual(invoke(['templates']).data.map((t: { id: string }) => t.id),
+    ['classic', 'overlay-poster', 'overlay-journal', 'overlay-minimal', 'overlay-variety']);
   const fake = path.join(root, 'packaging'), env = { CREATIVE_STUDIO_PACKAGING_DIR: fake };
   fs.mkdirSync(fake);
   const missing = invoke(['doctor'], env); assert.equal(missing.status, 3); assert.equal(missing.data.code, 'RUNTIME_MISSING');

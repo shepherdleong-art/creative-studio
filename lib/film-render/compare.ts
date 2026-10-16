@@ -8,16 +8,17 @@ import { probeMedia } from './media.ts';
 import { measureLoudness } from './audio.ts';
 import { writeNewJson } from './manifest.ts';
 import { requireInput } from './errors.ts';
-import type { RenderSpec } from './types.ts';
+import { isClassicSpec, type RenderSpec } from './types.ts';
 
 export function comparisonFrames(spec: RenderSpec): number[] {
   const frames = new Set([0, 10, 19, spec.canvas.frames - 1]);
   for (const shot of spec.shots) {
     frames.add(Math.min(shot.endFrame - 1, shot.startFrame + 5));
     frames.add(Math.floor((shot.startFrame + shot.endFrame) / 2));
-    if (Object.hasOwn(spec.classic.labels, shot.id)) frames.add(Math.floor((shot.startFrame + .18 * 24 + shot.endFrame - .02 * 24) / 2));
+    if (isClassicSpec(spec) && Object.hasOwn(spec.classic.labels, shot.id)) frames.add(Math.floor((shot.startFrame + .18 * 24 + shot.endFrame - .02 * 24) / 2));
   }
-  for (const item of spec.classic.callouts) frames.add(Math.floor((item.startFrame + item.endFrame) / 2));
+  if (isClassicSpec(spec)) for (const item of spec.classic.callouts) frames.add(Math.floor((item.startFrame + item.endFrame) / 2));
+  else for (const item of spec.packaging.pointCues ?? []) frames.add(Math.floor((item.startSec + item.endSec) * 12));
   return [...frames].sort((a, b) => a - b);
 }
 
@@ -55,8 +56,9 @@ export async function compareFilms(input: { spec: RenderSpec; video: string; ref
   const sheet = input.sheet ?? path.join(workDir, 'comparison.jpg');
   requireInput(!fs.existsSync(sheet), 'OUTPUT_EXISTS', `对照图已存在: ${sheet}`);
   await sharp({ create: { width: 1620, height: Math.ceil(frames.length / 3) * 390, channels: 3, background: '#222222' } }).composite(tiles).jpeg({ quality: 85 }).toFile(sheet);
-  const newHtml = path.join(path.dirname(video), 'hf/index.html');
-  const adjacentHtml = path.join(path.dirname(reference), 'hf/index.html');
+  const compositionFile = isClassicSpec(spec) ? 'hf/index.html' : 'base/composition.json';
+  const newHtml = path.join(path.dirname(video), compositionFile);
+  const adjacentHtml = path.join(path.dirname(reference), compositionFile);
   const oldHtml = input.referenceHtml ?? (fs.existsSync(adjacentHtml) ? adjacentHtml : path.join(spec.project.root, 'variants', spec.project.variant, 'hf/index.html'));
   const htmlMatch = fs.existsSync(newHtml) && fs.existsSync(oldHtml) && fs.readFileSync(newHtml).equals(fs.readFileSync(oldHtml));
   const result = { ok: sameVideo && sameAudio && htmlMatch && samples.every(s => s.ok), threshold, sameVideo, sameAudio,

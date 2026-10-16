@@ -61,6 +61,20 @@ try {
   assert.equal((selected.match(/区间重叠 ×2/g) ?? []).length, 2, '选中片段自身也保留提醒和斜纹');
   const single = render([film([splitClips[0]])]);
   assert.doesNotMatch(single, /同一素材 ×|区间重叠 ×|重复检查：/);
+  // A later successful cover must change the actual media URL; no ready attempt
+  // must render no candidate cover request at all.
+  const coverUrls = (coverAttemptId) => [...render([{ ...film([splitClips[0]]), seq: 1, coverAttemptId }])
+    .matchAll(/<img\b[^>]*src="([^"]+)"/g)]
+    .map(([, src]) => new URL(src.replaceAll('&amp;', '&'), 'http://localhost'))
+    .filter(url => url.searchParams.get('kind') === 'cover');
+  for (const attemptId of ['first-success', 'replacement-success']) {
+    const urls = coverUrls(attemptId);
+    assert.equal(urls.length, 1);
+    assert.equal(urls[0].searchParams.get('renderAttemptId'), attemptId);
+    assert.equal(urls[0].searchParams.get('source'), 'candidate');
+    assert.equal(urls[0].pathname, '/api/batch-production/batches/batch/outputs/one/media');
+  }
+  assert.equal(coverUrls(null).length, 0);
   const sourceFilm = { ...film([
     clip('first', 'v1', 0, 2_000_000, 0), clip('second', 'v2', 0, 2_000_000, 2_000_000),
     clip('third', 'unrelated', 0, 2_000_000, 4_000_000),

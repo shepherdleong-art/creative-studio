@@ -45,6 +45,12 @@ copyFileSync(serverEntrySource, join(standaloneDir, 'runtime', 'server-entry.js'
 for (const pkg of ['ffmpeg-static', 'ffprobe-static']) {
   copyDirectory(join(root, 'node_modules', pkg), join(standaloneDir, 'node_modules', pkg));
 }
+// Windows uses the pinned replacement probe; copy only the host binary package.
+if (process.platform === 'win32') {
+  for (const pkg of ['@ffprobe-installer/ffprobe', `@ffprobe-installer/${process.platform}-${process.arch}`]) {
+    copyDirectory(join(root, 'node_modules', pkg), join(standaloneDir, 'node_modules', pkg));
+  }
+}
 
 // sharp 的原生运行时在 @img/ 下：.node 依赖同目录的 libvips DLL，
 // Next 文件追踪只收录 .node 会漏掉 DLL（ERR_DLOPEN_FAILED），整个 @img 目录强制拷入

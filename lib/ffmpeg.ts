@@ -1,7 +1,21 @@
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import ffmpegStatic from 'ffmpeg-static';
 import ffprobeStatic from 'ffprobe-static';
+
+const require = createRequire(import.meta.url);
+function bundledFfprobePath(): string | undefined {
+  // The old Windows 4.0.2 build can hang before completing H.264 metadata.
+  // Keep the existing non-Windows selection until its platform acceptance.
+  if (process.platform !== 'win32') return (ffprobeStatic as { path?: string })?.path;
+  try {
+    return (require('@ffprobe-installer/ffprobe') as { path: string }).path;
+  } catch {
+    // Optional platform packages may be unavailable; retain PATH/ffmpeg fallback.
+    return undefined;
+  }
+}
 
 function canRunBinary(binPath: string): boolean {
   try {
@@ -26,7 +40,7 @@ export function resolveFfmpegPath(): string {
 export function resolveFfprobePath(): string {
   const env = process.env.CREATIVE_STUDIO_FFPROBE;
   if (env && fs.existsSync(env) && canRunBinary(env)) return env;
-  const p = (ffprobeStatic as { path?: string })?.path;
+  const p = bundledFfprobePath();
   if (p && fs.existsSync(p) && canRunBinary(p)) return p;
   if (canRunBinary('ffprobe')) return 'ffprobe';
   // Return the static path even if it can't run — probeDurationSec has a
@@ -42,7 +56,7 @@ export function resolveFfprobePath(): string {
 function resolveFfprobeCandidatePath(): string {
   const env = process.env.CREATIVE_STUDIO_FFPROBE;
   if (env && fs.existsSync(env)) return env;
-  const bundled = (ffprobeStatic as { path?: string })?.path;
+  const bundled = bundledFfprobePath();
   if (bundled && fs.existsSync(bundled)) return bundled;
   return 'ffprobe';
 }

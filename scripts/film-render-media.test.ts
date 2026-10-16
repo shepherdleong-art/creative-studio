@@ -10,6 +10,7 @@ import { runCaptured } from '../lib/film-render/process.ts';
 import { prepareShot, probeMedia, muxFilm, extractCover } from '../lib/film-render/media.ts';
 import { mixFilmAudio, stitchNarration } from '../lib/film-render/audio.ts';
 import { verifyFilm, inspectRightEdge } from '../lib/film-render/verify.ts';
+import { isClassicSpec } from '../lib/film-render/types.ts';
 
 process.env.CREATIVE_STUDIO_PACKAGING_DIR = path.join(repo, 'packaging');
 const { renderSpecFromProject } = await import('../lib/film-render/from-project.ts');
@@ -18,6 +19,7 @@ const command = async (args: string[]) => runFfmpeg(['-nostdin', '-hide_banner',
 try {
   fixtureProject(root);
   const spec = renderSpecFromProject(root, '01');
+  assert.ok(isClassicSpec(spec));
   spec.canvas.frames = 360; spec.classic.durationText = '15';
   spec.shots[1].endFrame = 288; spec.shots[2].startFrame = 288; spec.shots[2].endFrame = 360;
   // Generate a moving source for frame-count tests at 0.5x, 1x and 2x speed.

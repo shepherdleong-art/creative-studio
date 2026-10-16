@@ -108,7 +108,7 @@ for (const file of desktopSources) {
   const source = fs.readFileSync(file.absolutePath, 'utf8');
   assert.doesNotMatch(
     source,
-    /\b(?:better-sqlite3|sharp|ffmpeg-static|ffprobe-static)\b/,
+    /\b(?:better-sqlite3|sharp|ffmpeg-static|ffprobe-static|ffprobe-installer)\b/,
     `${file.relativePath} 不得触达 native 业务依赖`,
   );
   for (const specifier of moduleSpecifiers(source)) {

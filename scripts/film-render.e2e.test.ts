@@ -9,6 +9,7 @@ import { runFfmpeg } from '../lib/ffmpeg.ts';
 import { renderSpecFromProject } from '../lib/film-render/from-project.ts';
 import { renderFilm } from '../lib/film-render/render.ts';
 import { compareFilms } from '../lib/film-render/compare.ts';
+import { isClassicSpec } from '../lib/film-render/types.ts';
 
 if (process.env.FILM_E2E !== '1') {
   console.log('SKIP: set FILM_E2E=1 to run real HyperFrames twice');
@@ -37,6 +38,7 @@ if (process.env.FILM_E2E !== '1') {
 .label-content{padding:80px}.headline{font-size:70px}.kicker,.support{font-size:30px}
 `);
   const spec = renderSpecFromProject(root, '01');
+  assert.ok(isClassicSpec(spec));
   spec.canvas.frames = 360; spec.classic.durationText = '15';
   spec.shots[1].endFrame = 288; spec.shots[2].startFrame = 288; spec.shots[2].endFrame = 360;
   spec.audio.voices = [24, 144, 264].map(atFrame => ({ file: 'narration-source.wav', trimStart: .1, trimEnd: 3.1, atFrame }));

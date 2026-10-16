@@ -1,3 +1,5 @@
+import type { FinalEditPackagingConfig, PackagingTemplateId } from '../media-core/packaging-vars.ts';
+
 export type Point = [number, number];
 export interface Shot {
   id: string;
@@ -55,15 +57,24 @@ export interface ClassicConfig {
   callouts: Callout[];
   outro: { title: [string, string] };
 }
-export interface RenderSpec {
+export interface FilmComposition {
   schemaVersion: 1;
   project: { root: string; variant: string; baseName: string };
   canvas: { width: 1080; height: 1440; fps: 24; introFrames: 20; frames: number };
-  template: { id: 'classic'; version: '1' };
   shots: Shot[];
   subtitles: Subtitle[];
   audio: FilmAudio;
-  classic: ClassicConfig;
   output: { coverFrame: number };
 }
-export type ClassicComposition = Pick<RenderSpec, 'project' | 'canvas' | 'shots' | 'subtitles' | 'classic'>;
+export interface ClassicRenderSpec extends FilmComposition {
+  template: { id: 'classic'; version: '1' };
+  classic: ClassicConfig;
+}
+export interface OverlayRenderSpec extends FilmComposition {
+  template: { id: PackagingTemplateId; version: '1' };
+  cover: { image: string };
+  packaging: Pick<FinalEditPackagingConfig, 'enabled' | 'template' | 'varsOverrides' | 'pointCues' | 'pointCuesMode' | 'layouts'>;
+}
+export type RenderSpec = ClassicRenderSpec | OverlayRenderSpec;
+export function isClassicSpec(spec: RenderSpec): spec is ClassicRenderSpec { return spec.template.id === 'classic'; }
+export type ClassicComposition = Pick<ClassicRenderSpec, 'project' | 'canvas' | 'shots' | 'subtitles' | 'classic'>;

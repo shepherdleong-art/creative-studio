@@ -66,7 +66,7 @@ export async function prepareShot(spec: RenderSpec, shot: Shot, output: string, 
     'SOURCE_TOO_SHORT', `镜头 ${shot.id} 需源片至 ${required}s（含转场余量），仅有 ${sourceDuration}s`);
   await runFfmpeg(['-nostdin', '-hide_banner', '-n', '-ss', String(shot.inSec), '-i', file,
     '-vf', `setpts=(PTS-STARTPTS)/${shot.rate},${CLASSIC_BASE_FILTER}`, '-an', '-frames:v', String(frames),
-    ...LEGACY_VIDEO_ARGS, output], { ...options, timeoutMs: options.timeoutMs ?? 300_000 });
+    ...(spec.template.id === 'classic' ? LEGACY_VIDEO_ARGS : ['-c:v', 'libx264', '-qp', '0', '-preset', 'fast', '-threads', '2', '-pix_fmt', 'yuv420p']), output], { ...options, timeoutMs: options.timeoutMs ?? 300_000 });
   const result = await probeMedia(output, path.dirname(output), { ...options, countFrames: true });
   const stream = result.streams.find(s => s.codec_type === 'video');
   if (Number(stream?.nb_read_frames) !== frames) throw new FilmRenderError('PREPARED_FRAME_COUNT', `镜头 ${shot.id} 实际解码帧数不足 ${frames}`, 4);
@@ -77,7 +77,7 @@ export async function prepareShots(spec: RenderSpec, mediaDir: string, options: 
   const files: string[] = [];
   for (let i = 0; i < spec.shots.length; i++) {
     const output = path.join(mediaDir, spec.shots[i].id + '.mp4');
-    await prepareShot(spec, spec.shots[i], output, i < spec.shots.length - 1 ? 4 : 0, options);
+    await prepareShot(spec, spec.shots[i], output, spec.template.id === 'classic' && i < spec.shots.length - 1 ? 4 : 0, options);
     files.push(output);
   }
   return files;

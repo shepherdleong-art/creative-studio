@@ -58,7 +58,7 @@ assert.match(build, /Copy-DirectoryContent -Source \(Join-Path \$Root 'dist-desk
 assert.match(build, /runtime\\node\.exe/);
 assert.match(desktopService, /CREATIVE_STUDIO_DESKTOP: '1'/);
 assert.match(build, /node_modules\\ffmpeg-static\\ffmpeg\.exe/);
-assert.match(build, /node_modules\\ffprobe-static\\bin\\win32\\x64\\ffprobe\.exe/);
+assert.match(build, /node_modules\\@ffprobe-installer\\win32-x64\\ffprobe\.exe/);
 assert.match(build, /dist-desktop.*-Include '\*\.map', '\*\.ts', '\*\.tsx'/s);
 // 禁入清单单一来源：安装脚本必须从 forbidden-paths.json 派生出三层清单，
 // 不得再硬编码重复清单（与 next.config.ts / build-mac-installer.sh 共用）。

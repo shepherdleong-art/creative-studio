@@ -221,7 +221,7 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                     下载当前正式版视频
                   </a>
                   {formal.cover && (
-                    <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'cover', formal.cover.id, true)} download>
+                    <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'cover', formal.video.id, true)} download>
                       下载当前正式版封面
                     </a>
                   )}

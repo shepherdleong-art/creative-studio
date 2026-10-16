@@ -1,7 +1,7 @@
 /**
  * 成片生成 UI 契约（源码级断言，与仓库既有 *.ui-contract.test.mjs 同款）。
  * 编辑器优先模型（2026-09）：
- * - 检查页点卡片直接进编辑器,封面 <img> 的 key 带封面尝试代际;
+ * - 检查页委托统一工作台，封面列和预览绑定成功封面尝试代际;
  * - 导出页只绑定 currentFormalArtifact:播放器 key 含 artifactId,下载只有当前正式版;
  * - 编辑清审核提示;面板失效选择列表 + 选择全部交服务端复核 + 结构化结果 + 同页自动续跑。
  */
@@ -9,6 +9,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const review = fs.readFileSync('components/batch-production/BatchStepReview.tsx', 'utf8');
+const unifiedReview = fs.readFileSync('components/batch-production/review/BatchUnifiedReviewWorkspace.tsx', 'utf8');
+const reviewTimeline = fs.readFileSync('components/batch-production/review/BatchReviewTimelineDock.tsx', 'utf8');
+const reviewPreview = fs.readFileSync('components/batch-production/review/BatchReviewPreviewDock.tsx', 'utf8');
 const editor = fs.readFileSync('components/batch-production/BatchOutputEditor.tsx', 'utf8');
 const exportStep = fs.readFileSync('components/batch-production/BatchStepExport.tsx', 'utf8');
 const panel = fs.readFileSync('components/batch-production/BatchPreparationPanel.tsx', 'utf8');
@@ -23,11 +26,12 @@ assert.match(orchestrator, /wakeScheduler/, '编排模块必须拥有唤醒能�
 assert.match(clipsRoute, /coverContractBefore === null \|\| coverContractAfter === null \|\| coverContractBefore !== coverContractAfter/, '普通编辑不得重做封面,只有契约变化才排封面任务');
 assert.match(clipsRoute, /resolveCoverContractHash/, '封面契约变化必须用统一哈希判断');
 
-// ---- 检查页:封面墙代际 + 直接进编辑器 ----
-assert.match(review, /coverAttemptId/, '封面墙媒体按封面尝试代际取源');
-assert.match(review, /key=\{`\$\{card\.planId\}-\$\{card\.coverAttemptId\}`\}/, '封面 img key 必须含封面尝试代际');
-assert.match(review, /setEditorCard\(card\)/, '点卡片直接进入编辑器');
-assert.doesNotMatch(review, /<video/, '检查页不再有渲染视频播放器');
+// ---- 检查页:统一工作台中的封面代际与精调入口 ----
+assert.match(review, /<BatchUnifiedReviewWorkspace/, '检查页使用已确认的统一审片工作台');
+assert.match(unifiedReview, /coverAttemptId: card\.coverAttemptId/, '成功封面尝试身份传入统一工作台');
+assert.match(reviewTimeline, /renderAttemptId=\$\{encodeURIComponent\(\s*film\.coverAttemptId/, '时间轴封面按尝试代际取源');
+assert.match(reviewPreview, /renderAttemptId: previewFilm\.coverAttemptId/, '中央封面预览使用相同尝试身份');
+assert.match(reviewTimeline, /onOpenCoverEditor\(film\.planId\)/, '封面列保留精调入口');
 assert.match(editor, /candidateRenderAttemptId\?: string \| null/);
 assert.match(editor, /&renderAttemptId=\$\{encodeURIComponent\(candidateRenderAttemptId\)\}/, '编辑器封面预览绑定封面尝试代际');
 

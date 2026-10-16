@@ -12,6 +12,8 @@ try {
   assert.deepEqual(await runCaptured(process.execPath, ['-e', script]), { stdout: 'output', stderr: 'diagnostic' });
   assert.deepEqual(await runCaptured(process.execPath, ['-e', script], { outputFiles: files('ok') }), { stdout: 'output', stderr: 'diagnostic' });
   assert.equal(fs.readFileSync(files('ok').stdout, 'utf8'), 'output');
+  await assert.rejects(runCaptured(process.execPath, ['-e', script], { outputFiles: files('ok') }), /EEXIST/);
+  assert.equal(fs.readFileSync(files('ok').stdout, 'utf8'), 'output', 'exclusive diagnostics must not overwrite an existing file');
   await assert.rejects(runCaptured(process.execPath, ['-e', 'process.stderr.write("real failure");process.exit(7)'], { outputFiles: files('fail') }), /exit 7\nreal failure/);
   await assert.rejects(runCaptured(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { outputFiles: files('timeout'), timeoutMs: 100 }), /timeout/);
   const active = new AbortController();

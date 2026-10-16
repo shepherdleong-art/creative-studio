@@ -11,6 +11,7 @@ import { composeCoverJpg } from './cover-compose.ts';
 /** Render into the caller's private job directory; publishing and lineage remain the caller's responsibility. */
 export async function renderVideoPackaging(input: {
   videoPath: string; coverPath: string; config: FinalEditPackagingConfig; totalSec: number;
+  staticCover?: boolean;
   signal?: AbortSignal; onProgress?: (value: number) => void;
 }): Promise<void> {
   if (!input.config.enabled) return;
@@ -30,7 +31,7 @@ export async function renderVideoPackaging(input: {
     fonts[`${slot}File`] = file;
   }
   const vars = buildTimelineVars({ vars: buildPackagingVars({ subtitleCues: [], overrides: input.config.varsOverrides }),
-    totalSec: input.totalSec, coverSec, pointCues: input.config.pointCues ?? [], pointCuesMode: input.config.pointCuesMode ?? 'none', layouts: input.config.layouts, fonts });
+    totalSec: input.totalSec, coverSec, staticCover: input.staticCover, pointCues: input.config.pointCues ?? [], pointCuesMode: input.config.pointCuesMode ?? 'none', layouts: input.config.layouts, fonts });
   const varsPath = path.join(jobDir, 'packaging-vars.json');
   await fs.writeFile(varsPath, JSON.stringify(vars), 'utf8');
   await runPackagingPipeline({ nodeExe: resolvePackagingNode(), packagingDir: dir,

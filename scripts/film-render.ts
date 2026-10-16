@@ -35,10 +35,17 @@ try {
     result = await (await import('../lib/film-render/runtime-info.ts')).doctor();
   } else if (p[0] === 'templates') {
     const { classicTemplateDir, verifyClassicAssets } = await import('../lib/film-render/files.ts');
-    verifyClassicAssets(); result = [JSON.parse(fs.readFileSync(path.join(classicTemplateDir(), 'template.json'), 'utf8'))];
+    const { PACKAGING_TEMPLATE_IDS } = await import('../lib/media-core/packaging-vars.ts');
+    const { resolvePackagingDir, resolvePackagingTemplateDir } = await import('../lib/media-core/packaging-runtime.ts');
+    verifyClassicAssets(); result = [JSON.parse(fs.readFileSync(path.join(classicTemplateDir(), 'template.json'), 'utf8')),
+      ...PACKAGING_TEMPLATE_IDS.map((id, index) => {
+        fs.accessSync(path.join(resolvePackagingTemplateDir(resolvePackagingDir(), id), 'index.html'));
+        return { id, version: '1', code: 'ABCD'[index], staticCover: true, introFrames: 20, fonts: 'template-default' };
+      })];
   } else if (p[0] === 'spec') {
     const spec = (await import('../lib/film-render/from-project.ts')).renderSpecFromProject(path.resolve(need(p[1], 'project')), need(p[2], 'variant'),
-      { baseName: values['base-name'], musicInSec: values['music-in'] === undefined ? undefined : Number(values['music-in']), coverFrame: values['cover-frame'] === undefined ? undefined : Number(values['cover-frame']) });
+      { baseName: values['base-name'], musicInSec: values['music-in'] === undefined ? undefined : Number(values['music-in']), coverFrame: values['cover-frame'] === undefined ? undefined : Number(values['cover-frame']),
+        onAdjustment: change => console.error(JSON.stringify({ stage: 'spec', adjustment: change })) });
     const text = serializeRenderSpec(spec);
     if (values.out) { fs.writeFileSync(path.resolve(values.out), text, { flag: 'wx' }); result = { ok: true, spec: path.resolve(values.out) }; }
     else process.stdout.write(text);

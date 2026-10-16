@@ -9,6 +9,12 @@ declare module 'fontkit' {
     /** OpenType name 表（records[nameID] = { 语言: 文本 }）。 */
     name?: { records?: Record<string, Record<string, string>> };
     hasGlyphForCodePoint(codepoint: number): boolean;
+    unitsPerEm: number;
+    getVariation(variation: Record<string, number>): FontkitFont;
+    layout(text: string): {
+      glyphs: { path: { toSVG(): string } }[];
+      positions: { xAdvance: number; yAdvance: number; xOffset: number; yOffset: number }[];
+    };
   }
   export function openSync(path: string): FontkitFont;
 }

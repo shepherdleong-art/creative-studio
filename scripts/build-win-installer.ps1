@@ -199,7 +199,7 @@ foreach ($relativePath in $forbiddenAssertPaths) {
 
 $ffmpegBinaries = @(
   'node_modules\ffmpeg-static\ffmpeg.exe',
-  'node_modules\ffprobe-static\bin\win32\x64\ffprobe.exe'
+  'node_modules\@ffprobe-installer\win32-x64\ffprobe.exe'
 )
 foreach ($relativePath in $ffmpegBinaries) {
   $target = Join-Path (Join-Path $Payload '.next\standalone') $relativePath

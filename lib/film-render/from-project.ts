@@ -6,6 +6,7 @@ import { parsePythonJson, pyNumber } from './python-format.ts';
 import { parseRenderSpec } from './spec.ts';
 import { array, identifier, numeric, object, string } from './validation.ts';
 import type { RenderSpec } from './types.ts';
+import { packagingFromProject, type CueAdjustment } from './overlay-from-project.ts';
 
 export function readProjectJson(root: string, file: string): unknown {
   return parsePythonJson(fs.readFileSync(projectFile(root, file), 'utf8'));
@@ -30,7 +31,7 @@ function deliveryBaseName(root: string, variant: string): string {
 /** Read-only adapter for the audited RC2C / BS619 variant timelines.
  * Audio and media paths are variant-relative; the returned spec is project-relative.
  */
-export function renderSpecFromProject(projectRoot: string, variant: string, options: { baseName?: string; musicInSec?: number; coverFrame?: number } = {}): RenderSpec {
+export function renderSpecFromProject(projectRoot: string, variant: string, options: { baseName?: string; musicInSec?: number; coverFrame?: number; onAdjustment?: (change: CueAdjustment) => void } = {}): RenderSpec {
   identifier(variant, 'variant');
   const root = fs.realpathSync(projectRoot);
   const variantDir = `variants/${variant}`;
@@ -47,7 +48,9 @@ export function renderSpecFromProject(projectRoot: string, variant: string, opti
   });
   requireInput(timeline.voices !== undefined && timeline.music !== undefined, 'AUDIO_SOURCE_MISSING',
     '时间线缺少 voices/music；需核对现场脚本，不能猜测配音或配乐');
-  const labels = Object.fromEntries(Object.entries(object(pack.labels, 'packaging.labels')).map(([id, value]) => [id,
+  const overlay = pack.packaging === undefined ? undefined : packagingFromProject(pack.packaging, Number(timeline.frames),
+    options.onAdjustment ?? (change => console.error(JSON.stringify({ stage: 'spec', adjustment: change }))));
+  const labels = overlay ? {} : Object.fromEntries(Object.entries(object(pack.labels, 'packaging.labels')).map(([id, value]) => [id,
     array(value, `labels.${id}`).map((v, i) => {
       if (typeof v === 'string') return v;
       if (typeof v === 'number') return pyNumber(v, value as object, i);
@@ -60,7 +63,7 @@ export function renderSpecFromProject(projectRoot: string, variant: string, opti
     schemaVersion: 1,
     project: { root, variant, baseName: options.baseName ?? deliveryBaseName(root, variant) },
     canvas: { width: timeline.width, height: timeline.height, fps: timeline.fps, introFrames: timeline.introFrames, frames: timeline.frames },
-    template: { id: 'classic', version: '1' },
+    template: { id: overlay?.template ?? 'classic', version: '1' },
     shots, subtitles: timeline.subtitles,
     audio: {
       voices: array(timeline.voices, 'voices').map(value => {
@@ -71,13 +74,13 @@ export function renderSpecFromProject(projectRoot: string, variant: string, opti
         ducking: { threshold: .025, ratio: 8, attackMs: 15, releaseMs: 250 } },
       loudness: { integratedLufs: -16, truePeakDb: -1.6, lra: 11 },
     },
-    classic: {
+    ...(overlay ? { cover: { image: fileAtVariant(timeline.coverImage) }, packaging: overlay } : { classic: {
       projectCss: 'tools/style.css', designDoc: 'DESIGN.md', theme: timeline.theme,
       durationText: pyNumber(duration, timeline, 'duration'),
       cover: { image: fileAtVariant(timeline.coverImage), title: timeline.title, tag: timeline.tag, note: pack.coverNote,
         brand: config.brand, model: config.model, productName: config.productName },
       labels, callouts: timeline.callouts === undefined ? [] : timeline.callouts, outro: { title: timeline.endtitle },
-    },
+    } }),
     output: { coverFrame: options.coverFrame ?? 16 },
   });
 }
