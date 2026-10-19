@@ -1,0 +1,134 @@
+import {
+  getCosVideoCompressOptions,
+  isCosMediaConfigured,
+  tryUploadToCosAndSign,
+} from './cos-media.ts';
+import {
+  assertProviderExecutionAvailable,
+} from './provider-execution-gate.ts';
+import type {
+  CompanyProviderRuntimeStatus,
+  InspectCompanyProviderRuntimeOptions,
+} from './company-provider-runtime.ts';
+import type { TailFrameCapability, TailFrameProtocol } from './video-providers/types.ts';
+
+/**
+ * 公司网关（本机 LiteLLM → 公司中转站 → 腾讯云 CreateAigcVideoTask）视频模型的
+ * 尾帧精确映射。
+ *
+ * 合同（2026-08-17 免费字段探测 + 真实任务双重验证，详见
+ * docs/2026-08-16-视频首尾帧-执行方案.md §4.2）：
+ * - 网关把未翻译的字段原样透传给腾讯校验，参数错误在任务创建前 400 返回；
+ *   因此腾讯原生 PascalCase 参数可直接使用。
+ * - 可灵（kling-3.0）：首帧 images[0]，尾帧 LastFrameUrl，比例
+ *   OutputConfig.AspectRatio，时长 OutputConfig.Duration（2026-08-18 实测：
+ *   网关 LastFrameUrl 分支不透传 seconds、落缺省 5s；OutputConfig 字段
+ *   原样透传腾讯，Duration=10 真实任务产出 10.042s 生效）。
+ *   images[1] 会被下游当参考图（Reference），
+ *   比例落回 16:9 默认值且末帧不收束——禁止用 images 双图表达可灵尾帧。
+ * - Kling 2.5（2026-09-29 腾讯文档确认）：支持首尾帧且要求 1080P，
+ *   复用上述腾讯原生协议；2.5 公司链路末帧收束尚未做真实任务验证。
+ *   https://cloud.tencent.com/document/product/1823/135742
+ *   https://cloud.tencent.com/document/api/266/126239
+ * - 公司 Seedance（doubao-seedance-2-0(-fast)-260128）：images[1] 即尾帧，
+ *   比例跟随图片，末帧收束，实测正确。
+ * - 公司 Seedance 2.5（doubao-seedance-2-5-260628，2026-09-08 加入并
+ *   同日两条真实任务复核）：双图任务按「双参考图+提示词」处理，不进
+ *   官网首尾帧像素锚定模式——不送 size 时比例自选（3:4 图出 9:16 片）、
+ *   落默认 720p；送 1080p size 后正常接受（无 400）、出 1248x1664 锁
+ *   3:4，末帧构图≈尾帧图（标注文字正确过渡），首帧仍是重构图。
+ *   像素级锚定需网关支持显式 role（first_frame/last_frame），待网关侧确认。
+ * - 下游支持 SessionId 去重，但网关侧幂等键字段未核验，本轮不发送；
+ *   providerTaskId 防重复与 submission_unknown 语义不变。
+ *
+ * 门禁（方案 D9）：公司尾帧只允许 本机回环 LiteLLM + COS 预签名 URL，
+ * 首帧尾帧都必须走 COS，禁止回退本机/公网 URL；任一条件不满足在
+ * POST /v1/videos 前失败关闭。
+ */
+
+/** 有文档或实测依据的精确模型别名 → 尾帧协议；禁止宽泛正则，证据范围见上。 */
+const COMPANY_TAIL_FRAME_MODEL_PROTOCOLS: Record<string, TailFrameProtocol> = {
+  'kling-2.5': 'company-gateway-kling',
+  'kling-3.0': 'company-gateway-kling',
+  // 2026-09-10 真实任务：images[0] 首帧 + end_image_url 尾帧；见当日验证记录。
+  'qiniuyun/kling-3.0': 'company-gateway-qiniuyun-kling',
+  'doubao-seedance-2-0-260128': 'company-gateway-seedance',
+  'doubao-seedance-2-0-fast-260128': 'company-gateway-seedance',
+  'doubao-seedance-2-5-260628': 'company-gateway-seedance',
+};
+
+export function companyGatewayTailFrameCapability(model: string): TailFrameCapability {
+  const protocol = COMPANY_TAIL_FRAME_MODEL_PROTOCOLS[model];
+  if (protocol) return { supported: true, protocol };
+  return { supported: false, reason: 'contract_unverified' };
+}
+
+type RuntimeInspector = (
+  options: InspectCompanyProviderRuntimeOptions,
+) => Promise<CompanyProviderRuntimeStatus>;
+
+let runtimeInspectorForTest: RuntimeInspector | null = null;
+
+/** 测试专用：注入公司运行时检查器（仅脚本测试使用；生产路径不调用）。 */
+export function _setCompanyTailFrameRuntimeInspectorForTest(inspector: RuntimeInspector | null): void {
+  runtimeInspectorForTest = inspector;
+}
+
+/**
+ * 公司尾帧传输门禁：回环 LiteLLM 地址 + sidecar 健康 + COS 可用，
+ * 复用 provider execution gate 的 media 能力检查。任一不满足抛错，
+ * 调用方不得在门禁失败后发出 /v1/videos 请求。
+ */
+export async function assertCompanyTailFrameTransport(baseUrl: string): Promise<void> {
+  await assertProviderExecutionAvailable(
+    {
+      id: 'company-gateway-video',
+      executionScope: 'company',
+      baseUrl,
+      enabled: true,
+      configured: true,
+    },
+    {
+      capability: 'media',
+      mediaTransportAvailable: isCosMediaConfigured(),
+      ...(runtimeInspectorForTest ? { inspectRuntime: runtimeInspectorForTest } : {}),
+    },
+  );
+}
+
+/**
+ * 首帧 + 尾帧都上传 COS 并返回预签名 URL。公司尾帧禁止本机/公网 URL 兜底：
+ * 任一图片上传失败直接抛错，调用方必须失败关闭、不得发出生成请求。
+ */
+export async function uploadCompanyTailFrameImages(
+  sourceImagePath: string,
+  tailImagePath: string,
+  tailMimeType?: string,
+): Promise<[string, string]> {
+  let firstRef: string | null = null;
+  try {
+    // 首帧/尾帧默认 >4.8MB 才压缩（质量 95）：腾讯尾帧 LastFrameUrl 限 5M、
+    // 首帧 FileInfos 限 10M。压缩只影响发给上游的 COS 中转副本；
+    // 本地文件与最终成片仍以原始质量保存。
+    const videoOptions = getCosVideoCompressOptions();
+    firstRef = await tryUploadToCosAndSign(sourceImagePath, undefined, videoOptions);
+  } catch (error) {
+    throw new Error(`首帧图上传 COS 失败，公司尾帧任务未提交：${error instanceof Error ? error.message : error}`);
+  }
+  if (!firstRef) {
+    throw new Error('首帧图上传 COS 未返回可用地址，公司尾帧任务未提交');
+  }
+
+  let tailRef: string | null = null;
+  try {
+    const videoOptions = getCosVideoCompressOptions();
+    tailRef = await tryUploadToCosAndSign(tailImagePath, tailMimeType, videoOptions);
+  } catch (error) {
+    throw new Error(`尾帧图上传 COS 失败，公司尾帧任务未提交：${error instanceof Error ? error.message : error}`);
+  }
+  if (!tailRef) {
+    throw new Error('尾帧图上传 COS 未返回可用地址，公司尾帧任务未提交');
+  }
+
+  return [firstRef, tailRef];
+}

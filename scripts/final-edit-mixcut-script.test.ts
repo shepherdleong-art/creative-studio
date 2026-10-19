@@ -1,0 +1,161 @@
+import assert from 'node:assert/strict';
+import {
+  buildMixcutTaskScriptSnapshot,
+  buildMixcutSemanticText,
+  getScriptSyncState,
+  normalizeNarrationText,
+  splitNarrationSentences,
+} from '../lib/final-edit/mixcut-script.ts';
+
+assert.equal(normalizeNarrationText('  第一行  \r\n\r\n 第二   行 '), '第一行\n第二 行');
+assert.equal(getScriptSyncState('第一句\n第二句', '第一句\r\n第二句'), 'synced');
+assert.equal(getScriptSyncState('第一句', '第一句。'), 'modified');
+assert.deepEqual(splitNarrationSentences('第一句。第二句！\nThird? Last'), ['第一句。', '第二句！', 'Third?', 'Last']);
+
+const longSentenceSegments = splitNarrationSentences('这是一段没有任何逗号但是长度明显超过二十四个汉字所以必须被稳定拆开的测试文本。');
+assert.ok(longSentenceSegments.length >= 2, '无逗号长句也必须按硬上限拆开');
+assert.ok(longSentenceSegments.every((segment) => Array.from(segment.replace(/[\p{P}\p{S}\s]/gu, '')).length <= 24));
+const shortHeadSegments = splitNarrationSentences('好，这是一段很长很长而且没有更多逗号的正文内容用于验证短首句会被重新平衡而不是单独成段。');
+assert.ok(shortHeadSegments.every((segment) => {
+  const length = Array.from(segment.replace(/[\p{P}\p{S}\s]/gu, '')).length;
+  return length >= 10 && length <= 24;
+}), '短首子句与长尾必须重新平衡到可用长度');
+
+const realShortMaterialNarration = '忙碌一天回到家，只想陷进这26斤满铺鹅毛的怀抱，感受5芯软弹带来的极致解压。112度的人体工学靠背，精准承托疲惫的腰背，久坐不累，让阅读时光也变得格外轻盈。触手可及的是婴幼级半青皮，A类认证的细腻质感，给全家一份可以贴脸呼吸的安心。';
+const realShortMaterialSegments = splitNarrationSentences(realShortMaterialNarration);
+assert.equal(realShortMaterialSegments.length, 6, '真实 116 字口播必须稳定切成 5–8 个适合短素材的句段');
+assert.deepEqual(realShortMaterialSegments, [
+  '忙碌一天回到家，只想陷进这26斤满铺鹅毛的怀抱，',
+  '感受5芯软弹带来的极致解压。',
+  '112度的人体工学靠背，精准承托疲惫的腰背，',
+  '久坐不累，让阅读时光也变得格外轻盈。',
+  '触手可及的是婴幼级半青皮，A类认证的细腻质感，',
+  '给全家一份可以贴脸呼吸的安心。',
+], '已实测 5.6 秒的“靠背 + 腰背 + 久坐”长段必须在第三个逗号前断开');
+assert.ok(realShortMaterialSegments.every((segment) => {
+  const contentLength = Array.from(segment.replace(/[\p{P}\p{S}\s]/gu, '')).length;
+  return contentLength >= 10 && contentLength <= 25;
+}), '逗号切分后必须合并过短子句，且单段不得继续接近原来的 38–40 字');
+
+const source = {
+  version: 2,
+  title: '原始标题',
+  targetDurationSec: 20,
+  shotSetId: 'set-a',
+  fullScript: '忽略这个回退字段',
+  segments: [
+    { id: 'source-1', shotId: 'shot-1', narration: '第一句。' },
+    { id: 'source-2', shotId: 'shot-2', narration: '第二句！' },
+  ],
+};
+const synced = buildMixcutTaskScriptSnapshot({
+  sourceDraftId: 'draft-1', sourceScriptUpdatedAt: '2026-07-24T00:00:00.000Z',
+  sourceScript: source, shotSetId: 'set-a', editedNarrationText: '第一句。\n第二句！',
+});
+assert.equal(synced.scriptSyncState, 'synced');
+assert.deepEqual(synced.segments.map((segment) => [segment.id, segment.shotId]), [['source-1', 'shot-1'], ['source-2', 'shot-2']]);
+
+const realSynced = buildMixcutTaskScriptSnapshot({
+  sourceDraftId: 'draft-real',
+  sourceScript: {
+    version: 2,
+    shotSetId: 'set-a',
+    fullScript: realShortMaterialNarration,
+    segments: [
+      { id: 'real-1', shotId: 'shot-1', narration: '忙碌一天回到家，只想陷进这26斤满铺鹅毛的怀抱，感受5芯软弹带来的极致解压。' },
+      { id: 'real-2', shotId: 'shot-2', narration: '112度的人体工学靠背，精准承托疲惫的腰背，久坐不累，让阅读时光也变得格外轻盈。' },
+      { id: 'real-3', shotId: 'shot-3', narration: '触手可及的是婴幼级半青皮，A类认证的细腻质感，给全家一份可以贴脸呼吸的安心。' },
+    ],
+  },
+  shotSetId: 'set-a',
+  editedNarrationText: '忙碌一天回到家，只想陷进这26斤满铺鹅毛的怀抱，感受5芯软弹带来的极致解压。\n112度的人体工学靠背，精准承托疲惫的腰背，久坐不累，让阅读时光也变得格外轻盈。\n触手可及的是婴幼级半青皮，A类认证的细腻质感，给全家一份可以贴脸呼吸的安心。',
+});
+assert.equal(realSynced.segments.length, 6);
+assert.deepEqual(realSynced.segments.map((segment) => segment.shotId), ['shot-1', 'shot-1', 'shot-2', 'shot-2', 'shot-3', 'shot-3'], '每个细分句段必须继承父分镜 shotId，不能按新数组下标错配');
+
+const alreadyFineSource = {
+  version: 2,
+  shotSetId: 'set-a',
+  segments: Array.from({ length: 7 }, (_, index) => ({ id: `fine-${index + 1}`, shotId: `fine-shot-${index + 1}`, narration: `第${index + 1}段已经足够短，保留这一段。` })),
+};
+const alreadyFine = buildMixcutTaskScriptSnapshot({
+  sourceDraftId: 'draft-fine',
+  sourceScript: alreadyFineSource,
+  shotSetId: 'set-a',
+  editedNarrationText: alreadyFineSource.segments.map((segment) => segment.narration).join('\n'),
+});
+assert.equal(alreadyFine.segments.length, 7, '模块 3 已有 5–8 段时不得再次按逗号翻倍切分');
+
+const modified = buildMixcutTaskScriptSnapshot({
+  sourceDraftId: 'draft-1', sourceScript: source, shotSetId: 'set-a',
+  editedNarrationText: '改写第一句。\n新增一句！',
+});
+assert.equal(modified.scriptSyncState, 'modified');
+assert.deepEqual(modified.segments.map((segment) => [segment.narration, segment.shotId]), [['改写第一句。', 'shot-1'], ['新增一句！', 'shot-2']]);
+
+const lightlyModifiedReal = buildMixcutTaskScriptSnapshot({
+  sourceDraftId: 'draft-real',
+  sourceScript: realSynced.sourceSegments.length ? {
+    version: 2,
+    shotSetId: 'set-a',
+    segments: realSynced.sourceSegments,
+  } : null,
+  shotSetId: 'set-a',
+  editedNarrationText: realShortMaterialNarration.replace('极致解压', '彻底解压').replace(/。/g, '。\n').trim(),
+});
+assert.equal(lightlyModifiedReal.segments.length, 6);
+assert.deepEqual(lightlyModifiedReal.segments.map((segment) => segment.shotId), ['shot-1', 'shot-1', 'shot-2', 'shot-2', 'shot-3', 'shot-3'], '逐行轻微改写后，细分句仍必须继承对应父分镜');
+
+const unmappableModified = buildMixcutTaskScriptSnapshot({
+  sourceDraftId: 'draft-1', sourceScript: source, shotSetId: 'set-a',
+  editedNarrationText: '完全重写且移除了原来的分段。又补充一句。',
+});
+assert.ok(unmappableModified.segments.every((segment) => segment.shotId === ''), '无法可靠映射原段时必须清空 shotId，不能按下标错绑');
+
+const v3Source = {
+  version: 3,
+  title: 'V3 两段式标题',
+  coverTitleParts: { primary: '下班就该这样躺', secondary: '112°稳稳承托', source: 'model' as const },
+  targetDurationSec: 15,
+  shotSetId: 'set-a',
+  segments: Array.from({ length: 5 }, (_, index) => ({
+    id: index === 0 ? 'shot-1' : `v3-${index + 1}`,
+    shotId: `must-not-propagate-${index + 1}`,
+    narration: `第${index + 1}段带自然标点，保留TTS停顿。`,
+    subtitle: '模型字幕不可信！',
+    sellingPointRefs: ['112°承托'],
+    visualIntent: '靠背承托状态特写',
+    visualKeywords: ['靠背', '承托'],
+  })),
+};
+const v3Synced = buildMixcutTaskScriptSnapshot({
+  sourceDraftId: 'draft-v3',
+  sourceScript: v3Source,
+  shotSetId: 'set-a',
+  editedNarrationText: v3Source.segments.map((segment) => segment.narration).join('\n'),
+});
+assert.equal(v3Synced.sourceScriptVersion, 3);
+assert.ok(v3Synced.segments.every((segment) => segment.shotId === ''), 'V3 即使返回或伪装成 shot ID 也不得传播同分镜先验');
+assert.equal(v3Synced.segments[0].id, 'shot-1', '稳定段落 ID 可以类似 shot ID，但只作为 canonical segment ID');
+assert.equal(v3Synced.segments[0].subtitle, '第1段带自然标点 保留TTS停顿');
+assert.deepEqual(v3Synced.segments[0].sellingPointRefs, ['112°承托']);
+assert.equal(v3Synced.segments[0].visualIntent, '靠背承托状态特写');
+assert.deepEqual(v3Synced.segments[0].visualKeywords, ['靠背', '承托']);
+assert.match(buildMixcutSemanticText({
+  narration: v3Synced.segments[0].narration,
+  sourceScriptVersion: v3Synced.sourceScriptVersion,
+  sourceSegment: v3Synced.segments[0],
+}), /画面语义：靠背承托状态特写 靠背 承托 112°承托/);
+assert.equal(buildMixcutSemanticText({
+  narration: synced.segments[0].narration,
+  sourceScriptVersion: synced.sourceScriptVersion,
+  sourceSegment: synced.segments[0],
+}), synced.segments[0].narration, 'V2 语义输入仍只使用 narration');
+
+const manual = buildMixcutTaskScriptSnapshot({ shotSetId: 'set-a', editedNarrationText: '纯手工第一句。纯手工第二句。' });
+assert.equal(manual.source, 'manual');
+assert.equal(manual.sourceDraftId, null);
+assert.equal(manual.scriptSyncState, 'modified');
+assert.equal(manual.segments.length, 2);
+
+console.log('final-edit mixcut script tests passed');

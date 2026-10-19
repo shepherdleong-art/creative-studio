@@ -1,0 +1,826 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { VideoPlaybackRateControl } from '@/components/mixcut/VideoPlaybackRateControl';
+import { ClipFramingControl } from '@/components/mixcut/ClipFramingControl';
+import { Icon } from '@/components/ui/Icon';
+import type { OutputPresetId } from '@/lib/final-edit/types';
+import type { TextStyle } from '@/lib/media-core/cover-types';
+import { NARRATION_GAIN_DB_DEFAULT, NARRATION_GAIN_DB_MAX, NARRATION_GAIN_DB_MIN } from '@/lib/media-core/audio-gain';
+import type {
+  BatchOutputClipEditResult,
+  BatchOutputClipEditView,
+} from '@/lib/batch-production/output-arrangement';
+import { resolveBgmDraftAfterViewLoad, type BatchBgmDraft } from './bgm-draft';
+import BatchCoverDraftPreview from './BatchCoverDraftPreview';
+import BatchCoverEditorDrawer, { type BatchCoverEditorDraft } from './BatchCoverEditorDrawer';
+import BatchTimeline from './BatchTimeline';
+import BatchTimelinePreview, { type BatchTimelinePreviewHandle } from './BatchTimelinePreview';
+import BatchTextStyleEditor from './BatchTextStyleEditor';
+import { LutVideoPlayer } from './LutVideoPlayer';
+import { ProxyPlaybackToggle } from './ProxyPlaybackToggle';
+import { useProxyPlaybackPreference } from './proxy-playback-preference';
+
+export interface BatchOutputEditorProps {
+  projectId: string;
+  batchId: string;
+  planId: string;
+  outputPreset: OutputPresetId;
+  /** 外层卡片正在重渲染时传入,编辑控件暂时锁定 */
+  renderBusy?: boolean;
+  active?: boolean;
+  /** 上层传入的当前候选渲染代际:编辑器封面 URL 绑定该成功尝试,不自行派生。 */
+  candidateRenderAttemptId?: string | null;
+  /** 编辑生效后回调,外层据此刷新 workspace(卡片进入渲染中) */
+  onChanged?: () => void;
+}
+
+interface EditFeedback {
+  kind: 'error';
+  message: string;
+}
+
+/**
+ * 「检查成片」片段编辑面板:左侧冻结素材池,中间实时预览与时间轴,右侧成片设置。
+ * 自身拉取 arrangement 视图;编辑生效后静默重拉本视图。
+ *
+ * 编辑器优先模型:编辑只保存 arrangement(必要时重做封面任务),不排整片渲染。
+ * 本面板的预览是客户端实时合成的,不看渲染产物;完整 mp4 推迟到导出阶段生成。
+ */
+export default function BatchOutputEditor({
+  projectId,
+  batchId,
+  planId,
+  outputPreset,
+  renderBusy = false,
+  active = true,
+  candidateRenderAttemptId,
+  onChanged,
+}: BatchOutputEditorProps) {
+  const [view, setView] = useState<BatchOutputClipEditView | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [selectedSubtitleCueId, setSelectedSubtitleCueId] = useState<string | null>(null);
+  const [playheadSec, setPlayheadSec] = useState(0);
+  const [timelineTool, setTimelineTool] = useState<'select' | 'split'>('select');
+  const editorRef = useRef<HTMLDivElement>(null);
+  const playbackRef = useRef<BatchTimelinePreviewHandle>(null);
+  const [replaceCandidateId, setReplaceCandidateId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [editFeedback, setEditFeedback] = useState<EditFeedback | null>(null);
+  /** 本次编辑确实清除了既有审核态;在本次编辑器会话内持续提示需重新审核。 */
+  const [reviewCleared, setReviewCleared] = useState(false);
+  /** BGM 本地草稿：曲目 + 音量 + 淡入 + 淡出共同组成一份 musicDraft，任一字段都可独立弄脏。 */
+  const [musicDraft, setMusicDraft] = useState<BatchBgmDraft>({ trackId: null, gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 });
+  const [narrationGainDraft, setNarrationGainDraft] = useState(NARRATION_GAIN_DB_DEFAULT);
+  const [coverEditorOpen, setCoverEditorOpen] = useState(false);
+  const [previewMode, setPreviewMode] = useState<'output' | 'material'>('output');
+  const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
+  /** B1 总开关:开(默认)=素材预览走代理解析,关=播原片(核对画质) */
+  const { proxyPlayback } = useProxyPlaybackPreference();
+  const materialVideoRef = useRef<HTMLVideoElement | null>(null);
+  const materialVideoStateRef = useRef<{ time: number; paused: boolean }>({ time: 0, paused: false });
+  /** 素材预览的代理解析状态(无代理素材时切换控件禁用并给引导);带 assetId 防切换串台 */
+  const [materialPreviewInfo, setMaterialPreviewInfo] = useState<{ assetId: string; kind: string; originalOnline: boolean } | null>(null);
+  const [subtitleStyleDraft, setSubtitleStyleDraft] = useState<TextStyle | null>(null);
+  const [auditioningTrackId, setAuditioningTrackId] = useState<string | null>(null);
+  const previewTabRefs = useRef<Record<'output' | 'material', HTMLButtonElement | null>>({ output: null, material: null });
+  const musicDraftRef = useRef<BatchBgmDraft>(musicDraft);
+  // React 编译器红线：渲染期不得写 ref。在 effect 中同步最新值；
+  // 读取方（BGM 草稿同步 effect）声明在其后，执行顺序有保证。
+  useEffect(() => { musicDraftRef.current = musicDraft; });
+  const syncedBgmRef = useRef<{ planId: string | null; music: BatchBgmDraft | null }>({ planId: null, music: null });
+  const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const clipsUrl = `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`;
+
+  const loadView = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setLoadError('');
+    }
+    try {
+      const response = await fetch(
+        `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/arrangement?projectId=${encodeURIComponent(projectId)}`,
+        { cache: 'no-store' },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof body.message === 'string' ? body.message : `HTTP ${response.status}`);
+      }
+      setView(body as BatchOutputClipEditView);
+    } catch (error) {
+      if (!silent) setLoadError(error instanceof Error ? error.message : '读取成片安排失败');
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [batchId, planId, projectId]);
+
+  useEffect(() => {
+    // 换片段计划时重置交互态并重新拉取;统一推迟到宏任务,避免 effect 内同步 setState。
+    const timer = window.setTimeout(() => {
+      setSelectedClipId(null);
+      setSelectedSubtitleCueId(null);
+      setPlayheadSec(0);
+      setReplaceCandidateId(null);
+      setEditFeedback(null);
+      setReviewCleared(false);
+      setCoverEditorOpen(false);
+      setPreviewMode('output');
+      setPreviewAssetId(null);
+      setSubtitleStyleDraft(null);
+      void loadView();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadView]);
+
+  const clips = useMemo(() => view?.clips ?? [], [view]);
+  const poolAssets = useMemo(() => view?.poolAssets ?? [], [view]);
+  const assetsById = useMemo(() => new Map(poolAssets.map((asset) => [asset.assetId, asset])), [poolAssets]);
+  const previewAssetsById = useMemo(
+    () => Object.fromEntries(poolAssets.map((asset) => [asset.assetId, {
+      // 代理解析路由(批次级,B1 开关开启时使用);原片直连供开关关闭时使用
+      previewUrl: asset.previewUrl,
+      originalUrl: `/api/batch-production/assets/${encodeURIComponent(asset.assetId)}/preview?projectId=${encodeURIComponent(projectId)}`,
+      // C3:时间线逐片段 LUT(冻结快照选择);.cube 只读端点由这里携带 projectId 构造
+      lutId: asset.lutId,
+      lutUrl: asset.lutId
+        ? `/api/batch-production/luts/${encodeURIComponent(asset.lutId)}/file?projectId=${encodeURIComponent(projectId)}`
+        : undefined,
+    }])),
+    [poolAssets, projectId],
+  );
+  const selectedClip = clips.find((clip) => clip.clipId === selectedClipId) ?? null;
+  const pendingReplaceAsset = replaceCandidateId ? assetsById.get(replaceCandidateId) ?? null : null;
+  const previewMaterial = previewAssetId ? assetsById.get(previewAssetId) ?? null : null;
+  // 素材预览的代理可用性:素材在版本池内,复用 previewUrl 上的批次参数查 previewInfo
+  useEffect(() => {
+    if (!previewMaterial) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`${previewMaterial.previewUrl}&previewInfo=1`, { cache: 'no-store' });
+        const body = await response.json().catch(() => ({})) as { kind?: string; originalOnline?: boolean };
+        if (!cancelled && response.ok) {
+          setMaterialPreviewInfo({ assetId: previewMaterial.assetId, kind: body.kind ?? 'unavailable', originalOnline: body.originalOnline ?? false });
+        }
+      } catch {
+        // 读取失败不阻塞预览;控件按"无代理"禁用
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [previewMaterial]);
+
+  const usedHere = poolAssets.filter((asset) => asset.usedByPlanIds.includes(planId)).length;
+  const coverHere = poolAssets.filter((asset) => asset.coverUsedByPlanIds.includes(planId)).length;
+  const neverUsed = poolAssets.filter((asset) => asset.usedByPlanIds.length === 0 && asset.coverUsedByPlanIds.length === 0).length;
+  const visualSec = (view?.visualDurationUs ?? 0) / 1_000_000;
+  const narrationSec = view?.narration.durationUs != null ? view.narration.durationUs / 1_000_000 : null;
+  const editLocked = !view?.editable || renderBusy || submitting;
+  useEffect(() => {
+    if (!active || !view || coverEditorOpen) return;
+    const keydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      const root = editorRef.current;
+      if (!(target instanceof HTMLElement) || !root) return;
+      const scope = root.closest('[role="dialog"]') ?? root;
+      if (!scope.contains(target) || target.isContentEditable || target.closest('input, textarea, select, [role="textbox"], [role="combobox"], [role="slider"], [role="menu"]')) return;
+      const dialog = target.closest('[role="dialog"], [role="alertdialog"]');
+      if (dialog && dialog !== scope) return;
+      const key = event.key.toLowerCase();
+      if (key !== ' ' && key !== 'c' && key !== 'v') return;
+      event.preventDefault(); // 同时阻止空格滚动页面、再次激活当前聚焦按钮。
+      if (event.repeat) return;
+      if (key === ' ') {
+        if (previewMode === 'material') {
+          const video = materialVideoRef.current;
+          if (video?.paused) void video.play().catch(() => undefined);
+          else video?.pause();
+        } else playbackRef.current?.togglePlayback();
+      } else if (!editLocked && clips.length > 0) {
+        setTimelineTool(key === 'c' ? 'split' : 'select');
+      }
+    };
+    window.addEventListener('keydown', keydown);
+    return () => window.removeEventListener('keydown', keydown);
+  }, [active, view, coverEditorOpen, previewMode, editLocked, clips.length]);
+  const syncedNarrationGain = view?.narration.gainDb;
+  // BGM 草稿同步决策（纯函数，见 bgm-draft.ts）：换 plan 或服务端真值变化才对齐；
+  // 其他编辑命令触发的静默 loadView(true) 一律保留未应用的草稿。
+  useEffect(() => {
+    if (!view) return;
+    const serverMusic: BatchBgmDraft = {
+      trackId: view.music.trackId,
+      gainDb: view.music.gainDb,
+      fadeInSec: view.music.fadeInSec,
+      fadeOutSec: view.music.fadeOutSec,
+    };
+    const resolution = resolveBgmDraftAfterViewLoad({
+      planId: view.planId,
+      syncedPlanId: syncedBgmRef.current.planId,
+      syncedServerMusic: syncedBgmRef.current.music,
+      serverMusic,
+      currentDraft: musicDraftRef.current,
+    });
+    syncedBgmRef.current = { planId: resolution.syncedPlanId, music: resolution.syncedServerMusic };
+    if (resolution.resync) setMusicDraft(resolution.draft);
+  }, [view]);
+
+  useEffect(() => {
+    if (syncedNarrationGain === undefined) return;
+    const timer = window.setTimeout(() => setNarrationGainDraft(syncedNarrationGain), 0);
+    return () => window.clearTimeout(timer);
+  }, [syncedNarrationGain]);
+
+  useEffect(() => () => {
+    auditionAudioRef.current?.pause();
+    auditionAudioRef.current = null;
+  }, []);
+
+  const narrationUrl = view?.narration.audioRelativePath
+    ? `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/media?kind=narration&projectId=${encodeURIComponent(projectId)}`
+    : null;
+  const coverUrl = view?.coverAssetId
+    ? `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=cover&source=candidate${candidateRenderAttemptId ? `&renderAttemptId=${encodeURIComponent(candidateRenderAttemptId)}` : ''}`
+    : null;
+  const previewBgmTrackId = musicDraft.trackId;
+  const previewBgm = useMemo(() => (previewBgmTrackId
+    ? {
+      fileUrl: `/api/final-edit-bgm/${encodeURIComponent(previewBgmTrackId)}/file`,
+      gainDb: musicDraft.gainDb,
+      fadeInSec: musicDraft.fadeInSec,
+      fadeOutSec: musicDraft.fadeOutSec,
+    }
+    : null), [previewBgmTrackId, musicDraft.gainDb, musicDraft.fadeInSec, musicDraft.fadeOutSec]);
+
+  async function submitEdit(payload: Record<string, unknown>): Promise<boolean> {
+    // 编辑器优先:所有编辑都只保存;服务端按 coverContractHash 幂等地重排封面任务。
+    setSubmitting(true);
+    setEditFeedback(null);
+    try {
+      const editRequest = fetch(clipsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      });
+      const response = await editRequest;
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof result.message === 'string' ? result.message : `HTTP ${response.status}`);
+      }
+      const editResult = result as BatchOutputClipEditResult;
+      // 有效编辑清除了既有审核态:常驻提示需要重新审核(覆盖片段/封面/字幕/BGM/口播音量)。
+      if (editResult.reviewCleared) setReviewCleared(true);
+      // 静默重拉:预览立即吃到新 arrangement(即改即看),不打断当前交互。
+      await loadView(true);
+      // 通知外层刷新工作区(审核/封面任务/formalOutdated 都可能已变化)。
+      if (editResult.changed) onChanged?.();
+      return true;
+    } catch (error) {
+      setEditFeedback({ kind: 'error', message: error instanceof Error ? error.message : '保存片段修改失败' });
+      return false;
+    } finally {
+      setSubmitting(false);
+    }
+  }
+  const confirmReplace = async (): Promise<void> => {
+    if (!selectedClip || !pendingReplaceAsset) return;
+    const accepted = await submitEdit({ type: 'replace', clipId: selectedClip.clipId, assetId: pendingReplaceAsset.assetId });
+    if (accepted) setReplaceCandidateId(null);
+  };
+
+  const confirmInsertAfter = async (): Promise<void> => {
+    if (!selectedClip || !pendingReplaceAsset) return;
+    const accepted = await submitEdit({
+      type: 'insert',
+      assetId: pendingReplaceAsset.assetId,
+      afterClipId: selectedClip.clipId,
+    });
+    if (accepted) setReplaceCandidateId(null);
+  };
+
+  const confirmAppendToEnd = async (): Promise<void> => {
+    if (!pendingReplaceAsset || clips.length === 0) return;
+    const accepted = await submitEdit({
+      type: 'insert',
+      assetId: pendingReplaceAsset.assetId,
+      afterClipId: clips[clips.length - 1].clipId,
+    });
+    if (accepted) setReplaceCandidateId(null);
+  };
+
+  const confirmDelete = async (targetClipId: string): Promise<void> => {
+    const target = clips.find((clip) => clip.clipId === targetClipId);
+    if (!target || clips.length === 1) return;
+    const accepted = window.confirm(
+      '删除后会保留空位，后续片段和音频位置不变。确定删除这段吗？',
+    );
+    if (!accepted) return;
+    const result = await submitEdit({ type: 'delete', clipId: target.clipId });
+    if (result) {
+      setSelectedClipId(null);
+      setReplaceCandidateId(null);
+    }
+  };
+
+  const confirmDeleteSubtitle = (cueId: string): void => {
+    if (!window.confirm('删除这条字幕后，口播音频不会改变。确定删除吗？')) return;
+    void submitEdit({ type: 'delete_subtitle_cue', cueId }).then((accepted) => {
+      if (accepted) setSelectedSubtitleCueId(null);
+    });
+  };
+
+  const auditionMusic = (trackId: string): void => {
+    if (auditioningTrackId === trackId) {
+      auditionAudioRef.current?.pause();
+      auditionAudioRef.current = null;
+      setAuditioningTrackId(null);
+      return;
+    }
+    const audio = new Audio(`/api/final-edit-bgm/${encodeURIComponent(trackId)}/file`);
+    audio.onended = () => setAuditioningTrackId(null);
+    auditionAudioRef.current?.pause();
+    auditionAudioRef.current = audio;
+    setAuditioningTrackId(trackId);
+    void audio.play().catch(() => setAuditioningTrackId(null));
+  };
+
+  const coverAsset = view?.coverAssetId ? assetsById.get(view.coverAssetId) ?? null : null;
+
+  const openCoverEditor = () => {
+    if (editLocked) return;
+    setCoverEditorOpen(true);
+  };
+
+  const applyCover = async (draft: BatchCoverEditorDraft): Promise<boolean> => {
+    if (!draft.assetId) return false;
+    return submitEdit({
+      type: 'set_cover',
+      assetId: draft.assetId,
+      timeUs: draft.timeUs,
+      framing: draft.framing,
+      title: !draft.packaging?.enabled || draft.titleEdited ? draft.title : undefined,
+      packaging: draft.packaging,
+      expectedEditRevision: draft.expectedEditRevision,
+      expectedOutputVersionId: draft.expectedOutputVersionId,
+    });
+  };
+
+  if (loading && !view) {
+    return <div className="tile p-6 text-center text-sm text-ink-secondary">正在读取成片安排…</div>;
+  }
+  if (loadError && !view) {
+    return (
+      <div className="tile space-y-3 p-6 text-sm">
+        <p className="text-fail">读取成片安排失败：{loadError}</p>
+        <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={() => void loadView()}>重试</button>
+      </div>
+    );
+  }
+  if (!view) return null;
+
+  // BGM 草稿与服务端真值的比较覆盖全部四个字段：曲目、音量、淡入、淡出。
+  const musicDraftChanged = musicDraft.trackId !== view.music.trackId
+    || musicDraft.gainDb !== view.music.gainDb
+    || musicDraft.fadeInSec !== view.music.fadeInSec
+    || musicDraft.fadeOutSec !== view.music.fadeOutSec;
+  const musicParamsMatchDefaults = musicDraft.gainDb === view.batchMusicDefaults.gainDb
+    && musicDraft.fadeInSec === view.batchMusicDefaults.fadeInSec
+    && musicDraft.fadeOutSec === view.batchMusicDefaults.fadeOutSec;
+  const narrationGainChanged = narrationGainDraft !== view.narration.gainDb;
+  const effectiveSubtitleStyleDraft = subtitleStyleDraft ?? view.subtitleStyle;
+  const subtitleStyleChanged = JSON.stringify(effectiveSubtitleStyleDraft) !== JSON.stringify(view.subtitleStyle);
+  const canResetSubtitleStyle = view.subtitleStyleOverride || subtitleStyleChanged;
+
+  return (
+    <div ref={editorRef} className="flex h-full min-h-0 min-w-0 flex-col gap-3" data-testid={`batch-output-editor-${planId}`}>
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-hairline pb-2">
+        <span className="text-sm font-semibold text-ink">预览调整</span>
+        <span className="rounded-full bg-surface-subtle px-2.5 py-1 text-[11px] text-ink-secondary">{clips.length} 个片段</span>
+        <span className="rounded-full bg-surface-subtle px-2.5 py-1 text-[11px] text-ink-secondary">画面 {visualSec.toFixed(1)} 秒</span>
+        {narrationSec != null && <span className="rounded-full bg-surface-subtle px-2.5 py-1 text-[11px] text-ink-secondary">口播 {narrationSec.toFixed(1)} 秒</span>}
+        <span className="ml-auto text-[11px] text-ink-tertiary">
+          本片使用 {usedHere}/{poolAssets.length} 条素材{coverHere > 0 ? ` · 封面 ${coverHere} 条` : ''} · 未使用 {neverUsed} 条
+          {view.versionNumber != null && ` · 当前 v${view.versionNumber}`}
+        </span>
+      </div>
+
+      {!view.outputVersionId && <p className="shrink-0 tile p-3 text-xs text-warn">还没有可编辑的成片版本，请先完成生产。</p>}
+      {view.outputVersionId && !view.editable && <p className="shrink-0 tile p-3 text-xs text-warn">批次已停止或输入尚未冻结，当前只能查看，不能调整片段。</p>}
+      {editFeedback && (
+        <p
+          role="alert"
+          className="shrink-0 tile p-3 text-xs text-fail"
+        >{editFeedback.message}</p>
+      )}
+      {reviewCleared && (
+        <p className="shrink-0 tile p-3 text-xs text-warn" role="status">
+          本次修改已重置审核状态；请返回检查成片重新通过。
+        </p>
+      )}
+
+      <div className="grid min-h-0 min-w-0 flex-1 gap-3 overflow-y-auto xl:overflow-visible xl:grid-cols-[minmax(254px,280px)_minmax(420px,1fr)_minmax(300px,340px)]">
+        <aside className="flex min-h-[320px] min-w-0 flex-col rounded-2xl bg-surface-subtle p-3 xl:min-h-0" aria-label="素材调整">
+          <div className="flex shrink-0 items-center gap-2">
+            <Icon name="retry" size={15} />
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-ink">素材调整</h3>
+              <p className="mt-0.5 text-[11px] text-ink-tertiary">冻结素材池 · {poolAssets.length} 条</p>
+            </div>
+          </div>
+          <p className="mt-2 shrink-0 text-[11px] leading-5 text-warn">
+            {selectedClip
+              ? '先选素材，再替换当前片段或插入到它之后。'
+              : '先在中间时间轴选中片段；没有选中时可把素材追加到末尾。'}
+          </p>
+          <div className="mt-3 shrink-0 rounded-xl border border-hairline bg-surface p-2.5" aria-live="polite">
+            <p className="truncate text-[11px] font-medium text-ink" title={pendingReplaceAsset?.displayName}>
+              {pendingReplaceAsset ? `已选素材：${pendingReplaceAsset.displayName}` : '尚未选择素材'}
+            </p>
+            <p className="mt-1 truncate text-[10px] text-ink-tertiary">
+              {selectedClip ? `目标：片段 #${clips.findIndex((clip) => clip.clipId === selectedClip.clipId) + 1}` : '目标：追加到末尾'}
+            </p>
+            {pendingReplaceAsset && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {selectedClip && (
+                  <>
+                    <button type="button" className="btn-primary h-8 shrink-0 whitespace-nowrap px-2.5 text-[11px]" disabled={editLocked} onClick={() => void confirmReplace()}>{submitting ? '处理中…' : '替换当前'}</button>
+                    <button type="button" className="btn-secondary h-8 shrink-0 whitespace-nowrap px-2.5 text-[11px]" disabled={editLocked} onClick={() => void confirmInsertAfter()}>{submitting ? '处理中…' : '插入之后'}</button>
+                  </>
+                )}
+                <button type="button" className="btn-secondary h-8 shrink-0 whitespace-nowrap px-2.5 text-[11px]" disabled={editLocked || clips.length === 0} onClick={() => void confirmAppendToEnd()}>{submitting ? '处理中…' : '追加末尾'}</button>
+                <button type="button" className="btn-secondary h-8 shrink-0 whitespace-nowrap px-2.5 text-[11px]" disabled={submitting} onClick={() => setReplaceCandidateId(null)}>取消</button>
+              </div>
+            )}
+          </div>
+          <div className="mt-3 flex shrink-0 items-center justify-between gap-2">
+            <p className="text-xs font-medium text-ink">素材列表</p>
+            <span className="text-[11px] text-ink-tertiary">已用 {usedHere} · 未用 {neverUsed}</span>
+          </div>
+          <div className="mt-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
+            {poolAssets.map((asset) => {
+              // 本片次数 = useCountByPlanId[planId]，其他次数 = 其余计划计数之和；
+              // 两数独立计算，同一素材同时用于本片和其他成片时两个徽标并存。
+              const thisCount = asset.useCountByPlanId[planId] ?? 0;
+              const otherCount = Object.entries(asset.useCountByPlanId)
+                .filter(([id]) => id !== planId)
+                .reduce((sum, [, count]) => sum + count, 0);
+              const usedByThis = thisCount > 0;
+              const usedByOthers = otherCount > 0;
+              const coverUsedByThis = asset.coverUsedByPlanIds.includes(planId);
+              const selectable = !asset.excluded && !editLocked && clips.length > 0;
+              const pending = replaceCandidateId === asset.assetId;
+              return (
+                <div
+                  key={asset.assetId}
+                  className={'flex min-h-[72px] min-w-0 items-center gap-1 rounded-xl p-1.5 transition ' + (asset.excluded ? 'opacity-45' : 'hover:bg-surface') + (pending ? ' bg-accent/10 ring-2 ring-accent' : '')}
+                >
+                  <button
+                    type="button"
+                    disabled={!selectable}
+                    aria-pressed={pending}
+                    title={asset.excluded ? '该素材已被排除出本批次分配，不可用于替换' : '选择素材「' + asset.displayName + '」'}
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded-lg p-0.5 text-left"
+                    onClick={() => setReplaceCandidateId(pending ? null : asset.assetId)}
+                  >
+                    <span className="relative h-14 w-20 shrink-0 overflow-hidden rounded-lg bg-ink/10">
+                      {asset.thumbnailUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={asset.thumbnailUrl} alt="" loading="lazy" className="h-full w-full object-cover" />
+                      ) : <span className="flex h-full items-center justify-center text-[9px] text-ink-tertiary">无图</span>}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className={(pending ? 'block truncate text-[11px] font-medium text-accent' : 'block truncate text-[11px] font-medium text-ink')} title={asset.displayName}>{asset.displayName}</span>
+                      <span className="mt-0.5 block text-[10px] tabular-nums text-ink-tertiary">{asset.durationSec != null ? asset.durationSec.toFixed(1) + ' 秒' : '时长未知'}</span>
+                      <span className="mt-1 flex flex-wrap gap-1">
+                        {usedByThis && <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-[9px] text-ok">本片已用{thisCount > 1 ? ` ×${thisCount}` : ''}</span>}
+                        {coverUsedByThis && <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[9px] text-accent">本片封面</span>}
+                        {usedByOthers && <span className="rounded-full bg-surface px-1.5 py-0.5 text-[9px] text-ink-secondary">其他成片已用{otherCount > 1 ? ` ×${otherCount}` : ''}</span>}
+                        {asset.excluded && <span className="rounded-full bg-fail/10 px-1.5 py-0.5 text-[9px] text-fail">已排除</span>}
+                      </span>
+                    </span>
+                    {pending && <Icon name="check" size={13} />}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary h-7 shrink-0 px-2 text-[10px]"
+                    aria-label={'预览素材 ' + asset.displayName}
+                    disabled={!asset.previewUrl && !asset.thumbnailUrl}
+                    onClick={() => {
+                      setPreviewAssetId(asset.assetId);
+                      setPreviewMode('material');
+                    }}
+                  >预览</button>
+                </div>
+              );
+            })}
+            {poolAssets.length === 0 && <p className="py-6 text-center text-xs text-ink-tertiary">冻结素材池为空</p>}
+          </div>
+        </aside>
+
+        <main className="flex min-h-0 min-w-0 flex-col overflow-y-auto rounded-2xl bg-surface-subtle p-3" data-testid="batch-output-middle-scroll-area" aria-label="预览调整">
+          <div className="flex flex-col gap-3">
+            <section className="flex h-[clamp(360px,58vh,560px)] min-h-[360px] flex-none flex-col overflow-hidden rounded-xl bg-surface p-3" data-testid="batch-output-preview-pane">
+              <div className="flex h-full min-h-0 flex-col gap-2">
+                <div className="flex shrink-0 items-center justify-between gap-2">
+                  <div
+                    className="flex rounded-lg bg-surface-subtle p-1"
+                    role="tablist"
+                    aria-label="预览内容"
+                    onKeyDown={(event) => {
+                      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                      event.preventDefault();
+                      const nextMode = previewMode === 'output' ? 'material' : 'output';
+                      setPreviewMode(nextMode);
+                      previewTabRefs.current[nextMode]?.focus();
+                    }}
+                  >
+                    <button
+                      type="button"
+                      role="tab"
+                      id="batch-output-preview-tab"
+                      aria-controls="batch-preview-panel"
+                      aria-selected={previewMode === 'output'}
+                      tabIndex={previewMode === 'output' ? 0 : -1}
+                      ref={(element) => { previewTabRefs.current.output = element; }}
+                      className={'rounded-md px-2.5 py-1 text-[11px] ' + (previewMode === 'output' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary')}
+                      onClick={() => setPreviewMode('output')}
+                    >成片预览</button>
+                    <button
+                      type="button"
+                      role="tab"
+                      id="batch-material-preview-tab"
+                      aria-controls="batch-preview-panel"
+                      aria-selected={previewMode === 'material'}
+                      tabIndex={previewMode === 'material' ? 0 : -1}
+                      ref={(element) => { previewTabRefs.current.material = element; }}
+                      className={'rounded-md px-2.5 py-1 text-[11px] ' + (previewMode === 'material' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary')}
+                      onClick={() => setPreviewMode('material')}
+                    >素材预览</button>
+                  </div>
+                  <span className="min-w-0 truncate text-[11px] text-ink-tertiary" title={previewMaterial?.displayName}>
+                    {previewMode === 'material' ? (previewMaterial?.displayName ?? '请从左侧点击预览') : '实时合成预览'}
+                  </span>
+                  {previewMode === 'material' && previewMaterial && (
+                    <ProxyPlaybackToggle
+                      disabled={materialPreviewInfo?.assetId !== previewMaterial.assetId || materialPreviewInfo?.kind !== 'proxy'}
+                      disabledHint="该素材还没有低清代理：生成后在代理与原片之间切换"
+                      onBeforeChange={() => {
+                        const video = materialVideoRef.current;
+                        if (video) materialVideoStateRef.current = { time: video.currentTime, paused: video.paused };
+                      }}
+                    />
+                  )}
+                </div>
+                <div
+                  id="batch-preview-panel"
+                  role="tabpanel"
+                  aria-labelledby={previewMode === 'output' ? 'batch-output-preview-tab' : 'batch-material-preview-tab'}
+                  className="min-h-0 flex-1"
+                >
+                  {previewMode === 'material' ? (
+                    <div className="flex h-full min-h-0 flex-col items-center justify-center gap-2 rounded-xl bg-ink/[.04] p-2" data-testid="batch-output-material-preview">
+                      {previewMaterial?.previewUrl ? (
+                        <LutVideoPlayer
+                          key={'material-preview-' + previewMaterial.assetId + '-' + (proxyPlayback ? 'proxy' : 'original')}
+                          src={proxyPlayback ? previewMaterial.previewUrl : `/api/batch-production/assets/${encodeURIComponent(previewMaterial.assetId)}/preview?projectId=${encodeURIComponent(projectId)}`}
+                          poster={previewMaterial.thumbnailUrl}
+                          ariaLabel={'素材预览：' + previewMaterial.displayName}
+                          className="flex h-full min-h-0 items-center justify-center"
+                          videoRef={materialVideoRef}
+                          lut={previewMaterial.lutId ? {
+                            lutId: previewMaterial.lutId,
+                            url: `/api/batch-production/luts/${encodeURIComponent(previewMaterial.lutId)}/file?projectId=${encodeURIComponent(projectId)}`,
+                          } : null}
+                          onLoadedMetadata={(event) => {
+                            // 开关切换换源后恢复播放位置与播放/暂停状态
+                            const state = materialVideoStateRef.current;
+                            if (state.time > 0 && Number.isFinite(state.time)) {
+                              try {
+                                const duration = event.currentTarget.duration;
+                                event.currentTarget.currentTime = Number.isFinite(duration) && duration > 0
+                                  ? Math.min(state.time, duration)
+                                  : state.time;
+                              } catch {
+                                // 换源瞬间 currentTime 可能不可写,忽略即可
+                              }
+                            }
+                            if (state.paused) event.currentTarget.pause();
+                          }}
+                        />
+                      ) : previewMaterial?.thumbnailUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={previewMaterial.thumbnailUrl} alt={previewMaterial.displayName} className="max-h-full max-w-full rounded-lg object-contain" />
+                      ) : (
+                        <p className="text-xs text-ink-tertiary">请从左侧素材列表点击“预览”</p>
+                      )}
+                      {previewMaterial && <p className="max-w-full truncate text-[11px] text-ink-tertiary" title={previewMaterial.displayName}>{previewMaterial.displayName}</p>}
+                    </div>
+                  ) : (
+                    <BatchTimelinePreview
+                      playbackRef={playbackRef}
+                      clips={clips}
+                      narrationDurationUs={view.narration.durationUs}
+                      preserveGaps={view.preserveGaps}
+                      audio={view.audio}
+                      assetsById={previewAssetsById}
+                      coverUrl={coverUrl}
+                      coverDraft={{ asset: coverAsset, timeUs: view.coverTimeUs, title: view.coverTitle, framing: view.coverFraming }}
+                      subtitleCues={view.subtitleCues}
+                      subtitleStyle={effectiveSubtitleStyleDraft}
+                      narrationUrl={narrationUrl}
+                      narrationGainDb={narrationGainDraft}
+                      bgm={previewBgm}
+                      outputPreset={outputPreset}
+                      playheadSec={playheadSec}
+                      onSeek={setPlayheadSec}
+                      active={active}
+                      compact
+                    />
+                  )}
+                </div>
+              </div>
+            </section>
+            <section className="flex-none rounded-xl bg-surface p-3" data-testid="batch-output-timeline-pane">
+              <BatchTimeline
+                tool={timelineTool}
+                onToolChange={setTimelineTool}
+                clips={clips}
+                assets={poolAssets}
+                subtitleCues={view.subtitleCues}
+                narrationDurationUs={view.narration.durationUs}
+                preserveGaps={view.preserveGaps}
+                audio={view.audio}
+                musicLabel={view.musicLibrary.find((track) => track.id === view.music.trackId)?.filename ?? null}
+                onMediaEdit={submitEdit}
+                playheadSec={playheadSec}
+                selectedClipId={selectedClipId}
+                selectedSubtitleCueId={selectedSubtitleCueId}
+                disabled={editLocked}
+                onSeek={setPlayheadSec}
+                onSelectClip={(clipId) => { setSelectedClipId(clipId); const clip = clips.find((item) => item.clipId === clipId); if (clip) { setPlayheadSec(20 / 24 + clip.timelineStartUs / 1e6); setPreviewMode('output'); } }}
+                onSelectSubtitleCue={setSelectedSubtitleCueId}
+                onTrimVariable={async (clipId, sourceStartUs, sourceEndUs) =>
+                  submitEdit({ type: 'trim_variable', clipId, sourceStartUs, sourceEndUs })}
+                onSplit={async (clipId, offsetUs) => submitEdit({ type: 'split', clipId, offsetUs })}
+                onDeleteClip={(clipId) => void confirmDelete(clipId)}
+                onSubtitleEdit={submitEdit}
+                onDeleteSubtitleCue={confirmDeleteSubtitle}
+              />
+            </section>
+          </div>
+        </main>
+
+        <aside className="min-h-0 min-w-0 space-y-3 overflow-y-auto pr-1" data-testid="batch-output-settings-scroll-area" aria-label="成片设置">
+          {selectedClip && <VideoPlaybackRateControl key={`speed:${selectedClip.clipId}`} value={selectedClip.playbackRate ?? 1} disabled={editLocked}
+            onCommit={(playbackRate) => submitEdit({ type: 'set_clip_playback_rate', clipId: selectedClip.clipId, playbackRate })} />}
+
+          {selectedClip && <ClipFramingControl key={`framing:${selectedClip.clipId}`} clip={{ framing: selectedClip.framing ?? { scale: 1, offsetX: 0, offsetY: 0 } }} disabled={editLocked}
+            onPreview={(framing) => setView((current) => current ? { ...current, clips: current.clips.map((clip) => clip.clipId === selectedClip.clipId ? { ...clip, framing } : clip) } : current)}
+            onCommit={(framing) => void submitEdit({ type: 'set_clip_framing', clipId: selectedClip.clipId, framing })} />}
+
+          <div className="tile space-y-3 p-3" aria-label="字幕样式">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-ink">字幕样式</p>
+              <span className={'rounded-full px-2 py-0.5 text-[11px] ' + (view.subtitleStyleOverride ? 'bg-warn/20 text-warn' : 'bg-ok/10 text-ok')}>{view.subtitleStyleOverride ? '本片覆盖' : '批次默认'}</span>
+            </div>
+            <p className="text-[11px] leading-5 text-ink-tertiary">这里的样式只覆盖当前成片；字幕文字仍可在下方时间轴拖动、修剪或双击编辑，改字幕不改口播音频。</p>
+            <BatchTextStyleEditor
+              key={'batch-subtitle-style-' + view.planId}
+              label="字幕样式"
+              value={effectiveSubtitleStyleDraft}
+              outputWidth={outputPreset === '16x9' ? 1920 : 1080}
+              disabled={editLocked}
+              onChange={setSubtitleStyleDraft}
+            />
+            <div className="flex flex-wrap justify-end gap-2 border-t border-hairline pt-3">
+              <button
+                type="button"
+                className="btn-secondary h-8 px-3 text-xs"
+                disabled={editLocked || !canResetSubtitleStyle}
+                onClick={() => {
+                  void submitEdit({ type: 'set_subtitle_style', style: null })
+                    .then((accepted) => { if (accepted) setSubtitleStyleDraft(null); });
+                }}
+              >恢复批次默认</button>
+              <button
+                type="button"
+                className="btn-primary h-8 px-3 text-xs"
+                disabled={editLocked || !subtitleStyleChanged}
+                onClick={() => {
+                  void submitEdit({ type: 'set_subtitle_style', style: effectiveSubtitleStyleDraft })
+                    .then((accepted) => { if (accepted) setSubtitleStyleDraft(null); });
+                }}
+              >应用字幕样式</button>
+            </div>
+            {view.subtitleOverride && <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={editLocked} onClick={() => void submitEdit({ type: 'restore_automatic_subtitles' })}>恢复自动字幕</button>}
+          </div>
+
+          <div className="tile space-y-3 p-3" aria-label="成片背景音乐">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-ink">成片背景音乐</p>
+              <span className="text-[11px] text-ink-tertiary">每条成片可单独覆盖</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                aria-label="成片背景音乐曲目"
+                value={musicDraft.trackId ?? ''}
+                disabled={editLocked}
+                onChange={(event) => setMusicDraft((current) => ({ ...current, trackId: event.target.value || null }))}
+                className="h-9 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
+              >
+                <option value="">关闭 BGM</option>
+                {view.musicLibrary.map((track) => <option key={track.id} value={track.id}>{track.filename} · {(track.durationUs / 1_000_000).toFixed(1)} 秒</option>)}
+              </select>
+              {musicDraft.trackId && <button type="button" className="btn-secondary h-9 shrink-0 px-3 text-xs" disabled={editLocked} onClick={() => auditionMusic(musicDraft.trackId!)}>{auditioningTrackId === musicDraft.trackId ? '停止试听' : '试听'}</button>}
+            </div>
+            <label className="block text-[11px] text-ink-secondary">音量 {musicDraft.gainDb.toFixed(0)} dB
+              <input type="range" min={-60} max={0} step={1} value={musicDraft.gainDb} disabled={editLocked || !musicDraft.trackId} onChange={(event) => setMusicDraft((current) => ({ ...current, gainDb: Number(event.target.value) }))} className="mt-1 w-full" />
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-[11px] text-ink-secondary">淡入 {musicDraft.fadeInSec.toFixed(1)} 秒
+                <input type="range" min={0} max={30} step={0.1} value={musicDraft.fadeInSec} disabled={editLocked || !musicDraft.trackId} onChange={(event) => setMusicDraft((current) => ({ ...current, fadeInSec: Number(event.target.value) }))} className="mt-1 w-full" />
+              </label>
+              <label className="text-[11px] text-ink-secondary">淡出 {musicDraft.fadeOutSec.toFixed(1)} 秒
+                <input type="range" min={0} max={30} step={0.1} value={musicDraft.fadeOutSec} disabled={editLocked || !musicDraft.trackId} onChange={(event) => setMusicDraft((current) => ({ ...current, fadeOutSec: Number(event.target.value) }))} className="mt-1 w-full" />
+              </label>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={editLocked || musicParamsMatchDefaults} onClick={() => setMusicDraft((current) => ({ ...current, ...view.batchMusicDefaults }))}>恢复批次默认</button>
+              <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={editLocked || !musicDraftChanged} onClick={() => void submitEdit({ type: 'set_music', trackId: musicDraft.trackId, gainDb: musicDraft.gainDb, fadeInSec: musicDraft.fadeInSec, fadeOutSec: musicDraft.fadeOutSec })}>应用 BGM 更改</button>
+            </div>
+          </div>
+
+          <div className="tile space-y-3 p-3" aria-label="成片口播音量" data-testid="batch-output-narration-volume-card">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-ink">成片口播音量</p>
+              <span className="text-[11px] text-ink-tertiary">每条成片可单独覆盖</span>
+            </div>
+            <p className="text-[11px] leading-5 text-ink-tertiary">只调整当前成片的口播响度，不改变口播内容与时长。</p>
+            <label className="block text-[11px] text-ink-secondary">音量 {narrationGainDraft.toFixed(0)} dB
+              <input
+                aria-label="成片口播音量"
+                type="range"
+                min={NARRATION_GAIN_DB_MIN}
+                max={NARRATION_GAIN_DB_MAX}
+                step={1}
+                value={narrationGainDraft}
+                disabled={editLocked || !narrationUrl}
+                onChange={(event) => setNarrationGainDraft(Number(event.target.value))}
+                className="mt-1 w-full"
+              />
+            </label>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={editLocked || !narrationGainChanged} onClick={() => { setNarrationGainDraft(NARRATION_GAIN_DB_DEFAULT); void submitEdit({ type: 'set_narration_gain', gainDb: NARRATION_GAIN_DB_DEFAULT }); }}>恢复默认</button>
+              <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={editLocked || !narrationGainChanged || !narrationUrl} onClick={() => void submitEdit({ type: 'set_narration_gain', gainDb: narrationGainDraft })}>应用口播音量</button>
+            </div>
+          </div>
+
+          <div className="tile space-y-3 p-3" aria-label="封面设置">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-ink">视频封面设置</p>
+              <span className="text-[11px] text-ink-tertiary">点击进入精调</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="w-20 shrink-0">
+                <BatchCoverDraftPreview asset={coverAsset} timeUs={view.coverTimeUs} title={view.coverTitle} framing={view.coverFraming} outputPreset={outputPreset} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-medium text-ink" title={coverAsset?.displayName}>{coverAsset?.displayName || '尚未设置封面素材'}</p>
+                <p className="mt-1 text-[10px] text-ink-tertiary">{coverAsset ? `截帧 ${(view.coverTimeUs / 1_000_000).toFixed(2)} 秒` : '选择视频片段作为封面'}</p>
+                <button
+                  type="button"
+                  className="btn-secondary mt-2 inline-flex h-8 items-center gap-1.5 px-3 text-xs"
+                  aria-label="打开视频封面设置"
+                  disabled={editLocked || poolAssets.length === 0}
+                  onClick={openCoverEditor}
+                >
+                  封面精调 <span aria-hidden="true">›</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+      <BatchCoverEditorDrawer
+        key={view.planId}
+        active={coverEditorOpen}
+        assets={poolAssets}
+        initialAssetId={view.coverAssetId}
+        initialTimeUs={view.coverTimeUs}
+        title={view.coverTitle}
+        framing={view.coverFraming}
+        outputPreset={outputPreset}
+        packaging={view.packaging}
+        packagingPreviewUrl={`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/packaging-preview?projectId=${encodeURIComponent(projectId)}`}
+        version={view.outputVersionId ? { editRevision: view.editRevision, outputVersionId: view.outputVersionId } : undefined}
+        busy={editLocked}
+        onClose={() => setCoverEditorOpen(false)}
+        onApply={applyCover}
+      />
+    </div>
+  );
+}

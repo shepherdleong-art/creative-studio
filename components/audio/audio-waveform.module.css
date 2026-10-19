@@ -1,0 +1,9 @@
+.waveform {
+  position: absolute;
+  inset: 16px 0 2px;
+  pointer-events: none;
+  color: inherit;
+  opacity: .72;
+}
+.waveform svg { display: block; }
+.status { position: absolute; left: 8px; top: 2px; font-size: 9px; color: var(--color-ink-tertiary); }

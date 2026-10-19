@@ -1,0 +1,97 @@
+﻿
+> creative-studio@0.7.0 build
+> next build && node scripts/sync-standalone-assets.mjs
+
+▲ Next.js 16.2.7 (Turbopack)
+
+  Creating an optimized production build ...
+node.exe : Turbopack build encountered 3 warnings:
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Turbopack build encountered 3 warnings::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+./next.config.ts
+Encountered unexpected file in NFT list
+A file was traced that indicates that the whole project was traced unintentionally. Somewhere in the import trace below
+, there are:
+- filesystem operations (like path.join, path.resolve or fs.readFile), or
+- very dynamic requires (like require('./' + foo)).
+To resolve this, you can
+- remove them if possible, or
+- only use them in development, or
+- make sure they are statically scoped to some subfolder: path.join(process.cwd(), 'data', bar), or
+- add ignore comments: path.join(/*turbopackIgnore: true*/ process.cwd(), bar)
+
+Import trace:
+  App Route:
+    ./next.config.ts
+    ./app/api/upload/route.ts
+
+
+./next.config.ts
+Encountered unexpected file in NFT list
+A file was traced that indicates that the whole project was traced unintentionally. Somewhere in the import trace below
+, there are:
+- filesystem operations (like path.join, path.resolve or fs.readFile), or
+- very dynamic requires (like require('./' + foo)).
+To resolve this, you can
+- remove them if possible, or
+- only use them in development, or
+- make sure they are statically scoped to some subfolder: path.join(process.cwd(), 'data', bar), or
+- add ignore comments: path.join(/*turbopackIgnore: true*/ process.cwd(), bar)
+
+Output asset trace:
+  [output]/.next/server/app/api/batch-production/batches/[id]/exports/route.js
+  [output]/.next/server/chunks/[root-of-the-server]__02htzm2._.js
+
+Import trace:
+  App Route:
+    ./next.config.ts
+    ./app/api/upload/route.ts
+
+
+./next.config.ts
+Encountered unexpected file in NFT list
+A file was traced that indicates that the whole project was traced unintentionally. Somewhere in the import trace below
+, there are:
+- filesystem operations (like path.join, path.resolve or fs.readFile), or
+- very dynamic requires (like require('./' + foo)).
+To resolve this, you can
+- remove them if possible, or
+- only use them in development, or
+- make sure they are statically scoped to some subfolder: path.join(process.cwd(), 'data', bar), or
+- add ignore comments: path.join(/*turbopackIgnore: true*/ process.cwd(), bar)
+
+Output asset trace:
+  [output]/.next/server/instrumentation.js
+  [output]/.next/server/chunks/_01ypgnb._.js
+  [output]/.next/server/chunks/[root-of-the-server]__1xco-pe._.js
+
+Import trace:
+  App Route:
+    ./next.config.ts
+    ./app/api/upload/route.ts
+
+
+✓ Compiled successfully in 11.0s
+  Running next.config.js provided runAfterProductionCompile ...
+✓ Completed runAfterProductionCompile in 44ms
+  Running TypeScript ...
+Failed to type check.
+
+./lib/film-render/overlay-subtitles.ts:26:24
+Type error: Property 'layout' does not exist on type 'FontkitFont'.
+
+  [90m24 |[0m         requireInput(font.hasGlyphForCodePoint(char.codePointAt([35m0[0m)!), [32m'SUBTITLE_GLYPH_MIS
+S...[0m
+  [90m25 |[0m       }
+[31m[1m>[0m [90m26 |[0m       [36mconst[0m run = font.layout(text);
+  [90m   |[0m                        [31m[1m^[0m
+  [90m27 |[0m       [36mconst[0m advance = run.positions.reduce((sum, position) => sum + position.xAdvance, [35m0
+[0m);
+  [90m28 |[0m       [36mconst[0m size = style.fontSizePx * [33mMath[0m.max([35m0.5[0m, [33mMath[0m.min([35m1
+[0m, style.boxWidthPx / [33mMath[0m.ma..[35m.[0m
+  [90m29 |[0m       [36mconst[0m scale = size / font.unitsPerEm;
+Next.js build worker exited with code: 1 and signal: null

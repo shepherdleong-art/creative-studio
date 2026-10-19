@@ -1,0 +1,141 @@
+import { sanitizeMessage } from './log-sanitize.ts';
+import { getDb } from './db.ts';
+import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
+import path from 'path';
+import { dataRoot } from './data-root.ts';
+
+const LOG_DIR = path.join(dataRoot(), 'storage', 'logs');
+
+function ensureLogDir() {
+  if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+  }
+}
+
+export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
+
+/**
+ * Format a Date as local time with timezone offset, e.g. 2026-08-25T09:25:35.203+08:00.
+ * Log files are read by humans during troubleshooting, so they use local time;
+ * the DB `createdAt` column stays in UTC (the frontend renders it as local).
+ */
+function formatLocalTimestamp(date: Date): string {
+  const pad = (value: number, width = 2) => String(value).padStart(width, '0');
+  const offsetMin = -date.getTimezoneOffset();
+  const sign = offsetMin >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMin);
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
+    `.${pad(date.getMilliseconds(), 3)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+  );
+}
+
+export interface JobLogEntry {
+  id: string;
+  jobId: string;
+  projectId: string;
+  level: LogLevel;
+  message: string;
+  attempt: number;
+  createdAt: string;
+}
+
+/**
+ * Write a log entry to both the database and a file.
+ * The API key is never logged — the logger explicitly redacts auth-related content.
+ */
+export function writeLog(params: {
+  jobId?: string;
+  projectId: string;
+  level: LogLevel;
+  message: string;
+  attempt?: number;
+}): void {
+  const { jobId = null, projectId, level, message, attempt = 0 } = params;
+
+  // Sanitize: redact any accidental API key exposure
+  const sanitized = sanitizeMessage(message);
+
+  // Write to DB (jobId is optional — null for queue-level logs)
+  try {
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO job_logs (id, jobId, projectId, level, message, attempt, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
+    ).run(uuidv4(), jobId, projectId, level, sanitized, attempt);
+  } catch {
+    // If DB write fails, still try to write to file
+  }
+
+  // Write to file
+  try {
+    ensureLogDir();
+    const now = new Date();
+    const dateStr = formatLocalTimestamp(now).slice(0, 10);
+    const logFile = path.join(LOG_DIR, `workbench-${dateStr}.log`);
+    const timestamp = formatLocalTimestamp(now);
+    const jobLabel = jobId ? `[job:${jobId.slice(0, 8)}] ` : '';
+    const line = `[${timestamp}] [${level.toUpperCase()}] ${jobLabel}[attempt:${attempt}] ${sanitized}\n`;
+    fs.appendFileSync(logFile, line, 'utf-8');
+  } catch {
+    // Last resort: console
+    console.error(`[LOGGER FAILED] ${sanitized}`);
+  }
+}
+
+/**
+ * Get all logs for a project, ordered by time descending.
+ */
+export function getProjectLogs(projectId: string, limit = 300): JobLogEntry[] {
+  const db = getDb();
+  // Fetch latest N rows, then return in ASC order (oldest first, newest last)
+  return db
+    .prepare(
+      `SELECT * FROM (
+        SELECT rowid, * FROM job_logs
+        WHERE projectId = ?
+        ORDER BY createdAt DESC, rowid DESC
+        LIMIT ?
+      ) ORDER BY createdAt ASC, rowid ASC`
+    )
+    .all(projectId, limit) as JobLogEntry[];
+}
+
+/**
+ * Get logs for a specific job (ASC order, oldest first).
+ */
+export function getJobLogs(jobId: string): JobLogEntry[] {
+  const db = getDb();
+  return db
+    .prepare(`SELECT * FROM job_logs WHERE jobId = ? ORDER BY createdAt ASC, rowid ASC`)
+    .all(jobId) as JobLogEntry[];
+}
+
+/**
+ * Clear old logs (keep last N days).
+ */
+export function cleanupOldLogs(daysToKeep = 30): void {
+  try {
+    const db = getDb();
+    db.prepare(
+      `DELETE FROM job_logs WHERE createdAt < datetime('now', ?)`
+    ).run(`-${daysToKeep} days`);
+
+    // Also clean up old log files
+    ensureLogDir();
+    const files = fs.readdirSync(LOG_DIR);
+    const cutoff = Date.now() - daysToKeep * 24 * 60 * 60 * 1000;
+
+    for (const file of files) {
+      const filePath = path.join(LOG_DIR, file);
+      const stat = fs.statSync(filePath);
+      if (stat.mtimeMs < cutoff) {
+        fs.unlinkSync(filePath);
+      }
+    }
+  } catch {
+    // Cleanup is best-effort
+  }
+}

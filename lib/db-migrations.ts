@@ -1,0 +1,144 @@
+export const CORE_DB_MIGRATIONS = [
+  `ALTER TABLE providers ADD COLUMN apiKeyEnv TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE providers ADD COLUMN apiKey TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE providers ADD COLUMN defaultCostPerImage REAL`,
+  `ALTER TABLE jobs ADD COLUMN reviewMark TEXT DEFAULT ''`,
+  `ALTER TABLE image_assets ADD COLUMN originalPath TEXT`,
+  `ALTER TABLE image_assets ADD COLUMN processedPath TEXT`,
+  `ALTER TABLE image_assets ADD COLUMN originalWidth INTEGER`,
+  `ALTER TABLE image_assets ADD COLUMN originalHeight INTEGER`,
+  `ALTER TABLE image_assets ADD COLUMN processedWidth INTEGER`,
+  `ALTER TABLE image_assets ADD COLUMN processedHeight INTEGER`,
+  `ALTER TABLE image_assets ADD COLUMN originalSizeBytes INTEGER`,
+  `ALTER TABLE image_assets ADD COLUMN processedSizeBytes INTEGER`,
+  `ALTER TABLE image_assets ADD COLUMN preprocessingEnabled INTEGER DEFAULT 1`,
+  `ALTER TABLE jobs ADD COLUMN providerTaskId TEXT`,
+  `ALTER TABLE jobs ADD COLUMN providerStatus TEXT`,
+  `ALTER TABLE jobs ADD COLUMN providerRawResponse TEXT`,
+  `ALTER TABLE jobs ADD COLUMN submittedAt TEXT`,
+  `ALTER TABLE jobs ADD COLUMN lastPolledAt TEXT`,
+  `ALTER TABLE jobs ADD COLUMN pollCount INTEGER DEFAULT 0`,
+  `ALTER TABLE jobs ADD COLUMN remoteImageUrl TEXT`,
+  `ALTER TABLE projects ADD COLUMN runId TEXT`,
+  `ALTER TABLE jobs ADD COLUMN postprocessTarget TEXT`,
+  `ALTER TABLE jobs ADD COLUMN parentJobId TEXT`,
+  `ALTER TABLE jobs ADD COLUMN revision INTEGER DEFAULT 0`,
+  `ALTER TABLE projects ADD COLUMN referenceGuidanceMode TEXT NOT NULL DEFAULT 'preserve_subject'`,
+  `ALTER TABLE jobs ADD COLUMN referenceGuidanceMode TEXT NOT NULL DEFAULT 'preserve_subject'`,
+  `ALTER TABLE projects ADD COLUMN timeoutMs INTEGER NOT NULL DEFAULT 600000`,
+  `ALTER TABLE projects ADD COLUMN workflowType TEXT NOT NULL DEFAULT 'legacy_batch_edit'`,
+  `ALTER TABLE projects ADD COLUMN productName TEXT DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN productCode TEXT DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN productCategory TEXT DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN scenePrompt TEXT DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN shotPrompt TEXT DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN targetAudience TEXT DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN scriptTone TEXT DEFAULT '种草'`,
+  `ALTER TABLE projects ADD COLUMN scriptPlatform TEXT DEFAULT '通用'`,
+  `ALTER TABLE projects ADD COLUMN sellingPointsJson TEXT DEFAULT '[]'`,
+  `ALTER TABLE projects ADD COLUMN sellingPointAnalysisJson TEXT DEFAULT ''`,
+  `ALTER TABLE image_assets ADD COLUMN usage TEXT DEFAULT ''`,
+  `UPDATE providers SET type = 'packy-images' WHERE baseUrl LIKE '%packyapi.com%' AND model = 'gpt-image-2' AND type = 'openai-compatible'`,
+  `UPDATE providers SET type = 'packy-gemini-image' WHERE baseUrl LIKE '%packyapi.com%' AND model IN ('gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview')`,
+  `UPDATE video_providers SET defaultModel = 'kling-v3' WHERE id = 'kling-3' AND defaultModel IN ('kling-3.0', 'kling-v3.0-i2v', 'kling-v3-0')`,
+  `UPDATE video_providers SET defaultModel = 'doubao-seedance-2-0-260128' WHERE id = 'jimeng-2' AND defaultModel = 'jimeng-2.0'`,
+  `UPDATE video_providers SET name = '即梦 1.5 Pro (Seedance)', defaultModel = 'doubao-seedance-1-5-pro-251215' WHERE id = 'jimeng-2' AND defaultModel IN ('doubao-seedance-1-5', 'doubao-seedance-1-5-pro', 'doubao-seedance-2-0-260128')`,
+  `INSERT OR IGNORE INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec) VALUES ('kling-2-5', '可灵 2.5', 'kling', 'KLING_VIDEO_BASE_URL', 'KLING_VIDEO_API_KEY', 'KLING_2_5_VIDEO_MODEL', 'kling-v2-5-turbo', 1, 5)`,
+  `ALTER TABLE video_providers ADD COLUMN baseUrl TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE video_providers ADD COLUMN apiKey TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE video_providers ADD COLUMN accessKey TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE video_providers ADD COLUMN secretKey TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE script_providers ADD COLUMN type TEXT NOT NULL DEFAULT 'openai-compatible'`,
+  `ALTER TABLE script_providers ADD COLUMN apiStyle TEXT NOT NULL DEFAULT 'openai-compatible'`,
+  `ALTER TABLE script_providers ADD COLUMN baseUrl TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE script_providers ADD COLUMN apiKey TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE script_providers ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE script_providers ADD COLUMN keyEnv TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE script_providers ADD COLUMN baseUrlEnv TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE script_providers ADD COLUMN modelEnv TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE script_providers ADD COLUMN defaultBaseUrl TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE script_providers ADD COLUMN defaultModel TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE script_providers ADD COLUMN maxTokens INTEGER NOT NULL DEFAULT 8192`,
+  `ALTER TABLE script_providers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE script_providers ADD COLUMN isBuiltin INTEGER NOT NULL DEFAULT 1`,
+  `INSERT OR IGNORE INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec, baseUrl, apiKey, accessKey, secretKey) VALUES ('jimeng-2-0', '即梦 2.0 (Seedance 2.0)', 'jimeng', 'JIMENG_VIDEO_BASE_URL', 'JIMENG_VIDEO_API_KEY', 'JIMENG_VIDEO_MODEL', 'doubao-seedance-2-0-260128', 1, 5, '', '', '', '')`,
+  `ALTER TABLE script_providers ADD COLUMN supportsVision INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE script_providers ADD COLUMN visionCostPerRequest REAL NOT NULL DEFAULT 0`,
+  `CREATE INDEX IF NOT EXISTS idx_shots_shotset ON shots(shotSetId)`,
+  `ALTER TABLE script_providers ADD COLUMN executionScope TEXT NOT NULL DEFAULT 'external' CHECK(executionScope IN ('external','company'))`,
+  `ALTER TABLE projects ADD COLUMN videoConcurrency INTEGER NOT NULL DEFAULT 10`,
+  `ALTER TABLE projects ADD COLUMN exportDirName TEXT NOT NULL DEFAULT ''`,
+  `UPDATE projects SET workflowType = 'complex_product' WHERE workflowType = 'legacy_batch_edit'`,
+  `CREATE TRIGGER IF NOT EXISTS projects_default_workflow_type AFTER INSERT ON projects WHEN NEW.workflowType = 'legacy_batch_edit' BEGIN UPDATE projects SET workflowType = 'complex_product' WHERE id = NEW.id; END`,
+  `ALTER TABLE video_jobs ADD COLUMN tailImageId TEXT`,
+  `ALTER TABLE shot_sets ADD COLUMN kind TEXT NOT NULL DEFAULT 'storyboard' CHECK(kind IN ('storyboard','free'))`,
+  `ALTER TABLE video_jobs ADD COLUMN multiShot INTEGER`,
+  `ALTER TABLE jobs ADD COLUMN usageSnapshotJson TEXT`,
+  `ALTER TABLE video_jobs ADD COLUMN usageSnapshotJson TEXT`,
+  // 是否参与「一键随机填充」。自建模板默认入池；关掉之后模板仍留在下拉里
+  // 供手动选，只是不再被洗牌抽到——避免某个产品线的专用提示词污染别的项目。
+  `ALTER TABLE video_prompt_templates ADD COLUMN inRandomPool INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE script_drafts ADD COLUMN generationDurationMs INTEGER`,
+  `ALTER TABLE projects ADD COLUMN lastOpenedAt TEXT`,
+  `ALTER TABLE video_jobs ADD COLUMN rejectedAt TEXT`,
+  `ALTER TABLE video_jobs ADD COLUMN rejectReason TEXT`,
+  // 场景结果稳定排序：同一创建请求写同一 createdAt、按提交顺序写 creationIndex；
+  // 历史行不回填，读取端按 lib/project-job-order.ts 的兼容规则排序。
+  `ALTER TABLE jobs ADD COLUMN createdAt TEXT`,
+  `ALTER TABLE jobs ADD COLUMN creationIndex INTEGER NOT NULL DEFAULT 0`,
+  // 生成视频友好展示名（D5）：只是展示层，物理文件名与 localVideoPath 不变。
+  // 新任务创建时写入；历史行保持 NULL，读取端用 lib/video-output-filenames.ts
+  // 按 shot 序号、来源图名、模板名与 (createdAt, id) 版次确定性派生，不回填。
+  `ALTER TABLE video_jobs ADD COLUMN displayName TEXT`,
+  // 项目生产身份（2026-09-03）：新项目只填写店铺/型号/子型号/生产类型/剪辑师，
+  // 项目名与导出基础名由服务端统一生成。namingDate 为新项目创建日 YYYYMMDD（上海时区），
+  // 历史空值读取时才从 createdAt 派生；currentExportIdentityId 指向 project_export_identities 当前身份。
+  `ALTER TABLE projects ADD COLUMN storeCode TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN productSubmodel TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN productionType TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN editorName TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN namingDate TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN currentExportIdentityId TEXT`,
+  `CREATE TABLE IF NOT EXISTS project_export_identities (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL,
+    revisionNumber INTEGER NOT NULL,
+    baseName TEXT NOT NULL,
+    exportDirName TEXT NOT NULL,
+    identityJson TEXT NOT NULL,
+    createdAt TEXT NOT NULL,
+    supersededAt TEXT,
+    UNIQUE(projectId, revisionNumber),
+    UNIQUE(exportDirName)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_project_export_identities_project ON project_export_identities(projectId)`,
+  // 修复 2026-09-03 生产身份 SQL 的历史错位:尺寸曾写进 projects.prompt,
+  // size 为空且 status/referenceGuidanceMode 分别变成 none/draft。只匹配该
+  // 组特征,把尺寸移回原列并清空不应展示的项目提示词;重复执行保持幂等。
+  `UPDATE projects
+   SET size = prompt, prompt = '', status = 'draft', referenceGuidanceMode = 'none'
+   WHERE size = ''
+     AND status = 'none'
+     AND referenceGuidanceMode = 'draft'
+     AND (prompt = 'auto' OR prompt GLOB '[0-9]*x[0-9]*')`,
+  // 受旧错位影响的项目可能已经在修复前通过「场景生成」继续创建了空尺寸任务；
+  // 让这些任务继承项目目标尺寸，避免队列跳过比例规整。只补齐空值，不覆盖已有任务快照。
+  `UPDATE jobs
+   SET size = (SELECT p.size FROM projects p WHERE p.id = jobs.projectId)
+   WHERE COALESCE(size, '') = ''
+     AND EXISTS (
+       SELECT 1 FROM projects p
+       WHERE p.id = jobs.projectId AND COALESCE(p.size, '') <> ''
+     )`,
+  // 本机工作台字体收藏，独立于项目/批次；取消收藏保留墓碑，防止旧浏览器缓存重新导入。
+  `CREATE TABLE IF NOT EXISTS font_favorites (
+    identity TEXT PRIMARY KEY,
+    family TEXT NOT NULL,
+    favorite INTEGER NOT NULL CHECK(favorite IN (0, 1)),
+    updatedAt INTEGER NOT NULL
+  )`,
+  // 开头提示词编号；NULL 表示升级前的视频，空串表示生成时明确未使用开头编号。
+  `ALTER TABLE video_prompt_templates ADD COLUMN openingCode TEXT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_video_prompt_opening_code ON video_prompt_templates(openingCode) WHERE openingCode IS NOT NULL AND openingCode <> ''`,
+  `ALTER TABLE video_jobs ADD COLUMN openingCode TEXT`,
+];

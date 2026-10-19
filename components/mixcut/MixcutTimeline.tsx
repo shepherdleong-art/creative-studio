@@ -1,0 +1,984 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useTimelineZoom } from '@/components/timeline/use-timeline-zoom';
+import { TimelineShortcutsDialog } from '@/components/timeline/TimelineShortcutsDialog';
+import { Icon } from '@/components/ui/Icon';
+import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, type FinalEditAssetView, type FinalEditVariantView, type SubtitleCue, type TimelineClip } from '@/lib/final-edit/types';
+import type { PointCue } from '@/lib/final-edit/packaging-cues';
+import type { GroupCommandInput, VariantCommandInput } from '@/components/final-edit/command-types';
+import { planSubtitleCueSplit, type SubtitleCueSplitPlan } from '@/components/final-edit/subtitle-split';
+import { planVideoClipSplit } from '@/lib/final-edit/clip-split';
+import { constrainClipDrag, planClipReorder, timelineAbsoluteFrameFromPointer, timelineContentWidthPx, type ClipDragMode, type ClipDraft } from '@/components/final-edit/timeline-edit';
+import { snapMovingClip } from '@/lib/media-core/timeline-snap';
+import { audioClips, videoPlaybackRate } from '@/lib/final-edit/clip-edit';
+import type { AudioClip, AudioTrackKind } from '@/lib/final-edit/types';
+import { NarrationPlaybackRateControl } from './NarrationPlaybackRateControl';
+import styles from './mixcut-content.module.css';
+
+const FPS = FINAL_EDIT_FPS;
+const INTRO_FRAMES = FINAL_EDIT_INTRO_FRAMES;
+const FRAME_US = Math.round(1_000_000 / FPS);
+const WAVEFORM_BAR_PITCH_PX = 4.5; // 2.5px 柱宽 + 2px 间距，与 CSS 保持一致
+const POINT_MIN_DURATION_SEC = 1.2; // 模板 MIN_DISPLAY_SEC：卖点最短展示时长
+const POINT_DEFAULT_DURATION_SEC = 2; // 「+ 卖点」默认时长
+const POINT_ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+/** 客户端生成卖点 id：p_ + 8 位 [a-z0-9]（与服务端 generatePointCueId 同形态）。 */
+function generatePointId(): string {
+  let id = 'p_';
+  for (let index = 0; index < 8; index += 1) id += POINT_ID_CHARS[Math.floor(Math.random() * POINT_ID_CHARS.length)];
+  return id;
+}
+
+/** 卖点时间统一保留 2 位小数（厘米秒），避免拖动产生超长浮点进 JSON。 */
+function roundPointSec(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+type TimelineContextMenu =
+  | { kind: 'video'; clipId: string; x: number; y: number }
+  | { kind: 'subtitle'; cueId: string; x: number; y: number }
+  | { kind: 'point'; pointId: string; x: number; y: number }
+  | { kind: 'narration'; clipId?: string; x: number; y: number }
+  | { kind: 'bgm'; clipId: string; x: number; y: number };
+
+type TimelineTool = 'select' | 'split';
+
+function Waveform({ tone, seed, playedWidthPx }: { tone: 'tts' | 'bgm'; seed: number; playedWidthPx: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const update = () => setCount(Math.floor(element.offsetWidth / WAVEFORM_BAR_PITCH_PX));
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  const bars = useMemo(() => Array.from({ length: Math.max(0, count) }, (_, index) => {
+    const raw = Math.sin(index * 127.1 + seed * 311.7) * 43758.5453;
+    return 18 + (raw - Math.floor(raw)) * 74;
+  }), [count, seed]);
+  const playedCount = Math.round(Math.max(0, playedWidthPx) / WAVEFORM_BAR_PITCH_PX);
+  return (
+    <div ref={ref} className={`${styles.wf} ${tone === 'tts' ? styles.wfTts : styles.wfBgm}`} aria-hidden="true">
+      {bars.map((height, index) => <span key={index} style={{ height: `${height}%` }} data-played={index < playedCount || undefined} />)}
+    </div>
+  );
+}
+
+export function MixcutTimeline({
+  variant,
+  cues,
+  assets,
+  selectedClipId,
+  selectedCueId,
+  playheadSec,
+  disabled,
+  active = true, onTogglePlay, onUndo, onRedo, canUndo = false, canRedo = false,
+  onSeek,
+  onSelectClip,
+  onSelectCue,
+  onVariantCommand,
+  onGroupCommand,
+  onTrimClip,
+  onEditCueText,
+  narrationPlaybackRate,
+  narrationDurationSec,
+  onNarrationPlaybackRatePreview,
+  onNarrationPlaybackRateCommit,
+  bgmTrackName,
+  pointCues,
+  coverSec,
+  selectedPointId,
+  packagingEnabled,
+  packagingTemplate,
+  activeCueText,
+  onSelectPoint,
+  onPointsChange,
+}: {
+  variant: FinalEditVariantView;
+  cues: SubtitleCue[];
+  assets: FinalEditAssetView[];
+  selectedClipId: string;
+  selectedCueId: string;
+  playheadSec: number;
+  disabled: boolean;
+  active?: boolean; onTogglePlay?: () => void; onUndo?: () => void; onRedo?: () => void; canUndo?: boolean; canRedo?: boolean;
+  onSeek: (seconds: number) => void;
+  onSelectClip: (clipId: string) => void;
+  onSelectCue: (cueId: string) => void;
+  onVariantCommand: (command: VariantCommandInput) => Promise<boolean>;
+  onGroupCommand: (command: GroupCommandInput) => Promise<boolean>;
+  onTrimClip: (clip: TimelineClip) => void;
+  onEditCueText: (cueId: string, text: string) => void;
+  narrationPlaybackRate: number;
+  narrationDurationSec: number;
+  onNarrationPlaybackRatePreview: (playbackRate: number) => void;
+  onNarrationPlaybackRateCommit: (playbackRate: number) => void;
+  bgmTrackName?: string | null;
+  /** §5 卖点轨：成片时间轴秒（与 ruler/视频轨同原点）；packagingEnabled=false 时整轨不渲染。 */
+  pointCues: PointCue[];
+  coverSec: number;
+  selectedPointId: string;
+  packagingEnabled: boolean;
+  packagingTemplate: string;
+  /** 「+ 卖点」默认文案来源：当前播放头处字幕句（PreviewStep 按 FinalEditPreview 同口径换算），空 → 「新卖点」。 */
+  activeCueText: string;
+  onSelectPoint: (pointId: string) => void;
+  /** 卖点增/删/改字/移动/修剪的唯一出口：携带完整新数组（调用方经 applyGroup 落库）。 */
+  onPointsChange: (next: PointCue[]) => void;
+}) {
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [selectedAudio, setSelectedAudio] = useState<{ track: AudioTrackKind; clipId: string } | null>(null);
+  const [viewportWidth, setViewportWidth] = useState(720);
+  const [contextMenu, setContextMenu] = useState<TimelineContextMenu | null>(null);
+  const [tool, setTool] = useState<TimelineTool>('select');
+  const [splitMessage, setSplitMessage] = useState('');
+  const narrationPlaybackRatePendingRef = useRef<number | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { zoom: pxPerSecond, changeZoom, inputRef: zoomInputRef } = useTimelineZoom({
+    scrollRef, playheadSec, minimum: 40, maximum: 240, step: 20,
+    shortcutsEnabled: active && !shortcutsOpen && !contextMenu,
+  });
+  const videoBodySec = variant.timeline.bodyFrames / FPS;
+  const bodySec = narrationDurationSec;
+  const totalSec = INTRO_FRAMES / FPS + bodySec;
+  const totalFrames = INTRO_FRAMES + Math.round(bodySec * FPS);
+  const totalUs = totalSec * 1_000_000;
+  const contentWidth = timelineContentWidthPx({ totalUs, pxPerSecond, viewportWidth: Math.max(1, viewportWidth) });
+  const introPx = INTRO_FRAMES / FPS * pxPerSecond;
+  const playheadPx = Math.max(0, Math.min(totalSec, playheadSec)) * pxPerSecond;
+  const assetById = useMemo(() => new Map(assets.map((asset) => [asset.videoJobId, asset])), [assets]);
+  const orderedClips = useMemo(() => [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame), [variant.timeline.clips]);
+
+  // ---- §5 卖点轨：增/删/改统一产出新 pointCues 数组，由 PreviewStep 经 applyGroup 落库 ----
+  const addPoint = () => {
+    let startSec = Math.max(playheadSec, coverSec); // 封面段内不能加正片卖点
+    let endSec = Math.min(startSec + POINT_DEFAULT_DURATION_SEC, totalSec);
+    if (endSec - startSec < 0.5) {
+      // 播放头贴近片尾：向前挪保证可见时长（极端短片兜底，仍保持 start ≥ coverSec）
+      endSec = totalSec;
+      startSec = Math.max(coverSec, endSec - POINT_DEFAULT_DURATION_SEC);
+    }
+    if (endSec - startSec < 0.5) return;
+    const cueText = activeCueText.trim();
+    const id = generatePointId();
+    const next = [...pointCues, { id, text: cueText ? cueText.slice(0, 14) : '新卖点', startSec: roundPointSec(startSec), endSec: roundPointSec(endSec) }]
+      .sort((left, right) => left.startSec - right.startSec || left.endSec - right.endSec);
+    onPointsChange(next);
+    onSelectPoint(id);
+  };
+  const changePoint = (pointId: string, patch: Partial<Omit<PointCue, 'id'>>) => {
+    onPointsChange(pointCues.map((cue) => (cue.id === pointId ? { ...cue, ...patch } : cue)));
+  };
+  const deletePoint = (pointId: string) => {
+    onPointsChange(pointCues.filter((cue) => cue.id !== pointId));
+    if (selectedPointId === pointId) onSelectPoint('');
+  };
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const update = () => setViewportWidth(element.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const closeContextMenu = useCallback(() => {
+    const pending = narrationPlaybackRatePendingRef.current;
+    if (contextMenu?.kind === 'narration' && pending !== null) {
+      narrationPlaybackRatePendingRef.current = null;
+      onNarrationPlaybackRateCommit(pending);
+    }
+    setContextMenu(null);
+  }, [contextMenu, onNarrationPlaybackRateCommit]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const keydown = (event: KeyboardEvent) => { if (event.key === 'Escape') closeContextMenu(); };
+    window.addEventListener('blur', closeContextMenu);
+    window.addEventListener('keydown', keydown);
+    return () => {
+      window.removeEventListener('blur', closeContextMenu);
+      window.removeEventListener('keydown', keydown);
+    };
+  }, [closeContextMenu, contextMenu]);
+
+  useEffect(() => {
+    if (!active) return;
+    const keydown = (event: KeyboardEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (event.defaultPrevented || event.isComposing || target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"], [role="listbox"]') || shortcutsOpen || contextMenu) return;
+      const key = event.key.toLowerCase();
+      const modifier = event.metaKey || event.ctrlKey;
+      if (event.altKey) return;
+      if (key === ' ' && !modifier && !target?.closest('button')) { event.preventDefault(); onTogglePlay?.(); return; }
+      if (disabled) return;
+      if (modifier && key === 'z') {
+        event.preventDefault();
+        if (!event.repeat) { if (event.shiftKey) { if (canRedo) onRedo?.(); } else if (canUndo) onUndo?.(); }
+      } else if (modifier && key === 'b') {
+        event.preventDefault();
+        if (event.repeat) return;
+        const bodySeconds = playheadSec - INTRO_FRAMES / FPS;
+        if (selectedAudio) {
+          const rate = selectedAudio.track === 'narration' ? narrationPlaybackRate : 1;
+          const clip = audioClips(variant.timeline, selectedAudio.track, bodySec * rate * 1e6).find(item => item.id === selectedAudio.clipId);
+          const atUs = Math.round(bodySeconds * rate * 1e6);
+          if (clip && atUs - clip.timelineStartUs >= 500_000 && clip.timelineEndUs - atUs >= 500_000)
+            void onVariantCommand({ type: 'split_audio_clip', ...selectedAudio, atUs });
+        } else if (selectedCueId) {
+          const cue = cues.find(item => item.id === selectedCueId);
+          const plan = cue && planSubtitleCueSplit({ cue, requestedSplitUs: bodySeconds * narrationPlaybackRate * 1e6, fps: FPS });
+          if (plan) void onGroupCommand({ type: 'split_subtitle_cue', cueId: selectedCueId, ...plan });
+        } else {
+          const clip = variant.timeline.clips.find(item => item.id === selectedClipId);
+          const plan = clip && planVideoClipSplit(clip, Math.round(bodySeconds * FPS));
+          if (plan) void onVariantCommand({ type: 'split_clip', clipId: selectedClipId, splitFrame: plan.splitFrame });
+        }
+      } else if (modifier) return;
+      else if (key === 'v') setTool('select');
+      else if (key === 'b') setTool('split');
+      else if (key === 'n') setSnapEnabled(value => !value);
+      else if (key === 'arrowleft' || key === 'arrowright') {
+        event.preventDefault();
+        onSeek(Math.max(0, Math.min(totalSec, playheadSec + (key === 'arrowleft' ? -1 : 1) * (event.shiftKey ? 10 : 1) / FPS)));
+      } else if (key === 'delete' || key === 'backspace') {
+        event.preventDefault();
+        if (event.repeat) return;
+        if (selectedAudio) void onVariantCommand({ type: 'delete_audio_clip', ...selectedAudio }).then(ok => { if (ok) setSelectedAudio(null); });
+        else if (selectedCueId) void onGroupCommand({ type: 'delete_subtitle_cue', cueId: selectedCueId }).then(ok => { if (ok) onSelectCue(''); });
+        else if (selectedClipId) void onVariantCommand({ type: 'delete_clip', clipId: selectedClipId }).then(ok => { if (ok) onSelectClip(''); });
+      } else if (key === 'escape') { setSelectedAudio(null); onSelectClip(''); onSelectCue(''); }
+    };
+    window.addEventListener('keydown', keydown);
+    return () => window.removeEventListener('keydown', keydown);
+  }, [active, disabled, shortcutsOpen, contextMenu, playheadSec, totalSec, selectedAudio, selectedCueId, selectedClipId, narrationPlaybackRate, variant, cues, bodySec, canUndo, canRedo, onUndo, onRedo, onTogglePlay, onSeek, onGroupCommand, onVariantCommand, onSelectClip, onSelectCue]);
+
+  const seekFromPointer = (clientX: number) => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const absoluteFrame = timelineAbsoluteFrameFromPointer({
+      clientX,
+      contentLeft: scroll.getBoundingClientRect().left,
+      scrollLeft: scroll.scrollLeft,
+      pxPerSecond,
+      totalFrames,
+      fps: FPS,
+    });
+    onSeek(absoluteFrame / FPS);
+  };
+
+  const ticks = Array.from({ length: Math.floor(totalSec) }, (_, index) => index * 0.5 + 0.5);
+  const beginPlayheadDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    seekFromPointer(event.clientX);
+    const move = (pointer: PointerEvent) => seekFromPointer(pointer.clientX);
+    const up = (pointer: PointerEvent) => {
+      seekFromPointer(pointer.clientX);
+      target.removeEventListener('pointermove', move);
+      target.removeEventListener('pointerup', up);
+      if (target.hasPointerCapture(pointer.pointerId)) target.releasePointerCapture(pointer.pointerId);
+    };
+    target.addEventListener('pointermove', move);
+    target.addEventListener('pointerup', up, { once: true });
+  };
+
+  return (
+    <div className={styles.tlShell}>
+      <div className={styles.tlToolbar} role="toolbar" aria-label="时间轴工具">
+        <button
+          type="button"
+          aria-label="选择工具"
+          aria-pressed={tool === 'select'}
+          className={[styles.tlToolButton, tool === 'select' ? styles.tlToolButtonActive : ''].filter(Boolean).join(' ')}
+          disabled={disabled}
+          onClick={() => setTool('select')}
+        >
+          <Icon name="check-circle" size={13} />选择
+        </button>
+        <button
+          type="button"
+          aria-label="分割工具"
+          aria-pressed={tool === 'split'}
+          className={[styles.tlToolButton, tool === 'split' ? styles.tlToolButtonActive : ''].filter(Boolean).join(' ')}
+          disabled={disabled}
+          onClick={() => setTool('split')}
+        >
+          <Icon name="scissors" size={13} />分割
+        </button>
+        {packagingEnabled && (
+          <button
+            type="button"
+            aria-label="新增卖点"
+            className={styles.tlToolButton}
+            disabled={disabled}
+            onClick={addPoint}
+            title="在播放头处新增卖点标签（默认取当前字幕句，封面段内自动钳到片头结束点）"
+          >
+            <Icon name="plus" size={13} />卖点
+          </button>
+        )}
+        <button type="button" className={styles.tlToolButton} disabled={disabled || !canUndo} onClick={onUndo} title="撤销 (⌘/Ctrl+Z)">撤销</button>
+        <button type="button" className={styles.tlToolButton} disabled={disabled || !canRedo} onClick={onRedo} title="重做 (⌘/Ctrl+Shift+Z)">重做</button>
+        <button type="button" className={styles.tlToolButton} aria-pressed={snapEnabled} onClick={() => setSnapEnabled(value => !value)} title="视频磁吸 (N)，Alt 临时关闭">磁吸{snapEnabled ? '开' : '关'}</button>
+        <label>缩放 <input ref={zoomInputRef} aria-label="时间轴缩放" type="range" min={40} max={240} step={10} value={pxPerSecond} onChange={event => changeZoom(Number(event.target.value))} /></label>
+        <button type="button" className={styles.tlToolButton} onClick={() => setShortcutsOpen(true)} aria-haspopup="dialog" aria-expanded={shortcutsOpen}>快捷键说明</button>
+        <span role="status" className={styles.tlToolHint} data-testid="mixcut-timeline-tool-hint">{tool === 'split' ? splitMessage || '点击视频、音频或字幕的目标位置切开；视频两侧至少保留 0.5 秒，右键删除' : '拖动字幕块移动，拖两侧修剪，双击改字；选中视频可在右侧调整倍速和画面，音频用分割工具裁切，右键删除'}</span>
+      </div>
+      {shortcutsOpen && <TimelineShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
+      <section className={styles.tl} aria-label="智能混剪时间轴" aria-busy={disabled} data-mutations-disabled={disabled || undefined} data-tool={tool}>
+      <div className={styles.tlLabels}>
+        <div className={styles.tlLab} style={{ height: 20 }} />
+        <div className={styles.tlLab} style={{ height: 28 }}>字幕</div>
+        {packagingEnabled && <div className={styles.tlLab} style={{ height: 28 }}>卖点</div>}
+        <div className={styles.tlLab} style={{ height: 64 }}>视频</div>
+        <div className={styles.tlLab} style={{ height: 60 }}>音频</div>
+      </div>
+      <div ref={scrollRef} className={styles.tlScroll} data-testid="mixcut-timeline-scroll">
+        <div
+          className={styles.tlInner}
+          style={{ width: contentWidth }}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            seekFromPointer(event.clientX);
+          }}
+        >
+          <div className={styles.tlRuler}>
+            {ticks.map((tick) => Number.isInteger(tick)
+              ? <div key={tick} className={styles.tlTick} style={{ left: tick * pxPerSecond }}><span>{tick}s</span></div>
+              : <div key={tick} className={`${styles.tlTick} ${styles.tlTickMinor}`} style={{ left: tick * pxPerSecond }} />)}
+          </div>
+          <div className={`${styles.tlTrack} ${styles.tlTrackSub}`} data-track="subtitle">
+            {cues.map((cue, index) => (
+              <SubtitleBlock
+                key={`${cue.id}-${cue.startUs}-${cue.endUs}`}
+                cue={cue}
+                previousCue={index > 0 ? cues[index - 1] : null}
+                nextCue={index < cues.length - 1 ? cues[index + 1] : null}
+                bodyUs={narrationDurationSec * narrationPlaybackRate * 1_000_000}
+                playbackRate={narrationPlaybackRate}
+                pxPerSecond={pxPerSecond}
+                selected={cue.id === selectedCueId}
+                anySelected={Boolean(selectedCueId)}
+                disabled={disabled}
+                tool={tool}
+                onSelect={(id) => { setSelectedAudio(null); onSelectCue(id); }}
+                onCommand={onGroupCommand}
+                onEditText={onEditCueText}
+                onOpenContextMenu={(clientX, clientY) => setContextMenu({
+                  kind: 'subtitle',
+                  cueId: cue.id,
+                  x: Math.max(8, Math.min(clientX, window.innerWidth - 184)),
+                  y: Math.max(8, Math.min(clientY, window.innerHeight - 86)),
+                })}
+              />
+            ))}
+          </div>
+          {packagingEnabled && (
+            <div className={`${styles.tlTrack} ${styles.tlTrackPoint}`} data-track="point">
+              {pointCues.map((cue) => (
+                <PointBlock
+                  key={`${cue.id}-${cue.startSec}-${cue.endSec}`}
+                  cue={cue}
+                  coverSec={coverSec}
+                  totalSec={totalSec}
+                  pxPerSecond={pxPerSecond}
+                  template={packagingTemplate}
+                  selected={cue.id === selectedPointId}
+                  anySelected={Boolean(selectedPointId)}
+                  disabled={disabled}
+                  tool={tool}
+                  onSelect={onSelectPoint}
+                  onChange={changePoint}
+                  onOpenContextMenu={(clientX, clientY) => setContextMenu({
+                    kind: 'point',
+                    pointId: cue.id,
+                    x: Math.max(8, Math.min(clientX, window.innerWidth - 184)),
+                    y: Math.max(8, Math.min(clientY, window.innerHeight - 86)),
+                  })}
+                />
+              ))}
+              {pointCues.length === 0 && <span className={styles.pointTrackEmpty}>点 +卖点 添加</span>}
+            </div>
+          )}
+          <div className={`${styles.tlTrack} ${styles.tlTrackVideo}`} data-track="video">
+            {orderedClips.map((clip, index) => (
+              <VideoBlock
+                key={`${clip.id}-${clip.sourceInFrame}-${clip.sourceOutFrame}-${clip.timelineInFrame}-${clip.timelineOutFrame}`}
+                clip={clip}
+                index={index}
+                clips={variant.timeline.clips}
+                sourceFrames={Math.floor((assetById.get(clip.videoJobId)?.durationUs || 0) / 1_000_000 * FPS)}
+                thumbnailUrl={assetById.get(clip.videoJobId)?.thumbnailUrl}
+                bodyFrames={variant.timeline.bodyFrames}
+                pxPerSecond={pxPerSecond}
+                selected={clip.id === selectedClipId}
+                tool={tool}
+                onSplitMessage={setSplitMessage}
+                disabled={disabled}
+                onSelect={(id) => { setSelectedAudio(null); onSelectClip(id); }}
+                snapEnabled={snapEnabled}
+                snapPoints={[0, bodySec, playheadSec - INTRO_FRAMES / FPS, ...cues.flatMap(cue => [cue.startUs / 1e6 / narrationPlaybackRate, cue.endUs / 1e6 / narrationPlaybackRate])]}
+                onCommand={onVariantCommand}
+                onTrimClip={onTrimClip}
+                onOpenContextMenu={(clientX, clientY) => setContextMenu({
+                  kind: 'video',
+                  clipId: clip.id,
+                  x: Math.max(8, Math.min(clientX, window.innerWidth - 184)),
+                  y: Math.max(8, Math.min(clientY, window.innerHeight - 86)),
+                })}
+              />
+            ))}
+            {bodySec > videoBodySec && orderedClips.at(-1)?.timelineOutFrame === variant.timeline.bodyFrames && (
+              <div
+                className={styles.videoFreezeTail}
+                style={{ left: (INTRO_FRAMES / FPS + videoBodySec) * pxPerSecond, width: (bodySec - videoBodySec) * pxPerSecond }}
+              >末帧延长</div>
+            )}
+          </div>
+          <div
+            className={`${styles.tlTrack} ${styles.tlTrackAudio} ${styles.tlTrackNarration}`}
+            data-track="narration"
+            title="右键调整口播音频倍速"
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (disabled) return;
+              narrationPlaybackRatePendingRef.current = null;
+              setContextMenu({
+                kind: 'narration',
+                x: Math.max(8, Math.min(event.clientX, window.innerWidth - 356)),
+                y: Math.max(8, Math.min(event.clientY, window.innerHeight - 224)),
+              });
+            }}
+          >
+            {audioClips(variant.timeline, 'narration', narrationDurationSec * narrationPlaybackRate * 1e6).map((clip) => (
+              <AudioBlock key={clip.id} clip={clip} track="narration" playbackRate={narrationPlaybackRate} bodySec={bodySec} pxPerSecond={pxPerSecond} playheadPx={playheadPx} tool={tool} disabled={disabled}
+                onSelect={() => { setSelectedAudio({ track: 'narration', clipId: clip.id }); onSelectClip(''); onSelectCue(''); }} selected={selectedAudio?.track === 'narration' && selectedAudio.clipId === clip.id}
+                label={`口播 · ${narrationPlaybackRate.toFixed(1)}x`} onSeek={onSeek} onCommand={onVariantCommand}
+                onOpenContextMenu={(x, y) => setContextMenu({ kind: 'narration', clipId: clip.id, x: Math.max(8, Math.min(x, window.innerWidth - 356)), y: Math.max(8, Math.min(y, window.innerHeight - 300)) })} />
+            ))}
+          </div>
+          <div className={`${styles.tlTrack} ${styles.tlTrackAudio}`} data-track="bgm" style={{ borderBottom: 'none' }}>
+            {variant.bgm.trackId && bgmTrackName ? audioClips(variant.timeline, 'bgm', bodySec * 1e6).map((clip) => (
+              <AudioBlock key={clip.id} clip={clip} track="bgm" playbackRate={1} bodySec={bodySec} pxPerSecond={pxPerSecond} playheadPx={playheadPx} tool={tool} disabled={disabled}
+                onSelect={() => { setSelectedAudio({ track: 'bgm', clipId: clip.id }); onSelectClip(''); onSelectCue(''); }} selected={selectedAudio?.track === 'bgm' && selectedAudio.clipId === clip.id}
+                label={`${bgmTrackName} · ${variant.bgm.gainDb} dB`} onSeek={onSeek} onCommand={onVariantCommand}
+                onOpenContextMenu={(x, y) => setContextMenu({ kind: 'bgm', clipId: clip.id, x: Math.max(8, Math.min(x, window.innerWidth - 184)), y: Math.max(8, Math.min(y, window.innerHeight - 86)) })} />
+            )) : <span className={styles.wfLabel} style={{ left: introPx + 8 }}>无 BGM</span>}
+          </div>
+          <button
+            type="button"
+            aria-label="拖动播放头"
+            className={styles.tlPlayhead}
+            style={{ left: playheadPx }}
+            onPointerDown={beginPlayheadDrag}
+          />
+        </div>
+      </div>
+      {contextMenu && typeof document !== 'undefined' && createPortal(
+        <div className={styles.timelineContextLayer} onPointerDown={closeContextMenu}>
+          <div
+            role={contextMenu.kind === 'narration' ? 'dialog' : 'menu'}
+            aria-label={contextMenu.kind === 'video'
+              ? '视频片段操作'
+              : contextMenu.kind === 'subtitle' ? '字幕操作'
+                : contextMenu.kind === 'point' ? '卖点操作' : contextMenu.kind === 'bgm' ? '背景音乐片段操作' : '口播音频变速'}
+            className={`${styles.timelineContextMenu} ${contextMenu.kind === 'narration' ? styles.timelineSpeedMenu : ''}`}
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {contextMenu.kind === 'video' ? (
+              <>
+              <button
+                type="button"
+                role="menuitem"
+                className={styles.timelineContextDanger}
+                disabled={disabled}
+                onClick={() => {
+                  const clipId = contextMenu.clipId;
+                  setContextMenu(null);
+                  void onVariantCommand({ type: 'delete_clip', clipId }).then((accepted) => {
+                    if (accepted && selectedClipId === clipId) onSelectClip('');
+                  });
+                }}
+              >删除片段（保留空位）</button>
+              </>
+            ) : contextMenu.kind === 'subtitle' ? (
+              <button
+                type="button"
+                role="menuitem"
+                className={styles.timelineContextDanger}
+                disabled={disabled}
+                onClick={() => {
+                  const cueId = contextMenu.cueId;
+                  setContextMenu(null);
+                  void onGroupCommand({ type: 'delete_subtitle_cue', cueId }).then((accepted) => {
+                    if (accepted && selectedCueId === cueId) onSelectCue('');
+                  });
+                }}
+              >删除字幕</button>
+            ) : contextMenu.kind === 'bgm' ? (
+              <button type="button" role="menuitem" className={styles.timelineContextDanger} disabled={disabled} onClick={() => { void onVariantCommand({ type: 'delete_audio_clip', track: 'bgm', clipId: contextMenu.clipId }); setContextMenu(null); }}>删除音频片段</button>
+            ) : contextMenu.kind === 'point' ? (
+              <button
+                type="button"
+                role="menuitem"
+                className={styles.timelineContextDanger}
+                disabled={disabled}
+                onClick={() => {
+                  const pointId = contextMenu.pointId;
+                  setContextMenu(null);
+                  deletePoint(pointId);
+                }}
+              >删除卖点</button>
+            ) : (
+              <>
+                {contextMenu.clipId && <button type="button" className={styles.timelineContextDanger} disabled={disabled} onClick={() => { void onVariantCommand({ type: 'delete_audio_clip', track: 'narration', clipId: contextMenu.clipId! }); setContextMenu(null); }}>删除音频片段（保留空位）</button>}
+                <div className={styles.timelineContextTitle}>调整音频倍速</div>
+                <div className={styles.timelineSpeedHint} id="mixcut-narration-speed-help">拖动后立即作用于当前音轨，松手自动保存。</div>
+                <NarrationPlaybackRateControl
+                  idPrefix="mixcut-narration-context-speed"
+                  value={narrationPlaybackRate}
+                  disabled={disabled}
+                  onPreview={onNarrationPlaybackRatePreview}
+                  onCommit={onNarrationPlaybackRateCommit}
+                  onPendingChange={(pending) => { narrationPlaybackRatePendingRef.current = pending; }}
+                />
+              </>
+            )}
+          </div>
+        </div>,
+        document.body,
+      )}
+      </section>
+    </div>
+  );
+}
+
+export function AudioBlock({ onSelect, selected, clip, track, playbackRate, bodySec, pxPerSecond, playheadPx, tool, disabled, label, onSeek, onCommand, onOpenContextMenu }: {
+  onSelect?: () => void; selected?: boolean;
+  clip: AudioClip; track: AudioTrackKind; playbackRate: number; bodySec: number; pxPerSecond: number; playheadPx: number;
+  tool: TimelineTool; disabled: boolean; label: string; onSeek: (seconds: number) => void;
+  onCommand: (command: VariantCommandInput) => Promise<boolean>;
+  onOpenContextMenu: (x: number, y: number) => void;
+}) {
+  const clipStartUs = clip.timelineStartUs ?? clip.startUs ?? 0;
+  const clipEndUs = clip.timelineEndUs ?? clip.endUs ?? 0;
+  const startSec = clipStartUs / 1e6 / playbackRate;
+  const endSec = Math.min(bodySec, clipEndUs / 1e6 / playbackRate);
+  const left = (INTRO_FRAMES / FPS + startSec) * pxPerSecond;
+  if (endSec <= startSec) return null;
+  return <button type="button" className={styles.audioClip} data-audio-clip-id={clip.id} aria-pressed={selected} aria-label={`${label}音频片段`} disabled={disabled}
+    style={{ left, width: (endSec - startSec) * pxPerSecond }}
+    onPointerDown={(event) => event.stopPropagation()}
+    onClick={(event) => {
+      event.stopPropagation();
+      onSelect?.();
+      const offsetSec = Math.max(0, event.clientX - event.currentTarget.getBoundingClientRect().left) / pxPerSecond;
+      if (tool === 'split') void onCommand({ type: 'split_audio_clip', track, clipId: clip.id, atUs: Math.round(clipStartUs + offsetSec * playbackRate * 1e6) });
+      else onSeek(INTRO_FRAMES / FPS + startSec + offsetSec);
+    }}
+    onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!disabled) { onSelect?.(); onOpenContextMenu(event.clientX, event.clientY); } }}
+    title="分割工具点击裁切 · 右键删除音频片段">
+    <Waveform tone={track === 'narration' ? 'tts' : 'bgm'} seed={track === 'narration' ? 3 : 7} playedWidthPx={playheadPx - left} />
+    <span className={styles.wfLabel} style={{ left: 8 }}>{label}</span>
+  </button>;
+}
+
+function VideoBlock({ snapEnabled, snapPoints, clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames, pxPerSecond, selected, disabled, tool, onSplitMessage, onSelect, onCommand, onTrimClip, onOpenContextMenu }: {
+  snapEnabled: boolean; snapPoints: number[];
+  clip: TimelineClip;
+  index: number;
+  clips: TimelineClip[];
+  sourceFrames: number;
+  thumbnailUrl?: string;
+  bodyFrames: number;
+  pxPerSecond: number;
+  selected: boolean;
+  disabled: boolean;
+  tool: TimelineTool;
+  onSplitMessage: (message: string) => void;
+  onSelect: (clipId: string) => void;
+  onCommand: (command: VariantCommandInput) => Promise<boolean>;
+  onTrimClip: (clip: TimelineClip) => void;
+  onOpenContextMenu: (clientX: number, clientY: number) => void;
+}) {
+  const initial: ClipDraft = { sourceInFrame: clip.sourceInFrame, sourceOutFrame: clip.sourceOutFrame, timelineInFrame: clip.timelineInFrame, timelineOutFrame: clip.timelineOutFrame };
+  const [draft, setDraft] = useState(initial);
+  const [reorderIds, setReorderIds] = useState<string[] | null>(null);
+  const [splitFrame, setSplitFrame] = useState<number | null>(null);
+  const splitFromPointer = (clientX: number, element: HTMLElement) => {
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0) return null;
+    const frame = Math.round(clip.timelineInFrame + (clientX - rect.left) / rect.width * (clip.timelineOutFrame - clip.timelineInFrame));
+    return planVideoClipSplit(clip, frame)?.splitFrame ?? null;
+  };
+  const left = (INTRO_FRAMES + draft.timelineInFrame) / FPS * pxPerSecond;
+  const width = (draft.timelineOutFrame - draft.timelineInFrame) / FPS * pxPerSecond;
+  const durationSec = (draft.timelineOutFrame - draft.timelineInFrame) / FPS;
+
+  const begin = (mode: ClipDragMode, event: React.PointerEvent<HTMLElement>) => {
+    if (disabled || tool !== 'select' || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onSelect(clip.id);
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    let latest = initial;
+    let latestOrder: string[] | null = null;
+    let changed = false;
+    const orderedIds = [...clips].sort((a, b) => a.timelineInFrame - b.timelineInFrame).map((item) => item.id);
+    const move = (pointer: PointerEvent) => {
+      let deltaFrames = Math.round((pointer.clientX - startX) / pxPerSecond * FPS);
+      const edgeFrame = mode === 'end' ? initial.timelineOutFrame : initial.timelineInFrame;
+      const result = snapMovingClip({ startSec: (edgeFrame + deltaFrames) / FPS,
+        durationSec: mode === 'move' ? (initial.timelineOutFrame - initial.timelineInFrame) / FPS : 0,
+        preferredCandidates: clips.filter(item => item.id !== clip.id).flatMap(item => [item.timelineInFrame / FPS, item.timelineOutFrame / FPS]),
+        candidates: snapPoints, pxPerSecond, enabled: snapEnabled && !pointer.altKey, fps: FPS });
+      deltaFrames = Math.round(result.startSec * FPS) - edgeFrame;
+      changed = changed || deltaFrames !== 0;
+      if (mode === 'move') {
+        const pointerFrame = initial.timelineInFrame + (initial.timelineOutFrame - initial.timelineInFrame) / 2 + deltaFrames;
+        const planned = planClipReorder({ clips, clipId: clip.id, pointerFrame });
+        latestOrder = planned.some((id, idx) => id !== orderedIds[idx]) ? planned : null;
+        setReorderIds(latestOrder);
+      }
+      latest = constrainClipDrag({ clip: { ...clip, ...initial }, clips, bodyFrames, sourceFrames, mode, deltaFrames });
+      setDraft(latest);
+    };
+    const up = async () => {
+      cleanup();
+      if (!changed) return;
+      const accepted = latestOrder
+        ? await onCommand({ type: 'reorder_clips', orderedClipIds: latestOrder })
+        : mode === 'move'
+          ? await onCommand({ type: 'move_clip', clipId: clip.id, timelineInFrame: latest.timelineInFrame })
+          : await onCommand({ type: 'trim_clip', clipId: clip.id, sourceInFrame: latest.sourceInFrame, sourceOutFrame: latest.sourceOutFrame, timelineInFrame: latest.timelineInFrame, timelineOutFrame: latest.timelineOutFrame });
+      if (!accepted) setDraft(initial);
+      setReorderIds(null);
+    };
+    const cleanup = () => {
+      target.removeEventListener('pointermove', move);
+      target.removeEventListener('pointerup', up);
+      target.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('keydown', key, true);
+      window.removeEventListener('blur', cancel);
+      if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
+    };
+    const cancel = () => { cleanup(); setDraft(initial); setReorderIds(null); };
+    const key = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); cancel(); } };
+    window.addEventListener('keydown', key, true);
+    window.addEventListener('blur', cancel);
+    target.addEventListener('pointercancel', cancel);
+    target.addEventListener('pointermove', move);
+    target.addEventListener('pointerup', up, { once: true });
+  };
+
+  return (
+    <article
+      data-clip-id={clip.id}
+      data-selected={selected ? 'true' : undefined}
+      data-reorder-active={reorderIds ? 'true' : undefined}
+      className={`${styles.clip} ${selected ? styles.clipSel : ''}`}
+      style={{ left, width, background: 'linear-gradient(135deg,#3a3d46,#22242b)' }}
+      onPointerMove={(event) => {
+        if (tool === 'split' && !disabled) {
+          const frame = splitFromPointer(event.clientX, event.currentTarget);
+          setSplitFrame(frame);
+          if (frame !== null) onSplitMessage('');
+        }
+      }}
+      onPointerLeave={() => setSplitFrame(null)}
+      onPointerDown={(event) => {
+        if (event.button !== 0 || disabled) return;
+        if (tool === 'select') { begin('move', event); return; }
+        event.preventDefault();
+        event.stopPropagation();
+        const frame = splitFromPointer(event.clientX, event.currentTarget);
+        if (frame === null) { onSplitMessage('分割后两侧视频均需至少保留 0.5 秒，请换一个分割点'); return; }
+        onSplitMessage('');
+        setSplitFrame(null);
+        onSelect(clip.id);
+        void onCommand({ type: 'split_clip', clipId: clip.id, splitFrame: frame });
+      }}
+      onContextMenu={(event) => {
+        if (disabled) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect(clip.id);
+        onOpenContextMenu(event.clientX, event.clientY);
+      }}
+      onDoubleClick={() => !disabled && tool === 'select' && onTrimClip(clip)}
+      title={tool === 'split' ? '点击切开视频，两侧均需至少保留 0.5 秒' : '单击选中 · 拖拽排序 · 双击截取时段 · 右键更多操作'}
+    >
+      {thumbnailUrl && <img src={thumbnailUrl} alt="" draggable={false} />}
+      {tool === 'split' && splitFrame !== null && <i data-testid="mixcut-video-split-preview" className={styles.subtitleSplitPreview} style={{ left: `${(splitFrame - clip.timelineInFrame) / (clip.timelineOutFrame - clip.timelineInFrame) * 100}%` }} aria-hidden="true" />}
+      <span className={styles.clipNo}>#{index + 1}</span>
+      <span className={styles.clipCd}>{durationSec.toFixed(1)}s · {videoPlaybackRate(clip)}x</span>
+      <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="裁剪片段开头" onPointerDown={(event) => begin('start', event)} />
+      <i className={`${styles.clipHandle} ${styles.clipHandleR}`} aria-label="裁剪片段结尾" onPointerDown={(event) => begin('end', event)} />
+    </article>
+  );
+}
+
+function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerSecond, selected, anySelected, disabled, tool, onSelect, onCommand, onEditText, onOpenContextMenu }: {
+  cue: SubtitleCue;
+  previousCue: SubtitleCue | null;
+  nextCue: SubtitleCue | null;
+  bodyUs: number;
+  playbackRate: number;
+  pxPerSecond: number;
+  selected: boolean;
+  anySelected: boolean;
+  disabled: boolean;
+  tool: TimelineTool;
+  onSelect: (cueId: string) => void;
+  onCommand: (command: GroupCommandInput) => Promise<boolean>;
+  onEditText: (cueId: string, text: string) => void;
+  onOpenContextMenu: (clientX: number, clientY: number) => void;
+}) {
+  const initial = { startUs: cue.startUs, endUs: cue.endUs };
+  const [draft, setDraft] = useState(initial);
+  const [editing, setEditing] = useState(false);
+  const [splitPlan, setSplitPlan] = useState<SubtitleCueSplitPlan | null>(null);
+  const splitPlanFromPointer = (clientX: number, element: HTMLElement) => {
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0) return null;
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return planSubtitleCueSplit({
+      cue: { ...cue, startUs: draft.startUs, endUs: draft.endUs },
+      requestedSplitUs: draft.startUs + (draft.endUs - draft.startUs) * ratio,
+      fps: FPS,
+    });
+  };
+  const begin = (mode: 'move' | 'start' | 'end', event: React.PointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    if (disabled || tool !== 'select') return;
+    event.preventDefault();
+    event.stopPropagation();
+    onSelect(cue.id);
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    let latest = initial;
+    let changed = false;
+    const move = (pointer: PointerEvent) => {
+      const deltaUs = Math.round((pointer.clientX - startX) / pxPerSecond * 1_000_000 * playbackRate / FRAME_US) * FRAME_US;
+      changed = changed || deltaUs !== 0;
+      if (mode === 'move') {
+        const duration = initial.endUs - initial.startUs;
+        const startUs = Math.max(previousCue?.endUs ?? 0, Math.min((nextCue?.startUs ?? bodyUs) - duration, initial.startUs + deltaUs));
+        latest = { startUs, endUs: startUs + duration };
+      } else if (mode === 'start') {
+        latest = { startUs: Math.max(previousCue?.endUs ?? 0, Math.min(initial.endUs - FRAME_US, initial.startUs + deltaUs)), endUs: initial.endUs };
+      } else {
+        latest = { startUs: initial.startUs, endUs: Math.min(nextCue?.startUs ?? bodyUs, Math.max(initial.startUs + FRAME_US, initial.endUs + deltaUs)) };
+      }
+      setDraft(latest);
+    };
+    const up = async () => {
+      cleanup();
+      if (!changed) return;
+      const accepted = await onCommand(mode === 'move'
+        ? { type: 'move_subtitle_cue', cueId: cue.id, startUs: latest.startUs, endUs: latest.endUs }
+        : { type: 'trim_subtitle_cue', cueId: cue.id, startUs: latest.startUs, endUs: latest.endUs });
+      if (!accepted) setDraft(initial);
+    };
+    const cleanup = () => {
+      target.removeEventListener('pointermove', move);
+      target.removeEventListener('pointerup', up);
+      target.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('keydown', key, true);
+      window.removeEventListener('blur', cancel);
+      if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
+    };
+    const cancel = () => { cleanup(); setDraft(initial);  };
+    const key = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); cancel(); } };
+    window.addEventListener('keydown', key, true);
+    window.addEventListener('blur', cancel);
+    target.addEventListener('pointercancel', cancel);
+    target.addEventListener('pointermove', move);
+    target.addEventListener('pointerup', up, { once: true });
+  };
+  return (
+    <article
+      data-cue-id={cue.id}
+      data-selected={selected ? 'true' : undefined}
+      data-dimmed={!selected && anySelected ? 'true' : undefined}
+      className={`${styles.subclip} ${selected ? styles.subclipSel : anySelected ? styles.subclipDim : ''}`}
+      style={{ left: (INTRO_FRAMES / FPS + draft.startUs / 1_000_000 / playbackRate) * pxPerSecond, width: (draft.endUs - draft.startUs) / 1_000_000 / playbackRate * pxPerSecond }}
+      onPointerMove={(event) => {
+        if (tool === 'split' && !disabled) setSplitPlan(splitPlanFromPointer(event.clientX, event.currentTarget));
+      }}
+      onPointerLeave={() => setSplitPlan(null)}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        if (tool === 'select') {
+          begin('move', event);
+          return;
+        }
+        if (disabled) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const plan = splitPlanFromPointer(event.clientX, event.currentTarget);
+        if (!plan) return;
+        onSelect(cue.id);
+        setSplitPlan(null);
+        void onCommand({ type: 'split_subtitle_cue', cueId: cue.id, ...plan });
+      }}
+      onContextMenu={(event) => { if (disabled) return;
+        event.preventDefault(); event.stopPropagation();
+        onSelect(cue.id);
+        setSplitPlan(null);
+        onOpenContextMenu(event.clientX, event.clientY);
+      }}
+      onDoubleClick={() => { if (!disabled && tool === 'select') { onSelect(cue.id); setEditing(true); } }}
+      title={tool === 'split' ? '点击此处切开字幕' : '双击编辑文案'}
+    >
+      {editing ? (
+        <input
+          type="text"
+          defaultValue={cue.text}
+          autoFocus
+          style={{ width: '100%', padding: '1px 4px', fontSize: 11 }}
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onBlur={(event) => { onEditText(cue.id, event.target.value); setEditing(false); }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
+            if (event.key === 'Escape') setEditing(false);
+          }}
+        />
+      ) : (
+        <>
+          {tool === 'split' && splitPlan && (
+            <i
+              className={styles.subtitleSplitPreview}
+              style={{ left: String((splitPlan.splitUs - draft.startUs) / Math.max(1, draft.endUs - draft.startUs) * 100) + '%' }}
+              aria-hidden="true"
+            />
+          )}
+          <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="裁剪字幕开头" onPointerDown={tool === 'select' ? (event) => begin('start', event) : undefined} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{cue.text}</span>
+          <i className={`${styles.clipHandle} ${styles.clipHandleR}`} aria-label="裁剪字幕结尾" onPointerDown={tool === 'select' ? (event) => begin('end', event) : undefined} />
+        </>
+      )}
+    </article>
+  );
+}
+
+/** §5 卖点块：pointCues 本就是成片时间轴秒，位置直接 秒×pxPerSecond（与 ruler/视频轨同原点）。
+ * 交互对齐字幕块（选择工具下）：单击选中 / 双击就地改字 / 拖动改时间（钳 [coverSec, totalSec]、时长不变）/
+ * 两侧修剪（最短 1.2s）/ 右键删除；分割工具对本轨不生效。 */
+function PointBlock({ cue, coverSec, totalSec, pxPerSecond, template, selected, anySelected, disabled, tool, onSelect, onChange, onOpenContextMenu }: {
+  cue: PointCue;
+  coverSec: number;
+  totalSec: number;
+  pxPerSecond: number;
+  template: string;
+  selected: boolean;
+  anySelected: boolean;
+  disabled: boolean;
+  tool: TimelineTool;
+  onSelect: (pointId: string) => void;
+  onChange: (pointId: string, patch: Partial<Omit<PointCue, 'id'>>) => void;
+  onOpenContextMenu: (clientX: number, clientY: number) => void;
+}) {
+  const initial = { startSec: cue.startSec, endSec: cue.endSec };
+  const [draft, setDraft] = useState(initial);
+  const [editing, setEditing] = useState(false);
+  const begin = (mode: 'move' | 'start' | 'end', event: React.PointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    if (disabled || tool !== 'select') return;
+    event.preventDefault();
+    event.stopPropagation();
+    onSelect(cue.id);
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    let latest = initial;
+    let changed = false;
+    const move = (pointer: PointerEvent) => {
+      const deltaSec = (pointer.clientX - startX) / pxPerSecond;
+      changed = changed || deltaSec !== 0;
+      if (mode === 'move') {
+        const duration = initial.endSec - initial.startSec;
+        const startSec = Math.max(coverSec, Math.min(totalSec - duration, initial.startSec + deltaSec));
+        latest = { startSec, endSec: startSec + duration };
+      } else if (mode === 'start') {
+        latest = { startSec: Math.max(coverSec, Math.min(initial.endSec - POINT_MIN_DURATION_SEC, initial.startSec + deltaSec)), endSec: initial.endSec };
+      } else {
+        latest = { startSec: initial.startSec, endSec: Math.min(totalSec, Math.max(initial.startSec + POINT_MIN_DURATION_SEC, initial.endSec + deltaSec)) };
+      }
+      setDraft(latest);
+    };
+    const up = (pointer: PointerEvent) => {
+      target.removeEventListener('pointermove', move);
+      target.removeEventListener('pointerup', up);
+      if (target.hasPointerCapture(pointer.pointerId)) target.releasePointerCapture(pointer.pointerId);
+      if (!changed) return;
+      onChange(cue.id, { startSec: roundPointSec(latest.startSec), endSec: roundPointSec(latest.endSec) });
+    };
+    target.addEventListener('pointermove', move);
+    target.addEventListener('pointerup', up, { once: true });
+  };
+  return (
+    <article
+      data-point-id={cue.id}
+      data-selected={selected ? 'true' : undefined}
+      data-template={template}
+      className={`${styles.pointBlock} ${selected ? styles.pointBlockSel : anySelected ? styles.pointBlockDim : ''}`}
+      style={{ left: draft.startSec * pxPerSecond, width: (draft.endSec - draft.startSec) * pxPerSecond }}
+      onPointerDown={(event) => { if (tool === 'select') begin('move', event); }}
+      onContextMenu={(event) => {
+        if (disabled) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect(cue.id);
+        onOpenContextMenu(event.clientX, event.clientY);
+      }}
+      onDoubleClick={() => { if (!disabled && tool === 'select') { onSelect(cue.id); setEditing(true); } }}
+      title="单击选中 · 拖动改弹出时间 · 拖两侧修剪 · 双击改字 · 右键删除"
+    >
+      {editing ? (
+        <input
+          type="text"
+          defaultValue={cue.text}
+          autoFocus
+          style={{ width: '100%', padding: '1px 4px', fontSize: 11 }}
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onBlur={(event) => {
+            const value = event.target.value.trim();
+            if (value && value !== cue.text) onChange(cue.id, { text: value });
+            setEditing(false);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
+            if (event.key === 'Escape') setEditing(false);
+          }}
+        />
+      ) : (
+        <>
+          <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="修剪卖点开头" onPointerDown={tool === 'select' ? (event) => begin('start', event) : undefined} />
+          <span className={styles.pointTag} aria-hidden="true">🏷</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{cue.text}</span>
+          <i className={`${styles.clipHandle} ${styles.clipHandleR}`} aria-label="修剪卖点结尾" onPointerDown={tool === 'select' ? (event) => begin('end', event) : undefined} />
+        </>
+      )}
+    </article>
+  );
+}

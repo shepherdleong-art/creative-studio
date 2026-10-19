@@ -1,0 +1,1576 @@
+'use client';
+
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Icon } from '@/components/ui/Icon';
+import SystemFontPicker from '@/components/ui/SystemFontPicker';
+import BatchProductionProgressCard, { type BatchProgressView } from './BatchProductionProgressCard';
+import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
+import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
+import { defaultTextStyle, normalizeTextStyle } from '@/lib/media-core/cover-domain';
+// 纯字符串模块(无 sharp/fs 依赖),与渲染端封面合成共用同一份 SVG 构造。
+import { textStyleToSvgElements } from '@/lib/media-core/cover-title-svg';
+import {
+  OUTPUT_PRESETS,
+  type CoverFraming,
+  type CoverPresetV2,
+  type OutputPresetId,
+  type TextStyle,
+} from '@/lib/final-edit/types';
+import { BatchFrozenScriptCard } from './BatchInputSelectionCards';
+import { BatchScriptImportDialog, type ManualScriptDraft } from './BatchScriptImportDialog';
+
+export interface BatchTtsProviderView {
+  id: string;
+  name: string;
+  model: string;
+  configured: boolean;
+  voices: Array<{ id: string; label: string }>;
+}
+
+export interface BatchBgmParamsDraft {
+  gainDb: number;
+  fadeInSec: number;
+  fadeOutSec: number;
+}
+
+export interface BatchBgmTrackView {
+  id: string;
+  relativePath: string;
+  filename: string;
+  durationUs: number;
+}
+
+export interface BatchMusicSelectionDraft {
+  mode: 'auto' | 'manual';
+  trackIds: string[];
+}
+
+/** 封面标题设置草稿:与 defaultsJson 写入形状一致(样式已按当前画幅解析)。 */
+export interface BatchCoverTitleDraft {
+  mode: 'none' | 'preset' | 'custom';
+  presetId: string | null;
+  styles: { primary: TextStyle; secondary: TextStyle } | null;
+  /** defaultsJson.coverTitleStylesByScript:按 sourceScriptId 的完整样式覆盖;无条目时回落 styles。 */
+  stylesByScript: Record<string, { primary: TextStyle; secondary: TextStyle }>;
+  framing: CoverFraming | null;
+}
+
+/** 批量字幕样式草稿:整批基准 + sourceScriptId 覆盖。 */
+export interface BatchSubtitleStyleDraft {
+  style: TextStyle;
+  stylesByScript: Record<string, TextStyle>;
+}
+
+export interface CoverPresetView extends CoverPresetV2 {
+  id: string;
+  name: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+async function readJson<T>(response: Response): Promise<T> {
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = typeof body.message === 'string' ? body.message : `HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return body as T;
+}
+
+/** 开跑后滚进视野的进度卡锚点。容器按 id 找它，避免跨组件传 ref。 */
+export const BATCH_PROGRESS_ANCHOR_ID = 'batch-production-progress';
+
+export interface BatchStepScriptsProps {
+  batchSelected: boolean;
+  prep: BatchPreparationResult;
+  selectedScripts: Record<string, number>;
+  onSetScriptsSelected: (scriptIds: string[], selected: boolean) => void;
+  onToggleScript: (scriptId: string, selected: boolean) => void;
+  onCopyCountChange: (scriptId: string, copyCount: number) => void;
+  plannedCount: number;
+  outputPreset: OutputPresetLabel;
+  frozen: boolean;
+  frozenScriptSnapshots: BatchSnapshotDetail['scriptSnapshots'];
+  busy: 'create' | 'snapshot' | 'start' | null;
+  outputPlans: Array<{ id: string; seq: number }>;
+  batchStatus: string;
+  ttsConfigured: boolean;
+  ttsProviders: BatchTtsProviderView[];
+  bgmParams: BatchBgmParamsDraft;
+  bgmLibrary: BatchBgmTrackView[];
+  bgmRescanning: boolean;
+  bgmSelection: BatchMusicSelectionDraft;
+  onBgmParamsChange: (params: BatchBgmParamsDraft) => void;
+  onRescanBgm: () => void;
+  onBgmSelectionChange: (selection: BatchMusicSelectionDraft) => void;
+  /** 配音配置变化时通知容器标记输入已修改 */
+  onNarrationConfigTouched: () => void;
+  /** 封面标题设置(容器持有草稿,写入 defaultsJson) */
+  coverTitle: BatchCoverTitleDraft;
+  onCoverTitleChange: (draft: BatchCoverTitleDraft) => void;
+  subtitleStyle: BatchSubtitleStyleDraft;
+  onSubtitleStyleChange: (draft: BatchSubtitleStyleDraft) => void;
+  onConfirmSnapshot: () => void;
+  onStartBatch: () => void;
+  /** 手动脚本导入/编辑/删除后通知容器刷新准备区(容器决定是否强制重新确认) */
+  onScriptCreated: () => void;
+  onScriptUpdated: (scriptId: string) => void;
+  onScriptsDeleted: (scriptIds: string[]) => void;
+  inputChangedWarning: boolean;
+  /** 开跑后的分阶段进度;未开跑时为 null。渲染在本步内容栈末尾(BGM 之下),
+      点开跑后由容器滚进视野——置顶会落在「开始」按钮的视线之外。 */
+  progress: BatchProgressView | null;
+  /** 批次控制态;与 onControlBatch 一起传入时,进度卡头部显示 暂停/继续/停止 按钮 */
+  controlState?: 'running' | 'paused' | 'stopped';
+  controlBusy?: boolean;
+  onControlBatch?: (action: 'pause' | 'resume' | 'stop') => void;
+}
+
+export interface OutputPresetLabel {
+  id: string;
+  label: string;
+}
+
+const BATCH_STATUS_LABELS: Record<string, string> = {
+  draft: '待确认',
+  running: '生产中',
+  partially_completed: '部分完成',
+  completed: '已完成',
+  failed: '失败',
+};
+
+const FEATURED_VOICE_COUNT = 6;
+
+interface NarrationConfigDraft {
+  providerId: string;
+  voice: string;
+  speed: number;
+}
+
+function defaultConfigFor(provider: BatchTtsProviderView | undefined): NarrationConfigDraft | null {
+  if (!provider || !provider.configured) return null;
+  return { providerId: provider.id, voice: provider.voices[0]?.id ?? '', speed: 1 };
+}
+
+/**
+ * 第 2 步 · 脚本与口播:每份脚本一张创作卡(勾选/份数/只读时长/配音配置),
+ * 未勾选的脚本折叠;下方输出设置卡(画幅只读、BGM 音量/淡入/淡出整批统一)
+ * 与「确认整体输入 → 开始批量生产」。
+ */
+export default function BatchStepScripts(props: BatchStepScriptsProps) {
+  const {
+    prep,
+    selectedScripts,
+    onToggleScript,
+    onSetScriptsSelected,
+    onCopyCountChange,
+    plannedCount,
+    outputPreset,
+    frozen,
+    frozenScriptSnapshots,
+    busy,
+    outputPlans,
+    batchStatus,
+    ttsConfigured,
+    ttsProviders,
+    bgmParams,
+    bgmLibrary,
+    bgmRescanning,
+    bgmSelection,
+    onBgmParamsChange,
+    onRescanBgm,
+    onBgmSelectionChange,
+    onNarrationConfigTouched,
+    coverTitle,
+    onCoverTitleChange,
+    subtitleStyle,
+    onSubtitleStyleChange,
+    onConfirmSnapshot,
+    onStartBatch,
+    onScriptCreated,
+    onScriptUpdated,
+    onScriptsDeleted,
+    inputChangedWarning,
+    progress,
+    controlState,
+    controlBusy,
+    onControlBatch,
+  } = props;
+
+  const configuredProvider = useMemo(
+    () => ttsProviders.find((provider) => provider.configured) ?? ttsProviders[0],
+    [ttsProviders],
+  );
+  const [configs, setConfigs] = useState<Record<string, NarrationConfigDraft>>(() => {
+    // 仅从脚本已存储的配置初始化;未存储的脚本不占 state,
+    // 渲染时按第一个已配置供应商回落(与执行器默认行为一致)。
+    const result: Record<string, NarrationConfigDraft> = {};
+    for (const script of prep.scripts) {
+      const stored = script.narrationConfig;
+      if (stored && typeof stored.providerId === 'string' && typeof stored.voice === 'string') {
+        result[script.id] = {
+          providerId: stored.providerId,
+          voice: stored.voice,
+          speed: typeof stored.speed === 'number' ? Math.min(2, Math.max(0.5, stored.speed)) : 1,
+        };
+      }
+    }
+    return result;
+  });
+  const [voiceQuery, setVoiceQuery] = useState<Record<string, string>>({});
+  const [showAllVoices, setShowAllVoices] = useState<Record<string, boolean>>({});
+  const [previewing, setPreviewing] = useState<Record<string, string | null>>({});
+  const [bgmListOpen, setBgmListOpen] = useState(false);
+  const [auditioningTrackId, setAuditioningTrackId] = useState<string | null>(null);
+  const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
+  const saveQueueRef = useRef<Record<string, Promise<void>>>({});
+  const [coverPresets, setCoverPresets] = useState<CoverPresetView[]>([]);
+  const [presetName, setPresetName] = useState('');
+  const [coverTitleError, setCoverTitleError] = useState('');
+  // 封面标题预览当前选中的脚本/快照 id:选中项失效(取消勾选/删脚本)时
+  // 渲染层回落第一条,无需清理。
+  const [coverPreviewScriptId, setCoverPreviewScriptId] = useState<string | null>(null);
+  // 「应用到全部脚本」会连带清掉其他脚本的单独调整,而当前脚本没单独调整时这一步
+  // 在界面上看不出任何变化(基准 → 基准),所以按批量提交同款做内联二次确认。
+  // 存的是「举起确认时要销毁的目标集合」指纹,目标或集合一变就自动失效。
+  const [coverApplyAllArmedFor, setCoverApplyAllArmedFor] = useState<string | null>(null);
+  const [subtitlePreviewScriptId, setSubtitlePreviewScriptId] = useState<string | null>(null);
+  const [subtitleEditTargetScriptId, setSubtitleEditTargetScriptId] = useState<string | null>(null);
+  const [subtitleApplyAllArmedFor, setSubtitleApplyAllArmedFor] = useState<string | null>(null);
+  // 手动脚本导入/编辑弹窗与删除进行中状态。
+  const [scriptDialogOpen, setScriptDialogOpen] = useState(false);
+  const [editingScript, setEditingScript] = useState<ManualScriptDraft | null>(null);
+  const [deletingScriptId, setDeletingScriptId] = useState<string | null>(null);
+  const [scriptActionError, setScriptActionError] = useState('');
+
+  // 封面标题预设来自全局(与单条共用),一次拉取,失败不阻塞其他输入。
+  useEffect(() => {
+    void fetch('/api/final-edit/title-presets').then((response) => readJson<CoverPresetView[]>(response))
+      .then(setCoverPresets)
+      .catch((error) => setCoverTitleError(error instanceof Error ? error.message : String(error)));
+  }, []);
+
+  const scriptCount = Object.keys(selectedScripts).length;
+  const selectedListedScripts = prep.scripts.filter(script => selectedScripts[script.id] !== undefined);
+  const allScriptsSelected = prep.scripts.length > 0 && selectedListedScripts.length === prep.scripts.length;
+  const scriptActionsDisabled = busy !== null || deletingScriptId !== null;
+  const onlineAssets = prep.assets.filter(({ status }) => status === 'online').length;
+
+  const startDisabledReason = !props.batchSelected
+    ? '请先在左侧创建或选择一个批次'
+    : !scriptCount
+      ? '请先勾选至少一份脚本'
+      : outputPlans.length === 0
+        ? '请先确认整体输入'
+        : batchStatus !== 'draft'
+          ? '批次已开始生产'
+          : !ttsConfigured
+            ? '尚未配置口播配音供应商，请在设置中配置'
+            : bgmLibrary.length === 0
+              ? '背景音乐曲库为空，请先放入音频并重新扫描'
+              : undefined;
+
+  function formatDuration(durationUs: number): string {
+    const totalSec = Math.max(0, Math.round(durationUs / 1_000_000));
+    const minutes = Math.floor(totalSec / 60);
+    const seconds = totalSec % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  function auditionBgm(trackId: string): void {
+    if (auditioningTrackId === trackId) {
+      auditionAudioRef.current?.pause();
+      setAuditioningTrackId(null);
+      return;
+    }
+    auditionAudioRef.current?.pause();
+    const audio = new Audio(`/api/final-edit-bgm/${encodeURIComponent(trackId)}/file`);
+    auditionAudioRef.current = audio;
+    setAuditioningTrackId(trackId);
+    audio.addEventListener('ended', () => setAuditioningTrackId(null), { once: true });
+    audio.addEventListener('error', () => setAuditioningTrackId(null), { once: true });
+    void audio.play();
+  }
+
+  function renderBgmSection() {
+    const manualCount = bgmSelection.mode === 'manual' ? bgmSelection.trackIds.length : 0;
+    const sliderRow = (label: string, ariaLabel: string, children: React.ReactNode, value: string) => (
+      <div className="flex items-center gap-3">
+        <span className="w-9 shrink-0 text-xs text-ink-secondary">{label}</span>
+        <div className="flex min-w-0 flex-1 items-center gap-3">{children}</div>
+        <span className="w-14 shrink-0 text-right text-xs tabular-nums text-ink-secondary">{value}</span>
+      </div>
+    );
+    return (
+      <section className="card space-y-4 p-5" aria-label="背景音乐">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Icon name="music" size={15} />
+            <h3 className="font-semibold text-ink">背景音乐</h3>
+            <span className="rounded-full bg-surface-subtle px-2.5 py-0.5 text-[11px] text-ink-secondary">曲库 {bgmLibrary.length} 首</span>
+          </div>
+          <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={bgmRescanning} onClick={onRescanBgm}>
+            {bgmRescanning ? '扫描中…' : '重新扫描'}
+          </button>
+        </div>
+        {bgmLibrary.length === 0 ? (
+          <div className="rounded-xl bg-warn/10 px-4 py-3 text-xs leading-5 text-warn">
+            曲库为空 —— 请把音频文件放进 storage/bgm/ 文件夹，然后点击「重新扫描」。曲库与单条模式共用，无需导入。
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-ink-secondary">
+                {manualCount > 0
+                  ? `已指定 ${manualCount} 首 · ${plannedCount} 条成片轮流使用`
+                  : `曲库 ${bgmLibrary.length} 首 · ${plannedCount} 条成片将自动分配`}
+              </p>
+              <button
+                type="button"
+                className="btn-secondary h-8 px-3 text-xs"
+                onClick={() => setBgmListOpen((value) => !value)}
+              >{bgmListOpen ? '收起曲目' : '曲目（可手动指定）'}</button>
+            </div>
+            {bgmListOpen && (
+              <ul className="grid gap-1.5 sm:grid-cols-2">
+                {bgmLibrary.map((track) => (
+                  <li key={track.id} className="flex items-center gap-2 rounded-xl bg-surface-subtle px-3 py-2 text-xs">
+                    <input
+                      type="checkbox"
+                      aria-label={`手动指定 ${track.filename}`}
+                      checked={bgmSelection.trackIds.includes(track.id)}
+                      onChange={(event) => {
+                        const checked = event.target.checked;
+                        const trackIds = checked
+                          ? [...new Set([...bgmSelection.trackIds, track.id])]
+                          : bgmSelection.trackIds.filter((id) => id !== track.id);
+                        onBgmSelectionChange({ mode: trackIds.length > 0 ? 'manual' : 'auto', trackIds });
+                      }}
+                      className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                    />
+                    <span className="min-w-0 flex-1 truncate text-ink-secondary" title={track.filename}>{track.filename}</span>
+                    <span className="shrink-0 tabular-nums text-ink-tertiary">{formatDuration(track.durationUs)}</span>
+                    <button
+                      type="button"
+                      className="flex shrink-0 items-center gap-1 text-accent underline"
+                      onClick={() => auditionBgm(track.id)}
+                      aria-pressed={auditioningTrackId === track.id}
+                    >
+                      <Icon name={auditioningTrackId === track.id ? 'stop' : 'play'} size={10} />
+                      {auditioningTrackId === track.id ? '停止' : '试听'}
+                    </button>
+                  </li>
+                ))}
+                {bgmSelection.mode === 'manual' && bgmSelection.trackIds.length > 0 && (
+                  <li className="flex items-center gap-2 rounded-xl bg-accent/5 px-3 py-2 text-[11px] text-ink-secondary">
+                    已手动指定 {bgmSelection.trackIds.length} 首，成片只在这几首之间轮流使用；取消全部勾选恢复自动分配。
+                  </li>
+                )}
+              </ul>
+            )}
+          </>
+        )}
+        <div className="space-y-2.5 border-t border-hairline pt-4">
+          {sliderRow('音量', '背景音乐音量增益', (
+            <input
+              type="range"
+              min={-60}
+              max={0}
+              step={1}
+              aria-label="背景音乐音量增益"
+              value={bgmParams.gainDb}
+              onChange={(event) => onBgmParamsChange({ ...bgmParams, gainDb: Number(event.target.value) })}
+              className="min-w-0 flex-1 accent-[var(--color-accent)]"
+            />
+          ), `${bgmParams.gainDb} dB`)}
+          {sliderRow('淡入', '背景音乐淡入', (
+            <input
+              type="range"
+              min={0}
+              max={10}
+              step={0.5}
+              aria-label="背景音乐淡入"
+              value={bgmParams.fadeInSec}
+              onChange={(event) => onBgmParamsChange({ ...bgmParams, fadeInSec: Number(event.target.value) })}
+              className="min-w-0 flex-1 accent-[var(--color-accent)]"
+            />
+          ), `${bgmParams.fadeInSec.toFixed(1)}s`)}
+          {sliderRow('淡出', '背景音乐淡出', (
+            <input
+              type="range"
+              min={0}
+              max={10}
+              step={0.5}
+              aria-label="背景音乐淡出"
+              value={bgmParams.fadeOutSec}
+              onChange={(event) => onBgmParamsChange({ ...bgmParams, fadeOutSec: Number(event.target.value) })}
+              className="min-w-0 flex-1 accent-[var(--color-accent)]"
+            />
+          ), `${bgmParams.fadeOutSec.toFixed(1)}s`)}
+        </div>
+      </section>
+    );
+  }
+
+  async function persistConfig(scriptId: string, config: NarrationConfigDraft): Promise<void> {
+    const queued = saveQueueRef.current[scriptId] ?? Promise.resolve();
+    const save = async () => {
+      const response = await fetch(
+        `/api/batch-production/scripts/${encodeURIComponent(scriptId)}/narration-config?projectId=${encodeURIComponent(props.prep.project.id)}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config),
+        },
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.message || body.error || '配音配置保存失败');
+      }
+    };
+    const next = queued.then(save, save);
+    saveQueueRef.current[scriptId] = next.catch(() => undefined);
+    await next;
+  }
+
+  function updateConfig(scriptId: string, patch: Partial<NarrationConfigDraft>): void {
+    const current = configs[scriptId] ?? defaultConfigFor(configuredProvider);
+    if (!current) return;
+    const next = { ...current, ...patch };
+    setConfigs((all) => ({ ...all, [scriptId]: next }));
+    onNarrationConfigTouched();
+    void persistConfig(scriptId, next).catch(() => undefined);
+  }
+
+  function applyConfigToAllScripts(source: NarrationConfigDraft): void {
+    setConfigs((all) => {
+      const next = { ...all };
+      for (const script of prep.scripts) {
+        next[script.id] = { ...source };
+      }
+      return next;
+    });
+    onNarrationConfigTouched();
+    for (const script of prep.scripts) {
+      void persistConfig(script.id, { ...source }).catch(() => undefined);
+    }
+  }
+
+  async function deleteScripts(scripts: BatchPreparationResult['scripts']): Promise<void> {
+    if (scriptActionsDisabled || frozen || scripts.length === 0) return;
+    const description = scripts.length === 1 ? '「' + (scripts[0].title || '未命名脚本') + '」' : '已选的 ' + scripts.length + ' 条脚本';
+    const changesInput = scripts.some(script => selectedScripts[script.id] !== undefined);
+    if (!confirm('确定从批量脚本列表删除' + description + '吗？\n第 3 步原脚本和历史批次会保留。' + (changesInput ? '当前批次需要重新确认输入。' : ''))) return;
+    setDeletingScriptId(scripts.length === 1 ? scripts[0].id : 'bulk');
+    setScriptActionError('');
+    try {
+      const result = await readJson<{ deletedIds: string[] }>(await fetch('/api/batch-production/scripts', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: prep.project.id, scriptIds: scripts.map(script => script.id) }),
+      }));
+      onScriptsDeleted(result.deletedIds);
+    } catch (error) {
+      setScriptActionError(error instanceof Error ? error.message : '脚本删除失败');
+    } finally { setDeletingScriptId(null); }
+  }
+
+  function openEditScriptDialog(script: BatchPreparationResult['scripts'][number]): void {
+    setScriptActionError('');
+    setEditingScript({
+      id: script.id,
+      title: script.title,
+      bodyText: script.bodyText,
+      targetDurationSec: script.targetDurationSec ?? 15,
+    });
+    setScriptDialogOpen(true);
+  }
+
+  async function auditionVoice(scriptId: string, providerId: string, voice: string, speed: number): Promise<void> {
+    if (previewing[scriptId]) return;
+    setPreviewing((current) => ({ ...current, [scriptId]: voice }));
+    try {
+      const response = await fetch(`/api/providers/tts/${encodeURIComponent(providerId)}/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice, speed }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.message || body.error || '音色试听失败');
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const audio = new Audio(url);
+      const release = () => URL.revokeObjectURL(url);
+      audio.addEventListener('ended', release, { once: true });
+      audio.addEventListener('error', release, { once: true });
+      await audio.play();
+    } catch (error) {
+      console.warn('音色试听失败', error);
+    } finally {
+      setPreviewing((current) => ({ ...current, [scriptId]: null }));
+    }
+  }
+
+  function renderNarrationConfig(scriptId: string) {
+    const config = configs[scriptId] ?? defaultConfigFor(configuredProvider);
+    if (!config) {
+      return (
+        <p className="text-xs text-warn">尚未配置口播配音供应商，请先在设置中启用并配置后再选择音色。</p>
+      );
+    }
+    const provider = ttsProviders.find((item) => item.id === config.providerId);
+    const allVoices = provider?.voices ?? [];
+    const effectiveVoice = allVoices.some((item) => item.id === config.voice) ? config.voice : allVoices[0]?.id ?? '';
+    const query = (voiceQuery[scriptId] ?? '').trim().toLocaleLowerCase();
+    const filtered = query
+      ? allVoices.filter((item) => item.label.toLocaleLowerCase().includes(query) || item.id.toLocaleLowerCase().includes(query))
+      : showAllVoices[scriptId]
+        ? allVoices
+        : allVoices.slice(0, FEATURED_VOICE_COUNT);
+    const selectedVoice = allVoices.find((item) => item.id === effectiveVoice);
+
+    return (
+      <div className="space-y-3 border-t border-hairline pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <label className="text-sm text-ink-secondary">
+              <span className="mb-1 block">配音服务商</span>
+              <select
+                aria-label={`${scriptId} 配音服务商`}
+                value={config.providerId}
+                onChange={(event) => updateConfig(scriptId, { providerId: event.target.value, voice: ttsProviders.find((item) => item.id === event.target.value)?.voices[0]?.id ?? '' })}
+                className="h-9 min-w-44 rounded-xl border border-hairline bg-surface px-3 text-sm text-ink"
+              >
+                {ttsProviders.filter((item) => item.configured || item.id === config.providerId).map((item) => (
+                  <option key={item.id} value={item.id}>{item.name} · {item.model}</option>
+                ))}
+              </select>
+            </label>
+            <span className={`rounded-full px-2 py-1 text-[11px] ${provider?.configured ? 'bg-ok/10 text-ok' : 'bg-warn/10 text-warn'}`}>
+              密钥{provider?.configured ? '已配置' : '未配置'}
+            </span>
+          </div>
+          <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={() => applyConfigToAllScripts(config)}>
+            应用到全部脚本
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs text-ink-secondary">语速</span>
+          <input
+            type="range"
+            min="0.5"
+            max="2"
+            step="0.1"
+            aria-label={`${scriptId} 语速`}
+            value={config.speed}
+            onChange={(event) => updateConfig(scriptId, { speed: Number(event.target.value) })}
+            className="w-40 accent-[var(--color-accent)]"
+          />
+          <span className="rounded-full bg-surface-subtle px-2 py-0.5 text-[11px] text-ink-secondary">{config.speed.toFixed(1)}x</span>
+          <span className="text-[11px] text-ink-tertiary">0.5x 慢速 · 1.0x 正常 · 2.0x 快速</span>
+        </div>
+
+        <div>
+          <p className="mb-2 text-xs text-ink-secondary">精选音色（点击选中，可单独试听）</p>
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+            {filtered.map((item) => (
+              <div
+                key={item.id}
+                role="button"
+                tabIndex={0}
+                className={`relative cursor-pointer rounded-xl border p-2 text-center transition ${item.id === effectiveVoice ? 'border-accent bg-accent/5' : 'border-hairline bg-surface'}`}
+                onClick={() => updateConfig(scriptId, { voice: item.id })}
+                onKeyDown={(event) => {
+                  if ((event.key === 'Enter' || event.key === ' ') && !previewing[scriptId]) updateConfig(scriptId, { voice: item.id });
+                }}
+              >
+                <div className="mx-auto grid h-8 w-8 place-items-center rounded-full bg-surface-subtle text-ink-secondary"><Icon name="mic" size={15} /></div>
+                <p className="mt-1 truncate text-xs font-medium text-ink">{item.label}</p>
+                <button
+                  type="button"
+                  className={`mt-1 inline-flex items-center gap-1 text-[11px] ${item.id === effectiveVoice ? 'text-accent' : 'text-ink-tertiary'}`}
+                  disabled={Boolean(previewing[scriptId]) || !provider?.configured}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void auditionVoice(scriptId, config.providerId, item.id, config.speed);
+                  }}
+                >
+                  <Icon name="play" size={9} />
+                  {previewing[scriptId] === item.id ? '生成中…' : '试听'}
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <input
+              type="text"
+              aria-label="搜索音色"
+              value={voiceQuery[scriptId] ?? ''}
+              onChange={(event) => setVoiceQuery((current) => ({ ...current, [scriptId]: event.target.value }))}
+              placeholder="搜索更多音色（名称或 ID）"
+              className="h-8 min-w-40 flex-1 rounded-xl border border-hairline bg-surface px-3 text-xs text-ink"
+            />
+            {allVoices.length > FEATURED_VOICE_COUNT && !query && (
+              <button type="button" className="text-xs text-accent underline" onClick={() => setShowAllVoices((current) => ({ ...current, [scriptId]: !current[scriptId] }))}>
+                {showAllVoices[scriptId] ? '收起音色' : `查看全部 ${allVoices.length} 个音色`}
+              </button>
+            )}
+            <span className="text-[11px] text-ink-tertiary">当前选中：{selectedVoice?.label ?? '未选择'}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+
+  const coverPresetId = outputPreset.id.replace(':', 'x') as OutputPresetId;
+  const coverPreviewSources = frozen
+    ? frozenScriptSnapshots.map((snapshot) => ({ id: snapshot.sourceScriptId, title: snapshot.title, coverTitle: snapshot.coverTitle }))
+    : prep.scripts
+        .filter((script) => selectedScripts[script.id] !== undefined)
+        .map((script) => ({ id: script.id, title: script.title, coverTitle: script.coverTitle }));
+  const coverPreview = coverPreviewSources.find((source) => source.id === coverPreviewScriptId) ?? coverPreviewSources[0] ?? null;
+  // 冻结态整卡只读,不存在编辑目标;草稿态用预览下拉选中的脚本,
+  // 没有已选脚本时编辑整批基准样式。
+  const coverEditScriptId = !frozen && coverPreview ? coverPreview.id : null;
+  const coverEffectiveStyles = coverEditScriptId
+    ? coverTitle.stylesByScript[coverEditScriptId] ?? coverTitle.styles
+    : coverTitle.styles;
+  // 只统计当前可见(已勾选/已冻结)的脚本:界面上数得出来的份数才拿去提示用户。
+  const coverOverrideScriptIds = coverPreviewSources
+    .filter((source) => coverTitle.stylesByScript[source.id])
+    .map((source) => source.id);
+  const coverApplyAllVictimIds = coverOverrideScriptIds.filter((id) => id !== coverEditScriptId);
+  const coverApplyAllArmKey = coverEditScriptId ? `${coverEditScriptId}|${coverApplyAllVictimIds.join(',')}` : '';
+  const coverApplyAllArmed = coverApplyAllVictimIds.length > 0 && coverApplyAllArmedFor === coverApplyAllArmKey;
+
+  const subtitlePreview = coverPreviewSources.find((source) => source.id === subtitlePreviewScriptId)
+    ?? coverPreviewSources[0]
+    ?? null;
+  const subtitleEditScriptId = !frozen
+    && subtitleEditTargetScriptId
+    && coverPreviewSources.some((source) => source.id === subtitleEditTargetScriptId)
+    ? subtitleEditTargetScriptId
+    : null;
+  const subtitleEditStyle = subtitleEditScriptId
+    ? subtitleStyle.stylesByScript[subtitleEditScriptId] ?? subtitleStyle.style
+    : subtitleStyle.style;
+  const subtitleEffectiveStyle = subtitlePreview
+    ? subtitleStyle.stylesByScript[subtitlePreview.id] ?? subtitleStyle.style
+    : subtitleStyle.style;
+  const subtitleOverrideScriptIds = coverPreviewSources
+    .filter((source) => subtitleStyle.stylesByScript[source.id])
+    .map((source) => source.id);
+  const subtitleApplyAllVictimIds = subtitleOverrideScriptIds.filter((id) => id !== subtitleEditScriptId);
+  const subtitleApplyAllArmKey = subtitleEditScriptId
+    ? `${subtitleEditScriptId}|${subtitleApplyAllVictimIds.join(',')}`
+    : '';
+  const subtitleApplyAllArmed = subtitleApplyAllVictimIds.length > 0
+    && subtitleApplyAllArmedFor === subtitleApplyAllArmKey;
+
+  /**
+   * 封面标题草稿更新:进入「使用预设/自定义」时补齐已解析的当前画幅样式与
+   * 默认 framing,保证 defaultsJson 始终是稳定完整形状(不选也为 none + null)。
+   */
+  function updateCoverTitle(patch: Partial<BatchCoverTitleDraft>): void {
+    const next: BatchCoverTitleDraft = {
+      mode: patch.mode ?? coverTitle.mode,
+      presetId: patch.presetId !== undefined ? patch.presetId : coverTitle.presetId,
+      styles: patch.styles !== undefined ? patch.styles : coverTitle.styles,
+      stylesByScript: patch.stylesByScript !== undefined ? patch.stylesByScript : coverTitle.stylesByScript,
+      framing: patch.framing !== undefined ? patch.framing : coverTitle.framing,
+    };
+    if (next.mode === 'preset' || next.mode === 'custom') {
+      if (!next.styles) {
+        next.styles = {
+          primary: defaultTextStyle('coverPrimary', OUTPUT_PRESETS[coverPresetId].width),
+          secondary: defaultTextStyle('coverSecondary', OUTPUT_PRESETS[coverPresetId].width),
+        };
+      }
+      if (!next.framing) next.framing = { scale: 1, offsetX: 0, offsetY: 0 };
+    }
+    onCoverTitleChange(next);
+  }
+
+  function updateCoverStyle(kind: 'primary' | 'secondary', patch: Partial<TextStyle>): void {
+    if (!coverTitle.styles) return;
+    if (coverEditScriptId) {
+      const base = coverTitle.stylesByScript[coverEditScriptId] ?? coverTitle.styles;
+      onCoverTitleChange({
+        ...coverTitle,
+        stylesByScript: {
+          ...coverTitle.stylesByScript,
+          [coverEditScriptId]: { ...base, [kind]: { ...base[kind], ...patch } },
+        },
+      });
+      return;
+    }
+    onCoverTitleChange({
+      ...coverTitle,
+      styles: { ...coverTitle.styles, [kind]: { ...coverTitle.styles[kind], ...patch } },
+    });
+  }
+
+  function applyCoverPreset(preset: CoverPresetView): void {
+    const value = preset.stylesByPreset[coverPresetId];
+    if (!value) return;
+    updateCoverTitle({
+      mode: 'preset',
+      presetId: preset.id,
+      styles: { primary: value.primary, secondary: value.secondary },
+      stylesByScript: {},
+      framing: { ...value.framing },
+    });
+  }
+
+  function applyCoverStyleToAllScripts(): void {
+    if (!coverEditScriptId || !coverEffectiveStyles) return;
+    // 会清掉其他脚本的单独调整;从当前脚本视角看不出损失,先举起确认再执行。
+    if (coverApplyAllVictimIds.length > 0 && !coverApplyAllArmed) {
+      setCoverApplyAllArmedFor(coverApplyAllArmKey);
+      return;
+    }
+    setCoverApplyAllArmedFor(null);
+    onCoverTitleChange({
+      ...coverTitle,
+      styles: coverEffectiveStyles,
+      stylesByScript: {},
+    });
+  }
+
+  function restoreCoverStyleToBaseline(): void {
+    if (!coverEditScriptId || !coverTitle.stylesByScript[coverEditScriptId]) return;
+    const stylesByScript = { ...coverTitle.stylesByScript };
+    delete stylesByScript[coverEditScriptId];
+    onCoverTitleChange({ ...coverTitle, stylesByScript });
+  }
+
+  function updateSubtitleStyle(patch: Partial<TextStyle>): void {
+    const current = subtitleEditScriptId
+      ? subtitleStyle.stylesByScript[subtitleEditScriptId] ?? subtitleStyle.style
+      : subtitleStyle.style;
+    const next = normalizeTextStyle({ ...current, ...patch }, subtitleStyle.style);
+    if (subtitleEditScriptId) {
+      onSubtitleStyleChange({
+        ...subtitleStyle,
+        stylesByScript: { ...subtitleStyle.stylesByScript, [subtitleEditScriptId]: next },
+      });
+      return;
+    }
+    onSubtitleStyleChange({ ...subtitleStyle, style: next });
+  }
+
+  function applySubtitleStyleToAllScripts(): void {
+    if (!subtitleEditScriptId) return;
+    if (subtitleApplyAllVictimIds.length > 0 && !subtitleApplyAllArmed) {
+      setSubtitleApplyAllArmedFor(subtitleApplyAllArmKey);
+      return;
+    }
+    setSubtitleApplyAllArmedFor(null);
+    onSubtitleStyleChange({ ...subtitleStyle, style: subtitleEditStyle, stylesByScript: {} });
+  }
+
+  function restoreSubtitleStyleToBaseline(): void {
+    if (!subtitleEditScriptId || !subtitleStyle.stylesByScript[subtitleEditScriptId]) return;
+    const stylesByScript = { ...subtitleStyle.stylesByScript };
+    delete stylesByScript[subtitleEditScriptId];
+    onSubtitleStyleChange({ ...subtitleStyle, stylesByScript });
+  }
+
+  function renderSubtitleTextStyleEditor(style: TextStyle) {
+    const smallInput = 'h-7 w-full min-w-0 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink';
+    const smallColor = 'h-7 w-10 shrink-0 rounded border border-hairline bg-surface p-0.5';
+    const previewSize = OUTPUT_PRESETS[coverPresetId] ?? OUTPUT_PRESETS['3x4'];
+    return (
+      <div className="rounded-xl bg-surface-subtle p-3">
+        <p className="mb-1.5 text-xs font-medium text-ink">字幕样式</p>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">字体</span>
+            <SystemFontPicker value={style.fontFamily} ariaLabel="字幕字体" disabled={frozen} compact onChange={(fontFamily) => updateSubtitleStyle({ fontFamily, fontPostscriptName: undefined })} />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">字号</span>
+            <input
+              type="number"
+              min={8}
+              max={400}
+              aria-label="字幕字号"
+              value={style.fontSizePx}
+              disabled={frozen}
+              onChange={(event) => updateSubtitleStyle({ fontSizePx: Math.max(8, Number.parseFloat(event.target.value) || 8) })}
+              className={smallInput}
+            />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">文字颜色</span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <input
+                type="color"
+                aria-label="字幕文字颜色"
+                value={style.color}
+                disabled={frozen}
+                onChange={(event) => updateSubtitleStyle({ color: event.target.value })}
+                className={smallColor}
+              />
+              <span className="truncate text-[11px] tabular-nums text-ink-tertiary">{style.color}</span>
+            </span>
+          </label>
+          <label className="flex items-end gap-2 pb-1.5">
+            <span className="flex items-center gap-1.5 text-xs text-ink-secondary">
+              <input
+                type="checkbox"
+                aria-label="字幕斜体"
+                checked={style.italic}
+                disabled={frozen}
+                onChange={(event) => updateSubtitleStyle({ italic: event.target.checked })}
+                className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+              />
+              斜体
+            </span>
+          </label>
+          <label className="col-span-2 flex min-w-0 flex-col gap-0.5">
+            <span className="flex min-w-0 items-center justify-between gap-2 text-[11px] text-ink-tertiary">
+              <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  aria-label="字幕描边"
+                  checked={style.stroke.enabled}
+                  disabled={frozen}
+                  onChange={(event) => updateSubtitleStyle({ stroke: { ...style.stroke, enabled: event.target.checked } })}
+                  className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                />
+                描边
+              </span>
+              <span className="flex shrink-0 items-center gap-1">
+                <input
+                  type="color"
+                  aria-label="字幕描边颜色"
+                  value={style.stroke.color}
+                  disabled={frozen || !style.stroke.enabled}
+                  onChange={(event) => updateSubtitleStyle({ stroke: { ...style.stroke, color: event.target.value } })}
+                  className={smallColor}
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={40}
+                  aria-label="字幕描边宽度"
+                  value={style.stroke.widthPx}
+                  disabled={frozen || !style.stroke.enabled}
+                  onChange={(event) => updateSubtitleStyle({ stroke: { ...style.stroke, widthPx: Math.max(0, Number.parseFloat(event.target.value) || 0) } })}
+                  className="h-7 w-14 shrink-0 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
+                />
+              </span>
+            </span>
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="flex items-center justify-between text-[11px] text-ink-tertiary"><span>横向位置</span><span>{Math.round(style.x * 100)}%</span></span>
+            <input type="range" min={0} max={100} aria-label="字幕横向位置" value={Math.round(style.x * 100)} disabled={frozen} onChange={(event) => updateSubtitleStyle({ x: Number(event.target.value) / 100 })} className="w-full accent-[var(--color-accent)]" />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="flex items-center justify-between text-[11px] text-ink-tertiary"><span>纵向位置</span><span>{Math.round(style.y * 100)}%</span></span>
+            <input type="range" min={0} max={100} aria-label="字幕纵向位置" value={Math.round(style.y * 100)} disabled={frozen} onChange={(event) => updateSubtitleStyle({ y: Number(event.target.value) / 100 })} className="w-full accent-[var(--color-accent)]" />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="flex items-center justify-between text-[11px] text-ink-tertiary"><span>缩放</span><span>{style.scale.toFixed(2)}×</span></span>
+            <input type="range" min={0.25} max={4} step={0.05} aria-label="字幕缩放" value={style.scale} disabled={frozen} onChange={(event) => updateSubtitleStyle({ scale: Number(event.target.value) })} className="w-full accent-[var(--color-accent)]" />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">文字框宽度（像素）</span>
+            <input type="number" min={100} max={previewSize.width} aria-label="字幕文字框宽度" value={Math.round(style.boxWidthPx)} disabled={frozen} onChange={(event) => updateSubtitleStyle({ boxWidthPx: Math.max(100, Number.parseFloat(event.target.value) || 100) })} className={smallInput} />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">对齐</span>
+            <select aria-label="字幕对齐" value={style.align} disabled={frozen} onChange={(event) => updateSubtitleStyle({ align: event.target.value as TextStyle['align'] })} className={smallInput}>
+              <option value="left">左对齐</option>
+              <option value="center">居中</option>
+              <option value="right">右对齐</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    );
+  }
+
+  function renderSubtitleStyleSection() {
+    const previewSize = OUTPUT_PRESETS[coverPresetId] ?? OUTPUT_PRESETS['3x4'];
+    const previewText = subtitlePreview?.title?.trim() || '示例字幕文案';
+    const previewSvg = textStyleToSvgElements(subtitleEffectiveStyle, previewText, previewSize);
+    return (
+      <section className={`card space-y-3 p-5 ${frozen ? 'border-accent/30' : ''}`} aria-label="字幕样式">
+        <div className="flex flex-wrap items-center gap-2">
+          <Icon name="text" size={15} />
+          <h3 className="font-semibold text-ink">字幕样式</h3>
+          {frozen && <span className="rounded-full bg-surface-subtle px-2.5 py-0.5 text-[11px] text-ink-tertiary">已锁定</span>}
+        </div>
+        <p className="text-xs text-ink-tertiary">字幕样式随整批输入冻结，预览与正式渲染使用同一份 SVG 参数。默认字幕来自口播对齐；在检查成片中编辑字幕时才会产生单条覆盖。确认后改样式会形成批次新版本。</p>
+        <div className="flex flex-wrap gap-4">
+          <div className="grid min-w-64 flex-1 gap-2.5">
+            {!frozen && <p className="text-xs text-ink-secondary">{subtitleEditScriptId ? `正在调整：脚本 ${coverPreviewSources.findIndex((source) => source.id === subtitleEditScriptId) + 1}（仅对这份脚本生效）` : '当前调整的是整批基准样式'}{subtitleOverrideScriptIds.length > 0 && `；本批已有 ${subtitleOverrideScriptIds.length} 份单独调整`}</p>}
+            {renderSubtitleTextStyleEditor(subtitleEditStyle)}
+          </div>
+          <div className="flex min-w-56 flex-1 flex-col gap-2">
+            {coverPreviewSources.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-tertiary">
+                <label className="flex min-w-0 basis-full items-center gap-2">
+                  <span className="shrink-0">预览脚本</span>
+                  <select aria-label="字幕样式预览脚本" value={subtitlePreview?.id ?? ''} onChange={(event) => setSubtitlePreviewScriptId(event.target.value)} className="h-7 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink">
+                    {coverPreviewSources.map((source, index) => <option key={source.id} value={source.id}>脚本 {index + 1} · {source.title || '未命名脚本'}</option>)}
+                  </select>
+                </label>
+                {!frozen && <label className="flex min-w-0 basis-full items-center gap-2">
+                  <span className="shrink-0">调整目标</span>
+                  <select aria-label="字幕样式调整目标" value={subtitleEditScriptId ?? ''} onChange={(event) => setSubtitleEditTargetScriptId(event.target.value || null)} className="h-7 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink">
+                    <option value="">整批基准样式</option>
+                    {coverPreviewSources.map((source, index) => <option key={source.id} value={source.id}>脚本 {index + 1} · {source.title || '未命名脚本'}</option>)}
+                  </select>
+                </label>}
+                {subtitleEditScriptId && subtitleStyle.stylesByScript[subtitleEditScriptId] && <><span className="rounded-full bg-accent/10 px-2 py-0.5 text-accent">已单独调整</span><button type="button" className="text-accent underline underline-offset-2" disabled={frozen} onClick={restoreSubtitleStyleToBaseline}>恢复基准样式</button></>}
+                {subtitleEditScriptId && <><button type="button" className={`underline underline-offset-2 ${subtitleApplyAllArmed ? 'text-warn' : 'text-accent'}`} disabled={frozen} onClick={applySubtitleStyleToAllScripts}>{subtitleApplyAllArmed ? `确认清除其他 ${subtitleApplyAllVictimIds.length} 份单独调整` : '应用到全部脚本'}</button>{subtitleApplyAllArmed && <button type="button" className="text-ink-tertiary underline underline-offset-2" onClick={() => setSubtitleApplyAllArmedFor(null)}>取消</button>}</>}
+              </div>
+            )}
+            <div className="relative mx-auto overflow-hidden rounded-xl bg-ink" style={{ aspectRatio: `${previewSize.width} / ${previewSize.height}`, width: `min(100%, ${Math.round((320 * previewSize.width) / previewSize.height)}px, 560px)` }}>
+              <svg viewBox={`0 0 ${previewSize.width} ${previewSize.height}`} xmlns="http://www.w3.org/2000/svg" role="img" aria-label="字幕样式预览" className="absolute inset-0 h-full w-full" dangerouslySetInnerHTML={{ __html: previewSvg }} />
+              <div className="pointer-events-none absolute border border-dashed border-surface/70" style={{ inset: '4%' }} aria-label="4% 导出安全区" />
+            </div>
+            <p className="text-[11px] text-ink-tertiary">预览使用真实输出尺寸（{previewSize.width}×{previewSize.height}）与同一 SVG 描边逻辑；虚线框为四边 4% 导出安全区。</p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  async function saveCoverPreset(): Promise<void> {
+    const name = presetName.trim();
+    if (!name) {
+      setCoverTitleError('请输入预设名称。');
+      return;
+    }
+    if (!coverEffectiveStyles) {
+      setCoverTitleError('请先选择「使用预设」或「自定义」并调整样式，再保存为新预设。');
+      return;
+    }
+    setCoverTitleError('');
+    try {
+      // 当前画幅写当前样式,其余比例用默认样式补齐,满足 CoverPresetV2 三比例形状。
+      const stylesByPreset = Object.fromEntries((Object.keys(OUTPUT_PRESETS) as OutputPresetId[]).map((preset) => [
+        preset,
+        {
+          primary: preset === coverPresetId
+            ? coverEffectiveStyles.primary
+            : defaultTextStyle('coverPrimary', OUTPUT_PRESETS[preset].width),
+          secondary: preset === coverPresetId
+            ? coverEffectiveStyles.secondary
+            : defaultTextStyle('coverSecondary', OUTPUT_PRESETS[preset].width),
+          framing: preset === coverPresetId
+            ? { ...(coverTitle.framing ?? { scale: 1, offsetX: 0, offsetY: 0 }) }
+            : { scale: 1, offsetX: 0, offsetY: 0 },
+        },
+      ])) as CoverPresetV2['stylesByPreset'];
+      const created = await readJson<CoverPresetView>(await fetch('/api/final-edit/title-presets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, version: 2, stylesByPreset }),
+      }));
+      setCoverPresets((items) => [...items, created]);
+      setPresetName('');
+    } catch (error) {
+      setCoverTitleError(error instanceof Error ? error.message : '预设保存失败');
+    }
+  }
+
+  async function deleteCoverPreset(presetId: string): Promise<void> {
+    setCoverTitleError('');
+    try {
+      const response = await fetch(`/api/final-edit/title-presets/${encodeURIComponent(presetId)}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.message || body.error || '预设删除失败');
+      }
+      setCoverPresets((items) => items.filter((item) => item.id !== presetId));
+    } catch (error) {
+      setCoverTitleError(error instanceof Error ? error.message : '预设删除失败');
+    }
+  }
+
+  function renderCoverTextStyleEditor(kind: 'primary' | 'secondary', style: TextStyle) {
+    // min-w-0:grid 子项默认 min-width:auto,内容比列宽长时会顶破列宽,
+    // 表现为标签竖排折行、相邻控件互相重叠。
+    const smallInput = 'h-7 w-full min-w-0 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink';
+    const smallColor = 'h-7 w-10 shrink-0 rounded border border-hairline bg-surface p-0.5';
+    return (
+      <div className="rounded-xl bg-surface-subtle p-3">
+        <p className="mb-1.5 text-xs font-medium text-ink">{kind === 'primary' ? '主标题样式' : '副标题样式'}</p>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">字体</span>
+            <SystemFontPicker value={style.fontFamily} ariaLabel={`${kind === 'primary' ? '主标题' : '副标题'}字体`} disabled={frozen} compact onChange={(fontFamily) => updateCoverStyle(kind, { fontFamily, fontPostscriptName: undefined })} />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">字号</span>
+            <input
+              type="number"
+              min={8}
+              max={400}
+              aria-label={`${kind === 'primary' ? '主标题' : '副标题'}字号`}
+              value={style.fontSizePx}
+              disabled={frozen}
+              onChange={(event) => updateCoverStyle(kind, { fontSizePx: Math.max(8, Number.parseInt(event.target.value, 10) || 8) })}
+              className={smallInput}
+            />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">颜色</span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <input
+                type="color"
+                aria-label={`${kind === 'primary' ? '主标题' : '副标题'}颜色`}
+                value={style.color}
+                disabled={frozen}
+                onChange={(event) => updateCoverStyle(kind, { color: event.target.value })}
+                className={smallColor}
+              />
+              <span className="truncate text-[11px] tabular-nums text-ink-tertiary">{style.color}</span>
+            </span>
+          </label>
+          <label className="flex items-end gap-2 pb-1.5">
+            <span className="flex items-center gap-1.5 text-xs text-ink-secondary">
+              <input
+                type="checkbox"
+                aria-label={`${kind === 'primary' ? '主标题' : '副标题'}斜体`}
+                checked={style.italic}
+                disabled={frozen}
+                onChange={(event) => updateCoverStyle(kind, { italic: event.target.checked })}
+                className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+              />
+              斜体
+            </span>
+          </label>
+          {/* 描边是 4 个控件的一行(开关+标签+颜色+宽度),占满整行才不会把
+              「描边」二字挤成竖排、并把相邻格子的滑块顶歪。 */}
+          <label className="col-span-2 flex min-w-0 flex-col gap-0.5">
+            <span className="flex min-w-0 items-center justify-between gap-2 text-[11px] text-ink-tertiary">
+              <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  aria-label={`${kind === 'primary' ? '主标题' : '副标题'}描边`}
+                  checked={style.stroke.enabled}
+                  disabled={frozen}
+                  onChange={(event) => updateCoverStyle(kind, { stroke: { ...style.stroke, enabled: event.target.checked } })}
+                  className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                />
+                描边
+              </span>
+              <span className="flex shrink-0 items-center gap-1">
+                <input
+                  type="color"
+                  aria-label={`${kind === 'primary' ? '主标题' : '副标题'}描边颜色`}
+                  value={style.stroke.color}
+                  disabled={frozen || !style.stroke.enabled}
+                  onChange={(event) => updateCoverStyle(kind, { stroke: { ...style.stroke, color: event.target.value } })}
+                  className={smallColor}
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={40}
+                  aria-label={`${kind === 'primary' ? '主标题' : '副标题'}描边宽度`}
+                  value={style.stroke.widthPx}
+                  disabled={frozen || !style.stroke.enabled}
+                  onChange={(event) => updateCoverStyle(kind, { stroke: { ...style.stroke, widthPx: Math.max(0, Number.parseInt(event.target.value, 10) || 0) } })}
+                  className="h-7 w-14 shrink-0 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
+                />
+              </span>
+            </span>
+          </label>
+          <label className="col-span-2 flex min-w-0 flex-col gap-0.5">
+            <span className="flex items-center justify-between text-[11px] text-ink-tertiary">
+              <span>横向位置</span>
+              <span className="tabular-nums">{Math.round(style.x * 100)}%</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              aria-label={`${kind === 'primary' ? '主标题' : '副标题'}横向位置`}
+              value={Math.round(style.x * 100)}
+              disabled={frozen}
+              onChange={(event) => updateCoverStyle(kind, { x: Number(event.target.value) / 100 })}
+              className="w-full accent-[var(--color-accent)]"
+            />
+          </label>
+          <label className="col-span-2 flex min-w-0 flex-col gap-0.5">
+            <span className="flex items-center justify-between text-[11px] text-ink-tertiary">
+              <span>纵向位置</span>
+              <span className="tabular-nums">{Math.round(style.y * 100)}%</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              aria-label={`${kind === 'primary' ? '主标题' : '副标题'}纵向位置`}
+              value={Math.round(style.y * 100)}
+              disabled={frozen}
+              onChange={(event) => updateCoverStyle(kind, { y: Number(event.target.value) / 100 })}
+              className="w-full accent-[var(--color-accent)]"
+            />
+          </label>
+        </div>
+      </div>
+    );
+  }
+
+  /** 封面标题卡:预设与 framing 整批统一,样式可按脚本覆盖;冻结后整卡只读。 */
+  function renderCoverTitleSection() {
+    const hasTitle = coverTitle.mode !== 'none' && coverEffectiveStyles !== null;
+    const coverStyles = coverEffectiveStyles;
+    const primaryText = coverPreview?.coverTitle.primary?.trim() || '示例主标题';
+    const secondaryText = coverPreview?.coverTitle.secondary?.trim() || '示例副标题';
+    const preset = coverPresets.find((item) => item.id === coverTitle.presetId);
+    // 预览与成片同构:viewBox 用真实输出尺寸,字号/描边/纵向位置全部按输出
+    // 像素写,缩放交给浏览器——不需要任何预览缩放系数。文字层复用渲染端那份
+    // textStyleToSvgElements(paint-order="stroke fill",描边在填充之下),
+    // 而不是 CSS WebkitTextStroke(描边压在填充之上,小字号下会吃掉填充色)。
+    const previewSize = OUTPUT_PRESETS[coverPresetId] ?? OUTPUT_PRESETS['3x4'];
+    const previewTitleSvg = [
+      primaryText ? textStyleToSvgElements(coverStyles?.primary ?? defaultTextStyle('coverPrimary', previewSize.width), primaryText, previewSize) : '',
+      secondaryText ? textStyleToSvgElements(coverStyles?.secondary ?? defaultTextStyle('coverSecondary', previewSize.width), secondaryText, previewSize) : '',
+    ].join('');
+
+    return (
+      <section className={`card space-y-3 p-5 ${frozen ? 'border-accent/30' : ''}`} aria-label="封面标题">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Icon name="text" size={15} />
+            <h3 className="font-semibold text-ink">封面标题</h3>
+            {frozen && <span className="rounded-full bg-surface-subtle px-2.5 py-0.5 text-[11px] text-ink-tertiary">已锁定</span>}
+          </div>
+          <label className="flex items-center gap-2">
+            <span className="text-xs text-ink-secondary">模式</span>
+            <select
+              aria-label="封面标题模式"
+              value={coverTitle.mode}
+              disabled={frozen}
+              onChange={(event) => updateCoverTitle({ mode: event.target.value as BatchCoverTitleDraft['mode'] })}
+              className="h-8 rounded-xl border border-hairline bg-surface px-3 text-xs text-ink"
+            >
+              <option value="none">无标题</option>
+              <option value="preset">使用预设</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+        </div>
+
+        <p className="text-xs text-ink-tertiary">
+          标题文字来自各脚本的封面标题，自定义脚本使用导入时填写的标题。样式与位置按脚本单独设置：预览下拉选择当前调整的脚本，未单独调整的脚本沿用整批基准；应用预设会把整批重置为预设样式。确认整体输入后随版本冻结，改样式会形成批次新版本。
+        </p>
+
+        {hasTitle && coverStyles && (
+          <div className="flex flex-wrap gap-4">
+            {/* 两个样式编辑器竖排:再切一次两列会让每个字段只剩约 95px,
+                标签折行、控件互相重叠。宽度让给字段本身。 */}
+            <div className="grid min-w-64 flex-1 gap-2.5">
+              {!frozen && (
+                <p className="text-xs text-ink-secondary">
+                  {coverEditScriptId && coverPreview
+                    ? `正在调整：脚本 ${coverPreviewSources.findIndex((source) => source.id === coverPreview.id) + 1} · ${coverPreview.coverTitle.primary.trim() || coverPreview.title || '未命名脚本'}（仅对这份脚本生效）`
+                    : '未勾选脚本时，调整的是整批基准样式'}
+                  {coverOverrideScriptIds.length > 0 && `；本批已有 ${coverOverrideScriptIds.length} 份单独调整`}
+                </p>
+              )}
+              {renderCoverTextStyleEditor('primary', coverStyles.primary)}
+              {renderCoverTextStyleEditor('secondary', coverStyles.secondary)}
+            </div>
+            <div className="flex min-w-56 flex-1 flex-col gap-2">
+              {coverPreviewSources.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-tertiary">
+                  {/* 预览下拉独占一整行：与右侧按钮同行时标题长一点就会被原生
+                      select 截断省略。title 作为悬停兜底。 */}
+                  <label className="flex min-w-0 basis-full items-center gap-2">
+                    <span className="shrink-0">预览脚本</span>
+                    <select
+                      aria-label="封面标题预览脚本"
+                      value={coverPreview?.id ?? ''}
+                      onChange={(event) => setCoverPreviewScriptId(event.target.value)}
+                      title={
+                        coverPreview
+                          ? `脚本 ${coverPreviewSources.findIndex((source) => source.id === coverPreview.id) + 1} · ${coverPreview.coverTitle.primary.trim() || coverPreview.title || '未命名脚本'}`
+                          : undefined
+                      }
+                      className="h-7 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
+                    >
+                      {coverPreviewSources.map((source, index) => (
+                        <option
+                          key={source.id}
+                          value={source.id}
+                          title={`脚本 ${index + 1} · ${source.coverTitle.primary.trim() || source.title || '未命名脚本'}`}
+                        >
+                          脚本 {index + 1} · {source.coverTitle.primary.trim() || source.title || '未命名脚本'}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {coverEditScriptId && coverTitle.stylesByScript[coverEditScriptId] && (
+                    <>
+                      <span className="rounded-full bg-accent/10 px-2 py-0.5 text-accent">已单独调整</span>
+                      <button
+                        type="button"
+                        className="text-accent underline underline-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={frozen}
+                        onClick={restoreCoverStyleToBaseline}
+                      >
+                        恢复基准样式
+                      </button>
+                    </>
+                  )}
+                  {coverEditScriptId && (
+                    <>
+                      <button
+                        type="button"
+                        className={`underline underline-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${coverApplyAllArmed ? 'text-warn' : 'text-accent'}`}
+                        disabled={frozen}
+                        onClick={applyCoverStyleToAllScripts}
+                      >
+                        {coverApplyAllArmed
+                          ? `确认清除其他 ${coverApplyAllVictimIds.length} 份单独调整`
+                          : '应用到全部脚本'}
+                      </button>
+                      {coverApplyAllArmed && (
+                        <button
+                          type="button"
+                          className="text-ink-tertiary underline underline-offset-2"
+                          onClick={() => setCoverApplyAllArmedFor(null)}
+                        >
+                          取消
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+              {/* 宽度按「高度上限 320px × 画幅比」反推、再封顶 560px,配合 aspectRatio
+                  让三种画幅的预览框都保持真实比例(旧版 w-full + maxHeight 会把竖版
+                  压成宽扁条,SVG letterbox 后看起来就是"没有比例")。 */}
+              <div
+                className="relative mx-auto overflow-hidden rounded-xl bg-surface-subtle"
+                style={{
+                  aspectRatio: `${previewSize.width} / ${previewSize.height}`,
+                  width: `min(100%, ${Math.round((320 * previewSize.width) / previewSize.height)}px, 560px)`,
+                }}
+              >
+                <svg
+                  viewBox={`0 0 ${previewSize.width} ${previewSize.height}`}
+                  xmlns="http://www.w3.org/2000/svg"
+                  role="img"
+                  aria-label="封面标题预览"
+                  className="absolute inset-0 h-full w-full"
+                  // 内容由 textStyleToSvgElements 生成,文本与属性都过 escapeXml。
+                  dangerouslySetInnerHTML={{ __html: previewTitleSvg }}
+                />
+                {/* 与混剪封面编辑器一致的四边 4% 导出安全区虚线框。 */}
+                <div className="pointer-events-none absolute border border-dashed border-surface/70" style={{ inset: '4%' }} aria-label="4% 导出安全区" />
+              </div>
+              <p className="text-[11px] text-ink-tertiary">
+                预览按成片尺寸等比缩放，样式与合成一致（底图为示意色块，虚线框为四边 4% 导出安全区）；{coverPreview ? <>当前预览 <span className="text-ink-secondary">{coverPreview.title || '未命名脚本'}</span> 的标题：{primaryText} / {secondaryText}</> : '暂无已选脚本，显示示例文字'}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {coverTitle.mode === 'preset' && (
+          <div className="space-y-2">
+            <label className="flex items-center gap-2">
+              <span className="text-xs text-ink-secondary">预设</span>
+              <select
+                aria-label="选择封面标题预设"
+                value={coverTitle.presetId ?? ''}
+                disabled={frozen}
+                onChange={(event) => {
+                  const chosen = coverPresets.find((item) => item.id === event.target.value);
+                  if (chosen) applyCoverPreset(chosen);
+                }}
+                className="h-8 min-w-52 rounded-xl border border-hairline bg-surface px-3 text-xs text-ink"
+              >
+                <option value="">{coverPresets.length === 0 ? '暂无预设' : '选择一个预设…'}</option>
+                {coverPresets.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+              {coverTitle.presetId && (
+                <span className="text-[11px] text-ink-tertiary">已应用「{preset?.name ?? '已删除的预设'}」</span>
+              )}
+            </label>
+            {coverPresets.length === 0 && (
+              <p className="text-xs text-ink-tertiary">还没有保存的预设 —— 可在「自定义」下调整后点「存为预设」。</p>
+            )}
+          </div>
+        )}
+
+        {!frozen && (
+          <div className="space-y-2 border-t border-hairline pt-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                aria-label="新预设名称"
+                value={presetName}
+                onChange={(event) => setPresetName(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') void saveCoverPreset(); }}
+                placeholder="把当前样式存为预设…"
+                className="h-8 min-w-48 flex-1 rounded-xl border border-hairline bg-surface px-3 text-xs text-ink"
+              />
+              <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={!hasTitle} onClick={() => void saveCoverPreset()}>
+                存为预设
+              </button>
+            </div>
+            {coverPresets.length > 0 && (
+              <ul className="flex flex-wrap gap-1.5">
+                {coverPresets.map((item) => (
+                  <li key={item.id} className="flex items-center gap-1 rounded-full bg-surface-subtle py-1 pl-3 pr-1 text-xs text-ink-secondary">
+                    <button
+                      type="button"
+                      className="underline-offset-2 hover:text-accent hover:underline"
+                      onClick={() => applyCoverPreset(item)}
+                    >{item.name}</button>
+                    <button
+                      type="button"
+                      aria-label={`删除预设 ${item.name}`}
+                      className="grid h-5 w-5 place-items-center rounded-full text-ink-tertiary hover:bg-fail/10 hover:text-fail"
+                      onClick={() => void deleteCoverPreset(item.id)}
+                    ><Icon name="close" size={10} /></button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {coverTitleError && <p className="text-xs text-fail">{coverTitleError}</p>}
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <div className="min-h-0 flex-1 space-y-4 p-2">
+      {frozen && (
+        <div className="card flex flex-wrap items-center justify-between gap-4 p-5">
+          <div>
+            <h3 className="font-semibold text-ink">已锁定的脚本与口播</h3>
+            <p className="mt-1 text-sm text-ink-secondary">
+              以下正文、标题、份数与配音设置来自锁定快照，不随项目当前内容变化。时长按每份脚本自身设定，锁定后不可改。
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <span className={`rounded-full px-3 py-1 text-xs ${batchStatus === 'running' ? 'bg-accent/10 text-accent' : 'bg-surface-subtle text-ink-secondary'}`}>
+              {BATCH_STATUS_LABELS[batchStatus] ?? batchStatus}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {!frozen && (
+        <section aria-label="脚本与口播">
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h3 className="font-semibold text-ink">脚本</h3>
+              <p className="mt-1 text-sm text-ink-secondary">每份脚本是一个独立创作单元：各自份数出 N 条成片，共用同一条配音，只有画面不同。时长来自脚本自身设定，此处只读。</p>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
+              <span className="text-xs text-ink-secondary" role="status">已选 {selectedListedScripts.length} / {prep.scripts.length} 条</span>
+              <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={scriptActionsDisabled || prep.scripts.length === 0}
+                onClick={() => onSetScriptsSelected(prep.scripts.map(script => script.id), !allScriptsSelected)}>{allScriptsSelected ? '取消全选' : '全选脚本'}</button>
+              <button type="button" className="btn-secondary h-8 px-3 text-xs text-fail" disabled={scriptActionsDisabled || selectedListedScripts.length === 0}
+                onClick={() => void deleteScripts(selectedListedScripts)}>{deletingScriptId === 'bulk' ? '删除中…' : '删除已选（' + selectedListedScripts.length + '）'}</button>
+              <button
+                type="button"
+                className="btn-secondary h-8 px-3 text-xs"
+                aria-label="导入自定义脚本"
+                disabled={scriptActionsDisabled}
+                onClick={() => { setScriptActionError(''); setEditingScript(null); setScriptDialogOpen(true); }}
+              >+ 导入自定义脚本</button>
+              <span className="text-sm text-ink-secondary">已选 {scriptCount} 份 · 目标成片 {plannedCount} 条</span>
+            </div>
+          </div>
+          {scriptActionError && <p className="mb-3 text-xs text-fail" role="alert">{scriptActionError}</p>}
+          {prep.scripts.length > 0 ? (
+            <div className="grid gap-3 lg:grid-cols-2">
+              {prep.scripts.map((script) => {
+                const selected = selectedScripts[script.id] !== undefined;
+                const durationSec = script.targetDurationSec ?? 15;
+                const title = `${script.scriptCode ? `${script.scriptCode} · ` : ''}${script.title || '未命名脚本'}`;
+                return selected ? (
+                  <article key={script.id} className={`rounded-2xl border bg-surface p-4 shadow-sm ${selected ? 'border-accent ring-2 ring-accent/10' : 'border-hairline'}`}>
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        aria-label={`选择脚本 ${title}`}
+                        disabled={scriptActionsDisabled}
+                        checked={selected}
+                        onChange={(event) => onToggleScript(script.id, event.target.checked)}
+                        className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-accent">{script.coverTitle.primary || '项目脚本'}</p>
+                            <h4 className="mt-1 font-semibold text-ink">{title}</h4>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {script.manual && (
+                              <span className="rounded-full bg-accent/10 px-2 py-1 text-[11px] text-accent">手动</span>
+                            )}
+                            <span className="rounded-full bg-surface-subtle px-2 py-1 text-[11px] text-ink-secondary">V{script.sourceVersion}</span>
+                            <span className="rounded-full bg-surface-subtle px-2 py-1 text-[11px] text-ink-secondary">
+                              {durationSec} 秒{durationSec === 15 && !script.targetDurationSec ? '（默认 15 秒）' : ''}
+                            </span>
+                            {script.manual && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="text-xs text-accent underline"
+                                  aria-label={`编辑手动脚本 ${title}`}
+                                  disabled={scriptActionsDisabled}
+                                  onClick={() => openEditScriptDialog(script)}
+                                >编辑</button>
+                              </>
+                            )}
+                                <button
+                                  type="button"
+                                  className="text-xs text-fail underline"
+                                  aria-label={`删除脚本 ${title}`}
+                                  disabled={scriptActionsDisabled}
+                                  onClick={() => void deleteScripts([script])}
+                                >{deletingScriptId === script.id ? '删除中…' : '删除'}</button>
+                          </div>
+                        </div>
+                        <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-ink-secondary">{script.bodyText}</p>
+                        <label className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-surface-subtle px-3 py-2 text-sm text-ink-secondary">
+                          <span>生成份数</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={99}
+                            step={1}
+                            aria-label={`${title} 生成份数`}
+                            value={selectedScripts[script.id] ?? 1}
+                            onChange={(event) => onCopyCountChange(script.id, Math.max(1, Number.parseInt(event.target.value, 10) || 1))}
+                            className="w-20 rounded-lg border border-hairline bg-surface px-2 py-1 text-right text-ink"
+                          />
+                        </label>
+                        {renderNarrationConfig(script.id)}
+                      </div>
+                    </div>
+                  </article>
+                ) : (
+                  <button
+                    key={script.id}
+                    type="button"
+                    className="flex items-center gap-3 rounded-2xl border border-hairline bg-surface px-4 py-3 text-left shadow-sm transition hover:border-accent/40"
+                    disabled={scriptActionsDisabled}
+                    onClick={() => onToggleScript(script.id, true)}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={`选择脚本 ${title}`}
+                      checked={false}
+                      readOnly
+                      className="h-4 w-4 accent-[var(--color-accent)]"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-ink">{title}</span>
+                      <span className="mt-0.5 block text-[11px] text-ink-tertiary">
+                        {durationSec} 秒 · {script.sourceVersion ? `V${script.sourceVersion}` : '项目脚本'}
+                        {configs[script.id] ? ' · 已配置配音' : ''}
+                      </span>
+                    </span>
+                    <span className="text-xs text-accent">展开</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="tile p-6 text-sm text-ink-secondary">暂无可用项目脚本。点击「导入自定义脚本」上传文件或粘贴文案，也可以使用第 3 步生成并保存的脚本。</div>
+          )}
+        </section>
+      )}
+
+      {frozen && frozenScriptSnapshots.length > 0 && (
+        <div className="grid gap-3 lg:grid-cols-2">
+          {frozenScriptSnapshots.map((snapshot) => <BatchFrozenScriptCard key={snapshot.id} snapshot={snapshot} />)}
+        </div>
+      )}
+
+      {renderBgmSection()}
+
+      {renderCoverTitleSection()}
+
+      {renderSubtitleStyleSection()}
+
+      {!frozen && (
+        <section className="card space-y-4 p-5" aria-label="输出设置与开始">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h3 className="font-semibold text-ink">输出设置</h3>
+              <p className="mt-1 text-sm text-ink-secondary">
+                画幅 {outputPreset.label}（顶栏统一设置）；背景音乐在上方卡片中设置。自定义脚本的目标时长可在「编辑」中修改。
+              </p>
+              {inputChangedWarning && (
+                <p className="mt-1 text-xs text-warn">输入已修改，重新确认后才会覆盖当前批次版本。</p>
+              )}
+            </div>
+            <div className="flex flex-col items-end gap-2">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className={`btn-secondary ${startDisabledReason === '请先确认整体输入' ? 'btn-callout' : ''}`}
+                  disabled={scriptActionsDisabled || !props.batchSelected}
+                  onClick={onConfirmSnapshot}
+                >
+                  {busy === 'snapshot' ? '确认中…' : '确认整体输入'}
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={scriptActionsDisabled || Boolean(startDisabledReason)}
+                  onClick={onStartBatch}
+                >{busy === 'start' ? '启动中…' : '开始批量生产'}</button>
+              </div>
+              {startDisabledReason && (
+                <p className="max-w-80 text-right text-xs leading-5 text-warn">
+                  {startDisabledReason === '请先确认整体输入' ? '还差一步：请先点击「确认整体输入」' : `暂时无法开始：${startDisabledReason}`}
+                  {onlineAssets === 0 && '；当前项目没有在线素材。'}
+                </p>
+              )}
+            </div>
+          </div>
+          {scriptCount > 0 && (
+            <p className="text-xs text-ink-tertiary">
+              确认信息：{scriptCount} 份脚本 × 各自份数 = {plannedCount} 条成片，{onlineAssets} 条在线素材，画幅 {outputPreset.label}。
+              点击开始后本次设置即锁定，后续修改项目内容不影响本批次。
+            </p>
+          )}
+        </section>
+      )}
+      {/* 进度卡放在本步最末:BGM 是开跑前的输入,必须排在进度之上。
+          id 是容器点开跑后滚进视野的锚点(见 BatchPreparationPanel 的
+          scrollToProgressRef)——置顶会落在「开始」按钮的视线之外。 */}
+      {progress && (
+        <div id={BATCH_PROGRESS_ANCHOR_ID}>
+          <BatchProductionProgressCard
+            progress={progress}
+            variant="full"
+            controlState={controlState}
+            controlBusy={controlBusy}
+            onControl={onControlBatch}
+          />
+        </div>
+      )}
+      <BatchScriptImportDialog
+        open={scriptDialogOpen}
+        projectId={prep.project.id}
+        editScript={editingScript}
+        onClose={() => setScriptDialogOpen(false)}
+        onCreated={() => { setScriptDialogOpen(false); onScriptCreated(); }}
+        onUpdated={(scriptId) => { setScriptDialogOpen(false); onScriptUpdated(scriptId); }}
+      />
+    </div>
+  );
+}

@@ -1,0 +1,265 @@
+import type Database from 'better-sqlite3';
+
+export const FINAL_EDIT_MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
+  {
+    version: 1,
+    sql: `
+      CREATE TABLE IF NOT EXISTS final_edit_groups (
+        id TEXT PRIMARY KEY, projectId TEXT NOT NULL, scriptDraftId TEXT NOT NULL, shotSetId TEXT NOT NULL,
+        scriptSnapshotJson TEXT NOT NULL, narrationHash TEXT NOT NULL,
+        analysisProviderId TEXT NOT NULL DEFAULT '', analysisModel TEXT NOT NULL DEFAULT '',
+        narrationConfigJson TEXT NOT NULL, narrationAudioPath TEXT,
+        narrationDurationUs INTEGER NOT NULL DEFAULT 0, wordTimingsJson TEXT NOT NULL DEFAULT '[]',
+        subtitleStateJson TEXT NOT NULL DEFAULT '[]', coverTitleJson TEXT NOT NULL,
+        textStylesJson TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', phase TEXT NOT NULL DEFAULT 'validating',
+        revision INTEGER NOT NULL DEFAULT 0, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL,
+        UNIQUE(projectId, scriptDraftId, narrationHash)
+      );
+      CREATE INDEX IF NOT EXISTS idx_final_edit_groups_project_script ON final_edit_groups(projectId, scriptDraftId, createdAt);
+
+      CREATE TABLE IF NOT EXISTS final_edit_variants (
+        id TEXT PRIMARY KEY, groupId TEXT NOT NULL, indexNum INTEGER NOT NULL, outputPreset TEXT NOT NULL,
+        timelineJson TEXT NOT NULL, bgmJson TEXT NOT NULL, coverJson TEXT NOT NULL,
+        issuesJson TEXT NOT NULL DEFAULT '[]', overlapJson TEXT NOT NULL DEFAULT '{}',
+        revision INTEGER NOT NULL DEFAULT 0, lastRenderedRevision INTEGER,
+        createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL,
+        UNIQUE(groupId, indexNum), FOREIGN KEY(groupId) REFERENCES final_edit_groups(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS final_edit_asset_analysis (
+        videoJobId TEXT PRIMARY KEY, shotSetId TEXT NOT NULL, fileFingerprint TEXT NOT NULL,
+        providerId TEXT NOT NULL, model TEXT NOT NULL, analyzerVersion TEXT NOT NULL,
+        status TEXT NOT NULL, mediaJson TEXT NOT NULL DEFAULT '{}', generatedJson TEXT NOT NULL DEFAULT '{}',
+        manualOverrideJson TEXT NOT NULL DEFAULT '{}', autoUseDisabled INTEGER NOT NULL DEFAULT 0,
+        errorCode TEXT, errorMessage TEXT, analyzedAt TEXT, updatedAt TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS final_edit_jobs (
+        id TEXT PRIMARY KEY, projectId TEXT NOT NULL, groupId TEXT, variantId TEXT,
+        kind TEXT NOT NULL, status TEXT NOT NULL, phase TEXT NOT NULL, progress REAL NOT NULL DEFAULT 0,
+        requestKey TEXT NOT NULL UNIQUE, inputSnapshotJson TEXT NOT NULL, outputJson TEXT,
+        errorCode TEXT, errorMessage TEXT, attempt INTEGER NOT NULL DEFAULT 0,
+        startedAt TEXT, finishedAt TEXT, createdAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_final_edit_jobs_status ON final_edit_jobs(status, createdAt);
+
+      CREATE TABLE IF NOT EXISTS final_edit_revisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, scopeKind TEXT NOT NULL, scopeId TEXT NOT NULL,
+        revision INTEGER NOT NULL, stateJson TEXT NOT NULL, commandJson TEXT NOT NULL, createdAt TEXT NOT NULL,
+        UNIQUE(scopeKind, scopeId, revision)
+      );
+
+      CREATE TABLE IF NOT EXISTS final_edit_proposals (
+        id TEXT PRIMARY KEY, variantId TEXT NOT NULL, baseRevision INTEGER NOT NULL, kind TEXT NOT NULL,
+        proposalJson TEXT NOT NULL, issuesJson TEXT NOT NULL, status TEXT NOT NULL,
+        createdAt TEXT NOT NULL, appliedAt TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS final_edit_usage (
+        scopeKind TEXT NOT NULL, scopeId TEXT NOT NULL, projectId TEXT NOT NULL, shotSetId TEXT NOT NULL,
+        groupId TEXT NOT NULL, variantId TEXT NOT NULL, assetKind TEXT NOT NULL, assetKey TEXT NOT NULL,
+        createdAt TEXT NOT NULL, UNIQUE(scopeKind, scopeId, assetKind, assetKey)
+      );
+
+      CREATE TABLE IF NOT EXISTS final_edit_bgm_tracks (
+        id TEXT PRIMARY KEY, relativePath TEXT NOT NULL, fileFingerprint TEXT NOT NULL,
+        durationUs INTEGER NOT NULL, format TEXT NOT NULL, loudnessJson TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL, errorMessage TEXT, scannedAt TEXT NOT NULL, UNIQUE(fileFingerprint)
+      );
+
+      CREATE TABLE IF NOT EXISTS final_edit_overlay_bundles (
+        id TEXT PRIMARY KEY, groupId TEXT NOT NULL, outputPreset TEXT NOT NULL,
+        groupRevision INTEGER NOT NULL, specHash TEXT NOT NULL, manifestJson TEXT NOT NULL,
+        relativeDir TEXT NOT NULL, status TEXT NOT NULL, createdAt TEXT NOT NULL,
+        UNIQUE(groupId, outputPreset, specHash)
+      );
+
+      CREATE TABLE IF NOT EXISTS final_edit_title_presets (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, stylesByPresetJson TEXT NOT NULL,
+        createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS final_edit_tts_providers (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, baseUrl TEXT NOT NULL,
+        apiKey TEXT NOT NULL DEFAULT '', keyEnv TEXT NOT NULL DEFAULT '', model TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1, isBuiltin INTEGER NOT NULL DEFAULT 1,
+        createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+      );
+    `,
+  },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE IF NOT EXISTS final_edit_project_settings (
+        projectId TEXT PRIMARY KEY,
+        autoUseLimit INTEGER NOT NULL DEFAULT 2 CHECK(autoUseLimit BETWEEN 1 AND 10),
+        updatedAt TEXT NOT NULL
+      );
+    `,
+  },
+  {
+    version: 3,
+    sql: `
+      ALTER TABLE final_edit_jobs ADD COLUMN estimatedCost REAL;
+      ALTER TABLE final_edit_jobs ADD COLUMN costCurrency TEXT NOT NULL DEFAULT 'CNY';
+      ALTER TABLE final_edit_tts_providers ADD COLUMN costPerThousandCharacters REAL NOT NULL DEFAULT 0;
+    `,
+  },
+  {
+    version: 5,
+    sql: `
+      CREATE TABLE IF NOT EXISTS final_edit_external_assets (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        shotSetId TEXT NOT NULL,
+        originalFilename TEXT NOT NULL,
+        relativePath TEXT NOT NULL,
+        thumbnailRelativePath TEXT,
+        mimeType TEXT NOT NULL,
+        mediaKind TEXT NOT NULL CHECK(mediaKind IN ('video','image')),
+        durationUs INTEGER NOT NULL DEFAULT 0,
+        width INTEGER,
+        height INTEGER,
+        fileFingerprint TEXT NOT NULL,
+        status TEXT NOT NULL,
+        errorMessage TEXT,
+        createdAt TEXT NOT NULL,
+        UNIQUE(shotSetId, fileFingerprint)
+      );
+      CREATE INDEX IF NOT EXISTS idx_final_edit_external_assets_group
+        ON final_edit_external_assets(projectId, shotSetId, createdAt);
+    `,
+  },
+  {
+    version: 6,
+    sql: `
+      ALTER TABLE final_edit_groups ADD COLUMN editedNarrationText TEXT NOT NULL DEFAULT '';
+      ALTER TABLE final_edit_groups ADD COLUMN scriptSyncState TEXT NOT NULL DEFAULT 'synced';
+      ALTER TABLE final_edit_groups ADD COLUMN sourceScriptUpdatedAt TEXT;
+      ALTER TABLE final_edit_groups ADD COLUMN selectedMaterialKeysJson TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
+  {
+    version: 7,
+    sql: `
+      ALTER TABLE final_edit_variants ADD COLUMN previewRelativePath TEXT;
+    `,
+  },
+  {
+    version: 8,
+    sql: `
+      CREATE TABLE IF NOT EXISTS final_edit_semantic_matrix_cache (
+        cacheKey TEXT PRIMARY KEY,
+        scriptHash TEXT NOT NULL,
+        scenesFingerprint TEXT NOT NULL,
+        providerId TEXT NOT NULL,
+        model TEXT NOT NULL,
+        promptVersion TEXT NOT NULL,
+        semanticScoresJson TEXT NOT NULL,
+        hookScoresJson TEXT NOT NULL,
+        semanticFallback INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_final_edit_semantic_matrix_lookup
+        ON final_edit_semantic_matrix_cache(scriptHash, scenesFingerprint, providerId, model, promptVersion);
+      ALTER TABLE final_edit_variants ADD COLUMN matchDiagnosticsJson TEXT NOT NULL DEFAULT '{}';
+    `,
+  },
+  {
+    version: 9,
+    sql: `
+      CREATE TABLE IF NOT EXISTS project_artifacts (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        displayName TEXT NOT NULL,
+        relativePath TEXT NOT NULL,
+        mimeType TEXT NOT NULL,
+        sourceJobId TEXT,
+        createdAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_artifacts_project
+        ON project_artifacts(projectId, createdAt);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_project_artifacts_project_path
+        ON project_artifacts(projectId, relativePath);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_project_artifacts_source_kind
+        ON project_artifacts(sourceJobId, kind);
+    `,
+  },
+  {
+    version: 10,
+    sql: `
+      ALTER TABLE final_edit_groups ADD COLUMN durationGateJson TEXT NOT NULL DEFAULT '{}';
+    `,
+  },
+  {
+    // 包装 v2：混剪组的包装配置（{enabled, template, varsOverrides}），导出渲染时联动
+    version: 11,
+    sql: `
+      ALTER TABLE final_edit_groups ADD COLUMN packagingJson TEXT NOT NULL DEFAULT '{}';
+    `,
+  },
+  {
+    // 单条 prepare 任务的处理明细（{lines: string[], current: string}）：逐条素材分析/逐句口播进度，
+    // 供创作页像批量模式一样看到「分析到第几条」，只写最近窗口，属展示层派生数据。
+    version: 12,
+    sql: `
+      ALTER TABLE final_edit_jobs ADD COLUMN detailJson TEXT;
+    `,
+  },
+  {
+    version: 13,
+    sql: `
+      CREATE TABLE final_edit_film_bindings (
+        id TEXT PRIMARY KEY, importKey TEXT NOT NULL UNIQUE, importHash TEXT NOT NULL,
+        projectId TEXT NOT NULL, shotSetId TEXT NOT NULL,
+        groupId TEXT NOT NULL UNIQUE REFERENCES final_edit_groups(id) ON DELETE CASCADE,
+        variantId TEXT NOT NULL UNIQUE REFERENCES final_edit_variants(id) ON DELETE CASCADE,
+        specJson TEXT NOT NULL, candidatesJson TEXT NOT NULL, manifestJson TEXT NOT NULL,
+        inputHashesJson TEXT NOT NULL, managedRootRelative TEXT NOT NULL,
+        deliveryDir TEXT NOT NULL, baseName TEXT NOT NULL, deliveryVersion INTEGER NOT NULL DEFAULT 1,
+        deliveredRevision INTEGER NOT NULL DEFAULT 0, previewRevision INTEGER NOT NULL DEFAULT 0,
+        reviewToken TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        UNIQUE(deliveryDir, baseName)
+      );
+      CREATE TABLE final_edit_film_deliveries (
+        bindingId TEXT NOT NULL REFERENCES final_edit_film_bindings(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL, jobId TEXT NOT NULL UNIQUE,
+        variantRevision INTEGER NOT NULL, status TEXT NOT NULL,
+        videoFilename TEXT NOT NULL, coverFilename TEXT NOT NULL,
+        videoSha256 TEXT, coverSha256 TEXT, archiveWarning TEXT,
+        PRIMARY KEY(bindingId, version)
+      );
+    `,
+  },
+];
+
+export function initFinalEditSchema(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS final_edit_schema_migrations (
+      version INTEGER PRIMARY KEY,
+      appliedAt TEXT NOT NULL
+    )
+  `);
+  for (const migration of FINAL_EDIT_MIGRATIONS) {
+    const applied = db.prepare(`SELECT 1 FROM final_edit_schema_migrations WHERE version = ?`).get(migration.version);
+    if (applied) continue;
+    db.transaction(() => {
+      db.exec(migration.sql);
+      db.prepare(`INSERT INTO final_edit_schema_migrations (version, appliedAt) VALUES (?, ?)`).run(migration.version, new Date().toISOString());
+    })();
+  }
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT OR IGNORE INTO final_edit_tts_providers
+      (id, name, type, baseUrl, apiKey, keyEnv, model, enabled, isBuiltin, createdAt, updatedAt)
+    VALUES ('vapi-qwen3-tts', 'V-API Qwen3 TTS Flash', 'vapi-qwen-json-url', 'https://api.v3.cm', '', 'VAPI_TTS_API_KEY', 'qwen3-tts-flash', 1, 1, ?, ?)
+  `).run(now, now);
+  db.prepare(`
+    INSERT OR IGNORE INTO final_edit_tts_providers
+      (id, name, type, baseUrl, apiKey, keyEnv, model, enabled, isBuiltin, createdAt, updatedAt)
+    VALUES ('doubao-seed-tts-2', '豆包语音合成 2.0', 'doubao-http-chunked', 'https://openspeech.bytedance.com', '', 'DOUBAO_TTS_API_KEY', 'seed-tts-2.0', 1, 1, ?, ?)
+  `).run(now, now);
+}

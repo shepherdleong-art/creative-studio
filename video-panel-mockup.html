@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>视频生成 — 布局原型</title>
+<style>
+  :root {
+    --surface: #ffffff;
+    --surface-subtle: #f5f5f7;
+    --ink: #1d1d1f;
+    --ink-secondary: #6e6e73;
+    --ink-tertiary: #86868b;
+    --hairline: #e6e6eb;
+    --accent: #0071e3;
+    --accent-hover: #0077ed;
+    --ok: #1b8e4d;
+    --ok-tint: #e7f7ee;
+    --fail: #d7372b;
+    --fail-tint: #fdebea;
+    --run: #0071e3;
+    --run-tint: #e8f1ff;
+    --warn-tint: #fff4e5;
+    --radius-card: 18px;
+    --radius-control: 10px;
+    --radius-pill: 980px;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--font);
+    background: var(--surface-subtle);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    padding: 24px;
+    min-height: 100vh;
+  }
+
+  h2 { font-size: 1.1rem; font-weight: 600; letter-spacing: -0.01em; }
+  h3 { font-size: 0.82rem; font-weight: 600; color: var(--ink); }
+  .label { display: block; font-size: 0.66rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-tertiary); margin-bottom: 0.35rem; }
+  .sub { font-size: 0.75rem; color: var(--ink-secondary); }
+
+  /* Layout */
+  .workspace {
+    display: grid;
+    grid-template-columns: 340px 1fr 260px;
+    gap: 16px;
+    max-width: 1280px;
+    margin: 0 auto;
+    height: calc(100vh - 140px);
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-card);
+    padding: 20px;
+    overflow-y: auto;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+
+  /* ── Left Panel ── */
+  .shot-tabs { display: flex; gap: 4px; }
+  .shot-tab {
+    flex: 1; text-align: center; padding: 8px 0; border-radius: var(--radius-control);
+    font-size: 0.75rem; font-weight: 500; cursor: pointer; border: 1px solid var(--hairline);
+    background: var(--surface); color: var(--ink-secondary); transition: all .15s;
+  }
+  .shot-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .shot-tab:hover:not(.active) { background: var(--surface-subtle); }
+
+  .source-preview {
+    aspect-ratio: 4/3; background: var(--surface-subtle);
+    border-radius: var(--radius-control); overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .source-preview img { width: 100%; height: 100%; object-fit: cover; }
+
+  .form-group { display: flex; flex-direction: column; gap: 10px; }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .form-row.three { grid-template-columns: 1fr 1fr 64px; }
+
+  select, input[type="text"], input[type="number"], textarea {
+    width: 100%; background: var(--surface); border: 1px solid var(--hairline);
+    border-radius: var(--radius-control); padding: 7px 10px; font-size: 0.8rem;
+    color: var(--ink); font-family: var(--font); transition: border-color .15s;
+  }
+  select, input[type="text"], input[type="number"] { height: 36px; line-height: 1; }
+  input[type="number"] { -moz-appearance: textfield; }
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: inner-spin-button;
+    opacity: 0.55; margin-left: 2px; cursor: pointer;
+  }
+  input[type="number"]:hover::-webkit-inner-spin-button,
+  input[type="number"]:hover::-webkit-outer-spin-button { opacity: 0.8; }
+  select:focus, input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0,113,227,.25); }
+  textarea { resize: vertical; min-height: 80px; font-family: var(--font-mono); font-size: 0.72rem; line-height: 1.5; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 8px 18px; border-radius: var(--radius-pill); font-size: 0.82rem; font-weight: 500;
+    cursor: pointer; border: none; transition: all .15s;
+  }
+  .btn-primary { background: var(--accent); color: #fff; width: 100%; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-secondary { background: var(--surface-subtle); color: var(--ink); }
+  .btn-secondary:hover { background: #ececf0; }
+  .btn-sm { padding: 5px 12px; font-size: 0.72rem; }
+
+  .link { color: var(--accent); cursor: pointer; font-size: 0.72rem; text-decoration: none; }
+  .link:hover { text-decoration: underline; }
+
+  /* ── Center Panel ── */
+  .center-panel { padding: 0; overflow: hidden; }
+  .video-stage {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    background: #000; position: relative;
+  }
+  .video-stage .placeholder {
+    color: rgba(255,255,255,.35); font-size: 0.85rem;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+  }
+  .video-stage video { width: 100%; max-height: 100%; object-fit: contain; }
+  .stage-controls {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    padding: 10px 16px; background: rgba(0,0,0,.85); color: #fff; font-size: 0.75rem;
+  }
+  .stage-controls button {
+    background: none; border: none; color: #fff; cursor: pointer; padding: 4px 8px;
+    border-radius: 6px; font-size: 0.75rem;
+  }
+  .stage-controls button:hover { background: rgba(255,255,255,.1); }
+
+  /* ── Right Panel ── */
+  .result-card {
+    border: 1px solid var(--hairline); border-radius: var(--radius-control);
+    overflow: hidden; transition: border-color .15s;
+  }
+  .result-card:hover { border-color: var(--accent); }
+  .result-thumb {
+    aspect-ratio: 16/9; background: var(--surface-subtle);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; position: relative;
+  }
+  .result-thumb video, .result-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .result-thumb .play-overlay {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.25); opacity: 0; transition: opacity .2s;
+  }
+  .result-card:hover .play-overlay { opacity: 1; }
+  .result-info { padding: 8px 10px 10px; font-size: 0.72rem; }
+  .result-info .row { display: flex; justify-content: space-between; align-items: center; flex-wrap:wrap; gap:4px; }
+  .result-info .row + .row { margin-top: 6px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px;
+    border-radius: var(--radius-pill); font-size: 0.68rem; font-weight: 500;
+  }
+  .badge-ok { background: var(--ok-tint); color: var(--ok); }
+  .badge-run { background: var(--run-tint); color: var(--run); }
+  .badge-fail { background: var(--fail-tint); color: var(--fail); }
+
+  .divider { height: 1px; background: var(--hairline); margin: 4px 0; }
+  .segmented { padding: 3px; background: var(--surface-subtle); border-radius: 11px; }
+  .segmented-tab { border: none; background: transparent; cursor: pointer; font-size: 0.82rem; font-weight: 500; padding: .35rem 1rem; border-radius: 8px; transition: background .15s, color .15s; text-align: center; }
+  .segmented-tab:hover:not(.active) { color: var(--ink); }
+  .segmented-tab.active { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.13); }
+  .toolbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,.72); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); border-bottom: 1px solid rgba(0,0,0,.08); padding: 0 24px; height: 48px; }
+  .toolbar .logo { font-size: 0.88rem; font-weight: 600; letter-spacing: -0.01em; cursor: pointer; }
+  .toolbar nav { display: flex; align-items: center; gap: 16px; font-size: 0.82rem; }
+  .toolbar nav a { color: var(--ink-secondary); text-decoration: none; transition: color .15s; }
+  .toolbar nav a:hover { color: var(--ink); }
+
+  @media (max-width: 1024px) {
+    .workspace { grid-template-columns: 1fr; height: auto; }
+    .center-panel { order: -1; min-height: 300px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══ Frosted Toolbar ═══ -->
+<header class="toolbar" style="margin:-24px -24px 0 -24px;">
+  <span class="logo">产品素材工作台</span>
+  <nav>
+    <a href="#">项目</a>
+    <a href="#">供应商</a>
+    <a href="#" style="color:var(--accent);">新建项目</a>
+  </nav>
+</header>
+
+<div style="padding-top:24px;">
+
+<!-- ═══ Workbench Tabs ═══ -->
+<nav style="max-width:1280px;margin:0 auto 16px;display:grid;gap:8px;grid-template-columns:repeat(4,1fr);width:100%;">
+  <a style="text-decoration:none;border-radius:8px;border:1px solid transparent;padding:10px 16px;color:var(--ink-secondary);transition:all .15s;">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="display:flex;width:24px;height:24px;align-items:center;justify-content:center;border-radius:50%;background:var(--surface-subtle);color:var(--ink-tertiary);font-size:0.7rem;font-weight:600;">1</span>
+      <span style="font-size:0.82rem;font-weight:600;">新场景图生成</span>
+    </div>
+  </a>
+  <a style="text-decoration:none;border-radius:8px;border:1px solid transparent;padding:10px 16px;color:var(--ink-secondary);transition:all .15s;">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="display:flex;width:24px;height:24px;align-items:center;justify-content:center;border-radius:50%;background:var(--surface-subtle);color:var(--ink-tertiary);font-size:0.7rem;font-weight:600;">2</span>
+      <span style="font-size:0.82rem;font-weight:600;">分镜生成</span>
+    </div>
+  </a>
+  <a style="text-decoration:none;border-radius:8px;border:1px solid transparent;padding:10px 16px;color:var(--ink-secondary);transition:all .15s;">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="display:flex;width:24px;height:24px;align-items:center;justify-content:center;border-radius:50%;background:var(--surface-subtle);color:var(--ink-tertiary);font-size:0.7rem;font-weight:600;">3</span>
+      <span style="font-size:0.82rem;font-weight:600;">脚本生成</span>
+    </div>
+  </a>
+  <a style="text-decoration:none;border-radius:8px;border:1px solid var(--accent);padding:10px 16px;background:var(--surface);color:var(--accent);box-shadow:0 1px 3px rgba(0,0,0,.08);transition:all .15s;">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="display:flex;width:24px;height:24px;align-items:center;justify-content:center;border-radius:50%;background:var(--accent);color:#fff;font-size:0.7rem;font-weight:600;">4</span>
+      <span style="font-size:0.82rem;font-weight:600;">视频生成</span>
+    </div>
+  </a>
+</nav>
+
+<div class="workspace">
+
+  <!-- ═══ LEFT: 参数 + 源图 ═══ -->
+  <div class="panel">
+    <!-- 分镜选择 tabs -->
+    <div>
+      <label class="label">分镜</label>
+      <div class="shot-tabs">
+        <div class="shot-tab active">分镜 1</div>
+        <div class="shot-tab">分镜 2</div>
+        <div class="shot-tab">分镜 3</div>
+        <div class="shot-tab">分镜 4</div>
+      </div>
+    </div>
+
+    <!-- 源图预览 -->
+    <div>
+      <label class="label">源图</label>
+      <div class="source-preview">
+        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='300'%3E%3Crect fill='%23f5f5f7' width='400' height='300'/%3E%3Ctext x='200' y='155' text-anchor='middle' fill='%2386868b' font-size='14' font-family='system-ui'%3E源图预览%3C/text%3E%3C/svg%3E" alt="源图">
+      </div>
+    </div>
+
+    <!-- 参数表单 -->
+    <div class="form-group">
+      <div>
+        <label class="label">供应商 / 模型</label>
+        <select>
+          <option>可灵 3.0</option>
+          <option>即梦 2.0 (Seedance)</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <div>
+          <label class="label">运镜模板</label>
+          <select>
+            <option>慢速推进</option>
+            <option>稳定氛围镜头</option>
+            <option>横向滑动</option>
+            <option>轻微环绕</option>
+            <option>材质细节推进</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">时长 (秒)</label>
+          <input type="number" value="5" min="2" max="15" style="text-align:center">
+        </div>
+      </div>
+      <div>
+        <label class="label">提示词</label>
+        <textarea>以当前图片为首帧，镜头缓慢向主体推进，运动平稳自然。保持产品结构、材质、比例、颜色和画面构图稳定，不要添加文字，不要让主体变形。</textarea>
+      </div>
+    </div>
+
+    <!-- 生成按钮 -->
+    <button class="btn btn-primary">生成视频</button>
+
+    <!-- 添加更多描述 -->
+    <button class="btn btn-secondary" style="width:100%">+ 添加描述</button>
+  </div>
+
+  <!-- ═══ CENTER: 视频大预览 ═══ -->
+  <div class="panel center-panel">
+    <div class="video-stage">
+      <div class="placeholder">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+        <span>选择左侧分镜并生成视频</span>
+      </div>
+    </div>
+    <div class="stage-controls">
+      <button>⏮</button>
+      <button>▶</button>
+      <button>⏭</button>
+      <span style="flex:1;margin:0 8px;">
+        <input type="range" value="0" style="width:100%;accent-color:var(--accent);">
+      </span>
+      <span>00:00 / 00:05</span>
+      <button>⛶</button>
+    </div>
+  </div>
+
+  <!-- ═══ RIGHT: 生成结果列表 ═══ -->
+  <div class="panel">
+    <!-- 结果 1 — 成功 -->
+    <div class="result-card">
+      <div class="result-thumb">
+        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='180'%3E%3Crect fill='%231d1d1f' width='320' height='180'/%3E%3Ctext x='160' y='95' text-anchor='middle' fill='%236e6e73' font-size='12' font-family='system-ui'%3E视频缩略图 1%3C/text%3E%3C/svg%3E" alt="视频 1">
+        <div class="play-overlay">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="white"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        </div>
+      </div>
+      <div class="result-info">
+        <div class="row">
+          <span class="badge badge-ok">完成</span>
+          <span style="font-size:0.68rem;color:var(--ink-tertiary)">可灵 3.0 / 慢速推进 / 5s</span>
+        </div>
+        <div class="row" style="margin-top:6px;">
+          <a class="link">下载</a>
+          <a class="link">预览</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- 结果 2 — 运行中 -->
+    <div class="result-card">
+      <div class="result-thumb" style="background:#1d1d1f;display:flex;align-items:center;justify-content:center;">
+        <span style="color:rgba(255,255,255,.4);font-size:0.72rem;">生成中…</span>
+      </div>
+      <div class="result-info">
+        <div class="row">
+          <span class="badge badge-run">运行中</span>
+          <span style="font-size:0.68rem;color:var(--ink-tertiary)">可灵 3.0 / 横向滑动 / 5s</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 结果 3 — 成功 -->
+    <div class="result-card">
+      <div class="result-thumb">
+        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='180'%3E%3Crect fill='%232a2a2e' width='320' height='180'/%3E%3Ctext x='160' y='95' text-anchor='middle' fill='%2386868b' font-size='12' font-family='system-ui'%3E视频缩略图 2%3C/text%3E%3C/svg%3E" alt="视频 2">
+        <div class="play-overlay">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="white"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        </div>
+      </div>
+      <div class="result-info">
+        <div class="row">
+          <span class="badge badge-ok">完成</span>
+          <span style="font-size:0.68rem;color:var(--ink-tertiary)">可灵 3.0 / 轻微环绕 / 5s</span>
+        </div>
+        <div class="row" style="margin-top:6px;">
+          <a class="link">下载</a>
+          <a class="link">预览</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</div>
+</body>
+</html>

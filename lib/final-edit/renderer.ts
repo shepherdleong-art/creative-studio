@@ -1,0 +1,213 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import sharp from 'sharp';
+import { probeDurationSec } from '../ffmpeg.ts';
+import { runExportVideo } from '../media-core/export-video-encoder.ts';
+import { FINAL_EDIT_INTRO_DURATION_US, OUTPUT_PRESETS, type FinalEditVariantView, type OutputPresetId, type SubtitleCue, type TextStyle } from './types.ts';
+import { resolveStoragePath } from './storage-path.ts';
+import { resolveImportedExternalAssetVideoPath } from './material-import.ts';
+import { composeCoverJpg } from './cover-compose.ts';
+import type { ReservedProjectExportTarget } from './export-naming.ts';
+import type { ExportIdentity } from './types.ts';
+import { normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
+import { audioCutFilter, videoPlaybackRate } from './clip-edit.ts';
+import type { PointCue } from './packaging-cues.ts';
+import type { PackagingLayouts } from './packaging-vars.ts';
+
+export interface FinalEditRenderSnapshot {
+  groupRevision: number;
+  variantRevision: number;
+  group: { narrationDurationUs: number; narrationPlaybackRate?: number; narrationGainDb?: number; subtitleCues: SubtitleCue[]; coverTitleEnabled?: boolean; coverTitle?: { primary: { text: string }; secondary: { text: string } } };
+  variant: FinalEditVariantView;
+  sources: Array<{ videoJobId: string; relativePath: string; fingerprint: string; externalScope?: { projectId: string; shotSetId: string } }>;
+  coverRelativePath: string;
+  narrationRelativePath: string;
+  bgm: { id: string; relativePath: string; fileFingerprint: string; gainDb: number; loop: boolean; fadeInSec: number; fadeOutSec: number } | null;
+  overlayBundle: { id: string; relativeDir: string; manifest: unknown };
+  /** Added in Mixcut Phase 6; optional only while recovering older queued snapshots. */
+  exportIdentity?: ExportIdentity;
+  /** Added in Mixcut Phase 6; worker fills it once for older queued snapshots. */
+  exportTarget?: ReservedProjectExportTarget;
+  /** §10.5 字体审计：记录渲染所用文字样式（含 fontFamily）；旧快照恢复时可能缺失。 */
+  textStyles?: { coverPrimary: TextStyle; coverSecondary: TextStyle; subtitle: TextStyle };
+  /**
+   * 包装 v2/v3 导出联动：混剪组包装配置（final_edit_groups.packagingJson）在入队时写入。
+   * 启用时渲染任务只发布封面，视频由包装任务以正常成片名发布（目录唯一成片）。
+   * v3 追加 pointCues / pointCuesMode：对时卖点在入队时冻结，渲染/包装零推理。
+   * §7 追加 layouts / pointCuesEdited：手动布局与编辑保护标志随快照冻结。
+   */
+  packaging?: { enabled: boolean; template?: string; varsOverrides?: Record<string, string>; pointCues?: PointCue[]; pointCuesMode?: 'timed' | 'even' | 'none'; layouts?: PackagingLayouts; pointCuesEdited?: boolean; pointFont?: { family: string; file: string }; titleFont?: { family: string; file: string }; subtitleFont?: { family: string; file: string } };
+}
+
+async function fileSha256(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+export function clipFilter(index: number, preset: OutputPresetId, framing: FinalEditVariantView['timeline']['clips'][number]['framing'], playbackRate = 1): string {
+  const { width, height } = OUTPUT_PRESETS[preset];
+  const scale = Math.max(0.25, Math.min(3, framing.scale));
+  const offsetX = Math.max(-1, Math.min(1, framing.offsetX));
+  const offsetY = Math.max(-1, Math.min(1, framing.offsetY));
+  if (preset === '16x9') {
+    return `[${index}:v]setpts=(PTS-STARTPTS)/${playbackRate},fps=24,setsar=1,split=2[bg${index}][fg${index}];` +
+      `[bg${index}]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},boxblur=24:2[blur${index}];` +
+      `[fg${index}]scale=${width}:${height}:force_original_aspect_ratio=decrease,scale=iw*${scale.toFixed(4)}:ih*${scale.toFixed(4)}[front${index}];` +
+      `[blur${index}][front${index}]overlay='(W-w)/2+${offsetX.toFixed(4)}*W/2':'(H-h)/2+${offsetY.toFixed(4)}*H/2',setsar=1,format=yuv420p[v${index}]`;
+  }
+  return `[${index}:v]setpts=(PTS-STARTPTS)/${playbackRate},fps=24,scale=${width}:${height}:force_original_aspect_ratio=increase,scale=iw*${scale.toFixed(4)}:ih*${scale.toFixed(4)},pad=iw+${width * 2}:ih+${height * 2}:(ow-iw)/2:(oh-ih)/2:black,crop=${width}:${height}:'(iw-${width})/2-${offsetX.toFixed(4)}*${width}/2':'(ih-${height})/2-${offsetY.toFixed(4)}*${height}/2',setsar=1,format=yuv420p[v${index}]`;
+}
+
+export function subtitleOverlayEnableExpression(startSec: number, endSec: number): string {
+  return 'gte(t,' + startSec.toFixed(6) + ')*lt(t,' + endSec.toFixed(6) + ')';
+}
+
+function assertNotAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error('成片渲染已中止');
+  error.name = 'AbortError';
+  throw error;
+}
+
+export async function renderFinalEditSnapshot(input: {
+  jobId: string;
+  storageRoot: string;
+  snapshot: FinalEditRenderSnapshot;
+  onProgress?: (progress: number) => void;
+  signal?: AbortSignal;
+}) {
+  assertNotAborted(input.signal);
+  const { snapshot, storageRoot } = input;
+  const narrationPlaybackRate = Number.isFinite(snapshot.group.narrationPlaybackRate)
+    ? Math.max(0.5, Math.min(2, Number(snapshot.group.narrationPlaybackRate)))
+    : 1;
+  const narrationGainDb = normalizeNarrationGainDb(snapshot.group.narrationGainDb);
+  const sourceNarrationSec = snapshot.group.narrationDurationUs / 1_000_000;
+  const bodySec = sourceNarrationSec / narrationPlaybackRate;
+  const totalSec = FINAL_EDIT_INTRO_DURATION_US / 1_000_000 + bodySec;
+  const preset = snapshot.variant.outputPreset;
+  const output = OUTPUT_PRESETS[preset];
+  const jobRelativeDir = path.join('final-edits', 'jobs', input.jobId);
+  const jobDir = resolveStoragePath(storageRoot, jobRelativeDir);
+  fs.mkdirSync(path.join(jobDir, 'tmp'), { recursive: true });
+  const sourceById = new Map(snapshot.sources.map((source) => [source.videoJobId, source]));
+  const resolveSource = (source: FinalEditRenderSnapshot['sources'][number]) => source.externalScope
+    ? resolveImportedExternalAssetVideoPath(storageRoot, source.externalScope, source.relativePath)
+    : resolveStoragePath(storageRoot, source.relativePath);
+  for (const source of snapshot.sources) {
+    const absolute = resolveSource(source);
+    if (!fs.existsSync(absolute) || await fileSha256(absolute) !== source.fingerprint) throw new Error(`视频素材已变化：${source.videoJobId}`);
+  }
+  const coverSource = resolveStoragePath(storageRoot, snapshot.coverRelativePath);
+  const narration = resolveStoragePath(storageRoot, snapshot.narrationRelativePath);
+  const bgmPath = snapshot.bgm ? resolveStoragePath(storageRoot, snapshot.bgm.relativePath) : null;
+  const overlayDir = resolveStoragePath(storageRoot, snapshot.overlayBundle.relativeDir);
+  if (![coverSource, narration, path.join(overlayDir, 'title.png')].every(fs.existsSync)) throw new Error('封面、口播或文字图层文件缺失');
+  if (snapshot.bgm && (!bgmPath || !fs.existsSync(bgmPath) || await fileSha256(bgmPath) !== snapshot.bgm.fileFingerprint)) throw new Error('BGM 文件缺失或内容已变化');
+
+  const coverPng = path.join(jobDir, 'cover.png');
+  const coverJpg = path.join(jobDir, 'cover.jpg');
+  // §4 封面标题开关：显式为 false 时跳过 title.png 合成（封面/片头即无旧标题；未定义/true 保持现状）
+  const coverTitleEnabled = snapshot.group.coverTitleEnabled !== false;
+  await composeCoverJpg({
+    coverSourcePath: coverSource,
+    framing: snapshot.variant.cover.framing,
+    output: { width: output.width, height: output.height },
+    overlays: coverTitleEnabled ? [path.join(overlayDir, 'title.png')] : [],
+    pngPath: coverPng,
+    jpgPath: coverJpg,
+  });
+
+  const clips = [...snapshot.variant.timeline.clips].sort((a, b) => a.timelineInFrame - b.timelineInFrame);
+  const args: string[] = ['-loop', '1', '-framerate', '24', '-i', coverPng];
+  for (const clip of clips) {
+    const source = sourceById.get(clip.videoJobId);
+    if (!source) throw new Error(`快照缺少视频素材：${clip.videoJobId}`);
+    args.push('-ss', (clip.sourceInFrame / 24).toFixed(6), '-t', ((clip.sourceOutFrame - clip.sourceInFrame) / 24).toFixed(6), '-i', resolveSource(source));
+  }
+  const narrationInput = clips.length + 1;
+  args.push('-i', narration);
+  const bgmInput = snapshot.bgm ? narrationInput + 1 : null;
+  if (bgmPath) args.push('-stream_loop', '-1', '-i', bgmPath);
+  const subtitleStartInput = narrationInput + 1 + (bgmInput == null ? 0 : 1);
+  for (const cue of snapshot.group.subtitleCues) {
+    const subtitlePath = path.join(overlayDir, `subtitle-${cue.id}.png`);
+    if (!fs.existsSync(subtitlePath)) throw new Error(`字幕图层缺失：${cue.id}`);
+    // 字幕是静态 PNG，单帧输入即可：overlay 默认 eof_action=repeat 会重复最后一帧，
+    // 可见性由 enable 时间窗控制。-loop 1 会让每条 cue 在整个时长内持续解码，
+    // 几十条 cue 时内存/CPU 随 cue 数线性膨胀，16GB 机器上实测会 OOM。
+    args.push('-i', subtitlePath);
+  }
+
+  const filters: string[] = [];
+  filters.push(`[0:v]trim=duration=${(FINAL_EDIT_INTRO_DURATION_US / 1_000_000).toFixed(6)},setpts=PTS-STARTPTS,scale=${output.width}:${output.height},fps=24,format=yuv420p[intro]`);
+  const bodyParts: string[] = [];
+  let cursor = 0;
+  const addGap = (frames: number) => {
+    if (frames <= 0) return;
+    const label = `gap${bodyParts.length}`;
+    filters.push(`color=c=black:s=${output.width}x${output.height}:r=24:d=${(frames / 24).toFixed(6)},trim=end_frame=${frames},setsar=1[${label}]`);
+    bodyParts.push(`[${label}]`);
+  };
+  clips.forEach((clip, index) => {
+    addGap(clip.timelineInFrame - cursor);
+    filters.push(clipFilter(index + 1, preset, clip.framing, videoPlaybackRate(clip)));
+    const frames = clip.timelineOutFrame - clip.timelineInFrame;
+    filters.push(`[v${index + 1}]tpad=stop_mode=clone:stop_duration=${(frames / 24).toFixed(6)},trim=end_frame=${frames},setpts=PTS-STARTPTS[part${index}]`);
+    bodyParts.push(`[part${index}]`);
+    cursor = clip.timelineOutFrame;
+  });
+  addGap(Math.max(1, snapshot.variant.timeline.bodyFrames) - cursor);
+  filters.push(`${bodyParts.join('')}concat=n=${bodyParts.length}:v=1:a=0[body]`);
+  filters.push(`[intro][body]concat=n=2:v=1:a=0[basepre]`);
+  // 当前口播音轨放慢后，视频轨用最后一帧补足到新的有效时长；加速时最终 -t 直接裁短。
+  // stop_duration 取完整 body 时长，可同时覆盖 matcher 的小缺口和最大 0.5x 的延长量。
+  filters.push(`[basepre]tpad=stop_mode=clone:stop_duration=${Math.max(0.5, bodySec).toFixed(6)}[base]`);
+  let currentVideo = 'base';
+  snapshot.group.subtitleCues.forEach((cue, index) => {
+    const next = `subtitle${index}`;
+    const start = (FINAL_EDIT_INTRO_DURATION_US + cue.startUs / narrationPlaybackRate) / 1_000_000;
+    const end = (FINAL_EDIT_INTRO_DURATION_US + cue.endUs / narrationPlaybackRate) / 1_000_000;
+    filters.push(`[${currentVideo}][${subtitleStartInput + index}:v]overlay=0:0:eof_action=repeat:enable='${subtitleOverlayEnableExpression(start, end)}'[${next}]`);
+    currentVideo = next;
+  });
+  const narrationTempo = Math.abs(narrationPlaybackRate - 1) < 1e-8 ? '' : `atempo=${narrationPlaybackRate.toFixed(4)},`;
+  // 不上 loudnorm:单遍动态模式会给音频流附加异常时间基准,下游 adelay
+  // 插入的片头静音会被吞掉,造成音画不同步(2026-08-12 实测复现)。
+  filters.push(`[${narrationInput}:a]asetpts=PTS-STARTPTS,${audioCutFilter(snapshot.variant.timeline.audio?.narration)}${narrationTempo}aresample=48000,volume=${narrationGainDb.toFixed(1)}dB,atrim=duration=${bodySec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`);
+  if (snapshot.bgm && bgmInput != null) {
+    const fadeInDuration = Math.min(Math.max(0, snapshot.bgm.fadeInSec), bodySec);
+    const fadeOutDuration = Math.min(Math.max(0, snapshot.bgm.fadeOutSec), bodySec);
+    const fadeStart = Math.max(0, bodySec - fadeOutDuration);
+    const fades = [
+      fadeInDuration > 0 ? `afade=t=in:st=0:d=${fadeInDuration.toFixed(6)}` : '',
+      fadeOutDuration > 0 ? `afade=t=out:st=${fadeStart.toFixed(6)}:d=${fadeOutDuration.toFixed(6)}` : '',
+    ].filter(Boolean).join(',');
+    filters.push(`[${bgmInput}:a]asetpts=PTS-STARTPTS,${audioCutFilter(snapshot.variant.timeline.audio?.bgm)}aresample=48000,volume=${snapshot.bgm.gainDb}dB,atrim=duration=${bodySec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
+    filters.push(`[narration][music]amix=inputs=2:duration=longest:dropout_transition=0[bodyaudio]`);
+  } else {
+    filters.push('[narration]anull[bodyaudio]');
+  }
+  filters.push(`[bodyaudio]adelay=833.333|833.333,apad,atrim=duration=${totalSec.toFixed(6)},alimiter=limit=0.84[audio]`);
+  const filterFile = path.join(jobDir, 'filter-complex.txt');
+  fs.writeFileSync(filterFile, filters.join(';\n'));
+  const tempVideo = path.join(jobDir, 'final.mp4.tmp');
+  const finalVideo = path.join(jobDir, 'final.mp4');
+  assertNotAborted(input.signal);
+  await runExportVideo([...args, '-filter_complex_script', filterFile, '-map', `[${currentVideo}]`, '-map', '[audio]', '-t', totalSec.toFixed(6), '-r', '24', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-movflags', '+faststart', '-f', 'mp4', '-progress', 'pipe:1', '-y', tempVideo], {
+    timeoutMs: 30 * 60_000,
+    onProgressSec: (outTimeSec) => input.onProgress?.(Math.max(0, Math.min(1, outTimeSec / totalSec))),
+    signal: input.signal,
+  });
+  const actualDuration = await probeDurationSec(tempVideo);
+  assertNotAborted(input.signal);
+  if (Math.abs(actualDuration - totalSec) > 1 / 24 + 0.01) throw new Error(`产物时长校验失败：${actualDuration.toFixed(3)}s，预期 ${totalSec.toFixed(3)}s`);
+  fs.renameSync(tempVideo, finalVideo);
+  return { videoRelativePath: path.join(jobRelativeDir, 'final.mp4'), coverRelativePath: path.join(jobRelativeDir, 'cover.jpg'), durationSec: actualDuration, width: output.width, height: output.height, fps: 24 };
+}

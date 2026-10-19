@@ -1,0 +1,97 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
+import { listScriptProviderMeta } from '@/lib/script-providers/store';
+
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const db = getDb();
+    const body = await request.json();
+    const existing = db.prepare(`SELECT id, type, apiStyle, model, executionScope FROM script_providers WHERE id = ?`).get(id) as {
+      id: string;
+      type?: string;
+      apiStyle?: string;
+      model?: string;
+      executionScope?: string;
+    } | undefined;
+    if (!existing) return NextResponse.json({ error: 'Script provider not found' }, { status: 404 });
+
+    const effectiveExecutionScope = body.executionScope !== undefined ? body.executionScope : existing.executionScope;
+    const effectiveApiStyle = typeof body.apiStyle === 'string' ? body.apiStyle.trim() : (existing.apiStyle || '').trim();
+    const effectiveModel = typeof body.model === 'string' ? body.model.trim() : (existing.model || '').trim();
+    const effectiveType = typeof body.type === 'string' ? body.type.trim() : (existing.type || '').trim();
+    const isFixedCompanyLuna = id === 'gpt'
+      && effectiveExecutionScope === 'company'
+      && effectiveApiStyle === 'openai-compatible'
+      && effectiveModel === 'GPT-5-6-Luna-Standard'
+      && effectiveType === 'openai-compatible';
+
+    const updates: string[] = [];
+    const values: unknown[] = [];
+
+    for (const field of ['name', 'type', 'apiStyle', 'baseUrl', 'model'] as const) {
+      if (body[field] !== undefined) {
+        updates.push(`${field} = ?`);
+        values.push(body[field]);
+      }
+    }
+    if (body.executionScope !== undefined) {
+      if (body.executionScope !== 'external' && body.executionScope !== 'company') {
+        return NextResponse.json({ error: 'Invalid execution scope' }, { status: 400 });
+      }
+      updates.push('executionScope = ?');
+      values.push(body.executionScope);
+    }
+    if (body.enabled !== undefined) {
+      updates.push('enabled = ?');
+      values.push(body.enabled ? 1 : 0);
+    }
+    if (body.supportsVision !== undefined) {
+      updates.push('supportsVision = ?');
+      values.push(body.supportsVision ? 1 : 0);
+    }
+    if (body.maxTokens !== undefined) {
+      updates.push('maxTokens = ?');
+      values.push(Number(body.maxTokens) || 8192);
+    }
+    if ((id !== 'gpt' || !isFixedCompanyLuna) && body.visionCostPerRequest !== undefined) {
+      const cost = Number(body.visionCostPerRequest);
+      if (!Number.isFinite(cost) || cost < 0) return NextResponse.json({ error: 'Invalid vision cost' }, { status: 400 });
+      updates.push('visionCostPerRequest = ?');
+      values.push(cost);
+    }
+    if (body.apiKey !== undefined) {
+      updates.push('apiKey = ?');
+      values.push(body.apiKey);
+    }
+    if (updates.length === 0) return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
+
+    values.push(id);
+    db.prepare(`UPDATE script_providers SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+
+    return NextResponse.json(listScriptProviderMeta().find((p) => p.id === id));
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
+}
+
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const db = getDb();
+    const row = db.prepare(`SELECT isBuiltin FROM script_providers WHERE id = ?`).get(id) as { isBuiltin: number } | undefined;
+    if (!row) return NextResponse.json({ error: 'Script provider not found' }, { status: 404 });
+    if (row.isBuiltin) return NextResponse.json({ error: '内置脚本供应商不能删除，可以禁用' }, { status: 400 });
+
+    db.prepare(`DELETE FROM script_providers WHERE id = ?`).run(id);
+    return NextResponse.json({ success: true });
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
+}

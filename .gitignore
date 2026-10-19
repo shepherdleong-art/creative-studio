@@ -1,0 +1,88 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+/dist
+/dist-desktop
+/.cache
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dev-server.*.log
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# local data (database, uploads, outputs, logs)
+/data/
+/storage/
+/outputs/
+!/storage/.gitkeep
+
+# 免安装包内置的便携 Node 运行时（87MB 二进制，不进仓库）
+/node-runtime/
+
+# 免安装包内置的便携 Python 运行时（本机构建产物，约数百 MB，不进仓库）
+/python-runtime/
+/.cache/python-runtime/
+
+# brainstorming visual-companion workspace (generated mockups, not source)
+/.superpowers/
+.tmp-pdf-text/
+
+# local Claude Code / skills tooling (not project source)
+/.claude/
+/.agents/
+/.omo/
+/skills-lock.json
+
+# git worktrees for isolated feature work
+/.worktrees/
+
+# oversized local docs (exceed GitHub's 100MB push limit; use Git LFS if they must be tracked)
+/docs/*.xlsx
+
+# company gateway local stack (litellm proxy config holds real API keys; venv is local tooling)
+/config.yaml
+/config.yaml.backup-*
+/litellm-config.yaml
+/.venv-litellm/
+
+# HyperFrames 包装层：无头 Chrome 运行时、依赖与渲染产物不进仓库（脚本与模板入库）
+/packaging/runtime/
+/packaging/node_modules/
+/packaging/renders/
+/packaging/demo-*/
+/packaging/package-lock.json

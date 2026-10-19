@@ -1,0 +1,402 @@
+import Database from 'better-sqlite3';
+import path from 'path';
+import fs from 'fs';
+import { CORE_DB_MIGRATIONS } from './db-migrations.ts';
+import { dataRoot } from './data-root.ts';
+import { initFinalEditSchema } from './final-edit/schema.ts';
+import { initUsageSchema, markUsageSchemaUnavailable } from './usage-schema.ts';
+
+const DB_PATH = path.join(dataRoot(), 'data', 'workbench.db');
+
+let db: Database.Database | null = null;
+
+export function getDb(): Database.Database {
+  if (!db) {
+    // Ensure data directory exists
+    const dataDir = path.dirname(DB_PATH);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+
+    db = new Database(DB_PATH);
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+    initTables(db);
+    try {
+      const usageReadiness = initUsageSchema(db);
+      if (!usageReadiness.available) {
+        console.error('[usage-schema] disabled; usage accounting is unavailable');
+      }
+    } catch (error) {
+      markUsageSchemaUnavailable(db, error);
+      console.error('[usage-schema] disabled; usage accounting is unavailable');
+    }
+    initFinalEditSchema(db);
+    seedAllVideo();
+  }
+  return db;
+}
+
+import { seedAllVideo } from './seed.ts';
+
+function initTables(db: Database.Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS providers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      baseUrl TEXT NOT NULL,
+      apiKeyEnv TEXT NOT NULL DEFAULT '',
+      apiKey TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT 'gpt-image-2',
+      type TEXT NOT NULL DEFAULT 'openai-compatible',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      defaultCostPerImage REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      providerId TEXT NOT NULL,
+      model TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      negativePrompt TEXT DEFAULT '',
+      size TEXT NOT NULL DEFAULT '1024x1024',
+      quality TEXT NOT NULL DEFAULT 'standard',
+      concurrency INTEGER NOT NULL DEFAULT 10,
+      videoConcurrency INTEGER NOT NULL DEFAULT 10,
+      exportDirName TEXT NOT NULL DEFAULT '',
+      maxAttempts INTEGER NOT NULL DEFAULT 2,
+      status TEXT NOT NULL DEFAULT 'draft',
+      runId TEXT,
+      referenceGuidanceMode TEXT NOT NULL DEFAULT 'preserve_subject',
+      storeCode TEXT NOT NULL DEFAULT '',
+      productSubmodel TEXT NOT NULL DEFAULT '',
+      productionType TEXT NOT NULL DEFAULT '',
+      editorName TEXT NOT NULL DEFAULT '',
+      namingDate TEXT NOT NULL DEFAULT '',
+      currentExportIdentityId TEXT,
+      FOREIGN KEY (providerId) REFERENCES providers(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS project_export_identities (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      revisionNumber INTEGER NOT NULL,
+      baseName TEXT NOT NULL,
+      exportDirName TEXT NOT NULL,
+      identityJson TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      supersededAt TEXT,
+      UNIQUE(projectId, revisionNumber),
+      UNIQUE(exportDirName)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_project_export_identities_project ON project_export_identities(projectId);
+
+
+    CREATE TABLE IF NOT EXISTS image_assets (
+      id TEXT PRIMARY KEY,
+      projectId TEXT,
+      role TEXT NOT NULL CHECK(role IN ('reference', 'input', 'output')),
+      filename TEXT NOT NULL,
+      path TEXT NOT NULL,
+      originalPath TEXT,
+      processedPath TEXT,
+      mimeType TEXT NOT NULL DEFAULT 'image/png',
+      width INTEGER,
+      height INTEGER,
+      originalWidth INTEGER,
+      originalHeight INTEGER,
+      processedWidth INTEGER,
+      processedHeight INTEGER,
+      originalSizeBytes INTEGER,
+      processedSizeBytes INTEGER,
+      preprocessingEnabled INTEGER DEFAULT 1,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS jobs (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      inputImageId TEXT NOT NULL,
+      referenceImageIds TEXT NOT NULL DEFAULT '[]',
+      providerId TEXT NOT NULL,
+      model TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      size TEXT NOT NULL DEFAULT '1024x1024',
+      quality TEXT NOT NULL DEFAULT 'standard',
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempt INTEGER NOT NULL DEFAULT 0,
+      maxAttempts INTEGER NOT NULL DEFAULT 2,
+      startedAt TEXT,
+      finishedAt TEXT,
+      latencyMs INTEGER,
+      estimatedCost REAL,
+      errorMessage TEXT,
+      reviewMark TEXT DEFAULT '',
+      outputImageId TEXT,
+      providerTaskId TEXT,
+      providerStatus TEXT,
+      providerRawResponse TEXT,
+      submittedAt TEXT,
+      lastPolledAt TEXT,
+      pollCount INTEGER DEFAULT 0,
+      remoteImageUrl TEXT,
+      postprocessTarget TEXT,
+      parentJobId TEXT,
+      revision INTEGER DEFAULT 0,
+      referenceGuidanceMode TEXT NOT NULL DEFAULT 'preserve_subject',
+      createdAt TEXT,
+      creationIndex INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (inputImageId) REFERENCES image_assets(id),
+      FOREIGN KEY (outputImageId) REFERENCES image_assets(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs(projectId);
+    CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+    CREATE INDEX IF NOT EXISTS idx_image_assets_project ON image_assets(projectId);
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS job_logs (
+      id TEXT PRIMARY KEY,
+      jobId TEXT,
+      projectId TEXT NOT NULL,
+      level TEXT NOT NULL DEFAULT 'info',
+      message TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_job_logs_project ON job_logs(projectId);
+    CREATE INDEX IF NOT EXISTS idx_job_logs_job ON job_logs(jobId);
+  `);
+
+  // Ensure job_logs table exists without FKs (for older DBs)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS job_logs (
+      id TEXT PRIMARY KEY,
+      jobId TEXT,
+      projectId TEXT NOT NULL,
+      level TEXT NOT NULL DEFAULT 'info',
+      message TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  // Scene references, shot sets, and shots
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scene_references (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      imageAssetId TEXT NOT NULL,
+      sourceJobId TEXT,
+      name TEXT NOT NULL,
+      productCode TEXT DEFAULT '',
+      category TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','archived')),
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (imageAssetId) REFERENCES image_assets(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS shot_sets (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      name TEXT NOT NULL,
+      productCode TEXT DEFAULT '',
+      category TEXT DEFAULT '',
+      sceneReferenceId TEXT,
+      status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','generating','reviewing','approved','video_ready')),
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (sceneReferenceId) REFERENCES scene_references(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS shots (
+      id TEXT PRIMARY KEY,
+      shotSetId TEXT NOT NULL,
+      indexNum INTEGER NOT NULL,
+      sourceImageId TEXT NOT NULL,
+      latestGeneratedImageId TEXT,
+      latestJobId TEXT,
+      reviewMark TEXT DEFAULT '',
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (shotSetId) REFERENCES shot_sets(id) ON DELETE CASCADE,
+      FOREIGN KEY (sourceImageId) REFERENCES image_assets(id),
+      FOREIGN KEY (latestGeneratedImageId) REFERENCES image_assets(id),
+      FOREIGN KEY (latestJobId) REFERENCES jobs(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS shot_result_candidates (
+      id TEXT PRIMARY KEY,
+      shotId TEXT NOT NULL,
+      jobId TEXT NOT NULL,
+      imageAssetId TEXT NOT NULL,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (shotId) REFERENCES shots(id) ON DELETE CASCADE,
+      FOREIGN KEY (jobId) REFERENCES jobs(id) ON DELETE CASCADE,
+      FOREIGN KEY (imageAssetId) REFERENCES image_assets(id) ON DELETE CASCADE,
+      UNIQUE(shotId, imageAssetId)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_shot_result_candidates_shot ON shot_result_candidates(shotId);
+    CREATE INDEX IF NOT EXISTS idx_shot_result_candidates_job ON shot_result_candidates(jobId);
+
+    CREATE TABLE IF NOT EXISTS video_providers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('kling','jimeng','openai-video')),
+      baseUrlEnv TEXT NOT NULL,
+      apiKeyEnv TEXT NOT NULL,
+      modelEnv TEXT NOT NULL,
+      defaultModel TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      defaultDurationSec INTEGER NOT NULL DEFAULT 5,
+      defaultCostPerVideo REAL,
+      baseUrl TEXT NOT NULL DEFAULT '',
+      apiKey TEXT NOT NULL DEFAULT '',
+      accessKey TEXT NOT NULL DEFAULT '',
+      secretKey TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS script_providers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'openai-compatible',
+      apiStyle TEXT NOT NULL DEFAULT 'openai-compatible',
+      baseUrl TEXT NOT NULL DEFAULT '',
+      apiKey TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      keyEnv TEXT NOT NULL DEFAULT '',
+      baseUrlEnv TEXT NOT NULL DEFAULT '',
+      modelEnv TEXT NOT NULL DEFAULT '',
+      defaultBaseUrl TEXT NOT NULL DEFAULT '',
+      defaultModel TEXT NOT NULL DEFAULT '',
+      maxTokens INTEGER NOT NULL DEFAULT 8192,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      isBuiltin INTEGER NOT NULL DEFAULT 1,
+      supportsVision INTEGER NOT NULL DEFAULT 0,
+      visionCostPerRequest REAL NOT NULL DEFAULT 0,
+      executionScope TEXT NOT NULL DEFAULT 'external'
+        CHECK(executionScope IN ('external','company'))
+    );
+
+    CREATE TABLE IF NOT EXISTS video_prompt_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      prompt TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'camera_motion',
+      isBuiltin INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS video_jobs (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      shotSetId TEXT,
+      shotId TEXT,
+      sourceImageId TEXT NOT NULL,
+      providerId TEXT NOT NULL,
+      model TEXT NOT NULL,
+      templateId TEXT,
+      prompt TEXT NOT NULL,
+      durationSec INTEGER NOT NULL DEFAULT 5,
+      status TEXT NOT NULL DEFAULT 'pending',
+      providerTaskId TEXT,
+      providerStatus TEXT,
+      providerRawResponse TEXT,
+      lastPolledAt TEXT,
+      pollCount INTEGER DEFAULT 0,
+      remoteVideoUrl TEXT,
+      localVideoPath TEXT,
+      filename TEXT,
+      displayName TEXT,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      maxAttempts INTEGER NOT NULL DEFAULT 2,
+      errorMessage TEXT,
+      startedAt TEXT,
+      finishedAt TEXT,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (shotSetId) REFERENCES shot_sets(id) ON DELETE SET NULL,
+      FOREIGN KEY (shotId) REFERENCES shots(id) ON DELETE SET NULL,
+      FOREIGN KEY (sourceImageId) REFERENCES image_assets(id),
+      FOREIGN KEY (providerId) REFERENCES video_providers(id),
+      FOREIGN KEY (templateId) REFERENCES video_prompt_templates(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_video_jobs_project ON video_jobs(projectId);
+    CREATE INDEX IF NOT EXISTS idx_video_jobs_shot ON video_jobs(shotId);
+    CREATE INDEX IF NOT EXISTS idx_video_jobs_status ON video_jobs(status);
+
+    CREATE TABLE IF NOT EXISTS script_drafts (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'gemini',
+      model TEXT NOT NULL,
+      inputSnapshot TEXT NOT NULL,
+      outputJson TEXT NOT NULL,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+  `);
+
+  // Run core migrations only after every core table has been created. Some
+  // appended migrations (for example indexes on shots) target tables from
+  // the second schema block above and would otherwise be skipped forever on
+  // a fresh database because this legacy runner intentionally catches errors.
+  for (const sql of CORE_DB_MIGRATIONS) {
+    try { db.exec(sql); } catch { /* Column already exists */ }
+  }
+
+  const videoJobMigrations = [
+    `ALTER TABLE video_jobs ADD COLUMN lastPolledAt TEXT`,
+    `ALTER TABLE video_jobs ADD COLUMN pollCount INTEGER DEFAULT 0`,
+  ];
+  for (const sql of videoJobMigrations) {
+    try { db.exec(sql); } catch { /* Column already exists */ }
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shot_result_candidates_shot ON shot_result_candidates(shotId);
+    CREATE INDEX IF NOT EXISTS idx_shot_result_candidates_job ON shot_result_candidates(jobId);
+
+    INSERT OR IGNORE INTO shot_result_candidates (id, shotId, jobId, imageAssetId, createdAt)
+    SELECT s.id || ':' || s.latestGeneratedImageId, s.id, s.latestJobId, s.latestGeneratedImageId, datetime('now')
+    FROM shots s
+    WHERE s.latestGeneratedImageId IS NOT NULL AND s.latestJobId IS NOT NULL;
+
+    INSERT OR IGNORE INTO shot_result_candidates (id, shotId, jobId, imageAssetId, createdAt)
+    WITH RECURSIVE shot_job_chain(shotId, jobId) AS (
+      SELECT id, latestJobId FROM shots WHERE latestJobId IS NOT NULL
+      UNION
+      SELECT c.shotId, j.parentJobId
+      FROM shot_job_chain c
+      JOIN jobs j ON j.id = c.jobId
+      WHERE j.parentJobId IS NOT NULL
+    )
+    SELECT
+      c.shotId || ':' || j.outputImageId,
+      c.shotId,
+      j.id,
+      j.outputImageId,
+      COALESCE(j.finishedAt, j.startedAt, j.submittedAt, datetime('now'))
+    FROM shot_job_chain c
+    JOIN jobs j ON j.id = c.jobId
+    WHERE j.status = 'succeeded' AND j.outputImageId IS NOT NULL;
+  `);
+}
+
+export function closeDb() {
+  if (db) {
+    db.close();
+    db = null;
+  }
+}

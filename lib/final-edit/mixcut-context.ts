@@ -1,0 +1,381 @@
+import { scriptCodeFromContent } from '../media-core/production-codes.ts';
+import { getCurrentExportIdentity } from '../project-export-identity.ts';
+import { buildProjectBaseName, deriveProjectNamingDate, readProductionIdentityFields } from '../project-production-identity.ts';
+import fs from 'node:fs';
+import path from 'node:path';
+import type Database from 'better-sqlite3';
+import { formatShanghaiTaskDate } from './export-identity.ts';
+import { probeVideoMedia } from '../ffmpeg.ts';
+import type { StoredScriptOutput } from '../script-providers/types.ts';
+import { resolveStoragePath } from './storage-path.ts';
+import { videoJobNotRejectedSql } from '../media-core/video-job-rejection.ts';
+import {
+  listReadableProjectScripts,
+  readableScriptShotSetId,
+  type ReadableProjectScriptRow,
+} from '../media-core/project-script-reader.ts';
+import { isScriptVisibleInContext } from '../media-core/script-visibility.ts';
+import { resolveVideoJobDisplayNames } from '../video-output-filenames.ts';
+import type { MixcutContextResponse } from './types.ts';
+
+// Pure, dependency-injected (db + storageRoot passed in — never getDb()/
+// dataRoot()) query/aggregation logic backing
+// GET /api/projects/:projectId/final-edit/context (plan §5.1). Kept out of
+// workspace.ts so scripts/final-edit-mixcut-flow.test.ts can exercise the
+// real query logic against an isolated in-memory SQLite db + temp storage
+// root, mirroring how scripts/final-edit-mixcut-context-contract.test.ts
+// proved the same rules in raw SQL during Phase 0 — without ever touching
+// the real data/workbench.db.
+//
+// "project not found" is signalled by returning null rather than throwing
+// FinalEditError directly: this query layer deliberately returns data/null,
+// while workspace.ts owns the HTTP-facing domain translation. Its
+// getMixcutContext() turns a null result into
+// FinalEditError('project_not_found', '项目不存在', 404).
+
+/**
+ * V2 and V3 are both first-class Mixcut inputs. Older unversioned/V1 rows
+ * remain on the existing legacy read path and are never rewritten here.
+ */
+import { isUsableMixcutScriptDraft } from '../media-core/script-draft-usable.ts';
+export { isUsableMixcutScriptDraft } from '../media-core/script-draft-usable.ts';
+
+interface ProjectRow {
+  id: string;
+  name: string;
+  productName: string | null;
+  productCode: string | null;
+  productCategory: string | null;
+  createdAt: string;
+  storeCode: string | null;
+  productSubmodel: string | null;
+  productionType: string | null;
+  editorName: string | null;
+  namingDate: string | null;
+  currentExportIdentityId: string | null;
+}
+
+interface ShotSetRow {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+interface VideoJobRow {
+  videoJobId: string;
+  shotSetId: string;
+  filename: string | null;
+  localVideoPath: string;
+}
+
+function tableExists(db: Database.Database, table: string): boolean {
+  return Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(table));
+}
+
+function parseSummary(value: string | null | undefined): string {
+  if (!value) return '';
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '';
+    const summary = (parsed as Record<string, unknown>).summary;
+    return typeof summary === 'string' ? summary.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function loadVideoAnalysisSummaries(db: Database.Database, videoJobIds: string[]): Map<string, string> {
+  const summaries = new Map<string, string>();
+  if (!videoJobIds.length || !tableExists(db, 'final_edit_asset_analysis')) return summaries;
+  const placeholders = videoJobIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT videoJobId, generatedJson, manualOverrideJson
+    FROM final_edit_asset_analysis
+    WHERE videoJobId IN (${placeholders})
+  `).all(...videoJobIds) as Array<{ videoJobId: string; generatedJson: string | null; manualOverrideJson: string | null }>;
+  for (const row of rows) {
+    summaries.set(row.videoJobId, parseSummary(row.manualOverrideJson) || parseSummary(row.generatedJson));
+  }
+  return summaries;
+}
+
+function storagePreviewUrl(storageRoot: string, absolutePath: string): string {
+  const relative = path.relative(path.resolve(storageRoot), absolutePath);
+  // ?preview=1：HEVC/10bit 原件浏览器放不动，播放统一走 H.264 预览衍生物
+  //（/api/videos 仅对 storage/videos 下的 mp4 懒生成，其余路径原样回源）。
+  return `/api/videos/${relative.split(path.sep).filter(Boolean).map(encodeURIComponent).join('/')}?preview=1`;
+}
+
+const MEDIA_PROBE_CONCURRENCY = 4;
+
+/**
+ * Resolve media metadata without allowing one context request to fan out into
+ * an unbounded number of ffprobe/ffmpeg child processes.
+ */
+export async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  mapper: (value: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error('concurrency must be a positive integer');
+  }
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(values[index], index);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, () => worker()),
+  );
+  return results;
+}
+
+/**
+ * Resolve+validate a `video_jobs.localVideoPath` value against storageRoot,
+ * and confirm the resolved file actually exists on disk.
+ *
+ * Mirrors the `toRelative()` idiom at lib/final-edit/workspace.ts:951-954
+ * (enqueueRender) and assetsForScript()'s try/catch at
+ * lib/final-edit/workspace.ts:195-208: a single row failing safe-path
+ * validation (escapes storageRoot, contains `..`, etc.) or pointing at a file
+ * that doesn't actually exist must not break the whole context response —
+ * return null so the caller silently excludes just that one row.
+ */
+function resolveSafeVideoAbsolutePath(storageRoot: string, localVideoPath: string | null): string | null {
+  if (!localVideoPath) return null;
+  try {
+    const resolved = resolveStoragePath(storageRoot, localVideoPath, { allowAbsolute: true });
+    // JUDGMENT CALL (JC-4): also require the file to exist on disk — same
+    // "exclude, don't 500" reasoning as the safe-path check above.
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return null;
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Builds the full MixcutContextResponse for one project, per plan §5.1's four
+ * query rules:
+ *   - shot_sets.projectId = :projectId.
+ *   - script_drafts.outputJson parsed; only V2/V3 + usable shotSetId/segments.
+ *   - videos for the CURRENT shot set: projectId+shotSetId+status='succeeded'
+ *     +localVideoPath present, and passing safe-path validation.
+ *   - no grouping ever inferred from filename/title/createdAt.
+ *
+ * Returns null when the project itself doesn't exist (see file header for
+ * why the caller, not this function, turns that into a FinalEditError).
+ */
+export async function buildMixcutContext(
+  db: Database.Database,
+  storageRoot: string,
+  projectId: string,
+  requestedShotSetId?: string | null,
+): Promise<MixcutContextResponse | null> {
+  const projectRow = db.prepare(`
+    SELECT id, name, productName, productCode, productCategory, createdAt,
+      storeCode, productSubmodel, productionType, editorName, namingDate, currentExportIdentityId
+    FROM projects WHERE id = ?
+  `).get(projectId) as ProjectRow | undefined;
+  if (!projectRow) return null;
+
+  // Rule: shot_sets.projectId = :projectId.
+  const shotSetRows = db.prepare(`
+    SELECT id, name, createdAt FROM shot_sets WHERE projectId = ? ORDER BY createdAt DESC
+  `).all(projectId) as ShotSetRow[];
+
+  // JUDGMENT CALL (JC-1): currentShotSetId selection. §5.2 only says "current"
+  // shotSetId lives in client workspace state; the plan never specifies a
+  // server-side default. An explicit ?shotSetId= is honored only if it
+  // belongs to this project (shotSetRows is already projectId-scoped, so a
+  // foreign or made-up id simply won't be found here); absent or
+  // non-belonging both fall back to the most-recently-created shot set
+  // rather than erroring — a stale client-cached shotSetId (e.g. from a
+  // deleted shot set) must not break the whole page load. Zero shot sets ->
+  // null.
+  const requestedRow = requestedShotSetId ? shotSetRows.find((row) => row.id === requestedShotSetId) : undefined;
+  const currentShotSetId: string | null = requestedRow?.id ?? shotSetRows[0]?.id ?? null;
+
+  // JUDGMENT CALL (JC-3): sidebar stats for EVERY shot set in the project use
+  // cheap DB-only aggregation, never probeVideoMedia/ffprobe — probing every
+  // video in the whole project on every page load would be wasteful.
+  // succeededVideoCount reuses the same SQL predicate as the detail rule
+  // below (projectId+shotSetId+status='succeeded'+localVideoPath IS NOT
+  // NULL) but intentionally skips the fs safe-path/existence check the
+  // detail list performs below — an intentional, documented approximation
+  // (a row with a corrupt/unsafe path still counts toward this number, even
+  // though it would never appear in that shot set's videoAssets[] detail
+  // list once it becomes "current"). totalDurationUs is likewise a coarse
+  // whole-second SUM(durationSec) * 1e6, not the precise per-file
+  // probeVideoMedia duration used for the CURRENT shot set's videoAssets[]
+  // further down.
+  // JUDGMENT CALL (new, not covered by JC-1..JC-5): shotCount = COUNT(*) of
+  // every row in `shots` for this shotSetId, unfiltered by any
+  // generation/review state — the frozen type just says "shotCount" with no
+  // further qualifier, and this is the only unambiguous reading.
+  //
+  // PERF (code review fix): this used to run two queries PER shot set inside
+  // a .map() — an N+1 pattern, and worse than usual because `shots` has no
+  // secondary index on shotSetId (lib/db.ts), so each iteration was a full
+  // table scan of `shots` across every project, repeated once per shot set
+  // in this project. Replaced with two GROUP BY queries, each run once for
+  // the whole project, plus idx_shots_shotset in the append-only core
+  // migrations so the shots query itself is no longer a full scan either.
+  const shotSetIds = shotSetRows.map((row) => row.id);
+  const validShotSetIds = new Set(shotSetIds);
+
+  const shotCountByShotSetId = new Map<string, number>();
+  if (shotSetIds.length > 0) {
+    const placeholders = shotSetIds.map(() => '?').join(',');
+    const shotCountRows = db.prepare(`
+      SELECT shotSetId, COUNT(*) AS count FROM shots WHERE shotSetId IN (${placeholders}) GROUP BY shotSetId
+    `).all(...shotSetIds) as { shotSetId: string; count: number }[];
+    for (const r of shotCountRows) shotCountByShotSetId.set(r.shotSetId, Number(r.count) || 0);
+  }
+
+  const videoAggByShotSetId = new Map<string, { count: number; totalSec: number }>();
+  const videoAggRows = db.prepare(`
+    SELECT shotSetId, COUNT(*) AS count, COALESCE(SUM(durationSec), 0) AS totalSec
+    FROM video_jobs
+    WHERE projectId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL AND shotSetId IS NOT NULL
+      AND ${videoJobNotRejectedSql(db)}
+    GROUP BY shotSetId
+  `).all(projectId) as { shotSetId: string; count: number; totalSec: number }[];
+  for (const r of videoAggRows) videoAggByShotSetId.set(r.shotSetId, { count: Number(r.count) || 0, totalSec: Number(r.totalSec) || 0 });
+
+  const shotSets = shotSetRows.map((row) => {
+    const videoAgg = videoAggByShotSetId.get(row.id);
+    return {
+      id: row.id,
+      name: row.name,
+      shotCount: shotCountByShotSetId.get(row.id) || 0,
+      succeededVideoCount: videoAgg?.count || 0,
+      totalDurationUs: (videoAgg?.totalSec || 0) * 1_000_000,
+    };
+  });
+
+  // Rule: project_scripts(新核心层) ∪ script_drafts(历史兼容)，只解析 V2/V3 内容，
+  // 可见性统一交给 isScriptVisibleInContext；空 shotSetId 项目级脚本可见。
+  const draftRows = listReadableProjectScripts(db, projectId);
+  const drafts: MixcutContextResponse['drafts'] = [];
+  for (const row of draftRows) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(row.outputJson); } catch { continue; }
+    if (!isUsableMixcutScriptDraft(parsed)) continue;
+    const script = parsed as StoredScriptOutput;
+    if (!isScriptVisibleInContext({
+      shotSetId: readableScriptShotSetId(row),
+      requestedShotSetId: requestedShotSetId || undefined,
+      validShotSetIds,
+    })) continue;
+    // fullScript is a derived convenience field and can be absent or stale in
+    // historical V2 rows. Rebuild the narration from the ordered source
+    // segments so Phase 2 never sends drifted text to TTS.
+    const narrationText = script.segments
+      .map((segment) => typeof segment.narration === 'string' ? segment.narration.trim() : '')
+      .filter(Boolean)
+      .join('\n');
+    if (!narrationText) continue;
+    drafts.push({
+      id: row.id,
+      version: script.version,
+      shotSetId: readableScriptShotSetId(row) || script.shotSetId || '',
+      title: script.title || '',
+      scriptCode: scriptCodeFromContent(script),
+      narrationText,
+      targetDurationSec: Number(script.targetDurationSec) || 0,
+      provider: row.provider || '',
+      model: row.model || '',
+      createdAt: row.createdAt,
+      sourceKind: row.kind,
+      sourceRevisionId: row.currentRevisionId,
+      sourceRevisionNumber: row.revisionNumber,
+    });
+  }
+
+  // Rule: videos for the CURRENT shot set must satisfy projectId+shotSetId+
+  // status='succeeded'+localVideoPath present AND pass safe-path validation
+  // (+ actually exist on disk). Only probed (JC-2) for this one shot set's
+  // detail list — never for the whole project (see shotSets aggregation
+  // above, which stays DB-only on purpose).
+  const videoAssets: MixcutContextResponse['videoAssets'] = [];
+  if (currentShotSetId) {
+    const videoRows = db.prepare(`
+      SELECT id AS videoJobId, shotSetId, filename, localVideoPath
+      FROM video_jobs
+      WHERE projectId = ? AND shotSetId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
+        AND ${videoJobNotRejectedSql(db)}
+      ORDER BY createdAt, rowid
+    `).all(projectId, currentShotSetId) as VideoJobRow[];
+
+    const safeRows = videoRows
+      .map((row) => ({ row, absolutePath: resolveSafeVideoAbsolutePath(storageRoot, row.localVideoPath) }))
+      .filter((entry): entry is { row: VideoJobRow; absolutePath: string } => entry.absolutePath !== null);
+    const summaries = loadVideoAnalysisSummaries(db, safeRows.map(({ row }) => row.videoJobId));
+    // 友好展示名（D5）：与视频生成 API、批量 catalog 共用同一派生 helper，
+    // 旧任务按 shot 序号/来源图名/模板名/版次确定性派生；filename 仅供播放 URL。
+    const displayNames = resolveVideoJobDisplayNames(db, safeRows.map(({ row }) => row.videoJobId));
+
+    // JUDGMENT CALL (JC-2): metadata probing stays inside the request because
+    // it is not a transcode/paid task, but it is bounded so a large shot set
+    // cannot spawn an ffprobe/ffmpeg process storm.
+    const probes = await mapWithConcurrency(
+      safeRows,
+      MEDIA_PROBE_CONCURRENCY,
+      (entry) => probeVideoMedia(entry.absolutePath),
+    );
+
+    safeRows.forEach((entry, index) => {
+      const probe = probes[index];
+      videoAssets.push({
+        videoJobId: entry.row.videoJobId,
+        shotSetId: entry.row.shotSetId,
+        filename: entry.row.filename || entry.row.videoJobId,
+        displayName: displayNames.get(entry.row.videoJobId) || entry.row.filename || entry.row.videoJobId,
+        durationUs: probe.durationUs,
+        width: probe.width,
+        height: probe.height,
+        thumbnailUrl: `/api/projects/${encodeURIComponent(projectId)}/final-edit/shot-sets/${encodeURIComponent(currentShotSetId)}/module4-assets/${encodeURIComponent(entry.row.videoJobId)}/thumbnail`,
+        previewUrl: storagePreviewUrl(storageRoot, entry.absolutePath),
+        summary: summaries.get(entry.row.videoJobId) || '',
+        source: 'module4',
+      });
+    });
+  }
+
+  const fields = readProductionIdentityFields({ ...projectRow });
+  const exportBaseName = getCurrentExportIdentity(db, projectId)?.baseName
+    || (fields.storeCode && fields.productCode && fields.productionType && fields.editorName
+      ? buildProjectBaseName({ ...fields, namingDate: deriveProjectNamingDate({ namingDate: projectRow.namingDate || '', createdAt: projectRow.createdAt }) }) : undefined);
+  return {
+    project: {
+      exportBaseName,
+      id: projectRow.id,
+      name: projectRow.name,
+      productName: projectRow.productName || '',
+      productCategory: projectRow.productCategory || '',
+      // Redline (plan §11.1 / ExportIdentity.productCode JSDoc in types.ts /
+      // Task 2 contract test): productCode must come from projects.productCode,
+      // NEVER projects.model (that's the image-generation provider's model).
+      // This module never reads projectRow.model anywhere.
+      productCode: projectRow.productCode || '',
+      createdAt: projectRow.createdAt,
+      taskDate: formatShanghaiTaskDate(projectRow.createdAt),
+      storeCode: projectRow.storeCode || '',
+      productSubmodel: projectRow.productSubmodel || '',
+      productionType: projectRow.productionType || '',
+      editorName: projectRow.editorName || '',
+      namingDate: projectRow.namingDate || '',
+      hasExportIdentity: Boolean(projectRow.currentExportIdentityId),
+    },
+    shotSets,
+    currentShotSetId,
+    drafts,
+    videoAssets,
+  };
+}

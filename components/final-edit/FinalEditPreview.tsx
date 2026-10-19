@@ -1,0 +1,576 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { drawFramedImage } from '@/lib/final-edit/cover-framing';
+import { audioAudibleAt, videoPlaybackRate } from '@/lib/final-edit/clip-edit';
+import { OUTPUT_PRESETS, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView } from '@/lib/final-edit/types';
+import type { StyleTarget } from './FinalEditInspector';
+import { expectedVideoTimeSec, getVideoSlotPlan, paintDecodedVideoFrame, previewAudioLevelsAtTime, shouldIssueSeek } from './preview-playback';
+import { drawEditorOverlay, textStyleFont } from './text-canvas-renderer';
+import styles from './FinalEditEditor.module.css';
+
+const FPS = 24;
+const INTRO_SEC = 20 / FPS;
+
+function formatTime(timeSec: number) {
+  const value = Math.max(0, timeSec);
+  return `${String(Math.floor(value / 60)).padStart(2, '0')}:${(value % 60).toFixed(2).padStart(5, '0')}`;
+}
+
+interface PreviewAudioGraph {
+  context: AudioContext;
+  narrationGain: GainNode;
+  bgmGain: GainNode;
+}
+
+function seekMedia(element: HTMLMediaElement | null, timeSec: number) {
+  if (!element || !Number.isFinite(timeSec)) return;
+  if (element.readyState === HTMLMediaElement.HAVE_NOTHING) {
+    element.addEventListener('loadedmetadata', () => seekMedia(element, timeSec), { once: true });
+    return;
+  }
+  try {
+    element.currentTime = Math.max(0, timeSec);
+  } catch {
+    // A media source can disappear while switching groups; the next prop sync retries.
+  }
+}
+
+export function FinalEditPreview({ group, variant, assets, selectedAsset, playheadSec, seekRequestId, stopRequestId, active = true, textTarget, overlay, narrationGainDb: narrationGainDbOverride, bgmGainDb: bgmGainDbOverride, onPlaybackStart, onPlayheadChange, onPlayingChange, onTextPositionChange }: {
+  group: FinalEditGroupView;
+  variant: FinalEditVariantView;
+  assets: FinalEditAssetView[];
+  selectedAsset: FinalEditAssetView | null;
+  playheadSec: number;
+  seekRequestId?: string | number;
+  stopRequestId?: string | number;
+  active?: boolean;
+  textTarget: StyleTarget | null;
+  narrationGainDb?: number;
+  bgmGainDb?: number;
+  /** 叠加层（如包装透明 iframe）：渲染在字幕画布之后、安全区/角标之前（后两者 z-index 更高保持在上层）；调用方保证 absolute inset:0。 */
+  overlay?: ReactNode;
+  onPlaybackStart?: () => void;
+  onPlayheadChange: (timeSec: number) => void;
+  /** 播放状态变化上报（开始/暂停/停止/播完自然结束均覆盖）。 */
+  onPlayingChange?: (playing: boolean) => void;
+  onTextPositionChange: (target: StyleTarget, x: number, y: number, commit: boolean) => void;
+}) {
+  const previewRootRef = useRef<HTMLElement>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenError, setFullscreenError] = useState('');
+  useEffect(() => {
+    const update = () => setFullscreen(document.fullscreenElement === previewRootRef.current);
+    document.addEventListener('fullscreenchange', update);
+    return () => document.removeEventListener('fullscreenchange', update);
+  }, []);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const coverImageCanvasRef = useRef<HTMLCanvasElement>(null);
+  const foregroundCanvasRef = useRef<HTMLCanvasElement>(null);
+  const videoARef = useRef<HTMLVideoElement>(null);
+  const videoBRef = useRef<HTMLVideoElement>(null);
+  const narrationRef = useRef<HTMLAudioElement>(null);
+  const bgmRef = useRef<HTMLAudioElement>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioGraphRef = useRef<PreviewAudioGraph | null>(null);
+  const clockStartRef = useRef(0);
+  const clockOffsetRef = useRef(0);
+  const animationRef = useRef(0);
+  const audioStartTimerRef = useRef(0);
+  const playingRef = useRef(false);
+  const lastStartedClipRef = useRef('');
+  /** seek 合流:两 slot 各自的最新 seek 目标;seek 在途时只记录不写入,seeked 后补齐最新目标。 */
+  const seekTargetRef = useRef<[number | null, number | null]>([null, null]);
+  const emittedPlayheadsRef = useRef<number[]>([]);
+  const lastSeekRequestIdRef = useRef<string | number | undefined>(seekRequestId);
+  const lastStopRequestIdRef = useRef<string | number | undefined>(stopRequestId);
+  const playheadSecRef = useRef(playheadSec);
+  const [playing, setPlaying] = useState(false);
+  const [showSafeArea, setShowSafeArea] = useState(false);
+
+  useEffect(() => { playheadSecRef.current = playheadSec; }, [playheadSec]);
+
+  const narrationPlaybackRate = group.script.narrationConfig.playbackRate;
+  const bodyDurationSec = group.narrationDurationUs / 1_000_000 / narrationPlaybackRate;
+  const totalSec = INTRO_SEC + bodyDurationSec;
+  const rawBodyFrame = Math.max(0, Math.floor((playheadSec - INTRO_SEC) * FPS));
+  const sortedClips = useMemo(() => [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame), [variant.timeline.clips]);
+  const frozenVideoTail = rawBodyFrame >= variant.timeline.bodyFrames && sortedClips.length > 0 && sortedClips[sortedClips.length - 1].timelineOutFrame === variant.timeline.bodyFrames;
+  const bodyFrame = frozenVideoTail
+    ? Math.max(0, sortedClips[sortedClips.length - 1].timelineOutFrame - 1)
+    : rawBodyFrame;
+  const activeClipIndex = playheadSec >= INTRO_SEC
+    ? frozenVideoTail ? sortedClips.length - 1 : sortedClips.findIndex((clip) => bodyFrame >= clip.timelineInFrame && bodyFrame < clip.timelineOutFrame)
+    : -1;
+  const activeClip = activeClipIndex >= 0 ? sortedClips[activeClipIndex] : null;
+  const activeAsset = activeClip ? assets.find((asset) => asset.videoJobId === activeClip.videoJobId) || null : null;
+  const slotPlan = getVideoSlotPlan(activeClipIndex, sortedClips.length);
+  const slotIndexA = slotPlan.clipIndexes[0];
+  const slotIndexB = slotPlan.clipIndexes[1];
+  const slotClips = useMemo(
+    () => [
+      slotIndexA == null ? null : sortedClips[slotIndexA],
+      slotIndexB == null ? null : sortedClips[slotIndexB],
+    ] as [typeof activeClip, typeof activeClip],
+    [slotIndexA, slotIndexB, sortedClips],
+  );
+  const slotAssets = slotClips.map((clip) => clip ? assets.find((asset) => asset.videoJobId === clip.videoJobId) || null : null) as [FinalEditAssetView | null, FinalEditAssetView | null];
+  const activeSlot = slotPlan.activeSlot;
+  const slotAClipId = slotClips[0]?.id || '';
+  const slotASourceInFrame = slotClips[0]?.sourceInFrame ?? -1;
+  const slotBClipId = slotClips[1]?.id || '';
+  const slotBSourceInFrame = slotClips[1]?.sourceInFrame ?? -1;
+  const bodyTimeUs = Math.max(0, (playheadSec - INTRO_SEC) * 1_000_000 * narrationPlaybackRate);
+  const activeCue = playheadSec >= INTRO_SEC ? group.subtitleCues.find((cue) => bodyTimeUs >= cue.startUs && bodyTimeUs < cue.endUs) || null : null;
+  const showSelectedMaterial = !playing && Boolean(selectedAsset);
+  const activeFraming = activeClip?.framing || { scale: 1, offsetX: 0, offsetY: 0 };
+  const activeFramingScale = activeFraming.scale;
+  const activeFramingOffsetX = activeFraming.offsetX;
+  const activeFramingOffsetY = activeFraming.offsetY;
+  const previewSize = OUTPUT_PRESETS[variant.outputPreset];
+  const narrationGainDb = narrationGainDbOverride ?? group.script.narrationConfig.gainDb;
+  const bgmGainDb = bgmGainDbOverride ?? variant.bgm.gainDb;
+
+  const setAudioLevels = useCallback((timeSec: number) => {
+    const graph = audioGraphRef.current;
+    if (!graph) return;
+    const levels = previewAudioLevelsAtTime({
+      playheadSec: timeSec,
+      introSec: INTRO_SEC,
+      bodyDurationSec,
+      narrationGainDb,
+      gainDb: bgmGainDb,
+      fadeInSec: variant.bgm.fadeInSec,
+      fadeOutSec: variant.bgm.fadeOutSec,
+    });
+    const bodyUs = (timeSec - INTRO_SEC) * 1_000_000;
+    graph.narrationGain.gain.setValueAtTime(audioAudibleAt(variant.timeline.audio?.narration, bodyUs * narrationPlaybackRate) ? levels.narrationGain : 0, graph.context.currentTime);
+    graph.bgmGain.gain.setValueAtTime(audioAudibleAt(variant.timeline.audio?.bgm, bodyUs) ? levels.bgmGain : 0, graph.context.currentTime);
+  }, [bodyDurationSec, bgmGainDb, narrationGainDb, narrationPlaybackRate, variant.bgm.fadeInSec, variant.bgm.fadeOutSec, variant.timeline.audio]);
+
+  useEffect(() => {
+    setAudioLevels(playheadSecRef.current);
+  }, [setAudioLevels]);
+
+  const pauseAllMedia = useCallback(() => {
+    playingRef.current = false;
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    animationRef.current = 0;
+    if (audioStartTimerRef.current) window.clearTimeout(audioStartTimerRef.current);
+    audioStartTimerRef.current = 0;
+    videoARef.current?.pause();
+    videoBRef.current?.pause();
+    narrationRef.current?.pause();
+    bgmRef.current?.pause();
+    const graph = audioGraphRef.current;
+    if (graph) {
+      graph.narrationGain.gain.setValueAtTime(0, graph.context.currentTime);
+      graph.bgmGain.gain.setValueAtTime(0, graph.context.currentTime);
+    }
+  }, []);
+
+  const stopPlayback = useCallback(() => {
+    pauseAllMedia();
+    setPlaying(false);
+  }, [pauseAllMedia]);
+
+  const emitPlayhead = useCallback((timeSec: number) => {
+    emittedPlayheadsRef.current.push(timeSec);
+    if (emittedPlayheadsRef.current.length > 8) emittedPlayheadsRef.current.shift();
+    onPlayheadChange(timeSec);
+  }, [onPlayheadChange]);
+
+  const synchronizePausedAudio = useCallback((timeSec: number) => {
+    const bodyOffset = Math.max(0, Math.min(bodyDurationSec, timeSec - INTRO_SEC));
+    seekMedia(narrationRef.current, bodyOffset * narrationPlaybackRate);
+    const bgm = bgmRef.current;
+    if (bgm) {
+      const loopDuration = Number.isFinite(bgm.duration) && bgm.duration > 0 ? bgm.duration : bodyDurationSec;
+      seekMedia(bgm, bodyOffset % Math.max(0.1, loopDuration));
+    }
+  }, [bodyDurationSec, narrationPlaybackRate]);
+
+  useEffect(() => {
+    const narration = narrationRef.current;
+    if (!narration) return;
+    narration.defaultPlaybackRate = narrationPlaybackRate;
+    narration.playbackRate = narrationPlaybackRate;
+    narration.preservesPitch = true;
+    const bodyOffset = Math.max(0, Math.min(bodyDurationSec, playheadSecRef.current - INTRO_SEC));
+    seekMedia(narration, bodyOffset * narrationPlaybackRate);
+  }, [bodyDurationSec, narrationPlaybackRate]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const showTitle = playheadSec < INTRO_SEC && !showSelectedMaterial && group.coverTitle.enabled;
+    const cue = showSelectedMaterial ? null : activeCue;
+    const styles = group.textStyles[variant.outputPreset];
+    const fonts = showTitle
+      ? [[styles.coverPrimary, group.coverTitle.primary.text], [styles.coverSecondary, group.coverTitle.secondary.text]] as const
+      : cue ? [[styles.subtitle, cue.text]] as const : [];
+    let cancelled = false;
+    void Promise.all(fonts.map(([style, text]) => document.fonts.load(textStyleFont(style), text)))
+      .catch(() => undefined)
+      .then(() => { if (!cancelled) drawEditorOverlay(canvas, group, variant.outputPreset, cue, showTitle); });
+    return () => { cancelled = true; };
+  }, [activeCue, group, playheadSec, showSelectedMaterial, variant.outputPreset]);
+
+  useEffect(() => {
+    const canvas = coverImageCanvasRef.current;
+    if (!canvas) return;
+    canvas.width = previewSize.width;
+    canvas.height = previewSize.height;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    if (!variant.cover.sourceUrl) return;
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled) drawFramedImage(context, image, variant.cover.framing);
+    };
+    image.src = variant.cover.sourceUrl;
+    return () => { cancelled = true; };
+  }, [previewSize.height, previewSize.width, variant.cover.framing, variant.cover.sourceUrl]);
+
+  // 常驻 seeked 监听:seek 在途期间被跳过的最新目标,在 seeked 后补一次赋值,实现「最新目标获胜」。
+  useEffect(() => {
+    const videos = [videoARef.current, videoBRef.current] as const;
+    const listeners = videos.map((video, slot) => {
+      const onSeeked = () => {
+        const target = seekTargetRef.current[slot];
+        if (target == null || !video) return;
+        if (shouldIssueSeek(video, target, 1 / FPS)) {
+          try {
+            video.currentTime = target;
+          } catch {
+            // A media source can disappear while switching groups; the next prop sync retries.
+          }
+        }
+      };
+      video?.addEventListener('seeked', onSeeked);
+      return () => video?.removeEventListener('seeked', onSeeked);
+    });
+    return () => listeners.forEach((cleanup) => cleanup());
+  }, []);
+
+  useEffect(() => {
+    const videos = [videoARef.current, videoBRef.current] as const;
+    const cleanups: Array<() => void> = [];
+    videos.forEach((video, slot) => {
+      const clip = slotClips[slot];
+      if (!video || !clip) return;
+      const expected = slot === activeSlot
+        ? Math.min((clip.sourceOutFrame - 1) / FPS, expectedVideoTimeSec(clip.sourceInFrame, clip.timelineInFrame, bodyFrame, FPS, videoPlaybackRate(clip)))
+        : clip.sourceInFrame / FPS;
+      const synchronize = () => {
+        video.playbackRate = videoPlaybackRate(clip);
+        seekTargetRef.current[slot] = expected;
+        if (slot !== activeSlot) {
+          video.pause();
+          if (shouldIssueSeek(video, expected, 1 / FPS)) video.currentTime = expected;
+          return;
+        }
+        if (frozenVideoTail) {
+          video.pause();
+          if (shouldIssueSeek(video, expected, 1 / FPS)) video.currentTime = expected;
+          return;
+        }
+        if (!activeAsset || showSelectedMaterial) { video.pause(); return; }
+        if (!playing) {
+          lastStartedClipRef.current = '';
+          video.pause();
+          if (shouldIssueSeek(video, expected, 1 / FPS)) video.currentTime = expected;
+          return;
+        }
+        if (lastStartedClipRef.current === clip.id) return;
+        if (Math.abs(video.currentTime - expected) > 0.35) video.currentTime = expected;
+        lastStartedClipRef.current = clip.id;
+        void video.play().catch(() => undefined);
+      };
+      if (video.readyState >= HTMLMediaElement.HAVE_METADATA) synchronize();
+      else {
+        video.addEventListener('loadedmetadata', synchronize, { once: true });
+        cleanups.push(() => video.removeEventListener('loadedmetadata', synchronize));
+      }
+    });
+    if (activeSlot == null || !activeClip || !activeAsset || showSelectedMaterial) {
+      lastStartedClipRef.current = '';
+      videoARef.current?.pause();
+      videoBRef.current?.pause();
+    }
+    return () => cleanups.forEach((cleanup) => cleanup());
+  }, [activeAsset, activeClip, activeSlot, bodyFrame, frozenVideoTail, playing, showSelectedMaterial, slotAClipId, slotASourceInFrame, slotBClipId, slotBSourceInFrame, slotClips]);
+
+  // 帧上屏:优先 requestVideoFrameCallback——只在解码器提交新帧时画,且暂停态 seek 完成时也会触发,
+  // 拖动进度条画面能持续跟随;回退到 rAF 循环 + seeked/loadeddata 补帧。多画一次无害,少画一次是黑屏。
+  useEffect(() => {
+    const canvas = foregroundCanvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    let frame = 0;
+    let videoFrameHandle = 0;
+    let videoFrameActive = false;
+    const paint = () => {
+      const video = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
+      if (activeAsset && video) paintDecodedVideoFrame(context, canvas, video, variant.outputPreset, {
+        scale: activeFramingScale,
+        offsetX: activeFramingOffsetX,
+        offsetY: activeFramingOffsetY,
+      });
+    };
+    const loop = () => { paint(); frame = requestAnimationFrame(loop); };
+    const video = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
+    if (video && typeof video.requestVideoFrameCallback === 'function') {
+      videoFrameActive = true;
+      const scheduleVideoFrame = () => {
+        videoFrameHandle = video.requestVideoFrameCallback(() => {
+          paint();
+          // 播放中持续排下一帧;暂停/seek 态画完即止,新帧提交时自然再触发。
+          if (playing) scheduleVideoFrame();
+        });
+      };
+      scheduleVideoFrame();
+    }
+    video?.addEventListener('loadeddata', paint);
+    video?.addEventListener('seeked', paint);
+    if (playing) loop(); else paint();
+    return () => {
+      cancelAnimationFrame(frame);
+      if (videoFrameActive) video?.cancelVideoFrameCallback(videoFrameHandle);
+      video?.removeEventListener('loadeddata', paint);
+      video?.removeEventListener('seeked', paint);
+    };
+  }, [activeAsset, activeFramingOffsetX, activeFramingOffsetY, activeFramingScale, activeSlot, bodyFrame, playing, variant.outputPreset]);
+
+  useEffect(() => {
+    if (!playing) return;
+    const context = audioContextRef.current;
+    if (!context) return;
+    const tick = () => {
+      const next = clockOffsetRef.current + (context.currentTime - clockStartRef.current);
+      if (next >= totalSec) {
+        emitPlayhead(totalSec);
+        stopPlayback();
+        return;
+      }
+      setAudioLevels(next);
+      emitPlayhead(next);
+      animationRef.current = requestAnimationFrame(tick);
+    };
+    animationRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animationRef.current);
+  }, [emitPlayhead, playing, setAudioLevels, stopPlayback, totalSec]);
+
+  useEffect(() => {
+    playingRef.current = playing;
+    if (playing) return;
+    pauseAllMedia();
+  }, [pauseAllMedia, playing]);
+
+  // 播放状态统一上报：start/pause/stop/播完自然结束都经 playing state 收敛，此处单点覆盖
+  useEffect(() => {
+    onPlayingChange?.(playing);
+  }, [playing, onPlayingChange]);
+
+  useEffect(() => {
+    if (active) return;
+    pauseAllMedia();
+    const timer = window.setTimeout(() => setPlaying(false), 0);
+    return () => window.clearTimeout(timer);
+  }, [active, pauseAllMedia]);
+
+  useEffect(() => {
+    if (
+      stopRequestId === undefined
+      || stopRequestId === lastStopRequestIdRef.current
+    ) return;
+    lastStopRequestIdRef.current = stopRequestId;
+    stopPlayback();
+  }, [stopPlayback, stopRequestId]);
+
+  useEffect(() => () => {
+    pauseAllMedia();
+    const context = audioContextRef.current;
+    audioGraphRef.current = null;
+    audioContextRef.current = null;
+    if (context && context.state !== 'closed') void context.close();
+  }, [pauseAllMedia]);
+
+  useEffect(() => {
+    const requestChanged = seekRequestId !== undefined && seekRequestId !== lastSeekRequestIdRef.current;
+    lastSeekRequestIdRef.current = seekRequestId;
+    const emittedIndex = emittedPlayheadsRef.current.findIndex((value) => Math.abs(value - playheadSec) < 1e-6);
+    const internallyEmitted = emittedIndex >= 0;
+    if (internallyEmitted) emittedPlayheadsRef.current.splice(0, emittedIndex + 1);
+    else emittedPlayheadsRef.current = [];
+    if (internallyEmitted && !requestChanged) return;
+    stopPlayback();
+    synchronizePausedAudio(playheadSec);
+  }, [playheadSec, seekRequestId, stopPlayback, synchronizePausedAudio, variant.id]);
+
+  const syncAudio = (startAt: number) => {
+    const bodyOffset = Math.max(0, Math.min(bodyDurationSec, startAt - INTRO_SEC));
+    const startsInCover = startAt < INTRO_SEC;
+    if (audioStartTimerRef.current) window.clearTimeout(audioStartTimerRef.current);
+    audioStartTimerRef.current = 0;
+    if (!audioContextRef.current || !playingRef.current) return;
+    const narration = narrationRef.current;
+    const bgm = bgmRef.current;
+    const levels = previewAudioLevelsAtTime({
+      playheadSec: startAt,
+      introSec: INTRO_SEC,
+      bodyDurationSec,
+      narrationGainDb,
+      gainDb: bgmGainDb,
+      fadeInSec: variant.bgm.fadeInSec,
+      fadeOutSec: variant.bgm.fadeOutSec,
+    });
+    // 必须在用户点击的同步调用栈里 play();片头靠增益保持静音,否则浏览器/Electron
+    // 可能把 setTimeout 里的首次 play() 判定为非用户手势并直接拒绝。
+    setAudioLevels(startAt);
+    if (narration) {
+      narration.volume = 1;
+      // 片头也立即启动媒体以取得用户手势授权,但正文音频必须从 0 秒对齐。
+      seekMedia(narration, startsInCover ? 0 : bodyOffset * narrationPlaybackRate);
+      void narration.play().catch(() => undefined);
+    }
+    if (bgm && variant.bgm.trackId) {
+      const loopDuration = Number.isFinite(bgm.duration) && bgm.duration > 0 ? bgm.duration : bodyDurationSec;
+      bgm.volume = 1;
+      seekMedia(bgm, (startsInCover ? 0 : bodyOffset) % Math.max(0.1, loopDuration));
+      // Web Audio 图只接管增益;BGM 的片头淡入仍由同一次起播前的参数先归零。
+      bgm.volume = levels.bgmGain > 0 ? 1 : 0;
+      void bgm.play().catch(() => undefined);
+    }
+    if (startsInCover) {
+      // 媒体已经在片头静音播放,到正文边界再把它们拨回 0 秒,避免片头时长被吃掉。
+      audioStartTimerRef.current = window.setTimeout(() => {
+        audioStartTimerRef.current = 0;
+        if (!playingRef.current) return;
+        seekMedia(narrationRef.current, 0);
+        const currentBgm = bgmRef.current;
+        if (currentBgm && variant.bgm.trackId) {
+          const currentLoopDuration = Number.isFinite(currentBgm.duration) && currentBgm.duration > 0 ? currentBgm.duration : bodyDurationSec;
+          seekMedia(currentBgm, 0 % Math.max(0.1, currentLoopDuration));
+          currentBgm.volume = 1;
+        }
+        setAudioLevels(INTRO_SEC);
+      }, (INTRO_SEC - startAt) * 1000);
+    }
+  };
+
+  const ensureAudioGraph = () => {
+    if (audioGraphRef.current) return audioGraphRef.current;
+    const narration = narrationRef.current;
+    const bgm = bgmRef.current;
+    if (!narration || !bgm) return null;
+    const context = audioContextRef.current || new AudioContext();
+    audioContextRef.current = context;
+    const narrationGain = context.createGain();
+    const bgmGain = context.createGain();
+    context.createMediaElementSource(narration).connect(narrationGain).connect(context.destination);
+    context.createMediaElementSource(bgm).connect(bgmGain).connect(context.destination);
+    const graph = { context, narrationGain, bgmGain };
+    audioGraphRef.current = graph;
+    return graph;
+  };
+
+  const togglePlayback = () => {
+    if (!active) return;
+    if (playing) { stopPlayback(); return; }
+    const graph = ensureAudioGraph();
+    if (!graph) return;
+    const { context } = graph;
+    // resume 与 play 都必须由这次点击同步触发;不要 await resume 后再起播,否则
+    // 某些浏览器/Electron 会丢失用户手势授权。音频图会在恢复后继续输出。
+    if (context.state === 'suspended') void context.resume().catch(() => undefined);
+    const startAt = playheadSec >= totalSec ? 0 : playheadSec;
+    if (startAt !== playheadSec) emitPlayhead(startAt);
+    clockOffsetRef.current = startAt;
+    clockStartRef.current = context.currentTime;
+    setAudioLevels(startAt);
+    onPlaybackStart?.();
+    playingRef.current = true;
+    setPlaying(true);
+    syncAudio(startAt);
+  };
+
+  const seek = (next: number) => {
+    const clamped = Math.max(0, Math.min(totalSec, next));
+    stopPlayback();
+    synchronizePausedAudio(clamped);
+    emitPlayhead(clamped);
+  };
+
+  const enterFullscreen = async () => {
+    const root = previewRootRef.current;
+    if (!root) return;
+    setFullscreenError('');
+    try {
+      if (document.fullscreenElement === root) await document.exitFullscreen();
+      else await root.requestFullscreen();
+    } catch { setFullscreenError('无法进入全屏，请重试'); }
+  };
+
+  const previewClass = variant.outputPreset === '16x9' ? styles.preview169 : variant.outputPreset === '9x16' ? styles.preview916 : styles.preview34;
+  const videoAAsset = slotAssets[0];
+  const videoBAsset = slotAssets[1];
+  const canDragText = !showSelectedMaterial && Boolean(textTarget) && ((playheadSec < INTRO_SEC && textTarget !== 'subtitle') || (playheadSec >= INTRO_SEC && textTarget === 'subtitle' && activeCue));
+  const beginTextDrag = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!textTarget || !canDragText) return;
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    let latest = { x: 0.5, y: 0.5 };
+    const move = (pointer: PointerEvent) => {
+      latest = { x: Math.max(0, Math.min(1, (pointer.clientX - rect.left) / Math.max(1, rect.width))), y: Math.max(0, Math.min(1, (pointer.clientY - rect.top) / Math.max(1, rect.height))) };
+      onTextPositionChange(textTarget, latest.x, latest.y, false);
+    };
+    const up = (pointer: PointerEvent) => {
+      move(pointer);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      onTextPositionChange(textTarget, latest.x, latest.y, true);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up, { once: true });
+  };
+
+  return (
+    <main ref={previewRootRef} className={styles.previewColumn} aria-label="成片预览">
+      <div className={styles.previewToolbar}><span>{variant.outputPreset.replace('x', ':')} · {FPS} fps</span><span>{showSelectedMaterial ? '素材预览' : activeClip ? `片段 ${activeClipIndex + 1}` : playheadSec < INTRO_SEC ? '封面' : '画面缺口'}</span></div>
+      <div className={styles.previewStageWrap}>
+        <div className={`${styles.previewStage} ${previewClass}`}>
+          {showSelectedMaterial && selectedAsset && <img className={`${styles.previewMedia} ${variant.outputPreset === '16x9' ? styles.previewContain : ''}`} src={selectedAsset.thumbnailUrl} alt="当前素材预览" />}
+          <canvas ref={coverImageCanvasRef} width={previewSize.width} height={previewSize.height} className={`${styles.previewMedia} ${showSelectedMaterial || playheadSec >= INTRO_SEC || !variant.cover.sourceUrl ? styles.previewInactive : ''}`} aria-label="封面预览" />
+          <video ref={videoARef} src={videoAAsset?.previewUrl} className={`${styles.previewMedia} ${styles.previewInactive}`} muted playsInline preload="auto" aria-hidden="true" />
+          <video ref={videoBRef} src={videoBAsset?.previewUrl} className={`${styles.previewMedia} ${styles.previewInactive}`} muted playsInline preload="auto" aria-hidden="true" />
+          <canvas ref={foregroundCanvasRef} width={previewSize.width} height={previewSize.height} className={`${styles.previewMedia} ${showSelectedMaterial || playheadSec < INTRO_SEC || !activeAsset ? styles.previewInactive : ''}`} />
+          {!showSelectedMaterial && playheadSec >= INTRO_SEC && !activeAsset && <div className={styles.previewGap} style={{ background: 'black' }} aria-label="视频空位" />}
+          <canvas ref={canvasRef} className={`${styles.previewCanvas} ${canDragText ? styles.draggableOverlay : ''}`} onPointerDown={beginTextDrag} />
+          {overlay}
+          {showSafeArea && <div className={styles.previewSafeArea} aria-label="4% 预览安全区" />}
+          <span className={styles.previewBadge}>{showSelectedMaterial ? '选中素材' : '成片时间线'}</span>
+        </div>
+      </div>
+      <div className={styles.playbackBar}>
+        <button type="button" className={styles.playButton} data-mixcut-toggle-play aria-label={playing ? '暂停' : '播放成片'} onClick={() => void togglePlayback()}>{playing ? 'Ⅱ' : '▶'}</button>
+        <span className={styles.timecode}>{formatTime(playheadSec)} / {formatTime(totalSec)}</span>
+        <input aria-label="播放位置" type="range" min={0} max={totalSec} step={1 / FPS} value={playheadSec} onChange={(event) => seek(Number(event.target.value))} />
+        <button
+          type="button"
+          className={`${styles.actionButton} ${showSafeArea ? styles.safeAreaButtonActive : ''}`}
+          aria-label={showSafeArea ? '隐藏安全区' : '显示安全区'}
+          aria-pressed={showSafeArea}
+          onClick={() => setShowSafeArea((visible) => !visible)}
+        >安全区</button>
+        <button type="button" className={styles.actionButton} aria-label={fullscreen ? "退出全屏" : "全屏预览"} onClick={() => void enterFullscreen()}>{fullscreen ? "退出全屏" : "全屏"}</button>
+      </div>
+      {fullscreenError && <p role="alert">{fullscreenError}</p>}
+      <audio ref={narrationRef} preload="metadata" src={`/api/final-edit-groups/${group.id}/narration`} />
+      <audio ref={bgmRef} preload="metadata" loop src={variant.bgm.trackId ? `/api/final-edit-bgm/${variant.bgm.trackId}/file` : undefined} />
+    </main>
+  );
+}

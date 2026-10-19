@@ -1,0 +1,66 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+const panel = fs.readFileSync(new URL('../components/ScriptPanel.tsx', import.meta.url), 'utf8');
+const strategy = fs.readFileSync(new URL('../components/ScriptStrategyConfig.tsx', import.meta.url), 'utf8');
+const result = fs.readFileSync(new URL('../components/ScriptResultView.tsx', import.meta.url), 'utf8');
+const picker = fs.readFileSync(new URL('../components/ScriptTemplatePicker.tsx', import.meta.url), 'utf8');
+const creativePackage = fs.readFileSync(new URL('../app/api/projects/[id]/creative-package/route.ts', import.meta.url), 'utf8');
+
+assert.match(panel, /analyzed\.recommendedTemplate\.id/);
+assert.match(panel, /parsed\.version === 2 && parsed\.shotSetId/);
+assert.match(panel, /这份脚本由旧版本生成/, '未声明版本的历史草稿继续走既有只读提示路径');
+assert.doesNotMatch(panel, /await loadShotImages\(selectedShotSetId\)/, 'V3 生成成功后不得加载分镜图片');
+assert.match(strategy, /目标总时长（包含封面）/);
+assert.match(strategy, /口播正文约/);
+assert.match(strategy, /minContentCharacters/);
+assert.match(strategy, /视觉生成模型/);
+assert.match(strategy, /p\.supportsVision/);
+assert.match(strategy, /发送给该模型进行视觉理解/);
+assert.match(strategy, /人群匹配/);
+assert.match(strategy, /平台匹配/);
+assert.match(strategy, /卖点强度/);
+assert.match(strategy, /历史策略分析不完整/);
+assert.match(strategy, /v3AnalysisIsComplete/);
+assert.match(panel, /p\.configured && p\.supportsVision/, '脚本生成模型必须默认选择已配置且支持视觉的供应商');
+assert.match(panel, /getDefaultSelectedSellingPointKeys\(loadedAnalysis\)/, '加载 V3 分析时必须统一选择最终排名前三');
+assert.match(panel, /getDefaultSelectedSellingPointKeys\(analyzed\)/, '新分析完成时必须统一选择最终排名前三');
+assert.match(panel, /resolveSelectedSellingPoints\(analysis, selectedSellingPointKeys\)/, '生成入参必须通过稳定 ID 回填卖点，不能按标题猜测');
+assert.match(panel, /spWithData\.length !== selectedSellingPointKeys\.length/, '历史选择键失效时必须阻止提交空或残缺卖点');
+assert.match(strategy, /getSellingPointSelectionKey\(r\)/, '卖点勾选状态必须使用稳定 ID 作为身份键');
+assert.match(panel, /hydrateStrategyFromDraft\(first, \{ restoreSellingPoints: false \}\)/, '初次加载最新草稿不得覆盖分析排名前三');
+assert.doesNotMatch(panel, /filter\(\(ranking\) => ranking\.priority === 'highest'\)\.slice\(0, 1\)/, '不得退回只选择唯一 highest');
+assert.match(panel, /data\.message \|\| data\.error/, '策略分析合同失败时必须优先展示服务端中文说明，而不是只显示错误码');
+assert.match(panel, /请先填写目标人群/, '没有目标人群时必须在调用模型前阻止泛化分析');
+
+// ── 工作流 A 任务 A3：脚本生成任务化后的前端恢复合同 ──
+assert.doesNotMatch(panel, /generationAbortRef/, '组件卸载不得再持有或中止生成请求；服务端任务生命周期由 script-generation 任务接口拥有');
+assert.doesNotMatch(panel, /readScriptGenerationStream|script-generation-stream/, '旧流式生成通道已删除，前端不得再消费客户端拥有的生成流');
+assert.doesNotMatch(panel, /action:\s*'generate'|action:\s*'cancel'/, '旧 /script 路由的生成/取消分支已返回 410，前端不得再调用');
+assert.match(panel, /\/api\/projects\/\$\{projectId\}\/script-generation/, '挂载时必须并行 GET 项目级 script-generation 任务状态');
+assert.match(panel, /state === 'running'/, '发现 running 任务时必须恢复生成中状态');
+assert.match(panel, /setTimeout\([^\n]*,\s*1000\)/, 'running 状态下必须约 1 秒轮询一次任务状态');
+assert.match(panel, /method:\s*'DELETE'/, '取消生成必须调用 DELETE，不得用 abort 查询请求代替服务端取消');
+assert.match(panel, /script-generation\?generationId=/, 'DELETE 取消必须携带 generationId 查询参数');
+assert.match(panel, /'succeeded'/, '必须处理 succeeded 终态');
+assert.match(panel, /snapshot\.draftId/, 'succeeded 后必须按返回的 draftId 重新加载并选中草稿');
+assert.match(panel, /setSelectedDraftId\(/, 'succeeded 后必须选中结果草稿');
+assert.match(panel, /snapshot\.error\?\.message/, 'failed 必须展示服务端返回的中文错误说明并允许重试');
+assert.match(panel, /'cancelled'/, '必须处理 cancelled 终态并恢复按钮状态，不弹失败提示');
+assert.match(panel, /role="progressbar"/, '生成中必须显示可访问的进度条');
+assert.match(panel, /aria-valuenow=\{generationProgress\.percent\}/, '进度条必须暴露当前进度值');
+assert.match(panel, /handleCancelGeneration/, '生成中必须提供取消处理器');
+assert.match(panel, /取消生成/, '生成中必须显示取消按钮');
+assert.match(result, /复制字幕稿/);
+assert.match(result, /复制配音稿/);
+assert.match(result, /完整字幕稿/);
+assert.match(result, /完整配音稿（保留自然标点）/);
+assert.match(result, /卖点采用情况/);
+assert.match(result, /图片暂不支持/);
+assert.match(result, /sellingPointUsage/);
+assert.match(picker, /SCRIPT_TEMPLATES/);
+assert.match(creativePackage, /manifestScript/);
+assert.match(creativePackage, /fullSubtitle/);
+assert.match(creativePackage, /if \(isV3\)/);
+
+console.log('script v3 UI contract tests passed');
