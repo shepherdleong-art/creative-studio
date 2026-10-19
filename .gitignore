@@ -86,3 +86,10 @@ next-env.d.ts
 /packaging/renders/
 /packaging/demo-*/
 /packaging/package-lock.json
+
+# 0.5.2 装配残留工具脚本（0.7.0 运行时已不包含；沙箱限制无法删除，排除入库）
+/packaging/asset-tools.cjs
+/packaging/process-assets.cjs
+/packaging/render-overlay.mjs
+# 用户字体运行时物化目录（内容寻址，由 system-fonts/select 在渲染时生成）
+/packaging/fonts/user/

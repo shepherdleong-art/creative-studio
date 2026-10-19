@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "files": {
+    "lib/film-render/templates/classic-v1.ts": "e155de849c54512d3294a16a4d3d0add2e91c639a5e8ad56b5cfe9201833bc71",
+    "lib/film-render/templates/classic-callouts-v1.ts": "ef97d6e9d2de914cd45126211a1e150924883b04782abc7584989a8bf4844913",
+    "lib/film-render/python-format.ts": "301fe8dfa2cc7e14ed22d10bd447e68302ee085559d57dc51d5846f7b4d78a27",
+    "lib/film-render/overlay-base.ts": "413b11fd593cd91f89752265113f2d3e2018b0bf9ff689de633ce550e5a3cea2",
+    "lib/film-render/overlay-subtitles.ts": "432505d87e1dc714eb9fe28405eea706bf61f5851f455f8a7dd413247bc9187c",
+    "lib/media-core/packaging-render.ts": "7873a2864de4f8a5f130917392a5ba09e2e6f5d3498c17307a553440b7f420dd",
+    "lib/media-core/packaging-runtime.ts": "d83f8b032a64ff5acedc953eb7ac6c43acbba845f83e637bc3c02c9bbac9d1cb",
+    "lib/media-core/packaging-vars.ts": "dc771f6de7a7e907e9f4f9660f3267ba0a6657dda523c6967edcf9a65886508d",
+    "lib/media-core/cover-title-svg.ts": "d9149b75cfb7fbfd670cd9e8fdb1282c5a8f4cbb63ef05dacaaa7221623508cd",
+    "lib/media-core/cover-domain.ts": "78855e4f215b214fe658cf9f42ed0ab65f78b30b6b78a3a8df0b6a53599a8e48"
+  }
+}

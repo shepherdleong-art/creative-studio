@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<title>包装层 · 花字种草（v4 素材复刻版）</title>
+<script src="gsap.min.js"></script>
+<style>
+  /* 方正正大黑（公司已购方正全库授权）：主副标题/卖点默认字体，用户可在包装界面更换 */
+  @font-face { font-family: "FZZDHei"; src: url("fonts/FZZDHJW.TTF") format("truetype"); font-weight: 400 900; }
+  /* 方正粗圆简：右上角「林氏好物分享」固定角标 */
+  @font-face { font-family: "FZCuYuan"; src: url("fonts/FZY4JW.TTF") format("truetype"); font-weight: 400 900; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  #root { position: absolute; inset: 0; container-type: size; }
+  /* 吸色深浅对（管线注入 window.__palette 覆盖；默认深棕/奶白兜底） */
+  #root { --ink-d: #6B4A3A; --ink-l: #F5EDE0; --ink-black: #181210; }
+
+  /* ---- v4 花字种草：用户素材三层叠放（视频窗在 base 透明区）+ 吸色变色 + 双层描边标题 + 钩子卖点标签 ---- */
+
+  .stage { position: absolute; inset: 0; z-index: 1; }
+
+  /* 变色素材层：实色底（mask 取原素材 alpha）+ 灰度模板 multiply（明暗质感保留、随吸色上色） */
+  .tint { position: absolute; inset: 0; isolation: isolate; pointer-events: none; }
+  .tint .fill { position: absolute; inset: 0; -webkit-mask-size: 100% 100%; mask-size: 100% 100%; }
+  .tint .shade { position: absolute; inset: 0; width: 100%; height: 100%; mix-blend-mode: multiply; }
+  .layer-base { z-index: 1; }
+  .layer-base .fill { background: var(--ink-l); -webkit-mask-image: url("assets/base.png"); mask-image: url("assets/base.png"); }
+  .layer-frame { z-index: 2; }
+  .layer-frame .fill { background: var(--ink-d); -webkit-mask-image: url("assets/frame.png"); mask-image: url("assets/frame.png"); }
+  /* 手部层：固定不变色，压所有层 */
+  .layer-hand { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+  .layer-hand img { width: 100%; height: 100%; display: block; }
+
+  /* 主副标题：双层描边（底层黑粗描边 ::before，上层彩描边+填充 ::after），元素本体文字仅作尺寸占位 */
+  .title {
+    position: absolute; top: 3.2%; left: 5%; z-index: 3; white-space: nowrap;
+    font-family: "UserTitle", "FZZDHei", sans-serif;
+    font-size: 13.5cqw; letter-spacing: .3cqw; color: transparent;
+  }
+  .subtitle {
+    position: absolute; top: 17%; left: 14.5%; z-index: 3; white-space: nowrap;
+    font-family: "UserSubtitle", "FZZDHei", sans-serif;
+    font-size: 10.2cqw; letter-spacing: .3cqw; color: transparent;
+  }
+  .title::before, .subtitle::before {
+    content: attr(data-text); position: absolute; left: 0; top: 0;
+    -webkit-text-stroke: 2.2cqw var(--ink-black); paint-order: stroke; color: transparent;
+  }
+  /* 主标题：深暖填充 + 浅暖内描边 */
+  .title::after {
+    content: attr(data-text); position: absolute; left: 0; top: 0;
+    -webkit-text-stroke: 1.05cqw var(--ink-l); paint-order: stroke fill; color: var(--ink-d);
+  }
+  /* 副标题：反转——浅暖填充 + 深暖内描边 */
+  .subtitle::after {
+    content: attr(data-text); position: absolute; left: 0; top: 0;
+    -webkit-text-stroke: 1.05cqw var(--ink-d); paint-order: stroke fill; color: var(--ink-l);
+  }
+
+  /* 右上角固定角标：林氏好物分享（方正粗圆简、黑色、两行右对齐，写死） */
+  .brand {
+    position: absolute; top: 6.5%; right: 8.5%; z-index: 3; text-align: right;
+    font-family: "FZCuYuan", "FZZDHei", sans-serif;
+    font-size: 4.4cqw; line-height: 1.3; letter-spacing: .2cqw; color: var(--ink-black);
+  }
+
+  /* 卖点标签：米白长条 + 左侧圆圈钩（钩子随主标题吸色方案=深暖）+ 深暖文字黑粗描边 */
+  .ptag {
+    position: relative; display: inline-flex; align-items: center; gap: 1.2cqw;
+    background: var(--ink-l); border-radius: 1.6cqw; padding: 1.1cqw 2.4cqw 1.1cqw 1.3cqw;
+    box-shadow: .3cqw .4cqw 0 rgba(0,0,0,.12);
+  }
+  .ptag .check {
+    width: 3.6cqw; height: 3.6cqw; flex: none;
+    border: .5cqw solid var(--ink-d); border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .ptag .check svg { width: 64%; height: 64%; display: block; }
+  .ptag .check path { stroke: var(--ink-d); }
+  .ptag .ptxt {
+    white-space: nowrap;
+    font-family: "UserPoint", "FZZDHei", sans-serif; font-size: 3.4cqw; letter-spacing: .15cqw;
+    color: var(--ink-l); -webkit-text-stroke: .7cqw var(--ink-black); paint-order: stroke fill;
+  }
+
+  /* 封面右下标签组：≤20% 画幅、贴紧微堆叠、预设小角度交替（禁真随机，逐帧渲染须可复现） */
+  .cover-tags {
+    position: absolute; right: 4%; bottom: 5%; z-index: 4;
+    display: flex; flex-direction: column; align-items: flex-end; gap: .9cqw;
+  }
+  .cover-tags .ptag:nth-child(1) { transform: rotate(-1.6deg); margin-right: 1.5cqw; }
+  .cover-tags .ptag:nth-child(2) { transform: rotate(1.2deg); }
+  .cover-tags .ptag:nth-child(3) { transform: rotate(-.9deg); margin-right: 2.2cqw; }
+
+  /* 占位文字（主/副标题抓取失败时模板端填充「标题需修改」/「副标题需修改」）：仅编辑态可见，
+     CLI 渲染态隐藏不进成片；占位不写入数据层——抓取成功绝不显示占位（2026-10-12 用户铁律），
+     导出前由 enqueueRender 校验空值弹窗提醒 */
+  [data-placeholder] { visibility: hidden; }
+  html[data-edit] [data-placeholder] { visibility: visible; }
+</style>
+</head>
+<body>
+  <div id="root"
+    data-composition-id="overlay"
+    data-duration="6"
+    data-fps="30"
+    data-width="1080"
+    data-height="1440"
+    data-composition-variables='{"title":{"type":"string","default":"单人沙发"},"subtitle":{"type":"string","default":"打造舒适家"},"point1":{"type":"string","default":"可拆洗设计"},"point2":{"type":"string","default":"高回弹海绵"},"point3":{"type":"string","default":"稳固实木框架"}}'
+  >
+    <div class="stage">
+      <div class="tint layer-base"><div class="fill"></div><img class="shade" src="assets/base-gray.png" alt=""/></div>
+      <div class="tint layer-frame"><div class="fill"></div><img class="shade" src="assets/frame-gray.png" alt=""/></div>
+      <div class="title" id="title" data-point-id="cover:title" data-text="单人沙发">单人沙发</div>
+      <div class="subtitle" id="subtitle" data-point-id="cover:subtitle" data-text="打造舒适家">打造舒适家</div>
+      <div class="brand">林氏好物<br/>分享</div>
+      <div class="cover-tags" id="coverTags"></div>
+      <div class="layer-hand"><img src="assets/hand.png" alt=""/></div>
+    </div>
+    <div id="dyn"></div>
+  </div>
+
+<script>
+(function () {
+  const rootEl = document.getElementById("root");
+  const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+  const V = (window.compositionVariables)
+    || (window.__hyperframes && window.__hyperframes.getVariables && window.__hyperframes.getVariables())
+    || {};
+  // 总时长：优先 V.totalSec（预览路由按真实成片注入）；渲染管线会把 data-duration 改写为探针实测时长作兜底
+  // （勿反转优先级：模板源硬编码 6s 曾把超窗卖点钳到末帧、尾段全程残留——2026-10-08 验收实锤）
+  const totalSec = Number(V.totalSec) > 0 ? Number(V.totalSec) : (parseFloat(rootEl.dataset.duration) || 5);
+  const coverSec = clamp(Number(V.coverSec) || 0.8, 0.3, 2);
+
+  // 吸色注入（管线封面帧取色，暖色优先深浅对）
+  const P = window.__palette || {};
+  if (typeof P.d === "string") rootEl.style.setProperty("--ink-d", P.d);
+  if (typeof P.l === "string") rootEl.style.setProperty("--ink-l", P.l);
+
+  // A 专属：ink-d 饱和度/亮度抬一档（用户 2026-09-07：与 D 同款，不要沉闷；模板侧派生，不动共用管线）
+  (function boostInkD() {
+    const cs = getComputedStyle(rootEl).getPropertyValue("--ink-d").trim();
+    const m = cs.match(/#([0-9A-Fa-f]{6})/);
+    if (!m) return;
+    const n = parseInt(m[1], 16);
+    let r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+    let h = 0; const l = (mx + mn) / 2;
+    const s = d === 0 ? 0 : (l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn));
+    if (d !== 0) h = (mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4) * 60;
+    const s2 = Math.min(0.7, s + 0.1), l2 = Math.min(0.5, l + 0.08);
+    const c = (1 - Math.abs(2 * l2 - 1)) * s2;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const mm = l2 - c / 2;
+    let rr = 0, gg = 0, bb = 0;
+    if (h < 60) { rr = c; gg = x; } else if (h < 120) { rr = x; gg = c; }
+    else if (h < 180) { gg = c; bb = x; } else if (h < 240) { gg = x; bb = c; }
+    else if (h < 300) { rr = x; bb = c; } else { rr = c; bb = x; }
+    const f = (v) => Math.round((v + mm) * 255).toString(16).padStart(2, "0");
+    rootEl.style.setProperty("--ink-d", "#" + f(rr) + f(gg) + f(bb));
+  })();
+
+  // 文案注入（元素本体作尺寸占位，::before/::after 双描边绘制）。
+  // 抓取失败（空文案）：主/副标题填充占位文字 + data-placeholder 标记——仅编辑态可见（CLI 渲染隐藏不进成片），
+  // 占位不写入数据层，抓取成功绝不显示（2026-10-12 用户铁律）；无占位文字的元素（卖点等）空=彻底不显示
+  const setText = (id, v, placeholderText) => {
+    const el = document.getElementById(id);
+    const t = String(v ?? el.textContent).trim();
+    if (!t) {
+      if (placeholderText) { el.dataset.placeholder = "1"; el.textContent = placeholderText; el.dataset.text = placeholderText; }
+      else el.style.display = "none";
+      return;
+    }
+    el.textContent = t;
+    el.dataset.text = t;
+  };
+  setText("title", V.title, "标题需修改");
+  setText("subtitle", V.subtitle, "副标题需修改");
+
+  /* 标题/副标题基准几何预捕获（§18 标题拖拽）：必须在任何 fit 改写内联样式之前——
+     fitTitle 会写副标题内联 top，若等首次 apply 才捕获 base，会把「被自动下移的值」误存为模板默认，
+     标题被用户接管后副标题就回不到 CSS 基准（验证实锤：长标题+标题布局时副标题卡在 26.63%）。 */
+  document.querySelectorAll('[data-point-id="cover:title"], [data-point-id="cover:subtitle"]').forEach((el) => {
+    el.dataset.baseCap = '1'; el.dataset.baseL = el.style.left || ''; el.dataset.baseT = el.style.top || ''; el.dataset.baseZ = el.style.zoom || ''; el.dataset.baseR = el.style.rotate || '';
+  });
+
+  /* 画幅边界保护（2026-10-09 主标题右边界升级）：主标题不得越过「林氏好物」徽章左缘（留 2cqw 间距含描边光晕），
+     触界先缩字号（60% 下限）；仍触界则折两行（限宽=安全宽度）继续缩（40% 绝对下限）；
+     副标题随标题块实际底边自动下移（+1.2% 间距，不低于基准 17%——短标题不带动）。
+     副标题本身只需不出画布。全程确定性（逐帧可复现）；refit 先还原基准字号/单行/限宽再重算（幂等）。
+     §18.3 用户决策：标题/副标题存在用户布局（dataset.ul）时自动适配停用——主标题仅保留画幅保护
+     （单行缩字号不出画布，不折行），副标题不再自动下移；↺ 复位清旗标后恢复全自动。 */
+  const SUBTITLE_BASE_TOP = 17; // 副标题基准 top（% 高，与 CSS 一致）
+  function fitTitle(el, subtitleEl) {
+    if (!el || el.style.display === "none") return;
+    const rootRect = rootEl.getBoundingClientRect();
+    const locked = el.dataset.ul === '1'; // 用户布局接管：右边界/折行停用
+    const brandEl = locked ? null : document.querySelector(".brand");
+    const brandLeft = brandEl ? brandEl.getBoundingClientRect().left : rootRect.right;
+    const gap = rootRect.width * 0.02;
+    const boundary = Math.min(rootRect.right - 2, brandLeft - gap); // 主标题右缘不可逾越的 x 坐标（locked 时=画布右缘）
+    const leftEdge = rootRect.left + rootRect.width * 0.05; // title left:5%
+    // 从当前画幅的 CSS 比例字号重算，不能缓存旧视口的 px，也不能累乘上次 fit 结果。
+    el.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(el).fontSize);
+    if (!base) return;
+    el.style.whiteSpace = "nowrap";
+    el.style.maxWidth = "";
+    el.style.lineHeight = "";
+    let size = base;
+    el.style.fontSize = size.toFixed(2) + "px";
+    if (locked) {
+      // 用户布局接管：仅画幅保护（单行缩字号不出画布，60% 下限；测量在 refit 回几何后进行，不响应用户 zoom/位移）
+      for (let i = 0; i < 24; i++) {
+        const r = el.getBoundingClientRect();
+        if (r.left >= rootRect.left + 2 && r.right <= rootRect.right - 2) break;
+        if (size <= base * 0.6) break;
+        size *= 0.96;
+        el.style.fontSize = size.toFixed(2) + "px";
+      }
+      return; // 副标题自动下移一并停用（locked 主标题不带动；副标题自身 locked 判断在下方统一分支外）
+    }
+    const fitsLine = () => {
+      const r = el.getBoundingClientRect();
+      return r.left >= rootRect.left + 2 && r.right <= boundary;
+    };
+    // 阶段一：单行缩字号（60% 下限）——普通长度到此为止，不换行
+    for (let i = 0; i < 24 && !fitsLine(); i++) {
+      if (size <= base * 0.6) break;
+      size *= 0.96;
+      el.style.fontSize = size.toFixed(2) + "px";
+    }
+    // 阶段二：仍触界 → 折两行（行高收紧 + 限宽=安全宽度）继续缩（40% 绝对下限）
+    if (!fitsLine()) {
+      el.style.whiteSpace = "normal";
+      el.style.lineHeight = "1.05";
+      el.style.maxWidth = Math.max(0, boundary - leftEdge) + "px";
+      for (let i = 0; i < 24; i++) {
+        const r = el.getBoundingClientRect();
+        if (r.left >= rootRect.left + 2 && r.right <= boundary + 1) break;
+        if (size <= base * 0.4) break;
+        size *= 0.96;
+        el.style.fontSize = size.toFixed(2) + "px";
+      }
+    }
+    // 副标题自动下移：标题块底边 +1.2% 间距，不低于基准（短/缩小标题不带动）；副标题被用户接管时停用
+    if (subtitleEl && subtitleEl.style.display !== "none" && subtitleEl.dataset.ul !== '1') {
+      const titleBottomPct = (el.getBoundingClientRect().bottom - rootRect.top) / rootRect.height * 100;
+      subtitleEl.style.top = Math.max(SUBTITLE_BASE_TOP, titleBottomPct + 1.2).toFixed(2) + "%";
+    }
+  }
+  function fitToCanvas(el) {
+    if (!el || el.style.display === "none") return;
+    // 从当前画幅的 CSS 比例字号重算，不能缓存旧视口的 px，也不能累乘上次 fit 结果。
+    el.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(el).fontSize);
+    if (!base) return;
+    let size = base;
+    el.style.fontSize = size.toFixed(2) + "px";
+    const rootRect = rootEl.getBoundingClientRect();
+    for (let i = 0; i < 24; i++) {
+      const r = el.getBoundingClientRect();
+      if (r.left >= rootRect.left + 2 && r.right <= rootRect.right - 2) break;
+      size *= 0.96;
+      el.style.fontSize = size.toFixed(2) + "px";
+      if (size < base * 0.6) break;
+    }
+  }
+  const fitHeadline = () => {
+    const subtitleEl = document.getElementById("subtitle");
+    fitTitle(document.getElementById("title"), subtitleEl);
+    fitToCanvas(subtitleEl);
+  };
+  fitHeadline();
+
+  /* 卖点标签（封面右下 + 正片动态共用同一结构） */
+  const CHECK_SVG = '<svg viewBox="0 0 24 24"><path d="M5 12.5 L10 17.5 L19 7" fill="none" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  function makeTag(text) {
+    const el = document.createElement("div");
+    el.className = "ptag";
+    el.innerHTML = `<span class="check">${CHECK_SVG}</span><span class="ptxt">${String(text || "")}</span>`;
+    return el;
+  }
+  /* 标签过宽纯缩字号（不截断）：maxW 为根宽占比；每次还原 CSS 比例字号，避免重复缩小或缓存旧 px */
+  function fitTag(el, maxW) {
+    const txt = el.querySelector(".ptxt");
+    if (!txt) return;
+    txt.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(txt).fontSize);
+    if (!base) return;
+    let size = base;
+    txt.style.fontSize = size.toFixed(2) + "px";
+    const limit = rootEl.clientWidth * maxW;
+    for (let i = 0; i < 20 && el.offsetWidth > limit; i++) {
+      size *= 0.94;
+      if (size < base * 0.5) break;
+      txt.style.fontSize = size.toFixed(2) + "px";
+    }
+  }
+
+  // 封面右下 3 个标签（空文案彻底不显示，2026-10-12 定稿）
+  const coverTagsHost = document.getElementById("coverTags");
+  ["point1", "point2", "point3"].forEach((k, i) => {
+    const t = String(V[k] || "").trim();
+    const tag = makeTag(t);
+    tag.dataset.pointId = "cover:" + k; // §8 版式覆盖钩子
+    if (!t) tag.style.display = "none";
+    coverTagsHost.appendChild(tag);
+    if (t) fitTag(tag, 0.42);
+  });
+
+  const fitAll = () => {
+    fitHeadline();
+    coverTagsHost.querySelectorAll(".ptag").forEach((t) => { if (t.style.display !== "none") fitTag(t, 0.42); });
+    document.querySelectorAll("#dyn .ptag").forEach((t) => fitTag(t, 0.44));
+  };
+
+  // 卖点时序
+  const cues = (Array.isArray(V.pointCues) ? V.pointCues : [])
+    .filter((c) => c && typeof c.text === "string" && c.text.trim());
+  const mode = (V.pointCuesMode === "even" || V.pointCuesMode === "none") ? V.pointCuesMode : "timed";
+  const distributeEven = (list) => {
+    const span = Math.max(1, totalSec - coverSec - 0.4);
+    return list.map((c, i) => {
+      const slot = span / list.length;
+      const start = coverSec + i * slot + slot * 0.05;
+      return { id: c.id, text: c.text, startSec: start, endSec: Math.min(start + Math.max(1.2, slot * 0.85), totalSec) };
+    });
+  };
+
+  // 6 槽位 Z 字视线路径（v3 定稿，确定性禁随机）
+  const SLOTS = [
+    { x: 0.26, y: 0.34, r: -1.5 }, { x: 0.70, y: 0.40, r: 1.5 },
+    { x: 0.30, y: 0.48, r: -1 },   { x: 0.66, y: 0.54, r: 1.8 },
+    { x: 0.38, y: 0.28, r: -2 },   { x: 0.62, y: 0.62, r: 1 },
+  ];
+
+  const dynHost = document.getElementById("dyn");
+  const tl = gsap.timeline({ paused: true });
+
+  // 固定渲染命令保持完整静帧；工作台默认保留原有退场动画。
+  if (V.staticCover === true) tl.set(".stage", { opacity: 0 }, coverSec);
+  else tl.to(".stage", { opacity: 0, y: -18, duration: 0.18, ease: "power2.in" }, Math.max(0, coverSec - 0.18));
+
+  // 正片卖点联动
+  if (mode !== "none") {
+    const bodyItems = mode === "even" ? distributeEven(cues) : cues;
+    bodyItems.forEach((cue, i) => {
+      const s = SLOTS[i % SLOTS.length];
+      const el = makeTag(cue.text);
+      if (cue.id) el.dataset.pointId = "cue:" + cue.id; // §8 版式覆盖钩子
+      el.style.position = "absolute";
+      el.style.left = `${s.x * 100}%`;
+      el.style.top = `${s.y * 100}%`;
+      el.style.transform = `translate(-50%,-50%) rotate(${s.r}deg)`;
+      dynHost.appendChild(el);
+      fitTag(el, 0.44);
+      const inAt = clamp(Number(cue.startSec) || coverSec, coverSec + 0.15, Math.max(coverSec + 0.2, totalSec - 0.1));
+      const outAt = clamp((Number(cue.endSec) || inAt + 1.2) + 0.3, inAt + 1.2, totalSec);
+      // 显式保留百分比居中，避免 GSAP 把初始 translateY(-50%) 缓存为旧高度的 px。
+      gsap.set(el, { x: 0, y: 0, xPercent: -50, yPercent: -50, opacity: 0, scale: 0.5 });
+      tl.to(el, { opacity: 1, scale: 1, duration: 0.3, ease: "back.out(1.5)" }, inAt)
+        .to(el, { opacity: 0, scale: 0.7, duration: 0.3, ease: "back.in(1.2)" }, outAt - 0.3);
+    });
+  }
+
+  // ===== §8 版式覆盖 v2：data-point-id 钩子匹配 layouts（四模板同构） =====
+  // 封面 cover:point1..3/title/subtitle ← layouts.cover.<键>；正片 cue:<cueId> ← layouts.cues[cueId]；无匹配保持模板默认版式。
+  // layouts v2 语义：x/y = 元素可视中心点在画布 #root 矩形上的百分比坐标（0~100，绝对坐标，非 style 偏移，文字改长不漂移）；
+  // scale = CSS zoom 倍率 0.3~3（用 zoom 而非 transform scale：卖点有 GSAP scale/opacity 入场 tween，写 transform 会被 GSAP 覆盖冲突；zoom 与 transform 互不干扰）；
+  // rotate = 顺时针角度（-180~180，可选缺省 0），经 CSS rotate 属性应用，与模板自带 transform、GSAP 内联 transform 互不干扰。
+  // 算法（与预览编辑桥同一契约，两份实现必须一致）：回默认偏移并应用 zoom/rotate → 「测量→写内联 px 偏移→复测中心→按实测位移斜率精修」闭环（≤3 轮）。
+  // 为什么闭环写 px 而非解析写 %（Blink 实测）：
+  //  ① % 偏移不随元素 zoom 缩放，px 偏移 ×zoom（且 ×祖先 transform 缩放）生效；
+  //  ② 相对定位元素在高度 auto 的包含块上 top% 完全无效（封面便签均为收缩宿主内相对定位标签）；
+  //  ③ 宿主几何模板各异（flex 收缩宿主、transform:scale 祖先、GSAP 入场缓存位移、零高包含块），解析式覆盖不全；
+  //     测量-修正闭环对单调仿射几何必收敛，且与模板结构无关。收敛判据 0.02%（≈0.2px，亚像素）。
+  const TEMPLATE_ID = "overlay-poster";
+  // liveLayouts：元素当前生效布局（桥 apply 实时写入；首帧回落注入 L）。L 仅载入期可读——
+  // 桥提交不重载 iframe，refit 重放若按陈旧 L 会把刚复位的布局盖回去（2026-10-09 标题拖拽引入）。
+  const L = ((window.__vars && window.__vars.layouts) || V.layouts || {})[TEMPLATE_ID] || {};
+  const liveLayouts = new Map();
+  function captureBase(el) {
+    if (el.dataset.baseCap !== '1') { el.dataset.baseCap = '1'; el.dataset.baseL = el.style.left || ''; el.dataset.baseT = el.style.top || ''; el.dataset.baseZ = el.style.zoom || ''; el.dataset.baseR = el.style.rotate || ''; }
+  }
+  function applyPointLayout(el, layout) {
+    captureBase(el);
+    liveLayouts.set(el, layout || null);
+    if (!layout) {
+      el.style.left = el.dataset.baseL; el.style.top = el.dataset.baseT; el.style.zoom = el.dataset.baseZ; el.style.rotate = el.dataset.baseR;
+      // 用户复位标题/副标题（桥 ↺）：清接管旗标并触发 refit 恢复自动适配
+      // （ul 已先清，refitAll 内 applyAll 的 null 分支 wasUser=false，不会重入）
+      const wasUser = el.dataset.ul === '1';
+      el.dataset.ul = '';
+      const pid0 = el.dataset.pointId || '';
+      if (wasUser && (pid0 === 'cover:title' || pid0 === 'cover:subtitle')) refitAll();
+      return;
+    }
+    el.dataset.ul = '1'; // 用户布局接管标记：fitTitle 的右边界/折行/副标题下移读此旗标停用（§18.3 用户决策）
+    // 1) 回默认偏移并应用 zoom/rotate（zoom 影响盒尺寸与偏移生效倍率；rotate 默认绕中心转，外接框中心不变）
+    el.style.left = el.dataset.baseL; el.style.top = el.dataset.baseT;
+    el.style.zoom = String(layout.scale);
+    el.style.rotate = layout.rotate ? layout.rotate + 'deg' : '';
+    var root = document.getElementById('root') || document.documentElement;
+    var rootRect = root.getBoundingClientRect();
+    var rootW = root.clientWidth || rootRect.width; // 页面本地坐标系尺寸（预览外层 transform 缩放不影响换算）
+    var rootH = root.clientHeight || rootRect.height;
+    var z = layout.scale > 0 ? layout.scale : 1;
+    var measure = function () {
+      var r = el.getBoundingClientRect();
+      return [(r.left + r.width / 2 - rootRect.left) / rootRect.width * 100, (r.top + r.height / 2 - rootRect.top) / rootRect.height * 100];
+    };
+    // 2) 测量-修正闭环：sx/sy = 实测位移斜率（屏幕px ÷ 内联px），首轮按 zoom 估计、后续轮用实测值精修
+    var m = measure(), curCx = m[0], curCy = m[1], sx = 0, sy = 0;
+    for (var i = 0; i < 3; i++) {
+      var dx = layout.x - curCx, dy = layout.y - curCy;
+      if (Math.abs(dx) < 0.02 && Math.abs(dy) < 0.02) break;
+      // 当前内联偏移解析到 px（模板 base 仅两种：绝对定位槽位的 %（相对 offsetParent 宽/高）与相对定位便签的空串=0；
+      // 首轮 %→px 换算与渲染若有差（零高/不定高包含块），残差由后续轮实测斜率吸收；layout=null 复位仍还原 base 原串）
+      var parent = el.offsetParent || root;
+      var pw = parent.clientWidth || rootW, ph = parent.clientHeight || rootH;
+      var sl = el.style.left, st = el.style.top;
+      var curL = sl.indexOf('%') >= 0 ? (parseFloat(sl) || 0) / 100 * pw : (parseFloat(sl) || 0);
+      var curT = st.indexOf('%') >= 0 ? (parseFloat(st) || 0) / 100 * ph : (parseFloat(st) || 0);
+      var wL = dx / 100 * rootW / (sx || z), wT = dy / 100 * rootH / (sy || z);
+      el.style.left = (curL + wL) + 'px';
+      el.style.top = (curT + wT) + 'px';
+      // 复测并更新实测斜率（写入量过小时保持原估计，避免噪声除零）
+      m = measure();
+      if (Math.abs(wL) > 0.5) sx = (m[0] - curCx) / 100 * rootW / wL;
+      if (Math.abs(wT) > 0.5) sy = (m[1] - curCy) / 100 * rootH / wT;
+      curCx = m[0]; curCy = m[1];
+    }
+  }
+  // refit 编排：回模板几何（不动 ul 旗标/不清 liveLayouts）→ 重算 fit → 重放布局，同一 JS 任务内完成无闪烁。
+  // 为何先回几何：fit 的 rect/offsetWidth 测量含用户 zoom 与拖拽偏移，直接重跑会把用户缩放误判「过大」反缩字号
+  // （标题画幅保护/右边界与卖点 fitTag 的既有隐患一并修）；fit 幂等（各处先还基准再重算），重放亦幂等。
+  function resetGeometry(el) {
+    if (el.dataset.baseCap !== '1') return;
+    el.style.left = el.dataset.baseL; el.style.top = el.dataset.baseT; el.style.zoom = el.dataset.baseZ; el.style.rotate = el.dataset.baseR;
+  }
+  const applyAllLayouts = () => {
+    document.querySelectorAll('[data-point-id]').forEach((el) => {
+      if (el.style.display === 'none') return; // 空文案隐藏的封面卖点跳过
+      const pid = el.dataset.pointId;
+      const layout = liveLayouts.has(el) ? liveLayouts.get(el)
+        : (pid.indexOf('cover:') === 0 ? (L.cover || {})[pid.slice(6)] : (L.cues || {})[pid.slice(4)]);
+      // 无布局元素只捕获 base 不写样式：模板默认态由 resetGeometry + fit 维护——
+      // null 分支的「还原 base」会抹掉 fitTitle 刚算好的副标题自动下移（poster:auto-long 验证实锤）
+      if (!layout && el.dataset.ul !== '1') { captureBase(el); liveLayouts.set(el, null); return; }
+      applyPointLayout(el, layout);
+    });
+  };
+  function refitAll() {
+    document.querySelectorAll('[data-point-id]').forEach(resetGeometry);
+    fitAll();
+    applyAllLayouts();
+  }
+  // 首帧即收敛：先 applyAll 落布局（接种 ul 旗标/liveLayouts/捕获 base），再 refit（reset→fit→重放）——
+  // 顺序勿反：若先 refit，首趟 fit 读不到 ul（未接种），标题布局存在时仍会按未接管跑自动适配，首帧闪中间态
+  applyAllLayouts();
+  refitAll();
+  // 字体就绪后按最终几何重算（字体加载改变盒尺寸与宿主收缩宽度，渲染逐帧采集前必须用最终几何重算中心）
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(refitAll);
+  window.setTimeout(refitAll, 500);
+  // 视口尺寸变化重排（§18.5 验收 bug#2）：窄窗/侧栏塌陷把 iframe 挤到 0 宽时 fit 曾按 0 宽算死后定格、拓宽不重排；
+  // ResizeObserver 监听画布：0 宽跳过（0 宽测量无意义且污染基准），宽度恢复且变化 >2px 时重跑 refitAll（幂等）
+  if (typeof ResizeObserver !== 'undefined') {
+    let lastRootW = 0;
+    new ResizeObserver(() => {
+      const w = rootEl.clientWidth;
+      if (!w || Math.abs(w - lastRootW) < 2) return;
+      lastRootW = w;
+      refitAll();
+    }).observe(rootEl);
+  }
+  // 编辑桥全局入口（预览 iframe 同源拖拽/复位调用；refit 供需要时外部触发）
+  window.__pointLayout = { apply: applyPointLayout, list: function () { return [...document.querySelectorAll('[data-point-id]')]; }, refit: refitAll };
+
+  window.__timelines = window.__timelines || {};
+  window.__timelines["overlay"] = tl;
+  if (!window.__hyperframes) tl.play(0);
+})();
+</script>
+</body>
+</html>

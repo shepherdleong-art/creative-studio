@@ -1,21 +1,47 @@
 import { contextBridge, ipcRenderer } from 'electron';
-
+// Keep the sandboxed preload's runtime dependency surface limited to Electron.
+// The shared bridge-types file is intentionally type-only here; importing its
+// value exports would make Electron try to resolve a local CommonJS module in
+// the sandboxed preload bundle.
 import type { DesktopBridge } from './bridge-types';
+import type { ThemePreference } from './theme';
 
 // Keep the sandboxed preload's runtime dependency surface limited to Electron.
 // The shared bridge-types file is intentionally type-only here; importing its
 // value exports would make Electron try to resolve a local CommonJS module in
 // the sandboxed preload bundle.
+
 const PLATFORM_CHANNEL = 'desktop:platform';
 const CHOOSE_MEDIA_FILES_CHANNEL = 'desktop:choose-media-files';
 const CHOOSE_FOLDER_CHANNEL = 'desktop:choose-folder';
 const GET_APP_VERSION_CHANNEL = 'desktop:get-app-version';
 const RELOCATE_LINKED_SOURCE_CHANNEL = 'desktop:relocate-linked-source';
+const OPEN_FOLDER_CHANNEL = 'desktop:open-folder';
+const REVEAL_ITEM_CHANNEL = 'desktop:reveal-item';
 const LINKED_IMPORT_PROGRESS_CHANNEL = 'desktop:linked-import-progress';
+const SET_THEME_PREFERENCE_CHANNEL = 'desktop:set-theme-preference';
+const QUIT_REQUESTED_CHANNEL = 'desktop:quit-requested';
 
-function isLinkedImportProgress(value: unknown): value is { requestId: string; completed: number; total: number } {
+/** 主进程→preload 的导入进度事件负载（路径永不跨越隔离边界）。 */
+interface LinkedImportProgress {
+  requestId: string;
+  completed: number;
+  total: number;
+}
+
+// Remember an early close click until React has mounted the shared dialog.
+// No Electron event or payload crosses into the renderer.
+let quitRequested = false;
+let quitListener: (() => void) | null = null;
+
+ipcRenderer.on(QUIT_REQUESTED_CHANNEL, () => {
+  if (quitListener) quitListener();
+  else quitRequested = true;
+});
+
+function isLinkedImportProgress(value: unknown): value is LinkedImportProgress {
   if (!value || typeof value !== 'object') return false;
-  const candidate = value as Record<string, unknown>;
+  const candidate = value as Partial<LinkedImportProgress>;
   const completed = candidate.completed;
   const total = candidate.total;
   return typeof candidate.requestId === 'string'
@@ -35,18 +61,27 @@ const desktopBridge: DesktopBridge = Object.freeze({
   chooseMediaFiles: () => ipcRenderer.invoke(CHOOSE_MEDIA_FILES_CHANNEL),
   chooseFolder: () => ipcRenderer.invoke(CHOOSE_FOLDER_CHANNEL),
   getAppVersion: () => ipcRenderer.invoke(GET_APP_VERSION_CHANNEL),
-  relocateLinkedSource: (assetId: string, sourceId: string) => ipcRenderer.invoke(
-    RELOCATE_LINKED_SOURCE_CHANNEL,
-    assetId,
-    sourceId,
-  ),
+  relocateLinkedSource: (assetId: string, sourceId: string) => ipcRenderer.invoke(RELOCATE_LINKED_SOURCE_CHANNEL, assetId, sourceId),
+  openFolder: (relativePath: string) => ipcRenderer.invoke(OPEN_FOLDER_CHANNEL, relativePath),
+  revealItem: (relativePath: string) => ipcRenderer.invoke(REVEAL_ITEM_CHANNEL, relativePath),
+  setThemePreference: (preference: ThemePreference) => ipcRenderer.invoke(SET_THEME_PREFERENCE_CHANNEL, preference),
+  onQuitRequested: (callback: () => void) => {
+    quitListener = callback;
+    if (quitRequested) {
+      quitRequested = false;
+      callback();
+    }
+    return () => {
+      if (quitListener === callback) quitListener = null;
+    };
+  },
 });
 
 contextBridge.exposeInMainWorld('desktopBridge', desktopBridge);
 
-// Progress is an internal main→preload event, not a sixth renderer bridge
+// Progress is an internal main→preload event, not a renderer bridge
 // method. Only validated counts cross the isolation boundary; paths never do.
-ipcRenderer.on(LINKED_IMPORT_PROGRESS_CHANNEL, (_event, payload: unknown) => {
+ipcRenderer.on(LINKED_IMPORT_PROGRESS_CHANNEL, (_event, payload) => {
   if (!isLinkedImportProgress(payload)) return;
-  window.dispatchEvent(new CustomEvent('creative-studio:linked-import-progress', { detail: payload }));
+  window.dispatchEvent(new CustomEvent<LinkedImportProgress>('creative-studio:linked-import-progress', { detail: payload }));
 });

@@ -1,0 +1,12 @@
+{
+  "id": "classic",
+  "version": "1",
+  "kind": "composition",
+  "displayName": "现行包装（静帧封面、贴纸、卖点标注、片尾）",
+  "canvas": { "width": 1080, "height": 1440, "fps": 24, "introFrames": 20 },
+  "elements": ["cover", "sceneTransition", "subtitles", "labels", "callouts", "outro"],
+  "assets": {
+    "assets/fonts/SourceHanSansCN-VF.ttf": "25a01e41b5cc99893eb35a6cd2cc7611841dc19eb03cbaf7f0c1de8210f2ba0b",
+    "assets/scripts/gsap.min.js": "c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280"
+  }
+}

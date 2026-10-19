@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<title>包装层 · 复古综艺（v4 素材复刻版 · 小红书暖卡片）</title>
+<script src="gsap.min.js"></script>
+<style>
+  /* 卓特悦动黑（用户指定，工具自挂强绑定）：D 模板主副标题/卖点默认字体，用户可在包装界面更换 */
+  @font-face { font-family: "YueDongHei"; src: url("fonts/ZhuoTeYueDongHei.otf") format("opentype"); font-weight: 400 900; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  #root { position: absolute; inset: 0; container-type: size; }
+  /* 吸色深浅对（管线注入 window.__palette 覆盖）；ink-dd=ink-d 加深版 / ink-lm=ink-l 微暗版（JS 派生） */
+  #root { --ink-d: #6B4A3A; --ink-l: #F5EDE0; --ink-dd: #3A281E; --ink-lm: #D8CCC2; }
+
+  /* ---- v4 复古综艺：暖橙渐变底（用户素材）+ 直角视频窗 + 纯文字/矢量包装层 ----
+     统一规则：所有深色=ink-d；浅色=ink-l（笔刷/主标题描边）；副标题=ink-lm（微暗，与笔刷区分）；阴影=ink-dd 硬边偏移 */
+
+  .stage { position: absolute; inset: 0; z-index: 1; }
+
+  /* 边框层：bg.png 暗角渐晕（用户素材，自带 alpha：边缘暗化、中央透明，直接全幅叠加） */
+  .layer-bg {
+    position: absolute; inset: 0; z-index: 1; pointer-events: none;
+    background: url("assets/bg.png") center / 100% 100% no-repeat;
+  }
+
+  /* 顶栏：胶囊 | 横线（延伸至 LINSY） | 品牌 */
+  .topbar { position: absolute; top: 3.2%; left: 5%; right: 5.5%; z-index: 3; display: flex; align-items: center; gap: 2.2cqw; }
+  .capsule {
+    flex: none; background: var(--ink-d); color: var(--ink-l);
+    font-family: "UserTitle", "YueDongHei", sans-serif; font-size: 2.9cqw; letter-spacing: .2cqw;
+    padding: .7cqw 2.6cqw .9cqw; border-radius: 2.2cqw;
+  }
+  .topline { flex: 1; height: .35cqw; background: var(--ink-l); border-radius: .2cqw; opacity: .92; }
+  .brand {
+    flex: none; text-align: center;
+    font-family: "Microsoft YaHei", "微软雅黑", sans-serif; font-weight: 700;
+    font-size: 3.2cqw; letter-spacing: .5cqw; color: var(--ink-l);
+  }
+  .brand::after { content: ""; display: block; height: .55cqw; margin-top: .5cqw; background: var(--ink-d); border-radius: .3cqw; }
+
+  /* 主标题：逐字跳舞，填=ink-d、粗描边=ink-l、无黑描边、ink-dd 硬边偏移投影 */
+  .title {
+    position: absolute; top: 7.5%; left: 8.5%; z-index: 3; white-space: nowrap;
+    font-family: "UserTitle", "YueDongHei", sans-serif; font-size: 15cqw; letter-spacing: .1cqw;
+  }
+  .title .ch {
+    display: inline-block; position: relative; color: transparent;
+    /* 阴影用 drop-shadow 滤镜：从「描边外缘」整体投出，真正在描边之外（text-shadow 会被描边盖住） */
+    filter: drop-shadow(.8cqw 1cqw 0 var(--ink-dd));
+  }
+  .title .ch::before {
+    content: attr(data-ch); position: absolute; left: 0; top: 0;
+    -webkit-text-stroke: 2.6cqw var(--ink-l); paint-order: stroke; color: transparent;
+  }
+  .title .ch::after {
+    content: attr(data-ch); position: absolute; left: 0; top: 0;
+    color: var(--ink-d);
+  }
+
+  /* 副标题：亮浅色（ink-l）无描边 + ink-dd 硬边投影；两端笔刷（ink-l，与主标题描边同色；右=左翻转 180°） */
+  .subtitle {
+    position: absolute; top: 25.5%; left: 14%; z-index: 3; white-space: nowrap;
+    font-family: "UserSubtitle", "YueDongHei", sans-serif; font-size: 12cqw; letter-spacing: .4cqw;
+    /* ink-lm=ink-l 微暗 7%（与笔刷 ink-l 拉开一线层次又保亮度，2026-09-07 用户折中方案） */
+    color: var(--ink-lm); transform: rotate(-2deg); transform-origin: left center;
+    /* 与主标题同款 drop-shadow（描边外缘投影） */
+    filter: drop-shadow(.8cqw 1cqw 0 var(--ink-dd));
+  }
+  .brush {
+    position: absolute; top: 50%; width: 8.5cqw; height: 6.9cqw; z-index: 2; display: none;
+    background: var(--ink-l);
+    -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+    -webkit-mask-size: contain; mask-size: contain; -webkit-mask-position: center; mask-position: center;
+    filter: drop-shadow(.8cqw 1cqw 0 var(--ink-dd));
+  }
+  .brush.bl { right: 100%; margin-right: 1.2cqw; transform: translateY(-50%); }
+  .brush.br { left: 100%; margin-left: .9cqw; transform: translateY(-50%) rotate(150deg); }
+
+  /* 右侧 #产品名（变量=#+title，微软雅黑） */
+  .hashtag {
+    position: absolute; top: 44%; right: 6%; z-index: 3; text-align: right;
+    font-family: "Microsoft YaHei", "微软雅黑", sans-serif; font-weight: 700;
+    font-size: 3.1cqw; letter-spacing: .15cqw; color: var(--ink-l);
+    text-shadow: .25cqw .3cqw 0 var(--ink-dd);
+  }
+
+  /* 底部左下卖点标签组：搜索框外观（米白长条 + 左方放大镜=ink-d + 文字=ink-d），竖排堆叠微旋转 */
+  .cover-tags {
+    position: absolute; left: 5%; bottom: 5%; z-index: 4;
+    display: flex; flex-direction: column; align-items: flex-start; gap: 1.3cqw;
+  }
+  .cover-tags .ptag:nth-child(1) { transform: rotate(-1.2deg); }
+  .cover-tags .ptag:nth-child(2) { transform: rotate(.9deg); margin-left: 2.4cqw; }
+  .cover-tags .ptag:nth-child(3) { transform: rotate(-.7deg); margin-left: .8cqw; }
+
+  .ptag {
+    position: relative; display: inline-flex; align-items: center; gap: 1.4cqw;
+    background: var(--ink-l); border-radius: 3.2cqw; padding: 1.2cqw 3.2cqw 1.2cqw 1.8cqw;
+    box-shadow: .3cqw .4cqw 0 rgba(0,0,0,.12);
+  }
+  .ptag .mag { width: 3.2cqw; height: 3.2cqw; flex: none; }
+  .ptag .mag circle, .ptag .mag line { stroke: var(--ink-d); }
+  .ptag .ptxt {
+    white-space: nowrap;
+    font-family: "UserPoint", "YueDongHei", sans-serif; font-size: 3.3cqw; letter-spacing: .15cqw;
+    color: var(--ink-d);
+  }
+
+  /* 占位文字（主/副标题抓取失败时模板端填充「标题需修改」/「副标题需修改」）：仅编辑态可见，
+     CLI 渲染态隐藏不进成片；占位不写入数据层——抓取成功绝不显示占位（2026-10-12 用户铁律），
+     导出前由 enqueueRender 校验空值弹窗提醒 */
+  [data-placeholder] { visibility: hidden; }
+  html[data-edit] [data-placeholder] { visibility: visible; }
+</style>
+</head>
+<body>
+  <div id="root"
+    data-composition-id="overlay"
+    data-duration="6"
+    data-fps="30"
+    data-width="1080"
+    data-height="1440"
+    data-composition-variables='{"title":{"type":"string","default":"复古藤编椅"},"subtitle":{"type":"string","default":"把自然搬回家"},"point1":{"type":"string","default":"手工藤编工艺"},"point2":{"type":"string","default":"高回弹坐垫"},"point3":{"type":"string","default":"实木框架承重强"}}'
+  >
+    <div class="stage">
+      <div class="layer-bg"></div>
+      <div class="topbar">
+        <div class="capsule">家居灵感</div>
+        <div class="topline"></div>
+        <div class="brand">LINSY</div>
+      </div>
+      <div class="title" id="title" data-point-id="cover:title"></div>
+      <div class="subtitle" id="subtitleWrap" data-point-id="cover:subtitle">
+        <div class="brush bl" id="brushL"></div>
+        <span id="subtitle">把自然搬回家</span>
+        <div class="brush br" id="brushR"></div>
+      </div>
+      <div class="hashtag" id="hashtag"></div>
+      <div class="cover-tags" id="coverTags"></div>
+    </div>
+    <div id="dyn"></div>
+  </div>
+
+<script>
+(function () {
+  const rootEl = document.getElementById("root");
+  const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+  const V = (window.compositionVariables)
+    || (window.__hyperframes && window.__hyperframes.getVariables && window.__hyperframes.getVariables())
+    || {};
+  // 总时长：优先 V.totalSec（预览路由按真实成片注入）；渲染管线会把 data-duration 改写为探针实测时长作兜底
+  // （勿反转优先级：模板源硬编码 6s 曾把超窗卖点钳到末帧、尾段全程残留——2026-10-08 验收实锤）
+  const totalSec = Number(V.totalSec) > 0 ? Number(V.totalSec) : (parseFloat(rootEl.dataset.duration) || 5);
+  const coverSec = clamp(Number(V.coverSec) || 0.8, 0.3, 2);
+
+  // 吸色注入（管线封面帧取色，暖色优先深浅对）
+  const P = window.__palette || {};
+  if (typeof P.d === "string") rootEl.style.setProperty("--ink-d", P.d);
+  if (typeof P.l === "string") rootEl.style.setProperty("--ink-l", P.l);
+
+  const hexToHsl = (hex) => {
+    const n = parseInt(hex.slice(1), 16);
+    let r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+    let h = 0; const l = (mx + mn) / 2;
+    const s = d === 0 ? 0 : (l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn));
+    if (d !== 0) h = (mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4) * 60;
+    return { h, s, l };
+  };
+  const hslToHex = (h, s, l) => {
+    h = ((h % 360) + 360) % 360;
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = l - c / 2;
+    let r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; }
+    else if (h < 180) { g = c; b = x; } else if (h < 240) { g = x; b = c; }
+    else if (h < 300) { r = x; b = c; } else { r = c; b = x; }
+    const f = (v) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+    return "#" + f(r) + f(g) + f(b);
+  };
+
+  // D 专属：ink-d 饱和度/亮度抬一档（用户 2026-09-07：不要那么沉闷；模板侧派生，不动共用管线）
+  (function boostInkD() {
+    const cs = getComputedStyle(rootEl).getPropertyValue("--ink-d").trim();
+    const m = cs.match(/#[0-9A-Fa-f]{6}/);
+    if (!m) return;
+    const { h, s, l } = hexToHsl(m[0]);
+    rootEl.style.setProperty("--ink-d", hslToHex(h, Math.min(0.7, s + 0.1), Math.min(0.5, l + 0.08)));
+  })();
+
+  // ink-dd 派生：ink-d 加深版（硬边投影色，与填充同色相）；ink-lm 派生：ink-l 微暗版（副标题用，与笔刷 ink-l 区分）
+  (function deriveDD() {
+    const cs = getComputedStyle(rootEl).getPropertyValue("--ink-d").trim();
+    const m = cs.match(/#([0-9A-Fa-f]{6})/);
+    if (m) {
+      const n = parseInt(m[1], 16);
+      const f = (v) => Math.round(v * 0.55).toString(16).padStart(2, "0");
+      rootEl.style.setProperty("--ink-dd", "#" + f(n >> 16) + f((n >> 8) & 255) + f(n & 255));
+    }
+    const cs2 = getComputedStyle(rootEl).getPropertyValue("--ink-l").trim();
+    const m2 = cs2.match(/#([0-9A-Fa-f]{6})/);
+    if (m2) {
+      const n2 = parseInt(m2[1], 16);
+      const g = (v) => Math.round(v * 0.93).toString(16).padStart(2, "0");
+      rootEl.style.setProperty("--ink-lm", "#" + g(n2 >> 16) + g((n2 >> 8) & 255) + g(n2 & 255));
+    }
+  })();
+
+  /* 主标题：逐字跳舞（按字序循环预设变换，任意字数自适应；禁真随机，逐帧渲染可复现） */
+  const DANCE = [
+    { r: -4, y: 0.3 }, { r: 3, y: -0.7 }, { r: -1.5, y: 0.5 }, { r: 4, y: -0.4 },
+    { r: -3, y: 0.6 }, { r: 2, y: -0.5 }, { r: -4, y: 0.2 },
+  ];
+  const titleEl = document.getElementById("title");
+  // 抓取失败（空文案）：填充占位文字 + data-placeholder 标记——仅编辑态可见（CLI 渲染隐藏不进成片），
+  // 占位不写入数据层，抓取成功绝不显示（2026-10-12 用户铁律；曾兜底演示文案「复古藤编椅」误进成片，已修）
+  const rawTitle = String(V.title || "").trim();
+  const titleText = rawTitle || "标题需修改";
+  if (!rawTitle) titleEl.dataset.placeholder = "1";
+  titleEl.innerHTML = [...titleText].map((ch, i) => {
+    const d = DANCE[i % DANCE.length];
+    return `<span class="ch" data-ch="${ch}" style="transform:rotate(${d.r}deg) translateY(${d.y}cqw)">${ch}</span>`;
+  }).join("");
+
+  // 副标题 / hashtag（副标题空→占位文字同上规则；hashtag 仅在标题真实有值时生成，占位不产生 hashtag）
+  const subtitleEl = document.getElementById("subtitle");
+  const subText = String(V.subtitle || "").trim();
+  if (!subText) { const wrap = document.getElementById("subtitleWrap"); wrap.dataset.placeholder = "1"; subtitleEl.textContent = "副标题需修改"; }
+  else subtitleEl.textContent = subText;
+  const hashtagEl = document.getElementById("hashtag");
+  if (rawTitle) hashtagEl.textContent = "#" + titleText;
+  else hashtagEl.style.display = "none";
+
+  /* 笔刷：用户提供 assets/brush-l.png（取 alpha 形状做 mask，运行时上 ink-l；右=左翻转 180°），加载失败静默隐藏 */
+  (function initBrushes() {
+    const im = new Image();
+    im.onload = () => {
+      ["brushL", "brushR"].forEach((id) => {
+        const el = document.getElementById(id);
+        el.style.webkitMaskImage = el.style.maskImage = `url("${im.src}")`;
+        el.style.display = "block";
+      });
+    };
+    im.src = "assets/brush-l.png";
+  })();
+
+  /* 标题/副标题基准几何预捕获（§18 标题拖拽）：必须在任何 fit 改写内联样式之前（四模板同构，防 fit 内联写入混进 base） */
+  document.querySelectorAll('[data-point-id="cover:title"], [data-point-id="cover:subtitle"]').forEach((el) => {
+    el.dataset.baseCap = '1'; el.dataset.baseL = el.style.left || ''; el.dataset.baseT = el.style.top || ''; el.dataset.baseZ = el.style.zoom || ''; el.dataset.baseR = el.style.rotate || '';
+  });
+
+  /* 主副标题按目标画宽定字号（主 85%、副 70%，过大缩 min 60%；2026-09-07 用户：更大且互相靠近） */
+  function scaleToWidth(el, measure, targetRatio, minRatio) {
+    if (!el || el.style.display === "none") return;
+    const rootW = rootEl.getBoundingClientRect().width;
+    el.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(el).fontSize);
+    if (!base) return;
+    const w = measure();
+    if (!w) return;
+    let size = base * ((rootW * targetRatio) / w);
+    size = Math.max(size, base * minRatio);
+    el.style.fontSize = size.toFixed(2) + "px";
+  }
+  const fitTitle = () => {
+    const chs = titleEl.querySelectorAll(".ch");
+    scaleToWidth(titleEl, () => {
+      let left = Infinity, right = -Infinity;
+      chs.forEach((c) => { const r = c.getBoundingClientRect(); left = Math.min(left, r.left); right = Math.max(right, r.right); });
+      return right - left;
+    }, 0.85, 0.6);
+  };
+  const fitSubtitle = () => {
+    scaleToWidth(subtitleEl, () => subtitleEl.getBoundingClientRect().width, 0.68, 0.6);
+  };
+  fitTitle(); fitSubtitle();
+
+  /* 卖点标签（搜索框外观：米白长条 + 左方放大镜 + ink-d 文字） */
+  const MAG_SVG = '<svg class="mag" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6.2" fill="none" stroke-width="2.6"/><line x1="14.8" y1="14.8" x2="20" y2="20" stroke-width="2.6" stroke-linecap="round"/></svg>';
+  function makeTag(text) {
+    const el = document.createElement("div");
+    el.className = "ptag";
+    el.innerHTML = `${MAG_SVG}<span class="ptxt">${String(text || "")}</span>`;
+    return el;
+  }
+  function fitTag(el, maxW) {
+    const txt = el.querySelector(".ptxt");
+    if (!txt) return;
+    // 还原 CSS 比例字号（避免字体加载或预览缩放后沿用旧 px）
+    txt.style.fontSize = "";
+    const base = parseFloat(getComputedStyle(txt).fontSize);
+    if (!base) return;
+    let size = base;
+    txt.style.fontSize = size.toFixed(2) + "px";
+    const limit = rootEl.clientWidth * maxW;
+    for (let i = 0; i < 20 && el.offsetWidth > limit; i++) {
+      size *= 0.94;
+      if (size < base * 0.5) break;
+      txt.style.fontSize = size.toFixed(2) + "px";
+    }
+  }
+
+  const coverTagsHost = document.getElementById("coverTags");
+  ["point1", "point2", "point3"].forEach((k, i) => {
+    const t = String(V[k] || "").trim();
+    const tag = makeTag(t);
+    tag.dataset.pointId = "cover:" + k; // §8 版式覆盖钩子
+    if (!t) tag.style.display = "none"; // 空文案标签彻底不显示（2026-10-12 定稿）
+    coverTagsHost.appendChild(tag);
+    if (t) fitTag(tag, 0.5);
+  });
+
+  const fitAll = () => {
+    fitTitle(); fitSubtitle();
+    coverTagsHost.querySelectorAll(".ptag").forEach((t) => { if (t.style.display !== "none") fitTag(t, 0.5); });
+    document.querySelectorAll("#dyn .ptag").forEach((t) => fitTag(t, 0.46));
+  };
+
+  // 卖点时序
+  const cues = (Array.isArray(V.pointCues) ? V.pointCues : [])
+    .filter((c) => c && typeof c.text === "string" && c.text.trim());
+  const mode = (V.pointCuesMode === "even" || V.pointCuesMode === "none") ? V.pointCuesMode : "timed";
+  const distributeEven = (list) => {
+    const span = Math.max(1, totalSec - coverSec - 0.4);
+    return list.map((c, i) => {
+      const slot = span / list.length;
+      const start = coverSec + i * slot + slot * 0.05;
+      return { id: c.id, text: c.text, startSec: start, endSec: Math.min(start + Math.max(1.2, slot * 0.85), totalSec) };
+    });
+  };
+
+  // 6 槽位 Z 字视线路径（v3 定稿，确定性禁随机）
+  const SLOTS = [
+    { x: 0.26, y: 0.34, r: -1.5 }, { x: 0.70, y: 0.40, r: 1.5 },
+    { x: 0.30, y: 0.48, r: -1 },   { x: 0.66, y: 0.54, r: 1.8 },
+    { x: 0.38, y: 0.28, r: -2 },   { x: 0.62, y: 0.62, r: 1 },
+  ];
+
+  const dynHost = document.getElementById("dyn");
+  const tl = gsap.timeline({ paused: true });
+
+  // 固定渲染命令保持完整静帧；工作台默认保留原有退场动画。
+  if (V.staticCover === true) tl.set(".stage", { opacity: 0 }, coverSec);
+  else tl.to(".stage", { opacity: 0, y: -18, duration: 0.18, ease: "power2.in" }, Math.max(0, coverSec - 0.18));
+
+  // 正片卖点联动
+  if (mode !== "none") {
+    const bodyItems = mode === "even" ? distributeEven(cues) : cues;
+    bodyItems.forEach((cue, i) => {
+      const s = SLOTS[i % SLOTS.length];
+      const el = makeTag(cue.text);
+      if (cue.id) el.dataset.pointId = "cue:" + cue.id; // §8 版式覆盖钩子
+      el.style.position = "absolute";
+      el.style.left = `${s.x * 100}%`;
+      el.style.top = `${s.y * 100}%`;
+      el.style.transform = `translate(-50%,-50%) rotate(${s.r}deg)`;
+      dynHost.appendChild(el);
+      fitTag(el, 0.46);
+      const inAt = clamp(Number(cue.startSec) || coverSec, coverSec + 0.15, Math.max(coverSec + 0.2, totalSec - 0.1));
+      const outAt = clamp((Number(cue.endSec) || inAt + 1.2) + 0.3, inAt + 1.2, totalSec);
+      gsap.set(el, { opacity: 0, scale: 0.5, x: 0, y: 0, xPercent: -50, yPercent: -50 });
+      tl.to(el, { opacity: 1, scale: 1, duration: 0.3, ease: "back.out(1.5)" }, inAt)
+        .to(el, { opacity: 0, scale: 0.7, duration: 0.3, ease: "back.in(1.2)" }, outAt - 0.3);
+    });
+  }
+
+  // ===== §8 版式覆盖 v2：data-point-id 钩子匹配 layouts（四模板同构） =====
+  // 封面 cover:point1..3/title/subtitle ← layouts.cover.<键>；正片 cue:<cueId> ← layouts.cues[cueId]；无匹配保持模板默认版式。
+  // layouts v2 语义：x/y = 元素可视中心点在画布 #root 矩形上的百分比坐标（0~100，绝对坐标，非 style 偏移，文字改长不漂移）；
+  // scale = CSS zoom 倍率 0.3~3（用 zoom 而非 transform scale：卖点有 GSAP scale/opacity 入场 tween，写 transform 会被 GSAP 覆盖冲突；zoom 与 transform 互不干扰）；
+  // rotate = 顺时针角度（-180~180，可选缺省 0），经 CSS rotate 属性应用，与模板自带 transform、GSAP 内联 transform 互不干扰。
+  // 算法（与预览编辑桥同一契约，两份实现必须一致）：回默认偏移并应用 zoom/rotate → 「测量→写内联 px 偏移→复测中心→按实测位移斜率精修」闭环（≤3 轮）。
+  // 为什么闭环写 px 而非解析写 %（Blink 实测）：
+  //  ① % 偏移不随元素 zoom 缩放，px 偏移 ×zoom（且 ×祖先 transform 缩放）生效；
+  //  ② 相对定位元素在高度 auto 的包含块上 top% 完全无效（封面便签均为收缩宿主内相对定位标签）；
+  //  ③ 宿主几何模板各异（flex 收缩宿主、transform:scale 祖先、GSAP 入场缓存位移、零高包含块），解析式覆盖不全；
+  //     测量-修正闭环对单调仿射几何必收敛，且与模板结构无关。收敛判据 0.02%（≈0.2px，亚像素）。
+  const TEMPLATE_ID = "overlay-variety";
+  // liveLayouts：元素当前生效布局（桥 apply 实时写入；首帧回落注入 L）。L 仅载入期可读——
+  // 桥提交不重载 iframe，refit 重放若按陈旧 L 会把刚复位的布局盖回去（2026-10-09 标题拖拽引入）。
+  const L = ((window.__vars && window.__vars.layouts) || V.layouts || {})[TEMPLATE_ID] || {};
+  const liveLayouts = new Map();
+  function captureBase(el) {
+    if (el.dataset.baseCap !== '1') { el.dataset.baseCap = '1'; el.dataset.baseL = el.style.left || ''; el.dataset.baseT = el.style.top || ''; el.dataset.baseZ = el.style.zoom || ''; el.dataset.baseR = el.style.rotate || ''; }
+  }
+  function applyPointLayout(el, layout) {
+    captureBase(el);
+    liveLayouts.set(el, layout || null);
+    if (!layout) {
+      el.style.left = el.dataset.baseL; el.style.top = el.dataset.baseT; el.style.zoom = el.dataset.baseZ; el.style.rotate = el.dataset.baseR;
+      // 用户复位标题/副标题（桥 ↺）：清接管旗标并触发 refit 恢复自动适配
+      // （ul 已先清，refitAll 内 applyAll 的 null 分支 wasUser=false，不会重入）
+      const wasUser = el.dataset.ul === '1';
+      el.dataset.ul = '';
+      const pid0 = el.dataset.pointId || '';
+      if (wasUser && (pid0 === 'cover:title' || pid0 === 'cover:subtitle')) refitAll();
+      return;
+    }
+    el.dataset.ul = '1'; // 用户布局接管标记：fit 的自动适配分支读此旗标停用（§18.3 用户决策）
+    // 1) 回默认偏移并应用 zoom/rotate（zoom 影响盒尺寸与偏移生效倍率；rotate 默认绕中心转，外接框中心不变）
+    el.style.left = el.dataset.baseL; el.style.top = el.dataset.baseT;
+    el.style.zoom = String(layout.scale);
+    el.style.rotate = layout.rotate ? layout.rotate + 'deg' : '';
+    var root = document.getElementById('root') || document.documentElement;
+    var rootRect = root.getBoundingClientRect();
+    var rootW = root.clientWidth || rootRect.width; // 页面本地坐标系尺寸（预览外层 transform 缩放不影响换算）
+    var rootH = root.clientHeight || rootRect.height;
+    var z = layout.scale > 0 ? layout.scale : 1;
+    var measure = function () {
+      var r = el.getBoundingClientRect();
+      return [(r.left + r.width / 2 - rootRect.left) / rootRect.width * 100, (r.top + r.height / 2 - rootRect.top) / rootRect.height * 100];
+    };
+    // 2) 测量-修正闭环：sx/sy = 实测位移斜率（屏幕px ÷ 内联px），首轮按 zoom 估计、后续轮用实测值精修
+    var m = measure(), curCx = m[0], curCy = m[1], sx = 0, sy = 0;
+    for (var i = 0; i < 3; i++) {
+      var dx = layout.x - curCx, dy = layout.y - curCy;
+      if (Math.abs(dx) < 0.02 && Math.abs(dy) < 0.02) break;
+      // 当前内联偏移解析到 px（模板 base 仅两种：绝对定位槽位的 %（相对 offsetParent 宽/高）与相对定位便签的空串=0；
+      // 首轮 %→px 换算与渲染若有差（零高/不定高包含块），残差由后续轮实测斜率吸收；layout=null 复位仍还原 base 原串）
+      var parent = el.offsetParent || root;
+      var pw = parent.clientWidth || rootW, ph = parent.clientHeight || rootH;
+      var sl = el.style.left, st = el.style.top;
+      var curL = sl.indexOf('%') >= 0 ? (parseFloat(sl) || 0) / 100 * pw : (parseFloat(sl) || 0);
+      var curT = st.indexOf('%') >= 0 ? (parseFloat(st) || 0) / 100 * ph : (parseFloat(st) || 0);
+      var wL = dx / 100 * rootW / (sx || z), wT = dy / 100 * rootH / (sy || z);
+      el.style.left = (curL + wL) + 'px';
+      el.style.top = (curT + wT) + 'px';
+      // 复测并更新实测斜率（写入量过小时保持原估计，避免噪声除零）
+      m = measure();
+      if (Math.abs(wL) > 0.5) sx = (m[0] - curCx) / 100 * rootW / wL;
+      if (Math.abs(wT) > 0.5) sy = (m[1] - curCy) / 100 * rootH / wT;
+      curCx = m[0]; curCy = m[1];
+    }
+  }
+  // refit 编排：回模板几何（不动 ul 旗标/不清 liveLayouts）→ 重算 fit → 重放布局，同一 JS 任务内完成无闪烁。
+  // 为何先回几何：fit 的 rect/offsetWidth 测量含用户 zoom 与拖拽偏移，直接重跑会把用户缩放误判「过大」反缩字号
+  // （scaleToWidth/fitTag 的既有隐患一并修）；fit 幂等（比例控制器定点收敛），重放亦幂等。
+  function resetGeometry(el) {
+    if (el.dataset.baseCap !== '1') return;
+    el.style.left = el.dataset.baseL; el.style.top = el.dataset.baseT; el.style.zoom = el.dataset.baseZ; el.style.rotate = el.dataset.baseR;
+  }
+  const applyAllLayouts = () => {
+    document.querySelectorAll('[data-point-id]').forEach((el) => {
+      if (el.style.display === 'none') return; // 空文案隐藏的封面卖点跳过
+      const pid = el.dataset.pointId;
+      const layout = liveLayouts.has(el) ? liveLayouts.get(el)
+        : (pid.indexOf('cover:') === 0 ? (L.cover || {})[pid.slice(6)] : (L.cues || {})[pid.slice(4)]);
+      // 无布局元素只捕获 base 不写样式：模板默认态由 resetGeometry + fit 维护（防「还原 base」抹掉 fit 算出的动态默认）
+      if (!layout && el.dataset.ul !== '1') { captureBase(el); liveLayouts.set(el, null); return; }
+      applyPointLayout(el, layout);
+    });
+  };
+  function refitAll() {
+    document.querySelectorAll('[data-point-id]').forEach(resetGeometry);
+    fitAll();
+    applyAllLayouts();
+  }
+  // 首帧即收敛：先 applyAll 落布局（接种 ul 旗标/liveLayouts/捕获 base），再 refit（reset→fit→重放）——顺序勿反（先 refit 首趟 fit 读不到 ul 会闪中间态）
+  applyAllLayouts();
+  refitAll();
+  // 字体就绪后按最终几何重算（字体加载改变盒尺寸与宿主收缩宽度，渲染逐帧采集前必须用最终几何重算中心）
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(refitAll);
+  window.setTimeout(refitAll, 500);
+  // 视口尺寸变化重排（§18.5 验收 bug#2）：窄窗/侧栏塌陷把 iframe 挤到 0 宽时 fit 曾按 0 宽算死后定格、拓宽不重排；
+  // ResizeObserver 监听画布：0 宽跳过（0 宽测量无意义且污染基准），宽度恢复且变化 >2px 时重跑 refitAll（幂等）
+  if (typeof ResizeObserver !== 'undefined') {
+    let lastRootW = 0;
+    new ResizeObserver(() => {
+      const w = rootEl.clientWidth;
+      if (!w || Math.abs(w - lastRootW) < 2) return;
+      lastRootW = w;
+      refitAll();
+    }).observe(rootEl);
+  }
+  // 编辑桥全局入口（预览 iframe 同源拖拽/复位调用；refit 供需要时外部触发）
+  window.__pointLayout = { apply: applyPointLayout, list: function () { return [...document.querySelectorAll('[data-point-id]')]; }, refit: refitAll };
+
+  window.__timelines = window.__timelines || {};
+  window.__timelines["overlay"] = tl;
+  if (!window.__hyperframes) tl.play(0);
+})();
+</script>
+</body>
+</html>

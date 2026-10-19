@@ -1,6 +1,5 @@
 import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
-
-import type { DesktopBridge } from './bridge-types';
+import type { ThemePreference } from './theme';
 
 export const CHANNELS = {
   platform: 'desktop:platform',
@@ -8,29 +7,29 @@ export const CHANNELS = {
   chooseFolder: 'desktop:choose-folder',
   getAppVersion: 'desktop:get-app-version',
   relocateLinkedSource: 'desktop:relocate-linked-source',
+  openFolder: 'desktop:open-folder',
+  revealItem: 'desktop:reveal-item',
   linkedImportProgress: 'desktop:linked-import-progress',
+  setThemePreference: 'desktop:set-theme-preference',
+  quitRequested: 'desktop:quit-requested',
 } as const;
 
-export type DesktopPlatform = Awaited<ReturnType<DesktopBridge['platform']>>;
-export type MediaSelectionResult = Awaited<
-  ReturnType<DesktopBridge['chooseMediaFiles']>
->;
-export type FolderSelectionResult = Awaited<
-  ReturnType<DesktopBridge['chooseFolder']>
->;
-export type RelocateLinkedSourceResult = Awaited<
-  ReturnType<DesktopBridge['relocateLinkedSource']>
->;
+/** ipcMain.handle 允许同步或异步返回值。 */
+type MaybePromise<T> = T | Promise<T>;
 
+/** 主进程侧 IPC handler 集合（与渲染端 DesktopBridge 对应；onQuitRequested 由 preload 本地实现，不过 IPC）。 */
 export interface DesktopIpcHandlers {
-  platform(): DesktopPlatform;
-  chooseMediaFiles(): Promise<MediaSelectionResult>;
-  chooseFolder(): Promise<FolderSelectionResult>;
-  getAppVersion(): string;
-  relocateLinkedSource(assetId: string, sourceId: string): Promise<RelocateLinkedSourceResult>;
+  platform(): MaybePromise<'macos' | 'windows'>;
+  chooseMediaFiles(): MaybePromise<{ requestId: string; count: number }>;
+  chooseFolder(): MaybePromise<{ requestId: string; count: number } | null>;
+  getAppVersion(): MaybePromise<string>;
+  relocateLinkedSource(assetId: string, sourceId: string): MaybePromise<{ relocated: boolean }>;
+  openFolder(relativePath: string): MaybePromise<{ opened: boolean; message?: string }>;
+  revealItem(relativePath: string): MaybePromise<{ revealed: boolean; message?: string }>;
+  setThemePreference(preference: ThemePreference): MaybePromise<void>;
 }
 
-interface RegisterIpcOptions {
+export interface RegisterIpcOptions {
   window: BrowserWindow;
   origin: string;
   handlers: DesktopIpcHandlers;
@@ -50,10 +49,7 @@ export function sameOrigin(left: string, right: string): boolean {
   }
 }
 
-function assertAllowedSender(
-  event: IpcMainInvokeEvent,
-  options: RegisterIpcOptions,
-): void {
+function assertAllowedSender(event: IpcMainInvokeEvent, options: RegisterIpcOptions): void {
   const senderFrame = event.senderFrame;
   if (
     !senderFrame ||
@@ -64,36 +60,21 @@ function assertAllowedSender(
   }
 }
 
+/** 注册全部桌面 IPC handler；返回移除函数（窗口销毁/停机时调用）。 */
 export function registerIpcHandlers(options: RegisterIpcOptions): () => void {
-  const protectedHandler = <TArgs extends unknown[], TResult>(
-    handler: (...args: TArgs) => TResult,
-  ) =>
-    (event: IpcMainInvokeEvent, ...args: TArgs): TResult => {
+  const protectedHandler = <Args extends unknown[], Result>(handler: (...args: Args) => Result) =>
+    (event: IpcMainInvokeEvent, ...args: unknown[]): Result => {
       assertAllowedSender(event, options);
-      return handler(...args);
+      return handler(...(args as Args));
     };
-
-  ipcMain.handle(
-    CHANNELS.platform,
-    protectedHandler(() => options.handlers.platform()),
-  );
-  ipcMain.handle(
-    CHANNELS.chooseMediaFiles,
-    protectedHandler(() => options.handlers.chooseMediaFiles()),
-  );
-  ipcMain.handle(
-    CHANNELS.chooseFolder,
-    protectedHandler(() => options.handlers.chooseFolder()),
-  );
-  ipcMain.handle(
-    CHANNELS.getAppVersion,
-    protectedHandler(() => options.handlers.getAppVersion()),
-  );
-  ipcMain.handle(
-    CHANNELS.relocateLinkedSource,
-    protectedHandler((assetId: string, sourceId: string) => options.handlers.relocateLinkedSource(assetId, sourceId)),
-  );
-
+  ipcMain.handle(CHANNELS.platform, protectedHandler(() => options.handlers.platform()));
+  ipcMain.handle(CHANNELS.chooseMediaFiles, protectedHandler(() => options.handlers.chooseMediaFiles()));
+  ipcMain.handle(CHANNELS.chooseFolder, protectedHandler(() => options.handlers.chooseFolder()));
+  ipcMain.handle(CHANNELS.getAppVersion, protectedHandler(() => options.handlers.getAppVersion()));
+  ipcMain.handle(CHANNELS.relocateLinkedSource, protectedHandler((assetId: string, sourceId: string) => options.handlers.relocateLinkedSource(assetId, sourceId)));
+  ipcMain.handle(CHANNELS.openFolder, protectedHandler((relativePath: string) => options.handlers.openFolder(relativePath)));
+  ipcMain.handle(CHANNELS.revealItem, protectedHandler((relativePath: string) => options.handlers.revealItem(relativePath)));
+  ipcMain.handle(CHANNELS.setThemePreference, protectedHandler((preference: ThemePreference) => options.handlers.setThemePreference(preference)));
   return () => {
     for (const channel of Object.values(CHANNELS)) {
       ipcMain.removeHandler(channel);
