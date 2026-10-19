@@ -1,4 +1,5 @@
 'use client';
+import { ReassembledPreviewStep } from './ReassembledPreviewStep';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
@@ -245,7 +246,8 @@ export default function MixcutPanel({
   }, [projectId]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadContext(), 0);
+    const query = new URLSearchParams(window.location.search);
+    const timer = window.setTimeout(() => void loadContext(query.get('filmShotSet'), query.get('filmGroup')), 0);
     return () => {
       window.clearTimeout(timer);
       requestRef.current?.controller.abort();
@@ -851,7 +853,7 @@ export default function MixcutPanel({
       main={(controls) => (
         activeStep === 2 ? (
           preparedGroup ? (
-            <PreviewStep
+            preparedGroup.reassembled ? <ReassembledPreviewStep group={preparedGroup} onGroupChange={setPreparedGroup} onExport={(variantId) => { setExportVariantId(variantId); setActiveStep(3); }} /> : <PreviewStep
               key={preparedGroup.id}
               group={preparedGroup}
               active

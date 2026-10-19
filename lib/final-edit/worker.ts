@@ -13,6 +13,7 @@ import { publishReservedExportTarget, publishReservedSingleFile, reserveProjectE
 import { buildPublishedJobOutput, registerPublishedArtifacts, registerSingleArtifact } from './project-artifacts.ts';
 import { deletePackagedPublish, executePackagingJob, registerPackagedArtifact, type FinalEditPackagingSnapshot, type PackagingJobResult } from './packaging.ts';
 import { FinalEditError } from './errors.ts';
+import { executeFilmJob } from './reassembled/jobs.ts';
 
 const sha256 = (input: string) => crypto.createHash('sha256').update(input).digest('hex');
 
@@ -20,6 +21,18 @@ let running = false;
 let recovered = false;
 let shutdownRequested = false;
 const activeFinalEditControllers = new Set<AbortController>();
+const renderControllers = new Map<string, AbortController>();
+
+export function cancelFinalEditRenderJob(jobId: string): void {
+  const db = getDb();
+  const row = db.prepare(`SELECT inputSnapshotJson FROM final_edit_jobs WHERE id=? AND status IN ('queued','running','failed')`).get(jobId) as { inputSnapshotJson: string } | undefined;
+  if (!row || JSON.parse(row.inputSnapshotJson).renderer !== 'reassembled-film/1') throw new FinalEditError('job_not_cancellable', '该任务不可取消', 409);
+  db.transaction(() => {
+    db.prepare(`UPDATE final_edit_jobs SET status='cancelled',phase='cancelled',requestKey=?,finishedAt=? WHERE id=?`).run(`cancelled:${jobId}`, new Date().toISOString(), jobId);
+    db.prepare(`DELETE FROM final_edit_film_deliveries WHERE jobId=? AND status='reserved'`).run(jobId);
+  })();
+  renderControllers.get(jobId)?.abort();
+}
 
 function makeAbortError(): Error {
   const error = new Error('成片任务因服务停机而中止');
@@ -75,18 +88,23 @@ async function drain() {
   const db = getDb();
   try {
     if (!recovered) {
-      db.prepare(`UPDATE final_edit_jobs SET status='queued', phase='recovered_after_restart', startedAt=NULL WHERE kind IN ('render','packaging') AND status='running'`).run();
+      db.prepare(`UPDATE final_edit_jobs SET status='queued', phase='recovered_after_restart', startedAt=NULL WHERE kind IN ('render','packaging','film-preview') AND status='running'`).run();
       recovered = true;
     }
     while (!shutdownRequested) {
-      const job = db.prepare(`SELECT id, projectId, groupId, kind, inputSnapshotJson FROM final_edit_jobs WHERE kind IN ('render','packaging') AND status='queued' ORDER BY createdAt LIMIT 1`).get() as { id: string; projectId: string; groupId: string | null; kind: string; inputSnapshotJson: string } | undefined;
+      const job = db.prepare(`SELECT id, projectId, groupId, kind, inputSnapshotJson FROM final_edit_jobs WHERE kind IN ('render','packaging','film-preview') AND status='queued' ORDER BY createdAt LIMIT 1`).get() as { id: string; projectId: string; groupId: string | null; kind: string; inputSnapshotJson: string } | undefined;
       if (!job) break;
       const claimed = db.prepare(`UPDATE final_edit_jobs SET status='running', phase='preflight', progress=0, startedAt=? WHERE id=? AND status='queued'`).run(new Date().toISOString(), job.id);
       if (!claimed.changes) continue;
       const registration = createFinalEditJobController();
       const controller = registration.controller;
+      renderControllers.set(job.id, controller);
       try {
         if (controller.signal.aborted) throw makeAbortError();
+        if (JSON.parse(job.inputSnapshotJson).renderer === 'reassembled-film/1') {
+          await runFinalEditHeavyJob(() => executeFilmJob(db, path.join(dataRoot(), 'storage'), job, controller.signal));
+          continue;
+        }
         if (job.kind === 'packaging') {
           await drainPackagingJob(db, job, controller);
           continue;
@@ -188,12 +206,14 @@ async function drain() {
           throw error;
         }
       } catch (error) {
+        if ((db.prepare('SELECT status FROM final_edit_jobs WHERE id=?').get(job.id) as { status: string }).status === 'cancelled') continue;
         if (shutdownRequested && isAbortError(error)) {
           db.prepare(`UPDATE final_edit_jobs SET status='queued', phase='recovered_after_shutdown', progress=0, errorCode=NULL, errorMessage=NULL, startedAt=NULL, finishedAt=NULL WHERE id=? AND status='running'`).run(job.id);
           break;
         }
         db.prepare(`UPDATE final_edit_jobs SET status='failed', phase='failed', errorCode=?, errorMessage=?, finishedAt=? WHERE id=?`).run(error instanceof FinalEditError ? error.code : 'render_failed', error instanceof Error ? error.message.slice(0, 1500) : String(error).slice(0, 1500), new Date().toISOString(), job.id);
       } finally {
+        renderControllers.delete(job.id);
         registration.release();
       }
     }

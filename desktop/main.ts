@@ -14,6 +14,7 @@ import {
   type StartServiceOptions,
 } from './service-spawn';
 import { CHANNELS } from './ipc';
+import { consumeFilmNavigation } from './reassembled-navigation';
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 
@@ -25,6 +26,7 @@ let dataRoot: string | null = null;
 let removeIpcHandlers: (() => void) | null = null;
 let shutdownPromise: Promise<void> | null = null;
 let explicitQuitRequested = false;
+let filmNavigationTimer: ReturnType<typeof setInterval> | null = null;
 
 function focusMainWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -83,6 +85,12 @@ async function boot(): Promise<void> {
     shutdown: () => shutdown(),
   };
   mainWindow = createWindow(windowHost);
+  filmNavigationTimer = setInterval(() => {
+    if (!service || !dataRoot || !mainWindow || mainWindow.isDestroyed()) return;
+    const destination = consumeFilmNavigation(dataRoot, service.instanceId);
+    if (destination) { focusMainWindow(); void mainWindow.loadURL(new URL(destination, service.origin).href); }
+  }, 500);
+  filmNavigationTimer.unref();
 }
 
 async function shutdown(): Promise<void> {
@@ -91,6 +99,7 @@ async function shutdown(): Promise<void> {
   }
 
   shutdownPromise = (async () => {
+    if (filmNavigationTimer) clearInterval(filmNavigationTimer);
     removeIpcHandlers?.();
     removeIpcHandlers = null;
     const currentService = service;

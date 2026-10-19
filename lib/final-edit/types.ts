@@ -129,6 +129,7 @@ export interface FinalEditVariantView {
 }
 
 export interface FinalEditGroupView {
+  reassembled?: import('./reassembled/types.ts').ReassembledFilmView;
   id: string;
   projectId: string;
   scriptDraftId: string;

@@ -208,6 +208,32 @@ export const FINAL_EDIT_MIGRATIONS: ReadonlyArray<{ version: number; sql: string
       ALTER TABLE final_edit_jobs ADD COLUMN detailJson TEXT;
     `,
   },
+  {
+    version: 13,
+    sql: `
+      CREATE TABLE final_edit_film_bindings (
+        id TEXT PRIMARY KEY, importKey TEXT NOT NULL UNIQUE, importHash TEXT NOT NULL,
+        projectId TEXT NOT NULL, shotSetId TEXT NOT NULL,
+        groupId TEXT NOT NULL UNIQUE REFERENCES final_edit_groups(id) ON DELETE CASCADE,
+        variantId TEXT NOT NULL UNIQUE REFERENCES final_edit_variants(id) ON DELETE CASCADE,
+        specJson TEXT NOT NULL, candidatesJson TEXT NOT NULL, manifestJson TEXT NOT NULL,
+        inputHashesJson TEXT NOT NULL, managedRootRelative TEXT NOT NULL,
+        deliveryDir TEXT NOT NULL, baseName TEXT NOT NULL, deliveryVersion INTEGER NOT NULL DEFAULT 1,
+        deliveredRevision INTEGER NOT NULL DEFAULT 0, previewRevision INTEGER NOT NULL DEFAULT 0,
+        reviewToken TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        UNIQUE(deliveryDir, baseName)
+      );
+      CREATE TABLE final_edit_film_deliveries (
+        bindingId TEXT NOT NULL REFERENCES final_edit_film_bindings(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL, jobId TEXT NOT NULL UNIQUE,
+        variantRevision INTEGER NOT NULL, status TEXT NOT NULL,
+        videoFilename TEXT NOT NULL, coverFilename TEXT NOT NULL,
+        videoSha256 TEXT, coverSha256 TEXT, archiveWarning TEXT,
+        PRIMARY KEY(bindingId, version)
+      );
+    `,
+  },
 ];
 
 export function initFinalEditSchema(db: Database.Database): void {

@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { CLASSIC_BUILDERS, OVERLAY_BUILDERS } from '../lib/film-render/builder-hashes.ts';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixtureRoot = mkdtempSync(path.join(tmpdir(), 'creative-studio-standalone-boundary-'));
@@ -107,8 +108,11 @@ try {
   writeFixture(`node_modules/@ffprobe-installer/${process.platform}-${process.arch}/ffprobe.exe`, 'pinned-probe');
   writeFixture('node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64.node');
   writeFixture('node_modules/@img/sharp-win32-x64/lib/libvips-42.dll');
-  for (const file of ['package.json', 'package-lock.json', 'package-video.mjs', 'win-hide-spawn.cjs', 'templates/overlay-poster/index.html', 'fonts/default.ttf', 'node_modules/hyperframes/package.json', 'runtime/chrome-headless-shell/chrome-headless-shell.exe']) {
+  for (const file of ['package.json', 'package-lock.json', 'film-runtime.json', 'package-video.mjs', 'win-hide-spawn.cjs', 'templates/overlay-poster/index.html', 'fonts/default.ttf', 'node_modules/hyperframes/package.json', 'runtime/chrome-headless-shell/chrome-headless-shell.exe']) {
     writeFixture(`packaging/${file}`);
+  }
+  for (const file of [...CLASSIC_BUILDERS, ...OVERLAY_BUILDERS]) {
+    writeFixture(path.posix.normalize(`lib/film-render/${file}`));
   }
   writeFixture('packaging/fonts/user/private.ttf');
   writeFixture('packaging/renders/private.mp4');

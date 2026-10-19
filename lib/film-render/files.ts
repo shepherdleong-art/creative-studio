@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { dataRoot } from '../data-root.ts';
+import { resolvePackagingDir } from '../media-core/packaging-runtime.ts';
 import { FilmRenderError, requireInput } from './errors.ts';
 
 export function sha256(file: string): string {
@@ -28,7 +28,7 @@ export function projectFile(root: string, name: string): string {
 }
 
 export function classicTemplateDir(): string {
-  return path.join(process.env.CREATIVE_STUDIO_PACKAGING_DIR || path.join(dataRoot(), 'packaging'), 'templates/classic/1');
+  return path.join(resolvePackagingDir(), 'templates/classic/1');
 }
 
 export const CLASSIC_ASSETS = {

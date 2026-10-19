@@ -20,7 +20,7 @@ try {
   const fake = path.join(root, 'packaging'), env = { CREATIVE_STUDIO_PACKAGING_DIR: fake };
   fs.mkdirSync(fake);
   const missing = invoke(['doctor'], env); assert.equal(missing.status, 3); assert.equal(missing.data.code, 'RUNTIME_MISSING');
-  for (const file of ['package.json', 'package-lock.json', 'node_modules/hyperframes/package.json', 'node_modules/hyperframes/bin/hyperframes.mjs', 'win-hide-spawn.cjs']) {
+  for (const file of ['package.json', 'package-lock.json', 'film-runtime.json', 'node_modules/hyperframes/package.json', 'node_modules/hyperframes/bin/hyperframes.mjs', 'win-hide-spawn.cjs']) {
     const dest = path.join(fake, file); fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.copyFileSync(path.join(repo, 'packaging', file), dest);
   }
   fs.mkdirSync(path.join(fake, 'node_modules/hyperframes/dist'));

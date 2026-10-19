@@ -7,7 +7,7 @@ import { sha256, verifyClassicAssets } from './files.ts';
 import { runCaptured } from './process.ts';
 
 export const CLASSIC_HYPERFRAMES_VERSION = '0.8.134';
-export function runtimeInfo(packagingDir = resolvePackagingDir(), setupScript = path.join(packagingDir, '../scripts/setup-packaging-runtime.mjs')) {
+export function runtimeInfo(packagingDir = resolvePackagingDir()) {
   const read = (file: string) => {
     if (!fs.existsSync(file)) throw new FilmRenderError('RUNTIME_MISSING', `缺少运行资源: ${file}`, 3);
     return fs.readFileSync(file, 'utf8');
@@ -26,9 +26,14 @@ export function runtimeInfo(packagingDir = resolvePackagingDir(), setupScript = 
     for (const match of read(path.join(dist, name)).matchAll(/\bCHROME_VERSION\s*=\s*["']([^"']+)/g)) versions.add(match[1]);
   }
   const chromeVersion = [...versions][0];
-  const expectedChrome = /buildId:\s*["']([^"']+)/.exec(read(setupScript))?.[1];
+  const contract = JSON.parse(read(path.join(packagingDir, 'film-runtime.json')));
+  if (contract.schemaVersion !== 1 || contract.hyperframesVersion !== CLASSIC_HYPERFRAMES_VERSION ||
+      contract.chromeVersion !== '152.0.7977.30') {
+    throw new FilmRenderError('RUNTIME_VERSION', '固定渲染运行时契约版本不一致', 3);
+  }
+  const expectedChrome = contract.chromeVersion;
   if (versions.size !== 1 || chromeVersion !== expectedChrome) {
-    throw new FilmRenderError('CHROME_VERSION', `Chrome 版本不一致: HyperFrames=${[...versions]}, setup=${expectedChrome}`, 3);
+    throw new FilmRenderError('CHROME_VERSION', `Chrome 版本不一致: HyperFrames=${[...versions]}, contract=${expectedChrome}`, 3);
   }
   const chrome = path.join(packagingDir, 'runtime/chrome-headless-shell', process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell');
   const cli = path.join(packagingDir, 'node_modules/hyperframes/bin/hyperframes.mjs');

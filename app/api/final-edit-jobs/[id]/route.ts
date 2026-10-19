@@ -4,12 +4,18 @@ import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { parseDurationGateState } from '@/lib/final-edit/duration-gate';
 import { parseRenderRevisionFromSnapshot } from '@/lib/final-edit/workspace';
 import { countScriptContentCharacters, estimateNarrationDurationSec } from '@/lib/script-duration-policy';
+import { wakeFinalEditWorker } from '@/lib/final-edit/worker';
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const row = getDb().prepare(`SELECT id, projectId, groupId, variantId, kind, status, phase, progress, estimatedCost, costCurrency, inputSnapshotJson, outputJson, errorCode, errorMessage, attempt, startedAt, finishedAt, createdAt, detailJson FROM final_edit_jobs WHERE id=?`).get(id) as Record<string, unknown> | undefined;
     if (!row) return NextResponse.json({ error: 'job_not_found', message: '任务不存在' }, { status: 404 });
+    // Reopening an interrupted film export resumes its persisted queue without
+    // requiring another export click (which could reserve a different revision).
+    if (['queued', 'running'].includes(String(row.status)) && typeof row.inputSnapshotJson === 'string') {
+      try { if (JSON.parse(row.inputSnapshotJson).renderer === 'reassembled-film/1') wakeFinalEditWorker(); } catch { /* legacy/corrupt snapshots remain visible */ }
+    }
     // prepare 任务的处理明细（逐条素材分析/逐句口播日志），失败/旧任务缺省为 null
     let detail: { lines: string[]; current: string } | null = null;
     if (typeof row.detailJson === 'string' && row.detailJson) {

@@ -3,12 +3,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { syncPackagingAssets } from './sync-packaging-assets.mjs';
+import { CLASSIC_BUILDERS, OVERLAY_BUILDERS, builderHashes } from '../lib/film-render/builder-hashes.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'packaging-assets-'));
 const out = path.join(root, 'standalone');
 try {
-  for (const name of ['package.json', 'package-lock.json', 'package-video.mjs', 'win-hide-spawn.cjs', 'templates/overlay-poster/index.html', 'fonts/a.ttf', 'fonts/user/private.ttf', 'node_modules/hyperframes/bin/hyperframes.mjs', 'runtime/chrome-headless-shell/chrome-headless-shell.exe', 'renders/work/private.json', '.font-scan-cache.json', '.env.local']) {
+  for (const name of ['package.json', 'package-lock.json', 'film-runtime.json', 'package-video.mjs', 'win-hide-spawn.cjs', 'templates/overlay-poster/index.html', 'fonts/a.ttf', 'fonts/user/private.ttf', 'node_modules/hyperframes/bin/hyperframes.mjs', 'runtime/chrome-headless-shell/chrome-headless-shell.exe', 'renders/work/private.json', '.font-scan-cache.json', '.env.local']) {
     const file = path.join(root, 'packaging', name); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'fixture');
+  }
+  for (const name of [...CLASSIC_BUILDERS, ...OVERLAY_BUILDERS]) {
+    const file = path.resolve(root, 'lib/film-render', name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.copyFileSync(path.resolve('lib/film-render', name), file);
   }
   fs.mkdirSync(path.join(out, 'packaging/renders'), { recursive: true });
   fs.writeFileSync(path.join(out, 'packaging/renders/old.json'), 'stale');
@@ -16,6 +22,14 @@ try {
   assert.ok(fs.existsSync(path.join(out, 'packaging/templates/overlay-poster/index.html')));
   assert.ok(fs.existsSync(path.join(out, 'packaging/runtime/chrome-headless-shell/chrome-headless-shell.exe')));
   for (const forbidden of ['fonts/user', 'renders', '.font-scan-cache.json', '.env.local']) assert.equal(fs.existsSync(path.join(out, 'packaging', forbidden)), false);
+  const options = { sourceDir: path.join(root, 'absent-source'), packagingDir: path.join(out, 'packaging') };
+  assert.deepEqual(builderHashes(CLASSIC_BUILDERS, options), builderHashes(CLASSIC_BUILDERS));
+  assert.deepEqual(builderHashes(OVERLAY_BUILDERS, options), builderHashes(OVERLAY_BUILDERS));
+  fs.appendFileSync(path.join(out, 'packaging/film-builders/lib/film-render/python-format.ts'), '\n// corrupt');
+  assert.throws(() => builderHashes(CLASSIC_BUILDERS, options), /哈希不符/);
+  assert.throws(() => builderHashes(CLASSIC_BUILDERS, { packagingDir: options.packagingDir }), /哈希不符/, 'source checkout must not mask a corrupt shipped archive');
+  fs.rmSync(path.join(out, 'packaging/film-builders/manifest.json'));
+  assert.throws(() => builderHashes(OVERLAY_BUILDERS, options), /来源缺失/);
   console.log('Packaging build payload: runtime included, personal fonts/cache/renders/secrets excluded');
 } finally {
   assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep));

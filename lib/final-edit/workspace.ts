@@ -1,4 +1,7 @@
 import { packagingCode } from '../media-core/production-codes.ts';
+import { filmBinding, filmView } from './reassembled/store.ts';
+import { projectFilmTimeline } from './reassembled/timeline.ts';
+import { enqueueFilmRender } from './reassembled/jobs.ts';
 import { resolveRevisionScriptCode, resolveVideoOpeningCode } from '../media-core/production-code-reader.ts';
 import crypto from 'node:crypto';
 import { planVideoClipSplit } from './clip-split.ts';
@@ -1106,6 +1109,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     return {
       id: String(group.id), projectId: String(group.projectId), scriptDraftId: String(group.scriptDraftId), shotSetId: String(group.shotSetId),
       status: String(group.status), phase: String(group.phase), revision: Number(group.revision),
+      reassembled: filmView(db, groupId),
       script: {
         sourceDraftId: String(group.scriptDraftId || '') || null,
         title: script.title || '',
@@ -1894,6 +1898,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const row = db.prepare(`SELECT * FROM final_edit_variants WHERE id=?`).get(command.variantId) as Record<string, unknown> | undefined;
       if (!row) throw new FinalEditError('variant_not_found', '成片草稿不存在', 404);
       if (Number(row.revision) !== command.expectedRevision) throw new FinalEditError('revision_conflict', '草稿已被其他操作更新', 409, { expectedRevision: command.expectedRevision, currentRevision: Number(row.revision) });
+      const importedFilm = filmBinding(db, String(row.groupId));
+      if (importedFilm && !['trim_clip', 'replace_clip', 'swap_clips', 'reorder_clips', 'restore_revision'].includes(command.type)) {
+        throw new FinalEditError('film_edit_unsupported', '实拍成片目前支持换已有候选、调整截取位置与顺序，其他编辑尚未接入固定包装', 409);
+      }
       let timeline = parseJson<VideoTimeline>(String(row.timelineJson), { fps: 24, introFrames: 20, bodyFrames: 0, clips: [] });
       let bgm = normalizeBgm(parseJson<unknown>(String(row.bgmJson), {}));
       let cover = normalizeCover(parseJson(String(row.coverJson), {}));
@@ -2115,6 +2123,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           blockedIssues.push({ code: 'timeline_overlap', severity: 'blocking', message: '视频片段发生重叠', targetId: orderedClips[index].id });
         }
       }
+      if (importedFilm) projectFilmTimeline(JSON.parse(importedFilm.specJson), timeline, JSON.parse(importedFilm.candidatesJson));
       const issues = issueList(timeline, cover.coverKey, true, blockedIssues);
       const revision = Number(row.revision) + 1;
       const groupId = String(row.groupId);
@@ -2136,6 +2145,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const row = db.prepare(`SELECT * FROM final_edit_groups WHERE id=?`).get(command.groupId) as Record<string, unknown> | undefined;
     if (!row) throw new FinalEditError('group_not_found', '成片组不存在', 404);
     if (Number(row.revision) !== command.expectedRevision) throw new FinalEditError('revision_conflict', '成片组已被其他操作更新', 409, { expectedRevision: command.expectedRevision, currentRevision: Number(row.revision) });
+    if (filmBinding(db, command.groupId)) throw new FinalEditError('film_edit_unsupported', '本阶段保留已导入的配音、字幕、封面和包装；请在实拍成片预览中调整镜头', 409);
     if (command.type === 'apply_cover_editor') {
       const variantRow = db.prepare(`SELECT * FROM final_edit_variants WHERE id=? AND groupId=?`).get(command.variantId, command.groupId) as Record<string, unknown> | undefined;
       if (!variantRow) throw new FinalEditError('variant_not_found', '成片草稿不存在', 404);
@@ -2411,6 +2421,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const variant = group.variants.find((item) => item.id === input.variantId);
     if (!variant) throw new FinalEditError('variant_not_found', '成片草稿不存在', 404);
     if (group.revision !== input.expectedGroupRevision || variant.revision !== input.expectedVariantRevision) throw new FinalEditError('revision_conflict', '导出前版本已变化', 409);
+    if (group.reassembled) return enqueueFilmRender(db, input, 'deliver');
     const blocking = variant.issues.find((issue) => issue.severity === 'blocking');
     if (blocking) throw new FinalEditError(blocking.code, blocking.message);
     if (variant.cover.coverKey && db.prepare(`SELECT 1 FROM final_edit_variants WHERE groupId=? AND id<>? AND json_extract(coverJson, '$.coverKey')=? LIMIT 1`).get(group.id, variant.id, variant.cover.coverKey)) {

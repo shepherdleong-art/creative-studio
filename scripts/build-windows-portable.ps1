@@ -106,6 +106,7 @@ $runtimeScriptFiles = @(
   'diagnose-local-env.mjs',
   'migrate-portable-data.ps1',
   'migrate-portable-data.mjs',
+  'reassembled-workbench.mjs',
   'runtime\ports.mjs',
   'runtime\process-tree.mjs',
   'runtime\stack-state.mjs',
@@ -120,6 +121,7 @@ $desktopPayloadFiles = @(
   'service-spawn.js',
   'service-ready.js',
   'service-state.js',
+  'reassembled-navigation.js',
   'service-shutdown.js'
 )
 $templateMap = @(
@@ -150,6 +152,7 @@ $manifestKeyFiles = @(
   'dist-desktop/service-ready.js',
   'dist-desktop/service-state.js',
   'dist-desktop/service-shutdown.js',
+    'dist-desktop/reassembled-navigation.js',
   'package.json',
   'LICENSE',
   'scripts/stop-stack.ps1',
@@ -161,6 +164,7 @@ $manifestKeyFiles = @(
   'scripts/migrate-portable-data.ps1',
   'scripts/migrate-portable-data.mjs',
   'scripts/diagnose-local-env.mjs',
+    'scripts/reassembled-workbench.mjs',
   'start-windows.cmd',
   'stop-windows.cmd',
   '迁移旧版数据.cmd',

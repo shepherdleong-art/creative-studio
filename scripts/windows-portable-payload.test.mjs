@@ -80,6 +80,7 @@ for (const runtimeScript of [
   'stop-windows.ps1',
   'start-litellm-proxy.py',
   'diagnose-local-env.mjs',
+  'reassembled-workbench.mjs',
   'migrate-portable-data.ps1',
   'migrate-portable-data.mjs',
   'runtime\\ports.mjs',
@@ -134,6 +135,8 @@ for (const key of [
   'scripts/start-desktop-windows.ps1',
   'scripts/start-stack.ps1',
   'scripts/start-litellm-proxy.py',
+  'scripts/reassembled-workbench.mjs',
+  'dist-desktop/reassembled-navigation.js',
   'scripts/runtime/ports.mjs',
   'scripts/runtime/process-tree.mjs',
   'scripts/runtime/stack-state.mjs',
@@ -217,6 +220,7 @@ function makeFixture({ omit = [] } = {}) {
   write('dist-desktop/service-ready.js');
   write('dist-desktop/service-state.js');
   write('dist-desktop/service-shutdown.js');
+  write('dist-desktop/reassembled-navigation.js');
   write('dist-desktop/main.js.map', '{"sources":["../desktop/main.ts"]}\n');
   write('dist-desktop/stale.js', 'throw new Error("stale build output");\n');
   write('scripts/start-desktop-windows.ps1');
@@ -224,6 +228,7 @@ function makeFixture({ omit = [] } = {}) {
   write('scripts/stop-stack.ps1');
   write('scripts/start-litellm-proxy.py');
   write('scripts/diagnose-local-env.mjs');
+  write('scripts/reassembled-workbench.mjs');
   write('scripts/stop-windows.ps1');
   write('scripts/migrate-portable-data.ps1');
   write('scripts/migrate-portable-data.mjs');
@@ -325,11 +330,15 @@ try {
     'dist-desktop/service-ready.js',
     'dist-desktop/service-state.js',
     'dist-desktop/service-shutdown.js',
+    'dist-desktop/reassembled-navigation.js',
     'scripts/start-desktop-windows.ps1',
     'scripts/start-stack.ps1',
     'scripts/stop-stack.ps1',
     'scripts/start-litellm-proxy.py',
+  'scripts/reassembled-workbench.mjs',
+  'dist-desktop/reassembled-navigation.js',
     'scripts/diagnose-local-env.mjs',
+    'scripts/reassembled-workbench.mjs',
     'scripts/stop-windows.ps1',
     'scripts/runtime/ports.mjs',
     'scripts/runtime/process-tree.mjs',
@@ -386,6 +395,8 @@ try {
     'scripts/start-desktop-windows.ps1',
     'scripts/start-stack.ps1',
     'scripts/start-litellm-proxy.py',
+  'scripts/reassembled-workbench.mjs',
+  'dist-desktop/reassembled-navigation.js',
     'config.yaml',
     '.env.local',
     'stop-windows.cmd',

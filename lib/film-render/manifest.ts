@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { builderHashes, CLASSIC_BUILDERS, OVERLAY_BUILDERS } from './builder-hashes.ts';
 import { projectFile, sha256, CLASSIC_ASSETS, classicTemplateDir } from './files.ts';
 import { isClassicSpec, type RenderSpec } from './types.ts';
 import { resolvePackagingDir, resolvePackagingTemplateDir } from '../media-core/packaging-runtime.ts';
@@ -28,12 +28,10 @@ export function templateHashes(spec?: RenderSpec) {
     for (const file of ['package-video.mjs', 'palette.js']) {
       if (fs.existsSync(path.join(dir, file))) assets[file] = sha256(path.join(dir, file));
     }
-    return { ...spec.template, builders: Object.fromEntries(['overlay-base.ts', 'overlay-subtitles.ts', '../media-core/packaging-render.ts', '../media-core/packaging-runtime.ts', '../media-core/packaging-vars.ts', '../media-core/cover-title-svg.ts', '../media-core/cover-domain.ts'].map(file =>
-      [file, sha256(fileURLToPath(new URL(file, import.meta.url)))])), assets };
+    return { ...spec.template, builders: builderHashes(OVERLAY_BUILDERS), assets };
   }
   return { id: 'classic', version: '1',
-    builders: Object.fromEntries(['templates/classic-v1.ts', 'templates/classic-callouts-v1.ts', 'python-format.ts'].map(file =>
-      [file, sha256(fileURLToPath(new URL(file, import.meta.url)))])),
+    builders: builderHashes(CLASSIC_BUILDERS),
     assets: Object.fromEntries(Object.keys(CLASSIC_ASSETS).map(file => [file, sha256(path.join(classicTemplateDir(), file))])) };
 }
 export function writeNewJson(file: string, data: unknown) {
