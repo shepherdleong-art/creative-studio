@@ -1,0 +1,138 @@
+// Real Electron/CLI five-step acceptance, only isolated synthetic production receipts.
+import fs from 'node:fs';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { randomUUID, createHash } from 'node:crypto';
+import Database from 'better-sqlite3';
+import { _electron as electron } from '@playwright/test';
+
+const source = path.resolve(process.env.FILM_PRODUCTION_FIXTURE);
+assert.ok(source.includes('2026-10-19-production') && fs.existsSync(path.join(source, 'result.json')));
+const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
+assert.equal(read(path.join(source, 'result.json')).paidCalls, 0);
+const parent = path.resolve('outputs/2026-10-19-production');
+const root = fs.mkdtempSync(path.join(parent, 'production-desktop-'));
+process.env.CREATIVE_STUDIO_DATA_ROOT = root;
+const { getDb, closeDb } = await import('../lib/db.ts');
+const setup = getDb();
+setup.prepare("INSERT INTO providers(id,name,type,baseUrl,apiKey,model) VALUES ('production-image','Synthetic image copies','openai','http://127.0.0.1:1','','synthetic-copy')").run();
+setup.prepare("INSERT INTO video_providers(id,name,type,baseUrlEnv,apiKeyEnv,modelEnv,defaultModel) VALUES ('production-video','Synthetic video copies','openai-video','','','','synthetic-local')").run();
+closeDb();
+const db = new Database(path.join(root, 'data/workbench.db'));
+const appRoot = path.resolve(process.env.FILM_DESKTOP_APP_ROOT || '.');
+const node = path.join(appRoot, 'node-runtime/node.exe');
+const env = { ...process.env, CREATIVE_STUDIO_DATA_ROOT: root, CREATIVE_STUDIO_NODE: node, CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER: '0', CREATIVE_STUDIO_CANVAS_ENABLE: '0' };
+for (const name of ['CREATIVE_STUDIO_STANDALONE_ROOT', 'CREATIVE_STUDIO_PACKAGING_DIR', 'CREATIVE_STUDIO_PACKAGING_NODE', 'CREATIVE_STUDIO_FFMPEG', 'CREATIVE_STUDIO_FFPROBE']) delete env[name];
+const begin = read(path.join(source, 'begin.json')); begin.requestId = randomUUID();
+begin.films.forEach(f => { f.importKey = randomUUID(); });
+const save = (name, value) => { const file = path.join(root, name); fs.writeFileSync(file, JSON.stringify(value, null, 2)); return file; };
+const beginFile = save('begin.json', begin);
+const wait = async (predicate, timeout = 90000) => { const end = Date.now() + timeout; while (Date.now() < end) { const result = await predicate(); if (result) return result; await new Promise(resolve => setTimeout(resolve, 500)); } throw new Error('Acceptance timed out'); };
+const app = await electron.launch({ args: [appRoot, `--user-data-dir=${path.join(root, 'electron')}`], cwd: appRoot, env, executablePath: path.join(appRoot, 'node_modules/electron/dist/electron.exe'), timeout: 60000 });
+const handle = app.process(); let state;
+try {
+  const page = await app.firstWindow({ timeout: 60000 }); await page.waitForURL(/127\.0\.0\.1/, { timeout: 60000 });
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach(w => w.minimize()));
+  const capture = async name => {
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach(w => w.showInactive()));
+    try {
+      if (name === 'delivery.png') await page.getByText('当前修改已导出', { exact: true }).waitFor({ timeout: 30000 });
+      return await page.screenshot({ path: path.join(root, name), timeout: 10000 }).then(() => null, error => String(error));
+    }
+    finally { await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach(w => w.minimize())); }
+  };
+  state = read(path.join(root, 'storage/run/electron-service.json'));
+  const cli = (...args) => JSON.parse(execFileSync(node, [path.join(appRoot, 'scripts/reassembled-workbench.mjs'), ...args], { encoding: 'utf8', windowsHide: true, timeout: 300000, stdio: ['ignore', 'pipe', 'pipe'] }));
+  const capabilities = cli('doctor', root); assert.ok(capabilities.capabilities.includes('film-production-sync/1'));
+  const production = cli('begin', root, beginFile); assert.deepEqual(cli('begin', root, beginFile), production);
+  const film = production.films[0], other = production.films[1];
+  const go = async tab => {
+    await page.goto(`${state.origin}/projects/${production.projectId}?tab=${tab}`);
+    const card = page.getByTestId('production-01'); await card.waitFor({ timeout: 30000 });
+    if (!await card.evaluate(e => e.open)) await card.locator('summary').click();
+    return card;
+  };
+  const initial = read(path.join(source, 'initial-sync.json')); initial.requestId = randomUUID();
+  const initialFile = save('initial-sync.json', initial);
+  cli('sync', root, film.id, initialFile);
+  const progressCard = await go('scene'); await progressCard.getByText('场景  · 待提交', { exact: true }).waitFor();
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM jobs').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM video_jobs').get().n, 0);
+  const complete = read(path.join(source, 'sync.json')); complete.requestId = randomUUID();
+  const completeFile = save('sync.json', complete);
+  cli('sync', root, film.id, completeFile); assert.deepEqual(cli('sync', root, film.id, completeFile), { itemId: film.id, revision: 2 });
+  console.log('Production terminal sync and replay verified');
+  const current = cli('production', root, production.id); assert.equal(current.films[1].revision, 0);
+  const receiptId = db.prepare('SELECT id FROM jobs ORDER BY id LIMIT 1').get().id;
+  const jobsBeforeRedo = db.prepare('SELECT COUNT(*) n FROM jobs').get().n;
+  const deniedRedo = await page.request.post(`${state.origin}/api/jobs/${receiptId}/regenerate`, { data: { prompt: 'This legacy request must be denied before creating any new task' } });
+  assert.equal(deniedRedo.status(), 409);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM jobs').get().n, jobsBeforeRedo);
+  const agentHeaders = { 'x-reassembled-token': fs.readFileSync(path.join(root, 'storage/run/reassembled-agent-token'), 'utf8').trim(), 'x-desktop-instance': capabilities.instanceId, 'x-data-identity': capabilities.dataIdentity };
+  const deniedMark = await page.request.patch(`${state.origin}/api/jobs/${receiptId}`, { headers: agentHeaders, data: { mark: 'discard' } });
+  assert.equal(deniedMark.status(), 409);
+  assert.equal(db.prepare('SELECT reviewMark FROM jobs WHERE id=?').get(receiptId).reviewMark, '');
+  const scene = await go('scene'); assert.ok(await scene.locator('img').count());
+  const sceneUrl = await scene.locator('img').first().getAttribute('src'); assert.equal((await page.request.get(state.origin + sceneUrl)).status(), 200);
+  await wait(() => scene.locator('img').first().evaluate(img => img.complete && img.naturalWidth > 0));
+  const shots = await go('storyboard'); assert.equal(await shots.locator('img').count(), begin.films[0].clips.length);
+  await wait(() => shots.locator('img').evaluateAll(images => images.every(img => img.complete && img.naturalWidth > 0)));
+  const stageScreenshotError = await capture('production-shots.png');
+  const script = await go('script'); await script.getByText(complete.snapshot.script.narration, { exact: true }).waitFor();
+  const videos = await go('video'); const video = videos.locator('video').first();
+  await wait(() => video.evaluate(v => v.readyState >= 1 && v.videoWidth > 0));
+  console.log('Five-step images, script and video verified');
+  const generationCounts = { jobs: db.prepare('SELECT COUNT(*) n FROM jobs').get().n, videos: db.prepare('SELECT COUNT(*) n FROM video_jobs').get().n };
+  const manifest = read(path.join(source, 'import.json'));
+  manifest.projectId = production.projectId; manifest.importKey = film.importKey; manifest.production = { itemId: film.id, expectedRevision: 2 };
+  const delivery = path.join(root, '客户交付'); fs.mkdirSync(delivery); manifest.delivery.directory = delivery;
+  const rendered = read(path.join(manifest.root, manifest.renderManifestFile));
+  const sha = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  const oldFiles = [[`${manifest.delivery.baseName}.mp4`, rendered.outputs.video], [`${manifest.delivery.baseName}-封面.jpg`, rendered.outputs.cover]].map(([name, file]) => { fs.copyFileSync(file, path.join(delivery, name)); return [name, sha(file)]; });
+  const imported = cli('import', root, save('import.json', manifest));
+  console.log('Stable production handoff imported');
+  assert.equal(imported.shotSetId, film.shotSetId); assert.equal(imported.groupId, film.groupId); assert.equal(imported.variantId, film.variantId);
+  assert.deepEqual({ jobs: db.prepare('SELECT COUNT(*) n FROM jobs').get().n, videos: db.prepare('SELECT COUNT(*) n FROM video_jobs').get().n }, generationCounts);
+  const humanMark = await page.evaluate(async id => (await fetch(`/api/jobs/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mark: 'available' }) })).status, receiptId);
+  assert.equal(humanMark, 200);
+  const card = await go('final-edit'); await card.getByRole('link', { name: '编辑这条成片', exact: true }).click();
+  console.log(`Production editor link: ${page.url()}`);
+  await page.getByTestId('film-editor').waitFor({ timeout: 60000 });
+  console.log('Target film editor visible');
+  await page.getByRole('button', { name: '编辑包装、字幕与音乐', exact: true }).click();
+  await page.getByLabel('主标题', { exact: true }).fill('制作同步后人工修改');
+  await page.getByRole('button', { name: '保存成片内容', exact: true }).click();
+  await page.getByRole('region', { name: '成片内容编辑', exact: true }).waitFor({ state: 'hidden' });
+  const human = cli('current', root, film.groupId);
+  assert.equal(human.content.decoration.packaging.varsOverrides.title, '制作同步后人工修改');
+  cli('begin', root, beginFile); cli('sync', root, film.id, completeFile);
+  assert.deepEqual(cli('current', root, film.groupId), human, 'Begin/reconnect/late sync cannot overwrite human revision');
+  assert.equal(db.prepare('SELECT reviewMark FROM jobs WHERE id=?').get(receiptId).reviewMark, 'available');
+  console.log('Human content and review mark preserved after request replay');
+  await page.getByRole('button', { name: '导出新版本', exact: true }).click();
+  await page.getByRole('button', { name: '导出新版本（含当前包装）', exact: true }).click();
+  console.log('Actual packaged export submitted');
+  const get = async url => (await page.request.get(state.origin + url)).json();
+  const job = await wait(async () => { const jobs = (await get(`/api/final-edit-groups/${film.groupId}`)).jobs.filter(j => j.kind === 'render'); const failed = jobs.find(j => j.status === 'failed'); assert.ok(!failed, failed?.errorMessage); return jobs.find(j => j.status === 'succeeded'); }, 600000);
+  const output = (await get(`/api/final-edit-jobs/${job.id}`)).output;
+  const run = path.join(root, 'storage', path.dirname(output.videoRelativePath));
+  const checks = read(path.join(run, 'checks.json')); assert.equal(checks.ok, true);
+  const resultSpec = read(path.join(run, 'spec.json')); assert.equal(resultSpec.packaging.varsOverrides.title, '制作同步后人工修改');
+  const renderManifest = read(path.join(run, 'render-manifest.json'));
+  for (const file of [renderManifest.tools.runtime.packagingDir, renderManifest.tools.runtime.node, renderManifest.tools.runtime.chrome, ...Object.values(renderManifest.tools.paths)]) { const relative = path.relative(appRoot, file); assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative)); }
+  for (const [name, hash] of oldFiles) assert.equal(sha(path.join(delivery, '旧版', name)), hash);
+  assert.equal(sha(path.join(delivery, output.videoFilename)), renderManifest.outputs.videoSha256);
+  assert.equal(cli('production', root, production.id).films[1].revision, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM shots WHERE shotSetId=?').get(other.shotSetId).n, 0);
+  const screenshotError = await capture('delivery.png');
+  save('result.json', { ok: true, root, appRoot, production, imported, paidCalls: 0, oldFiles, checks: checks.checks, output, stageScreenshotError, screenshotError, checksPassed: ['begin-idempotence', 'read-only-running', 'five-step-results', 'images-decoded', 'video-playable-metadata', 'legacy-regenerate-denied', 'agent-review-mark-denied', 'human-review-mark-preserved', 'stable-import-ids', 'no-duplicate-generation', 'human-edit-preserved-on-reconnect', 'packaged-delivery', 'other-film-unchanged', 'owned-runtime-tools'] });
+  console.log(`PASS production CLI and actual five-step desktop takeover: ${root}`);
+} catch (error) {
+  const page = app.windows()[0]; if (page) { console.log((await page.locator('body').innerText().catch(() => '')).slice(-4000)); await page.screenshot({ path: path.join(root, 'failure.png'), timeout: 3000 }).catch(() => {}); } throw error;
+} finally {
+  if (state) await fetch(state.origin + '/api/shutdown', { method: 'POST', signal: AbortSignal.timeout(15000) }).catch(() => {});
+  await wait(() => handle.exitCode !== null || handle.signalCode !== null, 25000).catch(() => handle.kill('SIGKILL'));
+  db.close();
+}
+assert.equal(handle.exitCode, 0); assert.ok(!fs.existsSync(path.join(root, 'storage/run/electron-service.json')));

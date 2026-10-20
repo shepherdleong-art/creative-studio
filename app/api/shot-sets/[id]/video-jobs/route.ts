@@ -1,3 +1,4 @@
+import { isReassembledShotSet, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
 import { resolveTemplateOpeningCode } from '@/lib/media-core/production-code-reader';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
@@ -17,6 +18,7 @@ export async function POST(
   try {
     const { id: shotSetId } = await params;
     const db = getDb();
+    if (isReassembledShotSet(db, shotSetId)) return NextResponse.json({ error: REASSEMBLED_REWORK_REQUIRED }, { status: 409 });
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
 
     const shotId = body.shotId as string;

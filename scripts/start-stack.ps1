@@ -21,8 +21,9 @@ if (-not $SkipApp) {
 }
 
 $Root = Split-Path -Parent $PSScriptRoot
-$LogDir = Join-Path $Root 'storage\logs'
-$RunDir = Join-Path $Root 'storage\run'
+$runtimeDataRoot = if ($env:CREATIVE_STUDIO_DATA_ROOT) { [System.IO.Path]::GetFullPath($env:CREATIVE_STUDIO_DATA_ROOT) } else { $Root }
+$LogDir = Join-Path $runtimeDataRoot 'storage\logs'
+$RunDir = Join-Path $runtimeDataRoot 'storage\run'
 New-Item -ItemType Directory -Force -Path $LogDir, $RunDir | Out-Null
 
 # ── 共享端口/状态工具用 Node 执行:包内 node-runtime 优先,否则取 PATH(与 start-desktop-windows.ps1 一致)──
@@ -126,7 +127,7 @@ foreach ($f in $requiredFiles) {
 }
 
 # ── 已有受控 sidecar 且健康时直接复用（与 scripts/start-litellm.sh 语义一致）──
-$existingRaw = (& $nodeExe $stackStateTool read $Root) -join "`n"
+$existingRaw = (& $nodeExe $stackStateTool read $runtimeDataRoot) -join "`n"
 if ($LASTEXITCODE -ne 0) {
   Write-Host "状态文件读取失败(退出码 $LASTEXITCODE): $stackStateTool" -ForegroundColor Red
   exit 1
@@ -163,7 +164,7 @@ foreach ($port in @($AppPort, $ProxyPort)) {
 }
 
 # 只有端口确认空闲后才清理陈旧状态；若旧 sidecar 仍在运行，必须保留其停止依据。
-& $nodeExe $stackStateTool clear $Root
+& $nodeExe $stackStateTool clear $runtimeDataRoot
 if ($LASTEXITCODE -ne 0) {
   Write-Host "状态文件清理失败(退出码 $LASTEXITCODE): $stackStateTool" -ForegroundColor Red
   exit 1
@@ -219,7 +220,7 @@ try {
   $started.startedAt = (Get-Date).ToString('s')
   # 原子写(无 BOM)委托 stack-state.mjs:stdin 传 JSON,保留 litellmPid/proxyPort/appPort/
   # litellmRuntime/litellmInterpreter/stopScript/startedAt 全部既有字段。
-  ($started | ConvertTo-Json) | & $nodeExe $stackStateTool write $Root
+  ($started | ConvertTo-Json) | & $nodeExe $stackStateTool write $runtimeDataRoot
   if ($LASTEXITCODE -ne 0) {
     throw "stack.json 写入失败(退出码 $LASTEXITCODE): $stackStateTool"
   }
@@ -231,6 +232,6 @@ try {
   if ($started.litellmPid) {
     Stop-Process -Id $started.litellmPid -Force -ErrorAction SilentlyContinue
   }
-  & $nodeExe $stackStateTool clear $Root 2>$null
+  & $nodeExe $stackStateTool clear $runtimeDataRoot 2>$null
   exit 1
 }

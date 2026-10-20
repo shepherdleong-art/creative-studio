@@ -1,8 +1,9 @@
 import { parseUsageSnapshot } from './usage-ledger.ts';
+import { isReassembledReworkJob, protectReassembledQueue, REASSEMBLED_SUBMIT_UNCERTAIN } from './reassembled-shot-guard.ts';
 import { calculateUsageCostMicros } from './usage-pricing.ts';
 import { getDb } from './db';
 import { editImageArk } from './providers/ark-images';
-import { editImage as editImageOpenAI, EditImageRequest } from './providers/openai-compatible';
+import { editImage as editImageOpenAI } from './providers/openai-compatible';
 import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json';
 import { submitGatewayTaskImage, pollGatewayTaskImage, downloadGatewayTaskImage, summarizeGatewayTaskResponse } from './providers/gateway-task-image';
 import { redactMediaUrlForLog } from './gateway-media-url.ts';
@@ -25,6 +26,8 @@ import { dataRoot } from './data-root';
 import fs from 'fs';
 
 export interface QueueOptions {
+  /** Limit a local rework run to its immutable job. */
+  jobId?: string;
   projectId: string;
   concurrency: number;
   maxAttempts: number;
@@ -128,10 +131,11 @@ export async function runQueue(options: QueueOptions): Promise<void> {
   concurrency = effectiveConcurrency;
 
   // Recover any stuck "running" jobs from a previous crash
+  protectReassembledQueue(db, projectId, 'generate_image', options.jobId);
   db.prepare(
     `UPDATE jobs SET status = 'retrying', errorMessage = 'Recovered from interrupted run'
-     WHERE projectId = ? AND status = 'running'`
-  ).run(projectId);
+     WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)`
+  ).run(projectId, options.jobId || null, options.jobId || null);
 
   try {
     db.prepare(`UPDATE projects SET status = 'running' WHERE id = ?`).run(projectId);
@@ -147,12 +151,12 @@ export async function runQueue(options: QueueOptions): Promise<void> {
         }
 
         // Atomically claim next pending/retrying job
-        const job = claimNextJob(projectId);
+        const job = claimNextJob(projectId, options.jobId);
         if (!job) {
           // No pending jobs. Check if any are still running.
           const runningCount = db
-            .prepare(`SELECT COUNT(*) as count FROM jobs WHERE projectId = ? AND status = 'running'`)
-            .get(projectId) as { count: number };
+            .prepare(`SELECT COUNT(*) as count FROM jobs WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)`)
+            .get(projectId, options.jobId || null, options.jobId || null) as { count: number };
           if (runningCount.count === 0) break;
           await sleep(500);
           continue;
@@ -865,6 +869,13 @@ async function runJob(
 
     errorMessage = sanitizeErrorMessage(errorMessage);
 
+    if (isReassembledReworkJob(db, job.id, 'generate_image')) {
+      const remote = db.prepare('SELECT providerTaskId FROM jobs WHERE id=?').get(job.id) as { providerTaskId: string | null };
+      db.prepare(`UPDATE jobs SET status=?, finishedAt=datetime('now'), errorMessage=? WHERE id=? AND status='running'`)
+        .run(remote.providerTaskId?.trim() ? 'needs_check' : 'failed', `${errorMessage}。${remote.providerTaskId?.trim() ? '已有远端任务，请补抓结果，不会重新提交。' : REASSEMBLED_SUBMIT_UNCERTAIN}`, job.id);
+      return;
+    }
+
     logError(`Job failed: ${errorMessage}`);
 
     const effectiveMaxAttempts = job.maxAttempts || maxAttempts || 2;
@@ -889,13 +900,14 @@ async function runJob(
  * Atomically claim the next pending/retrying job.
  * Returns the claimed job with attempt incremented, or null if none available.
  */
-function claimNextJob(projectId: string): (JobRecord & { attempt: number }) | null {
+function claimNextJob(projectId: string, jobId?: string): (JobRecord & { attempt: number }) | null {
   const db = getDb();
+  protectReassembledQueue(db, projectId, 'generate_image', jobId, false);
   const job = db.prepare(`
     SELECT * FROM jobs
-    WHERE projectId = ? AND status IN ('pending', 'retrying')
+    WHERE projectId = ? AND status IN ('pending', 'retrying') AND (? IS NULL OR id = ?)
     ORDER BY id LIMIT 1
-  `).get(projectId) as JobRecord | undefined;
+  `).get(projectId, jobId || null, jobId || null) as JobRecord | undefined;
 
   if (!job) return null;
 

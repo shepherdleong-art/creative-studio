@@ -658,6 +658,10 @@ function tableExists(db: Database.Database, table: string): boolean {
 }
 
 function assertAssetNotReferenced(db: Database.Database, scope: ShotSetMaterialScope, asset: ExternalAssetRow): void {
+  if (tableExists(db, 'final_edit_film_bindings') && db.prepare(`SELECT 1 FROM final_edit_film_bindings b, json_each(b.candidatesJson) c
+    WHERE b.projectId=? AND b.shotSetId=? AND json_extract(c.value, '$.externalAssetId')=? LIMIT 1`).get(scope.projectId, scope.shotSetId, asset.id)) {
+    throw new MaterialImportError('external_asset_in_use', '外部素材已登记为成片候选，需保留供当前编辑及历史恢复使用', 409);
+  }
   const variants = db.prepare(`
     SELECT v.timelineJson, v.coverJson
     FROM final_edit_variants v

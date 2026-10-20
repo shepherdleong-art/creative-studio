@@ -1,6 +1,6 @@
 import { packagingCode } from '../media-core/production-codes.ts';
 import { filmBinding, filmView } from './reassembled/store.ts';
-import { projectFilmTimeline } from './reassembled/timeline.ts';
+import { changeFilmClipDuration, changeFilmPlaybackRate, projectFilmTimeline } from './reassembled/timeline.ts';
 import { enqueueFilmRender } from './reassembled/jobs.ts';
 import { resolveRevisionScriptCode, resolveVideoOpeningCode } from '../media-core/production-code-reader.ts';
 import crypto from 'node:crypto';
@@ -261,9 +261,11 @@ export interface EnsureMixcutDraftInput {
 }
 
 export type FinalEditCommand =
+  | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_film_content'; content: import('./reassembled/content.ts').FilmContent; proposalId?: string }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'split_clip'; clipId: string; splitFrame: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'delete_clip'; clipId: string }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_clip_playback_rate'; clipId: string; playbackRate: number }
+  | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_film_clip_duration'; clipId: string; durationFrames: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'split_audio_clip'; track: 'narration' | 'bgm'; clipId: string; atUs: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'delete_audio_clip'; track: 'narration' | 'bgm'; clipId: string }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'move_clip'; clipId: string; timelineInFrame: number }
@@ -1019,9 +1021,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const scriptCode = script.scriptCode ?? resolveRevisionScriptCode(db, String(group.projectId), script.sourceScriptRevisionId);
     const selectedKeys = parseJson<unknown[]>(String(group.selectedMaterialKeysJson || '[]'), []).map(String);
     const selectedKeySet = new Set(selectedKeys);
+    const registeredFilm = filmBinding(db, groupId);
+    if (registeredFilm) for (const candidate of JSON.parse(registeredFilm.candidatesJson) as Array<{ videoJobId: string; externalAssetId?: string }>) {
+      selectedKeySet.add(candidate.externalAssetId ? `external:${candidate.externalAssetId}` : `module4:${candidate.videoJobId}`);
+    }
     const module4Assets = assetsForScript(db, storageRoot, String(group.projectId), String(group.shotSetId))
       .filter((asset) => selectedKeySet.size === 0 || selectedKeySet.has(asset.assetKey!));
-    const externalAssets = selectedKeys.filter((key) => key.startsWith('external:')).flatMap((assetKey) => {
+    const externalAssets = [...selectedKeySet].filter((key) => key.startsWith('external:')).flatMap((assetKey) => {
       const id = assetKey.slice('external:'.length);
       const row = db.prepare(`SELECT id, shotSetId, originalFilename, relativePath, durationUs FROM final_edit_external_assets WHERE id=? AND projectId=? AND shotSetId=?`).get(id, String(group.projectId), String(group.shotSetId)) as { id: string; shotSetId: string; originalFilename: string; relativePath: string; durationUs: number } | undefined;
       if (!row) return [];
@@ -1106,10 +1112,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       playbackRate,
       gainDb: normalizeNarrationGainDb(parsedNarrationConfig.gainDb),
     };
+    const reassembled = filmView(db, groupId);
     return {
       id: String(group.id), projectId: String(group.projectId), scriptDraftId: String(group.scriptDraftId), shotSetId: String(group.shotSetId),
       status: String(group.status), phase: String(group.phase), revision: Number(group.revision),
-      reassembled: filmView(db, groupId),
+      reassembled,
       script: {
         sourceDraftId: String(group.scriptDraftId || '') || null,
         title: script.title || '',
@@ -1124,10 +1131,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         selectedMaterialKeys: selectedKeys,
       },
       narrationDurationUs: Number(group.narrationDurationUs),
-      totalDurationUs: FINAL_EDIT_INTRO_DURATION_US + Number(group.narrationDurationUs) / playbackRate,
+      totalDurationUs: reassembled && variants[0] ? Math.round((variants[0].timeline.bodyFrames + FINAL_EDIT_INTRO_FRAMES) / FINAL_EDIT_FPS * 1e6) : FINAL_EDIT_INTRO_DURATION_US + Number(group.narrationDurationUs) / playbackRate,
       durationGate: parseDurationGateState(group.durationGateJson),
       coverTitle: parseCoverTitleState(String(group.coverTitleJson), script.coverTitleParts || splitCoverTitle(script.title || '')),
-      subtitleCues: parseJson<SubtitleCue[]>(String(group.subtitleStateJson), []),
+      subtitleCues: reassembled ? reassembled.content.subtitles.map((cue, i) => ({ id: `line-${i}`, segmentId: `line-${i}`, text: cue.text, startUs: Math.round((cue.startFrame - 20) / 24 * 1e6), endUs: Math.round((cue.endFrame - 20) / 24 * 1e6), textSource: 'manual' as const, timingSource: 'manual' as const })) : parseJson<SubtitleCue[]>(String(group.subtitleStateJson), []),
       textStyles: normalizeTextStyles(parseJson(String(group.textStylesJson), buildStyles())),
       variants: variants.map((variant) => {
         const firstClip = [...variant.timeline.clips].sort((a, b) => a.timelineInFrame - b.timelineInFrame)[0];
@@ -1899,10 +1906,20 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       if (!row) throw new FinalEditError('variant_not_found', '成片草稿不存在', 404);
       if (Number(row.revision) !== command.expectedRevision) throw new FinalEditError('revision_conflict', '草稿已被其他操作更新', 409, { expectedRevision: command.expectedRevision, currentRevision: Number(row.revision) });
       const importedFilm = filmBinding(db, String(row.groupId));
-      if (importedFilm && !['trim_clip', 'replace_clip', 'swap_clips', 'reorder_clips', 'restore_revision'].includes(command.type)) {
+      if (importedFilm && !['trim_clip', 'replace_clip', 'swap_clips', 'reorder_clips', 'restore_revision', 'set_film_content', 'set_clip_playback_rate', 'set_film_clip_duration'].includes(command.type)) {
         throw new FinalEditError('film_edit_unsupported', '实拍成片目前支持换已有候选、调整截取位置与顺序，其他编辑尚未接入固定包装', 409);
       }
       let timeline = parseJson<VideoTimeline>(String(row.timelineJson), { fps: 24, introFrames: 20, bodyFrames: 0, clips: [] });
+      if (command.type === 'set_film_content') {
+        if (!importedFilm) throw new FinalEditError('film_not_found', '此命令仅用于已接管实拍成片', 400);
+        if (!command.content || typeof command.content !== 'object') throw new FinalEditError('film_content_invalid', '缺少成片内容', 400);
+        if (command.proposalId) {
+          const proposal = db.prepare("SELECT baseRevision,status FROM final_edit_proposals WHERE id=? AND variantId=? AND kind='film-content'").get(command.proposalId, command.variantId) as { baseRevision: number; status: string } | undefined;
+          if (!proposal || proposal.status !== 'ready') throw new FinalEditError('proposal_not_ready', '包装提案不存在或已采用', 409);
+          if (proposal.baseRevision !== Number(row.revision)) throw new FinalEditError('proposal_stale', '提案基于旧编辑版本，不能覆盖当前人工修改', 409);
+        }
+        timeline.filmContent = structuredClone(command.content);
+      }
       let bgm = normalizeBgm(parseJson<unknown>(String(row.bgmJson), {}));
       let cover = normalizeCover(parseJson(String(row.coverJson), {}));
       // M4：记录命令执行前的 clip 集合，用于识别 insert_clip 新建的 clip。
@@ -1945,7 +1962,14 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           { ...clip, id: uuidv4(), sourceInFrame: plan.sourceSplitFrame, timelineInFrame: plan.splitFrame },
         );
       }
-      if (command.type === 'set_clip_playback_rate') changeVideoPlaybackRate(timeline, command.clipId, command.playbackRate);
+      if (command.type === 'set_clip_playback_rate') {
+        if (importedFilm) changeFilmPlaybackRate(timeline, command.clipId, command.playbackRate);
+        else changeVideoPlaybackRate(timeline, command.clipId, command.playbackRate);
+      }
+      if (command.type === 'set_film_clip_duration') {
+        if (!importedFilm) throw new FinalEditError('film_edit_unsupported', '该时长操作仅适用于已接管实拍成片', 409);
+        changeFilmClipDuration(timeline, command.clipId, command.durationFrames);
+      }
       if (command.type === 'split_audio_clip' || command.type === 'delete_audio_clip') {
         const group = db.prepare('SELECT narrationDurationUs, narrationConfigJson FROM final_edit_groups WHERE id=?').get(String(row.groupId)) as { narrationDurationUs: number; narrationConfigJson: string };
         const rate = parseJson<{ playbackRate?: number }>(group.narrationConfigJson, {}).playbackRate ?? 1;
@@ -2093,7 +2117,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       } else if (command.type === 'swap_clips') {
         touchedClipIds.add(command.leftClipId);
         touchedClipIds.add(command.rightClipId);
-      } else if (command.type === 'reorder_clips' || command.type === 'apply_proposal' || command.type === 'restore_revision') {
+      } else if (command.type === 'reorder_clips' || command.type === 'apply_proposal' || command.type === 'restore_revision' || command.type === 'set_film_clip_duration') {
         for (const clip of timeline.clips) touchedClipIds.add(clip.id);
       }
       const blockedIssues: FinalEditIssue[] = [];
@@ -2136,6 +2160,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         if (cover.coverKey) db.prepare(`INSERT INTO final_edit_usage (scopeKind, scopeId, projectId, shotSetId, groupId, variantId, assetKind, assetKey, createdAt) VALUES ('draft', ?, ?, ?, ?, ?, 'cover', ?, ?)`).run(`${command.variantId}:${revision}`, ownership.projectId, ownership.shotSetId, ownership.groupId, command.variantId, cover.coverKey, now());
         if (bgm.trackId) db.prepare(`INSERT INTO final_edit_usage (scopeKind, scopeId, projectId, shotSetId, groupId, variantId, assetKind, assetKey, createdAt) VALUES ('draft', ?, ?, ?, ?, ?, 'bgm', ?, ?)`).run(`${command.variantId}:${revision}`, ownership.projectId, ownership.shotSetId, ownership.groupId, command.variantId, bgm.trackId, now());
         if (command.type === 'apply_proposal') db.prepare(`UPDATE final_edit_proposals SET status='applied', appliedAt=? WHERE id=?`).run(now(), command.proposalId);
+        if (command.type === 'set_film_content' && command.proposalId) db.prepare(`UPDATE final_edit_proposals SET status='applied', appliedAt=? WHERE id=?`).run(now(), command.proposalId);
       })();
       refreshOverlap(groupId);
       const view = load(groupId).variants.find((variant) => variant.id === command.variantId)!;

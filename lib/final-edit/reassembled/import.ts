@@ -13,6 +13,7 @@ import { FinalEditError } from '../errors.ts';
 import { registerSingleArtifact } from '../project-artifacts.ts';
 import { filmTimeline, projectFilmTimeline } from './timeline.ts';
 import type { FilmImportManifest, FilmBinding, RegisteredCandidate } from './types.ts';
+import { productionForImport } from './production.ts';
 
 const check = (ok: unknown, message: string) => { if (!ok) throw new FinalEditError('film_import_invalid', message, 400); };
 const text = (s: unknown, name: string) => { check(typeof s === 'string' && s.trim().length > 0 && s.length < 10000, `${name} 不能为空或过长`); return s as string; };
@@ -43,7 +44,18 @@ export async function importFilm(db: Database.Database, storageRoot: string, raw
   check(render.schemaVersion === 1 && render.ok === true && render.checks?.ok === true && render.specSha256 === sha256(required(manifest.specFile)), '已有成片缺少有效渲染记录');
   check(JSON.stringify(stable(render.template)) === JSON.stringify(stable(templateHashes(spec))), '原包装版本与当前固定渲染模板不一致');
   const input = inputHashes(spec);
-  for (const [name, hash] of Object.entries(input)) check(manifest.files[name] === hash && render.inputs?.[name] === hash, `渲染输入或出处已变化: ${name}`);
+  // Windows fixed-render records use native separators. Verify the original
+  // record unchanged, then use canonical manifest paths in the managed copy.
+  const canonical = (name: string) => name.split(path.sep).join('/');
+  for (const [name, hash] of Object.entries(input)) check(manifest.files[canonical(name)] === hash && render.inputs?.[name] === hash, `渲染输入或出处已变化: ${name}`);
+  for (const shot of spec.shots) shot.file = canonical(shot.file);
+  for (const voice of spec.audio.voices) voice.file = canonical(voice.file);
+  spec.audio.music.file = canonical(spec.audio.music.file);
+  if (isClassicSpec(spec)) {
+    spec.classic.projectCss = canonical(spec.classic.projectCss);
+    spec.classic.designDoc = canonical(spec.classic.designDoc);
+    spec.classic.cover.image = canonical(spec.classic.cover.image);
+  } else spec.cover.image = canonical(spec.cover.image);
   const videoSource = projectFile(root, path.relative(root, render.outputs.video));
   const coverSource = projectFile(root, path.relative(root, render.outputs.cover));
   required(path.relative(root, videoSource).split(path.sep).join('/')); required(path.relative(root, coverSource).split(path.sep).join('/'));
@@ -84,7 +96,8 @@ export async function importFilm(db: Database.Database, storageRoot: string, raw
   }
   check(new Set(manifest.shots.map(s => s.id)).size === manifest.shots.length, '镜头 ID 重复');
   check(!db.prepare('SELECT 1 FROM final_edit_film_bindings WHERE deliveryDir=? AND baseName=?').get(deliveryDir, baseName), '该交付文件已归属另一条成片');
-  const id = randomUUID(), groupId = randomUUID(), variantId = randomUUID(), shotSetId = randomUUID(), draftId = randomUUID();
+  const production = productionForImport(db, manifest);
+  const id = randomUUID(), groupId = production?.item.groupId || randomUUID(), variantId = production?.item.variantId || randomUUID(), shotSetId = production?.item.shotSetId || randomUUID(), draftId = production?.item.draftId || randomUUID();
   const relative = `reassembled/${id}/project`;
   const managed = path.join(storageRoot, relative);
   fs.mkdirSync(managed, { recursive: true });
@@ -100,12 +113,12 @@ export async function importFilm(db: Database.Database, storageRoot: string, raw
     const verified = await verifyFilm({ spec, video: videoSource, cover: coverSource, workDir: scratch });
     check(verified.ok, '已有成片未通过本地技术复核');
     const candidates: RegisteredCandidate[] = [];
-    const shotIds = new Map(manifest.shots.map(s => [s.id, randomUUID()]));
+    const shotIds = new Map<string, string>(production ? Object.entries(JSON.parse(production.item.shotIdsJson)) as Array<[string, string]> : manifest.shots.map(s => [s.id, randomUUID()]));
     for (const shot of manifest.shots) for (const c of shot.candidates) {
       const media = await probeMedia(path.join(managed, c.file), scratch);
       const durationSec = Number(media.format.duration);
       check(Number.isFinite(durationSec) && durationSec >= c.approvedRangeSec[1], '候选审核区间超出视频实际时长');
-      candidates.push({ videoJobId: randomUUID(), clipId: shot.id, shotId: shotIds.get(shot.id)!, file: c.file,
+      candidates.push({ videoJobId: production?.registry.videos[c.id]?.id || randomUUID(), clipId: shot.id, shotId: shotIds.get(shot.id)!, file: c.file,
         fingerprint: manifest.files[c.file], durationSec, approvedRangeSec: c.approvedRangeSec });
     }
     const timeline = filmTimeline(spec, candidates);
@@ -116,11 +129,12 @@ export async function importFilm(db: Database.Database, storageRoot: string, raw
     for (const name of imageNames) {
       const meta = await sharp(required(name)).metadata();
       check(meta.width && meta.height && ['png', 'jpeg', 'webp'].includes(meta.format || ''), '素材图片无效');
-      images.set(name, { id: randomUUID(), width: meta.width!, height: meta.height!, mime: `image/${meta.format}` });
+      images.set(name, { id: production?.registry.images[name]?.id || randomUUID(), width: meta.width!, height: meta.height!, mime: `image/${meta.format}` });
     }
     const createdAt = new Date().toISOString(), reviewToken = randomBytes(32).toString('hex');
-    const sceneId = randomUUID();
+    const sceneId = production?.registry.sceneId || randomUUID();
     const narration = spec.subtitles.map(s => s.text).join('\n');
+    if (production) check(production.snapshot.script?.narration.trim() === narration.trim(), '最终字幕口播与已同步脚本不一致，请先同步实际使用的脚本');
     const script = { version: 2, source: 'module3', sourceDraftId: draftId, sourceScriptUpdatedAt: createdAt,
       sourceScriptVersion: 2, title: manifest.title, targetDurationSec: spec.canvas.frames / 24, shotSetId,
       sourceNarrationText: narration, sourceSegments: [], editedNarrationText: narration, scriptSyncState: 'synced',
@@ -128,21 +142,24 @@ export async function importFilm(db: Database.Database, storageRoot: string, raw
     const coverImage = images.get(isClassicSpec(spec) ? spec.classic.cover.image : spec.cover.image)!;
     const previewRelative = path.relative(storageRoot, path.join(managed, path.relative(root, videoSource))).split(path.sep).join('/');
     db.transaction(() => {
-      for (const [name, image] of images) db.prepare(`INSERT INTO image_assets (id,projectId,role,filename,path,mimeType,width,height) VALUES (?,?,?,?,?,?,?,?)`).run(image.id, manifest.projectId,
+      if (production) productionForImport(db, manifest);
+      for (const [name, image] of images) if (!production?.registry.images[name]) db.prepare(`INSERT INTO image_assets (id,projectId,role,filename,path,mimeType,width,height) VALUES (?,?,?,?,?,?,?,?)`).run(image.id, manifest.projectId,
         manifest.shots.some(s => s.candidates.some(c => c.sourceImage === name)) ? 'input' : 'output', path.basename(name), path.join(managed, name), image.mime, image.width, image.height);
-      db.prepare(`INSERT INTO scene_references (id,projectId,imageAssetId,name) VALUES (?,?,?,?)`).run(sceneId, manifest.projectId, images.get(manifest.sceneImage)!.id, manifest.title);
-      db.prepare(`INSERT INTO shot_sets (id,projectId,name,sceneReferenceId,status) VALUES (?,?,?,?,'video_ready')`).run(shotSetId, manifest.projectId, manifest.title, sceneId);
+      if (!production) {
+        db.prepare(`INSERT INTO scene_references (id,projectId,imageAssetId,name) VALUES (?,?,?,?)`).run(sceneId, manifest.projectId, images.get(manifest.sceneImage)!.id, manifest.title);
+        db.prepare(`INSERT INTO shot_sets (id,projectId,name,sceneReferenceId,status) VALUES (?,?,?,?,'video_ready')`).run(shotSetId, manifest.projectId, manifest.title, sceneId);
+      }
       let index = 0;
       for (const shot of manifest.shots) {
         const selected = shot.candidates.find(c => c.id === shot.selectedCandidateId)!;
-        db.prepare(`INSERT INTO shots (id,shotSetId,indexNum,sourceImageId,latestGeneratedImageId) VALUES (?,?,?,?,?)`).run(shotIds.get(shot.id), shotSetId, ++index, images.get(selected.sourceImage)!.id, images.get(selected.generatedImage)!.id);
+        if (!production) db.prepare(`INSERT INTO shots (id,shotSetId,indexNum,sourceImageId,latestGeneratedImageId) VALUES (?,?,?,?,?)`).run(shotIds.get(shot.id), shotSetId, ++index, images.get(selected.sourceImage)!.id, images.get(selected.generatedImage)!.id);
         for (const [i, c] of shot.candidates.entries()) {
           const registered = candidates.filter(item => item.clipId === shot.id)[i];
-          db.prepare(`INSERT INTO video_jobs (id,projectId,shotSetId,shotId,sourceImageId,providerId,model,prompt,durationSec,status,providerTaskId,localVideoPath,filename,displayName,finishedAt) VALUES (?,?,?,?,?,?,?,?,?,'succeeded',?,?,?,?,?)`).run(registered.videoJobId, manifest.projectId, shotSetId, registered.shotId, images.get(c.generatedImage)!.id, c.providerId, c.model, c.prompt, registered.durationSec, c.providerTaskId || null, path.join(managed, c.file), path.basename(c.file), `${shot.id} 候选 ${i + 1}`, createdAt);
-          db.prepare(`INSERT INTO final_edit_asset_analysis (videoJobId,shotSetId,fileFingerprint,providerId,model,analyzerVersion,status,mediaJson,generatedJson,updatedAt) VALUES (?,?,?,'','','import-metadata/1','succeeded',?,'{}',?)`).run(registered.videoJobId, shotSetId, registered.fingerprint, JSON.stringify({ durationUs: Math.round(registered.durationSec * 1e6) }), createdAt);
+          if (!production) db.prepare(`INSERT INTO video_jobs (id,projectId,shotSetId,shotId,sourceImageId,providerId,model,prompt,durationSec,status,providerTaskId,localVideoPath,filename,displayName,finishedAt) VALUES (?,?,?,?,?,?,?,?,?,'succeeded',?,?,?,?,?)`).run(registered.videoJobId, manifest.projectId, shotSetId, registered.shotId, images.get(c.generatedImage)!.id, c.providerId, c.model, c.prompt, registered.durationSec, c.providerTaskId || null, path.join(managed, c.file), path.basename(c.file), `${shot.id} 候选 ${i + 1}`, createdAt);
+          db.prepare(`INSERT OR IGNORE INTO final_edit_asset_analysis (videoJobId,shotSetId,fileFingerprint,providerId,model,analyzerVersion,status,mediaJson,generatedJson,updatedAt) VALUES (?,?,?,'','','import-metadata/1','succeeded',?,'{}',?)`).run(registered.videoJobId, shotSetId, registered.fingerprint, JSON.stringify({ durationUs: Math.round(registered.durationSec * 1e6) }), createdAt);
         }
       }
-      db.prepare(`INSERT INTO script_drafts (id,projectId,provider,model,inputSnapshot,outputJson) VALUES (?,?,'external-import','external-import',?,?)`).run(draftId, manifest.projectId, JSON.stringify({ importKey: manifest.importKey }), JSON.stringify({ version: 2, shotSetId, title: manifest.title, segments: script.segments, fullScript: narration, targetDurationSec: script.targetDurationSec }));
+      if (!production) db.prepare(`INSERT INTO script_drafts (id,projectId,provider,model,inputSnapshot,outputJson) VALUES (?,?,'external-import','external-import',?,?)`).run(draftId, manifest.projectId, JSON.stringify({ importKey: manifest.importKey }), JSON.stringify({ version: 2, shotSetId, title: manifest.title, segments: script.segments, fullScript: narration, targetDurationSec: script.targetDurationSec }));
       db.prepare(`INSERT INTO final_edit_groups (id,projectId,scriptDraftId,shotSetId,scriptSnapshotJson,narrationHash,narrationConfigJson,narrationDurationUs,subtitleStateJson,coverTitleJson,textStylesJson,status,phase,editedNarrationText,selectedMaterialKeysJson,createdAt,updatedAt) VALUES (?,?,?,?,?,?,'{}',?,?,'{}','{}','ready','ready',?,?,?,?)`).run(groupId, manifest.projectId, draftId, shotSetId, JSON.stringify(script), importHash,
         Math.round((spec.canvas.frames - 20) / 24 * 1e6), JSON.stringify(spec.subtitles.map((s, i) => ({ id: `line-${i}`, segmentId: `line-${i}`, text: s.text, startUs: Math.round((s.startFrame - 20) / 24 * 1e6), endUs: Math.round((s.endFrame - 20) / 24 * 1e6), textSource: 'manual', timingSource: 'manual' }))), narration, JSON.stringify(candidates.map(c => `module4:${c.videoJobId}`)), createdAt, createdAt);
       const cover = { coverKey: `image:${coverImage.id}`, kind: 'storyboard_image', sourceUrl: null, framing: { scale: 1, offsetX: 0, offsetY: 0 } };
@@ -154,6 +171,7 @@ export async function importFilm(db: Database.Database, storageRoot: string, raw
         ['final_video', `${baseName}.mp4`, previewRelative, 'video/mp4'],
         ['final_cover', `${baseName}-封面.jpg`, path.relative(storageRoot, path.join(managed, path.relative(root, coverSource))).split(path.sep).join('/'), 'image/jpeg'],
       ]) registerSingleArtifact(db, { id: `film-import:${id}:${kind}`, projectId: manifest.projectId, kind, displayName: filename, relativePath, mimeType, sourceJobId: `import:${id}`, createdAt });
+      if (production) db.prepare('UPDATE final_edit_film_production_items SET bindingId=?,revision=revision+1,updatedAt=? WHERE id=?').run(id, createdAt, production.item.id);
     })();
     committed = true;
     return db.prepare('SELECT * FROM final_edit_film_bindings WHERE id=?').get(id) as FilmBinding;

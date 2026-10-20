@@ -1,3 +1,4 @@
+import { isReassembledShotSet, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import path from 'path';
@@ -118,6 +119,7 @@ export async function PATCH(
   try {
     const { id } = await params;
     const db = getDb();
+    if (isReassembledShotSet(db, id)) return NextResponse.json({ error: REASSEMBLED_REWORK_REQUIRED }, { status: 409 });
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
 
     if (typeof body.status === 'string') {

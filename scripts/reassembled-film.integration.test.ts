@@ -10,7 +10,7 @@ import { consumeFilmNavigation } from '../desktop/reassembled-navigation.ts';
 
 const input = process.env.FILM_IMPORT_SPEC;
 if (!input) throw new Error('Set FILM_IMPORT_SPEC to a verified synthetic spec.json');
-const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reassembled-P1-中文 空格-')));
+const root = fs.realpathSync(fs.mkdtempSync(path.join(process.env.FILM_INTEGRATION_PARENT || os.tmpdir(), 'reassembled-P1-中文 空格-')));
 process.env.CREATIVE_STUDIO_DATA_ROOT = root;
 process.env.CREATIVE_STUDIO_PACKAGING_DIR = path.resolve('packaging');
 process.env.CREATIVE_STUDIO_DESKTOP = '1';
@@ -25,7 +25,7 @@ const { enqueueFilmRender, executeFilmJob } = await import('../lib/final-edit/re
 const { publishFilmPair, archivePriorFilm, verifyDeliveryDirectory } = await import('../lib/final-edit/reassembled/delivery.ts');
 const { filmBinding } = await import('../lib/final-edit/reassembled/store.ts');
 const { createFinalEditWorkspace } = await import('../lib/final-edit/workspace.ts');
-const { runFfmpeg } = await import('../lib/ffmpeg.ts');
+const { runFfmpeg, probeDurationSec } = await import('../lib/ffmpeg.ts');
 const { cancelFinalEditRenderJob } = await import('../lib/final-edit/worker.ts');
 const db = getDb(), storageRoot = path.join(root, 'storage');
 fs.mkdirSync(path.join(storageRoot, 'run'), { recursive: true });
@@ -40,18 +40,26 @@ const sourceRoot = spec.project.root;
 const alternative = 'variants/01/p1-alternative.mp4';
 if (!fs.existsSync(path.join(sourceRoot, alternative))) await runFfmpeg(['-nostdin', '-hide_banner', '-n', '-f', 'lavfi', '-i', 'color=c=0x195a80:size=540x720:rate=24:duration=8', '-an', '-c:v', 'libx264', '-threads', '2', path.join(sourceRoot, alternative)], { timeoutMs: 30000 });
 const rel = (file: string) => path.relative(sourceRoot, file).split(path.sep).join('/');
-const cover = spec.cover?.image || spec.classic.cover.image;
-const names = [...new Set<string>([...Object.keys(render.inputs), rel(input), rel(renderFile), rel(render.outputs.video), rel(render.outputs.cover), alternative, cover])];
+const canonical = (name: string) => name.split(path.sep).join('/');
+const cover = canonical(spec.cover?.image || spec.classic.cover.image);
+const names = [...new Set<string>([...Object.keys(render.inputs).map(canonical), rel(input), rel(renderFile), rel(render.outputs.video), rel(render.outputs.cover), alternative, cover])];
 const delivery = path.join(root, '客户交付 空格'); fs.mkdirSync(delivery);
 fs.copyFileSync(render.outputs.video, path.join(delivery, `${spec.project.baseName}.mp4`));
 fs.copyFileSync(render.outputs.cover, path.join(delivery, `${spec.project.baseName}-封面.jpg`));
+const syntheticDurations = new Map(await Promise.all([...new Set<string>([...spec.shots.map((shot: { file: string }) => canonical(shot.file)), alternative])].map(async file => [file, await probeDurationSec(path.join(sourceRoot, file))] as const)));
 const manifest: FilmImportManifest = { schemaVersion: 1, importKey: 'isolated-fixture-v1', projectId: 'p1-film', root: sourceRoot, title: '实拍成片验收', sceneImage: cover, sceneProvenance: { provider: 'local-synthetic-fixture', model: 'none', prompt: 'Synthetic fixtures, no generation request' }, specFile: rel(input), renderManifestFile: rel(renderFile),
   files: Object.fromEntries(names.map(name => [name, sha256(path.join(sourceRoot, name))])),
-  shots: spec.shots.map((shot: { id: string; file: string }, i: number) => ({ id: shot.id, selectedCandidateId: `${shot.id}-original`, candidates: [shot.file, ...(i === 0 ? [alternative] : [])].map((file, n) => ({ id: `${shot.id}-${n ? 'alternative' : 'original'}`, file, sourceImage: cover, generatedImage: cover, providerId: 'p1-video', model: 'synthetic-local', prompt: 'FFmpeg synthetic video; no remote generation', provenance: { imageProvider: 'local-fixture', imageModel: 'sharp', imagePrompt: 'Solid color test cover' }, approvedRangeSec: [0, 8] })) })),
+  shots: spec.shots.map((shot: { id: string; file: string }, i: number) => ({ id: shot.id, selectedCandidateId: `${shot.id}-original`, candidates: [canonical(shot.file), ...(i === 0 ? [alternative] : [])].map((file, n) => ({ id: `${shot.id}-${n ? 'alternative' : 'original'}`, file, sourceImage: cover, generatedImage: cover, providerId: 'p1-video', model: 'synthetic-local', prompt: 'FFmpeg synthetic video; no remote generation', provenance: { imageProvider: 'local-fixture', imageModel: 'sharp', imagePrompt: 'Solid color test cover' }, approvedRangeSec: [0, syntheticDurations.get(file)!] })) })),
   delivery: { directory: delivery, baseName: spec.project.baseName } };
 console.log(`EVIDENCE_ROOT=${root}`);
 fs.writeFileSync(path.join(root, 'import.json'), JSON.stringify(manifest, null, 2));
+const originalSpecHash = sha256(input), originalRenderHash = sha256(renderFile);
+for (const invalidPath of ['../outside.mp4', 'variants/../outside.mp4', 'variants\\01\\opening.mp4', 'C:/outside.mp4']) {
+  await assert.rejects(importFilm(db, storageRoot, { ...manifest, files: { [invalidPath]: 'a'.repeat(64) } }), { code: 'film_import_invalid' });
+}
 const binding = await importFilm(db, storageRoot, manifest);
+assert.equal(sha256(input), originalSpecHash, 'original fixed-render spec must stay unchanged');
+assert.equal(sha256(renderFile), originalRenderHash, 'original provenance must stay unchanged');
 refreshFilmReview(db, binding.id, true);
 assert.equal((await importFilm(db, storageRoot, manifest)).id, binding.id);
 assert.equal((db.prepare('SELECT COUNT(*) AS n FROM project_artifacts WHERE sourceJobId=?').get(`import:${binding.id}`) as {n:number}).n, 2);
@@ -92,7 +100,10 @@ assert.equal(sha256(path.join(delivery, `${spec.project.baseName}.mp4`)), oldHas
 assert.ok(!fs.existsSync(path.join(delivery, `${spec.project.baseName}-v2.mp4`)));
 fs.unlinkSync(path.join(delivery, `${spec.project.baseName}-v2-封面.jpg`));
 const markerDir = path.join(delivery, '.creative-studio', binding.id);
-fs.renameSync(markerDir, markerDir + '-saved'); fs.symlinkSync(markerDir + '-saved', markerDir);
+fs.renameSync(delivery, delivery + '-offline');
+assert.throws(() => verifyDeliveryDirectory(binding), { code: 'film_delivery_unavailable' });
+fs.renameSync(delivery + '-offline', delivery);
+fs.renameSync(markerDir, markerDir + '-saved'); fs.symlinkSync(markerDir + '-saved', markerDir, process.platform === 'win32' ? 'junction' : 'dir');
 assert.throws(() => verifyDeliveryDirectory(binding), /符号链接/);
 fs.unlinkSync(markerDir); fs.renameSync(markerDir + '-saved', markerDir);
 const nav = path.join(storageRoot, 'run/reassembled-navigation.json');

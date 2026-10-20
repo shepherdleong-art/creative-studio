@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import type { Callout } from '../lib/film-render/types.ts';
+import { validateClassicCallouts } from '../lib/film-render/templates/classic-callouts-v1.ts';
+import { moveCalloutPoint, trimCalloutTime } from '../lib/final-edit/reassembled/callout-edit.ts';
+const callout: Callout = { id: 'point', shot: 'shot', title: '跟踪标注', startFrame: 50, endFrame: 150, dot: [600, 700], pill: [80, 200], dotKeyframes: [{ frame: 50, dot: [600, 700] }, { frame: 100, dot: [650, 750] }, { frame: 149, dot: [699, 799] }] };
+const before = structuredClone(callout);
+moveCalloutPoint(callout, 'dot', 0, 620);
+assert.deepEqual(callout.dotKeyframes!.map(k => k.dot), [[620, 700], [670, 750], [719, 799]]);
+moveCalloutPoint(callout, 'pill', 1, 180);
+assert.deepEqual(callout.dot, [620, 700]);
+trimCalloutTime(callout, 'startFrame', 75);
+trimCalloutTime(callout, 'endFrame', 125);
+assert.deepEqual(callout.dot, [645, 725]);
+assert.deepEqual(callout.dotKeyframes, [{ frame: 75, dot: [645, 725] }, { frame: 100, dot: [670, 750] }, { frame: 124, dot: [694, 774] }]);
+validateClassicCallouts({ canvas: { width: 1080, height: 1440, fps: 24, introFrames: 20, frames: 360 }, shots: [{ id: 'shot', file: 'unused', startFrame: 20, endFrame: 200, inSec: 0, rate: 1 }] }, [callout]);
+assert.equal(callout.title, before.title);
+console.log('PASS tracked dot translation, independent card movement, endpoint interpolation and renderer validation');

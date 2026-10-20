@@ -105,6 +105,7 @@ export function stopControlledSidecar(): void {
     path.resolve(process.cwd(), 'scripts'),
     path.resolve(dataRoot(), 'scripts'),
   ]);
+  if (process.env.CREATIVE_STUDIO_APPLICATION_ROOT) controlledScriptsDirs.add(path.resolve(process.env.CREATIVE_STUDIO_APPLICATION_ROOT, 'scripts'));
   const stopScript = typeof stack.stopScript === 'string' ? path.resolve(stack.stopScript) : '';
   const stopScriptName = path.basename(stopScript);
   const isControlledStopScript = controlledScriptsDirs.has(path.dirname(stopScript))
@@ -115,7 +116,7 @@ export function stopControlledSidecar(): void {
     const child = spawn(
       'powershell.exe',
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', stopScript],
-      { detached: true, stdio: 'ignore' },
+      { detached: true, stdio: 'ignore', windowsHide: true },
     );
     child.on('error', () => undefined);
     child.unref();

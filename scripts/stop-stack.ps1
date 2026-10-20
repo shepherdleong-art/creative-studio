@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Continue'
 $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 $Root = Split-Path -Parent $PSScriptRoot
+$runtimeDataRoot = if ($env:CREATIVE_STUDIO_DATA_ROOT) { [System.IO.Path]::GetFullPath($env:CREATIVE_STUDIO_DATA_ROOT) } else { $Root }
 
 # ── 共享工具用 Node 执行:包内 node-runtime 优先,否则取 PATH(与 start-desktop-windows.ps1 一致)──
 $bundledNode = Join-Path $Root 'node-runtime\node.exe'
@@ -22,7 +23,7 @@ $portsTool = Join-Path $Root 'scripts\runtime\ports.mjs'
 $stackStateTool = Join-Path $Root 'scripts\runtime\stack-state.mjs'
 $processTreeTool = Join-Path $Root 'scripts\runtime\process-tree.mjs'
 
-$stackRaw = (& $nodeExe $stackStateTool read $Root) -join "`n"
+$stackRaw = (& $nodeExe $stackStateTool read $runtimeDataRoot) -join "`n"
 if ($LASTEXITCODE -ne 0) {
   Write-Host "状态文件读取失败(退出码 $LASTEXITCODE): $stackStateTool" -ForegroundColor Red
   exit 1
@@ -85,7 +86,7 @@ if ($stack -and $stack.appCmdPid) {
     Write-Host "状态文件中的 app PID $appCmdPid 不属于本项目，跳过（不误杀未知进程）。" -ForegroundColor Yellow
   }
 }
-if (-not $appStopped) {
+if (-not $appStopped -and $runtimeDataRoot -eq $Root) {
   foreach ($ownerPid in (Get-ListenerPids $appPort)) {
     if (Test-OwnedProcess $ownerPid) {
       & $nodeExe $processTreeTool kill-tree $ownerPid 2>$null | Out-Null
@@ -114,7 +115,7 @@ if ($stack -and $stack.litellmPid) {
     }
   }
 }
-if (-not $litellmStopped) {
+if (-not $litellmStopped -and $runtimeDataRoot -eq $Root) {
   # 兜底：端口属主中只停止归属本项目的进程，其余不动。
   foreach ($ownerPid in (Get-ListenerPids $proxyPort)) {
     if (Test-OwnedProcess $ownerPid) {
@@ -129,7 +130,7 @@ if (-not $litellmStopped) {
   }
 }
 
-& $nodeExe $stackStateTool clear $Root
+& $nodeExe $stackStateTool clear $runtimeDataRoot
 if ($LASTEXITCODE -ne 0) {
   Write-Host "状态文件清理失败(退出码 $LASTEXITCODE): $stackStateTool" -ForegroundColor Red
 }

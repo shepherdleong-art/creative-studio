@@ -8,7 +8,9 @@ param(
   # 强制重新执行 npm run build（代码更新后使用）
   [switch]$Rebuild,
   # 免安装包模式：只使用包内 node-runtime/python-runtime，禁止任何联网修复或构建
-  [switch]$Portable
+  [switch]$Portable,
+  # 审片协议处理器调用：后台启动，不在隐藏窗口里等待交互输入。
+  [switch]$ReviewLaunch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,6 +20,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = Split-Path -Parent $ScriptDir
 Set-Location $Root
+$runtimeDataRoot = if ($env:CREATIVE_STUDIO_DATA_ROOT) { [System.IO.Path]::GetFullPath($env:CREATIVE_STUDIO_DATA_ROOT) } else { $Root }
+$env:CREATIVE_STUDIO_DATA_ROOT = $runtimeDataRoot
 
 function Get-Sha256Hex([string]$FilePath) {
   $stream = [System.IO.File]::OpenRead($FilePath)
@@ -82,6 +86,8 @@ if ($Portable) {
     'scripts/migrate-portable-data.mjs',
     'scripts/diagnose-local-env.mjs',
     'scripts/reassembled-workbench.mjs',
+    'scripts/reassembled-launch.mjs',
+    'scripts/reassembled-launch.ps1',
     'start-windows.cmd',
     'stop-windows.cmd',
     '迁移旧版数据.cmd',
@@ -225,6 +231,7 @@ if ($LASTEXITCODE -ne 0) {
 if ($webListenerPids.Count -gt 0) {
   Write-Host '检测到 3000 端口已被占用，网页版可能正在运行。' -ForegroundColor Yellow
   Write-Host '桌面版与网页版共用 data/workbench.db，同时运行有并发写入风险。'
+  if ($ReviewLaunch) { throw '检测到 3000 端口占用，请先手动启动桌面并确认运行环境，再打开审片链接。' }
   $reply = Read-Host '仍要继续启动桌面版？(y/N)'
   if ($reply -notmatch '^(y|Y)$') { exit 1 }
   Write-Host ''
@@ -263,7 +270,7 @@ if ((Test-Path $litellmExe) -and -not (Test-LitellmUsable $litellmExe)) {
       Write-Host '未找到 Python 3.12，无法自动重建。公司供应商将不可用；安装 Python 3.12 后重开本脚本即可自动修复。' -ForegroundColor Yellow
     } else {
       # 重建前先停掉可能正在运行的受控 sidecar（运行中的 exe 删不掉）。
-      if (Test-Path (Join-Path $Root 'storage\run\stack.json')) {
+      if (Test-Path (Join-Path $runtimeDataRoot 'storage\run\stack.json')) {
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'stop-stack.ps1')
       }
       # 兜底：stack.json 缺失/失效时仍可能有残留进程占用 venv 文件，按路径清理。
@@ -316,7 +323,7 @@ if ($hasStackComponents) {
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'start-stack.ps1') @stackArgs
   if ($LASTEXITCODE -ne 0) {
     Write-Host '公司网关组件启动失败，继续启动工作台。' -ForegroundColor Yellow
-  } elseif (Test-Path (Join-Path $Root 'storage\run\stack.json')) {
+  } elseif (Test-Path (Join-Path $runtimeDataRoot 'storage\run\stack.json')) {
     $stackStarted = $true
     Write-Host '公司网关代理就绪: http://127.0.0.1:4000'
   } else {
@@ -427,8 +434,16 @@ Write-Host ''
 # 桌面壳退出时会请求 /api/shutdown，那条链路已经会停掉受控的 LiteLLM；
 # 这里的 finally 只是异常退出时的兜底，stop-stack.ps1 本身幂等。
 try {
-  & (Join-Path $Root 'node_modules\.bin\electron.cmd') .
-  $desktopExitCode = $LASTEXITCODE
+  if ($ReviewLaunch) {
+    $reviewElectronArgs = @('.')
+    if ($env:CREATIVE_STUDIO_REVIEW_USER_DATA) { $reviewElectronArgs += ('"--user-data-dir=' + $env:CREATIVE_STUDIO_REVIEW_USER_DATA + '"') }
+    $reviewProcess = Start-Process -FilePath $electronBinary -ArgumentList $reviewElectronArgs -WorkingDirectory $Root -WindowStyle Hidden -PassThru
+    $reviewProcess.WaitForExit()
+    $desktopExitCode = $reviewProcess.ExitCode
+  } else {
+    & (Join-Path $Root 'node_modules\.bin\electron.cmd') .
+    $desktopExitCode = $LASTEXITCODE
+  }
 } finally {
   if ($stackStarted) {
     Write-Host ''

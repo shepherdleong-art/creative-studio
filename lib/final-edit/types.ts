@@ -26,6 +26,8 @@ export interface TimelineClip {
 }
 
 export interface VideoTimeline {
+  /** Imported film edits share the existing revision/restore lifecycle. */
+  filmContent?: import('./reassembled/content.ts').FilmContent;
   fps: 24;
   introFrames: 20;
   bodyFrames: number;

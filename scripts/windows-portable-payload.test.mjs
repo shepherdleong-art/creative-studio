@@ -81,6 +81,7 @@ for (const runtimeScript of [
   'start-litellm-proxy.py',
   'diagnose-local-env.mjs',
   'reassembled-workbench.mjs',
+  'reassembled-launch.mjs', 'reassembled-launch.ps1',
   'migrate-portable-data.ps1',
   'migrate-portable-data.mjs',
   'runtime\\ports.mjs',
@@ -136,6 +137,7 @@ for (const key of [
   'scripts/start-stack.ps1',
   'scripts/start-litellm-proxy.py',
   'scripts/reassembled-workbench.mjs',
+  'scripts/reassembled-launch.mjs', 'scripts/reassembled-launch.ps1',
   'dist-desktop/reassembled-navigation.js',
   'scripts/runtime/ports.mjs',
   'scripts/runtime/process-tree.mjs',
@@ -173,7 +175,8 @@ assert.ok(
 );
 assert.match(build, /拒绝覆盖/, '目标已存在时必须拒绝覆盖');
 assert.match(build, /staging/, '必须使用同盘临时目录装配后再发布');
-assert.match(build, /Move-Item -LiteralPath \$staging -Destination \$OutputPath/, '必须改名发布（同盘原子移动）');
+assert.match(build, /Publish-PortableDirectory \$staging \$OutputPath/, '必须走有界重试的同盘改名发布');
+assert.match(build, /\[System\.IO\.Directory\]::Move\(\$sourceFull, \$destinationFull\)/, '发布只改名，目标存在时不得嵌套或覆盖');
 assert.doesNotMatch(
   build,
   /Get-Content[^\r\n]*(config\.yaml|\.env\.local)|ConvertFrom-Json[^\r\n]*(config\.yaml|\.env\.local)/,
@@ -229,6 +232,8 @@ function makeFixture({ omit = [] } = {}) {
   write('scripts/start-litellm-proxy.py');
   write('scripts/diagnose-local-env.mjs');
   write('scripts/reassembled-workbench.mjs');
+  write('scripts/reassembled-launch.mjs');
+  write('scripts/reassembled-launch.ps1');
   write('scripts/stop-windows.ps1');
   write('scripts/migrate-portable-data.ps1');
   write('scripts/migrate-portable-data.mjs');
@@ -336,9 +341,11 @@ try {
     'scripts/stop-stack.ps1',
     'scripts/start-litellm-proxy.py',
   'scripts/reassembled-workbench.mjs',
+  'scripts/reassembled-launch.mjs', 'scripts/reassembled-launch.ps1',
   'dist-desktop/reassembled-navigation.js',
     'scripts/diagnose-local-env.mjs',
     'scripts/reassembled-workbench.mjs',
+  'scripts/reassembled-launch.mjs', 'scripts/reassembled-launch.ps1',
     'scripts/stop-windows.ps1',
     'scripts/runtime/ports.mjs',
     'scripts/runtime/process-tree.mjs',
@@ -396,6 +403,7 @@ try {
     'scripts/start-stack.ps1',
     'scripts/start-litellm-proxy.py',
   'scripts/reassembled-workbench.mjs',
+  'scripts/reassembled-launch.mjs', 'scripts/reassembled-launch.ps1',
   'dist-desktop/reassembled-navigation.js',
     'config.yaml',
     '.env.local',

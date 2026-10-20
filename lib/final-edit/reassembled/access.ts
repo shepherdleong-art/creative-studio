@@ -41,3 +41,15 @@ export function assertAgentRequest(request: Request) {
     request.headers.get('x-desktop-instance') !== identity.instanceId || request.headers.get('x-data-identity') !== identity.dataIdentity) throw new FinalEditError('film_agent_identity', 'Agent 连接已过期或不属于该数据目录，请重新发现桌面实例', 403);
   return identity;
 }
+
+export function filmWriteActor(request: Request): 'human' | 'agent' {
+  const identity = checkLocalRequest(request);
+  if (request.headers.has('x-reassembled-token')) {
+    assertAgentRequest(request);
+    return 'agent';
+  }
+  if (request.headers.get('origin') !== identity.origin || request.headers.get('sec-fetch-site') !== 'same-origin') {
+    throw new FinalEditError('film_actor_required', '请从工作台操作；Agent 请使用实例身份与 token', 403);
+  }
+  return 'human';
+}

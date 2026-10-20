@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import ts from 'typescript';
 import Database from 'better-sqlite3';
 import * as duration from '../lib/video-duration.ts';
+import * as reassembledGuard from '../lib/reassembled-shot-guard.ts';
 
 // Execute the real route handlers with isolated SQLite and no queue/network side effects.
 const db = new Database(':memory:');
@@ -16,13 +17,15 @@ db.exec(`
   CREATE TABLE video_providers(id TEXT, name TEXT, type TEXT, defaultModel TEXT, enabled INTEGER);
   CREATE TABLE video_jobs(id TEXT, projectId TEXT, shotSetId TEXT, shotId TEXT, sourceImageId TEXT,
     tailImageId TEXT, providerId TEXT, model TEXT, templateId TEXT, prompt TEXT, durationSec REAL,
-    multiShot INTEGER, createdAt TEXT, displayName TEXT);
+    multiShot INTEGER, createdAt TEXT, displayName TEXT, openingCode TEXT);
 `);
 for (const [id, model] of [['sd25','doubao-seedance-2-5-260628'], ['sd20','doubao-seedance-2-0-260128'],
   ['fast','doubao-seedance-2-0-fast-260128'], ['kling','kling-3.0']]) {
   db.prepare('INSERT INTO video_providers VALUES (?, ?, ?, ?, 1)').run(id, id, 'openai-video', model);
 }
 const dependencies: Record<string, unknown> = {
+  '@/lib/reassembled-shot-guard': reassembledGuard,
+  '@/lib/media-core/production-code-reader': { resolveTemplateOpeningCode: () => null },
   'next/server': { NextResponse: { json: (data: unknown, init?: ResponseInit) => Response.json(data, init) } },
   '@/lib/db': { getDb: () => db }, 'uuid': { v4: randomUUID },
   '@/lib/video-queue': { getVideoQueueStatus: () => 'running', runVideoQueue: () => { throw new Error('Unexpected queue start'); } },
@@ -71,6 +74,12 @@ try {
     assert.equal(response.status, fastDuration === 15 ? 200 : 400);
     const stored = db.prepare('SELECT durationSec FROM video_jobs').all() as { durationSec: number }[];
     assert.deepEqual(stored.map(r => r.durationSec), fastDuration === 15 ? [30, 15] : []);
+  }
+  db.exec("CREATE TABLE final_edit_film_bindings(shotSetId TEXT); INSERT INTO final_edit_film_bindings VALUES ('set')");
+  for (const handler of [single, batch]) {
+    const response = await submit(handler, {});
+    assert.equal(response.status, 409, 'registered films cannot bypass versioned rework');
+    assert.equal((db.prepare('SELECT COUNT(*) n FROM video_jobs').get() as { n: number }).n, 0);
   }
   console.log('video-duration API tests passed');
 } finally { db.close(); }

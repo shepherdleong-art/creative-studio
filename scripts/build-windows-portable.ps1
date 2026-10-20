@@ -52,6 +52,33 @@ try {
   if ($LASTEXITCODE -eq 0 -and $sourceCommitCandidate) { $sourceCommit = [string]$sourceCommitCandidate }
 } catch {}
 
+function Publish-PortableDirectory([string]$SourcePath, [string]$DestinationPath) {
+  $sourceFull = [System.IO.Path]::GetFullPath($SourcePath)
+  $destinationFull = [System.IO.Path]::GetFullPath($DestinationPath)
+  if (-not [string]::Equals((Split-Path -Parent $sourceFull), (Split-Path -Parent $destinationFull), [StringComparison]::OrdinalIgnoreCase) -or
+      -not (Split-Path -Leaf $sourceFull).StartsWith('.portable-staging-')) {
+    throw '发布仅允许同目录的本次暂存目录改名。'
+  }
+  for ($attempt = 1; $attempt -le 10; $attempt++) {
+    if (Test-Path -LiteralPath $destinationFull) { throw '发布目标已存在，拒绝覆盖。' }
+    $sourceItem = Get-Item -LiteralPath $sourceFull -ErrorAction Stop
+    if (-not $sourceItem.PSIsContainer -or ($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+      throw '发布源必须是普通暂存目录。'
+    }
+    try {
+      # Directory.Move never nests into a concurrently created destination.
+      [System.IO.Directory]::Move($sourceFull, $destinationFull)
+      return
+    } catch {
+      $cause = $_.Exception
+      while ($cause.InnerException) { $cause = $cause.InnerException }
+      if ($attempt -eq 10 -or -not ($cause -is [System.IO.IOException] -or $cause -is [System.UnauthorizedAccessException])) { throw }
+      Write-Host ('[portable-publish] 目录暂时不可移动，等待后重试（{0}/10）。' -f $attempt)
+      Start-Sleep -Milliseconds (250 * [Math]::Min($attempt, 4))
+    }
+  }
+}
+
 function Get-Sha256Hex([string]$FilePath) {
   $stream = [System.IO.File]::OpenRead($FilePath)
   $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -107,6 +134,8 @@ $runtimeScriptFiles = @(
   'migrate-portable-data.ps1',
   'migrate-portable-data.mjs',
   'reassembled-workbench.mjs',
+  'reassembled-launch.mjs',
+  'reassembled-launch.ps1',
   'runtime\ports.mjs',
   'runtime\process-tree.mjs',
   'runtime\stack-state.mjs',
@@ -165,6 +194,8 @@ $manifestKeyFiles = @(
   'scripts/migrate-portable-data.mjs',
   'scripts/diagnose-local-env.mjs',
     'scripts/reassembled-workbench.mjs',
+    'scripts/reassembled-launch.mjs',
+    'scripts/reassembled-launch.ps1',
   'start-windows.cmd',
   'stop-windows.cmd',
   '迁移旧版数据.cmd',
@@ -340,7 +371,7 @@ try {
   )
 
   # ── 8/8 同盘改名发布 ──
-  Move-Item -LiteralPath $staging -Destination $OutputPath
+  Publish-PortableDirectory $staging $OutputPath
   Write-Host "[8/8] 免安装包已发布：$OutputPath" -ForegroundColor Green
   Write-Host '主包不要启动；请只从复制出的 QA 目录验收。'
 } catch {

@@ -14,7 +14,7 @@ import {
   type StartServiceOptions,
 } from './service-spawn';
 import { CHANNELS } from './ipc';
-import { consumeFilmNavigation } from './reassembled-navigation';
+import { completeFilmNavigation, consumeFilmNavigationRequest } from './reassembled-navigation';
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 
@@ -54,6 +54,7 @@ async function boot(): Promise<void> {
     dataRoot,
     instanceId: randomUUID(),
     desktopSecret,
+    environment: { CREATIVE_STUDIO_APPLICATION_ROOT: projectRoot, CREATIVE_STUDIO_DESKTOP_USER_DATA: app.getPath('userData') },
     // The in-app shutdown button exits the Node service directly. Without this
     // the window would survive as a dead shell pointing at a closed port, so
     // the whole application follows the service down. The quit confirmation is
@@ -87,8 +88,14 @@ async function boot(): Promise<void> {
   mainWindow = createWindow(windowHost);
   filmNavigationTimer = setInterval(() => {
     if (!service || !dataRoot || !mainWindow || mainWindow.isDestroyed()) return;
-    const destination = consumeFilmNavigation(dataRoot, service.instanceId);
-    if (destination) { focusMainWindow(); void mainWindow.loadURL(new URL(destination, service.origin).href); }
+    const destination = consumeFilmNavigationRequest(dataRoot, service.instanceId);
+    if (destination) {
+      const root = dataRoot, instance = service.instanceId;
+      focusMainWindow();
+      void mainWindow.loadURL(new URL(destination.url, service.origin).href)
+        .then(() => completeFilmNavigation(root, instance, destination, true), () => completeFilmNavigation(root, instance, destination, false))
+        .catch(() => { /* A closed data directory cannot acknowledge navigation. */ });
+    }
   }, 500);
   filmNavigationTimer.unref();
 }

@@ -8,6 +8,7 @@ export interface FilmCandidate {
   approvedRangeSec: [number, number];
 }
 export interface FilmImportManifest {
+  production?: { itemId: string; expectedRevision: number };
   schemaVersion: 1; importKey: string; projectId: string; root: string;
   title: string; sceneImage: string; sceneProvenance: Record<string, string | null>;
   specFile: string; renderManifestFile: string;
@@ -16,6 +17,7 @@ export interface FilmImportManifest {
   delivery: { directory: string; baseName: string };
 }
 export interface RegisteredCandidate {
+  externalAssetId?: string;
   videoJobId: string; shotId: string; clipId: string; file: string;
   fingerprint: string; durationSec: number; approvedRangeSec: [number, number];
 }
@@ -35,6 +37,10 @@ export interface FilmRenderSnapshot {
   exportTarget: ExportTargetView;
 }
 export interface ReassembledFilmView {
+  content: import('./content.ts').FilmContent;
+  originalContent: import('./content.ts').FilmContent;
+  history: Array<{ revision: number; type: string; createdAt: string }>;
+  proposals: Array<{ id: string; baseRevision: number; summary: string; content: import('./content.ts').FilmContent; status: string }>;
   id: string; baseName: string; template: string; deliveryDirectory: string; deliveryVersion: number;
   deliveredRevision: number; previewRevision: number;
   reviewUrl: string; candidates: Array<{ videoJobId: string; clipId: string; approvedRangeSec: [number, number] }>;

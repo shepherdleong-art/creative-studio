@@ -518,7 +518,7 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
                 }}
               >
                 <Icon name="download" size={16} />
-                {group.reassembled ? '导出新版本（含原包装）' : project.productCode.trim() ? (historicalSucceededJob ? '重新导出当前修改' : packagingEnabled ? '开始导出（含自动包装）' : '开始导出') : '填写信息并导出'}
+                {group.reassembled ? (variant?.timeline.filmContent ? '导出新版本（含当前包装）' : '导出新版本（含原包装）') : project.productCode.trim() ? (historicalSucceededJob ? '重新导出当前修改' : packagingEnabled ? '开始导出（含自动包装）' : '开始导出') : '填写信息并导出'}
               </button>
             ) : null}
             {group.reassembled && job && ['queued', 'running', 'failed'].includes(job.status) && <button className={styles.btn} disabled={busy} onClick={async () => { try { await readJson(await fetch(`/api/final-edit-jobs/${job.id}/cancel`, { method: 'POST' })); setJob({ ...job, status: 'cancelled' }); setMessage('任务已取消，旧成片保留。'); } catch (error) { setMessage(String(error)); } }}>取消导出任务</button>}

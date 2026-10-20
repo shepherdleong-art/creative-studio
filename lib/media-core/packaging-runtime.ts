@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { dataRoot } from '../data-root.ts';
 import { spawnHidden, spawnSyncHidden } from '../spawn-hidden.ts';
+import { resolveFfmpegPath, resolveFfprobePath } from '../ffmpeg.ts';
 import type { PackagingVars, PackagingLayouts } from './packaging-vars.ts';
 import type { PointCue, PointCueDraft } from './packaging-cues.ts';
 export class PackagingError extends Error {
@@ -113,7 +114,11 @@ export function runPackagingPipeline(input: {
     if (input.signal?.aborted) { reject(makeAbortError()); return; }
     const child = spawnHidden(input.nodeExe, input.args, {
       cwd: input.packagingDir,
-      env: { ...process.env, CREATIVE_STUDIO_PACKAGING_WORK_ROOT: path.join(dataRoot(), 'storage', 'packaging', 'renders'), CREATIVE_STUDIO_PACKAGING_USER_FONTS: path.join(dataRoot(), 'storage', 'packaging', 'fonts') },
+      env: { ...process.env,
+        // The packaging script otherwise falls back to its own old ffprobe-static.
+        // Pass the selected tools so nested HyperFrames probes match app diagnostics.
+        CREATIVE_STUDIO_FFMPEG: resolveFfmpegPath(), CREATIVE_STUDIO_FFPROBE: resolveFfprobePath(),
+        CREATIVE_STUDIO_PACKAGING_WORK_ROOT: path.join(dataRoot(), 'storage', 'packaging', 'renders'), CREATIVE_STUDIO_PACKAGING_USER_FONTS: path.join(dataRoot(), 'storage', 'packaging', 'fonts') },
       windowsHide: true,
       detached: process.platform !== 'win32',
     });

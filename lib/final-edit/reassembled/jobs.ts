@@ -62,7 +62,9 @@ export async function executeFilmJob(db: Database.Database, storageRoot: string,
       sha256(candidate.outputs.video) === candidate.outputs.videoSha256 && sha256(candidate.outputs.cover) === candidate.outputs.coverSha256) rendered = candidate;
   }
   if (!rendered) {
-    if (fs.existsSync(runDir)) runDir += `-${randomUUID()}`;
+    // A retry gets a fresh sibling without lengthening the job-sized name.
+    // Appending a second UUID can exceed Windows media-library path limits.
+    if (fs.existsSync(runDir)) runDir = path.join(renderRoot, randomUUID());
     rendered = await renderFilm({ spec: snapshot.spec, runDir, signal, onStage: event => {
       db.prepare('UPDATE final_edit_jobs SET phase=?,progress=? WHERE id=? AND status=\'running\'').run(event.stage, event.stage === 'verify' ? .85 : .25, job.id);
     } });

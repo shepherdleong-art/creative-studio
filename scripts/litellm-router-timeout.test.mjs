@@ -4,11 +4,11 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const litellm = path.join(projectRoot, '.venv-litellm', 'bin', 'litellm');
+const litellm = path.join(projectRoot, '.venv-litellm', ...(process.platform === 'win32' ? ['Scripts', 'litellm.exe'] : ['bin', 'litellm']));
 
 async function freePort() {
   const server = net.createServer();
@@ -40,6 +40,10 @@ async function waitUntilReady(url, child, stderr) {
 
 async function stopChild(child) {
   if (child.exitCode !== null) return;
+  if (process.platform === 'win32') {
+    await new Promise(resolve => execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 15000 }, resolve));
+    return;
+  }
   child.kill('SIGTERM');
   await Promise.race([
     new Promise((resolve) => child.once('exit', resolve)),
@@ -101,6 +105,7 @@ const child = spawn(litellm, [
 ], {
   cwd: projectRoot,
   env: childEnv,
+  windowsHide: true,
   stdio: ['ignore', 'ignore', 'pipe'],
 });
 child.stderr.setEncoding('utf8');
@@ -136,5 +141,7 @@ try {
 } finally {
   await stopChild(child);
   await new Promise((resolve) => upstream.close(resolve));
+  assert.equal(path.dirname(path.resolve(tempRoot)), path.resolve(os.tmpdir()));
+  assert.ok(path.basename(tempRoot).startsWith('creative-studio-litellm-timeout-') && !fs.lstatSync(tempRoot).isSymbolicLink());
   fs.rmSync(tempRoot, { recursive: true, force: true });
 }

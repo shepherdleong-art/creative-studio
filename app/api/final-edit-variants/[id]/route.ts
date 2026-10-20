@@ -3,10 +3,15 @@ import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import type { FinalEditCommand } from '@/lib/final-edit/workspace';
 import { getDb } from '@/lib/db';
+import { filmWriteActor } from '@/lib/final-edit/reassembled/access';
+import { FinalEditError } from '@/lib/final-edit/errors';
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
+    if (getDb().prepare('SELECT 1 FROM final_edit_film_bindings WHERE variantId=?').get(id) && filmWriteActor(request) === 'agent') {
+      throw new FinalEditError('film_manual_selection_required', 'Agent 续跑只登记候选，不能覆盖人工时间线；请在工作台采用候选', 409);
+    }
     const body = await request.json() as Omit<Extract<FinalEditCommand, { scope: 'variant' }>, 'scope' | 'variantId'>;
     return NextResponse.json(getFinalEditWorkspace().apply({ ...body, scope: 'variant', variantId: id } as Extract<FinalEditCommand, { scope: 'variant' }>));
   } catch (error) { return finalEditErrorResponse(error); }
@@ -15,6 +20,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
+    if (getDb().prepare('SELECT 1 FROM final_edit_film_bindings WHERE variantId=?').get(id)) throw new FinalEditError('film_edit_unsupported', '已接管成片保留修订历史，不能删除草稿', 409);
     const rendered = getDb().prepare(`SELECT 1 FROM final_edit_jobs WHERE variantId=? AND kind='render' AND status='succeeded' LIMIT 1`).get(id);
     if (rendered) return NextResponse.json({ error: 'variant_already_rendered', message: '已导出的草稿不能直接删除' }, { status: 409 });
     const result = getDb().transaction(() => {

@@ -144,7 +144,10 @@ export async function verifyFilm(args: {
   });
   if (!isClassicSpec(spec)) await phase('PACKAGING_CHECK_FAILED', async () => {
     const bare = path.join(workDir, 'bare-cover.png'), packaged = path.join(workDir, 'packaged-frame-10.png');
-    await sharp(projectFile(spec.project.root, spec.cover.image)).rotate().resize(1080, 1440, { fit: 'cover' }).removeAlpha().png().toFile(bare);
+    // Let Node handle long Windows paths; libvips filename I/O still rejects
+    // existing paths at MAX_PATH even though the image operation is valid.
+    const barePixels = await sharp(fs.readFileSync(projectFile(spec.project.root, spec.cover.image))).rotate().resize(1080, 1440, { fit: 'cover' }).removeAlpha().png().toBuffer();
+    fs.writeFileSync(bare, barePixels, { flag: 'wx' });
     await runFfmpeg(['-nostdin', '-hide_banner', '-n', '-i', video, '-vf', 'select=eq(n\\,10)', '-frames:v', '1', '-threads', '1', packaged], options);
     const similarity = await imageSsim(bare, packaged, options);
     check('PACKAGING_VISIBLE', similarity < .98, '第 10 帧与无包装封面明显不同', { ssim: similarity, threshold: .98 });

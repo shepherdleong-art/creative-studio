@@ -1,3 +1,4 @@
+import { isReassembledShotSet, REASSEMBLED_REWORK_REQUIRED } from './reassembled-shot-guard.ts';
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import {
@@ -265,6 +266,7 @@ export const TERMINAL_VIDEO_JOB_STATUSES = ['succeeded', 'failed', 'canceled'] a
 export type DeleteShotSetResult = { ok: true } | ShotSetServiceFailure;
 
 export function deleteShotSet(db: Database.Database, shotSetId: string): DeleteShotSetResult {
+  if (isReassembledShotSet(db, shotSetId)) return { ok: false, status: 409, error: REASSEMBLED_REWORK_REQUIRED };
   const existing = db.prepare(`SELECT id FROM shot_sets WHERE id = ?`).get(shotSetId);
   if (!existing) return { ok: false, status: 404, error: '分镜组不存在' };
 

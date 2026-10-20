@@ -1,4 +1,5 @@
 import { getDb } from './db.ts';
+import { isReassembledReworkJob, protectReassembledQueue, REASSEMBLED_SUBMIT_UNCERTAIN } from './reassembled-shot-guard.ts';
 import { getVideoAdapter } from './video-providers/index.ts';
 import { redactMediaUrlForLog } from './gateway-media-url.ts';
 import { describeGatewayDownloadFailure, downloadVideoMediaForProvider } from './media-download-policy.ts';
@@ -18,6 +19,8 @@ import type { SubmitVideoRequest } from './video-providers/types.ts';
 import { persistVideoJobUsageSnapshot, recordVideoJobUsage } from './usage-async-jobs.ts';
 
 export interface VideoQueueOptions {
+  /** Limit a local rework run to its immutable job. */
+  jobId?: string;
   projectId: string;
   concurrency: number;
   timeoutMs: number;
@@ -175,10 +178,11 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
   const db = getDb();
 
   // Recover stuck running jobs from a previous crash
+  protectReassembledQueue(db, projectId, 'generate_video', options.jobId);
   db.prepare(
     `UPDATE video_jobs SET status = 'pending', errorMessage = 'Recovered from interrupted run'
-     WHERE projectId = ? AND status = 'running'`
-  ).run(projectId);
+     WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)`
+  ).run(projectId, options.jobId || null, options.jobId || null);
 
   try {
     async function worker(workerId: number) {
@@ -189,14 +193,14 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
           continue;
         }
 
-        const claimed = claimNextVideoJob(projectId);
+        const claimed = claimNextVideoJob(projectId, options.jobId);
         if (claimed.job) {
           await runVideoJob(claimed.job, { timeoutMs, abort: abort.signal });
           continue;
         }
         // 没有新任务时,自动续跑已掉出轮询窗口的 needs_check 任务(它们持有
         // 远端 task_id,只是轮询超时,不能丢出自动化管线)。
-        const needsCheck = claimNeedsCheckVideoJob(projectId);
+        const needsCheck = claimNeedsCheckVideoJob(projectId, options.jobId);
         if (needsCheck) {
           await runVideoJob(needsCheck, { timeoutMs, abort: abort.signal });
           continue;
@@ -209,8 +213,8 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
         }
 
         const runningCount = db
-          .prepare(`SELECT COUNT(*) as count FROM video_jobs WHERE projectId = ? AND status = 'running'`)
-          .get(projectId) as { count: number };
+          .prepare(`SELECT COUNT(*) as count FROM video_jobs WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)`)
+          .get(projectId, options.jobId || null, options.jobId || null) as { count: number };
         if (runningCount.count === 0) break;
         await sleep(500);
         continue;
@@ -240,7 +244,8 @@ async function runVideoJob(
   // 存量库旧行 maxAttempts 默认是 1(建表默认值也长期是 1),实际等于“无自动
   // 重试”;这里把 <= 1 的值统一视为未配置,兜底到运行时上限 2,让旧库也能
   // 自动重试一次。显式配置 > 1 的值(如 3)保持原样。
-  const effectiveMaxAttempts = job.maxAttempts > 1 ? job.maxAttempts : DEFAULT_VIDEO_MAX_ATTEMPTS;
+  const rework = isReassembledReworkJob(db, job.id, 'generate_video');
+  const effectiveMaxAttempts = rework ? 1 : job.maxAttempts > 1 ? job.maxAttempts : DEFAULT_VIDEO_MAX_ATTEMPTS;
   const logInfo = (msg: string) =>
     writeLog({ jobId: job.id, projectId: job.projectId, level: 'info', message: msg, attempt });
   const logError = (msg: string) =>
@@ -522,7 +527,7 @@ async function runVideoJob(
     // 网关限流/过载(提交阶段 429/5xx):不消耗 maxAttempts,按供应商记冷却
     // 退避(30s/60s/120s 逐级),冷却内 claim 视同 gated;同一任务重排超过
     // RATE_LIMIT_MAX_REQUEUES 次才标失败。
-    if (isRateLimitedSubmitError(errorMessage)) {
+    if (!rework && isRateLimitedSubmitError(errorMessage)) {
       noteRateLimitCooldown(job.providerId);
       const requeues = (jobRateLimitRequeues.get(job.id) ?? 0) + 1;
       jobRateLimitRequeues.set(job.id, requeues);
@@ -558,7 +563,7 @@ async function runVideoJob(
       db.prepare(
         `UPDATE video_jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
          WHERE id = ? AND status = 'running'`
-      ).run(errorMessage, job.id);
+      ).run(rework ? `${errorMessage}。${REASSEMBLED_SUBMIT_UNCERTAIN}` : errorMessage, job.id);
     } else {
       db.prepare(
         `UPDATE video_jobs SET status = 'pending', errorMessage = ?
@@ -585,13 +590,14 @@ export interface ClaimVideoJobResult {
  * 商已达并发上限,不领取并标记 gated(跨项目统计 running,闸门在多项目
  * 并行时依然生效)。
  */
-export function claimNextVideoJob(projectId: string): ClaimVideoJobResult {
+export function claimNextVideoJob(projectId: string, jobId?: string): ClaimVideoJobResult {
   const db = getDb();
+  protectReassembledQueue(db, projectId, 'generate_video', jobId, false);
   const job = db.prepare(`
     SELECT * FROM video_jobs
-    WHERE projectId = ? AND status = 'pending'
+    WHERE projectId = ? AND status = 'pending' AND (? IS NULL OR id = ?)
     ORDER BY createdAt, rowid LIMIT 1
-  `).get(projectId) as VideoJobRecord | undefined;
+  `).get(projectId, jobId || null, jobId || null) as VideoJobRecord | undefined;
 
   if (!job) return { job: null, gated: false };
 
@@ -629,13 +635,13 @@ export function claimNextVideoJob(projectId: string): ClaimVideoJobResult {
  * 共享同一 createdAt 时按 rowid 决胜,续跑领取保持提交顺序,与
  * claimNextVideoJob 及列表 API 的排序口径一致。
  */
-export function claimNeedsCheckVideoJob(projectId: string): ClaimedVideoJob | null {
+export function claimNeedsCheckVideoJob(projectId: string, jobId?: string): ClaimedVideoJob | null {
   const db = getDb();
   const job = db.prepare(`
     SELECT * FROM video_jobs
-    WHERE projectId = ? AND status = 'needs_check' AND providerTaskId IS NOT NULL
+    WHERE projectId = ? AND status = 'needs_check' AND providerTaskId IS NOT NULL AND (? IS NULL OR id = ?)
     ORDER BY createdAt, rowid LIMIT 1
-  `).get(projectId) as VideoJobRecord | undefined;
+  `).get(projectId, jobId || null, jobId || null) as VideoJobRecord | undefined;
 
   if (!job) return null;
 

@@ -38,12 +38,12 @@ test('Windows 启动器把公司 sidecar 失败降级为警告并继续启动工
 
 test('start-stack 在失败时清理本轮受控状态文件，避免残留 sidecar 状态', () => {
   assert.match(startStack, /\$stackStateTool\s*=\s*Join-Path\s+\$Root\s+'scripts\\runtime\\stack-state\.mjs'/);
-  assert.match(startStack, /\$stackStateTool\s+clear\s+\$Root/, '状态清理必须委托 stack-state.mjs clear');
+  assert.match(startStack, /\$stackStateTool\s+clear\s+\$runtimeDataRoot/, '状态清理必须委托 stack-state.mjs clear');
   const portCheckStart = startStack.indexOf('# ── 端口占用检查');
   const staleCleanupStart = startStack.indexOf('# 只有端口确认空闲后才清理陈旧状态');
   assert.ok(portCheckStart >= 0 && staleCleanupStart > portCheckStart, '不能在端口预检前丢失旧 sidecar 状态');
   const catchBlock = startStack.slice(startStack.indexOf('} catch {', staleCleanupStart));
-  assert.match(catchBlock, /\$stackStateTool\s+clear\s+\$Root/, '失败清理必须委托 stack-state.mjs clear');
+  assert.match(catchBlock, /\$stackStateTool\s+clear\s+\$runtimeDataRoot/, '失败清理必须委托 stack-state.mjs clear');
 });
 
 test('start-stack 只要求公司 sidecar 文件，不把 standalone app 当成 sidecar 前置条件', () => {
@@ -272,8 +272,8 @@ test('stop-stack.ps1 按 stack.json PID 停止并委托共享工具校验归属�
   assert.doesNotMatch(stopStack, /\*windows-installer\*/, '不得按宽泛的安装目录名称强杀其他工作台实例');
   assert.match(stopStack, /litellmPid/, '必须优先按状态文件 PID 停止');
   // 归属校验/强杀/端口探测/状态管理必须委托共享 Node 工具，不再内联 CIM/netstat 实现
-  assert.match(stopStack, /\$stackStateTool\s+read\s+\$Root/, '栈状态读取必须委托 stack-state.mjs read');
-  assert.match(stopStack, /\$stackStateTool\s+clear\s+\$Root/, '栈状态清理必须委托 stack-state.mjs clear');
+  assert.match(stopStack, /\$stackStateTool\s+read\s+\$runtimeDataRoot/, '栈状态读取必须委托 stack-state.mjs read');
+  assert.match(stopStack, /\$stackStateTool\s+clear\s+\$runtimeDataRoot/, '栈状态清理必须委托 stack-state.mjs clear');
   assert.match(stopStack, /\$portsTool\s+listeners/, '端口探测必须委托 ports.mjs listeners');
   assert.match(stopStack, /\$processTreeTool\s+check-owner/, '归属校验必须委托 process-tree.mjs check-owner');
   assert.match(stopStack, /\$processTreeTool\s+kill-tree/, '强杀必须委托 process-tree.mjs kill-tree');
@@ -328,13 +328,30 @@ function makePortableFixture(t, files = {}) {
   return dir;
 }
 
-function runPs1(scriptPath, args, input) {
+function runPs1(scriptPath, args, input, env = process.env) {
   return spawnSync(
     'powershell.exe',
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args],
-    { input, encoding: 'utf8', timeout: 120000, windowsHide: true },
+    { input, env, encoding: 'utf8', timeout: 120000, windowsHide: true },
   );
 }
+
+test('隔离数据根的 sidecar 失败和停止均不触碰应用根状态或其他端口', { skip: !isWindows }, (t) => {
+  const dir = makePortableFixture(t);
+  const isolated = fs.mkdtempSync(path.join(os.tmpdir(), 'stack-data-'));
+  t.after(() => fs.rmSync(isolated, { recursive: true, force: true }));
+  const env = { ...process.env, CREATIVE_STUDIO_DATA_ROOT: isolated, CREATIVE_STUDIO_NODE: process.execPath };
+  const start = runPs1(path.join(dir, 'scripts/start-stack.ps1'), ['-SkipApp', '-Portable'], '', env);
+  assert.equal(start.status, 1, start.stderr);
+  assert.ok(fs.existsSync(path.join(isolated, 'storage/logs')));
+  assert.ok(!fs.existsSync(path.join(dir, 'storage')));
+  // A missing state in this isolated root must not invoke the port fallback.
+  fs.writeFileSync(path.join(dir, 'scripts/runtime/ports.mjs'), 'process.stderr.write("UNEXPECTED_PORT_PROBE"); process.exit(99);');
+  const stop = runPs1(path.join(dir, 'scripts/stop-stack.ps1'), [], '', env);
+  assert.equal(stop.status, 0, stop.stderr);
+  assert.doesNotMatch(`${stop.stdout}${stop.stderr}`, /UNEXPECTED_PORT_PROBE/);
+  assert.ok(!fs.existsSync(path.join(dir, 'storage')));
+});
 
 test('B4 行为：-Portable 且 manifest 缺失时报包损坏并安全失败，不创建 node_modules、不执行 npm', { skip: !isWindows }, (t) => {
   const dir = makePortableFixture(t);

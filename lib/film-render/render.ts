@@ -71,7 +71,9 @@ export async function renderFilm(input: { spec: RenderSpec; runDir: string; sign
       '-t', String(spec.canvas.frames / 24), '-movflags', '+faststart', muxed], { signal, timeoutMs: 300_000 });
   });
   if (!isClassicSpec(spec)) await stage('packaging', async () => {
-    const packagingCover = path.join(runDir, 'base/packaging-cover-source.png');
+    // libvips still uses traditional Windows path limits for filename inputs.
+    // Keep this private copy distinct from base/cover.png without a long suffix.
+    const packagingCover = path.join(runDir, 'base/p-cover.png');
     fs.copyFileSync(baseCover!, packagingCover, fs.constants.COPYFILE_EXCL);
     await renderVideoPackaging({ videoPath: muxed, coverPath: packagingCover, config: spec.packaging,
       totalSec: spec.canvas.frames / 24, staticCover: true, signal });

@@ -234,6 +234,47 @@ export const FINAL_EDIT_MIGRATIONS: ReadonlyArray<{ version: number; sql: string
       );
     `,
   },
+  {
+    version: 14,
+    sql: `
+      CREATE TABLE final_edit_film_shots (
+        bindingId TEXT NOT NULL REFERENCES final_edit_film_bindings(id) ON DELETE CASCADE,
+        clipId TEXT NOT NULL, shotId TEXT NOT NULL UNIQUE REFERENCES shots(id),
+        revision INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(bindingId, clipId)
+      );
+      CREATE TABLE final_edit_film_reworks (
+        id TEXT PRIMARY KEY, bindingId TEXT NOT NULL REFERENCES final_edit_film_bindings(id) ON DELETE CASCADE,
+        clipId TEXT NOT NULL, baseRevision INTEGER NOT NULL, actor TEXT NOT NULL,
+        kind TEXT NOT NULL, jobId TEXT, requestJson TEXT NOT NULL, resultJson TEXT NOT NULL,
+        createdAt TEXT NOT NULL, UNIQUE(bindingId, id)
+      );
+      CREATE INDEX idx_film_rework_shot ON final_edit_film_reworks(bindingId, clipId);
+    `,
+  },
+  {
+    version: 15,
+    sql: `
+      CREATE TABLE final_edit_film_productions (
+        id TEXT PRIMARY KEY, requestId TEXT NOT NULL UNIQUE, requestJson TEXT NOT NULL,
+        projectId TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        root TEXT NOT NULL, createdAt TEXT NOT NULL
+      );
+      CREATE TABLE final_edit_film_production_items (
+        id TEXT PRIMARY KEY, productionId TEXT NOT NULL REFERENCES final_edit_film_productions(id) ON DELETE CASCADE,
+        filmKey TEXT NOT NULL, importKey TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+        shotSetId TEXT NOT NULL UNIQUE REFERENCES shot_sets(id), groupId TEXT NOT NULL UNIQUE,
+        variantId TEXT NOT NULL UNIQUE, draftId TEXT NOT NULL UNIQUE,
+        shotIdsJson TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
+        snapshotJson TEXT NOT NULL, registryJson TEXT NOT NULL, baselineJson TEXT NOT NULL,
+        bindingId TEXT, updatedAt TEXT NOT NULL, UNIQUE(productionId, filmKey)
+      );
+      CREATE TABLE final_edit_film_production_syncs (
+        requestId TEXT PRIMARY KEY, itemId TEXT NOT NULL REFERENCES final_edit_film_production_items(id) ON DELETE CASCADE,
+        requestJson TEXT NOT NULL, resultJson TEXT NOT NULL, createdAt TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 export function initFinalEditSchema(db: Database.Database): void {

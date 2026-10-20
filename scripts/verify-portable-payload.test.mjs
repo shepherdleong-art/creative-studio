@@ -82,6 +82,28 @@ try {
   const cleanResult = verify(clean);
   assert.equal(cleanResult.status, 0, `干净 payload 应通过：\n${cleanResult.stdout}\n${cleanResult.stderr}`);
 
+  const productionCanvas = makePayload();
+  fs.appendFileSync(path.join(productionCanvas, '.env.local'),
+    'CREATIVE_STUDIO_CANVAS_ENABLE=1\nCREATIVE_STUDIO_CANVAS_EXECUTOR=company\n');
+  const configPath = path.join(productionCanvas, 'config.yaml');
+  fs.writeFileSync(configPath, fs.readFileSync(configPath, 'utf8').replace('router_settings:', [
+    '  - model_name: doubao-seedream-5-0-pro-image',
+    '    litellm_params:',
+    '      model: openai/doubao-seedream-5-0-pro-image',
+    '      api_base: https://gateway.example.test/v1',
+    '      api_key: sk-portable-fixture-pro',
+    'router_settings:',
+  ].join('\n')));
+  const canvasResult = verify(productionCanvas);
+  assert.equal(canvasResult.status, 0, canvasResult.stderr);
+  for (const executor of ['fixture', 'disabled', '']) {
+    const canvasEnvPath = path.join(productionCanvas, '.env.local');
+    const productionEnv = fs.readFileSync(canvasEnvPath, 'utf8');
+    fs.writeFileSync(canvasEnvPath, productionEnv.replace('EXECUTOR=company', `EXECUTOR=${executor}`));
+    assert.notEqual(verify(productionCanvas).status, 0, '启用画布必须使用公司执行器，禁止 fixture 或空执行器');
+    fs.writeFileSync(canvasEnvPath, productionEnv);
+  }
+
   const leakedBackup = makePayload();
   fs.writeFileSync(
     path.join(leakedBackup, '.next', 'standalone', 'config.yaml.backup-20260814-172847'),

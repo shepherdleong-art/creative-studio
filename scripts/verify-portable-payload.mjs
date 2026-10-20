@@ -13,6 +13,14 @@ const ALLOWED_ENV_NAMES = [
   'CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER',
 ];
 
+// Newer releases may enable the production canvas; fixture executors never ship.
+const OPTIONAL_ENV_VALUES = {
+  CREATIVE_STUDIO_CANVAS_ENABLE: ['0', '1'],
+  CREATIVE_STUDIO_CANVAS_EXECUTOR: ['disabled', 'company'],
+};
+
+const OPTIONAL_MODEL_ALIASES = ['doubao-seedream-5-0-pro-image'];
+
 const REQUIRED_MODEL_ALIASES = [
   'doubao-seedance-2-0-260128',
   'doubao-seedance-2-0-fast-260128',
@@ -75,7 +83,7 @@ function parseEnv(filePath, errors) {
     values.set(name, unquote(rawValue));
   }
 
-  const allowed = new Set(ALLOWED_ENV_NAMES);
+  const allowed = new Set([...ALLOWED_ENV_NAMES, ...Object.keys(OPTIONAL_ENV_VALUES)]);
   for (const name of values.keys()) {
     if (!allowed.has(name)) errors.push(`.env.local 包含未审核变量：${name}`);
   }
@@ -85,6 +93,15 @@ function parseEnv(filePath, errors) {
   }
   if (values.get('CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER') !== '1') {
     errors.push('CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER 必须为 1');
+  }
+  for (const [name, accepted] of Object.entries(OPTIONAL_ENV_VALUES)) {
+    if (values.has(name) && !accepted.includes(values.get(name))) {
+      errors.push(`.env.local 变量 ${name} 不是允许的生产配置`);
+    }
+  }
+  if (values.get('CREATIVE_STUDIO_CANVAS_ENABLE') === '1'
+    && values.get('CREATIVE_STUDIO_CANVAS_EXECUTOR') !== 'company') {
+    errors.push('启用创作画布时 CREATIVE_STUDIO_CANVAS_EXECUTOR 必须为 company');
   }
   return values;
 }
@@ -172,7 +189,7 @@ function parseConfig(filePath, errors) {
   }
 
   const actual = new Set(aliases);
-  const required = new Set(REQUIRED_MODEL_ALIASES);
+  const required = new Set([...REQUIRED_MODEL_ALIASES, ...OPTIONAL_MODEL_ALIASES]);
   for (const alias of REQUIRED_MODEL_ALIASES) {
     if (!actual.has(alias)) errors.push(`config.yaml 缺少模型别名：${alias}`);
   }

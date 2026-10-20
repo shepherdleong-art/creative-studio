@@ -12,6 +12,8 @@ import ScriptStudioPanel from '@/components/script-studio/ScriptStudioPanel';
 // 旧版 ScriptPanel 保留但不挂载为主入口：历史数据仍走旧路由兼容读取。
 import VideoGenerationPanel from '@/components/VideoGenerationPanel';
 import MixcutWorkspace from '@/components/mixcut/MixcutWorkspace';
+import { ReassembledReworkPanel } from '@/components/mixcut/ReassembledReworkPanel';
+import { ReassembledProductionStatus } from '@/components/mixcut/ReassembledProductionStatus';
 import AssetUploadGrid, { AssetGridItem } from '@/components/AssetUploadGrid';
 import ProjectWorkbenchTabs, { WorkbenchTabId } from '@/components/ProjectWorkbenchTabs';
 import LogDrawer from '@/components/LogDrawer';
@@ -559,6 +561,7 @@ export default function ProjectDetailPage() {
       )}
 
       <ProjectWorkbenchTabs projectId={project.id} activeTab={activeTab} />
+      <ReassembledProductionStatus projectId={project.id} tab={activeTab} />
       {activeTab !== 'final-edit' && project.jobs.length > 0 && (
         <div data-section="jobs">
         <QueueCompactBar
@@ -594,7 +597,8 @@ export default function ProjectDetailPage() {
                 sceneReferenceByImageId={sceneReferenceByImageId}
               />
             )}
-            {activeTab === 'storyboard' && (
+            {(activeTab === 'storyboard' || activeTab === 'video') && searchParams.get('filmGroup') && searchParams.get('filmClip') && <ReassembledReworkPanel key={`${activeTab}:${searchParams.get('filmGroup')}:${searchParams.get('filmClip')}`} groupId={searchParams.get('filmGroup')!} clipId={searchParams.get('filmClip')!} step={activeTab} />}
+            {activeTab === 'storyboard' && !(searchParams.get('filmGroup') && searchParams.get('filmClip')) && (
                 <StoryboardWorkspace
                   project={project}
                   providers={providers}
@@ -616,7 +620,7 @@ export default function ProjectDetailPage() {
               />
             )}
             {activeTab === 'script' && <ScriptStudioPanel projectId={project.id} />}
-            {activeTab === 'video' && (
+            {activeTab === 'video' && !(searchParams.get('filmGroup') && searchParams.get('filmClip')) && (
               <div className="video-generation-section">
                 <div className="video-generation-heading">
                   <h2 className="text-base font-semibold">视频生成</h2>

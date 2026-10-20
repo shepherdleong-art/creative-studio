@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveRegenerateImageJobProvider } from '@/lib/image-provider-selection';
 import { v4 as uuidv4 } from 'uuid';
+import { isReassembledImageJob, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
 
 const ALLOWED_SOURCE_STATUSES = new Set(['succeeded', 'failed', 'canceled', 'needs_check']);
 
@@ -17,6 +18,7 @@ export async function POST(
   try {
     const { id } = await params;
     const db = getDb();
+    if (isReassembledImageJob(db, id)) return NextResponse.json({ error: REASSEMBLED_REWORK_REQUIRED }, { status: 409 });
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
 
     const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
