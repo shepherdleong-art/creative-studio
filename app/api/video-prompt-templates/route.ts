@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 // 内置模板排在前面（seed 维护、界面只读），自建的按创建时间跟在后面。
 const LIST_SQL = `
-  SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, openingCode, createdAt
+  SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, lower(openingCode) AS openingCode, createdAt
   FROM video_prompt_templates
   ORDER BY isBuiltin DESC, createdAt
 `;
@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: `已有同名模板「${name}」` }, { status: 409 });
     }
 
-    if (openingCode && db.prepare('SELECT 1 FROM video_prompt_templates WHERE openingCode=?').get(openingCode)) {
+    if (openingCode && db.prepare('SELECT 1 FROM video_prompt_templates WHERE openingCode=? COLLATE NOCASE').get(openingCode)) {
       return NextResponse.json({ error: `开头编号 ${openingCode} 已被其他模板使用` }, { status: 409 });
     }
     const id = uuidv4();
@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
     `).run(id, name, description, prompt, inRandomPool ? 1 : 0, openingCode);
 
     const created = db.prepare(`
-      SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, openingCode, createdAt
+      SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, lower(openingCode) AS openingCode, createdAt
       FROM video_prompt_templates WHERE id = ?
     `).get(id);
     return NextResponse.json({ template: created, warnings: normalized.warnings }, { status: 201 });

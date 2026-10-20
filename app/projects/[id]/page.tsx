@@ -13,7 +13,6 @@ import ScriptStudioPanel from '@/components/script-studio/ScriptStudioPanel';
 import VideoGenerationPanel from '@/components/VideoGenerationPanel';
 import MixcutWorkspace from '@/components/mixcut/MixcutWorkspace';
 import { ReassembledReworkPanel } from '@/components/mixcut/ReassembledReworkPanel';
-import { ReassembledProductionStatus } from '@/components/mixcut/ReassembledProductionStatus';
 import AssetUploadGrid, { AssetGridItem } from '@/components/AssetUploadGrid';
 import ProjectWorkbenchTabs, { WorkbenchTabId } from '@/components/ProjectWorkbenchTabs';
 import LogDrawer from '@/components/LogDrawer';
@@ -561,7 +560,6 @@ export default function ProjectDetailPage() {
       )}
 
       <ProjectWorkbenchTabs projectId={project.id} activeTab={activeTab} />
-      <ReassembledProductionStatus projectId={project.id} tab={activeTab} />
       {activeTab !== 'final-edit' && project.jobs.length > 0 && (
         <div data-section="jobs">
         <QueueCompactBar

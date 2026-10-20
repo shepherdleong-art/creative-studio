@@ -240,6 +240,9 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
   const selectedProvider = selectableProviders.find((provider) => provider.id === selectedProviderId);
 
   const getImageUrl = (asset: ImageAsset | undefined): string | null => asset?.imageUrl || null;
+  const resultUrl = (job: Job): string | undefined =>
+    (job.outputImageId ? imageById.get(job.outputImageId)?.imageUrl : undefined) ||
+    (job.outputFilename ? `/api/images/outputs/${job.outputFilename.split(/[\\/]/).map(encodeURIComponent).join('/')}` : undefined);
   const getMark = (job: Job): string | null => job.reviewMark || null;
 
   const goPrev = () => {
@@ -463,7 +466,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                           <span className="line-clamp-3 text-center text-[10px] text-fail">{failedMessage}</span>
                         </div>
                       ) : isSucceeded ? (
-                        <img src={`/api/images/outputs/${job.outputFilename}`} alt={displayName} className="w-full h-full object-cover" />
+                        <img src={resultUrl(job)} alt={displayName} loading="lazy" className="w-full h-full object-cover" />
                       ) : (
                         <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-surface-subtle p-3 text-center">
                           {kind === 'queued' ? (
@@ -686,7 +689,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                         <div className="mb-2 text-xs text-ink-tertiary">结果</div>
                         <div className="flex-1 flex items-center justify-center min-h-0">
                           {selectedJob.outputFilename ? (
-                            <img src={`/api/images/outputs/${selectedJob.outputFilename}`} alt="结果" className="max-w-full max-h-full object-contain rounded-lg" />
+                            <img src={resultUrl(selectedJob)} alt="结果" className="max-w-full max-h-full object-contain rounded-lg" />
                           ) : selectedJob.status === 'failed' ? (
                             <div className="flex aspect-square w-full max-w-sm flex-col items-center justify-center rounded-lg border border-fail/30 bg-fail-tint p-4">
                               <Icon name="alert" size={24} className="mb-1 text-fail" />
@@ -766,7 +769,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                     : <button onClick={() => onSetSceneRef(selectedJob.id, selectedJob.outputImageId!)} className="btn-secondary btn-sm text-accent"><Icon name="video" size={14} /> 设为场景参考图</button>
                 )}
                 {selectedJobHasResult && selectedJob.outputFilename && (
-                  <a href={`/api/images/outputs/${selectedJob.outputFilename}`} download className="btn-primary btn-sm sm:ml-auto"><Icon name="download" size={14} /> 下载</a>
+                  <a href={resultUrl(selectedJob)} download className="btn-primary btn-sm sm:ml-auto"><Icon name="download" size={14} /> 下载</a>
                 )}
               </div>
             </div>

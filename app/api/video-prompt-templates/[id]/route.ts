@@ -4,7 +4,7 @@ import { getDb } from '@/lib/db';
 import { normalizeVideoPromptTemplateInput } from '@/lib/video-prompt-template';
 
 const SELECT_ONE = `
-  SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, openingCode, createdAt
+  SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, lower(openingCode) AS openingCode, createdAt
   FROM video_prompt_templates WHERE id = ?
 `;
 
@@ -40,11 +40,11 @@ export async function PATCH(
     const touchesContent = ['name', 'description', 'prompt']
       .some((key) => body[key] !== undefined);
 
-    const openingCode = body.openingCode === undefined ? (row.openingCode ?? '') : normalizeProductionCode(body.openingCode, 'K');
+    const openingCode = body.openingCode === undefined ? normalizeProductionCode(row.openingCode, 'K') : normalizeProductionCode(body.openingCode, 'K');
     if (body.openingCode !== undefined && (typeof body.openingCode !== 'string' || (body.openingCode.trim() && !openingCode))) {
-      return NextResponse.json({ error: '开头编号请填写 K1、K2 等（最多 6 位数字）' }, { status: 400 });
+      return NextResponse.json({ error: '开头编号请填写 k1、k2 等（最多 6 位数字）' }, { status: 400 });
     }
-    if (openingCode && db.prepare('SELECT id FROM video_prompt_templates WHERE openingCode=? AND id<>?').get(openingCode, id)) {
+    if (openingCode && db.prepare('SELECT id FROM video_prompt_templates WHERE openingCode=? COLLATE NOCASE AND id<>?').get(openingCode, id)) {
       return NextResponse.json({ error: `开头编号 ${openingCode} 已被其他模板使用` }, { status: 409 });
     }
     const inPool = body.inRandomPool === undefined ? row.inRandomPool : (body.inRandomPool ? 1 : 0);

@@ -640,7 +640,9 @@ function normalizeCover(value: unknown, groupId?: string, outputPreset?: OutputP
     kind: cover.kind === 'storyboard_image' || cover.kind === 'video_keyframe' ? cover.kind : null,
     sourceUrl: sourceKey && groupId && outputPreset
       ? `/api/final-edit-groups/${groupId}/cover-frame?sourceKey=${encodeURIComponent(sourceKey)}&timeUs=${frameTimeUs}&preset=${outputPreset}`
-      : typeof cover.sourceUrl === 'string' ? cover.sourceUrl : null,
+      : parsed?.kind === 'storyboard_image' && groupId && cover.coverKey
+        ? `/api/final-edit-groups/${groupId}/cover-candidates/${encodeURIComponent(cover.coverKey)}`
+        : typeof cover.sourceUrl === 'string' ? cover.sourceUrl : null,
     sourceKey,
     frameTimeUs,
     framing: {
@@ -1946,6 +1948,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         const state = parseJson<{ timeline: VideoTimeline; bgm: typeof bgm; cover: typeof cover } | null>(historical.stateJson, null);
         if (!state) throw new FinalEditError('revision_invalid', '历史版本数据损坏');
         timeline = state.timeline; bgm = state.bgm; cover = state.cover;
+        // Adoption is permanent; undo must not re-enable the retired editor.
+        if (parseJson<VideoTimeline>(String(row.timelineJson), {} as VideoTimeline).importedFilmEditor === 'mixcut') {
+          timeline.importedFilmEditor = 'mixcut';
+          delete timeline.filmContent;
+        }
       }
       if (command.type === 'delete_clip') {
         timeline.clips = timeline.clips.filter((clip) => clip.id !== command.clipId);

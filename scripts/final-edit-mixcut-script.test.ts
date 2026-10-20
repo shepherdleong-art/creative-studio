@@ -55,7 +55,7 @@ const synced = buildMixcutTaskScriptSnapshot({
   sourceScript: source, shotSetId: 'set-a', editedNarrationText: '第一句。\n第二句！',
 });
 assert.equal(synced.scriptSyncState, 'synced');
-assert.equal(synced.scriptCode, 'J1');
+assert.equal(synced.scriptCode, 'j1');
 assert.deepEqual(synced.segments.map((segment) => [segment.id, segment.shotId]), [['source-1', 'shot-1'], ['source-2', 'shot-2']]);
 
 const realSynced = buildMixcutTaskScriptSnapshot({

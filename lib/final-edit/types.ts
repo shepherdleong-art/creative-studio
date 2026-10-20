@@ -26,6 +26,8 @@ export interface TimelineClip {
 }
 
 export interface VideoTimeline {
+  /** Imported source retained for provenance; subsequent edits use normal mixcut. */
+  importedFilmEditor?: 'mixcut';
   /** Imported film edits share the existing revision/restore lifecycle. */
   filmContent?: import('./reassembled/content.ts').FilmContent;
   fps: 24;

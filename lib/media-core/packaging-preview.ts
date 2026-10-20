@@ -22,6 +22,7 @@ export function packagingPreviewHtml(input: {
     .replace("p.__packagingEditText(pid, { left: r.left, top: r.top, width: r.width, height: r.height });", "p.postMessage({type:'packaging:text',id:pid,rect:{left:r.left,top:r.top,width:r.width,height:r.height}},p.location.origin);")
     .replace("p && typeof p.__packagingEditText === 'function'", 'p');
   if (!input.edit) bridge = '';
-  const head = `<base href="/api/packaging/templates/${input.config.template}/"><style>html,body{background:transparent!important;background-image:none!important}</style>${buildConfigFontFacesCss(input.config)}<script>window.__hyperframes={getVariables:()=>(${json(vars)})};${input.palette ? `window.__palette=${json(input.palette)};` : ''}</script>`;
+  // Keep the document and embedding iframe on the same scheme to preserve alpha compositing.
+  const head = `<base href="/api/packaging/templates/${input.config.template}/"><style>:root{color-scheme:light}html,body{background:transparent!important;background-image:none!important}</style>${buildConfigFontFacesCss(input.config)}<script>window.__hyperframes={getVariables:()=>(${json(vars)})};${input.palette ? `window.__palette=${json(input.palette)};` : ''}</script>`;
   return fs.readFileSync(path.join(dir, 'index.html'), 'utf8').replace('<head>', `<head>${head}`).replace('</body>', `<script>${bridge}</script></body>`);
 }

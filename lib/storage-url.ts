@@ -55,3 +55,9 @@ export function toStorageImageUrl(filePath: string | null | undefined, storageRo
 
   return `/api/images/${encodedRelativePath}`;
 }
+
+/** Use the registered file location: imported skill videos need not live in storage/videos. */
+export function toStorageVideoUrl(filePath: string | null | undefined, storageRoot = path.resolve(dataRoot(), 'storage')) {
+  const relativePath = resolveStorageRelativePath(filePath, storageRoot);
+  return relativePath ? `/api/videos/${relativePath.split(path.sep).map(encodeURIComponent).join('/')}` : '';
+}

@@ -4,7 +4,12 @@ import { filmContent } from './content.ts';
 import type { VideoTimeline } from '../types.ts';
 
 export function filmBinding(db: Database.Database, groupId: string): FilmBinding | undefined {
-  return db.prepare('SELECT * FROM final_edit_film_bindings WHERE groupId=?').get(groupId) as FilmBinding | undefined;
+  const row = db.prepare('SELECT * FROM final_edit_film_bindings WHERE groupId=?').get(groupId) as FilmBinding | undefined;
+  if (row) {
+    const variant = db.prepare('SELECT timelineJson FROM final_edit_variants WHERE id=?').get(row.variantId) as { timelineJson: string } | undefined;
+    if (variant && JSON.parse(variant.timelineJson).importedFilmEditor === 'mixcut') return undefined;
+  }
+  return row;
 }
 export function filmView(db: Database.Database, groupId: string): ReassembledFilmView | undefined {
   const row = filmBinding(db, groupId);

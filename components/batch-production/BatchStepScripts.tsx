@@ -1395,7 +1395,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               {prep.scripts.map((script) => {
                 const selected = selectedScripts[script.id] !== undefined;
                 const durationSec = script.targetDurationSec ?? 15;
-                const title = `${script.scriptCode ? `${script.scriptCode} · ` : ''}${script.title || '未命名脚本'}`;
+                const title = `${script.scriptCode ? `${script.scriptCode.toLowerCase()} · ` : ''}${script.title || '未命名脚本'}`;
                 return selected ? (
                   <article key={script.id} className={`rounded-2xl border bg-surface p-4 shadow-sm ${selected ? 'border-accent ring-2 ring-accent/10' : 'border-hairline'}`}>
                     <div className="flex items-start gap-3">

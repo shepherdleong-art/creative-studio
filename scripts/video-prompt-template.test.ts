@@ -45,7 +45,7 @@ for (const code of ['K0', 'J1', 'K01', 1, 'K1/../../']) {
   assert.equal(normalizeVideoPromptTemplateInput({ ...good, openingCode: code }).ok, false);
 }
 const coded = normalizeVideoPromptTemplateInput({ ...good, openingCode: ' k2 ' });
-assert.equal(coded.ok && coded.value.openingCode, 'K2');
+assert.equal(coded.ok && coded.value.openingCode, 'k2');
 // ── 硬性错误 ──────────────────────────────────────────────────────────
 for (const [label, body] of [
   ['名称为空', { ...good, name: '   ' }],

@@ -1,5 +1,4 @@
 'use client';
-import { ReassembledPreviewStep } from './ReassembledPreviewStep';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
@@ -29,6 +28,7 @@ import { MaterialStep, type MaterialCardView } from './MaterialStep';
 import { MixcutSidebar } from './MixcutSidebar';
 import MixcutShell, { type MixcutStepDef } from './MixcutShell';
 import { PreviewStep } from './PreviewStep';
+import { ReassembledPreviewStep } from './ReassembledPreviewStep';
 import { ExportStep } from './ExportStep';
 import styles from './mixcut-shell.module.css';
 
@@ -159,6 +159,13 @@ export default function MixcutPanel({
         readJson<VisionProviderView[]>(await fetch('/api/providers/script', { signal: controller.signal })).catch(() => []),
       ]);
       if (requestRef.current?.sequence !== sequence) return;
+      for (let index = 0; index < groupsResult.groups.length; index += 1) {
+        const group = groupsResult.groups[index];
+        if (group.shotSetId === next.currentShotSetId && group.reassembled && group.reassembled.template !== 'classic') {
+          groupsResult.groups[index] = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${group.id}/use-mixcut`, { method: 'POST', signal: controller.signal }));
+        }
+      }
+      if (requestRef.current?.sequence !== sequence) return;
       setContext(next);
       setRecentGroups(groupsResult.groups);
       setTtsProviders(providersResult);
@@ -234,7 +241,7 @@ export default function MixcutPanel({
           });
           if (['queued', 'running', 'needs_input'].includes(latestPrepare.status)) setActiveStep(1);
         } else setActiveJob(null);
-        if (selectedGroupId) setActiveStep(latestPreparedGroup ? 2 : 1);
+        if (selectedGroupId || latestPreparedGroup?.reassembled || latestPreparedGroup?.variants[0]?.timeline.importedFilmEditor === 'mixcut') setActiveStep(latestPreparedGroup ? 2 : 1);
       }
       setMessage('');
     } catch (error) {
@@ -823,6 +830,11 @@ export default function MixcutPanel({
       )}
       topbarRight={(
         <>
+          {(context?.shotSets.length ?? 0) > 1 && (
+            <select aria-label="切换图片与视频分组" value={activeShotSetId ?? ''} onChange={event => selectShotSet(event.target.value)} disabled={loading || submitting} className={styles.btn} style={{ maxWidth: 280 }}>
+              {context?.shotSets.map(shotSet => <option key={shotSet.id} value={shotSet.id}>{shotSet.name}</option>)}
+            </select>
+          )}
           <button type="button" className={`${styles.btn} ${styles.small}`} onClick={() => setProjectInfoOpen(true)}>
             <Icon name="settings" size={14} />项目信息
           </button>
@@ -853,7 +865,14 @@ export default function MixcutPanel({
       main={(controls) => (
         activeStep === 2 ? (
           preparedGroup ? (
-            preparedGroup.reassembled ? <ReassembledPreviewStep group={preparedGroup} onGroupChange={setPreparedGroup} onExport={(variantId) => { setExportVariantId(variantId); setActiveStep(3); }} /> : <PreviewStep
+            preparedGroup.reassembled?.template === 'classic' ? (
+              <ReassembledPreviewStep
+                key={preparedGroup.id}
+                group={preparedGroup}
+                onGroupChange={setPreparedGroup}
+                onExport={(variantId) => { setExportVariantId(variantId); setActiveStep(3); }}
+              />
+            ) : <PreviewStep
               key={preparedGroup.id}
               group={preparedGroup}
               active
@@ -863,7 +882,6 @@ export default function MixcutPanel({
               onRgtCollapse={controls.onRgtCollapse}
               onResizeStart={controls.onResizeStart}
             />
-
           ) : (
             <main className={styles.mainCol}>
               {message && <div className={styles.errorBanner}><Icon name="alert" size={15} />{message}</div>}

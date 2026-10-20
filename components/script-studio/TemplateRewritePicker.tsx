@@ -52,7 +52,7 @@ function TemplateCard({
         <input type="checkbox" className="mt-1" checked={checked} disabled={disabled && !checked} onChange={onToggle} aria-label={`选择模板：${entry.name || entry.title}`} />
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-1.5">
-            <span className="font-semibold">{entry.scriptCode ? `${entry.scriptCode} · ` : ''}{entry.name || entry.title || entry.sourceTemplateId}</span>
+            <span className="font-semibold">{entry.scriptCode ? `${entry.scriptCode.toLowerCase()} · ` : ''}{entry.name || entry.title || entry.sourceTemplateId}</span>
             {entry.category && <span className="rounded-full bg-surface-subtle px-2 py-0.5 text-[0.62rem] text-ink-secondary">{entry.category}{entry.subCategory ? ` · ${entry.subCategory}` : ''}</span>}
             {entry.structureOrigin === 'fallback' && <span className="rounded-full bg-surface-subtle px-2 py-0.5 text-[0.62rem] text-ink-tertiary" title="表格未提供结构，使用默认结构">结构默认</span>}
           </span>
@@ -224,7 +224,7 @@ export default function TemplateRewritePicker({
             <div key={group.entry.id} className="flex items-center justify-between gap-2 rounded-[12px] border border-accent/40 bg-accent/[0.04] px-3 py-2 text-sm">
               <span className="min-w-0 truncate">
                 <span className="mr-2 text-[0.65rem] font-bold text-accent">{index + 1}.</span>
-                {group.entry.scriptCode ? `${group.entry.scriptCode} · ` : ''}{group.entry.name || group.entry.title}
+                {group.entry.scriptCode ? `${group.entry.scriptCode.toLowerCase()} · ` : ''}{group.entry.name || group.entry.title}
               </span>
               <span className="flex shrink-0 items-center gap-1.5">
                 <span className="flex items-center rounded-full border border-hairline bg-surface">

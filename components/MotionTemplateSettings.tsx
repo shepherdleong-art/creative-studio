@@ -158,7 +158,7 @@ export default function MotionTemplateSettings() {
   };
 
   const saveOpeningCode = async (template: MotionTemplate, value: string) => {
-    if (value.trim().toUpperCase() === (template.openingCode || '')) return;
+    if (value.trim().toLowerCase() === (template.openingCode || '').toLowerCase()) return;
     setError(null);
     try {
       const res = await fetch(`/api/video-prompt-templates/${template.id}`, {
@@ -195,7 +195,7 @@ export default function MotionTemplateSettings() {
       <div className="space-y-3">
         <div>
           <label className="label" htmlFor="opening-template-code">开头编号（仅开头提示词填写）</label>
-          <input id="opening-template-code" className="input-field" value={form.openingCode} maxLength={7} placeholder="例如 K5，普通运镜留空" onChange={(e) => setForm({ ...form, openingCode: e.target.value })} />
+          <input id="opening-template-code" className="input-field" value={form.openingCode} maxLength={7} placeholder="例如 k5，普通运镜留空" onChange={(e) => setForm({ ...form, openingCode: e.target.value })} />
         </div>
         <div>
           <label className="label">名称</label>
@@ -263,7 +263,7 @@ export default function MotionTemplateSettings() {
               <span className="font-semibold text-ink">{template.openingCode ? `${template.openingCode} · ` : ''}{template.name}</span>
               {(BUILTIN_OPENING_CODES[template.id] || template.isBuiltin !== 1) && <label className="flex items-center gap-2 text-xs text-ink-secondary">
                 <span className="whitespace-nowrap">开头编号</span>
-                <input key={`${template.id}:${template.openingCode || ''}`} aria-label={`${template.name}开头编号`} className="input-field w-24" defaultValue={template.openingCode || ''} maxLength={7} placeholder="K1" onBlur={(e) => void saveOpeningCode(template, e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+                <input key={`${template.id}:${template.openingCode || ''}`} aria-label={`${template.name}开头编号`} className="input-field w-24" defaultValue={template.openingCode || ''} maxLength={7} placeholder="k1" onBlur={(e) => void saveOpeningCode(template, e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
               </label>}
               <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
                 builtin ? 'bg-ink/[0.06] text-ink-tertiary' : 'bg-accent-tint/20 text-accent'

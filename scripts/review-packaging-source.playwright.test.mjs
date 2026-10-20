@@ -219,7 +219,7 @@ try{
  await page.goto(origin+'/?mode=menu');
  await page.getByRole('switch',{name:'启用视频包装'}).waitFor();
  assert.equal(await page.getByRole('radio').count(),4);assert.equal(await page.locator('input:not([type=file]),select').count(),0,'包装菜单不再包含重复文字表单');
- await page.getByRole('radio',{name:'B 手账拼贴'}).click();assert.equal(await page.evaluate(()=>window.edits.at(-1).config.template),'overlay-journal');
+ await page.getByRole('radio',{name:'f2 手账拼贴'}).click();assert.equal(await page.evaluate(()=>window.edits.at(-1).config.template),'overlay-journal');
  await page.getByRole('button',{name:'跳到封面',exact:true}).click();assert.equal(await page.evaluate(()=>window.jumpCount),1);
  await page.getByRole('button',{name:'重新提取卖点',exact:true}).click();assert.equal(await page.evaluate(()=>window.edits.at(-1).reextract),true);
  await page.goto(origin);

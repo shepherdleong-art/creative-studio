@@ -11,7 +11,7 @@
     "build:desktop": "tsc -p desktop/tsconfig.json",
     "dev:desktop": "npm run build:desktop && electron .",
     "dev:win": "next dev --hostname 127.0.0.1",
-    "build": "next build && node scripts/sync-standalone-assets.mjs",
+    "build": "node scripts/build-production.mjs",
     "build:win-portable": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-portable.ps1",
     "build:win-installer": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-installer.ps1",
     "build:mac-installer": "bash scripts/build-mac-installer.sh",

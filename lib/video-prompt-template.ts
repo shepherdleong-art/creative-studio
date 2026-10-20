@@ -43,7 +43,7 @@ export function normalizeVideoPromptTemplateInput(raw: unknown): NormalizeResult
 
   if (body.openingCode !== undefined && typeof body.openingCode !== 'string') return { ok: false, error: '开头编号必须是文本' };
   const openingCode = normalizeProductionCode(body.openingCode, 'K');
-  if (readString(body, 'openingCode') && !openingCode) return { ok: false, error: '开头编号请填写 K1、K2 等（最多 6 位数字）' };
+  if (readString(body, 'openingCode') && !openingCode) return { ok: false, error: '开头编号请填写 k1、k2 等（最多 6 位数字）' };
   const name = readString(body, 'name');
   const description = readString(body, 'description');
   const prompt = readString(body, 'prompt');

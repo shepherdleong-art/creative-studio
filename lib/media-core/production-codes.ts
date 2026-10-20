@@ -6,15 +6,15 @@ export interface ProductionCodes {
 }
 
 export const BUILTIN_OPENING_CODES: Readonly<Record<string, string>> = {
-  'magic-growth': 'K1',
-  'giant-hand-place': 'K2',
-  'carton-explosion': 'K3',
-  'bare-shell-renovation': 'K4',
+  'magic-growth': 'k1',
+  'giant-hand-place': 'k2',
+  'carton-explosion': 'k3',
+  'bare-shell-renovation': 'k4',
 };
 
 export function normalizeProductionCode(value: unknown, prefix: 'J' | 'K'): string {
-  const text = typeof value === 'string' ? value.normalize('NFKC').trim().toUpperCase() : '';
-  return new RegExp(`^${prefix}[1-9][0-9]{0,5}$`).test(text) ? text : '';
+  const text = typeof value === 'string' ? value.normalize('NFKC').trim().toLowerCase() : '';
+  return new RegExp(`^${prefix.toLowerCase()}[1-9][0-9]{0,5}$`).test(text) ? text : '';
 }
 
 export function scriptCodeFromContent(value: unknown): string {
@@ -25,14 +25,20 @@ export function scriptCodeFromContent(value: unknown): string {
 
 export function packagingCode(config: { enabled?: boolean; template?: string } | null | undefined): string {
   if (!config?.enabled) return '';
-  return ({ 'overlay-poster': 'A', 'overlay-journal': 'B', 'overlay-minimal': 'C', 'overlay-variety': 'D' } as Record<string, string>)[config.template || 'overlay-poster'] || '';
+  return ({ 'overlay-poster': 'f1', 'overlay-journal': 'f2', 'overlay-minimal': 'f3', 'overlay-variety': 'f4' } as Record<string, string>)[config.template || 'overlay-poster'] || '';
+}
+
+/** Frozen exports from older versions may still carry the A–D packaging codes. */
+export function normalizePackagingCode(value: unknown): string {
+  const text = typeof value === 'string' ? value.normalize('NFKC').trim().toLowerCase() : '';
+  return ({ a: 'f1', b: 'f2', c: 'f3', d: 'f4' } as Record<string, string>)[text] || (/^f[1-4]$/.test(text) ? text : '');
 }
 
 export function productionCodeSuffix(codes?: ProductionCodes): string {
   if (!codes) return '';
   return normalizeProductionCode(codes.scriptCode, 'J')
     + normalizeProductionCode(codes.openingCode, 'K')
-    + (/^[ABCD]$/.test(codes.packagingCode || '') ? codes.packagingCode : '');
+    + normalizePackagingCode(codes.packagingCode);
 }
 
 export function withProductionCodes(baseName: string, codes?: ProductionCodes): string {

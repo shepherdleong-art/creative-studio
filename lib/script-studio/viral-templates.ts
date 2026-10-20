@@ -223,7 +223,7 @@ export function listViralTemplateEntries(
   }
   const limit = Math.max(1, Math.min(500, Math.floor(options.limit ?? 200) || 200));
   return db.prepare(`
-    SELECT *, COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '') AS scriptCode FROM script_studio_viral_tpl_entries
+    SELECT *, lower(COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '')) AS scriptCode FROM script_studio_viral_tpl_entries
     WHERE ${conditions.join(' AND ')}
     ORDER BY category, subCategory, sourceRow LIMIT ?
   `).all(...params, limit) as ViralTemplateEntryRecord[];
@@ -233,7 +233,7 @@ export function getViralTemplateEntriesByIds(db: Database.Database, entryIds: st
   if (!entryIds.length) return [];
   const placeholders = entryIds.map(() => '?').join(', ');
   const rows = db.prepare(`
-    SELECT *, COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '') AS scriptCode FROM script_studio_viral_tpl_entries WHERE id IN (${placeholders})
+    SELECT *, lower(COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '')) AS scriptCode FROM script_studio_viral_tpl_entries WHERE id IN (${placeholders})
   `).all(...entryIds) as ViralTemplateEntryRecord[];
   const byId = new Map(rows.map((row) => [row.id, row]));
   // 按调用方给定的选择顺序返回（选择顺序是任务身份的一部分）。
@@ -247,7 +247,7 @@ export function updateViralTemplateEntryStatus(
   status: ViralTemplateStatus,
   reason: string,
 ): ViralTemplateEntryRecord {
-  const entry = db.prepare(`SELECT *, COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '') AS scriptCode FROM script_studio_viral_tpl_entries WHERE id = ?`).get(entryId) as ViralTemplateEntryRecord | undefined;
+  const entry = db.prepare(`SELECT *, lower(COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '')) AS scriptCode FROM script_studio_viral_tpl_entries WHERE id = ?`).get(entryId) as ViralTemplateEntryRecord | undefined;
   if (!entry) throw new ScriptStudioError('not_found', '模板条目不存在');
   if (!['usable', 'unusable', 'review'].includes(status)) {
     throw new ScriptStudioError('invalid_input', '无效的模板状态');
@@ -255,7 +255,7 @@ export function updateViralTemplateEntryStatus(
   db.prepare(`
     UPDATE script_studio_viral_tpl_entries SET status = ?, statusReason = ?, statusUpdatedBy = 'manual' WHERE id = ?
   `).run(status, reason.trim().slice(0, 200), entryId);
-  return db.prepare(`SELECT *, COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '') AS scriptCode FROM script_studio_viral_tpl_entries WHERE id = ?`).get(entryId) as ViralTemplateEntryRecord;
+  return db.prepare(`SELECT *, lower(COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '')) AS scriptCode FROM script_studio_viral_tpl_entries WHERE id = ?`).get(entryId) as ViralTemplateEntryRecord;
 }
 
 // ---------------------------------------------------------------------------

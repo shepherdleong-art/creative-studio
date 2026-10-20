@@ -47,7 +47,7 @@ export default function PackagingOverlay({ src, srcDoc, timeSec, editable = fals
     return () => window.removeEventListener('message', receive);
   }, [editable, onLayout, onText]);
   return <>
-    <iframe ref={frame} src={src} srcDoc={srcDoc} title={editable ? '包装版式编辑' : '包装效果叠加层'} onLoad={() => { setError(''); seek(); }} className="absolute inset-0 h-full w-full border-0" style={{ pointerEvents: editable ? 'auto' : 'none' }} />
+    <iframe ref={frame} src={src} srcDoc={srcDoc} title={editable ? '包装版式编辑' : '包装效果叠加层'} onLoad={() => { setError(''); seek(); }} className="absolute inset-0 h-full w-full border-0" style={{ colorScheme: 'light', pointerEvents: editable ? 'auto' : 'none' }} />
     {error && <p role="alert" className="absolute inset-x-0 bottom-0 bg-surface p-2 text-xs text-fail">{error}</p>}
   </>;
 }

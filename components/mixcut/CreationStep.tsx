@@ -77,7 +77,7 @@ function draftMetaLabel(draft: Draft): string {
 }
 
 function draftOptionLabel(draft: Draft): string {
-  return `${draft.scriptCode ? `${draft.scriptCode} · ` : ''}V${draft.version} · ${draft.title || '未命名脚本'} · ${draft.targetDurationSec}s · ${draftMetaLabel(draft)} · ${formatCreatedAt(draft.createdAt)}`;
+  return `${draft.scriptCode ? `${draft.scriptCode.toLowerCase()} · ` : ''}V${draft.version} · ${draft.title || '未命名脚本'} · ${draft.targetDurationSec}s · ${draftMetaLabel(draft)} · ${formatCreatedAt(draft.createdAt)}`;
 }
 
 function stageState(job: MixcutPrepareJobView | null, index: number): 'waiting' | 'running' | 'done' | 'failed' {

@@ -683,7 +683,7 @@ db.prepare(`UPDATE video_jobs SET rejectedAt=NULL, rejectReason=NULL WHERE id='v
 assert.equal(renderJob.target.taskName, '沙发任务');
 assert.equal(renderJob.target.productCode, 'SF-A1');
 assert.equal(renderJob.target.taskDate, '20260724');
-assert.equal(renderJob.target.videoFilename, '成片-SF-A1-20260724-J1K2A.mp4');
+assert.equal(renderJob.target.videoFilename, '成片-SF-A1-20260724-j1k2f1.mp4');
 assert.equal(renderJob.target.displayDirectory, '工作台/沙发任务/成片/');
 const renderSnapshot = JSON.parse((db.prepare(`SELECT inputSnapshotJson FROM final_edit_jobs WHERE id=?`).get(renderJob.id) as { inputSnapshotJson: string }).inputSnapshotJson) as {
   exportIdentity: { productCode: string; taskDate: string; productionCodes: { scriptCode: string; openingCode: string; packagingCode: string } };
@@ -691,7 +691,7 @@ const renderSnapshot = JSON.parse((db.prepare(`SELECT inputSnapshotJson FROM fin
 };
 assert.equal(renderSnapshot.exportIdentity.productCode, 'SF-A1', '不可把 projects.model 当作型号写入快照');
 assert.equal(renderSnapshot.exportIdentity.taskDate, '20260724');
-assert.deepEqual(renderSnapshot.exportIdentity.productionCodes, { scriptCode: 'J1', openingCode: 'K2', packagingCode: 'A' });
+assert.deepEqual(renderSnapshot.exportIdentity.productionCodes, { scriptCode: 'j1', openingCode: 'k2', packagingCode: 'f1' });
 releaseReservedExportTarget(storageRoot, renderSnapshot.exportTarget);
 db.prepare(`UPDATE projects SET productCode='' WHERE id='p1'`).run();
 await assert.rejects(

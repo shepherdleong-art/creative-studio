@@ -192,7 +192,7 @@ try {
   await page.getByRole('button', { name: '下一步：挑选爆文模板', exact: true }).click();
   await expect(page.getByText('推荐模板（按卖点库本地匹配，原因如实展示）')).toBeVisible({ timeout: 8000 });
   await expect(page.getByText('命中卖点关键词：伸缩、桌面').first()).toBeVisible();
-  await expect(page.getByText('J1 · 小户型餐桌爆款', { exact: true })).toBeVisible();
+  await expect(page.getByText('j1 · 小户型餐桌爆款', { exact: true })).toBeVisible();
   // 参考全文预览
   await page.getByRole('button', { name: '查看参考全文' }).first().click();
   await expect(page.getByText(/这是小户型餐桌爆款的参考文案/).first()).toBeVisible();
@@ -219,7 +219,7 @@ try {
   assert.match(firstRequestKey, /^regenerate-group:/);
 
   // ---------------- 3. 结果对照与诚实展示 ----------------
-  await expect(page.getByText('爆文模板：J1 · 小户型餐桌爆款').first()).toBeVisible({ timeout: 8000 });
+  await expect(page.getByText('爆文模板：j1 · 小户型餐桌爆款').first()).toBeVisible({ timeout: 8000 });
   await expect(page.getByText('文风：💬 闺蜜安利（快消/食品/日百）').first()).toBeVisible();
   await expect(page.getByText('结构：默认（表格未提供）').first()).toBeVisible();
   await expect(page.getByText('写作目标 ≈120 中文字').first()).toBeVisible();
@@ -265,34 +265,34 @@ try {
   state = { status: 'running', succeededCount: 1, failedCount: 0 };
   await page.reload();
   await expect(page.getByText('已保存 1 / 2 条，其他方案仍在生成')).toBeVisible({ timeout: 8000 });
-  await expect(page.getByText('爆文模板：J1 · 小户型餐桌爆款').first()).toBeVisible();
+  await expect(page.getByText('爆文模板：j1 · 小户型餐桌爆款').first()).toBeVisible();
   await page.getByRole('button', { name: '停止任务', exact: true }).first().click();
   await expect(page.getByText('任务已停止，已保存的脚本仍可使用。', { exact: true })).toBeVisible();
-  await expect(page.getByText('爆文模板：J1 · 小户型餐桌爆款').first()).toBeVisible();
+  await expect(page.getByText('爆文模板：j1 · 小户型餐桌爆款').first()).toBeVisible();
 
   await page.screenshot({ path: path.resolve('outputs/script-template-rewrite-results.png'), fullPage: true });
   // 开头编号走真实本地 API 和数据库，验证保存与唯一性；临时数据根不含用户项目。
   const settings = await browser.newPage();
   const templates = await (await settings.request.get(`${baseUrl}/api/video-prompt-templates`)).json();
   const growth = templates.find(t => t.id === 'magic-growth');
-  assert.equal(growth.openingCode, 'K1');
-  assert.equal(templates.find(t => t.id === 'giant-hand-place').openingCode, 'K2');
+  assert.equal(growth.openingCode, 'k1');
+  assert.equal(templates.find(t => t.id === 'giant-hand-place').openingCode, 'k2');
   await settings.goto(`${baseUrl}/settings`);
   await settings.getByRole('button', { name: '运镜模板', exact: false }).click();
-  await expect(settings.getByLabel('自然生长开头编号')).toHaveValue('K1');
+  await expect(settings.getByLabel('自然生长开头编号')).toHaveValue('k1');
   await settings.getByLabel('自然生长开头编号').fill('K9');
   const savedCode = settings.waitForResponse(r => r.url().endsWith('/api/video-prompt-templates/magic-growth') && r.request().method() === 'PATCH');
   await settings.getByLabel('自然生长开头编号').press('Tab');
   assert.equal((await savedCode).status(), 200);
-  await expect(settings.getByText('K9 · 自然生长', { exact: true })).toBeVisible();
+  await expect(settings.getByText('k9 · 自然生长', { exact: true })).toBeVisible();
   const duplicate = await settings.request.patch(`${baseUrl}/api/video-prompt-templates/magic-growth`, { data: { openingCode: 'K2' } });
   assert.equal(duplicate.status(), 409);
   const after = await (await settings.request.get(`${baseUrl}/api/video-prompt-templates`)).json();
-  assert.equal(after.find(t => t.id === 'magic-growth').openingCode, 'K9');
+  assert.equal(after.find(t => t.id === 'magic-growth').openingCode, 'k9');
   assert.equal(after.find(t => t.id === 'magic-growth').inRandomPool, growth.inRandomPool);
   await settings.reload();
   await settings.getByRole('button', { name: '运镜模板', exact: false }).click();
-  await expect(settings.getByLabel('自然生长开头编号')).toHaveValue('K9');
+  await expect(settings.getByLabel('自然生长开头编号')).toHaveValue('k9');
   await settings.screenshot({ path: path.resolve('outputs/opening-template-codes.png'), fullPage: true });
   await settings.close();
   assert.deepEqual(pageErrors, [], '页面不应出现运行时异常');

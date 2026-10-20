@@ -2,9 +2,18 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { toStorageImageUrl } from '../lib/storage-url.ts';
+import { toStorageImageUrl, toStorageVideoUrl } from '../lib/storage-url.ts';
 
 const storageRoot = path.resolve('/repo/storage');
+
+assert.equal(toStorageVideoUrl(path.join(storageRoot, 'videos', '普通视频.mp4'), storageRoot), '/api/videos/videos/%E6%99%AE%E9%80%9A%E8%A7%86%E9%A2%91.mp4');
+assert.equal(
+  toStorageVideoUrl(path.join(storageRoot, 'outputs', 'reassembled-productions', 'skill', 'clip 01.mp4'), storageRoot),
+  '/api/videos/outputs/reassembled-productions/skill/clip%2001.mp4',
+  'skill 入库视频必须使用登记路径，不能按 filename 猜 videos 目录',
+);
+assert.equal(toStorageVideoUrl(path.resolve('/outside/private.mp4'), storageRoot), '');
+assert.equal(toStorageVideoUrl(null, storageRoot), '');
 
 assert.equal(
   toStorageImageUrl(path.join(storageRoot, 'outputs', 'scene 01.png'), storageRoot),

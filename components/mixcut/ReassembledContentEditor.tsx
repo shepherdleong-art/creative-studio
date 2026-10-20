@@ -5,7 +5,7 @@ import type { FilmContent } from '@/lib/final-edit/reassembled/content';
 import type { PackagingPointLayout, PackagingTemplateId } from '@/lib/media-core/packaging-vars';
 import { moveCalloutPoint, trimCalloutTime } from '@/lib/final-edit/reassembled/callout-edit';
 
-const templates: Array<[PackagingTemplateId, string]> = [['overlay-poster', 'A 花字种草'], ['overlay-journal', 'B 手账拼贴'], ['overlay-minimal', 'C 极简高级'], ['overlay-variety', 'D 综艺撕纸']];
+const templates: Array<[PackagingTemplateId, string]> = [['overlay-poster', 'f1 花字种草'], ['overlay-journal', 'f2 手账拼贴'], ['overlay-minimal', 'f3 极简高级'], ['overlay-variety', 'f4 综艺撕纸']];
 const row = { display: 'flex', flexWrap: 'wrap' as const, gap: 12, alignItems: 'center', marginBlock: 10 };
 
 /** Mounting opens an immutable revision baseline; a failed save never remounts or discards the draft. */

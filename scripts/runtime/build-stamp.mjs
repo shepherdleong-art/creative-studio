@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 /** 影响 standalone 产物的源码目录（相对仓库根）。 */
 export const WATCHED_DIRS = ['app', 'components', 'lib', 'runtime', 'public', 'types'];
-/** 影响产物的根级文件；scripts 里只有同步脚本本身影响产物内容。 */
+/** 影响产物的根级文件，以及构建和资源同步入口。 */
 export const WATCHED_FILES = [
   'next.config.ts',
   'package.json',
@@ -23,6 +23,9 @@ export const WATCHED_FILES = [
   'tsconfig.json',
   'postcss.config.mjs',
   'scripts/sync-standalone-assets.mjs',
+  'scripts/build-production.mjs',
+  'scripts/runtime/build-stamp.mjs',
+  'instrumentation.ts',
 ];
 /** 这些文件更新时必须先 npm ci 再重建，否则构建会沿用旧依赖。 */
 export const DEPS_FILES = ['package.json', 'package-lock.json'];

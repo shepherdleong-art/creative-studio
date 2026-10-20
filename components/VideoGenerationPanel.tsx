@@ -75,6 +75,7 @@ interface VideoJob {
   providerTaskId?: string;
   providerStatus?: string;
   filename?: string;
+  videoUrl?: string;
   /** 用户可见的友好名称（D5）；filename 只服务播放 URL/物理路径。 */
   displayName?: string | null;
   localVideoPath?: string;
@@ -1247,9 +1248,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const previewVideoUrl = (() => {
     if (!videoPreviewJobId) return null;
     const job = videoJobs.find((j) => j.id === videoPreviewJobId);
-    if (!job?.filename) return null;
+    if (!job?.videoUrl) return null;
     // ?preview=1：HEVC/10bit 原件浏览器放不动时改由 H.264 预览衍生物播放
-    return `/api/videos/videos/${encodeURIComponent(job.filename)}?preview=1`;
+    return `${job.videoUrl}?preview=1`;
   })();
   const previewPosterUrl = videoPreviewJobId
     ? videoJobs.find((j) => j.id === videoPreviewJobId)?.posterImageUrl || null

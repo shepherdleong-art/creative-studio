@@ -16,6 +16,7 @@ interface VideoJob {
   providerTaskId?: string;
   providerStatus?: string;
   filename?: string;
+  videoUrl?: string;
   /** 用户可见的友好名称（D5）；filename 只服务播放 URL/物理路径。 */
   displayName?: string | null;
   localVideoPath?: string;
@@ -122,7 +123,7 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
                     <Image src={job.posterImageUrl} alt="视频缩略图" fill sizes="300px" className="object-cover" />
                   ) : (
                     <video
-                      src={job.filename ? `/api/videos/videos/${encodeURIComponent(job.filename)}?preview=1` : undefined}
+                      src={job.videoUrl ? `${job.videoUrl}?preview=1` : undefined}
                       preload="metadata"
                       muted
                       className="w-full h-full object-cover"
@@ -172,7 +173,7 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
                 {isSucceeded && job.filename && (
                   <>
                     <a
-                      href={`/api/videos/videos/${encodeURIComponent(job.filename)}`}
+                      href={job.videoUrl}
                       download={job.displayName || job.filename}
                       className="result-action link-accent"
                       onClick={(e) => e.stopPropagation()}

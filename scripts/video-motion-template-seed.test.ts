@@ -49,17 +49,17 @@ if (process.env[childFlag] !== '1') {
 
     const templates = readAll();
     const readCode = (id: string) => (db.prepare('SELECT openingCode FROM video_prompt_templates WHERE id=?').get(id) as { openingCode: string | null }).openingCode;
-    assert.equal(readCode('magic-growth'), 'K1');
-    assert.equal(readCode('giant-hand-place'), 'K2');
-    assert.equal(readCode('carton-explosion'), 'K3');
-    assert.equal(readCode('bare-shell-renovation'), 'K4');
+    assert.equal(readCode('magic-growth'), 'k1');
+    assert.equal(readCode('giant-hand-place'), 'k2');
+    assert.equal(readCode('carton-explosion'), 'k3');
+    assert.equal(readCode('bare-shell-renovation'), 'k4');
     assert.equal(readCode('slow-push-in'), null);
     db.prepare("UPDATE video_prompt_templates SET openingCode='K9' WHERE id='magic-growth'").run();
     db.prepare("UPDATE video_prompt_templates SET openingCode='' WHERE id='giant-hand-place'").run();
     seedMotionTemplates();
     assert.equal(readCode('magic-growth'), 'K9');
     assert.equal(readCode('giant-hand-place'), '', '人工清空也须保留');
-    assert.throws(() => db.prepare("UPDATE video_prompt_templates SET openingCode='K3' WHERE id='magic-growth'").run(), /UNIQUE/);
+    assert.throws(() => db.prepare("UPDATE video_prompt_templates SET openingCode='k3' WHERE id='magic-growth'").run(), /UNIQUE/);
     const byId = new Map(templates.map((t) => [t.id, t]));
     const names = new Set(templates.map((t) => t.name));
 

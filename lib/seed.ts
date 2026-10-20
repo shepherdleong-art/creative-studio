@@ -637,7 +637,7 @@ export function seedMotionTemplates() {
     }
     for (const [id, code] of Object.entries(BUILTIN_OPENING_CODES)) {
       db.prepare(`UPDATE video_prompt_templates SET openingCode=? WHERE id=? AND isBuiltin=1 AND openingCode IS NULL
-        AND NOT EXISTS (SELECT 1 FROM video_prompt_templates WHERE openingCode=?)`).run(code, id, code);
+        AND NOT EXISTS (SELECT 1 FROM video_prompt_templates WHERE openingCode=? COLLATE NOCASE)`).run(code, id, code);
     }
     for (const id of retiredBuiltinIds) retire.run(id, id);
   });

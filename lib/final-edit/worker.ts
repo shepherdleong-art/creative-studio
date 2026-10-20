@@ -14,6 +14,7 @@ import { buildPublishedJobOutput, registerPublishedArtifacts, registerSingleArti
 import { deletePackagedPublish, executePackagingJob, registerPackagedArtifact, type FinalEditPackagingSnapshot, type PackagingJobResult } from './packaging.ts';
 import { FinalEditError } from './errors.ts';
 import { executeFilmJob } from './reassembled/jobs.ts';
+import { refreshMixcutReview } from './reassembled/review.ts';
 
 const sha256 = (input: string) => crypto.createHash('sha256').update(input).digest('hex');
 
@@ -201,6 +202,7 @@ async function drain() {
             db.prepare(`UPDATE final_edit_jobs SET status='succeeded', phase='succeeded', progress=1, outputJson=?, errorCode=NULL, errorMessage=NULL, finishedAt=? WHERE id=?`).run(JSON.stringify(result), finishedAt, job.id);
             db.prepare(`UPDATE final_edit_variants SET lastRenderedRevision=? WHERE id=?`).run(snapshot.variantRevision, snapshot.variant.id);
           })();
+          refreshMixcutReview(db, job.groupId);
         } catch (error) {
           await restorePublishedExportReservation(storageRoot, target);
           throw error;
@@ -228,7 +230,7 @@ export function wakeFinalEditWorker() { setTimeout(() => void drain(), 0); }
  */
 async function drainPackagingJob(
   db: ReturnType<typeof getDb>,
-  job: { id: string; projectId: string; inputSnapshotJson: string },
+  job: { id: string; projectId: string; groupId?: string | null; inputSnapshotJson: string },
   controller: AbortController,
 ): Promise<void> {
   const snapshot = JSON.parse(job.inputSnapshotJson) as FinalEditPackagingSnapshot;
@@ -269,6 +271,7 @@ async function drainPackagingJob(
       registerPackagedArtifact(db, { projectId: job.projectId, sourceJobId: job.id, target: result.published, createdAt: finishedAt, kind: snapshot.exportTarget ? 'final_video' : 'packaged_video' });
       db.prepare(`UPDATE final_edit_jobs SET status='succeeded', phase='succeeded', progress=1, outputJson=?, errorCode=NULL, errorMessage=NULL, finishedAt=? WHERE id=?`).run(JSON.stringify(output), finishedAt, job.id);
     })();
+    refreshMixcutReview(db, job.groupId ?? null);
   } catch (error) {
     await deletePackagedPublish(storageRoot, result.published);
     throw error;

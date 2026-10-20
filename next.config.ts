@@ -25,6 +25,9 @@ const nextStandaloneExcludes = [
 
 const nextConfig: NextConfig = {
   output: 'standalone',
+  // A staged build has its own lockfile; never infer a parent workspace root.
+  turbopack: { root: process.cwd() },
+  outputFileTracingRoot: process.cwd(),
   compiler: {
     async runAfterProductionCompile({ projectDir, distDir }) {
       // Next 16 Turbopack does not apply route tracing excludes to instrumentation.

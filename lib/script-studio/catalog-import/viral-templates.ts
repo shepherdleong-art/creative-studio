@@ -171,7 +171,7 @@ function parseSheetEntries(
     const title = read(row.rowNumber, 'title');
     entries.push({
       sourceTemplateId,
-      scriptCode: read(row.rowNumber, 'scriptCode').normalize('NFKC').toUpperCase(),
+      scriptCode: read(row.rowNumber, 'scriptCode').normalize('NFKC').toLowerCase(),
       category,
       subCategory,
       name,
@@ -182,7 +182,7 @@ function parseSheetEntries(
       structure,
       structureOrigin: structureRaw || structureSummary ? 'source' : 'fallback',
       rawColumns: {
-        scriptCode: read(row.rowNumber, 'scriptCode').normalize('NFKC').toUpperCase(),
+        scriptCode: read(row.rowNumber, 'scriptCode').normalize('NFKC').toLowerCase(),
         assetType: read(row.rowNumber, 'assetType'),
         useCount: read(row.rowNumber, 'useCount'),
         itemId: read(row.rowNumber, 'itemId'),
@@ -304,7 +304,7 @@ export function parseViralTemplateWorkbook(sheets: WorkbookSheet[]): ViralTempla
   for (const entry of deduped) {
     if (!entry.scriptCode) continue;
     if (!normalizeProductionCode(entry.scriptCode, 'J')) {
-      issues.push({ code: 'invalid_script_code', message: `第 ${entry.sourceRow} 行脚本编号无效，请使用 J1、J2 等编号` });
+      issues.push({ code: 'invalid_script_code', message: `第 ${entry.sourceRow} 行脚本编号无效，请使用 j1、j2 等编号` });
     } else if (codes.has(entry.scriptCode)) {
       issues.push({ code: 'duplicate_script_code', message: `脚本编号 ${entry.scriptCode} 重复，请为不同模板填写不同编号` });
     }
