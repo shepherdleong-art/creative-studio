@@ -24,10 +24,14 @@ function sleep(ms) {
  * 找出监听指定 TCP 端口的进程 PID（去重）。
  *
  * - Windows：`netstat -ano`。TCP 行固定 5 列（Proto/本地/远端/状态/PID）：
- *   本地地址列以 `:<port>` 结尾即命中。状态列不做字面比较，因为非英文
- *   Windows 的 netstat 状态名会被本地化（如 LISTENING 显示为德文 ABHÖREN），
- *   只要求它不含数字与下划线（排除 TIME_WAIT 等带下划线条目）；ESTABLISHED
- *   行本地地址恰好是监听端口时 PID 也是同一个服务进程，结果无副作用。
+ *   本地地址列以 `:<port>` 结尾、且远端列必须是通配（`0.0.0.0:0` / `[::]:0`，
+ *   即远端端口为 0）才算监听。远端带具体端口的是已连上对端的出站套接字——
+ *   浏览器等进程偶尔会把目标端口本身用作本地源端口（如 Edge 网络服务以
+ *   4000 为源端口连本机代理 7897），只看本地列会把这种出站连接误判成监听。
+ *   状态列不做字面比较，因为非英文 Windows 的 netstat 状态名会被本地化
+ *   （如 LISTENING 显示为德文 ABHÖREN），只要求它不含数字与下划线（排除
+ *   TIME_WAIT 等带下划线条目）。监听套接字自身的 LISTENING 行已能给出 PID，
+ *   所以不再依赖“本地端口恰好等于监听端口的 ESTABLISHED 行”。
  * - 其余平台：`lsof -ti tcp:<port> -sTCP:LISTEN`，只输出 PID。
  *   探测命令失败（占用检查、无监听、lsof 不可用）一律按空结果处理。
  *
@@ -62,6 +66,8 @@ async function findListenerPidsWindows(port) {
     const tokens = line.trim().split(/\s+/);
     if (tokens.length < 5 || tokens[0] !== 'TCP') continue;
     if (!String(tokens[1]).endsWith(suffix)) continue;
+    // 远端必须是通配地址（远端端口 0），排除本地源端口恰好等于目标端口的出站连接。
+    if (!String(tokens[2]).endsWith(':0')) continue;
     const state = tokens[3];
     // 状态列只看形态：非数字、非下划线（TIME_WAIT/CLOSE_WAIT 一律排除）。
     if (state.length < 3 || /[\d_]/.test(state)) continue;
