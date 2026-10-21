@@ -20,7 +20,7 @@ db.exec(`
     multiShot INTEGER, createdAt TEXT, displayName TEXT, openingCode TEXT);
 `);
 for (const [id, model] of [['sd25','doubao-seedance-2-5-260628'], ['sd20','doubao-seedance-2-0-260128'],
-  ['fast','doubao-seedance-2-0-fast-260128'], ['kling','kling-3.0']]) {
+  ['fast','doubao-seedance-2-0-fast-260128'], ['kling','kling-3.0'], ['qiniu','qiniuyun/kling-3.0'], ['k25','kling-2.5']]) {
   db.prepare('INSERT INTO video_providers VALUES (?, ?, ?, ?, 1)').run(id, id, 'openai-video', model);
 }
 const dependencies: Record<string, unknown> = {
@@ -53,16 +53,17 @@ async function submit(handler: typeof single, body: unknown) {
   return handler(new Request('http://localhost/test', { method: 'POST', body: JSON.stringify(body) }), { params: Promise.resolve({ id: 'set' }) });
 }
 try {
-  for (const [providerId, min, max] of [['sd25',4,30], ['sd20',4,15], ['fast',4,15], ['kling',3,15]] as const) {
-    for (const seconds of [min, max, min - 1, max + 1, 4.5, 'bad', null, '']) {
-      const valid = seconds === min || seconds === max;
+  for (const [providerId, min, max] of [['sd25',4,30], ['sd20',4,15], ['fast',4,15], ['kling',3,15], ['qiniu',3,15], ['k25',5,10]] as const) {
+    for (const seconds of [2, 3, 4, 5, 7, 10, 11, 15, 16, 30, 31, 100, min, max, min - 1, max + 1, 4.5, 10.5, 'bad', null, '']) {
+      const valid = typeof seconds === 'number' && Number.isInteger(seconds)
+        && (providerId === 'k25' ? seconds === 5 || seconds === 10 : seconds >= min && seconds <= max);
       for (const handler of [single, batch]) {
         const item = { providerId, prompt: 'test', durationSec: seconds };
-        const body = handler === single ? { shotId: 'shot', ...item } : { shotId: 'shot', items: [item] };
+        const body = handler === single ? { shotId: 'shot', ...item } : { shotId: 'shot', items: [{ ...item, durationSec: min }, item] };
         const response = await submit(handler, body);
         assert.equal(response.status, valid ? 200 : 400, `${providerId} ${seconds}: ${await response.text()}`);
         const stored = db.prepare('SELECT durationSec FROM video_jobs').all() as { durationSec: number }[];
-        assert.deepEqual(stored.map(r => r.durationSec), valid ? [seconds] : []);
+        assert.deepEqual(stored.map(r => r.durationSec), valid ? (handler === single ? [seconds] : [min, seconds]) : []);
       }
     }
   }

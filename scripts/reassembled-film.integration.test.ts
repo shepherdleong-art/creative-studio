@@ -58,6 +58,7 @@ for (const invalidPath of ['../outside.mp4', 'variants/../outside.mp4', 'variant
   await assert.rejects(importFilm(db, storageRoot, { ...manifest, files: { [invalidPath]: 'a'.repeat(64) } }), { code: 'film_import_invalid' });
 }
 const binding = await importFilm(db, storageRoot, manifest);
+assert.ok(binding.managedRootRelative.endsWith(`--${binding.id}/project`), 'managed folder includes a readable delivery name and stable identity');
 assert.equal(sha256(input), originalSpecHash, 'original fixed-render spec must stay unchanged');
 assert.equal(sha256(renderFile), originalRenderHash, 'original provenance must stay unchanged');
 refreshFilmReview(db, binding.id, true);

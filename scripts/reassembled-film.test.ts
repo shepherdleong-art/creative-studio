@@ -8,6 +8,14 @@ import type { Callout } from '../lib/film-render/types.ts';
 import { isClassicSpec } from '../lib/film-render/types.ts';
 import { filmTimeline, projectFilmTimeline } from '../lib/final-edit/reassembled/timeline.ts';
 import type { RegisteredCandidate } from '../lib/final-edit/reassembled/types.ts';
+import { filmFolderName } from '../lib/final-edit/reassembled/folder-name.ts';
+
+const folderId = '163e2dd1-4cbb-42bb-aa53-086f89f92655';
+assert.equal(filmFolderName('20261020-K店-XQ2A-AI种草-PUIKIN-02', folderId), `20261020-K店-XQ2A-AI种草-PUIKIN-02--${folderId}`);
+assert.ok(!/[\\/:*?"<>|\r\n]/.test(filmFolderName('../产品\\片号:\r\n02? ', folderId)));
+assert.equal(filmFolderName(' ... ', folderId), `实拍成片--${folderId}`);
+assert.ok(filmFolderName('长'.repeat(200), folderId).length <= 102);
+assert.notEqual(filmFolderName('同名', folderId), filmFolderName('同名', 'bdba0ca9-d724-46e1-887a-1dc3bf8fc359'));
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reassembled-projection-'));
 try {

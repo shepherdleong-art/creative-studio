@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { describeVideoDurationOptions, normalizeVideoDraftDuration, parseVideoDuration, videoDurationError, videoDurationOptions } from '../lib/video-duration.ts';
 
 for (const [type, model, min, max] of [
@@ -20,4 +21,27 @@ assert.equal(describeVideoDurationOptions(videoDurationOptions('openai-video', '
 assert.equal(parseVideoDuration(undefined), 5);
 assert.equal(parseVideoDuration('30'), 30);
 for (const value of ['', ' ', null, true, [], {}, 'bad']) assert.ok(Number.isNaN(parseVideoDuration(value)));
+
+const discrete = videoDurationOptions('openai-video', 'kling-2.5');
+assert.deepEqual(discrete, [5, 10]);
+for (const [input, expected] of [[15, 10], [2, 5], [10, 10]]) assert.equal(normalizeVideoDraftDuration(input, discrete), expected);
+for (const model of ['kling-2.5-fast', 'KLING-2.5']) assert.ok(videoDurationOptions('openai-video', model).includes(15));
+assert.ok(videoDurationOptions('kling', 'kling-2.5').includes(15), '公司通道限制不得扩散到其他供应商');
+assert.equal(videoDurationOptions('openai-video', 'kling-3.0-unknown')[0], 2);
+for (const [model, min, max] of [
+  ['kling-3.0', 3, 15], ['qiniuyun/kling-3.0', 3, 15],
+  ['doubao-seedance-2-0-260128', 4, 15], ['doubao-seedance-2-0-fast-260128', 4, 15],
+  ['doubao-seedance-2-5-260628', 4, 30],
+] as const) {
+  const choices = videoDurationOptions('openai-video', model);
+  assert.deepEqual(choices, Array.from({ length: max - min + 1 }, (_, i) => i + min));
+  assert.equal(normalizeVideoDraftDuration(2, choices), min);
+  assert.equal(normalizeVideoDraftDuration(5, choices), 5);
+}
+const panel = fs.readFileSync('components/VideoGenerationPanel.tsx', 'utf8');
+assert.equal((panel.match(/getRowDurationOptions\(row\)\.map/g) || []).length, 2);
+assert.match(panel, /getBulkDurationOptions\(\)\.map/);
+assert.match(panel, /durationSec: getRowDuration\(r\)/);
+assert.match(panel, /durationSec: getRowDuration\(row\)/);
+assert.doesNotMatch(panel, /max=\{15\}/);
 console.log('video-duration tests passed');

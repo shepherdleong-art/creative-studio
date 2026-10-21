@@ -14,6 +14,7 @@ import { registerSingleArtifact } from '../project-artifacts.ts';
 import { filmTimeline, projectFilmTimeline } from './timeline.ts';
 import type { FilmImportManifest, FilmBinding, RegisteredCandidate } from './types.ts';
 import { productionForImport } from './production.ts';
+import { filmFolderName } from './folder-name.ts';
 
 const check = (ok: unknown, message: string) => { if (!ok) throw new FinalEditError('film_import_invalid', message, 400); };
 const text = (s: unknown, name: string) => { check(typeof s === 'string' && s.trim().length > 0 && s.length < 10000, `${name} 不能为空或过长`); return s as string; };
@@ -98,7 +99,7 @@ export async function importFilm(db: Database.Database, storageRoot: string, raw
   check(!db.prepare('SELECT 1 FROM final_edit_film_bindings WHERE deliveryDir=? AND baseName=?').get(deliveryDir, baseName), '该交付文件已归属另一条成片');
   const production = productionForImport(db, manifest);
   const id = randomUUID(), groupId = production?.item.groupId || randomUUID(), variantId = production?.item.variantId || randomUUID(), shotSetId = production?.item.shotSetId || randomUUID(), draftId = production?.item.draftId || randomUUID();
-  const relative = `reassembled/${id}/project`;
+  const relative = `reassembled/${filmFolderName(baseName, id)}/project`;
   const managed = path.join(storageRoot, relative);
   fs.mkdirSync(managed, { recursive: true });
   let committed = false;
