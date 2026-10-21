@@ -28,7 +28,7 @@ import { MaterialStep, type MaterialCardView } from './MaterialStep';
 import { MixcutSidebar } from './MixcutSidebar';
 import MixcutShell, { type MixcutStepDef } from './MixcutShell';
 import { PreviewStep } from './PreviewStep';
-import { ReassembledPreviewStep } from './ReassembledPreviewStep';
+import { AdoptFilmStep } from './AdoptFilmStep';
 import { ExportStep } from './ExportStep';
 import styles from './mixcut-shell.module.css';
 
@@ -866,11 +866,10 @@ export default function MixcutPanel({
         activeStep === 2 ? (
           preparedGroup ? (
             preparedGroup.reassembled?.template === 'classic' ? (
-              <ReassembledPreviewStep
+              <AdoptFilmStep
                 key={preparedGroup.id}
                 group={preparedGroup}
                 onGroupChange={setPreparedGroup}
-                onExport={(variantId) => { setExportVariantId(variantId); setActiveStep(3); }}
               />
             ) : <PreviewStep
               key={preparedGroup.id}

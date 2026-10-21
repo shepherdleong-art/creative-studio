@@ -29,6 +29,7 @@ import {
   buildMixcutEditingScriptSnapshot,
   buildMixcutSemanticText,
   buildMixcutTaskScriptSnapshot,
+  normalizeMixcutSourceScript,
   normalizeNarrationText,
   type MixcutSourceScript,
   type MixcutTaskScriptSnapshot,
@@ -512,7 +513,7 @@ function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'p
   }
   const row = listReadableProjectScripts(db, input.projectId).find((item) => item.id === scriptDraftId);
   if (!row) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
-  const source = parseJson<MixcutSourceScript | null>(row.outputJson, null);
+  const source = normalizeMixcutSourceScript(parseJson<unknown>(row.outputJson, null));
   const shotSetId = readableScriptShotSetId(row) || String(source?.shotSetId || '');
   if (!source || ![2, 3, 4].includes(source.version) || !Array.isArray(source.segments) || source.segments.length === 0) {
     throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3/V4 脚本');
@@ -543,7 +544,7 @@ function resolveEditingScript(db: Database.Database, input: Pick<EnsureMixcutDra
   if (!scriptDraftId) return buildMixcutEditingScriptSnapshot({ shotSetId: input.shotSetId, editedNarrationText: input.editedNarrationText });
   const row = listReadableProjectScripts(db, input.projectId).find((item) => item.id === scriptDraftId);
   if (!row) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
-  const source = parseJson<MixcutSourceScript | null>(row.outputJson, null);
+  const source = normalizeMixcutSourceScript(parseJson<unknown>(row.outputJson, null));
   const shotSetId = readableScriptShotSetId(row) || String(source?.shotSetId || '');
   if (!source || ![2, 3, 4].includes(source.version) || !Array.isArray(source.segments)) {
     throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3/V4 脚本');
@@ -1027,8 +1028,9 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     if (registeredFilm) for (const candidate of JSON.parse(registeredFilm.candidatesJson) as Array<{ videoJobId: string; externalAssetId?: string }>) {
       selectedKeySet.add(candidate.externalAssetId ? `external:${candidate.externalAssetId}` : `module4:${candidate.videoJobId}`);
     }
-    const module4Assets = assetsForScript(db, storageRoot, String(group.projectId), String(group.shotSetId))
-      .filter((asset) => selectedKeySet.size === 0 || selectedKeySet.has(asset.assetKey!));
+    // Creation selection is immutable task input, not the editor library.
+    // Newly completed videos are available here without changing any clip.
+    const module4Assets = assetsForScript(db, storageRoot, String(group.projectId), String(group.shotSetId));
     const externalAssets = [...selectedKeySet].filter((key) => key.startsWith('external:')).flatMap((assetKey) => {
       const id = assetKey.slice('external:'.length);
       const row = db.prepare(`SELECT id, shotSetId, originalFilename, relativePath, durationUs FROM final_edit_external_assets WHERE id=? AND projectId=? AND shotSetId=?`).get(id, String(group.projectId), String(group.shotSetId)) as { id: string; shotSetId: string; originalFilename: string; relativePath: string; durationUs: number } | undefined;
@@ -1038,7 +1040,9 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         return [{ assetKey, source: 'external' as const, videoJobId: `external-asset-${id}`, shotSetId: row.shotSetId, shotId: null, filename: row.originalFilename, displayName: row.originalFilename, localVideoPath: absolutePath, durationSec: row.durationUs / 1_000_000 }];
       } catch { return []; }
     });
-    const assets = [...module4Assets, ...externalAssets].map((asset) => {
+    const assets = [...module4Assets, ...externalAssets]
+      .sort((a, b) => Number(selectedKeySet.has(b.assetKey!)) - Number(selectedKeySet.has(a.assetKey!)))
+      .map((asset) => {
       const analysis = db.prepare(`SELECT * FROM final_edit_asset_analysis WHERE videoJobId = ?`).get(asset.videoJobId) as Record<string, unknown> | undefined;
       const generated = analysis ? parseJson<VideoAnalysisResult>(String(analysis.generatedJson), {} as VideoAnalysisResult) : null;
       const manual = analysis ? parseJson<Partial<VideoAnalysisResult>>(String(analysis.manualOverrideJson), {}) : {};

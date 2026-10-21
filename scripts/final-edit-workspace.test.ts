@@ -1267,6 +1267,15 @@ assert.equal(await waitForFinalEditJobsIdle(100), 0, 'prepare 收尾后必须从
   assert.throws(() => workspace.apply({ scope: 'group', groupId: group.id, expectedRevision: recovered.revision, type: 'restore_subtitle_revision', revision: deleted.revision }), (error: unknown) => error instanceof FinalEditError && error.code === 'revision_conflict');
 }
 
+// A film import can contain only fullScript; selection is a creation snapshot,
+// not a filter on the editor's current, same-shot-set material library.
+const fullTextScript = { version: 2, shotSetId: 'set-a', title: '导入成片', fullScript: '床边这点空间\n也能收得妥妥当当', segments: [] };
+db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson) VALUES ('film-text', 'p1', 'fake', 'fake', '{}', ?)`).run(JSON.stringify(fullTextScript));
+await assert.doesNotReject(workspace.preflight({ projectId: 'p1', shotSetId: 'set-a', scriptDraftId: 'film-text', count: 1, outputPreset: '3x4' }));
+const libraryDraft = workspace.ensureMixcutDraft({ projectId: 'p1', shotSetId: 'set-a', editedNarrationText: '文案', selectedMaterialKeys: ['module4:v1'], providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1 });
+assert.ok(libraryDraft.assets.some(asset => asset.videoJobId === 'v2'), '未选素材仍应自动进入剪辑素材库');
+assert.ok(!libraryDraft.assets.some(asset => asset.videoJobId === 'foreign'), '素材库仍按分镜组隔离');
+assert.deepEqual(libraryDraft.script.selectedMaterialKeys, ['module4:v1'], '自动发现不能改变生成选择快照');
 db.close();
 fs.rmSync(root, { recursive: true, force: true });
 console.log('final-edit workspace tests passed');

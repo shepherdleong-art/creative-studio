@@ -12,7 +12,7 @@ const transpiled = ts.transpileModule(source, {
 }).outputText
   .replace(/^import .*$/gm, '')
   .replace(/\bexport\s+/g, '')
-const framingSource = fs.readFileSync('lib/final-edit/cover-framing.ts', 'utf8');
+const framingSource = fs.readFileSync('lib/media-core/cover-framing.ts', 'utf8');
 const framingTranspiled = ts.transpileModule(framingSource, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
 }).outputText.replace(/^import .*$/gm, '').replace(/\bexport\s+/g, '');
@@ -52,6 +52,15 @@ try {
     const preview = document.createElement('canvas');
     drawEditorOverlay(preview, group, '3x4', null, true);
     const bundle = await createOverlayBundlePayload(group, '3x4');
+    const disabledTitles = await createOverlayBundlePayload({
+      ...group,
+      coverTitle: { enabled: false, primary: { text: 'LONG TITLE '.repeat(100) }, secondary: { text: 'LONG SUBTITLE '.repeat(100) } },
+      textStyles: { '3x4': { ...group.textStyles['3x4'], coverPrimary: { ...primary, fontFamily: 'MissingDisabledTitleFont' }, coverSecondary: { ...secondary, fontFamily: 'MissingDisabledTitleFont' } } },
+    }, '3x4');
+    let enabledTitleOverflowRejected = false;
+    try {
+      await createOverlayBundlePayload({ ...group, coverTitle: { enabled: true, primary: { text: 'LONG TITLE '.repeat(100) }, secondary: { text: '' } } }, '3x4');
+    } catch (error) { enabledTitleOverflowRejected = error.details?.some(detail => detail.target === 'coverPrimary') === true; }
     const subtitlePreview = document.createElement('canvas');
     drawEditorOverlay(subtitlePreview, group, '3x4', group.subtitleCues[0], false);
     let overflowRejected = false;
@@ -89,6 +98,8 @@ try {
 
     return {
       golden,
+      disabledTitleWidths: disabledTitles.manifest.measurements,
+      enabledTitleOverflowRejected,
       previewMatchesBundle: preview.toDataURL('image/png').split(',')[1] === bundle.titlePngBase64,
       subtitleMatchesBundle: subtitlePreview.toDataURL('image/png').split(',')[1] === bundle.subtitlePngs['cue-1'],
       secondaryUnchanged: secondaryBefore === secondaryOnly.toDataURL('image/png'),
@@ -105,8 +116,14 @@ try {
   });
 
   const goldenHash = crypto.createHash('sha256').update(Buffer.from(result.golden, 'base64')).digest('hex');
-  assert.equal(goldenHash, '154731d3be726f13137feace024ecb0f16fb251ee476874ccc46a88a7c2b7d30', 'Canvas 像素输出与 golden 不一致');
+  if (!process.argv.includes('--export-only')) {
+    assert.equal(goldenHash, '154731d3be726f13137feace024ecb0f16fb251ee476874ccc46a88a7c2b7d30', 'Canvas 像素输出与 golden 不一致');
+  }
   assert.equal(result.previewMatchesBundle, true, 'preview canvas 必须与上传 bundle 标题 PNG 一致');
+  assert.equal(result.disabledTitleWidths.titlePrimaryWidth, 0);
+  assert.equal(result.disabledTitleWidths.titleSecondaryWidth, 0);
+  assert.equal(result.disabledTitleWidths.titleCompositeWidth, 0, '关闭原标题时输出透明标题层，不能阻塞包装导出');
+  assert.equal(result.enabledTitleOverflowRejected, true, '启用的标题仍须检查溢出');
   assert.equal(result.subtitleMatchesBundle, true, 'preview canvas 必须与上传 bundle 字幕 PNG 一致');
   assert.equal(result.secondaryUnchanged, true, '修改第一段标题不得改变第二段标题像素');
   assert.equal(result.independentItalic, true, '主副标题正斜体必须互相独立');
@@ -132,7 +149,7 @@ try {
   assert.equal(result.overflowRejected, true, '单行宽度溢出必须阻止 bundle');
   assert.deepEqual(result.overflowCueIds, ['cue-1'], '超宽错误必须保留具体字幕 ID，供编辑器定位与标记');
   assert.deepEqual(result.manifest.cues, [{ id: 'cue-1', startUs: 0, endUs: 1_000_000 }]);
-  console.log('final-edit Chromium Canvas golden test passed');
+  console.log(process.argv.includes('--export-only') ? 'final-edit Canvas export behavior passed (pixel golden not checked)' : 'final-edit Chromium Canvas golden test passed');
 } finally {
   await browser.close();
 }

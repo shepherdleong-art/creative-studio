@@ -44,4 +44,13 @@ assert.equal(boundary.timeline.clips.some((clip) => clip.sourceOutFrame === 73),
 assert.ok(boundary.issues.some((issue) => issue.code === 'material_gap'), '贴死 ceil 的匹配必须转为 material_gap issue');
 assert.ok(boundary.timeline.clips.every((clip) => clip.sourceOutFrame <= 72), '所有 clip 的出点帧必须不超过 floor 边界');
 
+const roundedTail = audioFirstPlanToVideoTimeline({
+  plan: { segments: [{ sentenceId: 'tail', assetKey: 'a', startUs: 12_920_000, endUs: 14_420_000, sourceStartUs: 3_500_000, sourceEndUs: 5_000_000 }] },
+  assetsByKey: new Map([['a', { videoJobId: 'v', fingerprint: 'f', durationUs: 5_000_000 }]]),
+  narrationDurationUs: 14_420_000,
+});
+assert.equal(roundedTail.issues.length, 0, '有效片尾的取整误差不能丢弃整个句段');
+assert.equal(roundedTail.timeline.clips[0].timelineOutFrame, 347);
+assert.equal(roundedTail.timeline.clips[0].sourceOutFrame, 120);
+assert.equal(roundedTail.timeline.clips[0].sourceInFrame, 83);
 console.log('final-edit audio-first timeline tests passed');

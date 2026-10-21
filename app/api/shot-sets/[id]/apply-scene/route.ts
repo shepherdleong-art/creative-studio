@@ -1,4 +1,4 @@
-import { isReassembledShotSet, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
+import { requiresReassembledUpstreamRework, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveImageJobProvider } from '@/lib/image-provider-selection';
@@ -11,7 +11,7 @@ export async function POST(
   try {
     const { id } = await params;
     const db = getDb();
-    if (isReassembledShotSet(db, id)) return NextResponse.json({ error: REASSEMBLED_REWORK_REQUIRED }, { status: 409 });
+    if (requiresReassembledUpstreamRework(db, id)) return NextResponse.json({ error: REASSEMBLED_REWORK_REQUIRED }, { status: 409 });
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
 
     const sceneReferenceId = body.sceneReferenceId as string;

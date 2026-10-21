@@ -231,17 +231,24 @@ export function assertFontsEffective(families: Iterable<string>): void {
 
 export async function createOverlayBundlePayload(group: FinalEditGroupView, preset: OutputPresetId) {
   const style = group.textStyles[preset];
-  const requiredFonts = new Set([style.coverPrimary.fontFamily, style.coverSecondary.fontFamily, style.subtitle.fontFamily]);
+  const titleEnabled = group.coverTitle.enabled !== false;
+  const requiredFonts = new Set([style.subtitle.fontFamily]);
+  if (titleEnabled) {
+    requiredFonts.add(style.coverPrimary.fontFamily);
+    requiredFonts.add(style.coverSecondary.fontFamily);
+  }
   // document.fonts.check() 对任何字符串都返回 true，挡不住无效字体——改用像素比对。
   await document.fonts.ready;
   assertFontsEffective(requiredFonts);
   const titleCanvas = canvasFor(preset);
   const titleContext = titleCanvas.getContext('2d');
   if (!titleContext) throw new Error('浏览器 Canvas 不可用');
-  drawText(titleContext, group.coverTitle.primary.text, style.coverPrimary);
-  drawText(titleContext, group.coverTitle.secondary.text, style.coverSecondary);
-  const titlePrimaryWidth = renderSingleTextWidth(preset, group.coverTitle.primary.text, style.coverPrimary);
-  const titleSecondaryWidth = renderSingleTextWidth(preset, group.coverTitle.secondary.text, style.coverSecondary);
+  if (titleEnabled) {
+    drawText(titleContext, group.coverTitle.primary.text, style.coverPrimary);
+    drawText(titleContext, group.coverTitle.secondary.text, style.coverSecondary);
+  }
+  const titlePrimaryWidth = titleEnabled ? renderSingleTextWidth(preset, group.coverTitle.primary.text, style.coverPrimary) : 0;
+  const titleSecondaryWidth = titleEnabled ? renderSingleTextWidth(preset, group.coverTitle.secondary.text, style.coverSecondary) : 0;
   const titleCompositeWidth = renderedAlphaWidth(titleCanvas);
   const overflowDetails: TextOverflowDetail[] = [];
   if (titlePrimaryWidth > style.coverPrimary.boxWidthPx) overflowDetails.push({ target: 'coverPrimary', measuredWidthPx: titlePrimaryWidth, safeWidthPx: style.coverPrimary.boxWidthPx });

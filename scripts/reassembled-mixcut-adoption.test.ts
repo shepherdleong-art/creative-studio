@@ -12,6 +12,7 @@ import { readPcmWav } from '../lib/film-render/wav.ts';
 import { reviewHtml, refreshFilmReview, refreshMixcutReview } from '../lib/final-edit/reassembled/review.ts';
 import { verifyDeliveryDirectory } from '../lib/final-edit/reassembled/delivery.ts';
 import type { FilmBinding } from '../lib/final-edit/reassembled/types.ts';
+import { requiresReassembledUpstreamRework } from '../lib/reassembled-shot-guard.ts';
 
 assert.ok(process.env.FILM_EDITOR_DB, 'Set FILM_EDITOR_DB to a fixture database; source is opened read-only.');
 const source = new Database(process.env.FILM_EDITOR_DB!, { readonly: true });
@@ -21,21 +22,49 @@ const db = new Database(path.join(root, 'test.db'));
 source.close();
 const storageRoot = process.env.FILM_EDITOR_STORAGE || path.resolve(path.dirname(process.env.FILM_EDITOR_DB!), '..', 'storage');
 process.env.CREATIVE_STUDIO_DATA_ROOT = path.dirname(storageRoot);
+const classic = process.env.FILM_EDITOR_TEMPLATE === 'classic';
+// Reconstruct an imported classic in the disposable DB from its audit snapshot.
+// This also lets an already-adopted real project serve as a read-only media fixture.
+if (classic) {
+  const row = (db.prepare('SELECT * FROM final_edit_film_bindings').all() as FilmBinding[]).find(item => JSON.parse(item.specJson).template.id === 'classic');
+  if (row) {
+    const audit = db.prepare("SELECT commandJson FROM final_edit_revisions WHERE scopeId=? AND json_extract(commandJson,'$.type')='adopt_into_mixcut' ORDER BY revision DESC LIMIT 1").get(row.variantId) as { commandJson: string } | undefined;
+    if (audit) {
+      const original = JSON.parse(audit.commandJson);
+      const timeline = JSON.parse(original.originalVariant.timelineJson);
+      delete timeline.importedFilmEditor;
+      delete timeline.filmContent;
+      db.prepare('UPDATE final_edit_variants SET timelineJson=? WHERE id=?').run(JSON.stringify(timeline), row.variantId);
+    }
+  }
+}
 const binding = (db.prepare('SELECT * FROM final_edit_film_bindings').all() as FilmBinding[]).find(row => {
   const variant = db.prepare('SELECT timelineJson FROM final_edit_variants WHERE id=?').get(row.variantId) as { timelineJson: string };
-  return JSON.parse(row.specJson).template.id !== 'classic' && !JSON.parse(variant.timelineJson).importedFilmEditor;
+  return (JSON.parse(row.specJson).template.id === 'classic') === classic && !JSON.parse(variant.timelineJson).importedFilmEditor;
 })!;
-assert.ok(binding, 'Fixture needs one unadopted overlay film.');
+assert.ok(binding, 'Fixture needs a film matching FILM_EDITOR_TEMPLATE.');
 const forbidden = async (): Promise<never> => { throw new Error('External generation is forbidden'); };
 const workspace = createFinalEditWorkspace({ db, storageRoot, probeVideo: forbidden, analyzeVideo: forbidden, synthesize: forbidden });
 const before = workspace.load(binding.groupId);
-adoptFilmIntoMixcut(db, storageRoot, binding.groupId);
+assert.equal(requiresReassembledUpstreamRework(db, binding.shotSetId), true);
+if (classic) {
+  assert.throws(() => adoptFilmIntoMixcut(db, storageRoot, binding.groupId), { code: 'classic_template_required' });
+  assert.throws(() => adoptFilmIntoMixcut(db, storageRoot, binding.groupId, { template: 'overlay-minimal', expectedRevision: -1, expectedGroupRevision: before.revision }), { code: 'revision_conflict' });
+}
+adoptFilmIntoMixcut(db, storageRoot, binding.groupId, classic ? { template: 'overlay-minimal', expectedRevision: before.variants[0].revision, expectedGroupRevision: before.revision } : undefined);
 let group = workspace.load(binding.groupId);
 assert.equal(group.reassembled, undefined);
 assert.equal(filmBinding(db, binding.groupId), undefined);
 assert.deepEqual(group.variants[0].timeline.clips, before.variants[0].timeline.clips);
 assert.deepEqual(group.subtitleCues, before.subtitleCues);
-assert.deepEqual(group.packaging.varsOverrides, before.reassembled!.content.decoration.template !== 'classic' ? before.reassembled!.content.decoration.packaging.varsOverrides : {});
+const decoration = before.reassembled!.content.decoration;
+if (decoration.template === 'classic') {
+  assert.equal(group.packaging.enabled, true);
+  assert.equal(group.packaging.template, 'overlay-minimal');
+  assert.equal(group.packaging.varsOverrides.title, decoration.cover.title[0]);
+  assert.ok(group.packaging.pointCues?.length);
+} else assert.deepEqual(group.packaging.varsOverrides, decoration.packaging.varsOverrides);
+assert.equal(requiresReassembledUpstreamRework(db, binding.shotSetId), false);
 assert.ok(group.variants[0].bgm.trackId);
 assert.ok(group.variants[0].cover.sourceUrl?.includes('/cover-candidates/'), 'Imported still cover must load in the native player');
 const audio = db.prepare('SELECT narrationAudioPath FROM final_edit_groups WHERE id=?').get(group.id) as { narrationAudioPath: string };

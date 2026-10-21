@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { isReassembledShotSet, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
+import { requiresReassembledUpstreamRework, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
 import { resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
 import { toStorageVideoUrl } from '@/lib/storage-url';
 
@@ -42,7 +42,7 @@ export async function PATCH(
     };
     if (body.action === 'reject' || body.action === 'unreject') {
       const owner = db.prepare('SELECT shotSetId FROM video_jobs WHERE id=?').get(id) as { shotSetId: string | null } | undefined;
-      if (owner?.shotSetId && isReassembledShotSet(db, owner.shotSetId)) return NextResponse.json({ error: REASSEMBLED_REWORK_REQUIRED }, { status: 409 });
+      if (owner?.shotSetId && requiresReassembledUpstreamRework(db, owner.shotSetId)) return NextResponse.json({ error: REASSEMBLED_REWORK_REQUIRED }, { status: 409 });
       const job = db.prepare(`SELECT status FROM video_jobs WHERE id = ?`).get(id) as { status: string } | undefined;
       if (!job) return NextResponse.json({ error: 'Video job not found' }, { status: 404 });
       if (job.status !== 'succeeded') {

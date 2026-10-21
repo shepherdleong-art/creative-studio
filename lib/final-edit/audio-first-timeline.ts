@@ -36,9 +36,16 @@ export function audioFirstPlanToVideoTimeline(input: {
     const timelineInFrame = frameAt(segment.startUs);
     const timelineOutFrame = segment.endUs >= input.narrationDurationUs ? bodyFrames : frameAt(segment.endUs);
     const lengthFrames = timelineOutFrame - timelineInFrame;
-    const sourceInFrame = frameAt(segment.sourceStartUs);
-    const sourceOutFrame = sourceInFrame + lengthFrames;
+    let sourceInFrame = frameAt(segment.sourceStartUs);
     const sourceMaxOutFrame = sourceFrameLimit(asset.durationUs);
+    // Independent timeline rounding (and the final ceil) may require one more
+    // frame at a valid source tail. Shift the window back at most one frame;
+    // never expand the real media limit or rescue an already invalid plan.
+    if (sourceInFrame + lengthFrames === sourceMaxOutFrame + 1
+      && sourceInFrame > 0 && segment.sourceStartUs >= 0
+      && segment.sourceEndUs <= asset.durationUs
+      && segment.sourceEndUs > segment.sourceStartUs) sourceInFrame -= 1;
+    const sourceOutFrame = sourceInFrame + lengthFrames;
     if (lengthFrames <= 0 || sourceOutFrame > sourceMaxOutFrame) {
       issues.push({ code: 'material_gap', severity: 'blocking', message: `句段 ${boundSegmentId} 无法安全换算为视频帧`, targetId: boundSegmentId });
       continue;

@@ -38,6 +38,7 @@ import type { MixcutContextResponse } from './types.ts';
  * remain on the existing legacy read path and are never rewritten here.
  */
 import { isUsableMixcutScriptDraft } from '../media-core/script-draft-usable.ts';
+import { normalizeMixcutSourceScript } from './mixcut-script.ts';
 export { isUsableMixcutScriptDraft } from '../media-core/script-draft-usable.ts';
 
 interface ProjectRow {
@@ -265,7 +266,7 @@ export async function buildMixcutContext(
   const drafts: MixcutContextResponse['drafts'] = [];
   for (const row of draftRows) {
     let parsed: unknown;
-    try { parsed = JSON.parse(row.outputJson); } catch { continue; }
+    try { parsed = normalizeMixcutSourceScript(JSON.parse(row.outputJson)); } catch { continue; }
     if (!isUsableMixcutScriptDraft(parsed)) continue;
     const script = parsed as StoredScriptOutput;
     if (!isScriptVisibleInContext({

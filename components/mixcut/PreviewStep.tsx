@@ -162,6 +162,34 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const reloadGroupRef = useRef(reloadGroup);
   useEffect(() => { reloadGroupRef.current = reloadGroup; });
 
+  // Refresh only the library: background video completion must not overwrite
+  // unsaved text, framing, playback state, or the current timeline.
+  useEffect(() => {
+    if (!active) return;
+    const controller = new AbortController();
+    let refreshing = false;
+    const refreshAssets = async () => {
+      if (refreshing || pendingRef.current || document.hidden) return;
+      refreshing = true;
+      try {
+        const next = await responseBody<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${group.id}`, { signal: controller.signal }));
+        const current = groupRef.current;
+        if (!controller.signal.aborted && !pendingRef.current && current.id === next.id && JSON.stringify(current.assets) !== JSON.stringify(next.assets)) {
+          const merged = { ...current, assets: next.assets };
+          groupRef.current = merged;
+          onGroupChange(merged);
+        }
+      } catch { /* Keep the local edit on a transient refresh failure. */ }
+      finally { refreshing = false; }
+    };
+    void refreshAssets();
+    const timer = window.setInterval(() => void refreshAssets(), 10_000);
+    const refresh = () => void refreshAssets();
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { controller.abort(); window.clearInterval(timer); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
+  }, [active, group.id, onGroupChange]);
+
   const enqueue = <T,>(work: () => Promise<T>): Promise<T> => {
     pendingRef.current += 1;
     setBusy(true);
@@ -857,11 +885,11 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
         <section className={`${styles.panel} ${styles.panelGrow}`}>
           <h3><Icon name="retry" size={15} />素材调整</h3>
           <div className={styles.hintLine} style={{ color: '#B25E00' }}>{selectedClip && firstInsertableGap
-            ? `当前片段已选中，时间轴另有 ${(firstInsertableGap.endFrame - firstInsertableGap.startFrame) / FPS}s 缺口。先选素材，再明确选择替换或添加。`
+            ? `当前片段已选中，时间轴另有 ${((firstInsertableGap.endFrame - firstInsertableGap.startFrame) / FPS).toFixed(2)}s 缺口。先选素材，再明确选择替换或添加。`
             : selectedClip
               ? '当前片段已选中。先选素材，再点击“替换当前片段”；裁剪或删除可腾出添加缺口。'
               : firstInsertableGap
-                ? `时间轴有 ${(firstInsertableGap.endFrame - firstInsertableGap.startFrame) / FPS}s 缺口。先选素材，再点击“添加到缺口”。`
+                ? `时间轴有 ${((firstInsertableGap.endFrame - firstInsertableGap.startFrame) / FPS).toFixed(2)}s 缺口。先选素材，再点击“添加到缺口”。`
                 : '单击下方素材会高亮选中，点击“预览”查看视频；选中时间轴片段后可替换，右键片段可删除并腾出缺口。'}</div>
           <div className={styles.replaceSelection} aria-live="polite">
             <span className={styles.replaceSelectionName} title={materialName(selectedMaterial)}>

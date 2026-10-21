@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
-import { currentFilmContent, filmPackaging, filmSubtitleCues } from './editor.ts';
+import { classicMixcutPackaging, currentFilmContent, filmPackaging, filmSubtitleCues } from './editor.ts';
+import type { PackagingTemplateId } from '../../media-core/packaging-vars.ts';
 import { filmPreviewAudio } from './preview-audio.ts';
 import { projectFile } from '../../film-render/files.ts';
 import type { FilmBinding } from './types.ts';
@@ -11,21 +12,27 @@ import type { VideoTimeline } from '../types.ts';
 import { FinalEditError } from '../errors.ts';
 
 /** One-way, idempotent adoption. Keeps the original binding/deliveries and a full before snapshot. */
-export function adoptFilmIntoMixcut(db: Database.Database, storageRoot: string, groupId: string): void {
+export function adoptFilmIntoMixcut(db: Database.Database, storageRoot: string, groupId: string, options?: { template: PackagingTemplateId; expectedRevision: number; expectedGroupRevision: number }): void {
   const binding = db.prepare('SELECT * FROM final_edit_film_bindings WHERE groupId=?').get(groupId) as FilmBinding | undefined;
   if (!binding) return;
   const group = db.prepare('SELECT * FROM final_edit_groups WHERE id=?').get(groupId) as Record<string, unknown>;
   const variant = db.prepare('SELECT * FROM final_edit_variants WHERE id=?').get(binding.variantId) as Record<string, unknown>;
   const timeline = JSON.parse(String(variant.timelineJson)) as VideoTimeline;
   if (timeline.importedFilmEditor === 'mixcut') return;
+  if (options && (options.expectedRevision !== Number(variant.revision) || options.expectedGroupRevision !== Number(group.revision))) {
+    throw new FinalEditError('revision_conflict', '草稿已变化，请刷新后重新选择包装', 409);
+  }
   if (db.prepare("SELECT 1 FROM final_edit_jobs WHERE groupId=? AND status IN ('running','queued')").get(groupId)) {
     throw new FinalEditError('film_job_pending', '请等待当前成片任务完成后再打开精剪', 409);
   }
   const spec = JSON.parse(binding.specJson) as RenderSpec;
   const content = currentFilmContent(spec, timeline);
-  if (content.decoration.template === 'classic') {
-    throw new FinalEditError('classic_edit_not_supported', '此历史成片使用 classic 包装，尚不能无损转为四模板精剪草稿', 409);
+  if (content.decoration.template === 'classic' && !options) {
+    throw new FinalEditError('classic_template_required', '请选择包装预设后进入智能混剪', 409);
   }
+  const packaging = content.decoration.template === 'classic'
+    ? classicMixcutPackaging(content, spec, timeline, options!.template)
+    : filmPackaging(content);
   const narration = filmPreviewAudio(db, groupId);
   if (!narration) throw new FinalEditError('audio_file_missing', '原片配音缺失');
   const musicPath = projectFile(spec.project.root, spec.audio.music.file);
@@ -33,7 +40,6 @@ export function adoptFilmIntoMixcut(db: Database.Database, storageRoot: string, 
   const trackId = `film-${fingerprint}`;
   const bgm = { trackId, gainDb: content.music.gainDb, loop: true, fadeInSec: content.music.fadeInSec, fadeOutSec: content.music.fadeOutSec };
   const cues = filmSubtitleCues(content);
-  const packaging = filmPackaging(content);
   const stamp = new Date().toISOString();
   const nextTimeline: VideoTimeline = { ...timeline, importedFilmEditor: 'mixcut' };
   delete nextTimeline.filmContent;

@@ -33,6 +33,31 @@ export function isReassembledShotSet(db: Database.Database, shotSetId: string): 
   return ['final_edit_film_bindings', 'final_edit_film_production_items'].some(table => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)
     && db.prepare(`SELECT 1 FROM ${table} WHERE shotSetId=?`).get(shotSetId)));
 }
+
+/** Native mixcut owns an adopted draft; new image/video candidates do not alter its timeline.
+ * Keep the broader identity guard for deleting a shot set and its historical media.
+ */
+export function requiresReassembledUpstreamRework(db: Database.Database, shotSetId: string): boolean {
+  if (!isReassembledShotSet(db, shotSetId)) return false;
+  const hasBindings = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='final_edit_film_bindings'").get();
+  if (!hasBindings) return true;
+  const bindings = db.prepare(`SELECT v.timelineJson FROM final_edit_film_bindings b
+    LEFT JOIN final_edit_variants v ON v.id=b.variantId WHERE b.shotSetId=?`).all(shotSetId) as Array<{ timelineJson: string | null }>;
+  return bindings.length === 0 || bindings.some(row => !row.timelineJson || JSON.parse(row.timelineJson).importedFilmEditor !== 'mixcut');
+}
+
+export function requiresReassembledImageRework(db: Database.Database, jobId: string): boolean {
+  if (!isReassembledImageJob(db, jobId)) return false;
+  const owners = new Set<string>();
+  const exists = (table: string) => db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
+  if (exists('final_edit_film_production_items')) {
+    for (const row of db.prepare("SELECT p.shotSetId FROM final_edit_film_production_items p, json_each(p.registryJson, '$.jobs') j WHERE j.value=?").all(jobId) as Array<{ shotSetId: string }>) owners.add(row.shotSetId);
+  }
+  if (exists('final_edit_film_reworks') && exists('final_edit_film_bindings')) {
+    for (const row of db.prepare('SELECT b.shotSetId FROM final_edit_film_reworks r JOIN final_edit_film_bindings b ON b.id=r.bindingId WHERE r.jobId=?').all(jobId) as Array<{ shotSetId: string }>) owners.add(row.shotSetId);
+  }
+  return owners.size === 0 || [...owners].some(id => requiresReassembledUpstreamRework(db, id));
+}
 /** Completed external receipts and P2 candidates cannot use the unversioned redo route. */
 export function isReassembledImageJob(db: Database.Database, jobId: string): boolean {
   const exists = (table: string) => db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);

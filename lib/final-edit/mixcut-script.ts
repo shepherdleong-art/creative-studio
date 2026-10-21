@@ -77,6 +77,17 @@ export function sourceNarrationText(source: Pick<MixcutSourceScript, 'segments' 
   return fromSegments || normalizeNarrationText(source.fullScript || '');
 }
 
+/** Imported films may carry full narration without module-3 shot segments.
+ * Normalize on read, preserving the source row and preferring real segments.
+ */
+export function normalizeMixcutSourceScript(value: unknown): MixcutSourceScript | null {
+  if (!value || typeof value !== 'object') return null;
+  const source = value as MixcutSourceScript;
+  if (![2, 3, 4].includes(source.version) || !Array.isArray(source.segments)) return null;
+  if (source.segments.length || typeof source.fullScript !== 'string') return source;
+  return { ...source, segments: splitNarrationSentences(source.fullScript).map((narration, index) => ({ id: `segment-${index + 1}`, narration, subtitle: narration })) };
+}
+
 export function getScriptSyncState(sourceText: string, editedText: string): MixcutScriptSyncState {
   return normalizeNarrationText(sourceText) === normalizeNarrationText(editedText) ? 'synced' : 'modified';
 }

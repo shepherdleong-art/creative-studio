@@ -265,7 +265,7 @@ const validScript: ScriptOutput = {
 };
 const v1Draft = { version: 1, title: '旧版脚本', duration: '15秒', segments: [{ shotId: 'shot-a1', text: '夜晚加湿也不怕吵醒家人' }] };
 const emptyShotSetIdDraft: ScriptOutput = { ...validScript, shotSetId: '' };
-const emptySegmentsDraft: ScriptOutput = { ...validScript, segments: [] };
+const emptySegmentsDraft: ScriptOutput = { ...validScript, segments: [], fullScript: '' };
 const foreignShotSetDraft: ScriptOutput = { ...validScript, shotSetId: 'ss-c' };
 const staleFullScriptDraft: ScriptOutput = { ...validScript, fullScript: '这是一份已经漂移的派生文案' };
 const validV3Script: ScriptOutputV3 = {
@@ -674,6 +674,10 @@ assert.equal(defaultContext.project.createdAt, '2026-01-05 10:00:00');
 // =============================================================================
 // Cleanup.
 // =============================================================================
+db.prepare('UPDATE script_drafts SET outputJson=? WHERE id=?').run(JSON.stringify({ ...validScript, segments: [], fullScript: '床边收纳\n暖光陪伴' }), 'draft-valid');
+// The imported full-text shape must pass the same context route as segmented scripts.
+const fullTextContext = await buildMixcutContext(db, storageRoot, 'project-a', 'ss-a');
+assert.ok(fullTextContext?.drafts.some(draft => draft.narrationText === '床边收纳\n暖光陪伴'));
 fs.rmSync(storageRoot, { recursive: true, force: true });
 db.close();
 
