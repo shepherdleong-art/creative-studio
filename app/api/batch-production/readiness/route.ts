@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getBatchProductionReadiness } from '@/lib/batch-production/runtime-readiness';
+import { getFormulaCapability } from '@/lib/batch-production/formula/runtime-readiness';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -11,6 +12,8 @@ export async function GET() {
     const readiness = await getBatchProductionReadiness();
     return NextResponse.json({
       ...readiness,
+      formula: readiness.available ? await getFormulaCapability()
+        : { available: false, message: readiness.message },
       recovery: {
         endpoint: '/api/batch-production/recovery',
         requiresApplicationShutdown: true,

@@ -9,13 +9,17 @@ import { BatchDomainError } from './errors.ts';
 import { safeFontFilename, userFontDir } from '../media-core/packaging-font.ts';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { FormulaGenerationRequest } from './formula/generation.ts';
 
 type PackagingSource = Pick<BatchOutputClipEditView, 'planId' | 'coverTitle' | 'coverTitleOverride' | 'visualDurationUs'> & {
   subtitleCues: Array<{ text: string; startUs: number; endUs: number }>;
   narration: { durationUs: number | null };
+  audioPlan?: BatchOutputClipEditView['audioPlan'];
 };
 
 function batchNarrationPackaging(db: Database.Database, view: PackagingSource) {
+  if (view.audioPlan) return { words: view.subtitleCues,
+    points: extractHeuristicPoints(view.subtitleCues.map(cue => cue.text).join('，')) };
   const row = db.prepare(`SELECT n.narrationJson FROM batch_output_plans p
     JOIN batch_script_narrations n ON n.scriptSnapshotId=p.scriptSnapshotId AND n.batchVersionId=p.batchVersionId WHERE p.id=?`).get(view.planId) as { narrationJson: string } | undefined;
   let stored: { wordTimings?: unknown; packagingPoints?: unknown } = {};
@@ -26,8 +30,21 @@ function batchNarrationPackaging(db: Database.Database, view: PackagingSource) {
   };
 }
 
+function batchPackagingProject(db: Database.Database, projectId: string, view: PackagingSource) {
+  if (!view.audioPlan) return loadProjectPackagingData(db, projectId);
+  const row = db.prepare(`SELECT g.inputJson FROM batch_formula_generation_outputs o
+    JOIN batch_formula_generation_requests g ON g.id=o.requestId WHERE o.planId=? AND g.projectId=?`)
+    .get(view.planId, projectId) as { inputJson: string } | undefined;
+  // Historical requests have no product copy snapshot; never fill them from today's project.
+  const input: FormulaGenerationRequest['input'] | undefined = row ? JSON.parse(row.inputJson) : undefined;
+  return input?.presentationProject ?? {};
+}
+
 export function batchPackagingDefaults(db: Database.Database, projectId: string, view: PackagingSource) {
-  const project = loadProjectPackagingData(db, projectId);
+  const project = batchPackagingProject(db, projectId, view);
+  if (view.audioPlan) return buildPackagingVars({ project,
+    ...(view.coverTitleOverride && view.coverTitle ? { coverTitle: view.coverTitle } : {}),
+    subtitleCues: view.subtitleCues.map(cue => ({ ...cue, textSource: 'script' })) });
   const script = db.prepare(`SELECT s.title, s.coverTitleJson FROM batch_output_plans p
     JOIN batch_script_snapshots s ON s.id=p.scriptSnapshotId WHERE p.id=?`).get(view.planId) as { title: string; coverTitleJson: string } | undefined;
   let coverTitle = script ? splitCoverTitle(script.title) : undefined;
@@ -55,7 +72,7 @@ export async function prepareBatchPackagingConfig(db: Database.Database, project
     const built = await buildPointCues({
       extractPoints: text => extractSellingPointsWithLLM(text),
       narrationText: view.subtitleCues.map(cue => cue.text).join('，'), words: batchNarrationPackaging(db, view).words, subtitleCues: view.subtitleCues,
-      sellingPoints: loadProjectPackagingData(db, projectId).sellingPoints ?? [],
+      sellingPoints: batchPackagingProject(db, projectId, view).sellingPoints ?? [],
       totalSec: (Math.max(view.visualDurationUs, view.narration.durationUs ?? 0) + FINAL_EDIT_INTRO_DURATION_US) / 1e6,
       coverSec: FINAL_EDIT_INTRO_DURATION_US / 1e6, narrationPlaybackRate: 1,
     });

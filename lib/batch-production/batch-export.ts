@@ -1,4 +1,5 @@
 import { productionCodeSuffix, withProductionCodes, type ProductionCodes } from '../media-core/production-codes.ts';
+import { formulaExportSuffix, type FormulaExportIdentity } from '../media-core/export-identity.ts';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -10,6 +11,7 @@ import { computeFingerprintFromFile } from './fingerprint.ts';
 /** Export metadata supplied by the batch integration layer. */
 export interface BatchExportIdentity {
   productionCodes?: ProductionCodes;
+  formulaIdentity?: FormulaExportIdentity;
   projectId: string;
   batchId: string;
   productCode: string;
@@ -39,8 +41,11 @@ export interface BatchExportTarget {
 
 export interface BatchExportRenderContract {
   productionCodes?: ProductionCodes;
-  audioMode: 'narration' | 'silent_placeholder';
+  formulaIdentity?: FormulaExportIdentity;
+  audioMode: 'narration' | 'source' | 'mixed' | 'silent_placeholder';
   productionReady: boolean;
+  fullRenderContractHash?: string;
+  formulaExecution?: { stageId: string; contentContractHash: string };
   /** 渲染时冻结的成片编辑修订号;旧候选允许缺省并按 0 处理。 */
   editRevision?: number;
   /** 渲染时冻结的封面 arrangement.cover.timeUs;旧候选允许缺省。 */
@@ -141,6 +146,10 @@ function buildBaseName(identity: BatchExportIdentity): string {
   if (!Number.isInteger(identity.planSeq) || identity.planSeq < 1) throw new Error('plan 序号必须是正整数');
   if (!Number.isInteger(identity.outputVersion) || identity.outputVersion < 1) throw new Error('output version 必须是正整数');
   const sequenceSuffix = String(identity.planSeq).padStart(2, '0');
+  if (identity.formulaIdentity !== undefined) {
+    const base = identity.baseName || `成片-${safeFilenameSegment(identity.productCode, 'productCode')}-${dateInShanghai(identity.taskDate)}`;
+    return `${base}-${formulaExportSuffix(identity.formulaIdentity)}`;
+  }
   if (productionCodeSuffix(identity.productionCodes)) {
     const base = identity.baseName || `成片-${safeFilenameSegment(identity.productCode, 'productCode')}-${dateInShanghai(identity.taskDate)}`;
     return withProductionCodes(base, identity.productionCodes);
@@ -246,7 +255,12 @@ export async function publishBatchExportTarget(input: {
   expectedCoverChecksum?: string;
 }): Promise<BatchExportResult> {
   const storageRoot = path.resolve(input.storageRoot ?? input.target.storageRoot ?? path.join(dataRoot(), 'storage'));
-  if (input.productionReady !== true || !input.renderResult || input.renderResult.audioMode !== 'narration' || input.renderResult.productionReady !== true) {
+  const rendered = input.renderResult;
+  const verifiedFormulaSound = rendered && (rendered.audioMode === 'source' || rendered.audioMode === 'mixed')
+    && typeof rendered.formulaExecution?.stageId === 'string'
+    && /^rnd_[0-9a-f]{32}$/.test(rendered.formulaExecution.contentContractHash)
+    && /^rnd_[0-9a-f]{32}$/.test(rendered.fullRenderContractHash ?? '');
+  if (input.productionReady !== true || !rendered || (rendered.audioMode !== 'narration' && !verifiedFormulaSound) || rendered.productionReady !== true) {
     throw new Error('正式批量发布必须提供 productionReady=true 且已核验 narration;静音占位不能发布');
   }
   const target = input.target;

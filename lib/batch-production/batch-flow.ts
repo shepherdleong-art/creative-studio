@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { BatchDomainError } from './errors.ts';
+import { assertSemanticBatch, getBatchPlanningMode, type BatchPlanningMode } from './planning-mode.ts';
 import { createOutputPlansForSnapshot, listOutputPlans } from './plans.ts';
 import { resolveColorSnapshot, type ColorSnapshotInput } from './lut-catalog.ts';
 import { syncProjectScripts } from './script-catalog.ts';
@@ -397,6 +398,7 @@ export function createBatchSnapshot(
   batchId: string,
   input: BatchSnapshotInput,
 ): BatchSnapshotResult {
+  assertSemanticBatch(db, projectId, batchId);
   const createdAt = nowIso(input.now);
   if (!input.scriptSelections || input.scriptSelections.length === 0) {
     throw new BatchDomainError('invalid_input', '至少选择一份脚本');
@@ -517,6 +519,7 @@ export function startBatchProduction(
   now?: () => Date,
   options: { allowUnavailableAssets?: boolean } = {},
 ): void {
+  assertSemanticBatch(db, projectId, batchId);
   db.transaction(() => {
     const batch = db.prepare(`
       SELECT currentVersionId FROM batch_productions
@@ -666,6 +669,7 @@ export interface BatchSnapshotDetail {
     id: string;
     name: string;
     status: BatchProductionStatus;
+    planningMode?: BatchPlanningMode;
   };
   version: {
     id: string;
@@ -673,6 +677,7 @@ export interface BatchSnapshotDetail {
     copyCount: number;
     inputState: 'draft' | 'frozen';
     defaultsJson: unknown;
+    planningMode?: BatchPlanningMode;
   };
   scriptSnapshots: Array<{
     id: string;
@@ -764,10 +769,12 @@ export function getBatchSnapshotDetail(
     colorSnapshot: upgradeColorSnapshot(parseJsonOrRaw(colorJson)),
   }));
   const outputPlans = listOutputPlans(db, currentVersionId).map(({ id, seq }) => ({ id, seq }));
+  const planningMode = getBatchPlanningMode(db, projectId, batchId);
   return {
-    batch,
+    batch: { ...batch, planningMode },
     version: {
       ...version,
+      planningMode,
       inputState: version.inputState,
       defaultsJson: parseJsonOrRaw(version.defaultsJson),
     },

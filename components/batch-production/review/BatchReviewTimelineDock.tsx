@@ -7,8 +7,9 @@ import { TimelineShortcutsDialog } from '@/components/timeline/TimelineShortcuts
 import { Icon } from '@/components/ui/Icon';
 import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
 import { audioClips } from '@/lib/media-core/audio-edit';
+import { reviewAudioClips } from './audio-tracks';
 import { FINAL_EDIT_FPS } from '@/lib/media-core/render-contract';
-import type { MaterialDragItem, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
+import type { FormulaMediaDrop, MaterialDragItem, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
 import styles from './batch-unified-review.module.css';
 import BatchReviewSubtitleChip from './BatchReviewSubtitleChip';
 import AudioWaveform from '@/components/audio/AudioWaveform';
@@ -29,7 +30,7 @@ const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(
 const MIN_CLIP_US = 500_000;
 const SNAP_THRESHOLD_PX = 9;
 
-export type ReviewRowFilter = 'all' | 'pending' | 'approved' | 'overlap';
+export type ReviewRowFilter = 'all' | 'pending' | 'approved' | 'overlap' | 'replacement';
 
 type Arrangement = BatchOutputClipEditView;
 
@@ -39,6 +40,7 @@ export interface BatchReviewTimelineDockProps {
   films: UnifiedFilmState[];
   selectedPlanId: string | null;
   onSelectFilm: (planId: string) => void;
+  onShowFormula?: (planId: string) => void;
   selection: SelectionTarget | null;
   onSelectTarget: (target: SelectionTarget | null) => void;
   focusedAssetId: string | null;
@@ -75,19 +77,21 @@ export interface BatchReviewTimelineDockProps {
   onRefreshFilm: (planId: string) => Promise<void>;
   onOpenCoverEditor: (planId: string) => void;
   onOpenSource?: (planId: string, clipId: string) => void;
+  onOpenFormulaMedia?: (planId: string, edit: FormulaMediaDrop) => void;
 }
 
 /** 取某成片指定音轨的片段列表与源音频总时长。 */
 function audioTrackInfo(arrangement: Arrangement | null, track: 'narration' | 'bgm', fallbackDurationUs: number) {
   if (!arrangement) return { clips: [] as ReturnType<typeof audioClips>, sourceDurationUs: fallbackDurationUs };
   if (track === 'narration') {
-    const durationUs = arrangement.narration?.durationUs ?? fallbackDurationUs;
-    return { clips: audioClips({ audio: arrangement.audio }, 'narration', durationUs), sourceDurationUs: durationUs };
+    const durationUs = arrangement.audioPlan?.bodyDurationUs ?? arrangement.narration?.durationUs ?? fallbackDurationUs;
+    return { clips: reviewAudioClips(arrangement, 'narration', durationUs), sourceDurationUs: durationUs };
   }
-  const bgmSourceUs = arrangement.musicLibrary?.find((t) => t.id === arrangement.music?.trackId)?.durationUs
+  const bgmSourceUs = arrangement.formulaPreview?.music?.durationUs
+    ?? arrangement.musicLibrary?.find((t) => t.id === arrangement.music?.trackId)?.durationUs
     ?? arrangement.narration?.durationUs
     ?? fallbackDurationUs;
-  const spanUs = arrangement.narration?.durationUs ?? fallbackDurationUs;
+  const spanUs = arrangement.audioPlan?.bodyDurationUs ?? arrangement.narration?.durationUs ?? fallbackDurationUs;
   return { clips: audioClips({ audio: arrangement.audio }, 'bgm', spanUs), sourceDurationUs: bgmSourceUs };
 }
 
@@ -97,6 +101,7 @@ export default function BatchReviewTimelineDock({
   films,
   selectedPlanId,
   onSelectFilm,
+  onShowFormula,
   selection,
   onSelectTarget,
   focusedAssetId,
@@ -129,6 +134,7 @@ export default function BatchReviewTimelineDock({
   onRefreshFilm,
   onOpenCoverEditor,
   onOpenSource,
+  onOpenFormulaMedia,
 }: BatchReviewTimelineDockProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [snapLinePx, setSnapLinePx] = useState<number | null>(null);
@@ -197,6 +203,7 @@ export default function BatchReviewTimelineDock({
   const visibleRows = useMemo(() => {
     if (rowFilter === 'pending') return films.filter((f) => !f.approved);
     if (rowFilter === 'approved') return films.filter((f) => f.approved);
+    if (rowFilter === 'replacement') return films.filter(f => (f.formula?.replacementCount ?? 0) > 0);
     return films;
   }, [films, rowFilter]);
 
@@ -511,10 +518,16 @@ export default function BatchReviewTimelineDock({
     e.stopPropagation();
     const arrangement = film.arrangement;
     if (!arrangement) return;
-    const { clips: trackClips, sourceDurationUs } = audioTrackInfo(arrangement, track, film.durationSec * 1e6);
+    const info = audioTrackInfo(arrangement, track, film.durationSec * 1e6);
+    const trackClips = info.clips;
     const index = trackClips.findIndex((c) => c.id === clipId);
     if (index < 0) return;
     const clip = trackClips[index];
+    const sourceDurationUs = track === 'narration'
+      ? arrangement.formulaPreview?.audioTimeline.clips.find(clip => clip.id === clipId)?.sourceDurationUs ?? info.sourceDurationUs
+      : arrangement.formulaPreview?.music
+        ? Math.max(info.sourceDurationUs, clip.sourceEndUs, clip.sourceStartUs + arrangement.formulaPreview.audioTimeline.bodyDurationUs)
+        : info.sourceDurationUs;
     const prev = index > 0 ? trackClips[index - 1] : null;
     const next = index + 1 < trackClips.length ? trackClips[index + 1] : null;
 
@@ -805,6 +818,17 @@ export default function BatchReviewTimelineDock({
       const item: MaterialDragItem = JSON.parse(json);
       if (!poolAssetsById.has(item.assetId)) return;
 
+      const film = films.find(f => f.planId === target.planId);
+      if (film?.formula) {
+        onOpenFormulaMedia?.(target.planId, target.type === 'replace' && target.clipId
+          ? { type: 'replace', clipId: target.clipId, assetId: item.assetId }
+          : { type: 'insert', assetId: item.assetId,
+            afterClipId: target.type === 'append' && target.timelineStartUs === undefined
+              ? film.arrangement?.clips.at(-1)?.clipId ?? null : target.afterClipId ?? null,
+            ...(target.timelineStartUs !== undefined ? { timelineStartUs: target.timelineStartUs } : {}) });
+        return;
+      }
+
       if (target.type === 'replace' && target.clipId) {
         await onMediaEdit(target.planId, {
           type: 'replace',
@@ -839,25 +863,30 @@ export default function BatchReviewTimelineDock({
     return list;
   }, [totalTimelineSec, zoom]);
 
-  const renderAudioTrack = (film: UnifiedFilmState, track: 'narration' | 'bgm') => {
+  const renderAudioTrack = (film: UnifiedFilmState, track: 'narration' | 'bgm', sourceTrack = false) => {
     const arrangement = film.arrangement;
     if (!arrangement) {
       return <div className={styles.trackAudio} key={track} />;
     }
-    const { clips: trackClips } = audioTrackInfo(arrangement, track, film.durationSec * 1e6);
-    const hasNarration = arrangement.narration?.durationUs != null;
+    const { clips: allClips } = audioTrackInfo(arrangement, track, film.durationSec * 1e6);
+    const sourceIds = new Set(arrangement.audioPlan?.clips.filter(clip => clip.kind === 'source').map(clip => clip.id));
+    const trackClips = track === 'narration' && arrangement.audioPlan
+      ? allClips.filter(clip => sourceTrack === sourceIds.has(clip.id)) : allClips;
+    const hasNarration = arrangement.audioPlan ? trackClips.length > 0 : arrangement.narration?.durationUs != null;
     const audioUrl = track === 'narration'
       ? arrangement.narration?.audioRelativePath
         ? `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(film.planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=narration&source=candidate`
         : null
-      : arrangement.music?.trackId ? `/api/final-edit-bgm/${encodeURIComponent(arrangement.music.trackId)}/file` : null;
+      : arrangement.formulaPreview ? arrangement.formulaPreview.music?.fileUrl ?? null
+        : arrangement.music?.trackId ? `/api/final-edit-bgm/${encodeURIComponent(arrangement.music.trackId)}/file` : null;
     const sourceKey = track === 'narration'
       ? `${arrangement.outputVersionId}:${arrangement.narration?.audioRelativePath}`
-      : arrangement.music?.trackId ?? '';
+      : arrangement.formulaPreview ? arrangement.formulaPreview.music?.fileUrl ?? '' : arrangement.music?.trackId ?? '';
     const hasBgm = Boolean(arrangement.music?.trackId);
 
     return (
-      <div className={styles.trackAudio} key={track}>
+      <div className={styles.trackAudio} key={sourceTrack ? 'source' : track} role="group"
+        aria-label={sourceTrack ? '原声轨道' : track === 'narration' ? '配音轨道' : '背景音乐轨道'}>
         {track === 'narration' && !hasNarration ? (
           <span className="text-[10px] text-ink-tertiary px-2 py-1">无口播音频</span>
         ) : track === 'bgm' && !hasBgm ? (
@@ -874,17 +903,21 @@ export default function BatchReviewTimelineDock({
           </button>
         ) : (
           trackClips.map((ac) => {
+            const formulaAudio = track === 'narration' ? arrangement.audioPlan?.clips.find(clip => clip.id === ac.id) : undefined;
+            const linkedVideoClipId = formulaAudio?.linkedVideoClipId;
+            const sound = track === 'narration' ? arrangement.formulaPreview?.audioTimeline.clips.find(clip => clip.id === ac.id) : undefined;
             const isDraft = moveDraft?.kind === 'audio' && moveDraft.planId === film.planId && moveDraft.clipId === ac.id;
             const startSec = isDraft ? moveDraft.startSec : ac.timelineStartUs / 1e6;
             const durSec = (ac.timelineEndUs - ac.timelineStartUs) / 1e6;
-            const isSelected =
-              selection?.kind === 'audio' && selection.track === track && selection.clipId === ac.id;
+            const isSelected = linkedVideoClipId ? selection?.kind === 'clip' && selection.clipId === linkedVideoClipId
+              : selection?.kind === 'audio' && selection.track === track && selection.clipId === ac.id;
 
             return (
               <div
                 key={ac.id}
                 data-audio-clip-id={ac.id}
-                data-audio-track={track}
+                data-audio-track={sourceTrack ? 'source' : track}
+                data-linked-video-clip-id={linkedVideoClipId}
                 className={`${styles.audioBlock} ${track === 'narration' ? styles.audioTts : styles.audioBgm} ${
                   isSelected ? styles.audioSelected : ''
                 } ${isDraft ? styles.blockMoving : ''}`}
@@ -892,29 +925,34 @@ export default function BatchReviewTimelineDock({
                   left: startSec * zoom,
                   width: Math.max(24, durSec * zoom),
                 }}
-                onPointerDown={(e) => beginAudioBodyPointer(e, film, track, ac.id)}
-                title={`${track === 'narration' ? '口播TTS' : 'BGM'} · 源 ${(ac.sourceStartUs / 1e6).toFixed(1)}s–${(
+                onPointerDown={(e) => {
+                  if (!linkedVideoClipId) return beginAudioBodyPointer(e, film, track, ac.id);
+                  e.preventDefault(); e.stopPropagation();
+                  onSelectFilm(film.planId);
+                  onSelectTarget({ planId: film.planId, kind: 'clip', clipId: linkedVideoClipId });
+                }}
+                title={linkedVideoClipId ? '原声随画面移动和裁切；点击选中对应画面' : `${track === 'narration' ? '口播TTS' : 'BGM'} · 源 ${(ac.sourceStartUs / 1e6).toFixed(1)}s–${(
                   ac.sourceEndUs / 1e6
                 ).toFixed(1)}s · 拖动两端修剪,中间移动`}
               >
                 {/* 左修剪手柄 */}
-                <div
+                {!linkedVideoClipId && <div
                   className={`${styles.trimHandle} ${styles.trimHandleLeft}`}
                   onPointerDown={(e) => beginAudioTrimDrag(e, film, track, ac.id, 'start')}
                   title="拖动修剪入点"
-                />
-                <AudioWaveform url={audioUrl} sourceKey={sourceKey} sourceStartUs={ac.sourceStartUs} sourceEndUs={ac.sourceEndUs} widthPx={Math.max(24, durSec * zoom)} loop={track === 'bgm'} />
+                />}
+                <AudioWaveform url={sound?.url ?? audioUrl} sourceKey={sound?.url ?? sourceKey} sourceStartUs={ac.sourceStartUs} sourceEndUs={ac.sourceEndUs} widthPx={Math.max(24, durSec * zoom)} loop={track === 'bgm'} />
                 <span className={styles.audioLabel}>
                   {track === 'narration'
-                    ? `◖ 口播 ${(ac.sourceStartUs / 1e6).toFixed(1)}s–${(ac.sourceEndUs / 1e6).toFixed(1)}s`
+                    ? `◖ ${linkedVideoClipId ? '原声 · 随画面' : '配音'} ${(ac.sourceStartUs / 1e6).toFixed(1)}s–${(ac.sourceEndUs / 1e6).toFixed(1)}s`
                     : '♫ 背景音乐'}
                 </span>
                 {/* 右修剪手柄 */}
-                <div
+                {!linkedVideoClipId && <div
                   className={`${styles.trimHandle} ${styles.trimHandleRight}`}
                   onPointerDown={(e) => beginAudioTrimDrag(e, film, track, ac.id, 'end')}
                   title="拖动修剪出点"
-                />
+                />}
               </div>
             );
           })
@@ -934,6 +972,7 @@ export default function BatchReviewTimelineDock({
               ['pending', `待检查 ${pendingCount}`],
               ['approved', `已确认 ${approvedCount}`],
               ['overlap', '区间重复'],
+              ...(films.some(film => film.formula) ? [['replacement', `有替换 ${films.filter(film => (film.formula?.replacementCount ?? 0) > 0).length}`]] : []),
             ] as Array<[ReviewRowFilter, string]>
           ).map(([id, label]) => (
             <button
@@ -1084,7 +1123,7 @@ export default function BatchReviewTimelineDock({
           <button
             type="button"
             className="btn-primary h-7 px-2.5 text-xs"
-            disabled={selectedPlanIds.length === 0}
+            disabled={selectedPlanIds.length === 0 || phaseEBusy !== null}
             onClick={() => onReview('approved')}
           >
             通过已选 ({selectedPlanIds.length})
@@ -1092,7 +1131,7 @@ export default function BatchReviewTimelineDock({
           <button
             type="button"
             className="btn-secondary h-7 px-2 text-xs"
-            disabled={selectedPlanIds.length === 0}
+            disabled={selectedPlanIds.length === 0 || phaseEBusy !== null}
             onClick={() => onReview('rework')}
           >
             返工
@@ -1100,7 +1139,7 @@ export default function BatchReviewTimelineDock({
           <button
             type="button"
             className="btn-secondary h-7 px-2 text-xs"
-            disabled={selectedPlanIds.length === 0}
+            disabled={selectedPlanIds.length === 0 || phaseEBusy !== null}
             onClick={() => onReview('cancelled')}
           >
             撤销审核
@@ -1186,11 +1225,12 @@ export default function BatchReviewTimelineDock({
             const isPreviewing = previewPlanId === film.planId;
             const clips = arrangement?.clips ?? [];
             const subtitleCues = arrangement?.subtitleCues ?? [];
+            const hasSourceAudio = arrangement?.audioPlan?.clips.some(clip => clip.kind === 'source') ?? false;
 
             return (
               <div
                 key={film.planId}
-                className={`${styles.filmRow} ${isEditing ? styles.filmRowEditing : ''} ${
+                className={`${styles.filmRow} ${hasSourceAudio ? styles.filmRowWithSource : ''} ${isEditing ? styles.filmRowEditing : ''} ${
                   !isVisible ? styles.filmRowHidden : ''
                 }`}
                 onClick={() => {
@@ -1233,11 +1273,15 @@ export default function BatchReviewTimelineDock({
                         title={
                           film.approvable
                             ? '勾选用于统一导出/审核'
+                            : film.executionTask?.status === 'failed'
+                              ? '制作检查失败，请处理原因后重试检查'
+                            : film.executionTask?.status === 'queued' || film.executionTask?.status === 'running'
+                              ? '正在检查画面、声音、字幕和包装'
                             : film.coverStatus === 'failed'
                               ? '封面生成失败，请先重试封面'
                               : film.coverStatus === 'queued' || film.coverStatus === 'running'
                                 ? '封面还在生成中'
-                                : '这条成片还没有配音，暂时无法导出'
+                                : film.formula ? '这条成片尚未完成制作检查' : '这条成片还没有配音，暂时无法导出'
                         }
                       />
                       <span className="truncate text-xs font-semibold text-ink" title={film.scriptTitle}>
@@ -1254,12 +1298,16 @@ export default function BatchReviewTimelineDock({
                           : 'bg-warn/20 text-warn'
                       }`}
                     >
-                      {film.approved ? '已通过' : film.approvable ? '待审核' : '处理中'}
+                      {film.approved ? '已通过' : film.approvable ? '待审核' : film.executionTask?.status === 'failed' ? '检查失败' : '处理中'}
                     </span>
                   </div>
 
+                  {film.formula && <p className="mt-1 text-[10px] text-warn" role="status">
+                    {film.arrangement?.reviewContext?.issues.some(issue => issue.kind === 'deviation') ? `人工改编 · ${film.approved ? '已确认' : '待审'}。` : ''}
+                    {film.formula.replacementCount > 0 ? `替换 ${film.formula.replacementCount} 处 · ${film.approved ? '已确认' : '待审'}。` : ''}{film.formula.message}
+                  </p>}
                   <div className="flex items-center justify-between text-[10px] text-ink-tertiary pt-2 border-t border-hairline/60">
-                    <span>时长 {(film.durationSec).toFixed(1)}s</span>
+                    <span>{film.formula && !film.arrangement && !film.formula.bodyDurationUs ? '时长待确定' : `时长 ${film.durationSec.toFixed(1)}s`}</span>
                     {isPreviewing && (
                       <span className="flex items-center gap-1 text-accent text-[9px] font-medium">
                         <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />
@@ -1279,9 +1327,23 @@ export default function BatchReviewTimelineDock({
                   {/* 重试入口在上(时间轴区域较矮时也能直接点到),失败明细在下。
                       对齐旧卡片:重试配音 / 重试封面 / 换一批画面。 */}
                   {(film.narrationTask?.status === 'failed'
+                    || film.executionTask?.status === 'failed'
                     || (film.coverStatus === 'failed' && film.coverTask)
                     || batchControlState !== 'stopped') && (
                     <div className="mt-1 flex flex-wrap gap-1">
+                      {film.executionTask?.status === 'failed' && (
+                        <button
+                          type="button"
+                          className="btn-secondary h-6 px-2 text-[10px] text-fail"
+                          disabled={phaseEBusy !== null || batchControlState === 'stopped'}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onRetryRender(film.executionTask!.id);
+                          }}
+                        >
+                          {phaseEBusy === `render:${film.executionTask.id}` ? '重试中…' : '重试检查'}
+                        </button>
+                      )}
                       {film.narrationTask?.status === 'failed' && (
                         <button
                           type="button"
@@ -1319,10 +1381,11 @@ export default function BatchReviewTimelineDock({
                           disabled={phaseEBusy !== null}
                           onClick={(e) => {
                             e.stopPropagation();
-                            onReallocate(film.planId);
+                            if (film.formula) onShowFormula?.(film.planId);
+                            else onReallocate(film.planId);
                           }}
                         >
-                          {phaseEBusy === film.planId ? '处理中…' : '换一批画面'}
+                          {phaseEBusy === film.planId ? '处理中…' : film.formula ? '查看选片 / 重新选择' : '换一批画面'}
                         </button>
                       )}
                     </div>
@@ -1352,6 +1415,13 @@ export default function BatchReviewTimelineDock({
                         <li key={`b-${message}`} className="truncate" title={`无法继续：${message}`}>
                           无法继续：{message}
                         </li>
+                      ))}
+                    </ul>
+                  )}
+                  {!!arrangement?.audioPlan?.issues.length && (
+                    <ul className="mt-1 space-y-0.5 text-[9px] leading-snug text-warn" aria-label="声音需要处理">
+                      {arrangement.audioPlan.issues.map(issue => (
+                        <li key={`${issue.mediaId}:${issue.code}`} className="truncate" title={issue.message}>{issue.message}</li>
                       ))}
                     </ul>
                   )}
@@ -1581,6 +1651,9 @@ export default function BatchReviewTimelineDock({
                     )}
                   </div>
 
+                  {/* 公式原声与视频联动，单独显示在配音之前。 */}
+                  {hasSourceAudio && renderAudioTrack(film, 'narration', true)}
+
                   {/* Track 3: Narration TTS Audio */}
                   {renderAudioTrack(film, 'narration')}
 
@@ -1631,7 +1704,8 @@ export default function BatchReviewTimelineDock({
         <span><i className={styles.legendLocated} />红色框：素材池定位</span>
         <span><i className={styles.legendSwatch} />A/B… 同一素材 · S1/S2… 同源图；按颜色和编号找对应</span>
         <span><i className={styles.legendStripe} />源区间重叠</span>
-        <span>字幕 → 卖点 → 视频 → 口播 TTS → BGM</span>
+        <span>{films.some(film => film.arrangement?.audioPlan?.clips.some(clip => clip.kind === 'source'))
+          ? '字幕 → 卖点 → 视频 → 原声 → 配音 → BGM' : '字幕 → 卖点 → 视频 → 口播 TTS → BGM'}</span>
         <span>主视频秒尺 · 封面独立，不计复用</span>
       </div>
 

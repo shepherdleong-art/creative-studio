@@ -28,8 +28,8 @@ fs.mkdirSync(storageRoot, { recursive: true });
 const previousDataRoot = process.env.CREATIVE_STUDIO_DATA_ROOT;
 process.env.CREATIVE_STUDIO_DATA_ROOT = root;
 
+const db = new Database(path.join(root, 'workbench.db'));
 try {
-  const db = new Database(path.join(root, 'workbench.db'));
   db.pragma('foreign_keys = ON');
   db.exec(`
     CREATE TABLE projects (id TEXT PRIMARY KEY, productName TEXT, sellingPointsJson TEXT, name TEXT NOT NULL, productCode TEXT DEFAULT '', exportDirName TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL DEFAULT (datetime('now')), storeCode TEXT NOT NULL DEFAULT '', productSubmodel TEXT NOT NULL DEFAULT '', productionType TEXT NOT NULL DEFAULT '', editorName TEXT NOT NULL DEFAULT '', namingDate TEXT NOT NULL DEFAULT '', currentExportIdentityId TEXT);
@@ -357,9 +357,22 @@ try {
   assert.equal(unapprovedPublish.published, 0);
   assert.equal(unapprovedPublish.skipped, 1);
   assert.match(unapprovedPublish.items[0]?.reason ?? '', /审核/);
-  const reviewWrite = setBatchPlanReviews(db, 'project-1', batchId, { planIds: [publishPlanId], decision: 'approved' });
+  const reviewWrite = setBatchPlanReviews(db, 'project-1', batchId, { items: [{ planId: publishPlanId, ...reviewBefore.context! }], decision: 'approved' });
   assert.deepEqual(reviewWrite.planIds, [publishPlanId]);
   assert.equal(readBatchPlanReview(db, 'project-1', batchId, publishPlanId).decision, 'approved');
+
+  // New review concerns must block both render dispatch and final publication, even without a visual revision change.
+  db.prepare("UPDATE batch_output_versions SET arrangementJson=json_set(arrangementJson,'$.warnings',json(?)) WHERE id=?")
+    .run('["新增尺寸提醒"]', reviewBefore.context!.outputVersionId);
+  const outdatedReview = await orchestrateBatchExport(db, 'project-1', batchId, [publishPlanId], { storageRoot });
+  assert.equal(outdatedReview.items[0]?.status, 'skipped');
+  assert.match(outdatedReview.items[0]?.reason ?? '', /审核/, '提醒已变化不能复用旧审核进入导出');
+  const outdatedPublish = await publishSelectedBatchOutputs(db, 'project-1', batchId, [publishPlanId], { storageRoot });
+  assert.equal(outdatedPublish.published, 0);
+  assert.match(outdatedPublish.items[0]?.reason ?? '', /审核/);
+  const refreshedReview = readBatchPlanReview(db, 'project-1', batchId, publishPlanId).context!;
+  assert.equal(setBatchPlanReviews(db, 'project-1', batchId,
+    { items: [{ planId: publishPlanId, ...refreshedReview }], decision: 'approved' }).results[0].status, 'saved');
 
   const published = await publishSelectedBatchOutputs(db, 'project-1', batchId, [publishPlanId], { storageRoot, requireRenderContract: true });
   assert.equal(published.published, 1);
@@ -376,6 +389,15 @@ try {
   assert.equal(orchestrated.published, 0);
   assert.equal(orchestrated.items[0]?.status, 'already_published', '重复 POST 必须返回 already_published');
   assert.equal(orchestrated.items[0]?.videoArtifactId, currentArtifactId);
+  db.prepare("UPDATE batch_output_versions SET arrangementJson=json_set(arrangementJson,'$.warnings',json(?)) WHERE id=?")
+    .run('["新的选片提醒"]', refreshedReview.outputVersionId);
+  const stalePublished = await orchestrateBatchExport(db, 'project-1', batchId, [publishPlanId], { storageRoot });
+  assert.equal(stalePublished.items[0]?.status, 'skipped', '已有正式文件也不能让新导出请求绕过当前审核');
+  assert.match(stalePublished.items[0]?.reason ?? '', /审核/);
+  assert.ok(fs.existsSync(resolveBatchOutputMedia(db, 'project-1', batchId, publishPlanId, 'video', 'artifact', storageRoot).absolutePath),
+    '审核失效不删除已有正式产物');
+  setBatchPlanReviews(db, 'project-1', batchId, { items: [{ planId: publishPlanId,
+    ...readBatchPlanReview(db, 'project-1', batchId, publishPlanId).context! }], decision: 'approved' });
   assert.equal(
     (db.prepare(`SELECT COUNT(*) AS n FROM batch_artifacts WHERE outputPlanId = ?`).get(publishPlanId) as { n: number }).n,
     2,
@@ -538,9 +560,9 @@ try {
   assert.equal(readBatchPlanReview(db, 'project-1', batchId, publishPlanId).decision, null, '撤销审核后回到未审核态');
   setBatchPlanReviews(db, 'project-1', batchId, { planIds: [publishPlanId], decision: 'approved' });
 
-  db.close();
   console.log('batch Phase E orchestration tests passed');
 } finally {
+  db.close();
   if (previousDataRoot === undefined) delete process.env.CREATIVE_STUDIO_DATA_ROOT;
   else process.env.CREATIVE_STUDIO_DATA_ROOT = previousDataRoot;
   fs.rmSync(root, { recursive: true, force: true });

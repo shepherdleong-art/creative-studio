@@ -276,6 +276,7 @@ export async function synthesizeDoubaoNarration(input: DoubaoSynthesisInput) {
         narration: segment.narration,
         durationUs,
         segmentId: segment.segmentId,
+        signal: input.signal,
       });
     if (aligned.degraded) alignmentDegradedSegmentIds.push(segment.segmentId);
     wordTimings.push(...aligned.words.map((word) => ({

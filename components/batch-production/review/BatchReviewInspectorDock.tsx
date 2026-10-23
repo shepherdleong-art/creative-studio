@@ -1,12 +1,16 @@
 'use client';
 import BatchPackagingEditor from '../BatchPackagingEditor';
+import { humanizeBatchWarning } from '../batch-warning-text';
+import FormulaSelectionHistoryPanel from '../formula/FormulaSelectionHistoryPanel';
+import { FormulaPresentationLocks } from '../formula/FormulaPresentationControls';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { OutputPresetId, TextStyle } from '@/lib/media-core/cover-types';
 import { defaultTextStyle } from '@/lib/media-core/cover-domain';
 import { NARRATION_GAIN_DB_DEFAULT, NARRATION_GAIN_DB_MAX, NARRATION_GAIN_DB_MIN } from '@/lib/media-core/audio-gain';
-import type { BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
+import type { MusicDuckingConfig } from '@/lib/media-core/music-ducking';
+import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
 import { VideoPlaybackRateControl } from '@/components/mixcut/VideoPlaybackRateControl';
 import { ClipFramingControl } from '@/components/mixcut/ClipFramingControl';
 import BatchTextStyleEditor from '../BatchTextStyleEditor';
@@ -30,6 +34,7 @@ export interface BatchReviewInspectorDockProps {
   coverEditorOpen: boolean;
   onOpenCoverEditor: () => void;
   onCloseCoverEditor: () => void;
+  onFormulaChanged?: () => void;
 }
 
 export default function BatchReviewInspectorDock({
@@ -47,6 +52,7 @@ export default function BatchReviewInspectorDock({
   coverEditorOpen,
   onOpenCoverEditor,
   onCloseCoverEditor,
+  onFormulaChanged,
 }: BatchReviewInspectorDockProps) {
   const arrangement = film?.arrangement;
   const planId = film?.planId;
@@ -99,31 +105,37 @@ export default function BatchReviewInspectorDock({
   const narrationGainChanged = narrationGainDraft !== (arrangement?.narration?.gainDb ?? NARRATION_GAIN_DB_DEFAULT);
 
   // BGM draft
-  const [prevMusicPlanId, setPrevMusicPlanId] = useState<string | null>(null);
-  const [musicDraft, setMusicDraft] = useState({
+  const [musicSaving, setMusicSaving] = useState(false);
+  const [prevMusicKey, setPrevMusicKey] = useState<string | null>(null);
+  const musicKey = JSON.stringify([planId ?? null, arrangement?.outputVersionId, arrangement?.music]);
+  const [musicDraft, setMusicDraft] = useState<{ trackId: string | null; gainDb: number; fadeInSec: number; fadeOutSec: number; ducking?: MusicDuckingConfig }>({
     trackId: null as string | null,
     gainDb: -18,
     fadeInSec: 1,
     fadeOutSec: 1.5,
   });
-  if ((planId ?? null) !== prevMusicPlanId) {
-    setPrevMusicPlanId(planId ?? null);
+  if (musicKey !== prevMusicKey) {
+    setPrevMusicKey(musicKey);
     if (arrangement?.music) {
       setMusicDraft({
         trackId: arrangement.music.trackId ?? null,
         gainDb: arrangement.music.gainDb ?? -18,
         fadeInSec: arrangement.music.fadeInSec ?? 1,
         fadeOutSec: arrangement.music.fadeOutSec ?? 1.5,
+        ...(arrangement.music.ducking ? { ducking: { ...arrangement.music.ducking } } : {}),
       });
     }
   }
 
-  const musicDefaults = arrangement?.batchMusicDefaults ?? { trackId: null, gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 };
+  const musicDefaults: BatchOutputClipEditView['batchMusicDefaults'] = arrangement?.batchMusicDefaults ?? { gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 };
   const musicDraftChanged = JSON.stringify(musicDraft) !== JSON.stringify(arrangement?.music ?? musicDefaults);
-  const musicParamsMatchDefaults = JSON.stringify(musicDraft) === JSON.stringify(musicDefaults);
+  const musicParamsMatchDefaults = musicDraft.gainDb === musicDefaults.gainDb
+    && musicDraft.fadeInSec === musicDefaults.fadeInSec && musicDraft.fadeOutSec === musicDefaults.fadeOutSec
+    && JSON.stringify(musicDraft.ducking) === JSON.stringify(musicDefaults.ducking);
 
   // Audio audition
   const [auditioning, setAuditioning] = useState(false);
+  const [auditionError, setAuditionError] = useState('');
   const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const toggleAudition = (trackId: string) => {
@@ -132,8 +144,12 @@ export default function BatchReviewInspectorDock({
       setAuditioning(false);
     } else {
       if (!auditionAudioRef.current) auditionAudioRef.current = new Audio();
-      auditionAudioRef.current.src = `/api/final-edit-bgm/${encodeURIComponent(trackId)}/file`;
-      auditionAudioRef.current.play().catch(() => {});
+      const saved = arrangement?.formulaPreview && arrangement.music.trackId === trackId;
+      const url = saved ? arrangement.formulaPreview?.music?.fileUrl : `/api/final-edit-bgm/${encodeURIComponent(trackId)}/file`;
+      if (!url) { setAuditionError('音乐来源无法读取，请重新选择。'); return; }
+      setAuditionError('');
+      auditionAudioRef.current.src = url;
+      auditionAudioRef.current.play().catch(() => { setAuditionError('音乐试听失败，请检查文件或重新选曲。'); setAuditioning(false); });
       auditionAudioRef.current.onended = () => setAuditioning(false);
       setAuditioning(true);
     }
@@ -152,9 +168,12 @@ export default function BatchReviewInspectorDock({
         <div className={styles.dockHead}>
           <h3 className="text-xs font-semibold text-ink">属性检查器</h3>
         </div>
-        <div className="flex flex-1 items-center justify-center p-6 text-center text-xs text-ink-tertiary">
+        {film?.formula ? <div className={`${styles.inspectorScroll} p-3`}>
+          <FormulaSelectionHistoryPanel key={film.planId} projectId={projectId} batchId={batchId} planId={film.planId}
+            refreshKey={`${film.formula.stageId}:${film.formula.status}`} onChanged={() => onFormulaChanged?.()} />
+        </div> : <div className="flex flex-1 items-center justify-center p-6 text-center text-xs text-ink-tertiary">
           请在时间轴点击选择一条成片
-        </div>
+        </div>}
       </aside>
     );
   }
@@ -171,6 +190,8 @@ export default function BatchReviewInspectorDock({
       </div>
 
       <div className={styles.inspectorTabs}>
+        {film.formula && <button type="button" className={`${styles.inspectorTabBtn} ${inspectorTab === 'selection' ? styles.inspectorTabActive : ''}`}
+          onClick={() => onTabChange('selection')}>选片记录</button>}
         <button type="button" className={`${styles.inspectorTabBtn} ${inspectorTab === 'packaging' ? styles.inspectorTabActive : ''}`} onClick={() => onTabChange('packaging')}>包装</button>
         <button
           type="button"
@@ -203,6 +224,21 @@ export default function BatchReviewInspectorDock({
       </div>
 
       <div className={styles.inspectorScroll}>
+        {!!arrangement.reviewContext?.issues.length && <details className="mb-3 rounded-lg border border-line p-2 text-xs text-ink-secondary" data-testid="batch-review-issues">
+          <summary className="cursor-pointer font-medium text-ink">本次确认包含的提醒（{arrangement.reviewContext.issues.length}）</summary>
+          <ul className="mt-2 space-y-2">
+            {arrangement.reviewContext.issues.map((issue, index) => <li key={index}>
+              <p className={issue.kind === 'blocker' || issue.kind === 'audio' ? 'text-fail' : 'text-warn'}>{humanizeBatchWarning(issue.message)}</p>
+              {issue.details?.map((detail, detailIndex) => <p key={detailIndex} className="mt-1">{detail}</p>)}
+            </li>)}
+          </ul>
+        </details>}
+        {(inspectorTab === 'packaging' || inspectorTab === 'cover') && <FormulaPresentationLocks
+          key={`${film.planId}:${arrangement.outputVersionId}`} view={arrangement} onEdit={onMediaEdit} />}
+        {film.formula && inspectorTab === 'selection' && <FormulaSelectionHistoryPanel key={film.planId}
+          projectId={projectId} batchId={batchId} planId={film.planId}
+          refreshKey={`${film.formula.stageId}:${film.formula.status}:${arrangement.outputVersionId}:${arrangement.editRevision}`}
+          onChanged={() => onFormulaChanged?.()} />}
         {inspectorTab === 'packaging' && <BatchPackagingEditor key={`${film.planId}:${arrangement.outputVersionId}`} view={arrangement} onJumpToCover={() => onJumpToCover(film.planId)}
           onSave={(config, reextract) => onMediaEdit(film.planId, { type: 'set_packaging', config, reextract, expectedEditRevision: arrangement.editRevision, expectedOutputVersionId: arrangement.outputVersionId })} />}
         {/* TAB 1: 字幕 */}
@@ -452,7 +488,7 @@ export default function BatchReviewInspectorDock({
             </div>
 
             {/* 成片背景音乐 */}
-            <div className="rounded-xl bg-surface-subtle p-3 space-y-3 border border-hairline">
+            <fieldset disabled={musicSaving} aria-busy={musicSaving} className="min-w-0 rounded-xl bg-surface-subtle p-3 space-y-3 border border-hairline">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-ink">成片背景音乐</span>
                 <span className="text-[10px] text-ink-tertiary">每条成片可单独覆盖</span>
@@ -460,9 +496,13 @@ export default function BatchReviewInspectorDock({
 
               <div className="flex items-center gap-2">
                 <select
+                  aria-label="成片背景音乐"
                   className="h-8 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink focus:outline-none"
                   value={musicDraft.trackId ?? ''}
-                  onChange={(e) => setMusicDraft((c) => ({ ...c, trackId: e.target.value || null }))}
+                  onChange={(e) => {
+                    auditionAudioRef.current?.pause(); setAuditioning(false); setAuditionError('');
+                    setMusicDraft((c) => ({ ...c, trackId: e.target.value || null }));
+                  }}
                 >
                   <option value="">关闭 BGM</option>
                   {arrangement.musicLibrary?.map((t) => (
@@ -483,6 +523,7 @@ export default function BatchReviewInspectorDock({
                 )}
               </div>
 
+              {auditionError && <p role="alert" className="text-xs text-fail">{auditionError}</p>}
               {musicDraft.trackId && (
                 <div className="space-y-2">
                   <div className="space-y-1">
@@ -496,6 +537,7 @@ export default function BatchReviewInspectorDock({
                       max={0}
                       step={1}
                       value={musicDraft.gainDb}
+                      aria-label="背景音乐音量"
                       onChange={(e) => setMusicDraft((c) => ({ ...c, gainDb: Number(e.target.value) }))}
                       className="w-full accent-accent"
                     />
@@ -513,6 +555,7 @@ export default function BatchReviewInspectorDock({
                         max={30}
                         step={0.1}
                         value={musicDraft.fadeInSec}
+                        aria-label="背景音乐淡入时间"
                         onChange={(e) => setMusicDraft((c) => ({ ...c, fadeInSec: Number(e.target.value) }))}
                         className="w-full accent-accent"
                       />
@@ -528,11 +571,31 @@ export default function BatchReviewInspectorDock({
                         max={30}
                         step={0.1}
                         value={musicDraft.fadeOutSec}
+                        aria-label="背景音乐淡出时间"
                         onChange={(e) => setMusicDraft((c) => ({ ...c, fadeOutSec: Number(e.target.value) }))}
                         className="w-full accent-accent"
                       />
                     </div>
                   </div>
+                  {musicDraft.ducking && <div className="space-y-2 border-t border-hairline pt-2">
+                    <label className="flex items-center gap-2 text-xs text-ink">
+                      <input type="checkbox" className="accent-accent" checked={musicDraft.ducking.enabled}
+                        onChange={event => setMusicDraft(current => ({ ...current, ducking: { ...current.ducking!, enabled: event.target.checked } }))} />
+                      说话时压低音乐
+                    </label>
+                    <p className="text-[10px] text-ink-secondary">原声和配音都生效。应用后播放成片试听，右侧“试听”只播放曲目。</p>
+                    <div className="grid grid-cols-3 gap-2">
+                      {([
+                        ['reductionDb', '再降低 dB', 24, 1], ['attackMs', '压低 ms', 2000, 10], ['releaseMs', '恢复 ms', 5000, 10],
+                      ] as const).map(([key, label, max, step]) => <label key={key} className="space-y-1 text-[10px] text-ink-secondary">
+                        <span>{label}</span>
+                        <input type="number" aria-label={`音乐${label}`} min={0} max={max} step={step}
+                          disabled={!musicDraft.ducking!.enabled} value={musicDraft.ducking![key]}
+                          className="h-7 w-full rounded border border-hairline bg-surface px-1 text-xs text-ink disabled:opacity-50"
+                          onChange={event => setMusicDraft(current => ({ ...current, ducking: { ...current.ducking!, [key]: Number(event.target.value) } }))} />
+                      </label>)}
+                    </div>
+                  </div>}
                 </div>
               )}
 
@@ -549,20 +612,26 @@ export default function BatchReviewInspectorDock({
                   type="button"
                   className="btn-primary h-7 px-2 text-xs"
                   disabled={!musicDraftChanged}
-                  onClick={() => {
-                    void onMediaEdit(film.planId, {
-                      type: 'set_music',
-                      trackId: musicDraft.trackId,
-                      gainDb: musicDraft.gainDb,
-                      fadeInSec: musicDraft.fadeInSec,
-                      fadeOutSec: musicDraft.fadeOutSec,
-                    }).then(() => onRefreshFilm(film.planId));
+                  onClick={async () => {
+                    if (musicSaving) return;
+                    setMusicSaving(true);
+                    try {
+                      const saved = await onMediaEdit(film.planId, {
+                        type: 'set_music',
+                        trackId: musicDraft.trackId,
+                        gainDb: musicDraft.gainDb,
+                        fadeInSec: musicDraft.fadeInSec,
+                        fadeOutSec: musicDraft.fadeOutSec,
+                        ...(musicDraft.ducking ? { ducking: musicDraft.ducking } : {}),
+                      });
+                      if (saved) await onRefreshFilm(film.planId);
+                    } finally { setMusicSaving(false); }
                   }}
                 >
-                  应用 BGM 更改
+                  {musicSaving ? '保存中…' : '应用 BGM 更改'}
                 </button>
               </div>
-            </div>
+            </fieldset>
           </div>
         )}
       </div>

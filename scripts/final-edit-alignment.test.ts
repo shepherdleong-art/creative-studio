@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { createOpenAiAlignmentAdapter } from '../lib/final-edit/adapters/alignment.ts';
 
 const fallback = {
@@ -36,7 +37,7 @@ async function run() {
     if (transientRequestCount === 2) return new Response('upstream unavailable', { status: 503, headers: { 'Retry-After': '0' } });
     return successfulResponse();
   }, async () => {
-    const words = await createOpenAiAlignmentAdapter({}, fallback).align({ audioPath: new URL(import.meta.url).pathname, text: '你好' });
+    const words = await createOpenAiAlignmentAdapter({}, fallback).align({ audioPath: fileURLToPath(import.meta.url), text: '你好' });
     assert.equal(transientRequestCount, 3, '429 and 5xx responses should be retried');
     assert.deepEqual(words, [{ text: '你好', startUs: 0, endUs: 500_000 }]);
   });
@@ -47,7 +48,7 @@ async function run() {
     if (networkRequestCount === 1) throw new Error('offline');
     return successfulResponse();
   }, async () => {
-    await createOpenAiAlignmentAdapter({}, fallback).align({ audioPath: new URL(import.meta.url).pathname, text: '你好' });
+    await createOpenAiAlignmentAdapter({}, fallback).align({ audioPath: fileURLToPath(import.meta.url), text: '你好' });
     assert.equal(networkRequestCount, 2, 'network errors should be retried');
   });
 
@@ -57,7 +58,7 @@ async function run() {
     return new Response('still unavailable', { status: 503, headers: { 'Retry-After': '0' } });
   }, async () => {
     await assert.rejects(
-      createOpenAiAlignmentAdapter({}, fallback).align({ audioPath: new URL(import.meta.url).pathname, text: '你好' }),
+      createOpenAiAlignmentAdapter({}, fallback).align({ audioPath: fileURLToPath(import.meta.url), text: '你好' }),
       /强制对齐服务返回 503/,
     );
     assert.equal(exhaustedRequestCount, 5, 'retryable responses should stop after five attempts');
@@ -69,7 +70,7 @@ async function run() {
     return new Response('unauthorized', { status: 401 });
   }, async () => {
     await assert.rejects(
-      createOpenAiAlignmentAdapter({}, fallback).align({ audioPath: new URL(import.meta.url).pathname, text: '你好' }),
+      createOpenAiAlignmentAdapter({}, fallback).align({ audioPath: fileURLToPath(import.meta.url), text: '你好' }),
       /强制对齐服务返回 401/,
     );
     assert.equal(unauthorizedRequestCount, 1, 'configuration errors must not be retried');

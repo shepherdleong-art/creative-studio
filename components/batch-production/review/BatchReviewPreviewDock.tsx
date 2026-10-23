@@ -1,15 +1,17 @@
 'use client';
 
 import BatchSourceMonitor, { type SourceMonitorSession } from './BatchSourceMonitor';
+import FormulaManualMediaMonitor from './FormulaManualMediaMonitor';
 import BatchPackagingOverlay from '../BatchPackagingOverlay';
 import { useCallback, useMemo, useRef } from 'react';
 import type { OutputPresetId } from '@/lib/final-edit/types';
-import type { BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
+import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '@/lib/media-core/render-contract';
 import BatchTimelinePreview, { type BatchTimelinePreviewClip } from '../BatchTimelinePreview';
+import FormulaOutputPreview from '../formula/FormulaOutputPreview';
 import { LutVideoPlayer } from '../LutVideoPlayer';
 import { useProxyPlaybackPreference } from '../proxy-playback-preference';
-import type { UnifiedFilmState } from './types';
+import type { FormulaMediaSession, UnifiedFilmState } from './types';
 import styles from './batch-unified-review.module.css';
 
 const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS;
@@ -17,8 +19,8 @@ const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS;
 export interface BatchReviewPreviewDockProps {
   packagingEditable?: boolean;
   coverPreviewRequest?: number;
-  sourceSession?: SourceMonitorSession | null;
-  onSourceApply?: (planId: string, edit: Record<string, unknown>) => Promise<boolean>;
+  sourceSession?: SourceMonitorSession | FormulaMediaSession | null;
+  onSourceApply?: (planId: string, edit: Record<string, unknown>, undoBasis?: BatchOutputClipEditView) => Promise<boolean>;
   projectId: string;
   batchId: string;
   outputPreset: OutputPresetId;
@@ -113,6 +115,11 @@ export default function BatchReviewPreviewDock({
 
   const previewBgm = (() => {
     if (!arrangement?.music?.trackId) return null;
+    if (arrangement.formulaPreview) {
+      const music = arrangement.formulaPreview.music;
+      return music ? { fileUrl: music.fileUrl, durationUs: music.durationUs, gainDb: arrangement.music.gainDb,
+        fadeInSec: arrangement.music.fadeInSec, fadeOutSec: arrangement.music.fadeOutSec, ducking: arrangement.music.ducking } : null;
+    }
     const track = arrangement.musicLibrary?.find((t) => t.id === arrangement.music?.trackId);
     if (!track) return null;
     return {
@@ -149,7 +156,7 @@ export default function BatchReviewPreviewDock({
                   : 'bg-warn/20 text-warn'
               }`}
             >
-              {previewFilm.approved ? '已确认' : previewFilm.approvable ? '待检查' : '处理中'}
+              {previewFilm.approved ? '已确认' : previewFilm.approvable ? '待检查' : previewFilm.executionTask?.status === 'failed' ? '需处理' : '处理中'}
             </span>
           )}
         </div>
@@ -190,7 +197,9 @@ export default function BatchReviewPreviewDock({
       )}
       <div className={styles.previewStageArea}>
         {sourceSession && onSourceApply ? (
-          <BatchSourceMonitor key={`${sourceSession.view.outputVersionId}:${sourceSession.view.editRevision}:${sourceSession.clipId}`}
+          'edit' in sourceSession ? <FormulaManualMediaMonitor key={sourceSession.requestKey}
+            session={sourceSession} projectId={projectId} onApply={onSourceApply} onClose={onClearPreviewAsset} />
+          : <BatchSourceMonitor key={`${sourceSession.view.outputVersionId}:${sourceSession.view.editRevision}:${sourceSession.clipId}`}
             session={sourceSession} projectId={projectId} onApply={onSourceApply} onClose={onClearPreviewAsset} />
         ) : previewAsset ? (
           <div className="flex h-full w-full flex-col items-center justify-center p-2">
@@ -235,6 +244,10 @@ export default function BatchReviewPreviewDock({
             <p className="text-xs">全部成片已隐藏</p>
             <p className="text-[11px] opacity-75">点击时间轴任意成片左侧的眼睛图标恢复预览</p>
           </div>
+        ) : !arrangement && previewFilm.formula ? (
+          <FormulaOutputPreview key={`${projectId}:${batchId}:${previewFilm.planId}:${previewFilm.formula.stageId}`}
+            projectId={projectId} batchId={batchId} planId={previewFilm.planId} outputPreset={outputPreset}
+            playheadSec={playheadSec + INTRO_SEC} onSeek={handlePreviewSeek} />
         ) : isPastDuration ? (
           <div className="flex flex-col items-center justify-center gap-2 p-6 text-center text-ink-tertiary">
             <p className="text-xs font-medium">此处没有画面</p>
@@ -244,6 +257,10 @@ export default function BatchReviewPreviewDock({
           </div>
         ) : arrangement ? (
           <div className={styles.previewScreen}>
+            {arrangement.formulaPreview && <div className="absolute left-2 top-2 z-20 rounded bg-surface px-2 py-1 text-[11px] text-ink-secondary" role="status">
+              {arrangement.formulaPreview.message}
+              {arrangement.formulaPreview.musicError && <p role="alert" className="text-fail">{arrangement.formulaPreview.musicError}</p>}
+            </div>}
             <BatchTimelinePreview
               key={`${previewFilm.planId}:${packagingEditable}:${coverPreviewRequest}`}
               overlay={arrangement.packaging?.enabled ? <BatchPackagingOverlay key={`${previewFilm.planId}:${arrangement.editRevision}`} view={arrangement} editable={packagingEditable} onSave={onSourceApply}
@@ -253,7 +270,8 @@ export default function BatchReviewPreviewDock({
               narrationDurationUs={arrangement.narration?.durationUs}
               preserveGaps={arrangement.preserveGaps}
               audio={arrangement.audio}
-              assetsById={previewAssetsMap}
+              audioTimeline={arrangement.formulaPreview?.audioTimeline}
+              assetsById={arrangement.formulaPreview ? { ...previewAssetsMap, ...arrangement.formulaPreview.assetsById } : previewAssetsMap}
               coverUrl={coverUrl}
               coverDraft={{
                 asset: coverAsset,
@@ -274,8 +292,11 @@ export default function BatchReviewPreviewDock({
             />
           </div>
         ) : (
-          <div className="flex items-center justify-center p-6 text-xs text-ink-tertiary">
-            正在载入成片安排…
+          <div className="flex flex-col items-center justify-center gap-2 p-6 text-center text-xs text-ink-tertiary" role="status">
+            {previewFilm?.formula ? <>
+              <p>成片尚未就绪，可在右侧查看选片记录。</p>
+              <p>{previewFilm.formula.message}</p>
+            </> : '正在载入成片安排…'}
           </div>
         )}
       </div>

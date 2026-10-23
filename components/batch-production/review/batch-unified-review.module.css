@@ -583,6 +583,11 @@
   background: var(--color-surface);
 }
 
+.filmRowWithSource {
+  min-height: 264px;
+  height: 264px;
+}
+
 .filmRowEditing {
   background: color-mix(in srgb, var(--color-accent) 4%, transparent);
 }

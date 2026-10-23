@@ -10,6 +10,56 @@ const unhandled: unknown[] = [];
 const onUnhandled = (error: unknown) => unhandled.push(error);
 process.on('unhandledRejection', onUnhandled);
 try {
+  {
+    let calls = 0;
+    const spawn = mock.method(childProcess, 'spawn', () => {
+      calls++;
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true });
+      queueMicrotask(() => child.emit('close', 1));
+      return child;
+    });
+    syncBuiltinESMExports();
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      const result = await probeVideoMedia('fixture.mp4', { signal: controller.signal });
+      assert.equal(calls, 0, '已取消的元数据核验不能启动子进程');
+      assert.equal(result.durationUs, 0);
+      assert.match(result.errorMessage || '', /aborted/);
+    } finally { spawn.mock.restore(); syncBuiltinESMExports(); }
+  }
+  for (const abortAt of [1, 2]) {
+    const controller = new AbortController();
+    let calls = 0;
+    let targetClosed = false;
+    let targetKilled = false;
+    const children: EventEmitter[] = [];
+    const spawn = mock.method(childProcess, 'spawn', () => {
+      const call = ++calls;
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: () => {
+        if (call === abortAt) targetKilled = true;
+        setTimeout(() => { if (call === abortAt) targetClosed = true; child.emit('close', 1); }, 10);
+        return true;
+      } });
+      children.push(child);
+      queueMicrotask(() => call === abortAt ? controller.abort() : child.emit('close', 1));
+      return child;
+    });
+    syncBuiltinESMExports();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([probeVideoMedia('fixture.mp4', { signal: controller.signal }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('取消后仍等待探测')), 300); })]);
+      assert(targetKilled && targetClosed, '取消必须终止当前探测子进程并等到退出');
+      assert.equal(calls, abortAt, '取消后不再启动下一次探测');
+      assert.equal(result.durationUs, 0);
+      assert.match(result.errorMessage || '', /aborted/);
+    } finally {
+      clearTimeout(timer);
+      for (const child of children) child.emit('close', 1);
+      spawn.mock.restore(); syncBuiltinESMExports();
+    }
+  }
   for (const failure of ['throw', 'error', 'close'] as const) {
     let calls = 0;
     const spawn = mock.method(childProcess, 'spawn', () => {

@@ -8,10 +8,10 @@ import type { BatchProductionStatus } from './versions.ts';
  * scheduler.ts / runner.ts / batch-flow.ts 一律从这里导入,不得重新定义
  * 漂移的裸 string 状态。
  */
-export type BatchTaskWorkType = 'asset_prepare' | 'render' | 'proxy_generate' | 'narration' | 'semantic_score';
+export type BatchTaskWorkType = 'asset_prepare' | 'render' | 'proxy_generate' | 'narration' | 'semantic_score' | 'formula_stage';
 // legacy_proxy_cache 只可能由 v15 把无法回溯谱系的 v14 异常任务隔离成 cancelled
 // 历史记录；createBatchTask 的判别联合不接受它，运行时不能创建或调度这种目标。
-export type BatchTaskTargetKind = 'asset' | 'output_version' | 'output_version_cover' | 'proxy_request' | 'script_snapshot' | 'legacy_proxy_cache';
+export type BatchTaskTargetKind = 'asset' | 'output_version' | 'output_version_cover' | 'proxy_request' | 'script_snapshot' | 'legacy_proxy_cache' | 'formula_stage';
 export type BatchTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type BatchTaskAttemptStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 export type BatchTaskExpectedState = 'running' | 'paused' | 'stopped';
@@ -97,6 +97,13 @@ export function createBatchTask(
   db: Database.Database,
   projectId: string,
   input: ({
+    batchId: string;
+    workType: 'formula_stage';
+    targetKind: 'formula_stage';
+    targetId: string;
+    requestKey?: string;
+    now?: () => Date;
+  } | {
     batchId: string;
     workType: 'render';
     targetKind: 'output_version';
@@ -217,7 +224,15 @@ export function createBatchTask(
         db.prepare(`UPDATE batch_tasks SET requestKey = NULL WHERE id = ?`).run(existing.id);
       }
     }
-    if (input.workType === 'render') {
+    if (input.workType === 'formula_stage') {
+      if (input.targetKind !== 'formula_stage') throw new Error('公式阶段任务的目标类型不正确');
+      const stage = db.prepare(`SELECT r.projectId,r.batchId,r.batchVersionId,b.currentVersionId FROM batch_formula_execution_stages s
+        JOIN batch_formula_generation_requests r ON r.id=s.requestId JOIN batch_productions b ON b.id=r.batchId
+        WHERE s.id=?`).get(input.targetId) as { projectId: string; batchId: string; batchVersionId: string; currentVersionId: string } | undefined;
+      if (!stage || stage.projectId !== projectId || stage.batchId !== batchId || stage.batchVersionId !== stage.currentVersionId) {
+        throw new BatchDomainError('conflict', '公式阶段任务不属于当前批次输入版本');
+      }
+    } else if (input.workType === 'render') {
       if (input.targetKind !== 'output_version' && input.targetKind !== 'output_version_cover') {
         throw new Error('render 任务的目标类型必须是 output_version 或 output_version_cover');
       }

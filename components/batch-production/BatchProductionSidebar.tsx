@@ -3,12 +3,16 @@
 import { useMemo, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { BatchProductionStatus } from '@/lib/batch-production/versions';
+import { BATCH_PLANNING_MODE_LABELS, type BatchPlanningMode } from '@/lib/batch-production/planning-mode';
 import shellStyles from '@/components/mixcut/mixcut-shell.module.css';
 
 export interface BatchSidebarItem {
   id: string;
   name: string;
+  planningMode?: BatchPlanningMode;
   status: BatchProductionStatus;
+  progressLabel?: string;
+  inputRevisionOpen?: boolean;
   currentVersionId: string | null;
   archivedAt: string | null;
 }
@@ -83,7 +87,7 @@ export default function BatchProductionSidebar({
             <p className={shellStyles.hintLine}>
               {!showArchived && !query.trim() && batches.some((batch) => batch.archivedAt)
                 ? '批次已归档，勾选下方「显示已归档」即可查看和恢复。'
-                : `没有匹配的批次${batches.length === 0 ? '，点击顶栏「新建批次」开始' : ''}。`}
+                : `没有匹配的批次${batches.length === 0 ? '，在上方「新建批次」开始' : ''}。`}
             </p>
           )}
           {visibleBatches.map((batch) => (
@@ -99,8 +103,9 @@ export default function BatchProductionSidebar({
                   {batch.archivedAt && <span>已归档</span>}
                 </span>
                 <span className={shellStyles.sessionM}>
-                  {STATUS_LABELS[batch.status] ?? batch.status}
-                  {batch.currentVersionId ? ' · 已锁定' : ''}
+                  {BATCH_PLANNING_MODE_LABELS[batch.planningMode ?? 'semantic']} ·{' '}
+                  {batch.progressLabel ?? STATUS_LABELS[batch.status] ?? batch.status}
+                  {batch.currentVersionId && !batch.inputRevisionOpen ? ' · 已锁定' : ''}
                 </span>
               </button>
               <button

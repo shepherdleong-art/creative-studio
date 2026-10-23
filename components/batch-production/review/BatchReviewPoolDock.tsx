@@ -19,7 +19,6 @@ export interface BatchReviewPoolDockProps {
 
 export default function BatchReviewPoolDock({
   projectId,
-  batchId,
   selectedPlanId,
   poolAssets,
   focusedAssetId,
@@ -56,13 +55,11 @@ export default function BatchReviewPoolDock({
     setUploadError(null);
     try {
       const formData = new FormData();
-      formData.append('projectId', projectId);
-      formData.append('batchId', batchId);
       formData.append('role', tab);
       for (let i = 0; i < files.length; i++) {
         formData.append('files', files[i]);
       }
-      const response = await fetch('/api/batch-production/assets/import', {
+      const response = await fetch(`/api/batch-production/assets/import?projectId=${encodeURIComponent(projectId)}`, {
         method: 'POST',
         body: formData,
       });
@@ -70,7 +67,8 @@ export default function BatchReviewPoolDock({
       if (!response.ok) {
         throw new Error(data.message || `上传失败 (${response.status})`);
       }
-      onAssetImported?.();
+      if (data.assetIds?.length) await onAssetImported?.();
+      if (data.errors?.length) setUploadError(data.errors.map((item: { filename: string; message: string }) => `${item.filename}：${item.message}`).join('；'));
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : '上传失败');
     } finally {
@@ -107,7 +105,7 @@ export default function BatchReviewPoolDock({
           <input
             ref={fileInputRef}
             type="file"
-            accept="video/*,image/*"
+            accept=".mp4,.mov,.avi,.webm,video/*"
             multiple
             className="hidden"
             onChange={handleUpload}

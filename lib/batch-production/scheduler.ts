@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { BatchDomainError } from './errors.ts';
+import { hasBatchPlanningModeColumn } from './planning-mode.ts';
+import { formulaExecutionAvailable } from './formula/execution-gate.ts';
 import {
   type BatchControlState,
   type BatchTaskCompletionStatus,
@@ -55,6 +57,29 @@ export function claimNextTask(
   const { workerId, leaseDurationMs = 5 * 60_000 } = options;
   const startedAt = nowIso(options.now);
   return db.transaction(() => {
+    const formulaReady = formulaExecutionAvailable(db);
+    // 同一原片/识别输入只允许一个进行中的检查，完成后其他份复用结果；不同来源仍可并行。
+    // 复用前仍核验文件，失败不缓存；运行任务的中断和失效租约沿用原恢复流程。
+    const formulaFilter = formulaReady ? `AND (t.workType<>'formula_stage' OR EXISTS (
+      SELECT 1 FROM batch_formula_execution_stages fs JOIN batch_formula_generation_requests fr ON fr.id=fs.requestId
+      WHERE fs.id=t.targetId AND t.targetKind='formula_stage' AND fr.batchId=t.batchId AND fr.projectId=t.projectId
+        AND fr.batchVersionId=p.currentVersionId))
+      AND NOT EXISTS (
+        SELECT 1 FROM batch_formula_speech_stages source
+        JOIN batch_formula_speech_stages active ON active.assetId=source.assetId
+          AND active.contentFingerprint=source.contentFingerprint AND active.inputJson=source.inputJson
+        JOIN batch_tasks running ON running.targetId=active.id AND running.workType='formula_stage'
+          AND running.targetKind='formula_stage' AND running.projectId=t.projectId AND running.status='running'
+        WHERE t.workType='formula_stage' AND source.id=t.targetId AND running.id<>t.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM batch_formula_narration_stages source
+        JOIN batch_formula_narration_stages active ON active.id<>source.id
+        JOIN batch_tasks running ON running.targetId=active.id AND running.workType='formula_stage'
+          AND running.targetKind='formula_stage' AND running.projectId=t.projectId AND running.status='running'
+        WHERE t.workType='formula_stage' AND source.id=t.targetId AND EXISTS (
+          SELECT 1 FROM json_each(source.inputJson,'$.reuseKeys') wanted
+          JOIN json_each(active.inputJson,'$.reuseKeys') producing ON producing.value=wanted.value))`
+      : `AND t.workType<>'formula_stage' ${hasBatchPlanningModeColumn(db, 'batch_productions') ? "AND COALESCE(p.planningMode,'semantic')<>'formula'" : ''}`;
     // 素材级 proxy_generate 任务没有所属批次(batchId 为 NULL),不受批次
     // 控制态约束,只要期望运行即可领取;其余任务仍必须挂到运行中的批次。
     const candidate = db.prepare(`
@@ -62,6 +87,7 @@ export function claimNextTask(
       FROM batch_tasks t
       LEFT JOIN batch_productions p ON p.id = t.batchId
       WHERE t.status = 'queued'
+        ${formulaFilter}
         AND t.expectedState = 'running'
         AND (
           (p.controlState = 'running' AND p.deletedAt IS NULL)

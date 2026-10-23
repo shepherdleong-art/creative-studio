@@ -27,6 +27,7 @@ export type SchemaUpgradeRecoveryCandidate = {
 
 const RECOVERY_SCOPES: ReadonlyArray<SchemaUpgradeScope> = [
   'batch-production',
+  'batch-formula',
   'video-provider-gateway',
   'script-studio',
   'creative-canvas',

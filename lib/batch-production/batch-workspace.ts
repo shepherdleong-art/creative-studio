@@ -1,10 +1,15 @@
 import type Database from 'better-sqlite3';
+import { formulaSelectionSummaries, type FormulaSelectionSummary } from './formula/selection-summary.ts';
+import { batchOutputReviewContext, batchReviewMatches } from './review-context.ts';
 import { batchSourceReview, type BatchSourceConflictGroup } from './source-conflicts.ts';
 import { batchArtifactPathsArePaired } from './artifact-pair.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
 import { getCurrentExportDirName } from '../project-export-identity.ts';
 import { isFormalArtifactOutdated } from './formal-artifact-freshness.ts';
 import { resolveCoverContractHash, resolveFullRenderContractHash } from './cover-contract.ts';
+import { formulaOutputExecutionReady, formulaOutputCoverReady, readFormulaExecutionTask } from './formula/execution-store.ts';
+import { formulaExecutionAvailable } from './formula/execution-gate.ts';
+import { readFormulaGenerationProgress, type FormulaGenerationProgress } from './formula/progress.ts';
 import { BatchDomainError } from './errors.ts';
 import type { BatchProductionStatus } from './versions.ts';
 import type { BatchTaskExpectedState, BatchTaskStatus } from './tasks.ts';
@@ -78,6 +83,8 @@ export interface BatchCoverRangeView {
 }
 
 export interface BatchOutputCardView {
+  executionTask?: BatchWorkspaceTaskView | null;
+  formula?: FormulaSelectionSummary;
   planId: string;
   seq: number;
   scriptSnapshotId: string;
@@ -126,6 +133,7 @@ export interface BatchOutputCardView {
 }
 
 export interface BatchWorkspaceView {
+  formulaGeneration?: FormulaGenerationProgress | null;
   batch: {
     id: string;
     name: string;
@@ -215,11 +223,12 @@ function loadPoolAssetDurations(db: Database.Database, batchVersionId: string): 
 }
 
 /** 审核态:当前版本 arrangement.review.decision === 'approved' */
-function arrangementReviewApproved(value: unknown): boolean {
+function arrangementReviewApproved(db: Database.Database, outputVersionId: string | null, value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const review = (value as Record<string, unknown>).review;
   if (!review || typeof review !== 'object' || Array.isArray(review)) return false;
-  return (review as Record<string, unknown>).decision === 'approved';
+  return !!outputVersionId && (review as Record<string, unknown>).decision === 'approved'
+    && batchReviewMatches(review, batchOutputReviewContext(db, outputVersionId, value), !!(value as Record<string, unknown>).formula);
 }
 
 /**
@@ -273,7 +282,8 @@ function diagnosticMessages(value: unknown, key: 'warnings' | 'blockers'): strin
   const diagnostics = (value as Record<string, unknown>)[key];
   if (!Array.isArray(diagnostics)) return [];
   return diagnostics.flatMap((entry): string[] => {
-    if (typeof entry === 'string' && entry.trim()) return [entry.trim()];
+    if (typeof entry === 'string' && entry.trim()) return [entry === 'formula_execution_pending'
+      ? '正在检查实际画面、声音、字幕和包装' : entry.trim()];
     if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
       const record = entry as Record<string, unknown>;
       const message = typeof record.message === 'string'
@@ -435,6 +445,7 @@ function readLatestFullRenderAttempt(
 }
 
 function deriveCardStatus(input: {
+  executionTask: BatchWorkspaceTaskView | null;
   reviewable: boolean;
   coverStatus: BatchCoverTaskStatus;
   fullRenderTask: BatchWorkspaceTaskView | null;
@@ -451,6 +462,12 @@ function deriveCardStatus(input: {
   }
   if (input.batchControl === 'paused') {
     return { status: 'paused', nextAction: '继续批次后恢复处理' };
+  }
+  if (!input.productionReady && input.executionTask) {
+    if (input.executionTask.status === 'failed') return { status: 'retryable_failed', nextAction: '制作检查失败，处理原因后重试检查' };
+    if (input.executionTask.status === 'queued' || input.executionTask.status === 'running') {
+      return { status: 'processing', nextAction: '正在检查实际画面、声音、字幕和包装' };
+    }
   }
   if (!input.reviewable) {
     return input.blockers.length > 0
@@ -518,6 +535,7 @@ export function getBatchWorkspace(
     };
   }
 
+  const formulaSummaries = formulaSelectionSummaries(db, batch.currentVersionId);
   const plans = db.prepare(`
     SELECT p.id, p.seq, p.scriptSnapshotId, p.currentVersionId, p.currentArtifactId,
            s.title AS scriptTitle,
@@ -656,9 +674,12 @@ export function getBatchWorkspace(
 
     const latestFullResult = asRecord(parseJson(latestFullAttempt?.resultJson));
     // 老批次兼容:arrangement 尚无真实口播时,成功渲染候选的生产就绪位仍可信。
-    const productionReady = arrangementProductionReady(arrangement)
-      || (latestFullResult?.productionReady === true);
-    const approved = arrangementReviewApproved(arrangement);
+    const formulaArrangement = asRecord(arrangement);
+    const executionTask = formulaArrangement?.formula && plan.currentVersionId ? readFormulaExecutionTask(db, plan.currentVersionId) : null;
+    const productionReady = formulaArrangement?.formula && plan.currentVersionId
+      ? formulaOutputExecutionReady(db, plan.currentVersionId, formulaArrangement)
+      : arrangementProductionReady(arrangement) || (latestFullResult?.productionReady === true);
+    const approved = arrangementReviewApproved(db, plan.currentVersionId, arrangement);
     const reviewable = Boolean(
       plan.currentVersionId
       && batch.controlState !== 'stopped',
@@ -667,6 +688,7 @@ export function getBatchWorkspace(
       plan.currentVersionId
       && productionReady
       && coverStatus === 'succeeded'
+      && (!formulaArrangement?.formula || (formulaExecutionAvailable(db) && formulaOutputCoverReady(db, plan.currentVersionId!)))
       && batch.controlState !== 'stopped',
     );
     const exportEligible = Boolean(
@@ -695,10 +717,20 @@ export function getBatchWorkspace(
           ? 'rendering'
           : 'not_exported';
     // 配音失败必须显式暴露为 blocker,否则用户只看到渲染一直没动静。
-    const effectiveBlockers = narrationTask?.status === 'failed'
+    const effectiveBlockers = !productionReady && executionTask?.status === 'failed'
+      ? [...blockers.filter(message => message !== '正在检查实际画面、声音、字幕和包装'), `制作检查失败：${executionTask.errorMessage || '请检查素材和制作设置后重试'}`]
+      : narrationTask?.status === 'failed'
       ? [...blockers, `配音失败：${narrationTask.errorMessage || '未知原因'}，请点「重试配音」`]
       : blockers;
+    const formula = formulaSummaries.get(plan.id);
+    if (formula && formula.status !== 'unavailable' && plan.currentVersionId && executionTask) {
+      formula.message = productionReady
+        ? approvable ? '制作检查通过，可以预览并确认成片' : '制作检查通过，正在准备审片封面'
+        : executionTask.status === 'failed' ? '制作检查未通过，处理下方原因后重试检查'
+          : '正在检查画面、声音、字幕和包装';
+    }
     const state = deriveCardStatus({
+      executionTask,
       reviewable,
       coverStatus,
       fullRenderTask,
@@ -718,8 +750,11 @@ export function getBatchWorkspace(
       scriptTitle: plan.scriptTitle,
       versionId: plan.currentVersionId,
       versionNumber: plan.versionNumber,
-      status: state.status,
-      nextAction: state.nextAction,
+      status: formula && !plan.currentVersionId ? (batch.controlState === 'paused' ? 'paused' : batch.controlState === 'stopped' ? 'stopped'
+        : formula.status === 'failed' ? 'retryable_failed' : formula.status === 'needs_attention' || formula.status === 'unavailable' ? 'needs_attention'
+          : formula.status === 'cancelled' ? 'stopped' : 'processing') : state.status,
+      nextAction: formula && !plan.currentVersionId ? formula.message : state.nextAction,
+      ...(formula ? { formula } : {}),
       reviewable,
       approvable,
       approved,
@@ -741,6 +776,7 @@ export function getBatchWorkspace(
         : null,
       fullRenderTask,
       coverTask: coverFacts.task,
+      executionTask,
       narrationTask,
     };
   });
@@ -760,5 +796,6 @@ export function getBatchWorkspace(
   else if (versionCount < plans.length) phase = 'allocate';
   else phase = 'review';
 
-  return { batch, phase, exportDirName: getCurrentExportDirName(db, projectId) ?? resolveProjectExportDirName(db, projectId), counts, cards, exclusions, allocationReport };
+  return { batch, phase, exportDirName: getCurrentExportDirName(db, projectId) ?? resolveProjectExportDirName(db, projectId), counts, cards, exclusions, allocationReport,
+    formulaGeneration: readFormulaGenerationProgress(db, projectId, batchId, cards) };
 }

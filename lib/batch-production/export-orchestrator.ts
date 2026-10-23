@@ -1,7 +1,11 @@
 import type Database from 'better-sqlite3';
+import { batchOutputReviewContext, batchReviewMatches } from './review-context.ts';
 import { batchArtifactPathsArePaired } from './artifact-pair.ts';
 import { isFormalArtifactOutdated } from './formal-artifact-freshness.ts';
 import { resolveFullRenderContractHash } from './cover-contract.ts';
+import { getBatchPlanningMode } from './planning-mode.ts';
+import { formulaExecutionAvailable } from './formula/execution-gate.ts';
+import { formulaOutputExecutionReady, formulaOutputCoverReady } from './formula/execution-store.ts';
 import { BatchDomainError } from './errors.ts';
 import { checkFormalExportPreflight } from './export-preflight.ts';
 import { publishSelectedBatchOutputs } from './phase-e.ts';
@@ -349,8 +353,14 @@ async function orchestrateOne(
   }
   const outputVersionId = lineage.currentVersionId;
   const arrangement = asRecord(parseJson(lineage.arrangementJson));
+  if (getBatchPlanningMode(db, projectId, batchId) === 'formula'
+    && (!formulaExecutionAvailable(db) || !arrangement || !formulaOutputExecutionReady(db, outputVersionId, arrangement)
+      || !formulaOutputCoverReady(db, outputVersionId))) {
+    return { planId, status: 'skipped', reason: '实拍制作检查或封面尚未完成，或公式功能暂不可用' };
+  }
   const review = asRecord(arrangement?.review);
-  if (review?.decision !== 'approved') {
+  if (review?.decision !== 'approved'
+    || !batchReviewMatches(review, batchOutputReviewContext(db, outputVersionId, arrangement), !!arrangement?.formula)) {
     return { planId, status: 'skipped', reason: '该成片尚未审核通过,请先在检查页标记「通过」后再导出' };
   }
   if (!arrangementProductionReady(arrangement)) {

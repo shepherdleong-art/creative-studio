@@ -10,9 +10,12 @@ import type { FilenameAnalysisProgress, FilenameAnalysisResult } from '@/lib/bat
 import { readFilenameAnalysisStream } from '@/lib/batch-production/filename-analysis-stream';
 import type { BatchSnapshotDetail, BatchSnapshotResult } from '@/lib/batch-production/batch-flow';
 import type { BatchProductionStatus } from '@/lib/batch-production/versions';
+import { BATCH_PLANNING_MODE_LABELS, type BatchPlanningMode } from '@/lib/batch-production/planning-mode';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 import type { BatchTasksView } from '@/lib/batch-production/tasks';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
+import type { BatchReviewTarget } from '@/lib/batch-production/review-context';
+import type { BatchReviewWriteResult } from '@/lib/batch-production/review';
 import { batchAllocationProgress, batchExportElapsedSec, batchSemanticProgress, splitBatchRenderTasks } from '@/lib/batch-production/progress-summary';
 import type { DesktopBridge } from '@/desktop/bridge-types';
 import {
@@ -38,11 +41,14 @@ import BatchStepExport from './BatchStepExport';
 import { LutVideoPlayer } from './LutVideoPlayer';
 import { ProxyPlaybackToggle } from './ProxyPlaybackToggle';
 import { useProxyPlaybackPreference } from './proxy-playback-preference';
+import FormulaImportPanel, { type FormulaInputSummary } from './formula/FormulaImportPanel';
+import FormulaGenerationProgressPanel from './formula/FormulaGenerationProgressPanel';
 
 interface ReadinessResponse {
   available: boolean;
   message: string;
   code?: string;
+  formula?: { available: boolean; message: string };
 }
 
 interface BatchListResponse {
@@ -54,6 +60,7 @@ interface BatchCreateResponse {
   id: string;
   projectId: string;
   name: string;
+  planningMode: BatchPlanningMode;
 }
 
 interface BatchSnapshotResponse extends BatchSnapshotResult {
@@ -151,11 +158,23 @@ function visionProviderStorageKey(projectId: string): string {
   return `batch-vision-provider:${projectId}`;
 }
 
+function rememberBatchSelection(batchId: string): void {
+  const url = new URL(window.location.href);
+  if (batchId) url.searchParams.set('batch', batchId);
+  else url.searchParams.delete('batch');
+  window.history.replaceState(window.history.state, '', url);
+}
+
 export default function BatchPreparationPanel({ projectId }: BatchPreparationPanelProps) {
   const [preparation, setPreparation] = useState<BatchPreparationResult | null>(null);
   const [batches, setBatches] = useState<BatchSidebarItem[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState('');
   const [newBatchName, setNewBatchName] = useState('');
+  const [newPlanningMode, setNewPlanningMode] = useState<BatchPlanningMode>('semantic');
+  const [formulaCapability, setFormulaCapability] = useState({ available: false, message: '正在检查可用性…' });
+  const [formulaSummary, setFormulaSummary] = useState<FormulaInputSummary | null>(null);
+  const [createError, setCreateError] = useState('');
+  const createPendingRef = useRef(false);
   const [selectedScripts, setSelectedScripts] = useState<Record<string, number>>({});
   const [selectedAssets, setSelectedAssets] = useState<Record<string, AssetSelectionState>>({});
   const [outputPlans, setOutputPlans] = useState<Array<{ id: string; seq: number }>>([]);
@@ -270,6 +289,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     setError('');
     try {
       const readiness = await readJson<ReadinessResponse>(await fetch('/api/batch-production/readiness', { cache: 'no-store' }));
+      setFormulaCapability(readiness.formula ?? { available: false, message: '实拍公式混剪尚未启用' });
       if (!readiness.available) throw new Error(readiness.message || '批量生产暂不可用');
       const [result, batchResult, providerResult, ttsResult] = await Promise.all([
         readJson<BatchPreparationResult>(await fetch(
@@ -313,10 +333,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         setInputConfirmed(false);
         setAssetPrepareTasks([]);
       }
+      const requestedBatchId = new URLSearchParams(window.location.search).get('batch') ?? '';
       setSelectedBatchId((current) => (
         batchResult.batches.some(({ id }) => id === current)
           ? current
-          : batchResult.batches.find((batch) => !batch.archivedAt)?.id ?? ''
+          : batchResult.batches.find(batch => batch.id === requestedBatchId)?.id
+            ?? batchResult.batches.find((batch) => !batch.archivedAt)?.id ?? ''
       ));
     } catch (loadError) {
       setPreparation(null);
@@ -669,7 +691,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     return () => window.clearInterval(timer);
   }, [hasActiveBatchTask, batchStopped]);
 
+  const currentBatch = batches.find(({ id }) => id === selectedBatchId);
   const progressView = useMemo<BatchProgressView | null>(() => {
+    if (currentBatch?.planningMode === 'formula') return null;
     // 语义匹配/口播排队期间，服务端批次状态还不是 running，但生产任务已经
     // 排队——此时也必须显示进度卡，否则开跑后只剩顶部横幅、下方一片空白。
     const renderTaskGroups = splitBatchRenderTasks(batchTasks);
@@ -739,7 +763,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         ),
       ],
     };
-  }, [batchStatus, batchTasks, workspace, hasActiveBatchTask, nowMs]);
+  }, [batchStatus, batchTasks, workspace, hasActiveBatchTask, nowMs, currentBatch?.planningMode]);
 
   // 开跑后滚到进度卡。progressView 只在 setBatchStatus('running') 之后才非空,
   // 所以不能在 startBatch 里同步滚(那时元素还不存在);等它出现再用 rAF 滚。
@@ -752,7 +776,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     return () => window.cancelAnimationFrame(frame);
   }, [progressView]);
 
-  const currentBatch = batches.find(({ id }) => id === selectedBatchId);
   const currentVersionId = currentBatch?.currentVersionId ?? null;
 
   // Technical and content tasks both replace the asset's current analysis
@@ -1033,18 +1056,25 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }
 
   async function createBatch(): Promise<void> {
+    if (createPendingRef.current || busy !== null) return;
     const name = newBatchName.trim();
     if (!name) {
-      setFeedback({ kind: 'error', message: '请先输入新批次名称。' });
+      setCreateError('请先输入新批次名称。');
       return;
     }
+    if (newPlanningMode === 'formula' && !formulaCapability.available) {
+      setCreateError(formulaCapability.message);
+      return;
+    }
+    createPendingRef.current = true;
+    setCreateError('');
     setBusy('create');
     setFeedback(null);
     try {
       const created = await readJson<BatchCreateResponse>(await fetch('/api/batch-production/batches', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, name }),
+        body: JSON.stringify({ projectId, name, planningMode: newPlanningMode }),
       }));
       const batch: BatchSidebarItem = {
         ...created,
@@ -1054,10 +1084,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       };
       setBatches((current) => [...current, batch]);
       setSelectedBatchId(created.id);
+      rememberBatchSelection(created.id);
       setProxyTasks([]);
       setAssetPrepareTasks([]);
       analysisReloadedTaskIdsRef.current.clear();
       setNewBatchName('');
+      setNewPlanningMode('semantic');
       setSelectedScripts({});
       setSelectedAssets({});
       setOutputPlans([]);
@@ -1068,8 +1100,17 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       setActiveStep(0);
       setFeedback({ kind: 'success', message: `批次已创建：${created.name}` });
     } catch (createError) {
-      setFeedback({ kind: 'error', message: createError instanceof Error ? createError.message : '批次创建失败' });
+      setCreateError(createError instanceof Error ? createError.message : '批次创建失败');
+      if (newPlanningMode === 'formula') {
+        try {
+          const readiness = await readJson<ReadinessResponse>(await fetch('/api/batch-production/readiness', {
+            cache: 'no-store', signal: AbortSignal.timeout(5_000),
+          }));
+          setFormulaCapability(readiness.formula ?? { available: false, message: '实拍公式混剪尚未启用' });
+        } catch { /* 保留创建错误和用户输入；可用性检查失败不能改成普通方式。 */ }
+      }
     } finally {
+      createPendingRef.current = false;
       setBusy(null);
     }
   }
@@ -1600,49 +1641,65 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     }
   }
 
-  async function reviewPlans(planIds: string[], decision: 'approved' | 'rework' | 'cancelled'): Promise<boolean> {
+  async function reviewPlans(items: BatchReviewTarget[], decision: 'approved' | 'rework' | 'cancelled'): Promise<boolean> {
     if (!selectedBatchId) return false;
-    if (planIds.length === 0) {
+    if (items.length === 0) {
       setFeedback({ kind: 'error', message: '请先选择要操作的成片。' });
       return false;
     }
     setPhaseEBusy(`review:${decision}`);
     setFeedback(null);
     try {
-      const reviewResult = await readJson<{ pendingRender?: boolean }>(await fetch(
+      const reviewResult = await readJson<BatchReviewWriteResult>(await fetch(
         `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/review?projectId=${encodeURIComponent(projectId)}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ planIds, decision }),
+          body: JSON.stringify({ items, decision }),
         },
       ));
-      if (decision === 'rework') {
-        // 返工联动:逐条换一批画面;新版本没有 review 字段,天然回到未审核态。
-        for (const planId of planIds) {
-          await readJson(await fetch(
+      const failed = reviewResult.results.filter(item => item.status !== 'saved');
+      const failures = failed.map(item => {
+        const seq = workspace?.cards.find(card => card.planId === item.planId)?.seq;
+        return `成片 ${seq ?? '已移除'}：${item.message || '未保存，请重新检查'}`;
+      });
+      const formula = currentBatch?.planningMode === 'formula';
+      let reallocated = 0;
+      if (decision === 'rework' && !formula) {
+        // Only successful ordinary reviews use semantic reallocation. Formula edits keep their chosen order.
+        for (const planId of reviewResult.planIds) {
+          try {
+            await readJson(await fetch(
             `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(planId)}/reallocate?projectId=${encodeURIComponent(projectId)}`,
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ reason: '用户审核返工,换一批画面' }),
             },
-          ));
+            ));
+            reallocated += 1;
+          } catch (error) {
+            const seq = workspace?.cards.find(card => card.planId === planId)?.seq;
+            failures.push(`成片 ${seq ?? ''}已标记返工，但换片失败：${error instanceof Error ? error.message : '请重试'}`);
+          }
         }
-        setSelectedPlanIds([]);
       }
       await loadWorkspace(selectedBatchId);
+      setSelectedPlanIds(current => [...new Set([
+        ...current.filter(id => decision !== 'rework' || !reviewResult.planIds.includes(id)),
+        ...failed.map(item => item.planId),
+      ])]);
+      const count = reviewResult.planIds.length;
+      const savedMessage = decision === 'approved' ? `已确认 ${count} 条成片。`
+        : decision === 'rework' ? formula
+          ? `已标记返工 ${count} 条，请在当前成片中调整，或明确重新选片。`
+          : `已标记返工 ${count} 条，其中 ${reallocated} 条已换片，需要重新检查。`
+        : `已撤销 ${count} 条成片的确认。`;
       setFeedback({
-        kind: 'success',
-        message: decision === 'approved'
-          ? reviewResult.pendingRender
-            ? `已通过 ${planIds.length} 条成片，渲染中，完成后才可导出。`
-            : `已通过 ${planIds.length} 条成片，可以正式导出。`
-          : decision === 'rework'
-            ? `已返工 ${planIds.length} 条成片并换一批画面，新候选需要重新审核。`
-            : `已撤销 ${planIds.length} 条成片的审核。`,
+        kind: failures.length ? 'error' : 'success',
+        message: `${savedMessage}${failed.length ? ` ${failed.length} 条未保存，保留待检查。` : ''}${failures.length ? ` ${failures.join('；')}` : ''}`,
       });
-      return true;
+      return failures.length === 0;
     } catch (reviewError) {
       setFeedback({ kind: 'error', message: reviewError instanceof Error ? reviewError.message : '审核操作失败' });
       return false;
@@ -1920,6 +1977,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }
 
   const selectBatch = (batchId: string) => {
+    rememberBatchSelection(batchId);
     setSelectedBatchId(batchId);
     setProxyTasks([]);
     setAssetPrepareTasks([]);
@@ -1944,7 +2002,19 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     try { localStorage.setItem(visionProviderStorageKey(projectId), providerId); } catch { /* 隐私模式忽略 */ }
   };
 
-  const overview = [
+  const formulaGeneration = workspace?.batch.id === selectedBatchId ? workspace.formulaGeneration : null;
+  const formulaInputRevisionOpen = !!formulaGeneration?.inputRevisionOpen;
+  const formulaStatusLabel = formulaGeneration
+    ? formulaInputRevisionOpen ? '准备下一轮' : workspace?.batch.controlState === 'stopped' ? '已停止' : workspace?.batch.controlState === 'paused' ? '已暂停'
+      : formulaGeneration.pending ? '制作中' : formulaGeneration.finished ? '可审片'
+        : formulaGeneration.ready ? '部分就绪' : '需处理'
+    : undefined;
+  const overview = currentBatch?.planningMode === 'formula' ? [
+    { label: '已导入文件', value: formulaSummary?.batchId === selectedBatchId ? formulaSummary.videoSources : '—' },
+    { label: '已导入脚本', value: formulaSummary?.batchId === selectedBatchId ? formulaSummary.scripts : '—' },
+    { label: '目标成片', value: formulaGeneration?.total ?? '待生成', accent: true },
+    { label: '可审片', value: formulaGeneration?.ready ?? 0 },
+  ] : [
     { label: '已选素材', value: Object.keys(selectedAssets).length },
     { label: '脚本份数', value: selectedScriptEntries.length },
     { label: '目标成片', value: plannedCount, accent: true },
@@ -1961,6 +2031,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const outputPresetLabel: OutputPresetLabel = { id: outputPreset, label: OUTPUT_PRESET_LABELS[outputPreset] };
   // 检查成片的片段编辑预览用成片画幅 ID(3:4 → 3x4),与批量输出预设一一对应。
   const reviewOutputPreset = outputPreset.replace(':', 'x') as '3x4' | '9x16' | '16x9';
+  const formulaProgress = workspace && formulaGeneration
+    ? <FormulaGenerationProgressPanel progress={formulaGeneration} controlState={workspace.batch.controlState} compact={activeStep === 2}
+      busy={phaseEBusy !== null} onControl={action => void controlBatch(action)} onRetry={taskId => void retryRenderTask(taskId)} onReview={() => setActiveStep(2)} /> : null;
 
   return (
     <MixcutShell
@@ -1980,16 +2053,17 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       topbarLeft={(
         <div className="flex min-w-0 flex-1 items-center gap-3 px-1">
           <strong className="truncate text-ink">{currentBatch?.name ?? '未选择批次'}</strong>
+          {currentBatch && <span className="shrink-0 text-xs text-ink-secondary">{BATCH_PLANNING_MODE_LABELS[currentBatch.planningMode ?? 'semantic']}</span>}
           {selectedBatchId && (
             <span className={`rounded-full px-2.5 py-0.5 text-[11px] ${batchStatus === 'running' ? 'bg-accent/10 text-accent' : batchStatus === 'failed' ? 'bg-fail/10 text-fail' : batchStatus === 'completed' ? 'bg-ok/10 text-ok' : 'bg-surface-subtle text-ink-secondary'}`}>
-              {BATCH_STATUS_LABELS[batchStatus]}
+              {formulaStatusLabel ?? BATCH_STATUS_LABELS[batchStatus]}
             </span>
           )}
-          {frozen && <span className="rounded-full bg-accent/10 px-2.5 py-0.5 text-[11px] text-accent">已锁定</span>}
+          {frozen && !formulaInputRevisionOpen && <span className="rounded-full bg-accent/10 px-2.5 py-0.5 text-[11px] text-accent">已锁定</span>}
         </div>
       )}
       topbarRight={(
-        <>
+        currentBatch?.planningMode !== 'formula' && <>
           <span className={shellStyles.segLabel}>画幅</span>
           <span className={shellStyles.seg} role="group" aria-label="全局画幅">
             {(['3:4', '9:16', '16:9'] as const).map((preset) => (
@@ -2002,28 +2076,49 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         <div className="space-y-3">
           <div className={shellStyles.panel}>
             <h3 className="mb-2 flex items-center gap-2 text-[13px] font-semibold"><Icon name="plus" size={15} />新建批次</h3>
-            <div className="flex gap-2">
+            <label className="mb-3 block space-y-2 text-xs font-medium text-ink-secondary">
+              <span>批次名称</span>
               <input
                 type="text"
                 aria-label="新批次名称"
                 value={newBatchName}
+                disabled={busy !== null}
                 onChange={(event) => setNewBatchName(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && busy === null) void createBatch();
                 }}
-                placeholder="例如：8 月产品口播"
-                className="h-9 min-w-0 flex-1 rounded-xl border border-hairline bg-surface px-3 text-sm text-ink"
+                placeholder="例如：PS866 实拍首批"
+                className="h-9 w-full min-w-0 rounded-xl border border-hairline bg-surface px-3 text-sm text-ink"
               />
+            </label>
+            <fieldset disabled={busy !== null} className="mb-3 space-y-2">
+              <legend className="mb-2 text-xs font-medium text-ink-secondary">剪辑方式</legend>
+              {(['semantic', 'formula'] as const).map((mode) => (
+                <label key={mode} className={`flex items-start gap-2 rounded-lg border p-2 text-xs ${newPlanningMode === mode ? 'border-accent bg-accent/5' : 'border-hairline'} ${mode === 'formula' && !formulaCapability.available ? 'opacity-60' : ''}`}>
+                  <input type="radio" name={`batch-planning-mode-${projectId}`} value={mode}
+                    checked={newPlanningMode === mode}
+                    disabled={mode === 'formula' && !formulaCapability.available}
+                    onChange={() => { setNewPlanningMode(mode); setCreateError(''); }}
+                    className="mt-0.5 accent-[var(--color-accent)]" />
+                  <span><span className="block font-medium text-ink">{BATCH_PLANNING_MODE_LABELS[mode]}</span>
+                    <span className="mt-1 block text-ink-secondary">{mode === 'semantic' ? '根据文案自动搭配镜头。' : '按 Excel 指定的素材编号和顺序剪辑。'}</span></span>
+                </label>
+              ))}
+              {!formulaCapability.available && <p className="text-xs text-ink-tertiary">{formulaCapability.message}</p>}
+            </fieldset>
+            <p className="mb-3 text-xs text-ink-secondary">创建后不能更换剪辑方式；选错请另建批次。</p>
+            <div className="flex gap-2">
               <button
                 type="button"
-                className="btn-primary h-9 px-3 text-sm"
-                disabled={busy !== null}
+                className="btn-primary h-9 w-full px-3 text-sm"
+                disabled={busy !== null || (newPlanningMode === 'formula' && !formulaCapability.available)}
                 onClick={() => void createBatch()}
               >{busy === 'create' ? '创建中…' : '创建'}</button>
             </div>
+            {createError && <p className="mt-2 text-xs text-fail" role="alert">{createError}</p>}
           </div>
           <BatchProductionSidebar
-            batches={batches}
+            batches={formulaStatusLabel ? batches.map(batch => batch.id === selectedBatchId ? { ...batch, progressLabel: formulaStatusLabel, inputRevisionOpen: formulaInputRevisionOpen } : batch) : batches}
             selectedBatchId={selectedBatchId}
             onSelect={selectBatch}
             onArchive={(batchId, archived) => void archiveBatch(batchId, archived)}
@@ -2098,6 +2193,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 注意:不要在 {content} 之后再挂同级节点——.mainCol 是 flex
                 column,而各步根节点是 min-h-0 flex-1,会被压缩到容器高度、
                 内容溢出并盖住后面的兄弟节点(表现为卡片叠在一起)。 */}
+            {activeStep === 2 && formulaProgress && !formulaGeneration?.finished && <div className="mb-2 shrink-0">{formulaProgress}</div>}
             {progressView && activeStep === 2
               && !(progressView.finished && !progressView.stages.some((stage) => stage.status === 'failed'))
               && (
@@ -2128,7 +2224,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 </section>
               );
             })()}
-            {activeStep === 0 && !frozen && (
+            {activeStep === 0 && !frozen && currentBatch?.planningMode !== 'formula' && (
               <div className="card mx-2 flex flex-wrap items-center justify-between gap-3 p-4">
                 <div>
                   <p className="text-sm font-medium text-ink">已有写好的脚本？</p>
@@ -2140,6 +2236,15 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
             {content}
           </main>
         );
+        if (currentBatch?.planningMode === 'formula' && activeStep < 2) {
+          return commonMain(formulaCapability.available
+            ? <FormulaImportPanel key={`${selectedBatchId}:${activeStep}`} projectId={projectId} batchId={selectedBatchId} step={activeStep as 0 | 1} onSummary={setFormulaSummary}
+              progress={formulaProgress} readOnly={frozen || !!formulaGeneration} onInputRevised={() => loadWorkspace(selectedBatchId)} onGenerated={async () => {
+                setBatchStatus('running');
+                await Promise.all([loadBatchDetail(selectedBatchId), loadTasks(selectedBatchId), loadWorkspace(selectedBatchId)]);
+              }} />
+            : <p className="p-4 text-sm text-ink-secondary" role="status">{formulaCapability.message}。此批次仍保留为实拍公式混剪。</p>);
+        }
         if (activeStep === 0) {
           return commonMain(
             <BatchStepMaterials
@@ -2342,7 +2447,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 setSelectionDropped([]);
                 setSelectedPlanIds(allSelected ? [] : selectable.map(({ planId }) => planId));
               }}
-              onReview={(decision) => void reviewPlans(selectedPlanIds, decision)}
               onReviewPlans={reviewPlans}
               phaseEBusy={phaseEBusy}
               onRetryRender={(taskId) => void retryRenderTask(taskId)}
@@ -2362,6 +2466,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         }
         return commonMain(
           <BatchStepExport
+            formulaMode={currentBatch?.planningMode === 'formula'}
             workspace={workspace ?? { batch: { id: selectedBatchId, name: '', status: 'draft', controlState: 'stopped', currentVersionId: null }, phase: 'prepare_materials', exportDirName: '', counts: { total: 0, reviewable: 0, approvable: 0, approved: 0, processing: 0, needsAttention: 0, failed: 0 }, cards: [], exclusions: [], allocationReport: null }}
             selectedPlanIds={selectedPlanIds}
             onTogglePlan={(planId, checked) => {

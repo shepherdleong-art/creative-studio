@@ -1,5 +1,8 @@
 import type Database from 'better-sqlite3';
 import { writeLog } from '../logger.ts';
+import { formulaTaskPermission } from './formula/execution-gate.ts';
+import { getBatchPlanningMode } from './planning-mode.ts';
+import { repairFormulaContinuations } from './formula/selection-store.ts';
 import { semanticFallbackMessage } from './semantic-score-policy.ts';
 import { findExecutor, type BatchTaskExecutor, type BatchTaskProgress } from './executors.ts';
 import {
@@ -110,7 +113,7 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 type ExecuteOneOutcome = 'completed' | 'lease_lost';
-type InterruptionReason = 'batch_control' | 'lease_lost' | 'superseded';
+type InterruptionReason = 'batch_control' | 'lease_lost' | 'superseded' | 'capability_unavailable';
 
 /**
  * 领取并执行一轮可执行任务(受控 worker pool)。
@@ -130,6 +133,9 @@ export async function runPendingOnce(options: SchedulerRunOptions): Promise<numb
     progressThrottleMs = 1_000,
   } = options;
   const now = options.now;
+  if (!options.signal?.aborted && !options.shutdownSignal?.aborted) repairFormulaContinuations(db, (projectId, requestId) => {
+    (options.log ?? writeLog)({ projectId, level: 'warn', message: `公式制作请求 ${requestId} 的后续阶段续接失败；输入记录保留，其他批量任务继续。` });
+  });
   let handled = 0;
 
   // 一个并发槽:循环领取执行,直到没有可领取任务
@@ -198,6 +204,12 @@ async function executeOne(
     interruptionReason ??= reason;
     controller.abort();
   };
+  const checkFormulaPermission = (): boolean => {
+    const permission = formulaTaskPermission(db, claim.task);
+    if (permission === 'ready') return true;
+    interrupt(permission === 'superseded' ? 'superseded' : 'capability_unavailable');
+    return false;
+  };
   const reportProgress = (progress: BatchTaskProgress): void => {
     Object.assign(lastProgress, progress);
     // 只记录分析阶段切换，不把百分比更新/心跳刷进项目日志。
@@ -227,6 +239,7 @@ async function executeOne(
   // 一个任务(不动批次 controlState)必须能在下一个心跳周期内被感知并中止,
   // 不必等任务自然跑完。
   const heartbeat = setInterval(() => {
+    if (!checkFormulaPermission()) return;
     if (!renewLease(db, claim.attempt.id, { workerId, now, leaseDurationMs })) {
       interrupt('lease_lost');
       return;
@@ -253,6 +266,7 @@ async function executeOne(
   }, heartbeatMs);
 
   try {
+    if (!checkFormulaPermission()) throw new Error('公式任务已暂停或输入版本已变化');
     if (!executor) {
       throw new Error(`没有注册可执行 ${claim.task.workType} 任务的执行器`);
     }
@@ -261,6 +275,8 @@ async function executeOne(
     const signals = [controller.signal, options.signal, options.shutdownSignal]
       .filter((signal): signal is AbortSignal => Boolean(signal));
     const executorSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]!;
+    // 首次进度写入也会核验租约；此时已失效就不要启动执行器。
+    executorSignal.throwIfAborted();
     const execution = await executor.execute({
       db,
       claim,
@@ -274,6 +290,7 @@ async function executeOne(
     // 指针、控制态、租约和成功落账必须在同一 SQLite 事务内检查，避免
     // 重分配刚切换 currentVersionId 时旧 render 仍提交迟到候选。
     db.transaction(() => {
+      if (!checkFormulaPermission()) throw new Error('公式任务已暂停或输入版本已变化，不能提交旧结果');
       const completionState = db.prepare(`
         SELECT t.expectedState, COALESCE(p.controlState, 'running') AS controlState,
           CASE
@@ -351,6 +368,18 @@ async function executeOne(
         interrupt('superseded');
         throw new Error('封面渲染结果与任务契约不一致,不能提交结果');
       }
+      if (renderTask?.workType === 'render' && renderTask.targetKind === 'output_version'
+        && claim.task.batchId && getBatchPlanningMode(db, claim.task.projectId, claim.task.batchId) === 'formula') {
+        const resultHash = resultJson && typeof resultJson === 'object' && !Array.isArray(resultJson)
+          ? (resultJson as Record<string, unknown>).fullRenderContractHash : undefined;
+        let currentKey: string | null = null;
+        try { currentKey = resolveCurrentRenderRequestKey(db, renderTask); } catch { /* Reject unverifiable completion below. */ }
+        if (parsedTaskKey?.kind !== 'full' || resultHash !== parsedTaskKey.contractHash
+          || !currentKey || currentKey !== renderTask.requestKey) {
+          interrupt('superseded');
+          throw new Error('公式成片的实际渲染内容与任务或当前版本不一致，不能提交结果');
+        }
+      }
       db.prepare(`
         UPDATE batch_task_attempts SET progressJson = ? WHERE id = ? AND claimedBy = ?
       `).run(JSON.stringify(lastProgress), claim.attempt.id, workerId);
@@ -382,6 +411,8 @@ async function executeOne(
       settleInterruptedTask(db, claim.attempt.id, now, 'user_stop');
     } else if (abortedBySchedulerShutdown) {
       // 应用/调度器关闭不是用户停止:尝试结束,任务保持 running 期望并可恢复。
+      settleInterruptedTask(db, claim.attempt.id, now, 'scheduler_shutdown');
+    } else if (interruptionReason === 'capability_unavailable') {
       settleInterruptedTask(db, claim.attempt.id, now, 'scheduler_shutdown');
     } else if (interruptionReason === 'superseded') {
       settleInterruptedTask(db, claim.attempt.id, now, 'superseded');

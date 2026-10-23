@@ -240,10 +240,12 @@ export async function applyFrozenCoverTitleToFile(
   coverFilePath: string,
   outputSize: { width: number; height: number },
   coverOverride?: unknown,
+  /** A renderer may capture this before its first await; null means no frozen title. */
+  frozenConfig?: FrozenBatchCoverTitleConfig | null,
 ): Promise<boolean> {
   const config = resolveBatchCoverTitleOverride(
-    loadFrozenCoverTitleConfig(db, planId),
-    coverOverride === undefined ? loadCurrentCoverOverride(db, planId) : coverOverride,
+    frozenConfig === undefined ? loadFrozenCoverTitleConfig(db, planId) : frozenConfig,
+    coverOverride === undefined && frozenConfig === undefined ? loadCurrentCoverOverride(db, planId) : coverOverride,
     outputSize.width,
   );
   if (!config) {

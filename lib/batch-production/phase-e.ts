@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
+import { batchOutputReviewContext, batchReviewMatches } from './review-context.ts';
 import { dataRoot } from '../data-root.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
 import {
@@ -12,7 +13,10 @@ import {
 import { readProductionIdentityFields, deriveProjectNamingDate } from '../project-production-identity.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
 // 命名合约与单条模式共用同一处纯函数,避免两边各写一份后慢慢漂移。
-import { formatShanghaiTaskDate } from '../media-core/export-identity.ts';
+import { formatShanghaiTaskDate, formulaExportSuffix } from '../media-core/export-identity.ts';
+import { normalizePackagingCode } from '../media-core/production-codes.ts';
+import { parsePackagingConfig } from '../media-core/packaging-vars.ts';
+import { readFormulaExportIdentity } from './formula/export-identity.ts';
 import {
   clearBatchAssetExclusion,
   persistBatchAllocation,
@@ -29,6 +33,10 @@ import {
 import { readFrozenBatchExportIdentity, startBatchProduction } from './batch-flow.ts';
 import { freezeBatchMusicPool, readBatchBgmPool } from './bgm.ts';
 import { BatchDomainError } from './errors.ts';
+import { assertSemanticBatch, getBatchPlanningMode } from './planning-mode.ts';
+import { formulaExecutionAvailable } from './formula/execution-gate.ts';
+import { formulaOutputExecutionReady, formulaOutputCoverReady } from './formula/execution-store.ts';
+import { checkBatchFormulaExecution } from './batch-renderer.ts';
 import { checkFormalExportPreflight } from './export-preflight.ts';
 import { registerArtifact } from './artifacts.ts';
 import { batchArtifactPathsArePaired } from './artifact-pair.ts';
@@ -54,13 +62,17 @@ function scheduleCoverForCurrentOutputVersion(
   now?: () => Date,
 ): string | null {
   const plan = db.prepare(`
-    SELECT p.currentVersionId AS outputVersionId
+    SELECT p.currentVersionId AS outputVersionId,
+      (json_type(o.arrangementJson, '$.formula') = 'object'
+        AND json_extract(o.arrangementJson, '$.productionReady') IS NOT 1) AS formulaDraft
     FROM batch_output_plans p
+    LEFT JOIN batch_output_versions o ON o.id = p.currentVersionId
     JOIN batch_production_versions v ON v.id = p.batchVersionId
     JOIN batch_productions b ON b.id = v.batchId
     WHERE p.id = ? AND b.id = ? AND b.projectId = ? AND b.deletedAt IS NULL
-  `).get(planId, batchId, projectId) as { outputVersionId: string | null } | undefined;
-  if (!plan?.outputVersionId) return null;
+  `).get(planId, batchId, projectId) as { outputVersionId: string | null; formulaDraft: number } | undefined;
+  // 声音/包装执行契约未完成的公式草稿，只保存编辑，不进入旧封面渲染。
+  if (!plan?.outputVersionId || plan.formulaDraft) return null;
   return createBatchTask(db, projectId, {
     batchId,
     workType: 'render',
@@ -241,6 +253,7 @@ export function startOrResumePhaseE(
   batchId: string,
   now?: () => Date,
 ): BatchPhaseEStartResult {
+  assertSemanticBatch(db, projectId, batchId);
   let lineage = getBatchLineage(db, projectId, batchId);
   if (lineage.controlState === 'stopped') {
     throw new BatchDomainError('conflict', '批次已停止,不能再次启动生产');
@@ -299,6 +312,7 @@ export function reallocateAndScheduleOutput(
   reason = 'manual',
   now?: () => Date,
 ): BatchAllocationSchedulingResult {
+  assertSemanticBatch(db, projectId, batchId);
   const lineage = getBatchLineage(db, projectId, batchId);
   if (lineage.inputState !== 'frozen') {
     throw new BatchDomainError('conflict', '批次尚未启动,不能重新分配成片');
@@ -469,7 +483,25 @@ function assertArrangementStateMatchesRender(
   const decision = review && typeof review === 'object' && !Array.isArray(review)
     ? (review as Record<string, unknown>).decision
     : undefined;
-  if (decision !== 'approved') {
+  const formula = (arrangement as Record<string, unknown>)?.formula;
+  if (formula) {
+    if (!formulaExecutionAvailable(db) || !formulaOutputExecutionReady(db, outputVersionId, arrangement as Record<string, unknown>)
+      || !formulaOutputCoverReady(db, outputVersionId)) throw new BatchDomainError('conflict', '公式制作检查、封面或功能状态已变化，请重新检查');
+    const proof = (arrangement as Record<string, unknown>).formulaExecution as { stageId: string; contentContractHash: string };
+    if (!render.formulaExecution || render.formulaExecution.stageId !== proof.stageId
+      || render.formulaExecution.contentContractHash !== proof.contentContractHash
+      || render.fullRenderContractHash !== resolveFullRenderContractHash(db, outputVersionId)) {
+      throw new BatchDomainError('conflict', '公式渲染结果不属于当前已检查的画面与声音');
+    }
+    const identity = readFormulaExportIdentity(db, { projectId: render.projectId, batchId: render.batchId,
+      planId: render.planId, outputVersionId, packaging: parsePackagingConfig((arrangement as Record<string, unknown>).packaging) });
+    if (render.formulaIdentity !== undefined ? formulaExportSuffix(render.formulaIdentity) !== formulaExportSuffix(identity)
+      : (normalizePackagingCode(render.productionCodes?.packagingCode) || 'none') !== identity.packagingCode) {
+      throw new BatchDomainError('conflict', '渲染结果的原脚本号、份次或包装与当前正式成片不一致');
+    }
+  }
+  if (decision !== 'approved' || !batchReviewMatches(review, batchOutputReviewContext(db, outputVersionId, arrangement),
+    !!(arrangement as Record<string, unknown>)?.formula)) {
     throw new BatchDomainError('conflict', '该成片尚未审核通过,请先在检查页标记「通过」后再导出');
   }
 }
@@ -490,7 +522,7 @@ function parseRenderResult(raw: string | null): RenderAttemptResult | null {
       || typeof value.coverRelativePath !== 'string'
       || typeof value.videoChecksum !== 'string'
       || typeof value.coverChecksum !== 'string'
-      || (value.audioMode !== 'narration' && value.audioMode !== 'silent_placeholder')
+      || !['narration', 'source', 'mixed', 'silent_placeholder'].includes(value.audioMode ?? '')
       || typeof value.productionReady !== 'boolean'
       || (value.editRevision !== undefined
         && (!Number.isSafeInteger(value.editRevision) || Number(value.editRevision) < 0))
@@ -558,6 +590,7 @@ export async function publishSelectedBatchOutputs(
     throw new BatchDomainError('invalid_input', '请至少选择一条成片进行正式导出');
   }
   const lineage = getBatchLineage(db, projectId, batchId);
+  const isFormula = getBatchPlanningMode(db, projectId, batchId) === 'formula';
   if (lineage.inputState !== 'frozen') {
     throw new BatchDomainError('conflict', '批次输入尚未冻结,不能正式导出');
   }
@@ -617,7 +650,7 @@ export async function publishSelectedBatchOutputs(
         entry && typeof entry === 'object' && !Array.isArray(entry)
         && (entry as Record<string, unknown>).planId === planId
       )) as { status?: unknown; blockers?: unknown } | undefined;
-      if (!latestOutput || latestOutput.status !== 'available') {
+      if (!isFormula && (!latestOutput || latestOutput.status !== 'available')) {
         const blockers = Array.isArray(latestOutput?.blockers)
           ? latestOutput.blockers.filter((value): value is string => typeof value === 'string' && value.length > 0)
           : [];
@@ -663,7 +696,7 @@ export async function publishSelectedBatchOutputs(
         || render.planSeq !== row.seq
         || render.outputVersionNumber !== row.versionNumber
       ) throw new BatchDomainError('conflict', '渲染候选谱系与当前成片版本不一致');
-      if (!render.productionReady || render.audioMode !== 'narration') {
+      if (!render.productionReady || render.audioMode === 'silent_placeholder' || (!isFormula && render.audioMode !== 'narration')) {
         throw new BatchDomainError('conflict', '当前只是静音视觉候选,需准备并核验口播后才能正式导出');
       }
       const pendingRender = db.prepare(`
@@ -684,6 +717,15 @@ export async function publishSelectedBatchOutputs(
       // 修订号/封面时间点/审核结论 CAS——发布前先跑一遍;复制文件完成后、
       // 替换当前指针前的最终事务里还会再跑一遍(见下方 db.transaction)。
       assertArrangementStateMatchesRender(db, row.currentVersionId, render);
+      const checkedFormula = isFormula ? await checkBatchFormulaExecution({ db, projectId, batchId,
+        batchVersionId: lineage.currentVersionId!, planId, outputVersionId: row.currentVersionId }) : null;
+      if (checkedFormula) {
+        const taskContract = parseRenderTaskRequestKey(row.requestKey);
+        if (!taskContract || taskContract.kind !== 'full' || taskContract.outputVersionId !== row.currentVersionId
+          || taskContract.contractHash !== render.fullRenderContractHash || checkedFormula.audioMode !== render.audioMode) {
+          throw new BatchDomainError('conflict', '公式渲染任务、实际声音和当前制作记录不一致');
+        }
+      }
       // 渲染契约 CAS:导出编排开启时,成功任务必须对应当前完整渲染契约。
       if (options.requireRenderContract) {
         assertRenderContractCurrent(db, row.requestKey, row.currentVersionId);
@@ -706,6 +748,9 @@ export async function publishSelectedBatchOutputs(
         taskDate: frozenBatchIdentity?.taskDate || taskDate || options.now?.() || new Date(),
         planSeq: row.seq,
         productionCodes: render.productionCodes,
+        // 旧公式候选已有完整渲染/制作证明时，从不可变原号/份次和已核对的实际包装补齐；不更名已有正式文件。
+        formulaIdentity: isFormula ? render.formulaIdentity ?? readFormulaExportIdentity(db, { projectId, batchId, planId,
+          outputVersionId: row.currentVersionId, packaging: parsePackagingConfig((arrangement as Record<string, unknown>).packaging) }) : undefined,
         outputVersion: row.versionNumber,
         exportDirName,
         ...(frozenIdentity ? { baseName: frozenIdentity.baseName } : {}),
@@ -749,6 +794,7 @@ export async function publishSelectedBatchOutputs(
         // (修订号/封面时间点/审核结论)与渲染契约 CAS 全部重跑一遍;撤销审核
         // 不递增 editRevision,只比对修订号拦不住它,必须在事务内复核审核态。
         assertArrangementStateMatchesRender(db, row.currentVersionId, render);
+        checkedFormula?.recheck();
         if (options.requireRenderContract) {
           assertRenderContractCurrent(db, row.requestKey, row.currentVersionId);
         }

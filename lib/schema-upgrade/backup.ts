@@ -2,14 +2,16 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import packageMetadata from '../../package.json' with { type: 'json' };
 
-export type SchemaUpgradeScope = 'batch-production' | 'video-provider-gateway' | 'script-studio' | 'creative-canvas';
+export type SchemaUpgradeScope = 'batch-production' | 'batch-formula' | 'video-provider-gateway' | 'script-studio' | 'creative-canvas';
 
 /** 备份目录 slug；新增 scope 必须同时更新这里与 cleanupInterruptedSchemaUpgradeBackups 的匹配。 */
 export const SCOPE_SLUGS: Record<SchemaUpgradeScope, string> = {
   'batch-production': 'batch',
+  'batch-formula': 'batch-formula',
   'video-provider-gateway': 'video-gateway',
   'script-studio': 'script-studio',
   'creative-canvas': 'canvas',
@@ -100,6 +102,22 @@ function validateBackupDatabase(backupPath: string): void {
   }
 }
 
+async function publishBackupDirectory(stagingDirectory: string, publishedDirectory: string): Promise<void> {
+  // Windows 会短暂拒绝刚写好的目录重命名。只重试发布同一份已验证备份；持续失败仍阻止迁移。
+  const retryDelaysMs = [20, 50, 100, 200];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fsPromises.rename(stagingDirectory, publishedDirectory);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(code ?? '')
+        || attempt >= retryDelaysMs.length) throw error;
+      await delay(retryDelaysMs[attempt]);
+    }
+  }
+}
+
 export async function createValidatedSchemaUpgradeBackup(params: {
   db: Database.Database;
   backupRoot: string;
@@ -169,7 +187,7 @@ export async function createValidatedSchemaUpgradeBackup(params: {
       `${JSON.stringify(manifest, null, 2)}\n`,
       { encoding: 'utf8', flag: 'wx' },
     );
-    await fsPromises.rename(stagingDirectory, publishedDirectory);
+    await publishBackupDirectory(stagingDirectory, publishedDirectory);
     return { directory: publishedDirectory, manifest };
   } catch (error) {
     await fsPromises.rm(stagingDirectory, { recursive: true, force: true });
@@ -193,7 +211,7 @@ export async function cleanupInterruptedSchemaUpgradeBackups(backupRoot: string)
   }
   const interrupted = entries.filter((entry) => (
     entry.isDirectory()
-    && /^\.pre-(?:batch|video-gateway|script-studio|canvas)-v\d+-/.test(entry.name)
+    && /^\.pre-(?:batch|batch-formula|video-gateway|script-studio|canvas)-v\d+-/.test(entry.name)
   ));
   for (const entry of interrupted) {
     await fsPromises.rm(path.join(backupRoot, entry.name), { recursive: true, force: true });

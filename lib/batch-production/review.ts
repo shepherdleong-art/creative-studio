@@ -1,5 +1,8 @@
 import type Database from 'better-sqlite3';
 import { BatchDomainError } from './errors.ts';
+import { getBatchPlanningMode } from './planning-mode.ts';
+import { batchOutputReviewContext, batchReviewMatches, type BatchReviewContext, type BatchReviewTarget } from './review-context.ts';
+import { confirmBatchReviews } from './review-confirmation.ts';
 
 export type BatchReviewDecision = 'approved' | 'rework' | 'cancelled';
 
@@ -17,6 +20,7 @@ export interface BatchReviewWriteResult {
   planIds: string[];
   /** 目标成片是否仍有 queued/running 的渲染任务。 */
   pendingRender: boolean;
+  results: Array<{ planId: string; status: 'saved' | 'conflict' | 'not_ready' | 'unavailable'; message?: string }>;
 }
 
 export interface BatchPlanReviewRow {
@@ -44,10 +48,12 @@ export function setBatchPlanReviews(
   db: Database.Database,
   projectId: string,
   batchId: string,
-  input: { planIds: string[]; decision: BatchReviewDecision | null },
+  input: { planIds: string[]; decision: BatchReviewDecision | null } | { items: BatchReviewTarget[]; decision: BatchReviewDecision | null },
   now?: () => Date,
 ): BatchReviewWriteResult {
   assertReviewDecision(input.decision);
+  if ('items' in input) return confirmBatchReviews(db, projectId, batchId, input, now);
+  // Kept for trusted ordinary-mode callers. HTTP and formula reviews must supply the displayed identity.
   const uniquePlanIds = [...new Set(input.planIds.filter((value) => typeof value === 'string' && value.trim()))];
   if (uniquePlanIds.length === 0) {
     throw new BatchDomainError('invalid_input', '请至少选择一条成片进行审核操作');
@@ -80,6 +86,13 @@ export function setBatchPlanReviews(
   const normalizedDecision: BatchReviewDecision | null = input.decision === 'cancelled' ? null : input.decision;
   const reviewJson = JSON.stringify({ decision: normalizedDecision, decidedAt: updatedAt });
   const pendingRender = db.transaction(() => {
+    if (getBatchPlanningMode(db, projectId, batchId) === 'formula') {
+      throw new BatchDomainError('invalid_input', '公式确认需要当前所见版本和提醒信息，请刷新检查页');
+    }
+    for (const plan of plans) {
+      const row = plan.currentVersionId ? db.prepare('SELECT arrangementJson FROM batch_output_versions WHERE id=?').get(plan.currentVersionId) as { arrangementJson: string } : null;
+      if (row && JSON.parse(row.arrangementJson)?.formula) throw new BatchDomainError('invalid_input', '公式确认需要当前所见版本和提醒信息，请刷新检查页');
+    }
     const pendingRenderIds = currentOutputVersionIds.length === 0 ? new Set<string>() : new Set(
       (db.prepare(`
         SELECT targetId
@@ -109,6 +122,7 @@ export function setBatchPlanReviews(
     updatedAt,
     planIds: plans.map(({ id }) => id),
     pendingRender,
+    results: plans.map(({ id }) => ({ planId: id, status: 'saved' as const })),
   };
 }
 
@@ -118,26 +132,30 @@ export function readBatchPlanReview(
   projectId: string,
   batchId: string,
   planId: string,
-): { decision: BatchReviewDecision | null; decidedAt: string | null } {
+): { decision: BatchReviewDecision | null; decidedAt: string | null; context: BatchReviewContext | null; confirmed: BatchReviewContext | null } {
   const row = db.prepare(`
-    SELECT o.arrangementJson
+    SELECT o.arrangementJson,o.id AS outputVersionId
     FROM batch_output_plans p
     JOIN batch_production_versions v ON v.id = p.batchVersionId
     JOIN batch_productions b ON b.id = v.batchId
     LEFT JOIN batch_output_versions o ON o.id = p.currentVersionId
     WHERE p.id = ? AND b.id = ? AND b.projectId = ? AND b.deletedAt IS NULL
-  `).get(planId, batchId, projectId) as { arrangementJson: string | null } | undefined;
-  if (!row?.arrangementJson) return { decision: null, decidedAt: null };
+  `).get(planId, batchId, projectId) as { arrangementJson: string | null; outputVersionId: string } | undefined;
+  if (!row?.arrangementJson) return { decision: null, decidedAt: null, context: null, confirmed: null };
   try {
-    const arrangement = JSON.parse(row.arrangementJson) as { review?: unknown };
+    const arrangement = JSON.parse(row.arrangementJson) as { review?: unknown; formula?: unknown };
+    const context = batchOutputReviewContext(db, row.outputVersionId, arrangement);
     const review = arrangement.review;
-    if (!review || typeof review !== 'object' || Array.isArray(review)) return { decision: null, decidedAt: null };
+    if (!review || typeof review !== 'object' || Array.isArray(review)) return { decision: null, decidedAt: null, context, confirmed: null };
     const record = review as Record<string, unknown>;
     const decision = record.decision === 'approved' || record.decision === 'rework' || record.decision === 'cancelled'
       ? record.decision
       : null;
-    return { decision, decidedAt: typeof record.decidedAt === 'string' ? record.decidedAt : null };
+    return { decision: batchReviewMatches(review, context, !!arrangement.formula) ? decision : null,
+      decidedAt: typeof record.decidedAt === 'string' ? record.decidedAt : null, context,
+      confirmed: record.version === 1 ? { outputVersionId: String(record.outputVersionId), editRevision: Number(record.editRevision),
+        issueSetHash: String(record.issueSetHash), issues: Array.isArray(record.issues) ? record.issues : [] } : null };
   } catch {
-    return { decision: null, decidedAt: null };
+    return { decision: null, decidedAt: null, context: null, confirmed: null };
   }
 }

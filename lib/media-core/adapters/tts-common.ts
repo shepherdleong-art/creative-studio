@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { probeDurationSec, runFfmpeg } from '../../ffmpeg.ts';
 import type { AlignmentAdapter, AlignmentWordTiming } from './alignment.ts';
+import { speechContent } from './alignment.ts';
 
 const PCM_WAV_HEADER_BYTES = 44;
 
@@ -64,21 +65,28 @@ export async function alignOrProportionallyTime(input: {
   narration: string;
   durationUs: number;
   segmentId: string;
+  signal?: AbortSignal;
 }): Promise<{ words: AlignmentWordTiming[]; degraded: boolean }> {
   try {
+    input.signal?.throwIfAborted();
     if (!input.alignment.configured) throw new Error('alignment unavailable');
-    const words = await input.alignment.align({ audioPath: input.audioPath, text: input.narration });
+    const words = await input.alignment.align({ audioPath: input.audioPath, text: input.narration, signal: input.signal });
+    input.signal?.throwIfAborted();
     let lastEndUs = 0;
     for (const word of words) {
-      if (word.startUs < lastEndUs || word.endUs <= word.startUs || word.endUs > input.durationUs) {
+      if (!Number.isSafeInteger(word.startUs) || !Number.isSafeInteger(word.endUs)
+        || word.startUs < lastEndUs || word.endUs <= word.startUs || word.endUs > input.durationUs) {
         throw new Error(`强制对齐时间越界或倒退：${input.segmentId}`);
       }
       lastEndUs = word.endUs;
     }
-    const coverage = countTtsContent(words.map((word) => word.text).join('')) / Math.max(1, countTtsContent(input.narration));
-    if (coverage < 0.95) throw new Error(`强制对齐覆盖率不足：${input.segmentId}`);
+    const expected = speechContent(input.narration);
+    if (!expected || speechContent(words.map(word => word.text).join('')) !== expected) {
+      throw new Error(`强制对齐内容不一致：${input.segmentId}`);
+    }
     return { words, degraded: false };
   } catch {
+    input.signal?.throwIfAborted();
     return { words: proportionalWordTimings(input.narration, input.durationUs), degraded: true };
   }
 }

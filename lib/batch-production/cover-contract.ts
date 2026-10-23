@@ -8,6 +8,12 @@ import {
 } from './cover-title.ts';
 import type { CoverFraming, TextStyle } from '../media-core/cover-types.ts';
 import { BATCH_OUTPUT_PRESETS, type BatchOutputPreset } from './output-presets.ts';
+import { readFormulaOutputAudioPlan, readFormulaOutputBasis } from './formula/output-audio.ts';
+import { readFormulaMusicSource } from './formula/output-music.ts';
+import { readMusicDucking } from '../media-core/music-ducking.ts';
+import { normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
+import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '../media-core/render-contract.ts';
+import { loadFrozenSubtitleStyle, resolveBatchSubtitleStyle, resolveBatchSubtitleStyleOverride } from './subtitle-style.ts';
 
 export const BATCH_COVER_RENDERER_VERSION = 'batch-cover-v1';
 export const BATCH_FULL_RENDER_ADAPTER_VERSION = 'batch-render-v3';
@@ -32,6 +38,20 @@ export interface CoverContractInput {
 }
 
 export interface FullRenderContractInput {
+  /** Formula audio is a sequence of real sources, not a legacy whole-script narration. */
+  formula?: {
+    version: 'formula-render/1' | 'formula-render/2';
+    basis: NonNullable<ReturnType<typeof readFormulaOutputBasis>>;
+    audioPlan: Pick<NonNullable<ReturnType<typeof readFormulaOutputAudioPlan>>, 'version' | 'bodyDurationUs' | 'clips'>;
+    narrationGainDb: number;
+    musicSource: ReturnType<typeof readFormulaMusicSource>;
+    musicDucking: ReturnType<typeof readMusicDucking>;
+    musicDefaults: unknown;
+    subtitleStyle: TextStyle;
+    fps: number;
+    introFrames: number;
+    videoSources: Array<{ clipId: string; assetId: string; assetFingerprint: string; colorSnapshot: ColorSnapshotV1 }>;
+  };
   packaging?: unknown;
   outputVersionId: string;
   editRevision: number;
@@ -44,6 +64,7 @@ export interface FullRenderContractInput {
   coverContractHash: string;
   clips: Array<{
     clipId: string;
+    formulaSourceId?: string;
     assetId: string;
     sourceStartUs: number;
     sourceEndUs: number;
@@ -163,6 +184,9 @@ export function resolveCoverContract(
 
   const poolItem = db.prepare(`SELECT colorJson FROM batch_asset_pool_items WHERE batchVersionId = ? AND assetId = ?`).get(row.batchVersionId, assetId) as { colorJson: string } | undefined;
   let colorJsonStr = poolItem?.colorJson;
+  // Formula sources need not be in the old pool. Match the renderer's frozen
+  // neutral fallback; analysis is neither a color snapshot nor a color table.
+  if (!colorJsonStr && arrangement.formula !== undefined) colorJsonStr = '{"lutId":null}';
   if (!colorJsonStr) {
     const analysis = db.prepare(`SELECT colorJson FROM batch_asset_analysis WHERE assetId = ? ORDER BY createdAt DESC LIMIT 1`).get(assetId) as { colorJson: string } | undefined;
     colorJsonStr = analysis?.colorJson ?? '{"lutId":null}';
@@ -210,32 +234,42 @@ export function resolveCoverContractHash(
 export function resolveFullRenderContract(
   db: Database.Database,
   outputVersionId: string,
+  frozenArrangementJson?: string,
 ): FullRenderContractInput {
   const row = db.prepare(`
     SELECT
       o.id AS outputVersionId,
-      o.arrangementJson AS arrangementJson
+      o.arrangementJson AS arrangementJson,
+      p.batchVersionId AS batchVersionId,
+      p.id AS planId,
+      v.defaultsJson AS defaultsJson
     FROM batch_output_versions o
+    JOIN batch_output_plans p ON p.id = o.planId
+    JOIN batch_production_versions v ON v.id = p.batchVersionId
     WHERE o.id = ?
   `).get(outputVersionId) as {
     outputVersionId: string;
     arrangementJson: string;
+    batchVersionId: string;
+    planId: string;
+    defaultsJson: string;
   } | undefined;
   if (!row) throw new Error(`outputVersion ${outputVersionId} 不存在`);
 
-  const arrangement = JSON.parse(row.arrangementJson) as Record<string, unknown>;
+  const arrangement = JSON.parse(frozenArrangementJson ?? row.arrangementJson) as Record<string, unknown>;
   const editRevision = Number.isSafeInteger(Number(arrangement.editRevision)) && Number(arrangement.editRevision) > 0
     ? Number(arrangement.editRevision)
     : 0;
   const preset = (typeof arrangement.preset === 'string' ? arrangement.preset : '3:4') as BatchOutputPreset;
   const outputSize = BATCH_OUTPUT_PRESETS[preset] ?? BATCH_OUTPUT_PRESETS['3:4'];
 
-  const coverContract = resolveCoverContract(db, outputVersionId);
+  const coverContract = resolveCoverContract(db, outputVersionId, frozenArrangementJson);
   const coverContractHash = computeCoverContractHash(coverContract);
 
   const rawClips = Array.isArray(arrangement.clips) ? arrangement.clips as Array<Record<string, unknown>> : [];
   const clips = rawClips.map((c) => ({
     clipId: String(c.clipId ?? c.id ?? c.segmentId ?? ''),
+    ...(typeof c.formulaSourceId === 'string' ? { formulaSourceId: c.formulaSourceId } : {}),
     assetId: String(c.assetId ?? ''),
     sourceStartUs: Number(c.sourceStartUs || 0),
     sourceEndUs: Number(c.sourceEndUs || 0),
@@ -277,10 +311,38 @@ export function resolveFullRenderContract(
       }
     : null;
 
+  let formula: FullRenderContractInput['formula'];
+  if (arrangement.planningMode === 'formula' || arrangement.formula !== undefined || arrangement.audioPlan !== undefined) {
+    const basis = readFormulaOutputBasis(arrangement.formula);
+    const plan = readFormulaOutputAudioPlan(arrangement.audioPlan);
+    if (!basis || !plan || !plan.clips.length) throw new Error('公式成片缺少实际声音计划，无法确认渲染版本');
+    const defaults = JSON.parse(row.defaultsJson) as Record<string, unknown>;
+    formula = {
+      version: 'formula-render/2', basis,
+      audioPlan: { version: plan.version, bodyDurationUs: plan.bodyDurationUs, clips: plan.clips },
+      narrationGainDb: normalizeNarrationGainDb(narrationRaw?.gainDb),
+      musicSource: readFormulaMusicSource(musicRaw),
+      musicDucking: readMusicDucking(musicRaw?.ducking),
+      musicDefaults: defaults.batchBgmParams ?? null,
+      subtitleStyle: resolveBatchSubtitleStyleOverride(loadFrozenSubtitleStyle(db, row.planId, outputSize.width)
+        ?? resolveBatchSubtitleStyle(defaults, outputSize.width), subtitleRaw),
+      fps: FINAL_EDIT_FPS, introFrames: FINAL_EDIT_INTRO_FRAMES,
+      videoSources: clips.map(clip => {
+        const asset = db.prepare('SELECT contentFingerprint FROM batch_assets WHERE id=?').get(clip.assetId) as { contentFingerprint: string } | undefined;
+        if (!asset) throw new Error(`素材 ${clip.assetId} 不存在`);
+        const pool = db.prepare('SELECT colorJson FROM batch_asset_pool_items WHERE batchVersionId=? AND assetId=?')
+          .get(row.batchVersionId, clip.assetId) as { colorJson: string } | undefined;
+        return { clipId: clip.clipId, assetId: clip.assetId, assetFingerprint: asset.contentFingerprint,
+          colorSnapshot: upgradeColorSnapshot(JSON.parse(pool?.colorJson ?? '{"lutId":null}')) };
+      }),
+    };
+  }
+
   return {
     outputVersionId: row.outputVersionId,
     editRevision,
     adapterVersion: BATCH_FULL_RENDER_ADAPTER_VERSION,
+    ...(formula ? { formula } : {}),
     ...(parsePackagingConfig(arrangement.packaging).enabled ? { packaging: parsePackagingConfig(arrangement.packaging) } : {}),
     ...(arrangement.audio ? { audio: arrangement.audio } : {}),
     ...(arrangement.preserveGaps === true ? { preserveGaps: true } : {}),

@@ -1,12 +1,23 @@
 'use client';
 
-import type { BatchOutputClipEditView } from '@/lib/batch-production/output-arrangement';
+import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
 
-export type InspectorTab = 'subtitle' | 'picture' | 'cover' | 'audio' | 'packaging';
+export type InspectorTab = 'subtitle' | 'picture' | 'cover' | 'audio' | 'packaging' | 'selection';
 export type TimelineTool = 'select' | 'split';
 
+export type FormulaMediaDrop = { type: 'replace'; clipId: string; assetId: string }
+  | { type: 'insert'; afterClipId: string | null; assetId: string; timelineStartUs?: number };
+
+export interface FormulaMediaSession {
+  view: BatchOutputClipEditView;
+  asset: BatchOutputPoolAssetView;
+  edit: FormulaMediaDrop;
+  requestKey: string;
+}
+
 export interface UnifiedFilmState {
+  formula?: BatchWorkspaceView['cards'][number]['formula'];
   planId: string;
   seq: number;
   scriptTitle: string;
@@ -26,6 +37,8 @@ export interface UnifiedFilmState {
   blockers: string[];
   /** 口播任务(失败时可重试配音);来自 workspace 卡片视图。 */
   narrationTask: BatchWorkspaceView['cards'][number]['narrationTask'];
+  /** 公式成片的实际制作检查，失败后可重试同一任务。 */
+  executionTask?: BatchWorkspaceView['cards'][number]['executionTask'];
   /** 独立封面渲染任务(失败时可重试封面)。 */
   coverTask: BatchWorkspaceView['cards'][number]['coverTask'];
   /** 整片渲染任务(仅用于失败信息展示)。 */

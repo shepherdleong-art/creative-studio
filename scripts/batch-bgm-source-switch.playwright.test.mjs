@@ -4,9 +4,10 @@
  * 运行方式（与 batch-preparation-workspace.playwright.test.mjs 相同）：
  *   npm run build && node scripts/batch-bgm-source-switch.playwright.test.mjs
  *   M7_BROWSER_DEV=1 使用源码开发服务；M7_MEDIA_EDIT_ONLY=1 运行新增剪辑操作回归。
+ *   M7_REVIEW_ONLY=1 复用临时媒体夹具，验收所见版本确认与批量逐条结果。
  *
  * 与源码匹配测试不同，本文件用真实 standalone 服务 + 真实媒体文件（ffmpeg 生成）
- * 驱动「检查成片 → 调整片段」编辑器，在播放中切换 BGM 曲目并断言 <audio> 的
+ * 驱动「检查成片 → 配音BGM」统一审片界面，在播放中切换 BGM 曲目并断言 <audio> 的
  * 实际播放状态，覆盖执行方案 §5.4 要求的浏览器证据：
  *   - 播放中从「关闭 BGM」选曲 → 新源生效、paused === false、按正文偏移定位；
  *   - 播放中曲目 A → B 换源续播，位置与正文播放头对齐；
@@ -28,6 +29,7 @@ import { createBatchTask } from '../lib/batch-production/tasks.ts';
 import { createOutputPlansForSnapshot, createOutputVersion } from '../lib/batch-production/plans.ts';
 import { addAssetToPool, createBatchProduction, createBatchProductionVersion } from '../lib/batch-production/versions.ts';
 import { runFfmpeg } from '../lib/ffmpeg.ts';
+import { runReviewVersionBrowserCases } from './batch-review-browser-cases.mjs';
 
 const standaloneServer = path.join(process.cwd(), '.next', 'standalone', 'server.js');
 assert.ok(fs.existsSync(standaloneServer), '请先运行 npm run build，再执行 BGM 换源浏览器验收');
@@ -181,9 +183,10 @@ try {
     sourceVersion: '1',
     metadata: { shotSetId: 'shot-set-bgm', contentRevision: 'revision-1' },
   });
-  const snapshotId = snapshotScriptIntoBatch(db, versionId, { scriptId, copyCount: 1 });
+  const reviewOnly = process.env.M7_REVIEW_ONLY === '1';
+  const snapshotId = snapshotScriptIntoBatch(db, versionId, { scriptId, copyCount: reviewOnly ? 2 : 1 });
   const planIds = createOutputPlansForSnapshot(db, versionId, snapshotId);
-  assert.equal(planIds.length, 1);
+  assert.equal(planIds.length, reviewOnly ? 2 : 1);
   const planId = planIds[0];
 
   const mediaDir = path.join(storageRoot, 'batch-media', projectId);
@@ -223,8 +226,8 @@ try {
   db.prepare(`
     UPDATE batch_production_versions SET inputState = 'frozen', frozenAt = datetime('now') WHERE id = ?
   `).run(versionId);
-  const outputVersionId = createOutputVersion(db, planId, {
-    arrangementJson: {
+  const fixtureArrangement = {
+      ...(reviewOnly ? { warnings: ['检查产品颜色'] } : {}),
       preset: '3:4',
       clips: [{
         clipId: 'clip-1',
@@ -243,8 +246,9 @@ try {
       },
       // 初始关闭 BGM：播放中第一次选曲正是 F3 的原始复现路径。
       music: { trackId: null, gainDb: -18, fadeInSec: 0, fadeOutSec: 0 },
-    },
-  });
+  };
+  const outputVersionIds = planIds.map(id => createOutputVersion(db, id, { arrangementJson: fixtureArrangement }));
+  const outputVersionId = outputVersionIds[0];
 
   // 渲染候选（真实小文件），让检查成片卡片可点开预览。
   const candidateDir = path.join(storageRoot, 'batch-renders', outputVersionId, 'fixture');
@@ -256,19 +260,20 @@ try {
     '-f', 'lavfi', '-i', 'color=c=darkseagreen:size=540x960:rate=1',
     '-frames:v', '1', '-y', candidateCoverPath,
   ]);
+  for (const [index, fixtureOutputId] of outputVersionIds.entries()) {
   const taskId = createBatchTask(db, projectId, {
     batchId,
     workType: 'render',
     targetKind: 'output_version',
-    targetId: outputVersionId,
-    requestKey: `bgm-switch-candidate:${outputVersionId}`,
+    targetId: fixtureOutputId,
+    requestKey: `bgm-switch-candidate:${fixtureOutputId}`,
   });
   const resultJson = JSON.stringify({
     projectId,
     batchId,
     batchVersionId: versionId,
-    planId,
-    outputVersionId,
+    planId: planIds[index],
+    outputVersionId: fixtureOutputId,
     videoRelativePath: path.relative(storageRoot, candidateVideoPath),
     coverRelativePath: path.relative(storageRoot, candidateCoverPath),
     durationUs: BODY_SEC * 1_000_000,
@@ -281,6 +286,7 @@ try {
     VALUES (?, ?, 1, 'succeeded', '{}', ?, datetime('now'), datetime('now'), datetime('now'))
   `).run(randomUUID(), taskId, resultJson);
   db.prepare(`UPDATE batch_tasks SET status = 'succeeded', attemptCount = 1 WHERE id = ?`).run(taskId);
+  }
   db.close();
 
   browser = await chromium.launch({
@@ -289,7 +295,8 @@ try {
     // 放宽手势策略让媒体播放只取决于被测逻辑本身。
     args: ['--autoplay-policy=no-user-gesture-required'],
   });
-  page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  const browserContext = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  page = await browserContext.newPage();
   page.setDefaultTimeout(10_000);
   page.on('pageerror', (error) => pageErrors.push(String(error)));
   page.on('response', async (response) => {
@@ -301,10 +308,11 @@ try {
   await page.getByRole('heading', { name: '素材区' }).waitFor();
   // 直达「检查成片」：fixture 已是冻结批次 + 当前成片版本。
   await page.getByRole('button', { name: /检查成片/ }).click();
-  await page.getByTestId('batch-output-card').first().waitFor();
-  await page.getByRole('button', { name: /^编辑成片 1 / }).click();
-
-  if (process.env.M7_MEDIA_EDIT_ONLY === '1') {
+  if (reviewOnly) {
+    await runReviewVersionBrowserCases({ page, baseUrl, projectId, batchId, planIds });
+  } else if (process.env.M7_MEDIA_EDIT_ONLY === '1') {
+    await page.getByTestId('batch-output-card').first().waitFor();
+    await page.getByRole('button', { name: /^编辑成片 1 / }).click();
     const arrangementUrl = `${baseUrl}/api/batch-production/batches/${batchId}/outputs/${planId}/arrangement?projectId=${projectId}`;
     const readArrangement = () => fetch(arrangementUrl).then((response) => response.json());
     const waitForArrangement = async (check) => {
@@ -390,6 +398,8 @@ try {
     await page.screenshot({ path: path.resolve('outputs/playwright/batch-media-edit.png') });
     console.log('batch media editing browser checks passed');
   } else {
+  await page.getByRole('region', { name: '成片实时预览', exact: true }).waitFor();
+  await page.getByRole('button', { name: '配音BGM', exact: true }).click();
   const playButton = page.getByRole('button', { name: '播放', exact: true });
   await playButton.waitFor();
   await playButton.click();
@@ -402,7 +412,11 @@ try {
   const playheadBeforeSwitch = await page.evaluate(() => Number(document.querySelector('input[aria-label="播放位置"]').value));
   assert.ok(playheadBeforeSwitch > INTRO_SEC, '切换曲目前播放头必须已进入正文');
 
-  const bgmSelect = page.getByLabel('成片背景音乐曲目');
+  const bgmSelect = page.getByRole('combobox').filter({ has: page.locator('option[value="bgm-switch-track-a"]') });
+  const selectBgm = async (trackId) => {
+    await bgmSelect.selectOption(trackId);
+    await page.getByRole('button', { name: '应用 BGM 更改', exact: true }).click();
+  };
   const readBgmState = async () => {
     const state = await page.evaluate(() => {
       const element = document.querySelector('audio[loop]');
@@ -419,7 +433,7 @@ try {
   const readPlayhead = () => page.evaluate(() => Number(document.querySelector('input[aria-label="播放位置"]').value));
 
   // 场景 1（F3 红灯核心）：播放中从「关闭 BGM」选曲 A——新源必须定位正文偏移并续播。
-  await bgmSelect.selectOption('bgm-switch-track-a');
+  await selectBgm('bgm-switch-track-a');
   await waitForBgmState(page, { trackId: 'bgm-switch-track-a', playing: true, minCurrentTime: 0.2 });
   const stateAfterFirstSwitch = await readBgmState();
   const playheadAfterFirstSwitch = await readPlayhead();
@@ -430,7 +444,7 @@ try {
   assert.ok(await readPlayhead() > INTRO_SEC, '切换 BGM 不得重置画面播放头');
 
   // 场景 2：播放中曲目 A → B 换源续播，位置跟随当前正文播放头（F4：读 ref 而非陈旧闭包）。
-  await bgmSelect.selectOption('bgm-switch-track-b');
+  await selectBgm('bgm-switch-track-b');
   await waitForBgmState(page, { trackId: 'bgm-switch-track-b', playing: true, minCurrentTime: 0.5 });
   const playheadAtSecondSwitch = await readPlayhead();
   const stateAfterSecondSwitch = await readBgmState();
@@ -441,19 +455,19 @@ try {
   assert.ok(await readPlayhead() > INTRO_SEC, '再次换曲不得重置画面播放头');
 
   // 场景 3：播放中切回「关闭 BGM」——当前曲目暂停。
-  await bgmSelect.selectOption('');
+  await selectBgm('');
   await waitForBgmState(page, { trackId: null, playing: false, minCurrentTime: 0 });
   assert.ok(await readPlayhead() > INTRO_SEC, '关闭 BGM 不得重置画面播放头');
 
   // 场景 4（F3 原始复现）：关闭 → 播放中再选曲，必须重新续播而不是静默。
-  await bgmSelect.selectOption('bgm-switch-track-a');
+  await selectBgm('bgm-switch-track-a');
   await waitForBgmState(page, { trackId: 'bgm-switch-track-a', playing: true, minCurrentTime: 0.2 });
   const playheadAfterResume = await readPlayhead();
   assert.ok(playheadAfterResume > INTRO_SEC, '再次选曲不得重置画面播放头');
 
   }
   assert.equal(pageErrors.length, 0, `页面不得有未捕获异常：${pageErrors.join('\n')}`);
-  console.log('batch BGM source switch Playwright tests passed');
+  console.log(reviewOnly ? 'batch review version Playwright tests passed' : 'batch BGM source switch Playwright tests passed');
 } catch (error) {
   process.stderr.write(serverOutput.join(''));
   if (page) {

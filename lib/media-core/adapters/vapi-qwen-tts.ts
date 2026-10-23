@@ -119,6 +119,7 @@ export async function synthesizeVapiNarration(input: SynthesisInput) {
       narration: segment.narration,
       durationUs,
       segmentId: segment.segmentId,
+      signal: input.signal,
     });
     if (aligned.degraded) alignmentDegradedSegmentIds.push(segment.segmentId);
     wordTimings.push(...aligned.words.map((word) => ({ ...word, startUs: word.startUs + cursorUs, endUs: word.endUs + cursorUs })));

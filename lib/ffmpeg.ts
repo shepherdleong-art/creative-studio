@@ -311,7 +311,10 @@ const PROBE_VIDEO_MEDIA_TIMEOUT_MS = 10_000;
  * 失败仍不 reject，避免一条损坏视频打断整份 context 响应；errorMessage 保留 stderr
  * 尾部，供导入接口返回可观察的诊断。
  */
-export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
+export function probeVideoMedia(filePath: string, options: { signal?: AbortSignal } = {}): Promise<VideoMediaProbe> {
+  const signal = options.signal;
+  const aborted = (): VideoMediaProbe => ({ durationUs: 0, width: 0, height: 0, fps: 0, errorMessage: 'media probe aborted' });
+  if (signal?.aborted) return Promise.resolve(aborted());
   return new Promise((resolve) => {
     try {
       const child = spawn(
@@ -323,17 +326,20 @@ export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
       let stderrTail = '';
       let settled = false;
       let fallbackStarted = false;
+      const onAbort = () => { child.kill('SIGKILL'); };
       const finish = (result: VideoMediaProbe) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         resolve(result);
       };
       const fallbackToFfmpeg = () => {
         if (settled || fallbackStarted) return;
         fallbackStarted = true;
         clearTimeout(timer);
-        probeVideoMediaWithFfmpeg(filePath, stderrTail).then(finish);
+        if (signal?.aborted) { finish(aborted()); return; }
+        probeVideoMediaWithFfmpeg(filePath, stderrTail, signal).then(finish);
       };
       // Mirrors runFfmpeg's timeout guard above (kill + settle rather than
       // hang forever), but — per this function's documented "never reject"
@@ -344,6 +350,8 @@ export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
         stderrTail = `${stderrTail}\nffprobe timeout after ${PROBE_VIDEO_MEDIA_TIMEOUT_MS}ms`.slice(-4000);
         fallbackToFfmpeg();
       }, PROBE_VIDEO_MEDIA_TIMEOUT_MS);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) onAbort();
       child.stdout.on('data', (b: Buffer) => { out += b.toString(); });
       child.stderr.on('data', (b: Buffer) => { stderrTail = (stderrTail + b.toString()).slice(-4000); });
       child.on('error', (error) => {
@@ -352,6 +360,7 @@ export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
       });
       child.on('close', (code) => {
         if (settled || fallbackStarted) return;
+        if (signal?.aborted) { finish(aborted()); return; }
         if (code !== 0) { fallbackToFfmpeg(); return; }
         try {
           const parsed = JSON.parse(out) as { streams?: Array<{ codec_type?: string; codec_name?: string; pix_fmt?: string; sample_rate?: string; width?: number; height?: number; r_frame_rate?: string; tags?: { rotate?: string }; side_data_list?: Array<{ rotation?: number | string }> }>; format?: { duration?: string; format_name?: string } };
@@ -381,20 +390,23 @@ export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
         }
       });
     } catch (error) {
-      probeVideoMediaWithFfmpeg(filePath, error instanceof Error ? error.message : String(error)).then(resolve);
+      probeVideoMediaWithFfmpeg(filePath, error instanceof Error ? error.message : String(error), signal).then(resolve);
     }
   });
 }
 
-function probeVideoMediaWithFfmpeg(filePath: string, ffprobeError: string): Promise<VideoMediaProbe> {
+function probeVideoMediaWithFfmpeg(filePath: string, ffprobeError: string, signal?: AbortSignal): Promise<VideoMediaProbe> {
+  if (signal?.aborted) return Promise.resolve({ durationUs: 0, width: 0, height: 0, fps: 0, errorMessage: 'media probe aborted' });
   return new Promise<VideoMediaProbe>((resolve) => {
     let stderrTail = '';
     let settled = false;
     const child = spawn(resolveFfmpegCandidatePath(), ['-hide_banner', '-i', filePath], { windowsHide: true });
+    const onAbort = () => { child.kill('SIGKILL'); };
     const finish = (result: VideoMediaProbe) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
       resolve(result);
     };
     const failed = (message?: string) => finish({
@@ -408,11 +420,14 @@ function probeVideoMediaWithFfmpeg(filePath: string, ffprobeError: string): Prom
       child.kill('SIGKILL');
       failed(`ffmpeg metadata probe timeout after ${PROBE_VIDEO_MEDIA_TIMEOUT_MS}ms`);
     }, PROBE_VIDEO_MEDIA_TIMEOUT_MS);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
     child.stdout.on('data', () => {});
     child.stderr.on('data', (buffer: Buffer) => { stderrTail = (stderrTail + buffer.toString()).slice(-8000); });
     child.on('error', (error) => failed(error.message));
     child.on('close', () => {
       if (settled) return;
+      if (signal?.aborted) { failed('media probe aborted'); return; }
       const durationMatch = stderrTail.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
       const formatMatch = stderrTail.match(/Input #0,\s*(.+?),\s+from /);
       const videoLine = stderrTail.split(/\r?\n/).find((line) => /Stream .*Video:/.test(line)) || '';

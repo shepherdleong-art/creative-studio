@@ -347,7 +347,7 @@ assert.equal(realResult.imported.length, 1);
 assert.ok(realResult.imported[0].durationUs > 0);
 assert.equal(realResult.imported[0].filename, '真音频.wav');
 
-const { scanFinalEditBgm } = await import('../lib/final-edit/bgm.ts');
+const { scanFinalEditBgm, listReadyFinalEditBgmTracks } = await import('../lib/final-edit/bgm.ts');
 const rescannedTracks = await scanFinalEditBgm(realDb, realStorage);
 const rescannedRealTrack = rescannedTracks.find((track) => /真音频\.wav$/.test(track.relativePath));
 assert.equal(
@@ -366,6 +366,20 @@ assert.ok(
   ),
   '扫描结果中的曲目 ID 必须可被媒体接口按主键查询',
 );
+
+const indexedPath = path.join(realBgmDir, '真音频.wav');
+const originalMusic = fs.readFileSync(indexedPath);
+await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=880:duration=0.2', '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', indexedPath]);
+const replaced = await scanFinalEditBgm(realDb, realStorage);
+assert.equal(replaced.length, 1);
+assert.notEqual(replaced[0].id, realResult.imported[0].id);
+assert.equal(listReadyFinalEditBgmTracks(realDb).length, 1, '同路径音乐替换后，旧指纹不能继续出现在可选曲库');
+fs.unlinkSync(indexedPath);
+await scanFinalEditBgm(realDb, realStorage);
+assert.deepEqual(listReadyFinalEditBgmTracks(realDb), [], '移走的音乐须退出可选曲库');
+fs.writeFileSync(indexedPath, originalMusic);
+const restoredMusic = await scanFinalEditBgm(realDb, realStorage);
+assert.equal(restoredMusic[0].id, realResult.imported[0].id, '失效条目应保留，恢复原文件后继续使用原曲目身份');
 
 const fakeMp3Path = path.join(realAudioRoot, '伪装.mp3');
 fs.writeFileSync(fakeMp3Path, 'this is not audio');

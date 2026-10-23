@@ -13,7 +13,8 @@ function formatSec(sec: number): string {
 
 // V2 Trim 截取条（规格 §6.7）：双击片段打开，拖动蓝色选择框调整源素材入点，时长保持不变。
 // 注：胶片条目前用片段代表帧平铺，逐帧缩略图待后端提供后替换。
-export function TrimEditor({ clip, clipIndex, asset, disabled, onCommit, onClose, onPreview, compact = false }: {
+export function TrimEditor({ clip, clipIndex, asset, disabled, onCommit, onClose, onPreview, compact = false,
+  commitLabel = '完成', selectionDisabled = false, commitDisabled = false }: {
   clip: Pick<TimelineClip, 'sourceInFrame' | 'sourceOutFrame'>;
   clipIndex: number;
   asset: Pick<FinalEditAssetView, 'durationUs' | 'thumbnailUrl'> | null;
@@ -22,6 +23,9 @@ export function TrimEditor({ clip, clipIndex, asset, disabled, onCommit, onClose
   onClose: () => void;
   onPreview?: (sourceInSec: number) => void;
   compact?: boolean;
+  commitLabel?: string;
+  selectionDisabled?: boolean;
+  commitDisabled?: boolean;
 }) {
   const sourceSec = Math.max(0.1, (asset?.durationUs ?? 0) / 1_000_000);
   const sourceFrames = Math.max(1, Math.floor(sourceSec * FPS));
@@ -40,7 +44,7 @@ export function TrimEditor({ clip, clipIndex, asset, disabled, onCommit, onClose
   };
 
   const beginDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (disabled || saving || !stripRef.current) return;
+    if (disabled || saving || selectionDisabled || !stripRef.current) return;
     event.preventDefault(); event.stopPropagation();
     const target = event.currentTarget;
     const bounds = stripRef.current.getBoundingClientRect();
@@ -64,7 +68,7 @@ export function TrimEditor({ clip, clipIndex, asset, disabled, onCommit, onClose
   };
 
   const commit = async () => {
-    if (disabled || saving) return;
+    if (disabled || saving || commitDisabled) return;
     const sourceOutFrame = sourceInFrame + clipFrames;
     setSaving(true);
     try {
@@ -83,7 +87,7 @@ export function TrimEditor({ clip, clipIndex, asset, disabled, onCommit, onClose
         <span className={styles.trimDescription} title="拖动选框选取画面，片段时长保持不变">{!compact && '拖动选框选取画面，片段时长保持不变 · '}入点 {formatSec(sourceInSec)} → 出点 {formatSec((sourceInFrame + clipFrames) / FPS)}</span>
         <span className={styles.spacer} />
         <button type="button" className={styles.btn} onClick={onClose} disabled={saving}>取消</button>
-        <button type="button" className={`${styles.btn} ${styles.primary}`} onClick={() => void commit()} disabled={disabled || saving}>{saving ? '应用中…' : '完成'}</button>
+        <button type="button" className={`${styles.btn} ${styles.primary}`} onClick={() => void commit()} disabled={disabled || saving || commitDisabled}>{saving ? '应用中…' : commitLabel}</button>
       </div>
       <div className={styles.trimStrip} ref={stripRef} onPointerDown={beginDrag}>
         {Array.from({ length: 16 }).map((_, index) => (
@@ -95,11 +99,12 @@ export function TrimEditor({ clip, clipIndex, asset, disabled, onCommit, onClose
         ))}
         <div className={styles.trimDim} style={{ left: 0, width: `${offsetPercent}%` }} />
         <div className={styles.trimDim} style={{ left: `${offsetPercent + windowPercent}%`, right: 0 }} />
-        <div className={styles.trimSel} role="slider" tabIndex={disabled || saving ? -1 : 0} aria-label="移动截取选框"
+        <div className={styles.trimSel} role="slider" tabIndex={disabled || saving || selectionDisabled ? -1 : 0} aria-label="移动截取选框"
+          aria-disabled={disabled || saving || selectionDisabled}
           aria-valuemin={0} aria-valuemax={Math.max(maxIn / FPS, sourceInSec)} aria-valuenow={sourceInSec}
           aria-valuetext={`入点 ${formatSec(sourceInSec)}，出点 ${formatSec((sourceInFrame + clipFrames) / FPS)}`}
           onKeyDown={event => {
-            if (disabled || saving || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            if (disabled || saving || selectionDisabled || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
             event.preventDefault(); event.stopPropagation();
             selectStart(event.key === 'Home' ? 0 : event.key === 'End' ? maxIn : Math.min(maxIn, Math.max(0, Math.round(sourceInFrame) + (event.key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? 10 : 1))));
           }}

@@ -1,6 +1,7 @@
 'use client';
 
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
+import FormulaExportPackages from './formula/FormulaExportPackages';
 
 export interface BatchStepExportProps {
   workspace: BatchWorkspaceView;
@@ -22,6 +23,7 @@ export interface BatchStepExportProps {
   selectedBatchId: string;
   /** 项目产品编码:参与正式导出的文件名,为空时服务端会拒绝导出 */
   productCode: string;
+  formulaMode?: boolean;
 }
 
 /**
@@ -78,6 +80,8 @@ export default function BatchStepExport(props: BatchStepExportProps) {
 
   return (
     <div className="min-h-0 flex-1 space-y-4 p-2">
+      {props.formulaMode && <FormulaExportPackages key={`${projectId}:${selectedBatchId}`} projectId={projectId}
+        batchId={selectedBatchId} workspace={workspace} selectedPlanIds={selectedPlanIds} />}
       <div className="card space-y-4 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>

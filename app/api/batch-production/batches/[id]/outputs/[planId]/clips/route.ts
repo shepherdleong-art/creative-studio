@@ -11,6 +11,8 @@ import type { CoverFraming, TextStyle } from '@/lib/media-core/cover-types';
 import { scheduleRenderAfterCoverChange } from '@/lib/batch-production/phase-e';
 import { resolveCoverContractHash } from '@/lib/batch-production/cover-contract';
 import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
+import { applyFormulaManualClipEdit, type FormulaManualClipEdit } from '@/lib/batch-production/formula/manual-clip-edit';
+import { BatchDomainError } from '@/lib/batch-production/errors';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
@@ -46,7 +48,11 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       config?: unknown;
       packaging?: unknown;
       reextract?: unknown;
+      target?: unknown;
+      locked?: unknown;
       expectedOutputVersionId?: unknown;
+      requestKey?: unknown;
+      formulaMedia?: unknown;
       clipId?: unknown;
       sourceStartUs?: unknown;
       sourceEndUs?: unknown;
@@ -59,6 +65,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       gainDb?: unknown;
       fadeInSec?: unknown;
       fadeOutSec?: unknown;
+      ducking?: unknown;
       cueId?: unknown;
       text?: unknown;
       startUs?: unknown;
@@ -82,7 +89,11 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
 
     let edit: BatchOutputClipEdit;
 
-    if (body.type === 'set_packaging') {
+    if (body.type === 'set_presentation_lock') {
+      edit = { type: 'set_presentation_lock', target: body.target as 'packaging' | 'cover', locked: body.locked as boolean };
+    } else if (body.type === 'reassign_presentation') {
+      edit = { type: 'reassign_presentation' };
+    } else if (body.type === 'set_packaging') {
       const view = getBatchOutputArrangementView(getDb(), projectId, id, planId);
       edit = { type: 'set_packaging', config: await prepareBatchPackagingConfig(getDb(), projectId, view, body.config, body.reextract === true), expectedEditRevision: body.expectedEditRevision as number, expectedOutputVersionId: body.expectedOutputVersionId as string };
     } else if (body.type === 'set_source_range') {
@@ -289,6 +300,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
         gainDb: body.gainDb as number,
         fadeInSec: body.fadeInSec as number,
         fadeOutSec: body.fadeOutSec as number,
+        ducking: body.ducking,
       };
     } else if (body.type === 'set_narration_gain') {
       if (typeof body.gainDb !== 'number' || !Number.isFinite(body.gainDb)) {
@@ -376,6 +388,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
     }
 
+    if (body.expectedEditRevision !== undefined) edit.expectedEditRevision = body.expectedEditRevision as number;
+    if (body.expectedOutputVersionId !== undefined) edit.expectedOutputVersionId = body.expectedOutputVersionId as string;
     const db = getDb();
     // 封面契约前后比对:只有封面契约真的变化才排封面任务。BGM、字幕、口播
     // 音量等编辑同样会置 visualChanged,但不能触发封面重渲染;老批次没有
@@ -392,7 +406,13 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
         coverContractBefore = null;
       }
     }
-    const result = applyBatchOutputClipEdit(db, projectId, id, planId, edit);
+    if (body.formulaMedia !== undefined && edit.type !== 'replace' && edit.type !== 'insert') {
+      throw new BatchDomainError('invalid_input', '人工素材核验只用于换片或插入');
+    }
+    const result = body.formulaMedia !== undefined
+      ? await applyFormulaManualClipEdit(db, projectId, id, planId, { ...edit, requestKey: body.requestKey,
+        media: body.formulaMedia } as FormulaManualClipEdit, request.signal)
+      : applyBatchOutputClipEdit(db, projectId, id, planId, edit);
     let coverContractAfter: string | null = null;
     if (outputVersionId && result.visualChanged) {
       try {
