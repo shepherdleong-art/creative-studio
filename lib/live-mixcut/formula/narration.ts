@@ -144,7 +144,7 @@ function saveCache(directory: string, cached: CachedAudio): void {
 export async function synthesizeFormulaNarration(db: Database.Database, projectId: string,
   input: { text: string; service: FormulaTtsService | null }, signal: AbortSignal): Promise<FormulaNarrationResult> {
   signal.throwIfAborted();
-  if (!db.prepare('SELECT 1 FROM projects WHERE id=?').get(projectId)) throw new BatchDomainError('not_found', '配音所属项目不存在');
+  if (!db.prepare('SELECT 1 FROM live_mixcut_projects WHERE id=? AND deletedAt IS NULL').get(projectId)) throw new BatchDomainError('not_found', '配音所属任务不存在');
   if (typeof input.text !== 'string' || !speechContent(input.text) || input.text.length > 20_000) throw new BatchDomainError('invalid_input', '配音文案为空或过长');
   const base = { executionReady: false as const, algorithmVersion: 'formula-narration/1' as const, text: input.text };
   if (!input.service) return { ...base, status: 'needs_attention', reason: 'service_unavailable', message: '本次制作未选择配音音色；请选择后重新发起制作。' };
@@ -183,7 +183,7 @@ export async function synthesizeFormulaNarration(db: Database.Database, projectI
         providerName: current.row.name, providerType: current.row.type, configuredModel: service.voice.model, requestModel: service.voice.model },
       voice: service.voice.voice, speed: service.voice.speed, segments: [{ segmentId: 'narration', narration: input.text }],
       outputDir: path.dirname(absolutePath), relativeOutputPath: relativePath, alignment: current.alignment, signal: taskSignal,
-      usageContext: { projectId, refType: 'formula-narration', refId: path.basename(path.dirname(absolutePath)) },
+      usageContext: { projectId: null, refType: 'live-mixcut-narration', refId: path.basename(path.dirname(absolutePath)) },
     });
     taskSignal.throwIfAborted();
     if (path.resolve(result.absolutePath) !== absolutePath || result.relativePath !== relativePath) throw new Error('invalid output path');

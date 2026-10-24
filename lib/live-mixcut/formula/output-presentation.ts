@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
 import { BatchDomainError } from '../errors.ts';
 import { buildLocalPointCues } from '../../media-core/packaging-cues.ts';
-import { buildPackagingVars, loadProjectPackagingData, parsePackagingConfig } from '../../media-core/packaging-vars.ts';
+import { buildPackagingVars, parsePackagingConfig } from '../../media-core/packaging-vars.ts';
 import { FINAL_EDIT_INTRO_DURATION_US } from '../../media-core/render-contract.ts';
 import type { FormulaGenerationRequest } from './generation.ts';
 import { parseFormulaProductionSettings } from './production-settings.ts';
@@ -20,10 +20,10 @@ export function readFormulaPresentationLocks(value: unknown, legacyEditRevision 
   return { packaging: value.packaging, cover: value.cover };
 }
 
-/** Older/minimal project schemas may not have optional product copy. Never read it again during execution. */
-export function captureFormulaPresentationProject(db: Database.Database, projectId: string) {
-  const columns = db.prepare("SELECT name FROM pragma_table_info('projects') WHERE name IN ('productName','sellingPointsJson')").all();
-  return columns.length === 2 ? loadProjectPackagingData(db, projectId) : {};
+/** 实拍混剪不关联项目：包装标题用任务里填的产品名，暂时没有卖点库。生成时读一次，之后不再读。 */
+export function captureFormulaPresentationProject(db: Database.Database, projectId: string): { productName?: string; sellingPoints?: string[] } {
+  const row = db.prepare('SELECT productName FROM live_mixcut_projects WHERE id = ?').get(projectId) as { productName: string } | undefined;
+  return row?.productName.trim() ? { productName: row.productName.trim() } : {};
 }
 
 function choose(request: Pick<FormulaGenerationRequest, 'seed'>, planId: string, kind: string, ids: string[]): string {

@@ -12,6 +12,7 @@ process.env.FINAL_EDIT_ALIGNMENT_MODEL = 'words-test';
 const originalFetch = globalThis.fetch;
 const db = new Database(':memory:');
 db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY); INSERT INTO projects VALUES ('project-a'),('project-b');
+  CREATE TABLE live_mixcut_projects (id TEXT PRIMARY KEY, deletedAt TEXT); INSERT INTO live_mixcut_projects (id) VALUES ('project-a'),('project-b');
   CREATE TABLE final_edit_tts_providers (id TEXT PRIMARY KEY,name TEXT,type TEXT,baseUrl TEXT,apiKey TEXT,keyEnv TEXT,model TEXT,enabled INTEGER);
   INSERT INTO final_edit_tts_providers VALUES ('vapi-qwen3-tts','测试音色','vapi-qwen-json-url','https://voice.example','test-secret',NULL,'qwen3-tts-flash',1);`);
 

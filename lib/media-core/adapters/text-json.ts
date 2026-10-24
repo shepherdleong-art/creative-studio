@@ -10,7 +10,7 @@ export async function listTextJsonModels(): Promise<Array<Pick<TextJsonModel, 'i
     .map(({ id, name, model }) => ({ id, name, model }));
 }
 
-export async function resolveTextJsonModel(providerId: string, usage: { projectId: string; refType: string; refId: string }): Promise<TextJsonModel> {
+export async function resolveTextJsonModel(providerId: string, usage: { projectId?: string; refType: string; refId: string }): Promise<TextJsonModel> {
   const selected = (await listTextJsonModels()).find(item => item.id === providerId);
   if (!selected) throw new Error('所选脚本模型未配置或不可用，请到设置中检查，也可手动选择列');
   return { ...selected, complete: async input => {

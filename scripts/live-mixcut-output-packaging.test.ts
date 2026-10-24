@@ -30,7 +30,6 @@ try {
   const { createFormulaStageExecutor } = await import('../lib/live-mixcut/formula/stage-executor.ts');
   const { runPendingOnce } = await import('../lib/live-mixcut/runner.ts');
   const { getBatchOutputArrangementView, applyBatchOutputClipEdit } = await import('../lib/live-mixcut/output-arrangement.ts');
-  const { batchPackagingDefaults, prepareBatchPackagingConfig } = await import('../lib/live-mixcut/packaging.ts');
   const { defaultTextStyle } = await import('../lib/media-core/cover-domain.ts');
   const { OUTPUT_PRESETS } = await import('../lib/media-core/cover-types.ts');
   const { runFfmpeg, resolveFfprobePath } = await import('../lib/ffmpeg.ts');
@@ -48,6 +47,7 @@ try {
   const options = { db, ...schemaUpgradeRuntimePaths(root) };
   assert.equal((await checkBatchProductionReadiness(options)).available, true);
   seedLiveMixcutProjects(options, ['p']);
+  db.prepare('UPDATE live_mixcut_projects SET productName=? WHERE id=?').run('实拍椅', 'p');
   assert.equal((await checkBatchProductionReadiness(options)).available, true);
   seedLiveMixcutProjects(options, ['p']);
   db.exec('CREATE TABLE final_edit_bgm_tracks (id TEXT PRIMARY KEY,relativePath TEXT,fileFingerprint TEXT,durationUs INTEGER,status TEXT)');
@@ -81,7 +81,7 @@ try {
   const request = await createFormulaGenerationRequest(db, 'p', batchId, { requestKey: 'packaging', settingsId: settings.saved!.id, expectedInputRevision: 2 });
   // A queued request must not pick up a later edit to the project or preset library.
   db.prepare('DELETE FROM final_edit_title_presets WHERE id=?').run('cover-one');
-  db.prepare('UPDATE projects SET productName=?,sellingPointsJson=? WHERE id=?').run('后来改名', '[{"title":"后来新卖点"}]', 'p');
+  db.prepare('UPDATE live_mixcut_projects SET productName=? WHERE id=?').run('后来改名', 'p');
   await runPendingOnce({ db, workerId: 'packaging', concurrency: 2, executors: [createFormulaStageExecutor()], log: () => {} });
   const views = request.outputs.map(output => getBatchOutputArrangementView(db, 'p', batchId, output.planId));
   assert(views.every(view => view.outputVersionId), '排片完成后应有可编辑成片');
@@ -91,19 +91,11 @@ try {
     assert.equal(view.packaging.varsOverrides?.title, '实拍椅');
     assert.deepEqual(view.coverFraming, { scale: 1.4, offsetX: 0.2, offsetY: -0.1 }, '采用生成时冻结的预设构图');
     assert.equal(view.coverTitle?.styles.primary.color, '#123456', '保存预设完整样式供关闭包装时使用');
-    assert.equal(view.packaging.pointCuesMode, 'timed');
-    assert.equal(view.packaging.pointCues?.[0].text, '轻松擦洗');
-    assert(Math.abs(view.packaging.pointCues![0].startSec - (20 / 24 + 0.1)) < 0.000001, '按实际声音对时，片头偏移只加一次');
   }
-  assert.equal(batchPackagingDefaults(db, 'p', views[0]).point1, '轻松擦洗', '预览和恢复默认不能混入项目后来修改的卖点');
   applyBatchOutputClipEdit(db, 'p', batchId, views[0].planId, { type: 'move_audio_clip', track: 'narration',
     clipId: views[0].audioPlan!.clips[0].id, timelineStartUs: 1_000_000,
     expectedEditRevision: views[0].editRevision, expectedOutputVersionId: views[0].outputVersionId! });
   const moved = getBatchOutputArrangementView(db, 'p', batchId, views[0].planId);
-  const extracted = await prepareBatchPackagingConfig(db, 'p', moved, moved.packaging, true);
-  assert.equal(extracted.pointCuesMode, 'timed');
-  assert.equal(extracted.pointCues?.[0].text, '轻松擦洗');
-  assert(Math.abs(extracted.pointCues![0].startSec - (20 / 24 + 1.1)) < 0.000001, '显式重新提取按该条编辑后的声音对时');
   assert.deepEqual(getBatchOutputArrangementView(db, 'p', batchId, views[1].planId), views[1], '修改一份不能影响同脚本其他份');
   const timeline = readFormulaTimeline(db, 'p', batchId, views[0].planId);
   assert.equal(materializeFormulaOutput(db, 'p', batchId, timeline.stageId!, request), moved.outputVersionId);

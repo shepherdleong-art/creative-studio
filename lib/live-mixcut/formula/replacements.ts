@@ -98,7 +98,7 @@ export async function resolveFormulaReplacementModel(request: FormulaGenerationR
   if (!selected) return null;
   let model: TextJsonModel;
   try { model = await resolveTextJsonModel(selected.providerId as string,
-    { projectId, refType: `formula_${purpose}`, refId: request.id }); }
+    { refType: `live_mixcut_${purpose}`, refId: request.id }); }
   catch { throw new BatchDomainError('invalid_input', `${purpose === 'replacement' ? '缺片替换' : '声音编排'}使用的脚本模型不可用，请恢复原模型配置后重试`); }
   if (model.model !== selected.model) throw new BatchDomainError('conflict', `${purpose === 'replacement' ? '缺片替换' : '声音编排'}的模型已更换，请恢复原模型或重新生成`);
   return model;

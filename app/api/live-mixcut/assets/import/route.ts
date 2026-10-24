@@ -85,7 +85,7 @@ export async function POST(request: NextRequest) {
   // 在读取上传正文前检查项目/批次归属和能力，不能只依赖浏览器隐藏入口。
   try {
     await assertBatchApiReady();
-    if (!getDb().prepare('SELECT 1 FROM projects WHERE id=?').get(projectId)) throw new BatchDomainError('not_found', '项目不存在');
+    if (!getDb().prepare('SELECT 1 FROM live_mixcut_projects WHERE id=? AND deletedAt IS NULL').get(projectId)) throw new BatchDomainError('not_found', '任务不存在');
     if (formulaBatchId !== null) {
       await assertFormulaApiReady();
       assertFormulaBatch(getDb(), projectId, formulaBatchId, true);
@@ -153,7 +153,7 @@ export async function POST(request: NextRequest) {
   try {
     await assertBatchApiReady();
     const db = getDb();
-    const project = db.prepare(`SELECT id FROM projects WHERE id = ?`).get(projectId);
+    const project = db.prepare(`SELECT id FROM live_mixcut_projects WHERE id = ? AND deletedAt IS NULL`).get(projectId);
     if (!project) {
       return NextResponse.json({ error: 'project_not_found', message: '项目不存在' }, {
         status: 404,
