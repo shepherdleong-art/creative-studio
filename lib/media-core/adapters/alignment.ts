@@ -26,7 +26,7 @@ export interface SpeechTranscription {
 }
 export interface SpeechTranscriptionAdapter {
   configured: boolean;
-  readonly identity: Readonly<{ adapterVersion: 'openai-word-transcription/1'; model: string; endpointHash: string }>;
+  readonly identity: Readonly<{ adapterVersion: 'openai-word-transcription/1' | 'volc-flash-asr/1'; model: string; endpointHash: string }>;
   transcribe(input: { audioPath: string; durationUs: number; signal?: AbortSignal }): Promise<SpeechTranscription>;
 }
 
