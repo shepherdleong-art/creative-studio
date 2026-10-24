@@ -13,7 +13,6 @@ import { readFormulaExportIdentity } from './formula/export-identity.ts';
 import {
   clearBatchAssetExclusion,
   persistBatchAllocation,
-  persistOutputReallocation,
   setBatchAssetExclusion,
   type PersistedAllocationRun,
 } from './allocation-store.ts';
@@ -23,10 +22,8 @@ import {
   reserveBatchExportTarget,
   type BatchExportRenderContract,
 } from './batch-export.ts';
-import { startBatchProduction } from './batch-flow.ts';
-import { freezeBatchMusicPool, readBatchBgmPool } from './bgm.ts';
 import { BatchDomainError } from './errors.ts';
-import { assertSemanticBatch, getBatchPlanningMode } from './planning-mode.ts';
+import { getBatchPlanningMode } from './planning-mode.ts';
 import { formulaExecutionAvailable } from './formula/execution-gate.ts';
 import { formulaOutputExecutionReady, formulaOutputCoverReady } from './formula/execution-store.ts';
 import { checkBatchFormulaExecution } from './batch-renderer.ts';
@@ -134,44 +131,6 @@ function getBatchLineage(
   return row;
 }
 
-/** 该批次版本仍未完成(queued/running)的口播任务数。 */
-function countIncompleteBatchNarrationTasks(db: Database.Database, batchVersionId: string): number {
-  const row = db.prepare(`
-    SELECT COUNT(*) AS n
-    FROM live_mixcut_tasks t
-    JOIN live_mixcut_script_snapshots s ON s.id = t.targetId
-    WHERE t.workType = 'narration' AND t.targetKind = 'script_snapshot'
-      AND s.batchVersionId = ?
-      AND t.status IN ('queued', 'running')
-  `).get(batchVersionId) as { n: number };
-  return row.n;
-}
-
-/** 冻结后为版本内每份脚本快照建一条口播任务(同脚本 N 条成片共用一条)。 */
-function scheduleNarrationTasks(
-  db: Database.Database,
-  projectId: string,
-  batchId: string,
-  batchVersionId: string,
-  now?: () => Date,
-): Record<string, string> {
-  const snapshotIds = db.prepare(`
-    SELECT id FROM live_mixcut_script_snapshots WHERE batchVersionId = ? ORDER BY createdAt, id
-  `).all(batchVersionId) as Array<{ id: string }>;
-  const taskIds: Record<string, string> = {};
-  for (const { id: snapshotId } of snapshotIds) {
-    taskIds[`narration:${snapshotId}`] = createBatchTask(db, projectId, {
-      batchId,
-      workType: 'narration',
-      targetKind: 'script_snapshot',
-      targetId: snapshotId,
-      requestKey: `narration:${batchVersionId}:${snapshotId}`,
-      now,
-    });
-  }
-  return taskIds;
-}
-
 function scheduleAllocationRenderTasks(
   db: Database.Database,
   projectId: string,
@@ -219,126 +178,6 @@ function scheduleAllocationRenderTasks(
     });
   }
   return taskIds;
-}
-
-/**
- * Freeze a draft batch (or resume a previously frozen start request), then run
- * the production pipeline in order: 口播 → 分配 → 封面。
- *
- * After the freeze point only narration tasks are enqueued; the batch-wide
- * allocation and cover tasks are deferred until every narration task of this
- * version has reached a terminal state. An unfinished narration returns
- * `narration_pending` (same resume mechanism as semantic scoring: PUT /start
- * is idempotent and re-entered by the frontend once tasks settle). Failed
- * narrations still proceed to allocation so silent preview candidates can be
- * checked; formal publishing stays behind `assertNarrationPublishable`.
- *
- * 编辑器优先模型:生产阶段只出封面,不渲染整片 mp4;完整视频渲染由导出
- * 阶段按完整渲染契约按需触发。
- *
- * BGM is a required output component: the shared library is snapshotted into
- * the frozen version at lock time, so later library changes never mutate an
- * already-locked batch. An empty library blocks start with a readable reason.
- */
-export function startOrResumePhaseE(
-  db: Database.Database,
-  projectId: string,
-  batchId: string,
-  now?: () => Date,
-): BatchPhaseEStartResult {
-  assertSemanticBatch(db, projectId, batchId);
-  let lineage = getBatchLineage(db, projectId, batchId);
-  if (lineage.controlState === 'stopped') {
-    throw new BatchDomainError('conflict', '批次已停止,不能再次启动生产');
-  }
-  if (lineage.inputState === 'draft') {
-    // Phase B keeps its conservative default, while Phase E freezes the
-    // selected pool and lets the allocator exclude offline/archived entries
-    // per plan instead of rejecting every sibling before allocation.
-    startBatchProduction(db, projectId, batchId, now, { allowUnavailableAssets: true });
-    lineage = getBatchLineage(db, projectId, batchId);
-  }
-  const batchVersionId = lineage.currentVersionId!;
-  // 曲库在锁定时快照进冻结版本;同一批次版本的重跑/重分配复用同一份池。
-  const musicPool = readBatchBgmPool(db);
-  if (musicPool.length === 0) {
-    throw new BatchDomainError('conflict', '曲库为空：请先把背景音乐放入 storage/bgm/ 目录并重新扫描后再开始批量生产');
-  }
-  freezeBatchMusicPool(db, batchVersionId, musicPool);
-  // 口播先于分配:冻结后只建口播任务,不再立即调 persistBatchAllocation。
-  scheduleNarrationTasks(db, projectId, batchId, batchVersionId, now);
-  const narrationPending = countIncompleteBatchNarrationTasks(db, batchVersionId);
-  if (narrationPending > 0) {
-    return {
-      status: 'narration_pending',
-      batchId,
-      batchVersionId,
-      narrationPending,
-    };
-  }
-  const allocation = persistBatchAllocation(db, projectId, batchVersionId, { now });
-  const taskIds = db.transaction(() => scheduleAllocationRenderTasks(
-    db,
-    projectId,
-    batchId,
-    allocation,
-    now,
-  ))();
-  return {
-    status: 'running',
-    batchId,
-    batchVersionId,
-    allocationRunId: allocation.runId,
-    allocationCreated: allocation.created,
-    allocationStatus: allocation.result.status,
-    outputVersionIds: allocation.outputVersionIds,
-    taskIds,
-  };
-}
-
-/** Reallocate one plan only and enqueue a render only when it gained a new version. */
-export function reallocateAndScheduleOutput(
-  db: Database.Database,
-  projectId: string,
-  batchId: string,
-  planId: string,
-  reason = 'manual',
-  now?: () => Date,
-): BatchAllocationSchedulingResult {
-  assertSemanticBatch(db, projectId, batchId);
-  const lineage = getBatchLineage(db, projectId, batchId);
-  if (lineage.inputState !== 'frozen') {
-    throw new BatchDomainError('conflict', '批次尚未启动,不能重新分配成片');
-  }
-  if (lineage.controlState === 'stopped') {
-    throw new BatchDomainError('conflict', '批次已停止,不能重新分配成片');
-  }
-  const batchVersionId = lineage.currentVersionId!;
-  const allocation = persistOutputReallocation(
-    db,
-    projectId,
-    batchVersionId,
-    planId,
-    reason,
-    { now },
-  );
-  const taskIds = db.transaction(() => scheduleAllocationRenderTasks(
-    db,
-    projectId,
-    batchId,
-    allocation,
-    now,
-  ))();
-  return {
-    status: 'running' as const,
-    batchId,
-    batchVersionId,
-    allocationRunId: allocation.runId,
-    allocationCreated: allocation.created,
-    allocationStatus: allocation.result.status,
-    outputVersionIds: allocation.outputVersionIds,
-    taskIds,
-  };
 }
 
 /**
