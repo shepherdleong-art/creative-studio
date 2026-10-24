@@ -39,7 +39,8 @@ import { createMusicDuckingEnvelope, musicDuckingExpression, readMusicDucking } 
 import { buildMusicTimeline } from '../media-core/music-timeline.ts';
 import { audioEdgeFades, audioEdgeFilter } from '../media-core/audio-edges.ts';
 import { audioProtectionFilter } from '../media-core/audio-protection.ts';
-import { FORMULA_STEREO_FILTER } from '../media-core/audio-stereo.ts';
+import { formulaStereoFilter } from '../media-core/audio-stereo.ts';
+import { probeAudioChannels } from '../media-core/audio-channels.ts';
 import { assertProjectAssetFileIdentity, projectAssetFileIdentity } from './project-asset-media.ts';
 import { formulaOutputExecutionReady } from './formula/execution-store.ts';
 import { resolvePackagingDir, resolvePackagingTemplateDir } from '../media-core/packaging-runtime.ts';
@@ -1028,15 +1029,23 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     });
     const audioInput = snapshot.clips.length;
     const bgm = await resolveBatchBgm(snapshot.arrangement, snapshot.versionDefaultsJson, resolvedStorageRoot, input.db);
+    // Same channel split as the speech clips: keep background music's upmix level-faithful.
+    const bgmChannels = bgm ? await probeAudioChannels(bgm.absolutePath, { signal }) : 0;
     const args: string[] = [];
     snapshot.clips.forEach((clip) => {
       args.push('-ss', (clip.sourceStartUs / 1_000_000).toFixed(6), '-t', ((clip.sourceEndUs - clip.sourceStartUs) / 1_000_000).toFixed(6), '-i', clip.sourcePath);
     });
     const formulaInputs = new Map<string, number>();
+    // Probing the source channel count lets each clip use an explicit pan
+    // mapping. aformat's mono→stereo upmix attenuates 3dB and negotiates the
+    // layout before `volume` sees nb_channels, so a channel-conditional gain
+    // silently stops firing on some FFmpeg builds (see media-core/audio-stereo).
+    const formulaChannels = new Map<string, number>();
     if (formulaAudio) {
       for (const [mediaId, filename] of formulaAudio.audioFiles) {
         formulaInputs.set(mediaId, audioInput + formulaInputs.size);
         args.push('-i', filename);
+        formulaChannels.set(mediaId, await probeAudioChannels(filename, { signal }));
       }
     } else if (narrationPath) args.push('-i', narrationPath);
     else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
@@ -1117,7 +1126,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
         // Preserve delayed source tracks by filling to video time zero first.
         const delaySamples = Math.round(clip.timelineStartUs * 48_000 / 1e6);
         const edgeFilter = audioEdgeFilter(edges.get(clip.id)!, clip.timelineEndUs - clip.timelineStartUs);
-        filters.push(`[${formulaInputs.get(clip.mediaId)}:a:0]${FORMULA_STEREO_FILTER},aresample=48000:async=1:first_pts=0,atrim=start=${from}:end=${to},asetpts=PTS-STARTPTS,` +
+        filters.push(`[${formulaInputs.get(clip.mediaId)}:a:0]${formulaStereoFilter(formulaChannels.get(clip.mediaId))},aresample=48000:async=1:first_pts=0,atrim=start=${from}:end=${to},asetpts=PTS-STARTPTS,` +
           `${edgeFilter ? `${edgeFilter},` : ''}volume=${gain.toFixed(3)}dB,adelay=${delaySamples}S:all=1,` +
           `asetpts=N/SR/TB,apad,atrim=duration=${bodyDurationSec.toFixed(6)}[formulaSound${index}]`);
       }
@@ -1154,7 +1163,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
             const sourceStart = (clip.sourceStartUs / 1e6).toFixed(6), sourceEnd = (clip.sourceEndUs / 1e6).toFixed(6);
             const delaySamples = Math.round(clip.timelineStartUs * 48_000 / 1e6);
             const edgeFilter = audioEdgeFilter(edges.get(clip.id)!, clip.timelineEndUs - clip.timelineStartUs);
-            filters.push(`[${bgmInput}:a]${FORMULA_STEREO_FILTER},aresample=48000,asetpts=N/SR/TB,atrim=start=${sourceStart}:end=${sourceEnd},asetpts=N/SR/TB,${edgeFilter ? `${edgeFilter},` : ''}adelay=${delaySamples}S:all=1,asetpts=N/SR/TB,apad,atrim=duration=${bodyDurationSec.toFixed(6)}[bseg${i}]`);
+            filters.push(`[${bgmInput}:a]${formulaStereoFilter(bgmChannels)},aresample=48000,asetpts=N/SR/TB,atrim=start=${sourceStart}:end=${sourceEnd},asetpts=N/SR/TB,${edgeFilter ? `${edgeFilter},` : ''}adelay=${delaySamples}S:all=1,asetpts=N/SR/TB,apad,atrim=duration=${bodyDurationSec.toFixed(6)}[bseg${i}]`);
           }
           const labels = musicTimeline.clips.map((_, i) => `[bseg${i}]`).join('');
           filters.push(`${labels}amix=inputs=${musicTimeline.clips.length}:normalize=0:duration=longest:dropout_transition=0,volume=${bgmParams.gainDb.toFixed(1)}dB,${fades ? `${fades},` : ''}asetpts=N/SR/TB[music]`);
