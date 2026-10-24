@@ -206,7 +206,10 @@ export function planFormulaDuration(input: FormulaDurationInput): FormulaDuratio
   });
   let cursor = 0;
   const clips = prepared.map((item, index): FormulaDurationClip => {
-    const sourceStart = item.fixedStart ?? Math.max(item.start, (item.protectedEnd ?? item.start) - durations[index]);
+    // 没有人工区间、没有原声、没有保护动作的镜头，从默认取用范围的正中间取。
+    const centered = !item.slot.range.confirmed && !item.source && item.protectedStart === undefined
+      ? item.start + Math.floor((item.end - item.start - durations[index]) / 2) : undefined;
+    const sourceStart = item.fixedStart ?? centered ?? Math.max(item.start, (item.protectedEnd ?? item.start) - durations[index]);
     const sourceEnd = sourceStart + durations[index];
     const timelineStartFrame = cursor; cursor += durations[index];
     return { slotId: item.slot.slotId, logicalCode: item.slot.logicalCode, assetId: item.slot.assetId,
@@ -225,6 +228,8 @@ export function planFormulaDuration(input: FormulaDurationInput): FormulaDuratio
   if (target.mode === 'reference' && bodyFrames !== targetBody) issues.push({ code: 'target_deviation', slotIds: slots.map(slot => slot.slotId), differenceFrames: bodyFrames - targetBody, message: '按完整内容生成的片长与参考目标不同，请审片核对' });
   const unconfirmed = slots.filter(slot => !slot.range.confirmed).map(slot => slot.slotId);
   if (unconfirmed.length) issues.push({ code: 'range_unconfirmed', slotIds: unconfirmed, message: '这些裁切区间仍需审片确认' });
+  const reduced = slots.filter(slot => slot.range.id.startsWith('suggested-reduced:')).map(slot => slot.slotId);
+  if (reduced.length) issues.push({ code: 'range_unconfirmed', slotIds: reduced, message: '这些镜头的素材较短，开头结尾少去了一些，请审片确认' });
   return { status: 'planned', algorithmVersion: 'formula-duration/1', executionReady: false, fps: FINAL_EDIT_FPS,
     introFrames: FINAL_EDIT_INTRO_FRAMES, bodyFrames, totalFrames, bodyDurationUs: time(bodyFrames), totalDurationUs: time(totalFrames),
     audioRevisionId: audio.revisionId, target: { ...target, quantizedFrames, bodyFrames: Math.max(0, targetBody),

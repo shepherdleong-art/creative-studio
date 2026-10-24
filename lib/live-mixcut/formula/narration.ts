@@ -5,7 +5,7 @@ import type Database from 'better-sqlite3';
 import { dataRoot } from '../../data-root.ts';
 import { assertNoStorageSymlink } from '../../media-core/storage-path.ts';
 import { getFinalEditTtsAdapter } from '../../media-core/adapters/tts-registry.ts';
-import { createOpenAiAlignmentAdapter, createOpenAiTranscriptionAdapter, speechContent, type AlignmentWordTiming } from '../../media-core/adapters/alignment.ts';
+import { createOpenAiAlignmentAdapter, createOpenAiTranscriptionAdapter, SPEECH_EMOJI, speechContent, type AlignmentWordTiming } from '../../media-core/adapters/alignment.ts';
 import { assertTtsSpeed } from '../../media-core/tts-speed.ts';
 import { computeFingerprintFromBuffer } from '../fingerprint.ts';
 import { BatchDomainError } from '../errors.ts';
@@ -181,7 +181,7 @@ export async function synthesizeFormulaNarration(db: Database.Database, projectI
     const result = await current.adapter.synthesize({
       provider: { baseUrl: current.baseUrl, apiKey: current.apiKey, model: service.voice.model, providerId: current.row.id,
         providerName: current.row.name, providerType: current.row.type, configuredModel: service.voice.model, requestModel: service.voice.model },
-      voice: service.voice.voice, speed: service.voice.speed, segments: [{ segmentId: 'narration', narration: input.text }],
+      voice: service.voice.voice, speed: service.voice.speed, segments: [{ segmentId: 'narration', narration: input.text.replace(SPEECH_EMOJI, '') }],
       outputDir: path.dirname(absolutePath), relativeOutputPath: relativePath, alignment: current.alignment, signal: taskSignal,
       usageContext: { projectId: null, refType: 'live-mixcut-narration', refId: path.basename(path.dirname(absolutePath)) },
     });

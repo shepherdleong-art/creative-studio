@@ -15,7 +15,7 @@ export interface FormulaProductionOptions {
 }
 
 export function defaultFormulaProductionSettings(): FormulaProductionSettings {
-  return { outputPreset: '9x16', audio: { mode: 'mixed', tts: null },
+  return { outputPreset: '3x4', audio: { mode: 'mixed', tts: null },
     packaging: { mode: 'uniform', templateIds: ['overlay-poster'] }, cover: { mode: 'default', presetIds: [] } };
 }
 

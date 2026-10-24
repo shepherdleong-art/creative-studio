@@ -111,7 +111,7 @@ try {
   randomRequest.input.settings.settings.production.cover = { mode: 'random', presetIds: ['cover-one', 'cover-two'] };
   const secondPreset = structuredClone(randomRequest.input.productionResources.covers[0]);
   secondPreset.id = 'cover-two'; secondPreset.name = '偏左构图';
-  secondPreset.preset.stylesByPreset['9x16'].framing = { scale: 1.8, offsetX: -0.3, offsetY: 0.1 };
+  secondPreset.preset.stylesByPreset['3x4'].framing = { scale: 1.8, offsetX: -0.3, offsetY: 0.1 };
   randomRequest.input.productionResources.covers.push(secondPreset);
   const allocation = randomRequest.outputs.map(output => initialFormulaPresentation(randomRequest, output.planId, 'timeline-fixture', plannedTimeline));
   assert.equal(new Set(allocation.map(item => item.packaging.template)).size, 4, '同脚本多份可独立采用四种已选包装');

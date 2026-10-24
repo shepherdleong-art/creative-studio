@@ -116,7 +116,7 @@ try {
   db.prepare('INSERT INTO live_mixcut_formula_settings (id,collectionId,revision,scriptsSessionId,contentJson,createdAt) VALUES (?,?,?,?,?,?)')
     .run('legacy-settings', getFormulaCollection(db, 'p', legacyBatch)!.id, 1, legacyDraft.id, JSON.stringify(legacySettings), new Date().toISOString());
   const legacy = readFormulaSettings(db, 'p', legacyBatch);
-  assert.deepEqual(legacy.saved!.settings.production, { outputPreset: '9x16', audio: { mode: 'mixed', tts: null },
+  assert.deepEqual(legacy.saved!.settings.production, { outputPreset: '3x4', audio: { mode: 'mixed', tts: null },
     packaging: { mode: 'uniform', templateIds: ['overlay-poster'] }, cover: { mode: 'default', presetIds: [] } });
   assert.equal((await saveFormulaSettings(db, 'p', legacyBatch, { expectedInputRevision: 1, expectedSettingsRevision: 1,
     scriptsSessionId: legacyDraft.id, settings: legacySettings })).saved!.id, 'legacy-settings');

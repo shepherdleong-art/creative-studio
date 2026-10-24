@@ -169,8 +169,11 @@ export function createOpenAiTranscriptionAdapter(
   } };
 }
 
-/** 忽略句读、空白与字母大小写；保留数字的小数点、正负号、百分号等含义。 */
+/** 表情符号不朗读：配音前去掉，核对台词时也不算。 */
+export const SPEECH_EMOJI = /[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}]/gu;
+
+/** 忽略句读、空白、表情符号与字母大小写；保留数字的小数点、正负号、百分号等含义。 */
 export function speechContent(text: string): string {
-  return text.normalize('NFKC').replace(/[\s，。！？；：、!?;:…“”‘’"'（）()【】\[\]]/gu, '')
+  return text.normalize('NFKC').replace(SPEECH_EMOJI, '').replace(/[\s，。！？；：、!?;:…“”‘’"'（）()【】\[\]]/gu, '')
     .replace(/(?<!\p{N})[.,]|[.,](?!\p{N})/gu, '').toLowerCase();
 }

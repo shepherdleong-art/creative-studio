@@ -233,7 +233,7 @@ try {
   // A split retains the same media identity. Moving the TTS changes only its
   // destination; extending the last silent picture keeps the whole edit covered.
   edit({ type: 'split', clipId: view.clips[0].clipId, offsetUs: 1_000_000 });
-  edit({ type: 'trim_variable', clipId: view.clips[1].clipId, sourceStartUs: 0, sourceEndUs: 1_500_000 });
+  edit({ type: 'trim_variable', clipId: view.clips[1].clipId, sourceStartUs: view.clips[1].sourceStartUs, sourceEndUs: 2_000_000 });
   edit({ type: 'move_audio_clip', track: 'narration', clipId: view.audioPlan!.clips[1].id, timelineStartUs: 2_500_000 });
   edit({ type: 'split_audio_clip', track: 'narration', clipId: view.audioPlan!.clips[1].id, atUs: 3_000_000 });
   edit({ type: 'set_narration_gain', gainDb: -6 });

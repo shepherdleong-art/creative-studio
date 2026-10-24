@@ -203,11 +203,11 @@ try {
   const replacement = { type: 'replace' as const, clipId: target.clipId, assetId: addedAssets[1],
     expectedOutputVersionId: before.outputVersionId!, expectedEditRevision: before.editRevision,
     requestKey: 'replace-verified', media: { contentFingerprint: before.clips.find(clip => clip.assetId === addedAssets[1])!.contentFingerprint,
-      inUs: 250_000, outUs: 250_000 + target.sourceEndUs - target.sourceStartUs, protected: { inUs: 750_000, outUs: 1_000_000 },
+      inUs: 208_333, outUs: 1_791_667, protected: { inUs: 750_000, outUs: 1_000_000 },
       sound: 'mute' as const, segments: [], confirmed: true } };
   await applyFormulaManualClipEdit(db, 'p', batchId, planId, replacement);
   assert.equal(view().clips.find(clip => clip.clipId === target.clipId)!.assetId, addedAssets[1]);
-  assert.equal(view().clips.find(clip => clip.clipId === target.clipId)!.sourceStartUs, 250_000, '不能默默从新片开头取用');
+  assert.equal(view().clips.find(clip => clip.clipId === target.clipId)!.sourceStartUs, 208_333, '不能默默从新片开头取用');
   assert(view().reviewContext!.issues.some(issue => issue.message.includes('人工选定区间') && issue.message.includes('新素材原声静音')));
   assert(!view().reviewContext!.issues.some(issue => issue.message.includes('镜头 2（G1）使用系统安排')));
   await work();
@@ -244,7 +244,7 @@ try {
     sourceEndUs: target.sourceEndUs - target.sourceStartUs, expectedEditRevision: view().editRevision, expectedOutputVersionId: view().outputVersionId! }), /核验/);
   assert.equal(view().editRevision, afterDenied.editRevision, '非法取用区间不能部分保存');
   await assert.rejects(() => applyFormulaManualClipEdit(db, 'p', batchId, planId, { ...replacement, requestKey: 'not-on-frame',
-    expectedEditRevision: view().editRevision, media: { ...replacement.media, inUs: 250_001, outUs: replacement.media.outUs + 1 } }), /帧边界/);
+    expectedEditRevision: view().editRevision, media: { ...replacement.media, inUs: replacement.media.inUs + 1, outUs: replacement.media.outUs + 1 } }), /帧边界/);
   const protectedSnapshot = view();
   applyBatchOutputClipEdit(db, 'p', batchId, planId, { type: 'split', clipId: target.clipId, offsetUs: 666_667,
     expectedOutputVersionId: view().outputVersionId!, expectedEditRevision: view().editRevision });

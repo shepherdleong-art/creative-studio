@@ -35,6 +35,24 @@ export type FormulaTimelineResult = Exclude<FormulaDurationResult, { status: 'pl
 function invalid(message: string): never { throw new BatchDomainError('invalid_input', message); }
 
 /** 把已核验的原声/实际配音放到正文时间轴；封面偏移由预览和渲染统一加一次。 */
+// 非口播镜头的默认取用范围：素材开头、结尾一般是无效片段，默认去掉开头 3 秒、结尾 2 秒，
+// 不够用时开头最少也去 2 秒；还不够就按比例少去一些，id 标成 suggested-reduced，审片时提示。
+// 口播镜头保留整段，由原声区间决定取哪里（见 duration.ts）。
+const DEFAULT_HEAD_US = 3_000_000, MIN_HEAD_US = 2_000_000, DEFAULT_TAIL_US = 2_000_000;
+function suggestedRange(slot: { slotId: string; mediaDurationUs: number }, preferredUs: number, hasSpeech: boolean) {
+  const durationUs = slot.mediaDurationUs;
+  const base = { protected: null, confirmed: false };
+  if (hasSpeech) return { ...base, id: `suggested:${slot.slotId}`, inUs: 0, outUs: durationUs };
+  for (const headUs of [DEFAULT_HEAD_US, MIN_HEAD_US]) {
+    if (durationUs - headUs - DEFAULT_TAIL_US >= preferredUs) {
+      return { ...base, id: `suggested:${slot.slotId}`, inUs: headUs, outUs: durationUs - DEFAULT_TAIL_US };
+    }
+  }
+  const spareUs = Math.max(0, durationUs - preferredUs);
+  const headUs = Math.round(spareUs * MIN_HEAD_US / (MIN_HEAD_US + DEFAULT_TAIL_US));
+  return { ...base, id: `suggested-reduced:${slot.slotId}`, inUs: headUs, outUs: durationUs - (spareUs - headUs) };
+}
+
 export function buildFormulaTimeline(input: FormulaTimelineInput): FormulaTimelineResult {
   const mapping = input.mapping.result;
   if (mapping.status === 'waiting_speech') return { status: 'waiting_audio', executionReady: false, pendingIds: mapping.slotIds };
@@ -48,10 +66,12 @@ export function buildFormulaTimeline(input: FormulaTimelineInput): FormulaTimeli
     && voice.text === item.text && JSON.stringify(voice.slotIds) === JSON.stringify(item.slotIds) && JSON.stringify(voice.blockIds) === JSON.stringify(item.blockIds)))) {
     invalid('实际配音与这份成片的文案映射不一致');
   }
+  const speechSlotIds = new Set(mapping.sources.map(source => source.slotId));
   const candidates: FormulaDurationSlot[][] = input.slots.map(slot => {
+    const preferredDurationUs = Math.max(1, Math.round(input.target.durationUs / Math.max(1, input.slots.length)));
     const ranges = slot.ranges.length ? slot.ranges.map(range => ({ ...range, confirmed: true }))
-      : [{ id: `suggested:${slot.slotId}`, inUs: 0, outUs: slot.mediaDurationUs, protected: null, confirmed: false }];
-    return ranges.map(range => ({ ...slot, preferredDurationUs: Math.max(1, Math.round(input.target.durationUs / Math.max(1, input.slots.length))), range }));
+      : [suggestedRange(slot, preferredDurationUs, speechSlotIds.has(slot.slotId))];
+    return ranges.map(range => ({ ...slot, preferredDurationUs, range }));
   });
   const durationAudio: Extract<FormulaDurationAudio, { status: 'ready' }> = { status: 'ready',
     revisionId: input.narration?.stageId ?? input.mapping.stageId,

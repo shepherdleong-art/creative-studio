@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createOpenAiAlignmentAdapter, createOpenAiTranscriptionAdapter } from '../lib/media-core/adapters/alignment.ts';
+import { createOpenAiAlignmentAdapter, createOpenAiTranscriptionAdapter, speechContent } from '../lib/media-core/adapters/alignment.ts';
 import { alignOrProportionallyTime } from '../lib/media-core/adapters/tts-common.ts';
 
 const config = { baseUrl: 'https://speech.example.test/v1', apiKey: 'test-secret', model: 'whisper-1' };
@@ -88,5 +88,6 @@ try {
   const unavailable = await alignOrProportionallyTime({ alignment: createOpenAiAlignmentAdapter({}), audioPath,
     narration: '你好', durationUs: 1_000_000, segmentId: 's1' });
   assert.equal(unavailable.degraded, true, '保留旧流程中明确标为估算的退路');
+  assert.equal(speechContent('买沙发🛋️前'), speechContent('买沙发前'));
   console.log('media speech tests passed');
 } finally { globalThis.fetch = originalFetch; }
