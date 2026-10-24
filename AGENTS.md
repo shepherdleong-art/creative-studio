@@ -96,6 +96,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 | `docs/reference/打包与桌面运行.md` | 改打包脚本、快启脚本、Electron 桌面壳 |
 | `docs/reference/详情页智能脚本生成.md` | 改 `lib/script-studio/` 任何东西 |
 | `docs/reference/创作画布.md` | 改 `lib/creative-canvas/`、`app/api/canvas/`、`components/creative-canvas/`、`app/canvas/` 任何东西 |
+| `docs/reference/实拍混剪.md` | 改 `lib/live-mixcut/`、`app/live-mixcut/`、`app/api/live-mixcut/`、`components/live-mixcut/` 任何东西 |
 | `docs/reference/视频包装.md` | 改共享包装、四套模板、单条或批量包装入口、离线包装运行资源 |
 | `docs/reference/固定渲染命令.md` | 改 `lib/film-render/`、`scripts/film-render.ts` 或 classic 渲染验收 |
 
@@ -119,6 +120,10 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 - `creative-canvas/` — 独立画布模块：纯图定义与能力表、自己的迁移流与共享升级 gate、计划器与持久化调度器（全局默认 10 名额）、执行器与恢复、素材与产物、ZIP 导出、用量包装。红线：不写旧 `jobs`／`video_jobs`／`projects`／`shot_sets`，只从 `media-core/` 方向取共享能力，绝不从 `final-edit/` 导入；开关关闭时不建表、不起 worker。
 - 页面与接口：`app/canvas/`（列表与编辑器）、`app/api/canvas/`（画布、素材、计划、运行、任务、导出、模型能力）；前端组件在 `components/creative-canvas/`，React Flow 样式在 `app/globals.css` 的 Tailwind 导入之后。
+
+**实拍混剪** — 细节见 `docs/reference/实拍混剪.md`
+
+- `live-mixcut/` — 独立任务、迁移流与调度器；只从 `media-core/` 取共享能力，不 import 批量和 `final-edit`，开关关闭时不建表、不起后台任务。
 
 **供应商与队列** — 细节见 `docs/reference/供应商与队列.md`
 
