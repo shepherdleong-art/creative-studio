@@ -20,7 +20,7 @@ export interface BatchStepExportProps {
   folderRelativePath: string | null;
   projectId: string;
   selectedBatchId: string;
-  /** 项目产品编码:参与正式导出的文件名,为空时服务端会拒绝导出 */
+  /** 项目产品名:参与正式导出的文件名,为空时服务端会拒绝导出 */
   productCode: string;
   formulaMode?: boolean;
 }
@@ -55,7 +55,7 @@ export default function BatchStepExport(props: BatchStepExportProps) {
   const productCodeMissing = !productCode.trim();
   const hasPublished = workspace.cards.some(({ currentFormalArtifact }) => Boolean(currentFormalArtifact));
   const exportFolder = folderRelativePath
-    ?? (hasPublished && workspace.exportDirName ? `storage/projects/${workspace.exportDirName}/成片` : null);
+    ?? (hasPublished && workspace.exportDirName ? `storage/live-mixcut/exports/${workspace.exportDirName}/成片` : null);
   const selectable = workspace.cards.filter(({ exportEligible }) => exportEligible);
   const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
   const selectedExportCount = selectable.filter(({ planId }) => selectedPlanIds.includes(planId)).length;
@@ -95,15 +95,15 @@ export default function BatchStepExport(props: BatchStepExportProps) {
               type="button"
               className="btn-primary text-xs"
               disabled={phaseEBusy !== null || selectedExportCount === 0 || productCodeMissing}
-              title={productCodeMissing ? '请先在项目信息中填写产品编码' : undefined}
+              title={productCodeMissing ? '请先在项目信息中填写产品名' : undefined}
               onClick={onPublish}
-            >{phaseEBusy === 'export' ? '导出中…' : productCodeMissing ? '请先填写产品编码' : `正式导出选中项（${selectedExportCount}）`}</button>
+            >{phaseEBusy === 'export' ? '导出中…' : productCodeMissing ? '请先填写产品名' : `正式导出选中项（${selectedExportCount}）`}</button>
           </div>
         </div>
         {productCodeMissing && (
           <div className="rounded-xl bg-warn/10 px-4 py-3 text-xs leading-5 text-warn" role="alert">
-            <strong className="font-medium">还差一步：本项目还没有产品编码。</strong>
-            <span className="ml-1">导出文件名会包含产品编码及脚本、开头、包装编号。请回到项目信息补上产品编码后再来导出。</span>
+            <strong className="font-medium">还差一步：本项目还没有产品名。</strong>
+            <span className="ml-1">导出文件名会包含产品名及脚本、开头、包装编号。请回到项目信息补上产品名后再来导出。</span>
           </div>
         )}
         {awaitingReview > 0 && (

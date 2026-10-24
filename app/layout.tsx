@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { connection } from "next/server";
 import Header from "@/components/Header";
 import { canvasFeatureEnabled } from "@/lib/creative-canvas/config";
+import { liveMixcutFeatureEnabled } from "@/lib/live-mixcut/config";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -27,7 +28,7 @@ const themeInitScript = `(function(){try{var p=localStorage.getItem('creative-st
 async function RuntimeHeader() {
   // Read the server's runtime flag so standalone builds can enable the entry at launch.
   await connection();
-  return <Header canvasEnabled={canvasFeatureEnabled()} />;
+  return <Header canvasEnabled={canvasFeatureEnabled()} liveMixcutEnabled={liveMixcutFeatureEnabled()} />;
 }
 
 export default function RootLayout({
