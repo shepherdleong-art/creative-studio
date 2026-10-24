@@ -99,6 +99,13 @@ try {
   await orchestrateBatchExport(db, 'p', batchId, [planId], { wakeScheduler: () => {} });
   await runPendingOnce({ db, workerId: 'external-publish', executors: [createFormulaStageExecutor(), createBatchRenderExecutor()], log: () => {} });
   assert.equal((await orchestrateBatchExport(db, 'p', batchId, [planId], { wakeScheduler: () => {} })).items[0].status, 'published');
+  const { writeFormulaExportFolderManifest } = await import('../lib/live-mixcut/formula/export-manifest.ts');
+  writeFormulaExportFolderManifest(db, 'p', batchId);
+  const exportedWorkspace = getBatchWorkspace(db, 'p', batchId);
+  const manifestPath = path.join(root, 'storage', 'live-mixcut', 'exports', exportedWorkspace.exportDirName, '成片', '清单.csv');
+  const manifestCsv = fs.readFileSync(manifestPath, 'utf8');
+  assert(manifestCsv.startsWith('\ufeff"原脚本号",'));
+  assert(manifestCsv.includes(exportedWorkspace.cards[0].currentFormalArtifact!.video.relativePath.replaceAll('\\', '/').split('/').at(-1)!));
   const narration = readFormulaNarration(db, 'p', batchId, planId), sound = narration.result!.items[0];
   const media = resolveFormulaNarrationMedia(db, 'p', batchId, planId, narration.selectionStageId, sound.id);
   const original = fs.readFileSync(media.absolutePath), corrupt = Buffer.from(original); corrupt[corrupt.length - 2] ^= 1;

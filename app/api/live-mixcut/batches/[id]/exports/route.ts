@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { orchestrateBatchExport } from '@/lib/live-mixcut/export-orchestrator';
+import { writeFormulaExportFolderManifest } from '@/lib/live-mixcut/formula/export-manifest';
 import { assertBatchApiReady } from '@/lib/live-mixcut/runtime-readiness';
+import { writeLog } from '@/lib/logger';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
@@ -38,6 +40,14 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const result = await orchestrateBatchExport(getDb(), projectId, batchId, body.planIds as string[], {
       allowPackagingPlaceholder: body.allowPackagingPlaceholder === true,
     });
+    if (result.items.some(({ status }) => status === 'published' || status === 'already_published')) {
+      try {
+        writeFormulaExportFolderManifest(getDb(), projectId, batchId);
+      } catch (error) {
+        writeLog({ projectId, level: 'error',
+          message: `实拍混剪清单写入失败：${error instanceof Error ? error.message : String(error)}` });
+      }
+    }
     return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'live_mixcut_export_failed', '批次正式导出失败');

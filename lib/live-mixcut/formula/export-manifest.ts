@@ -1,5 +1,9 @@
 import type Database from 'better-sqlite3';
+import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { dataRoot } from '../../data-root.ts';
+import { getBatchWorkspace } from '../batch-workspace.ts';
 import { getBatchOutputArrangementView } from '../output-arrangement.ts';
 import { resolveFullRenderContractHash } from '../cover-contract.ts';
 import { BatchDomainError } from '../errors.ts';
@@ -151,4 +155,33 @@ export function captureFormulaManifestItem(db: Database.Database, projectId: str
       primary: view.coverTitle?.primary, secondary: view.coverTitle?.secondary, styles: view.coverTitle?.styles },
     reviewedIssueSetHash: view.reviewContext.issueSetHash,
   };
+}
+
+export function writeFormulaExportFolderManifest(db: Database.Database, projectId: string, batchId: string): void {
+  const workspace = getBatchWorkspace(db, projectId, batchId);
+  const requests = new Map<string, FormulaGenerationRequest>();
+  const items = workspace.cards
+    .filter(card => card.exportStatus === 'exported' && card.currentFormalArtifact)
+    .map(card => {
+      const formal = card.currentFormalArtifact!;
+      if (!formal.cover) throw new BatchDomainError('conflict', '成片缺少正式封面，无法生成清单');
+      const content = captureFormulaManifestItem(db, projectId, batchId, card.planId, requests);
+      return {
+        ...content,
+        video: { artifactId: formal.video.id,
+          filename: formal.video.relativePath.replaceAll('\\', '/').split('/').at(-1)!, checksum: formal.video.checksum },
+        coverFile: { artifactId: formal.cover.id,
+          filename: formal.cover.relativePath.replaceAll('\\', '/').split('/').at(-1)!, checksum: formal.cover.checksum },
+      };
+    });
+  const directory = path.join(dataRoot(), 'storage', 'live-mixcut', 'exports', workspace.exportDirName, '成片');
+  fs.mkdirSync(directory, { recursive: true });
+  const destination = path.join(directory, '清单.csv');
+  const temporary = `${destination}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, csvManifest({ items }), 'utf8');
+    fs.renameSync(temporary, destination);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
 }
