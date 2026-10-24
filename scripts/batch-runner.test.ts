@@ -59,7 +59,6 @@ function createLegacyDatabase(root: string, name: string): Database.Database {
 }
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-runner-'));
-let openedDb: Database.Database | undefined;
 
 /** 受控执行器:执行挂起,由测试显式 release 或等待 abort */
 function controlledExecutor(): {
@@ -164,7 +163,6 @@ try {
   const dbRoot = path.join(root, 'db');
   fs.mkdirSync(dbRoot, { recursive: true });
   const db = createLegacyDatabase(dbRoot, 'workbench.db');
-  openedDb = db;
 
   const migrated = await ensureBatchSchemaReady({
     db,
@@ -172,20 +170,6 @@ try {
     now: () => new Date('2026-08-02T08:00:00.000Z'),
   });
   assert.equal(migrated.state, 'ready');
-
-  // 领取后、交给执行器前租约已过期：不应启动媒体/外部服务工作。
-  const batchExpiredBeforeExecution = setupBatch(db, 'batch-expired-before-execution', 1);
-  let clockReads = 0;
-  let dispatchedExpired = 0;
-  await runPendingOnce({ db, workerId: 'worker-expired-before-execution', concurrency: 1, leaseDurationMs: 20,
-    now: () => new Date(Date.parse('2026-08-02T09:30:00Z') + (clockReads++ === 0 ? 0 : 1000)),
-    executors: [{ workTypes: ['render'], async execute() { dispatchedExpired++; return { resultJson: {} }; } }],
-  });
-  assert.equal(dispatchedExpired, 0, '执行前已失去租约，不能把已中止信号交给执行器后才检查');
-  const expiredTasks = db.prepare('SELECT id FROM batch_tasks WHERE batchId=?').all(batchExpiredBeforeExecution) as Array<{ id: string }>;
-  assert.equal(getBatchTask(db, 'project-1', expiredTasks[0].id)?.status, 'queued');
-  assert.equal(listTaskAttempts(db, expiredTasks[0].id)[0].status, 'interrupted');
-  stopBatch(db, 'project-1', batchExpiredBeforeExecution);
 
   // --- 场景 1:受控并发池——peak ≤ concurrency,且 concurrency>1 时确实并行 ---
   const batchA = setupBatch(db, 'batch-a', 5);
@@ -383,14 +367,12 @@ try {
     ORDER BY createdAt LIMIT 1
   `).get(batchLease) as { id: string };
   let leaseExecutions = 0;
-  let leaseClock = Date.parse('2026-08-02T11:30:00Z');
   const leaseLossExecutor: BatchTaskExecutor = {
     workTypes: ['render'],
     execute({ signal }) {
       leaseExecutions += 1;
       return new Promise((resolve, reject) => {
         signal.addEventListener('abort', () => reject(new Error('租约中断')), { once: true });
-        leaseClock += 1000; // 本场景固定在执行开始后过期，不依赖机器是否在20ms内启动。
         if (leaseExecutions > 1) {
           resolve({ resultJson: {} });
         }
@@ -405,7 +387,6 @@ try {
     heartbeatMs: 80,
     leaseDurationMs: 20,
     progressThrottleMs: 0,
-    now: () => new Date(leaseClock),
   });
   assert.deepEqual(
     {
@@ -823,9 +804,5 @@ try {
   console.log('batch runner tests passed');
 } finally {
   await resetSchedulerSingletonForTests();
-  if (openedDb?.open) openedDb.close();
-  const resolvedRoot = fs.realpathSync(root);
-  assert.equal(path.dirname(resolvedRoot), fs.realpathSync(os.tmpdir()));
-  assert.ok(path.basename(resolvedRoot).startsWith('creative-studio-runner-'));
-  fs.rmSync(resolvedRoot, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
 }

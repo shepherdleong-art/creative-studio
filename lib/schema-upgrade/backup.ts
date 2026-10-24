@@ -6,12 +6,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import packageMetadata from '../../package.json' with { type: 'json' };
 
-export type SchemaUpgradeScope = 'batch-production' | 'batch-formula' | 'video-provider-gateway' | 'script-studio' | 'creative-canvas' | 'live-mixcut';
+export type SchemaUpgradeScope = 'batch-production' | 'video-provider-gateway' | 'script-studio' | 'creative-canvas' | 'live-mixcut';
 
 /** 备份目录 slug；新增 scope 必须同时更新这里与 cleanupInterruptedSchemaUpgradeBackups 的匹配。 */
 export const SCOPE_SLUGS: Record<SchemaUpgradeScope, string> = {
   'batch-production': 'batch',
-  'batch-formula': 'batch-formula',
   'video-provider-gateway': 'video-gateway',
   'script-studio': 'script-studio',
   'creative-canvas': 'canvas',
@@ -212,7 +211,7 @@ export async function cleanupInterruptedSchemaUpgradeBackups(backupRoot: string)
   }
   const interrupted = entries.filter((entry) => (
     entry.isDirectory()
-    && /^\.pre-(?:batch|batch-formula|video-gateway|script-studio|canvas|live-mixcut)-v\d+-/.test(entry.name)
+    && /^\.pre-(?:batch|video-gateway|script-studio|canvas|live-mixcut)-v\d+-/.test(entry.name)
   ));
   for (const entry of interrupted) {
     await fsPromises.rm(path.join(backupRoot, entry.name), { recursive: true, force: true });

@@ -232,7 +232,6 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
     verified: '媒体核验完成',
     analyzed: '分析完成',
     semantic_score: '语义匹配',
-    formula_stage: '公式制作',
   };
   const taskStatus = analysisTask?.status;
   const taskError = analysisTask?.attempts?.at(-1)?.errorMessage;

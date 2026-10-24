@@ -5,7 +5,6 @@ import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { prepareBatchSemanticScoreBeforeStart } from '@/lib/batch-production/semantic-match';
 import { reactivateBatchForStart } from '@/lib/batch-production/scheduler';
-import { assertSemanticBatch } from '@/lib/batch-production/planning-mode';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
@@ -28,7 +27,6 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
   try {
     await assertBatchApiReady();
     const db = getDb();
-    assertSemanticBatch(db, projectId, id);
     // 显式开跑 = 用户明确要批次运行:已停止/已暂停的批次在此重新激活。
     // 必须放在语义门禁之前——否则已停止批次里新排队的打分任务永远不会被领取。
     reactivateBatchForStart(db, projectId, id);

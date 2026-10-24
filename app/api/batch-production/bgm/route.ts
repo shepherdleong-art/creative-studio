@@ -4,7 +4,7 @@ import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { listBatchBgmTracks } from '@/lib/batch-production/bgm';
-import { scanBgmTracks } from '@/lib/media-core/bgm-catalog';
+import { scanFinalEditBgm } from '@/lib/final-edit/bgm';
 import {
   BATCH_NO_STORE_HEADERS,
   batchRouteErrorResponse,
@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
   try {
     await assertBatchApiReady();
     const db = getDb();
-    await scanBgmTracks(db, path.join(dataRoot(), 'storage'));
+    await scanFinalEditBgm(db, path.join(dataRoot(), 'storage'));
     const tracks = listBatchBgmTracks(db);
     return NextResponse.json({ tracks, count: tracks.length }, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {

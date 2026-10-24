@@ -2,8 +2,6 @@
 
 import { audioAudibleAt, type AudioEdits } from '@/lib/media-core/audio-edit';
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type Ref, type ReactNode } from 'react';
-import { createMusicDuckingEnvelope, musicDuckingGainAtTime, type MusicDuckingConfig } from '@/lib/media-core/music-ducking';
-import { buildMusicTimeline, musicPositionAtTime } from '@/lib/media-core/music-timeline';
 import {
   activeClipIndexAtBodyFrame,
   expectedVideoTimeSec,
@@ -20,7 +18,6 @@ import {
 } from '@/lib/final-edit/types';
 import { defaultTextStyle } from '@/lib/media-core/cover-domain';
 import { textStyleToSvgElements } from '@/lib/media-core/cover-title-svg';
-import { subtitleStyleToSvgElements } from '@/lib/media-core/subtitle-svg';
 import type { CoverFraming, TextStyle } from '@/lib/media-core/cover-types';
 import type { FrozenBatchCoverTitleConfig } from '@/lib/batch-production/cover-title';
 import BatchCoverDraftPreview, { type BatchCoverPreviewAsset } from './BatchCoverDraftPreview';
@@ -28,11 +25,6 @@ import { createLutRenderer, loadCubeLutFromEndpoint, type LutRenderer, type Pars
 import { ProxyPlaybackToggle } from './ProxyPlaybackToggle';
 import { useProxyPlaybackPreference } from './proxy-playback-preference';
 import styles from './batch-preview.module.css';
-import { PreviewAudioTimelinePlayer, type PreviewAudioTimeline, type PreviewAudioState } from '@/lib/media-core/preview-audio-timeline';
-import { createPreviewAudioMedia } from './preview-audio-media';
-import { createPreviewAudioOutput, schedulePreviewAudioGain } from './preview-audio-output';
-import { createPreviewAudioStart } from './preview-audio-start';
-import { audioEdgeFades, audioEdgeEnvelope } from '@/lib/media-core/audio-edges';
 
 /**
  * 把离屏 GL canvas 伪装成 2D 合成管线可消费的帧源:
@@ -84,8 +76,6 @@ export interface BatchTimelinePreviewProps {
   playbackRef?: Ref<BatchTimelinePreviewHandle>;
   clips: BatchTimelinePreviewClip[];
   narrationDurationUs?: number | null;
-  /** 多源声音使用自己的正文长度与源时间映射，不再把单条配音长度当成正文。 */
-  audioTimeline?: PreviewAudioTimeline | null;
   preserveGaps?: boolean;
   audio?: AudioEdits;
   /**
@@ -105,7 +95,7 @@ export interface BatchTimelinePreviewProps {
   subtitleStyle?: TextStyle;
   narrationUrl: string | null;
   narrationGainDb: number;
-  bgm: { fileUrl: string; durationUs?: number; gainDb: number; fadeInSec: number; fadeOutSec: number; ducking?: MusicDuckingConfig } | null;
+  bgm: { fileUrl: string; gainDb: number; fadeInSec: number; fadeOutSec: number } | null;
   outputPreset: OutputPresetId;
   /** 含片头的绝对播放头（受控，与时间轴共享） */
   playheadSec: number;
@@ -151,13 +141,13 @@ function seekMedia(element: HTMLMediaElement | null, timeSec: number): void {
 export default function BatchTimelinePreview({
   playbackRef, overlay,
   clips,
-  narrationDurationUs, audioTimeline, preserveGaps, audio,
+  narrationDurationUs, preserveGaps, audio,
   assetsById,
   coverUrl,
   coverDraft,
   subtitleCues,
   subtitleStyle,
-  narrationUrl: legacyNarrationUrl,
+  narrationUrl,
   narrationGainDb,
   bgm,
   outputPreset,
@@ -167,9 +157,7 @@ export default function BatchTimelinePreview({
   compact = false,
 }: BatchTimelinePreviewProps) {
   const sortedClips = useMemo(() => [...clips].sort((a, b) => a.timelineStartUs - b.timelineStartUs), [clips]);
-  const bodyDurationSec = (audioTimeline?.bodyDurationUs ?? narrationDurationUs ?? sortedClips.at(-1)?.timelineEndUs ?? 0) / 1_000_000;
-  const narrationUrl = audioTimeline ? null : legacyNarrationUrl;
-  const audioTimelineJson = JSON.stringify(audioTimeline ?? null);
+  const bodyDurationSec = (narrationDurationUs ?? sortedClips.at(-1)?.timelineEndUs ?? 0) / 1_000_000;
   const totalSec = INTRO_SEC + bodyDurationSec;
   const size = OUTPUT_PRESETS[outputPreset];
 
@@ -177,26 +165,14 @@ export default function BatchTimelinePreview({
   const [showSafeArea, setShowSafeArea] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const fullscreenRef = useRef<HTMLDivElement>(null);
-  const playerRootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
   const videoARef = useRef<HTMLVideoElement>(null);
   const videoBRef = useRef<HTMLVideoElement>(null);
   const narrationRef = useRef<HTMLAudioElement>(null);
   const bgmRef = useRef<HTMLAudioElement>(null);
-  const multiAudioContainerRef = useRef<HTMLDivElement>(null);
-  const multiAudioPlayerRef = useRef<PreviewAudioTimelinePlayer | null>(null);
-  const multiAudioBufferingRef = useRef(false);
-  const [multiAudioState, setMultiAudioState] = useState<PreviewAudioState>({ status: 'ready' });
-  const [formulaVideoError, setFormulaVideoError] = useState('');
-  const [formulaMusicErrorUrl, setFormulaMusicErrorUrl] = useState<string | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioGraphRef = useRef<BatchPreviewAudioGraph | null>(null);
-  const formulaOutputRef = useRef<ReturnType<typeof createPreviewAudioOutput> | null>(null);
-  const formulaOutputReadyRef = useRef(false);
-  const formulaMusicSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
-  const formulaMusicStartRef = useRef<ReturnType<typeof createPreviewAudioStart> | null>(null);
-  const formulaMusicEdgeRef = useRef<GainNode | null>(null);
   const playingRef = useRef(false);
   const clockStartRef = useRef(0);
   const clockOffsetRef = useRef(0);
@@ -268,7 +244,7 @@ export default function BatchTimelinePreview({
   const showCover = playheadSec < INTRO_SEC;
   const resolvedSubtitleStyle = subtitleStyle ?? defaultTextStyle('subtitle', size.width);
   const subtitleSvg = !showCover && activeCue
-    ? (audioTimeline ? subtitleStyleToSvgElements : textStyleToSvgElements)(resolvedSubtitleStyle, activeCue.text, size)
+    ? textStyleToSvgElements(resolvedSubtitleStyle, activeCue.text, size)
     : '';
 
   const setNarrationOutputGain = useCallback((gain: number) => {
@@ -284,7 +260,6 @@ export default function BatchTimelinePreview({
 
   const pauseAllMedia = useCallback(() => {
     playingRef.current = false;
-    multiAudioBufferingRef.current = false;
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
     animationRef.current = 0;
     if (audioStartTimerRef.current) window.clearTimeout(audioStartTimerRef.current);
@@ -292,7 +267,6 @@ export default function BatchTimelinePreview({
     videoARef.current?.pause();
     videoBRef.current?.pause();
     narrationRef.current?.pause();
-    multiAudioPlayerRef.current?.pause();
     bgmRef.current?.pause();
     const graph = audioGraphRef.current;
     if (graph) graph.narrationGain.gain.setValueAtTime(0, graph.context.currentTime);
@@ -303,38 +277,6 @@ export default function BatchTimelinePreview({
     pauseAllMedia();
     setPlaying(false);
   }, [pauseAllMedia]);
-
-  useEffect(() => {
-    const timeline: PreviewAudioTimeline | null = JSON.parse(audioTimelineJson);
-    const container = multiAudioContainerRef.current;
-    if (!timeline || !container) return;
-    const player = new PreviewAudioTimelinePlayer(timeline,
-      clip => createPreviewAudioMedia(clip, container, () => formulaOutputReadyRef.current ? audioContextRef.current : null, () => formulaOutputRef.current?.input ?? null), state => {
-        setMultiAudioState(state);
-        if (state.status === 'error') stopPlayback();
-      });
-    multiAudioPlayerRef.current = player;
-    player.sync((lastDrivenSecRef.current - INTRO_SEC) * 1_000_000, false);
-    return () => {
-      stopPlayback(); player.dispose();
-      if (multiAudioPlayerRef.current === player) multiAudioPlayerRef.current = null;
-    };
-  }, [audioTimelineJson, stopPlayback]);
-
-  useEffect(() => {
-    if (audioTimelineJson === 'null') return;
-    const otherMediaStarted = (event: Event) => {
-      if (event.target instanceof HTMLMediaElement && !event.target.paused && !playerRootRef.current?.contains(event.target)) stopPlayback();
-    };
-    const failed = () => { setFormulaVideoError('画面文件加载失败，请检查素材后点击播放重试。'); stopPlayback(); };
-    const videos = [videoARef.current, videoBRef.current];
-    document.addEventListener('play', otherMediaStarted, true);
-    videos.forEach(video => video?.addEventListener('error', failed));
-    return () => {
-      document.removeEventListener('play', otherMediaStarted, true);
-      videos.forEach(video => video?.removeEventListener('error', failed));
-    };
-  }, [audioTimelineJson, stopPlayback]);
 
   // 常驻 seeked 监听:seek 在途期间被跳过的最新目标,在 seeked 后补一次赋值,实现「最新目标获胜」。
   useEffect(() => {
@@ -381,10 +323,10 @@ export default function BatchTimelinePreview({
       const synchronize = () => {
         video.playbackRate = clip.playbackRate ?? (clip.sourceEndUs - clip.sourceStartUs) / (clip.timelineEndUs - clip.timelineStartUs);
         seekTargetRef.current[slot] = expected;
-        if (slot !== activeSlot || frozenVideoTail || !playingRef.current || multiAudioBufferingRef.current) {
+        if (slot !== activeSlot || frozenVideoTail || !playing) {
           video.pause();
           if (shouldIssueSeek(video, expected, 1 / FPS)) video.currentTime = expected;
-          if (!playingRef.current || multiAudioBufferingRef.current) lastStartedClipRef.current = '';
+          if (!playing) lastStartedClipRef.current = '';
           return;
         }
         if (lastStartedClipRef.current === clip.clipId) return;
@@ -548,111 +490,22 @@ export default function BatchTimelinePreview({
   }, [activeClip, activeSlot, bodyFrame, outputPreset, playing]);
 
   // 播放时钟:performance.now() 推进播放头,同时驱动口播/BGM 音量包络。
-  const duckingEnvelope = useMemo(() => audioTimeline && bgm?.ducking
-    ? createMusicDuckingEnvelope(audioTimeline.clips, bgm.ducking) : null, [audioTimeline, bgm?.ducking]);
-  const musicTimeline = useMemo(() => audioTimeline && bgm?.durationUs
-    ? buildMusicTimeline(audio?.bgm, audioTimeline.bodyDurationUs, bgm.durationUs) : null,
-  [audio?.bgm, audioTimeline, bgm?.durationUs]);
-  const musicEdges = useMemo(() => musicTimeline ? audioEdgeFades(musicTimeline.clips.map(clip => ({ ...clip,
-    sourceKey: 'music', sourcePeriodUs: musicTimeline.sourceDurationUs }))) : null, [musicTimeline]);
-  const soundBoundaries = useMemo(() => [...new Set([
-    ...(audioTimeline?.clips ?? []).flatMap(clip => [clip.timelineStartUs, clip.timelineEndUs]),
-    ...(musicTimeline?.clips ?? []).flatMap(clip => [clip.timelineStartUs, clip.timelineEndUs]),
-  ])].sort((a, b) => a - b).map(us => us / 1e6 + INTRO_SEC), [audioTimeline, musicTimeline]);
   const audioLevels = useCallback((input: Parameters<typeof previewAudioLevelsAtTime>[0]) => {
     const levels = previewAudioLevelsAtTime(input);
     const timeUs = (input.playheadSec - INTRO_SEC) * 1e6;
-    const duckingGain = duckingEnvelope ? musicDuckingGainAtTime(duckingEnvelope, timeUs) : 1;
-    return { narrationGain: audioAudibleAt(audio?.narration, timeUs) ? levels.narrationGain : 0,
-      bgmGain: audioAudibleAt(audio?.bgm, timeUs) ? levels.bgmGain * duckingGain : 0 };
-  }, [audio, duckingEnvelope]);
+    return { narrationGain: audioAudibleAt(audio?.narration, timeUs) ? levels.narrationGain : 0, bgmGain: audioAudibleAt(audio?.bgm, timeUs) ? levels.bgmGain : 0 };
+  }, [audio]);
   const bgmGainDb = bgm?.gainDb ?? 0;
   const bgmFadeInSec = bgm?.fadeInSec ?? 0;
   const bgmFadeOutSec = bgm?.fadeOutSec ?? 0;
-  /** A seek is silent until decoded; the playback clock waits with the picture and speech. */
-  const syncFormulaMusic = useCallback((timeSec: number, shouldPlay: boolean): boolean => {
-    if (!musicTimeline) return true;
-    if (shouldPlay && !formulaOutputReadyRef.current) return false;
-    const element = bgmRef.current;
-    if (!element) return false;
-    const position = musicPositionAtTime(musicTimeline, (timeSec - INTRO_SEC) * 1e6);
-    const silence = () => {
-      element.volume = 0; element.pause();
-      if (formulaMusicEdgeRef.current && audioContextRef.current) schedulePreviewAudioGain(formulaMusicEdgeRef.current, audioContextRef.current, 0);
-    };
-    if (!position) { silence(); return true; }
-    if (element.error || element.readyState < 1) { silence(); return false; }
-    const expected = position.sourceTimeUs / 1e6;
-    if (Math.abs(element.currentTime - expected) > (shouldPlay ? 0.08 : 0.001)) {
-      silence();
-      if (!element.seeking) seekMedia(element, expected);
-    }
-    if (element.seeking || element.readyState < 2) { silence(); return false; }
-    if (!shouldPlay) { silence(); return true; }
-    const clip = musicTimeline.clips.find(clip => clip.id === position.clipId)!;
-    if (formulaMusicEdgeRef.current && audioContextRef.current && musicEdges) {
-      const envelope = audioEdgeEnvelope(musicEdges.get(clip.id)!, (timeSec - INTRO_SEC) * 1e6 - clip.timelineStartUs,
-        clip.timelineEndUs - clip.timelineStartUs);
-      schedulePreviewAudioGain(formulaMusicEdgeRef.current, audioContextRef.current, envelope[0].gain, envelope.slice(1));
-    }
-    element.volume = audioLevels({ playheadSec: timeSec, introSec: INTRO_SEC, bodyDurationSec,
-      narrationGainDb, gainDb: bgmGainDb, fadeInSec: bgmFadeInSec, fadeOutSec: bgmFadeOutSec }).bgmGain;
-    if (element.paused) void element.play().catch(error => {
-      // Pausing while a seek/load is pending intentionally aborts play().
-      if (error?.name !== 'AbortError' && playingRef.current) {
-        setFormulaMusicErrorUrl(bgm?.fileUrl ?? null); stopPlayback();
-      }
-    });
-    return true;
-  }, [musicTimeline, musicEdges, audioLevels, bodyDurationSec, narrationGainDb, bgmGainDb, bgmFadeInSec, bgmFadeOutSec, bgm?.fileUrl, stopPlayback]);
-  useEffect(() => {
-    const element = bgmRef.current;
-    if (!musicTimeline || !element) return;
-    const syncPaused = () => { if (!playingRef.current) syncFormulaMusic(lastDrivenSecRef.current, false); };
-    for (const event of ['loadedmetadata', 'canplay', 'seeked']) element.addEventListener(event, syncPaused);
-    syncPaused();
-    return () => { for (const event of ['loadedmetadata', 'canplay', 'seeked']) element.removeEventListener(event, syncPaused); };
-  }, [musicTimeline, syncFormulaMusic]);
   useEffect(() => {
     if (!playing) return;
     const tick = () => {
-      if (!playingRef.current) return;
-      const multiAudio = multiAudioPlayerRef.current;
-      const holdPicture = () => {
-        multiAudioBufferingRef.current = true;
-        multiAudio?.pause();
-        videoARef.current?.pause(); videoBRef.current?.pause(); bgmRef.current?.pause();
-        lastStartedClipRef.current = '';
-      };
-      const syncSound = (timeSec: number) => {
-        if (multiAudio && !formulaOutputReadyRef.current) return false;
-        const speechReady = multiAudio?.sync((timeSec - INTRO_SEC) * 1e6, true) ?? true;
-        const musicReady = syncFormulaMusic(timeSec, speechReady);
-        return speechReady && musicReady;
-      };
-      if (multiAudioBufferingRef.current && !syncSound(lastDrivenSecRef.current)) {
-        holdPicture();
-        clockOffsetRef.current = lastDrivenSecRef.current; clockStartRef.current = performance.now();
-        animationRef.current = requestAnimationFrame(tick); return;
-      }
-      const clockNext = clockOffsetRef.current + (performance.now() - clockStartRef.current) / 1000;
-      // Visit an audio boundary before advancing past it; a frame tick must not
-      // skip the first five milliseconds of a newly started sound.
-      const next = soundBoundaries.find(time => time > lastDrivenSecRef.current + 1e-6 && time < clockNext) ?? clockNext;
+      const next = clockOffsetRef.current + (performance.now() - clockStartRef.current) / 1000;
       if (next >= totalSec) {
         drivePlayhead(totalSec);
         stopPlayback();
         return;
-      }
-      if (!syncSound(next)) {
-        holdPicture();
-        clockOffsetRef.current = next; clockStartRef.current = performance.now(); drivePlayhead(next);
-        animationRef.current = requestAnimationFrame(tick); return;
-      }
-      if (multiAudioBufferingRef.current) {
-        multiAudioBufferingRef.current = false;
-        const music = bgmRef.current;
-        if (music && bgm && !musicTimeline) { seekMedia(music, Math.max(0, next - INTRO_SEC)); void music.play().catch(() => undefined); }
       }
       const levels = audioLevels({
         playheadSec: next,
@@ -679,7 +532,7 @@ export default function BatchTimelinePreview({
     };
     animationRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationRef.current);
-  }, [audioLevels, bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, drivePlayhead, narrationGainDb, narrationUrl, playing, setNarrationOutputGain, stopPlayback, totalSec, musicTimeline, soundBoundaries, syncFormulaMusic]);
+  }, [audioLevels, bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, drivePlayhead, narrationGainDb, narrationUrl, playing, setNarrationOutputGain, stopPlayback, totalSec]);
 
   useEffect(() => {
     if (active) return;
@@ -692,11 +545,6 @@ export default function BatchTimelinePreview({
   useEffect(() => () => {
     pauseAllMedia();
     const context = audioContextRef.current;
-    formulaMusicSourceRef.current?.disconnect(); formulaMusicSourceRef.current = null;
-    formulaMusicStartRef.current?.dispose(); formulaMusicStartRef.current = null;
-    formulaMusicEdgeRef.current?.disconnect(); formulaMusicEdgeRef.current = null;
-    formulaOutputRef.current?.dispose(); formulaOutputRef.current = null;
-    formulaOutputReadyRef.current = false;
     audioGraphRef.current = null;
     audioContextRef.current = null;
     if (context && context.state !== 'closed') void context.close();
@@ -704,8 +552,6 @@ export default function BatchTimelinePreview({
 
   /** 在点击事件里立即起播;片头靠音量包络保持静音,避免延迟 play() 丢失用户手势授权。 */
   const syncAudioStart = useCallback((startAt: number) => {
-    if (multiAudioPlayerRef.current && !formulaOutputReadyRef.current) return;
-    multiAudioPlayerRef.current?.sync((startAt - INTRO_SEC) * 1_000_000, true);
     const bodyOffset = Math.max(0, Math.min(bodyDurationSec, startAt - INTRO_SEC));
     const startsInCover = startAt < INTRO_SEC;
     if (audioStartTimerRef.current) window.clearTimeout(audioStartTimerRef.current);
@@ -731,14 +577,9 @@ export default function BatchTimelinePreview({
     }
     const bgmElement = bgmRef.current;
     if (bgmElement && bgm) {
-      if (musicTimeline) {
-        if (!syncFormulaMusic(startAt, true)) bgmElement.volume = 0;
-      } else {
-        const loopDuration = Number.isFinite(bgmElement.duration) && bgmElement.duration > 0 ? bgmElement.duration : bodyDurationSec;
-        bgmElement.volume = startsInCover ? 0 : levels.bgmGain;
-        seekMedia(bgmElement, (startsInCover ? 0 : bodyOffset) % Math.max(0.1, loopDuration));
-      }
-      // Keep the user's play gesture even when a formula seek is still decoding.
+      const loopDuration = Number.isFinite(bgmElement.duration) && bgmElement.duration > 0 ? bgmElement.duration : bodyDurationSec;
+      bgmElement.volume = startsInCover ? 0 : levels.bgmGain;
+      seekMedia(bgmElement, (startsInCover ? 0 : bodyOffset) % Math.max(0.1, loopDuration));
       void bgmElement.play().catch(() => undefined);
     }
     if (startsInCover) {
@@ -761,7 +602,7 @@ export default function BatchTimelinePreview({
           setNarrationOutputGain(bodyLevels.narrationGain);
         }
         const currentBgm = bgmRef.current;
-        if (currentBgm && bgm && !musicTimeline) {
+        if (currentBgm && bgm) {
           const currentLoopDuration = Number.isFinite(currentBgm.duration) && currentBgm.duration > 0 ? currentBgm.duration : bodyDurationSec;
           seekMedia(currentBgm, 0 % Math.max(0.1, currentLoopDuration));
           currentBgm.volume = audioLevels({
@@ -776,7 +617,7 @@ export default function BatchTimelinePreview({
         }
       }, (INTRO_SEC - startAt) * 1000);
     }
-  }, [audioLevels, bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, narrationGainDb, narrationUrl, setNarrationOutputGain, musicTimeline, syncFormulaMusic]);
+  }, [audioLevels, bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, narrationGainDb, narrationUrl, setNarrationOutputGain]);
 
   /** 暂停态音频 seek debounce:拖动每格都 seek 口播/BGM 是无用功(暂停的音频不发声),~120ms 内只做最后一次。 */
   const pausedAudioSeekTimerRef = useRef(0);
@@ -802,11 +643,9 @@ export default function BatchTimelinePreview({
   // 渲染期写 ref 是 React 编译器红线，因此在每次渲染后的 effect 中同步。
   const bgmLevelsInputRef = useRef({ bodyDurationSec, narrationGainDb, gainDb: bgmGainDb, fadeInSec: bgmFadeInSec, fadeOutSec: bgmFadeOutSec });
   const audioLevelsRef = useRef(audioLevels);
-  const formulaMusicSyncRef = useRef({ enabled: !!musicTimeline, sync: syncFormulaMusic });
   useEffect(() => {
     bgmLevelsInputRef.current = { bodyDurationSec, narrationGainDb, gainDb: bgmGainDb, fadeInSec: bgmFadeInSec, fadeOutSec: bgmFadeOutSec };
     audioLevelsRef.current = audioLevels;
-    formulaMusicSyncRef.current = { enabled: !!musicTimeline, sync: syncFormulaMusic };
   });
   useEffect(() => {
     const element = bgmRef.current;
@@ -826,10 +665,6 @@ export default function BatchTimelinePreview({
       // 播放头读 lastDrivenSecRef（时钟驱动与外部 seek 双路维护，始终等于
       // 当前有效播放头），避免异步分支里用陈旧闭包值 seek 落后一个加载时长。
       const currentSec = lastDrivenSecRef.current;
-      if (formulaMusicSyncRef.current.enabled) {
-        formulaMusicSyncRef.current.sync(currentSec, playingRef.current);
-        return;
-      }
       const levels = bgmLevelsInputRef.current;
       const bodyOffset = Math.max(0, Math.min(levels.bodyDurationSec, currentSec - INTRO_SEC));
       const loopDuration = Number.isFinite(element.duration) && element.duration > 0 ? element.duration : levels.bodyDurationSec;
@@ -858,20 +693,18 @@ export default function BatchTimelinePreview({
   }, [bgmFileUrl]);
 
   const synchronizePausedAudio = useCallback((timeSec: number) => {
-    multiAudioPlayerRef.current?.sync((timeSec - INTRO_SEC) * 1_000_000, false);
     if (pausedAudioSeekTimerRef.current) window.clearTimeout(pausedAudioSeekTimerRef.current);
     pausedAudioSeekTimerRef.current = window.setTimeout(() => {
       pausedAudioSeekTimerRef.current = 0;
       const bodyOffset = Math.max(0, Math.min(bodyDurationSec, timeSec - INTRO_SEC));
       seekMedia(narrationRef.current, bodyOffset);
       const bgmElement = bgmRef.current;
-      if (musicTimeline) syncFormulaMusic(timeSec, false);
-      else if (bgmElement) {
+      if (bgmElement) {
         const loopDuration = Number.isFinite(bgmElement.duration) && bgmElement.duration > 0 ? bgmElement.duration : bodyDurationSec;
         seekMedia(bgmElement, bodyOffset % Math.max(0.1, loopDuration));
       }
     }, 120);
-  }, [bodyDurationSec, musicTimeline, syncFormulaMusic]);
+  }, [bodyDurationSec]);
 
   // 外部 seek（时间轴）与自有时钟驱动的区分:时钟驱动会先写 lastDrivenSecRef,差值≈0;
   // 外部 seek 差值大,暂停时对齐音频,播放中时基重置并对齐口播/BGM。
@@ -899,41 +732,7 @@ export default function BatchTimelinePreview({
       stopPlayback();
       return;
     }
-    // 在本次播放意图发生时停止外部试听，不能等延迟的原生 play 事件再抢声音。
-    document.querySelectorAll<HTMLMediaElement>('audio,video').forEach(media => {
-      if (!playerRootRef.current?.contains(media)) media.pause();
-    });
     const narration = narrationRef.current;
-    multiAudioPlayerRef.current?.retryFailed();
-    if (formulaVideoError) {
-      setFormulaVideoError('');
-      [videoARef.current, videoBRef.current].forEach(video => { if (video?.error) video.load(); });
-    }
-    if (audioTimeline && bgm?.fileUrl && bgmRef.current?.error) {
-      setFormulaMusicErrorUrl(null);
-      bgmRef.current.load();
-    }
-    if (audioTimeline && !audioContextRef.current) {
-      const context = new AudioContext();
-      audioContextRef.current = context;
-      const output = createPreviewAudioOutput(context);
-      formulaOutputRef.current = output;
-      setMultiAudioState({ status: 'loading' });
-      void output.ready.then(() => {
-        if (formulaOutputRef.current !== output) return;
-        if (bgmRef.current) {
-          formulaMusicSourceRef.current = context.createMediaElementSource(bgmRef.current);
-          formulaMusicEdgeRef.current = context.createGain();
-          formulaMusicStartRef.current = createPreviewAudioStart(context, bgmRef.current);
-          formulaMusicSourceRef.current.connect(formulaMusicStartRef.current.node).connect(formulaMusicEdgeRef.current).connect(output.input);
-        }
-        formulaOutputReadyRef.current = true;
-      }).catch(() => {
-        if (formulaOutputRef.current !== output) return;
-        setMultiAudioState({ status: 'error', message: '声音播放组件加载失败，请重新打开成片后再试。' });
-        stopPlayback();
-      });
-    }
     if (narration && narrationUrl && !audioGraphRef.current) {
       const context = audioContextRef.current || new AudioContext();
       const narrationGain = context.createGain();
@@ -1034,7 +833,7 @@ export default function BatchTimelinePreview({
   );
 
   return (
-    <div ref={playerRootRef} data-batch-timeline-player className={compact ? styles.compactPlayer : 'space-y-2'} aria-label="成片实时预览">
+    <div className={compact ? styles.compactPlayer : 'space-y-2'} aria-label="成片实时预览">
       <div
         ref={fullscreenRef}
         className={`${compact ? styles.compactViewport : 'flex justify-center'} ${styles.fullscreenShell}`}
@@ -1092,19 +891,8 @@ export default function BatchTimelinePreview({
         {isFullscreen && renderControls(true)}
       </div>
       {!isFullscreen && renderControls(false)}
-      <div ref={multiAudioContainerRef} className="hidden" />
-      {formulaVideoError && <p role="alert" className="text-xs text-fail">{formulaVideoError}</p>}
-      {audioTimeline && bgm?.fileUrl && formulaMusicErrorUrl === bgm.fileUrl && <p role="alert" className="text-xs text-fail">
-        背景音乐加载失败，请检查音乐后点击播放重试。
-      </p>}
-      {audioTimeline && multiAudioState.status !== 'ready' && <p role={multiAudioState.status === 'error' ? 'alert' : 'status'}
-        className={`text-xs ${multiAudioState.status === 'error' ? 'text-fail' : 'text-ink-secondary'}`}>
-        {multiAudioState.message || '正在准备声音，播放位置暂时保持…'}
-      </p>}
       <audio ref={narrationRef} preload="auto" src={narrationUrl ?? undefined} />
-      <audio ref={bgmRef} preload="auto" loop src={bgm?.fileUrl}
-        onError={() => { if (audioTimeline && bgm?.fileUrl) { setFormulaMusicErrorUrl(bgm.fileUrl); stopPlayback(); } }}
-        onCanPlay={() => setFormulaMusicErrorUrl(null)} />
+      <audio ref={bgmRef} preload="auto" loop src={bgm?.fileUrl} />
       {hasLutClips && !webgl2Available && (
         <p className="text-[11px] text-warn" role="status">
           当前设备不支持实时 LUT 预览（需要 WebGL2）；预览为实时近似效果，以正式导出成片为准。

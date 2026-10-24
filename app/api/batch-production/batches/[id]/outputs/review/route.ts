@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { setBatchPlanReviews } from '@/lib/batch-production/review';
-import type { BatchReviewTarget } from '@/lib/batch-production/review-context';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
@@ -25,14 +24,14 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   try {
     await assertBatchApiReady();
     const body = await request.json().catch(() => ({})) as {
-      items?: unknown;
+      planIds?: unknown;
       decision?: unknown;
     };
     const decision = body.decision === null || body.decision === undefined
       ? null
       : typeof body.decision === 'string' ? body.decision : 'invalid';
     const result = setBatchPlanReviews(getDb(), projectId, id, {
-      items: (Array.isArray(body.items) ? body.items : []) as BatchReviewTarget[],
+      planIds: Array.isArray(body.planIds) ? body.planIds.map(String) : [],
       decision: decision as 'approved' | 'rework' | 'cancelled' | null,
     });
     return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });

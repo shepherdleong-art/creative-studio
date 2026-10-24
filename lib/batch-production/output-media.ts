@@ -5,7 +5,6 @@ import { dataRoot } from '../data-root.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
 import { BatchDomainError } from './errors.ts';
 import { batchArtifactPathsArePaired } from './artifact-pair.ts';
-import { getBatchPlanningMode } from './planning-mode.ts';
 
 export type BatchOutputMediaKind = 'video' | 'cover';
 export type BatchOutputMediaSource = 'candidate' | 'artifact';
@@ -51,7 +50,6 @@ function parseCandidate(raw: string | null, expected: {
   batchVersionId: string;
   planId: string;
   outputVersionId: string;
-  formula: boolean;
 }): {
   videoRelativePath: string;
   coverRelativePath: string;
@@ -60,14 +58,6 @@ function parseCandidate(raw: string | null, expected: {
   if (!raw) return null;
   try {
     const value = JSON.parse(raw) as Record<string, unknown>;
-    const formulaProof = value.formulaExecution as { stageId?: unknown; contentContractHash?: unknown } | undefined;
-    const audioValid = expected.formula
-      ? ['narration', 'source', 'mixed'].includes(String(value.audioMode))
-        && /^rnd_[0-9a-f]{32}$/.test(String(value.fullRenderContractHash))
-        && (value.productionReady === false || (typeof formulaProof?.stageId === 'string'
-          && /^rnd_[0-9a-f]{32}$/.test(String(formulaProof.contentContractHash))))
-      : (value.audioMode === 'narration' || value.audioMode === 'silent_placeholder')
-        && value.productionReady === (value.audioMode === 'narration');
     if (
       value.projectId !== expected.projectId
       || value.batchId !== expected.batchId
@@ -76,8 +66,9 @@ function parseCandidate(raw: string | null, expected: {
       || value.outputVersionId !== expected.outputVersionId
       || typeof value.videoRelativePath !== 'string'
       || typeof value.coverRelativePath !== 'string'
-      || !audioValid
+      || (value.audioMode !== 'narration' && value.audioMode !== 'silent_placeholder')
       || typeof value.productionReady !== 'boolean'
+      || value.productionReady !== (value.audioMode === 'narration')
     ) return null;
     return {
       videoRelativePath: value.videoRelativePath,
@@ -248,7 +239,6 @@ export function resolveBatchOutputMedia(
         batchVersionId: plan.batchVersionId,
         planId,
         outputVersionId: targetVersionId,
-        formula: getBatchPlanningMode(db, projectId, batchId) === 'formula',
       });
       if (!candidate) throw new BatchDomainError('not_found', kind === 'video' ? '该成片版本没有可播放的视频' : '该成片版本没有封面');
       relativePath = kind === 'video' ? candidate.videoRelativePath : candidate.coverRelativePath;

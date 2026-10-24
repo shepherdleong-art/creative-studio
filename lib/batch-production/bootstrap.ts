@@ -3,8 +3,6 @@ import { analyzeAssetExecutor, semanticScoreExecutor } from './executors.ts';
 import { proxyGenerateExecutor } from './proxy-executor.ts';
 import { batchRenderExecutor } from './batch-render-executor.ts';
 import { batchNarrationExecutor } from './narration-executor.ts';
-import { formulaStageExecutor } from './formula/stage-executor.ts';
-import { getFormulaCapability } from './formula/runtime-readiness';
 import { completePendingProxyDeletions } from './proxy-cache.ts';
 import { assertBatchApiReady } from './runtime-readiness.ts';
 import { startBatchScheduler, type SchedulerController } from './runner.ts';
@@ -23,7 +21,7 @@ export function ensureBatchSchedulerStarted(): SchedulerController {
   return startBatchScheduler({
     db,
     workerId: 'batch-scheduler',
-    executors: [analyzeAssetExecutor, proxyGenerateExecutor, batchNarrationExecutor, semanticScoreExecutor, batchRenderExecutor, formulaStageExecutor],
+    executors: [analyzeAssetExecutor, proxyGenerateExecutor, batchNarrationExecutor, semanticScoreExecutor, batchRenderExecutor],
     intervalMs: 2_000,
   });
 }
@@ -35,9 +33,6 @@ export function ensureBatchSchedulerStarted(): SchedulerController {
 export async function startBatchSchedulerAfterReadiness(): Promise<SchedulerController | null> {
   try {
     await assertBatchApiReady();
-    // 公式失败只关闭公式任务；普通批量仍由独立基础检查决定是否启动。
-    const formula = await getFormulaCapability();
-    if (formula.code === 'base_batch_unavailable') return null;
     return ensureBatchSchedulerStarted();
   } catch {
     return null;

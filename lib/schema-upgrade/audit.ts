@@ -59,7 +59,6 @@ export interface SchemaUpgradeAuditRecord {
 
 const AUDIT_SCOPES: ReadonlyArray<SchemaUpgradeScope> = [
   'batch-production',
-  'batch-formula',
   'video-provider-gateway',
   'script-studio',
   'creative-canvas',

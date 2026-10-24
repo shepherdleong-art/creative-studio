@@ -110,7 +110,6 @@ const TASK_PHASE_LABELS: Record<string, string> = {
   rendering: '渲染中',
   cover: '生成封面',
   semantic_score: '语义匹配',
-  formula_stage: '公式制作',
 };
 
 const subscribeToDesktopBridge = () => () => undefined;

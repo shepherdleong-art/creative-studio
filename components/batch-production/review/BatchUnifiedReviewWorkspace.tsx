@@ -2,9 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
-import type { BatchReviewTarget } from '@/lib/batch-production/review-context';
 import { FINAL_EDIT_FPS } from '@/lib/media-core/render-contract';
-import { reviewAudioClips } from './audio-tracks';
+import { audioClips } from '@/lib/media-core/audio-edit';
 import type { OutputPresetId } from '@/lib/media-core/cover-types';
 import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
 import type { SourceMonitorSession } from './BatchSourceMonitor';
@@ -12,10 +11,9 @@ import BatchReviewPoolDock from './BatchReviewPoolDock';
 import BatchReviewPreviewDock from './BatchReviewPreviewDock';
 import BatchReviewInspectorDock from './BatchReviewInspectorDock';
 import BatchReviewTimelineDock from './BatchReviewTimelineDock';
-import type { FormulaMediaSession, InspectorTab, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
+import type { InspectorTab, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
 import styles from './batch-unified-review.module.css';
 import { subtitleSplitEdit } from './subtitle-edit';
-import { FormulaPresentationBatchAction } from '../formula/FormulaPresentationControls';
 
 const FPS = FINAL_EDIT_FPS;
 
@@ -31,9 +29,7 @@ function buildRestoreSnapshot(view: BatchOutputClipEditView): Record<string, unk
   return {
     clips: view.clips,
     packaging: view.packaging,
-    ...(view.presentationLocks ? { presentationLocks: view.presentationLocks } : {}),
     ...(view.audio !== undefined ? { audio: view.audio } : {}),
-    ...(view.audioPlan !== undefined ? { audioPlan: view.audioPlan, outputVersionId: view.outputVersionId } : {}),
     preserveGaps: view.preserveGaps === true,
     subtitleOverride: view.subtitleOverride,
     subtitleCues: view.subtitleCues,
@@ -45,8 +41,6 @@ function buildRestoreSnapshot(view: BatchOutputClipEditView): Record<string, unk
     coverTitle: view.coverTitle,
     coverTitleOverride: view.coverTitleOverride,
     musicTrackId: view.music.trackId,
-    musicSourceFingerprint: view.formulaPreview?.music?.sourceFingerprint,
-    musicDucking: view.music.ducking,
     musicGainDb: view.music.gainDb,
     musicFadeInSec: view.music.fadeInSec,
     musicFadeOutSec: view.music.fadeOutSec,
@@ -62,8 +56,9 @@ export interface BatchUnifiedReviewWorkspaceProps {
   selectedPlanIds: string[];
   onTogglePlan: (planId: string, checked: boolean) => void;
   onSelectAll: () => void;
+  onReview: (decision: 'approved' | 'rework' | 'cancelled') => void;
   /** 按明确成片集合审核;预览区「确认这条」只作用于正在预览的那一条。 */
-  onReviewPlans: (items: BatchReviewTarget[], decision: 'approved' | 'rework' | 'cancelled') => Promise<boolean>;
+  onReviewPlans: (planIds: string[], decision: 'approved' | 'rework' | 'cancelled') => Promise<boolean>;
   onReallocate: (planId: string) => void;
   onRetryNarration: (taskId: string) => void;
   onRetryRender: (taskId: string) => void;
@@ -87,6 +82,7 @@ export default function BatchUnifiedReviewWorkspace({
   selectedPlanIds,
   onTogglePlan,
   onSelectAll,
+  onReview,
   onReviewPlans,
   onReallocate,
   onRetryNarration,
@@ -136,7 +132,7 @@ export default function BatchUnifiedReviewWorkspace({
   const [focusedAssetId, setFocusedAssetId] = useState<string | null>(null);
   const [previewAsset, setPreviewAsset] = useState<BatchOutputPoolAssetView | null>(null);
 
-  const [sourceSession, setSourceSession] = useState<SourceMonitorSession | FormulaMediaSession | null>(null);
+  const [sourceSession, setSourceSession] = useState<SourceMonitorSession | null>(null);
 
   // Arrangements cache: planId -> BatchOutputClipEditView
   const [arrangements, setArrangements] = useState<Record<string, BatchOutputClipEditView>>({});
@@ -214,16 +210,15 @@ export default function BatchUnifiedReviewWorkspace({
 
   // Submit an edit to a film's arrangement via REST API;成功后记录撤销历史
   const handleMediaEdit = useCallback(
-    async (planId: string, edit: Record<string, unknown>, undoBasis?: BatchOutputClipEditView): Promise<boolean> => {
-      const beforeView = undoBasis ?? arrangements[planId] ?? null;
+    async (planId: string, edit: Record<string, unknown>): Promise<boolean> => {
+      const beforeView = arrangements[planId] ?? null;
       try {
         const response = await fetch(
           `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...(beforeView?.audioPlan ? { expectedEditRevision: beforeView.editRevision,
-              expectedOutputVersionId: beforeView.outputVersionId } : {}), ...edit, projectId }),
+            body: JSON.stringify({ ...edit, projectId }),
           }
         );
         const data = await response.json().catch(() => ({}));
@@ -231,12 +226,7 @@ export default function BatchUnifiedReviewWorkspace({
           throw new Error(data.message || '编辑失败');
         }
         const afterView = await refreshFilmArrangement(planId);
-        if (edit.formulaMedia && !afterView) throw new Error('尚未读到保存后的成片');
-        if (edit.formulaMedia && beforeView && afterView && (afterView.outputVersionId !== beforeView.outputVersionId
-          || afterView.editRevision !== beforeView.editRevision + 1)) {
-          throw new Error('这次保存已完成，但成片又有更新，请返回成片核对');
-        }
-        if ((data.changed || (edit.formulaMedia && data.replayed)) && beforeView && afterView) {
+        if (beforeView && afterView) {
           setUndoStack((stack) => [
             ...stack.slice(-20),
             {
@@ -249,7 +239,6 @@ export default function BatchUnifiedReviewWorkspace({
         }
         return true;
       } catch (err) {
-        if (edit.formulaMedia) throw err;
         alert(err instanceof Error ? err.message : '操作失败');
         return false;
       }
@@ -271,7 +260,7 @@ export default function BatchUnifiedReviewWorkspace({
               projectId,
               type: 'restore_arrangement',
               snapshot,
-              ...(current ? { expectedEditRevision: current.editRevision, expectedOutputVersionId: current.outputVersionId } : {}),
+              ...(current ? { expectedEditRevision: current.editRevision } : {}),
             }),
           }
         );
@@ -317,17 +306,13 @@ export default function BatchUnifiedReviewWorkspace({
   // Unified film states
   const films: UnifiedFilmState[] = useMemo(() => {
     return workspace.cards.map((card) => {
-      const loaded = arrangements[card.planId];
-      // 公式选片完成时尚无成片版本；接口返回的空编辑视图不是可播放的时间轴。
-      const arrangement = loaded?.outputVersionId === card.versionId && (!card.formula || !!card.versionId) ? loaded : null;
+      const arrangement = arrangements[card.planId] ?? null;
       const lastClipEndSec = arrangement?.clips?.at(-1)?.timelineEndUs ? arrangement.clips.at(-1)!.timelineEndUs / 1e6 : 0;
       const narrationSec = arrangement?.narration?.durationUs ? arrangement.narration.durationUs / 1e6 : 0;
-      const durationSec = arrangement?.audioPlan ? arrangement.audioPlan.bodyDurationUs / 1e6 : !arrangement && card.formula?.bodyDurationUs
-        ? card.formula.bodyDurationUs / 1e6 : Math.max(lastClipEndSec, narrationSec, 5);
+      const durationSec = Math.max(lastClipEndSec, narrationSec, 5);
 
       return {
         planId: card.planId,
-        formula: card.formula,
         seq: card.seq,
         scriptTitle: card.scriptTitle || '未命名脚本',
         status: card.status,
@@ -345,7 +330,6 @@ export default function BatchUnifiedReviewWorkspace({
         sourceConflictGroups: arrangement ? arrangement.sourceConflictGroups : card.sourceConflictGroups,
         blockers: card.blockers,
         narrationTask: card.narrationTask,
-        executionTask: card.executionTask,
         coverTask: card.coverTask,
         fullRenderTask: card.fullRenderTask,
         subtitleOverride: card.subtitleOverride,
@@ -377,40 +361,13 @@ export default function BatchUnifiedReviewWorkspace({
     }));
   }, []);
 
-  const submitDisplayedReviews = async (planIds: string[], decision: 'approved' | 'rework' | 'cancelled') => {
-    const items: BatchReviewTarget[] = [];
-    for (const planId of planIds) {
-      const context = films.find(film => film.planId === planId)?.arrangement?.reviewContext;
-      if (!context) {
-        setReviewError('部分成片还没读完，请等待加载完成或刷新后再确认。');
-        return false;
-      }
-      // Use the displayed view. Fetching fresh context here would approve unseen edits.
-      items.push({ planId, outputVersionId: context.outputVersionId, editRevision: context.editRevision, issueSetHash: context.issueSetHash });
-    }
-    return onReviewPlans(items, decision);
-  };
-
-  const handleBatchReview = async (decision: 'approved' | 'rework' | 'cancelled') => {
-    if (reviewPendingRef.current || phaseEBusy !== null) return;
-    reviewPendingRef.current = true;
-    setReviewPending(true);
-    setReviewError(null);
-    try {
-      await submitDisplayedReviews(selectedPlanIds, decision);
-    } finally {
-      reviewPendingRef.current = false;
-      setReviewPending(false);
-    }
-  };
-
   const handleToggleReview = async (planId: string, currentApproved: boolean) => {
     if (reviewPendingRef.current || phaseEBusy !== null) return;
     reviewPendingRef.current = true;
     setReviewPending(true);
     setReviewError(null);
     try {
-      const saved = await submitDisplayedReviews([planId], currentApproved ? 'cancelled' : 'approved');
+      const saved = await onReviewPlans([planId], currentApproved ? 'cancelled' : 'approved');
       if (!saved) {
         setReviewError('审核未保存，请查看页面上方提示后重试。');
         return;
@@ -545,8 +502,8 @@ export default function BatchUnifiedReviewWorkspace({
               const edit = cue ? subtitleSplitEdit(cue, Math.round(playheadSec * 1e6)) : null;
               if (edit) void handleMediaEdit(selectedPlanId, edit);
             } else if (selection?.kind === 'audio' && selection.track && selection.clipId && film?.arrangement) {
-              const trackClips = reviewAudioClips(
-                film.arrangement,
+              const trackClips = audioClips(
+                { audio: film.arrangement.audio },
                 selection.track,
                 film.arrangement.narration?.durationUs ?? film.durationSec * 1e6
               );
@@ -615,7 +572,7 @@ export default function BatchUnifiedReviewWorkspace({
   const approvedCount = films.filter((f) => f.approved).length;
 
   // v14 时间轴行筛选:全部 / 待检查 / 已确认 / 区间重复(只影响行展示,不改数据与眼睛)
-  const [rowFilter, setRowFilter] = useState<'all' | 'pending' | 'approved' | 'overlap' | 'replacement'>('all');
+  const [rowFilter, setRowFilter] = useState<'all' | 'pending' | 'approved' | 'overlap'>('all');
 
   // v14「显示全部轨道」:一键恢复所有眼睛可见性
   const handleShowAll = useCallback(() => {
@@ -638,10 +595,6 @@ export default function BatchUnifiedReviewWorkspace({
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
-          {films.some(film => film.formula) && <FormulaPresentationBatchAction key={batchId}
-            views={films.flatMap(film => film.arrangement ? [film.arrangement] : [])}
-            loading={workspace.cards.some(card => card.formula && card.versionId && arrangements[card.planId]?.outputVersionId !== card.versionId)}
-            onEdit={handleMediaEdit} />}
           <div className="text-xs text-ink-secondary flex items-center gap-1">
             <span>已确认</span>
             <strong className="text-sm font-semibold text-ink">{approvedCount}</strong>
@@ -679,7 +632,7 @@ export default function BatchUnifiedReviewWorkspace({
           <BatchReviewPreviewDock
             projectId={projectId}
             batchId={batchId}
-            outputPreset={previewFilm?.arrangement?.outputPreset ?? outputPreset}
+            outputPreset={outputPreset}
             previewFilm={previewFilm}
             previewAsset={sourceSession?.asset ?? previewAsset}
             sourceSession={sourceSession}
@@ -702,7 +655,7 @@ export default function BatchUnifiedReviewWorkspace({
             onJumpToCover={planId => { setSelectedPlanId(planId); setPreviewAsset(null); setSourceSession(null); setPlayheadSec(-10 / 24); setCoverPreviewRequest(value => value + 1); }}
             projectId={projectId}
             batchId={batchId}
-            outputPreset={activeFilm?.arrangement?.outputPreset ?? outputPreset}
+            outputPreset={outputPreset}
             film={activeFilm}
             selection={selection}
             inspectorTab={inspectorTab}
@@ -713,16 +666,6 @@ export default function BatchUnifiedReviewWorkspace({
             }}
             onCloseCoverEditor={() => setCoverEditorOpen(false)}
             onTabChange={setInspectorTab}
-            onFormulaChanged={() => {
-              if (activeFilm) setArrangements(current => {
-                const next = { ...current };
-                delete next[activeFilm.planId];
-                return next;
-              });
-              setPreviewAsset(null); setSourceSession(null); setSelection(null);
-              setCoverEditorOpen(false); setPlayheadSec(0);
-              onOutputChanged?.();
-            }}
             poolAssets={poolAssets}
             onMediaEdit={handleMediaEdit}
             onRefreshFilm={async (planId) => {
@@ -739,7 +682,6 @@ export default function BatchUnifiedReviewWorkspace({
             films={films}
             selectedPlanId={selectedPlanId}
             onSelectFilm={(id) => setSelectedPlanId(id)}
-            onShowFormula={(id) => { setSelectedPlanId(id); setInspectorTab('selection'); }}
             selection={selection}
             onSelectTarget={setSelection}
             focusedAssetId={focusedAssetId}
@@ -759,12 +701,12 @@ export default function BatchUnifiedReviewWorkspace({
             onTogglePlanSelect={(planId, checked) => onTogglePlan(planId, checked)}
             selectedPlanIds={selectedPlanIds}
             onSelectAll={onSelectAll}
-            onReview={(decision) => void handleBatchReview(decision)}
+            onReview={onReview}
             rowFilter={rowFilter}
             onRowFilterChange={setRowFilter}
             onShowAll={handleShowAll}
             batchControlState={workspace.batch.controlState}
-            phaseEBusy={reviewPending ? 'review:pending' : phaseEBusy}
+            phaseEBusy={phaseEBusy}
             onReallocate={onReallocate}
             onRetryNarration={onRetryNarration}
             onRetryRender={onRetryRender}
@@ -779,16 +721,6 @@ export default function BatchUnifiedReviewWorkspace({
               if (!view || !asset) return;
               setSelectedPlanId(planId); setSelection({ planId, kind: 'clip', clipId });
               setPreviewAsset(null); setSourceSession({ view: structuredClone(view), clipId, asset });
-            }}
-            onOpenFormulaMedia={(planId, edit) => {
-              const view = arrangements[planId];
-              const asset = poolAssets.find(item => item.assetId === edit.assetId);
-              if (!view?.formulaPreview || !asset || !view.editable) return;
-              setSelectedPlanId(planId);
-              setSelection(edit.type === 'replace' ? { planId, kind: 'clip', clipId: edit.clipId } : null);
-              setPreviewAsset(null); setCoverEditorOpen(false);
-              setSourceSession({ view: structuredClone(view), asset: structuredClone(asset), edit,
-                requestKey: `manual-media:${crypto.randomUUID()}` });
             }}
             onOpenCoverEditor={(planId) => {
               setSelectedPlanId(planId);

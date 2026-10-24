@@ -139,15 +139,10 @@ export function createBatchExternalScript(
     title: string;
     bodyText: string;
     sourceVersion: string;
-    /** 省略时保留既有外部文案的默认值；公式导入传入表格目标，不做秒数取整。 */
-    targetDurationSec?: number;
     now?: () => Date;
   },
 ): string {
   const updatedAt = nowIso(input.now);
-  if (input.targetDurationSec !== undefined && (!Number.isFinite(input.targetDurationSec) || input.targetDurationSec <= 0)) {
-    throw new Error('目标时长必须是有效的正数');
-  }
   return db.transaction(() => {
     const owner = assertBatchVersionEditable(db, batchVersionId);
     const existing = db.prepare(`
@@ -157,17 +152,17 @@ export function createBatchExternalScript(
     if (existing) {
       db.prepare(`
         UPDATE batch_scripts
-        SET title = ?, bodyText = ?, sourceVersion = ?, updatedAt = ?, targetDurationSec = COALESCE(?, targetDurationSec)
+        SET title = ?, bodyText = ?, sourceVersion = ?, updatedAt = ?
         WHERE id = ?
-      `).run(input.title, input.bodyText, input.sourceVersion, updatedAt, input.targetDurationSec ?? null, existing.id);
+      `).run(input.title, input.bodyText, input.sourceVersion, updatedAt, existing.id);
       return existing.id;
     }
     const id = randomUUID();
     db.prepare(`
       INSERT INTO batch_scripts
         (id, projectId, sourceKind, sourceId, title, bodyText, sourceVersion,
-         ownerBatchVersionId, externalSourceId, createdAt, updatedAt, targetDurationSec)
-      VALUES (?, ?, 'external', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ownerBatchVersionId, externalSourceId, createdAt, updatedAt)
+      VALUES (?, ?, 'external', ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       owner.projectId,
@@ -179,7 +174,6 @@ export function createBatchExternalScript(
       input.sourceId,
       updatedAt,
       updatedAt,
-      input.targetDurationSec ?? 15,
     );
     return id;
   })();

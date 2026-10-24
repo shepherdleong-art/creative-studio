@@ -2570,18 +2570,6 @@ function validateBatchSchema(db: Database.Database): void {
   assertIntegrity(db);
 }
 
-/** 只读验证基础能力；公式升级不能用其自身版本替代基础批量的安全判断。 */
-export function validateCurrentBatchSchema(db: Database.Database): void {
-  const versions = readAppliedVersions(db);
-  if (validateMigrationHistory(versions) || versions.at(-1) !== BATCH_SCHEMA_MIGRATIONS.at(-1)?.version) {
-    throw new Error('基础批量数据结构尚未就绪');
-  }
-  validateBatchSchema(db);
-  if ((db.pragma('foreign_key_check') as unknown[]).length > 0) {
-    throw new Error('基础批量外键检查未通过');
-  }
-}
-
 function validateBatchSchemaUpTo(db: Database.Database, version: number): void {
   for (let index = 0; index < version && index < SCHEMA_VALIDATORS.length; index += 1) {
     SCHEMA_VALIDATORS[index]?.(db);

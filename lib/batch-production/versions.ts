@@ -3,8 +3,6 @@ import type Database from 'better-sqlite3';
 import { type ColorSnapshotV1, type ColorSnapshotIdentity } from './color-pipeline.ts';
 import { fingerprintsEqual } from './fingerprint.ts';
 import { isBatchAssetEligible } from './media-catalog.ts';
-import { hasBatchPlanningModeColumn, parseBatchPlanningMode, type BatchPlanningMode } from './planning-mode.ts';
-import { BatchApiUnavailableError, BatchDomainError } from './errors.ts';
 
 export type BatchProductionStatus = 'draft' | 'running' | 'partially_completed' | 'completed' | 'failed';
 
@@ -12,7 +10,6 @@ export interface BatchProductionRow {
   id: string;
   projectId: string;
   name: string;
-  planningMode?: BatchPlanningMode;
   status: BatchProductionStatus;
   currentVersionId: string | null;
   progressJson: string;
@@ -26,7 +23,6 @@ export interface BatchProductionRow {
 export interface BatchProductionVersionRow {
   id: string;
   batchId: string;
-  planningMode?: BatchPlanningMode;
   versionNumber: number;
   copyCount: number;
   defaultsJson: string;
@@ -69,18 +65,13 @@ export function createBatchProduction(
   projectId: string,
   name: string,
   now?: () => Date,
-  options: { planningMode?: BatchPlanningMode } = {},
 ): string {
-  const mode = parseBatchPlanningMode(options.planningMode);
-  if (!name.trim()) throw new BatchDomainError('invalid_input', '请填写批次名称');
-  const hasMode = hasBatchPlanningModeColumn(db, 'batch_productions');
-  if (mode === 'formula' && !hasMode) throw new BatchApiUnavailableError('formula_schema_unavailable', '实拍公式混剪尚未完成安全升级');
   const createdAt = nowIso(now);
   const id = randomUUID();
   db.prepare(`
-    INSERT INTO batch_productions (id, projectId, name, status, currentVersionId, progressJson, createdAt, updatedAt${hasMode ? ', planningMode' : ''})
-    VALUES (?, ?, ?, 'draft', NULL, '{}', ?, ?${hasMode ? ', ?' : ''})
-  `).run(id, projectId, name.trim(), createdAt, createdAt, ...(hasMode ? [mode] : []));
+    INSERT INTO batch_productions (id, projectId, name, status, currentVersionId, progressJson, createdAt, updatedAt)
+    VALUES (?, ?, ?, 'draft', NULL, '{}', ?, ?)
+  `).run(id, projectId, name, createdAt, createdAt);
   return id;
 }
 
@@ -93,7 +84,7 @@ export function getBatchProduction(
     SELECT * FROM batch_productions WHERE id = ? AND projectId = ? AND deletedAt IS NULL
   `).get(batchId, projectId) as BatchProductionRow | undefined;
   if (!row) return undefined;
-  return { ...row, planningMode: parseBatchPlanningMode(row.planningMode), progressJson: JSON.parse(row.progressJson) };
+  return { ...row, progressJson: JSON.parse(row.progressJson) };
 }
 
 export function listProjectBatchProductions(
@@ -101,13 +92,12 @@ export function listProjectBatchProductions(
   projectId: string,
   options: { includeArchived?: boolean } = {},
 ): BatchProductionRow[] {
-  const rows = db.prepare(`
+  return db.prepare(`
     SELECT * FROM batch_productions
     WHERE projectId = ? AND deletedAt IS NULL
       AND (${options.includeArchived ? '1' : 'archivedAt IS NULL'})
     ORDER BY createdAt, id
   `).all(projectId) as BatchProductionRow[];
-  return rows.map(row => ({ ...row, planningMode: parseBatchPlanningMode(row.planningMode) }));
 }
 
 /**
@@ -195,8 +185,8 @@ export function createBatchProductionVersion(
   const createdAt = nowIso(input.now);
   const versionNumber = db.transaction(() => {
     const batch = db.prepare(`
-      SELECT * FROM batch_productions WHERE id = ? AND deletedAt IS NULL
-    `).get(batchId) as BatchProductionRow | undefined;
+      SELECT id FROM batch_productions WHERE id = ? AND deletedAt IS NULL
+    `).get(batchId);
     if (!batch) {
       throw new Error('批次不存在');
     }
@@ -205,9 +195,6 @@ export function createBatchProductionVersion(
     `).get(batchId) as { maxVersion: number | null };
     const next = (existing.maxVersion ?? 0) + 1;
     const id = randomUUID();
-    const mode = parseBatchPlanningMode(batch.planningMode);
-    const hasMode = hasBatchPlanningModeColumn(db, 'batch_production_versions');
-    if (mode === 'formula' && !hasMode) throw new BatchApiUnavailableError('formula_schema_unavailable', '实拍公式混剪版本结构不可用');
     db.prepare(`
       UPDATE batch_production_versions
       SET inputState = 'frozen', frozenAt = COALESCE(frozenAt, ?)
@@ -215,9 +202,9 @@ export function createBatchProductionVersion(
     `).run(createdAt, batchId);
     db.prepare(`
       INSERT INTO batch_production_versions
-        (id, batchId, versionNumber, copyCount, defaultsJson, inputState, frozenAt, createdAt${hasMode ? ', planningMode' : ''})
-      VALUES (?, ?, ?, ?, ?, 'draft', NULL, ?${hasMode ? ', ?' : ''})
-    `).run(id, batchId, next, input.copyCount, JSON.stringify(input.defaultsJson ?? {}), createdAt, ...(hasMode ? [mode] : []));
+        (id, batchId, versionNumber, copyCount, defaultsJson, inputState, frozenAt, createdAt)
+      VALUES (?, ?, ?, ?, ?, 'draft', NULL, ?)
+    `).run(id, batchId, next, input.copyCount, JSON.stringify(input.defaultsJson ?? {}), createdAt);
     db.prepare(`
       UPDATE batch_productions
       SET currentVersionId = ?, status = 'draft', progressJson = '{}', updatedAt = ?
@@ -237,14 +224,13 @@ export function getBatchVersion(
     SELECT * FROM batch_production_versions WHERE id = ? AND batchId = ?
   `).get(versionId, batchId) as BatchProductionVersionRow | undefined;
   if (!row) return undefined;
-  return { ...row, planningMode: parseBatchPlanningMode(row.planningMode), defaultsJson: JSON.parse(row.defaultsJson) };
+  return { ...row, defaultsJson: JSON.parse(row.defaultsJson) };
 }
 
 export function listBatchVersions(db: Database.Database, batchId: string): BatchProductionVersionRow[] {
-  const rows = db.prepare(`
+  return db.prepare(`
     SELECT * FROM batch_production_versions WHERE batchId = ? ORDER BY versionNumber
   `).all(batchId) as BatchProductionVersionRow[];
-  return rows.map(row => ({ ...row, planningMode: parseBatchPlanningMode(row.planningMode) }));
 }
 
 /**

@@ -1,6 +1,6 @@
 'use client';
 
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useState } from 'react';
 import BatchPreparationPanel from '@/components/batch-production/BatchPreparationPanel';
 import type { ProjectInfoValue } from '@/components/ProjectInfoDialog';
 import MixcutPanel from './MixcutPanel';
@@ -13,15 +13,7 @@ interface MixcutWorkspaceProps {
 }
 
 export default function MixcutWorkspace(props: MixcutWorkspaceProps) {
-  const pathname = usePathname();
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const mode = searchParams.get('mixcut') === 'batch' ? 'batch' : 'single';
-  const setMode = (nextMode: 'single' | 'batch') => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('mixcut', nextMode);
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-  };
+  const [mode, setMode] = useState<'single' | 'batch'>('single');
   return (
     <div className="space-y-4">
       <div className="card flex flex-wrap items-center justify-between gap-3 p-3">

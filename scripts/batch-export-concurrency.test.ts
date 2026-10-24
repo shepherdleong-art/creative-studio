@@ -27,7 +27,7 @@ const { computeFingerprintFromFile } = await import('../lib/batch-production/fin
 const { publishSelectedBatchOutputs } = await import('../lib/batch-production/phase-e.ts');
 const { orchestrateBatchExport } = await import('../lib/batch-production/export-orchestrator.ts');
 const { createOutputPlansForSnapshot, createOutputVersion } = await import('../lib/batch-production/plans.ts');
-const { setBatchPlanReviews, readBatchPlanReview } = await import('../lib/batch-production/review.ts');
+const { setBatchPlanReviews } = await import('../lib/batch-production/review.ts');
 const { BATCH_SCHEMA_MIGRATIONS } = await import('../lib/batch-production/schema.ts');
 const { createBatchTask } = await import('../lib/batch-production/tasks.ts');
 const { addAssetToPool, createBatchProduction, createBatchProductionVersion } = await import('../lib/batch-production/versions.ts');
@@ -287,22 +287,7 @@ try {
   assert.equal(walk(storageRoot, '.jpg').length, jpgsBefore, '审核 CAS 失败必须清理本次复制的封面文件');
 
   // 恢复审核,回到可发布状态。
-  const confirmCurrent = () => setBatchPlanReviews(db!, projectId, batchId, { items: [{ planId,
-    ...readBatchPlanReview(db!, projectId, batchId, planId).context! }], decision: 'approved' });
-  assert.equal(confirmCurrent().results[0].status, 'saved');
-  const changedConcerns = await publishSelectedBatchOutputs(db, projectId, batchId, [planId], {
-    storageRoot, requireRenderContract: true,
-    beforeRegister: () => {
-      conn.prepare("UPDATE batch_output_versions SET arrangementJson=json_set(arrangementJson,'$.warnings',json(?)) WHERE id=?")
-        .run('["新增材质提醒"]', outputVersionId);
-    },
-  });
-  assert.equal(changedConcerns.published, 0, '复制期间提醒改变，最终注册仍须拒绝旧确认');
-  assert.match(changedConcerns.items[0]?.reason ?? '', /审核/);
-  assert.equal(readBatchPlanReview(db, projectId, batchId, planId).decision, null);
-  assert.equal(walk(storageRoot, '.mp4').length, mp4sBefore, '过期审核不得留下新正式视频');
-  assert.equal(walk(storageRoot, '.jpg').length, jpgsBefore, '过期审核不得留下新正式封面');
-  assert.equal(confirmCurrent().results[0].status, 'saved');
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [planId], decision: 'approved' });
 
   // --- 回归 2:并发重复 POST 只注册一对 artifact、只留一份正式文件 ---
   // 用屏障保证两个请求都已复制完文件、即将进入最终注册事务，再同时放行。
