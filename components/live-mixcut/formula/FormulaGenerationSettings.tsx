@@ -5,7 +5,6 @@ import type { FormulaSettingsView } from '@/lib/live-mixcut/formula/settings-sto
 import { FORMULA_DEFAULT_BGM, FORMULA_MAX_OUTPUTS, type FormulaBgmMode, type FormulaSettings } from '@/lib/live-mixcut/formula/settings';
 import { defaultFormulaProductionSettings, formulaProductionSettingsError } from '@/lib/live-mixcut/formula/production-settings';
 import FormulaProductionSettingsPanel from './FormulaProductionSettingsPanel';
-import FormulaExternalNarrationPanel from './FormulaExternalNarrationPanel';
 import { defaultFormulaTimingSettings, parseFormulaTimingSettings, type FormulaTimingSettings } from '@/lib/live-mixcut/formula/timing-settings';
 
 async function responseBody<T>(response: Response): Promise<T> {
@@ -14,10 +13,9 @@ async function responseBody<T>(response: Response): Promise<T> {
   return body;
 }
 
-export default function FormulaGenerationSettings({ projectId, batchId, inputRevision, pendingImport, disabled, onEdit, onGenerated, onInputsChanged }: {
+export default function FormulaGenerationSettings({ projectId, batchId, inputRevision, pendingImport, disabled, onEdit, onGenerated }: {
   projectId: string; batchId: string; inputRevision: number; pendingImport: boolean; disabled: boolean; onEdit: (key: string) => void;
   onGenerated: () => Promise<void>;
-  onInputsChanged: () => Promise<void>;
 }) {
   const [view, setView] = useState<FormulaSettingsView | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -28,7 +26,6 @@ export default function FormulaGenerationSettings({ projectId, batchId, inputRev
   const [durationText, setDurationText] = useState('');
   const [marginText, setMarginText] = useState('120');
   const [busy, setBusy] = useState(false);
-  const [externalBusy, setExternalBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -44,7 +41,9 @@ export default function FormulaGenerationSettings({ projectId, batchId, inputRev
     const counts = new Map(previous.map(item => [item.key, item.copies]));
     setCopies(Object.fromEntries(next.scripts.map(row => [row.key, String(counts.get(row.key) ?? 1)])));
     setMusic(next.saved?.settings.bgm ?? { ...FORMULA_DEFAULT_BGM });
-    setProduction(next.saved?.settings.production ?? defaultFormulaProductionSettings());
+    // 包装与封面是一体的：封面跟随包装模板，不再单独保存封面预设。
+    const savedProduction = next.saved?.settings.production;
+    setProduction(savedProduction ? { ...savedProduction, cover: { mode: 'default', presetIds: [] } } : defaultFormulaProductionSettings());
     const savedTiming = next.saved?.settings.timing ?? defaultFormulaTimingSettings();
     setTiming(savedTiming); setDurationText(savedTiming.overrideDurationSec === null ? '' : String(savedTiming.overrideDurationSec));
     setMarginText(String(savedTiming.speechMarginMs));
@@ -84,7 +83,9 @@ export default function FormulaGenerationSettings({ projectId, batchId, inputRev
     if (locked || invalidSettings || submitting.current || !view) return;
     submitting.current = true; setBusy(true); setError(''); setMessage('');
     try {
-      const saved = dirty || !view.saved ? await persistSettings() : view;
+      // 旧设置若还保留独立封面预设，按新的“封面跟随包装”规则重新保存。
+      const coverFollowsPackaging = view.saved?.settings.production.cover.mode === 'default';
+      const saved = dirty || !view.saved || !coverFollowsPackaging ? await persistSettings() : view;
       apply(saved);
       if (!saved.saved) throw new Error('生成设置尚未保存，请重试。');
       await responseBody(await fetch(url.replace('/settings?', '/generation?'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -137,7 +138,7 @@ export default function FormulaGenerationSettings({ projectId, batchId, inputRev
     setMusic({ mode, trackIds: [] }); setDirty(true); setMessage('');
   }
 
-  const locked = disabled || busy || externalBusy || !view || !view.editable || view.inputRevision !== inputRevision || pendingImport || view.hasPendingScripts;
+  const locked = disabled || busy || !view || !view.editable || view.inputRevision !== inputRevision || pendingImport || view.hasPendingScripts;
   const invalidCopies = [...selected].some(key => !Number.isSafeInteger(Number(copies[key])) || Number(copies[key]) < 1);
   const total = [...selected].reduce((sum, key) => sum + (Number(copies[key]) || 0), 0);
   const tracks = view?.tracks ?? [];
@@ -257,9 +258,6 @@ export default function FormulaGenerationSettings({ projectId, batchId, inputRev
         <button type="button" className="btn-secondary" disabled={busy || disabled} onClick={() => void reload()}>重新读取设置</button>
         <span className="text-xs text-ink-secondary">{dirty ? '当前设置尚未保存' : '设置已保存'}</span>
       </div>
-      <FormulaExternalNarrationPanel projectId={projectId} batchId={batchId} inputRevision={inputRevision}
-        disabled={disabled || busy || pendingImport || view.hasPendingScripts} dirty={dirty} mode={production.audio.mode}
-        onBusy={setExternalBusy} onSaved={onInputsChanged} />
     </>}
   </section>;
 }

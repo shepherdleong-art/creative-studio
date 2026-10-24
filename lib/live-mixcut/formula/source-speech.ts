@@ -51,7 +51,7 @@ export async function analyzeFormulaSourceSpeech(db: Database.Database, projectI
   }
   if (candidate.media.hasAudio === false) return { ...identity, status: 'no_audio_stream', sourceId: candidate.sourceId, mediaDurationUs };
   const adapter = typeof service === 'function' ? service() : service;
-  if (!adapter.configured) return { ...identity, status: 'needs_attention', reason: 'service_unavailable', message: '本次制作未配置原声转写服务。可回第一步点「修改输入」，人工核对原声后重新生成；也可配置识别服务后重新生成。' };
+  if (!adapter.configured) return { ...identity, status: 'needs_attention', reason: 'service_unavailable', message: '本次制作未配置原声转写服务，原片台词无法自动核对；请在检查成片时人工核对，或配置识别服务后重新生成。' };
   // 16kHz 单声道 PCM 十分钟约 19.2MB，避免把整段超长视频无界载入转写服务。
   if (mediaDurationUs > 600_000_000) return { ...identity, status: 'needs_attention', reason: 'source_too_long', message: '原片超过十分钟，请拆分素材或人工核对台词和区间。' };
   const storageRoot = path.join(dataRoot(), 'storage');
@@ -71,7 +71,7 @@ export async function analyzeFormulaSourceSpeech(db: Database.Database, projectI
     try { transcript = await adapter.transcribe({ audioPath, durationUs: mediaDurationUs, signal }); }
     catch {
       signal.throwIfAborted();
-      return { ...identity, status: 'needs_attention', reason: 'transcription_failed', message: '未取得可靠的台词及时间，请重试或人工核对原声；不能据此认定没有人声。' };
+      return { ...identity, status: 'needs_attention', reason: 'transcription_failed', message: '未取得可靠的台词及时间，请重试；不能据此认定没有人声，请在检查成片时人工核对。' };
     }
     signal.throwIfAborted();
     recheckFormulaCandidate(db, projectId, candidate);

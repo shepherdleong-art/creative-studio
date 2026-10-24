@@ -89,7 +89,7 @@ export async function resolveFormulaRenderAudio(target: RenderTarget, arrangemen
       continue;
     }
     const original = timeline.duration.clips.find(item => item.slotId === clip.segmentId);
-    if (!original || original.assetId !== clip.assetId || original.contentFingerprint !== clip.contentFingerprint) fail('人工插入或换片尚未完成画面、区间和台词核验；请在选片记录重新选择素材后制作');
+    if (!original || original.assetId !== clip.assetId || original.contentFingerprint !== clip.contentFingerprint) fail('人工插入或换片尚未完成画面、区间和台词核验；请重新拖入带原声的素材，或回到第二步修改输入后重新生成');
     const verified = await candidateFor(original.slotId);
     if (Number(clip.sourceEndUs) > verified.media.durationUs) fail('公式画面区间超出原片');
     videoPaths.set(String(clip.clipId), resolveSourceFilePath(verified.location));

@@ -1,12 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { formatShanghaiTaskDate, sanitizeExportFilenamePart } from '../media-core/export-identity.ts';
+import { sanitizeExportFilenamePart } from '../media-core/export-identity.ts';
+import { formatShanghaiIdentityDate } from '../project-production-identity.ts';
 import { BatchDomainError } from './errors.ts';
+import {
+  buildLiveMixcutTaskName,
+  parseLiveMixcutNamingInput,
+  resolveUniqueLiveMixcutTaskName,
+} from './naming.ts';
 import { createBatchProduction } from './versions.ts';
 
 /**
  * 实拍混剪的"任务"。复制来的代码处处用 projectId，指的就是这里的 id，和工作台的 projects 表无关。
- * 一个任务只有一个批次（batchId）。
+ * 一个任务可以有多个批次；batchId 仅记录首批，用于兼容旧导出目录。
  */
 export interface LiveMixcutProject {
   id: string;
@@ -41,28 +47,30 @@ export function readLiveMixcutProject(db: Database.Database, projectId: string):
   return row;
 }
 
-/** 导出目录：任务名-创建日期，重名加 -2、-3。创建后不再改，免得已导出的文件找不到。 */
-function uniqueExportDirName(db: Database.Database, name: string, createdAt: string): string {
+/** 导出目录：直接用自动生成的任务名，重名加 -2、-3。创建后不再改，免得已导出的文件找不到。 */
+function uniqueExportDirName(db: Database.Database, name: string): string {
   // 和导出目录守卫的白名单一致：只留字母、数字、中文和 ._-。
   const safe = sanitizeExportFilenamePart(name).replace(/[^A-Za-z0-9._\-\u4e00-\u9fa5]/g, '') || '实拍混剪';
-  const base = `${safe}-${formatShanghaiTaskDate(createdAt)}`;
   const taken = db.prepare('SELECT 1 FROM live_mixcut_projects WHERE exportDirName = ?');
   for (let index = 1; ; index += 1) {
-    const candidate = index === 1 ? base : `${base}-${index}`;
+    const candidate = index === 1 ? safe : `${safe}-${index}`;
     if (!taken.get(candidate)) return candidate;
   }
 }
 
-export function createLiveMixcutProject(db: Database.Database, input: { name: unknown; productName: unknown },
-  now = new Date()): LiveMixcutProject {
-  const name = cleanName(input.name, '任务名');
-  const productName = cleanName(input.productName, '产品名');
+export function createLiveMixcutProject(db: Database.Database, input: {
+  storeCode: unknown; productCode: unknown; editorName: unknown;
+}, now = new Date()): LiveMixcutProject {
+  const naming = parseLiveMixcutNamingInput(input);
+  // 实拍混剪不单独填写产品名：包装标题使用型号，和生产身份保持一致。
+  const productName = naming.productCode;
   const id = randomUUID();
   const createdAt = now.toISOString();
   db.transaction(() => {
+    const name = resolveUniqueLiveMixcutTaskName(db, buildLiveMixcutTaskName(naming, formatShanghaiIdentityDate(now)));
     db.prepare(`INSERT INTO live_mixcut_projects (id, name, productName, exportDirName, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?)`).run(id, name, productName, uniqueExportDirName(db, name, createdAt), createdAt, createdAt);
-    // 剪辑方式固定为实拍公式；批次和任务同名。
+      VALUES (?, ?, ?, ?, ?, ?)`).run(id, name, productName, uniqueExportDirName(db, name), createdAt, createdAt);
+    // 首批与任务同名；后续可在任务内复制或新建其他批次。
     const batchId = createBatchProduction(db, id, name, () => now, { planningMode: 'formula' });
     db.prepare('UPDATE live_mixcut_projects SET batchId = ? WHERE id = ?').run(batchId, id);
   })();

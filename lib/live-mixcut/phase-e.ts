@@ -7,6 +7,7 @@ import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storag
 // 命名合约与单条模式共用同一处纯函数,避免两边各写一份后慢慢漂移。
 import { formatShanghaiTaskDate, formulaExportSuffix, sanitizeExportFilenamePart } from '../media-core/export-identity.ts';
 import { readLiveMixcutProject } from './projects.ts';
+import { resolveLiveMixcutBatchExport } from './batches.ts';
 import { normalizePackagingCode } from '../media-core/production-codes.ts';
 import { parsePackagingConfig } from '../media-core/packaging-vars.ts';
 import { readFormulaExportIdentity } from './formula/export-identity.ts';
@@ -429,7 +430,7 @@ export async function publishSelectedBatchOutputs(
   // 实拍混剪不关联项目：导出目录和文件名都取任务上保存的值（见 ./projects.ts）。
   const task = readLiveMixcutProject(db, projectId);
   const taskDate = formatShanghaiTaskDate(task.createdAt) || undefined;
-  const exportDirName = task.exportDirName;
+  const { exportDirName, batchExportDirName } = resolveLiveMixcutBatchExport(db, projectId, batchId);
   const taskBaseName = sanitizeExportFilenamePart(task.productName) || '实拍混剪';
 
   const storageRoot = path.resolve(options.storageRoot ?? path.join(dataRoot(), 'storage'));
@@ -551,6 +552,7 @@ export async function publishSelectedBatchOutputs(
           outputVersionId: row.currentVersionId, packaging: parsePackagingConfig((arrangement as Record<string, unknown>).packaging) }) : undefined,
         outputVersion: row.versionNumber,
         exportDirName,
+        batchExportDirName,
         baseName: taskBaseName,
       });
       let output;

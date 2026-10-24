@@ -1,7 +1,6 @@
 'use client';
 import BatchPackagingEditor from '../BatchPackagingEditor';
 import { humanizeBatchWarning } from '../batch-warning-text';
-import FormulaSelectionHistoryPanel from '../formula/FormulaSelectionHistoryPanel';
 import { FormulaPresentationLocks } from '../formula/FormulaPresentationControls';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -34,7 +33,6 @@ export interface BatchReviewInspectorDockProps {
   coverEditorOpen: boolean;
   onOpenCoverEditor: () => void;
   onCloseCoverEditor: () => void;
-  onFormulaChanged?: () => void;
 }
 
 export default function BatchReviewInspectorDock({
@@ -52,7 +50,6 @@ export default function BatchReviewInspectorDock({
   coverEditorOpen,
   onOpenCoverEditor,
   onCloseCoverEditor,
-  onFormulaChanged,
 }: BatchReviewInspectorDockProps) {
   const arrangement = film?.arrangement;
   const planId = film?.planId;
@@ -162,18 +159,35 @@ export default function BatchReviewInspectorDock({
     };
   }, []);
 
-  if (!film || !arrangement) {
+  if (!film) {
     return (
       <aside className={`${styles.dock} h-full`} aria-label="成片属性">
         <div className={styles.dockHead}>
-          <h3 className="text-xs font-semibold text-ink">属性检查器</h3>
+          <div className="min-w-0">
+            <h3 className="truncate text-xs font-semibold text-ink">成片属性</h3>
+          </div>
         </div>
-        {film?.formula ? <div className={`${styles.inspectorScroll} p-3`}>
-          <FormulaSelectionHistoryPanel key={film.planId} projectId={projectId} batchId={batchId} planId={film.planId}
-            refreshKey={`${film.formula.stageId}:${film.formula.status}`} onChanged={() => onFormulaChanged?.()} />
-        </div> : <div className="flex flex-1 items-center justify-center p-6 text-center text-xs text-ink-tertiary">
-          请在时间轴点击选择一条成片
-        </div>}
+        <div className="flex flex-1 items-center justify-center p-6 text-center text-xs text-ink-tertiary">
+          请在下方时间轴选择一条已就绪成片
+        </div>
+      </aside>
+    );
+  }
+
+  if (!arrangement) {
+    return (
+      <aside className={`${styles.dock} h-full`} aria-label="成片属性">
+        <div className={styles.dockHead}>
+          <div className="min-w-0">
+            <h3 className="truncate text-xs font-semibold text-ink">
+              成片 {String(film.seq).padStart(2, '0')} · {film.scriptTitle || '未命名脚本'}
+            </h3>
+            <p className="text-[10px] text-ink-tertiary">这条成片还没有可编辑的画面、字幕和声音</p>
+          </div>
+        </div>
+        <div className="flex flex-1 items-center justify-center p-6 text-center text-xs text-ink-tertiary">
+          {film.reviewable ? '正在读取成片编辑数据…' : '这条成片还在制作中，暂无可编辑内容。'}
+        </div>
       </aside>
     );
   }
@@ -190,8 +204,6 @@ export default function BatchReviewInspectorDock({
       </div>
 
       <div className={styles.inspectorTabs}>
-        {film.formula && <button type="button" className={`${styles.inspectorTabBtn} ${inspectorTab === 'selection' ? styles.inspectorTabActive : ''}`}
-          onClick={() => onTabChange('selection')}>选片记录</button>}
         <button type="button" className={`${styles.inspectorTabBtn} ${inspectorTab === 'packaging' ? styles.inspectorTabActive : ''}`} onClick={() => onTabChange('packaging')}>包装</button>
         <button
           type="button"
@@ -235,10 +247,6 @@ export default function BatchReviewInspectorDock({
         </details>}
         {(inspectorTab === 'packaging' || inspectorTab === 'cover') && <FormulaPresentationLocks
           key={`${film.planId}:${arrangement.outputVersionId}`} view={arrangement} onEdit={onMediaEdit} />}
-        {film.formula && inspectorTab === 'selection' && <FormulaSelectionHistoryPanel key={film.planId}
-          projectId={projectId} batchId={batchId} planId={film.planId}
-          refreshKey={`${film.formula.stageId}:${film.formula.status}:${arrangement.outputVersionId}:${arrangement.editRevision}`}
-          onChanged={() => onFormulaChanged?.()} />}
         {inspectorTab === 'packaging' && <BatchPackagingEditor key={`${film.planId}:${arrangement.outputVersionId}`} view={arrangement} onJumpToCover={() => onJumpToCover(film.planId)}
           onSave={(config, reextract) => onMediaEdit(film.planId, { type: 'set_packaging', config, reextract, expectedEditRevision: arrangement.editRevision, expectedOutputVersionId: arrangement.outputVersionId })} />}
         {/* TAB 1: 字幕 */}

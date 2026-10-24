@@ -4,6 +4,7 @@ import type { BatchWorkspaceView } from '@/lib/live-mixcut/batch-workspace';
 import type { BatchReviewTarget } from '@/lib/live-mixcut/review-context';
 import type { OutputPresetId } from '@/lib/final-edit/types';
 import BatchUnifiedReviewWorkspace from './review/BatchUnifiedReviewWorkspace';
+import type { InspectorTab } from './review/types';
 
 export type CardFilter = 'all' | BatchWorkspaceView['cards'][number]['status'];
 
@@ -28,6 +29,10 @@ export interface BatchStepReviewProps {
   outputPreset: OutputPresetId;
   /** 片段编辑生效后回调(外层刷新 workspace) */
   onOutputChanged?: () => void;
+  /** 从制作进度跳转时聚焦的成片与属性页。 */
+  focusPlanId?: string | null;
+  focusInspectorTab?: InspectorTab | null;
+  focusNonce?: number;
   busy: 'create' | 'snapshot' | 'start' | null;
   onStartBatch: () => void;
 }
@@ -54,6 +59,9 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
         onRetryRender={props.onRetryRender}
         phaseEBusy={props.phaseEBusy}
         onOutputChanged={props.onOutputChanged}
+        focusPlanId={props.focusPlanId}
+        focusInspectorTab={props.focusInspectorTab}
+        focusNonce={props.focusNonce}
       />
     </div>
   );

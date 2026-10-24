@@ -135,7 +135,7 @@ export async function mapFormulaAudio(input: FormulaAudioMappingInput, resolveMo
     basis = input.mode === 'narration' ? 'explicit_mode' : 'single_window';
     proposed = [{ text: input.bodyText, kind: 'tts', slotIds: windows[0] }];
   } else {
-    if (!model) return issue('mapping_model_unavailable', '自动分配需要脚本模型；可恢复这次制作的模型配置，或在选片记录里点「人工分配声音用途」。', []);
+    if (!model) return issue('mapping_model_unavailable', '自动分配需要脚本模型；请恢复这次制作的模型配置，或回到第二步修改输入后重新生成。', []);
     basis = 'model';
     let response: unknown;
     try {

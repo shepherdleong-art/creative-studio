@@ -62,7 +62,7 @@ export function batchOutputReviewContext(db: Database.Database, outputVersionId:
           LEFT JOIN live_mixcut_formula_timeline_results t ON t.stageId=e.id WHERE s.stageId=?`).get(String(basis.timelineStageId ?? ''), basis.selectionStageId) as
         { resultJson: string; projectId: string; inputJson: string | null; timelineJson: string | null } | undefined : undefined;
     const selection: FormulaSelection | null = row ? JSON.parse(row.resultJson) : null;
-    if (!selection || selection.status !== 'selected') issues.push({ kind: 'blocker', message: '选片记录缺失或尚未完成，请重新核对' });
+    if (!selection || selection.status !== 'selected') issues.push({ kind: 'blocker', message: '选片结果缺失或尚未完成，请重新核对' });
     if (selection?.status === 'selected') {
       const input: FormulaGenerationRequest['input'] | null = row?.inputJson ? JSON.parse(row.inputJson) : null;
       const activeAudio = record(arrangement.audioPlan).clips;

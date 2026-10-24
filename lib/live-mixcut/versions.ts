@@ -128,7 +128,7 @@ export function setBatchProductionArchived(
     WHERE id = ? AND projectId = ? AND deletedAt IS NULL
   `).run(archived ? updatedAt : null, updatedAt, batchId, projectId);
   if (result.changes === 0) {
-    throw new Error('批次不存在');
+    throw new BatchDomainError('not_found', '批次不存在');
   }
 }
 

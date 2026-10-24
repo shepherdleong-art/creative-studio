@@ -9,14 +9,14 @@ import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/li
 import { audioClips } from '@/lib/media-core/audio-edit';
 import { reviewAudioClips } from './audio-tracks';
 import { FINAL_EDIT_FPS } from '@/lib/media-core/render-contract';
-import type { FormulaMediaDrop, MaterialDragItem, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
+import type { MaterialDragItem, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
 import styles from './batch-unified-review.module.css';
 import BatchReviewSubtitleChip from './BatchReviewSubtitleChip';
 import AudioWaveform from '@/components/audio/AudioWaveform';
 import { subtitleSplitEdit } from './subtitle-edit';
 import { videoTrimRange, type VideoTrimRange } from './video-trim';
 import { snapMovingClip } from '@/lib/media-core/timeline-snap';
-import { materialDropInGap } from './material-drop';
+import { materialDragCount, MATERIAL_DROP_MIN_US, materialDropInGap, materialInsertAnchor, materialInsertDurationUs } from './material-drop';
 import { buildVideoUsage, type ReviewUsageGroup } from './video-usage';
 
 function groupStyle(group?: ReviewUsageGroup): CSSProperties {
@@ -40,7 +40,6 @@ export interface BatchReviewTimelineDockProps {
   films: UnifiedFilmState[];
   selectedPlanId: string | null;
   onSelectFilm: (planId: string) => void;
-  onShowFormula?: (planId: string) => void;
   selection: SelectionTarget | null;
   onSelectTarget: (target: SelectionTarget | null) => void;
   focusedAssetId: string | null;
@@ -73,11 +72,10 @@ export interface BatchReviewTimelineDockProps {
   onReallocate: (planId: string) => void;
   onRetryNarration: (taskId: string) => void;
   onRetryRender: (taskId: string) => void;
-  onMediaEdit: (planId: string, edit: Record<string, unknown>) => Promise<boolean>;
-  onRefreshFilm: (planId: string) => Promise<void>;
+  onMediaEdit: (planId: string, edit: Record<string, unknown>, undoBasis?: BatchOutputClipEditView) => Promise<boolean>;
+  onRefreshFilm: (planId: string) => Promise<BatchOutputClipEditView | null>;
   onOpenCoverEditor: (planId: string) => void;
   onOpenSource?: (planId: string, clipId: string) => void;
-  onOpenFormulaMedia?: (planId: string, edit: FormulaMediaDrop) => void;
 }
 
 /** 取某成片指定音轨的片段列表与源音频总时长。 */
@@ -101,7 +99,6 @@ export default function BatchReviewTimelineDock({
   films,
   selectedPlanId,
   onSelectFilm,
-  onShowFormula,
   selection,
   onSelectTarget,
   focusedAssetId,
@@ -134,7 +131,6 @@ export default function BatchReviewTimelineDock({
   onRefreshFilm,
   onOpenCoverEditor,
   onOpenSource,
-  onOpenFormulaMedia,
 }: BatchReviewTimelineDockProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [snapLinePx, setSnapLinePx] = useState<number | null>(null);
@@ -147,7 +143,17 @@ export default function BatchReviewTimelineDock({
     clipId?: string;
     afterClipId?: string | null;
     timelineStartUs?: number;
+    /** 本次拖入的素材条数；仅用于拖拽时的落点提示。 */
+    count?: number;
   } | null>(null);
+  // 落轨结果：拖入即提交，不再弹确认；这里只负责即时回显结果或阻止原因。
+  const [dropBusy, setDropBusy] = useState(false);
+  const [dropNotice, setDropNotice] = useState<{ kind: 'ok' | 'error' | 'busy'; message: string } | null>(null);
+  useEffect(() => {
+    if (!dropNotice || dropNotice.kind === 'busy') return;
+    const timer = window.setTimeout(() => setDropNotice(null), dropNotice.kind === 'error' ? 8000 : 4000);
+    return () => window.clearTimeout(timer);
+  }, [dropNotice]);
 
   useEffect(() => {
     const clear = () => setDropTarget(null);
@@ -795,61 +801,128 @@ export default function BatchReviewTimelineDock({
     });
   };
 
-  // Drag and Drop Material Handling
+  // Drag and Drop Material Handling：拖入即保存，不再经过确认弹层。
+  const dragItems = (e: React.DragEvent): MaterialDragItem[] => {
+    try {
+      const parsed: unknown = JSON.parse(e.dataTransfer.getData('application/json'));
+      const list = Array.isArray(parsed) ? parsed : [parsed];
+      return list.filter((item): item is MaterialDragItem => !!item && typeof item === 'object'
+        && typeof (item as MaterialDragItem).assetId === 'string' && poolAssetsById.has((item as MaterialDragItem).assetId))
+        .slice(0, 50);
+    } catch { return []; }
+  };
+
+  // 拖拽期间浏览器不允许读取自定义数据，素材池把条数编码在类型名里，
+  // 让时间轴在悬停时就能区分「替换」和「多条插入」并给出正确落点。
   const handleDragOver = (e: React.DragEvent, target: typeof dropTarget) => {
     e.stopPropagation();
-    if (!e.dataTransfer.types.includes('application/json') || !films.find(f => f.planId === target?.planId)?.arrangement?.editable) {
+    if (dropBusy || !e.dataTransfer.types.includes('application/json')
+      || !films.find(f => f.planId === target?.planId)?.arrangement?.editable) {
       setDropTarget(null);
       return;
     }
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
-    setDropTarget(target);
+    const count = materialDragCount(e.dataTransfer.types);
+    let next = target ? { ...target, count } : null;
+    // 多条素材落在片段上时只能插入，提示要和时间轴实际结果一致。
+    if (next && count > 1 && next.type === 'replace') {
+      const clips = films.find(f => f.planId === next!.planId)?.arrangement?.clips;
+      const anchor = clips ? materialInsertAnchor(clips, target!) : null;
+      if (anchor) next = { planId: next.planId, type: 'insert', count, ...anchor };
+    }
+    // 拖拽期间高频触发；落点没变就不重渲染整条时间轴，保证反馈即时。
+    setDropTarget(current => current && next
+      && current.planId === next.planId && current.type === next.type && current.clipId === next.clipId
+      && current.afterClipId === next.afterClipId && current.timelineStartUs === next.timelineStartUs
+      && current.count === next.count ? current : next);
   };
 
   const handleDrop = async (e: React.DragEvent, target = dropTarget) => {
     e.preventDefault();
     e.stopPropagation();
     setDropTarget(null);
-    if (!target || !films.find(f => f.planId === target.planId)?.arrangement?.editable) return;
-    const json = e.dataTransfer.getData('application/json');
-    if (!json) return;
+    if (dropBusy || !target) return;
+    const film = films.find(item => item.planId === target.planId);
+    const arrangement = film?.arrangement;
+    if (!film || !arrangement?.editable) return;
+    const items = dragItems(e);
+    if (!items.length) {
+      setDropNotice({ kind: 'error', message: '没有读到可用的素材，请从素材池重新拖入。' });
+      return;
+    }
+    const clips = arrangement.clips;
+    const replaceClip = target.type === 'replace' && target.clipId
+      ? clips.find(clip => clip.clipId === target.clipId) ?? null : null;
+    const replacing = !!replaceClip && items.length === 1;
+    let inserted = 0;
+    setDropBusy(true);
+    setDropNotice({ kind: 'busy', message: replacing ? '正在替换画面…' : `正在把 ${items.length} 条素材插入时间轴…` });
     try {
-      const item: MaterialDragItem = JSON.parse(json);
-      if (!poolAssetsById.has(item.assetId)) return;
-
-      const film = films.find(f => f.planId === target.planId);
-      if (film?.formula) {
-        onOpenFormulaMedia?.(target.planId, target.type === 'replace' && target.clipId
-          ? { type: 'replace', clipId: target.clipId, assetId: item.assetId }
-          : { type: 'insert', assetId: item.assetId,
-            afterClipId: target.type === 'append' && target.timelineStartUs === undefined
-              ? film.arrangement?.clips.at(-1)?.clipId ?? null : target.afterClipId ?? null,
-            ...(target.timelineStartUs !== undefined ? { timelineStartUs: target.timelineStartUs } : {}) });
+      if (replacing && replaceClip) {
+        const item = items[0];
+        // 静音替换会删掉这段画面里的原声台词；必须保留时明确阻止，不能静默丢声音。
+        if (arrangement.audioPlan?.clips.some(clip => clip.kind === 'source' && clip.linkedVideoClipId === replaceClip.clipId)) {
+          throw new Error('这段画面含必须保留的原声，已阻止静音换片。请拖到空隙插入，或先处理这段原声。');
+        }
+        const lengthUs = replaceClip.sourceEndUs - replaceClip.sourceStartUs;
+        if (item.durationSec != null && item.durationSec * 1e6 < lengthUs) {
+          throw new Error(`「${item.displayName}」只有 ${item.durationSec.toFixed(1)} 秒，覆盖不了这段 ${(lengthUs / 1e6).toFixed(1)} 秒的镜头。`);
+        }
+        const edit: Record<string, unknown> = { type: 'replace', clipId: replaceClip.clipId, assetId: item.assetId };
+        if (film.formula) {
+          if (!arrangement.outputVersionId) throw new Error('这条成片还没有可编辑版本，请刷新后重试。');
+          Object.assign(edit, {
+            requestKey: `material-drop:${crypto.randomUUID()}`,
+            expectedEditRevision: arrangement.editRevision,
+            expectedOutputVersionId: arrangement.outputVersionId,
+            formulaMedia: { contentFingerprint: item.contentFingerprint, inUs: 0, outUs: lengthUs, protected: null,
+              sound: 'mute', segments: [], confirmed: true },
+          });
+        }
+        const saved = await onMediaEdit(target.planId, edit, arrangement);
+        if (!saved) throw new Error('替换没有保存成功，请重试。');
+        await onRefreshFilm(target.planId);
+        setDropNotice({ kind: 'ok', message: `已替换为「${item.displayName}」，静音入轨，原有配音保持原位。` });
         return;
       }
 
-      if (target.type === 'replace' && target.clipId) {
-        await onMediaEdit(target.planId, {
-          type: 'replace',
-          clipId: target.clipId,
-          assetId: item.assetId,
-        });
-      } else {
-        const film = films.find((f) => f.planId === target.planId);
-        await onMediaEdit(target.planId, {
-          type: 'insert',
-          assetId: item.assetId,
-          afterClipId: target.type === 'append' && target.timelineStartUs === undefined
-            ? film?.arrangement?.clips.at(-1)?.clipId ?? null
-            : target.afterClipId ?? null,
-          durationUs: 3_000_000,
-          ...(target.timelineStartUs !== undefined ? { timelineStartUs: target.timelineStartUs } : {}),
-        });
+      // 多条或拖到空隙：按落点顺序连续插入。倒序提交让每条都紧跟同一锚点，
+      // 最终顺序与素材池里勾选的顺序一致。
+      const anchor = materialInsertAnchor(clips, target);
+      if (!anchor) throw new Error('没有找到插入位置，请刷新时间轴后重试。');
+      let view: Arrangement = arrangement;
+      for (let index = items.length - 1; index >= 0; index--) {
+        const item = items[index];
+        const durationUs = materialInsertDurationUs(item.durationSec);
+        if (durationUs < MATERIAL_DROP_MIN_US) throw new Error(`「${item.displayName}」短于 0.5 秒，无法插入时间轴。`);
+        const edit: Record<string, unknown> = {
+          type: 'insert', assetId: item.assetId, afterClipId: anchor.afterClipId,
+          ...(anchor.timelineStartUs !== undefined ? { timelineStartUs: anchor.timelineStartUs } : {}),
+        };
+        if (film.formula) {
+          if (!view.outputVersionId) throw new Error('这条成片还没有可编辑版本，请刷新后重试。');
+          Object.assign(edit, {
+            requestKey: `material-drop:${crypto.randomUUID()}`,
+            expectedEditRevision: view.editRevision,
+            expectedOutputVersionId: view.outputVersionId,
+            formulaMedia: { contentFingerprint: item.contentFingerprint, inUs: 0, outUs: durationUs, protected: null,
+              sound: 'mute', segments: [], confirmed: true },
+          });
+        } else edit.durationUs = durationUs;
+        const saved = await onMediaEdit(target.planId, edit, view);
+        if (!saved) throw new Error('插入没有保存成功，请重试。');
+        inserted++;
+        const next = await onRefreshFilm(target.planId);
+        if (!next) throw new Error('已提交，但没能读回最新时间轴，请刷新核对。');
+        view = next;
       }
-      await onRefreshFilm(target.planId);
-    } catch {
-      setDropTarget(null);
+      setDropNotice({ kind: 'ok', message: `已按顺序插入 ${inserted} 条素材，静音入轨，原有配音保持原位。` });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '素材未能放入时间轴，请重试。';
+      setDropNotice({ kind: 'error', message: inserted ? `${message}（已插入 ${inserted} 条，剩余素材未处理）` : message });
+    } finally {
+      setDropBusy(false);
     }
   };
 
@@ -1149,6 +1222,12 @@ export default function BatchReviewTimelineDock({
 
       {/* 3. Focusbar with Repeat Highlight Message (PRD T-03) */}
       <div className={styles.focusbar}>
+        {dropNotice && (
+          <span role={dropNotice.kind === 'error' ? 'alert' : 'status'}
+            className={`w-full text-xs ${dropNotice.kind === 'error' ? 'text-fail' : dropNotice.kind === 'ok' ? 'text-ok' : 'text-accent'}`}>
+            {dropNotice.message}
+          </span>
+        )}
         {videoUsage.repeatedClipCount > 0 && (
           <p role="status" className="text-xs text-warn">
             重复检查：{videoUsage.repeatedAssetCount} 个素材被用于 {videoUsage.repeatedClipCount} 个片段
@@ -1329,7 +1408,7 @@ export default function BatchReviewTimelineDock({
                   {(film.narrationTask?.status === 'failed'
                     || film.executionTask?.status === 'failed'
                     || (film.coverStatus === 'failed' && film.coverTask)
-                    || batchControlState !== 'stopped') && (
+                    || (!film.formula && batchControlState !== 'stopped')) && (
                     <div className="mt-1 flex flex-wrap gap-1">
                       {film.executionTask?.status === 'failed' && (
                         <button
@@ -1374,18 +1453,17 @@ export default function BatchReviewTimelineDock({
                           {phaseEBusy === `render:${film.coverTask.id}` ? '重试中…' : '重试封面'}
                         </button>
                       )}
-                      {batchControlState !== 'stopped' && (
+                      {!film.formula && batchControlState !== 'stopped' && (
                         <button
                           type="button"
                           className="btn-secondary h-6 px-2 text-[10px]"
                           disabled={phaseEBusy !== null}
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (film.formula) onShowFormula?.(film.planId);
-                            else onReallocate(film.planId);
+                            onReallocate(film.planId);
                           }}
                         >
-                          {phaseEBusy === film.planId ? '处理中…' : film.formula ? '查看选片 / 重新选择' : '换一批画面'}
+                          {phaseEBusy === film.planId ? '处理中…' : '换一批画面'}
                         </button>
                       )}
                     </div>
@@ -1646,7 +1724,7 @@ export default function BatchReviewTimelineDock({
                         className={styles.materialDropMarker}
                         style={{ left: dropTarget.timelineStartUs / 1e6 * zoom }}
                       >
-                        <span>成片 {film.seq} · {dropTarget.type === 'append' ? '追加' : '插入'} · {(dropTarget.timelineStartUs / 1e6).toFixed(2)} 秒</span>
+                        <span>成片 {film.seq} · {dropTarget.type === 'append' ? '追加' : '插入'}{dropTarget.count && dropTarget.count > 1 ? ` ${dropTarget.count} 条` : ''} · {(dropTarget.timelineStartUs / 1e6).toFixed(2)} 秒</span>
                       </div>
                     )}
                   </div>

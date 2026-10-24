@@ -63,6 +63,16 @@ try {
   assert.equal(saved.items[0].saved?.audio?.timingSource, 'manual', 'SRT 是人工确认时间，不能冒充服务对齐');
   assert.deepEqual(await saveFormulaExternalNarration(db, 'p', batchId, input), saved, '丢回复重试不重复保存或推进修订');
   assert.equal(readFormulaExternalNarrations(db, 'p', batchId).items[0].saved?.text, '坐得稳。靠背舒服。');
+  const { createLiveMixcutBatch } = await import('../lib/live-mixcut/batches.ts');
+  const clonedBatch = createLiveMixcutBatch(db, 'p', { name: '复制外部配音输入', sourceBatchId: batchId, copyInputs: true });
+  const clonedNarration = readFormulaExternalNarrations(db, 'p', clonedBatch.id).items[0].saved!;
+  assert.notEqual(clonedNarration.id, saved.items[0].saved!.id);
+  assert.equal(clonedNarration.audio?.externalNarrationId, clonedNarration.id,
+    '复制后外部配音记录与音频身份一致，审片披露与清单不会丢失');
+  assert.equal(clonedNarration.text, '坐得稳。靠背舒服。');
+  assert.equal(fs.existsSync(path.join(root, 'storage', clonedNarration.audio!.relativePath)), true, '复制引用同一不可变受管音频，不重生成');
+  assert.equal(readFormulaExternalNarrations(db, 'p', batchId).items[0].saved?.id, saved.items[0].saved!.id,
+    '复制不改写原批次配音身份');
   const production = defaultFormulaProductionSettings();
   production.audio = { mode: 'narration', tts: null };
   production.packaging = { mode: 'none', templateIds: [] };
@@ -102,7 +112,7 @@ try {
   const { writeFormulaExportFolderManifest } = await import('../lib/live-mixcut/formula/export-manifest.ts');
   writeFormulaExportFolderManifest(db, 'p', batchId);
   const exportedWorkspace = getBatchWorkspace(db, 'p', batchId);
-  const manifestPath = path.join(root, 'storage', 'live-mixcut', 'exports', exportedWorkspace.exportDirName, '成片', '清单.csv');
+  const manifestPath = path.join(root, 'storage', 'live-mixcut', 'exports', ...exportedWorkspace.exportDirName.split(/[\\/]/), '成片', '清单.csv');
   const manifestCsv = fs.readFileSync(manifestPath, 'utf8');
   assert(manifestCsv.startsWith('\ufeff"原脚本号",'));
   assert(manifestCsv.includes(exportedWorkspace.cards[0].currentFormalArtifact!.video.relativePath.replaceAll('\\', '/').split('/').at(-1)!));

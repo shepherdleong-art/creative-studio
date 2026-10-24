@@ -40,7 +40,7 @@ export function formulaSelectionSummaries(db: Database.Database, batchVersionId:
     const message = status === 'unavailable' ? '实拍公式能力暂不可用，已有记录保留'
       : status === 'selected' ? timeline?.status === 'planned' ? '已排好画面与声音，可在预览区播放；包装和审片尚未完成'
         : timeline?.status === 'needs_attention' ? '时长安排需要处理，请查看排片记录' : '已完成选片，等待核验声音和最终裁切'
-      : status === 'needs_attention' ? '有缺失或不可用素材，请查看选片记录'
+      : status === 'needs_attention' ? '有缺失或不可用素材，请回到第二步修改输入后重新生成'
       : status === 'failed' ? row.errorMessage || '选片失败，可查看原因后重新选片'
       : status === 'cancelled' ? '这次选片已停止' : status === 'running' ? '正在按公式检查和选择素材' : '等待按公式选片';
     return [row.planId, { stageId: row.id, revision: row.revision, status, message,

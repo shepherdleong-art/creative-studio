@@ -15,22 +15,27 @@ try {
   const { createLiveMixcutProject, readLiveMixcutProject, listLiveMixcutProjects,
     updateLiveMixcutProject, deleteLiveMixcutProject } = await import('../lib/live-mixcut/projects.ts');
   const { getBatchProduction } = await import('../lib/live-mixcut/versions.ts');
-  const { formatShanghaiTaskDate } = await import('../lib/media-core/export-identity.ts');
   assert.equal((await checkBatchProductionReadiness({ db, ...schemaUpgradeRuntimePaths(root) })).available, true);
 
   const now = new Date('2026-10-24T01:02:03.000Z');
-  const first = createLiveMixcutProject(db, { name: 'x', productName: '实拍椅' }, now);
-  const second = createLiveMixcutProject(db, { name: 'x', productName: '实拍椅' }, now);
-  const date = formatShanghaiTaskDate(now.toISOString());
-  assert.equal(first.exportDirName, `x-${date}`);
-  assert.equal(second.exportDirName, `x-${date}-2`);
+  const input = { storeCode: 'K店', productCode: 'XQ9A', editorName: '张三' };
+  const first = createLiveMixcutProject(db, input, now);
+  const second = createLiveMixcutProject(db, input, now);
+  const baseName = '20261024-K店-XQ9A-实拍混剪-张三';
+  assert.equal(first.name, baseName);
+  assert.equal(first.productName, 'XQ9A');
+  assert.equal(first.exportDirName, baseName);
+  assert.equal(second.name, `${baseName}-02`);
+  assert.equal(second.exportDirName, `${baseName}-02`);
   assert.equal(listLiveMixcutProjects(db).length, 2);
   const batch = getBatchProduction(db, first.id, first.batchId);
   assert.equal(batch?.projectId, first.id);
+  assert.equal(batch?.name, baseName);
   assert.equal(batch?.planningMode, 'formula');
 
-  assert.throws(() => createLiveMixcutProject(db, { name: ' ', productName: '产品' }), /任务名/);
-  assert.throws(() => createLiveMixcutProject(db, { name: '任务', productName: '' }), /产品名/);
+  assert.throws(() => createLiveMixcutProject(db, { ...input, storeCode: 'X店' }), /店铺/);
+  assert.throws(() => createLiveMixcutProject(db, { ...input, productCode: ' ' }), /型号/);
+  assert.throws(() => createLiveMixcutProject(db, { ...input, editorName: '' }), /剪辑师/);
   assert.equal(listLiveMixcutProjects(db).length, 2);
 
   const renamed = updateLiveMixcutProject(db, first.id, { name: '新任务名' }, new Date('2026-10-24T02:02:03.000Z'));

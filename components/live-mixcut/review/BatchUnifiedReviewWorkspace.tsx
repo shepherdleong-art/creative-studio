@@ -12,7 +12,7 @@ import BatchReviewPoolDock from './BatchReviewPoolDock';
 import BatchReviewPreviewDock from './BatchReviewPreviewDock';
 import BatchReviewInspectorDock from './BatchReviewInspectorDock';
 import BatchReviewTimelineDock from './BatchReviewTimelineDock';
-import type { FormulaMediaSession, InspectorTab, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
+import type { InspectorTab, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
 import styles from './batch-unified-review.module.css';
 import { subtitleSplitEdit } from './subtitle-edit';
 import { FormulaPresentationBatchAction } from '../formula/FormulaPresentationControls';
@@ -67,6 +67,10 @@ export interface BatchUnifiedReviewWorkspaceProps {
   onReallocate: (planId: string) => void;
   onRetryNarration: (taskId: string) => void;
   onRetryRender: (taskId: string) => void;
+  /** 从制作进度点「去处理」时聚焦的成片与属性页。 */
+  focusPlanId?: string | null;
+  focusInspectorTab?: InspectorTab | null;
+  focusNonce?: number;
   /** Phase E 单条任务重试/重分配的进行中标记(`narration:<id>` / `render:<id>` / planId)。 */
   phaseEBusy: string | null;
   onOutputChanged?: () => void;
@@ -91,6 +95,9 @@ export default function BatchUnifiedReviewWorkspace({
   onReallocate,
   onRetryNarration,
   onRetryRender,
+  focusPlanId,
+  focusInspectorTab,
+  focusNonce,
   phaseEBusy,
   onOutputChanged,
 }: BatchUnifiedReviewWorkspaceProps) {
@@ -127,16 +134,27 @@ export default function BatchUnifiedReviewWorkspace({
   // Tools & modes
   const [tool, setTool] = useState<TimelineTool>('select');
   const [snapEnabled, setSnapEnabled] = useState(true);
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('subtitle');
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>(focusInspectorTab ?? 'subtitle');
   const [coverEditorOpen, setCoverEditorOpen] = useState(false);
 
-  // Selection
-  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(() => workspace.cards[0]?.planId ?? null);
+  // Selection：默认打开第一条可编辑成片，避免先落到仍需处理的卡片上。
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(() => (
+    focusPlanId ?? workspace.cards.find(card => card.reviewable)?.planId ?? workspace.cards[0]?.planId ?? null
+  ));
+  // 渲染期同步外部聚焦请求，避免在 effect 里级联 setState。
+  const [prevFocusNonce, setPrevFocusNonce] = useState(focusNonce);
+  if (focusNonce !== prevFocusNonce) {
+    setPrevFocusNonce(focusNonce);
+    if (focusPlanId) {
+      setSelectedPlanId(focusPlanId);
+      if (focusInspectorTab) setInspectorTab(focusInspectorTab);
+    }
+  }
   const [selection, setSelection] = useState<SelectionTarget | null>(null);
   const [focusedAssetId, setFocusedAssetId] = useState<string | null>(null);
   const [previewAsset, setPreviewAsset] = useState<BatchOutputPoolAssetView | null>(null);
 
-  const [sourceSession, setSourceSession] = useState<SourceMonitorSession | FormulaMediaSession | null>(null);
+  const [sourceSession, setSourceSession] = useState<SourceMonitorSession | null>(null);
 
   // Arrangements cache: planId -> BatchOutputClipEditView
   const [arrangements, setArrangements] = useState<Record<string, BatchOutputClipEditView>>({});
@@ -333,6 +351,7 @@ export default function BatchUnifiedReviewWorkspace({
         status: card.status,
         approved: card.approved,
         approvable: card.approvable,
+        reviewable: card.reviewable,
         formalOutdated: card.formalOutdated,
         coverAttemptId: card.coverAttemptId,
         coverStatus: card.coverStatus,
@@ -713,16 +732,6 @@ export default function BatchUnifiedReviewWorkspace({
             }}
             onCloseCoverEditor={() => setCoverEditorOpen(false)}
             onTabChange={setInspectorTab}
-            onFormulaChanged={() => {
-              if (activeFilm) setArrangements(current => {
-                const next = { ...current };
-                delete next[activeFilm.planId];
-                return next;
-              });
-              setPreviewAsset(null); setSourceSession(null); setSelection(null);
-              setCoverEditorOpen(false); setPlayheadSec(0);
-              onOutputChanged?.();
-            }}
             poolAssets={poolAssets}
             onMediaEdit={handleMediaEdit}
             onRefreshFilm={async (planId) => {
@@ -739,7 +748,6 @@ export default function BatchUnifiedReviewWorkspace({
             films={films}
             selectedPlanId={selectedPlanId}
             onSelectFilm={(id) => setSelectedPlanId(id)}
-            onShowFormula={(id) => { setSelectedPlanId(id); setInspectorTab('selection'); }}
             selection={selection}
             onSelectTarget={setSelection}
             focusedAssetId={focusedAssetId}
@@ -769,9 +777,7 @@ export default function BatchUnifiedReviewWorkspace({
             onRetryNarration={onRetryNarration}
             onRetryRender={onRetryRender}
             onMediaEdit={handleMediaEdit}
-            onRefreshFilm={async (planId) => {
-              await refreshFilmArrangement(planId);
-            }}
+            onRefreshFilm={(planId) => refreshFilmArrangement(planId)}
             onOpenSource={(planId, clipId) => {
               const view = arrangements[planId];
               const clip = view?.clips.find(item => item.clipId === clipId);
@@ -779,16 +785,6 @@ export default function BatchUnifiedReviewWorkspace({
               if (!view || !asset) return;
               setSelectedPlanId(planId); setSelection({ planId, kind: 'clip', clipId });
               setPreviewAsset(null); setSourceSession({ view: structuredClone(view), clipId, asset });
-            }}
-            onOpenFormulaMedia={(planId, edit) => {
-              const view = arrangements[planId];
-              const asset = poolAssets.find(item => item.assetId === edit.assetId);
-              if (!view?.formulaPreview || !asset || !view.editable) return;
-              setSelectedPlanId(planId);
-              setSelection(edit.type === 'replace' ? { planId, kind: 'clip', clipId: edit.clipId } : null);
-              setPreviewAsset(null); setCoverEditorOpen(false);
-              setSourceSession({ view: structuredClone(view), asset: structuredClone(asset), edit,
-                requestKey: `manual-media:${crypto.randomUUID()}` });
             }}
             onOpenCoverEditor={(planId) => {
               setSelectedPlanId(planId);

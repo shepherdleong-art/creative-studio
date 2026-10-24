@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { BatchOutputPoolAssetView } from '@/lib/live-mixcut/output-arrangement';
 import type { MaterialDragItem } from './types';
+import { MATERIAL_DRAG_COUNT_PREFIX } from './material-drop';
 import styles from './batch-unified-review.module.css';
 
 export interface BatchReviewPoolDockProps {
@@ -27,6 +28,7 @@ export default function BatchReviewPoolDock({
   onAssetImported,
 }: BatchReviewPoolDockProps) {
   const [tab, setTab] = useState<'opening' | 'body'>('opening');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -39,6 +41,19 @@ export default function BatchReviewPoolDock({
 
   const openingCount = useMemo(() => poolAssets.filter((a) => a.role === 'opening').length, [poolAssets]);
   const bodyCount = useMemo(() => poolAssets.filter((a) => (a.role ?? 'body') === 'body').length, [poolAssets]);
+  const selectedAssets = useMemo(
+    () => poolAssets.filter(asset => selectedIds.includes(asset.assetId)),
+    [poolAssets, selectedIds],
+  );
+  // 拖拽按素材池当前顺序携带，落轨时按这个顺序连续插入。
+  const dragItem = (asset: BatchOutputPoolAssetView): MaterialDragItem => ({
+    assetId: asset.assetId,
+    contentFingerprint: asset.contentFingerprint,
+    displayName: asset.displayName,
+    durationSec: asset.durationSec,
+    thumbnailUrl: asset.thumbnailUrl,
+    previewUrl: asset.previewUrl,
+  });
 
   // Group assets by role
   const filteredAssets = useMemo(() => {
@@ -153,6 +168,12 @@ export default function BatchReviewPoolDock({
             <>✓ {bodyCount} 份正文素材 <span className="opacity-80">拖到片段上替换 · 左缘间隙插入 · 末尾追加</span></>
           )}
         </p>
+        {selectedAssets.length > 0 && (
+          <div className="mt-1.5 flex items-center justify-between gap-2 rounded-md bg-accent/10 px-2 py-1 text-[10px] text-accent">
+            <span>已选 {selectedAssets.length} 条 · 拖任意已选卡片到时间轴，按顺序插入</span>
+            <button type="button" className="shrink-0 underline" onClick={() => setSelectedIds([])}>清空</button>
+          </div>
+        )}
       </div>
 
       {uploadError && (
@@ -178,14 +199,12 @@ export default function BatchReviewPoolDock({
               className={`${styles.poolCard} ${isFocused ? styles.poolCardFocused : ''}`}
               draggable
               onDragStart={(e) => {
-                const item: MaterialDragItem = {
-                  assetId: asset.assetId,
-                  displayName: asset.displayName,
-                  durationSec: asset.durationSec,
-                  thumbnailUrl: asset.thumbnailUrl,
-                  previewUrl: asset.previewUrl,
-                };
-                e.dataTransfer.setData('application/json', JSON.stringify(item));
+                // 拖已选中的卡片时带上全部已选素材；拖未选中的卡片只带它自己。
+                const picked = selectedIds.includes(asset.assetId) && selectedAssets.length > 1 ? selectedAssets : [asset];
+                const items = picked.map(dragItem);
+                e.dataTransfer.setData('application/json', JSON.stringify(items));
+                // 悬停阶段读不到数据内容；把条数编码进类型名，时间轴据此给出正确的插入提示。
+                e.dataTransfer.setData(`${MATERIAL_DRAG_COUNT_PREFIX}${items.length}`, '1');
                 e.dataTransfer.effectAllowed = 'copyMove';
               }}
             >
@@ -194,6 +213,22 @@ export default function BatchReviewPoolDock({
                 onPointerMove={(e) => handlePointerMove(e, asset)}
                 onPointerLeave={handlePointerLeave}
               >
+                <label className="absolute right-1.5 top-1.5 z-10 flex h-5 w-5 cursor-pointer items-center justify-center rounded bg-black/60"
+                  title="勾选后可与其他素材一起拖入时间轴">
+                  <input
+                    type="checkbox"
+                    aria-label={`选择素材 ${asset.displayName}`}
+                    className="h-3.5 w-3.5 cursor-pointer accent-[var(--color-accent)]"
+                    checked={selectedIds.includes(asset.assetId)}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setSelectedIds(current => checked
+                        ? [...new Set([...current, asset.assetId])]
+                        : current.filter(id => id !== asset.assetId));
+                    }}
+                  />
+                </label>
                 {asset.thumbnailUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={asset.thumbnailUrl} alt={asset.displayName} loading="lazy" draggable={false} />

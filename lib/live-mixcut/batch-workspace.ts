@@ -3,7 +3,7 @@ import { formulaSelectionSummaries, type FormulaSelectionSummary } from './formu
 import { batchOutputReviewContext, batchReviewMatches } from './review-context.ts';
 import { batchSourceReview, type BatchSourceConflictGroup } from './source-conflicts.ts';
 import { batchArtifactPathsArePaired } from './artifact-pair.ts';
-import { readLiveMixcutProject } from './projects.ts';
+import { getLiveMixcutBatchExportDirName } from './batches.ts';
 import { isFormalArtifactOutdated } from './formal-artifact-freshness.ts';
 import { resolveCoverContractHash, resolveFullRenderContractHash } from './cover-contract.ts';
 import { formulaOutputExecutionReady, formulaOutputCoverReady, readFormulaExecutionTask } from './formula/execution-store.ts';
@@ -526,7 +526,7 @@ export function getBatchWorkspace(
     return {
       batch,
       phase: 'prepare_materials',
-      exportDirName: readLiveMixcutProject(db, projectId).exportDirName,
+      exportDirName: getLiveMixcutBatchExportDirName(db, projectId, batchId),
       counts: { total: 0, reviewable: 0, approvable: 0, approved: 0, processing: 0, needsAttention: 0, failed: 0 },
       cards: [],
       exclusions: [],
@@ -795,6 +795,6 @@ export function getBatchWorkspace(
   else if (versionCount < plans.length) phase = 'allocate';
   else phase = 'review';
 
-  return { batch, phase, exportDirName: readLiveMixcutProject(db, projectId).exportDirName, counts, cards, exclusions, allocationReport,
+  return { batch, phase, exportDirName: getLiveMixcutBatchExportDirName(db, projectId, batchId), counts, cards, exclusions, allocationReport,
     formulaGeneration: readFormulaGenerationProgress(db, projectId, batchId, cards) };
 }

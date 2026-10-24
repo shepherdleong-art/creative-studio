@@ -1,20 +1,10 @@
 'use client';
 
-import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/live-mixcut/output-arrangement';
+import type { BatchOutputClipEditView } from '@/lib/live-mixcut/output-arrangement';
 import type { BatchWorkspaceView } from '@/lib/live-mixcut/batch-workspace';
 
-export type InspectorTab = 'subtitle' | 'picture' | 'cover' | 'audio' | 'packaging' | 'selection';
+export type InspectorTab = 'subtitle' | 'picture' | 'cover' | 'audio' | 'packaging';
 export type TimelineTool = 'select' | 'split';
-
-export type FormulaMediaDrop = { type: 'replace'; clipId: string; assetId: string }
-  | { type: 'insert'; afterClipId: string | null; assetId: string; timelineStartUs?: number };
-
-export interface FormulaMediaSession {
-  view: BatchOutputClipEditView;
-  asset: BatchOutputPoolAssetView;
-  edit: FormulaMediaDrop;
-  requestKey: string;
-}
 
 export interface UnifiedFilmState {
   formula?: BatchWorkspaceView['cards'][number]['formula'];
@@ -24,6 +14,7 @@ export interface UnifiedFilmState {
   status: BatchWorkspaceView['cards'][number]['status'];
   approved: boolean;
   approvable: boolean;
+  reviewable: boolean;
   formalOutdated: boolean;
   coverAttemptId: string | null;
   coverStatus: string | null;
@@ -57,6 +48,7 @@ export interface SelectionTarget {
 
 export interface MaterialDragItem {
   assetId: string;
+  contentFingerprint: string;
   displayName: string;
   durationSec: number | null;
   thumbnailUrl: string | null;

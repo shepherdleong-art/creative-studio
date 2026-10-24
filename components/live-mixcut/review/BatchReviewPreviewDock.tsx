@@ -1,7 +1,6 @@
 'use client';
 
 import BatchSourceMonitor, { type SourceMonitorSession } from './BatchSourceMonitor';
-import FormulaManualMediaMonitor from './FormulaManualMediaMonitor';
 import BatchPackagingOverlay from '../BatchPackagingOverlay';
 import { useCallback, useMemo, useRef } from 'react';
 import type { OutputPresetId } from '@/lib/final-edit/types';
@@ -11,7 +10,7 @@ import BatchTimelinePreview, { type BatchTimelinePreviewClip } from '../BatchTim
 import FormulaOutputPreview from '../formula/FormulaOutputPreview';
 import { LutVideoPlayer } from '../LutVideoPlayer';
 import { useProxyPlaybackPreference } from '../proxy-playback-preference';
-import type { FormulaMediaSession, UnifiedFilmState } from './types';
+import type { UnifiedFilmState } from './types';
 import styles from './batch-unified-review.module.css';
 
 const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS;
@@ -19,7 +18,7 @@ const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS;
 export interface BatchReviewPreviewDockProps {
   packagingEditable?: boolean;
   coverPreviewRequest?: number;
-  sourceSession?: SourceMonitorSession | FormulaMediaSession | null;
+  sourceSession?: SourceMonitorSession | null;
   onSourceApply?: (planId: string, edit: Record<string, unknown>, undoBasis?: BatchOutputClipEditView) => Promise<boolean>;
   projectId: string;
   batchId: string;
@@ -197,9 +196,7 @@ export default function BatchReviewPreviewDock({
       )}
       <div className={styles.previewStageArea}>
         {sourceSession && onSourceApply ? (
-          'edit' in sourceSession ? <FormulaManualMediaMonitor key={sourceSession.requestKey}
-            session={sourceSession} projectId={projectId} onApply={onSourceApply} onClose={onClearPreviewAsset} />
-          : <BatchSourceMonitor key={`${sourceSession.view.outputVersionId}:${sourceSession.view.editRevision}:${sourceSession.clipId}`}
+          <BatchSourceMonitor key={`${sourceSession.view.outputVersionId}:${sourceSession.view.editRevision}:${sourceSession.clipId}`}
             session={sourceSession} projectId={projectId} onApply={onSourceApply} onClose={onClearPreviewAsset} />
         ) : previewAsset ? (
           <div className="flex h-full w-full flex-col items-center justify-center p-2">
@@ -294,7 +291,7 @@ export default function BatchReviewPreviewDock({
         ) : (
           <div className="flex flex-col items-center justify-center gap-2 p-6 text-center text-xs text-ink-tertiary" role="status">
             {previewFilm?.formula ? <>
-              <p>成片尚未就绪，可在右侧查看选片记录。</p>
+              <p>成片尚未就绪，暂无可播放画面。</p>
               <p>{previewFilm.formula.message}</p>
             </> : '正在载入成片安排…'}
           </div>

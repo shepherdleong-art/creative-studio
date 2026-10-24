@@ -6,7 +6,7 @@ import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { isSameOriginRequest } from '@/lib/same-origin-request';
 import { assertNoStorageSymlink } from '@/lib/media-core/storage-path';
-import { readLiveMixcutProject } from '@/lib/live-mixcut/projects';
+import { getLiveMixcutBatchExportDirName } from '@/lib/live-mixcut/batches';
 import { assertBatchApiReady } from '@/lib/live-mixcut/runtime-readiness';
 import {
   BATCH_NO_STORE_HEADERS,
@@ -69,9 +69,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       });
     }
     const storageRoot = path.join(dataRoot(), 'storage');
-    // 与 reserveBatchExportTarget 同一个成品目录(和单条模式共用)。
-    // 改导出路径时这里必须一起改,否则桌面版会打不开目录。
-    const exportDirName = readLiveMixcutProject(getDb(), projectId).exportDirName;
+    // 与正式发布、工作区和清单使用同一个批次目录解析；首批保留原路径。
+    const exportDirName = getLiveMixcutBatchExportDirName(getDb(), projectId, id);
     const relativeDir = path.join('live-mixcut', 'exports', exportDirName, '成片');
     const directory = assertNoStorageSymlink(storageRoot, relativeDir);
     const stat = fs.statSync(directory);

@@ -19,8 +19,14 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     await assertBatchApiReady();
-    const body = await request.json().catch(() => ({})) as { name?: unknown; productName?: unknown };
-    const project = createLiveMixcutProject(getDb(), { name: body.name, productName: body.productName });
+    const body = await request.json().catch(() => ({})) as {
+      storeCode?: unknown; productCode?: unknown; editorName?: unknown;
+    };
+    const project = createLiveMixcutProject(getDb(), {
+      storeCode: body.storeCode,
+      productCode: body.productCode,
+      editorName: body.editorName,
+    });
     return NextResponse.json({ project }, { status: 201, headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'create_live_mixcut_project_failed', '任务创建失败');

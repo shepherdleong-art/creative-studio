@@ -5,15 +5,10 @@ import type { ReactNode } from 'react';
 import type { FormulaInputsView, FormulaImportSessionView } from '@/lib/live-mixcut/formula/import-store';
 import FormulaVideoImportPanel from './FormulaVideoImportPanel';
 import FormulaColumnMapping from './FormulaColumnMapping';
-import FormulaMaterialNotesPanel from './FormulaMaterialNotesPanel';
 import type { FormulaSheetMapping } from '@/lib/live-mixcut/formula/workbook';
 import type { FormulaScriptInput, FormulaScriptFields } from '@/lib/live-mixcut/formula/script-rows';
 import FormulaScriptRowEditor from './FormulaScriptRowEditor';
 import FormulaGenerationSettings from './FormulaGenerationSettings';
-import FormulaSelectionPanel from './FormulaSelectionPanel';
-import FormulaRangesPanel from './FormulaRangesPanel';
-import FormulaManualSpeechPanel from './FormulaManualSpeechPanel';
-import FormulaReplacementHintsPanel from './FormulaReplacementHintsPanel';
 
 type InputsWithModels = FormulaInputsView & { aiProviders?: Array<{ id: string; name: string; model: string }> };
 
@@ -43,8 +38,8 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
   const openingInput = useRef(false);
   const readOnly = inputs ? !inputs.editing.editable : outerReadOnly;
   const controlsBusy = busy || !!editing || readOnly;
-  const kind = step === 0 ? 'materials' : 'scripts';
-  const label = step === 0 ? '素材命名表' : '脚本表';
+  const kind = 'scripts';
+  const label = '脚本表';
   const url = `/api/live-mixcut/batches/${encodeURIComponent(batchId)}/formula/imports?projectId=${encodeURIComponent(projectId)}`;
   const load = useCallback(async (signal?: AbortSignal) => {
     const value = await read<InputsWithModels>(await fetch(url, { cache: 'no-store', signal }));
@@ -173,7 +168,7 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
   const unresolvedIssues = session?.preview.issues.filter(issue => !session.excludedKeys?.includes(issue.key)) ?? [];
   const scriptInputs = new Map(session?.preview.scriptInputs?.map(row => [row.key, row]));
   return (
-    <section className="min-h-0 flex-1 space-y-4 overflow-auto p-4" aria-label={`实拍公式混剪${label}`}>
+    <section className="min-h-0 flex-1 space-y-4 overflow-auto p-4" aria-label="实拍公式混剪输入">
       {step === 1 && <div ref={progressElement}>{progress}</div>}
       {readOnly && <div className="card flex flex-wrap items-center justify-between gap-3 p-4">
         <p className="text-sm text-ink-secondary">这次制作的输入已锁定。点「修改输入」可调整素材、脚本、音色和包装；旧成片与导出包会保留。</p>
@@ -184,10 +179,13 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
       {inputs?.editing.revisionId && <p role="status" className="rounded-xl border border-hairline bg-surface-subtle p-3 text-sm text-ink">
         正在修改下一轮制作的输入。上一次成片仍可查看；第二步点「生成」后，使用新输入重新制作。
       </p>}
-      {step === 0 && inputs && <fieldset disabled={readOnly}><FormulaVideoImportPanel projectId={projectId} batchId={batchId} inputRevision={inputs.revision} onChanged={load} /></fieldset>}
-      <div className="card space-y-3 p-4">
-        <h2 className="text-base font-semibold text-ink">{step === 0 ? '准备素材资料' : '导入脚本与公式'}</h2>
-        <p className="text-sm text-ink-secondary">{step === 0 ? '导入素材命名表，保存编号、画面描述和口播资料。' : '导入脚本表，保留原脚本序号、镜头顺序、目标时长和文案。'}</p>
+      {busy && <p role="status" className="text-sm text-ink-secondary">正在处理…</p>}
+      {error && <p role="alert" className="text-sm text-fail">{error}</p>}
+      {message && <p role="status" className="text-sm text-ok">{message}</p>}
+      {step === 0 && inputs && <fieldset disabled={readOnly}><FormulaVideoImportPanel projectId={projectId} batchId={batchId} inputRevision={inputs.revision} readOnly={readOnly} onChanged={load} /></fieldset>}
+      {step === 1 && <div className="card space-y-3 p-4">
+        <h2 className="text-base font-semibold text-ink">导入脚本与公式</h2>
+        <p className="text-sm text-ink-secondary">导入脚本表，保留原脚本序号、镜头顺序、目标时长和文案。</p>
         <label className={`inline-flex cursor-pointer items-center rounded-lg border border-hairline bg-surface px-3 py-2 text-sm text-ink focus-within:ring-2 focus-within:ring-accent ${controlsBusy || !inputs ? 'opacity-50' : 'hover:bg-surface-subtle'}`}>
           <span>选择{label}（XLSX）</span>
           <input type="file" accept=".xlsx" aria-label={`选择${label}`} disabled={controlsBusy || !inputs}
@@ -196,12 +194,9 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
         </label>
         <p className="text-xs text-ink-tertiary">每个工作簿不超过 10 MiB、10,000 行、50 列。已配置脚本模型时，导入后自动识别列对应；也可手动修改。</p>
         {saved && <p className="text-sm text-ink-secondary">已保存：{saved.filename} · {saved.rows.length} 条{saved.excludedKeys.length ? ` · 已排除 ${saved.excludedKeys.length} 行` : ''}</p>}
-        {step === 1 && saved && !session && <button type="button" className="btn-secondary" disabled={controlsBusy} onClick={() => void openScript()}>修改已保存脚本</button>}
-        {busy && <p role="status" className="text-sm text-ink-secondary">正在处理…</p>}
-        {error && <p role="alert" className="text-sm text-fail">{error}</p>}
-        {message && <p role="status" className="text-sm text-ok">{message}</p>}
-      </div>
-      {session && <div className="card space-y-3 p-4">
+        {saved && !session && <button type="button" className="btn-secondary" disabled={controlsBusy} onClick={() => void openScript()}>修改已保存脚本</button>}
+      </div>}
+      {step === 1 && session && <div className="card space-y-3 p-4">
         <p className="text-sm font-medium text-ink">待确认：{session.filename} · 共 {session.preview.rowCount} 行，可导入 {rows.length} 行</p>
         <div className="flex flex-wrap items-center gap-2">
           <select aria-label="表格识别模型" className="rounded-lg border border-hairline bg-surface px-3 py-2 text-sm text-ink"
@@ -239,14 +234,13 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
       </div>}
       {editing && <FormulaScriptRowEditor key={`${editing.session.id}:${editing.session.draftRevision}:${editing.row.key}`} input={editing.row} busy={busy} onSave={values => void saveScript(values)} onClose={() => setEditing(null)} />}
       {step === 1 && inputs && <FormulaGenerationSettings projectId={projectId} batchId={batchId} inputRevision={inputs.revision}
-        onInputsChanged={async () => { await load(); await onInputRevised(); }}
         pendingImport={!!session} disabled={controlsBusy} onEdit={key => void openScript(key)} onGenerated={async () => {
           await onGenerated();
           await load();
           window.requestAnimationFrame(() => progressElement.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
         }} />}
-      {rows.length > 0 && (step === 0 || session) && <div className="card overflow-x-auto p-4">
-        <p className="mb-3 text-sm text-ink-secondary">{session ? '导入预览' : '已保存资料'} · {showAll ? rows.length : Math.min(rows.length, 20)} / {rows.length} 条</p>
+      {step === 1 && session && rows.length > 0 && <div className="card overflow-x-auto p-4">
+        <p className="mb-3 text-sm text-ink-secondary">导入预览 · {showAll ? rows.length : Math.min(rows.length, 20)} / {rows.length} 条</p>
         <table className="w-full text-left text-sm">
           <thead><tr className="border-b border-hairline text-ink-secondary"><th className="p-2">编号</th><th className="p-2">内容</th><th className="p-2">来源</th></tr></thead>
           <tbody>{(showAll ? rows : rows.slice(0, 20)).map(row => <tr key={row.key} className="border-b border-hairline align-top text-ink">
@@ -260,12 +254,6 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
         </table>
         {rows.length > 20 && <button type="button" className="btn-secondary mt-3" onClick={() => setShowAll(value => !value)}>{showAll ? '收起' : `查看全部 ${rows.length} 条`}</button>}
       </div>}
-      {step === 0 && inputs && <fieldset disabled={readOnly}><FormulaMaterialNotesPanel projectId={projectId} batchId={batchId} inputRevision={inputs.revision} onChanged={load} /></fieldset>}
-      {step === 0 && inputs && <FormulaManualSpeechPanel projectId={projectId} batchId={batchId} inputRevision={inputs.revision} disabled={controlsBusy} onChanged={load} />}
-      {step === 0 && inputs && <FormulaReplacementHintsPanel projectId={projectId} batchId={batchId} inputRevision={inputs.revision} disabled={controlsBusy} onChanged={load} />}
-      {step === 0 && inputs && <FormulaRangesPanel projectId={projectId} batchId={batchId} inputRevision={inputs.revision} disabled={controlsBusy} onChanged={load} />}
-      {inputs && <FormulaSelectionPanel projectId={projectId} batchId={batchId} step={step} inputRevision={inputs.revision}
-        disabled={controlsBusy} onChanged={load} />}
       <p className="text-sm text-ink-secondary">{step === 0 ? '素材准备好后，进入第二步选择脚本、声音和包装，再点击生成。' : '制作中可以离开页面，已就绪的成片可先进入第三步检查。'}</p>
     </section>
   );

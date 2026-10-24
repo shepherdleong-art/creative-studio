@@ -26,11 +26,27 @@ try {
   assert.throws(() => publishBuild(root, stage, () => {}), /未生成/);
   assert.ok(fs.existsSync(path.join(root, '.next/old.txt')));
   write('.cache/stage/.next/standalone/server.js', 'new build');
+  // Turbopack emits two junction layouts. The top-level one resolves inside
+  // `stage/node_modules`; the standalone one resolves inside
+  // `stage/.next/standalone/node_modules`, which is still a self-contained
+  // input of this build and must materialize rather than abort.
+  write('.cache/stage/node_modules/example/index.js');
+  write('.cache/stage/.next/standalone/node_modules/example/index.js');
+  const standaloneAlias = path.join(stage, '.next/standalone/.next/node_modules/example-standalone-hashed');
+  fs.mkdirSync(path.dirname(standaloneAlias), { recursive: true });
+  fs.symlinkSync(path.join(stage, '.next/standalone/node_modules/example'), standaloneAlias, process.platform === 'win32' ? 'junction' : 'dir');
   const alias = path.join(stage, '.next/standalone/.next/node_modules/example-hashed');
   fs.mkdirSync(path.dirname(alias), { recursive: true });
   fs.symlinkSync(path.join(stage, 'node_modules/example'), alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => {
+    const escape = path.join(stage, '.next/standalone/.next/node_modules/example-escaped');
+    fs.symlinkSync(root, escape, process.platform === 'win32' ? 'junction' : 'dir');
+    try { materializeBuildLinks(stage); } finally { fs.rmSync(escape, { force: true }); }
+  }, /构建目录之外/, '链接指向构建目录之外时必须中止，避免把宿主内容嵌进产物');
   materializeBuildLinks(stage);
   assert.equal(fs.lstatSync(alias).isSymbolicLink(), false);
+  assert.equal(fs.lstatSync(standaloneAlias).isSymbolicLink(), false, 'standalone 内部的链接必须实体化');
+  assert.equal(fs.readFileSync(path.join(standaloneAlias, 'index.js'), 'utf8'), 'fixture');
   assert.throws(() => publishBuild(root, stage, () => { throw new Error('asset sync failed'); }), /asset sync failed/);
   assert.ok(fs.existsSync(path.join(root, '.next/old.txt')), 'sync failure must restore previous output');
   publishBuild(root, stage, () => {});

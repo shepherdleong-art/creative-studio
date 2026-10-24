@@ -46,15 +46,20 @@ export function prepareBuildInputs(root, stage) {
 // Turbopack emits hashed external-package junctions, including in standalone.
 // They must become real directories before the temporary dependency tree goes away.
 export function materializeBuildLinks(stage) {
-  const modules = fs.realpathSync(path.join(stage, 'node_modules'));
+  // Turbopack resolves these junctions two ways: the top-level ones into
+  // `stage/node_modules`, and the standalone ones into
+  // `stage/.next/standalone/node_modules`. Both are self-contained inputs of this
+  // build, so bound the check by the stage root rather than the top-level tree —
+  // anything still outside the stage would embed host content into the artifact.
+  const root = fs.realpathSync(stage);
   const visit = directory => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const file = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) {
         const source = fs.realpathSync(file);
-        const relative = path.relative(modules, source);
+        const relative = path.relative(root, source);
         if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-          throw new Error(`构建产物包含非依赖目录链接：${file}`);
+          throw new Error(`构建产物包含指向构建目录之外的链接：${file}`);
         }
         const temporary = `${file}.materializing`;
         fs.cpSync(source, temporary, { recursive: true, dereference: true });

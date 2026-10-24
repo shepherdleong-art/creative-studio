@@ -4,7 +4,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { speechContent, type SpeechTranscriptionAdapter } from './alignment.ts';
 
 export const VOLC_FLASH_ASR_URL = 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash';
-export const VOLC_FLASH_ASR_RESOURCE_ID = 'volc.bigasr.auc_turbo';
+/**
+ * 火山同一个 Key 下可能只授权了部分资源，Resource-Id 必须与实际开通的一致，
+ * 否则返回 45000030「requested resource not granted」。
+ * 默认用 SeedASR（实测可用）；不同账号可在设置页或环境变量改。
+ */
+export const VOLC_FLASH_ASR_RESOURCE_ID = 'volc.seedasr.auc';
+export const VOLC_FLASH_ASR_RESOURCE_ID_ENV = 'CREATIVE_STUDIO_VOLC_ASR_RESOURCE_ID';
 /** 只有服务繁忙（55000031）或 HTTP 429/5xx 才重试；其余错误直接交给调用方。 */
 const RETRY_DELAYS_MS = [1_000, 3_000, 8_000] as const;
 const TIMEOUT_MS = 120_000;
@@ -22,9 +28,10 @@ interface VolcPayload { result?: { text?: unknown; utterances?: Array<{ words?: 
 export function createVolcFlashAsrAdapter(env: Environment = process.env): SpeechTranscriptionAdapter {
   const apiKey = (env.CREATIVE_STUDIO_VOLC_ASR_API_KEY ?? '').trim();
   const url = (env.CREATIVE_STUDIO_VOLC_ASR_URL ?? '').trim() || VOLC_FLASH_ASR_URL;
+  const resourceId = (env[VOLC_FLASH_ASR_RESOURCE_ID_ENV] ?? '').trim() || VOLC_FLASH_ASR_RESOURCE_ID;
   return {
     configured: Boolean(apiKey),
-    identity: Object.freeze({ adapterVersion: 'volc-flash-asr/1' as const, model: VOLC_FLASH_ASR_RESOURCE_ID,
+    identity: Object.freeze({ adapterVersion: 'volc-flash-asr/1' as const, model: resourceId,
       endpointHash: createHash('sha256').update(url).digest('hex') }),
     async transcribe({ audioPath, durationUs, signal }) {
       if (!apiKey) throw new Error('火山原声识别未配置：需要 CREATIVE_STUDIO_VOLC_ASR_API_KEY');
@@ -37,7 +44,7 @@ export function createVolcFlashAsrAdapter(env: Environment = process.env): Speec
       for (let attempt = 0; ; attempt += 1) {
         requestSignal.throwIfAborted();
         const response = await fetch(url, { method: 'POST', body, signal: requestSignal, headers: {
-          'Content-Type': 'application/json', 'X-Api-Key': apiKey, 'X-Api-Resource-Id': VOLC_FLASH_ASR_RESOURCE_ID,
+          'Content-Type': 'application/json', 'X-Api-Key': apiKey, 'X-Api-Resource-Id': resourceId,
           'X-Api-Request-Id': randomUUID(), 'X-Api-Sequence': '-1' } });
         const status = response.headers.get('X-Api-Status-Code') ?? '';
         if (status === '20000000') { payload = await response.json() as VolcPayload; break; }
@@ -45,7 +52,13 @@ export function createVolcFlashAsrAdapter(env: Environment = process.env): Speec
         const busy = status === '55000031' || response.status === 429 || response.status >= 500;
         if (!busy || attempt >= RETRY_DELAYS_MS.length) {
           const logId = response.headers.get('X-Tt-Logid');
-          throw new Error(`火山原声识别失败（${status || `HTTP ${response.status}`}${logId ? `，Log ID ${logId}` : ''}）`);
+          const apiMessage = response.headers.get('X-Api-Message') ?? '';
+          // 45000030 是「这个 Key 没开通该 Resource-Id」，光看状态码会误判成 Key 失效，
+          // 把服务端原话带出去，用户才知道该去开通哪个资源。
+          const hint = status === '45000030'
+            ? `：当前 Key 未开通 Resource-Id「${resourceId}」，请在火山智能语音控制台开通该服务，或改填已授权的 Resource-Id`
+            : status === '45000010' ? '：Key 无效，请检查是否填了语音服务（而非方舟）的凭证' : '';
+          throw new Error(`火山原声识别失败（${status || `HTTP ${response.status}`}${apiMessage ? `，${apiMessage}` : ''}${logId ? `，Log ID ${logId}` : ''}）${hint}`);
         }
         await delay(RETRY_DELAYS_MS[attempt], undefined, { signal: requestSignal });
       }
