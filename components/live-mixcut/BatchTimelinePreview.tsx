@@ -1,0 +1,1128 @@
+'use client';
+
+import { audioAudibleAt, type AudioEdits } from '@/lib/media-core/audio-edit';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type Ref, type ReactNode } from 'react';
+import { createMusicDuckingEnvelope, musicDuckingGainAtTime, type MusicDuckingConfig } from '@/lib/media-core/music-ducking';
+import { buildMusicTimeline, musicPositionAtTime } from '@/lib/media-core/music-timeline';
+import {
+  activeClipIndexAtBodyFrame,
+  expectedVideoTimeSec,
+  getVideoSlotPlan,
+  paintDecodedVideoFrame,
+  previewAudioLevelsAtTime,
+  shouldIssueSeek,
+} from '@/components/final-edit/preview-playback';
+import {
+  FINAL_EDIT_FPS,
+  FINAL_EDIT_INTRO_FRAMES,
+  OUTPUT_PRESETS,
+  type OutputPresetId,
+} from '@/lib/final-edit/types';
+import { defaultTextStyle } from '@/lib/media-core/cover-domain';
+import { textStyleToSvgElements } from '@/lib/media-core/cover-title-svg';
+import { subtitleStyleToSvgElements } from '@/lib/media-core/subtitle-svg';
+import type { CoverFraming, TextStyle } from '@/lib/media-core/cover-types';
+import type { FrozenBatchCoverTitleConfig } from '@/lib/live-mixcut/cover-title';
+import BatchCoverDraftPreview, { type BatchCoverPreviewAsset } from './BatchCoverDraftPreview';
+import { createLutRenderer, loadCubeLutFromEndpoint, type LutRenderer, type ParsedCubeLut } from './lut-3d';
+import { ProxyPlaybackToggle } from './ProxyPlaybackToggle';
+import { useProxyPlaybackPreference } from './proxy-playback-preference';
+import styles from './batch-preview.module.css';
+import { PreviewAudioTimelinePlayer, type PreviewAudioTimeline, type PreviewAudioState } from '@/lib/media-core/preview-audio-timeline';
+import { createPreviewAudioMedia } from './preview-audio-media';
+import { createPreviewAudioOutput, schedulePreviewAudioGain } from './preview-audio-output';
+import { createPreviewAudioStart } from './preview-audio-start';
+import { audioEdgeFades, audioEdgeEnvelope } from '@/lib/media-core/audio-edges';
+
+/**
+ * 把离屏 GL canvas 伪装成 2D 合成管线可消费的帧源:
+ * paintDecodedVideoFrame 只读 videoWidth/videoHeight/readyState/seeking 并 drawImage,
+ * drawImage 原生接受 canvas 源;宽高与就绪状态铺到对象上即复用整条合成管线,不改它。
+ */
+function toPaintableSource(source: HTMLCanvasElement): HTMLVideoElement {
+  const paintSource = source as unknown as HTMLVideoElement & {
+    videoWidth: number;
+    videoHeight: number;
+    readyState: number;
+    seeking: boolean;
+  };
+  paintSource.videoWidth = source.width;
+  paintSource.videoHeight = source.height;
+  paintSource.readyState = 2;
+  paintSource.seeking = false;
+  return paintSource;
+}
+
+interface SlotLutState {
+  /** 该 slot 目标 LUT(来自 clip 素材的冻结快照选择) */
+  lutId: string | null;
+  /** lutId 匹配的解析结果;null 表示未就绪(加载中/无 LUT/失败直通) */
+  parsed: ParsedCubeLut | null;
+  error?: string | null;
+}
+
+const FPS = FINAL_EDIT_FPS;
+const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FPS; // 20/24 秒片头封面静帧
+
+export interface BatchTimelinePreviewClip {
+  clipId: string;
+  assetId: string;
+  sourceStartUs: number;
+  sourceEndUs: number;
+  timelineStartUs: number;
+  timelineEndUs: number;
+  playbackRate?: number;
+  framing?: CoverFraming;
+}
+
+export interface BatchTimelinePreviewHandle {
+  togglePlayback: () => void;
+}
+
+export interface BatchTimelinePreviewProps {
+  overlay?: ReactNode;
+  playbackRef?: Ref<BatchTimelinePreviewHandle>;
+  clips: BatchTimelinePreviewClip[];
+  narrationDurationUs?: number | null;
+  /** 多源声音使用自己的正文长度与源时间映射，不再把单条配音长度当成正文。 */
+  audioTimeline?: PreviewAudioTimeline | null;
+  preserveGaps?: boolean;
+  audio?: AudioEdits;
+  /**
+   * assetId → 预览地址(代理解析路由,代理开关打开时使用);originalUrl 为原片直连(开关关闭时使用);
+   * lutId 为该素材冻结快照中的 LUT 选择(无则 null),lutUrl 为 .cube 只读端点(由调用方携带 projectId 构造)。
+   */
+  assetsById: Record<string, { previewUrl: string; originalUrl?: string; lutId?: string | null; lutUrl?: string }>;
+  coverUrl: string | null;
+  /** 提供时片头用客户端实时合成的封面草稿，不再等渲染产物（封面精调即改即看）。 */
+  coverDraft?: {
+    asset: BatchCoverPreviewAsset | null;
+    timeUs: number;
+    title: FrozenBatchCoverTitleConfig | null;
+    framing: CoverFraming | null;
+  } | null;
+  subtitleCues: Array<{ id?: string; startUs: number; endUs: number; text: string }>;
+  subtitleStyle?: TextStyle;
+  narrationUrl: string | null;
+  narrationGainDb: number;
+  bgm: { fileUrl: string; durationUs?: number; gainDb: number; fadeInSec: number; fadeOutSec: number; ducking?: MusicDuckingConfig } | null;
+  outputPreset: OutputPresetId;
+  /** 含片头的绝对播放头（受控，与时间轴共享） */
+  playheadSec: number;
+  onSeek: (sec: number) => void;
+  /** false 时暂停一切播放（预留防御；当前调用方未传，弹窗关闭靠卸载兜底） */
+  active?: boolean;
+  /** 嵌入编辑器时让预览区与时间轴共享固定高度，避免预览把时间轴推到视口外。 */
+  compact?: boolean;
+}
+
+interface BatchPreviewAudioGraph {
+  context: AudioContext;
+  narrationGain: GainNode;
+}
+
+function formatTime(timeSec: number): string {
+  const value = Math.max(0, timeSec);
+  return `${String(Math.floor(value / 60)).padStart(2, '0')}:${(value % 60).toFixed(1).padStart(4, '0')}`;
+}
+
+function usToFrame(us: number): number {
+  return Math.round((us / 1_000_000) * FPS);
+}
+
+function seekMedia(element: HTMLMediaElement | null, timeSec: number): void {
+  if (!element || !Number.isFinite(timeSec)) return;
+  if (element.readyState === HTMLMediaElement.HAVE_NOTHING) {
+    element.addEventListener('loadedmetadata', () => seekMedia(element, timeSec), { once: true });
+    return;
+  }
+  try {
+    element.currentTime = Math.max(0, timeSec);
+  } catch {
+    // 媒体源切换瞬间 currentTime 可能不可写,下一轮同步会补上。
+  }
+}
+
+/**
+ * 批量「检查成片」的实时预览:客户端按当前 arrangement 即时合成,不等重渲染。
+ * 机制与单条混剪预览同源——片头封面静帧、双 <video> slot 轮播、前景 canvas 上屏、
+ * 字幕顶层 SVG、口播片头结束后起播、BGM 音量包络;但不依赖 final-edit 的路由与类型。
+ */
+export default function BatchTimelinePreview({
+  playbackRef, overlay,
+  clips,
+  narrationDurationUs, audioTimeline, preserveGaps, audio,
+  assetsById,
+  coverUrl,
+  coverDraft,
+  subtitleCues,
+  subtitleStyle,
+  narrationUrl: legacyNarrationUrl,
+  narrationGainDb,
+  bgm,
+  outputPreset,
+  playheadSec,
+  onSeek,
+  active = true,
+  compact = false,
+}: BatchTimelinePreviewProps) {
+  const sortedClips = useMemo(() => [...clips].sort((a, b) => a.timelineStartUs - b.timelineStartUs), [clips]);
+  const bodyDurationSec = (audioTimeline?.bodyDurationUs ?? narrationDurationUs ?? sortedClips.at(-1)?.timelineEndUs ?? 0) / 1_000_000;
+  const narrationUrl = audioTimeline ? null : legacyNarrationUrl;
+  const audioTimelineJson = JSON.stringify(audioTimeline ?? null);
+  const totalSec = INTRO_SEC + bodyDurationSec;
+  const size = OUTPUT_PRESETS[outputPreset];
+
+  const [playing, setPlaying] = useState(false);
+  const [showSafeArea, setShowSafeArea] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const fullscreenRef = useRef<HTMLDivElement>(null);
+  const playerRootRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const frameCanvasRef = useRef<HTMLCanvasElement>(null);
+  const videoARef = useRef<HTMLVideoElement>(null);
+  const videoBRef = useRef<HTMLVideoElement>(null);
+  const narrationRef = useRef<HTMLAudioElement>(null);
+  const bgmRef = useRef<HTMLAudioElement>(null);
+  const multiAudioContainerRef = useRef<HTMLDivElement>(null);
+  const multiAudioPlayerRef = useRef<PreviewAudioTimelinePlayer | null>(null);
+  const multiAudioBufferingRef = useRef(false);
+  const [multiAudioState, setMultiAudioState] = useState<PreviewAudioState>({ status: 'ready' });
+  const [formulaVideoError, setFormulaVideoError] = useState('');
+  const [formulaMusicErrorUrl, setFormulaMusicErrorUrl] = useState<string | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioGraphRef = useRef<BatchPreviewAudioGraph | null>(null);
+  const formulaOutputRef = useRef<ReturnType<typeof createPreviewAudioOutput> | null>(null);
+  const formulaOutputReadyRef = useRef(false);
+  const formulaMusicSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const formulaMusicStartRef = useRef<ReturnType<typeof createPreviewAudioStart> | null>(null);
+  const formulaMusicEdgeRef = useRef<GainNode | null>(null);
+  const playingRef = useRef(false);
+  const clockStartRef = useRef(0);
+  const clockOffsetRef = useRef(0);
+  const animationRef = useRef(0);
+  const audioStartTimerRef = useRef(0);
+  const lastStartedClipRef = useRef('');
+  const lastDrivenSecRef = useRef(0);
+  const externalSeekUntilRef = useRef(0);
+  /** seek 合流:两 slot 各自的最新 seek 目标;seek 在途时只记录不写入,seeked 后补齐最新目标。 */
+  const seekTargetRef = useRef<[number | null, number | null]>([null, null]);
+  const drivePlayhead = useCallback((sec: number) => {
+    lastDrivenSecRef.current = sec;
+    onSeek(sec);
+  }, [onSeek]);
+
+  const bodyFrames = Math.max(0, usToFrame(sortedClips.at(-1)?.timelineEndUs ?? 0));
+  const rawBodyFrame = Math.max(0, Math.floor((playheadSec - INTRO_SEC) * FPS));
+  const frozenVideoTail = !preserveGaps && rawBodyFrame >= bodyFrames && sortedClips.length > 0;
+  const bodyFrame = frozenVideoTail ? Math.max(0, bodyFrames - 1) : rawBodyFrame;
+  const activeClipIndex = playheadSec >= INTRO_SEC
+    ? frozenVideoTail
+      ? sortedClips.length - 1
+      : activeClipIndexAtBodyFrame(sortedClips, bodyFrame, FPS)
+    : -1;
+  const activeClip = activeClipIndex >= 0 ? sortedClips[activeClipIndex] : null;
+  const slotPlan = getVideoSlotPlan(activeClipIndex, sortedClips.length);
+  const slotIndexA = slotPlan.clipIndexes[0];
+  const slotIndexB = slotPlan.clipIndexes[1];
+  const slotClips = useMemo(
+    () => [
+      slotIndexA == null ? null : sortedClips[slotIndexA],
+      slotIndexB == null ? null : sortedClips[slotIndexB],
+    ] as [BatchTimelinePreviewClip | null, BatchTimelinePreviewClip | null],
+    [slotIndexA, slotIndexB, sortedClips],
+  );
+  const activeSlot = slotPlan.activeSlot;
+  // B1 总开关:开(默认)=优先代理解析(有代理播代理,无代理由解析路由回退原片);
+  // 关=全局播原片(核对画质场景)。只影响隐藏 video 的源,src 变化后 video 重载,
+  // synchronize 会在 loadedmetadata 时把 currentTime 拨回当前播放头并恢复播放状态。
+  const { proxyPlayback } = useProxyPlaybackPreference();
+  const clipSource = (clip: BatchTimelinePreviewClip | null): string | undefined => {
+    if (!clip) return undefined;
+    const media = assetsById[clip.assetId];
+    if (!media) return undefined;
+    return proxyPlayback ? media.previewUrl : media.originalUrl;
+  };
+  const videoASrc = clipSource(slotClips[0]);
+  const videoBSrc = clipSource(slotClips[1]);
+  // C3:每个 slot 的离屏 WebGL 渲染器与画布(仅在对应 clip 有 LUT 且解析成功时创建)
+  const slotRendererARef = useRef<LutRenderer | null>(null);
+  const slotRendererBRef = useRef<LutRenderer | null>(null);
+  const slotGlCanvasARef = useRef<HTMLCanvasElement | null>(null);
+  const slotGlCanvasBRef = useRef<HTMLCanvasElement | null>(null);
+  const [slotLuts, setSlotLuts] = useState<[SlotLutState, SlotLutState]>([
+    { lutId: null, parsed: null },
+    { lutId: null, parsed: null },
+  ]);
+  const [lutFpsHint, setLutFpsHint] = useState(false);
+  const webgl2Available = typeof WebGL2RenderingContext !== 'undefined';
+  const hasLutClips = slotClips.some((clip) => clip ? Boolean(assetsById[clip.assetId]?.lutId) : false);
+  const slotLutState = (slot: 0 | 1): SlotLutState => slotLuts[slot];
+  const bodyTimeUs = Math.max(0, (playheadSec - INTRO_SEC) * 1_000_000);
+  const activeCue = playheadSec >= INTRO_SEC
+    ? subtitleCues.find((cue) => bodyTimeUs >= cue.startUs && bodyTimeUs < cue.endUs) ?? null
+    : null;
+  // 时间轴也能从外部直接 seek；封面/成片状态以实际播放头为准，避免外部
+  // seek 到 0 时仍残留「成片」模式而显示黑帧。
+  const previewMode: 'cover' | 'finished' = playheadSec < INTRO_SEC ? 'cover' : 'finished';
+  const showCover = playheadSec < INTRO_SEC;
+  const resolvedSubtitleStyle = subtitleStyle ?? defaultTextStyle('subtitle', size.width);
+  const subtitleSvg = !showCover && activeCue
+    ? (audioTimeline ? subtitleStyleToSvgElements : textStyleToSvgElements)(resolvedSubtitleStyle, activeCue.text, size)
+    : '';
+
+  const setNarrationOutputGain = useCallback((gain: number) => {
+    const graph = audioGraphRef.current;
+    if (graph) {
+      graph.narrationGain.gain.setValueAtTime(Math.max(0, gain), graph.context.currentTime);
+      return;
+    }
+    // 播放尚未经过用户手势建立 Web Audio 图时，只能使用 HTML 音量的安全范围。
+    // 正式播放路径会在 togglePlayback 中建立图，因此 +10dB 不会在正常预览中被截断。
+    if (narrationRef.current) narrationRef.current.volume = Math.min(1, Math.max(0, gain));
+  }, []);
+
+  const pauseAllMedia = useCallback(() => {
+    playingRef.current = false;
+    multiAudioBufferingRef.current = false;
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    animationRef.current = 0;
+    if (audioStartTimerRef.current) window.clearTimeout(audioStartTimerRef.current);
+    audioStartTimerRef.current = 0;
+    videoARef.current?.pause();
+    videoBRef.current?.pause();
+    narrationRef.current?.pause();
+    multiAudioPlayerRef.current?.pause();
+    bgmRef.current?.pause();
+    const graph = audioGraphRef.current;
+    if (graph) graph.narrationGain.gain.setValueAtTime(0, graph.context.currentTime);
+    else if (narrationRef.current) narrationRef.current.volume = 0;
+  }, []);
+
+  const stopPlayback = useCallback(() => {
+    pauseAllMedia();
+    setPlaying(false);
+  }, [pauseAllMedia]);
+
+  useEffect(() => {
+    const timeline: PreviewAudioTimeline | null = JSON.parse(audioTimelineJson);
+    const container = multiAudioContainerRef.current;
+    if (!timeline || !container) return;
+    const player = new PreviewAudioTimelinePlayer(timeline,
+      clip => createPreviewAudioMedia(clip, container, () => formulaOutputReadyRef.current ? audioContextRef.current : null, () => formulaOutputRef.current?.input ?? null), state => {
+        setMultiAudioState(state);
+        if (state.status === 'error') stopPlayback();
+      });
+    multiAudioPlayerRef.current = player;
+    player.sync((lastDrivenSecRef.current - INTRO_SEC) * 1_000_000, false);
+    return () => {
+      stopPlayback(); player.dispose();
+      if (multiAudioPlayerRef.current === player) multiAudioPlayerRef.current = null;
+    };
+  }, [audioTimelineJson, stopPlayback]);
+
+  useEffect(() => {
+    if (audioTimelineJson === 'null') return;
+    const otherMediaStarted = (event: Event) => {
+      if (event.target instanceof HTMLMediaElement && !event.target.paused && !playerRootRef.current?.contains(event.target)) stopPlayback();
+    };
+    const failed = () => { setFormulaVideoError('画面文件加载失败，请检查素材后点击播放重试。'); stopPlayback(); };
+    const videos = [videoARef.current, videoBRef.current];
+    document.addEventListener('play', otherMediaStarted, true);
+    videos.forEach(video => video?.addEventListener('error', failed));
+    return () => {
+      document.removeEventListener('play', otherMediaStarted, true);
+      videos.forEach(video => video?.removeEventListener('error', failed));
+    };
+  }, [audioTimelineJson, stopPlayback]);
+
+  // 常驻 seeked 监听:seek 在途期间被跳过的最新目标,在 seeked 后补一次赋值,实现「最新目标获胜」。
+  useEffect(() => {
+    const videos = [videoARef.current, videoBRef.current] as const;
+    const listeners = videos.map((video, slot) => {
+      const onSeeked = () => {
+        const target = seekTargetRef.current[slot];
+        if (target == null || !video) return;
+        if (shouldIssueSeek(video, target, 1 / FPS)) {
+          try {
+            video.currentTime = target;
+          } catch {
+            // 媒体源切换瞬间 currentTime 可能不可写,下一轮同步会补上。
+          }
+        }
+      };
+      video?.addEventListener('seeked', onSeeked);
+      return () => video?.removeEventListener('seeked', onSeeked);
+    });
+    return () => listeners.forEach((cleanup) => cleanup());
+  }, []);
+
+  // 双 slot 同步:活跃 slot 按源区间期望时间播放,备用 slot 预停在自身入点。
+  // seek 写入经 shouldIssueSeek 合流:在途 seek 期间只更新 seekTargetRef,不打断在途 seek。
+  // 代理/原片开关切换会让隐藏 video 换源(同一元素重载):旧源的 loadedmetadata 监听
+  // 已被消费且 lastStartedClipRef 守卫会短路同步,这里在源组合变化时重置守卫,
+  // 让换源后走完整的「seek 到播放头 + 恢复播放/暂停」路径。
+  const previousPreviewSourcesRef = useRef<{ a: string | undefined; b: string | undefined } | null>(null);
+  useEffect(() => {
+    const previous = previousPreviewSourcesRef.current;
+    if (previous && (previous.a !== videoASrc || previous.b !== videoBSrc)) {
+      lastStartedClipRef.current = '';
+    }
+    previousPreviewSourcesRef.current = { a: videoASrc, b: videoBSrc };
+    const videos = [videoARef.current, videoBRef.current] as const;
+    const cleanups: Array<() => void> = [];
+    videos.forEach((video, slot) => {
+      const clip = slotClips[slot];
+      if (!video || !clip) return;
+      const sourceInFrame = usToFrame(clip.sourceStartUs);
+      const expected = slot === activeSlot
+        ? Math.min((clip.sourceEndUs / 1e6) - 1 / FPS, expectedVideoTimeSec(sourceInFrame, usToFrame(clip.timelineStartUs), bodyFrame, FPS, clip.playbackRate ?? (clip.sourceEndUs - clip.sourceStartUs) / (clip.timelineEndUs - clip.timelineStartUs)))
+        : sourceInFrame / FPS;
+      const synchronize = () => {
+        video.playbackRate = clip.playbackRate ?? (clip.sourceEndUs - clip.sourceStartUs) / (clip.timelineEndUs - clip.timelineStartUs);
+        seekTargetRef.current[slot] = expected;
+        if (slot !== activeSlot || frozenVideoTail || !playingRef.current || multiAudioBufferingRef.current) {
+          video.pause();
+          if (shouldIssueSeek(video, expected, 1 / FPS)) video.currentTime = expected;
+          if (!playingRef.current || multiAudioBufferingRef.current) lastStartedClipRef.current = '';
+          return;
+        }
+        if (lastStartedClipRef.current === clip.clipId) return;
+        if (Math.abs(video.currentTime - expected) > 0.35) video.currentTime = expected;
+        lastStartedClipRef.current = clip.clipId;
+        void video.play().catch(() => undefined);
+      };
+      if (video.readyState >= HTMLMediaElement.HAVE_METADATA) synchronize();
+      else {
+        video.addEventListener('loadedmetadata', synchronize, { once: true });
+        cleanups.push(() => video.removeEventListener('loadedmetadata', synchronize));
+      }
+    });
+    if (activeSlot == null || !activeClip) {
+      lastStartedClipRef.current = '';
+      videoARef.current?.pause();
+      videoBRef.current?.pause();
+    }
+    return () => cleanups.forEach((cleanup) => cleanup());
+  }, [activeClip, activeSlot, bodyFrame, frozenVideoTail, playing, slotClips, videoASrc, videoBSrc]);
+
+  // C3:按 slot 当前 clip 的素材 LUT 加载/换纹理;无 LUT 的 slot 保持直通(不建 GL)。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (const slot of [0, 1] as const) {
+        const clip = slotClips[slot];
+        const asset = clip ? assetsById[clip.assetId] : undefined;
+        const lutId = asset?.lutId ?? null;
+        const lutUrl = asset?.lutUrl ?? '';
+        if (!lutId || !lutUrl) {
+          setSlotLuts((prev) => (prev[slot].lutId === null && !prev[slot].error ? prev : {
+            ...prev,
+            [slot]: { ...prev[slot], lutId: null, parsed: null, error: null },
+          } as [SlotLutState, SlotLutState]));
+          continue;
+        }
+        try {
+          const parsed = await loadCubeLutFromEndpoint({ lutId, url: lutUrl });
+          if (cancelled) return;
+          setSlotLuts((prev) => (prev[slot].lutId === lutId && prev[slot].parsed === parsed ? prev : {
+            ...prev,
+            [slot]: { lutId, parsed, error: null },
+          } as [SlotLutState, SlotLutState]));
+        } catch (error) {
+          if (cancelled) return;
+          setSlotLuts((prev) => (prev[slot].lutId === lutId && prev[slot].error ? prev : {
+            ...prev,
+            [slot]: { lutId, parsed: null, error: error instanceof Error ? error.message : 'LUT 解析失败' },
+          } as [SlotLutState, SlotLutState]));
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [slotClips, assetsById]);
+
+  // C3:slot 渲染器生命周期——有解析好的 LUT 时创建(离屏 canvas,零挂载),否则 dispose。
+  useEffect(() => {
+    for (const slot of [0, 1] as const) {
+      const rendererRef = slot === 0 ? slotRendererARef : slotRendererBRef;
+      const canvasRef = slot === 0 ? slotGlCanvasARef : slotGlCanvasBRef;
+      const clip = slotClips[slot];
+      const lutId = clip ? (assetsById[clip.assetId]?.lutId ?? null) : null;
+      const lutState = slotLuts[slot];
+      const ready = Boolean(webgl2Available && lutId && lutState.lutId === lutId && lutState.parsed);
+      if (!ready) {
+        rendererRef.current?.dispose();
+        rendererRef.current = null;
+        canvasRef.current = null;
+        continue;
+      }
+      if (!rendererRef.current) {
+        const canvas = document.createElement('canvas');
+        // createLutRenderer 在 shader 编译/链接失败时会 throw;
+        // GL 异常与该 slot 无 LUT 同路径降级(直通),不能让时间线崩溃。
+        let renderer: LutRenderer | null = null;
+        try {
+          renderer = createLutRenderer(canvas);
+        } catch {
+          renderer = null;
+        }
+        if (!renderer) {
+          canvasRef.current = null;
+          continue;
+        }
+        canvasRef.current = canvas;
+        rendererRef.current = renderer;
+      }
+      rendererRef.current.setLut(lutState.parsed!);
+    }
+    return () => {
+      slotRendererARef.current?.dispose();
+      slotRendererARef.current = null;
+      slotGlCanvasARef.current = null;
+      slotRendererBRef.current?.dispose();
+      slotRendererBRef.current = null;
+      slotGlCanvasBRef.current = null;
+    };
+  }, [slotClips, slotLuts, assetsById, webgl2Available]);
+
+  // 帧上屏:优先 requestVideoFrameCallback——只在解码器提交新帧时画(24fps 源从 60Hz rAF 降到 24 次/秒),
+  // 且暂停态 seek 完成时也会触发,拖动进度条画面能持续跟随。回退到 rAF 循环 + seeked/loadeddata 补帧。
+  // C3:每个 slot 的帧先过该 clip 素材 LUT(离屏 WebGL,复用 C1 渲染器)再进 2D 合成管线;
+  // 无 LUT 的 slot 直通 video 源(不创建 GL,零成本);所有 clip 无 LUT 时整体零 GL。
+  useEffect(() => {
+    const canvas = frameCanvasRef.current;
+    const context = canvas?.getContext('2d');
+    if (!canvas || !context) return;
+    let frame = 0;
+    let videoFrameHandle = 0;
+    let videoFrameActive = false;
+    let slowFrames = 0;
+    let lastPaintAt = 0;
+    const paint = () => {
+      // 掉帧度量:持续 >48ms/帧 达 30 帧时提示一次(检测做简单的,不调参与自适应)
+      const now = performance.now();
+      if (lastPaintAt > 0) {
+        if (now - lastPaintAt > 48) slowFrames += 1;
+        else slowFrames = 0;
+        if (slowFrames >= 30) setLutFpsHint(true);
+      }
+      lastPaintAt = now;
+      const slotVideo = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
+      const slotRenderer = activeSlot === 0 ? slotRendererARef.current : activeSlot === 1 ? slotRendererBRef.current : null;
+      const slotGlCanvas = activeSlot === 0 ? slotGlCanvasARef.current : activeSlot === 1 ? slotGlCanvasBRef.current : null;
+      let source = slotVideo;
+      if (slotVideo && slotRenderer && slotGlCanvas) {
+        // 当前 slot 启用 LUT:先把当前帧画进离屏 GL canvas,2D 合成管线以 canvas 为帧源
+        slotRenderer.drawFrame(slotVideo);
+        source = toPaintableSource(slotGlCanvas);
+      }
+      if (activeClip && source) {
+        paintDecodedVideoFrame(context, canvas, source, outputPreset, activeClip.framing ?? { scale: 1, offsetX: 0, offsetY: 0 }, 'cover');
+      } else {
+        context.fillStyle = 'black';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    };
+    const loop = () => { paint(); frame = requestAnimationFrame(loop); };
+    const video = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
+    if (video && typeof video.requestVideoFrameCallback === 'function') {
+      videoFrameActive = true;
+      const scheduleVideoFrame = () => {
+        videoFrameHandle = video.requestVideoFrameCallback(() => {
+          paint();
+          // 播放中持续排下一帧;暂停/seek 态画完即止,新帧提交时自然再触发。
+          if (playing) scheduleVideoFrame();
+        });
+      };
+      scheduleVideoFrame();
+    }
+    video?.addEventListener('loadeddata', paint);
+    video?.addEventListener('seeked', paint);
+    if (playing) loop(); else paint();
+    return () => {
+      cancelAnimationFrame(frame);
+      if (videoFrameActive) video?.cancelVideoFrameCallback(videoFrameHandle);
+      video?.removeEventListener('loadeddata', paint);
+      video?.removeEventListener('seeked', paint);
+    };
+  }, [activeClip, activeSlot, bodyFrame, outputPreset, playing]);
+
+  // 播放时钟:performance.now() 推进播放头,同时驱动口播/BGM 音量包络。
+  const duckingEnvelope = useMemo(() => audioTimeline && bgm?.ducking
+    ? createMusicDuckingEnvelope(audioTimeline.clips, bgm.ducking) : null, [audioTimeline, bgm?.ducking]);
+  const musicTimeline = useMemo(() => audioTimeline && bgm?.durationUs
+    ? buildMusicTimeline(audio?.bgm, audioTimeline.bodyDurationUs, bgm.durationUs) : null,
+  [audio?.bgm, audioTimeline, bgm?.durationUs]);
+  const musicEdges = useMemo(() => musicTimeline ? audioEdgeFades(musicTimeline.clips.map(clip => ({ ...clip,
+    sourceKey: 'music', sourcePeriodUs: musicTimeline.sourceDurationUs }))) : null, [musicTimeline]);
+  const soundBoundaries = useMemo(() => [...new Set([
+    ...(audioTimeline?.clips ?? []).flatMap(clip => [clip.timelineStartUs, clip.timelineEndUs]),
+    ...(musicTimeline?.clips ?? []).flatMap(clip => [clip.timelineStartUs, clip.timelineEndUs]),
+  ])].sort((a, b) => a - b).map(us => us / 1e6 + INTRO_SEC), [audioTimeline, musicTimeline]);
+  const audioLevels = useCallback((input: Parameters<typeof previewAudioLevelsAtTime>[0]) => {
+    const levels = previewAudioLevelsAtTime(input);
+    const timeUs = (input.playheadSec - INTRO_SEC) * 1e6;
+    const duckingGain = duckingEnvelope ? musicDuckingGainAtTime(duckingEnvelope, timeUs) : 1;
+    return { narrationGain: audioAudibleAt(audio?.narration, timeUs) ? levels.narrationGain : 0,
+      bgmGain: audioAudibleAt(audio?.bgm, timeUs) ? levels.bgmGain * duckingGain : 0 };
+  }, [audio, duckingEnvelope]);
+  const bgmGainDb = bgm?.gainDb ?? 0;
+  const bgmFadeInSec = bgm?.fadeInSec ?? 0;
+  const bgmFadeOutSec = bgm?.fadeOutSec ?? 0;
+  /** A seek is silent until decoded; the playback clock waits with the picture and speech. */
+  const syncFormulaMusic = useCallback((timeSec: number, shouldPlay: boolean): boolean => {
+    if (!musicTimeline) return true;
+    if (shouldPlay && !formulaOutputReadyRef.current) return false;
+    const element = bgmRef.current;
+    if (!element) return false;
+    const position = musicPositionAtTime(musicTimeline, (timeSec - INTRO_SEC) * 1e6);
+    const silence = () => {
+      element.volume = 0; element.pause();
+      if (formulaMusicEdgeRef.current && audioContextRef.current) schedulePreviewAudioGain(formulaMusicEdgeRef.current, audioContextRef.current, 0);
+    };
+    if (!position) { silence(); return true; }
+    if (element.error || element.readyState < 1) { silence(); return false; }
+    const expected = position.sourceTimeUs / 1e6;
+    if (Math.abs(element.currentTime - expected) > (shouldPlay ? 0.08 : 0.001)) {
+      silence();
+      if (!element.seeking) seekMedia(element, expected);
+    }
+    if (element.seeking || element.readyState < 2) { silence(); return false; }
+    if (!shouldPlay) { silence(); return true; }
+    const clip = musicTimeline.clips.find(clip => clip.id === position.clipId)!;
+    if (formulaMusicEdgeRef.current && audioContextRef.current && musicEdges) {
+      const envelope = audioEdgeEnvelope(musicEdges.get(clip.id)!, (timeSec - INTRO_SEC) * 1e6 - clip.timelineStartUs,
+        clip.timelineEndUs - clip.timelineStartUs);
+      schedulePreviewAudioGain(formulaMusicEdgeRef.current, audioContextRef.current, envelope[0].gain, envelope.slice(1));
+    }
+    element.volume = audioLevels({ playheadSec: timeSec, introSec: INTRO_SEC, bodyDurationSec,
+      narrationGainDb, gainDb: bgmGainDb, fadeInSec: bgmFadeInSec, fadeOutSec: bgmFadeOutSec }).bgmGain;
+    if (element.paused) void element.play().catch(error => {
+      // Pausing while a seek/load is pending intentionally aborts play().
+      if (error?.name !== 'AbortError' && playingRef.current) {
+        setFormulaMusicErrorUrl(bgm?.fileUrl ?? null); stopPlayback();
+      }
+    });
+    return true;
+  }, [musicTimeline, musicEdges, audioLevels, bodyDurationSec, narrationGainDb, bgmGainDb, bgmFadeInSec, bgmFadeOutSec, bgm?.fileUrl, stopPlayback]);
+  useEffect(() => {
+    const element = bgmRef.current;
+    if (!musicTimeline || !element) return;
+    const syncPaused = () => { if (!playingRef.current) syncFormulaMusic(lastDrivenSecRef.current, false); };
+    for (const event of ['loadedmetadata', 'canplay', 'seeked']) element.addEventListener(event, syncPaused);
+    syncPaused();
+    return () => { for (const event of ['loadedmetadata', 'canplay', 'seeked']) element.removeEventListener(event, syncPaused); };
+  }, [musicTimeline, syncFormulaMusic]);
+  useEffect(() => {
+    if (!playing) return;
+    const tick = () => {
+      if (!playingRef.current) return;
+      const multiAudio = multiAudioPlayerRef.current;
+      const holdPicture = () => {
+        multiAudioBufferingRef.current = true;
+        multiAudio?.pause();
+        videoARef.current?.pause(); videoBRef.current?.pause(); bgmRef.current?.pause();
+        lastStartedClipRef.current = '';
+      };
+      const syncSound = (timeSec: number) => {
+        if (multiAudio && !formulaOutputReadyRef.current) return false;
+        const speechReady = multiAudio?.sync((timeSec - INTRO_SEC) * 1e6, true) ?? true;
+        const musicReady = syncFormulaMusic(timeSec, speechReady);
+        return speechReady && musicReady;
+      };
+      if (multiAudioBufferingRef.current && !syncSound(lastDrivenSecRef.current)) {
+        holdPicture();
+        clockOffsetRef.current = lastDrivenSecRef.current; clockStartRef.current = performance.now();
+        animationRef.current = requestAnimationFrame(tick); return;
+      }
+      const clockNext = clockOffsetRef.current + (performance.now() - clockStartRef.current) / 1000;
+      // Visit an audio boundary before advancing past it; a frame tick must not
+      // skip the first five milliseconds of a newly started sound.
+      const next = soundBoundaries.find(time => time > lastDrivenSecRef.current + 1e-6 && time < clockNext) ?? clockNext;
+      if (next >= totalSec) {
+        drivePlayhead(totalSec);
+        stopPlayback();
+        return;
+      }
+      if (!syncSound(next)) {
+        holdPicture();
+        clockOffsetRef.current = next; clockStartRef.current = performance.now(); drivePlayhead(next);
+        animationRef.current = requestAnimationFrame(tick); return;
+      }
+      if (multiAudioBufferingRef.current) {
+        multiAudioBufferingRef.current = false;
+        const music = bgmRef.current;
+        if (music && bgm && !musicTimeline) { seekMedia(music, Math.max(0, next - INTRO_SEC)); void music.play().catch(() => undefined); }
+      }
+      const levels = audioLevels({
+        playheadSec: next,
+        introSec: INTRO_SEC,
+        bodyDurationSec,
+        narrationGainDb,
+        gainDb: bgmGainDb,
+        fadeInSec: bgmFadeInSec,
+        fadeOutSec: bgmFadeOutSec,
+      });
+      const narration = narrationRef.current;
+      if (narration) setNarrationOutputGain(narrationUrl ? levels.narrationGain : 0);
+      const bgmElement = bgmRef.current;
+      if (bgmElement) bgmElement.volume = bgm ? levels.bgmGain : 0;
+      // 外部 seek 落地窗口内只续排 rAF 不驱动播放头,等同步 effect 重置时钟基线后再从新基线继续。
+      if (performance.now() < externalSeekUntilRef.current) {
+        // 空转期间冻结时钟基线,窗口结束后从 seek 值平滑续播,消除 ~120ms 补跳。
+        clockStartRef.current = performance.now();
+        animationRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      drivePlayhead(next);
+      animationRef.current = requestAnimationFrame(tick);
+    };
+    animationRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animationRef.current);
+  }, [audioLevels, bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, drivePlayhead, narrationGainDb, narrationUrl, playing, setNarrationOutputGain, stopPlayback, totalSec, musicTimeline, soundBoundaries, syncFormulaMusic]);
+
+  useEffect(() => {
+    if (active) return;
+    pauseAllMedia();
+    // setPlaying 异步置位:effect 里同步 setState 会触发级联渲染(lint 红线)。
+    const timer = window.setTimeout(() => setPlaying(false), 0);
+    return () => window.clearTimeout(timer);
+  }, [active, pauseAllMedia]);
+
+  useEffect(() => () => {
+    pauseAllMedia();
+    const context = audioContextRef.current;
+    formulaMusicSourceRef.current?.disconnect(); formulaMusicSourceRef.current = null;
+    formulaMusicStartRef.current?.dispose(); formulaMusicStartRef.current = null;
+    formulaMusicEdgeRef.current?.disconnect(); formulaMusicEdgeRef.current = null;
+    formulaOutputRef.current?.dispose(); formulaOutputRef.current = null;
+    formulaOutputReadyRef.current = false;
+    audioGraphRef.current = null;
+    audioContextRef.current = null;
+    if (context && context.state !== 'closed') void context.close();
+  }, [pauseAllMedia]);
+
+  /** 在点击事件里立即起播;片头靠音量包络保持静音,避免延迟 play() 丢失用户手势授权。 */
+  const syncAudioStart = useCallback((startAt: number) => {
+    if (multiAudioPlayerRef.current && !formulaOutputReadyRef.current) return;
+    multiAudioPlayerRef.current?.sync((startAt - INTRO_SEC) * 1_000_000, true);
+    const bodyOffset = Math.max(0, Math.min(bodyDurationSec, startAt - INTRO_SEC));
+    const startsInCover = startAt < INTRO_SEC;
+    if (audioStartTimerRef.current) window.clearTimeout(audioStartTimerRef.current);
+    audioStartTimerRef.current = 0;
+    if (!playingRef.current) return;
+    const levels = audioLevels({
+      playheadSec: startAt,
+      introSec: INTRO_SEC,
+      bodyDurationSec,
+      narrationGainDb,
+      gainDb: bgmGainDb,
+      fadeInSec: bgmFadeInSec,
+      fadeOutSec: bgmFadeOutSec,
+    });
+    const narration = narrationRef.current;
+    if (narration && narrationUrl) {
+      // 必须在用户点击的同步调用栈里 play();片头靠 GainNode 保持静音,否则浏览器/Electron
+      // 可能把 setTimeout 里的首次 play() 判定为非用户手势并直接拒绝。
+      setNarrationOutputGain(levels.narrationGain);
+      // 片头也立即启动媒体以取得用户手势授权,但正文音频必须从 0 秒对齐。
+      seekMedia(narration, startsInCover ? 0 : bodyOffset);
+      void narration.play().catch(() => undefined);
+    }
+    const bgmElement = bgmRef.current;
+    if (bgmElement && bgm) {
+      if (musicTimeline) {
+        if (!syncFormulaMusic(startAt, true)) bgmElement.volume = 0;
+      } else {
+        const loopDuration = Number.isFinite(bgmElement.duration) && bgmElement.duration > 0 ? bgmElement.duration : bodyDurationSec;
+        bgmElement.volume = startsInCover ? 0 : levels.bgmGain;
+        seekMedia(bgmElement, (startsInCover ? 0 : bodyOffset) % Math.max(0.1, loopDuration));
+      }
+      // Keep the user's play gesture even when a formula seek is still decoding.
+      void bgmElement.play().catch(() => undefined);
+    }
+    if (startsInCover) {
+      // 媒体已经在片头静音播放,到正文边界再把它们拨回 0 秒,避免片头时长被吃掉。
+      audioStartTimerRef.current = window.setTimeout(() => {
+        audioStartTimerRef.current = 0;
+        if (!playingRef.current) return;
+        const currentNarration = narrationRef.current;
+        if (currentNarration && narrationUrl) {
+          seekMedia(currentNarration, 0);
+          const bodyLevels = audioLevels({
+            playheadSec: INTRO_SEC,
+            introSec: INTRO_SEC,
+            bodyDurationSec,
+            narrationGainDb,
+            gainDb: bgmGainDb,
+            fadeInSec: bgmFadeInSec,
+            fadeOutSec: bgmFadeOutSec,
+          });
+          setNarrationOutputGain(bodyLevels.narrationGain);
+        }
+        const currentBgm = bgmRef.current;
+        if (currentBgm && bgm && !musicTimeline) {
+          const currentLoopDuration = Number.isFinite(currentBgm.duration) && currentBgm.duration > 0 ? currentBgm.duration : bodyDurationSec;
+          seekMedia(currentBgm, 0 % Math.max(0.1, currentLoopDuration));
+          currentBgm.volume = audioLevels({
+            playheadSec: INTRO_SEC,
+            introSec: INTRO_SEC,
+            bodyDurationSec,
+            narrationGainDb,
+            gainDb: bgmGainDb,
+            fadeInSec: bgmFadeInSec,
+            fadeOutSec: bgmFadeOutSec,
+          }).bgmGain;
+        }
+      }, (INTRO_SEC - startAt) * 1000);
+    }
+  }, [audioLevels, bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, narrationGainDb, narrationUrl, setNarrationOutputGain, musicTimeline, syncFormulaMusic]);
+
+  /** 暂停态音频 seek debounce:拖动每格都 seek 口播/BGM 是无用功(暂停的音频不发声),~120ms 内只做最后一次。 */
+  const pausedAudioSeekTimerRef = useRef(0);
+  useEffect(() => () => {
+    if (pausedAudioSeekTimerRef.current) window.clearTimeout(pausedAudioSeekTimerRef.current);
+  }, []);
+
+  /**
+   * BGM 换源媒体同步：曲目 fileUrl 变化时保留播放头与播放状态——
+   * 暂停时载入新源并定位当前播放头；播放中载入新源、定位正文偏移并按当前
+   * 音量包络续播。「首次挂载」与「BGM 原本是关闭的」用独立的 initialized
+   * 标记区分：lastBgmFileUrlRef 的 null 不能兼任两种语义，否则「关闭 BGM →
+   * 播放中再选曲」（以及初始无 BGM、播放中第一次选曲）会被当成首帧跳过，
+   * 新 <audio src> 生效后无人调 play()，音乐静默到下一次暂停/重播。
+   * 不重置画面播放头，不影响口播 GainNode；play() 失败按现有安全策略静默
+   * 处理，不产生未处理 Promise rejection。
+   */
+  const bgmFileUrl = bgm?.fileUrl ?? null;
+  const lastBgmFileUrlRef = useRef<string | null>(null);
+  const bgmSyncInitializedRef = useRef(false);
+  // 换源续播的音量包络输入：loadedmetadata 异步回调触发时读 ref 里的最新值，
+  // 不吃 effect 闭包里的快照（换 src 后加载期间播放头/增益可能已变化）。
+  // 渲染期写 ref 是 React 编译器红线，因此在每次渲染后的 effect 中同步。
+  const bgmLevelsInputRef = useRef({ bodyDurationSec, narrationGainDb, gainDb: bgmGainDb, fadeInSec: bgmFadeInSec, fadeOutSec: bgmFadeOutSec });
+  const audioLevelsRef = useRef(audioLevels);
+  const formulaMusicSyncRef = useRef({ enabled: !!musicTimeline, sync: syncFormulaMusic });
+  useEffect(() => {
+    bgmLevelsInputRef.current = { bodyDurationSec, narrationGainDb, gainDb: bgmGainDb, fadeInSec: bgmFadeInSec, fadeOutSec: bgmFadeOutSec };
+    audioLevelsRef.current = audioLevels;
+    formulaMusicSyncRef.current = { enabled: !!musicTimeline, sync: syncFormulaMusic };
+  });
+  useEffect(() => {
+    const element = bgmRef.current;
+    if (!element) return;
+    const previous = lastBgmFileUrlRef.current;
+    lastBgmFileUrlRef.current = bgmFileUrl;
+    if (!bgmSyncInitializedRef.current) {
+      bgmSyncInitializedRef.current = true;
+      return;
+    }
+    if (previous === bgmFileUrl) return;
+    if (bgmFileUrl === null) {
+      element.pause();
+      return;
+    }
+    const resumeBgm = () => {
+      // 播放头读 lastDrivenSecRef（时钟驱动与外部 seek 双路维护，始终等于
+      // 当前有效播放头），避免异步分支里用陈旧闭包值 seek 落后一个加载时长。
+      const currentSec = lastDrivenSecRef.current;
+      if (formulaMusicSyncRef.current.enabled) {
+        formulaMusicSyncRef.current.sync(currentSec, playingRef.current);
+        return;
+      }
+      const levels = bgmLevelsInputRef.current;
+      const bodyOffset = Math.max(0, Math.min(levels.bodyDurationSec, currentSec - INTRO_SEC));
+      const loopDuration = Number.isFinite(element.duration) && element.duration > 0 ? element.duration : levels.bodyDurationSec;
+      seekMedia(element, bodyOffset % Math.max(0.1, loopDuration));
+      if (playingRef.current) {
+        element.volume = audioLevelsRef.current({
+          playheadSec: currentSec,
+          introSec: INTRO_SEC,
+          bodyDurationSec: levels.bodyDurationSec,
+          narrationGainDb: levels.narrationGainDb,
+          gainDb: levels.gainDb,
+          fadeInSec: levels.fadeInSec,
+          fadeOutSec: levels.fadeOutSec,
+        }).bgmGain;
+        void element.play().catch(() => undefined);
+      }
+    };
+    if (element.readyState >= HTMLMediaElement.HAVE_METADATA) resumeBgm();
+    else {
+      element.addEventListener('loadedmetadata', resumeBgm, { once: true });
+      // 快速连换两首时摘掉尚未触发的陈旧监听器，不让它对共享的 <audio>
+      // 再做一次过期 seek/play（与同文件其他监听器的 cleanup 惯例一致）。
+      // 本 effect 依赖只有 bgmFileUrl，cleanup 必然对应一次换源或卸载。
+      return () => element.removeEventListener('loadedmetadata', resumeBgm);
+    }
+  }, [bgmFileUrl]);
+
+  const synchronizePausedAudio = useCallback((timeSec: number) => {
+    multiAudioPlayerRef.current?.sync((timeSec - INTRO_SEC) * 1_000_000, false);
+    if (pausedAudioSeekTimerRef.current) window.clearTimeout(pausedAudioSeekTimerRef.current);
+    pausedAudioSeekTimerRef.current = window.setTimeout(() => {
+      pausedAudioSeekTimerRef.current = 0;
+      const bodyOffset = Math.max(0, Math.min(bodyDurationSec, timeSec - INTRO_SEC));
+      seekMedia(narrationRef.current, bodyOffset);
+      const bgmElement = bgmRef.current;
+      if (musicTimeline) syncFormulaMusic(timeSec, false);
+      else if (bgmElement) {
+        const loopDuration = Number.isFinite(bgmElement.duration) && bgmElement.duration > 0 ? bgmElement.duration : bodyDurationSec;
+        seekMedia(bgmElement, bodyOffset % Math.max(0.1, loopDuration));
+      }
+    }, 120);
+  }, [bodyDurationSec, musicTimeline, syncFormulaMusic]);
+
+  // 外部 seek（时间轴）与自有时钟驱动的区分:时钟驱动会先写 lastDrivenSecRef,差值≈0;
+  // 外部 seek 差值大,暂停时对齐音频,播放中时基重置并对齐口播/BGM。
+  useEffect(() => {
+    if (Math.abs(playheadSec - lastDrivenSecRef.current) <= 1 / FPS) return;
+    lastDrivenSecRef.current = playheadSec;
+    if (playing) {
+      clockOffsetRef.current = playheadSec;
+      clockStartRef.current = performance.now();
+      externalSeekUntilRef.current = performance.now() + 120;
+      syncAudioStart(playheadSec);
+    } else {
+      synchronizePausedAudio(playheadSec);
+    }
+  }, [playheadSec, playing, syncAudioStart, synchronizePausedAudio]);
+
+  // 编辑后总长变短时把播放头收回新总长;drivePlayhead 走握手,同步 effect 自动早退。
+  useEffect(() => {
+    if (playheadSec > totalSec) drivePlayhead(totalSec);
+  }, [playheadSec, totalSec, drivePlayhead]);
+
+  const togglePlayback = () => {
+    if (!active || sortedClips.length === 0) return;
+    if (playing) {
+      stopPlayback();
+      return;
+    }
+    // 在本次播放意图发生时停止外部试听，不能等延迟的原生 play 事件再抢声音。
+    document.querySelectorAll<HTMLMediaElement>('audio,video').forEach(media => {
+      if (!playerRootRef.current?.contains(media)) media.pause();
+    });
+    const narration = narrationRef.current;
+    multiAudioPlayerRef.current?.retryFailed();
+    if (formulaVideoError) {
+      setFormulaVideoError('');
+      [videoARef.current, videoBRef.current].forEach(video => { if (video?.error) video.load(); });
+    }
+    if (audioTimeline && bgm?.fileUrl && bgmRef.current?.error) {
+      setFormulaMusicErrorUrl(null);
+      bgmRef.current.load();
+    }
+    if (audioTimeline && !audioContextRef.current) {
+      const context = new AudioContext();
+      audioContextRef.current = context;
+      const output = createPreviewAudioOutput(context);
+      formulaOutputRef.current = output;
+      setMultiAudioState({ status: 'loading' });
+      void output.ready.then(() => {
+        if (formulaOutputRef.current !== output) return;
+        if (bgmRef.current) {
+          formulaMusicSourceRef.current = context.createMediaElementSource(bgmRef.current);
+          formulaMusicEdgeRef.current = context.createGain();
+          formulaMusicStartRef.current = createPreviewAudioStart(context, bgmRef.current);
+          formulaMusicSourceRef.current.connect(formulaMusicStartRef.current.node).connect(formulaMusicEdgeRef.current).connect(output.input);
+        }
+        formulaOutputReadyRef.current = true;
+      }).catch(() => {
+        if (formulaOutputRef.current !== output) return;
+        setMultiAudioState({ status: 'error', message: '声音播放组件加载失败，请重新打开成片后再试。' });
+        stopPlayback();
+      });
+    }
+    if (narration && narrationUrl && !audioGraphRef.current) {
+      const context = audioContextRef.current || new AudioContext();
+      const narrationGain = context.createGain();
+      context.createMediaElementSource(narration).connect(narrationGain).connect(context.destination);
+      narration.volume = 1;
+      audioContextRef.current = context;
+      audioGraphRef.current = { context, narrationGain };
+    }
+    const context = audioContextRef.current;
+    // resume 与 play 都必须由这次点击同步触发;不要 await resume 后再起播,否则
+    // 某些浏览器/Electron 会丢失用户手势授权。音频图会在恢复后继续输出。
+    if (context?.state === 'suspended') void context.resume().catch(() => undefined);
+    const startAt = playheadSec >= totalSec ? 0 : playheadSec;
+    clockOffsetRef.current = startAt;
+    clockStartRef.current = performance.now();
+    playingRef.current = true;
+    setPlaying(true);
+    if (startAt !== playheadSec) drivePlayhead(startAt);
+    syncAudioStart(startAt);
+  };
+
+  const seek = (next: number) => {
+    const clamped = Math.max(0, Math.min(totalSec, next));
+    // 已暂停且没有在途 rAF/音频定时器时,跳过 stopPlayback 的全套 pauseAllMedia,避免拖动每格重复做无用功。
+    if (playing || animationRef.current || audioStartTimerRef.current) stopPlayback();
+    synchronizePausedAudio(clamped);
+    drivePlayhead(clamped);
+  };
+
+  useImperativeHandle(playbackRef, () => ({ togglePlayback }));
+
+  useEffect(() => {
+    const sync = () => setIsFullscreen(document.fullscreenElement === fullscreenRef.current);
+    document.addEventListener('fullscreenchange', sync);
+    return () => document.removeEventListener('fullscreenchange', sync);
+  }, []);
+
+  const toggleFullscreen = () => {
+    const root = fullscreenRef.current;
+    if (!root || typeof document === 'undefined') return;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => undefined);
+    } else if (root.requestFullscreen) {
+      void root.requestFullscreen().catch(() => undefined);
+    }
+  };
+
+  const choosePreviewMode = (mode: 'cover' | 'finished') => {
+    if (mode === 'cover') seek(0);
+    else if (playheadSec < INTRO_SEC) seek(INTRO_SEC);
+  };
+
+  const renderControls = (overlay: boolean) => (
+    <div className={overlay ? styles.fullscreenControls : compact ? styles.compactControls : 'flex flex-wrap items-center gap-2'}>
+      <button
+        type="button"
+        className="btn-primary h-8 w-8 shrink-0 rounded-full text-xs"
+        aria-label={playing ? '暂停' : '播放'}
+        aria-keyshortcuts="Space"
+        title="播放/暂停（空格）"
+        data-toggle-play
+        disabled={!active || sortedClips.length === 0}
+        onClick={togglePlayback}
+      >{playing ? 'Ⅱ' : '▶'}</button>
+      <span className="shrink-0 text-xs tabular-nums text-ink-secondary">{formatTime(playheadSec)} / {formatTime(totalSec)}</span>
+      <input
+        aria-label="播放位置"
+        type="range"
+        className="min-w-0 flex-1"
+        min={0}
+        max={Math.max(totalSec, 1 / FPS)}
+        step={1 / FPS}
+        value={Math.min(playheadSec, totalSec)}
+        onChange={(event) => seek(Number(event.target.value))}
+      />
+      <div className={compact && !overlay ? styles.compactOptions : 'contents'}>
+      <div className="flex shrink-0 items-center gap-1 rounded-lg bg-surface-subtle p-1" role="group" aria-label="预览内容切换">
+        <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'cover' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'cover'} onClick={() => choosePreviewMode('cover')}>封面</button>
+        <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'finished' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'finished'} onClick={() => choosePreviewMode('finished')}>成片</button>
+      </div>
+      <ProxyPlaybackToggle />
+      <button
+        type="button"
+        className={`btn-secondary h-8 shrink-0 px-2 text-[11px] ${showSafeArea ? 'border-accent text-accent' : ''}`}
+        aria-label={showSafeArea ? '隐藏安全区' : '显示安全区'}
+        aria-pressed={showSafeArea}
+        onClick={() => setShowSafeArea((current) => !current)}
+      >安全区</button>
+      <button
+        type="button"
+        className="btn-secondary h-8 shrink-0 px-3 text-[11px]"
+        aria-label={isFullscreen ? '退出全屏' : '全屏'}
+        title={isFullscreen ? '退出全屏' : '全屏'}
+        onClick={toggleFullscreen}
+      >{isFullscreen ? '退出全屏' : '全屏'}</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div ref={playerRootRef} data-batch-timeline-player className={compact ? styles.compactPlayer : 'space-y-2'} aria-label="成片实时预览">
+      <div
+        ref={fullscreenRef}
+        className={`${compact ? styles.compactViewport : 'flex justify-center'} ${styles.fullscreenShell}`}
+        style={{ '--batch-preview-ratio': size.width / size.height } as CSSProperties}
+      >
+        <div
+          ref={stageRef}
+          className={`${styles.stage} relative overflow-hidden rounded-xl bg-black`}
+          style={compact
+            ? undefined
+            : size.width >= size.height
+              ? { aspectRatio: `${size.width} / ${size.height}`, width: '100%' }
+              : { aspectRatio: `${size.width} / ${size.height}`, height: 'min(52vh, 560px)' }}
+        >
+          <video ref={videoARef} src={videoASrc} className="pointer-events-none absolute h-px w-px opacity-0" muted playsInline preload="auto" aria-hidden="true" />
+          <video ref={videoBRef} src={videoBSrc} className="pointer-events-none absolute h-px w-px opacity-0" muted playsInline preload="auto" aria-hidden="true" />
+          <canvas ref={frameCanvasRef} width={size.width} height={size.height} className="absolute inset-0 h-full w-full" />
+          {showCover && (
+            coverDraft?.asset
+              ? <BatchCoverDraftPreview
+                fill
+                asset={coverDraft.asset}
+                timeUs={coverDraft.timeUs}
+                title={coverDraft.title}
+                framing={coverDraft.framing}
+                outputPreset={outputPreset}
+              />
+              : coverUrl
+                // eslint-disable-next-line @next/next/no-img-element
+                ? <img src={coverUrl} alt="片头封面" className="absolute inset-0 h-full w-full object-cover" />
+                : coverDraft
+                  ? <BatchCoverDraftPreview
+                    fill
+                    asset={coverDraft.asset}
+                    timeUs={coverDraft.timeUs}
+                    title={coverDraft.title}
+                    framing={coverDraft.framing}
+                    outputPreset={outputPreset}
+                  />
+                  : <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">片头封面</div>
+          )}
+          <svg
+            className="pointer-events-none absolute inset-0 h-full w-full"
+            viewBox={`0 0 ${size.width} ${size.height}`}
+            role="img"
+            aria-label={activeCue?.text ? `字幕：${activeCue.text}` : '字幕预览'}
+            dangerouslySetInnerHTML={{ __html: subtitleSvg }}
+          />
+          {overlay}
+          {showSafeArea && <div className="pointer-events-none absolute inset-[4%] rounded-md border border-dashed border-surface/55" aria-label="4% 预览安全区" />}
+          {sortedClips.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">没有可预览的片段</div>
+          )}
+        </div>
+        {isFullscreen && renderControls(true)}
+      </div>
+      {!isFullscreen && renderControls(false)}
+      <div ref={multiAudioContainerRef} className="hidden" />
+      {formulaVideoError && <p role="alert" className="text-xs text-fail">{formulaVideoError}</p>}
+      {audioTimeline && bgm?.fileUrl && formulaMusicErrorUrl === bgm.fileUrl && <p role="alert" className="text-xs text-fail">
+        背景音乐加载失败，请检查音乐后点击播放重试。
+      </p>}
+      {audioTimeline && multiAudioState.status !== 'ready' && <p role={multiAudioState.status === 'error' ? 'alert' : 'status'}
+        className={`text-xs ${multiAudioState.status === 'error' ? 'text-fail' : 'text-ink-secondary'}`}>
+        {multiAudioState.message || '正在准备声音，播放位置暂时保持…'}
+      </p>}
+      <audio ref={narrationRef} preload="auto" src={narrationUrl ?? undefined} />
+      <audio ref={bgmRef} preload="auto" loop src={bgm?.fileUrl}
+        onError={() => { if (audioTimeline && bgm?.fileUrl) { setFormulaMusicErrorUrl(bgm.fileUrl); stopPlayback(); } }}
+        onCanPlay={() => setFormulaMusicErrorUrl(null)} />
+      {hasLutClips && !webgl2Available && (
+        <p className="text-[11px] text-warn" role="status">
+          当前设备不支持实时 LUT 预览（需要 WebGL2）；预览为实时近似效果，以正式导出成片为准。
+        </p>
+      )}
+      {hasLutClips && webgl2Available && slotLutState(0).error && !slotLutState(0).parsed && (
+        <p className="text-[11px] text-fail" role="alert">
+          LUT 解析失败：{slotLutState(0).error}（对应片段未叠加 LUT；预览为实时近似效果，以正式导出成片为准。）
+        </p>
+      )}
+      {hasLutClips && webgl2Available && slotLutState(1).error && !slotLutState(1).parsed && (
+        <p className="text-[11px] text-fail" role="alert">
+          LUT 解析失败：{slotLutState(1).error}（对应片段未叠加 LUT；预览为实时近似效果，以正式导出成片为准。）
+        </p>
+      )}
+      {lutFpsHint && (
+        <p className="text-[11px] text-warn" role="status">调色预览有明显掉帧，生成低清代理可获得更流畅的预览。</p>
+      )}
+    </div>
+  );
+}

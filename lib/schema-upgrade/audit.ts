@@ -63,6 +63,7 @@ const AUDIT_SCOPES: ReadonlyArray<SchemaUpgradeScope> = [
   'video-provider-gateway',
   'script-studio',
   'creative-canvas',
+  'live-mixcut',
 ];
 
 function isAuditRecord(value: unknown): value is SchemaUpgradeAuditRecord {

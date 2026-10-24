@@ -31,6 +31,7 @@ const RECOVERY_SCOPES: ReadonlyArray<SchemaUpgradeScope> = [
   'video-provider-gateway',
   'script-studio',
   'creative-canvas',
+  'live-mixcut',
 ];
 
 function isManifest(value: unknown): value is SchemaUpgradeBackupManifest {
