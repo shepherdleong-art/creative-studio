@@ -1,7 +1,6 @@
 'use client';
 
 import type { BatchWorkspaceView } from '@/lib/live-mixcut/batch-workspace';
-import FormulaExportPackages from './formula/FormulaExportPackages';
 
 export interface BatchStepExportProps {
   workspace: BatchWorkspaceView;
@@ -80,8 +79,6 @@ export default function BatchStepExport(props: BatchStepExportProps) {
 
   return (
     <div className="min-h-0 flex-1 space-y-4 p-2">
-      {props.formulaMode && <FormulaExportPackages key={`${projectId}:${selectedBatchId}`} projectId={projectId}
-        batchId={selectedBatchId} workspace={workspace} selectedPlanIds={selectedPlanIds} />}
       <div className="card space-y-4 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>

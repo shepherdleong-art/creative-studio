@@ -579,6 +579,6 @@ export function getScriptSnapshot(
 
 export function listScriptSnapshots(db: Database.Database, batchVersionId: string): BatchScriptSnapshotRow[] {
   return db.prepare(`
-    SELECT * FROM live_mixcut_script_snapshots WHERE batchVersionId = ? ORDER BY createdAt, id
+    SELECT * FROM live_mixcut_script_snapshots WHERE batchVersionId = ? ORDER BY createdAt, rowid
   `).all(batchVersionId) as BatchScriptSnapshotRow[];
 }

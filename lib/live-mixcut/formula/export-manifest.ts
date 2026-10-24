@@ -15,6 +15,28 @@ import type { FormulaAudioMapping } from './audio-mapping.ts';
 import type { FormulaTimelineResult } from './timeline.ts';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '../../media-core/render-contract.ts';
 
+interface FormulaExportManifestFile { artifactId: string; filename: string; checksum: string }
+export interface FormulaExportManifest {
+  items: Array<ReturnType<typeof captureFormulaManifestItem> & { video: FormulaExportManifestFile; coverFile: FormulaExportManifestFile }>;
+}
+
+export function csvCell(value: unknown): string {
+  let text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  if (/^[\s]*[=+\-@]/.test(text) || /^[\t\r\n]/.test(text)) text = "'" + text;
+  return '"' + text.replaceAll('"', '""') + '"';
+}
+
+/** CSV columns are projected from one frozen manifest. */
+export function csvManifest(manifest: FormulaExportManifest): string {
+  const rows: unknown[][] = [['原脚本号', '份次', '原始公式', '应用公式', '脚本文案', '实际用片及源区间', '人工偏离',
+    '声音', '音乐', '包装', '封面设置', '字幕', '输出版本', '编辑修订', '渲染身份', '视频文件', '视频校验值', '封面文件', '封面校验值']];
+  for (const item of manifest.items) rows.push([item.scriptNumber, item.copyIndex, item.originalFormula, item.appliedFormula,
+    item.bodyText, item.clips, item.deviations, item.audio, item.music, item.packaging, item.cover, item.subtitles,
+    item.outputVersionId, item.editRevision, item.fullRenderContractHash, item.video.filename, item.video.checksum,
+    item.coverFile.filename, item.coverFile.checksum]);
+  return '\ufeff' + rows.map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
+}
+
 /** Only explicit public fields enter a manifest: never spread frozen inputs, providers or storage locations. */
 export function captureFormulaManifestItem(db: Database.Database, projectId: string, batchId: string, planId: string,
   requests: Map<string, FormulaGenerationRequest>) {
