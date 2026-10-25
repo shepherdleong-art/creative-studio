@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { requestDoubaoAudio } from '../lib/final-edit/adapters/doubao-tts.ts';
+import { requestDoubaoAudio } from '../lib/media-core/adapters/doubao-tts.ts';
 import { getFinalEditTtsAdapter } from '../lib/final-edit/adapters/tts-registry.ts';
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'final-edit-doubao-tts-'));

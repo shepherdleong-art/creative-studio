@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isReusableNarrationChunk, proportionalWordTimings, synthesizeVapiNarration, synthesizeVapiPreview, VAPI_VOICES, VAPI_PREVIEW_TEXT, speechUrl, validateVapiAudioUrl } from '../lib/final-edit/adapters/vapi-qwen-tts.ts';
+import { isReusableNarrationChunk, proportionalWordTimings, synthesizeVapiNarration, synthesizeVapiPreview, VAPI_VOICES, VAPI_PREVIEW_TEXT, speechUrl, validateVapiAudioUrl } from '../lib/media-core/adapters/vapi-qwen-tts.ts';
 import { assertTtsSpeed } from '../lib/final-edit/tts-speed.ts';
 
 assert.equal(VAPI_VOICES.length, 17);

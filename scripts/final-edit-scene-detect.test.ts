@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildSceneRanges, parseSceneCutTimes } from '../lib/final-edit/scene-detect.ts';
+import { buildSceneRanges, parseSceneCutTimes } from '../lib/media-core/scene-detect.ts';
 
 const stdout = 'frame:12 pts:12000 pts_time:1.25\nlavfi.scene_score=0.44\n';
 const stderr = 'frame:44 pts:44000 pts_time:4.50\nlavfi.scene_score=0.51\n';

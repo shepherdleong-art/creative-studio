@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildVideoAnalysisPrompt } from '../lib/final-edit/adapters/video-analysis-prompt.ts';
+import { buildVideoAnalysisPrompt } from '../lib/media-core/adapters/video-analysis-prompt.ts';
 
 const prompt = buildVideoAnalysisPrompt([{ startUs: 0, endUs: 5_000_000 }], 5);
 assert.ok(prompt.includes('json'), 'OpenAI-compatible json_object 请求的 user message 必须显式包含小写 json 关键字');

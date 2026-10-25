@@ -37,7 +37,7 @@ interface CreatedResponse {
 
 const inputClass = 'h-9 w-full rounded-xl border border-hairline bg-surface px-3 text-sm text-ink';
 // components/batch-production/ 下第一个 textarea:样式沿用本区输入框惯例,
-// 去掉 h-9、补 py-2(参考 components/ScriptSellingPointInput.tsx 的排版)。
+// 去掉 h-9、补 py-2。
 const textareaClass = 'w-full rounded-xl border border-hairline bg-surface px-3 py-2 text-sm leading-6 text-ink';
 
 export function BatchScriptImportDialog(props: BatchScriptImportDialogProps) {

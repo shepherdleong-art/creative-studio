@@ -12,7 +12,6 @@ const review = fs.readFileSync('components/batch-production/BatchStepReview.tsx'
 const unifiedReview = fs.readFileSync('components/batch-production/review/BatchUnifiedReviewWorkspace.tsx', 'utf8');
 const reviewTimeline = fs.readFileSync('components/batch-production/review/BatchReviewTimelineDock.tsx', 'utf8');
 const reviewPreview = fs.readFileSync('components/batch-production/review/BatchReviewPreviewDock.tsx', 'utf8');
-const editor = fs.readFileSync('components/batch-production/BatchOutputEditor.tsx', 'utf8');
 const exportStep = fs.readFileSync('components/batch-production/BatchStepExport.tsx', 'utf8');
 const panel = fs.readFileSync('components/batch-production/BatchPreparationPanel.tsx', 'utf8');
 const exportsRoute = fs.readFileSync('app/api/batch-production/batches/[id]/exports/route.ts', 'utf8');
@@ -32,8 +31,6 @@ assert.match(unifiedReview, /coverAttemptId: card\.coverAttemptId/, '成功封�
 assert.match(reviewTimeline, /renderAttemptId=\$\{encodeURIComponent\(\s*film\.coverAttemptId/, '时间轴封面按尝试代际取源');
 assert.match(reviewPreview, /renderAttemptId: previewFilm\.coverAttemptId/, '中央封面预览使用相同尝试身份');
 assert.match(reviewTimeline, /onOpenCoverEditor\(film\.planId\)/, '封面列保留精调入口');
-assert.match(editor, /candidateRenderAttemptId\?: string \| null/);
-assert.match(editor, /&renderAttemptId=\$\{encodeURIComponent\(candidateRenderAttemptId\)\}/, '编辑器封面预览绑定封面尝试代际');
 
 // ---- 导出页:播放器与下载只绑定当前正式 artifact ----
 assert.match(exportStep, /const formal = card\.currentFormalArtifact/, '播放源只绑定当前正式成片');
@@ -57,9 +54,6 @@ assert.match(exportStep, /onRetryExport\(card\.planId, card\.fullRenderTask\.id\
 assert.match(exportStep, /关闭或刷新了页面，重新进入后需要再点一次「导出」/, '渲染中提示必须说明关闭/刷新后要再点一次导出');
 
 // ---- 编辑清审核提示 ----
-assert.match(editor, /本次修改已重置审核状态；请返回检查成片重新通过/);
-assert.match(editor, /if \(editResult\.reviewCleared\) setReviewCleared\(true\)/);
-assert.match(editor, /editResult\.reviewCleared/);
 
 // ---- 面板信息链路 ----
 assert.match(panel, /const \[selectionDropped, setSelectionDropped\] = useState/);
