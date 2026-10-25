@@ -32,6 +32,8 @@ const staleScheduler: ScriptStudioSchedulerController = {
   requestCancel() { return false; },
 };
 globalScope[schedulerModule.SCRIPT_STUDIO_SCHEDULER_KEY] = staleScheduler;
+const versionKey = Symbol.for('creative-studio.script-studio-scheduler-version');
+globalScope[versionKey] = 27; // 上一版闭包不能绕过新的模板恢复与白名单规则。
 
 try {
   const refreshed = await bootstrap.ensureScriptStudioSchedulerStarted();
@@ -49,6 +51,7 @@ try {
   await refreshed.stop();
 } finally {
   delete globalScope[schedulerModule.SCRIPT_STUDIO_SCHEDULER_KEY];
+  delete globalScope[versionKey];
   closeDb();
   fs.rmSync(tempRoot, { recursive: true, force: true });
 }

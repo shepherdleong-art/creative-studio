@@ -3,19 +3,26 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { ensureScriptStudioSchemaReady } from '../lib/script-studio/schema.ts';
-import { createTask, createScriptStudioTaskRequestKey, getTask } from '../lib/script-studio/tasks.ts';
-import { executeScriptStudioTask, type ScriptStudioRunDeps } from '../lib/script-studio/runner.ts';
-import { createLibraryRevision } from '../lib/script-studio/libraries.ts';
-import { createScriptGenerator } from '../lib/script-studio/generator.ts';
-import { createScriptRequestBudget } from '../lib/script-studio/request-budget.ts';
-import { listReadableProjectScripts } from '../lib/media-core/project-script-reader.ts';
+import { register } from 'node:module';
+
+// 数据根在业务模块加载前固定，直接运行本测试也不会触碰工作台数据。
+const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'script-studio-template-execution-'));
+process.env.CREATIVE_STUDIO_DATA_ROOT = testRoot;
+register('./typescript-extension-loader.mjs', import.meta.url);
+const { ensureScriptStudioSchemaReady } = await import('../lib/script-studio/schema.ts');
+const { createTask, createScriptStudioTaskRequestKey, getTask, mergeStagePayload } = await import('../lib/script-studio/tasks.ts');
+import type { ScriptStudioRunDeps } from '../lib/script-studio/runner.ts';
+const { executeScriptStudioTask } = await import('../lib/script-studio/runner.ts');
+const { createLibraryRevision } = await import('../lib/script-studio/libraries.ts');
+const { createScriptGenerator } = await import('../lib/script-studio/generator.ts');
+const { createScriptRequestBudget } = await import('../lib/script-studio/request-budget.ts');
+const { listReadableProjectScripts } = await import('../lib/media-core/project-script-reader.ts');
 import type { ScriptStudioCompleteJson, ScriptStudioCompleteJsonRequest } from '../lib/script-studio/llm-contract.ts';
 import type { VisionExtractionResult, VisionExtractor } from '../lib/script-studio/adapters/vision-extract.ts';
 import type { EvidenceReprobe } from '../lib/script-studio/adapters/reprobe.ts';
 import type { FrozenViralTemplateSpec, ScriptStudioScriptContent } from '../lib/script-studio/types.ts';
-import { charBoundsForTarget, scriptCnLen, templatePlanFingerprint } from '../lib/script-studio/template-rewrite.ts';
-import { validateScriptContent } from '../lib/script-studio/validation.ts';
+const { charBoundsForTarget, scriptCnLen, templatePlanFingerprint } = await import('../lib/script-studio/template-rewrite.ts');
+const { validateScriptContent } = await import('../lib/script-studio/validation.ts');
 
 /**
  * 爆文模板改写模式全链行为测试（迁移方案 §7：A04–A12、A14）。
@@ -237,6 +244,7 @@ function createRewriteTask(
   templates: FrozenViralTemplateSpec[],
   requestKey: string,
   durationSec = 20,
+  providerModel = 'fake-text-1',
 ): string {
   const requestedCount = templates.length;
   const inputSnapshot = {
@@ -245,7 +253,7 @@ function createRewriteTask(
     creativeBrief: '',
     productionMode: 'template_rewrite',
     providerId: 'fake-text',
-    providerModel: 'fake-text-1',
+    providerModel,
     templatePlan: templatePlanOf(templates),
   };
   const task = createTask(db, {
@@ -268,7 +276,7 @@ function makeTaskDeps(
 ): ScriptStudioRunDeps {
   const task = getTask(db, 'p1', taskId)!;
   const budget = createScriptRequestBudget({ db, taskId, requestedCount, now: FIXED_NOW });
-  const generator = createScriptGenerator(llm.completeJson, { id: 'fake-text', model: 'fake-text-1' }, { budget });
+  const generator = createScriptGenerator(llm.completeJson, { id: 'fake-text', model: (JSON.parse(task.inputSnapshotJson) as { providerModel: string }).providerModel }, { budget });
   return {
     db,
     projectId: 'p1',
@@ -294,7 +302,7 @@ function savedRewriteContents(db: Database.Database): ScriptStudioScriptContent[
 }
 
 async function freshEnv(name: string): Promise<{ db: Database.Database; root: string }> {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `creative-studio-tpl-rewrite-${name}-`));
+  const root = fs.mkdtempSync(path.join(testRoot, `${name}-`));
   const db = createDb(root);
   await ensureScriptStudioSchemaReady({ db, backupRoot: path.join(root, 'backups'), now: FIXED_NOW });
   return { db, root };
@@ -646,6 +654,11 @@ async function freshEnv(name: string): Promise<{ db: Database.Database; root: st
   const draftCalls2 = llm2.calls.filter((call) => call.systemPrompt?.includes('带货文案改写专家'));
   assert.ok(draftCalls2.length > 0 && draftCalls2.every((call) => call.userPrompt.includes('会失败的参考')), '恢复只跑未完成模板');
   assert.equal(savedRewriteContents(db).length, 2, '恢复不重复保存已完成模板');
+  assert.ok(second.scriptIds.includes(first.scriptIds[0]!), '部分成功的原脚本身份保留');
+  assert.deepEqual(savedRewriteContents(db)[0], partialContents[0], '恢复不改写已经保存的正文和白名单');
+  assert.equal(llm2.calls.filter(c => /卖点甄别|天天刷带货视频/.test(c.systemPrompt)).length, 0, '部分失败后的检查点仍保留，筛选与风格不重复收费');
+  const resumedBudget = createScriptRequestBudget({ db, taskId, requestedCount: 2 });
+  assert.ok(resumedBudget.usedFor(2) > llm2.calls.length, '失败调用和恢复调用共同占用原方案预算');
   db.close();
 }
 
@@ -859,4 +872,201 @@ for (const stage of ['draft', 'humanize', 'smooth']) {
   }
 }
 
+// 在真实 generator 发出检查点后中断，保持其原有持久化和预算路径。
+async function interruptRewrite(
+  db: Database.Database, taskId: string, llm: FakeLlm, after: 'filter' | 'style',
+): Promise<void> {
+  const controller = new AbortController();
+  const deps = makeTaskDeps(db, taskId, llm, 1, controller.signal);
+  const run = deps.generator.runTemplateRewrite!.bind(deps.generator);
+  deps.generator.runTemplateRewrite = (input) => run({ ...input, onStateChange(next) {
+    input.onStateChange?.(next);
+    if (after === 'filter' || next.styleAnalysis !== undefined) {
+      controller.abort();
+      throw new DOMException('模拟检查点后停机', 'AbortError');
+    }
+  } });
+  await executeScriptStudioTask(deps);
+  assert.equal(getTask(db, 'p1', taskId)!.status, 'queued');
+  assert.equal(savedRewriteContents(db).length, 0);
+}
+
+function rewriteCheckpoint(db: Database.Database, taskId: string): Record<string, unknown> {
+  return JSON.parse(getTask(db, 'p1', taskId)!.stages.find(s => s.stage === 'generate')!.payloadJson) as Record<string, unknown>;
+}
+
+// undefined 会继续分析，null 保持已完成的降级；成功缓存不能覆盖已完成的 null。
+for (const styleState of ['unstarted', 'success', 'degraded', 'legacy'] as const) {
+  const { db } = await freshEnv(`resume-${styleState}`);
+  const library = await seedLibrary(db);
+  const template = makeTemplate();
+  const taskId = createRewriteTask(db, library.id, [template], `resume-${styleState}`);
+  const firstLlm = makeFakeLlm({ ...(styleState === 'degraded' ? { styleResult: {} } : {}) });
+  await interruptRewrite(db, taskId, firstLlm, styleState === 'unstarted' ? 'filter' : 'style');
+  if (styleState === 'legacy') {
+    mergeStagePayload(db, 'p1', taskId, 'generate', { templateExecutionIdentity: undefined }, FIXED_NOW);
+  }
+  if (styleState === 'degraded') {
+    const { writeViralTemplateStyleCache } = await import('../lib/script-studio/viral-templates.ts');
+    const { TEMPLATE_REWRITE_VERSION } = await import('../lib/script-studio/template-rewrite.ts');
+    writeViralTemplateStyleCache(db, { contentHash: template.contentHash, model: 'fake-text-1',
+      promptVersion: TEMPLATE_REWRITE_VERSION, analysisJson: JSON.stringify({ 说话感觉: '不应覆盖已降级的检查点' }) });
+  }
+  const llm = makeFakeLlm();
+  const result = await executeScriptStudioTask(makeTaskDeps(db, taskId, llm, 1));
+  assert.equal(result.status, 'succeeded', `${styleState}: ${result.errorMessage}`);
+  assert.equal(llm.calls.filter(c => c.systemPrompt.includes('卖点甄别')).length, 0, '已完成筛选不重复收费');
+  assert.equal(llm.calls.filter(c => c.systemPrompt.includes('天天刷带货视频')).length, styleState === 'unstarted' ? 1 : 0);
+  const budget = createScriptRequestBudget({ db, taskId, requestedCount: 1 });
+  assert.equal(budget.taskTextUsed(), firstLlm.calls.length + llm.calls.length, '检查点恢复沿用原请求预算');
+  if (styleState === 'degraded') assert.equal(savedRewriteContents(db)[0]!.templateRewrite!.styleAnalysis, null);
+  db.close();
+}
+
+// 跨快照的旧检查点不能当作当前筛选结果；共享风格缓存仅由内容哈希+实际模型+提示词版本复用。
+for (const change of ['providerModel', 'contentHash', 'structure'] as const) {
+  const { db } = await freshEnv(`identity-${change}`);
+  const library = await seedLibrary(db);
+  const template = makeTemplate();
+  const oldTask = createRewriteTask(db, library.id, [template], `old-${change}`);
+  await interruptRewrite(db, oldTask, makeFakeLlm(), 'style');
+  const changedTemplate = change === 'contentHash'
+    ? { ...template, contentHash: 'different-content-hash', refText: template.refText + '换一种讲法。' }
+    : change === 'structure' ? { ...template, structure: '场景 → 卖点 → 行动' } : template;
+  const model = change === 'providerModel' ? 'fake-text-2' : 'fake-text-1';
+  const taskId = createRewriteTask(db, library.id, [changedTemplate], `new-${change}`, 20, model);
+  // 使用领域持久化函数注入旧检查点，模拟恢复读到不匹配快照，无复制 schema/SQL。
+  mergeStagePayload(db, 'p1', taskId, 'generate', rewriteCheckpoint(db, oldTask), FIXED_NOW);
+  const llm = makeFakeLlm();
+  const result = await executeScriptStudioTask(makeTaskDeps(db, taskId, llm, 1));
+  assert.equal(result.status, 'succeeded', `${change}: ${result.errorMessage}`);
+  assert.equal(llm.calls.filter(c => c.systemPrompt.includes('卖点甄别')).length, 1, `${change} 变化使旧筛选检查点失效`);
+  assert.equal(llm.calls.filter(c => c.systemPrompt.includes('天天刷带货视频')).length, change === 'structure' ? 0 : 1,
+    `${change} 必须按实际模型与内容哈希匹配风格缓存`);
+  const { readViralTemplateStyleCache } = await import('../lib/script-studio/viral-templates.ts');
+  const { TEMPLATE_REWRITE_VERSION } = await import('../lib/script-studio/template-rewrite.ts');
+  assert.ok(readViralTemplateStyleCache(db, template.contentHash, 'fake-text-1', TEMPLATE_REWRITE_VERSION), '旧缓存不被覆盖');
+  assert.ok(readViralTemplateStyleCache(db, changedTemplate.contentHash, model, TEMPLATE_REWRITE_VERSION), '新身份缓存独立保存');
+  db.close();
+}
+
+// 恢复后的筛选白名单同时约束标题修复上下文与最终落库；包外引用不能靠扩大元数据通过。
+for (const outsideRef of [false, true]) {
+  const { db } = await freshEnv(`whitelist-${outsideRef}`);
+  const library = await seedLibrary(db);
+  const taskId = createRewriteTask(db, library.id, [makeTemplate()], `whitelist-${outsideRef}`);
+  await interruptRewrite(db, taskId, makeFakeLlm({ filterKeep: { keep: ['1'] } }), 'style');
+  const llm = makeFakeLlm({
+    draftCover: null,
+    draftSegments: () => [
+      { label: '钩子', text: SEG_OK_1, refs: ['1'] },
+      { label: '逼单', text: '桌面收起来，家里走动也自在。朋友过来聚餐时再把桌面拉开，四人位变六人位，围坐聊天不用为座位发愁。想给家里添一张伸缩餐桌，就去看看吧。', refs: ['1'] },
+    ],
+    titleRepairResult: { coverTitleParts: { primary: '朋友来家吃顿饭', secondary: '桌面拉开坐六人' } },
+  });
+  const deps = makeTaskDeps(db, taskId, llm, 1);
+  const run = deps.generator.runTemplateRewrite!.bind(deps.generator);
+  deps.generator.runTemplateRewrite = async (input) => {
+    const result = await run(input);
+    if (outsideRef) {
+      result.content.templateRewrite = { ...result.content.templateRewrite!,
+        whitelistPointIds: [...result.content.templateRewrite!.whitelistPointIds, library.sellingPoints[1]!.id] };
+      result.content.segments[0]!.sellingPointIdRefs = [library.sellingPoints[1]!.id];
+    }
+    return result;
+  };
+  const repair = deps.generator.repairTitles!.bind(deps.generator);
+  let repairs = 0;
+  deps.generator.repairTitles = (input) => {
+    repairs++;
+    assert.deepEqual(input.brief.requiredPointIds, [library.sellingPoints[0]!.id]);
+    assert.deepEqual(input.brief.optionalPointIds, []);
+    return repair(input);
+  };
+  const result = await executeScriptStudioTask(deps);
+  assert.equal(result.status, outsideRef ? 'failed' : 'succeeded', result.errorMessage);
+  const saved = savedRewriteContents(db);
+  assert.equal(saved.length, outsideRef ? 0 : 1, '包外引用不得保存');
+  if (!outsideRef) {
+    assert.equal(repairs, 1);
+    assert.deepEqual(saved[0]!.templateRewrite!.whitelistPointIds, [library.sellingPoints[0]!.id]);
+    assert.ok(saved[0]!.segments.every(s => s.sellingPointIdRefs.every(id => id === library.sellingPoints[0]!.id)));
+  }
+  db.close();
+}
+
+// 同模板第一条失败后，后续变体仍执行；失败 promise 不得阻断模板串行链。
+{
+  const { db } = await freshEnv('same-template-failure');
+  const library = await seedLibrary(db);
+  const template = makeTemplate();
+  const taskId = createRewriteTask(db, library.id, [template, { ...template }], 'same-template-failure');
+  const llm = makeFakeLlm();
+  const complete = llm.completeJson;
+  let failedDrafts = 0;
+  llm.completeJson = async (request) => {
+    if (request.systemPrompt.includes('带货文案改写专家') && failedDrafts++ < 2) {
+      llm.calls.push(request);
+      throw new Error('第一变体的首稿失败');
+    }
+    return complete(request);
+  };
+  const result = await executeScriptStudioTask(makeTaskDeps(db, taskId, llm, 2));
+  assert.equal(result.status, 'partial');
+  assert.equal(result.succeededCount, 1);
+  assert.equal(result.failedCount, 1);
+  assert.equal(savedRewriteContents(db).length, 1);
+  db.close();
+}
+
+// 调用时排队、真正执行时取标题：等待期间保存的标题必须进入下一变体的 prompt。
+{
+  const { createTemplateRewriteExecution } = await import('../lib/script-studio/template-rewrite-execution.ts');
+  const { db } = await freshEnv('queued-title-context');
+  const library = await seedLibrary(db);
+  const template = makeTemplate();
+  const taskId = createRewriteTask(db, library.id, [template, { ...template }], 'queued-title-context');
+  const deps = makeTaskDeps(db, taskId, makeFakeLlm(), 2);
+  const savedScripts: ScriptStudioScriptContent[] = [];
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  let announceFirst!: () => void;
+  const firstStarted = new Promise<void>(resolve => { announceFirst = resolve; });
+  const original = deps.generator.runTemplateRewrite!.bind(deps.generator);
+  deps.generator.runTemplateRewrite = async (input) => {
+    if (input.plan.index === 1) {
+      announceFirst();
+      await firstGate;
+    } else {
+      assert.deepEqual(input.previousTitles.map(t => t.title), ['排队期间保存的标题', '项目历史标题']);
+      assert.equal(input.siblingVariantTexts?.length, 1, '同模板的前一变体正文也在执行时读取');
+    }
+    const result = await original(input);
+    if (input.plan.index === 1) {
+      // 模拟 runner/其他并发方案在等待期间追加已保存结果；复用真实生成的内容形状。
+      savedScripts.push({ ...result.content, title: '排队期间保存的标题' });
+    }
+    return result;
+  };
+  const execution = createTemplateRewriteExecution({
+    db, projectId: 'p1', taskId, inputSnapshot: deps.inputSnapshot, libraryRevision: library,
+    eligiblePoints: library.sellingPoints.slice(0, 2), generator: deps.generator,
+    savedScripts, recentTitles: [{ title: '项目历史标题', coverTitleParts: { primary: '', secondary: '' } }],
+    now: FIXED_NOW,
+  });
+  const plan = { index: 1, templateId: 'viral:test', templateName: '模板', templateVersion: 1,
+    rationale: '', direction: 'template_rewrite', angle: '', templateRewrite: template };
+  const brief = { planIndex: 1, templateId: plan.templateId, themeKey: '', themeTitle: '',
+    requiredPointIds: library.sellingPoints.slice(0, 2).map(p => p.id), optionalPointIds: [],
+    candidateCount: 2, degraded: false, rationale: '' };
+  const first = execution.run(plan, brief);
+  await firstStarted;
+  const second = execution.run({ ...plan, index: 2 }, { ...brief, planIndex: 2 });
+  assert.equal(savedScripts.length, 0, '第二变体排队时还没有已保存标题');
+  releaseFirst();
+  await Promise.all([first, second]);
+  db.close();
+}
+
+fs.rmSync(testRoot, { recursive: true, force: true });
 console.log('script-studio-template-rewrite tests passed');

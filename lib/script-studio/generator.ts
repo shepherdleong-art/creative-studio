@@ -118,8 +118,8 @@ export interface ScriptTitleRepairInput extends ScriptGeneratorInput {
 
 // ---------------------------------------------------------------------------
 // 爆文模板改写（迁移方案 §4）：单模板完整链路的输入/中间态/结果。
-// 中间态（筛选/风格/修改说明）由 runner 持久化到 generate 阶段 payload，
-// 恢复后已完成子阶段不重新收费；风格缓存由 runner 读写（generator 不持有 db）。
+// 以下是 template-rewrite-execution 的内部生成接缝（也供假供应商测试注入）。
+// 执行模块独占检查点/风格缓存/白名单传递；generator 只运行付费子步骤，不持有 db。
 // ---------------------------------------------------------------------------
 
 export interface TemplateRewriteResumeState {
@@ -142,7 +142,7 @@ export interface TemplateRewriteRunInput {
   eligiblePoints: SellingPointRecord[];
   targetDurationSec: number;
   previousTitles: ScriptTitleSummary[];
-  /** 同一模板已生成变体（标题+正文摘录）：生成同模板多条时由 runner 串行收集，用于差异化。 */
+  /** 同一模板已生成变体（标题+正文摘录）：生成同模板多条时由执行模块串行收集，用于差异化。 */
   siblingVariantTexts?: string[];
   resumeState?: TemplateRewriteResumeState;
   onStateChange?: (state: TemplateRewriteResumeState) => void;

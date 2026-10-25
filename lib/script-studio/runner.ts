@@ -33,7 +33,6 @@ import { parseTileRefIndex, tileSourceImages, selectEvidenceTiles, type TileSetR
 import {
   finishStage,
   getTask,
-  mergeStagePayload,
   startStage,
   updateTask,
 } from './tasks.ts';
@@ -46,11 +45,7 @@ import {
   TEMPLATE_REWRITE_VERSION,
   templatePlanFingerprint,
 } from './template-rewrite.ts';
-import {
-  readViralTemplateStyleCache,
-  writeViralTemplateStyleCache,
-} from './viral-templates.ts';
-import type { TemplateRewriteResumeState } from './generator.ts';
+import { createTemplateRewriteExecution } from './template-rewrite-execution.ts';
 import type { FrozenViralTemplateSpec, SellingPointRecord } from './types.ts';
 import {
   checkScriptEndingQuality,
@@ -1106,119 +1101,18 @@ export async function executeScriptStudioTask(
       createdScripts.push(JSON.parse(saved.contentJson) as ScriptStudioScriptContent);
     }
     await updateTask(db, projectId, taskId, { succeededCount: scriptIds.length, failedCount: 0 }, now);
-    type InitialResult = { candidate?: GeneratedCandidate; error?: unknown };
-    // ------------------------------------------------------------------
-    // 爆文模板改写：恢复每模板中间态（筛选/风格/修改说明），指纹不匹配的旧状态作废；
-    // 风格分析缓存命中直接复用（键=模板内容哈希+实际模型+提示词版本），不重新收费。
-    // ------------------------------------------------------------------
-    const templateStates: Record<number, TemplateRewriteResumeState> = {};
-    if (productionMode === 'template_rewrite') {
-      const generatePayload = readStagePayload(db, taskId, 'generate');
-      const planFingerprintValue = templatePlanFingerprint(frozenTemplates);
-      const storedStates = generatePayload.templatePlanFingerprint === planFingerprintValue
-        ? stagePayload(generatePayload.templateStates)
-        : {};
-      const providerModel = typeof input.providerModel === 'string' ? input.providerModel : '';
-      for (const plan of plansWithRecommendations) {
-        const spec = plan.templateRewrite!;
-        const stored = stagePayload(storedStates[String(plan.index)]) as TemplateRewriteResumeState;
-        const state: TemplateRewriteResumeState = { ...stored };
-        if (state.styleAnalysis === undefined && providerModel) {
-          const cached = readViralTemplateStyleCache(db, spec.contentHash, providerModel, TEMPLATE_REWRITE_VERSION);
-          if (cached) {
-            try {
-              state.styleAnalysis = JSON.parse(cached.analysisJson) as TemplateRewriteResumeState['styleAnalysis'];
-              state.styleDegraded = '';
-            } catch {
-              // 缓存损坏按未命中处理，正常走分析（不会额外收费于已完成的筛选阶段）。
-            }
-          }
-        }
-        templateStates[plan.index] = state;
-        // 恢复时同步把筛选白名单回灌进卖点包（标题修复与校验边界使用同一白名单）。
-        if (state.whitelistPointIds?.length) {
-          const brief = briefByPlanIndex.get(plan.index);
-          if (brief) {
-            brief.requiredPointIds = state.whitelistPointIds;
-            brief.candidateCount = state.whitelistPointIds.length;
-          }
-        }
-      }
-    }
-    // 同一模板的多条变体串行生成：后一条拿到前一条正文做差异化（并行会让差异化信号失效）。
-    // 恢复场景先把已保存的同模板脚本灌入差异化上下文。
-    const templateVariantChains = new Map<string, Promise<InitialResult>>();
-    const templateVariantTexts = new Map<string, string[]>();
-    if (productionMode === 'template_rewrite') {
-      for (const created of createdScripts) {
-        const entryId = created.templateRewrite?.entryId;
-        if (!entryId) continue;
-        const list = templateVariantTexts.get(entryId) ?? [];
-        list.push(`标题：${created.title}\n${(created.fullScript || '').slice(0, 500)}`);
-        templateVariantTexts.set(entryId, list);
-      }
-    }
-    const runTemplateInitial = async (plan: (typeof plansWithRecommendations)[number]): Promise<InitialResult> => {
-      const spec = plan.templateRewrite!;
-      if (!deps.generator.runTemplateRewrite) {
-        return { error: new ScriptStudioError('invalid_input', '当前生成器不支持爆文模板改写') };
-      }
-      const entryId = spec.entryId;
-      const queued = templateVariantChains.get(entryId) ?? Promise.resolve({} as InitialResult);
-      const run = queued.then(async (): Promise<InitialResult> => {
-        try {
-          if (signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
-          const result = await deps.generator.runTemplateRewrite!({
-            plan,
-            libraryRevision: libraryRevision!,
-            eligiblePoints: templateEligiblePoints,
-            targetDurationSec,
-            previousTitles: [...createdScripts, ...recentTitles],
-            siblingVariantTexts: templateVariantTexts.get(entryId) ?? [],
-            resumeState: templateStates[plan.index],
-            onStateChange: (next) => {
-              templateStates[plan.index] = next;
-              mergeStagePayload(deps.db, projectId, taskId, 'generate', {
-                templatePlanFingerprint: templatePlanFingerprint(frozenTemplates),
-                templateStates: Object.fromEntries(Object.entries(templateStates).map(([key, value]) => [String(key), value])),
-              }, now);
-              if (next.whitelistPointIds?.length) {
-                const brief = briefByPlanIndex.get(plan.index);
-                if (brief) {
-                  brief.requiredPointIds = next.whitelistPointIds;
-                  brief.candidateCount = next.whitelistPointIds.length;
-                }
-              }
-              // 风格缓存只写完整成功结果（降级/null 不写），键含模板内容哈希+模型+提示词版本。
-              if (next.styleAnalysis) {
-                const providerModel = typeof input.providerModel === 'string' ? input.providerModel : '';
-                if (providerModel) {
-                  writeViralTemplateStyleCache(deps.db, {
-                    contentHash: spec.contentHash,
-                    model: providerModel,
-                    promptVersion: TEMPLATE_REWRITE_VERSION,
-                    analysisJson: JSON.stringify(next.styleAnalysis),
-                  }, now);
-                }
-              }
-            },
-            signal,
-          });
-          const variants = templateVariantTexts.get(entryId) ?? [];
-          variants.push(`标题：${result.content.title}\n${(result.content.fullScript || '').slice(0, 500)}`);
-          templateVariantTexts.set(entryId, variants);
-          return { candidate: { content: result.content, endingReview: { status: 'unreviewed' } } };
-        } catch (error) {
-          return { error };
-        }
-      });
-      templateVariantChains.set(entryId, run);
-      return run;
-    };
+    type InitialResult = { candidate?: GeneratedCandidate; brief?: DirectionSellingPointBrief; error?: unknown };
+    const templateExecution = productionMode === 'template_rewrite'
+      ? createTemplateRewriteExecution({
+          db, projectId, taskId, inputSnapshot: input, libraryRevision: libraryRevision!,
+          eligiblePoints: templateEligiblePoints, generator: deps.generator,
+          savedScripts: createdScripts, recentTitles, signal, now,
+        })
+      : undefined;
     // 按完成顺序串行完成兄弟方案校验、标题修复与保存，异步修复期间不允许另一方案抢先保存。
     const finalizeProposal = async (index: number, initial: InitialResult): Promise<void> => {
       const plan = plansWithRecommendations[index]!;
-      const brief = briefByPlanIndex.get(plan.index);
+      const brief = initial.brief ?? briefByPlanIndex.get(plan.index);
       if (!brief) throw new ScriptStudioError('invalid_input', `缺少方案 ${plan.index} 的方向卖点包`);
       try {
         if (signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
@@ -1328,14 +1222,17 @@ export async function executeScriptStudioTask(
         if (!brief) throw new ScriptStudioError('invalid_input', `缺少方案 ${plan.index} 的方向卖点包`);
         let initial: InitialResult;
         try {
-          initial = productionMode === 'template_rewrite'
-            ? await runTemplateInitial(plan)
-            : { candidate: await generateValidatedScript(
+          if (templateExecution) {
+            const result = await templateExecution.run(plan, brief);
+            initial = { candidate: { content: result.content, endingReview: { status: 'unreviewed' } }, brief: result.brief };
+          } else {
+            initial = { candidate: await generateValidatedScript(
                 deps, libraryRevision!, plan, brief,
                 { ...generationContext, audienceSegment: audienceSegmentByPlan.get(plan.index) },
                 [...createdScripts], knowledgeContext, recentTitles, distilledExpressions,
                 [...priorPainOpportunities, ...(painPlanning?.opportunities.filter((_, index) => index + 1 !== plan.index) ?? [])],
               ) };
+          }
         } catch (error) {
           initial = { error };
         }
@@ -1350,6 +1247,8 @@ export async function executeScriptStudioTask(
     const rejected = workers.find((result) => result.status === 'rejected');
     if (rejected?.status === 'rejected') throw rejected.reason;
     finishStage(db, projectId, taskId, 'generate', scriptIds.length > 0 || plansWithRecommendations.length === 0 ? 'succeeded' : 'failed', {
+      // 阶段汇总保留执行模块的检查点，部分失败后恢复不会重复已完成的付费子步骤。
+      ...readStagePayload(db, taskId, 'generate'),
       generated: scriptIds.length,
       requested: requestedCount,
       initialConcurrency: generationConcurrency,
