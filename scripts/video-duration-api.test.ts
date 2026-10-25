@@ -76,7 +76,9 @@ try {
     const stored = db.prepare('SELECT durationSec FROM video_jobs').all() as { durationSec: number }[];
     assert.deepEqual(stored.map(r => r.durationSec), fastDuration === 15 ? [30, 15] : []);
   }
-  db.exec("CREATE TABLE final_edit_film_bindings(shotSetId TEXT); INSERT INTO final_edit_film_bindings VALUES ('set')");
+  // 已登记但尚未并入智能混剪的成片（并入后放行的规则见 reassembled-video-guard.test.ts）。
+  db.exec(`CREATE TABLE final_edit_film_bindings(shotSetId TEXT, variantId TEXT); CREATE TABLE final_edit_variants(id TEXT, timelineJson TEXT);
+    INSERT INTO final_edit_film_bindings VALUES ('set', NULL)`);
   for (const handler of [single, batch]) {
     const response = await submit(handler, {});
     assert.equal(response.status, 409, 'registered films cannot bypass versioned rework');

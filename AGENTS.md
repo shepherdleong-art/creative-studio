@@ -46,6 +46,7 @@ node scripts/<name>.test.ts             # 其余测试同理
 - 测试文件为 `scripts/*.test.ts`（少量 `*.test.mjs`），用 `node:assert/strict` 断言，无测试框架。
 - 从 `lib/` 导入时带 `.ts` 扩展名（tsconfig 开了 `allowImportingTsExtensions`）。
 - 数据库测试用 `better-sqlite3` 的 `:memory:` 实例；文件类测试用 `os.tmpdir()` 下 `fs.mkdtempSync` 的临时目录。
+- `lib/data-root.ts` 在**模块加载时**就固定数据根：测试要先设 `process.env.CREATIVE_STUDIO_DATA_ROOT`，再 `await import('../lib/…')`；静态 import 之后再设，日志和产物会写进仓库自己的 `storage/`。被测代码有不带 `.ts` 后缀的相对导入时，在测试开头 `register('./typescript-extension-loader.mjs', import.meta.url)`（`node:module`）。
 - 部分测试（如 `final-edit-render.test.ts`）会真实调用 ffmpeg/sharp 合成素材，依赖本机 ffmpeg 可用。
 - `scripts/final-edit-canvas.playwright.test.mjs` 是 Playwright 浏览器测试，运行方式不同，动它前先看文件头。
 - **改动某个模块时，优先跑与它同名的测试文件**（改 `lib/db-migrations.ts` 就跑 `db-migrations.test.ts`）。

@@ -243,7 +243,6 @@ for (const [jobId, provider, requestModel] of [
 {
   const queueSource = fs.readFileSync(path.resolve('lib/video-queue.ts'), 'utf8');
   const resumeSource = fs.readFileSync(path.resolve('app/api/video-jobs/[id]/resume-poll/route.ts'), 'utf8');
-  const retrySource = fs.readFileSync(path.resolve('app/api/video-jobs/[id]/retry/route.ts'), 'utf8');
   const submitIndex = queueSource.indexOf('adapter.submit(');
   const snapshotIndex = queueSource.indexOf('persistVideoJobUsageSnapshot(');
   const successIndex = queueSource.indexOf("status = 'succeeded'");
@@ -255,7 +254,6 @@ for (const [jobId, provider, requestModel] of [
   assert.match(queueSource, /WHERE id = \? AND status = 'running'/, 'queue success must be atomic');
   assert.match(resumeSource, /WHERE id = \? AND status = 'running'/, 'resume success must be atomic');
   assert.match(resumeSource, /recordVideoJobUsage\(/, 'resume must record from existing snapshot');
-  assert.doesNotMatch(retrySource, /usageSnapshotJson\s*=\s*NULL/i, 'retry must preserve usageSnapshotJson');
 }
 
 console.log('usage-video-jobs tests passed');

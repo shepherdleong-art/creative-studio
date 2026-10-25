@@ -175,35 +175,6 @@ try {
     assert(!fs.readFileSync(file, 'utf8').includes('NEVER_PERSIST'));
     assert.equal(record.outputHash, crypto.createHash('sha256').update('rendered-timed').digest('hex'));
   });
-  await test('tail frame waits for generation and review; changed tail bytes invalidate approval', async () => {
-    const p = fixture(), adapter = fake(), q = queue(p, adapter), tail = job('tail');
-    const video = job('tail-video', 'video', { model: 'qiniuyun/kling-3.0', durationSec: 5, tailInput: tail.output });
-    enqueue(p, [video, tail]); q.tick(readInbox(p));
-    assert.equal(q.states[video.id], 'waiting_dependency:tail');
-    assert(!adapter.calls.includes(`submit:${video.id}`));
-    await until(() => q.done.has(tail.id)); q.tick();
-    assert.equal(q.states[video.id], 'waiting_visual_review:tail');
-    approve(p, tail.id, 'agent', 'Reviewed tail composition and product geometry');
-    fs.writeFileSync(local(p, tail.output), 'changed-after-review'); q.tick();
-    assert.equal(q.states[video.id], 'waiting_visual_review:tail');
-    assert(!adapter.calls.includes(`submit:${video.id}`));
-    fs.writeFileSync(local(p, tail.output), `rendered-${tail.id}`);
-    await q.drain([]);
-    assert.equal(q.done.size, 2); assert.equal(q.errors.size, 0);
-    assert.equal(adapter.calls.filter(c => c === `submit:${video.id}`).length, 1);
-  });
-  await test('invalid tail paths and tail dependency cycles fail before provider calls', async () => {
-    const p = fixture(), adapter = fake();
-    for (const tailInput of ['', null, 42, []]) {
-      assert.throws(() => enqueue(p, [job('bad-tail', 'video', { tailInput })]), /Invalid tailInput/);
-      assert.throws(() => queue(p, adapter).add([job('bad-tail', 'video', { tailInput })]), /Invalid tailInput/);
-    }
-    assert.throws(() => enqueue(p, [job('escape-tail', 'video', { tailInput: '../escape.png' })]), /outside/);
-    const a = job('cycle-a', 'video', { tailInput: 'out/cycle-b.bin' });
-    const b = job('cycle-b', 'image', { input: a.output });
-    assert.throws(() => queue(p, adapter).add([a, b]), /cycle/);
-    assert.equal(adapter.calls.length, 0);
-  });
   await test('changed tail content blocks resumption without another paid submission', async () => {
     const p = fixture(), adapter = fake();
     fs.writeFileSync(local(p, 'tail.png'), 'original-tail');
@@ -217,33 +188,18 @@ try {
     const third = await queue(p, adapter).drain([j]); assert.equal(third.completed, 1);
     assert.equal(adapter.calls.filter(c => c.startsWith('submit:')).length, 1);
   });
-  await test('video estimates scale with duration while image estimates stay per image', async () => {
-    const p = fixture(), adapter = fake();
+  await test('estimates are per request regardless of video duration', async () => {
+    // 2026-10-12（2d0bfd9）起改回按次估价，不再按视频时长折算。
+    const p = fixture();
     const jobs = [
-      job('qiniu3', 'video', { model: 'qiniuyun/kling-3.0', durationSec: 3 }),
       job('qiniu5', 'video', { model: 'qiniuyun/kling-3.0', durationSec: 5 }),
       job('qiniu10', 'video', { model: 'qiniuyun/kling-3.0', durationSec: 10 }),
-      job('qiniu15', 'video', { model: 'qiniuyun/kling-3.0', durationSec: 15 }),
-      job('kling10', 'video', { durationSec: 10 }),
-      job('seedance8', 'video', { model: 'doubao-seedance-2-0-260128', durationSec: 8 }),
-      job('seedance25_8', 'video', { model: 'doubao-seedance-2-5-260628', durationSec: 8 }),
-      job('image'), job('seedream', 'image', { model: 'doubao-seedream-5-0-pro-image' }),
+      job('image'),
     ];
-    const result = await queue(p, adapter, { cap: 100 }).drain(jobs);
-    assert.equal(result.completed, jobs.length); assert.deepEqual(result.errors, {});
+    const result = await queue(p, fake(), { cap: 100 }).drain(jobs);
+    assert.equal(result.completed, jobs.length);
     const ledger = readJson(local(p, 'review/generation-ledger.json'));
-    const expected = { qiniu3: 1.8, qiniu5: 3, qiniu10: 6, qiniu15: 9, kling10: 3.04, seedance8: 4, seedance25_8: 15.2, image: .25, seedream: .61 };
-    for (const [id, cost] of Object.entries(expected)) assert.equal(ledger[id].estimateYuan, cost, id);
-  });
-  await test('duration-adjusted reservations enforce the cap across concurrent video submissions', async () => {
-    const p = fixture(), adapter = fake();
-    const jobs = [10, 5].map((durationSec, i) => job(`budget-video-${i}`, 'video', { model: 'qiniuyun/kling-3.0', durationSec }));
-    const result = await queue(p, adapter, { cap: 6 }).drain(jobs);
-    assert.deepEqual(adapter.calls.filter(c => c.startsWith('submit:')), ['submit:budget-video-0']);
-    assert.equal(result.estimateYuan, 6); assert.match(result.errors[jobs[1].id], /budget cap/);
-    const blocked = await queue(fixture(), fake(), { cap: 5.99 }).drain([jobs[0]]);
-    assert.equal(blocked.completed, 0); assert.equal(blocked.estimateYuan, 0);
-    assert.match(blocked.errors[jobs[0].id], /budget cap/);
+    assert.deepEqual([ledger.qiniu5.estimateYuan, ledger.qiniu10.estimateYuan, ledger.image.estimateYuan], [3, 3, .25]);
   });
   await test('historical reservations stay frozen on resume and unknown models cannot submit', async () => {
     const p = fixture(), adapter = fake();

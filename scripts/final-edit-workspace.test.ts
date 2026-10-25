@@ -468,7 +468,11 @@ if (symlinkCreated) {
     (error: unknown) => error instanceof FinalEditError && error.code === 'material_not_ready',
     '导入后替换成 symlink 的外部素材不得再被 prepare 读取',
   );
-  assert.equal(workspace.load(externalJob.groupId).assets.length, 0, 'load 不得暴露已经 symlink 越界的外部素材');
+  // 素材库会列出同分镜组的全部普通视频（327f531 起），这里只断言越界的外部素材不出现。
+  assert.ok(
+    workspace.load(externalJob.groupId).assets.every((asset) => asset.videoJobId !== 'external-asset-external-a'),
+    'load 不得暴露已经 symlink 越界的外部素材',
+  );
   db.prepare(`UPDATE final_edit_variants SET issuesJson='[]' WHERE id=?`).run(externalGroup.variants[0].id);
   db.prepare(`INSERT INTO final_edit_overlay_bundles (id, groupId, outputPreset, groupRevision, specHash, manifestJson, relativeDir, status, createdAt) VALUES ('external-symlink-bundle', ?, '3x4', ?, 'external-symlink', '{}', 'final-edits/test/overlays', 'ready', datetime('now'))`).run(externalGroup.id, externalGroup.revision);
   await assert.rejects(

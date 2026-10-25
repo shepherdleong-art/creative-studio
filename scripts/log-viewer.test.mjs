@@ -65,7 +65,7 @@ vm.runInNewContext(source, {
     if (name === '@/components/ui/Icon') return { Icon: () => null };
     throw new Error(`Unexpected import: ${name}`);
   },
-  fetch: async () => ({ json: async () => response }),
+  fetch: async () => ({ ok: true, json: async () => response }),
   URLSearchParams, console, setTimeout, clearTimeout, setInterval, clearInterval,
 });
 async function flush() {

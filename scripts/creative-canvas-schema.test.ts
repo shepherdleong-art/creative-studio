@@ -182,12 +182,16 @@ const tablesAfterMigration = [
 // --- 旧 scope 回归：slug 与既有迁移不受影响 -----------------------------------
 
 {
-  assert.deepEqual(SCOPE_SLUGS, {
+  // 只锁住既有 scope 的 slug；新模块（如 10-24 的 live-mixcut）可以追加自己的 scope。
+  const legacySlugs = {
     'batch-production': 'batch',
     'video-provider-gateway': 'video-gateway',
     'script-studio': 'script-studio',
     'creative-canvas': 'canvas',
-  });
+  } as const;
+  for (const [scope, slug] of Object.entries(legacySlugs)) {
+    assert.equal(SCOPE_SLUGS[scope as keyof typeof legacySlugs], slug);
+  }
   assert.equal(CREATIVE_CANVAS_MIGRATIONS.length, 4);
   assert.deepEqual(CREATIVE_CANVAS_MIGRATIONS.map((migration) => migration.version), [1, 2, 3, 4]);
 

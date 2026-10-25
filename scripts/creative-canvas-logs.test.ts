@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { CREATIVE_CANVAS_MIGRATIONS } from '../lib/creative-canvas/schema.ts';
-import { createCanvas } from '../lib/creative-canvas/repository.ts';
-import { getCanvasLogs, writeCanvasLog } from '../lib/creative-canvas/logs.ts';
-import { claimCanvasTasks, updateCanvasTaskGuarded, updateCanvasTaskUnGuarded } from '../lib/creative-canvas/tasks.ts';
-import { sanitizeMessage } from '../lib/log-sanitize.ts';
 
-assert.ok(process.env.CREATIVE_STUDIO_DATA_ROOT, '必须显式设置隔离数据根');
+// 日志落盘到 dataRoot()/storage/logs，而 lib/data-root.ts 在加载时就固定数据根：
+// 先建临时数据根再动态导入，避免写进仓库自己的 storage/logs。
+process.env.CREATIVE_STUDIO_DATA_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-canvas-logs-'));
+const { CREATIVE_CANVAS_MIGRATIONS } = await import('../lib/creative-canvas/schema.ts');
+const { createCanvas } = await import('../lib/creative-canvas/repository.ts');
+const { getCanvasLogs, writeCanvasLog } = await import('../lib/creative-canvas/logs.ts');
+const { claimCanvasTasks, updateCanvasTaskGuarded, updateCanvasTaskUnGuarded } = await import('../lib/creative-canvas/tasks.ts');
+const { sanitizeMessage } = await import('../lib/log-sanitize.ts');
 const db = new Database(':memory:');
 db.pragma('foreign_keys = ON');
 for (const migration of CREATIVE_CANVAS_MIGRATIONS) db.exec(migration.sql);

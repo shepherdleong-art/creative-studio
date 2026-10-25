@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { register } from 'node:module';
 import type { ScriptStudioSchedulerController } from '../lib/script-studio/scheduler.ts';
+
+// lib/script-providers/index.ts 里有不带 .ts 后缀的相对导入，先注册补后缀的解析器，再动态导入业务模块。
+register('./typescript-extension-loader.mjs', import.meta.url);
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'script-studio-scheduler-version-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = tempRoot;

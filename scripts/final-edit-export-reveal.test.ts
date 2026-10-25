@@ -16,7 +16,8 @@ const routeModule: { exports: { POST?: (request: Request, context: { params: Pro
 const revealed: string[] = [];
 const routeRequire = (id: string): unknown => {
   if (id === 'next/server') return { NextResponse: Response };
-  if (id === '@/lib/db') return { getDb: () => ({ prepare: () => ({ get: (jobId: string) => jobId === packagingJob.id
+  // 只有任务表能查到这条包装任务；实拍交付表查不到，走普通成片的定位路径。
+  if (id === '@/lib/db') return { getDb: () => ({ prepare: (sql: string) => ({ get: (jobId: string) => sql.includes('FROM final_edit_jobs') && jobId === packagingJob.id
     ? { status: 'succeeded', outputJson: JSON.stringify(packagingJob.output) }
     : undefined }) }) };
   if (id === '@/lib/data-root') return { dataRoot: () => path.resolve('outputs/reveal-test') };

@@ -62,6 +62,7 @@ try {
   assert.equal(after.finishedAt, null);
   assert.equal(after.pollCount, 0);
   assert.equal(after.attempt, 0);
+  assert.equal(after.usageSnapshotJson, null, 'a new paid task must re-freeze its own usage snapshot before submit');
   for (const key of ['model', 'multiShot', 'prompt', 'sourceImageId', 'tailImageId', 'durationSec']) {
     assert.equal(after[key], before[key], `retry must preserve frozen ${key}`);
   }
@@ -82,6 +83,7 @@ try {
     const current = read(id);
     assert.equal(current.providerTaskId, old.providerTaskId, `${id}: must resume existing task to avoid duplicate generation`);
     assert.equal(current.providerRawResponse, old.providerRawResponse);
+    assert.equal(current.usageSnapshotJson, old.usageSnapshotJson, `${id}: resuming the same task keeps its frozen usage snapshot`);
   }
   fixture('never-submitted', { providerTaskId: null, providerStatus: null });
   assert.equal((await retry('never-submitted')).status, 200);

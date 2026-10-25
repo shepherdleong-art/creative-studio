@@ -1,4 +1,4 @@
-// node --loader ./scripts/typescript-extension-loader.mjs scripts/reassembled-rework-queue.test.ts
+// node scripts/reassembled-rework-queue.test.ts
 // Isolated SQLite + loopback HTTP + fake video adapter; no paid/network suppliers.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,6 +6,10 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import sharp from 'sharp';
+import { register } from 'node:module';
+
+// lib/queue.ts 里有不带 .ts 后缀的相对导入，先注册补后缀的解析器，再动态导入业务模块。
+register('./typescript-extension-loader.mjs', import.meta.url);
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reassembled-rework-queue-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = root;

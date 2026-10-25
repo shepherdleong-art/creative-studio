@@ -18,8 +18,9 @@ try {
     now: () => new Date('2026-08-03T00:00:00.000Z'),
   });
   assert.equal(result.state, 'ready');
-  assert.equal(result.targetVersion, 24);
-  assert.equal(BATCH_SCHEMA_MIGRATIONS.at(-1)?.version, 24);
+  // 本测试覆盖到 v24 的口播回填；之后追加的迁移不应让它失败，只要求升级到最新版。
+  assert.equal(result.targetVersion, BATCH_SCHEMA_MIGRATIONS.at(-1)?.version);
+  assert.ok(BATCH_SCHEMA_MIGRATIONS.some((migration) => migration.version === 24));
   assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'batch_asset_analysis_requests'`).get());
   const requestColumns = db.prepare(`PRAGMA table_info(batch_asset_analysis_requests)`).all() as Array<{ name: string }>;
   assert.ok(requestColumns.some((column) => column.name === 'executionScope'));
@@ -148,11 +149,11 @@ try {
         (id, planId, versionNumber, arrangementJson, createdAt)
       VALUES ('task-version-upgraded', 'task-plan', 2, ?, ?)
     `).run(upgradedArrangement, now);
-    // 模拟 v23 状态:删掉 v24 记录后重跑迁移,回填只应命中占位版本。
-    db.prepare(`DELETE FROM batch_schema_migrations WHERE version = 24`).run();
-    const backfill = await ensureBatchSchemaReady({ db, backupRoot: path.join(root, 'backups') });
-    assert.equal(backfill.state, 'ready');
-    assert.deepEqual(backfill.appliedVersions, [24]);
+    // 直接重放 v24 回填,只应命中占位版本。不能删 v24 记录重跑迁移链:之后的版本
+    // 已记录,中间缺号会被判为升级记录不完整;v26 起的 ALTER TABLE 也不能重跑。
+    const v24 = BATCH_SCHEMA_MIGRATIONS.find((migration) => migration.version === 24);
+    assert.ok(v24);
+    db.exec(v24.sql);
     const filled = JSON.parse((db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE id = 'task-version-placeholder'`).get() as { arrangementJson: string }).arrangementJson);
     assert.equal(filled.narration.productionReady, true, '占位版本必须回填为已核验口播');
     assert.equal(filled.narration.mode, 'local_ready');

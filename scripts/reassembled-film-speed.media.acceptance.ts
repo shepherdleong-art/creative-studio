@@ -1,4 +1,5 @@
 // Local moving-picture check: projected rate must change which source frames appear.
+// 手动验收：需要本机 outputs/2026-10-19-p1-matrix 下的合成工程（不进 Git），结果写到 outputs/2026-10-19-film-editing。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';

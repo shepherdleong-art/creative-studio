@@ -28,6 +28,8 @@ import {
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-canvas-assets-'));
 const storageRoot = canvasStorageRoot(root);
 const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-canvas-source-'));
+// fixture 执行器只在显式标记的临时数据根上启用，三个变量缺一不可（见 lib/creative-canvas/config.ts）。
+process.env.CREATIVE_STUDIO_DATA_ROOT = root;
 process.env.CREATIVE_STUDIO_CANVAS_EXECUTOR = 'fixture';
 process.env.CREATIVE_STUDIO_CANVAS_TEST_ROOT = '1';
 
