@@ -1,3 +1,5 @@
+import { analyzeFinalEditAsset, type VideoAnalysisResult } from './asset-analysis.ts';
+export { FINAL_EDIT_ANALYZER_VERSION } from './asset-analysis.ts';
 import { packagingCode } from '../media-core/production-codes.ts';
 import { filmBinding, filmView } from './reassembled/store.ts';
 import { changeFilmClipDuration, changeFilmPlaybackRate, projectFilmTimeline } from './reassembled/timeline.ts';
@@ -118,16 +120,6 @@ interface ScriptSegment {
 
 type ScriptSnapshot = MixcutTaskScriptSnapshot;
 
-interface VideoAnalysisResult {
-  summary: string;
-  sellingPoints: string[];
-  semanticTags: string[];
-  usableRanges: Array<{ startUs: number; endUs: number; qualityScore: number }>;
-  qualityIssues: string[];
-  coverFrameTimesUs: number[];
-  scenes?: Array<{ startUs: number; endUs: number; description: string; labels: string[]; qualityScore: number }>;
-}
-
 interface NarrationArtifact {
   relativePath: string;
   durationUs: number;
@@ -163,18 +155,6 @@ function serializeNarrationTimings(narration: NarrationArtifact): string {
     segments: narration.segmentTimings,
     alignmentDegradedSegmentIds: narration.alignmentDegradedSegmentIds || [],
   } satisfies StoredNarrationTimingsV1);
-}
-
-function isVideoAnalysisResult(value: unknown): value is VideoAnalysisResult {
-  if (!value || typeof value !== 'object') return false;
-  const analysis = value as Partial<VideoAnalysisResult>;
-  return typeof analysis.summary === 'string'
-    && Array.isArray(analysis.sellingPoints)
-    && Array.isArray(analysis.semanticTags)
-    && Array.isArray(analysis.usableRanges)
-    && analysis.usableRanges.every((range) => Number.isFinite(range?.startUs) && Number.isFinite(range?.endUs) && Number.isFinite(range?.qualityScore) && range.endUs > range.startUs)
-    && Array.isArray(analysis.qualityIssues)
-    && Array.isArray(analysis.coverFrameTimesUs);
 }
 
 export interface FinalEditWorkspaceDependencies {
@@ -386,8 +366,6 @@ interface PreparedAsset extends AssetRow {
   existingUsageCount: number;
   analysisSucceeded?: boolean;
 }
-
-export const FINAL_EDIT_ANALYZER_VERSION = '2';
 
 function flattenPreparedSemanticScenes(assets: PreparedAsset[]): SemanticScene[] {
   return assets.flatMap((asset) => {
@@ -1225,37 +1203,14 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         assertNotAborted(signal);
         const assetName = row.displayName || row.filename || row.videoJobId;
         pushDetail(null, `正在分析素材 ${prepared.length + 1}/${rows.length}：${assetName}`);
-        const fingerprint = sha256(fs.readFileSync(row.localVideoPath));
-        const media = await deps.probeVideo({ filePath: row.localVideoPath, videoJobId: row.videoJobId });
-        let analysis: VideoAnalysisResult;
-        const analysisProviderId = input.analysisProviderId || '';
-        let analysisModel = '';
-        try { analysisModel = String((db.prepare(`SELECT COALESCE(NULLIF(model, ''), defaultModel, '') AS model FROM script_providers WHERE id=?`).get(analysisProviderId) as { model?: string } | undefined)?.model || ''); } catch { /* isolated domain tests omit provider tables */ }
-        const cached = db.prepare(`SELECT fileFingerprint, providerId, model, analyzerVersion, status, mediaJson, generatedJson FROM final_edit_asset_analysis WHERE videoJobId=?`).get(row.videoJobId) as { fileFingerprint: string; providerId: string; model: string; analyzerVersion: string; status: string; mediaJson: string; generatedJson: string } | undefined;
-        let analysisSucceeded = false;
-        let analysisNote = '分析失败，已降级';
-        try {
-          const cachedGenerated = cached ? parseJson<unknown>(cached.generatedJson, null) : null;
-          const cacheHit = cached?.fileFingerprint === fingerprint
-            && cached.providerId === analysisProviderId
-            && cached.model === analysisModel
-            && cached.analyzerVersion === FINAL_EDIT_ANALYZER_VERSION
-            && cached.status === 'succeeded'
-            && isVideoAnalysisResult(cachedGenerated);
-          analysis = cacheHit
-            ? cachedGenerated
-            : await deps.analyzeVideo({ filePath: row.localVideoPath, videoJobId: row.videoJobId, shotSetId: row.shotSetId, providerId: analysisProviderId });
-          if (!isVideoAnalysisResult(analysis)) throw new Error('视频分析结果结构无效');
-          analysisSucceeded = true;
-          analysisNote = cacheHit ? '缓存命中' : '分析成功';
-          db.prepare(`
-            INSERT INTO final_edit_asset_analysis
-              (videoJobId, shotSetId, fileFingerprint, providerId, model, analyzerVersion, status, mediaJson, generatedJson, updatedAt, analyzedAt)
-            VALUES (?, ?, ?, ?, ?, ?, 'succeeded', ?, ?, ?, ?)
-            ON CONFLICT(videoJobId) DO UPDATE SET shotSetId=excluded.shotSetId, fileFingerprint=excluded.fileFingerprint,
-              providerId=excluded.providerId, model=excluded.model, analyzerVersion=excluded.analyzerVersion, status='succeeded', mediaJson=excluded.mediaJson, generatedJson=excluded.generatedJson,
-              errorCode=NULL, errorMessage=NULL, analyzedAt=excluded.analyzedAt, updatedAt=excluded.updatedAt
-          `).run(row.videoJobId, row.shotSetId, fingerprint, analysisProviderId, analysisModel, FINAL_EDIT_ANALYZER_VERSION, JSON.stringify(media), JSON.stringify(analysis), now(), now());
+        const result = await analyzeFinalEditAsset(deps, {
+          filePath: row.localVideoPath, videoJobId: row.videoJobId, shotSetId: row.shotSetId,
+          providerId: input.analysisProviderId || '', mode: 'prepare',
+        });
+        const { fingerprint, media, analysis } = result;
+        const analysisSucceeded = result.status === 'succeeded';
+        const analysisNote = analysisSucceeded ? (result.cacheHit ? '缓存命中' : '分析成功') : '分析失败，已降级';
+        if (analysisSucceeded) {
           for (const frameUs of (analysis.coverFrameTimesUs || []).slice(0, 3)) {
             const lastSafeFrameUs = Math.max(0, media.durationUs - Math.max(50_000, Math.ceil(1_000_000 / Math.max(1, media.fps))));
             const safeFrameUs = Math.max(0, Math.min(lastSafeFrameUs, frameUs));
@@ -1265,14 +1220,6 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
               else await materializeVideoFrame({ storageRoot, ...frameInput });
             } catch { /* 封面候选抽帧失败不应淘汰已经成功分析的完整视频。 */ }
           }
-        } catch (error) {
-          analysis = { summary: '', sellingPoints: [], semanticTags: [], usableRanges: [], qualityIssues: ['analysis_failed'], coverFrameTimesUs: [] };
-          db.prepare(`
-            INSERT INTO final_edit_asset_analysis
-              (videoJobId, shotSetId, fileFingerprint, providerId, model, analyzerVersion, status, mediaJson, generatedJson, errorCode, errorMessage, updatedAt)
-            VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, '{}', 'analysis_failed', ?, ?)
-            ON CONFLICT(videoJobId) DO UPDATE SET fileFingerprint=excluded.fileFingerprint, providerId=excluded.providerId, model=excluded.model, analyzerVersion=excluded.analyzerVersion, status='failed', mediaJson=excluded.mediaJson, generatedJson='{}', errorCode='analysis_failed', errorMessage=excluded.errorMessage, updatedAt=excluded.updatedAt
-          `).run(row.videoJobId, row.shotSetId, fingerprint, analysisProviderId, analysisModel, FINAL_EDIT_ANALYZER_VERSION, JSON.stringify(media), error instanceof Error ? error.message : String(error), now());
         }
         const analysisState = db.prepare(`SELECT manualOverrideJson, autoUseDisabled FROM final_edit_asset_analysis WHERE videoJobId=?`).get(row.videoJobId) as { manualOverrideJson: string; autoUseDisabled: number } | undefined;
         const manual = parseJson<Partial<VideoAnalysisResult>>(analysisState?.manualOverrideJson || '{}', {});
@@ -2613,20 +2560,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     if (deps.validateAnalysisProvider && !deps.validateAnalysisProvider(providerId)) {
       throw new FinalEditError('vision_provider_unavailable', '原素材分析模型不可用，请在智能创作中检查配置', 409);
     }
-    const fingerprint = sha256(fs.readFileSync(row.localVideoPath));
-    const media = await deps.probeVideo({ filePath: row.localVideoPath, videoJobId });
-    const analysis = await deps.analyzeVideo({ filePath: row.localVideoPath, videoJobId, shotSetId: row.shotSetId, providerId });
-    if (!isVideoAnalysisResult(analysis)) throw new FinalEditError('analysis_failed', '视频分析结果结构无效');
-    let analysisModel = '';
-    try { analysisModel = String((db.prepare(`SELECT COALESCE(NULLIF(model, ''), defaultModel, '') AS model FROM script_providers WHERE id=?`).get(providerId) as { model?: string } | undefined)?.model || ''); } catch { /* isolated tests omit provider tables */ }
-    db.prepare(`
-      INSERT INTO final_edit_asset_analysis
-        (videoJobId, shotSetId, fileFingerprint, providerId, model, analyzerVersion, status, mediaJson, generatedJson, updatedAt, analyzedAt)
-      VALUES (?, ?, ?, ?, ?, ?, 'succeeded', ?, ?, ?, ?)
-      ON CONFLICT(videoJobId) DO UPDATE SET shotSetId=excluded.shotSetId, fileFingerprint=excluded.fileFingerprint,
-        providerId=excluded.providerId, model=excluded.model, analyzerVersion=excluded.analyzerVersion, status='succeeded', mediaJson=excluded.mediaJson, generatedJson=excluded.generatedJson,
-        errorCode=NULL, errorMessage=NULL, analyzedAt=excluded.analyzedAt, updatedAt=excluded.updatedAt
-    `).run(row.videoJobId, row.shotSetId, fingerprint, providerId, analysisModel, FINAL_EDIT_ANALYZER_VERSION, JSON.stringify(media), JSON.stringify(analysis), now(), now());
+    await analyzeFinalEditAsset(deps, {
+      filePath: row.localVideoPath, videoJobId: row.videoJobId, shotSetId: row.shotSetId,
+      providerId, mode: 'refresh',
+    });
     return load(groupId);
   };
 

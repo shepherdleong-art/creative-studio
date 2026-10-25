@@ -99,6 +99,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 | `docs/reference/创作画布.md` | 改 `lib/creative-canvas/`、`app/api/canvas/`、`components/creative-canvas/`、`app/canvas/` 任何东西 |
 | `docs/reference/实拍混剪.md` | 改 `lib/live-mixcut/`、`app/live-mixcut/`、`app/api/live-mixcut/`、`components/live-mixcut/` 任何东西 |
 | `docs/reference/视频包装.md` | 改共享包装、四套模板、单条或批量包装入口、离线包装运行资源 |
+| `docs/reference/单条素材分析.md` | 改单条混剪的素材分析缓存、重新分析及分析记录写入 |
 | `docs/reference/固定渲染命令.md` | 改 `lib/film-render/`、`scripts/film-render.ts` 或 classic 渲染验收 |
 
 ### `lib/` 核心模块
