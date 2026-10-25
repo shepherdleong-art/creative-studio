@@ -35,6 +35,7 @@ import {
   getBatchOutputArrangementView,
 } from '../lib/batch-production/output-arrangement.ts';
 import { scheduleRenderAfterCoverChange } from '../lib/batch-production/phase-e.ts';
+import { editBatchOutput, changeBatchOutputCoverFrame } from '../lib/batch-production/output-editing.ts';
 import { resolveCoverContractHash, resolveFullRenderContractHash } from '../lib/batch-production/cover-contract.ts';
 import { resolveBatchOutputNarrationAudio } from '../lib/batch-production/output-media.ts';
 import { BatchDomainError } from '../lib/batch-production/errors.ts';
@@ -1469,6 +1470,87 @@ try {
   applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'restore_arrangement', snapshot: { clips: preciseClips }, expectedEditRevision: preciseResult.editRevision });
   assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).clips, preciseView.clips, '等长截取可完整撤销');
   console.log('✓ 24. 共用截取：微秒时长/倍速/邻片位置/版本门禁/撤销');
+  // 编辑入口负责封面副作用：实际调用领域编辑与排队，不靠路由源码表达式断言。
+  {
+    resetPlan0Arrangement();
+    let wakes = 0;
+    const options = { wakeScheduler: () => { wakes++; } };
+    const taskCount = () => (db.prepare('SELECT COUNT(*) AS n FROM batch_tasks').get() as { n: number }).n;
+    const editOutput = (edit: Parameters<typeof editBatchOutput>[4]) => editBatchOutput(db, projectId, batchId, plans[0], edit, options);
+    const initialTasks = taskCount();
+    const musicEdit = await editOutput({ type: 'set_music', trackId: 'bgm-b', gainDb: -12, fadeInSec: 2, fadeOutSec: 3 });
+    assert.equal(musicEdit.changed, true);
+    assert.equal(musicEdit.coverTaskId, null, '改配乐不排封面，即使 visualChanged 为 true');
+    assert.equal(taskCount(), initialTasks);
+    assert.equal(wakes, 0);
+
+    resetPlan0Arrangement();
+    setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+    const splitRevision = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).editRevision;
+    const splitEdit = await editOutput({ type: 'split', clipId: 'clip-1', offsetUs: 1_000_000 });
+    assert.equal(splitEdit.coverTaskId, null);
+    assert.equal(splitEdit.editRevision, splitRevision);
+    assert.equal(readBatchPlanReview(db, projectId, batchId, plans[0]).decision, 'approved');
+    assert.equal(taskCount(), initialTasks);
+
+    resetPlan0Arrangement();
+    const coverEdit = { type: 'set_cover' as const, assetId: assetC, timeUs: 3_250_000 };
+    const savedCover = await editOutput(coverEdit);
+    assert.ok(savedCover.coverTaskId);
+    const coverTask = db.prepare('SELECT targetKind, targetId FROM batch_tasks WHERE id=?').get(savedCover.coverTaskId) as { targetKind: string; targetId: string };
+    assert.deepEqual({ ...coverTask }, { targetKind: 'output_version_cover', targetId: outputVersionId });
+    assert.equal(wakes, 1);
+    const afterCoverTasks = taskCount();
+    const repeatedCover = await editOutput(coverEdit);
+    assert.equal(repeatedCover.changed, false);
+    assert.equal(repeatedCover.coverTaskId, null);
+    assert.equal(taskCount(), afterCoverTasks);
+    assert.equal(wakes, 1);
+    const beforeConflict = currentArrangement(plans[0]);
+    await assert.rejects(editOutput({ ...coverEdit, timeUs: 3_500_000, expectedEditRevision: savedCover.editRevision - 1 }), /重新打开/);
+    await assert.rejects(editBatchOutput(db, 'wrong-project', batchId, plans[0], coverEdit, options), BatchDomainError);
+    assert.deepEqual(currentArrangement(plans[0]), beforeConflict);
+    assert.equal(taskCount(), afterCoverTasks);
+    assert.equal(wakes, 1);
+
+    // 兼容换封面：相同抽帧请求也要唤醒既有任务，但不新建任务或递增修订。
+    const legacyCover = await changeBatchOutputCoverFrame(db, projectId, batchId, plans[0], coverEdit.timeUs, options);
+    assert.equal(legacyCover?.coverTaskId, savedCover.coverTaskId);
+    assert.equal(legacyCover?.changed, false);
+    assert.equal(legacyCover?.editRevision, savedCover.editRevision);
+    assert.equal(taskCount(), afterCoverTasks);
+    assert.equal(wakes, 2);
+    assert.equal(await changeBatchOutputCoverFrame(db, 'wrong-project', batchId, plans[0], 0, options), null);
+    assert.equal(wakes, 2);
+
+    // 已保存的修改不会因为唤醒失败回滚，也不能被描述为未保存。
+    await assert.rejects(editBatchOutput(db, projectId, batchId, plans[0], { ...coverEdit, timeUs: 3_750_000 }, {
+      wakeScheduler: () => { throw new Error('test scheduler unavailable'); },
+    }), /修改已保存，封面任务已排队/);
+    assert.equal((currentArrangement(plans[0]).cover as { timeUs: number }).timeUs, 3_750_000);
+    assert.equal(taskCount(), afterCoverTasks + 1);
+    const wakeRetry = await changeBatchOutputCoverFrame(db, projectId, batchId, plans[0], 3_750_000, options);
+    assert.ok(wakeRetry?.coverTaskId);
+    assert.equal(taskCount(), afterCoverTasks + 1);
+
+    // 损坏的旧封面可由有效 set_cover 修复，前置哈希失败不能阻止后续排队。
+    const broken = currentArrangement(plans[0]);
+    broken.cover = { assetId: 'missing-cover', timeUs: 0 };
+    db.prepare('UPDATE batch_output_versions SET arrangementJson=? WHERE id=?').run(JSON.stringify(broken), outputVersionId);
+    assert.throws(() => resolveCoverContractHash(db, outputVersionId));
+    const repairedCover = await editOutput({ ...coverEdit, timeUs: 4_250_000 });
+    assert.ok(repairedCover.coverTaskId);
+    assert.equal((currentArrangement(plans[0]).cover as { assetId: string }).assetId, assetC);
+
+    db.exec(`CREATE TRIGGER reject_test_cover_task BEFORE INSERT ON batch_tasks BEGIN SELECT RAISE(ABORT, 'test queue unavailable'); END;`);
+    const beforeQueueFailureTasks = taskCount();
+    try {
+      await assert.rejects(editOutput({ ...coverEdit, timeUs: 4_750_000 }), /修改已保存，但封面任务未能排队/);
+      assert.equal((currentArrangement(plans[0]).cover as { timeUs: number }).timeUs, 4_750_000);
+      assert.equal(taskCount(), beforeQueueFailureTasks);
+    } finally { db.exec('DROP TRIGGER reject_test_cover_task'); }
+    console.log('✓ 25. 编辑编排：封面影响/幂等/纯分割/修订与归属/兼容入口/旧数据修复/保存后调度失败');
+  }
   console.log('batch output clip edit tests passed');
 } finally {
   db.close();

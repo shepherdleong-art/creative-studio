@@ -3,14 +3,9 @@ import { getBatchOutputArrangementView } from '@/lib/batch-production/output-arr
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
-import {
-  applyBatchOutputClipEdit,
-  type BatchOutputClipEdit,
-} from '@/lib/batch-production/output-arrangement';
+import type { BatchOutputClipEdit } from '@/lib/batch-production/output-arrangement';
 import type { CoverFraming, TextStyle } from '@/lib/media-core/cover-types';
-import { scheduleRenderAfterCoverChange } from '@/lib/batch-production/phase-e';
-import { resolveCoverContractHash } from '@/lib/batch-production/cover-contract';
-import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
+import { editBatchOutput } from '@/lib/batch-production/output-editing';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
@@ -377,40 +372,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     }
 
     const db = getDb();
-    // 封面契约前后比对:只有封面契约真的变化才排封面任务。BGM、字幕、口播
-    // 音量等编辑同样会置 visualChanged,但不能触发封面重渲染;老批次没有
-    // 封面任务时更不能因为改 BGM 平白生出一条封面任务。
-    const planRow = db.prepare(`SELECT currentVersionId FROM batch_output_plans WHERE id = ?`).get(planId) as {
-      currentVersionId: string | null;
-    } | undefined;
-    const outputVersionId = planRow?.currentVersionId ?? null;
-    let coverContractBefore: string | null = null;
-    if (outputVersionId) {
-      try {
-        coverContractBefore = resolveCoverContractHash(db, outputVersionId);
-      } catch {
-        coverContractBefore = null;
-      }
-    }
-    const result = applyBatchOutputClipEdit(db, projectId, id, planId, edit);
-    let coverContractAfter: string | null = null;
-    if (outputVersionId && result.visualChanged) {
-      try {
-        coverContractAfter = resolveCoverContractHash(db, outputVersionId);
-      } catch {
-        coverContractAfter = null;
-      }
-    }
-    // 前后契约任一无法解析时保持老行为(visualChanged 即排),可解析且相等则
-    // 说明本次编辑与封面无关,不产生封面任务。
-    const coverContractChanged = result.changed
-      && result.visualChanged
-      && (coverContractBefore === null || coverContractAfter === null || coverContractBefore !== coverContractAfter);
-    const coverTaskId = coverContractChanged
-      ? scheduleRenderAfterCoverChange(db, projectId, id, planId)
-      : null;
-    if (coverTaskId) ensureBatchSchedulerStarted();
-    return NextResponse.json({ ...result, coverTaskId }, { headers: BATCH_NO_STORE_HEADERS });
+    const result = await editBatchOutput(db, projectId, id, planId, edit);
+    return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'batch_clip_edit_failed', '编辑成片片段失败');
   }

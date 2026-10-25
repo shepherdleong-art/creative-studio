@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
-import { applyBatchOutputClipEdit } from '@/lib/batch-production/output-arrangement';
-import { resolveCoverContract } from '@/lib/batch-production/cover-contract';
-import { scheduleRenderAfterCoverChange } from '@/lib/batch-production/phase-e';
-import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
+import { changeBatchOutputCoverFrame } from '@/lib/batch-production/output-editing';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
@@ -38,29 +35,14 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
     }
     const db = getDb();
-    const plan = db.prepare(`
-      SELECT p.currentVersionId
-      FROM batch_output_plans p
-      JOIN batch_production_versions v ON v.id = p.batchVersionId
-      JOIN batch_productions b ON b.id = v.batchId
-      WHERE p.id = ? AND b.id = ? AND b.projectId = ? AND b.deletedAt IS NULL
-    `).get(planId, id, projectId) as { currentVersionId: string | null } | undefined;
-    if (!plan?.currentVersionId) {
+    const result = await changeBatchOutputCoverFrame(db, projectId, id, planId, body.timeUs);
+    if (!result) {
       return NextResponse.json({
         error: 'no_current_version',
         message: '当前成片版本还没有候选版本,不能换封面',
       }, { status: 409, headers: BATCH_NO_STORE_HEADERS });
     }
-    // 保留当前封面素材,只改抽帧时间点(与渲染契约的封面素材解析一致)。
-    const cover = resolveCoverContract(db, plan.currentVersionId);
-    const result = applyBatchOutputClipEdit(db, projectId, id, planId, {
-      type: 'set_cover',
-      assetId: cover.assetId,
-      timeUs: body.timeUs,
-    });
-    const coverTaskId = scheduleRenderAfterCoverChange(db, projectId, id, planId);
-    if (coverTaskId) ensureBatchSchedulerStarted();
-    return NextResponse.json({ ...result, coverTaskId }, { headers: BATCH_NO_STORE_HEADERS });
+    return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'batch_cover_failed', '换封面失败');
   }

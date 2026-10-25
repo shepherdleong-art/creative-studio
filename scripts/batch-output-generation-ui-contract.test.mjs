@@ -15,16 +15,11 @@ const reviewPreview = fs.readFileSync('components/batch-production/review/BatchR
 const exportStep = fs.readFileSync('components/batch-production/BatchStepExport.tsx', 'utf8');
 const panel = fs.readFileSync('components/batch-production/BatchPreparationPanel.tsx', 'utf8');
 const exportsRoute = fs.readFileSync('app/api/batch-production/batches/[id]/exports/route.ts', 'utf8');
-const clipsRoute = fs.readFileSync('app/api/batch-production/batches/[id]/outputs/[planId]/clips/route.ts', 'utf8');
 const orchestrator = fs.readFileSync('lib/batch-production/export-orchestrator.ts', 'utf8');
 
 // ---- 编排与路由边界:唤醒下沉,路由只调用统一入口 ----
 assert.doesNotMatch(exportsRoute, /ensureBatchSchedulerStarted/, '调度器唤醒必须下沉进编排模块,路由不得再直接唤醒');
 assert.match(orchestrator, /wakeScheduler/, '编排模块必须拥有唤醒能力(默认懒加载 bootstrap,可注入 seam)');
-// 封面任务只在前后封面契约真的变化时安排:BGM/字幕/音量等 visualChanged 编辑不得触发
-assert.match(clipsRoute, /coverContractBefore === null \|\| coverContractAfter === null \|\| coverContractBefore !== coverContractAfter/, '普通编辑不得重做封面,只有契约变化才排封面任务');
-assert.match(clipsRoute, /resolveCoverContractHash/, '封面契约变化必须用统一哈希判断');
-
 // ---- 检查页:统一工作台中的封面代际与精调入口 ----
 assert.match(review, /<BatchUnifiedReviewWorkspace/, '检查页使用已确认的统一审片工作台');
 assert.match(unifiedReview, /coverAttemptId: card\.coverAttemptId/, '成功封面尝试身份传入统一工作台');
