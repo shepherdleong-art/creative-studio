@@ -47,42 +47,47 @@ assert.match(guide, /迁移退出码为 0 且新版根目录出现“迁移报�
 assert.match(guide, /不读取、显示、上传或复述其内容/, 'Agent 任务必须保护随包密钥内容');
 assert.match(guide, /不提交图片、视频、脚本或语音生成任务/, 'Agent 验收必须保持非计费');
 
-const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), '创意工作台 portable wrapper '));
-try {
-  const fixtureScripts = path.join(fixtureRoot, 'scripts');
-  const fixtureCmd = path.join(fixtureRoot, '迁移旧版数据.cmd');
-  fs.mkdirSync(fixtureScripts, { recursive: true });
-  fs.copyFileSync(cmdPath, fixtureCmd);
-  fs.writeFileSync(
-    path.join(fixtureScripts, 'migrate-portable-data.ps1'),
-    `\ufeffparam([string]$NewRoot)\r\n` +
-      `$ErrorActionPreference = 'Stop'\r\n` +
-      `try {\r\n` +
-      `  $resolved = [System.IO.Path]::GetFullPath($NewRoot)\r\n` +
-      `  if (-not (Test-Path -LiteralPath $resolved -PathType Container)) { throw 'ROOT_NOT_FOUND' }\r\n` +
-      `  Write-Output 'ROOT_OK'\r\n` +
-      `  exit 0\r\n` +
-      `} catch {\r\n` +
-      `  Write-Output ('ROOT_ERROR:' + $_.Exception.Message)\r\n` +
-      `  exit 1\r\n` +
-      `}\r\n`,
-    'utf8',
-  );
+// 真实执行 cmd → PowerShell 只能在 Windows 上做；其他平台只跑上面的静态检查。
+if (process.platform !== 'win32') {
+  console.log('SKIP 迁移入口真实执行（需要 Windows cmd.exe 与 PowerShell）');
+} else {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), '创意工作台 portable wrapper '));
+  try {
+    const fixtureScripts = path.join(fixtureRoot, 'scripts');
+    const fixtureCmd = path.join(fixtureRoot, '迁移旧版数据.cmd');
+    fs.mkdirSync(fixtureScripts, { recursive: true });
+    fs.copyFileSync(cmdPath, fixtureCmd);
+    fs.writeFileSync(
+      path.join(fixtureScripts, 'migrate-portable-data.ps1'),
+      `\ufeffparam([string]$NewRoot)\r\n` +
+        `$ErrorActionPreference = 'Stop'\r\n` +
+        `try {\r\n` +
+        `  $resolved = [System.IO.Path]::GetFullPath($NewRoot)\r\n` +
+        `  if (-not (Test-Path -LiteralPath $resolved -PathType Container)) { throw 'ROOT_NOT_FOUND' }\r\n` +
+        `  Write-Output 'ROOT_OK'\r\n` +
+        `  exit 0\r\n` +
+        `} catch {\r\n` +
+        `  Write-Output ('ROOT_ERROR:' + $_.Exception.Message)\r\n` +
+        `  exit 1\r\n` +
+        `}\r\n`,
+      'utf8',
+    );
 
-  const result = spawnSync(
-    process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe',
-    ['/d', '/c', 'call', fixtureCmd],
-    { encoding: 'utf8', input: '\r\n', timeout: 30_000, windowsHide: true },
-  );
-  assert.equal(
-    result.status,
-    0,
-    `迁移入口必须把含空格、中文且以反斜杠结尾的包根作为一个合法参数传给 PowerShell：\n${result.stdout || ''}\n${result.stderr || ''}\n${result.error || ''}`,
-  );
-  assert.match(result.stdout, /ROOT_OK/, '迁移入口应把自身包根完整传给 PowerShell');
-  assert.doesNotMatch(result.stdout, /Illegal characters in path|路径中有非法字符/i);
-} finally {
-  fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    const result = spawnSync(
+      process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe',
+      ['/d', '/c', 'call', fixtureCmd],
+      { encoding: 'utf8', input: '\r\n', timeout: 30_000, windowsHide: true },
+    );
+    assert.equal(
+      result.status,
+      0,
+      `迁移入口必须把含空格、中文且以反斜杠结尾的包根作为一个合法参数传给 PowerShell：\n${result.stdout || ''}\n${result.stderr || ''}\n${result.error || ''}`,
+    );
+    assert.match(result.stdout, /ROOT_OK/, '迁移入口应把自身包根完整传给 PowerShell');
+    assert.doesNotMatch(result.stdout, /Illegal characters in path|路径中有非法字符/i);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 }
 
 console.log('portable data migration wrapper contract test passed');

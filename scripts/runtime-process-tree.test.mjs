@@ -36,7 +36,8 @@ try {
   assert.equal(typeof info.commandLine, 'string');
   assert.ok(info.commandLine.length > 0);
   if (process.platform !== 'win32') {
-    assert.equal(info.cwd, sandbox, 'unix 下应能从 lsof 取到 cwd');
+    // lsof 报告真实路径；macOS 的 /var 是 /private/var 的链接，要和真实路径比。
+    assert.equal(info.cwd, fs.realpathSync(sandbox), 'unix 下应能从 lsof 取到 cwd');
   } else {
     assert.equal(info.cwd, null, 'Windows 下不提供 cwd（CIM 语义）');
     assert.equal(typeof info.executablePath, 'string');

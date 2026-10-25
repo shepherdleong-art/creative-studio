@@ -111,16 +111,12 @@ test('UI 关闭端点按平台执行受控的 PowerShell 或 shell 停止脚本'
 test('LiteLLM 运行依赖锁定到已验证版本并包含 SOCKS 支持', () => {
   const requirements = read('requirements-litellm.txt');
   const eslintConfig = read('eslint.config.mjs');
-  const nextConfig = read('next.config.ts');
-  const standaloneSync = read('scripts/sync-standalone-assets.mjs');
 
   assert.match(requirements, /^litellm\[proxy\]==1\.89\.2$/m);
   assert.match(requirements, /^socksio==1\.0\.0$/m);
   assert.match(eslintConfig, /["']\.venv-litellm\/\*\*["']/);
-  assert.match(nextConfig, /["']\.\/\.venv-litellm\/\*\*\/\*["']/);
-  assert.match(nextConfig, /["']\.\/config\.yaml["']/);
-  assert.match(standaloneSync, /config\.yaml/);
-  assert.match(standaloneSync, /\.venv-litellm/);
+  // next.config.ts 与 sync-standalone-assets.mjs 从 scripts/packaging/forbidden-paths.json 读排除项
+  // （09-08 起单一来源），.venv-litellm 与 config.yaml 不进 standalone 由 standalone-desktop-boundary.test.mjs 守护。
 });
 
 test('LiteLLM Router 在应用超时前终止上游且不做内部重试', {

@@ -55,6 +55,7 @@ async function launch() {
   }
   const event = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
   app.requestSingleInstanceLock = () => true;
+  app.getPath = (name) => `/fake-electron/${name}`; // 只作为环境变量传给假服务，不落盘
   app.whenReady = () => Promise.resolve();
   app.quit = () => {
     const quitEvent = event();
@@ -79,6 +80,8 @@ async function launch() {
       registerIpcHandlers: () => () => { calls.clears += 1; },
     },
     './theme': {},
+    // 没有待处理的实拍成片跳转请求时，主窗口照常打开首页。
+    './reassembled-navigation': { consumeFilmNavigationRequest: () => null, completeFilmNavigation: () => {} },
     './service-spawn': {
       resolveServicePaths: () => ({}),
       resolveNodeExecutable: () => process.execPath,
@@ -87,7 +90,8 @@ async function launch() {
   };
   load('desktop/preload.ts', modules, { window: rendererWindow });
   modules['./window'] = load('desktop/window.ts', modules);
-  load('desktop/main.ts', modules);
+  // main.ts 用计时器轮询实拍成片跳转请求；vm 沙箱默认没有 Node 计时器。
+  load('desktop/main.ts', modules, { setInterval, clearInterval });
   await tick();
   function mountHeader() {
     const states = [];
@@ -105,6 +109,7 @@ async function launch() {
         useEffect: (effect) => { if (!mounted) cleanup = effect(); },
       },
       'next/link': () => null,
+      'next/navigation': { usePathname: () => '/' },
       '@/components/ui/Icon': { Icon: () => null },
       '@/components/ThemeToggle': () => null,
     }, {
@@ -119,7 +124,7 @@ async function launch() {
     }).default;
     function render() {
       cursor = 0;
-      const tree = Header();
+      const tree = Header({});
       mounted = true;
       return tree;
     }
