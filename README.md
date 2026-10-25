@@ -181,7 +181,7 @@ stop.command
 
 ### 桌面版（Electron，源码运行）
 
-不想装 DMG、又要用桌面壳的原生能力（本机原片登记、原生文件选择）时，双击：
+要用桌面壳的原生能力（本机原片登记、原生文件选择）时，双击：
 
 ```text
 start-desktop.command
@@ -196,7 +196,7 @@ start-desktop.command
   ./start-desktop.command --rebuild
   ```
 
-- 组件齐备时同样会先拉起 LiteLLM 代理，因此公司供应商可用（这一点与安装版不同，见 [MACOS.md](./MACOS.md)）。
+- 组件齐备时同样会先拉起 LiteLLM 代理，因此公司供应商可用。
 - 数据根仍是本项目目录，与网页版共用同一个 `data/workbench.db`；脚本检测到 3000 端口被占用时会提示先停掉网页版，请不要同时运行两者。
 
 退出方式（任选其一）：
@@ -204,7 +204,7 @@ start-desktop.command
 - 点击桌面窗口的关闭按钮（X），或应用菜单选择「退出」——显示与电源按钮相同的「停止服务并退出」弹窗，确认后停止工作台和受控的 LiteLLM 代理。需要继续后台任务时请最小化窗口。
 - 界面右上角的电源按钮「停止服务并退出」——服务停止后应用会自动退出。
 - 直接关闭启动它的终端窗口，或按 `Ctrl+C`。
-- 双击 `stop-desktop.command`——用于应用失去响应，或从 Finder 启动后没有终端窗口可用的情况。它同时覆盖源码态和安装版，会先校验实例身份再请求优雅关闭，之后才做有界的兜底回收。
+- 双击 `stop-desktop.command`——用于应用失去响应，或从 Finder 启动后没有终端窗口可用的情况。它同时覆盖源码态和以前装过的 DMG 版，会先校验实例身份再请求优雅关闭，之后才做有界的兜底回收。
 
 注意 `stop.command` 只负责网页版（3000 端口），停不了桌面版监听随机端口的私有服务。
 
@@ -238,34 +238,13 @@ npm run build      # 生产构建（含 standalone 资源同步）
 npm run start      # 生产服务器
 ```
 
-## Windows 安装包
-
-提供 Inno Setup 编译的一键安装程序，内置私有 Node.js 运行时，用户无需安装 Node/npm。
-
-```powershell
-npm run build:win-installer
-```
-
-安装包输出到 `dist/windows/CreativeStudioSetup.exe`。安装后可从桌面或开始菜单启动，默认卸载保留本地数据。
-
-## macOS 安装包
-
-提供 Apple Silicon 专用的 Electron DMG，内置私有 Node.js 运行时，用户拖到 Applications 后即可从 Finder 启动。
-
-```bash
-npm run build:mac-installer
-```
-
-安装包输出到 `dist/macos/产品素材工作台-<version>.dmg`。正式分发需要 Developer ID 签名与公证；详细说明见 [MACOS.md](./MACOS.md)。
-
 ## 目录结构
 
 ```text
 app/                    Next.js 页面和 API 路由
 components/             工作台 UI 组件（components/mixcut/ 为第五步智能混剪）
 components/ui/          通用 UI 原语和图标
-installer/windows/      Windows 安装包脚本和配置
-installer/macos/        macOS .app 元数据与历史启动资源
+installer/windows/      Windows 免安装包的启动、说明与迁移脚本
 lib/                    数据库、队列、供应商适配器、文件导出等核心逻辑
 lib/final-edit/         智能混剪后端（时间线、TTS、字幕对齐、ffmpeg 渲染）
 lib/providers/          图片生成供应商适配器
@@ -299,7 +278,7 @@ python-runtime/
 - `data/` 包含本地 SQLite 数据库，保存供应商配置与 API Key。
 - `storage/` 包含上传素材、生成图片、视频和日志。
 - `.env.local` 包含 LLM API Key 与腾讯云 COS 密钥。
-- `config.yaml` 包含公司网关 API Key；`.venv-litellm/` 是源码开发用的本地 Python 环境；`python-runtime/` 是免安装包内置的便携 Python 运行时（本机构建产物，数百 MB，不进 Git 也不进 Inno/DMG 安装包）。
+- `config.yaml` 包含公司网关 API Key；`.venv-litellm/` 是源码开发用的本地 Python 环境；`python-runtime/` 是免安装包内置的便携 Python 运行时（本机构建产物，数百 MB，不进 Git）。
 
 干净迁移方式：从 GitHub 下载源码，在目标机器运行 `npm ci`、`start-windows.cmd` 或 `start.command`，重新放置 `.env.local` 与 `config.yaml`，再到 `/settings` 重新配置供应商。
 

@@ -3,7 +3,7 @@
 // 行为语义对齐：
 // - desktop/service-state.ts（状态文件结构）、desktop/service-ready.ts（health instanceId 核身）、
 //   desktop/service-shutdown.ts（优雅停机链：POST /api/shutdown → 轮询 → 归属校验后强杀）
-// - installer/windows/stop-installed.ps1:21-52 与 stop-desktop.command:28-61
+// - stop-desktop.command:28-61
 //   （origin 正则严格校验 127.0.0.1 + instanceId 格式 + health 核身，fail-closed）
 // 红线：origin 不合法绝不请求；instance 不匹配绝不杀进程；归属不明只报告。
 
@@ -74,7 +74,7 @@ export function readServiceState(rootDir) {
     return { found: false, reason: 'invalid-origin', rawOrigin: String(parsed.origin ?? '') };
   }
   const instanceId = typeof parsed.instanceId === 'string' ? parsed.instanceId : '';
-  // instanceId 格式与参考实现一致（stop-installed.ps1 / stop-desktop.command），
+  // instanceId 格式与参考实现一致（stop-desktop.command），
   // 格式异常意味着状态文件无法用于核身，按不可用处理（绝不请求、绝不杀进程）。
   if (!INSTANCE_ID_PATTERN.test(instanceId)) {
     return { found: false, reason: 'unreadable' };

@@ -13,8 +13,6 @@
     "dev:win": "next dev --hostname 127.0.0.1",
     "build": "node scripts/build-production.mjs",
     "build:win-portable": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-portable.ps1",
-    "build:win-installer": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-installer.ps1",
-    "build:mac-installer": "bash scripts/build-mac-installer.sh",
     "icons": "node scripts/generate-app-icons.mjs",
     "start": "next start",
     "start:win": "next start --hostname 127.0.0.1",

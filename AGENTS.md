@@ -13,7 +13,7 @@
 **Creative Studio（产品素材工作台）** 是一个本地优先的 AI 素材生产工作台：把一张产品素材图推进到「场景图 → 分镜图 → 口播脚本 → 视频任务 → 成片剪辑 → ZIP 导出包」的完整流水线。API Key、项目数据、生成结果全部保存在本机，不依赖外部后台。
 
 - 技术栈：Next.js 16（App Router）+ React 19 + TypeScript（strict）+ Tailwind CSS 4 + SQLite（`better-sqlite3`）+ `sharp`（图片处理）+ `archiver`（ZIP 导出）+ `ffmpeg-static`/`ffprobe-static`（成片渲染）。
-- 运行形态：既能 `npm run dev` 作为普通 Web 应用跑，也能打包成带私有 Node 运行时的 Windows（Inno Setup）/ macOS（DMG，仅 Apple Silicon）桌面安装包。
+- 运行形态：既能 `npm run dev` 作为普通 Web 应用跑，也能以 Electron 桌面壳运行（macOS 源码桌面版、Windows 免安装包）。Windows 安装程序（Inno Setup）与 macOS DMG 已于 2026-10-25 移除。
 - UI 语言为中文。核心领域术语：项目（project）、场景图（scene image）、分镜（shot/storyboard）、脚本（script）、视频任务（video job）、成片剪辑（final edit）。领域词汇表见 `CONTEXT.md`。
 - 许可证：GPL-3.0-only。
 
@@ -27,8 +27,7 @@ npm run build                # 生产构建：next build + scripts/sync-standalo
 npm run start                # 启动生产服务器
 npm run lint                 # ESLint（eslint.config.mjs，eslint-config-next core-web-vitals + typescript）
 npm run icons                # 从源图重新生成应用图标
-npm run build:win-installer  # Windows 安装包（PowerShell + Inno Setup，须在 Windows 上跑）
-npm run build:mac-installer  # macOS DMG（bash；须 Apple Silicon 主机 + Node 22.x + Xcode CLT）
+npm run build:win-portable   # Windows 免安装包（PowerShell，须在 Windows 上跑）
 ```
 
 **终端用户快启脚本**（非开发用途）：`start.command` / `stop.command`（macOS 网页版）、`start-desktop.command` / `stop-desktop.command`（macOS 桌面版）、`start-windows.cmd` / `stop-windows.cmd`（Windows）。两个 macOS 入口共用同一数据根，**不能同时跑**（桌面入口在 3000 被占用时会告警）；`start-desktop.command --rebuild` 强制重跑一次 `npm run build`。免安装包装配、便携 Node/Python 运行时与 manifest 校验见 `docs/reference/打包与桌面运行.md`。
@@ -50,7 +49,7 @@ node scripts/<name>.test.ts             # 其余测试同理
 - 部分测试（如 `final-edit-render.test.ts`）会真实调用 ffmpeg/sharp 合成素材，依赖本机 ffmpeg 可用。
 - `scripts/final-edit-canvas.playwright.test.mjs` 是 Playwright 浏览器测试，运行方式不同，动它前先看文件头。
 - **改动某个模块时，优先跑与它同名的测试文件**（改 `lib/db-migrations.ts` 就跑 `db-migrations.test.ts`）。
-- 打包边界测试：`python-runtime-windows.test.mjs`、`company-provider-startup.test.mjs`、`windows-portable-payload.test.mjs`、`standalone-desktop-boundary.test.mjs`、`windows-installer.test.mjs`。`macos-installer-payload.test.mjs` 只能在 Apple Silicon 构建机上跑。
+- 打包边界测试：`python-runtime-windows.test.mjs`、`company-provider-startup.test.mjs`、`windows-portable-payload.test.mjs`、`standalone-desktop-boundary.test.mjs`。
 
 ## 目录结构与代码组织
 
@@ -72,9 +71,8 @@ components/             React UI（工作台各面板）；components/mixcut/ �
 lib/                    核心业务逻辑（见下）
 data/                   本地 SQLite 库 workbench.db（gitignored）
 storage/                上传素材、生成产物、日志（gitignored；含 bgm/final-edits/videos 等子目录）
-scripts/                测试文件、安装包构建脚本、启停辅助脚本、资源同步脚本
-installer/windows/      Electron 安装包脚本（Inno Setup）+ 安装停止/清理 PS 脚本；`launcher.cs` 仅历史资源，不打包
-installer/macos/        .app bundle 元数据模板（Info.plist）；launcher.c/launcher.sh 仅历史资源，不打包
+scripts/                测试文件、免安装包构建脚本、启停辅助脚本、资源同步脚本
+installer/windows/      Windows 免安装包的启动、说明与迁移脚本
 docs/                   设计/评审/会话记录，按日期前缀命名；
                         docs/reference/ 放常驻参考（架构细节，见下）；
                         docs/superpowers/{specs,plans}/ 放较大功能的规格与计划文档
@@ -173,7 +171,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - **批量统一审片改造**：修改统一工作台、轨道编辑或开场归库前，先读 [确认版 PRD](docs/superpowers/specs/2026-09-25-批量统一审片-PRD.md) 与 [执行文档](docs/superpowers/plans/2026-09-25-批量统一审片-执行文档.md)，按冻结 v14 和逐项验收执行。
 - **外观主题**：全局三态（浅色/深色/跟随系统）由 `html[data-theme="dark"]` 驱动——暗色令牌与组件覆盖集中在 `app/globals.css` 末尾，mixcut 两个 CSS module 各自带暗色覆盖块；偏好存 `localStorage["creative-studio-theme"]`，水合前初始化脚本在 `app/layout.tsx`，切换按钮是 `components/ThemeToggle.tsx`。新增 UI 颜色一律走设计令牌，不要新增硬编码浅色值（深色覆盖只补丁存量）。
 - **文档**：常驻架构参考放 `docs/reference/`；设计、评审、会话记录放 `docs/`，文件名带日期前缀（`YYYY-MM-DD-主题.md`）；较大功能的规格与计划放 `docs/superpowers/{specs,plans}/`——**这个目录名是历史沿革，与当前使用的任何 skill 无关**，新文档照旧往里放，不要按名字另起炉灶。
-- **关闭端点**：`POST /api/shutdown` 先 await `gracefulShutdown`（各步骤有界超时）再延迟 100ms `process.exit(0)`，供安装版启停脚本调用；不要在开发流程里误触。SIGTERM/SIGINT 也走同一入口。
+- **关闭端点**：`POST /api/shutdown` 先 await `gracefulShutdown`（各步骤有界超时）再延迟 100ms `process.exit(0)`，供启停脚本（含 Windows 免安装包）调用；不要在开发流程里误触。SIGTERM/SIGINT 也走同一入口。
 
 ## Agent skills
 
@@ -189,7 +187,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - 供应商 API Key 存本地 SQLite（`providers.apiKey` 等列），前端只显示「是否已配置」，不回显明文——保持这个约束。
 - `data/`、`storage/`、`outputs/`、`dist/` 是本机运行数据，gitignored，也不要打进安装包。
 - 日志会脱敏 API Key（`lib/logger.ts`）；新增日志点不要打印请求头、密钥或完整鉴权串。
-- 安装包构建脚本会裁剪并断言负载中不含 `data/`、`storage/`、`outputs/`、`docs/`、`scripts/`、`.git/`、`.env*`、`config.yaml`、`.venv-litellm/`、`python-runtime/`；**改动打包逻辑时保留这些断言**。禁入清单单一来源为 `scripts/packaging/forbidden-paths.json`（`next.config.ts`、`sync-standalone-assets.mjs`、`build-win-installer.ps1`、`build-mac-installer.sh` 及各自守护测试共用），改清单只改 JSON，且必须保持 ASCII-only（Windows PowerShell 5.1 按 ANSI 读无 BOM 文件，非 ASCII 字节会破坏 `ConvertFrom-Json`）。`python-runtime/` 只进 Windows 免安装包，不进 Git、Inno/DMG 安装包与 standalone。
+- Windows 免安装包按白名单装配，守护测试断言负载中不含 `data/`、`storage/`、`outputs/`、`docs/`、`scripts/`、`.git/`、`.env*`、`config.yaml`、`.venv-litellm/`、`python-runtime/`；**改动打包逻辑时保留这些断言**。禁入清单单一来源为 `scripts/packaging/forbidden-paths.json`（`next.config.ts`、`sync-standalone-assets.mjs` 及各自守护测试共用），改清单只改 JSON，且必须保持 ASCII-only（Windows PowerShell 5.1 按 ANSI 读无 BOM 文件，非 ASCII 字节会破坏 `ConvertFrom-Json`）。`python-runtime/` 只进 Windows 免安装包，不进 Git 与 standalone。
 - 本机服务（app 与 LiteLLM 代理）**不得暴露到公网**，公网交付只走 COS。
 
 ## 桌面打包与部署
@@ -197,7 +195,5 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 完整流程、脚本参数与 Electron 状态文件契约见 `docs/reference/打包与桌面运行.md`。必须记住的几条：
 
 - `next.config.ts` 用 `output: 'standalone'`；`ffmpeg-static`/`ffprobe-static` 与 sharp 的 `node_modules/@img` 由 `scripts/sync-standalone-assets.mjs` **强制拷入**（Next 文件追踪只收 `.node`，会漏掉同目录 libvips DLL 导致 `ERR_DLOPEN_FAILED`）。
-- **macOS 构建机必须是 arm64 Node 22.x**，主版本或架构不一致会让 `better-sqlite3`/`sharp` 原生模块 ABI 不匹配；另需 Xcode CLT。发版还需 Developer ID + notarytool 配置，`--allow-adhoc` 仅限本地。
 - `scripts/*.ps1` 必须存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 中文会解析失败）；`storage/run/stack.json` 则是**无 BOM** JSON。
-- 打包出的 `.app` 不含 `config.yaml` 与 `.venv-litellm/`，所以**公司供应商只在源码运行时可用，安装版永远没有**。
-- 用户侧 macOS 安装/卸载/数据位置说明见 `MACOS.md`。
+- macOS 源码桌面版的启动、停止与数据位置见 `MACOS.md`。
