@@ -38,7 +38,7 @@ export async function importPresets(dataRoot, bundle) {
     db.pragma('busy_timeout = 10000');
     const columns = db.prepare('PRAGMA table_info(video_prompt_templates)').all().map(row => row.name);
     if (![...fields, 'isBuiltin', 'category'].every(field => columns.includes(field))) {
-      throw new Error('模板数据表尚未就绪，请先启动 0.6.2 工作台，正常退出后重试。');
+      throw new Error('模板数据表尚未就绪，请先启动 0.6.2 或更新版本的工作台，正常退出后重试。');
     }
     const backupRoot = path.join(root, 'data/backups/motion-template-import');
     fs.mkdirSync(backupRoot, { recursive: true });

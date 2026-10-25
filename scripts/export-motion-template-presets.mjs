@@ -19,7 +19,7 @@ export function exportPresets(sourceRoot, outputRoot) {
     ['scripts/import-motion-template-presets.mjs', fs.readFileSync(path.join(scriptRoot, 'import-motion-template-presets.mjs'))],
     ['导入自定义运镜模板.cmd', fs.readFileSync(path.join(scriptRoot, '../installer/windows/导入自定义运镜模板.cmd'))],
     ['自定义运镜模板说明.txt', Buffer.from([
-      '自定义运镜模板补充包（适用创意工作台 0.6.2 Windows 免安装版）',
+      '自定义运镜模板补充包（适用创意工作台 0.6.2 及以上的 Windows 免安装版）',
       '',
       `本包包含 ${templates.length} 条：${templates.map(row => row.name).join('、')}。`,
       '1. 退出工作台。将补充包全部内容解压到工作台目录，与 start-windows.cmd 放在同一层。',
