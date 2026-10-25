@@ -1,4 +1,4 @@
-// FILM_P2_FIXTURE=/isolated/reassembled-P1-.../fixture.json node scripts/reassembled-film-rework.test.ts
+// FILM_P2_FIXTURE=/isolated/reassembled-P1-.../fixture.json node scripts/reassembled-film-rework.acceptance.ts
 // Service/CAS acceptance, using synthesized completions, never starts supplier queues.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

@@ -24,11 +24,11 @@ for (const template of templates) {
   const directory = path.join(root, template); fs.mkdirSync(directory);
   const env = { ...process.env, FILM_IMPORT_SPEC: path.join(synthetic, 'variants/01/renders', template + '-first/spec.json'), FILM_INTEGRATION_PARENT: directory, FILM_INTEGRATION_RENDER: '0' };
   console.log(`START ${template}`);
-  run('scripts/reassembled-film.integration.test.ts', env, path.join(directory, 'import.log'));
+  run('scripts/reassembled-film.integration.acceptance.ts', env, path.join(directory, 'import.log'));
   const fixtures = fs.readdirSync(directory).filter(name => name.startsWith('reassembled-P1-'));
   assert.equal(fixtures.length, 1);
   const fixtureRoot = path.join(directory, fixtures[0]);
-  run('scripts/reassembled-film-rework.test.ts', { ...env, FILM_P2_FIXTURE: path.join(fixtureRoot, 'fixture.json'), FILM_P2_RENDER: '1' }, path.join(directory, 'rework.log'));
+  run('scripts/reassembled-film-rework.acceptance.ts', { ...env, FILM_P2_FIXTURE: path.join(fixtureRoot, 'fixture.json'), FILM_P2_RENDER: '1' }, path.join(directory, 'rework.log'));
   const result = JSON.parse(fs.readFileSync(path.join(fixtureRoot, 'p2-service-result.json'), 'utf8'));
   assert.equal(result.ok, true); assert.equal(result.rendered, true);
   results.push({ template, fixtureRoot, result });

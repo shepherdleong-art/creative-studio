@@ -1,4 +1,4 @@
-// Fresh synthetic fixture from reassembled-film.integration.test.ts, under
+// Fresh synthetic fixture from reassembled-film.integration.acceptance.ts, under
 // outputs/2026-10-19-review-handoff. Never uses a user's database or credentials.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

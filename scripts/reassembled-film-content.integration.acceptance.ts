@@ -1,4 +1,4 @@
-// FILM_CONTENT_FIXTURE must be a fresh isolated fixture from reassembled-film.integration.test.ts.
+// FILM_CONTENT_FIXTURE must be a fresh isolated fixture from reassembled-film.integration.acceptance.ts.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';

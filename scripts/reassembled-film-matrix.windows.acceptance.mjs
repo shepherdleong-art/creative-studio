@@ -51,12 +51,12 @@ for (const mode of ['source', 'portable']) for (const [index, template] of templ
   assert.equal(JSON.parse(fs.readFileSync(spec, 'utf8')).template.id, template);
   const env = { ...cleanEnv, FILM_IMPORT_SPEC: spec, FILM_INTEGRATION_PARENT: directory, FILM_EXPECT_TEMPLATE: template };
   console.log(`START ${mode} ${template}`);
-  run('scripts/reassembled-film.integration.test.ts', env, path.join(directory, 'integration.log'));
+  run('scripts/reassembled-film.integration.acceptance.ts', env, path.join(directory, 'integration.log'));
   const fixtureRoots = fs.readdirSync(directory).filter(name => name.startsWith('reassembled-P1-'));
   assert.equal(fixtureRoots.length, 1);
   const fixture = path.join(directory, fixtureRoots[0], 'fixture.json');
   const evidence = path.join(directory, 'desktop');
-  run('scripts/reassembled-film.desktop.test.mjs', { ...env, FILM_DESKTOP_FIXTURE: fixture, FILM_DESKTOP_EVIDENCE: evidence,
+  run('scripts/reassembled-film.desktop.acceptance.mjs', { ...env, FILM_DESKTOP_FIXTURE: fixture, FILM_DESKTOP_EVIDENCE: evidence,
     ...(mode === 'portable' ? { FILM_DESKTOP_APP_ROOT: portable } : {}) }, path.join(directory, 'desktop.log'));
   const result = JSON.parse(fs.readFileSync(path.join(evidence, 'desktop-result.json'), 'utf8'));
   const cleanup = JSON.parse(fs.readFileSync(path.join(evidence, 'cleanup.json'), 'utf8'));

@@ -1,4 +1,4 @@
-// FILM_DESKTOP_FIXTURE=/isolated/test/root/fixture.json node scripts/reassembled-film.desktop.test.mjs
+// FILM_DESKTOP_FIXTURE=/isolated/test/root/fixture.json node scripts/reassembled-film.desktop.acceptance.mjs
 // Starts its own Electron + standalone service and shuts down only that instance.
 // FILM_DESKTOP_APP_ROOT selects a real portable payload (including bundled Node/Electron).
 // FILM_DESKTOP_RESTART=1 interrupts a running export and verifies same-job recovery.

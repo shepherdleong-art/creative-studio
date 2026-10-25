@@ -1,4 +1,4 @@
-// FILM_DESKTOP_FIXTURE=<isolated fixture.json> node scripts/reassembled-film-delivery.windows.test.ts
+// FILM_DESKTOP_FIXTURE=<isolated fixture.json> node scripts/reassembled-film-delivery.windows.acceptance.ts
 // Exercises a real NTFS sharing lock after a completed synthetic desktop export.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

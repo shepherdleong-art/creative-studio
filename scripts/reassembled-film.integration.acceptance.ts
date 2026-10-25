@@ -1,4 +1,4 @@
-// FILM_IMPORT_SPEC=/absolute/completed/spec.json node scripts/reassembled-film.integration.test.ts
+// FILM_IMPORT_SPEC=/absolute/completed/spec.json node scripts/reassembled-film.integration.acceptance.ts
 // Uses an existing synthetic fixed-render fixture; no provider calls. Leaves an isolated DB for browser acceptance.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

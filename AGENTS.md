@@ -49,6 +49,7 @@ node scripts/<name>.test.ts             # 其余测试同理
 - 部分测试（如 `final-edit-render.test.ts`）会真实调用 ffmpeg/sharp 合成素材，依赖本机 ffmpeg 可用。
 - `scripts/final-edit-canvas.playwright.test.mjs` 是 Playwright 浏览器测试，运行方式不同，动它前先看文件头。
 - **改动某个模块时，优先跑与它同名的测试文件**（改 `lib/db-migrations.ts` 就跑 `db-migrations.test.ts`）。
+- `scripts/*.acceptance.{ts,mjs}` 是实拍重组的手动验收脚本，要专门准备的素材（`FILM_*` 环境变量），多数还要桌面实例或 Windows，**不属于自动测试**；用法见各文件第一行和 `docs/reference/实拍成片工作台接入.md`。
 - 打包边界测试：`python-runtime-windows.test.mjs`、`company-provider-startup.test.mjs`、`windows-portable-payload.test.mjs`、`standalone-desktop-boundary.test.mjs`。
 
 ## 目录结构与代码组织

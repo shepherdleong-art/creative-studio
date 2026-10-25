@@ -1,4 +1,4 @@
-// FILM_REAL_FIXTURE=... node scripts/reassembled-rework-single-shot.test.ts
+// FILM_REAL_FIXTURE=... node scripts/reassembled-rework-single-shot.acceptance.ts
 // Copy only the already-isolated acceptance DB; never start a queue or call a supplier.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

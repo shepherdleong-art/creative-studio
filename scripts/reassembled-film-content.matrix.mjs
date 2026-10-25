@@ -22,10 +22,10 @@ for (const template of templates) {
   const spec = template === 'classic' ? process.env.FILM_CONTENT_CLASSIC_SPEC : path.join(synthetic, 'variants/01/renders', template + '-first/spec.json');
   assert.ok(spec && fs.existsSync(spec));
   const env = { ...process.env, FILM_IMPORT_SPEC: spec, FILM_INTEGRATION_PARENT: directory, FILM_INTEGRATION_RENDER: '0' };
-  console.log(`START ${template}`); run('scripts/reassembled-film.integration.test.ts', env, path.join(directory, 'import.log'));
+  console.log(`START ${template}`); run('scripts/reassembled-film.integration.acceptance.ts', env, path.join(directory, 'import.log'));
   const fixtures = fs.readdirSync(directory).filter(name => name.startsWith('reassembled-P1-')); assert.equal(fixtures.length, 1);
   const fixtureRoot = path.join(directory, fixtures[0]);
-  run('scripts/reassembled-film-content.integration.test.ts', { ...env, FILM_CONTENT_FIXTURE: path.join(fixtureRoot, 'fixture.json'), FILM_CONTENT_RENDER: '1' }, path.join(directory, 'content.log'));
+  run('scripts/reassembled-film-content.integration.acceptance.ts', { ...env, FILM_CONTENT_FIXTURE: path.join(fixtureRoot, 'fixture.json'), FILM_CONTENT_RENDER: '1' }, path.join(directory, 'content.log'));
   const result = JSON.parse(fs.readFileSync(path.join(fixtureRoot, 'content-service-result.json'), 'utf8')); assert.equal(result.ok, true);
   results.push({ template, fixtureRoot, result }); fs.writeFileSync(path.join(root, 'results.json'), JSON.stringify({ ok: results.length === templates.length, results }, null, 2));
   console.log(`PASS ${template}`);
