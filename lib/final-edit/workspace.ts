@@ -62,14 +62,10 @@ import { matchAudioFirst, type MatchDiagnostics } from './audio-first-matcher.ts
 import { audioFirstPlanToVideoTimeline } from './audio-first-timeline.ts';
 import { resolveVideoJobDisplayNames } from '../video-output-filenames.ts';
 import {
-  buildSemanticMatrixPrompt,
-  createSemanticMatrixCacheKey,
-  normalizeSemanticMatrix,
-  scoreSemanticMatrixWithRetry,
-  SEMANTIC_MATRIX_PROMPT_VERSION,
   type SemanticScene,
   type SemanticSentence,
 } from './semantic-matrix.ts';
+import { resolveFinalEditSemanticScores, type SemanticScoreAdapter } from './semantic-scoring.ts';
 import { extractMatchKeywords } from './match-keywords.ts';
 import { buildTtsAwareMatchSentences } from './match-sentence-refinement.ts';
 import type { BeatDetectionResult } from './beat-detect.ts';
@@ -163,13 +159,7 @@ export interface FinalEditWorkspaceDependencies {
   runJobsInline?: boolean;
   probeVideo(input: { filePath: string; videoJobId: string }): Promise<{ durationUs: number; width: number; height: number; fps: number }>;
   analyzeVideo(input: { filePath: string; videoJobId: string; shotSetId: string; providerId: string }): Promise<VideoAnalysisResult>;
-  scoreSemanticMatrix?(input: {
-    providerId: string;
-    systemPrompt: string;
-    userPrompt: string;
-    temperature: number;
-    maxTokens: number;
-  }): Promise<unknown>;
+  scoreSemanticMatrix?: SemanticScoreAdapter;
   semanticRetrySleep?(delayMs: number): Promise<void>;
   log?(input: { jobId: string; projectId: string; level: 'warn' | 'error'; message: string; attempt: number }): void;
   detectBeatPoints?(input: { audioPath: string; durationUs: number }): Promise<BeatDetectionResult>;
@@ -1358,74 +1348,28 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           ])].slice(0, 12),
         };
       });
-      const semanticInput = {
+      const semanticResult = await resolveFinalEditSemanticScores({
+        db,
         sentences: semanticSentences,
         scenes: semanticScenes,
         providerId: input.analysisProviderId || '',
-        model: (() => {
-          try { return String((db.prepare(`SELECT COALESCE(NULLIF(model, ''), defaultModel, '') AS model FROM script_providers WHERE id=?`).get(input.analysisProviderId || '') as { model?: string } | undefined)?.model || ''); }
-          catch { return ''; }
-        })(),
-        promptVersion: SEMANTIC_MATRIX_PROMPT_VERSION,
-      };
-      const semanticCacheKey = createSemanticMatrixCacheKey(semanticInput);
-      const scriptHash = sha256(JSON.stringify(semanticSentences));
-      const scenesFingerprint = sha256(JSON.stringify(semanticScenes));
-      const cachedMatrix = db.prepare(`SELECT semanticScoresJson, hookScoresJson, semanticFallback FROM final_edit_semantic_matrix_cache WHERE cacheKey=?`).get(semanticCacheKey) as { semanticScoresJson: string; hookScoresJson: string; semanticFallback: number } | undefined;
-      const normalizedCachedMatrix = cachedMatrix
-        ? normalizeSemanticMatrix({ score_matrix: parseJson(cachedMatrix.semanticScoresJson, []), hook_scores: parseJson(cachedMatrix.hookScoresJson, []) }, semanticSentences.length, semanticScenes.length)
-        : normalizeSemanticMatrix(null, semanticSentences.length, semanticScenes.length);
-      const semanticCacheHit = Boolean(cachedMatrix && !cachedMatrix.semanticFallback && !normalizedCachedMatrix.semanticFallback);
-      let semanticResult = semanticCacheHit
-        ? { ...normalizedCachedMatrix, semanticFallback: Boolean(cachedMatrix?.semanticFallback) }
-        : normalizeSemanticMatrix(null, semanticSentences.length, semanticScenes.length);
-      if (!semanticCacheHit && semanticSentences.length && semanticScenes.length && deps.scoreSemanticMatrix) {
-        const prompt = buildSemanticMatrixPrompt(semanticInput);
-        semanticResult = await scoreSemanticMatrixWithRetry({
-          sentenceCount: semanticSentences.length,
-          sceneCount: semanticScenes.length,
-          score: () => deps.scoreSemanticMatrix!({
-            providerId: semanticInput.providerId,
-            ...prompt,
-            temperature: 0.2,
-            // 推理型模型（GPT-5-5 等）的思考过程会吃 max_tokens 预算：1500 会被
-            // 思考占满、可见输出为空（finish_reason=length），矩阵解析必败。
-            maxTokens: 8000,
-          }),
-          sleep: deps.semanticRetrySleep,
-          onRetry: ({ attempt, maxAttempts, delayMs, error }) => deps.log?.({
-            jobId,
-            projectId: input.projectId,
-            level: 'warn',
-            attempt,
-            message: `语义评分失败，将进行第 ${attempt + 1}/${maxAttempts} 次尝试（${delayMs}ms）：${error instanceof Error ? error.message : String(error)}`,
-          }),
-          onFailure: (error, attempts) => deps.log?.({
-            jobId,
-            projectId: input.projectId,
-            level: 'error',
-            attempt: attempts,
-            message: `语义评分不可用，已降级到关键词匹配：${error instanceof Error ? error.message : String(error)}`,
-          }),
-        });
-        // fallback（LLM 失败的 0.6 均匀矩阵）不写缓存：一次抖动不得把该输入
-        // 永久绑定到降级结果，下次重跑必须重试 LLM 直至成功（自愈）。
-        if (!semanticResult.semanticFallback) {
-          db.prepare(`
-          INSERT INTO final_edit_semantic_matrix_cache
-            (cacheKey, scriptHash, scenesFingerprint, providerId, model, promptVersion, semanticScoresJson, hookScoresJson, semanticFallback, createdAt, updatedAt)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(cacheKey) DO UPDATE SET
-            scriptHash=excluded.scriptHash, scenesFingerprint=excluded.scenesFingerprint,
-            providerId=excluded.providerId, model=excluded.model, promptVersion=excluded.promptVersion,
-            semanticScoresJson=excluded.semanticScoresJson, hookScoresJson=excluded.hookScoresJson,
-            semanticFallback=excluded.semanticFallback, updatedAt=excluded.updatedAt
-        `).run(
-            semanticCacheKey, scriptHash, scenesFingerprint, semanticInput.providerId, semanticInput.model, semanticInput.promptVersion,
-            JSON.stringify(semanticResult.semanticScores), JSON.stringify(semanticResult.hookScores), semanticResult.semanticFallback ? 1 : 0, now(), now(),
-          );
-        }
-      }
+        score: deps.scoreSemanticMatrix,
+        sleep: deps.semanticRetrySleep,
+        onRetry: ({ attempt, maxAttempts, delayMs, error }) => deps.log?.({
+          jobId,
+          projectId: input.projectId,
+          level: 'warn',
+          attempt,
+          message: `语义评分失败，将进行第 ${attempt + 1}/${maxAttempts} 次尝试（${delayMs}ms）：${error instanceof Error ? error.message : String(error)}`,
+        }),
+        onFailure: (error, attempts) => deps.log?.({
+          jobId,
+          projectId: input.projectId,
+          level: 'error',
+          attempt: attempts,
+          message: `语义评分不可用，已降级到关键词匹配：${error instanceof Error ? error.message : String(error)}`,
+        }),
+      });
       const beatResult = deps.detectBeatPoints
         ? await deps.detectBeatPoints({ audioPath: resolveStoragePath(storageRoot, narration.relativePath), durationUs: narration.durationUs })
         : { pointsUs: [], fallback: true };
