@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import { describeVideoDurationOptions, normalizeVideoDraftDuration, parseVideoDuration, videoDurationError, videoDurationOptions } from '../lib/video-duration.ts';
 
 for (const [type, model, min, max] of [
@@ -38,10 +37,4 @@ for (const [model, min, max] of [
   assert.equal(normalizeVideoDraftDuration(2, choices), min);
   assert.equal(normalizeVideoDraftDuration(5, choices), 5);
 }
-const panel = fs.readFileSync('components/VideoGenerationPanel.tsx', 'utf8');
-assert.equal((panel.match(/getRowDurationOptions\(row\)\.map/g) || []).length, 2);
-assert.match(panel, /getBulkDurationOptions\(\)\.map/);
-assert.match(panel, /durationSec: getRowDuration\(r\)/);
-assert.match(panel, /durationSec: getRowDuration\(row\)/);
-assert.doesNotMatch(panel, /max=\{15\}/);
 console.log('video-duration tests passed');

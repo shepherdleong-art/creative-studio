@@ -6,7 +6,8 @@ import HoverZoomImage from '@/components/HoverZoomImage';
 import VideoGenerationPreview from '@/components/VideoGenerationPreview';
 import VideoGenerationResults from '@/components/VideoGenerationResults';
 import { Icon } from '@/components/ui/Icon';
-import { videoDurationOptions, normalizeVideoDraftDuration } from '@/lib/video-duration';
+import { resolveVideoGenerationSelection, type VideoGenerationProvider } from '@/lib/video-generation-options';
+import { normalizeVideoDraftDuration } from '@/lib/video-duration';
 import {
   collectVideoMotionTailImageIds,
   createVideoMotionRow,
@@ -35,21 +36,6 @@ function releaseDraftTailFrameAssets(
       keepalive: true,
     }).catch(() => undefined);
   }
-}
-
-interface VideoProvider {
-  id: string;
-  name: string;
-  type: string;
-  defaultModel: string;
-  defaultDurationSec: number;
-  configured?: boolean;
-  missing?: string[];
-  tailFrameCapability?: VideoTailFrameCapability;
-  multiShotCapability?: {
-    supported: boolean;
-    defaultEnabled: boolean;
-  };
 }
 
 interface MotionTemplate {
@@ -106,7 +92,7 @@ const FREE_HEAD_FRAME_DRAG_KEY = '__free-head-frame__';
 const TAIL_TRANSITION_DEFAULT_PROMPT = '从首帧丝滑转场到尾帧';
 
 export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Props) {
-  const [providers, setProviders] = useState<VideoProvider[]>([]);
+  const [providers, setProviders] = useState<VideoGenerationProvider[]>([]);
   const [templates, setTemplates] = useState<MotionTemplate[]>([]);
   const [videoJobs, setVideoJobs] = useState<VideoJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -154,23 +140,15 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const storageKey = `creative-studio:video-shot-set:${projectId}`;
   const configuredProviders = providers.filter((provider) => provider.configured !== false);
 
-  // 未选供应商的草稿继承批量选择；明确选过但已不可用的供应商不得静默换成其他模型。
-  // 偏好可灵（kling）：团队的主力视频模型，避免每次手动切换。
-  const preferredProvider = configuredProviders.find((provider) =>
-    /kling/i.test(provider.defaultModel ?? '') || /kling/i.test(provider.name ?? ''),
-  ) ?? configuredProviders[0];
-  const getRowProviderId = (row: { providerId: string }): string =>
-    row.providerId || bulkProviderId || preferredProvider?.id || '';
-  const getRowTailCapability = (row: { providerId: string }): VideoTailFrameCapability | undefined =>
-    providers.find((provider) => provider.id === getRowProviderId(row))?.tailFrameCapability;
-  const getRowDurationOptions = (row: { providerId: string }) => {
-    const provider = providers.find((item) => item.id === getRowProviderId(row));
-    return videoDurationOptions(provider?.type || '', provider?.defaultModel || '');
-  };
+  const getRowSelection = (row: { providerId: string; durationSec?: number; multiShot?: boolean }) =>
+    resolveVideoGenerationSelection(providers, bulkProviderId, row);
+  const getRowProviderId = (row: { providerId: string }) => getRowSelection(row).providerId;
+  const getRowTailCapability = (row: { providerId: string }): VideoTailFrameCapability =>
+    getRowSelection(row).capabilities.tailFrame;
+  const getRowDurationOptions = (row: { providerId: string }) => getRowSelection(row).capabilities.durations;
   const getRowDuration = (row: VideoMotionRow, value = row.durationSec) =>
-    normalizeVideoDraftDuration(value, getRowDurationOptions(row));
-  const getRowMultiShotCapability = (row: { providerId: string }): VideoProvider['multiShotCapability'] =>
-    providers.find((provider) => provider.id === getRowProviderId(row))?.multiShotCapability;
+    getRowSelection({ ...row, durationSec: value }).durationSec;
+  const getRowMultiShotCapability = (row: { providerId: string }) => getRowSelection(row).capabilities.multiShot;
 
   const makeEmptyRow = (): VideoMotionRow => {
     const row = createVideoMotionRow(crypto.randomUUID(), defaultDuration);
@@ -865,9 +843,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         prompt: r.prompt.trim(),
         templateId: r.templateId || null,
         providerId: getRowProviderId(r),
-        durationSec: getRowDuration(r),
+        ...getRowSelection(r).requestOptions,
         tailImageId: r.tailImageId,
-        ...(getRowMultiShotCapability(r)?.supported === true ? { multiShot: r.multiShot } : {}),
       }))
       .filter((r) => r.prompt.length > 0);
     if (items.length === 0) { alert('请至少填写一条描述提示词'); return; }
@@ -992,9 +969,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           prompt: row.prompt.trim(),
           templateId: row.templateId || null,
           providerId: getRowProviderId(row),
-          durationSec: getRowDuration(row),
+          ...getRowSelection(row).requestOptions,
           tailImageId: row.tailImageId,
-          ...(getRowMultiShotCapability(row)?.supported === true ? { multiShot: row.multiShot } : {}),
         }));
         try {
           const res = await fetch(`/api/shot-sets/${effectiveSetId}/video-jobs/batch`, {

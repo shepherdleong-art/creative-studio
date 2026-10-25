@@ -1,18 +1,8 @@
 import type Database from 'better-sqlite3';
-import { getVideoAdapter } from './video-providers/index.ts';
-import type { TailFrameCapability } from './video-providers/types.ts';
+import { getVideoTailFrameCapability } from './video-model-capabilities.ts';
+export { getVideoTailFrameCapability } from './video-model-capabilities.ts';
 
 export const VIDEO_TAIL_FRAME_USAGE = 'video_tail_frame';
-
-const UNSUPPORTED_CAPABILITY: TailFrameCapability = {
-  supported: false,
-  reason: 'unsupported_model',
-};
-
-const UNVERIFIED_GATEWAY_CAPABILITY: TailFrameCapability = {
-  supported: false,
-  reason: 'contract_unverified',
-};
 
 export interface VideoTailFrameAsset {
   id: string;
@@ -52,16 +42,6 @@ export function validateVideoTailFrameUpload(params: {
   const project = params.db.prepare(`SELECT id FROM projects WHERE id = ?`).get(params.projectId);
   if (!project) return '当前项目不存在';
   return null;
-}
-
-export function getVideoTailFrameCapability(
-  providerType: string,
-  model: string,
-): TailFrameCapability {
-  const capability = getVideoAdapter(providerType)?.tailFrameCapability?.(model);
-  if (capability) return capability;
-  if (providerType === 'openai-video') return UNVERIFIED_GATEWAY_CAPABILITY;
-  return UNSUPPORTED_CAPABILITY;
 }
 
 export function validateVideoTailFrameAsset(params: {

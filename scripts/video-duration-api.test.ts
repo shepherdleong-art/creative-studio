@@ -3,48 +3,57 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import ts from 'typescript';
-import Database from 'better-sqlite3';
-import * as duration from '../lib/video-duration.ts';
-import * as reassembledGuard from '../lib/reassembled-shot-guard.ts';
+import os from 'node:os';
+import path from 'node:path';
+import { register } from 'node:module';
+register('./typescript-extension-loader.mjs', import.meta.url);
+const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'video-capabilities-api-'));
+process.env.CREATIVE_STUDIO_DATA_ROOT = dataRoot;
+const { getDb, closeDb } = await import('../lib/db.ts');
+const duration = await import('../lib/video-duration.ts');
+const multiShot = await import('../lib/video-multi-shot.ts');
+const reassembledGuard = await import('../lib/reassembled-shot-guard.ts');
+const providerCapabilities = await import('../lib/video-model-capabilities.ts');
+const videoAuth = await import('../lib/video-auth.ts');
+const tailFrames = await import('../lib/video-tail-frame.ts');
+const filenames = await import('../lib/video-output-filenames.ts');
+const productionCodes = await import('../lib/media-core/production-code-reader.ts');
 
-// Execute the real route handlers with isolated SQLite and no queue/network side effects.
-const db = new Database(':memory:');
-db.exec(`
-  CREATE TABLE shots(id TEXT, shotSetId TEXT, sourceImageId TEXT, latestGeneratedImageId TEXT);
-  INSERT INTO shots VALUES ('shot','set','image',NULL);
-  CREATE TABLE shot_sets(id TEXT, projectId TEXT);
-  INSERT INTO shot_sets VALUES ('set','project');
-  CREATE TABLE video_providers(id TEXT, name TEXT, type TEXT, defaultModel TEXT, enabled INTEGER);
-  CREATE TABLE video_jobs(id TEXT, projectId TEXT, shotSetId TEXT, shotId TEXT, sourceImageId TEXT,
-    tailImageId TEXT, providerId TEXT, model TEXT, templateId TEXT, prompt TEXT, durationSec REAL,
-    multiShot INTEGER, createdAt TEXT, displayName TEXT, openingCode TEXT);
-`);
+// Production schema/handlers; only queue dispatch and HTTP transport are substituted.
+const db = getDb();
+db.prepare(`INSERT INTO providers (id, name, baseUrl, model) VALUES ('image-provider','test','http://invalid.test','test')`).run();
+db.prepare(`INSERT INTO projects (id, name, providerId, model, prompt) VALUES ('project','test','image-provider','test','test')`).run();
+db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path) VALUES ('image','project','input','test.png','/test.png')`).run();
+db.prepare(`INSERT INTO shot_sets (id, projectId, name) VALUES ('set','project','test')`).run();
+db.prepare(`INSERT INTO shots (id, shotSetId, sourceImageId, indexNum) VALUES ('shot','set','image',1)`).run();
 for (const [id, model] of [['sd25','doubao-seedance-2-5-260628'], ['sd20','doubao-seedance-2-0-260128'],
   ['fast','doubao-seedance-2-0-fast-260128'], ['kling','kling-3.0'], ['qiniu','qiniuyun/kling-3.0'], ['k25','kling-2.5']]) {
-  db.prepare('INSERT INTO video_providers VALUES (?, ?, ?, ?, 1)').run(id, id, 'openai-video', model);
+  db.prepare(`INSERT INTO video_providers (id, name, type, defaultModel, baseUrlEnv, apiKeyEnv, modelEnv, baseUrl, apiKey, enabled) VALUES (?, ?, 'openai-video', ?, '', '', '', 'http://invalid.test', 'test-key', 1)`).run(id, id, model);
 }
 const dependencies: Record<string, unknown> = {
   '@/lib/reassembled-shot-guard': reassembledGuard,
-  '@/lib/media-core/production-code-reader': { resolveTemplateOpeningCode: () => null },
+  '@/lib/media-core/production-code-reader': productionCodes,
   'next/server': { NextResponse: { json: (data: unknown, init?: ResponseInit) => Response.json(data, init) } },
   '@/lib/db': { getDb: () => db }, 'uuid': { v4: randomUUID },
   '@/lib/video-queue': { getVideoQueueStatus: () => 'running', runVideoQueue: () => { throw new Error('Unexpected queue start'); } },
   '@/lib/storage-url': {}, '@/lib/video-duration': duration,
-  '@/lib/video-auth': { getVideoProviderConfigState: () => ({ configured: true }) },
-  '@/lib/video-tail-frame': { validateVideoTailFrameAsset: () => ({ ok: true }), validateVideoTailFrameBatchDrafts: () => null },
-  '@/lib/video-multi-shot': { normalizeVideoMultiShotForStorage: () => null },
-  '@/lib/video-output-filenames': { countVideoJobsForShot: () => 0, planVideoJobDisplayName: () => 'test.mp4' },
+  '@/lib/video-auth': videoAuth,
+  '@/lib/video-model-capabilities': providerCapabilities,
+  '@/lib/video-provider-schema-runtime': { getVideoProviderGatewayReadiness: () => { throw new Error('Unexpected schema upgrade'); } },
+  '@/lib/video-tail-frame': tailFrames,
+  '@/lib/video-multi-shot': multiShot,
+  '@/lib/video-output-filenames': filenames,
 };
-function loadRoute(file: string) {
+function loadRoute(file: string, method = 'POST') {
   const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
   }).outputText;
-  const exports: { POST?: (request: Request, context: { params: Promise<{ id: string }> }) => Promise<Response> } = {};
-  vm.runInNewContext(code, { exports, console, require: (name: string) => {
+  const exports: Record<string, (request: Request, context: { params: Promise<{ id: string }> }) => Promise<Response>> = {};
+  vm.runInNewContext(code, { exports, console, URL, require: (name: string) => {
     if (!(name in dependencies)) throw new Error(`Unexpected dependency ${name}`);
     return dependencies[name];
   } });
-  return exports.POST!;
+  return exports[method];
 }
 const single = loadRoute('app/api/shot-sets/[id]/video-jobs/route.ts');
 const batch = loadRoute('app/api/shot-sets/[id]/video-jobs/batch/route.ts');
@@ -76,13 +85,74 @@ try {
     const stored = db.prepare('SELECT durationSec FROM video_jobs').all() as { durationSec: number }[];
     assert.deepEqual(stored.map(r => r.durationSec), fastDuration === 15 ? [30, 15] : []);
   }
+  // Exercise real persistence, including canonical model selection and old NULL semantics.
+  db.prepare(`UPDATE video_providers SET defaultModel = ' qiniuyun/kling-3.0 ' WHERE id = 'qiniu'`).run();
+  for (const providerId of ['qiniu', 'kling', 'sd25']) {
+    for (const value of [false, true, undefined, null]) {
+      for (const handler of [single, batch]) {
+        const item = { providerId, prompt: 'test', durationSec: 5, multiShot: value };
+        const response = await submit(handler, handler === single ? { shotId: 'shot', ...item } : { shotId: 'shot', items: [item] });
+        assert.equal(response.status, 200, await response.text());
+        const stored = db.prepare('SELECT multiShot, model FROM video_jobs').get() as { multiShot: number | null; model: string };
+        assert.equal(stored.multiShot, providerId === 'sd25' ? null : value === false ? 0 : 1);
+        assert.equal(stored.model, stored.model.trim());
+        assert.equal(multiShot.videoMultiShotFromStorage(stored.multiShot), providerId === 'sd25' ? undefined : value !== false);
+      }
+    }
+  }
+  // Incomplete Kling credentials must yield actionable 400s, never throwing runtime resolution.
+  db.prepare(`INSERT INTO video_providers (id, name, type, defaultModel, baseUrlEnv, apiKeyEnv, modelEnv, baseUrl, accessKey) VALUES ('incomplete', 'incomplete', 'kling', 'kling-v3', '', '', '', 'http://invalid.test', 'test-key')`).run();
+  for (const handler of [single, batch]) {
+    const item = { providerId: 'incomplete', prompt: 'test', durationSec: 5 };
+    const response = await submit(handler, handler === single ? { shotId: 'shot', ...item } : { shotId: 'shot', items: [item] });
+    assert.equal(response.status, 400);
+    assert.equal((db.prepare('SELECT COUNT(*) n FROM video_jobs').get() as { n: number }).n, 0);
+  }
+  // Both provider response paths publish the same capability snapshot and legacy aliases.
+  db.prepare(`DELETE FROM video_providers WHERE id = 'incomplete'`).run();
+  const getProviders = loadRoute('app/api/providers/video/route.ts', 'GET');
+  const listResponse = await getProviders(new Request('http://localhost/providers'), { params: Promise.resolve({ id: '' }) });
+  assert.equal(listResponse.status, 200, await listResponse.clone().text());
+  const listed = await listResponse.json() as Array<ReturnType<typeof providerCapabilities.describeVideoProvider>>;
+  const listedQiniu = listed.find(p => p.id === 'qiniu')!;
+  assert.deepEqual(listedQiniu.capabilities.durations, Array.from({ length: 13 }, (_, i) => i + 3));
+  assert.deepEqual(listedQiniu.capabilities.tailFrame, listedQiniu.tailFrameCapability);
+  assert.deepEqual(listedQiniu.capabilities.multiShot, listedQiniu.multiShotCapability);
+  assert.equal('apiKey' in listedQiniu, false);
+  const updateProvider = loadRoute('app/api/providers/video/[id]/route.ts', 'PUT');
+  const updateResponse = await updateProvider(new Request('http://localhost/providers/qiniu', {
+    method: 'PUT', body: JSON.stringify({ defaultModel: 'kling-2.5', defaultDurationSec: 10 }),
+  }), { params: Promise.resolve({ id: 'qiniu' }) });
+  assert.equal(updateResponse.status, 200, 'provider model switch must return current capabilities');
+  const updated = await updateResponse.json();
+  assert.deepEqual(updated.capabilities.durations, [5, 10]);
+  assert.equal(updated.capabilities.tailFrame.supported, true);
+  assert.equal(updated.capabilities.multiShot.supported, false);
+  assert.equal('multiShotCapability' in updated, false, 'legacy unsupported capability remains omitted');
+  const refreshed = await getProviders(new Request('http://localhost/providers'), { params: Promise.resolve({ id: '' }) });
+  assert.deepEqual((await refreshed.json()).find((p: { id: string }) => p.id === 'qiniu'), updated,
+    'PUT and GET must serialize the same provider identically');
+  const createProvider = loadRoute('app/api/providers/video/route.ts');
+  const createdResponse = await createProvider(new Request('http://localhost/providers', {
+    method: 'POST', body: JSON.stringify({ type: 'jimeng', defaultModel: 'doubao-seedance-2-0-260128', defaultDurationSec: 5 }),
+  }), { params: Promise.resolve({ id: '' }) });
+  assert.equal(createdResponse.status, 200);
+  const created = await createdResponse.json();
+  assert.equal(created.capabilities.tailFrame.protocol, 'ark-content-roles');
+  assert.equal(created.capabilities.durations[0], 4);
+
+
   // 已登记但尚未并入智能混剪的成片（并入后放行的规则见 reassembled-video-guard.test.ts）。
-  db.exec(`CREATE TABLE final_edit_film_bindings(shotSetId TEXT, variantId TEXT); CREATE TABLE final_edit_variants(id TEXT, timelineJson TEXT);
-    INSERT INTO final_edit_film_bindings VALUES ('set', NULL)`);
+  db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, narrationConfigJson, coverTitleJson, textStylesJson, createdAt, updatedAt)
+    VALUES ('group', 'project', 'script', 'set', '{}', 'hash', '{}', '{}', '{}', 'now', 'now')`).run();
+  db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, createdAt, updatedAt)
+    VALUES ('variant', 'group', 1, 'test', '{}', '{}', '{}', 'now', 'now')`).run();
+  db.prepare(`INSERT INTO final_edit_film_bindings (id, importKey, importHash, projectId, shotSetId, groupId, variantId, specJson, candidatesJson, manifestJson, inputHashesJson, managedRootRelative, deliveryDir, baseName, reviewToken, createdAt)
+    VALUES ('binding', 'import', 'hash', 'project', 'set', 'group', 'variant', '{}', '{}', '{}', '{}', 'test', '/test', 'test', 'token', 'now')`).run();
   for (const handler of [single, batch]) {
     const response = await submit(handler, {});
     assert.equal(response.status, 409, 'registered films cannot bypass versioned rework');
     assert.equal((db.prepare('SELECT COUNT(*) n FROM video_jobs').get() as { n: number }).n, 0);
   }
   console.log('video-duration API tests passed');
-} finally { db.close(); }
+} finally { closeDb(); fs.rmSync(dataRoot, { recursive: true, force: true }); }

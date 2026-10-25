@@ -1,47 +1,10 @@
 import { NextResponse } from 'next/server';
 import { parseVideoDuration, videoDurationError } from '@/lib/video-duration';
 import { getDb } from '@/lib/db';
-import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
+import type { VideoProviderEnvConfig } from '@/lib/video-auth';
+import { describeVideoProvider } from '@/lib/video-model-capabilities';
 import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
-import { getVideoTailFrameCapability } from '@/lib/video-tail-frame';
-import { isCompanyKlingMultiShotTarget } from '@/lib/video-multi-shot';
 import { v4 as uuidv4 } from 'uuid';
-
-function safeVideoProvider(provider: {
-  id: string;
-  name: string;
-  type: string;
-  baseUrlEnv: string;
-  apiKeyEnv: string;
-  modelEnv?: string;
-  defaultModel: string;
-  defaultDurationSec: number;
-  enabled: number;
-  baseUrl?: string;
-  apiKey?: string;
-  accessKey?: string;
-  secretKey?: string;
-}) {
-  const runtime = resolveVideoProviderRuntimeConfig(provider);
-  const multiShotCapability = isCompanyKlingMultiShotTarget(provider.type, runtime.model)
-    ? { supported: true, defaultEnabled: true }
-    : undefined;
-  return {
-    id: provider.id,
-    name: provider.name,
-    category: 'video',
-    type: provider.type,
-    baseUrl: runtime.baseUrl,
-    defaultModel: runtime.model,
-    defaultDurationSec: runtime.durationSec,
-    enabled: provider.enabled,
-    configured: runtime.configured,
-    missing: runtime.missing,
-    hasApiKey: runtime.hasApiKey,
-    tailFrameCapability: getVideoTailFrameCapability(provider.type, runtime.model),
-    ...(multiShotCapability ? { multiShotCapability } : {}),
-  };
-}
 
 export async function GET(request: Request) {
   try {
@@ -68,7 +31,7 @@ export async function GET(request: Request) {
       accessKey: string;
       secretKey: string;
     }>;
-    return NextResponse.json(providers.map(safeVideoProvider));
+    return NextResponse.json(providers.map(describeVideoProvider));
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
@@ -110,8 +73,8 @@ export async function POST(request: Request) {
       type === 'kling' ? (body.secretKey || '') : ''
     );
 
-    const provider = db.prepare(`SELECT * FROM video_providers WHERE id = ?`).get(id) as Parameters<typeof safeVideoProvider>[0];
-    return NextResponse.json(safeVideoProvider(provider));
+    const provider = db.prepare(`SELECT * FROM video_providers WHERE id = ?`).get(id) as VideoProviderEnvConfig;
+    return NextResponse.json(describeVideoProvider(provider));
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

@@ -1,32 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
+import type { VideoProviderEnvConfig } from '@/lib/video-auth';
+import { describeVideoProvider } from '@/lib/video-model-capabilities';
 import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
-import { getVideoTailFrameCapability } from '@/lib/video-tail-frame';
-import { isCompanyKlingMultiShotTarget } from '@/lib/video-multi-shot';
 import { parseVideoDuration, videoDurationError } from '@/lib/video-duration';
-
-function safeVideoProvider(provider: Record<string, unknown>) {
-  const runtime = resolveVideoProviderRuntimeConfig(provider as never);
-  const multiShotCapability = isCompanyKlingMultiShotTarget(String(provider.type), runtime.model)
-    ? { supported: true, defaultEnabled: true }
-    : undefined;
-  return {
-    id: provider.id,
-    name: provider.name,
-    category: 'video',
-    type: provider.type,
-    baseUrl: runtime.baseUrl,
-    defaultModel: runtime.model,
-    defaultDurationSec: runtime.durationSec,
-    enabled: provider.enabled,
-    configured: runtime.configured,
-    missing: runtime.missing,
-    hasApiKey: runtime.hasApiKey,
-    tailFrameCapability: getVideoTailFrameCapability(String(provider.type), runtime.model),
-    ...(multiShotCapability ? { multiShotCapability } : {}),
-  };
-}
 
 export async function PUT(
   request: NextRequest,
@@ -82,7 +59,7 @@ export async function PUT(
     values.push(id);
     db.prepare(`UPDATE video_providers SET ${updates.join(', ')} WHERE id = ?`).run(...values);
     const updated = db.prepare(`SELECT * FROM video_providers WHERE id = ?`).get(id) as Record<string, unknown>;
-    return NextResponse.json(safeVideoProvider(updated));
+    return NextResponse.json(describeVideoProvider(updated as unknown as VideoProviderEnvConfig));
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
