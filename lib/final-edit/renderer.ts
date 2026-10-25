@@ -11,6 +11,7 @@ import { composeCoverJpg } from './cover-compose.ts';
 import type { ReservedProjectExportTarget } from './export-naming.ts';
 import type { ExportIdentity } from './types.ts';
 import { normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
+import { bgmStreamLoopCount } from '../media-core/bgm-loop.ts';
 import { audioCutFilter, videoPlaybackRate } from './clip-edit.ts';
 import type { PointCue } from './packaging-cues.ts';
 import type { PackagingLayouts } from './packaging-vars.ts';
@@ -134,7 +135,7 @@ export async function renderFinalEditSnapshot(input: {
   const narrationInput = clips.length + 1;
   args.push('-i', narration);
   const bgmInput = snapshot.bgm ? narrationInput + 1 : null;
-  if (bgmPath) args.push('-stream_loop', '-1', '-i', bgmPath);
+  if (bgmPath) args.push('-stream_loop', String(bgmStreamLoopCount(await probeDurationSec(bgmPath), bodySec)), '-i', bgmPath);
   const subtitleStartInput = narrationInput + 1 + (bgmInput == null ? 0 : 1);
   for (const cue of snapshot.group.subtitleCues) {
     const subtitlePath = path.join(overlayDir, `subtitle-${cue.id}.png`);

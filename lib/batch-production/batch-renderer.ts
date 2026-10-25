@@ -1,6 +1,7 @@
 import { readBatchProductionCodes } from './production-codes.ts';
 import type { ProductionCodes } from '../media-core/production-codes.ts';
 import { audioCutFilter, parseAudioEdits, isAudioClipsMoved, normalizeAudioClip, type AudioEdits, type AudioClip } from '../media-core/audio-edit.ts';
+import { bgmStreamLoopCount } from '../media-core/bgm-loop.ts';
 import type { CoverFraming } from '../media-core/cover-types.ts';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -953,7 +954,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     if (narrationPath) args.push('-i', narrationPath);
     else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
     const bgmInput = bgm ? audioInput + 1 : null;
-    if (bgm) args.push('-stream_loop', '-1', '-i', bgm.absolutePath);
+    if (bgm) args.push('-stream_loop', String(bgmStreamLoopCount(await probeDurationSec(bgm.absolutePath), bodyDurationSec)), '-i', bgm.absolutePath);
     const subtitleStartInput = audioInput + 1 + (bgm ? 1 : 0);
     const subtitlePaths = await materializeSubtitleOverlays({
       directory: subtitleDir,

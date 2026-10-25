@@ -144,6 +144,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 - `final-edit/` — “智能混剪”第五步的后端：版本化 schema、时间线/字幕领域模型、ffmpeg 渲染、渲染 worker（重启把 running 恢复为 queued）、工作区/提案/BGM，以及视频分析、TTS、对齐等 `adapters/`。共享媒体基础（存储路径、匹配、封面标题、场景检测、TTS 与对齐、`render-contract.ts` 的 24fps / 20 帧片头常量）在 `media-core/`，旧路径只做兼容再导出。**混剪上下文与外部素材按 `projectId + shotSetId` 隔离，不许从文件名或时间戳推断归属。**
 - `ffmpeg.ts` — 解析 ffmpeg/ffprobe（`CREATIVE_STUDIO_FFMPEG`/`_FFPROBE` → static 包 → PATH），封装带进度回调、超时、stderr 尾部报错和 AbortSignal 的 `runFfmpeg`，并提供直接子进程的停机广播/等待；`probeDurationSec` 在 ffprobe 失败时回退 ffmpeg 解析。
+- 配乐循环用 `media-core/bgm-loop.ts` 算出的有限次数，**不要写 `-stream_loop -1`**：自带的 ffmpeg 6.0 在配乐短于成片时会卡在收尾（成片已写完，进程不退出）。
 - `shutdown.ts` — **唯一**的进程级优雅停机编排：停批量调度、广播并排空直接 FFmpeg、关闭 SQLite、按 `stack.json` 受控停 LiteLLM。UI 关闭端点与 SIGTERM/SIGINT 共用且幂等。
 - **停机信号契约**：成片 prepare 与批量口播任务向停机 worker 注册**同一个** AbortController；TTS 归一化/拼接与五分钟 prepare 预览都接收任务信号，被打断的 prepare 行退回 `queued` 走租约式恢复。另有三处**按策略保留的信号缺口**（都是有意为之的短调用，靠进程级 FFmpeg 停机兜底）：`lut-catalog.ts`（10s）、`project-asset-media.ts`（60s）、`final-edit/video-frame.ts`（30s）——动它们之前先确认是否还需要保持缺口。
 
