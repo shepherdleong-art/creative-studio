@@ -178,7 +178,8 @@ const durationRow = db.prepare(`SELECT generationDurationMs FROM script_drafts W
   generationDurationMs?: number;
 };
 assert.equal(typeof durationRow.generationDurationMs, 'number', '成功落库必须记录生成耗时');
-assert.ok((durationRow.generationDurationMs ?? 0) > 0);
+// 假生成器会在 1 毫秒内返回，耗时记成 0 也是合法记录；只拒绝负数。
+assert.ok((durationRow.generationDurationMs ?? -1) >= 0);
 
 let nonVisionGenerateCalled = false;
 const nonVisionResponse = await generateAndPersistScriptV3({
