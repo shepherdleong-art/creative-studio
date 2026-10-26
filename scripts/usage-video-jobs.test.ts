@@ -7,7 +7,7 @@ import {
   persistVideoJobUsageSnapshot,
   recordVideoJobUsage,
 } from '../lib/usage-async-jobs.ts';
-import { parseUsageSnapshot } from '../lib/usage-ledger.ts';
+import { parseUsageSnapshot } from '../lib/usage-snapshot.ts';
 import { initUsageSchema } from '../lib/usage-schema.ts';
 
 function createDb(): Database.Database {

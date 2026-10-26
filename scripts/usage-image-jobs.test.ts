@@ -7,7 +7,7 @@ import {
   persistImageJobUsageSnapshot,
   recordImageJobUsage,
 } from '../lib/usage-async-jobs.ts';
-import { parseUsageSnapshot } from '../lib/usage-ledger.ts';
+import { parseUsageSnapshot } from '../lib/usage-snapshot.ts';
 import { CORE_USAGE_PRICING_VERSION } from '../lib/usage-pricing.ts';
 import { initUsageSchema } from '../lib/usage-schema.ts';
 
