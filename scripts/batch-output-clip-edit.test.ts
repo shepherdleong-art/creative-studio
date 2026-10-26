@@ -1474,7 +1474,11 @@ try {
   {
     resetPlan0Arrangement();
     let wakes = 0;
-    const options = { wakeScheduler: () => { wakes++; } };
+    const logs: string[] = [];
+    const log = (entry: { projectId: string; jobId?: string; level: 'info' | 'warn' | 'error' | 'debug'; message: string; attempt?: number }) => {
+      logs.push(entry.message);
+    };
+    const options = { wakeScheduler: () => { wakes++; }, log };
     const taskCount = () => (db.prepare('SELECT COUNT(*) AS n FROM batch_tasks').get() as { n: number }).n;
     const editOutput = (edit: Parameters<typeof editBatchOutput>[4]) => editBatchOutput(db, projectId, batchId, plans[0], edit, options);
     const initialTasks = taskCount();
@@ -1526,7 +1530,9 @@ try {
     // 已保存的修改不会因为唤醒失败回滚，也不能被描述为未保存。
     await assert.rejects(editBatchOutput(db, projectId, batchId, plans[0], { ...coverEdit, timeUs: 3_750_000 }, {
       wakeScheduler: () => { throw new Error('test scheduler unavailable'); },
+      log,
     }), /修改已保存，封面任务已排队/);
+    assert.match(logs.at(-1) ?? '', /test scheduler unavailable/, '唤醒失败必须保留原始错误');
     assert.equal((currentArrangement(plans[0]).cover as { timeUs: number }).timeUs, 3_750_000);
     assert.equal(taskCount(), afterCoverTasks + 1);
     const wakeRetry = await changeBatchOutputCoverFrame(db, projectId, batchId, plans[0], 3_750_000, options);
@@ -1548,6 +1554,7 @@ try {
       await assert.rejects(editOutput({ ...coverEdit, timeUs: 4_750_000 }), /修改已保存，但封面任务未能排队/);
       assert.equal((currentArrangement(plans[0]).cover as { timeUs: number }).timeUs, 4_750_000);
       assert.equal(taskCount(), beforeQueueFailureTasks);
+      assert.match(logs.at(-1) ?? '', /test queue unavailable/, '排队失败必须保留原始错误');
     } finally { db.exec('DROP TRIGGER reject_test_cover_task'); }
     console.log('✓ 25. 编辑编排：封面影响/幂等/纯分割/修订与归属/兼容入口/旧数据修复/保存后调度失败');
   }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { describeVideoDurationOptions, normalizeVideoDraftDuration, parseVideoDuration, videoDurationError, videoDurationOptions } from '../lib/video-duration.ts';
 
 for (const [type, model, min, max] of [
@@ -37,4 +38,9 @@ for (const [model, min, max] of [
   assert.equal(normalizeVideoDraftDuration(2, choices), min);
   assert.equal(normalizeVideoDraftDuration(5, choices), 5);
 }
+
+const panel = fs.readFileSync(new URL('../components/VideoGenerationPanel.tsx', import.meta.url), 'utf8');
+assert.equal((panel.match(/getRowDurationOptions\(row\)\.map/g) || []).length, 2, '逐行时长选项必须来自模型能力');
+assert.match(panel, /getBulkDurationOptions\(\)\.map/, '批量时长选项必须来自模型能力');
+assert.doesNotMatch(panel, /max=\{15\}/, '视频时长不得写死为最多 15 秒；Seedance 2.5 支持 30 秒');
 console.log('video-duration tests passed');

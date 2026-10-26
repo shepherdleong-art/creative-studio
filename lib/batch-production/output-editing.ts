@@ -3,9 +3,11 @@ import { applyBatchOutputClipEdit, type BatchOutputClipEdit, type BatchOutputCli
 import { resolveCoverContract, resolveCoverContractHash } from './cover-contract.ts';
 import { scheduleRenderAfterCoverChange } from './phase-e.ts';
 import { BatchDomainError } from './errors.ts';
+import { writeLog } from '../logger.ts';
 
 interface EditingOptions {
   wakeScheduler?: () => void | Promise<void>;
+  log?: typeof writeLog;
 }
 
 async function defaultWakeScheduler() {
@@ -23,13 +25,29 @@ async function finishEdit(
   db: Database.Database, projectId: string, batchId: string, planId: string,
   result: BatchOutputClipEditResult, needsCover: boolean, options: EditingOptions,
 ) {
+  const log = options.log ?? writeLog;
   let coverTaskId: string | null = null;
   if (needsCover) {
     try { coverTaskId = scheduleRenderAfterCoverChange(db, projectId, batchId, planId); }
-    catch { throw new BatchDomainError('conflict', '修改已保存，但封面任务未能排队，请刷新检查成片后重试'); }
+    catch (error) {
+      log({
+        projectId,
+        level: 'error',
+        message: `[批量生产] 修改已保存，但封面任务排队失败（batchId=${batchId}，planId=${planId}）：${error instanceof Error ? error.message : String(error)}`,
+      });
+      throw new BatchDomainError('conflict', '修改已保存，但封面任务未能排队，请刷新检查成片后重试');
+    }
     if (coverTaskId) {
       try { await (options.wakeScheduler ?? defaultWakeScheduler)(); }
-      catch { throw new BatchDomainError('conflict', '修改已保存，封面任务已排队，但调度器启动失败'); }
+      catch (error) {
+        log({
+          projectId,
+          jobId: coverTaskId,
+          level: 'error',
+          message: `[批量生产] 修改已保存，封面任务已排队，但调度器唤醒失败（taskId=${coverTaskId}）：${error instanceof Error ? error.message : String(error)}`,
+        });
+        throw new BatchDomainError('conflict', '修改已保存，封面任务已排队，但调度器启动失败');
+      }
     }
   }
   return { ...result, coverTaskId };
