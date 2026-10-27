@@ -91,7 +91,7 @@ function NumberProperty({ label, value, min, max, step, suffix, disabled, onComm
   );
 }
 
-export function StickerPanel({ active, enabled, busy, template, stickers, selectedSticker, addBlockedReason, onAdd, onDragStart, onDragEnd, onPatchSticker }: {
+export function StickerPanel({ active, enabled, busy, template, stickers, selectedSticker, addBlockedReason, onAdd, onDragStart, onDragEnd, onPatchSticker, onDuplicateSticker, onDeleteSticker }: {
   active: boolean;
   enabled: boolean;
   busy: boolean;
@@ -103,6 +103,8 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
   onDragStart: (choice: StickerAssetChoice) => void;
   onDragEnd: () => void;
   onPatchSticker: (id: string, patch: PackagingStickerEditPatch) => void;
+  onDuplicateSticker: (id: string) => void;
+  onDeleteSticker: (id: string) => void;
 }) {
   const [assets, setAssets] = useState<StickerCatalogAsset[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -245,6 +247,10 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
           <div className={styles.stickerSectionHead}>
             <span><Icon name="settings" size={13} />当前贴纸</span>
             <span className={styles.stickerCount}>{selectedAsset?.label || selectedSticker.assetId} · {((selectedSticker.endFrame - selectedSticker.startFrame) / 24).toFixed(2)}s</span>
+          </div>
+          <div className={styles.stickerActionRow}>
+            <button type="button" className={styles.stickerActionButton} disabled={busy || !enabled} onClick={() => onDuplicateSticker(selectedSticker.id)}><Icon name="copy" size={12} />复制</button>
+            <button type="button" className={`${styles.stickerActionButton} ${styles.stickerActionDanger}`} disabled={busy || !enabled} onClick={() => onDeleteSticker(selectedSticker.id)}><Icon name="trash" size={12} />删除</button>
           </div>
           <label className={styles.stickerPropertyWide}>
             <span>素材风格</span>

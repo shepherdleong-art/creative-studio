@@ -31,7 +31,13 @@ import {
   createManualPackagingSticker,
   planStickerFramesAtPlayhead,
   type PackagingStickerEditPatch,
+  type PackagingStickerInstance,
 } from '@/lib/media-core/packaging-stickers';
+import {
+  duplicatePackagingSticker,
+  insertPackagingStickerAtTop,
+  normalizePackagingStickerTracks,
+} from '@/lib/media-core/packaging-sticker-timeline';
 import { PackagingTextEditPopover } from '@/components/packaging/PackagingTextEditor';
 import { PackagingOverlaySync } from './packaging-overlay-sync';
 import type { BgmImportResponse } from '@/lib/final-edit/types';
@@ -88,6 +94,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [draggedStickerChoice, setDraggedStickerChoice] = useState<StickerAssetChoice | null>(null);
   const stickerClickOffsetRef = useRef(0);
   const [playheadSec, setPlayheadSec] = useState(0);
+  const [timelineSnapEnabled, setTimelineSnapEnabled] = useState(true);
   const [seekRequestId, setSeekRequestId] = useState(0);
   const [message, setMessage] = useState('已从本地草稿恢复');
   const [busy, setBusy] = useState(false);
@@ -99,7 +106,9 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [trimClip, setTrimClip] = useState<TimelineClip | null>(null);
   const [trimPreviewInFrame, setTrimPreviewInFrame] = useState(0);
   const [analyzingKey, setAnalyzingKey] = useState('');
-  type HistoryEntry = { scope: 'variant' | 'group'; id: string; before: number; after: number };
+  type HistoryEntry =
+    | { scope: 'variant'; id: string; before: number; after: number }
+    | { scope: 'group'; id: string; target: 'subtitle' | 'packaging'; before: number; after: number };
   const historyRef = useRef<{ undo: HistoryEntry[]; redo: HistoryEntry[] }>({ undo: [], redo: [] });
   const [historyAvailable, setHistoryAvailable] = useState({ undo: false, redo: false });
   const syncHistory = () => setHistoryAvailable({ undo: historyRef.current.undo.length > 0, redo: historyRef.current.redo.length > 0 });
@@ -288,7 +297,9 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
         }));
         if (groupRef.current.id === currentGroup.id) publishGroup(result.view);
         if (record && /subtitle/.test(command.type) && command.type !== 'normalize_automatic_subtitles') {
-          recordHistory({ scope: 'group', id: currentGroup.id, before: currentGroup.revision, after: result.view.revision });
+          recordHistory({ scope: 'group', target: 'subtitle', id: currentGroup.id, before: currentGroup.revision, after: result.view.revision });
+        } else if (record && command.type === 'set_packaging_config') {
+          recordHistory({ scope: 'group', target: 'packaging', id: currentGroup.id, before: currentGroup.revision, after: result.view.revision });
         } else if (record) clearHistory();
         if (mountedRef.current) setMessage('已自动保存');
         return true;
@@ -321,14 +332,23 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     if (!entry) return;
     if (entry.scope === 'variant' && entry.id !== variant?.id) return;
     const revision = redo ? entry.after : entry.before;
-    const accepted = entry.scope === 'variant'
-      ? await enqueue(() => applyVariantNow({ type: 'restore_revision', revision }, false))
-      : await applyGroup({ type: 'restore_subtitle_revision', revision }, false);
+    let accepted: boolean;
+    if (entry.scope === 'variant') accepted = await enqueue(() => applyVariantNow({ type: 'restore_revision', revision }, false));
+    else if (entry.target === 'packaging') accepted = await applyGroup({ type: 'restore_packaging_revision', revision }, false);
+    else accepted = await applyGroup({ type: 'restore_subtitle_revision', revision }, false);
     if (!accepted) return;
     (redo ? history.redo : history.undo).pop();
     (redo ? history.undo : history.redo).push(entry);
     syncHistory();
     setSelectedClipId(''); setSelectedCueId('');
+    selectedPointIdRef.current = ''; selectedStickerIdRef.current = '';
+    setSelectedPointId(''); setSelectedStickerId('');
+    setPackagingTextEdit(null); packagingTextEditRef.current = null;
+    if (entry.scope === 'group' && entry.target === 'packaging') {
+      // 日常 layouts 拖动不重载 overlay；只有历史恢复显式刷新，避免版式与预览分叉。
+      setPackagingOverlayRestoreId((value) => value + 1);
+      setPackagingPreviewRefreshId((value) => value + 1);
+    }
     setMessage(redo ? '已重做' : '已撤销');
   };
 
@@ -398,6 +418,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [packagingPreview, setPackagingPreview] = useState<PackagingPreviewData | null>(null);
   const [packagingPreviewError, setPackagingPreviewError] = useState('');
   const [packagingPreviewRefreshId, setPackagingPreviewRefreshId] = useState(0);
+  const [packagingOverlayRestoreId, setPackagingOverlayRestoreId] = useState(0);
   // §B 画面内文字直改：桥 dblclick 上报打开的浮框状态（rect=元素在 iframe 内的视口 rect，frame=iframe 自身视口左上）
   const [packagingTextEdit, setPackagingTextEdit] = useState<{
     pointId: string;
@@ -682,22 +703,26 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     return () => window.clearTimeout(timer);
   }, [group.id, previewVariantId]);
 
-  const applyStickerPatch = (stickerId: string, patch: PackagingStickerEditPatch): Promise<boolean> => {
-    const normalized: PackagingStickerEditPatch = { ...patch };
-    if (normalized.centerXPct !== undefined) normalized.centerXPct = Math.min(100, Math.max(0, normalized.centerXPct));
-    if (normalized.centerYPct !== undefined) normalized.centerYPct = Math.min(100, Math.max(0, normalized.centerYPct));
-    if (normalized.visualWidthPct !== undefined) normalized.visualWidthPct = Math.min(1000, Math.max(1, normalized.visualWidthPct));
-    if (normalized.rotationDeg !== undefined) normalized.rotationDeg = Math.min(180, Math.max(-180, normalized.rotationDeg));
-    return applyGroupRef.current((current): GroupCommandInput => ({
+  const applyStickerInstances = (update: (stickers: PackagingStickerInstance[]) => PackagingStickerInstance[]): Promise<boolean> => (
+    applyGroupRef.current((current): GroupCommandInput => ({
       type: 'set_packaging_config',
       variantId: previewVariantId,
       config: {
         enabled: current.packaging.enabled,
         template: current.packaging.template,
         varsOverrides: packagingVarsOverridesRecord(current.packaging.varsOverrides),
-        stickers: (current.packaging.stickers ?? []).map((sticker) => sticker.id === stickerId ? applyPackagingStickerEdit(sticker, normalized) : sticker),
+        stickers: normalizePackagingStickerTracks(update(current.packaging.stickers ?? [])),
       },
-    }));
+    }))
+  );
+
+  const applyStickerPatch = (stickerId: string, patch: PackagingStickerEditPatch): Promise<boolean> => {
+    const normalized: PackagingStickerEditPatch = { ...patch };
+    if (normalized.centerXPct !== undefined) normalized.centerXPct = Math.min(100, Math.max(0, normalized.centerXPct));
+    if (normalized.centerYPct !== undefined) normalized.centerYPct = Math.min(100, Math.max(0, normalized.centerYPct));
+    if (normalized.visualWidthPct !== undefined) normalized.visualWidthPct = Math.min(1000, Math.max(1, normalized.visualWidthPct));
+    if (normalized.rotationDeg !== undefined) normalized.rotationDeg = Math.min(180, Math.max(-180, normalized.rotationDeg));
+    return applyStickerInstances((stickers) => stickers.map((sticker) => sticker.id === stickerId ? applyPackagingStickerEdit(sticker, normalized) : sticker));
   };
 
   const handleAddSticker = (choice: StickerAssetChoice, dropCenter?: { x: number; y: number }) => {
@@ -732,13 +757,44 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           enabled: current.packaging.enabled,
           template: current.packaging.template,
           varsOverrides: packagingVarsOverridesRecord(current.packaging.varsOverrides),
-          stickers: [...(current.packaging.stickers ?? []), sticker],
+          stickers: insertPackagingStickerAtTop(current.packaging.stickers ?? [], sticker),
         },
       };
     }).then((accepted) => {
       if (!accepted) return;
       handleSelectSticker(stickerId);
       seek(startFrame / FPS);
+    });
+  };
+
+  const handleTimelineStickersChange = (next: PackagingStickerInstance[]) => {
+    if (busy || !packagingEnabled) return;
+    void applyStickerInstances(() => next);
+  };
+
+  const handleDuplicateSticker = (stickerId: string) => {
+    if (busy || !packagingEnabled) return;
+    const stickers = groupRef.current.packaging.stickers ?? [];
+    if (stickers.length >= MAX_STICKER_INSTANCES) {
+      setMessage(`单个视频最多放置 ${MAX_STICKER_INSTANCES} 张贴纸。`);
+      return;
+    }
+    const source = stickers.find((sticker) => sticker.id === stickerId);
+    if (!source) return;
+    const copy = duplicatePackagingSticker(source, `s_${crypto.randomUUID()}`, FINAL_EDIT_INTRO_FRAMES + variant.timeline.bodyFrames);
+    if (!copy) {
+      setMessage('原贴纸后剩余正文不足，无法完整复制；请先缩短贴纸或移动到其他时段。');
+      return;
+    }
+    void applyStickerInstances((current) => insertPackagingStickerAtTop(current, copy)).then((accepted) => {
+      if (accepted) handleSelectSticker(copy.id);
+    });
+  };
+
+  const handleDeleteSticker = (stickerId: string) => {
+    if (busy || !packagingEnabled) return;
+    void applyStickerInstances((stickers) => stickers.filter((sticker) => sticker.id !== stickerId)).then((accepted) => {
+      if (accepted && selectedStickerIdRef.current === stickerId) setStickerSelection('');
     });
   };
 
@@ -904,7 +960,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
 
   // iframe 重载键：模板/三槽字体/文案覆盖层/草稿/卖点与贴纸数组任一变化即重载（不含 layouts——拖拽保存不重载，§6）。
   // pointCues 入键：卖点增删改后 iframe 重载，同步控制器 load 后自动 seek 回当前播放头（§3 恢复逻辑）。
-  const packagingOverlayKey = `${packagingTemplate}|${JSON.stringify(packagingConfig.varsOverrides)}|${packagingConfig.titleFont?.file ?? ''}|${packagingConfig.subtitleFont?.file ?? ''}|${packagingConfig.pointFont?.file ?? ''}|${previewVariantId}|${JSON.stringify(packagingConfig.pointCues ?? [])}|${JSON.stringify(packagingConfig.stickers ?? [])}`;
+  const packagingOverlayKey = `${packagingTemplate}|${JSON.stringify(packagingConfig.varsOverrides)}|${packagingConfig.titleFont?.file ?? ''}|${packagingConfig.subtitleFont?.file ?? ''}|${packagingConfig.pointFont?.file ?? ''}|${previewVariantId}|${packagingOverlayRestoreId}|${JSON.stringify(packagingConfig.pointCues ?? [])}|${JSON.stringify(packagingConfig.stickers ?? [])}`;
   const packagingOverlaySrc = packagingEnabled && previewVariantId && packagingPreview
     ? `/api/final-edit-groups/${encodeURIComponent(group.id)}/packaging-preview?variantId=${encodeURIComponent(previewVariantId)}&template=${encodeURIComponent(packagingTemplate)}&format=html&sync=1&edit=1`
     : '';
@@ -951,18 +1007,18 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     const apply = () => {
       try {
         const win = iframe.contentWindow as (Window & {
-          __stickerEditMode?: { active: boolean; only: string | null };
+          __stickerEditMode?: { active: boolean; only: string | null; snapEnabled: boolean };
           __packagingStickerEditBridge?: { sync?: () => void };
         }) | null;
         if (!win) return;
-        win.__stickerEditMode = { active: Boolean(stickerEditModeKey), only: stickerEditModeKey || null };
+        win.__stickerEditMode = { active: Boolean(stickerEditModeKey), only: stickerEditModeKey || null, snapEnabled: timelineSnapEnabled };
         win.__packagingStickerEditBridge?.sync?.();
       } catch { /* 文档销毁或跨域时不干预下一次重载恢复 */ }
     };
     apply();
     iframe.addEventListener('load', apply);
     return () => iframe.removeEventListener('load', apply);
-  }, [stickerEditModeKey, packagingOverlayKey, overlayMounted]);
+  }, [stickerEditModeKey, packagingOverlayKey, overlayMounted, timelineSnapEnabled]);
 
   // 「+ 卖点」默认文案：当前播放头处字幕句（与 FinalEditPreview 同口径：bodyTimeUs=(playhead-INTRO)*1e6*rate）
   const playbackRateForCueLookup = group.script.narrationConfig.playbackRate;
@@ -1307,10 +1363,12 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             onSelectClip={(clipId) => {
               setSelectedClipId(clipId);
               setSelectedCueId('');
+              setStickerSelection('');
+              setPointSelection('');
               const clip = variant.timeline.clips.find((item) => item.id === clipId);
               if (clip) { setPreviewMode('output'); seek((20 + clip.timelineInFrame) / FPS); }
             }}
-            onSelectCue={(cueId) => { setSelectedCueId(cueId); setSelectedClipId(''); }}
+            onSelectCue={(cueId) => { setSelectedCueId(cueId); setSelectedClipId(''); setStickerSelection(''); setPointSelection(''); }}
             onVariantCommand={(command) => applyVariant(command)}
             onGroupCommand={applyGroup}
             onTrimClip={openTrim}
@@ -1328,6 +1386,14 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             activeCueText={activeCueText}
             onSelectPoint={handleSelectPoint}
             onPointsChange={applyPointCues}
+            stickers={packagingStickers}
+            selectedStickerId={timelineSelectedStickerId}
+            snapEnabled={timelineSnapEnabled}
+            onSnapEnabledChange={setTimelineSnapEnabled}
+            onSelectSticker={handleSelectSticker}
+            onStickersChange={handleTimelineStickersChange}
+            onDuplicateSticker={handleDuplicateSticker}
+            onDeleteSticker={handleDeleteSticker}
           />
         </div>
       </main>
@@ -1369,6 +1435,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
               onDragStart={setDraggedStickerChoice}
               onDragEnd={() => setDraggedStickerChoice(null)}
               onPatchSticker={(stickerId, patch) => { void applyStickerPatch(stickerId, patch); }}
+              onDuplicateSticker={handleDuplicateSticker}
+              onDeleteSticker={handleDeleteSticker}
             />
           )}
           onApplyGroup={applyGroup}

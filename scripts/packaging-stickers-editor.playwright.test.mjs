@@ -145,7 +145,7 @@ try {
   assert.ok(frameBox);
   const secondAdd = await readPatch(() => panel.getByRole('button', { name: '添加贴纸 好物来了', exact: true }).dragTo(iframe, { targetPosition: { x: 120, y: 180 } }));
   assert.equal(secondAdd.view.packaging.stickers.length, 2, '拖放必须新增而不是替换当前贴纸');
-  const second = secondAdd.view.packaging.stickers[1];
+  const second = secondAdd.view.packaging.stickers.find((item) => item.id !== first.id);
   assert.ok(Math.abs(second.centerXPct - 120 / frameBox.width * 100) < 1, `拖放 X 坐标错误：${second.centerXPct}`);
   assert.ok(Math.abs(second.centerYPct - 180 / frameBox.height * 100) < 1, `拖放 Y 坐标错误：${second.centerYPct}`);
   assert.equal(second.startFrame, 20);
@@ -262,6 +262,148 @@ try {
   });
   assert.equal(propertyResult.view.packaging.stickers.find((item) => item.id === second.id).centerXPct, 63.5, '属性区数值必须一次提交');
 
+  const stickerTrackToggle = page.locator('[aria-controls="mixcut-sticker-tracks"]');
+  await stickerTrackToggle.click();
+  assert.equal(await page.locator('[data-track="sticker"]').getAttribute('data-expanded'), 'false');
+  assert.equal(await page.locator('[data-sticker-clip-id]').count(), 0, '收起轨道组后隐藏贴纸块但保留数据');
+  await stickerTrackToggle.click();
+  const timelineBlock = page.locator(`[data-sticker-clip-id="${second.id}"]`);
+  await timelineBlock.waitFor();
+  assert.equal(await page.locator('[data-sticker-clip-id]').count(), 2, '重叠贴纸必须分行显示');
+
+  await page.getByRole('button', { name: '磁吸开', exact: true }).click();
+  const beforeTimelineMove = propertyResult.view.packaging.stickers.find((item) => item.id === second.id);
+  await timelineBlock.scrollIntoViewIfNeeded();
+  let blockBox = await timelineBlock.boundingBox();
+  assert.ok(blockBox);
+  const timelineMovedResult = await readPatch(async () => {
+    await page.mouse.move(blockBox.x + blockBox.width / 2, blockBox.y + blockBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(blockBox.x + blockBox.width / 2 + 60, blockBox.y + blockBox.height / 2, { steps: 6 });
+    await page.mouse.up();
+  });
+  const timelineMoved = timelineMovedResult.view.packaging.stickers.find((item) => item.id === second.id);
+  assert.equal(timelineMoved.startFrame, beforeTimelineMove.startFrame + 24, '磁吸关闭时 60px 必须按 60px/s 移动 24 整帧');
+  assert.equal(timelineMoved.endFrame, beforeTimelineMove.endFrame + 24);
+
+  await page.getByRole('button', { name: '磁吸关', exact: true }).click();
+  blockBox = await timelineBlock.boundingBox();
+  assert.ok(blockBox);
+  const timelineSnappedResult = await readPatch(async () => {
+    await page.mouse.move(blockBox.x + blockBox.width / 2, blockBox.y + blockBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(blockBox.x + blockBox.width / 2 - 57, blockBox.y + blockBox.height / 2, { steps: 6 });
+    await page.getByTestId('sticker-time-snap-line').waitFor({ state: 'visible' });
+    await page.mouse.up();
+  });
+  const timelineSnapped = timelineSnappedResult.view.packaging.stickers.find((item) => item.id === second.id);
+  assert.equal(timelineSnapped.startFrame, beforeTimelineMove.startFrame, '磁吸开启后必须吸附到其他贴纸起点');
+  assert.equal(timelineSnapped.endFrame, beforeTimelineMove.endFrame);
+
+  await page.getByRole('button', { name: '磁吸开', exact: true }).click();
+  const trimHandle = timelineBlock.locator('[aria-label="修剪贴纸结尾"]');
+  const trimBox = await trimHandle.boundingBox();
+  assert.ok(trimBox);
+  const timelineTrimmedResult = await readPatch(async () => {
+    await page.mouse.move(trimBox.x + trimBox.width / 2, trimBox.y + trimBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(trimBox.x + trimBox.width / 2 + 30, trimBox.y + trimBox.height / 2, { steps: 5 });
+    await page.mouse.up();
+  });
+  const timelineTrimmed = timelineTrimmedResult.view.packaging.stickers.find((item) => item.id === second.id);
+  assert.equal(timelineTrimmed.startFrame, timelineSnapped.startFrame, '修剪结尾不得改变起点');
+  assert.equal(timelineTrimmed.endFrame, timelineSnapped.endFrame + 12, '修剪必须按整帧提交');
+
+  const sourceTrack = timelineTrimmed.trackIndex;
+  const targetTrack = sourceTrack === 0 ? 1 : 0;
+  blockBox = await timelineBlock.boundingBox();
+  assert.ok(blockBox);
+  const reorderedResult = await readPatch(async () => {
+    await page.mouse.move(blockBox.x + blockBox.width / 2, blockBox.y + blockBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(blockBox.x + blockBox.width / 2, blockBox.y + blockBox.height / 2 + (targetTrack - sourceTrack) * 28, { steps: 6 });
+    await page.getByTestId('sticker-track-insert-line').waitFor({ state: 'visible' });
+    await page.getByTestId('sticker-track-placeholder').waitFor({ state: 'visible' });
+    assert.equal(await page.locator(`[data-sticker-lane="${targetTrack}"]`).getAttribute('data-drop-target'), 'true', '换轨必须高亮目标轨');
+    await page.mouse.up();
+  });
+  const reordered = reorderedResult.view.packaging.stickers.find((item) => item.id === second.id);
+  assert.equal(reordered.trackIndex, targetTrack, '上下拖动必须改变轨道层级');
+  assert.equal(reordered.startFrame, timelineTrimmed.startFrame, '换轨不得改变开始帧');
+  assert.equal(reordered.endFrame, timelineTrimmed.endFrame, '换轨不得改变时长');
+  const reorderedFirst = reorderedResult.view.packaging.stickers.find((item) => item.id === first.id);
+  await eventually(async () => {
+    const secondZ = await overlay.locator(`[data-sticker-id="${second.id}"]`).evaluate((element) => Number(element.style.zIndex));
+    const firstZ = await overlay.locator(`[data-sticker-id="${first.id}"]`).evaluate((element) => Number(element.style.zIndex));
+    return secondZ === 1000 - reordered.trackIndex && firstZ === 1000 - reorderedFirst.trackIndex;
+  }, 'overlay 层级必须与时间轴轨道顺序一致');
+
+  await eventually(async () => await page.getByRole('button', { name: '撤销', exact: true }).isEnabled(), '换轨保存后撤销必须可用');
+  const undoTrackResult = await readPatch(() => page.keyboard.press('Control+z'), false);
+  assert.equal(undoTrackResult.request.type, 'restore_packaging_revision');
+  assert.equal(undoTrackResult.view.packaging.stickers.find((item) => item.id === second.id).trackIndex, sourceTrack, '一次撤销必须恢复整个换轨操作');
+  const redoTrackResult = await readPatch(() => page.keyboard.press('Control+Shift+z'), false);
+  assert.equal(redoTrackResult.request.type, 'restore_packaging_revision');
+  assert.equal(redoTrackResult.view.packaging.stickers.find((item) => item.id === second.id).trackIndex, targetTrack, '重做必须恢复换轨后的层级');
+
+  const beforeTimelineCancel = redoTrackResult.view.packaging.stickers.find((item) => item.id === second.id);
+  blockBox = await timelineBlock.boundingBox();
+  assert.ok(blockBox);
+  const timelineCancelRequests = [];
+  const watchTimelineCancelRequests = (request) => {
+    if (request.method() === 'PATCH' && new URL(request.url()).pathname === groupPath && (request.postData() || '').includes('"stickers"')) timelineCancelRequests.push(request);
+  };
+  page.on('request', watchTimelineCancelRequests);
+  await page.mouse.move(blockBox.x + blockBox.width / 2, blockBox.y + blockBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(blockBox.x + blockBox.width / 2 + 60, blockBox.y + blockBox.height / 2 + (beforeTimelineCancel.trackIndex === 0 ? 28 : -28), { steps: 6 });
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.up({ button: 'right' });
+  await page.mouse.up();
+  await page.waitForTimeout(350);
+  page.off('request', watchTimelineCancelRequests);
+  assert.equal(timelineCancelRequests.length, 0, `右键取消时间轴拖拽不得产生保存请求：${timelineCancelRequests.map((request) => request.postData()).join('\n')}`);
+  const afterTimelineCancel = await page.evaluate(async (groupId) => (await (await fetch(`/api/final-edit-groups/${groupId}`)).json()), fixture.groupId);
+  assert.equal(afterTimelineCancel.revision, redoTrackResult.view.revision, '右键取消时间轴拖拽不得推进 revision');
+  const cancelledTimelineSticker = afterTimelineCancel.packaging.stickers.find((item) => item.id === second.id);
+  assert.deepEqual(
+    { startFrame: cancelledTimelineSticker.startFrame, endFrame: cancelledTimelineSticker.endFrame, trackIndex: cancelledTimelineSticker.trackIndex },
+    { startFrame: beforeTimelineCancel.startFrame, endFrame: beforeTimelineCancel.endFrame, trackIndex: beforeTimelineCancel.trackIndex },
+    '右键取消必须同时恢复时间和层级',
+  );
+  const timelineContextMenuPrevented = await page.evaluate(() => {
+    const synthetic = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    document.dispatchEvent(synthetic);
+    return synthetic.defaultPrevented;
+  });
+  assert.equal(timelineContextMenuPrevented, true, '时间轴右键取消必须阻止浏览器原生菜单');
+
+  const idsBeforeCopy = new Set(afterTimelineCancel.packaging.stickers.map((item) => item.id));
+  const copiedResult = await readPatch(() => page.keyboard.press('Control+d'));
+  assert.equal(copiedResult.view.packaging.stickers.length, 3, 'Ctrl+D 必须复制当前贴纸');
+  const copied = copiedResult.view.packaging.stickers.find((item) => !idsBeforeCopy.has(item.id));
+  assert.ok(copied);
+  assert.equal(copied.startFrame, beforeTimelineCancel.endFrame, '复制默认紧接原贴纸之后');
+  assert.equal(copied.endFrame - copied.startFrame, beforeTimelineCancel.endFrame - beforeTimelineCancel.startFrame);
+  assert.equal(copied.centerXPct, beforeTimelineCancel.centerXPct);
+  assert.equal(copied.centerYPct, beforeTimelineCancel.centerYPct);
+  assert.equal(copied.visualWidthPct, beforeTimelineCancel.visualWidthPct);
+  assert.equal(copied.rotationDeg, beforeTimelineCancel.rotationDeg);
+  assert.equal(copied.animation, beforeTimelineCancel.animation);
+  assert.deepEqual(copied.origin, { kind: 'manual' }, '复制自动或手动贴纸都必须产生手动来源');
+  await eventually(async () => await page.locator(`[data-sticker-clip-id="${copied.id}"]`).getAttribute('data-selected') === 'true', '复制后必须选中新贴纸');
+  const deletedCopyResult = await readPatch(() => page.keyboard.press('Delete'));
+  assert.equal(deletedCopyResult.view.packaging.stickers.length, 2, 'Delete 必须删除当前贴纸');
+  assert.equal(deletedCopyResult.view.packaging.stickers.some((item) => item.id === copied.id), false);
+
+  await eventually(async () => await page.getByRole('button', { name: '撤销', exact: true }).isEnabled(), '删除后撤销必须可用');
+  const undoDeleteResult = await readPatch(() => page.keyboard.press('Control+z'), false);
+  assert.equal(undoDeleteResult.view.packaging.stickers.length, 3, '一次撤销必须恢复被删除贴纸');
+  assert.equal(undoDeleteResult.view.packaging.stickers.some((item) => item.id === copied.id), true);
+  const redoDeleteResult = await readPatch(() => page.keyboard.press('Control+Shift+z'), false);
+  assert.equal(redoDeleteResult.view.packaging.stickers.length, 2, '重做必须再次删除复制贴纸');
+  assert.equal(redoDeleteResult.view.packaging.stickers.some((item) => item.id === copied.id), false);
+
   const disabledResult = await readPatch(() => page.getByRole('switch', { name: '启用视频包装' }).click(), false);
   assert.equal(disabledResult.view.packaging.enabled, false);
   assert.equal(disabledResult.view.packaging.stickers.length, 2, '关闭包装不得删除贴纸');
@@ -286,7 +428,7 @@ try {
   assert.equal(persisted.find((item) => item.id === second.id).centerXPct, 63.5);
 
   passed = true;
-  console.log('贴纸编辑器真实 E2E 通过：双页签、115 张目录、分类搜索、点击/拖放、空间编辑、属性提交、包装开关与刷新恢复。');
+  console.log('贴纸编辑器真实 E2E 通过：素材目录、空间编辑、时间轴移动/修剪/磁吸/换轨、右键取消、复制删除、撤销重做、包装开关与刷新恢复。');
 } catch (error) {
   if (server) console.error(server.output());
   throw error;

@@ -14,7 +14,10 @@ import { constrainClipDrag, planClipReorder, timelineAbsoluteFrameFromPointer, t
 import { snapMovingClip } from '@/lib/media-core/timeline-snap';
 import { audioClips, videoPlaybackRate } from '@/lib/final-edit/clip-edit';
 import type { AudioClip, AudioTrackKind } from '@/lib/final-edit/types';
+import type { PackagingStickerInstance } from '@/lib/media-core/packaging-stickers';
+import { layoutPackagingStickerTracks } from '@/lib/media-core/packaging-sticker-timeline';
 import { NarrationPlaybackRateControl } from './NarrationPlaybackRateControl';
+import { MIXCUT_STICKER_TRACK_HEIGHT, MixcutStickerTrack } from './MixcutStickerTrack';
 import styles from './mixcut-content.module.css';
 
 const FPS = FINAL_EDIT_FPS;
@@ -99,6 +102,14 @@ export function MixcutTimeline({
   activeCueText,
   onSelectPoint,
   onPointsChange,
+  stickers,
+  selectedStickerId,
+  snapEnabled,
+  onSnapEnabledChange,
+  onSelectSticker,
+  onStickersChange,
+  onDuplicateSticker,
+  onDeleteSticker,
 }: {
   variant: FinalEditVariantView;
   cues: SubtitleCue[];
@@ -131,10 +142,19 @@ export function MixcutTimeline({
   onSelectPoint: (pointId: string) => void;
   /** 卖点增/删/改字/移动/修剪的唯一出口：携带完整新数组（调用方经 applyGroup 落库）。 */
   onPointsChange: (next: PointCue[]) => void;
+  stickers: PackagingStickerInstance[];
+  selectedStickerId: string;
+  snapEnabled: boolean;
+  onSnapEnabledChange: (enabled: boolean) => void;
+  onSelectSticker: (stickerId: string) => void;
+  onStickersChange: (next: PackagingStickerInstance[]) => void;
+  onDuplicateSticker: (stickerId: string) => void;
+  onDeleteSticker: (stickerId: string) => void;
 }) {
-  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [stickerTracksExpanded, setStickerTracksExpanded] = useState(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [selectedAudio, setSelectedAudio] = useState<{ track: AudioTrackKind; clipId: string } | null>(null);
+  const effectiveSelectedAudio = selectedStickerId ? null : selectedAudio;
   const [viewportWidth, setViewportWidth] = useState(720);
   const [contextMenu, setContextMenu] = useState<TimelineContextMenu | null>(null);
   const [tool, setTool] = useState<TimelineTool>('select');
@@ -155,6 +175,18 @@ export function MixcutTimeline({
   const playheadPx = Math.max(0, Math.min(totalSec, playheadSec)) * pxPerSecond;
   const assetById = useMemo(() => new Map(assets.map((asset) => [asset.videoJobId, asset])), [assets]);
   const orderedClips = useMemo(() => [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame), [variant.timeline.clips]);
+  const laidOutStickers = useMemo(() => layoutPackagingStickerTracks(stickers), [stickers]);
+  const stickerTrackCount = useMemo(() => laidOutStickers.reduce((count, sticker) => Math.max(count, sticker.trackIndex + 1), 1), [laidOutStickers]);
+  const stickerSnapCandidates = useMemo(() => [
+    playheadSec,
+    INTRO_FRAMES / FPS,
+    (INTRO_FRAMES + variant.timeline.bodyFrames) / FPS,
+    ...orderedClips.flatMap((clip) => [
+      (INTRO_FRAMES + clip.timelineInFrame) / FPS,
+      (INTRO_FRAMES + clip.timelineOutFrame) / FPS,
+    ]),
+    ...pointCues.flatMap((cue) => [cue.startSec, cue.endSec]),
+  ], [playheadSec, variant.timeline.bodyFrames, orderedClips, pointCues]);
 
   // ---- §5 卖点轨：增/删/改统一产出新 pointCues 数组，由 PreviewStep 经 applyGroup 落库 ----
   const addPoint = () => {
@@ -221,19 +253,22 @@ export function MixcutTimeline({
       if (event.altKey) return;
       if (key === ' ' && !modifier && !target?.closest('button')) { event.preventDefault(); onTogglePlay?.(); return; }
       if (disabled) return;
-      if (modifier && key === 'z') {
+      if (modifier && key === 'd' && selectedStickerId && packagingEnabled) {
+        event.preventDefault();
+        if (!event.repeat) onDuplicateSticker(selectedStickerId);
+      } else if (modifier && key === 'z') {
         event.preventDefault();
         if (!event.repeat) { if (event.shiftKey) { if (canRedo) onRedo?.(); } else if (canUndo) onUndo?.(); }
       } else if (modifier && key === 'b') {
         event.preventDefault();
         if (event.repeat) return;
         const bodySeconds = playheadSec - INTRO_FRAMES / FPS;
-        if (selectedAudio) {
-          const rate = selectedAudio.track === 'narration' ? narrationPlaybackRate : 1;
-          const clip = audioClips(variant.timeline, selectedAudio.track, bodySec * rate * 1e6).find(item => item.id === selectedAudio.clipId);
+        if (effectiveSelectedAudio) {
+          const rate = effectiveSelectedAudio.track === 'narration' ? narrationPlaybackRate : 1;
+          const clip = audioClips(variant.timeline, effectiveSelectedAudio.track, bodySec * rate * 1e6).find(item => item.id === effectiveSelectedAudio.clipId);
           const atUs = Math.round(bodySeconds * rate * 1e6);
           if (clip && atUs - clip.timelineStartUs >= 500_000 && clip.timelineEndUs - atUs >= 500_000)
-            void onVariantCommand({ type: 'split_audio_clip', ...selectedAudio, atUs });
+            void onVariantCommand({ type: 'split_audio_clip', ...effectiveSelectedAudio, atUs });
         } else if (selectedCueId) {
           const cue = cues.find(item => item.id === selectedCueId);
           const plan = cue && planSubtitleCueSplit({ cue, requestedSplitUs: bodySeconds * narrationPlaybackRate * 1e6, fps: FPS });
@@ -246,21 +281,22 @@ export function MixcutTimeline({
       } else if (modifier) return;
       else if (key === 'v') setTool('select');
       else if (key === 'b') setTool('split');
-      else if (key === 'n') setSnapEnabled(value => !value);
+      else if (key === 'n') onSnapEnabledChange(!snapEnabled);
       else if (key === 'arrowleft' || key === 'arrowright') {
         event.preventDefault();
         onSeek(Math.max(0, Math.min(totalSec, playheadSec + (key === 'arrowleft' ? -1 : 1) * (event.shiftKey ? 10 : 1) / FPS)));
       } else if (key === 'delete' || key === 'backspace') {
         event.preventDefault();
         if (event.repeat) return;
-        if (selectedAudio) void onVariantCommand({ type: 'delete_audio_clip', ...selectedAudio }).then(ok => { if (ok) setSelectedAudio(null); });
+        if (selectedStickerId && packagingEnabled) onDeleteSticker(selectedStickerId);
+        else if (effectiveSelectedAudio) void onVariantCommand({ type: 'delete_audio_clip', ...effectiveSelectedAudio }).then(ok => { if (ok) setSelectedAudio(null); });
         else if (selectedCueId) void onGroupCommand({ type: 'delete_subtitle_cue', cueId: selectedCueId }).then(ok => { if (ok) onSelectCue(''); });
         else if (selectedClipId) void onVariantCommand({ type: 'delete_clip', clipId: selectedClipId }).then(ok => { if (ok) onSelectClip(''); });
-      } else if (key === 'escape') { setSelectedAudio(null); onSelectClip(''); onSelectCue(''); }
+      } else if (key === 'escape') { setSelectedAudio(null); onSelectClip(''); onSelectCue(''); onSelectPoint(''); onSelectSticker(''); }
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [active, disabled, shortcutsOpen, contextMenu, playheadSec, totalSec, selectedAudio, selectedCueId, selectedClipId, narrationPlaybackRate, variant, cues, bodySec, canUndo, canRedo, onUndo, onRedo, onTogglePlay, onSeek, onGroupCommand, onVariantCommand, onSelectClip, onSelectCue]);
+  }, [active, disabled, shortcutsOpen, contextMenu, playheadSec, totalSec, effectiveSelectedAudio, selectedCueId, selectedClipId, selectedStickerId, packagingEnabled, narrationPlaybackRate, variant, cues, bodySec, snapEnabled, canUndo, canRedo, onUndo, onRedo, onTogglePlay, onSeek, onGroupCommand, onVariantCommand, onSelectClip, onSelectCue, onSelectPoint, onSelectSticker, onSnapEnabledChange, onDuplicateSticker, onDeleteSticker]);
 
   const seekFromPointer = (clientX: number) => {
     const scroll = scrollRef.current;
@@ -331,7 +367,7 @@ export function MixcutTimeline({
         )}
         <button type="button" className={styles.tlToolButton} disabled={disabled || !canUndo} onClick={onUndo} title="撤销 (⌘/Ctrl+Z)">撤销</button>
         <button type="button" className={styles.tlToolButton} disabled={disabled || !canRedo} onClick={onRedo} title="重做 (⌘/Ctrl+Shift+Z)">重做</button>
-        <button type="button" className={styles.tlToolButton} aria-pressed={snapEnabled} onClick={() => setSnapEnabled(value => !value)} title="视频磁吸 (N)，Alt 临时关闭">磁吸{snapEnabled ? '开' : '关'}</button>
+        <button type="button" className={styles.tlToolButton} aria-pressed={snapEnabled} onClick={() => onSnapEnabledChange(!snapEnabled)} title="时间轴与贴纸磁吸 (N)，视频拖动可按 Alt 临时关闭">磁吸{snapEnabled ? '开' : '关'}</button>
         <label>缩放 <input ref={zoomInputRef} aria-label="时间轴缩放" type="range" min={40} max={240} step={10} value={pxPerSecond} onChange={event => changeZoom(Number(event.target.value))} /></label>
         <button type="button" className={styles.tlToolButton} onClick={() => setShortcutsOpen(true)} aria-haspopup="dialog" aria-expanded={shortcutsOpen}>快捷键说明</button>
         <span role="status" className={styles.tlToolHint} data-testid="mixcut-timeline-tool-hint">{tool === 'split' ? splitMessage || '点击视频、音频或字幕的目标位置切开；视频两侧至少保留 0.5 秒，右键删除' : '拖动字幕块移动，拖两侧修剪，双击改字；选中视频可在右侧调整倍速和画面，音频用分割工具裁切，右键删除'}</span>
@@ -342,6 +378,18 @@ export function MixcutTimeline({
         <div className={styles.tlLab} style={{ height: 20 }} />
         <div className={styles.tlLab} style={{ height: 28 }}>字幕</div>
         {packagingEnabled && <div className={styles.tlLab} style={{ height: 28 }}>卖点</div>}
+        {packagingEnabled && (
+          <button
+            type="button"
+            className={`${styles.tlLab} ${styles.tlStickerLabel}`}
+            style={{ height: (stickerTracksExpanded ? stickerTrackCount : 1) * MIXCUT_STICKER_TRACK_HEIGHT }}
+            aria-expanded={stickerTracksExpanded}
+            aria-controls="mixcut-sticker-tracks"
+            data-expanded={stickerTracksExpanded}
+            onClick={() => setStickerTracksExpanded((value) => !value)}
+            title={stickerTracksExpanded ? '收起贴纸轨道' : '展开贴纸轨道'}
+          ><Icon name="chevron-down" size={10} />贴纸</button>
+        )}
         <div className={styles.tlLab} style={{ height: 64 }}>视频</div>
         <div className={styles.tlLab} style={{ height: 60 }}>音频</div>
       </div>
@@ -399,7 +447,7 @@ export function MixcutTimeline({
                   anySelected={Boolean(selectedPointId)}
                   disabled={disabled}
                   tool={tool}
-                  onSelect={onSelectPoint}
+                  onSelect={(pointId) => { setSelectedAudio(null); onSelectClip(''); onSelectCue(''); onSelectPoint(pointId); }}
                   onChange={changePoint}
                   onOpenContextMenu={(clientX, clientY) => setContextMenu({
                     kind: 'point',
@@ -411,6 +459,21 @@ export function MixcutTimeline({
               ))}
               {pointCues.length === 0 && <span className={styles.pointTrackEmpty}>点 +卖点 添加</span>}
             </div>
+          )}
+          {packagingEnabled && (
+            <MixcutStickerTrack
+              stickers={stickers}
+              expanded={stickerTracksExpanded}
+              trackCount={stickerTrackCount}
+              bodyEndFrame={INTRO_FRAMES + variant.timeline.bodyFrames}
+              pxPerSecond={pxPerSecond}
+              snapEnabled={snapEnabled}
+              snapCandidates={stickerSnapCandidates}
+              selectedStickerId={selectedStickerId}
+              disabled={disabled || tool !== 'select'}
+              onSelect={(stickerId) => { setSelectedAudio(null); onSelectClip(''); onSelectCue(''); onSelectSticker(stickerId); }}
+              onCommit={onStickersChange}
+            />
           )}
           <div className={`${styles.tlTrack} ${styles.tlTrackVideo}`} data-track="video">
             {orderedClips.map((clip, index) => (
@@ -465,7 +528,7 @@ export function MixcutTimeline({
           >
             {audioClips(variant.timeline, 'narration', narrationDurationSec * narrationPlaybackRate * 1e6).map((clip) => (
               <AudioBlock key={clip.id} clip={clip} track="narration" playbackRate={narrationPlaybackRate} bodySec={bodySec} pxPerSecond={pxPerSecond} playheadPx={playheadPx} tool={tool} disabled={disabled}
-                onSelect={() => { setSelectedAudio({ track: 'narration', clipId: clip.id }); onSelectClip(''); onSelectCue(''); }} selected={selectedAudio?.track === 'narration' && selectedAudio.clipId === clip.id}
+                onSelect={() => { setSelectedAudio({ track: 'narration', clipId: clip.id }); onSelectClip(''); onSelectCue(''); }} selected={effectiveSelectedAudio?.track === 'narration' && effectiveSelectedAudio.clipId === clip.id}
                 label={`口播 · ${narrationPlaybackRate.toFixed(1)}x`} onSeek={onSeek} onCommand={onVariantCommand}
                 onOpenContextMenu={(x, y) => setContextMenu({ kind: 'narration', clipId: clip.id, x: Math.max(8, Math.min(x, window.innerWidth - 356)), y: Math.max(8, Math.min(y, window.innerHeight - 300)) })} />
             ))}
@@ -473,7 +536,7 @@ export function MixcutTimeline({
           <div className={`${styles.tlTrack} ${styles.tlTrackAudio}`} data-track="bgm" style={{ borderBottom: 'none' }}>
             {variant.bgm.trackId && bgmTrackName ? audioClips(variant.timeline, 'bgm', bodySec * 1e6).map((clip) => (
               <AudioBlock key={clip.id} clip={clip} track="bgm" playbackRate={1} bodySec={bodySec} pxPerSecond={pxPerSecond} playheadPx={playheadPx} tool={tool} disabled={disabled}
-                onSelect={() => { setSelectedAudio({ track: 'bgm', clipId: clip.id }); onSelectClip(''); onSelectCue(''); }} selected={selectedAudio?.track === 'bgm' && selectedAudio.clipId === clip.id}
+                onSelect={() => { setSelectedAudio({ track: 'bgm', clipId: clip.id }); onSelectClip(''); onSelectCue(''); }} selected={effectiveSelectedAudio?.track === 'bgm' && effectiveSelectedAudio.clipId === clip.id}
                 label={`${bgmTrackName} · ${variant.bgm.gainDb} dB`} onSeek={onSeek} onCommand={onVariantCommand}
                 onOpenContextMenu={(x, y) => setContextMenu({ kind: 'bgm', clipId: clip.id, x: Math.max(8, Math.min(x, window.innerWidth - 184)), y: Math.max(8, Math.min(y, window.innerHeight - 86)) })} />
             )) : <span className={styles.wfLabel} style={{ left: introPx + 8 }}>无 BGM</span>}

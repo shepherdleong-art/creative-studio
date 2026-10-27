@@ -168,6 +168,8 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
   }
 
   function snapMove(currentEl, target) {
+    var mode = activeMode();
+    if (mode && mode.snapEnabled === false) return { x: null, y: null };
     var model = modelFor(currentEl);
     var rect = rootRect();
     var box = effectiveBox(Object.assign({}, model.sticker, target), model.asset, rect);

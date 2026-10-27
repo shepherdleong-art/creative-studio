@@ -364,6 +364,24 @@
 .pointBlockSel { z-index: 2; box-shadow: 0 0 0 1.5px #fff, 0 0 0 3.5px var(--blue); filter: brightness(1.08); }
 .pointTag { flex-shrink: 0; font-size: 10px; line-height: 1; }
 .pointTrackEmpty { position: absolute; top: 50%; left: 8px; transform: translateY(-50%); color: var(--faint); font-size: 10px; pointer-events: none; }
+.tlLabels .tlStickerLabel { gap: 2px; padding: 0; border: 0; border-bottom: .5px solid var(--line-soft); background: transparent; color: var(--sub); cursor: pointer; }
+.tlLabels .tlStickerLabel:hover { background: var(--color-surface-hover); color: var(--ink); }
+.tlStickerLabel svg { flex-shrink: 0; transition: transform .15s; }
+.tlStickerLabel[data-expanded='false'] svg { transform: rotate(-90deg); }
+.stickerTracks { position: relative; }
+.stickerLane { box-sizing: border-box; height: 28px; transition: background .12s; }
+.stickerLaneTarget { background: var(--blue-wash); }
+.stickerBlock { position: absolute; top: 3px; display: flex; height: 22px; align-items: center; gap: 4px; overflow: hidden; padding: 0 9px; border: .5px solid color-mix(in srgb, var(--blue) 30%, var(--line)); border-radius: 6px; background: color-mix(in srgb, var(--blue) 12%, var(--paper)); box-shadow: var(--sh-sm); color: var(--ink); font-size: 10px; white-space: nowrap; cursor: grab; touch-action: none; user-select: none; }
+.stickerBlock > svg { flex-shrink: 0; color: var(--blue); }
+.stickerBlockSel { z-index: 2; border-color: var(--blue); background: var(--blue-wash); box-shadow: 0 0 0 1.5px var(--paper), 0 0 0 3px color-mix(in srgb, var(--blue) 58%, transparent); }
+.stickerBlockDraft { cursor: grabbing; }
+.stickerBlockLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.stickerBlockDuration { flex-shrink: 0; margin-left: auto; color: var(--sub); font-size: 9px; font-variant-numeric: tabular-nums; }
+.stickerBlockGhost { z-index: 4; display: flex; justify-content: center; border: 1px dashed var(--blue); background: color-mix(in srgb, var(--blue) 18%, var(--paper)); color: var(--blue); opacity: .62; pointer-events: none; }
+.stickerTrackInsertLine { position: absolute; z-index: 6; top: -1px; right: 0; left: 0; height: 2px; background: var(--blue); box-shadow: 0 0 0 1px color-mix(in srgb, var(--paper) 65%, transparent); pointer-events: none; }
+.stickerTrackEmpty { position: absolute; top: 50%; left: 8px; transform: translateY(-50%); color: var(--faint); font-size: 10px; pointer-events: none; }
+.stickerSnapLine { position: absolute; z-index: 6; top: 0; bottom: 0; width: 1px; background: var(--orange); box-shadow: 0 0 0 1px color-mix(in srgb, var(--paper) 55%, transparent); pointer-events: none; }
+.tl[data-tool='split'] .stickerBlock { cursor: default; }
 .wf { position: absolute; inset: 0; display: flex; align-items: center; gap: 2px; overflow: hidden; padding: 0 2px; pointer-events: none; }
 .wf span { flex-shrink: 0; width: 2.5px; border-radius: 2px; background: currentColor; opacity: .22; }
 .wf span[data-played] { opacity: .95; }
@@ -637,6 +655,12 @@
 .stickerAssetStyle { overflow: hidden; color: var(--faint); font-size: 9px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .stickerEmpty { display: flex; min-height: 82px; align-items: center; justify-content: center; flex-direction: column; gap: 7px; padding: 12px; border: .5px dashed var(--line); border-radius: 10px; color: var(--faint); font-size: 11px; line-height: 1.5; text-align: center; }
 .stickerSelected { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: .5px solid var(--line-soft); }
+.stickerActionRow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.stickerActionButton { display: inline-flex; min-height: 30px; align-items: center; justify-content: center; gap: 5px; border: .5px solid var(--line); border-radius: 8px; background: var(--seg); color: var(--ink); font-size: 11px; cursor: pointer; }
+.stickerActionButton:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); }
+.stickerActionButton:disabled { cursor: not-allowed; opacity: .45; }
+.stickerActionDanger { color: var(--red); }
+.stickerActionDanger:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
 .stickerPropertyWide { display: flex; flex-direction: column; gap: 5px; color: var(--sub); font-size: 11px; }
 .stickerPropertyWide select { width: 100%; min-width: 0; height: 31px; padding: 0 8px; border: .5px solid var(--line); border-radius: 8px; background: var(--seg); color: var(--ink); font-size: 11px; }
 .stickerPropertyGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
