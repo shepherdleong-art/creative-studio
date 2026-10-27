@@ -93,7 +93,7 @@ function NumberProperty({ label, value, min, max, step, suffix, disabled, onComm
   );
 }
 
-export function StickerPanel({ active, enabled, busy, template, stickers, selectedSticker, defaultAnimation, addBlockedReason, onAdd, onDragStart, onDragEnd, onPatchSticker, onDuplicateSticker, onDeleteSticker, onDefaultAnimationChange, onApplyAnimationToAll, onPlaySticker }: {
+export function StickerPanel({ active, enabled, busy, template, stickers, selectedSticker, defaultAnimation, addBlockedReason, autoLayoutBlockedReason, onAdd, onDragStart, onDragEnd, onPatchSticker, onDuplicateSticker, onDeleteSticker, onDefaultAnimationChange, onApplyAnimationToAll, onPlaySticker, onAutoLayout }: {
   active: boolean;
   enabled: boolean;
   busy: boolean;
@@ -102,6 +102,7 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
   selectedSticker: PackagingStickerInstance | null;
   defaultAnimation: StickerAnimation;
   addBlockedReason: string;
+  autoLayoutBlockedReason: string;
   onAdd: (choice: StickerAssetChoice) => void;
   onDragStart: (choice: StickerAssetChoice) => void;
   onDragEnd: () => void;
@@ -111,6 +112,7 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
   onDefaultAnimationChange: (animation: StickerAnimation) => void;
   onApplyAnimationToAll: () => void;
   onPlaySticker: (id: string) => void;
+  onAutoLayout: (assets: StickerCatalogAsset[]) => void;
 }) {
   const [assets, setAssets] = useState<StickerCatalogAsset[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -147,6 +149,8 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
   const loading = active && !loaded && !error;
 
   const scopedAssets = useMemo(() => scope === 'current' ? assets.filter((asset) => asset.style === templateStyle) : assets, [assets, scope, templateStyle]);
+  const templateAssets = useMemo(() => assets.filter((asset) => asset.style === templateStyle), [assets, templateStyle]);
+  const hasAutomatic = stickers.some((sticker) => sticker.origin.kind === 'auto');
   const filteredAssets = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase();
     return scopedAssets.filter((asset) => {
@@ -177,6 +181,16 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
         <StickerAnimationPopover value={defaultAnimation} template={template} disabled={busy || !enabled} allowFollowTemplate onChange={onDefaultAnimationChange} />
         <button type="button" className={styles.stickerAnimationApplyAll} disabled={busy || !enabled || stickers.length === 0} onClick={onApplyAnimationToAll}>应用到本视频全部贴纸</button>
       </section>
+
+      <div className={styles.stickerAutoLayout}>
+        <button
+          type="button"
+          className={styles.stickerAutoButton}
+          disabled={busy || !enabled || !loaded || Boolean(error) || Boolean(autoLayoutBlockedReason)}
+          onClick={() => onAutoLayout(templateAssets)}
+        ><Icon name="sparkle" size={13} />{hasAutomatic ? '换一组基础贴纸' : '一键基础布置'}</button>
+        {autoLayoutBlockedReason && <p className={styles.hintLine}>{autoLayoutBlockedReason}</p>}
+      </div>
 
       <div className={styles.stickerScope} role="group" aria-label="素材风格范围">
         <button type="button" className={scope === 'current' ? styles.stickerScopeActive : ''} onClick={() => setScope('current')}>当前模板</button>

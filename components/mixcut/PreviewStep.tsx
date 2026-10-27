@@ -23,10 +23,11 @@ import { CoverEditorDrawer } from './CoverEditorDrawer';
 import { preloadSystemFonts } from '@/components/system-fonts';
 import { BgmCard, type BgmImportUiResult } from './BgmCard';
 import { PackagingCard, type PackagingCardTab, type PackagingPreviewData } from './PackagingCard';
-import { StickerPanel, type StickerAssetChoice } from './StickerPanel';
+import { StickerPanel, type StickerAssetChoice, type StickerCatalogAsset } from './StickerPanel';
 import {
   DEFAULT_PACKAGING_STICKER_DEFAULTS,
   MAX_STICKER_INSTANCES,
+  STICKER_AUTO_MIN_BODY_FRAMES,
   applyPackagingStickerEdit,
   createManualPackagingSticker,
   planStickerFramesAtPlayhead,
@@ -39,6 +40,7 @@ import {
   insertPackagingStickerAtTop,
   normalizePackagingStickerTracks,
 } from '@/lib/media-core/packaging-sticker-timeline';
+import { planPackagingStickerAutoLayout, replaceAutomaticPackagingStickers } from '@/lib/media-core/packaging-sticker-planner';
 import { PackagingTextEditPopover } from '@/components/packaging/PackagingTextEditor';
 import { PackagingOverlaySync } from './packaging-overlay-sync';
 import type { BgmImportResponse } from '@/lib/final-edit/types';
@@ -695,6 +697,11 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       : !stickerPlacement
         ? variant.timeline.bodyFrames < 19 ? '正文不足 19 帧，无法添加贴纸。' : '当前位置剩余正文不足 19 帧，请将播放头前移后再添加。'
         : '';
+  const autoLayoutBlockedReason = variant.timeline.bodyFrames < STICKER_AUTO_MIN_BODY_FRAMES
+    ? '正文不足 6 秒，无法一键布置；请手动添加贴纸。'
+    : packagingStickers.filter((sticker) => sticker.origin.kind !== 'auto').length + 6 > MAX_STICKER_INSTANCES
+      ? `手动贴纸过多，自动布置后不能超过 ${MAX_STICKER_INSTANCES} 张。`
+      : '';
   const timelineFrame = Math.min(20 + variant.timeline.bodyFrames, Math.max(20, Math.floor(effectivePlayheadSec * FPS + 1e-6)));
   const stickerEditActive = Boolean(packagingEnabled && previewMode === 'output' && selectedSticker
     && timelineFrame >= selectedSticker.startFrame && timelineFrame < selectedSticker.endFrame);
@@ -839,6 +846,42 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       if (!accepted) return;
       const targetId = selectedStickerIdRef.current || stickers[0]?.id;
       if (targetId) playStickerOnce(targetId);
+    });
+  };
+
+  const handleAutoLayout = (assets: StickerCatalogAsset[]) => {
+    if (busy || !packagingEnabled) return;
+    if (autoLayoutBlockedReason) {
+      setMessage(autoLayoutBlockedReason);
+      return;
+    }
+    const current = groupRef.current;
+    const automatic = (current.packaging.stickers ?? []).filter((sticker) => sticker.origin.kind === 'auto');
+    if (automatic.some((sticker) => sticker.origin.kind === 'auto' && sticker.origin.autoEdited)
+      && !window.confirm('当前自动组合中有已编辑贴纸，换一组将重置这些调整。是否继续？')) return;
+    const autoGroupId = `auto_${crypto.randomUUID()}`;
+    let generated: PackagingStickerInstance[] | null = null;
+    try {
+      generated = planPackagingStickerAutoLayout({
+        bodyFrames: variant.timeline.bodyFrames,
+        template: packagingTemplate,
+        assets,
+        animation: (current.packaging.stickerDefaults ?? DEFAULT_PACKAGING_STICKER_DEFAULTS).animation,
+        autoGroupId,
+        random: Math.random,
+        createId: () => `s_${crypto.randomUUID()}`,
+      });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (!generated) {
+      setMessage('正文不足 6 秒，无法一键布置；请手动添加贴纸。');
+      return;
+    }
+    void applyStickerInstances((currentStickers) => replaceAutomaticPackagingStickers(currentStickers, generated)).then((accepted) => {
+      if (!accepted) return;
+      setMessage(automatic.length > 0 ? '已换一组基础贴纸，手动贴纸已保留' : '已生成 6 张基础贴纸');
     });
   };
 
@@ -1476,6 +1519,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
               selectedSticker={selectedSticker}
               defaultAnimation={stickerDefaultAnimation}
               addBlockedReason={stickerAddBlockedReason}
+              autoLayoutBlockedReason={autoLayoutBlockedReason}
               onAdd={(choice) => handleAddSticker(choice)}
               onDragStart={setDraggedStickerChoice}
               onDragEnd={() => setDraggedStickerChoice(null)}
@@ -1485,6 +1529,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
               onDefaultAnimationChange={handleDefaultAnimationChange}
               onApplyAnimationToAll={handleApplyAnimationToAll}
               onPlaySticker={playStickerOnce}
+              onAutoLayout={handleAutoLayout}
             />
           )}
           onApplyGroup={applyGroup}

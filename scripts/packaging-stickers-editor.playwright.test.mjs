@@ -463,6 +463,68 @@ try {
   await eventually(async () => await page.getByRole('button', { name: '暂停', exact: true }).count() === 1, '应用全部后必须播放实际贴纸效果');
   await page.getByRole('button', { name: '暂停', exact: true }).click();
 
+  const autoBodyFrames = applyAllAnimationResult.view.variants.find((item) => item.id === fixture.variantId).timeline.bodyFrames;
+  assert.ok(autoBodyFrames >= 144, '自动布置验收 fixture 正文必须至少 6 秒');
+  const autoLayoutResult = await readPatch(() => panel.getByRole('button', { name: '一键基础布置', exact: true }).click());
+  assert.equal(autoLayoutResult.view.packaging.stickers.length, 8, '首次自动布置必须新增 6 张并保留 2 张手动贴纸');
+  const automatic = autoLayoutResult.view.packaging.stickers.filter((item) => item.origin.kind === 'auto');
+  assert.equal(automatic.length, 6);
+  const autoGroupId = automatic[0].origin.autoGroupId;
+  assert.ok(automatic.every((item) => item.origin.autoGroupId === autoGroupId && item.origin.autoEdited === false));
+  assert.ok(automatic.every((item) => item.animation === 'rise'), '自动实例必须继承生成时的统一动效');
+  assert.ok(automatic.every((item) => item.startFrame >= 20 && item.endFrame <= 20 + autoBodyFrames));
+  for (let index = 1; index < automatic.length; index += 1) assert.ok(automatic[index].startFrame >= automatic[index - 1].endFrame, '自动布置六张默认不得时间重叠');
+  for (const manual of [first, second]) {
+    const retained = autoLayoutResult.view.packaging.stickers.find((item) => item.id === manual.id);
+    assert.equal(retained.origin.kind, 'manual');
+    assert.equal(retained.centerXPct, applyAllAnimationResult.view.packaging.stickers.find((item) => item.id === manual.id).centerXPct);
+  }
+  await panel.getByRole('button', { name: '换一组基础贴纸', exact: true }).waitFor();
+  await eventually(async () => await page.getByRole('button', { name: '撤销', exact: true }).isEnabled(), '自动布置后撤销必须可用');
+  const undoAutoLayoutResult = await readPatch(() => page.keyboard.press('Control+z'), false);
+  assert.equal(undoAutoLayoutResult.view.packaging.stickers.length, 2, '一次撤销必须恢复自动布置前的手动贴纸');
+  const redoAutoLayoutResult = await readPatch(() => page.keyboard.press('Control+Shift+z'), false);
+  assert.equal(redoAutoLayoutResult.view.packaging.stickers.length, 8, '一次重做必须恢复完整自动组合');
+
+  const editedAuto = automatic[0];
+  const editedAutoBlock = page.locator(`[data-sticker-clip-id="${editedAuto.id}"]`);
+  await editedAutoBlock.click({ position: { x: 20, y: 10 } });
+  const autoEditResult = await readPatch(async () => {
+    const input = panel.getByLabel('中心 X', { exact: true });
+    await input.fill('61.5');
+    await input.press('Enter');
+  });
+  assert.equal(autoEditResult.view.packaging.stickers.find((item) => item.id === editedAuto.id).origin.autoEdited, true, '编辑自动实例必须设置保护标记');
+  page.once('dialog', async (dialog) => {
+    assert.match(dialog.message(), /重置这些调整/);
+    await dialog.accept();
+  });
+  const replacedAutoResult = await readPatch(() => panel.getByRole('button', { name: '换一组基础贴纸', exact: true }).click());
+  assert.equal(replacedAutoResult.view.packaging.stickers.length, 8, '换一组不得叠加为 12 张');
+  const replacedAutomatic = replacedAutoResult.view.packaging.stickers.filter((item) => item.origin.kind === 'auto');
+  assert.equal(replacedAutomatic.length, 6);
+  const replacedGroupId = replacedAutomatic[0].origin.autoGroupId;
+  assert.notEqual(replacedGroupId, autoGroupId);
+  assert.ok(replacedAutomatic.every((item) => item.origin.autoGroupId === replacedGroupId && item.origin.autoEdited === false));
+  assert.equal(replacedAutomatic.some((item) => item.id === editedAuto.id), false, '换一组必须替换已编辑自动实例');
+  assert.equal(replacedAutoResult.view.packaging.stickers.filter((item) => item.origin.kind === 'manual').length, 2, '换一组必须保留手动贴纸');
+  const undoReplaceResult = await readPatch(() => page.keyboard.press('Control+z'), false);
+  assert.equal(undoReplaceResult.view.packaging.stickers.find((item) => item.id === editedAuto.id).origin.autoEdited, true, '一次撤销必须恢复换一组前的已编辑组合');
+  const redoReplaceResult = await readPatch(() => page.keyboard.press('Control+Shift+z'), false);
+  assert.equal(redoReplaceResult.view.packaging.stickers.filter((item) => item.origin.kind === 'auto')[0].origin.autoGroupId, replacedGroupId);
+
+  let afterAutoDeleteResult = redoReplaceResult;
+  const replacedAutoIds = replacedAutomatic.map((item) => item.id);
+  for (const stickerId of replacedAutoIds) {
+    const autoBlock = page.locator(`[data-sticker-clip-id="${stickerId}"]`);
+    await autoBlock.click({ position: { x: 20, y: 10 } });
+    await eventually(async () => await panel.getByRole('button', { name: '删除', exact: true }).isEnabled(), '删除前必须等待选中与保存队列就绪');
+    afterAutoDeleteResult = await readPatch(() => page.keyboard.press('Delete'));
+  }
+  assert.equal(afterAutoDeleteResult.view.packaging.stickers.length, 2, '删除全部自动实例后只保留手动贴纸');
+  assert.equal(afterAutoDeleteResult.view.packaging.stickers.every((item) => item.origin.kind === 'manual'), true);
+  await panel.getByRole('button', { name: '一键基础布置', exact: true }).waitFor();
+
   const disabledResult = await readPatch(() => page.getByRole('switch', { name: '启用视频包装' }).click(), false);
   assert.equal(disabledResult.view.packaging.enabled, false);
   assert.equal(disabledResult.view.packaging.stickers.length, 2, '关闭包装不得删除贴纸');
@@ -487,7 +549,7 @@ try {
   assert.equal(persisted.find((item) => item.id === second.id).centerXPct, 63.5);
 
   passed = true;
-  console.log('贴纸编辑器真实 E2E 通过：素材目录、空间编辑、时间轴与历史、六卡动效浮窗、统一/单张/全部设置、实际播放、包装开关与刷新恢复。');
+  console.log('贴纸编辑器真实 E2E 通过：素材目录、空间编辑、时间轴与历史、六卡动效浮窗、统一/单张/全部设置、自动 6 张与换一组、实际播放、包装开关与刷新恢复。');
 } catch (error) {
   if (server) console.error(server.output());
   throw error;

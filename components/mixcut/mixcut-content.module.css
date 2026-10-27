@@ -666,6 +666,10 @@
 .stickerAnimationDefaultRow > span:last-child { color: var(--faint); font-size: 9px; font-weight: 400; }
 .stickerAnimationApplyAll { align-self: flex-start; padding: 0; border: 0; background: transparent; color: var(--blue); font-size: 10px; cursor: pointer; }
 .stickerAnimationApplyAll:disabled { color: var(--faint); cursor: not-allowed; }
+.stickerAutoLayout { display: flex; flex-direction: column; gap: 5px; }
+.stickerAutoButton { display: inline-flex; min-height: 34px; align-items: center; justify-content: center; gap: 6px; border: .5px solid color-mix(in srgb, var(--blue) 32%, var(--line)); border-radius: 9px; background: var(--blue-wash); color: var(--blue); font-size: 11px; font-weight: 600; cursor: pointer; }
+.stickerAutoButton:hover:not(:disabled) { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 15%, var(--paper)); }
+.stickerAutoButton:disabled { cursor: not-allowed; opacity: .48; }
 .stickerAnimationAnchor { position: relative; display: inline-flex; min-width: 0; }
 .stickerAnimationTrigger { display: inline-flex; min-height: 30px; align-items: center; gap: 5px; padding: 0 9px; border: .5px solid var(--line); border-radius: 8px; background: var(--seg); color: var(--ink); font-size: 10px; cursor: pointer; }
 .stickerAnimationTrigger:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); }
