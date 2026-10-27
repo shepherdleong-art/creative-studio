@@ -10,6 +10,9 @@ import {
   resolveStickerStyle,
   resolveStickerAssetFile,
   resolveStickerAnimation,
+  planStickerFramesAtPlayhead,
+  createManualPackagingSticker,
+  applyPackagingStickerEdit,
   type PackagingStickerInstance,
 } from '../lib/media-core/packaging-stickers.ts';
 import { parsePackagingConfig } from '../lib/media-core/packaging-vars.ts';
@@ -49,6 +52,27 @@ assert.deepEqual(validatePackagingStickers([base], 360), [base]);
 assert.throws(() => validatePackagingStickers([sticker({ endFrame: 400 })], 360), /超出正文时间范围/);
 assert.throws(() => validatePackagingStickers([sticker({ id: 'bad', centerXPct: 101 })], 360), /非法项/);
 assert.throws(() => validatePackagingStickers('bad', 360), /必须是数组/);
+
+assert.deepEqual(planStickerFramesAtPlayhead(0, 240), { startFrame: 20, endFrame: 68 });
+assert.deepEqual(planStickerFramesAtPlayhead(1, 240), { startFrame: 24, endFrame: 72 });
+assert.deepEqual(planStickerFramesAtPlayhead(220 / 24, 240), { startFrame: 220, endFrame: 260 });
+assert.equal(planStickerFramesAtPlayhead(250 / 24, 240), null);
+assert.equal(planStickerFramesAtPlayhead(0, 18), null);
+assert.equal(planStickerFramesAtPlayhead(999, 240), null);
+const manual = createManualPackagingSticker({
+  id: 'manual_1', assetId: 'highlight', styleMode: 'follow-template', fixedStyle: null,
+  startFrame: 20, endFrame: 68, centerXPct: 50, centerYPct: 50, animation: 'soft',
+});
+assert.equal(manual.visualWidthPct, 30);
+assert.equal(manual.trackIndex, 0);
+assert.deepEqual(manual.origin, { kind: 'manual' });
+assert.deepEqual(validatePackagingStickers([manual], 240), [manual]);
+const autoEdited = applyPackagingStickerEdit({ ...manual, origin: { kind: 'auto', autoGroupId: 'auto_1', autoEdited: false } }, { centerXPct: 42 });
+assert.equal(autoEdited.centerXPct, 42);
+assert.deepEqual(autoEdited.origin, { kind: 'auto', autoGroupId: 'auto_1', autoEdited: true });
+const forcedSpecial = applyPackagingStickerEdit({ ...manual, assetId: 'special', styleMode: 'fixed', fixedStyle: 'show' }, { styleMode: 'follow-template', fixedStyle: null });
+assert.equal(forcedSpecial.styleMode, 'fixed');
+assert.equal(forcedSpecial.fixedStyle, 'show');
 
 const special = sticker({ id: 'special_1', assetId: 'special', styleMode: 'fixed', fixedStyle: 'show' });
 assert.deepEqual(sanitizePackagingStickers([special]), [special]);

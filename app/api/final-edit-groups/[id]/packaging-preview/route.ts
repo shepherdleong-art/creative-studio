@@ -1,4 +1,5 @@
 import { PACKAGING_EDIT_BRIDGE_JS } from '@/lib/media-core/packaging-edit-bridge';
+import { PACKAGING_STICKER_EDIT_BRIDGE_JS } from '@/lib/media-core/packaging-sticker-edit-bridge';
 // 包装 v2/v3 实时预览端点（配置前置：预览发生在导出渲染之前）
 // GET ?variantId=&template=&format=json|html[&t=<秒>][&sync=1][&edit=1]
 //   json → { vars, defaults, frameUrl, template, timeline:{coverSec,totalSec,pointCues,pointCuesMode},
@@ -127,8 +128,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       : hasSeek
         ? `<script>setTimeout(function(){var t=window.__timelines&&window.__timelines.overlay;if(t){t.pause(0);t.seek(${seekT});}},80);</script>`
         : '<script>setTimeout(function(){var t=window.__timelines&&window.__timelines.overlay;if(t)t.play(0)},80);</script>';
-    // §6：edit=1 注入预览画面内拖拽/缩放编辑桥（同源 iframe 内运行，幂等）
-    const editBridge = editMode ? `<script>${PACKAGING_EDIT_BRIDGE_JS}</script>` : '';
+    // §6：edit=1 注入文字与贴纸两套独立编辑桥（同源 iframe 内运行，均幂等）
+    const editBridge = editMode ? `<script>${PACKAGING_EDIT_BRIDGE_JS}</script><script>${PACKAGING_STICKER_EDIT_BRIDGE_JS}</script>` : '';
     html = html
       .replace('<head>', `<head><base href="${baseHref}">`)
       .replace('</head>', `${headEnd}</head>`)

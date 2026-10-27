@@ -10,6 +10,7 @@
 // 三槽字体省略保留、null 清除；layouts 按模板键浅合并（{ [template]: {} } 清该模板）；forceReextract 强制重提取。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { TEMPLATES, TemplateThumb } from '@/components/packaging/PackagingTemplates';
 import { Icon } from '@/components/ui/Icon';
 import type { GroupCommandInput } from '@/components/final-edit/command-types';
@@ -23,6 +24,7 @@ type FontSlotKey = 'titleFont' | 'subtitleFont' | 'pointFont';
 
 /** 组级写命令（与 PreviewStep 的 applyGroup 入参同构，避免反向 import）。 */
 export type PackagingGroupCommand = GroupCommandInput | ((group: FinalEditGroupView) => GroupCommandInput);
+export type PackagingCardTab = 'settings' | 'stickers';
 
 /** 包装预览 JSON（/packaging-preview?format=json）。 */
 export interface PackagingPreviewData {
@@ -85,12 +87,15 @@ function TemplateHoverPreview({ tpl, top, left }: { tpl: { id: string; name: str
   );
 }
 
-export function PackagingCard({ group, variantId, preview, previewError, busy, onApplyGroup, onSeek, onPreviewVarsMerge, onPreviewRefresh }: {
+export function PackagingCard({ group, variantId, preview, previewError, busy, activeTab, stickerPanel, onTabChange, onApplyGroup, onSeek, onPreviewVarsMerge, onPreviewRefresh }: {
   group: FinalEditGroupView;
   variantId: string;
   preview: PackagingPreviewData | null;
   previewError: string;
   busy: boolean;
+  activeTab: PackagingCardTab;
+  stickerPanel: ReactNode;
+  onTabChange: (tab: PackagingCardTab) => void;
   onApplyGroup: (request: PackagingGroupCommand) => Promise<boolean>;
   onSeek: (sec: number) => void;
   onPreviewVarsMerge: (saved: Partial<PackagingVars>) => void;
@@ -247,6 +252,41 @@ export function PackagingCard({ group, variantId, preview, previewError, busy, o
           <span className={styles.pkSwitchKnob} />
         </button>
       </div>
+      <div
+        className={`${styles.previewModeTabs} ${styles.packagingTabs}`}
+        role="tablist"
+        aria-label="视频包装设置"
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+          event.preventDefault();
+          const next: PackagingCardTab = activeTab === 'settings' ? 'stickers' : 'settings';
+          onTabChange(next);
+          const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+          buttons[next === 'settings' ? 0 : 1]?.focus();
+        }}
+      >
+        <button
+          type="button"
+          role="tab"
+          id="packaging-settings-tab"
+          aria-controls="packaging-settings-panel"
+          aria-selected={activeTab === 'settings'}
+          tabIndex={activeTab === 'settings' ? 0 : -1}
+          className={`${styles.previewModeTab} ${activeTab === 'settings' ? styles.previewModeTabActive : ''}`}
+          onClick={() => onTabChange('settings')}
+        >包装设置</button>
+        <button
+          type="button"
+          role="tab"
+          id="packaging-stickers-tab"
+          aria-controls="packaging-stickers-panel"
+          aria-selected={activeTab === 'stickers'}
+          tabIndex={activeTab === 'stickers' ? 0 : -1}
+          className={`${styles.previewModeTab} ${activeTab === 'stickers' ? styles.previewModeTabActive : ''}`}
+          onClick={() => onTabChange('stickers')}
+        >贴纸</button>
+      </div>
+      <div id="packaging-settings-panel" role="tabpanel" aria-labelledby="packaging-settings-tab" hidden={activeTab !== 'settings'}>
       {!config.enabled && (
         <p className={styles.hintLine}>开启后可选择模板、字体与文案，包装层直接叠加在预览窗口并同步播放。</p>
       )}
@@ -336,6 +376,10 @@ export function PackagingCard({ group, variantId, preview, previewError, busy, o
           <p className={styles.hintLine}>预览为近似效果，最终以导出渲染为准。</p>
         </>
       )}
+      </div>
+      <div id="packaging-stickers-panel" role="tabpanel" aria-labelledby="packaging-stickers-tab" hidden={activeTab !== 'stickers'}>
+        {stickerPanel}
+      </div>
     </section>
   );
 }

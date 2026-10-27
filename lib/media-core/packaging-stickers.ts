@@ -198,6 +198,53 @@ export function validatePackagingStickers(input: unknown, bodyFrames: number): P
   return stickers;
 }
 
+export function planStickerFramesAtPlayhead(playheadSec: number, bodyFrames: number): { startFrame: number; endFrame: number } | null {
+  if (!Number.isFinite(playheadSec) || !Number.isSafeInteger(bodyFrames) || bodyFrames < 0) return null;
+  const bodyEndFrame = STICKER_INTRO_FRAMES + bodyFrames;
+  const timelineFrame = Math.floor(playheadSec * STICKER_FPS + 1e-6);
+  const startFrame = Math.min(bodyEndFrame, Math.max(STICKER_INTRO_FRAMES, timelineFrame));
+  const endFrame = Math.min(startFrame + STICKER_DEFAULT_DURATION_FRAMES, bodyEndFrame);
+  return endFrame - startFrame >= STICKER_MIN_DURATION_FRAMES ? { startFrame, endFrame } : null;
+}
+
+export function createManualPackagingSticker(input: {
+  id: string;
+  assetId: string;
+  styleMode: PackagingStickerInstance['styleMode'];
+  fixedStyle: StickerStyle | null;
+  startFrame: number;
+  endFrame: number;
+  centerXPct: number;
+  centerYPct: number;
+  animation: StickerAnimation;
+}): PackagingStickerInstance {
+  return {
+    ...input,
+    visualWidthPct: 30,
+    rotationDeg: 0,
+    trackIndex: 0,
+    origin: { kind: 'manual' },
+  };
+}
+
+export type PackagingStickerEditPatch = Partial<Pick<PackagingStickerInstance,
+  'styleMode' | 'fixedStyle' | 'startFrame' | 'endFrame' | 'centerXPct' | 'centerYPct'
+  | 'visualWidthPct' | 'rotationDeg' | 'trackIndex' | 'animation'
+>>;
+
+export function applyPackagingStickerEdit(sticker: PackagingStickerInstance, patch: PackagingStickerEditPatch): PackagingStickerInstance {
+  const next: PackagingStickerInstance = {
+    ...sticker,
+    ...patch,
+    origin: sticker.origin.kind === 'auto' ? { ...sticker.origin, autoEdited: true } : sticker.origin,
+  };
+  if (next.assetId === 'special') {
+    next.styleMode = 'fixed';
+    next.fixedStyle = next.fixedStyle ?? sticker.fixedStyle;
+  }
+  return next;
+}
+
 export function resolveStickerStyle(sticker: PackagingStickerInstance, template: PackagingTemplateId): StickerStyle {
   return sticker.styleMode === 'fixed' ? sticker.fixedStyle! : STICKER_STYLE_BY_TEMPLATE[template];
 }

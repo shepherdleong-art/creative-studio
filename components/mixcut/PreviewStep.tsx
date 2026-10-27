@@ -22,7 +22,16 @@ import { ClipFramingControl } from './ClipFramingControl';
 import { CoverEditorDrawer } from './CoverEditorDrawer';
 import { preloadSystemFonts } from '@/components/system-fonts';
 import { BgmCard, type BgmImportUiResult } from './BgmCard';
-import { PackagingCard, type PackagingPreviewData } from './PackagingCard';
+import { PackagingCard, type PackagingCardTab, type PackagingPreviewData } from './PackagingCard';
+import { StickerPanel, type StickerAssetChoice } from './StickerPanel';
+import {
+  DEFAULT_PACKAGING_STICKER_DEFAULTS,
+  MAX_STICKER_INSTANCES,
+  applyPackagingStickerEdit,
+  createManualPackagingSticker,
+  planStickerFramesAtPlayhead,
+  type PackagingStickerEditPatch,
+} from '@/lib/media-core/packaging-stickers';
 import { PackagingTextEditPopover } from '@/components/packaging/PackagingTextEditor';
 import { PackagingOverlaySync } from './packaging-overlay-sync';
 import type { BgmImportResponse } from '@/lib/final-edit/types';
@@ -73,6 +82,11 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [previewMaterialKey, setPreviewMaterialKey] = useState('');
   const [selectedCueId, setSelectedCueId] = useState(group.subtitleCues[0]?.id || '');
   const [selectedPointId, setSelectedPointId] = useState('');
+  const [selectedStickerId, setSelectedStickerId] = useState('');
+  const selectedStickerIdRef = useRef('');
+  const [packagingCardTab, setPackagingCardTab] = useState<PackagingCardTab>('settings');
+  const [draggedStickerChoice, setDraggedStickerChoice] = useState<StickerAssetChoice | null>(null);
+  const stickerClickOffsetRef = useRef(0);
   const [playheadSec, setPlayheadSec] = useState(0);
   const [seekRequestId, setSeekRequestId] = useState(0);
   const [message, setMessage] = useState('已从本地草稿恢复');
@@ -113,6 +127,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   // 卖点选中态：与 selectedCueId 同级；选中 id 可能因删除/重提取失效，下游一律用校验后的 timelineSelectedPointId
   const selectedPointIdRef = useRef('');
   const timelineSelectedPointId = group.packaging.pointCues?.some((cue) => cue.id === selectedPointId) ? selectedPointId : '';
+  const timelineSelectedStickerId = group.packaging.stickers?.some((sticker) => sticker.id === selectedStickerId) ? selectedStickerId : '';
   const orderedClips = useMemo(() => variant ? [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame) : [], [variant]);
   const trimClipIndex = trimClip ? orderedClips.findIndex((clip) => clip.id === trimClip.id) : -1;
   const trimAsset = trimClip ? group.assets.find((asset) => asset.videoJobId === trimClip.videoJobId) ?? null : null;
@@ -403,6 +418,22 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     selectedPointIdRef.current = pointId;
     setSelectedPointId(pointId);
   };
+  const setStickerSelection = (stickerId: string) => {
+    selectedStickerIdRef.current = stickerId;
+    setSelectedStickerId(stickerId);
+  };
+  const handleSelectSticker = (stickerId: string) => {
+    setPointSelection('');
+    openPackagingTextEdit(null);
+    setStickerSelection(stickerId);
+    if (!stickerId) return;
+    setPackagingCardTab('stickers');
+    setPreviewMode('output');
+    const sticker = groupRef.current.packaging.stickers?.find((item) => item.id === stickerId);
+    if (!sticker) return;
+    const frame = Math.floor(playheadSec * FPS + 1e-6);
+    if (frame < sticker.startFrame || frame >= sticker.endFrame) seek(sticker.startFrame / FPS);
+  };
   // 卖点数据变更（重新提取/删除）后选中 id 可能已失效：失效即清除——
   // 否则桥 only 过滤会拿失效 id 把全部气泡挡在门外，编辑整体锁死（2026-10-09 实锤）
   useEffect(() => {
@@ -411,6 +442,12 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       return () => window.clearTimeout(timer);
     }
   }, [group.packaging.pointCues, selectedPointId]);
+  useEffect(() => {
+    if (selectedStickerId && !(group.packaging.stickers ?? []).some((sticker) => sticker.id === selectedStickerId)) {
+      const timer = window.setTimeout(() => setStickerSelection(''), 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [group.packaging.stickers, selectedStickerId]);
   // 卖点选中取消出口（§18.5 摩擦项）：父页面捕获阶段 Esc 清选中——卖点文本框聚焦时 Esc 会被输入框吞掉，
   // 桥内 Esc 只覆盖 iframe 聚焦场景，这里兜底；blur 一并放下输入框焦点。
   // 包装文字浮框打开时 Esc 归浮框自己（取消编辑），不清卖点选中。
@@ -428,6 +465,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   // 卖点块单击（含拖动手势起始）：选中；新选中时 seek 到弹出中点（自动暂停，§5）
   const handleSelectPoint = (pointId: string) => {
     const previous = selectedPointIdRef.current;
+    setStickerSelection('');
     setPointSelection(pointId);
     if (pointId && pointId !== previous) {
       const cue = groupRef.current.packaging.pointCues?.find((item) => item.id === pointId);
@@ -435,11 +473,10 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     }
   };
 
-  // ⑤ 正片卖点直点：编辑模式关闭（正片段未选中）时叠加层 iframe pointer-events 为 none，点击穿透到本层——
-  // 父页代做命中探测：命中可见 cue 气泡即选中（与时间线点选同效），随后 only 模式自动激活可拖可改。
-  // 封面元素此时因 .stage 退场不可见但自身 opacity 为 1，故只探测 cue:*（封面段编辑由桥内 cover 态负责）。
-  const probePackagingCueHit = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (packagingEditModeKey !== 'off') return;
+  // 正片卖点/贴纸直点：编辑模式关闭时叠加层 iframe pointer-events 为 none，点击穿透到本层——
+  // 父页按真实命中堆叠选择可见 cue 或 sticker，随后对应独立编辑桥激活；封面段仍只由文字桥处理。
+  const probePackagingHit = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (packagingEditModeKey !== 'off' || stickerEditActive) return;
     const iframe = packagingIframeRef.current;
     const win = iframe?.contentWindow;
     const doc = iframe?.contentDocument;
@@ -450,12 +487,16 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
     const stack = doc.elementsFromPoint(x, y);
     for (const node of stack) {
-      const el = (node as Element).closest?.('[data-point-id^="cue:"]');
-      if (!el) continue;
-      const cs = win.getComputedStyle(el);
+      const element = node as Element;
+      const point = element.closest?.('[data-point-id^="cue:"]');
+      const sticker = element.closest?.('.packaging-sticker[data-sticker-id]');
+      const target = point || sticker;
+      if (!target) continue;
+      const cs = win.getComputedStyle(target);
       const opacity = parseFloat(cs.opacity);
       if (cs.display === 'none' || cs.visibility === 'hidden' || (isFinite(opacity) ? opacity : 1) < 0.05) continue;
-      handleSelectPoint(el.getAttribute('data-point-id')!.slice('cue:'.length));
+      if (point) handleSelectPoint(point.getAttribute('data-point-id')!.slice('cue:'.length));
+      else if (sticker) handleSelectSticker(sticker.getAttribute('data-sticker-id')!);
       break;
     }
   };
@@ -618,6 +659,89 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const packagingEnabled = packagingConfig.enabled;
   const packagingTemplate = packagingConfig.template;
   const previewVariantId = variant?.id ?? '';
+  const packagingStickers = packagingConfig.stickers ?? [];
+  const selectedSticker = packagingStickers.find((sticker) => sticker.id === timelineSelectedStickerId) ?? null;
+  const stickerPlacement = planStickerFramesAtPlayhead(effectivePlayheadSec, variant.timeline.bodyFrames);
+  const stickerAddBlockedReason = !packagingEnabled
+    ? '开启视频包装后可添加与编辑贴纸；已有贴纸数据会继续保留。'
+    : packagingStickers.length >= MAX_STICKER_INSTANCES
+      ? `单个视频最多放置 ${MAX_STICKER_INSTANCES} 张贴纸。`
+      : !stickerPlacement
+        ? variant.timeline.bodyFrames < 19 ? '正文不足 19 帧，无法添加贴纸。' : '当前位置剩余正文不足 19 帧，请将播放头前移后再添加。'
+        : '';
+  const timelineFrame = Math.min(20 + variant.timeline.bodyFrames, Math.max(20, Math.floor(effectivePlayheadSec * FPS + 1e-6)));
+  const stickerEditActive = Boolean(packagingEnabled && previewMode === 'output' && selectedSticker
+    && timelineFrame >= selectedSticker.startFrame && timelineFrame < selectedSticker.endFrame);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setStickerSelection('');
+      setDraggedStickerChoice(null);
+      stickerClickOffsetRef.current = 0;
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [group.id, previewVariantId]);
+
+  const applyStickerPatch = (stickerId: string, patch: PackagingStickerEditPatch): Promise<boolean> => {
+    const normalized: PackagingStickerEditPatch = { ...patch };
+    if (normalized.centerXPct !== undefined) normalized.centerXPct = Math.min(100, Math.max(0, normalized.centerXPct));
+    if (normalized.centerYPct !== undefined) normalized.centerYPct = Math.min(100, Math.max(0, normalized.centerYPct));
+    if (normalized.visualWidthPct !== undefined) normalized.visualWidthPct = Math.min(1000, Math.max(1, normalized.visualWidthPct));
+    if (normalized.rotationDeg !== undefined) normalized.rotationDeg = Math.min(180, Math.max(-180, normalized.rotationDeg));
+    return applyGroupRef.current((current): GroupCommandInput => ({
+      type: 'set_packaging_config',
+      variantId: previewVariantId,
+      config: {
+        enabled: current.packaging.enabled,
+        template: current.packaging.template,
+        varsOverrides: packagingVarsOverridesRecord(current.packaging.varsOverrides),
+        stickers: (current.packaging.stickers ?? []).map((sticker) => sticker.id === stickerId ? applyPackagingStickerEdit(sticker, normalized) : sticker),
+      },
+    }));
+  };
+
+  const handleAddSticker = (choice: StickerAssetChoice, dropCenter?: { x: number; y: number }) => {
+    if (busy) return;
+    if (stickerAddBlockedReason || !stickerPlacement) {
+      if (stickerAddBlockedReason) setMessage(stickerAddBlockedReason);
+      return;
+    }
+    const sequence = stickerClickOffsetRef.current;
+    if (!dropCenter) stickerClickOffsetRef.current += 1;
+    const offsets = [[0, 0], [-3, 2], [3, -2], [-2, -3], [2, 3]] as const;
+    const offset = offsets[sequence % offsets.length];
+    const center = dropCenter ?? { x: 50 + offset[0], y: 50 + offset[1] };
+    const stickerId = `s_${crypto.randomUUID()}`;
+    const startFrame = stickerPlacement.startFrame;
+    void applyGroupRef.current((current): GroupCommandInput => {
+      const sticker = createManualPackagingSticker({
+        id: stickerId,
+        assetId: choice.asset.id,
+        styleMode: choice.styleMode,
+        fixedStyle: choice.fixedStyle,
+        startFrame,
+        endFrame: stickerPlacement.endFrame,
+        centerXPct: center.x,
+        centerYPct: center.y,
+        animation: (current.packaging.stickerDefaults ?? DEFAULT_PACKAGING_STICKER_DEFAULTS).animation,
+      });
+      return {
+        type: 'set_packaging_config',
+        variantId: previewVariantId,
+        config: {
+          enabled: current.packaging.enabled,
+          template: current.packaging.template,
+          varsOverrides: packagingVarsOverridesRecord(current.packaging.varsOverrides),
+          stickers: [...(current.packaging.stickers ?? []), sticker],
+        },
+      };
+    }).then((accepted) => {
+      if (!accepted) return;
+      handleSelectSticker(stickerId);
+      seek(startFrame / FPS);
+    });
+  };
+
   // 叠加层同步控制器：构造函数无副作用（visibilitychange 监听首次 attach 才绑定），可安全惰性初始化
   const packagingSyncRef = useRef<PackagingOverlaySync | null>(null);
   packagingSyncRef.current ??= new PackagingOverlaySync();
@@ -681,6 +805,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
 
   const packagingBridgeHandlersRef = useRef({ handleSelectPoint, openPackagingTextEdit });
   useEffect(() => { packagingBridgeHandlersRef.current = { handleSelectPoint, openPackagingTextEdit }; });
+  const stickerBridgeHandlersRef = useRef({ handleSelectSticker, applyStickerPatch });
+  useEffect(() => { stickerBridgeHandlersRef.current = { handleSelectSticker, applyStickerPatch }; });
 
   useEffect(() => {
     const target = window as Window & {
@@ -688,11 +814,17 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       __packagingEditExit?: () => void;
       __packagingEditText?: (pointId: string, rect: { left: number; top: number; width: number; height: number }) => void;
       __packagingEditCueSelect?: (cueId: string) => void;
+      __packagingStickerEditSelect?: (stickerId: string) => void;
+      __packagingStickerEditExit?: () => void;
+      __packagingStickerEditCommit?: (stickerId: string, patch: PackagingStickerEditPatch) => void;
     };
     target.__packagingEditCommit = (pointId, layout) => schedulePackagingLayoutCommit(pointId, layout);
     target.__packagingEditExit = () => setPointSelection('');
     // ⑤ 桥内直点另一条正片卖点气泡的上报通道：与时间线点选同效（选中+跳中点暂停，only 模式随后自动激活）
     target.__packagingEditCueSelect = (cueId) => packagingBridgeHandlersRef.current.handleSelectPoint(cueId);
+    target.__packagingStickerEditSelect = (stickerId) => stickerBridgeHandlersRef.current.handleSelectSticker(stickerId);
+    target.__packagingStickerEditExit = () => setStickerSelection('');
+    target.__packagingStickerEditCommit = (stickerId, patch) => { void stickerBridgeHandlersRef.current.applyStickerPatch(stickerId, patch); };
     // §B 桥 dblclick 上报：换算 iframe 视口坐标后开浮框（元素 rect 冻结于打开时刻，提交后叠加层经重载键刷新）
     target.__packagingEditText = (pointId, rect) => {
       const iframe = packagingIframeRef.current;
@@ -705,6 +837,9 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       delete target.__packagingEditExit;
       delete target.__packagingEditText;
       delete target.__packagingEditCueSelect;
+      delete target.__packagingStickerEditSelect;
+      delete target.__packagingStickerEditExit;
+      delete target.__packagingStickerEditCommit;
       if (packagingLayoutTimerRef.current) {
         window.clearTimeout(packagingLayoutTimerRef.current);
         packagingLayoutTimerRef.current = 0;
@@ -786,6 +921,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
         ? `cue:${timelineSelectedPointId}`
         : 'off';
   const packagingEditActive = packagingEditModeKey !== 'off';
+  const stickerEditModeKey = stickerEditActive ? timelineSelectedStickerId : '';
 
   // iframe load 后与三态变化时写 contentWindow.__editMode（同源可用；跨域/文档销毁静默降级——桥内读不到即不激活）。
   // overlayMounted 入依赖：预览 JSON 到达前 iframe 未挂载，effect 首跑必落空——F5 且播放头在封面段时
@@ -808,6 +944,25 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     iframe.addEventListener('load', apply);
     return () => iframe.removeEventListener('load', apply);
   }, [packagingEditModeKey, packagingOverlayKey, overlayMounted]);
+
+  useEffect(() => {
+    const iframe = packagingIframeRef.current;
+    if (!iframe) return;
+    const apply = () => {
+      try {
+        const win = iframe.contentWindow as (Window & {
+          __stickerEditMode?: { active: boolean; only: string | null };
+          __packagingStickerEditBridge?: { sync?: () => void };
+        }) | null;
+        if (!win) return;
+        win.__stickerEditMode = { active: Boolean(stickerEditModeKey), only: stickerEditModeKey || null };
+        win.__packagingStickerEditBridge?.sync?.();
+      } catch { /* 文档销毁或跨域时不干预下一次重载恢复 */ }
+    };
+    apply();
+    iframe.addEventListener('load', apply);
+    return () => iframe.removeEventListener('load', apply);
+  }, [stickerEditModeKey, packagingOverlayKey, overlayMounted]);
 
   // 「+ 卖点」默认文案：当前播放头处字幕句（与 FinalEditPreview 同口径：bodyTimeUs=(playhead-INTRO)*1e6*rate）
   const playbackRateForCueLookup = group.script.narrationConfig.playbackRate;
@@ -1019,7 +1174,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             className={styles.previewModePanel}
           >
             <div className={styles.previewWrap}>
-              <div className={styles.previewFrame} data-output-preset={variant.outputPreset} onPointerDown={probePackagingCueHit}>
+              <div className={styles.previewFrame} data-output-preset={variant.outputPreset} onPointerDown={probePackagingHit}>
                 {previewMode === 'material' ? (
                   <div className={styles.materialPreview} data-testid="mixcut-material-preview">
                     {previewMaterial?.previewUrl ? (
@@ -1055,18 +1210,40 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                     textTarget={null}
                     narrationGainDb={effectiveNarrationGainDb}
                     bgmGainDb={effectiveBgmGainDb}
-                overlay={packagingOverlaySrc ? (
-                  <iframe
-                    key={packagingOverlayKey}
-                    ref={attachPackagingOverlay}
-                    data-packaging-overlay=""
-                    src={packagingOverlaySrc}
-                    title="包装效果叠加层"
-                    aria-hidden="true"
-                    tabIndex={-1}
-                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, pointerEvents: packagingEditActive ? 'auto' : 'none' }}
-                  />
-                ) : null}
+                    overlay={(packagingOverlaySrc || draggedStickerChoice) ? (
+                      <>
+                        {packagingOverlaySrc && (
+                          <iframe
+                            key={packagingOverlayKey}
+                            ref={attachPackagingOverlay}
+                            data-packaging-overlay=""
+                            src={packagingOverlaySrc}
+                            title="包装效果叠加层"
+                            aria-hidden="true"
+                            tabIndex={-1}
+                            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, pointerEvents: packagingEditActive || stickerEditActive ? 'auto' : 'none' }}
+                          />
+                        )}
+                        {draggedStickerChoice && (
+                          <div
+                            className={styles.stickerDropSurface}
+                            data-testid="sticker-drop-surface"
+                            onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }}
+                            onDrop={(event) => {
+                              event.preventDefault();
+                              const choice = draggedStickerChoice;
+                              setDraggedStickerChoice(null);
+                              if (!choice) return;
+                              const rect = event.currentTarget.getBoundingClientRect();
+                              handleAddSticker(choice, {
+                                x: Math.min(100, Math.max(0, (event.clientX - rect.left) / rect.width * 100)),
+                                y: Math.min(100, Math.max(0, (event.clientY - rect.top) / rect.height * 100)),
+                              });
+                            }}
+                          ><span>松开鼠标放置贴纸</span></div>
+                        )}
+                      </>
+                    ) : null}
                     onPlaybackStart={() => setAuditionStopRequestId((value) => value + 1)}
                     onPlayheadChange={handlePlayheadChange}
                     onPlayingChange={handlePreviewPlayingChange}
@@ -1177,6 +1354,23 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           preview={packagingPreview}
           previewError={packagingPreviewError}
           busy={busy}
+          activeTab={packagingCardTab}
+          onTabChange={setPackagingCardTab}
+          stickerPanel={(
+            <StickerPanel
+              active={packagingCardTab === 'stickers'}
+              enabled={packagingEnabled}
+              busy={busy}
+              template={packagingTemplate}
+              stickers={packagingStickers}
+              selectedSticker={selectedSticker}
+              addBlockedReason={stickerAddBlockedReason}
+              onAdd={(choice) => handleAddSticker(choice)}
+              onDragStart={setDraggedStickerChoice}
+              onDragEnd={() => setDraggedStickerChoice(null)}
+              onPatchSticker={(stickerId, patch) => { void applyStickerPatch(stickerId, patch); }}
+            />
+          )}
           onApplyGroup={applyGroup}
           onSeek={seek}
           onPreviewVarsMerge={mergePackagingPreviewVars}

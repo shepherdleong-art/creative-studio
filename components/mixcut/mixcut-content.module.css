@@ -606,6 +606,47 @@
 .pkSwitchOn .pkSwitchKnob { background: var(--green); box-shadow: none; }
 .pkSwitchOn .pkSwitchKnob::after { transform: translateX(14px); background: var(--color-surface); }
 
+/* ---- 贴纸双页签、素材库与当前属性 ---- */
+.packagingTabs { width: 100%; margin: 2px 0 14px; }
+.packagingTabs > button { flex: 1; }
+.stickerPanel { display: flex; min-height: 0; flex-direction: column; gap: 11px; }
+.stickerSectionHead { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; color: var(--ink); font-size: 12px; font-weight: 600; }
+.stickerSectionHead > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
+.stickerSectionHead svg { color: var(--sub); }
+.stickerCount { overflow: hidden; color: var(--faint); font-size: 10px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.stickerScope { display: grid; flex-shrink: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; padding: 3px; border-radius: 9px; background: var(--seg); }
+.stickerScope button { min-height: 27px; border: 0; border-radius: 7px; background: transparent; color: var(--sub); font-size: 11px; cursor: pointer; }
+.stickerScope button.stickerScopeActive { background: var(--paper); box-shadow: var(--sh-sm); color: var(--ink); }
+.stickerSearch { display: flex; height: 32px; align-items: center; gap: 7px; padding: 0 9px; border: .5px solid var(--line); border-radius: 8px; background: var(--seg); color: var(--faint); }
+.stickerSearch input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; }
+.stickerSearch button { display: grid; flex: 0 0 auto; width: 20px; height: 20px; place-items: center; border: 0; background: transparent; color: var(--faint); cursor: pointer; }
+.stickerCategories { display: flex; flex-wrap: wrap; gap: 5px; }
+.stickerCategories button { min-height: 25px; padding: 0 8px; border: .5px solid var(--line); border-radius: 7px; background: transparent; color: var(--sub); font-size: 10px; cursor: pointer; }
+.stickerCategories button.stickerCategoryActive { border-color: color-mix(in srgb, var(--blue) 38%, transparent); background: var(--blue-wash); color: var(--blue); }
+.stickerNotice { display: flex; align-items: flex-start; gap: 6px; padding: 8px 9px; border-radius: 8px; background: var(--blue-wash); color: var(--sub); font-size: 11px; line-height: 1.45; }
+.stickerNotice svg { flex: 0 0 auto; margin-top: 1px; color: var(--blue); }
+.stickerResultMeta { color: var(--faint); font-size: 10px; }
+.stickerGrid { display: grid; min-height: 0; max-height: 320px; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; gap: 7px; overflow-y: auto; padding: 1px 2px 3px 1px; }
+.stickerAsset { display: flex; min-width: 0; flex-direction: column; align-items: stretch; gap: 3px; padding: 5px; border: .5px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); cursor: grab; text-align: center; transition: border-color .15s, box-shadow .15s, transform .15s; }
+.stickerAsset:not(:disabled):hover { border-color: color-mix(in srgb, var(--blue) 45%, transparent); box-shadow: var(--sh-sm); transform: translateY(-1px); }
+.stickerAsset:not(:disabled):active { cursor: grabbing; }
+.stickerAsset:disabled { cursor: not-allowed; opacity: .45; }
+.stickerThumb { display: grid; aspect-ratio: 1; place-items: center; overflow: hidden; border-radius: 7px; background-color: var(--bg); background-image: linear-gradient(45deg, var(--seg) 25%, transparent 25%), linear-gradient(-45deg, var(--seg) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, var(--seg) 75%), linear-gradient(-45deg, transparent 75%, var(--seg) 75%); background-position: 0 0, 0 5px, 5px -5px, -5px 0; background-size: 10px 10px; }
+.stickerThumb img { display: block; width: 92%; height: 92%; object-fit: contain; pointer-events: none; }
+.stickerAssetLabel { overflow: hidden; font-size: 10px; font-weight: 500; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.stickerAssetStyle { overflow: hidden; color: var(--faint); font-size: 9px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.stickerEmpty { display: flex; min-height: 82px; align-items: center; justify-content: center; flex-direction: column; gap: 7px; padding: 12px; border: .5px dashed var(--line); border-radius: 10px; color: var(--faint); font-size: 11px; line-height: 1.5; text-align: center; }
+.stickerSelected { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: .5px solid var(--line-soft); }
+.stickerPropertyWide { display: flex; flex-direction: column; gap: 5px; color: var(--sub); font-size: 11px; }
+.stickerPropertyWide select { width: 100%; min-width: 0; height: 31px; padding: 0 8px; border: .5px solid var(--line); border-radius: 8px; background: var(--seg); color: var(--ink); font-size: 11px; }
+.stickerPropertyGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.stickerProperty { display: flex; min-width: 0; flex-direction: column; gap: 4px; color: var(--sub); font-size: 10px; }
+.stickerNumberWrap { display: flex; min-width: 0; height: 30px; align-items: center; gap: 3px; padding: 0 7px; border: .5px solid var(--line); border-radius: 8px; background: var(--seg); }
+.stickerNumberWrap input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 11px; font-variant-numeric: tabular-nums; }
+.stickerNumberWrap > span { flex: 0 0 auto; color: var(--faint); font-size: 10px; }
+.stickerDropSurface { position: absolute; z-index: 20; inset: 0; display: grid; place-items: center; border: 2px dashed var(--blue); background: color-mix(in srgb, var(--blue) 12%, transparent); color: var(--blue); pointer-events: auto; }
+.stickerDropSurface > span { padding: 9px 12px; border: .5px solid color-mix(in srgb, var(--blue) 28%, transparent); border-radius: 9px; background: var(--paper); box-shadow: var(--sh-md); font-size: 12px; font-weight: 600; pointer-events: none; }
+
 .tplGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .tplGridCompact { grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .tplCard { display: flex; flex-direction: column; gap: 4px; padding: 6px 5px; border: 1.5px solid var(--line); border-radius: 12px; background: var(--color-surface); cursor: pointer; text-align: left; transition: border-color .15s, box-shadow .15s, transform .1s; }
