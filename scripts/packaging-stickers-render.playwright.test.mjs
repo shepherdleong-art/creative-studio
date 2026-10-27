@@ -43,12 +43,16 @@ function run(command, args, options = {}) {
   return result;
 }
 
-async function alphaInfo(file) {
-  const { data, info } = await sharp(file).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  let count = 0, left = info.width, top = info.height, right = -1, bottom = -1;
+async function alphaInfo(file, region) {
+  let pipeline = sharp(file);
+  if (region) pipeline = pipeline.extract(region);
+  const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  let count = 0, alphaSum = 0, left = info.width, top = info.height, right = -1, bottom = -1;
   for (let y = 0; y < info.height; y++) {
     for (let x = 0; x < info.width; x++) {
-      if (data[(y * info.width + x) * info.channels + 3] <= 8) continue;
+      const alpha = data[(y * info.width + x) * info.channels + 3];
+      alphaSum += alpha;
+      if (alpha <= 8) continue;
       count++;
       if (x < left) left = x;
       if (x > right) right = x;
@@ -56,7 +60,8 @@ async function alphaInfo(file) {
       if (y > bottom) bottom = y;
     }
   }
-  return { width: info.width, height: info.height, count, bbox: count ? [left, top, right + 1, bottom + 1] : null };
+  const offsetX = region?.left ?? 0, offsetY = region?.top ?? 0;
+  return { width: info.width, height: info.height, count, alphaSum, bbox: count ? [left + offsetX, top + offsetY, right + 1 + offsetX, bottom + 1 + offsetY] : null };
 }
 
 async function brightPixelCount(file) {
@@ -66,6 +71,97 @@ async function brightPixelCount(file) {
     if (Math.max(data[i], data[i + 1], data[i + 2]) > 80) count++;
   }
   return count;
+}
+
+function stickerGeometry(sticker, asset, width, height) {
+  const [left, top, right, bottom] = asset.alpha_gt8_bbox;
+  const imageWidth = sticker.visualWidthPct / 100 * width * asset.width / (right - left);
+  const imageHeight = imageWidth * asset.height / asset.width;
+  const imageLeft = sticker.centerXPct / 100 * width - (left + right) / 2 / asset.width * imageWidth;
+  const imageTop = sticker.centerYPct / 100 * height - (top + bottom) / 2 / asset.height * imageHeight;
+  return {
+    imageLeft,
+    imageTop,
+    imageWidth,
+    imageHeight,
+    bbox: [
+      imageLeft + left / asset.width * imageWidth,
+      imageTop + top / asset.height * imageHeight,
+      imageLeft + right / asset.width * imageWidth,
+      imageTop + bottom / asset.height * imageHeight,
+    ],
+  };
+}
+
+function expectedRegion(bbox, width, height, padding = 6) {
+  const left = Math.max(0, Math.floor(bbox[0]) - padding);
+  const top = Math.max(0, Math.floor(bbox[1]) - padding);
+  const right = Math.min(width, Math.ceil(bbox[2]) + padding);
+  const bottom = Math.min(height, Math.ceil(bbox[3]) + padding);
+  return { left, top, width: right - left, height: bottom - top };
+}
+
+async function assertStickerGeometry(file, sticker, asset, label) {
+  const width = 270, height = 360;
+  const expected = stickerGeometry(sticker, asset, width, height).bbox;
+  const info = await alphaInfo(file, expectedRegion(expected, width, height));
+  assert.ok(info.count > 100 && info.bbox, `${label} 应有可见像素`);
+  expected.forEach((value, index) => assert.ok(Math.abs(info.bbox[index] - value) <= 4, `${label} 包围框轴 ${index}：实际 ${info.bbox[index]}，预期 ${value}`));
+  return info;
+}
+
+async function readRgba(file) {
+  const { data, info } = await sharp(file).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  return { data, info };
+}
+
+function pixelAt(raw, x, y) {
+  const offset = (Math.round(y) * raw.info.width + Math.round(x)) * raw.info.channels;
+  return [...raw.data.subarray(offset, offset + 4)];
+}
+
+function colorDistance(left, right) {
+  return Math.hypot(left[0] - right[0], left[1] - right[1], left[2] - right[2]);
+}
+
+async function assertUpperLayer(file, upperSticker, upperAsset, lowerSticker, lowerAsset, label) {
+  const width = 270, height = 360;
+  const upperGeometry = stickerGeometry(upperSticker, upperAsset, width, height);
+  const lowerGeometry = stickerGeometry(lowerSticker, lowerAsset, width, height);
+  const left = Math.max(0, Math.ceil(Math.max(upperGeometry.bbox[0], lowerGeometry.bbox[0])));
+  const top = Math.max(0, Math.ceil(Math.max(upperGeometry.bbox[1], lowerGeometry.bbox[1])));
+  const right = Math.min(width, Math.floor(Math.min(upperGeometry.bbox[2], lowerGeometry.bbox[2])));
+  const bottom = Math.min(height, Math.floor(Math.min(upperGeometry.bbox[3], lowerGeometry.bbox[3])));
+  const [upperRaw, lowerRaw, actualRaw] = await Promise.all([
+    readRgba(path.join(PACKAGING_DIR, 'stickers', upperAsset.file)),
+    readRgba(path.join(PACKAGING_DIR, 'stickers', lowerAsset.file)),
+    readRgba(file),
+  ]);
+  const sourcePixel = (raw, geometry, asset, x, y) => {
+    const sourceX = Math.round((x - geometry.imageLeft) / geometry.imageWidth * asset.width);
+    const sourceY = Math.round((y - geometry.imageTop) / geometry.imageHeight * asset.height);
+    if (sourceX < 0 || sourceY < 0 || sourceX >= raw.info.width || sourceY >= raw.info.height) return null;
+    return pixelAt(raw, sourceX, sourceY);
+  };
+  const probes = [];
+  for (let y = top; y < bottom && probes.length < 24; y += 3) {
+    for (let x = left; x < right && probes.length < 24; x += 3) {
+      const upper = sourcePixel(upperRaw, upperGeometry, upperAsset, x, y);
+      const lower = sourcePixel(lowerRaw, lowerGeometry, lowerAsset, x, y);
+      if (!upper || !lower || upper[3] < 250 || lower[3] < 250 || colorDistance(upper, lower) < 100) continue;
+      probes.push({ x, y, upper, lower });
+    }
+  }
+  assert.ok(probes.length >= 4, `${label} 未找到足够的上下层高对比重叠探测点`);
+  const votes = probes.map((probe) => {
+    const actual = pixelAt(actualRaw, probe.x, probe.y);
+    const upperDistance = colorDistance(actual, probe.upper);
+    const lowerDistance = colorDistance(actual, probe.lower);
+    return { probe, actual, upperDistance, lowerDistance, upperWins: upperDistance < lowerDistance };
+  });
+  const upperWins = votes.filter((vote) => vote.upperWins).length;
+  const first = votes[0];
+  assert.ok(upperWins > votes.length / 2, `${label} 上层覆盖错误：${upperWins}/${votes.length} 点接近上层；首点实际 ${first.actual}，上层 ${first.probe.upper}，下层 ${first.probe.lower}`);
 }
 
 let browser;
@@ -308,8 +404,109 @@ try {
   const visibleAt72 = await brightPixelCount(finalFrame72);
   assert.ok(visibleAt24 > visibleAt72 + 100, `最终 MP4 未体现贴纸：开始帧 ${visibleAt24}，结束帧 ${visibleAt72}`);
 
+  const acceptanceBase = path.join(temporaryDir, 'acceptance-base.mp4');
+  run(ffmpegPath, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=0x101010:s=270x360:r=24:d=9', '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', acceptanceBase]);
+  const acceptanceTemplates = ['overlay-poster', 'overlay-journal', 'overlay-minimal', 'overlay-variety'];
+  const bboxCenter = (info) => [(info.bbox[0] + info.bbox[2]) / 2, (info.bbox[1] + info.bbox[3]) / 2];
+  for (const template of acceptanceTemplates) {
+    const outputDir = path.join(temporaryDir, 'acceptance', template);
+    fs.mkdirSync(outputDir, { recursive: true });
+    const animated = animationIds.map((animation, index) => sticker({
+      id: `${template}_${animation}`,
+      assetId: 'highlight',
+      styleMode: 'follow-template',
+      fixedStyle: null,
+      animation,
+      startFrame: 24 + index * 24,
+      endFrame: 48 + index * 24,
+      centerXPct: index % 2 === 0 ? 30 : 70,
+      centerYPct: 45,
+      visualWidthPct: 18,
+      trackIndex: 0,
+    }));
+    const lower = sticker({ id: `${template}_lower`, assetId: 'highlight', styleMode: 'follow-template', fixedStyle: null, startFrame: 176, endFrame: 200, centerXPct: 50, centerYPct: 55, visualWidthPct: 45, trackIndex: 1, animation: 'none' });
+    const upper = sticker({ id: `${template}_upper`, assetId: 'recommend', styleMode: 'follow-template', fixedStyle: null, startFrame: 176, endFrame: 200, centerXPct: 50, centerYPct: 55, visualWidthPct: 20, trackIndex: 0, animation: 'none' });
+    const special = sticker({ id: `${template}_special`, assetId: 'special', styleMode: 'fixed', fixedStyle: 'show', startFrame: 176, endFrame: 200, centerXPct: 15, centerYPct: 25, visualWidthPct: 12, trackIndex: 2, animation: 'none' });
+    const cross = sticker({ id: `${template}_cross`, assetId: 'like', styleMode: 'fixed', fixedStyle: 'show', startFrame: 176, endFrame: 200, centerXPct: 85, centerYPct: 25, visualWidthPct: 12, trackIndex: 3, animation: 'none' });
+    const acceptanceStickers = [...animated, lower, upper, special, cross];
+    const acceptanceAssets = resolvePackagingStickerAssets({ packagingDir: PACKAGING_DIR, template, stickers: acceptanceStickers });
+    const acceptanceVars = buildTimelineVars({
+      vars: { title: '', subtitle: '', desc: '', point1: '', point2: '', point3: '', accent1: '', accent2: '', accent3: '' },
+      totalSec: 9,
+      coverSec: 20 / 24,
+      pointCues: [],
+      pointCuesMode: 'none',
+      stickers: acceptanceStickers,
+      stickerDefaults: { animation: 'follow-template' },
+      stickerAssets: acceptanceAssets,
+      template,
+    });
+    const acceptanceVarsPath = path.join(outputDir, 'vars.json');
+    const acceptanceOutput = path.join(outputDir, 'packaged.mp4');
+    fs.writeFileSync(acceptanceVarsPath, JSON.stringify(acceptanceVars));
+    run(process.execPath, [path.join(PACKAGING_DIR, 'package-video.mjs'), acceptanceBase, acceptanceVarsPath, acceptanceOutput, path.join(PACKAGING_DIR, 'templates', template)], {
+      cwd: ROOT,
+      env: { ...process.env, CREATIVE_STUDIO_PACKAGING_WORK_ROOT: path.join(outputDir, 'work') },
+      timeout: 9 * 60_000,
+    });
+    const acceptanceOverlay = path.join(outputDir, 'overlay.webm');
+    assert.ok(fs.statSync(acceptanceOutput).size > 0 && fs.statSync(acceptanceOverlay).size > 0, `${template} 正式 MP4 与透明 WebM 必须生成`);
+    const extractAcceptance = (frame, name, input = acceptanceOverlay, alpha = true) => {
+      const file = path.join(outputDir, `${name}.png`);
+      extract(input, frame, file, alpha);
+      return file;
+    };
+    for (let index = 0; index < animated.length; index += 1) {
+      const item = animated[index];
+      const animation = animationIds[index];
+      const label = `${template}/${animation}`;
+      const asset = acceptanceAssets[item.id];
+      const atStartInfo = await alphaInfo(extractAcceptance(item.startFrame, `${animation}-start`));
+      const enteringInfo = await alphaInfo(extractAcceptance(item.startFrame + 2, `${animation}-entering`));
+      const stableInfo = await assertStickerGeometry(extractAcceptance(item.startFrame + 16, `${animation}-stable`), item, asset, `${label} 稳定段`);
+      const exitingInfo = await alphaInfo(extractAcceptance(item.endFrame - 2, `${animation}-exiting`));
+      const atEndInfo = await alphaInfo(
+        extractAcceptance(item.endFrame, `${animation}-end`),
+        expectedRegion(stickerGeometry(item, asset, 270, 360).bbox, 270, 360),
+      );
+      assert.equal(atEndInfo.count, 0, `${label} 必须在 endFrame 隐藏`);
+      if (animation === 'none') {
+        assert.ok(atStartInfo.count > 100 && exitingInfo.count > 100, `${label} 无动画应直接出现并保持到终点前`);
+        continue;
+      }
+      assert.equal(atStartInfo.count, 0, `${label} 入场首帧应透明`);
+      assert.ok(enteringInfo.alphaSum < stableInfo.alphaSum, `${label} 入场透明度应低于稳定段`);
+      assert.ok(exitingInfo.alphaSum < stableInfo.alphaSum, `${label} 退场透明度应低于稳定段`);
+      const enteringCenter = bboxCenter(enteringInfo);
+      const exitingCenter = bboxCenter(exitingInfo);
+      const stableCenter = bboxCenter(stableInfo);
+      if (animation === 'soft') {
+        assert.ok(enteringCenter[1] > stableCenter[1] + 1 && exitingCenter[1] < stableCenter[1] - 1, `${label} 上浮方向错误`);
+      } else if (animation === 'rise') {
+        assert.ok(enteringCenter[1] > stableCenter[1] + 1 && exitingCenter[1] > stableCenter[1] + 1, `${label} 上下方向错误`);
+      } else if (animation === 'slide') {
+        assert.ok(enteringCenter[0] < stableCenter[0] - 1 && exitingCenter[0] > stableCenter[0] + 1, `${label} 左右方向错误`);
+      } else {
+        const enteringWidth = enteringInfo.bbox[2] - enteringInfo.bbox[0];
+        const exitingWidth = exitingInfo.bbox[2] - exitingInfo.bbox[0];
+        const stableWidth = stableInfo.bbox[2] - stableInfo.bbox[0];
+        assert.ok(enteringWidth < stableWidth - 1 && exitingWidth < stableWidth - 1, `${label} 缩放尺寸错误`);
+      }
+    }
+    const staticFrame = extractAcceptance(188, 'static');
+    await assertUpperLayer(staticFrame, upper, acceptanceAssets[upper.id], lower, acceptanceAssets[lower.id], `${template} 上下层`);
+    await assertStickerGeometry(staticFrame, special, acceptanceAssets[special.id], `${template}/special 固定 show`);
+    await assertStickerGeometry(staticFrame, cross, acceptanceAssets[cross.id], `${template}/跨风格固定 show`);
+    const staticEnd = await alphaInfo(extractAcceptance(200, 'static-end'));
+    assert.equal(staticEnd.count, 0, `${template} 静态贴纸必须在 endFrame 全部消失`);
+    const finalVisible = await brightPixelCount(extractAcceptance(188, 'final-visible', acceptanceOutput, false));
+    const finalHidden = await brightPixelCount(extractAcceptance(200, 'final-hidden', acceptanceOutput, false));
+    assert.ok(finalVisible > finalHidden, `${template} 最终 MP4 未体现静态贴纸`);
+    console.log(`四模板验收进度：${template} 正式导出与抽帧通过`);
+  }
+
   passed = true;
-  console.log('贴纸真实渲染测试通过：浏览器几何、轨道层级、六种动效逐帧、终点隐藏、哈希失败关闭、WebM alpha 与最终 MP4。');
+  console.log('贴纸真实渲染测试通过：四套模板正式导出、六动效逐帧、几何与透明度、多点像素层级、special/跨风格固定、终点隐藏、WebM alpha 与最终 MP4。');
 } finally {
   if (browser) await browser.close();
   if (temporaryDir) {

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import {
   STICKER_COMMON_IDS,
+  STICKER_STYLE_BY_TEMPLATE,
   sanitizePackagingStickers,
   sanitizePackagingStickerDefaults,
   validatePackagingStickerDefaults,
@@ -16,15 +17,16 @@ import {
   applyPackagingStickerEdit,
   type PackagingStickerInstance,
 } from '../lib/media-core/packaging-stickers.ts';
-import { parsePackagingConfig } from '../lib/media-core/packaging-vars.ts';
+import { parsePackagingConfig, PACKAGING_TEMPLATE_IDS } from '../lib/media-core/packaging-vars.ts';
 import { buildTimelineVars } from '../lib/media-core/packaging-runtime.ts';
 import { resolvePackagingStickerAssets } from '../lib/media-core/packaging-sticker-assets.ts';
 
 const require = createRequire(import.meta.url);
-const { planStickerAnimation } = require('../packaging/stickers/runtime.js') as {
+const { planStickerAnimation, computeStickerGeometry } = require('../packaging/stickers/runtime.js') as {
   planStickerAnimation: (sticker: PackagingStickerInstance, template: string) => {
     animation: string; enterFrames: number; exitFrames: number; stableFrames: number; exitStartFrame: number;
   };
+  computeStickerGeometry: (sticker: PackagingStickerInstance, asset: { alpha_gt8_bbox: [number, number, number, number]; width: number; height: number }) => { imageWidthPct: number };
 };
 
 function sticker(overrides: Partial<PackagingStickerInstance> = {}): PackagingStickerInstance {
@@ -149,4 +151,21 @@ assert.ok(Math.abs(compressed.enterFrames / 9 - compressed.exitFrames / 6) < 0.1
 const minimum = planStickerAnimation(sticker({ endFrame: 24, animation: 'soft' }), 'overlay-poster');
 assert.deepEqual([minimum.enterFrames, minimum.exitFrames, minimum.stableFrames], [1, 1, 2]);
 assert.throws(() => planStickerAnimation(sticker({ endFrame: 23, animation: 'soft' }), 'overlay-poster'), /至少为 4 帧/);
-console.log('贴纸领域测试通过：清洗、模板映射、资产解析、19/48 帧、六种动效、短时长压缩、旧配置和快照透传。');
+
+for (const assetId of STICKER_COMMON_IDS) {
+  for (const template of PACKAGING_TEMPLATE_IDS) {
+    const common = sticker({ assetId, visualWidthPct: 30 });
+    const resolved = resolvePackagingStickerAssets({ packagingDir: path.resolve('packaging'), template, stickers: [common] });
+    const asset = resolved[common.id];
+    assert.equal(asset.file, `${STICKER_STYLE_BY_TEMPLATE[template]}/${assetId}.png`, `${template}/${assetId} 模板素材映射错误`);
+    const geometry = computeStickerGeometry(common, asset);
+    const effectiveWidth = geometry.imageWidthPct * (asset.alpha_gt8_bbox[2] - asset.alpha_gt8_bbox[0]) / asset.width;
+    assert.ok(Math.abs(effectiveWidth - 30) < 1e-8, `${template}/${assetId} 换模板视觉宽度必须保持`);
+  }
+}
+for (const template of PACKAGING_TEMPLATE_IDS) {
+  assert.equal(resolveStickerAssetFile(special, template), 'show/special.png', 'special 必须固定原风格，不随模板错误替换');
+  const cross = sticker({ assetId: 'like', styleMode: 'fixed', fixedStyle: 'show' });
+  assert.equal(resolveStickerAssetFile(cross, template), 'show/like.png', '跨风格固定贴纸必须保留 show 素材');
+}
+console.log('贴纸领域测试通过：清洗、28 个共同 ID 与视觉尺寸、special/跨风格固定、六种动效、短时长压缩和快照透传。');

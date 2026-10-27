@@ -3,7 +3,7 @@
 > 日期：2026-10-27
 > 权威规格：`docs/superpowers/specs/2026-10-27-smart-mixcut-stickers-design.md`
 > 执行方式：用户授权自主推进；只有重大方向变化或不确定风险再询问
-> 当前阶段：C5b 已完成，下一步 C6 四套模板真实导出与回归验收
+> 当前阶段：C6 已完成；单条精准混剪贴纸首版进入批量支持评估
 
 ## 1. 实施原则
 
@@ -14,6 +14,7 @@
 - 缩略图只用于面板，原图只按实例需要加载；不引入 base64 或模板素材副本。
 - 小浮窗使用 CSS 动画，根项目不新增 GSAP 依赖；正式 overlay 继续使用已有 GSAP 运行时。
 - 每阶段完成针对性验证后提交并推送；直连失败时仅对单次命令使用本机代理，不修改 Git 配置。
+- 当前交付状态：C1–C6 的代码与针对性验收已完成；首版仍只开放单条精准混剪，批量混剪贴纸需另行评估。
 
 ## 2. C1 — 素材目录、清单与缩略图
 
@@ -170,3 +171,38 @@
 - 本地始终使用 `master`。`origin` 为私有仓库 `ALANCL129/creative-studio`，推送 `master → master`；`shepherd` 为公开仓库 `shepherdleong-art/creative-studio`，固定推送 `master → dev`，不覆盖其 `master`。
 - 两个远程都推送成功后才能宣称该阶段已交付；任一网络失败则明确记录“本地已提交、哪个远程待推送”。
 - 需要代理时只对单次 push 使用 `git -c http.proxy=http://127.0.0.1:57890 ...`，不写 Git 全局或仓库配置。
+
+## 11. 实施编年史与验收记录
+
+- C1 `7f8cf19`：115 张原图、目录、缩略图与安全路由。
+- C2 `5dd4e70`：独立实例模型、组级持久化、快照和包装历史。
+- C3 `f655f75`：四模板共享宿主、真实透明层与 MP4 导出。
+- C4a `07e58c2`：双页签素材库、点击/拖放与预览空间编辑。
+- C4b `d6df726`：时间轴、轨道层级、右键取消、复制删除和统一撤销。
+- C5a `82c6b06`：六动效、206px 浮窗、统一默认、单张覆盖和应用全部。
+- C5b `f33ab30`：固定随机 6 张、三阶段与四模板槽位、换一组保护。
+- C6：四套模板各完成 9 秒正式 MP4 + 透明 WebM；逐帧核对六动效、几何、透明度、终点、多层像素、`special` 与跨风格固定。28 个共同 ID 的模板映射和视觉尺寸保持通过。
+
+针对性验证均通过：
+
+- `node scripts/packaging-stickers-render.playwright.test.mjs`
+- `node scripts/packaging-stickers-editor.playwright.test.mjs`
+- `node scripts/packaging-stickers.test.ts`、`packaging-stickers-domain.test.ts`、`packaging-stickers-workspace.test.ts`、`packaging-sticker-timeline.test.ts`、`packaging-sticker-planner.test.ts`
+- `node scripts/final-edit-packaging-vars.test.ts`、`final-edit-packaging-cues.test.ts`、`final-edit-packaging-palette.test.ts`
+- `node scripts/final-edit-render.test.ts` 与现有混剪纯模型测试
+- 变更文件 ESLint；`packaging/templates/classic` 与 `lib/film-render` 冻结边界零改动。
+
+仓库既有基线阻塞（不记为贴纸验收失败，也不写成通过）：
+
+- `npx tsc --noEmit` 与 `npm run build` 仍被 `packaging/film-builders` 既有缺失镜像文件及关联 `any` 错误阻断；Next 编译阶段成功，但构建未生成 `BUILD_ID`，因此未运行要求生产产物的 `final-edit-mixcut-real.playwright.test.mjs`。
+- 全量 `npm run lint` 仍失败于既有 `packaging/asset-tools.cjs`、`process-assets.cjs` 和冻结第三方脚本；本次变更文件无 lint error。
+- `final-edit-mixcut-flow.test.ts` 仍要求旧的空 `shotSetId` 形状门禁；当前实现已把可见性交由 `script-visibility`，该失败不由贴纸改动引入。
+- `final-edit-mixcut-ui-contract.test.mjs` 缺少既有 `MixcutPanel.module.css`；`final-edit-mixcut.playwright.test.mjs` 缺少默认 Playwright 浏览器。贴纸真实 E2E 使用仓库内置 Chrome，已通过。
+
+## 12. 实际踩坑与防坑
+
+- 多键拖拽不能只监听 `pointerdown`：右键松开也可能触发同 pointerId 的 `pointerup`。贴纸时间轴只允许左键松开提交，并在右键或 `contextmenu` 时恢复草稿、短暂吞掉原生菜单。
+- 动效入场首帧透明，普通选中必须落在稳定中点；“预览动效”才从起点播放，否则用户会误以为贴纸或编辑手柄消失。
+- 相邻动效可共享同一帧作为前者终点和后者起点；验收必须按实例区域检查，不能把下一张的直接出现误判为前者拖尾。
+- 正式 WebM 的缩放与 VP9 压缩会让单像素颜色漂移；层级验收使用多个高对比探测点的多数结果，不依赖单点颜色或 DOM z-index 数值。
+- 时间轴播放头会覆盖贴纸块中点，浏览器测试从块内 25% 位置抓取，分别验证贴纸拖动和播放头拖动。
