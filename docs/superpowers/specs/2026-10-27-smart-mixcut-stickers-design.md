@@ -214,7 +214,7 @@
 - 从统一动效或当前贴纸的“预览动效”按钮旁弹出。
 - 桌面端约 206px 宽，两列三行，无全屏遮罩，不覆盖视频预览和时间轴。
 - 六张动效卡同时循环，便于直接比较，不逐个轮播。
-- 所有卡片复用同一张固定默认示例图片，不读取当前贴纸，也不让素材库运动。
+- 所有卡片统一复用固定的 `show/highlight` 示例图，与当前模板和当前贴纸无关，也不让素材库运动。
 - 点击卡片选择；选择、点击浮窗外部或点击 × 关闭。
 - 浮窗关闭后停止示例动画；主视频预览用当前贴纸播放一次实际效果。
 - 不生成任何动画版 PNG、GIF 或视频素材。
@@ -294,6 +294,7 @@ type PackagingStickerDefaults = {
 约束：
 
 - `assetId` 是功能 ID；实际文件由 `styleMode + fixedStyle + 当前模板` 解析。
+- `styleMode = 'fixed'` 时 `fixedStyle` 必填；`styleMode = 'follow-template'` 时 `fixedStyle` 必须为 `null`。
 - `special` 必须使用 `styleMode = 'fixed'`。
 - `trackIndex` 越小，层级越高；换轨后归一化顺序。
 - 中心点指有效图案包围框中心，不是 PNG 透明画布中心。
