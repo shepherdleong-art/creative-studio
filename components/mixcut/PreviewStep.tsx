@@ -767,9 +767,9 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     setPackagingPreviewRefreshId((value) => value + 1);
   }, []);
 
-  // iframe 重载键：模板/三槽字体/文案覆盖层/草稿/卖点数组任一变化即重载（不含 layouts——拖拽保存不重载，§6）。
+  // iframe 重载键：模板/三槽字体/文案覆盖层/草稿/卖点与贴纸数组任一变化即重载（不含 layouts——拖拽保存不重载，§6）。
   // pointCues 入键：卖点增删改后 iframe 重载，同步控制器 load 后自动 seek 回当前播放头（§3 恢复逻辑）。
-  const packagingOverlayKey = `${packagingTemplate}|${JSON.stringify(packagingConfig.varsOverrides)}|${packagingConfig.titleFont?.file ?? ''}|${packagingConfig.subtitleFont?.file ?? ''}|${packagingConfig.pointFont?.file ?? ''}|${previewVariantId}|${JSON.stringify(packagingConfig.pointCues ?? [])}`;
+  const packagingOverlayKey = `${packagingTemplate}|${JSON.stringify(packagingConfig.varsOverrides)}|${packagingConfig.titleFont?.file ?? ''}|${packagingConfig.subtitleFont?.file ?? ''}|${packagingConfig.pointFont?.file ?? ''}|${previewVariantId}|${JSON.stringify(packagingConfig.pointCues ?? [])}|${JSON.stringify(packagingConfig.stickers ?? [])}`;
   const packagingOverlaySrc = packagingEnabled && previewVariantId && packagingPreview
     ? `/api/final-edit-groups/${encodeURIComponent(group.id)}/packaging-preview?variantId=${encodeURIComponent(previewVariantId)}&template=${encodeURIComponent(packagingTemplate)}&format=html&sync=1&edit=1`
     : '';

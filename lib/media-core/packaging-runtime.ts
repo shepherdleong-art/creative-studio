@@ -4,6 +4,7 @@ import { dataRoot } from '../data-root.ts';
 import { spawnHidden, spawnSyncHidden } from '../spawn-hidden.ts';
 import type { PackagingVars, PackagingLayouts } from './packaging-vars.ts';
 import type { PackagingStickerDefaults, PackagingStickerInstance } from './packaging-stickers.ts';
+import type { PackagingStickerAssetMap } from './packaging-sticker-assets.ts';
 import type { PointCue, PointCueDraft } from './packaging-cues.ts';
 export class PackagingError extends Error {
   code: string;
@@ -67,6 +68,7 @@ export function buildTimelineVars(input: {
   layouts?: PackagingLayouts;
   stickers?: PackagingStickerInstance[];
   stickerDefaults?: PackagingStickerDefaults;
+  stickerAssets?: PackagingStickerAssetMap;
   fonts?: { titleFile?: string; subtitleFile?: string; pointFile?: string };
 }): Record<string, unknown> {
   return {
@@ -79,6 +81,7 @@ export function buildTimelineVars(input: {
     ...(input.layouts && Object.keys(input.layouts).length > 0 ? { layouts: input.layouts } : {}),
     ...(input.stickers && input.stickers.length > 0 ? { stickers: input.stickers } : {}),
     ...(input.stickerDefaults ? { stickerDefaults: input.stickerDefaults } : {}),
+    ...(input.stickers && input.stickers.length > 0 && input.stickerAssets && Object.keys(input.stickerAssets).length > 0 ? { stickerAssets: input.stickerAssets } : {}),
     // 字体文件名为纯文件名（package-video 在 fonts/user/ 下解析并注入 @font-face）
     ...(input.fonts?.titleFile ? { titleFontFile: input.fonts.titleFile } : {}),
     ...(input.fonts?.subtitleFile ? { subtitleFontFile: input.fonts.subtitleFile } : {}),

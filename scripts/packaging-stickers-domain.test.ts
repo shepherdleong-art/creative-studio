@@ -1,5 +1,6 @@
 // 运行：node scripts/packaging-stickers-domain.test.ts
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {
   STICKER_COMMON_IDS,
   sanitizePackagingStickers,
@@ -13,6 +14,7 @@ import {
 } from '../lib/media-core/packaging-stickers.ts';
 import { parsePackagingConfig } from '../lib/media-core/packaging-vars.ts';
 import { buildTimelineVars } from '../lib/media-core/packaging-runtime.ts';
+import { resolvePackagingStickerAssets } from '../lib/media-core/packaging-sticker-assets.ts';
 
 function sticker(overrides: Partial<PackagingStickerInstance> = {}): PackagingStickerInstance {
   return {
@@ -73,6 +75,13 @@ const config = parsePackagingConfig({ enabled: true, template: 'overlay-variety'
 assert.deepEqual(config.stickers, [base]);
 assert.deepEqual(config.stickerDefaults, { animation: 'soft' });
 
+const stickerAssets = resolvePackagingStickerAssets({ packagingDir: path.resolve('packaging'), template: 'overlay-variety', stickers: [base] });
+assert.equal(stickerAssets[base.id].file, 'show/highlight.png');
+assert.equal(stickerAssets[base.id].alpha_gt8_bbox.length, 4);
+assert.match(stickerAssets[base.id].sha256, /^[a-f0-9]{64}$/);
+assert.throws(() => resolvePackagingStickerAssets({ packagingDir: path.resolve('packaging'), template: 'overlay-basic', stickers: [base] }), /不支持贴纸/);
+assert.throws(() => resolvePackagingStickerAssets({ packagingDir: path.resolve('packaging'), template: 'overlay-variety', stickers: [sticker({ assetId: 'missing' })] }), /缺少 show\/missing.png/);
+
 const timelineVars = buildTimelineVars({
   vars: { title: '', subtitle: '', point1: '', point2: '', point3: '', accent1: '', accent2: '', accent3: '' },
   totalSec: 15,
@@ -81,7 +90,9 @@ const timelineVars = buildTimelineVars({
   pointCuesMode: 'none',
   stickers: [base],
   stickerDefaults: { animation: 'soft' },
+  stickerAssets,
 });
 assert.deepEqual(timelineVars.stickers, [base]);
 assert.deepEqual(timelineVars.stickerDefaults, { animation: 'soft' });
-console.log('贴纸领域测试通过：清洗、模板映射、19/48 帧、旧配置和快照透传。');
+assert.deepEqual(timelineVars.stickerAssets, stickerAssets);
+console.log('贴纸领域测试通过：清洗、模板映射、资产解析、19/48 帧、旧配置和快照透传。');

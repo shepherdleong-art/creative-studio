@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(__dirname, "..");
@@ -214,6 +214,51 @@ try {
   console.log(`      吸色跳过（${e.message}），模板用默认深浅色`);
 }
 let html = fs.readFileSync(path.join(workDir, "index.html"), "utf-8");
+// 贴纸单源分发：共享运行时随模板复制；原图只复制当前 vars 快照实际引用的实例。
+// 在 HyperFrames 启动前校验相对路径与 SHA-256，缺图/改动一律失败，不静默降级。
+const stickerVars = varsAbs && fs.existsSync(varsAbs) ? JSON.parse(fs.readFileSync(varsAbs, "utf-8")) : {};
+const stickerInstances = Array.isArray(stickerVars.stickers) ? stickerVars.stickers : [];
+const usesStickerRuntime = /src=["']stickers\/runtime\.js["']/.test(html);
+const sharedStickerRoot = path.resolve(__dirname, "stickers");
+const resolveStickerPath = (root, relativeFile) => {
+  if (typeof relativeFile !== "string" || !relativeFile || relativeFile.includes("\0")) return null;
+  const resolved = path.resolve(root, relativeFile);
+  return resolved !== root && resolved.startsWith(`${root}${path.sep}`) ? resolved : null;
+};
+if (usesStickerRuntime) {
+  const runtimeSource = path.join(sharedStickerRoot, "runtime.js");
+  if (!fs.existsSync(runtimeSource)) throw new Error("共享贴纸运行时缺失：stickers/runtime.js");
+  fs.mkdirSync(path.join(workDir, "stickers"), { recursive: true });
+  fs.copyFileSync(runtimeSource, path.join(workDir, "stickers", "runtime.js"));
+}
+if (stickerInstances.length > 0) {
+  if (!usesStickerRuntime) throw new Error("当前包装模板不支持贴纸");
+  const copiedStickerFiles = new Map();
+  for (const instance of stickerInstances) {
+    const asset = instance && typeof instance.id === "string" && stickerVars.stickerAssets && typeof stickerVars.stickerAssets === "object"
+      ? stickerVars.stickerAssets[instance.id]
+      : null;
+    if (!asset || typeof asset.file !== "string" || !asset.file.toLowerCase().endsWith(".png") || !/^[a-f0-9]{64}$/.test(asset.sha256 || "")) {
+      throw new Error(`贴纸 ${instance?.id || "unknown"} 缺少有效的已解析素材`);
+    }
+    if (copiedStickerFiles.has(asset.file)) {
+      if (copiedStickerFiles.get(asset.file) !== asset.sha256) throw new Error(`贴纸素材哈希声明不一致：${asset.file}`);
+      continue;
+    }
+    const source = resolveStickerPath(sharedStickerRoot, asset.file);
+    const destination = resolveStickerPath(path.resolve(workDir, "stickers"), asset.file);
+    if (!source || !destination) throw new Error(`贴纸素材路径无效：${asset.file}`);
+    let bytes;
+    try { bytes = fs.readFileSync(source); }
+    catch { throw new Error(`贴纸原图读取失败：${asset.file}`); }
+    const actualHash = createHash("sha256").update(bytes).digest("hex");
+    if (actualHash !== asset.sha256) throw new Error(`贴纸原图 SHA-256 校验失败：${asset.file}`);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(destination, bytes);
+    copiedStickerFiles.set(asset.file, asset.sha256);
+  }
+  console.log(`      贴纸: ${stickerInstances.length} 个实例，${copiedStickerFiles.size} 张原图已校验`);
+}
 html = html
   .replace(/data-duration="[^"]*"/, `data-duration="${spec.duration}"`)
   .replace(/data-fps="[^"]*"/, `data-fps="${spec.fps}"`)

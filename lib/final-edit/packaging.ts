@@ -21,6 +21,7 @@ import { extractAccentColors } from './packaging-color.ts';
 import { safeFontFilename } from './packaging-font.ts';
 import { buildPackagingVars, loadProjectPackagingData, type PackagingLayouts, type PackagingVars } from './packaging-vars.ts';
 import type { PackagingStickerDefaults, PackagingStickerInstance } from '../media-core/packaging-stickers.ts';
+import { resolvePackagingStickerAssets } from '../media-core/packaging-sticker-assets.ts';
 import type { FinalEditRenderSnapshot } from './renderer.ts';
 import { composeCoverJpg } from './cover-compose.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from './storage-path.ts';
@@ -313,6 +314,7 @@ export async function executePackagingJob(input: {
     pointCues = ensured.pointCues;
     pointCuesMode = ensured.mode;
   }
+  const stickerAssets = resolvePackagingStickerAssets({ packagingDir, template: templateName, stickers: input.snapshot.stickers });
   const timelineVars = buildTimelineVars({
     vars,
     totalSec,
@@ -323,6 +325,7 @@ export async function executePackagingJob(input: {
     layouts: input.snapshot.layouts,
     stickers: input.snapshot.stickers,
     stickerDefaults: input.snapshot.stickerDefaults,
+    stickerAssets,
     // §10 ②：快照冻结的三槽字体（非法/缺失文件名由 safeFontFilename 过滤，package-video 端二次校验存在性）
     fonts: {
       titleFile: safeFontFilename(input.snapshot.titleFont?.file) ?? undefined,

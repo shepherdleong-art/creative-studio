@@ -14,6 +14,7 @@ import { TEMPLATES, TemplateThumb } from '@/components/packaging/PackagingTempla
 import { Icon } from '@/components/ui/Icon';
 import type { GroupCommandInput } from '@/components/final-edit/command-types';
 import type { PackagingLayouts, PackagingVars } from '@/lib/final-edit/packaging-vars';
+import type { PackagingStickerDefaults, PackagingStickerInstance } from '@/lib/media-core/packaging-stickers';
 import type { FinalEditGroupView } from '@/lib/final-edit/types';
 import { FontPicker, type SystemFontItem } from './FontPicker';
 import styles from './mixcut-content.module.css';
@@ -35,6 +36,8 @@ export interface PackagingPreviewData {
     pointCuesMode: 'timed' | 'even' | 'none';
   };
   layouts?: PackagingLayouts;
+  stickers: PackagingStickerInstance[];
+  stickerDefaults: PackagingStickerDefaults;
   pointCuesStale?: boolean;
   pointCuesEdited?: boolean;
 }

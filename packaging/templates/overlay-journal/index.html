@@ -19,7 +19,11 @@
   /* ---- v4 手账拼贴：用户素材整框(114%) + 遮罩纯色底 + 正大黑 + 撕纸便签 ---- */
 
   /* 封面舞台：整组放大 114%（框/纯色底/标题/便签组同步） */
-  .stage { position: absolute; inset: 0; transform: scale(1.14); transform-origin: 50% 50%; z-index: 1; }
+  .stage { position: absolute; inset: 0; transform: scale(1.14); transform-origin: 50% 50%; z-index: 3; }
+  /* 贴纸在封面/包装文字与正片卖点之下；封面舞台在正文开始前已完全退场。 */
+  #sticker-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+  #dyn { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+  #dyn [data-point-id] { pointer-events: auto; }
 
   /* 低饱和纯色底：吸封面帧深暖色；mask 由框 alpha 洪水填充生成，窗格精确镂空（撕纸边零误差） */
   .paperbg {
@@ -97,6 +101,7 @@
         <div class="note" id="c3" data-point-id="cover:point3"></div>
       </div>
     </div>
+    <div id="sticker-layer"></div>
     <div id="dyn"></div>
   </div>
 
@@ -377,5 +382,6 @@
   if (!window.__hyperframes) tl.play(0);
 })();
 </script>
+<script src="stickers/runtime.js"></script>
 </body>
 </html>

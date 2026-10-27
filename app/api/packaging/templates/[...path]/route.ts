@@ -17,6 +17,7 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   '.woff2': 'font/woff2',
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
+  '.webp': 'image/webp',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.svg': 'image/svg+xml',
@@ -45,6 +46,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pat
     // segments = [<template>, 'fonts', <字体文件>...]
     const sharedFontsRoot = segments[2] === 'user' ? userFontDir() : path.resolve(packagingDir, 'fonts');
     const shared = resolveWithin(sharedFontsRoot, segments.slice(segments[2] === 'user' ? 3 : 2));
+    if (shared && fs.existsSync(shared)) file = shared;
+  }
+  if (file && !fs.existsSync(file) && segments.length > 2 && segments[1] === 'stickers') {
+    // 共享贴纸运行时与原图：四套模板只保存相对引用，预览从 packaging/stickers 回退读取。
+    const shared = resolveWithin(path.resolve(packagingDir, 'stickers'), segments.slice(2));
     if (shared && fs.existsSync(shared)) file = shared;
   }
   const stat = file ? fs.statSync(file, { throwIfNoEntry: false }) : undefined;

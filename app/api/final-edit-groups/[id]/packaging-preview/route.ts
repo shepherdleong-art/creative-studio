@@ -25,6 +25,7 @@ import { buildConfigFontFacesCss } from '@/lib/final-edit/packaging-font';
 import { extractPackagingPalette, resolveTemplateHueMode, type PackagingPalette } from '@/lib/final-edit/packaging-palette';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { FINAL_EDIT_INTRO_DURATION_US } from '@/lib/media-core/render-contract';
+import { resolvePackagingStickerAssets } from '@/lib/media-core/packaging-sticker-assets';
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -98,7 +99,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
     let html = fs.readFileSync(path.join(templateDir, 'index.html'), 'utf-8');
     // §7：layouts 随 vars 注入，模板端经 window.__vars.layouts 读取（与导出渲染同契约）
-    const timelineVars = buildTimelineVars({ vars, totalSec, coverSec, pointCues, pointCuesMode, layouts, stickers: group.packaging.stickers, stickerDefaults: group.packaging.stickerDefaults });
+    const stickerAssets = resolvePackagingStickerAssets({ packagingDir: resolvePackagingDir(), template, stickers: group.packaging.stickers });
+    const timelineVars = buildTimelineVars({ vars, totalSec, coverSec, pointCues, pointCuesMode, layouts, stickers: group.packaging.stickers, stickerDefaults: group.packaging.stickerDefaults, stickerAssets });
     const varsJson = JSON.stringify(timelineVars).replace(/</g, '\\u003c');
     const baseHref = `/api/packaging/templates/${encodeURIComponent(template)}/`;
     // §10 ②：预览与成片一致——按当前配置三槽注入 @font-face（UserTitle/UserSubtitle/UserPoint；
