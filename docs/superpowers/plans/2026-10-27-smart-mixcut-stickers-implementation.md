@@ -167,5 +167,6 @@
 ## 10. 回退与网络策略
 
 - 每个 C 阶段独立提交；问题回退使用对应 `git revert`，不在共享工作区做破坏性重置。
-- push 必须先于下一阶段宣称完成；网络失败则明确记录“本地已提交、待推送”。
-- 需要代理时只使用 `git -c http.proxy=http://127.0.0.1:57890 push` 形式的单次配置，不写 Git 全局或仓库配置。
+- 本地始终使用 `master`。`origin` 为私有仓库 `ALANCL129/creative-studio`，推送 `master → master`；`shepherd` 为公开仓库 `shepherdleong-art/creative-studio`，固定推送 `master → dev`，不覆盖其 `master`。
+- 两个远程都推送成功后才能宣称该阶段已交付；任一网络失败则明确记录“本地已提交、哪个远程待推送”。
+- 需要代理时只对单次 push 使用 `git -c http.proxy=http://127.0.0.1:57890 ...`，不写 Git 全局或仓库配置。
