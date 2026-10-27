@@ -20,6 +20,7 @@ import { ensurePackagingPointCues, type PointCue } from './packaging-cues.ts';
 import { extractAccentColors } from './packaging-color.ts';
 import { safeFontFilename } from './packaging-font.ts';
 import { buildPackagingVars, loadProjectPackagingData, type PackagingLayouts, type PackagingVars } from './packaging-vars.ts';
+import type { PackagingStickerDefaults, PackagingStickerInstance } from '../media-core/packaging-stickers.ts';
 import type { FinalEditRenderSnapshot } from './renderer.ts';
 import { composeCoverJpg } from './cover-compose.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from './storage-path.ts';
@@ -50,6 +51,9 @@ export interface FinalEditPackagingSnapshot {
   layouts?: PackagingLayouts;
   /** §7：pointCues 手动编辑保护标志（随快照冻结，审计用）。 */
   pointCuesEdited?: boolean;
+  /** 独立贴纸与新增默认动效，随渲染快照冻结。 */
+  stickers?: PackagingStickerInstance[];
+  stickerDefaults?: PackagingStickerDefaults;
   /** §10 ②：三槽用户字体（enqueueRender 时冻结；文件已物化到 packaging/fonts/user/）。 */
   pointFont?: { family: string; file: string };
   titleFont?: { family: string; file: string };
@@ -317,6 +321,8 @@ export async function executePackagingJob(input: {
     pointCuesMode,
     // §7：快照冻结的手动布局（模板端 applyLayouts 按 data-point-id 覆盖默认版式）
     layouts: input.snapshot.layouts,
+    stickers: input.snapshot.stickers,
+    stickerDefaults: input.snapshot.stickerDefaults,
     // §10 ②：快照冻结的三槽字体（非法/缺失文件名由 safeFontFilename 过滤，package-video 端二次校验存在性）
     fonts: {
       titleFile: safeFontFilename(input.snapshot.titleFont?.file) ?? undefined,

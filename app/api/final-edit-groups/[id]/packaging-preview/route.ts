@@ -94,11 +94,11 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const totalSec = Math.max(group.totalDurationUs / 1e6, coverSec + 0.2);
     const timeline = { coverSec, totalSec, pointCues, pointCuesMode };
 
-    if (format === 'json') return NextResponse.json({ vars, defaults, frameUrl, template, timeline, layouts, pointCuesStale, pointCuesEdited }, { headers: { 'Cache-Control': 'no-store' } });
+    if (format === 'json') return NextResponse.json({ vars, defaults, frameUrl, template, timeline, layouts, stickers: group.packaging.stickers ?? [], stickerDefaults: group.packaging.stickerDefaults ?? { animation: 'follow-template' }, pointCuesStale, pointCuesEdited }, { headers: { 'Cache-Control': 'no-store' } });
 
     let html = fs.readFileSync(path.join(templateDir, 'index.html'), 'utf-8');
     // §7：layouts 随 vars 注入，模板端经 window.__vars.layouts 读取（与导出渲染同契约）
-    const timelineVars = buildTimelineVars({ vars, totalSec, coverSec, pointCues, pointCuesMode, layouts });
+    const timelineVars = buildTimelineVars({ vars, totalSec, coverSec, pointCues, pointCuesMode, layouts, stickers: group.packaging.stickers, stickerDefaults: group.packaging.stickerDefaults });
     const varsJson = JSON.stringify(timelineVars).replace(/</g, '\\u003c');
     const baseHref = `/api/packaging/templates/${encodeURIComponent(template)}/`;
     // §10 ②：预览与成片一致——按当前配置三槽注入 @font-face（UserTitle/UserSubtitle/UserPoint；

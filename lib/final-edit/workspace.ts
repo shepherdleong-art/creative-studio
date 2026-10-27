@@ -45,6 +45,7 @@ import {
 } from './material-import.ts';
 import { assertNarrationPlaybackRate, assertTtsSpeed } from './tts-speed.ts';
 import { buildPackagingVars, DEFAULT_PACKAGING_TEMPLATE, loadProjectPackagingData, mergePackagingLayouts, PACKAGING_TEMPLATE_IDS, parsePackagingConfig, sanitizePackagingVarsOverrides, sanitizePointCues, type PackagingLayouts, type PackagingLayoutsPatch, type PackagingPointLayout, type PackagingTemplateId } from './packaging-vars.ts';
+import { assertPackagingStickerFrames, PackagingStickerError, validatePackagingStickerDefaults, validatePackagingStickers, type PackagingStickerDefaults, type PackagingStickerInstance } from '../media-core/packaging-stickers.ts';
 import { buildPointCues, computePointCuesKey, ensurePackagingPointCues, extractSellingPointsWithLLM, loadProjectSellingPoints, mergePointCuesIntoPackagingJson, type PointCue } from './packaging-cues.ts';
 import { preparePreviewCacheKey } from './prepare-preview.ts';
 import { normalizeCoverPreset } from './title-presets.ts';
@@ -287,6 +288,7 @@ export type FinalEditCommand =
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'trim_subtitle_cue'; cueId: string; startUs: number; endUs: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'insert_subtitle_cue'; segmentId: string; text: string; startUs: number; endUs: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'restore_subtitle_revision'; revision: number }
+  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'restore_packaging_revision'; revision: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'restore_automatic_subtitles' }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'normalize_automatic_subtitles' }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'split_subtitle_cue'; cueId: string; splitUs: number; leftText: string; rightText: string }
@@ -298,7 +300,7 @@ export type FinalEditCommand =
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'apply_cover_editor'; variantId: string; expectedVariantRevision: number; draft: CoverEditorDraft }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_narration_playback_rate'; playbackRate: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_narration_gain'; gainDb: number }
-  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_packaging_config'; config: { enabled: boolean; template?: string; varsOverrides?: Record<string, string>; pointFont?: { family: string; file: string } | null; titleFont?: { family: string; file: string } | null; subtitleFont?: { family: string; file: string } | null; pointCues?: Array<{ id?: string; text: string; startSec: number; endSec: number }>; layouts?: PackagingLayoutsPatch | '__clear'; pointCuesEdited?: boolean; forceReextract?: boolean } }
+  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_packaging_config'; variantId?: string; config: { enabled: boolean; template?: string; varsOverrides?: Record<string, string>; pointFont?: { family: string; file: string } | null; titleFont?: { family: string; file: string } | null; subtitleFont?: { family: string; file: string } | null; pointCues?: Array<{ id?: string; text: string; startSec: number; endSec: number }>; layouts?: PackagingLayoutsPatch | '__clear'; pointCuesEdited?: boolean; forceReextract?: boolean; stickers?: PackagingStickerInstance[]; stickerDefaults?: PackagingStickerDefaults } }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_mixcut_script_state'; scriptDraftId?: string; editedNarrationText: string; selectedMaterialKeys: string[]; providerId?: string; analysisProviderId?: string; voice: string; speed: number };
 
 export interface EnqueueRenderInput {
@@ -2217,6 +2219,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     let selectedMaterialKeys = parseJson<unknown[]>(String(row.selectedMaterialKeysJson || '[]'), []).map(String);
     let analysisProviderId = String(row.analysisProviderId || '');
     let packagingConfig = parsePackagingConfig(row.packagingJson);
+    const previousPackagingConfig = packagingConfig;
     const validateCueRange = (cueId: string | null, startUs: number, endUs: number) => {
       const minimumUs = minimumFrameDurationUs(FINAL_EDIT_FPS);
       if (startUs < 0 || endUs > Number(row.narrationDurationUs) || endUs - startUs < minimumUs) throw new FinalEditError('subtitle_out_of_range', '字幕时间超出正文或短于一帧');
@@ -2228,6 +2231,12 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       if (!Array.isArray(state.cues)) throw new FinalEditError('revision_not_found', '要恢复的字幕版本不存在', 404);
       cues.splice(0, cues.length, ...state.cues);
       for (const cue of cues) validateCueRange(cue.id, cue.startUs, cue.endUs);
+    }
+    if (command.type === 'restore_packaging_revision') {
+      const historical = db.prepare(`SELECT stateJson FROM final_edit_revisions WHERE scopeKind='group' AND scopeId=? AND revision=?`).get(command.groupId, command.revision) as { stateJson: string } | undefined;
+      const state = historical ? parseJson<{ packaging?: unknown }>(historical.stateJson, {}) : {};
+      if (!state.packaging || typeof state.packaging !== 'object' || Array.isArray(state.packaging)) throw new FinalEditError('revision_not_found', '要恢复的包装版本不存在', 404);
+      packagingConfig = parsePackagingConfig(state.packaging);
     }
     if (command.type === 'set_subtitle_cue_text') {
       const cue = cues.find((item) => item.id === command.cueId);
@@ -2358,6 +2367,22 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       let pointCuesKey = packagingConfig.pointCuesKey;
       let pointCuesEdited = packagingConfig.pointCuesEdited === true;
       let layouts = packagingConfig.layouts ?? {};
+      let stickers = packagingConfig.stickers;
+      let stickerDefaults = packagingConfig.stickerDefaults;
+      if (command.config.stickers !== undefined || command.config.stickerDefaults !== undefined) {
+        try {
+          if (command.config.stickers !== undefined) {
+            const variants = load(command.groupId).variants;
+            const variant = variants.find((item) => item.id === command.variantId) ?? (command.variantId ? undefined : variants[0]);
+            if (!variant) throw new FinalEditError('variant_not_found', '贴纸所属成片草稿不存在', 404);
+            stickers = validatePackagingStickers(command.config.stickers, variant.timeline.bodyFrames);
+          }
+          if (command.config.stickerDefaults !== undefined) stickerDefaults = validatePackagingStickerDefaults(command.config.stickerDefaults);
+        } catch (error) {
+          if (error instanceof PackagingStickerError) throw new FinalEditError(error.code, error.message, 400);
+          throw error;
+        }
+      }
       if (command.config.pointCues !== undefined) {
         // 整体替换：服务端为缺 id 的项回填 id；任何 pointCues 变更自动置编辑保护
         pointCues = sanitizePointCues(command.config.pointCues) ?? [];
@@ -2388,6 +2413,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         pointCuesMode: packagingConfig.pointCuesMode ?? 'timed',
         ...(pointCuesEdited ? { pointCuesEdited: true } : {}),
         ...(Object.keys(layouts).length > 0 ? { layouts } : {}),
+        ...(stickers && stickers.length > 0 ? { stickers } : {}),
+        ...(stickerDefaults ? { stickerDefaults } : {}),
         ...fontSlot('titleFont'),
         ...fontSlot('subtitleFont'),
         ...fontSlot('pointFont'),
@@ -2395,13 +2422,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     }
     const revision = Number(row.revision) + 1;
     db.transaction(() => {
-      db.prepare(`INSERT INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('group', ?, ?, ?, '{"type":"before_edit"}', ?) ON CONFLICT(scopeKind, scopeId, revision) DO UPDATE SET stateJson=json_set(final_edit_revisions.stateJson, '$.cues', json_extract(excluded.stateJson, '$.cues')) WHERE json_type(final_edit_revisions.stateJson, '$.cues') IS NULL`).run(command.groupId, Number(row.revision), JSON.stringify({ cues: parseJson(String(row.subtitleStateJson), []) }), now());
-      db.prepare(`INSERT INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('group', ?, ?, ?, ?, ?)`).run(command.groupId, revision, JSON.stringify({ cues, coverTitle, textStyles, scriptSnapshot: mixcutScriptSnapshot, narrationConfig, selectedMaterialKeys }), JSON.stringify(command), now());
+      db.prepare(`INSERT INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('group', ?, ?, ?, '{"type":"before_edit"}', ?) ON CONFLICT(scopeKind, scopeId, revision) DO UPDATE SET stateJson=json_set(final_edit_revisions.stateJson, '$.cues', COALESCE(json_extract(final_edit_revisions.stateJson, '$.cues'), json_extract(excluded.stateJson, '$.cues')), '$.packaging', COALESCE(json_extract(final_edit_revisions.stateJson, '$.packaging'), json_extract(excluded.stateJson, '$.packaging')))`).run(command.groupId, Number(row.revision), JSON.stringify({ cues: parseJson(String(row.subtitleStateJson), []), packaging: previousPackagingConfig }), now());
+      db.prepare(`INSERT INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('group', ?, ?, ?, ?, ?)`).run(command.groupId, revision, JSON.stringify({ cues, coverTitle, textStyles, scriptSnapshot: mixcutScriptSnapshot, narrationConfig, selectedMaterialKeys, packaging: packagingConfig }), JSON.stringify(command), now());
       if (command.type === 'set_mixcut_script_state') {
         db.prepare(`UPDATE final_edit_groups SET scriptDraftId=?, analysisProviderId=?, subtitleStateJson=?, coverTitleJson=?, textStylesJson=?, scriptSnapshotJson=?, editedNarrationText=?, scriptSyncState=?, sourceScriptUpdatedAt=?, narrationConfigJson=?, selectedMaterialKeysJson=?, revision=?, updatedAt=? WHERE id=?`).run(mixcutScriptSnapshot.sourceDraftId || '', analysisProviderId, JSON.stringify(cues), JSON.stringify(coverTitle), JSON.stringify(textStyles), JSON.stringify(mixcutScriptSnapshot), mixcutScriptSnapshot.editedNarrationText, mixcutScriptSnapshot.scriptSyncState, mixcutScriptSnapshot.sourceScriptUpdatedAt, JSON.stringify(narrationConfig), JSON.stringify(selectedMaterialKeys), revision, now(), command.groupId);
       } else if (command.type === 'set_narration_playback_rate' || command.type === 'set_narration_gain') {
         db.prepare(`UPDATE final_edit_groups SET narrationConfigJson=?, revision=?, updatedAt=? WHERE id=?`).run(JSON.stringify(narrationConfig), revision, now(), command.groupId);
-      } else if (command.type === 'set_packaging_config') {
+      } else if (command.type === 'set_packaging_config' || command.type === 'restore_packaging_revision') {
         db.prepare(`UPDATE final_edit_groups SET packagingJson=?, revision=?, updatedAt=? WHERE id=?`).run(JSON.stringify(packagingConfig), revision, now(), command.groupId);
       } else {
         db.prepare(`UPDATE final_edit_groups SET subtitleStateJson=?, coverTitleJson=?, textStylesJson=?, revision=?, updatedAt=? WHERE id=?`).run(JSON.stringify(cues), JSON.stringify(coverTitle), JSON.stringify(textStyles), revision, now(), command.groupId);
@@ -2422,6 +2449,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     if (!variant) throw new FinalEditError('variant_not_found', '成片草稿不存在', 404);
     if (group.revision !== input.expectedGroupRevision || variant.revision !== input.expectedVariantRevision) throw new FinalEditError('revision_conflict', '导出前版本已变化', 409);
     if (group.reassembled) return enqueueFilmRender(db, input, 'deliver');
+    if (group.packaging.enabled && group.packaging.stickers?.length) {
+      try { assertPackagingStickerFrames(group.packaging.stickers, variant.timeline.bodyFrames); }
+      catch (error) {
+        if (error instanceof PackagingStickerError) throw new FinalEditError(error.code, error.message, 409);
+        throw error;
+      }
+    }
     const blocking = variant.issues.find((issue) => issue.severity === 'blocking');
     if (blocking) throw new FinalEditError(blocking.code, blocking.message);
     if (variant.cover.coverKey && db.prepare(`SELECT 1 FROM final_edit_variants WHERE groupId=? AND id<>? AND json_extract(coverJson, '$.coverKey')=? LIMIT 1`).get(group.id, variant.id, variant.cover.coverKey)) {
@@ -2523,6 +2557,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         // §7：手动布局与编辑保护标志冻结进渲染快照（导出期间继续调整不影响本次任务）
         ...(group.packaging.layouts && Object.keys(group.packaging.layouts).length > 0 ? { layouts: group.packaging.layouts } : {}),
         ...(group.packaging.pointCuesEdited ? { pointCuesEdited: true } : {}),
+        ...(group.packaging.stickers && group.packaging.stickers.length > 0 ? { stickers: group.packaging.stickers } : {}),
+        ...(group.packaging.stickerDefaults ? { stickerDefaults: group.packaging.stickerDefaults } : {}),
         // §10 ②：三槽字体冻结进渲染快照（包装任务按快照注入 @font-face，导出期间换字体不影响本次导出）
         ...(group.packaging.titleFont ? { titleFont: group.packaging.titleFont } : {}),
         ...(group.packaging.subtitleFont ? { subtitleFont: group.packaging.subtitleFont } : {}),

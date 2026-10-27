@@ -14,6 +14,7 @@ import { normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
 import { audioCutFilter, videoPlaybackRate } from './clip-edit.ts';
 import type { PointCue } from './packaging-cues.ts';
 import type { PackagingLayouts } from './packaging-vars.ts';
+import type { PackagingStickerDefaults, PackagingStickerInstance } from '../media-core/packaging-stickers.ts';
 
 export interface FinalEditRenderSnapshot {
   groupRevision: number;
@@ -37,7 +38,7 @@ export interface FinalEditRenderSnapshot {
    * v3 追加 pointCues / pointCuesMode：对时卖点在入队时冻结，渲染/包装零推理。
    * §7 追加 layouts / pointCuesEdited：手动布局与编辑保护标志随快照冻结。
    */
-  packaging?: { enabled: boolean; template?: string; varsOverrides?: Record<string, string>; pointCues?: PointCue[]; pointCuesMode?: 'timed' | 'even' | 'none'; layouts?: PackagingLayouts; pointCuesEdited?: boolean; pointFont?: { family: string; file: string }; titleFont?: { family: string; file: string }; subtitleFont?: { family: string; file: string } };
+  packaging?: { enabled: boolean; template?: string; varsOverrides?: Record<string, string>; pointCues?: PointCue[]; pointCuesMode?: 'timed' | 'even' | 'none'; layouts?: PackagingLayouts; pointCuesEdited?: boolean; stickers?: PackagingStickerInstance[]; stickerDefaults?: PackagingStickerDefaults; pointFont?: { family: string; file: string }; titleFont?: { family: string; file: string }; subtitleFont?: { family: string; file: string } };
 }
 
 async function fileSha256(filePath: string): Promise<string> {

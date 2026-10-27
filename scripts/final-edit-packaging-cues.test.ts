@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import {
   alignPointToCues, alignPointToWords, buildPointCues, computeNarrationContentKey, computePointCuesKey,
-  dedupeCandidates, distributeEvenCues, ensurePackagingPointCues, extractHeuristicPoints, normalizeForMatch,
+  dedupeCandidates, distributeEvenCues, ensurePackagingPointCues, extractHeuristicPoints, mergePointCuesIntoPackagingJson, normalizeForMatch,
   parseStoredWordTimings, postProcessTimedCues, type CueLike, type WordTiming,
 } from '../lib/final-edit/packaging-cues.ts';
 import { parsePackagingConfig } from '../lib/final-edit/packaging-vars.ts';
@@ -332,6 +332,24 @@ const COVER_SEC = FINAL_EDIT_INTRO_DURATION_US / 1e6;
   assert.equal(guarded.pointCues.length, 2, '编辑保护期内不得按新口播重提取');
   assert.equal(guarded.pointCues[0].id, 'p_keepme01');
   db.close();
+}
+
+// 卖点重写必须保留独立贴纸及默认动效
+{
+  const merged = mergePointCuesIntoPackagingJson(JSON.stringify({
+    enabled: true,
+    template: 'overlay-variety',
+    stickers: [{
+      id: 'sticker_cues', assetId: 'highlight', styleMode: 'follow-template', fixedStyle: null,
+      startFrame: 20, endFrame: 68, centerXPct: 50, centerYPct: 40, visualWidthPct: 30,
+      rotationDeg: 0, trackIndex: 0, animation: 'follow-template', origin: { kind: 'manual' },
+    }],
+    stickerDefaults: { animation: 'soft' },
+  }), [{ text: '新卖点', startSec: 1, endSec: 2 }], 'test-key', 'timed');
+  const config = parsePackagingConfig(merged.packagingJson);
+  assert.equal(config.stickers?.[0]?.id, 'sticker_cues');
+  assert.deepEqual(config.stickerDefaults, { animation: 'soft' });
+  assert.equal(config.pointCues?.[0]?.text, '新卖点');
 }
 
 console.log('final-edit-packaging-cues.test.ts: 全部断言通过');

@@ -6,6 +6,7 @@ import { FinalEditError } from '@/lib/final-edit/errors';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { previewPackagingVars, resolvePackagingDir, resolvePackagingTemplateDir, type FinalEditPackagingSnapshot } from '@/lib/final-edit/packaging';
 import { PACKAGING_TEMPLATE_IDS, sanitizePackagingVarsOverrides, type PackagingVars } from '@/lib/final-edit/packaging-vars';
+import type { FinalEditRenderSnapshot } from '@/lib/final-edit/renderer';
 import { wakeFinalEditWorker } from '@/lib/final-edit/worker';
 
 /** 包装文案覆盖层白名单：只收 v2 模板键的字符串（空串=隐藏元素），超长截断。 */
@@ -53,7 +54,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       wakeFinalEditWorker();
       return NextResponse.json({ id: existing.id, groupId: variant.groupId, variantId, kind: 'packaging', status: existing.status }, { status: 202 });
     }
-    const snapshot: FinalEditPackagingSnapshot = { renderJobId: renderJob.id, variantId, ...(template ? { template } : {}), ...(varsOverrides ? { varsOverrides } : {}) };
+    const renderRow = db.prepare(`SELECT inputSnapshotJson FROM final_edit_jobs WHERE id=?`).get(renderJob.id) as { inputSnapshotJson: string };
+    const renderSnapshot = JSON.parse(renderRow.inputSnapshotJson) as FinalEditRenderSnapshot;
+    const snapshot: FinalEditPackagingSnapshot = {
+      renderJobId: renderJob.id,
+      variantId,
+      ...(template ? { template } : {}),
+      ...(varsOverrides ? { varsOverrides } : {}),
+      ...(renderSnapshot.packaging?.stickers?.length ? { stickers: renderSnapshot.packaging.stickers } : {}),
+      ...(renderSnapshot.packaging?.stickerDefaults ? { stickerDefaults: renderSnapshot.packaging.stickerDefaults } : {}),
+    };
     const id = uuidv4();
     const requestKey = crypto.createHash('sha256').update(JSON.stringify({ id, snapshot })).digest('hex');
     db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, variantId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, ?, 'packaging', 'queued', 'queued', 0, ?, ?, 0, 'CNY', ?)`).run(id, variant.projectId, variant.groupId, variantId, requestKey, JSON.stringify(snapshot), new Date().toISOString());

@@ -156,6 +156,8 @@ async function drain() {
             // §7：手动布局与编辑保护标志随快照冻结（包装任务据此写 vars.json 的 layouts）
             ...(snapshot.packaging.layouts && Object.keys(snapshot.packaging.layouts).length > 0 ? { layouts: snapshot.packaging.layouts } : {}),
             ...(snapshot.packaging.pointCuesEdited ? { pointCuesEdited: true } : {}),
+            ...(snapshot.packaging.stickers && snapshot.packaging.stickers.length > 0 ? { stickers: snapshot.packaging.stickers } : {}),
+            ...(snapshot.packaging.stickerDefaults ? { stickerDefaults: snapshot.packaging.stickerDefaults } : {}),
             // §10 ②：三槽字体随快照冻结（包装任务按此注入 @font-face）
             ...(snapshot.packaging.titleFont ? { titleFont: snapshot.packaging.titleFont } : {}),
             ...(snapshot.packaging.subtitleFont ? { subtitleFont: snapshot.packaging.subtitleFont } : {}),

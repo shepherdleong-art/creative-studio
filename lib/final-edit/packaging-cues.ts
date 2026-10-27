@@ -136,6 +136,8 @@ export function mergePointCuesIntoPackagingJson(packagingJsonText: string | null
     // §7 新增字段必须随重写保留，不能丢
     ...(config.pointCuesEdited ? { pointCuesEdited: true } : {}),
     ...(config.layouts && Object.keys(config.layouts).length > 0 ? { layouts: config.layouts } : {}),
+    ...(config.stickers ? { stickers: config.stickers } : {}),
+    ...(config.stickerDefaults ? { stickerDefaults: config.stickerDefaults } : {}),
   };
   return { pointCues, packagingJson: JSON.stringify(next) };
 }
