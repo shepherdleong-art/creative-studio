@@ -32,6 +32,7 @@ import {
   planStickerFramesAtPlayhead,
   type PackagingStickerEditPatch,
   type PackagingStickerInstance,
+  type StickerAnimation,
 } from '@/lib/media-core/packaging-stickers';
 import {
   duplicatePackagingSticker,
@@ -444,6 +445,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     setSelectedStickerId(stickerId);
   };
   const handleSelectSticker = (stickerId: string) => {
+    const previousStickerId = selectedStickerIdRef.current;
     setPointSelection('');
     openPackagingTextEdit(null);
     setStickerSelection(stickerId);
@@ -453,7 +455,9 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     const sticker = groupRef.current.packaging.stickers?.find((item) => item.id === stickerId);
     if (!sticker) return;
     const frame = Math.floor(playheadSec * FPS + 1e-6);
-    if (frame < sticker.startFrame || frame >= sticker.endFrame) seek(sticker.startFrame / FPS);
+    if (stickerId !== previousStickerId || frame < sticker.startFrame || frame >= sticker.endFrame) {
+      seek(Math.floor((sticker.startFrame + sticker.endFrame) / 2) / FPS);
+    }
   };
   // 卖点数据变更（重新提取/删除）后选中 id 可能已失效：失效即清除——
   // 否则桥 only 过滤会拿失效 id 把全部气泡挡在门外，编辑整体锁死（2026-10-09 实锤）
@@ -681,6 +685,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const packagingTemplate = packagingConfig.template;
   const previewVariantId = variant?.id ?? '';
   const packagingStickers = packagingConfig.stickers ?? [];
+  const stickerDefaultAnimation = (packagingConfig.stickerDefaults ?? DEFAULT_PACKAGING_STICKER_DEFAULTS).animation;
   const selectedSticker = packagingStickers.find((sticker) => sticker.id === timelineSelectedStickerId) ?? null;
   const stickerPlacement = planStickerFramesAtPlayhead(effectivePlayheadSec, variant.timeline.bodyFrames);
   const stickerAddBlockedReason = !packagingEnabled
@@ -763,7 +768,6 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     }).then((accepted) => {
       if (!accepted) return;
       handleSelectSticker(stickerId);
-      seek(startFrame / FPS);
     });
   };
 
@@ -795,6 +799,46 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     if (busy || !packagingEnabled) return;
     void applyStickerInstances((stickers) => stickers.filter((sticker) => sticker.id !== stickerId)).then((accepted) => {
       if (accepted && selectedStickerIdRef.current === stickerId) setStickerSelection('');
+    });
+  };
+
+  const playStickerOnce = (stickerId: string) => {
+    const sticker = groupRef.current.packaging.stickers?.find((item) => item.id === stickerId);
+    if (!sticker) return;
+    handleSelectSticker(stickerId);
+    seek(sticker.startFrame / FPS);
+    window.setTimeout(() => {
+      const button = previewRootRef.current?.querySelector<HTMLButtonElement>('[data-mixcut-toggle-play]');
+      if (button?.getAttribute('aria-label') === '播放成片') button.click();
+    }, 60);
+  };
+
+  const handleDefaultAnimationChange = (animation: StickerAnimation) => {
+    if (busy || !packagingEnabled) return;
+    void applyGroupRef.current((current): GroupCommandInput => ({
+      type: 'set_packaging_config',
+      variantId: previewVariantId,
+      config: {
+        enabled: current.packaging.enabled,
+        template: current.packaging.template,
+        varsOverrides: packagingVarsOverridesRecord(current.packaging.varsOverrides),
+        stickerDefaults: { animation },
+      },
+    }));
+  };
+
+  const handleApplyAnimationToAll = () => {
+    if (busy || !packagingEnabled) return;
+    const current = groupRef.current;
+    const animation = (current.packaging.stickerDefaults ?? DEFAULT_PACKAGING_STICKER_DEFAULTS).animation;
+    const stickers = current.packaging.stickers ?? [];
+    if (stickers.length === 0) return;
+    if (stickers.some((sticker) => sticker.animation !== animation)
+      && !window.confirm('部分贴纸使用了单独动效，应用后将重置这些覆盖。是否继续？')) return;
+    void applyStickerInstances((currentStickers) => currentStickers.map((sticker) => applyPackagingStickerEdit(sticker, { animation }))).then((accepted) => {
+      if (!accepted) return;
+      const targetId = selectedStickerIdRef.current || stickers[0]?.id;
+      if (targetId) playStickerOnce(targetId);
     });
   };
 
@@ -1430,13 +1474,17 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
               template={packagingTemplate}
               stickers={packagingStickers}
               selectedSticker={selectedSticker}
+              defaultAnimation={stickerDefaultAnimation}
               addBlockedReason={stickerAddBlockedReason}
               onAdd={(choice) => handleAddSticker(choice)}
               onDragStart={setDraggedStickerChoice}
               onDragEnd={() => setDraggedStickerChoice(null)}
-              onPatchSticker={(stickerId, patch) => { void applyStickerPatch(stickerId, patch); }}
+              onPatchSticker={applyStickerPatch}
               onDuplicateSticker={handleDuplicateSticker}
               onDeleteSticker={handleDeleteSticker}
+              onDefaultAnimationChange={handleDefaultAnimationChange}
+              onApplyAnimationToAll={handleApplyAnimationToAll}
+              onPlaySticker={playStickerOnce}
             />
           )}
           onApplyGroup={applyGroup}

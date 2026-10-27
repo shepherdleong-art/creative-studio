@@ -1,6 +1,7 @@
 // 运行：node scripts/packaging-stickers-domain.test.ts
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import {
   STICKER_COMMON_IDS,
   sanitizePackagingStickers,
@@ -18,6 +19,13 @@ import {
 import { parsePackagingConfig } from '../lib/media-core/packaging-vars.ts';
 import { buildTimelineVars } from '../lib/media-core/packaging-runtime.ts';
 import { resolvePackagingStickerAssets } from '../lib/media-core/packaging-sticker-assets.ts';
+
+const require = createRequire(import.meta.url);
+const { planStickerAnimation } = require('../packaging/stickers/runtime.js') as {
+  planStickerAnimation: (sticker: PackagingStickerInstance, template: string) => {
+    animation: string; enterFrames: number; exitFrames: number; stableFrames: number; exitStartFrame: number;
+  };
+};
 
 function sticker(overrides: Partial<PackagingStickerInstance> = {}): PackagingStickerInstance {
   return {
@@ -115,8 +123,30 @@ const timelineVars = buildTimelineVars({
   stickers: [base],
   stickerDefaults: { animation: 'soft' },
   stickerAssets,
+  template: 'overlay-variety',
 });
 assert.deepEqual(timelineVars.stickers, [base]);
 assert.deepEqual(timelineVars.stickerDefaults, { animation: 'soft' });
 assert.deepEqual(timelineVars.stickerAssets, stickerAssets);
-console.log('贴纸领域测试通过：清洗、模板映射、资产解析、19/48 帧、旧配置和快照透传。');
+assert.equal(timelineVars.stickerTemplate, 'overlay-variety');
+
+for (const animation of ['soft', 'bounce', 'rise', 'slide', 'zoom', 'none'] as const) {
+  const plan = planStickerAnimation(sticker({ animation }), 'overlay-poster');
+  assert.equal(plan.animation, animation);
+  assert.equal(plan.enterFrames + plan.exitFrames + plan.stableFrames, 48);
+  assert.equal(plan.exitStartFrame, 68 - plan.exitFrames);
+  assert.ok(plan.stableFrames >= 2, `${animation} 必须保留至少 2 帧稳定显示`);
+  if (animation === 'none') assert.deepEqual([plan.enterFrames, plan.exitFrames], [0, 0]);
+  else assert.ok(plan.enterFrames >= 1 && plan.exitFrames >= 1, `${animation} 入退场至少各 1 帧`);
+}
+assert.equal(planStickerAnimation(sticker({ animation: 'follow-template' }), 'overlay-poster').animation, 'bounce');
+assert.equal(planStickerAnimation(sticker({ animation: 'follow-template' }), 'overlay-journal').animation, 'soft');
+const compressed = planStickerAnimation(sticker({ endFrame: 25, animation: 'bounce' }), 'overlay-poster');
+assert.equal(compressed.enterFrames + compressed.exitFrames, 3);
+assert.equal(compressed.stableFrames, 2);
+assert.ok(compressed.enterFrames < 9 && compressed.exitFrames < 6, '短时长必须等比压缩入出场');
+assert.ok(Math.abs(compressed.enterFrames / 9 - compressed.exitFrames / 6) < 0.1);
+const minimum = planStickerAnimation(sticker({ endFrame: 24, animation: 'soft' }), 'overlay-poster');
+assert.deepEqual([minimum.enterFrames, minimum.exitFrames, minimum.stableFrames], [1, 1, 2]);
+assert.throws(() => planStickerAnimation(sticker({ endFrame: 23, animation: 'soft' }), 'overlay-poster'), /至少为 4 帧/);
+console.log('贴纸领域测试通过：清洗、模板映射、资产解析、19/48 帧、六种动效、短时长压缩、旧配置和快照透传。');

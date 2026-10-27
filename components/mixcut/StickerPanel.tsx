@@ -9,8 +9,10 @@ import {
   resolveStickerStyle,
   type PackagingStickerEditPatch,
   type PackagingStickerInstance,
+  type StickerAnimation,
   type StickerStyle,
 } from '@/lib/media-core/packaging-stickers';
+import { StickerAnimationPopover } from './StickerAnimationPopover';
 import styles from './mixcut-content.module.css';
 
 export type StickerCatalogCategory = 'opening' | 'explain' | 'ending' | 'gesture' | 'annotation' | 'special';
@@ -91,20 +93,24 @@ function NumberProperty({ label, value, min, max, step, suffix, disabled, onComm
   );
 }
 
-export function StickerPanel({ active, enabled, busy, template, stickers, selectedSticker, addBlockedReason, onAdd, onDragStart, onDragEnd, onPatchSticker, onDuplicateSticker, onDeleteSticker }: {
+export function StickerPanel({ active, enabled, busy, template, stickers, selectedSticker, defaultAnimation, addBlockedReason, onAdd, onDragStart, onDragEnd, onPatchSticker, onDuplicateSticker, onDeleteSticker, onDefaultAnimationChange, onApplyAnimationToAll, onPlaySticker }: {
   active: boolean;
   enabled: boolean;
   busy: boolean;
   template: PackagingTemplateId;
   stickers: PackagingStickerInstance[];
   selectedSticker: PackagingStickerInstance | null;
+  defaultAnimation: StickerAnimation;
   addBlockedReason: string;
   onAdd: (choice: StickerAssetChoice) => void;
   onDragStart: (choice: StickerAssetChoice) => void;
   onDragEnd: () => void;
-  onPatchSticker: (id: string, patch: PackagingStickerEditPatch) => void;
+  onPatchSticker: (id: string, patch: PackagingStickerEditPatch) => Promise<boolean>;
   onDuplicateSticker: (id: string) => void;
   onDeleteSticker: (id: string) => void;
+  onDefaultAnimationChange: (animation: StickerAnimation) => void;
+  onApplyAnimationToAll: () => void;
+  onPlaySticker: (id: string) => void;
 }) {
   const [assets, setAssets] = useState<StickerCatalogAsset[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -165,6 +171,12 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
         <span><Icon name="image" size={14} />贴纸素材</span>
         <span className={styles.stickerCount}>{stickers.length} 张已放置</span>
       </div>
+
+      <section className={styles.stickerAnimationDefaults} aria-label="统一动效设置">
+        <div className={styles.stickerAnimationDefaultRow}><span>统一动效</span><span>仅影响之后新增</span></div>
+        <StickerAnimationPopover value={defaultAnimation} template={template} disabled={busy || !enabled} allowFollowTemplate onChange={onDefaultAnimationChange} />
+        <button type="button" className={styles.stickerAnimationApplyAll} disabled={busy || !enabled || stickers.length === 0} onClick={onApplyAnimationToAll}>应用到本视频全部贴纸</button>
+      </section>
 
       <div className={styles.stickerScope} role="group" aria-label="素材风格范围">
         <button type="button" className={scope === 'current' ? styles.stickerScopeActive : ''} onClick={() => setScope('current')}>当前模板</button>
@@ -251,6 +263,20 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
           <div className={styles.stickerActionRow}>
             <button type="button" className={styles.stickerActionButton} disabled={busy || !enabled} onClick={() => onDuplicateSticker(selectedSticker.id)}><Icon name="copy" size={12} />复制</button>
             <button type="button" className={`${styles.stickerActionButton} ${styles.stickerActionDanger}`} disabled={busy || !enabled} onClick={() => onDeleteSticker(selectedSticker.id)}><Icon name="trash" size={12} />删除</button>
+          </div>
+          <div className={styles.stickerPropertyWide}>
+            <span>当前贴纸动效</span>
+            <StickerAnimationPopover
+              value={selectedSticker.animation}
+              template={template}
+              disabled={busy || !enabled}
+              allowFollowTemplate
+              onChange={(animation) => {
+                void onPatchSticker(selectedSticker.id, { animation }).then((accepted) => {
+                  if (accepted) onPlaySticker(selectedSticker.id);
+                });
+              }}
+            />
           </div>
           <label className={styles.stickerPropertyWide}>
             <span>素材风格</span>

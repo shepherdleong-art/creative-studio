@@ -69,6 +69,8 @@ export function buildTimelineVars(input: {
   stickers?: PackagingStickerInstance[];
   stickerDefaults?: PackagingStickerDefaults;
   stickerAssets?: PackagingStickerAssetMap;
+  /** follow-template 动效在浏览器与导出运行时按同一模板解析。 */
+  template?: string;
   fonts?: { titleFile?: string; subtitleFile?: string; pointFile?: string };
 }): Record<string, unknown> {
   return {
@@ -81,6 +83,7 @@ export function buildTimelineVars(input: {
     ...(input.layouts && Object.keys(input.layouts).length > 0 ? { layouts: input.layouts } : {}),
     ...(input.stickers && input.stickers.length > 0 ? { stickers: input.stickers } : {}),
     ...(input.stickerDefaults ? { stickerDefaults: input.stickerDefaults } : {}),
+    ...(input.template ? { stickerTemplate: input.template } : {}),
     ...(input.stickers && input.stickers.length > 0 && input.stickerAssets && Object.keys(input.stickerAssets).length > 0 ? { stickerAssets: input.stickerAssets } : {}),
     // 字体文件名为纯文件名（package-video 在 fonts/user/ 下解析并注入 @font-face）
     ...(input.fonts?.titleFile ? { titleFontFile: input.fonts.titleFile } : {}),

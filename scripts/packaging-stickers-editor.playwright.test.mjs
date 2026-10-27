@@ -148,13 +148,16 @@ try {
   const second = secondAdd.view.packaging.stickers.find((item) => item.id !== first.id);
   assert.ok(Math.abs(second.centerXPct - 120 / frameBox.width * 100) < 1, `拖放 X 坐标错误：${second.centerXPct}`);
   assert.ok(Math.abs(second.centerYPct - 180 / frameBox.height * 100) < 1, `拖放 Y 坐标错误：${second.centerYPct}`);
-  assert.equal(second.startFrame, 20);
+  assert.equal(second.startFrame, Math.floor((first.startFrame + first.endFrame) / 2), '选中停在稳定中点后，新贴纸应从当前播放头添加');
   await eventually(async () => await overlay.locator('.packaging-sticker').count() === 2, '拖放后 overlay 必须出现第二张贴纸');
   await overlay.locator('[data-sticker-edit-ui]').waitFor();
 
+  await eventually(async () => Number(await overlay.locator(`[data-sticker-id="${second.id}"]`).evaluate((element) => getComputedStyle(element).opacity)) === 1, '拖动前必须等到新贴纸处于稳定可见段');
+  const moveFrameBox = await iframe.boundingBox();
+  assert.ok(moveFrameBox);
   const moveStart = {
-    x: frameBox.x + second.centerXPct / 100 * frameBox.width,
-    y: frameBox.y + second.centerYPct / 100 * frameBox.height,
+    x: moveFrameBox.x + second.centerXPct / 100 * moveFrameBox.width,
+    y: moveFrameBox.y + second.centerYPct / 100 * moveFrameBox.height,
   };
   const moveEnd = { x: moveStart.x + 60, y: moveStart.y + 40 };
   const movedResult = await readPatch(async () => {
@@ -164,8 +167,8 @@ try {
     await page.mouse.up();
   });
   const moved = movedResult.view.packaging.stickers.find((item) => item.id === second.id);
-  const expectedMoveX = (moveEnd.x - frameBox.x) / frameBox.width * 100;
-  const expectedMoveY = (moveEnd.y - frameBox.y) / frameBox.height * 100;
+  const expectedMoveX = (moveEnd.x - moveFrameBox.x) / moveFrameBox.width * 100;
+  const expectedMoveY = (moveEnd.y - moveFrameBox.y) / moveFrameBox.height * 100;
   assert.ok(Math.abs(moved.centerXPct - expectedMoveX) < 2, `移动 X 未按预览提交：${moved.centerXPct} vs ${expectedMoveX}`);
   assert.ok(Math.abs(moved.centerYPct - expectedMoveY) < 2, `移动 Y 未按预览提交：${moved.centerYPct} vs ${expectedMoveY}`);
 
@@ -277,9 +280,9 @@ try {
   let blockBox = await timelineBlock.boundingBox();
   assert.ok(blockBox);
   const timelineMovedResult = await readPatch(async () => {
-    await page.mouse.move(blockBox.x + blockBox.width / 2, blockBox.y + blockBox.height / 2);
+    await page.mouse.move(blockBox.x + blockBox.width * 0.25, blockBox.y + blockBox.height / 2);
     await page.mouse.down();
-    await page.mouse.move(blockBox.x + blockBox.width / 2 + 60, blockBox.y + blockBox.height / 2, { steps: 6 });
+    await page.mouse.move(blockBox.x + blockBox.width * 0.25 + 60, blockBox.y + blockBox.height / 2, { steps: 6 });
     await page.mouse.up();
   });
   const timelineMoved = timelineMovedResult.view.packaging.stickers.find((item) => item.id === second.id);
@@ -290,15 +293,15 @@ try {
   blockBox = await timelineBlock.boundingBox();
   assert.ok(blockBox);
   const timelineSnappedResult = await readPatch(async () => {
-    await page.mouse.move(blockBox.x + blockBox.width / 2, blockBox.y + blockBox.height / 2);
+    await page.mouse.move(blockBox.x + blockBox.width * 0.25, blockBox.y + blockBox.height / 2);
     await page.mouse.down();
-    await page.mouse.move(blockBox.x + blockBox.width / 2 - 57, blockBox.y + blockBox.height / 2, { steps: 6 });
+    await page.mouse.move(blockBox.x + blockBox.width * 0.25 - 113, blockBox.y + blockBox.height / 2, { steps: 6 });
     await page.getByTestId('sticker-time-snap-line').waitFor({ state: 'visible' });
     await page.mouse.up();
   });
   const timelineSnapped = timelineSnappedResult.view.packaging.stickers.find((item) => item.id === second.id);
-  assert.equal(timelineSnapped.startFrame, beforeTimelineMove.startFrame, '磁吸开启后必须吸附到其他贴纸起点');
-  assert.equal(timelineSnapped.endFrame, beforeTimelineMove.endFrame);
+  assert.equal(timelineSnapped.startFrame, first.startFrame, '磁吸开启后必须吸附到其他贴纸起点');
+  assert.equal(timelineSnapped.endFrame, first.endFrame);
 
   await page.getByRole('button', { name: '磁吸开', exact: true }).click();
   const trimHandle = timelineBlock.locator('[aria-label="修剪贴纸结尾"]');
@@ -319,9 +322,9 @@ try {
   blockBox = await timelineBlock.boundingBox();
   assert.ok(blockBox);
   const reorderedResult = await readPatch(async () => {
-    await page.mouse.move(blockBox.x + blockBox.width / 2, blockBox.y + blockBox.height / 2);
+    await page.mouse.move(blockBox.x + blockBox.width * 0.25, blockBox.y + blockBox.height / 2);
     await page.mouse.down();
-    await page.mouse.move(blockBox.x + blockBox.width / 2, blockBox.y + blockBox.height / 2 + (targetTrack - sourceTrack) * 28, { steps: 6 });
+    await page.mouse.move(blockBox.x + blockBox.width * 0.25, blockBox.y + blockBox.height / 2 + (targetTrack - sourceTrack) * 28, { steps: 6 });
     await page.getByTestId('sticker-track-insert-line').waitFor({ state: 'visible' });
     await page.getByTestId('sticker-track-placeholder').waitFor({ state: 'visible' });
     assert.equal(await page.locator(`[data-sticker-lane="${targetTrack}"]`).getAttribute('data-drop-target'), 'true', '换轨必须高亮目标轨');
@@ -354,9 +357,9 @@ try {
     if (request.method() === 'PATCH' && new URL(request.url()).pathname === groupPath && (request.postData() || '').includes('"stickers"')) timelineCancelRequests.push(request);
   };
   page.on('request', watchTimelineCancelRequests);
-  await page.mouse.move(blockBox.x + blockBox.width / 2, blockBox.y + blockBox.height / 2);
+  await page.mouse.move(blockBox.x + blockBox.width * 0.25, blockBox.y + blockBox.height / 2);
   await page.mouse.down();
-  await page.mouse.move(blockBox.x + blockBox.width / 2 + 60, blockBox.y + blockBox.height / 2 + (beforeTimelineCancel.trackIndex === 0 ? 28 : -28), { steps: 6 });
+  await page.mouse.move(blockBox.x + blockBox.width * 0.25 + 60, blockBox.y + blockBox.height / 2 + (beforeTimelineCancel.trackIndex === 0 ? 28 : -28), { steps: 6 });
   await page.mouse.down({ button: 'right' });
   await page.mouse.up({ button: 'right' });
   await page.mouse.up();
@@ -404,6 +407,62 @@ try {
   assert.equal(redoDeleteResult.view.packaging.stickers.length, 2, '重做必须再次删除复制贴纸');
   assert.equal(redoDeleteResult.view.packaging.stickers.some((item) => item.id === copied.id), false);
 
+  const defaultAnimationTrigger = panel.getByRole('button', { name: /^预览动效 / }).first();
+  await defaultAnimationTrigger.click();
+  const animationDialog = page.getByRole('dialog', { name: '选择贴纸动效' });
+  await animationDialog.waitFor();
+  assert.equal(await animationDialog.locator('[data-animation-card]').count(), 6, '浮窗必须同时展示六张动效卡');
+  assert.equal(Math.round((await animationDialog.boundingBox()).width), 206, '动效浮窗宽度必须为 206px');
+  const demoStates = await animationDialog.locator('[data-animation-demo]').evaluateAll((images) => images.map((image) => ({
+    src: image.getAttribute('src'),
+    animationName: getComputedStyle(image).animationName,
+    iterations: getComputedStyle(image).animationIterationCount,
+  })));
+  assert.ok(demoStates.every((state) => state.src === '/api/packaging/stickers/show/highlight.png'), '所有示例必须使用固定 show/highlight 原图');
+  assert.ok(demoStates.filter((state) => state.animationName !== 'none').every((state) => state.iterations === 'infinite'), '五张动态示例必须同时循环');
+  await page.getByRole('button', { name: '关闭动效选择' }).click();
+  assert.equal(await animationDialog.count(), 0);
+  assert.equal(await page.locator('[data-animation-demo]').count(), 0, '关闭浮窗必须卸载并停止示例动画');
+  await defaultAnimationTrigger.click();
+  await animationDialog.waitFor();
+  await page.locator('body').click({ position: { x: 4, y: 4 } });
+  await animationDialog.waitFor({ state: 'detached' }, '点击浮窗外部必须关闭');
+
+  const defaultAnimationResult = await readPatch(async () => {
+    await defaultAnimationTrigger.click();
+    await animationDialog.getByRole('button', { name: '选择动效 上浮', exact: true }).click();
+  }, false);
+  assert.equal(defaultAnimationResult.view.packaging.stickerDefaults.animation, 'rise');
+  assert.ok(defaultAnimationResult.view.packaging.stickers.every((item) => item.animation === 'follow-template'), '修改默认动效不得暗改已有贴纸');
+  assert.equal(await animationDialog.count(), 0, '选择动效后浮窗必须关闭');
+
+  const idsBeforeAnimationAdd = new Set(defaultAnimationResult.view.packaging.stickers.map((item) => item.id));
+  const animationAddResult = await readPatch(() => panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).click());
+  const animationAdded = animationAddResult.view.packaging.stickers.find((item) => !idsBeforeAnimationAdd.has(item.id));
+  assert.equal(animationAdded.animation, 'rise', '新增贴纸必须复制当前统一动效');
+  const animationAddDeleteResult = await readPatch(() => panel.getByRole('button', { name: '删除', exact: true }).click());
+  assert.equal(animationAddDeleteResult.view.packaging.stickers.length, 2);
+
+  await timelineBlock.click({ position: { x: 20, y: 10 } });
+  const selectedAnimationTrigger = panel.getByRole('button', { name: /^预览动效 / }).last();
+  const singleAnimationResult = await readPatch(async () => {
+    await selectedAnimationTrigger.click();
+    await animationDialog.getByRole('button', { name: '选择动效 滑入', exact: true }).click();
+  });
+  assert.equal(singleAnimationResult.view.packaging.stickers.find((item) => item.id === second.id).animation, 'slide', '单张覆盖必须只修改当前贴纸');
+  assert.equal(singleAnimationResult.view.packaging.stickers.find((item) => item.id === first.id).animation, 'follow-template');
+  await eventually(async () => await page.getByRole('button', { name: '暂停', exact: true }).count() === 1, '选择单张动效后必须从起点播放一次实际效果');
+  await page.getByRole('button', { name: '暂停', exact: true }).click();
+
+  page.once('dialog', async (dialog) => {
+    assert.match(dialog.message(), /重置这些覆盖/);
+    await dialog.accept();
+  });
+  const applyAllAnimationResult = await readPatch(() => panel.getByRole('button', { name: '应用到本视频全部贴纸', exact: true }).click());
+  assert.ok(applyAllAnimationResult.view.packaging.stickers.every((item) => item.animation === 'rise'), '应用全部必须把当前统一动效显式写入所有实例');
+  await eventually(async () => await page.getByRole('button', { name: '暂停', exact: true }).count() === 1, '应用全部后必须播放实际贴纸效果');
+  await page.getByRole('button', { name: '暂停', exact: true }).click();
+
   const disabledResult = await readPatch(() => page.getByRole('switch', { name: '启用视频包装' }).click(), false);
   assert.equal(disabledResult.view.packaging.enabled, false);
   assert.equal(disabledResult.view.packaging.stickers.length, 2, '关闭包装不得删除贴纸');
@@ -428,7 +487,7 @@ try {
   assert.equal(persisted.find((item) => item.id === second.id).centerXPct, 63.5);
 
   passed = true;
-  console.log('贴纸编辑器真实 E2E 通过：素材目录、空间编辑、时间轴移动/修剪/磁吸/换轨、右键取消、复制删除、撤销重做、包装开关与刷新恢复。');
+  console.log('贴纸编辑器真实 E2E 通过：素材目录、空间编辑、时间轴与历史、六卡动效浮窗、统一/单张/全部设置、实际播放、包装开关与刷新恢复。');
 } catch (error) {
   if (server) console.error(server.output());
   throw error;

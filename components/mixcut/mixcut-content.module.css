@@ -661,6 +661,37 @@
 .stickerActionButton:disabled { cursor: not-allowed; opacity: .45; }
 .stickerActionDanger { color: var(--red); }
 .stickerActionDanger:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+.stickerAnimationDefaults { display: flex; flex-direction: column; gap: 7px; padding: 9px; border: .5px solid var(--line); border-radius: 10px; background: var(--bg); }
+.stickerAnimationDefaultRow { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; color: var(--ink); font-size: 11px; font-weight: 600; }
+.stickerAnimationDefaultRow > span:last-child { color: var(--faint); font-size: 9px; font-weight: 400; }
+.stickerAnimationApplyAll { align-self: flex-start; padding: 0; border: 0; background: transparent; color: var(--blue); font-size: 10px; cursor: pointer; }
+.stickerAnimationApplyAll:disabled { color: var(--faint); cursor: not-allowed; }
+.stickerAnimationAnchor { position: relative; display: inline-flex; min-width: 0; }
+.stickerAnimationTrigger { display: inline-flex; min-height: 30px; align-items: center; gap: 5px; padding: 0 9px; border: .5px solid var(--line); border-radius: 8px; background: var(--seg); color: var(--ink); font-size: 10px; cursor: pointer; }
+.stickerAnimationTrigger:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); }
+.stickerAnimationTrigger:disabled { cursor: not-allowed; opacity: .45; }
+.stickerAnimationPopover { position: absolute; z-index: 80; top: calc(100% + 6px); left: 0; display: flex; box-sizing: border-box; width: 206px; flex-direction: column; gap: 7px; padding: 8px; border: .5px solid var(--line); border-radius: 12px; background: var(--paper); box-shadow: var(--sh-md); }
+.stickerAnimationHead { display: flex; align-items: center; justify-content: space-between; color: var(--ink); font-size: 11px; font-weight: 600; }
+.stickerAnimationHead > button { display: grid; width: 22px; height: 22px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--sub); cursor: pointer; }
+.stickerAnimationHead > button:hover { background: var(--seg); }
+.stickerAnimationFollow { min-height: 26px; border: .5px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--sub); font-size: 10px; cursor: pointer; }
+.stickerAnimationFollow[aria-pressed='true'] { border-color: var(--blue); color: var(--blue); }
+.stickerAnimationGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.stickerAnimationCard { display: flex; min-width: 0; flex-direction: column; gap: 4px; padding: 4px; border: .5px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--sub); font-size: 10px; text-align: center; cursor: pointer; }
+.stickerAnimationCard:hover, .stickerAnimationCardActive { border-color: var(--blue); color: var(--blue); }
+.stickerAnimationStage { display: grid; height: 44px; place-items: center; overflow: hidden; border-radius: 6px; background: var(--bg); }
+.stickerAnimationDemo { width: 40px; height: 40px; object-fit: contain; animation-duration: 2.4s; animation-timing-function: ease-in-out; animation-iteration-count: infinite; animation-fill-mode: both; pointer-events: none; }
+.stickerDemoSoft { animation-name: stickerDemoSoft; }
+.stickerDemoBounce { animation-name: stickerDemoBounce; }
+.stickerDemoRise { animation-name: stickerDemoRise; }
+.stickerDemoSlide { animation-name: stickerDemoSlide; }
+.stickerDemoZoom { animation-name: stickerDemoZoom; }
+.stickerDemoNone { animation-name: none; }
+@keyframes stickerDemoSoft { 0%, 10% { opacity: 0; transform: translateY(7px); } 30%, 70% { opacity: 1; transform: translateY(0); } 90%, 100% { opacity: 0; transform: translateY(-3px); } }
+@keyframes stickerDemoBounce { 0%, 10% { opacity: 0; transform: scale(.72); } 30% { opacity: 1; transform: scale(1.08); } 42%, 70% { opacity: 1; transform: scale(1); } 90%, 100% { opacity: 0; transform: scale(.86); } }
+@keyframes stickerDemoRise { 0%, 10% { opacity: 0; transform: translateY(14px); } 30%, 70% { opacity: 1; transform: translateY(0); } 90%, 100% { opacity: 0; transform: translateY(12px); } }
+@keyframes stickerDemoSlide { 0%, 10% { opacity: 0; transform: translateX(-18px); } 30%, 70% { opacity: 1; transform: translateX(0); } 90%, 100% { opacity: 0; transform: translateX(18px); } }
+@keyframes stickerDemoZoom { 0%, 10% { opacity: 0; transform: scale(.6); } 32%, 70% { opacity: 1; transform: scale(1); } 90%, 100% { opacity: 0; transform: scale(.75); } }
 .stickerPropertyWide { display: flex; flex-direction: column; gap: 5px; color: var(--sub); font-size: 11px; }
 .stickerPropertyWide select { width: 100%; min-width: 0; height: 31px; padding: 0 8px; border: .5px solid var(--line); border-radius: 8px; background: var(--seg); color: var(--ink); font-size: 11px; }
 .stickerPropertyGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }

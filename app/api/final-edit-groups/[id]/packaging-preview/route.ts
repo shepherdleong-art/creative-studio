@@ -101,7 +101,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     let html = fs.readFileSync(path.join(templateDir, 'index.html'), 'utf-8');
     // §7：layouts 随 vars 注入，模板端经 window.__vars.layouts 读取（与导出渲染同契约）
     const stickerAssets = resolvePackagingStickerAssets({ packagingDir: resolvePackagingDir(), template, stickers: group.packaging.stickers });
-    const timelineVars = buildTimelineVars({ vars, totalSec, coverSec, pointCues, pointCuesMode, layouts, stickers: group.packaging.stickers, stickerDefaults: group.packaging.stickerDefaults, stickerAssets });
+    const timelineVars = buildTimelineVars({ vars, totalSec, coverSec, pointCues, pointCuesMode, layouts, stickers: group.packaging.stickers, stickerDefaults: group.packaging.stickerDefaults, stickerAssets, template });
     const varsJson = JSON.stringify(timelineVars).replace(/</g, '\\u003c');
     const baseHref = `/api/packaging/templates/${encodeURIComponent(template)}/`;
     // §10 ②：预览与成片一致——按当前配置三槽注入 @font-face（UserTitle/UserSubtitle/UserPoint；

@@ -157,6 +157,74 @@ try {
   assert.ok(Math.abs(rotation.originX - rotation.expectedX) < 0.1, JSON.stringify(rotation));
   assert.ok(Math.abs(rotation.originY - rotation.expectedY) < 0.1, JSON.stringify(rotation));
   assert.deepEqual(pageErrors, [], '模板浏览器运行时不应有脚本错误');
+
+  const animationIds = ['soft', 'bounce', 'rise', 'slide', 'zoom', 'none'];
+  const animatedStickers = animationIds.map((animation, index) => sticker({
+    id: `anim_${animation}`,
+    animation,
+    centerXPct: 15 + index * 12,
+    centerYPct: 55,
+    visualWidthPct: 18,
+  }));
+  const animatedAssets = resolvePackagingStickerAssets({ packagingDir: PACKAGING_DIR, template: 'overlay-variety', stickers: animatedStickers });
+  const animatedPage = await browser.newPage({ viewport: { width: 1080, height: 1440 }, deviceScaleFactor: 1 });
+  const animatedErrors = [];
+  animatedPage.on('pageerror', (error) => animatedErrors.push(error.message));
+  await animatedPage.addInitScript((vars) => { window.__hyperframes = { getVariables: () => vars }; }, {
+    totalSec: 4,
+    coverSec: 20 / 24,
+    pointCues: [],
+    pointCuesMode: 'none',
+    stickers: animatedStickers,
+    stickerAssets: animatedAssets,
+    stickerTemplate: 'overlay-variety',
+  });
+  await animatedPage.goto(pathToFileURL(path.join(previewDir, 'index.html')).href);
+  await animatedPage.waitForFunction(() => {
+    const images = [...document.querySelectorAll('.packaging-sticker img')];
+    return images.length === 6 && images.every((image) => image.complete && image.naturalWidth > 0);
+  });
+  const readAnimationFrame = (frame) => animatedPage.evaluate((time) => {
+    const timeline = window.__timelines.overlay;
+    timeline.pause();
+    timeline.seek(time);
+    return Object.fromEntries([...document.querySelectorAll('.packaging-sticker')].map((element) => {
+      const motion = element.querySelector('.packaging-sticker-motion');
+      const matrix = new DOMMatrix(getComputedStyle(motion).transform);
+      return [element.dataset.stickerId.replace('anim_', ''), {
+        opacity: Number(getComputedStyle(element).opacity),
+        x: matrix.m41,
+        y: matrix.m42,
+        scale: matrix.a,
+      }];
+    }));
+  }, frame / 24);
+  const atStart = await readAnimationFrame(24);
+  const entering = await readAnimationFrame(26);
+  const stable = await readAnimationFrame(48);
+  const exiting = await readAnimationFrame(70);
+  const atEnd = await readAnimationFrame(72);
+  for (const animation of animationIds) {
+    assert.equal(atEnd[animation].opacity, 0, `${animation} 必须在 endFrame 完全隐藏`);
+    assert.equal(stable[animation].opacity, 1, `${animation} 稳定段必须完全不透明`);
+    assert.ok(Math.abs(stable[animation].x) < 0.01 && Math.abs(stable[animation].y) < 0.01 && Math.abs(stable[animation].scale - 1) < 0.01, `${animation} 稳定段必须回到原始几何`);
+    if (animation === 'none') {
+      assert.equal(atStart.none.opacity, 1);
+      assert.equal(entering.none.opacity, 1);
+      assert.equal(exiting.none.opacity, 1);
+      continue;
+    }
+    assert.ok(atStart[animation].opacity < 0.001, `${animation} 入场首帧应从透明开始`);
+    assert.ok(entering[animation].opacity > 0 && entering[animation].opacity < 1, `${animation} 入场中应渐显`);
+    assert.ok(exiting[animation].opacity > 0 && exiting[animation].opacity < 1, `${animation} 退场中应渐隐`);
+  }
+  assert.ok(entering.soft.y > 0.1 && exiting.soft.y < -0.1, '柔和应上浮进入并轻微上移退场');
+  assert.ok(Math.abs(entering.bounce.scale - 1) > 0.02 && exiting.bounce.scale < 0.99, 'Q 弹应缩放进入并缩小退场');
+  assert.ok(entering.rise.y > 0.1 && exiting.rise.y > 0.1, '上浮应从下方进入并向下方退场');
+  assert.ok(entering.slide.x < -0.1 && exiting.slide.x > 0.1, '滑入应从左侧进入并向右侧退场');
+  assert.ok(entering.zoom.scale < 0.99 && exiting.zoom.scale < 0.99, '缩放应放大进入并缩小退场');
+  assert.deepEqual(animatedErrors, [], '六种动效运行时不应有脚本错误');
+  await animatedPage.close();
   await browser.close();
   browser = undefined;
 
@@ -176,6 +244,7 @@ try {
     stickers: [exportSticker],
     stickerDefaults: { animation: 'none' },
     stickerAssets: exportAssets,
+    template: 'overlay-minimal',
   });
   const varsPath = path.join(temporaryDir, 'vars.json');
   fs.writeFileSync(varsPath, JSON.stringify(vars));
@@ -240,7 +309,7 @@ try {
   assert.ok(visibleAt24 > visibleAt72 + 100, `最终 MP4 未体现贴纸：开始帧 ${visibleAt24}，结束帧 ${visibleAt72}`);
 
   passed = true;
-  console.log('贴纸真实渲染测试通过：浏览器几何、轨道层级、23/24/71/72 帧、哈希失败关闭、WebM alpha 与最终 MP4。');
+  console.log('贴纸真实渲染测试通过：浏览器几何、轨道层级、六种动效逐帧、终点隐藏、哈希失败关闭、WebM alpha 与最终 MP4。');
 } finally {
   if (browser) await browser.close();
   if (temporaryDir) {

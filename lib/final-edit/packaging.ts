@@ -326,6 +326,7 @@ export async function executePackagingJob(input: {
     stickers: input.snapshot.stickers,
     stickerDefaults: input.snapshot.stickerDefaults,
     stickerAssets,
+    template: input.snapshot.template,
     // §10 ②：快照冻结的三槽字体（非法/缺失文件名由 safeFontFilename 过滤，package-video 端二次校验存在性）
     fonts: {
       titleFile: safeFontFilename(input.snapshot.titleFont?.file) ?? undefined,
