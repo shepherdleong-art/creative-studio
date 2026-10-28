@@ -3,7 +3,7 @@
 > 日期：2026-10-28
 > 权威规格：`docs/superpowers/specs/2026-10-28-batch-mixcut-stickers-design.md`
 > 执行方式：用户授权自主推进；重大方向变化或不确定风险再确认
-> 当前阶段：B1 文档
+> 当前阶段：B7 已完成；功能、真实浏览器、四模板导出与生产构建验收通过，待双推
 
 ## 1. 实施原则
 
@@ -158,3 +158,31 @@
 - 本地使用 `master`；`origin` 推 `master → master`，`shepherd` 推 `master → dev`。
 - 两个远程都成功后才能宣称阶段已双推；任一失败则保留本地提交并明确待推送项。
 - 需要代理时只对单次 push 使用命令级代理，不修改 Git 配置。
+
+## 10. 实施记录与验收结果
+
+- B1 `b5f0bdb`：批量贴纸设计规格与实施计划。
+- B2 `2e4abab`：跨片变体规划器、随机去重、时间映射与批量保存帧校验。
+- B3 `55235b3`：批次事务复制、多片恢复、修订与审核门禁。
+- B6 `4d14987`：批量预览与正式渲染贴纸数据闭环；`3782e06` 增加四模板真实导出验收。
+- B4 `35c9956`：当前成片双页签、预览空间编辑、时间轴、拖放和动效播放。
+- B5 `f5fc510`：跨片目标弹窗、事务 API 与多片整体撤销／重做。
+- B7 `a1f64df`：修复预览切回时间轴后的 Delete 焦点，并完成真实浏览器回归。
+
+已通过：
+
+- `node scripts/packaging-sticker-variants.test.ts`
+- `node scripts/batch-sticker-copy.test.ts`
+- `node scripts/batch-packaging-stickers.test.ts`
+- `node scripts/batch-stickers-editor.playwright.test.mjs`：9 次核心真实写入、488 条真实 API 响应，API 失败、页面异常及 console error 均为 0。
+- `node scripts/batch-sticker-render.test.ts`：四模板、6s／9s 正文、29 个正文贴纸稳定帧区域、片头安全区域与同快照字节一致。
+- `node scripts/packaging-stickers-editor.playwright.test.mjs`：单条贴纸完整回归。
+- 既有贴纸领域、规划器、时间轴、workspace、包装变量／卖点／配色测试。
+- 变更文件 ESLint、`npx tsc --noEmit --pretty false`。
+- `npm run build`：生产构建及 standalone 资源同步通过，保留 2 条既有 NFT 非阻断警告。
+- `git diff --exit-code -- packaging/templates/classic lib/film-render`：冻结域零改动。
+
+非阻断既有基线：
+
+- 全量 `npm run lint` 仍有 59 个历史 error 与 1206 个 warning，集中于第三方包装脚本和历史 `require()`／`this` 别名；本次变更文件 lint 无 error。
+- `batch-renderer.test.ts` 仍引用已不存在的历史导出 `regenerateBatchOutputCover`，因此在模块加载阶段失败；本功能使用独立真实 `renderBatchOutputVersion` 验收，未把该历史漂移记为通过或本次回归。
