@@ -22,6 +22,7 @@ export default function BatchPackagingEditor({
   onStickerDragStart,
   onStickerDragEnd,
   onPlaySticker,
+  onCopyStickers,
 }: {
   view: BatchStickerPanelView;
   onSave: (config: FinalEditPackagingConfig, reextract?: boolean) => Promise<boolean>;
@@ -33,6 +34,7 @@ export default function BatchPackagingEditor({
   onStickerDragStart?: (choice: StickerAssetChoice) => void;
   onStickerDragEnd?: () => void;
   onPlaySticker?: (stickerId: string) => void;
+  onCopyStickers?: () => void;
 }) {
   const config = view.packaging ?? fallback;
   const [busy, setBusy] = useState(false);
@@ -103,6 +105,7 @@ export default function BatchPackagingEditor({
           onDragStart={(choice) => onStickerDragStart?.(choice)}
           onDragEnd={() => onStickerDragEnd?.()}
           onPlaySticker={(stickerId) => onPlaySticker?.(stickerId)}
+          onCopyToOtherFilms={onCopyStickers}
         />}
       </div>
     </>}

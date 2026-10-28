@@ -36,6 +36,7 @@ export interface BatchReviewInspectorDockProps {
   onStickerDragStart: (planId: string, choice: StickerAssetChoice) => void;
   onStickerDragEnd: () => void;
   onPlaySticker: (planId: string, stickerId: string) => void;
+  onCopyStickers: (planId: string) => void;
 }
 
 export default function BatchReviewInspectorDock({
@@ -58,6 +59,7 @@ export default function BatchReviewInspectorDock({
   onStickerDragStart,
   onStickerDragEnd,
   onPlaySticker,
+  onCopyStickers,
 }: BatchReviewInspectorDockProps) {
   const arrangement = film?.arrangement;
   const planId = film?.planId;
@@ -223,6 +225,7 @@ export default function BatchReviewInspectorDock({
           onStickerDragStart={(choice) => onStickerDragStart(film.planId, choice)}
           onStickerDragEnd={onStickerDragEnd}
           onPlaySticker={(stickerId) => onPlaySticker(film.planId, stickerId)}
+          onCopyStickers={() => onCopyStickers(film.planId)}
           onJumpToCover={() => onJumpToCover(film.planId)}
           onSave={(config, reextract) => onMediaEdit(film.planId, { type: 'set_packaging', config, reextract, expectedEditRevision: arrangement.editRevision, expectedOutputVersionId: arrangement.outputVersionId })}
         />}

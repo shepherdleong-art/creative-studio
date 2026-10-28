@@ -16,6 +16,8 @@ import styles from './batch-unified-review.module.css';
 import { subtitleSplitEdit } from './subtitle-edit';
 import type { StickerAssetChoice } from '@/components/mixcut/StickerPanel';
 import type { BatchStickerPlaybackRequest } from '../BatchPackagingOverlay';
+import BatchStickerCopyDialog, { type BatchStickerCopyDialogTarget } from './BatchStickerCopyDialog';
+import type { BatchPackagingStickerSnapshot, BatchStickerMutationResult } from '@/lib/batch-production/sticker-copy';
 import {
   MAX_STICKER_INSTANCES,
   createManualPackagingSticker,
@@ -29,10 +31,26 @@ const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS;
 
 /** 撤销/重做历史项:记录受影响成片与编辑前后的整包快照(回放走后端 restore_arrangement)。 */
 interface EditHistoryEntry {
+  kind: 'arrangement';
   planId: string;
   before: Record<string, unknown>;
   after: Record<string, unknown>;
 }
+
+interface StickerCopyHistoryTarget {
+  planId: string;
+  outputVersionId: string;
+  currentEditRevision: number;
+  before: BatchPackagingStickerSnapshot;
+  after: BatchPackagingStickerSnapshot;
+}
+
+interface StickerCopyHistoryEntry {
+  kind: 'sticker-copy';
+  targets: StickerCopyHistoryTarget[];
+}
+
+type ReviewHistoryEntry = EditHistoryEntry | StickerCopyHistoryEntry;
 
 /** 从编辑器数据视图派生后端 restore_arrangement 快照(只含可编辑字段)。 */
 function buildRestoreSnapshot(view: BatchOutputClipEditView): Record<string, unknown> {
@@ -141,6 +159,7 @@ export default function BatchUnifiedReviewWorkspace({
   const selectedPlanIdRef = useRef(selectedPlanId);
   useEffect(() => { selectedPlanIdRef.current = selectedPlanId; }, [selectedPlanId]);
   const [selection, setSelection] = useState<SelectionTarget | null>(null);
+  const [stickerCopySourceId, setStickerCopySourceId] = useState<string | null>(null);
   const [draggedSticker, setDraggedSticker] = useState<{ planId: string; choice: StickerAssetChoice } | null>(null);
   const [stickerPlaybackRequest, setStickerPlaybackRequest] = useState<BatchStickerPlaybackRequest | null>(null);
   const stickerPlaybackRequestRef = useRef(0);
@@ -161,8 +180,8 @@ export default function BatchUnifiedReviewWorkspace({
 
   // Undo / Redo history:撤销/重做把快照整包回放到后端(restore_arrangement),
   // 由后端走正式修订/冲突门禁——前端本地状态不再作为"已保存"的事实来源。
-  const [undoStack, setUndoStack] = useState<EditHistoryEntry[]>([]);
-  const [redoStack, setRedoStack] = useState<EditHistoryEntry[]>([]);
+  const [undoStack, setUndoStack] = useState<ReviewHistoryEntry[]>([]);
+  const [redoStack, setRedoStack] = useState<ReviewHistoryEntry[]>([]);
 
   // Fetch arrangements for all films
   const loadAllArrangements = useCallback(async () => {
@@ -247,6 +266,7 @@ export default function BatchUnifiedReviewWorkspace({
           setUndoStack((stack) => [
             ...stack.slice(-20),
             {
+              kind: 'arrangement',
               planId,
               before: buildRestoreSnapshot(beforeView),
               after: buildRestoreSnapshot(afterView),
@@ -262,6 +282,30 @@ export default function BatchUnifiedReviewWorkspace({
     },
     [arrangements, batchId, projectId, refreshFilmArrangement]
   );
+
+  const handleCopyStickers = useCallback(async (sourcePlanId: string, targets: BatchStickerCopyDialogTarget[]) => {
+    const response = await fetch(`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/sticker-copy?projectId=${encodeURIComponent(projectId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'copy', sourcePlanId, targets }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || '跨片贴纸复制失败');
+    const result = data as BatchStickerMutationResult;
+    const entry: StickerCopyHistoryEntry = {
+      kind: 'sticker-copy',
+      targets: result.targets.map((target) => ({
+        planId: target.planId,
+        outputVersionId: target.outputVersionId,
+        currentEditRevision: target.afterEditRevision,
+        before: target.before,
+        after: target.after,
+      })),
+    };
+    setUndoStack((stack) => [...stack.slice(-20), entry]);
+    setRedoStack([]);
+    await Promise.all(result.targets.map((target) => refreshFilmArrangement(target.planId)));
+  }, [batchId, projectId, refreshFilmArrangement]);
 
   // Replay a restore snapshot to the backend (undo/redo shared path)
   const postRestoreSnapshot = useCallback(
@@ -295,6 +339,45 @@ export default function BatchUnifiedReviewWorkspace({
     },
     [arrangements, batchId, projectId, refreshFilmArrangement]
   );
+
+  const postRestoreStickerCopy = useCallback(async (entry: StickerCopyHistoryEntry, side: 'before' | 'after'): Promise<
+    { status: 'ok'; entry: StickerCopyHistoryEntry } | { status: 'conflict' | 'error' }
+  > => {
+    try {
+      const response = await fetch(`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/sticker-copy?projectId=${encodeURIComponent(projectId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'restore',
+          targets: entry.targets.map((target) => ({
+            planId: target.planId,
+            expectedOutputVersionId: target.outputVersionId,
+            expectedEditRevision: target.currentEditRevision,
+            snapshot: target[side],
+          })),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (data.code === 'conflict' || data.error === 'conflict') return { status: 'conflict' };
+        throw new Error(data.message || '跨片贴纸撤销/重做失败');
+      }
+      const result = data as BatchStickerMutationResult;
+      const nextEntry: StickerCopyHistoryEntry = {
+        ...entry,
+        targets: entry.targets.map((target) => {
+          const mutated = result.targets.find((item) => item.planId === target.planId);
+          if (!mutated) throw new Error('跨片贴纸恢复结果缺少目标成片');
+          return { ...target, currentEditRevision: mutated.afterEditRevision };
+        }),
+      };
+      await Promise.all(result.targets.map((target) => refreshFilmArrangement(target.planId)));
+      return { status: 'ok', entry: nextEntry };
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '跨片贴纸撤销/重做失败');
+      return { status: 'error' };
+    }
+  }, [batchId, projectId, refreshFilmArrangement]);
 
   // Pool assets: aggregate from all loaded arrangements
   const poolAssets = useMemo(() => {
@@ -369,6 +452,7 @@ export default function BatchUnifiedReviewWorkspace({
   const activeFilm = useMemo(() => {
     return films.find((f) => f.planId === selectedPlanId) ?? films[0] ?? null;
   }, [films, selectedPlanId]);
+  const stickerCopySource = stickerCopySourceId ? films.find((film) => film.planId === stickerCopySourceId) ?? null : null;
 
   const handleSelectFilm = useCallback((planId: string) => {
     if (planId !== selectedPlanId) setDraggedSticker(null);
@@ -557,6 +641,18 @@ export default function BatchUnifiedReviewWorkspace({
   const handleUndo = useCallback(async () => {
     const entry = undoStack[undoStack.length - 1];
     if (!entry) return;
+    if (entry.kind === 'sticker-copy') {
+      const outcome = await postRestoreStickerCopy(entry, 'before');
+      if (outcome.status === 'ok') {
+        setUndoStack((stack) => stack.slice(0, -1));
+        setRedoStack((stack) => [...stack, outcome.entry]);
+      } else if (outcome.status === 'conflict') {
+        setUndoStack([]);
+        setRedoStack([]);
+        alert('这次跨片复制涉及更新的正式编辑，整体撤销已被拒绝，历史已重置。');
+      }
+      return;
+    }
     const outcome = await postRestoreSnapshot(entry.planId, entry.before);
     if (outcome === 'ok') {
       setUndoStack((s) => s.slice(0, -1));
@@ -566,11 +662,23 @@ export default function BatchUnifiedReviewWorkspace({
       setRedoStack([]);
       alert('这条成片已有更新的正式编辑，撤销被拒绝。已按最新状态刷新，历史已重置。');
     }
-  }, [undoStack, postRestoreSnapshot]);
+  }, [undoStack, postRestoreSnapshot, postRestoreStickerCopy]);
 
   const handleRedo = useCallback(async () => {
     const entry = redoStack[redoStack.length - 1];
     if (!entry) return;
+    if (entry.kind === 'sticker-copy') {
+      const outcome = await postRestoreStickerCopy(entry, 'after');
+      if (outcome.status === 'ok') {
+        setRedoStack((stack) => stack.slice(0, -1));
+        setUndoStack((stack) => [...stack, outcome.entry]);
+      } else if (outcome.status === 'conflict') {
+        setUndoStack([]);
+        setRedoStack([]);
+        alert('这次跨片复制涉及更新的正式编辑，整体重做已被拒绝，历史已重置。');
+      }
+      return;
+    }
     const outcome = await postRestoreSnapshot(entry.planId, entry.after);
     if (outcome === 'ok') {
       setRedoStack((s) => s.slice(0, -1));
@@ -580,7 +688,7 @@ export default function BatchUnifiedReviewWorkspace({
       setRedoStack([]);
       alert('这条成片已有更新的正式编辑，重做被拒绝。已按最新状态刷新，历史已重置。');
     }
-  }, [redoStack, postRestoreSnapshot]);
+  }, [redoStack, postRestoreSnapshot, postRestoreStickerCopy]);
 
   // Global Keyboard Shortcuts (PRD T-06)
   useEffect(() => {
@@ -794,6 +902,7 @@ export default function BatchUnifiedReviewWorkspace({
             onStickerDragStart={(planId, choice) => setDraggedSticker({ planId, choice })}
             onStickerDragEnd={() => setDraggedSticker(null)}
             onPlaySticker={handlePlaySticker}
+            onCopyStickers={setStickerCopySourceId}
             onJumpToCover={planId => { handleSelectFilm(planId); setPreviewAsset(null); setSourceSession(null); setPlayheadSec(-10 / 24); setCoverPreviewRequest(value => value + 1); }}
             projectId={projectId}
             batchId={batchId}
@@ -940,6 +1049,13 @@ export default function BatchUnifiedReviewWorkspace({
         />
       </div>
 
+      {stickerCopySource && <BatchStickerCopyDialog
+        source={stickerCopySource}
+        films={films}
+        initialSelectedPlanIds={selectedPlanIds}
+        onClose={() => setStickerCopySourceId(null)}
+        onConfirm={(targets) => handleCopyStickers(stickerCopySource.planId, targets)}
+      />}
     </div>
   );
 }

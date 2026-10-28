@@ -33,6 +33,7 @@ export default function BatchStickerPanel({
   onDragStart,
   onDragEnd,
   onPlaySticker,
+  onCopyToOtherFilms,
 }: {
   active: boolean;
   view: BatchStickerPanelView;
@@ -43,6 +44,7 @@ export default function BatchStickerPanel({
   onDragStart: (choice: StickerAssetChoice) => void;
   onDragEnd: () => void;
   onPlaySticker: (stickerId: string) => void;
+  onCopyToOtherFilms?: () => void;
 }) {
   const config = view.packaging!;
   const stickers = config.stickers ?? [];
@@ -64,6 +66,9 @@ export default function BatchStickerPanel({
     : stickers.filter((sticker) => sticker.origin.kind !== 'auto').length + 6 > MAX_STICKER_INSTANCES
       ? `手动贴纸过多，自动布置后不能超过 ${MAX_STICKER_INSTANCES} 张。`
       : '';
+  const copyBlockedReason = !config.enabled
+    ? '开启视频包装后才能复制贴纸。'
+    : stickers.length === 0 ? '先在当前成片添加贴纸，再复制到其他成片。' : '';
 
   const save = async (next: FinalEditPackagingConfig): Promise<boolean> => {
     if (saving.current || !view.editable) return false;
@@ -167,6 +172,16 @@ export default function BatchStickerPanel({
       onPlaySticker={onPlaySticker}
       onAutoLayout={handleAutoLayout}
     />
+    {onCopyToOtherFilms && <div className="pt-2">
+      <button
+        type="button"
+        className="btn-primary h-8 w-full text-xs"
+        disabled={busy || !view.editable || Boolean(copyBlockedReason)}
+        title={copyBlockedReason || '选择目标成片，并生成各自持久化的随机变体'}
+        onClick={onCopyToOtherFilms}
+      >复制到其他成片</button>
+      {copyBlockedReason && <p className="pt-1 text-[11px] text-ink-tertiary">{copyBlockedReason}</p>}
+    </div>}
     {message && <p role="status" className="text-xs text-ink-secondary">{message}</p>}
   </>;
 }
