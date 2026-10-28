@@ -7,6 +7,7 @@ import { buildPackagingVars, type FinalEditPackagingConfig } from './packaging-v
 import { buildTimelineVars, resolvePackagingDir, resolvePackagingNode, resolvePackagingTemplateDir, runPackagingPipeline } from './packaging-runtime.ts';
 import { safeFontFilename, userFontDir } from './packaging-font.ts';
 import { composeCoverJpg } from './cover-compose.ts';
+import { resolvePackagingStickerAssets } from './packaging-sticker-assets.ts';
 
 /** Render into the caller's private job directory; publishing and lineage remain the caller's responsibility. */
 export async function renderVideoPackaging(input: {
@@ -30,8 +31,10 @@ export async function renderVideoPackaging(input: {
     await fs.access(path.join(userFontDir(), file));
     fonts[`${slot}File`] = file;
   }
+  const stickerAssets = resolvePackagingStickerAssets({ packagingDir: dir, template: input.config.template, stickers: input.config.stickers });
   const vars = buildTimelineVars({ vars: buildPackagingVars({ subtitleCues: [], overrides: input.config.varsOverrides }),
-    totalSec: input.totalSec, coverSec, staticCover: input.staticCover, pointCues: input.config.pointCues ?? [], pointCuesMode: input.config.pointCuesMode ?? 'none', layouts: input.config.layouts, fonts });
+    totalSec: input.totalSec, coverSec, staticCover: input.staticCover, pointCues: input.config.pointCues ?? [], pointCuesMode: input.config.pointCuesMode ?? 'none', layouts: input.config.layouts, fonts,
+    stickers: input.config.stickers, stickerDefaults: input.config.stickerDefaults, stickerAssets, template: input.config.template });
   const varsPath = path.join(jobDir, 'packaging-vars.json');
   await fs.writeFile(varsPath, JSON.stringify(vars), 'utf8');
   await runPackagingPipeline({ nodeExe: resolvePackagingNode(), packagingDir: dir,
