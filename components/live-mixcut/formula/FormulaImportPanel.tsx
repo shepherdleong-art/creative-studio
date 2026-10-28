@@ -90,7 +90,9 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
         method: 'POST', headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, body: file,
       }));
       setSession(next);
-      setMessage('原表已读取。可点击「用 AI 识别表头」，也可直接核对列对应后确认导入。');
+      setMessage(next.preview.mapping.length === next.preview.sheets.length
+        ? `表头已对上，已直接读入 ${next.preview.rowCount} 行原表内容；核对后确认导入，不用识别。`
+        : '表头对不上：可以选模型识别，也可以手动选择列。读取原表本身不会调用 AI。');
     } catch (err) { setError(err instanceof Error ? err.message : '读取失败'); }
     finally { setBusy(false); }
   }
@@ -201,6 +203,9 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
   const rows = session ? session.preview.rows.filter(row => !session.excludedKeys?.includes(row.key)) : saved?.rows ?? [];
   const unresolvedIssues = session?.preview.issues.filter(issue => !session.excludedKeys?.includes(issue.key)) ?? [];
   const scriptInputs = new Map(session?.preview.scriptInputs?.map(row => [row.key, row]));
+  // 表头全部对上时直接读入，不显示识别入口；只有对不上才让用户选模型。
+  const headersRead = Boolean(session?.preview.sheets.length && session.preview.mapping.length === session.preview.sheets.length);
+  const needsMapping = Boolean(session && !headersRead);
   return (
     <section className="min-h-0 flex-1 space-y-4 overflow-auto p-4" aria-label="实拍公式混剪输入">
       {step === 1 && <div ref={progressElement}>{progress}</div>}
@@ -220,7 +225,7 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
       {step === 1 && <div className="card space-y-3 p-4">
         <h2 className="text-base font-semibold text-ink">导入脚本与公式</h2>
         <p className="text-sm text-ink-secondary">导入脚本表，保留原脚本序号、镜头顺序、目标时长和文案。</p>
-        <div className="flex flex-wrap items-center gap-2">
+        {needsMapping && <div className="flex flex-wrap items-center gap-2">
           <label className="text-sm text-ink">表格识别模型
             <select aria-label="表格识别模型" className="ml-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-sm text-ink"
               value={providerId || inputs?.aiProviders?.[0]?.id || ''}
@@ -233,27 +238,31 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
               {inputs?.aiProviders?.map(provider => <option key={provider.id} value={provider.id}>{provider.name} · {provider.model}</option>)}
             </select>
           </label>
-          {session && <button type="button" className="btn-secondary" disabled={controlsBusy || aiRunning || aiRequested || !inputs?.aiProviders?.length} onClick={() => void modify('ai')}>
-            {aiRunning || aiRequested ? 'AI 正在识别…' : session.extraction ? '重新用 AI 识别' : '用 AI 识别表头'}
-          </button>}
+          <button type="button" className="btn-secondary" disabled={controlsBusy || aiRunning || aiRequested || !inputs?.aiProviders?.length} onClick={() => void modify('ai')}>
+            {aiRunning || aiRequested ? 'AI 正在识别…' : session?.extraction ? '重新用 AI 识别' : '用 AI 识别表头'}
+          </button>
           {(aiRunning || aiRequested || stoppingAi) && <button type="button" className="btn-secondary" disabled={stoppingAi} onClick={() => void stopRecognition()}>
             {stoppingAi ? '正在停止…' : '停止识别'}
           </button>}
-        </div>
-        <p className="text-xs text-ink-secondary">先选模型，再导入表格；读取原表不会自动调用 AI。识别中切换模型会停止当前识别，已保存的预览保留。</p>
+        </div>}
+        <p className="text-xs text-ink-secondary">{headersRead
+          ? '表头已对上，原表已按列名直接读入，不用识别。'
+          : needsMapping ? '表头对不上：选模型识别，或手动选择列。读取原表本身不会调用 AI。' : '先导入脚本表；表头对得上就直接读入，不用识别。'}</p>
         <label className={`inline-flex cursor-pointer items-center rounded-lg border border-hairline bg-surface px-3 py-2 text-sm text-ink focus-within:ring-2 focus-within:ring-accent ${controlsBusy || !inputs ? 'opacity-50' : 'hover:bg-surface-subtle'}`}>
           <span>选择{label}（XLSX）</span>
           <input type="file" accept=".xlsx" aria-label={`选择${label}`} disabled={controlsBusy || !inputs}
             onChange={event => { const file = event.target.files?.[0]; if (file) void preview(file); event.target.value = ''; }}
             className="sr-only" />
         </label>
-        <p className="text-xs text-ink-tertiary">每个工作簿不超过 10 MiB、10,000 行、50 列。导入后按需点击 AI 识别，也可手动选择列。</p>
+        <p className="text-xs text-ink-tertiary">每个工作簿不超过 10 MiB、10,000 行、50 列。表头对得上就直接读入；对不上才需要识别或手动选择列。</p>
         {saved && <p className="text-sm text-ink-secondary">已保存：{saved.filename} · {saved.rows.length} 条{saved.excludedKeys.length ? ` · 已排除 ${saved.excludedKeys.length} 行` : ''}</p>}
         {saved && !session && <button type="button" className="btn-secondary" disabled={controlsBusy} onClick={() => void openScript()}>修改已保存脚本</button>}
       </div>}
       {step === 1 && session && <div className="card space-y-3 p-4">
         <p className="text-sm font-medium text-ink">待确认：{session.filename} · 共 {session.preview.rowCount} 行，可导入 {rows.length} 行</p>
-        <p className="text-xs text-ink-secondary">AI 仅接收表头和前 20 行文字样本，用于判断列对应；全部资料由程序读取原表。没有模型时可直接手动选择列。</p>
+        <p className="text-xs text-ink-secondary">{headersRead
+          ? '表头对得上，已直接按列名读入；AI 没有参与，也不会收到表格内容。'
+          : 'AI 仅接收表头和前 20 行文字样本，用于判断列对应；全部资料由程序读取原表。没有模型时可直接手动选择列。'}</p>
         {session.extraction && <p role="status" className={`text-sm ${session.extraction.state === 'failed' ? 'text-fail' : 'text-ink-secondary'}`}>
           {session.extraction.manualOverride ? session.extraction.message : session.extraction.state === 'running' ? `正在识别表头：${session.extraction.completedSheets} / ${session.extraction.totalSheets} 个工作表`
             : session.extraction.state === 'completed' ? `已由 ${session.extraction.providerName} 识别列对应；${session.preview.issues.length ? '下方错误行仍需处理。' : '原表内容及后续手工修改均已保留。'}`

@@ -17,6 +17,8 @@ import {
   type NarrationTake, type SchedulingFile, type SchedulingJudgment, type SchedulingSlotMaterial,
 } from '../lib/live-mixcut/scheduling/index.ts';
 import { cleanSourceSpeech } from '../lib/live-mixcut/source-speech-clean.ts';
+import { parseMaterialFilename } from '../lib/live-mixcut/formula/parse.ts';
+import { readFormulaWorkbook } from '../lib/live-mixcut/formula/workbook.ts';
 
 const args = process.argv.slice(2);
 const value = (name: string): string | undefined => {
@@ -77,15 +79,11 @@ for (const row of db.prepare(`SELECT s.assetId,x.resultJson FROM live_mixcut_for
   speechByAsset.set(row.assetId, cleanSourceSpeech({ text: result.text, words: result.words }));
 }
 
-function parseVoLine(fileName: string): string | null {
-  const matched = /“([^”]+)”/.exec(fileName);
-  return matched ? matched[1] : null;
-}
-
 const materialsByCode = new Map<string, SchedulingSlotMaterial>();
 for (const binding of bindings) {
   const media = assets.get(binding.assetId);
   if (!media) continue;
+  const parsed = parseMaterialFilename(binding.sourceName);
   const isVo = /^VO/i.test(binding.logicalCode);
   const durationUs = Math.round(media.durationSec * 1_000_000);
   const speech = isVo ? speechByAsset.get(binding.assetId) ?? null : null;
@@ -101,9 +99,7 @@ for (const binding of bindings) {
   let material = materialsByCode.get(binding.logicalCode);
   if (!material) {
     material = { logicalCode: binding.logicalCode, kind: binding.logicalCode.replace(/\d+$/, ''), files: [],
-      isVo, voLine: parseVoLine(binding.sourceName),
-      wide: binding.sourceName.includes('整体外观') && binding.sourceName.includes('无人出镜'),
-      wideExperience: /^P/i.test(binding.logicalCode) && binding.sourceName.includes('全景') };
+      isVo, voLine: parsed.voLine, wide: parsed.wide, wideExperience: parsed.wideExperience };
     materialsByCode.set(binding.logicalCode, material);
   }
   material.files.push(file);
@@ -210,6 +206,24 @@ function median(values: number[]): number {
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
+
+// 素材标记：全景展示 / 全景体验，直接从文件名读出。
+const markerCodes = (pick: (material: SchedulingSlotMaterial) => boolean) => [...materialsByCode.values()]
+  .filter(pick).map(material => material.logicalCode).sort((left, right) => left.localeCompare(right, 'en', { numeric: true }));
+console.log(`全景展示（${markerCodes(material => material.wide).length}）：${markerCodes(material => material.wide).join('、') || '无'}`);
+console.log(`全景体验（${markerCodes(material => material.wideExperience).length}）：${markerCodes(material => material.wideExperience).join('、') || '无'}`);
+
+// 脚本表：表头对得上就直接读入，不需要识别。
+const workbookRow = db.prepare('SELECT workbookBytes FROM live_mixcut_formula_import_sessions WHERE id=?')
+  .get(collection.scriptsSessionId) as { workbookBytes: Buffer | null } | undefined;
+if (workbookRow?.workbookBytes) {
+  try {
+    const preview = await readFormulaWorkbook(workbookRow.workbookBytes, 'scripts');
+    console.log(`脚本表：表头对得上，直接读入 ${preview.rows.length} 条；需要识别的表 ${preview.sheets.length - preview.mapping.length} 个`);
+  } catch (error) {
+    console.log(`脚本表读入失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+} else console.log('脚本表：这条导入没有保存原表，无法复核直接读入');
 
 console.log(`任务：${project.name}`);
 console.log(`批次：${production.name}`);

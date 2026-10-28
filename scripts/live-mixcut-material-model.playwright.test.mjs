@@ -58,11 +58,12 @@ try {
   let releaseRequest;
   let run = null;
   const binding = { id: 'binding-fixture', assetId: 'asset-fixture', sourceName: 'G1_沙发.mp4', sourcePath: 'G1_沙发.mp4',
-    logicalCode: 'G1', contentFingerprint: 'a'.repeat(64), available: true, excludedReason: null };
+    logicalCode: 'G1', contentFingerprint: 'a'.repeat(64), available: true, excludedReason: null,
+    voLine: null, wide: false, wideExperience: false };
   const item = { bindingId: binding.id, sourceName: binding.sourceName, logicalCode: 'G1', excluded: false,
     available: true, profile: null, stale: false, inputFingerprint: 'fixture',
     source: { filename: binding.sourceName, table: null } };
-  const notes = () => ({ revision: 1, items: imported ? [item] : [], run, aiProviders: models });
+  const notes = () => ({ revision: 1, items: imported ? [item] : [], run, videoProviders: models });
   await page.route('**/formula/materials?*', route => route.fulfill({ json: { revision: 1, bindings: imported ? [binding] : [], codes: [] } }));
   await page.route('**/assets/import?*', route => {
     imported = true;

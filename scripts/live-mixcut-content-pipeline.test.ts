@@ -52,8 +52,6 @@ try {
   const manual = notes.items.find(item=>item.logicalCode==='P2')!;
   const saved = saveFormulaMaterialNote(db,'p',batchId,manual.bindingId,{expectedRevision:notes.revision,expectedProfileId:null,
     content:{description:'人工确认的展示',category:'',sellingPoints:[],actions:[],speech:'unknown',evidence:[]}});
-  notes = await organizeFormulaMaterialNotes(db,'p',batchId,{expectedRevision:notes.revision},{id:'fixture',name:'命名',model:'name',complete:async input=>({items:JSON.parse(input.userPrompt).items.map((item: {bindingId:string;filename:string})=>({bindingId:item.bindingId,content:{description:item.filename,category:'',sellingPoints:[],actions:[],speech:'unknown',evidence:[{field:'description',source:'filename',quote:item.filename}]}}))})});
-  assert.equal(notes.run?.succeeded,3);
   const chosen = assets.filter(asset=>asset.code==='P1').sort((a,b)=>a.id.localeCompare(b.id))[1];
   const observed: string[] = [];
   const visualModel = {id:'vision',name:'画面',model:'vision-fixture',analyze:async (input: {assetId:string;filePath:string})=>{
@@ -62,12 +60,12 @@ try {
     return {summary:description,sellingPoints:[description],semanticTags:[],qualityIssues:[],usableRanges:[],coverFrameTimesUs:[],
       scenes:[{startUs:0,endUs:500_000,description,labels:[],qualityScore:0.8}]};
   }};
-  notes=await organizeFormulaMaterialNotes(db,'p',batchId,{expectedRevision:notes.revision,mode:'video'},visualModel);
+  notes=await organizeFormulaMaterialNotes(db,'p',batchId,{expectedRevision:notes.revision},visualModel);
   assert.equal(notes.run?.succeeded,3);
   assert.equal(notes.items.find(item=>item.bindingId===manual.bindingId)?.profile?.id,saved.id,'画面分析不得覆盖人工说明');
   assert.equal(notes.items.find(item=>item.source.assetId===chosen.id)?.profile?.provenance.visualObservation,true);
   assert.equal(notes.items.find(item=>item.source.assetId===chosen.id)?.profile?.content.speech,'unknown');
-  await organizeFormulaMaterialNotes(db,'p',batchId,{expectedRevision:notes.revision,mode:'video'},visualModel);
+  await organizeFormulaMaterialNotes(db,'p',batchId,{expectedRevision:notes.revision},visualModel);
   assert.equal(observed.length,3,'续做不重复调用已成功的画面分析');
   const book=new ExcelJS.Workbook();
   book.addWorksheet('脚本').addRows([['序号','平台','镜头数','预估时长(s)','画面分镜(逻辑镜号组合)','脚本文案'],[1,'抖音',3,6,'P2 VO1 P1','易清洁。']]);
@@ -109,5 +107,5 @@ try {
   await orchestrateBatchExport(db,'p',batchId,[planId],{wakeScheduler:()=>{}});
   await runPendingOnce({db,workerId:'export',executors:[createBatchRenderExecutor()],log:()=>{}});
   assert.equal((await orchestrateBatchExport(db,'p',batchId,[planId],{wakeScheduler:()=>{}})).items[0].status,'published');
-  console.log('PASS 文件名/视频两路、人工保护、同编号按说明选择、真实抽音频、无人声失败重试续接、公式顺序、实际MP4导出');
+  console.log('PASS 画面分析、人工保护、同编号按说明选择、真实抽音频、无人声失败重试续接、公式顺序、实际MP4导出');
 } finally {globalThis.fetch=originalFetch;db.close();fs.rmSync(root,{recursive:true,force:true});}

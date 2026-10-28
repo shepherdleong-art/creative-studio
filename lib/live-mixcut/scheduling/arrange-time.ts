@@ -19,8 +19,6 @@ const TAIL_FRAMES = Math.round(TAIL_US / FRAME_US);
 const BORROW_MAX_FRAMES = Math.round(BORROW_MAX_US / FRAME_US);
 /** 补镜最短 1 秒 = 24 帧。 */
 const MIN_FILLER_FRAMES = Math.round(MIN_FILLER_US / FRAME_US);
-/** 口播余量 0.12 秒 ≈ 3 帧。 */
-const SPEECH_MARGIN_FRAMES = Math.round(SPEECH_MARGIN_US / FRAME_US);
 
 export function microsecondsToFrames(us: number): number {
   return Math.max(0, Math.round(us / FRAME_US));

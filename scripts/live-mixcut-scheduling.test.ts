@@ -359,7 +359,7 @@ function baseInput(overrides: Partial<SchedulingInput> & Pick<SchedulingInput, '
       materials, judgment, voiceMode: random() < 0.3 ? 'narration' : 'mixed',
     });
     const plan = assignFormulaVoice(input);
-    const timeline = arrangeFormulaTime({ plan, materials, narrations: takes(plan, index => 1 + random() * 3),
+    const timeline = arrangeFormulaTime({ plan, materials, narrations: takes(plan, () => 1 + random() * 3),
       judgment, scriptNumber: input.script.scriptNumber, copyIndex: input.script.copyIndex });
     const problems = validateFormulaShortFilm({ plan, timeline, materials });
     assert.deepEqual(problems, [], `第 ${round} 轮随机脚本：${problems.join('；')}`);

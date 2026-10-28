@@ -5,7 +5,7 @@
  * 规矩 a～f 全在这里；时间相关的规矩 g 在 arrange-time.ts。
  */
 import {
-  type LineFate, type NarrationTake, type SchedulingFile, type SchedulingInput, type SchedulingJudgment,
+  type NarrationTake, type SchedulingFile, type SchedulingInput, type SchedulingJudgment,
   type SchedulingSlotMaterial, type SchedulingSubstitution, type VoicePlan, type VoicePlanItem, type VoicePlanLine,
   SCHEDULING_VERSION,
 } from './types.ts';

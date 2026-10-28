@@ -10,6 +10,8 @@ export interface FormulaAssetBinding {
   id: string; assetId: string; sourceName: string; sourcePath: string;
   contentFingerprint: string; detectedCode: string | null; logicalCode: string | null;
   excludedReason: 'preview' | null;
+  /** 从文件名直接读出、不用再点整理：口播台词与两种全景标记。 */
+  voLine: string | null; wide: boolean; wideExperience: boolean;
 }
 export interface FormulaMaterialIndex {
   revision: number;
@@ -67,7 +69,8 @@ export function getFormulaMaterialIndex(db: Database.Database, projectId: string
     SELECT 1 FROM live_mixcut_asset_sources s WHERE s.assetId=a.id AND s.sourceKind='managed' AND s.health='healthy')) AS available
     FROM live_mixcut_formula_asset_bindings f JOIN live_mixcut_assets a ON a.id=f.assetId AND a.projectId=?
     WHERE f.collectionId=? ORDER BY f.sourcePath, f.id`).all(projectId, collection.id) as Array<FormulaAssetBinding & { available: number }> : [];
-  const bindings = rows.map(row => ({ ...row, available: Boolean(row.available) }));
+  // 编号以库里的为准（可能人工改过）；口播台词和全景标记每次都从文件名直接读。
+  const bindings = rows.map(row => ({ ...parseMaterialFilename(row.sourceName), ...row, available: Boolean(row.available) }));
   const codes = new Map<string, FormulaMaterialIndex['codes'][number]>();
   const item = (logicalCode: string) => {
     let found = codes.get(logicalCode);

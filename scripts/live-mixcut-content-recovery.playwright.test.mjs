@@ -43,10 +43,10 @@ const require=createRequire(import.meta.url);const reactId=bundle(require.resolv
 const script=`const process={env:{NODE_ENV:'production'}};const modules={${[...modules.values()].map(m=>`${m.id}:[function(require,module,exports){${m.source}\n},${JSON.stringify(m.deps)}]`).join(',')}};
 const cache={};function load(id){if(cache[id])return cache[id].exports;const m=cache[id]={exports:{}};const [fn,deps]=modules[id];fn(r=>load(deps[r]),m,m.exports);return m.exports;}
 const React=load(${reactId});const mode=new URLSearchParams(location.search).get('mode');load(${domId}).createRoot(document.getElementById('root')).render(React.createElement(load(mode!=='import'&&mode?${issueId}:${importId}).default,mode!=='import'&&mode?{projectId:'p',batchId:'b',item:{planId:'plan-1',scriptNumber:'45',copyIndex:1,phase:mode==='audio'?'安排声音':'选片',detail:'S29：缺少原片',status:'needs_attention'},onChanged:async()=>{},onNavigate:step=>document.body.dataset.step=step}:{projectId:'p',batchId:'b',inputRevision:1,readOnly:false,onChanged:async()=>{}}));`;
-const binding={id:'binding',assetId:'asset',sourceName:'P1_展示.mp4',sourcePath:'P1_展示.mp4',logicalCode:'P1',contentFingerprint:'fp',available:true,excludedReason:null};
+const binding={id:'binding',assetId:'asset',sourceName:'P1_展示.mp4',sourcePath:'P1_展示.mp4',logicalCode:'P1',contentFingerprint:'fp',available:true,excludedReason:null,voLine:null,wide:false,wideExperience:false};
 const item={bindingId:binding.id,sourceName:binding.sourceName,logicalCode:'P1',excluded:false,available:true,profile:null,stale:false,inputFingerprint:'fp',source:{...binding,filename:binding.sourceName,table:null}};
 let profile=null;let run=null;const requests=[];
-const notes=()=>({revision:1,items:[{...item,profile}],run,aiProviders:[{id:'text',name:'文字',model:'text'}],videoProviders:[{id:'vision',name:'视觉',model:'vision'}]});
+const notes=()=>({revision:1,items:[{...item,profile}],run,videoProviders:[{id:'vision',name:'视觉',model:'vision'}]});
 const slots=[{slotId:'s1',clipId:0,logicalCode:'S29'},{slotId:'s2',clipId:1,logicalCode:'P1'}];
 const selection={planId:'plan-1',scriptNumber:'45',copyIndex:1,slots,editable:true,outputVersion:null,candidates:[{assetId:'asset',logicalCode:'P1',sourceName:'P1_展示.mp4'}],current:{id:'select-1',result:{slots:[{...slots[0],candidate:null,replacementCheck:{message:'缺少原片'}},{...slots[1],candidate:{assetId:'asset'}}]},overrides:[{slotId:'s2',sourceLogicalCode:'P1',assetId:'asset'}]}};
 const server=http.createServer(async(req,res)=>{
@@ -54,7 +54,7 @@ const server=http.createServer(async(req,res)=>{
  if(url.pathname.includes('/formula/material-notes')){
   if(req.method==='POST'){
    let raw='';for await(const chunk of req)raw+=chunk;const input=JSON.parse(raw);requests.push(input);
-   profile={id:'v1',origin:'ai',provenance:{visualObservation:input.mode==='video'},content:{description:'实际画面展示产品',category:'',actions:[],sellingPoints:[],speech:'unknown',evidence:[]}};
+   profile={id:'v1',origin:'ai',provenance:{visualObservation:true},content:{description:'实际画面展示产品',category:'',actions:[],sellingPoints:[],speech:'unknown',evidence:[]}};
    run={id:'run',state:'completed',succeeded:1,total:1,skipped:0,errors:[]};
   }res.end(JSON.stringify(notes()));
  }else if(url.pathname.includes('/formula/materials'))res.end(JSON.stringify({revision:1,bindings:[binding],codes:[]}));
@@ -72,10 +72,9 @@ let browser;
 try{
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));browser=await chromium.launch({headless:true});const page=await browser.newPage();const errors=[];page.on('pageerror',err=>errors.push(err.message));
  const origin=`http://127.0.0.1:${server.address().port}`;await page.goto(origin);
- const models=page.getByRole('combobox',{name:'素材整理模型',exact:true});await expect(models).toHaveValue('');await expect(page.getByRole('radio',{name:'根据文件名整理',exact:true})).toBeChecked();
- await models.selectOption('text');assert.equal(requests.length,0);
- await page.getByRole('radio',{name:'分析视频画面',exact:true}).check();await expect(models).toHaveValue('');await expect(models.locator('option')).toHaveCount(2);await models.selectOption('vision');assert.equal(requests.length,0);
- await page.getByRole('button',{name:/开始整理/}).click();await expect(page.getByText('AI 画面分析 · 基于实际抽帧',{exact:true})).toBeVisible();assert.equal(requests[0].mode,'video');assert.equal(requests[0].providerId,'vision');
+ const models=page.getByRole('combobox',{name:'素材整理模型',exact:true});await expect(models).toHaveValue('');await expect(models.locator('option')).toHaveCount(2);
+ await models.selectOption('vision');assert.equal(requests.length,0);
+ await page.getByRole('button',{name:/开始整理/}).click();await expect(page.getByText('AI 画面分析 · 基于实际抽帧',{exact:true})).toBeVisible();assert.equal(requests[0].providerId,'vision');assert.equal(requests[0].mode,undefined);
  await page.reload();assert.equal(requests.length,1);await expect(models).toHaveValue('');
  await page.goto(origin+'/?mode=issue');await expect(page.getByText('脚本 45 · 第 1 份 · 选片',{exact:true})).toBeVisible();await expect(page.getByText('公式顺序：S29 → P1',{exact:true})).toBeVisible();
  const replacement=page.getByRole('combobox',{name:'第 1 个镜头替代原片',exact:true});await replacement.selectOption(JSON.stringify(['P1','asset']));await expect(page.getByLabel('第 1 个镜头替代预览')).toHaveAttribute('src',/\/asset\/preview/);

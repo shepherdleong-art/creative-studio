@@ -7,7 +7,7 @@ import { groupFormulaVideoUploads } from '@/lib/live-mixcut/formula/video-upload
 import { fingerprintsEqual } from '@/lib/live-mixcut/fingerprint-format';
 
 type MaterialModel = { id: string; name: string; model: string };
-type NotesView = FormulaMaterialNotesView & { aiProviders?: MaterialModel[]; videoProviders?: MaterialModel[] };
+type NotesView = FormulaMaterialNotesView & { videoProviders?: MaterialModel[] };
 const pendingNote = (item: FormulaMaterialNoteItem) => item.available && !item.excluded
   && (!item.profile || (item.stale && item.profile.origin === 'ai'));
 
@@ -96,7 +96,7 @@ function NoteBody({ item }: { item: FormulaMaterialNoteItem }) {
       {item.profile.content.conflicts?.map((conflict, i) => <p key={i} className="text-xs text-fail">命名与表格有差异：{conflict.message}（文件名“{conflict.filenameQuote}”；素材表“{conflict.tableQuote}”）。请核对并修改说明。</p>)}
       <p className="text-xs text-ink-secondary">类别：{item.profile.content.category || '未确定'} · 口播：{item.profile.content.speech === 'yes' ? '有口播（仍需核验）' : item.profile.content.speech === 'no' ? '无口播（仍需核验）' : '未确定'}</p>
       {(item.profile.content.sellingPoints.length > 0 || item.profile.content.actions.length > 0) && <p className="text-xs text-ink-secondary">卖点：{item.profile.content.sellingPoints.join('、') || '未确定'}；动作：{item.profile.content.actions.join('、') || '未确定'}</p>}
-  </> : <p className="text-xs text-ink-secondary">选择模型并点击「开始整理」后，可根据文件名整理内容说明，也可以手动填写。</p>}
+  </> : <p className="text-xs text-ink-secondary">选择模型并点击「开始整理」后，会分析视频画面生成内容说明，也可以手动填写。</p>}
     <details className="text-xs text-ink-secondary"><summary className="cursor-pointer">查看整理依据</summary>
       <p className="mt-2 break-all">文件名：{item.sourceName}</p>
       {item.source.table && <div className="mt-2 space-y-1"><p>{item.source.table.sheet} 第 {item.source.table.row} 行</p>
@@ -112,7 +112,6 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
   const [index, setIndex] = useState<FormulaMaterialIndex | null>(null);
   const [notes, setNotes] = useState<NotesView | null>(null);
   const [providerId, setProviderId] = useState('');
-  const [analysisMode, setAnalysisMode] = useState<'filename' | 'video'>('filename');
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [organizing, setOrganizing] = useState(false);
@@ -146,21 +145,21 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
     return () => controller.abort();
   }, [materialsUrl, notesUrl, inputRevision]);
   const organize = useCallback(async (current: NotesView, modelId: string) => {
-    if (organizeRef.current || readOnly || !(analysisMode === 'video' ? current.videoProviders : current.aiProviders)?.some(model => model.id === modelId)) return;
+    if (organizeRef.current || readOnly || !current.videoProviders?.some(model => model.id === modelId)) return;
     const controller = new AbortController();
     organizeRef.current = controller;
     setOrganizing(true); setError('');
     try {
       const next = await read<NotesView>(await fetch(notesUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-        body: JSON.stringify({ expectedRevision: current.revision, providerId: modelId, mode: analysisMode }) }));
+        body: JSON.stringify({ expectedRevision: current.revision, providerId: modelId }) }));
       controller.signal.throwIfAborted();
-      setNotes({ ...next, aiProviders: current.aiProviders, videoProviders: current.videoProviders });
+      setNotes({ ...next, videoProviders: current.videoProviders });
       await onChanged();
     } catch (err) {
       if (!controller.signal.aborted) setError(err instanceof Error ? err.message : '整理失败');
       await loadNotes().catch(() => {});
     } finally { organizeRef.current = null; setOrganizing(false); }
-  }, [notesUrl, readOnly, onChanged, loadNotes, analysisMode]);
+  }, [notesUrl, readOnly, onChanged, loadNotes]);
   const running = notes?.run?.state === 'running';
   useEffect(() => {
     if (!running && !organizing) return;
@@ -251,7 +250,7 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
       const next = await read<NotesView>(await fetch(notesUrl, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ bindingId: editing.item.bindingId, expectedRevision: editing.revision,
           expectedProfileId: editing.item.profile?.id ?? null, content }) }));
-      setNotes({ ...next, aiProviders: notes?.aiProviders, videoProviders: notes?.videoProviders }); setEditing(null);
+      setNotes({ ...next, videoProviders: notes?.videoProviders }); setEditing(null);
       await onChanged();
     } catch (err) { setError(err instanceof Error ? err.message : '保存失败'); }
     finally { setBusy(false); }
@@ -260,21 +259,15 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
   const bindings = index?.bindings ?? [];
   const notesById = new Map((notes?.items ?? []).map(item => [item.bindingId, item]));
   const items = notes?.items.filter(item => !item.excluded) ?? [];
-  const remaining = items.filter(item => pendingNote(item) || (analysisMode === 'video' && item.available && !item.excluded && item.profile?.origin === 'ai' && item.profile.provenance.visualObservation !== true)).length;
+  const remaining = items.filter(pendingNote).length;
   const missing = index?.codes.filter(code => code.status !== 'available' && (code.defined || code.referencedBy.length)) ?? [];
   const visible = showAll ? bindings : bindings.slice(0, 20);
-  const models = analysisMode === 'video' ? notes?.videoProviders : notes?.aiProviders;
+  const models = notes?.videoProviders;
   const selectedModelId = models?.some(model => model.id === providerId) ? providerId : '';
   return <div className="card space-y-3 p-4" aria-label="实拍视频导入与整理">
     <h2 className="text-base font-semibold text-ink">导入与整理素材</h2>
-    <p className="text-sm text-ink-secondary">选择视频或整个文件夹，系统会分批复制到项目中，按文件名识别编号。导入不会调用 AI；选好模型后点击「开始整理」生成内容说明。原文件保持不变。</p>
+    <p className="text-sm text-ink-secondary">选择视频或整个文件夹，系统会分批复制到项目中，按文件名直接读出编号、口播台词和全景标记。导入不会调用 AI；选好模型后点击「开始整理」才分析视频画面。原文件保持不变。</p>
     <div className="space-y-2 rounded-lg border border-hairline bg-surface-subtle p-3">
-      <fieldset disabled={readOnly || busy || running || organizing} className="flex flex-wrap gap-4 text-sm text-ink">
-        <legend className="mb-2">内容分析方式</legend>
-        {([['filename', '根据文件名整理'], ['video', '分析视频画面']] as const).map(([value, label]) => <label key={value} className="flex items-center gap-2">
-          <input type="radio" name={`material-analysis-${batchId}`} checked={analysisMode === value} onChange={() => { setAnalysisMode(value); setProviderId(''); }} />{label}
-        </label>)}
-      </fieldset>
       <div className="flex flex-wrap items-center gap-2">
         <label className="text-sm text-ink">素材整理模型
           <select aria-label="素材整理模型" value={selectedModelId} disabled={readOnly || busy || running || organizing || !models?.length}
@@ -287,8 +280,8 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
           onClick={() => { if (notes) void organize(notes, selectedModelId); }}>{organizing || running ? '正在整理…' : `开始整理（${remaining} 项待整理）`}</button>
         {organizing && <button type="button" className="btn-secondary" onClick={() => organizeRef.current?.abort()}>停止本次整理</button>}
       </div>
-      <p className="text-xs text-ink-secondary">{analysisMode === 'video' ? '抽取实际视频画面发送给所选模型，补充内容说明供选片使用；已保存的人工说明保留。此步骤不识别原声，不确认精确动作时间。' : '根据文件名与素材表整理大概内容，供选片使用；不上传视频画面。'} 选好方式和模型后点击开始，停止后可继续未完成项。</p>
-      {!models?.length && <p className="text-xs text-ink-secondary">暂时没有可用的脚本模型，可以先导入视频并手动填写说明。</p>}
+      <p className="text-xs text-ink-secondary">抽取实际视频画面发送给所选模型，补充内容说明供选片使用；已保存的人工说明保留。此步骤不识别原声，不确认精确动作时间。选好模型后点击开始，停止后可继续未完成项。</p>
+      {!models?.length && <p className="text-xs text-ink-secondary">暂时没有可用的画面理解模型，可以先导入视频并手动填写说明。</p>}
       {notes?.run && <p role="status" className="text-sm text-ink-secondary">{running ? '正在整理' : notes.run.state === 'completed' ? '本次整理完成' : '本次整理未全部完成'}：已保存 {notes.run.succeeded} / {notes.run.total} 项，保留已有说明 {notes.run.skipped} 项。{notes.run.message}</p>}
     </div>
     <div className="flex flex-wrap gap-4">
@@ -301,7 +294,7 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
           onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; if (files.length) void upload(files); }} />
       </label>
     </div>
-    <p className="text-xs text-ink-tertiary">单文件不超过 256 MiB；每次请求不超过 100 个文件、512 MiB。关闭页面后可重新选择原文件夹，已保存且内容相同的文件会跳过。</p>
+    <p className="text-xs text-ink-tertiary">单文件不超过 256 MiB；每次请求不超过 100 个文件、512 MiB。关闭页面后可重新选择原文件夹，已保存且内容相同的文件会跳过。同一编号的几份文件会全部列出，生成时按脚本号轮流使用。</p>
     {progress && <p role="status" className="text-sm text-ink-secondary">{progress}</p>}
     {uploading && <button type="button" className="btn-secondary" onClick={() => controllerRef.current?.abort()}>停止本次导入</button>}
     {error && <p role="alert" className="text-sm text-fail">{error}</p>}
@@ -322,6 +315,11 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
           <p className="line-clamp-2 min-w-0 flex-1 break-all text-sm font-medium text-ink" title={binding.sourcePath}>{binding.sourcePath}</p>
           <span className="shrink-0 text-xs text-ink-secondary">{status}</span>
         </div>
+        {(binding.voLine || binding.wide || binding.wideExperience) && <p className="text-xs text-ink-secondary">
+          {binding.voLine && <span>口播台词：{binding.voLine}</span>}
+          {binding.voLine && (binding.wide || binding.wideExperience) && ' · '}
+          {binding.wide && '全景展示'}{binding.wide && binding.wideExperience && ' · '}{binding.wideExperience && '全景体验'}
+        </p>}
         <div className="flex flex-wrap items-center gap-2">
           <CodeEditor key={`${binding.id}:${binding.logicalCode}`} value={binding.logicalCode ?? ''} disabled={busy} onSave={code => void saveCode(binding.id, code)} />
           {expanded && <button type="button" className="btn-secondary" onClick={() => setPreviewId(null)}>收起预览</button>}

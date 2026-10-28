@@ -63,6 +63,16 @@ try {
   assert.deepEqual(index.codes.find(row => row.logicalCode === 'G10')?.candidateAssetIds, [assetId]);
   assert.deepEqual(index.codes.find(row => row.logicalCode === 'GB9')?.candidateAssetIds, []);
   assert.equal(index.codes.find(row => row.logicalCode === 'S76')?.status, 'missing_file');
+  // 编号、口播台词和全景标记直接从文件名读出，不用再点整理。
+  const wide = registerFormulaAssetBinding(db, 'p', batch, { assetId, sourcePath: '素材/S3_整体外观_无人出镜.mp4' });
+  assert.deepEqual([wide.wide, wide.wideExperience, wide.voLine], [true, false, null]);
+  const wideExperience = registerFormulaAssetBinding(db, 'p', batch, { assetId, sourcePath: '素材/P3_全景_整体外观_有人出镜.mp4' });
+  assert.deepEqual([wideExperience.wide, wideExperience.wideExperience], [false, true]);
+  const talking = registerFormulaAssetBinding(db, 'p', batch, { assetId, sourcePath: '素材/VO7_口播_单人出镜_“这款坐着真舒服。”.mp4' });
+  assert.equal(talking.voLine, '这款坐着真舒服。');
+  index = getFormulaMaterialIndex(db, 'p', batch);
+  assert.deepEqual(index.bindings.find(item => item.id === wide.id)?.wide, true);
+  assert.deepEqual(index.bindings.find(item => item.id === talking.id)?.voLine, '这款坐着真舒服。');
   assert.equal(getFormulaMaterialIndex(db, 'p', otherBatch).bindings.length, 0, '集合不能借用另一批次同号素材');
   assert.throws(() => getFormulaMaterialIndex(db, 'other', batch), /不存在/);
   assert.throws(() => registerFormulaAssetBinding(db, 'other', batch, { assetId, sourcePath: 'G1.mp4' }), /不存在/);
@@ -98,112 +108,24 @@ try {
   assert.throws(() => saveFormulaMaterialNote(db, 'p', batch, binding.id, {
     expectedRevision: noteInputs.revision, expectedProfileId: null, content: note.content,
   }), /更新/);
-  const organized = await organizeFormulaMaterialNotes(db, 'p', batch, { expectedRevision: noteAfter.revision }, {
-    id: 'fixture', name: '命名分析验收', model: 'fixture-model', complete: async input => {
-      const sources = JSON.parse(input.userPrompt).items as Array<{ bindingId: string; filename: string }>;
-      return { items: sources.map(item => ({ bindingId: item.bindingId, content: {
-        description: item.filename, category: '', sellingPoints: [], actions: [], speech: 'unknown',
-        evidence: [{ field: 'description', source: 'filename', quote: item.filename }],
-      } })) };
-    },
-  });
-  assert.equal(organized.run?.state, 'completed');
-  assert.equal(organized.run?.succeeded, 3, '排除预览文件，并保留已人工整理的一条');
-  assert.equal(organized.items.find(item => item.bindingId === binding.id)?.profile?.id, note.id);
-  assert.equal(organized.items.find(item => item.logicalCode === 'G10')?.profile?.origin, 'ai');
-  assert.equal(organized.items.find(item => item.logicalCode === 'GB9')?.profile, null);
-  assert.equal(organized.revision, noteAfter.revision, '素材说明的独立修订不能作废正在预览的工作簿');
-  const modelReply = (userPrompt: string) => {
-    const sources = JSON.parse(userPrompt).items as Array<{ bindingId: string; filename: string }>;
-    return { items: sources.map(item => ({ bindingId: item.bindingId, content: { description: item.filename,
-      category: '', sellingPoints: [], actions: [], speech: 'unknown', evidence: [{ field: 'description', source: 'filename', quote: item.filename }] } })) };
-  };
-  for (let i = 1; i <= 13; i++) registerFormulaAssetBinding(db, 'p', batch, { assetId, sourcePath: `追加/P${1000 + i}_展示.mp4` });
-  let calls = 0;
-  const partial = await organizeFormulaMaterialNotes(db, 'p', batch, { expectedRevision: getFormulaMaterialIndex(db, 'p', batch).revision }, {
-    id: 'fixture', name: '命名分析验收', model: 'fixture-model', complete: async input => {
-      calls++; if (calls === 2) throw new Error('上游秘密不得回显'); return modelReply(input.userPrompt);
-    },
-  });
-  assert.equal(partial.run?.state, 'failed');
-  assert.equal(partial.run?.total, 13);
-  assert.equal(partial.run?.succeeded, 12);
-  assert.equal(partial.run?.errors.length, 1);
-  assert(!JSON.stringify(partial).includes('上游秘密'));
-  const completedIds = partial.items.flatMap(item => item.profile ? [item.profile.id] : []);
-  let retriedItems = 0;
-  const resumed = await organizeFormulaMaterialNotes(db, 'p', batch, { expectedRevision: partial.revision }, {
-    id: 'fixture', name: '命名分析验收', model: 'fixture-model', complete: async input => {
-      const result = modelReply(input.userPrompt); retriedItems += result.items.length; return result;
-    },
-  });
-  assert.equal(retriedItems, 1, '不能因最后一组失败而重新调用已成功的 12 项');
-  assert.equal(resumed.run?.state, 'completed');
-  assert(completedIds.every(id => resumed.items.some(item => item.profile?.id === id)));
-  // 资料变化时显示过期，保留人工说明；表格旧路径不进入模型输入。
+  // 资料变化后人工说明显示过期，但原说明保留；表格里的旧文件路径不进入对外展示。
   sheet.getCell('C1').value = '台词'; sheet.getCell('D1').value = '旧文件路径';
   sheet.addRow(['G1', '产品背面外观', '这是表中台词', 'E:/用户旧盘/原片.mp4']);
-  const newTable = await createFormulaImportSession(db, 'p', batch, { kind: 'materials', filename: '素材补充.xlsx', bytes: Buffer.from(await wb.xlsx.writeBuffer()), expectedRevision: resumed.revision });
-  confirmFormulaImportSession(db, 'p', batch, newTable.id, { expectedRevision: resumed.revision, excludedKeys: [] });
+  const newTable = await createFormulaImportSession(db, 'p', batch, { kind: 'materials', filename: '素材补充.xlsx',
+    bytes: Buffer.from(await wb.xlsx.writeBuffer()), expectedRevision: noteAfter.revision });
+  confirmFormulaImportSession(db, 'p', batch, newTable.id, { expectedRevision: noteAfter.revision, excludedKeys: [] });
   const changed = readFormulaMaterialNotes(db, 'p', batch);
   assert.equal(changed.items.find(item => item.bindingId === binding.id)?.stale, true);
-  const refreshed = await organizeFormulaMaterialNotes(db, 'p', batch, { expectedRevision: changed.revision }, {
-    id: 'fixture', name: '命名分析验收', model: 'fixture-model', complete: async input => {
-      assert(!input.userPrompt.includes('E:/用户旧盘'));
-      assert(input.userPrompt.includes('产品背面外观'));
-      return { items: modelReply(input.userPrompt).items.map(row => ({ ...row, content: { ...row.content,
-        conflicts: [{ filenameQuote: '正面', tableQuote: '背面', message: '文件名写正面，表格写背面，需要核对' }],
-      } })) };
-    },
-  });
-  assert.equal(refreshed.items.find(item => item.bindingId === binding.id)?.profile?.id, note.id);
-  assert.equal(refreshed.items.find(item => item.bindingId === binding.id)?.source.table?.cells['画面描述'], 'B3');
-  assert.equal(refreshed.items.find(item => item.logicalCode === 'G1' && item.bindingId !== binding.id)?.profile?.content.conflicts?.length, 1);
-  const lateBinding = registerFormulaAssetBinding(db, 'p', batch, { assetId, sourcePath: '追加/P2000_等待整理.mp4' });
-  let finishModel!: (value: unknown) => void;
-  let capturedPrompt = '';
-  const waiting = new Promise<unknown>(resolve => { finishModel = resolve; });
-  const late = organizeFormulaMaterialNotes(db, 'p', batch, { expectedRevision: getFormulaMaterialIndex(db, 'p', batch).revision }, {
-    id: 'fixture', name: '命名分析验收', model: 'fixture-model', complete: input => { capturedPrompt = input.userPrompt; return waiting; },
-  });
-  const during = readFormulaMaterialNotes(db, 'p', batch);
-  const manualDuring = saveFormulaMaterialNote(db, 'p', batch, lateBinding.id, { expectedRevision: during.revision, expectedProfileId: null, content: note.content });
-  finishModel(modelReply(capturedPrompt));
-  const lateResult = await late;
-  assert.equal(lateResult.items.find(item => item.bindingId === lateBinding.id)?.profile?.id, manualDuring.id, '迟到模型不能盖掉人工保存');
-  const badBinding = registerFormulaAssetBinding(db, 'p', batch, { assetId, sourcePath: '追加/P3000_无证据.mp4' });
-  const badResult = await organizeFormulaMaterialNotes(db, 'p', batch, { expectedRevision: getFormulaMaterialIndex(db, 'p', batch).revision }, {
-    id: 'fixture', name: '命名分析验收', model: 'fixture-model', complete: async input => {
-      const result = modelReply(input.userPrompt); result.items[0].content.evidence[0].quote = '来源中没有这句话'; return result;
-    },
-  });
-  assert.equal(badResult.run?.state, 'failed');
-  assert.equal(badResult.items.find(item => item.bindingId === badBinding.id)?.profile, null);
-  const rollbackBinding = registerFormulaAssetBinding(db, 'p', batch, { assetId, sourcePath: '追加/P3001_写入失败.mp4' });
-  db.exec(`CREATE TRIGGER fixture_profile_failure BEFORE INSERT ON live_mixcut_formula_material_profiles
-    WHEN NEW.bindingId='${rollbackBinding.id}' BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END`);
-  const rolledBack = await organizeFormulaMaterialNotes(db, 'p', batch, { expectedRevision: getFormulaMaterialIndex(db, 'p', batch).revision }, {
-    id: 'fixture', name: '验收', model: 'fixture', complete: async input => modelReply(input.userPrompt),
-  });
-  assert.equal(rolledBack.run?.state, 'failed');
-  assert.equal(rolledBack.run?.succeeded, 0, '同组写入回滚时不能把此前未提交的项计入成功');
-  assert.equal(rolledBack.items.find(item => item.bindingId === badBinding.id)?.profile, null);
-  db.exec('DROP TRIGGER fixture_profile_failure');
-  const cancelController = new AbortController();
-  const cancelled = await organizeFormulaMaterialNotes(db, 'p', batch, { expectedRevision: rolledBack.revision, signal: cancelController.signal }, {
-    id: 'fixture', name: '验收', model: 'fixture', complete: async input => { cancelController.abort(); return modelReply(input.userPrompt); },
-  });
-  assert.equal(cancelled.run?.state, 'cancelled');
-  assert.equal(cancelled.run?.succeeded, 0);
-  assert.equal(cancelled.items.find(item => item.bindingId === badBinding.id)?.profile, null);
+  assert.equal(changed.items.find(item => item.bindingId === binding.id)?.profile?.id, note.id, '资料变化不删除人工说明');
+  assert.equal(changed.items.find(item => item.bindingId === binding.id)?.source.table?.cells['画面描述'], 'B3');
   createBatchProductionVersion(db, batch, { copyCount: 1 });
   updateBatchProductionStatus(db, 'p', batch, 'running');
   assert.throws(() => registerFormulaAssetBinding(db, 'p', batch, { assetId, sourcePath: 'P2.mp4' }), /冻结/);
-  assert.throws(() => saveFormulaMaterialNote(db, 'p', batch, binding.id, { expectedRevision: badResult.revision, expectedProfileId: note.id, content: note.content }), /冻结/);
-  await assert.rejects(() => organizeFormulaMaterialNotes(db, 'p', batch, { expectedRevision: badResult.revision }, {
-    id: 'fixture', name: '验收', model: 'fixture', complete: async () => { throw new Error('不应发起模型调用'); },
+  assert.throws(() => saveFormulaMaterialNote(db, 'p', batch, binding.id, { expectedRevision: changed.revision, expectedProfileId: note.id, content: note.content }), /冻结/);
+  await assert.rejects(() => organizeFormulaMaterialNotes(db, 'p', batch, { expectedRevision: changed.revision }, {
+    id: 'fixture', name: '验收', model: 'fixture', analyze: async () => { throw new Error('不应发起模型调用'); },
   }), /冻结/);
-  console.log('formula-material-bindings: 视频/别名隔离、素材说明、AI 分批续做、人工覆盖、引用与差异、回滚/取消/冻结通过');
+  console.log('formula-material-bindings: 视频/别名隔离、文件名解析、素材说明、人工覆盖、过期与冻结通过');
 } finally {
   db.close();
   if (previousRoot === undefined) delete process.env.CREATIVE_STUDIO_DATA_ROOT; else process.env.CREATIVE_STUDIO_DATA_ROOT = previousRoot;

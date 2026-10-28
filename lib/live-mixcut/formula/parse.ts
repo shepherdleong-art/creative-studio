@@ -7,15 +7,32 @@ export function normalizeLogicalCode(value: string): string {
   return code;
 }
 
-export function parseMaterialFilename(filename: string): {
+export interface FormulaMaterialFilename {
   logicalCode: string | null;
   excludedReason: 'preview' | null;
-} {
-  const name = filename.normalize('NFKC').trim().toUpperCase();
+  /** 口播台词：文件名里 “ ” 中间的字；不是口播时也只是原文，由调用方按编号判断。 */
+  voLine: string | null;
+  /** 全景展示：文件名同时含「整体外观」和「无人出镜」。 */
+  wide: boolean;
+  /** 全景体验：P 镜头，并且文件名含「全景」。 */
+  wideExperience: boolean;
+}
+
+/** 从素材文件名直接读出编号、口播台词和两种全景标记；不依赖表格，也不调模型。 */
+export function parseMaterialFilename(filename: string): FormulaMaterialFilename {
+  const original = filename.trim();
+  // 编号和标记不区分全角/半角；口播台词保留原样，标点不能改。
+  const name = original.normalize('NFKC').toUpperCase();
   const match = /^([A-Z]+[0-9]+)(?=[\s_.\-]|$)/.exec(name);
+  const logicalCode = match ? normalizeLogicalCode(match[1]) : null;
+  const quoted = /“([^”]*)”|"([^"]*)"/.exec(original);
+  const voLine = quoted ? (quoted[1] ?? quoted[2] ?? '').trim() || null : null;
   return {
-    logicalCode: match ? normalizeLogicalCode(match[1]) : null,
+    logicalCode,
     excludedReason: /(?:^|[\s_.\-])(?:PREVIEW|PROXY|预览|代理)(?=[\s_.\-]|$)/.test(name) ? 'preview' : null,
+    voLine,
+    wide: name.includes('整体外观') && name.includes('无人出镜'),
+    wideExperience: Boolean(logicalCode?.startsWith('P')) && name.includes('全景'),
   };
 }
 
