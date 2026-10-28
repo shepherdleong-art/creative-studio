@@ -12,7 +12,7 @@ import { createBatchProduction } from './versions.ts';
 
 /**
  * 实拍混剪的"任务"。复制来的代码处处用 projectId，指的就是这里的 id，和工作台的 projects 表无关。
- * 一个任务可以有多个批次；batchId 仅记录首批，用于兼容旧导出目录。
+ * 一个任务可以有多个批次；batchId 仅记录首批，供界面默认选中，不再影响导出目录。
  */
 export interface LiveMixcutProject {
   id: string;

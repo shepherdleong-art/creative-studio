@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { dataRoot } from '../../data-root.ts';
 import { getBatchWorkspace } from '../batch-workspace.ts';
 import { getBatchOutputArrangementView } from '../output-arrangement.ts';
+import { readLiveMixcutProject } from '../projects.ts';
+import { listProjectBatchProductions } from '../versions.ts';
 import { resolveFullRenderContractHash } from '../cover-contract.ts';
 import { BatchDomainError } from '../errors.ts';
 import { readFormulaGenerationRequest, type FormulaGenerationRequest } from './generation.ts';
@@ -157,24 +159,65 @@ export function captureFormulaManifestItem(db: Database.Database, projectId: str
   };
 }
 
-export function writeFormulaExportFolderManifest(db: Database.Database, projectId: string, batchId: string): void {
-  const workspace = getBatchWorkspace(db, projectId, batchId);
+/**
+ * 「成片」只看当前这一套：旧版本已挪进旁边的「旧版」，不再写进清单。
+ * 一条成片按冻结导出身份（原脚本号、份次、包装）认，跨批次同一条只留最高版本。
+ */
+function inCurrentExportFolder(relativePath: string, prefix: string): boolean {
+  const normalized = relativePath.replaceAll('\\', '/');
+  if (!normalized.startsWith(prefix)) return false;
+  const remainder = normalized.slice(prefix.length);
+  return !!remainder && !remainder.includes('/');
+}
+
+function exportedVideoInCurrentSet(relativePath: string, prefix: string): { key: string; version: number } | null {
+  if (!inCurrentExportFolder(relativePath, prefix)) return null;
+  const remainder = relativePath.replaceAll('\\', '/').slice(prefix.length);
+  const match = /^(.*?)(?:-v(\d+))?\.mp4$/u.exec(remainder);
+  if (!match) return null;
+  return { key: `${prefix}${match[1]}`, version: match[2] ? Number(match[2]) : 1 };
+}
+
+/**
+ * 一个任务只有一个「成片」文件夹，所以清单按整个任务写，而不是按触发导出的批次。
+ * 只列文件夹里的当前这一套（每条成片的当前正式版本），旧版不列。
+ */
+export function writeFormulaExportFolderManifest(db: Database.Database, projectId: string): void {
+  const task = readLiveMixcutProject(db, projectId);
+  const prefix = `live-mixcut/exports/${task.exportDirName.replaceAll('\\', '/')}/成片/`;
   const requests = new Map<string, FormulaGenerationRequest>();
-  const items = workspace.cards
-    .filter(card => card.exportStatus === 'exported' && card.currentFormalArtifact)
-    .map(card => {
-      const formal = card.currentFormalArtifact!;
-      if (!formal.cover) throw new BatchDomainError('conflict', '成片缺少正式封面，无法生成清单');
-      const content = captureFormulaManifestItem(db, projectId, batchId, card.planId, requests);
-      return {
+  const collected: Array<{ key: string; version: number; item: FormulaExportManifest['items'][number] }> = [];
+  const indexByKey = new Map<string, number>();
+  // 归档批次的文件仍在「成片」里，所以也要列；软删除的批次由查询排除。
+  for (const batch of listProjectBatchProductions(db, projectId, { includeArchived: true })) {
+    if (batch.planningMode !== 'formula' || !batch.currentVersionId) continue;
+    const workspace = getBatchWorkspace(db, projectId, batch.id);
+    for (const card of workspace.cards) {
+      if (card.exportStatus !== 'exported' || !card.currentFormalArtifact) continue;
+      const formal = card.currentFormalArtifact;
+      if (!formal.cover) continue;
+      // 上一版已被挪走，正式产物路径同步改到「旧版」；它不属于当前这一套。
+      const current = exportedVideoInCurrentSet(formal.video.relativePath, prefix);
+      if (!current || !inCurrentExportFolder(formal.cover.relativePath, prefix)) continue;
+      const content = captureFormulaManifestItem(db, projectId, batch.id, card.planId, requests);
+      const item = {
         ...content,
         video: { artifactId: formal.video.id,
           filename: formal.video.relativePath.replaceAll('\\', '/').split('/').at(-1)!, checksum: formal.video.checksum },
         coverFile: { artifactId: formal.cover.id,
           filename: formal.cover.relativePath.replaceAll('\\', '/').split('/').at(-1)!, checksum: formal.cover.checksum },
       };
-    });
-  const directory = path.join(dataRoot(), 'storage', 'live-mixcut', 'exports', workspace.exportDirName, '成片');
+      const existing = indexByKey.get(current.key);
+      if (existing === undefined) {
+        indexByKey.set(current.key, collected.length);
+        collected.push({ key: current.key, version: current.version, item });
+      } else if (collected[existing].version < current.version) {
+        collected[existing] = { key: current.key, version: current.version, item };
+      }
+    }
+  }
+  const items = collected.map(entry => entry.item);
+  const directory = path.join(dataRoot(), 'storage', 'live-mixcut', 'exports', task.exportDirName, '成片');
   fs.mkdirSync(directory, { recursive: true });
   const destination = path.join(directory, '清单.csv');
   const temporary = `${destination}.${randomUUID()}.tmp`;

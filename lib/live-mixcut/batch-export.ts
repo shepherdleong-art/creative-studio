@@ -21,16 +21,17 @@ export interface BatchExportIdentity {
   outputVersion: number;
   /** 任务导出根目录名，由调用方解析后传入。 */
   exportDirName: string;
-  /** 后续批次使用独立子目录；首批为空，继续写原目录。 */
-  batchExportDirName?: string;
   /** 生产身份基础名（无「成片-」前缀），来自 `project_export_identities` 冻结身份。缺省回退旧命名。 */
   baseName?: string;
 }
 
 export interface BatchExportTarget {
   storageRoot: string;
+  /** 同一套导出身份的版本号；1 不带后缀，2 起叫 `-v2`。 */
   exportSequence: number;
   baseName: string;
+  /** 不含版本号的导出身份键；同一键的再导出接着排版本号。 */
+  exportKey: string;
   videoAbsolutePath: string;
   coverAbsolutePath: string;
   reservationAbsolutePath: string;
@@ -39,6 +40,13 @@ export interface BatchExportTarget {
   reservationRelativePath: string;
   videoFilename: string;
   coverFilename: string;
+}
+
+/** 上一版被挪进「旧版」的文件；发布成功后由集成层同步正式产物的路径。 */
+export interface BatchExportArchivedFile {
+  fromRelativePath: string;
+  toRelativePath: string;
+  kind: 'video' | 'cover';
 }
 
 export interface BatchExportRenderContract {
@@ -62,6 +70,8 @@ export interface BatchExportResult {
   videoChecksum: string;
   coverChecksum: string;
   exportSequence: number;
+  /** 这次导出把哪些上一版文件挪进了「旧版」；集成层据此修正正式产物路径。 */
+  archived: BatchExportArchivedFile[];
 }
 
 function assertSafePathSegment(value: string, label: string): void {
@@ -163,42 +173,88 @@ function buildBaseName(identity: BatchExportIdentity): string {
   return `成片-${productCode}-${dateInShanghai(identity.taskDate)}-${sequenceSuffix}`;
 }
 
+const EXPORT_FOLDER = '成片';
+const ARCHIVE_FOLDER = '旧版';
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** 首次导出不带后缀；同一套导出身份再导出叫 -v2、-v3。 */
+export function liveMixcutVersionName(exportKey: string, version: number): string {
+  return version > 1 ? `${exportKey}-v${version}` : exportKey;
+}
+
+function exportedFileMatcher(exportKey: string): RegExp {
+  return new RegExp(`^${escapeRegExp(exportKey)}(?:-v(\\d+))?(?:-封面\\.jpg|\\.mp4)$`, 'u');
+}
+
+function reservationMatcher(exportKey: string): RegExp {
+  return new RegExp(`^\\.${escapeRegExp(exportKey)}(?:-v(\\d+))?\\.publish\\.lock$`, 'u');
+}
+
+function versionOfMatch(match: RegExpExecArray): number {
+  return match[1] ? Number(match[1]) : 1;
+}
+
+function highestVersionIn(directory: string, matchers: RegExp[]): number {
+  let names: string[];
+  try { names = fs.readdirSync(directory); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
+  }
+  let highest = 0;
+  for (const name of names) {
+    for (const matcher of matchers) {
+      const match = matcher.exec(name);
+      if (match) { highest = Math.max(highest, versionOfMatch(match)); break; }
+    }
+  }
+  return highest;
+}
+
 /**
- * Atomically reserves a paired video/cover name in the batch export folder.
- * The lock file is deliberately separate from the output files, so a failed
- * render never makes an old formal artifact appear to be a new one.
+ * Atomically reserves a paired video/cover name in the task's export folder.
+ * Version numbers come from the files already in 成片/旧版 plus in-flight locks,
+ * so two concurrent reservations of the same identity get -v2 and -v3.
+ * The lock file is deliberately separate from the output files.
  */
 export function reserveBatchExportTarget(input: BatchExportIdentity & { storageRoot?: string }): BatchExportTarget {
   assertSafePathSegment(input.projectId, '项目标识');
   assertSafePathSegment(input.batchId, '批次标识');
   assertSafePathSegment(input.exportDirName, '导出目录名');
-  if (input.batchExportDirName) assertSafePathSegment(input.batchExportDirName, '批次导出目录名');
   const storageRoot = path.resolve(input.storageRoot ?? path.join(dataRoot(), 'storage'));
-  const baseName = buildBaseName(input);
-  // 与单条模式同一个成品目录:一个项目的成片(不论单条还是批量)集中存放。
-  // 重名由下面的占位循环 + .lock 独占创建保证不会互相覆盖。
-  const relativeDir = path.join('live-mixcut', 'exports', input.exportDirName, input.batchExportDirName ?? '', '成片');
+  const exportKey = buildBaseName(input);
+  // 一个任务只有一个「成片」文件夹；所有批次按同一套导出身份共用版本号。
+  const relativeDir = path.join('live-mixcut', 'exports', input.exportDirName, EXPORT_FOLDER);
   const exportDir = ensureDirectory(storageRoot, relativeDir);
+  const archiveDir = path.join(path.dirname(exportDir), ARCHIVE_FOLDER);
+  const fileMatcher = exportedFileMatcher(exportKey);
+  const lockMatcher = reservationMatcher(exportKey);
 
-  for (let exportSequence = 1; exportSequence < 100_000; exportSequence += 1) {
-    // 首次导出不带后缀;重复导出同一条成片才往后排 -02、-03(与单条一致)
-    const sequenceSuffix = exportSequence === 1 ? '' : `-${String(exportSequence).padStart(2, '0')}`;
-    const candidateBase = `${baseName}${sequenceSuffix}`;
+  for (let attempt = 0; attempt < 100_000; attempt += 1) {
+    const highest = Math.max(
+      highestVersionIn(exportDir, [fileMatcher, lockMatcher]),
+      highestVersionIn(archiveDir, [fileMatcher]),
+    );
+    const version = highest + 1;
+    const candidateBase = liveMixcutVersionName(exportKey, version);
     const videoFilename = `${candidateBase}.mp4`;
     const coverFilename = `${candidateBase}-封面.jpg`;
     const reservationFilename = `.${candidateBase}.publish.lock`;
     const videoAbsolutePath = path.join(exportDir, videoFilename);
     const coverAbsolutePath = path.join(exportDir, coverFilename);
     const reservationAbsolutePath = path.join(exportDir, reservationFilename);
-    if (lstatExists(videoAbsolutePath) || lstatExists(coverAbsolutePath) || lstatExists(reservationAbsolutePath)) continue;
+    if (lstatExists(videoAbsolutePath) || lstatExists(coverAbsolutePath)) continue;
     assertNoStorageSymlink(storageRoot, relativeDir);
     try {
       const fd = fs.openSync(reservationAbsolutePath, 'wx');
       fs.closeSync(fd);
       return {
         storageRoot,
-        exportSequence,
+        exportSequence: version,
         baseName: candidateBase,
+        exportKey,
         videoAbsolutePath,
         coverAbsolutePath,
         reservationAbsolutePath,
@@ -221,6 +277,78 @@ export function releaseBatchExportReservation(storageRoot: string, target: Batch
   assertNoStorageSymlink(storageRoot, target.reservationRelativePath);
   try { fs.unlinkSync(reservation); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+/** 「旧版」里同一个版本号不能覆盖已有文件；重名时往后加 -2、-3。 */
+function archivedBaseFor(archiveDir: string, exportKey: string, version: number): string {
+  const base = liveMixcutVersionName(exportKey, version);
+  for (let index = 1; index < 1000; index += 1) {
+    const candidate = index === 1 ? base : `${base}-${index}`;
+    if (!lstatExists(path.join(archiveDir, `${candidate}.mp4`))
+      && !lstatExists(path.join(archiveDir, `${candidate}-封面.jpg`))) return candidate;
+  }
+  throw new Error('旧版文件名预留次数已耗尽');
+}
+
+/**
+ * 新版本发布后，把「成片」里同一条旧版本的视频和封面挪到旁边的「旧版」。
+ * 「成片」只留当前这一套；旧版本文件不删除，只换位置。
+ */
+async function archiveEarlierExports(storageRoot: string, target: BatchExportTarget): Promise<BatchExportArchivedFile[]> {
+  const exportDir = path.dirname(target.videoAbsolutePath);
+  const matcher = exportedFileMatcher(target.exportKey);
+  const groups = new Map<number, string[]>();
+  for (const name of fs.readdirSync(exportDir)) {
+    const match = matcher.exec(name);
+    if (!match) continue;
+    const version = versionOfMatch(match);
+    if (version >= target.exportSequence) continue;
+    groups.set(version, [...(groups.get(version) ?? []), name]);
+  }
+  if (groups.size === 0) return [];
+  const archiveDir = ensureDirectory(storageRoot, toStorageRelativePath(storageRoot, path.join(path.dirname(exportDir), ARCHIVE_FOLDER)));
+  const moves: BatchExportArchivedFile[] = [];
+  try {
+    for (const version of [...groups.keys()].sort((left, right) => left - right)) {
+      const destBase = archivedBaseFor(archiveDir, target.exportKey, version);
+      // 视频先挪，封面后挪；失败时整体退回，避免只过去一半。
+      const names = [...groups.get(version)!].sort((left, right) => Number(right.endsWith('.mp4')) - Number(left.endsWith('.mp4')));
+      for (const name of names) {
+        const extension = name.endsWith('.mp4') ? '.mp4' : '-封面.jpg';
+        const source = path.join(exportDir, name);
+        const destination = path.join(archiveDir, `${destBase}${extension}`);
+        if (lstatExists(destination)) throw new Error('旧版目标已存在,不得覆盖');
+        await fsp.link(source, destination);
+        try {
+          await fsp.unlink(source);
+        } catch (error) {
+          await fsp.unlink(destination).catch(() => undefined);
+          throw error;
+        }
+        moves.push({
+          fromRelativePath: toStorageRelativePath(storageRoot, source),
+          toRelativePath: toStorageRelativePath(storageRoot, destination),
+          kind: extension === '.mp4' ? 'video' : 'cover',
+        });
+      }
+    }
+    return moves;
+  } catch (error) {
+    try { restoreArchivedBatchExportMoves(storageRoot, moves); } catch { /* 保留原始错误 */ }
+    throw error;
+  }
+}
+
+/** 把已经挪进「旧版」的文件退回原处；注册事务失败或并发重复发布时用。 */
+export function restoreArchivedBatchExportMoves(storageRoot: string, moves: readonly BatchExportArchivedFile[]): void {
+  for (const move of [...moves].reverse()) {
+    const source = resolveStoragePath(storageRoot, move.fromRelativePath);
+    const archived = resolveStoragePath(storageRoot, move.toRelativePath);
+    assertNoStorageSymlink(storageRoot, move.fromRelativePath);
+    assertNoStorageSymlink(storageRoot, move.toRelativePath);
+    fs.linkSync(archived, source);
+    fs.unlinkSync(archived);
   }
 }
 
@@ -284,6 +412,7 @@ export async function publishBatchExportTarget(input: {
   const coverTemp = `${target.coverAbsolutePath}.${unique}.tmp`;
   let videoPublished = false;
   let coverPublished = false;
+  let archived: BatchExportArchivedFile[] = [];
   try {
     const [videoChecksum, coverChecksum] = await Promise.all([
       copyAndHash(videoSource, videoTemp, '视频'),
@@ -298,6 +427,7 @@ export async function publishBatchExportTarget(input: {
     videoPublished = true;
     await fsp.link(coverTemp, target.coverAbsolutePath);
     coverPublished = true;
+    archived = await archiveEarlierExports(storageRoot, target);
     await Promise.all([fsp.unlink(videoTemp), fsp.unlink(coverTemp), fsp.unlink(target.reservationAbsolutePath)]);
     return {
       videoAbsolutePath: target.videoAbsolutePath,
@@ -307,9 +437,13 @@ export async function publishBatchExportTarget(input: {
       videoChecksum,
       coverChecksum,
       exportSequence: target.exportSequence,
+      archived,
     };
   } catch (error) {
     await Promise.allSettled([fsp.unlink(videoTemp), fsp.unlink(coverTemp)]);
+    if (archived.length) {
+      try { restoreArchivedBatchExportMoves(storageRoot, archived); } catch { /* 保留原始错误 */ }
+    }
     if (videoPublished) await fsp.unlink(target.videoAbsolutePath).catch(() => undefined);
     if (coverPublished) await fsp.unlink(target.coverAbsolutePath).catch(() => undefined);
     throw error;

@@ -111,7 +111,7 @@ try {
   await runPendingOnce({ db, workerId: 'external-publish', executors: [createFormulaStageExecutor(), createBatchRenderExecutor()], log: () => {} });
   assert.equal((await orchestrateBatchExport(db, 'p', batchId, [planId], { wakeScheduler: () => {} })).items[0].status, 'published');
   const { writeFormulaExportFolderManifest } = await import('../lib/live-mixcut/formula/export-manifest.ts');
-  writeFormulaExportFolderManifest(db, 'p', batchId);
+  writeFormulaExportFolderManifest(db, 'p');
   const exportedWorkspace = getBatchWorkspace(db, 'p', batchId);
   const manifestPath = path.join(root, 'storage', 'live-mixcut', 'exports', ...exportedWorkspace.exportDirName.split(/[\\/]/), '成片', '清单.csv');
   const manifestCsv = fs.readFileSync(manifestPath, 'utf8');

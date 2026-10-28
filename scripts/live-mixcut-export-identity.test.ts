@@ -30,11 +30,12 @@ try {
   const { getBatchTasksView } = await import('../lib/live-mixcut/tasks.ts');
   const { retryTask } = await import('../lib/live-mixcut/scheduler.ts');
   const { getBatchWorkspace } = await import('../lib/live-mixcut/batch-workspace.ts');
-  const { getBatchOutputArrangementView } = await import('../lib/live-mixcut/output-arrangement.ts');
+  const { getBatchOutputArrangementView, applyBatchOutputClipEdit } = await import('../lib/live-mixcut/output-arrangement.ts');
   const { setBatchPlanReviews } = await import('../lib/live-mixcut/review.ts');
   const { orchestrateBatchExport } = await import('../lib/live-mixcut/export-orchestrator.ts');
   const { resolveBatchOutputMedia } = await import('../lib/live-mixcut/output-media.ts');
   const { reserveBatchExportTarget, releaseBatchExportReservation } = await import('../lib/live-mixcut/batch-export.ts');
+  const { writeFormulaExportFolderManifest } = await import('../lib/live-mixcut/formula/export-manifest.ts');
   const { runFfmpeg } = await import('../lib/ffmpeg.ts');
   db.pragma('foreign_keys=ON');
   db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY,name TEXT NOT NULL,productCode TEXT DEFAULT 'PS866',exportDirName TEXT DEFAULT '',createdAt TEXT DEFAULT '2026-10-23T00:00:00Z',storeCode TEXT DEFAULT '',productSubmodel TEXT DEFAULT '',productionType TEXT DEFAULT '',editorName TEXT DEFAULT '',namingDate TEXT DEFAULT '20261023');
@@ -113,19 +114,59 @@ try {
   }
   assert.deepEqual((await createFormulaGenerationRequest(db, 'p', batchId, generation)).outputs, request.outputs,
     '重新打开或重试生成请求，原脚本号和份次保持不变');
+  // 同一条再导出：新版本 -v2，上一版视频和封面挪进「成片」旁边的「旧版」。
+  const exportRoot = path.join(root, 'storage', 'live-mixcut', 'exports', '测试任务-p');
+  assert.equal(fs.existsSync(path.join(exportRoot, '旧版')), false, '首次导出还不需要旧版文件夹');
+  const reexportOutput = outputs[1];
+  const beforeArchive = resolveBatchOutputMedia(db, 'p', batchId, reexportOutput.planId, 'video', 'artifact');
+  const arrange = () => getBatchOutputArrangementView(db, 'p', batchId, reexportOutput.planId);
+  applyBatchOutputClipEdit(db, 'p', batchId, reexportOutput.planId, {
+    type: 'set_narration_gain', gainDb: -4,
+    expectedEditRevision: arrange().editRevision, expectedOutputVersionId: arrange().outputVersionId!,
+  });
+  await work();
+  const reexportReview = arrange().reviewContext!;
+  assert.equal(setBatchPlanReviews(db, 'p', batchId, { decision: 'approved',
+    items: [{ planId: reexportOutput.planId, ...reexportReview }] }).results[0].status, 'saved');
+  const exportReexport = () => orchestrateBatchExport(db, 'p', batchId, [reexportOutput.planId], { wakeScheduler: () => {} });
+  assert.equal((await exportReexport()).items[0].status, 'render_queued', '修改后要重新渲染');
+  await work();
+  assert.equal((await exportReexport()).items[0].status, 'published');
+  const exportedVideo = resolveBatchOutputMedia(db, 'p', batchId, reexportOutput.planId, 'video', 'artifact');
+  const exportedCover = resolveBatchOutputMedia(db, 'p', batchId, reexportOutput.planId, 'cover', 'artifact');
+  assert.equal(path.basename(exportedVideo.absolutePath), '测试产品-脚本12-第02份-无包装-v2.mp4', '同一条再导出排 -v2');
+  assert.equal(path.basename(exportedCover.absolutePath), '测试产品-脚本12-第02份-无包装-v2-封面.jpg');
+  const archivedVideo = path.join(exportRoot, '旧版', '测试产品-脚本12-第02份-无包装.mp4');
+  const archivedCover = path.join(exportRoot, '旧版', '测试产品-脚本12-第02份-无包装-封面.jpg');
+  assert.ok(fs.existsSync(archivedVideo), '上一版视频挪进「成片」旁边的「旧版」');
+  assert.ok(fs.existsSync(archivedCover), '上一版封面一起挪走');
+  assert.equal(fs.existsSync(beforeArchive.absolutePath), false, '「成片」只留当前这一套');
+  assert.equal(path.dirname(archivedVideo), path.join(exportRoot, '旧版'), '「旧版」在「成片」旁边，不在里面');
+  // 清单只列当前这一套：v2 在列，挪走的 v1 不在列。
+  writeFormulaExportFolderManifest(db, 'p');
+  const manifestCsv = fs.readFileSync(path.join(exportRoot, '成片', '清单.csv'), 'utf8');
+  assert.ok(manifestCsv.includes('测试产品-脚本12-第02份-无包装-v2.mp4'), '清单列出当前版本');
+  assert.equal(manifestCsv.includes('"测试产品-脚本12-第02份-无包装.mp4"'), false, '清单不列已挪进旧版的上一版');
+  assert.equal(manifestCsv.includes('旧版'), false, '清单只描述成片里的文件');
+  assert.equal(manifestCsv.trimEnd().split('\r\n').length, 4, '清单是表头加三条成片，不重复列旧版本');
   // 公共预留接口：防重名后缀与脚本内份次独立；旧 J/K 字段不能替代公式身份。
   const naming = { projectId: 'p', batchId, storageRoot: path.join(root, 'storage'), exportDirName: '命名边界', baseName: '产品',
     productCode: 'PS866', planSeq: 99, outputVersion: 1, productionCodes: { scriptCode: 'J99', openingCode: 'VO1', packagingCode: 'f1' },
     formulaIdentity: { version: 1 as const, scriptNumber: '12', copyIndex: 2, packagingCode: 'none' as const } };
   const first = reserveBatchExportTarget(naming), second = reserveBatchExportTarget(naming);
+  // 不同批次的同一条：身份相同就接着排版本号，批次不参与命名。
+  const third = reserveBatchExportTarget({ ...naming, batchId: 'another-batch' });
   assert.equal(first.videoFilename, '产品-脚本12-第02份-无包装.mp4');
-  assert.equal(second.videoFilename, '产品-脚本12-第02份-无包装-02.mp4');
-  releaseBatchExportReservation(naming.storageRoot, first); releaseBatchExportReservation(naming.storageRoot, second);
+  assert.equal(second.videoFilename, '产品-脚本12-第02份-无包装-v2.mp4', '同一条再导出排 -v2，不再用 -02');
+  assert.equal(third.videoFilename, '产品-脚本12-第02份-无包装-v3.mp4', '不同批次的同一条接着排 -v3');
+  releaseBatchExportReservation(naming.storageRoot, first);
+  releaseBatchExportReservation(naming.storageRoot, second);
+  releaseBatchExportReservation(naming.storageRoot, third);
   for (const identity of [{ ...naming.formulaIdentity, scriptNumber: '../12' }, { ...naming.formulaIdentity, copyIndex: 0 },
     { ...naming.formulaIdentity, packagingCode: 'f5' }]) {
     assert.throws(() => reserveBatchExportTarget({ ...naming, formulaIdentity: identity as typeof naming.formulaIdentity }), /原脚本号|份次|包装/);
   }
-  console.log('formula export identity: 原脚本 12/141、多份乱序真实发布、错误身份拒绝与重试、旧候选、独立防重名及非法字段通过');
+  console.log('formula export identity: 原脚本 12/141、多份乱序真实发布、错误身份拒绝与重试、旧候选、-v2 归档与任务清单、跨批次版本号及非法字段通过');
 } finally {
   globalThis.fetch = originalFetch;
   db.close();

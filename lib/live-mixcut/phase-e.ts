@@ -21,6 +21,8 @@ import {
   publishBatchExportTarget,
   releaseBatchExportReservation,
   reserveBatchExportTarget,
+  restoreArchivedBatchExportMoves,
+  type BatchExportArchivedFile,
   type BatchExportRenderContract,
 } from './batch-export.ts';
 import { BatchDomainError } from './errors.ts';
@@ -430,13 +432,17 @@ export async function publishSelectedBatchOutputs(
   // 实拍混剪不关联项目：导出目录和文件名都取任务上保存的值（见 ./projects.ts）。
   const task = readLiveMixcutProject(db, projectId);
   const taskDate = formatShanghaiTaskDate(task.createdAt) || undefined;
-  const { exportDirName, batchExportDirName } = resolveLiveMixcutBatchExport(db, projectId, batchId);
+  const { exportDirName } = resolveLiveMixcutBatchExport(db, projectId, batchId);
   const taskBaseName = sanitizeExportFilenamePart(task.productName) || '实拍混剪';
 
   const storageRoot = path.resolve(options.storageRoot ?? path.join(dataRoot(), 'storage'));
   const items: BatchPublishItemResult[] = [];
   for (const planId of uniquePlanIds) {
-    let publishedPaths: { videoRelativePath: string; coverRelativePath: string } | null = null;
+    let publishedPaths: {
+      videoRelativePath: string;
+      coverRelativePath: string;
+      archived: BatchExportArchivedFile[];
+    } | null = null;
     try {
       const latestAllocation = db.prepare(`
         SELECT r.resultJson
@@ -552,7 +558,6 @@ export async function publishSelectedBatchOutputs(
           outputVersionId: row.currentVersionId, packaging: parsePackagingConfig((arrangement as Record<string, unknown>).packaging) }) : undefined,
         outputVersion: row.versionNumber,
         exportDirName,
-        batchExportDirName,
         baseName: taskBaseName,
       });
       let output;
@@ -572,6 +577,7 @@ export async function publishSelectedBatchOutputs(
       publishedPaths = {
         videoRelativePath: output.videoRelativePath,
         coverRelativePath: output.coverRelativePath,
+        archived: output.archived,
       };
       if (output.videoChecksum !== render.videoChecksum || output.coverChecksum !== render.coverChecksum) {
         throw new BatchDomainError('conflict', '正式发布源内容与已核验渲染候选指纹不一致');
@@ -625,6 +631,12 @@ export async function publishSelectedBatchOutputs(
             return null;
           }
         }
+        // 上一版的视频/封面已经挪进「旧版」（包括其他批次里同一条的旧版本记录），
+        // 正式产物路径要跟着改，下载入口才能继续找到它们。
+        for (const move of output.archived) {
+          db.prepare('UPDATE live_mixcut_artifacts SET relativePath = ? WHERE relativePath = ?')
+            .run(move.toRelativePath, move.fromRelativePath);
+        }
         const coverArtifactId = registerArtifact(db, projectId, {
           batchId,
           batchVersionId: lineage.currentVersionId!,
@@ -649,7 +661,9 @@ export async function publishSelectedBatchOutputs(
       })();
       if (registered === null) {
         // 唯一走到这里的路径是并发重复 POST(alreadyPublishedVideoId 已置):
-        // 清理本次多复制的一对文件,不碰已注册的正式产物。
+        // 把这次多挪进「旧版」的上一版退回原处，再清理本次多复制的一对文件，
+        // 不碰已注册的正式产物。
+        if (output.archived.length) restoreArchivedBatchExportMoves(storageRoot, output.archived);
         await unlinkPublishedPair(storageRoot, output.videoRelativePath, output.coverRelativePath);
         publishedPaths = null;
         items.push({
@@ -669,6 +683,9 @@ export async function publishSelectedBatchOutputs(
       });
     } catch (error) {
       if (publishedPaths) {
+        if (publishedPaths.archived.length) {
+          try { restoreArchivedBatchExportMoves(storageRoot, publishedPaths.archived); } catch { /* 保留原始错误 */ }
+        }
         await unlinkPublishedPair(storageRoot, publishedPaths.videoRelativePath, publishedPaths.coverRelativePath);
       }
       items.push({

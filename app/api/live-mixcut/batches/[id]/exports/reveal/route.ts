@@ -69,7 +69,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       });
     }
     const storageRoot = path.join(dataRoot(), 'storage');
-    // 与正式发布、工作区和清单使用同一个批次目录解析；首批保留原路径。
+    // 与正式发布、工作区和清单使用同一个任务级目录；一个任务只有一个「成片」文件夹。
     const exportDirName = getLiveMixcutBatchExportDirName(getDb(), projectId, id);
     const relativeDir = path.join('live-mixcut', 'exports', exportDirName, '成片');
     const directory = assertNoStorageSymlink(storageRoot, relativeDir);

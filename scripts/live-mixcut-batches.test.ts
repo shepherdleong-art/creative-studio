@@ -123,20 +123,24 @@ try {
   const { getBatchWorkspace } = await import('../lib/live-mixcut/batch-workspace.ts');
   const { reserveBatchExportTarget, releaseBatchExportReservation } = await import('../lib/live-mixcut/batch-export.ts');
   const { writeFormulaExportFolderManifest } = await import('../lib/live-mixcut/formula/export-manifest.ts');
-  assert.equal(getBatchWorkspace(db, task.id, task.batchId).exportDirName, task.exportDirName, '首批继续使用原目录');
-  assert.notEqual(getBatchWorkspace(db, task.id, copied.id).exportDirName, getBatchWorkspace(db, task.id, task.batchId).exportDirName, '新批次有独立目录');
-  const legacyManifest = path.join(root, 'storage', 'live-mixcut', 'exports', task.exportDirName, '成片', '清单.csv');
-  fs.mkdirSync(path.dirname(legacyManifest), { recursive: true });
-  fs.writeFileSync(legacyManifest, '原批次清单，不得覆盖');
-  writeFormulaExportFolderManifest(db, task.id, copied.id);
-  assert.equal(fs.readFileSync(legacyManifest, 'utf8'), '原批次清单，不得覆盖');
+  assert.equal(getBatchWorkspace(db, task.id, task.batchId).exportDirName, task.exportDirName, '首批使用任务目录');
+  assert.equal(getBatchWorkspace(db, task.id, copied.id).exportDirName, task.exportDirName, '一个任务只有一个成片文件夹，不再按批次分目录');
+  // 清单写在任务级「成片」里；再写一次仍只更新这一份，不产生批次子目录。
+  writeFormulaExportFolderManifest(db, task.id);
+  writeFormulaExportFolderManifest(db, task.id);
+  const manifestPath = path.join(root, 'storage', 'live-mixcut', 'exports', task.exportDirName, '成片', '清单.csv');
+  assert.ok(fs.existsSync(manifestPath), '清单在任务级成片文件夹里');
+  assert.ok(fs.readFileSync(manifestPath, 'utf8').startsWith('﻿"原脚本号",'));
+  assert.equal(fs.readdirSync(path.join(root, 'storage', 'live-mixcut', 'exports', task.exportDirName))
+    .some(name => name.startsWith('批次-')), false, '不再生成批次子目录');
   const target = reserveBatchExportTarget({
     projectId: task.id, batchId: copied.id, storageRoot: path.join(root, 'storage'),
     exportDirName: task.exportDirName,
-    batchExportDirName: (await import('../lib/live-mixcut/batches.ts')).resolveLiveMixcutBatchExport(db, task.id, copied.id).batchExportDirName,
     productCode: task.productName, planSeq: 1, outputVersion: 1,
   });
-  assert.notEqual(path.dirname(target.videoAbsolutePath), path.dirname(legacyManifest));
+  assert.equal(path.dirname(target.videoAbsolutePath), path.join(root, 'storage', 'live-mixcut', 'exports', task.exportDirName, '成片'));
+  assert.equal(path.dirname(path.dirname(target.videoAbsolutePath)),
+    path.join(root, 'storage', 'live-mixcut', 'exports', task.exportDirName), '成片直接挂在任务导出目录下');
   releaseBatchExportReservation(path.join(root, 'storage'), target);
 
   // REST 契约与真实本地数据库使用同一个临时数据根，不走界面内存或伪造响应。
@@ -170,7 +174,7 @@ try {
   }));
   assert.equal(rejected.status, 404, '不能跨任务复制');
   closeDb();
-  console.log('live mixcut batches: copy, independent settings, blank batch, archive, export and manifest isolation passed');
+  console.log('live mixcut batches: copy, independent settings, blank batch, archive, shared export folder and task manifest passed');
 } finally {
   db.close();
   fs.rmSync(root, { recursive: true, force: true });

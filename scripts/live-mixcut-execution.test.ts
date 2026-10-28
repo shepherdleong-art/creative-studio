@@ -330,8 +330,17 @@ try {
     assert.equal(currentCard().formalOutdated, false);
     assert.notEqual(resolveBatchOutputMedia(db, 'p', batchId, planId, 'video', 'artifact').absolutePath, originalVideo.absolutePath);
     assert.ok(path.basename(resolveBatchOutputMedia(db, 'p', batchId, planId, 'video', 'artifact').absolutePath)
-      .endsWith(`-脚本141-第01份-${packaged ? 'f3' : '无包装'}-02.mp4`), '返工防重名后缀不改变原号或份次');
-    assert.ok(fs.existsSync(originalVideo.absolutePath), '新正式成片追加保存，不覆盖或删除旧文件');
+      .endsWith(`-脚本141-第01份-${packaged ? 'f3' : '无包装'}-v2.mp4`), '同一条再导出排 -v2，不改原号或份次');
+    const archivedVideo = path.join(path.dirname(path.dirname(originalVideo.absolutePath)), '旧版',
+      path.basename(originalVideo.absolutePath));
+    assert.ok(fs.existsSync(archivedVideo), '上一版连同封面挪进「旧版」');
+    assert.equal(fs.existsSync(originalVideo.absolutePath), false, '「成片」只留当前这一套');
+    const { writeFormulaExportFolderManifest } = await import('../lib/live-mixcut/formula/export-manifest.ts');
+    writeFormulaExportFolderManifest(db, 'p');
+    const manifestCsv = fs.readFileSync(path.join(path.dirname(path.dirname(originalVideo.absolutePath)), '成片', '清单.csv'), 'utf8');
+    assert.ok(manifestCsv.includes(path.basename(resolveBatchOutputMedia(db, 'p', batchId, planId, 'video', 'artifact').absolutePath)),
+      '清单只列当前这一套');
+    assert.equal(manifestCsv.includes(`"${path.basename(originalVideo.absolutePath)}"`), false, '清单不列旧版');
   }
   }
   console.log('formula execution tests passed');

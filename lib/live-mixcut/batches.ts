@@ -1,7 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import path from 'node:path';
 import type Database from 'better-sqlite3';
-import { sanitizeExportFilenamePart } from '../media-core/export-identity.ts';
 import { BatchDomainError } from './errors.ts';
 import { readLiveMixcutProject } from './projects.ts';
 import {
@@ -13,27 +11,27 @@ import {
 import { getFormulaCollection } from './formula/collection-store.ts';
 
 export interface LiveMixcutBatch extends BatchProductionRow {
-  /** 后续批次的独立子目录名；首批为空，表示沿用任务原目录。 */
+  /** 兼容字段；新规矩下一个任务只有一个「成片」文件夹，恒为空。 */
   batchExportDirName: string;
 }
 
+/**
+ * 一个任务只有一个导出目录和「成片」文件夹，不再按批次分子目录。
+ * 版本号按同一套冻结导出身份（原脚本号、份次、包装）在文件夹内接着排。
+ */
 export function resolveLiveMixcutBatchExport(db: Database.Database, projectId: string, batchId: string): {
   exportDirName: string; batchExportDirName: string;
 } {
-  const row = db.prepare(`SELECT p.batchId AS initialBatchId, p.exportDirName,
-      b.id, b.name FROM live_mixcut_projects p
+  const row = db.prepare(`SELECT p.exportDirName FROM live_mixcut_projects p
     JOIN live_mixcut_productions b ON b.projectId=p.id
     WHERE p.id=? AND b.id=? AND p.deletedAt IS NULL AND b.deletedAt IS NULL`)
-    .get(projectId, batchId) as { initialBatchId: string | null; exportDirName: string; id: string; name: string } | undefined;
+    .get(projectId, batchId) as { exportDirName: string } | undefined;
   if (!row) throw new BatchDomainError('not_found', '批次不存在');
-  if (row.initialBatchId === batchId) return { exportDirName: row.exportDirName, batchExportDirName: '' };
-  const name = sanitizeExportFilenamePart(row.name).replace(/[^A-Za-z0-9._\-\u4e00-\u9fa5]/g, '').slice(0, 48) || '未命名';
-  return { exportDirName: row.exportDirName, batchExportDirName: `批次-${name}-${batchId.slice(0, 8)}` };
+  return { exportDirName: row.exportDirName, batchExportDirName: '' };
 }
 
 export function getLiveMixcutBatchExportDirName(db: Database.Database, projectId: string, batchId: string): string {
-  const target = resolveLiveMixcutBatchExport(db, projectId, batchId);
-  return path.posix.join(target.exportDirName, target.batchExportDirName);
+  return resolveLiveMixcutBatchExport(db, projectId, batchId).exportDirName;
 }
 
 export function listLiveMixcutBatches(db: Database.Database, projectId: string, options: { includeArchived?: boolean } = {}): LiveMixcutBatch[] {

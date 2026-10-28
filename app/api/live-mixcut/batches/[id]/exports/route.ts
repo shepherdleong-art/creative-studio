@@ -42,7 +42,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     });
     if (result.items.some(({ status }) => status === 'published' || status === 'already_published')) {
       try {
-        writeFormulaExportFolderManifest(getDb(), projectId, batchId);
+        writeFormulaExportFolderManifest(getDb(), projectId);
       } catch (error) {
         writeLog({ projectId, level: 'error',
           message: `实拍混剪清单写入失败：${error instanceof Error ? error.message : String(error)}` });
