@@ -1,4 +1,4 @@
-// Run: npm run build && node scripts/live-mixcut-import.playwright.test.mjs
+// Run: npm run build && node scripts/live-mixcut-material-model.playwright.test.mjs
 // 可用 CREATIVE_STUDIO_TEST_BUILD_ROOT 指向隔离构建，避免替换运行中的桌面产物。
 // Creates an isolated production server + data root. No existing database or media is touched.
 import assert from 'node:assert/strict';

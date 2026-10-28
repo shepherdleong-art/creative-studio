@@ -1,3 +1,4 @@
+// Run: node scripts/live-mixcut-content-recovery.playwright.test.mjs
 // Real components, isolated HTTP fixture; no user data or provider calls.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

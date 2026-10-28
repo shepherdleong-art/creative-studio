@@ -10,7 +10,7 @@
 - **规格**：`docs/superpowers/specs/<YYYY-MM-DD>-<主题>-<类型>.md`，类型如 `PRD`、`确认单`、`功能方案`、`需求共识`。
 - **任务单**：`docs/superpowers/plans/<YYYY-MM-DD>-<主题>/`，一个任务一个文件，文件名 `NN-<中文短标题>.md`，从 `01` 起编号。**永远不要写成一个大文件。**
 - 任务目录配一个 `README.md` 当索引，列出全部任务和依赖顺序。
-- 任务状态写在文件顶部一行 `Status: <值>`（写成 `**Status:** <值>` 也算），取值见 `triage-labels.md`；没有这一行视为 `needs-triage`。
+- 任务状态写在文件顶部一行 `**状态：** \`<值>\``，取值见 `triage-labels.md`；没有这一行视为 `needs-triage`。
 - 讨论、返工记录追加到文件末尾的 `## Comments` 标题下。
 
 ## 当 skill 说「发布到 issue tracker」

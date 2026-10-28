@@ -78,6 +78,8 @@ scripts/                测试文件、免安装包构建脚本、启停辅助�
 installer/windows/      Windows 免安装包的启动、说明与迁移脚本
 docs/                   设计/评审/会话记录，按日期前缀命名；
                         docs/reference/ 放常驻参考（架构细节，见下）；
+                        docs/adr/ 放架构决策记录；
+                        docs/agents/ 放 skill 读的任务单位置、分诊状态与领域文档约定；
                         docs/superpowers/{specs,plans}/ 放较大功能的规格与计划文档
                         （目录名属历史沿革，与当前使用的工具无关）
 outputs/                阶段性规格、测试清单、交付记录（gitignored）
@@ -191,7 +193,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 ### Triage labels
 
-五个状态沿用默认字符串：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`，写进任务文件顶部的 `Status:` 行。见 `docs/agents/triage-labels.md`。
+五个状态沿用默认字符串：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`，写进任务文件顶部的 `**状态：**` 行。见 `docs/agents/triage-labels.md`。
 
 ### Domain docs
 

@@ -55,7 +55,7 @@ export default function FormulaAudioRecoveryPanel({ projectId, batchId, planId, 
     || block.kind === 'source' && !!block.slotId
     || block.kind === 'on_screen' && !!block.slotId && !!block.displayText?.trim());
   return <section className="space-y-4" aria-label="核对文案与实际原声">
-    <p className="text-sm text-ink-secondary">先试听以下原片，对照实际台词，再为每段文案选择用途。原声会整段保留，包括多说的内容；字幕使用实际台词。若需要改台词、声音模式或镜头，请返回修改输入。</p>
+    <p className="text-sm text-ink-secondary">先试听以下原片，对照实际台词，再为每段文案选择用途。原声会整段保留，包括多说的内容；字幕使用实际台词。若需要改台词、声音方式或镜头，请返回修改输入。</p>
     {view?.sources.map(source => {
       const asset = assets.find(asset => asset.slotId === source.slotId);
       return <div key={source.slotId} className="space-y-2 rounded-xl border border-hairline p-3">
