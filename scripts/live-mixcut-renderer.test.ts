@@ -1,4 +1,4 @@
-import { seedLiveMixcutProjects } from './live-mixcut-test-helpers.ts';
+import { seedLiveMixcutProjects, seedFormulaMaterialAnalysis } from './live-mixcut-test-helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -66,6 +66,7 @@ try {
     const assetId = await registerManagedCopy(db, 'p', { sourcePath: file });
     registerFormulaAssetBinding(db, 'p', batchId, { assetId, sourcePath: name });
   }
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   const book = new ExcelJS.Workbook();
   book.addWorksheet('脚本').addRows([
     ['序号', '平台', '镜头数', '预估时长(s)', '画面分镜(逻辑镜号组合)', '脚本文案'], [141, '抖音', 2, 3, 'VO1 G1', '好擦洗。坐得稳。'],
@@ -401,6 +402,7 @@ try {
       const assetId = await registerManagedCopy(db, 'p', { sourcePath: file });
       registerFormulaAssetBinding(db, 'p', modeBatch, { assetId, sourcePath: name });
     }
+    await seedFormulaMaterialAnalysis({ db }, 'p', modeBatch);
     const modeImport = await createFormulaImportSession(db, 'p', modeBatch, { kind: 'scripts', filename: '脚本.xlsx',
       bytes: Buffer.from(await book.xlsx.writeBuffer()), expectedRevision: 2 });
     confirmFormulaImportSession(db, 'p', modeBatch, modeImport.id, { expectedRevision: 2, excludedKeys: [] });

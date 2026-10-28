@@ -72,9 +72,9 @@ let browser;
 try{
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));browser=await chromium.launch({headless:true});const page=await browser.newPage();const errors=[];page.on('pageerror',err=>errors.push(err.message));
  const origin=`http://127.0.0.1:${server.address().port}`;await page.goto(origin);
- const models=page.getByRole('combobox',{name:'素材整理模型',exact:true});await expect(models).toHaveValue('');await expect(models.locator('option')).toHaveCount(2);
+ const models=page.getByRole('combobox',{name:'画面分析模型',exact:true});await expect(models).toHaveValue('');await expect(models.locator('option')).toHaveCount(2);
  await models.selectOption('vision');assert.equal(requests.length,0);
- await page.getByRole('button',{name:/开始整理/}).click();await expect(page.getByText('AI 画面分析 · 基于实际抽帧',{exact:true})).toBeVisible();assert.equal(requests[0].providerId,'vision');assert.equal(requests[0].mode,undefined);
+ await page.getByRole('button',{name:/分析画面/}).click();await expect(page.getByText('AI 画面分析 · 基于实际抽帧',{exact:true})).toBeVisible();assert.equal(requests[0].providerId,'vision');assert.equal(requests[0].mode,undefined);
  await page.reload();assert.equal(requests.length,1);await expect(models).toHaveValue('');
  await page.goto(origin+'/?mode=issue');await expect(page.getByText('脚本 45 · 第 1 份 · 选片',{exact:true})).toBeVisible();await expect(page.getByText('公式顺序：S29 → P1',{exact:true})).toBeVisible();
  const replacement=page.getByRole('combobox',{name:'第 1 个镜头替代原片',exact:true});await replacement.selectOption(JSON.stringify(['P1','asset']));await expect(page.getByLabel('第 1 个镜头替代预览')).toHaveAttribute('src',/\/asset\/preview/);

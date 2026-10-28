@@ -1,4 +1,4 @@
-import { seedLiveMixcutProjects } from './live-mixcut-test-helpers.ts';
+import { seedLiveMixcutProjects, seedFormulaMaterialAnalysis } from './live-mixcut-test-helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -42,6 +42,7 @@ try {
     const id = await registerManagedCopy(db, 'p', { sourcePath: video }); assets.push(id);
     registerFormulaAssetBinding(db, 'p', batchId, { assetId: id, sourcePath: `S${25 + i}_清洁展示.mp4` });
   }
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   async function importRows(kind: 'materials' | 'scripts', rows: unknown[][]) {
     const book = new ExcelJS.Workbook(); book.addWorksheet(kind).addRows(rows);
     const revision = getFormulaMaterialIndex(db, 'p', batchId).revision;
@@ -138,6 +139,7 @@ try {
   await runFfmpeg(['-f', 'lavfi', '-i', 'color=green:s=64x64:r=24:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', originalVideo]);
   const originalAsset = await registerManagedCopy(db, 'p', { sourcePath: originalVideo });
   registerFormulaAssetBinding(db, 'p', batchId, { assetId: originalAsset, sourcePath: 'S29_补回原片.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   const restoredRequest = await nextRequest('original-back');
   const restored = await selectFormulaOutput(db, 'p', restoredRequest, restoredRequest.outputs[2], new AbortController().signal, () => {}, resolver);
   assert.equal(restored.slots[0].assetId, originalAsset, '新请求优先恢复可用原编号，不能被备用规则强制替换');

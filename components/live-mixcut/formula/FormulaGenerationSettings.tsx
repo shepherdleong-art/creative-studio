@@ -80,7 +80,7 @@ export default function FormulaGenerationSettings({ projectId, batchId, inputRev
     finally { setBusy(false); submitting.current = false; }
   }
   async function generate() {
-    if (locked || invalidSettings || submitting.current || !view) return;
+    if (locked || invalidSettings || analysisBlocked || submitting.current || !view) return;
     submitting.current = true; setBusy(true); setError(''); setMessage('');
     try {
       // 旧设置若还保留独立封面预设，按新的“封面跟随包装”规则重新保存。
@@ -156,6 +156,15 @@ export default function FormulaGenerationSettings({ projectId, batchId, inputRev
   const matching = (view?.scripts ?? []).filter(row => !query || `${row.scriptNumber} ${row.platform} ${row.bodyText}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   const rows = showAll ? matching : matching.slice(0, 20);
   const invalidSettings = !view?.scriptsSessionId || !selected.size || invalidCopies || total > FORMULA_MAX_OUTPUTS || !!musicError || !!productionError || !!timingError;
+  // 生成前检查：这次选中的脚本用到的素材必须都分析过画面。
+  const analysisMissing = (() => {
+    const missingByCode = view?.materialAnalysis?.missingByCode ?? {};
+    const codes = new Set((view?.scripts ?? []).filter(row => selected.has(row.key)).flatMap(row => row.codes));
+    const missing = [...codes].filter(code => (missingByCode[code] ?? 0) > 0)
+      .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+    return { sources: missing.reduce((count, code) => count + missingByCode[code], 0), codes: missing };
+  })();
+  const analysisBlocked = analysisMissing.sources > 0;
 
   return <section className="card space-y-4 p-4" aria-label="生成设置">
     <div><h2 className="text-base font-semibold text-ink">选择脚本与生成设置</h2>
@@ -252,8 +261,10 @@ export default function FormulaGenerationSettings({ projectId, batchId, inputRev
       <FormulaProductionSettingsPanel value={production} options={view.productionOptions} disabled={locked || !view.scripts.length} groupId={batchId}
         onChange={next => { setProduction(next); setDirty(true); setMessage(''); }} />
       {productionError && <p className="text-sm text-fail">{productionError}</p>}
+      {analysisBlocked && <p role="status" className="text-sm text-warn">还有 {analysisMissing.sources} 段素材没分析画面
+        （{analysisMissing.codes.slice(0, 6).join('、')}{analysisMissing.codes.length > 6 ? ' 等' : ''}），请先在第一步点「分析画面」，再回来生成。</p>}
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" className="btn-primary" disabled={locked || invalidSettings} onClick={() => void generate()}>{busy ? '处理中…' : '生成'}</button>
+        <button type="button" className="btn-primary" disabled={locked || invalidSettings || analysisBlocked} onClick={() => void generate()}>{busy ? '处理中…' : '生成'}</button>
         <button type="button" className="btn-secondary" disabled={locked || invalidSettings} onClick={() => void save()}>保存生成设置</button>
         <button type="button" className="btn-secondary" disabled={busy || disabled} onClick={() => void reload()}>重新读取设置</button>
         <span className="text-xs text-ink-secondary">{dirty ? '当前设置尚未保存' : '设置已保存'}</span>

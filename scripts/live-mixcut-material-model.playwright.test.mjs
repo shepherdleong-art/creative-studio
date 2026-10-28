@@ -79,7 +79,7 @@ try {
   });
   await page.reload({ waitUntil: 'networkidle' });
   await page.getByRole('button', { name: '准备素材', exact: true }).click();
-  const model = page.getByRole('combobox', { name: '素材整理模型', exact: true });
+  const model = page.getByRole('combobox', { name: '画面分析模型', exact: true });
   const visibleBeforeImport = await model.isVisible();
   if (visibleBeforeImport) {
     await expect(model).toHaveValue('');
@@ -91,9 +91,9 @@ try {
   await page.waitForTimeout(2200);
   console.log(JSON.stringify({ visibleBeforeImport, callsAfterImport: calls }));
   assert.deepEqual(calls, [], '导入视频不得自动调用任何模型');
-  assert.equal(visibleBeforeImport, true, '空批次导入前就能选择素材整理模型');
+  assert.equal(visibleBeforeImport, true, '空批次导入前就能选择画面分析模型');
   await expect(model).toHaveValue('chosen-model');
-  await page.getByRole('button', { name: /开始整理|整理未完成项/ }).click();
+  await page.getByRole('button', { name: /分析画面/ }).click();
   await expect.poll(() => calls.length).toBe(1);
   assert.deepEqual(calls, ['chosen-model'], '只使用用户选定的模型');
   await expect(model).toBeDisabled();
@@ -111,11 +111,11 @@ try {
   await page.getByRole('button', { name: '准备素材', exact: true }).click();
   await expect(model).toBeEnabled();
   await expect(model).toHaveValue('');
-  await expect(page.getByRole('button', { name: /开始整理/ })).toBeDisabled();
+  await expect(page.getByRole('button', { name: /分析画面/ })).toBeDisabled();
   await page.waitForTimeout(2200);
   assert.equal(calls.length, 1, '刷新不自动续跑未完成素材');
   await model.selectOption('first-model');
-  await page.getByRole('button', { name: /开始整理|整理未完成项/ }).click();
+  await page.getByRole('button', { name: /分析画面/ }).click();
   await expect.poll(() => calls.length).toBe(2);
   assert.deepEqual(calls, ['chosen-model', 'first-model']);
   run = { ...run, state: 'completed' };

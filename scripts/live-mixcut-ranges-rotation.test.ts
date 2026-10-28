@@ -1,4 +1,4 @@
-import { seedLiveMixcutProjects } from './live-mixcut-test-helpers.ts';
+import { seedLiveMixcutProjects, seedFormulaMaterialAnalysis } from './live-mixcut-test-helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -34,6 +34,7 @@ try {
     assets.push(assetId);
     registerFormulaAssetBinding(db, 'p', batchId, { assetId, sourcePath: `G1_${color}${color === 'green' ? '.preview' : ''}.mp4` });
   }
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   const book = new ExcelJS.Workbook();
   book.addWorksheet('脚本').addRows([
     ['序号', '平台', '镜头数', '预估时长(s)', '画面分镜(逻辑镜号组合)', '脚本文案'],

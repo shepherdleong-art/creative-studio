@@ -49,9 +49,7 @@ try {
     assets.push({id,code,bindingId:binding.id});
   }
   let notes = readFormulaMaterialNotes(db,'p',batchId);
-  const manual = notes.items.find(item=>item.logicalCode==='P2')!;
-  const saved = saveFormulaMaterialNote(db,'p',batchId,manual.bindingId,{expectedRevision:notes.revision,expectedProfileId:null,
-    content:{description:'人工确认的展示',category:'',sellingPoints:[],actions:[],speech:'unknown',evidence:[]}});
+  const manualItem = notes.items.find(item=>item.logicalCode==='P2')!;
   const chosen = assets.filter(asset=>asset.code==='P1').sort((a,b)=>a.id.localeCompare(b.id))[1];
   const observed: string[] = [];
   const visualModel = {id:'vision',name:'画面',model:'vision-fixture',analyze:async (input: {assetId:string;filePath:string})=>{
@@ -60,13 +58,23 @@ try {
     return {summary:description,sellingPoints:[description],semanticTags:[],qualityIssues:[],usableRanges:[],coverFrameTimesUs:[],
       scenes:[{startUs:0,endUs:500_000,description,labels:[],qualityScore:0.8}]};
   }};
+  // 分析画面只看非口播素材：P1 两份和 P2，各留一段有效片段和画面描述。
   notes=await organizeFormulaMaterialNotes(db,'p',batchId,{expectedRevision:notes.revision},visualModel);
   assert.equal(notes.run?.succeeded,3);
-  assert.equal(notes.items.find(item=>item.bindingId===manual.bindingId)?.profile?.id,saved.id,'画面分析不得覆盖人工说明');
+  assert.equal(observed.length,3,'口播镜头不做画面分析');
+  assert.equal(notes.items.find(item=>item.voiceOver)?.analysis,null);
+  assert(notes.items.find(item=>item.bindingId===manualItem.bindingId)?.analysis?.usableInUs === 0,'每段非口播素材都有有效片段');
   assert.equal(notes.items.find(item=>item.source.assetId===chosen.id)?.profile?.provenance.visualObservation,true);
   assert.equal(notes.items.find(item=>item.source.assetId===chosen.id)?.profile?.content.speech,'unknown');
-  await organizeFormulaMaterialNotes(db,'p',batchId,{expectedRevision:notes.revision},visualModel);
+  // 人工说明可以修正 AI 结果；再点分析画面不会覆盖人工说明，也不会重新调用模型。
+  const aiProfile = notes.items.find(item=>item.bindingId===manualItem.bindingId)!.profile!;
+  const saved = saveFormulaMaterialNote(db,'p',batchId,manualItem.bindingId,{expectedRevision:notes.revision,expectedProfileId:aiProfile.id,
+    content:{description:'人工确认的展示',category:'',sellingPoints:[],actions:[],speech:'unknown',evidence:[]}});
+  notes=readFormulaMaterialNotes(db,'p',batchId);
+  assert.equal(notes.items.find(item=>item.bindingId===manualItem.bindingId)?.profile?.id,saved.id);
+  notes=await organizeFormulaMaterialNotes(db,'p',batchId,{expectedRevision:notes.revision},visualModel);
   assert.equal(observed.length,3,'续做不重复调用已成功的画面分析');
+  assert.equal(notes.items.find(item=>item.bindingId===manualItem.bindingId)?.profile?.id,saved.id,'画面分析不得覆盖人工说明');
   const book=new ExcelJS.Workbook();
   book.addWorksheet('脚本').addRows([['序号','平台','镜头数','预估时长(s)','画面分镜(逻辑镜号组合)','脚本文案'],[1,'抖音',3,6,'P2 VO1 P1','易清洁。']]);
   const imported=await createFormulaImportSession(db,'p',batchId,{kind:'scripts',filename:'脚本.xlsx',bytes:Buffer.from(await book.xlsx.writeBuffer()),expectedRevision:notes.revision});

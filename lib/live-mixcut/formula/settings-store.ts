@@ -11,6 +11,7 @@ import { parseFormulaProductionSettings, type FormulaProductionOptions } from '.
 import { readFormulaProductionOptions, resolveFormulaProductionResources } from './production-options.ts';
 import { parseFormulaTimingSettings } from './timing-settings.ts';
 import { readFormulaInputEditing } from './input-editing.ts';
+import { formulaMaterialAnalysisGap, type FormulaMaterialAnalysisGap } from './material-analysis.ts';
 
 export interface FormulaSavedSettings {
   id: string; revision: number; scriptsSessionId: string; settings: FormulaSettings; totalCopies: number; createdAt: string;
@@ -20,6 +21,8 @@ export interface FormulaSettingsView {
   hasPendingScripts: boolean; editable: boolean; stale: boolean;
   saved: FormulaSavedSettings | null; tracks: BatchBgmTrackView[];
   productionOptions: FormulaProductionOptions;
+  /** 还没分析画面的素材（按编号），生成入口据此提示。 */
+  materialAnalysis: FormulaMaterialAnalysisGap;
 }
 
 export function readFormulaSettings(db: Database.Database, projectId: string, batchId: string): FormulaSettingsView {
@@ -38,7 +41,8 @@ export function readFormulaSettings(db: Database.Database, projectId: string, ba
     scripts: (inputs.scripts?.rows ?? []).filter((row): row is FormulaScriptRow => 'scriptNumber' in row), editable,
     hasPendingScripts: inputs.drafts.some(draft => draft.kind === 'scripts' && draft.baseRevision === inputs.revision),
     stale: !!saved && saved.scriptsSessionId !== inputs.scripts?.sessionId,
-    saved, tracks: listBatchBgmTracks(db), productionOptions: readFormulaProductionOptions(db) };
+    saved, tracks: listBatchBgmTracks(db), productionOptions: readFormulaProductionOptions(db),
+    materialAnalysis: formulaMaterialAnalysisGap(db, projectId, batchId) };
 }
 
 export async function saveFormulaSettings(db: Database.Database, projectId: string, batchId: string, input: {

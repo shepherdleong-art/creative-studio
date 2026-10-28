@@ -1,4 +1,4 @@
-import { seedLiveMixcutProjects } from './live-mixcut-test-helpers.ts';
+import { seedLiveMixcutProjects, seedFormulaMaterialAnalysis } from './live-mixcut-test-helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -40,6 +40,7 @@ try {
   await runFfmpeg(['-f', 'lavfi', '-i', 'color=red:s=64x64:r=24:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', video]);
   const assetId = await registerManagedCopy(db, 'p', { sourcePath: video });
   registerFormulaAssetBinding(db, 'p', batchId, { assetId, sourcePath: '实拍/S25_用纸擦净污渍.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   const materials = new ExcelJS.Workbook();
   materials.addWorksheet('素材').addRows([
     ['逻辑编号', '画面描述', '核心卖点', '景别', '文件路径'],
@@ -90,7 +91,7 @@ try {
   nameOnly.input.materialIndex.bindings.push(originalBinding);
   nameOnly.input.materialNotes = [originalBinding, candidateBinding].map(binding => ({
     bindingId: binding.id, sourceName: binding.sourceName, logicalCode: binding.logicalCode, excluded: false, available: binding.available,
-    inputFingerprint: 'frozen', stale: false,
+    voiceOver: false, analysis: null, inputFingerprint: 'frozen', stale: false,
     source: { bindingId: binding.id, assetId: binding.assetId, contentFingerprint: binding.contentFingerprint, filename: binding.sourceName, logicalCode: binding.logicalCode, table: null },
     profile: { id: `profile-${binding.id}`, revision: 1, inputFingerprint: 'frozen', origin: 'ai', provenance: { basis: 'filename_and_table', visualObservation: false },
       content: { description: binding.logicalCode === 'S29' ? '抗污易清洁' : '用纸擦净污渍', category: '', sellingPoints: [], actions: [], speech: 'unknown',
@@ -155,6 +156,7 @@ try {
   await runFfmpeg(['-f', 'lavfi', '-i', 'color=blue:s=64x64:r=24:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', alternateVideo]);
   const alternateId = await registerManagedCopy(db, 'p', { sourcePath: alternateVideo });
   registerFormulaAssetBinding(db, 'p', batchId, { assetId: alternateId, sourcePath: 'S25_污渍轻擦即净.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   const withAlternate = await createFormulaGenerationRequest(db, 'p', batchId, { requestKey: 'binding-evidence',
     settingsId: settings.saved!.id, expectedInputRevision: 4 });
   const evidenceAsset = [assetId, alternateId].sort()[1];
@@ -178,6 +180,7 @@ try {
 
   createBatchProductionVersion(db, batchId, { copyCount: 2 });
   registerFormulaAssetBinding(db, 'p', batchId, { assetId: alternateId, sourcePath: 'S29_补回的原片.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   const withOriginal = await createFormulaGenerationRequest(db, 'p', batchId, { requestKey: 'original-restored',
     settingsId: settings.saved!.id, expectedInputRevision: 5 });
   const exact = await selectFormulaOutput(db, 'p', withOriginal, withOriginal.outputs[0], new AbortController().signal, () => {},
@@ -205,6 +208,7 @@ try {
   registerFormulaAssetBinding(db, 'p', safetyBatch, { assetId, sourcePath: 'S1_沙发整体外观.mp4' });
   registerFormulaAssetBinding(db, 'p', safetyBatch, { assetId, sourcePath: 'P1_坐姿.mp4' });
   registerFormulaAssetBinding(db, 'p', safetyBatch, { assetId, sourcePath: 'VO13_口播.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', safetyBatch);
   const safetyMaterials = new ExcelJS.Workbook();
   safetyMaterials.addWorksheet('素材').addRows([
     ['逻辑编号', '画面描述', '核心卖点', '台词'],
@@ -247,6 +251,7 @@ try {
 
   const conflictBatch = createBatchProduction(db, 'p', '资料冲突不能替换', undefined, { planningMode: 'formula' });
   const conflictBinding = registerFormulaAssetBinding(db, 'p', conflictBatch, { assetId, sourcePath: 'S25_摆拍全景.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', conflictBatch);
   const conflictMaterials = await createFormulaImportSession(db, 'p', conflictBatch, { kind: 'materials', filename: '素材.xlsx',
     bytes: Buffer.from(await materials.xlsx.writeBuffer()), expectedRevision: 1 });
   confirmFormulaImportSession(db, 'p', conflictBatch, conflictMaterials.id, { expectedRevision: 1, excludedKeys: [] });

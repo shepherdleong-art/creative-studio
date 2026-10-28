@@ -1,4 +1,4 @@
-import { seedLiveMixcutProjects } from './live-mixcut-test-helpers.ts';
+import { seedLiveMixcutProjects, seedFormulaMaterialAnalysis } from './live-mixcut-test-helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -121,6 +121,7 @@ try {
   await runFfmpeg(['-f', 'lavfi', '-i', 'color=red:s=64x64:r=24:d=0.5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', source]);
   const assetId = await registerManagedCopy(db, 'p', { sourcePath: source });
   const binding = registerFormulaAssetBinding(db, 'p', material.batchId, { assetId, sourcePath: '实拍/G1_正面.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', material.batchId);
   material.expectedInputRevision = 2;
   const content = { description: '产品正面', category: '外观', sellingPoints: [], actions: [], speech: 'unknown' as const, evidence: [] };
   const note = saveFormulaMaterialNote(db, 'p', material.batchId, binding.id, { expectedRevision: 2, expectedProfileId: null, content });

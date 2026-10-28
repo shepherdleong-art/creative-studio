@@ -1,4 +1,4 @@
-import { seedLiveMixcutProjects } from './live-mixcut-test-helpers.ts';
+import { seedLiveMixcutProjects, seedFormulaMaterialAnalysis } from './live-mixcut-test-helpers.ts';
 /** A23/A35: saved generation settings must reach each editable output, using its actual audio timings. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -65,6 +65,7 @@ try {
   const assetId = await registerManagedCopy(db, 'p', { sourcePath: file });
   const batchId = createBatchProduction(db, 'p', '统一包装和封面', undefined, { planningMode: 'formula' });
   registerFormulaAssetBinding(db, 'p', batchId, { assetId, sourcePath: 'G1_静物.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   const book = new ExcelJS.Workbook();
   book.addWorksheet('脚本').addRows([
     ['序号', '平台', '镜头数', '预估时长(s)', '画面分镜(逻辑镜号组合)', '脚本文案'], [12, '抖音', 1, 16, 'G1', '轻松擦洗。'],
@@ -209,6 +210,7 @@ try {
   db.prepare('INSERT INTO final_edit_title_presets VALUES (?,?,?)').run(secondPreset.id, secondPreset.name, JSON.stringify(secondPreset.preset));
   const randomBatch = createBatchProduction(db, 'p', '随机重分配', undefined, { planningMode: 'formula' });
   registerFormulaAssetBinding(db, 'p', randomBatch, { assetId, sourcePath: 'G1_静物.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', randomBatch);
   const randomImport = await createFormulaImportSession(db, 'p', randomBatch, { kind: 'scripts', filename: '脚本.xlsx',
     bytes: Buffer.from(await book.xlsx.writeBuffer()), expectedRevision: 1 });
   confirmFormulaImportSession(db, 'p', randomBatch, randomImport.id, { expectedRevision: 1, excludedKeys: [] });

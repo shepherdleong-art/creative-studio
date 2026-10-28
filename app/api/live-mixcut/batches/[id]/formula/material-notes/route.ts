@@ -58,7 +58,7 @@ export async function POST(request: NextRequest, route: { params: Promise<{ id: 
     catch { throw new BatchDomainError('invalid_input', '所选画面理解模型未配置或不可用，可先手动填写素材说明'); }
     const result = await organizeFormulaMaterialNotes(db, projectId, id, { expectedRevision: body.expectedRevision, signal: request.signal }, model);
     return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });
-  } catch (error) { return batchRouteErrorResponse(error, 'formula_material_organize_failed', '素材整理失败，请重试'); }
+  } catch (error) { return batchRouteErrorResponse(error, 'formula_material_organize_failed', '画面分析失败，请重试'); }
 }
 
 export async function PATCH(request: NextRequest, route: { params: Promise<{ id: string }> }) {

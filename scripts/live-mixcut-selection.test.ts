@@ -1,4 +1,4 @@
-import { seedLiveMixcutProjects } from './live-mixcut-test-helpers.ts';
+import { seedLiveMixcutProjects, seedFormulaMaterialAnalysis } from './live-mixcut-test-helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -38,6 +38,7 @@ try {
   await runFfmpeg(['-f', 'lavfi', '-i', 'color=red:s=64x64:r=24:d=0.5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', video]);
   const assetId = await registerManagedCopy(db, 'p', { sourcePath: video });
   registerFormulaAssetBinding(db, 'p', batchId, { assetId, sourcePath: 'G1_正面.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   const book = new ExcelJS.Workbook();
   book.addWorksheet('脚本').addRows([
     ['序号', '平台', '镜头数', '预估时长(s)', '画面分镜(逻辑镜号组合)', '脚本文案'],
@@ -116,6 +117,7 @@ try {
   const alternate = await registerManagedCopy(db, 'p', { sourcePath: alternateVideo });
   registerFormulaAssetBinding(db, 'p', batchId, { assetId: alternate, sourcePath: '另一份/G1_正面.mp4' });
   registerFormulaAssetBinding(db, 'p', batchId, { assetId: alternate, sourcePath: 'VO1.preview.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   const fallback = await createFormulaGenerationRequest(db, 'p', batchId, { requestKey: 'corrupted-candidate', settingsId: settings.saved!.id, expectedInputRevision: 4 });
   const [bad, good] = [assetId, alternate].sort();
   const frozenSource = listAssetSources(db, bad).find(source => source.sourceKind === 'managed')!;
@@ -148,6 +150,7 @@ try {
   assert.equal(readFormulaSelection(db, 'p', batchId, fixed.outputs[0].planId)!.slots[0].reason, 'manual_primary');
   createBatchProductionVersion(db, batchId, { copyCount: 3 });
   registerFormulaAssetBinding(db, 'p', batchId, { assetId: bad, sourcePath: 'G2_手动替换.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   const overrideView = readFormulaSelectionRules(db, 'p', batchId);
   const overridden = saveFormulaSelectionRules(db, 'p', batchId, {
     expectedInputRevision: overrideView.inputRevision, expectedRulesRevision: overrideView.saved!.revision,

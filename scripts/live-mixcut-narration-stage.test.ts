@@ -1,4 +1,4 @@
-import { seedLiveMixcutProjects } from './live-mixcut-test-helpers.ts';
+import { seedLiveMixcutProjects, seedFormulaMaterialAnalysis } from './live-mixcut-test-helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -50,6 +50,7 @@ try {
   await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', audio]);
   const assetId = await registerManagedCopy(db, 'p', { sourcePath: file });
   registerFormulaAssetBinding(db, 'p', batchId, { assetId, sourcePath: 'G1_静物.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   const book = new ExcelJS.Workbook();
   book.addWorksheet('脚本').addRows([
     ['序号', '平台', '镜头数', '预估时长(s)', '画面分镜(逻辑镜号组合)', '脚本文案'], [12, '抖音', 1, 16, 'G1', '坐得稳。'],
@@ -226,6 +227,7 @@ try {
     tts: { providerId: 'vapi-qwen3-tts', voice: 'Ethan', speed: 1 } } };
   const secondBatch = createBatchProduction(db, 'p', '对齐失败后重试', undefined, { planningMode: 'formula' });
   registerFormulaAssetBinding(db, 'p', secondBatch, { assetId, sourcePath: 'G1_静物.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', secondBatch);
   const secondImported = await createFormulaImportSession(db, 'p', secondBatch, { kind: 'scripts', filename: '脚本.xlsx',
     bytes: Buffer.from(await book.xlsx.writeBuffer()), expectedRevision: 1 });
   confirmFormulaImportSession(db, 'p', secondBatch, secondImported.id, { expectedRevision: 1, excludedKeys: [] });

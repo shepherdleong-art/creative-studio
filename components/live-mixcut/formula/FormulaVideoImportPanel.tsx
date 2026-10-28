@@ -8,8 +8,10 @@ import { fingerprintsEqual } from '@/lib/live-mixcut/fingerprint-format';
 
 type MaterialModel = { id: string; name: string; model: string };
 type NotesView = FormulaMaterialNotesView & { videoProviders?: MaterialModel[] };
-const pendingNote = (item: FormulaMaterialNoteItem) => item.available && !item.excluded
+// 口播镜头不看画面；其余素材都要有一段按内容存下的画面分析。
+const pendingNote = (item: FormulaMaterialNoteItem) => item.available && !item.excluded && !item.voiceOver
   && (!item.profile || (item.stale && item.profile.origin === 'ai'));
+const toSeconds = (us: number) => (us / 1_000_000).toFixed(1);
 
 async function read<T>(response: Response): Promise<T> {
   const body = await response.json();
@@ -88,15 +90,18 @@ function NoteEditor({ item, busy, onSave, onCancel }: { item: FormulaMaterialNot
 }
 
 function NoteBody({ item }: { item: FormulaMaterialNoteItem }) {
+  if (item.voiceOver) return <p className="text-xs text-ink-secondary">口播镜头：不看画面，有效片段按原声的说话起止算。</p>;
   return <>
-    <p className="text-xs text-ink-secondary">{item.profile ? item.profile.origin === 'manual' ? '人工说明' : item.profile.provenance.visualObservation === true ? 'AI 画面分析 · 基于实际抽帧' : 'AI 整理 · 基于文件名与已有资料' : '尚未整理'}
+    <p className="text-xs text-ink-secondary">{item.profile ? item.profile.origin === 'manual' ? '人工说明' : item.profile.provenance.visualObservation === true ? 'AI 画面分析 · 基于实际抽帧' : 'AI 整理 · 基于文件名与已有资料' : item.analysis ? '已分析画面，说明待写入' : '尚未分析画面'}
       {item.stale ? ' · 来源资料已变化，请核对' : ''}{!item.available ? ' · 视频不可用' : ''}</p>
+    {item.analysis && <p className="text-xs text-ink-secondary">有效片段：{toSeconds(item.analysis.usableInUs)} – {toSeconds(item.analysis.usableOutUs)} 秒
+      （素材全长 {toSeconds(item.analysis.durationUs)} 秒）</p>}
     {item.profile ? <>
       <p className="whitespace-pre-wrap text-sm text-ink">{item.profile.content.description}</p>
       {item.profile.content.conflicts?.map((conflict, i) => <p key={i} className="text-xs text-fail">命名与表格有差异：{conflict.message}（文件名“{conflict.filenameQuote}”；素材表“{conflict.tableQuote}”）。请核对并修改说明。</p>)}
       <p className="text-xs text-ink-secondary">类别：{item.profile.content.category || '未确定'} · 口播：{item.profile.content.speech === 'yes' ? '有口播（仍需核验）' : item.profile.content.speech === 'no' ? '无口播（仍需核验）' : '未确定'}</p>
       {(item.profile.content.sellingPoints.length > 0 || item.profile.content.actions.length > 0) && <p className="text-xs text-ink-secondary">卖点：{item.profile.content.sellingPoints.join('、') || '未确定'}；动作：{item.profile.content.actions.join('、') || '未确定'}</p>}
-  </> : <p className="text-xs text-ink-secondary">选择模型并点击「开始整理」后，会分析视频画面生成内容说明，也可以手动填写。</p>}
+  </> : <p className="text-xs text-ink-secondary">选择模型并点击「分析画面」后，会看视频画面找出有效片段并生成一句画面描述，也可以手动填写说明。</p>}
     <details className="text-xs text-ink-secondary"><summary className="cursor-pointer">查看整理依据</summary>
       <p className="mt-2 break-all">文件名：{item.sourceName}</p>
       {item.source.table && <div className="mt-2 space-y-1"><p>{item.source.table.sheet} 第 {item.source.table.row} 行</p>
@@ -265,24 +270,24 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
   const models = notes?.videoProviders;
   const selectedModelId = models?.some(model => model.id === providerId) ? providerId : '';
   return <div className="card space-y-3 p-4" aria-label="实拍视频导入与整理">
-    <h2 className="text-base font-semibold text-ink">导入与整理素材</h2>
-    <p className="text-sm text-ink-secondary">选择视频或整个文件夹，系统会分批复制到项目中，按文件名直接读出编号、口播台词和全景标记。导入不会调用 AI；选好模型后点击「开始整理」才分析视频画面。原文件保持不变。</p>
+    <h2 className="text-base font-semibold text-ink">导入素材与分析画面</h2>
+    <p className="text-sm text-ink-secondary">选择视频或整个文件夹，系统会分批复制到项目中，按文件名直接读出编号、口播台词和全景标记。导入不会调用 AI；选好模型后点「分析画面」才会看视频画面，为每段非口播素材找出有效片段并留一句画面描述。口播镜头不看画面。原文件保持不变。</p>
     <div className="space-y-2 rounded-lg border border-hairline bg-surface-subtle p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <label className="text-sm text-ink">素材整理模型
-          <select aria-label="素材整理模型" value={selectedModelId} disabled={readOnly || busy || running || organizing || !models?.length}
+        <label className="text-sm text-ink">画面分析模型
+          <select aria-label="画面分析模型" value={selectedModelId} disabled={readOnly || busy || running || organizing || !models?.length}
             onChange={event => setProviderId(event.target.value)} className="ml-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-sm text-ink">
             <option value="">{models?.length ? '请选择模型' : '暂无可用模型'}</option>
             {models?.map(model => <option key={model.id} value={model.id}>{model.name} · {model.model}</option>)}
           </select>
         </label>
         <button type="button" className="btn-secondary" disabled={readOnly || busy || running || organizing || !!editing || !selectedModelId || !remaining}
-          onClick={() => { if (notes) void organize(notes, selectedModelId); }}>{organizing || running ? '正在整理…' : `开始整理（${remaining} 项待整理）`}</button>
-        {organizing && <button type="button" className="btn-secondary" onClick={() => organizeRef.current?.abort()}>停止本次整理</button>}
+          onClick={() => { if (notes) void organize(notes, selectedModelId); }}>{organizing || running ? '正在分析…' : `分析画面（${remaining} 项待分析）`}</button>
+        {organizing && <button type="button" className="btn-secondary" onClick={() => organizeRef.current?.abort()}>停止本次分析</button>}
       </div>
-      <p className="text-xs text-ink-secondary">抽取实际视频画面发送给所选模型，补充内容说明供选片使用；已保存的人工说明保留。此步骤不识别原声，不确认精确动作时间。选好模型后点击开始，停止后可继续未完成项。</p>
+      <p className="text-xs text-ink-secondary">抽取实际视频画面发送给所选模型，找出有效片段并留一句画面描述，供 AI 判断挑补镜和替代镜头使用；已保存的人工说明保留。口播镜头不做画面分析。同一段素材换批次不会重复分析。此步骤不识别原声。停止后可继续未完成项。</p>
       {!models?.length && <p className="text-xs text-ink-secondary">暂时没有可用的画面理解模型，可以先导入视频并手动填写说明。</p>}
-      {notes?.run && <p role="status" className="text-sm text-ink-secondary">{running ? '正在整理' : notes.run.state === 'completed' ? '本次整理完成' : '本次整理未全部完成'}：已保存 {notes.run.succeeded} / {notes.run.total} 项，保留已有说明 {notes.run.skipped} 项。{notes.run.message}</p>}
+      {notes?.run && <p role="status" className="text-sm text-ink-secondary">{running ? '正在分析' : notes.run.state === 'completed' ? '本次分析完成' : '本次分析未全部完成'}：已保存 {notes.run.succeeded} / {notes.run.total} 项，保留已有说明 {notes.run.skipped} 项。{notes.run.message}</p>}
     </div>
     <div className="flex flex-wrap gap-4">
       <label className={`inline-flex cursor-pointer items-center rounded-lg border border-hairline bg-surface px-3 py-2 text-sm text-ink focus-within:ring-2 focus-within:ring-accent ${busy || !index ? 'opacity-50' : 'hover:bg-surface-subtle'}`}><span>选择视频</span>
@@ -303,7 +308,7 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
       <button type="button" className="btn-secondary" disabled={busy} onClick={() => void upload(failures.map(item => item.file))}>重试未完成文件</button>
     </div>}
     {bindings.length > 0 && <p className="text-sm text-ink-secondary">已登记 {bindings.length} 个文件来源 · 待填编号 {bindings.filter(item => !item.logicalCode).length} 个 · 排除预览文件 {bindings.filter(item => item.excludedReason).length} 个</p>}
-    {items.length > 0 && <p className="text-sm text-ink-secondary">正式文件 {items.length} 个 · 已有说明 {items.filter(item => item.profile).length} 个 · 待整理 {remaining} 个 · 需核对 {items.filter(item => item.stale || item.profile?.content.conflicts?.length).length} 个</p>}
+    {items.length > 0 && <p className="text-sm text-ink-secondary">正式文件 {items.length} 个 · 已分析画面 {items.filter(item => item.analysis).length} 个 · 已有说明 {items.filter(item => item.profile).length} 个 · 待分析 {remaining} 个 · 需核对 {items.filter(item => item.stale || item.profile?.content.conflicts?.length).length} 个</p>}
     {bindings.length > 0 && <div className="grid items-start gap-3 sm:grid-cols-2">{visible.map(binding => {
       const note = notesById.get(binding.id);
       const status = binding.excludedReason ? '预览文件，已排除' : !binding.available ? '文件不可用' : !binding.logicalCode ? '待填编号' : '已复制并核验';

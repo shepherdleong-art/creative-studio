@@ -1,4 +1,4 @@
-import { seedLiveMixcutProjects } from './live-mixcut-test-helpers.ts';
+import { seedLiveMixcutProjects, seedFormulaMaterialAnalysis } from './live-mixcut-test-helpers.ts';
 /** Public seam: import → external narration → generation worker → actual full-size MP4.
  * Synthetic frame/audio markers isolate format and timing checks from service/model quality.
  */
@@ -75,6 +75,7 @@ try {
       const assetId = await registerManagedCopy(db, 'p', { sourcePath: video.filename });
       registerFormulaAssetBinding(db, 'p', batchId, { assetId, sourcePath: `G${index + 1}_格式.mp4` });
     }
+    await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
     const book = new ExcelJS.Workbook();
     book.addWorksheet('脚本').addRows([['序号', '平台', '镜头数', '预估时长(s)', '画面分镜(逻辑镜号组合)', '脚本文案'],
       [12, '本地验收', 2, 4, 'G1 G2', `${firstCaption}第二镜头。`]]);

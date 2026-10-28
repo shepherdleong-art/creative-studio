@@ -10,6 +10,7 @@ import { readFormulaInputs, type FormulaImportedRow } from './import-store.ts';
 import { readFormulaSettings } from './settings-store.ts';
 import { getFormulaMaterialIndex } from './material-bindings.ts';
 import { readFormulaMaterialNotes } from './material-notes.ts';
+import { formulaMaterialAnalysisGap } from './material-analysis.ts';
 import { resolveFormulaProductionResources } from './production-options.ts';
 import { checkFormulaMusicSelection, selectFormulaMusicPool } from './settings-music.ts';
 import type { FormulaWorkbookPreview } from './workbook.ts';
@@ -49,7 +50,16 @@ function captureInput(db: Database.Database, projectId: string, batchId: string,
     throw new BatchDomainError('conflict', '有待确认的导入预览，请先确认资料再生成');
   }
   const notes = readFormulaMaterialNotes(db, projectId, batchId);
-  if (notes.run?.state === 'running') throw new BatchDomainError('conflict', '素材内容仍在整理，请完成后再生成');
+  if (notes.run?.state === 'running') throw new BatchDomainError('conflict', '素材画面仍在分析，请完成后再生成');
+  // 生成前检查：这次要生成的脚本用到的素材必须都分析过画面，不能退回固定掐头去尾。
+  const selectedScripts = new Set(view.saved.settings.selections.map(item => item.key));
+  const gap = formulaMaterialAnalysisGap(db, projectId, batchId, [...new Set(view.scripts
+    .filter(script => selectedScripts.has(script.key)).flatMap(script => script.codes))]);
+  if (gap.missingSources) {
+    const codes = gap.missingCodes.slice(0, 6).join('、') + (gap.missingCodes.length > 6 ? ' 等' : '');
+    throw new BatchDomainError('conflict',
+      `还有 ${gap.missingSources} 段素材没分析画面（${codes}），请先在第一步点「分析画面」`);
+  }
   const index = getFormulaMaterialIndex(db, projectId, batchId);
   const choices = readFormulaSelectionRules(db, projectId, batchId);
   if (choices.stale) throw new BatchDomainError('conflict', '脚本已修订，请重新核对单镜头指定或清除旧指定后再生成');

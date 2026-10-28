@@ -1,4 +1,4 @@
-import { seedLiveMixcutProjects } from './live-mixcut-test-helpers.ts';
+import { seedLiveMixcutProjects, seedFormulaMaterialAnalysis } from './live-mixcut-test-helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -63,6 +63,7 @@ try {
     voiceReplacementId = await registerManagedCopy(db, 'p', { sourcePath: voice });
     registerFormulaAssetBinding(db, 'p', batchId, { assetId: voiceReplacementId, sourcePath: 'VO2_口播.mp4' });
   }
+  await seedFormulaMaterialAnalysis({ db }, 'p', batchId);
   const baseRevision = manualSpeechMedia ? 4 : 3;
   const originalFormula = 'VO1 G1 G2';
   const book = new ExcelJS.Workbook();

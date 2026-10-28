@@ -6,10 +6,15 @@ import { BatchDomainError } from '../errors.ts';
 import { assertFormulaBatch, getFormulaCollection } from './collection-store.ts';
 import { getFormulaMaterialIndex } from './material-bindings.ts';
 import { readFormulaInputs } from './import-store.ts';
-import { assertVideoContentAnalysis, type VideoContentModel } from '../../media-core/adapters/video-analysis.ts';
+import { assertVideoContentAnalysis, type VideoContentAnalysis, type VideoContentModel } from '../../media-core/adapters/video-analysis.ts';
 import { dataRoot } from '../../data-root.ts';
 import { listAssetSources, resolveSourceFilePath } from '../media-catalog.ts';
 import { verifyFormulaCandidate, recheckFormulaCandidate, type FormulaVerifiedCandidate } from './candidate-media.ts';
+import {
+  formulaAnalysisDescription, listFormulaMaterialAnalyses, saveFormulaMaterialAnalysis,
+  type FormulaMaterialAnalysis,
+} from './material-analysis.ts';
+import { isVoiceOver } from '../scheduling/text.ts';
 
 export interface FormulaMaterialContent {
   description: string; category: string; sellingPoints: string[]; actions: string[];
@@ -27,8 +32,13 @@ export interface FormulaMaterialProfile {
 }
 export interface FormulaMaterialNoteItem {
   bindingId: string; sourceName: string; logicalCode: string | null; excluded: boolean; available: boolean;
+  /** 口播镜头：不看画面，有效片段按原声说话起止算。 */
+  voiceOver: boolean;
   inputFingerprint: string; source: MaterialSource; profile: FormulaMaterialProfile | null; stale: boolean;
+  /** 这段素材的画面分析（按内容指纹存在项目下，换批次也认得）；界面只需要有效片段和描述。 */
+  analysis: FormulaMaterialAnalysisView | null;
 }
+export type FormulaMaterialAnalysisView = Pick<FormulaMaterialAnalysis, 'id' | 'durationUs' | 'usableInUs' | 'usableOutUs' | 'description'>;
 export interface FormulaMaterialOrganizeRun {
   id: string; state: 'running' | 'completed' | 'failed' | 'cancelled'; providerName: string; model: string;
   total: number; succeeded: number; skipped: number; errors: Array<{ bindingId: string; message: string }>; message: string | null;
@@ -48,9 +58,10 @@ export function readFormulaMaterialNotes(db: Database.Database, projectId: strin
   const run: FormulaMaterialOrganizeRun | null = runRow ? { id: runRow.id, state: runRow.state, providerName: runRow.providerName, model: runRow.model,
     total: runRow.total, succeeded: runRow.succeeded, skipped: runRow.skipped, errors: JSON.parse(runRow.errorsJson), message: runRow.message } : null;
   if (run?.state === 'running' && Date.now() - Date.parse(runRow!.updatedAt) > RUN_LEASE_MS) {
-    run.state = 'failed'; run.message = '上次整理已超时或中断，可继续整理未完成项';
+    run.state = 'failed'; run.message = '上次分析已超时或中断，可继续分析未完成项';
   }
   const profiles = collection ? db.prepare('SELECT * FROM live_mixcut_formula_material_profiles WHERE collectionId=? ORDER BY revision DESC').all(collection.id) as ProfileRow[] : [];
+  const analyses = listFormulaMaterialAnalyses(db, projectId);
   const current = new Map<string, FormulaMaterialProfile>();
   for (const row of profiles) {
     if (!current.has(row.bindingId)) current.set(row.bindingId, { id: row.id, revision: row.revision,
@@ -68,13 +79,44 @@ export function readFormulaMaterialNotes(db: Database.Database, projectId: strin
         cells: Object.fromEntries(Object.keys(fields).map(key => [key, definition.source.cells[key]])), fields } : null };
     const inputFingerprint = createHash('sha256').update(JSON.stringify(source)).digest('hex');
     const profile = current.get(binding.id) ?? null;
+    const analysis = analyses.get(binding.contentFingerprint) ?? null;
     return { bindingId: binding.id, sourceName: binding.sourceName, logicalCode: binding.logicalCode,
-      excluded: Boolean(binding.excludedReason), available: binding.available, source, inputFingerprint, profile,
-      stale: Boolean(profile && profile.inputFingerprint !== inputFingerprint) };
+      excluded: Boolean(binding.excludedReason), available: binding.available,
+      voiceOver: isVoiceOver(binding.logicalCode ?? ''),
+      inputFingerprint, source, profile,
+      stale: Boolean(profile && profile.inputFingerprint !== inputFingerprint),
+      analysis: analysis ? { id: analysis.id, durationUs: analysis.durationUs, usableInUs: analysis.usableInUs,
+        usableOutUs: analysis.usableOutUs, description: analysis.description } : null };
   }) };
 }
 
 /** 只看视频画面；人工说明保留，画面观察不冒充原声或人工区间确认。 */
+/** 画面分析结果转成素材说明；不冒充原声，也不覆盖已有的人工核对结果。 */
+function contentFromAnalysis(analysis: VideoContentAnalysis, conflicts: FormulaMaterialContent['conflicts']): FormulaMaterialContent {
+  const description = formulaAnalysisDescription(analysis);
+  if (!description) throw new BatchDomainError('invalid_input', '模型没有给出画面描述，请重试或手动填写说明');
+  const sellingPoints = [...new Set(analysis.sellingPoints.map(value => value.slice(0, 120).trim()).filter(Boolean))].slice(0, 10);
+  const actions = [...new Set(analysis.scenes.map(scene => scene.description.slice(0, 120).trim()).filter(Boolean))].slice(0, 10);
+  return {
+    description, category: '', sellingPoints, actions, speech: 'unknown',
+    evidence: [
+      { field: 'description', source: 'video_frame', quote: description.slice(0, 300) },
+      ...sellingPoints.map(quote => ({ field: 'sellingPoints' as const, source: 'video_frame' as const, quote })),
+      ...actions.map(quote => ({ field: 'actions' as const, source: 'video_frame' as const, quote })),
+    ],
+    conflicts,
+  };
+}
+
+interface CommitEntry {
+  bindingId: string; inputFingerprint: string; expectedProfileId: string | null;
+  content: unknown; provenance: Record<string, unknown>;
+}
+
+/**
+ * 分析画面：用户点开始、选好视觉模型后才调用。
+ * 口播镜头不看画面；同一段内容在项目里只分析一次，换批次只补写这条来源的说明。
+ */
 export async function organizeFormulaMaterialNotes(db: Database.Database, projectId: string, batchId: string,
   input: { expectedRevision: number; signal?: AbortSignal }, model: VideoContentModel,
 ): Promise<FormulaMaterialNotesView> {
@@ -84,24 +126,28 @@ export async function organizeFormulaMaterialNotes(db: Database.Database, projec
     assertFormulaBatch(db, projectId, batchId, true);
     const view = readFormulaMaterialNotes(db, projectId, batchId);
     if (view.revision !== input.expectedRevision) throw new BatchDomainError('conflict', '素材资料已更新，请刷新后重试');
-    if (view.run?.state === 'running') throw new BatchDomainError('conflict', '此批次已经在整理素材，请等待完成');
+    if (view.run?.state === 'running') throw new BatchDomainError('conflict', '此批次正在分析画面，请等待完成');
     const collection = getFormulaCollection(db, projectId, batchId);
-    const candidates = view.items.filter(item => !item.excluded && item.available);
-    if (!collection || !candidates.length) throw new BatchDomainError('invalid_input', '请先导入可用的正式视频');
+    // 口播镜头的有效片段按原声说话起止算，不看画面。
+    const candidates = view.items.filter(item => !item.excluded && item.available && !item.voiceOver);
+    if (!collection || !candidates.length) throw new BatchDomainError('invalid_input', '请先导入可用的正式视频；口播镜头不做画面分析');
     const active = db.prepare("SELECT count(*) AS count FROM live_mixcut_formula_material_organize_runs WHERE state='running' AND providerId=? AND updatedAt>?")
       .get(model.id, new Date(Date.now() - RUN_LEASE_MS).toISOString()) as { count: number };
-    if (active.count >= 2) throw new BatchDomainError('conflict', '此模型已有两批素材正在整理，请稍后重试');
+    if (active.count >= 2) throw new BatchDomainError('conflict', '此模型已有两批素材在分析画面，请稍后重试');
     const pending = candidates.filter(item => !item.profile || (item.profile.origin === 'ai'
       && (item.stale || item.profile.provenance.visualObservation !== true)));
-    if (pending.length > 2000) throw new BatchDomainError('invalid_input', '单批最多整理 2,000 个文件来源，请拆分批次');
+    if (pending.length > 2000) throw new BatchDomainError('invalid_input', '单批最多分析 2,000 个文件来源，请拆分批次');
+    // 已经分析过同一段内容的素材不再调模型；只把这段来源的说明补上。
+    const cached = listFormulaMaterialAnalyses(db, projectId);
+    const modelWork = pending.filter(item => !cached.has(item.source.contentFingerprint));
     const id = randomUUID();
     const now = new Date().toISOString();
     db.prepare(`INSERT INTO live_mixcut_formula_material_organize_runs
       (id,collectionId,providerId,providerName,model,promptVersion,inputJson,state,total,skipped,startedAt,updatedAt)
       VALUES (?,?,?,?,?,?,?,'running',?,?,?,?)`).run(id, collection.id, model.id, model.name, model.model, promptVersion,
-      JSON.stringify(pending.map(item => ({ source: item.source, inputFingerprint: item.inputFingerprint, expectedProfileId: item.profile?.id ?? null }))),
+      JSON.stringify(modelWork.map(item => ({ source: item.source, inputFingerprint: item.inputFingerprint, expectedProfileId: item.profile?.id ?? null }))),
       pending.length, candidates.length - pending.length, now, now);
-    return { id, collectionId: collection.id, pending, skipped: candidates.length - pending.length };
+    return { id, collectionId: collection.id, pending, cached, modelWork, skipped: candidates.length - pending.length };
   }).immediate();
   const timeout = AbortSignal.timeout(15 * 60_000);
   const signal = input.signal ? AbortSignal.any([timeout, input.signal]) : timeout;
@@ -111,12 +157,44 @@ export async function organizeFormulaMaterialNotes(db: Database.Database, projec
   function assertRunActive() {
     assertFormulaBatch(db, projectId, batchId, true);
     const row = db.prepare('SELECT state,updatedAt FROM live_mixcut_formula_material_organize_runs WHERE id=?').get(started.id) as { state: string; updatedAt: string };
-    if (row.state !== 'running' || Date.now() - Date.parse(row.updatedAt) > RUN_LEASE_MS) throw new BatchDomainError('conflict', '这次整理已失效，请刷新后继续未完成项');
+    if (row.state !== 'running' || Date.now() - Date.parse(row.updatedAt) > RUN_LEASE_MS) throw new BatchDomainError('conflict', '这次分析已失效，请刷新后继续未完成项');
   }
   function update(state: FormulaMaterialOrganizeRun['state'], message: string | null = null,
     counts = { succeeded, skipped, errors }) {
     db.prepare('UPDATE live_mixcut_formula_material_organize_runs SET state=?,succeeded=?,skipped=?,errorsJson=?,message=?,updatedAt=? WHERE id=?')
       .run(state, counts.succeeded, counts.skipped, JSON.stringify(counts.errors), message, new Date().toISOString(), started.id);
+  }
+  function commit(entries: readonly CommitEntry[], candidate: FormulaVerifiedCandidate | null) {
+    return db.transaction(() => {
+      signal.throwIfAborted();
+      assertRunActive();
+      const latest = readFormulaMaterialNotes(db, projectId, batchId);
+      let saved = 0;
+      let superseded = 0;
+      const failed: FormulaMaterialOrganizeRun['errors'] = [];
+      for (const entry of entries) {
+        const item = latest.items.find(item => item.bindingId === entry.bindingId);
+        if (!item || item.excluded || !item.available || item.inputFingerprint !== entry.inputFingerprint) {
+          failed.push({ bindingId: entry.bindingId, message: '来源或素材表已变化，请重新分析' }); continue;
+        }
+        if ((item.profile?.id ?? null) !== entry.expectedProfileId) {
+          superseded++; continue; // 人工或其他请求已更新，旧结果不覆盖。
+        }
+        try {
+          if (candidate) recheckFormulaCandidate(db, projectId, candidate);
+          const content = validateContent(entry.content, item.source, true, true);
+          appendProfile(db, started.collectionId, item, content, 'ai', { runId: started.id, promptVersion,
+            ...entry.provenance, previousProfileId: item.profile?.id ?? null });
+          saved++;
+        } catch (error) {
+          if (!(error instanceof BatchDomainError)) throw error;
+          failed.push({ bindingId: item.bindingId, message: error.message });
+        }
+      }
+      // 说明有自己的追加修订；不使正在预览的原表失效。生成输入须冻结确切 profileId。
+      update('running', null, { succeeded: succeeded + saved, skipped: skipped + superseded, errors: [...errors, ...failed] });
+      return { saved, superseded, failed };
+    }).immediate();
   }
   // 抽帧/视觉调用可能超过一次租约周期；停止仍由请求信号及提交前检查共同约束。
   const heartbeat = setInterval(() => {
@@ -124,16 +202,37 @@ export async function organizeFormulaMaterialNotes(db: Database.Database, projec
       .run(new Date().toISOString(), started.id);
   }, 20_000);
   try {
-    const chunkSize = 1;
-    for (let offset = 0; offset < started.pending.length; offset += chunkSize) {
+    // 这段素材之前已经分析过：直接按缓存补说明，不花模型费。
+    const cachedWork = started.pending.filter(item => started.cached.has(item.source.contentFingerprint));
+    if (cachedWork.length) {
+      const entries: CommitEntry[] = [];
+      for (const item of cachedWork) {
+        const analysis = started.cached.get(item.source.contentFingerprint)!;
+        try {
+          entries.push({ bindingId: item.bindingId, inputFingerprint: item.inputFingerprint,
+            expectedProfileId: item.profile?.id ?? null,
+            content: contentFromAnalysis(analysis.analysis, item.profile?.content.conflicts ?? []),
+            provenance: { providerId: analysis.providerId, providerName: analysis.providerName, model: analysis.model,
+              basis: 'video_frames', visualObservation: true, timingAssessed: false, analysisId: analysis.id } });
+        } catch (error) {
+          if (!(error instanceof BatchDomainError)) throw error;
+          errors.push({ bindingId: item.bindingId, message: error.message });
+        }
+      }
+      if (entries.length) {
+        const committed = commit(entries, null);
+        succeeded += committed.saved;
+        skipped += committed.superseded;
+        errors.push(...committed.failed);
+      }
+    }
+    for (const item of started.modelWork) {
       signal.throwIfAborted();
       assertRunActive();
-      const chunk = started.pending.slice(offset, offset + chunkSize);
-      let entries: Array<{ bindingId: string; content: unknown }>;
+      let entry: CommitEntry | null = null;
       let candidate: FormulaVerifiedCandidate | null = null;
       try {
         if (!('analyze' in model)) throw new BatchDomainError('invalid_input', '请选择支持画面理解的模型');
-        const item = chunk[0];
         candidate = await verifyFormulaCandidate(db, projectId, item.source.assetId, item.source.contentFingerprint,
           listAssetSources(db, item.source.assetId).map(source => ({ id: source.id, location: source.locationJson })), signal);
         if (!candidate) throw new BatchDomainError('invalid_input', '原片无法核验，请检查素材后重试');
@@ -141,61 +240,32 @@ export async function organizeFormulaMaterialNotes(db: Database.Database, projec
         try {
           const analysis = await model.analyze({ filePath: resolveSourceFilePath(candidate.location), assetId: item.source.assetId, cacheDir, signal });
           assertVideoContentAnalysis(analysis);
-          const description = (analysis.summary || analysis.scenes.map(scene => scene.description).join('；')).slice(0, 400);
-          const sellingPoints = analysis.sellingPoints.slice(0, 10).map(value => value.slice(0, 120));
-          const actions = analysis.scenes.map(scene => scene.description).filter(Boolean).slice(0, 10).map(value => value.slice(0, 120));
-          entries = [{ bindingId: item.bindingId, content: { description, category: '', sellingPoints, actions, speech: 'unknown',
-            evidence: [{ field: 'description', source: 'video_frame', quote: description.slice(0, 300) },
-              ...sellingPoints.map(quote => ({ field: 'sellingPoints', source: 'video_frame', quote })),
-              ...actions.map(quote => ({ field: 'actions', source: 'video_frame', quote }))], conflicts: item.profile?.content.conflicts ?? [] } }];
+          const content = contentFromAnalysis(analysis, item.profile?.content.conflicts ?? []);
+          // 先按内容存下分析结果：说明写入失败也不用来回重花模型费。
+          const saved = saveFormulaMaterialAnalysis(db, projectId, { contentFingerprint: item.source.contentFingerprint, analysis,
+            provider: { id: model.id, name: model.name, model: model.model } });
+          entry = { bindingId: item.bindingId, inputFingerprint: item.inputFingerprint,
+            expectedProfileId: item.profile?.id ?? null, content,
+            provenance: { providerId: model.id, providerName: model.name, model: model.model, basis: 'video_frames',
+              visualObservation: true, timingAssessed: false, analysisId: saved.id } };
         } finally { fs.rmSync(cacheDir, { recursive: true, force: true }); }
       } catch (error) {
         signal.throwIfAborted();
         assertRunActive();
-        const message = error instanceof BatchDomainError ? error.message : '模型整理失败，请检查模型配置后重试';
-        errors.push(...chunk.map(item => ({ bindingId: item.bindingId, message })));
+        const message = error instanceof BatchDomainError ? error.message : '模型分析失败，请检查模型配置后重试';
+        errors.push({ bindingId: item.bindingId, message });
         update('running');
         continue;
       }
-      const committed = db.transaction(() => {
-        signal.throwIfAborted();
-        assertRunActive();
-        const latest = readFormulaMaterialNotes(db, projectId, batchId);
-        let saved = 0;
-        let superseded = 0;
-        const failed: FormulaMaterialOrganizeRun['errors'] = [];
-        for (const original of chunk) {
-          const item = latest.items.find(item => item.bindingId === original.bindingId);
-          if (!item || item.excluded || !item.available || item.inputFingerprint !== original.inputFingerprint) {
-            failed.push({ bindingId: original.bindingId, message: '来源或素材表已变化，请重新整理' }); continue;
-          }
-          if ((item.profile?.id ?? null) !== (original.profile?.id ?? null)) {
-            superseded++; continue; // 人工或其他请求已更新，旧模型响应不覆盖。
-          }
-          try {
-            if (candidate) recheckFormulaCandidate(db, projectId, candidate);
-            const content = validateContent(entries.find(entry => entry.bindingId === item.bindingId)!.content, item.source, true, true);
-            appendProfile(db, started.collectionId, item, content, 'ai', { runId: started.id, providerId: model.id,
-              providerName: model.name, model: model.model, promptVersion, basis: 'video_frames',
-              visualObservation: true, timingAssessed: false, previousProfileId: item.profile?.id ?? null });
-            saved++;
-          } catch (error) {
-            if (!(error instanceof BatchDomainError)) throw error;
-            failed.push({ bindingId: item.bindingId, message: error.message });
-          }
-        }
-        // 说明有自己的追加修订；不使正在预览的原表失效。生成输入须冻结确切 profileId。
-        update('running', null, { succeeded: succeeded + saved, skipped: skipped + superseded, errors: [...errors, ...failed] });
-        return { saved, superseded, failed };
-      }).immediate();
+      const committed = commit([entry], candidate);
       succeeded += committed.saved;
       skipped += committed.superseded;
       errors.push(...committed.failed);
     }
-    update(errors.length ? 'failed' : 'completed', errors.length ? '部分素材尚未整理完成，可继续未完成项' : null);
+    update(errors.length ? 'failed' : 'completed', errors.length ? '部分素材尚未分析完成，可继续未完成项' : null);
   } catch (error) {
-    update(signal.aborted ? 'cancelled' : 'failed', signal.aborted ? '本次整理已停止，已保存结果保留，可继续未完成项'
-      : error instanceof BatchDomainError ? error.message : '本次整理中断，已保存结果保留');
+    update(signal.aborted ? 'cancelled' : 'failed', signal.aborted ? '本次分析已停止，已保存结果保留，可继续未完成项'
+      : error instanceof BatchDomainError ? error.message : '本次分析中断，已保存结果保留');
   } finally { clearInterval(heartbeat); }
   return readFormulaMaterialNotes(db, projectId, batchId);
 }
