@@ -42,6 +42,17 @@ try {
   assert.equal(calls[0].headers['X-Api-Sequence'], '-1');
   assert.equal(calls[0].body.audio.data, Buffer.from('RIFF-test-audio').toString('base64'));
 
+  // 官方 20000003 表示未检测到人声，是明确识别结果，不是配置错误或空响应。
+  calls = stubReplies([{ code: '20000003' }]);
+  assert.deepEqual(await adapter.transcribe({ audioPath, durationUs: 1_000_000 }), {
+    text: '', words: [], noSpeech: { provider: 'volc', statusCode: '20000003' },
+  });
+  assert.equal(calls.length, 1, '明确无人声结果不重试');
+  stubReplies([{ code: '20000000', body: { result: { text: '', utterances: [] } } }]);
+  await assert.rejects(adapter.transcribe({ audioPath, durationUs: 1_000_000 }), /未返回/);
+  stubReplies([{ status: 400, code: '20000003' }]);
+  await assert.rejects(adapter.transcribe({ audioPath, durationUs: 1_000_000 }), /失败/);
+
   // 服务繁忙重试一次后成功。
   calls = stubReplies([{ code: '55000031' }, ok([['好', 0, 200]])]);
   assert.equal((await adapter.transcribe({ audioPath, durationUs: 1_000_000 })).text, '好');
@@ -60,6 +71,17 @@ try {
   stubReplies([ok([['坐', 100, 400], ['得', 350, 350], ['稳', 400, 1_020]])]);
   const fixed = await adapter.transcribe({ audioPath, durationUs: 1_000_000 });
   assert.deepEqual(fixed.words.map(word => [word.startUs, word.endUs]), [[100_000, 400_000], [400_000, 401_000], [401_000, 1_000_000]]);
+
+  // 真实 SeedASR 响应会在中英文之间插入无时间的空格，不能让整段有效台词失败。
+  stubReplies([ok([['爆款', 100, 300], [' ', -1, -1], ['PS', 350, 500], ['866', 500, 800]], '爆款 PS866。')]);
+  const spaced = await adapter.transcribe({ audioPath, durationUs: 1_000_000 });
+  assert.deepEqual(spaced.words.map(word => word.text), ['爆款', 'PS', '866']);
+  assert.equal(spaced.text, '爆款 PS866。');
+  // 只允许忽略空白占位；真正台词缺时间必须继续失败，不可编造有效区间。
+  stubReplies([ok([['好', -1, -1]])]);
+  await assert.rejects(adapter.transcribe({ audioPath, durationUs: 1_000_000 }), /时间/);
+  stubReplies([ok([[' ', -1, -1]], '缺失台词')]);
+  await assert.rejects(adapter.transcribe({ audioPath, durationUs: 1_000_000 }), /未返回|不一致/);
 
   // 超出时长太多、台词和逐字内容对不上：都当失败。
   stubReplies([ok([['好', 100, 2_000]])]);

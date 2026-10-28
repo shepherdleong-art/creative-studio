@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { speechContent, type SpeechTranscriptionAdapter } from './alignment.ts';
+import { SpeechTranscriptionError } from './speech-errors.ts';
 
 export const VOLC_FLASH_ASR_URL = 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash';
 /**
@@ -39,7 +40,7 @@ export function createVolcFlashAsrAdapter(env: Environment = process.env): Speec
       const timeout = AbortSignal.timeout(TIMEOUT_MS);
       const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
       const body = JSON.stringify({ user: { uid: 'creative-studio' },
-        audio: { data: fs.readFileSync(audioPath).toString('base64') }, request: { model_name: 'bigmodel' } });
+        audio: { data: fs.readFileSync(audioPath).toString('base64') }, request: { model_name: 'bigmodel', show_utterances: true } });
       let payload: VolcPayload | undefined;
       for (let attempt = 0; ; attempt += 1) {
         requestSignal.throwIfAborted();
@@ -49,39 +50,47 @@ export function createVolcFlashAsrAdapter(env: Environment = process.env): Speec
         const status = response.headers.get('X-Api-Status-Code') ?? '';
         if (status === '20000000') { payload = await response.json() as VolcPayload; break; }
         await response.body?.cancel();
+        // 官方终态：静音音频 / 未检测到人声。与成功但缺少文本、鉴权失败严格区分。
+        if (response.ok && status === '20000003') {
+          return { text: '', words: [], noSpeech: { provider: 'volc', statusCode: '20000003' } };
+        }
         const busy = status === '55000031' || response.status === 429 || response.status >= 500;
         if (!busy || attempt >= RETRY_DELAYS_MS.length) {
-          const logId = response.headers.get('X-Tt-Logid');
-          const apiMessage = response.headers.get('X-Api-Message') ?? '';
+          // 只输出已知类别，不把上游任意响应头（可能含鉴权信息）展示给用户。
           // 45000030 是「这个 Key 没开通该 Resource-Id」，光看状态码会误判成 Key 失效，
-          // 把服务端原话带出去，用户才知道该去开通哪个资源。
+          // 用固定提示说明资源未授权，避免误导用户更换有效的 Key。
           const hint = status === '45000030'
             ? `：当前 Key 未开通 Resource-Id「${resourceId}」，请在火山智能语音控制台开通该服务，或改填已授权的 Resource-Id`
             : status === '45000010' ? '：Key 无效，请检查是否填了语音服务（而非方舟）的凭证' : '';
-          throw new Error(`火山原声识别失败（${status || `HTTP ${response.status}`}${apiMessage ? `，${apiMessage}` : ''}${logId ? `，Log ID ${logId}` : ''}）${hint}`);
+          const code = /^\d{8}$/.test(status ?? '') ? status : `HTTP ${response.status}`;
+          throw new SpeechTranscriptionError(`火山原声识别失败（${code}）${hint || (busy ? '：服务繁忙或限流，请稍后重试。' : '：请检查语音服务配置后重试。')}`);
         }
         await delay(RETRY_DELAYS_MS[attempt], undefined, { signal: requestSignal });
       }
       const text = typeof payload?.result?.text === 'string' ? payload.result.text.trim() : '';
-      const raw = (payload?.result?.utterances ?? []).flatMap(utterance => utterance.words ?? []);
-      if (!text || !raw.length) throw new Error('未取得完整台词及逐字时间，请重试或人工核对原声');
+      // SeedASR 在中英文之间可能返回 {text:' ',start_time:-1,end_time:-1}。
+      // 空白不是发音单元；仅过滤空白，台词及数字的缺失时间仍须拒绝。
+      const raw = (payload?.result?.utterances ?? []).flatMap(utterance => utterance.words ?? [])
+        .filter(word => typeof word?.text !== 'string' || Boolean(word.text.trim()));
+      if (!text || !raw.length) throw new SpeechTranscriptionError('识别服务未返回完整台词及逐字时间，请重试；空结果不能直接认定为没有人声。');
       let previousEnd = 0;
       const words = raw.map(word => {
-        if (typeof word.text !== 'string' || !word.text.trim() || typeof word.start_time !== 'number' || typeof word.end_time !== 'number') {
-          throw new Error('火山返回的逐字时间格式无效');
+        if (!word || typeof word.text !== 'string' || !word.text.trim() || typeof word.start_time !== 'number' || typeof word.end_time !== 'number'
+          || !Number.isFinite(word.start_time) || !Number.isFinite(word.end_time) || word.start_time < 0 || word.end_time < word.start_time) {
+          throw new SpeechTranscriptionError('火山返回的台词时间格式无效，请重试识别。');
         }
         // 相邻字的时间偶尔重叠或为零长度：起点不早于上一个字的终点，终点至少比起点晚 1 毫秒。
         const startUs = Math.max(previousEnd, Math.round(word.start_time * 1_000));
         let endUs = Math.max(startUs + 1_000, Math.round(word.end_time * 1_000));
         if (endUs > durationUs) {
-          if (endUs - durationUs > END_TOLERANCE_US || startUs >= durationUs) throw new Error('火山返回的逐字时间超出原片长度');
+          if (endUs - durationUs > END_TOLERANCE_US || startUs >= durationUs) throw new SpeechTranscriptionError('火山返回的逐字时间超出原片长度，请重试识别。');
           endUs = durationUs;
         }
         previousEnd = endUs;
         return { text: word.text.trim(), startUs, endUs };
       });
       if (speechContent(text) !== speechContent(words.map(word => word.text).join(''))) {
-        throw new Error('台词与逐字时间不一致，请核对原声');
+        throw new SpeechTranscriptionError('识别文本与逐字时间对应的台词不一致，请重试识别。');
       }
       return { text, words };
     },

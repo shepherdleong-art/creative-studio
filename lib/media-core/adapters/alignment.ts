@@ -23,6 +23,8 @@ export interface AlignmentAdapterConfig {
 export interface SpeechTranscription {
   text: string;
   words: AlignmentWordTiming[];
+  /** 仅映射服务明确的无人声状态；空文本或调用失败不能产生此结论。 */
+  noSpeech?: { provider: 'volc'; statusCode: '20000003' };
 }
 export interface SpeechTranscriptionAdapter {
   configured: boolean;
