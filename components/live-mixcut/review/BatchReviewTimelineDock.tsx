@@ -30,7 +30,7 @@ const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(
 const MIN_CLIP_US = 500_000;
 const SNAP_THRESHOLD_PX = 9;
 
-export type ReviewRowFilter = 'all' | 'pending' | 'approved' | 'overlap' | 'replacement';
+export type ReviewRowFilter = 'all' | 'pending' | 'approved' | 'overlap' | 'replacement' | 'marked';
 
 type Arrangement = BatchOutputClipEditView;
 
@@ -210,6 +210,7 @@ export default function BatchReviewTimelineDock({
     if (rowFilter === 'pending') return films.filter((f) => !f.approved);
     if (rowFilter === 'approved') return films.filter((f) => f.approved);
     if (rowFilter === 'replacement') return films.filter(f => (f.formula?.replacementCount ?? 0) > 0);
+    if (rowFilter === 'marked') return films.filter(f => (f.formula?.reviewMarks?.length ?? 0) > 0);
     return films;
   }, [films, rowFilter]);
 
@@ -1046,6 +1047,8 @@ export default function BatchReviewTimelineDock({
               ['approved', `已确认 ${approvedCount}`],
               ['overlap', '区间重复'],
               ...(films.some(film => film.formula) ? [['replacement', `有替换 ${films.filter(film => (film.formula?.replacementCount ?? 0) > 0).length}`]] : []),
+              ...(films.some(film => (film.formula?.reviewMarks?.length ?? 0) > 0)
+                ? [['marked', `有标记 ${films.filter(film => (film.formula?.reviewMarks?.length ?? 0) > 0).length}`]] : []),
             ] as Array<[ReviewRowFilter, string]>
           ).map(([id, label]) => (
             <button
@@ -1383,7 +1386,8 @@ export default function BatchReviewTimelineDock({
 
                   {film.formula && <p className="mt-1 text-[10px] text-warn" role="status">
                     {film.arrangement?.reviewContext?.issues.some(issue => issue.kind === 'deviation') ? `人工改编 · ${film.approved ? '已确认' : '待审'}。` : ''}
-                    {film.formula.replacementCount > 0 ? `替换 ${film.formula.replacementCount} 处 · ${film.approved ? '已确认' : '待审'}。` : ''}{film.formula.message}
+                    {film.formula.replacementCount > 0 ? `替换 ${film.formula.replacementCount} 处 · ${film.approved ? '已确认' : '待审'}。` : ''}
+                    {(film.formula.reviewMarks?.length ?? 0) > 0 ? `AI 改过 ${film.formula.reviewMarks.length} 处 · ${film.approved ? '已确认' : '待审'}。` : ''}{film.formula.message}
                   </p>}
                   <div className="flex items-center justify-between text-[10px] text-ink-tertiary pt-2 border-t border-hairline/60">
                     <span>{film.formula && !film.arrangement && !film.formula.bodyDurationUs ? '时长待确定' : `时长 ${film.durationSec.toFixed(1)}s`}</span>

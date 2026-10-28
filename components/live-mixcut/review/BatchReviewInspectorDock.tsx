@@ -246,6 +246,12 @@ export default function BatchReviewInspectorDock({
       </div>
 
       <div className={styles.inspectorScroll}>
+        {!!film?.formula?.reviewMarks?.length && <details open className="mb-3 rounded-lg border border-warn/40 bg-warn/5 p-2 text-xs text-ink-secondary" data-testid="formula-review-marks">
+          <summary className="cursor-pointer font-medium text-ink">AI 改过的地方（{film.formula.reviewMarks.length}）</summary>
+          <ul className="mt-2 space-y-1">
+            {film.formula.reviewMarks.map((mark, index) => <li key={index} className="text-warn" data-mark-kind={mark.kind}>{mark.message}</li>)}
+          </ul>
+        </details>}
         {!!arrangement.reviewContext?.issues.length && <details className="mb-3 rounded-lg border border-line p-2 text-xs text-ink-secondary" data-testid="batch-review-issues">
           <summary className="cursor-pointer font-medium text-ink">本次确认包含的提醒（{arrangement.reviewContext.issues.length}）</summary>
           <ul className="mt-2 space-y-2">

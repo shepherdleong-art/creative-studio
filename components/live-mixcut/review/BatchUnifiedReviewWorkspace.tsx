@@ -11,7 +11,7 @@ import type { SourceMonitorSession } from './BatchSourceMonitor';
 import BatchReviewPoolDock from './BatchReviewPoolDock';
 import BatchReviewPreviewDock from './BatchReviewPreviewDock';
 import BatchReviewInspectorDock from './BatchReviewInspectorDock';
-import BatchReviewTimelineDock from './BatchReviewTimelineDock';
+import BatchReviewTimelineDock, { type ReviewRowFilter } from './BatchReviewTimelineDock';
 import type { InspectorTab, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
 import styles from './batch-unified-review.module.css';
 import { subtitleSplitEdit } from './subtitle-edit';
@@ -634,7 +634,7 @@ export default function BatchUnifiedReviewWorkspace({
   const approvedCount = films.filter((f) => f.approved).length;
 
   // v14 时间轴行筛选:全部 / 待检查 / 已确认 / 区间重复(只影响行展示,不改数据与眼睛)
-  const [rowFilter, setRowFilter] = useState<'all' | 'pending' | 'approved' | 'overlap' | 'replacement'>('all');
+  const [rowFilter, setRowFilter] = useState<ReviewRowFilter>('all');
 
   // v14「显示全部轨道」:一键恢复所有眼睛可见性
   const handleShowAll = useCallback(() => {

@@ -201,6 +201,15 @@ try {
   assert.ok(arrangement12.formulaExecution?.stageId, '执行检查已经通过并记在成片上');
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM live_mixcut_formula_schedule_output_versions').get() as { count: number }).count, 3);
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM live_mixcut_formula_schedule_execution_results').get() as { count: number }).count, 3);
+  const card12 = getBatchWorkspace(db, 'p', batchId).cards.find(card => card.planId === planId(0))!;
+  const marks12 = card12.formula!.reviewMarks;
+  assert.ok(marks12.length > 0, '工作台的成片摘要带 AI 改过的地方');
+  assert.ok(marks12.some(mark => mark.kind === 'skipped-line' && mark.message.includes('文案逐字写着这句')),
+    '省掉的文案行说清是哪一行、被哪段口播说了');
+  assert.ok(marks12.some(mark => mark.kind === 'substitute' && mark.message.includes('G2')),
+    '替代镜头说清顶替了哪个缺号');
+  assert.ok(marks12.every(mark => mark.message.trim().length > 0));
+  assert.equal(card12.formula!.bodyDurationUs, schedule12.timeline.totalDurationUs, '工作台显示的时长就是排出来的长度');
   const review12 = batchOutputReviewContext(db, output12.id, arrangement12);
   assert.equal(review12.issues.filter(issue => issue.kind === 'deviation').length, 0,
     'AI 自己排出的补镜、替镜和没用上的镜头不算人工改动');
@@ -230,6 +239,8 @@ try {
   assert.equal(legacy.rulesVersion, 'formula-generation/1', '旧批次照旧版本读');
   const legacyWorkspace = getBatchWorkspace(db, 'p', legacyBatch).formulaGeneration;
   assert.equal(legacyWorkspace?.items[0].phase, '选片', '旧批次照旧能打开看');
+  const legacyCard = getBatchWorkspace(db, 'p', legacyBatch).cards[0];
+  assert.deepEqual(legacyCard.formula?.reviewMarks ?? [], [], '旧批次没有标记就不显示');
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM live_mixcut_formula_judgment_stages').get() as { count: number }).count, 3,
     '旧批次不建新规矩的判断阶段，判断阶段仍只有新批次那三份');
 
