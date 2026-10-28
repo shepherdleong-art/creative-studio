@@ -1,4 +1,3 @@
-import { requiresReassembledUpstreamRework, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
 import { resolveTemplateOpeningCode } from '@/lib/media-core/production-code-reader';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
@@ -31,7 +30,8 @@ export async function POST(
   try {
     const { id: shotSetId } = await params;
     const db = getDb();
-    if (requiresReassembledUpstreamRework(db, shotSetId)) return NextResponse.json({ error: REASSEMBLED_REWORK_REQUIRED }, { status: 409 });
+    // Append independent candidates; never replace synced receipts or film selections.
+    // This is also safe before a reassembled production has been adopted into mixcut.
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
 
     const shotId = body.shotId as string;

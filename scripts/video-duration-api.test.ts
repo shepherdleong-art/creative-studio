@@ -142,17 +142,54 @@ try {
   assert.equal(created.capabilities.durations[0], 4);
 
 
-  // 已登记但尚未并入智能混剪的成片（并入后放行的规则见 reassembled-video-guard.test.ts）。
-  db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, narrationConfigJson, coverTitleJson, textStylesJson, createdAt, updatedAt)
-    VALUES ('group', 'project', 'script', 'set', '{}', 'hash', '{}', '{}', '{}', 'now', 'now')`).run();
-  db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, createdAt, updatedAt)
-    VALUES ('variant', 'group', 1, 'test', '{}', '{}', '{}', 'now', 'now')`).run();
-  db.prepare(`INSERT INTO final_edit_film_bindings (id, importKey, importHash, projectId, shotSetId, groupId, variantId, specJson, candidatesJson, manifestJson, inputHashesJson, managedRootRelative, deliveryDir, baseName, reviewToken, createdAt)
-    VALUES ('binding', 'import', 'hash', 'project', 'set', 'group', 'variant', '{}', '{}', '{}', '{}', 'test', '/test', 'test', 'token', 'now')`).run();
-  for (const handler of [single, batch]) {
-    const response = await submit(handler, {});
-    assert.equal(response.status, 409, 'registered films cannot bypass versioned rework');
-    assert.equal((db.prepare('SELECT COUNT(*) n FROM video_jobs').get() as { n: number }).n, 0);
+  db.exec(`
+    INSERT INTO final_edit_film_productions (id,requestId,requestJson,projectId,root,createdAt)
+      VALUES ('production','request','{}','project','/test','now');
+    INSERT INTO final_edit_film_production_items (id,productionId,filmKey,importKey,title,shotSetId,groupId,variantId,draftId,shotIdsJson,snapshotJson,registryJson,baselineJson,updatedAt)
+      VALUES ('item','production','film','import','test','set','group','variant','script','{}','{}','{"videos":{"synced":{"id":"synced-video"}}}','frozen production baseline','now');
+  `);
+  // Step four appends independent candidates even before production has a film binding.
+  // It must never change synced media, current image selection, or the saved film.
+  const protectedTables = ['shots', 'shot_sets', 'final_edit_groups', 'final_edit_film_productions', 'final_edit_film_production_items', 'final_edit_film_bindings', 'final_edit_variants'];
+  const snapshot = () => protectedTables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
+  for (const stage of ['production', 'legacy', 'adopted']) {
+    if (stage === 'legacy') {
+      db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, narrationConfigJson, coverTitleJson, textStylesJson, createdAt, updatedAt)
+        VALUES ('group', 'project', 'script', 'set', '{}', 'hash', '{}', '{}', '{}', 'now', 'now')`).run();
+      db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, createdAt, updatedAt)
+        VALUES ('variant', 'group', 1, 'test', '{}', '{}', '{}', 'now', 'now')`).run();
+      db.prepare(`INSERT INTO final_edit_film_bindings (id, importKey, importHash, projectId, shotSetId, groupId, variantId, specJson, candidatesJson, manifestJson, inputHashesJson, managedRootRelative, deliveryDir, baseName, reviewToken, createdAt)
+        VALUES ('binding', 'import', 'hash', 'project', 'set', 'group', 'variant', '{}', '{}', '{}', '{}', 'test', '/test', 'test', 'token', 'now')`).run();
+      db.prepare('UPDATE final_edit_variants SET timelineJson=? WHERE id=?').run(JSON.stringify({ clips: [{ videoJobId: 'synced-video' }] }), 'variant');
+      db.prepare('UPDATE final_edit_film_production_items SET bindingId=? WHERE id=?').run('binding', 'item');
+    }
+    if (stage === 'adopted') db.prepare('UPDATE final_edit_variants SET timelineJson=?').run(
+      JSON.stringify({ importedFilmEditor: 'mixcut', clips: [{ videoJobId: 'synced-video' }] }),
+    );
+    assert.equal(reassembledGuard.requiresReassembledUpstreamRework(db, 'set'), stage !== 'adopted');
+    for (const handler of [single, batch]) {
+      db.exec(`DELETE FROM video_jobs;
+        INSERT INTO video_jobs(id, projectId, shotSetId, shotId, sourceImageId, prompt, providerId, model, durationSec, status)
+        VALUES ('synced-video','project','set','shot','image','original synced prompt','kling','kling-3.0',5,'succeeded');`);
+      const originalVideo = db.prepare('SELECT * FROM video_jobs WHERE id=?').get('synced-video');
+      const before = snapshot();
+      const item = { providerId: 'kling', prompt: 'new independent candidate', durationSec: 5 };
+      const body = handler === single ? { shotId: 'shot', ...item } : { shotId: 'shot', items: [item, item] };
+      const response = await handler(new Request('http://localhost/test', { method: 'POST', body: JSON.stringify(body) }), { params: Promise.resolve({ id: 'set' }) });
+      assert.equal(response.status, 200, `${stage}: step four should append videos: ${await response.text()}`);
+      const added = db.prepare('SELECT * FROM video_jobs WHERE id<>?').all('synced-video') as Array<Record<string, unknown>>;
+      assert.equal(added.length, handler === single ? 1 : 2);
+      for (const job of added) {
+        assert.equal(job.projectId, 'project');
+        assert.equal(job.shotSetId, 'set');
+        assert.equal(job.shotId, 'shot');
+        assert.equal(job.sourceImageId, 'image');
+        assert.equal(job.model, 'kling-3.0');
+        assert.equal(job.prompt, item.prompt);
+      }
+      assert.deepEqual(db.prepare('SELECT * FROM video_jobs WHERE id=?').get('synced-video'), originalVideo);
+      assert.deepEqual(snapshot(), before, `${stage}: appending candidates must preserve production and film selection`);
+    }
   }
   console.log('video-duration API tests passed');
 } finally { closeDb(); fs.rmSync(dataRoot, { recursive: true, force: true }); }
