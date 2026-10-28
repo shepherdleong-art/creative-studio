@@ -7,7 +7,7 @@ import { TimelineShortcutsDialog } from '@/components/timeline/TimelineShortcuts
 import { Icon } from '@/components/ui/Icon';
 import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
 import { audioClips } from '@/lib/media-core/audio-edit';
-import { FINAL_EDIT_FPS } from '@/lib/media-core/render-contract';
+import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '@/lib/media-core/render-contract';
 import type { MaterialDragItem, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
 import styles from './batch-unified-review.module.css';
 import BatchReviewSubtitleChip from './BatchReviewSubtitleChip';
@@ -17,6 +17,9 @@ import { videoTrimRange, type VideoTrimRange } from './video-trim';
 import { snapMovingClip } from '@/lib/media-core/timeline-snap';
 import { materialDropInGap } from './material-drop';
 import { buildVideoUsage, type ReviewUsageGroup } from './video-usage';
+import { MixcutStickerTrack, MIXCUT_STICKER_TRACK_HEIGHT } from '@/components/mixcut/MixcutStickerTrack';
+import { layoutPackagingStickerTracks } from '@/lib/media-core/packaging-sticker-timeline';
+import type { PackagingStickerInstance } from '@/lib/media-core/packaging-stickers';
 
 function groupStyle(group?: ReviewUsageGroup): CSSProperties {
   return group ? {
@@ -28,6 +31,7 @@ function groupStyle(group?: ReviewUsageGroup): CSSProperties {
 const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
 const MIN_CLIP_US = 500_000;
 const SNAP_THRESHOLD_PX = 9;
+const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS;
 
 export type ReviewRowFilter = 'all' | 'pending' | 'approved' | 'overlap';
 
@@ -72,6 +76,8 @@ export interface BatchReviewTimelineDockProps {
   onRetryNarration: (taskId: string) => void;
   onRetryRender: (taskId: string) => void;
   onMediaEdit: (planId: string, edit: Record<string, unknown>) => Promise<boolean>;
+  onStickersChange: (planId: string, stickers: PackagingStickerInstance[]) => Promise<boolean>;
+  onDeleteSticker: (planId: string, stickerId: string) => Promise<boolean>;
   onRefreshFilm: (planId: string) => Promise<void>;
   onOpenCoverEditor: (planId: string) => void;
   onOpenSource?: (planId: string, clipId: string) => void;
@@ -126,6 +132,8 @@ export default function BatchReviewTimelineDock({
   onRetryNarration,
   onRetryRender,
   onMediaEdit,
+  onStickersChange,
+  onDeleteSticker,
   onRefreshFilm,
   onOpenCoverEditor,
   onOpenSource,
@@ -727,8 +735,10 @@ export default function BatchReviewTimelineDock({
 
   // 「删除」:删除选中视频/字幕/音频片段,保留空位(Delete 同效)
   const deleteSelection = useCallback(() => {
-    if (!selectedPlanId || !selection) return;
-    if (selection.kind === 'clip' && selection.clipId) {
+    if (!selectedPlanId || !selection || selection.planId !== selectedPlanId) return;
+    if (selection.kind === 'sticker' && selection.stickerId) {
+      void onDeleteSticker(selectedPlanId, selection.stickerId);
+    } else if (selection.kind === 'clip' && selection.clipId) {
       void onMediaEdit(selectedPlanId, { type: 'delete', clipId: selection.clipId });
       onSelectTarget(null);
     } else if (selection.kind === 'subtitle' && selection.cueId) {
@@ -738,7 +748,7 @@ export default function BatchReviewTimelineDock({
       void onMediaEdit(selectedPlanId, { type: 'delete_audio_clip', track: selection.track, clipId: selection.clipId });
       onSelectTarget(null);
     }
-  }, [onMediaEdit, onSelectTarget, selectedPlanId, selection]);
+  }, [onDeleteSticker, onMediaEdit, onSelectTarget, selectedPlanId, selection]);
 
   const canSplitSelection = useMemo(() => {
     if (!selection || !selectedPlanId) return false;
@@ -765,7 +775,7 @@ export default function BatchReviewTimelineDock({
   }, [films, playheadSec, selectedPlanId, selection]);
 
   const canDeleteSelection = Boolean(
-    selection && (selection.kind === 'clip' || selection.kind === 'subtitle' || selection.kind === 'audio')
+    selection && (selection.kind === 'clip' || selection.kind === 'subtitle' || selection.kind === 'audio' || selection.kind === 'sticker')
   );
 
   const selectedVideoClip = selection?.kind === 'clip'
@@ -1186,6 +1196,12 @@ export default function BatchReviewTimelineDock({
             const isPreviewing = previewPlanId === film.planId;
             const clips = arrangement?.clips ?? [];
             const subtitleCues = arrangement?.subtitleCues ?? [];
+            const stickers = arrangement?.packaging?.enabled ? arrangement.packaging.stickers ?? [] : [];
+            const stickerTrackCount = arrangement?.packaging?.enabled
+              ? layoutPackagingStickerTracks(stickers).reduce((count, sticker) => Math.max(count, sticker.trackIndex + 1), 1)
+              : 0;
+            const stickerRowGrowth = stickerTrackCount > 0 ? stickerTrackCount * MIXCUT_STICKER_TRACK_HEIGHT + 6 : 0;
+            const bodyFrames = Math.floor(Math.max(arrangement?.visualDurationUs ?? 0, arrangement?.narration.durationUs ?? 0) / 1e6 * FINAL_EDIT_FPS + 1e-6);
 
             return (
               <div
@@ -1193,6 +1209,7 @@ export default function BatchReviewTimelineDock({
                 className={`${styles.filmRow} ${isEditing ? styles.filmRowEditing : ''} ${
                   !isVisible ? styles.filmRowHidden : ''
                 }`}
+                style={{ height: 216 + stickerRowGrowth, minHeight: 216 + stickerRowGrowth }}
                 onClick={() => {
                   if (selectedPlanId !== film.planId) {
                     onSelectFilm(film.planId);
@@ -1424,6 +1441,30 @@ export default function BatchReviewTimelineDock({
                     onSelect={() => { onSelectFilm(film.planId); onSelectTarget(null); }}
                     onSeek={onSeek} onEdit={edit => onMediaEdit(film.planId, edit)} />}
 
+                  {arrangement?.packaging?.enabled && <div className={styles.stickerTrack} aria-label="贴纸轨道">
+                    <MixcutStickerTrack
+                      key={`${film.planId}:${arrangement.outputVersionId}:stickers`}
+                      id={`batch-sticker-tracks-${film.planId}`}
+                      stickers={stickers}
+                      template={arrangement.packaging.template}
+                      expanded
+                      trackCount={stickerTrackCount}
+                      originFrame={FINAL_EDIT_INTRO_FRAMES}
+                      bodyEndFrame={FINAL_EDIT_INTRO_FRAMES + bodyFrames}
+                      pxPerSecond={zoom}
+                      snapEnabled={snapEnabled}
+                      snapCandidates={snapCandidates.map((candidate) => candidate.sec + INTRO_SEC)}
+                      selectedStickerId={selection?.planId === film.planId && selection.kind === 'sticker' ? selection.stickerId ?? '' : ''}
+                      disabled={!arrangement.editable || tool !== 'select'}
+                      onSelect={(stickerId) => {
+                        onSelectFilm(film.planId);
+                        onSelectTarget({ planId: film.planId, kind: 'sticker', stickerId });
+                      }}
+                      onCommit={(next) => { void onStickersChange(film.planId, next); }}
+                      onDelete={(stickerId) => { void onDeleteSticker(film.planId, stickerId); }}
+                    />
+                  </div>}
+
                   {/* Track 2: Video Clips */}
                   <div
                     className={styles.trackVideo}
@@ -1631,7 +1672,7 @@ export default function BatchReviewTimelineDock({
         <span><i className={styles.legendLocated} />红色框：素材池定位</span>
         <span><i className={styles.legendSwatch} />A/B… 同一素材 · S1/S2… 同源图；按颜色和编号找对应</span>
         <span><i className={styles.legendStripe} />源区间重叠</span>
-        <span>字幕 → 卖点 → 视频 → 口播 TTS → BGM</span>
+        <span>字幕 → 卖点 → 贴纸 → 视频 → 口播 TTS → BGM</span>
         <span>主视频秒尺 · 封面独立，不计复用</span>
       </div>
 

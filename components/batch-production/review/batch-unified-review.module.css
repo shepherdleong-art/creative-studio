@@ -653,6 +653,8 @@
 }
 
 .trackPackaging { height: 26px; position: relative; background: var(--color-surface-subtle); border-radius: 4px; }
+.stickerTrack { position: relative; overflow: hidden; border-radius: 4px; background: var(--color-sticker-track-tint); }
+.stickerTrack [data-sticker-lane] { background: color-mix(in srgb, var(--color-sticker-track-tint) 58%, transparent); }
 .addPoint { position: absolute; top: 2px; z-index: 3; border-radius: 4px; background: var(--color-surface); color: var(--color-accent); font-size: 9px; padding: 1px 3px; }
 .pointChip { position: absolute; top: 2px; height: 22px; border: 1px solid var(--color-hairline); border-radius: 4px; background: color-mix(in srgb, var(--color-accent) 15%, var(--color-surface)); color: var(--color-ink); font-size: 10px; padding: 2px 7px; cursor: grab; touch-action: none; }
 .pointText { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; pointer-events: none; }

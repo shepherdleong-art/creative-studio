@@ -13,6 +13,7 @@ import BatchTextStyleEditor from '../BatchTextStyleEditor';
 import BatchCoverDraftPreview from '../BatchCoverDraftPreview';
 import BatchCoverEditorDrawer, { type BatchCoverEditorDraft } from '../BatchCoverEditorDrawer';
 import type { InspectorTab, SelectionTarget, UnifiedFilmState } from './types';
+import type { StickerAssetChoice } from '@/components/mixcut/StickerPanel';
 import styles from './batch-unified-review.module.css';
 
 export interface BatchReviewInspectorDockProps {
@@ -30,6 +31,11 @@ export interface BatchReviewInspectorDockProps {
   coverEditorOpen: boolean;
   onOpenCoverEditor: () => void;
   onCloseCoverEditor: () => void;
+  playheadSec: number;
+  onAddSticker: (planId: string, choice: StickerAssetChoice) => void;
+  onStickerDragStart: (planId: string, choice: StickerAssetChoice) => void;
+  onStickerDragEnd: () => void;
+  onPlaySticker: (planId: string, stickerId: string) => void;
 }
 
 export default function BatchReviewInspectorDock({
@@ -47,17 +53,22 @@ export default function BatchReviewInspectorDock({
   coverEditorOpen,
   onOpenCoverEditor,
   onCloseCoverEditor,
+  playheadSec,
+  onAddSticker,
+  onStickerDragStart,
+  onStickerDragEnd,
+  onPlaySticker,
 }: BatchReviewInspectorDockProps) {
   const arrangement = film?.arrangement;
   const planId = film?.planId;
 
   // Selected Clip
-  const selectedClip = (arrangement?.clips && selection?.clipId)
+  const selectedClip = (arrangement?.clips && selection && selection.planId === planId && selection.clipId)
     ? (arrangement.clips.find((c) => c.clipId === selection.clipId) ?? null)
     : null;
 
   // Selected Subtitle Cue
-  const selectedCue = (arrangement?.subtitleCues && selection?.cueId)
+  const selectedCue = (arrangement?.subtitleCues && selection && selection.planId === planId && selection.cueId)
     ? (arrangement.subtitleCues.find((c) => c.id === selection.cueId) ?? null)
     : null;
 
@@ -203,8 +214,18 @@ export default function BatchReviewInspectorDock({
       </div>
 
       <div className={styles.inspectorScroll}>
-        {inspectorTab === 'packaging' && <BatchPackagingEditor key={`${film.planId}:${arrangement.outputVersionId}`} view={arrangement} onJumpToCover={() => onJumpToCover(film.planId)}
-          onSave={(config, reextract) => onMediaEdit(film.planId, { type: 'set_packaging', config, reextract, expectedEditRevision: arrangement.editRevision, expectedOutputVersionId: arrangement.outputVersionId })} />}
+        {inspectorTab === 'packaging' && <BatchPackagingEditor
+          key={`${film.planId}:${arrangement.outputVersionId}`}
+          view={arrangement}
+          playheadSec={playheadSec}
+          stickerSelection={selection?.planId === film.planId && selection.kind === 'sticker' ? selection : null}
+          onAddSticker={(choice) => onAddSticker(film.planId, choice)}
+          onStickerDragStart={(choice) => onStickerDragStart(film.planId, choice)}
+          onStickerDragEnd={onStickerDragEnd}
+          onPlaySticker={(stickerId) => onPlaySticker(film.planId, stickerId)}
+          onJumpToCover={() => onJumpToCover(film.planId)}
+          onSave={(config, reextract) => onMediaEdit(film.planId, { type: 'set_packaging', config, reextract, expectedEditRevision: arrangement.editRevision, expectedOutputVersionId: arrangement.outputVersionId })}
+        />}
         {/* TAB 1: 字幕 */}
         {inspectorTab === 'subtitle' && (
           <div className="space-y-4">

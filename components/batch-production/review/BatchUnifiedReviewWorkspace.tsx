@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
-import { FINAL_EDIT_FPS } from '@/lib/media-core/render-contract';
+import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '@/lib/media-core/render-contract';
 import { audioClips } from '@/lib/media-core/audio-edit';
 import type { OutputPresetId } from '@/lib/media-core/cover-types';
 import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
@@ -14,8 +14,18 @@ import BatchReviewTimelineDock from './BatchReviewTimelineDock';
 import type { InspectorTab, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
 import styles from './batch-unified-review.module.css';
 import { subtitleSplitEdit } from './subtitle-edit';
+import type { StickerAssetChoice } from '@/components/mixcut/StickerPanel';
+import type { BatchStickerPlaybackRequest } from '../BatchPackagingOverlay';
+import {
+  MAX_STICKER_INSTANCES,
+  createManualPackagingSticker,
+  planStickerFramesAtPlayhead,
+  type PackagingStickerInstance,
+} from '@/lib/media-core/packaging-stickers';
+import { insertPackagingStickerAtTop, normalizePackagingStickerTracks } from '@/lib/media-core/packaging-sticker-timeline';
 
 const FPS = FINAL_EDIT_FPS;
+const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS;
 
 /** 撤销/重做历史项:记录受影响成片与编辑前后的整包快照(回放走后端 restore_arrangement)。 */
 interface EditHistoryEntry {
@@ -128,7 +138,14 @@ export default function BatchUnifiedReviewWorkspace({
 
   // Selection
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(() => workspace.cards[0]?.planId ?? null);
+  const selectedPlanIdRef = useRef(selectedPlanId);
+  useEffect(() => { selectedPlanIdRef.current = selectedPlanId; }, [selectedPlanId]);
   const [selection, setSelection] = useState<SelectionTarget | null>(null);
+  const [draggedSticker, setDraggedSticker] = useState<{ planId: string; choice: StickerAssetChoice } | null>(null);
+  const [stickerPlaybackRequest, setStickerPlaybackRequest] = useState<BatchStickerPlaybackRequest | null>(null);
+  const stickerPlaybackRequestRef = useRef(0);
+  const stickerClickOffsetsRef = useRef<Record<string, number>>({});
+  const stickerAddBusyRef = useRef(new Set<string>());
   const [focusedAssetId, setFocusedAssetId] = useState<string | null>(null);
   const [previewAsset, setPreviewAsset] = useState<BatchOutputPoolAssetView | null>(null);
 
@@ -353,6 +370,115 @@ export default function BatchUnifiedReviewWorkspace({
     return films.find((f) => f.planId === selectedPlanId) ?? films[0] ?? null;
   }, [films, selectedPlanId]);
 
+  const handleSelectFilm = useCallback((planId: string) => {
+    if (planId !== selectedPlanId) setDraggedSticker(null);
+    setSelection(null);
+    setStickerPlaybackRequest(null);
+    setSelectedPlanId(planId);
+  }, [selectedPlanId]);
+
+  const handleSelectSticker = useCallback((planId: string, stickerId: string, knownSticker?: PackagingStickerInstance) => {
+    if (!stickerId) {
+      setSelection((current) => current?.planId === planId && current.kind === 'sticker' ? null : current);
+      setStickerPlaybackRequest((current) => current?.planId === planId ? null : current);
+      return;
+    }
+    const sticker = knownSticker ?? arrangements[planId]?.packaging?.stickers?.find((item) => item.id === stickerId);
+    if (!sticker) return;
+    handleSelectFilm(planId);
+    setPreviewAsset(null);
+    setSourceSession(null);
+    setSelection({ planId, kind: 'sticker', stickerId });
+    setInspectorTab('packaging');
+    const startSec = sticker.startFrame / FPS - INTRO_SEC;
+    const endSec = sticker.endFrame / FPS - INTRO_SEC;
+    if (selection?.planId !== planId || selection.kind !== 'sticker' || selection.stickerId !== stickerId || playheadSec < startSec || playheadSec >= endSec) {
+      setPlayheadSec((startSec + endSec) / 2);
+    }
+  }, [arrangements, handleSelectFilm, playheadSec, selection]);
+
+  const handleSelectTarget = useCallback((target: SelectionTarget | null) => {
+    if (target?.kind === 'sticker' && target.stickerId) {
+      handleSelectSticker(target.planId, target.stickerId);
+      return;
+    }
+    if (target) handleSelectFilm(target.planId);
+    setSelection(target);
+    setStickerPlaybackRequest(null);
+  }, [handleSelectFilm, handleSelectSticker]);
+
+  const saveStickerInstances = useCallback(async (planId: string, nextStickers: PackagingStickerInstance[]) => {
+    const view = arrangements[planId];
+    if (!view?.packaging?.enabled || !view.editable) return false;
+    return handleMediaEdit(planId, {
+      type: 'set_packaging',
+      config: { ...view.packaging, stickers: normalizePackagingStickerTracks(nextStickers) },
+      expectedEditRevision: view.editRevision,
+      expectedOutputVersionId: view.outputVersionId,
+    });
+  }, [arrangements, handleMediaEdit]);
+
+  const handleDeleteSticker = useCallback(async (planId: string, stickerId: string) => {
+    const stickers = arrangements[planId]?.packaging?.stickers ?? [];
+    if (!stickers.some((sticker) => sticker.id === stickerId)) return false;
+    const accepted = await saveStickerInstances(planId, stickers.filter((sticker) => sticker.id !== stickerId));
+    if (accepted) {
+      setSelection((current) => current?.planId === planId && current.kind === 'sticker' && current.stickerId === stickerId ? null : current);
+      setStickerPlaybackRequest((current) => current?.planId === planId && current.stickerId === stickerId ? null : current);
+    }
+    return accepted;
+  }, [arrangements, saveStickerInstances]);
+
+  const handleAddSticker = useCallback(async (planId: string, choice: StickerAssetChoice, dropCenter?: { x: number; y: number }) => {
+    const view = arrangements[planId];
+    const config = view?.packaging;
+    if (!view || !config?.enabled || !view.editable || stickerAddBusyRef.current.has(planId)) return;
+    const stickers = config.stickers ?? [];
+    if (stickers.length >= MAX_STICKER_INSTANCES) return;
+    const bodyFrames = Math.floor(Math.max(view.visualDurationUs, view.narration.durationUs ?? 0) / 1e6 * FPS + 1e-6);
+    const placement = planStickerFramesAtPlayhead(playheadSec + INTRO_SEC, bodyFrames);
+    if (!placement) return;
+    const scopeKey = `${planId}:${view.outputVersionId ?? ''}`;
+    const sequence = stickerClickOffsetsRef.current[scopeKey] ?? 0;
+    if (!dropCenter) stickerClickOffsetsRef.current[scopeKey] = sequence + 1;
+    const offsets = [[0, 0], [-3, 2], [3, -2], [-2, -3], [2, 3]] as const;
+    const offset = offsets[sequence % offsets.length];
+    const center = dropCenter ?? { x: 50 + offset[0], y: 50 + offset[1] };
+    const stickerId = `s_${crypto.randomUUID()}`;
+    const sticker = createManualPackagingSticker({
+      id: stickerId,
+      assetId: choice.asset.id,
+      styleMode: choice.styleMode,
+      fixedStyle: choice.fixedStyle,
+      startFrame: placement.startFrame,
+      endFrame: placement.endFrame,
+      centerXPct: center.x,
+      centerYPct: center.y,
+      animation: config.stickerDefaults?.animation ?? 'follow-template',
+    });
+    stickerAddBusyRef.current.add(planId);
+    try {
+      if (await saveStickerInstances(planId, insertPackagingStickerAtTop(stickers, sticker))
+        && selectedPlanIdRef.current === planId) {
+        handleSelectSticker(planId, stickerId, sticker);
+      }
+    } finally {
+      stickerAddBusyRef.current.delete(planId);
+    }
+  }, [arrangements, handleSelectSticker, playheadSec, saveStickerInstances]);
+
+  const handlePlaySticker = useCallback((planId: string, stickerId: string) => {
+    if (selectedPlanIdRef.current !== planId || !arrangements[planId]?.packaging?.stickers?.some((sticker) => sticker.id === stickerId)) return;
+    handleSelectSticker(planId, stickerId);
+    setStickerPlaybackRequest({ requestId: ++stickerPlaybackRequestRef.current, planId, stickerId });
+  }, [arrangements, handleSelectSticker]);
+
+  const handleDropSticker = useCallback((choice: StickerAssetChoice, center: { x: number; y: number }) => {
+    const planId = draggedSticker?.planId;
+    setDraggedSticker(null);
+    if (planId) void handleAddSticker(planId, choice, center);
+  }, [draggedSticker, handleAddSticker]);
+
   // Toggle eye visibility for a film
   const handleToggleEye = useCallback((planId: string) => {
     setEyeMap((curr) => ({
@@ -376,7 +502,7 @@ export default function BatchUnifiedReviewWorkspace({
       // 只在本次单条确认成功后推进；不改变多选导出集合或其他行的眼睛。
       setEyeMap((current) => ({ ...current, [planId]: false }));
       const nextFilm = latestFilmsRef.current.find((film) => film.planId !== planId && film.visible);
-      setSelectedPlanId(nextFilm?.planId ?? planId);
+      handleSelectFilm(nextFilm?.planId ?? planId);
       setSelection(null);
       setPreviewAsset(null);
       setPlayheadSec(0);
@@ -525,8 +651,11 @@ export default function BatchUnifiedReviewWorkspace({
       } else if (e.key === 'n' || e.key === 'N') {
         setSnapEnabled((s) => !s);
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedPlanId) {
-          if (selection?.kind === 'clip' && selection.clipId) {
+        if (selectedPlanId && selection?.planId === selectedPlanId) {
+          if (selection.kind === 'sticker' && selection.stickerId) {
+            e.preventDefault();
+            void handleDeleteSticker(selectedPlanId, selection.stickerId);
+          } else if (selection.kind === 'clip' && selection.clipId) {
             e.preventDefault();
             void handleMediaEdit(selectedPlanId, { type: 'delete', clipId: selection.clipId });
             setSelection(null);
@@ -567,7 +696,7 @@ export default function BatchUnifiedReviewWorkspace({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [coverEditorOpen, sourceSession, selection, selectedPlanId, films, playheadSec, handleMediaEdit, handleUndo, handleRedo]);
+  }, [coverEditorOpen, sourceSession, selection, selectedPlanId, films, playheadSec, handleMediaEdit, handleDeleteSticker, handleUndo, handleRedo]);
 
   const approvedCount = films.filter((f) => f.approved).length;
 
@@ -646,13 +775,26 @@ export default function BatchUnifiedReviewWorkspace({
             onToggleReview={handleToggleReview}
             reviewBusy={reviewPending || phaseEBusy !== null}
             reviewError={reviewError}
+            selectedStickerId={selection?.kind === 'sticker' && selection.planId === previewFilm?.planId ? selection.stickerId ?? '' : ''}
+            snapEnabled={snapEnabled}
+            onSelectSticker={handleSelectSticker}
+            onDeleteSticker={(planId, stickerId) => { void handleDeleteSticker(planId, stickerId); }}
+            onStickerExit={(planId) => handleSelectSticker(planId, '')}
+            stickerPlaybackRequest={stickerPlaybackRequest}
+            draggedStickerChoice={draggedSticker && draggedSticker.planId === previewFilm?.planId ? draggedSticker.choice : null}
+            onDropSticker={handleDropSticker}
           />
         </div>
 
         {/* Zone 3: Inspector Dock (Right, spanning rows 1 & 2) */}
         <div style={{ gridColumn: 3, gridRow: '1 / 3' }} className="min-h-0 min-w-0">
           <BatchReviewInspectorDock
-            onJumpToCover={planId => { setSelectedPlanId(planId); setPreviewAsset(null); setSourceSession(null); setPlayheadSec(-10 / 24); setCoverPreviewRequest(value => value + 1); }}
+            playheadSec={playheadSec}
+            onAddSticker={handleAddSticker}
+            onStickerDragStart={(planId, choice) => setDraggedSticker({ planId, choice })}
+            onStickerDragEnd={() => setDraggedSticker(null)}
+            onPlaySticker={handlePlaySticker}
+            onJumpToCover={planId => { handleSelectFilm(planId); setPreviewAsset(null); setSourceSession(null); setPlayheadSec(-10 / 24); setCoverPreviewRequest(value => value + 1); }}
             projectId={projectId}
             batchId={batchId}
             outputPreset={outputPreset}
@@ -681,9 +823,9 @@ export default function BatchUnifiedReviewWorkspace({
             batchId={batchId}
             films={films}
             selectedPlanId={selectedPlanId}
-            onSelectFilm={(id) => setSelectedPlanId(id)}
+            onSelectFilm={handleSelectFilm}
             selection={selection}
-            onSelectTarget={setSelection}
+            onSelectTarget={handleSelectTarget}
             focusedAssetId={focusedAssetId}
             onSelectFocusedAsset={setFocusedAssetId}
             playheadSec={playheadSec}
@@ -711,6 +853,8 @@ export default function BatchUnifiedReviewWorkspace({
             onRetryNarration={onRetryNarration}
             onRetryRender={onRetryRender}
             onMediaEdit={handleMediaEdit}
+            onStickersChange={saveStickerInstances}
+            onDeleteSticker={handleDeleteSticker}
             onRefreshFilm={async (planId) => {
               await refreshFilmArrangement(planId);
             }}
@@ -719,11 +863,11 @@ export default function BatchUnifiedReviewWorkspace({
               const clip = view?.clips.find(item => item.clipId === clipId);
               const asset = clip && poolAssets.find(item => item.assetId === clip.assetId);
               if (!view || !asset) return;
-              setSelectedPlanId(planId); setSelection({ planId, kind: 'clip', clipId });
+              handleSelectFilm(planId); setSelection({ planId, kind: 'clip', clipId });
               setPreviewAsset(null); setSourceSession({ view: structuredClone(view), clipId, asset });
             }}
             onOpenCoverEditor={(planId) => {
-              setSelectedPlanId(planId);
+              handleSelectFilm(planId);
               setInspectorTab('cover');
               setPreviewAsset(null); setSourceSession(null); setPlayheadSec(-10 / 24);
               setCoverPreviewRequest(value => value + 1);

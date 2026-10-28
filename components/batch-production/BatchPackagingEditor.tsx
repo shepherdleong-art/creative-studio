@@ -1,32 +1,64 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import type { BatchOutputClipEditView } from '@/lib/batch-production/output-arrangement';
 import type { FinalEditPackagingConfig } from '@/lib/media-core/packaging-vars';
 import { FontPicker } from '@/components/mixcut/FontPicker';
 import { TEMPLATES, TemplateThumb } from '@/components/packaging/PackagingTemplates';
+import type { StickerAssetChoice } from '@/components/mixcut/StickerPanel';
+import BatchStickerPanel, { type BatchStickerPanelView } from './BatchStickerPanel';
 import styles from '@/components/mixcut/mixcut-content.module.css';
 
 const fallback: FinalEditPackagingConfig = { enabled: false, template: 'overlay-poster', varsOverrides: {} };
+type PackagingTab = 'settings' | 'stickers';
 
-export default function BatchPackagingEditor({ view, onSave, onJumpToCover, draft = false }: {
-  view: Pick<BatchOutputClipEditView, 'packaging' | 'editable'>;
+export default function BatchPackagingEditor({
+  view,
+  onSave,
+  onJumpToCover,
+  draft = false,
+  stickerSelection = null,
+  playheadSec = 0,
+  onAddSticker,
+  onStickerDragStart,
+  onStickerDragEnd,
+  onPlaySticker,
+}: {
+  view: BatchStickerPanelView;
   onSave: (config: FinalEditPackagingConfig, reextract?: boolean) => Promise<boolean>;
   onJumpToCover?: () => void;
   draft?: boolean;
+  stickerSelection?: { stickerId?: string } | null;
+  playheadSec?: number;
+  onAddSticker?: (choice: StickerAssetChoice) => void;
+  onStickerDragStart?: (choice: StickerAssetChoice) => void;
+  onStickerDragEnd?: () => void;
+  onPlaySticker?: (stickerId: string) => void;
 }) {
   const config = view.packaging ?? fallback;
   const [busy, setBusy] = useState(false);
   const saving = useRef(false);
   const [message, setMessage] = useState('');
+  const [activeTab, setActiveTab] = useState<PackagingTab>('settings');
   const fileInput = useRef<HTMLInputElement>(null);
   const disabled = busy || !view.editable;
+  const [previousStickerSelection, setPreviousStickerSelection] = useState<typeof stickerSelection>(null);
+  if (stickerSelection?.stickerId && stickerSelection !== previousStickerSelection) {
+    setPreviousStickerSelection(stickerSelection);
+    setActiveTab('stickers');
+  }
   const save = async (next: FinalEditPackagingConfig, reextract = false) => {
-    if (saving.current || !view.editable) return;
+    if (saving.current || !view.editable) return false;
     saving.current = true; setBusy(true); setMessage('');
-    try { if (!await onSave(next, reextract)) setMessage('保存未成功，请刷新当前成片后重试'); }
-    catch (error) { setMessage(error instanceof Error ? error.message : '保存失败'); }
-    finally { saving.current = false; setBusy(false); }
+    try {
+      const accepted = await onSave(next, reextract);
+      if (!accepted) setMessage('保存未成功，请刷新当前成片后重试');
+      return accepted;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '保存失败');
+      return false;
+    } finally {
+      saving.current = false; setBusy(false);
+    }
   };
   return <section className="space-y-3 text-xs text-ink" aria-label="视频包装设置">
     <div className="flex items-center justify-between gap-2">
@@ -35,40 +67,81 @@ export default function BatchPackagingEditor({ view, onSave, onJumpToCover, draf
         <span className={styles.pkSwitchLabel}>{config.enabled ? '已开启' : '已关闭'}</span><span className={styles.pkSwitchKnob} />
       </button>
     </div>
-    {!config.enabled && <p className="text-ink-tertiary">开启后可选择模板、字体，包装层直接叠加在预览窗口并同步播放。</p>}
-    {config.enabled && <>
-      <div className={`${styles.tplGrid} ${styles.tplGridCompact}`} role="radiogroup" aria-label="包装模板">
-        {TEMPLATES.map(item => <button type="button" key={item.id} role="radio" aria-checked={config.template === item.id} className={`${styles.tplCard} ${config.template === item.id ? styles.tplCardActive : ''}`} disabled={disabled} title={item.desc} onClick={() => void save({ ...config, template: item.id as FinalEditPackagingConfig['template'] })}>
-          <TemplateThumb template={item.id} /><span className={styles.tplName}>{item.name}</span>
-        </button>)}
+    {!draft && <>
+      <div
+        className={`${styles.previewModeTabs} ${styles.packagingTabs}`}
+        role="tablist"
+        aria-label="包装编辑页面"
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+          event.preventDefault();
+          const next = activeTab === 'settings' ? 'stickers' : 'settings';
+          setActiveTab(next);
+          event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next === 'settings' ? 0 : 1]?.focus();
+        }}
+      >
+        {(['settings', 'stickers'] as const).map((tab) => <button
+          key={tab}
+          type="button"
+          role="tab"
+          id={`batch-packaging-${tab}-tab`}
+          aria-controls={`batch-packaging-${tab}-panel`}
+          aria-selected={activeTab === tab}
+          tabIndex={activeTab === tab ? 0 : -1}
+          className={`${styles.previewModeTab} ${activeTab === tab ? styles.previewModeTabActive : ''}`}
+          onClick={() => setActiveTab(tab)}
+        >{tab === 'settings' ? '包装设置' : '贴纸'}</button>)}
       </div>
-      <div className={styles.pkFontRows}>
-        {(['title', 'subtitle', 'point'] as const).map((slot, i) => <div key={slot} className={styles.pkFontRow}>
-          <span className={styles.pkFontLabel}>{['主标题字体', '副标题字体', '卖点字体'][i]}</span>
-          <FontPicker slot={slot} inlinePanel={draft} current={config[`${slot}Font`] ?? null} onSelect={(font, file) => void save({ ...config, [`${slot}Font`]: { family: font.family, file } })} onSelectNone={() => void save({ ...config, [`${slot}Font`]: undefined })} disabled={disabled} />
-          {slot === 'point' && <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => fileInput.current?.click()}>上传字体</button>}
-        </div>)}
+      <div id="batch-packaging-stickers-panel" role="tabpanel" aria-labelledby="batch-packaging-stickers-tab" hidden={activeTab !== 'stickers'}>
+        {activeTab === 'stickers' && <BatchStickerPanel
+          active
+          view={{ ...view, packaging: config }}
+          playheadSec={playheadSec}
+          selectedStickerId={stickerSelection?.stickerId ?? ''}
+          onSave={(next) => onSave(next)}
+          onAdd={(choice) => onAddSticker?.(choice)}
+          onDragStart={(choice) => onStickerDragStart?.(choice)}
+          onDragEnd={() => onStickerDragEnd?.()}
+          onPlaySticker={(stickerId) => onPlaySticker?.(stickerId)}
+        />}
       </div>
-      <input ref={fileInput} type="file" hidden accept=".ttf,.otf,.woff2" onChange={async event => {
-        const file = event.target.files?.[0]; event.target.value = ''; if (!file || saving.current) return;
-        saving.current = true; setBusy(true); setMessage('');
-        try {
-          const body = new FormData(); body.set('font', file); body.set('slot', 'point');
-          const response = await fetch('/api/packaging/user-font', { method: 'POST', body }); const result = await response.json();
-          if (!response.ok) throw new Error(result.message || '字体上传失败');
-          if (!await onSave({ ...config, pointFont: { family: file.name, file: result.font } })) setMessage('字体未保存，请重试');
-        } catch (error) { setMessage(error instanceof Error ? error.message : '字体上传失败'); }
-        finally { saving.current = false; setBusy(false); }
-      }} />
-      <p className="text-ink-tertiary">{draft ? '双击封面中的标题或卖点直接改字；拖动调整文字位置，角点可缩放和旋转。' : '双击中央预览中的标题或卖点直接改字；拖动调整位置。正片卖点在时间轴上调整时间。'}</p>
-      <div className="flex flex-wrap gap-2">
-        {onJumpToCover && <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={onJumpToCover}>跳到封面</button>}
-        <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => void save({ ...config, layouts: { ...config.layouts, [config.template]: draft ? { ...config.layouts?.[config.template], cover: {} } : {} } })}>恢复默认版式</button>
-        {!draft && <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => void save(config, true)}>重新提取卖点</button>}
-        <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => void save({ ...config, varsOverrides: {} })}>恢复默认文案</button>
-      </div>
-      <p className="text-ink-tertiary">{draft ? '点击「应用封面」一起保存。模板与字体也作用于正片；正片卖点时序保持不变。' : '修改自动保存；预览为近似效果，最终以导出渲染为准。'}</p>
     </>}
+    {(draft || activeTab === 'settings') && <div id={draft ? undefined : 'batch-packaging-settings-panel'} role={draft ? undefined : 'tabpanel'} aria-labelledby={draft ? undefined : 'batch-packaging-settings-tab'}>
+      {!config.enabled && <p className="text-ink-tertiary">开启后可选择模板、字体，包装层直接叠加在预览窗口并同步播放。</p>}
+      {config.enabled && <div className="space-y-3">
+        <div className={`${styles.tplGrid} ${styles.tplGridCompact}`} role="radiogroup" aria-label="包装模板">
+          {TEMPLATES.map(item => <button type="button" key={item.id} role="radio" aria-checked={config.template === item.id} className={`${styles.tplCard} ${config.template === item.id ? styles.tplCardActive : ''}`} disabled={disabled} title={item.desc} onClick={() => void save({ ...config, template: item.id as FinalEditPackagingConfig['template'] })}>
+            <TemplateThumb template={item.id} /><span className={styles.tplName}>{item.name}</span>
+          </button>)}
+        </div>
+        <div className={styles.pkFontRows}>
+          {(['title', 'subtitle', 'point'] as const).map((slot, i) => <div key={slot} className={styles.pkFontRow}>
+            <span className={styles.pkFontLabel}>{['主标题字体', '副标题字体', '卖点字体'][i]}</span>
+            <FontPicker slot={slot} inlinePanel={draft} current={config[`${slot}Font`] ?? null} onSelect={(font, file) => void save({ ...config, [`${slot}Font`]: { family: font.family, file } })} onSelectNone={() => void save({ ...config, [`${slot}Font`]: undefined })} disabled={disabled} />
+            {slot === 'point' && <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => fileInput.current?.click()}>上传字体</button>}
+          </div>)}
+        </div>
+        <input ref={fileInput} type="file" hidden accept=".ttf,.otf,.woff2" onChange={async event => {
+          const file = event.target.files?.[0]; event.target.value = ''; if (!file || saving.current) return;
+          saving.current = true; setBusy(true); setMessage('');
+          try {
+            const body = new FormData(); body.set('font', file); body.set('slot', 'point');
+            const response = await fetch('/api/packaging/user-font', { method: 'POST', body }); const result = await response.json();
+            if (!response.ok) throw new Error(result.message || '字体上传失败');
+            if (!await onSave({ ...config, pointFont: { family: file.name, file: result.font } })) setMessage('字体未保存，请重试');
+          } catch (error) { setMessage(error instanceof Error ? error.message : '字体上传失败'); }
+          finally { saving.current = false; setBusy(false); }
+        }} />
+        <p className="text-ink-tertiary">{draft ? '双击封面中的标题或卖点直接改字；拖动调整文字位置，角点可缩放和旋转。' : '双击中央预览中的标题或卖点直接改字；拖动调整位置。正片卖点在时间轴上调整时间。'}</p>
+        <div className="flex flex-wrap gap-2">
+          {onJumpToCover && <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={onJumpToCover}>跳到封面</button>}
+          <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => void save({ ...config, layouts: { ...config.layouts, [config.template]: draft ? { ...config.layouts?.[config.template], cover: {} } : {} } })}>恢复默认版式</button>
+          {!draft && <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => void save(config, true)}>重新提取卖点</button>}
+          <button type="button" className="btn-secondary px-2 py-1" disabled={disabled} onClick={() => void save({ ...config, varsOverrides: {} })}>恢复默认文案</button>
+        </div>
+        <p className="text-ink-tertiary">{draft ? '点击「应用封面」一起保存。模板与字体也作用于正片；正片卖点时序保持不变。' : '修改自动保存；预览为近似效果，最终以导出渲染为准。'}</p>
+      </div>}
+    </div>}
     {message && <p role="alert" className="text-fail">{message}</p>}
   </section>;
 }

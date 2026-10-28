@@ -41,8 +41,11 @@ export function MixcutStickerTrack({
   snapCandidates,
   selectedStickerId,
   disabled,
+  originFrame = 0,
+  id = 'mixcut-sticker-tracks',
   onSelect,
   onCommit,
+  onDelete,
 }: {
   stickers: PackagingStickerInstance[];
   template: string;
@@ -55,8 +58,12 @@ export function MixcutStickerTrack({
   snapCandidates: number[];
   selectedStickerId: string;
   disabled: boolean;
+  /** 仅影响显示坐标；帧数据、修剪与磁吸计算始终使用最终时间线。 */
+  originFrame?: number;
+  id?: string;
   onSelect: (stickerId: string) => void;
   onCommit: (stickers: PackagingStickerInstance[]) => void;
+  onDelete?: (stickerId: string) => void;
 }) {
   const [draft, setDraft] = useState<StickerDraft | null>(null);
   const [labels, setLabels] = useState<Record<string, string>>({});
@@ -195,7 +202,7 @@ export function MixcutStickerTrack({
 
   return (
     <div
-      id="mixcut-sticker-tracks"
+      id={id}
       className={styles.stickerTracks}
       data-track="sticker"
       data-expanded={expanded}
@@ -227,12 +234,18 @@ export function MixcutStickerTrack({
                 aria-label={`贴纸 ${label}`}
                 aria-pressed={selectedStickerId === sticker.id}
                 style={{
-                  left: shown.startFrame / STICKER_FPS * pxPerSecond,
+                  left: (shown.startFrame - originFrame) / STICKER_FPS * pxPerSecond,
                   width: (shown.endFrame - shown.startFrame) / STICKER_FPS * pxPerSecond,
                   opacity: isReordering ? 0.35 : undefined,
                 }}
                 onPointerDown={(event) => begin('move', sticker, event)}
                 onKeyDown={(event) => {
+                  if ((event.key === 'Delete' || event.key === 'Backspace') && onDelete) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (!disabled) onDelete(sticker.id);
+                    return;
+                  }
                   if (event.key !== 'Enter') return;
                   event.preventDefault();
                   onSelect(sticker.id);
@@ -253,7 +266,7 @@ export function MixcutStickerTrack({
               <div
                 className={`${styles.stickerBlock} ${styles.stickerBlockGhost}`}
                 data-testid="sticker-track-placeholder"
-                style={{ left: draft.startFrame / STICKER_FPS * pxPerSecond, width: (draft.endFrame - draft.startFrame) / STICKER_FPS * pxPerSecond }}
+                style={{ left: (draft.startFrame - originFrame) / STICKER_FPS * pxPerSecond, width: (draft.endFrame - draft.startFrame) / STICKER_FPS * pxPerSecond }}
               >移动到此层</div>
               <i className={styles.stickerTrackInsertLine} data-testid="sticker-track-insert-line" aria-hidden="true" />
             </>
@@ -266,7 +279,7 @@ export function MixcutStickerTrack({
         </div>
       )}
       {expanded && draft?.snapSec !== null && draft?.snapSec !== undefined && (
-        <i className={styles.stickerSnapLine} data-testid="sticker-time-snap-line" style={{ left: draft.snapSec * pxPerSecond }} aria-hidden="true" />
+        <i className={styles.stickerSnapLine} data-testid="sticker-time-snap-line" style={{ left: (draft.snapSec - originFrame / STICKER_FPS) * pxPerSecond }} aria-hidden="true" />
       )}
     </div>
   );

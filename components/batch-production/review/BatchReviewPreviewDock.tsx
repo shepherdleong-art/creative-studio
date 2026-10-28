@@ -1,7 +1,7 @@
 'use client';
 
 import BatchSourceMonitor, { type SourceMonitorSession } from './BatchSourceMonitor';
-import BatchPackagingOverlay from '../BatchPackagingOverlay';
+import BatchPackagingOverlay, { type BatchStickerPlaybackRequest } from '../BatchPackagingOverlay';
 import { useCallback, useMemo, useRef } from 'react';
 import type { OutputPresetId } from '@/lib/final-edit/types';
 import type { BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
@@ -10,7 +10,9 @@ import BatchTimelinePreview, { type BatchTimelinePreviewClip } from '../BatchTim
 import { LutVideoPlayer } from '../LutVideoPlayer';
 import { useProxyPlaybackPreference } from '../proxy-playback-preference';
 import type { UnifiedFilmState } from './types';
+import type { StickerAssetChoice } from '@/components/mixcut/StickerPanel';
 import styles from './batch-unified-review.module.css';
+import mixcutStyles from '@/components/mixcut/mixcut-content.module.css';
 
 const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS;
 
@@ -31,6 +33,14 @@ export interface BatchReviewPreviewDockProps {
   reviewBusy?: boolean;
   reviewError?: string | null;
   poolAssets: BatchOutputPoolAssetView[];
+  selectedStickerId?: string;
+  snapEnabled?: boolean;
+  onSelectSticker?: (planId: string, stickerId: string) => void;
+  onDeleteSticker?: (planId: string, stickerId: string) => void;
+  onStickerExit?: (planId: string) => void;
+  stickerPlaybackRequest?: BatchStickerPlaybackRequest | null;
+  draggedStickerChoice?: StickerAssetChoice | null;
+  onDropSticker?: (choice: StickerAssetChoice, center: { x: number; y: number }) => void;
 }
 
 export default function BatchReviewPreviewDock({
@@ -50,9 +60,18 @@ export default function BatchReviewPreviewDock({
   reviewBusy = false,
   reviewError,
   poolAssets,
+  selectedStickerId = '',
+  snapEnabled = true,
+  onSelectSticker,
+  onDeleteSticker,
+  onStickerExit,
+  stickerPlaybackRequest = null,
+  draggedStickerChoice = null,
+  onDropSticker,
 }: BatchReviewPreviewDockProps) {
   const { proxyPlayback } = useProxyPlaybackPreference();
   const materialVideoRef = useRef<HTMLVideoElement | null>(null);
+  const previewScreenRef = useRef<HTMLDivElement | null>(null);
   // 主时间轴使用正文秒，复用播放器使用含封面的成片秒；只在这个边界换算。
   // 封面播放期间正文播放头停在 0，负值只用来保存封面内的播放位置。
   const handlePreviewSeek = useCallback((sec: number) => onSeek(sec - INTRO_SEC), [onSeek]);
@@ -125,6 +144,29 @@ export default function BatchReviewPreviewDock({
 
   const durationSec = previewFilm?.durationSec ?? 0;
   const isPastDuration = !previewAsset && previewFilm && playheadSec > durationSec;
+
+  const probeStickerHit = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || packagingEditable || !previewFilm || !onSelectSticker) return;
+    const iframe = previewScreenRef.current?.querySelector('iframe');
+    const win = iframe?.contentWindow;
+    const doc = iframe?.contentDocument;
+    if (!iframe || !win || !doc) return;
+    const rect = iframe.getBoundingClientRect();
+    const stack = doc.elementsFromPoint(event.clientX - rect.left, event.clientY - rect.top);
+    for (const node of stack) {
+      const sticker = (node as Element).closest?.('.packaging-sticker[data-sticker-id]');
+      if (!sticker) continue;
+      const style = win.getComputedStyle(sticker);
+      const opacity = Number.parseFloat(style.opacity);
+      if (style.display === 'none' || style.visibility === 'hidden' || (Number.isFinite(opacity) && opacity < 0.05)) continue;
+      const stickerId = sticker.getAttribute('data-sticker-id');
+      if (!stickerId) continue;
+      event.preventDefault();
+      event.stopPropagation();
+      onSelectSticker(previewFilm.planId, stickerId);
+      return;
+    }
+  };
 
   return (
     <section className={`${styles.dock} h-full`} aria-label="成片实时预览">
@@ -243,12 +285,39 @@ export default function BatchReviewPreviewDock({
             </p>
           </div>
         ) : arrangement ? (
-          <div className={styles.previewScreen}>
+          <div ref={previewScreenRef} className={styles.previewScreen} onPointerDownCapture={probeStickerHit}>
             <BatchTimelinePreview
               key={`${previewFilm.planId}:${packagingEditable}:${coverPreviewRequest}`}
-              overlay={arrangement.packaging?.enabled ? <BatchPackagingOverlay key={`${previewFilm.planId}:${arrangement.editRevision}`} view={arrangement} editable={packagingEditable} onSave={onSourceApply}
-                src={`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(previewFilm.planId)}/packaging-preview?projectId=${encodeURIComponent(projectId)}&format=html&edit=1&revision=${arrangement.editRevision}`}
-                timeSec={playheadSec + INTRO_SEC} /> : null}
+              overlay={arrangement.packaging?.enabled || draggedStickerChoice ? <>
+                {arrangement.packaging?.enabled && <BatchPackagingOverlay
+                  key={`${previewFilm.planId}:${arrangement.editRevision}`}
+                  view={arrangement}
+                  editable={packagingEditable}
+                  onSave={onSourceApply}
+                  selectedStickerId={selectedStickerId}
+                  snapEnabled={snapEnabled}
+                  onStickerSelect={(stickerId) => onSelectSticker?.(previewFilm.planId, stickerId)}
+                  onStickerDelete={(stickerId) => onDeleteSticker?.(previewFilm.planId, stickerId)}
+                  onStickerExit={() => onStickerExit?.(previewFilm.planId)}
+                  playbackRequest={stickerPlaybackRequest}
+                  onSeek={onSeek}
+                  src={`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(previewFilm.planId)}/packaging-preview?projectId=${encodeURIComponent(projectId)}&format=html&edit=1&revision=${arrangement.editRevision}`}
+                  timeSec={playheadSec + INTRO_SEC}
+                />}
+                {draggedStickerChoice && <div
+                  className={mixcutStyles.stickerDropSurface}
+                  data-testid="batch-sticker-drop-surface"
+                  onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    onDropSticker?.(draggedStickerChoice, {
+                      x: Math.min(100, Math.max(0, (event.clientX - rect.left) / rect.width * 100)),
+                      y: Math.min(100, Math.max(0, (event.clientY - rect.top) / rect.height * 100)),
+                    });
+                  }}
+                ><span>松开鼠标放置贴纸</span></div>}
+              </> : null}
               clips={clips}
               narrationDurationUs={arrangement.narration?.durationUs}
               preserveGaps={arrangement.preserveGaps}
