@@ -8,6 +8,7 @@ import { findFormulaReplacements, resolveFormulaReplacementModel, type FormulaRe
   describeManualFormulaReplacement, type FormulaManualReplacement, type FormulaReplacementSearch, type FormulaReplacementModelResolver } from './replacements.ts';
 import type { FormulaSlotChoice } from './selection-rules.ts';
 import { BatchDomainError } from '../errors.ts';
+import { materialContentScore } from './material-content.ts';
 
 export interface FormulaSelectionSlot {
   slotId: string; clipId: number; logicalCode: string; assetId: string | null;
@@ -17,10 +18,10 @@ export interface FormulaSelectionSlot {
   replacement?: FormulaReplacement;
   manualReplacement?: FormulaManualReplacement;
   replacementCheck?: Omit<FormulaReplacementSearch, 'proposals'>;
-  reason: 'exact_code' | 'same_code_stable_choice' | 'manual_primary' | 'manual_slot' | 'manual_unusable' | 'approved_rotation' | 'rotation_unusable' | 'missing_file' | 'undefined' | 'unusable' | 'automatic_replacement' | 'manual_replacement' | 'manual_replacement_unusable';
+  reason: 'exact_code' | 'same_code_stable_choice' | 'same_code_content_choice' | 'manual_primary' | 'manual_slot' | 'manual_unusable' | 'approved_rotation' | 'rotation_unusable' | 'missing_file' | 'undefined' | 'unusable' | 'automatic_replacement' | 'manual_replacement' | 'manual_replacement_unusable';
 }
 export interface FormulaSelection {
-  algorithmVersion: 'formula-selection/1' | 'formula-selection/2' | 'formula-selection/3' | 'formula-selection/4'; status: 'selected' | 'needs_attention';
+  algorithmVersion: 'formula-selection/1' | 'formula-selection/2' | 'formula-selection/3' | 'formula-selection/4' | 'formula-selection/5'; status: 'selected' | 'needs_attention';
   executionReady: false; slots: FormulaSelectionSlot[];
 }
 
@@ -52,6 +53,11 @@ export async function selectFormulaOutput(db: Database.Database, projectId: stri
       let assetIds = fixed ? bindings.filter(binding => binding.assetId === fixed.assetId
         && binding.contentFingerprint === fixed.contentFingerprint).map(binding => binding.assetId)
         : rotation ? rotation.candidates.map(candidate => candidate.assetId).sort() : [...new Set(bindings.map(binding => binding.assetId))].sort();
+      const script = request.input.scripts.find(script => script.key === output.scriptKey);
+      const context = [request.input.materialIndex.codes.find(code => code.logicalCode === sourceLogicalCode)?.description, script?.bodyText].filter(Boolean).join('；');
+      const scores = new Map(assetIds.map(id => [id, materialContentScore(request.input.materialNotes, id, sourceLogicalCode, context)]));
+      const contentRanked = !fixed && !rotation && new Set(scores.values()).size > 1;
+      if (contentRanked) assetIds.sort((a, b) => scores.get(b)! - scores.get(a)! || a.localeCompare(b));
       if (rotation && !fixed && assetIds.length) {
         const seedOffset = createHash('sha256').update(JSON.stringify([request.seed, sourceLogicalCode])).digest().readUInt32BE(0);
         const scriptIndex = request.input.scripts.findIndex(script => script.key === output.scriptKey);
@@ -76,7 +82,7 @@ export async function selectFormulaOutput(db: Database.Database, projectId: stri
         }
         if (candidate) { approvedRanges = approved; break; }
       }
-      return { sourceLogicalCode, candidate, approvedRanges, fixed, primary, rotation, assetIds };
+      return { sourceLogicalCode, candidate, approvedRanges, fixed, primary, rotation, assetIds, contentRanked };
     }
     let choice = await choose(override?.sourceLogicalCode ?? slot.logicalCode, override);
     let replacement: FormulaReplacement | undefined;
@@ -105,17 +111,17 @@ export async function selectFormulaOutput(db: Database.Database, projectId: stri
       if (search.proposals.length && !replacement) replacementCheck = { status: 'no_equivalent', message: '有资料相符的候选，但实际文件或已批准区间不可用，请补充素材后重新生成' };
       }
     }
-    const { sourceLogicalCode, candidate, approvedRanges, fixed, primary, rotation, assetIds } = choice;
+    const { sourceLogicalCode, candidate, approvedRanges, fixed, primary, rotation, assetIds, contentRanked } = choice;
     const defined = request.input.materialIndex.codes.find(code => code.logicalCode === slot.logicalCode)?.defined;
     slots.push({ ...slot, sourceLogicalCode, candidate, approvedRanges, assetId: candidate?.assetId ?? null,
       ...(replacement ? { replacement } : {}), ...(replacementCheck ? { replacementCheck } : {}),
       ...(manualReplacement ? { manualReplacement } : {}),
       media: candidate?.media ?? null, rangeStatus: approvedRanges ? 'confirmed' : 'pending',
-      reason: candidate ? (manualReplacement ? 'manual_replacement' : replacement ? 'automatic_replacement' : override ? 'manual_slot' : primary ? 'manual_primary' : rotation ? 'approved_rotation' : assetIds.length > 1 ? 'same_code_stable_choice' : 'exact_code')
+      reason: candidate ? (manualReplacement ? 'manual_replacement' : replacement ? 'automatic_replacement' : override ? 'manual_slot' : primary ? 'manual_primary' : rotation ? 'approved_rotation' : contentRanked ? 'same_code_content_choice' : assetIds.length > 1 ? 'same_code_stable_choice' : 'exact_code')
         : manualReplacement ? 'manual_replacement_unusable' : fixed ? 'manual_unusable' : rotation ? 'rotation_unusable' : assetIds.length ? 'unusable' : defined ? 'missing_file' : 'undefined' });
     onProgress(slots.length, output.slots.length);
   }
-  return { algorithmVersion: 'formula-selection/4', status: slots.every(slot => slot.candidate) ? 'selected' : 'needs_attention',
+  return { algorithmVersion: 'formula-selection/5', status: slots.every(slot => slot.candidate) ? 'selected' : 'needs_attention',
     executionReady: false, slots };
 }
 

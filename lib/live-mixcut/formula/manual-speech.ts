@@ -7,6 +7,8 @@ import { getFormulaMaterialIndex } from './material-bindings.ts';
 import { readFormulaInputEditing } from './input-editing.ts';
 import { formulaExecutionAvailable } from './execution-gate.ts';
 import { verifyFormulaCandidate, recheckFormulaCandidate } from './candidate-media.ts';
+import { readFormulaSpeech } from './speech-store.ts';
+import type { FormulaSelection } from './selection.ts';
 
 export type FormulaManualSpeechMode = 'automatic' | 'speech' | 'no_speech';
 export interface FormulaManualSpeechSegment { text: string; startUs: number; endUs: number }
@@ -17,7 +19,9 @@ export interface FormulaSavedManualSpeech {
 }
 export interface FormulaManualSpeechView {
   inputRevision: number; editable: boolean;
+  context?: { planId: string; scriptNumber: string; copyIndex: number };
   items: Array<{ assetId: string; contentFingerprint: string; names: string[]; available: boolean;
+    review?: { logicalCodes: string[]; needsAttention: boolean; message: string };
     saved: FormulaSavedManualSpeech | null;
     automatic: { text: string; segments: FormulaManualSpeechSegment[] } | null }>;
 }
@@ -45,16 +49,39 @@ export function parseFormulaManualSpeech(mode: unknown, value: unknown, duration
   return { formatVersion: 1 as const, origin: 'manual' as const, mode: mode as FormulaManualSpeechMode, segments };
 }
 
-export function readFormulaManualSpeech(db: Database.Database, projectId: string, batchId: string): FormulaManualSpeechView {
+export function readFormulaManualSpeech(db: Database.Database, projectId: string, batchId: string, planId?: string): FormulaManualSpeechView {
+  const speech = planId ? readFormulaSpeech(db, projectId, batchId, planId) : null;
+  const output = planId ? db.prepare(`SELECT o.scriptNumber,o.copyIndex FROM live_mixcut_formula_generation_outputs o
+    JOIN live_mixcut_formula_generation_requests r ON r.id=o.requestId WHERE o.planId=? AND r.projectId=? AND r.batchId=?`)
+    .get(planId, projectId, batchId) as { scriptNumber: string; copyIndex: number } : null;
+  const selected = speech ? db.prepare('SELECT resultJson FROM live_mixcut_formula_selection_results WHERE stageId=?')
+    .get(speech.selectionStageId) as { resultJson: string } | undefined : undefined;
+  const selection: FormulaSelection | null = selected ? JSON.parse(selected.resultJson) : null;
   const index = getFormulaMaterialIndex(db, projectId, batchId);
   const collection = getFormulaCollection(db, projectId, batchId);
   const rows = collection ? db.prepare(`SELECT m.* FROM live_mixcut_formula_manual_speech m WHERE m.collectionId=? AND NOT EXISTS (
     SELECT 1 FROM live_mixcut_formula_manual_speech newer WHERE newer.collectionId=m.collectionId AND newer.assetId=m.assetId AND newer.revision>m.revision)`)
     .all(collection.id) as Array<{ id: string; assetId: string; contentFingerprint: string; revision: number; baseInputRevision: number; contentJson: string; createdAt: string }> : [];
-  const bindings = index.bindings.filter(binding => binding.logicalCode && !binding.excludedReason);
+  const bindings = index.bindings.filter(binding => binding.logicalCode && !binding.excludedReason
+    && (!planId || selection?.slots.some(slot => slot.assetId === binding.assetId
+      && slot.candidate?.contentFingerprint === binding.contentFingerprint)));
+  const assetIds = planId ? [...new Set(selection?.slots.flatMap(slot =>
+    slot.assetId && bindings.some(binding => binding.assetId === slot.assetId) ? [slot.assetId] : []) ?? [])]
+    : [...new Set(bindings.map(binding => binding.assetId))];
   return { inputRevision: index.revision, editable: readFormulaInputEditing(db, projectId, batchId).editable,
-    items: [...new Set(bindings.map(binding => binding.assetId))].map(assetId => {
-      const aliases = bindings.filter(binding => binding.assetId === assetId), row = rows.find(item => item.assetId === assetId);
+    ...(output && planId ? { context: { planId, scriptNumber: String(output.scriptNumber), copyIndex: output.copyIndex } } : {}),
+    items: assetIds.map(assetId => {
+      const logicalCodes = [...new Set(selection?.slots.filter(slot => slot.assetId === assetId)
+        .map(slot => slot.sourceLogicalCode ?? slot.logicalCode) ?? [])];
+      const aliases = bindings.filter(binding => binding.assetId === assetId).sort((a, b) =>
+        Number(logicalCodes.includes(b.logicalCode!)) - Number(logicalCodes.includes(a.logicalCode!)));
+      const row = rows.find(item => item.assetId === assetId);
+      const source = speech?.sources.find(item => item.assetId === assetId);
+      const needsAttention = source?.result?.status === 'needs_attention' || source?.taskStatus === 'failed' || source?.taskStatus === 'cancelled';
+      const message = source?.result?.status === 'needs_attention' ? source.result.message : source?.errorMessage
+        ?? (source?.result?.status === 'transcribed' ? '原声识别已完成，可试听核对。'
+          : source?.result?.status === 'no_audio_stream' ? '原片没有音轨。'
+            : source?.result?.status === 'no_speech' ? '已记录为没有人声。' : '原声检查尚未完成。');
       const recognized = db.prepare(`SELECT x.resultJson FROM live_mixcut_formula_speech_results x
         JOIN live_mixcut_formula_speech_stages s ON s.id=x.stageId JOIN live_mixcut_formula_stages t ON t.id=s.selectionStageId
         JOIN live_mixcut_formula_generation_requests r ON r.id=t.requestId
@@ -63,8 +90,10 @@ export function readFormulaManualSpeech(db: Database.Database, projectId: string
           AND json_extract(x.resultJson,'$.status')='transcribed'
           AND json_type(x.resultJson,'$.transcriptionIdentity')='object' ORDER BY x.createdAt DESC,s.id LIMIT 1`)
         .get(projectId, batchId, assetId, aliases[0].contentFingerprint) as { resultJson: string } | undefined;
-      const automatic = recognized ? JSON.parse(recognized.resultJson) as { text: string; words: FormulaManualSpeechSegment[] } : null;
+      const automatic = planId ? (source?.result?.status === 'transcribed' && source.result.transcriptionIdentity ? source.result : null)
+        : recognized ? JSON.parse(recognized.resultJson) as { text: string; words: FormulaManualSpeechSegment[] } : null;
       return { assetId, contentFingerprint: aliases[0].contentFingerprint, names: aliases.map(item => item.sourcePath),
+        ...(planId ? { review: { logicalCodes, needsAttention, message } } : {}),
         available: aliases.some(item => item.available),
         saved: row ? { id: row.id, assetId, contentFingerprint: row.contentFingerprint, revision: row.revision,
           baseInputRevision: row.baseInputRevision, createdAt: row.createdAt, ...JSON.parse(row.contentJson) } : null,

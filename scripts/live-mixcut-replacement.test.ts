@@ -82,6 +82,30 @@ try {
   assert.ok(result.slots[0].replacement?.differences.includes('湿布变为纸擦拭'));
   assert.equal(result.slots[0].rangeStatus, 'pending');
   assert.equal(result.executionReady, false, '选到替代素材不代表声音、动作区间或正式成片已核验');
+  const nameOnly = structuredClone(request);
+  nameOnly.input.sessions = nameOnly.input.sessions.filter(session => session.kind !== 'materials');
+  nameOnly.input.materialIndex.codes.forEach(code => { code.defined = false; });
+  const candidateBinding = nameOnly.input.materialIndex.bindings.find(binding => binding.logicalCode === 'S25')!;
+  const originalBinding = { ...candidateBinding, id: 'missing-original', assetId: 'offline-original', logicalCode: 'S29', available: false, sourceName: 'S29_抗污易清洁.mp4' };
+  nameOnly.input.materialIndex.bindings.push(originalBinding);
+  nameOnly.input.materialNotes = [originalBinding, candidateBinding].map(binding => ({
+    bindingId: binding.id, sourceName: binding.sourceName, logicalCode: binding.logicalCode, excluded: false, available: binding.available,
+    inputFingerprint: 'frozen', stale: false,
+    source: { bindingId: binding.id, assetId: binding.assetId, contentFingerprint: binding.contentFingerprint, filename: binding.sourceName, logicalCode: binding.logicalCode, table: null },
+    profile: { id: `profile-${binding.id}`, revision: 1, inputFingerprint: 'frozen', origin: 'ai', provenance: { basis: 'filename_and_table', visualObservation: false },
+      content: { description: binding.logicalCode === 'S29' ? '抗污易清洁' : '用纸擦净污渍', category: '', sellingPoints: [], actions: [], speech: 'unknown',
+        evidence: [{ field: 'description', source: 'filename', quote: binding.sourceName }] } },
+  }));
+  const namedReplacement = await selectFormulaOutput(db, 'p', nameOnly, nameOnly.outputs[0], new AbortController().signal, () => {},
+    async () => ({ ...model, async complete(input) {
+      const facts = JSON.parse(input.userPrompt);
+      const from = facts.original.facts.find((fact: { origin: { source: string } }) => fact.origin.source === 'ai_filename');
+      const to = facts.candidates.find((candidate: { logicalCode: string }) => candidate.logicalCode === 'S25').facts.find((fact: { origin: { source: string } }) => fact.origin.source === 'ai_filename');
+      assert(from && to, '文件名整理出的结构化说明必须进入替换判断');
+      return { matches: [{ ...validReply.matches[0], evidence: [{ originalField: from.field, originalQuote: from.text, replacementField: to.field, replacementQuote: to.text }] }] };
+    } }));
+  assert.equal(namedReplacement.status, 'selected', '没有素材表时，已保存的原编号说明也能支持缺片判断');
+  assert.equal(namedReplacement.slots[0].replacement?.evidence[0].original.source, 'ai_filename');
   const hintedRequest = structuredClone(request);
   hintedRequest.input.replacementHints = { id: 'old-hints', filename: 'substitutions.json', fingerprint: 'a'.repeat(64),
     baseInputRevision: 0, createdAt: 'then', hints: [{ originalCode: 'S29', replacementCode: 'S25', sourceLine: null, note: '旧表说明，仅作参考' }] };

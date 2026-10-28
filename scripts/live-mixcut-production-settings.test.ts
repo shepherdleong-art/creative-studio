@@ -103,7 +103,9 @@ try {
   db.prepare('UPDATE final_edit_tts_providers SET enabled=0').run();
   await assert.rejects(() => update(production, 2), /配音供应商不可用/);
   const original = await update({ ...settings.production, packaging: { mode: 'random', templateIds: ['overlay-poster'] } }, 2);
-  assert.equal(original.saved!.settings.production.packaging.mode, 'uniform', '一个随机候选按统一处理');
+  assert.equal(original.saved!.settings.production.packaging.mode, 'random', '保存不能把用户选择的随机包装改成统一');
+  assert.deepEqual(readFormulaSettings(db, 'p', batch).saved!.settings.production.packaging,
+    { mode: 'random', templateIds: ['overlay-poster'] }, '重新读取仍保留随机模式及用户勾选的候选');
   assert.equal(original.saved!.settings.production.audio.mode, 'original', '停用 TTS 不阻止纯原声');
   const pendingVoice = await update({ ...settings.production, audio: { mode: 'mixed', tts: null } }, 3);
   assert.equal(pendingVoice.saved!.settings.production.audio.tts, null, '可先保存草稿，制作时只对实际需要 TTS 的输出检查配置');

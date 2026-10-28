@@ -780,6 +780,18 @@ export function getBatchWorkspace(
     };
   });
 
+  const formulaGeneration = readFormulaGenerationProgress(db, projectId, batchId, cards);
+  const cardsByPlan = new Map(cards.map(card => [card.planId, card]));
+  for (const item of formulaGeneration?.items ?? []) {
+    const card = cardsByPlan.get(item.planId);
+    if (!card?.formula || card.versionId || item.status !== 'needs_attention') continue;
+    const detail = `${item.phase}未完成：${item.detail}`;
+    if (batch.controlState === 'running') card.status = item.retryTaskId ? 'retryable_failed' : 'needs_attention';
+    card.nextAction = detail;
+    card.formula = { ...card.formula, message: detail, retryTaskId: item.retryTaskId };
+    card.blockers = [...new Set([...card.blockers, detail])];
+  }
+
   const counts = {
     total: cards.length,
     reviewable: cards.filter(({ reviewable }) => reviewable).length,
@@ -796,5 +808,5 @@ export function getBatchWorkspace(
   else phase = 'review';
 
   return { batch, phase, exportDirName: getLiveMixcutBatchExportDirName(db, projectId, batchId), counts, cards, exclusions, allocationReport,
-    formulaGeneration: readFormulaGenerationProgress(db, projectId, batchId, cards) };
+    formulaGeneration };
 }

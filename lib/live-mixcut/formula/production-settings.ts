@@ -33,12 +33,12 @@ function identifiers(value: unknown, label: string): string[] {
   return [...new Set(value as string[])].sort();
 }
 
-function selectionMode(mode: unknown, ids: string[], offMode: 'none' | 'default', label: string) {
+function selectionMode(mode: unknown, ids: string[], offMode: 'none' | 'default', label: string, preserveMode = false) {
   if (mode !== offMode && mode !== 'uniform' && mode !== 'random') throw new Error(`${label}分配方式无效`);
   if (mode === offMode && ids.length) throw new Error(`${label}未启用时不能保留候选`);
   if (mode !== offMode && !ids.length) throw new Error(`请至少选择一个${label}候选`);
   if (mode === 'uniform' && ids.length !== 1) throw new Error(`${label}统一模式只能选择一个候选`);
-  return mode === 'random' && ids.length === 1 ? 'uniform' : mode;
+  return !preserveMode && mode === 'random' && ids.length === 1 ? 'uniform' : mode;
 }
 
 /** 严格验证用户设置；旧设置缺此字段时采用明确默认值，不在读取时随机分配。 */
@@ -59,7 +59,8 @@ export function parseFormulaProductionSettings(value: unknown): FormulaProductio
   if (audio.mode === 'original' && tts) throw new Error('纯原声模式不使用配音设置，请清除配音选择');
   const packaging = object(input.packaging, ['mode', 'templateIds'], '视频包装');
   const templateIds = identifiers(packaging.templateIds, '视频包装');
-  const packagingMode = selectionMode(packaging.mode, templateIds, 'none', '视频包装');
+  // 候选只有一个只影响分配结果，不应改写用户明确选择的包装模式。
+  const packagingMode = selectionMode(packaging.mode, templateIds, 'none', '视频包装', true);
   const cover = object(input.cover, ['mode', 'presetIds'], '封面预设');
   const presetIds = identifiers(cover.presetIds, '封面预设');
   const coverMode = selectionMode(cover.mode, presetIds, 'default', '封面预设');

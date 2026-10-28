@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3';
 import { dataRoot } from '../../data-root.ts';
 import { runFfmpeg } from '../../ffmpeg.ts';
 import { assertNoStorageSymlink } from '../../media-core/storage-path.ts';
+import { SpeechTranscriptionError } from '../../media-core/adapters/speech-errors.ts';
 import type { SpeechTranscription, SpeechTranscriptionAdapter } from '../../media-core/adapters/alignment.ts';
 import { resolveSourceFilePath } from '../media-catalog.ts';
 import { verifyFormulaCandidate, recheckFormulaCandidate, type FormulaCandidateSource } from './candidate-media.ts';
@@ -19,7 +20,8 @@ export type FormulaSourceSpeech = SourceIdentity & (
   | { status: 'transcribed'; sourceId: string; mediaDurationUs: number; reviewStatus: 'pending'; text: string; words: SpeechTranscription['words'];
       audioStreamIndex: 0; transcriptionIdentity: SpeechTranscriptionAdapter['identity'] | null }
   | { status: 'no_audio_stream'; sourceId: string; mediaDurationUs: number }
-  | { status: 'no_speech'; sourceId: string; mediaDurationUs: number }
+  | { status: 'no_speech'; sourceId: string; mediaDurationUs: number;
+      detection?: NonNullable<SpeechTranscription['noSpeech']> & { transcriptionIdentity: SpeechTranscriptionAdapter['identity'] } }
   | { status: 'needs_attention'; reason: 'source_unavailable' | 'service_unavailable' | 'source_too_long' | 'transcription_failed' | 'manual_invalid'; message: string }
 );
 
@@ -69,12 +71,20 @@ export async function analyzeFormulaSourceSpeech(db: Database.Database, projectI
     recheckFormulaCandidate(db, projectId, candidate);
     let transcript: SpeechTranscription;
     try { transcript = await adapter.transcribe({ audioPath, durationUs: mediaDurationUs, signal }); }
-    catch {
+    catch (error) {
       signal.throwIfAborted();
-      return { ...identity, status: 'needs_attention', reason: 'transcription_failed', message: '未取得可靠的台词及时间，请重试；不能据此认定没有人声，请在检查成片时人工核对。' };
+      const message = error instanceof SpeechTranscriptionError ? error.message
+        : error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name) ? '原声识别请求超时，请重试此步骤。'
+          : '原声识别调用或结果解析失败，请检查服务后重试；不能据此认定没有人声。';
+      return { ...identity, status: 'needs_attention', reason: 'transcription_failed', message };
     }
     signal.throwIfAborted();
     recheckFormulaCandidate(db, projectId, candidate);
+    if (transcript.noSpeech?.provider === 'volc' && transcript.noSpeech.statusCode === '20000003'
+      && !transcript.text && !transcript.words.length) {
+      return { ...identity, status: 'no_speech', sourceId: candidate.sourceId, mediaDurationUs,
+        detection: { ...transcript.noSpeech, transcriptionIdentity: { ...adapter.identity } } };
+    }
     return { ...identity, status: 'transcribed', sourceId: candidate.sourceId, mediaDurationUs,
       reviewStatus: 'pending', text: transcript.text, words: transcript.words,
       audioStreamIndex: 0, transcriptionIdentity: { ...adapter.identity } };

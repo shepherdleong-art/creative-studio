@@ -33,16 +33,20 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
   const [showAll, setShowAll] = useState(false);
   const [providerId, setProviderId] = useState('');
   const [aiRequested, setAiRequested] = useState(false);
+  const [stoppingAi, setStoppingAi] = useState(false);
+  const aiController = useRef<AbortController | null>(null);
+  useEffect(() => () => aiController.current?.abort(), []);
   const [editing, setEditing] = useState<{ session: FormulaImportSessionView; row: FormulaScriptInput } | null>(null);
   const progressElement = useRef<HTMLDivElement>(null);
   const openingInput = useRef(false);
   const readOnly = inputs ? !inputs.editing.editable : outerReadOnly;
-  const controlsBusy = busy || !!editing || readOnly;
+  const controlsBusy = busy || stoppingAi || !!editing || readOnly;
   const kind = 'scripts';
   const label = '脚本表';
   const url = `/api/live-mixcut/batches/${encodeURIComponent(batchId)}/formula/imports?projectId=${encodeURIComponent(projectId)}`;
   const load = useCallback(async (signal?: AbortSignal) => {
     const value = await read<InputsWithModels>(await fetch(url, { cache: 'no-store', signal }));
+    if (signal?.aborted) return;
     setInputs(value);
     setSession(value.drafts.find(item => item.kind === kind && item.baseRevision === value.revision) ?? null);
     onSummary({ batchId, videoSources: value.videoSourceCount, scripts: value.scripts?.rows.length ?? 0 });
@@ -86,9 +90,7 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
         method: 'POST', headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, body: file,
       }));
       setSession(next);
-      if (inputs.aiProviders?.length && next.draftRevision === 0 && !next.extraction) {
-        await updatePreview(next, 'ai');
-      }
+      setMessage('原表已读取。可点击「用 AI 识别表头」，也可直接核对列对应后确认导入。');
     } catch (err) { setError(err instanceof Error ? err.message : '读取失败'); }
     finally { setBusy(false); }
   }
@@ -117,17 +119,49 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
   }
 
   async function updatePreview(current: FormulaImportSessionView, action: 'mapping' | 'ai', mapping?: FormulaSheetMapping[]) {
+    const controller = action === 'ai' ? new AbortController() : null;
+    if (controller) aiController.current = controller;
     setAiRequested(action === 'ai');
     try {
       const next = await read<FormulaImportSessionView>(await fetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        signal: controller?.signal,
         body: JSON.stringify({ action, sessionId: current.id, expectedRevision: current.baseRevision,
           expectedDraftRevision: current.draftRevision, mapping, providerId: providerId || inputs?.aiProviders?.[0]?.id }) }));
+      if (controller?.signal.aborted) return;
       setSession(next);
       setMessage(action === 'ai' ? `AI 已识别列对应，已逐行检查 ${next.preview.rowCount} 行原始资料。` : '已保存列对应，预览已更新。');
     } catch (err) {
+      if (controller?.signal.aborted) return;
       setError(err instanceof Error ? err.message : '识别或修改失败');
       await load().catch(() => {});
-    } finally { setAiRequested(false); }
+    } finally {
+      if (!controller || aiController.current === controller) {
+        aiController.current = null;
+        setAiRequested(false);
+      }
+    }
+  }
+
+  async function stopRecognition() {
+    if (!session || stoppingAi) return;
+    setStoppingAi(true); setError('');
+    aiController.current?.abort();
+    aiController.current = null; setAiRequested(false);
+    try {
+      // 识别开始时服务端会推进修订，先读取最新身份再取消，刷新页面后也能停止。
+      const latest = await read<InputsWithModels>(await fetch(url, { cache: 'no-store' }));
+      const current = latest.drafts.find(item => item.id === session.id);
+      if (current?.extraction?.state === 'running') {
+        await read(await fetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'cancel_ai', sessionId: current.id, expectedRevision: current.baseRevision,
+            expectedDraftRevision: current.draftRevision }) }));
+      }
+      await load();
+      setMessage('已停止识别，预览保留。选好模型后点击「重新用 AI 识别」。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '停止失败，请重试');
+      await load().catch(() => {});
+    } finally { setStoppingAi(false); setBusy(false); }
   }
 
   async function openScript(key?: string) {
@@ -186,28 +220,39 @@ export default function FormulaImportPanel({ projectId, batchId, step, onSummary
       {step === 1 && <div className="card space-y-3 p-4">
         <h2 className="text-base font-semibold text-ink">导入脚本与公式</h2>
         <p className="text-sm text-ink-secondary">导入脚本表，保留原脚本序号、镜头顺序、目标时长和文案。</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-sm text-ink">表格识别模型
+            <select aria-label="表格识别模型" className="ml-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-sm text-ink"
+              value={providerId || inputs?.aiProviders?.[0]?.id || ''}
+              disabled={readOnly || !!editing || stoppingAi || (busy && !aiRequested && !aiRunning) || !inputs?.aiProviders?.length}
+              onChange={event => {
+                setProviderId(event.target.value);
+                if (aiRequested || aiRunning) void stopRecognition();
+              }}>
+              {!inputs?.aiProviders?.length && <option value="">暂无可用脚本模型</option>}
+              {inputs?.aiProviders?.map(provider => <option key={provider.id} value={provider.id}>{provider.name} · {provider.model}</option>)}
+            </select>
+          </label>
+          {session && <button type="button" className="btn-secondary" disabled={controlsBusy || aiRunning || aiRequested || !inputs?.aiProviders?.length} onClick={() => void modify('ai')}>
+            {aiRunning || aiRequested ? 'AI 正在识别…' : session.extraction ? '重新用 AI 识别' : '用 AI 识别表头'}
+          </button>}
+          {(aiRunning || aiRequested || stoppingAi) && <button type="button" className="btn-secondary" disabled={stoppingAi} onClick={() => void stopRecognition()}>
+            {stoppingAi ? '正在停止…' : '停止识别'}
+          </button>}
+        </div>
+        <p className="text-xs text-ink-secondary">先选模型，再导入表格；读取原表不会自动调用 AI。识别中切换模型会停止当前识别，已保存的预览保留。</p>
         <label className={`inline-flex cursor-pointer items-center rounded-lg border border-hairline bg-surface px-3 py-2 text-sm text-ink focus-within:ring-2 focus-within:ring-accent ${controlsBusy || !inputs ? 'opacity-50' : 'hover:bg-surface-subtle'}`}>
           <span>选择{label}（XLSX）</span>
           <input type="file" accept=".xlsx" aria-label={`选择${label}`} disabled={controlsBusy || !inputs}
             onChange={event => { const file = event.target.files?.[0]; if (file) void preview(file); event.target.value = ''; }}
             className="sr-only" />
         </label>
-        <p className="text-xs text-ink-tertiary">每个工作簿不超过 10 MiB、10,000 行、50 列。已配置脚本模型时，导入后自动识别列对应；也可手动修改。</p>
+        <p className="text-xs text-ink-tertiary">每个工作簿不超过 10 MiB、10,000 行、50 列。导入后按需点击 AI 识别，也可手动选择列。</p>
         {saved && <p className="text-sm text-ink-secondary">已保存：{saved.filename} · {saved.rows.length} 条{saved.excludedKeys.length ? ` · 已排除 ${saved.excludedKeys.length} 行` : ''}</p>}
         {saved && !session && <button type="button" className="btn-secondary" disabled={controlsBusy} onClick={() => void openScript()}>修改已保存脚本</button>}
       </div>}
       {step === 1 && session && <div className="card space-y-3 p-4">
         <p className="text-sm font-medium text-ink">待确认：{session.filename} · 共 {session.preview.rowCount} 行，可导入 {rows.length} 行</p>
-        <div className="flex flex-wrap items-center gap-2">
-          <select aria-label="表格识别模型" className="rounded-lg border border-hairline bg-surface px-3 py-2 text-sm text-ink"
-            value={providerId || inputs?.aiProviders?.[0]?.id || ''} disabled={controlsBusy || aiRunning || !inputs?.aiProviders?.length} onChange={event => setProviderId(event.target.value)}>
-            {!inputs?.aiProviders?.length && <option value="">暂无可用脚本模型</option>}
-            {inputs?.aiProviders?.map(provider => <option key={provider.id} value={provider.id}>{provider.name} · {provider.model}</option>)}
-          </select>
-          <button type="button" className="btn-secondary" disabled={controlsBusy || aiRunning || !inputs?.aiProviders?.length} onClick={() => void modify('ai')}>
-            {aiRunning ? 'AI 正在识别…' : session.extraction ? '重新用 AI 识别' : '用 AI 识别表头'}
-          </button>
-        </div>
         <p className="text-xs text-ink-secondary">AI 仅接收表头和前 20 行文字样本，用于判断列对应；全部资料由程序读取原表。没有模型时可直接手动选择列。</p>
         {session.extraction && <p role="status" className={`text-sm ${session.extraction.state === 'failed' ? 'text-fail' : 'text-ink-secondary'}`}>
           {session.extraction.manualOverride ? session.extraction.message : session.extraction.state === 'running' ? `正在识别表头：${session.extraction.completedSheets} / ${session.extraction.totalSheets} 个工作表`

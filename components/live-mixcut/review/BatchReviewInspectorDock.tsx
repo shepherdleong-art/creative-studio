@@ -30,6 +30,8 @@ export interface BatchReviewInspectorDockProps {
   onMediaEdit: (planId: string, edit: Record<string, unknown>) => Promise<boolean>;
   onJumpToCover: (planId: string) => void;
   onRefreshFilm: (planId: string) => Promise<void>;
+  onRetryTask: (taskId: string) => void;
+  retryBusy: boolean;
   coverEditorOpen: boolean;
   onOpenCoverEditor: () => void;
   onCloseCoverEditor: () => void;
@@ -46,6 +48,8 @@ export default function BatchReviewInspectorDock({
   poolAssets,
   onMediaEdit,
   onRefreshFilm,
+  onRetryTask,
+  retryBusy,
   onJumpToCover,
   coverEditorOpen,
   onOpenCoverEditor,
@@ -185,8 +189,14 @@ export default function BatchReviewInspectorDock({
             <p className="text-[10px] text-ink-tertiary">这条成片还没有可编辑的画面、字幕和声音</p>
           </div>
         </div>
-        <div className="flex flex-1 items-center justify-center p-6 text-center text-xs text-ink-tertiary">
-          {film.reviewable ? '正在读取成片编辑数据…' : '这条成片还在制作中，暂无可编辑内容。'}
+        <div className="flex flex-1 flex-col gap-3 overflow-auto p-4 text-sm text-ink-secondary">
+          <p>{film.reviewable ? '正在读取成片编辑数据…' : film.blockers.length
+            ? '制作受阻，时间轴尚未生成。处理以下问题后才能自动排入素材。'
+            : '正在准备画面和声音，完成后自动生成时间轴。'}</p>
+          {film.blockers.map((message, index) => <p key={index} role="alert" className="text-fail">{message}</p>)}
+          {film.formula?.retryTaskId && <button type="button" className="btn-secondary" disabled={retryBusy}
+            onClick={() => onRetryTask(film.formula!.retryTaskId!)}>重试此步骤</button>}
+          {film.blockers.length > 0 && <p className="text-xs">需要调整素材、脚本或配音时，请回「脚本与口播」点「修改输入」。</p>}
         </div>
       </aside>
     );

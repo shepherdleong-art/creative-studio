@@ -136,7 +136,7 @@ export default function FormulaProductionSettingsPanel({ value, options, disable
       </label>
       <div className="flex flex-wrap gap-4">{([['none', '不加包装'], ['uniform', '整批统一包装'], ['random', '随机分配包装']] as const).map(([mode, label]) => <label key={mode} className="flex items-center gap-2 text-sm text-ink">
         <input type="radio" name={`formula-packaging-${groupId}`} checked={value.packaging.mode === mode} onChange={() => onChange({ ...value,
-          packaging: { mode, templateIds: mode === 'none' ? [] : mode === 'uniform' ? [value.packaging.templateIds[0] ?? options.templates[0]?.id].filter(Boolean) : value.packaging.templateIds },
+          packaging: { mode, templateIds: mode === 'none' ? [] : mode === 'uniform' ? [value.packaging.templateIds[0] ?? options.templates[0]?.id].filter(Boolean) : options.templates.map(item => item.id) },
           cover: { mode: 'default', presetIds: [] } })} />{label}
       </label>)}</div>
       {value.packaging.mode !== 'none' && <div className="grid gap-2 sm:grid-cols-2">{options.templates.map(item => <label key={item.id} className="flex items-center gap-2 rounded-lg border border-hairline bg-surface-subtle p-3 text-sm text-ink">
@@ -144,7 +144,8 @@ export default function FormulaProductionSettingsPanel({ value, options, disable
           templateIds: value.packaging.mode === 'uniform' ? [item.id] : event.target.checked ? [...value.packaging.templateIds, item.id] : value.packaging.templateIds.filter(id => id !== item.id) },
           cover: { mode: 'default', presetIds: [] } })} />{item.name}
       </label>)}</div>}
-      {value.packaging.mode === 'random' && <p className="text-xs text-ink-secondary">从勾选模板中为每条成片分配一个；只有一个候选时按统一处理。开始制作后固定结果，刷新和重试不重新抽取。</p>}
+      {value.packaging.mode === 'random' && <p className="text-xs text-ink-secondary">从勾选模板中为每条成片随机分配一个，可取消不想使用的模板。开始制作后固定结果，刷新和重试不重新抽取。</p>}
+      {value.packaging.mode === 'random' && value.packaging.templateIds.length === 1 && <p className="text-xs text-warn">当前只勾选了一个模板，所有成片都会使用它；勾选至少两个模板才能产生不同包装。</p>}
       <p className="text-xs text-ink-secondary">{value.packaging.mode === 'none'
         ? '不加包装时使用默认封面，不叠加标题样式。'
         : '包装模板同时决定封面效果，封面文字由包装模板显示，无需另外选择封面预设。'}</p>

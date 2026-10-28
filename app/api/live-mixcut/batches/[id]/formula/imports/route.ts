@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertFormulaApiReady } from '@/lib/live-mixcut/formula/runtime-readiness';
-import { createFormulaImportSession, confirmFormulaImportSession, readFormulaInputs, remapFormulaImportSession, analyzeFormulaImportSession, editFormulaScriptRow, reviseFormulaScriptImport } from '@/lib/live-mixcut/formula/import-store';
+import { createFormulaImportSession, confirmFormulaImportSession, readFormulaInputs, remapFormulaImportSession, analyzeFormulaImportSession, editFormulaScriptRow, reviseFormulaScriptImport, cancelFormulaImportAnalysis } from '@/lib/live-mixcut/formula/import-store';
 import { listTextJsonModels, resolveTextJsonModel } from '@/lib/media-core/adapters/text-json';
 import { FORMULA_WORKBOOK_LIMITS } from '@/lib/live-mixcut/formula/workbook-budget';
 import { BatchDomainError } from '@/lib/live-mixcut/errors';
@@ -97,6 +97,8 @@ export async function PATCH(request: NextRequest, route: { params: Promise<{ id:
     } else if (body.action === 'mapping') {
       if (!Array.isArray(body.mapping)) throw new BatchDomainError('invalid_input', '缺少列对应关系');
       session = await remapFormulaImportSession(db, projectId, id, body.sessionId, { ...expected, mapping: body.mapping });
+    } else if (body.action === 'cancel_ai') {
+      session = cancelFormulaImportAnalysis(db, projectId, id, body.sessionId, expected);
     } else if (body.action === 'ai') {
       if (typeof body.providerId !== 'string') throw new BatchDomainError('invalid_input', '请选择用于识别的脚本模型');
       let model;

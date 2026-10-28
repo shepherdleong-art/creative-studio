@@ -144,6 +144,14 @@ try {
   for (const task of listBatchTasks(db, voiceBatch).filter(task => task.status === 'failed')) retryTask(db, 'p', task.id);
   await runPendingOnce({ db, workerId: 'config-restored', executors: [formulaStageExecutor], log: () => {} });
   assert.equal(listBatchTasks(db, voiceBatch).filter(task => task.status === 'failed').length, 2, '未识别出台词可按原任务重试，不能落成不可重试的成功');
+  const { getBatchWorkspace } = await import('../lib/live-mixcut/batch-workspace.ts');
+  const blockedWorkspace = getBatchWorkspace(db, 'p', voiceBatch);
+  const blockedCard = blockedWorkspace.cards.find(card => card.planId === voiceRequest.outputs[0].planId)!;
+  assert.equal(blockedCard.status, 'retryable_failed', '声音失败不能在第三步显示为一直处理中');
+  assert.match(blockedCard.formula!.message, /核对原声/);
+  assert(blockedCard.formula?.retryTaskId, '第三步必须提供原失败任务的重试入口');
+  assert(blockedCard.blockers.length > 0, '没有时间轴时仍须展示真实阻塞原因');
+
   const restoredPath = resolveSourceFilePath(listAssetSources(db, voiceAsset).find(source => source.sourceKind === 'managed')!.locationJson);
   const restoredStat = fs.statSync(restoredPath);
   fs.utimesSync(restoredPath, restoredStat.atime, new Date(restoredStat.mtimeMs + 1_000));

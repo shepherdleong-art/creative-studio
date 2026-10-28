@@ -7,7 +7,7 @@ import { groupFormulaVideoUploads } from '@/lib/live-mixcut/formula/video-upload
 import { fingerprintsEqual } from '@/lib/live-mixcut/fingerprint-format';
 
 type MaterialModel = { id: string; name: string; model: string };
-type NotesView = FormulaMaterialNotesView & { aiProviders?: MaterialModel[] };
+type NotesView = FormulaMaterialNotesView & { aiProviders?: MaterialModel[]; videoProviders?: MaterialModel[] };
 const pendingNote = (item: FormulaMaterialNoteItem) => item.available && !item.excluded
   && (!item.profile || (item.stale && item.profile.origin === 'ai'));
 
@@ -89,19 +89,19 @@ function NoteEditor({ item, busy, onSave, onCancel }: { item: FormulaMaterialNot
 
 function NoteBody({ item }: { item: FormulaMaterialNoteItem }) {
   return <>
-    <p className="text-xs text-ink-secondary">{item.profile ? item.profile.origin === 'manual' ? '人工说明' : 'AI 整理 · 基于文件名与已有资料' : '尚未整理'}
+    <p className="text-xs text-ink-secondary">{item.profile ? item.profile.origin === 'manual' ? '人工说明' : item.profile.provenance.visualObservation === true ? 'AI 画面分析 · 基于实际抽帧' : 'AI 整理 · 基于文件名与已有资料' : '尚未整理'}
       {item.stale ? ' · 来源资料已变化，请核对' : ''}{!item.available ? ' · 视频不可用' : ''}</p>
     {item.profile ? <>
       <p className="whitespace-pre-wrap text-sm text-ink">{item.profile.content.description}</p>
       {item.profile.content.conflicts?.map((conflict, i) => <p key={i} className="text-xs text-fail">命名与表格有差异：{conflict.message}（文件名“{conflict.filenameQuote}”；素材表“{conflict.tableQuote}”）。请核对并修改说明。</p>)}
       <p className="text-xs text-ink-secondary">类别：{item.profile.content.category || '未确定'} · 口播：{item.profile.content.speech === 'yes' ? '有口播（仍需核验）' : item.profile.content.speech === 'no' ? '无口播（仍需核验）' : '未确定'}</p>
       {(item.profile.content.sellingPoints.length > 0 || item.profile.content.actions.length > 0) && <p className="text-xs text-ink-secondary">卖点：{item.profile.content.sellingPoints.join('、') || '未确定'}；动作：{item.profile.content.actions.join('、') || '未确定'}</p>}
-    </> : <p className="text-xs text-ink-secondary">工作台会根据文件名自动整理内容说明，也可以手动填写。</p>}
+  </> : <p className="text-xs text-ink-secondary">选择模型并点击「开始整理」后，可根据文件名整理内容说明，也可以手动填写。</p>}
     <details className="text-xs text-ink-secondary"><summary className="cursor-pointer">查看整理依据</summary>
       <p className="mt-2 break-all">文件名：{item.sourceName}</p>
       {item.source.table && <div className="mt-2 space-y-1"><p>{item.source.table.sheet} 第 {item.source.table.row} 行</p>
         {Object.entries(item.source.table.fields).map(([field, value]) => <p key={field} className="whitespace-pre-wrap">{field}：{value}</p>)}</div>}
-      {item.profile?.content.evidence.map((evidence, i) => <p key={i} className="mt-1">{evidence.source === 'filename' ? '文件名' : '素材表'}引用：{evidence.quote}</p>)}
+      {item.profile?.content.evidence.map((evidence, i) => <p key={i} className="mt-1">{evidence.source === 'filename' ? '文件名' : evidence.source === 'video_frame' ? '画面分析' : '素材表'}引用：{evidence.quote}</p>)}
     </details>
   </>;
 }
@@ -112,6 +112,7 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
   const [index, setIndex] = useState<FormulaMaterialIndex | null>(null);
   const [notes, setNotes] = useState<NotesView | null>(null);
   const [providerId, setProviderId] = useState('');
+  const [analysisMode, setAnalysisMode] = useState<'filename' | 'video'>('filename');
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [organizing, setOrganizing] = useState(false);
@@ -145,28 +146,21 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
     return () => controller.abort();
   }, [materialsUrl, notesUrl, inputRevision]);
   const organize = useCallback(async (current: NotesView, modelId: string) => {
-    if (organizeRef.current || readOnly) return;
+    if (organizeRef.current || readOnly || !(analysisMode === 'video' ? current.videoProviders : current.aiProviders)?.some(model => model.id === modelId)) return;
     const controller = new AbortController();
     organizeRef.current = controller;
     setOrganizing(true); setError('');
     try {
       const next = await read<NotesView>(await fetch(notesUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-        body: JSON.stringify({ expectedRevision: current.revision, providerId: modelId }) }));
-      setNotes({ ...next, aiProviders: current.aiProviders });
+        body: JSON.stringify({ expectedRevision: current.revision, providerId: modelId, mode: analysisMode }) }));
+      controller.signal.throwIfAborted();
+      setNotes({ ...next, aiProviders: current.aiProviders, videoProviders: current.videoProviders });
       await onChanged();
     } catch (err) {
       if (!controller.signal.aborted) setError(err instanceof Error ? err.message : '整理失败');
       await loadNotes().catch(() => {});
     } finally { organizeRef.current = null; setOrganizing(false); }
-  }, [notesUrl, readOnly, onChanged, loadNotes]);
-  useEffect(() => {
-    if (readOnly || editing) return;
-    const modelId = providerId || notes?.aiProviders?.[0]?.id;
-    if (!notes || !modelId) return;
-    // 载入后自动续跑未完成项：这是启动外部整理任务的副作用，不是派生状态。
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (notes.items.some(pendingNote) && (!notes.run || notes.run.state === 'completed')) void organize(notes, modelId);
-  }, [notes, providerId, readOnly, editing, organize]);
+  }, [notesUrl, readOnly, onChanged, loadNotes, analysisMode]);
   const running = notes?.run?.state === 'running';
   useEffect(() => {
     if (!running && !organizing) return;
@@ -257,7 +251,7 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
       const next = await read<NotesView>(await fetch(notesUrl, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ bindingId: editing.item.bindingId, expectedRevision: editing.revision,
           expectedProfileId: editing.item.profile?.id ?? null, content }) }));
-      setNotes({ ...next, aiProviders: notes?.aiProviders }); setEditing(null);
+      setNotes({ ...next, aiProviders: notes?.aiProviders, videoProviders: notes?.videoProviders }); setEditing(null);
       await onChanged();
     } catch (err) { setError(err instanceof Error ? err.message : '保存失败'); }
     finally { setBusy(false); }
@@ -266,12 +260,37 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
   const bindings = index?.bindings ?? [];
   const notesById = new Map((notes?.items ?? []).map(item => [item.bindingId, item]));
   const items = notes?.items.filter(item => !item.excluded) ?? [];
-  const remaining = items.filter(pendingNote).length;
+  const remaining = items.filter(item => pendingNote(item) || (analysisMode === 'video' && item.available && !item.excluded && item.profile?.origin === 'ai' && item.profile.provenance.visualObservation !== true)).length;
   const missing = index?.codes.filter(code => code.status !== 'available' && (code.defined || code.referencedBy.length)) ?? [];
   const visible = showAll ? bindings : bindings.slice(0, 20);
+  const models = analysisMode === 'video' ? notes?.videoProviders : notes?.aiProviders;
+  const selectedModelId = models?.some(model => model.id === providerId) ? providerId : '';
   return <div className="card space-y-3 p-4" aria-label="实拍视频导入与整理">
     <h2 className="text-base font-semibold text-ink">导入与整理素材</h2>
-    <p className="text-sm text-ink-secondary">选择视频或整个文件夹，系统会分批复制到项目中，按文件名识别编号，并自动整理内容说明。原文件保持不变。</p>
+    <p className="text-sm text-ink-secondary">选择视频或整个文件夹，系统会分批复制到项目中，按文件名识别编号。导入不会调用 AI；选好模型后点击「开始整理」生成内容说明。原文件保持不变。</p>
+    <div className="space-y-2 rounded-lg border border-hairline bg-surface-subtle p-3">
+      <fieldset disabled={readOnly || busy || running || organizing} className="flex flex-wrap gap-4 text-sm text-ink">
+        <legend className="mb-2">内容分析方式</legend>
+        {([['filename', '根据文件名整理'], ['video', '分析视频画面']] as const).map(([value, label]) => <label key={value} className="flex items-center gap-2">
+          <input type="radio" name={`material-analysis-${batchId}`} checked={analysisMode === value} onChange={() => { setAnalysisMode(value); setProviderId(''); }} />{label}
+        </label>)}
+      </fieldset>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-sm text-ink">素材整理模型
+          <select aria-label="素材整理模型" value={selectedModelId} disabled={readOnly || busy || running || organizing || !models?.length}
+            onChange={event => setProviderId(event.target.value)} className="ml-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-sm text-ink">
+            <option value="">{models?.length ? '请选择模型' : '暂无可用模型'}</option>
+            {models?.map(model => <option key={model.id} value={model.id}>{model.name} · {model.model}</option>)}
+          </select>
+        </label>
+        <button type="button" className="btn-secondary" disabled={readOnly || busy || running || organizing || !!editing || !selectedModelId || !remaining}
+          onClick={() => { if (notes) void organize(notes, selectedModelId); }}>{organizing || running ? '正在整理…' : `开始整理（${remaining} 项待整理）`}</button>
+        {organizing && <button type="button" className="btn-secondary" onClick={() => organizeRef.current?.abort()}>停止本次整理</button>}
+      </div>
+      <p className="text-xs text-ink-secondary">{analysisMode === 'video' ? '抽取实际视频画面发送给所选模型，补充内容说明供选片使用；已保存的人工说明保留。此步骤不识别原声，不确认精确动作时间。' : '根据文件名与素材表整理大概内容，供选片使用；不上传视频画面。'} 选好方式和模型后点击开始，停止后可继续未完成项。</p>
+      {!models?.length && <p className="text-xs text-ink-secondary">暂时没有可用的脚本模型，可以先导入视频并手动填写说明。</p>}
+      {notes?.run && <p role="status" className="text-sm text-ink-secondary">{running ? '正在整理' : notes.run.state === 'completed' ? '本次整理完成' : '本次整理未全部完成'}：已保存 {notes.run.succeeded} / {notes.run.total} 项，保留已有说明 {notes.run.skipped} 项。{notes.run.message}</p>}
+    </div>
     <div className="flex flex-wrap gap-4">
       <label className={`inline-flex cursor-pointer items-center rounded-lg border border-hairline bg-surface px-3 py-2 text-sm text-ink focus-within:ring-2 focus-within:ring-accent ${busy || !index ? 'opacity-50' : 'hover:bg-surface-subtle'}`}><span>选择视频</span>
         <input className="sr-only" type="file" multiple accept=".mp4,.mov,.avi,.webm" aria-label="选择实拍视频" disabled={busy || !index}
@@ -292,21 +311,6 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
     </div>}
     {bindings.length > 0 && <p className="text-sm text-ink-secondary">已登记 {bindings.length} 个文件来源 · 待填编号 {bindings.filter(item => !item.logicalCode).length} 个 · 排除预览文件 {bindings.filter(item => item.excludedReason).length} 个</p>}
     {items.length > 0 && <p className="text-sm text-ink-secondary">正式文件 {items.length} 个 · 已有说明 {items.filter(item => item.profile).length} 个 · 待整理 {remaining} 个 · 需核对 {items.filter(item => item.stale || item.profile?.content.conflicts?.length).length} 个</p>}
-    {bindings.length > 0 && <div className="space-y-2 rounded-lg border border-hairline bg-surface-subtle p-3">
-      <p className="text-xs text-ink-secondary">AI 根据文件名整理大概内容，结果标为“AI 整理”。视频画面、原声和动作时间尚未核验。</p>
-      <div className="flex flex-wrap items-center gap-2">
-        <select aria-label="素材整理模型" value={providerId || notes?.aiProviders?.[0]?.id || ''} disabled={busy || running || organizing || !notes?.aiProviders?.length}
-          onChange={event => setProviderId(event.target.value)} className="rounded-lg border border-hairline bg-surface px-3 py-2 text-sm text-ink">
-          {!notes?.aiProviders?.length && <option value="">暂无可用脚本模型</option>}
-          {notes?.aiProviders?.map(model => <option key={model.id} value={model.id}>{model.name} · {model.model}</option>)}
-        </select>
-        <button type="button" className="btn-secondary" disabled={busy || running || organizing || !notes?.aiProviders?.length || !remaining}
-          onClick={() => { if (notes) void organize(notes, providerId || notes.aiProviders![0].id); }}>整理未完成项（{remaining}）</button>
-        {organizing && <button type="button" className="btn-secondary" onClick={() => organizeRef.current?.abort()}>停止本次整理</button>}
-      </div>
-      {!notes?.aiProviders?.length && <p className="text-xs text-ink-secondary">暂时没有可用的脚本模型，可以先手动填写说明；不会把本地编号识别显示成 AI 分析成功。</p>}
-      {notes?.run && <p role="status" className="text-sm text-ink-secondary">{running ? '正在整理' : notes.run.state === 'completed' ? '本次整理完成' : '本次整理未全部完成'}：已保存 {notes.run.succeeded} / {notes.run.total} 项，保留已有说明 {notes.run.skipped} 项。{notes.run.message}</p>}
-    </div>}
     {bindings.length > 0 && <div className="grid items-start gap-3 sm:grid-cols-2">{visible.map(binding => {
       const note = notesById.get(binding.id);
       const status = binding.excludedReason ? '预览文件，已排除' : !binding.available ? '文件不可用' : !binding.logicalCode ? '待填编号' : '已复制并核验';

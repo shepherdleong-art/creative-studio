@@ -14,7 +14,8 @@ async function context(request: NextRequest, params: Promise<{ id: string }>) {
   if (!projectId) throw new BatchDomainError('invalid_input', '缺少项目');
   await assertFormulaApiReady();
   const db = getDb();
-  return { db, id, projectId, view: readFormulaManualSpeech(db, projectId, id) };
+  const planId = request.nextUrl.searchParams.get('planId') || undefined;
+  return { db, id, projectId, planId, view: readFormulaManualSpeech(db, projectId, id, planId) };
 }
 export async function GET(request: NextRequest, route: { params: Promise<{ id: string }> }) {
   try {
@@ -24,7 +25,7 @@ export async function GET(request: NextRequest, route: { params: Promise<{ id: s
 }
 export async function PUT(request: NextRequest, route: { params: Promise<{ id: string }> }) {
   try {
-    const { db, id, projectId } = await context(request, route.params);
+    const { db, id, projectId, planId, view: focused } = await context(request, route.params);
     const reader = request.body?.getReader();
     if (!reader) throw new BatchDomainError('invalid_input', '缺少人工台词设置');
     const chunks: Uint8Array[] = []; let size = 0;
@@ -43,7 +44,10 @@ export async function PUT(request: NextRequest, route: { params: Promise<{ id: s
       !['assetId', 'contentFingerprint', 'expectedInputRevision', 'expectedSpeechRevision', 'confirmed', 'mode', 'segments'].includes(key))) {
       throw new BatchDomainError('invalid_input', '人工台词格式不正确');
     }
+    if (planId && !focused.items.some(item => item.assetId === body.assetId && item.contentFingerprint === body.contentFingerprint)) {
+      throw new BatchDomainError('conflict', '这份原片不属于当前脚本的选片，请重新打开核对窗口');
+    }
     const view = await saveFormulaManualSpeech(db, projectId, id, { ...body, signal: request.signal });
-    return NextResponse.json(view, { headers: BATCH_NO_STORE_HEADERS });
+    return NextResponse.json(planId ? readFormulaManualSpeech(db, projectId, id, planId) : view, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) { return batchRouteErrorResponse(error, 'formula_manual_speech_save_failed', '人工台词未保存，请重试'); }
 }

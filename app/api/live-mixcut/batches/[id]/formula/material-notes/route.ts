@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { assertFormulaApiReady } from '@/lib/live-mixcut/formula/runtime-readiness';
 import { readFormulaMaterialNotes, saveFormulaMaterialNote, organizeFormulaMaterialNotes } from '@/lib/live-mixcut/formula/material-notes';
 import { listTextJsonModels, resolveTextJsonModel } from '@/lib/media-core/adapters/text-json';
+import { listVideoContentModels, resolveVideoContentModel } from '@/lib/media-core/adapters/video-analysis';
 import { BatchDomainError } from '@/lib/live-mixcut/errors';
 import { BATCH_NO_STORE_HEADERS, batchRouteErrorResponse } from '../../../response';
 
@@ -44,7 +45,8 @@ export async function GET(request: NextRequest, route: { params: Promise<{ id: s
   try {
     const { notes } = await context(request, route.params);
     const aiProviders = await listTextJsonModels().catch(() => []);
-    return NextResponse.json({ ...notes, aiProviders }, { headers: BATCH_NO_STORE_HEADERS });
+    const videoProviders = await listVideoContentModels().catch(() => []);
+    return NextResponse.json({ ...notes, aiProviders, videoProviders }, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) { return batchRouteErrorResponse(error, 'formula_material_notes_failed', '无法读取素材说明'); }
 }
 
@@ -53,10 +55,12 @@ export async function POST(request: NextRequest, route: { params: Promise<{ id: 
     const { db, id, projectId } = await context(request, route.params);
     const body = await readBody(request);
     if (typeof body.providerId !== 'string') throw new BatchDomainError('invalid_input', '请选择脚本模型');
+    if (body.mode !== undefined && !['filename', 'video'].includes(body.mode)) throw new BatchDomainError('invalid_input', '请选择有效的素材分析方式');
     let model;
-    try { model = await resolveTextJsonModel(body.providerId, { projectId, refType: 'formula_material_notes', refId: id }); }
+    try { model = body.mode === 'video' ? await resolveVideoContentModel(body.providerId)
+      : await resolveTextJsonModel(body.providerId, { refType: 'formula_material_notes', refId: id }); }
     catch { throw new BatchDomainError('invalid_input', '所选脚本模型未配置或不可用，可先手动填写素材说明'); }
-    const result = await organizeFormulaMaterialNotes(db, projectId, id, { expectedRevision: body.expectedRevision, signal: request.signal }, model);
+    const result = await organizeFormulaMaterialNotes(db, projectId, id, { expectedRevision: body.expectedRevision, signal: request.signal, mode: body.mode }, model);
     return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) { return batchRouteErrorResponse(error, 'formula_material_organize_failed', '素材整理失败，请重试'); }
 }

@@ -207,7 +207,7 @@ export function createFormulaStageExecutor(resolveModel: (request: FormulaGenera
           queueFormulaAudioMapping(db, claim.task.projectId, claim.task.batchId!, stage.selectionStageId, request);
           return { resultJson: result, progress: { phase: 'formula_source_speech_done', percent: 1,
             description: result.status === 'transcribed' ? result.manualVerification ? '采用人工核对的台词和时间，等待编排与审片' : '原声台词已识别，等待逐条声音编排与审片'
-              : result.status === 'no_speech' ? '人工确认没有人声，等待编排其余声音'
+              : result.status === 'no_speech' ? result.manualVerification ? '人工确认没有人声，等待编排其余声音' : '识别服务未检测到人声，等待编排其余声音'
                 : result.status === 'no_audio_stream' ? '原片没有音轨，等待配置这条成片的配音' : result.message } };
         } };
       }

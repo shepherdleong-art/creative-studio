@@ -155,7 +155,7 @@ export default function BatchReviewPreviewDock({
                   : 'bg-warn/20 text-warn'
               }`}
             >
-              {previewFilm.approved ? '已确认' : previewFilm.approvable ? '待检查' : previewFilm.executionTask?.status === 'failed' ? '需处理' : '处理中'}
+              {previewFilm.approved ? '已确认' : previewFilm.approvable ? '待检查' : previewFilm.status === 'paused' ? '已暂停' : previewFilm.status === 'stopped' ? '已停止' : previewFilm.status === 'retryable_failed' || previewFilm.status === 'needs_attention' ? '需处理' : '处理中'}
             </span>
           )}
         </div>

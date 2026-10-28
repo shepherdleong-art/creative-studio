@@ -8,7 +8,7 @@ import ExcelJS from 'exceljs';
 import { checkBatchProductionReadiness } from '../lib/live-mixcut/readiness.ts';
 import { schemaUpgradeRuntimePaths } from '../lib/schema-upgrade/runtime.ts';
 import { createBatchProduction, createBatchProductionVersion, updateBatchProductionStatus } from '../lib/live-mixcut/versions.ts';
-import { createFormulaImportSession, confirmFormulaImportSession, readFormulaInputs, remapFormulaImportSession, analyzeFormulaImportSession } from '../lib/live-mixcut/formula/import-store.ts';
+import { createFormulaImportSession, confirmFormulaImportSession, readFormulaInputs, remapFormulaImportSession, analyzeFormulaImportSession, cancelFormulaImportAnalysis } from '../lib/live-mixcut/formula/import-store.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'formula-import-session-'));
 const db = new Database(path.join(root, 'workbench.db'));
@@ -131,6 +131,35 @@ try {
   const interrupted = readFormulaInputs(db, 'p', modelBatch).drafts[0];
   assert.equal(interrupted.extraction?.state, 'failed');
   assert.equal(interrupted.preview.rows.length, 300);
+  // 停止识别立即释放会话；即使旧供应商忽略取消、迟到返回，也不能覆盖新模型结果。
+  let releaseOld!: (value: unknown) => void;
+  let oldSignal!: AbortSignal;
+  const oldPending = analyzeFormulaImportSession(db, 'p', modelBatch, fullDraft.id, {
+    expectedRevision: 0, expectedDraftRevision: interrupted.draftRevision,
+  }, { id: 'old', name: '旧模型', model: 'old', complete: ({ signal }) => {
+    oldSignal = signal;
+    return new Promise(resolve => { releaseOld = resolve; });
+  } });
+  const oldRunning = readFormulaInputs(db, 'p', modelBatch).drafts[0];
+  assert.throws(() => cancelFormulaImportAnalysis(db, 'other', modelBatch, fullDraft.id, {
+    expectedRevision: 0, expectedDraftRevision: oldRunning.draftRevision,
+  }), /不存在|归属/);
+  const stopped = cancelFormulaImportAnalysis(db, 'p', modelBatch, fullDraft.id, {
+    expectedRevision: 0, expectedDraftRevision: oldRunning.draftRevision,
+  });
+  assert.equal(oldSignal.aborted, true);
+  assert.equal(stopped.extraction?.state, 'failed');
+  assert.equal(stopped.preview.rows.length, 300);
+  const replacement = await analyzeFormulaImportSession(db, 'p', modelBatch, fullDraft.id, {
+    expectedRevision: 0, expectedDraftRevision: stopped.draftRevision,
+  }, { id: 'new', name: '新模型', model: 'new', complete: async () => ({ mapping: session.preview.mapping }) });
+  releaseOld({ mapping: [] });
+  await assert.rejects(oldPending);
+  const finalDraft = readFormulaInputs(db, 'p', modelBatch).drafts[0];
+  assert.equal(finalDraft.extraction?.providerId, 'new');
+  assert.equal(finalDraft.extraction?.state, 'completed');
+  assert.equal(finalDraft.draftRevision, replacement.draftRevision);
+  assert.equal(finalDraft.preview.rows.length, 300);
   createBatchProductionVersion(db, batchId, { copyCount: 1 });
   updateBatchProductionStatus(db, 'p', batchId, 'running');
   assert.deepEqual(confirmFormulaImportSession(db, 'p', batchId, session.id, { expectedRevision: 0, excludedKeys: [] }), receipt,

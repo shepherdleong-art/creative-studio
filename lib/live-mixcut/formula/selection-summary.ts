@@ -8,6 +8,8 @@ export interface FormulaSelectionSummary {
   status: 'queued' | 'running' | 'failed' | 'cancelled' | 'selected' | 'needs_attention' | 'unavailable';
   message: string;
   previewReady?: boolean; bodyDurationUs?: number;
+  /** 后续制作阶段受阻时的恢复入口，不改变已保存的选片事实。 */
+  retryTaskId?: string | null;
 }
 
 /** 工作台一次读取当前批次的选片摘要；完整依据与历史按选中的成片单独读取。 */

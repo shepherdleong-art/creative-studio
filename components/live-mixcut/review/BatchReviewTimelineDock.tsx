@@ -1377,7 +1377,7 @@ export default function BatchReviewTimelineDock({
                           : 'bg-warn/20 text-warn'
                       }`}
                     >
-                      {film.approved ? '已通过' : film.approvable ? '待审核' : film.executionTask?.status === 'failed' ? '检查失败' : '处理中'}
+                      {film.approved ? '已通过' : film.approvable ? '待审核' : film.status === 'paused' ? '已暂停' : film.status === 'stopped' ? '已停止' : film.status === 'retryable_failed' || film.status === 'needs_attention' ? '需处理' : '处理中'}
                     </span>
                   </div>
 

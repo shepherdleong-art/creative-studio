@@ -68,6 +68,24 @@ try {
   if (empty.status === 'needs_attention') assert.equal(empty.reason, 'transcription_failed');
   assert.deepEqual(fs.readdirSync(path.join(root, 'storage/live-mixcut/speech-temp')), []);
 
+  const { createVolcFlashAsrAdapter } = await import('../lib/media-core/adapters/volc-asr.ts');
+  const volc = createVolcFlashAsrAdapter({ CREATIVE_STUDIO_VOLC_ASR_API_KEY: 'fixture-only' });
+  globalThis.fetch = async (_url, init) => {
+    const wav = Buffer.from(JSON.parse(String(init!.body)).audio.data, 'base64');
+    assert.equal(wav.toString('ascii', 0, 4), 'RIFF', '火山也收到实际提取的 WAV');
+    assert(wav.length > 60_000);
+    return new Response('{}', { headers: { 'X-Api-Status-Code': '20000003' } });
+  };
+  const noSpeech = await analyzeFormulaSourceSpeech(db, 'p', input, volc, new AbortController().signal);
+  assert.equal(noSpeech.status, 'no_speech', '供应商明确无人声结果不能阻塞展示镜头');
+  assert.equal(noSpeech.manualVerification, undefined, '自动检测不能冒充人工确认');
+  if (noSpeech.status === 'no_speech') {
+    assert.equal(noSpeech.mediaDurationUs, 2_000_000);
+    assert.deepEqual(noSpeech.detection, { provider: 'volc', statusCode: '20000003', transcriptionIdentity: volc.identity });
+  }
+  assert.equal(noSpeech.executionReady, false, '无人声检查不等于成片通过');
+  assert.deepEqual(fs.readdirSync(path.join(root, 'storage/live-mixcut/speech-temp')), []);
+
   const controller = new AbortController();
   const stopReason = new Error('本次原声任务已停止');
   globalThis.fetch = async () => { controller.abort(stopReason); throw stopReason; };

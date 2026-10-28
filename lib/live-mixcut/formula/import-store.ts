@@ -22,6 +22,24 @@ export interface FormulaExtractionStatus {
   mapping?: FormulaSheetMapping[]; manualOverride?: boolean;
 }
 const AI_TIMEOUT_MS = 120_000;
+const activeAnalyses = new WeakMap<Database.Database, Map<string, AbortController>>();
+
+/** 先使旧修订失效，再中止本进程请求；其他进程的迟到结果也无法落库。 */
+export function cancelFormulaImportAnalysis(db: Database.Database, projectId: string, batchId: string, sessionId: string,
+  input: { expectedRevision: number; expectedDraftRevision: number }): FormulaImportSessionView {
+  const view = db.transaction(() => {
+    const row = editableSession(db, projectId, batchId, sessionId, input);
+    const previous = sessionView(row).extraction;
+    if (previous?.state !== 'running') return sessionView(row);
+    const updated = { ...row, draftRevision: row.draftRevision + 1,
+      extractionJson: JSON.stringify({ ...previous, state: 'failed', message: '已停止识别，现有预览保留。可以更换模型后重新识别，或手动选择列。' }) };
+    db.prepare('UPDATE live_mixcut_formula_import_sessions SET extractionJson=?,draftRevision=? WHERE id=?')
+      .run(updated.extractionJson, updated.draftRevision, sessionId);
+    return sessionView(updated);
+  }).immediate();
+  activeAnalyses.get(db)?.get(sessionId)?.abort();
+  return view;
+}
 export interface FormulaImportSessionView {
   id: string; kind: FormulaWorkbookKind; filename: string; baseRevision: number;
   state: 'draft' | 'confirmed'; preview: FormulaWorkbookPreview<FormulaImportedRow>;
@@ -301,7 +319,11 @@ export async function analyzeFormulaImportSession(db: Database.Database, project
   }).immediate();
   const expected = { expectedRevision: input.expectedRevision, expectedDraftRevision: started.draftRevision };
   const timeout = AbortSignal.timeout(AI_TIMEOUT_MS);
-  const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
+  const controller = new AbortController();
+  const active = activeAnalyses.get(db) ?? new Map<string, AbortController>();
+  activeAnalyses.set(db, active);
+  active.set(sessionId, controller);
+  const signal = AbortSignal.any([timeout, controller.signal, ...(input.signal ? [input.signal] : [])]);
   try {
     const mapping: FormulaSheetMapping[] = [];
     for (const sheet of started.preview.sheets) {
@@ -338,5 +360,7 @@ export async function analyzeFormulaImportSession(db: Database.Database, project
     }).immediate();
     if (error instanceof BatchDomainError && error.code === 'conflict') throw error;
     throw new BatchDomainError('invalid_input', message);
+  } finally {
+    if (active.get(sessionId) === controller) active.delete(sessionId);
   }
 }

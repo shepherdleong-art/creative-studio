@@ -1,15 +1,21 @@
 import { createHash, randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { BatchDomainError } from '../errors.ts';
 import { assertFormulaBatch, getFormulaCollection } from './collection-store.ts';
 import { getFormulaMaterialIndex } from './material-bindings.ts';
 import { readFormulaInputs } from './import-store.ts';
 import type { TextJsonModel } from '../../media-core/adapters/text-json.ts';
+import { assertVideoContentAnalysis, type VideoContentModel } from '../../media-core/adapters/video-analysis.ts';
+import { dataRoot } from '../../data-root.ts';
+import { listAssetSources, resolveSourceFilePath } from '../media-catalog.ts';
+import { verifyFormulaCandidate, recheckFormulaCandidate, type FormulaVerifiedCandidate } from './candidate-media.ts';
 
 export interface FormulaMaterialContent {
   description: string; category: string; sellingPoints: string[]; actions: string[];
   speech: 'yes' | 'no' | 'unknown';
-  evidence: Array<{ field: 'description' | 'category' | 'sellingPoints' | 'actions' | 'speech'; source: 'filename' | 'material_table'; quote: string }>;
+  evidence: Array<{ field: 'description' | 'category' | 'sellingPoints' | 'actions' | 'speech'; source: 'filename' | 'material_table' | 'video_frame'; quote: string }>;
   conflicts?: Array<{ filenameQuote: string; tableQuote: string; message: string }>;
 }
 interface MaterialSource {
@@ -70,11 +76,13 @@ export function readFormulaMaterialNotes(db: Database.Database, projectId: strin
   }) };
 }
 
-/** 按来源逐条保存有效结果；失败重试只补缺项，模型不读取视频、不生成可用区间。 */
+/** 两条显式分析路径；人工说明保留，画面观察不冒充原声或人工区间确认。 */
 export async function organizeFormulaMaterialNotes(db: Database.Database, projectId: string, batchId: string,
-  input: { expectedRevision: number; signal?: AbortSignal }, model: TextJsonModel,
+  input: { expectedRevision: number; signal?: AbortSignal; mode?: 'filename' | 'video' }, model: TextJsonModel | VideoContentModel,
 ): Promise<FormulaMaterialNotesView> {
   input.signal?.throwIfAborted();
+  const visual = input.mode === 'video';
+  const promptVersion = visual ? 'formula-material-video/1' : PROMPT_VERSION;
   const started = db.transaction(() => {
     assertFormulaBatch(db, projectId, batchId, true);
     const view = readFormulaMaterialNotes(db, projectId, batchId);
@@ -86,13 +94,14 @@ export async function organizeFormulaMaterialNotes(db: Database.Database, projec
     const active = db.prepare("SELECT count(*) AS count FROM live_mixcut_formula_material_organize_runs WHERE state='running' AND providerId=? AND updatedAt>?")
       .get(model.id, new Date(Date.now() - RUN_LEASE_MS).toISOString()) as { count: number };
     if (active.count >= 2) throw new BatchDomainError('conflict', '此模型已有两批素材正在整理，请稍后重试');
-    const pending = candidates.filter(item => !item.profile || (item.stale && item.profile.origin === 'ai'));
+    const pending = candidates.filter(item => !item.profile || (item.profile.origin === 'ai'
+      && (item.stale || (visual && item.profile.provenance.visualObservation !== true))));
     if (pending.length > 2000) throw new BatchDomainError('invalid_input', '单批最多整理 2,000 个文件来源，请拆分批次');
     const id = randomUUID();
     const now = new Date().toISOString();
     db.prepare(`INSERT INTO live_mixcut_formula_material_organize_runs
       (id,collectionId,providerId,providerName,model,promptVersion,inputJson,state,total,skipped,startedAt,updatedAt)
-      VALUES (?,?,?,?,?,?,?,'running',?,?,?,?)`).run(id, collection.id, model.id, model.name, model.model, PROMPT_VERSION,
+      VALUES (?,?,?,?,?,?,?,'running',?,?,?,?)`).run(id, collection.id, model.id, model.name, model.model, promptVersion,
       JSON.stringify(pending.map(item => ({ source: item.source, inputFingerprint: item.inputFingerprint, expectedProfileId: item.profile?.id ?? null }))),
       pending.length, candidates.length - pending.length, now, now);
     return { id, collectionId: collection.id, pending, skipped: candidates.length - pending.length };
@@ -112,13 +121,40 @@ export async function organizeFormulaMaterialNotes(db: Database.Database, projec
     db.prepare('UPDATE live_mixcut_formula_material_organize_runs SET state=?,succeeded=?,skipped=?,errorsJson=?,message=?,updatedAt=? WHERE id=?')
       .run(state, counts.succeeded, counts.skipped, JSON.stringify(counts.errors), message, new Date().toISOString(), started.id);
   }
+  // 抽帧/视觉调用可能超过一次租约周期；停止仍由请求信号及提交前检查共同约束。
+  const heartbeat = setInterval(() => {
+    db.prepare("UPDATE live_mixcut_formula_material_organize_runs SET updatedAt=? WHERE id=? AND state='running'")
+      .run(new Date().toISOString(), started.id);
+  }, 20_000);
   try {
-    for (let offset = 0; offset < started.pending.length; offset += 12) {
+    const chunkSize = visual ? 1 : 12;
+    for (let offset = 0; offset < started.pending.length; offset += chunkSize) {
       signal.throwIfAborted();
       assertRunActive();
-      const chunk = started.pending.slice(offset, offset + 12);
+      const chunk = started.pending.slice(offset, offset + chunkSize);
       let entries: Array<{ bindingId: string; content: unknown }>;
+      let candidate: FormulaVerifiedCandidate | null = null;
       try {
+        if (visual) {
+          if (!('analyze' in model)) throw new BatchDomainError('invalid_input', '请选择支持画面理解的模型');
+          const item = chunk[0];
+          candidate = await verifyFormulaCandidate(db, projectId, item.source.assetId, item.source.contentFingerprint,
+            listAssetSources(db, item.source.assetId).map(source => ({ id: source.id, location: source.locationJson })), signal);
+          if (!candidate) throw new BatchDomainError('invalid_input', '原片无法核验，请检查素材后重试');
+          const cacheDir = path.join(dataRoot(), 'storage', 'live-mixcut', 'analysis', started.id, item.bindingId);
+          try {
+            const analysis = await model.analyze({ filePath: resolveSourceFilePath(candidate.location), assetId: item.source.assetId, cacheDir, signal });
+            assertVideoContentAnalysis(analysis);
+            const description = (analysis.summary || analysis.scenes.map(scene => scene.description).join('；')).slice(0, 400);
+            const sellingPoints = analysis.sellingPoints.slice(0, 10).map(value => value.slice(0, 120));
+            const actions = analysis.scenes.map(scene => scene.description).filter(Boolean).slice(0, 10).map(value => value.slice(0, 120));
+            entries = [{ bindingId: item.bindingId, content: { description, category: '', sellingPoints, actions, speech: 'unknown',
+              evidence: [{ field: 'description', source: 'video_frame', quote: description.slice(0, 300) },
+                ...sellingPoints.map(quote => ({ field: 'sellingPoints', source: 'video_frame', quote })),
+                ...actions.map(quote => ({ field: 'actions', source: 'video_frame', quote }))], conflicts: item.profile?.content.conflicts ?? [] } }];
+          } finally { fs.rmSync(cacheDir, { recursive: true, force: true }); }
+        } else {
+        if (!('complete' in model)) throw new BatchDomainError('invalid_input', '请选择文件名整理模型');
         const userPrompt = JSON.stringify({ kind: 'material_names', items: chunk.map(item => ({ bindingId: item.bindingId,
           filename: item.source.filename, logicalCode: item.logicalCode, table: item.source.table?.fields ?? {} })) });
         if (userPrompt.length > 180_000) throw new BatchDomainError('invalid_input', '素材文字资料过长，请手动整理或精简后重试');
@@ -131,6 +167,7 @@ export async function organizeFormulaMaterialNotes(db: Database.Database, projec
           throw new BatchDomainError('invalid_input', '模型未返回完整、唯一的素材来源，请重试这组文件');
         }
         entries = raw;
+        }
       } catch (error) {
         signal.throwIfAborted();
         assertRunActive();
@@ -155,10 +192,11 @@ export async function organizeFormulaMaterialNotes(db: Database.Database, projec
             superseded++; continue; // 人工或其他请求已更新，旧模型响应不覆盖。
           }
           try {
-            const content = validateContent(entries.find(entry => entry.bindingId === item.bindingId)!.content, item.source, true);
+            if (candidate) recheckFormulaCandidate(db, projectId, candidate);
+            const content = validateContent(entries.find(entry => entry.bindingId === item.bindingId)!.content, item.source, true, visual);
             appendProfile(db, started.collectionId, item, content, 'ai', { runId: started.id, providerId: model.id,
-              providerName: model.name, model: model.model, promptVersion: PROMPT_VERSION, basis: 'filename_and_table',
-              visualObservation: false, timingAssessed: false, previousProfileId: item.profile?.id ?? null });
+              providerName: model.name, model: model.model, promptVersion, basis: visual ? 'video_frames' : 'filename_and_table',
+              visualObservation: visual, timingAssessed: false, previousProfileId: item.profile?.id ?? null });
             saved++;
           } catch (error) {
             if (!(error instanceof BatchDomainError)) throw error;
@@ -177,11 +215,11 @@ export async function organizeFormulaMaterialNotes(db: Database.Database, projec
   } catch (error) {
     update(signal.aborted ? 'cancelled' : 'failed', signal.aborted ? '本次整理已停止，已保存结果保留，可继续未完成项'
       : error instanceof BatchDomainError ? error.message : '本次整理中断，已保存结果保留');
-  }
+  } finally { clearInterval(heartbeat); }
   return readFormulaMaterialNotes(db, projectId, batchId);
 }
 
-function validateContent(value: unknown, source: MaterialSource, requireEvidence: boolean): FormulaMaterialContent {
+function validateContent(value: unknown, source: MaterialSource, requireEvidence: boolean, visual = false): FormulaMaterialContent {
   const invalid = () => new BatchDomainError('invalid_input', '素材内容格式或引用依据无效，请修改后重试');
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid();
   const row = value as Record<string, unknown>;
@@ -203,10 +241,10 @@ function validateContent(value: unknown, source: MaterialSource, requireEvidence
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid();
     const entry = value as Record<string, unknown>;
     if (typeof entry.field !== 'string' || !['description','category','sellingPoints','actions','speech'].includes(entry.field)
-      || typeof entry.source !== 'string' || !['filename','material_table'].includes(entry.source) || typeof entry.quote !== 'string' || !entry.quote.trim() || entry.quote.length > 300) throw invalid();
+      || typeof entry.source !== 'string' || !(visual ? ['video_frame'] : ['filename','material_table']).includes(entry.source) || typeof entry.quote !== 'string' || !entry.quote.trim() || entry.quote.length > 300) throw invalid();
     const sources = entry.source === 'filename' ? [source.filename] : Object.values(source.table?.fields ?? {});
-    if (!sources.some(text => text.includes(entry.quote as string))) throw invalid();
-    return { field: entry.field as FormulaMaterialContent['evidence'][number]['field'], source: entry.source as 'filename' | 'material_table', quote: entry.quote };
+    if (!visual && !sources.some(text => text.includes(entry.quote as string))) throw invalid();
+    return { field: entry.field as FormulaMaterialContent['evidence'][number]['field'], source: entry.source as FormulaMaterialContent['evidence'][number]['source'], quote: entry.quote };
   });
   const rawConflicts = row.conflicts ?? [];
   if (!Array.isArray(rawConflicts) || rawConflicts.length > 6) throw invalid();

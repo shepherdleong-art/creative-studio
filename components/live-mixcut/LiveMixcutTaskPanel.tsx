@@ -21,6 +21,7 @@ import BatchStepExport from './BatchStepExport';
 import FormulaImportPanel, { type FormulaInputSummary } from './formula/FormulaImportPanel';
 import FormulaGenerationProgressPanel from './formula/FormulaGenerationProgressPanel';
 import FormulaManualSpeechPanel from './formula/FormulaManualSpeechPanel';
+import FormulaIssuePanel from './formula/FormulaIssuePanel';
 
 interface LiveMixcutTaskPanelProps {
   projectId: string;
@@ -125,6 +126,7 @@ export default function LiveMixcutTaskPanel({ projectId }: LiveMixcutTaskPanelPr
   const [reviewFocus, setReviewFocus] = useState<{ planId: string; tab: InspectorTab; nonce: number } | null>(null);
   // 原声核对失败时打开人工填写台词与时间的弹层。
   const [manualSpeechPlanId, setManualSpeechPlanId] = useState<string | null>(null);
+  const [issuePlanId, setIssuePlanId] = useState<string | null>(null);
   const [folderRelativePath, setFolderRelativePath] = useState<string | null>(null);
   const [revealBusy, setRevealBusy] = useState(false);
   // 「打开文件夹」的结果反馈渲染在第 4 步按钮旁,不再挤到面板顶部的公共错误条。
@@ -148,6 +150,7 @@ export default function LiveMixcutTaskPanel({ projectId }: LiveMixcutTaskPanelPr
     setExportResult(null);
     setReviewFocus(null);
     setManualSpeechPlanId(null);
+    setIssuePlanId(null);
     setCardFilter('all');
     setFolderRelativePath(null);
     setRevealFeedback(null);
@@ -689,17 +692,14 @@ export default function LiveMixcutTaskPanel({ projectId }: LiveMixcutTaskPanelPr
 
   // 公式模式固定 3:4 输出（卡11 才引入可配置默认）,审片画幅 ID 与之一一对应。
   const reviewOutputPreset = '3x4' as const;
-  function handleProgressItem(planId: string, phase: string) {
+  function handleProgressItem(planId: string) {
     const card = workspace?.cards.find(item => item.planId === planId);
     if (card?.reviewable) {
       setReviewFocus(current => ({ planId, tab: 'subtitle', nonce: (current?.nonce ?? 0) + 1 }));
       setActiveStep(2);
       return;
     }
-    setActiveStep(1);
-    setFeedback({ kind: 'error', message: phase === '安排声音'
-      ? '这条成片的声音分配没有完成。请在本页检查脚本和音色设置后点「修改输入」，再重新生成。'
-      : '这条成片还需要调整声音、时长或素材设置。请在本页下方检查后点「修改输入」，再重新生成。' });
+    setIssuePlanId(planId);
   }
   const formulaProgress = workspace && formulaGeneration
     ? <FormulaGenerationProgressPanel progress={formulaGeneration} controlState={workspace.batch.controlState}
@@ -965,6 +965,15 @@ export default function LiveMixcutTaskPanel({ projectId }: LiveMixcutTaskPanelPr
         );
       }}
     />
+    {issuePlanId && selectedBatchId && formulaGeneration?.items.find(item => item.planId === issuePlanId) && <div role="dialog" aria-modal="true" aria-label="处理制作问题"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setIssuePlanId(null)}>
+      <div className="max-h-[90vh] w-full max-w-2xl space-y-4 overflow-auto rounded-2xl bg-surface p-5 shadow-xl" onClick={event => event.stopPropagation()}>
+        <div className="flex items-center justify-between"><h3 className="font-semibold text-ink">处理制作问题</h3>
+          <button type="button" className="btn-secondary" aria-label="关闭制作问题" onClick={() => setIssuePlanId(null)}>×</button></div>
+        <FormulaIssuePanel key={issuePlanId} projectId={projectId} batchId={selectedBatchId} item={formulaGeneration.items.find(item => item.planId === issuePlanId)!}
+          onChanged={() => loadWorkspace(selectedBatchId)} onNavigate={step => { setIssuePlanId(null); setActiveStep(step); }} />
+      </div>
+    </div>}
     {manualSpeechPlanId && selectedBatchId && (
       <div
         role="dialog"
@@ -977,11 +986,12 @@ export default function LiveMixcutTaskPanel({ projectId }: LiveMixcutTaskPanelPr
           <div className="mb-3 flex items-start justify-between gap-3 border-b border-hairline pb-3">
             <div>
               <h3 id="live-mixcut-manual-speech-title" className="font-semibold text-ink">人工核对原声</h3>
-              <p className="mt-1 text-xs text-ink-secondary">保存后回到「脚本与口播」点「修改输入」，再点「生成」才会应用到下一轮。</p>
+              <p className="mt-1 text-xs text-ink-secondary">核对下方已定位的原片。人工记录保存后用于下一轮生成。</p>
             </div>
             <button type="button" className="btn-secondary h-7 w-7 shrink-0 p-0" aria-label="关闭人工核对原声" onClick={() => setManualSpeechPlanId(null)}>×</button>
           </div>
-          <FormulaManualSpeechPanel projectId={projectId} batchId={selectedBatchId} disabled={false}
+          <FormulaManualSpeechPanel key={manualSpeechPlanId} projectId={projectId} batchId={selectedBatchId} planId={manualSpeechPlanId} disabled={false}
+            onEditInput={() => { setManualSpeechPlanId(null); setActiveStep(1); }}
             onChanged={async () => {
               await Promise.all([loadWorkspace(selectedBatchId), loadTasks(selectedBatchId)]);
             }} />

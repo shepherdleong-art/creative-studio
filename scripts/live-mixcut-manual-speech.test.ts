@@ -114,6 +114,14 @@ try {
     '撤回人工核对后不能继续复用旧人工台词，无服务时明确需处理');
   assert.equal(externalCalls, 0);
   const { analyzeFormulaSourceSpeech } = await import('../lib/live-mixcut/formula/source-speech.ts');
+  const focused = readFormulaManualSpeech(db, 'p', batchId, automatic.outputs[0].planId);
+  assert.equal(focused.context?.scriptNumber, '12', '人工核对必须说明从哪条脚本进入');
+  assert.equal(focused.context?.copyIndex, 1);
+  assert.deepEqual(focused.items.map(item => item.assetId), [assetId]);
+  assert.deepEqual(focused.items[0].review?.logicalCodes, ['VO1']);
+  assert.equal(focused.items[0].review?.needsAttention, true);
+  assert.match(focused.items[0].review?.message ?? '', /未配置/);
+  assert.throws(() => readFormulaManualSpeech(db, 'p', batchId, 'missing-plan'), /不存在/);
   const { listAssetSources } = await import('../lib/live-mixcut/media-catalog.ts');
   const roleBatch = createBatchProduction(db, 'p', '人工确认无声', undefined, { planningMode: 'formula' });
   registerFormulaAssetBinding(db, 'p', roleBatch, { assetId, sourcePath: 'G1_环境音.mp4' });
@@ -131,6 +139,13 @@ try {
   await assert.rejects(saveFormulaManualSpeech(db, 'p', roleBatch, { ...input, assetId: silentAsset,
     contentFingerprint: silentView.items.find(item => item.assetId === silentAsset)!.contentFingerprint,
     expectedInputRevision: silentView.inputRevision, segments: [{ text: '不能伪造的原声', startUs: 0, endUs: 500_000 }] }), /没有可用音轨/);
+  assert.throws(() => readFormulaManualSpeech(db, 'p', roleBatch, automatic.outputs[0].planId), /不存在/,
+    '不能用其他批次的成片身份读取原声上下文');
+  beginFormulaInputRevision(db, 'p', batchId, { expectedBatchVersionId: automatic.batchVersionId, expectedInputRevision: 7 });
+  registerFormulaAssetBinding(db, 'p', batchId, { assetId: silentAsset, sourcePath: 'G10_不属于此脚本.mp4' });
+  assert.equal(readFormulaManualSpeech(db, 'p', batchId).items.length, 2);
+  assert.deepEqual(readFormulaManualSpeech(db, 'p', batchId, automatic.outputs[0].planId).items.map(item => item.assetId), [assetId],
+    '脚本入口不得把同批未选中的素材交给用户猜测');
   console.log('formula manual speech: 人工台词离线制作、字幕、时间校验、幂等保存、修订隔离与撤回通过');
 } finally {
   globalThis.fetch = originalFetch;

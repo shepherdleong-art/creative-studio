@@ -718,6 +718,8 @@ export default function BatchUnifiedReviewWorkspace({
         {/* Zone 3: Inspector Dock (Right, spanning rows 1 & 2) */}
         <div style={{ gridColumn: 3, gridRow: '1 / 3' }} className="min-h-0 min-w-0">
           <BatchReviewInspectorDock
+            onRetryTask={onRetryRender}
+            retryBusy={phaseEBusy !== null}
             onJumpToCover={planId => { setSelectedPlanId(planId); setPreviewAsset(null); setSourceSession(null); setPlayheadSec(-10 / 24); setCoverPreviewRequest(value => value + 1); }}
             projectId={projectId}
             batchId={batchId}
