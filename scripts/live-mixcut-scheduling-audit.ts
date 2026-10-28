@@ -18,6 +18,7 @@ import {
 } from '../lib/live-mixcut/scheduling/index.ts';
 import { cleanSourceSpeech } from '../lib/live-mixcut/source-speech-clean.ts';
 import { parseMaterialFilename } from '../lib/live-mixcut/formula/parse.ts';
+import { selectFormulaScript } from '../lib/live-mixcut/formula/script-selection.ts';
 import { readFormulaWorkbook } from '../lib/live-mixcut/formula/workbook.ts';
 
 const args = process.argv.slice(2);
@@ -58,9 +59,9 @@ const scripts: ScriptRow[] = preview.rows.map(row => ({ scriptNumber: String(row
   codes: row.codes })).slice(0, limit);
 if (!scripts.length) throw new Error('脚本表里没有脚本');
 
-const bindings = db.prepare(`SELECT assetId,logicalCode,sourceName FROM live_mixcut_formula_asset_bindings
+const bindings = db.prepare(`SELECT assetId,contentFingerprint,logicalCode,sourceName FROM live_mixcut_formula_asset_bindings
   WHERE collectionId=? AND excludedReason IS NULL AND logicalCode IS NOT NULL ORDER BY logicalCode,sourceName`)
-  .all(collection.id) as Array<{ assetId: string; logicalCode: string; sourceName: string }>;
+  .all(collection.id) as Array<{ assetId: string; contentFingerprint: string; logicalCode: string; sourceName: string }>;
 const assets = new Map<string, { durationSec: number }>();
 for (const row of db.prepare('SELECT id,mediaJson FROM live_mixcut_assets WHERE projectId=?').all(project.id) as
   Array<{ id: string; mediaJson: string }>) {
@@ -207,6 +208,17 @@ function median(values: number[]): number {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
+// 选片：缺号不停，缺的是哪些编号记下来，交给定声音时替代。
+const selectionBindings = bindings.map(binding => ({ assetId: binding.assetId, contentFingerprint: binding.contentFingerprint,
+  fileName: binding.sourceName, logicalCode: binding.logicalCode, available: true, excludedReason: null }));
+const selections = scripts.map(script => selectFormulaScript({ scriptNumber: script.scriptNumber, copyIndex: 1,
+  codes: script.codes, bindings: selectionBindings }));
+const selectionPassed = selections.filter(selection => selection.status === 'selected').length;
+const selectionMissing = [...new Set(selections.flatMap(selection => selection.missingCodes))]
+  .sort((left, right) => left.localeCompare(right, 'en', { numeric: true }));
+console.log(`选片：${selectionPassed}/${scripts.length} 条全部通过（缺号不停、不等人指定）；`
+  + `缺号 ${selectionMissing.length} 个：${selectionMissing.join('、') || '无'}；涉及 ${selections.filter(selection => selection.missingCodes.length).length} 条脚本`);
+
 // 素材标记：全景展示 / 全景体验，直接从文件名读出。
 const markerCodes = (pick: (material: SchedulingSlotMaterial) => boolean) => [...materialsByCode.values()]
   .filter(pick).map(material => material.logicalCode).sort((left, right) => left.localeCompare(right, 'en', { numeric: true }));
@@ -256,4 +268,4 @@ const totalProblems = (['mixed', 'narration'] as const).reduce((sum, mode) => {
 }, 0);
 console.log(`\n合计问题：${totalProblems} 处`);
 db.close();
-process.exitCode = totalProblems ? 1 : 0;
+process.exitCode = totalProblems || selectionPassed !== scripts.length ? 1 : 0;

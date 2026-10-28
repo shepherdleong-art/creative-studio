@@ -15,7 +15,12 @@ try {
   const { registerManagedCopy, listAssetSources, resolveSourceFilePath } = await import('../lib/live-mixcut/media-catalog.ts');
   const { runFfmpeg } = await import('../lib/ffmpeg.ts');
   const { createOpenAiTranscriptionAdapter } = await import('../lib/media-core/adapters/alignment.ts');
-  const { analyzeFormulaSourceSpeech } = await import('../lib/live-mixcut/formula/source-speech.ts');
+  const { analyzeFormulaSourceSpeech, withCleanedSourceSpeech } = await import('../lib/live-mixcut/formula/source-speech.ts');
+  type FormulaSourceSpeech = Awaited<ReturnType<typeof analyzeFormulaSourceSpeech>>;
+  type SchedulingWord = { text: string; startUs: number; endUs: number };
+  /** 按字给逐字时间，保证和识别文字去掉标点后一致。 */
+  const charWords = (text: string): SchedulingWord[] => [...text].filter(char => /[\p{L}\p{N}]/u.test(char))
+    .map((text, index) => ({ text, startUs: index * 300_000, endUs: (index + 1) * 300_000 }));
   db.pragma('foreign_keys=ON');
   db.exec("CREATE TABLE projects (id TEXT PRIMARY KEY,name TEXT NOT NULL); INSERT INTO projects VALUES ('p','原声核验');");
   assert.equal((await checkBatchProductionReadiness({ db, ...schemaUpgradeRuntimePaths(root) })).available, true);
@@ -51,6 +56,10 @@ try {
   assert.ok(result.transcriptionIdentity, '自动识别须保留真实服务身份');
   assert.equal(result.transcriptionIdentity.model, 'whisper-1');
   assert.equal(result.audioStreamIndex, 0);
+  assert.ok(result.cleaned, '识别后直接带上清洗结果');
+  assert.equal(result.cleaned.text, '声音测试');
+  assert.deepEqual([result.cleaned.startUs, result.cleaned.endUs], [250_000, 1_500_000], '说话起止按清洗后的逐字时间');
+  assert.deepEqual([result.cleaned.headCutEndUs, result.cleaned.tailCutStartUs], [null, null], '没有倒数口令时不做剪裁');
   assert.equal(uploads, 1);
   assert.equal(JSON.stringify(result).includes('test-secret'), false);
   assert.deepEqual(fs.readdirSync(path.join(root, 'storage/live-mixcut/speech-temp')), [], '成功后清理临时声音');
@@ -133,6 +142,37 @@ try {
     sources: listAssetSources(db, delayedId).map(source => ({ id: source.id, location: source.locationJson })) }, adapter, new AbortController().signal);
   assert.equal(delayed.status, 'transcribed');
   if (delayed.status === 'transcribed') assert.equal(delayed.words[0].startUs, 1_100_000, '源时间保持原片坐标，不提前到零秒');
+
+  // 识别文字里的倒数和结尾口令被剪掉；台词本身以「来」开头时保留。
+  const dirtyText = '三二一开始。来看看这张沙发。OK.';
+  globalThis.fetch = async () => Response.json({ text: dirtyText, words: [
+    { word: '三二一开始', start: 0, end: 0.5 }, { word: '来', start: 0.6, end: 0.8 },
+    { word: '看看这张沙发', start: 0.9, end: 1.5 }, { word: 'OK', start: 1.6, end: 1.8 }] });
+  const dirty = await analyzeFormulaSourceSpeech(db, 'p', { ...input, plannedLine: '来看看这张沙发' }, adapter, new AbortController().signal);
+  assert.equal(dirty.status, 'transcribed');
+  if (dirty.status !== 'transcribed') throw new Error('expected transcribed');
+  assert.equal(dirty.text, dirtyText, '原始识别文字照原样保留');
+  assert.equal(dirty.cleaned?.text, '来看看这张沙发');
+  assert.deepEqual(dirty.cleaned?.removedHead, ['三二一开始']);
+  assert.deepEqual(dirty.cleaned?.removedTail, ['OK']);
+  assert.deepEqual([dirty.cleaned?.startUs, dirty.cleaned?.endUs], [600_000, 1_500_000]);
+  assert.deepEqual([dirty.cleaned?.headCutEndUs, dirty.cleaned?.tailCutStartUs], [500_000, 1_600_000],
+    '余量不能伸进被剪掉的倒数/口令');
+
+  // 10-26 已经识别过、没有清洗结果的原声：读取时补做清洗，不再调用识别服务。
+  const before = uploads;
+  const legacy = { algorithmVersion: 'formula-source-speech/1', executionReady: false, assetId,
+    contentFingerprint: input.contentFingerprint, sourceId: 'legacy', mediaDurationUs: 2_000_000,
+    status: 'transcribed', reviewStatus: 'pending', text: '三二一开始。买沙发。OK.',
+    words: charWords('三二一开始。买沙发。OK.'), audioStreamIndex: 0,
+    transcriptionIdentity: { adapterVersion: 'legacy/1', model: 'legacy', endpointHash: 'x' } } as unknown as FormulaSourceSpeech;
+  const recleaned = withCleanedSourceSpeech(legacy, null);
+  assert.equal(recleaned.status, 'transcribed');
+  if (recleaned.status === 'transcribed') assert.equal(recleaned.cleaned?.text, '买沙发');
+  assert.equal(uploads, before, '补清洗不调用识别服务');
+  assert.deepEqual(withCleanedSourceSpeech(recleaned, null), recleaned, '已清洗过的不重复处理');
+  const manual = withCleanedSourceSpeech({ ...legacy, manualVerification: { revisionId: 'r', verifiedAt: 't', timing: 'manual_segments' } } as unknown as FormulaSourceSpeech, null);
+  assert.equal(manual.status === 'transcribed' ? manual.cleaned : undefined, null, '人工核对的台词不清洗');
   console.log('formula source speech tests passed (ASR response stubbed, real extraction)');
 } finally {
   globalThis.fetch = originalFetch;

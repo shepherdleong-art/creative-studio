@@ -8,7 +8,8 @@ import type { TextJsonModel } from '../../media-core/adapters/text-json.ts';
 import { readFormulaStageOverrides } from './reselection.ts';
 import { findReusableFormulaSpeech, queueFormulaSpeech, readFormulaSpeechStage } from './speech-store.ts';
 import { resolveFormulaSpeechService } from './speech-provider.ts';
-import { analyzeFormulaSourceSpeech } from './source-speech.ts';
+import { analyzeFormulaSourceSpeech, withCleanedSourceSpeech } from './source-speech.ts';
+import { parseMaterialFilename } from './parse.ts';
 import { recheckFormulaCandidate, verifyFormulaCandidate, type FormulaVerifiedCandidate } from './candidate-media.ts';
 import type { FormulaSelection } from './selection.ts';
 import { mapFormulaAudio } from './audio-mapping.ts';
@@ -187,9 +188,17 @@ export function createFormulaStageExecutor(resolveModel: (request: FormulaGenera
           throw new BatchDomainError('conflict', '原声任务与已保存的选片不一致');
         }
         reportProgress({ phase: 'formula_source_speech', description: '核验原片并识别实际台词', percent: null });
+        // 清洗要用台词判断「这句本来就以口令开头/结尾」，台词来自素材文件名。
+        const plannedLine = (() => {
+          const binding = request.input.materialIndex.bindings.find(item => item.assetId === source.assetId
+            && item.contentFingerprint === source.contentFingerprint);
+          return binding ? parseMaterialFilename(binding.sourceName).voLine : null;
+        })();
         let result = findReusableFormulaSpeech(db, claim.task.projectId, source) ?? await analyzeFormulaSourceSpeech(db, claim.task.projectId, { assetId: source.assetId,
-          contentFingerprint: source.contentFingerprint, sources: [{ id: candidate.sourceId, location: candidate.location }], manualSpeech: source.manualSpeech },
+          contentFingerprint: source.contentFingerprint, sources: [{ id: candidate.sourceId, location: candidate.location }], manualSpeech: source.manualSpeech, plannedLine },
         () => resolveFormulaSpeechService(source.service), signal);
+        // 旧批次的识别结果在这里补做清洗，不再调用识别服务。
+        result = withCleanedSourceSpeech(result, plannedLine);
         signal.throwIfAborted();
         if (result.status === 'needs_attention' && ['source_unavailable', 'transcription_failed'].includes(result.reason)) {
           throw new BatchDomainError('conflict', result.message);

@@ -9,6 +9,7 @@ import type { SpeechTranscription, SpeechTranscriptionAdapter } from '../../medi
 import { resolveSourceFilePath } from '../media-catalog.ts';
 import { verifyFormulaCandidate, recheckFormulaCandidate, type FormulaCandidateSource } from './candidate-media.ts';
 import { parseFormulaManualSpeech, type FormulaSavedManualSpeech } from './manual-speech.ts';
+import { cleanSourceSpeech, type CleanedSourceSpeech } from '../source-speech-clean.ts';
 
 type SourceIdentity = {
   algorithmVersion: 'formula-source-speech/1'; executionReady: false;
@@ -18,16 +19,31 @@ type SourceIdentity = {
 };
 export type FormulaSourceSpeech = SourceIdentity & (
   | { status: 'transcribed'; sourceId: string; mediaDurationUs: number; reviewStatus: 'pending'; text: string; words: SpeechTranscription['words'];
-      audioStreamIndex: 0; transcriptionIdentity: SpeechTranscriptionAdapter['identity'] | null }
+      audioStreamIndex: 0; transcriptionIdentity: SpeechTranscriptionAdapter['identity'] | null;
+      /** 去掉开头倒数和结尾口令后的原声；人工核对过的结果为 null（按人工输入的原文）。 */
+      cleaned?: CleanedSourceSpeech | null }
   | { status: 'no_audio_stream'; sourceId: string; mediaDurationUs: number }
   | { status: 'no_speech'; sourceId: string; mediaDurationUs: number;
       detection?: NonNullable<SpeechTranscription['noSpeech']> & { transcriptionIdentity: SpeechTranscriptionAdapter['identity'] } }
   | { status: 'needs_attention'; reason: 'source_unavailable' | 'service_unavailable' | 'source_too_long' | 'transcription_failed' | 'manual_invalid'; message: string }
 );
 
+/**
+ * 识别结果去掉开头的倒数、结尾的口令。人工核对过的台词按原样用，不清洗。
+ * 已经清洗过的（含人工结果的 null）原样返回，旧批次识别结果在这里补洗一次，不重新调识别服务。
+ */
+export function withCleanedSourceSpeech(result: FormulaSourceSpeech, plannedLine?: string | null): FormulaSourceSpeech {
+  if (result.status !== 'transcribed') return result;
+  if (result.cleaned !== undefined) return result;
+  if (result.manualVerification) return { ...result, cleaned: null };
+  return { ...result, cleaned: cleanSourceSpeech({ text: result.text, words: result.words, plannedLine: plannedLine ?? null }) };
+}
+
 /** 后台声音阶段的原片核验入口；返回识别依据，不生成/批准逐输出声音计划。 */
 export async function analyzeFormulaSourceSpeech(db: Database.Database, projectId: string, input: {
   assetId: string; contentFingerprint: string; sources: FormulaCandidateSource[]; manualSpeech?: FormulaSavedManualSpeech | null;
+  /** 口播台词（素材文件名里 “ ” 中间的字），清洗时用来避免误剪台词本身。 */
+  plannedLine?: string | null;
 }, service: SpeechTranscriptionAdapter | (() => SpeechTranscriptionAdapter), signal: AbortSignal): Promise<FormulaSourceSpeech> {
   signal.throwIfAborted();
   const identity: SourceIdentity = { algorithmVersion: 'formula-source-speech/1', executionReady: false,
@@ -46,7 +62,8 @@ export async function analyzeFormulaSourceSpeech(db: Database.Database, projectI
         manualVerification: { revisionId: manual.id, verifiedAt: manual.createdAt, timing: 'manual_segments' as const } };
       if (parsed.mode === 'no_speech') return { ...verified, status: 'no_speech' };
       return { ...verified, status: 'transcribed', reviewStatus: 'pending', audioStreamIndex: 0,
-        text: parsed.segments.map(segment => segment.text).join(''), words: parsed.segments, transcriptionIdentity: null };
+        text: parsed.segments.map(segment => segment.text).join(''), words: parsed.segments, transcriptionIdentity: null,
+        cleaned: null };
     } catch {
       return { ...identity, status: 'needs_attention', reason: 'manual_invalid', message: '人工台词或时间与本次原片不一致，请修改输入并重新核对。' };
     }
@@ -87,7 +104,8 @@ export async function analyzeFormulaSourceSpeech(db: Database.Database, projectI
     }
     return { ...identity, status: 'transcribed', sourceId: candidate.sourceId, mediaDurationUs,
       reviewStatus: 'pending', text: transcript.text, words: transcript.words,
-      audioStreamIndex: 0, transcriptionIdentity: { ...adapter.identity } };
+      audioStreamIndex: 0, transcriptionIdentity: { ...adapter.identity },
+      cleaned: cleanSourceSpeech({ text: transcript.text, words: transcript.words, plannedLine: input.plannedLine ?? null }) };
   } finally {
     // 只删除本次创建的单个临时文件和空目录，不递归清理调用方目录。
     assertNoStorageSymlink(storageRoot, relative);
