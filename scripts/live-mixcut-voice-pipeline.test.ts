@@ -36,6 +36,7 @@ try {
   const { readFormulaScheduleResult, readFormulaScheduleStageId } = await import('../lib/live-mixcut/formula/schedule.ts');
   const { createBatchRenderExecutor } = await import('../lib/live-mixcut/batch-render-executor.ts');
   const { batchOutputReviewContext } = await import('../lib/live-mixcut/review-context.ts');
+  const { restoreFormulaScheduleLine } = await import('../lib/live-mixcut/formula/restore-line.ts');
   const { runFfmpeg } = await import('../lib/ffmpeg.ts');
   db.pragma('foreign_keys=ON');
   db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY,name TEXT NOT NULL);
@@ -106,7 +107,9 @@ try {
     modelCalls += 1;
     const body = JSON.parse(input.userPrompt) as { script: { lines: Array<{ text: string }> } };
     if (failScript34 && body.script.lines.some(line => line.text.includes('第一句话'))) throw new Error('fixture network down');
-    return { similar: [], bestVo: null, related: [] };
+    const similarLine = body.script.lines.findIndex(line => line.text.includes('恢复测试行'));
+    return similarLine < 0 ? { similar: [], bestVo: null, related: [] }
+      : { similar: [{ lineIndex: similarLine, logicalCode: 'VO2' }], bestVo: null, related: [] };
   } };
   const executor = createFormulaStageExecutor(async () => model);
   const renderExecutor = createBatchRenderExecutor();
@@ -206,6 +209,8 @@ try {
   assert.ok(marks12.length > 0, '工作台的成片摘要带 AI 改过的地方');
   assert.ok(marks12.some(mark => mark.kind === 'skipped-line' && mark.message.includes('文案逐字写着这句')),
     '省掉的文案行说清是哪一行、被哪段口播说了');
+  assert.equal(marks12.find(mark => mark.kind === 'skipped-line')?.restorable, false,
+    '「文案逐字写着」的行没有恢复入口');
   assert.ok(marks12.some(mark => mark.kind === 'substitute' && mark.message.includes('G2')),
     '替代镜头说清顶替了哪个缺号');
   assert.ok(marks12.every(mark => mark.message.trim().length > 0));
@@ -281,6 +286,94 @@ try {
   assert.equal((JSON.parse(narrationOutput!.arrangementJson) as { productionReady: boolean }).productionReady, true);
   const narrationProgress = getBatchWorkspace(db, 'p', narrationBatch).formulaGeneration!;
   assert(narrationProgress.items.every(item => item.phase === '待审片' && item.status === 'ready'), '统一配音的成片能进审片');
+
+  // 10. 恢复这一行：AI 判断相近省掉的行改回普通文案，只影响这一条、只补这一行的配音。
+  const book55 = new ExcelJS.Workbook();
+  book55.addWorksheet('脚本').addRows([
+    ['序号', '平台', '镜头数', '预估时长(s)', '画面分镜(逻辑镜号组合)', '脚本文案'],
+    [55, '抖音', 3, 16, 'VO1 VO2 G1', '好擦洗。\n恢复测试行。\n恢复批第三行。'],
+  ]);
+  const restoreBatch = createBatchProduction(db, 'p', '恢复一行', undefined, { planningMode: 'formula' });
+  registerFormulaAssetBinding(db, 'p', restoreBatch, { assetId: voId, sourcePath: 'VO1_口播_真人_“好擦洗。”.mp4' });
+  registerFormulaAssetBinding(db, 'p', restoreBatch, { assetId: voId, sourcePath: 'VO2_口播_真人_“完全不同的台词。”.mp4' });
+  registerFormulaAssetBinding(db, 'p', restoreBatch, { assetId: stillId, sourcePath: 'G1_静物_正面.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', restoreBatch);
+  const restoreImported = await createFormulaImportSession(db, 'p', restoreBatch, { kind: 'scripts', filename: '脚本.xlsx',
+    bytes: Buffer.from(await book55.xlsx.writeBuffer()), expectedRevision: 3 });
+  confirmFormulaImportSession(db, 'p', restoreBatch, restoreImported.id, { expectedRevision: 3, excludedKeys: [] });
+  const restoreProduction = defaultFormulaProductionSettings();
+  restoreProduction.audio = { mode: 'mixed', tts: { providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1 } };
+  restoreProduction.packaging = { mode: 'none', templateIds: [] };
+  const restoreSettings = await saveFormulaSettings(db, 'p', restoreBatch, { expectedInputRevision: 4, expectedSettingsRevision: 0,
+    scriptsSessionId: restoreImported.id, settings: { selections: [{ key: '1:2', copies: 2 }], bgm: { mode: 'none', trackIds: [] },
+      production: restoreProduction } });
+  const restoreRequest = await createFormulaGenerationRequest(db, 'p', restoreBatch, { requestKey: 'restore-line',
+    settingsId: restoreSettings.saved!.id, expectedInputRevision: 4, rulesVersion: 'formula-generation/2' });
+  assert.equal(restoreRequest.outputs.length, 2);
+  const synthesesBeforeInitial = syntheses;
+  await runPendingOnce({ db, workerId: 'restore-line-initial', concurrency: 1, executors: [executor, renderExecutor], log: () => {} });
+  assert.equal(syntheses, synthesesBeforeInitial + 1, '两份成片共用同一段配音');
+
+  const restorePlanIds = restoreRequest.outputs.map(output => output.planId);
+  const restoreSelect = (index: number) => (db.prepare("SELECT id FROM live_mixcut_formula_stages WHERE planId=? AND kind='select'")
+    .get(restorePlanIds[index]) as { id: string }).id;
+  const currentVersionId = (planId: string) => (db.prepare('SELECT currentVersionId FROM live_mixcut_output_plans WHERE id=?')
+    .get(planId) as { currentVersionId: string }).currentVersionId;
+
+  const voiceBefore = readFormulaVoiceResult(db, restoreSelect(0))!;
+  assert.deepEqual(voiceBefore.narrationLines, [2], '第 1 行由 AI 判断相近的原声顶掉，只给第 2 行配音');
+  assert.equal((voiceBefore.plan.lines[1].fate as { basis?: string } | null)?.basis, 'similar');
+  assert.ok(voiceBefore.plan.voUsage.some(item => item.logicalCode === 'VO2' && item.role === 'similar'));
+
+  const restoreMarks = getBatchWorkspace(db, 'p', restoreBatch).cards.find(card => card.planId === restorePlanIds[0])!.formula!.reviewMarks;
+  const similarMark = restoreMarks.find(mark => mark.kind === 'skipped-line' && mark.restorable);
+  assert.ok(similarMark, 'AI 判断相近的行带恢复入口');
+  assert.equal(similarMark!.lineIndex, 1);
+  assert.equal(restoreMarks.find(mark => mark.kind === 'skipped-line' && !mark.restorable)?.lineIndex, 0,
+    '文案逐字写着的行没有恢复入口');
+
+  const oldVersion0 = currentVersionId(restorePlanIds[0]);
+  const oldVersion1 = currentVersionId(restorePlanIds[1]);
+  assert.throws(() => restoreFormulaScheduleLine(db, 'p', restoreBatch, restorePlanIds[0],
+    { lineIndex: 0, expectedOutputVersionId: oldVersion0 }), /逐字写着/);
+  assert.throws(() => restoreFormulaScheduleLine(db, 'p', restoreBatch, restorePlanIds[0],
+    { lineIndex: 9, expectedOutputVersionId: oldVersion0 }), /不在这次排片里/);
+  assert.throws(() => restoreFormulaScheduleLine(db, 'p', restoreBatch, restorePlanIds[0],
+    { lineIndex: 1, expectedOutputVersionId: 'stale-version' }), /已更新/);
+
+  const synthesesBeforeRestore = syntheses;
+  const restored = restoreFormulaScheduleLine(db, 'p', restoreBatch, restorePlanIds[0],
+    { lineIndex: 1, expectedOutputVersionId: oldVersion0 });
+  assert.equal(restored.status, 'queued');
+  assert.ok(restored.taskId);
+  assert.equal(restoreFormulaScheduleLine(db, 'p', restoreBatch, restorePlanIds[0],
+    { lineIndex: 1, expectedOutputVersionId: oldVersion0 }).status, 'already_restored', '重复点击不重复建修订');
+  await runPendingOnce({ db, workerId: 'restore-line-run', concurrency: 1, executors: [executor, renderExecutor], log: () => {} });
+  assert.equal(syntheses, synthesesBeforeRestore + 1, '只新合成这一行的配音，其余配音复用');
+
+  const voiceAfter = readFormulaVoiceResult(db, restoreSelect(0))!;
+  assert.equal(voiceAfter.plan.lines[1].fate, null, '恢复的行改回普通文案');
+  assert.deepEqual(voiceAfter.narrationLines, [1, 2]);
+  assert.ok(voiceAfter.plan.unusedSlots.some(slot => slot.logicalCode === 'VO2'), '不再顶行的口播按「一段都没用上」处理');
+  const narrationAfter = readFormulaVoiceNarrationResult(db, restoreSelect(0))!;
+  assert.deepEqual(narrationAfter.items.map(item => item.lineIndex), [1, 2]);
+  const scheduleAfter = readFormulaScheduleResult(db, restoreSelect(0))!;
+  assert.ok(scheduleAfter.timeline.sounds.some(sound => sound.id === 'narration:1'), '恢复的行有了配音');
+  assert.ok(!scheduleAfter.timeline.marks.some(mark => mark.type === 'skipped-line' && mark.lineIndex === 1));
+
+  const newVersion0 = currentVersionId(restorePlanIds[0]);
+  assert.notEqual(newVersion0, oldVersion0, '这条成片出了新版本');
+  assert.equal(currentVersionId(restorePlanIds[1]), oldVersion1, '同批其他成片不变');
+  const newArrangement = JSON.parse((db.prepare('SELECT arrangementJson FROM live_mixcut_output_versions WHERE id=?')
+    .get(newVersion0) as { arrangementJson: string }).arrangementJson) as
+      { productionReady: boolean; formula: { timelineStageId: string } };
+  assert.equal(newArrangement.formula.timelineStageId, readFormulaScheduleStageId(db, restoreSelect(0)));
+  assert.equal(newArrangement.productionReady, true);
+  const restoredItem = getBatchWorkspace(db, 'p', restoreBatch).formulaGeneration!.items.find(item => item.planId === restorePlanIds[0])!;
+  assert.equal(restoredItem.phase, '待审片', '新版本回到待审');
+  assert.equal(restoredItem.status, 'ready');
+  const afterMarks = getBatchWorkspace(db, 'p', restoreBatch).cards.find(card => card.planId === restorePlanIds[0])!.formula!.reviewMarks;
+  assert.ok(!afterMarks.some(mark => mark.kind === 'skipped-line' && mark.lineIndex === 1), '恢复的行不再标成省掉');
 
   console.log('formula voice pipeline tests passed (fake ASR/AI/TTS, real files)');
 } finally {

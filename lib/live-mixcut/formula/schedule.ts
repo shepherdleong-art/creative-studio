@@ -16,7 +16,7 @@ import { arrangeFormulaTime, validateFormulaShortFilm, type NarrationTake, type 
 import type { SchedulingJudgment, SchedulingScript } from '../scheduling/types.ts';
 import type { FormulaGenerationOutput, FormulaGenerationRequest } from './generation.ts';
 import type { FormulaSelection } from './selection.ts';
-import { readFormulaVoiceStage, readFormulaVoiceNarrationResult, readFormulaVoiceResult,
+import { readFormulaVoiceStage, readFormulaVoiceNarrationResultOfStage, readFormulaVoiceResultOfStage,
   type FormulaVoiceNarrationStageResult } from './pipeline-v2.ts';
 import { verifyFormulaCandidateCached, recheckFormulaCandidateCached } from './candidate-cache.ts';
 import type { FormulaVerifiedCandidate } from './candidate-media.ts';
@@ -101,9 +101,9 @@ export function buildFormulaSchedulePlan(input: FormulaSchedulePlanInput): Timel
 /** 从阶段自己的冻结输入还原排时间要用的全部东西。 */
 export function readFormulaScheduleInput(db: Database.Database, stage: FormulaScheduleStage) {
   const voiceStage = readFormulaVoiceStage(db, stage.voiceStageId);
-  const plan = readFormulaVoiceResult(db, stage.selectionStageId);
+  const plan = readFormulaVoiceResultOfStage(db, stage.voiceStageId);
   if (!plan) throw new BatchDomainError('conflict', '排时间缺少定声音结果');
-  const narration = stage.narrationStageId ? readFormulaVoiceNarrationResult(db, stage.selectionStageId) : null;
+  const narration = stage.narrationStageId ? readFormulaVoiceNarrationResultOfStage(db, stage.narrationStageId) : null;
   if (stage.narrationStageId && !narration) throw new BatchDomainError('conflict', '排时间缺少配音结果');
   if (plan.narrationLines.length && !narration) throw new BatchDomainError('conflict', '排时间缺少这部成片的配音');
   const selection = db.prepare('SELECT resultJson FROM live_mixcut_formula_selection_results WHERE stageId=?')
@@ -188,7 +188,7 @@ export async function resolveFormulaScheduleMedia(db: Database.Database, project
   const sound = result.timeline.sounds.find(item => item.id === mediaId);
   if (!sound) throw new BatchDomainError('not_found', '这段声音不属于当前排片');
   if (sound.kind === 'narration') {
-    const narration = result.narrationStageId ? readFormulaVoiceNarrationResult(db, owner.selectionStageId) : null;
+    const narration = result.narrationStageId ? readFormulaVoiceNarrationResultOfStage(db, result.narrationStageId) : null;
     const item = narration?.items.find(entry => `narration:${entry.lineIndex}` === sound.id);
     if (!item || item.audio.fingerprint !== sound.contentFingerprint) throw new BatchDomainError('conflict', '配音不属于这份成片');
     const absolutePath = assertFormulaNarrationAudio(projectId, item.text, item.audio);

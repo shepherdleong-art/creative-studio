@@ -40,6 +40,8 @@ export interface FormulaVoiceStageInput {
   voiceMode: 'mixed' | 'narration';
   materials: SchedulingSlotMaterial[];
   judgment: SchedulingJudgment;
+  /** 审片时恢复的文案行：这些行按普通文案配音，不再由相近口播顶掉。 */
+  restoredLines?: number[];
 }
 export interface FormulaVoiceStageResult {
   status: 'ready'; algorithmVersion: 'formula-voice/1'; executionReady: false;
@@ -128,19 +130,32 @@ export function readFormulaJudgmentResult(db: Database.Database, selectStageId: 
   return row ? JSON.parse(row.resultJson) as FormulaJudgmentStageResult : null;
 }
 
-export function readFormulaVoiceResult(db: Database.Database, selectStageId: string): FormulaVoiceStageResult | null {
-  const row = db.prepare(`SELECT x.resultJson FROM live_mixcut_formula_voice_stages v
-    JOIN live_mixcut_formula_voice_results x ON x.stageId=v.id
-    WHERE v.selectionStageId=? ORDER BY v.revision DESC LIMIT 1`).get(selectStageId) as { resultJson: string } | undefined;
+/** 某一次定声音的结果；阶段还没有结果时是 null。 */
+export function readFormulaVoiceResultOfStage(db: Database.Database, stageId: string): FormulaVoiceStageResult | null {
+  const row = db.prepare('SELECT resultJson FROM live_mixcut_formula_voice_results WHERE stageId=?').get(stageId) as
+    { resultJson: string } | undefined;
   return row ? JSON.parse(row.resultJson) as FormulaVoiceStageResult : null;
 }
 
-export function readFormulaVoiceNarrationResult(db: Database.Database, selectStageId: string): FormulaVoiceNarrationStageResult | null {
-  const row = db.prepare(`SELECT x.resultJson FROM live_mixcut_formula_voice_narration_stages n
-    JOIN live_mixcut_formula_voice_narration_results x ON x.stageId=n.id
-    JOIN live_mixcut_formula_voice_stages v ON v.id=n.voiceStageId
-    WHERE v.selectionStageId=? ORDER BY v.revision DESC LIMIT 1`).get(selectStageId) as { resultJson: string } | undefined;
+/** 最新一次定声音的结果；新修订还在算时按「还没有结果」处理，不能拿旧结果往下走。 */
+export function readFormulaVoiceResult(db: Database.Database, selectStageId: string): FormulaVoiceStageResult | null {
+  return readFormulaVoiceResultOfStage(db, voiceStageId(db, selectStageId) ?? '');
+}
+
+/** 某一次配音的结果；阶段还没有结果时是 null。 */
+export function readFormulaVoiceNarrationResultOfStage(db: Database.Database, stageId: string): FormulaVoiceNarrationStageResult | null {
+  const row = db.prepare('SELECT resultJson FROM live_mixcut_formula_voice_narration_results WHERE stageId=?').get(stageId) as
+    { resultJson: string } | undefined;
   return row ? JSON.parse(row.resultJson) as FormulaVoiceNarrationStageResult : null;
+}
+
+/** 最新一次定声音对应的配音结果；那一版还没出配音就算没有。 */
+export function readFormulaVoiceNarrationResult(db: Database.Database, selectStageId: string): FormulaVoiceNarrationStageResult | null {
+  const voiceStageIdValue = voiceStageId(db, selectStageId);
+  if (!voiceStageIdValue) return null;
+  const row = db.prepare('SELECT id FROM live_mixcut_formula_voice_narration_stages WHERE voiceStageId=?').get(voiceStageIdValue) as
+    { id: string } | undefined;
+  return row ? readFormulaVoiceNarrationResultOfStage(db, row.id) : null;
 }
 
 function judgmentStageId(db: Database.Database, selectStageId: string): string | null {

@@ -157,7 +157,16 @@ export function materializeFormulaScheduleOutput(db: Database.Database, projectI
       queueFormulaScheduleExecutionCheck(db, projectId, batchId, existing.outputVersionId);
       return existing.outputVersionId;
     }
-    if (row.planVersionId) throw new BatchDomainError('conflict', '成片已经有其他当前版本，不能覆盖');
+    // 恢复某一行会重排一次、出这条成片的新版本；只有「当前版本就来自这一次或更晚的排时间」才拒绝。
+    if (row.planVersionId) {
+      const current = db.prepare(`SELECT sc.selectionStageId,sc.revision FROM live_mixcut_output_plans p
+        JOIN live_mixcut_formula_schedule_output_versions f ON f.outputVersionId=p.currentVersionId
+        JOIN live_mixcut_formula_schedule_stages sc ON sc.id=f.scheduleStageId WHERE p.id=?`).get(row.planId) as
+          { selectionStageId: string; revision: number } | undefined;
+      if (!current || current.selectionStageId !== stage.selectionStageId || current.revision >= stage.revision) {
+        throw new BatchDomainError('conflict', '成片已经有其他当前版本，不能覆盖');
+      }
+    }
     const result = readFormulaScheduleStageResult(db, scheduleStageId);
     if (!result || result.status !== 'planned') return null;
     const selectionRow = db.prepare('SELECT resultJson FROM live_mixcut_formula_selection_results WHERE stageId=?')

@@ -16,6 +16,7 @@ import BatchTextStyleEditor from '../BatchTextStyleEditor';
 import BatchCoverDraftPreview from '../BatchCoverDraftPreview';
 import BatchCoverEditorDrawer, { type BatchCoverEditorDraft } from '../BatchCoverEditorDrawer';
 import type { InspectorTab, SelectionTarget, UnifiedFilmState } from './types';
+import type { FormulaReviewMark } from '@/lib/live-mixcut/formula/selection-summary';
 import styles from './batch-unified-review.module.css';
 
 export interface BatchReviewInspectorDockProps {
@@ -57,6 +58,46 @@ export default function BatchReviewInspectorDock({
 }: BatchReviewInspectorDockProps) {
   const arrangement = film?.arrangement;
   const planId = film?.planId;
+
+  // 「恢复这一行」：恢复后这条成片会出新版本，旧标记先在本页隐藏，等工作台刷新。
+  const [restoringLine, setRestoringLine] = useState<number | null>(null);
+  const [restoredLine, setRestoredLine] = useState<number | null>(null);
+  const [restoreMessage, setRestoreMessage] = useState('');
+  const [restoreError, setRestoreError] = useState('');
+  const [prevRestorePlanId, setPrevRestorePlanId] = useState<string | null>(null);
+  if ((planId ?? null) !== prevRestorePlanId) {
+    setPrevRestorePlanId(planId ?? null);
+    setRestoringLine(null);
+    setRestoredLine(null);
+    setRestoreMessage('');
+    setRestoreError('');
+  }
+  const visibleMarks = (film?.formula?.reviewMarks ?? []).filter(mark =>
+    !(mark.kind === 'skipped-line' && mark.lineIndex !== undefined && mark.lineIndex === restoredLine));
+
+  const handleRestoreLine = async (mark: FormulaReviewMark) => {
+    if (!planId || mark.lineIndex === undefined || !arrangement?.outputVersionId) return;
+    setRestoringLine(mark.lineIndex);
+    setRestoreError('');
+    setRestoreMessage('');
+    try {
+      const response = await fetch(`/api/live-mixcut/batches/${encodeURIComponent(batchId)}/formula/outputs/`
+        + `${encodeURIComponent(planId)}/restore-line?projectId=${encodeURIComponent(projectId)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineIndex: mark.lineIndex, expectedOutputVersionId: arrangement.outputVersionId }),
+      });
+      const data = await response.json().catch(() => ({})) as { status?: string; message?: string };
+      if (!response.ok) throw new Error(data.message || '恢复这一行失败');
+      setRestoredLine(mark.lineIndex);
+      setRestoreMessage(data.status === 'already_restored' ? '这一行已经恢复过，正在重新排时间。'
+        : '已恢复这一行，正在补配音并重新排时间；完成后会回到待审。');
+      await onRefreshFilm(planId);
+    } catch (error) {
+      setRestoreError(error instanceof Error ? error.message : '恢复这一行失败');
+    } finally {
+      setRestoringLine(null);
+    }
+  };
 
   // Selected Clip
   const selectedClip = (arrangement?.clips && selection?.clipId)
@@ -247,10 +288,18 @@ export default function BatchReviewInspectorDock({
 
       <div className={styles.inspectorScroll}>
         {!!film?.formula?.reviewMarks?.length && <details open className="mb-3 rounded-lg border border-warn/40 bg-warn/5 p-2 text-xs text-ink-secondary" data-testid="formula-review-marks">
-          <summary className="cursor-pointer font-medium text-ink">AI 改过的地方（{film.formula.reviewMarks.length}）</summary>
+          <summary className="cursor-pointer font-medium text-ink">AI 改过的地方（{visibleMarks.length}）</summary>
           <ul className="mt-2 space-y-1">
-            {film.formula.reviewMarks.map((mark, index) => <li key={index} className="text-warn" data-mark-kind={mark.kind}>{mark.message}</li>)}
+            {visibleMarks.map((mark, index) => <li key={index} className="text-warn" data-mark-kind={mark.kind}>
+              <span>{mark.message}</span>
+              {mark.restorable && mark.lineIndex !== undefined && <button type="button"
+                className="ml-2 rounded border border-hairline bg-surface px-1.5 py-0.5 text-ink-secondary hover:text-ink disabled:opacity-50"
+                disabled={restoringLine !== null} onClick={() => void handleRestoreLine(mark)}>
+                {restoringLine === mark.lineIndex ? '正在恢复…' : '恢复这一行'}
+              </button>}
+            </li>)}
           </ul>
+          {(restoreMessage || restoreError) && <p className={`mt-2 ${restoreError ? 'text-fail' : 'text-ink-secondary'}`}>{restoreError || restoreMessage}</p>}
         </details>}
         {!!arrangement.reviewContext?.issues.length && <details className="mb-3 rounded-lg border border-line p-2 text-xs text-ink-secondary" data-testid="batch-review-issues">
           <summary className="cursor-pointer font-medium text-ink">本次确认包含的提醒（{arrangement.reviewContext.issues.length}）</summary>

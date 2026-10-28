@@ -7,6 +7,10 @@ import type { FormulaTimelineResult } from './timeline.ts';
 export interface FormulaReviewMark {
   kind: 'skipped-line' | 'substitute' | 'filler';
   message: string;
+  /** 省掉的文案行序号；只有这一类能回到那一行。 */
+  lineIndex?: number;
+  /** 能否「恢复这一行」：AI 判断相近才省掉的行可以，文案逐字写着的不能。 */
+  restorable?: boolean;
 }
 
 const substitutionSource: Record<string, string> = {
@@ -84,7 +88,8 @@ export function reviewMarksOf(schedule: import('./schedule.ts').FormulaScheduleS
   for (const mark of schedule.timeline.marks) {
     if (mark.type === 'skipped-line') {
       marks.push({ kind: 'skipped-line', message: `第 ${mark.lineIndex + 1} 行「${lines.get(mark.lineIndex) ?? ''}」不用配音，`
-        + `由 ${mark.logicalCode} 的原声说了（${mark.basis === 'planned' ? '文案逐字写着这句' : 'AI 判断意思相近'}）` });
+        + `由 ${mark.logicalCode} 的原声说了（${mark.basis === 'planned' ? '文案逐字写着这句' : 'AI 判断意思相近'}）`,
+      lineIndex: mark.lineIndex, restorable: mark.basis === 'similar' });
     } else if (mark.type === 'substitute') {
       const clip = schedule.timeline.clips.find(item => item.substitution?.replacedCode === mark.replacedCode && item.assetId === mark.assetId);
       marks.push({ kind: 'substitute', message: `缺号 ${mark.replacedCode} 由${substitutionSource[mark.from] ?? '其他素材'}`

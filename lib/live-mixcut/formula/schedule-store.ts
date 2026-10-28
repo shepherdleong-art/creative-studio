@@ -30,14 +30,17 @@ export function queueFormulaSchedule(db: Database.Database, projectId: string, b
   if (voice.narrationLines.length && !narrationStageId) return;
   if (narrationStageId && !readFormulaVoiceNarrationResult(db, selectStage.id)) return;
 
-  let stage = db.prepare('SELECT id FROM live_mixcut_formula_schedule_stages WHERE selectionStageId=? ORDER BY revision DESC LIMIT 1')
-    .get(selectStage.id) as { id: string } | undefined;
+  const input = { formatVersion: 1 as const, voiceStageId, narrationStageId };
+  const latest = db.prepare('SELECT id,inputJson,revision FROM live_mixcut_formula_schedule_stages WHERE selectionStageId=? ORDER BY revision DESC LIMIT 1')
+    .get(selectStage.id) as { id: string; inputJson: string; revision: number } | undefined;
+  // 定声音或配音换了（比如审片时恢复了一行），就新排一次；否则沿用同一阶段。
+  let stage = latest && JSON.stringify(JSON.parse(latest.inputJson)) === JSON.stringify(input) ? { id: latest.id } : undefined;
   if (!stage) {
     stage = { id: randomUUID() };
     db.prepare(`INSERT INTO live_mixcut_formula_schedule_stages
-      (id,selectionStageId,voiceStageId,narrationStageId,revision,inputJson,createdAt) VALUES (?,?,?,?,1,?,?)`)
-      .run(stage.id, selectStage.id, voiceStageId, narrationStageId,
-        JSON.stringify({ formatVersion: 1, voiceStageId, narrationStageId }), new Date().toISOString());
+      (id,selectionStageId,voiceStageId,narrationStageId,revision,inputJson,createdAt) VALUES (?,?,?,?,?,?,?)`)
+      .run(stage.id, selectStage.id, voiceStageId, narrationStageId, (latest?.revision ?? 0) + 1,
+        JSON.stringify(input), new Date().toISOString());
   }
   createBatchTask(db, projectId, { batchId, workType: 'formula_stage', targetKind: 'formula_stage', targetId: stage.id,
     requestKey: `formula:schedule:${stage.id}` });

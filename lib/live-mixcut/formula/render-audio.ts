@@ -13,7 +13,7 @@ import type { FormulaTimelineResult } from './timeline.ts';
 import { readFormulaOutputAudioPlan, reconcileFormulaOutputAudio, type FormulaOutputBasis } from './output-audio.ts';
 import { readFormulaGenerationRequest } from './generation.ts';
 import { readFormulaScheduleStageResult } from './schedule.ts';
-import { readFormulaVoiceNarrationResult } from './pipeline-v2.ts';
+import { readFormulaVoiceNarrationResultOfStage } from './pipeline-v2.ts';
 import { manualMediaForClip, assertManualMediaProtection } from './manual-media.ts';
 import { effectiveFormulaOutputBasis } from './manual-audio-basis.ts';
 
@@ -175,7 +175,7 @@ async function resolveScheduleRenderAudio(target: RenderTarget, arrangement: Rec
   const schedule = readFormulaScheduleStageResult(db, basis.timelineStageId);
   if (!schedule || schedule.status !== 'planned' || schedule.algorithmVersion !== 'formula-schedule/1') fail('公式画面与声音尚未排好');
   if (schedule.narrationStageId !== saved.narrationStageId) fail('排时间不属于这份配音');
-  const narration = saved.narrationStageId ? readFormulaVoiceNarrationResult(db, basis.selectionStageId) : null;
+  const narration = saved.narrationStageId ? readFormulaVoiceNarrationResultOfStage(db, saved.narrationStageId) : null;
   if (saved.narrationStageId && !narration) fail('配音结果缺失');
   const videoClips = arrangement.clips as Array<Record<string, unknown>>;
   // Recompute linked sound and completeness, rather than trusting saved issues=[] or productionReady.
