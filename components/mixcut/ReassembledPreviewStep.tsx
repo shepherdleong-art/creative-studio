@@ -116,6 +116,6 @@ export function ReassembledPreviewStep({ group, onGroupChange, onExport }: {
       onVariantCommand={apply} onGroupCommand={unsupported} onTrimClip={setTrim} onEditCueText={() => void unsupported()}
       narrationPlaybackRate={1} narrationDurationSec={variant.timeline.bodyFrames / 24} onNarrationPlaybackRatePreview={() => void unsupported()} onNarrationPlaybackRateCommit={() => void unsupported()}
       bgmTrackName="原片音乐" pointCues={[]} coverSec={20 / 24} selectedPointId="" packagingEnabled={false} packagingTemplate={film.template} activeCueText="" onSelectPoint={() => void unsupported()} onPointsChange={() => void unsupported()}
-      stickers={[]} selectedStickerId="" snapEnabled={snapEnabled} onSnapEnabledChange={setSnapEnabled} onSelectSticker={() => void unsupported()} onStickersChange={() => void unsupported()} onDuplicateSticker={() => void unsupported()} onDeleteSticker={() => void unsupported()} />
+      stickers={[]} selectedStickerId="" snapEnabled={snapEnabled} onSnapEnabledChange={setSnapEnabled} onSelectSticker={() => void unsupported()} onStickersChange={() => void unsupported()} onDeleteSticker={() => void unsupported()} />
   </main>;
 }

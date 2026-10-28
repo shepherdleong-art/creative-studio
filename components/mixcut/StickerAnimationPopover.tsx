@@ -69,7 +69,7 @@ export function StickerAnimationPopover({ value, template, disabled, allowFollow
         aria-expanded={open}
         aria-controls={open ? popoverId : undefined}
         onClick={() => setOpen((current) => !current)}
-      ><Icon name="play" size={10} />动效 · {valueLabel}</button>
+      ><Icon name="play" size={10} />{valueLabel}</button>
       {open ? (
         <span id={popoverId} role="dialog" aria-label="选择贴纸动效" className={styles.stickerAnimationPopover}>
           <span className={styles.stickerAnimationHead}>

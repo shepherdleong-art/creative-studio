@@ -31,6 +31,8 @@
   --color-warn: #b25e00;  --color-warn-tint: #fff4e5;
   --color-idle: #6e6e73;  --color-idle-tint: #efeff2;
   --color-check: #5331d8; --color-check-tint: #ececfb;
+  /* 贴纸轨道：固定青绿色，与模板配色和蓝色选中态分开。 */
+  --color-sticker-track: #0f766e; --color-sticker-track-tint: #e3f4f1; --color-sticker-track-foreground: #ffffff;
   /* status dots */
   --color-dot-ok: #34c759;
   --color-dot-fail: #ff3b30;
@@ -830,6 +832,7 @@ html[data-theme='dark'] {
   --color-warn: #ffb340;  --color-warn-tint: rgba(255, 179, 64, .15);
   --color-idle: #98989d;  --color-idle-tint: rgba(152, 152, 157, .16);
   --color-check: #7d7aff; --color-check-tint: rgba(125, 122, 255, .18);
+  --color-sticker-track: #2dd4bf; --color-sticker-track-tint: rgba(45, 212, 191, .16); --color-sticker-track-foreground: #10302b;
 }
 
 /* --- 以下为组件类里硬编码浅色值的暗色覆盖 --- */

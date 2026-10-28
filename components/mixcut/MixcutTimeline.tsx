@@ -108,7 +108,6 @@ export function MixcutTimeline({
   onSnapEnabledChange,
   onSelectSticker,
   onStickersChange,
-  onDuplicateSticker,
   onDeleteSticker,
 }: {
   variant: FinalEditVariantView;
@@ -148,7 +147,6 @@ export function MixcutTimeline({
   onSnapEnabledChange: (enabled: boolean) => void;
   onSelectSticker: (stickerId: string) => void;
   onStickersChange: (next: PackagingStickerInstance[]) => void;
-  onDuplicateSticker: (stickerId: string) => void;
   onDeleteSticker: (stickerId: string) => void;
 }) {
   const [stickerTracksExpanded, setStickerTracksExpanded] = useState(true);
@@ -253,9 +251,9 @@ export function MixcutTimeline({
       if (event.altKey) return;
       if (key === ' ' && !modifier && !target?.closest('button')) { event.preventDefault(); onTogglePlay?.(); return; }
       if (disabled) return;
-      if (modifier && key === 'd' && selectedStickerId && packagingEnabled) {
+      if (modifier && key === 'd') {
         event.preventDefault();
-        if (!event.repeat) onDuplicateSticker(selectedStickerId);
+        return;
       } else if (modifier && key === 'z') {
         event.preventDefault();
         if (!event.repeat) { if (event.shiftKey) { if (canRedo) onRedo?.(); } else if (canUndo) onUndo?.(); }
@@ -296,7 +294,7 @@ export function MixcutTimeline({
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [active, disabled, shortcutsOpen, contextMenu, playheadSec, totalSec, effectiveSelectedAudio, selectedCueId, selectedClipId, selectedStickerId, packagingEnabled, narrationPlaybackRate, variant, cues, bodySec, snapEnabled, canUndo, canRedo, onUndo, onRedo, onTogglePlay, onSeek, onGroupCommand, onVariantCommand, onSelectClip, onSelectCue, onSelectPoint, onSelectSticker, onSnapEnabledChange, onDuplicateSticker, onDeleteSticker]);
+  }, [active, disabled, shortcutsOpen, contextMenu, playheadSec, totalSec, effectiveSelectedAudio, selectedCueId, selectedClipId, selectedStickerId, packagingEnabled, narrationPlaybackRate, variant, cues, bodySec, snapEnabled, canUndo, canRedo, onUndo, onRedo, onTogglePlay, onSeek, onGroupCommand, onVariantCommand, onSelectClip, onSelectCue, onSelectPoint, onSelectSticker, onSnapEnabledChange, onDeleteSticker]);
 
   const seekFromPointer = (clientX: number) => {
     const scroll = scrollRef.current;
@@ -463,6 +461,7 @@ export function MixcutTimeline({
           {packagingEnabled && (
             <MixcutStickerTrack
               stickers={stickers}
+              template={packagingTemplate}
               expanded={stickerTracksExpanded}
               trackCount={stickerTrackCount}
               bodyEndFrame={INTRO_FRAMES + variant.timeline.bodyFrames}

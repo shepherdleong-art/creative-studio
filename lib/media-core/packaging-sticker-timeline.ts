@@ -53,13 +53,6 @@ export function movePackagingStickerToTrack(stickers: PackagingStickerInstance[]
   })));
 }
 
-export function duplicatePackagingSticker(sticker: PackagingStickerInstance, id: string, bodyEndFrame: number): PackagingStickerInstance | null {
-  const startFrame = sticker.endFrame;
-  const endFrame = startFrame + (sticker.endFrame - sticker.startFrame);
-  if (endFrame > bodyEndFrame) return null;
-  return { ...sticker, id, startFrame, endFrame, origin: { kind: 'manual' } };
-}
-
 export function planPackagingStickerFrames(sticker: PackagingStickerInstance, input: {
   mode: 'move' | 'start' | 'end';
   deltaFrames: number;

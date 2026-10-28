@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { PackagingTemplateId } from '@/lib/final-edit/packaging-vars';
 import {
-  STICKER_STYLES,
   STICKER_STYLE_BY_TEMPLATE,
   resolveStickerStyle,
   type PackagingStickerEditPatch,
@@ -58,42 +57,7 @@ function stickerResourceUrl(relativePath: string): string {
   return `/api/packaging/stickers/${relativePath.split('/').map(encodeURIComponent).join('/')}`;
 }
 
-function NumberProperty({ label, value, min, max, step, suffix, disabled, onCommit }: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  suffix: string;
-  disabled: boolean;
-  onCommit: (value: number) => void;
-}) {
-  return (
-    <label className={styles.stickerProperty}>
-      <span>{label}</span>
-      <span className={styles.stickerNumberWrap}>
-        <input
-          key={`${label}:${value}`}
-          type="number"
-          defaultValue={Number(value.toFixed(2))}
-          min={min}
-          max={max}
-          step={step}
-          disabled={disabled}
-          onBlur={(event) => {
-            const next = event.currentTarget.valueAsNumber;
-            if (Number.isFinite(next) && next !== value) onCommit(next);
-          }}
-          onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
-          aria-label={label}
-        />
-        <span>{suffix}</span>
-      </span>
-    </label>
-  );
-}
-
-export function StickerPanel({ active, enabled, busy, template, stickers, selectedSticker, defaultAnimation, addBlockedReason, autoLayoutBlockedReason, onAdd, onDragStart, onDragEnd, onPatchSticker, onDuplicateSticker, onDeleteSticker, onDefaultAnimationChange, onApplyAnimationToAll, onPlaySticker, onAutoLayout }: {
+export function StickerPanel({ active, enabled, busy, template, stickers, selectedSticker, defaultAnimation, addBlockedReason, autoLayoutBlockedReason, onAdd, onDragStart, onDragEnd, onPatchSticker, onDefaultAnimationChange, onApplyAnimationToAll, onPlaySticker, onAutoLayout }: {
   active: boolean;
   enabled: boolean;
   busy: boolean;
@@ -107,10 +71,8 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
   onDragStart: (choice: StickerAssetChoice) => void;
   onDragEnd: () => void;
   onPatchSticker: (id: string, patch: PackagingStickerEditPatch) => Promise<boolean>;
-  onDuplicateSticker: (id: string) => void;
-  onDeleteSticker: (id: string) => void;
   onDefaultAnimationChange: (animation: StickerAnimation) => void;
-  onApplyAnimationToAll: () => void;
+  onApplyAnimationToAll: (animation: StickerAnimation) => void;
   onPlaySticker: (id: string) => void;
   onAutoLayout: (assets: StickerCatalogAsset[]) => void;
 }) {
@@ -168,40 +130,56 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
   const selectedAsset = selectedSticker
     ? assets.find((asset) => asset.id === selectedSticker.assetId && asset.style === resolveStickerStyle(selectedSticker, template))
     : null;
+  const currentAnimation = selectedSticker?.animation ?? defaultAnimation;
+  const selectedLabel = selectedSticker ? selectedAsset?.label || selectedSticker.assetId : '';
 
   return (
     <div className={styles.stickerPanel}>
-      <div className={styles.stickerSectionHead}>
-        <span><Icon name="image" size={14} />贴纸素材</span>
-        <span className={styles.stickerCount}>{stickers.length} 张已放置</span>
-      </div>
-
-      <section className={styles.stickerAnimationDefaults} aria-label="统一动效设置">
-        <div className={styles.stickerAnimationDefaultRow}><span>统一动效</span><span>仅影响之后新增</span></div>
-        <StickerAnimationPopover value={defaultAnimation} template={template} disabled={busy || !enabled} allowFollowTemplate onChange={onDefaultAnimationChange} />
-        <button type="button" className={styles.stickerAnimationApplyAll} disabled={busy || !enabled || stickers.length === 0} onClick={onApplyAnimationToAll}>应用到本视频全部贴纸</button>
+      <section className={styles.stickerAnimationDefaults} aria-label="动效设置">
+        <div className={styles.stickerAnimationDefaultRow}>
+          <span>{selectedSticker ? `动效 · 当前贴纸（${selectedLabel}）` : '动效 · 新贴纸默认'}</span>
+          <span>{selectedSticker ? '仅当前贴纸' : '仅之后新增'}</span>
+        </div>
+        <div className={styles.stickerAnimationControls}>
+          <StickerAnimationPopover
+            value={currentAnimation}
+            template={template}
+            disabled={busy || !enabled}
+            allowFollowTemplate
+            onChange={(animation) => {
+              if (!selectedSticker) {
+                onDefaultAnimationChange(animation);
+                return;
+              }
+              void onPatchSticker(selectedSticker.id, { animation }).then((accepted) => {
+                if (accepted) onPlaySticker(selectedSticker.id);
+              });
+            }}
+          />
+          <button
+            type="button"
+            className={styles.stickerAutoButton}
+            aria-label={hasAutomatic ? '换一组基础贴纸' : '一键基础布置'}
+            title={hasAutomatic ? '换一组基础贴纸' : '一键基础布置'}
+            disabled={busy || !enabled || !loaded || Boolean(error) || Boolean(autoLayoutBlockedReason)}
+            onClick={() => onAutoLayout(templateAssets)}
+          ><Icon name="sparkle" size={13} />{hasAutomatic ? '换一组' : '一键布置'}</button>
+        </div>
+        <button type="button" className={styles.stickerAnimationApplyAll} disabled={busy || !enabled || stickers.length === 0} onClick={() => onApplyAnimationToAll(currentAnimation)}>应用到全部贴纸</button>
+        {autoLayoutBlockedReason && <p className={styles.hintLine}>{autoLayoutBlockedReason}</p>}
       </section>
 
-      <div className={styles.stickerAutoLayout}>
-        <button
-          type="button"
-          className={styles.stickerAutoButton}
-          disabled={busy || !enabled || !loaded || Boolean(error) || Boolean(autoLayoutBlockedReason)}
-          onClick={() => onAutoLayout(templateAssets)}
-        ><Icon name="sparkle" size={13} />{hasAutomatic ? '换一组基础贴纸' : '一键基础布置'}</button>
-        {autoLayoutBlockedReason && <p className={styles.hintLine}>{autoLayoutBlockedReason}</p>}
+      <div className={styles.stickerLibraryTools}>
+        <div className={styles.stickerScope} role="group" aria-label="素材风格范围">
+          <button type="button" className={scope === 'current' ? styles.stickerScopeActive : ''} onClick={() => setScope('current')}>当前模板</button>
+          <button type="button" className={scope === 'all' ? styles.stickerScopeActive : ''} onClick={() => setScope('all')}>全部风格</button>
+        </div>
+        <label className={styles.stickerSearch}>
+          <Icon name="search" size={13} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索贴纸" aria-label="搜索贴纸名称" />
+          {query && <button type="button" aria-label="清空贴纸搜索" onClick={() => setQuery('')}><Icon name="close" size={12} /></button>}
+        </label>
       </div>
-
-      <div className={styles.stickerScope} role="group" aria-label="素材风格范围">
-        <button type="button" className={scope === 'current' ? styles.stickerScopeActive : ''} onClick={() => setScope('current')}>当前模板</button>
-        <button type="button" className={scope === 'all' ? styles.stickerScopeActive : ''} onClick={() => setScope('all')}>全部风格</button>
-      </div>
-
-      <label className={styles.stickerSearch}>
-        <Icon name="search" size={13} />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索贴纸名称" aria-label="搜索贴纸名称" />
-        {query && <button type="button" aria-label="清空贴纸搜索" onClick={() => setQuery('')}><Icon name="close" size={12} /></button>}
-      </label>
 
       <div className={styles.stickerCategories} aria-label="贴纸分类">
         {CATEGORIES.map((item) => (
@@ -225,7 +203,7 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
         <div className={styles.stickerEmpty}>正在读取贴纸目录…</div>
       ) : (
         <>
-          <div className={styles.stickerResultMeta} aria-live="polite">{filteredAssets.length} 张 · 点击添加或拖入预览</div>
+          <div className={styles.stickerResultMeta} aria-live="polite"><span>{filteredAssets.length} 张 · 点击添加或拖入预览</span><span>{stickers.length} 张已放置</span></div>
           <div className={styles.stickerGrid}>
             {filteredAssets.map((asset) => {
               const choice = choiceFor(asset);
@@ -266,56 +244,6 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
           </div>
           {filteredAssets.length === 0 && <div className={styles.stickerEmpty}>没有符合当前筛选的贴纸</div>}
         </>
-      )}
-
-      {selectedSticker && (
-        <section className={styles.stickerSelected} aria-label="当前贴纸属性">
-          <div className={styles.stickerSectionHead}>
-            <span><Icon name="settings" size={13} />当前贴纸</span>
-            <span className={styles.stickerCount}>{selectedAsset?.label || selectedSticker.assetId} · {((selectedSticker.endFrame - selectedSticker.startFrame) / 24).toFixed(2)}s</span>
-          </div>
-          <div className={styles.stickerActionRow}>
-            <button type="button" className={styles.stickerActionButton} disabled={busy || !enabled} onClick={() => onDuplicateSticker(selectedSticker.id)}><Icon name="copy" size={12} />复制</button>
-            <button type="button" className={`${styles.stickerActionButton} ${styles.stickerActionDanger}`} disabled={busy || !enabled} onClick={() => onDeleteSticker(selectedSticker.id)}><Icon name="trash" size={12} />删除</button>
-          </div>
-          <div className={styles.stickerPropertyWide}>
-            <span>当前贴纸动效</span>
-            <StickerAnimationPopover
-              value={selectedSticker.animation}
-              template={template}
-              disabled={busy || !enabled}
-              allowFollowTemplate
-              onChange={(animation) => {
-                void onPatchSticker(selectedSticker.id, { animation }).then((accepted) => {
-                  if (accepted) onPlaySticker(selectedSticker.id);
-                });
-              }}
-            />
-          </div>
-          <label className={styles.stickerPropertyWide}>
-            <span>素材风格</span>
-            <select
-              value={selectedSticker.styleMode === 'follow-template' ? 'follow-template' : selectedSticker.fixedStyle ?? templateStyle}
-              disabled={busy || !enabled}
-              onChange={(event) => {
-                const value = event.target.value;
-                onPatchSticker(selectedSticker.id, value === 'follow-template'
-                  ? { styleMode: 'follow-template', fixedStyle: null }
-                  : { styleMode: 'fixed', fixedStyle: value as StickerStyle });
-              }}
-            >
-              <option value="follow-template" disabled={selectedSticker.assetId === 'special'}>跟随当前模板</option>
-              {STICKER_STYLES.map((style) => <option key={style} value={style} disabled={selectedSticker.assetId === 'special' && style !== selectedSticker.fixedStyle}>{STYLE_LABELS[style]}</option>)}
-            </select>
-          </label>
-          <div className={styles.stickerPropertyGrid}>
-            <NumberProperty label="中心 X" value={selectedSticker.centerXPct} min={0} max={100} step={0.1} suffix="%" disabled={busy || !enabled} onCommit={(centerXPct) => onPatchSticker(selectedSticker.id, { centerXPct })} />
-            <NumberProperty label="中心 Y" value={selectedSticker.centerYPct} min={0} max={100} step={0.1} suffix="%" disabled={busy || !enabled} onCommit={(centerYPct) => onPatchSticker(selectedSticker.id, { centerYPct })} />
-            <NumberProperty label="视觉宽度" value={selectedSticker.visualWidthPct} min={1} max={1000} step={1} suffix="%" disabled={busy || !enabled} onCommit={(visualWidthPct) => onPatchSticker(selectedSticker.id, { visualWidthPct })} />
-            <NumberProperty label="旋转" value={selectedSticker.rotationDeg} min={-180} max={180} step={1} suffix="°" disabled={busy || !enabled} onCommit={(rotationDeg) => onPatchSticker(selectedSticker.id, { rotationDeg })} />
-          </div>
-          <p className={styles.hintLine}>也可在预览中拖动位置、角点等比缩放和顶部手柄旋转。</p>
-        </section>
       )}
     </div>
   );

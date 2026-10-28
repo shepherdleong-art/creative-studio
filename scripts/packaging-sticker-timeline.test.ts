@@ -1,7 +1,6 @@
 // 运行：node scripts/packaging-sticker-timeline.test.ts
 import assert from 'node:assert/strict';
 import {
-  duplicatePackagingSticker,
   insertPackagingStickerAtTop,
   layoutPackagingStickerTracks,
   movePackagingStickerToTrack,
@@ -52,11 +51,4 @@ assert.deepEqual(planPackagingStickerFrames(first, { mode: 'end', deltaFrames: 5
 assert.deepEqual(planPackagingStickerFrames(first, { mode: 'move', deltaFrames: 0, bodyEndFrame: 260, candidates: [21 / 24], pxPerSecond: 120, snapEnabled: true }), { startFrame: 21, endFrame: 69, snapSec: 21 / 24 });
 assert.deepEqual(planPackagingStickerFrames(first, { mode: 'move', deltaFrames: 0, bodyEndFrame: 260, candidates: [21 / 24], pxPerSecond: 120, snapEnabled: false }), { startFrame: 20, endFrame: 68, snapSec: null });
 
-const duplicate = duplicatePackagingSticker({ ...first, origin: { kind: 'auto', autoGroupId: 'auto_1', autoEdited: true } }, 'copy_1', 260);
-assert.ok(duplicate);
-assert.equal(duplicate.id, 'copy_1');
-assert.equal(duplicate.startFrame, 68);
-assert.equal(duplicate.endFrame, 116);
-assert.deepEqual(duplicate.origin, { kind: 'manual' });
-assert.equal(duplicatePackagingSticker(sticker('near_end', { startFrame: 220, endFrame: 260 }), 'copy_2', 260), null);
-console.log('贴纸时间轴纯逻辑测试通过：轨道归一化、共享行、整帧边界、磁吸与复制来源。');
+console.log('贴纸时间轴纯逻辑测试通过：轨道归一化、共享行、整帧边界与磁吸。');

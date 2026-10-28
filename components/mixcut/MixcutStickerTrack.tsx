@@ -1,12 +1,14 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import {
   STICKER_FPS,
   applyPackagingStickerEdit,
+  resolveStickerStyle,
   type PackagingStickerInstance,
 } from '@/lib/media-core/packaging-stickers';
+import type { PackagingTemplateId } from '@/lib/final-edit/packaging-vars';
 import {
   layoutPackagingStickerTracks,
   movePackagingStickerToTrack,
@@ -30,6 +32,7 @@ type StickerDraft = {
 
 export function MixcutStickerTrack({
   stickers,
+  template,
   expanded,
   trackCount,
   bodyEndFrame,
@@ -42,6 +45,7 @@ export function MixcutStickerTrack({
   onCommit,
 }: {
   stickers: PackagingStickerInstance[];
+  template: string;
   expanded: boolean;
   trackCount: number;
   bodyEndFrame: number;
@@ -55,10 +59,30 @@ export function MixcutStickerTrack({
   onCommit: (stickers: PackagingStickerInstance[]) => void;
 }) {
   const [draft, setDraft] = useState<StickerDraft | null>(null);
+  const [labels, setLabels] = useState<Record<string, string>>({});
+  const hasStickers = stickers.length > 0;
+  useEffect(() => {
+    if (!hasStickers) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch('/api/packaging/stickers/catalog.json', { signal: controller.signal });
+        if (!response.ok) return;
+        const body = await response.json() as { assets?: Array<{ style?: string; id?: string; label?: string }> };
+        const next: Record<string, string> = {};
+        for (const asset of body.assets ?? []) {
+          if (asset.style && asset.id && asset.label) next[`${asset.style}/${asset.id}`] = asset.label;
+        }
+        if (!controller.signal.aborted) setLabels(next);
+      } catch { /* 目录暂不可用时保留功能 ID 兜底，不影响轨道编辑 */ }
+    })();
+    return () => controller.abort();
+  }, [hasStickers]);
   const laidOut = useMemo(() => layoutPackagingStickerTracks(stickers), [stickers]);
   const lanes = useMemo(() => Array.from({ length: Math.max(1, trackCount) }, (_, trackIndex) => (
     laidOut.filter((sticker) => sticker.trackIndex === trackIndex)
   )), [laidOut, trackCount]);
+  const labelFor = (sticker: PackagingStickerInstance) => labels[`${resolveStickerStyle(sticker, template as PackagingTemplateId)}/${sticker.assetId}`] ?? sticker.assetId;
 
   const begin = (mode: DragMode, sticker: PackagingStickerInstance, event: React.PointerEvent<HTMLElement>) => {
     if (disabled || event.button !== 0) return;
@@ -188,6 +212,7 @@ export function MixcutStickerTrack({
             const activeDraft = draft?.id === sticker.id ? draft : null;
             const isReordering = activeDraft?.mode === 'move' && activeDraft.targetTrackIndex !== activeDraft.initialTrackIndex;
             const shown = activeDraft && !isReordering ? activeDraft : sticker;
+            const label = labelFor(sticker);
             return (
               <article
                 key={sticker.id}
@@ -199,7 +224,7 @@ export function MixcutStickerTrack({
                 data-selected={selectedStickerId === sticker.id ? 'true' : undefined}
                 role="button"
                 tabIndex={0}
-                aria-label={`贴纸 ${sticker.assetId}`}
+                aria-label={`贴纸 ${label}`}
                 aria-pressed={selectedStickerId === sticker.id}
                 style={{
                   left: shown.startFrame / STICKER_FPS * pxPerSecond,
@@ -213,10 +238,10 @@ export function MixcutStickerTrack({
                   onSelect(sticker.id);
                 }}
                 onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
-                title="拖动调时间或上下换轨 · 拖两侧修剪 · Ctrl/Cmd+D 复制 · Delete 删除 · 拖动中右键取消"
+                title={`${label} · 拖动调时间或上下换轨 · 拖两侧修剪 · Delete 删除 · 拖动中右键取消`}
               >
                 <Icon name="image" size={11} />
-                <span className={styles.stickerBlockLabel}>{sticker.assetId}</span>
+                <span className={styles.stickerBlockLabel}>{label}</span>
                 <span className={styles.stickerBlockDuration}>{((shown.endFrame - shown.startFrame) / STICKER_FPS).toFixed(1)}s</span>
                 <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="修剪贴纸开头" onPointerDown={(event) => begin('start', sticker, event)} />
                 <i className={`${styles.clipHandle} ${styles.clipHandleR}`} aria-label="修剪贴纸结尾" onPointerDown={(event) => begin('end', sticker, event)} />

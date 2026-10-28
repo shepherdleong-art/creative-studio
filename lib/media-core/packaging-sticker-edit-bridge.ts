@@ -12,7 +12,6 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
   var rotateHandle = null;
   var guideXEl = null;
   var guideYEl = null;
-  var tipEl = null;
   var session = null;
   var pending = null;
   var rafScheduled = false;
@@ -108,7 +107,6 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     var next = pending;
     pending = null;
     applyGeometry(next.el, next.target);
-    if (session) showTip(session.target);
   }
   function scheduleApply(el, target) {
     pending = { el: el, target: Object.assign({}, target) };
@@ -116,23 +114,6 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     rafScheduled = true;
     requestAnimationFrame(function () { rafScheduled = false; flushPending(); });
   }
-
-  function ensureTip() {
-    if (tipEl) return;
-    tipEl = document.createElement('div');
-    tipEl.style.cssText = 'position:fixed;z-index:2147483647;display:none;pointer-events:none;transform:translateX(-50%);'
-      + 'padding:4px 8px;border-radius:6px;background:rgba(20,20,22,.88);color:#fff;font:11px/1.4 sans-serif;white-space:nowrap;';
-    document.body.appendChild(tipEl);
-  }
-  function showTip(target) {
-    ensureTip();
-    var rect = rootRect();
-    tipEl.textContent = 'X ' + target.centerXPct.toFixed(1) + '% · Y ' + target.centerYPct.toFixed(1) + '% · 宽 ' + target.visualWidthPct.toFixed(1) + '% · ' + target.rotationDeg.toFixed(0) + '°';
-    tipEl.style.left = (rect.left + rect.width / 2) + 'px';
-    tipEl.style.top = (rect.top + 8) + 'px';
-    tipEl.style.display = 'block';
-  }
-  function hideTip() { if (tipEl) tipEl.style.display = 'none'; }
 
   function ensureGuides() {
     if (guideXEl && guideYEl) return;
@@ -226,7 +207,6 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     session = null;
     pending = null;
     hideGuides();
-    hideTip();
   }
   function syncSelection() {
     var mode = activeMode();
@@ -254,8 +234,31 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     rotateHandle.title = '拖动旋转';
     rotateHandle.style.cssText = 'position:absolute;left:50%;top:-25px;width:14px;height:14px;border:2px solid #fff;border-radius:50%;'
       + 'background:#0071e3;box-shadow:0 1px 4px rgba(0,0,0,.25);pointer-events:auto;cursor:grab;touch-action:none;transform:translateX(-50%);';
+    var deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.setAttribute('data-sticker-delete', '1');
+    deleteButton.setAttribute('aria-label', '删除贴纸');
+    deleteButton.title = '删除贴纸';
+    deleteButton.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+    var stickerRect = el.getBoundingClientRect();
+    var previewRect = rootRect();
+    var deleteTop = stickerRect.top - previewRect.top < 36 ? '4px' : '-30px';
+    var deleteRight = stickerRect.right > previewRect.right - 30 ? '4px' : '-8px';
+    deleteButton.style.cssText = 'position:absolute;right:' + deleteRight + ';top:' + deleteTop + ';width:22px;height:22px;display:grid;place-items:center;padding:3px;border:2px solid #fff;border-radius:6px;'
+      + 'background:#0071e3;box-shadow:0 1px 4px rgba(0,0,0,.25);color:#fff;pointer-events:auto;cursor:pointer;';
+    deleteButton.addEventListener('click', function (event) {
+      if (event.detail !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      var id = selected && selected.getAttribute('data-sticker-id');
+      if (!id) return;
+      try {
+        if (window.parent && typeof window.parent.__packagingStickerEditDelete === 'function') window.parent.__packagingStickerEditDelete(id);
+      } catch (error) {}
+    });
     selectionEl.appendChild(scaleHandle);
     selectionEl.appendChild(rotateHandle);
+    selectionEl.appendChild(deleteButton);
     rotation.appendChild(selectionEl);
   }
 
@@ -307,7 +310,6 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     }
     session.moved = true;
     scheduleApply(session.el, target);
-    showTip(target);
   }
   function commitSession() {
     if (!session) return;
@@ -315,7 +317,6 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     session = null;
     flushPending();
     hideGuides();
-    hideTip();
     if (!current.moved) return;
     swallowClick = true;
     try {
@@ -337,7 +338,6 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     pending = null;
     if (current.el.isConnected) applyGeometry(current.el, current.initial);
     hideGuides();
-    hideTip();
   }
   function onPointerUp(event) {
     if (!session || event.pointerId !== session.pointerId) return;
@@ -363,6 +363,21 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     var mode = activeMode();
     if (!mode || event.button !== 0) return;
     var stack = document.elementsFromPoint(event.clientX, event.clientY);
+    var deleteHit = false;
+    for (var d = 0; d < stack.length; d++) {
+      if (stack[d].closest && stack[d].closest('[data-sticker-delete]')) { deleteHit = true; break; }
+    }
+    if (deleteHit) {
+      event.preventDefault();
+      event.stopPropagation();
+      var deleteId = selected && selected.getAttribute('data-sticker-id');
+      if (deleteId) {
+        try {
+          if (window.parent && typeof window.parent.__packagingStickerEditDelete === 'function') window.parent.__packagingStickerEditDelete(deleteId);
+        } catch (error) {}
+      }
+      return;
+    }
     var handle = '';
     for (var i = 0; i < stack.length; i++) {
       if (stack[i].getAttribute && stack[i].getAttribute('data-sticker-handle')) { handle = stack[i].getAttribute('data-sticker-handle'); break; }
