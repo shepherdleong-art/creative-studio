@@ -182,9 +182,20 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 本仓库常用的 skill 装在**全局**（Claude Code 插件 `mattpocock-skills@claude-plugins-official`，user scope），仓库里不含任何 skill 文件——换一台机器或新克隆一份代码不会自带，需各自 `claude plugin install mattpocock-skills`。
 
-- **本仓库没跑过 `/setup-matt-pocock-skills`**：`to-tickets`、`triage`、`to-spec` 这类要读 issue tracker 配置的 skill 会现场追问「issue 放哪、label 用什么」。纯方法论的（`tdd`、`diagnosing-bugs`、`grilling`、`prototype`、`research`、`codebase-design`）不受影响，直接可用。
 - `CONTEXT.md` 由 `/domain-modeling` 维护，格式见该 skill 的 `CONTEXT-FORMAT.md`（术语 + `_避免：别名_`）。**它只是词汇表**：实现细节、规格、临时笔记一律不进——那些归 `docs/`。
 - skill 产出的规格与计划落到 `docs/superpowers/{specs,plans}/`（见「目录结构与代码组织」）。
+
+### Issue tracker
+
+任务单和规格用本地 Markdown，落在 `docs/superpowers/specs/` 与 `docs/superpowers/plans/<日期>-<主题>/`。见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+五个状态沿用默认字符串：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`，写进任务文件顶部的 `Status:` 行。见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+单上下文：词汇表是 `CONTEXT.md`（不是 `GLOSSARY.md`），架构决策在 `docs/adr/`。见 `docs/agents/domain.md`。
 
 ## 安全注意事项
 
