@@ -88,6 +88,14 @@ test('桌面版入口与网页版入口同样看管 LiteLLM sidecar', () => {
   assert.doesNotMatch(startDesktop, /apiKey|masterKey/);
 });
 
+test('桌面版入口不会继承普通 Node 调试模式的 Electron 环境变量', () => {
+  const startDesktop = read('start-desktop.command');
+
+  // 开发终端或宿主可能注入 ELECTRON_RUN_AS_NODE=1；继承它会让桌面壳
+  // 以 Node 身份运行，Electron 的 app 模块为 undefined，启动直接失败。
+  assert.match(startDesktop, /^unset ELECTRON_RUN_AS_NODE$/m);
+});
+
 test('桌面壳把 POSIX 信号接到同一条 shutdown 链路', () => {
   const main = read('desktop/main.ts');
 

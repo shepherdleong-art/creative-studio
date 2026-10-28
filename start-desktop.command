@@ -65,6 +65,10 @@ esac
 CREATIVE_STUDIO_NODE="$(command -v node)"
 export CREATIVE_STUDIO_NODE
 
+# 开发终端/宿主注入此变量会让 Electron 以普通 Node 身份启动，app 接口不可用。
+# 桌面壳必须作为 GUI 进程运行；私有 Node 服务已有上面的独立运行时路径。
+unset ELECTRON_RUN_AS_NODE
+
 # Check if dependencies are installed
 if [ ! -d "node_modules" ]; then
     echo "📦 首次运行，正在安装依赖..."
