@@ -8,6 +8,7 @@ import { getFormulaMaterialIndex } from './material-bindings.ts';
 import { readFormulaInputs } from './import-store.ts';
 import { assertVideoContentAnalysis, type VideoContentAnalysis, type VideoContentModel } from '../../media-core/adapters/video-analysis.ts';
 import { dataRoot } from '../../data-root.ts';
+import { sanitizeMessage } from '../../log-sanitize.ts';
 import { listAssetSources, resolveSourceFilePath } from '../media-catalog.ts';
 import { verifyFormulaCandidate, recheckFormulaCandidate, type FormulaVerifiedCandidate } from './candidate-media.ts';
 import {
@@ -45,6 +46,29 @@ export interface FormulaMaterialOrganizeRun {
 }
 export interface FormulaMaterialNotesView { revision: number; items: FormulaMaterialNoteItem[]; run: FormulaMaterialOrganizeRun | null }
 const RUN_LEASE_MS = 90_000;
+
+/** 上游偶发抖动：一次失败不动结论，留一拍再试一次。被停机打断时不重试。 */
+async function retryOnce<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    if (signal.aborted) throw error;
+    await new Promise(resolve => setTimeout(resolve, 1_500));
+    signal.throwIfAborted();
+    return work();
+  }
+}
+
+/**
+ * 失败原因要能分辨是限流、额度还是配置问题。保留脱敏后的上游原话；
+ * 业务错误已经写着可读原因，原样返回。
+ */
+function describeAnalysisFailure(error: unknown): string {
+  if (error instanceof BatchDomainError) return error.message;
+  const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const detail = sanitizeMessage(raw).replace(/\s+/g, ' ').trim().slice(0, 300);
+  return detail ? `模型分析失败：${detail}` : '模型分析失败，请检查模型配置后重试';
+}
 interface ProfileRow {
   id: string; bindingId: string; revision: number; inputFingerprint: string; origin: 'ai' | 'manual'; contentJson: string; provenanceJson: string;
 }
@@ -238,7 +262,10 @@ export async function organizeFormulaMaterialNotes(db: Database.Database, projec
         if (!candidate) throw new BatchDomainError('invalid_input', '原片无法核验，请检查素材后重试');
         const cacheDir = path.join(dataRoot(), 'storage', 'live-mixcut', 'analysis', started.id, item.bindingId);
         try {
-          const analysis = await model.analyze({ filePath: resolveSourceFilePath(candidate.location), assetId: item.source.assetId, cacheDir, signal });
+          // 上游会偶发抖动（同一段素材过一会儿再跑就成功）。一条素材最多试两次，
+          // 仍然失败才记下来；每次重试前留一拍，避免连续撞同一个瞬时故障。
+          const analysis = await retryOnce(() => model.analyze({ filePath: resolveSourceFilePath(candidate!.location),
+            assetId: item.source.assetId, cacheDir, signal }), signal);
           assertVideoContentAnalysis(analysis);
           const content = contentFromAnalysis(analysis, item.profile?.content.conflicts ?? []);
           // 先按内容存下分析结果：说明写入失败也不用来回重花模型费。
@@ -252,8 +279,8 @@ export async function organizeFormulaMaterialNotes(db: Database.Database, projec
       } catch (error) {
         signal.throwIfAborted();
         assertRunActive();
-        const message = error instanceof BatchDomainError ? error.message : '模型分析失败，请检查模型配置后重试';
-        errors.push({ bindingId: item.bindingId, message });
+        // 记住上游给的原话，才分得清是限流、额度还是模型配置。消息已脱敏，不含密钥和签名。
+        errors.push({ bindingId: item.bindingId, message: describeAnalysisFailure(error) });
         update('running');
         continue;
       }

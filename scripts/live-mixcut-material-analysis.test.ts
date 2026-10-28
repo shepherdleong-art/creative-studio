@@ -118,7 +118,42 @@ try {
   assert.deepEqual(pickFormulaUsableRange(rangesOf([{ startUs: 0, endUs: 1_000_000, qualityScore: 0.5 },
     { startUs: 2_000_000, endUs: 4_000_000, qualityScore: 0.5 }])), { inUs: 2_000_000, outUs: 4_000_000 });
   assert.deepEqual(pickFormulaUsableRange(rangesOf([])), { inUs: 0, outUs: 0 });
-  console.log('formula-material-analysis: 每段只分析一次、换批次复用、口播跳过、生成前检查通过');
+
+  // 上游偶发抖动：第一次失败、第二次成功，这条照常算分析好了，并且只算成功一次。
+  const batchD = createBatchProduction(db, 'p', '第四批', undefined, { planningMode: 'formula' });
+  const teal = await video('teal.mp4', 'teal');
+  registerFormulaAssetBinding(db, 'p', batchD, { assetId: teal, sourcePath: '素材/P9_抖动.mp4' });
+  let flakyCalls = 0;
+  const flaky = { id: 'flaky-vision', name: '抖动视觉', model: 'flaky/1', analyze: async () => {
+    flakyCalls += 1;
+    if (flakyCalls === 1) throw new Error('upstream 503 service unavailable');
+    return { summary: '抖动后成功', sellingPoints: [], semanticTags: [], qualityIssues: [], coverFrameTimesUs: [],
+      usableRanges: [{ startUs: 0, endUs: 1_000_000, qualityScore: 0.6 }], scenes: [] };
+  } };
+  let notesD = readFormulaMaterialNotes(db, 'p', batchD);
+  notesD = await organizeFormulaMaterialNotes(db, 'p', batchD, { expectedRevision: notesD.revision }, flaky);
+  assert.equal(flakyCalls, 2, '失败一次会再试一次');
+  assert.equal(notesD.run?.succeeded, 1, '重试成功后这条素材算分析好了');
+  assert.deepEqual(notesD.run?.errors, [], '重试成功不留失败记录');
+  assert.equal(notesD.items[0].analysis?.description, '抖动后成功');
+
+  // 两次都失败：失败记录要写清上游原话，不能只留一句「请检查模型配置」。
+  const batchE = createBatchProduction(db, 'p', '第五批', undefined, { planningMode: 'formula' });
+  const brown = await video('brown.mp4', 'brown');
+  registerFormulaAssetBinding(db, 'p', batchE, { assetId: brown, sourcePath: '素材/P10_必失败.mp4' });
+  let brokenCalls = 0;
+  const broken = { id: 'broken-vision', name: '失败视觉', model: 'broken/1', analyze: async () => {
+    brokenCalls += 1;
+    throw new Error('429 rate limit exceeded for gemini-3.8-flash');
+  } };
+  let notesE = readFormulaMaterialNotes(db, 'p', batchE);
+  notesE = await organizeFormulaMaterialNotes(db, 'p', batchE, { expectedRevision: notesE.revision }, broken);
+  assert.equal(brokenCalls, 2, '同一段素材最多试两次，不会无限重试');
+  assert.equal(notesE.run?.state, 'failed');
+  assert.match(notesE.run!.errors[0].message, /模型分析失败：.*429 rate limit exceeded.*/,
+    '失败记录写明上游原话，才分得清限流、额度还是配置');
+
+  console.log('formula-material-analysis: 每段只分析一次、换批次复用、口播跳过、生成前检查、失败重试一次与失败原因通过');
 } finally {
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
