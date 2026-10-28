@@ -10,10 +10,11 @@ export interface FormulaGenerationProgress {
   items: Array<{ planId: string; scriptNumber: string; copyIndex: number; phase: string;
     status: 'pending' | 'running' | 'needs_attention' | 'ready'; detail: string; retryTaskId: string | null }>;
 }
-type StageKind = 'select' | 'source_speech' | 'audio_mapping' | 'narration' | 'timeline' | 'execution';
-const labels: Record<StageKind, string> = { select: '选片', source_speech: '核对原声', audio_mapping: '安排声音',
-  narration: '生成配音', timeline: '安排画面与字幕', execution: '检查画面、声音与包装' };
-const order: StageKind[] = ['select', 'source_speech', 'audio_mapping', 'narration', 'timeline', 'execution'];
+type StageKind = 'select' | 'source_speech' | 'judgment' | 'voice' | 'voice_narration' | 'audio_mapping' | 'narration' | 'timeline' | 'execution';
+const labels: Record<StageKind, string> = { select: '选片', source_speech: '识别原声', judgment: 'AI 判断', voice: '定声音',
+  voice_narration: '生成配音', audio_mapping: '安排声音', narration: '生成配音', timeline: '安排画面与字幕', execution: '检查画面、声音与包装' };
+const order: StageKind[] = ['select', 'source_speech', 'judgment', 'voice', 'voice_narration',
+  'audio_mapping', 'narration', 'timeline', 'execution'];
 interface StageResult {
   status?: string; message?: string; issues?: Array<{ message?: string }>; conflicts?: Array<{ message?: string }>;
   narrations?: unknown[];
@@ -32,15 +33,20 @@ function resultMessage(result: StageResult | null): string {
 export function readFormulaGenerationProgress(db: Database.Database, projectId: string, batchId: string,
   cards: readonly BatchOutputCardView[]): FormulaGenerationProgress | null {
   if (getBatchPlanningMode(db, projectId, batchId) !== 'formula' || !formulaExecutionAvailable(db)) return null;
-  const request = db.prepare(`SELECT r.id,r.batchVersionId,json_type(r.inputJson,'$.ttsService')='object' AS hasTtsService FROM live_mixcut_formula_generation_requests r
+  const request = db.prepare(`SELECT r.id,r.batchVersionId,r.rulesVersion,json_type(r.inputJson,'$.ttsService')='object' AS hasTtsService
+    FROM live_mixcut_formula_generation_requests r
     JOIN live_mixcut_productions b ON b.id=r.batchId AND b.currentVersionId=r.batchVersionId
-    WHERE r.projectId=? AND r.batchId=?`).get(projectId, batchId) as { id: string; batchVersionId: string; hasTtsService: number | null } | undefined;
+    WHERE r.projectId=? AND r.batchId=?`).get(projectId, batchId) as
+    { id: string; batchVersionId: string; rulesVersion: string; hasTtsService: number | null } | undefined;
   if (!request) return null;
+  // 旧批次的原声阶段仍叫「核对原声」，界面上的「人工核对原声」入口按这个名字出现。
+  const stageLabel = (kind: StageKind) => kind === 'source_speech' && request.rulesVersion !== 'formula-generation/2'
+    ? '核对原声' : labels[kind];
   const outputs = db.prepare(`SELECT o.planId,o.scriptNumber,o.copyIndex FROM live_mixcut_formula_generation_outputs o
     JOIN live_mixcut_output_plans p ON p.id=o.planId WHERE o.requestId=? ORDER BY p.seq`).all(request.id) as
     Array<{ planId: string; scriptNumber: string; copyIndex: number }>;
   const stages = db.prepare(`SELECT s.id,s.planId,s.kind,t.id AS taskId,t.status,a.errorMessage,
-      COALESCE(x.resultJson,v.resultJson,m.resultJson,n.resultJson,l.resultJson,e.resultJson) AS resultJson
+      COALESCE(x.resultJson,v.resultJson,m.resultJson,n.resultJson,l.resultJson,e.resultJson,jr.resultJson,vr.resultJson,nr.resultJson) AS resultJson
     FROM live_mixcut_formula_execution_stages s
     JOIN live_mixcut_formula_stages latest ON latest.id=s.selectionStageId
       AND latest.revision=(SELECT MAX(revision) FROM live_mixcut_formula_stages WHERE planId=s.planId AND kind='select')
@@ -52,6 +58,9 @@ export function readFormulaGenerationProgress(db: Database.Database, projectId: 
     LEFT JOIN live_mixcut_formula_narration_results n ON n.stageId=s.id
     LEFT JOIN live_mixcut_formula_timeline_results l ON l.stageId=s.id
     LEFT JOIN live_mixcut_formula_execution_results e ON e.stageId=s.id
+    LEFT JOIN live_mixcut_formula_judgment_results jr ON jr.stageId=s.id
+    LEFT JOIN live_mixcut_formula_voice_results vr ON vr.stageId=s.id
+    LEFT JOIN live_mixcut_formula_voice_narration_results nr ON nr.stageId=s.id
     WHERE s.requestId=?`).all(request.id) as Array<{ id: string; planId: string; kind: StageKind; taskId: string | null;
       status: string | null; errorMessage: string | null; resultJson: string | null }>;
   const byPlan = new Map<string, typeof stages>();
@@ -66,11 +75,11 @@ export function readFormulaGenerationProgress(db: Database.Database, projectId: 
     for (const stage of chain) {
       const result = stage.resultJson ? JSON.parse(stage.resultJson) as StageResult : null;
       if (stage.status === 'failed' || result?.status === 'needs_attention' || result?.status === 'blocked') {
-        return { ...base, phase: labels[stage.kind], status: 'needs_attention',
-          detail: stage.errorMessage || resultMessage(result) || `${labels[stage.kind]}需要处理，请查看这条成片的资料和提示。`,
+        return { ...base, phase: stageLabel(stage.kind), status: 'needs_attention',
+          detail: stage.errorMessage || resultMessage(result) || `${stageLabel(stage.kind)}需要处理，请查看这条成片的资料和提示。`,
           retryTaskId: stage.status === 'failed' ? stage.taskId : null };
       }
-      if (stage.status !== 'succeeded') return { ...base, phase: labels[stage.kind],
+      if (stage.status !== 'succeeded') return { ...base, phase: stageLabel(stage.kind),
         status: stage.status === 'running' ? 'running' : 'pending', detail: stage.status === 'cancelled' ? '任务已中止，请检查批次控制状态。' : '后台会继续处理，刷新或关闭页面不会重新选片。' };
       if (stage.kind === 'audio_mapping' && result?.status === 'mapped' && result.narrations?.length && !request.hasTtsService
         && !chain.some(item => item.kind === 'narration')) {
@@ -82,6 +91,15 @@ export function readFormulaGenerationProgress(db: Database.Database, projectId: 
       detail: card.executionTask.errorMessage || '制作检查失败，请重试。', retryTaskId: card.executionTask.id };
     if (card?.coverTask?.status === 'failed') return { ...base, phase: '生成审片封面', status: 'needs_attention',
       detail: card.coverTask.errorMessage || '封面生成失败，请重试。', retryTaskId: card.coverTask.id };
+    // 新规矩在任务 08 先走到配音为止；这里只说明「在等排时间」，不是停下等人。
+    const voice = chain.find(stage => stage.kind === 'voice');
+    const narration = chain.find(stage => stage.kind === 'voice_narration');
+    if (request.rulesVersion === 'formula-generation/2' && voice?.status === 'succeeded'
+      && (narration ? narration.status === 'succeeded'
+        : (JSON.parse(voice.resultJson ?? '{}') as { narrationLines?: unknown[] }).narrationLines?.length === 0)) {
+      return { ...base, phase: '等待排时间', status: 'pending',
+        detail: '定声音和配音已完成；排时间在任务 09 接上。' };
+    }
     return { ...base, phase: card?.productionReady ? '生成审片封面' : chain.length ? '等待下一阶段' : '选片',
       status: card?.coverTask?.status === 'running' ? 'running' : 'pending', detail: '尚未完成制作，请等待后台处理。' };
   });

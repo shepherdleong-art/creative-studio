@@ -32,7 +32,9 @@ export async function POST(request: NextRequest, route: { params: Promise<{ id: 
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new BatchDomainError('invalid_input', '生成请求格式不正确');
     const { id } = await route.params;
     const result = await createFormulaGenerationRequest(getDb(), projectId, id, {
-      requestKey: input.requestKey, settingsId: input.settingsId, expectedInputRevision: input.expectedInputRevision, signal: request.signal,
+      requestKey: input.requestKey, settingsId: input.settingsId, expectedInputRevision: input.expectedInputRevision,
+      // 工作台的生成入口一律按新规矩建立批次；旧批次保留自己的 rulesVersion。
+      rulesVersion: 'formula-generation/2', signal: request.signal,
     });
     await ensureBatchSchedulerStarted();
     return NextResponse.json({ requestId: result.id, batchVersionId: result.batchVersionId, outputCount: result.outputs.length }, { headers: BATCH_NO_STORE_HEADERS });

@@ -12,6 +12,17 @@ import { analyzeFormulaSourceSpeech, withCleanedSourceSpeech } from './source-sp
 import { parseMaterialFilename } from './parse.ts';
 import { recheckFormulaCandidate, verifyFormulaCandidate, type FormulaVerifiedCandidate } from './candidate-media.ts';
 import type { FormulaSelection } from './selection.ts';
+import { selectFormulaOutputV2 } from './selection-v2.ts';
+import { isFormulaRulesV2 } from './rules-version.ts';
+import {
+  queueFormulaV2Plan, readFormulaJudgmentStage, readFormulaVoiceStage, readFormulaVoiceNarrationInput,
+  verifyFormulaVoicePlanFiles, recheckFormulaVoicePlanFiles,
+  type FormulaJudgmentStageResult, type FormulaVoiceStageResult, type FormulaVoiceNarrationStageResult,
+} from './pipeline-v2.ts';
+import { verifyFormulaCandidateCached, recheckFormulaCandidateCached } from './candidate-cache.ts';
+import { judgeFormulaFilm } from './judgment.ts';
+import { assignFormulaVoice } from '../scheduling/voice.ts';
+import { linesToNarrate } from '../scheduling/voice.ts';
 import { mapFormulaAudio } from './audio-mapping.ts';
 import { queueFormulaAudioMapping, readFormulaAudioMappingInput } from './audio-mapping-store.ts';
 import { queueFormulaNarration, readFormulaNarrationInput, type FormulaNarrationStageResult } from './narration-store.ts';
@@ -28,14 +39,15 @@ import { readFrozenFormulaManualAudio } from './manual-audio-mapping.ts';
 
 /** 模型是外部服务边界；生产与隔离验收均使用同一个任务执行和提交流程。 */
 export function createFormulaStageExecutor(resolveModel: (request: FormulaGenerationRequest, projectId: string,
-  purpose?: 'replacement' | 'audio_mapping') => Promise<TextJsonModel | null>
+  purpose?: 'replacement' | 'audio_mapping' | 'judgment') => Promise<TextJsonModel | null>
   = resolveFormulaReplacementModel): BatchTaskExecutor {
   return {
     workTypes: ['formula_stage'],
     async execute({ db, claim, signal, reportProgress }) {
       if (!claim.task.batchId || claim.task.targetKind !== 'formula_stage') throw new BatchDomainError('invalid_input', '公式任务目标无效');
       const stage = db.prepare('SELECT * FROM live_mixcut_formula_execution_stages WHERE id=?').get(claim.task.targetId) as
-        (Omit<FormulaStage, 'kind'> & { kind: 'select' | 'source_speech' | 'audio_mapping' | 'narration' | 'timeline' | 'execution'; selectionStageId: string }) | undefined;
+        (Omit<FormulaStage, 'kind'> & { kind: 'select' | 'source_speech' | 'audio_mapping' | 'narration' | 'timeline' | 'execution'
+          | 'judgment' | 'voice' | 'voice_narration'; selectionStageId: string }) | undefined;
       if (!stage) throw new BatchDomainError('invalid_input', '尚不支持此公式制作阶段');
       const request = readFormulaGenerationRequest(db, claim.task.projectId, claim.task.batchId, stage.requestId);
       const output = request.outputs.find(item => item.planId === stage.planId);
@@ -74,6 +86,83 @@ export function createFormulaStageExecutor(resolveModel: (request: FormulaGenera
           createBatchTask(db, claim.task.projectId, { batchId: claim.task.batchId!, workType: 'render', targetKind: 'output_version_cover',
             targetId: check.outputVersionId, requestKey: buildCoverRenderTaskRequestKey(check.outputVersionId, verified.contract.coverContractHash) });
           return { resultJson: result, progress: { phase: 'formula_execution_done', percent: 1, description: '制作检查通过，正在准备审片封面' } };
+        } };
+      }
+      if (stage.kind === 'judgment') {
+        const existing = db.prepare('SELECT resultJson FROM live_mixcut_formula_judgment_results WHERE stageId=?').get(stage.id) as
+          { resultJson: string } | undefined;
+        if (existing) return { commit() {
+          queueFormulaV2Plan(db, claim.task.projectId, claim.task.batchId!, { id: stage.selectionStageId, planId: stage.planId }, request, output);
+          return { resultJson: JSON.parse(existing.resultJson) };
+        } };
+        const input = readFormulaJudgmentStage(db, stage.id).input;
+        reportProgress({ phase: 'formula_judgment', description: '判断哪行文案和哪段口播意思相近，排出相关素材', percent: null });
+        const empty = !input.judgment.voiceOvers.length && !input.judgment.materials.length;
+        const view = empty
+          ? { judgment: { similar: [], bestVo: null, related: [] }, provider: { id: 'none', name: '无需判断', model: 'none' }, cached: false }
+          : await (async () => {
+            const model = await resolveModel(request, claim.task.projectId, 'judgment');
+            if (!model) throw new BatchDomainError('invalid_input', 'AI 判断使用的脚本模型未配置或不可用，请到设置中检查后重试');
+            return judgeFormulaFilm(db, claim.task.projectId, input.judgment, model, signal);
+          })();
+        signal.throwIfAborted();
+        const result: FormulaJudgmentStageResult = { status: 'ready', algorithmVersion: 'formula-judgment-stage/1',
+          executionReady: false, judgment: view.judgment, provider: view.provider, cached: view.cached };
+        return { commit() {
+          db.prepare('INSERT INTO live_mixcut_formula_judgment_results (stageId,resultJson,createdAt) VALUES (?,?,?)')
+            .run(stage.id, JSON.stringify(result), new Date().toISOString());
+          queueFormulaV2Plan(db, claim.task.projectId, claim.task.batchId!, { id: stage.selectionStageId, planId: stage.planId }, request, output);
+          return { resultJson: result, progress: { phase: 'formula_judgment_done', percent: 1, description: 'AI 判断已保存，等待定声音' } };
+        } };
+      }
+      if (stage.kind === 'voice') {
+        const existing = db.prepare('SELECT resultJson FROM live_mixcut_formula_voice_results WHERE stageId=?').get(stage.id) as
+          { resultJson: string } | undefined;
+        if (existing) return { commit() {
+          queueFormulaV2Plan(db, claim.task.projectId, claim.task.batchId!, { id: stage.selectionStageId, planId: stage.planId }, request, output);
+          return { resultJson: JSON.parse(existing.resultJson) };
+        } };
+        const input = readFormulaVoiceStage(db, stage.id).input;
+        reportProgress({ phase: 'formula_voice', description: '按文案定原声、配音和画面', percent: null });
+        let plan;
+        try { plan = assignFormulaVoice(input); }
+        catch (error) { throw new BatchDomainError('invalid_input', `定声音失败：${error instanceof Error ? error.message : String(error)}`); }
+        signal.throwIfAborted();
+        const verified = await verifyFormulaVoicePlanFiles(db, claim.task.projectId, request, plan, signal);
+        signal.throwIfAborted();
+        const result: FormulaVoiceStageResult = { status: 'ready', algorithmVersion: 'formula-voice/1', executionReady: false,
+          mode: plan.mode, plan, narrationLines: linesToNarrate(plan), missingCodes: plan.missingCodes };
+        return { commit() {
+          recheckFormulaVoicePlanFiles(db, claim.task.projectId, verified);
+          db.prepare('INSERT INTO live_mixcut_formula_voice_results (stageId,resultJson,createdAt) VALUES (?,?,?)')
+            .run(stage.id, JSON.stringify(result), new Date().toISOString());
+          queueFormulaV2Plan(db, claim.task.projectId, claim.task.batchId!, { id: stage.selectionStageId, planId: stage.planId }, request, output);
+          return { resultJson: result, progress: { phase: 'formula_voice_done', percent: 1,
+            description: result.narrationLines.length ? `已定声音，等待合成 ${result.narrationLines.length} 行配音` : '全部文案由原声覆盖，无需配音' } };
+        } };
+      }
+      if (stage.kind === 'voice_narration') {
+        const existing = db.prepare('SELECT resultJson FROM live_mixcut_formula_voice_narration_results WHERE stageId=?').get(stage.id) as
+          { resultJson: string } | undefined;
+        if (existing) return { commit() { return { resultJson: JSON.parse(existing.resultJson) }; } };
+        const input = readFormulaVoiceNarrationInput(db, stage.id);
+        const items: FormulaVoiceNarrationStageResult['items'] = [];
+        for (const item of input.items) {
+          reportProgress({ phase: 'formula_voice_narration', description: '只为要配音的文案合成声音', completed: items.length,
+            total: input.items.length, percent: items.length / input.items.length });
+          const narration = await synthesizeFormulaNarration(db, claim.task.projectId, { text: item.text, service: input.service }, signal);
+          if (narration.status !== 'ready') throw new BatchDomainError('conflict', narration.message);
+          items.push({ ...item, audio: narration.audio });
+        }
+        signal.throwIfAborted();
+        const result: FormulaVoiceNarrationStageResult = { status: 'ready', algorithmVersion: 'formula-narration-stage/2',
+          executionReady: false, items };
+        return { commit() {
+          for (const item of items) assertFormulaNarrationAudio(claim.task.projectId, item.text, item.audio);
+          db.prepare('INSERT INTO live_mixcut_formula_voice_narration_results (stageId,resultJson,createdAt) VALUES (?,?,?)')
+            .run(stage.id, JSON.stringify(result), new Date().toISOString());
+          return { resultJson: result, progress: { phase: 'formula_voice_narration_done', percent: 1,
+            description: '配音已完成；排时间在下一步接上' } };
         } };
       }
       if (stage.kind === 'timeline') {
@@ -177,7 +266,9 @@ export function createFormulaStageExecutor(resolveModel: (request: FormulaGenera
       if (stage.kind === 'source_speech') {
         const existing = db.prepare('SELECT resultJson FROM live_mixcut_formula_speech_results WHERE stageId=?').get(stage.id) as { resultJson: string } | undefined;
         if (existing) return { commit() {
-          queueFormulaAudioMapping(db, claim.task.projectId, claim.task.batchId!, stage.selectionStageId, request);
+          if (isFormulaRulesV2(request.rulesVersion)) {
+            queueFormulaV2Plan(db, claim.task.projectId, claim.task.batchId!, { id: stage.selectionStageId, planId: stage.planId }, request, output);
+          } else queueFormulaAudioMapping(db, claim.task.projectId, claim.task.batchId!, stage.selectionStageId, request);
           return { resultJson: JSON.parse(existing.resultJson) };
         } };
         const source = readFormulaSpeechStage(db, stage.id);
@@ -200,20 +291,29 @@ export function createFormulaStageExecutor(resolveModel: (request: FormulaGenera
         // 旧批次的识别结果在这里补做清洗，不再调用识别服务。
         result = withCleanedSourceSpeech(result, plannedLine);
         signal.throwIfAborted();
-        if (result.status === 'needs_attention' && ['source_unavailable', 'transcription_failed'].includes(result.reason)) {
+        if (isFormulaRulesV2(request.rulesVersion)) {
+          // 新规矩没有人工核对：识别服务真的出错就让这条成片失败、写明原因、可重试。
+          if (result.status === 'needs_attention') throw new BatchDomainError('conflict', result.message);
+        } else if (result.status === 'needs_attention' && ['source_unavailable', 'transcription_failed'].includes(result.reason)) {
           throw new BatchDomainError('conflict', result.message);
         }
         // 内容恢复为同一指纹可继续；发布时用本次核验的文件身份，不能沿用旧选片时的 mtime。
-        const verified = await verifyFormulaCandidate(db, claim.task.projectId, source.assetId, source.contentFingerprint,
-          [{ id: candidate.sourceId, location: candidate.location }], signal);
+        const verified = isFormulaRulesV2(request.rulesVersion)
+          ? await verifyFormulaCandidateCached(db, claim.task.projectId, source.assetId, source.contentFingerprint,
+            [{ id: candidate.sourceId, location: candidate.location }], signal)
+          : await verifyFormulaCandidate(db, claim.task.projectId, source.assetId, source.contentFingerprint,
+            [{ id: candidate.sourceId, location: candidate.location }], signal);
         if (!verified) throw new BatchDomainError('conflict', '原声检查后原片无法核验，请恢复同一内容后重试');
         if (result.status !== 'needs_attention') result = { ...result, sourceId: verified.sourceId };
         signal.throwIfAborted();
         return { commit() {
-          recheckFormulaCandidate(db, claim.task.projectId, verified);
+          if (isFormulaRulesV2(request.rulesVersion)) recheckFormulaCandidateCached(db, claim.task.projectId, verified);
+          else recheckFormulaCandidate(db, claim.task.projectId, verified);
           db.prepare('INSERT INTO live_mixcut_formula_speech_results (stageId,resultJson,createdAt) VALUES (?,?,?)')
             .run(stage.id, JSON.stringify(result), new Date().toISOString());
-          queueFormulaAudioMapping(db, claim.task.projectId, claim.task.batchId!, stage.selectionStageId, request);
+          if (isFormulaRulesV2(request.rulesVersion)) {
+            queueFormulaV2Plan(db, claim.task.projectId, claim.task.batchId!, { id: stage.selectionStageId, planId: stage.planId }, request, output);
+          } else queueFormulaAudioMapping(db, claim.task.projectId, claim.task.batchId!, stage.selectionStageId, request);
           return { resultJson: result, progress: { phase: 'formula_source_speech_done', percent: 1,
             description: result.status === 'transcribed' ? result.manualVerification ? '采用人工核对的台词和时间，等待编排与审片' : '原声台词已识别，等待逐条声音编排与审片'
               : result.status === 'no_speech' ? result.manualVerification ? '人工确认没有人声，等待编排其余声音' : '识别服务未检测到人声，等待编排其余声音'
@@ -223,10 +323,33 @@ export function createFormulaStageExecutor(resolveModel: (request: FormulaGenera
       const existing = db.prepare('SELECT resultJson FROM live_mixcut_formula_selection_results WHERE stageId=?').get(stage.id) as { resultJson: string } | undefined;
       if (existing) return { commit() {
         const result = JSON.parse(existing.resultJson) as FormulaSelection;
+        if (isFormulaRulesV2(request.rulesVersion)) {
+          queueFormulaV2Plan(db, claim.task.projectId, claim.task.batchId!, { id: stage.id, planId: stage.planId }, request, output);
+          return { resultJson: result };
+        }
         queueFormulaSpeech(db, claim.task.projectId, claim.task.batchId!, { ...stage, kind: 'select' }, request, result);
         queueFormulaAudioMapping(db, claim.task.projectId, claim.task.batchId!, stage.id, request);
         return { resultJson: result };
       } };
+    if (isFormulaRulesV2(request.rulesVersion)) {
+      // 新规矩的选片：按轮换取文件、核验实际文件；缺号不停。
+      const result = await selectFormulaOutputV2(db, claim.task.projectId, request, output, signal, {
+        verify: (assetId, contentFingerprint, sources, verifySignal) =>
+          verifyFormulaCandidateCached(db, claim.task.projectId, assetId, contentFingerprint, sources, verifySignal),
+        onProgress: (completed, total) => reportProgress({ phase: 'formula_select', description: '按公式编号核验并选择素材',
+          completed, total, percent: completed / total }),
+      });
+      signal.throwIfAborted();
+      return { commit() {
+        for (const slot of result.slots) if (slot.candidate) recheckFormulaCandidateCached(db, claim.task.projectId, slot.candidate);
+        db.prepare('INSERT INTO live_mixcut_formula_selection_results (stageId,resultJson,createdAt) VALUES (?,?,?)')
+          .run(stage.id, JSON.stringify(result), new Date().toISOString());
+        queueFormulaV2Plan(db, claim.task.projectId, claim.task.batchId!, { id: stage.id, planId: stage.planId }, request, output);
+        return { resultJson: result, progress: { phase: 'formula_select_done', percent: 1,
+          description: result.missingCodes?.length
+            ? `已选定文件；${result.missingCodes.length} 个缺号留给定声音替代` : '已选定文件，等待核验原声与 AI 判断' } };
+      } };
+    }
     const revised = readFormulaStageOverrides(db, stage.id);
     if (stage.revision > 1 && !revised) throw new BatchDomainError('conflict', '这次重选的输入记录缺失，不能沿用旧输入');
     const result = await selectFormulaOutput(db, claim.task.projectId, revised ? { ...request, seed: revised.seed } : request, output, signal, (completed, total) => {

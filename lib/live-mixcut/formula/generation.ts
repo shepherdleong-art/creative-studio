@@ -23,11 +23,15 @@ import { captureFormulaPresentationProject } from './output-presentation.ts';
 import { reactivateBatchForStart } from '../scheduler.ts';
 import { readFormulaManualSpeech } from './manual-speech.ts';
 import { readFormulaReplacementHints } from './replacement-hints-store.ts';
+import { LEGACY_FORMULA_RULES_VERSION, FORMULA_RULES_VERSION, isFormulaRulesV2,
+  type FormulaGenerationRulesVersion } from './rules-version.ts';
 
 export interface FormulaGenerationInput {
   requestKey: string;
   expectedInputRevision: number;
   settingsId: string;
+  /** 不传时按旧规矩建立请求；工作台的生成入口显式传新规矩。 */
+  rulesVersion?: FormulaGenerationRulesVersion;
   signal?: AbortSignal;
 }
 export interface FormulaGenerationOutput {
@@ -36,15 +40,20 @@ export interface FormulaGenerationOutput {
 }
 interface RequestRow {
   id: string; batchVersionId: string; settingsId: string; inputRevision: number;
-  requestKey: string; seed: string; inputJson: string; createdAt: string;
+  requestKey: string; seed: string; inputJson: string; createdAt: string; rulesVersion: string;
 }
 
-function captureInput(db: Database.Database, projectId: string, batchId: string, input: FormulaGenerationInput) {
+function captureInput(db: Database.Database, projectId: string, batchId: string, input: FormulaGenerationInput,
+  rulesVersion: FormulaGenerationRulesVersion) {
   assertFormulaBatch(db, projectId, batchId, true);
   const collection = getFormulaCollection(db, projectId, batchId);
   const view = readFormulaSettings(db, projectId, batchId);
   if (!collection || !view.saved || view.saved.id !== input.settingsId || view.inputRevision !== input.expectedInputRevision
     || view.stale) throw new BatchDomainError('conflict', '脚本、素材或设置已变化，请刷新核对后再生成');
+  // 新规矩没有「只用原声」：声音只认原声＋配音、统一配音两种（任务 14 去掉旧入口）。
+  if (isFormulaRulesV2(rulesVersion) && view.saved.settings.production.audio.mode === 'original') {
+    throw new BatchDomainError('invalid_input', '新规矩不再支持「只用原声」，请把声音方式改成「原声＋配音」或「统一配音」后重新生成');
+  }
   const imports = readFormulaInputs(db, projectId, batchId);
   if (imports.drafts.some(draft => draft.baseRevision === collection.revision)) {
     throw new BatchDomainError('conflict', '有待确认的导入预览，请先确认资料再生成');
@@ -103,6 +112,8 @@ function captureInput(db: Database.Database, projectId: string, batchId: string,
 
 export interface FormulaGenerationRequest {
   id: string; batchVersionId: string; requestKey: string; seed: string; createdAt: string;
+  /** 这批成片按哪一套规矩读和跑；旧请求为 formula-generation/1。 */
+  rulesVersion: FormulaGenerationRulesVersion;
   input: Omit<ReturnType<typeof captureInput>, 'selectionRules' | 'assetRanges' | 'speechService' | 'ttsService' | 'presentationProject' | 'manualSpeech' | 'replacementHints' | 'externalNarrations'> & {
     externalNarrations?: ReturnType<typeof captureInput>['externalNarrations'];
     replacementHints?: ReturnType<typeof captureInput>['replacementHints'];
@@ -125,6 +136,7 @@ export function readFormulaGenerationRequest(db: Database.Database, projectId: s
       planId: string; scriptKey: string; scriptNumber: string; copyIndex: number; slotsJson: string;
     }>;
   return { id: row.id, batchVersionId: row.batchVersionId, requestKey: row.requestKey, seed: row.seed, createdAt: row.createdAt,
+    rulesVersion: row.rulesVersion as FormulaGenerationRulesVersion,
     input: JSON.parse(row.inputJson), outputs: outputs.map(output => ({ planId: output.planId, scriptKey: output.scriptKey,
       scriptNumber: output.scriptNumber, copyIndex: output.copyIndex, slots: JSON.parse(output.slotsJson) })) };
 }
@@ -139,25 +151,30 @@ export async function createFormulaGenerationRequest(db: Database.Database, proj
   }
   input.signal?.throwIfAborted();
   assertFormulaBatch(db, projectId, batchId);
+  const rulesVersion = input.rulesVersion ?? LEGACY_FORMULA_RULES_VERSION;
+  if (rulesVersion !== LEGACY_FORMULA_RULES_VERSION && rulesVersion !== FORMULA_RULES_VERSION) {
+    throw new BatchDomainError('invalid_input', '不支持这次生成的规矩版本');
+  }
   const existing = () => {
     const row = db.prepare('SELECT * FROM live_mixcut_formula_generation_requests WHERE projectId=? AND batchId=? AND requestKey=?')
       .get(projectId, batchId, input.requestKey) as RequestRow | undefined;
     if (!row) return null;
-    if (row.settingsId !== input.settingsId || row.inputRevision !== input.expectedInputRevision) {
+    if (row.settingsId !== input.settingsId || row.inputRevision !== input.expectedInputRevision
+      || row.rulesVersion !== rulesVersion) {
       throw new BatchDomainError('conflict', '同一生成请求标识不能用于不同的输入，请重新发起生成');
     }
     return readFormulaGenerationRequest(db, projectId, batchId, row.id);
   };
   const prior = existing();
   if (prior) return prior;
-  const snapshot = captureInput(db, projectId, batchId, input);
+  const snapshot = captureInput(db, projectId, batchId, input, rulesVersion);
   await checkFormulaMusicSelection(db, snapshot.settings.settings.bgm, input.signal);
   input.signal?.throwIfAborted();
   return db.transaction(() => {
     // 并发点击可能已在文件核验期间提交；先恢复它，再检查草稿是否可写。
     const completed = existing();
     if (completed) return completed;
-    if (JSON.stringify(captureInput(db, projectId, batchId, input)) !== JSON.stringify(snapshot)) {
+    if (JSON.stringify(captureInput(db, projectId, batchId, input, rulesVersion)) !== JSON.stringify(snapshot)) {
       throw new BatchDomainError('conflict', '核验期间输入资料或预设已变化，请刷新核对后再生成');
     }
     const id = randomUUID();
@@ -165,9 +182,9 @@ export async function createFormulaGenerationRequest(db: Database.Database, proj
     const batchVersionId = createBatchProductionVersion(db, batchId, { copyCount: snapshot.settings.totalCopies,
       defaultsJson: { planningMode: 'formula', generationRequestId: id } });
     db.prepare(`INSERT INTO live_mixcut_formula_generation_requests
-      (id,projectId,batchId,collectionId,batchVersionId,settingsId,inputRevision,requestKey,seed,inputJson,createdAt)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(id, projectId, batchId, snapshot.collectionId, batchVersionId, input.settingsId,
-      snapshot.inputRevision, input.requestKey, randomBytes(32).toString('hex'), JSON.stringify(snapshot), now);
+      (id,projectId,batchId,collectionId,batchVersionId,settingsId,inputRevision,requestKey,seed,inputJson,createdAt,rulesVersion)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, projectId, batchId, snapshot.collectionId, batchVersionId, input.settingsId,
+      snapshot.inputRevision, input.requestKey, randomBytes(32).toString('hex'), JSON.stringify(snapshot), now, rulesVersion);
     let seq = 0;
     for (const script of snapshot.scripts) {
       const copies = snapshot.settings.settings.selections.find(item => item.key === script.key)!.copies;

@@ -21,8 +21,11 @@ export interface FormulaSelectionSlot {
   reason: 'exact_code' | 'same_code_stable_choice' | 'same_code_content_choice' | 'manual_primary' | 'manual_slot' | 'manual_unusable' | 'approved_rotation' | 'rotation_unusable' | 'missing_file' | 'undefined' | 'unusable' | 'automatic_replacement' | 'manual_replacement' | 'manual_replacement_unusable';
 }
 export interface FormulaSelection {
-  algorithmVersion: 'formula-selection/1' | 'formula-selection/2' | 'formula-selection/3' | 'formula-selection/4' | 'formula-selection/5'; status: 'selected' | 'needs_attention';
+  algorithmVersion: 'formula-selection/1' | 'formula-selection/2' | 'formula-selection/3' | 'formula-selection/4' | 'formula-selection/5' | 'formula-selection/6';
+  status: 'selected' | 'needs_attention';
   executionReady: false; slots: FormulaSelectionSlot[];
+  /** 新规矩（/6）：公式里没有可用文件的编号；缺号不停，交给定声音替代。 */
+  missingCodes?: string[];
 }
 
 /** 先核验原编号，确实不可用才按冻结资料寻找直接替代；替换始终待审。 */

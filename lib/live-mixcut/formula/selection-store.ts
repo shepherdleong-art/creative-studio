@@ -12,6 +12,8 @@ import { queueFormulaNarration } from './narration-store.ts';
 import { queueFormulaTimeline } from './timeline-store.ts';
 import { materializeFormulaOutput } from './output-store.ts';
 import { repairFormulaExecutionChecks } from './execution-store.ts';
+import { isFormulaRulesV2 } from './rules-version.ts';
+import { queueFormulaV2Plan } from './pipeline-v2.ts';
 
 export interface FormulaStage { id: string; requestId: string; planId: string; kind: 'select'; revision: number }
 const continuationFailures = new WeakMap<Database.Database, Set<string>>();
@@ -26,6 +28,7 @@ export function repairFormulaContinuations(db: Database.Database, onError: (proj
     JOIN live_mixcut_formula_selection_results x ON x.stageId=s.id
     WHERE b.deletedAt IS NULL AND b.controlState='running' AND json_extract(x.resultJson,'$.status')='selected'
       AND s.revision=(SELECT MAX(revision) FROM live_mixcut_formula_stages WHERE planId=s.planId AND kind='select')
+      AND r.rulesVersion<>'formula-generation/2'
       AND (NOT EXISTS (SELECT 1 FROM live_mixcut_formula_audio_mapping_stages a WHERE a.selectionStageId=s.id)
         OR ((json_type(r.inputJson,'$.ttsService')='object' OR EXISTS (
           SELECT 1 FROM json_each(r.inputJson,'$.externalNarrations') ext
@@ -45,9 +48,18 @@ export function repairFormulaContinuations(db: Database.Database, onError: (proj
           WHERE t.kind='timeline' AND t.selectionStageId=s.id AND json_extract(v.resultJson,'$.status')='planned'
             AND NOT EXISTS (SELECT 1 FROM live_mixcut_formula_output_versions o WHERE o.timelineStageId=t.id)))`)
     .all() as Array<{ id: string; projectId: string; batchId: string }>;
+  // 新规矩的批次：选片一完成就由同一套续接往下接；已有的阶段和任务原样沿用，失败任务不自动重试。
+  const v2Requests = db.prepare(`SELECT DISTINCT r.id,r.projectId,r.batchId FROM live_mixcut_formula_generation_requests r
+    JOIN live_mixcut_productions b ON b.id=r.batchId AND b.currentVersionId=r.batchVersionId
+    JOIN live_mixcut_formula_stages s ON s.requestId=r.id AND s.kind='select'
+    JOIN live_mixcut_formula_selection_results x ON x.stageId=s.id
+    WHERE b.deletedAt IS NULL AND b.controlState='running' AND r.rulesVersion='formula-generation/2'
+      AND json_extract(x.resultJson,'$.status')='selected'
+      AND s.revision=(SELECT MAX(revision) FROM live_mixcut_formula_stages WHERE planId=s.planId AND kind='select')`)
+    .all() as Array<{ id: string; projectId: string; batchId: string }>;
   const failures = continuationFailures.get(db) ?? new Set<string>();
   continuationFailures.set(db, failures);
-  for (const request of requests) {
+  for (const request of [...requests, ...v2Requests]) {
     try {
       queueFormulaSelection(db, request.projectId, request.batchId, request.id);
       failures.delete(request.id);
@@ -80,6 +92,10 @@ export function queueFormulaSelection(db: Database.Database, projectId: string, 
         requestKey: `formula:select:${stage.id}` });
       const existing = db.prepare('SELECT resultJson FROM live_mixcut_formula_selection_results WHERE stageId=?').get(stage.id) as { resultJson: string } | undefined;
       if (existing) {
+        if (isFormulaRulesV2(request.rulesVersion)) {
+          queueFormulaV2Plan(db, projectId, batchId, stage, request, output);
+          return taskId;
+        }
         queueFormulaSpeech(db, projectId, batchId, stage, request, JSON.parse(existing.resultJson));
         queueFormulaAudioMapping(db, projectId, batchId, stage.id, request);
         queueFormulaNarration(db, projectId, batchId, stage.id, request);

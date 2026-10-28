@@ -92,7 +92,7 @@ export function describeManualFormulaReplacement(request: FormulaGenerationReque
 
 /** 沿用这次已冻结资料中用户选择的模型；配置变动不能悄悄换到另一模型。 */
 export async function resolveFormulaReplacementModel(request: FormulaGenerationRequest, projectId: string,
-  purpose: 'replacement' | 'audio_mapping' = 'replacement'): Promise<TextJsonModel | null> {
+  purpose: 'replacement' | 'audio_mapping' | 'judgment' = 'replacement'): Promise<TextJsonModel | null> {
   const extraction = [...request.input.sessions].sort((a, b) => Number(b.kind === 'scripts') - Number(a.kind === 'scripts'))
     .map(session => session.extraction as Record<string, unknown> | null).find(item => item?.state === 'completed'
       && typeof item.providerId === 'string' && typeof item.model === 'string');
@@ -100,11 +100,14 @@ export async function resolveFormulaReplacementModel(request: FormulaGenerationR
     && typeof item.profile.provenance.providerId === 'string' && typeof item.profile.provenance.model === 'string');
   const selected = extraction ?? note?.profile?.provenance;
   if (!selected) return null;
+  const label = purpose === 'replacement' ? '缺片替换' : purpose === 'audio_mapping' ? '声音编排' : 'AI 判断';
   let model: TextJsonModel;
   try { model = await resolveTextJsonModel(selected.providerId as string,
-    { refType: `live_mixcut_${purpose}`, refId: request.id }); }
-  catch { throw new BatchDomainError('invalid_input', `${purpose === 'replacement' ? '缺片替换' : '声音编排'}使用的脚本模型不可用，请恢复原模型配置后重试`); }
-  if (model.model !== selected.model) throw new BatchDomainError('conflict', `${purpose === 'replacement' ? '缺片替换' : '声音编排'}的模型已更换，请恢复原模型或重新生成`);
+    { refType: `live_mixcut_${purpose}`, refId: request.id },
+    // AI 判断一次要给 300 条里的长文案和素材排序，默认 4096 tokens 会在返回中途截断。
+    purpose === 'judgment' ? { maxTokens: 16_384, timeoutMs: 180_000 } : undefined); }
+  catch { throw new BatchDomainError('invalid_input', `${label}使用的脚本模型不可用，请恢复原模型配置后重试`); }
+  if (model.model !== selected.model) throw new BatchDomainError('conflict', `${label}的模型已更换，请恢复原模型或重新生成`);
   return model;
 }
 

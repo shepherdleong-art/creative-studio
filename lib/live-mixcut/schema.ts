@@ -13,6 +13,7 @@ import { LIVE_MIXCUT_SCHEMA_V1_SQL } from './schema-v1-sql.ts';
 import { LIVE_MIXCUT_SCHEMA_V2_SQL } from './schema-v2-sql.ts';
 import { LIVE_MIXCUT_SCHEMA_V3_SQL } from './schema-v3-sql.ts';
 import { LIVE_MIXCUT_SCHEMA_V4_SQL } from './schema-v4-sql.ts';
+import { LIVE_MIXCUT_SCHEMA_V5_SQL } from './schema-v5-sql.ts';
 
 export interface LiveMixcutMigration {
   version: number;
@@ -24,6 +25,7 @@ export const LIVE_MIXCUT_MIGRATIONS: ReadonlyArray<LiveMixcutMigration> = [
   { version: 2, sql: LIVE_MIXCUT_SCHEMA_V2_SQL },
   { version: 3, sql: LIVE_MIXCUT_SCHEMA_V3_SQL },
   { version: 4, sql: LIVE_MIXCUT_SCHEMA_V4_SQL },
+  { version: 5, sql: LIVE_MIXCUT_SCHEMA_V5_SQL },
 ];
 
 export type BatchSchemaFailureCode =
