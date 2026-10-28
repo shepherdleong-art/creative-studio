@@ -20,6 +20,8 @@ import { readFormulaManualMedia } from './manual-media.ts';
 import type { FormulaAudioMapping } from './audio-mapping.ts';
 import type { FormulaTimelineResult } from './timeline.ts';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '../../media-core/render-contract.ts';
+import { isLiveMixcutExportedFile, liveMixcutExportRelativeDir,
+  parseLiveMixcutExportedVideo } from '../export-paths.ts';
 
 interface FormulaExportManifestFile { artifactId: string; filename: string; checksum: string }
 export interface FormulaExportManifest {
@@ -160,31 +162,11 @@ export function captureFormulaManifestItem(db: Database.Database, projectId: str
 }
 
 /**
- * 「成片」只看当前这一套：旧版本已挪进旁边的「旧版」，不再写进清单。
- * 一条成片按冻结导出身份（原脚本号、份次、包装）认，跨批次同一条只留最高版本。
- */
-function inCurrentExportFolder(relativePath: string, prefix: string): boolean {
-  const normalized = relativePath.replaceAll('\\', '/');
-  if (!normalized.startsWith(prefix)) return false;
-  const remainder = normalized.slice(prefix.length);
-  return !!remainder && !remainder.includes('/');
-}
-
-function exportedVideoInCurrentSet(relativePath: string, prefix: string): { key: string; version: number } | null {
-  if (!inCurrentExportFolder(relativePath, prefix)) return null;
-  const remainder = relativePath.replaceAll('\\', '/').slice(prefix.length);
-  const match = /^(.*?)(?:-v(\d+))?\.mp4$/u.exec(remainder);
-  if (!match) return null;
-  return { key: `${prefix}${match[1]}`, version: match[2] ? Number(match[2]) : 1 };
-}
-
-/**
  * 一个任务只有一个「成片」文件夹，所以清单按整个任务写，而不是按触发导出的批次。
  * 只列文件夹里的当前这一套（每条成片的当前正式版本），旧版不列。
  */
 export function writeFormulaExportFolderManifest(db: Database.Database, projectId: string): void {
   const task = readLiveMixcutProject(db, projectId);
-  const prefix = `live-mixcut/exports/${task.exportDirName.replaceAll('\\', '/')}/成片/`;
   const requests = new Map<string, FormulaGenerationRequest>();
   const collected: Array<{ key: string; version: number; item: FormulaExportManifest['items'][number] }> = [];
   const indexByKey = new Map<string, number>();
@@ -197,8 +179,8 @@ export function writeFormulaExportFolderManifest(db: Database.Database, projectI
       const formal = card.currentFormalArtifact;
       if (!formal.cover) continue;
       // 上一版已被挪走，正式产物路径同步改到「旧版」；它不属于当前这一套。
-      const current = exportedVideoInCurrentSet(formal.video.relativePath, prefix);
-      if (!current || !inCurrentExportFolder(formal.cover.relativePath, prefix)) continue;
+      const current = parseLiveMixcutExportedVideo(formal.video.relativePath, task.exportDirName);
+      if (!current || !isLiveMixcutExportedFile(formal.cover.relativePath, task.exportDirName)) continue;
       const content = captureFormulaManifestItem(db, projectId, batch.id, card.planId, requests);
       const item = {
         ...content,
@@ -217,7 +199,7 @@ export function writeFormulaExportFolderManifest(db: Database.Database, projectI
     }
   }
   const items = collected.map(entry => entry.item);
-  const directory = path.join(dataRoot(), 'storage', 'live-mixcut', 'exports', task.exportDirName, '成片');
+  const directory = path.join(dataRoot(), 'storage', ...liveMixcutExportRelativeDir(task.exportDirName).split('/'));
   fs.mkdirSync(directory, { recursive: true });
   const destination = path.join(directory, '清单.csv');
   const temporary = `${destination}.${randomUUID()}.tmp`;

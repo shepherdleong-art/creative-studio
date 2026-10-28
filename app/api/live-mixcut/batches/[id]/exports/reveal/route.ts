@@ -7,6 +7,7 @@ import { dataRoot } from '@/lib/data-root';
 import { isSameOriginRequest } from '@/lib/same-origin-request';
 import { assertNoStorageSymlink } from '@/lib/media-core/storage-path';
 import { getLiveMixcutBatchExportDirName } from '@/lib/live-mixcut/batches';
+import { liveMixcutExportRelativeDir } from '@/lib/live-mixcut/export-paths';
 import { assertBatchApiReady } from '@/lib/live-mixcut/runtime-readiness';
 import {
   BATCH_NO_STORE_HEADERS,
@@ -71,7 +72,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const storageRoot = path.join(dataRoot(), 'storage');
     // 与正式发布、工作区和清单使用同一个任务级目录；一个任务只有一个「成片」文件夹。
     const exportDirName = getLiveMixcutBatchExportDirName(getDb(), projectId, id);
-    const relativeDir = path.join('live-mixcut', 'exports', exportDirName, '成片');
+    const relativeDir = liveMixcutExportRelativeDir(exportDirName);
     const directory = assertNoStorageSymlink(storageRoot, relativeDir);
     const stat = fs.statSync(directory);
     if (!stat.isDirectory()) throw new Error('批次成品目录不存在');

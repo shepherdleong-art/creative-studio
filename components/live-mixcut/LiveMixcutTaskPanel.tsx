@@ -9,6 +9,7 @@ import type { BatchSnapshotDetail } from '@/lib/live-mixcut/batch-flow';
 import type { BatchProductionStatus } from '@/lib/live-mixcut/versions';
 import type { BatchTasksView } from '@/lib/live-mixcut/tasks';
 import type { BatchWorkspaceView } from '@/lib/live-mixcut/batch-workspace';
+import { liveMixcutExportRelativeDir } from '@/lib/live-mixcut/export-paths';
 import type { BatchReviewTarget } from '@/lib/live-mixcut/review-context';
 import type { BatchReviewWriteResult } from '@/lib/live-mixcut/review';
 import type { InspectorTab } from './review/types';
@@ -628,7 +629,7 @@ export default function LiveMixcutTaskPanel({ projectId }: LiveMixcutTaskPanelPr
       const bridge = (window as Window & { desktopBridge?: DesktopBridge }).desktopBridge;
       const exportDirName = workspace?.exportDirName;
       if (bridge?.openFolder && exportDirName) {
-        const result = await bridge.openFolder(`storage/live-mixcut/exports/${exportDirName}/成片`);
+        const result = await bridge.openFolder(`storage/${liveMixcutExportRelativeDir(exportDirName)}`);
         if (result.opened) {
           setRevealFeedback({ kind: 'ok', message: '已请求系统打开文件夹' });
         } else {

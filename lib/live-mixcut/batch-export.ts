@@ -6,6 +6,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { dataRoot } from '../data-root.ts';
 import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../media-core/storage-path.ts';
+import { LIVE_MIXCUT_ARCHIVE_FOLDER, liveMixcutExportRelativeDir,
+  liveMixcutVersionName, liveMixcutVersionSuffixPattern } from './export-paths.ts';
 import { computeFingerprintFromFile } from './fingerprint.ts';
 
 /** Export metadata supplied by the batch integration layer. */
@@ -173,20 +175,12 @@ function buildBaseName(identity: BatchExportIdentity): string {
   return `成片-${productCode}-${dateInShanghai(identity.taskDate)}-${sequenceSuffix}`;
 }
 
-const EXPORT_FOLDER = '成片';
-const ARCHIVE_FOLDER = '旧版';
-
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** 首次导出不带后缀；同一套导出身份再导出叫 -v2、-v3。 */
-export function liveMixcutVersionName(exportKey: string, version: number): string {
-  return version > 1 ? `${exportKey}-v${version}` : exportKey;
-}
-
 function exportedFileMatcher(exportKey: string): RegExp {
-  return new RegExp(`^${escapeRegExp(exportKey)}(?:-v(\\d+))?(?:-封面\\.jpg|\\.mp4)$`, 'u');
+  return new RegExp(`^${escapeRegExp(exportKey)}${liveMixcutVersionSuffixPattern()}(?:-封面\\.jpg|\\.mp4)$`, 'u');
 }
 
 function reservationMatcher(exportKey: string): RegExp {
@@ -226,9 +220,9 @@ export function reserveBatchExportTarget(input: BatchExportIdentity & { storageR
   const storageRoot = path.resolve(input.storageRoot ?? path.join(dataRoot(), 'storage'));
   const exportKey = buildBaseName(input);
   // 一个任务只有一个「成片」文件夹；所有批次按同一套导出身份共用版本号。
-  const relativeDir = path.join('live-mixcut', 'exports', input.exportDirName, EXPORT_FOLDER);
+  const relativeDir = liveMixcutExportRelativeDir(input.exportDirName);
   const exportDir = ensureDirectory(storageRoot, relativeDir);
-  const archiveDir = path.join(path.dirname(exportDir), ARCHIVE_FOLDER);
+  const archiveDir = path.join(path.dirname(exportDir), LIVE_MIXCUT_ARCHIVE_FOLDER);
   const fileMatcher = exportedFileMatcher(exportKey);
   const lockMatcher = reservationMatcher(exportKey);
 
@@ -307,7 +301,7 @@ async function archiveEarlierExports(storageRoot: string, target: BatchExportTar
     groups.set(version, [...(groups.get(version) ?? []), name]);
   }
   if (groups.size === 0) return [];
-  const archiveDir = ensureDirectory(storageRoot, toStorageRelativePath(storageRoot, path.join(path.dirname(exportDir), ARCHIVE_FOLDER)));
+  const archiveDir = ensureDirectory(storageRoot, toStorageRelativePath(storageRoot, path.join(path.dirname(exportDir), LIVE_MIXCUT_ARCHIVE_FOLDER)));
   const moves: BatchExportArchivedFile[] = [];
   try {
     for (const version of [...groups.keys()].sort((left, right) => left - right)) {

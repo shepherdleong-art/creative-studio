@@ -1,6 +1,7 @@
 'use client';
 
 import type { BatchWorkspaceView } from '@/lib/live-mixcut/batch-workspace';
+import { liveMixcutExportRelativeDir } from '@/lib/live-mixcut/export-paths';
 
 export interface BatchStepExportProps {
   workspace: BatchWorkspaceView;
@@ -55,7 +56,7 @@ export default function BatchStepExport(props: BatchStepExportProps) {
   const productCodeMissing = !productCode.trim();
   const hasPublished = workspace.cards.some(({ currentFormalArtifact }) => Boolean(currentFormalArtifact));
   const exportFolder = folderRelativePath
-    ?? (hasPublished && workspace.exportDirName ? `storage/live-mixcut/exports/${workspace.exportDirName}/成片` : null);
+    ?? (hasPublished && workspace.exportDirName ? `storage/${liveMixcutExportRelativeDir(workspace.exportDirName)}` : null);
   const selectable = workspace.cards.filter(({ exportEligible }) => exportEligible);
   const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
   const selectedExportCount = selectable.filter(({ planId }) => selectedPlanIds.includes(planId)).length;
