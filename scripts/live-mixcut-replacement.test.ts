@@ -91,7 +91,7 @@ try {
   nameOnly.input.materialIndex.bindings.push(originalBinding);
   nameOnly.input.materialNotes = [originalBinding, candidateBinding].map(binding => ({
     bindingId: binding.id, sourceName: binding.sourceName, logicalCode: binding.logicalCode, excluded: false, available: binding.available,
-    voiceOver: false, analysis: null, inputFingerprint: 'frozen', stale: false,
+    voiceOver: false, inScope: true, analysis: null, inputFingerprint: 'frozen', stale: false,
     source: { bindingId: binding.id, assetId: binding.assetId, contentFingerprint: binding.contentFingerprint, filename: binding.sourceName, logicalCode: binding.logicalCode, table: null },
     profile: { id: `profile-${binding.id}`, revision: 1, inputFingerprint: 'frozen', origin: 'ai', provenance: { basis: 'filename_and_table', visualObservation: false },
       content: { description: binding.logicalCode === 'S29' ? '抗污易清洁' : '用纸擦净污渍', category: '', sellingPoints: [], actions: [], speech: 'unknown',

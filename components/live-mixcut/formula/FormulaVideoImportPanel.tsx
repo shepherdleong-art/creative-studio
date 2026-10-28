@@ -8,9 +8,10 @@ import { fingerprintsEqual } from '@/lib/live-mixcut/fingerprint-format';
 
 type MaterialModel = { id: string; name: string; model: string };
 type NotesView = FormulaMaterialNotesView & { videoProviders?: MaterialModel[] };
-// 口播镜头不看画面；其余素材都要有一段按内容存下的画面分析。
-const pendingNote = (item: FormulaMaterialNoteItem) => item.available && !item.excluded && !item.voiceOver
-  && (!item.profile || (item.stale && item.profile.origin === 'ai'));
+// 与后台「这次要不要分析这一段」一致：口播镜头不看画面；范围外的编号（没选中的脚本用不到）不花钱；
+// 已经看过实际画面的 AI 说明不用重做，只有按文件名整理的说明要补看画面。
+const pendingNote = (item: FormulaMaterialNoteItem) => item.inScope && item.available && !item.excluded && !item.voiceOver
+  && (!item.profile || (item.profile.origin === 'ai' && (item.stale || item.profile.provenance.visualObservation !== true)));
 const toSeconds = (us: number) => (us / 1_000_000).toFixed(1);
 
 async function read<T>(response: Response): Promise<T> {
@@ -92,7 +93,7 @@ function NoteEditor({ item, busy, onSave, onCancel }: { item: FormulaMaterialNot
 function NoteBody({ item }: { item: FormulaMaterialNoteItem }) {
   if (item.voiceOver) return <p className="text-xs text-ink-secondary">口播镜头：不看画面，有效片段按原声的说话起止算。</p>;
   return <>
-    <p className="text-xs text-ink-secondary">{item.profile ? item.profile.origin === 'manual' ? '人工说明' : item.profile.provenance.visualObservation === true ? 'AI 画面分析 · 基于实际抽帧' : 'AI 整理 · 基于文件名与已有资料' : item.analysis ? '已分析画面，说明待写入' : '尚未分析画面'}
+    <p className="text-xs text-ink-secondary">{item.profile ? item.profile.origin === 'manual' ? '人工说明' : item.profile.provenance.visualObservation === true ? 'AI 画面分析 · 基于实际抽帧' : 'AI 整理 · 基于文件名与已有资料' : item.analysis ? '已分析画面，说明待写入' : item.inScope ? '尚未分析画面' : '不在本次范围 · 没被选中的脚本用到'}
       {item.stale ? ' · 来源资料已变化，请核对' : ''}{!item.available ? ' · 视频不可用' : ''}</p>
     {item.analysis && <p className="text-xs text-ink-secondary">有效片段：{toSeconds(item.analysis.usableInUs)} – {toSeconds(item.analysis.usableOutUs)} 秒
       （素材全长 {toSeconds(item.analysis.durationUs)} 秒）</p>}
@@ -265,6 +266,12 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
   const notesById = new Map((notes?.items ?? []).map(item => [item.bindingId, item]));
   const items = notes?.items.filter(item => !item.excluded) ?? [];
   const remaining = items.filter(pendingNote).length;
+  const scope = notes?.analysisScope;
+  const inScope = items.filter(item => item.inScope && item.available && !item.voiceOver);
+  const outOfScope = items.filter(item => !item.inScope && item.available && !item.voiceOver);
+  const scopeHint = scope?.basis === 'selected-scripts'
+    ? `本次只分析第二步选中脚本用到的 ${inScope.length} 段素材；另有 ${outOfScope.length} 段没被选中的脚本用到，不分析也不花钱。`
+    : scope?.basis === 'all-scripts' ? '还没在第二步选中脚本，先按全部脚本用到的素材分析。' : '';
   const missing = index?.codes.filter(code => code.status !== 'available' && (code.defined || code.referencedBy.length)) ?? [];
   const visible = showAll ? bindings : bindings.slice(0, 20);
   const models = notes?.videoProviders;
@@ -286,6 +293,7 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
         {organizing && <button type="button" className="btn-secondary" onClick={() => organizeRef.current?.abort()}>停止本次分析</button>}
       </div>
       <p className="text-xs text-ink-secondary">抽取实际视频画面发送给所选模型，找出有效片段并留一句画面描述，供 AI 判断挑补镜和替代镜头使用；已保存的人工说明保留。口播镜头不做画面分析。同一段素材换批次不会重复分析。此步骤不识别原声。停止后可继续未完成项。</p>
+      {scopeHint && <p className="text-xs text-ink-secondary">{scopeHint}</p>}
       {!models?.length && <p className="text-xs text-ink-secondary">暂时没有可用的画面理解模型，可以先导入视频并手动填写说明。</p>}
       {notes?.run && <p role="status" className="text-sm text-ink-secondary">{running ? '正在分析' : notes.run.state === 'completed' ? '本次分析完成' : '本次分析未全部完成'}：已保存 {notes.run.succeeded} / {notes.run.total} 项，保留已有说明 {notes.run.skipped} 项。{notes.run.message}</p>}
     </div>
@@ -308,7 +316,7 @@ export default function FormulaVideoImportPanel({ projectId, batchId, inputRevis
       <button type="button" className="btn-secondary" disabled={busy} onClick={() => void upload(failures.map(item => item.file))}>重试未完成文件</button>
     </div>}
     {bindings.length > 0 && <p className="text-sm text-ink-secondary">已登记 {bindings.length} 个文件来源 · 待填编号 {bindings.filter(item => !item.logicalCode).length} 个 · 排除预览文件 {bindings.filter(item => item.excludedReason).length} 个</p>}
-    {items.length > 0 && <p className="text-sm text-ink-secondary">正式文件 {items.length} 个 · 已分析画面 {items.filter(item => item.analysis).length} 个 · 已有说明 {items.filter(item => item.profile).length} 个 · 待分析 {remaining} 个 · 需核对 {items.filter(item => item.stale || item.profile?.content.conflicts?.length).length} 个</p>}
+    {items.length > 0 && <p className="text-sm text-ink-secondary">正式文件 {items.length} 个 · 在本次范围内 {inScope.length} 个 · 已分析画面 {items.filter(item => item.analysis).length} 个 · 已有说明 {items.filter(item => item.profile).length} 个 · 待分析 {remaining} 个 · 需核对 {items.filter(item => item.stale || item.profile?.content.conflicts?.length).length} 个</p>}
     {bindings.length > 0 && <div className="grid items-start gap-3 sm:grid-cols-2">{visible.map(binding => {
       const note = notesById.get(binding.id);
       const status = binding.excludedReason ? '预览文件，已排除' : !binding.available ? '文件不可用' : !binding.logicalCode ? '待填编号' : '已复制并核验';

@@ -12,6 +12,7 @@ import { readFormulaProductionOptions, resolveFormulaProductionResources } from 
 import { parseFormulaTimingSettings } from './timing-settings.ts';
 import { readFormulaInputEditing } from './input-editing.ts';
 import { formulaMaterialAnalysisGap, type FormulaMaterialAnalysisGap } from './material-analysis.ts';
+import { readFormulaAnalysisScope } from './analysis-scope.ts';
 
 export interface FormulaSavedSettings {
   id: string; revision: number; scriptsSessionId: string; settings: FormulaSettings; totalCopies: number; createdAt: string;
@@ -25,8 +26,7 @@ export interface FormulaSettingsView {
   materialAnalysis: FormulaMaterialAnalysisGap;
 }
 
-export function readFormulaSettings(db: Database.Database, projectId: string, batchId: string): FormulaSettingsView {
-  const inputs = readFormulaInputs(db, projectId, batchId);
+export function readFormulaSettings(db: Database.Database, projectId: string, batchId: string): FormulaSettingsView {  const inputs = readFormulaInputs(db, projectId, batchId);
   const collection = getFormulaCollection(db, projectId, batchId);
   const record = collection && db.prepare(`SELECT id,revision,scriptsSessionId,contentJson,createdAt FROM live_mixcut_formula_settings
     WHERE collectionId=? ORDER BY revision DESC LIMIT 1`).get(collection.id) as {
@@ -37,12 +37,16 @@ export function readFormulaSettings(db: Database.Database, projectId: string, ba
   const saved = record && settings ? { id: record.id, revision: record.revision, scriptsSessionId: record.scriptsSessionId,
     settings, totalCopies: settings.selections.reduce((total, item) => total + item.copies, 0), createdAt: record.createdAt } : null;
   const editable = readFormulaInputEditing(db, projectId, batchId).editable;
+  const scripts = (inputs.scripts?.rows ?? []).filter((row): row is FormulaScriptRow => 'scriptNumber' in row);
+  // 待分析数按这次选中的脚本算，和「分析画面」的口径一致；还没选脚本时退回全部脚本。
+  const scope = readFormulaAnalysisScope(db, projectId, batchId, scripts);
   return { inputRevision: inputs.revision, scriptsSessionId: inputs.scripts?.sessionId ?? null,
-    scripts: (inputs.scripts?.rows ?? []).filter((row): row is FormulaScriptRow => 'scriptNumber' in row), editable,
+    scripts, editable,
     hasPendingScripts: inputs.drafts.some(draft => draft.kind === 'scripts' && draft.baseRevision === inputs.revision),
     stale: !!saved && saved.scriptsSessionId !== inputs.scripts?.sessionId,
     saved, tracks: listBatchBgmTracks(db), productionOptions: readFormulaProductionOptions(db),
-    materialAnalysis: formulaMaterialAnalysisGap(db, projectId, batchId) };
+    materialAnalysis: scope.codes ? formulaMaterialAnalysisGap(db, projectId, batchId, scope.codes)
+      : formulaMaterialAnalysisGap(db, projectId, batchId) };
 }
 
 export async function saveFormulaSettings(db: Database.Database, projectId: string, batchId: string, input: {

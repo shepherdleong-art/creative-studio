@@ -11,6 +11,7 @@ import { readFormulaSettings } from './settings-store.ts';
 import { getFormulaMaterialIndex } from './material-bindings.ts';
 import { readFormulaMaterialNotes } from './material-notes.ts';
 import { formulaMaterialAnalysisGap } from './material-analysis.ts';
+import { readFormulaAnalysisScope } from './analysis-scope.ts';
 import { resolveFormulaProductionResources } from './production-options.ts';
 import { checkFormulaMusicSelection, selectFormulaMusicPool } from './settings-music.ts';
 import type { FormulaWorkbookPreview } from './workbook.ts';
@@ -61,9 +62,10 @@ function captureInput(db: Database.Database, projectId: string, batchId: string,
   const notes = readFormulaMaterialNotes(db, projectId, batchId);
   if (notes.run?.state === 'running') throw new BatchDomainError('conflict', '素材画面仍在分析，请完成后再生成');
   // 生成前检查：这次要生成的脚本用到的素材必须都分析过画面，不能退回固定掐头去尾。
-  const selectedScripts = new Set(view.saved.settings.selections.map(item => item.key));
-  const gap = formulaMaterialAnalysisGap(db, projectId, batchId, [...new Set(view.scripts
-    .filter(script => selectedScripts.has(script.key)).flatMap(script => script.codes))]);
+  // 口径与「分析画面」一致——只算选中脚本用到的编号。
+  const scope = readFormulaAnalysisScope(db, projectId, batchId, view.scripts);
+  const gap = scope.codes ? formulaMaterialAnalysisGap(db, projectId, batchId, scope.codes)
+    : formulaMaterialAnalysisGap(db, projectId, batchId);
   if (gap.missingSources) {
     const codes = gap.missingCodes.slice(0, 6).join('、') + (gap.missingCodes.length > 6 ? ' 等' : '');
     throw new BatchDomainError('conflict',

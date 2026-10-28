@@ -7,10 +7,12 @@ import { assertFormulaBatch, getFormulaCollection } from './collection-store.ts'
 import { getFormulaMaterialIndex } from './material-bindings.ts';
 import { readFormulaInputs } from './import-store.ts';
 import { assertVideoContentAnalysis, type VideoContentAnalysis, type VideoContentModel } from '../../media-core/adapters/video-analysis.ts';
+import type { FormulaScriptRow } from './workbook.ts';
 import { dataRoot } from '../../data-root.ts';
 import { sanitizeMessage } from '../../log-sanitize.ts';
 import { listAssetSources, resolveSourceFilePath } from '../media-catalog.ts';
 import { verifyFormulaCandidate, recheckFormulaCandidate, type FormulaVerifiedCandidate } from './candidate-media.ts';
+import { inFormulaAnalysisScope, readFormulaAnalysisScope, type FormulaAnalysisScope } from './analysis-scope.ts';
 import {
   formulaAnalysisDescription, listFormulaMaterialAnalyses, saveFormulaMaterialAnalysis,
   type FormulaMaterialAnalysis,
@@ -35,6 +37,8 @@ export interface FormulaMaterialNoteItem {
   bindingId: string; sourceName: string; logicalCode: string | null; excluded: boolean; available: boolean;
   /** 口播镜头：不看画面，有效片段按原声说话起止算。 */
   voiceOver: boolean;
+  /** 在本次「分析画面」的范围内：只有选中的脚本用到的编号才算，没选中的脚本不花钱。 */
+  inScope: boolean;
   inputFingerprint: string; source: MaterialSource; profile: FormulaMaterialProfile | null; stale: boolean;
   /** 这段素材的画面分析（按内容指纹存在项目下，换批次也认得）；界面只需要有效片段和描述。 */
   analysis: FormulaMaterialAnalysisView | null;
@@ -44,7 +48,11 @@ export interface FormulaMaterialOrganizeRun {
   id: string; state: 'running' | 'completed' | 'failed' | 'cancelled'; providerName: string; model: string;
   total: number; succeeded: number; skipped: number; errors: Array<{ bindingId: string; message: string }>; message: string | null;
 }
-export interface FormulaMaterialNotesView { revision: number; items: FormulaMaterialNoteItem[]; run: FormulaMaterialOrganizeRun | null }
+export interface FormulaMaterialNotesView {
+  revision: number; items: FormulaMaterialNoteItem[]; run: FormulaMaterialOrganizeRun | null;
+  /** 这次「分析画面」的范围：只做选中脚本用到的编号。 */
+  analysisScope: FormulaAnalysisScope;
+}
 const RUN_LEASE_MS = 90_000;
 
 /** 上游偶发抖动：一次失败不动结论，留一拍再试一次。被停机打断时不重试。 */
@@ -77,6 +85,8 @@ export function readFormulaMaterialNotes(db: Database.Database, projectId: strin
   const index = getFormulaMaterialIndex(db, projectId, batchId);
   const inputs = readFormulaInputs(db, projectId, batchId);
   const collection = getFormulaCollection(db, projectId, batchId);
+  const scope = readFormulaAnalysisScope(db, projectId, batchId,
+    (inputs.scripts?.rows ?? []).filter((row): row is FormulaScriptRow => 'scriptNumber' in row));
   const runRow = collection ? db.prepare('SELECT * FROM live_mixcut_formula_material_organize_runs WHERE collectionId=? ORDER BY startedAt DESC, rowid DESC LIMIT 1')
     .get(collection.id) as (Omit<FormulaMaterialOrganizeRun, 'errors'> & { errorsJson: string; updatedAt: string }) | undefined : undefined;
   const run: FormulaMaterialOrganizeRun | null = runRow ? { id: runRow.id, state: runRow.state, providerName: runRow.providerName, model: runRow.model,
@@ -92,7 +102,7 @@ export function readFormulaMaterialNotes(db: Database.Database, projectId: strin
       inputFingerprint: row.inputFingerprint, origin: row.origin, content: JSON.parse(row.contentJson), provenance: JSON.parse(row.provenanceJson) });
   }
   const definitions = new Map((inputs.materials?.rows ?? []).flatMap(row => 'logicalCode' in row ? [[row.logicalCode, row] as const] : []));
-  return { revision: index.revision, run, items: index.bindings.map(binding => {
+  return { revision: index.revision, run, analysisScope: scope, items: index.bindings.map(binding => {
     const definition = binding.logicalCode ? definitions.get(binding.logicalCode) : undefined;
     // 只提供内容判断需要的字段；原表中的盘符路径、下载链接等不发给模型。
     const fields = definition ? Object.fromEntries(Object.entries(definition.fields).filter(([key]) =>
@@ -107,6 +117,7 @@ export function readFormulaMaterialNotes(db: Database.Database, projectId: strin
     return { bindingId: binding.id, sourceName: binding.sourceName, logicalCode: binding.logicalCode,
       excluded: Boolean(binding.excludedReason), available: binding.available,
       voiceOver: isVoiceOver(binding.logicalCode ?? ''),
+      inScope: inFormulaAnalysisScope(scope, binding.logicalCode),
       inputFingerprint, source, profile,
       stale: Boolean(profile && profile.inputFingerprint !== inputFingerprint),
       analysis: analysis ? { id: analysis.id, durationUs: analysis.durationUs, usableInUs: analysis.usableInUs,
@@ -152,9 +163,12 @@ export async function organizeFormulaMaterialNotes(db: Database.Database, projec
     if (view.revision !== input.expectedRevision) throw new BatchDomainError('conflict', '素材资料已更新，请刷新后重试');
     if (view.run?.state === 'running') throw new BatchDomainError('conflict', '此批次正在分析画面，请等待完成');
     const collection = getFormulaCollection(db, projectId, batchId);
-    // 口播镜头的有效片段按原声说话起止算，不看画面。
-    const candidates = view.items.filter(item => !item.excluded && item.available && !item.voiceOver);
-    if (!collection || !candidates.length) throw new BatchDomainError('invalid_input', '请先导入可用的正式视频；口播镜头不做画面分析');
+    // 口播镜头的有效片段按原声说话起止算，不看画面；
+    // 只做这次选中脚本用到的编号，没选中的脚本不跟着花钱。
+    const candidates = view.items.filter(item => !item.excluded && item.available && !item.voiceOver && item.inScope);
+    if (!collection || !candidates.length) throw new BatchDomainError('invalid_input', view.analysisScope.basis === 'selected-scripts'
+      ? '选中的脚本没有可分析的画面素材，请检查素材编号，或先在第二步选中脚本'
+      : '请先导入可用的正式视频；口播镜头不做画面分析');
     const active = db.prepare("SELECT count(*) AS count FROM live_mixcut_formula_material_organize_runs WHERE state='running' AND providerId=? AND updatedAt>?")
       .get(model.id, new Date(Date.now() - RUN_LEASE_MS).toISOString()) as { count: number };
     if (active.count >= 2) throw new BatchDomainError('conflict', '此模型已有两批素材在分析画面，请稍后重试');

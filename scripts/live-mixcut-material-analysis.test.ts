@@ -26,6 +26,7 @@ try {
   const { createFormulaImportSession, confirmFormulaImportSession } = await import('../lib/live-mixcut/formula/import-store.ts');
   const { saveFormulaSettings } = await import('../lib/live-mixcut/formula/settings-store.ts');
   const { createFormulaGenerationRequest } = await import('../lib/live-mixcut/formula/generation.ts');
+  const { readFormulaSettings } = await import('../lib/live-mixcut/formula/settings-store.ts');
   const options = { db, ...schemaUpgradeRuntimePaths(root) };
   assert.equal((await checkBatchProductionReadiness(options)).available, true);
   seedLiveMixcutProjects(options, ['p']);
@@ -118,6 +119,46 @@ try {
   assert.deepEqual(pickFormulaUsableRange(rangesOf([{ startUs: 0, endUs: 1_000_000, qualityScore: 0.5 },
     { startUs: 2_000_000, endUs: 4_000_000, qualityScore: 0.5 }])), { inUs: 2_000_000, outUs: 4_000_000 });
   assert.deepEqual(pickFormulaUsableRange(rangesOf([])), { inUs: 0, outUs: 0 });
+
+  // 分析范围按选中脚本收窄：没选中的脚本用到的素材不花模型费。
+  const batchF = createBatchProduction(db, 'p', '第六批', undefined, { planningMode: 'formula' });
+  const navy = await video('navy.mp4', 'navy');
+  const lime = await video('lime.mp4', 'lime');
+  registerFormulaAssetBinding(db, 'p', batchF, { assetId: navy, sourcePath: '素材/G3_选中.mp4' });
+  registerFormulaAssetBinding(db, 'p', batchF, { assetId: lime, sourcePath: '素材/P7_没选中.mp4' });
+  const bookF = new ExcelJS.Workbook();
+  bookF.addWorksheet('脚本').addRows([
+    ['序号', '平台', '镜头数', '预估时长(s)', '画面分镜(逻辑镜号组合)', '脚本文案'],
+    [1, '抖音', 1, 3, 'G3', '这件真好看。'],
+    [2, '抖音', 1, 3, 'P7', '这条不做了。'],
+  ]);
+  const revisionF = readFormulaMaterialNotes(db, 'p', batchF).revision;
+  const scriptsF = await createFormulaImportSession(db, 'p', batchF, { kind: 'scripts', filename: '脚本.xlsx',
+    bytes: Buffer.from(await bookF.xlsx.writeBuffer()), expectedRevision: revisionF });
+  confirmFormulaImportSession(db, 'p', batchF, scriptsF.id, { expectedRevision: revisionF, excludedKeys: [] });
+  let notesF = readFormulaMaterialNotes(db, 'p', batchF);
+  assert.deepEqual([...notesF.analysisScope.codes!].sort(), ['G3', 'P7'], '还没选脚本时先按全部脚本用到的素材');
+  assert.equal(notesF.analysisScope.basis, 'all-scripts');
+  const settingsF = await saveFormulaSettings(db, 'p', batchF, { expectedInputRevision: readFormulaMaterialNotes(db, 'p', batchF).revision,
+    expectedSettingsRevision: 0, scriptsSessionId: scriptsF.id,
+    settings: { selections: [{ key: '1:2', copies: 1 }], bgm: { mode: 'none', trackIds: [] } } });
+  assert.equal(settingsF.saved!.settings.selections.length, 1);
+  notesF = readFormulaMaterialNotes(db, 'p', batchF);
+  assert.deepEqual(notesF.analysisScope, { codes: ['G3'], basis: 'selected-scripts' }, '选中一条脚本后只做它用到的编号');
+  assert.equal(notesF.items.find(item => item.source.assetId === navy)?.inScope, true);
+  assert.equal(notesF.items.find(item => item.source.assetId === lime)?.inScope, false, '没选中的脚本用到的素材不在范围内');
+  const callsF: string[] = [];
+  const visionF = { id: 'scope-vision', name: '范围视觉', model: 'scope/1', analyze: async (input: { assetId: string }) => {
+    callsF.push(input.assetId);
+    return { summary: '深蓝沙发', sellingPoints: [], semanticTags: [], qualityIssues: [], coverFrameTimesUs: [],
+      usableRanges: [{ startUs: 0, endUs: 1_000_000, qualityScore: 0.7 }], scenes: [] };
+  } };
+  notesF = await organizeFormulaMaterialNotes(db, 'p', batchF, { expectedRevision: notesF.revision }, visionF);
+  assert.deepEqual(callsF, [navy], '只分析选中脚本用到的素材，没选中的一次都不调');
+  assert.equal(notesF.run?.total, 1);
+  assert.equal(notesF.run?.succeeded, 1);
+  assert.equal(notesF.items.find(item => item.source.assetId === lime)?.analysis, null);
+  assert.equal(readFormulaSettings(db, 'p', batchF).materialAnalysis.missingSources, 0, '生成前检查与界面计数按同一范围');
 
   // 上游偶发抖动：第一次失败、第二次成功，这条照常算分析好了，并且只算成功一次。
   const batchD = createBatchProduction(db, 'p', '第四批', undefined, { planningMode: 'formula' });
