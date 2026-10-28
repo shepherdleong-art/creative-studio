@@ -693,7 +693,7 @@ export default function BatchUnifiedReviewWorkspace({
   // Global Keyboard Shortcuts (PRD T-06)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (coverEditorOpen || sourceSession || e.defaultPrevented || e.isComposing) return;
+      if (coverEditorOpen || sourceSession || stickerCopySourceId || e.defaultPrevented || e.isComposing) return;
       // Ignore if focus is in input / textarea
       const target = e.target as HTMLElement | null;
       if (
@@ -804,7 +804,7 @@ export default function BatchUnifiedReviewWorkspace({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [coverEditorOpen, sourceSession, selection, selectedPlanId, films, playheadSec, handleMediaEdit, handleDeleteSticker, handleUndo, handleRedo]);
+  }, [coverEditorOpen, sourceSession, stickerCopySourceId, selection, selectedPlanId, films, playheadSec, handleMediaEdit, handleDeleteSticker, handleUndo, handleRedo]);
 
   const approvedCount = films.filter((f) => f.approved).length;
 

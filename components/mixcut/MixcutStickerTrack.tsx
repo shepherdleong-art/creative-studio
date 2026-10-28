@@ -97,6 +97,8 @@ export function MixcutStickerTrack({
     event.stopPropagation();
     onSelect(sticker.id);
     const target = event.currentTarget;
+    // preventDefault 会阻止鼠标默认聚焦；显式聚焦才能从预览 iframe 接收 Delete/Backspace。
+    target.focus({ preventScroll: true });
     const pointerId = event.pointerId;
     const startX = event.clientX;
     const startY = event.clientY;
