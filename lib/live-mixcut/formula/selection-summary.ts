@@ -14,7 +14,7 @@ export interface FormulaReviewMark {
 }
 
 const substitutionSource: Record<string, string> = {
-  'replacement-table': '替换表', 'same-kind': '同类素材', wide: '全景展示', 'wide-experience': '全景体验' };
+  'replacement-table': '替换表', 'same-kind': '同类素材', wide: '全景展示', 'wide-experience': '全景体验', other: '其他素材' };
 
 export interface FormulaSelectionSummary {
   stageId: string; revision: number; replacementCount: number;

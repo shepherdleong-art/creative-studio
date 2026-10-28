@@ -117,7 +117,7 @@ export interface VoicePlanLine {
 
 export interface SchedulingSubstitution {
   replacedCode: string;
-  from: 'replacement-table' | 'same-kind' | 'wide' | 'wide-experience';
+  from: 'replacement-table' | 'same-kind' | 'wide' | 'wide-experience' | 'other';
   file: SchedulingFile;
 }
 

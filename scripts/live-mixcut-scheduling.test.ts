@@ -366,6 +366,56 @@ function baseInput(overrides: Partial<SchedulingInput> & Pick<SchedulingInput, '
   }
 }
 
+// ⑰ 统一配音：文案里逐字写着口播台词，也不能漏读——口播是静音的，这一行必须配音。
+{
+  const vo = material('VO1', [file('VO1', { duration: 8, speech: speech('今天说沙发的坐感', 1, 4) })], { voLine: '今天说沙发的坐感' });
+  const materials = [material('S1', [file('S1')]), vo, material('S2', [file('S2')])];
+  const input = baseInput({
+    script: { scriptNumber: '17', copyIndex: 1, lines: ['钩子一句。', '今天说沙发的坐感。'], codes: ['S1', 'VO1', 'S2'] },
+    materials, voiceMode: 'narration',
+  });
+  const { plan, timeline } = build(input, 2);
+  assert.ok(plan.lines.every(line => line.fate === null), '统一配音不做原声锚行');
+  assert.deepEqual(timeline.sounds.filter(sound => sound.kind === 'narration').map(sound => sound.lineIndexes[0]), [0, 1],
+    '写着口播台词的行照样配音，不能既不放原声又漏掉这一行');
+  assert.equal(timeline.sounds.filter(sound => sound.kind === 'source').length, 0, '统一配音时口播静音');
+  assert.ok(plan.items.some(item => item.kind === 'shot' && item.logicalCode === 'VO1'), '口播只当画面');
+}
+
+// ⑱ 缺号和别的类都没有：最后从其余非口播素材挑，审片说「其他素材」，不冒充同类。
+{
+  const materials = [material('S1', [file('S1')]), material('S2', [file('S2')])];
+  const input = baseInput({ script: { scriptNumber: '18', copyIndex: 1, lines: ['第一句。', '第二句。'], codes: ['S1', 'P1'] }, materials });
+  const { plan, timeline } = build(input, 2);
+  const second = plan.items[1];
+  assert.equal(second.kind, 'shot');
+  if (second.kind === 'shot') {
+    assert.equal(second.substitution?.from, 'other');
+    assert.equal(second.file.assetId, 'S2', '先用本条没用过的其余非口播素材');
+  }
+  assert.ok(timeline.marks.some(mark => mark.type === 'substitute' && mark.replacedCode === 'P1' && mark.from === 'other'));
+}
+
+// ⑲ 片尾：全景都用过了就重复用，不先拿别的普通素材顶。
+{
+  const materials = [material('W1', [file('W1')], { wide: true }), material('S9', [file('S9')])];
+  const input = baseInput({ script: { scriptNumber: '19', copyIndex: 1, lines: ['第一句。', '第二句。', '第三句。'], codes: ['W1'] }, materials });
+  const { timeline } = build(input, 2);
+  const ending = timeline.clips.filter(clip => clip.kind === 'filler' && clip.fillerCause === 'ending');
+  assert.ok(ending.length > 0);
+  assert.ok(ending.every(clip => clip.logicalCode === 'W1'), '全景都用过了重复用，不先拿普通素材');
+}
+
+// ⑳ 片尾：连全景都没有时，退回本条其余非口播素材，片尾不能没画面。
+{
+  const materials = [material('S1', [file('S1')])];
+  const input = baseInput({ script: { scriptNumber: '20', copyIndex: 1, lines: ['第一句。', '第二句。', '第三句。'], codes: ['S1'] }, materials });
+  const { timeline } = build(input, 2);
+  const ending = timeline.clips.filter(clip => clip.kind === 'filler' && clip.fillerCause === 'ending');
+  assert.ok(ending.length > 0);
+  assert.ok(ending.every(clip => clip.logicalCode === 'S1'));
+}
+
 // 估算时长只作参考：字数为 0 时也给一个最短时长。
 assert.ok(estimatedSpeechUs('') >= 600_000);
 

@@ -209,7 +209,10 @@ export function arrangeFormulaTime(input: SchedulingArrangeInput): TimelinePlan 
   }
 
   function endingChooser(): () => SchedulingFile | null {
-    const queue = [...spare, ...widePool, ...wideExperiencePool, ...nonVoPool];
+    // 片尾按确认单：公式里没用上的镜头 → 全景展示 → 全景体验，都用过了就重复用。
+    // 这三类一段都没有时才退回其余非口播素材，保证片尾仍有画面。
+    const preferred = [...spare, ...widePool, ...wideExperiencePool];
+    const queue = preferred.length ? preferred : nonVoPool;
     let index = 0;
     return () => {
       for (let step = 0; step < queue.length; step += 1) {

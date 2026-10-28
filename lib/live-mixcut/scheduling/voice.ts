@@ -210,7 +210,7 @@ function substituteMissingSlots(input: SchedulingInput, items: DraftItem[]): str
     }
     if (!file) {
       file = pickRelatedFile([], pool, used);
-      if (file) item.substitution = { replacedCode: item.code, from: 'same-kind', file };
+      if (file) item.substitution = { replacedCode: item.code, from: 'other', file };
     }
     if (file) used.add(file.assetId);
     else warnings.push(`${item.code} 缺素材，也没有可用的替代镜头`);
@@ -243,8 +243,11 @@ export function assignFormulaVoice(input: SchedulingInput): VoicePlan {
   const slots = buildSlots(input);
   const lines: VoicePlanLine[] = script.lines.map((text, index) => ({ index, text, fate: null }));
 
-  anchorPlannedLines(slots, lines);
-  if (input.voiceMode === 'mixed') anchorSimilarLines(input, slots, lines);
+  // 只有原声＋配音才放原片；统一配音里口播全部静音，锚行会让这一行既没原声也没配音。
+  if (input.voiceMode === 'mixed') {
+    anchorPlannedLines(slots, lines);
+    anchorSimilarLines(input, slots, lines);
+  }
 
   // 公式里的口播按文案用：用到的都放原片，其余不用；一段都没用上时 AI 挑一段。
   const talking = slots.filter(slot => slot.isVo && slot.file);
