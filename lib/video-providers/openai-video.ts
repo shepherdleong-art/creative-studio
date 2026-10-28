@@ -17,6 +17,7 @@ import {
 } from '../company-gateway-tail-frame.ts';
 import { shouldInjectCompanyKlingMultiShot } from '../video-multi-shot.ts';
 import { videoDurationError } from '../video-duration.ts';
+import { companyNativeVideoModel } from '../company-gateway-video-models.ts';
 import type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';
 
 /**
@@ -119,8 +120,18 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     const url = `${cleanBase}/v1/videos`;
     const isQiniuKling = request.model === 'qiniuyun/kling-3.0';
     const isCompanyKling25 = request.model === 'kling-2.5';
+    const nativeModel = companyNativeVideoModel(request.model);
+    const requiresCos = isQiniuKling || nativeModel !== null;
     const durationError = videoDurationError('openai-video', request.model, request.durationSec);
     if (durationError) throw new Error(durationError);
+    let nativeAspectRatio: string | null = null;
+    if (nativeModel?.explicitAspectRatios) {
+      const dims = await probeImageDimensions(request.sourceImagePath);
+      if (!dims) throw new Error('无法读取公司视频首帧尺寸，不能确定输出比例，任务未提交');
+      nativeAspectRatio = snapCompanyVideoAspectRatio(dims.width, dims.height, {
+        tiers: [], ratios: [...nativeModel.explicitAspectRatios],
+      });
+    }
 
     const hasTailImagePath = request.tailImagePath !== undefined;
     const hasTailMimeType = request.tailMimeType !== undefined;
@@ -131,8 +142,8 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     if (tailCapability && !tailCapability.supported) {
       throw new Error(`模型 ${request.model} 不支持首尾帧（不在公司网关尾帧已核验别名内），请移除尾帧图或更换模型`);
     }
-    // 新七牛渠道只经本机 LiteLLM + COS；单首帧也不得回退外部/本机图片 URL。
-    if (isQiniuKling && !hasTailImagePath) await assertCompanyTailFrameTransport(cleanBase);
+    // 新公司渠道只经本机 LiteLLM + COS；单首帧也不得回退外部/本机图片 URL。
+    if (requiresCos && !hasTailImagePath) await assertCompanyTailFrameTransport(cleanBase);
 
     // 网关的 images 字段映射到上游首帧/参考图。上游（腾讯等）只接受可访问的真实 URL。
     // 优先上传腾讯云 COS 返回 24h 预签名 URL（配置 CREATIVE_STUDIO_COS_* 时）；
@@ -158,12 +169,12 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
           getCosVideoCompressOptions(),
         );
       } catch (error) {
-        if (isQiniuKling) throw new Error('七牛可灵首帧上传 COS 失败，任务未提交');
+        if (requiresCos) throw new Error('公司视频首帧上传 COS 失败，任务未提交');
         console.warn('[cos-media] 首帧图上传 COS 失败，回退本机 URL：', error instanceof Error ? error.message : error);
       }
     }
     if (!imageRef) {
-      if (isQiniuKling) throw new Error('七牛可灵首帧上传 COS 未返回可用地址，任务未提交');
+      if (requiresCos) throw new Error('公司视频首帧上传 COS 未返回可用地址，任务未提交');
       const imageResolution = resolvePublicImageUrlWithSource(request.sourceImagePath);
       if (
         !imageResolution
@@ -195,6 +206,19 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
       seconds: String(request.durationSec),
       images: tailProtocol === 'company-gateway-seedance' ? [imageRef, tailImageRef] : [imageRef],
     };
+    if (nativeModel) {
+      // Native roles avoid treating a second image as a reference. Pixel size is
+      // deliberately omitted. Wan requires an explicit ratio derived from the frame.
+      delete body.images;
+      body.FileInfos = [
+        { Type: 'Url', Category: 'Image', Url: imageRef, Usage: 'FirstFrame' },
+        ...(tailImageRef ? [{ Type: 'Url', Category: 'Image', Url: tailImageRef, Usage: 'LastFrame' }] : []),
+      ];
+      body.OutputConfig = {
+        Duration: request.durationSec, Resolution: nativeModel.resolution,
+        ...(nativeAspectRatio ? { AspectRatio: nativeAspectRatio } : {}),
+      };
+    }
     if (tailProtocol === 'company-gateway-kling') {
       body.LastFrameUrl = tailImageRef;
     }

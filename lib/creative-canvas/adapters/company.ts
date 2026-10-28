@@ -12,10 +12,12 @@ import { videoDurationError } from '../../video-duration.ts';
 
 import sharp from 'sharp';
 import type Database from 'better-sqlite3';
-import { snapCompanyImageSize, companyImageCapsForModel, companyVideoCapsForModel, snapCompanyVideoSize } from '../../company-gateway-size.ts';
+import { snapCompanyImageSize, companyImageCapsForModel, companyVideoCapsForModel, snapCompanyVideoSize, snapCompanyVideoAspectRatio } from '../../company-gateway-size.ts';
+import { companyNativeVideoModel } from '../../company-gateway-video-models.ts';
+import { isLoopbackLiteLlmUrl } from '../../provider-execution-gate.ts';
 import { downloadGatewayMedia, normalizeGatewayResultUrl, sanitizeGatewayMediaDiagnostic } from '../../gateway-media-url.ts';
 import { resolveGptImage2Size } from '../../gpt-image-2-size-presets.ts';
-import { findCanvasCapability, type CanvasModelCapability } from '../capabilities.ts';
+import { findCanvasCapability, validateCapabilityInputs, type CanvasModelCapability } from '../capabilities.ts';
 import {
   COMPANY_CANVAS_SEEDANCE_2_5_CAPABILITY,
   COMPANY_CANVAS_QINIUYUN_KLING_CAPABILITY,
@@ -142,14 +144,55 @@ function isCompanyCapability(capability: CanvasModelCapability): boolean {
   return capability.providerKind === 'company';
 }
 
-function inputRuleFor(capability: CanvasModelCapability, input: CanvasResolvedInput) {
+function inputRuleFor(capability: CanvasModelCapability, input: CanvasResolvedInput, mode: CanvasTaskContext['generationMode']) {
   const kind = input.kind === 'text' ? 'text' : input.kind;
-  const candidates = capability.inputs.filter((rule) => rule.kind === kind);
+  const candidates = capability.inputs.filter((rule) => rule.kind === kind && (!rule.modes || rule.modes.includes(mode)));
   return candidates.find((rule) => rule.roles.includes(input.role)) ?? null;
 }
 
 function isFrameRole(role: string): boolean {
   return role === 'first-frame' || role === 'last-frame';
+}
+
+/** Recheck frozen inputs before delivery and POST; never silently discard unsupported inputs. */
+async function nativeVideoOutputConfig(capability: CanvasModelCapability, context: CanvasTaskContext, route: CanvasProviderRoute) {
+  const contract = companyNativeVideoModel(capability.modelAlias);
+  if (!contract) return null;
+  if (!isLoopbackLiteLlmUrl(route.baseUrl)) {
+    throw new CanvasAdapterError('prepare', '公司供应商必须通过本机 LiteLLM 地址访问', { code: 'provider_route_invalid' });
+  }
+  const problems = validateCapabilityInputs({
+    capability, mode: context.generationMode, refs: context.inputs,
+    parameters: context.parameters,
+  });
+  if (problems.length) {
+    throw new CanvasAdapterError('prepare', problems.map((problem) => problem.message).join('；'), { code: 'invalid_native_video_input' });
+  }
+  const output: Record<string, string | number> = {
+    Duration: Number(context.parameters.durationSec ?? 5), Resolution: String(context.parameters.resolution ?? contract.resolution),
+  };
+  for (const kind of ['video', 'audio'] as const) {
+    const refs = context.inputs.filter((input) => input.kind === kind);
+    if (refs.some((input) => input.durationSec === null || !Number.isFinite(input.durationSec)
+      || input.durationSec < contract.referenceMinDurationSec || input.durationSec > 15)) {
+      throw new CanvasAdapterError('prepare', `参考${kind === 'video' ? '视频' : '音频'}每段需为 ${contract.referenceMinDurationSec}–15 秒。`, { code: 'invalid_reference_duration' });
+    }
+    const total = refs.reduce((sum, input) => sum + (input.durationSec ?? 0), 0);
+    if (total > 15 || (capability.modelAlias === 'wan-3.0' && kind === 'video' && total + Number(output.Duration) > 30)) {
+      throw new CanvasAdapterError('prepare', '参考音视频各自总长不能超过 15 秒；Wan 输入视频加输出不能超过 30 秒。', { code: 'invalid_reference_duration' });
+    }
+  }
+  if (context.generationMode !== 'image-to-video') {
+    output.AspectRatio = String(context.parameters.aspectRatio ?? '16:9');
+  } else if (contract.explicitAspectRatios) {
+    const first = context.inputs.find((input) => input.kind === 'image' && input.role === 'first-frame');
+    const dims = first?.absolutePath ? await probeImageDimensions(first.absolutePath) : null;
+    if (!dims) throw new CanvasAdapterError('prepare', '无法读取首帧尺寸，任务未提交。', { code: 'missing_output_ratio' });
+    const ratio = snapCompanyVideoAspectRatio(dims.width, dims.height, { tiers: [], ratios: [...contract.explicitAspectRatios] });
+    if (!ratio) throw new CanvasAdapterError('prepare', '无法确定首帧比例，任务未提交。', { code: 'missing_output_ratio' });
+    output.AspectRatio = ratio;
+  }
+  return output;
 }
 
 export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions): CanvasTaskAdapter {
@@ -188,7 +231,8 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
 
     async prepare(context, signal) {
       const capability = findGatewayCapability(context.capabilityKey);
-      routeFor(context);
+      const route = routeFor(context);
+      await nativeVideoOutputConfig(capability, context, route);
 
       const mediaInputs = context.inputs.filter((input) => input.kind !== 'text');
       // COS 强交付是公司渠道的红线；外部网关按自己的可达地址交付
@@ -197,7 +241,7 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
       const hasTailRole = mediaInputs.some((input) => input.role === 'last-frame');
 
       for (const input of mediaInputs) {
-        const rule = inputRuleFor(capability, input);
+        const rule = inputRuleFor(capability, input, context.generationMode);
         if (!rule) {
           throw new CanvasAdapterError(
             'prepare',
@@ -257,10 +301,11 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
     async submit(context, signal) {
       const capability = findGatewayCapability(context.capabilityKey);
       const route = routeFor(context);
+      const nativeOutput = await nativeVideoOutputConfig(capability, context, route);
       const mediaInputs = context.inputs.filter((input) => input.kind !== 'text');
       const imageInputs = mediaInputs.filter((input) => input.kind === 'image');
       const imageRefs = imageInputs.map((input) => input.deliveryRef ?? '');
-      if (imageRefs.some((ref) => !ref)) {
+      if ((nativeOutput ? mediaInputs : imageInputs).some((input) => !input.deliveryRef)) {
         throw new CanvasAdapterError('submit', '素材交付地址缺失，任务未提交。', { code: 'delivery_ref_missing' });
       }
       const lastFrameInput = imageInputs.find((input) => input.role === 'last-frame') ?? null;
@@ -298,6 +343,21 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
       } else {
         if (bodyImageRefs.length > 0) body.images = bodyImageRefs;
         body.seconds = String(context.parameters.durationSec ?? 5);
+        if (nativeOutput) {
+          delete body.images;
+          const frames = ['first-frame', 'last-frame'].flatMap((role) => {
+            const input = imageInputs.find((entry) => entry.role === role);
+            return input ? [{ Type: 'Url', Category: 'Image', Url: input.deliveryRef,
+              Usage: role === 'first-frame' ? 'FirstFrame' : 'LastFrame' }] : [];
+          });
+          if (context.generationMode === 'image-to-video') body.FileInfos = frames;
+          else if (context.generationMode === 'reference-to-video') {
+            body.FileInfos = mediaInputs.map((input) => ({ Type: 'Url',
+              Category: input.kind === 'image' ? 'Image' : input.kind === 'video' ? 'Video' : 'Audio',
+              Url: input.deliveryRef, Usage: 'Reference' }));
+          }
+          body.OutputConfig = nativeOutput;
+        }
 
         const isQiniuKling = companyModel
           && capability.modelAlias === COMPANY_CANVAS_QINIUYUN_KLING_CAPABILITY.modelAlias;

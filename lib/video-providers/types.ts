@@ -4,6 +4,7 @@ export type TailFrameProtocol =
   | 'ark-content-roles'
   | 'company-gateway-kling'
   | 'company-gateway-qiniuyun-kling'
+  | 'company-gateway-tencent-file-infos'
   | 'company-gateway-seedance';
 
 export interface TailFrameCapability {

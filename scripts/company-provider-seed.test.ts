@@ -71,6 +71,8 @@ try {
     assert.deepEqual(preserved, { name: '用户自定义', enabled: 0 });
   }
   for (const [id, model] of [
+    ['company-minimax-h3', 'minimax-h3'],
+    ['company-wan-3-0', 'wan-3.0'],
     ['company-kling-2-5', 'kling-2.5'],
     ['company-kling-3-0', 'kling-3.0'],
     ['company-qiniuyun-kling-3-0', 'qiniuyun/kling-3.0'],
@@ -83,6 +85,15 @@ try {
     assert.equal(row.defaultModel, model);
     assert.equal(row.enabled, 1);
     assert.deepEqual(getVideoProviderConfigState(row as never), { configured: true, missing: [] });
+  }
+
+  for (const id of ['company-minimax-h3', 'company-wan-3-0']) {
+    db.prepare('UPDATE video_providers SET enabled = 0, name = ?, apiKey = ?, baseUrl = ?, defaultModel = ? WHERE id = ?')
+      .run('custom', 'custom-key', 'https://custom.example', 'custom-model', id);
+    seedAllVideo();
+    assert.deepEqual(db.prepare('SELECT name, enabled, apiKey, baseUrl, defaultModel FROM video_providers WHERE id = ?').get(id), {
+      name: 'custom', enabled: 0, apiKey: 'custom-key', baseUrl: 'https://custom.example', defaultModel: 'custom-model',
+    });
   }
 
   // 脚本：GPT 内置供应商指向公司模型（company scope + 视觉）

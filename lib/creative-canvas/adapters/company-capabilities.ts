@@ -15,6 +15,7 @@
 import { companyVideoCapsForModel } from '../../company-gateway-size.ts';
 import { companyGatewayTailFrameCapability } from '../../company-gateway-tail-frame.ts';
 import { videoDurationOptions } from '../../video-duration.ts';
+import { companyNativeVideoModel } from '../../company-gateway-video-models.ts';
 import type { CanvasModelCapability } from '../capabilities.ts';
 
 /**
@@ -174,12 +175,52 @@ export const COMPANY_CANVAS_KLING_3_0_CAPABILITY: CanvasModelCapability = {
   evidenceNote: 'LastFrameUrl + OutputConfig 合同来自 2026-08-17／18 真实任务；画布侧映射本轮由请求捕获验证。',
 };
 
+/** Main workbench paid samples establish the wire contract; Canvas execution stays mapped. */
+export const COMPANY_CANVAS_NATIVE_VIDEO_CAPABILITIES: ReadonlyArray<CanvasModelCapability> = (
+  ['minimax-h3', 'wan-3.0'] as const
+).map<CanvasModelCapability>((modelAlias) => {
+  const contract = companyNativeVideoModel(modelAlias)!;
+  const providerIdentity = modelAlias === 'minimax-h3' ? 'company-minimax-h3' : 'company-wan-3-0';
+  return {
+    key: `${providerIdentity}:tencent-file-infos-v1`,
+    displayName: modelAlias === 'minimax-h3' ? '公司 MiniMax H3 · 2K' : '公司万相 Wan 3.0 · 1080p',
+    providerKind: 'company', providerIdentity, modelAlias, mediaKind: 'video',
+    modes: ['text-to-video', 'image-to-video', 'reference-to-video'],
+    inputs: [
+      { kind: 'image', roles: ['first-frame'], min: 1, max: 1, modes: ['image-to-video'] },
+      { kind: 'image', roles: ['last-frame'], min: 0, max: 1, modes: ['image-to-video'] },
+      { kind: 'image', roles: ['reference', 'subject', 'product', 'style', 'scene'], min: 0, max: contract.referenceImageCount,
+        modes: ['reference-to-video'], mimeTypes: ['image/png', 'image/jpeg'], maxBytes: 10 * 1024 * 1024 },
+      { kind: 'video', roles: ['reference', 'camera'], min: 0, max: contract.referenceMediaCount,
+        modes: ['reference-to-video'], mimeTypes: ['video/mp4', 'video/quicktime'], maxBytes: contract.referenceVideoMaxBytes, maxDurationSec: 15 },
+      { kind: 'audio', roles: ['audio'], min: 0, max: contract.referenceMediaCount,
+        modes: ['reference-to-video'], mimeTypes: ['audio/mpeg', 'audio/wav', 'audio/x-wav'], maxBytes: 15 * 1024 * 1024, maxDurationSec: 15 },
+      { kind: 'text', roles: ['reference'], min: 0, max: 1 },
+    ],
+    mediaInputMinimums: [{ modes: ['reference-to-video'], min: 1 }],
+    parameters: [
+      { key: 'durationSec', label: '时长（秒）', type: 'integer', min: contract.minDurationSec, max: contract.maxDurationSec, default: 5 },
+      { key: 'resolution', label: '分辨率', type: 'enum', options: contract.resolutions, default: contract.resolution },
+      { key: 'aspectRatio', label: '比例', type: 'enum', options: contract.aspectRatios, default: '16:9', modes: ['text-to-video', 'reference-to-video'] },
+    ],
+    modeLabels: { 'image-to-video': '图生视频（首尾帧）', 'reference-to-video': '参考生视频' },
+    modeHints: {
+      'text-to-video': '只填写提示词，并选择输出比例。',
+      'image-to-video': '第一张图为首帧，第二张为可选尾帧；按参考列表排序，输出比例跟随首帧。',
+      'reference-to-video': `最多 ${contract.referenceImageCount} 张图片、${contract.referenceMediaCount} 段视频、${contract.referenceMediaCount} 段音频；视频和音频各自总长不超过 15 秒。参考素材不锁定首尾帧。`,
+    },
+    cancellation: false, evidence: 'mapped',
+    evidenceNote: '首尾帧合同已有 2026-10-28 公司通道付费样例；文生、参考生与清晰度选项按原厂及腾讯 FileInfos / OutputConfig 文档映射，未实测组合不作效果保证。',
+  };
+});
+
 export const COMPANY_CANVAS_CAPABILITIES: ReadonlyArray<CanvasModelCapability> = [
   COMPANY_CANVAS_IMAGE2_CAPABILITY,
   COMPANY_CANVAS_QINIUYUN_KLING_CAPABILITY,
   COMPANY_CANVAS_SEEDANCE_2_5_CAPABILITY,
   COMPANY_CANVAS_SEEDANCE_2_0_FAST_CAPABILITY,
   COMPANY_CANVAS_KLING_3_0_CAPABILITY,
+  ...COMPANY_CANVAS_NATIVE_VIDEO_CAPABILITIES,
 ];
 
 /** Existing company route and billing evidence do not prove the Canvas creation contract. Not registered. */
@@ -192,7 +233,8 @@ export const COMPANY_CANVAS_SEEDANCE_2_0_CANDIDATE: CanvasModelCapability = {
 
 /** 必须走 COS 预签名交付的公司模型（缺 COS 时 fail closed，不回退本机 URL）。 */
 export function companyCanvasModelRequiresCos(modelAlias: string): boolean {
-  return modelAlias.startsWith('qiniuyun/') || modelAlias === 'nano-banana-3.0' || modelAlias === 'nano-banana-3.1';
+  return modelAlias.startsWith('qiniuyun/') || modelAlias === 'nano-banana-3.0' || modelAlias === 'nano-banana-3.1'
+    || companyNativeVideoModel(modelAlias) !== null;
 }
 
 /** 公司尾帧协议按精确别名判定（与 company-gateway-tail-frame 的 allowlist 保持一致）。 */

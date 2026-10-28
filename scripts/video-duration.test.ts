@@ -9,6 +9,11 @@ for (const [type, model, min, max] of [
   ['openai-video', 'doubao-seedance-2-0-fast-260128', 4, 15],
   ['openai-video', 'kling-3.0', 3, 15], ['openai-video', 'qiniuyun/kling-3.0', 3, 15], ['kling', 'kling-v3', 3, 15],
   ['openai-video', 'sora-2', 2, 15],
+  ['openai-video', 'minimax-h3', 4, 15],
+  ['openai-video', 'wan-3.0', 2, 30],
+  ['openai-video', 'minimax-h3-max', 2, 15],
+  ['openai-video', 'wan-3.0-prime', 2, 15],
+  ['kling', 'wan-3.0', 2, 15],
 ] as const) {
   const options = videoDurationOptions(type, model);
   assert.deepEqual([options[0], options[options.length - 1]], [min, max]);

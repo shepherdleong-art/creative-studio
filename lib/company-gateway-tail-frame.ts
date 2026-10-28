@@ -48,6 +48,10 @@ import type { TailFrameCapability, TailFrameProtocol } from './video-providers/t
 
 /** 有文档或实测依据的精确模型别名 → 尾帧协议；禁止宽泛正则，证据范围见上。 */
 const COMPANY_TAIL_FRAME_MODEL_PROTOCOLS: Record<string, TailFrameProtocol> = {
+  // 2026-10-28 paid 4:3 first/last-frame tests confirmed endpoint composition for both.
+  // FileInfos uses explicit Usage roles; see the dated integration record for limits.
+  'minimax-h3': 'company-gateway-tencent-file-infos',
+  'wan-3.0': 'company-gateway-tencent-file-infos',
   'kling-2.5': 'company-gateway-kling',
   'kling-3.0': 'company-gateway-kling',
   // 2026-09-10 真实任务：images[0] 首帧 + end_image_url 尾帧；见当日验证记录。

@@ -27,7 +27,7 @@ db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path) VALUE
 db.prepare(`INSERT INTO shot_sets (id, projectId, name) VALUES ('set','project','test')`).run();
 db.prepare(`INSERT INTO shots (id, shotSetId, sourceImageId, indexNum) VALUES ('shot','set','image',1)`).run();
 for (const [id, model] of [['sd25','doubao-seedance-2-5-260628'], ['sd20','doubao-seedance-2-0-260128'],
-  ['fast','doubao-seedance-2-0-fast-260128'], ['kling','kling-3.0'], ['qiniu','qiniuyun/kling-3.0'], ['k25','kling-2.5']]) {
+  ['fast','doubao-seedance-2-0-fast-260128'], ['kling','kling-3.0'], ['qiniu','qiniuyun/kling-3.0'], ['k25','kling-2.5'], ['h3','minimax-h3'], ['wan3','wan-3.0']]) {
   db.prepare(`INSERT INTO video_providers (id, name, type, defaultModel, baseUrlEnv, apiKeyEnv, modelEnv, baseUrl, apiKey, enabled) VALUES (?, ?, 'openai-video', ?, '', '', '', 'http://invalid.test', 'test-key', 1)`).run(id, id, model);
 }
 const dependencies: Record<string, unknown> = {
@@ -62,7 +62,7 @@ async function submit(handler: typeof single, body: unknown) {
   return handler(new Request('http://localhost/test', { method: 'POST', body: JSON.stringify(body) }), { params: Promise.resolve({ id: 'set' }) });
 }
 try {
-  for (const [providerId, min, max] of [['sd25',4,30], ['sd20',4,15], ['fast',4,15], ['kling',3,15], ['qiniu',3,15], ['k25',5,10]] as const) {
+  for (const [providerId, min, max] of [['sd25',4,30], ['sd20',4,15], ['fast',4,15], ['kling',3,15], ['qiniu',3,15], ['k25',5,10], ['h3',4,15], ['wan3',2,30]] as const) {
     for (const seconds of [2, 3, 4, 5, 7, 10, 11, 15, 16, 30, 31, 100, min, max, min - 1, max + 1, 4.5, 10.5, 'bad', null, '']) {
       const valid = typeof seconds === 'number' && Number.isInteger(seconds)
         && (providerId === 'k25' ? seconds === 5 || seconds === 10 : seconds >= min && seconds <= max);

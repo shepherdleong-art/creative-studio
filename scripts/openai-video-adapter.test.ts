@@ -406,6 +406,61 @@ try {
   delete process.env.CREATIVE_STUDIO_PUBLIC_BASE_URL;
   _resetCosMediaCacheForTest();
 
+  for (const [model, resolution, min, max] of [
+    ['minimax-h3', '2K', 4, 15], ['wan-3.0', '1080P', 2, 30],
+  ] as const) {
+    assert.deepEqual(openaiVideoAdapter.tailFrameCapability?.(model), {
+      supported: true, protocol: 'company-gateway-tencent-file-infos',
+    });
+    for (const tail of [false, true]) {
+      const request = {
+        model, prompt: 'native frame roles', sourceImagePath: imagePath,
+        sourceMimeType: 'image/png' as const, durationSec: max, multiShot: true,
+        ...(tail ? { tailImagePath, tailMimeType: 'image/png' as const } : {}),
+      };
+      await openaiVideoAdapter.submit(request, 'gateway-key', 'http://127.0.0.1:4000');
+      assert.equal(capturedBody?.model, model);
+      assert.equal(capturedBody?.seconds, String(max));
+      assert.deepEqual(capturedBody?.OutputConfig, {
+        Duration: max, Resolution: resolution, ...(model === 'wan-3.0' ? { AspectRatio: '4:3' } : {}),
+      });
+      const frames = capturedBody?.FileInfos as Array<{ Type: string; Category: string; Usage: string; Url: string }>;
+      assert.deepEqual(frames.map(frame => frame.Usage), tail ? ['FirstFrame', 'LastFrame'] : ['FirstFrame']);
+      for (const frame of frames) {
+        assert.equal(frame.Type, 'Url');
+        assert.equal(frame.Category, 'Image');
+        assert.match(frame.Url, /^https:\/\/cos\.example\.com\//);
+        assert.match(frame.Url, /q-signature=/);
+      }
+      if (tail) assert.notEqual(frames[0].Url, frames[1].Url);
+      for (const field of ['images', 'size', 'LastFrameUrl', 'multi_shot', 'shot_type', 'response_format']) {
+        assert.equal(capturedBody?.[field], undefined, `${model}: must not inherit Kling field ${field}`);
+      }
+      const before = capturedMethods.length;
+      if (model === 'wan-3.0') {
+        await assert.rejects(openaiVideoAdapter.submit({ ...request, sourceImagePath: outsideImagePath },
+          'gateway-key', 'http://127.0.0.1:4000'), /无法读取公司视频首帧尺寸/);
+      }
+      for (const durationSec of [min - 1, max + 1, 4.5, NaN]) {
+        await assert.rejects(openaiVideoAdapter.submit({ ...request, durationSec }, 'gateway-key', 'http://127.0.0.1:4000'), /视频时长/);
+      }
+      await assert.rejects(openaiVideoAdapter.submit(request, 'gateway-key', 'https://external.example.com'), /LiteLLM/);
+      const savedSecret: string | undefined = process.env.CREATIVE_STUDIO_COS_SECRET_KEY;
+      try {
+        delete process.env.CREATIVE_STUDIO_COS_SECRET_KEY;
+        _resetCosMediaCacheForTest();
+        await assert.rejects(openaiVideoAdapter.submit(request, 'gateway-key', 'http://127.0.0.1:4000'), /CREATIVE_STUDIO_COS/);
+      } finally {
+        process.env.CREATIVE_STUDIO_COS_SECRET_KEY = savedSecret;
+        _resetCosMediaCacheForTest();
+      }
+      assert.equal(capturedMethods.length, before, 'Invalid duration/transport must fail before network I/O');
+    }
+  }
+  for (const model of ['MiniMax-H3', 'minimax-h3-max', 'wan-3.0-prime', 'wan-3.0-unknown']) {
+    assert.equal(openaiVideoAdapter.tailFrameCapability?.(model).supported, false);
+  }
+
   // 可灵 3.0 尾帧（2026-08-17 实测合同）：images 只放首帧，尾帧走腾讯原生
   // LastFrameUrl，比例走 OutputConfig.AspectRatio，size 在首尾帧模式被忽略不发送；
   // 时长走 OutputConfig.Duration（2026-08-18 实测：网关 LastFrameUrl 分支不透传

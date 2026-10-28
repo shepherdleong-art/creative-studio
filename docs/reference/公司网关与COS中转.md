@@ -39,6 +39,8 @@ Seedream 5.0 Pro 同步生图的应用超时单独沿用项目 `timeoutMs`，默
 
 ## `seed.ts` — 公司供应商开箱即用补种
 
+公司 `minimax-h3` / `wan-3.0` 复用可灵 Key 与 `/v1/videos` 腾讯透传通道，使用 `FileInfos` 显式首尾帧角色和 `OutputConfig`；工作台分别默认 2K / 1080P，时长分别 4–15 / 2–30 秒。单帧与双帧都要求回环 LiteLLM + COS，不传可灵智能分镜字段。Wan 必须显式传 `OutputConfig.AspectRatio`（首帧吸附五种标准比例，adaptive 创建前 400）；H3 省略比例。各一条 4:3 双帧真实任务已确认首尾构图收束：H3 请求 4 秒实返 1920×1440 / 4.459 秒，Wan 请求 2 秒实返 1662×1246 / 视频轨道 2 秒。证据与未验收边界见 [2026-10-28 接入记录](../2026-10-28-MiniMaxH3与Wan3公司模型接入.md)。
+
 - `seed.ts` — 启动时向 `providers` / `video_providers` / `script_providers` 写入内置供应商预设。公司供应商（图片 `image2-medium`、`qiniuyun/gpt-image-2-medium`，视频 `kling-3.0` / `doubao-seedance-2-0-fast-260128` / `doubao-seedance-2-5-260628`，脚本 `GPT-5-6-Luna-Standard`）以 `http://127.0.0.1:4000` + 占位 Key 开箱即用补种（本机 LiteLLM 不校验调用方 Bearer，上游真实 Key 由 `config.yaml` 持有）；只按 canonical ID 补缺，手工同模型行可并存，已有 canonical 行的用户连接、模型与启用状态不被覆盖。Seedance 2.5 尾帧 2026-09-08 开放并同日两条真实任务复核（`company-gateway-tail-frame.ts` allowlist，协议同 2.0 的 images[1] 双图）。结论：网关对 seedance 任务**不按像素锚定首帧**——单图任务（2.0 fast 与 2.5 相同，四条任务首帧比对）按参考图模式重构图生成，真人脸按参考图规则审核拦截；2.5 双图按「双参考图+提示词」处理：不送 size 时比例自选（3:4 图出 9:16 片）落 720p 默认；送 1080p size 后正常接受（无 400）、出 1248x1664 锁 3:4、末帧构图≈尾帧图（标注文字正确过渡），首帧仍重构。当前 2.5 与 2.0 标准版单双图都送 1080p size，2.0 fast 单双图显式送方舟 720p size；Fast 历史双图验证使用省略 size 的请求（2026-08-17），显式 720p 为后续配置调整。像素级锚定首尾帧需网关支持显式 role，待网关侧确认。豆包 TTS 由 final-edit schema 预置，真实 Key 从 `.env.local` 读取；0.6.0 免安装版的脚本调度器变量固定为 `CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER=1`。
 
 ## 红线（这几条同时留在 AGENTS.md）
