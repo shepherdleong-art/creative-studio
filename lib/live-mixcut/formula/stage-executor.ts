@@ -20,6 +20,8 @@ import {
   type FormulaJudgmentStageResult, type FormulaVoiceStageResult, type FormulaVoiceNarrationStageResult,
 } from './pipeline-v2.ts';
 import { verifyFormulaCandidateCached, recheckFormulaCandidateCached } from './candidate-cache.ts';
+import { buildFormulaSchedulePlan, readFormulaScheduleInput, readFormulaScheduleStage, readFormulaScheduleStageResult,
+  scheduleScriptOf, verifyFormulaScheduleFiles, type FormulaScheduleStageResult } from './schedule.ts';
 import { judgeFormulaFilm } from './judgment.ts';
 import { assignFormulaVoice } from '../scheduling/voice.ts';
 import { linesToNarrate } from '../scheduling/voice.ts';
@@ -47,14 +49,17 @@ export function createFormulaStageExecutor(resolveModel: (request: FormulaGenera
       if (!claim.task.batchId || claim.task.targetKind !== 'formula_stage') throw new BatchDomainError('invalid_input', '公式任务目标无效');
       const stage = db.prepare('SELECT * FROM live_mixcut_formula_execution_stages WHERE id=?').get(claim.task.targetId) as
         (Omit<FormulaStage, 'kind'> & { kind: 'select' | 'source_speech' | 'audio_mapping' | 'narration' | 'timeline' | 'execution'
-          | 'judgment' | 'voice' | 'voice_narration'; selectionStageId: string }) | undefined;
+          | 'judgment' | 'voice' | 'voice_narration' | 'schedule'; selectionStageId: string }) | undefined;
       if (!stage) throw new BatchDomainError('invalid_input', '尚不支持此公式制作阶段');
       const request = readFormulaGenerationRequest(db, claim.task.projectId, claim.task.batchId, stage.requestId);
       const output = request.outputs.find(item => item.planId === stage.planId);
       if (!output) throw new BatchDomainError('conflict', '公式阶段与输出身份不一致');
       if (stage.kind === 'execution') {
-        const check = db.prepare('SELECT outputVersionId,inputKey FROM live_mixcut_formula_execution_checks WHERE id=?')
-          .get(stage.id) as { outputVersionId: string; inputKey: string };
+        const check = db.prepare('SELECT outputVersionId,inputKey,sourceKind FROM live_mixcut_formula_execution_lineage WHERE id=?')
+          .get(stage.id) as { outputVersionId: string; inputKey: string; sourceKind: 'timeline' | 'schedule' } | undefined;
+        if (!check) throw new BatchDomainError('conflict', '执行检查记录不存在');
+        const resultTable = check.sourceKind === 'schedule'
+          ? 'live_mixcut_formula_schedule_execution_results' : 'live_mixcut_formula_execution_results';
         const current = () => {
           const row = db.prepare(`SELECT o.arrangementJson FROM live_mixcut_output_versions o JOIN live_mixcut_output_plans p ON p.currentVersionId=o.id
             WHERE o.id=? AND p.id=? AND p.batchVersionId=?`).get(check.outputVersionId, stage.planId, request.batchVersionId) as { arrangementJson: string } | undefined;
@@ -77,7 +82,7 @@ export function createFormulaStageExecutor(resolveModel: (request: FormulaGenera
           const result: FormulaExecutionResult = { version: 1, status: 'ready', executionReady: true,
             outputVersionId: check.outputVersionId, checkedEditRevision: verified.contract.editRevision, contentContractHash,
             audioMode: verified.audioMode, contract: verified.contract, checkedAt: new Date().toISOString() };
-          db.prepare('INSERT INTO live_mixcut_formula_execution_results (stageId,resultJson,createdAt) VALUES (?,?,?)')
+          db.prepare(`INSERT INTO ${resultTable} (stageId,resultJson,createdAt) VALUES (?,?,?)`)
             .run(stage.id, JSON.stringify(result), result.checkedAt);
           arrangement.productionReady = true;
           arrangement.formulaExecution = { stageId: stage.id, contentContractHash };
@@ -144,7 +149,10 @@ export function createFormulaStageExecutor(resolveModel: (request: FormulaGenera
       if (stage.kind === 'voice_narration') {
         const existing = db.prepare('SELECT resultJson FROM live_mixcut_formula_voice_narration_results WHERE stageId=?').get(stage.id) as
           { resultJson: string } | undefined;
-        if (existing) return { commit() { return { resultJson: JSON.parse(existing.resultJson) }; } };
+        if (existing) return { commit() {
+          queueFormulaV2Plan(db, claim.task.projectId, claim.task.batchId!, { id: stage.selectionStageId, planId: stage.planId }, request, output);
+          return { resultJson: JSON.parse(existing.resultJson) };
+        } };
         const input = readFormulaVoiceNarrationInput(db, stage.id);
         const items: FormulaVoiceNarrationStageResult['items'] = [];
         for (const item of input.items) {
@@ -161,8 +169,35 @@ export function createFormulaStageExecutor(resolveModel: (request: FormulaGenera
           for (const item of items) assertFormulaNarrationAudio(claim.task.projectId, item.text, item.audio);
           db.prepare('INSERT INTO live_mixcut_formula_voice_narration_results (stageId,resultJson,createdAt) VALUES (?,?,?)')
             .run(stage.id, JSON.stringify(result), new Date().toISOString());
+          queueFormulaV2Plan(db, claim.task.projectId, claim.task.batchId!, { id: stage.selectionStageId, planId: stage.planId }, request, output);
           return { resultJson: result, progress: { phase: 'formula_voice_narration_done', percent: 1,
-            description: '配音已完成；排时间在下一步接上' } };
+            description: '配音已保存，正在排时间' } };
+        } };
+      }
+      if (stage.kind === 'schedule') {
+        const existing = readFormulaScheduleStageResult(db, stage.id);
+        if (existing) return { commit() {
+          queueFormulaV2Plan(db, claim.task.projectId, claim.task.batchId!, { id: stage.selectionStageId, planId: stage.planId }, request, output);
+          return { resultJson: existing };
+        } };
+        const schedule = readFormulaScheduleStage(db, stage.id);
+        const input = readFormulaScheduleInput(db, schedule);
+        reportProgress({ phase: 'formula_schedule', description: '按实际配音时长排出画面、声音、字幕和审片标记', percent: null });
+        const timeline = buildFormulaSchedulePlan({ script: scheduleScriptOf(request, output), plan: input.plan.plan,
+          materials: input.voiceStage.input.materials, judgment: input.voiceStage.input.judgment, narration: input.narration });
+        signal.throwIfAborted();
+        const files = await verifyFormulaScheduleFiles(db, claim.task.projectId, request, timeline, signal);
+        signal.throwIfAborted();
+        const result: FormulaScheduleStageResult = { status: 'planned', algorithmVersion: 'formula-schedule/1',
+          executionReady: false, reviewStatus: 'pending', voiceStageId: schedule.voiceStageId,
+          narrationStageId: schedule.narrationStageId, plan: input.plan.plan, timeline, warnings: timeline.warnings };
+        return { commit() {
+          files.recheck();
+          db.prepare('INSERT INTO live_mixcut_formula_schedule_results (stageId,resultJson,createdAt) VALUES (?,?,?)')
+            .run(stage.id, JSON.stringify(result), new Date().toISOString());
+          queueFormulaV2Plan(db, claim.task.projectId, claim.task.batchId!, { id: stage.selectionStageId, planId: stage.planId }, request, output);
+          return { resultJson: result, progress: { phase: 'formula_schedule_done', percent: 1,
+            description: `已排出 ${(timeline.totalDurationUs / 1e6).toFixed(1)} 秒成片，正在检查制作条件` } };
         } };
       }
       if (stage.kind === 'timeline') {

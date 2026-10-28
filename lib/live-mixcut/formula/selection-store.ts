@@ -12,6 +12,7 @@ import { queueFormulaNarration } from './narration-store.ts';
 import { queueFormulaTimeline } from './timeline-store.ts';
 import { materializeFormulaOutput } from './output-store.ts';
 import { repairFormulaExecutionChecks } from './execution-store.ts';
+import { repairFormulaScheduleExecutionChecks } from './schedule-output.ts';
 import { isFormulaRulesV2 } from './rules-version.ts';
 import { queueFormulaV2Plan } from './pipeline-v2.ts';
 
@@ -22,6 +23,7 @@ const continuationFailures = new WeakMap<Database.Database, Set<string>>();
 export function repairFormulaContinuations(db: Database.Database, onError: (projectId: string, requestId: string) => void = () => {}): void {
   if (!formulaExecutionAvailable(db)) return;
   repairFormulaExecutionChecks(db, onError);
+  repairFormulaScheduleExecutionChecks(db, onError);
   const requests = db.prepare(`SELECT DISTINCT r.id,r.projectId,r.batchId FROM live_mixcut_formula_generation_requests r
     JOIN live_mixcut_productions b ON b.id=r.batchId AND b.currentVersionId=r.batchVersionId
     JOIN live_mixcut_formula_stages s ON s.requestId=r.id AND s.kind='select'

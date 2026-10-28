@@ -1,7 +1,7 @@
 /**
- * 新规矩（formula-generation/2）的生产链：选片 → 识别原声 → AI 判断 → 定声音 → 配音。
+ * 新规矩（formula-generation/2）的生产链：选片 → 识别原声 → AI 判断 → 定声音 → 配音 → 排时间。
  *
- * 排时间由任务 09 接在这里后面；在那之前，新批次走到配音就停住，不碰旧时间轴。
+ * 配音齐了就交给 schedule-store 排时间；旧批次的时间轴和声音编排一行不碰。
  * 每一步只有两种结果：做好了，或者失败（带原因、能重试）。缺号、文案没写口播台词
  * 都不停下等人；只有识别、AI、配音接口真的报错才让这条成片失败。
  *
@@ -22,6 +22,7 @@ import type { FormulaJudgmentInput } from './judgment.ts';
 import type { FormulaTtsService } from './narration.ts';
 import { formulaNarrationReuseKey } from './narration.ts';
 import { isFormulaRulesV2 } from './rules-version.ts';
+import { queueFormulaSchedule } from './schedule-store.ts';
 import { speechContent } from '../../media-core/adapters/alignment.ts';
 import { verifyFormulaCandidateCached, recheckFormulaCandidateCached } from './candidate-cache.ts';
 import type { FormulaVerifiedCandidate } from './candidate-media.ts';
@@ -368,16 +369,20 @@ export function queueFormulaV2Plan(db: Database.Database, projectId: string, bat
   if (!voice) return;
   const narrationId = db.prepare('SELECT id FROM live_mixcut_formula_voice_narration_stages WHERE voiceStageId=?')
     .get(voiceStageId(db, selectStage.id)!) as { id: string } | undefined;
-  if (narrationId || !voice.narrationLines.length) return;
-  const items: FormulaVoiceNarrationItem[] = voice.narrationLines.map(lineIndex => ({ id: `line-${lineIndex}`,
-    lineIndex, text: voice.plan.lines[lineIndex].text }));
-  const input: FormulaVoiceNarrationStageInput = { formatVersion: 1, service: request.input.ttsService ?? null,
-    items, reuseKeys: narrationReuseKeys(items, request.input.ttsService ?? null) };
-  const id = randomUUID();
-  db.prepare('INSERT INTO live_mixcut_formula_voice_narration_stages (id,voiceStageId,inputJson,createdAt) VALUES (?,?,?,?)')
-    .run(id, voiceStageId(db, selectStage.id)!, JSON.stringify(input), new Date().toISOString());
-  createBatchTask(db, projectId, { batchId, workType: 'formula_stage', targetKind: 'formula_stage', targetId: id,
-    requestKey: `formula:voice_narration:${id}` });
+  if (voice.narrationLines.length && !narrationId) {
+    const items: FormulaVoiceNarrationItem[] = voice.narrationLines.map(lineIndex => ({ id: `line-${lineIndex}`,
+      lineIndex, text: voice.plan.lines[lineIndex].text }));
+    const input: FormulaVoiceNarrationStageInput = { formatVersion: 1, service: request.input.ttsService ?? null,
+      items, reuseKeys: narrationReuseKeys(items, request.input.ttsService ?? null) };
+    const id = randomUUID();
+    db.prepare('INSERT INTO live_mixcut_formula_voice_narration_stages (id,voiceStageId,inputJson,createdAt) VALUES (?,?,?,?)')
+      .run(id, voiceStageId(db, selectStage.id)!, JSON.stringify(input), new Date().toISOString());
+    createBatchTask(db, projectId, { batchId, workType: 'formula_stage', targetKind: 'formula_stage', targetId: id,
+      requestKey: `formula:voice_narration:${id}` });
+    return;
+  }
+  // 配音齐了（或本来就不用配音）：接着排时间。
+  queueFormulaSchedule(db, projectId, batchId, selectStage, request, output);
 }
 
 /** 定声音用到的每个文件都要能核验；失败让这条成片带原因重试。 */

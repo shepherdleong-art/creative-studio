@@ -21,7 +21,8 @@ export function formulaOutputPreviewMedia(projectId: string, batchId: string, pl
   const plan = readFormulaOutputAudioPlan(arrangement.audioPlan);
   if (!plan) throw new BatchDomainError('conflict', '公式成片缺少声音计划');
   const url = (kind: 'audio' | 'video', mediaId: string) => {
-    const query = new URLSearchParams({ projectId, outputVersionId, selectionStageId: basis.selectionStageId, timelineStageId: basis.timelineStageId, kind, mediaId });
+    const query = new URLSearchParams({ projectId, outputVersionId, selectionStageId: basis.selectionStageId,
+      timelineStageId: basis.timelineStageId, kind, mediaId });
     return `/api/live-mixcut/batches/${encodeURIComponent(batchId)}/formula/outputs/${encodeURIComponent(planId)}/preview/media?${query}`;
   };
   const assetsById: FormulaOutputPreviewMedia['assetsById'] = {};

@@ -178,7 +178,7 @@ export function arrangeFormulaTime(input: SchedulingArrangeInput): TimelinePlan 
     pushedClip({ id: `clip:${clips.length}`, kind: 'vo', logicalCode: item.logicalCode, assetId: file.assetId,
       contentFingerprint: file.contentFingerprint, fileName: file.fileName,
       sourceInUs: framesToMicroseconds(range.inFrame), sourceOutUs: framesToMicroseconds(range.outFrame),
-      lineIndexes: [...covers] }, length);
+      lineIndexes: [...covers], slotIndex: item.slotIndex }, length);
     const speech = file.speech!;
     const sound: TimelineSound = {
       id: `source:${item.slotIndex}`, kind: 'source', slotIndex: item.slotIndex, lineIndexes: [...covers],

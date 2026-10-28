@@ -16,14 +16,14 @@ export async function resolveFormulaPreviewMusic(db: Database.Database, projectI
   if (!expected?.outputVersionId || !expected.sourceFingerprint) throw new BatchDomainError('invalid_input', '缺少音乐版本，请刷新成片');
   const read = () => {
     signal.throwIfAborted();
-    const row = db.prepare(`SELECT o.arrangementJson FROM live_mixcut_formula_output_versions f
-      JOIN live_mixcut_output_versions o ON o.id=f.outputVersionId JOIN live_mixcut_output_plans p ON p.id=o.planId
-      JOIN live_mixcut_formula_execution_stages e ON e.id=f.timelineStageId
-      JOIN live_mixcut_formula_generation_requests g ON g.id=e.requestId JOIN live_mixcut_productions b ON b.id=g.batchId
-      WHERE o.id=? AND p.id=? AND p.currentVersionId=o.id AND f.timelineStageId=? AND e.selectionStageId=?
-        AND e.planId=p.id AND p.batchVersionId=g.batchVersionId AND b.currentVersionId=g.batchVersionId
+    // 新旧两种排片都从血缘视图取：sourceStageId 分别是旧时间轴阶段或新规矩的排时间阶段。
+    const row = db.prepare(`SELECT o.arrangementJson FROM live_mixcut_formula_output_lineage l
+      JOIN live_mixcut_output_versions o ON o.id=l.outputVersionId JOIN live_mixcut_output_plans p ON p.id=o.planId
+      JOIN live_mixcut_formula_generation_requests g ON g.id=l.requestId JOIN live_mixcut_productions b ON b.id=g.batchId
+      WHERE o.id=? AND p.id=? AND p.currentVersionId=o.id AND l.sourceStageId=? AND l.selectionStageId=?
+        AND l.planId=p.id AND p.batchVersionId=g.batchVersionId AND b.currentVersionId=g.batchVersionId
         AND g.projectId=? AND b.projectId=g.projectId AND b.id=? AND b.deletedAt IS NULL
-        AND e.selectionStageId=(SELECT id FROM live_mixcut_formula_stages WHERE planId=p.id AND kind='select' ORDER BY revision DESC LIMIT 1)`)
+        AND l.selectionStageId=(SELECT id FROM live_mixcut_formula_stages WHERE planId=p.id AND kind='select' ORDER BY revision DESC LIMIT 1)`)
       .get(expected.outputVersionId, planId, timelineStageId, selectionStageId, projectId, batchId) as { arrangementJson: string } | undefined;
     if (!row) throw new BatchDomainError('not_found', '当前成片音乐不存在，请刷新');
     const source = readFormulaMusicSource(JSON.parse(row.arrangementJson).music);

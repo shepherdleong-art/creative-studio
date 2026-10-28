@@ -13,6 +13,7 @@ import { readFormulaSelectionHistory } from './reselection.ts';
 import { getBatchOutputArrangementView } from '../output-arrangement.ts';
 import { resolveFormulaPreviewMusic, type FormulaMusicPreviewIdentity } from './preview-music.ts';
 import { readFormulaManualMedia } from './manual-media.ts';
+import { readFormulaScheduleOutputOwner, resolveFormulaScheduleMedia } from './schedule.ts';
 
 export interface FormulaPreview {
   selectionStageId: string; timelineStageId: string; readOnly: boolean;
@@ -108,12 +109,20 @@ export async function resolveFormulaPreviewMedia(db: Database.Database, projectI
   selectionStageId: string, timelineStageId: string, kind: string, mediaId: string, signal: AbortSignal, musicIdentity?: FormulaMusicPreviewIdentity) {
   if (!selectionStageId || !timelineStageId || !mediaId || !['video', 'audio', 'music'].includes(kind)) throw new BatchDomainError('invalid_input', '缺少有效的预览来源');
   if (kind === 'music') return resolveFormulaPreviewMusic(db, projectId, batchId, planId, selectionStageId, timelineStageId, mediaId, musicIdentity, signal);
-  const { saved } = context(db, projectId, batchId, planId, selectionStageId, timelineStageId);
-  if (!saved) throw new BatchDomainError('not_found', '排片预览尚未就绪');
+  // 新规矩的成片没有旧时间轴：画面和声音从排时间结果里认，旧批次照旧读旧表。
+  const outputVersionId = musicIdentity?.outputVersionId ?? '';
+  const scheduled = outputVersionId
+    ? readFormulaScheduleOutputOwner(db, outputVersionId, timelineStageId, selectionStageId) : null;
+  const { saved } = scheduled ? { saved: null } : context(db, projectId, batchId, planId, selectionStageId, timelineStageId);
+  if (!scheduled && !saved) throw new BatchDomainError('not_found', '排片预览尚未就绪');
   signal.throwIfAborted();
   if (mediaId.startsWith('manual-media:')) {
     const current = () => {
-      context(db, projectId, batchId, planId, selectionStageId, timelineStageId);
+      if (scheduled) {
+        if (!readFormulaScheduleOutputOwner(db, outputVersionId, timelineStageId, selectionStageId)) {
+          throw new BatchDomainError('conflict', '排片预览已变化，请刷新');
+        }
+      } else context(db, projectId, batchId, planId, selectionStageId, timelineStageId);
       const view = getBatchOutputArrangementView(db, projectId, batchId, planId);
       if (!musicIdentity?.outputVersionId || view.outputVersionId !== musicIdentity.outputVersionId
         || !view.clips.some(clip => clip.formulaSourceId === mediaId)
@@ -134,16 +143,25 @@ export async function resolveFormulaPreviewMedia(db: Database.Database, projectI
     const absolutePath = resolveSourceFilePath(verified.location);
     return { absolutePath, identity: verified.fileIdentity, mimeType: projectAssetMimeType(absolutePath) };
   }
-  const sound = kind === 'audio' ? saved.timeline.audio.find(clip => clip.id === mediaId) : null;
+  if (scheduled) {
+    const media = await resolveFormulaScheduleMedia(db, projectId, batchId, planId, selectionStageId, timelineStageId,
+      outputVersionId, kind, mediaId, signal);
+    // 读取期间身份没变，才把文件交出去。
+    if (!readFormulaScheduleOutputOwner(db, outputVersionId, timelineStageId, selectionStageId)) {
+      throw new BatchDomainError('conflict', '排片预览已变化，请刷新');
+    }
+    return media;
+  }
+  const sound = kind === 'audio' ? saved!.timeline.audio.find(clip => clip.id === mediaId) : null;
   if (kind === 'audio' && !sound) throw new BatchDomainError('not_found', '这段声音不属于当前排片');
   if (sound?.kind === 'narration') {
-    const item = saved.narration!.items.find(item => item.id === sound.narrationId)!;
+    const item = saved!.narration!.items.find(item => item.id === sound.narrationId)!;
     const absolutePath = assertFormulaNarrationAudio(projectId, item.text, item.audio);
     return { absolutePath, identity: projectAssetFileIdentity(fs.statSync(absolutePath)), mimeType: 'audio/wav' };
   }
   const slotId = sound?.linkGroupId ?? mediaId;
-  if (!saved.timeline.duration.clips.some(clip => clip.slotId === slotId)) throw new BatchDomainError('not_found', '这段画面不属于当前排片');
-  const candidate = saved.selection.slots.find(slot => slot.slotId === slotId)!.candidate!;
+  if (!saved!.timeline.duration.clips.some(clip => clip.slotId === slotId)) throw new BatchDomainError('not_found', '这段画面不属于当前排片');
+  const candidate = saved!.selection.slots.find(slot => slot.slotId === slotId)!.candidate!;
   const verified = await verifyFormulaCandidate(db, projectId, candidate.assetId, candidate.contentFingerprint,
     [{ id: candidate.sourceId, location: candidate.location }], signal);
   if (!verified || (sound && !verified.media.hasAudio)) throw new BatchDomainError('conflict', '原片或声音已变化，请重新核验');

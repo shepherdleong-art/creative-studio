@@ -33,9 +33,14 @@ export function formulaOutputExecutionReady(db: Database.Database, outputVersion
   const proof = arrangement.formulaExecution as { stageId?: unknown; contentContractHash?: unknown } | undefined;
   if (typeof proof?.stageId !== 'string' || typeof proof.contentContractHash !== 'string') return false;
   try {
-    const row = db.prepare(`SELECT r.resultJson FROM live_mixcut_formula_execution_results r
-      JOIN live_mixcut_formula_execution_checks e ON e.id=r.stageId WHERE e.id=? AND e.outputVersionId=?`)
-      .get(proof.stageId, outputVersionId) as { resultJson: string } | undefined;
+    // 新旧两种执行检查各写各的结果表；血缘视图说明这次检查属于哪一条成片、来自哪条链。
+    const lineage = db.prepare('SELECT sourceKind FROM live_mixcut_formula_execution_lineage WHERE id=? AND outputVersionId=?')
+      .get(proof.stageId, outputVersionId) as { sourceKind: 'timeline' | 'schedule' } | undefined;
+    if (!lineage) return false;
+    const table = lineage.sourceKind === 'schedule'
+      ? 'live_mixcut_formula_schedule_execution_results' : 'live_mixcut_formula_execution_results';
+    const row = db.prepare(`SELECT resultJson FROM ${table} WHERE stageId=?`)
+      .get(proof.stageId) as { resultJson: string } | undefined;
     if (!row) return false;
     const result = JSON.parse(row.resultJson) as FormulaExecutionResult;
     return result.version === 1 && result.executionReady === true && result.status === 'ready'
@@ -58,7 +63,7 @@ export function formulaOutputCoverReady(db: Database.Database, outputVersionId: 
 export function readFormulaExecutionTask(db: Database.Database, outputVersionId: string): BatchWorkspaceTaskView | null {
   try {
     const row = db.prepare(`SELECT t.id,t.status,t.expectedState,t.attemptCount,a.progressJson,a.errorCode,a.errorMessage
-      FROM live_mixcut_formula_execution_checks e JOIN live_mixcut_tasks t ON t.targetId=e.id AND t.workType='formula_stage'
+      FROM live_mixcut_formula_execution_lineage e JOIN live_mixcut_tasks t ON t.targetId=e.id AND t.workType='formula_stage'
       LEFT JOIN live_mixcut_task_attempts a ON a.taskId=t.id AND a.attemptNumber=t.attemptCount
       WHERE e.outputVersionId=? ORDER BY e.revision DESC LIMIT 1`).get(outputVersionId) as
         (Omit<BatchWorkspaceTaskView, 'progress'> & { progressJson: string | null }) | undefined;

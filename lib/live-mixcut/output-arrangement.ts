@@ -17,7 +17,7 @@ import { hasBatchSubtitleStyleOverride, loadFrozenSubtitleStyle, resolveBatchSub
 import { defaultTextStyle, normalizeTextStyle } from '../media-core/cover-domain.ts';
 import { NARRATION_GAIN_DB_DEFAULT, normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
 import { cleanFraming } from '../media-core/cover-title-presets.ts';
-import { queueFormulaExecutionCheck } from './formula/execution-store.ts';
+import { queueFormulaOutputCheck } from './formula/schedule-output.ts';
 import type { CoverFraming, OutputPresetId, TextStyle } from '../media-core/cover-types.ts';
 import { resolveModule4AssetDisplayNames } from './media-catalog.ts';
 import { batchSourceReview, batchSourceWarnings, type BatchSourceConflictGroup } from './source-conflicts.ts';
@@ -1853,7 +1853,7 @@ export function applyBatchOutputClipEdit(
       db.prepare(`
         UPDATE live_mixcut_output_versions SET arrangementJson = ? WHERE id = ?
       `).run(JSON.stringify(arrangement), outputVersionId);
-      if (arrangement.formula) queueFormulaExecutionCheck(db, projectId, batchId, outputVersionId);
+      if (arrangement.formula) queueFormulaOutputCheck(db, projectId, batchId, outputVersionId);
       return {
         outputVersionId,
         editRevision: nextEditRevision,
@@ -1872,7 +1872,7 @@ export function applyBatchOutputClipEdit(
         arrangement.review = { ...review, editRevision: editRevision + 1 };
       }
       db.prepare('UPDATE live_mixcut_output_versions SET arrangementJson=? WHERE id=?').run(JSON.stringify(arrangement), outputVersionId);
-      if (arrangement.formula) queueFormulaExecutionCheck(db, projectId, batchId, outputVersionId);
+      if (arrangement.formula) queueFormulaOutputCheck(db, projectId, batchId, outputVersionId);
       return { ...unchanged, editRevision: editRevision + 1, changed: true };
     }
 
@@ -1881,7 +1881,7 @@ export function applyBatchOutputClipEdit(
       db.prepare(`
         UPDATE live_mixcut_output_versions SET arrangementJson = ? WHERE id = ?
       `).run(JSON.stringify(arrangement), outputVersionId);
-      if (arrangement.formula) queueFormulaExecutionCheck(db, projectId, batchId, outputVersionId);
+      if (arrangement.formula) queueFormulaOutputCheck(db, projectId, batchId, outputVersionId);
       return { outputVersionId, editRevision, changed: true, visualChanged: false, reviewCleared: false, warnings: [] };
     }
 

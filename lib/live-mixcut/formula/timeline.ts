@@ -23,7 +23,7 @@ export interface FormulaTimelineAudio {
   linkGroupId?: string;
 }
 export type FormulaTimelineResult = Exclude<FormulaDurationResult, { status: 'planned' }> | {
-  status: 'planned'; algorithmVersion: 'formula-timeline/1' | 'formula-timeline/2'; executionReady: false; reviewStatus: 'pending';
+  status: 'planned'; algorithmVersion: 'formula-timeline/1' | 'formula-timeline/2' | 'formula-timeline/3'; executionReady: false; reviewStatus: 'pending';
   mappingStageId: string; narrationStageId: string | null;
   duration: Extract<FormulaDurationResult, { status: 'planned' }>;
   audio: FormulaTimelineAudio[];

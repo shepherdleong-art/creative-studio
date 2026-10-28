@@ -168,6 +168,8 @@ export interface TimelineClip {
   timelineEndUs: number;
   /** 这段画面承载的文案行（原声覆盖的文案行记在对应 vo 上）。 */
   lineIndexes: number[];
+  /** 只有 vo 有：公式里的镜头序号，用来把原声和画面配成一对。 */
+  slotIndex?: number;
   /** 补镜原因；只有 filler 有。 */
   fillerCause?: 'overflow' | 'gap' | 'ending';
   substitution?: SchedulingSubstitution | null;

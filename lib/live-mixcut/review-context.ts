@@ -7,6 +7,7 @@ import type { FormulaGenerationRequest } from './formula/generation.ts';
 import type { FormulaTimelineResult } from './formula/timeline.ts';
 import { describeFormulaDeviations } from './formula/deviations.ts';
 import { manualMediaForClip } from './formula/manual-media.ts';
+import { readFormulaScheduleStageResult } from './formula/schedule.ts';
 
 export interface BatchReviewIssue {
   kind: 'warning' | 'blocker' | 'replacement' | 'range' | 'audio' | 'deviation';
@@ -54,13 +55,25 @@ export function batchOutputReviewContext(db: Database.Database, outputVersionId:
   const basis = record(arrangement.formula);
   if (arrangement.formula) {
     const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_mixcut_formula_selection_results'").get();
+    // 新规矩的成片：排时间结果就是「生成时的样子」，人工改动相对它比较。
+    const lineage = exists ? db.prepare(`SELECT sourceKind FROM live_mixcut_formula_output_lineage WHERE outputVersionId=?`)
+      .get(outputVersionId) as { sourceKind: 'timeline' | 'schedule' } | undefined : undefined;
+    const schedule = lineage?.sourceKind === 'schedule' && typeof basis.timelineStageId === 'string'
+      ? readFormulaScheduleStageResult(db, basis.timelineStageId) : null;
     const row = exists && typeof basis.selectionStageId === 'string'
-      ? db.prepare(`SELECT s.resultJson,g.projectId,g.inputJson,t.resultJson AS timelineJson FROM live_mixcut_formula_selection_results s
-          LEFT JOIN live_mixcut_formula_stages stage ON stage.id=s.stageId
-          LEFT JOIN live_mixcut_formula_generation_requests g ON g.id=stage.requestId
-          LEFT JOIN live_mixcut_formula_execution_stages e ON e.id=? AND e.selectionStageId=stage.id AND e.planId=stage.planId
-          LEFT JOIN live_mixcut_formula_timeline_results t ON t.stageId=e.id WHERE s.stageId=?`).get(String(basis.timelineStageId ?? ''), basis.selectionStageId) as
-        { resultJson: string; projectId: string; inputJson: string | null; timelineJson: string | null } | undefined : undefined;
+      ? (schedule
+        ? db.prepare(`SELECT s.resultJson,g.projectId,g.inputJson FROM live_mixcut_formula_selection_results s
+            LEFT JOIN live_mixcut_formula_stages stage ON stage.id=s.stageId
+            LEFT JOIN live_mixcut_formula_generation_requests g ON g.id=stage.requestId
+            WHERE s.stageId=?`).get(basis.selectionStageId) as
+            { resultJson: string; projectId: string; inputJson: string | null } | undefined
+        : db.prepare(`SELECT s.resultJson,g.projectId,g.inputJson,t.resultJson AS timelineJson FROM live_mixcut_formula_selection_results s
+            LEFT JOIN live_mixcut_formula_stages stage ON stage.id=s.stageId
+            LEFT JOIN live_mixcut_formula_generation_requests g ON g.id=stage.requestId
+            LEFT JOIN live_mixcut_formula_execution_stages e ON e.id=? AND e.selectionStageId=stage.id AND e.planId=stage.planId
+            LEFT JOIN live_mixcut_formula_timeline_results t ON t.stageId=e.id WHERE s.stageId=?`).get(String(basis.timelineStageId ?? ''), basis.selectionStageId) as
+            { resultJson: string; projectId: string; inputJson: string | null; timelineJson: string | null } | undefined)
+      : undefined;
     const selection: FormulaSelection | null = row ? JSON.parse(row.resultJson) : null;
     if (!selection || selection.status !== 'selected') issues.push({ kind: 'blocker', message: '选片结果缺失或尚未完成，请重新核对' });
     if (selection?.status === 'selected') {
@@ -74,9 +87,23 @@ export function batchOutputReviewContext(db: Database.Database, outputVersionId:
           details: ['音频内容及 SRT 时间已由用户试听确认，未冒充自动识别或自动对齐。', `实际台词：${imported.text}`],
           evidenceHash: hash({ id: imported.id, fingerprint: imported.audio?.fingerprint, words: imported.audio?.words }) });
       }
-      const timeline: FormulaTimelineResult | null = row?.timelineJson ? JSON.parse(row.timelineJson) : null;
+      const timelineJson = row && 'timelineJson' in row ? (row as { timelineJson: string | null }).timelineJson : null;
+      const timeline: FormulaTimelineResult | null = timelineJson ? JSON.parse(timelineJson) : null;
       const currentClips = (Array.isArray(arrangement.clips) ? arrangement.clips : []) as Parameters<typeof describeFormulaDeviations>[1];
-      const changes = describeFormulaDeviations(selection, currentClips, input?.materialIndex.bindings, timeline?.status === 'planned' ? timeline.duration.clips : []);
+      // 排好的成片按「排时间的结果」当基线：补镜、替镜、没用上的镜头都不是人工改动。
+      const scheduledSlots = schedule ? new Set(schedule.timeline.clips.flatMap(clip =>
+        clip.slotIndex === undefined ? [] : [selection.slots[clip.slotIndex]?.slotId]).filter((id): id is string => !!id)) : null;
+      const baselineSelection = scheduledSlots
+        ? { ...selection, slots: selection.slots.filter(slot => scheduledSlots.has(slot.slotId)) } : selection;
+      const baselineClips = schedule ? schedule.timeline.clips.flatMap(clip => {
+        const slotId = clip.slotIndex === undefined ? clip.id : selection.slots[clip.slotIndex]?.slotId;
+        return slotId && baselineSelection.slots.some(slot => slot.slotId === slotId)
+          ? [{ slotId, assetId: clip.assetId, contentFingerprint: clip.contentFingerprint, sourceInUs: clip.sourceInUs, sourceOutUs: clip.sourceOutUs }]
+          : [];
+      }) : timeline?.status === 'planned' ? timeline.duration.clips : [];
+      const changes = describeFormulaDeviations(baselineSelection, currentClips, input?.materialIndex.bindings, baselineClips);
+      const generatedClipIds = new Set(schedule ? schedule.timeline.clips.map(clip => clip.id) : []);
+      changes.insertedClips = changes.insertedClips.filter(clip => !generatedClipIds.has(clip.clipId));
       for (const clip of changes.replacedClips) issues.push({ kind: 'deviation',
         message: `人工换片：原公式 ${clip.originalCode} 的画面已更换，请核对内容与声音`,
         details: [`生成时选用：${clip.selectedCode}；现用编号：${clip.actualCodes.join('、') || '未登记编号'}`], evidenceHash: hash(clip) });

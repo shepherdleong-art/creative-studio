@@ -17,6 +17,7 @@ const db = new Database(path.join(root, 'test.db'));
 const originalFetch = globalThis.fetch;
 try {
   const { checkBatchProductionReadiness } = await import('../lib/live-mixcut/readiness.ts');
+  const { readLiveMixcutAppliedVersions } = await import('../lib/live-mixcut/schema.ts');
   const { schemaUpgradeRuntimePaths } = await import('../lib/schema-upgrade/runtime.ts');
   const { createBatchProduction } = await import('../lib/live-mixcut/versions.ts');
   const { registerManagedCopy } = await import('../lib/live-mixcut/media-catalog.ts');
@@ -32,6 +33,9 @@ try {
   const { readFormulaSelection } = await import('../lib/live-mixcut/formula/selection-store.ts');
   const { readFormulaJudgmentResult, readFormulaVoiceResult, readFormulaVoiceNarrationResult } =
     await import('../lib/live-mixcut/formula/pipeline-v2.ts');
+  const { readFormulaScheduleResult, readFormulaScheduleStageId } = await import('../lib/live-mixcut/formula/schedule.ts');
+  const { createBatchRenderExecutor } = await import('../lib/live-mixcut/batch-render-executor.ts');
+  const { batchOutputReviewContext } = await import('../lib/live-mixcut/review-context.ts');
   const { runFfmpeg } = await import('../lib/ffmpeg.ts');
   db.pragma('foreign_keys=ON');
   db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY,name TEXT NOT NULL);
@@ -40,6 +44,7 @@ try {
     INSERT INTO final_edit_tts_providers VALUES ('vapi-qwen3-tts','测试音色','vapi-qwen-json-url','https://voice.example','fixture',NULL,'qwen3-tts-flash',1);`);
   const options = { db, ...schemaUpgradeRuntimePaths(root) };
   assert.equal((await checkBatchProductionReadiness(options)).available, true);
+  assert(readLiveMixcutAppliedVersions(db).includes(6), '排时间的表走追加迁移，旧库打开时补上');
   seedLiveMixcutProjects(options, ['p']);
   assert.equal((await checkBatchProductionReadiness(options)).available, true);
   seedLiveMixcutProjects(options, ['p']);
@@ -104,7 +109,8 @@ try {
     return { similar: [], bestVo: null, related: [] };
   } };
   const executor = createFormulaStageExecutor(async () => model);
-  await runPendingOnce({ db, workerId: 'voice-chain', concurrency: 1, executors: [executor], log: () => {} });
+  const renderExecutor = createBatchRenderExecutor();
+  await runPendingOnce({ db, workerId: 'voice-chain', concurrency: 1, executors: [executor, renderExecutor], log: () => {} });
 
   const planId = (index: number) => request.outputs[index].planId;
   const selectStageId = (index: number) => (db.prepare("SELECT id FROM live_mixcut_formula_stages WHERE planId=? AND kind='select'")
@@ -150,7 +156,7 @@ try {
   // 4. AI 问题修好后重试这一条，其余成片不受影响。
   retryTask(db, 'p', failedItem.retryTaskId!);
   failScript34 = false;
-  await runPendingOnce({ db, workerId: 'voice-chain-retry', concurrency: 1, executors: [executor], log: () => {} });
+  await runPendingOnce({ db, workerId: 'voice-chain-retry', concurrency: 1, executors: [executor, renderExecutor], log: () => {} });
   const voice34Retried = readFormulaVoiceResult(db, selectStageId(2))!;
   assert.equal(voice34Retried.status, 'ready');
   assert.deepEqual(voice34Retried.narrationLines, [0, 1], '文案没写口播台词：两行都配音，不停下等人');
@@ -159,8 +165,9 @@ try {
   assert.deepEqual(narration34.items.map(item => item.lineIndex), [0, 1]);
   const afterRetry = getBatchWorkspace(db, 'p', batchId).formulaGeneration!;
   assert.equal(afterRetry.needsAttention, 0);
-  assert(afterRetry.items.every(item => item.phase === '等待排时间' && item.status === 'pending'),
-    '新批次停在排时间之前，没有一条停下等人');
+  // 排时间接上了：三份都排出成片、通过执行检查、生成审片封面，进到审片工作台。
+  assert(afterRetry.items.every(item => item.phase === '待审片' && item.status === 'ready'),
+    '定声音、配音、排时间、执行检查和封面全部走完，三条都能审');
 
   // 5. 配音复用：同样文字、同样声音只合成一次；识别原声也只调用一次。
   assert.equal(syntheses, 4, '脚本 12 的两份共用两段配音，脚本 34 两行各一段');
@@ -170,7 +177,34 @@ try {
   assert.equal(judgments.filter(result => result.cached).length, 1, '同文案同素材的第二份直接读判断缓存');
   assert.equal(modelCalls, 3, '脚本 12 只问一次模型，脚本 34 首次失败、重试成功各一次');
 
-  // 6. 排时间还没接上：新批次没有旧时间轴，也没有执行检查和封面任务。
+  // 6. 排时间按实际配音时长排出画面、声音、字幕和审片标记；新批次不建旧时间轴。
+  const schedule12 = readFormulaScheduleResult(db, selectStageId(0))!;
+  assert.equal(schedule12.status, 'planned');
+  assert.equal(schedule12.algorithmVersion, 'formula-schedule/1', '新批次的排片结果标新的算法版本');
+  assert.equal(schedule12.timeline.algorithmVersion, 'formula-scheduling/1');
+  assert.equal(schedule12.timeline.mode, 'mixed');
+  assert.ok(schedule12.timeline.totalDurationUs > 0);
+  assert.ok(schedule12.timeline.clips.some(clip => clip.kind === 'vo'), '原声镜头的画面在');
+  assert.ok(schedule12.timeline.sounds.some(sound => sound.kind === 'narration'), '配音在');
+  assert.ok(schedule12.timeline.words.length > 0, '字幕有逐字时间');
+  assert.ok(schedule12.timeline.marks.length > 0, '审片能看出 AI 改过的地方');
+  const scheduleStage12 = readFormulaScheduleStageId(db, selectStageId(0))!;
+  const output12 = db.prepare(`SELECT o.id,o.arrangementJson FROM live_mixcut_formula_schedule_output_versions f
+    JOIN live_mixcut_output_versions o ON o.id=f.outputVersionId WHERE f.scheduleStageId=?`).get(scheduleStage12) as
+      { id: string; arrangementJson: string };
+  const arrangement12 = JSON.parse(output12.arrangementJson) as { formula: { timelineStageId: string; selectionStageId: string };
+    productionReady: boolean; targetDurationUs: number; formulaExecution?: { stageId: string }; audioPlan: { clips: unknown[] } };
+  assert.equal(arrangement12.formula.timelineStageId, scheduleStage12, '成片登记的是这次排时间');
+  assert.equal(arrangement12.formula.selectionStageId, selectStageId(0));
+  assert.equal(arrangement12.targetDurationUs, schedule12.timeline.totalDurationUs, '成片长度以读完为准');
+  assert.equal(arrangement12.productionReady, true);
+  assert.ok(arrangement12.formulaExecution?.stageId, '执行检查已经通过并记在成片上');
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM live_mixcut_formula_schedule_output_versions').get() as { count: number }).count, 3);
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM live_mixcut_formula_schedule_execution_results').get() as { count: number }).count, 3);
+  const review12 = batchOutputReviewContext(db, output12.id, arrangement12);
+  assert.equal(review12.issues.filter(issue => issue.kind === 'deviation').length, 0,
+    'AI 自己排出的补镜、替镜和没用上的镜头不算人工改动');
+  assert.equal(review12.issues.filter(issue => issue.kind === 'blocker').length, 0, '审片没有拦人的问题');
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM live_mixcut_formula_timeline_stages').get() as { count: number }).count, 0);
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM live_mixcut_formula_timeline_results').get() as { count: number }).count, 0);
 
@@ -198,6 +232,45 @@ try {
   assert.equal(legacyWorkspace?.items[0].phase, '选片', '旧批次照旧能打开看');
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM live_mixcut_formula_judgment_stages').get() as { count: number }).count, 3,
     '旧批次不建新规矩的判断阶段，判断阶段仍只有新批次那三份');
+
+  // 9. 另一种声音方式（统一配音）也从定声音走通到排时间，成片同样能审。
+  const narrationBatch = createBatchProduction(db, 'p', '统一配音走通', undefined, { planningMode: 'formula' });
+  registerFormulaAssetBinding(db, 'p', narrationBatch, { assetId: voId, sourcePath: 'VO1_口播_真人_“好擦洗。”.mp4' });
+  registerFormulaAssetBinding(db, 'p', narrationBatch, { assetId: stillId, sourcePath: 'G1_静物_正面.mp4' });
+  await seedFormulaMaterialAnalysis({ db }, 'p', narrationBatch);
+  const narrationImported = await createFormulaImportSession(db, 'p', narrationBatch, { kind: 'scripts', filename: '脚本.xlsx',
+    bytes: Buffer.from(await book.xlsx.writeBuffer()), expectedRevision: 2 });
+  confirmFormulaImportSession(db, 'p', narrationBatch, narrationImported.id, { expectedRevision: 2, excludedKeys: [] });
+  const narrationProduction = defaultFormulaProductionSettings();
+  narrationProduction.audio = { mode: 'narration', tts: { providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1 } };
+  narrationProduction.packaging = { mode: 'none', templateIds: [] };
+  const narrationSettings = await saveFormulaSettings(db, 'p', narrationBatch, { expectedInputRevision: 3, expectedSettingsRevision: 0,
+    scriptsSessionId: narrationImported.id, settings: { selections: [{ key: '1:2', copies: 1 }], bgm: { mode: 'none', trackIds: [] },
+      production: narrationProduction } });
+  const narrationRequest = await createFormulaGenerationRequest(db, 'p', narrationBatch, { requestKey: 'narration-mode',
+    settingsId: narrationSettings.saved!.id, expectedInputRevision: 3, rulesVersion: 'formula-generation/2' });
+  await runPendingOnce({ db, workerId: 'narration-mode', concurrency: 1, executors: [executor, renderExecutor], log: () => {} });
+  const narrationPlanId = narrationRequest.outputs[0].planId;
+  const narrationSelect = (db.prepare("SELECT id FROM live_mixcut_formula_stages WHERE planId=? AND kind='select'")
+    .get(narrationPlanId) as { id: string }).id;
+  const narrationVoice = readFormulaVoiceResult(db, narrationSelect)!;
+  assert.equal(narrationVoice.mode, 'narration');
+  assert.deepEqual(narrationVoice.narrationLines, [0, 1, 2], '统一配音：三行都配音');
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM live_mixcut_formula_speech_stages WHERE selectionStageId=?')
+    .get(narrationSelect) as { n: number }).n, 0, '统一配音不识别原声');
+  const narrationSchedule = readFormulaScheduleResult(db, narrationSelect)!;
+  assert.equal(narrationSchedule.algorithmVersion, 'formula-schedule/1');
+  assert.equal(narrationSchedule.timeline.mode, 'narration');
+  assert.ok(narrationSchedule.timeline.sounds.length > 0);
+  assert(narrationSchedule.timeline.sounds.every(sound => sound.kind === 'narration'), '统一配音下没有原声');
+  const narrationOutput = db.prepare(`SELECT o.arrangementJson FROM live_mixcut_formula_schedule_output_versions f
+    JOIN live_mixcut_output_versions o ON o.id=f.outputVersionId JOIN live_mixcut_formula_schedule_stages s ON s.id=f.scheduleStageId
+    WHERE s.selectionStageId=?`).get(narrationSelect) as { arrangementJson: string } | undefined;
+  assert.ok(narrationOutput, '统一配音也排出成片');
+  assert.equal((JSON.parse(narrationOutput!.arrangementJson) as { productionReady: boolean }).productionReady, true);
+  const narrationProgress = getBatchWorkspace(db, 'p', narrationBatch).formulaGeneration!;
+  assert(narrationProgress.items.every(item => item.phase === '待审片' && item.status === 'ready'), '统一配音的成片能进审片');
+
   console.log('formula voice pipeline tests passed (fake ASR/AI/TTS, real files)');
 } finally {
   globalThis.fetch = originalFetch;

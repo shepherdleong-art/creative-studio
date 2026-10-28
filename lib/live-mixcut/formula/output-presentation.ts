@@ -38,10 +38,9 @@ export function reassignFormulaPresentation(db: Database.Database, projectId: st
   planId: string, outputVersionId: string, arrangement: Record<string, unknown>): boolean {
   const locks = readFormulaPresentationLocks(arrangement.presentationLocks, Number(arrangement.editRevision ?? 0));
   if (locks.packaging && locks.cover) return false;
-  const row = db.prepare(`SELECT r.seed,r.inputJson FROM live_mixcut_formula_output_versions v
-    JOIN live_mixcut_formula_execution_stages s ON s.id=v.timelineStageId
-    JOIN live_mixcut_formula_generation_requests r ON r.id=s.requestId
-    WHERE v.outputVersionId=? AND s.planId=? AND r.projectId=? AND r.batchId=?`)
+  const row = db.prepare(`SELECT r.seed,r.inputJson FROM live_mixcut_formula_output_lineage v
+    JOIN live_mixcut_formula_generation_requests r ON r.id=v.requestId
+    WHERE v.outputVersionId=? AND v.planId=? AND r.projectId=? AND r.batchId=?`)
     .get(outputVersionId, planId, projectId, batchId) as { seed: string; inputJson: string } | undefined;
   if (!row) throw new BatchDomainError('conflict', '缺少这条成片的原制作设置，不能重新分配');
   const input = JSON.parse(row.inputJson) as FormulaGenerationRequest['input'];

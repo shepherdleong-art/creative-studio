@@ -10,11 +10,12 @@ export interface FormulaGenerationProgress {
   items: Array<{ planId: string; scriptNumber: string; copyIndex: number; phase: string;
     status: 'pending' | 'running' | 'needs_attention' | 'ready'; detail: string; retryTaskId: string | null }>;
 }
-type StageKind = 'select' | 'source_speech' | 'judgment' | 'voice' | 'voice_narration' | 'audio_mapping' | 'narration' | 'timeline' | 'execution';
+type StageKind = 'select' | 'source_speech' | 'judgment' | 'voice' | 'voice_narration' | 'audio_mapping' | 'narration' | 'timeline' | 'schedule' | 'execution';
 const labels: Record<StageKind, string> = { select: '选片', source_speech: '识别原声', judgment: 'AI 判断', voice: '定声音',
-  voice_narration: '生成配音', audio_mapping: '安排声音', narration: '生成配音', timeline: '安排画面与字幕', execution: '检查画面、声音与包装' };
+  voice_narration: '生成配音', audio_mapping: '安排声音', narration: '生成配音', timeline: '安排画面与字幕', schedule: '排时间',
+  execution: '检查画面、声音与包装' };
 const order: StageKind[] = ['select', 'source_speech', 'judgment', 'voice', 'voice_narration',
-  'audio_mapping', 'narration', 'timeline', 'execution'];
+  'audio_mapping', 'narration', 'timeline', 'schedule', 'execution'];
 interface StageResult {
   status?: string; message?: string; issues?: Array<{ message?: string }>; conflicts?: Array<{ message?: string }>;
   narrations?: unknown[];
@@ -46,7 +47,8 @@ export function readFormulaGenerationProgress(db: Database.Database, projectId: 
     JOIN live_mixcut_output_plans p ON p.id=o.planId WHERE o.requestId=? ORDER BY p.seq`).all(request.id) as
     Array<{ planId: string; scriptNumber: string; copyIndex: number }>;
   const stages = db.prepare(`SELECT s.id,s.planId,s.kind,t.id AS taskId,t.status,a.errorMessage,
-      COALESCE(x.resultJson,v.resultJson,m.resultJson,n.resultJson,l.resultJson,e.resultJson,jr.resultJson,vr.resultJson,nr.resultJson) AS resultJson
+      COALESCE(x.resultJson,v.resultJson,m.resultJson,n.resultJson,l.resultJson,e.resultJson,jr.resultJson,vr.resultJson,nr.resultJson,
+        sr.resultJson,se.resultJson) AS resultJson
     FROM live_mixcut_formula_execution_stages s
     JOIN live_mixcut_formula_stages latest ON latest.id=s.selectionStageId
       AND latest.revision=(SELECT MAX(revision) FROM live_mixcut_formula_stages WHERE planId=s.planId AND kind='select')
@@ -61,6 +63,8 @@ export function readFormulaGenerationProgress(db: Database.Database, projectId: 
     LEFT JOIN live_mixcut_formula_judgment_results jr ON jr.stageId=s.id
     LEFT JOIN live_mixcut_formula_voice_results vr ON vr.stageId=s.id
     LEFT JOIN live_mixcut_formula_voice_narration_results nr ON nr.stageId=s.id
+    LEFT JOIN live_mixcut_formula_schedule_results sr ON sr.stageId=s.id
+    LEFT JOIN live_mixcut_formula_schedule_execution_results se ON se.stageId=s.id
     WHERE s.requestId=?`).all(request.id) as Array<{ id: string; planId: string; kind: StageKind; taskId: string | null;
       status: string | null; errorMessage: string | null; resultJson: string | null }>;
   const byPlan = new Map<string, typeof stages>();
@@ -91,15 +95,6 @@ export function readFormulaGenerationProgress(db: Database.Database, projectId: 
       detail: card.executionTask.errorMessage || '制作检查失败，请重试。', retryTaskId: card.executionTask.id };
     if (card?.coverTask?.status === 'failed') return { ...base, phase: '生成审片封面', status: 'needs_attention',
       detail: card.coverTask.errorMessage || '封面生成失败，请重试。', retryTaskId: card.coverTask.id };
-    // 新规矩在任务 08 先走到配音为止；这里只说明「在等排时间」，不是停下等人。
-    const voice = chain.find(stage => stage.kind === 'voice');
-    const narration = chain.find(stage => stage.kind === 'voice_narration');
-    if (request.rulesVersion === 'formula-generation/2' && voice?.status === 'succeeded'
-      && (narration ? narration.status === 'succeeded'
-        : (JSON.parse(voice.resultJson ?? '{}') as { narrationLines?: unknown[] }).narrationLines?.length === 0)) {
-      return { ...base, phase: '等待排时间', status: 'pending',
-        detail: '定声音和配音已完成；排时间在任务 09 接上。' };
-    }
     return { ...base, phase: card?.productionReady ? '生成审片封面' : chain.length ? '等待下一阶段' : '选片',
       status: card?.coverTask?.status === 'running' ? 'running' : 'pending', detail: '尚未完成制作，请等待后台处理。' };
   });
