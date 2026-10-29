@@ -6,6 +6,19 @@
 # 每个模型在这里用 litellm_params 做各自的参数映射/补充。
 
 model_list:
+  # Company aliases use the same gateway and key as company Kling.
+  - model_name: minimax-h3
+    litellm_params:
+      model: openai/minimax-h3
+      api_base: https://your-company-gateway.com/v1
+      api_key: your-company-key
+
+  - model_name: wan-3.0
+    litellm_params:
+      model: openai/wan-3.0
+      api_base: https://your-company-gateway.com/v1
+      api_key: your-company-key
+
   # ── 示例 1：OpenAI 兼容协议的图片模型（多数中转网关都是这个形态）──
   - model_name: doubao-seedance-2-5-260628
     litellm_params:

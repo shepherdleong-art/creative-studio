@@ -35,11 +35,12 @@ const port = probe.address().port;
 await new Promise(resolve => probe.close(resolve));
 const config = path.join(temp, 'config.yaml');
 fs.writeFileSync(config, `model_list:
-  - model_name: qiniuyun/kling-3.0
+${['qiniuyun/kling-3.0', 'minimax-h3', 'wan-3.0'].map(model => `  - model_name: ${model}
     litellm_params:
-      model: openai/qiniuyun/kling-3.0
+      model: openai/${model}
       api_base: http://127.0.0.1:${server.address().port}/v1
       api_key: local-fake-key
+`).join('')}
 router_settings:
   num_retries: 0
   timeout: 15
@@ -85,7 +86,27 @@ try {
     assert.equal(forwarded.shot_type, multiShot ? 'intelligence' : undefined);
     assert.ok([multiShot, String(multiShot)].includes(forwarded.multi_shot));
   }
-  assert.equal(captured.length, 2);
+  for (const [model, resolution, durationSec] of [['minimax-h3', '2K', 15], ['wan-3.0', '1080P', 30]]) {
+    for (const tail of [false, true]) {
+      const result = await openaiVideoAdapter.submit({
+        model, prompt: 'native forwarding fixture', sourceImagePath: imagePath, sourceMimeType: 'image/png', durationSec,
+        ...(tail ? { tailImagePath: imagePath, tailMimeType: 'image/png' } : {}),
+      }, 'local-fake-key', `http://127.0.0.1:${port}`);
+      assert.ok(result.providerTaskId);
+      const forwarded = captured.at(-1);
+      const decode = value => typeof value === 'string' ? JSON.parse(value) : value;
+      assert.equal(forwarded.model, model);
+      assert.equal(String(forwarded.seconds), String(durationSec));
+      assert.deepEqual(decode(forwarded.OutputConfig), {
+        Duration: durationSec, Resolution: resolution, ...(model === 'wan-3.0' ? { AspectRatio: '4:3' } : {}),
+      });
+      const frames = decode(forwarded.FileInfos);
+      assert.deepEqual(frames.map(frame => frame.Usage), tail ? ['FirstFrame', 'LastFrame'] : ['FirstFrame']);
+      assert.ok(frames.every(frame => frame.Url.startsWith('https://cos-fixture.example.com/')));
+      for (const field of ['images', 'multi_shot', 'shot_type', 'size']) assert.equal(forwarded[field], undefined);
+    }
+  }
+  assert.equal(captured.length, 6);
   console.log('litellm video forwarding tests passed');
 } finally {
   globalThis.fetch = originalFetch;

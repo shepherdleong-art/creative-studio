@@ -1297,6 +1297,99 @@ for (const alias of ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260
   assert.deepEqual(final.body, { model: capability.modelAlias, content: [{ type: 'draft_task', draft_task: { id: source.providerTaskId } }], resolution: '1080p', output_format: 'mov', watermark: true, return_last_frame: false, prompt: '' });
 }
 
+// New company native video models: configured list -> planner -> executor -> publication.
+for (const [id, model, durationSec, resolution] of [
+  ['company-minimax-h3', 'minimax-h3', 4, '2K'],
+  ['company-wan-3-0', 'wan-3.0', 2, '1080P'],
+] as const) {
+  insertVideoProvider.run(id, model, model, baseUrl, 'video-key');
+  const capability = ensureCanvasCapabilitiesRegistered(db).find((entry) => entry.providerIdentity === id)!;
+  for (const withTail of [false, true]) {
+    save([
+      material('native-first', firstFrameAsset),
+      ...(withTail ? [material('native-last', lastFrameAsset)] : []),
+      videoNode('native-video', capability.key, { durationSec, resolution }, 'image-to-video'),
+    ], [edge('native-first-edge', 'native-first', 'native-video'),
+      ...(withTail ? [edge('native-last-edge', 'native-last', 'native-video')] : [])]);
+    const deliveries: string[] = [];
+    const result = await runOnce('native-video', companyAdapter({
+      name: 'native-cos-check',
+      async deliver(request, signal) {
+        assert.equal(request.requireCos, true, `${model}: every frame requires COS`);
+        assert.equal(request.isFrameImage, true);
+        deliveries.push(request.role);
+        return fakeDeliverer.deliver(request, signal);
+      },
+    }));
+    assert.equal(result.phase, 'succeeded', result.errorMessage ?? model);
+    assert.equal(result.posts, 1);
+    assert.deepEqual(deliveries, withTail ? ['first-frame', 'last-frame'] : ['first-frame']);
+    assert.equal(result.body?.model, model);
+    assert.equal(result.body?.seconds, String(durationSec));
+    assert.deepEqual(result.body?.OutputConfig, {
+      Duration: durationSec, Resolution: resolution, ...(model === 'wan-3.0' ? { AspectRatio: '3:4' } : {}),
+    });
+    assert.deepEqual(result.body?.FileInfos, [
+      { Type: 'Url', Category: 'Image', Url: expectedRef(firstFrameAsset, 'first-frame'), Usage: 'FirstFrame' },
+      ...(withTail ? [{ Type: 'Url', Category: 'Image', Url: expectedRef(lastFrameAsset, 'last-frame'), Usage: 'LastFrame' }] : []),
+    ]);
+    for (const key of ['images', 'size', 'LastFrameUrl', 'multi_shot', 'shot_type', 'response_format']) assert.equal(result.body?.[key], undefined);
+    const noCos = await runOnce('native-video', companyAdapter(createDefaultCanvasDeliverer()));
+    assert.equal(noCos.posts, 0, `${model}: missing COS must fail before POST`);
+  }
+  db.prepare('UPDATE video_providers SET baseUrl = ? WHERE id = ?').run('https://example.invalid', id);
+  const nonLoopback = await runOnce('native-video');
+  assert.equal(nonLoopback.posts, 0);
+  assert.equal(nonLoopback.errorCode, 'provider_route_invalid');
+  db.prepare('UPDATE video_providers SET baseUrl = ? WHERE id = ?').run(baseUrl, id);
+  // All declared resolutions must reach OutputConfig unchanged in text and reference modes.
+  for (const resolutionOption of model === 'minimax-h3' ? ['768P', '2K'] : ['480P', '720P', '1080P']) {
+    for (const mode of ['text-to-video', 'reference-to-video'] as const) {
+      const sources = mode === 'reference-to-video' ? [material('native-ref-image', firstFrameAsset),
+        material('native-ref-video', videoRefAsset, 'video'), material('native-ref-audio', companyAudio, 'audio')] : [];
+      save([...sources, videoNode('native-modes', capability.key, { durationSec, resolution: resolutionOption, aspectRatio: '16:9' }, mode)],
+        sources.map((source, index) => edge(`native-ref-${index}`, source.id, 'native-modes')));
+      const result = await runOnce('native-modes', companyAdapter({
+        name: 'native-reference-cos-check',
+        async deliver(request, signal) {
+          assert.equal(request.requireCos, true);
+          return fakeDeliverer.deliver(request, signal);
+        },
+      }));
+      assert.equal(result.phase, 'succeeded', `${model}/${mode}/${resolutionOption}: ${result.errorMessage}`);
+      assert.equal(result.posts, 1);
+      assert.deepEqual(result.body?.OutputConfig, { Duration: durationSec, Resolution: resolutionOption, AspectRatio: '16:9' });
+      assert.equal(result.body?.images, undefined);
+      const files = result.body?.FileInfos as Array<{ Category: string; Usage: string; Url: string }> | undefined;
+      if (mode === 'text-to-video') assert.equal(files, undefined, 'Text mode must not send placeholder images');
+      else {
+        assert.deepEqual(files?.map((file) => [file.Category, file.Usage]), [['Image', 'Reference'], ['Video', 'Reference'], ['Audio', 'Reference']]);
+        assert.ok(files?.every((file) => file.Url.startsWith('https://cos.test/')));
+      }
+    }
+  }
+  // Persisted media duration is validated before any paid POST, including unknown duration.
+  const originalDuration = (db.prepare('SELECT durationSec FROM creative_canvas_assets WHERE id = ?').get(videoRefAsset) as { durationSec: number }).durationSec;
+  save([material('bad-duration-video', videoRefAsset, 'video'),
+    videoNode('bad-native-duration', capability.key, { durationSec, resolution }, 'reference-to-video')],
+  [edge('bad-duration-edge', 'bad-duration-video', 'bad-native-duration')]);
+  for (const invalidDuration of [null, 0.5, 16]) {
+    db.prepare('UPDATE creative_canvas_assets SET durationSec = ? WHERE id = ?').run(invalidDuration, videoRefAsset);
+    const result = await runOnce('bad-native-duration');
+    assert.equal(result.posts, 0);
+    assert.equal(result.errorCode, 'invalid_reference_duration');
+  }
+  db.prepare('UPDATE creative_canvas_assets SET durationSec = ? WHERE id = ?').run(originalDuration, videoRefAsset);
+  if (model === 'wan-3.0') {
+    save([material('wan-duration-video', videoRefAsset, 'video'),
+      videoNode('wan-duration-total', capability.key, { durationSec: 30, resolution }, 'reference-to-video')],
+    [edge('wan-duration-edge', 'wan-duration-video', 'wan-duration-total')]);
+    const result = await runOnce('wan-duration-total');
+    assert.equal(result.posts, 0, 'Wan input video plus output must not exceed 30 seconds');
+    assert.equal(result.errorCode, 'invalid_reference_duration');
+  }
+}
+
 server.close();
 db.close();
 fs.rmSync(root, { recursive: true, force: true });

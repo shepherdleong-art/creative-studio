@@ -1,3 +1,5 @@
+import { companyNativeVideoModel } from './company-gateway-video-models.ts';
+
 // 界面、单条/批量提交接口与各视频适配器共用的整数秒约束；非法值一律拒绝，不静默截断。
 const durationsBetween = (min: number, max: number) => Array.from({ length: max - min + 1 }, (_, index) => min + index);
 
@@ -17,6 +19,8 @@ function isGatewayKling25(providerType: string, model: string): boolean {
 /** 按供应商类型与实际模型给出允许的整数秒（升序）；未知模型保留历史 2–15 秒。 */
 export function videoDurationOptions(providerType: string, model: string): readonly number[] {
   if (isGatewayKling25(providerType, model)) return KLING_25_GATEWAY_DURATIONS;
+  const nativeModel = providerType === 'openai-video' ? companyNativeVideoModel(model) : null;
+  if (nativeModel) return durationsBetween(nativeModel.minDurationSec, nativeModel.maxDurationSec);
   const m = model.trim().toLowerCase();
   if (/^doubao-seedance-2-5(?:-\d{6})?$/.test(m)) return SEEDANCE_25_DURATIONS;
   if (/^doubao-seedance-2-0(?:-fast)?(?:-\d{6})?$/.test(m)) return SEEDANCE_20_DURATIONS;

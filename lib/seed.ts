@@ -365,6 +365,18 @@ export function seedVideoProviders() {
 function ensureCompanyVideoProviders(db: ReturnType<typeof getDb>) {
   const companyProviders = [
     {
+      id: 'company-minimax-h3',
+      name: '公司 MiniMax H3 · 2K',
+      modelEnv: 'COMPANY_MINIMAX_H3_VIDEO_MODEL',
+      defaultModel: 'minimax-h3',
+    },
+    {
+      id: 'company-wan-3-0',
+      name: '公司万相 Wan 3.0 · 1080p',
+      modelEnv: 'COMPANY_WAN_3_0_VIDEO_MODEL',
+      defaultModel: 'wan-3.0',
+    },
+    {
       id: 'company-kling-2-5',
       name: '公司可灵 2.5 · 1080p',
       modelEnv: 'COMPANY_KLING_2_5_VIDEO_MODEL',

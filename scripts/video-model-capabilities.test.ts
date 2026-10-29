@@ -94,7 +94,8 @@ try {
   execFileSync(process.execPath, ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--input-type=module', '-e', `
     import { registerHooks } from 'node:module';
     registerHooks({ resolve(specifier, context, nextResolve) {
-      if (!specifier.endsWith('/video-generation-options.ts') && specifier !== './video-duration.ts') {
+      if (!specifier.endsWith('/video-generation-options.ts')
+        && !['./video-duration.ts', './company-gateway-video-models.ts'].includes(specifier)) {
         throw new Error('Unexpected client runtime dependency: ' + specifier);
       }
       return nextResolve(specifier, context);

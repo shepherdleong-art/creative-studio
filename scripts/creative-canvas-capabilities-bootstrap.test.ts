@@ -30,6 +30,8 @@ for (const [id, name, model] of configured) {
 }
 // 模拟用户本地视频配置：旧 ID 已改用不同渠道/模型，必须认实际字段。
 const videos = [
+  ['company-minimax-h3', 'minimax-h3'],
+  ['company-wan-3-0', 'wan-3.0'],
   ['kling-2-5', 'kling-3.0'],
   ['jimeng-2-0', 'doubao-seedance-2-0-fast-260128'],
   ['company-seedance-2-0-fast', 'doubao-seedance-2-0-260128'],
@@ -48,6 +50,28 @@ for (const capability of selected) {
   assert.equal(route.providerId, capability.providerIdentity);
 }
 const kling25 = selected.find((capability) => capability.modelAlias === 'kling-2.5')!;
+for (const [model, min, max, resolution] of [['minimax-h3', 4, 15, '2K'], ['wan-3.0', 2, 30, '1080P']] as const) {
+  const capability = selected.find((entry) => entry.modelAlias === model)!;
+  const refs = [{ kind: 'image', role: 'first-frame' }, { kind: 'image', role: 'last-frame' }] as const;
+  for (const durationSec of [min, max]) {
+    assert.deepEqual(validateCapabilityInputs({ capability, mode: 'image-to-video', refs, parameters: { durationSec, resolution } }), []);
+  }
+  for (const durationSec of [min - 1, max + 1, min + 0.5]) {
+    assert.ok(validateCapabilityInputs({ capability, mode: 'image-to-video', refs, parameters: { durationSec } }).some((problem) => problem.code === 'parameter_value_invalid'));
+  }
+  assert.ok(validateCapabilityInputs({ capability, mode: 'image-to-video', refs: [] }).length);
+  assert.deepEqual(validateCapabilityInputs({ capability, mode: 'text-to-video', refs: [], parameters: { aspectRatio: '16:9' } }), []);
+  assert.ok(validateCapabilityInputs({ capability, mode: 'text-to-video', refs }).length);
+  assert.deepEqual(validateCapabilityInputs({ capability, mode: 'reference-to-video', refs: [{ kind: 'image', role: 'reference' }, { kind: 'audio', role: 'audio' }] }), []);
+  assert.ok(validateCapabilityInputs({ capability, mode: 'reference-to-video', refs: [] }).length);
+  assert.ok(validateCapabilityInputs({ capability, mode: 'reference-to-video', refs }).length);
+  assert.ok(validateCapabilityInputs({ capability, mode: 'image-to-video', refs, parameters: { multiShot: true } }).length);
+  for (const resolutionOption of model === 'minimax-h3' ? ['768P', '2K'] : ['480P', '720P', '1080P']) {
+    assert.deepEqual(validateCapabilityInputs({ capability, mode: 'image-to-video', refs, parameters: { resolution: resolutionOption } }), []);
+  }
+  assert.ok(validateCapabilityInputs({ capability, mode: 'image-to-video', refs, parameters: { resolution: '4K' } }).length);
+  assert.ok(validateCapabilityInputs({ capability, mode: 'image-to-video', refs: [...refs, refs[1]] }).length);
+}
 assert.equal(validateCapabilityInputs({ capability: kling25, mode: 'text-to-video', refs: [], parameters: { durationSec: 6 } }).length, 1);
 assert.equal(validateCapabilityInputs({ capability: kling25, mode: 'text-to-video', refs: [], parameters: { durationSec: 10 } }).length, 0);
 db.prepare(`UPDATE providers SET enabled = 0 WHERE model = 'nano-banana-3.0'`).run();
@@ -55,7 +79,13 @@ db.prepare(`UPDATE providers SET apiKey = '' WHERE model = 'nano-banana-3.1'`).r
 db.prepare(`UPDATE video_providers SET enabled = 0 WHERE defaultModel = 'kling-3.0'`).run();
 const refreshed = ensureCanvasCapabilitiesRegistered(db);
 assert.equal(refreshed.filter((capability) => capability.mediaKind === 'image').length, 3, '停用和清空 Key 后不残留在模型列表');
-assert.equal(refreshed.filter((capability) => capability.mediaKind === 'video').length, 5);
+assert.equal(refreshed.filter((capability) => capability.mediaKind === 'video').length, videos.length - 1);
+
+db.prepare(`UPDATE video_providers SET enabled = 0 WHERE defaultModel = 'minimax-h3'`).run();
+db.prepare(`UPDATE video_providers SET apiKey = '' WHERE defaultModel = 'wan-3.0'`).run();
+assert.ok(!ensureCanvasCapabilitiesRegistered(db).some((entry) => ['minimax-h3', 'wan-3.0'].includes(entry.modelAlias)));
+db.prepare(`INSERT INTO video_providers VALUES ('unknown-h3', 'Unknown H3', 'openai-video', 'minimax-h3-max', 'http://127.0.0.1:4000', 'test-key', 1)`).run();
+assert.ok(!ensureCanvasCapabilitiesRegistered(db).some((entry) => entry.modelAlias === 'minimax-h3-max'));
 db.prepare(`UPDATE providers SET name = '自定义名称' WHERE model = 'image2-medium'`).run();
 assert.equal(ensureCanvasCapabilitiesRegistered(db).find((capability) => capability.key === 'company-image2-medium')?.displayName, '自定义名称');
 db.prepare(`UPDATE providers SET model = 'unknown-image' WHERE model = 'image2-medium'`).run();

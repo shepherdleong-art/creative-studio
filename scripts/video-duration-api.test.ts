@@ -27,7 +27,7 @@ db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path) VALUE
 db.prepare(`INSERT INTO shot_sets (id, projectId, name) VALUES ('set','project','test')`).run();
 db.prepare(`INSERT INTO shots (id, shotSetId, sourceImageId, indexNum) VALUES ('shot','set','image',1)`).run();
 for (const [id, model] of [['sd25','doubao-seedance-2-5-260628'], ['sd20','doubao-seedance-2-0-260128'],
-  ['fast','doubao-seedance-2-0-fast-260128'], ['kling','kling-3.0'], ['qiniu','qiniuyun/kling-3.0'], ['k25','kling-2.5']]) {
+  ['fast','doubao-seedance-2-0-fast-260128'], ['kling','kling-3.0'], ['qiniu','qiniuyun/kling-3.0'], ['k25','kling-2.5'], ['h3','minimax-h3'], ['wan3','wan-3.0']]) {
   db.prepare(`INSERT INTO video_providers (id, name, type, defaultModel, baseUrlEnv, apiKeyEnv, modelEnv, baseUrl, apiKey, enabled) VALUES (?, ?, 'openai-video', ?, '', '', '', 'http://invalid.test', 'test-key', 1)`).run(id, id, model);
 }
 const dependencies: Record<string, unknown> = {
@@ -62,7 +62,7 @@ async function submit(handler: typeof single, body: unknown) {
   return handler(new Request('http://localhost/test', { method: 'POST', body: JSON.stringify(body) }), { params: Promise.resolve({ id: 'set' }) });
 }
 try {
-  for (const [providerId, min, max] of [['sd25',4,30], ['sd20',4,15], ['fast',4,15], ['kling',3,15], ['qiniu',3,15], ['k25',5,10]] as const) {
+  for (const [providerId, min, max] of [['sd25',4,30], ['sd20',4,15], ['fast',4,15], ['kling',3,15], ['qiniu',3,15], ['k25',5,10], ['h3',4,15], ['wan3',2,30]] as const) {
     for (const seconds of [2, 3, 4, 5, 7, 10, 11, 15, 16, 30, 31, 100, min, max, min - 1, max + 1, 4.5, 10.5, 'bad', null, '']) {
       const valid = typeof seconds === 'number' && Number.isInteger(seconds)
         && (providerId === 'k25' ? seconds === 5 || seconds === 10 : seconds >= min && seconds <= max);
@@ -142,35 +142,35 @@ try {
   assert.equal(created.capabilities.durations[0], 4);
 
 
-  // fc68d49 起，第四步单条及批量视频生成允许为实拍组追加独立候选（含制作中、未接管）。
-  // 旧的无版本切图/整组换景/删组守卫仍保留，见 reassembled-video-guard.test.ts。
-  // 表由 final-edit 迁移建好（含 NOT NULL 外键），这里只插满足约束的最小行。
-  db.prepare(`INSERT INTO final_edit_film_productions (id, requestId, requestJson, projectId, root, createdAt)
-    VALUES ('production', 'request', '{}', 'project', 'root', 'now')`).run();
-  db.prepare(`INSERT INTO final_edit_film_production_items
-    (id, productionId, filmKey, importKey, title, shotSetId, groupId, variantId, draftId, shotIdsJson, snapshotJson, registryJson, baselineJson, updatedAt)
-    VALUES ('item', 'production', 'film', 'import', 'title', 'set', 'group', 'variant', 'draft', '[]', '{}',
-      '{"videos":{"synced":{"id":"synced-video"}}}', 'frozen production baseline', 'now')`).run();
+  db.exec(`
+    INSERT INTO final_edit_film_productions (id,requestId,requestJson,projectId,root,createdAt)
+      VALUES ('production','request','{}','project','/test','now');
+    INSERT INTO final_edit_film_production_items (id,productionId,filmKey,importKey,title,shotSetId,groupId,variantId,draftId,shotIdsJson,snapshotJson,registryJson,baselineJson,updatedAt)
+      VALUES ('item','production','film','import','test','set','group','variant','script','{}','{}','{"videos":{"synced":{"id":"synced-video"}}}','frozen production baseline','now');
+  `);
   // Step four appends independent candidates even before production has a film binding.
   // It must never change synced media, current image selection, or the saved film.
-  const protectedTables = ['shots', 'shot_sets', 'final_edit_film_production_items', 'final_edit_film_bindings', 'final_edit_variants'];
+  const protectedTables = ['shots', 'shot_sets', 'final_edit_groups', 'final_edit_film_productions', 'final_edit_film_production_items', 'final_edit_film_bindings', 'final_edit_variants'];
   const snapshot = () => protectedTables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
   for (const stage of ['production', 'legacy', 'adopted']) {
-    if (stage === 'legacy') db.exec(`
-      INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, narrationConfigJson, coverTitleJson, textStylesJson, createdAt, updatedAt)
-        VALUES ('legacy-group', 'project', 'script', 'set', '{}', 'hash', '{}', '{}', '{}', 'now', 'now');
-      INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, createdAt, updatedAt)
-        VALUES ('legacy-variant', 'legacy-group', 1, 'test', '{"clips":[{"videoJobId":"synced-video"}]}', '{}', '{}', 'now', 'now');
-      INSERT INTO final_edit_film_bindings (id, importKey, importHash, projectId, shotSetId, groupId, variantId, specJson, candidatesJson, manifestJson, inputHashesJson, managedRootRelative, deliveryDir, baseName, reviewToken, createdAt)
-        VALUES ('legacy-binding', 'legacy-import', 'hash', 'project', 'set', 'legacy-group', 'legacy-variant', '{}', '{}', '{}', '{}', 'test', '/legacy', 'legacy', 'token', 'now');
-    `);
-    if (stage === 'adopted') db.prepare('UPDATE final_edit_variants SET timelineJson=? WHERE id=?').run(
-      JSON.stringify({ importedFilmEditor: 'mixcut', clips: [{ videoJobId: 'synced-video' }] }), 'legacy-variant',
+    if (stage === 'legacy') {
+      db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, narrationConfigJson, coverTitleJson, textStylesJson, createdAt, updatedAt)
+        VALUES ('group', 'project', 'script', 'set', '{}', 'hash', '{}', '{}', '{}', 'now', 'now')`).run();
+      db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, createdAt, updatedAt)
+        VALUES ('variant', 'group', 1, 'test', '{}', '{}', '{}', 'now', 'now')`).run();
+      db.prepare(`INSERT INTO final_edit_film_bindings (id, importKey, importHash, projectId, shotSetId, groupId, variantId, specJson, candidatesJson, manifestJson, inputHashesJson, managedRootRelative, deliveryDir, baseName, reviewToken, createdAt)
+        VALUES ('binding', 'import', 'hash', 'project', 'set', 'group', 'variant', '{}', '{}', '{}', '{}', 'test', '/test', 'test', 'token', 'now')`).run();
+      db.prepare('UPDATE final_edit_variants SET timelineJson=? WHERE id=?').run(JSON.stringify({ clips: [{ videoJobId: 'synced-video' }] }), 'variant');
+      db.prepare('UPDATE final_edit_film_production_items SET bindingId=? WHERE id=?').run('binding', 'item');
+    }
+    if (stage === 'adopted') db.prepare('UPDATE final_edit_variants SET timelineJson=?').run(
+      JSON.stringify({ importedFilmEditor: 'mixcut', clips: [{ videoJobId: 'synced-video' }] }),
     );
+    assert.equal(reassembledGuard.requiresReassembledUpstreamRework(db, 'set'), stage !== 'adopted');
     for (const handler of [single, batch]) {
       db.exec(`DELETE FROM video_jobs;
-        INSERT INTO video_jobs(id, projectId, shotSetId, shotId, sourceImageId, providerId, model, prompt, durationSec)
-        VALUES ('synced-video','project','set','shot','image','kling','kling-3.0','original synced prompt',5);`);
+        INSERT INTO video_jobs(id, projectId, shotSetId, shotId, sourceImageId, prompt, providerId, model, durationSec, status)
+        VALUES ('synced-video','project','set','shot','image','original synced prompt','kling','kling-3.0',5,'succeeded');`);
       const originalVideo = db.prepare('SELECT * FROM video_jobs WHERE id=?').get('synced-video');
       const before = snapshot();
       const item = { providerId: 'kling', prompt: 'new independent candidate', durationSec: 5 };
