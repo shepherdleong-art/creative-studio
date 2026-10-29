@@ -228,6 +228,16 @@ function baseInput(overrides: Partial<SchedulingInput> & Pick<SchedulingInput, '
     assert.equal(filler.length, 1);
     assert.ok((filler[0].timelineEndFrame - filler[0].timelineStartFrame) >= 24);
   }
+  // 所有素材的有效片段都不到 1 秒：不插短补镜，只报警告。
+  {
+    const thin = [material('P1', [file('P1', { in: 1, out: 1.5 })]), material('P9', [file('P9', { in: 1, out: 1.5 })])];
+    const input = baseInput({ script: { scriptNumber: '9', copyIndex: 1, lines: ['这一行读三秒六。'], codes: ['P1'] }, materials: thin,
+      judgment: { similar: [], bestVo: null, related: [{ lineIndex: 0, assetIds: ['P9'] }] } });
+    const { timeline } = build(input, 3.6);
+    assert.ok(timeline.clips.filter(clip => clip.kind === 'filler')
+      .every(clip => clip.timelineEndFrame - clip.timelineStartFrame >= 24), '补镜不会短于 1 秒');
+    assert.ok(timeline.warnings.some(message => message.includes('补镜不够长')), '补不够要报警告，不能悄悄放一段短画面');
+  }
 }
 
 // ⑩ 结尾镜头：先用公式里没用上的镜头（从靠后的开始），再全景展示，再全景体验。
@@ -462,7 +472,7 @@ function baseInput(overrides: Partial<SchedulingInput> & Pick<SchedulingInput, '
   assert.equal(timeline.totalFrames, 66);
 }
 
-// ㉔ 原片没有余量：接一段短结尾画面补上收尾，任何画面都不许变速。
+// ㉔ 原片没有余量：接一段短结尾画面补上收尾；结尾画面同样不短于 1 秒。
 {
   const materials = [material('S1', [file('S1', { in: 1, out: 3, duration: 3 })])];
   const input = baseInput({ script: { scriptNumber: '24', copyIndex: 1, lines: ['只有一句。'], codes: ['S1'] }, materials });
@@ -471,8 +481,8 @@ function baseInput(overrides: Partial<SchedulingInput> & Pick<SchedulingInput, '
   const tail = timeline.clips.at(-1)!;
   assert.equal(tail.kind, 'filler');
   assert.equal(tail.fillerCause, 'ending');
-  assert.equal(tail.timelineEndFrame - tail.timelineStartFrame, 18, '结尾画面正好补 0.75 秒');
-  assert.equal(timeline.totalFrames, 66, '总长仍是声音 + 0.75 秒');
+  assert.equal(tail.timelineEndFrame - tail.timelineStartFrame, 24, '结尾画面至少 1 秒，收尾比 0.75 秒略长');
+  assert.equal(timeline.totalFrames, 48 + 24, '总长是声音 + 至少 1 秒结尾画面');
   for (const clip of timeline.clips) {
     assert.equal(microsecondsToFrames(clip.sourceOutUs) - microsecondsToFrames(clip.sourceInUs),
       clip.timelineEndFrame - clip.timelineStartFrame, `画面 ${clip.logicalCode} 不许变速`);

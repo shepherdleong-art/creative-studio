@@ -55,7 +55,7 @@ try {
   await runFfmpeg(['-f', 'lavfi', '-i', 'color=green:s=64x64:r=24:d=2', '-f', 'lavfi', '-i', 'sine=frequency=660:duration=2',
     '-c:a', 'aac', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-shortest', '-y', vo]);
   await runFfmpeg(['-f', 'lavfi', '-i', 'color=blue:s=64x64:r=24:d=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', still]);
-  await runFfmpeg(['-f', 'lavfi', '-i', 'color=red:s=64x64:r=24:d=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', spare]);
+  await runFfmpeg(['-f', 'lavfi', '-i', 'color=red:s=64x64:r=24:d=3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', spare]);
   await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', voice]);
   const voId = await registerManagedCopy(db, 'p', { sourcePath: vo });
   const stillId = await registerManagedCopy(db, 'p', { sourcePath: still });
@@ -411,6 +411,7 @@ try {
 
   // 12. 制作检查的通过标记被冲掉后，修复循环把标记补回来；已经通过的成片不会被打回未通过。
   const { repairFormulaContinuations } = await import('../lib/live-mixcut/formula/selection-store.ts');
+  const { repairFormulaScheduleExecutionChecks } = await import('../lib/live-mixcut/formula/schedule-output.ts');
   const { formulaOutputExecutionReady } = await import('../lib/live-mixcut/formula/execution-store.ts');
   const narrationVersion = db.prepare(`SELECT o.id,o.arrangementJson FROM live_mixcut_formula_schedule_output_versions f
     JOIN live_mixcut_output_versions o ON o.id=f.outputVersionId JOIN live_mixcut_formula_schedule_stages s ON s.id=f.scheduleStageId
@@ -427,6 +428,9 @@ try {
   delete stripped.formulaExecution;
   stripped.blockers = ['formula_execution_pending'];
   db.prepare('UPDATE live_mixcut_output_versions SET arrangementJson=? WHERE id=?').run(JSON.stringify(stripped), narrationVersion.id);
+  // 旧链的修复只认旧表，看不到新规矩的成片：只跑新链这条修复，才能证明它自己补得回来。
+  repairFormulaScheduleExecutionChecks(db, () => {});
+  assert.equal(readArrangement().productionReady, true, '新规矩的修复单独跑也能把通过标记补回来');
   repairFormulaContinuations(db);
   const healed = readArrangement();
   assert.equal(healed.productionReady, true, '检查结果还在、内容没变，修复把通过标记补回来');
@@ -440,6 +444,35 @@ try {
   assert.equal(afterRepairs.productionReady, true, '修复跑再多轮也不把已通过的成片打回');
   assert.equal(afterRepairs.formulaExecution?.stageId, healed.formulaExecution?.stageId);
   assert.equal(checkCount(), checksBefore, '反复修复不会堆检查单');
+
+  // 13. 新规矩的成片能人工换片：核验记录写新表，不撞旧时间轴的外键和归属触发器。
+  const { applyFormulaManualClipEdit } = await import('../lib/live-mixcut/formula/manual-clip-edit.ts');
+  const { getBatchOutputArrangementView } = await import('../lib/live-mixcut/output-arrangement.ts');
+  const editable12 = getBatchOutputArrangementView(db, 'p', batchId, planId(0));
+  assert.ok(editable12.editable && editable12.outputVersionId, '成片当前可以编辑');
+  const targetClip = editable12.clips.find(clip => clip.assetId === stillId);
+  assert.ok(targetClip, '排时间里有静物镜头可以换');
+  const spareFingerprint = (db.prepare('SELECT contentFingerprint FROM live_mixcut_assets WHERE id=?')
+    .get(spareId) as { contentFingerprint: string }).contentFingerprint;
+  const targetLengthUs = targetClip!.sourceEndUs - targetClip!.sourceStartUs;
+  await applyFormulaManualClipEdit(db, 'p', batchId, planId(0), {
+    type: 'replace', clipId: targetClip!.clipId, assetId: spareId,
+    expectedOutputVersionId: editable12.outputVersionId!, expectedEditRevision: editable12.editRevision,
+    requestKey: 'schedule-manual-replace',
+    media: { contentFingerprint: spareFingerprint, inUs: 0, outUs: targetLengthUs, protected: null,
+      sound: 'mute', segments: [], confirmed: true },
+  });
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM live_mixcut_formula_schedule_manual_media WHERE outputVersionId=?')
+    .get(editable12.outputVersionId) as { n: number }).n, 1, '新规矩成片的人工素材记录写进新表');
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM live_mixcut_formula_manual_media WHERE outputVersionId=?')
+    .get(editable12.outputVersionId) as { n: number }).n, 0, '旧时间轴的人工素材表一行不写');
+  const replacedView = getBatchOutputArrangementView(db, 'p', batchId, planId(0));
+  assert.equal(replacedView.clips.find(clip => clip.clipId === targetClip!.clipId)?.assetId, spareId);
+  assert.ok(replacedView.reviewContext?.issues.some(issue => issue.message.includes('人工换片')), '审片能看到人工换片');
+  const manifestAfterReplace = captureFormulaManifestItem(db, 'p', batchId, planId(0), new Map());
+  assert.equal(manifestAfterReplace.deviations.replacedClips.length, 1, '清单也记下这次人工换片');
+  assert.equal(manifestAfterReplace.clips.find(clip => clip.clipId === targetClip!.clipId)?.manualDeviation,
+    'source_changed', '非口播换片在清单里不再认成没改动');
 
   console.log('formula voice pipeline tests passed (fake ASR/AI/TTS, real files)');
 } finally {

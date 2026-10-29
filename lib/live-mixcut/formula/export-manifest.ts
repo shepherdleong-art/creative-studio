@@ -17,7 +17,7 @@ import type { FormulaScheduleStageResult } from './schedule.ts';
 import { readFormulaMusicSource } from './output-music.ts';
 import { readFormulaExportIdentity } from './export-identity.ts';
 import type { FormulaSelection } from './selection.ts';
-import { describeFormulaDeviations, describeScheduleFormulaDeviations } from './deviations.ts';
+import { describeFormulaDeviations, describeScheduleFormulaDeviations, scheduleClipSlotIds } from './deviations.ts';
 import { readFormulaManualMedia } from './manual-media.ts';
 import type { FormulaAudioMapping } from './audio-mapping.ts';
 import type { FormulaTimelineResult } from './timeline.ts';
@@ -123,11 +123,15 @@ export function captureFormulaManifestItem(db: Database.Database, projectId: str
   if (timeline?.status !== 'planned') throw new BatchDomainError('conflict', '成片缺少对应版本的原始排片记录');
   const identity = readFormulaExportIdentity(db, { projectId, batchId, planId, outputVersionId: view.outputVersionId, packaging: view.packaging ?? {} });
   const scheduleClips = new Map((schedule?.timeline.clips ?? []).map(clip => [clip.id, clip]));
+  // 非口播镜头的 segmentId 是排时间片段 id；按槽位表换回来，清单才认得出人工改动。
+  const scheduleSlotByClipId = schedule ? scheduleClipSlotIds(selection, schedule) : new Map<string, string>();
   const clips = [...view.clips].sort((a, b) => a.timelineStartUs - b.timelineStartUs || a.timelineEndUs - b.timelineEndUs).map(clip => {
-    const slot = selection.slots.find(slot => slot.slotId === clip.segmentId);
+    const slot = selection.slots.find(slot => slot.slotId === clip.segmentId)
+      ?? selection.slots.find(slot => slot.slotId === scheduleSlotByClipId.get(clip.segmentId))
+      ?? selection.slots.find(slot => slot.slotId === scheduleSlotByClipId.get(clip.clipId));
     // 非口播镜头在排时间结果里没有槽位号，只能按片段 id 认回排时间自己的决定：
     // 镜头、替换镜头和补镜都是算法排的，不是人工插入。
-    const scheduled = slot ? undefined : scheduleClips.get(clip.clipId);
+    const scheduled = scheduleClips.get(clip.clipId) ?? scheduleClips.get(clip.segmentId);
     const generated = scheduled && scheduled.kind !== 'filler' ? scheduled : null;
     const replacement = slot?.manualReplacement ?? slot?.replacement;
     const manual = clip.formulaSourceId ? readFormulaManualMedia(db, projectId, view.outputVersionId!, clip.formulaSourceId) : null;
@@ -146,9 +150,13 @@ export function captureFormulaManifestItem(db: Database.Database, projectId: str
       sourceStartUs: clip.sourceStartUs, sourceEndUs: clip.sourceEndUs,
       timelineStartUs: clip.timelineStartUs, timelineEndUs: clip.timelineEndUs,
       playbackRate: clip.playbackRate ?? 1, framing: clip.framing ?? null,
-      selectionReason: slot?.reason ?? (scheduled ? `schedule_${scheduled.kind}` : 'manual_insert'),
-      manualDeviation: slot ? (slot.assetId !== clip.assetId || slot.candidate?.contentFingerprint !== clip.contentFingerprint ? 'source_changed' : null)
-        : scheduled ? null : 'manual_insert',
+      selectionReason: scheduled ? `schedule_${scheduled.kind}` : slot?.reason ?? 'manual_insert',
+      // 排时间出来的成片按排时间实际用的那份比：换素材才算人工改动，补镜和替镜都不算。
+      manualDeviation: generated
+        ? (generated.assetId !== clip.assetId || generated.contentFingerprint !== clip.contentFingerprint ? 'source_changed' : null)
+        : scheduled ? null : slot
+          ? (slot.assetId !== clip.assetId || slot.candidate?.contentFingerprint !== clip.contentFingerprint ? 'source_changed' : null)
+          : 'manual_insert',
       ...(scheduled?.kind === 'filler' ? { fillerCause: scheduled.fillerCause ?? null, fillerLines: scheduled.lineIndexes } : {}),
       ...(scheduled?.substitution ? { scheduleSubstitution: { replacedCode: scheduled.substitution.replacedCode,
         from: scheduled.substitution.from, assetId: scheduled.substitution.file.assetId,

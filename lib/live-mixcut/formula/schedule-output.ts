@@ -130,7 +130,7 @@ export function queueFormulaOutputCheck(db: Database.Database, projectId: string
 /** 升级或中断后把新规矩的成片检查补回来；和旧链的修复互不相干。 */
 export function repairFormulaScheduleExecutionChecks(db: Database.Database, onError: (projectId: string, requestId: string) => void): void {
   if (!formulaExecutionAvailable(db)) return;
-  const rows = db.prepare(`SELECT f.outputVersionId AS id,b.projectId,sel.requestId FROM live_mixcut_formula_schedule_output_versions f
+  const rows = db.prepare(`SELECT f.outputVersionId AS id,b.projectId,b.id AS batchId,sel.requestId FROM live_mixcut_formula_schedule_output_versions f
     JOIN live_mixcut_output_versions o ON o.id=f.outputVersionId JOIN live_mixcut_output_plans p ON p.currentVersionId=o.id
     JOIN live_mixcut_production_versions v ON v.id=p.batchVersionId JOIN live_mixcut_productions b ON b.currentVersionId=v.id
     JOIN live_mixcut_formula_schedule_stages s ON s.id=f.scheduleStageId

@@ -17,11 +17,34 @@ export interface FormulaReplacedSpeechRange {
 export type FormulaManualMediaProof = FormulaManualMediaBase & ({ version: 1; sound: 'mute' }
   | { version: 2 | 3; sound: 'source'; segments: FormulaManualSpeechSegment[]; speechConfirmed: true;
       previousText: string; replaces: FormulaReplacedSpeechRange[] });
+/**
+ * 人工素材核验记录：旧时间轴的成片和排时间的成片各写各的表（v7 起）。
+ * 读按 id 两张都查，写按血缘选表；旧库还没有新表时只认旧表。
+ */
+const MANUAL_MEDIA_TABLES = ['live_mixcut_formula_manual_media', 'live_mixcut_formula_schedule_manual_media'] as const;
+
+function manualMediaTableExists(db: Database.Database, table: string): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table));
+}
+
+/** 写核验记录用哪张表：新规矩的成片走新表，旧时间轴的成片走旧表。 */
+export function formulaManualMediaTable(db: Database.Database, outputVersionId: string): string {
+  try {
+    const row = db.prepare('SELECT sourceKind FROM live_mixcut_formula_output_lineage WHERE outputVersionId=?')
+      .get(outputVersionId) as { sourceKind: 'timeline' | 'schedule' } | undefined;
+    if (row?.sourceKind === 'schedule') return 'live_mixcut_formula_schedule_manual_media';
+  } catch { /* 还没建血缘视图时按旧表处理 */ }
+  return 'live_mixcut_formula_manual_media';
+}
+
 export function readFormulaManualMedia(db: Database.Database, projectId: string, outputVersionId: string, id: string): FormulaManualMediaProof {
-  const row = db.prepare('SELECT proofJson FROM live_mixcut_formula_manual_media WHERE id=? AND projectId=? AND outputVersionId=?')
-    .get(id, projectId, outputVersionId) as { proofJson: string } | undefined;
-  if (!row) throw new BatchDomainError('conflict', '人工素材核验记录不属于这份成片');
-  return JSON.parse(row.proofJson) as FormulaManualMediaProof;
+  for (const table of MANUAL_MEDIA_TABLES) {
+    if (!manualMediaTableExists(db, table)) continue;
+    const row = db.prepare(`SELECT proofJson FROM ${table} WHERE id=? AND projectId=? AND outputVersionId=?`)
+      .get(id, projectId, outputVersionId) as { proofJson: string } | undefined;
+    if (row) return JSON.parse(row.proofJson) as FormulaManualMediaProof;
+  }
+  throw new BatchDomainError('conflict', '人工素材核验记录不属于这份成片');
 }
 
 export function manualMediaForClip(db: Database.Database, projectId: string, outputVersionId: string, clip: Record<string, unknown>) {

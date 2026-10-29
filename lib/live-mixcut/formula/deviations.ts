@@ -53,25 +53,74 @@ export function describeFormulaDeviations(selection: FormulaSelection, clips: re
   };
 }
 
-type ScheduleClip = { id: string; slotIndex?: number; assetId: string; contentFingerprint: string;
-  sourceInUs: number; sourceOutUs: number };
+type ScheduleClip = { id: string; kind?: string; slotIndex?: number; logicalCode?: string; assetId: string;
+  contentFingerprint: string; sourceInUs: number; sourceOutUs: number };
+type SchedulePlanItem = { kind: string; slotIndex?: number; dropped?: boolean };
+export interface ScheduleDeviationSource {
+  timeline: { clips: readonly ScheduleClip[] };
+  plan?: { items: readonly SchedulePlanItem[] };
+}
+
+/**
+ * 排时间画面 → 选片槽位。
+ * 口播画面自己带 slotIndex；非口播画面上没有，只能按「定声音的镜头项和公式画面一一对应」的顺序配回去。
+ * 补镜不是公式镜头，不在里面。
+ */
+export function scheduleClipSlotIds(selection: FormulaSelection, schedule: ScheduleDeviationSource): Map<string, string> {
+  const slotIndexByClipId = new Map<string, number>();
+  for (const clip of schedule.timeline.clips) if (clip.slotIndex !== undefined) slotIndexByClipId.set(clip.id, clip.slotIndex);
+  // 被丢掉的镜头（文案已经读完）不出画面，配槽位时要跳过，否则后面的镜头会整体错位。
+  const formulaItems = (schedule.plan?.items ?? []).filter((item): item is SchedulePlanItem & { slotIndex: number } =>
+    (item.kind === 'shot' || item.kind === 'vo') && typeof item.slotIndex === 'number'
+    && !(item.kind === 'shot' && item.dropped === true));
+  const formulaClips = schedule.timeline.clips.filter(clip => clip.kind !== 'filler');
+  if (formulaItems.length === formulaClips.length) {
+    formulaClips.forEach((clip, index) => {
+      if (!slotIndexByClipId.has(clip.id)) slotIndexByClipId.set(clip.id, formulaItems[index].slotIndex);
+    });
+  }
+  const slotIdByClipId = new Map<string, string>();
+  for (const clip of schedule.timeline.clips) {
+    const slotIndex = slotIndexByClipId.get(clip.id);
+    const slot = slotIndex === undefined ? undefined : selection.slots[slotIndex];
+    if (slot) slotIdByClipId.set(clip.id, slot.slotId);
+  }
+  return slotIdByClipId;
+}
 
 /**
  * 排时间出来的成片：以排时间结果当基线。
  * 补镜、替代镜头、没用上的镜头都是算法自己的决定，不算人工改动；只有和排时间结果不一致的地方才是。
  */
 export function describeScheduleFormulaDeviations(selection: FormulaSelection,
-  schedule: { timeline: { clips: readonly ScheduleClip[] } }, clips: readonly Clip[], bindings: readonly Binding[] = []) {
-  const scheduledSlotIds = new Set(schedule.timeline.clips.flatMap(clip =>
-    clip.slotIndex === undefined ? [] : [selection.slots[clip.slotIndex]?.slotId]).filter((id): id is string => !!id));
-  const baselineSelection = { ...selection, slots: selection.slots.filter(slot => scheduledSlotIds.has(slot.slotId)) };
+  schedule: ScheduleDeviationSource, clips: readonly Clip[], bindings: readonly Binding[] = []) {
+  const slotIdByClipId = scheduleClipSlotIds(selection, schedule);
+  const scheduledSlotIds = new Set(slotIdByClipId.values());
+  // 基线认排时间实际用的素材和区间：同号轮换、替镜都不是人工改动。
   const baselineClips = schedule.timeline.clips.flatMap(clip => {
-    const slotId = clip.slotIndex === undefined ? clip.id : selection.slots[clip.slotIndex]?.slotId;
-    return slotId && baselineSelection.slots.some(slot => slot.slotId === slotId)
-      ? [{ slotId, assetId: clip.assetId, contentFingerprint: clip.contentFingerprint, sourceInUs: clip.sourceInUs, sourceOutUs: clip.sourceOutUs }]
-      : [];
+    const slotId = slotIdByClipId.get(clip.id);
+    return slotId ? [{ slotId, assetId: clip.assetId, contentFingerprint: clip.contentFingerprint,
+      sourceInUs: clip.sourceInUs, sourceOutUs: clip.sourceOutUs }] : [];
   });
-  const changes = describeFormulaDeviations(baselineSelection, clips, bindings, baselineClips);
+  const baselineAsset = new Map(baselineClips.map(clip => [clip.slotId, clip]));
+  const baselineSelection = { ...selection, slots: selection.slots.filter(slot => scheduledSlotIds.has(slot.slotId))
+    .map(slot => {
+      const clip = baselineAsset.get(slot.slotId);
+      if (!clip) return slot;
+      return { ...slot, assetId: clip.assetId,
+        // 缺号时选片没有候选文件；基线指纹仍要写上排时间实际用的那份，否则会误报成人工换片。
+        candidate: { ...(slot.candidate ?? {}), assetId: clip.assetId, contentFingerprint: clip.contentFingerprint } as NonNullable<typeof slot.candidate> };
+    }) };
+  // 成片版本里的 segmentId：口播是选片槽位，非口播是排时间片段 id（分割出来的后半段也是）；
+  // 比较前统一换回槽位。
+  const selectionSlotIds = new Set(selection.slots.map(slot => slot.slotId));
+  const normalizedClips = clips.map(clip => {
+    const segmentId = clip.segmentId ?? '';
+    const slotId = slotIdByClipId.get(clip.clipId) ?? slotIdByClipId.get(segmentId)
+      ?? (selectionSlotIds.has(segmentId) ? segmentId : undefined);
+    return slotId === undefined || slotId === clip.segmentId ? clip : { ...clip, segmentId: slotId };
+  });
+  const changes = describeFormulaDeviations(baselineSelection, normalizedClips, bindings, baselineClips);
   // 排时间自己生成的画面（补镜等）不是人工插入。
   const generatedClipIds = new Set(schedule.timeline.clips.map(clip => clip.id));
   changes.insertedClips = changes.insertedClips.filter(clip => !generatedClipIds.has(clip.clipId));

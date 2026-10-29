@@ -199,50 +199,61 @@ export function arrangeFormulaTime(input: SchedulingArrangeInput): TimelinePlan 
     words.push(...soundWords(sound, speech, sound.sourceInUs, sound.timelineStartUs));
   }
 
-  function chooserFor(lineIndexes: readonly number[]): () => SchedulingFile | null {
+  function chooserFor(lineIndexes: readonly number[]): (excluded: ReadonlySet<string>) => SchedulingFile | null {
     const ranking = relatedAssetIds(judgment, lineIndexes);
     const byAsset = new Map(nonVoPool.map(file => [file.assetId, file]));
-    return () => {
+    return (excluded) => {
       for (const assetId of ranking) {
         const file = byAsset.get(assetId);
-        if (file && !used.has(file.assetId)) return file;
+        if (file && !used.has(file.assetId) && !excluded.has(file.assetId)) return file;
       }
       for (const assetId of ranking) {
         const file = byAsset.get(assetId);
-        if (file) return file;
+        if (file && !excluded.has(file.assetId)) return file;
       }
-      return nonVoPool.find(file => !used.has(file.assetId)) ?? nonVoPool[0] ?? null;
+      return nonVoPool.find(file => !used.has(file.assetId) && !excluded.has(file.assetId))
+        ?? nonVoPool.find(file => !excluded.has(file.assetId)) ?? null;
     };
   }
 
-  function endingChooser(): () => SchedulingFile | null {
+  function endingChooser(): (excluded: ReadonlySet<string>) => SchedulingFile | null {
     // 片尾按确认单：公式里没用上的镜头 → 全景展示 → 全景体验，都用过了就重复用。
-    // 这三类一段都没有时才退回其余非口播素材，保证片尾仍有画面。
+    // 首选三类都短得不能当画面时，才退回其余非口播素材，保证片尾仍有画面。
     const preferred = [...spare, ...widePool, ...wideExperiencePool];
-    const queue = preferred.length ? preferred : nonVoPool;
     let index = 0;
-    return () => {
-      for (let step = 0; step < queue.length; step += 1) {
-        const file = queue[(index + step) % queue.length];
-        if (!used.has(file.assetId)) { index = (index + step + 1) % queue.length; return file; }
+    return (excluded) => {
+      for (const pool of [preferred, nonVoPool]) {
+        if (!pool.length) continue;
+        for (let step = 0; step < pool.length; step += 1) {
+          const file = pool[(index + step) % pool.length];
+          if (!used.has(file.assetId) && !excluded.has(file.assetId)) { index = (index + step + 1) % pool.length; return file; }
+        }
+        // 这个池子没有没用过的了：首选池就重复用；首选池全都不够长才换下一个池。
+        const usable = pool.filter(file => !excluded.has(file.assetId));
+        if (usable.length) {
+          const repeat = usable[index % usable.length];
+          index = (index + 1) % usable.length;
+          return repeat;
+        }
       }
-      const repeat = queue[index % queue.length] ?? null;
-      index = (index + 1) % Math.max(1, queue.length);
-      return repeat;
+      return null;
     };
   }
 
-  /** 补画面：只补「声音比画面长的这一段」，不重复算整句。 */
-  function fill(frames: number, lineIndexes: readonly number[], cause: 'overflow' | 'gap' | 'ending', choose: () => SchedulingFile | null): void {
+  /** 补画面：只补「声音比画面长的这一段」，不重复算整句；每段补镜至少 1 秒。 */
+  function fill(frames: number, lineIndexes: readonly number[], cause: 'overflow' | 'gap' | 'ending',
+    choose: (excluded: ReadonlySet<string>) => SchedulingFile | null): void {
     let remain = frames;
     let guard = 0;
+    // 有效片段短于 1 秒的素材不能拿来补镜；记住它们，让挑选换下一段。
+    const tooShort = new Set<string>();
     while (remain > 0 && guard < 10_000) {
       guard += 1;
-      const file = choose();
+      const file = choose(tooShort);
       if (!file) break;
       const range = usableFrames(file);
       const capacity = range.outFrame - range.inFrame;
-      if (capacity < 1) continue;
+      if (capacity < MIN_FILLER_FRAMES) { tooShort.add(file.assetId); continue; }
       const length = Math.min(Math.max(remain, MIN_FILLER_FRAMES), capacity);
       used.add(file.assetId);
       pushedClip({ id: `clip:${clips.length}`, kind: 'filler', logicalCode: file.logicalCode ?? file.fileName, assetId: file.assetId,
@@ -297,6 +308,7 @@ export function arrangeFormulaTime(input: SchedulingArrangeInput): TimelinePlan 
     // 收尾：最后一句声音之后画面再留 0.75 秒。这 0.75 秒必须是真实画面——
     // 先把最后一段的原片往后多放，原片没有余量时才接一段短结尾画面。
     // 只把时间线拉长、不补素材，渲染时整段画面会被放慢，违反「不变速」。
+    // 接结尾画面时它本身也受 1 秒下限约束，所以收尾会比 0.75 秒略长。
     let remain = TAIL_FRAMES;
     const last = clips[clips.length - 1];
     const lastFile = filesByAsset.get(last.assetId);
@@ -317,16 +329,18 @@ export function arrangeFormulaTime(input: SchedulingArrangeInput): TimelinePlan 
     cursor = last.timelineEndFrame;
     if (remain > 0) {
       // 原片后面没有余量了：接一段短结尾画面。收尾是规矩本身，不算 AI 改动，不打审片标记。
+      // 结尾画面也算补镜，最短 1 秒：宁可收尾多留一点，也不放一闪而过的画面。
       const choose = endingChooser();
       let guard = 0;
+      const tooShort = new Set<string>();
       while (remain > 0 && guard < 1_000) {
         guard += 1;
-        const file = choose();
+        const file = choose(tooShort);
         if (!file) break;
         const range = usableFrames(file);
         const capacity = range.outFrame - range.inFrame;
-        if (capacity < 1) continue;
-        const length = Math.min(remain, capacity);
+        if (capacity < MIN_FILLER_FRAMES) { tooShort.add(file.assetId); continue; }
+        const length = Math.min(Math.max(remain, MIN_FILLER_FRAMES), capacity);
         used.add(file.assetId);
         pushedClip({ id: `clip:${clips.length}`, kind: 'filler', logicalCode: file.logicalCode ?? file.fileName,
           assetId: file.assetId, contentFingerprint: file.contentFingerprint, fileName: file.fileName,

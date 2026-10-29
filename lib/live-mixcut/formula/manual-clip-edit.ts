@@ -5,7 +5,7 @@ import { listAssetSources } from '../media-catalog.ts';
 import { applyBatchOutputClipEdit, getBatchOutputArrangementView } from '../output-arrangement.ts';
 import { verifyFormulaCandidate, recheckFormulaCandidate } from './candidate-media.ts';
 import { parseFormulaAvailableRanges, type FormulaRangeBounds } from './range-contract.ts';
-import { readFormulaManualMedia, type FormulaManualMediaProof, type FormulaReplacedSpeechRange } from './manual-media.ts';
+import { formulaManualMediaTable, readFormulaManualMedia, type FormulaManualMediaProof, type FormulaReplacedSpeechRange } from './manual-media.ts';
 import { parseFormulaManualSpeech } from './manual-speech.ts';
 import { effectiveFormulaOutputBasis } from './manual-audio-basis.ts';
 import { FINAL_EDIT_FPS } from '../../media-core/render-contract.ts';
@@ -45,7 +45,7 @@ export async function applyFormulaManualClipEdit(db: Database.Database, projectI
     if (!view.formulaPreview || !view.editable || view.outputVersionId !== input.expectedOutputVersionId) {
       throw new BatchDomainError('conflict', '公式成片版本已变化或当前不能编辑');
     }
-    const prior = db.prepare('SELECT inputJson FROM live_mixcut_formula_manual_media WHERE projectId=? AND outputVersionId=? AND requestKey=?')
+    const prior = db.prepare(`SELECT inputJson FROM ${formulaManualMediaTable(db, view.outputVersionId)} WHERE projectId=? AND outputVersionId=? AND requestKey=?`)
       .get(projectId, view.outputVersionId, input.requestKey) as { inputJson: string } | undefined;
     if (prior) {
       if (prior.inputJson !== inputJson) throw new BatchDomainError('conflict', '同一次人工编辑请求不能改用其他素材或区间');
@@ -147,7 +147,8 @@ export async function applyFormulaManualClipEdit(db: Database.Database, projectI
     const current = check();
     if (current.replay) return unchanged(current.view);
     recheckFormulaCandidate(db, projectId, candidate);
-    db.prepare(`INSERT INTO live_mixcut_formula_manual_media (id,projectId,outputVersionId,assetId,requestKey,inputJson,proofJson,createdAt)
+    const manualMediaTable = formulaManualMediaTable(db, input.expectedOutputVersionId);
+    db.prepare(`INSERT INTO ${manualMediaTable} (id,projectId,outputVersionId,assetId,requestKey,inputJson,proofJson,createdAt)
       VALUES (?,?,?,?,?,?,?,?)`).run(proof.id, projectId, input.expectedOutputVersionId, input.assetId,
       input.requestKey, inputJson, JSON.stringify(proof), new Date().toISOString());
     return applyBatchOutputClipEdit(db, projectId, batchId, planId, { ...input, formulaSourceId: proof.id });
