@@ -12,7 +12,8 @@ import { createBatchTask } from '../tasks.ts';
 import { buildCoverRenderTaskRequestKey } from '../render-task-key.ts';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '../../media-core/render-contract.ts';
 import { formulaExecutionAvailable } from './execution-gate.ts';
-import { formulaExecutionInputKey, formulaOutputExecutionReady, queueFormulaExecutionCheck } from './execution-store.ts';
+import { formulaExecutionInputKey, formulaOutputExecutionReady, queueFormulaExecutionCheck,
+  readFormulaExecutionProof, restoreFormulaExecutionStamp } from './execution-store.ts';
 import type { FormulaGenerationRequest } from './generation.ts';
 import { readFormulaScheduleStage, readFormulaScheduleStageResult, selectionSlotId,
   type FormulaScheduleStageResult } from './schedule.ts';
@@ -72,7 +73,10 @@ export function schedulePresentationTimeline(stageId: string, result: FormulaSch
   };
 }
 
-/** 成片登记：这条 output version 由哪次排时间产生。 */
+/**
+ * 成片登记：这条 output version 由哪次排时间产生。
+ * 用 immediate 事务：修复循环读到的成片和写回的成片在同一把写锁里，不能把刚提交的通过标记覆盖成旧快照。
+ */
 export function queueFormulaScheduleExecutionCheck(db: Database.Database, projectId: string, batchId: string,
   outputVersionId: string): string | null {
   if (!formulaExecutionAvailable(db)) return null;
@@ -89,6 +93,9 @@ export function queueFormulaScheduleExecutionCheck(db: Database.Database, projec
     if (!row) return null;
     const arrangement = JSON.parse(row.arrangementJson) as Record<string, unknown>;
     if (formulaOutputExecutionReady(db, outputVersionId, arrangement)) return null;
+    // 通过标记可能被别的写入冲掉过：检查结果还在且内容没变，就把标记补回去，不再重排一次检查。
+    const proof = readFormulaExecutionProof(db, outputVersionId);
+    if (proof) { restoreFormulaExecutionStamp(db, outputVersionId, arrangement, proof); return null; }
     arrangement.productionReady = false;
     delete arrangement.formulaExecution;
     const blockers = Array.isArray(arrangement.blockers) ? arrangement.blockers : [];
@@ -107,7 +114,7 @@ export function queueFormulaScheduleExecutionCheck(db: Database.Database, projec
     }
     return createBatchTask(db, projectId, { batchId, workType: 'formula_stage', targetKind: 'formula_stage', targetId: stage.id,
       requestKey: `formula:execution:${stage.id}` });
-  })();
+  }).immediate();
 }
 
 /** 成片改动后重新排检查：新规矩的成片走新表，旧批次走旧表，调用方不用分。 */

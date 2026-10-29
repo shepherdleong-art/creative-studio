@@ -375,6 +375,72 @@ try {
   const afterMarks = getBatchWorkspace(db, 'p', restoreBatch).cards.find(card => card.planId === restorePlanIds[0])!.formula!.reviewMarks;
   assert.ok(!afterMarks.some(mark => mark.kind === 'skipped-line' && mark.lineIndex === 1), '恢复的行不再标成省掉');
 
+  // 11. 新规矩的成片也能写清单：取用区间、来源码、声音来源、逐字时间和审片标记都记全。
+  const { captureFormulaManifestItem, csvManifest } = await import('../lib/live-mixcut/formula/export-manifest.ts');
+  const manifestItem = captureFormulaManifestItem(db, 'p', batchId, planId(0), new Map());
+  assert.equal(manifestItem.clips.length, schedule12.timeline.clips.length, '清单的镜头与排时间结果一一对应');
+  assert.equal(manifestItem.timelineStageId, scheduleStage12, '清单记的是这次排时间');
+  const manifestMapping = manifestItem.scriptAudioMapping;
+  assert.equal(manifestMapping.scope, 'schedule', '新规矩按排时间结果记文案与声音');
+  if (manifestMapping.scope !== 'schedule') throw new Error('清单应记排时间来源');
+  assert.deepEqual(manifestMapping.lines.map(line => line.spokenBy.kind), ['source', 'narration', 'narration'],
+    '第 0 行是口播原声，其余是配音');
+  assert.ok(manifestMapping.lines[0].spokenBy.kind === 'source'
+    && manifestMapping.lines[0].spokenBy.logicalCode === 'VO1');
+  assert.ok(manifestMapping.lines[0].words.length > 0, '原声也带逐字时间');
+  assert.ok(manifestMapping.sources.some(source => source.assetId === voId && source.speechOutUs > source.speechInUs),
+    '清单记下原声来自哪个素材、用了哪一段');
+  assert.ok(manifestMapping.narrations.length > 0, '配音的来源也记下来');
+  assert.ok(manifestMapping.marks.length > 0, '审片标记进清单');
+  assert.ok(manifestItem.clips.every(clip => clip.playbackRate === 1), '清单里没有变速镜头');
+  const fillerClips = schedule12.timeline.clips.filter(clip => clip.kind === 'filler');
+  const manifestFillers = manifestItem.clips.filter(clip => clip.selectionReason === 'schedule_filler');
+  assert.equal(manifestFillers.length, fillerClips.length, '补镜如实记成排时间补的画面');
+  assert.ok(manifestFillers.every(clip => clip.manualDeviation === null), '补镜不是人工改动');
+  const scheduleClipIds = new Set(schedule12.timeline.clips.map(clip => clip.id));
+  assert.ok(manifestItem.clips.filter(clip => scheduleClipIds.has(clip.clipId))
+    .every(clip => clip.manualDeviation === null), '排时间自己排的镜头不算人工改动');
+  const scheduledShot = manifestItem.clips.find(clip =>
+    schedule12.timeline.clips.find(item => item.id === clip.clipId)?.kind === 'shot');
+  if (scheduledShot) assert.ok(scheduledShot.originalCode, '非口播镜头也写明用的是哪个编号');
+  assert.equal(manifestItem.deviations.insertedClips.length, 0, '补镜和替代镜头不算人工插入');
+  const csv = csvManifest({ items: [{ ...manifestItem,
+    video: { artifactId: 'video', filename: '成片.mp4', checksum: 'a' },
+    coverFile: { artifactId: 'cover', filename: '成片-封面.jpg', checksum: 'b' } }] });
+  assert.ok(csv.includes('"成片.mp4"') && csv.includes('"成片-封面.jpg"'), '清单.csv 能写出行和文件');
+
+  // 12. 制作检查的通过标记被冲掉后，修复循环把标记补回来；已经通过的成片不会被打回未通过。
+  const { repairFormulaContinuations } = await import('../lib/live-mixcut/formula/selection-store.ts');
+  const { formulaOutputExecutionReady } = await import('../lib/live-mixcut/formula/execution-store.ts');
+  const narrationVersion = db.prepare(`SELECT o.id,o.arrangementJson FROM live_mixcut_formula_schedule_output_versions f
+    JOIN live_mixcut_output_versions o ON o.id=f.outputVersionId JOIN live_mixcut_formula_schedule_stages s ON s.id=f.scheduleStageId
+    WHERE s.selectionStageId=?`).get(narrationSelect) as { id: string; arrangementJson: string };
+  const checkCount = () => (db.prepare('SELECT COUNT(*) AS n FROM live_mixcut_formula_schedule_execution_checks WHERE outputVersionId=?')
+    .get(narrationVersion.id) as { n: number }).n;
+  const readArrangement = () => JSON.parse((db.prepare('SELECT arrangementJson FROM live_mixcut_output_versions WHERE id=?')
+    .get(narrationVersion.id) as { arrangementJson: string }).arrangementJson) as
+      { productionReady: boolean; blockers: string[]; formulaExecution?: { stageId: string } };
+  const checksBefore = checkCount();
+  // 模拟交错：检查提交之后，修复逻辑拿着旧快照把通过标记覆盖成未通过。
+  const stripped = JSON.parse(narrationVersion.arrangementJson) as Record<string, unknown>;
+  stripped.productionReady = false;
+  delete stripped.formulaExecution;
+  stripped.blockers = ['formula_execution_pending'];
+  db.prepare('UPDATE live_mixcut_output_versions SET arrangementJson=? WHERE id=?').run(JSON.stringify(stripped), narrationVersion.id);
+  repairFormulaContinuations(db);
+  const healed = readArrangement();
+  assert.equal(healed.productionReady, true, '检查结果还在、内容没变，修复把通过标记补回来');
+  assert.ok(healed.formulaExecution?.stageId, '补回来的标记指向原来那张检查单');
+  assert.ok(!healed.blockers.includes('formula_execution_pending'));
+  assert.equal(formulaOutputExecutionReady(db, narrationVersion.id, healed), true);
+  assert.equal(checkCount(), checksBefore, '补标记不新开检查单');
+  repairFormulaContinuations(db);
+  repairFormulaContinuations(db);
+  const afterRepairs = readArrangement();
+  assert.equal(afterRepairs.productionReady, true, '修复跑再多轮也不把已通过的成片打回');
+  assert.equal(afterRepairs.formulaExecution?.stageId, healed.formulaExecution?.stageId);
+  assert.equal(checkCount(), checksBefore, '反复修复不会堆检查单');
+
   console.log('formula voice pipeline tests passed (fake ASR/AI/TTS, real files)');
 } finally {
   globalThis.fetch = originalFetch;

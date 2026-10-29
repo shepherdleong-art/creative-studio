@@ -27,26 +27,57 @@ export function formulaExecutionInputKey(db: Database.Database, outputVersionId:
   return createHash('sha256').update(canonicalJson([input, mediaContract])).digest('hex');
 }
 
+function executionResultTable(sourceKind: 'timeline' | 'schedule'): string {
+  return sourceKind === 'schedule'
+    ? 'live_mixcut_formula_schedule_execution_results' : 'live_mixcut_formula_execution_results';
+}
+
+export interface FormulaExecutionProof { stageId: string; result: FormulaExecutionResult }
+
+/**
+ * 这条成片真正通过的检查：结果必须是 ready，且内容指纹等于现在成片的内容。
+ * 判定只认「检查结果 + 内容指纹」；成片上的标记只是指针，丢了不等于没通过。
+ */
+export function readFormulaExecutionProof(db: Database.Database, outputVersionId: string, stageId?: string): FormulaExecutionProof | null {
+  try {
+    // 新旧两种执行检查各写各的结果表；血缘视图说明这次检查属于哪一条成片、来自哪条链。
+    const rows = (stageId
+      ? db.prepare('SELECT id AS stageId,sourceKind FROM live_mixcut_formula_execution_lineage WHERE outputVersionId=? AND id=?')
+        .all(outputVersionId, stageId)
+      : db.prepare('SELECT id AS stageId,sourceKind FROM live_mixcut_formula_execution_lineage WHERE outputVersionId=? ORDER BY revision DESC')
+        .all(outputVersionId)) as Array<{ stageId: string; sourceKind: 'timeline' | 'schedule' }>;
+    if (!rows.length) return null;
+    const currentHash = formulaExecutionContentHash(resolveFullRenderContract(db, outputVersionId));
+    for (const row of rows) {
+      const stored = db.prepare(`SELECT resultJson FROM ${executionResultTable(row.sourceKind)} WHERE stageId=?`)
+        .get(row.stageId) as { resultJson: string } | undefined;
+      if (!stored) continue;
+      const result = JSON.parse(stored.resultJson) as FormulaExecutionResult;
+      if (result?.version !== 1 || result.status !== 'ready' || result.executionReady !== true) continue;
+      if (result.outputVersionId !== outputVersionId || result.contentContractHash !== currentHash) continue;
+      return { stageId: row.stageId, result };
+    }
+    return null;
+  } catch { return null; }
+}
+
 /** A browser-supplied ready flag cannot replace a persisted, verified execution result. */
 export function formulaOutputExecutionReady(db: Database.Database, outputVersionId: string, arrangement: Record<string, unknown>): boolean {
   if (arrangement.productionReady !== true || !arrangement.formula) return false;
   const proof = arrangement.formulaExecution as { stageId?: unknown; contentContractHash?: unknown } | undefined;
   if (typeof proof?.stageId !== 'string' || typeof proof.contentContractHash !== 'string') return false;
-  try {
-    // 新旧两种执行检查各写各的结果表；血缘视图说明这次检查属于哪一条成片、来自哪条链。
-    const lineage = db.prepare('SELECT sourceKind FROM live_mixcut_formula_execution_lineage WHERE id=? AND outputVersionId=?')
-      .get(proof.stageId, outputVersionId) as { sourceKind: 'timeline' | 'schedule' } | undefined;
-    if (!lineage) return false;
-    const table = lineage.sourceKind === 'schedule'
-      ? 'live_mixcut_formula_schedule_execution_results' : 'live_mixcut_formula_execution_results';
-    const row = db.prepare(`SELECT resultJson FROM ${table} WHERE stageId=?`)
-      .get(proof.stageId) as { resultJson: string } | undefined;
-    if (!row) return false;
-    const result = JSON.parse(row.resultJson) as FormulaExecutionResult;
-    return result.version === 1 && result.executionReady === true && result.status === 'ready'
-      && result.outputVersionId === outputVersionId && result.contentContractHash === proof.contentContractHash
-      && result.contentContractHash === formulaExecutionContentHash(resolveFullRenderContract(db, outputVersionId));
-  } catch { return false; }
+  const stored = readFormulaExecutionProof(db, outputVersionId, proof.stageId);
+  return Boolean(stored && stored.result.contentContractHash === proof.contentContractHash);
+}
+
+/** 检查结果还在、指纹也对得上，只是成片上的通过标记丢了：补回去，不重跑检查。 */
+export function restoreFormulaExecutionStamp(db: Database.Database, outputVersionId: string,
+  arrangement: Record<string, unknown>, proof: FormulaExecutionProof): void {
+  arrangement.productionReady = true;
+  arrangement.formulaExecution = { stageId: proof.stageId, contentContractHash: proof.result.contentContractHash };
+  arrangement.blockers = (Array.isArray(arrangement.blockers) ? arrangement.blockers : [])
+    .filter(value => value !== 'formula_execution_pending');
+  db.prepare('UPDATE live_mixcut_output_versions SET arrangementJson=? WHERE id=?').run(JSON.stringify(arrangement), outputVersionId);
 }
 
 export function formulaOutputCoverReady(db: Database.Database, outputVersionId: string): boolean {
@@ -73,7 +104,10 @@ export function readFormulaExecutionTask(db: Database.Database, outputVersionId:
   } catch { return null; }
 }
 
-/** Called in the same transaction as output creation/editing. Invalid media is a worker failure, not a lost edit. */
+/**
+ * Called in the same transaction as output creation/editing. Invalid media is a worker failure, not a lost edit.
+ * 用 immediate 事务：修复循环读到的成片和写回的成片必须在同一把写锁里，不能把刚提交的通过标记覆盖成旧快照。
+ */
 export function queueFormulaExecutionCheck(db: Database.Database, projectId: string, batchId: string, outputVersionId: string): string | null {
   if (!formulaExecutionAvailable(db)) return null;
   return db.transaction(() => {
@@ -88,6 +122,9 @@ export function queueFormulaExecutionCheck(db: Database.Database, projectId: str
     if (!row) return null;
     const arrangement = JSON.parse(row.arrangementJson) as Record<string, unknown>;
     if (formulaOutputExecutionReady(db, outputVersionId, arrangement)) return null;
+    // 通过标记可能被别的写入冲掉过：检查结果还在且内容没变，就把标记补回去，不再重排一次检查。
+    const proof = readFormulaExecutionProof(db, outputVersionId);
+    if (proof) { restoreFormulaExecutionStamp(db, outputVersionId, arrangement, proof); return null; }
     arrangement.productionReady = false;
     delete arrangement.formulaExecution;
     const blockers = Array.isArray(arrangement.blockers) ? arrangement.blockers : [];
@@ -105,7 +142,7 @@ export function queueFormulaExecutionCheck(db: Database.Database, projectId: str
     }
     return createBatchTask(db, projectId, { batchId, workType: 'formula_stage', targetKind: 'formula_stage', targetId: stage.id,
       requestKey: `formula:execution:${stage.id}` });
-  })();
+  }).immediate();
 }
 
 /** Upgrades and interrupted edit responses must not rely on a page to finish the workflow. */
