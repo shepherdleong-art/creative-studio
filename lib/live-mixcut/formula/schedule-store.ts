@@ -6,6 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { createBatchTask } from '../tasks.ts';
+import { SCHEDULING_VERSION } from '../scheduling/types.ts';
 import type { FormulaGenerationOutput, FormulaGenerationRequest } from './generation.ts';
 import { isFormulaRulesV2 } from './rules-version.ts';
 import { readFormulaVoiceNarrationResult, readFormulaVoiceResult } from './pipeline-v2.ts';
@@ -30,7 +31,7 @@ export function queueFormulaSchedule(db: Database.Database, projectId: string, b
   if (voice.narrationLines.length && !narrationStageId) return;
   if (narrationStageId && !readFormulaVoiceNarrationResult(db, selectStage.id)) return;
 
-  const input = { formatVersion: 1 as const, voiceStageId, narrationStageId };
+  const input = { formatVersion: 1 as const, schedulingVersion: SCHEDULING_VERSION, voiceStageId, narrationStageId };
   const latest = db.prepare('SELECT id,inputJson,revision FROM live_mixcut_formula_schedule_stages WHERE selectionStageId=? ORDER BY revision DESC LIMIT 1')
     .get(selectStage.id) as { id: string; inputJson: string; revision: number } | undefined;
   // 定声音或配音换了（比如审片时恢复了一行），就新排一次；否则沿用同一阶段。

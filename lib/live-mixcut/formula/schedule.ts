@@ -23,6 +23,8 @@ import type { FormulaVerifiedCandidate } from './candidate-media.ts';
 
 export interface FormulaScheduleStageInput {
   formatVersion: 1;
+  /** 排片算法的版本；算法一变就按新输入重排一次，不沿用旧结果。旧记录没有这个字段。 */
+  schedulingVersion?: string;
   voiceStageId: string;
   narrationStageId: string | null;
 }

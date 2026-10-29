@@ -184,7 +184,7 @@ try {
   const schedule12 = readFormulaScheduleResult(db, selectStageId(0))!;
   assert.equal(schedule12.status, 'planned');
   assert.equal(schedule12.algorithmVersion, 'formula-schedule/1', '新批次的排片结果标新的算法版本');
-  assert.equal(schedule12.timeline.algorithmVersion, 'formula-scheduling/1');
+  assert.equal(schedule12.timeline.algorithmVersion, 'formula-scheduling/2');
   assert.equal(schedule12.timeline.mode, 'mixed');
   assert.ok(schedule12.timeline.totalDurationUs > 0);
   assert.ok(schedule12.timeline.clips.some(clip => clip.kind === 'vo'), '原声镜头的画面在');

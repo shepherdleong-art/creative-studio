@@ -119,6 +119,7 @@ export function arrangeFormulaTime(input: SchedulingArrangeInput): TimelinePlan 
   const seed = numericSeed(input.scriptNumber, input.copyIndex);
   const nonVoPool = materials.filter(material => !material.isVo).flatMap(material => material.files)
     .filter(file => microsecondsToFrames(file.usableOutUs) > microsecondsToFrames(file.usableInUs));
+  const filesByAsset = new Map(materials.flatMap(material => material.files).map(file => [file.assetId, file]));
   const widePool = rotate(materials.filter(material => material.wide).flatMap(material => material.files), seed);
   const wideExperiencePool = rotate(materials.filter(material => material.wideExperience).flatMap(material => material.files), seed);
   const used = new Set<string>();
@@ -293,10 +294,49 @@ export function arrangeFormulaTime(input: SchedulingArrangeInput): TimelinePlan 
   }
 
   if (clips.length) {
+    // 收尾：最后一句声音之后画面再留 0.75 秒。这 0.75 秒必须是真实画面——
+    // 先把最后一段的原片往后多放，原片没有余量时才接一段短结尾画面。
+    // 只把时间线拉长、不补素材，渲染时整段画面会被放慢，违反「不变速」。
+    let remain = TAIL_FRAMES;
     const last = clips[clips.length - 1];
-    last.timelineEndFrame += TAIL_FRAMES;
-    last.timelineEndUs = framesToMicroseconds(last.timelineEndFrame);
+    const lastFile = filesByAsset.get(last.assetId);
+    if (lastFile) {
+      // 口播镜头最多放到被剪掉的倒数和口令之前；其余素材和「多用原片」一样只认文件长度。
+      const limitUs = last.kind === 'vo'
+        ? Math.min(lastFile.durationUs, lastFile.speech?.tailCutStartUs ?? lastFile.durationUs)
+        : lastFile.durationUs;
+      const available = microsecondsToFrames(limitUs) - microsecondsToFrames(last.sourceOutUs);
+      const take = Math.max(0, Math.min(remain, available));
+      if (take > 0) {
+        last.sourceOutUs = framesToMicroseconds(microsecondsToFrames(last.sourceOutUs) + take);
+        last.timelineEndFrame += take;
+        last.timelineEndUs = framesToMicroseconds(last.timelineEndFrame);
+        remain -= take;
+      }
+    }
     cursor = last.timelineEndFrame;
+    if (remain > 0) {
+      // 原片后面没有余量了：接一段短结尾画面。收尾是规矩本身，不算 AI 改动，不打审片标记。
+      const choose = endingChooser();
+      let guard = 0;
+      while (remain > 0 && guard < 1_000) {
+        guard += 1;
+        const file = choose();
+        if (!file) break;
+        const range = usableFrames(file);
+        const capacity = range.outFrame - range.inFrame;
+        if (capacity < 1) continue;
+        const length = Math.min(remain, capacity);
+        used.add(file.assetId);
+        pushedClip({ id: `clip:${clips.length}`, kind: 'filler', logicalCode: file.logicalCode ?? file.fileName,
+          assetId: file.assetId, contentFingerprint: file.contentFingerprint, fileName: file.fileName,
+          sourceInUs: framesToMicroseconds(range.inFrame), sourceOutUs: framesToMicroseconds(range.inFrame + length),
+          lineIndexes: [], fillerCause: 'ending' }, length);
+        remain -= length;
+      }
+      if (remain > 0) warnings.push('片尾找不到多余画面，收尾少放了一点');
+    }
+    cursor = clips[clips.length - 1].timelineEndFrame;
   }
 
   for (const line of plan.lines) {

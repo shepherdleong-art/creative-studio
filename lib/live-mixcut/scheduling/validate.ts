@@ -2,7 +2,10 @@
  * 规矩 h：每条成片都要满足的五条。返回人话的违规说明，空数组表示全部通过。
  * 只读排片结果，不改任何东西。
  */
-import type { SchedulingFile, SchedulingSlotMaterial, TimelinePlan, VoicePlan } from './types.ts';
+import { SCHEDULING_FPS, type SchedulingFile, type SchedulingSlotMaterial, type TimelinePlan, type VoicePlan } from './types.ts';
+
+const FRAME_US = 1_000_000 / SCHEDULING_FPS;
+const framesOf = (us: number): number => Math.max(0, Math.round(us / FRAME_US));
 
 export interface ValidateInput {
   plan: VoicePlan;
@@ -37,6 +40,11 @@ export function validateFormulaShortFilm(input: ValidateInput): string[] {
     if (clip.timelineStartFrame !== previousEnd) problems.push(`画面 ${clip.id} 与上一段之间有缝隙或重叠`);
     if (clip.timelineEndFrame <= clip.timelineStartFrame) problems.push(`画面 ${clip.id} 没有长度（静帧）`);
     if (clip.sourceOutUs <= clip.sourceInUs) problems.push(`画面 ${clip.id} 的取用区间倒放或为空`);
+    // 时间线占的帧数必须等于取用的原片帧数；多出来或少掉就是变速（渲染会按比例改播放速度）。
+    const sourceFrames = framesOf(clip.sourceOutUs) - framesOf(clip.sourceInUs);
+    if (sourceFrames !== clip.timelineEndFrame - clip.timelineStartFrame) {
+      problems.push(`画面 ${clip.id} 在变速：原片取 ${sourceFrames} 帧，时间线占 ${clip.timelineEndFrame - clip.timelineStartFrame} 帧`);
+    }
     const file = files.get(clip.assetId);
     if (file && (clip.sourceInUs < 0 || clip.sourceOutUs > file.durationUs)) {
       problems.push(`画面 ${clip.id} 超出素材 ${file.fileName} 的范围`);

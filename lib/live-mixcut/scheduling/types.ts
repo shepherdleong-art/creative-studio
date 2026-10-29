@@ -10,7 +10,7 @@
  * 本模块照搬原型 outputs/2026-10-28-实拍混剪排片原型/实拍混剪排片原型.html 的 `Rules.assemble`。
  */
 
-export const SCHEDULING_VERSION = 'formula-scheduling/1' as const;
+export const SCHEDULING_VERSION = 'formula-scheduling/2' as const;
 
 /** 收尾：最后一句声音之后，最后一个画面多放 0.75 秒。 */
 export const TAIL_US = 750_000;

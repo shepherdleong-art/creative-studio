@@ -449,6 +449,38 @@ function baseInput(overrides: Partial<SchedulingInput> & Pick<SchedulingInput, '
   if (last.kind === 'vo') assert.ok(last.timelineEndUs > timeline.sounds.at(-1)!.timelineEndUs, '收尾留了画面');
 }
 
+// ㉓ 收尾必须用真实画面：原片后面还有余量时，多放的是原片本身，不是把最后一段拉慢。
+{
+  const materials = [material('S1', [file('S1')])];
+  const input = baseInput({ script: { scriptNumber: '23', copyIndex: 1, lines: ['只有一句。'], codes: ['S1'] }, materials });
+  const { timeline } = build(input, 2);
+  assert.equal(timeline.clips.length, 1, '原片有余量时不接第二段画面');
+  const last = timeline.clips[0];
+  assert.equal(last.timelineEndFrame - last.timelineStartFrame, 48 + 18, '收尾仍然是 0.75 秒');
+  assert.equal(microsecondsToFrames(last.sourceOutUs) - microsecondsToFrames(last.sourceInUs),
+    last.timelineEndFrame - last.timelineStartFrame, '收尾多放的是原片，时间线长度等于原片长度');
+  assert.equal(timeline.totalFrames, 66);
+}
+
+// ㉔ 原片没有余量：接一段短结尾画面补上收尾，任何画面都不许变速。
+{
+  const materials = [material('S1', [file('S1', { in: 1, out: 3, duration: 3 })])];
+  const input = baseInput({ script: { scriptNumber: '24', copyIndex: 1, lines: ['只有一句。'], codes: ['S1'] }, materials });
+  const { timeline } = build(input, 2);
+  assert.equal(timeline.clips.length, 2, '原片放到头之后接一段结尾画面');
+  const tail = timeline.clips.at(-1)!;
+  assert.equal(tail.kind, 'filler');
+  assert.equal(tail.fillerCause, 'ending');
+  assert.equal(tail.timelineEndFrame - tail.timelineStartFrame, 18, '结尾画面正好补 0.75 秒');
+  assert.equal(timeline.totalFrames, 66, '总长仍是声音 + 0.75 秒');
+  for (const clip of timeline.clips) {
+    assert.equal(microsecondsToFrames(clip.sourceOutUs) - microsecondsToFrames(clip.sourceInUs),
+      clip.timelineEndFrame - clip.timelineStartFrame, `画面 ${clip.logicalCode} 不许变速`);
+  }
+  assert.ok(!timeline.marks.some(mark => mark.type === 'filler' && mark.lineIndexes.length === 0),
+    '收尾是规矩本身，不打审片标记');
+}
+
 // 估算时长只作参考：字数为 0 时也给一个最短时长。
 assert.ok(estimatedSpeechUs('') >= 600_000);
 
