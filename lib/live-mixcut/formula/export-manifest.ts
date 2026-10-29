@@ -10,12 +10,14 @@ import { listProjectBatchProductions } from '../versions.ts';
 import { resolveFullRenderContractHash } from '../cover-contract.ts';
 import { BatchDomainError } from '../errors.ts';
 import { readFormulaGenerationRequest, type FormulaGenerationRequest } from './generation.ts';
-import { readFormulaOutputAudioPlan } from './output-audio.ts';
+import { readFormulaOutputAudioPlan, type FormulaOutputBasis } from './output-audio.ts';
 import { effectiveFormulaOutputBasis } from './manual-audio-basis.ts';
+import { schedulePresentationTimeline } from './schedule-output.ts';
+import type { FormulaScheduleStageResult } from './schedule.ts';
 import { readFormulaMusicSource } from './output-music.ts';
 import { readFormulaExportIdentity } from './export-identity.ts';
 import type { FormulaSelection } from './selection.ts';
-import { describeFormulaDeviations } from './deviations.ts';
+import { describeFormulaDeviations, describeScheduleFormulaDeviations } from './deviations.ts';
 import { readFormulaManualMedia } from './manual-media.ts';
 import type { FormulaAudioMapping } from './audio-mapping.ts';
 import type { FormulaTimelineResult } from './timeline.ts';
@@ -45,6 +47,37 @@ export function csvManifest(manifest: FormulaExportManifest): string {
   return '\ufeff' + rows.map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }
 
+/** 每一行文案由哪段声音说、声音从哪来、逐字时间；再加上审片标记和提醒。 */
+function scheduleScriptAudioMapping(schedule: FormulaScheduleStageResult, stageId: string, basis: FormulaOutputBasis) {
+  const soundsByLine = new Map<number, (typeof schedule.timeline.sounds)[number]>();
+  for (const sound of schedule.timeline.sounds) for (const index of sound.lineIndexes) soundsByLine.set(index, sound);
+  return {
+    scope: 'schedule' as const, stageId,
+    algorithmVersion: schedule.timeline.algorithmVersion, mode: schedule.plan.mode,
+    lines: schedule.plan.lines.map(line => {
+      const sound = soundsByLine.get(line.index);
+      return {
+        lineIndex: line.index, text: line.text,
+        spokenBy: line.fate?.type === 'source'
+          ? { kind: 'source' as const, logicalCode: line.fate.logicalCode, basis: line.fate.basis }
+          : { kind: 'narration' as const },
+        ...(sound ? { soundId: sound.id, timelineStartUs: sound.timelineStartUs, timelineEndUs: sound.timelineEndUs,
+          sourceInUs: sound.sourceInUs, sourceOutUs: sound.sourceOutUs,
+          ...(sound.relativePath ? { relativePath: sound.relativePath } : {}) } : {}),
+        words: sound ? schedule.timeline.words.filter(word => word.soundId === sound.id)
+          .map(word => ({ text: word.text, startUs: word.startUs, endUs: word.endUs })) : [],
+      };
+    }),
+    sources: basis.audioSources.filter(source => source.kind === 'source').map(source => ({ slotId: source.slotId ?? null,
+      assetId: source.assetId ?? null, mediaId: source.mediaId, contentFingerprint: source.contentFingerprint,
+      speechInUs: source.verifiedInUs, speechOutUs: source.verifiedOutUs, sourceDurationUs: source.sourceDurationUs,
+      words: source.words })),
+    narrations: basis.audioSources.filter(source => source.kind === 'narration').map(source => ({ mediaId: source.mediaId,
+      contentFingerprint: source.contentFingerprint, sourceDurationUs: source.sourceDurationUs, words: source.words })),
+    marks: schedule.timeline.marks, warnings: schedule.timeline.warnings,
+  };
+}
+
 /** Only explicit public fields enter a manifest: never spread frozen inputs, providers or storage locations. */
 export function captureFormulaManifestItem(db: Database.Database, projectId: string, batchId: string, planId: string,
   requests: Map<string, FormulaGenerationRequest>) {
@@ -64,25 +97,45 @@ export function captureFormulaManifestItem(db: Database.Database, projectId: str
   const basis = effectiveFormulaOutputBasis(db, projectId, view.outputVersionId, arrangement);
   const audio = readFormulaOutputAudioPlan(arrangement.audioPlan);
   if (!basis || !audio) throw new BatchDomainError('conflict', '成片缺少声音记录');
-  const mappingRow = db.prepare(`SELECT m.stageId,m.resultJson,r.resultJson AS timelineJson FROM live_mixcut_formula_timeline_stages t
+  const selection = JSON.parse(row.resultJson) as FormulaSelection;
+  // 新规矩的成片从「排时间」出来：basis.timelineStageId 指向排时间阶段，没有旧链的音频映射记录。
+  const scheduleRow = db.prepare(`SELECT sc.id AS stageId,r.resultJson FROM live_mixcut_formula_schedule_stages sc
+    JOIN live_mixcut_formula_schedule_results r ON r.stageId=sc.id
+    WHERE sc.id=? AND sc.selectionStageId=?`).get(basis.timelineStageId, basis.selectionStageId) as
+    { stageId: string; resultJson: string } | undefined;
+  const schedule = scheduleRow ? JSON.parse(scheduleRow.resultJson) as FormulaScheduleStageResult : null;
+  const mappingRow = schedule ? undefined : db.prepare(`SELECT m.stageId,m.resultJson,r.resultJson AS timelineJson FROM live_mixcut_formula_timeline_stages t
     JOIN live_mixcut_formula_timeline_results r ON r.stageId=t.id
     JOIN live_mixcut_formula_audio_mapping_results m ON m.stageId=t.audioMappingStageId
     JOIN live_mixcut_formula_audio_mapping_stages a ON a.id=m.stageId
     WHERE t.id=? AND a.selectionStageId=?`).get(basis.timelineStageId, basis.selectionStageId) as
     { stageId: string; resultJson: string; timelineJson: string } | undefined;
   const mapping = mappingRow ? JSON.parse(mappingRow.resultJson) as FormulaAudioMapping : null;
-  if (mapping?.status !== 'mapped') throw new BatchDomainError('conflict', '成片缺少对应版本的文案与声音分配记录');
-  const timeline: FormulaTimelineResult | null = mappingRow?.timelineJson ? JSON.parse(mappingRow.timelineJson) : null;
+  // 旧规矩（时间轴）才走音频映射；新规矩没有这条记录，按排时间结果记。
+  let legacyMapping: Extract<FormulaAudioMapping, { status: 'mapped' }> | null = null;
+  if (!schedule) {
+    if (mapping?.status !== 'mapped') throw new BatchDomainError('conflict', '成片缺少对应版本的文案与声音分配记录');
+    legacyMapping = mapping;
+  }
+  const timeline: FormulaTimelineResult | null = schedule
+    ? schedulePresentationTimeline(scheduleRow!.stageId, schedule, selection)
+    : mappingRow?.timelineJson ? JSON.parse(mappingRow.timelineJson) : null;
   if (timeline?.status !== 'planned') throw new BatchDomainError('conflict', '成片缺少对应版本的原始排片记录');
-  const selection = JSON.parse(row.resultJson) as FormulaSelection;
   const identity = readFormulaExportIdentity(db, { projectId, batchId, planId, outputVersionId: view.outputVersionId, packaging: view.packaging ?? {} });
+  const scheduleClips = new Map((schedule?.timeline.clips ?? []).map(clip => [clip.id, clip]));
   const clips = [...view.clips].sort((a, b) => a.timelineStartUs - b.timelineStartUs || a.timelineEndUs - b.timelineEndUs).map(clip => {
     const slot = selection.slots.find(slot => slot.slotId === clip.segmentId);
+    // 非口播镜头在排时间结果里没有槽位号，只能按片段 id 认回排时间自己的决定：
+    // 镜头、替换镜头和补镜都是算法排的，不是人工插入。
+    const scheduled = slot ? undefined : scheduleClips.get(clip.clipId);
+    const generated = scheduled && scheduled.kind !== 'filler' ? scheduled : null;
     const replacement = slot?.manualReplacement ?? slot?.replacement;
     const manual = clip.formulaSourceId ? readFormulaManualMedia(db, projectId, view.outputVersionId!, clip.formulaSourceId) : null;
     return {
-      clipId: clip.clipId, slotId: slot?.slotId ?? null, originalCode: slot?.logicalCode ?? null,
-      selectedCode: slot?.sourceLogicalCode ?? replacement?.replacementCode ?? slot?.logicalCode ?? null,
+      clipId: clip.clipId, slotId: slot?.slotId ?? null,
+      originalCode: slot?.logicalCode ?? generated?.substitution?.replacedCode ?? generated?.logicalCode ?? null,
+      selectedCode: slot?.sourceLogicalCode ?? replacement?.replacementCode ?? slot?.logicalCode
+        ?? generated?.logicalCode ?? null,
       actualCodes: [...new Set(request.input.materialIndex.bindings.filter(binding => binding.assetId === clip.assetId
         && binding.contentFingerprint === clip.contentFingerprint).map(binding => binding.logicalCode))],
       assetId: clip.assetId, contentFingerprint: clip.contentFingerprint,
@@ -93,8 +146,13 @@ export function captureFormulaManifestItem(db: Database.Database, projectId: str
       sourceStartUs: clip.sourceStartUs, sourceEndUs: clip.sourceEndUs,
       timelineStartUs: clip.timelineStartUs, timelineEndUs: clip.timelineEndUs,
       playbackRate: clip.playbackRate ?? 1, framing: clip.framing ?? null,
-      selectionReason: slot?.reason ?? 'manual_insert',
-      manualDeviation: !slot ? 'manual_insert' : slot.assetId !== clip.assetId || slot.candidate?.contentFingerprint !== clip.contentFingerprint ? 'source_changed' : null,
+      selectionReason: slot?.reason ?? (scheduled ? `schedule_${scheduled.kind}` : 'manual_insert'),
+      manualDeviation: slot ? (slot.assetId !== clip.assetId || slot.candidate?.contentFingerprint !== clip.contentFingerprint ? 'source_changed' : null)
+        : scheduled ? null : 'manual_insert',
+      ...(scheduled?.kind === 'filler' ? { fillerCause: scheduled.fillerCause ?? null, fillerLines: scheduled.lineIndexes } : {}),
+      ...(scheduled?.substitution ? { scheduleSubstitution: { replacedCode: scheduled.substitution.replacedCode,
+        from: scheduled.substitution.from, assetId: scheduled.substitution.file.assetId,
+        fileName: scheduled.substitution.file.fileName } } : {}),
       replacement: replacement ? { originalCode: replacement.originalCode, replacementCode: replacement.replacementCode,
         reason: replacement.reason, differences: replacement.differences, basisScope: replacement.basisScope,
         importedSuggestion: slot?.replacement?.importedSuggestion ? {
@@ -103,7 +161,10 @@ export function captureFormulaManifestItem(db: Database.Database, projectId: str
           replacementCode: slot.replacement.importedSuggestion.replacementCode, sourceLine: slot.replacement.importedSuggestion.sourceLine } : null } : null,
     };
   });
-  const deviations = describeFormulaDeviations(selection, view.clips, request.input.materialIndex.bindings, timeline.duration.clips);
+  // 排时间出来的成片以排时间结果当基线：补镜、替镜不算人工改动，和审片口径一致。
+  const deviations = schedule
+    ? describeScheduleFormulaDeviations(selection, schedule, view.clips, request.input.materialIndex.bindings)
+    : describeFormulaDeviations(selection, view.clips, request.input.materialIndex.bindings, timeline.duration.clips);
   const music = readFormulaMusicSource(arrangement.music);
   const packaging = view.packaging;
   return {
@@ -124,10 +185,12 @@ export function captureFormulaManifestItem(db: Database.Database, projectId: str
       && audio.clips.some(clip => clip.mediaId === source.mediaId))).map(item => ({ id: item.id, origin: 'external' as const,
       filename: item.filename, text: item.text, confirmedAt: item.createdAt, fingerprint: item.audio?.fingerprint,
       durationUs: item.audio?.durationUs, channels: item.audio?.channels, timing: 'manually_confirmed_srt' as const, cues: item.audio?.words })),
-    scriptAudioMapping: { scope: 'generation_basis' as const, stageId: mappingRow!.stageId, algorithmVersion: mapping.algorithmVersion,
-      basis: mapping.basis, manualVerification: mapping.manualVerification ? {
-        revisionId: mapping.manualVerification.revisionId, confirmedAt: mapping.manualVerification.confirmedAt } : null,
-      blocks: mapping.blocks.map(block => ({ id: block.id, start: block.start, end: block.end, text: block.text, kind: block.kind,
+    scriptAudioMapping: schedule && scheduleRow
+      ? scheduleScriptAudioMapping(schedule, scheduleRow.stageId, basis)
+      : { scope: 'generation_basis' as const, stageId: mappingRow!.stageId, algorithmVersion: legacyMapping!.algorithmVersion,
+      basis: legacyMapping!.basis, manualVerification: legacyMapping!.manualVerification ? {
+        revisionId: legacyMapping!.manualVerification.revisionId, confirmedAt: legacyMapping!.manualVerification.confirmedAt } : null,
+      blocks: legacyMapping!.blocks.map(block => ({ id: block.id, start: block.start, end: block.end, text: block.text, kind: block.kind,
         slotId: block.slotId ?? null, slotIds: block.slotIds ?? null,
         ...(block.displayText ? { displayText: block.displayText } : {}),
         ...(block.roleVerification ? { roleVerification: {
@@ -139,9 +202,9 @@ export function captureFormulaManifestItem(db: Database.Database, projectId: str
             promptVersion: block.sourceCoverage.verification.promptVersion, providerId: block.sourceCoverage.verification.providerId,
             model: block.sourceCoverage.verification.model, reason: block.sourceCoverage.verification.reason,
           } } : {}) } : null })),
-      sources: mapping.sources.map(source => ({ slotId: source.slotId, assetId: source.assetId,
+      sources: legacyMapping!.sources.map(source => ({ slotId: source.slotId, assetId: source.assetId,
         contentFingerprint: source.contentFingerprint, speechStageId: source.speechStageId, text: source.text })),
-      issues: mapping.issues.map(issue => ({ code: issue.code, message: issue.message, slotIds: issue.slotIds,
+      issues: legacyMapping!.issues.map(issue => ({ code: issue.code, message: issue.message, slotIds: issue.slotIds,
         scriptText: issue.scriptText ?? null, sourceText: issue.sourceText ?? null })) },
     manualSourceSpeech: (request.input.manualSpeech ?? []).filter(source => clips.some(clip => clip.assetId === source.assetId
       && clip.contentFingerprint === source.contentFingerprint)).map(source => ({ revisionId: source.id,

@@ -5,7 +5,7 @@ import { batchSourceReview } from './source-conflicts.ts';
 import type { FormulaSelection } from './formula/selection.ts';
 import type { FormulaGenerationRequest } from './formula/generation.ts';
 import type { FormulaTimelineResult } from './formula/timeline.ts';
-import { describeFormulaDeviations } from './formula/deviations.ts';
+import { describeFormulaDeviations, describeScheduleFormulaDeviations } from './formula/deviations.ts';
 import { manualMediaForClip } from './formula/manual-media.ts';
 import { readFormulaScheduleStageResult } from './formula/schedule.ts';
 
@@ -91,19 +91,10 @@ export function batchOutputReviewContext(db: Database.Database, outputVersionId:
       const timeline: FormulaTimelineResult | null = timelineJson ? JSON.parse(timelineJson) : null;
       const currentClips = (Array.isArray(arrangement.clips) ? arrangement.clips : []) as Parameters<typeof describeFormulaDeviations>[1];
       // 排好的成片按「排时间的结果」当基线：补镜、替镜、没用上的镜头都不是人工改动。
-      const scheduledSlots = schedule ? new Set(schedule.timeline.clips.flatMap(clip =>
-        clip.slotIndex === undefined ? [] : [selection.slots[clip.slotIndex]?.slotId]).filter((id): id is string => !!id)) : null;
-      const baselineSelection = scheduledSlots
-        ? { ...selection, slots: selection.slots.filter(slot => scheduledSlots.has(slot.slotId)) } : selection;
-      const baselineClips = schedule ? schedule.timeline.clips.flatMap(clip => {
-        const slotId = clip.slotIndex === undefined ? clip.id : selection.slots[clip.slotIndex]?.slotId;
-        return slotId && baselineSelection.slots.some(slot => slot.slotId === slotId)
-          ? [{ slotId, assetId: clip.assetId, contentFingerprint: clip.contentFingerprint, sourceInUs: clip.sourceInUs, sourceOutUs: clip.sourceOutUs }]
-          : [];
-      }) : timeline?.status === 'planned' ? timeline.duration.clips : [];
-      const changes = describeFormulaDeviations(baselineSelection, currentClips, input?.materialIndex.bindings, baselineClips);
-      const generatedClipIds = new Set(schedule ? schedule.timeline.clips.map(clip => clip.id) : []);
-      changes.insertedClips = changes.insertedClips.filter(clip => !generatedClipIds.has(clip.clipId));
+      const changes = schedule
+        ? describeScheduleFormulaDeviations(selection, schedule, currentClips, input?.materialIndex.bindings)
+        : describeFormulaDeviations(selection, currentClips, input?.materialIndex.bindings,
+          timeline?.status === 'planned' ? timeline.duration.clips : []);
       for (const clip of changes.replacedClips) issues.push({ kind: 'deviation',
         message: `人工换片：原公式 ${clip.originalCode} 的画面已更换，请核对内容与声音`,
         details: [`生成时选用：${clip.selectedCode}；现用编号：${clip.actualCodes.join('、') || '未登记编号'}`], evidenceHash: hash(clip) });

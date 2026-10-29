@@ -40,15 +40,17 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const result = await orchestrateBatchExport(getDb(), projectId, batchId, body.planIds as string[], {
       allowPackagingPlaceholder: body.allowPackagingPlaceholder === true,
     });
+    // 清单写不出来不能只吞进日志：导出结果里带回去，页面上看得见。
+    let manifestError: string | null = null;
     if (result.items.some(({ status }) => status === 'published' || status === 'already_published')) {
       try {
         writeFormulaExportFolderManifest(getDb(), projectId);
       } catch (error) {
-        writeLog({ projectId, level: 'error',
-          message: `实拍混剪清单写入失败：${error instanceof Error ? error.message : String(error)}` });
+        manifestError = error instanceof Error ? error.message : String(error);
+        writeLog({ projectId, level: 'error', message: `实拍混剪清单写入失败：${manifestError}` });
       }
     }
-    return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });
+    return NextResponse.json(manifestError ? { ...result, manifestError } : result, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'live_mixcut_export_failed', '批次正式导出失败');
   }

@@ -52,3 +52,28 @@ export function describeFormulaDeviations(selection: FormulaSelection, clips: re
     reordered: JSON.stringify(actualOrder) !== JSON.stringify(originalOrder.filter(id => actualOrder.includes(id))),
   };
 }
+
+type ScheduleClip = { id: string; slotIndex?: number; assetId: string; contentFingerprint: string;
+  sourceInUs: number; sourceOutUs: number };
+
+/**
+ * 排时间出来的成片：以排时间结果当基线。
+ * 补镜、替代镜头、没用上的镜头都是算法自己的决定，不算人工改动；只有和排时间结果不一致的地方才是。
+ */
+export function describeScheduleFormulaDeviations(selection: FormulaSelection,
+  schedule: { timeline: { clips: readonly ScheduleClip[] } }, clips: readonly Clip[], bindings: readonly Binding[] = []) {
+  const scheduledSlotIds = new Set(schedule.timeline.clips.flatMap(clip =>
+    clip.slotIndex === undefined ? [] : [selection.slots[clip.slotIndex]?.slotId]).filter((id): id is string => !!id));
+  const baselineSelection = { ...selection, slots: selection.slots.filter(slot => scheduledSlotIds.has(slot.slotId)) };
+  const baselineClips = schedule.timeline.clips.flatMap(clip => {
+    const slotId = clip.slotIndex === undefined ? clip.id : selection.slots[clip.slotIndex]?.slotId;
+    return slotId && baselineSelection.slots.some(slot => slot.slotId === slotId)
+      ? [{ slotId, assetId: clip.assetId, contentFingerprint: clip.contentFingerprint, sourceInUs: clip.sourceInUs, sourceOutUs: clip.sourceOutUs }]
+      : [];
+  });
+  const changes = describeFormulaDeviations(baselineSelection, clips, bindings, baselineClips);
+  // 排时间自己生成的画面（补镜等）不是人工插入。
+  const generatedClipIds = new Set(schedule.timeline.clips.map(clip => clip.id));
+  changes.insertedClips = changes.insertedClips.filter(clip => !generatedClipIds.has(clip.clipId));
+  return changes;
+}

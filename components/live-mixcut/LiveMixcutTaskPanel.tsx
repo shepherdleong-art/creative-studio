@@ -508,6 +508,8 @@ export default function LiveMixcutTaskPanel({ projectId }: LiveMixcutTaskPanelPr
         pending: number;
         failed: number;
         skipped: number;
+        // 清单写不出来时服务端把原因带回来，页面必须提示，不能只留在日志里。
+        manifestError?: string | null;
         items: Array<{
           planId: string;
           status: 'skipped' | 'render_queued' | 'rendering' | 'render_failed' | 'already_published' | 'published';
@@ -549,6 +551,9 @@ export default function LiveMixcutTaskPanel({ projectId }: LiveMixcutTaskPanelPr
           ? `已开始渲染 ${result.pending} 条成片并跳过 ${result.skipped} 条，渲染完成后自动导出（关闭或刷新页面后需再点一次导出）。`
           : `已导出 ${exportedTotal} 条${result.failed > 0 ? ` · 渲染失败 ${result.failed} 条` : ''}${result.skipped > 0 ? ` · 跳过 ${result.skipped} 条` : ''}${removed.length > 0 ? ` · 取消选择 ${removed.length} 条` : ''}`,
       });
+      if (result.manifestError) {
+        setFeedback({ kind: 'error', message: `文件已导出，但「清单.csv」没写出来：${result.manifestError}` });
+      }
       const exported = result.items.find(({ status }) => status === 'published');
       if (exported?.videoRelativePath) {
         const folder = exported.videoRelativePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
