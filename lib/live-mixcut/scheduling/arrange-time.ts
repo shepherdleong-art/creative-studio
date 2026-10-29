@@ -133,8 +133,10 @@ export function arrangeFormulaTime(input: SchedulingArrangeInput): TimelinePlan 
     .map(item => item.file).reverse();
 
   let cursor = 0;
+  /** 配音占几帧：向上取整，保证画面窗口不短于声音本身。 */
+  const narrationFrames = (durationUs: number): number => Math.max(1, Math.ceil(durationUs / FRAME_US - 1e-6));
   const lineDurationFrames = (lineIndexes: readonly number[]) => lineIndexes
-    .reduce((total, index) => total + Math.max(1, microsecondsToFrames(takes.get(index)!.durationUs)), 0);
+    .reduce((total, index) => total + narrationFrames(takes.get(index)!.durationUs), 0);
 
   function pushedClip(clip: Omit<TimelineClip, 'timelineStartFrame' | 'timelineEndFrame' | 'timelineStartUs' | 'timelineEndUs'>, lengthFrames: number): void {
     const start = cursor;
@@ -147,15 +149,19 @@ export function arrangeFormulaTime(input: SchedulingArrangeInput): TimelinePlan 
     let position = startFrame;
     for (const lineIndex of lineIndexes) {
       const take = takes.get(lineIndex)!;
-      const length = Math.max(1, microsecondsToFrames(take.durationUs));
+      const length = narrationFrames(take.durationUs);
       const text = stripEmoji(take.text || plan.lines[lineIndex].text);
+      // 配音的长短是音频文件自己的真实毫秒数，画面才按整帧走。声音终点跟着真实长度写，
+      // 否则取整差半帧（最多 20 毫秒）会让成片校验以为「原片长度和时间线长度对不上」，
+      // 而渲染本来也是按真实长度削音频、按起点延时的。
+      const timelineStartUs = framesToMicroseconds(position);
       const sound: TimelineSound = {
         id: `narration:${lineIndex}`, kind: 'narration', slotIndex: null, lineIndexes: [lineIndex],
         logicalCode: null, assetId: null,
         contentFingerprint: take.contentFingerprint ?? `${take.durationUs}:${text}`,
         fileName: null, text,
         timelineStartFrame: position, timelineEndFrame: position + length,
-        timelineStartUs: framesToMicroseconds(position), timelineEndUs: framesToMicroseconds(position + length),
+        timelineStartUs, timelineEndUs: timelineStartUs + take.durationUs,
         sourceInUs: 0, sourceOutUs: take.durationUs, relativePath: take.relativePath ?? null,
       };
       sounds.push(sound);

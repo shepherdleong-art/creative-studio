@@ -416,6 +416,39 @@ function baseInput(overrides: Partial<SchedulingInput> & Pick<SchedulingInput, '
   assert.ok(ending.every(clip => clip.logicalCode === 'S1'));
 }
 
+// ㉑ 配音时长不是整帧：声音终点按真实毫秒数写，不能被取整拉长或压短。
+// 成片校验要求「原片长度 = 时间线长度」，配音的原片就是音频文件本身。
+{
+  const materials = [material('S1', [file('S1')]), material('S2', [file('S2')])];
+  const input = baseInput({ script: { scriptNumber: '21', copyIndex: 1, lines: ['第一句。', '第二句。'], codes: ['S1', 'S2'] }, materials });
+  // 4.032 秒不是 24fps 的整帧数，取整会差 9.7 毫秒。
+  const { timeline } = build(input, lineIndex => (lineIndex === 0 ? 4.032 : 3.624));
+  for (const sound of timeline.sounds.filter(sound => sound.kind === 'narration')) {
+    assert.equal(sound.timelineEndUs - sound.timelineStartUs, sound.sourceOutUs - sound.sourceInUs,
+      '配音的时间线长度必须等于音频真实长度');
+  }
+  // 配音占的画面窗口不短于声音，声音不会溢出到下一段。
+  const first = timeline.sounds.find(sound => sound.kind === 'narration')!;
+  const covering = timeline.clips.find(clip => clip.timelineStartFrame === first.timelineStartFrame)!;
+  assert.ok(covering.timelineEndUs >= first.timelineEndUs, '画面窗口不能比配音短');
+}
+
+// ㉒ 成片最后一段是口播镜头时，收尾只拉长画面，原声不能被一起拉长。
+{
+  const vo = material('VO1', [file('VO1', { duration: 8, speech: speech('收尾这句由原片说。', 2, 4) })],
+    { voLine: '收尾这句由原片说。' });
+  const materials = [material('S1', [file('S1')]), vo];
+  const input = baseInput({
+    script: { scriptNumber: '22', copyIndex: 1, lines: ['开场一句。', '收尾这句由原片说。'], codes: ['S1', 'VO1'] }, materials });
+  const { timeline } = build(input, 2);
+  for (const sound of timeline.sounds) {
+    assert.equal(sound.timelineEndUs - sound.timelineStartUs, sound.sourceOutUs - sound.sourceInUs,
+      '原声的时间线长度等于它取用的原片长度，收尾不拉伸声音');
+  }
+  const last = timeline.clips.at(-1)!;
+  if (last.kind === 'vo') assert.ok(last.timelineEndUs > timeline.sounds.at(-1)!.timelineEndUs, '收尾留了画面');
+}
+
 // 估算时长只作参考：字数为 0 时也给一个最短时长。
 assert.ok(estimatedSpeechUs('') >= 600_000);
 
