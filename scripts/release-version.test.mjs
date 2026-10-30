@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const expectedVersion = '0.7.0';
+const expectedVersion = '0.7.1';
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const packageLock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
 const portableGuide = fs.readFileSync(path.join(root, 'installer', 'windows', '使用说明-portable.txt'), 'utf8');
@@ -12,7 +12,7 @@ const portableGuide = fs.readFileSync(path.join(root, 'installer', 'windows', '�
 assert.equal(packageJson.version, expectedVersion);
 assert.equal(packageLock.version, expectedVersion);
 assert.equal(packageLock.packages[''].version, expectedVersion);
-assert.match(portableGuide, /创意工作台-0\.7\.0-免安装版/);
+assert.match(portableGuide, /创意工作台-0\.7\.1-免安装版/);
 assert.doesNotMatch(portableGuide, /创意工作台-0\.6\.\d+-免安装版/);
 assert.match(portableGuide, /迁移旧版数据\.cmd/);
 assert.match(portableGuide, /stop-windows\.cmd/);
