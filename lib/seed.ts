@@ -1,11 +1,8 @@
 import { BUILTIN_OPENING_CODES } from './media-core/production-codes.ts';
-import { SEEDREAM_5_PRO, SEEDREAM_PROVIDER_ID, SEEDREAM_BASE_URL } from './seedream-image.ts';
 import { resolveCoreUsagePlan } from './usage-pricing.ts';
 import { getDb } from './db.ts';
-import { GPTGE_GPT_IMAGE_2_PROVIDER } from './image-provider-presets.ts';
 import { isPlaceholderValue } from './video-auth.ts';
 import { defaultScriptProviderConfigs } from './script-providers/config.ts';
-import { v4 as uuidv4 } from 'uuid';
 
 // 公司供应商统一经本机 LiteLLM 代理（127.0.0.1:4000）转发；代理不校验调用方
 // Bearer（上游真实 Key 由包内 config.yaml 持有），所以种子里的 apiKey 只需非空
@@ -16,100 +13,8 @@ const COMPANY_LITELLM_PLACEHOLDER_KEY = 'litellm-local-passthrough';
 
 export function seedProviders() {
   const db = getDb();
-
-  const existing = db.prepare(`SELECT COUNT(*) as count FROM providers`).get() as { count: number };
-  if (existing.count === 0) {
-    const providers = [
-      {
-        id: uuidv4(),
-        name: 'GeekAI',
-        baseUrl: 'https://geekai.co/api',
-        apiKeyEnv: 'GEEKAI_API_KEY',
-        apiKey: '',
-        model: 'gpt-image-2',
-        type: 'geekai-json',
-        enabled: 1,
-        defaultCostPerImage: 0.5,
-      },
-      {
-        id: 'packy-gpt-image-2',
-        name: 'Packy GPT-Image-2',
-        baseUrl: 'https://www.packyapi.com',
-        apiKeyEnv: 'PACKY_API_KEY',
-        apiKey: '',
-        model: 'gpt-image-2',
-        type: 'packy-images',
-        enabled: 0,
-        defaultCostPerImage: 0.5,
-      },
-      GPTGE_GPT_IMAGE_2_PROVIDER,
-      {
-        id: 'packy-nano-banana-2',
-        name: 'Packy Nano Banana 2',
-        baseUrl: 'https://www.packyapi.com',
-        apiKeyEnv: 'PACKY_IMAGE_API_KEY',
-        apiKey: '',
-        model: 'gemini-3.1-flash-image-preview',
-        type: 'packy-gemini-image',
-        enabled: 0,
-        defaultCostPerImage: 0.4,
-      },
-      {
-        id: 'gptge-nano-banana-2-2k',
-        name: 'GPT.ge Nano Banana 2 2K',
-        baseUrl: 'https://api.gpt.ge',
-        apiKeyEnv: 'GPTGE_API_KEY',
-        apiKey: '',
-        model: 'gemini-3.1-flash-image-2k',
-        type: 'packy-gemini-image',
-        enabled: 0,
-        defaultCostPerImage: 0.25,
-      },
-      {
-        id: 'gptge-nano-banana-pro-2k',
-        name: 'GPT.ge Nano Banana Pro 2K',
-        baseUrl: 'https://api.gpt.ge',
-        apiKeyEnv: 'GPTGE_API_KEY',
-        apiKey: '',
-        model: 'gemini-3-pro-image-2k',
-        type: 'packy-gemini-image',
-        enabled: 0,
-        defaultCostPerImage: 0.34,
-      },
-      {
-        id: 'packy-nano-banana-pro',
-        name: 'Packy Nano Banana Pro',
-        baseUrl: 'https://www.packyapi.com',
-        apiKeyEnv: 'PACKY_IMAGE_API_KEY',
-        apiKey: '',
-        model: 'gemini-3-pro-image-preview',
-        type: 'packy-gemini-image',
-        enabled: 0,
-        defaultCostPerImage: 0.7,
-      },
-    ];
-
-    const insert = db.prepare(
-      `INSERT INTO providers (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    );
-
-    for (const p of providers) {
-      insert.run(p.id, p.name, p.baseUrl, p.apiKeyEnv, p.apiKey, p.model, p.type, p.enabled, p.defaultCostPerImage);
-    }
-  }
-
-  // Clean up any placeholder apiKey values that may have been persisted before
-  // isPlaceholderValue filtering was added to the seed (self-healing migration).
   cleanPlaceholderKeys(db);
-  ensurePackyImageProviders(db);
-  ensureGptGeImageProvider(db);
   ensureCompanyImageProviders(db);
-  // 仅补缺；Key 由设置页配置，不从其他供应商自动复制，不编造计价。
-  db.prepare(`INSERT OR IGNORE INTO providers
-    (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
-    VALUES (?, ?, ?, '', '', ?, 'ark-images', 0, NULL)`)
-    .run(SEEDREAM_PROVIDER_ID, 'Seedream 5.0 Pro（方舟直连）', SEEDREAM_BASE_URL, SEEDREAM_5_PRO);
 }
 
 /**
@@ -187,92 +92,6 @@ function cleanPlaceholderKeys(db: ReturnType<typeof getDb>) {
   }
 }
 
-function ensurePackyImageProviders(db: ReturnType<typeof getDb>) {
-  db.prepare(`
-    UPDATE providers
-    SET type = 'packy-gemini-image'
-    WHERE baseUrl LIKE '%packyapi.com%'
-      AND model IN ('gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview')
-  `).run();
-
-  db.prepare(`
-    INSERT INTO providers
-      (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
-    SELECT
-      'packy-nano-banana-2', 'Packy Nano Banana 2', ?, 'PACKY_IMAGE_API_KEY', ?, 'gemini-3.1-flash-image-preview', 'packy-gemini-image', 0, 0.4
-    WHERE NOT EXISTS (
-      SELECT 1 FROM providers
-      WHERE baseUrl LIKE '%packyapi.com%'
-        AND model = 'gemini-3.1-flash-image-preview'
-    )
-  `).run(
-    'https://www.packyapi.com',
-    ''
-  );
-
-  db.prepare(`
-    INSERT INTO providers
-      (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
-    SELECT
-      'packy-nano-banana-pro', 'Packy Nano Banana Pro', ?, 'PACKY_IMAGE_API_KEY', ?, 'gemini-3-pro-image-preview', 'packy-gemini-image', 0, 0.7
-    WHERE NOT EXISTS (
-      SELECT 1 FROM providers
-      WHERE baseUrl LIKE '%packyapi.com%'
-        AND model = 'gemini-3-pro-image-preview'
-    )
-  `).run(
-    'https://www.packyapi.com',
-    ''
-  );
-}
-
-function ensureGptGeImageProvider(db: ReturnType<typeof getDb>) {
-  db.prepare(`
-    INSERT INTO providers
-      (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
-    SELECT
-      'gptge-gpt-image-2', 'GPT.ge GPT-Image-2', ?, 'GPTGE_API_KEY', ?, 'gpt-image-2', 'openai-compatible', 0, 0.12
-    WHERE NOT EXISTS (
-      SELECT 1 FROM providers
-      WHERE id = 'gptge-gpt-image-2'
-        OR (baseUrl LIKE '%api.gpt.ge%' AND model = 'gpt-image-2')
-    )
-  `).run(
-    'https://api.gpt.ge',
-    ''
-  );
-
-  db.prepare(`
-    INSERT INTO providers
-      (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
-    SELECT
-      'gptge-nano-banana-2-2k', 'GPT.ge Nano Banana 2 2K', ?, 'GPTGE_API_KEY', ?, 'gemini-3.1-flash-image-2k', 'packy-gemini-image', 0, 0.25
-    WHERE NOT EXISTS (
-      SELECT 1 FROM providers
-      WHERE id = 'gptge-nano-banana-2-2k'
-        OR (baseUrl LIKE '%api.gpt.ge%' AND model = 'gemini-3.1-flash-image-2k')
-    )
-  `).run(
-    'https://api.gpt.ge',
-    ''
-  );
-
-  db.prepare(`
-    INSERT INTO providers
-      (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
-    SELECT
-      'gptge-nano-banana-pro-2k', 'GPT.ge Nano Banana Pro 2K', ?, 'GPTGE_API_KEY', ?, 'gemini-3-pro-image-2k', 'packy-gemini-image', 0, 0.34
-    WHERE NOT EXISTS (
-      SELECT 1 FROM providers
-      WHERE id = 'gptge-nano-banana-pro-2k'
-        OR (baseUrl LIKE '%api.gpt.ge%' AND model = 'gemini-3-pro-image-2k')
-    )
-  `).run(
-    'https://api.gpt.ge',
-    ''
-  );
-}
-
 export function seedVideoProviders() {
   const db = getDb();
 
@@ -295,21 +114,6 @@ export function seedVideoProviders() {
       secretKey: '',
     },
     {
-      id: 'kling-2-5',
-      name: '可灵 2.5',
-      type: 'kling',
-      baseUrlEnv: 'KLING_VIDEO_BASE_URL',
-      apiKeyEnv: 'KLING_VIDEO_API_KEY',
-      modelEnv: 'KLING_2_5_VIDEO_MODEL',
-      defaultModel: 'kling-v2-5-turbo',
-      enabled: 1,
-      defaultDurationSec: 5,
-      baseUrl: '',
-      apiKey: '',
-      accessKey: '',
-      secretKey: '',
-    },
-    {
       id: 'jimeng-2',
       name: '即梦 1.5 Pro (Seedance)',
       type: 'jimeng',
@@ -317,21 +121,6 @@ export function seedVideoProviders() {
       apiKeyEnv: 'JIMENG_VIDEO_API_KEY',
       modelEnv: 'JIMENG_VIDEO_MODEL',
       defaultModel: 'doubao-seedance-1-5-pro-251215',
-      enabled: 1,
-      defaultDurationSec: 5,
-      baseUrl: '',
-      apiKey: '',
-      accessKey: '',
-      secretKey: '',
-    },
-    {
-      id: 'jimeng-2-0',
-      name: '即梦 2.0 (Seedance 2.0)',
-      type: 'jimeng',
-      baseUrlEnv: 'JIMENG_VIDEO_BASE_URL',
-      apiKeyEnv: 'JIMENG_VIDEO_API_KEY',
-      modelEnv: 'JIMENG_VIDEO_MODEL',
-      defaultModel: 'doubao-seedance-2-0-260128',
       enabled: 1,
       defaultDurationSec: 5,
       baseUrl: '',
@@ -364,6 +153,12 @@ export function seedVideoProviders() {
  */
 function ensureCompanyVideoProviders(db: ReturnType<typeof getDb>) {
   const companyProviders = [
+    {
+      id: 'company-seedance-2-0',
+      name: '公司即梦 Seedance 2.0 · 1080p',
+      modelEnv: 'COMPANY_SEEDANCE_2_0_VIDEO_MODEL',
+      defaultModel: 'doubao-seedance-2-0-260128',
+    },
     {
       id: 'company-minimax-h3',
       name: '公司 MiniMax H3 · 2K',

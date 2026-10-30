@@ -461,7 +461,89 @@ try {
     assert.equal(openaiVideoAdapter.tailFrameCapability?.(model).supported, false);
   }
 
-  // 可灵 3.0 尾帧（2026-08-17 实测合同）：images 只放首帧，尾帧走腾讯原生
+  // 公司全能参考：调用方已交付 URL，适配器只发一次 POST，不上传、不改用首尾帧字段。
+  for (const [model, resolution, aspectRatio] of [
+    ['minimax-h3', '2K', '21:9'], ['wan-3.0', '1080P', '4:3'],
+  ] as const) {
+    const before = capturedMethods.length;
+    await openaiVideoAdapter.submitReference!({
+      model, prompt: '参考图、运镜和声音', durationSec: 5, aspectRatio,
+      references: [
+        { kind: 'image', url: 'https://cos.example.com/image.png', mimeType: 'image/png' },
+        { kind: 'video', url: 'https://cos.example.com/video.mp4', mimeType: 'video/mp4', durationSec: 2 },
+        { kind: 'audio', url: 'https://cos.example.com/audio.mp3', mimeType: 'audio/mpeg', durationSec: 3 },
+      ],
+    }, 'gateway-key', 'http://127.0.0.1:4000');
+    assert.equal(capturedMethods.length, before + 1);
+    assert.equal(capturedMethods[capturedMethods.length - 1], 'POST');
+    assert.equal(capturedUrl, 'http://127.0.0.1:4000/v1/videos');
+    assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['FileInfos', 'OutputConfig', 'model', 'prompt', 'seconds']);
+    assert.equal(capturedBody?.seconds, '5');
+    assert.deepEqual(capturedBody?.FileInfos, [
+      { Type: 'Url', Category: 'Image', Url: 'https://cos.example.com/image.png', Usage: 'Reference' },
+      { Type: 'Url', Category: 'Video', Url: 'https://cos.example.com/video.mp4', Usage: 'Reference' },
+      { Type: 'Url', Category: 'Audio', Url: 'https://cos.example.com/audio.mp3', Usage: 'Reference' },
+    ]);
+    assert.deepEqual(capturedBody?.OutputConfig, { Duration: 5, Resolution: resolution, AspectRatio: aspectRatio });
+    for (const field of ['images', 'LastFrameUrl', 'end_image_url', 'multi_shot', 'shot_type', 'size', 'content']) {
+      assert.equal(capturedBody?.[field], undefined, `${model}: forbidden reference field ${field}`);
+    }
+  }
+
+  for (const model of ['minimax-h3', 'wan-3.0']) {
+    const before = capturedMethods.length;
+    await assert.rejects(openaiVideoAdapter.submitReference!({
+      model, prompt: '缺少比例必须失败', durationSec: 5,
+      references: [{ kind: 'image', url: 'https://cos.example.com/image.png', mimeType: 'image/png' }],
+    }, 'gateway-key', 'http://127.0.0.1:4000'), /必须显式指定输出比例/);
+    assert.equal(capturedMethods.length, before, `${model} 缺比例不得发送 undefined 或发起 POST`);
+  }
+
+  // 公司 Seedance 复用方舟 content 顺序与 LiteLLM 外层 prompt/seconds。
+  for (const [model, durationSec, resolution] of [
+    ['doubao-seedance-2-0-260128', 8, '1080p'],
+    ['doubao-seedance-2-0-fast-260128', 8, '720p'],
+    ['doubao-seedance-2-5-260628', 20, '1080p'],
+  ] as const) {
+    await openaiVideoAdapter.submitReference!({
+      model, prompt: '保留方舟参考顺序', durationSec, aspectRatio: '9:16',
+      references: [
+        { kind: 'image', url: 'https://cos.example.com/image.png', mimeType: 'image/png' },
+        { kind: 'video', url: 'https://cos.example.com/video.mp4', mimeType: 'video/mp4', durationSec: durationSec === 20 ? 20 : 4 },
+        { kind: 'audio', url: 'https://cos.example.com/audio.mp3', mimeType: 'audio/mpeg', durationSec: 3 },
+      ],
+      ...(model === 'doubao-seedance-2-0-260128' ? { omniReferenceTaskType: 'edit' as const } : {}),
+    }, 'gateway-key', 'http://127.0.0.1:4000');
+    assert.equal(capturedUrl, 'http://127.0.0.1:4000/v1/videos');
+    assert.equal(capturedBody?.prompt, '保留方舟参考顺序');
+    assert.equal(capturedBody?.seconds, String(durationSec));
+    assert.equal(capturedBody?.duration, durationSec);
+    assert.equal(capturedBody?.resolution, resolution);
+    assert.equal(capturedBody?.ratio, '9:16');
+    assert.deepEqual(capturedBody?.content, [
+      { type: 'text', text: '保留方舟参考顺序' },
+      { type: 'image_url', image_url: { url: 'https://cos.example.com/image.png' }, role: 'reference_image' },
+      { type: 'video_url', video_url: { url: 'https://cos.example.com/video.mp4' }, role: 'reference_video' },
+      { type: 'audio_url', audio_url: { url: 'https://cos.example.com/audio.mp3' }, role: 'reference_audio' },
+    ]);
+    assert.equal(capturedBody?.omni_reference_task_type, model === 'doubao-seedance-2-5-260628' ? 'reference' : undefined);
+    for (const field of ['FileInfos', 'OutputConfig', 'images', 'LastFrameUrl', 'end_image_url', 'multi_shot', 'shot_type', 'camera_fixed']) {
+      assert.equal(capturedBody?.[field], undefined, `${model}: forbidden Seedance reference field ${field}`);
+    }
+  }
+
+  const beforeUnsupportedReference = capturedMethods.length;
+  await assert.rejects(openaiVideoAdapter.submitReference!({
+    model: 'kling-2.5', prompt: 'unsupported', durationSec: 5,
+    references: [{ kind: 'image', url: 'https://cos.example.com/image.png', mimeType: 'image/png' }],
+  }, 'gateway-key', 'http://127.0.0.1:4000'), /不支持全能参考/);
+  await assert.rejects(openaiVideoAdapter.submitReference!({
+    model: 'minimax-h3', prompt: 'gate', durationSec: 5, aspectRatio: '16:9',
+    references: [{ kind: 'image', url: 'https://cos.example.com/image.png', mimeType: 'image/png' }],
+  }, 'gateway-key', 'https://external.example.com'), /LiteLLM/);
+  assert.equal(capturedMethods.length, beforeUnsupportedReference);
+
+  // 可灵 3.0 尾帧（2026-08-17 实测合同）：images 只放首帧，尾帧是腾讯原生
   // LastFrameUrl，比例走 OutputConfig.AspectRatio，size 在首尾帧模式被忽略不发送；
   // 时长走 OutputConfig.Duration（2026-08-18 实测：网关 LastFrameUrl 分支不透传
   // seconds，OutputConfig 字段会原样透传腾讯，Duration=10 产出 10.042s）；

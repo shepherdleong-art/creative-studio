@@ -18,6 +18,8 @@ import {
 import { shouldInjectCompanyKlingMultiShot } from '../video-multi-shot.ts';
 import { videoDurationError } from '../video-duration.ts';
 import { companyNativeVideoModel } from '../company-gateway-video-models.ts';
+import { validateVideoReferenceRequest, videoReferenceCapability } from '../video-reference-contract.ts';
+import { createCompanySeedanceVideoAdapter } from './company-seedance-video.ts';
 import type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';
 
 /**
@@ -311,6 +313,84 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
 
       const data = (await res.json()) as GatewayVideoResponse;
 
+      return {
+        providerTaskId: data.id,
+        rawResponse: sanitizeGatewayRawResponse(data, apiKey),
+      };
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    }
+  },
+
+  async submitReference(request, apiKey, baseUrl, signal): Promise<SubmitVideoResult> {
+    const capability = videoReferenceCapability('openai-video', request.model);
+    if (!capability.supported) {
+      throw new Error(`模型 ${request.model} 不支持全能参考`);
+    }
+    const problems = validateVideoReferenceRequest({
+      providerType: 'openai-video',
+      model: request.model,
+      references: request.references.map((reference, index) => ({
+        id: String(index + 1),
+        kind: reference.kind,
+        mimeType: reference.mimeType,
+        byteSize: null,
+        durationSec: reference.durationSec,
+      })),
+      durationSec: request.durationSec,
+      aspectRatio: request.aspectRatio,
+      resolution: request.resolution,
+    });
+    if (problems.length > 0) throw new Error(problems.join('；'));
+
+    const nativeModel = companyNativeVideoModel(request.model);
+    if (nativeModel && !request.aspectRatio) {
+      throw new Error(`模型 ${request.model} 的全能参考必须显式指定输出比例，任务未提交`);
+    }
+    const cleanBase = baseUrl.replace(/\/$/, '');
+    // URLs are delivered by the caller. The company gate still fails closed before POST;
+    // this adapter never uploads reference media or falls back to a local URL.
+    await assertCompanyTailFrameTransport(cleanBase);
+    if (!nativeModel) {
+      return createCompanySeedanceVideoAdapter().submitReference!(request, apiKey, cleanBase, signal);
+    }
+
+    const body = {
+      model: request.model,
+      prompt: request.prompt || 'gentle camera movement, stable product detail',
+      seconds: String(request.durationSec),
+      FileInfos: request.references.map((reference) => ({
+        Type: 'Url',
+        Category: reference.kind === 'image' ? 'Image' : reference.kind === 'video' ? 'Video' : 'Audio',
+        Url: reference.url,
+        Usage: 'Reference',
+      })),
+      OutputConfig: {
+        Duration: request.durationSec,
+        Resolution: request.resolution ?? capability.defaultResolution,
+        AspectRatio: request.aspectRatio,
+      },
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
+    const onAbort = () => controller.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const res = await fetch(`${cleanBase}/v1/videos`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        const errorText = sanitizeGatewayMediaDiagnostic(await res.text(), apiKey);
+        throw new Error(`Video gateway submit error ${res.status}: ${errorText.slice(0, 500)}`);
+      }
+      const data = (await res.json()) as GatewayVideoResponse;
       return {
         providerTaskId: data.id,
         rawResponse: sanitizeGatewayRawResponse(data, apiKey),

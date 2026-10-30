@@ -100,6 +100,7 @@ export async function importViralTemplateLibrary(
   buffer: Buffer,
   sourceFilename: string,
   now?: () => Date,
+  options?: { onlyIfEmpty?: boolean },
 ): Promise<ViralTemplateImportOutcome> {
   assertXlsxBuffer(buffer);
   const workbook = await loadWorkbook(buffer);
@@ -119,6 +120,14 @@ export async function importViralTemplateLibrary(
   const revisionId = randomUUID();
   const ts = nowIso(now);
   const publish = db.transaction(() => {
+    // A manual import or another startup may have won while the workbook parsed.
+    if (options?.onlyIfEmpty) {
+      const current = db.prepare(`SELECT r.* FROM script_studio_viral_tpl_libraries l
+        JOIN script_studio_viral_tpl_revisions r ON r.id = l.currentRevisionId WHERE l.id = ?`)
+        .get(library.id) as ViralTemplateRevisionRecord | undefined;
+      if (current) return { libraryId: library.id, revisionId: current.id, created: false,
+        report: JSON.parse(current.importReportJson) as ViralTemplateImportReport };
+    }
     const numberRow = db.prepare(`
       SELECT COALESCE(MAX(revisionNumber), 0) + 1 AS next FROM script_studio_viral_tpl_revisions WHERE libraryId = ?
     `).get(library.id) as { next: number };
@@ -146,9 +155,9 @@ export async function importViralTemplateLibrary(
     db.prepare(`
       UPDATE script_studio_viral_tpl_libraries SET currentRevisionId = ?, updatedAt = ? WHERE id = ?
     `).run(revisionId, ts, library.id);
+    return { libraryId: library.id, revisionId, created: true, report: parsed.report };
   });
-  publish.immediate();
-  return { libraryId: library.id, revisionId, created: true, report: parsed.report };
+  return publish.immediate();
 }
 
 export interface ViralTemplateLibraryView {

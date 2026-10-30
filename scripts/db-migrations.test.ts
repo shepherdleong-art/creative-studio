@@ -273,6 +273,19 @@ assert.ok(
   videoJobColumns.some((column) => column.name === 'tailImageId'),
   'video_jobs.tailImageId should be added when migrating older installed databases',
 );
+const generationModeColumn = videoJobColumns.find((column) => column.name === 'generationMode') as
+  | { type?: string; notnull?: number; dflt_value?: string | null }
+  | undefined;
+assert.equal(generationModeColumn?.type, 'TEXT');
+assert.equal(generationModeColumn?.notnull, 1);
+assert.equal(generationModeColumn?.dflt_value, "'image-to-video'");
+assert.ok(videoJobColumns.some((column) => column.name === 'aspectRatio'));
+assert.ok(videoJobColumns.some((column) => column.name === 'resolution'));
+assert.deepEqual(
+  db.prepare(`SELECT generationMode, aspectRatio, resolution FROM video_jobs WHERE id = 'legacy-video-job'`).get(),
+  { generationMode: 'image-to-video', aspectRatio: null, resolution: null },
+  '历史任务必须保持首尾帧旧路径且不伪造参考输出参数',
+);
 const multiShotColumn = videoJobColumns.find((column) => column.name === 'multiShot') as
   | { name: string; type?: string; notnull?: number; dflt_value?: string | null }
   | undefined;

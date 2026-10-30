@@ -336,6 +336,20 @@ function runPs1(scriptPath, args, input, env = process.env) {
   );
 }
 
+test('源码桌面启动修复仅剩 .bin 的依赖目录，并显式安装开发依赖', { skip: !isWindows }, (t) => {
+  const dir = makePortableFixture(t, {
+    'node_modules/.bin/old.cmd': '@exit /b 0\r\n',
+    'fake-bin/npm.cmd': '@echo off\r\necho INSTALL_ARGS=%*\r\nexit /b 73\r\n',
+  });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
+  env.PATH = `${path.join(dir, 'fake-bin')};${path.dirname(process.execPath)};${process.env.PATH ?? process.env.Path}`;
+  const r = runPs1(path.join(dir, 'scripts/start-desktop-windows.ps1'), ['-ReviewLaunch'], '', env);
+  const out = `${r.stdout ?? ''}\n${r.stderr ?? ''}`;
+  assert.equal(r.status, 73, `应进入依赖修复并传递安装失败退出码：\n${out}`);
+  assert.match(out, /INSTALL_ARGS=ci --include=dev/);
+  assert.doesNotMatch(out, /正在安装 Electron 运行时/);
+});
+
 test('隔离数据根的 sidecar 失败和停止均不触碰应用根状态或其他端口', { skip: !isWindows }, (t) => {
   const dir = makePortableFixture(t);
   const isolated = fs.mkdtempSync(path.join(os.tmpdir(), 'stack-data-'));

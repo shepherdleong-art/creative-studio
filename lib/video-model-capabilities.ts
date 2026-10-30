@@ -5,6 +5,7 @@ import { videoDurationOptions } from './video-duration.ts';
 import { isCompanyKlingMultiShotTarget } from './video-multi-shot.ts';
 import { resolveVideoProviderRuntimeConfig, type VideoProviderEnvConfig } from './video-auth.ts';
 import type { VideoModelCapabilities } from './video-generation-options.ts';
+import { videoReferenceCapability } from './video-reference-contract.ts';
 
 export function getVideoTailFrameCapability(providerType: string, model: string): TailFrameCapability {
   return getVideoAdapter(providerType)?.tailFrameCapability?.(model) ?? {
@@ -19,6 +20,7 @@ export function getVideoModelCapabilities(providerType: string, model: string): 
     durations: videoDurationOptions(providerType, model),
     tailFrame: getVideoTailFrameCapability(providerType, model),
     multiShot: { supported: multiShot, defaultEnabled: multiShot },
+    reference: videoReferenceCapability(providerType, model),
   };
 }
 

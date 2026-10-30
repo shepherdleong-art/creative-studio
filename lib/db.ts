@@ -5,6 +5,7 @@ import { CORE_DB_MIGRATIONS } from './db-migrations.ts';
 import { dataRoot } from './data-root.ts';
 import { initFinalEditSchema } from './final-edit/schema.ts';
 import { initUsageSchema, markUsageSchemaUnavailable } from './usage-schema.ts';
+import { seedBundledMotionPresets } from './bundled-motion-presets.ts';
 
 const DB_PATH = path.join(dataRoot(), 'data', 'workbench.db');
 
@@ -33,6 +34,7 @@ export function getDb(): Database.Database {
     }
     initFinalEditSchema(db);
     seedAllVideo();
+    seedBundledMotionPresets(db);
   }
   return db;
 }
@@ -307,6 +309,9 @@ function initTables(db: Database.Database) {
       templateId TEXT,
       prompt TEXT NOT NULL,
       durationSec INTEGER NOT NULL DEFAULT 5,
+      generationMode TEXT NOT NULL DEFAULT 'image-to-video',
+      aspectRatio TEXT,
+      resolution TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       providerTaskId TEXT,
       providerStatus TEXT,
@@ -334,6 +339,31 @@ function initTables(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_video_jobs_project ON video_jobs(projectId);
     CREATE INDEX IF NOT EXISTS idx_video_jobs_shot ON video_jobs(shotId);
     CREATE INDEX IF NOT EXISTS idx_video_jobs_status ON video_jobs(status);
+
+    CREATE TABLE IF NOT EXISTS video_reference_assets (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('image','video','audio')),
+      filename TEXT NOT NULL,
+      path TEXT NOT NULL,
+      mimeType TEXT NOT NULL,
+      byteSize INTEGER NOT NULL CHECK(byteSize >= 0),
+      durationSec REAL,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS video_job_references (
+      jobId TEXT NOT NULL,
+      orderIndex INTEGER NOT NULL CHECK(orderIndex >= 0),
+      assetId TEXT NOT NULL,
+      PRIMARY KEY (jobId, orderIndex),
+      FOREIGN KEY (jobId) REFERENCES video_jobs(id) ON DELETE CASCADE,
+      FOREIGN KEY (assetId) REFERENCES video_reference_assets(id) ON DELETE RESTRICT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_video_reference_assets_project ON video_reference_assets(projectId);
+    CREATE INDEX IF NOT EXISTS idx_video_job_references_asset ON video_job_references(assetId);
 
     CREATE TABLE IF NOT EXISTS script_drafts (
       id TEXT PRIMARY KEY,

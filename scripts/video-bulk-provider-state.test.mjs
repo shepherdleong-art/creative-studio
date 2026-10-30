@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
-import { createVideoMotionRow, getVideoMotionRowIssue } from '../components/video-tail-frame-state.ts';
-import { materializeShotDrafts, planBulkVideoGeneration, MAX_ROWS_PER_SHOT } from '../components/video-bulk-prompt.ts';
+import { createVideoMotionRow, getVideoMotionGenerationMode, getVideoMotionRowIssue } from '../components/video-tail-frame-state.ts';
+import { materializeShotDrafts, planBulkVideoGeneration, serializeVideoGenerationFields, MAX_ROWS_PER_SHOT } from '../components/video-bulk-prompt.ts';
 import { resolveVideoGenerationSelection } from '../lib/video-generation-options.ts';
 
 // Execute production UI functions across draft resets; capture the actual batch POST.
@@ -11,8 +11,8 @@ import { resolveVideoGenerationSelection } from '../lib/video-generation-options
 const file = 'components/VideoGenerationPanel.tsx';
 const source = fs.readFileSync(file, 'utf8');
 const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const names = ['getRowSelection', 'getRowProviderId', 'getRowTailCapability', 'getRowDurationOptions', 'getRowDuration',
-  'getRowMultiShotCapability', 'makeEmptyRow', 'materializeAllDrafts', 'applyBulkProvider', 'handleGenerateAll', 'getBulkProviderId'];
+const names = ['getRowSelection', 'getRowProviderId', 'getRowTailCapability', 'getRowReferenceCapability', 'getRowDurationOptions', 'getRowDuration',
+  'getRowGenerationMode', 'getVideoMotionRowIssue', 'serializeVideoGenerationFields', 'getRowMultiShotCapability', 'makeEmptyRow', 'materializeAllDrafts', 'applyBulkProvider', 'handleGenerateAll', 'getBulkProviderId'];
 const declarations = [];
 function visit(node) {
   if (ts.isVariableDeclaration(node) && names.includes(node.name.getText(ast))) declarations.push(`const ${node.getText(ast)};`);
@@ -24,6 +24,10 @@ const providers = [
   { id: 'q30', name: '七牛可灵 3.0', type: 'openai-video', defaultModel: 'qiniuyun/kling-3.0', configured: true },
 ];
 for (const provider of providers) provider.capabilities = { durations: provider.id === 'k25' ? [5, 10] : Array.from({ length: 13 }, (_, i) => i + 3), tailFrame: { supported: false }, multiShot: { supported: provider.id === 'q30', defaultEnabled: true } };
+providers.push(...['minimax-h3', 'wan-3.0'].map(model => ({
+  id: model, name: model, type: 'openai-video', defaultModel: model, configured: true,
+  capabilities: { durations: [5, 10], tailFrame: { supported: false }, multiShot: { supported: false }, reference: { supported: true } },
+})));
 const drafts = new Map();
 const requests = [];
 let status;
@@ -31,8 +35,9 @@ const ctx = {
   providers, configuredProviders: [...providers], preferredProvider: providers[0], bulkProviderId: '',
   safeShots: [{ id: 'first-shot', indexNum: 1 }], defaultDuration: 5, crypto,
   createVideoMotionRow, materializeShotDrafts, planBulkVideoGeneration, MAX_ROWS_PER_SHOT,
-  resolveVideoGenerationSelection, getVideoMotionRowIssue,
+  resolveVideoGenerationSelection, validateVideoMotionRow: getVideoMotionRowIssue, getVideoMotionGenerationMode, serializeDraftGenerationFields: serializeVideoGenerationFields,
   creatingRef: { current: false }, mountedRef: { current: true }, pendingCreationTailIdsRef: { current: new Set() },
+  pendingCreationReferenceIdsRef: { current: new Set() },
   getShotRows: id => drafts.get(id) || [], setShotRows: (id, rows) => drafts.set(id, rows),
   setBulkProviderId: id => { ctx.bulkProviderId = id; }, setBulkStatus: value => { status = value; },
   setCreating: () => {}, setBulkProgress: () => {}, setBulkDrawerOpen: () => {},
@@ -60,6 +65,8 @@ drafts.get('next-shot')[0].multiShot = false;
 await ui.handleGenerateAll();
 assert.equal(ctx.bulkProviderId, 'q30');
 assert.equal(requests[0].body.items[0].multiShot, false, 'Explicit false must survive serialization into the batch request');
+assert.equal(requests[0].body.items[0].generationMode, 'image-to-video', 'Existing drafts retain the legacy generation mode');
+assert.deepEqual(requests[0].body.items[0].referenceAssetIds, [], 'Image-to-video requests never carry reference IDs');
 assert.equal(requests[0].body.items[0].providerId, 'q30', 'Header shows 七牛可灵3.0: the batch request must not fall back to kling-2.5 after switching groups');
 assert.equal(ui.getBulkProviderId(), 'q30');
 
@@ -79,6 +86,21 @@ ui.applyBulkProvider('q30');
 assert.equal(ui.getBulkProviderId(), 'q30');
 await ui.handleGenerateAll();
 assert.ok(requests.slice(1).every(request => request.body.items.every(item => item.providerId === 'q30')));
+
+for (const model of ['minimax-h3', 'wan-3.0']) {
+  ui.applyBulkProvider(model);
+  for (const row of drafts.get('next-shot')) { row.tailImageId = 'old-tail'; row.tailUploadState = 'error'; }
+  const start = requests.length;
+  await ui.handleGenerateAll();
+  assert.ok(requests.length > start);
+  for (const request of requests.slice(start)) for (const item of request.body.items) {
+    assert.equal(item.generationMode, 'reference-to-video');
+    assert.deepEqual(item.referenceAssetIds, []);
+    assert.equal(item.tailImageId, null, 'Automatic reference ignores stale tail drafts');
+  }
+}
+ui.applyBulkProvider('q30');
+for (const row of drafts.get('next-shot')) { row.tailImageId = null; row.tailUploadState = 'idle'; }
 
 // Disabling/removing a selected provider must not silently submit with 2.5.
 ctx.configuredProviders = [providers[0]];

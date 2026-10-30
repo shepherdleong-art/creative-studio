@@ -1,3 +1,10 @@
+import {
+  getVideoMotionGenerationMode,
+  type ReferenceUploadState,
+  type VideoGenerationMode,
+  type VideoReferenceAsset,
+} from './video-tail-frame-state.ts';
+
 export const MAX_ROWS_PER_SHOT = 10;
 
 export interface BulkPromptTemplate {
@@ -10,6 +17,29 @@ export interface BulkPromptTemplate {
 export interface BulkPromptRow {
   prompt: string;
   templateId?: string | null;
+  tailImageId?: string | null;
+  generationMode?: VideoGenerationMode;
+  referenceAssets?: readonly VideoReferenceAsset[];
+  referenceUploadState?: ReferenceUploadState;
+  referenceUploadError?: string | null;
+}
+
+export interface SerializedVideoGenerationFields {
+  generationMode: VideoGenerationMode;
+  referenceAssetIds: string[];
+  tailImageId: string | null;
+}
+
+/** 单条与批量共用；模式切换保留另一套草稿，但请求只携带当前模式的素材。 */
+export function serializeVideoGenerationFields(row: BulkPromptRow): SerializedVideoGenerationFields {
+  const generationMode = getVideoMotionGenerationMode(row);
+  return {
+    generationMode,
+    referenceAssetIds: generationMode === 'reference-to-video'
+      ? (row.referenceAssets ?? []).map((asset) => asset.id)
+      : [],
+    tailImageId: generationMode === 'image-to-video' ? row.tailImageId ?? null : null,
+  };
 }
 
 export interface BulkPromptShot<Row extends BulkPromptRow = BulkPromptRow> {
@@ -208,6 +238,17 @@ function copyRows<Row extends BulkPromptRow>(rows: readonly Row[]): Row[] {
   return [...rows];
 }
 
+function getBulkReferenceIssue(row: BulkPromptRow): string | null {
+  if (getVideoMotionGenerationMode(row) !== 'reference-to-video') return null;
+  if (row.referenceUploadState === 'uploading' || row.referenceUploadState === 'deleting') {
+    return '请等待参考素材上传或移除完成';
+  }
+  if (row.referenceUploadState === 'failed') {
+    return row.referenceUploadError || '参考素材上传失败，请重试';
+  }
+  return null;
+}
+
 export function planBulkVideoGeneration<Row extends BulkPromptRow>(
   shots: readonly BulkVideoGenerationShot<Row>[],
   options: BulkVideoGenerationOptions<Row> = {},
@@ -226,7 +267,7 @@ export function planBulkVideoGeneration<Row extends BulkPromptRow>(
     }
 
     const issues = rows
-      .map((row) => options.rowIssue?.(row, shot) ?? null)
+      .map((row) => getBulkReferenceIssue(row) ?? options.rowIssue?.(row, shot) ?? null)
       .filter((issue): issue is string => Boolean(issue));
     if (issues.length > 0) {
       blocked.push({ shotId: shot.shotId, rows, reason: issues[0] });

@@ -82,6 +82,20 @@ try {
   const cleanResult = verify(clean);
   assert.equal(cleanResult.status, 0, `干净 payload 应通过：\n${cleanResult.stdout}\n${cleanResult.stderr}`);
 
+  const modern = makePayload();
+  const modernPath = path.join(modern, 'config.yaml');
+  const modernConfig = fs.readFileSync(modernPath, 'utf8')
+    .replace('num_retries: 2\ntimeout: 600', '  num_retries: 0\n  timeout: 110')
+    .replace('router_settings:', ['minimax-h3', 'wan-3.0'].map(model =>
+      `  - model_name: ${model}\n    litellm_params:\n      model: openai/${model}\n      api_base: https://gateway.example.test/v1\n      api_key: sk-portable-fixture-new-${model}\n`
+    ).join('') + 'router_settings:');
+  fs.writeFileSync(modernPath, modernConfig);
+  assert.equal(verify(modern).status, 0, '新版路由超时与 H3/Wan 精确别名应通过');
+  fs.writeFileSync(modernPath, modernConfig.replace('  timeout: 110', '  timeout: 600'));
+  assert.notEqual(verify(modern).status, 0, '禁止延长已审核的路由超时');
+  fs.writeFileSync(modernPath, modernConfig + '\nnum_retries: 0\n');
+  assert.notEqual(verify(modern).status, 0, '禁止同时混用顶层与 router 参数');
+
   const productionCanvas = makePayload();
   fs.appendFileSync(path.join(productionCanvas, '.env.local'),
     'CREATIVE_STUDIO_CANVAS_ENABLE=1\nCREATIVE_STUDIO_CANVAS_EXECUTOR=company\n');

@@ -5,6 +5,7 @@ import type { VideoProviderEnvConfig } from '@/lib/video-auth';
 import { describeVideoProvider } from '@/lib/video-model-capabilities';
 import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
 import { v4 as uuidv4 } from 'uuid';
+import { isVisibleVideoProvider } from '@/lib/provider-list-visibility';
 
 export async function GET(request: Request) {
   try {
@@ -31,7 +32,7 @@ export async function GET(request: Request) {
       accessKey: string;
       secretKey: string;
     }>;
-    return NextResponse.json(providers.map(describeVideoProvider));
+    return NextResponse.json(providers.filter(isVisibleVideoProvider).map(describeVideoProvider));
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
