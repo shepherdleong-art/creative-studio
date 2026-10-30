@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import packageMetadata from '../../package.json' with { type: 'json' };
 
+// 实拍混剪已于 2026-10-30 迁出工作台；保留这个名字只为认得旧的升级记录和迁移备份，不要删。
 export type SchemaUpgradeScope = 'batch-production' | 'video-provider-gateway' | 'script-studio' | 'creative-canvas' | 'live-mixcut';
 
 /** 备份目录 slug；新增 scope 必须同时更新这里与 cleanupInterruptedSchemaUpgradeBackups 的匹配。 */
@@ -14,6 +15,7 @@ export const SCOPE_SLUGS: Record<SchemaUpgradeScope, string> = {
   'video-provider-gateway': 'video-gateway',
   'script-studio': 'script-studio',
   'creative-canvas': 'canvas',
+  // 实拍混剪已于 2026-10-30 迁出工作台；保留这个名字只为认得旧的升级记录和迁移备份，不要删。
   'live-mixcut': 'live-mixcut',
 };
 

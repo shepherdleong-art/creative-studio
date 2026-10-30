@@ -182,7 +182,7 @@ const tablesAfterMigration = [
 // --- 旧 scope 回归：slug 与既有迁移不受影响 -----------------------------------
 
 {
-  // 只锁住既有 scope 的 slug；新模块（如 10-24 的 live-mixcut）可以追加自己的 scope。
+  // 只锁住既有 scope 的 slug；新模块可以追加自己的 scope。
   const legacySlugs = {
     'batch-production': 'batch',
     'video-provider-gateway': 'video-gateway',

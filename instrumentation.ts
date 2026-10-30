@@ -46,7 +46,4 @@ export async function register(): Promise<void> {
   // 创作画布：开关关闭时这里立即返回，不创建画布表、不启动画布 worker。
   const { startCanvasAfterReadiness } = await import('./lib/creative-canvas/bootstrap');
   void startCanvasAfterReadiness();
-  // 实拍混剪：开关关闭时这里立即返回，不建表、不起后台任务。
-  const { startBatchSchedulerAfterReadiness: startLiveMixcutAfterReadiness } = await import('./lib/live-mixcut/bootstrap');
-  void startLiveMixcutAfterReadiness();
 }

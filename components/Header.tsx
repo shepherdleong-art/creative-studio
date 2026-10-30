@@ -13,10 +13,9 @@ const subscribeToDesktopShell = () => () => {};
 const readDesktopShell = () => Boolean((window as { desktopBridge?: unknown }).desktopBridge);
 const readDesktopShellOnServer = () => false;
 
-export default function Header({ canvasEnabled = false, liveMixcutEnabled = false }: { canvasEnabled?: boolean; liveMixcutEnabled?: boolean }) {
+export default function Header({ canvasEnabled = false }: { canvasEnabled?: boolean }) {
   const pathname = usePathname();
   const onCanvas = pathname === '/canvas' || pathname.startsWith('/canvas/');
-  const onLiveMixcut = pathname === '/live-mixcut' || pathname.startsWith('/live-mixcut/');
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [stopping, setStopping] = useState(false);
   // In the shell, stopping the service also takes the application down, so the
@@ -57,13 +56,6 @@ export default function Header({ canvasEnabled = false, liveMixcutEnabled = fals
             aria-current={onCanvas ? 'page' : undefined}
             className={`whitespace-nowrap transition-colors hover:text-ink ${onCanvas ? 'font-medium text-accent' : 'text-ink-secondary'}`}
           >创作画布</Link>
-        )}
-        {liveMixcutEnabled && (
-          <Link
-            href="/live-mixcut"
-            aria-current={onLiveMixcut ? 'page' : undefined}
-            className={`whitespace-nowrap transition-colors hover:text-ink ${onLiveMixcut ? 'font-medium text-accent' : 'text-ink-secondary'}`}
-          >实拍混剪</Link>
         )}
         <Link href="/usage" className="text-ink-secondary transition-colors hover:text-ink">消耗</Link>
         <Link href="/settings" className="text-ink-secondary transition-colors hover:text-ink">供应商</Link>

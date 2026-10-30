@@ -16,11 +16,6 @@ import {
   type SchedulerController,
 } from './batch-production/runner.ts';
 import {
-  abortRunningBatchTasks as abortRunningLiveMixcutTasks,
-  getBatchSchedulerController as getLiveMixcutSchedulerController,
-  waitForBatchTasksIdle as waitForLiveMixcutTasksIdle,
-} from './live-mixcut/runner.ts';
-import {
   abortRunningFinalEditJobs,
   waitForFinalEditJobsIdle,
 } from './final-edit/worker.ts';
@@ -45,9 +40,6 @@ export interface GracefulShutdownDependencies {
   scheduler?: SchedulerController | null;
   abortBatchTasks?: () => number;
   waitForBatchTasks?: (timeoutMs: number) => Promise<number>;
-  liveMixcutScheduler?: SchedulerController | null;
-  abortLiveMixcutTasks?: () => number;
-  waitForLiveMixcutTasks?: (timeoutMs: number) => Promise<number>;
   abortFinalEdit?: () => number;
   waitForFinalEdit?: (timeoutMs: number) => Promise<number>;
   abortScriptGenerations?: () => number;
@@ -155,18 +147,6 @@ async function performGracefulShutdown(
     }
   }
 
-  const liveMixcutScheduler = 'liveMixcutScheduler' in dependencies
-    ? dependencies.liveMixcutScheduler
-    : getLiveMixcutSchedulerController();
-  let liveMixcutSchedulerStop: Promise<void> | null = null;
-  if (liveMixcutScheduler) {
-    try {
-      liveMixcutSchedulerStop = Promise.resolve(liveMixcutScheduler.stop());
-    } catch {
-      pendingTasks += 1;
-    }
-  }
-
   const scriptStudioScheduler = 'scriptStudioScheduler' in dependencies
     ? dependencies.scriptStudioScheduler
     : getScriptStudioSchedulerController();
@@ -208,13 +188,6 @@ async function performGracefulShutdown(
     pendingTasks += 1;
   }
 
-  let abortedLiveMixcutTaskCount = 0;
-  try {
-    abortedLiveMixcutTaskCount = dependencies.abortLiveMixcutTasks?.() ?? abortRunningLiveMixcutTasks();
-  } catch {
-    pendingTasks += 1;
-  }
-
   let abortedFinalEditCount = 0;
   try {
     abortedFinalEditCount = dependencies.abortFinalEdit?.() ?? abortRunningFinalEditJobs();
@@ -238,9 +211,6 @@ async function performGracefulShutdown(
   if (schedulerStop && !(await waitForStep(schedulerStop, remainingBudget()))) {
     pendingTasks += 1;
   }
-  if (liveMixcutSchedulerStop && !(await waitForStep(liveMixcutSchedulerStop, remainingBudget()))) {
-    pendingTasks += 1;
-  }
   if (scriptStudioSchedulerStop && !(await waitForStep(scriptStudioSchedulerStop, remainingBudget()))) {
     pendingTasks += 1;
   }
@@ -257,16 +227,6 @@ async function performGracefulShutdown(
     );
   } catch {
     pendingTasks += Math.max(1, abortedBatchTaskCount);
-  }
-
-  try {
-    pendingTasks += await waitForCountStep(
-      dependencies.waitForLiveMixcutTasks ?? waitForLiveMixcutTasksIdle,
-      remainingBudget(),
-      abortedLiveMixcutTaskCount,
-    );
-  } catch {
-    pendingTasks += Math.max(1, abortedLiveMixcutTaskCount);
   }
 
   try {
