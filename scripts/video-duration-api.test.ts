@@ -18,6 +18,8 @@ const videoAuth = await import('../lib/video-auth.ts');
 const tailFrames = await import('../lib/video-tail-frame.ts');
 const filenames = await import('../lib/video-output-filenames.ts');
 const productionCodes = await import('../lib/media-core/production-code-reader.ts');
+const videoJobCreate = await import('../lib/video-job-create.ts');
+const providerVisibility = await import('../lib/provider-list-visibility.ts');
 
 // Production schema/handlers; only queue dispatch and HTTP transport are substituted.
 const db = getDb();
@@ -43,6 +45,8 @@ const dependencies: Record<string, unknown> = {
   '@/lib/video-tail-frame': tailFrames,
   '@/lib/video-multi-shot': multiShot,
   '@/lib/video-output-filenames': filenames,
+  '@/lib/video-job-create': videoJobCreate,
+  '@/lib/provider-list-visibility': providerVisibility,
 };
 function loadRoute(file: string, method = 'POST') {
   const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
@@ -100,6 +104,27 @@ try {
       }
     }
   }
+  // 单条与批量路由共用同一创建链路：参考模式字段必须一致透传并持久化。
+  db.prepare(`INSERT INTO video_reference_assets (id, projectId, kind, filename, path, mimeType, byteSize, durationSec)
+    VALUES ('ref-image', 'project', 'image', 'ref.png', '/test.png', 'image/png', 10, NULL)`).run();
+  for (const handler of [single, batch]) {
+    const item = {
+      providerId: 'sd25', prompt: 'reference', durationSec: 20,
+      generationMode: 'reference-to-video', referenceAssetIds: ['ref-image'],
+      aspectRatio: '9:16', resolution: '720p',
+    };
+    const response = await submit(handler, handler === single ? { shotId: 'shot', ...item } : { shotId: 'shot', items: [item] });
+    assert.equal(response.status, 200, await response.text());
+    const stored = db.prepare(`SELECT generationMode, aspectRatio, resolution, sourceImageId
+      FROM video_jobs`).all() as Array<{ generationMode: string; aspectRatio: string; resolution: string; sourceImageId: string }>;
+    assert.deepEqual(stored, [{
+      generationMode: 'reference-to-video', aspectRatio: '9:16', resolution: '720p', sourceImageId: 'image',
+    }], '单条与批量必须同口径持久化参考模式快照');
+    const link = db.prepare('SELECT orderIndex, assetId FROM video_job_references').all();
+    assert.deepEqual(link, [{ orderIndex: 0, assetId: 'ref-image' }]);
+  }
+  db.exec('DELETE FROM video_jobs; DELETE FROM video_reference_assets');
+
   // Incomplete Kling credentials must yield actionable 400s, never throwing runtime resolution.
   db.prepare(`INSERT INTO video_providers (id, name, type, defaultModel, baseUrlEnv, apiKeyEnv, modelEnv, baseUrl, accessKey) VALUES ('incomplete', 'incomplete', 'kling', 'kling-v3', '', '', '', 'http://invalid.test', 'test-key')`).run();
   for (const handler of [single, batch]) {

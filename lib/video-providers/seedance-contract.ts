@@ -3,6 +3,7 @@ export const SEEDANCE_20 = 'doubao-seedance-2-0-260128';
 export const SEEDANCE_25 = 'doubao-seedance-2-5-260628';
 export const SEEDANCE_FAST = 'doubao-seedance-2-0-fast-260128';
 export const SEEDANCE_MINI = 'doubao-seedance-2-0-mini-260128';
+export const SEEDANCE_REFERENCE_ASPECT_RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive'] as const;
 
 export interface SeedanceOutputOptions {
   resolution?: string;

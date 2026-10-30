@@ -5,7 +5,7 @@ const panel = fs.readFileSync('components/VideoGenerationPanel.tsx', 'utf8');
 const results = fs.readFileSync('components/VideoGenerationResults.tsx', 'utf8');
 
 assert.match(panel, /usage', 'video_tail_frame'/, 'tail upload must use the dedicated asset usage');
-assert.match(panel, /tailImageId: r\.tailImageId/, 'batch request must include each row tailImageId');
+assert.match(panel, /\.\.\.serializeVideoGenerationFields\(r\)/, 'single-shot request must serialize mode, tail and ordered references together');
 assert.match(panel, /handleTailFrameUpload\(selectedShot, row\.key, file\)/, 'async upload must target row.key');
 assert.match(panel, /releaseDraftTailFrameAssets/, 'unsubmitted tail assets must be released on reset/unmount');
 assert.match(panel, /pendingCreationTailIdsRef/, 'tail assets in an active create request must be protected from draft cleanup');
@@ -22,4 +22,22 @@ assert.match(panel, /<HoverZoomImage[\s\S]*alt="尾帧预览"/, 'loaded tail fra
 assert.doesNotMatch(panel, /className="flex h-14 cursor-pointer/, 'the old compact tail-frame upload strip must not return');
 assert.match(results, /job\.tailImageId[\s\S]*首尾帧/, 'result cards must identify tail-frame jobs');
 
-console.log('video tail-frame UI contract tests passed');
+assert.match(panel, /generationMode === 'image-to-video' && \([\s\S]*data-testid="video-frame-pair"/, 'the existing first/tail-frame editor must remain in image-to-video mode');
+assert.match(panel, /generationMode === 'reference-to-video' && \([\s\S]*data-testid="video-reference-editor"/, 'reference mode replaces the frame editor');
+assert.match(panel, /const deleteReferenceAsset[\s\S]*response\.status !== 404 && response\.status !== 409/, 'reference delete must detach drafts on missing or job-protected assets');
+assert.match(panel, /releaseDraftReferenceAssets/, 'unsubmitted references must be released on reset/unmount');
+assert.match(panel, /pendingCreationReferenceIdsRef/, 'references in an active create request must be protected from draft cleanup');
+assert.match(panel, /referenceDeletionIdsRef/, 'in-flight reference deletion must not be duplicated by draft cleanup');
+assert.match(panel, /\.\.\.serializeVideoGenerationFields\(row\)/, 'bulk request must use the same mode and ordered-reference serializer');
+assert.doesNotMatch(panel, /from ['"]@\/lib\/video-job-create/, 'browser draft code must not import the server creation module');
+
+
+assert.doesNotMatch(panel, /aria-label="生成模式"/, 'Modes are selected automatically by model');
+assert.match(panel, /getRowSelection\(row\)\.generationMode/);
+assert.match(panel, /video-reference-editor/);
+assert.match(panel, /使用当前分镜图/);
+assert.match(panel, /src=\{selectedShotData\.imageUrl\}/);
+assert.doesNotMatch(panel, /handleReferenceUpload|添加参考素材|参考素材上移|参考素材下移/);
+
+assert.match(panel, /全能参考 · 当前分镜图/);
+console.log('video tail-frame and reference UI contract tests passed');

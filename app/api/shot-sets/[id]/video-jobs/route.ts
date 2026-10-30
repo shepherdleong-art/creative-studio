@@ -1,14 +1,9 @@
-import { resolveTemplateOpeningCode } from '@/lib/media-core/production-code-reader';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { v4 as uuidv4 } from 'uuid';
 import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { toStorageImageUrl, toStorageVideoUrl } from '@/lib/storage-url';
-import { getVideoProviderConfigState } from '@/lib/video-auth';
-import { validateVideoTailFrameAsset } from '@/lib/video-tail-frame';
-import { normalizeVideoMultiShotForStorage } from '@/lib/video-multi-shot';
-import { parseVideoDuration, videoDurationError } from '@/lib/video-duration';
-import { countVideoJobsForShot, planVideoJobDisplayName, resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
+import { createVideoJobsForShot, parseVideoJobCreationItem } from '@/lib/video-job-create';
+import { resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
 
 export async function POST(
   request: NextRequest,
@@ -20,94 +15,25 @@ export async function POST(
     // New video candidates do not change production receipts or the film's selected clips.
     // Allow step-four generation for reassembled sets, including unfinished productions.
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
-
     const shotId = body.shotId as string;
-    const providerId = body.providerId as string;
-    const templateId = (body.templateId as string) || null;
-    const prompt = (body.prompt as string)?.trim();
-    const durationSec = parseVideoDuration(body.durationSec);
-    const tailImageId = typeof body.tailImageId === 'string' && body.tailImageId.trim()
-      ? body.tailImageId.trim()
-      : null;
-
     if (!shotId) return NextResponse.json({ error: 'shotId is required' }, { status: 400 });
-    if (!providerId) return NextResponse.json({ error: 'providerId is required' }, { status: 400 });
-    if (!prompt) return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
+    const parsed = parseVideoJobCreationItem(body);
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+    const item = parsed.item;
+    if (!item.providerId) return NextResponse.json({ error: 'providerId is required' }, { status: 400 });
+    if (!item.prompt) return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
 
-    // Validate shot belongs to this shot set
-    const shot = db.prepare(`SELECT * FROM shots WHERE id = ? AND shotSetId = ?`).get(shotId, shotSetId) as {
-      id: string; latestGeneratedImageId: string | null; sourceImageId: string;
-    } | undefined;
-    if (!shot) return NextResponse.json({ error: 'Shot not found in this shot set' }, { status: 404 });
-
-    // Validate provider
-    const provider = db.prepare(`SELECT * FROM video_providers WHERE id = ? AND enabled = 1`).get(providerId) as {
-      id: string; name: string; type: string; baseUrlEnv: string; apiKeyEnv: string; defaultModel: string;
-    } | undefined;
-    if (!provider) return NextResponse.json({ error: 'Video provider not found or disabled' }, { status: 400 });
-    const providerConfig = getVideoProviderConfigState(provider);
-    if (!providerConfig.configured) {
-      return NextResponse.json(
-        { error: `视频供应商 ${provider.name} 未配置完整：${providerConfig.missing.join(', ')}` },
-        { status: 400 }
-      );
-    }
-    const model = (provider.defaultModel || '').trim();
-    const durationError = videoDurationError(provider.type, model, durationSec);
-    if (durationError) return NextResponse.json({ error: durationError }, { status: 400 });
-
-    // Use latest generated image, fallback to source image
-    const sourceImageId = shot.latestGeneratedImageId || shot.sourceImageId;
-
-    // Get project ID from shot set
-    const shotSet = db.prepare(`SELECT projectId FROM shot_sets WHERE id = ?`).get(shotSetId) as {
-      projectId: string;
-    } | undefined;
-    if (!shotSet) return NextResponse.json({ error: 'Shot set not found' }, { status: 404 });
-
-    const videoJobId = uuidv4();
-    const multiShot = normalizeVideoMultiShotForStorage(
-      provider.type,
-      model,
-      body.multiShot,
-    );
-    const createResult = db.transaction(() => {
-      const tailFrameValidation = validateVideoTailFrameAsset({
-        db,
-        tailImageId,
-        projectId: shotSet.projectId,
-        providerType: provider.type,
-        model,
-      });
-      if (!tailFrameValidation.ok) return tailFrameValidation;
-
-      // 友好展示名（D5）：创建事务内计算并持久化；物理文件名仍由队列用
-      // video-<jobId>-<时间戳>.mp4 生成，两者互不影响。createdAt 用 ISO 毫秒
-      // 精度写入，保证同 shot 的 (createdAt, id) 排名与持久化版次一致。
-      const displayName = planVideoJobDisplayName(db, {
-        shotId,
-        sourceImageId,
-        templateId,
-        versionNumber: countVideoJobsForShot(db, shotId) + 1,
-      });
-      db.prepare(`
-        INSERT INTO video_jobs
-          (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec, multiShot, createdAt, displayName, openingCode)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec, multiShot, new Date().toISOString(), displayName, resolveTemplateOpeningCode(db, templateId));
-      return { ok: true as const };
-    })();
-    if (!createResult.ok) {
-      return NextResponse.json({ error: createResult.error }, { status: 400 });
-    }
+    const result = await createVideoJobsForShot({ shotSetId, shotId, items: [item], db });
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+    const projectId = (db.prepare(`SELECT projectId FROM shot_sets WHERE id = ?`).get(shotSetId) as { projectId: string }).projectId;
 
     // Auto-start video queue if idle
-    const qStatus = getVideoQueueStatus(shotSet.projectId);
+    const qStatus = getVideoQueueStatus(projectId);
     if (qStatus === 'idle') {
-      const projectRow = db.prepare(`SELECT videoConcurrency FROM projects WHERE id = ?`).get(shotSet.projectId) as { videoConcurrency?: number } | undefined;
+      const projectRow = db.prepare(`SELECT videoConcurrency FROM projects WHERE id = ?`).get(projectId) as { videoConcurrency?: number } | undefined;
       const concurrency = Math.max(1, Math.min(10, Number(projectRow?.videoConcurrency) || DEFAULT_VIDEO_CONCURRENCY));
       runVideoQueue({
-        projectId: shotSet.projectId,
+        projectId,
         concurrency,
         timeoutMs: DEFAULT_VIDEO_TIMEOUT_MS,
       }).catch((err) => {
@@ -115,7 +41,7 @@ export async function POST(
       });
     }
 
-    return NextResponse.json({ success: true, videoJobId });
+    return NextResponse.json({ success: true, videoJobId: result.videoJobIds[0] });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

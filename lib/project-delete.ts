@@ -16,6 +16,18 @@ export function deleteProjectRecords(
     const assets = db.prepare(`
       SELECT id, path, originalPath, processedPath FROM image_assets WHERE projectId = ?
     `).all(projectId) as DeletedProjectAsset[];
+    const hasVideoReferenceSchema = Boolean(db.prepare(`SELECT 1 FROM sqlite_master
+      WHERE type = 'table' AND name = 'video_reference_assets'`).get())
+      && Boolean(db.prepare(`SELECT 1 FROM sqlite_master
+        WHERE type = 'table' AND name = 'video_job_references'`).get());
+    const referenceAssets = hasVideoReferenceSchema ? db.prepare(`
+      SELECT id, path FROM video_reference_assets WHERE projectId = ?
+    `).all(projectId) as Array<Pick<DeletedProjectAsset, 'id' | 'path'>> : [];
+    if (hasVideoReferenceSchema) {
+      db.prepare(`DELETE FROM video_job_references WHERE jobId IN (
+        SELECT id FROM video_jobs WHERE projectId = ?
+      )`).run(projectId);
+    }
     // v11 的历史主题表没有 ON DELETE CASCADE；不能修改已发布迁移。
     // 仅在整项目删除时清理，按真实外键归属限定范围，并兼容尚未升级的数据库。
     if (db.prepare(`SELECT 1 FROM sqlite_master
@@ -29,6 +41,12 @@ export function deleteProjectRecords(
     if (result.changes !== 1) return null;
     const deleteAsset = db.prepare('DELETE FROM image_assets WHERE id = ?');
     for (const asset of assets) deleteAsset.run(asset.id);
-    return assets;
+    if (hasVideoReferenceSchema) {
+      db.prepare('DELETE FROM video_reference_assets WHERE projectId = ?').run(projectId);
+    }
+    return [
+      ...assets,
+      ...referenceAssets.map((asset) => ({ ...asset, originalPath: null, processedPath: null })),
+    ];
   })();
 }

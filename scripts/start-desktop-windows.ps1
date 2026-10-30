@@ -178,7 +178,7 @@ if (Test-Path (Join-Path $Root 'node_modules\better-sqlite3')) {
   }
 }
 
-# 需要 npm 的步骤（装依赖/构建）只在免安装包内容缺失时触发；npm 不存在时给出明确指引。
+# 需要 npm 的步骤只允许在源码模式触发；免安装包缺失时只提示重新复制。
 function Assert-NpmAvailable {
   if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
     Write-Host '需要执行 npm，但本机未安装 Node.js。免安装包应自带依赖与构建产物，请重新完整拷贝。' -ForegroundColor Red
@@ -186,14 +186,26 @@ function Assert-NpmAvailable {
   }
 }
 
-if (-not (Test-Path (Join-Path $Root 'node_modules'))) {
+# node_modules 可能因安装中断只剩 .bin，源码模式须检查真正的包入口。
+$needsDepsInstall = -not (Test-Path (Join-Path $Root 'node_modules'))
+if (-not $Portable) {
+  foreach ($requiredDependency in @(
+    'electron\install.js', 'next\package.json', 'typescript\bin\tsc',
+    'better-sqlite3\package.json', 'sharp\package.json', '.bin\electron.cmd'
+  )) {
+    if (-not (Test-Path (Join-Path $Root "node_modules\$requiredDependency") -PathType Leaf)) {
+      $needsDepsInstall = $true
+    }
+  }
+}
+if ($needsDepsInstall) {
   if ($Portable) {
     Write-Host '免安装包缺少 node_modules，请重新完整复制免安装包；免安装模式不执行 npm 安装。' -ForegroundColor Red
     exit 1
   }
   Assert-NpmAvailable
-  Write-Host '首次运行，正在安装依赖，请保持联网...'
-  & npm.cmd ci
+  Write-Host '依赖缺失或不完整，正在安装依赖，请保持联网...'
+  & npm.cmd ci --include=dev
   if ($LASTEXITCODE -ne 0) {
     Write-Host '依赖安装失败。请检查网络、npm registry 或杀毒软件拦截。' -ForegroundColor Red
     exit $LASTEXITCODE
@@ -375,7 +387,7 @@ if ($needBuild) {
   Assert-NpmAvailable
   if ($needDepsInstall) {
     Write-Host '依赖清单已更新，正在重新安装依赖（npm ci）...'
-    & npm.cmd ci
+    & npm.cmd ci --include=dev
     if ($LASTEXITCODE -ne 0) {
       Write-Host '依赖安装失败。请检查网络、npm registry 或杀毒软件拦截。' -ForegroundColor Red
       exit $LASTEXITCODE

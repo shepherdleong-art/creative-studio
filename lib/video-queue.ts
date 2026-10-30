@@ -5,7 +5,6 @@ import { redactMediaUrlForLog } from './gateway-media-url.ts';
 import { describeGatewayDownloadFailure, downloadVideoMediaForProvider } from './media-download-policy.ts';
 import { resolveVideoProviderRuntimeConfig } from './video-auth.ts';
 import { writeLog } from './logger.ts';
-import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
 import { dataRoot } from './data-root.ts';
@@ -15,8 +14,17 @@ import { writeVideoOutputFile } from './video-output-storage.ts';
 import { resolveVideoPollingTimeoutMs } from './video-polling-policy.ts';
 import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
 import { videoMultiShotFromStorage } from './video-multi-shot.ts';
-import type { SubmitVideoRequest } from './video-providers/types.ts';
+import type { SubmitReferenceVideoRequest, SubmitVideoRequest, SubmitVideoResult } from './video-providers/types.ts';
 import { persistVideoJobUsageSnapshot, recordVideoJobUsage } from './usage-async-jobs.ts';
+import { validateVideoReferenceRequest, videoReferenceCapability, type VideoReferenceKind } from './video-reference-contract.ts';
+import { assertCompanyTailFrameTransport } from './company-gateway-tail-frame.ts';
+import {
+  deliverVideoReferenceMedia,
+  precheckSeedanceReferenceMedia,
+  precheckVideoReferenceDeliveryMedia,
+} from './video-providers/reference-media.ts';
+import { SEEDANCE_25 } from './video-providers/seedance-contract.ts';
+import { readVideoSourceReference } from './video-source-reference.ts';
 
 export interface VideoQueueOptions {
   /** Limit a local rework run to its immutable job. */
@@ -118,6 +126,9 @@ interface VideoJobRecord {
   model: string;
   prompt: string;
   durationSec: number;
+  generationMode: string;
+  aspectRatio: string | null;
+  resolution: string | null;
   status: string;
   attempt: number;
   maxAttempts: number;
@@ -185,7 +196,7 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
   ).run(projectId, options.jobId || null, options.jobId || null);
 
   try {
-    async function worker(workerId: number) {
+    async function worker() {
       while (!abort.signal.aborted) {
         const entry = runningQueues.get(projectId);
         if (entry?.status === 'paused') {
@@ -222,13 +233,102 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
     }
 
     await Promise.allSettled(
-      Array.from({ length: concurrency }, (_, i) => worker(i + 1))
+      Array.from({ length: concurrency }, () => worker())
     );
   } finally {
     if (!abort.signal.aborted) {
       runningQueues.delete(projectId);
     }
   }
+}
+
+interface VideoJobReferenceAsset {
+  id: string;
+  kind: VideoReferenceKind;
+  path: string;
+  mimeType: string;
+  byteSize: number;
+  durationSec: number | null;
+}
+
+async function prepareReferenceSubmitRequest(
+  db: ReturnType<typeof getDb>,
+  job: VideoJobRecord,
+  providerType: string,
+  baseUrl: string,
+  signal: AbortSignal,
+): Promise<SubmitReferenceVideoRequest> {
+  if (!job.aspectRatio || !job.resolution) throw new Error('全能参考任务缺少冻结的输出比例或清晰度');
+  const assets = db.prepare(`
+    SELECT asset.id, asset.kind, asset.path, asset.mimeType, asset.byteSize, asset.durationSec
+    FROM video_job_references link
+    JOIN video_reference_assets asset ON asset.id = link.assetId
+    WHERE link.jobId = ?
+    ORDER BY link.orderIndex ASC
+  `).all(job.id) as VideoJobReferenceAsset[];
+  if (assets.length === 0) assets.push(await readVideoSourceReference(db, job.sourceImageId, job.projectId));
+  if (new Set(assets.map((asset) => asset.id)).size !== assets.length) throw new Error('全能参考素材不能重复');
+
+  const capability = videoReferenceCapability(providerType, job.model);
+  if (!capability.supported) throw new Error(`模型 ${job.model} 不支持全能参考`);
+  for (const asset of assets) {
+    const media = {
+      kind: asset.kind,
+      absolutePath: asset.path,
+      mimeType: asset.mimeType,
+      byteSize: asset.byteSize,
+      durationSec: asset.durationSec,
+    };
+    const rule = capability[asset.kind];
+    const problems = precheckVideoReferenceDeliveryMedia(media, {
+      mimeTypes: rule.mimeTypes,
+      maxBytes: rule.maxBytes,
+      maxDurationSec: rule.maxDurationSec ?? null,
+    });
+    problems.push(...await precheckSeedanceReferenceMedia(media, job.model));
+    if (problems.length > 0) throw new Error(`参考素材 ${asset.id}：${problems.join('；')}`);
+    asset.durationSec = media.durationSec;
+  }
+  const problems = validateVideoReferenceRequest({
+    providerType,
+    model: job.model,
+    references: assets,
+    durationSec: job.durationSec,
+    aspectRatio: job.aspectRatio,
+    resolution: job.resolution,
+  });
+  if (problems.length > 0) throw new Error(problems.join('；'));
+
+  // 公司参考统一走现有回环 LiteLLM + COS 门禁；门禁先于任何上传与生成 POST。
+  if (providerType === 'openai-video') await assertCompanyTailFrameTransport(baseUrl);
+  const references = [];
+  for (const asset of assets) {
+    const url = await deliverVideoReferenceMedia({
+      kind: asset.kind,
+      absolutePath: asset.path,
+      mimeType: asset.mimeType,
+      byteSize: asset.byteSize,
+      durationSec: asset.durationSec,
+      requireCos: providerType === 'openai-video',
+      isFrameImage: false,
+      imageFallback: 'data-url',
+    }, signal);
+    references.push({
+      kind: asset.kind,
+      url,
+      mimeType: asset.mimeType,
+      durationSec: asset.durationSec,
+    });
+  }
+  return {
+    model: job.model,
+    prompt: job.prompt,
+    references,
+    durationSec: job.durationSec,
+    aspectRatio: job.aspectRatio,
+    resolution: job.resolution,
+    ...(job.model === SEEDANCE_25 ? { omniReferenceTaskType: 'reference' as const } : {}),
+  };
 }
 
 async function runVideoJob(
@@ -331,54 +431,58 @@ async function runVideoJob(
       taskId = existingTaskId;
       logInfo(`Resuming polling for existing task_id=${taskId}`);
     } else {
-      const tailValidation = validateVideoTailFrameAsset({
-        db,
-        tailImageId: job.tailImageId,
-        projectId: job.projectId,
-        providerType: provider.type,
-        model: job.model,
-      });
-      if (!tailValidation.ok) throw new Error(tailValidation.error);
-      const tailImage = tailValidation.asset;
-      // 尾帧同首帧：优先未压缩原图，保住末帧收束的画质。
-      const tailPath = tailImage
-        ? (tailImage.originalPath || tailImage.processedPath || tailImage.path)
-        : undefined;
-      const tailMimeType = tailPath ? videoFrameMimeFromPath(tailPath, tailImage?.mimeType) : undefined;
-
       logInfo('Submitting video generation task...');
-      const submitRequest: SubmitVideoRequest = {
-        model: job.model,
-        prompt: job.prompt,
-        sourceImagePath: imagePath,
-        sourceMimeType: mimeType,
-        tailImagePath: tailPath,
-        tailMimeType,
-        durationSec: job.durationSec,
+      const persistUsage = () => {
+        usageSnapshot = persistVideoJobUsageSnapshot(db, {
+          jobId: job.id,
+          projectId: job.projectId,
+          requestModel: job.model,
+          provider: {
+            id: provider.id,
+            name: provider.name,
+            type: provider.type,
+            model: provider.defaultModel,
+            baseUrl: runtime.baseUrl,
+          },
+          refType: 'video-job',
+          refId: job.id,
+        });
       };
-      const multiShot = videoMultiShotFromStorage(job.multiShot);
-      if (multiShot !== undefined) submitRequest.multiShot = multiShot;
-
-      usageSnapshot = persistVideoJobUsageSnapshot(db, {
-        jobId: job.id,
-        projectId: job.projectId,
-        requestModel: job.model,
-        provider: {
-          id: provider.id,
-          name: provider.name,
-          type: provider.type,
-          model: provider.defaultModel,
-          baseUrl: runtime.baseUrl,
-        },
-        refType: 'video-job',
-        refId: job.id,
-      });
-      const submitResult = await adapter.submit(
-        submitRequest,
-        apiKey,
-        runtime.baseUrl,
-        reqAbort.signal
-      );
+      let submitResult: SubmitVideoResult;
+      if (job.generationMode === 'reference-to-video') {
+        if (!adapter.submitReference) throw new Error(`供应商 ${provider.type} 不支持全能参考`);
+        const referenceRequest = await prepareReferenceSubmitRequest(db, job, provider.type, runtime.baseUrl, reqAbort.signal);
+        persistUsage();
+        submitResult = await adapter.submitReference(referenceRequest, apiKey, runtime.baseUrl, reqAbort.signal);
+      } else {
+        const tailValidation = validateVideoTailFrameAsset({
+          db,
+          tailImageId: job.tailImageId,
+          projectId: job.projectId,
+          providerType: provider.type,
+          model: job.model,
+        });
+        if (!tailValidation.ok) throw new Error(tailValidation.error);
+        const tailImage = tailValidation.asset;
+        // 尾帧同首帧：优先未压缩原图，保住末帧收束的画质。
+        const tailPath = tailImage
+          ? (tailImage.originalPath || tailImage.processedPath || tailImage.path)
+          : undefined;
+        const tailMimeType = tailPath ? videoFrameMimeFromPath(tailPath, tailImage?.mimeType) : undefined;
+        const submitRequest: SubmitVideoRequest = {
+          model: job.model,
+          prompt: job.prompt,
+          sourceImagePath: imagePath,
+          sourceMimeType: mimeType,
+          tailImagePath: tailPath,
+          tailMimeType,
+          durationSec: job.durationSec,
+        };
+        const multiShot = videoMultiShotFromStorage(job.multiShot);
+        if (multiShot !== undefined) submitRequest.multiShot = multiShot;
+        persistUsage();
+        submitResult = await adapter.submit(submitRequest, apiKey, runtime.baseUrl, reqAbort.signal);
+      }
 
       if (!submitResult.providerTaskId) {
         throw new Error('Video provider did not return a task_id');

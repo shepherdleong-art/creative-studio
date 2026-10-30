@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { seedProviders } from '@/lib/seed';
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { v4 as uuidv4 } from 'uuid';
+import { isVisibleImageProvider } from '@/lib/provider-list-visibility';
 
 function isRealKey(value: string | undefined | null): boolean {
   const s = (value || '').trim();
@@ -16,7 +17,7 @@ export async function GET() {
     const providers = db.prepare(`SELECT * FROM providers ORDER BY name`).all();
 
     // Don't expose apiKey or apiKeyEnv; just indicate if configured
-    const safe = (providers as Array<Record<string, unknown>>).map((p) => ({
+    const safe = (providers as Array<Record<string, unknown> & { id: string; name: string; type: string; baseUrl: string }>).filter(isVisibleImageProvider).map((p) => ({
       ...p,
       category: 'image',
       configured: isRealKey(p.apiKey as string),

@@ -19,7 +19,7 @@ const OPTIONAL_ENV_VALUES = {
   CREATIVE_STUDIO_CANVAS_EXECUTOR: ['disabled', 'company'],
 };
 
-const OPTIONAL_MODEL_ALIASES = ['doubao-seedream-5-0-pro-image'];
+const OPTIONAL_MODEL_ALIASES = ['doubao-seedream-5-0-pro-image', 'minimax-h3', 'wan-3.0'];
 
 const REQUIRED_MODEL_ALIASES = [
   'doubao-seedance-2-0-260128',
@@ -134,9 +134,12 @@ function parseConfig(filePath, errors) {
     return true;
   };
 
+  const routerTimeouts = config?.router_settings && typeof config.router_settings === 'object'
+    && ('num_retries' in config.router_settings || 'timeout' in config.router_settings);
   if (!assertExactFields(
     config,
-    ['model_list', 'router_settings', 'num_retries', 'timeout', 'litellm_settings'],
+    routerTimeouts ? ['model_list', 'router_settings', 'litellm_settings']
+      : ['model_list', 'router_settings', 'num_retries', 'timeout', 'litellm_settings'],
     '顶层',
   )) return [];
 
@@ -171,16 +174,21 @@ function parseConfig(filePath, errors) {
     }
   });
 
-  if (assertExactFields(config.router_settings, ['routing_strategy'], 'router_settings')) {
+  if (assertExactFields(config.router_settings,
+    routerTimeouts ? ['routing_strategy', 'num_retries', 'timeout'] : ['routing_strategy'], 'router_settings')) {
     if (typeof config.router_settings.routing_strategy !== 'string' || !config.router_settings.routing_strategy.trim()) {
       errors.push('config.yaml 的 router_settings.routing_strategy 必须是非空字符串');
     }
   }
-  if (!Number.isInteger(config.num_retries) || config.num_retries < 0) {
+  const reliability = routerTimeouts ? config.router_settings : config;
+  if (!Number.isInteger(reliability.num_retries) || reliability.num_retries < 0) {
     errors.push('config.yaml 的 num_retries 必须是非负整数');
   }
-  if (typeof config.timeout !== 'number' || !Number.isFinite(config.timeout) || config.timeout <= 0) {
+  if (typeof reliability.timeout !== 'number' || !Number.isFinite(reliability.timeout) || reliability.timeout <= 0) {
     errors.push('config.yaml 的 timeout 必须是正数');
+  }
+  if (routerTimeouts && (reliability.num_retries !== 0 || reliability.timeout !== 110)) {
+    errors.push('config.yaml 的 router_settings 必须使用已审核的 num_retries=0 / timeout=110');
   }
   if (assertExactFields(config.litellm_settings, ['drop_params'], 'litellm_settings')) {
     if (typeof config.litellm_settings.drop_params !== 'boolean') {

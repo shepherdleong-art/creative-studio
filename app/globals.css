@@ -531,6 +531,27 @@ body {
   .video-frame-remove:hover:not(:disabled) { background: rgba(215,55,43,.9); }
   .video-frame-busy { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; background: rgba(22,22,24,.5); color: #fff; font-size: 11px; font-weight: 600; backdrop-filter: blur(3px); }
   .video-tail-frame-warning { display: flex; align-items: flex-start; gap: 5px; margin: 0; border-radius: 8px; background: var(--color-warn-tint); padding: 6px 8px; color: var(--color-warn); font-size: 10.5px; line-height: 1.45; }
+  .video-reference-editor { display: flex; flex-direction: column; gap: 9px; }
+  .video-reference-upload { display: flex; min-height: 68px; align-items: center; justify-content: center; gap: 10px; border: 1px dashed var(--color-hairline); border-radius: 12px; background: var(--color-surface-subtle); padding: 12px; color: var(--color-accent); cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+  .video-reference-upload:hover:not(.is-busy):not(.is-disabled) { border-color: var(--color-accent); background: var(--color-run-tint); }
+  .video-reference-upload.is-busy, .video-reference-upload.is-disabled { cursor: default; opacity: .58; }
+  .video-reference-upload > span { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+  .video-reference-upload strong { color: var(--color-ink-secondary); font-size: 12px; font-weight: 600; line-height: 1.25; }
+  .video-reference-upload small { color: var(--color-ink-tertiary); font-size: 10px; line-height: 1.35; }
+  .video-reference-list { display: flex; flex-direction: column; gap: 7px; margin: 0; padding: 0; list-style: none; }
+  .video-reference-item { display: grid; grid-template-columns: 18px 78px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 0; border: 1px solid var(--color-hairline-soft); border-radius: 11px; background: var(--color-surface); padding: 7px; }
+  .video-reference-order { display: inline-flex; width: 18px; height: 18px; align-items: center; justify-content: center; border-radius: 50%; background: var(--color-surface-subtle); color: var(--color-ink-tertiary); font-size: 10px; font-weight: 650; }
+  .video-reference-preview { display: flex; width: 78px; height: 58px; align-items: center; justify-content: center; overflow: hidden; border-radius: 8px; background: var(--color-surface-subtle); }
+  .video-reference-preview video, .video-reference-image { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .video-reference-preview audio { width: 74px; height: 32px; }
+  .video-reference-info { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+  .video-reference-info strong { overflow: hidden; color: var(--color-ink); font-size: 11px; font-weight: 550; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+  .video-reference-kind { color: var(--color-ink-tertiary); font-size: 10px; line-height: 1.25; }
+  .video-reference-actions { display: flex; align-items: center; gap: 3px; }
+  .video-reference-actions button { display: inline-flex; width: 24px; height: 26px; align-items: center; justify-content: center; border: 1px solid var(--color-hairline-soft); border-radius: 7px; background: var(--color-surface-subtle); color: var(--color-ink-secondary); font-family: inherit; font-size: 12px; cursor: pointer; }
+  .video-reference-actions button:hover:not(:disabled) { border-color: var(--color-accent); color: var(--color-accent); }
+  .video-reference-actions button:disabled { cursor: default; opacity: .35; }
+  .video-reference-actions .video-reference-remove:hover:not(:disabled) { border-color: var(--color-fail); color: var(--color-fail); }
   .video-workspace .video-control.input-field { height: 40px !important; padding: 0 12px !important; border-radius: 11px; background: rgba(255,255,255,.94); font-size: 13px !important; line-height: 1.2; }
   .video-multishot-toggle { display: inline-flex; align-items: center; gap: 7px; height: 40px; padding: 0 10px 0 12px; border: 1px solid var(--color-hairline-soft); border-radius: 11px; background: rgba(255,255,255,.94); color: var(--color-ink-tertiary); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.2; white-space: nowrap; cursor: pointer; transition: border-color .15s ease, color .15s ease, background .15s ease; }
   .video-multishot-toggle:hover:not(:disabled) { border-color: rgba(0,113,227,.35); }
@@ -587,7 +608,7 @@ body {
   .video-bulk-badge.is-existing { background: var(--color-ok-tint); color: var(--color-ok); }
   .video-bulk-badge.is-empty { background: var(--color-warn-tint); color: var(--color-warn); }
   .video-bulk-badge.is-locked { background: var(--color-check-tint); color: var(--color-check); }
-  .video-bulk-badge.is-tail { background: var(--color-run-tint); color: var(--color-run); }
+  .video-bulk-badge.is-tail, .video-bulk-badge.is-reference { background: var(--color-run-tint); color: var(--color-run); }
   .video-bulk-badge.is-problem { background: var(--color-fail-tint); color: var(--color-fail); }
   .video-bulk-row-issue { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
   .video-bulk-drawer-footer { display: flex; flex-shrink: 0; justify-content: flex-end; gap: 10px; padding: 15px 28px 18px; border-top: 1px solid var(--color-hairline-soft); background: rgba(255,255,255,.9); }
@@ -950,6 +971,10 @@ html[data-theme='dark'] .video-multishot-toggle-track { background: rgba(255, 25
 html[data-theme='dark'] .video-workspace .video-prompt-field.input-field { background: rgba(255, 255, 255, .07); }
 html[data-theme='dark'] .video-motion-delete { background: rgba(44, 44, 46, .9); }
 html[data-theme='dark'] .video-workspace .video-add-action { background: rgba(255, 255, 255, .08); }
+html[data-theme='dark'] .video-reference-upload { background: rgba(255, 255, 255, .04); }
+html[data-theme='dark'] .video-reference-item { background: rgba(255, 255, 255, .04); }
+html[data-theme='dark'] .video-reference-order,
+html[data-theme='dark'] .video-reference-actions button { background: rgba(255, 255, 255, .07); }
 
 /* bulk drawer */
 html[data-theme='dark'] .video-bulk-drawer { background: rgba(0, 0, 0, .55); }

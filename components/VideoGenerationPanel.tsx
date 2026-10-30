@@ -9,9 +9,10 @@ import { Icon } from '@/components/ui/Icon';
 import { resolveVideoGenerationSelection, type VideoGenerationProvider } from '@/lib/video-generation-options';
 import { normalizeVideoDraftDuration } from '@/lib/video-duration';
 import {
+  collectVideoMotionReferenceAssetIds,
   collectVideoMotionTailImageIds,
   createVideoMotionRow,
-  getVideoMotionRowIssue,
+  getVideoMotionRowIssue as validateVideoMotionRow,
   removeVideoMotionRowByKey,
   updateVideoMotionRowByKey,
   type VideoMotionRow,
@@ -23,7 +24,9 @@ import {
   materializeShotDrafts,
   planBulkPromptFill,
   planBulkVideoGeneration,
+  serializeVideoGenerationFields as serializeDraftGenerationFields,
 } from '@/components/video-bulk-prompt';
+import type { VideoReferenceCapability } from '@/lib/video-reference-contract';
 
 function releaseDraftTailFrameAssets(
   rowGroups: Iterable<VideoMotionRow[]>,
@@ -32,6 +35,19 @@ function releaseDraftTailFrameAssets(
   for (const assetId of collectVideoMotionTailImageIds(rowGroups)) {
     if (protectedIds.has(assetId)) continue;
     fetch(`/api/images/${encodeURIComponent(assetId)}`, {
+      method: 'DELETE',
+      keepalive: true,
+    }).catch(() => undefined);
+  }
+}
+
+function releaseDraftReferenceAssets(
+  rowGroups: Iterable<VideoMotionRow[]>,
+  protectedIds: ReadonlySet<string> = new Set(),
+): void {
+  for (const assetId of collectVideoMotionReferenceAssetIds(rowGroups)) {
+    if (protectedIds.has(assetId)) continue;
+    fetch(`/api/video-reference-assets/${encodeURIComponent(assetId)}`, {
       method: 'DELETE',
       keepalive: true,
     }).catch(() => undefined);
@@ -119,6 +135,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [deletingShot, setDeletingShot] = useState(false);
   const mountedRef = useRef(true);
   const pendingCreationTailIdsRef = useRef<Set<string>>(new Set());
+  const pendingCreationReferenceIdsRef = useRef<Set<string>>(new Set());
+  const referenceDeletionIdsRef = useRef<Set<string>>(new Set());
   const tailFrameDragDepthRef = useRef<Map<string, number>>(new Map());
   const [tailFrameDragRowKey, setTailFrameDragRowKey] = useState<string | null>(null);
   const [videoPreviewJobId, setVideoPreviewJobId] = useState<string | null>(null);
@@ -145,10 +163,18 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const getRowProviderId = (row: { providerId: string }) => getRowSelection(row).providerId;
   const getRowTailCapability = (row: { providerId: string }): VideoTailFrameCapability =>
     getRowSelection(row).capabilities.tailFrame;
+  const getRowReferenceCapability = (row: { providerId: string }): VideoReferenceCapability =>
+    getRowSelection(row).capabilities.reference;
   const getRowDurationOptions = (row: { providerId: string }) => getRowSelection(row).capabilities.durations;
   const getRowDuration = (row: VideoMotionRow, value = row.durationSec) =>
     getRowSelection({ ...row, durationSec: value }).durationSec;
   const getRowMultiShotCapability = (row: { providerId: string }) => getRowSelection(row).capabilities.multiShot;
+
+  const getRowGenerationMode = (row: { providerId: string }) => getRowSelection(row).generationMode;
+  const getVideoMotionRowIssue = (row: VideoMotionRow, tail: VideoTailFrameCapability, reference?: VideoReferenceCapability) =>
+    validateVideoMotionRow({ ...row, generationMode: getRowGenerationMode(row) }, tail, reference);
+  const serializeVideoGenerationFields = (row: VideoMotionRow) =>
+    serializeDraftGenerationFields({ ...row, generationMode: getRowGenerationMode(row), referenceAssets: [] });
 
   const makeEmptyRow = (): VideoMotionRow => {
     const row = createVideoMotionRow(crypto.randomUUID(), defaultDuration);
@@ -182,6 +208,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     mountedRef.current = true;
     const motionCache = perShotMotionCache.current;
     const tailFrameDragDepth = tailFrameDragDepthRef.current;
+    const referenceDeletionIds = referenceDeletionIdsRef.current;
     return () => {
       mountedRef.current = false;
       tailFrameDragDepth.clear();
@@ -189,6 +216,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         motionRowsRef.current,
         ...motionCache.values(),
       ], pendingCreationTailIdsRef.current);
+      releaseDraftReferenceAssets([
+        motionRowsRef.current,
+        ...motionCache.values(),
+      ], new Set([
+        ...pendingCreationReferenceIdsRef.current,
+        ...referenceDeletionIds,
+      ]));
+      referenceDeletionIds.clear();
       selectedShotRef.current = null;
       motionRowsRef.current = [];
       motionCache.clear();
@@ -322,6 +357,10 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       motionRowsRef.current,
       ...perShotMotionCache.current.values(),
     ]);
+    releaseDraftReferenceAssets([
+      motionRowsRef.current,
+      ...perShotMotionCache.current.values(),
+    ], referenceDeletionIdsRef.current);
     setSelectedSetId(setId);
     selectedSetIdRef.current = setId;
     replaceSelectedShot(null);
@@ -432,9 +471,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const autoFillTailTransitionPrompts = () => {
     for (const shot of safeShots) {
       const rows = getShotRows(shot.id);
-      if (!rows.some((row) => row.tailImageId && !row.prompt.trim())) continue;
+      if (!rows.some((row) => (
+        getRowGenerationMode(row) === 'image-to-video' && row.tailImageId && !row.prompt.trim()
+      ))) continue;
       setShotRows(shot.id, rows.map((row) => (
-        row.tailImageId && !row.prompt.trim()
+        getRowGenerationMode(row) === 'image-to-video' && row.tailImageId && !row.prompt.trim()
           ? { ...row, prompt: TAIL_TRANSITION_DEFAULT_PROMPT }
           : row
       )));
@@ -622,6 +663,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     if (removed?.tailImageId) {
       fetch(`/api/images/${encodeURIComponent(removed.tailImageId)}`, { method: 'DELETE' }).catch(() => undefined);
     }
+    if (removed) releaseDraftReferenceAssets([[removed]], referenceDeletionIdsRef.current);
   };
   const updateRowPrompt = (rowKey: string, value: string) => {
     const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({ ...row, prompt: value, templateId: '' }));
@@ -832,10 +874,22 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     }
   };
 
+  const deleteReferenceAsset = async (assetId: string): Promise<void> => {
+    const response = await fetch(`/api/video-reference-assets/${encodeURIComponent(assetId)}`, { method: 'DELETE' });
+    if (!response.ok && response.status !== 404 && response.status !== 409) {
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+  };
+
   const handleCreateVideos = async (shotId: string) => {
-    const blockedRow = motionRows.find((row) => getVideoMotionRowIssue(row, getRowTailCapability(row)));
+    const blockedRow = motionRows.find((row) => getVideoMotionRowIssue(
+      row,
+      getRowTailCapability(row),
+      getRowReferenceCapability(row),
+    ));
     if (blockedRow) {
-      alert(getVideoMotionRowIssue(blockedRow, getRowTailCapability(blockedRow)));
+      alert(getVideoMotionRowIssue(blockedRow, getRowTailCapability(blockedRow), getRowReferenceCapability(blockedRow)));
       return;
     }
     const items = motionRows
@@ -844,13 +898,15 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         templateId: r.templateId || null,
         providerId: getRowProviderId(r),
         ...getRowSelection(r).requestOptions,
-        tailImageId: r.tailImageId,
+        ...serializeVideoGenerationFields(r),
       }))
       .filter((r) => r.prompt.length > 0);
     if (items.length === 0) { alert('请至少填写一条描述提示词'); return; }
     if (configuredProviders.length === 0) { alert('请先配置视频供应商'); return; }
     const submittedTailIds = new Set(items.flatMap((item) => item.tailImageId ? [item.tailImageId] : []));
+    const submittedReferenceIds = new Set(items.flatMap((item) => item.referenceAssetIds));
     pendingCreationTailIdsRef.current = submittedTailIds;
+    pendingCreationReferenceIdsRef.current = submittedReferenceIds;
     creatingRef.current = true;
     setCreating(true);
     try {
@@ -865,18 +921,25 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           await refreshJobs();
           // 运镜行（含尾帧、供应商、时长、提示词）在提交后保留：用户通常
           // 要基于同一组首尾帧改提示词连出多条，清空只会逼人重新传图。
-          // 已提交的尾帧素材已被 video_jobs 引用，删除接口会 409 保护，
-          // 卸载/切组时的草稿清理不会误删它。
+          // 已提交的尾帧与参考素材已被 video_jobs 引用，删除接口会 409 保护，
+          // 卸载/切组时的草稿清理不会误删它们。
         }
       } else {
         if (mountedRef.current) alert('创建视频任务失败: ' + (data.error || '未知错误'));
-        else for (const assetId of submittedTailIds) await deleteTailFrameAsset(assetId).catch(() => undefined);
+        else {
+          for (const assetId of submittedTailIds) await deleteTailFrameAsset(assetId).catch(() => undefined);
+          for (const assetId of submittedReferenceIds) await deleteReferenceAsset(assetId).catch(() => undefined);
+        }
       }
     } catch (err) {
       if (mountedRef.current) alert('创建失败: ' + String(err));
-      else for (const assetId of submittedTailIds) await deleteTailFrameAsset(assetId).catch(() => undefined);
+      else {
+        for (const assetId of submittedTailIds) await deleteTailFrameAsset(assetId).catch(() => undefined);
+        for (const assetId of submittedReferenceIds) await deleteReferenceAsset(assetId).catch(() => undefined);
+      }
     } finally {
       pendingCreationTailIdsRef.current = new Set();
+      pendingCreationReferenceIdsRef.current = new Set();
       creatingRef.current = false;
       if (mountedRef.current) setCreating(false);
     }
@@ -927,7 +990,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       safeShots.map((shot) => ({ shotId: shot.id, rows: getShotRows(shot.id) })),
       {
         shotsWithExistingJobs,
-        rowIssue: (row) => getVideoMotionRowIssue(row, getRowTailCapability(row)),
+        rowIssue: (row) => getVideoMotionRowIssue(row, getRowTailCapability(row), getRowReferenceCapability(row)),
       },
     );
 
@@ -952,9 +1015,15 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     }
 
     const submittedTailIds = new Set(
-      plan.ready.flatMap((shot) => shot.rows.flatMap((row) => row.tailImageId ? [row.tailImageId] : [])),
+      plan.ready.flatMap((shot) => shot.rows.flatMap((row) => (
+        getRowGenerationMode(row) === 'image-to-video' && row.tailImageId ? [row.tailImageId] : []
+      ))),
+    );
+    const submittedReferenceIds = new Set(
+      plan.ready.flatMap((shot) => shot.rows.flatMap((row) => serializeVideoGenerationFields(row).referenceAssetIds)),
     );
     pendingCreationTailIdsRef.current = submittedTailIds;
+    pendingCreationReferenceIdsRef.current = submittedReferenceIds;
     creatingRef.current = true;
     setCreating(true);
     setBulkProgress({ submitted: 0, total: plan.totalClips });
@@ -970,7 +1039,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           templateId: row.templateId || null,
           providerId: getRowProviderId(row),
           ...getRowSelection(row).requestOptions,
-          tailImageId: row.tailImageId,
+          ...serializeVideoGenerationFields(row),
         }));
         try {
           const res = await fetch(`/api/shot-sets/${effectiveSetId}/video-jobs/batch`, {
@@ -1009,7 +1078,12 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       setBulkProgress(null);
       setBulkStatus(`批量生成未完成：${error instanceof Error ? error.message : String(error)}`);
     } finally {
+      if (!mountedRef.current) {
+        for (const assetId of submittedTailIds) await deleteTailFrameAsset(assetId).catch(() => undefined);
+        for (const assetId of submittedReferenceIds) await deleteReferenceAsset(assetId).catch(() => undefined);
+      }
       pendingCreationTailIdsRef.current = new Set();
+      pendingCreationReferenceIdsRef.current = new Set();
       creatingRef.current = false;
       if (mountedRef.current) setCreating(false);
     }
@@ -1406,8 +1480,10 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               <div className="space-y-3">
                 {motionRows.map((row, idx) => {
                   const tailCapability = getRowTailCapability(row);
+                  const referenceCapability = getRowReferenceCapability(row);
+                  const generationMode = getRowGenerationMode(row);
                   const multiShotCapability = getRowMultiShotCapability(row);
-                  const tailIssue = getVideoMotionRowIssue(row, tailCapability);
+                  const tailIssue = getVideoMotionRowIssue(row, tailCapability, referenceCapability);
                   const tailBusy = row.tailUploadState === 'uploading' || row.tailUploadState === 'deleting';
                   const tailDropEnabled = tailCapability?.supported === true && !tailBusy && !creating;
                   const tailDragging = tailFrameDragRowKey === row.key;
@@ -1421,6 +1497,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                   <div key={row.key} className="video-motion-card">
                     <span className="video-motion-label">描述 {idx + 1}</span>
 
+
+
+                    {generationMode === 'image-to-video' && (
                     <div className="video-frame-pair" data-testid="video-frame-pair">
                       <div className="video-frame-tile video-frame-source">
                         {selectedShotData?.imageUrl ? (
@@ -1544,8 +1623,27 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         </div>
                       )}
                     </div>
+                    )}
 
-                    {tailIssue && (row.tailImageId || row.tailUploadState === 'failed') && (
+                    {generationMode === 'reference-to-video' && (
+                      <div className="video-reference-editor" data-testid="video-reference-editor">
+                        <div className="video-frame-tile video-frame-source">
+                          {selectedShotData?.imageUrl && (
+                            <HoverZoomImage
+                              src={selectedShotData.imageUrl}
+                              alt="当前分镜参考图"
+                              className="video-frame-image"
+                              zoomMaxWidth={520}
+                              zoomMaxHeight={390}
+                            />
+                          )}
+                          <span className="video-frame-tag">参考图</span>
+                        </div>
+                        <p className="generation-helper">使用当前分镜图</p>
+                      </div>
+                    )}
+
+                    {tailIssue && (generationMode === 'reference-to-video' || row.tailImageId || row.tailUploadState === 'failed') && (
                       <p className="video-tail-frame-warning" role="status">
                         <Icon name="alert" size={12} className="mt-0.5 shrink-0" />
                         {tailIssue}
@@ -1651,7 +1749,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                   disabled={creating
                     || configuredProviders.length === 0
                     || motionRows.every((r) => !r.prompt.trim())
-                    || motionRows.some((r) => Boolean(getVideoMotionRowIssue(r, getRowTailCapability(r))))}
+                    || motionRows.some((r) => Boolean(getVideoMotionRowIssue(
+                      r,
+                      getRowTailCapability(r),
+                      getRowReferenceCapability(r),
+                    )))}
                   className="btn-primary btn-sm w-full video-create-action"
                 >
                   {creating
@@ -1709,7 +1811,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               <div>
                 <p className="video-bulk-eyebrow">第四步 · 视频生成</p>
                 <h2>批量检查 {safeShots.length} 个分镜</h2>
-                <p>逐条扫一遍提示词、模板和时长；尾帧请回到单个分镜编辑。</p>
+                <p>逐条扫一遍提示词、模板和时长；首尾帧请回到单个分镜编辑，全能参考直接使用对应分镜图。</p>
               </div>
               <button
                 type="button"
@@ -1767,7 +1869,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               {safeShots.map((shot) => {
                 const rows = getShotRows(shot.id);
                 // 尾帧是行级数据；标题行只取第一条带尾帧的运镜做预览，与首帧并排
-                const tailPreviewRow = rows.find((row) => row.tailImageId);
+                const tailPreviewRow = rows.find((row) => (
+                  getRowGenerationMode(row) === 'image-to-video' && row.tailImageId
+                ));
                 const shotHasExistingJobs = videoJobs.some((job) => (
                   job.shotId === shot.id && !DISCARDABLE_JOB_STATUSES.has(job.status)
                 ));
@@ -1809,8 +1913,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
                     <div className="video-bulk-shot-rows">
                       {rows.map((row, rowIndex) => {
-                        const rowIssue = getVideoMotionRowIssue(row, getRowTailCapability(row));
-                        const isAutoTransition = Boolean(row.tailImageId)
+                        const rowIssue = getVideoMotionRowIssue(
+                          row,
+                          getRowTailCapability(row),
+                          getRowReferenceCapability(row),
+                        );
+                        const isAutoTransition = getRowGenerationMode(row) === 'image-to-video'
+                          && Boolean(row.tailImageId)
                           && row.prompt.trim() === TAIL_TRANSITION_DEFAULT_PROMPT;
                         const manualLocked = !isAutoTransition
                           && Boolean(row.prompt.trim()) && !isPromptReplaceable(row, templates);
@@ -1846,7 +1955,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                               {getRowDurationOptions(row).map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
                             </select>
                             <div className="video-bulk-row-status" aria-label="运镜状态">
-                              {row.tailImageId && <span className="video-bulk-badge is-tail">带尾帧</span>}
+                              {getRowGenerationMode(row) === 'reference-to-video' ? (
+                                <span className="video-bulk-badge is-reference">全能参考 · 当前分镜图</span>
+                              ) : (
+                                <span className="video-bulk-badge is-tail">首尾帧</span>
+                              )}
+                              {getRowGenerationMode(row) === 'image-to-video' && row.tailImageId && (
+                                <span className="video-bulk-badge is-tail">带尾帧</span>
+                              )}
                               {isAutoTransition && <span className="video-bulk-badge is-tail">转场提示词</span>}
                               {!row.prompt.trim() && <span className="video-bulk-badge is-empty">未填写</span>}
                               {manualLocked && <span className="video-bulk-badge is-locked">手写已锁定</span>}

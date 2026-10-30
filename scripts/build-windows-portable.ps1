@@ -18,6 +18,8 @@ param(
   [string]$OutputPath,
   # 可选：只导出该数据根的自定义运镜模板，不复制数据库、项目或供应商配置。
   [string]$MotionTemplatesSourceRoot,
+  # 可选：已审核的 motion-template-presets.json 与 viral-templates.xlsx，首次启动自动导入。
+  [string]$BundledPresetsSourceRoot,
   # 仅供临时 fixture 测试；正式发布不得传此参数。
   [switch]$SkipBuild
 )
@@ -329,6 +331,17 @@ try {
     & $presetNode (Join-Path $ScriptDir 'export-motion-template-presets.mjs') --source-root $MotionTemplatesSourceRoot --output $staging
     if ($LASTEXITCODE -ne 0) { throw '自定义运镜模板导出失败，停止发布。' }
     $manifestKeyFiles += @('motion-template-presets.json', 'scripts/import-motion-template-presets.mjs', '导入自定义运镜模板.cmd')
+  }
+
+  if ($BundledPresetsSourceRoot) {
+    $presetFiles = @('motion-template-presets.json', 'viral-templates.xlsx')
+    New-Item -ItemType Directory -Force -Path (Join-Path $staging 'bundled-presets') | Out-Null
+    foreach ($presetFile in $presetFiles) {
+      $presetSource = Join-Path $BundledPresetsSourceRoot $presetFile
+      if (-not (Test-Path -LiteralPath $presetSource -PathType Leaf)) { throw "缺少内置模板文件：$presetFile" }
+      Copy-Item -LiteralPath $presetSource -Destination (Join-Path $staging "bundled-presets\$presetFile")
+      $manifestKeyFiles += "bundled-presets/$presetFile"
+    }
   }
 
   foreach ($forbidden in $forbiddenInPayload) {

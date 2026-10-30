@@ -141,4 +141,29 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE video_prompt_templates ADD COLUMN openingCode TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_video_prompt_opening_code ON video_prompt_templates(openingCode) WHERE openingCode IS NOT NULL AND openingCode <> ''`,
   `ALTER TABLE video_jobs ADD COLUMN openingCode TEXT`,
+  `CREATE TABLE IF NOT EXISTS video_reference_assets (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('image','video','audio')),
+    filename TEXT NOT NULL,
+    path TEXT NOT NULL,
+    mimeType TEXT NOT NULL,
+    byteSize INTEGER NOT NULL CHECK(byteSize >= 0),
+    durationSec REAL,
+    createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS video_job_references (
+    jobId TEXT NOT NULL,
+    orderIndex INTEGER NOT NULL CHECK(orderIndex >= 0),
+    assetId TEXT NOT NULL,
+    PRIMARY KEY (jobId, orderIndex),
+    FOREIGN KEY (jobId) REFERENCES video_jobs(id) ON DELETE CASCADE,
+    FOREIGN KEY (assetId) REFERENCES video_reference_assets(id) ON DELETE RESTRICT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_video_reference_assets_project ON video_reference_assets(projectId)`,
+  `CREATE INDEX IF NOT EXISTS idx_video_job_references_asset ON video_job_references(assetId)`,
+  `ALTER TABLE video_jobs ADD COLUMN generationMode TEXT NOT NULL DEFAULT 'image-to-video'`,
+  `ALTER TABLE video_jobs ADD COLUMN aspectRatio TEXT`,
+  `ALTER TABLE video_jobs ADD COLUMN resolution TEXT`,
 ];

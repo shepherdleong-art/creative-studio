@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isVisibleVideoProvider } from '../lib/provider-list-visibility.ts';
 
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-company-seed-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = dataRoot;
@@ -20,9 +21,11 @@ try {
   const db = getDb();
 
   const arkId = 'ark-seedream-5-0-pro';
-  assert.deepEqual(db.prepare('SELECT type, model, apiKey, enabled, defaultCostPerImage FROM providers WHERE id = ?').get(arkId), {
-    type: 'ark-images', model: 'doubao-seedream-5-0-pro-260628', apiKey: '', enabled: 0, defaultCostPerImage: null,
-  });
+  assert.equal(db.prepare('SELECT id FROM providers WHERE id = ?').get(arkId), undefined);
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM providers WHERE id NOT LIKE 'company-%'").get() as {n:number}).n, 0);
+  const historicalVideoPresets = db.prepare("SELECT id FROM video_providers WHERE id IN ('jimeng-2-0', 'kling-2-5')").all() as {id:string}[];
+  assert.equal(historicalVideoPresets.filter(isVisibleVideoProvider).length, 0, '历史迁移保留的记录不再作为选项展示');
+  db.prepare("INSERT INTO providers (id, name, type, baseUrl, model) VALUES (?, 'Custom existing', 'ark-images', 'https://example.invalid', 'custom')").run(arkId);
   db.prepare('UPDATE providers SET apiKey = ?, enabled = 1 WHERE id = ?').run('user-configured-key', arkId);
   seedProviders();
   assert.deepEqual(db.prepare('SELECT apiKey, enabled FROM providers WHERE id = ?').get(arkId), {
@@ -76,6 +79,7 @@ try {
     ['company-kling-2-5', 'kling-2.5'],
     ['company-kling-3-0', 'kling-3.0'],
     ['company-qiniuyun-kling-3-0', 'qiniuyun/kling-3.0'],
+    ['company-seedance-2-0', 'doubao-seedance-2-0-260128'],
     ['company-seedance-2-0-fast', 'doubao-seedance-2-0-fast-260128'],
     ['company-seedance-2-5', 'doubao-seedance-2-5-260628'],
   ] as const) {
@@ -193,3 +197,5 @@ try {
   // Windows 上 WAL 文件句柄释放有延迟，清理失败不影响测试结果
   try { fs.rmSync(dataRoot, { recursive: true, force: true }); } catch { /* 临时目录留待系统清理 */ }
 }
+
+
