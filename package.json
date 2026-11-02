@@ -5,6 +5,7 @@
   "private": true,
   "main": "dist-desktop/main.js",
   "scripts": {
+    "prototype:team": "node scripts/prototype-team-ui.mjs",
     "setup:packaging": "node scripts/setup-packaging-runtime.mjs",
     "predev": "bash scripts/start-litellm.sh || echo '⚠️  LiteLLM 未启动，公司供应商暂不可用（不影响工作台）'",
     "dev": "next dev",
