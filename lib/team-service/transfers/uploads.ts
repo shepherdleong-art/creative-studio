@@ -5,12 +5,22 @@ import { once } from 'node:events';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type Database from 'better-sqlite3';
-import type { AccessActor } from '../../media-core/access-context.ts';
+import { runWithAccessContext, type AccessActor } from '../../media-core/access-context.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../../media-core/storage-path.ts';
-import { requireResourceAccess } from '../resource-scopes.ts';
+import { createTeamAccessContext, requireResourceAccess } from '../resource-scopes.ts';
 import { teamFileEtag, type TeamFileRecord } from '../files/index.ts';
 import { TransferError, transferError } from './errors.ts';
+import type { TeamTransferSpace } from './space.ts';
 import { displayNameFromRelativePath, normalizeRelativeName } from './names.ts';
+import {
+  expectedTeamUploadScope,
+  expectedTeamUploadUsage,
+  normalizeTeamUploadTargetKind,
+  prepareBusinessPublication,
+  publishBusinessEntity,
+  type PreparedBusinessPublication,
+  type TeamUploadTargetKind,
+} from './business-publication.ts';
 
 export const DEFAULT_TEAM_UPLOAD_PART_SIZE = 8 * 1024 * 1024;
 const MIN_PART_SIZE = 64 * 1024;
@@ -29,6 +39,7 @@ interface TeamUploadRow {
   id: string;
   userId: string;
   deviceId: string | null;
+  targetKind: TeamUploadTargetKind | null;
   targetResourceType: string;
   targetResourceId: string;
   usage: string;
@@ -52,6 +63,7 @@ interface TeamUploadRow {
 export interface TeamUploadView {
   id: string;
   state: TeamUploadState;
+  targetKind: TeamUploadTargetKind | null;
   fileId: string;
   relativeName: string;
   mimeType: string;
@@ -79,7 +91,9 @@ export interface TeamFileManifest {
 
 export interface CreateTeamUploadInput {
   storageRoot: string;
-  target: { resourceType: string; resourceId: string };
+  target?: { resourceType: string; resourceId: string };
+  targetKind?: string;
+  targetScope?: { resourceType: string; resourceId: string };
   deviceId?: string;
   relativeName: string;
   mimeType: string;
@@ -229,6 +243,7 @@ function uploadView(db: Database.Database, upload: TeamUploadRow, storageRoot: s
   return {
     id: upload.id,
     state: upload.state,
+    targetKind: upload.targetKind,
     fileId: upload.fileId,
     relativeName: upload.relativeName,
     mimeType: upload.mimeType,
@@ -245,9 +260,17 @@ function uploadView(db: Database.Database, upload: TeamUploadRow, storageRoot: s
   };
 }
 
-function sameUploadInput(upload: TeamUploadRow, input: CreateTeamUploadInput, relativeName: string, partSize: number): boolean {
-  return upload.targetResourceType === input.target.resourceType
-    && upload.targetResourceId === input.target.resourceId
+function sameUploadInput(
+  upload: TeamUploadRow,
+  input: CreateTeamUploadInput,
+  target: { resourceType: string; resourceId: string },
+  targetKind: TeamUploadTargetKind | null,
+  relativeName: string,
+  partSize: number,
+): boolean {
+  return upload.targetResourceType === target.resourceType
+    && upload.targetResourceId === target.resourceId
+    && upload.targetKind === targetKind
     && upload.relativeName === relativeName
     && upload.mimeType === input.mimeType
     && upload.usage === input.usage
@@ -263,11 +286,17 @@ export function createTeamUpload(
   input: CreateTeamUploadInput,
 ): TeamUploadView {
   assertActiveUser(db, actor);
-  if (!input.target || typeof input.target.resourceType !== 'string' || !input.target.resourceType.trim()
-    || typeof input.target.resourceId !== 'string' || !input.target.resourceId.trim()) {
+  const target = input.targetScope ?? input.target;
+  if (!target || typeof target.resourceType !== 'string' || !target.resourceType.trim()
+    || typeof target.resourceId !== 'string' || !target.resourceId.trim()) {
     throw new TransferError('invalid_input', '上传目标资源无效。');
   }
-  requireResourceAccess(db, actor, input.target.resourceType, input.target.resourceId, 'write');
+  const targetKind = normalizeTeamUploadTargetKind(input.targetKind);
+  if (targetKind && (target.resourceType !== expectedTeamUploadScope(targetKind)
+    || input.usage !== expectedTeamUploadUsage(targetKind))) {
+    throw new TransferError('invalid_input', '上传业务类型、目标范围与用途不匹配。');
+  }
+  requireResourceAccess(db, actor, target.resourceType, target.resourceId, 'write');
   const relativeName = normalizeRelativeName(input.relativeName);
   const partSize = input.partSize ?? DEFAULT_TEAM_UPLOAD_PART_SIZE;
   if (!Number.isSafeInteger(input.expectedSize) || input.expectedSize <= 0 || input.expectedSize > MAX_UPLOAD_SIZE
@@ -289,7 +318,7 @@ export function createTeamUpload(
   const existing = db.prepare('SELECT * FROM team_uploads WHERE userId = ? AND idempotencyKey = ?')
     .get(actor.userId, input.idempotencyKey) as TeamUploadRow | undefined;
   if (existing) {
-    if (!sameUploadInput(existing, input, relativeName, partSize)) {
+    if (!sameUploadInput(existing, input, target, targetKind, relativeName, partSize)) {
       throw new TransferError('idempotency_conflict', '幂等键已用于不同的上传内容或目标。');
     }
     return uploadView(db, existing, input.storageRoot);
@@ -300,12 +329,12 @@ export function createTeamUpload(
   try {
     db.prepare(`
       INSERT INTO team_uploads (
-        id, userId, deviceId, targetResourceType, targetResourceId, usage, relativeName, mimeType,
+        id, userId, deviceId, targetKind, targetResourceType, targetResourceId, usage, relativeName, mimeType,
         expectedSize, expectedSha256, sourceFingerprint, partSize, idempotencyKey, state, fileId,
         createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'receiving', ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'receiving', ?, ?, ?)
     `).run(
-      id, actor.userId, input.deviceId ?? null, input.target.resourceType, input.target.resourceId,
+      id, actor.userId, input.deviceId ?? null, targetKind, target.resourceType, target.resourceId,
       input.usage, relativeName, input.mimeType, input.expectedSize, input.expectedSha256,
       input.sourceFingerprint, partSize, input.idempotencyKey, fileId, at, at,
     );
@@ -338,8 +367,10 @@ async function writePartBody(
   targetPath: string,
   expectedSize: number,
   spaceProbe?: SpaceProbe,
+  space?: TeamTransferSpace,
 ): Promise<{ byteSize: number; sha256: string }> {
-  await spaceProbe?.(expectedSize);
+  const reservation = space ? await space.reserve(expectedSize) : null;
+  if (!space) await spaceProbe?.(expectedSize);
   const hash = createHash('sha256');
   let byteSize = 0;
   const limiter = new Transform({
@@ -353,9 +384,13 @@ async function writePartBody(
       callback(null, chunk);
     },
   });
-  await pipeline(Readable.from(bodyIterable(body)), limiter, fs.createWriteStream(targetPath, { flags: 'wx' }));
-  if (byteSize !== expectedSize) throw new TransferError('part_size_mismatch', '分片真实字节与固定范围不一致。');
-  return { byteSize, sha256: hash.digest('hex') };
+  try {
+    await pipeline(Readable.from(bodyIterable(body)), limiter, fs.createWriteStream(targetPath, { flags: 'wx' }));
+    if (byteSize !== expectedSize) throw new TransferError('part_size_mismatch', '分片真实字节与固定范围不一致。');
+    return { byteSize, sha256: hash.digest('hex') };
+  } finally {
+    await reservation?.release();
+  }
 }
 
 function saveUploadError(db: Database.Database, uploadId: string, code: string, failed: boolean): void {
@@ -372,6 +407,7 @@ export async function putTeamUploadPart(
     partNumber: number;
     body: ByteBody;
     spaceProbe?: SpaceProbe;
+    space?: TeamTransferSpace;
   },
 ): Promise<TeamUploadPartResult> {
   const upload = ownedUpload(db, actor, input.uploadId);
@@ -388,7 +424,7 @@ export async function putTeamUploadPart(
   const temporary = `${final}.${randomUUID()}.tmp`;
   let received: { byteSize: number; sha256: string };
   try {
-    received = await writePartBody(input.body, temporary, expectedSize, input.spaceProbe);
+    received = await writePartBody(input.body, temporary, expectedSize, input.spaceProbe, input.space);
   } catch (error) {
     fs.rmSync(temporary, { force: true });
     const stable = transferError(error);
@@ -442,6 +478,7 @@ async function assembleUpload(
   upload: TeamUploadRow,
   storageRoot: string,
   spaceProbe?: SpaceProbe,
+  space?: TeamTransferSpace,
 ): Promise<{ filePath: string; sha256: string }> {
   const view = uploadView(db, upload, storageRoot);
   if (view.missingParts.length > 0) {
@@ -449,7 +486,8 @@ async function assembleUpload(
       .run(now(), upload.id);
     throw new TransferError('missing_parts', '仍缺少上传分片。', 409, { missingParts: view.missingParts });
   }
-  await spaceProbe?.(upload.expectedSize);
+  const reservation = space ? await space.reserve(upload.expectedSize) : null;
+  if (!space) await spaceProbe?.(upload.expectedSize);
   const final = assembledPath(storageRoot, upload.id);
   const temporary = `${final}.${randomUUID()}.tmp`;
   const output = fs.createWriteStream(temporary, { flags: 'wx' });
@@ -485,6 +523,8 @@ async function assembleUpload(
     output.destroy();
     fs.rmSync(temporary, { force: true });
     throw error;
+  } finally {
+    await reservation?.release();
   }
 }
 
@@ -573,29 +613,42 @@ function fileManifest(file: TeamFileRecord, relativeName: string): TeamFileManif
   };
 }
 
-function publishReadyFile(db: Database.Database, upload: TeamUploadRow): TeamFileManifest {
+function publishReadyFile(
+  db: Database.Database,
+  upload: TeamUploadRow,
+  prepared: PreparedBusinessPublication | null,
+): TeamFileManifest {
   const at = now();
   db.transaction(() => {
     const currentUpload = readUpload(db, upload.id)!;
     if (currentUpload.state === 'cancelled') throw new TransferError('upload_cancelled', '上传已取消。');
     const current = db.prepare('SELECT * FROM team_files WHERE id = ?').get(upload.fileId) as TeamFileRecord | undefined;
     if (!current) throw new TransferError('publish_conflict', '缺少 staged 文件登记。');
+    const published = prepared ? publishBusinessEntity(db, upload, prepared) : null;
     if (current.state !== 'ready') {
       const readySeq = ((db.prepare('SELECT MAX(readySeq) AS value FROM team_files').pluck().get() as number | null) ?? 0) + 1;
       db.prepare("UPDATE team_files SET state = 'ready', readySeq = ?, readyAt = ? WHERE id = ? AND state = 'staged'")
         .run(readySeq, at, upload.fileId);
     }
-    const role = ['output', 'export', 'delivery'].includes(upload.usage) ? upload.usage : 'input';
     const insertReference = db.prepare(`INSERT OR IGNORE INTO team_file_references (
       fileId, resourceType, resourceId, role, pinKind, createdAt
     ) VALUES (?, ?, ?, ?, 'entity', ?)`);
-    insertReference.run(upload.fileId, upload.targetResourceType, upload.targetResourceId, role, at);
-    if (['output', 'export', 'delivery'].includes(upload.usage)) {
-      insertReference.run(upload.fileId, upload.targetResourceType, upload.targetResourceId, 'delivery', at);
+    if (published) {
+      for (const reference of published.references) {
+        insertReference.run(upload.fileId, reference.resourceType, reference.resourceId, reference.role, at);
+      }
+    } else {
+      const role = ['output', 'export', 'delivery'].includes(upload.usage) ? upload.usage : 'input';
+      insertReference.run(upload.fileId, upload.targetResourceType, upload.targetResourceId, role, at);
+      if (['output', 'export', 'delivery'].includes(upload.usage)) {
+        insertReference.run(upload.fileId, upload.targetResourceType, upload.targetResourceId, 'delivery', at);
+      }
     }
+    const resultResourceType = published?.resourceType ?? upload.targetResourceType;
+    const resultResourceId = published?.resourceId ?? upload.targetResourceId;
     db.prepare(`UPDATE team_uploads SET state = 'ready', resultResourceType = ?, resultResourceId = ?,
       errorCode = NULL, updatedAt = ?, completedAt = ? WHERE id = ?`).run(
-      upload.targetResourceType, upload.targetResourceId, at, at, upload.id,
+      resultResourceType, resultResourceId, at, at, upload.id,
     );
   }).immediate();
   const file = db.prepare('SELECT * FROM team_files WHERE id = ?').get(upload.fileId) as TeamFileRecord;
@@ -611,6 +664,7 @@ async function performComplete(
     expectedSha256?: string;
     sourceFingerprint?: string;
     spaceProbe?: SpaceProbe;
+    space?: TeamTransferSpace;
     failAfterMoveForTest?: boolean;
   },
 ): Promise<TeamUploadView & { file: TeamFileManifest }> {
@@ -640,16 +694,18 @@ async function performComplete(
         throw new TransferError('source_changed', '暂存文件与源文件指纹不一致。');
       }
     } else {
-      const result = await assembleUpload(db, upload, input.storageRoot, input.spaceProbe);
+      const result = await assembleUpload(db, upload, input.storageRoot, input.spaceProbe, input.space);
       assembled = result.filePath;
       digest = result.sha256;
     }
     validateMediaType(assembled, upload.mimeType);
     insertStagedFile(db, upload, input.storageRoot, digest);
-    await input.spaceProbe?.(upload.expectedSize);
+    if (input.space) await input.space.probe(0);
+    else await input.spaceProbe?.(upload.expectedSize);
     moveIntoManagedLocation(upload, input.storageRoot, assembled, digest);
     if (input.failAfterMoveForTest) throw new Error('injected after move');
-    const file = publishReadyFile(db, upload);
+    const prepared = await prepareBusinessPublication(upload, finalPath(input.storageRoot, upload));
+    const file = publishReadyFile(db, upload, prepared);
     fs.rmSync(stagingRoot(input.storageRoot, upload.id), { recursive: true, force: true });
     const ready = readUpload(db, upload.id)!;
     return { ...uploadView(db, ready, input.storageRoot), file };
@@ -672,6 +728,7 @@ export async function completeTeamUpload(
     expectedSha256?: string;
     sourceFingerprint?: string;
     spaceProbe?: SpaceProbe;
+    space?: TeamTransferSpace;
     failAfterMoveForTest?: boolean;
   },
 ): Promise<TeamUploadView & { file: TeamFileManifest }> {
@@ -734,7 +791,7 @@ export function cancelTeamUpload(
 
 export async function recoverTeamUploads(
   db: Database.Database,
-  options: { storageRoot: string },
+  options: { storageRoot: string; space?: TeamTransferSpace },
 ): Promise<Array<{ uploadId: string; state: TeamUploadState; errorCode?: string }>> {
   const rows = db.prepare("SELECT * FROM team_uploads WHERE state IN ('receiving', 'validating', 'staged')")
     .all() as TeamUploadRow[];
@@ -752,7 +809,10 @@ export async function recoverTeamUploads(
         const view = getTeamUpload(db, actor, { storageRoot: options.storageRoot, uploadId: row.id });
         results.push({ uploadId: row.id, state: view.state });
       } else {
-        const completed = await completeTeamUpload(db, actor, { storageRoot: options.storageRoot, uploadId: row.id });
+        const completed = await runWithAccessContext(
+          createTeamAccessContext({ db, principal: actor }),
+          () => completeTeamUpload(db, actor, { storageRoot: options.storageRoot, uploadId: row.id, space: options.space }),
+        );
         results.push({ uploadId: row.id, state: completed.state });
       }
     } catch (error) {

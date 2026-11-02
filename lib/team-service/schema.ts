@@ -312,6 +312,13 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
       CREATE INDEX idx_team_download_receipts_device ON team_download_receipts(deviceId, state, updatedAt);
     `,
   },
+  {
+    version: 8,
+    sql: `
+      ALTER TABLE team_uploads ADD COLUMN targetKind TEXT;
+      CREATE INDEX idx_team_uploads_target_kind ON team_uploads(targetKind, state);
+    `,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;

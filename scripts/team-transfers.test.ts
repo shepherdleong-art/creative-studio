@@ -36,7 +36,7 @@ const stream = (bytes: Buffer, chunkSize = 8191) => Readable.from((function* () 
 
 try {
   for (const migration of TEAM_SERVICE_MIGRATIONS) db.exec(migration.sql);
-  assert.deepEqual(TEAM_SERVICE_MIGRATIONS.map((migration) => migration.version), [1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(TEAM_SERVICE_MIGRATIONS.map((migration) => migration.version), [1, 2, 3, 4, 5, 6, 7, 8]);
   const insertUser = db.prepare(`INSERT INTO team_users (
     id, employeeId, displayName, role, status, passwordHash, mustChangePassword, sessionVersion, createdAt, updatedAt
   ) VALUES (?, ?, ?, 'employee', 'active', 'test', 0, 1, '2026-11-02', '2026-11-02')`);
@@ -45,7 +45,7 @@ try {
   registerRootScope(db, { resourceType: 'test_resource', resourceId: 'resource-a', ownerUserId: userA.userId });
   registerRootScope(db, { resourceType: 'test_resource', resourceId: 'resource-b', ownerUserId: userB.userId });
 
-  const bytes = Buffer.alloc(3 * 256 * 1024 + 123);
+  const bytes = Buffer.alloc(3 * 512 * 1024 + 123);
   for (let index = 0; index < bytes.length; index += 1) bytes[index] = index % 251;
   const input = {
     target: { resourceType: 'test_resource', resourceId: 'resource-a' },
@@ -56,7 +56,7 @@ try {
     expectedSha256: sha256(bytes),
     sourceFingerprint: `source-v1:${sha256(bytes)}`,
     idempotencyKey: 'large-upload-v1',
-    partSize: 256 * 1024,
+    partSize: 512 * 1024,
   };
   const created = createTeamUpload(db, userA, { storageRoot, ...input });
   assert.equal(created.state, 'receiving');

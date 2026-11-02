@@ -20,6 +20,7 @@ import type { ExecutionRuntime } from '../media-core/execution/context.ts';
 import type { ServerRuntimeConfig } from './config.ts';
 import { checkTeamServiceReadiness } from './readiness.ts';
 import { recoverTeamUploads } from './transfers/uploads.ts';
+import { teamTransferSpace } from './transfers/space.ts';
 import {
   initializeTeamRuntimeState,
   markTeamRuntimeFailed,
@@ -195,7 +196,8 @@ export function createTeamServiceBootstrap(options: {
     setTeamRuntimePhase('recovering', { ready: false, maintenance: true });
     try {
       for (const lifecycle of modules) await lifecycle.recover(context);
-      await recoverTeamUploads(options.db, { storageRoot: path.join(options.config.dataRoot, 'storage') });
+      const storageRoot = path.join(options.config.dataRoot, 'storage');
+      await recoverTeamUploads(options.db, { storageRoot, space: teamTransferSpace(storageRoot) });
       stage = 3;
       setTeamRuntimePhase('recovered', { ready: false, maintenance: true });
     } catch (error) {

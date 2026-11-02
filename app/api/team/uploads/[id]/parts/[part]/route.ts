@@ -4,6 +4,7 @@ import { readRuntimeConfig } from '@/lib/team-service/config';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { putTeamUploadPart, TransferError } from '@/lib/team-service/transfers';
 import { teamTransferErrorResponse, teamTransferStorageRoot } from '@/lib/team-service/transfers/http';
+import { teamTransferSpace } from '@/lib/team-service/transfers/space';
 
 export const runtime = 'nodejs';
 
@@ -17,6 +18,7 @@ async function __teamRoutePUT(request: Request, { params }: { params: Promise<{ 
       uploadId: id,
       partNumber: Number(part),
       body: request.body,
+      space: teamTransferSpace(teamTransferStorageRoot()),
     });
     return Response.json(result, { headers: { 'Cache-Control': 'private, no-store' } });
   } catch (error) {

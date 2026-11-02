@@ -4,6 +4,7 @@ import { readRuntimeConfig } from '@/lib/team-service/config';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { completeTeamUpload } from '@/lib/team-service/transfers';
 import { readTransferJson, teamTransferErrorResponse, teamTransferStorageRoot } from '@/lib/team-service/transfers/http';
+import { teamTransferSpace } from '@/lib/team-service/transfers/space';
 
 export const runtime = 'nodejs';
 
@@ -17,6 +18,7 @@ async function __teamRoutePOST(request: Request, { params }: { params: Promise<{
       uploadId: id,
       expectedSha256: typeof body.expectedSha256 === 'string' ? body.expectedSha256 : undefined,
       sourceFingerprint: typeof body.sourceFingerprint === 'string' ? body.sourceFingerprint : undefined,
+      space: teamTransferSpace(teamTransferStorageRoot()),
     });
     return Response.json(result, { headers: { 'Cache-Control': 'private, no-store' } });
   } catch (error) {

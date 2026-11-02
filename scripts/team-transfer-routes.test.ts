@@ -98,7 +98,7 @@ function request(url: string, user: { cookie: string }, init: RequestInit = {}):
 const json = (value: unknown) => ({ body: JSON.stringify(value), headers: { 'content-type': 'application/json' } }) satisfies RequestInit;
 
 try {
-  const bytes = Buffer.alloc(192 * 1024 + 17);
+  const bytes = Buffer.alloc(2 * 1024 * 1024 + 17);
   for (let index = 0; index < bytes.length; index += 1) bytes[index] = index % 253;
   const digest = createHash('sha256').update(bytes).digest('hex');
   const createdResponse = await uploadsRoute.POST(request('https://studio.example.test/api/team/uploads', userA, {
@@ -106,19 +106,19 @@ try {
       target: { resourceType: 'test_resource', resourceId: 'resource-a' },
       relativeName: 'route/output.bin', mimeType: 'application/octet-stream', usage: 'output',
       expectedSize: bytes.length, expectedSha256: digest, sourceFingerprint: 'route-source-v1',
-      idempotencyKey: 'route-upload-v1', partSize: 128 * 1024,
+      idempotencyKey: 'route-upload-v1', partSize: 1024 * 1024,
     }),
   }));
   assert.equal(createdResponse.status, 200, await createdResponse.clone().text());
   const createdBody = await createdResponse.json();
   const uploadId = createdBody.uploadId as string;
   assert.ok(uploadId);
-  assert.equal(createdBody.missingParts.length, 2);
+  assert.equal(createdBody.missingParts.length, 3);
 
   const partOne = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(bytes.subarray(0, 31));
-      controller.enqueue(bytes.subarray(31, 128 * 1024));
+      controller.enqueue(bytes.subarray(31, 1024 * 1024));
       controller.close();
     },
   });
@@ -126,16 +126,21 @@ try {
     method: 'PUT', headers: { 'content-type': 'application/octet-stream' }, body: partOne, duplex: 'half',
   } as RequestInit), { params: Promise.resolve({ id: uploadId, part: '1' }) });
   assert.equal(putResponse.status, 200, await putResponse.clone().text());
-  assert.equal((await putResponse.json()).byteSize, 128 * 1024);
+  assert.equal((await putResponse.json()).byteSize, 1024 * 1024);
 
   const crossPut = await partRoute.PUT(request(`https://studio.example.test/api/team/uploads/${uploadId}/parts/2`, userB, {
-    method: 'PUT', headers: { 'content-type': 'application/octet-stream' }, body: bytes.subarray(128 * 1024),
+    method: 'PUT', headers: { 'content-type': 'application/octet-stream' }, body: bytes.subarray(1024 * 1024, 2 * 1024 * 1024),
   }), { params: Promise.resolve({ id: uploadId, part: '2' }) });
   assert.equal(crossPut.status, 404);
   const putTwo = await partRoute.PUT(request(`https://studio.example.test/api/team/uploads/${uploadId}/parts/2`, userA, {
-    method: 'PUT', headers: { 'content-type': 'application/octet-stream' }, body: bytes.subarray(128 * 1024),
+    method: 'PUT', headers: { 'content-type': 'application/octet-stream' }, body: bytes.subarray(1024 * 1024, 2 * 1024 * 1024),
   }), { params: Promise.resolve({ id: uploadId, part: '2' }) });
   assert.equal(putTwo.status, 200, await putTwo.clone().text());
+  const putThree = await partRoute.PUT(request(`https://studio.example.test/api/team/uploads/${uploadId}/parts/3`, userA, {
+    method: 'PUT', headers: { 'content-type': 'application/octet-stream' }, body: bytes.subarray(2 * 1024 * 1024),
+  }), { params: Promise.resolve({ id: uploadId, part: '3' }) });
+  assert.equal(putThree.status, 200, await putThree.clone().text());
+  assert.equal((await putThree.json()).byteSize, 17);
 
   const status = await uploadRoute.GET(request(`https://studio.example.test/api/team/uploads/${uploadId}`, userA), {
     params: Promise.resolve({ id: uploadId }),

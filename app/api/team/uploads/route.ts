@@ -4,6 +4,7 @@ import { readRuntimeConfig } from '@/lib/team-service/config';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { createTeamUpload, type CreateTeamUploadInput } from '@/lib/team-service/transfers';
 import { readTransferJson, teamTransferErrorResponse, teamTransferStorageRoot } from '@/lib/team-service/transfers/http';
+import { teamTransferSpace } from '@/lib/team-service/transfers/space';
 
 export const runtime = 'nodejs';
 
@@ -13,12 +14,16 @@ async function __teamRoutePOST(request: Request) {
     const body = await readTransferJson(request);
     const entries = Array.isArray(body.files) ? body.files : [body];
     if (entries.length < 1 || entries.length > 100) return Response.json({ error: 'invalid_input' }, { status: 400 });
-    const uploads = entries.map((value) => {
+    const uploads = [];
+    for (const value of entries) {
       const entry = value as Record<string, unknown>;
       const target = entry.target as { resourceType: string; resourceId: string } | undefined;
+      const targetScope = entry.targetScope as { resourceType: string; resourceId: string } | undefined;
       const input = {
         storageRoot: teamTransferStorageRoot(),
-        target: target ?? { resourceType: entry.targetResourceType, resourceId: entry.targetResourceId },
+        target: target ?? (entry.targetResourceType ? { resourceType: entry.targetResourceType, resourceId: entry.targetResourceId } : undefined),
+        targetKind: entry.targetKind,
+        targetScope,
         deviceId: entry.deviceId,
         relativeName: entry.relativeName,
         mimeType: entry.mimeType,
@@ -29,8 +34,9 @@ async function __teamRoutePOST(request: Request) {
         idempotencyKey: entry.idempotencyKey,
         partSize: entry.partSize,
       } as CreateTeamUploadInput;
-      return createTeamUpload(getDb(), requireAccessContext().actor, input);
-    });
+      await teamTransferSpace(input.storageRoot).probe(input.expectedSize);
+      uploads.push(createTeamUpload(getDb(), requireAccessContext().actor, input));
+    }
     const first = uploads[0];
     return Response.json({
       uploads,
