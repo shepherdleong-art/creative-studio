@@ -127,6 +127,16 @@ try {
   assert.ok(path.resolve(revealed[0]).startsWith(path.resolve(root) + path.sep));
   await assert.rejects(() => controller.revealDownload(path.join(root, 'source.bin')), /download|下载|受管/);
   await assert.rejects(() => controller.revealDownload('unknown-download'), /download|下载|受管/);
+
+  const clearsBeforeLogout = session.cacheClears;
+  authenticated = false;
+  await controller.synchronizeIdentity();
+  assert.equal(session.cacheClears, clearsBeforeLogout + 1, '登出必须清除前账号缓存');
+  assert.equal(session.storageClears, clearsBeforeLogout + 1, '登出必须清除前账号存储');
+  account = 'user-b';
+  authenticated = true;
+  await controller.synchronizeIdentity();
+  assert.deepEqual(controller.listTransfers(), [], '登出后换账号不得恢复前账号传输或下载');
   console.log('team client remote transfer tests passed');
 } finally {
   releaseFirstPart.resolve(new Response(new Uint8Array([97, 98, 99, 100])));

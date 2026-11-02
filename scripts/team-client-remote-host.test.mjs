@@ -24,7 +24,7 @@ function load(file, modules, globals = {}) {
   return loaded.exports;
 }
 
-const calls = { starts: 0, stops: 0, remoteHosts: 0, exits: 0, shutdownRequests: 0, errors: [] };
+const calls = { starts: 0, stops: 0, remoteHosts: 0, remoteStops: 0, exits: 0, shutdownRequests: 0, errors: [] };
 const app = new EventEmitter();
 app.requestSingleInstanceLock = () => true;
 app.isPackaged = false;
@@ -34,7 +34,7 @@ app.whenReady = () => Promise.resolve();
 app.quit = () => {};
 app.exit = () => { calls.exits += 1; };
 const remoteSession = { name: 'shared-team-session' };
-const remoteController = { async stop() {}, async pauseForUpdate() {}, async resumeAfterUpdate() {} };
+const remoteController = { async stop() { calls.remoteStops += 1; }, async pauseForUpdate() {}, async resumeAfterUpdate() {} };
 const remoteHost = {
   mode: 'remote', origin: 'https://studio.example.test', preloadPath: 'preload.js',
   session: remoteSession, remote: remoteController,
@@ -87,6 +87,12 @@ await tick();
 assert.equal(calls.remoteHosts, 1, calls.errors.join('\n'));
 assert.equal(calls.starts, 0, 'remote Host 不得 spawn 生产后台');
 assert.equal(calls.shutdownRequests, 0, 'remote 启动不得发公共 shutdown');
+app.emit('before-quit', { preventDefault() {} });
+await tick();
+await tick();
+assert.equal(calls.remoteStops, 1, 'remote 关闭必须停止本机传输控制器');
+assert.equal(calls.exits, 1, 'remote 关闭必须退出本机客户端');
+assert.equal(calls.shutdownRequests, 0, 'remote 关闭不得发公共 shutdown');
 
 const remoteSource = fs.readFileSync('desktop/window.ts', 'utf8');
 assert.match(remoteSource, /session:\s*host\.session/, 'remote BrowserWindow 与原生传输必须共用 Session');

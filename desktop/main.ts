@@ -190,8 +190,13 @@ if (!singleInstanceLock) {
   app.on('before-quit', (event) => {
     event.preventDefault();
     if (explicitQuitRequested || shutdownPromise) return;
+    if (windowHost?.mode === 'remote') {
+      explicitQuitRequested = true;
+      void shutdown();
+      return;
+    }
     if (mainWindow && !mainWindow.isDestroyed()) {
-      // The X and menu Quit open the same in-page dialog as the power button.
+      // The local X and menu Quit open the same in-page dialog as the power button.
       // Only its confirmation sends /api/shutdown; cancellation leaves the
       // service and IPC handlers untouched.
       focusMainWindow();

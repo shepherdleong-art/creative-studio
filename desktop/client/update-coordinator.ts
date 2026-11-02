@@ -68,6 +68,11 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isDownloadStatePath(relative: string): boolean {
+  const parts = relative.split(path.sep);
+  return parts[0] === 'downloads' || (parts[0] === 'accounts' && parts[2] === 'downloads');
+}
+
 export class ClientUpdateCoordinator {
   private readonly rootDir: string;
   private readonly pointerPath: string;
@@ -153,7 +158,7 @@ export class ClientUpdateCoordinator {
       recursive: true,
       filter: (source) => {
         const relative = path.relative(this.stateRoot, source);
-        return !relative || !['downloads', 'run'].includes(relative.split(path.sep)[0]);
+        return !relative || (relative.split(path.sep)[0] !== 'run' && !isDownloadStatePath(relative));
       },
     });
     fs.renameSync(temporary, target);
@@ -167,6 +172,21 @@ export class ClientUpdateCoordinator {
     fs.mkdirSync(failed, { recursive: true });
     for (const entry of fs.readdirSync(this.stateRoot)) {
       if (['downloads', 'run'].includes(entry)) continue;
+      if (entry === 'accounts') {
+        const accountsRoot = path.join(this.stateRoot, entry);
+        const failedAccounts = path.join(failed, entry);
+        fs.mkdirSync(failedAccounts, { recursive: true });
+        for (const accountEntry of fs.readdirSync(accountsRoot)) {
+          const sourceAccount = path.join(accountsRoot, accountEntry);
+          const failedAccount = path.join(failedAccounts, accountEntry);
+          fs.mkdirSync(failedAccount, { recursive: true });
+          for (const child of fs.readdirSync(sourceAccount)) {
+            if (child === 'downloads') continue;
+            fs.renameSync(path.join(sourceAccount, child), path.join(failedAccount, child));
+          }
+        }
+        continue;
+      }
       fs.renameSync(path.join(this.stateRoot, entry), path.join(failed, entry));
     }
     fs.cpSync(snapshot, this.stateRoot, { recursive: true, force: true });

@@ -285,18 +285,18 @@ export class RemoteTransferController {
       if (previousKey) this.pauseForIdentity();
       this.csrfToken = null;
       this.currentUserId = userId;
+      if (previousKey) {
+        await this.session.clearCache();
+        await this.session.clearStorageData({
+          storages: ['cachestorage', 'serviceworkers', 'indexdb', 'localstorage'],
+        });
+      }
       if (!userId) {
         this.accountKey = null;
         this.account = emptyAccount();
         return;
       }
       const nextKey = this.keyFor(userId);
-      if (previousKey && previousKey !== nextKey) {
-        await this.session.clearCache();
-        await this.session.clearStorageData({
-          storages: ['cachestorage', 'serviceworkers', 'indexdb', 'localstorage'],
-        });
-      }
       this.accountKey = nextKey;
       this.account = this.loadAccount(nextKey);
       if (!this.updateBlocked) this.resumeReason('identity');

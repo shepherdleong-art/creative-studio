@@ -96,10 +96,11 @@ function packageFor(releaseId, extra = []) {
 }
 function initialInstallation(root, oldManifest = manifest('old', Buffer.alloc(0))) {
   fs.mkdirSync(path.join(root, 'versions', 'old'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'client-state', 'accounts'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'client-state', 'accounts', 'a', 'downloads'), { recursive: true });
   fs.mkdirSync(path.join(root, 'client-state', 'downloads'), { recursive: true });
   fs.writeFileSync(path.join(root, 'client-state', 'state.json'), '{"schemaVersion":1,"owner":"old"}\n');
-  fs.writeFileSync(path.join(root, 'client-state', 'accounts', 'a.json'), '{"records":[{"id":"old"}]}\n');
+  fs.writeFileSync(path.join(root, 'client-state', 'accounts', 'a', 'transfers.json'), '{"records":[{"id":"old"}]}\n');
+  fs.writeFileSync(path.join(root, 'client-state', 'accounts', 'a', 'downloads', 'keep.bin'), 'account-keep');
   fs.writeFileSync(path.join(root, 'client-state', 'downloads', 'keep.bin'), 'keep');
   fs.writeFileSync(path.join(root, 'current.json'), `${JSON.stringify({ schemaVersion: 1, releaseId: 'old', directory: 'versions/old', manifest: oldManifest }, null, 2)}\n`);
   return oldManifest;
@@ -228,6 +229,8 @@ try {
     assert.equal(current(root).releaseId, 'old', name);
     assert.ok(events.indexOf(`stop-new`) > events.indexOf('health-new'), '失败必须先停新版再回滚');
     assert.equal(fs.readFileSync(path.join(root, 'client-state', 'downloads', 'keep.bin'), 'utf8'), 'keep');
+    assert.equal(fs.readFileSync(path.join(root, 'client-state', 'accounts', 'a', 'downloads', 'keep.bin'), 'utf8'), 'account-keep');
+    assert.equal(fs.existsSync(path.join(root, 'updates', 'snapshots', 'new', 'accounts', 'a', 'downloads')), false, '账号下载不得进入状态快照');
     if (expectedStatus === 'rolled_back') {
       assert.equal(fs.readFileSync(path.join(root, 'client-state', 'state.json'), 'utf8'), '{"schemaVersion":1,"owner":"old"}\n');
       assert.equal(events.at(-1), 'resume');
@@ -268,6 +271,8 @@ try {
     assert.equal(events.at(-1), 'resume');
     assert.equal(fs.existsSync(path.join(root, 'versions', 'old')), true, '保留最近可用版本，占用目录延后清理');
     assert.equal(fs.readFileSync(path.join(root, 'client-state', 'downloads', 'keep.bin'), 'utf8'), 'keep');
+    assert.equal(fs.readFileSync(path.join(root, 'client-state', 'accounts', 'a', 'downloads', 'keep.bin'), 'utf8'), 'account-keep');
+    assert.equal(fs.existsSync(path.join(root, 'updates', 'snapshots', 'new', 'accounts', 'a', 'downloads')), false);
     assert.equal(fs.existsSync(path.join(root, 'updates', 'snapshots')), true);
   }
   console.log('team client updater fault matrix passed');
