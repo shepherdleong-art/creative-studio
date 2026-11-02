@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export function GET(): NextResponse {
+
+function __teamRouteGET(): NextResponse {
   const instanceId = process.env.CREATIVE_STUDIO_INSTANCE_ID;
   if (!instanceId) {
     return NextResponse.json(
@@ -17,3 +19,4 @@ export function GET(): NextResponse {
     { headers: { 'Cache-Control': 'no-store' } },
   );
 }
+export const GET = withTeamRoute('/api/desktop/health', 'GET', __teamRouteGET);

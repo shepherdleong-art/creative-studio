@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { requireAccessContext } from './media-core/access-context.ts';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
@@ -133,6 +134,8 @@ export async function generateAndPersistScriptV3(
   dependencies: GenerateScriptV3ServiceDependencies,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const { projectId, project, body } = input;
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
   const shotSetId = typeof body.shotSetId === 'string' ? body.shotSetId : '';
   if (!shotSetId) return { status: 400, body: { error: '请选择要生成脚本的分镜组' } };
 
@@ -263,7 +266,8 @@ export async function generateAndPersistScriptV3(
   const model = provider.model || '';
   const draftId = (dependencies.createId || uuidv4)();
   const generationDurationMs = Date.now() - generationStartedAt;
-  dependencies.db.prepare(`
+  const persist = dependencies.db.transaction(() => {
+    dependencies.db.prepare(`
     INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson, generationDurationMs)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -292,8 +296,14 @@ export async function generateAndPersistScriptV3(
       attempts: result.attempts,
     }),
     JSON.stringify(result.script),
-    generationDurationMs,
-  );
+      generationDurationMs,
+    );
+    access.registerInheritedScope({
+      resourceType: 'script_draft', resourceId: draftId,
+      parent: { resourceType: 'project', resourceId: projectId },
+    });
+  });
+  persist.immediate();
   dependencies.onProgress?.({ phase: 'completed', percent: 100, message: '脚本生成完成' });
   return {
     status: 200,

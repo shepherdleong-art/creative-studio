@@ -4,6 +4,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { relocateLinkedSource } from '@/lib/batch-production/media-catalog';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,7 +28,7 @@ function denied(message: string): NextResponse {
   );
 }
 
-export async function POST(request: NextRequest): Promise<NextResponse> {
+async function __teamRoutePOST(request: NextRequest): Promise<NextResponse> {
   if (process.env.CREATIVE_STUDIO_DESKTOP !== '1') {
     return denied('当前运行方式不支持桌面原片重新定位');
   }
@@ -90,3 +92,4 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 }
+export const POST = withTeamRoute('/api/desktop/relocate-linked', 'POST', __teamRoutePOST);

@@ -20,6 +20,8 @@ vm.runInNewContext(source, {
       errorResponse: error => ({ status: 400, body: { message: error.message } }),
     };
     if (name === '@/lib/script-studio/errors') return { ScriptStudioError: class extends Error {} };
+    // local 部署下 wrapper 原样调用 handler；server 授权矩阵另行覆盖。
+    if (name === '@/lib/team-service/route-wrapper') return { withTeamRoute: (_route, _method, handler) => handler };
     if (name === '@/lib/script-studio/import-directory') return {
       importImageDirectory: async (_db, projectId, directoryPath) => {
         calls.push({ projectId, directoryPath });

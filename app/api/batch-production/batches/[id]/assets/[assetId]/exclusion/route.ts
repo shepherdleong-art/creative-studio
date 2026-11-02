@@ -8,12 +8,14 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 更改当前冻结批次版本内的素材排除，并重新执行整批联合分配。 */
-export async function POST(
+async function __teamRoutePOST(
   request: NextRequest,
   context: { params: Promise<{ id: string; assetId: string }> },
 ) {
@@ -59,3 +61,4 @@ export async function POST(
     return batchRouteErrorResponse(error, 'batch_asset_exclusion_failed', '批次素材排除修改失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/assets/[assetId]/exclusion', 'POST', __teamRoutePOST);

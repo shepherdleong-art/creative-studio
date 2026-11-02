@@ -5,11 +5,13 @@ import { assertScriptStudioApiReady, errorResponse } from '@/lib/script-studio/h
 import { getTask, updateTask } from '@/lib/script-studio/tasks';
 import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
 import { requestScriptStudioTaskCancel } from '@/lib/script-studio/scheduler';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function POST(
+async function __teamRoutePOST(
   _request: Request,
   { params }: { params: Promise<{ id: string; taskId: string }> },
 ) {
@@ -40,3 +42,4 @@ export async function POST(
     return NextResponse.json(result.body, { status: result.status });
   }
 }
+export const POST = withTeamRoute('/api/projects/[id]/script-studio/tasks/[taskId]/cancel', 'POST', __teamRoutePOST);

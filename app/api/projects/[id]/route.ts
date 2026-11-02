@@ -17,8 +17,10 @@ import { hasExportIdentity, createExportIdentity, activateNewExportIdentity } fr
 import { sortProjectJobsByCreation, type ProjectJobOrderRow } from '@/lib/project-job-order';
 import { deleteProjectRecords } from '@/lib/project-delete';
 import { syncShotPromptFromScene } from '@/lib/furniture-prompt';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(
+
+async function __teamRouteGET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -80,7 +82,7 @@ export async function GET(
   }
 }
 
-export async function DELETE(
+async function __teamRouteDELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -117,7 +119,7 @@ export async function DELETE(
   }
 }
 
-export async function PATCH(
+async function __teamRoutePATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -255,3 +257,6 @@ export async function PATCH(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/projects/[id]', 'GET', __teamRouteGET);
+export const DELETE = withTeamRoute('/api/projects/[id]', 'DELETE', __teamRouteDELETE);
+export const PATCH = withTeamRoute('/api/projects/[id]', 'PATCH', __teamRoutePATCH);

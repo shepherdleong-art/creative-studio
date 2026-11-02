@@ -1,4 +1,5 @@
 import { getDb } from './db.ts';
+import { runWithAcceptedTaskAccess } from './team-service/accepted-access.ts';
 import { isReassembledReworkJob, protectReassembledQueue, REASSEMBLED_SUBMIT_UNCERTAIN } from './reassembled-shot-guard.ts';
 import { getVideoAdapter } from './video-providers/index.ts';
 import { redactMediaUrlForLog } from './gateway-media-url.ts';
@@ -332,6 +333,13 @@ async function prepareReferenceSubmitRequest(
 }
 
 async function runVideoJob(
+  job: VideoJobRecord,
+  options: { timeoutMs: number; abort: AbortSignal }
+): Promise<void> {
+  return runWithAcceptedTaskAccess(getDb(), 'video', job.id, () => runAuthorizedVideoJob(job, options));
+}
+
+async function runAuthorizedVideoJob(
   job: VideoJobRecord,
   options: { timeoutMs: number; abort: AbortSignal }
 ): Promise<void> {

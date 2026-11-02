@@ -20,6 +20,7 @@ import { canvasAssetAbsolutePath, getCanvasAsset } from './assets.ts';
 import { getCanvasNodeState, requireCanvas } from './repository.ts';
 import { findGraphNode } from './graph.ts';
 import { canvasNamedDirectory, canvasNamedFilename, sanitizeCanvasFilename } from './asset-naming.ts';
+import { requireAccessContext } from '../media-core/access-context.ts';
 
 export interface CanvasExportManifestItem {
   videoMetadata?: CanvasVideoMetadata;
@@ -127,6 +128,8 @@ export interface CreateCanvasExportParams {
  */
 export async function createCanvasExport(params: CreateCanvasExportParams): Promise<CanvasExportRecord> {
   const { db, canvasId, storageRoot, nodeIds } = params;
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas', canvasId, 'write');
   const now = params.now ?? (() => new Date());
   const canvas = requireCanvas(db, canvasId);
   if (nodeIds.length === 0) {
@@ -196,10 +199,22 @@ export async function createCanvasExport(params: CreateCanvasExportParams): Prom
     skipped,
   };
 
-  db.prepare(`
-    INSERT INTO creative_canvas_exports (id, canvasId, manifestJson, status, zipRelativePath, errorCode, errorMessage, createdAt, updatedAt)
-    VALUES (?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?)
-  `).run(exportId, canvasId, JSON.stringify(manifest), createdAt, createdAt);
+  const register = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO creative_canvas_exports (id, canvasId, manifestJson, status, zipRelativePath, errorCode, errorMessage, createdAt, updatedAt)
+      VALUES (?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?)
+    `).run(exportId, canvasId, JSON.stringify(manifest), createdAt, createdAt);
+    access.registerInheritedScope({
+      resourceType: 'canvas_export', resourceId: exportId,
+      parent: { resourceType: 'canvas', resourceId: canvasId },
+    });
+    access.registerTaskPrincipal({
+      module: 'canvas_export', taskId: exportId,
+      scope: { resourceType: 'canvas', resourceId: canvasId },
+      creationSnapshot: { graphRevision: canvas.graphRevision, nodeIds: [...nodeIds] },
+    });
+  });
+  register.immediate();
 
   const relativeZipPath = path.posix.join(canvasNamedDirectory(db, canvasId), '导出打包',
     canvasNamedFilename(canvas.name, exportId, 'zip', new Date(createdAt)));

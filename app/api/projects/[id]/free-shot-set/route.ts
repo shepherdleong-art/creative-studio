@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getOrCreateFreeShotSet } from '@/lib/shot-set-service';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 // 前端在第 4 步下拉里选中「自由素材工位」时调用。
 // 一个项目只有一个(D15):第一次会建一个空的,之后每次返回同一个。
-export async function POST(
+async function __teamRoutePOST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -19,3 +21,4 @@ export async function POST(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const POST = withTeamRoute('/api/projects/[id]/free-shot-set', 'POST', __teamRoutePOST);

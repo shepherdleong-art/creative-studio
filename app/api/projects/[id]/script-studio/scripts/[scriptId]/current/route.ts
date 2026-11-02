@@ -3,11 +3,13 @@ import { getDb } from '@/lib/db';
 import { ScriptStudioError } from '@/lib/script-studio/errors';
 import { assertScriptStudioApiReady, errorResponse, jsonOrNull } from '@/lib/script-studio/http';
 import { setProjectScriptCurrentRevision } from '@/lib/script-studio/scripts';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function PUT(
+async function __teamRoutePUT(
   request: Request,
   { params }: { params: Promise<{ id: string; scriptId: string }> },
 ) {
@@ -25,3 +27,4 @@ export async function PUT(
     return NextResponse.json(result.body, { status: result.status });
   }
 }
+export const PUT = withTeamRoute('/api/projects/[id]/script-studio/scripts/[scriptId]/current', 'PUT', __teamRoutePUT);

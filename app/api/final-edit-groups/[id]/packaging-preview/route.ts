@@ -25,8 +25,10 @@ import { buildConfigFontFacesCss } from '@/lib/final-edit/packaging-font';
 import { extractPackagingPalette, resolveTemplateHueMode, type PackagingPalette } from '@/lib/final-edit/packaging-palette';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { FINAL_EDIT_INTRO_DURATION_US } from '@/lib/media-core/render-contract';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: groupId } = await params;
     const query = new URL(request.url).searchParams;
@@ -143,3 +145,4 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 // 桥不再自己换算 style 偏移：手势只算目标 {x,y,scale,rotate}，经 rAF 节流（每帧最多一次）委托 apply 应用，提交时按最终可视状态回传。
 // 父页面侧契约：设置 iframe contentWindow.__editMode = { active, only } 开关编辑；
 // 注册 window.__packagingEditCommit(pointId, layout|null, {x,y,scale}) 接收结果；可选 __packagingEditExit() 接收 ESC 退出。
+export const GET = withTeamRoute('/api/final-edit-groups/[id]/packaging-preview', 'GET', __teamRouteGET);

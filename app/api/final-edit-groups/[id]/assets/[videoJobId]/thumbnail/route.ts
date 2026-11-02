@@ -4,8 +4,10 @@ import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { mediaResponse } from '@/lib/final-edit/media-response';
 import { materializeVideoFrame } from '@/lib/final-edit/video-frame';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(request: Request, { params }: { params: Promise<{ id: string; videoJobId: string }> }) {
+
+async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string; videoJobId: string }> }) {
   const { id, videoJobId } = await params;
   const db = getDb();
   const row = db.prepare(`
@@ -31,3 +33,4 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: 'thumbnail_failed', message: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/final-edit-groups/[id]/assets/[videoJobId]/thumbnail', 'GET', __teamRouteGET);

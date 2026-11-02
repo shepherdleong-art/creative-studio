@@ -1,3 +1,4 @@
+import { runWithTaskAccessContext } from '../media-core/access-context.ts';
 import { recordCanvasTaskLog } from './logs.ts';
 import { recordCanvasVideoMetadata } from './video-metadata.ts';
 /**
@@ -264,6 +265,10 @@ function commitRecordedOutput(
 }
 
 export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<CanvasRunTaskOutcome> {
+  return runWithTaskAccessContext(options.db, 'canvas', options.taskId, () => runAuthorizedCanvasTask(options));
+}
+
+async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<CanvasRunTaskOutcome> {
   const {
     db,
     taskId,

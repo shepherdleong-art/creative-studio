@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { writeLog } from '@/lib/logger';
 import { getVideoQueueStatus, runVideoQueue, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(
+
+async function __teamRoutePOST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -63,3 +65,4 @@ export async function POST(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const POST = withTeamRoute('/api/video-jobs/[id]/retry', 'POST', __teamRoutePOST);

@@ -8,12 +8,14 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 面向批量工作区的稳定聚合视图；卡片状态由服务端领域事实推导。 */
-export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRouteGET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -32,3 +34,4 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     return batchRouteErrorResponse(error, 'batch_workspace_failed', '批次工作区读取失败');
   }
 }
+export const GET = withTeamRoute('/api/batch-production/batches/[id]/workspace', 'GET', __teamRouteGET);

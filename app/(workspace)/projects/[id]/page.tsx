@@ -182,7 +182,7 @@ export default function ProjectDetailPage() {
 
   useEffect(() => {
     let active = true;
-    fetch('/api/providers')
+    fetch('/api/team/models?kind=image')
       .then((res) => res.json())
       .then((data: ImageProvider[]) => {
         if (active && Array.isArray(data)) setProviders(data);

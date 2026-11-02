@@ -5,11 +5,13 @@ import { CanvasError } from '@/lib/creative-canvas/errors';
 import { canvasStorageRoot } from '@/lib/creative-canvas/assets';
 import { createCanvasExport } from '@/lib/creative-canvas/export';
 import { assertCanvasApiReady, canvasJsonError, readCanvasJson } from '@/lib/creative-canvas/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
 /** 固定选中节点的当前结果并生成 ZIP；生成完整后才返回可下载入口。 */
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -37,3 +39,4 @@ export async function POST(
     return canvasJsonError(error);
   }
 }
+export const POST = withTeamRoute('/api/canvas/[id]/exports', 'POST', __teamRoutePOST);

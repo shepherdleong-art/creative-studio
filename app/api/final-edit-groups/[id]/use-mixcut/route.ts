@@ -6,8 +6,10 @@ import { adoptFilmIntoMixcut } from '@/lib/final-edit/reassembled/adopt';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { PACKAGING_TEMPLATE_IDS, type PackagingTemplateId } from '@/lib/media-core/packaging-vars';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const origin = request.headers.get('origin');
   const host = request.headers.get('host');
   if (request.headers.has('x-reassembled-token') || request.headers.get('sec-fetch-site') !== 'same-origin' || !origin || new URL(origin).host !== host) return NextResponse.json({ error: 'origin_denied' }, { status: 403 });
@@ -23,3 +25,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json(getFinalEditWorkspace().load(id));
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const POST = withTeamRoute('/api/final-edit-groups/[id]/use-mixcut', 'POST', __teamRoutePOST);

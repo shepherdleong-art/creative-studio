@@ -9,10 +9,12 @@ import {
   importFinalEditBgmFromFormData,
 } from '@/lib/final-edit/bgm-import-http';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
-export async function POST(request: Request) {
+async function __teamRoutePOST(request: Request) {
   try {
     const db = getDb();
     const storageRoot = path.join(dataRoot(), 'storage');
@@ -30,3 +32,4 @@ export async function POST(request: Request) {
     return finalEditErrorResponse(error);
   }
 }
+export const POST = withTeamRoute('/api/final-edit-bgm', 'POST', __teamRoutePOST);

@@ -17,8 +17,17 @@ assert.throws(() => resolvePublishedVideoForReveal(storageRoot, JSON.stringify({
 const outsideFile = path.join(root, 'outside.mp4');
 fs.writeFileSync(outsideFile, 'outside');
 const linkedVideo = path.join(storageRoot, 'projects/project-1/成片/linked.mp4');
-fs.symlinkSync(outsideFile, linkedVideo);
-assert.throws(() => resolvePublishedVideoForReveal(storageRoot, JSON.stringify({ publishedVideoRelativePath: path.relative(storageRoot, linkedVideo) })), /符号链接/);
+let symlinkCreated = false;
+try {
+  fs.symlinkSync(outsideFile, linkedVideo);
+  symlinkCreated = true;
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+  console.log('跳过 symlink 越界安全子测试：当前环境无符号链接权限');
+}
+if (symlinkCreated) {
+  assert.throws(() => resolvePublishedVideoForReveal(storageRoot, JSON.stringify({ publishedVideoRelativePath: path.relative(storageRoot, linkedVideo) })), /符号链接/);
+}
 assert.deepEqual(revealCommand('darwin', absolutePath), { command: 'open', args: ['-R', absolutePath] });
 assert.deepEqual(revealCommand('win32', absolutePath), { command: 'explorer.exe', args: [`/select,${absolutePath}`] });
 assert.throws(() => revealCommand('linux', absolutePath), /不支持/);

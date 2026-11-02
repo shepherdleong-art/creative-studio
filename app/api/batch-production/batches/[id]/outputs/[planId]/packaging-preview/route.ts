@@ -11,16 +11,18 @@ import { extractPackagingPalette, resolveTemplateHueMode } from '@/lib/media-cor
 import { resolvePackagingDir, resolvePackagingTemplateDir } from '@/lib/media-core/packaging-runtime';
 import { BatchDomainError } from '@/lib/batch-production/errors';
 import { batchProjectIdFromRequest, batchRouteErrorResponse, BATCH_NO_STORE_HEADERS } from '../../../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
+async function __teamRouteGET(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
   return preview(request, context, false);
 }
 
 /** 草稿预览不写 arrangement、不提取卖点；取消编辑不会留下半份封面配置。 */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
   return preview(request, context, true);
 }
 
@@ -54,3 +56,5 @@ async function preview(request: NextRequest, context: { params: Promise<{ id: st
     return new Response(html, { headers: { ...BATCH_NO_STORE_HEADERS, 'Content-Type': 'text/html; charset=utf-8' } });
   } catch (error) { return batchRouteErrorResponse(error, 'packaging_preview_failed', '读取包装预览失败'); }
 }
+export const GET = withTeamRoute('/api/batch-production/batches/[id]/outputs/[planId]/packaging-preview', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/outputs/[planId]/packaging-preview', 'POST', __teamRoutePOST);

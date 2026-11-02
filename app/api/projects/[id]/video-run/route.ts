@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { cancelVideoQueue, getVideoQueueStatus, runVideoQueue, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { writeLog } from '@/lib/logger';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(
+
+async function __teamRoutePOST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -43,10 +45,12 @@ export async function POST(
   }
 }
 
-export async function GET(
+async function __teamRouteGET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   return NextResponse.json({ queueStatus: getVideoQueueStatus(id) });
 }
+export const POST = withTeamRoute('/api/projects/[id]/video-run', 'POST', __teamRoutePOST);
+export const GET = withTeamRoute('/api/projects/[id]/video-run', 'GET', __teamRouteGET);

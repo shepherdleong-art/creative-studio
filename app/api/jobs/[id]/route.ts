@@ -3,8 +3,10 @@ import { getDb } from '@/lib/db';
 import { isReassembledImageJob } from '@/lib/reassembled-shot-guard';
 import { filmWriteActor } from '@/lib/final-edit/reassembled/access';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function PATCH(
+
+async function __teamRoutePATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -31,3 +33,4 @@ export async function PATCH(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const PATCH = withTeamRoute('/api/jobs/[id]', 'PATCH', __teamRoutePATCH);

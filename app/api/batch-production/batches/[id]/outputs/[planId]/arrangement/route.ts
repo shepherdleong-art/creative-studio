@@ -7,12 +7,14 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 检查成片的编辑器数据视图:当前候选片段、口播/字幕/BGM 与冻结池素材使用标记。 */
-export async function GET(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
+async function __teamRouteGET(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
   const { id, planId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -29,3 +31,4 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     return batchRouteErrorResponse(error, 'batch_arrangement_failed', '读取成片安排失败');
   }
 }
+export const GET = withTeamRoute('/api/batch-production/batches/[id]/outputs/[planId]/arrangement', 'GET', __teamRouteGET);

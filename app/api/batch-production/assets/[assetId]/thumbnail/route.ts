@@ -6,11 +6,13 @@ import {
 } from '@/lib/batch-production/project-asset-media';
 import { projectAssetMediaResponse, PROJECT_ASSET_THUMBNAIL_HEADERS } from '@/lib/batch-production/project-asset-media-response';
 import { BATCH_NO_STORE_HEADERS, batchRouteErrorResponse } from '../../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET(
+async function __teamRouteGET(
   request: NextRequest,
   context: { params: Promise<{ assetId: string }> },
 ) {
@@ -30,3 +32,4 @@ export async function GET(
     return batchRouteErrorResponse(error, 'asset_thumbnail_failed', '素材缩略图生成失败');
   }
 }
+export const GET = withTeamRoute('/api/batch-production/assets/[assetId]/thumbnail', 'GET', __teamRouteGET);

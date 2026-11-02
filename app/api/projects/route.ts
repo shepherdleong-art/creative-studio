@@ -17,13 +17,24 @@ import {
   resolveUniqueProjectBaseName,
 } from '@/lib/project-production-identity';
 import { ProjectInfoValidationError } from '@/lib/project-info';
+import { requireAccessContext, type ResourceAccessContext } from '@/lib/media-core/access-context';
+import { bindImageScopeToProject } from '@/lib/team-service/resource-scopes';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 function isRealApiKey(value: string | null | undefined): boolean {
   const trimmed = (value || '').trim();
   return !!trimmed && !isPlaceholderValue(trimmed);
 }
 
-function bindProjectImage(db: ReturnType<typeof getDb>, imageId: string, projectId: string, role: 'input') {
+function bindProjectImage(
+  db: ReturnType<typeof getDb>,
+  imageId: string,
+  projectId: string,
+  role: 'input',
+  access: ResourceAccessContext,
+  ownerUserId: string,
+) {
   const result = db.prepare(`
     UPDATE image_assets
     SET projectId = ?, role = ?
@@ -32,9 +43,10 @@ function bindProjectImage(db: ReturnType<typeof getDb>, imageId: string, project
   if (result.changes !== 1) {
     throw new Error(`Image asset is not available for this project: ${imageId}`);
   }
+  if (access.kind === 'team') bindImageScopeToProject(db, imageId, projectId, ownerUserId);
 }
 
-export async function GET() {
+async function __teamRouteGET() {
   try {
     const db = getDb();
     // 项目总成本以 usage ledger 为准（覆盖图片/视频/脚本/TTS 的核心模型用量）；
@@ -48,6 +60,17 @@ export async function GET() {
     } catch {
       usageCostByProject = null;
     }
+    const access = requireAccessContext();
+    const visibility = access.kind === 'local'
+      ? { sql: '', params: [] }
+      : {
+          sql: `WHERE EXISTS (
+            SELECT 1 FROM team_resource_scopes scope
+            WHERE scope.resourceType = 'project' AND scope.resourceId = p.id
+              AND scope.deletedAt IS NULL ${access.actor.role === 'admin' ? '' : 'AND scope.ownerUserId = ?'}
+          )`,
+          params: access.actor.role === 'admin' ? [] : [access.actor.userId],
+        };
     const projects = (db.prepare(`
       SELECT p.*,
         -- 任务计数 = 图片任务 + 视频任务，与下方金额的全口径（usage ledger 含视频/LLM/TTS）保持一致
@@ -72,8 +95,9 @@ export async function GET() {
         )
         WHERE rn = 1
       ) thumb ON thumb.projectId = p.id
+      ${visibility.sql}
       ORDER BY COALESCE(p.lastOpenedAt, p.createdAt) DESC
-    `).all() as Array<Record<string, unknown>>).map((project) => {
+    `).all(...visibility.params) as Array<Record<string, unknown>>).map((project) => {
       const thumbnailPath = typeof project.thumbnailPath === 'string' ? project.thumbnailPath : '';
       const legacyCostMicros = Math.round(Number(project.totalCost || 0) * 1_000_000);
       const usageCostMicros = usageCostByProject?.get(String(project.id)) ?? 0;
@@ -93,7 +117,7 @@ export async function GET() {
   }
 }
 
-export async function POST(request: NextRequest) {
+async function __teamRoutePOST(request: NextRequest) {
   try {
     const db = getDb();
     const body = await request.json();
@@ -140,6 +164,8 @@ export async function POST(request: NextRequest) {
     }
 
     const projectId = uuidv4();
+    const access = requireAccessContext();
+    const ownerUserId = access.resolveOwner(body.ownerUserId);
     const quality = body.quality || 'medium';
     const timeoutMs = body.timeoutMs || 600000;
     const maxAttempts = body.maxAttempts || 2;
@@ -173,12 +199,13 @@ export async function POST(request: NextRequest) {
       `).run(projectId, baseName, '', identity.productCode, '', body.providerId, model, '', '', resolvedSize, quality, concurrency, maxAttempts, 'draft', 'none', timeoutMs, 'complex_product',
         scenePrompt || defaultScenePrompt, syncShotPromptFromScene(scenePrompt || defaultScenePrompt, shotPrompt || defaultShotPrompt),
         identity.storeCode, identity.productSubmodel, identity.productionType, identity.editorName, namingDate);
+      access.registerRootScope({ resourceType: 'project', resourceId: projectId, ownerUserId, visibility: 'private' });
 
       if (hasFullCreation) {
-        bindProjectImage(db, sceneSeedImageId, projectId, 'input');
+        bindProjectImage(db, sceneSeedImageId, projectId, 'input', access, ownerUserId);
 
         for (const imgId of shotImageIds) {
-          bindProjectImage(db, imgId, projectId, 'input');
+          bindProjectImage(db, imgId, projectId, 'input', access, ownerUserId);
         }
 
         // Create scene generation jobs：同一请求写同一 createdAt、按提交顺序写 creationIndex。
@@ -188,19 +215,42 @@ export async function POST(request: NextRequest) {
           VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none', ?, ?)
         `);
         for (let g = 0; g < genCount; g++) {
-          insertJob.run(uuidv4(), projectId, sceneSeedImageId, body.providerId, model, scenePrompt, resolvedSize, quality, maxAttempts, batchCreatedAt, g);
+          const jobId = uuidv4();
+          insertJob.run(jobId, projectId, sceneSeedImageId, body.providerId, model, scenePrompt, resolvedSize, quality, maxAttempts, batchCreatedAt, g);
+          access.registerInheritedScope({
+            resourceType: 'job', resourceId: jobId,
+            parent: { resourceType: 'project', resourceId: projectId },
+          });
+          access.registerTaskPrincipal({
+            module: 'image', taskId: jobId,
+            scope: { resourceType: 'project', resourceId: projectId },
+            creationSnapshot: { inputImageId: sceneSeedImageId, model, creationIndex: g },
+          });
         }
 
         // Create draft ShotSet
         const setId = uuidv4();
         db.prepare(`INSERT INTO shot_sets (id, projectId, name, productCode, category) VALUES (?, ?, ?, ?, '')`).run(setId, projectId, baseName, identity.productCode);
+        access.registerInheritedScope({
+          resourceType: 'shot_set', resourceId: setId,
+          parent: { resourceType: 'project', resourceId: projectId },
+        });
         const insertShot = db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourceImageId) VALUES (?, ?, ?, ?)`);
-        shotImageIds.forEach((imgId, i) => insertShot.run(uuidv4(), setId, i + 1, imgId));
+        shotImageIds.forEach((imgId, i) => {
+          const shotId = uuidv4();
+          insertShot.run(shotId, setId, i + 1, imgId);
+          access.registerInheritedScope({
+            resourceType: 'shot', resourceId: shotId,
+            parent: { resourceType: 'shot_set', resourceId: setId },
+          });
+        });
       }
-    })();
+    }).immediate();
 
     return NextResponse.json({ id: projectId, workflowType: 'complex_product', name: baseName });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/projects', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/projects', 'POST', __teamRoutePOST);

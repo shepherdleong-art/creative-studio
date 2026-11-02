@@ -4,8 +4,10 @@ import { mediaResponse, resolveFinalEditMedia } from '@/lib/final-edit/media-res
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { dataRoot } from '@/lib/data-root';
 import { ensureBrowserPreview } from '@/lib/video-browser-preview';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(
+
+async function __teamRouteGET(
   request: Request,
   { params }: { params: Promise<{ id: string; shotSetId: string; assetId: string }> },
 ) {
@@ -27,3 +29,4 @@ export async function GET(
     return finalEditErrorResponse(error);
   }
 }
+export const GET = withTeamRoute('/api/projects/[id]/final-edit/shot-sets/[shotSetId]/external-assets/[assetId]/media', 'GET', __teamRouteGET);

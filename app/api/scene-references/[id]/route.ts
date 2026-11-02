@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function PATCH(
+
+async function __teamRoutePATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -29,7 +31,7 @@ export async function PATCH(
   }
 }
 
-export async function DELETE(
+async function __teamRouteDELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -42,3 +44,5 @@ export async function DELETE(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const PATCH = withTeamRoute('/api/scene-references/[id]', 'PATCH', __teamRoutePATCH);
+export const DELETE = withTeamRoute('/api/scene-references/[id]', 'DELETE', __teamRouteDELETE);

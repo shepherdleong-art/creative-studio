@@ -10,12 +10,14 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 冻结输入、执行幂等的全批联合分配，并把每条候选接入同一持久调度器。 */
-export async function PUT(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRoutePUT(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -72,3 +74,4 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
     return batchRouteErrorResponse(error, 'batch_start_failed', '批次启动失败');
   }
 }
+export const PUT = withTeamRoute('/api/batch-production/batches/[id]/start', 'PUT', __teamRoutePUT);

@@ -5,11 +5,13 @@ import { CanvasError } from '@/lib/creative-canvas/errors';
 import { canvasStorageRoot, readCanvasAsset, readCanvasAssetPreview, requireCanvasAsset } from '@/lib/creative-canvas/assets';
 import { canvasAssetDownloadFilename, canvasAttachmentHeader } from '@/lib/creative-canvas/asset-naming';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
 /** 读取素材内容：经过所属画布与文件边界检查，视频支持 Range 按需加载。 */
-export async function GET(
+async function __teamRouteGET(
   request: Request,
   { params }: { params: Promise<{ assetId: string }> },
 ) {
@@ -42,3 +44,4 @@ export async function GET(
     return canvasJsonError(error);
   }
 }
+export const GET = withTeamRoute('/api/canvas/assets/[assetId]', 'GET', __teamRouteGET);

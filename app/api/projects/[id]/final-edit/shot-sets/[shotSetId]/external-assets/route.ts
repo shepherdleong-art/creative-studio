@@ -2,10 +2,12 @@ import { NextResponse } from 'next/server';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { importShotSetExternalAssetsFromFormData } from '@/lib/final-edit/material-import-http';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
-export async function GET(
+async function __teamRouteGET(
   _request: Request,
   { params }: { params: Promise<{ id: string; shotSetId: string }> },
 ) {
@@ -17,7 +19,7 @@ export async function GET(
   }
 }
 
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string; shotSetId: string }> },
 ) {
@@ -33,3 +35,5 @@ export async function POST(
     return finalEditErrorResponse(error);
   }
 }
+export const GET = withTeamRoute('/api/projects/[id]/final-edit/shot-sets/[shotSetId]/external-assets', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/projects/[id]/final-edit/shot-sets/[shotSetId]/external-assets', 'POST', __teamRoutePOST);

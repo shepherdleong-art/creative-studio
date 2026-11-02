@@ -15,6 +15,8 @@ import {
   canvasJsonError,
   readCanvasJson,
 } from '@/lib/creative-canvas/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
@@ -54,7 +56,7 @@ function canvasView(canvasId: string) {
   };
 }
 
-export async function GET(
+async function __teamRouteGET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -71,7 +73,7 @@ export async function GET(
  * 一个端点覆盖三类互斥写入：图定义（带期望修订号）、名称、视口。
  * 运行投影（currentAssetId / activeTaskId）不接受客户端写入——图里出现这些字段会被解析层拒绝。
  */
-export async function PATCH(
+async function __teamRoutePATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -117,3 +119,5 @@ export async function PATCH(
     return canvasJsonError(error);
   }
 }
+export const GET = withTeamRoute('/api/canvas/[id]', 'GET', __teamRouteGET);
+export const PATCH = withTeamRoute('/api/canvas/[id]', 'PATCH', __teamRoutePATCH);

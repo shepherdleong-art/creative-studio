@@ -11,6 +11,11 @@ export function ensureBundledViralPresets(db: Database.Database, root = dataRoot
   const existing = pending.get(db);
   if (existing) return existing;
   const run = async () => {
+    if (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server') {
+      // 公共 preset 只能由首管理员初始化流程以明确管理员上下文发布。
+      return;
+    }
+    if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'script_studio_viral_tpl_libraries'`).get()) return;
     if (db.prepare('SELECT 1 FROM script_studio_viral_tpl_libraries WHERE currentRevisionId IS NOT NULL').get()) return;
     const file = path.join(root, 'bundled-presets', 'viral-templates.xlsx');
     if (!fs.existsSync(file)) return;

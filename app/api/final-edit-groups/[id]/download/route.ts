@@ -5,10 +5,12 @@ import { dataRoot } from '@/lib/data-root';
 import { buildGenericZipStream, type ZipImageEntry } from '@/lib/zip-download';
 import { assertNoStorageSymlink } from '@/lib/final-edit/storage-path';
 import { getCurrentExportIdentity, listExportIdentities } from '@/lib/project-export-identity';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function __teamRouteGET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const db = getDb();
@@ -43,3 +45,4 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     return new NextResponse(buildGenericZipStream(entries), { headers: { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(`${baseName || '成片组'}-成片组.zip`)}`, 'Cache-Control': 'no-store' } });
   } catch (error) { return NextResponse.json({ error: 'zip_failed', message: error instanceof Error ? error.message : String(error) }, { status: 500 }); }
 }
+export const GET = withTeamRoute('/api/final-edit-groups/[id]/download', 'GET', __teamRouteGET);

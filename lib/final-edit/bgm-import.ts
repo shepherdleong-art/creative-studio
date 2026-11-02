@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import { probeDurationSec } from '../ffmpeg.ts';
 import {
   FINAL_EDIT_BGM_EXTENSIONS,
@@ -168,7 +169,9 @@ async function importSingleFile(
     WHERE fileFingerprint = ? AND status = 'ready'
   `).get(fingerprint) as { id: string; relativePath: string; fileFingerprint: string; durationUs: number } | undefined;
 
+  const access = requireAccessContext();
   if (existing) {
+    if (access.kind === 'team') access.assertAccess('bgm', existing.id, 'read');
     const existingPath = path.resolve(storageRoot, existing.relativePath);
     if (fs.existsSync(existingPath)) {
       return {
@@ -203,23 +206,32 @@ async function importSingleFile(
   const id = existing?.id || crypto.randomUUID();
 
   try {
-    db.prepare(`INSERT INTO final_edit_bgm_tracks
-      (id, relativePath, fileFingerprint, durationUs, format, status, errorMessage, scannedAt)
-      VALUES (?, ?, ?, ?, ?, 'ready', NULL, ?)
-      ON CONFLICT(fileFingerprint) DO UPDATE SET
-        relativePath=excluded.relativePath,
-        durationUs=excluded.durationUs,
-        format=excluded.format,
-        status='ready',
-        errorMessage=NULL,
-        scannedAt=excluded.scannedAt`).run(
-      id,
-      relativePath,
-      fingerprint,
-      durationUs,
-      format,
-      new Date().toISOString(),
-    );
+    const publish = db.transaction(() => {
+      db.prepare(`INSERT INTO final_edit_bgm_tracks
+        (id, relativePath, fileFingerprint, durationUs, format, status, errorMessage, scannedAt)
+        VALUES (?, ?, ?, ?, ?, 'ready', NULL, ?)
+        ON CONFLICT(fileFingerprint) DO UPDATE SET
+          relativePath=excluded.relativePath,
+          durationUs=excluded.durationUs,
+          format=excluded.format,
+          status='ready',
+          errorMessage=NULL,
+          scannedAt=excluded.scannedAt`).run(
+        id,
+        relativePath,
+        fingerprint,
+        durationUs,
+        format,
+        new Date().toISOString(),
+      );
+      if (!existing) {
+        access.registerRootScope({
+          resourceType: 'bgm', resourceId: id,
+          ownerUserId: access.actor.userId, visibility: 'private',
+        });
+      }
+    });
+    publish.immediate();
 
     const row = db.prepare(`
       SELECT id, relativePath, durationUs

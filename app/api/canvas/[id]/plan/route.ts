@@ -7,6 +7,8 @@ import {
   canvasJsonError,
   readCanvasJson,
 } from '@/lib/creative-canvas/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
@@ -24,7 +26,7 @@ function planRequestFromBody(canvasId: string, body: Record<string, unknown>) {
 }
 
 /** 单点／分支计划预检：只读当前图与任务状态，不产生任何写入。 */
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -43,3 +45,4 @@ export async function POST(
     return canvasJsonError(error);
   }
 }
+export const POST = withTeamRoute('/api/canvas/[id]/plan', 'POST', __teamRoutePOST);

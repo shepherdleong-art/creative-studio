@@ -251,7 +251,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     (async () => {
       try {
         const [provRes, tmplRes] = await Promise.all([
-          fetch('/api/providers/video'), fetch('/api/video-prompt-templates'),
+          fetch('/api/team/models?kind=video'), fetch('/api/video-prompt-templates'),
         ]);
         const provData = await provRes.json().catch(() => []);
         const tmplData = await tmplRes.json().catch(() => []);

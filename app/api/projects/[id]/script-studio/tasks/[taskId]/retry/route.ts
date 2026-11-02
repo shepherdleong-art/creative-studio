@@ -7,11 +7,13 @@ import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
 import { templatePlanFingerprint } from '@/lib/script-studio/template-rewrite';
 import type { FrozenViralTemplateSpec } from '@/lib/script-studio/types';
 import { createHash } from 'node:crypto';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function POST(
+async function __teamRoutePOST(
   _request: Request,
   { params }: { params: Promise<{ id: string; taskId: string }> },
 ) {
@@ -92,3 +94,4 @@ export async function POST(
     return NextResponse.json(result.body, { status: result.status });
   }
 }
+export const POST = withTeamRoute('/api/projects/[id]/script-studio/tasks/[taskId]/retry', 'POST', __teamRoutePOST);

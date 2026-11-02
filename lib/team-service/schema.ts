@@ -54,6 +54,64 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
       CREATE INDEX idx_team_sessions_expiry ON team_sessions(absoluteExpiresAt);
     `,
   },
+  {
+    version: 3,
+    sql: `
+      CREATE TABLE team_resource_scopes (
+        resourceType TEXT NOT NULL,
+        resourceId TEXT NOT NULL,
+        ownerUserId TEXT NOT NULL,
+        visibility TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private', 'public')),
+        parentType TEXT,
+        parentId TEXT,
+        rootType TEXT NOT NULL,
+        rootId TEXT NOT NULL,
+        deletedAt TEXT,
+        deletedBy TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        PRIMARY KEY (resourceType, resourceId),
+        FOREIGN KEY (ownerUserId) REFERENCES team_users(id),
+        FOREIGN KEY (deletedBy) REFERENCES team_users(id),
+        FOREIGN KEY (parentType, parentId) REFERENCES team_resource_scopes(resourceType, resourceId),
+        FOREIGN KEY (rootType, rootId) REFERENCES team_resource_scopes(resourceType, resourceId),
+        CHECK ((parentType IS NULL) = (parentId IS NULL))
+      );
+      CREATE INDEX idx_team_scopes_owner ON team_resource_scopes(ownerUserId, resourceType, deletedAt);
+      CREATE INDEX idx_team_scopes_parent ON team_resource_scopes(parentType, parentId);
+      CREATE INDEX idx_team_scopes_root ON team_resource_scopes(rootType, rootId);
+
+      CREATE TABLE team_task_principals (
+        module TEXT NOT NULL,
+        taskId TEXT NOT NULL,
+        actorUserId TEXT NOT NULL,
+        scopeType TEXT NOT NULL,
+        scopeId TEXT NOT NULL,
+        creationSnapshot TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        PRIMARY KEY (module, taskId),
+        FOREIGN KEY (actorUserId) REFERENCES team_users(id),
+        FOREIGN KEY (scopeType, scopeId) REFERENCES team_resource_scopes(resourceType, resourceId)
+      );
+      CREATE INDEX idx_team_task_actor ON team_task_principals(actorUserId, createdAt);
+      CREATE INDEX idx_team_task_scope ON team_task_principals(scopeType, scopeId);
+    `,
+  },
+  {
+    version: 4,
+    sql: `
+      CREATE TABLE team_font_favorites (
+        userId TEXT NOT NULL,
+        identity TEXT NOT NULL,
+        family TEXT NOT NULL,
+        favorite INTEGER NOT NULL CHECK(favorite IN (0, 1)),
+        updatedAt INTEGER NOT NULL,
+        PRIMARY KEY (userId, identity),
+        FOREIGN KEY (userId) REFERENCES team_users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_team_font_favorites_user ON team_font_favorites(userId, favorite, updatedAt);
+    `,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;
@@ -75,6 +133,11 @@ function validateTeamServiceSchema(db: Database.Database): void {
   if (employeeId?.type.toUpperCase() !== 'TEXT' || employeeId.notnull !== 1
     || tokenHash?.type.toUpperCase() !== 'TEXT' || tokenHash.notnull !== 1) {
     throw new Error('team-service 身份结构检查未通过');
+  }
+  for (const table of ['team_resource_scopes', 'team_task_principals', 'team_font_favorites']) {
+    if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table)) {
+      throw new Error(`team-service 缺少 ${table} 结构`);
+    }
   }
 }
 

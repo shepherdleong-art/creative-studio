@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { createShotSet } from '@/lib/shot-set-service';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(
+
+async function __teamRouteGET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -24,7 +26,7 @@ export async function GET(
   }
 }
 
-export async function POST(
+async function __teamRoutePOST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -48,3 +50,5 @@ export async function POST(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/projects/[id]/shot-sets', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/projects/[id]/shot-sets', 'POST', __teamRoutePOST);

@@ -3,6 +3,35 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
+import module from 'node:module';
+import { pathToFileURL } from 'node:url';
+
+const repoRoot = path.resolve(import.meta.dirname, '..');
+const extensions = ['.ts', '.tsx', '/index.ts', '/index.tsx'];
+interface ResolvedModule { url: string; format?: string | null; shortCircuit?: boolean }
+type NextResolve = (specifier: string, context?: unknown) => ResolvedModule;
+const { registerHooks } = module as unknown as {
+  registerHooks: (hooks: { resolve: (specifier: string, context: unknown, nextResolve: NextResolve) => ResolvedModule }) => void;
+};
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier.startsWith('@/')) {
+      const base = path.join(repoRoot, specifier.slice(2));
+      const candidate = fs.existsSync(base) && fs.statSync(base).isFile()
+        ? base : extensions.map((extension) => `${base}${extension}`).find((file) => fs.existsSync(file));
+      if (candidate) return nextResolve(pathToFileURL(candidate).href, context);
+    }
+    try {
+      return nextResolve(specifier, context);
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ERR_MODULE_NOT_FOUND') {
+        if (specifier.startsWith('.')) return nextResolve(`${specifier}.ts`, context);
+        if (!specifier.startsWith('/')) return nextResolve(`${specifier}.js`, context);
+      }
+      throw error;
+    }
+  },
+});
 
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-team-auth-route-'));
 const previousEnv = { ...process.env };

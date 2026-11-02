@@ -1,7 +1,9 @@
 import { parseUsageSnapshot } from './usage-snapshot.ts';
 import { isReassembledReworkJob, protectReassembledQueue, REASSEMBLED_SUBMIT_UNCERTAIN } from './reassembled-shot-guard.ts';
 import { calculateUsageCostMicros } from './usage-pricing.ts';
-import { getDb } from './db';
+import { getDb } from './db.ts';
+import { runWithAcceptedTaskAccess } from './team-service/accepted-access.ts';
+import { requireAccessContext } from './media-core/access-context.ts';
 import { editImageArk } from './providers/ark-images';
 import { editImage as editImageOpenAI } from './providers/openai-compatible';
 import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json';
@@ -186,6 +188,13 @@ export async function runQueue(options: QueueOptions): Promise<void> {
  * Run a single job with atomic claiming, abort support, and post-request validation.
  */
 async function runJob(
+  job: JobRecord,
+  options: { timeoutMs: number; maxAttempts: number; abort: AbortSignal }
+): Promise<void> {
+  return runWithAcceptedTaskAccess(getDb(), 'image', job.id, () => runAuthorizedJob(job, options));
+}
+
+async function runAuthorizedJob(
   job: JobRecord,
   options: { timeoutMs: number; maxAttempts: number; abort: AbortSignal }
 ): Promise<void> {
@@ -768,10 +777,18 @@ async function runJob(
 
     // Save output image asset (tag with usage so tabs can filter)
     const outputImageId = uuidv4();
-    db.prepare(
-      `INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage, width, height, createdAt)
-       VALUES (?, ?, 'output', ?, ?, ?, ?, ?, ?, datetime('now'))`
-    ).run(outputImageId, job.projectId, outputFilename, outputPath, outputMimeType, outputUsage, normalizedImage.width, normalizedImage.height);
+    const access = requireAccessContext();
+    const publishOutput = db.transaction(() => {
+      db.prepare(
+        `INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage, width, height, createdAt)
+         VALUES (?, ?, 'output', ?, ?, ?, ?, ?, ?, datetime('now'))`
+      ).run(outputImageId, job.projectId, outputFilename, outputPath, outputMimeType, outputUsage, normalizedImage.width, normalizedImage.height);
+      access.registerInheritedScope({
+        resourceType: 'image', resourceId: outputImageId,
+        parent: { resourceType: 'project', resourceId: job.projectId },
+      });
+    });
+    publishOutput.immediate();
 
     const finishedAt = new Date().toISOString();
     const frozenPrice = parseUsageSnapshot(usageSnapshot);

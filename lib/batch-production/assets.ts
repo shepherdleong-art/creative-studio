@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 
 /**
  * 素材来源类型的唯一权威定义。module4 是模块 4 产物来源,
@@ -85,30 +86,40 @@ function nowIso(now?: () => Date): string {
  * 来源覆盖首个来源的主位置。
  */
 export function createAsset(db: Database.Database, input: CreateBatchAssetInput): string {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', input.projectId, 'write');
   const createdAt = nowIso(input.now);
   const existing = db.prepare(`
     SELECT id FROM batch_assets
     WHERE projectId = ? AND contentFingerprint = ?
   `).get(input.projectId, input.contentFingerprint) as { id: string } | undefined;
   if (existing) {
+    if (access.kind === 'team') access.assertAccess('batch_asset', existing.id, 'read');
     return existing.id;
   }
   const id = randomUUID();
-  db.prepare(`
-    INSERT INTO batch_assets
-      (id, projectId, sourceKind, locationJson, contentFingerprint, mediaKind, mediaJson, status, currentAnalysisId, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'online', NULL, ?, ?)
-  `).run(
-    id,
-    input.projectId,
-    recordSourceKindOf(input.sourceKind),
-    JSON.stringify(input.locationJson),
-    input.contentFingerprint,
-    input.mediaKind,
-    JSON.stringify(input.mediaJson ?? {}),
-    createdAt,
-    createdAt,
-  );
+  const create = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO batch_assets
+        (id, projectId, sourceKind, locationJson, contentFingerprint, mediaKind, mediaJson, status, currentAnalysisId, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'online', NULL, ?, ?)
+    `).run(
+      id,
+      input.projectId,
+      recordSourceKindOf(input.sourceKind),
+      JSON.stringify(input.locationJson),
+      input.contentFingerprint,
+      input.mediaKind,
+      JSON.stringify(input.mediaJson ?? {}),
+      createdAt,
+      createdAt,
+    );
+    access.registerInheritedScope({
+      resourceType: 'batch_asset', resourceId: id,
+      parent: { resourceType: 'project', resourceId: input.projectId },
+    });
+  });
+  create.immediate();
   return id;
 }
 
@@ -116,6 +127,8 @@ export function getAsset(db: Database.Database, projectId: string, assetId: stri
   locationJson: unknown;
   mediaJson: unknown;
 }) | undefined {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
   const row = db.prepare(`
     SELECT * FROM batch_assets WHERE id = ? AND projectId = ?
   `).get(assetId, projectId) as BatchAssetRow | undefined;
@@ -204,22 +217,31 @@ export function syncAssetStatusFromSources(
  * 创建新分析不会自动改写素材的当前分析指向。
  */
 export function createAnalysisVersion(db: Database.Database, input: CreateBatchAnalysisInput): string {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('batch_asset', input.assetId, 'write');
   const createdAt = nowIso(input.now);
   const id = randomUUID();
-  db.prepare(`
-    INSERT INTO batch_asset_analysis
-      (id, assetId, analyzerVersion, providerId, model, analysisJson, status, analyzedAt, createdAt)
-    VALUES (?, ?, ?, ?, ?, ?, 'ready', ?, ?)
-  `).run(
-    id,
-    input.assetId,
-    input.analyzerVersion,
-    input.providerId,
-    input.model,
-    JSON.stringify(input.analysisJson ?? {}),
-    createdAt,
-    createdAt,
-  );
+  const create = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO batch_asset_analysis
+        (id, assetId, analyzerVersion, providerId, model, analysisJson, status, analyzedAt, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, 'ready', ?, ?)
+    `).run(
+      id,
+      input.assetId,
+      input.analyzerVersion,
+      input.providerId,
+      input.model,
+      JSON.stringify(input.analysisJson ?? {}),
+      createdAt,
+      createdAt,
+    );
+    access.registerInheritedScope({
+      resourceType: 'batch_analysis', resourceId: id,
+      parent: { resourceType: 'batch_asset', resourceId: input.assetId },
+    });
+  });
+  create.immediate();
   return id;
 }
 

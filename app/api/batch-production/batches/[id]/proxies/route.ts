@@ -10,6 +10,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -24,7 +26,7 @@ interface PoolAssetRow {
  * 代理请求一律不带色彩快照(共识 13):LUT 是预览层实时效果,固定写入
  * LUT 关闭的默认快照;批次归属校验由 requestProxy 完成。
  */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id: batchId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -97,3 +99,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return batchRouteErrorResponse(error, 'proxy_request_failed', '代理请求失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/proxies', 'POST', __teamRoutePOST);

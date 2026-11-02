@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import { BatchDomainError } from './errors.ts';
 import type { BatchProductionStatus } from './versions.ts';
 
@@ -147,6 +148,8 @@ export function createBatchTask(
     now?: () => Date;
   }),
 ): string {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
   const createdAt = nowIso(input.now);
   const batchId = input.batchId ?? null;
   return db.transaction(() => {
@@ -350,8 +353,19 @@ export function createBatchTask(
       createdAt,
       createdAt,
     );
+    access.registerInheritedScope({
+      resourceType: 'batch_task', resourceId: id,
+      parent: batchId
+        ? { resourceType: 'batch', resourceId: batchId }
+        : { resourceType: 'project', resourceId: projectId },
+    });
+    access.registerTaskPrincipal({
+      module: 'batch', taskId: id,
+      scope: { resourceType: 'project', resourceId: projectId },
+      creationSnapshot: { batchId, workType: input.workType, targetKind: input.targetKind, targetId: input.targetId, requestKey: input.requestKey ?? null },
+    });
     return id;
-  })();
+  }).immediate();
 }
 
 export function getBatchTask(
@@ -359,6 +373,8 @@ export function getBatchTask(
   projectId: string,
   taskId: string,
 ): (BatchTaskRow & { progressJson: unknown }) | undefined {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
   const row = db.prepare(`
     SELECT * FROM batch_tasks WHERE id = ? AND projectId = ?
   `).get(taskId, projectId) as BatchTaskRow | undefined;

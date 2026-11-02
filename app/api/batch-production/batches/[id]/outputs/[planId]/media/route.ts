@@ -10,6 +10,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -70,7 +72,7 @@ function serveMedia(request: NextRequest, filePath: string, contentType: string,
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export async function GET(
+async function __teamRouteGET(
   request: NextRequest,
   context: { params: Promise<{ id: string; planId: string }> },
 ) {
@@ -142,3 +144,4 @@ export async function GET(
     return batchRouteErrorResponse(error, 'batch_output_media_failed', '成片媒体读取失败');
   }
 }
+export const GET = withTeamRoute('/api/batch-production/batches/[id]/outputs/[planId]/media', 'GET', __teamRouteGET);

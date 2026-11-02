@@ -2,11 +2,13 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertScriptStudioApiReady, errorResponse } from '@/lib/script-studio/http';
 import { listProjectScripts } from '@/lib/script-studio/scripts';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET(
+async function __teamRouteGET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -25,3 +27,4 @@ export async function GET(
     return NextResponse.json(result.body, { status: result.status });
   }
 }
+export const GET = withTeamRoute('/api/projects/[id]/script-studio/scripts', 'GET', __teamRouteGET);

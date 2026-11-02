@@ -6,11 +6,13 @@ import {
   canvasJsonError,
   readCanvasJson,
 } from '@/lib/creative-canvas/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
 /** 完整节点复制：接收已固定的复制快照，服务端重新分配身份并原子创建副本与连线。 */
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -36,3 +38,4 @@ export async function POST(
     return canvasJsonError(error);
   }
 }
+export const POST = withTeamRoute('/api/canvas/[id]/copies', 'POST', __teamRoutePOST);

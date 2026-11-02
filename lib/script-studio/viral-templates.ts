@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import { ScriptStudioError } from './errors.ts';
 import { assertXlsxBuffer } from './catalog-import/index.ts';
 import { loadWorkbook, sheetToWorkbookSheet } from './catalog-import/workbook.ts';
@@ -66,15 +67,27 @@ function nowIso(now?: () => Date): string {
 }
 
 export function getOrCreateViralTemplateLibrary(db: Database.Database, now?: () => Date): ViralTemplateLibraryRecord {
+  const access = requireAccessContext();
   const existing = db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries ORDER BY createdAt LIMIT 1`)
     .get() as ViralTemplateLibraryRecord | undefined;
-  if (existing) return existing;
+  if (existing) {
+    if (access.kind === 'team') access.assertAccess('viral_template_library', existing.id, 'read');
+    return existing;
+  }
+  if (access.kind === 'team' && access.actor.role !== 'admin') throw new Error('只有管理员可以发布爆文模板库');
   const id = randomUUID();
   const ts = nowIso(now);
-  db.prepare(`
-    INSERT INTO script_studio_viral_tpl_libraries (id, currentRevisionId, createdAt, updatedAt)
-    VALUES (?, NULL, ?, ?)
-  `).run(id, ts, ts);
+  const create = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO script_studio_viral_tpl_libraries (id, currentRevisionId, createdAt, updatedAt)
+      VALUES (?, NULL, ?, ?)
+    `).run(id, ts, ts);
+    access.registerRootScope({
+      resourceType: 'viral_template_library', resourceId: id,
+      ownerUserId: access.actor.userId, visibility: 'public',
+    });
+  });
+  create.immediate();
   return db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries WHERE id = ?`).get(id) as ViralTemplateLibraryRecord;
 }
 
@@ -108,6 +121,8 @@ export async function importViralTemplateLibrary(
   const parsed = parseViralTemplateWorkbook(sheets);
   if (!parsed.report.canActivate) throw new ScriptStudioError('invalid_input', parsed.report.issues.map(issue => issue.message).join('；') || '没有可导入的模板');
   const library = getOrCreateViralTemplateLibrary(db, now);
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('viral_template_library', library.id, 'write');
   const sourceSha256 = createHash('sha256').update(buffer).digest('hex');
 
   const existing = db.prepare(`
@@ -136,6 +151,11 @@ export async function importViralTemplateLibrary(
         (id, libraryId, revisionNumber, sourceFilename, sourceSha256, importReportJson, createdAt)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(revisionId, library.id, Number(numberRow.next), sourceFilename, sourceSha256, JSON.stringify(parsed.report), ts);
+    access.registerInheritedScope({
+      resourceType: 'viral_template_revision', resourceId: revisionId,
+      parent: { resourceType: 'viral_template_library', resourceId: library.id },
+      visibility: 'public',
+    });
     const insertEntry = db.prepare(`
       INSERT INTO script_studio_viral_tpl_entries
         (id, revisionId, sourceTemplateId, category, subCategory, name, title, refText,
@@ -144,13 +164,19 @@ export async function importViralTemplateLibrary(
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'import', ?)
     `);
     for (const entry of parsed.entries) {
+      const entryId = randomUUID();
       insertEntry.run(
-        randomUUID(), revisionId, entry.sourceTemplateId, entry.category, entry.subCategory,
+        entryId, revisionId, entry.sourceTemplateId, entry.category, entry.subCategory,
         entry.name, entry.title, entry.refText, entry.structureRaw, entry.structureSummary,
         entry.structure, entry.structureOrigin, JSON.stringify(entry.rawColumns),
         entry.sourceSheet, entry.sourceRow, sourceSha256, entry.contentHash,
         entry.status, entry.statusReason, ts,
       );
+      access.registerInheritedScope({
+        resourceType: 'viral_template_entry', resourceId: entryId,
+        parent: { resourceType: 'viral_template_revision', resourceId: revisionId },
+        visibility: 'public',
+      });
     }
     db.prepare(`
       UPDATE script_studio_viral_tpl_libraries SET currentRevisionId = ?, updatedAt = ? WHERE id = ?
@@ -198,6 +224,8 @@ export function setViralTemplateCurrentRevision(
   now?: () => Date,
 ): { libraryId: string; currentRevisionId: string } {
   const library = getOrCreateViralTemplateLibrary(db, now);
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('viral_template_library', library.id, 'write');
   const revision = db.prepare(`
     SELECT id FROM script_studio_viral_tpl_revisions WHERE id = ? AND libraryId = ?
   `).get(revisionId, library.id) as { id: string } | undefined;
@@ -231,11 +259,16 @@ export function listViralTemplateEntries(
     params.push(like, like, like, like, like, like);
   }
   const limit = Math.max(1, Math.min(500, Math.floor(options.limit ?? 200) || 200));
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT *, lower(COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '')) AS scriptCode FROM script_studio_viral_tpl_entries
     WHERE ${conditions.join(' AND ')}
     ORDER BY category, subCategory, sourceRow LIMIT ?
   `).all(...params, limit) as ViralTemplateEntryRecord[];
+  const access = requireAccessContext();
+  if (access.kind === 'team') {
+    for (const row of rows) access.assertAccess('viral_template_entry', row.id, 'read');
+  }
+  return rows;
 }
 
 export function getViralTemplateEntriesByIds(db: Database.Database, entryIds: string[]): ViralTemplateEntryRecord[] {
@@ -244,6 +277,10 @@ export function getViralTemplateEntriesByIds(db: Database.Database, entryIds: st
   const rows = db.prepare(`
     SELECT *, lower(COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '')) AS scriptCode FROM script_studio_viral_tpl_entries WHERE id IN (${placeholders})
   `).all(...entryIds) as ViralTemplateEntryRecord[];
+  const access = requireAccessContext();
+  if (access.kind === 'team') {
+    for (const row of rows) access.assertAccess('viral_template_entry', row.id, 'read');
+  }
   const byId = new Map(rows.map((row) => [row.id, row]));
   // 按调用方给定的选择顺序返回（选择顺序是任务身份的一部分）。
   return entryIds.map((id) => byId.get(id)).filter((row): row is ViralTemplateEntryRecord => Boolean(row));
@@ -256,6 +293,8 @@ export function updateViralTemplateEntryStatus(
   status: ViralTemplateStatus,
   reason: string,
 ): ViralTemplateEntryRecord {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('viral_template_entry', entryId, 'write');
   const entry = db.prepare(`SELECT *, lower(COALESCE(json_extract(rawColumnsJson, '$.scriptCode'), '')) AS scriptCode FROM script_studio_viral_tpl_entries WHERE id = ?`).get(entryId) as ViralTemplateEntryRecord | undefined;
   if (!entry) throw new ScriptStudioError('not_found', '模板条目不存在');
   if (!['usable', 'unusable', 'review'].includes(status)) {

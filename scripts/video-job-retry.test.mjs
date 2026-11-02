@@ -24,6 +24,8 @@ const deps = {
     runVideoQueue: async () => { queueStarts += 1; },
     DEFAULT_VIDEO_CONCURRENCY: 10, DEFAULT_VIDEO_TIMEOUT_MS: 60_000,
   },
+  // local 部署下 wrapper 原样调用 handler；本测试不进入 server 身份路径。
+  '@/lib/team-service/route-wrapper': { withTeamRoute: (_route, _method, handler) => handler },
 };
 const source = fs.readFileSync('app/api/video-jobs/[id]/retry/route.ts', 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;

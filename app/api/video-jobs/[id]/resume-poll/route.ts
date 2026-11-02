@@ -12,8 +12,10 @@ import { recordVideoJobUsage } from '@/lib/usage-async-jobs';
 import fs from 'fs';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(
+
+async function __teamRoutePOST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -187,3 +189,4 @@ export async function POST(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const POST = withTeamRoute('/api/video-jobs/[id]/resume-poll', 'POST', __teamRoutePOST);

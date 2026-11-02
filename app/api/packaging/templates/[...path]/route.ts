@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { NextResponse } from 'next/server';
 import { resolvePackagingDir } from '@/lib/media-core/packaging-runtime';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 const MIME_BY_EXTENSION: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -32,7 +34,7 @@ function resolveWithin(root: string, segments: string[]): string | null {
   return resolved;
 }
 
-export async function GET(_request: Request, { params }: { params: Promise<{ path: string[] }> }) {
+async function __teamRouteGET(_request: Request, { params }: { params: Promise<{ path: string[] }> }) {
   const { path: segments } = await params;
   if (!segments?.length || segments.some((segment) => !isSafeSegment(segment))) {
     return NextResponse.json({ error: 'unsafe_path', message: '模板资源路径无效' }, { status: 400 });
@@ -55,3 +57,4 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pat
   const buffer = fs.readFileSync(file);
   return new Response(new Uint8Array(buffer), { headers: { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=300' } });
 }
+export const GET = withTeamRoute('/api/packaging/templates/[...path]', 'GET', __teamRouteGET);

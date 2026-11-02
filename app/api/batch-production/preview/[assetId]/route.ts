@@ -9,6 +9,8 @@ import { projectAssetMimeType } from '@/lib/batch-production/project-asset-media
 import { buildMediaEtag, projectAssetMediaResponse } from '@/lib/batch-production/project-asset-media-response';
 import { ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { BATCH_NO_STORE_HEADERS, batchProjectIdFromRequest } from '../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -33,7 +35,7 @@ function previewMediaEtag(parts: string[], stat: fs.Stats): string {
   return buildMediaEtag([...parts, String(stat.size), String(stat.mtimeMs)]);
 }
 
-export async function GET(request: NextRequest, context: { params: Promise<{ assetId: string }> }) {
+async function __teamRouteGET(request: NextRequest, context: { params: Promise<{ assetId: string }> }) {
   const { assetId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -238,3 +240,4 @@ export async function GET(request: NextRequest, context: { params: Promise<{ ass
     }, { status: 500, headers: BATCH_NO_STORE_HEADERS });
   }
 }
+export const GET = withTeamRoute('/api/batch-production/preview/[assetId]', 'GET', __teamRouteGET);

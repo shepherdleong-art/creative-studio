@@ -8,6 +8,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,7 +19,7 @@ export const dynamic = 'force-dynamic';
  * 任务不在任何批次的 /tasks 列表里,前端引导按钮轮询任务状态走这里;
  * 返回形状与 GET /batches/[id]/tasks 的 tasks[] 一致。
  */
-export async function GET(request: NextRequest, context: { params: Promise<{ taskId: string }> }) {
+async function __teamRouteGET(request: NextRequest, context: { params: Promise<{ taskId: string }> }) {
   const { taskId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -50,3 +52,4 @@ export async function GET(request: NextRequest, context: { params: Promise<{ tas
     return batchRouteErrorResponse(error, 'task_read_failed', '任务读取失败');
   }
 }
+export const GET = withTeamRoute('/api/batch-production/tasks/[taskId]', 'GET', __teamRouteGET);

@@ -7,8 +7,10 @@ import { probeVideoMedia } from '@/lib/ffmpeg';
 import { analyzeVideoWithVision } from '@/lib/final-edit/adapters/video-analysis';
 import { resolveStoragePath } from '@/lib/final-edit/storage-path';
 import { analyzeFinalEditAsset } from '@/lib/final-edit/asset-analysis';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(request: Request, { params }: { params: Promise<{ videoJobId: string }> }) {
+
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ videoJobId: string }> }) {
   try {
     const { videoJobId } = await params;
     const body = await request.json().catch(() => ({})) as { providerId?: string };
@@ -27,3 +29,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ vid
     return NextResponse.json({ success: true, analysis: result.analysis });
   } catch (error) { return NextResponse.json({ error: 'reanalyze_failed', message: error instanceof Error ? error.message : String(error) }, { status: 400 }); }
 }
+export const POST = withTeamRoute('/api/final-edit-assets/[videoJobId]/reanalyze', 'POST', __teamRoutePOST);

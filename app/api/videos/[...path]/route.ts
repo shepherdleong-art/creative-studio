@@ -5,8 +5,10 @@ import { dataRoot } from '@/lib/data-root';
 import { ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { fileResponse } from '@/lib/media-core/file-response';
 import { assertNoStorageSymlink } from '@/lib/media-core/storage-path';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(
+
+async function __teamRouteGET(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
@@ -54,3 +56,4 @@ export async function GET(
 
   return fileResponse(request, served, mimeType);
 }
+export const GET = withTeamRoute('/api/videos/[...path]', 'GET', __teamRouteGET);

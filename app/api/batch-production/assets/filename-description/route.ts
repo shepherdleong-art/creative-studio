@@ -6,11 +6,13 @@ import { batchErrorResponse } from '@/lib/batch-production/http-errors';
 import { writeLog } from '@/lib/logger';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { BATCH_NO_STORE_HEADERS, batchProjectIdFromRequest, batchRouteErrorResponse } from '../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: NextRequest) {
+async function __teamRoutePOST(request: NextRequest) {
   const projectId = batchProjectIdFromRequest(request);
   const body = await request.json().catch(() => null) as { assetIds?: unknown } | null;
   if (!projectId || !Array.isArray(body?.assetIds) || body.assetIds.some((id) => typeof id !== 'string')) {
@@ -46,3 +48,4 @@ export async function POST(request: NextRequest) {
     return batchRouteErrorResponse(error, 'filename_analysis_failed', '文件名描述提取失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/assets/filename-description', 'POST', __teamRoutePOST);

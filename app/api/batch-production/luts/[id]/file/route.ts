@@ -9,6 +9,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,7 +20,7 @@ export const dynamic = 'force-dynamic';
  * 按 lutId + projectId 解析受管路径(拒绝越界/符号链接),返回纯文本内容。
  * 导入侧已验证过 8MB 上限与真实 lut3d 解码,这里不再重复校验。
  */
-export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRouteGET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id: lutId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -55,3 +57,4 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     return batchRouteErrorResponse(error, 'lut_file_failed', 'LUT 文件读取失败');
   }
 }
+export const GET = withTeamRoute('/api/batch-production/luts/[id]/file', 'GET', __teamRouteGET);

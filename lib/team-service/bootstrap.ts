@@ -1,3 +1,4 @@
+import './accepted-access.ts';
 import type Database from 'better-sqlite3';
 import type { SchemaUpgradeDiskSpaceProbe } from '../schema-upgrade/backup.ts';
 import type { SchemaUpgradeGateReadiness } from '../schema-upgrade/gate.ts';

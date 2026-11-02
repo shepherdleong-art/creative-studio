@@ -1,6 +1,7 @@
 import { isReassembledShotSet, REASSEMBLED_REWORK_REQUIRED } from './reassembled-shot-guard.ts';
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
+import { requireAccessContext, type ResourceAccessContext } from './media-core/access-context.ts';
 import {
   FREE_SHOT_SET_NAME,
   isShotSetKind,
@@ -28,12 +29,23 @@ function allImagesBelongToProject(
   return row.cnt === imageIds.length;
 }
 
-function insertShots(db: Database.Database, shotSetId: string, imageIds: string[], startIndex: number): void {
+function insertShots(
+  db: Database.Database,
+  shotSetId: string,
+  imageIds: string[],
+  startIndex: number,
+  access: ResourceAccessContext,
+): void {
   const insert = db.prepare(`
     INSERT INTO shots (id, shotSetId, indexNum, sourceImageId) VALUES (?, ?, ?, ?)
   `);
   imageIds.forEach((imageId, offset) => {
-    insert.run(uuidv4(), shotSetId, startIndex + offset, imageId);
+    const shotId = uuidv4();
+    insert.run(shotId, shotSetId, startIndex + offset, imageId);
+    access.registerInheritedScope({
+      resourceType: 'shot', resourceId: shotId,
+      parent: { resourceType: 'shot_set', resourceId: shotSetId },
+    });
   });
 }
 
@@ -56,6 +68,8 @@ export function createShotSet(
   db: Database.Database,
   input: CreateShotSetInput,
 ): CreateShotSetResult {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', input.projectId, 'write');
   // 非法 kind 必须显式报错,不能静默降级成 storyboard —— 静默降级会让调用方
   // 以为建了自由工位,实际建出一个会出现在第 2 步的普通组。
   let kind: ShotSetKind = 'storyboard';
@@ -80,6 +94,9 @@ export function createShotSet(
   if (!allImagesBelongToProject(db, input.projectId, shotImageIds)) {
     return { ok: false, status: 400, error: '部分图片不存在或不属于当前项目' };
   }
+  if (access.kind === 'team') {
+    for (const imageId of shotImageIds) access.assertAccess('image', imageId, 'read');
+  }
 
   const setId = uuidv4();
   const inserted = db.transaction(() => {
@@ -101,7 +118,11 @@ export function createShotSet(
       // 普通分镜组保持既有的 draft。
       kind === 'free' ? 'approved' : 'draft',
     );
-    insertShots(db, setId, shotImageIds, 1);
+    access.registerInheritedScope({
+      resourceType: 'shot_set', resourceId: setId,
+      parent: { resourceType: 'project', resourceId: input.projectId },
+    });
+    insertShots(db, setId, shotImageIds, 1, access);
     return true;
   }).immediate();
 
@@ -121,6 +142,8 @@ export type FreeShotSetResult = { ok: true; id: string; created: boolean } | Sho
  * 第一次会建一个空的,之后每次都返回同一个。
  */
 export function getOrCreateFreeShotSet(db: Database.Database, projectId: string): FreeShotSetResult {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
   const project = db.prepare(`SELECT id FROM projects WHERE id = ?`).get(projectId);
   if (!project) return { ok: false, status: 404, error: '项目不存在' };
 
@@ -165,6 +188,8 @@ export function appendShotToFreeSet(
   shotSetId: string,
   imageId: unknown,
 ): AppendShotResult {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('shot_set', shotSetId, 'write');
   const set = db.prepare(`SELECT id, projectId, kind FROM shot_sets WHERE id = ?`).get(shotSetId) as
     | { id: string; projectId: string; kind: string }
     | undefined;
@@ -178,6 +203,7 @@ export function appendShotToFreeSet(
   if (!allImagesBelongToProject(db, set.projectId, [id])) {
     return { ok: false, status: 400, error: '图片不存在或不属于当前项目' };
   }
+  if (access.kind === 'team') access.assertAccess('image', id, 'read');
 
   const shotId = uuidv4();
   let indexNum = 1;
@@ -189,7 +215,11 @@ export function appendShotToFreeSet(
     db.prepare(`
       INSERT INTO shots (id, shotSetId, indexNum, sourceImageId) VALUES (?, ?, ?, ?)
     `).run(shotId, shotSetId, indexNum, id);
-  })();
+    access.registerInheritedScope({
+      resourceType: 'shot', resourceId: shotId,
+      parent: { resourceType: 'shot_set', resourceId: shotSetId },
+    });
+  }).immediate();
 
   return { ok: true, shotId, indexNum };
 }

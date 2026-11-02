@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertScriptStudioApiReady, errorResponse, jsonOrNull } from '@/lib/script-studio/http';
 import { setViralTemplateCurrentRevision } from '@/lib/script-studio/viral-templates';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
 /** 激活爆文模板库历史修订（只切当前指针）。 */
-export async function PUT(request: NextRequest) {
+async function __teamRoutePUT(request: NextRequest) {
   try {
     await assertScriptStudioApiReady();
     const body = await jsonOrNull(request);
@@ -21,3 +23,4 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json(body, { status });
   }
 }
+export const PUT = withTeamRoute('/api/script-studio/viral-templates/current', 'PUT', __teamRoutePUT);

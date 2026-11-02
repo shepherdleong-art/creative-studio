@@ -5,17 +5,22 @@ import { timelineGaps } from '@/lib/final-edit/domain';
 import { findAvailableSourceWindow } from '@/lib/final-edit/proposal';
 import type { VideoTimeline } from '@/lib/final-edit/types';
 import { videoJobNotRejectedSql } from '@/lib/media-core/video-job-rejection';
+import { requireAccessContext } from '@/lib/media-core/access-context';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 const MIN_AUTO_CLIP_FRAMES = 24;
 
 function parse<T>(value: string, fallback: T): T { try { return JSON.parse(value) as T; } catch { return fallback; } }
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const variantId = (await params).id;
     const body = await request.json().catch(() => ({})) as { kind?: string };
     const kind = body.kind === 'fill_gap' ? 'fill_gap' : 'fill_all_gaps';
     const db = getDb();
+    const access = requireAccessContext();
+    if (access.kind === 'team') access.assertAccess('final_variant', variantId, 'write');
     const row = db.prepare(`SELECT v.revision, v.timelineJson, g.projectId, g.shotSetId, COALESCE(s.autoUseLimit, 2) AS autoUseLimit FROM final_edit_variants v JOIN final_edit_groups g ON g.id=v.groupId LEFT JOIN final_edit_project_settings s ON s.projectId=g.projectId WHERE v.id=?`).get(variantId) as { revision: number; timelineJson: string; projectId: string; shotSetId: string; autoUseLimit: number } | undefined;
     if (!row) return NextResponse.json({ error: 'variant_not_found' }, { status: 404 });
     const timeline = parse<VideoTimeline>(row.timelineJson, { fps: 24, introFrames: 20, bodyFrames: 0, clips: [] });
@@ -62,7 +67,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
     const id = uuidv4();
     const createdAt = new Date().toISOString();
-    db.prepare(`INSERT INTO final_edit_proposals (id, variantId, baseRevision, kind, proposalJson, issuesJson, status, createdAt) VALUES (?, ?, ?, ?, ?, '[]', 'ready', ?)`).run(id, variantId, row.revision, kind, JSON.stringify({ timeline: candidate }), createdAt);
+    const create = db.transaction(() => {
+      db.prepare(`INSERT INTO final_edit_proposals (id, variantId, baseRevision, kind, proposalJson, issuesJson, status, createdAt) VALUES (?, ?, ?, ?, ?, '[]', 'ready', ?)`).run(id, variantId, row.revision, kind, JSON.stringify({ timeline: candidate }), createdAt);
+      access.registerInheritedScope({
+        resourceType: 'final_proposal', resourceId: id,
+        parent: { resourceType: 'final_variant', resourceId: variantId },
+      });
+    });
+    create.immediate();
     return NextResponse.json({ id, variantId, baseRevision: row.revision, kind, addedClipCount: candidate.clips.length - timeline.clips.length, status: 'ready' }, { status: 201 });
   } catch (error) { return NextResponse.json({ error: 'proposal_failed', message: error instanceof Error ? error.message : String(error) }, { status: 400 }); }
 }
+export const POST = withTeamRoute('/api/final-edit-variants/[id]/proposals', 'POST', __teamRoutePOST);

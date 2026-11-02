@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertScriptStudioApiReady, errorResponse, readCatalogImportUpload } from '@/lib/script-studio/http';
 import { importViralTemplateLibrary, previewViralTemplateImport } from '@/lib/script-studio/viral-templates';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
 /** 爆文模板库导入：?mode=preview 只解析预览（不落库）；默认确认发布（指纹幂等）。 */
-export async function POST(request: NextRequest) {
+async function __teamRoutePOST(request: NextRequest) {
   try {
     await assertScriptStudioApiReady();
     const upload = await readCatalogImportUpload(request);
@@ -26,3 +28,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(body, { status });
   }
 }
+export const POST = withTeamRoute('/api/script-studio/viral-templates/import', 'POST', __teamRoutePOST);

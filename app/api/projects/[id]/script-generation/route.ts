@@ -15,6 +15,10 @@ import {
   handleScriptGenerationPost,
   type ScriptGenerationRouteResponse,
 } from '@/lib/script-generation-route-handler';
+import { requireAccessContext, runWithTaskAccessContext } from '@/lib/media-core/access-context';
+import { requireTaskScope } from '@/lib/team-service/task-principals';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -53,10 +57,22 @@ function buildDeps(projectId: string, project: Record<string, unknown>) {
   return {
     projectExists: () => Boolean(project),
     isShuttingDown: () => isScriptGenerationShuttingDown(),
-    start: (body: Record<string, unknown>) => startScriptGeneration({
+    start: (body: Record<string, unknown>) => {
+      const access = requireAccessContext();
+      if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
+      const generationId = String(body.generationId);
+      const started = startScriptGeneration({
       projectId,
-      generationId: String(body.generationId),
-      execute: async ({ signal, onProgress }) => {
+      generationId,
+      accept: () => {
+        const accept = getDb().transaction(() => access.registerTaskPrincipal({
+          module: 'script_generation', taskId: generationId,
+          scope: { resourceType: 'project', resourceId: projectId },
+          creationSnapshot: { shotSetId: body.shotSetId, providerId: body.providerId },
+        }));
+        accept.immediate();
+      },
+      execute: async ({ signal, onProgress }) => runWithTaskAccessContext(getDb(), 'script_generation', generationId, async () => {
         logScriptInfo(projectId, `开始生成脚本（模型 ${(body.providerId as string) || '默认'}，任务化）`);
         try {
           const result = await generateAndPersistScriptV3({ projectId, project, body }, {
@@ -86,18 +102,23 @@ function buildDeps(projectId: string, project: Record<string, unknown>) {
           }
           throw error;
         }
-      },
-    }),
+      }),
+      });
+      if (access.kind === 'team' && !started.created) requireTaskScope(getDb(), 'script_generation', started.snapshot.generationId);
+      return started;
+    },
     getCurrent: () => getProjectScriptGeneration(projectId),
     cancel: (generationId: string) => cancelScriptGeneration(projectId, generationId),
   };
 }
 
-export async function POST(
+async function __teamRoutePOST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id: projectId } = await params;
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
   const project = getDb()
     .prepare(`SELECT * FROM projects WHERE id = ?`)
     .get(projectId) as Record<string, unknown> | undefined;
@@ -105,22 +126,26 @@ export async function POST(
   return toResponse(handleScriptGenerationPost(buildDeps(projectId, project ?? {}), body));
 }
 
-export async function GET(
+async function __teamRouteGET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id: projectId } = await params;
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
   const project = getDb()
     .prepare(`SELECT id FROM projects WHERE id = ?`)
     .get(projectId) as { id: string } | undefined;
   return toResponse(handleScriptGenerationGet(buildDeps(projectId, project ?? {})));
 }
 
-export async function DELETE(
+async function __teamRouteDELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id: projectId } = await params;
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
   const project = getDb()
     .prepare(`SELECT id FROM projects WHERE id = ?`)
     .get(projectId) as { id: string } | undefined;
@@ -129,3 +154,6 @@ export async function DELETE(
     request.nextUrl.searchParams.get('generationId'),
   ));
 }
+export const POST = withTeamRoute('/api/projects/[id]/script-generation', 'POST', __teamRoutePOST);
+export const GET = withTeamRoute('/api/projects/[id]/script-generation', 'GET', __teamRouteGET);
+export const DELETE = withTeamRoute('/api/projects/[id]/script-generation', 'DELETE', __teamRouteDELETE);

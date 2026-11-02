@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import type { ReservedProjectExportTarget } from './export-naming.ts';
 
 export interface InternalRenderOutput {
@@ -54,6 +55,10 @@ export function registerSingleArtifact(db: Database.Database, input: {
       relativePath=excluded.relativePath,
       mimeType=excluded.mimeType
   `).run(input.id, input.projectId, input.kind, input.displayName, input.relativePath, input.mimeType, input.sourceJobId, input.createdAt);
+  requireAccessContext().registerInheritedScope({
+    resourceType: 'project_artifact', resourceId: input.id,
+    parent: { resourceType: 'project', resourceId: input.projectId },
+  });
 }
 
 export function registerPublishedArtifacts(db: Database.Database, input: {
@@ -80,4 +85,11 @@ export function registerPublishedArtifacts(db: Database.Database, input: {
   `);
   upsert.run(`final-edit:${input.sourceJobId}:video`, input.projectId, 'final_video', input.target.videoFilename, input.target.videoRelativePath, 'video/mp4', input.sourceJobId, input.createdAt);
   upsert.run(`final-edit:${input.sourceJobId}:cover`, input.projectId, 'final_cover', input.target.coverFilename, input.target.coverRelativePath, 'image/jpeg', input.sourceJobId, input.createdAt);
+  const access = requireAccessContext();
+  for (const kind of ['video', 'cover'] as const) {
+    access.registerInheritedScope({
+      resourceType: 'project_artifact', resourceId: `final-edit:${input.sourceJobId}:${kind}`,
+      parent: { resourceType: 'project', resourceId: input.projectId },
+    });
+  }
 }

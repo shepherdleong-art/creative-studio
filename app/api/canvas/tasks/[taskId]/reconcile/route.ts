@@ -3,6 +3,8 @@ import { getDb } from '@/lib/db';
 import { CanvasError } from '@/lib/creative-canvas/errors';
 import { reconcileCanvasTaskNotCreated, reconcileCanvasTaskWithRemoteId } from '@/lib/creative-canvas/recovery';
 import { assertCanvasApiReady, canvasJsonError, readCanvasJson } from '@/lib/creative-canvas/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
@@ -10,7 +12,7 @@ export const runtime = 'nodejs';
  * 待核查任务的核查结论：确认远端没有创建（按失败收尾并释放名额），
  * 或填入实际远端任务 ID（接管原任务续查）。两者都不会重新提交。
  */
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ taskId: string }> },
 ) {
@@ -35,3 +37,4 @@ export async function POST(
     return canvasJsonError(error);
   }
 }
+export const POST = withTeamRoute('/api/canvas/tasks/[taskId]/reconcile', 'POST', __teamRoutePOST);

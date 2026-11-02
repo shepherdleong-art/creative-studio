@@ -155,8 +155,8 @@ export default function MixcutPanel({
           )
           : Promise.resolve({ assets: [] }),
         readJson<{ groups: FinalEditGroupView[] }>(await fetch(`/api/projects/${projectId}/final-edit/groups`, { signal: controller.signal })).catch(() => ({ groups: [] })),
-        readJson<MixcutTtsProviderView[]>(await fetch('/api/providers/tts', { signal: controller.signal })).catch(() => []),
-        readJson<VisionProviderView[]>(await fetch('/api/providers/script', { signal: controller.signal })).catch(() => []),
+        readJson<MixcutTtsProviderView[]>(await fetch('/api/team/models?kind=tts', { signal: controller.signal })).catch(() => []),
+        readJson<VisionProviderView[]>(await fetch('/api/team/models?kind=script', { signal: controller.signal })).catch(() => []),
       ]);
       if (requestRef.current?.sequence !== sequence) return;
       for (let index = 0; index < groupsResult.groups.length; index += 1) {

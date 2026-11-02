@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { runWithTaskAccessContext } from '../media-core/access-context.ts';
 import { writeLog } from '../logger.ts';
 import { semanticFallbackMessage } from './semantic-score-policy.ts';
 import { findExecutor, type BatchTaskExecutor, type BatchTaskProgress } from './executors.ts';
@@ -141,7 +142,7 @@ export async function runPendingOnce(options: SchedulerRunOptions): Promise<numb
       }
       handled += 1;
       const controller = new AbortController();
-      const outcome = await executeOne(claim, controller, {
+      const outcome = await runWithTaskAccessContext(db, 'batch', claim.task.id, () => executeOne(claim, controller, {
         db,
         workerId,
         executors,
@@ -152,7 +153,7 @@ export async function runPendingOnce(options: SchedulerRunOptions): Promise<numb
         now,
         signal: options.signal,
         shutdownSignal: options.shutdownSignal,
-      });
+      }));
       if (outcome === 'lease_lost') {
         // 本 worker 已失去提交资格。本轮不要立即重新领取同一任务;
         // 让下一轮或其他 worker 在新的租约下安全恢复。
