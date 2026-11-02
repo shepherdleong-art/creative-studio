@@ -801,6 +801,7 @@ function SceneWorkspace({
         selectedImageId={selectedSceneSeedIds[0] || ''}
         defaultPrompt={project.scenePrompt || ''}
         onJobsCreated={onJobsCreated}
+        onPromptSaved={onUploaded}
       />
 
       <section className="card p-5">
@@ -1043,19 +1044,34 @@ function ImageProviderRunControls({
 }
 
 function SceneGenerationForm({
-  project, providers, selectedImageId, defaultPrompt, onJobsCreated,
+  project, providers, selectedImageId, defaultPrompt, onJobsCreated, onPromptSaved,
 }: {
   project: Project;
   providers: ImageProvider[];
   selectedImageId: string;
   defaultPrompt: string;
   onJobsCreated: (concurrency?: number) => void | Promise<void>;
+  onPromptSaved: () => void | Promise<void>;
 }) {
   const [prompt, setPrompt] = useState(defaultPrompt);
   const [count, setCount] = useState(4);
   const [providerId, setProviderId] = useState(project.providerId);
   const [concurrency, setConcurrency] = useState(clampImageConcurrency(project.concurrency || 3));
   const [creating, setCreating] = useState(false);
+  const promptSaveRef = useRef(Promise.resolve());
+  const [promptSaveError, setPromptSaveError] = useState('');
+  const savePrompt = (nextPrompt: string) => {
+    // 快速连续选择按顺序保存，避免旧请求最后落库覆盖新选择。
+    promptSaveRef.current = promptSaveRef.current.catch(() => {}).then(async () => {
+      const response = await fetch(`/api/projects/${project.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scenePrompt: nextPrompt }),
+      });
+      if (!response.ok) throw new Error('类目与场景同步失败，请重新选择');
+      setPromptSaveError('');
+      await onPromptSaved();
+    }).catch((error) => { setPromptSaveError(error instanceof Error ? error.message : '同步失败'); });
+  };
   const selectableProviders = getSelectableImageProviders(providers);
   const selectedProviderId = resolveSelectableImageProviderId(providers, providerId);
 
@@ -1071,9 +1087,10 @@ function SceneGenerationForm({
       <div className="generation-form-grid">
         <div className="generation-main-stack">
           <div>
-            <FurniturePromptControls prompt={prompt} onChange={setPrompt} />
+            <FurniturePromptControls prompt={prompt} onChange={(next) => { setPrompt(next); savePrompt(next); }} />
             <label className="label generation-label">场景提示词</label>
-            <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} className="input-field generation-control generation-textarea" />
+            <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} onBlur={() => savePrompt(prompt)} rows={4} className="input-field generation-control generation-textarea" />
+            <p className="generation-helper" role="status">{promptSaveError || '类目和场景会自动同步到分镜提示词。'}</p>
           </div>
           {selectableProviders.length > 0 ? (
             <ImageProviderSelect
@@ -1113,6 +1130,7 @@ function SceneGenerationForm({
             if (!selectedProviderId) { alert('请选择可用供应商'); return; }
             setCreating(true);
             try {
+              await promptSaveRef.current;
               const res = await fetch(`/api/projects/${project.id}/scene-jobs`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sceneSeedImageId: selectedImageId, scenePrompt: prompt.trim(), generationCount: count, providerId: selectedProviderId }),

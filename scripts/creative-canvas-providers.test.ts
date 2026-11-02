@@ -16,7 +16,7 @@ import { registerExternalCanvasCapabilities } from '../lib/creative-canvas/adapt
 import { ensureCanvasCapabilitiesRegistered } from '../lib/creative-canvas/capabilities-bootstrap.ts';
 import { createDefaultCanvasDeliverer, type CanvasMediaDeliverer } from '../lib/creative-canvas/adapters/media-delivery.ts';
 import { canvasStorageRoot, importCanvasAsset } from '../lib/creative-canvas/assets.ts';
-import { createCanvas, saveCanvasGraph } from '../lib/creative-canvas/repository.ts';
+import { createCanvas, saveCanvasGraph, listCanvasNodeCandidates } from '../lib/creative-canvas/repository.ts';
 import { startCanvasRun } from '../lib/creative-canvas/runs.ts';
 import { runCanvasTask } from '../lib/creative-canvas/runner.ts';
 import { claimCanvasTasks, getCanvasTask, listCanvasTasks } from '../lib/creative-canvas/tasks.ts';
@@ -108,13 +108,20 @@ const server = http.createServer((request, response) => {
       const parsed = JSON.parse(body);
       if (Array.isArray(parsed.content)) {
         const id = `company-ark-${companyArkResponses.size + 1}`;
-        companyArkResponses.set(id, { ...parsed, created_at: Math.floor(Date.now() / 1000) });
+        // 真实公司网关把响应重写成自有包装：不回显请求体（无 draft/content 回显），
+        // 只有 id/model/status/created_at —— 测试必须模拟这个形态，否则测不出对 draft 回显的依赖。
+        companyArkResponses.set(id, { id, model: parsed.model, status: 'queued', created_at: Math.floor(Date.now() / 1000) });
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ id, status: 'queued' }));
         return;
       }
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ id: 'gateway-task-1', status: 'queued' }));
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/v1/chat/completions') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: { content: `![result](data:image/png;base64,${resultPng.toString('base64')})` } }] }));
       return;
     }
     // 外部图片供应商：OpenAI 风格同步出图
@@ -279,7 +286,7 @@ function videoNode(
   };
 }
 
-function imageNode(id: string, modelKey: string, parameters: Record<string, string | number | boolean> = {}): CanvasGraphNode {
+function imageNode(id: string, modelKey: string, parameters: Record<string, string | number | boolean> = {}, generationMode: CanvasGenerationMode = 'image-to-image'): CanvasGraphNode {
   return {
     id,
     kind: 'image-generation',
@@ -287,7 +294,7 @@ function imageNode(id: string, modelKey: string, parameters: Record<string, stri
     data: {
       title: id,
       modelKey,
-      generationMode: 'image-to-image',
+      generationMode,
       prompt: '把产品放到明亮的客厅里',
       parameters,
       references: [],
@@ -725,7 +732,8 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
     VALUES ('jimeng-2-0', '即梦直连（测试）', 'jimeng', '', '', '', 'doubao-seedance-2-0-260128', 1, 5, ?, 'ark-key', '', '')
   `).run(baseUrl);
   const registered = registerExternalCanvasCapabilities(db, (capability) => registerCanvasCapability(capability));
-  assert.deepEqual(registered, ['external-jimeng-seedance-2-0', 'external-jimeng-seedance-2-5'], '真实能力表按「行 + 启用 + Key」注册');
+  assert.equal(registered.filter((key) => !key.includes(':provider:')).length, 2, 'canonical keys remain available');
+  assert.ok(registered.some((key) => key.includes(':provider:jimeng-test:')), '用户添加的渠道也应自动同步');
   const jimengKey = 'external-jimeng-seedance-2-0';
 
   const audioAsset = await makeAudioAsset('参考音频.wav', 3);
@@ -1139,6 +1147,8 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
   assert.equal(source.providerTaskId, task.providerTaskId);
   const metadata = JSON.parse((db.prepare('SELECT metadataJson FROM creative_canvas_video_metadata WHERE taskId = ?').get(task.id) as { metadataJson: string }).metadataJson);
   assert.ok(metadata.tailAssetId, '返回尾帧必须保存为关联素材');
+  assert.equal(listCanvasNodeCandidates(db, canvas.id).find((entry) => entry.taskId === task.id)?.tailAssetId, metadata.tailAssetId, '轮询投影必须同时携带尾帧');
+  assert.equal(source.capabilityKey, key, '转正式保留来源模型能力键');
   const rerun = await runOnce('draft-source');
   assert.equal(rerun.phase, 'succeeded');
   assert.equal(requireCanvasDraftSource(db, canvas.id, source.assetId).providerTaskId, source.providerTaskId, '上游重跑不得替换已选样片 A');
@@ -1389,6 +1399,38 @@ for (const [id, model, durationSec, resolution] of [
     assert.equal(result.errorCode, 'invalid_reference_duration');
   }
 }
+
+// 设置页新增或复制的供应商无需再次配置即可用于画布；真实本地请求验证协议。
+for (const [id, type, model] of [
+  ['copied-gpt', 'packy-images', 'gpt-image-2'],
+  ['copied-gemini', 'packy-gemini-image', 'gemini-3.1-flash-image-preview'],
+  ['copied-ark-image', 'ark-images', 'doubao-seedream-5-0-pro-260628'],
+]) {
+  db.prepare('INSERT INTO providers (id, name, type, model, baseUrl, apiKey) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, `自定义名称 ${id}`, type, model, baseUrl, 'test-image-key');
+}
+db.prepare(`INSERT INTO video_providers (id, name, type, defaultModel, baseUrl, apiKey, baseUrlEnv, apiKeyEnv, modelEnv)
+  VALUES ('copied-video', '自定义视频渠道', 'jimeng', 'doubao-seedance-2-0-260128', ?, 'test-video-key', '', '', '')`).run(baseUrl);
+const synced = ensureCanvasCapabilitiesRegistered(db);
+for (const id of ['copied-gpt', 'copied-gemini', 'copied-ark-image', 'copied-video']) {
+  assert.ok(synced.some((capability) => capability.providerIdentity === id), `${id} must sync from settings`);
+}
+const gemini = synced.find((capability) => capability.providerIdentity === 'copied-gemini')!;
+for (const withReference of [false, true]) {
+  const output = imageNode('gemini-output', gemini.key, { aspectRatio: '3:4', resolution: '2K' }, withReference ? 'image-to-image' : 'text-to-image');
+  save([...(withReference ? [material('gemini-input', firstFrameAsset)] : []),
+    output],
+    withReference ? [edge('gemini-edge', 'gemini-input', 'gemini-output')] : []);
+  const result = await runOnce('gemini-output');
+  assert.equal(result.phase, 'succeeded', result.errorMessage ?? '');
+  const request = captured.filter((entry) => entry.method === 'POST' && entry.url === '/v1/chat/completions').at(-1)!;
+  const body = JSON.parse(request.body);
+  assert.equal(body.model, gemini.modelAlias);
+  assert.equal(body.messages[0].content.filter((part: { type: string }) => part.type === 'image_url').length, withReference ? 1 : 0);
+  assert.ok(!body.messages[0].content[0].text.includes('待编辑底图'));
+}
+db.prepare("UPDATE providers SET enabled = 0 WHERE id = 'copied-gemini'").run();
+assert.ok(!ensureCanvasCapabilitiesRegistered(db).some((capability) => capability.providerIdentity === 'copied-gemini'), '停用立即同步');
 
 server.close();
 db.close();

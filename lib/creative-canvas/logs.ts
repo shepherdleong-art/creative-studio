@@ -51,6 +51,7 @@ function taskMessage(task: CanvasTaskRecord): string {
   } catch { /* 老记录可能没有模型快照。 */ }
   return [`节点 ${task.nodeId}`, model && `模型 ${model}`, PHASE_LABELS[task.phase] ?? task.phase,
     task.providerTaskId && `远端任务 ${task.providerTaskId}`,
+    task.pollCount > 0 && `第 ${task.pollCount} 次查询`,
     task.errorCode && `错误码 ${task.errorCode}`, task.errorMessage].filter(Boolean).join(' · ');
 }
 
@@ -61,11 +62,11 @@ function taskLevel(task: CanvasTaskRecord): CanvasLogEntry['level'] {
   return 'info';
 }
 
-/** 只记有诊断价值的变化；轮询计数与租约心跳不刷屏。守卫失败不得调用。 */
+/** 记录阶段、错误与查询次数；租约心跳不刷屏。守卫失败不得调用。 */
 export function recordCanvasTaskLog(db: Database.Database, task: CanvasTaskRecord, before?: CanvasTaskRecord): void {
   if (before && task.phase === before.phase && task.errorCode === before.errorCode
       && task.errorMessage === before.errorMessage && task.providerTaskId === before.providerTaskId
-      && task.cancelRequestedAt === before.cancelRequestedAt) return;
+      && task.cancelRequestedAt === before.cancelRequestedAt && task.pollCount === before.pollCount) return;
   // 第一次恢复旧任务前先保存其遗留错误，避免新状态覆盖唯一的历史证据。
   if (before && !db.prepare('SELECT 1 FROM creative_canvas_logs WHERE jobId = ? LIMIT 1').get(task.id)) {
     writeCanvasLog(db, { canvasId: before.canvasId, jobId: before.id, level: taskLevel(before),

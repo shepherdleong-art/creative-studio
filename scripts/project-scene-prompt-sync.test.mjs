@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {register} from 'node:module';
+const repo=process.cwd();
+register(pathToFileURL(path.join(repo,'scripts/typescript-extension-loader.mjs')));
+register(`data:text/javascript,${encodeURIComponent(`export async function resolve(s,c,n){if(s==='next/server')return n('next/server.js',c);try{return await n(s,c)}catch(e){if(e.code!=='ERR_UNSUPPORTED_DIR_IMPORT')throw e;return n(s+'/index.ts',c)}}`)}`);
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'cs-scene-sync-'));
+process.env.CREATIVE_STUDIO_DATA_ROOT=root;
+process.env.CREATIVE_STUDIO_CANVAS_ENABLE='0';
+process.env.CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER='0';
+const {getDb,closeDb}=await import(pathToFileURL(path.join(repo,'lib/db.ts')));
+const {PATCH}=await import(pathToFileURL(path.join(repo,'app/api/projects/[id]/route.ts')));
+const {POST}=await import(pathToFileURL(path.join(repo,'app/api/projects/[id]/scene-jobs/route.ts')));
+try {
+const db=getDb();
+db.prepare(`INSERT INTO providers (id,name,baseUrl,apiKey,model,type) VALUES ('test','test','http://unused.invalid','fake-key','gpt-image-2','packy-images')`).run();
+const shot='图1是待编辑分镜图。保持图中床和模特的一致性不变，更换卧室的其他家具，机位不变。保留窗帘。';
+db.prepare(`INSERT INTO projects (id,name,providerId,model,prompt,workflowType,shotPrompt) VALUES ('test-project','test','test','gpt-image-2','','complex_product',?)`).run(shot);
+const ctx={params:Promise.resolve({id:'test-project'})};
+const scene='保持图中沙发的一致性不变，让客厅温馨舒适';
+const patch=await PATCH(new Request('http://test/api/projects/test-project',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({scenePrompt:scene})}),ctx);
+assert.equal(patch.status,200,await patch.text());
+assert.equal(db.prepare("SELECT shotPrompt FROM projects WHERE id='test-project'").get().shotPrompt,shot.replace('图中床','图中沙发').replace('更换卧室','更换客厅'));
+db.prepare(`INSERT INTO image_assets (id,projectId,role,filename,path,mimeType) VALUES ('image','test-project','input','fake.png','fake.png','image/png')`).run();
+const requestScene='保持图中床垫的一致性不变，让书房温馨舒适';
+const res=await POST(new Request('http://test/api/projects/test-project/scene-jobs',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({sceneSeedImageId:'image',scenePrompt:requestScene,generationCount:1})}),ctx);
+assert.equal(res.status,200,await res.text());
+const row=db.prepare("SELECT scenePrompt,shotPrompt FROM projects WHERE id='test-project'").get();
+assert.equal(row.scenePrompt,requestScene);
+assert.equal(row.shotPrompt,shot.replace('图中床','图中床垫').replace('更换卧室','更换书房'));
+console.log('Scene selection PATCH and scene-job POST both sync storyboard slots, preserving custom directions: passed');
+} finally { closeDb();fs.rmSync(root,{recursive:true,force:true}); }

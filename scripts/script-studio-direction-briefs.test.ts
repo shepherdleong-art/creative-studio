@@ -316,6 +316,47 @@ assert.equal(
   '卖点使用记录也只覆盖包内候选',
 );
 
+// 单条方向偶发超时后补齐，失败请求同样消耗已有预算。
+let transientCalls = 0;
+const purposes: string[] = [];
+const retryGenerator = createScriptGenerator(async () => {
+  if (++transientCalls === 1) throw new Error('Gemini 请求超时（120000ms）');
+  return normalized;
+}, { id: 'fake', model: 'fake' }, { budget: {
+  reserve: ({ purpose }) => { purposes.push(purpose); }, usedFor: () => purposes.length,
+  titleRepairUsedFor: () => 0, taskTextUsed: () => purposes.length,
+} });
+await retryGenerator.generate(generatorInput);
+assert.equal(transientCalls, 2, '偶发超时应只重试失败方向');
+assert.deepEqual(purposes, ['generate', 'generate'], '所有重试仍计入方案预算');
+let permanentCalls = 0;
+await assert.rejects(createScriptGenerator(async () => {
+  permanentCalls += 1;
+  throw new Error('请求失败（HTTP 401）');
+}, { id: 'fake', model: 'fake' }).generate(generatorInput), /401/);
+assert.equal(permanentCalls, 1, '鉴权错误不能自动重试');
+let exhaustedCalls = 0;
+await assert.rejects(createScriptGenerator(async () => {
+  exhaustedCalls += 1;
+  throw new Error('请求超时');
+}, { id: 'fake', model: 'fake' }).generate(generatorInput), /超时/);
+assert.equal(exhaustedCalls, 3, '持续超时最多三次，不无限补齐数量');
+let reviewCalls = 0;
+const reviewGenerator = createScriptGenerator(async () => {
+  if (++reviewCalls === 1) throw new Error('请求失败（HTTP 503）');
+  return { pass: true };
+}, { id: 'fake', model: 'fake' });
+await reviewGenerator.reviewScriptContent!({ ...generatorInput, content: normalized });
+assert.equal(reviewCalls, 2, '审核的临时失败也应重试，不能丢掉合格首稿');
+const cancelled = new AbortController();
+cancelled.abort();
+let cancelledCalls = 0;
+await assert.rejects(createScriptGenerator(async () => {
+  cancelledCalls += 1;
+  return normalized;
+}, { id: 'fake', model: 'fake' }).generate({ ...generatorInput, signal: cancelled.signal }), /取消/);
+assert.equal(cancelledCalls, 0, '取消后不得重新请求');
+
 // 方向编排不可绕过：缺少 brief 时生成直接失败，且不得回退完整卖点库。
 let modelCalls = 0;
 const guardedGenerator = createScriptGenerator(async () => {

@@ -28,3 +28,9 @@ export function updateFurniturePrompt(prompt: string, field: 'furniture' | 'room
   return ROOM_SLOTS.reduce((text, pattern) => text.replace(pattern, (_match, prefix, _previous, suffix) =>
     `${prefix}${value}${suffix}`), prompt);
 }
+
+/** 只同步模板变量，保留分镜的机位、构图、模特与用户附加要求。 */
+export function syncShotPromptFromScene(scenePrompt: string, shotPrompt: string): string {
+  const values = readFurniturePrompt(scenePrompt);
+  return updateFurniturePrompt(updateFurniturePrompt(shotPrompt, 'furniture', values.furniture), 'room', values.room);
+}

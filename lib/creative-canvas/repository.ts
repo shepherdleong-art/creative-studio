@@ -398,6 +398,7 @@ export function publishCanvasNodeResult(params: PublishNodeResultParams): Publis
  * 每节点取最近 12 条（时间倒序），走 idx_cct_node_results 索引。
  */
 export interface CanvasNodeCandidate {
+  tailAssetId: string | null;
   nodeId: string;
   taskId: string;
   assetId: string;
@@ -407,10 +408,12 @@ export interface CanvasNodeCandidate {
 
 export function listCanvasNodeCandidates(db: Database.Database, canvasId: string): CanvasNodeCandidate[] {
   const rows = db.prepare(
-    `SELECT nodeId, id AS taskId, outputAssetId, variantIndex, createdAt
-       FROM creative_canvas_tasks
-      WHERE canvasId = ? AND phase = 'succeeded' AND outputAssetId IS NOT NULL
-      ORDER BY nodeId, createdAt DESC`,
+    `SELECT t.nodeId, t.id AS taskId, t.outputAssetId, t.variantIndex, t.createdAt,
+            json_extract(m.metadataJson, '$.tailAssetId') AS tailAssetId
+       FROM creative_canvas_tasks t
+       LEFT JOIN creative_canvas_video_metadata m ON m.taskId = t.id
+      WHERE t.canvasId = ? AND t.phase = 'succeeded' AND t.outputAssetId IS NOT NULL
+      ORDER BY t.nodeId, t.createdAt DESC`,
   ).all(canvasId) as Array<Record<string, unknown>>;
   const perNode = new Map<string, CanvasNodeCandidate[]>();
   for (const row of rows) {
@@ -418,6 +421,7 @@ export function listCanvasNodeCandidates(db: Database.Database, canvasId: string
     const bucket = perNode.get(nodeId) ?? [];
     if (bucket.length >= 12) continue;
     bucket.push({
+      tailAssetId: row.tailAssetId ? String(row.tailAssetId) : null,
       nodeId,
       taskId: String(row.taskId),
       assetId: String(row.outputAssetId),

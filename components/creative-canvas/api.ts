@@ -64,6 +64,7 @@ export interface CanvasTaskDto {
 
 /** 节点候选投影（v2）：该节点一次成功任务及其输出。 */
 export interface CanvasNodeCandidateDto {
+  tailAssetId?: string | null;
   nodeId: string;
   taskId: string;
   assetId: string;

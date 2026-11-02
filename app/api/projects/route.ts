@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { syncShotPromptFromScene } from '@/lib/furniture-prompt';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveGptImage2Size, isValidGptImage2Size } from '@/lib/gpt-image-2-size-presets';
@@ -170,7 +171,7 @@ export async function POST(request: NextRequest) {
         INSERT INTO projects (id, name, productName, productCode, productCategory, providerId, model, prompt, negativePrompt, size, quality, concurrency, maxAttempts, status, referenceGuidanceMode, timeoutMs, workflowType, scenePrompt, shotPrompt, storeCode, productSubmodel, productionType, editorName, namingDate)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(projectId, baseName, '', identity.productCode, '', body.providerId, model, '', '', resolvedSize, quality, concurrency, maxAttempts, 'draft', 'none', timeoutMs, 'complex_product',
-        scenePrompt || defaultScenePrompt, shotPrompt || defaultShotPrompt,
+        scenePrompt || defaultScenePrompt, syncShotPromptFromScene(scenePrompt || defaultScenePrompt, shotPrompt || defaultShotPrompt),
         identity.storeCode, identity.productSubmodel, identity.productionType, identity.editorName, namingDate);
 
       if (hasFullCreation) {

@@ -147,7 +147,6 @@ function getReferenceModeIssue(
   }
 
   const assets = row.referenceAssets ?? [];
-  if (!row.prompt.trim()) return '请填写运镜提示词';
   // No separate uploads: the server uses the shot's current image as the reference.
   if (assets.length === 0) return null;
   if (new Set(assets.map((asset) => asset.id)).size !== assets.length) {

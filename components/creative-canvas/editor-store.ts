@@ -237,7 +237,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
    * 结果自动物化：新发布的产物在源节点右侧飞出素材节点并带来源连线（溯源连线）。
    * 快照语义：assetId 钉死，上游之后重跑不跟随；要新结果就等下一次飞出。
    */
-  const materializeResults = useCallback((candidates: CanvasNodeCandidateDto[]) => {
+  const materializeResults = useCallback((candidates: Array<CanvasNodeCandidateDto & { isTailFrame?: boolean }>) => {
     const nextNodes = [...nodesRef.current];
     const nextEdges = [...edgesRef.current];
     for (const candidate of candidates) {
@@ -255,9 +255,9 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
         style: { width: nodeKindSpec('material').defaultWidth },
         position: findOpenPosition(desired, nextNodes, 'material'),
         data: {
-          title: sourceTitle ? `${sourceTitle} · 结果` : '生成结果',
+          title: candidate.isTailFrame ? (sourceTitle ? `${sourceTitle} · 尾帧` : '返回尾帧') : sourceTitle ? `${sourceTitle} · 结果` : '生成结果',
           assetId: candidate.assetId,
-          mediaKind: source.type === 'video-generation' ? 'video' : 'image',
+          mediaKind: candidate.isTailFrame ? 'image' : source.type === 'video-generation' ? 'video' : 'image',
         },
       });
       nextEdges.push({
@@ -273,7 +273,10 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
 
   const updateRuntimeFromCanvas = useCallback((canvas: CanvasDto) => {
     runtime.update(canvas.nodeStates, canvas.tasks ?? [], canvas.nodeCandidates ?? []);
-    const candidates = canvas.nodeCandidates ?? [];
+    const candidates = (canvas.nodeCandidates ?? []).flatMap((candidate) => [
+      candidate,
+      ...(candidate.tailAssetId ? [{ ...candidate, assetId: candidate.tailAssetId, isTailFrame: true }] : []),
+    ]);
     if (flownAssetIdsRef.current === null) {
       // 首次投影只建档：打开画布前的旧结果不补飞，否则每次进画布都刷屏
       flownAssetIdsRef.current = new Set(candidates.map((candidate) => candidate.assetId));

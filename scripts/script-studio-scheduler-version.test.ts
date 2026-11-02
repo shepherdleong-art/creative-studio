@@ -33,7 +33,7 @@ const staleScheduler: ScriptStudioSchedulerController = {
 };
 globalScope[schedulerModule.SCRIPT_STUDIO_SCHEDULER_KEY] = staleScheduler;
 const versionKey = Symbol.for('creative-studio.script-studio-scheduler-version');
-globalScope[versionKey] = 27; // 上一版闭包不能绕过新的模板恢复与白名单规则。
+globalScope[versionKey] = 28; // 上一版闭包不能绕过新的模板恢复与白名单规则。
 
 try {
   const refreshed = await bootstrap.ensureScriptStudioSchedulerStarted();

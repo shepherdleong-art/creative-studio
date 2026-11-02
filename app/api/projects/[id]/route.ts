@@ -16,6 +16,7 @@ import {
 import { hasExportIdentity, createExportIdentity, activateNewExportIdentity } from '@/lib/project-export-identity';
 import { sortProjectJobsByCreation, type ProjectJobOrderRow } from '@/lib/project-job-order';
 import { deleteProjectRecords } from '@/lib/project-delete';
+import { syncShotPromptFromScene } from '@/lib/furniture-prompt';
 
 export async function GET(
   _request: NextRequest,
@@ -129,7 +130,7 @@ export async function PATCH(
 
     const project = db.prepare(`
       SELECT id, name, productName, productCode, productCategory, createdAt,
-        storeCode, productSubmodel, productionType, editorName, namingDate
+        storeCode, productSubmodel, productionType, editorName, namingDate, scenePrompt, shotPrompt
       FROM projects WHERE id = ?
     `).get(id) as Record<string, unknown> | undefined;
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
@@ -189,6 +190,13 @@ export async function PATCH(
       }
     }
 
+    if (typeof body.scenePrompt === 'string') {
+      updates.push('scenePrompt = ?'); values.push(body.scenePrompt.trim());
+      if (typeof body.shotPrompt !== 'string') {
+        updates.push('shotPrompt = ?');
+        values.push(syncShotPromptFromScene(body.scenePrompt, String(project.shotPrompt || '')));
+      }
+    }
     if (typeof body.shotPrompt === 'string') { updates.push('shotPrompt = ?'); values.push(body.shotPrompt.trim()); }
     if (typeof body.targetAudience === 'string') { updates.push('targetAudience = ?'); values.push(body.targetAudience); }
     if (typeof body.scriptTone === 'string') { updates.push('scriptTone = ?'); values.push(body.scriptTone); }
@@ -206,7 +214,9 @@ export async function PATCH(
       if (result.changes !== 1) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    const responseShotPrompt = typeof body.shotPrompt === 'string' ? body.shotPrompt.trim() : '';
+    const responseShotPrompt = typeof body.shotPrompt === 'string' ? body.shotPrompt.trim()
+      : typeof body.scenePrompt === 'string' ? syncShotPromptFromScene(body.scenePrompt, String(project.shotPrompt || ''))
+      : String(project.shotPrompt || '');
     const updatedProjectRow = db.prepare(`
       SELECT id, name, productName, productCode, productCategory, storeCode, productSubmodel, productionType, editorName, namingDate FROM projects WHERE id = ?
     `).get(id) as {

@@ -925,13 +925,13 @@ export const GenerationNode = memo(function GenerationNode({
                       <option key={option} value={option}>{option === 'gateway-default' ? '网关默认（待验证）' : option === 'adaptive' ? '自动' : option === '4k' ? '4K' : option}</option>
                     ))}
                   </select>
-                ) : parameter.specialValues?.includes(-1) ? (
+                ) : (parameter.specialValues?.includes(-1) || (parameter.key === 'durationSec' && parameter.type === 'integer' && parameter.min !== undefined && parameter.max !== undefined)) ? (
                   <select className="nodrag sc-canvas-select flex-1" aria-label={parameter.label}
                     value={Number(data.parameters?.[parameter.key] ?? parameter.default ?? 5)}
                     onChange={(event) => controller.updateNodeData(id, {
                       parameters: { ...(data.parameters ?? {}), [parameter.key]: Number(event.target.value) },
                     })}>
-                    <option value={-1}>自动</option>
+                    {parameter.specialValues?.includes(-1) ? <option value={-1}>自动</option> : null}
                     {Array.from({ length: (parameter.max ?? 15) - (parameter.min ?? 4) + 1 }, (_, index) => (parameter.min ?? 4) + index)
                       .map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
                   </select>

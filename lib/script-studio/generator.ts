@@ -1,4 +1,5 @@
 import { buildPainPlanningPrompt, PAIN_PATHS, PAIN_REVIEW_CHECKS, painWritingRequirements, type PainPlanningInput } from './pain-solving.ts';
+import { setTimeout as waitForRetry } from 'node:timers/promises';
 import { normalizeAutomaticSubtitleText } from '../subtitle-display.ts';
 import { buildScriptDurationBudget, countScriptContentCharacters, estimateNarrationDurationSec } from '../script-duration-policy.ts';
 import type { DirectionSellingPointBrief } from './direction-briefs.ts';
@@ -221,7 +222,10 @@ export function buildScriptPrompt(
   const expressionForPoint = (pointId: string): DistilledExpressionRef | undefined =>
     expressions.find((ref) => ref.sourceFactIds.includes(pointId));
   const requirements = [
-    '只能使用上面方向卖点包中的事实，priority=required 的卖点必须优先考虑；不得新增功效、数字、材质或认证',
+    '只能使用方向卖点包中的事实；priority=required 表示优先候选，不是全部必写。围绕一个核心购买理由选择相关事实，不得新增功效、数字、材质或认证',
+    '开头提出的问题必须由后文产品事实直接回应；不能用无关材质、认证或参数回答软硬、支撑等不同问题。证据不足时换一个有依据的切入点，不要强凑因果',
+    '每条只讲一个具体场景或购买判断；15–20秒选1个主卖点和至多1个相关辅助卖点，较长脚本也不逐条念完整卖点库。自然说人话，不照搬策划标签、框架公式和生硬参数词组',
+    '框架、文案钩子与画面钩子只是可选表达方法；与产品事实或当前方向不合时应舍弃，不为套公式虚构痛点、效果、对比或亲测',
     'sellingPoints 中的 distilled 字段是已确认的提炼表达参考（短句/用户价值/范围/限定条件），可参考其措辞，但它不是新的事实来源；口播中的事实仍须挂在对应的 sellingPoints 引用上，范围与限定条件不得扩大',
     '同系列卖点中的型号、颜色、配置及功能适用限定必须保留，不得把某款专属功能说成全系列标配，也不得把互斥配置拼成同一款商品',
     '完整返回主标题、副标题、分段口播、画面意图与关键词',
@@ -229,7 +233,7 @@ export function buildScriptPrompt(
     input.plan.painSolving ? '15秒口播目标55–70字，结果式结尾，不为补字添加卖点。' : `口播围绕目标时长 ${input.targetDurationSec} 秒组织；字数预算 ${budget.minContentCharacters}-${budget.maxContentCharacters} 字仅作参考，完整表达与 CTA 优先，可为一句完整 CTA 适当超出；不得为凑字数重复卖点或追加无关内容`,
     '同一轮多条方案必须在开场、结构或卖点组合上明显不同',
     ...(input.audienceSegment ? [
-      '口播必须说给 audienceProfile 里的人听：开场先落在画像的 scenario 或 pains 上再引出卖点；至少一个分段只讲场景或痛点、不引用任何卖点，禁止从头到尾逐条念卖点',
+      '口播自然回应 audienceProfile 的一个具体需求；画像只是策划假设，不能当成产品事实。不必单独凑一段痛点，也不要硬塞人群标签',
       '每个被引用的卖点都必须能对应到画像的某个痛点或决策驱动；与画像无关的卖点宁可不写',
       '不得使用 audienceProfile.rejections 中的表述',
     ] : []),
@@ -429,6 +433,7 @@ export function buildScriptEndingReviewPrompt(input: ScriptEndingReviewInput): {
         '任何一项不通过则 pass=false，并在 issues 中给出具体中文原因（指出哪个词/哪一句不受支持）',
         'pass 与 checks 必须一致：pass=true 时四项 checks 必须全部为 true 且 issues 为空数组；任何一项为 false 时 pass 必须为 false（自相矛盾的响应会被服务端整体拒绝）',
         '只依据 verifiedFacts 判断事实支持，不要凭常识脑补产品能力',
+        'followsContext 还检查全文逻辑：开头问题是否被正文直接回答，卖点间是否围绕同一购买理由。以无关材质或认证回答软硬、支撑等问题，或生硬拼接独立卖点，均为不通过；给出具体断裂位置',
       ],
       output: {
         pass: 'boolean',
@@ -719,6 +724,11 @@ export interface CreateScriptGeneratorOptions {
   budget?: ScriptRequestBudget;
 }
 
+function isTransientTextError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /超时|timeout|timed out|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|HTTP[ )：:]*(?:408|429|5\d\d)/i.test(message);
+}
+
 export function createScriptGenerator(
   completeJson: ScriptStudioCompleteJson,
   provider: { id: string; model: string },
@@ -727,16 +737,25 @@ export function createScriptGenerator(
   const reserve = (input: { plan: { index: number } }, purpose: ScriptRequestPurpose): void => {
     options.budget?.reserve({ planIndex: input.plan.index, purpose });
   };
+  const requestWithRetry = async (input: { plan: { index: number } }, purpose: ScriptRequestPurpose, request: Parameters<ScriptStudioCompleteJson>[0]) => {
+    for (let attempt = 1; ; attempt += 1) {
+      if (request.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
+      reserve(input, purpose);
+      try { return await completeJson(request); }
+      catch (error) {
+        if (request.signal?.aborted || !isTransientTextError(error) || attempt >= 2) throw error;
+        await waitForRetry(500 * attempt, undefined, { signal: request.signal });
+      }
+    }
+  };
   return {
     async repairTitles(input) {
-      reserve(input, 'title_repair');
       const prompt = buildScriptTitleRepairPrompt(input);
-      return completeJson({ ...prompt, temperature: 1, maxTokens: input.content.templateRewrite ? TEMPLATE_REWRITE_MAX_TOKENS : SCRIPT_TITLE_REPAIR_MAX_TOKENS, signal: input.signal });
+      return requestWithRetry(input, 'title_repair', { ...prompt, temperature: 1, maxTokens: input.content.templateRewrite ? TEMPLATE_REWRITE_MAX_TOKENS : SCRIPT_TITLE_REPAIR_MAX_TOKENS, signal: input.signal });
     },
     async repairScriptContent(input) {
-      reserve(input, 'repair');
       const prompt = buildScriptBodyRepairPrompt(input);
-      return completeJson({
+      return requestWithRetry(input, 'repair', {
         systemPrompt: prompt.systemPrompt,
         userPrompt: prompt.userPrompt,
         temperature: 1,
@@ -745,9 +764,8 @@ export function createScriptGenerator(
       });
     },
     async reviewScriptContent(input) {
-      reserve(input, 'review');
       const prompt = buildScriptEndingReviewPrompt(input);
-      return completeJson({
+      return requestWithRetry(input, 'review', {
         systemPrompt: prompt.systemPrompt,
         userPrompt: prompt.userPrompt,
         temperature: 1,
@@ -1189,15 +1207,24 @@ export function createScriptGenerator(
       let attempts = 0;
       let raw: unknown;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
+        if (input.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
         reserve(input, 'generate');
         attempts += 1;
-        raw = await completeJson({
-          systemPrompt: prompt.systemPrompt,
-          userPrompt: prompt.userPrompt,
-          temperature: 1,
-          maxTokens: options.maxTokens ?? 8000,
-          signal: input.signal,
-        });
+        try {
+          raw = await completeJson({
+            systemPrompt: prompt.systemPrompt,
+            userPrompt: prompt.userPrompt,
+            temperature: 1,
+            maxTokens: options.maxTokens ?? 8000,
+            signal: input.signal,
+          });
+        } catch (error) {
+          if (input.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
+          // 文本请求可重试；永久配置错误与预算耗尽原样上抛。
+          if (!isTransientTextError(error) || attempt === 3) throw error;
+          await waitForRetry(500 * attempt, undefined, { signal: input.signal });
+          continue;
+        }
         try {
           return { content: normalizeGeneratedScript(raw, input), attempts };
         } catch {

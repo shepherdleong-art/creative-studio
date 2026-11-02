@@ -721,13 +721,17 @@ async function seedanceSuite(page) {
   }
   const companyImages = configuredCanvasImages(providerDb);
   const companyVideos = configuredCanvasVideos(providerDb);
+  for (const model of ['minimax-h3', 'wan-3.0']) {
+    providerDb.prepare(`INSERT INTO video_providers VALUES (?, ?, ?, 'openai-video', 'http://127.0.0.1:1', 'test-key', 1)`).run(model, model, model);
+  }
+  const nativeVideos = configuredCanvasVideos(providerDb).filter((capability) => ['minimax-h3', 'wan-3.0'].includes(capability.modelAlias));
   providerDb.close();
   let imageOptions = companyImages;
   // UI-only capabilities over the fixture server. No generation API is exercised here.
   await page.route('**/api/canvas/models', async (route) => {
     const response = await route.fetch();
     const value = await response.json();
-    await route.fulfill({ response, json: { ...value, models: [...value.models, directSeedanceCapability(SEEDANCE_20), directSeedanceCapability(SEEDANCE_25), ...imageOptions, ...companyVideos] } });
+    await route.fulfill({ response, json: { ...value, models: [...value.models, directSeedanceCapability(SEEDANCE_20), directSeedanceCapability(SEEDANCE_25), ...imageOptions, ...companyVideos, ...nativeVideos] } });
   });
   await createCanvas(page, 'Seedance 参数验收');
   const id = await addNode(page, 'video-generation');
@@ -760,6 +764,16 @@ async function seedanceSuite(page) {
     const resolutions = await node.getByLabel('分辨率', { exact: true }).locator('option').evaluateAll((options) => options.map((option) => option.value));
     assert.deepEqual(resolutions, capability.parameters.find((parameter) => parameter.key === 'resolution').options);
   }
+  for (const capability of nativeVideos) {
+    await selectModel(page, id, capability.key);
+    const duration = node.getByLabel('时长（秒）', { exact: true });
+    assert.equal(await duration.evaluate((element) => element.tagName), 'SELECT');
+    const values = await duration.locator('option').evaluateAll((options) => options.map((option) => Number(option.value)));
+    assert.equal(values[0], capability.modelAlias === 'minimax-h3' ? 4 : 2);
+    assert.equal(values.at(-1), capability.modelAlias === 'minimax-h3' ? 15 : 30);
+    await duration.selectOption('12');
+    assert.equal(await duration.inputValue(), '12');
+  }
   const imageId = await addNode(page, 'image-generation');
   const imageNode = page.locator(`.react-flow__node[data-id="${imageId}"]`);
   for (const capability of companyImages) {
@@ -776,6 +790,16 @@ async function seedanceSuite(page) {
   await runFfmpeg(['-y', '-f', 'lavfi', '-i', 'color=blue:size=640x640:rate=24:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'pcm_s16le', '-shortest', movPath], { timeoutMs: 60_000 });
   const materialId = await addNode(page, 'material');
   const material = page.locator(`.react-flow__node[data-id="${materialId}"]`);
+  const sourceCapability = companyVideos.find((capability) => capability.modelAlias === SEEDANCE_25);
+  await page.route('**/api/canvas/assets/*/draft', async (route) => {
+    const assetId = new URL(route.request().url()).pathname.split('/').at(-2);
+    await route.fulfill({ json: { source: {
+      assetId, taskId: 'fixed-draft-task', providerTaskId: 'remote-draft',
+      capabilityKey: sourceCapability.key, providerIdentity: sourceCapability.providerIdentity, model: SEEDANCE_25,
+      remoteCreatedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400_000).toISOString(), expired: false,
+      generationMode: 'text-to-video', prompt: '固定样片', parameters: { durationSec: 5, aspectRatio: '3:4', withAudio: false },
+    }, metadata: { stage: 'draft' } } });
+  });
   await material.locator('[data-testid="material-file-input"]').setInputFiles(movPath);
   const video = material.locator('video');
   await video.waitFor();
@@ -791,6 +815,19 @@ async function seedanceSuite(page) {
   fs.mkdirSync(path.dirname(screenshot), { recursive: true });
   await page.screenshot({ path: screenshot });
   await page.unroute('**/api/canvas/models');
+  const beforeFormal = await nodeIds(page, 'video-generation');
+  await material.getByRole('button', { name: '生成正式版', exact: true }).evaluate((element) => element.click());
+  await page.waitForFunction((count) => document.querySelectorAll('[data-node-kind="video-generation"]').length === count + 1, beforeFormal.length);
+  const formalId = (await nodeIds(page, 'video-generation')).find((nodeId) => !beforeFormal.includes(nodeId));
+  const formal = page.locator(`.react-flow__node[data-id="${formalId}"]`);
+  await formal.getByText('已绑定样片，无需连线。', { exact: false }).waitFor();
+  assert.equal(await formal.locator('[data-testid="model-select"]').inputValue(), sourceCapability.key, '保留样片原渠道');
+  await waitSaved(page);
+  const formalCanvasId = new URL(page.url()).pathname.split('/').pop();
+  const formalGraph = (await (await page.request.get(`${baseUrl}/api/canvas/${formalCanvasId}`)).json()).canvas.graph;
+  assert.equal(formalGraph.edges.filter((edge) => edge.target === formalId).length, 0, '样片已绑定，不需额外连线');
+  assert.equal(runPosts.length, 0, '选定样片只创建节点，不自动发起付费生成');
+  await page.unroute('**/api/canvas/assets/*/draft');
   return { sixModes: true, companySixModes: true, configuredImages: 5, refreshOnFocus: true, newAudioEnabled: true, draftResolutionLocked: true, directPreferenceRestored: true, modelSwitchExplained: true, movPlaybackProgress: true, originalMovDownloadPreserved: true, generationRequests: 0, screenshot };
 }
 
@@ -1198,7 +1235,30 @@ async function executionSuite(page) {
   assert.ok(await page.locator('.react-flow__node').count() > 0, '浅色下画布仍应渲染节点');
   await chooseTheme('跟随系统');
   assert.notEqual(await page.getAttribute('html', 'data-theme'), null);
-  return { canvasId: new URL(page.url()).pathname.split('/').pop(), initialTheme };
+  // API 返回附属尾帧后，无需点击按钮即自动物化；轮询与重载不重复添加。
+  const canvasId = new URL(page.url()).pathname.split('/').pop();
+  const beforeTail = await (await page.request.get(`${baseUrl}/api/canvas/${canvasId}`)).json();
+  const tailAssetId = beforeTail.canvas.graph.nodes.find((node) => node.id === materialId).data.assetId;
+  const canvasUrl = `**/api/canvas/${canvasId}`;
+  await page.route(canvasUrl, async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    const value = await response.json();
+    value.canvas.nodeCandidates = value.canvas.nodeCandidates.map((candidate) => candidate.nodeId === videoId ? { ...candidate, tailAssetId } : candidate);
+    await route.fulfill({ response, json: value });
+  });
+  const tailNodes = page.locator('.react-flow__node:has([data-node-kind="material"])').filter({ has: page.locator('[data-testid="node-title"]', { hasText: '尾帧' }) });
+  await tailNodes.first().waitFor({ timeout: 15_000 });
+  assert.equal(await tailNodes.count(), 1);
+  await waitSaved(page);
+  await page.waitForTimeout(3_200);
+  assert.equal(await tailNodes.count(), 1, '持续轮询不重复展开尾帧');
+  await page.reload();
+  await page.waitForSelector('[data-testid="canvas-editor"]');
+  await tailNodes.first().waitFor({ timeout: 15_000 });
+  assert.equal(await tailNodes.count(), 1, '重载后保留尾帧，不重复展开');
+  await page.unroute(canvasUrl);
+  return { canvasId, initialTheme, automaticTail: true };
 }
 
 /**

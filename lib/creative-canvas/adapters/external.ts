@@ -15,6 +15,7 @@ import { SEEDANCE_25, SeedanceRequestError } from '../../video-providers/seedanc
  */
 
 import fs from 'node:fs';
+import { extractPackyGeminiImageSource } from '../../providers/packy-gemini-image.ts';
 import { buildArkImageBody } from '../../providers/ark-images.ts';
 import { SEEDREAM_5_PRO, seedreamImageEndpoint } from '../../seedream-image.ts';
 import sharp from 'sharp';
@@ -231,7 +232,7 @@ function linkedTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number)
   return AbortSignal.any([signal, timeout]);
 }
 
-async function decodeImageResponse(response: Response, apiKey: string): Promise<Buffer | { url: string }> {
+async function decodeImageResponse(response: Response, apiKey: string, chatImage = false): Promise<Buffer | { url: string }> {
   let text: string;
   try {
     text = await response.text();
@@ -249,7 +250,7 @@ async function decodeImageResponse(response: Response, apiKey: string): Promise<
       { uncertain, code: uncertain ? 'external_submit_uncertain' : 'external_submit_rejected' },
     );
   }
-  let payload: { data?: Array<{ b64_json?: string; url?: string }>; error?: unknown };
+  let payload: Parameters<typeof extractPackyGeminiImageSource>[0] & { data?: Array<{ b64_json?: string; url?: string }> };
   try {
     payload = JSON.parse(text) as typeof payload;
   } catch {
@@ -261,6 +262,11 @@ async function decodeImageResponse(response: Response, apiKey: string): Promise<
   const item = payload.data?.[0];
   if (item?.b64_json) return Buffer.from(item.b64_json, 'base64');
   if (item?.url) return { url: item.url };
+  if (chatImage) {
+    const source = extractPackyGeminiImageSource(payload);
+    if (source?.startsWith('data:')) return Buffer.from(source.slice(source.indexOf(',') + 1), 'base64');
+    if (source) return { url: source };
+  }
   throw new CanvasAdapterError('submit', '外部图片网关没有返回图片内容，提交结果不明。', {
     uncertain: true,
     code: 'external_result_missing',
@@ -443,8 +449,9 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
           assertDraftSourceMatches(source, context.modelAlias, context.providerIdentity);
           // Revalidate remote availability using the current credentials/route immediately before POST.
           const remote = await adapter.poll(source.providerTaskId, route.apiKey, route.baseUrl, signal);
-          const raw = remote.rawResponse as { model?: string; draft?: boolean; created_at?: number };
-          if (remote.status !== 'succeeded' || raw.model !== source.model || raw.draft !== true
+          // 公司网关不回显请求侧 draft 标志；远端任务存在 + model/status/created_at 精确一致即是身份证明。
+          const raw = remote.rawResponse as { model?: string; created_at?: number };
+          if (remote.status !== 'succeeded' || raw.model !== source.model
             || Number(raw.created_at) * 1000 !== Date.parse(source.remoteCreatedAt)) throw new Error('供应商样片身份或状态无法确认，请重新生成样片');
           assertDraftSourceMatches({ ...source, expired: Date.parse(source.expiresAt) <= Date.now() }, context.modelAlias, context.providerIdentity);
         } catch (error) { throw new CanvasAdapterError('prepare', sanitizeGatewayMediaDiagnostic((error as Error).message, route.apiKey), { code: 'draft_source_invalid' }); }
@@ -500,6 +507,17 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
               }),
               signal: linkedTimeoutSignal(signal, options.submitTimeoutMs ?? 600_000),
             });
+          } else if (route.type === 'packy-gemini-image') {
+            // 沿用主项目聊天式图片协议；不加入旧工作台的底图/参考用途前缀。
+            response = await fetchImpl(`${route.baseUrl.replace(/\/v1$/, '')}/v1/chat/completions`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${route.apiKey}` },
+              body: JSON.stringify({ model: capability.modelAlias, stream: false, messages: [{ role: 'user', content: [
+                { type: 'text', text: `${context.prompt}\n输出尺寸/比例要求：${size}。` },
+                ...imageInputs.map((input) => ({ type: 'image_url', image_url: { url: localFileDataUrl(input) } })),
+              ] }] }),
+              signal: linkedTimeoutSignal(signal, options.submitTimeoutMs ?? 600_000),
+            });
           } else if (imageInputs.length === 0) {
             // 文生图：不伪造占位底图
             response = await fetchImpl(`${route.baseUrl}/v1/images/generations`, {
@@ -533,7 +551,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
         } catch (error) {
           throw submitError('submit', '外部图片网关提交请求失败，结果不明。', error, signal);
         }
-        const result = await decodeImageResponse(response, route.apiKey);
+        const result = await decodeImageResponse(response, route.apiKey, route.type === 'packy-gemini-image');
         try {
           if (Buffer.isBuffer(result)) {
             const tempPath = syncImageTempPath(storageRoot, context.task.canvasId, context.task.id);

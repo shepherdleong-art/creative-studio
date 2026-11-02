@@ -396,6 +396,7 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
 
   // 4. 轮询远端（已保存远端 ID；本地超时不释放名额）
   let attempts = 0;
+  const previousPollCount = getCanvasTask(db, taskId)?.pollCount ?? 0;
   let pollState: 'succeeded' | 'failed' | 'aborted' | 'cancelled' = 'aborted';
   while (attempts < maxPollAttempts) {
     if (signal?.aborted) {
@@ -418,7 +419,7 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
         taskId,
         patch: {
           lastPolledAt: now().toISOString(),
-          pollCount: attempts,
+          pollCount: previousPollCount + attempts,
           errorCode: error instanceof CanvasAdapterError ? error.code : 'poll_failed',
           errorMessage: error instanceof Error ? error.message : String(error),
         },
@@ -429,7 +430,7 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
     }
     updateCanvasTaskGuarded(db, {
       taskId,
-      patch: { lastPolledAt: now().toISOString(), pollCount: attempts },
+      patch: { lastPolledAt: now().toISOString(), pollCount: previousPollCount + attempts, errorCode: null, errorMessage: null },
       guard,
       now,
     });

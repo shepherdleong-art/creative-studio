@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveImageJobProvider } from '@/lib/image-provider-selection';
 import { v4 as uuidv4 } from 'uuid';
+import { syncShotPromptFromScene } from '@/lib/furniture-prompt';
 
 export async function POST(
   request: NextRequest,
@@ -21,7 +22,7 @@ export async function POST(
 
     // Validate project exists and is complex_product
     const project = db.prepare(`SELECT * FROM projects WHERE id = ?`).get(id) as {
-      workflowType: string; providerId: string; model: string; size: string; quality: string; maxAttempts: number;
+      workflowType: string; providerId: string; model: string; size: string; quality: string; maxAttempts: number; shotPrompt: string;
     } | undefined;
     if (!project) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
     if (project.workflowType !== 'complex_product') return NextResponse.json({ error: '只有复杂产品项目支持场景生成' }, { status: 400 });
@@ -48,7 +49,8 @@ export async function POST(
       db.prepare(`UPDATE image_assets SET projectId = ?, role = 'input', usage = 'scene_seed' WHERE id = ?`).run(id, sceneSeedImageId);
 
       // Update project scenePrompt
-      db.prepare(`UPDATE projects SET scenePrompt = ? WHERE id = ?`).run(scenePrompt, id);
+      db.prepare(`UPDATE projects SET scenePrompt = ?, shotPrompt = ? WHERE id = ?`)
+        .run(scenePrompt, syncShotPromptFromScene(scenePrompt, project.shotPrompt || ''), id);
 
       // Create scene generation jobs：同一请求写同一 createdAt、按提交顺序写 creationIndex。
       const batchCreatedAt = new Date().toISOString();

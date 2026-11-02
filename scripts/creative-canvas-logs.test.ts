@@ -33,11 +33,12 @@ update({ phase: 'submitting' });
 update({ phase: 'polling', providerTaskId: 'remote-123' });
 const beforeHeartbeat = getCanvasLogs(db, canvas.id).length;
 update({ pollCount: 1, lastPolledAt: at });
-assert.equal(getCanvasLogs(db, canvas.id).length, beforeHeartbeat, '正常轮询不刷日志');
+assert.equal(getCanvasLogs(db, canvas.id).length, beforeHeartbeat + 1, '正常轮询必须显示查询次数');
 assert.equal(updateCanvasTaskGuarded(db, {
   taskId: 'task-1', guard: { ...guard, fence: -1 }, patch: { phase: 'failed' },
 }), false);
-assert.equal(getCanvasLogs(db, canvas.id).length, beforeHeartbeat, '旧租约不留虚假日志');
+assert.equal(getCanvasLogs(db, canvas.id).length, beforeHeartbeat + 1, '旧租约不留虚假日志');
+assert.match(getCanvasLogs(db, canvas.id).at(-1)!.message, /第 1 次查询/);
 const secret = 'sk-abcdefghijklmnopqrstuvwxyz123456';
 update({ phase: 'download_failed', errorCode: 'download_error',
   errorMessage: `下载异常 ${secret} https://bucket.example/x?q-signature=private-secret&token=hidden` });

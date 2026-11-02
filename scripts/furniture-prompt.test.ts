@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFurniturePrompt, updateFurniturePrompt } from '../lib/furniture-prompt.ts';
+import { readFurniturePrompt, updateFurniturePrompt, syncShotPromptFromScene } from '../lib/furniture-prompt.ts';
 
 const scene = '保持图中书柜的一致性不变，更换其他家具和软装布置，风格参考原图，让书房温馨舒适，全景图';
 assert.deepEqual(readFurniturePrompt(scene), { furniture: '书柜', room: '书房' });
@@ -21,3 +21,6 @@ assert.equal(updateFurniturePrompt('完全自定义的提示词', 'furniture', '
 assert.equal(updateFurniturePrompt(scene, 'room', ''), scene);
 
 console.log('furniture-prompt tests passed');
+
+assert.equal(syncShotPromptFromScene(scene, shot), shot.replace('图中床和模特', '图中书柜和模特').replace('更换卧室', '更换书房'));
+assert.equal(syncShotPromptFromScene(scene, '完全自定义的提示词'), '完全自定义的提示词');

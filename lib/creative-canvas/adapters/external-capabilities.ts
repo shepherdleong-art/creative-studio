@@ -1,3 +1,4 @@
+import { PACKY_IMAGE_MODEL_OPTIONS } from '../../image-model-capabilities.ts';
 import { SEEDREAM_5_PRO, SEEDREAM_PROVIDER_ID, SEEDREAM_RATIOS } from '../../seedream-image.ts';
 import { directSeedanceCapability } from './seedance-capabilities.ts';
 import { SEEDANCE_20, SEEDANCE_25 } from '../../video-providers/seedance-contract.ts';
@@ -75,23 +76,43 @@ export function registerExternalCanvasCapabilities(
   register: (capability: CanvasModelCapability) => unknown,
 ): string[] {
   const registered: string[] = [];
-  for (const spec of EXTERNAL_MODEL_SPECS) {
-    try {
-      const row = spec.table === 'providers'
-        ? db.prepare(`SELECT enabled, apiKey, type, model FROM providers WHERE id = ?`).get(spec.providerId)
-        : db.prepare(`SELECT enabled, apiKey, type FROM video_providers WHERE id = ?`).get(spec.providerId);
-      const typed = row as { enabled?: number; apiKey?: string; type?: string; model?: string } | undefined;
-      if (!typed || Number(typed.enabled) !== 1 || !String(typed.apiKey ?? '').trim()) continue;
-      if (spec.table === 'video_providers' && typed.type !== 'jimeng') continue;
-      if (spec.table === 'providers') {
-        const supportedTypes = spec.providerId === SEEDREAM_PROVIDER_ID
-          ? ['ark-images'] : ['packy-images', 'openai-compatible'];
-        if (typed.model !== spec.capability.modelAlias || !supportedTypes.includes(typed.type ?? '')) continue;
+  const publish = (template: CanvasModelCapability, row: { id: string; name: string }, model = template.modelAlias) => {
+    const canonical = row.id === template.providerIdentity && model === template.modelAlias;
+    const capability: CanvasModelCapability = {
+      ...template,
+      key: canonical ? template.key : `${template.key}:provider:${encodeURIComponent(row.id)}:model:${encodeURIComponent(model)}`,
+      providerIdentity: row.id, modelAlias: model,
+      displayName: template.mediaKind === 'video' ? `${row.name} · ${model === SEEDANCE_25 ? 'Seedance 2.5' : 'Seedance 2.0'}` : row.name,
+      ...(canonical ? {} : { evidence: 'mapped', evidenceNote: '复用已接入的精确模型协议；此供应商行尚未做真实画布生成验收。' }),
+    };
+    register(capability);
+    registered.push(capability.key);
+  };
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'providers'").get()) {
+    const rows = db.prepare(`SELECT id, name, type, model FROM providers
+      WHERE enabled = 1 AND length(trim(apiKey)) > 0 AND length(trim(baseUrl)) > 0 ORDER BY name, id`)
+      .all() as Array<{ id: string; name: string; type: string; model: string }>;
+    for (const row of rows) {
+      const seedream = EXTERNAL_MODEL_SPECS.find((spec) => spec.providerId === SEEDREAM_PROVIDER_ID)!;
+      const images = EXTERNAL_MODEL_SPECS.find((spec) => spec.capability.modelAlias === 'gpt-image-2')!;
+      if (row.type === 'ark-images' && row.model === SEEDREAM_5_PRO) publish(seedream.capability, row);
+      else if (['packy-images', 'openai-compatible'].includes(row.type) && PACKY_IMAGE_MODEL_OPTIONS.some((entry) => entry.model === row.model)) {
+        publish(images.capability, row, row.model);
+      } else if (row.type === 'packy-gemini-image' && PACKY_IMAGE_MODEL_OPTIONS.some((entry) => entry.model === row.model && entry.model.startsWith('gemini-'))) {
+        publish({ ...images.capability, key: `external-gemini-image:${encodeURIComponent(row.model)}`,
+          evidence: 'mapped', evidenceNote: '复用主项目 Gemini 图片聊天协议，提示词按画布原文提交。',
+          parameters: images.capability.parameters.map((parameter) => parameter.key === 'resolution' && row.model.endsWith('-2k')
+            ? { ...parameter, options: ['2K'], default: '2K' } : parameter),
+        }, row, row.model);
       }
-      register(spec.capability);
-      registered.push(spec.capability.key);
-    } catch {
-      // 供应商表缺失或读取失败时不注册，也不影响画布其它能力
+    }
+  }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'video_providers'").get()) {
+    const rows = db.prepare(`SELECT id, name FROM video_providers
+      WHERE type = 'jimeng' AND enabled = 1 AND length(trim(apiKey)) > 0 AND length(trim(baseUrl)) > 0 ORDER BY name, id`)
+      .all() as Array<{ id: string; name: string }>;
+    for (const row of rows) {
+      for (const model of [SEEDANCE_20, SEEDANCE_25] as const) publish(directSeedanceCapability(model), row);
     }
   }
   return registered;

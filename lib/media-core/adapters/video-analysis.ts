@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { runFfmpeg, probeDurationSec } from '../../ffmpeg.ts';
 import { detectVideoScenes } from '../scene-detect.ts';
-import { buildVideoAnalysisPrompt, buildVideoFrameSamples } from './video-analysis-prompt.ts';
+import { buildVideoAnalysisPrompt, buildVideoFrameSamples, type VideoFrameSample } from './video-analysis-prompt.ts';
 
 interface RawAnalysis {
   summary?: unknown;
@@ -29,15 +29,31 @@ export async function analyzeVideoWithVision(input: {
   const durationUs = Math.round(durationSec * 1_000_000);
   const detectedScenes = await detectVideoScenes({ filePath: input.filePath, durationUs, signal: input.signal });
   fs.mkdirSync(input.cacheDir, { recursive: true });
-  const images: Array<{ mimeType: string; imageBase64: string }> = [];
-  const frames = buildVideoFrameSamples(detectedScenes);
-  for (const frame of frames) {
-    if (input.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    const timeSec = frame.timeUs / 1_000_000;
-    const output = path.join(input.cacheDir, `${frame.timeUs}.jpg`);
-    await runFfmpeg(['-ss', timeSec.toFixed(6), '-i', input.filePath, '-frames:v', '1', '-vf', 'scale=1280:1280:force_original_aspect_ratio=decrease', '-q:v', '3', '-y', output], { timeoutMs: 60_000, signal: input.signal });
-    images.push({ mimeType: 'image/jpeg', imageBase64: fs.readFileSync(output).toString('base64') });
+  const extracted: Array<{ frame: VideoFrameSample; image: { mimeType: string; imageBase64: string } }> = [];
+  for (const frame of buildVideoFrameSamples(detectedScenes)) {
+    const scene = detectedScenes[frame.sceneIndex];
+    // 容器/音轨可比视频长；FFmpeg 在最后一帧之后 seek 会退出 0 却不写图片。
+    // 只在当前场景内有限回退，单帧短片最终尝试场景起点，不拿其他场景冒充。
+    const candidates = [...new Set([frame.timeUs, frame.timeUs - 100_000, frame.timeUs - 500_000, scene.startUs]
+      .map(timeUs => Math.max(scene.startUs, timeUs)))];
+    let found = false;
+    for (const timeUs of candidates) {
+      if (input.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      const output = path.join(input.cacheDir, `${timeUs}.jpg`);
+      // 重试不能把之前遗留的图片当作本次抽帧成功。
+      fs.rmSync(output, { force: true });
+      await runFfmpeg(['-ss', (timeUs / 1_000_000).toFixed(6), '-i', input.filePath, '-frames:v', '1', '-vf', 'scale=1280:1280:force_original_aspect_ratio=decrease', '-q:v', '3', '-y', output], { timeoutMs: 60_000, signal: input.signal });
+      if (input.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      if (!fs.existsSync(output) || fs.statSync(output).size === 0) continue;
+      extracted.push({ frame: { ...frame, timeUs }, image: { mimeType: 'image/jpeg', imageBase64: fs.readFileSync(output).toString('base64') } });
+      found = true;
+      break;
+    }
+    if (!found) throw new Error(`素材画面抽取失败：场景 ${frame.sceneIndex + 1} 在 ${(frame.timeUs / 1_000_000).toFixed(3)} 秒及场景内回退位置均未生成图片，请检查视频画面是否可解码`);
   }
+  extracted.sort((left, right) => left.frame.timeUs - right.frame.timeUs);
+  const frames = extracted.map(({ frame }, index) => ({ ...frame, imageIndex: index + 1 }));
+  const images = extracted.map(({ image }) => image);
   const { completeJson } = await import('../../script-providers/index.ts');
   const result = await completeJson<RawAnalysis>({
     providerId: input.providerId,

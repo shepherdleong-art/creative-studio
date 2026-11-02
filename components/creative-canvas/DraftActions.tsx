@@ -29,18 +29,18 @@ export function DraftActions({ assetId, controller, position, bound = false }: {
   return <div className="mt-2 text-[11px] text-ink-secondary" data-testid="draft-source">
     {tailAction}
     <div>{bound ? '固定样片' : '样片'} · {source.taskId.slice(0, 8)} · {expired ? '已过期，可下载原片' : `有效至 ${new Date(source.expiresAt).toLocaleString('zh-CN')}`}</div>
-    {bound ? <div>直连方舟 · Seedance 2.5 · 时长 {source.parameters.durationSec === -1 ? '自动' : `${source.parameters.durationSec ?? 5} 秒`} · 比例 {String(source.parameters.aspectRatio ?? '跟随素材')} · 声音 {(source.parameters.withAudio ?? true) ? '开启' : '关闭'}。仅单点运行会生成正式视频。</div> : null}
+    {bound ? <div>已绑定样片，无需连线。点击“生成”即可生成正式版。时长 {source.parameters.durationSec === -1 ? '自动' : `${source.parameters.durationSec ?? 5} 秒`} · 比例 {String(source.parameters.aspectRatio ?? '跟随素材')} · 声音 {(source.parameters.withAudio ?? true) ? '开启' : '关闭'}。</div> : null}
     {!bound && !expired ? <button type="button" className="nodrag sc-canvas-button mt-1" onClick={async () => {
       const id = await controller.addNode('video-generation', position);
       if (id) controller.updateNodeData(id, {
-        title: '样片转正式', modelKey: 'external-jimeng-seedance-2-5',
+        title: '生成正式版', modelKey: source.capabilityKey || 'external-jimeng-seedance-2-5',
         generationMode: source.generationMode as CanvasGenerationMode, prompt: '', references: [],
         parameters: { generationStage: 'final-from-draft', draftAssetId: source.assetId, resolution: '1080p', outputFormat: 'mp4', watermark: false, returnLastFrame: false },
       });
-    }}>基于此样片生成正式视频</button> : null}
+    }}>生成正式版</button> : null}
     {expired ? <button type="button" className="nodrag sc-canvas-button mt-1" onClick={async () => {
       const id = await controller.addNode('video-generation', position);
-      if (id) controller.updateNodeData(id, { title: '重新生成样片', prompt: source.prompt, modelKey: 'external-jimeng-seedance-2-5', generationMode: source.generationMode as CanvasGenerationMode,
+      if (id) controller.updateNodeData(id, { title: '重新生成样片', prompt: source.prompt, modelKey: source.capabilityKey || 'external-jimeng-seedance-2-5', generationMode: source.generationMode as CanvasGenerationMode,
         parameters: { ...source.parameters, generationStage: 'draft', resolution: '480p' } });
     }}>新建样片节点（重新连接素材）</button> : null}
   </div>;
