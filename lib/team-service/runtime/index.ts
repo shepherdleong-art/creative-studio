@@ -4,6 +4,8 @@ import { getDb } from '../../db.ts';
 import { schemaUpgradeRuntimePaths } from '../../schema-upgrade/runtime.ts';
 import { createTeamExecutionRuntime, createTeamServiceBootstrap, type TeamServiceBootstrap } from '../bootstrap.ts';
 import { ExecutionError, type ExecutionFacade, type ExecutionRuntime } from '../../media-core/execution/context.ts';
+import { clearExecutionModuleRuntime, setExecutionModuleRuntime } from '../../media-core/execution/module-runtime.ts';
+import { createScriptGenerationV3Lifecycle } from '../../script-generation-v3-server.ts';
 import { ensureServerDeploymentMarker, readRuntimeConfig } from '../config.ts';
 import { acquireTeamRuntimeOwner, type TeamRuntimeOwner } from './owner.ts';
 import {
@@ -46,6 +48,7 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
         identity: owner,
         db,
         execution,
+        modules: [createScriptGenerationV3Lifecycle(db)],
         ...schemaUpgradeRuntimePaths(dataRoot()),
         assertOwnerActive: () => {
           owner?.assertActive();
@@ -55,8 +58,14 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
       await bootstrap.ensureSchemaReady();
       await bootstrap.registerRecovery();
       await bootstrap.recover();
+      setExecutionModuleRuntime({
+        facade: execution.facade,
+        instanceId: owner.instanceId,
+        fence: owner.fence,
+      });
       await bootstrap.start();
     } catch (error) {
+      clearExecutionModuleRuntime();
       execution?.closeNewWork();
       const code = error instanceof Error && 'code' in error ? String(error.code) : 'bootstrap_failed';
       markTeamRuntimeFailed(code);
@@ -89,6 +98,7 @@ export async function drainTeamRuntime(timeoutMs: number): Promise<number> {
 
 export function releaseTeamRuntimeOwner(): void {
   draining = true;
+  clearExecutionModuleRuntime();
   execution?.closeNewWork();
   execution = null;
   owner?.release();

@@ -309,8 +309,12 @@ export async function settleAttempt(options: ExecutionFacadeOptions, input: Sett
             releaseReason = COALESCE(releaseReason, ?)
           WHERE permitId = ? AND kind = 'concurrency' AND state = 'held'
         `).run(at, input.outcome === 'not_created' ? 'confirmed_not_created' : 'remote_terminal', before.permitId);
-        options.db.prepare('UPDATE execution_operations SET status = ?, updatedAt = ? WHERE id = ?')
-          .run(input.outcome === 'not_created' ? 'pending' : input.outcome, at, operation.id);
+        options.db.prepare(`
+          UPDATE execution_operations SET status = ?, resultJson = COALESCE(?, resultJson), updatedAt = ? WHERE id = ?
+        `).run(
+          input.outcome === 'not_created' ? 'pending' : input.outcome,
+          input.result === undefined ? null : JSON.stringify(input.result), at, operation.id,
+        );
       }).immediate();
     }
     return readAttempt(options.db, before.id);

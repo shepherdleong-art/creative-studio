@@ -1,8 +1,26 @@
 /** 二级回退：LLM 提取卖点（复用素材分析 provider 通道）。供应商取组分析供应商或首个已配置脚本供应商。 */
-export async function extractSellingPointsWithLLM(narrationText: string, analysisProviderId?: string, signal?: AbortSignal): Promise<string[]> {
+export async function extractSellingPointsWithLLM(
+  narrationText: string,
+  analysisProviderId?: string,
+  signal?: AbortSignal,
+  execution?: {
+    taskId: string;
+    scope: { resourceType: string; resourceId: string };
+  },
+): Promise<string[]> {
   const text = (narrationText || '').trim();
   if (!text) return [];
-  let completeJson: ((input: { providerId: string; systemPrompt: string; userPrompt: string; temperature?: number; maxTokens?: number; timeoutMs?: number; signal?: AbortSignal }) => Promise<{ points?: unknown }>) | undefined;
+  let completeJson: ((input: {
+    providerId: string;
+    systemPrompt: string;
+    userPrompt: string;
+    temperature?: number;
+    maxTokens?: number;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    usageContext?: { projectId?: string; refType: string; refId: string };
+    executionContext?: { taskId: string; step: string; scope: { resourceType: string; resourceId: string } };
+  }) => Promise<{ points?: unknown }>) | undefined;
   let providerId: string | null = null;
   try {
     const mod = await import('../script-providers/index.ts');
@@ -21,6 +39,16 @@ export async function extractSellingPointsWithLLM(narrationText: string, analysi
       maxTokens: 1200,
       timeoutMs: 30_000,
       signal,
+      usageContext: execution ? {
+        projectId: execution.scope.resourceType === 'project' ? execution.scope.resourceId : undefined,
+        refType: 'packaging-extraction',
+        refId: execution.taskId,
+      } : undefined,
+      executionContext: execution ? {
+        taskId: execution.taskId,
+        step: 'extract:1',
+        scope: execution.scope,
+      } : undefined,
     });
     const points = Array.isArray(result?.points) ? result.points.map(String).filter(Boolean) : [];
     return points;

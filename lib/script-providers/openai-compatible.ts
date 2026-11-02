@@ -11,10 +11,12 @@ import { createScriptProviderRequestControl } from './request-control.ts';
 import {
   beginLlmUsageCall,
   finishLlmUsageCall,
+  llmTransportActualCost,
   type LlmUsageContext,
 } from '../usage-llm.ts';
 import { readSseStream } from './sse.ts';
 import { safeProviderErrorHint } from './error-diagnostics.ts';
+import { runLlmTransport, type LlmExecutionTransport } from './transport-execution.ts';
 
 const DEFAULT_CHAT_TIMEOUT_MS = 120_000;
 
@@ -66,6 +68,8 @@ export interface ChatOptions {
   images?: ChatImagePart[];
   /** 仅由脚本注册入口为精确公司 GPT 调用启用的内部 usage 记账标记。 */
   usageContext?: LlmUsageContext;
+  /** server 统一执行传输；local 不注入，保留原适配器行为。 */
+  executionTransport?: LlmExecutionTransport;
 }
 
 /** Normalizes a (trailing-slash-stripped) base URL to the /chat/completions endpoint. */
@@ -137,7 +141,7 @@ export async function chatCompletion(
     // 显式传其他值会被上游 400 拒绝。命中该特征错误时改传 temperature=1 重试一次，
     // 并记入进程内名单，后续调用直接固定 temperature=1。
     const serializedPrompt = JSON.stringify(body.messages);
-    const send = async (requestBody: Record<string, unknown>) => {
+    const perform = async (requestBody: Record<string, unknown>) => {
       const usageAttempt = runtime
         ? beginLlmUsageCall(runtime, String(requestBody.model || model), options.usageContext)
         : null;
@@ -150,78 +154,91 @@ export async function chatCompletion(
         body: JSON.stringify(requestBody),
         signal: requestControl.signal,
       });
-      return { response, usageAttempt };
+      if (!response.ok) return { response, errText: await response.text(), rawText: '' };
+      if (streaming) {
+        if (!response.body) throw new Error(`${config.name} 返回了空响应流`);
+        const streamed = await readStreamingChatResponse(response.body, requestControl.signal, {
+          onTextDelta: options.onTextDelta,
+          onReasoningDelta: options.onReasoningDelta,
+        });
+        finishLlmUsageCall(usageAttempt, {
+          usage: streamed.usage,
+          serializedPrompt,
+          rawOutput: streamed.text,
+          hasImages: Boolean(options.images?.length),
+        });
+        if (!streamed.text.trim()) throw new Error(`${config.name} 返回了空响应`);
+        return { response, errText: '', rawText: streamed.text };
+      }
+      const rawResponse = await response.text();
+      let data: {
+        choices?: Array<{ message?: { content?: string } }>;
+        usage?: unknown;
+      };
+      try {
+        const parsed: unknown = JSON.parse(rawResponse);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('response body is not an object');
+        data = parsed as typeof data;
+      } catch {
+        finishLlmUsageCall(usageAttempt, {
+          usage: undefined,
+          serializedPrompt,
+          rawOutput: rawResponse,
+          hasImages: Boolean(options.images?.length),
+        });
+        throw new Error(`${config.name} 返回了无效响应 JSON`);
+      }
+      const rawText = typeof data.choices?.[0]?.message?.content === 'string'
+        ? data.choices[0].message.content
+        : '';
+      finishLlmUsageCall(usageAttempt, {
+        usage: data.usage,
+        serializedPrompt,
+        rawOutput: rawText,
+        hasImages: Boolean(options.images?.length),
+      });
+      if (!rawText.trim()) throw new Error(`${config.name} 返回了空响应`);
+      return { response, errText: '', rawText };
+    };
+    const temperatureRejected = (requestBody: Record<string, unknown>, status: number, errText: string) => status === 400
+      && 'temperature' in requestBody
+      && /temperature/i.test(errText)
+      && /does not support|unsupported value|not supported/i.test(errText);
+    const send = async (requestBody: Record<string, unknown>, retryKind: 'initial' | 'protocol_fallback' = 'initial') => {
+      if (!options.executionTransport) return perform(requestBody);
+      return runLlmTransport(options.executionTransport, {
+        requestSnapshot: requestBody,
+        retryKind,
+        send: async () => {
+          const performed = await perform(requestBody);
+          const rejected = !performed.response.ok
+            && temperatureRejected(requestBody, performed.response.status, performed.errText);
+          return {
+            value: performed,
+            terminalState: performed.response.ok ? 'succeeded' : 'failed',
+            result: performed.response.ok ? performed.rawText : undefined,
+            actualCost: performed.response.ok
+              ? runtime ? llmTransportActualCost(runtime, String(requestBody.model || model)) : null
+              : rejected ? { currency: 'CNY', minor: 0 } : null,
+            remoteTerminal: performed.response.ok || !rejected,
+            errorCode: performed.response.ok ? undefined : rejected ? 'temperature_rejected' : `http_${performed.response.status}`,
+          };
+        },
+      });
     };
 
-    const firstResponse = await send(body);
-    let res = firstResponse.response;
-    let usageAttempt = firstResponse.usageAttempt;
-    if (!res.ok) {
-      let errText = await res.text();
-      const temperatureRejected = res.status === 400
-        && 'temperature' in body
-        && /temperature/i.test(errText)
-        && /does not support|unsupported value|not supported/i.test(errText);
-      if (temperatureRejected) {
+    let performed = await send(body);
+    if (!performed.response.ok) {
+      const rejected = temperatureRejected(body, performed.response.status, performed.errText);
+      if (rejected) {
         defaultTemperatureOnlyModels.add(modelKey);
-        const fallbackBody = { ...body, temperature: 1 };
-        const fallbackResponse = await send(fallbackBody);
-        res = fallbackResponse.response;
-        usageAttempt = fallbackResponse.usageAttempt;
+        performed = await send({ ...body, temperature: 1 }, 'protocol_fallback');
       }
-      if (!res.ok) {
-        if (temperatureRejected) errText = await res.text();
-        // Only local diagnostic labels may enter persisted errors, never the
-        // upstream body (which can echo prompts, credentials or signed URLs).
-        throw new Error(`${config.name} (openai-compatible) 请求失败（HTTP ${res.status}）：${safeProviderErrorHint(errText)}`);
+      if (!performed.response.ok) {
+        throw new Error(`${config.name} (openai-compatible) 请求失败（HTTP ${performed.response.status}）：${safeProviderErrorHint(performed.errText)}`);
       }
     }
-
-    if (streaming) {
-      if (!res.body) throw new Error(`${config.name} 返回了空响应流`);
-      const streamed = await readStreamingChatResponse(res.body, requestControl.signal, {
-        onTextDelta: options.onTextDelta,
-        onReasoningDelta: options.onReasoningDelta,
-      });
-      finishLlmUsageCall(usageAttempt, {
-        usage: streamed.usage,
-        serializedPrompt,
-        rawOutput: streamed.text,
-        hasImages: Boolean(options.images?.length),
-      });
-      if (!streamed.text.trim()) throw new Error(`${config.name} 返回了空响应`);
-      return streamed.text;
-    }
-
-    const rawResponse = await res.text();
-    let data: {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: unknown;
-    };
-    try {
-      const parsed: unknown = JSON.parse(rawResponse);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('response body is not an object');
-      data = parsed as typeof data;
-    } catch {
-      finishLlmUsageCall(usageAttempt, {
-        usage: undefined,
-        serializedPrompt,
-        rawOutput: rawResponse,
-        hasImages: Boolean(options.images?.length),
-      });
-      throw new Error(`${config.name} 返回了无效响应 JSON`);
-    }
-    const rawText = typeof data.choices?.[0]?.message?.content === 'string'
-      ? data.choices[0].message.content
-      : '';
-    finishLlmUsageCall(usageAttempt, {
-      usage: data.usage,
-      serializedPrompt,
-      rawOutput: rawText,
-      hasImages: Boolean(options.images?.length),
-    });
-    if (!rawText.trim()) throw new Error(`${config.name} 返回了空响应`);
-    return rawText;
+    return performed.rawText;
   } catch (error) {
     return requestControl.rethrow(error);
   } finally {

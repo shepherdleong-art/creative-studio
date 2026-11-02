@@ -32,6 +32,7 @@ export function resolveRuntimeProviders(requestedProviderId?: string | null): {
 }
 
 function providerCompleteJson(providerId: string, model: string, projectId: string, taskId: string, refType: string) {
+  let sequence = 0;
   return (input: ScriptStudioCompleteJsonRequest) => completeJson({
     providerId,
     model,
@@ -41,6 +42,11 @@ function providerCompleteJson(providerId: string, model: string, projectId: stri
       projectId,
       refType,
       refId: taskId,
+    },
+    executionContext: {
+      taskId,
+      step: `${refType}:${++sequence}`,
+      scope: { resourceType: 'project', resourceId: projectId },
     },
   } as Parameters<typeof completeJson>[0]);
 }

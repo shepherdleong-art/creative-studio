@@ -219,6 +219,10 @@ export async function scoreBatchSemanticMatrix(input: {
   sentences: readonly BatchSemanticSentence[];
   scenes: readonly BatchSemanticScene[];
   providerId: string;
+  execution?: {
+    taskId: string;
+    scope: { resourceType: string; resourceId: string };
+  };
   /** 测试注入;默认 buildSemanticMatrixPrompt + completeJson(纯文本,无 COS 门禁)。 */
   score?: (chunk: BatchSemanticScoreChunk) => Promise<unknown>;
   model?: string;
@@ -240,6 +244,16 @@ export async function scoreBatchSemanticMatrix(input: {
       // 思考占满、可见输出为空（finish_reason=length），矩阵解析必败。
       maxTokens: 8000,
       signal: input.signal,
+      usageContext: input.execution ? {
+        projectId: input.execution.scope.resourceType === 'project' ? input.execution.scope.resourceId : undefined,
+        refType: 'batch-semantic-match',
+        refId: input.execution.taskId,
+      } : undefined,
+      executionContext: input.execution ? {
+        taskId: input.execution.taskId,
+        step: `semantic:${input.sentences.indexOf(chunk.sentences[0]!)}:${input.scenes.indexOf(chunk.scenes[0]!)}`,
+        scope: input.execution.scope,
+      } : undefined,
     });
   });
   const scores: BatchSemanticScoreMap = {};
