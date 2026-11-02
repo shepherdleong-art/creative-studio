@@ -28,7 +28,10 @@ import { SEEDANCE_25 } from './video-providers/seedance-contract.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
 import { registerManagedFile } from './media-core/access-context.ts';
 import {
+  assertLegacyMediaProviderRecovery,
   cancelLegacyMediaNewStage,
+  failLegacyMediaOperation,
+  isLegacyMediaProviderRecoveryBlocked,
   isLegacyMediaSubmissionUnknown,
   isServerMediaExecution,
   legacyMediaExecutionRevision,
@@ -468,6 +471,17 @@ async function runAuthorizedVideoJob(
     if (!provider) throw new Error('Video provider not found');
 
     const runtime = resolveVideoProviderRuntimeConfig(provider);
+    const credentialIdentity = provider.type === 'kling'
+      ? `${runtime.accessKey}\0${runtime.secretKey}`
+      : runtime.apiKey;
+    const providerSnapshot = {
+      providerId: provider.id, type: provider.type, model: job.model, baseUrl: runtime.baseUrl,
+    };
+    assertLegacyMediaProviderRecovery({
+      module: 'video', taskId: job.id,
+      inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+      providerSnapshot, credentialIdentity,
+    });
     let apiKey = runtime.apiKey;
     if (!runtime.enabled) {
       throw new Error('Video provider is disabled. Enable it in Settings before running jobs.');
@@ -538,14 +552,10 @@ async function runAuthorizedVideoJob(
           providerType: provider!.type, generationMode: job.generationMode,
           model: job.model, durationSec: job.durationSec,
         },
-        providerSnapshot: {
-          providerId: provider!.id, type: provider!.type, model: job.model, baseUrl: runtime.baseUrl,
-        },
+        providerSnapshot,
         baseUrl: runtime.baseUrl,
         apiKey,
-        credentialIdentity: provider!.type === 'kling'
-          ? `${runtime.accessKey}\0${runtime.secretKey}`
-          : runtime.apiKey,
+        credentialIdentity,
         quote: reserveMinor === null
           ? { kind: 'unpriced' }
           : { kind: 'priced', reserve: { currency: 'CNY', minor: reserveMinor }, pricingSnapshot: usageSnapshot },
@@ -848,7 +858,7 @@ async function runAuthorizedVideoJob(
     const errorMessage = (err instanceof Error ? err.message : String(err)).slice(0, 2000);
     logError(`Video job failed: ${errorMessage}`);
 
-    if (isServerMediaExecution() && isLegacyMediaSubmissionUnknown(err)) {
+    if (isServerMediaExecution() && (isLegacyMediaSubmissionUnknown(err) || isLegacyMediaProviderRecoveryBlocked(err))) {
       db.prepare(`UPDATE video_jobs SET status = 'needs_check', providerStatus = 'unknown', errorMessage = ?, finishedAt = datetime('now')
         WHERE id = ? AND status = 'running'`).run(`${errorMessage}。提交结果未知，已禁止自动重发。`, job.id);
       return;
@@ -890,6 +900,9 @@ async function runAuthorizedVideoJob(
     }
 
     if (attempt >= effectiveMaxAttempts) {
+      failLegacyMediaOperation({
+        module: 'video', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+      });
       db.prepare(
         `UPDATE video_jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
          WHERE id = ? AND status = 'running'`

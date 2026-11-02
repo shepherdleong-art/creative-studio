@@ -19,7 +19,7 @@ Object.assign(process.env, {
   CREATIVE_STUDIO_TRUSTED_ORIGIN: 'https://studio.example.test',
 });
 
-const [{ getDb, closeDb }, { startTeamServiceRuntime, releaseTeamRuntimeOwner }, queue, videoQueue, videoProviders] = await Promise.all([
+const [{ getDb, closeDb }, { startTeamServiceRuntime, drainTeamRuntime, releaseTeamRuntimeOwner, getTeamExecutionFacade }, queue, videoQueue, videoProviders] = await Promise.all([
   import('../lib/db.ts'),
   import('../lib/team-service/runtime/index.ts'),
   import('../lib/queue.ts'),
@@ -143,6 +143,12 @@ const fake = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'POST' && req.url === '/packy-terminal/v1/images/edits') {
+    req.resume();
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'bad request' } }));
+    return;
+  }
   req.resume();
   res.writeHead(404).end();
 });
@@ -189,6 +195,71 @@ try {
   `).pluck().get(sharedPoolKey) as number;
   assert.equal(held, 0, '远端明确终态后必须释放共享生成池，而不是等本地下载或进程退出');
   console.log('legacy media shared-pool test passed');
+
+  const canvasOperation = getTeamExecutionFacade().enqueue({
+    operationKey: 'canvas/canvas-before-legacy/submit/r0',
+    actor: { userId: 'member-image' },
+    scope: { resourceType: 'project', resourceId: 'project-image' },
+    module: 'canvas', taskId: 'canvas-before-legacy', step: 'submit', inputRevision: 'r0',
+    businessAttempt: { id: 'canvas-before-legacy:r0', number: 1 },
+    inputSnapshot: { canvasId: 'canvas-before-legacy' }, inputHash: 'canvas-before-legacy',
+    continuationKey: 'canvas.submit', providerSnapshot: { providerId: 'shared-image' },
+    requiredPools: [sharedPoolKey], quote: { kind: 'unpriced' },
+  });
+  imageJob('job-after-canvas', 'project-image', 'member-image');
+  const orderedRun = queue.runQueue({
+    projectId: 'project-image', jobId: 'job-after-canvas', concurrency: 1, maxAttempts: 1, timeoutMs: 60_000,
+  });
+  try {
+    const outcome = await Promise.race([
+      orderedRun.then(() => 'done'),
+      sleep(500).then(() => 'timeout'),
+    ]);
+    assert.equal(outcome, 'done', '旧媒体不得截留先就绪的 canvas grant 后永久等待');
+    assert.equal((db.prepare('SELECT status FROM execution_operations WHERE id = ?').pluck()
+      .get(canvasOperation.operation.id) as string), 'pending', 'canvas operation 必须留给自己的 continuation');
+    assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-after-canvas'").pluck().get() as string), 'succeeded');
+  } finally {
+    queue.cancelQueue('project-image');
+    await orderedRun;
+  }
+  console.log('legacy media directed-admission test passed');
+
+  provider('terminal-image', 'openai-compatible', `${baseUrl}/terminal`);
+  member('member-terminal');
+  project('project-terminal', 'member-terminal', 'terminal-image');
+  imageJob('job-terminal', 'project-terminal', 'member-terminal', 'terminal-image');
+  db.prepare("UPDATE jobs SET maxAttempts = 1 WHERE id = 'job-terminal'").run();
+  await queue.runQueue({ projectId: 'project-terminal', concurrency: 1, maxAttempts: 1, timeoutMs: 60_000 });
+  const terminalFailure = db.prepare("SELECT status, errorMessage FROM jobs WHERE id = 'job-terminal'").get() as { status: string; errorMessage: string };
+  assert.equal(terminalFailure.status, 'failed', terminalFailure.errorMessage);
+  imageJob('job-after-terminal', 'project-terminal', 'member-terminal', 'shared-image');
+  await queue.runQueue({
+    projectId: 'project-terminal', jobId: 'job-after-terminal', concurrency: 1, maxAttempts: 1, timeoutMs: 60_000,
+  });
+  assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-after-terminal'").pluck().get() as string), 'succeeded');
+  const terminalOperation = db.prepare(`SELECT id, status FROM execution_operations
+    WHERE module = 'image' AND taskId = 'job-terminal'`).get() as { id: string; status: string };
+  const terminalAdmission = getTeamExecutionFacade().admit({
+    instanceId: 'legacy-media-test-instance', fence: 1, operationId: terminalOperation.id,
+  });
+  assert.equal(terminalAdmission.kind, 'idle', 'maxAttempts 耗尽的旧 operation 不得再次占名额');
+  assert.equal(terminalOperation.status, 'failed', '业务终态必须保留失败台账');
+
+  provider('terminal-packy', 'packy-images', `${baseUrl}/packy-terminal`);
+  imageJob('job-terminal-packy', 'project-terminal', 'member-terminal', 'terminal-packy');
+  db.prepare("UPDATE jobs SET maxAttempts = 1 WHERE id = 'job-terminal-packy'").run();
+  await queue.runQueue({
+    projectId: 'project-terminal', jobId: 'job-terminal-packy', concurrency: 1, maxAttempts: 1, timeoutMs: 60_000,
+  });
+  const packyTerminalOperation = db.prepare(`SELECT id, status FROM execution_operations
+    WHERE module = 'image' AND taskId = 'job-terminal-packy'`).get() as { id: string; status: string };
+  assert.equal(packyTerminalOperation.status, 'failed', 'Packy 明确不可重试终态也必须关闭旧 operation');
+  const packyTerminalAdmission = getTeamExecutionFacade().admit({
+    instanceId: 'legacy-media-test-instance', fence: 1, operationId: packyTerminalOperation.id,
+  });
+  assert.equal(packyTerminalAdmission.kind, 'idle');
+  console.log('legacy media terminal-operation test passed');
 
   provider('legacy-unknown-image', 'openai-compatible', `${baseUrl}/legacy-unknown`);
   member('member-legacy-unknown');
@@ -264,8 +335,53 @@ try {
   assert.equal(syncImageDownloads, 2, '重启只补下载');
   assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-sync-url'").pluck().get() as string), 'succeeded');
   console.log('legacy media synchronous URL download recovery test passed');
+
+  member('member-frozen');
+  project('project-frozen', 'member-frozen', 'shared-image');
+  videoJob('job-frozen', 'project-frozen', 'member-frozen');
+  const frozenPolls: Array<{ apiKey: string; baseUrl: string }> = [];
+  let providerChanged = false;
+  videoProviders.registerTestVideoAdapter('openai-video', {
+    submit: async () => ({ providerTaskId: 'remote-frozen', rawResponse: null }),
+    poll: async (_taskId, apiKey, pollBaseUrl) => {
+      frozenPolls.push({ apiKey, baseUrl: pollBaseUrl });
+      if (providerChanged) return { status: 'failed', errorMessage: 'must not poll changed identity', rawResponse: null };
+      return { status: 'processing', rawResponse: null };
+    },
+    minimumPollingTimeoutMs: () => 0,
+  });
+  const frozenRun = videoQueue.runVideoQueue({ projectId: 'project-frozen', concurrency: 1, timeoutMs: 60_000 });
+  const frozenAcceptedDeadline = Date.now() + 2_000;
+  while (Date.now() < frozenAcceptedDeadline) {
+    const remoteId = db.prepare("SELECT providerTaskId FROM video_jobs WHERE id = 'job-frozen'").pluck().get() as string | null;
+    if (remoteId === 'remote-frozen') break;
+    await sleep(10);
+  }
+  assert.equal((db.prepare("SELECT providerTaskId FROM video_jobs WHERE id = 'job-frozen'").pluck().get() as string), 'remote-frozen');
+  videoQueue.cancelVideoQueue('project-frozen');
+  await frozenRun;
+  const frozenPollsBeforeConfigChange = frozenPolls.length;
+  const frozenExecution = db.prepare(`SELECT providerSnapshotJson, configVersion, credentialVersionRef
+    FROM execution_operations WHERE module = 'video' AND taskId = 'job-frozen'`).get() as {
+    providerSnapshotJson: string; configVersion: string | null; credentialVersionRef: string | null;
+  };
+  assert.equal((JSON.parse(frozenExecution.providerSnapshotJson) as { baseUrl: string }).baseUrl, baseUrl);
+  assert.ok(frozenExecution.configVersion, '操作建立时必须冻结供应商配置版本');
+  assert.ok(frozenExecution.credentialVersionRef, '操作建立时必须冻结受保护凭据版本引用');
+  providerChanged = true;
+  db.prepare("UPDATE video_providers SET baseUrl = ?, apiKey = 'changed-secret' WHERE id = 'shared-video'")
+    .run(`${baseUrl}/changed-default`);
+  await videoQueue.resumeVideoJobPolling('job-frozen');
+  assert.equal(frozenPolls.length, frozenPollsBeforeConfigChange, '在途任务不得使用管理员后来修改的账号续查');
+  const frozenRecovery = db.prepare("SELECT status, errorMessage FROM video_jobs WHERE id = 'job-frozen'").get() as {
+    status: string; errorMessage: string;
+  };
+  assert.equal(frozenRecovery.status, 'needs_check', frozenRecovery.errorMessage);
+  assert.match(frozenRecovery.errorMessage, /配置|凭据/, '无凭据版本解析设施时必须明确 fail closed');
+  console.log('legacy media frozen-provider recovery test passed');
 } finally {
   releaseImage();
+  await drainTeamRuntime(5_000);
   await releaseTeamRuntimeOwner();
   closeDb();
   await new Promise<void>((resolve) => fake.close(() => resolve()));

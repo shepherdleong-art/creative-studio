@@ -27,7 +27,10 @@ import path from 'path';
 import { dataRoot } from './data-root.ts';
 import fs from 'fs';
 import {
+  assertLegacyMediaProviderRecovery,
   cancelLegacyMediaNewStage,
+  failLegacyMediaOperation,
+  isLegacyMediaProviderRecoveryBlocked,
   isLegacyMediaSubmissionUnknown,
   isServerMediaExecution,
   legacyMediaExecutionRevision,
@@ -385,6 +388,15 @@ async function runAuthorizedJob(
       logInfo(`  图${ri + 2} 参考: ${path.basename(refApiPaths[ri])}`);
     }
 
+    const providerSnapshot = {
+      providerId: provider.id, type: providerType, model: job.model, baseUrl: provider.baseUrl,
+    };
+    assertLegacyMediaProviderRecovery({
+      module: 'image', taskId: job.id,
+      inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+      providerSnapshot, credentialIdentity: apiKey,
+    });
+
     // Create a per-request AbortController linked to the queue's abort signal
     const reqAbort = new AbortController();
     const onAbort = () => reqAbort.abort();
@@ -432,9 +444,7 @@ async function runAuthorizedJob(
           referenceGuidanceMode: job.referenceGuidanceMode || 'preserve_subject',
         },
         requestSnapshot: { providerType, model: job.model, size: job.size, quality: job.quality },
-        providerSnapshot: {
-          providerId: provider!.id, type: providerType, model: job.model, baseUrl: provider!.baseUrl,
-        },
+        providerSnapshot,
         baseUrl: provider!.baseUrl,
         apiKey,
         quote: reserveMinor === null
@@ -1131,7 +1141,7 @@ async function runAuthorizedJob(
       return;
     }
 
-    if (isServerMediaExecution() && isLegacyMediaSubmissionUnknown(err)) {
+    if (isServerMediaExecution() && (isLegacyMediaSubmissionUnknown(err) || isLegacyMediaProviderRecoveryBlocked(err))) {
       db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'unknown', errorMessage = ?, finishedAt = datetime('now')
         WHERE id = ? AND status = 'running'`).run(`${errorMessage}。提交结果未知，已禁止自动重发。`, job.id);
       logError('图片提交结果未知，进入 needs_check，禁止自动重发');
@@ -1156,6 +1166,9 @@ async function runAuthorizedJob(
 
       if (isNonRetryablePackyError(errorMessage)) {
         const msg = `${errorMessage}。${getNonRetryablePackyAdvice(errorMessage)}`;
+        failLegacyMediaOperation({
+          module: 'image', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+        });
         db.prepare(
           `UPDATE jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
            WHERE id = ? AND status = 'running'`
@@ -1179,6 +1192,9 @@ async function runAuthorizedJob(
     const effectiveMaxAttempts = job.maxAttempts || maxAttempts || 2;
 
     if (attempt >= effectiveMaxAttempts) {
+      failLegacyMediaOperation({
+        module: 'image', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+      });
       db.prepare(
         `UPDATE jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
          WHERE id = ? AND status = 'running'`

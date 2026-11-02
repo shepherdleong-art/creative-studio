@@ -88,9 +88,18 @@ try {
     assert.equal(current.providerRawResponse, old.providerRawResponse);
     assert.equal(current.usageSnapshotJson, old.usageSnapshotJson, `${id}: resuming the same task keeps its frozen usage snapshot`);
   }
-  fixture('never-submitted', { providerTaskId: null, providerStatus: null });
+  const neverSubmitted = fixture('never-submitted', { providerTaskId: null, providerStatus: null });
   assert.equal((await retry('never-submitted')).status, 200);
   assert.equal(read('never-submitted').providerTaskId, null);
+  assert.equal(read('never-submitted').executionRevision, neverSubmitted.executionRevision + 1,
+    'a retry after terminal submission failure must create a new execution operation');
+  const downloadOnly = fixture('download-only-no-task', {
+    providerTaskId: null, providerStatus: 'download_failed', remoteVideoUrl: 'https://example.com/video.mp4',
+    executionRevision: 4,
+  });
+  assert.equal((await retry(downloadOnly.id)).status, 200);
+  assert.equal(read(downloadOnly.id).executionRevision, downloadOnly.executionRevision,
+    'download-only recovery must keep the original execution operation');
   fixture('running', { status: 'running' });
   assert.equal((await retry('running')).status, 400);
   assert.equal((await retry('missing')).status, 404);

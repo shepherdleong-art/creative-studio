@@ -87,8 +87,6 @@ interface LegacyExecutionInjection {
 }
 
 const INJECTION_KEY = Symbol.for('creative-studio.legacy-media-execution');
-const readyGrants = new Map<string, ExecutionGrant>();
-let admissionChain: Promise<unknown> = Promise.resolve();
 
 function injection(): LegacyExecutionInjection {
   const value = (globalThis as unknown as Record<symbol, LegacyExecutionInjection | undefined>)[INJECTION_KEY];
@@ -99,11 +97,7 @@ function injection(): LegacyExecutionInjection {
 export function setLegacyMediaExecutionRuntime(value: LegacyExecutionInjection | null): void {
   const globals = globalThis as unknown as Record<symbol, LegacyExecutionInjection | undefined>;
   if (value) globals[INJECTION_KEY] = value;
-  else {
-    delete globals[INJECTION_KEY];
-    readyGrants.clear();
-    admissionChain = Promise.resolve();
-  }
+  else delete globals[INJECTION_KEY];
 }
 
 function canonical(value: unknown): string {
@@ -136,13 +130,24 @@ export class LegacyMediaNotCreatedError extends Error {
   }
 }
 
+export class LegacyMediaProviderRecoveryBlockedError extends Error {
+  constructor() {
+    super('在途任务的供应商配置或凭据版本已变化，缺少原凭据版本解析设施，已停止续查；恢复原配置后再试。');
+    this.name = 'LegacyMediaProviderRecoveryBlockedError';
+  }
+}
+
 export function isLegacyMediaSubmissionUnknown(error: unknown): error is LegacyMediaSubmissionUnknownError {
   return error instanceof LegacyMediaSubmissionUnknownError;
 }
 
+export function isLegacyMediaProviderRecoveryBlocked(error: unknown): error is LegacyMediaProviderRecoveryBlockedError {
+  return error instanceof LegacyMediaProviderRecoveryBlockedError;
+}
+
 function explicitNotCreated(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /(?:API error|submit error|HTTP[ )]+)(400|401|403|404|409|413|422)\b/i.test(message);
+  return /(?:API error|submit error|HTTP)[ )]*(400|401|403|404|409|413|422)\b/i.test(message);
 }
 
 function safeErrorCode(error: unknown): string {
@@ -159,18 +164,8 @@ async function admitFor(operationId: string, signal?: AbortSignal): Promise<Exec
   const { facade, instance } = injection();
   for (;;) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    const ready = readyGrants.get(operationId);
-    if (ready) {
-      readyGrants.delete(operationId);
-      return ready;
-    }
-    const pending = admissionChain.then(() => facade.admit(instance));
-    admissionChain = pending;
-    const result = await pending;
-    if (result.kind === 'admitted') {
-      if (result.grant.operation.id === operationId) return result.grant;
-      readyGrants.set(result.grant.operation.id, result.grant);
-    }
+    const result = facade.admit({ ...instance, operationId });
+    if (result.kind === 'admitted') return result.grant;
     await sleep(50);
   }
 }
@@ -184,6 +179,42 @@ function currentAttempt(operationId: string): AttemptRecord | null {
   return row ?? null;
 }
 
+export interface LegacyMediaProviderSnapshot {
+  providerId: string;
+  type: string;
+  model: string;
+  baseUrl: string;
+}
+
+export function assertLegacyMediaProviderRecovery(input: {
+  module: 'image' | 'video';
+  taskId: string;
+  inputRevision: string;
+  providerSnapshot: LegacyMediaProviderSnapshot;
+  credentialIdentity: string;
+}): void {
+  if (!isServerMediaExecution()) return;
+  const operationKey = `${input.module}/${input.taskId}/submit/${input.inputRevision}`;
+  const row = getDb().prepare(`
+    SELECT providerSnapshotJson, configVersion, credentialVersionRef FROM execution_operations
+    WHERE module = ? AND taskId = ? AND operationKey = ?
+  `).get(input.module, input.taskId, operationKey) as {
+    providerSnapshotJson: string; configVersion: string | null; credentialVersionRef: string | null;
+  } | undefined;
+  if (!row) return;
+  let frozenProvider: unknown;
+  try {
+    frozenProvider = JSON.parse(row.providerSnapshotJson);
+  } catch {
+    throw new LegacyMediaProviderRecoveryBlockedError();
+  }
+  const configVersion = row.configVersion ?? hash(frozenProvider);
+  const credentialVersion = upstreamFingerprint(input.providerSnapshot.baseUrl, input.credentialIdentity);
+  if (configVersion !== hash(input.providerSnapshot) || row.credentialVersionRef !== credentialVersion) {
+    throw new LegacyMediaProviderRecoveryBlockedError();
+  }
+}
+
 export interface LegacyMediaSubmitInput<T> {
   module: 'image' | 'video';
   taskId: string;
@@ -191,7 +222,7 @@ export interface LegacyMediaSubmitInput<T> {
   inputRevision: string;
   inputSnapshot: unknown;
   requestSnapshot: unknown;
-  providerSnapshot: { providerId: string; type: string; model: string; baseUrl: string };
+  providerSnapshot: LegacyMediaProviderSnapshot;
   baseUrl: string;
   apiKey: string;
   credentialIdentity?: string;
@@ -230,6 +261,7 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
     inputHash: hash(input.inputSnapshot),
     continuationKey: `legacy-${input.module}.submit`,
     providerSnapshot: input.providerSnapshot,
+    configVersion: hash(input.providerSnapshot),
     credentialVersionRef: upstreamFingerprint(input.baseUrl, credentialIdentity),
     requiredPools: [poolKey],
     quote: input.quote,
@@ -295,6 +327,20 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
   }
 }
 
+export function failLegacyMediaOperation(input: {
+  module: 'image' | 'video';
+  taskId: string;
+  inputRevision: string;
+}): void {
+  if (!isServerMediaExecution()) return;
+  const operationKey = `${input.module}/${input.taskId}/submit/${input.inputRevision}`;
+  getDb().prepare(`
+    UPDATE execution_operations SET status = 'failed', waitReason = 'business_failed',
+      waitDetail = NULL, updatedAt = ?
+    WHERE module = ? AND taskId = ? AND operationKey = ? AND status IN ('pending', 'deferred')
+  `).run(new Date().toISOString(), input.module, input.taskId, operationKey);
+}
+
 export async function settleLegacyMediaRemote(input: {
   module: 'image' | 'video';
   taskId: string;
@@ -334,7 +380,6 @@ export async function cancelLegacyMediaNewStage(input: {
     WHERE module = ? AND taskId = ? AND operationKey = ? AND status IN ('pending', 'deferred', 'admitted')
   `).get(input.module, input.taskId, operationKey) as { id: string; currentAttemptId: string | null } | undefined;
   if (!operation) return;
-  readyGrants.delete(operation.id);
   if (operation.currentAttemptId) {
     const state = db.prepare('SELECT submissionState FROM execution_attempts WHERE id = ?')
       .pluck().get(operation.currentAttemptId) as string | undefined;
