@@ -296,7 +296,10 @@ export function withTeamRoute<T>(route: string, method: string, handler: T): T &
     }
     const invoke = () => (handler as (...handlerArgs: unknown[]) => unknown)(...args);
     const response = await (context ? runWithAccessContext(context, invoke) : invoke()) as Response;
-    if (response instanceof Response) response.headers.set('Cache-Control', 'no-store');
+    if (response instanceof Response) {
+      const cacheControl = response.headers.get('Cache-Control') ?? '';
+      response.headers.set('Cache-Control', cacheControl.includes('private') ? 'private, no-store' : 'no-store');
+    }
     return response;
   };
   return wrapped as T & ((...args: unknown[]) => Promise<Response>);

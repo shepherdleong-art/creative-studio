@@ -13,7 +13,7 @@ import { resolveSourceFilePath } from './media-catalog.ts';
  * 页面、route、分析代码不得自行拼代理路径或重新判断匹配关系——一律通过这个函数。
  */
 export type PreviewSource =
-  | { kind: 'proxy'; cacheItemId: string; relativePath: string; originalOnline: boolean }
+  | { kind: 'proxy'; cacheItemId: string; relativePath: string; originalOnline: boolean; originalSourcePath: string | null }
   | { kind: 'original'; sourcePath: string }
   | { kind: 'unavailable'; reason: string };
 
@@ -58,6 +58,7 @@ export function resolvePreviewSource(
       cacheItemId: readyProxy.id,
       relativePath: readyProxy.relativePath,
       originalOnline: originalSourcePath !== null,
+      originalSourcePath,
     };
   }
   if (originalSourcePath) {

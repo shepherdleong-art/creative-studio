@@ -118,10 +118,7 @@ export function resolveKnowledgeContext(
         normalizeModelKeyForContext(input.modelKey, input.submodel),
       );
 
-  const templateRevisionId = (() => {
-    const row = db.prepare(`SELECT currentRevisionId FROM script_studio_catalogs WHERE kind = 'template'`).get() as { currentRevisionId: string | null } | undefined;
-    return row?.currentRevisionId ?? null;
-  })();
+  const templateRevisionId = getCatalogCurrentRevisionId(db, 'template');
   let template: FrozenTemplateContext = {
     templateCatalogRevisionId: templateRevisionId,
     usedCatalog: false,

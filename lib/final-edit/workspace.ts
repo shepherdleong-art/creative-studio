@@ -1,4 +1,4 @@
-import { requireAccessContext, runWithTaskAccessContext } from '../media-core/access-context.ts';
+import { registerManagedFile, requireAccessContext, runWithTaskAccessContext } from '../media-core/access-context.ts';
 import { analyzeFinalEditAsset, type VideoAnalysisResult } from './asset-analysis.ts';
 export { FINAL_EDIT_ANALYZER_VERSION } from './asset-analysis.ts';
 import { packagingCode } from '../media-core/production-codes.ts';
@@ -1529,6 +1529,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         }
       } catch { /* 卖点预提取失败不阻塞生成：预览/导出端点会按需重提取 */ }
       const transaction = db.transaction(() => {
+        if (requireAccessContext().kind === 'team') {
+          registerManagedFile({
+            absolutePath: path.join(storageRoot, narration.relativePath),
+            mimeType: 'audio/wav',
+            references: [{ resourceType: 'final_group', resourceId: groupId, role: 'output' }],
+          });
+        }
         db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, durationGateJson=?, status=?, phase='ready', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, serializeNarrationTimings(narration), JSON.stringify(cues), JSON.stringify(durationGateForRun), variants.some((variant) => variant.issues.some((issue) => issue.severity === 'blocking')) ? 'partial' : 'ready', now(), groupId);
         if (packagingJsonWithPoints) db.prepare(`UPDATE final_edit_groups SET packagingJson=? WHERE id=?`).run(packagingJsonWithPoints, groupId);
         for (let index = 0; index < variants.length; index += 1) {
@@ -1538,6 +1545,14 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             resourceType: 'final_variant', resourceId: variant.id,
             parent: { resourceType: 'final_group', resourceId: groupId },
           });
+          const previewRelativePath = previewPaths.get(variant.id);
+          if (requireAccessContext().kind === 'team' && previewRelativePath) {
+            registerManagedFile({
+              absolutePath: path.join(storageRoot, previewRelativePath),
+              mimeType: 'video/mp4',
+              references: [{ resourceType: 'final_variant', resourceId: variant.id, role: 'derivative' }],
+            });
+          }
           db.prepare(`INSERT OR IGNORE INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('variant', ?, 0, ?, '{"type":"initial"}', ?)`).run(variant.id, JSON.stringify({ timeline: variant.timeline, bgm: variant.bgm, cover: variant.cover, issues: variant.issues, matchDiagnostics: variant.matchDiagnostics }), now());
           const uniqueFingerprints = new Set(variant.timeline.clips.map((clip) => clip.sourceFingerprint));
           for (const fingerprint of uniqueFingerprints) db.prepare(`INSERT OR IGNORE INTO final_edit_usage (scopeKind, scopeId, projectId, shotSetId, groupId, variantId, assetKind, assetKey, createdAt) VALUES ('draft', ?, ?, ?, ?, ?, 'video', ?, ?)`).run(`${variant.id}:0`, input.projectId, script.shotSetId, groupId, variant.id, fingerprint, now());

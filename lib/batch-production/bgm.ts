@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 
 /** 冻结的 BGM 池条目:身份 + 受管相对路径 + 内容指纹,全部在锁定时快照。 */
 export interface BatchBgmPoolEntry {
@@ -24,6 +25,7 @@ export const BATCH_MUSIC_SELECTION_KEY = 'batchMusicSelection';
  * 曲库表不存在(旧库尚未初始化)时按空曲库处理,由调用方决定是否拦截启动。
  */
 export function readBatchBgmPool(db: Database.Database): BatchBgmPoolEntry[] {
+  const access = requireAccessContext();
   try {
     const rows = db.prepare(`
       SELECT id AS trackId, relativePath, fileFingerprint, durationUs
@@ -31,9 +33,16 @@ export function readBatchBgmPool(db: Database.Database): BatchBgmPoolEntry[] {
       WHERE status = 'ready'
       ORDER BY relativePath, id
     `).all() as Array<{ trackId: string; relativePath: string; fileFingerprint: string; durationUs: number }>;
-    return rows.filter((row) => (
-      row.trackId && row.relativePath && row.fileFingerprint
-    ));
+    return rows.filter((row) => {
+      if (!row.trackId || !row.relativePath || !row.fileFingerprint) return false;
+      if (access.kind === 'local') return true;
+      try {
+        access.assertAccess('bgm', row.trackId, 'read');
+        return true;
+      } catch {
+        return false;
+      }
+    });
   } catch {
     return [];
   }

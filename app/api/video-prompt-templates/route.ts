@@ -43,27 +43,28 @@ async function __teamRoutePOST(request: NextRequest) {
     }
 
     const db = getDb();
+    const access = requireAccessContext();
+    const ownerKey = access.kind === 'team' ? access.actor.userId : 'local';
     const { name, description, prompt, inRandomPool, openingCode = '' } = normalized.value;
 
-    // 同名会让批量检查列表里的下拉完全没法分辨，直接挡掉。
+    // 同名只在当前所有者的私人命名空间拦截，公开模板不阻塞员工个人模板。
     const duplicate = db.prepare(
-      `SELECT id FROM video_prompt_templates WHERE name = ?`,
-    ).get(name) as { id: string } | undefined;
+      `SELECT id FROM video_prompt_templates WHERE name = ? AND ownerKey = ?`,
+    ).get(name, ownerKey) as { id: string } | undefined;
     if (duplicate) {
       return NextResponse.json({ error: `已有同名模板「${name}」` }, { status: 409 });
     }
 
-    if (openingCode && db.prepare('SELECT 1 FROM video_prompt_templates WHERE openingCode=? COLLATE NOCASE').get(openingCode)) {
+    if (openingCode && db.prepare('SELECT 1 FROM video_prompt_templates WHERE openingCode=? COLLATE NOCASE AND ownerKey=?').get(openingCode, ownerKey)) {
       return NextResponse.json({ error: `开头编号 ${openingCode} 已被其他模板使用` }, { status: 409 });
     }
     const id = uuidv4();
-    const access = requireAccessContext();
     const create = db.transaction(() => {
       db.prepare(`
         INSERT INTO video_prompt_templates
-          (id, name, description, prompt, category, isBuiltin, inRandomPool, openingCode)
-        VALUES (?, ?, ?, ?, 'camera_motion', 0, ?, ?)
-      `).run(id, name, description, prompt, inRandomPool ? 1 : 0, openingCode);
+          (id, name, description, prompt, category, isBuiltin, inRandomPool, openingCode, ownerKey)
+        VALUES (?, ?, ?, ?, 'camera_motion', 0, ?, ?, ?)
+      `).run(id, name, description, prompt, inRandomPool ? 1 : 0, openingCode, ownerKey);
       access.registerRootScope({
         resourceType: 'video_prompt_template', resourceId: id,
         ownerUserId: access.actor.userId, visibility: 'private',

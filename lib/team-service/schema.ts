@@ -112,6 +112,51 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
       CREATE INDEX idx_team_font_favorites_user ON team_font_favorites(userId, favorite, updatedAt);
     `,
   },
+  {
+    version: 5,
+    sql: `
+      CREATE TABLE team_files (
+        id TEXT PRIMARY KEY,
+        seriesId TEXT NOT NULL,
+        version INTEGER NOT NULL CHECK(version > 0),
+        ownerUserId TEXT NOT NULL,
+        relativePath TEXT NOT NULL UNIQUE,
+        mimeType TEXT NOT NULL,
+        byteSize INTEGER NOT NULL CHECK(byteSize >= 0),
+        sha256 TEXT NOT NULL CHECK(length(sha256) = 64),
+        state TEXT NOT NULL CHECK(state IN ('staged', 'ready', 'purge_pending')),
+        derivedFromFileId TEXT,
+        readySeq INTEGER UNIQUE,
+        createdAt TEXT NOT NULL,
+        readyAt TEXT,
+        FOREIGN KEY (ownerUserId) REFERENCES team_users(id),
+        FOREIGN KEY (derivedFromFileId) REFERENCES team_files(id),
+        UNIQUE(seriesId, version),
+        CHECK ((state = 'ready') = (readySeq IS NOT NULL)),
+        CHECK ((state = 'ready') = (readyAt IS NOT NULL))
+      );
+      CREATE INDEX idx_team_files_series ON team_files(seriesId, version DESC);
+      CREATE INDEX idx_team_files_ready ON team_files(readySeq) WHERE state = 'ready';
+      CREATE INDEX idx_team_files_derived ON team_files(derivedFromFileId);
+
+      CREATE TABLE team_file_references (
+        fileId TEXT NOT NULL,
+        resourceType TEXT NOT NULL,
+        resourceId TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('input', 'output', 'derivative', 'export', 'delivery', 'backup')),
+        pinKind TEXT NOT NULL CHECK(pinKind IN ('entity', 'accepted_task', 'export', 'backup')),
+        createdAt TEXT NOT NULL,
+        releasedAt TEXT,
+        FOREIGN KEY (fileId) REFERENCES team_files(id) ON DELETE CASCADE,
+        FOREIGN KEY (resourceType, resourceId) REFERENCES team_resource_scopes(resourceType, resourceId)
+      );
+      CREATE UNIQUE INDEX idx_team_file_reference_active
+        ON team_file_references(fileId, resourceType, resourceId, role, pinKind)
+        WHERE releasedAt IS NULL;
+      CREATE INDEX idx_team_file_reference_resource
+        ON team_file_references(resourceType, resourceId, releasedAt);
+    `,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;
@@ -134,7 +179,7 @@ function validateTeamServiceSchema(db: Database.Database): void {
     || tokenHash?.type.toUpperCase() !== 'TEXT' || tokenHash.notnull !== 1) {
     throw new Error('team-service 身份结构检查未通过');
   }
-  for (const table of ['team_resource_scopes', 'team_task_principals', 'team_font_favorites']) {
+  for (const table of ['team_resource_scopes', 'team_task_principals', 'team_font_favorites', 'team_files', 'team_file_references']) {
     if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table)) {
       throw new Error(`team-service 缺少 ${table} 结构`);
     }

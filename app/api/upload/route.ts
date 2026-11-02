@@ -10,7 +10,7 @@ import {
   VIDEO_TAIL_FRAME_USAGE,
 } from '@/lib/video-tail-frame';
 import { validateUploadedImageBuffer } from '@/lib/image-upload-validation';
-import { requireAccessContext } from '@/lib/media-core/access-context';
+import { registerManagedFile, requireAccessContext } from '@/lib/media-core/access-context';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
 
@@ -202,6 +202,18 @@ async function __teamRoutePOST(request: NextRequest) {
             access.registerRootScope({
               resourceType: 'image', resourceId: id,
               ownerUserId: unboundOwnerUserId!, visibility: 'private',
+            });
+          }
+          const originalFileId = registerManagedFile({
+            absolutePath: originalPath,
+            mimeType,
+            references: [{ resourceType: 'image', resourceId: id, role: 'input' }],
+          });
+          if (originalFileId && preprocessEnabled && preprocessResult.processedPath !== originalPath) {
+            registerManagedFile({
+              absolutePath: preprocessResult.processedPath,
+              mimeType: preprocessResult.mimeType,
+              derivedFromFileId: originalFileId,
             });
           }
         }

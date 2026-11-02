@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
-import { requireAccessContext } from '@/lib/media-core/access-context';
+import { referenceManagedFile, requireAccessContext } from '@/lib/media-core/access-context';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
 
@@ -44,7 +44,7 @@ async function __teamRoutePOST(
     if (!imageAssetId) return NextResponse.json({ error: '缺少图片' }, { status: 400 });
 
     // Verify image belongs to project
-    const img = db.prepare(`SELECT id FROM image_assets WHERE id = ? AND projectId = ?`).get(imageAssetId, id);
+    const img = db.prepare(`SELECT id, path FROM image_assets WHERE id = ? AND projectId = ?`).get(imageAssetId, id) as { id: string; path: string } | undefined;
     if (!img) return NextResponse.json({ error: '图片不属于当前项目' }, { status: 400 });
     if (access.kind === 'team') {
       access.assertAccess('image', imageAssetId, 'read');
@@ -61,6 +61,11 @@ async function __teamRoutePOST(
         resourceType: 'scene_reference', resourceId: refId,
         parent: { resourceType: 'project', resourceId: id },
       });
+      if (access.kind === 'team') {
+        referenceManagedFile(img.path, {
+          resourceType: 'scene_reference', resourceId: refId, role: 'input',
+        });
+      }
     });
     create.immediate();
 

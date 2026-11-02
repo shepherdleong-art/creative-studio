@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { requireAccessContext } from '../media-core/access-context.ts';
+import { managedResourceVisibility, requireAccessContext } from '../media-core/access-context.ts';
 import { ScriptStudioError } from './errors.ts';
 import { assertXlsxBuffer } from './catalog-import/index.ts';
 import { loadWorkbook, sheetToWorkbookSheet } from './catalog-import/workbook.ts';
@@ -23,6 +23,7 @@ import { normalizeText } from './catalog-import/normalize.ts';
 export interface ViralTemplateLibraryRecord {
   id: string;
   currentRevisionId: string | null;
+  ownerKey: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -68,23 +69,32 @@ function nowIso(now?: () => Date): string {
 
 export function getOrCreateViralTemplateLibrary(db: Database.Database, now?: () => Date): ViralTemplateLibraryRecord {
   const access = requireAccessContext();
-  const existing = db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries ORDER BY createdAt LIMIT 1`)
-    .get() as ViralTemplateLibraryRecord | undefined;
-  if (existing) {
-    if (access.kind === 'team') access.assertAccess('viral_template_library', existing.id, 'read');
-    return existing;
+  const records = db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries ORDER BY createdAt, id`)
+    .all() as ViralTemplateLibraryRecord[];
+  let publicRecord: ViralTemplateLibraryRecord | undefined;
+  for (const record of records) {
+    if (access.kind === 'team') {
+      try {
+        access.assertAccess('viral_template_library', record.id, 'read');
+      } catch {
+        continue;
+      }
+    }
+    if (access.kind === 'local' || record.ownerKey === access.actor.userId) return record;
+    publicRecord ??= record;
   }
-  if (access.kind === 'team' && access.actor.role !== 'admin') throw new Error('只有管理员可以发布爆文模板库');
+  if (publicRecord) return publicRecord;
   const id = randomUUID();
   const ts = nowIso(now);
+  const ownerKey = access.kind === 'team' ? access.actor.userId : 'local';
   const create = db.transaction(() => {
     db.prepare(`
-      INSERT INTO script_studio_viral_tpl_libraries (id, currentRevisionId, createdAt, updatedAt)
-      VALUES (?, NULL, ?, ?)
-    `).run(id, ts, ts);
+      INSERT INTO script_studio_viral_tpl_libraries (id, currentRevisionId, ownerKey, createdAt, updatedAt)
+      VALUES (?, NULL, ?, ?, ?)
+    `).run(id, ownerKey, ts, ts);
     access.registerRootScope({
       resourceType: 'viral_template_library', resourceId: id,
-      ownerUserId: access.actor.userId, visibility: 'public',
+      ownerUserId: access.actor.userId, visibility: 'private',
     });
   });
   create.immediate();
@@ -123,6 +133,7 @@ export async function importViralTemplateLibrary(
   const library = getOrCreateViralTemplateLibrary(db, now);
   const access = requireAccessContext();
   if (access.kind === 'team') access.assertAccess('viral_template_library', library.id, 'write');
+  const visibility = managedResourceVisibility('viral_template_library', library.id);
   const sourceSha256 = createHash('sha256').update(buffer).digest('hex');
 
   const existing = db.prepare(`
@@ -154,7 +165,7 @@ export async function importViralTemplateLibrary(
     access.registerInheritedScope({
       resourceType: 'viral_template_revision', resourceId: revisionId,
       parent: { resourceType: 'viral_template_library', resourceId: library.id },
-      visibility: 'public',
+      visibility,
     });
     const insertEntry = db.prepare(`
       INSERT INTO script_studio_viral_tpl_entries
@@ -175,7 +186,7 @@ export async function importViralTemplateLibrary(
       access.registerInheritedScope({
         resourceType: 'viral_template_entry', resourceId: entryId,
         parent: { resourceType: 'viral_template_revision', resourceId: revisionId },
-        visibility: 'public',
+        visibility,
       });
     }
     db.prepare(`
@@ -194,11 +205,21 @@ export interface ViralTemplateLibraryView {
 
 export function getViralTemplateLibraryView(db: Database.Database): ViralTemplateLibraryView {
   const library = getOrCreateViralTemplateLibrary(db);
+  const access = requireAccessContext();
   const revisions = (db.prepare(`
     SELECT r.*, (SELECT COUNT(*) FROM script_studio_viral_tpl_entries e WHERE e.revisionId = r.id) AS entryCount
     FROM script_studio_viral_tpl_revisions r WHERE r.libraryId = ? ORDER BY r.revisionNumber DESC
-  `).all(library.id) as Array<ViralTemplateRevisionRecord & { entryCount: number }>)
-    .map((row) => ({ ...row, current: row.id === library.currentRevisionId }));
+  `).all(library.id) as Array<ViralTemplateRevisionRecord & { current: boolean; entryCount: number }>)
+    .flatMap((row) => {
+      if (access.kind === 'team') {
+        try {
+          access.assertAccess('viral_template_revision', row.id, 'read');
+        } catch {
+          return [];
+        }
+      }
+      return [{ ...row, current: row.id === library.currentRevisionId }];
+    });
   const currentRow = revisions.find((row) => row.current);
   let current: ViralTemplateLibraryView['current'] = null;
   if (currentRow) {

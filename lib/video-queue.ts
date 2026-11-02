@@ -26,6 +26,7 @@ import {
 } from './video-providers/reference-media.ts';
 import { SEEDANCE_25 } from './video-providers/seedance-contract.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
+import { registerManagedFile } from './media-core/access-context.ts';
 
 export interface VideoQueueOptions {
   /** Limit a local rework run to its immutable job. */
@@ -567,9 +568,22 @@ async function runAuthorizedVideoJob(
         const displayName = resolveVideoJobDisplayNames(db, [job.id]).get(job.id) || '未命名视频.mp4';
         const { filename: videoFilename, videoPath } = writeVideoOutputFile(videosDir, displayName, videoBuffer);
 
+        const originalFileId = registerManagedFile({
+          absolutePath: videoPath,
+          mimeType: 'video/mp4',
+          references: [{ resourceType: 'video_job', resourceId: job.id, role: 'output' }],
+        });
+
         // HEVC/10bit 产物（如 Seedance 2.5 1080p）浏览器放不动：先就地生成
         // H.264 预览衍生物再标记完成。内部已全兜底（失败回退原件），不会阻断任务。
-        await ensureBrowserPreview(videoPath);
+        const previewPath = await ensureBrowserPreview(videoPath);
+        if (originalFileId && previewPath !== videoPath) {
+          registerManagedFile({
+            absolutePath: previewPath,
+            mimeType: 'video/mp4',
+            derivedFromFileId: originalFileId,
+          });
+        }
 
         const finishedAt = new Date().toISOString();
         const completeResult = db.prepare(

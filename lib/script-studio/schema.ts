@@ -459,6 +459,17 @@ export const SCRIPT_STUDIO_MIGRATIONS: ReadonlyArray<ScriptStudioMigration> = [
       CREATE INDEX IF NOT EXISTS idx_sspt_revision ON script_studio_selling_point_themes(revisionId, seq);
     `,
   },
+  {
+    // 团队目录与爆文库按所有者选择私人版本，local 继续共用单例。
+    version: 12,
+    sql: `
+      ALTER TABLE script_studio_catalogs ADD COLUMN ownerKey TEXT NOT NULL DEFAULT 'local';
+      DROP INDEX IF EXISTS idx_ssc_kind;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ssc_kind ON script_studio_catalogs(kind, ownerKey);
+      ALTER TABLE script_studio_viral_tpl_libraries ADD COLUMN ownerKey TEXT NOT NULL DEFAULT 'local';
+      CREATE INDEX IF NOT EXISTS idx_ssvl_owner ON script_studio_viral_tpl_libraries(ownerKey, createdAt);
+    `,
+  },
 ];
 
 export type ScriptStudioSchemaFailureCode =

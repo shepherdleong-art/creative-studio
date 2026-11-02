@@ -1,24 +1,47 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import { Readable } from 'node:stream';
+import {
+  authorizeManagedFileRead,
+  type ManagedFileGrant,
+} from './access-context.ts';
+import { projectAssetMediaResponse } from './project-asset-media-response.ts';
 
-/** Stream only the requested bytes; seeking must not allocate or read a whole film. */
-export function fileResponse(request: Request, file: string, contentType: string): Response {
-  const size = fs.statSync(file).size;
-  const headers = { 'Content-Type': contentType, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, max-age=3600' };
-  const range = request.headers.get('range');
-  if (!size && !range) return new Response(null, { headers: { ...headers, 'Content-Length': '0' } });
-  let start = 0, end = size - 1;
-  if (range) {
-    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
-    const invalid = () => new Response(null, { status: 416, headers: { ...headers, 'Content-Range': `bytes */${size}` } });
-    if (!match || (!match[1] && !match[2])) return invalid();
-    start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
-    end = match[1] && match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
-    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= size || end < start) return invalid();
+export interface FileResponseOptions {
+  cacheControl?: string;
+  etag?: string;
+  downloadName?: string;
+  onClose?: () => void;
+  /** 已由 team-files 完成实体授权时传入，避免重复解析。 */
+  grant?: ManagedFileGrant;
+}
+
+function strongEtag(file: string, grant: ManagedFileGrant | null): string {
+  const stat = grant ? null : fs.statSync(file);
+  const identity = grant
+    ? `${grant.fileId}\0${grant.version}\0${grant.sha256}`
+    : `${file}\0${stat!.size}\0${stat!.mtimeMs}`;
+  return `"${createHash('sha256').update(identity).digest('hex')}"`;
+}
+
+/** 单文件共享入口：团队模式先完成登记与实体授权，再打开文件。 */
+export function fileResponse(
+  request: Request,
+  file: string,
+  contentType: string,
+  options: FileResponseOptions = {},
+): Response {
+  const grant = options.grant ?? authorizeManagedFileRead(file);
+  const headers: Record<string, string> = {};
+  if (options.downloadName) {
+    headers['Content-Disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(options.downloadName)}`;
   }
-  const stream = fs.createReadStream(file, { start, end });
-  return new Response(Readable.toWeb(stream) as ReadableStream<Uint8Array>, {
-    status: range ? 206 : 200,
-    headers: { ...headers, 'Content-Length': String(end - start + 1), ...(range ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}) },
+  const response = projectAssetMediaResponse(request, file, contentType, headers, undefined, {
+    cacheControl: grant ? 'private, no-store' : options.cacheControl ?? 'private, max-age=3600',
+    etag: options.etag ?? strongEtag(file, grant),
+    onClose: options.onClose,
+    grant: grant ?? undefined,
   });
+  return response.status === 416
+    ? new Response(null, { status: 416, headers: response.headers })
+    : response;
 }

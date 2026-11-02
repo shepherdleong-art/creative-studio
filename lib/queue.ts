@@ -3,7 +3,7 @@ import { isReassembledReworkJob, protectReassembledQueue, REASSEMBLED_SUBMIT_UNC
 import { calculateUsageCostMicros } from './usage-pricing.ts';
 import { getDb } from './db.ts';
 import { runWithAcceptedTaskAccess } from './team-service/accepted-access.ts';
-import { requireAccessContext } from './media-core/access-context.ts';
+import { registerManagedFile, requireAccessContext } from './media-core/access-context.ts';
 import { editImageArk } from './providers/ark-images';
 import { editImage as editImageOpenAI } from './providers/openai-compatible';
 import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json';
@@ -787,6 +787,16 @@ async function runAuthorizedJob(
         resourceType: 'image', resourceId: outputImageId,
         parent: { resourceType: 'project', resourceId: job.projectId },
       });
+      if (access.kind === 'team') {
+        registerManagedFile({
+          absolutePath: outputPath,
+          mimeType: outputMimeType,
+          references: [
+            { resourceType: 'image', resourceId: outputImageId, role: 'output' },
+            { resourceType: 'job', resourceId: job.id, role: 'output' },
+          ],
+        });
+      }
     });
     publishOutput.immediate();
 

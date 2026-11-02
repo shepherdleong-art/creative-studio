@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
-import { requireAccessContext } from '../media-core/access-context.ts';
+import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { dataRoot } from '../data-root.ts';
 import { runFfmpeg } from '../ffmpeg.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
@@ -133,6 +133,13 @@ export function createManagedLut(
       resourceType: 'lut', resourceId: id,
       parent: { resourceType: 'project', resourceId: projectId },
     });
+    if (access.kind === 'team') {
+      registerManagedFile({
+        absolutePath: path.join(dataRoot(), 'storage', input.relativePath),
+        mimeType: 'application/octet-stream',
+        references: [{ resourceType: 'lut', resourceId: id, role: 'input' }],
+      });
+    }
     return id;
   }).immediate();
 }

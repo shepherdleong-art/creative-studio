@@ -14,7 +14,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
-import { requireAccessContext } from '../media-core/access-context.ts';
+import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { probeVideoMedia, probeDurationSec } from '../ffmpeg.ts';
 import { CanvasError } from './errors.ts';
 import type { CanvasMediaKind } from './types.ts';
@@ -269,6 +269,13 @@ export async function importCanvasAsset(params: ImportCanvasAssetParams): Promis
         resourceType: 'canvas_asset', resourceId: assetId,
         parent: { resourceType: 'canvas', resourceId: canvasId },
       });
+      if (access.kind === 'team') {
+        registerManagedFile({
+          absolutePath,
+          mimeType: MIME_MEDIA_KIND[mimeType.toLowerCase()] ? mimeType.toLowerCase() : CANVAS_MIME_BY_EXTENSION[extension] ?? 'application/octet-stream',
+          references: [{ resourceType: 'canvas_asset', resourceId: assetId, role: 'input' }],
+        });
+      }
     });
     publish.immediate();
     return requireCanvasAsset(db, assetId);
@@ -388,6 +395,13 @@ export async function registerCanvasResultAsset(
         resourceType: 'canvas_asset', resourceId: assetId,
         parent: { resourceType: 'canvas', resourceId: canvasId },
       });
+      if (access.kind === 'team') {
+        registerManagedFile({
+          absolutePath,
+          mimeType,
+          references: [{ resourceType: 'canvas_asset', resourceId: assetId, role: 'output' }],
+        });
+      }
 
       if (videoProbe) db.prepare(`UPDATE creative_canvas_assets SET width = ?, height = ?, durationSec = ?, videoCodec = ?, pixelFormat = ? WHERE id = ?`)
         .run(videoProbe.width || null, videoProbe.height || null, videoProbe.durationUs > 0 ? videoProbe.durationUs / 1_000_000 : null, videoProbe.videoCodec || null, videoProbe.pixelFormat || null, assetId);
