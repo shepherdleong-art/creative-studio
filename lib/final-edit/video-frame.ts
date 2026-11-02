@@ -4,20 +4,9 @@ import path from 'node:path';
 import { runFfmpeg } from '../ffmpeg.ts';
 import { resolveStoragePath, toStorageRelativePath } from './storage-path.ts';
 import { authorizeManagedFileRead, registerManagedFile } from '../media-core/access-context.ts';
+import { withMediaResource } from '../media-core/media-resource-gate.ts';
 
 const inFlightFrames = new Map<string, Promise<void>>();
-const frameWaiters: Array<() => void> = [];
-let activeFrameJobs = 0;
-
-async function withFrameSlot<T>(work: () => Promise<T>): Promise<T> {
-  if (activeFrameJobs >= 2) await new Promise<void>((resolve) => frameWaiters.push(resolve));
-  activeFrameJobs += 1;
-  try { return await work(); }
-  finally {
-    activeFrameJobs -= 1;
-    frameWaiters.shift()?.();
-  }
-}
 
 export async function materializeVideoFrame(input: {
   storageRoot: string;
@@ -47,7 +36,7 @@ export async function materializeVideoFrame(input: {
             : input.outputSize
             ? `scale=${Math.round(input.outputSize.width)}:${Math.round(input.outputSize.height)}:force_original_aspect_ratio=increase,crop=${Math.round(input.outputSize.width)}:${Math.round(input.outputSize.height)}`
             : 'scale=960:720:force_original_aspect_ratio=increase,crop=960:720';
-          await withFrameSlot(() => runFfmpeg([
+          await withMediaResource({ taskId: safeKey, step: 'video-frame', wait: true }, () => runFfmpeg([
               '-ss', (Math.max(0, input.frameUs) / 1_000_000).toFixed(6),
               '-i', sourceAbsolutePath,
               '-frames:v', '1',

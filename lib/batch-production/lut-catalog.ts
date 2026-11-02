@@ -5,6 +5,7 @@ import type Database from 'better-sqlite3';
 import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { dataRoot } from '../data-root.ts';
 import { runFfmpeg } from '../ffmpeg.ts';
+import { withMediaResource } from '../media-core/media-resource-gate.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
 import {
   buildLutVerificationArgs,
@@ -285,10 +286,10 @@ function validateLutUpload(upload: LutUpload): { originalFilename: string } {
 async function verifyLutWithFfmpeg(lutAbsolutePath: string): Promise<void> {
   const probeOutput = `${lutAbsolutePath}.verify-${randomUUID()}.jpg`;
   try {
-    await runFfmpeg([
+    await withMediaResource({ taskId: lutAbsolutePath, step: 'lut-verify', wait: true }, () => runFfmpeg([
       ...buildLutVerificationArgs(lutAbsolutePath),
       probeOutput,
-    ], { timeoutMs: 10_000 });
+    ], { timeoutMs: 10_000 }));
   } catch {
     throw new LutImportError('invalid_lut_content', 'LUT 文件验证失败,可能已损坏或格式不受支持');
   } finally {

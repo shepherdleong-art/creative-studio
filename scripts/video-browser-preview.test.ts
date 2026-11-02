@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-preview-'));
+process.env.CREATIVE_STUDIO_DATA_ROOT = tmp;
 
 try {
   const { browserPreviewPath, ensureBrowserPreview } = await import('../lib/video-browser-preview.ts');
@@ -63,5 +64,7 @@ try {
 
   console.log('video-browser-preview tests passed');
 } finally {
+  const { closeDb } = await import('../lib/db.ts');
+  closeDb();
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* 临时目录留待系统清理 */ }
 }

@@ -12,6 +12,8 @@ import { embeddingRequirementText, checkTitleEmbedding } from './title-embedding
 import { buildScriptTitleContext, scriptTitleRequirements, type ScriptTitleSummary, type ScriptTitleIssue } from './title-policy.ts';
 import { PAIN_PLANNING_MAX_TOKENS, SCRIPT_TITLE_REPAIR_MAX_TOKENS } from './limits.ts';
 import type { ScriptRequestBudget, ScriptRequestPurpose } from './request-budget.ts';
+import { getExecutionModuleRuntime } from '../media-core/execution/module-runtime.ts';
+import { isExecutionControlError } from '../media-core/execution/waiting.ts';
 import { ctaEndingSceneFromStructure, scriptCtaRequirements } from './cta-policy.ts';
 import type { AudienceAnalysisInput, AudienceSegmentProfile } from './audience-profile.ts';
 import { buildAudienceAnalysisPrompt } from './audience-profile.ts';
@@ -730,12 +732,38 @@ function isTransientTextError(error: unknown): boolean {
 }
 
 export function createScriptGenerator(
-  completeJson: ScriptStudioCompleteJson,
+  completeJsonBase: ScriptStudioCompleteJson,
   provider: { id: string; model: string },
   options: CreateScriptGeneratorOptions = {},
 ): ScriptGenerator {
+  let pendingExecutionBudget: { planIndex: number; purpose: ScriptRequestPurpose } | null = null;
+  let pendingExecutionStep: string | null = null;
+  const purposeSequences = new Map<string, number>();
+  const completeJson: ScriptStudioCompleteJson = async (request) => {
+    const server = Boolean(getExecutionModuleRuntime());
+    const executionBudget = server ? pendingExecutionBudget : null;
+    const executionStep = server ? pendingExecutionStep : null;
+    pendingExecutionBudget = null;
+    pendingExecutionStep = null;
+    return completeJsonBase({
+      ...request,
+      ...(executionBudget ? { executionBudget } : {}),
+      ...(executionStep ? { executionStep } : {}),
+    });
+  };
+  const reserveForPlan = (planIndex: number, purpose: ScriptRequestPurpose): void => {
+    if (getExecutionModuleRuntime()) {
+      const key = `${planIndex}:${purpose}`;
+      const sequence = (purposeSequences.get(key) ?? 0) + 1;
+      purposeSequences.set(key, sequence);
+      pendingExecutionBudget = { planIndex, purpose };
+      pendingExecutionStep = `plan:${planIndex}:${purpose}:${sequence}`;
+      return;
+    }
+    options.budget?.reserve({ planIndex, purpose });
+  };
   const reserve = (input: { plan: { index: number } }, purpose: ScriptRequestPurpose): void => {
-    options.budget?.reserve({ planIndex: input.plan.index, purpose });
+    reserveForPlan(input.plan.index, purpose);
   };
   const requestWithRetry = async (input: { plan: { index: number } }, purpose: ScriptRequestPurpose, request: Parameters<ScriptStudioCompleteJson>[0]) => {
     for (let attempt = 1; ; attempt += 1) {
@@ -775,7 +803,8 @@ export function createScriptGenerator(
     },
     async planPainOpportunities(input) {
       return completeJson({ ...buildPainPlanningPrompt(input), temperature: 1,
-        maxTokens: options.maxTokens ?? PAIN_PLANNING_MAX_TOKENS, signal: input.signal });
+        maxTokens: options.maxTokens ?? PAIN_PLANNING_MAX_TOKENS, signal: input.signal,
+        executionPhaseBudget: 'plan_analysis', executionStep: 'plan:pain-opportunities:1' });
     },
     async analyzeAudienceProfile(input) {
       // 预算由 runner 在 plan 阶段统一占用（plan_analysis 独立阶段额度），这里只发请求。
@@ -786,6 +815,8 @@ export function createScriptGenerator(
         temperature: 1,
         maxTokens: 2400,
         signal: input.signal,
+        executionPhaseBudget: 'plan_analysis',
+        executionStep: 'plan:audience-profile:1',
       });
     },
     // ------------------------------------------------------------------
@@ -800,12 +831,13 @@ export function createScriptGenerator(
       const signal = input.signal;
       const assertNotAborted = (error: unknown): void => {
         if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
+        if (isExecutionControlError(error)) throw error;
       };
       const state: TemplateRewriteResumeState = { ...(input.resumeState ?? {}) };
       const emit = (): void => input.onStateChange?.({ ...state });
       const eligible = input.eligiblePoints;
       const reserve = (purpose: ScriptRequestPurpose): void => {
-        options.budget?.reserve({ planIndex: input.plan.index, purpose });
+        reserveForPlan(input.plan.index, purpose);
       };
       const formatSellingPoint = (point: SellingPointRecord): string => {
         // 免责口径（仅供参考/以实际为准等）不是口播素材，进 prompt 前剥除（sanitizeSellingPointText）。

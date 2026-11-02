@@ -11,6 +11,7 @@ import { acquireTeamRuntimeOwner, type TeamRuntimeOwner } from './owner.ts';
 import { setLegacyMediaExecutionRuntime } from '../../legacy-media-execution.ts';
 import { createLegacyMediaLifecycle } from '../../legacy-media-lifecycle.ts';
 import { createCanvasExecutionLifecycle } from '../../creative-canvas/bootstrap.ts';
+import { createFinalEditExecutionLifecycle } from '../../final-edit/lifecycle.ts';
 import {
   getTeamRuntimeState,
   initializeTeamRuntimeState,
@@ -53,6 +54,7 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
         db,
         execution,
         modules: [
+          createFinalEditExecutionLifecycle(db),
           createScriptGenerationV3Lifecycle(db),
           createCanvasExecutionLifecycle({ db, execution: execution.facade }),
           createLegacyMediaLifecycle(),

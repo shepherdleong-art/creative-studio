@@ -113,6 +113,14 @@ function assertExternalProviderExecutionAvailable(
   }
 }
 
+export interface LlmExecutionRequestBudget {
+  kind: 'script-studio-text' | 'script-studio-phase';
+  taskId: string;
+  requestedCount: number;
+  planIndex: number;
+  purpose: string;
+}
+
 export interface LlmExecutionContext {
   taskId: string;
   step: string;
@@ -120,6 +128,15 @@ export interface LlmExecutionContext {
   scope: { resourceType: string; resourceId: string };
   requiredPools?: readonly string[];
   businessAttempt?: { id: string; number: number };
+  requestBudget?: LlmExecutionRequestBudget;
+}
+
+type LlmRequestBudgetReserver = (db: ReturnType<typeof getDb>, budget: LlmExecutionRequestBudget) => void;
+let llmRequestBudgetReserver: LlmRequestBudgetReserver | null = null;
+
+/** 模块在运行时注册自己的持久预算；公共传输层只在真正获准后调用。 */
+export function registerLlmExecutionRequestBudgetReserver(reserver: LlmRequestBudgetReserver): void {
+  llmRequestBudgetReserver = reserver;
 }
 
 export interface CompleteJsonInput {
@@ -279,6 +296,11 @@ async function executeLlmGrant(
   };
   const input = liveInput ?? snapshot.request;
   try {
+    const requestBudget = input.executionContext?.requestBudget;
+    if (requestBudget && grant.attempt.submitRound === 1) {
+      if (!llmRequestBudgetReserver) throw new Error('server LLM 请求预算尚未注册，拒绝继续执行');
+      llmRequestBudgetReserver(getDb(), requestBudget);
+    }
     await completeJsonDirect(input, transport, snapshot.provider);
   } catch (error) {
     if (!transport.submittingStarted) {

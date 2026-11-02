@@ -7,7 +7,7 @@ import { PROXY_PROFILE_VERSION } from '@/lib/batch-production/proxy-executor';
 import { acquireProxyReadLease, resolveControlledProxyPath } from '@/lib/batch-production/proxy-cache';
 import { projectAssetMimeType } from '@/lib/batch-production/project-asset-media';
 import { buildMediaEtag, projectAssetMediaResponse } from '@/lib/batch-production/project-asset-media-response';
-import { ensureBrowserPreview } from '@/lib/video-browser-preview';
+import { BrowserPreviewPendingError, ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { BATCH_NO_STORE_HEADERS, batchProjectIdFromRequest } from '../../batches/response';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { authorizeManagedFileRead, registerManagedFile } from '@/lib/media-core/access-context';
@@ -246,7 +246,10 @@ async function __teamRouteGET(request: NextRequest, context: { params: Promise<{
     } finally {
       if (!streaming) releaseOnce();
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof BrowserPreviewPendingError) {
+      return NextResponse.json({ error: 'preview_pending', retryAfterMs: error.retryAfterMs }, { status: 202, headers: BATCH_NO_STORE_HEADERS });
+    }
     return NextResponse.json({
       error: 'preview_failed',
       message: '预览解析失败',

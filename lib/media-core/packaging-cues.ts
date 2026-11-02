@@ -11,6 +11,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { cleanSellingPoint } from './packaging-vars.ts';
+import { isExecutionControlError } from './execution/waiting.ts';
 
 export interface PointCue {
   /** 稳定 id（p_ 前缀）：layouts.*.cues 的布局引用键；重提取按规范化文本匹配保留。 */
@@ -263,7 +264,10 @@ export async function buildPointCandidates(input: Pick<BuildPointCuesInput, 'sel
         candidates = cleaned;
         usedLLM = true;
       }
-    } catch { /* LLM 失败走启发式 */ }
+    } catch (error) {
+      if (isExecutionControlError(error)) throw error;
+      // 只有明确失败的 LLM 才允许走确定性启发式。
+    }
   }
   if (candidates.length === 0) candidates = dedupeCandidates(extractHeuristicPoints(input.narrationText));
   return { candidates, usedLLM };

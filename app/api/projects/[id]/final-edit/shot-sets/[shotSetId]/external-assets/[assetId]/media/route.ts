@@ -3,7 +3,7 @@ import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { mediaResponse, resolveFinalEditMedia } from '@/lib/final-edit/media-response';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { dataRoot } from '@/lib/data-root';
-import { ensureBrowserPreview } from '@/lib/video-browser-preview';
+import { BrowserPreviewPendingError, ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { authorizeManagedFileRead, registerManagedFile } from '@/lib/media-core/access-context';
 
@@ -31,6 +31,9 @@ async function __teamRouteGET(
     }
     return mediaResponse(request, media.relativePath, media.mimeType);
   } catch (error) {
+    if (error instanceof BrowserPreviewPendingError) {
+      return Response.json({ error: 'preview_pending', retryAfterMs: error.retryAfterMs }, { status: 202 });
+    }
     return finalEditErrorResponse(error);
   }
 }

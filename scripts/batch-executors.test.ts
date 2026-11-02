@@ -262,8 +262,62 @@ try {
   const task4Row = db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(task4) as { status: string };
   assert.equal(task4Row.status, 'failed', '未注册执行器的任务必须失败而不是挂起');
 
+  // --- 场景 5:链内子调用 deferred → 让出编排槽，续跑复用原 attempt ---
+  const batch5 = createBatchProduction(db, 'project-1', '批次五', () => new Date('2026-08-02T13:00:00.000Z'));
+  const snapshot5 = createBatchSnapshot(db, 'project-1', batch5, {
+    scriptSelections: [{ scriptId: scriptA, copyCount: 1 }],
+    assetSelections: [{ assetId, analysisId: 'analysis-0' }],
+    now: () => new Date('2026-08-02T13:05:00.000Z'),
+  });
+  db.prepare(`
+    INSERT INTO batch_output_versions (id, planId, versionNumber, arrangementJson, createdAt)
+    VALUES ('ov-b5', ?, 1, '{}', '2026-08-02T13:06:00.000Z')
+  `).run(snapshot5.planIds[0]!);
+  db.prepare(`UPDATE batch_output_plans SET currentVersionId = 'ov-b5' WHERE id = ?`).run(snapshot5.planIds[0]!);
+  const task5 = createBatchTask(db, 'project-1', {
+    batchId: batch5,
+    workType: 'render',
+    targetKind: 'output_version',
+    targetId: 'ov-b5',
+    now: () => new Date('2026-08-02T13:07:00.000Z'),
+  });
+  startBatchProduction(db, 'project-1', batch5, () => new Date('2026-08-02T13:08:00.000Z'));
+  let deferredCalls = 0;
+  const deferringExecutor: BatchTaskExecutor = {
+    workTypes: ['render'],
+    async execute() {
+      deferredCalls += 1;
+      if (deferredCalls === 1) {
+        throw Object.assign(new Error('等待统一执行名额'), {
+          code: 'llm_execution_deferred',
+          operationId: 'operation-chunk-2',
+          waitReason: 'pool_capacity',
+        });
+      }
+      return { resultJson: { continued: true } };
+    },
+  };
+  await runPendingOnce({
+    db, workerId: 'worker-deferred', executors: [deferringExecutor], concurrency: 1, progressThrottleMs: 0,
+  });
+  const deferredTask = db.prepare(`SELECT status, attemptCount FROM batch_tasks WHERE id = ?`).get(task5) as { status: string; attemptCount: number };
+  assert.deepEqual(deferredTask, { status: 'queued', attemptCount: 1 }, 'deferred 不是失败或新业务重试');
+  const deferredAttempt = db.prepare(`SELECT id, status, errorCode, resultJson FROM batch_task_attempts WHERE taskId = ?`).get(task5) as {
+    id: string; status: string; errorCode: string; resultJson: string;
+  };
+  assert.equal(deferredAttempt.status, 'interrupted');
+  assert.equal(deferredAttempt.errorCode, 'execution_deferred');
+  assert.equal(JSON.parse(deferredAttempt.resultJson).operationId, 'operation-chunk-2', '必须留下可续跑操作检查点');
+  await runPendingOnce({
+    db, workerId: 'worker-resumed', executors: [deferringExecutor], concurrency: 1, progressThrottleMs: 0,
+  });
+  assert.equal(deferredCalls, 2);
+  assert.equal((db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(task5) as { status: string }).status, 'succeeded');
+  assert.equal((db.prepare(`SELECT attemptCount FROM batch_tasks WHERE id = ?`).get(task5) as { attemptCount: number }).attemptCount, 1, '恢复等待不得增加 attempt');
+  assert.equal((db.prepare(`SELECT id FROM batch_task_attempts WHERE taskId = ?`).get(task5) as { id: string }).id, deferredAttempt.id, '续跑必须复用原批量 attempt 身份');
+
   db.close();
   console.log('batch executors tests passed');
 } finally {
-  fs.rmSync(root, { recursive: true, force: true });
+  try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* Windows 失败路径可能仍持有 SQLite 句柄，保留原始断言 */ }
 }
