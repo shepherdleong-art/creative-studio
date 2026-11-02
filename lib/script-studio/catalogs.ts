@@ -485,7 +485,16 @@ export function listCatalogRevisions(db: Database.Database, catalogId: string): 
   const records = db.prepare(`
     SELECT * FROM script_studio_catalog_revisions WHERE catalogId = ? ORDER BY revisionNumber DESC
   `).all(catalogId) as Array<CatalogRevisionRecord & { current: boolean }>;
-  return records.map((record) => ({ ...record, current: record.id === currentId }));
+  return records.flatMap((record) => {
+    if (access.kind === 'team') {
+      try {
+        access.assertAccess('script_catalog_revision', record.id, 'read');
+      } catch {
+        return [];
+      }
+    }
+    return [{ ...record, current: record.id === currentId }];
+  });
 }
 
 export function getCatalogRevisionView(db: Database.Database, revisionId: string): CatalogRevisionView | null {

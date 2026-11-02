@@ -205,11 +205,21 @@ export interface ViralTemplateLibraryView {
 
 export function getViralTemplateLibraryView(db: Database.Database): ViralTemplateLibraryView {
   const library = getOrCreateViralTemplateLibrary(db);
+  const access = requireAccessContext();
   const revisions = (db.prepare(`
     SELECT r.*, (SELECT COUNT(*) FROM script_studio_viral_tpl_entries e WHERE e.revisionId = r.id) AS entryCount
     FROM script_studio_viral_tpl_revisions r WHERE r.libraryId = ? ORDER BY r.revisionNumber DESC
-  `).all(library.id) as Array<ViralTemplateRevisionRecord & { entryCount: number }>)
-    .map((row) => ({ ...row, current: row.id === library.currentRevisionId }));
+  `).all(library.id) as Array<ViralTemplateRevisionRecord & { current: boolean; entryCount: number }>)
+    .flatMap((row) => {
+      if (access.kind === 'team') {
+        try {
+          access.assertAccess('viral_template_revision', row.id, 'read');
+        } catch {
+          return [];
+        }
+      }
+      return [{ ...row, current: row.id === library.currentRevisionId }];
+    });
   const currentRow = revisions.find((row) => row.current);
   let current: ViralTemplateLibraryView['current'] = null;
   if (currentRow) {

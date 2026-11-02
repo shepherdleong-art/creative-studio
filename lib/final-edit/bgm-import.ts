@@ -166,15 +166,15 @@ async function importSingleFile(
   const access = requireAccessContext();
   const ownerKey = access.kind === 'team' ? access.actor.userId : 'local';
   const existing = db.prepare(`
-    SELECT id, relativePath, fileFingerprint, durationUs
+    SELECT id, relativePath, fileFingerprint, durationUs, status
     FROM final_edit_bgm_tracks
-    WHERE fileFingerprint = ? AND ownerKey = ? AND status = 'ready'
-  `).get(fingerprint, ownerKey) as { id: string; relativePath: string; fileFingerprint: string; durationUs: number } | undefined;
+    WHERE fileFingerprint = ? AND ownerKey = ?
+  `).get(fingerprint, ownerKey) as { id: string; relativePath: string; fileFingerprint: string; durationUs: number; status: string } | undefined;
 
   if (existing) {
     if (access.kind === 'team') access.assertAccess('bgm', existing.id, 'read');
     const existingPath = path.resolve(storageRoot, existing.relativePath);
-    if (fs.existsSync(existingPath)) {
+    if (existing.status === 'ready' && fs.existsSync(existingPath)) {
       return {
         reused: {
           id: existing.id,
@@ -231,12 +231,12 @@ async function importSingleFile(
           resourceType: 'bgm', resourceId: id,
           ownerUserId: access.actor.userId, visibility: 'private',
         });
-        registerManagedFile({
-          absolutePath: placed.absolutePath,
-          mimeType: upload.mimeType || 'application/octet-stream',
-          references: [{ resourceType: 'bgm', resourceId: id, role: 'input' }],
-        });
       }
+      registerManagedFile({
+        absolutePath: placed.absolutePath,
+        mimeType: upload.mimeType || 'application/octet-stream',
+        references: [{ resourceType: 'bgm', resourceId: id, role: 'input' }],
+      });
     });
     publish.immediate();
 

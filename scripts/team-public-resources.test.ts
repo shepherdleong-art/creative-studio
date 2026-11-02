@@ -24,8 +24,8 @@ const { importFinalEditBgmFiles } = await import('../lib/final-edit/bgm-import.t
 const { readBatchBgmPool } = await import('../lib/batch-production/bgm.ts');
 const { publishTeamResource } = await import('../lib/team-service/files/publication.ts');
 const { ensureScriptStudioSchemaReady } = await import('../lib/script-studio/schema.ts');
-const { getOrCreateCatalog, createCatalogRevision, getCatalogCurrentRevisionId, getCatalogRevision } = await import('../lib/script-studio/catalogs.ts');
-const { getOrCreateViralTemplateLibrary } = await import('../lib/script-studio/viral-templates.ts');
+const { getOrCreateCatalog, createCatalogRevision, getCatalogCurrentRevisionId, getCatalogRevision, listCatalogRevisions } = await import('../lib/script-studio/catalogs.ts');
+const { getOrCreateViralTemplateLibrary, getViralTemplateLibraryView } = await import('../lib/script-studio/viral-templates.ts');
 
 ensureServerDeploymentMarker({
   mode: 'server', dataRoot: root, hostname: '127.0.0.1', port: 3300,
@@ -40,6 +40,7 @@ const insertUser = db.prepare(`INSERT INTO team_users (
 insertUser.run('admin', '0000', '管理员', 'admin');
 insertUser.run('user-a', '0001', '甲', 'employee');
 insertUser.run('user-b', '0002', '乙', 'employee');
+insertUser.run('user-c', '0003', '丙', 'employee');
 const principal = (userId: string, role: 'employee' | 'admin' = 'employee') => ({
   kind: 'user' as const, userId, employeeId: userId, displayName: userId, role,
   sessionId: `session-${userId}`, sessionVersion: 1, mustChangePassword: false,
@@ -48,8 +49,10 @@ const principal = (userId: string, role: 'employee' | 'admin' = 'employee') => (
 const admin = principal('admin', 'admin');
 const userA = principal('user-a');
 const userB = principal('user-b');
+const userC = principal('user-c');
 const contextA = createTeamAccessContext({ db, principal: userA });
 const contextB = createTeamAccessContext({ db, principal: userB });
+const contextC = createTeamAccessContext({ db, principal: userC });
 const storageRoot = path.join(root, 'storage');
 fs.mkdirSync(storageRoot, { recursive: true });
 const upload = path.join(root, 'same.mp3');
@@ -94,15 +97,52 @@ try {
   assert.equal(runWithAccessContext(contextA, () => getCatalogCurrentRevisionId(db, 'template')), revisionA);
   assert.equal(runWithAccessContext(contextB, () => getCatalogCurrentRevisionId(db, 'template')), revisionB);
   assert.throws(() => runWithAccessContext(contextA, () => getCatalogRevision(db, revisionB)), /无权/);
+  const revisionBPublic = runWithAccessContext(contextB, () => createCatalogRevision(db, {
+    catalogId: catalogB.id, sourceFilename: 'public.xlsx', sourceSha256: 'public-hash', importReport: {},
+  })).revisionId;
   publishTeamResource(db, admin, { resourceType: 'script_catalog', resourceId: catalogB.id });
-  publishTeamResource(db, admin, { resourceType: 'script_catalog_revision', resourceId: revisionB });
-  assert.equal(runWithAccessContext(contextA, () => getCatalogRevision(db, revisionB))?.id, revisionB);
-  assert.throws(() => requireResourceAccess(db, userA, 'script_catalog_revision', revisionB, 'write'), /无权/);
+  publishTeamResource(db, admin, { resourceType: 'script_catalog_revision', resourceId: revisionBPublic });
+  assert.equal(runWithAccessContext(contextC, () => getCatalogCurrentRevisionId(db, 'template')), revisionBPublic);
+  assert.deepEqual(
+    runWithAccessContext(contextA, () => listCatalogRevisions(db, catalogB.id)).map((revision) => revision.id),
+    [revisionBPublic],
+    '公开当前修订不得连带暴露私人历史修订',
+  );
+  assert.throws(() => runWithAccessContext(contextA, () => getCatalogRevision(db, revisionB)), /无权/);
+  assert.equal(runWithAccessContext(contextA, () => getCatalogRevision(db, revisionBPublic))?.id, revisionBPublic);
+  assert.throws(() => requireResourceAccess(db, userA, 'script_catalog_revision', revisionBPublic, 'write'), /无权/);
 
   const viralA = runWithAccessContext(contextA, () => getOrCreateViralTemplateLibrary(db));
   const viralB = runWithAccessContext(contextB, () => getOrCreateViralTemplateLibrary(db));
   assert.notEqual(viralA.id, viralB.id);
-  console.log('PASS: same-hash BGM/catalog records stay independent; public revisions are read-only');
+  const insertViralRevision = db.prepare(`INSERT INTO script_studio_viral_tpl_revisions (
+    id, libraryId, revisionNumber, sourceFilename, sourceSha256, importReportJson, createdAt
+  ) VALUES (?, ?, ?, ?, ?, '{}', '2026-11-02')`);
+  insertViralRevision.run('viral-private-revision', viralB.id, 1, 'private.xlsx', 'private-hash');
+  insertViralRevision.run('viral-public-revision', viralB.id, 2, 'public.xlsx', 'public-hash');
+  runWithAccessContext(contextB, () => {
+    for (const resourceId of ['viral-private-revision', 'viral-public-revision']) {
+      contextB.registerInheritedScope({
+        resourceType: 'viral_template_revision', resourceId,
+        parent: { resourceType: 'viral_template_library', resourceId: viralB.id }, visibility: 'private',
+      });
+    }
+  });
+  db.prepare('UPDATE script_studio_viral_tpl_libraries SET currentRevisionId = ? WHERE id = ?')
+    .run('viral-public-revision', viralB.id);
+  publishTeamResource(db, admin, { resourceType: 'viral_template_library', resourceId: viralB.id });
+  publishTeamResource(db, admin, { resourceType: 'viral_template_revision', resourceId: 'viral-public-revision' });
+  const viralView = runWithAccessContext(contextC, () => getViralTemplateLibraryView(db));
+  assert.equal(viralView.current?.id, 'viral-public-revision');
+  assert.deepEqual(viralView.revisions.map((revision) => revision.id), ['viral-public-revision']);
+
+  db.prepare("UPDATE final_edit_bgm_tracks SET status = 'failed', errorMessage = 'test failure' WHERE id = ?").run(trackA.id);
+  const restored = await runWithAccessContext(contextA, () => importFinalEditBgmFiles(deps, [
+    { filename: 'same.mp3', mimeType: 'audio/mpeg', temporaryPath: upload, size: 16 },
+  ]));
+  assert.equal(restored.imported[0]?.id, trackA.id, '失败曲目重导入必须复用原实体');
+  assert.ok(contextA.authorizeFileRead!(path.join(storageRoot, restored.imported[0].relativePath)).fileId);
+  console.log('PASS: same-hash isolation, independent public revisions, and failed BGM re-import registration');
 } finally {
   closeDb();
   process.env = previousEnv;
