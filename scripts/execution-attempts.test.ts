@@ -46,7 +46,8 @@ const journal = {
   appendReceipt: (input: Record<string, unknown>) => {
     if (input.attemptId) {
       const state = db.prepare('SELECT submissionState FROM execution_attempts WHERE id = ?').pluck().get(input.attemptId);
-      assert.equal(state, 'maybe_sent', 'receipt journal 必须先于 DB 回执更新');
+      assert.ok(state === 'maybe_sent' || (state === 'terminal' && input.reconciliationSource),
+        'receipt journal 必须先于 DB 回执更新；晚到核查费用可在既有终态上追加');
     }
     const record = {
       ...input, schemaVersion: 1, deploymentId: 'deployment-attempts', eventType: 'receipt',
@@ -121,6 +122,8 @@ try {
     assert.equal(accepted.remoteId, 'remote-sync');
     assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE state = 'held'").pluck().get(), 3,
       'accepted 后仍保留共享、个人和费用占额');
+    const replayedReceipt = await execution.attachReceipt({ intent, receipt: { remoteId: 'remote-sync' } });
+    assert.equal(replayedReceipt.remoteId, 'remote-sync', '相同回执重放必须幂等');
 
     now = new Date('2026-02-01T00:00:00.000Z');
     failUsageMirror = true;
@@ -163,6 +166,13 @@ try {
     assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE kind = 'concurrency' AND state = 'held'").pluck().get(), 2,
       '协议回退前必须复用原远端并发 permit');
 
+    await assert.rejects(() => execution.markSubmitting({
+      grant: { ...fallback, instance: { instanceId: 'stale-instance', fence: 99 } },
+      requestSnapshot: { model: 'model-a', temperature: 1 }, retryKind: 'protocol_fallback',
+      quote: { kind: 'priced', reserve: { currency: 'CNY', minor: 80 }, pricingSnapshot: { version: 1 } },
+    }), (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error
+      && (error as { code?: string }).code === 'stale_fence'));
+
     const secondIntent = await execution.markSubmitting({
       grant: fallback, requestSnapshot: { model: 'model-a', temperature: 1 }, retryKind: 'protocol_fallback',
       quote: { kind: 'priced', reserve: { currency: 'CNY', minor: 80 }, pricingSnapshot: { version: 1 } },
@@ -179,6 +189,13 @@ try {
     assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE kind = 'cost'").pluck().get(), 3,
       '每次实际 HTTP 传输独立计价');
     assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE kind = 'concurrency' AND permitId = ?").pluck().get(fallback.permitId), 2);
+    await execution.settle({
+      attemptId: fallback.attempt.id, outcome: 'failed', actualCost: { currency: 'CNY', minor: 20 }, remoteTerminal: true,
+    });
+    assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE kind = 'concurrency' AND permitId = ? AND state = 'held'")
+      .pluck().get(fallback.permitId), 2, '旧 transport 的迟到终态不得释放新 fallback 正在复用的 permit');
+    assert.equal(db.prepare('SELECT currentAttemptId FROM execution_operations WHERE id = ?').pluck().get(fallback.operation.id),
+      secondAccepted.id, '旧 transport 不得覆盖新 fallback 的操作状态');
     await execution.settle({
       attemptId: secondAccepted.id, outcome: 'succeeded', actualCost: { currency: 'CNY', minor: 80 }, remoteTerminal: true,
     });
@@ -230,6 +247,36 @@ try {
     assert.equal(db.prepare("SELECT state FROM execution_reservations WHERE kind = 'cost' AND attemptId = ?").pluck().get(unknown.attempt.id), 'held',
       '受限用户未知实际费用保留待核查预留');
     execution.enqueue(operation('after-unknown', 'user-a', 0));
+    const blocked = execution.admit(identity);
+    assert.equal(blocked.kind, 'deferred');
+    if (blocked.kind === 'deferred') assert.ok(blocked.reasons.includes('cost_unknown'));
+    const latePriced = await execution.reconcile({
+      attemptId: unknown.attempt.id,
+      evidence: { kind: 'terminal', outcome: 'succeeded', actualCost: { currency: 'CNY', minor: 40 } },
+      source: 'provider',
+    });
+    assert.equal(latePriced.actualMinor, 40, '未知费用必须允许晚到实际账单结算');
+    assert.equal(latePriced.costState, 'settled');
+    assert.equal(monthlyCostUsage(db, 'user-a', '2026-02'), 140, '晚到费用仍计入原账期且只结算一次');
+  }
+
+  {
+    updateActorPolicy(db, {
+      actorId: 'user-b', monthlyLimitMinor: null, personalConcurrency: 2, paused: false, expectedVersion: 0,
+    });
+    const unknown = await grant('unknown-before-limit', 'user-b', 10);
+    const intent = await execution.markSubmitting({ grant: unknown, requestSnapshot: {} });
+    await execution.transmit(intent, async () => ({ remoteId: 'remote-unknown-before-limit' }));
+    await execution.settle({ attemptId: unknown.attempt.id, outcome: 'succeeded', actualCost: null, remoteTerminal: true });
+    assert.equal(db.prepare("SELECT state FROM execution_reservations WHERE kind = 'cost' AND attemptId = ?")
+      .pluck().get(unknown.attempt.id), 'settled');
+    updateActorPolicy(db, {
+      actorId: 'user-b', monthlyLimitMinor: 100, personalConcurrency: 2, paused: false, expectedVersion: 1,
+    });
+    assert.equal(monthlyCostUsage(db, 'user-b', '2026-02'), 10,
+      '不限额转受限后，历史未知费用仍按原预留占额而不是归零');
+    execution.enqueue(operation('after-limit-with-unknown', 'user-b', 0));
+    assert.equal(execution.admit(identity).kind, 'admitted', '先让 RR 中另一用户的已就绪操作继续');
     const blocked = execution.admit(identity);
     assert.equal(blocked.kind, 'deferred');
     if (blocked.kind === 'deferred') assert.ok(blocked.reasons.includes('cost_unknown'));

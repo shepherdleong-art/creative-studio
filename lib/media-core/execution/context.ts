@@ -146,6 +146,7 @@ export interface ExecutionJournalRecord {
   module: string;
   step: string;
   inputHash: string;
+  requestHash?: string;
   transportSeq: number;
   requiredPools: string[];
   policyVersion: number;

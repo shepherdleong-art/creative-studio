@@ -22,6 +22,7 @@ function identity(input: JournalInput | ReceiptInput) {
     module: input.module,
     step: input.step,
     inputHash: input.inputHash,
+    requestHash: input.requestHash as string | undefined,
     transportSeq: input.transportSeq,
     requiredPools: [...input.requiredPools],
     policyVersion: input.policyVersion,

@@ -21,6 +21,7 @@ function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== undefined)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`);
   return `{${entries.join(',')}}`;
@@ -58,6 +59,7 @@ export function journalIdentity(operation: OperationRecord, attempt: AttemptReco
     module: operation.module,
     step: operation.step,
     inputHash: operation.inputHash,
+    requestHash: attempt.requestHash ?? undefined,
     transportSeq: attempt.transportSeq,
     requiredPools: operation.requiredPools,
     policyVersion: attempt.policyVersion,
@@ -165,6 +167,7 @@ export async function markSubmitting(options: AttemptOptions, input: MarkSubmitt
       if (changed.changes !== 1) throw new ExecutionError('stale_fence', '提交前执行权已变化。');
     } else {
       const previous = readAttempt(options.db, operation.currentAttemptId ?? '');
+      assertCurrentIdentity(previous, input.grant.instance);
       if (previous.permitId !== input.grant.permitId || previous.submissionState !== 'terminal'
         || previous.costState !== 'settled') {
         throw new ExecutionError('previous_attempt_uncertain', '前一传输未明确终态并结算，禁止内部回退。');
@@ -286,17 +289,20 @@ export async function settleAttempt(options: ExecutionFacadeOptions, input: Sett
     SELECT * FROM execution_reservations WHERE kind = 'cost' AND attemptId = ?
   `).get(input.attemptId) as { state: string; actualMinor: number | null; costState: string } | undefined;
   if (!reservation) throw new ExecutionError('cost_reservation_missing', '执行费用预留缺失，禁止结算。');
-  const alreadyFinal = reservation.state !== 'held'
-    || (before.costState === 'unknown' && before.submissionState === 'terminal' && before.actualMinor === null);
+  const operation = readOperation(options.db, before.operationId);
+  const releaseRemote = input.remoteTerminal && operation.currentAttemptId === before.id;
+  const latePricing = actualCost !== null && reservation.costState === 'unknown'
+    && before.terminalState === input.outcome;
+  const alreadyFinal = !latePricing && (reservation.state !== 'held'
+    || (before.costState === 'unknown' && before.submissionState === 'terminal' && before.actualMinor === null));
   if (alreadyFinal) {
     if (before.terminalState !== input.outcome
       || (before.actualMinor !== null && before.actualMinor !== actualCost?.minor)
       || (before.actualMinor === null && actualCost !== null)) {
       throw new ExecutionError('settle_conflict', '同一传输已有不同结算结果。');
     }
-    if (input.remoteTerminal) {
+    if (releaseRemote) {
       const at = (options.now?.() ?? new Date()).toISOString();
-      const operation = readOperation(options.db, before.operationId);
       options.db.transaction(() => {
         options.db.prepare(`
           UPDATE execution_reservations SET state = 'released', releasedAt = COALESCE(releasedAt, ?),
@@ -312,7 +318,6 @@ export async function settleAttempt(options: ExecutionFacadeOptions, input: Sett
   if (before.actualMinor !== null && before.actualMinor !== actualCost?.minor) {
     throw new ExecutionError('settle_conflict', '结算金额与已持久回执不一致。');
   }
-  const operation = readOperation(options.db, before.operationId);
   const policy = readActorPolicy(options.db, before.actorId);
   const now = options.now?.() ?? new Date();
   const at = now.toISOString();
@@ -338,21 +343,22 @@ export async function settleAttempt(options: ExecutionFacadeOptions, input: Sett
     } else {
       options.db.prepare(`
         UPDATE execution_reservations SET state = 'settled', actualMinor = ?, costState = ?, settledAt = ?
-        WHERE attemptId = ? AND kind = 'cost' AND state = 'held'
+        WHERE attemptId = ? AND kind = 'cost'
+          AND (state = 'held' OR (state = 'settled' AND costState = 'unknown'))
       `).run(actualCost?.minor ?? null, unknown ? 'unknown' : 'settled', at, before.id);
     }
-    if (input.remoteTerminal) {
+    if (releaseRemote) {
       options.db.prepare(`
         UPDATE execution_reservations SET state = 'released', releasedAt = ?, releaseReason = ?
         WHERE permitId = ? AND kind = 'concurrency' AND state = 'held'
       `).run(at, input.outcome === 'not_created' ? 'confirmed_not_created' : 'remote_terminal', before.permitId);
     }
-    if (input.outcome === 'not_created') {
+    if (input.outcome === 'not_created' && releaseRemote) {
       options.db.prepare(`
         UPDATE execution_operations SET status = 'pending', currentAttemptId = NULL, currentPermitId = NULL,
           waitReason = NULL, waitDetail = NULL, updatedAt = ? WHERE id = ?
       `).run(at, operation.id);
-    } else if (input.remoteTerminal) {
+    } else if (releaseRemote) {
       options.db.prepare(`
         UPDATE execution_operations SET status = ?, resultJson = COALESCE(?, resultJson), updatedAt = ? WHERE id = ?
       `).run(input.outcome, input.result === undefined ? null : JSON.stringify(input.result), at, operation.id);

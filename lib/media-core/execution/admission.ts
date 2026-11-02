@@ -57,7 +57,7 @@ function candidateReason(
   if (policy.monthlyLimitMinor !== null) {
     const unknown = options.db.prepare(`
       SELECT 1 FROM execution_reservations
-      WHERE kind = 'cost' AND actorId = ? AND state = 'held' AND costState = 'unknown' LIMIT 1
+      WHERE kind = 'cost' AND actorId = ? AND state IN ('held', 'settled') AND costState = 'unknown' LIMIT 1
     `).get(operation.actorId);
     if (unknown) return 'cost_unknown';
     const reserve = operation.quote.kind === 'priced' ? operation.quote.reserve.minor : 0;

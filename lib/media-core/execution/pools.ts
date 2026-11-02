@@ -160,7 +160,7 @@ export function monthlyCostUsage(db: Database.Database, actorId: string, account
   return db.prepare(`
     SELECT COALESCE(SUM(CASE
       WHEN state = 'held' THEN COALESCE(reservedMinor, 0)
-      WHEN state = 'settled' THEN COALESCE(actualMinor, 0)
+      WHEN state = 'settled' THEN COALESCE(actualMinor, CASE WHEN costState = 'unknown' THEN reservedMinor ELSE 0 END, 0)
       ELSE 0
     END), 0) AS amount
     FROM execution_reservations

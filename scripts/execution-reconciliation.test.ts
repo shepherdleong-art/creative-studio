@@ -183,6 +183,83 @@ try {
     assert.equal(terminal.actualMinor, 90);
     assert.equal(fixture.db.prepare("SELECT state FROM execution_reservations WHERE kind = 'cost' AND attemptId = ?").pluck().get(grant.attempt.id), 'settled');
     assert.equal(fixture.db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE kind = 'concurrency' AND state = 'held'").pluck().get(), 0);
+    const journalLength = fixture.journal.scan().length;
+    await assert.rejects(() => fixture.execution.reconcile({
+      attemptId: grant.attempt.id,
+      evidence: { kind: 'terminal', outcome: 'succeeded', actualCost: { currency: 'CNY', minor: 90 } },
+      source: 'provider',
+    }), /终态/);
+    await assert.rejects(() => fixture.execution.reconcile({
+      attemptId: grant.attempt.id, evidence: { kind: 'confirmed_not_created' }, source: 'provider',
+    }), /终态/);
+    assert.equal(fixture.journal.scan().length, journalLength, '冲突终态不得先污染 journal');
+    const unchanged = fixture.db.prepare('SELECT terminalState, actualMinor FROM execution_attempts WHERE id = ?')
+      .get(grant.attempt.id);
+    assert.deepEqual(unchanged, { terminalState: 'failed', actualMinor: 90 });
+    fixture.runtime.closeNewWork();
+  }
+
+  {
+    const fixture = await setup('rollback-not-sent-with-intent');
+    const grant = await fixture.grant();
+    await fixture.execution.markSubmitting({ grant, requestSnapshot: { prompt: 'rolled-back-request' } });
+    fixture.db.prepare(`
+      UPDATE execution_attempts SET submissionState = 'not_sent', requestHash = NULL, intentJournalSeq = NULL WHERE id = ?
+    `).run(grant.attempt.id);
+    fixture.db.prepare("UPDATE execution_operations SET status = 'admitted' WHERE id = ?").run(grant.operation.id);
+    const recovered = await recoverExecution(fixture.options as never);
+    assert.ok(recovered.unknownAttemptIds.includes(grant.attempt.id),
+      'DB 回退丢失 maybe_sent 时，独立 intent 仍证明可能已发送，不能按未创建释放');
+    const restored = fixture.db.prepare('SELECT * FROM execution_attempts WHERE id = ?').get(grant.attempt.id) as Record<string, unknown>;
+    assert.equal(restored.submissionState, 'maybe_sent');
+    assert.equal(typeof restored.requestHash, 'string');
+    assert.equal(typeof restored.intentJournalSeq, 'number');
+    assert.equal(fixture.db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE state = 'held'").pluck().get(), 3);
+    const accepted = await fixture.execution.reconcile({
+      attemptId: grant.attempt.id, evidence: { kind: 'remote_id', remoteId: 'remote-after-rollback' }, source: 'journal',
+    });
+    assert.equal(accepted.remoteId, 'remote-after-rollback');
+    fixture.runtime.closeNewWork();
+  }
+
+  {
+    const fixture = await setup('late-cost-before-database');
+    const grant = await fixture.grant();
+    const intent = await fixture.execution.markSubmitting({ grant, requestSnapshot: {} });
+    await fixture.execution.transmit(intent, async () => ({ remoteId: 'remote-late-cost' }));
+    await fixture.execution.settle({
+      attemptId: grant.attempt.id, outcome: 'succeeded', actualCost: null, remoteTerminal: true,
+    });
+    const orphanIntent = fixture.journal.scan().find((record) => record.attemptId === grant.attempt.id
+      && record.eventType === 'submit_intent');
+    assert.ok(orphanIntent);
+    fixture.journal.appendReceipt({
+      ...orphanIntent, terminalState: 'succeeded', actualCost: { currency: 'CNY', minor: 70 },
+      reconciliationSource: 'provider',
+    });
+    await recoverExecution(fixture.options as never);
+    const recovered = fixture.db.prepare('SELECT * FROM execution_attempts WHERE id = ?').get(grant.attempt.id) as Record<string, unknown>;
+    assert.equal(recovered.actualMinor, 70);
+    assert.equal(recovered.costState, 'settled');
+    assert.equal(fixture.db.prepare("SELECT state FROM execution_reservations WHERE kind = 'cost' AND attemptId = ?")
+      .pluck().get(grant.attempt.id), 'settled', '晚到费用 journal 必须能恢复 DB 尚未入账的结算');
+    fixture.runtime.closeNewWork();
+  }
+
+  {
+    const fixture = await setup('terminal-before-settle');
+    const grant = await fixture.grant();
+    const intent = await fixture.execution.markSubmitting({ grant, requestSnapshot: {} });
+    await fixture.execution.transmit(intent, async () => ({
+      remoteId: 'remote-terminal-crash', terminalState: 'succeeded', actualCost: { currency: 'CNY', minor: 120 },
+    }));
+    assert.equal(fixture.db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE state = 'held'").pluck().get(), 3);
+    await recoverExecution(fixture.options as never);
+    const recovered = fixture.db.prepare('SELECT * FROM execution_attempts WHERE id = ?').get(grant.attempt.id) as Record<string, unknown>;
+    assert.equal(recovered.costState, 'settled');
+    assert.equal(recovered.actualMinor, 120);
+    assert.equal(fixture.db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE state = 'held'").pluck().get(), 0,
+      'DB 回执落库后、结算前崩溃必须按 journal 完成终态结算');
     fixture.runtime.closeNewWork();
   }
 

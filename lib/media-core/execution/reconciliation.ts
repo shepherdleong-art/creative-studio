@@ -103,8 +103,9 @@ export async function reconcileAttempt(options: ExecutionFacadeOptions, input: R
     });
   }
   if (input.evidence.kind === 'confirmed_not_created') {
-    if (attempt.submissionState === 'accepted') {
-      throw new ExecutionError('receipt_conflict', '已受理调用不能被改写为未创建。');
+    if (attempt.submissionState === 'accepted'
+      || (attempt.terminalState !== null && attempt.terminalState !== 'not_created')) {
+      throw new ExecutionError('receipt_conflict', '已受理或已有终态的调用不能被改写为未创建。');
     }
     if (attempt.terminalState !== 'not_created') {
       await appendTerminal(options, attempt, operation, {
@@ -116,7 +117,15 @@ export async function reconcileAttempt(options: ExecutionFacadeOptions, input: R
       errorCode: input.evidence.errorCode,
     });
   }
-  if (attempt.terminalState !== input.evidence.outcome) {
+  if (attempt.terminalState !== null && attempt.terminalState !== input.evidence.outcome) {
+    throw new ExecutionError('receipt_conflict', '同一传输已有不同的远端终态。');
+  }
+  if (attempt.actualMinor !== null && input.evidence.actualCost
+    && attempt.actualMinor !== input.evidence.actualCost.minor) {
+    throw new ExecutionError('settle_conflict', '同一传输已有不同的实际费用。');
+  }
+  const lateActualCost = attempt.actualMinor === null && input.evidence.actualCost != null;
+  if (attempt.terminalState !== input.evidence.outcome || lateActualCost) {
     await appendTerminal(options, attempt, operation, {
       terminalState: input.evidence.outcome,
       actualCost: input.evidence.actualCost,
@@ -211,7 +220,8 @@ function recoverOrphan(
           settledAt = CASE WHEN ? = 'settled' THEN COALESCE(settledAt, ?) ELSE settledAt END,
           releasedAt = CASE WHEN ? = 'released' THEN COALESCE(releasedAt, ?) ELSE releasedAt END,
           releaseReason = CASE WHEN ? = 'released' THEN 'confirmed_not_created' ELSE releaseReason END
-        WHERE kind = 'cost' AND attemptId = ? AND state = 'held'
+        WHERE kind = 'cost' AND attemptId = ?
+          AND (state = 'held' OR (state = 'settled' AND costState = 'unknown'))
       `).run(reservationState, actualMinor, costState,
         reservationState, receipt?.at ?? intent.at, reservationState, receipt?.at ?? intent.at,
         reservationState, intent.attemptId);
@@ -245,30 +255,69 @@ export async function recoverExecution(options: ExecutionFacadeOptions): Promise
     byAttempt.set(record.attemptId, group);
   }
   const inFlight = options.db.prepare(`
-    SELECT id FROM execution_attempts WHERE submissionState IN ('not_sent', 'maybe_sent', 'accepted') ORDER BY createdAt
+    SELECT id FROM execution_attempts
+    WHERE submissionState IN ('not_sent', 'maybe_sent', 'accepted')
+      OR (submissionState = 'terminal' AND (
+        costState = 'unknown'
+        OR EXISTS (
+          SELECT 1 FROM execution_reservations
+          WHERE attemptId = execution_attempts.id AND kind = 'cost' AND state = 'held'
+        )
+      ))
+    ORDER BY createdAt
   `).all() as Array<{ id: string }>;
   for (const { id } of inFlight) {
-    const attempt = readAttempt(options.db, id);
+    let attempt = readAttempt(options.db, id);
     const operation = readOperation(options.db, attempt.operationId);
     const evidence = byAttempt.get(id);
     const intent = evidence?.find((record) => record.eventType === 'submit_intent');
     const receipt = receiptFor(evidence);
-    if (intent) ensureReservations(options, intent, operation.id);
+    if (intent) {
+      ensureReservations(options, intent, operation.id);
+      if (attempt.submissionState === 'not_sent' || attempt.requestHash === null || attempt.intentJournalSeq === null) {
+        options.db.prepare(`
+          UPDATE execution_attempts SET submissionState = ?,
+            requestHash = COALESCE(requestHash, ?), intentJournalSeq = COALESCE(intentJournalSeq, ?), updatedAt = ?
+          WHERE id = ?
+        `).run(attempt.submissionState === 'not_sent' ? 'maybe_sent' : attempt.submissionState,
+          intent.requestHash ?? null, intent.seq, intent.at, id);
+        attempt = readAttempt(options.db, id);
+      }
+    }
     if (attempt.submissionState === 'not_sent') {
       await settleAttempt(options, { attemptId: id, outcome: 'not_created', actualCost: null, remoteTerminal: true });
       continue;
     }
     if (receipt && receipt.terminalState !== 'unknown') {
-      if (attempt.receiptJournalSeq === null) result.recoveredReceiptAttemptIds.push(id);
-      applyReceipt(options, operation, attempt, receipt);
-      if (receipt.terminalState) {
+      const terminal = receipt.terminalState ?? null;
+      if (terminal) {
+        if (attempt.terminalState && attempt.terminalState !== terminal) {
+          throw new ExecutionError('receipt_conflict', '数据库与 journal 的远端终态不一致。');
+        }
+        if (attempt.actualMinor !== null && receipt.actualCost && attempt.actualMinor !== receipt.actualCost.minor) {
+          throw new ExecutionError('settle_conflict', '数据库与 journal 的实际费用不一致。');
+        }
+        const shouldApply = attempt.submissionState !== 'terminal' || attempt.receiptJournalSeq === null
+          || (attempt.actualMinor === null && receipt.actualCost != null);
+        if (shouldApply) {
+          if (attempt.receiptJournalSeq === null) result.recoveredReceiptAttemptIds.push(id);
+          attempt = applyReceipt(options, operation, attempt, receipt);
+        }
+        const actualCost = receipt.actualCost ?? (attempt.actualMinor === null ? null : {
+          currency: attempt.currency, minor: attempt.actualMinor,
+        });
         await settleAttempt(options, {
           attemptId: id,
-          outcome: receipt.terminalState,
-          actualCost: receipt.actualCost,
+          outcome: terminal,
+          actualCost,
           remoteTerminal: true,
           errorCode: receipt.errorCode,
         });
+        continue;
+      }
+      if (attempt.submissionState !== 'terminal') {
+        if (attempt.receiptJournalSeq === null) result.recoveredReceiptAttemptIds.push(id);
+        applyReceipt(options, operation, attempt, receipt);
       }
       continue;
     }
