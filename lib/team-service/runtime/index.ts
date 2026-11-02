@@ -1,0 +1,85 @@
+import { randomUUID } from 'node:crypto';
+import { dataRoot } from '../../data-root.ts';
+import { getDb } from '../../db.ts';
+import { schemaUpgradeRuntimePaths } from '../../schema-upgrade/runtime.ts';
+import { createTeamServiceBootstrap, type TeamServiceBootstrap } from '../bootstrap.ts';
+import { ensureServerDeploymentMarker, readRuntimeConfig } from '../config.ts';
+import { acquireTeamRuntimeOwner, type TeamRuntimeOwner } from './owner.ts';
+import {
+  getTeamRuntimeState,
+  initializeTeamRuntimeState,
+  markTeamRuntimeFailed,
+  setTeamRuntimePhase,
+  type TeamRuntimeState,
+} from './state.ts';
+
+let owner: TeamRuntimeOwner | null = null;
+let bootstrap: TeamServiceBootstrap | null = null;
+let starting: Promise<TeamRuntimeState> | null = null;
+let draining = false;
+
+export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
+  if (starting) return starting;
+  starting = (async () => {
+    const config = readRuntimeConfig();
+    if (config.mode !== 'server') throw new Error('团队服务入口要求显式 server 模式');
+    ensureServerDeploymentMarker(config);
+    owner = await acquireTeamRuntimeOwner({
+      dataRoot: config.dataRoot,
+      instanceId: process.env.CREATIVE_STUDIO_INSTANCE_ID || randomUUID(),
+    });
+    initializeTeamRuntimeState(owner);
+    try {
+      const db = getDb();
+      bootstrap = createTeamServiceBootstrap({
+        config,
+        identity: owner,
+        db,
+        ...schemaUpgradeRuntimePaths(dataRoot()),
+        assertOwnerActive: () => {
+          owner?.assertActive();
+          if (draining) throw new Error('团队服务正在停机，停止后续启动阶段');
+        },
+      });
+      await bootstrap.ensureSchemaReady();
+      await bootstrap.registerRecovery();
+      await bootstrap.recover();
+      await bootstrap.start();
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? String(error.code) : 'bootstrap_failed';
+      markTeamRuntimeFailed(code);
+      console.error(`[team-service] 业务入口保持关闭：${code}`);
+    }
+    return getTeamRuntimeState();
+  })();
+  return starting;
+}
+
+export async function drainTeamRuntime(timeoutMs: number): Promise<number> {
+  if (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE !== 'server') return 0;
+  draining = true;
+  setTeamRuntimePhase('draining', { ready: false, maintenance: true });
+  if (starting) await starting.catch(() => getTeamRuntimeState());
+  if (!bootstrap) {
+    setTeamRuntimePhase('stopped', { ready: false, maintenance: true });
+    return 0;
+  }
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  const result = await Promise.race([
+    bootstrap.drain(),
+    new Promise<{ stopped: false; pendingTasks: number }>((resolve) => {
+      const timer = setTimeout(() => resolve({ stopped: false, pendingTasks: 1 }), Math.max(0, deadline - Date.now()));
+      timer.unref();
+    }),
+  ]);
+  return result.pendingTasks;
+}
+
+export function releaseTeamRuntimeOwner(): void {
+  draining = true;
+  owner?.release();
+  owner = null;
+  if (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server') {
+    setTeamRuntimePhase('stopped', { ready: false, maintenance: true });
+  }
+}

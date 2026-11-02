@@ -30,6 +30,8 @@ const RECOVERY_SCOPES: ReadonlyArray<SchemaUpgradeScope> = [
   'video-provider-gateway',
   'script-studio',
   'creative-canvas',
+  'team-service',
+  'execution',
   // 实拍混剪已于 2026-10-30 迁出工作台；保留这个名字只为认得旧的升级记录和迁移备份，不要删。
   'live-mixcut',
 ];
