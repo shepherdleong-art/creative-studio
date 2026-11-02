@@ -4,12 +4,15 @@ import { assertScriptStudioApiReady, errorResponse, jsonOrNull } from '@/lib/scr
 import { importImageDirectory } from '@/lib/script-studio/import-directory';
 import { ScriptStudioError } from '@/lib/script-studio/errors';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { controlledUploadRequired } from '@/lib/team-service/transfers/controlled-transfer';
 
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  if (readRuntimeConfig().mode === 'server') return controlledUploadRequired();
   try {
     // 本地路径导入只接受工作台同源 JSON 请求，避免其他网页读取本机文件。
     const origin = request.headers.get('origin');

@@ -2,7 +2,7 @@ import path from 'node:path';
 import { getDb } from '../db';
 import { dataRoot } from '../data-root';
 import { probeVideoMedia } from '../ffmpeg';
-import { completeJson, estimateVisionAnalysisCost, getAvailableProviders } from '../script-providers';
+import { completeJson, estimateVisionAnalysisCost, getAvailableProviders } from '../script-providers/index.ts';
 import { fitNarrationTextToDuration } from '../script-generation-v3';
 import { createFinalEditWorkspace, type FinalEditWorkspaceRuntime } from './workspace';
 import { analyzeVideoWithVision } from './adapters/video-analysis';

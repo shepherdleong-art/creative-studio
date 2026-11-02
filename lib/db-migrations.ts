@@ -208,4 +208,6 @@ export const CORE_DB_MIGRATIONS = [
     createdAt INTEGER NOT NULL,
     updatedAt INTEGER NOT NULL
   )`,
+  `ALTER TABLE jobs ADD COLUMN executionRevision INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE video_jobs ADD COLUMN executionRevision INTEGER NOT NULL DEFAULT 0`,
 ];

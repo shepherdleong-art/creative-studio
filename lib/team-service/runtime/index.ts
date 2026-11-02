@@ -8,6 +8,8 @@ import { clearExecutionModuleRuntime, setExecutionModuleRuntime } from '../../me
 import { createScriptGenerationV3Lifecycle } from '../../script-generation-v3-server.ts';
 import { ensureServerDeploymentMarker, readRuntimeConfig } from '../config.ts';
 import { acquireTeamRuntimeOwner, type TeamRuntimeOwner } from './owner.ts';
+import { setLegacyMediaExecutionRuntime } from '../../legacy-media-execution.ts';
+import { createLegacyMediaLifecycle } from '../../legacy-media-lifecycle.ts';
 import { createCanvasExecutionLifecycle } from '../../creative-canvas/bootstrap.ts';
 import { createFinalEditExecutionLifecycle } from '../../final-edit/lifecycle.ts';
 import {
@@ -45,6 +47,7 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
     try {
       const db = getDb();
       execution = createTeamExecutionRuntime({ config, db });
+      setLegacyMediaExecutionRuntime({ facade: execution.facade, instance: owner });
       bootstrap = createTeamServiceBootstrap({
         config,
         identity: owner,
@@ -54,6 +57,7 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
           createFinalEditExecutionLifecycle(db),
           createScriptGenerationV3Lifecycle(db),
           createCanvasExecutionLifecycle({ db, execution: execution.facade }),
+          createLegacyMediaLifecycle(),
         ],
         ...schemaUpgradeRuntimePaths(dataRoot()),
         assertOwnerActive: () => {
@@ -107,6 +111,7 @@ export function releaseTeamRuntimeOwner(): void {
   clearExecutionModuleRuntime();
   execution?.closeNewWork();
   execution = null;
+  setLegacyMediaExecutionRuntime(null);
   owner?.release();
   owner = null;
   if (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server') {

@@ -67,7 +67,10 @@ export function registerSingleArtifact(db: Database.Database, input: {
       absolutePath: path.join(dataRoot(), 'storage', input.relativePath),
       mimeType: input.mimeType,
       seriesId: `project-artifact:${input.id}`,
-      references: [{ resourceType: 'project_artifact', resourceId: input.id, role: 'output' }],
+      references: [
+        { resourceType: 'project_artifact', resourceId: input.id, role: 'output' },
+        { resourceType: 'project_artifact', resourceId: input.id, role: 'delivery' },
+      ],
     });
   }
 }
@@ -108,7 +111,10 @@ export function registerPublishedArtifacts(db: Database.Database, input: {
         absolutePath: path.join(dataRoot(), 'storage', relativePath),
         mimeType: kind === 'video' ? 'video/mp4' : 'image/jpeg',
         seriesId: `project-artifact:final-edit:${input.sourceJobId}:${kind}`,
-        references: [{ resourceType: 'project_artifact', resourceId: `final-edit:${input.sourceJobId}:${kind}`, role: 'output' }],
+        references: [
+          { resourceType: 'project_artifact', resourceId: `final-edit:${input.sourceJobId}:${kind}`, role: 'output' },
+          { resourceType: 'project_artifact', resourceId: `final-edit:${input.sourceJobId}:${kind}`, role: 'delivery' },
+        ],
       });
     }
   }

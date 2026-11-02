@@ -33,7 +33,7 @@ try {
 
   const team = await checkTeamServiceReadiness(options(root, db));
   assert.equal(team.available, true);
-  assert.deepEqual(team.appliedVersions, [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(team.appliedVersions, [1, 2, 3, 4, 5, 6, 7, 8]);
   const execution = await checkExecutionReadiness(options(root, db));
   assert.equal(execution.available, true);
   assert.deepEqual(execution.appliedVersions, [1, 2]);
@@ -44,7 +44,7 @@ try {
   );
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'execution_instances'").get());
   assert.deepEqual(db.prepare('SELECT version FROM team_schema_migrations').all(), [
-    { version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 },
+    { version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 },
   ]);
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_files'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_file_references'").get());
@@ -54,10 +54,12 @@ try {
   for (const table of [
     'team_lifecycle_events', 'team_lifecycle_event_scopes', 'team_lifecycle_barriers',
     'team_backup_pins', 'team_cleanup_jobs', 'team_cleanup_files',
+    'team_uploads', 'team_upload_parts', 'team_devices', 'team_download_receipts',
   ]) {
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table), `缺少 ${table}`);
   }
   assert.equal((db.prepare("SELECT type FROM pragma_table_info('team_users') WHERE name = 'employeeId'").get() as { type: string }).type, 'TEXT');
+  assert.equal((db.prepare("SELECT type FROM pragma_table_info('team_uploads') WHERE name = 'targetKind'").get() as { type: string }).type, 'TEXT');
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_sessions'").get());
   assert.deepEqual(db.prepare('SELECT version FROM execution_schema_migrations').all(), [{ version: 1 }, { version: 2 }]);
   for (const table of [

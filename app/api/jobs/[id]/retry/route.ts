@@ -42,7 +42,8 @@ async function __teamRoutePOST(
 
     db.prepare(`
       UPDATE jobs SET status = 'pending', attempt = 0, errorMessage = NULL,
-        startedAt = NULL, finishedAt = NULL, latencyMs = NULL, estimatedCost = NULL
+        startedAt = NULL, finishedAt = NULL, latencyMs = NULL, estimatedCost = NULL,
+        executionRevision = COALESCE(executionRevision, 0) + 1
       WHERE id = ?
     `).run(id);
 
