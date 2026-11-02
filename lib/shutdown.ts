@@ -29,6 +29,7 @@ import {
   waitForScriptStudioTasksIdle,
   type ScriptStudioSchedulerController,
 } from './script-studio/scheduler.ts';
+import { drainTeamRuntime, releaseTeamRuntimeOwner } from './team-service/runtime/index.ts';
 
 export interface GracefulShutdownResult {
   stopped: boolean;
@@ -51,6 +52,8 @@ export interface GracefulShutdownDependencies {
   abortFfmpeg?: () => number;
   waitForFfmpeg?: (timeoutMs: number) => Promise<number>;
   closeDatabase?: () => void;
+  drainTeam?: (timeoutMs: number) => Promise<number>;
+  releaseTeamOwner?: () => void;
   stopSidecar?: () => void | Promise<void>;
 }
 
@@ -95,6 +98,7 @@ async function waitForCountStep(
  * dataRoot 或项目 scripts 目录中的已知停止脚本。
  */
 export function stopControlledSidecar(): void {
+  if (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server') return;
   const stackFile = path.join(dataRoot(), 'storage', 'run', 'stack.json');
   if (!fs.existsSync(stackFile)) return;
 
@@ -134,6 +138,17 @@ async function performGracefulShutdown(
   const deadline = Date.now() + Math.max(0, Math.floor(timeoutMs));
   const remainingBudget = (): number => Math.max(0, deadline - Date.now());
   let pendingTasks = 0;
+
+  // server 先关闭新业务受理，再停止各模块领取；本地模式此步骤为空操作。
+  let teamDrain: Promise<void> | null = null;
+  try {
+    const drain = dependencies.drainTeam ?? drainTeamRuntime;
+    teamDrain = Promise.resolve(drain(remainingBudget())).then((count) => {
+      pendingTasks += Math.max(0, count);
+    });
+  } catch {
+    pendingTasks += 1;
+  }
 
   const scheduler = 'scheduler' in dependencies
     ? dependencies.scheduler
@@ -218,6 +233,9 @@ async function performGracefulShutdown(
   if (canvasSchedulerStop && !(await waitForStep(canvasSchedulerStop, remainingBudget()))) {
     pendingTasks += 1;
   }
+  if (teamDrain && !(await waitForStep(teamDrain, remainingBudget()))) {
+    pendingTasks += 1;
+  }
 
   try {
     pendingTasks += await waitForCountStep(
@@ -273,6 +291,12 @@ async function performGracefulShutdown(
   try {
     if (dependencies.closeDatabase) dependencies.closeDatabase();
     else closeDb();
+  } catch {
+    pendingTasks += 1;
+  }
+
+  try {
+    (dependencies.releaseTeamOwner ?? releaseTeamRuntimeOwner)();
   } catch {
     pendingTasks += 1;
   }
