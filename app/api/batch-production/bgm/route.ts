@@ -9,12 +9,14 @@ import {
   BATCH_NO_STORE_HEADERS,
   batchRouteErrorResponse,
 } from '../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 批量 BGM 曲库:与单条模式共用 storage/bgm/ 与 final_edit_bgm_tracks,不建独立曲库。 */
-export async function GET() {
+async function __teamRouteGET() {
   try {
     await assertBatchApiReady();
     const tracks = listBatchBgmTracks(getDb());
@@ -25,7 +27,7 @@ export async function GET() {
 }
 
 /** 重新扫描 storage/bgm/ 目录(用户放完文件无需重启应用)。 */
-export async function POST(request: NextRequest) {
+async function __teamRoutePOST(request: NextRequest) {
   if (request.headers.get('x-creative-studio-action') !== 'rescan') {
     return NextResponse.json({ error: 'invalid_rescan_request', message: '曲库扫描请求缺少工作台标记' }, {
       status: 403,
@@ -42,3 +44,5 @@ export async function POST(request: NextRequest) {
     return batchRouteErrorResponse(error, 'batch_bgm_rescan_failed', '曲库重新扫描失败');
   }
 }
+export const GET = withTeamRoute('/api/batch-production/bgm', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/batch-production/bgm', 'POST', __teamRoutePOST);

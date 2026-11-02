@@ -69,6 +69,15 @@ export const USAGE_SCHEMA_MIGRATIONS: ReadonlyArray<UsageSchemaMigration> = [
       );
     `,
   },
+  {
+    version: 3,
+    sql: `
+      ALTER TABLE usage_ledger ADD COLUMN actorUserId TEXT NOT NULL DEFAULT '';
+      ALTER TABLE usage_call_events ADD COLUMN actorUserId TEXT NOT NULL DEFAULT '';
+      CREATE INDEX IF NOT EXISTS idx_usage_ledger_actor ON usage_ledger(actorUserId, createdAt);
+      CREATE INDEX IF NOT EXISTS idx_usage_events_actor ON usage_call_events(actorUserId, createdAt);
+    `,
+  },
 ];
 
 const DEFAULT_READINESS: UsageSchemaReadiness = {

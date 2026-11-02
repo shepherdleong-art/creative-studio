@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getFinalEditTtsAdapter } from '@/lib/final-edit/adapters/tts-registry';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 const KEY_PLACEHOLDER = '••••••••';
 
-export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function __teamRoutePUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   let adapter: ReturnType<typeof getFinalEditTtsAdapter>;
   try { adapter = getFinalEditTtsAdapter(id); } catch { return NextResponse.json({ error: 'provider_not_found' }, { status: 404 }); }
@@ -34,3 +36,4 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   getDb().prepare(`UPDATE final_edit_tts_providers SET baseUrl=?, apiKey=?, enabled=?, costPerThousandCharacters=?, updatedAt=? WHERE id=?`).run(baseUrl, apiKey, body.enabled == null ? current.enabled : (body.enabled ? 1 : 0), cost, new Date().toISOString(), id);
   return NextResponse.json({ success: true, hasApiKey: Boolean(apiKey) });
 }
+export const PUT = withTeamRoute('/api/providers/tts/[id]', 'PUT', __teamRoutePUT);

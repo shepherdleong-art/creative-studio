@@ -7,6 +7,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,7 +18,7 @@ export const dynamic = 'force-dynamic';
  * 省略 projectId 时是设置页"清理全部代理"入口,按项目分别清理并汇总结果。
  * 正在使用中的代理会被跳过并标记 pending-delete,不会一边使用一边删除。
  */
-export async function POST(request: NextRequest) {
+async function __teamRoutePOST(request: NextRequest) {
   const projectId = batchProjectIdFromRequest(request);
   const body = await request.json().catch(() => ({})) as { assetIds?: unknown };
   const assetIds = Array.isArray(body.assetIds)
@@ -33,3 +35,4 @@ export async function POST(request: NextRequest) {
     return batchRouteErrorResponse(error, 'proxy_cleanup_failed', '代理清理失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/proxies/cleanup', 'POST', __teamRoutePOST);

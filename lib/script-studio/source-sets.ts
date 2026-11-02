@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import { dataRoot } from '../data-root.ts';
 import { ScriptStudioError } from './errors.ts';
 import { getScriptStudioLimits, logLimitHit, type ScriptStudioLimits } from './limits.ts';
@@ -145,6 +146,11 @@ export function createOrFindSourceSet(
   imageAssetIds: string[],
   options: { now?: () => Date; limits?: ScriptStudioLimits } = {},
 ): CreateSourceSetResult {
+  const access = requireAccessContext();
+  if (access.kind === 'team') {
+    access.assertAccess('project', projectId, 'write');
+    for (const imageId of imageAssetIds) access.assertAccess('image', imageId, 'read');
+  }
   assertImagesBelongToProject(db, projectId, imageAssetIds);
   const rows = loadSourceSetImageRows(db, projectId, imageAssetIds);
   const resourceReport = inspectSourceSetResources(rows, options.limits);
@@ -157,6 +163,7 @@ export function createOrFindSourceSet(
     WHERE projectId = ? AND contentFingerprint = ?
   `).get(projectId, contentFingerprint) as { id: string } | undefined;
   if (existing) {
+    if (access.kind === 'team') access.assertAccess('script_source_set', existing.id, 'read');
     return {
       sourceSetId: existing.id,
       contentFingerprint,
@@ -167,17 +174,24 @@ export function createOrFindSourceSet(
   }
   const now = (options.now ?? (() => new Date()))();
   const sourceSetId = randomUUID();
-  db.prepare(`
-    INSERT INTO script_studio_source_sets
-      (id, projectId, contentFingerprint, imageAssetIdsJson, createdAt)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(
-    sourceSetId,
-    projectId,
-    contentFingerprint,
-    JSON.stringify(rows.map((row) => row.id)),
-    now.toISOString(),
-  );
+  const create = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO script_studio_source_sets
+        (id, projectId, contentFingerprint, imageAssetIdsJson, createdAt)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      sourceSetId,
+      projectId,
+      contentFingerprint,
+      JSON.stringify(rows.map((row) => row.id)),
+      now.toISOString(),
+    );
+    access.registerInheritedScope({
+      resourceType: 'script_source_set', resourceId: sourceSetId,
+      parent: { resourceType: 'project', resourceId: projectId },
+    });
+  });
+  create.immediate();
   return {
     sourceSetId,
     contentFingerprint,
@@ -192,6 +206,8 @@ export function getSourceSet(
   projectId: string,
   sourceSetId: string,
 ): SourceSetRecord | undefined {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
   return db.prepare(`
     SELECT id, projectId, contentFingerprint, imageAssetIdsJson, createdAt
     FROM script_studio_source_sets

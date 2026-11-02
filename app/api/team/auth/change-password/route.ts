@@ -1,8 +1,10 @@
 import { authError, authJson, principalBody, readJson } from '../../../../../lib/team-service/auth/http.ts';
 import { assertTrustedWriteRequest, requirePrincipal } from '../../../../../lib/team-service/auth/request.ts';
 import { getTeamAuthService } from '../../../../../lib/team-service/auth/runtime.ts';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(request: Request): Promise<Response> {
+
+async function __teamRoutePOST(request: Request): Promise<Response> {
   try {
     assertTrustedWriteRequest(request);
     const principal = requirePrincipal(request, { allowMustChangePassword: true });
@@ -17,3 +19,4 @@ export async function POST(request: Request): Promise<Response> {
     return authError(error);
   }
 }
+export const POST = withTeamRoute('/api/team/auth/change-password', 'POST', __teamRoutePOST);

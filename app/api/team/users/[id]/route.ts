@@ -2,8 +2,10 @@ import { authError, authJson, readJson } from '../../../../../lib/team-service/a
 import { assertTrustedWriteRequest, requirePrincipal } from '../../../../../lib/team-service/auth/request.ts';
 import { getTeamAuthService } from '../../../../../lib/team-service/auth/runtime.ts';
 import { TeamAuthError } from '../../../../../lib/team-service/auth/types.ts';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function PATCH(
+
+async function __teamRoutePATCH(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ): Promise<Response> {
@@ -27,3 +29,4 @@ export async function PATCH(
     return authError(error);
   }
 }
+export const PATCH = withTeamRoute('/api/team/users/[id]', 'PATCH', __teamRoutePATCH);

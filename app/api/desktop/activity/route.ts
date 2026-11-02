@@ -1,6 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,7 +20,7 @@ function authorized(request: NextRequest): boolean {
     && timingSafeEqual(providedBytes, expectedBytes);
 }
 
-export function GET(request: NextRequest): NextResponse {
+function __teamRouteGET(request: NextRequest): NextResponse {
   if (!authorized(request)) {
     return NextResponse.json(
       { error: 'desktop_activity_denied' },
@@ -40,3 +42,4 @@ export function GET(request: NextRequest): NextResponse {
     return NextResponse.json({ active: true, uncertain: true }, { headers: NO_STORE_HEADERS });
   }
 }
+export const GET = withTeamRoute('/api/desktop/activity', 'GET', __teamRouteGET);

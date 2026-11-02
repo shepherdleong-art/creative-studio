@@ -5,8 +5,10 @@
 
 import { NextResponse } from 'next/server';
 import { scanSystemFonts } from '@/lib/media-core/packaging-font';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(request: Request): Promise<NextResponse> {
+
+async function __teamRouteGET(request: Request): Promise<NextResponse> {
   try {
     const force = new URL(request.url).searchParams.get('refresh') === '1';
     const result = scanSystemFonts(force);
@@ -20,3 +22,4 @@ export async function GET(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'font_scan_failed', message: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/packaging/system-fonts', 'GET', __teamRouteGET);

@@ -2,6 +2,8 @@ import { normalizeProductionCode } from '@/lib/media-core/production-codes';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { normalizeVideoPromptTemplateInput } from '@/lib/video-prompt-template';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 const SELECT_ONE = `
   SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, lower(openingCode) AS openingCode, createdAt
@@ -23,7 +25,7 @@ interface TemplateRow {
  * 想改先「复制一份」。inRandomPool 与 openingCode 允许单独维护，
  * seed 只补初始值，保留用户已修改的入池选择和开头编号（含主动清空）。
  */
-export async function PATCH(
+async function __teamRoutePATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -102,7 +104,7 @@ export async function PATCH(
  * 已被视频任务引用的也删不掉：video_jobs.templateId 是外键，那条模板是那些
  * 视频的出处，删掉历史记录就断了。两种情况都给出能照着做的说明。
  */
-export async function DELETE(
+async function __teamRouteDELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -138,3 +140,5 @@ export async function DELETE(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const PATCH = withTeamRoute('/api/video-prompt-templates/[id]', 'PATCH', __teamRoutePATCH);
+export const DELETE = withTeamRoute('/api/video-prompt-templates/[id]', 'DELETE', __teamRouteDELETE);

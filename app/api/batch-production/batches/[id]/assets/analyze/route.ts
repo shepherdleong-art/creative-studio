@@ -13,6 +13,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -21,7 +23,7 @@ export const dynamic = 'force-dynamic';
  * 在确认批次快照前为项目素材排队技术分析。分析版本属于项目素材库，
  * 所选 draft batch 只作为任务的调度/恢复载体；重复请求使用稳定 requestKey。
  */
-export async function POST(
+async function __teamRoutePOST(
   request: NextRequest,
   context: { params: Promise<{ id: string }> },
 ) {
@@ -100,3 +102,4 @@ export async function POST(
     return batchRouteErrorResponse(error, 'asset_analysis_enqueue_failed', '素材分析排队失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/assets/analyze', 'POST', __teamRoutePOST);

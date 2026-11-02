@@ -466,7 +466,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const taskPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadProviders = useCallback(async () => {
-    const response = await fetch('/api/providers/script', { cache: 'no-store' });
+    const response = await fetch('/api/team/models?kind=script', { cache: 'no-store' });
     const data = await response.json().catch(() => []);
     if (!response.ok || !Array.isArray(data)) {
       setError('无法读取脚本模型配置，请稍后重试');

@@ -47,6 +47,7 @@ export interface UsageQueryFilters {
   to?: string;
   coreModelKey?: CoreUsageModelKey;
   category?: CoreUsageCategory;
+  actorUserId?: string;
 }
 
 export interface UsageDashboardQuery extends UsageQueryFilters {
@@ -251,6 +252,17 @@ function buildLedgerWhere(filters: UsageQueryFilters, alias = ''): WhereClause {
     clauses.push(`${prefix}category = ?`);
     values.push(filters.category);
   }
+  if (filters.actorUserId) {
+    clauses.push(`(
+      ${prefix}actorUserId = ?
+      OR (${prefix}actorUserId = '' AND ${prefix}projectId IS NOT NULL AND EXISTS (
+        SELECT 1 FROM team_resource_scopes scope
+        WHERE scope.resourceType = 'project' AND scope.resourceId = ${prefix}projectId
+          AND scope.ownerUserId = ? AND scope.deletedAt IS NULL
+      ))
+    )`);
+    values.push(filters.actorUserId, filters.actorUserId);
+  }
   return { sql: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', values };
 }
 
@@ -289,6 +301,17 @@ function uncertainCount(db: Database.Database, filters: UsageQueryFilters): numb
   if (filters.coreModelKey) {
     clauses.push(`CASE WHEN json_valid(snapshotJson) THEN json_extract(snapshotJson, '$.coreModelKey') ELSE NULL END = ?`);
     values.push(filters.coreModelKey);
+  }
+  if (filters.actorUserId) {
+    clauses.push(`(
+      actorUserId = ?
+      OR (actorUserId = '' AND projectId IS NOT NULL AND EXISTS (
+        SELECT 1 FROM team_resource_scopes scope
+        WHERE scope.resourceType = 'project' AND scope.resourceId = projectId
+          AND scope.ownerUserId = ? AND scope.deletedAt IS NULL
+      ))
+    )`);
+    values.push(filters.actorUserId, filters.actorUserId);
   }
   if (filters.category) {
     clauses.push(`
@@ -333,9 +356,10 @@ export function queryUsageDashboard(
     to: input.to ?? periods.today.to,
     coreModelKey: input.coreModelKey,
     category: input.category,
+    actorUserId: input.actorUserId,
   };
   validateFilters(filters);
-  const dimensionFilters = { coreModelKey: filters.coreModelKey, category: filters.category };
+  const dimensionFilters = { coreModelKey: filters.coreModelKey, category: filters.category, actorUserId: filters.actorUserId };
   const totals = aggregate(db, filters);
   const modelWhere = buildLedgerWhere(filters);
   const modelRows = db.prepare(`
@@ -451,6 +475,7 @@ export function listUsageRecords(
     to: input.to,
     coreModelKey: input.coreModelKey,
     category: input.category,
+    actorUserId: input.actorUserId,
   };
   const where = buildLedgerWhere(filters);
   const countRow = db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger ${where.sql}`)

@@ -8,6 +8,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,7 +18,7 @@ export const dynamic = 'force-dynamic';
  * 单个任务级控制:暂停/继续/取消,只影响这一个任务,不影响同批次的其他任务
  * 或整个批次的 controlState。与批次级 .../batches/[id]/control 是不同的 seam。
  */
-export async function POST(request: NextRequest, context: { params: Promise<{ taskId: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ taskId: string }> }) {
   const { taskId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -52,3 +54,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ta
     return batchRouteErrorResponse(error, 'task_control_failed', '任务控制失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/tasks/[taskId]/control', 'POST', __teamRoutePOST);

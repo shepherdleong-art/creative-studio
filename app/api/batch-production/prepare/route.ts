@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { prepareBatchProductionInputs } from '@/lib/batch-production/prepare';
 import { getBatchProductionReadiness } from '@/lib/batch-production/runtime-readiness';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -13,7 +15,7 @@ const NO_STORE_HEADERS = { 'Cache-Control': 'no-store' };
  * 核验素材来源健康状态,返回选择前的展示数据。
  * 只做输入准备与展示,不建立批次快照、不开始生产。
  */
-export async function GET(request: NextRequest) {
+async function __teamRouteGET(request: NextRequest) {
   const projectId = request.nextUrl.searchParams.get('projectId');
   if (!projectId) {
     return NextResponse.json({
@@ -54,3 +56,4 @@ export async function GET(request: NextRequest) {
     }, { status: 500, headers: NO_STORE_HEADERS });
   }
 }
+export const GET = withTeamRoute('/api/batch-production/prepare', 'GET', __teamRouteGET);

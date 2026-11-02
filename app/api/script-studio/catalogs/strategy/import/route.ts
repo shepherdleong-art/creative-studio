@@ -2,10 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertScriptStudioApiReady, errorResponse, readCatalogImportUpload } from '@/lib/script-studio/http';
 import { importStrategyCatalog } from '@/lib/script-studio/catalog-service';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
-export async function POST(request: NextRequest) {
+async function __teamRoutePOST(request: NextRequest) {
   try {
     await assertScriptStudioApiReady();
     const upload = await readCatalogImportUpload(request);
@@ -18,3 +20,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(body, { status });
   }
 }
+export const POST = withTeamRoute('/api/script-studio/catalogs/strategy/import', 'POST', __teamRoutePOST);

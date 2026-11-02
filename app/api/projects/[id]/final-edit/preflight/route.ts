@@ -2,8 +2,10 @@ import { NextResponse } from 'next/server';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import type { OutputPresetId } from '@/lib/final-edit/types';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: projectId } = await params;
     const body = await request.json() as { scriptDraftId?: string; shotSetId?: string; editedNarrationText?: string; selectedMaterialKeys?: string[]; count?: number; outputPreset?: OutputPresetId; providerId?: string; voice?: string; speed?: number; analysisProviderId?: string };
@@ -11,3 +13,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json(result);
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const POST = withTeamRoute('/api/projects/[id]/final-edit/preflight', 'POST', __teamRoutePOST);

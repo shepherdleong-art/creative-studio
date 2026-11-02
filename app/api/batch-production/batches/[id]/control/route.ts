@@ -8,12 +8,14 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 批次控制:暂停(停止领取)、继续(恢复领取)、停止(结束未完成工作,保留成功结果)。 */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -49,3 +51,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return batchRouteErrorResponse(error, 'batch_control_failed', '批次控制失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/control', 'POST', __teamRoutePOST);

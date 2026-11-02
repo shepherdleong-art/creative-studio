@@ -7,6 +7,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,7 +17,7 @@ export const dynamic = 'force-dynamic';
 // 不需要 material-import 那种大文件流式暂存,整段读入内存即可安全处理。
 const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 
-export async function GET(request: NextRequest) {
+async function __teamRouteGET(request: NextRequest) {
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
     return NextResponse.json({
@@ -34,7 +36,7 @@ export async function GET(request: NextRequest) {
 }
 
 /** 导入一份 LUT(浏览器文件选择上传);服务端不接受任意本机绝对路径。 */
-export async function POST(request: NextRequest) {
+async function __teamRoutePOST(request: NextRequest) {
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
     return NextResponse.json({
@@ -72,3 +74,5 @@ export async function POST(request: NextRequest) {
     return batchRouteErrorResponse(error, 'lut_import_failed', 'LUT 导入失败');
   }
 }
+export const GET = withTeamRoute('/api/batch-production/luts', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/batch-production/luts', 'POST', __teamRoutePOST);

@@ -3,8 +3,10 @@ import { getDb } from '@/lib/db';
 import { requireCanvasAsset } from '@/lib/creative-canvas/assets';
 import { requireCanvasDraftSource, canvasVideoMetadataForAsset } from '@/lib/creative-canvas/video-metadata';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 export const runtime = 'nodejs';
-export async function GET(_request: Request, { params }: { params: Promise<{ assetId: string }> }) {
+async function __teamRouteGET(_request: Request, { params }: { params: Promise<{ assetId: string }> }) {
   try {
     await assertCanvasApiReady();
     const { assetId } = await params;
@@ -18,3 +20,4 @@ export async function GET(_request: Request, { params }: { params: Promise<{ ass
     }
   } catch (error) { return canvasJsonError(error); }
 }
+export const GET = withTeamRoute('/api/canvas/assets/[assetId]/draft', 'GET', __teamRouteGET);

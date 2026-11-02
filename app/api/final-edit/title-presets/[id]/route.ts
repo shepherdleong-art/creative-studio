@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { normalizeCoverPreset } from '@/lib/final-edit/title-presets';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRoutePATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const current = getDb().prepare(`SELECT name, stylesByPresetJson FROM final_edit_title_presets WHERE id=?`).get(id) as { name: string; stylesByPresetJson: string } | undefined;
@@ -18,7 +20,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     return NextResponse.json({ id, name, ...preset, updatedAt });
   } catch (error) { return NextResponse.json({ error: 'invalid_title_preset', message: error instanceof Error ? error.message : String(error) }, { status: 400 }); }
 }
-export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function __teamRouteDELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const result = getDb().prepare(`DELETE FROM final_edit_title_presets WHERE id=?`).run((await params).id);
   return result.changes ? new NextResponse(null, { status: 204 }) : NextResponse.json({ error: 'preset_not_found' }, { status: 404 });
 }
+export const PATCH = withTeamRoute('/api/final-edit/title-presets/[id]', 'PATCH', __teamRoutePATCH);
+export const DELETE = withTeamRoute('/api/final-edit/title-presets/[id]', 'DELETE', __teamRouteDELETE);

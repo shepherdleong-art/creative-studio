@@ -11,11 +11,13 @@ import {
   canvasJsonError,
   readCanvasJson,
 } from '@/lib/creative-canvas/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
 /** 幂等启动一次运行；数据事务成功后由后端调度器推进，不依赖前端计时器。 */
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -73,3 +75,4 @@ export async function POST(
     return canvasJsonError(error);
   }
 }
+export const POST = withTeamRoute('/api/canvas/[id]/runs', 'POST', __teamRoutePOST);

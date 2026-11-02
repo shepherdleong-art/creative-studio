@@ -22,12 +22,14 @@ import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
 import { getViralTemplateEntriesByIds } from '@/lib/script-studio/viral-templates';
 import { templatePlanFingerprint } from '@/lib/script-studio/template-rewrite';
 import type { FrozenViralTemplateSpec } from '@/lib/script-studio/types';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 最近任务列表：刷新页面后前端据此恢复运行中任务（queued/running 继续轮询）。 */
-export async function GET(
+async function __teamRouteGET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -48,7 +50,7 @@ export async function GET(
   }
 }
 
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -221,3 +223,5 @@ function uniquePointTypes(revision: LibraryRevisionView | null | undefined): Scr
   }
   return [...types];
 }
+export const GET = withTeamRoute('/api/projects/[id]/script-studio/tasks', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/projects/[id]/script-studio/tasks', 'POST', __teamRoutePOST);

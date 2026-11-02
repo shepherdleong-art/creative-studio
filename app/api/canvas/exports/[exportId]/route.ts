@@ -5,11 +5,13 @@ import { getDb } from '@/lib/db';
 import { canvasExportAbsolutePath, requireCanvasExport } from '@/lib/creative-canvas/export';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
 import { canvasAttachmentHeader, sanitizeCanvasFilename } from '@/lib/creative-canvas/asset-naming';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
 /** 查询导出状态；带 ?download=1 时交付完整 ZIP。 */
-export async function GET(
+async function __teamRouteGET(
   request: Request,
   { params }: { params: Promise<{ exportId: string }> },
 ) {
@@ -46,3 +48,4 @@ export async function GET(
     return canvasJsonError(error);
   }
 }
+export const GET = withTeamRoute('/api/canvas/exports/[exportId]', 'GET', __teamRouteGET);

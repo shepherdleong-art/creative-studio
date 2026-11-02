@@ -3,6 +3,10 @@ import { getDb } from '@/lib/db';
 import { resolveRegenerateImageJobProvider } from '@/lib/image-provider-selection';
 import { v4 as uuidv4 } from 'uuid';
 import { requiresReassembledImageRework, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
+import { requireAccessContext } from '@/lib/media-core/access-context';
+import { bindImageScopeToProject, assertScopeConsistency } from '@/lib/team-service/resource-scopes';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 const ALLOWED_SOURCE_STATUSES = new Set(['succeeded', 'failed', 'canceled', 'needs_check']);
 
@@ -11,13 +15,15 @@ function safeParseStringArray(value: unknown): string[] {
   return value.filter((id): id is string => typeof id === 'string' && id.length > 0);
 }
 
-export async function POST(
+async function __teamRoutePOST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
     const db = getDb();
+    const access = requireAccessContext();
+    if (access.kind === 'team') access.assertAccess('job', id, 'write');
     if (requiresReassembledImageRework(db, id)) return NextResponse.json({ error: REASSEMBLED_REWORK_REQUIRED }, { status: 409 });
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
 
@@ -73,6 +79,8 @@ export async function POST(
       newInputImageId = originalJob.outputImageId as string;
     }
 
+    if (access.kind === 'team') access.assertAccess('image', newInputImageId, 'read');
+
     // ── Resolve reference image IDs ──
     const oldReferenceIds = safeParseStringArray(originalJob.referenceImageIds);
     const requestedReferenceIds: string[] = hasReferenceOverride
@@ -81,35 +89,43 @@ export async function POST(
     // Remove base image from reference set (backend guarantee)
     const uniqueReferenceIds: string[] = [...new Set(requestedReferenceIds)].filter((rid) => rid !== newInputImageId);
 
-    // ── Validate reference images belong to same project ──
+    // ── Validate reference images belong to same project or are owned unbound uploads ──
     if (uniqueReferenceIds.length > 0) {
-      // Bind any newly uploaded images (projectId IS NULL) to this project
-      db.prepare(
-        `UPDATE image_assets SET projectId = ?, role = 'reference' WHERE id IN (${uniqueReferenceIds.map(() => '?').join(',')}) AND projectId IS NULL`
-      ).run(originalJob.projectId as string, ...uniqueReferenceIds);
-
-      // Validate all requested images exist and belong to the project
       const placeholders = uniqueReferenceIds.map(() => '?').join(',');
       const projectId = originalJob.projectId as string;
       const queryParams: string[] = [...uniqueReferenceIds, projectId];
       const validImages = db.prepare(
-        `SELECT id FROM image_assets WHERE id IN (${placeholders}) AND projectId = ? AND role IN ('input', 'reference', 'output')`
+        `SELECT id FROM image_assets WHERE id IN (${placeholders}) AND (projectId = ? OR projectId IS NULL) AND role IN ('input', 'reference', 'output')`
       ).all(...queryParams) as { id: string }[];
-
       const validIds = new Set(validImages.map((img) => img.id));
       const invalidIds = uniqueReferenceIds.filter((rid) => !validIds.has(rid));
-
       if (invalidIds.length > 0) {
         return NextResponse.json(
           { success: false, error: `以下参考图 ID 不属于当前项目或不存在: ${invalidIds.join(', ')}` },
           { status: 400 }
         );
       }
+      if (access.kind === 'team') {
+        for (const imageId of uniqueReferenceIds) access.assertAccess('image', imageId, 'write');
+      }
     }
 
     // ── Atomic transaction: calculate revision, insert new job, mark original ──
     const newJobId = uuidv4();
     const createRegeneration = db.transaction(() => {
+      const projectId = originalJob.projectId as string;
+      const ownerUserId = access.kind === 'team' ? assertScopeConsistency(db, 'project', projectId).ownerUserId : '';
+      for (const imageId of uniqueReferenceIds) {
+        db.prepare(`UPDATE image_assets SET projectId = ?, role = 'reference' WHERE id = ? AND projectId IS NULL`)
+          .run(projectId, imageId);
+        if (access.kind === 'team') bindImageScopeToProject(db, imageId, projectId, ownerUserId);
+      }
+      const placeholders = uniqueReferenceIds.map(() => '?').join(',');
+      if (uniqueReferenceIds.length > 0) {
+        const valid = db.prepare(`SELECT COUNT(*) AS count FROM image_assets WHERE id IN (${placeholders}) AND projectId = ?`)
+          .get(...uniqueReferenceIds, projectId) as { count: number };
+        if (valid.count !== uniqueReferenceIds.length) throw new Error('参考图项目归属校验失败');
+      }
       // Revision: track revisions per original input image to keep version chain stable
       const latest = db.prepare(
         `SELECT COALESCE(MAX(revision), 0) + 1 as rev FROM jobs WHERE projectId = ? AND inputImageId = ?`
@@ -138,6 +154,16 @@ export async function POST(
         id
       );
 
+      access.registerInheritedScope({
+        resourceType: 'job', resourceId: newJobId,
+        parent: { resourceType: 'project', resourceId: originalJob.projectId },
+      });
+      access.registerTaskPrincipal({
+        module: 'image', taskId: newJobId,
+        scope: { resourceType: 'project', resourceId: originalJob.projectId },
+        creationSnapshot: { parentJobId: id, inputImageId: newInputImageId, referenceImageIds: uniqueReferenceIds },
+      });
+
       if (markOriginal) {
         db.prepare(`UPDATE jobs SET reviewMark = 'rework' WHERE id = ?`).run(id);
       }
@@ -145,7 +171,7 @@ export async function POST(
       return latest.rev;
     });
 
-    const newRevision = createRegeneration();
+    const newRevision = createRegeneration.immediate();
 
     return NextResponse.json({
       success: true,
@@ -158,3 +184,4 @@ export async function POST(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const POST = withTeamRoute('/api/jobs/[id]/regenerate', 'POST', __teamRoutePOST);

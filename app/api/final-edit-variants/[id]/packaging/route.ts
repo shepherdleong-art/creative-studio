@@ -7,6 +7,8 @@ import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { previewPackagingVars, resolvePackagingDir, resolvePackagingTemplateDir, type FinalEditPackagingSnapshot } from '@/lib/final-edit/packaging';
 import { PACKAGING_TEMPLATE_IDS, sanitizePackagingVarsOverrides, type PackagingVars } from '@/lib/final-edit/packaging-vars';
 import { wakeFinalEditWorker } from '@/lib/final-edit/worker';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 /** 包装文案覆盖层白名单：只收 v2 模板键的字符串（空串=隐藏元素），超长截断。 */
 function sanitizeVarsOverrides(input: unknown): Partial<PackagingVars> | undefined {
@@ -36,7 +38,7 @@ function resolveRenderJob(variantId: string, renderJobId?: string): { id: string
 }
 
 /** 创建包装任务（幂等：同一渲染任务已有排队/运行中的包装任务则复用）。 */
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: variantId } = await params;
     const body = await request.json().catch(() => ({})) as { renderJobId?: string; template?: unknown; varsOverrides?: unknown };
@@ -63,7 +65,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 }
 
 /** 包装文案预览：确定性自动组装，供包装界面只读展示。 */
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: variantId } = await params;
     const renderJobId = new URL(request.url).searchParams.get('renderJobId') || undefined;
@@ -76,3 +78,5 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     });
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const POST = withTeamRoute('/api/final-edit-variants/[id]/packaging', 'POST', __teamRoutePOST);
+export const GET = withTeamRoute('/api/final-edit-variants/[id]/packaging', 'GET', __teamRouteGET);

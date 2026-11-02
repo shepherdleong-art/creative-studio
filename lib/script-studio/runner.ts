@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { runWithTaskAccessContext } from '../media-core/access-context.ts';
 import { PAIN_SOLVING_VERSION, painPlanningFingerprint, parsePainPlanning, painPlan, painBrief, parsePainReview } from './pain-solving.ts';
 import type { EvidenceReprobe } from './adapters/reprobe.ts';
 import type { VisionExtractor } from './adapters/vision-extract.ts';
@@ -543,6 +544,12 @@ async function generateValidatedScript(
 }
 
 export async function executeScriptStudioTask(
+  deps: ScriptStudioRunDeps,
+): Promise<ScriptStudioRunResult> {
+  return runWithTaskAccessContext(deps.db, 'script_studio', deps.taskId, () => executeAuthorizedScriptStudioTask(deps));
+}
+
+async function executeAuthorizedScriptStudioTask(
   deps: ScriptStudioRunDeps,
 ): Promise<ScriptStudioRunResult> {
   const { db, projectId, taskId, signal, now } = deps;

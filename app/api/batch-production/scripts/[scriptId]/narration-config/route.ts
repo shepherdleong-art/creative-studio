@@ -6,12 +6,14 @@ import {
   BATCH_NO_STORE_HEADERS,
   batchRouteErrorResponse,
 } from '../../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 按脚本单独保存配音配置(服务商/音色/语速);快照确认时冻结这份配置。 */
-export async function PUT(request: NextRequest, context: { params: Promise<{ scriptId: string }> }) {
+async function __teamRoutePUT(request: NextRequest, context: { params: Promise<{ scriptId: string }> }) {
   const { scriptId } = await context.params;
   const projectId = request.nextUrl.searchParams.get('projectId');
   if (!projectId) {
@@ -38,3 +40,4 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ scr
     return batchRouteErrorResponse(error, 'narration_config_save_failed', '配音配置保存失败');
   }
 }
+export const PUT = withTeamRoute('/api/batch-production/scripts/[scriptId]/narration-config', 'PUT', __teamRoutePUT);

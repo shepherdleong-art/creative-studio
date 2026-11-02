@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertScriptStudioApiReady, errorResponse } from '@/lib/script-studio/http';
 import { listViralTemplateEntries } from '@/lib/script-studio/viral-templates';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
 /** 爆文模板条目浏览/搜索：?status=&category=&q=&revisionId=&limit=。 */
-export async function GET(request: NextRequest) {
+async function __teamRouteGET(request: NextRequest) {
   try {
     await assertScriptStudioApiReady();
     const params = request.nextUrl.searchParams;
@@ -24,3 +26,4 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(body, { status });
   }
 }
+export const GET = withTeamRoute('/api/script-studio/viral-templates/entries', 'GET', __teamRouteGET);

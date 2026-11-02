@@ -14,6 +14,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,7 +31,7 @@ function revealCommand(platform: NodeJS.Platform, directory: string): { command:
 }
 
 /** 导出完成后在系统文件管理器中打开批次成品文件夹。 */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -88,3 +90,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return batchRouteErrorResponse(error, 'batch_reveal_failed', '打开成品文件夹失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/exports/reveal', 'POST', __teamRoutePOST);

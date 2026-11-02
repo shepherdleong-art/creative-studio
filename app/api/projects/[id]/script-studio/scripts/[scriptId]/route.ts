@@ -4,11 +4,13 @@ import { ScriptStudioError } from '@/lib/script-studio/errors';
 import { assertScriptStudioApiReady, errorResponse, jsonOrNull } from '@/lib/script-studio/http';
 import { getCurrentLibraryRevision } from '@/lib/script-studio/libraries';
 import { addProjectScriptRevision, getProjectScript, getProjectScriptRevision } from '@/lib/script-studio/scripts';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET(
+async function __teamRouteGET(
   request: Request,
   { params }: { params: Promise<{ id: string; scriptId: string }> },
 ) {
@@ -26,7 +28,7 @@ export async function GET(
   }
 }
 
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string; scriptId: string }> },
 ) {
@@ -62,3 +64,5 @@ export async function POST(
     return NextResponse.json(result.body, { status: result.status });
   }
 }
+export const GET = withTeamRoute('/api/projects/[id]/script-studio/scripts/[scriptId]', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/projects/[id]/script-studio/scripts/[scriptId]', 'POST', __teamRoutePOST);

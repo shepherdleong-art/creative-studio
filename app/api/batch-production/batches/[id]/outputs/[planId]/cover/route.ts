@@ -7,6 +7,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,7 +18,7 @@ export const dynamic = 'force-dynamic';
  * 不再依赖「先有一条完整视频候选」。与片段编辑的 set_cover 共用同一编辑入口,
  * 封面任务 requestKey 是统一 coverContractHash,同一契约重复触发幂等。
  */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
   const { id, planId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -47,3 +49,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return batchRouteErrorResponse(error, 'batch_cover_failed', '换封面失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/outputs/[planId]/cover', 'POST', __teamRoutePOST);

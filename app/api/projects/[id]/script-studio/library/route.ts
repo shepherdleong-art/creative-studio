@@ -12,11 +12,13 @@ import {
   listLibraryRevisions,
   manualEditLibraryRevision,
 } from '@/lib/script-studio/libraries';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET(
+async function __teamRouteGET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -43,7 +45,7 @@ export async function GET(
   }
 }
 
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -71,3 +73,5 @@ export async function POST(
     return NextResponse.json(result.body, { status: result.status });
   }
 }
+export const GET = withTeamRoute('/api/projects/[id]/script-studio/library', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/projects/[id]/script-studio/library', 'POST', __teamRoutePOST);

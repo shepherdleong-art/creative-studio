@@ -136,7 +136,7 @@ export default function HomePage() {
 
   useEffect(() => {
     loadProjects();
-    fetch('/api/providers')
+    fetch('/api/team/models?kind=image')
       .then((r) => r.json())
       .then((data: Array<{ hasApiKey: boolean; enabled: number }>) => {
         const enabled = data.filter((p) => p.enabled);

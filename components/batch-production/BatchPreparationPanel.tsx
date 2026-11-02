@@ -281,9 +281,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           `/api/batch-production/batches?projectId=${encodeURIComponent(projectId)}&includeArchived=1`,
           { cache: 'no-store' },
         )),
-        readJson<VisionProviderView[]>(await fetch('/api/providers/script', { cache: 'no-store' }))
+        readJson<VisionProviderView[]>(await fetch('/api/team/models?kind=script', { cache: 'no-store' }))
           .catch(() => []),
-        readJson<TtsProviderView[]>(await fetch('/api/providers/tts', { cache: 'no-store' }))
+        readJson<TtsProviderView[]>(await fetch('/api/team/models?kind=tts', { cache: 'no-store' }))
           .catch(() => []),
       ]);
       setPreparation(result);

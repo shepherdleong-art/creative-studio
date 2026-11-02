@@ -3,8 +3,10 @@ import { getDb } from '@/lib/db';
 import { requiresReassembledUpstreamRework, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
 import { resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
 import { toStorageVideoUrl } from '@/lib/storage-url';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(
+
+async function __teamRouteGET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -28,7 +30,7 @@ export async function GET(
   }
 }
 
-export async function PATCH(
+async function __teamRoutePATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -80,3 +82,5 @@ export async function PATCH(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/video-jobs/[id]', 'GET', __teamRouteGET);
+export const PATCH = withTeamRoute('/api/video-jobs/[id]', 'PATCH', __teamRoutePATCH);

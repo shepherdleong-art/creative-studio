@@ -10,6 +10,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import type { LibraryRevisionView } from './libraries.ts';
 import { isSellingPointEvidenceUsable } from './selling-point-normalize.ts';
 import type { SellingPointRecord } from './types.ts';
@@ -412,6 +413,8 @@ export function saveDistilledPoints(
        limitationsJson, reviewStatus, reviewIssuesJson, editHistoryJson, fingerprint, createdAt, updatedAt, supersededById)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
   `);
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', input.projectId, 'write');
   db.transaction(() => {
     for (const record of records) {
       insert.run(
@@ -424,6 +427,10 @@ export function saveDistilledPoints(
         record.fingerprint,
         record.createdAt, record.updatedAt,
       );
+      access.registerInheritedScope({
+        resourceType: 'script_distilled_point', resourceId: record.id,
+        parent: { resourceType: 'project', resourceId: input.projectId },
+      });
     }
   }).immediate();
   return records.map((record) => rowToRecord(record as unknown as Record<string, unknown>));
@@ -444,6 +451,8 @@ export function editDistilledPoint(
   input: { shortCopy?: string; benefitText?: string },
   now: () => Date,
 ): DistilledSellingPointRecord | null {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('script_distilled_point', distilledPointId, 'write');
   const row = db.prepare(`
     SELECT * FROM script_studio_distilled_points
     WHERE id = ? AND projectId = ? AND supersededById IS NULL
@@ -494,6 +503,10 @@ export function editDistilledPoint(
       editedAt,
       editedAt,
     );
+    access.registerInheritedScope({
+      resourceType: 'script_distilled_point', resourceId: newId,
+      parent: { resourceType: 'project', resourceId: projectId },
+    });
     db.prepare(`
       UPDATE script_studio_distilled_points
       SET supersededById = ?, updatedAt = ?

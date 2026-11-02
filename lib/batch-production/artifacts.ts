@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 
 export type BatchArtifactKind = 'video' | 'cover';
 
@@ -94,6 +95,10 @@ export function registerArtifact(
       input.checksum,
       createdAt,
     );
+    requireAccessContext().registerInheritedScope({
+      resourceType: 'batch_artifact', resourceId: id,
+      parent: { resourceType: 'batch_plan', resourceId: input.outputPlanId },
+    });
     if (input.kind === 'video') {
       db.prepare(`
         UPDATE batch_output_plans SET currentArtifactId = ? WHERE id = ?

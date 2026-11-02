@@ -12,11 +12,13 @@ import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
 import { resolveRuntimeProviders } from '@/lib/script-studio/runtime';
 import { templatePlanFingerprint } from '@/lib/script-studio/template-rewrite';
 import type { FrozenViralTemplateSpec } from '@/lib/script-studio/types';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string; scriptId: string }> },
 ) {
@@ -101,3 +103,4 @@ export async function POST(
     return NextResponse.json(result.body, { status: result.status });
   }
 }
+export const POST = withTeamRoute('/api/projects/[id]/script-studio/scripts/[scriptId]/regenerate', 'POST', __teamRoutePOST);

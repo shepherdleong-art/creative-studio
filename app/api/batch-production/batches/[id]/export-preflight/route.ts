@@ -8,6 +8,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,7 +19,7 @@ export const dynamic = 'force-dynamic';
  * 不建立 render 任务、不修改任何数据。Phase E 的正式 renderer 落地前,这个 route
  * 让用户和后续调用方都能提前看到"为什么还不能导出"的可操作原因。
  */
-export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRouteGET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id: batchId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -44,3 +46,4 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     return batchRouteErrorResponse(error, 'export_preflight_failed', '正式输出前置检查失败');
   }
 }
+export const GET = withTeamRoute('/api/batch-production/batches/[id]/export-preflight', 'GET', __teamRouteGET);

@@ -2,8 +2,10 @@ import { NextResponse } from 'next/server';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { wakeFinalEditWorker } from '@/lib/final-edit/worker';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: variantId } = await params;
     const body = await request.json() as { groupId?: string; expectedGroupRevision?: number; expectedVariantRevision?: number; overlayBundleId?: string; allowPackagingPlaceholder?: boolean };
@@ -12,3 +14,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json(result, { status: 202 });
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const POST = withTeamRoute('/api/final-edit-variants/[id]/render', 'POST', __teamRoutePOST);

@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { listScriptProviderMeta } from '@/lib/script-providers/store';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function PUT(
+
+async function __teamRoutePUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -78,7 +80,7 @@ export async function PUT(
   }
 }
 
-export async function DELETE(
+async function __teamRouteDELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -95,3 +97,5 @@ export async function DELETE(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const PUT = withTeamRoute('/api/providers/script/[id]', 'PUT', __teamRoutePUT);
+export const DELETE = withTeamRoute('/api/providers/script/[id]', 'DELETE', __teamRouteDELETE);

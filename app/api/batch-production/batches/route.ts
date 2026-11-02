@@ -3,12 +3,14 @@ import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { createBatchProduction, listProjectBatchProductions } from '@/lib/batch-production/versions';
 import { BATCH_NO_STORE_HEADERS, batchRouteErrorResponse } from './response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 创建一次批量生产工作单(批次);列表按 projectId 查询当前项目批次。 */
-export async function POST(request: NextRequest) {
+async function __teamRoutePOST(request: NextRequest) {
   const body = await request.json().catch(() => null) as { projectId?: unknown; name?: unknown } | null;
   const projectId = typeof body?.projectId === 'string' && body.projectId ? body.projectId : null;
   const name = typeof body?.name === 'string' && body.name.trim() ? body.name.trim() : null;
@@ -35,7 +37,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET(request: NextRequest) {
+async function __teamRouteGET(request: NextRequest) {
   const projectId = request.nextUrl.searchParams.get('projectId');
   if (!projectId) {
     return NextResponse.json({
@@ -53,3 +55,5 @@ export async function GET(request: NextRequest) {
     return batchRouteErrorResponse(error, 'list_batches_failed', '批次列表读取失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches', 'POST', __teamRoutePOST);
+export const GET = withTeamRoute('/api/batch-production/batches', 'GET', __teamRouteGET);

@@ -1,7 +1,9 @@
 import { authError, authJson, principalBody } from '../../../../../lib/team-service/auth/http.ts';
 import { optionalPrincipal } from '../../../../../lib/team-service/auth/request.ts';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(request: Request): Promise<Response> {
+
+async function __teamRouteGET(request: Request): Promise<Response> {
   try {
     const principal = optionalPrincipal(request);
     return authJson(principal
@@ -11,3 +13,4 @@ export async function GET(request: Request): Promise<Response> {
     return authError(error);
   }
 }
+export const GET = withTeamRoute('/api/team/auth/session', 'GET', __teamRouteGET);

@@ -7,7 +7,9 @@ import { checkLocalRequest } from '@/lib/final-edit/reassembled/access';
 import { FinalEditError } from '@/lib/final-edit/errors';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import type { FilmBinding } from '@/lib/final-edit/reassembled/types';
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
+async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const identity = checkLocalRequest(request, true), query = new URL(request.url).searchParams;
     const binding = getDb().prepare('SELECT * FROM final_edit_film_bindings WHERE id=?').get((await params).id) as FilmBinding | undefined;
@@ -23,3 +25,4 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     return new Response('已请求桌面工作台打开这条成片，可返回桌面窗口。', { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } });
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const GET = withTeamRoute('/api/reassembled-films/[id]/open', 'GET', __teamRouteGET);

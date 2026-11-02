@@ -12,12 +12,15 @@ import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
 import fs from 'fs';
+import { requireAccessContext } from '@/lib/media-core/access-context';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 /**
  * Resume polling for a needs_check job without re-submitting to the API.
  * Only polls the existing providerTaskId, avoiding double charges.
  */
-export async function POST(
+async function __teamRoutePOST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -114,7 +117,15 @@ export async function POST(
 
               fs.writeFileSync(outputPath, normalizedImage.imageBuffer);
               const outputImageId = uuidv4();
-              db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage, width, height, createdAt) VALUES (?, ?, 'output', ?, ?, ?, ?, ?, ?, datetime('now'))`).run(outputImageId, job.projectId, outputFilename, outputPath, outputMimeType, outputUsage, normalizedImage.width, normalizedImage.height);
+              const access = requireAccessContext();
+              const publish = db.transaction(() => {
+                db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage, width, height, createdAt) VALUES (?, ?, 'output', ?, ?, ?, ?, ?, ?, datetime('now'))`).run(outputImageId, job.projectId, outputFilename, outputPath, outputMimeType, outputUsage, normalizedImage.width, normalizedImage.height);
+                access.registerInheritedScope({
+                  resourceType: 'image', resourceId: outputImageId,
+                  parent: { resourceType: 'project', resourceId: job.projectId },
+                });
+              });
+              publish.immediate();
 
               const finishedAt = new Date().toISOString();
               const completeResult = db.prepare(`UPDATE jobs SET status = 'succeeded', providerStatus = 'succeeded', remoteImageUrl = ?, outputImageId = ?, finishedAt = ?, latencyMs = ? WHERE id = ? AND status = 'running'`).run(pollResult.imageUrl, outputImageId, finishedAt, Date.now() - startedAt, job.id);
@@ -159,3 +170,4 @@ function safeJson(obj: unknown, ml = 4000): string {
   if (obj === null || obj === undefined) return '';
   try { const s = JSON.stringify(obj); return s.length > ml ? s.slice(0, ml) + '...[t]' : s; } catch { return '[?]'; }
 }
+export const POST = withTeamRoute('/api/jobs/[id]/resume-poll', 'POST', __teamRoutePOST);

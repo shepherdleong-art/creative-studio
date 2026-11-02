@@ -5,8 +5,10 @@ import { dataRoot } from '@/lib/data-root';
 import { CoverFrameError, materializeCoverFrame } from '@/lib/final-edit/cover-frame';
 import { mediaResponse } from '@/lib/final-edit/media-response';
 import type { OutputPresetId } from '@/lib/final-edit/types';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const query = new URL(request.url).searchParams;
   const sourceKey = query.get('sourceKey') || '';
@@ -30,3 +32,4 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: 'cover_frame_failed', message: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/final-edit-groups/[id]/cover-frame', 'GET', __teamRouteGET);

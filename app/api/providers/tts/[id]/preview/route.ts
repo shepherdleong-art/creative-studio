@@ -6,8 +6,10 @@ import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { getFinalEditTtsAdapter } from '@/lib/final-edit/adapters/tts-registry';
 import { mediaResponse } from '@/lib/final-edit/media-response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const adapter = getFinalEditTtsAdapter(id);
@@ -51,3 +53,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'voice_preview_failed', message: error instanceof Error ? error.message : String(error) }, { status: 400 });
   }
 }
+export const POST = withTeamRoute('/api/providers/tts/[id]/preview', 'POST', __teamRoutePOST);

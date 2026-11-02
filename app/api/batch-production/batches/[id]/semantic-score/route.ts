@@ -9,6 +9,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,7 +19,7 @@ export const dynamic = 'force-dynamic';
  * 手动(重)触发当前版本的语义矩阵打分。body 可带 providerId 换供应商
  * (新供应商摘要会形成新 requestKey);同供应商重复调用幂等跳过。
  */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -48,3 +50,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return batchRouteErrorResponse(error, 'semantic_score_trigger_failed', '语义匹配触发失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/semantic-score', 'POST', __teamRoutePOST);

@@ -1,6 +1,8 @@
 import { getTeamRuntimeState } from '../../../../../lib/team-service/runtime/state.ts';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export function GET(): Response {
+
+function __teamRouteGET(): Response {
   const state = getTeamRuntimeState();
   return Response.json(
     {
@@ -14,3 +16,4 @@ export function GET(): Response {
     },
   );
 }
+export const GET = withTeamRoute('/api/team/health/ready', 'GET', __teamRouteGET);

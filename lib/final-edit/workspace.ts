@@ -1,3 +1,4 @@
+import { requireAccessContext, runWithTaskAccessContext } from '../media-core/access-context.ts';
 import { analyzeFinalEditAsset, type VideoAnalysisResult } from './asset-analysis.ts';
 export { FINAL_EDIT_ANALYZER_VERSION } from './asset-analysis.ts';
 import { packagingCode } from '../media-core/production-codes.ts';
@@ -1130,6 +1131,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   };
 
   const ensureMixcutDraft = (input: EnsureMixcutDraftInput): FinalEditGroupView => {
+    const access = requireAccessContext();
+    if (access.kind === 'team') access.assertAccess('shot_set', input.shotSetId, 'write');
     const ownership = db.prepare(`SELECT 1 FROM shot_sets WHERE id=? AND projectId=?`).get(input.shotSetId, input.projectId);
     if (!ownership) throw new FinalEditError('shot_set_not_found', '分镜组不存在或不属于当前项目', 404);
     if (!input.providerId.trim() || !input.voice.trim()) throw new FinalEditError('tts_selection_required', '必须明确选择口播配音供应商和音色');
@@ -1144,8 +1147,15 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const titleParts = script.coverTitleParts || splitCoverTitle(script.title);
     const createdAt = now();
     const narrationHash = sha256(JSON.stringify({ kind: 'editing-draft', groupId }));
-    db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, editedNarrationText, scriptSyncState, sourceScriptUpdatedAt, selectedMaterialKeysJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'editing', 'editing', 0, ?, ?)`).run(groupId, input.projectId, script.sourceDraftId || '', input.shotSetId, JSON.stringify(script), narrationHash, input.analysisProviderId || '', JSON.stringify({ providerId: input.providerId, voice: input.voice, speed: input.speed, gainDb: NARRATION_GAIN_DB_DEFAULT }), JSON.stringify({ enabled: false, primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), script.editedNarrationText, script.scriptSyncState, script.sourceScriptUpdatedAt, JSON.stringify(selectedMaterialKeys), createdAt, createdAt);
-    db.prepare(`UPDATE final_edit_groups SET packagingJson=? WHERE id=?`).run(JSON.stringify({ enabled: true, template: DEFAULT_PACKAGING_TEMPLATE, varsOverrides: {} }), groupId);
+    const create = db.transaction(() => {
+      db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, editedNarrationText, scriptSyncState, sourceScriptUpdatedAt, selectedMaterialKeysJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'editing', 'editing', 0, ?, ?)`).run(groupId, input.projectId, script.sourceDraftId || '', input.shotSetId, JSON.stringify(script), narrationHash, input.analysisProviderId || '', JSON.stringify({ providerId: input.providerId, voice: input.voice, speed: input.speed, gainDb: NARRATION_GAIN_DB_DEFAULT }), JSON.stringify({ enabled: false, primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), script.editedNarrationText, script.scriptSyncState, script.sourceScriptUpdatedAt, JSON.stringify(selectedMaterialKeys), createdAt, createdAt);
+      access.registerInheritedScope({
+        resourceType: 'final_group', resourceId: groupId,
+        parent: { resourceType: 'shot_set', resourceId: input.shotSetId },
+      });
+      db.prepare(`UPDATE final_edit_groups SET packagingJson=? WHERE id=?`).run(JSON.stringify({ enabled: true, template: DEFAULT_PACKAGING_TEMPLATE, varsOverrides: {} }), groupId);
+    });
+    create.immediate();
     return load(groupId);
   };
 
@@ -1524,6 +1534,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         for (let index = 0; index < variants.length; index += 1) {
           const variant = variants[index];
           db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, issuesJson, matchDiagnosticsJson, overlapJson, revision, previewRelativePath, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, ?, ?, ?)`).run(variant.id, groupId, variant.indexNum, variant.outputPreset, JSON.stringify(variant.timeline), JSON.stringify(variant.bgm), JSON.stringify(variant.cover), JSON.stringify(variant.issues), JSON.stringify(variant.matchDiagnostics || {}), previewPaths.get(variant.id) || null, now(), now());
+          requireAccessContext().registerInheritedScope({
+            resourceType: 'final_variant', resourceId: variant.id,
+            parent: { resourceType: 'final_group', resourceId: groupId },
+          });
           db.prepare(`INSERT OR IGNORE INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('variant', ?, 0, ?, '{"type":"initial"}', ?)`).run(variant.id, JSON.stringify({ timeline: variant.timeline, bgm: variant.bgm, cover: variant.cover, issues: variant.issues, matchDiagnostics: variant.matchDiagnostics }), now());
           const uniqueFingerprints = new Set(variant.timeline.clips.map((clip) => clip.sourceFingerprint));
           for (const fingerprint of uniqueFingerprints) db.prepare(`INSERT OR IGNORE INTO final_edit_usage (scopeKind, scopeId, projectId, shotSetId, groupId, variantId, assetKind, assetKey, createdAt) VALUES ('draft', ?, ?, ?, ?, ?, 'video', ?, ?)`).run(`${variant.id}:0`, input.projectId, script.shotSetId, groupId, variant.id, fingerprint, now());
@@ -1557,6 +1571,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   };
 
   const start = async (input: StartFinalEditInput): Promise<JobRef> => {
+    const access = requireAccessContext();
     let script: ScriptSnapshot;
     let executionInput = input;
     if (input.draftGroupId) {
@@ -1580,6 +1595,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     }
     if (!executionInput.providerId.trim() || !executionInput.voice.trim()) throw new FinalEditError('tts_selection_required', '必须明确选择口播配音供应商和音色');
     validateTtsSpeed(executionInput.speed);
+    if (access.kind === 'team') access.assertAccess('shot_set', script.shotSetId, 'write');
     await preflight(executionInput);
     if (!script.segments.length) throw new FinalEditError('narration_text_required', '请输入混剪文案');
     const selectedMaterialKeys = selectedAssets(db, storageRoot, executionInput.projectId, script.shotSetId, executionInput.selectedMaterialKeys).map((asset) => asset.assetKey!);
@@ -1611,8 +1627,21 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     db.transaction(() => {
     db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, editedNarrationText, scriptSyncState, sourceScriptUpdatedAt, selectedMaterialKeysJson, durationGateJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'validating', 0, ?, ?)`).run(groupId, executionInput.projectId, normalizedInput.scriptDraftId, script.shotSetId, JSON.stringify(script), narrationHash, executionInput.analysisProviderId || '', JSON.stringify({ providerId: executionInput.providerId, voice: executionInput.voice, speed: executionInput.speed, gainDb: NARRATION_GAIN_DB_DEFAULT }), JSON.stringify({ enabled: false, primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), script.editedNarrationText, script.scriptSyncState, script.sourceScriptUpdatedAt, JSON.stringify(selectedMaterialKeys), JSON.stringify(createUncheckedDurationGateState({ narrationHash, targetTotalSec: script.targetDurationSec })), createdAt, createdAt);
     db.prepare(`UPDATE final_edit_groups SET packagingJson=? WHERE id=?`).run(JSON.stringify({ enabled: true, template: DEFAULT_PACKAGING_TEMPLATE, varsOverrides: {} }), groupId);
+      access.registerInheritedScope({
+        resourceType: 'final_group', resourceId: groupId,
+        parent: { resourceType: 'shot_set', resourceId: script.shotSetId },
+      });
       db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, 'prepare', 'queued', 'analyzing', 0, ?, ?, ?, 'CNY', ?)`).run(jobId, executionInput.projectId, groupId, requestKey, JSON.stringify(jobSnapshot), estimatedCost, createdAt);
-    })();
+      access.registerInheritedScope({
+        resourceType: 'final_job', resourceId: jobId,
+        parent: { resourceType: 'project', resourceId: executionInput.projectId },
+      });
+      access.registerTaskPrincipal({
+        module: 'final_edit', taskId: jobId,
+        scope: { resourceType: 'project', resourceId: executionInput.projectId },
+        creationSnapshot: jobSnapshot,
+      });
+    }).immediate();
     if (deps.runJobsInline) await resumePrepareJob(jobId);
     else void resumePrepareJob(jobId);
     const status = (db.prepare(`SELECT status FROM final_edit_jobs WHERE id=?`).get(jobId) as { status: string }).status;
@@ -1758,14 +1787,26 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         estimatedCost,
         now(),
       );
-    })();
+      const access = requireAccessContext();
+      access.registerInheritedScope({
+        resourceType: 'final_job', resourceId: jobId,
+        parent: { resourceType: 'project', resourceId: String(row.projectId) },
+      });
+      access.registerTaskPrincipal({
+        module: 'final_edit', taskId: jobId,
+        scope: { resourceType: 'project', resourceId: String(row.projectId) },
+        creationSnapshot: { version: 1, input: nextInput, scriptSnapshot: script },
+      });
+    }).immediate();
     if (deps.runJobsInline) await resumePrepareJob(jobId);
     else void resumePrepareJob(jobId);
     const status = (db.prepare(`SELECT status FROM final_edit_jobs WHERE id=?`).get(jobId) as { status: string }).status;
     return { id: jobId, groupId: input.groupId, kind: 'prepare', status };
   };
 
-  const resumePrepareJob = async (jobId: string) => {
+  const resumePrepareJob = async (jobId: string) => runWithTaskAccessContext(db, 'final_edit', jobId, () => resumeAuthorizedPrepareJob(jobId));
+
+  const resumeAuthorizedPrepareJob = async (jobId: string) => {
     const row = db.prepare(`SELECT groupId, inputSnapshotJson FROM final_edit_jobs WHERE id=? AND kind='prepare' AND status='queued'`).get(jobId) as { groupId: string; inputSnapshotJson: string } | undefined;
     if (!row) return;
     const snapshot = parseJson<{ version?: number; input?: StartFinalEditInput; scriptSnapshot?: ScriptSnapshot } | null>(row.inputSnapshotJson, null);
@@ -2223,6 +2264,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       textStyles[command.preset][command.target] = defaultTextStyle(command.target, OUTPUT_PRESETS[command.preset].width);
     }
     if (command.type === 'apply_title_preset') {
+      const access = requireAccessContext();
+      if (access.kind === 'team') access.assertAccess('title_preset', command.presetId, 'read');
       const preset = db.prepare(`SELECT stylesByPresetJson FROM final_edit_title_presets WHERE id=?`).get(command.presetId) as { stylesByPresetJson: string } | undefined;
       if (!preset) throw new FinalEditError('preset_not_found', '标题预设不存在', 404);
       const stored = normalizeCoverPreset(parseJson<unknown>(preset.stylesByPresetJson, {}));
@@ -2344,6 +2387,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   };
 
   const enqueueRender = async (input: EnqueueRenderInput): Promise<RenderJobRef> => {
+    const access = requireAccessContext();
+    if (access.kind === 'team') access.assertAccess('final_variant', input.variantId, 'write');
     const group = load(input.groupId);
     const variant = group.variants.find((item) => item.id === input.variantId);
     if (!variant) throw new FinalEditError('variant_not_found', '成片草稿不存在', 404);
@@ -2473,7 +2518,19 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const current = load(group.id);
       const currentVariant = current.variants.find(item => item.id === variant.id);
       if (current.revision !== group.revision || currentVariant?.revision !== variant.revision) throw new FinalEditError('revision_conflict', '导出准备期间版本已变化，请重试', 409);
-      db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, variantId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, ?, 'render', 'queued', 'preflight', 0, ?, ?, 0, 'CNY', ?)`).run(id, group.projectId, group.id, variant.id, sha256(JSON.stringify({ id, snapshot })), JSON.stringify(snapshot), now());
+      const enqueue = db.transaction(() => {
+        db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, variantId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, ?, 'render', 'queued', 'preflight', 0, ?, ?, 0, 'CNY', ?)`).run(id, group.projectId, group.id, variant.id, sha256(JSON.stringify({ id, snapshot })), JSON.stringify(snapshot), now());
+        access.registerInheritedScope({
+          resourceType: 'final_job', resourceId: id,
+          parent: { resourceType: 'project', resourceId: group.projectId },
+        });
+        access.registerTaskPrincipal({
+          module: 'final_edit', taskId: id,
+          scope: { resourceType: 'project', resourceId: group.projectId },
+          creationSnapshot: snapshot,
+        });
+      });
+      enqueue.immediate();
     } catch (error) {
       releaseReservedExportTarget(storageRoot, exportTarget);
       throw error;

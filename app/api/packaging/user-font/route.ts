@@ -7,12 +7,14 @@
 import path from 'node:path';
 import { NextResponse } from 'next/server';
 import { FONT_SLOT_ALIASES, materializeFontBuffer, readUserFontFilename, sniffFontMagic, USER_FONT_EXTENSIONS, USER_FONT_MAX_BYTES, type FontSlot } from '@/lib/media-core/packaging-font';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(): Promise<NextResponse> {
+
+async function __teamRouteGET(): Promise<NextResponse> {
   return NextResponse.json({ font: readUserFontFilename() });
 }
 
-export async function POST(request: Request): Promise<NextResponse> {
+async function __teamRoutePOST(request: Request): Promise<NextResponse> {
   let file: File | null = null;
   let slot: FontSlot = 'point';
   try {
@@ -38,6 +40,9 @@ export async function POST(request: Request): Promise<NextResponse> {
 }
 
 // Content-addressed fonts may still be referenced by frozen render snapshots.
-export async function DELETE(): Promise<NextResponse> {
+async function __teamRouteDELETE(): Promise<NextResponse> {
   return NextResponse.json({ error: 'font_snapshot_protected', message: '请在包装配置中选择模板原生字体；已使用字体保留供历史任务渲染' }, { status: 409 });
 }
+export const GET = withTeamRoute('/api/packaging/user-font', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/packaging/user-font', 'POST', __teamRoutePOST);
+export const DELETE = withTeamRoute('/api/packaging/user-font', 'DELETE', __teamRouteDELETE);

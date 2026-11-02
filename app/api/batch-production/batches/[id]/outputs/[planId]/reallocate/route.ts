@@ -8,12 +8,14 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 只重分配目标计划；其他计划的候选版本和正式产物保持不变。 */
-export async function POST(
+async function __teamRoutePOST(
   request: NextRequest,
   context: { params: Promise<{ id: string; planId: string }> },
 ) {
@@ -45,3 +47,4 @@ export async function POST(
     return batchRouteErrorResponse(error, 'batch_reallocation_failed', '单条重新分配失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/outputs/[planId]/reallocate', 'POST', __teamRoutePOST);

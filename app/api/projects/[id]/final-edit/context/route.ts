@@ -1,13 +1,15 @@
 import { NextResponse } from 'next/server';
 import { getFinalEditWorkspace, recoverFinalEditPrepareJobs } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 // docs/superpowers/plans/2026-07-23-mixcut-technical-execution.md §5.1 /
 // §3.1's app/api/projects/[id]/final-edit/context/route.ts. Thin wrapper per
 // plan §2.1/§3.2: all query/aggregation logic lives behind
 // FinalEditWorkspace.getMixcutContext (lib/final-edit/workspace.ts), which
 // delegates to the pure, independently-testable lib/final-edit/mixcut-context.ts.
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     recoverFinalEditPrepareJobs();
     const { id: projectId } = await params;
@@ -22,3 +24,4 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     return finalEditErrorResponse(error);
   }
 }
+export const GET = withTeamRoute('/api/projects/[id]/final-edit/context', 'GET', __teamRouteGET);

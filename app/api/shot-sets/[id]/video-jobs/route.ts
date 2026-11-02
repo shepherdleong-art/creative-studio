@@ -4,8 +4,10 @@ import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_
 import { toStorageImageUrl, toStorageVideoUrl } from '@/lib/storage-url';
 import { createVideoJobsForShot, parseVideoJobCreationItem } from '@/lib/video-job-create';
 import { resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(
+
+async function __teamRoutePOST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -47,7 +49,7 @@ export async function POST(
   }
 }
 
-export async function GET(
+async function __teamRouteGET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -79,3 +81,5 @@ export async function GET(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const POST = withTeamRoute('/api/shot-sets/[id]/video-jobs', 'POST', __teamRoutePOST);
+export const GET = withTeamRoute('/api/shot-sets/[id]/video-jobs', 'GET', __teamRouteGET);

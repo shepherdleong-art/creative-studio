@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { inspectCompanyProviderRuntime } from '@/lib/company-provider-runtime';
 import { dataRoot } from '@/lib/data-root';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 const FALLBACK_STATUS = {
   status: 'unavailable' as const,
@@ -11,7 +13,7 @@ const FALLBACK_STATUS = {
 };
 
 /** Read-only local runtime status; it never starts a process or calls a model. */
-export async function GET() {
+async function __teamRouteGET() {
   try {
     const status = await inspectCompanyProviderRuntime({ root: dataRoot() });
     return NextResponse.json(status, { headers: { 'Cache-Control': 'no-store' } });
@@ -20,3 +22,4 @@ export async function GET() {
     return NextResponse.json(FALLBACK_STATUS, { headers: { 'Cache-Control': 'no-store' } });
   }
 }
+export const GET = withTeamRoute('/api/company-provider/health', 'GET', __teamRouteGET);

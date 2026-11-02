@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import {
   ScriptStudioError,
 } from './errors.ts';
@@ -72,6 +73,8 @@ export function getOrCreateLibrary(
   projectId: string,
   now?: () => Date,
 ): LibraryRecord {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
   const existing = db.prepare(`
     SELECT id, projectId, currentRevisionId, createdAt, updatedAt
     FROM script_studio_libraries WHERE projectId = ?
@@ -86,10 +89,17 @@ export function getOrCreateLibrary(
     createdAt,
     updatedAt: createdAt,
   };
-  db.prepare(`
-    INSERT INTO script_studio_libraries (id, projectId, currentRevisionId, createdAt, updatedAt)
-    VALUES (?, ?, NULL, ?, ?)
-  `).run(library.id, projectId, createdAt, createdAt);
+  const create = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO script_studio_libraries (id, projectId, currentRevisionId, createdAt, updatedAt)
+      VALUES (?, ?, NULL, ?, ?)
+    `).run(library.id, projectId, createdAt, createdAt);
+    access.registerInheritedScope({
+      resourceType: 'script_library', resourceId: library.id,
+      parent: { resourceType: 'project', resourceId: projectId },
+    });
+  });
+  create.immediate();
   return library;
 }
 
@@ -174,9 +184,13 @@ export function createLibraryRevision(
         computeDetailStatus({ detailText: point.detailText, factText: point.factText, evidenceQuote: point.evidenceQuote }),
       );
     });
-    db.prepare(`
-      UPDATE script_studio_libraries SET currentRevisionId = ?, updatedAt = ? WHERE id = ?
-    `).run(id, createdAt, library.id);
+    const access = requireAccessContext();
+    access.registerInheritedScope({
+      resourceType: 'script_library_revision', resourceId: id,
+      parent: { resourceType: 'script_library', resourceId: library.id },
+    });
+    db.prepare(`UPDATE script_studio_libraries SET currentRevisionId = ?, updatedAt = ? WHERE id = ?`)
+      .run(id, createdAt, library.id);
     return getLibraryRevision(db, input.projectId, id)!;
   }).immediate();
 }
@@ -186,6 +200,8 @@ export function getLibraryRevision(
   projectId: string,
   revisionId: string,
 ): LibraryRevisionView | undefined {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
   const row = db.prepare(`
     SELECT r.* FROM script_studio_library_revisions r
     JOIN script_studio_libraries l ON l.id = r.libraryId

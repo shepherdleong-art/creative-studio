@@ -5,8 +5,10 @@ import { cancelVideoQueue } from '@/lib/video-queue';
 import { writeLog } from '@/lib/logger';
 import { getEffectiveImageConcurrency } from '@/lib/provider-concurrency';
 import { v4 as uuidv4 } from 'uuid';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(
+
+async function __teamRoutePOST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -124,7 +126,7 @@ export async function POST(
   }
 }
 
-export async function GET(
+async function __teamRouteGET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -132,3 +134,5 @@ export async function GET(
   const status = getQueueStatus(id);
   return NextResponse.json({ queueStatus: status });
 }
+export const POST = withTeamRoute('/api/projects/[id]/run', 'POST', __teamRoutePOST);
+export const GET = withTeamRoute('/api/projects/[id]/run', 'GET', __teamRouteGET);

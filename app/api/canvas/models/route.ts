@@ -3,11 +3,13 @@ import { ensureCanvasCapabilitiesRegistered } from '@/lib/creative-canvas/capabi
 import { getDb } from '@/lib/db';
 import { readCanvasRuntimeConfig } from '@/lib/creative-canvas/config';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
 /** 脱敏的可用模型与能力；不返回密钥、私密配置或完整鉴权 URL。 */
-export async function GET() {
+async function __teamRouteGET() {
   try {
     await assertCanvasApiReady();
     const config = readCanvasRuntimeConfig();
@@ -33,3 +35,4 @@ export async function GET() {
     return canvasJsonError(error);
   }
 }
+export const GET = withTeamRoute('/api/canvas/models', 'GET', __teamRouteGET);

@@ -3,14 +3,20 @@ import { getDb } from '@/lib/db';
 import { resolveImageJobProvider } from '@/lib/image-provider-selection';
 import { v4 as uuidv4 } from 'uuid';
 import { syncShotPromptFromScene } from '@/lib/furniture-prompt';
+import { requireAccessContext } from '@/lib/media-core/access-context';
+import { bindImageScopeToProject, assertScopeConsistency } from '@/lib/team-service/resource-scopes';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(
+
+async function __teamRoutePOST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
     const db = getDb();
+    const access = requireAccessContext();
+    if (access.kind === 'team') access.assertAccess('project', id, 'write');
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
 
     const sceneSeedImageId = body.sceneSeedImageId as string;
@@ -42,11 +48,16 @@ export async function POST(
     const img = db.prepare(`SELECT id, projectId FROM image_assets WHERE id = ?`).get(sceneSeedImageId) as { projectId: string | null } | undefined;
     if (!img) return NextResponse.json({ error: '场景图 A 不存在' }, { status: 400 });
     if (img.projectId && img.projectId !== id) return NextResponse.json({ error: '图片不属于当前项目' }, { status: 400 });
+    if (access.kind === 'team') access.assertAccess('image', sceneSeedImageId, 'write');
 
     const jobIds: string[] = [];
     db.transaction(() => {
       // Bind image to project
       db.prepare(`UPDATE image_assets SET projectId = ?, role = 'input', usage = 'scene_seed' WHERE id = ?`).run(id, sceneSeedImageId);
+      if (access.kind === 'team') {
+        const owner = assertScopeConsistency(db, 'project', id).ownerUserId;
+        bindImageScopeToProject(db, sceneSeedImageId, id, owner);
+      }
 
       // Update project scenePrompt
       db.prepare(`UPDATE projects SET scenePrompt = ?, shotPrompt = ? WHERE id = ?`)
@@ -61,12 +72,22 @@ export async function POST(
       for (let g = 0; g < generationCount; g++) {
         const jobId = uuidv4();
         insertJob.run(jobId, id, sceneSeedImageId, jobProvider.providerId, jobProvider.model, scenePrompt, project.size, project.quality, maxAttempts, batchCreatedAt, g);
+        access.registerInheritedScope({
+          resourceType: 'job', resourceId: jobId,
+          parent: { resourceType: 'project', resourceId: id },
+        });
+        access.registerTaskPrincipal({
+          module: 'image', taskId: jobId,
+          scope: { resourceType: 'project', resourceId: id },
+          creationSnapshot: { inputImageId: sceneSeedImageId, model: jobProvider.model, creationIndex: g },
+        });
         jobIds.push(jobId);
       }
-    })();
+    }).immediate();
 
     return NextResponse.json({ success: true, jobCount: jobIds.length, jobIds });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const POST = withTeamRoute('/api/projects/[id]/scene-jobs', 'POST', __teamRoutePOST);

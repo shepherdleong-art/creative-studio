@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 /** Only these subdirectories under storage/ are allowed to be served. */
 const ALLOWED_DIRS = ['inputs', 'outputs', 'references', 'originals', 'processed'];
@@ -18,7 +20,7 @@ const BLOCKED_PATTERNS = [
   /^logs$/,
 ];
 
-export async function GET(
+async function __teamRouteGET(
   _request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
@@ -84,3 +86,4 @@ export async function GET(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/images/[...path]', 'GET', __teamRouteGET);

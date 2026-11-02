@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import { dataRoot } from '../data-root.ts';
 import { runFfmpeg } from '../ffmpeg.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
@@ -64,6 +65,8 @@ export function resolveColorSnapshot(
   if (!lut) {
     throw new BatchDomainError('not_found', 'LUT 不存在');
   }
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('lut', lutId, 'read');
   if (lut.projectId !== projectId) {
     throw new BatchDomainError('invalid_input', 'LUT 不属于该批次所在项目');
   }
@@ -98,6 +101,8 @@ export function createManagedLut(
     now?: () => Date;
   },
 ): string {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
   const fingerprint = normalizeFingerprint(input.contentFingerprint);
   const createdAt = nowIso(input.now);
   return db.transaction(() => {
@@ -105,6 +110,7 @@ export function createManagedLut(
       SELECT id FROM batch_luts WHERE projectId = ? AND contentFingerprint = ?
     `).get(projectId, fingerprint) as { id: string } | undefined;
     if (existing) {
+      if (access.kind === 'team') access.assertAccess('lut', existing.id, 'read');
       return existing.id;
     }
     const id = randomUUID();
@@ -123,11 +129,17 @@ export function createManagedLut(
       createdAt,
       createdAt,
     );
+    access.registerInheritedScope({
+      resourceType: 'lut', resourceId: id,
+      parent: { resourceType: 'project', resourceId: projectId },
+    });
     return id;
-  })();
+  }).immediate();
 }
 
 export function getLut(db: Database.Database, projectId: string, lutId: string): BatchLutRow | undefined {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
   return db.prepare(`
     SELECT * FROM batch_luts WHERE id = ? AND projectId = ?
   `).get(lutId, projectId) as BatchLutRow | undefined;

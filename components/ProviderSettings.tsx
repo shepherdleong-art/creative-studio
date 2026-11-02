@@ -24,7 +24,7 @@ export default function ProviderSettings({ selectedId, onSelect }: Props) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/providers')
+    fetch('/api/team/models?kind=image')
       .then((r) => r.json())
       .then((data: Provider[]) => {
         setProviders(data);

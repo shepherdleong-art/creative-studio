@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import { ScriptStudioError } from './errors.ts';
 import { parseScriptProductionMode, parseScriptStudioRequestedCount } from './generation-contract.ts';
 import type {
@@ -149,7 +150,7 @@ function stageSeq(db: Database.Database, taskId: string): number {
  * try/catch 吞错误：唯一冲突外的失败（NOT NULL、FK、磁盘满、schema 未就绪……）必须
  * 原样上抛，让调用方看到真实原因，而不是被伪装成 conflict。
  */
-export function createTask(
+function createTaskAtomic(
   db: Database.Database,
   input: CreateTaskInput,
   now?: () => Date,
@@ -180,6 +181,18 @@ export function createTask(
     createdAt,
   );
   const inserted = result.changes > 0;
+  if (inserted) {
+    const access = requireAccessContext();
+    access.registerInheritedScope({
+      resourceType: 'script_studio_task', resourceId: id,
+      parent: { resourceType: 'project', resourceId: input.projectId },
+    });
+    access.registerTaskPrincipal({
+      module: 'script_studio', taskId: id,
+      scope: { resourceType: 'project', resourceId: input.projectId },
+      creationSnapshot: { requestKey: input.requestKey, input: input.inputSnapshot },
+    });
+  }
   const row = db.prepare(`
     SELECT * FROM script_studio_tasks WHERE projectId = ? AND requestKey = ?
   `).get(input.projectId, input.requestKey) as ScriptStudioTaskRecord | undefined;
@@ -191,6 +204,17 @@ export function createTask(
   if (inserted) return { task, created: true };
   if (taskIdentitiesMatch(taskStoredIdentity(task), identity)) return { task, created: false };
   throw new ScriptStudioError('conflict', '同一 requestKey 已对应不同请求内容，不能复用');
+}
+
+export function createTask(
+  db: Database.Database,
+  input: CreateTaskInput,
+  now?: () => Date,
+): { task: TaskView; created: boolean } {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', input.projectId, 'write');
+  const create = db.transaction(() => createTaskAtomic(db, input, now));
+  return create.immediate();
 }
 
 export interface TaskRequestParams {
@@ -336,6 +360,8 @@ export function getTask(
   projectId: string,
   taskId: string,
 ): TaskView | undefined {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
   const row = db.prepare(`
     SELECT * FROM script_studio_tasks WHERE id = ? AND projectId = ?
   `).get(taskId, projectId) as ScriptStudioTaskRecord | undefined;

@@ -4,12 +4,14 @@ import { getDb } from '@/lib/db';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
 import { deleteShotSet } from '@/lib/shot-set-service';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 function toImageUrl(storageRoot: string, imagePath: string | null | undefined): string {
   return imagePath ? `/api/images/${path.relative(storageRoot, path.resolve(imagePath)).split(path.sep).join('/')}` : '';
 }
 
-export async function GET(
+async function __teamRouteGET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -112,7 +114,7 @@ export async function GET(
   }
 }
 
-export async function PATCH(
+async function __teamRoutePATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -163,7 +165,7 @@ export async function PATCH(
   }
 }
 
-export async function DELETE(
+async function __teamRouteDELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -178,3 +180,6 @@ export async function DELETE(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/shot-sets/[id]', 'GET', __teamRouteGET);
+export const PATCH = withTeamRoute('/api/shot-sets/[id]', 'PATCH', __teamRoutePATCH);
+export const DELETE = withTeamRoute('/api/shot-sets/[id]', 'DELETE', __teamRouteDELETE);

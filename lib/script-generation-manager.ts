@@ -39,6 +39,8 @@ export interface ScriptGenerationExecutionResult {
 export interface ScriptGenerationTaskInput {
   projectId: string;
   generationId: string;
+  /** 在任务进入 running 且执行器启动前同步完成持久受理登记。 */
+  accept?(): void;
   /** 由调用方注入的真实生成执行器；必须尊重 signal 取消。 */
   execute(context: {
     signal: AbortSignal;
@@ -225,6 +227,7 @@ export function startScriptGeneration(input: ScriptGenerationTaskInput): ScriptG
   }
 
   if (reg.shuttingDown) throw new ScriptGenerationShuttingDownError();
+  input.accept?.();
 
   const record: ScriptGenerationTaskRecord = {
     projectId: input.projectId,

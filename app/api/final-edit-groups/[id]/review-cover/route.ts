@@ -2,11 +2,14 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { latestMixcutReviewCover } from '@/lib/final-edit/reassembled/review';
 import { mediaResponse } from '@/lib/final-edit/media-response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const file = latestMixcutReviewCover(getDb(), (await params).id);
   if (!file) return NextResponse.json({ error: 'cover_not_found' }, { status: 404 });
   const response = mediaResponse(request, file, 'image/jpeg');
   response.headers.set('Cache-Control', 'no-store');
   return response;
 }
+export const GET = withTeamRoute('/api/final-edit-groups/[id]/review-cover', 'GET', __teamRouteGET);

@@ -3,14 +3,19 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveImageJobProvider } from '@/lib/image-provider-selection';
 import { v4 as uuidv4 } from 'uuid';
+import { requireAccessContext } from '@/lib/media-core/access-context';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(
+
+async function __teamRoutePOST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
     const db = getDb();
+    const access = requireAccessContext();
+    if (access.kind === 'team') access.assertAccess('shot_set', id, 'write');
     if (requiresReassembledUpstreamRework(db, id)) return NextResponse.json({ error: REASSEMBLED_REWORK_REQUIRED }, { status: 409 });
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
 
@@ -70,15 +75,23 @@ export async function POST(
           batchCreatedAt, index
         );
         db.prepare(`UPDATE shots SET latestJobId = ? WHERE id = ?`).run(jobId, shot.id);
+        access.registerInheritedScope({
+          resourceType: 'job', resourceId: jobId,
+          parent: { resourceType: 'project', resourceId: set.projectId },
+        });
+        access.registerTaskPrincipal({
+          module: 'image', taskId: jobId,
+          scope: { resourceType: 'project', resourceId: set.projectId },
+          creationSnapshot: { shotId: shot.id, sceneReferenceId, model: jobProvider.model, creationIndex: index },
+        });
         createdJobs.push(jobId);
       });
-    })();
-
-    // Update shot set status
-    db.prepare(`UPDATE shot_sets SET status = 'generating', sceneReferenceId = ? WHERE id = ?`).run(sceneReferenceId, id);
+      db.prepare(`UPDATE shot_sets SET status = 'generating', sceneReferenceId = ? WHERE id = ?`).run(sceneReferenceId, id);
+    }).immediate();
 
     return NextResponse.json({ success: true, jobCount: createdJobs.length, jobIds: createdJobs });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const POST = withTeamRoute('/api/shot-sets/[id]/apply-scene', 'POST', __teamRoutePOST);

@@ -12,8 +12,10 @@ import {
 } from '@/lib/media-core/project-script-reader';
 import { isScriptVisibleInContext } from '@/lib/media-core/script-visibility';
 import { isUsableMixcutScriptDraft } from '@/lib/media-core/script-draft-usable';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: projectId } = await params;
     recoverFinalEditPrepareJobs();
@@ -49,3 +51,4 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     });
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const GET = withTeamRoute('/api/projects/[id]/final-edit/bootstrap', 'GET', __teamRouteGET);

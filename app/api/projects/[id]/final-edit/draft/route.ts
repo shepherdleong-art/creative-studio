@@ -2,8 +2,10 @@ import { NextResponse } from 'next/server';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import type { EnsureMixcutDraftInput } from '@/lib/final-edit/workspace';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: projectId } = await params;
     const body = await request.json() as Omit<EnsureMixcutDraftInput, 'projectId'>;
@@ -22,3 +24,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return finalEditErrorResponse(error);
   }
 }
+export const POST = withTeamRoute('/api/projects/[id]/final-edit/draft', 'POST', __teamRoutePOST);

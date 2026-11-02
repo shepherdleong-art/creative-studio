@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
 import Header, { type HeaderPrincipal } from "@/components/Header";
+import TeamFetchBridge from "@/components/TeamFetchBridge";
 import { canvasFeatureEnabled } from "@/lib/creative-canvas/config";
 import { readRuntimeConfig } from "@/lib/team-service/config";
 import { TEAM_SESSION_COOKIE } from "@/lib/team-service/auth/request";
@@ -54,10 +55,12 @@ async function RuntimeHeader() {
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  const deploymentMode = readRuntimeConfig().mode;
   return (
-    <html lang="zh-CN" className="h-full antialiased" suppressHydrationWarning>
+    <html lang="zh-CN" className="h-full antialiased" suppressHydrationWarning data-deployment-mode={deploymentMode}>
       <body className="min-h-full flex flex-col bg-surface text-ink">
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        <TeamFetchBridge />
         <Suspense fallback={<Header deploymentMode={process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server' ? 'server' : 'local'} />}>
           <RuntimeHeader />
         </Suspense>

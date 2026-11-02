@@ -5,8 +5,10 @@ import { parseDurationGateState } from '@/lib/final-edit/duration-gate';
 import { parseRenderRevisionFromSnapshot } from '@/lib/final-edit/workspace';
 import { countScriptContentCharacters, estimateNarrationDurationSec } from '@/lib/script-duration-policy';
 import { wakeFinalEditWorker } from '@/lib/final-edit/worker';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRouteGET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const row = getDb().prepare(`SELECT id, projectId, groupId, variantId, kind, status, phase, progress, estimatedCost, costCurrency, inputSnapshotJson, outputJson, errorCode, errorMessage, attempt, startedAt, finishedAt, createdAt, detailJson FROM final_edit_jobs WHERE id=?`).get(id) as Record<string, unknown> | undefined;
@@ -90,3 +92,4 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ ...publicRow, detail, target, output, renderRevision, durationReview });
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const GET = withTeamRoute('/api/final-edit-jobs/[id]', 'GET', __teamRouteGET);

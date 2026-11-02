@@ -12,8 +12,10 @@ import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { publishUnpackagedRender } from '@/lib/final-edit/publish-original';
 import { loadSucceededRenderJob, type FinalEditPackagingSnapshot } from '@/lib/final-edit/packaging';
 import { registerPublishedArtifacts } from '@/lib/final-edit/project-artifacts';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRoutePOST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const db = getDb();
@@ -61,3 +63,4 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     return NextResponse.json({ id, status: 'skipped', videoFilename: exportTarget.videoFilename, displayDirectory: exportTarget.displayDirectory });
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const POST = withTeamRoute('/api/final-edit-jobs/[id]/publish-original', 'POST', __teamRoutePOST);

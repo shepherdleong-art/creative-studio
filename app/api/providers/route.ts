@@ -4,13 +4,15 @@ import { seedProviders } from '@/lib/seed';
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { v4 as uuidv4 } from 'uuid';
 import { isVisibleImageProvider } from '@/lib/provider-list-visibility';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 function isRealKey(value: string | undefined | null): boolean {
   const s = (value || '').trim();
   return !!s && !isPlaceholderValue(s);
 }
 
-export async function GET() {
+async function __teamRouteGET() {
   try {
     seedProviders();
     const db = getDb();
@@ -33,7 +35,7 @@ export async function GET() {
   }
 }
 
-export async function POST(request: Request) {
+async function __teamRoutePOST(request: Request) {
   try {
     const db = getDb();
     const body = await request.json();
@@ -68,3 +70,5 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/providers', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/providers', 'POST', __teamRoutePOST);

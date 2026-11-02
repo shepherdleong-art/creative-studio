@@ -10,10 +10,13 @@ import {
 } from '@/lib/usage-query';
 import { getUsageSchemaReadiness } from '@/lib/usage-schema';
 import type { CoreUsageCategory, CoreUsageModelKey } from '@/lib/usage-pricing';
+import { requireAccessContext } from '@/lib/media-core/access-context';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 const NO_STORE_HEADERS = { 'Cache-Control': 'no-store' } as const;
 
-export async function GET(request: Request) {
+async function __teamRouteGET(request: Request) {
   const db = getDb();
   const readiness = getUsageSchemaReadiness(db);
   if (!readiness.available) {
@@ -64,7 +67,11 @@ export async function GET(request: Request) {
     );
   }
   try {
-    return NextResponse.json(queryUsageDashboard(db, query), { headers: NO_STORE_HEADERS });
+    const access = requireAccessContext();
+    return NextResponse.json(queryUsageDashboard(db, {
+      ...query,
+      actorUserId: access.kind === 'team' && access.actor.role !== 'admin' ? access.actor.userId : undefined,
+    }), { headers: NO_STORE_HEADERS });
   } catch {
     return NextResponse.json(
       { error: 'usage_unavailable', message: '消耗统计读取失败，其他工作台功能不受影响。' },
@@ -72,3 +79,4 @@ export async function GET(request: Request) {
     );
   }
 }
+export const GET = withTeamRoute('/api/usage', 'GET', __teamRouteGET);

@@ -7,6 +7,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,7 +19,7 @@ export const dynamic = 'force-dynamic';
  * 已发布且未过期 → already_published(幂等);复制注册成功 → published。
  * 调度器唤醒由编排模块内部完成(幂等),路由不接触任务领取细节。
  */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id: batchId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -43,3 +45,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return batchRouteErrorResponse(error, 'batch_export_failed', '批次正式导出失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/exports', 'POST', __teamRoutePOST);

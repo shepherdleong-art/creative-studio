@@ -5,6 +5,8 @@ import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { assertScriptStudioApiReady, errorResponse } from '@/lib/script-studio/http';
 import { assertNoStorageSymlink } from '@/lib/media-core/storage-path';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
@@ -17,7 +19,7 @@ const MIME_BY_EXT: Record<string, string> = {
   svg: 'image/svg+xml',
 };
 
-export async function GET(
+async function __teamRouteGET(
   _request: Request,
   { params }: { params: Promise<{ assetId: string }> },
 ) {
@@ -45,3 +47,4 @@ export async function GET(
     return NextResponse.json(body, { status });
   }
 }
+export const GET = withTeamRoute('/api/script-studio/template-assets/[assetId]', 'GET', __teamRouteGET);

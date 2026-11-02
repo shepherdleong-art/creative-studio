@@ -6,7 +6,9 @@ import { refreshFilmReview } from '@/lib/final-edit/reassembled/review';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { FinalEditError } from '@/lib/final-edit/errors';
 import type { FilmBinding } from '@/lib/final-edit/reassembled/types';
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     checkLocalRequest(request); const db = getDb();
     const binding = db.prepare('SELECT * FROM final_edit_film_bindings WHERE id=?').get((await params).id) as FilmBinding | undefined;
@@ -20,3 +22,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ warning });
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const POST = withTeamRoute('/api/reassembled-films/[id]/archive', 'POST', __teamRoutePOST);

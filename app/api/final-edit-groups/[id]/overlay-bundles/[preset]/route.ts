@@ -9,10 +9,12 @@ import { dataRoot } from '@/lib/data-root';
 import { OUTPUT_PRESETS, type OutputPresetId } from '@/lib/final-edit/types';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { alphaBoundsWidth, overlayMeasurementLimit } from '@/lib/final-edit/overlay-measurement';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 function digest(value: string | Buffer) { return crypto.createHash('sha256').update(value).digest('hex'); }
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string; preset: string }> }) {
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string; preset: string }> }) {
   try {
     const { id, preset: rawPreset } = await params;
     if (!(rawPreset in OUTPUT_PRESETS)) return NextResponse.json({ error: 'invalid_output_preset' }, { status: 400 });
@@ -59,3 +61,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ id: bundleId, specHash, reused: false }, { status: 201 });
   } catch (error) { return NextResponse.json({ error: 'overlay_bundle_invalid', message: error instanceof Error ? error.message : String(error) }, { status: 400 }); }
 }
+export const POST = withTeamRoute('/api/final-edit-groups/[id]/overlay-bundles/[preset]', 'POST', __teamRoutePOST);

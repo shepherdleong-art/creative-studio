@@ -6,11 +6,13 @@ import { ScriptStudioError } from '@/lib/script-studio/errors';
 import { resolveRuntimeProviders } from '@/lib/script-studio/runtime';
 import { createSellingPointOrganizer } from '@/lib/script-studio/selling-point-organizer';
 import { reorganizeLibrary } from '@/lib/script-studio/reorganize-library';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     await assertScriptStudioApiReady();
     const { id: projectId } = await params;
@@ -32,3 +34,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json(result.body, { status: result.status });
   }
 }
+export const POST = withTeamRoute('/api/projects/[id]/script-studio/library/organize', 'POST', __teamRoutePOST);

@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { mediaResponse } from '@/lib/final-edit/media-response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const row = getDb().prepare(`SELECT status, outputJson FROM final_edit_jobs WHERE id=? AND kind='render'`).get(id) as { status: string; outputJson: string | null } | undefined;
   if (!row || row.status !== 'succeeded' || !row.outputJson) return NextResponse.json({ error: 'artifact_not_ready' }, { status: 404 });
@@ -13,3 +15,4 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   response.headers.set('Cache-Control', 'no-cache');
   return response;
 }
+export const GET = withTeamRoute('/api/final-edit-jobs/[id]/cover', 'GET', __teamRouteGET);

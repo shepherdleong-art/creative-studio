@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { appendShotToFreeSet } from '@/lib/shot-set-service';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 // 自由素材工位的「再加一张图」。只允许 kind='free'——普通分镜组的分镜
 // 由第 2 步的场景生成流程产生,不能从这里塞。
-export async function POST(
+async function __teamRoutePOST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -20,3 +22,4 @@ export async function POST(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const POST = withTeamRoute('/api/shot-sets/[id]/shots', 'POST', __teamRoutePOST);

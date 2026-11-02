@@ -5,8 +5,10 @@
 
 import { NextResponse } from 'next/server';
 import { FONT_SLOT_ALIASES, materializeSystemFont, type FontSlot } from '@/lib/media-core/packaging-font';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(request: Request): Promise<NextResponse> {
+
+async function __teamRoutePOST(request: Request): Promise<NextResponse> {
   let key = '';
   let slot: FontSlot = 'point';
   try {
@@ -25,3 +27,4 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'font_materialize_failed', message: error instanceof Error ? error.message : String(error) }, { status: 400 });
   }
 }
+export const POST = withTeamRoute('/api/packaging/system-fonts/select', 'POST', __teamRoutePOST);
