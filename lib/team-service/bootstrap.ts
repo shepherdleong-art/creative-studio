@@ -63,9 +63,7 @@ export function createTeamServiceBootstrap(options: {
 }): TeamServiceBootstrap {
   const modules = options.modules ?? [];
   const checkBusinessReadiness = options.checkBusinessReadiness ?? (async () => ({
-    available: false,
-    code: 'identity_unavailable',
-    message: '身份设施尚未注册，业务入口保持关闭。',
+    available: true,
   }));
   const controller = new AbortController();
   const context: ExecutionModuleContext = {

@@ -33,7 +33,7 @@ try {
 
   const team = await checkTeamServiceReadiness(options(root, db));
   assert.equal(team.available, true);
-  assert.deepEqual(team.appliedVersions, [1]);
+  assert.deepEqual(team.appliedVersions, [1, 2]);
   const execution = await checkExecutionReadiness(options(root, db));
   assert.equal(execution.available, true);
   assert.deepEqual(execution.appliedVersions, [1]);
@@ -43,7 +43,9 @@ try {
     { id: 1, maintenance: 0 },
   );
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'execution_instances'").get());
-  assert.deepEqual(db.prepare('SELECT version FROM team_schema_migrations').all(), [{ version: 1 }]);
+  assert.deepEqual(db.prepare('SELECT version FROM team_schema_migrations').all(), [{ version: 1 }, { version: 2 }]);
+  assert.equal((db.prepare("SELECT type FROM pragma_table_info('team_users') WHERE name = 'employeeId'").get() as { type: string }).type, 'TEXT');
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_sessions'").get());
   assert.deepEqual(db.prepare('SELECT version FROM execution_schema_migrations').all(), [{ version: 1 }]);
 
   const teamAgain = await checkTeamServiceReadiness(options(root, db));
