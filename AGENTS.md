@@ -67,8 +67,11 @@ app/                    Next.js 页面与 API 路由
                         final-edit-variants / final-edit-jobs /
                         final-edit-assets / final-edit-bgm / final-edit-proposals
 components/             React UI（工作台各面板）；components/mixcut/ 是正式第五步“智能混剪”；
+                        components/batch-production/ 是批量生产与统一审片；components/packaging/ 是共享包装层；
                         components/final-edit/ 保留预览、检查器和 Canvas 等共享编辑能力；
                         components/ui/ 是通用原语（目前只有 Icon.tsx）
+desktop/                Electron 桌面壳与私有 Node 服务看管
+packaging/              HyperFrames 模板、贴纸目录与共享运行时、离线包装工具；classic 为冻结域
 lib/                    核心业务逻辑（见下）
 data/                   本地 SQLite 库 workbench.db（gitignored）
 storage/                上传素材、生成产物、日志（gitignored；含 bgm/final-edits/videos 等子目录）
@@ -97,7 +100,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 | `docs/reference/详情页智能脚本生成.md` | 改 `lib/script-studio/` 任何东西 |
 | `docs/reference/创作画布.md` | 改 `lib/creative-canvas/`、`app/api/canvas/`、`components/creative-canvas/`、`app/canvas/` 任何东西 |
 | `docs/reference/视频包装.md` | 改共享包装、四套模板、单条或批量包装入口、离线包装运行资源 |
-| `docs/reference/固定渲染命令.md` | 改 `lib/film-render/`、`scripts/film-render.ts` 或 classic 渲染验收 |
+| `docs/reference/固定渲染命令.md` | 改 `lib/film-render/`、`packaging/film-builders/` 或 classic 渲染验收 |
 
 ### `lib/` 核心模块
 
@@ -109,7 +112,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 **批量生产** — 细节见 `docs/reference/批量生产模块.md`
 
-- `batch-production/` — 独立的批量生产 Module，自带 `{version, sql}` 迁移流（v1–v23，权威清单直接看 `schema.ts`）和 `readiness.ts` 闸门。红线：迁移只能追加；批量迁移必须过共享备份/锁/审计 gate，不许塞回会吞错误的旧 core runner；**只从 `media-core/` 导入，绝不从 `final-edit/` 导入**；静音占位素材只能预览，不得通过正式发布。
+- `batch-production/` — 独立的批量生产 Module，自带 `{version, sql}` 迁移流（权威清单直接看 `schema.ts`）和 `readiness.ts` 闸门。红线：迁移只能追加；批量迁移必须过共享备份/锁/审计 gate，不许塞回会吞错误的旧 core runner；**只从 `media-core/` 导入，绝不从 `final-edit/` 导入**；静音占位素材只能预览，不得通过正式发布。
 
 **详情页智能脚本生成** — 细节见 `docs/reference/详情页智能脚本生成.md`
 
@@ -135,9 +138,15 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 **成片与媒体**
 
-- `film-render/` — 源码工程的 classic 固定渲染核心与 CLI；不读工作台数据库，只依赖 `media-core` 和底层媒体工具。输出只写新 `renders/<runId>`，classic/1 构建器与金样冻结，详见 `docs/reference/固定渲染命令.md`。
+- `film-render/` — 源码工程的 classic 固定渲染核心与库入口（当前无专用 CLI）；不读工作台数据库，只依赖 `media-core` 和底层媒体工具。输出只写新 `renders/<runId>`，classic/1 构建器与金样冻结，详见 `docs/reference/固定渲染命令.md`。
 
 - `final-edit/` — “智能混剪”第五步的后端：版本化 schema、时间线/字幕领域模型、ffmpeg 渲染、渲染 worker（重启把 running 恢复为 queued）、工作区/提案/BGM，以及视频分析、TTS、对齐等 `adapters/`。共享媒体基础（存储路径、匹配、封面标题、场景检测、TTS 与对齐、`render-contract.ts` 的 24fps / 20 帧片头常量）在 `media-core/`，旧路径只做兼容再导出。**混剪上下文与外部素材按 `projectId + shotSetId` 隔离，不许从文件名或时间戳推断归属。**
+
+**贴纸与视频包装** — 细节见 `docs/reference/视频包装.md`
+
+- 单条与批量共用 `media-core/packaging-sticker*` 和 `packaging/stickers/runtime.js`；预览与正式导出必须读取同一份持久化实例，随机结果不得重抽，classic/1 不支持贴纸。
+- 批量跨片复制只能经 `batch-production/sticker-copy.ts` 的多目标事务修改 `stickers/stickerDefaults`；不得由前端逐片保存形成半批结果。
+
 - `ffmpeg.ts` — 解析 ffmpeg/ffprobe（`CREATIVE_STUDIO_FFMPEG`/`_FFPROBE` → static 包 → PATH），封装带进度回调、超时、stderr 尾部报错和 AbortSignal 的 `runFfmpeg`，并提供直接子进程的停机广播/等待；`probeDurationSec` 在 ffprobe 失败时回退 ffmpeg 解析。
 - `shutdown.ts` — **唯一**的进程级优雅停机编排：停批量调度、广播并排空直接 FFmpeg、关闭 SQLite、按 `stack.json` 受控停 LiteLLM。UI 关闭端点与 SIGTERM/SIGINT 共用且幂等。
 - **停机信号契约**：成片 prepare 与批量口播任务向停机 worker 注册**同一个** AbortController；TTS 归一化/拼接与五分钟 prepare 预览都接收任务信号，被打断的 prepare 行退回 `queued` 走租约式恢复。另有三处**按策略保留的信号缺口**（都是有意为之的短调用，靠进程级 FFmpeg 停机兜底）：`lut-catalog.ts`（10s）、`project-asset-media.ts`（60s）、`final-edit/video-frame.ts`（30s）——动它们之前先确认是否还需要保持缺口。
@@ -165,7 +174,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - **路径**：所有本地文件路径基于 `dataRoot()`。
 - **TypeScript**：strict 模式；路径别名 `@/*` 指向仓库根。ESLint 用 Next.js 官方 flat config，无额外自定义规则。
 - **UI**：界面文案为中文；视觉风格为 Apple 官网式精致极简（见 `docs/2026-06-12-session-summary.md`）。
-- **批量统一审片改造**：修改统一工作台、轨道编辑或开场归库前，先读 [确认版 PRD](docs/superpowers/specs/2026-09-25-批量统一审片-PRD.md) 与 [执行文档](docs/superpowers/plans/2026-09-25-批量统一审片-执行文档.md)，按冻结 v14 和逐项验收执行。
+- **批量统一审片改造**：修改统一工作台、轨道编辑或开场归库前，先读 `docs/reference/批量生产模块.md`，保持代码中已标识的 v14 行筛选、眼睛预览、选择、审核与导出契约；历史 PRD 不得替代当前实现核验。
 - **外观主题**：全局三态（浅色/深色/跟随系统）由 `html[data-theme="dark"]` 驱动——暗色令牌与组件覆盖集中在 `app/globals.css` 末尾，mixcut 两个 CSS module 各自带暗色覆盖块；偏好存 `localStorage["creative-studio-theme"]`，水合前初始化脚本在 `app/layout.tsx`，切换按钮是 `components/ThemeToggle.tsx`。新增 UI 颜色一律走设计令牌，不要新增硬编码浅色值（深色覆盖只补丁存量）。
 - **文档**：常驻架构参考放 `docs/reference/`；设计、评审、会话记录放 `docs/`，文件名带日期前缀（`YYYY-MM-DD-主题.md`）；较大功能的规格与计划放 `docs/superpowers/{specs,plans}/`——**这个目录名是历史沿革，与当前使用的任何 skill 无关**，新文档照旧往里放，不要按名字另起炉灶。
 - **关闭端点**：`POST /api/shutdown` 先 await `gracefulShutdown`（各步骤有界超时）再延迟 100ms `process.exit(0)`，供安装版启停脚本调用；不要在开发流程里误触。SIGTERM/SIGINT 也走同一入口。

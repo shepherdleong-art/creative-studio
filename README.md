@@ -15,7 +15,10 @@ Creative Studio 是一个本地优先的 AI 素材生产工作台，把产品素
 - **脚本生成**：围绕卖点、人群、平台、语气和分镜组生成口播脚本，并支持图文审阅和复制。
 - **视频任务准备**：基于分镜创建视频任务，支持视频供应商配置、任务轮询、重试和结果预览。
 - **智能混剪成片**：分析视频素材（本地抽帧 + 视觉模型）、TTS 生成配音与字幕对齐、组时间线、ffmpeg 渲染最终成片。
-- **批量生产**：与单条智能混剪共用同一个“智能混剪”入口，提供“单条精调”和“批量成片”两种模式；单条模式用于逐条调整并导出，批量模式用于按批次组织素材和脚本、一次产出多条成片。
+- **详情页智能脚本生成**：独立管理脚本快照、生成任务、调度与恢复，支持按项目详情页持续生产文案。
+- **创作画布**：以节点画布组织素材、生成计划和执行任务，支持任务恢复、用量查看与 ZIP 导出。
+- **视频包装与贴纸**：四套 HyperFrames 模板支持主副标题、卖点和 115 张透明 PNG 贴纸；单条与批量均可编辑时间、位置、层级和动效，一键生成基础组合并正式导出。
+- **批量生产**：与单条智能混剪共用同一个“智能混剪”入口，提供“单条精调”和“批量成片”两种模式；支持统一审片、逐片精调、跨片贴纸随机变体和多片整体撤销／重做。
 - **公司网关接入**：可选联动本地 LiteLLM 代理（127.0.0.1:4000）接入公司模型网关，可灵、Seedance、image2、nano-banana 等模型走统一任务协议。
 - **腾讯云 COS 参考图中转**：参考图按内容哈希上传 COS 并生成 24h 预签名 URL 传给网关上游。
 - **供应商切换与故障转移**：重新生成时可选择不同供应商，支持进度中的故障切换控制。供应商预设有 GPT.ge 等内置选项。
@@ -56,7 +59,7 @@ http://localhost:3000
 node scripts/db-migrations.test.ts   # 数据库迁移
 node scripts/cos-media.test.ts       # COS 模块单元测试（mock）
 node scripts/local-image-url.test.ts # 本地图片 URL 解析
-npm run lint
+npx tsc --noEmit             # TypeScript 严格类型检查
 ```
 
 Windows 如需固定本机地址或换端口：
@@ -262,20 +265,39 @@ npm run build:mac-installer
 
 ```text
 app/                    Next.js 页面和 API 路由
-components/             工作台 UI 组件（components/mixcut/ 为第五步智能混剪）
+components/             工作台 UI 组件（mixcut、batch-production、creative-canvas 等）
 components/ui/          通用 UI 原语和图标
+desktop/                Electron 桌面壳与私有 Node 服务看管
+packaging/              HyperFrames 模板、贴纸目录与共享运行时、离线包装工具
 installer/windows/      Windows 安装包脚本和配置
 installer/macos/        macOS .app 元数据与历史启动资源
 lib/                    数据库、队列、供应商适配器、文件导出等核心逻辑
-lib/final-edit/         智能混剪后端（时间线、TTS、字幕对齐、ffmpeg 渲染）
+lib/media-core/         混剪与批量共享的媒体、包装和贴纸能力
+lib/final-edit/         单条智能混剪后端（时间线、TTS、字幕对齐、ffmpeg 渲染）
+lib/batch-production/   批量生产、统一审片、事务编辑与正式导出
+lib/script-studio/      详情页智能脚本生成模块
+lib/creative-canvas/    创作画布、计划调度与执行恢复
 lib/providers/          图片生成供应商适配器
 lib/script-providers/   脚本生成供应商适配器
 lib/video-providers/    视频生成供应商适配器
-docs/                   设计、评审和实现记录
+docs/                   设计、评审和实现记录；docs/reference/ 为常驻架构参考
 outputs/                阶段性规格、测试清单和交付记录
 scripts/                启停辅助脚本、测试文件、安装包构建脚本
 types/                  第三方包类型补丁
 ```
+
+## 项目文档
+
+- [AGENTS.md](./AGENTS.md)：仓库唯一说明书，包含命令、结构、开发约定与红线。
+- [CONTEXT.md](./CONTEXT.md)：统一领域术语，不记录实现细节。
+- [批量生产模块](./docs/reference/批量生产模块.md)
+- [视频包装与贴纸](./docs/reference/视频包装.md)
+- [供应商与队列](./docs/reference/供应商与队列.md)
+- [公司网关与 COS 中转](./docs/reference/公司网关与COS中转.md)
+- [详情页智能脚本生成](./docs/reference/详情页智能脚本生成.md)
+- [创作画布](./docs/reference/创作画布.md)
+- [打包与桌面运行](./docs/reference/打包与桌面运行.md)
+- [固定渲染命令](./docs/reference/固定渲染命令.md)
 
 ## 本地数据和安全
 
