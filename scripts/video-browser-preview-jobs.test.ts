@@ -14,6 +14,7 @@ const { runFfmpeg } = await import('../lib/ffmpeg.ts');
 const { browserPreviewPath, ensureBrowserPreview } = await import('../lib/video-browser-preview.ts');
 const { withMediaResource } = await import('../lib/media-core/media-resource-gate.ts');
 const { clearExecutionModuleRuntime, setExecutionModuleRuntime } = await import('../lib/media-core/execution/module-runtime.ts');
+const { runWithAccessContext } = await import('../lib/media-core/access-context.ts');
 
 const source = path.join(dataRoot, 'source-hevc.mp4');
 await runFfmpeg([
@@ -49,7 +50,19 @@ try {
   clearExecutionModuleRuntime();
   assert.equal(await ensureBrowserPreview(source), preview);
 
-  console.log('video browser preview jobs: persistent dedupe, lease recovery and retryable capacity pending passed');
+  const authorizationFailure = new Error('preview-authorization-denied');
+  await assert.rejects(
+    runWithAccessContext({
+      kind: 'team', actor: { userId: 'denied-user', role: 'employee' },
+      assertAccess() {}, resolveOwner() { return 'denied-user'; }, registerRootScope() {},
+      registerInheritedScope() {}, registerTaskPrincipal() {},
+      authorizeFileRead() { throw authorizationFailure; },
+    }, () => ensureBrowserPreview(source)),
+    (error: unknown) => error === authorizationFailure,
+    '授权失败必须向上返回，不得吞错后回退原件',
+  );
+
+  console.log('video browser preview jobs: persistent dedupe, lease recovery, capacity pending and authorization fail-closed passed');
 } finally {
   clearExecutionModuleRuntime();
   closeDb();

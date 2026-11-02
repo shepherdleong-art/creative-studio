@@ -100,6 +100,27 @@ try {
   `).run(at, at);
   const resumed = schedulerModule.claimNextScriptStudioTask(db, { workerId: 'resume-worker' });
   assert.equal(resumed?.task.attemptCount, 1, 'deferred 续跑不得增加业务 attempt');
+
+  db.prepare(`UPDATE script_studio_tasks SET status = 'queued', errorCode = 'execution_deferred', leaseUntil = NULL WHERE id = 'tick-deferred'`).run();
+  let deferredExecutions = 0;
+  const deferring = schedulerModule.startScriptStudioScheduler({
+    db,
+    workerId: 'deferred-worker',
+    intervalMs: 60_000,
+    executor: {
+      async execute(task) {
+        deferredExecutions += 1;
+        if (deferredExecutions > 1) {
+          db.prepare(`UPDATE script_studio_tasks SET status = 'cancelled', errorCode = 'test_stop' WHERE id = ?`).run(task.id);
+          return;
+        }
+        db.prepare(`UPDATE script_studio_tasks SET status = 'queued', errorCode = 'execution_deferred', leaseUntil = NULL WHERE id = ?`).run(task.id);
+      },
+    },
+  });
+  assert.equal(await deferring.runPendingOnce(), 1, 'deferred 必须让出当前 slot，等待下一次 tick');
+  assert.equal(deferredExecutions, 1, '同一轮不得立刻重领 deferred 任务形成 tight loop');
+  await deferring.stop();
 } finally {
   delete globalScope[schedulerModule.SCRIPT_STUDIO_SCHEDULER_KEY];
   delete globalScope[versionKey];

@@ -20,8 +20,9 @@ const { registerExecutionInstance } = await import('../lib/media-core/execution/
 const { updateActorPolicy, upsertExecutionPool } = await import('../lib/media-core/execution/pools.ts');
 const { schemaUpgradeRuntimePaths } = await import('../lib/schema-upgrade/runtime.ts');
 const { clearExecutionModuleRuntime, setExecutionModuleRuntime } = await import('../lib/media-core/execution/module-runtime.ts');
-const { requestDoubaoAudio } = await import('../lib/media-core/adapters/doubao-tts.ts');
+const { requestDoubaoAudio, synthesizeDoubaoNarration } = await import('../lib/media-core/adapters/doubao-tts.ts');
 const { createOpenAiAlignmentAdapter } = await import('../lib/media-core/adapters/alignment.ts');
+const { withMediaResource } = await import('../lib/media-core/media-resource-gate.ts');
 
 const db = getDb();
 const readiness = await checkExecutionReadiness({ db, ...schemaUpgradeRuntimePaths(dataRoot) });
@@ -117,6 +118,40 @@ try {
     SELECT COUNT(*) FROM execution_reservations r JOIN execution_operations o ON o.id = r.operationId
     WHERE o.taskId = 'speech-complete' AND r.kind = 'concurrency' AND r.state = 'held'
   `).pluck().get(), 0, '同步 TTS 终态后必须释放远端生成名额');
+
+  const resumeOutputDir = path.join(dataRoot, 'speech-local-resume');
+  const resumeInput = {
+    provider: {
+      ...provider,
+      usageContext: {
+        projectId: 'user-a-project', refType: 'batch-narration', refId: 'speech-local-resume',
+        detail: { attempt: 1 },
+      },
+    },
+    voice: 'zh_female_vv_uranus_bigtts', speed: 1,
+    segments: [{ segmentId: 'segment-1', narration: '你好' }],
+    outputDir: resumeOutputDir,
+    relativeOutputPath: 'speech-local-resume/narration.wav',
+    alignment: { configured: false, async align() { throw new Error('不得额外请求对齐'); } },
+  };
+  let releaseLocal!: () => void;
+  const occupied = withMediaResource(
+    { taskId: 'other-media-work', wait: true },
+    () => new Promise<void>((resolve) => { releaseLocal = resolve; }),
+  );
+  const postsBeforeLocalDefer = posts;
+  await assert.rejects(
+    runWithAccessContext(access('user-a'), () => synthesizeDoubaoNarration(resumeInput)),
+    (error: unknown) => (error as { code?: string }).code === 'media_resource_deferred',
+  );
+  releaseLocal();
+  await occupied;
+  const rawResumePath = path.join(resumeOutputDir, 'segment-0-0-raw.mp3');
+  assert.equal(fs.existsSync(rawResumePath), true, '本地 deferred 后必须保留已成功回执对应的原始音频');
+  const resumed = await runWithAccessContext(access('user-a'), () => synthesizeDoubaoNarration(resumeInput));
+  assert.equal(posts, postsBeforeLocalDefer + 1, '本地恢复只允许首次远端 POST，不得重复付费');
+  assert.equal(fs.existsSync(resumed.absolutePath), true);
+  assert.equal(fs.existsSync(rawResumePath), false, '成功发布后应清理临时原始音频');
 
   globalThis.fetch = async () => { posts += 1; throw new Error('socket reset'); };
   await assert.rejects(call('user-b', 'speech-unknown'), (error: unknown) => (error as { code?: string }).code === 'media_execution_unknown');

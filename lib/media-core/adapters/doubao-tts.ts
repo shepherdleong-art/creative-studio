@@ -379,6 +379,7 @@ export async function synthesizeDoubaoNarration(input: DoubaoSynthesisInput) {
         const filters = input.speed === 1 ? ['aresample=48000'] : [`atempo=${input.speed.toFixed(2)}`, 'aresample=48000'];
         const temporaryPath = `${normalizedPath}.${process.pid}-${Date.now()}.tmp.wav`;
         const temporaryTimingPath = `${timingPath}.${process.pid}-${Date.now()}.tmp`;
+        let published = false;
         try {
           await withMediaResource({ taskId: normalizedPath, step: 'tts-normalize', wait: false, signal: input.signal }, () => runFfmpeg([
             '-i', rawPath, '-vn', '-af', filters.join(','),
@@ -387,6 +388,7 @@ export async function synthesizeDoubaoNarration(input: DoubaoSynthesisInput) {
           if (!await isReusableNarrationChunk(temporaryPath)) throw new Error('豆包 TTS 分段音频标准化后不可读取');
           fs.rmSync(normalizedPath, { force: true });
           fs.renameSync(temporaryPath, normalizedPath);
+          published = true;
           chunkWords = synthesis.wordTimings.map((word) => ({
             ...word,
             startUs: Math.round(word.startUs / input.speed),
@@ -399,7 +401,7 @@ export async function synthesizeDoubaoNarration(input: DoubaoSynthesisInput) {
         } finally {
           fs.rmSync(temporaryPath, { force: true });
           fs.rmSync(temporaryTimingPath, { force: true });
-          fs.rmSync(rawPath, { force: true });
+          if (published) fs.rmSync(rawPath, { force: true });
         }
       }
       chunkFiles.push(normalizedPath);
@@ -468,6 +470,7 @@ export async function synthesizeDoubaoPreview(input: {
   fs.mkdirSync(path.dirname(input.outputPath), { recursive: true });
   const rawPath = `${input.outputPath}.raw.mp3`;
   const temporaryOutputPath = `${input.outputPath}.${process.pid}-${Date.now()}.tmp.wav`;
+  let published = false;
   try {
     await requestDoubaoAudio(input.provider, input.voice, input.text, rawPath, input.signal, input.execution);
     const filters = input.speed === 1 ? ['aresample=48000'] : [`atempo=${input.speed.toFixed(2)}`, 'aresample=48000'];
@@ -478,8 +481,9 @@ export async function synthesizeDoubaoPreview(input: {
     if (!await isReusableNarrationChunk(temporaryOutputPath)) throw new Error('豆包 TTS 试听音频标准化后不可读取');
     fs.rmSync(input.outputPath, { force: true });
     fs.renameSync(temporaryOutputPath, input.outputPath);
+    published = true;
   } finally {
-    fs.rmSync(rawPath, { force: true });
+    if (published) fs.rmSync(rawPath, { force: true });
     fs.rmSync(temporaryOutputPath, { force: true });
   }
 }

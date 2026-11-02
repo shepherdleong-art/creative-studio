@@ -158,6 +158,9 @@ export function startScriptStudioScheduler(options: {
         handled += 1;
         try {
           await executor.execute(claim.task, controller.signal);
+          const current = db.prepare(`SELECT status, errorCode FROM script_studio_tasks WHERE id = ?`)
+            .get(claim.task.id) as { status: string; errorCode: string | null } | undefined;
+          if (current?.status === 'queued' && current.errorCode === 'execution_deferred') return;
         } catch {
           // 执行器负责把任务写成失败/可恢复状态；调度器只保证不因异常退出循环。
         } finally {

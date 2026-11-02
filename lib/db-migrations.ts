@@ -196,6 +196,8 @@ export const CORE_DB_MIGRATIONS = [
     rawText TEXT NOT NULL,
     createdAt TEXT NOT NULL
   )`,
+  `ALTER TABLE jobs ADD COLUMN executionRevision INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE video_jobs ADD COLUMN executionRevision INTEGER NOT NULL DEFAULT 0`,
   `CREATE TABLE IF NOT EXISTS media_derivative_jobs (
     jobKey TEXT PRIMARY KEY,
     sourcePath TEXT NOT NULL,
@@ -208,6 +210,4 @@ export const CORE_DB_MIGRATIONS = [
     createdAt INTEGER NOT NULL,
     updatedAt INTEGER NOT NULL
   )`,
-  `ALTER TABLE jobs ADD COLUMN executionRevision INTEGER NOT NULL DEFAULT 0`,
-  `ALTER TABLE video_jobs ADD COLUMN executionRevision INTEGER NOT NULL DEFAULT 0`,
 ];

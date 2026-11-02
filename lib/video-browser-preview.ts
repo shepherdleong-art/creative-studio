@@ -135,8 +135,8 @@ async function doEnsureBrowserPreview(
 ): Promise<string> {
   const jobKey = previewJobKey(videoPath);
   const previewPath = browserPreviewPath(videoPath);
+  authorizeManagedFileRead(videoPath);
   try {
-    authorizeManagedFileRead(videoPath);
     if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) return previewPath;
     if (jobPending(await readJob(jobKey), Date.now())) throw new BrowserPreviewPendingError(jobKey);
     return await withMediaResource({
