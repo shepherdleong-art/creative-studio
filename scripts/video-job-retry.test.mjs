@@ -9,7 +9,7 @@ db.exec(`CREATE TABLE video_jobs (
   id TEXT PRIMARY KEY, projectId TEXT, status TEXT, providerStatus TEXT,
   providerTaskId TEXT, providerRawResponse TEXT, remoteVideoUrl TEXT, localVideoPath TEXT,
   lastPolledAt TEXT, pollCount INTEGER, startedAt TEXT, finishedAt TEXT,
-  attempt INTEGER, errorMessage TEXT, usageSnapshotJson TEXT,
+  attempt INTEGER, errorMessage TEXT, usageSnapshotJson TEXT, executionRevision INTEGER DEFAULT 0,
   model TEXT, multiShot INTEGER, prompt TEXT, sourceImageId TEXT, tailImageId TEXT, durationSec INTEGER
 ); CREATE TABLE projects (id TEXT PRIMARY KEY, videoConcurrency INTEGER);`);
 db.prepare('INSERT INTO projects VALUES (?, ?)').run('project', 3);
@@ -40,7 +40,7 @@ function fixture(id, overrides = {}) {
     id, projectId: 'project', status: 'failed', providerStatus: 'failed', providerTaskId: 'old-remote',
     providerRawResponse: '{"status":"failed"}', remoteVideoUrl: null, localVideoPath: null,
     lastPolledAt: 'old-time', pollCount: 7, startedAt: 'old-time', finishedAt: 'old-time',
-    attempt: 4, errorMessage: "shot_type value 'intelligent' is invalid", usageSnapshotJson: '{}',
+    attempt: 4, errorMessage: "shot_type value 'intelligent' is invalid", usageSnapshotJson: '{}', executionRevision: 0,
     model: 'qiniuyun/kling-3.0', multiShot: 1, prompt: 'frozen prompt',
     sourceImageId: 'first-frame', tailImageId: 'last-frame', durationSec: 5,
     ...overrides,
@@ -65,6 +65,7 @@ try {
   assert.equal(after.pollCount, 0);
   assert.equal(after.attempt, 0);
   assert.equal(after.usageSnapshotJson, null, 'a new paid task must re-freeze its own usage snapshot before submit');
+  assert.equal(after.executionRevision, 1, 'confirmed manual resubmit must create a new execution operation revision');
   for (const key of ['model', 'multiShot', 'prompt', 'sourceImageId', 'tailImageId', 'durationSec']) {
     assert.equal(after[key], before[key], `retry must preserve frozen ${key}`);
   }

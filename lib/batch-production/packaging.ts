@@ -53,7 +53,10 @@ export async function prepareBatchPackagingConfig(db: Database.Database, project
   config.varsOverrides = { ...batchPackagingDefaults(db, projectId, view), ...config.varsOverrides };
   if (config.enabled && (reextract || !config.pointCues)) {
     const built = await buildPointCues({
-      extractPoints: text => extractSellingPointsWithLLM(text),
+      extractPoints: text => extractSellingPointsWithLLM(text, undefined, undefined, {
+        taskId: view.planId,
+        scope: { resourceType: 'project', resourceId: projectId },
+      }),
       narrationText: view.subtitleCues.map(cue => cue.text).join('，'), words: batchNarrationPackaging(db, view).words, subtitleCues: view.subtitleCues,
       sellingPoints: loadProjectPackagingData(db, projectId).sellingPoints ?? [],
       totalSec: (Math.max(view.visualDurationUs, view.narration.durationUs ?? 0) + FINAL_EDIT_INTRO_DURATION_US) / 1e6,

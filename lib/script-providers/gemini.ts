@@ -27,6 +27,9 @@ import {
   type ChatImagePart,
 } from './openai-compatible';
 import { createScriptProviderRequestControl } from './request-control.ts';
+import { beginLlmUsageCall, finishLlmUsageCall, llmTransportActualCost, type LlmUsageContext } from '../usage-llm.ts';
+import { safeProviderErrorHint } from './error-diagnostics.ts';
+import { runLlmTransport, type LlmExecutionTransport } from './transport-execution.ts';
 
 const DEFAULT_GEMINI_TIMEOUT_MS = 120_000;
 
@@ -36,6 +39,8 @@ interface GeminiCallOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   images?: ChatImagePart[];
+  usageContext?: LlmUsageContext;
+  executionTransport?: LlmExecutionTransport;
 }
 
 // ── Provider Config ──
@@ -119,30 +124,59 @@ async function geminiNativeCall(
     timeoutMessage: (timeoutMs) => `Gemini (native) 请求超时（${timeoutMs}ms）`,
   });
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts }],
-        generationConfig: {
-          temperature: options?.temperature ?? 0.7,
-          maxOutputTokens: options?.maxTokens ?? runtime?.maxTokens ?? geminiConfig.maxTokens,
-        },
-      }),
-      signal: requestControl.signal,
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Gemini (native) error ${res.status}: ${errText.slice(0, 500)}`);
-    }
-
-    const data = await res.json() as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    const body = {
+      contents: [{ parts }],
+      generationConfig: {
+        temperature: options?.temperature ?? 0.7,
+        maxOutputTokens: options?.maxTokens ?? runtime?.maxTokens ?? geminiConfig.maxTokens,
+      },
     };
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    if (!rawText.trim()) throw new Error('Gemini 返回了空响应');
-    return rawText;
+    const perform = async () => {
+      const usageAttempt = runtime ? beginLlmUsageCall(runtime, model, options?.usageContext) : null;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: requestControl.signal,
+      });
+      if (!response.ok) return { response, errText: await response.text(), rawText: '' };
+      const data = await response.json() as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+        usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+      };
+      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      finishLlmUsageCall(usageAttempt, {
+        usage: data.usageMetadata ? {
+          prompt_tokens: data.usageMetadata.promptTokenCount,
+          completion_tokens: data.usageMetadata.candidatesTokenCount,
+        } : undefined,
+        serializedPrompt: JSON.stringify(body.contents),
+        rawOutput: rawText,
+        hasImages: Boolean(options?.images?.length),
+      });
+      if (!rawText.trim()) throw new Error('Gemini 返回了空响应');
+      return { response, errText: '', rawText };
+    };
+    const performed = options?.executionTransport
+      ? await runLlmTransport(options.executionTransport, {
+          requestSnapshot: body,
+          send: async () => {
+            const value = await perform();
+            return {
+              value,
+              terminalState: value.response.ok ? 'succeeded' : 'failed',
+              result: value.response.ok ? value.rawText : undefined,
+              actualCost: value.response.ok && runtime ? llmTransportActualCost(runtime, model) : null,
+              remoteTerminal: true,
+              errorCode: value.response.ok ? undefined : `http_${value.response.status}`,
+            };
+          },
+        })
+      : await perform();
+    if (!performed.response.ok) {
+      throw new Error(`Gemini (native) 请求失败（HTTP ${performed.response.status}）：${safeProviderErrorHint(performed.errText)}`);
+    }
+    return performed.rawText;
   } catch (error) {
     return requestControl.rethrow(error);
   } finally {
@@ -171,6 +205,8 @@ async function geminiCall(
       signal: options?.signal,
       responseFormat,
       images: options?.images,
+      usageContext: options?.usageContext,
+      executionTransport: options?.executionTransport,
     }, runtime);
   }
 
@@ -197,6 +233,8 @@ export async function geminiCompleteJson<T>(input: {
   timeoutMs?: number;
   signal?: AbortSignal;
   images?: ChatImagePart[];
+  usageContext?: LlmUsageContext;
+  executionTransport?: LlmExecutionTransport;
 }, runtime?: ScriptProviderRuntimeConfig): Promise<T> {
   const rawText = await geminiCall(
     input.systemPrompt,
@@ -209,6 +247,8 @@ export async function geminiCompleteJson<T>(input: {
       timeoutMs: input.timeoutMs,
       signal: input.signal,
       images: input.images,
+      usageContext: input.usageContext,
+      executionTransport: input.executionTransport,
     },
   );
   return parseJsonResponse<T>(rawText, 'Gemini');

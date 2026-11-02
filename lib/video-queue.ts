@@ -27,6 +27,18 @@ import {
 import { SEEDANCE_25 } from './video-providers/seedance-contract.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
 import { registerManagedFile } from './media-core/access-context.ts';
+import {
+  cancelLegacyMediaNewStage,
+  isLegacyMediaSubmissionUnknown,
+  isServerMediaExecution,
+  legacyMediaExecutionRevision,
+  recoverLegacyMediaSubmission,
+  settleLegacyMediaRemote,
+  submitLegacyMediaOperation,
+} from './legacy-media-execution.ts';
+import type { ExecutionReceipt } from './media-core/execution/context.ts';
+import { parseUsageSnapshot } from './usage-snapshot.ts';
+import { calculateUsageCostMicros } from './usage-pricing.ts';
 
 export interface VideoQueueOptions {
   /** Limit a local rework run to its immutable job. */
@@ -136,11 +148,22 @@ interface VideoJobRecord {
   maxAttempts: number;
   multiShot: number | null;
   usageSnapshotJson?: string | null;
+  executionRevision?: number;
+  providerTaskId?: string | null;
+  providerStatus?: string | null;
+  remoteVideoUrl?: string | null;
 }
 
 type QueueStatus = 'idle' | 'running' | 'paused';
 
-const runningQueues = new Map<string, { abort: AbortController; status: QueueStatus }>();
+interface RunningVideoQueueEntry {
+  abort: AbortController;
+  status: QueueStatus;
+  done: Promise<void>;
+  finish: () => void;
+}
+
+const runningQueues = new Map<string, RunningVideoQueueEntry>();
 
 export function getVideoQueueStatus(projectId: string): QueueStatus {
   return runningQueues.get(projectId)?.status ?? 'idle';
@@ -168,12 +191,21 @@ export function cancelVideoQueue(projectId: string) {
   const entry = runningQueues.get(projectId);
   if (entry) {
     entry.abort.abort();
-    runningQueues.delete(projectId);
+    if (!isServerMediaExecution()) runningQueues.delete(projectId);
     const db = getDb();
-    db.prepare(
-      `UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
-       WHERE projectId = ? AND status IN ('pending', 'running')`
-    ).run(projectId);
+    if (isServerMediaExecution()) {
+      // server 取消只阻止尚未受理的新阶段；running 行由各自的 abort 收尾，
+      // 有远端回执的转 needs_check，不能抹掉已付费任务身份。
+      db.prepare(
+        `UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
+         WHERE projectId = ? AND status = 'pending'`
+      ).run(projectId);
+    } else {
+      db.prepare(
+        `UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
+         WHERE projectId = ? AND status IN ('pending', 'running')`
+      ).run(projectId);
+    }
   }
 }
 
@@ -186,16 +218,47 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
   }
 
   const abort = new AbortController();
-  runningQueues.set(projectId, { abort, status: 'running' });
+  let finish!: () => void;
+  const done = new Promise<void>((resolve) => { finish = resolve; });
+  runningQueues.set(projectId, { abort, status: 'running', done, finish });
 
   const db = getDb();
 
-  // Recover stuck running jobs from a previous crash
+  // Recover stuck running jobs from a previous crash.
   protectReassembledQueue(db, projectId, 'generate_video', options.jobId);
-  db.prepare(
-    `UPDATE video_jobs SET status = 'pending', errorMessage = 'Recovered from interrupted run'
-     WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)`
-  ).run(projectId, options.jobId || null, options.jobId || null);
+  if (isServerMediaExecution()) {
+    const interrupted = db.prepare(`
+      SELECT id, providerTaskId, executionRevision FROM video_jobs
+      WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)
+    `).all(projectId, options.jobId || null, options.jobId || null) as Array<{
+      id: string; providerTaskId: string | null; executionRevision: number;
+    }>;
+    for (const row of interrupted) {
+      const recovered = recoverLegacyMediaSubmission({
+        module: 'video', taskId: row.id,
+        inputRevision: legacyMediaExecutionRevision(row.executionRevision),
+        providerTaskId: row.providerTaskId,
+      });
+      if (recovered.status === 'pending') {
+        db.prepare("UPDATE video_jobs SET status = 'pending', errorMessage = NULL WHERE id = ? AND status = 'running'").run(row.id);
+      } else {
+        db.prepare(`UPDATE video_jobs SET status = 'needs_check', providerStatus = ?,
+          providerTaskId = COALESCE(?, providerTaskId), remoteVideoUrl = COALESCE(?, remoteVideoUrl),
+          errorMessage = '中断前的提交结果需要核查，未自动重发'
+          WHERE id = ? AND status = 'running'`).run(
+          recovered.resultRef ? 'download_failed' : 'unknown',
+          recovered.remoteId ?? null,
+          recovered.resultRef ?? null,
+          row.id,
+        );
+      }
+    }
+  } else {
+    db.prepare(
+      `UPDATE video_jobs SET status = 'pending', errorMessage = 'Recovered from interrupted run'
+       WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)`
+    ).run(projectId, options.jobId || null, options.jobId || null);
+  }
 
   try {
     async function worker() {
@@ -216,6 +279,7 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
         const needsCheck = claimNeedsCheckVideoJob(projectId, options.jobId);
         if (needsCheck) {
           await runVideoJob(needsCheck, { timeoutMs, abort: abort.signal });
+          if (isServerMediaExecution()) await sleep(1000);
           continue;
         }
         if (claimed.gated) {
@@ -238,10 +302,16 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
       Array.from({ length: concurrency }, () => worker())
     );
   } finally {
-    if (!abort.signal.aborted) {
-      runningQueues.delete(projectId);
-    }
+    finish();
+    if (runningQueues.get(projectId)?.abort === abort) runningQueues.delete(projectId);
   }
+}
+
+export async function drainVideoQueues(): Promise<number> {
+  const entries = [...runningQueues.values()];
+  for (const entry of entries) entry.abort.abort();
+  await Promise.all(entries.map((entry) => entry.done));
+  return entries.length;
 }
 
 interface VideoJobReferenceAsset {
@@ -340,6 +410,18 @@ async function runVideoJob(
   return runWithAcceptedTaskAccess(getDb(), 'video', job.id, () => runAuthorizedVideoJob(job, options));
 }
 
+export async function resumeVideoJobPolling(jobId: string, timeoutMs = DEFAULT_VIDEO_TIMEOUT_MS): Promise<void> {
+  const db = getDb();
+  const job = db.prepare('SELECT * FROM video_jobs WHERE id = ?').get(jobId) as VideoJobRecord | undefined;
+  if (!job?.providerTaskId) throw new Error('No provider task ID to resume polling');
+  const claimed = db.prepare(`
+    UPDATE video_jobs SET status = 'running', errorMessage = NULL, finishedAt = NULL
+    WHERE id = ? AND (status IN ('needs_check', 'pending') OR providerStatus = 'download_failed')
+  `).run(jobId);
+  if (claimed.changes !== 1) throw new Error('Only accepted jobs waiting for polling or download can be resumed');
+  await runVideoJob({ ...job, status: 'running' }, { timeoutMs, abort: new AbortController().signal });
+}
+
 async function runAuthorizedVideoJob(
   job: VideoJobRecord,
   options: { timeoutMs: number; abort: AbortSignal }
@@ -349,7 +431,7 @@ async function runAuthorizedVideoJob(
 
   if (abort.aborted) return;
 
-  const attempt = job.attempt;
+  let attempt = job.attempt;
   // 存量库旧行 maxAttempts 默认是 1(建表默认值也长期是 1),实际等于“无自动
   // 重试”;这里把 <= 1 的值统一视为未配置,兜底到运行时上限 2,让旧库也能
   // 自动重试一次。显式配置 > 1 的值(如 3)保持原样。
@@ -403,24 +485,6 @@ async function runAuthorizedVideoJob(
     const adapter = getVideoAdapter(provider.type);
     if (!adapter) throw new Error(`Unknown video provider type: ${provider.type}`);
 
-    // Load source image
-    const sourceImage = db
-      .prepare(`SELECT * FROM image_assets WHERE id = ?`)
-      .get(job.sourceImageId) as {
-      path: string;
-      originalPath: string | null;
-      processedPath: string | null;
-      mimeType: string;
-    } | undefined;
-
-    if (!sourceImage) throw new Error('Source image not found');
-
-    // 首帧优先用未压缩的原图：上传预处理（最长边 1536、JPEG q85）是给图片
-    // 生成 API 省流量的，压过再给视频模型会直接拉低成片起点画质；生成的
-    // 分镜图没有 originalPath，自然回退到原有路径。
-    const imagePath = sourceImage.originalPath || sourceImage.processedPath || sourceImage.path;
-    const mimeType = videoFrameMimeFromPath(imagePath, sourceImage.mimeType);
-
     logInfo(`Calling video API: ${runtime.baseUrl} (type=${provider.type}, model=${job.model}, duration=${job.durationSec}s)`);
 
     const reqAbort = new AbortController();
@@ -435,12 +499,182 @@ async function runAuthorizedVideoJob(
     `).get(job.id) as { providerTaskId: string | null } | undefined)?.providerTaskId ?? null;
     let usageSnapshot: string | null = job.usageSnapshotJson ?? null;
 
+    async function executeVideoSubmission(
+      send: () => Promise<SubmitVideoResult>,
+    ): Promise<SubmitVideoResult> {
+      if (!isServerMediaExecution()) return send();
+      usageSnapshot = persistVideoJobUsageSnapshot(db, {
+        jobId: job.id,
+        projectId: job.projectId,
+        requestModel: job.model,
+        provider: {
+          id: provider!.id, name: provider!.name, type: provider!.type,
+          model: provider!.defaultModel, baseUrl: runtime.baseUrl,
+        },
+        refType: 'video-job',
+        refId: job.id,
+      });
+      const parsed = parseUsageSnapshot(usageSnapshot);
+      const reserveMinor = parsed.ok
+        ? Math.ceil(calculateUsageCostMicros(parsed.parsed.snapshot.priceComponents, job.durationSec) / 10_000)
+        : null;
+      const submitted = await submitLegacyMediaOperation<SubmitVideoResult>({
+        module: 'video',
+        taskId: job.id,
+        projectId: job.projectId,
+        inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+        inputSnapshot: {
+          sourceImageId: job.sourceImageId,
+          tailImageId: job.tailImageId,
+          generationMode: job.generationMode,
+          model: job.model,
+          prompt: job.prompt,
+          durationSec: job.durationSec,
+          multiShot: job.multiShot,
+          aspectRatio: job.aspectRatio,
+          resolution: job.resolution,
+        },
+        requestSnapshot: {
+          providerType: provider!.type, generationMode: job.generationMode,
+          model: job.model, durationSec: job.durationSec,
+        },
+        providerSnapshot: {
+          providerId: provider!.id, type: provider!.type, model: job.model, baseUrl: runtime.baseUrl,
+        },
+        baseUrl: runtime.baseUrl,
+        apiKey,
+        credentialIdentity: provider!.type === 'kling'
+          ? `${runtime.accessKey}\0${runtime.secretKey}`
+          : runtime.apiKey,
+        quote: reserveMinor === null
+          ? { kind: 'unpriced' }
+          : { kind: 'priced', reserve: { currency: 'CNY', minor: reserveMinor }, pricingSnapshot: usageSnapshot },
+        signal: reqAbort.signal,
+        onAdmitted() {
+          attempt += 1;
+          job.attempt = attempt;
+          db.prepare('UPDATE video_jobs SET attempt = ?, startedAt = datetime(\'now\') WHERE id = ? AND status = \'running\'')
+            .run(attempt, job.id);
+        },
+        send: async () => {
+          const value = await send();
+          const receipt: ExecutionReceipt = value.immediateVideoUrl
+            ? { terminalState: 'succeeded', resultRef: value.immediateVideoUrl }
+            : { remoteId: value.providerTaskId };
+          return { value, receipt };
+        },
+      });
+      if (submitted.resumed || submitted.value === undefined) {
+        throw new Error(`已受理视频任务 ${submitted.remoteId ?? ''} 需要续查，不能重新提交。`);
+      }
+      return submitted.value;
+    }
+
+    async function settleVideoExecution(
+      outcome: 'succeeded' | 'failed',
+      resultRef?: string,
+      errorCode?: string,
+    ): Promise<void> {
+      const parsed = parseUsageSnapshot(usageSnapshot);
+      const actualCost = outcome === 'succeeded' && parsed.ok
+        ? {
+            currency: 'CNY' as const,
+            minor: Math.ceil(calculateUsageCostMicros(parsed.parsed.snapshot.priceComponents, job.durationSec) / 10_000),
+          }
+        : null;
+      await settleLegacyMediaRemote({
+        module: 'video',
+        taskId: job.id,
+        inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+        outcome,
+        actualCost,
+        resultRef,
+        errorCode,
+      });
+    }
+
+    async function downloadVideoResult(videoUrl: string): Promise<boolean> {
+      logInfo(`Video generation succeeded, downloading: ${redactMediaUrlForLog(videoUrl, apiKey)}`);
+      const downloadResult = await downloadVideoMediaForProvider({
+        providerType: provider!.type,
+        url: videoUrl,
+        baseUrl: runtime.baseUrl,
+        apiKey,
+      });
+      if (!downloadResult.ok) {
+        const failure = describeGatewayDownloadFailure('video', videoUrl, downloadResult, apiKey);
+        logError(`${failure.errorMessage} URL: ${failure.logUrl}`);
+        db.prepare(
+          `UPDATE video_jobs SET status = ?, errorMessage = ?, providerStatus = ?, remoteVideoUrl = ?, finishedAt = datetime('now')
+           WHERE id = ? AND status = 'running'`
+        ).run(failure.status, failure.errorMessage, failure.providerStatus, videoUrl, job.id);
+        return false;
+      }
+
+      const videosDir = path.join(dataRoot(), 'storage', 'videos');
+      if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
+      const displayName = resolveVideoJobDisplayNames(db, [job.id]).get(job.id) || '未命名视频.mp4';
+      const { filename: videoFilename, videoPath } = writeVideoOutputFile(videosDir, displayName, downloadResult.buffer);
+      const originalFileId = registerManagedFile({
+        absolutePath: videoPath,
+        mimeType: 'video/mp4',
+        references: [{ resourceType: 'video_job', resourceId: job.id, role: 'output' }],
+      });
+      const previewPath = await ensureBrowserPreview(videoPath);
+      if (originalFileId && previewPath !== videoPath) {
+        registerManagedFile({
+          absolutePath: previewPath,
+          mimeType: 'video/mp4',
+          derivedFromFileId: originalFileId,
+        });
+      }
+
+      const finishedAt = new Date().toISOString();
+      const completeResult = db.prepare(
+        `UPDATE video_jobs SET
+          status = 'succeeded', providerStatus = 'succeeded', remoteVideoUrl = ?,
+          localVideoPath = ?, filename = ?, finishedAt = ?
+         WHERE id = ? AND status = 'running'`
+      ).run(videoUrl, videoPath, videoFilename, finishedAt, job.id);
+      if (completeResult.changes === 1) {
+        const usageResult = recordVideoJobUsage(db, {
+          jobId: job.id,
+          projectId: job.projectId,
+          durationSec: job.durationSec,
+          snapshot: usageSnapshot,
+          finishedAt,
+        });
+        if (!usageResult.ok) {
+          logWarn(`实时 usage 记账失败，将由 reconciler 补记 (${usageResult.reason ?? 'unknown'})`);
+        }
+      }
+      logInfo(`Video job completed, saved as ${videoFilename}`);
+      return completeResult.changes === 1;
+    }
+
     let taskId: string;
     if (existingTaskId) {
       taskId = existingTaskId;
+      if (job.remoteVideoUrl && job.providerStatus === 'download_failed') {
+        await downloadVideoResult(job.remoteVideoUrl);
+        return;
+      }
       logInfo(`Resuming polling for existing task_id=${taskId}`);
     } else {
       logInfo('Submitting video generation task...');
+      const sourceImage = db
+        .prepare(`SELECT * FROM image_assets WHERE id = ?`)
+        .get(job.sourceImageId) as {
+        path: string;
+        originalPath: string | null;
+        processedPath: string | null;
+        mimeType: string;
+      } | undefined;
+      if (!sourceImage) throw new Error('Source image not found');
+      // 首帧优先用未压缩原图；已受理续查和补下载不读取该资产。
+      const imagePath = sourceImage.originalPath || sourceImage.processedPath || sourceImage.path;
+      const mimeType = videoFrameMimeFromPath(imagePath, sourceImage.mimeType);
+
       const persistUsage = () => {
         usageSnapshot = persistVideoJobUsageSnapshot(db, {
           jobId: job.id,
@@ -460,9 +694,12 @@ async function runAuthorizedVideoJob(
       let submitResult: SubmitVideoResult;
       if (job.generationMode === 'reference-to-video') {
         if (!adapter.submitReference) throw new Error(`供应商 ${provider.type} 不支持全能参考`);
-        const referenceRequest = await prepareReferenceSubmitRequest(db, job, provider.type, runtime.baseUrl, reqAbort.signal);
         persistUsage();
-        submitResult = await adapter.submitReference(referenceRequest, apiKey, runtime.baseUrl, reqAbort.signal);
+        submitResult = await executeVideoSubmission(async () => {
+          // 准入后才生成/刷新短期 COS URL；等待名额期间不冻结即将过期的交付地址。
+          const referenceRequest = await prepareReferenceSubmitRequest(db, job, provider.type, runtime.baseUrl, reqAbort.signal);
+          return adapter.submitReference!(referenceRequest, apiKey, runtime.baseUrl, reqAbort.signal);
+        });
       } else {
         const tailValidation = validateVideoTailFrameAsset({
           db,
@@ -490,7 +727,9 @@ async function runAuthorizedVideoJob(
         const multiShot = videoMultiShotFromStorage(job.multiShot);
         if (multiShot !== undefined) submitRequest.multiShot = multiShot;
         persistUsage();
-        submitResult = await adapter.submit(submitRequest, apiKey, runtime.baseUrl, reqAbort.signal);
+        submitResult = await executeVideoSubmission(
+          () => adapter.submit(submitRequest, apiKey, runtime.baseUrl, reqAbort.signal),
+        );
       }
 
       if (!submitResult.providerTaskId) {
@@ -541,82 +780,15 @@ async function runAuthorizedVideoJob(
       logInfo(`Video poll status=${pollResult.status} (${elapsedSec}s elapsed)`);
 
       if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
-        // Step 3: Download video
-        logInfo(`Video generation succeeded, downloading: ${redactMediaUrlForLog(pollResult.videoUrl, apiKey)}`);
-        const downloadResult = await downloadVideoMediaForProvider({
-          providerType: provider.type,
-          url: pollResult.videoUrl,
-          baseUrl: runtime.baseUrl,
-          apiKey,
-        });
-
-        if (!downloadResult.ok) {
-          const failure = describeGatewayDownloadFailure('video', pollResult.videoUrl, downloadResult, apiKey);
-          logError(`${failure.errorMessage} URL: ${failure.logUrl}`);
-          db.prepare(
-            `UPDATE video_jobs SET status = ?, errorMessage = ?, providerStatus = ?, remoteVideoUrl = ?, finishedAt = datetime('now')
-             WHERE id = ? AND status = 'running'`
-          ).run(failure.status, failure.errorMessage, failure.providerStatus, pollResult.videoUrl, job.id);
-          return;
-        }
-        const videoBuffer = downloadResult.buffer;
-
-        // Save video to storage/videos/
-        const videosDir = path.join(dataRoot(), 'storage', 'videos');
-        if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
-
-        const displayName = resolveVideoJobDisplayNames(db, [job.id]).get(job.id) || '未命名视频.mp4';
-        const { filename: videoFilename, videoPath } = writeVideoOutputFile(videosDir, displayName, videoBuffer);
-
-        const originalFileId = registerManagedFile({
-          absolutePath: videoPath,
-          mimeType: 'video/mp4',
-          references: [{ resourceType: 'video_job', resourceId: job.id, role: 'output' }],
-        });
-
-        // HEVC/10bit 产物（如 Seedance 2.5 1080p）浏览器放不动：先就地生成
-        // H.264 预览衍生物再标记完成。内部已全兜底（失败回退原件），不会阻断任务。
-        const previewPath = await ensureBrowserPreview(videoPath);
-        if (originalFileId && previewPath !== videoPath) {
-          registerManagedFile({
-            absolutePath: previewPath,
-            mimeType: 'video/mp4',
-            derivedFromFileId: originalFileId,
-          });
-        }
-
-        const finishedAt = new Date().toISOString();
-        const completeResult = db.prepare(
-          `UPDATE video_jobs SET
-            status = 'succeeded',
-            providerStatus = 'succeeded',
-            remoteVideoUrl = ?,
-            localVideoPath = ?,
-            filename = ?,
-            finishedAt = ?
-           WHERE id = ? AND status = 'running'`
-         ).run(pollResult.videoUrl, videoPath, videoFilename, finishedAt, job.id);
-
-        if (completeResult.changes === 1) {
-          const usageResult = recordVideoJobUsage(db, {
-            jobId: job.id,
-            projectId: job.projectId,
-            durationSec: job.durationSec,
-            snapshot: usageSnapshot,
-            finishedAt,
-          });
-          if (!usageResult.ok) {
-            logWarn(`实时 usage 记账失败，将由 reconciler 补记 (${usageResult.reason ?? 'unknown'})`);
-          }
-        }
-
-        logInfo(`Video job completed, saved as ${videoFilename}`);
+        await settleVideoExecution('succeeded', pollResult.videoUrl);
+        if (!await downloadVideoResult(pollResult.videoUrl)) return;
         polled = true;
         break;
       }
 
       if (pollResult.status === 'failed') {
         // 供应商明确失败:终态,不补抓、不自动重试(避免无意义的重复提交)。
+        await settleVideoExecution('failed', undefined, 'provider_failed');
         const failureMessage = pollResult.errorMessage || 'unknown';
         logError(`Video generation failed: ${failureMessage}`);
         db.prepare(
@@ -640,15 +812,47 @@ async function runAuthorizedVideoJob(
     // 提交/30s 轮询)产生的是 AbortError,但远端任务可能仍在跑,绝不能误判为
     // canceled——按下面的失败分支处理。
     if (abort.aborted) {
-      db.prepare(
-        `UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
-         WHERE id = ? AND status = 'running'`
-      ).run(job.id);
+      if (isServerMediaExecution()) {
+        const current = db.prepare('SELECT providerTaskId, executionRevision FROM video_jobs WHERE id = ?').get(job.id) as
+          { providerTaskId: string | null; executionRevision: number } | undefined;
+        const recovered = recoverLegacyMediaSubmission({
+          module: 'video', taskId: job.id,
+          inputRevision: legacyMediaExecutionRevision(current?.executionRevision),
+          providerTaskId: current?.providerTaskId,
+        });
+        if (recovered.status === 'needs_check') {
+          db.prepare(`UPDATE video_jobs SET status = 'needs_check', providerStatus = ?,
+            providerTaskId = COALESCE(?, providerTaskId), remoteVideoUrl = COALESCE(?, remoteVideoUrl),
+            errorMessage = '已受理任务保留，等待续查或补下载'
+            WHERE id = ? AND status = 'running'`).run(
+            recovered.resultRef ? 'download_failed' : 'unknown',
+            recovered.remoteId ?? null,
+            recovered.resultRef ?? null,
+            job.id,
+          );
+        } else {
+          await cancelLegacyMediaNewStage({
+            module: 'video', taskId: job.id,
+            inputRevision: legacyMediaExecutionRevision(current?.executionRevision),
+          });
+          db.prepare(`UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
+            WHERE id = ? AND status = 'running'`).run(job.id);
+        }
+      } else {
+        db.prepare(`UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
+          WHERE id = ? AND status = 'running'`).run(job.id);
+      }
       return;
     }
 
     const errorMessage = (err instanceof Error ? err.message : String(err)).slice(0, 2000);
     logError(`Video job failed: ${errorMessage}`);
+
+    if (isServerMediaExecution() && isLegacyMediaSubmissionUnknown(err)) {
+      db.prepare(`UPDATE video_jobs SET status = 'needs_check', providerStatus = 'unknown', errorMessage = ?, finishedAt = datetime('now')
+        WHERE id = ? AND status = 'running'`).run(`${errorMessage}。提交结果未知，已禁止自动重发。`, job.id);
+      return;
+    }
 
     // 网关限流/过载(提交阶段 429/5xx):不消耗 maxAttempts,按供应商记冷却
     // 退避(30s/60s/120s 逐级),冷却内 claim 视同 gated;同一任务重排超过
@@ -722,6 +926,7 @@ export function claimNextVideoJob(projectId: string, jobId?: string): ClaimVideo
   const job = db.prepare(`
     SELECT * FROM video_jobs
     WHERE projectId = ? AND status = 'pending' AND (? IS NULL OR id = ?)
+      ${isServerMediaExecution() ? "AND NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = video_jobs.id AND r.kind = 'generate_video')" : ''}
     ORDER BY createdAt, rowid LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as VideoJobRecord | undefined;
 
@@ -745,7 +950,7 @@ export function claimNextVideoJob(projectId: string, jobId?: string): ClaimVideo
     providerCooldownUntil.delete(job.providerId);
   }
 
-  const nextAttempt = job.attempt + 1;
+  const nextAttempt = isServerMediaExecution() ? job.attempt : job.attempt + 1;
   const result = db.prepare(`
     UPDATE video_jobs SET status = 'running', attempt = ?, startedAt = datetime('now'), errorMessage = NULL
     WHERE id = ? AND status = 'pending'
@@ -765,16 +970,19 @@ export function claimNeedsCheckVideoJob(projectId: string, jobId?: string): Clai
   const db = getDb();
   const job = db.prepare(`
     SELECT * FROM video_jobs
-    WHERE projectId = ? AND status = 'needs_check' AND providerTaskId IS NOT NULL AND (? IS NULL OR id = ?)
+    WHERE projectId = ?
+      AND (status = 'needs_check' ${isServerMediaExecution() ? "OR providerStatus = 'download_failed'" : ''})
+      AND providerTaskId IS NOT NULL AND (? IS NULL OR id = ?)
+      ${isServerMediaExecution() ? "AND NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = video_jobs.id AND r.kind = 'generate_video')" : ''}
     ORDER BY createdAt, rowid LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as VideoJobRecord | undefined;
 
   if (!job) return null;
 
-  const nextAttempt = job.attempt + 1;
+  const nextAttempt = isServerMediaExecution() ? job.attempt : job.attempt + 1;
   const result = db.prepare(`
     UPDATE video_jobs SET status = 'running', attempt = ?, startedAt = datetime('now'), errorMessage = NULL
-    WHERE id = ? AND status = 'needs_check'
+    WHERE id = ? AND (status = 'needs_check' ${isServerMediaExecution() ? "OR providerStatus = 'download_failed'" : ''})
   `).run(nextAttempt, job.id);
 
   if (result.changes !== 1) return null;

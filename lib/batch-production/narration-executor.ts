@@ -345,7 +345,10 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
         sellingPoints: loadProjectPackagingData(db, claim.task.projectId).sellingPoints ?? [],
         extractPoints: text => cachedPoints ? Promise.resolve(cachedPoints) : options.extractPackagingPoints
           ? options.extractPackagingPoints(text, signal)
-          : extractSellingPointsWithLLM(text, undefined, signal),
+          : extractSellingPointsWithLLM(text, undefined, signal, {
+            taskId: claim.task.id,
+            scope: { resourceType: 'project', resourceId: claim.task.projectId },
+          }),
       });
       if (signal.aborted) throw new Error('任务已中止');
       narrationSnapshot.packagingPoints = points.candidates;

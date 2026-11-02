@@ -90,7 +90,10 @@ export async function ensurePackagingPointCues(db: Database.Database, groupId: s
     totalSec,
     coverSec,
     narrationPlaybackRate: playbackRate,
-    extractPoints: (text) => extractSellingPointsWithLLM(text, row.analysisProviderId || undefined),
+    extractPoints: (text) => extractSellingPointsWithLLM(text, row.analysisProviderId || undefined, undefined, {
+      taskId: groupId,
+      scope: { resourceType: 'project', resourceId: row.projectId },
+    }),
   });
   if (computePointCuesKey(loadGroupNarrationText(db, groupId)) !== key) throw new Error('卖点提取期间口播已更新，请重试');
   const latest = db.prepare(`SELECT packagingJson FROM final_edit_groups WHERE id=?`).get(groupId) as { packagingJson: string | null } | undefined;

@@ -28,6 +28,7 @@ export interface EditImageResult {
   imageBuffer: Buffer;
   latencyMs: number;
   rawResponse?: unknown;
+  remoteImageUrl?: string;
 }
 
 // These providers expect the singular `image` field, not the OpenAI-standard `image[]`
@@ -54,7 +55,8 @@ export async function editImage(
   request: EditImageRequest,
   apiKey: string,
   baseUrl: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: { deferDownload?: boolean }
 ): Promise<EditImageResult> {
   const startTime = Date.now();
   const hasRefs = request.referenceImagePaths.length > 0;
@@ -131,6 +133,9 @@ export async function editImage(
   if (firstResult.b64_json) {
     imageBuffer = Buffer.from(firstResult.b64_json, 'base64');
   } else if (firstResult.url) {
+    if (options?.deferDownload) {
+      return { imageBuffer: Buffer.alloc(0), latencyMs, rawResponse: data, remoteImageUrl: firstResult.url };
+    }
     const urlResponse = await fetch(firstResult.url, { signal });
     const arrayBuffer = await urlResponse.arrayBuffer();
     imageBuffer = Buffer.from(arrayBuffer);

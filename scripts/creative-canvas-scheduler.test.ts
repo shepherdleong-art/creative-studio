@@ -489,7 +489,7 @@ function save(
   env.dispose();
 }
 
-// --- 未知响应进入待核查并保留名额 --------------------------------------------
+// --- 未知响应进入待核查，释放本地 slot 且不自动重发 ---------------------------
 
 {
   const env = await freshDatabase('uncertain');
@@ -519,8 +519,8 @@ function save(
   const uncertain = getCanvasTask(db, taskId);
   assert.equal(uncertain?.phase, 'uncertain');
   assert.equal(uncertain?.submissionState, 'maybe_sent');
-  // 提交结果不明时保守保留可能占用的名额，不自动重发
-  assert.equal(uncertain?.slotHeld, true);
+  // 提交结果不明时保留远端身份，但不继续占本地 worker slot，也绝不自动重发
+  assert.equal(uncertain?.slotHeld, false);
   assert.equal(adapter.submitCountForNode('g1'), 1);
 
   await scheduler.tick();
