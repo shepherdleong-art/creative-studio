@@ -70,8 +70,9 @@ export function softDeleteResource(
     `);
     let scopeCount = 0;
     for (const scope of scopes) {
-      insertEventScope.run(eventId, scope.resourceType, scope.resourceId);
-      scopeCount += markDeleted.run(at, principal.userId, at, scope.resourceType, scope.resourceId).changes;
+      const changed = markDeleted.run(at, principal.userId, at, scope.resourceType, scope.resourceId).changes;
+      if (changed === 1) insertEventScope.run(eventId, scope.resourceType, scope.resourceId);
+      scopeCount += changed;
     }
     return { ...ref, deletedAt: at, restored: false, scopeCount };
   }).immediate();
@@ -299,13 +300,16 @@ export function requestPermanentCleanup(
   now: () => Date = () => new Date(),
 ): CleanupJobView {
   assertAdmin(principal);
+  const currentScope = readScope(db, ref);
+  if (currentScope && !currentScope.deletedAt) {
+    throw new ResourceAccessError('scope_inconsistent', '只有回收站中的资源可以永久清理。', 409);
+  }
   const existing = db.prepare(`
     SELECT * FROM team_cleanup_jobs WHERE resourceType = ? AND resourceId = ?
     ORDER BY createdAt DESC, rowid DESC LIMIT 1
   `).get(ref.resourceType, ref.resourceId) as CleanupJobRow | undefined;
   if (existing) return cleanupView(existing);
-  const scope = assertLifecycleOwner(readScope(db, ref), principal);
-  if (!scope.deletedAt) throw new ResourceAccessError('scope_inconsistent', '只有回收站中的资源可以永久清理。', 409);
+  assertLifecycleOwner(currentScope, principal);
   const id = randomUUID();
   const at = now().toISOString();
   db.prepare(`
@@ -585,6 +589,9 @@ export function runPermanentCleanup(
   if (job.phase === 'plan' || job.phase === 'database') {
     const ref = { resourceType: job.resourceType, resourceId: job.resourceId };
     const scope = readScope(db, ref);
+    if (scope && !scope.deletedAt) {
+      throw new ResourceAccessError('scope_inconsistent', '资源已恢复，不再处于回收站，已停止永久清理。', 409);
+    }
     if (scope) {
       const scopes = descendants(db, ref);
       const fileIds = cleanupCandidates(db, scopes);
@@ -593,6 +600,10 @@ export function runPermanentCleanup(
       const at = now().toISOString();
       try {
         db.transaction(() => {
+          const currentScope = readScope(db, ref);
+          if (!currentScope?.deletedAt) {
+            throw new ResourceAccessError('scope_inconsistent', '资源已恢复，不再处于回收站，已停止永久清理。', 409);
+          }
           const rechecked = planBlockers(db, descendants(db, ref), fileIds);
           if (rechecked.length > 0) throw new Error(`清理引用复核失败：${JSON.stringify(rechecked)}`);
           db.prepare(`
@@ -615,6 +626,7 @@ export function runPermanentCleanup(
           db.prepare("UPDATE team_cleanup_jobs SET phase = 'files', updatedAt = ? WHERE id = ?").run(at, job.id);
         }).immediate();
       } catch (error) {
+        if (error instanceof ResourceAccessError) throw error;
         if ((error as { code?: string }).code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
           return saveDeferred(db, job.id, 'plan', [{
             kind: 'cross_module', ...ref, detail: '数据库仍存在外键或历史版本引用，物理清理已延期。',

@@ -19,12 +19,13 @@ db.exec(`
   CREATE TABLE batch_script_snapshots (id TEXT PRIMARY KEY, batchVersionId TEXT NOT NULL, sourceScriptId TEXT NOT NULL);
   INSERT INTO team_users (id, employeeId, displayName, role, status, passwordHash, mustChangePassword, sessionVersion, createdAt, updatedAt)
   VALUES ('admin', '0000', '管理员', 'admin', 'active', 'x', 0, 1, '2026-11-02', '2026-11-02');
-  INSERT INTO projects VALUES ('project-a'), ('project-b'), ('project-c'), ('project-d'), ('project-e'), ('project-f');
+  INSERT INTO projects VALUES ('project-a'), ('project-b'), ('project-c'), ('project-d'), ('project-e'), ('project-f'), ('project-g');
 `);
 const { registerRootScope, registerInheritedScope, requireResourceAccess } = await import('../lib/team-service/resource-scopes.ts');
 const { registerReadyTeamFile } = await import('../lib/team-service/files/registry.ts');
 const {
   softDeleteResource,
+  restoreResource,
   createBackupPin,
   releaseBackupPin,
   acquireLifecycleBarrier,
@@ -55,7 +56,7 @@ function addFile(name: string, references: Array<{ resourceType: string; resourc
 }
 
 try {
-  for (const id of ['project-a', 'project-b', 'project-c', 'project-d', 'project-e', 'project-f']) addProject(id);
+  for (const id of ['project-a', 'project-b', 'project-c', 'project-d', 'project-e', 'project-f', 'project-g']) addProject(id);
   const fileA = addFile('a.txt', [ref('project-a')]);
   const fileShared = addFile('shared.txt', [ref('project-a'), ref('project-b')]);
   softDeleteResource(db, admin, ref('project-a'));
@@ -134,6 +135,24 @@ try {
   assert.deepEqual(db.prepare("SELECT state FROM team_files WHERE id = ?").get(fileD.id), { state: 'ready' });
   db.exec('DROP TRIGGER fail_lifecycle_scope_delete');
   assert.equal(runPermanentCleanup(db, { jobId: databaseInterrupted.id, storageRoot }).status, 'completed');
+
+  const fileG = addFile('g.txt', [ref('project-g')]);
+  softDeleteResource(db, admin, ref('project-g'));
+  const restoredCleanup = requestPermanentCleanup(db, admin, ref('project-g'));
+  restoreResource(db, admin, ref('project-g'));
+  assert.throws(() => requestPermanentCleanup(db, admin, ref('project-g')), /只有回收站/);
+  assert.throws(() => runPermanentCleanup(db, { jobId: restoredCleanup.id, storageRoot }), /资源已恢复/);
+  assert.ok(db.prepare("SELECT 1 FROM projects WHERE id = 'project-g'").get(), '恢复后的资源不得被旧清理任务删除');
+  assert.equal(fs.existsSync(path.join(storageRoot, 'staging', 'g.txt')), true);
+  assert.deepEqual(db.prepare('SELECT state FROM team_files WHERE id = ?').get(fileG.id), { state: 'ready' });
+  softDeleteResource(db, admin, ref('project-g'));
+  assert.throws(() => runPermanentCleanup(db, {
+    jobId: restoredCleanup.id, storageRoot,
+    now() { restoreResource(db, admin, ref('project-g')); return new Date(); },
+  }), /资源已恢复/, '数据库阶段必须再次拒绝已恢复资源');
+  assert.equal(fs.existsSync(path.join(storageRoot, 'staging', 'g.txt')), true);
+  softDeleteResource(db, admin, ref('project-g'));
+  assert.equal(runPermanentCleanup(db, { jobId: restoredCleanup.id, storageRoot }).status, 'completed');
 
   softDeleteResource(db, admin, ref('project-e'));
   db.prepare("INSERT INTO execution_operations VALUES ('operation-e', 'project', 'project-e', 'accepted')").run();

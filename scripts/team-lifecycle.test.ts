@@ -45,6 +45,9 @@ try {
     module: 'image', taskId: 'job-a', actorUserId: 'user-a',
     scope: { resourceType: 'project', resourceId: 'project-a' }, creationSnapshot: { frozen: true },
   });
+  softDeleteResource(db, userA, {
+    resourceType: 'job', resourceId: 'job-a',
+  }, () => new Date('2026-11-02T08:00:00.000Z'));
 
   const deleted = softDeleteResource(db, userA, {
     resourceType: 'project', resourceId: 'project-a',
@@ -67,8 +70,11 @@ try {
   assert.equal(restored.restored, true);
   assert.equal(isAutomaticDeliverySuppressed(db, 'project-a'), false);
   assert.equal(requireResourceAccess(db, userA, 'project', 'project-a', 'write').resourceId, 'project-a');
+  assert.throws(() => requireResourceAccess(db, userA, 'job', 'job-a', 'read'),
+    /不存在或不可用/, '恢复父资源不得连带恢复先前独立删除的子资源');
+  assert.equal(restoreResource(db, userA, { resourceType: 'job', resourceId: 'job-a' }).restored, true);
 
-  console.log('PASS: server soft delete, accepted-task reads, automatic-delivery suppression and restore');
+  console.log('PASS: server soft delete, accepted-task reads, automatic-delivery suppression and precise restore');
 } finally {
   db.close();
 }
