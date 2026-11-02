@@ -15,6 +15,8 @@ import {
 } from './service-spawn';
 import { CHANNELS } from './ipc';
 import { completeFilmNavigation, consumeFilmNavigationRequest } from './reassembled-navigation';
+import { createRemoteClientHost, confirmRemoteClientHealth, defaultClientStateRoot, readRemoteClientConfig } from './client/remote-host';
+import { spawnIndependentUpdateHelper } from './client/update-helper';
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 
@@ -41,6 +43,55 @@ function focusMainWindow(): void {
 
 async function boot(): Promise<void> {
   const projectRoot = resolve(__dirname, '..');
+  const clientConfig = readRemoteClientConfig();
+  if (clientConfig.mode === 'remote') {
+    const remoteStateRoot = defaultClientStateRoot();
+    const installRoot = process.env.CREATIVE_STUDIO_CLIENT_INSTALL_ROOT;
+    windowHost = await createRemoteClientHost({
+      origin: clientConfig.origin,
+      stateRoot: remoteStateRoot,
+      preloadPath: join(__dirname, 'preload.js'),
+      isQuitRequested: () => explicitQuitRequested,
+      setIpcHandlerRemover: (remover) => { removeIpcHandlers = remover; },
+      clearIpcHandlers: () => {
+        removeIpcHandlers?.();
+        removeIpcHandlers = null;
+      },
+      onWindowClosed: () => { mainWindow = null; },
+      shutdown: () => shutdown(),
+      installUpdate: async (manifestUrl) => {
+        if (!installRoot) return { started: false, message: '未找到稳定安装根，请使用受控修复包。' };
+        await spawnIndependentUpdateHelper({
+          installRoot,
+          manifestUrl,
+          serverOrigin: clientConfig.origin,
+          currentPid: process.pid,
+          onPauseRequested: async () => {
+            if (windowHost?.mode === 'remote') await windowHost.remote.pauseForUpdate();
+          },
+          onResumeRequested: async () => {
+            if (windowHost?.mode === 'remote') await windowHost.remote.resumeAfterUpdate();
+          },
+          onStopRequested: async () => {
+            explicitQuitRequested = true;
+            await shutdown();
+          },
+          onResult: (result) => {
+            if ((result.status === 'rejected' || result.status === 'recovery_required') && !shutdownPromise) {
+              void dialog.showMessageBox({
+                type: 'error', title: '轻客户端更新未完成',
+                message: result.message ?? '已保留当前版本与本机状态，请重试或联系管理员修复。',
+              });
+            }
+          },
+        });
+        return { started: true };
+      },
+    });
+    mainWindow = createWindow(windowHost);
+    await confirmRemoteClientHealth(remoteStateRoot, windowHost.remote);
+    return;
+  }
   const paths = resolveServicePaths();
   // Keep packaged data in the documented stable user directory instead of
   // the install bundle or Electron's package-name-derived default.
@@ -67,6 +118,7 @@ async function boot(): Promise<void> {
 
   service = await startService(launchOptions);
   windowHost = {
+    mode: 'local',
     origin: service.origin,
     preloadPath: join(__dirname, 'preload.js'),
     service,
@@ -111,6 +163,7 @@ async function shutdown(): Promise<void> {
     removeIpcHandlers = null;
     const currentService = service;
     service = null;
+    if (windowHost?.mode === 'remote') await windowHost.remote.stop();
     await currentService?.stop();
     desktopSecret = null;
     app.exit(0);

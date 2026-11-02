@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import { Icon } from '@/components/ui/Icon';
 import ThemeToggle from '@/components/ThemeToggle';
 import { teamError, teamWrite } from '@/components/team/client';
+import type { ClientStatus } from '@/desktop/bridge-types';
 
 // Read-only probe for the desktop shell. The bridge is injected by the preload
 // before any React code runs and never changes afterwards, so the subscription
@@ -37,6 +38,9 @@ export default function Header({
   const [stopping, setStopping] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState('');
+  const [clientStatus, setClientStatus] = useState<ClientStatus | null>(null);
+  const [clientUpdating, setClientUpdating] = useState(false);
+  const [clientMessage, setClientMessage] = useState('');
   // In the shell, stopping the service also takes the application down, so the
   // copy must not tell the user to close the window themselves.
   const isDesktop = useSyncExternalStore(
@@ -59,6 +63,33 @@ export default function Header({
     }
   }, [loggingOut]);
 
+  useEffect(() => {
+    if (!server) return;
+    let active = true;
+    const refresh = () => Promise.resolve()
+      .then(() => window.desktopBridge?.getClientStatus?.())
+      .then((status) => { if (active && status) setClientStatus(status); })
+      .catch(() => undefined);
+    void refresh();
+    return () => { active = false; };
+  }, [server]);
+
+  const clientCompatible = clientStatus?.compatible !== false;
+  const handleClientUpdate = async () => {
+    if (clientUpdating) return;
+    setClientUpdating(true);
+    setClientMessage('');
+    try {
+      const result = await window.desktopBridge?.installClientUpdate?.();
+      if (!result?.started) setClientMessage(result?.message ?? '未找到受控更新入口，请联系管理员修复。');
+      else setClientMessage('更新助手已启动；验证完成前会暂停本机传输。');
+    } catch (error) {
+      setClientMessage(error instanceof Error ? error.message : '更新助手启动失败，请联系管理员修复。');
+    } finally {
+      setClientUpdating(false);
+    }
+  };
+
   useEffect(() => window.desktopBridge?.onQuitRequested?.(() => {
     if (server) void handleLogout();
     else setShowStopConfirm(true);
@@ -77,7 +108,7 @@ export default function Header({
     }, 2000);
   };
 
-  const showWorkspace = !server || Boolean(principal && !principal.mustChangePassword);
+  const showWorkspace = clientCompatible && (!server || Boolean(principal && !principal.mustChangePassword));
 
   return (
     <header className="toolbar h-12 gap-5 px-6 text-sm">
@@ -103,6 +134,11 @@ export default function Header({
             <Icon name="plus" size={15} /> 新建项目
           </Link>
         </>}
+        {server && !clientCompatible && <button
+          onClick={handleClientUpdate}
+          disabled={clientUpdating}
+          className="btn-primary btn-sm"
+        >{clientUpdating ? '正在启动更新…' : '修复并更新'}</button>}
         <ThemeToggle />
         {server && principal && <>
           <span className="text-xs text-ink-tertiary">{principal.displayName}</span>
@@ -119,6 +155,7 @@ export default function Header({
           <Icon name="power" size={16} />
         </button>}
         {logoutError && <span className="text-xs text-fail">{logoutError}</span>}
+        {clientMessage && <span className="max-w-72 text-xs text-ink-secondary">{clientMessage}</span>}
       </nav>
 
       {!server && showStopConfirm && (

@@ -1,6 +1,6 @@
 import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 
-import type { DesktopBridge, ThemePreference } from './bridge-types';
+import type { DesktopBridge, RemoteUploadTarget, ThemePreference } from './bridge-types';
 
 export const CHANNELS = {
   platform: 'desktop:platform',
@@ -13,6 +13,13 @@ export const CHANNELS = {
   linkedImportProgress: 'desktop:linked-import-progress',
   setThemePreference: 'desktop:set-theme-preference',
   quitRequested: 'desktop:quit-requested',
+  chooseUploadFiles: 'desktop:client-choose-upload-files',
+  pauseTransfer: 'desktop:client-pause-transfer',
+  resumeTransfer: 'desktop:client-resume-transfer',
+  cancelTransfer: 'desktop:client-cancel-transfer',
+  revealDownload: 'desktop:client-reveal-download',
+  getClientStatus: 'desktop:client-get-status',
+  installClientUpdate: 'desktop:client-install-update',
 } as const;
 
 export type DesktopPlatform = Awaited<ReturnType<DesktopBridge['platform']>>;
@@ -41,6 +48,13 @@ export interface DesktopIpcHandlers {
   openFolder(relativePath: string): Promise<OpenFolderResult>;
   revealItem(relativePath: string): Promise<RevealItemResult>;
   setThemePreference(preference: ThemePreference): void;
+  chooseUploadFiles(target: RemoteUploadTarget): Promise<{ transferIds: string[] }>;
+  pauseTransfer(transferId: string): void;
+  resumeTransfer(transferId: string): void;
+  cancelTransfer(transferId: string): Promise<void>;
+  revealDownload(downloadId: string): Promise<{ revealed: boolean }>;
+  getClientStatus(): ReturnType<DesktopBridge['getClientStatus']>;
+  installClientUpdate(): Promise<{ started: boolean; message?: string }>;
 }
 
 interface RegisterIpcOptions {
@@ -117,6 +131,34 @@ export function registerIpcHandlers(options: RegisterIpcOptions): () => void {
   ipcMain.handle(
     CHANNELS.setThemePreference,
     protectedHandler((preference: ThemePreference) => options.handlers.setThemePreference(preference)),
+  );
+  ipcMain.handle(
+    CHANNELS.chooseUploadFiles,
+    protectedHandler((target: RemoteUploadTarget) => options.handlers.chooseUploadFiles(target)),
+  );
+  ipcMain.handle(
+    CHANNELS.pauseTransfer,
+    protectedHandler((transferId: string) => options.handlers.pauseTransfer(transferId)),
+  );
+  ipcMain.handle(
+    CHANNELS.resumeTransfer,
+    protectedHandler((transferId: string) => options.handlers.resumeTransfer(transferId)),
+  );
+  ipcMain.handle(
+    CHANNELS.cancelTransfer,
+    protectedHandler((transferId: string) => options.handlers.cancelTransfer(transferId)),
+  );
+  ipcMain.handle(
+    CHANNELS.revealDownload,
+    protectedHandler((downloadId: string) => options.handlers.revealDownload(downloadId)),
+  );
+  ipcMain.handle(
+    CHANNELS.getClientStatus,
+    protectedHandler(() => options.handlers.getClientStatus()),
+  );
+  ipcMain.handle(
+    CHANNELS.installClientUpdate,
+    protectedHandler(() => options.handlers.installClientUpdate()),
   );
 
   return () => {
