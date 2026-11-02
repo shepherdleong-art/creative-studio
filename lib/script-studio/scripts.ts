@@ -218,11 +218,18 @@ export function listProjectScripts(
   options: { cursor?: string; limit?: number; includeArchived?: boolean } = {},
 ): { scripts: ProjectScriptWithRevision[]; nextCursor: string | null } {
   const limit = Math.max(1, Math.min(100, Number(options.limit) || 50));
+  const access = requireAccessContext();
+  const lifecycle = access.kind === 'local' ? '' : `AND EXISTS (
+    SELECT 1 FROM team_resource_scopes scope
+    WHERE scope.resourceType = 'project_script' AND scope.resourceId = project_scripts.id
+      AND scope.deletedAt IS NULL
+  )`;
   const rows = db.prepare(`
     SELECT * FROM project_scripts
     WHERE projectId = ?
       AND (? = '' OR id > ?)
       AND (? = 1 OR archivedAt IS NULL)
+      ${lifecycle}
     ORDER BY updatedAt DESC, id DESC
     LIMIT ?
   `).all(

@@ -71,6 +71,11 @@ async function __teamRouteGET() {
           )`,
           params: access.actor.role === 'admin' ? [] : [access.actor.userId],
         };
+    const thumbnailLifecycle = access.kind === 'local' ? '' : `AND EXISTS (
+      SELECT 1 FROM team_resource_scopes scope
+      WHERE scope.resourceType = 'image' AND scope.resourceId = image_assets.id
+        AND scope.deletedAt IS NULL
+    )`;
     const projects = (db.prepare(`
       SELECT p.*,
         -- 任务计数 = 图片任务 + 视频任务，与下方金额的全口径（usage ledger 含视频/LLM/TTS）保持一致
@@ -92,6 +97,7 @@ async function __teamRouteGET() {
             ROW_NUMBER() OVER (PARTITION BY projectId ORDER BY createdAt ASC) as rn
           FROM image_assets
           WHERE role = 'output' AND usage = 'scene_gen'
+          ${thumbnailLifecycle}
         )
         WHERE rn = 1
       ) thumb ON thumb.projectId = p.id

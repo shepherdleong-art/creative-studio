@@ -325,9 +325,10 @@ export function registerRootScope(
 export function registerInheritedScope(
   db: Database.Database,
   input: InheritedScopeRegistration & { ownerUserId?: string; visibility?: ResourceVisibility },
+  options: { allowDeleted?: boolean } = {},
 ): TeamResourceScope {
   const parent = assertScopeConsistency(db, input.parent.resourceType, input.parent.resourceId);
-  if (parent.deletedAt) throw new ResourceAccessError('resource_not_found', '父资源不可用。');
+  if (parent.deletedAt && !options.allowDeleted) throw new ResourceAccessError('resource_not_found', '父资源不可用。');
   const existing = readScope(db, input.resourceType, input.resourceId);
   if (existing) {
     const consistent = assertScopeConsistency(db, input.resourceType, input.resourceId);
@@ -401,6 +402,7 @@ export function requireResourceAccess(
   resourceType: string,
   resourceId: string,
   action: ResourceAccessAction,
+  options: { allowDeleted?: boolean } = {},
 ): TeamResourceScope {
   let scope: TeamResourceScope;
   try {
@@ -411,7 +413,7 @@ export function requireResourceAccess(
     }
     throw error;
   }
-  if (scope.deletedAt) throw new ResourceAccessError('resource_not_found', '资源不存在或不可用。');
+  if (scope.deletedAt && !options.allowDeleted) throw new ResourceAccessError('resource_not_found', '资源不存在或不可用。');
   if (principal.role === 'admin' || scope.ownerUserId === principal.userId) return scope;
   if (action === 'read' && scope.visibility === 'public') return scope;
   throw new ResourceAccessError('resource_forbidden', '无权访问此资源。', 403);
@@ -421,6 +423,7 @@ export function authorizeTeamFileReferences(
   db: Database.Database,
   principal: AccessActor,
   fileId: string,
+  options: { allowDeleted?: boolean } = {},
 ): boolean {
   const references = db.prepare(`
     SELECT resourceType, resourceId FROM team_file_references
@@ -428,7 +431,7 @@ export function authorizeTeamFileReferences(
   `).all(fileId) as Array<{ resourceType: string; resourceId: string }>;
   for (const reference of references) {
     try {
-      requireResourceAccess(db, principal, reference.resourceType, reference.resourceId, 'read');
+      requireResourceAccess(db, principal, reference.resourceType, reference.resourceId, 'read', options);
       return true;
     } catch {
       // 其它无权引用不能泄露文件存在性。
@@ -458,13 +461,15 @@ export function requireCanvasAccess(
 export function createTeamAccessContext(options: {
   db: Database.Database;
   principal: AuthPrincipal;
+  allowDeleted?: boolean;
 }): ResourceAccessContext {
   const { db, principal } = options;
+  const accessOptions = { allowDeleted: options.allowDeleted === true };
   return {
     kind: 'team',
     actor: { userId: principal.userId, role: principal.role },
     assertAccess(resourceType, resourceId, action) {
-      requireResourceAccess(db, principal, resourceType, resourceId, action);
+      requireResourceAccess(db, principal, resourceType, resourceId, action, accessOptions);
     },
     resolveOwner(requestedOwnerUserId) {
       return resolveOwnerUserId(principal, requestedOwnerUserId);
@@ -476,7 +481,7 @@ export function createTeamAccessContext(options: {
       registerRootScope(db, input);
     },
     registerInheritedScope(input) {
-      registerInheritedScope(db, input);
+      registerInheritedScope(db, input, accessOptions);
     },
     registerTaskPrincipal(input: TaskPrincipalRegistration) {
       registerTaskPrincipal(db, { ...input, actorUserId: input.actorUserId ?? principal.userId });
@@ -487,10 +492,10 @@ export function createTeamAccessContext(options: {
         storageRoot: resolveStoragePath(dataRoot(), 'storage'),
         ownerUserId: principal.userId,
         validateReference(reference) {
-          requireResourceAccess(db, principal, reference.resourceType, reference.resourceId, input.derivedFromFileId ? 'read' : 'write');
+          requireResourceAccess(db, principal, reference.resourceType, reference.resourceId, input.derivedFromFileId ? 'read' : 'write', accessOptions);
         },
         validateExisting(file) {
-          if (!authorizeTeamFileReferences(db, principal, file.id)) {
+          if (!authorizeTeamFileReferences(db, principal, file.id, accessOptions)) {
             throw new ResourceAccessError('resource_not_found', '文件不存在或不可用。');
           }
         },
@@ -502,10 +507,10 @@ export function createTeamAccessContext(options: {
       const relativePath = path.relative(storageRoot, resolved).split(path.sep).join('/');
       const file = db.prepare("SELECT id FROM team_files WHERE relativePath = ? AND state = 'ready'")
         .get(relativePath) as { id: string } | undefined;
-      if (!file || !authorizeTeamFileReferences(db, principal, file.id)) {
+      if (!file || !authorizeTeamFileReferences(db, principal, file.id, accessOptions)) {
         throw new ResourceAccessError('resource_not_found', '文件不存在或不可用。');
       }
-      requireResourceAccess(db, principal, reference.resourceType, reference.resourceId, 'write');
+      requireResourceAccess(db, principal, reference.resourceType, reference.resourceId, 'write', accessOptions);
       db.prepare(`
         INSERT OR IGNORE INTO team_file_references (fileId, resourceType, resourceId, role, pinKind, createdAt)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -518,7 +523,7 @@ export function createTeamAccessContext(options: {
       const relativePath = path.relative(storageRoot, resolved).split(path.sep).join('/');
       const file = db.prepare("SELECT id, seriesId, version, sha256 FROM team_files WHERE relativePath = ? AND state = 'ready'")
         .get(relativePath) as { id: string; seriesId: string; version: number; sha256: string } | undefined;
-      if (!file || !authorizeTeamFileReferences(db, principal, file.id)) {
+      if (!file || !authorizeTeamFileReferences(db, principal, file.id, accessOptions)) {
         throw new ResourceAccessError('resource_not_found', '文件不存在或不可用。');
       }
       return { fileId: file.id, seriesId: file.seriesId, version: file.version, sha256: file.sha256 };
