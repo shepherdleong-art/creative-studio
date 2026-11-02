@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { dataRoot } from '../../data-root.ts';
 import { getDb } from '../../db.ts';
 import { schemaUpgradeRuntimePaths } from '../../schema-upgrade/runtime.ts';
-import { createTeamServiceBootstrap, type TeamServiceBootstrap } from '../bootstrap.ts';
+import { createTeamExecutionRuntime, createTeamServiceBootstrap, type TeamServiceBootstrap } from '../bootstrap.ts';
+import { ExecutionError, type ExecutionFacade, type ExecutionRuntime } from '../../media-core/execution/context.ts';
 import { ensureServerDeploymentMarker, readRuntimeConfig } from '../config.ts';
 import { acquireTeamRuntimeOwner, type TeamRuntimeOwner } from './owner.ts';
 import {
@@ -15,8 +16,16 @@ import {
 
 let owner: TeamRuntimeOwner | null = null;
 let bootstrap: TeamServiceBootstrap | null = null;
+let execution: ExecutionRuntime | null = null;
 let starting: Promise<TeamRuntimeState> | null = null;
 let draining = false;
+
+export function getTeamExecutionFacade(): ExecutionFacade {
+  if (!execution || draining || !getTeamRuntimeState().ready) {
+    throw new ExecutionError('execution_not_ready', 'server 执行上下文尚未就绪。');
+  }
+  return execution.facade;
+}
 
 export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
   if (starting) return starting;
@@ -31,10 +40,12 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
     initializeTeamRuntimeState(owner);
     try {
       const db = getDb();
+      execution = createTeamExecutionRuntime({ config, db });
       bootstrap = createTeamServiceBootstrap({
         config,
         identity: owner,
         db,
+        execution,
         ...schemaUpgradeRuntimePaths(dataRoot()),
         assertOwnerActive: () => {
           owner?.assertActive();
@@ -46,6 +57,7 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
       await bootstrap.recover();
       await bootstrap.start();
     } catch (error) {
+      execution?.closeNewWork();
       const code = error instanceof Error && 'code' in error ? String(error.code) : 'bootstrap_failed';
       markTeamRuntimeFailed(code);
       console.error(`[team-service] 业务入口保持关闭：${code}`);
@@ -77,6 +89,8 @@ export async function drainTeamRuntime(timeoutMs: number): Promise<number> {
 
 export function releaseTeamRuntimeOwner(): void {
   draining = true;
+  execution?.closeNewWork();
+  execution = null;
   owner?.release();
   owner = null;
   if (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server') {

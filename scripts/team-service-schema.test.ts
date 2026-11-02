@@ -36,7 +36,7 @@ try {
   assert.deepEqual(team.appliedVersions, [1, 2, 3, 4]);
   const execution = await checkExecutionReadiness(options(root, db));
   assert.equal(execution.available, true);
-  assert.deepEqual(execution.appliedVersions, [1]);
+  assert.deepEqual(execution.appliedVersions, [1, 2]);
 
   assert.deepEqual(
     db.prepare('SELECT id, maintenance FROM team_service_state').get(),
@@ -49,7 +49,13 @@ try {
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_font_favorites'").get());
   assert.equal((db.prepare("SELECT type FROM pragma_table_info('team_users') WHERE name = 'employeeId'").get() as { type: string }).type, 'TEXT');
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_sessions'").get());
-  assert.deepEqual(db.prepare('SELECT version FROM execution_schema_migrations').all(), [{ version: 1 }]);
+  assert.deepEqual(db.prepare('SELECT version FROM execution_schema_migrations').all(), [{ version: 1 }, { version: 2 }]);
+  for (const table of [
+    'execution_operations', 'execution_attempts', 'execution_pools',
+    'execution_actor_policies', 'execution_reservations', 'execution_admission_state',
+  ]) {
+    assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table), `缺少 ${table}`);
+  }
 
   const teamAgain = await checkTeamServiceReadiness(options(root, db));
   const executionAgain = await checkExecutionReadiness(options(root, db));
