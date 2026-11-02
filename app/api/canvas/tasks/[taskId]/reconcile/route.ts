@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { CanvasError } from '@/lib/creative-canvas/errors';
-import { reconcileCanvasTaskNotCreated, reconcileCanvasTaskWithRemoteId } from '@/lib/creative-canvas/recovery';
+import { reconcileCanvasTaskExecution, reconcileCanvasTaskNotCreated, reconcileCanvasTaskWithRemoteId } from '@/lib/creative-canvas/recovery';
 import { assertCanvasApiReady, canvasJsonError, readCanvasJson } from '@/lib/creative-canvas/http';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { getTeamExecutionFacade } from '@/lib/team-service/runtime/index';
 
 
 export const runtime = 'nodejs';
@@ -22,13 +23,20 @@ async function __teamRoutePOST(
     const body = await readCanvasJson(request);
     const outcome = String(body.outcome ?? '');
     if (outcome === 'not_created') {
+      if (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server') {
+        await reconcileCanvasTaskExecution(getDb(), getTeamExecutionFacade(), { taskId, outcome });
+      }
       const task = reconcileCanvasTaskNotCreated(getDb(), { taskId });
       return NextResponse.json({ task: { id: task.id, phase: task.phase } });
     }
     if (outcome === 'remote_id') {
+      const providerTaskId = String(body.providerTaskId ?? '');
+      if (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server') {
+        await reconcileCanvasTaskExecution(getDb(), getTeamExecutionFacade(), { taskId, outcome, providerTaskId });
+      }
       const task = reconcileCanvasTaskWithRemoteId(getDb(), {
         taskId,
-        providerTaskId: String(body.providerTaskId ?? ''),
+        providerTaskId,
       });
       return NextResponse.json({ task: { id: task.id, phase: task.phase, providerTaskId: task.providerTaskId } });
     }

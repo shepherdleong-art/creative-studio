@@ -11,6 +11,7 @@
  */
 
 import type Database from 'better-sqlite3';
+import type { ExecutionFacade } from '../media-core/execution/context.ts';
 import { CanvasError } from './errors.ts';
 import {
   getCanvasTask,
@@ -45,7 +46,48 @@ export function recoverCanvasTasks(
     ['preparing', 'submitting', 'polling', 'downloading'].includes(task.phase)
   ));
 
+  const hasExecutionTables = Boolean(db.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_attempts'
+  `).get());
   for (const task of inFlight) {
+    const execution = !task.providerTaskId && task.phase === 'submitting' && hasExecutionTables
+      ? db.prepare(`
+        SELECT a.remoteId, a.submissionState, a.terminalState
+        FROM execution_operations o
+        JOIN execution_attempts a ON a.id = o.currentAttemptId
+        WHERE o.module = 'canvas' AND o.taskId = ?
+        ORDER BY o.createdAt DESC LIMIT 1
+      `).get(task.id) as { remoteId: string | null; submissionState: string; terminalState: string | null } | undefined
+      : undefined;
+    if (execution?.terminalState === 'not_created') {
+      updateCanvasTaskUnGuarded(db, task.id, {
+        phase: 'failed', slotHeld: false, submissionState: 'terminal',
+        errorCode: 'confirmed_not_created', errorMessage: '执行核查确认远端未创建任务。',
+        leaseOwner: null, leaseUntil: null, updatedAt: at,
+      });
+      releaseNodeActiveTask(db, task);
+      report.cleaned.push(task.id);
+      continue;
+    }
+    if (execution?.terminalState === 'failed') {
+      updateCanvasTaskUnGuarded(db, task.id, {
+        phase: 'failed', slotHeld: false, submissionState: 'terminal',
+        errorCode: 'provider_failed', errorMessage: '远端任务已失败。',
+        leaseOwner: null, leaseUntil: null, updatedAt: at,
+      });
+      releaseNodeActiveTask(db, task);
+      report.cleaned.push(task.id);
+      continue;
+    }
+    if (execution?.remoteId) {
+      updateCanvasTaskUnGuarded(db, task.id, {
+        phase: 'polling', slotHeld: true, submissionState: 'accepted',
+        providerTaskId: execution.remoteId, errorCode: null, errorMessage: null,
+        leaseOwner: null, leaseUntil: null, updatedAt: at,
+      });
+      report.resumable.push(task.id);
+      continue;
+    }
     if (task.providerTaskId) {
       // 有远端身份：保留名额，交给调度器接管查询／补下载
       updateCanvasTaskUnGuarded(db, task.id, {
@@ -69,10 +111,10 @@ export function recoverCanvasTasks(
       report.pending.push(task.id);
       continue;
     }
-    // submitting 且没有远端身份：请求可能已经送达，保守进入待核查并保留名额
+    // submitting 且没有远端身份：远端预留继续保留，本地 worker slot 释放。
     updateCanvasTaskUnGuarded(db, task.id, {
       phase: 'uncertain',
-      slotHeld: true,
+      slotHeld: false,
       submissionState: 'maybe_sent',
       errorCode: task.errorCode ?? 'submission_unknown',
       errorMessage: task.errorMessage ?? '进程在提交过程中中断，远端是否已创建任务不明，请核查后再继续。',
@@ -84,6 +126,31 @@ export function recoverCanvasTasks(
   }
 
   return report;
+}
+
+/** server 人工核查先结算 06 原尝试；unknown 不会在画布侧被重提。 */
+export async function reconcileCanvasTaskExecution(
+  db: Database.Database,
+  execution: ExecutionFacade,
+  params: { taskId: string; outcome: 'not_created' } | { taskId: string; outcome: 'remote_id'; providerTaskId: string },
+): Promise<void> {
+  const task = requireCanvasTask(db, params.taskId);
+  if (task.phase !== 'uncertain') throw new CanvasError('conflict', '只有待核查的任务需要核查结论。');
+  const row = db.prepare(`
+    SELECT currentAttemptId FROM execution_operations
+    WHERE module = 'canvas' AND taskId = ? ORDER BY createdAt DESC LIMIT 1
+  `).get(task.id) as { currentAttemptId: string | null } | undefined;
+  if (!row?.currentAttemptId) throw new CanvasError('conflict', '任务缺少统一执行核查身份。');
+  if (params.outcome === 'remote_id' && !params.providerTaskId.trim()) {
+    throw new CanvasError('invalid_input', '远端任务 ID 不能为空。');
+  }
+  await execution.reconcile({
+    attemptId: row.currentAttemptId,
+    source: 'operator',
+    evidence: params.outcome === 'not_created'
+      ? { kind: 'confirmed_not_created' }
+      : { kind: 'remote_id', remoteId: params.providerTaskId.trim() },
+  });
 }
 
 /** 用户确认「远端没有创建任务」：按失败收尾并释放名额，不自动重发。 */
@@ -188,7 +255,7 @@ export function resumeCanvasTask(
 /**
  * 用户停止任务：
  * - 还没提交（等待／排队／准备）→ 直接取消，不占名额；
- * - 已经提交 → 只记录取消意图，由在飞执行器按供应商真实能力处理（不支持取消时保留名额与身份）。
+ * - 已经提交 → 只记录停止后续付费阶段的意图；原远端任务继续查询、下载并保存，不能丢弃已受理结果。
  */
 export function requestCanvasTaskCancel(
   db: Database.Database,

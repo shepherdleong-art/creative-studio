@@ -282,6 +282,8 @@ async function writeZip(
 }
 
 export function requireCanvasExport(db: Database.Database, exportId: string): CanvasExportRecord {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas_export', exportId, 'read');
   const row = db.prepare(`SELECT * FROM creative_canvas_exports WHERE id = ?`).get(exportId) as
     | Record<string, unknown>
     | undefined;
