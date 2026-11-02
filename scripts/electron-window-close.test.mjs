@@ -32,11 +32,11 @@ function load(file, modules, globals = {}) {
   return loaded.exports;
 }
 async function launch() {
-  const calls = { stops: 0, exits: 0, dialogs: 0, clears: 0, shutdownRequests: 0 };
+  const calls = { stops: 0, exits: 0, dialogs: 0, clears: 0, shutdownRequests: 0, logoutRequests: 0, csrfRequests: 0 };
   const stopped = deferred();
   const app = new EventEmitter();
   const ipcRenderer = new EventEmitter();
-  const rendererWindow = {};
+  const rendererWindow = { location: { assign() {} } };
   const windows = [];
   let onServiceExit;
   class FakeWindow extends EventEmitter {
@@ -93,13 +93,31 @@ async function launch() {
   // main.ts 用计时器轮询实拍成片跳转请求；vm 沙箱默认没有 Node 计时器。
   load('desktop/main.ts', modules, { setInterval, clearInterval });
   await tick();
-  function mountHeader() {
+  function mountHeader(headerProps = {}) {
     const states = [];
     let cursor = 0;
     let mounted = false;
     let cleanup;
+    const fakeFetch = async (url, options = {}) => {
+      if (url === '/api/team/auth/csrf') {
+        calls.csrfRequests += 1;
+        return { ok: true, json: async () => ({ csrfToken: 'server-test-csrf' }) };
+      }
+      if (url === '/api/team/auth/logout') {
+        assert.equal(options.method, 'POST');
+        assert.equal(options.headers['x-csrf-token'], 'server-test-csrf');
+        calls.logoutRequests += 1;
+        return { ok: true, json: async () => ({ loggedOut: true }) };
+      }
+      assert.equal(url, '/api/shutdown');
+      assert.equal(options.method, 'POST');
+      calls.shutdownRequests += 1;
+      onServiceExit();
+      return { ok: true };
+    };
     const Header = load('components/Header.tsx', {
       react: {
+        useCallback: (callback) => callback,
         useState: (initial) => {
           const index = cursor++;
           if (!(index in states)) states[index] = initial;
@@ -112,19 +130,21 @@ async function launch() {
       'next/navigation': { usePathname: () => '/' },
       '@/components/ui/Icon': { Icon: () => null },
       '@/components/ThemeToggle': () => null,
+      '@/components/team/client': {
+        teamWrite: async (url, options = {}) => {
+          const csrf = await fakeFetch('/api/team/auth/csrf');
+          const token = (await csrf.json()).csrfToken;
+          return fakeFetch(url, { ...options, headers: { ...(options.headers ?? {}), 'x-csrf-token': token } });
+        },
+      },
     }, {
       window: rendererWindow,
       setTimeout: () => 0,
-      fetch: async (url, options) => {
-        assert.equal(url, '/api/shutdown');
-        assert.equal(options.method, 'POST');
-        calls.shutdownRequests += 1;
-        onServiceExit();
-      },
+      fetch: fakeFetch,
     }).default;
     function render() {
       cursor = 0;
-      const tree = Header({});
+      const tree = Header(headerProps);
       mounted = true;
       return tree;
     }
@@ -200,5 +220,22 @@ async function launch() {
   assert.equal(shell.calls.shutdownRequests, 0);
   assert.equal(shell.calls.dialogs, 0);
   replacement.unmount();
+}
+// Server 员工的窗口关闭只退出账号，绝不请求公共 shutdown 或停止本地服务。
+{
+  const shell = await launch();
+  const header = shell.mountHeader({
+    deploymentMode: 'server',
+    principal: { displayName: '员工甲', role: 'employee' },
+  });
+  shell.close();
+  await tick();
+  await tick();
+  assert.equal(shell.calls.logoutRequests, 1);
+  assert.equal(shell.calls.csrfRequests, 1);
+  assert.equal(shell.calls.shutdownRequests, 0);
+  assert.equal(shell.calls.stops, 0);
+  assert.equal(shell.calls.exits, 0);
+  header.unmount();
 }
 console.log('electron window close tests passed');

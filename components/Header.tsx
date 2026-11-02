@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Icon } from '@/components/ui/Icon';
 import ThemeToggle from '@/components/ThemeToggle';
+import { teamError, teamWrite } from '@/components/team/client';
 
 // Read-only probe for the desktop shell. The bridge is injected by the preload
 // before any React code runs and never changes afterwards, so the subscription
@@ -13,11 +14,29 @@ const subscribeToDesktopShell = () => () => {};
 const readDesktopShell = () => Boolean((window as { desktopBridge?: unknown }).desktopBridge);
 const readDesktopShellOnServer = () => false;
 
-export default function Header({ canvasEnabled = false }: { canvasEnabled?: boolean }) {
+export interface HeaderPrincipal {
+  employeeId?: string;
+  displayName: string;
+  role: 'employee' | 'admin';
+  mustChangePassword?: boolean;
+}
+
+export default function Header({
+  canvasEnabled = false,
+  deploymentMode = 'local',
+  principal = null,
+}: {
+  canvasEnabled?: boolean;
+  deploymentMode?: 'local' | 'server';
+  principal?: HeaderPrincipal | null;
+}) {
   const pathname = usePathname();
   const onCanvas = pathname === '/canvas' || pathname.startsWith('/canvas/');
+  const server = deploymentMode === 'server';
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState('');
   // In the shell, stopping the service also takes the application down, so the
   // copy must not tell the user to close the window themselves.
   const isDesktop = useSyncExternalStore(
@@ -26,9 +45,24 @@ export default function Header({ canvasEnabled = false }: { canvasEnabled?: bool
     readDesktopShellOnServer,
   );
 
+  const handleLogout = useCallback(async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    setLogoutError('');
+    try {
+      const response = await teamWrite('/api/team/auth/logout', { method: 'POST' });
+      if (!response.ok) throw new Error(await teamError(response, '退出失败'));
+      window.location.assign('/team/login');
+    } catch (error) {
+      setLogoutError(error instanceof Error ? error.message : '退出失败，请重试');
+      setLoggingOut(false);
+    }
+  }, [loggingOut]);
+
   useEffect(() => window.desktopBridge?.onQuitRequested?.(() => {
-    setShowStopConfirm(true);
-  }), []);
+    if (server) void handleLogout();
+    else setShowStopConfirm(true);
+  }), [server, handleLogout]);
 
   const handleStop = async () => {
     setStopping(true);
@@ -43,37 +77,51 @@ export default function Header({ canvasEnabled = false }: { canvasEnabled?: bool
     }, 2000);
   };
 
+  const showWorkspace = !server || Boolean(principal && !principal.mustChangePassword);
+
   return (
     <header className="toolbar h-12 gap-5 px-6 text-sm">
       <Link href="/" className="font-semibold tracking-tight text-ink transition-colors hover:text-accent">
         产品素材工作台
       </Link>
       <nav className="ml-auto flex items-center gap-4">
-        <Link href="/" className="text-ink-secondary transition-colors hover:text-ink">项目</Link>
-        {canvasEnabled && (
-          <Link
-            href="/canvas"
-            aria-current={onCanvas ? 'page' : undefined}
-            className={`whitespace-nowrap transition-colors hover:text-ink ${onCanvas ? 'font-medium text-accent' : 'text-ink-secondary'}`}
-          >创作画布</Link>
-        )}
-        <Link href="/usage" className="text-ink-secondary transition-colors hover:text-ink">消耗</Link>
-        <Link href="/settings" className="text-ink-secondary transition-colors hover:text-ink">供应商</Link>
-        <Link href="/projects/new" className="btn-primary btn-sm">
-          <Icon name="plus" size={15} /> 新建项目
-        </Link>
+        {showWorkspace && <>
+          <Link href="/" className="text-ink-secondary transition-colors hover:text-ink">项目</Link>
+          {canvasEnabled && (
+            <Link
+              href="/canvas"
+              aria-current={onCanvas ? 'page' : undefined}
+              className={`whitespace-nowrap transition-colors hover:text-ink ${onCanvas ? 'font-medium text-accent' : 'text-ink-secondary'}`}
+            >创作画布</Link>
+          )}
+          <Link href="/usage" className="text-ink-secondary transition-colors hover:text-ink">消耗</Link>
+          {(!server || principal?.role === 'admin') && <>
+            {server && <Link href="/team/admin/users" className="text-ink-secondary transition-colors hover:text-ink">账号</Link>}
+            <Link href="/settings" className="text-ink-secondary transition-colors hover:text-ink">供应商</Link>
+          </>}
+          <Link href="/projects/new" className="btn-primary btn-sm">
+            <Icon name="plus" size={15} /> 新建项目
+          </Link>
+        </>}
         <ThemeToggle />
-        <button
+        {server && principal && <>
+          <span className="text-xs text-ink-tertiary">{principal.displayName}</span>
+          <button onClick={handleLogout} disabled={loggingOut} className="btn-secondary btn-sm" aria-label="退出登录">
+            {loggingOut ? '退出中…' : '退出登录'}
+          </button>
+        </>}
+        {!server && <button
           onClick={() => setShowStopConfirm(true)}
           className="icon-btn text-ink-tertiary hover:text-fail"
           title="停止服务"
           aria-label="停止服务"
         >
           <Icon name="power" size={16} />
-        </button>
+        </button>}
+        {logoutError && <span className="text-xs text-fail">{logoutError}</span>}
       </nav>
 
-      {showStopConfirm && (
+      {!server && showStopConfirm && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm">
           <div className="card w-full max-w-sm p-6 shadow-[0_20px_60px_rgba(0,0,0,.18)]">
             <h3 className="mb-2 text-lg font-semibold text-ink">{isDesktop ? '停止服务并退出' : '停止服务'}</h3>

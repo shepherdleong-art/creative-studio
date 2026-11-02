@@ -59,12 +59,12 @@ try {
   assert.deepEqual(server, {
     mode: 'server',
     batchSchedulerStarted: false,
-    ready: false,
-    code: 'identity_unavailable',
+    ready: true,
+    code: null,
     teamSchema: true,
     executionSchema: true,
     shutdown: { stopped: true, pendingTasks: 0 },
-  }, 'server 只跑共享迁移和分阶段组合，不得自动启动旧 worker；身份未接入时保持业务关闭');
+  }, 'server 只跑共享迁移和分阶段组合；身份结构就绪后开放登录，不自动启动旧 worker');
 
   const corruptCore = await run('server', true);
   assert.deepEqual(corruptCore, {

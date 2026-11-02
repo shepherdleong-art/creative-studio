@@ -1,8 +1,12 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { connection } from "next/server";
-import Header from "@/components/Header";
+import { cookies } from "next/headers";
+import Header, { type HeaderPrincipal } from "@/components/Header";
 import { canvasFeatureEnabled } from "@/lib/creative-canvas/config";
+import { readRuntimeConfig } from "@/lib/team-service/config";
+import { TEAM_SESSION_COOKIE } from "@/lib/team-service/auth/request";
+import { getTeamAuthService } from "@/lib/team-service/auth/runtime";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -27,7 +31,24 @@ const themeInitScript = `(function(){try{var p=localStorage.getItem('creative-st
 async function RuntimeHeader() {
   // Read the server's runtime flag so standalone builds can enable the entry at launch.
   await connection();
-  return <Header canvasEnabled={canvasFeatureEnabled()} />;
+  const config = readRuntimeConfig();
+  if (config.mode === 'local') return <Header canvasEnabled={canvasFeatureEnabled()} />;
+  let principal: HeaderPrincipal | null = null;
+  try {
+    const token = (await cookies()).get(TEAM_SESSION_COOKIE)?.value;
+    const resolved = token ? getTeamAuthService().resolveSession(token) : null;
+    if (resolved) {
+      principal = {
+        employeeId: resolved.employeeId,
+        displayName: resolved.displayName,
+        role: resolved.role,
+        mustChangePassword: resolved.mustChangePassword,
+      };
+    }
+  } catch {
+    // 身份结构不可用时使用无权限 Header，业务入口由运行时 readiness 继续关闭。
+  }
+  return <Header canvasEnabled={canvasFeatureEnabled()} deploymentMode="server" principal={principal} />;
 }
 
 export default function RootLayout({
@@ -37,7 +58,7 @@ export default function RootLayout({
     <html lang="zh-CN" className="h-full antialiased" suppressHydrationWarning>
       <body className="min-h-full flex flex-col bg-surface text-ink">
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
-        <Suspense fallback={<Header />}>
+        <Suspense fallback={<Header deploymentMode={process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server' ? 'server' : 'local'} />}>
           <RuntimeHeader />
         </Suspense>
         <main className="flex-1 w-full max-w-[980px] mx-auto px-6 py-10">
