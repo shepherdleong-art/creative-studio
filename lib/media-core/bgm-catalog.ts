@@ -3,12 +3,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { probeDurationSec } from '../ffmpeg.ts';
+import { requireAccessContext } from './access-context.ts';
 
 export const BGM_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg']);
 export interface ScannedBgmTrack { id: string; relativePath: string; fileFingerprint: string; durationUs: number }
 
 /** 单条与批量共用曲库。失效记录退出 ready 列表，历史身份保留以供恢复和冻结产物核验。 */
 export async function scanBgmTracks(db: Database.Database, storageRoot: string): Promise<ScannedBgmTrack[]> {
+  const access = requireAccessContext();
+  if (access.kind === 'team') {
+    const rows = db.prepare("SELECT id, relativePath, fileFingerprint, durationUs FROM final_edit_bgm_tracks WHERE status = 'ready'")
+      .all() as ScannedBgmTrack[];
+    return rows.filter((row) => {
+      try {
+        access.assertAccess('bgm', row.id, 'read');
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  }
   const previous = db.prepare("SELECT id,relativePath,fileFingerprint,scannedAt FROM final_edit_bgm_tracks WHERE status='ready'")
     .all() as Array<{ id: string; relativePath: string; fileFingerprint: string; scannedAt: string }>;
   const root = path.join(storageRoot, 'bgm');
@@ -29,10 +43,10 @@ export async function scanBgmTracks(db: Database.Database, storageRoot: string):
       const relativePath = path.relative(storageRoot, file).split(path.sep).join('/');
       const durationUs = Math.round(await probeDurationSec(file) * 1_000_000);
       const candidateId = fingerprint.slice(0, 32);
-      db.prepare(`INSERT INTO final_edit_bgm_tracks (id, relativePath, fileFingerprint, durationUs, format, status, scannedAt) VALUES (?, ?, ?, ?, ?, 'ready', ?) ON CONFLICT(fileFingerprint) DO UPDATE SET relativePath=excluded.relativePath, durationUs=excluded.durationUs, format=excluded.format, status='ready', errorMessage=NULL, scannedAt=excluded.scannedAt`)
+      db.prepare(`INSERT INTO final_edit_bgm_tracks (id, relativePath, fileFingerprint, durationUs, format, status, scannedAt) VALUES (?, ?, ?, ?, ?, 'ready', ?) ON CONFLICT(ownerKey, fileFingerprint) DO UPDATE SET relativePath=excluded.relativePath, durationUs=excluded.durationUs, format=excluded.format, status='ready', errorMessage=NULL, scannedAt=excluded.scannedAt`)
         .run(candidateId, relativePath, fingerprint, durationUs, path.extname(file).slice(1).toLowerCase(), new Date().toISOString());
       const authoritative = db.prepare(`SELECT id, relativePath, fileFingerprint, durationUs FROM final_edit_bgm_tracks
-        WHERE fileFingerprint=? AND status='ready'`).get(fingerprint) as ScannedBgmTrack | undefined;
+        WHERE fileFingerprint=? AND ownerKey='local' AND status='ready'`).get(fingerprint) as ScannedBgmTrack | undefined;
       if (!authoritative) throw new Error('BGM 扫描结果未能写入索引');
       result.push(authoritative);
     } catch (error) {

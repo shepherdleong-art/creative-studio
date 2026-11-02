@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'node:fs';
 import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { getLut, resolveManagedLutPath } from '@/lib/batch-production/lut-catalog';
@@ -10,6 +9,7 @@ import {
   batchRouteErrorResponse,
 } from '../../../batches/response';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { fileResponse } from '@/lib/media-core/file-response';
 
 
 export const runtime = 'nodejs';
@@ -42,17 +42,11 @@ async function __teamRouteGET(request: NextRequest, context: { params: Promise<{
     } catch {
       throw new BatchDomainError('not_found', 'LUT 受管路径不可用');
     }
-    if (!fs.existsSync(absolutePath)) {
-      throw new BatchDomainError('not_found', 'LUT 文件缺失');
-    }
-    const content = fs.readFileSync(absolutePath, 'utf8');
-    return new NextResponse(content, {
-      headers: {
-        ...BATCH_NO_STORE_HEADERS,
-        'Content-Type': 'text/plain; charset=utf-8',
-        'X-Lut-Fingerprint': lut.contentFingerprint,
-      },
+    const response = fileResponse(request, absolutePath, 'text/plain; charset=utf-8', {
+      cacheControl: BATCH_NO_STORE_HEADERS['Cache-Control'],
     });
+    response.headers.set('X-Lut-Fingerprint', lut.contentFingerprint);
+    return response;
   } catch (error) {
     return batchRouteErrorResponse(error, 'lut_file_failed', 'LUT 文件读取失败');
   }

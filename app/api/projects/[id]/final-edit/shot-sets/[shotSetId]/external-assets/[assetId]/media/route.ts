@@ -5,6 +5,7 @@ import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { dataRoot } from '@/lib/data-root';
 import { ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { authorizeManagedFileRead, registerManagedFile } from '@/lib/media-core/access-context';
 
 
 async function __teamRouteGET(
@@ -18,8 +19,12 @@ async function __teamRouteGET(
     // （必要时懒生成的）H.264 预览衍生物；不带参数的 GET 始终给原件。
     if (new URL(request.url).searchParams.get('preview') === '1' && media.mimeType.startsWith('video/')) {
       const absolute = resolveFinalEditMedia(media.relativePath);
+      const originalFileId = authorizeManagedFileRead(absolute)?.fileId ?? null;
       const served = await ensureBrowserPreview(absolute);
       if (served !== absolute) {
+        if (originalFileId) {
+          registerManagedFile({ absolutePath: served, mimeType: 'video/mp4', derivedFromFileId: originalFileId });
+        }
         const storageRoot = path.resolve(dataRoot(), 'storage');
         return mediaResponse(request, path.relative(storageRoot, served), 'video/mp4');
       }

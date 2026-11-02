@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type Database from 'better-sqlite3';
-import { requireAccessContext } from '../media-core/access-context.ts';
+import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { probeDurationSec } from '../ffmpeg.ts';
 import {
   FINAL_EDIT_BGM_EXTENSIONS,
@@ -163,13 +163,14 @@ async function importSingleFile(
     };
   }
 
+  const access = requireAccessContext();
+  const ownerKey = access.kind === 'team' ? access.actor.userId : 'local';
   const existing = db.prepare(`
     SELECT id, relativePath, fileFingerprint, durationUs
     FROM final_edit_bgm_tracks
-    WHERE fileFingerprint = ? AND status = 'ready'
-  `).get(fingerprint) as { id: string; relativePath: string; fileFingerprint: string; durationUs: number } | undefined;
+    WHERE fileFingerprint = ? AND ownerKey = ? AND status = 'ready'
+  `).get(fingerprint, ownerKey) as { id: string; relativePath: string; fileFingerprint: string; durationUs: number } | undefined;
 
-  const access = requireAccessContext();
   if (existing) {
     if (access.kind === 'team') access.assertAccess('bgm', existing.id, 'read');
     const existingPath = path.resolve(storageRoot, existing.relativePath);
@@ -208,9 +209,9 @@ async function importSingleFile(
   try {
     const publish = db.transaction(() => {
       db.prepare(`INSERT INTO final_edit_bgm_tracks
-        (id, relativePath, fileFingerprint, durationUs, format, status, errorMessage, scannedAt)
-        VALUES (?, ?, ?, ?, ?, 'ready', NULL, ?)
-        ON CONFLICT(fileFingerprint) DO UPDATE SET
+        (id, relativePath, fileFingerprint, ownerKey, durationUs, format, status, errorMessage, scannedAt)
+        VALUES (?, ?, ?, ?, ?, ?, 'ready', NULL, ?)
+        ON CONFLICT(ownerKey, fileFingerprint) DO UPDATE SET
           relativePath=excluded.relativePath,
           durationUs=excluded.durationUs,
           format=excluded.format,
@@ -220,6 +221,7 @@ async function importSingleFile(
         id,
         relativePath,
         fingerprint,
+        ownerKey,
         durationUs,
         format,
         new Date().toISOString(),
@@ -229,6 +231,11 @@ async function importSingleFile(
           resourceType: 'bgm', resourceId: id,
           ownerUserId: access.actor.userId, visibility: 'private',
         });
+        registerManagedFile({
+          absolutePath: placed.absolutePath,
+          mimeType: upload.mimeType || 'application/octet-stream',
+          references: [{ resourceType: 'bgm', resourceId: id, role: 'input' }],
+        });
       }
     });
     publish.immediate();
@@ -236,8 +243,8 @@ async function importSingleFile(
     const row = db.prepare(`
       SELECT id, relativePath, durationUs
       FROM final_edit_bgm_tracks
-      WHERE fileFingerprint = ?
-    `).get(fingerprint) as { id: string; relativePath: string; durationUs: number } | undefined;
+      WHERE fileFingerprint = ? AND ownerKey = ?
+    `).get(fingerprint, ownerKey) as { id: string; relativePath: string; durationUs: number } | undefined;
 
     if (!row) {
       try { fs.unlinkSync(placed.absolutePath); } catch { /* best effort */ }

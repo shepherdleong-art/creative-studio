@@ -1,5 +1,7 @@
+import path from 'node:path';
 import type Database from 'better-sqlite3';
-import { requireAccessContext } from '../media-core/access-context.ts';
+import { dataRoot } from '../data-root.ts';
+import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import type { ReservedProjectExportTarget } from './export-naming.ts';
 
 export interface InternalRenderOutput {
@@ -55,10 +57,19 @@ export function registerSingleArtifact(db: Database.Database, input: {
       relativePath=excluded.relativePath,
       mimeType=excluded.mimeType
   `).run(input.id, input.projectId, input.kind, input.displayName, input.relativePath, input.mimeType, input.sourceJobId, input.createdAt);
-  requireAccessContext().registerInheritedScope({
+  const access = requireAccessContext();
+  access.registerInheritedScope({
     resourceType: 'project_artifact', resourceId: input.id,
     parent: { resourceType: 'project', resourceId: input.projectId },
   });
+  if (access.kind === 'team') {
+    registerManagedFile({
+      absolutePath: path.join(dataRoot(), 'storage', input.relativePath),
+      mimeType: input.mimeType,
+      seriesId: `project-artifact:${input.id}`,
+      references: [{ resourceType: 'project_artifact', resourceId: input.id, role: 'output' }],
+    });
+  }
 }
 
 export function registerPublishedArtifacts(db: Database.Database, input: {
@@ -91,5 +102,14 @@ export function registerPublishedArtifacts(db: Database.Database, input: {
       resourceType: 'project_artifact', resourceId: `final-edit:${input.sourceJobId}:${kind}`,
       parent: { resourceType: 'project', resourceId: input.projectId },
     });
+    if (access.kind === 'team') {
+      const relativePath = kind === 'video' ? input.target.videoRelativePath : input.target.coverRelativePath;
+      registerManagedFile({
+        absolutePath: path.join(dataRoot(), 'storage', relativePath),
+        mimeType: kind === 'video' ? 'video/mp4' : 'image/jpeg',
+        seriesId: `project-artifact:final-edit:${input.sourceJobId}:${kind}`,
+        references: [{ resourceType: 'project_artifact', resourceId: `final-edit:${input.sourceJobId}:${kind}`, role: 'output' }],
+      });
+    }
   }
 }

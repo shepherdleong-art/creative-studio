@@ -6,6 +6,7 @@ import { dataRoot } from '../data-root.ts';
 import { probeVideoMedia, runFfmpeg } from '../ffmpeg.ts';
 import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts';
 import { resolveSourceFilePath } from './media-catalog.ts';
+import { authorizeManagedFileRead, registerManagedFile } from '../media-core/access-context.ts';
 import {
   acquireProxyWriteLease,
   resolveControlledProxyPath,
@@ -270,6 +271,8 @@ export const proxyGenerateExecutor: BatchTaskExecutor = {
           throw new Error('无法读取原片媒体信息,无法生成代理');
         }
 
+        const originalFileId = authorizeManagedFileRead(verifiedSourcePath)?.fileId ?? null;
+
         // 进入写租约保护段:临时文件准备从这一刻开始
         const finalAbsolutePath = resolveControlledProxyPath(cacheItem.relativePath);
         tempAbsolutePath = `${finalAbsolutePath}.tmp-${randomUUID()}`;
@@ -328,6 +331,13 @@ export const proxyGenerateExecutor: BatchTaskExecutor = {
         // 原子发布:先写临时文件、探测校验通过后再改名,避免半成品被当作可用代理提供预览。
         fs.renameSync(tempAbsolutePath, finalAbsolutePath);
         tempAbsolutePath = '';
+        if (originalFileId) {
+          registerManagedFile({
+            absolutePath: finalAbsolutePath,
+            mimeType: 'video/mp4',
+            derivedFromFileId: originalFileId,
+          });
+        }
 
         db.prepare(`
           UPDATE batch_proxy_cache_items

@@ -166,4 +166,8 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE video_jobs ADD COLUMN generationMode TEXT NOT NULL DEFAULT 'image-to-video'`,
   `ALTER TABLE video_jobs ADD COLUMN aspectRatio TEXT`,
   `ALTER TABLE video_jobs ADD COLUMN resolution TEXT`,
+  // 团队模板的编号只在所有者命名空间唯一；local 全部使用 local，保留原全局唯一行为。
+  `ALTER TABLE video_prompt_templates ADD COLUMN ownerKey TEXT NOT NULL DEFAULT 'local'`,
+  `DROP INDEX IF EXISTS idx_video_prompt_opening_code`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_video_prompt_opening_code ON video_prompt_templates(ownerKey, openingCode) WHERE openingCode IS NOT NULL AND openingCode <> ''`,
 ];

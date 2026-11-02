@@ -3,6 +3,9 @@ import fs from 'fs';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { fileResponse } from '@/lib/media-core/file-response';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { ResourceAccessError } from '@/lib/team-service/resource-scopes';
 
 
 /** Only these subdirectories under storage/ are allowed to be served. */
@@ -21,7 +24,7 @@ const BLOCKED_PATTERNS = [
 ];
 
 async function __teamRouteGET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
   try {
@@ -55,6 +58,13 @@ async function __teamRouteGET(
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
+    if (readRuntimeConfig().mode === 'server') {
+      const mimeTypes: Record<string, string> = {
+        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+      };
+      return fileResponse(request, resolvedPath, mimeTypes[ext] || 'application/octet-stream');
+    }
+
     if (!fs.existsSync(resolvedPath)) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
@@ -83,7 +93,10 @@ async function __teamRouteGET(
       },
     });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    if (err instanceof ResourceAccessError || (err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+    return NextResponse.json({ error: 'Failed to read image' }, { status: 500 });
   }
 }
 export const GET = withTeamRoute('/api/images/[...path]', 'GET', __teamRouteGET);

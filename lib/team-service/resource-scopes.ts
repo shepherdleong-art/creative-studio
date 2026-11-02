@@ -1,7 +1,11 @@
+import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { AuthPrincipal } from './auth/types.ts';
 import { registerTaskPrincipal } from './task-principals.ts';
 import type { AccessActor } from '../media-core/access-context.ts';
+import { dataRoot } from '../data-root.ts';
+import { resolveStoragePath } from '../media-core/storage-path.ts';
+import { registerReadyTeamFile } from './files/registry.ts';
 import {
   type ResourceAccessAction,
   type ResourceAccessContext,
@@ -393,7 +397,7 @@ export function scopeDescendsFrom(
 
 export function requireResourceAccess(
   db: Database.Database,
-  principal: AuthPrincipal,
+  principal: AccessActor,
   resourceType: string,
   resourceId: string,
   action: ResourceAccessAction,
@@ -411,6 +415,26 @@ export function requireResourceAccess(
   if (principal.role === 'admin' || scope.ownerUserId === principal.userId) return scope;
   if (action === 'read' && scope.visibility === 'public') return scope;
   throw new ResourceAccessError('resource_forbidden', '无权访问此资源。', 403);
+}
+
+export function authorizeTeamFileReferences(
+  db: Database.Database,
+  principal: AccessActor,
+  fileId: string,
+): boolean {
+  const references = db.prepare(`
+    SELECT resourceType, resourceId FROM team_file_references
+    WHERE fileId = ? AND releasedAt IS NULL
+  `).all(fileId) as Array<{ resourceType: string; resourceId: string }>;
+  for (const reference of references) {
+    try {
+      requireResourceAccess(db, principal, reference.resourceType, reference.resourceId, 'read');
+      return true;
+    } catch {
+      // 其它无权引用不能泄露文件存在性。
+    }
+  }
+  return false;
 }
 
 export function requireProjectAccess(
@@ -445,6 +469,9 @@ export function createTeamAccessContext(options: {
     resolveOwner(requestedOwnerUserId) {
       return resolveOwnerUserId(principal, requestedOwnerUserId);
     },
+    visibilityOf(resourceType, resourceId) {
+      return assertScopeConsistency(db, resourceType, resourceId).visibility;
+    },
     registerRootScope(input) {
       registerRootScope(db, input);
     },
@@ -453,6 +480,48 @@ export function createTeamAccessContext(options: {
     },
     registerTaskPrincipal(input: TaskPrincipalRegistration) {
       registerTaskPrincipal(db, { ...input, actorUserId: input.actorUserId ?? principal.userId });
+    },
+    registerFile(input) {
+      return registerReadyTeamFile(db, {
+        ...input,
+        storageRoot: resolveStoragePath(dataRoot(), 'storage'),
+        ownerUserId: principal.userId,
+        validateReference(reference) {
+          requireResourceAccess(db, principal, reference.resourceType, reference.resourceId, input.derivedFromFileId ? 'read' : 'write');
+        },
+        validateExisting(file) {
+          if (!authorizeTeamFileReferences(db, principal, file.id)) {
+            throw new ResourceAccessError('resource_not_found', '文件不存在或不可用。');
+          }
+        },
+      }).id;
+    },
+    referenceFile(absolutePath, reference) {
+      const storageRoot = resolveStoragePath(dataRoot(), 'storage');
+      const resolved = resolveStoragePath(storageRoot, absolutePath, { allowAbsolute: true });
+      const relativePath = path.relative(storageRoot, resolved).split(path.sep).join('/');
+      const file = db.prepare("SELECT id FROM team_files WHERE relativePath = ? AND state = 'ready'")
+        .get(relativePath) as { id: string } | undefined;
+      if (!file || !authorizeTeamFileReferences(db, principal, file.id)) {
+        throw new ResourceAccessError('resource_not_found', '文件不存在或不可用。');
+      }
+      requireResourceAccess(db, principal, reference.resourceType, reference.resourceId, 'write');
+      db.prepare(`
+        INSERT OR IGNORE INTO team_file_references (fileId, resourceType, resourceId, role, pinKind, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(file.id, reference.resourceType, reference.resourceId, reference.role ?? 'input', reference.pinKind ?? 'entity', now());
+      return file.id;
+    },
+    authorizeFileRead(absolutePath) {
+      const storageRoot = resolveStoragePath(dataRoot(), 'storage');
+      const resolved = resolveStoragePath(storageRoot, absolutePath, { allowAbsolute: true });
+      const relativePath = path.relative(storageRoot, resolved).split(path.sep).join('/');
+      const file = db.prepare("SELECT id, seriesId, version, sha256 FROM team_files WHERE relativePath = ? AND state = 'ready'")
+        .get(relativePath) as { id: string; seriesId: string; version: number; sha256: string } | undefined;
+      if (!file || !authorizeTeamFileReferences(db, principal, file.id)) {
+        throw new ResourceAccessError('resource_not_found', '文件不存在或不可用。');
+      }
+      return { fileId: file.id, seriesId: file.seriesId, version: file.version, sha256: file.sha256 };
     },
   };
 }

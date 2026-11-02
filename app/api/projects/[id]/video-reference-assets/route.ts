@@ -9,7 +9,7 @@ import { dataRoot } from '@/lib/data-root';
 import { resolveFfprobePath } from '@/lib/ffmpeg';
 import { validateUploadedImageBuffer } from '@/lib/image-upload-validation';
 import { assertNoStorageSymlink } from '@/lib/media-core/storage-path';
-import { requireAccessContext } from '@/lib/media-core/access-context';
+import { registerManagedFile, requireAccessContext } from '@/lib/media-core/access-context';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
 
@@ -185,6 +185,13 @@ async function __teamRoutePOST(
           resourceType: 'video_reference_asset', resourceId: id,
           parent: { resourceType: 'project', resourceId: projectId },
         });
+        if (access.kind === 'team') {
+          registerManagedFile({
+            absolutePath: savedPath,
+            mimeType: detected.mimeType,
+            references: [{ resourceType: 'video_reference_asset', resourceId: id, role: 'input' }],
+          });
+        }
       });
       publish.immediate();
       insertedIds.push(id);

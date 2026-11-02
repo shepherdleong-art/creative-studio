@@ -1,0 +1,155 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { register } from 'node:module';
+
+register('./typescript-extension-loader.mjs', import.meta.url);
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-team-files-'));
+const previousEnv = { ...process.env };
+Object.assign(process.env, {
+  CREATIVE_STUDIO_DATA_ROOT: root,
+  CREATIVE_STUDIO_DEPLOYMENT_MODE: 'server',
+  CREATIVE_STUDIO_PORT: '3300',
+  CREATIVE_STUDIO_DEPLOYMENT_ID: 'deployment-files',
+  CREATIVE_STUDIO_TRUSTED_ORIGIN: 'https://studio.example.test',
+});
+
+const { ensureServerDeploymentMarker } = await import('../lib/team-service/config.ts');
+const { getDb, closeDb } = await import('../lib/db.ts');
+const { checkTeamServiceReadiness } = await import('../lib/team-service/readiness.ts');
+const { schemaUpgradeRuntimePaths } = await import('../lib/schema-upgrade/runtime.ts');
+const {
+  createTeamAccessContext,
+  registerRootScope,
+  requireResourceAccess,
+} = await import('../lib/team-service/resource-scopes.ts');
+const {
+  registerReadyTeamFile,
+  resolveTeamFile,
+  teamFileResponse,
+} = await import('../lib/team-service/files/index.ts');
+const { publishTeamResource } = await import('../lib/team-service/files/publication.ts');
+const { runWithAccessContext } = await import('../lib/media-core/access-context.ts');
+const { buildGenericZipStream } = await import('../lib/zip-download.ts');
+
+ensureServerDeploymentMarker({
+  mode: 'server', dataRoot: root, hostname: '127.0.0.1', port: 3300,
+  deploymentId: 'deployment-files', trustedOrigin: 'https://studio.example.test',
+});
+const db = getDb();
+assert.equal((await checkTeamServiceReadiness({ db, ...schemaUpgradeRuntimePaths(root) })).available, true);
+const insertUser = db.prepare(`INSERT INTO team_users (
+  id, employeeId, displayName, role, status, passwordHash, mustChangePassword, sessionVersion, createdAt, updatedAt
+) VALUES (?, ?, ?, ?, 'active', 'test', 0, 1, '2026-11-02', '2026-11-02')`);
+insertUser.run('admin', '0000', '管理员', 'admin');
+insertUser.run('user-a', '0001', '甲', 'employee');
+insertUser.run('user-b', '0002', '乙', 'employee');
+const principal = (userId: string, role: 'employee' | 'admin' = 'employee') => ({
+  kind: 'user' as const,
+  userId,
+  employeeId: userId,
+  displayName: userId,
+  role,
+  sessionId: `session-${userId}`,
+  sessionVersion: 1,
+  mustChangePassword: false,
+  absoluteExpiresAt: '2099-01-01T00:00:00.000Z',
+});
+const admin = principal('admin', 'admin');
+const userA = principal('user-a');
+const userB = principal('user-b');
+for (const [id, ownerUserId] of [['resource-a', 'user-a'], ['resource-b', 'user-b'], ['resource-public', 'admin']] as const) {
+  registerRootScope(db, { resourceType: 'test_resource', resourceId: id, ownerUserId });
+}
+
+const storageRoot = path.join(root, 'storage');
+fs.mkdirSync(path.join(storageRoot, 'inputs'), { recursive: true });
+const bytes = Buffer.from('same bytes, independent permissions');
+fs.writeFileSync(path.join(storageRoot, 'inputs', 'a.txt'), bytes);
+fs.writeFileSync(path.join(storageRoot, 'inputs', 'b.txt'), bytes);
+const referenceA = { resourceType: 'test_resource', resourceId: 'resource-a' };
+const referenceB = { resourceType: 'test_resource', resourceId: 'resource-b' };
+
+try {
+  const fileA = registerReadyTeamFile(db, {
+    storageRoot,
+    absolutePath: path.join(storageRoot, 'inputs', 'a.txt'),
+    mimeType: 'application/octet-stream',
+    ownerUserId: userA.userId,
+    references: [referenceA],
+    validateReference: (reference) => { requireResourceAccess(db, userA, reference.resourceType, reference.resourceId, 'write'); },
+  });
+  const fileB = registerReadyTeamFile(db, {
+    storageRoot,
+    absolutePath: path.join(storageRoot, 'inputs', 'b.txt'),
+    mimeType: 'application/octet-stream',
+    ownerUserId: userB.userId,
+    references: [referenceB],
+    validateReference: (reference) => { requireResourceAccess(db, userB, reference.resourceType, reference.resourceId, 'write'); },
+  });
+  assert.notEqual(fileA.id, fileB.id);
+  assert.equal(fileA.sha256, fileB.sha256);
+  assert.equal(fileA.state, 'ready');
+  assert.equal(fileA.version, 1);
+  assert.ok(fileA.readySeq !== null && fileA.readySeq > 0);
+  assert.throws(() => resolveTeamFile(db, userB, { storageRoot, fileId: fileA.id }), /不存在或不可用/);
+  assert.equal(resolveTeamFile(db, userA, { storageRoot, fileId: fileA.id }).id, fileA.id);
+  assert.equal(resolveTeamFile(db, userB, { storageRoot, fileId: fileB.id }).id, fileB.id);
+  assert.throws(() => resolveTeamFile(db, userA, { storageRoot, relativePath: 'inputs/b.txt' }), /不存在或不可用/);
+
+  const range = teamFileResponse(new Request('https://studio.example.test/api/team/files/x', {
+    headers: { Range: 'bytes=1-4' },
+  }), db, userA, { storageRoot, fileId: fileA.id });
+  assert.equal(range.status, 206);
+  assert.equal(range.headers.get('Content-Range'), `bytes 1-4/${bytes.byteLength}`);
+  assert.equal(range.headers.get('Cache-Control'), 'private, no-store');
+  assert.match(range.headers.get('ETag') ?? '', /^"[a-f0-9]{64}"$/);
+  assert.equal(Buffer.from(await range.arrayBuffer()).toString(), bytes.subarray(1, 5).toString());
+  const etag = range.headers.get('ETag')!;
+  const notModified = teamFileResponse(new Request('https://studio.example.test/api/team/files/x', {
+    headers: { 'If-None-Match': etag },
+  }), db, userA, { storageRoot, fileId: fileA.id });
+  assert.equal(notModified.status, 304);
+
+  fs.writeFileSync(path.join(storageRoot, 'inputs', 'a.derived.txt'), Buffer.from('derivative'));
+  const derived = registerReadyTeamFile(db, {
+    storageRoot,
+    absolutePath: path.join(storageRoot, 'inputs', 'a.derived.txt'),
+    mimeType: 'application/octet-stream',
+    ownerUserId: userA.userId,
+    derivedFromFileId: fileA.id,
+    seriesId: fileA.seriesId,
+  });
+  assert.equal(derived.version, 2);
+  assert.equal(derived.derivedFromFileId, fileA.id);
+  assert.throws(() => resolveTeamFile(db, userB, { storageRoot, fileId: derived.id }), /不存在或不可用/);
+
+  const contextA = createTeamAccessContext({ db, principal: userA });
+  assert.throws(() => runWithAccessContext(contextA, () => buildGenericZipStream([
+    { filePath: path.join(storageRoot, 'inputs', 'b.txt'), filename: 'stolen.txt' },
+  ])), /不存在或不可用/);
+  const zip = runWithAccessContext(contextA, () => buildGenericZipStream([
+    { filePath: path.join(storageRoot, 'inputs', 'a.txt'), filename: 'owned.txt' },
+  ]));
+  assert.ok(zip);
+
+  publishTeamResource(db, admin, referenceB);
+  assert.equal(resolveTeamFile(db, userA, { storageRoot, fileId: fileB.id }).id, fileB.id);
+  assert.throws(() => requireResourceAccess(db, userA, referenceB.resourceType, referenceB.resourceId, 'write'), /无权/);
+  assert.throws(() => publishTeamResource(db, userA, referenceA), /管理员/);
+
+  db.prepare('DELETE FROM team_file_references WHERE fileId = ?').run(derived.id);
+  db.prepare('DELETE FROM team_files WHERE id = ?').run(derived.id);
+  db.prepare('DELETE FROM team_file_references WHERE fileId = ?').run(fileA.id);
+  db.prepare('DELETE FROM team_files WHERE id = ?').run(fileA.id);
+  assert.equal(resolveTeamFile(db, userA, { storageRoot, fileId: fileB.id }).id, fileB.id);
+  assert.throws(() => resolveTeamFile(db, userA, { storageRoot, fileId: fileA.id }), /不存在或不可用/);
+
+  console.log('PASS: team file versions, same-hash isolation, derivative scope, Range/ETag, ZIP and public read-only access');
+} finally {
+  closeDb();
+  process.env = previousEnv;
+  fs.rmSync(root, { recursive: true, force: true });
+}

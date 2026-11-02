@@ -10,6 +10,7 @@ import { buildMediaEtag, projectAssetMediaResponse } from '@/lib/batch-productio
 import { ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { BATCH_NO_STORE_HEADERS, batchProjectIdFromRequest } from '../../batches/response';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { authorizeManagedFileRead, registerManagedFile } from '@/lib/media-core/access-context';
 
 
 export const runtime = 'nodejs';
@@ -148,6 +149,7 @@ async function __teamRouteGET(request: NextRequest, context: { params: Promise<{
       }, { status: 404, headers: BATCH_NO_STORE_HEADERS });
     }
     if (source.kind === 'original') {
+      const originalGrant = authorizeManagedFileRead(source.sourcePath);
       if (!fs.existsSync(source.sourcePath)) {
         return NextResponse.json({
           error: 'preview_unavailable',
@@ -161,6 +163,9 @@ async function __teamRouteGET(request: NextRequest, context: { params: Promise<{
       const served = originalMime.startsWith('video/')
         ? await ensureBrowserPreview(source.sourcePath)
         : source.sourcePath;
+      if (originalGrant && served !== source.sourcePath) {
+        registerManagedFile({ absolutePath: served, mimeType: 'video/mp4', derivedFromFileId: originalGrant.fileId });
+      }
       const stat = fs.statSync(served);
       const etagParts = [
         source.kind,
@@ -197,6 +202,14 @@ async function __teamRouteGET(request: NextRequest, context: { params: Promise<{
     let streaming = false;
     try {
       const absolutePath = resolveControlledProxyPath(source.relativePath);
+      if (source.originalSourcePath) {
+        const originalGrant = authorizeManagedFileRead(source.originalSourcePath);
+        if (originalGrant) {
+          registerManagedFile({ absolutePath, mimeType: 'video/mp4', derivedFromFileId: originalGrant.fileId });
+        }
+      } else {
+        authorizeManagedFileRead(absolutePath);
+      }
       if (!fs.existsSync(absolutePath)) {
         return NextResponse.json({
           error: 'preview_unavailable',

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
-import { requireAccessContext } from '../media-core/access-context.ts';
+import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { v4 as uuidv4 } from 'uuid';
 import { runFfmpeg, type VideoMediaProbe } from '../ffmpeg.ts';
 import {
@@ -590,10 +590,25 @@ async function importExternalAssetsForScope(
             row.thumbnailRelativePath, row.mimeType, row.mediaKind, row.durationUs,
             row.width, row.height, row.fileFingerprint, row.status, row.errorMessage, row.createdAt,
           );
-          requireAccessContext().registerInheritedScope({
+          const access = requireAccessContext();
+          access.registerInheritedScope({
             resourceType: 'final_external_asset', resourceId: row.id,
             parent: { resourceType: 'shot_set', resourceId: row.shotSetId },
           });
+          if (access.kind === 'team') {
+            const originalFileId = registerManagedFile({
+              absolutePath: path.join(deps.storageRoot, row.relativePath),
+              mimeType: row.mimeType,
+              references: [{ resourceType: 'final_external_asset', resourceId: row.id, role: 'input' }],
+            });
+            if (originalFileId && row.thumbnailRelativePath) {
+              registerManagedFile({
+                absolutePath: path.join(deps.storageRoot, row.thumbnailRelativePath),
+                mimeType: 'image/jpeg',
+                derivedFromFileId: originalFileId,
+              });
+            }
+          }
         }).immediate();
       } catch (error) {
         const constraint = (error as { code?: string })?.code?.startsWith('SQLITE_CONSTRAINT');

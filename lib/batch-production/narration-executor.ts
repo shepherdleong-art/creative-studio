@@ -15,6 +15,7 @@ import {
 } from '../media-core/adapters/tts-registry.ts';
 import { assertNoStorageSymlink } from '../media-core/storage-path.ts';
 import { computeFingerprintFromFile } from './fingerprint.ts';
+import { registerManagedFile } from '../media-core/access-context.ts';
 import {
   buildBatchNarrationSegments,
   createLocalNarrationSnapshot,
@@ -361,6 +362,11 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
         commit: () => {
           if (signal.aborted) throw new Error('任务已中止');
           const now = new Date().toISOString();
+          registerManagedFile({
+            absolutePath,
+            mimeType: 'audio/wav',
+            references: [{ resourceType: 'batch_task', resourceId: claim.task.id, role: 'output' }],
+          });
           // 权威表:新分配的候选版本与重试渲染都能回落到这条已核验配音。
           db.prepare(`
             INSERT INTO batch_script_narrations

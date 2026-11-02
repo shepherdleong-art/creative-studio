@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import type Database from 'better-sqlite3';
-import { requireAccessContext } from '../media-core/access-context.ts';
+import { dataRoot } from '../data-root.ts';
+import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 
 export type BatchArtifactKind = 'video' | 'cover';
 
@@ -95,10 +97,18 @@ export function registerArtifact(
       input.checksum,
       createdAt,
     );
-    requireAccessContext().registerInheritedScope({
+    const access = requireAccessContext();
+    access.registerInheritedScope({
       resourceType: 'batch_artifact', resourceId: id,
       parent: { resourceType: 'batch_plan', resourceId: input.outputPlanId },
     });
+    if (access.kind === 'team') {
+      registerManagedFile({
+        absolutePath: path.join(dataRoot(), 'storage', input.relativePath),
+        mimeType: input.kind === 'video' ? 'video/mp4' : 'image/png',
+        references: [{ resourceType: 'batch_artifact', resourceId: id, role: 'output' }],
+      });
+    }
     if (input.kind === 'video') {
       db.prepare(`
         UPDATE batch_output_plans SET currentArtifactId = ? WHERE id = ?

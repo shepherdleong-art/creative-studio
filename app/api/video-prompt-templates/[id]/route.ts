@@ -16,6 +16,7 @@ interface TemplateRow {
   isBuiltin: number;
   inRandomPool: number;
   openingCode: string | null;
+  ownerKey: string;
 }
 
 /**
@@ -32,7 +33,7 @@ async function __teamRoutePATCH(
   try {
     const { id } = await params;
     const db = getDb();
-    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode FROM video_prompt_templates WHERE id = ?`)
+    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode, ownerKey FROM video_prompt_templates WHERE id = ?`)
       .get(id) as TemplateRow | undefined;
     if (!row) return NextResponse.json({ error: '模板不存在' }, { status: 404 });
 
@@ -46,7 +47,7 @@ async function __teamRoutePATCH(
     if (body.openingCode !== undefined && (typeof body.openingCode !== 'string' || (body.openingCode.trim() && !openingCode))) {
       return NextResponse.json({ error: '开头编号请填写 k1、k2 等（最多 6 位数字）' }, { status: 400 });
     }
-    if (openingCode && db.prepare('SELECT id FROM video_prompt_templates WHERE openingCode=? COLLATE NOCASE AND id<>?').get(openingCode, id)) {
+    if (openingCode && db.prepare('SELECT id FROM video_prompt_templates WHERE openingCode=? COLLATE NOCASE AND ownerKey=? AND id<>?').get(openingCode, row.ownerKey, id)) {
       return NextResponse.json({ error: `开头编号 ${openingCode} 已被其他模板使用` }, { status: 409 });
     }
     const inPool = body.inRandomPool === undefined ? row.inRandomPool : (body.inRandomPool ? 1 : 0);
@@ -76,8 +77,8 @@ async function __teamRoutePATCH(
     const { name, description, prompt, inRandomPool } = normalized.value;
 
     const duplicate = db.prepare(
-      `SELECT id FROM video_prompt_templates WHERE name = ? AND id != ?`,
-    ).get(name, id) as { id: string } | undefined;
+      `SELECT id FROM video_prompt_templates WHERE name = ? AND ownerKey = ? AND id != ?`,
+    ).get(name, row.ownerKey, id) as { id: string } | undefined;
     if (duplicate) {
       return NextResponse.json({ error: `已有同名模板「${name}」` }, { status: 409 });
     }
@@ -111,7 +112,7 @@ async function __teamRouteDELETE(
   try {
     const { id } = await params;
     const db = getDb();
-    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode FROM video_prompt_templates WHERE id = ?`)
+    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode, ownerKey FROM video_prompt_templates WHERE id = ?`)
       .get(id) as TemplateRow | undefined;
     if (!row) return NextResponse.json({ error: '模板不存在' }, { status: 404 });
 

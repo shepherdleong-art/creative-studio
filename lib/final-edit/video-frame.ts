@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { runFfmpeg } from '../ffmpeg.ts';
 import { resolveStoragePath, toStorageRelativePath } from './storage-path.ts';
+import { authorizeManagedFileRead, registerManagedFile } from '../media-core/access-context.ts';
 
 const inFlightFrames = new Map<string, Promise<void>>();
 const frameWaiters: Array<() => void> = [];
@@ -29,6 +30,7 @@ export async function materializeVideoFrame(input: {
 }): Promise<{ absolutePath: string; relativePath: string }> {
   const sourceRelativePath = toStorageRelativePath(input.storageRoot, input.sourcePath);
   const sourceAbsolutePath = resolveStoragePath(input.storageRoot, sourceRelativePath);
+  const originalFileId = authorizeManagedFileRead(sourceAbsolutePath)?.fileId ?? null;
   if (!fs.existsSync(sourceAbsolutePath)) throw new Error('视频素材文件不存在');
   const safeKey = crypto.createHash('sha256').update(input.cacheKey).digest('hex');
   const relativePath = path.join('final-edits', 'previews', input.cacheNamespace, `${safeKey}.jpg`);
@@ -67,6 +69,9 @@ export async function materializeVideoFrame(input: {
       }).catch(() => undefined);
     }
     await frameJob;
+  }
+  if (originalFileId) {
+    registerManagedFile({ absolutePath, mimeType: 'image/jpeg', derivedFromFileId: originalFileId });
   }
   return { absolutePath, relativePath };
 }

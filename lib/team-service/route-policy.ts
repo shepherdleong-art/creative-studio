@@ -215,7 +215,9 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/auth/session': 'GET',
   '/api/team/health/live': 'GET',
   '/api/team/health/ready': 'GET',
+  '/api/team/files/[id]': 'GET',
   '/api/team/models': 'GET',
+  '/api/team/public-resources': 'POST',
   '/api/team/users': 'GET POST',
   '/api/team/users/[id]/reset-credential': 'POST',
   '/api/team/users/[id]': 'PATCH',
@@ -239,18 +241,17 @@ const AUTHENTICATED = new Set([
   '/api/team/auth/change-password POST', '/api/team/auth/logout POST',
   '/api/canvas/models GET', '/api/final-edit/capabilities GET',
   '/api/system-fonts GET', '/api/packaging/system-fonts GET', '/api/team/models GET',
+  '/api/team/files/[id] GET', '/api/images/[...path] GET', '/api/videos/[...path] GET',
 ]);
 const ADMIN_PREFIXES = ['/api/providers', '/api/team/users'];
 const ADMIN = new Set([
   '/api/company-provider/health GET',
   '/api/batch-production/proxies/cleanup POST', '/api/batch-production/proxies/usage GET',
   '/api/batch-production/readiness GET', '/api/batch-production/recovery GET',
-  '/api/script-studio/catalogs/strategy/import POST', '/api/script-studio/catalogs/template/import POST',
-  '/api/script-studio/catalogs/[catalogId]/current PUT',
-  '/api/script-studio/viral-templates/current PUT', '/api/script-studio/viral-templates/import POST',
+  '/api/team/public-resources POST',
 ]);
 const SERVER_DISABLED = new Set([
-  '/api/images/[...path] GET', '/api/videos/[...path] GET', '/api/packaging/templates/[...path] GET',
+  '/api/packaging/templates/[...path] GET',
   '/api/packaging/system-fonts/select POST', '/api/projects/[id]/script-studio/import-directory POST',
   '/api/packaging/user-font GET', '/api/packaging/user-font POST', '/api/packaging/user-font DELETE',
   '/api/providers/tts/[id]/preview POST',

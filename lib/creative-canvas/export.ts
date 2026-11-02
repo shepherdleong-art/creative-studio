@@ -20,7 +20,7 @@ import { canvasAssetAbsolutePath, getCanvasAsset } from './assets.ts';
 import { getCanvasNodeState, requireCanvas } from './repository.ts';
 import { findGraphNode } from './graph.ts';
 import { canvasNamedDirectory, canvasNamedFilename, sanitizeCanvasFilename } from './asset-naming.ts';
-import { requireAccessContext } from '../media-core/access-context.ts';
+import { authorizeManagedFileRead, registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 
 export interface CanvasExportManifestItem {
   videoMetadata?: CanvasVideoMetadata;
@@ -166,6 +166,7 @@ export async function createCanvasExport(params: CreateCanvasExportParams): Prom
       throw new CanvasError('conflict', `节点「${nodeTitle}」的当前结果文件已不存在。`, { nodeId, assetId });
     }
     const absolutePath = canvasAssetAbsolutePath(asset, storageRoot);
+    authorizeManagedFileRead(absolutePath);
     if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
       throw new CanvasError('conflict', `节点「${nodeTitle}」的当前结果文件缺失，导出未生成。`, { nodeId, assetId });
     }
@@ -227,9 +228,19 @@ export async function createCanvasExport(params: CreateCanvasExportParams): Prom
       return canvasAssetAbsolutePath(asset, storageRoot);
     });
     const at = now().toISOString();
-    db.prepare(
-      `UPDATE creative_canvas_exports SET status = 'ready', zipRelativePath = ?, updatedAt = ? WHERE id = ?`,
-    ).run(relativeZipPath, at, exportId);
+    const publish = db.transaction(() => {
+      db.prepare(
+        `UPDATE creative_canvas_exports SET status = 'ready', zipRelativePath = ?, updatedAt = ? WHERE id = ?`,
+      ).run(relativeZipPath, at, exportId);
+      if (access.kind === 'team') {
+        registerManagedFile({
+          absolutePath: absoluteZipPath,
+          mimeType: 'application/zip',
+          references: [{ resourceType: 'canvas_export', resourceId: exportId, role: 'export', pinKind: 'export' }],
+        });
+      }
+    });
+    publish.immediate();
   } catch (error) {
     const at = now().toISOString();
     db.prepare(

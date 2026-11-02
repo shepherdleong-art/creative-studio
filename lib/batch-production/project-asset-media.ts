@@ -18,6 +18,7 @@ import {
 } from './media-catalog.ts';
 import { getAsset, syncAssetStatusFromSources, type BatchAssetRow } from './assets.ts';
 import { assertNoStorageSymlink } from '../media-core/storage-path.ts';
+import { authorizeManagedFileRead, registerManagedFile } from '../media-core/access-context.ts';
 
 export interface VerifiedProjectAssetMedia {
   asset: BatchAssetRow;
@@ -218,8 +219,15 @@ async function materializeThumbnail(
   absolutePath: string,
   relativePath: string,
 ): Promise<MaterializedAssetThumbnail> {
+  const originalFileId = authorizeManagedFileRead(source.filePath)?.fileId ?? null;
+  const registerDerivative = () => {
+    if (originalFileId) {
+      registerManagedFile({ absolutePath, mimeType: 'image/jpeg', derivedFromFileId: originalFileId });
+    }
+  };
   if (fs.existsSync(absolutePath)) {
     assertRegularFile(absolutePath);
+    registerDerivative();
     return { absolutePath, relativePath, fingerprint: source.fingerprint };
   }
   await mkdir(path.dirname(absolutePath), { recursive: true });
@@ -255,6 +263,7 @@ async function materializeThumbnail(
   } finally {
     await unlink(temporaryPath).catch(() => undefined);
   }
+  registerDerivative();
   return { absolutePath, relativePath, fingerprint: source.fingerprint };
 }
 
@@ -313,6 +322,10 @@ async function resolvePublishedAssetThumbnail(
     }
     if (fs.existsSync(absolutePath)) {
       assertRegularFile(absolutePath);
+      const originalFileId = authorizeManagedFileRead(filePath)?.fileId ?? null;
+      if (originalFileId) {
+        registerManagedFile({ absolutePath, mimeType: 'image/jpeg', derivedFromFileId: originalFileId });
+      }
       markSourceHealth(db, source, 'healthy');
       return { absolutePath, relativePath, fingerprint };
     }
