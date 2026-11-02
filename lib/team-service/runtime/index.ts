@@ -8,6 +8,7 @@ import { clearExecutionModuleRuntime, setExecutionModuleRuntime } from '../../me
 import { createScriptGenerationV3Lifecycle } from '../../script-generation-v3-server.ts';
 import { ensureServerDeploymentMarker, readRuntimeConfig } from '../config.ts';
 import { acquireTeamRuntimeOwner, type TeamRuntimeOwner } from './owner.ts';
+import { createCanvasExecutionLifecycle } from '../../creative-canvas/bootstrap.ts';
 import {
   getTeamRuntimeState,
   initializeTeamRuntimeState,
@@ -48,7 +49,10 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
         identity: owner,
         db,
         execution,
-        modules: [createScriptGenerationV3Lifecycle(db)],
+        modules: [
+          createScriptGenerationV3Lifecycle(db),
+          createCanvasExecutionLifecycle({ db, execution: execution.facade }),
+        ],
         ...schemaUpgradeRuntimePaths(dataRoot()),
         assertOwnerActive: () => {
           owner?.assertActive();

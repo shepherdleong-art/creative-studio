@@ -70,7 +70,7 @@ function candidateReason(
 
 export function admitOperation(
   options: AdmissionOptions,
-  instance: InstanceFence & { leaseMs?: number },
+  instance: InstanceFence & { leaseMs?: number; operationId?: string },
 ): AdmitResult {
   options.assertOpen();
   if (!Number.isSafeInteger(instance.fence) || instance.fence <= 0 || !instance.instanceId.trim()) {
@@ -88,18 +88,24 @@ export function admitOperation(
     const state = options.db.prepare('SELECT cursorActorId FROM execution_admission_state WHERE id = 1').get() as
       | { cursorActorId: string | null } | undefined;
     if (!state) throw new ExecutionError('execution_not_ready', '执行轮转状态未就绪。');
-    const actors = (options.db.prepare(`
-      SELECT actorId FROM execution_operations
-      WHERE status IN ('pending', 'deferred')
-      GROUP BY actorId ORDER BY actorId
-    `).all() as Array<{ actorId: string }>).map(({ actorId }) => actorId);
+    const requestedRow = instance.operationId ? options.db.prepare(`
+      SELECT * FROM execution_operations WHERE id = ? AND status IN ('pending', 'deferred')
+    `).get(instance.operationId) as Parameters<typeof mapOperation>[0] | undefined : undefined;
+    if (instance.operationId && !requestedRow) return { kind: 'idle' };
+    const actors = requestedRow
+      ? [mapOperation(requestedRow).actorId]
+      : (options.db.prepare(`
+        SELECT actorId FROM execution_operations
+        WHERE status IN ('pending', 'deferred')
+        GROUP BY actorId ORDER BY actorId
+      `).all() as Array<{ actorId: string }>).map(({ actorId }) => actorId);
     if (actors.length === 0) return { kind: 'idle' };
     const ordered = state.cursorActorId
       ? [...actors.filter((actor) => actor > state.cursorActorId!), ...actors.filter((actor) => actor <= state.cursorActorId!)]
       : actors;
     const reasons: AdmissionWaitReason[] = [];
     for (const actorId of ordered) {
-      const row = options.db.prepare(`
+      const row = requestedRow ?? options.db.prepare(`
         SELECT * FROM execution_operations
         WHERE actorId = ? AND status IN ('pending', 'deferred')
         ORDER BY readySeq LIMIT 1

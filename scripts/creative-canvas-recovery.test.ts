@@ -123,7 +123,7 @@ function claimOne(workerId: string) {
   return claimed[0];
 }
 
-// --- 1. 提交意图落库后、POST 之前中断 → 待核查且保留名额 ----------------------
+// --- 1. 提交意图落库后、POST 之前中断 → 待核查且释放本地 slot -----------------
 
 {
   const taskId = await prepareNode('g-submit-before', '素材1.png');
@@ -141,9 +141,9 @@ function claimOne(workerId: string) {
   assert.deepEqual(report.uncertain, [taskId]);
   const task = getCanvasTask(db, taskId);
   assert.equal(task?.phase, 'uncertain');
-  assert.equal(task?.slotHeld, true, '提交结果不明必须保留可能占用的名额');
+  assert.equal(task?.slotHeld, false, '待核查保留远端身份，但不占本地 worker slot');
   assert.equal(task?.providerTaskId, null);
-  assert.equal(canvasTaskSlotUsage(db).held, before);
+  assert.equal(canvasTaskSlotUsage(db).held, before - 1);
 
   // 待核查期间不会被重新领取，也不会重新 POST
   const adapter = createCanvasFixtureAdapter({ defaultScript: { delayMs: 1 } });
