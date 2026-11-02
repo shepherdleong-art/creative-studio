@@ -7,10 +7,26 @@ import { dataRoot } from './data-root.ts';
 
 const LOG_DIR = path.join(dataRoot(), 'storage', 'logs');
 
-function ensureLogDir() {
-  if (!fs.existsSync(LOG_DIR)) {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-  }
+export interface WorkbenchLogRetention {
+  retentionDays: number;
+  maxFileBytes: number;
+  maxTotalBytes: number;
+  maxFiles: number;
+}
+
+function positiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function workbenchLogRetention(env: Record<string, string | undefined> = process.env): WorkbenchLogRetention {
+  const maxFileBytes = positiveInteger(env.CREATIVE_STUDIO_LOG_MAX_FILE_BYTES, 10 * 1024 * 1024);
+  return {
+    retentionDays: positiveInteger(env.CREATIVE_STUDIO_LOG_RETENTION_DAYS, 30),
+    maxFileBytes,
+    maxTotalBytes: Math.max(maxFileBytes, positiveInteger(env.CREATIVE_STUDIO_LOG_MAX_TOTAL_BYTES, 100 * 1024 * 1024)),
+    maxFiles: positiveInteger(env.CREATIVE_STUDIO_LOG_MAX_FILES, 20),
+  };
 }
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
@@ -30,6 +46,65 @@ function formatLocalTimestamp(date: Date): string {
     `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
     `.${pad(date.getMilliseconds(), 3)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
   );
+}
+
+function boundedLogLine(line: string, maxBytes: number): Buffer {
+  let value = line.replace(/[\r\n]+$/g, '');
+  const contentLimit = Math.max(0, maxBytes - 1);
+  while (Buffer.byteLength(value, 'utf8') > contentLimit) value = value.slice(0, -1);
+  return Buffer.from(`${value}\n`, 'utf8');
+}
+
+export function cleanupBoundedWorkbenchLogs(
+  directory: string,
+  options: WorkbenchLogRetention,
+  now = new Date(),
+): void {
+  if (!fs.existsSync(directory)) return;
+  const cutoff = now.getTime() - options.retentionDays * 24 * 60 * 60 * 1000;
+  const files = fs.readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /^workbench-.*\.log$/.test(entry.name))
+    .map((entry) => {
+      const filePath = path.join(directory, entry.name);
+      const stat = fs.statSync(filePath);
+      return { filePath, size: stat.size, mtimeMs: stat.mtimeMs };
+    });
+  for (const file of files) {
+    if (file.mtimeMs < cutoff) fs.unlinkSync(file.filePath);
+  }
+  const remaining = files.filter((file) => file.mtimeMs >= cutoff && fs.existsSync(file.filePath))
+    .sort((left, right) => right.mtimeMs - left.mtimeMs || right.filePath.localeCompare(left.filePath));
+  let totalBytes = 0;
+  let kept = 0;
+  for (const file of remaining) {
+    if (kept < options.maxFiles && totalBytes + file.size <= options.maxTotalBytes) {
+      totalBytes += file.size;
+      kept += 1;
+    } else {
+      fs.unlinkSync(file.filePath);
+    }
+  }
+}
+
+export function appendBoundedWorkbenchLog(
+  directory: string,
+  line: string,
+  options: WorkbenchLogRetention,
+  now = new Date(),
+): void {
+  fs.mkdirSync(directory, { recursive: true });
+  const dateStr = formatLocalTimestamp(now).slice(0, 10);
+  const activePath = path.join(directory, `workbench-${dateStr}.log`);
+  const bytes = boundedLogLine(line, options.maxFileBytes);
+  if (fs.existsSync(activePath)) {
+    const size = fs.statSync(activePath).size;
+    if (size > 0 && size + bytes.length > options.maxFileBytes) {
+      const suffix = formatLocalTimestamp(now).replace(/[:.]/g, '-');
+      fs.renameSync(activePath, path.join(directory, `workbench-${dateStr}-${suffix}-${uuidv4().slice(0, 8)}.log`));
+    }
+  }
+  fs.appendFileSync(activePath, bytes);
+  cleanupBoundedWorkbenchLogs(directory, options, now);
 }
 
 export interface JobLogEntry {
@@ -71,14 +146,11 @@ export function writeLog(params: {
 
   // Write to file
   try {
-    ensureLogDir();
     const now = new Date();
-    const dateStr = formatLocalTimestamp(now).slice(0, 10);
-    const logFile = path.join(LOG_DIR, `workbench-${dateStr}.log`);
     const timestamp = formatLocalTimestamp(now);
     const jobLabel = jobId ? `[job:${jobId.slice(0, 8)}] ` : '';
-    const line = `[${timestamp}] [${level.toUpperCase()}] ${jobLabel}[attempt:${attempt}] ${sanitized}\n`;
-    fs.appendFileSync(logFile, line, 'utf-8');
+    const line = `[${timestamp}] [${level.toUpperCase()}] ${jobLabel}[attempt:${attempt}] ${sanitized}`;
+    appendBoundedWorkbenchLog(LOG_DIR, line, workbenchLogRetention(), now);
   } catch {
     // Last resort: console
     console.error(`[LOGGER FAILED] ${sanitized}`);
@@ -123,18 +195,11 @@ export function cleanupOldLogs(daysToKeep = 30): void {
       `DELETE FROM job_logs WHERE createdAt < datetime('now', ?)`
     ).run(`-${daysToKeep} days`);
 
-    // Also clean up old log files
-    ensureLogDir();
-    const files = fs.readdirSync(LOG_DIR);
-    const cutoff = Date.now() - daysToKeep * 24 * 60 * 60 * 1000;
-
-    for (const file of files) {
-      const filePath = path.join(LOG_DIR, file);
-      const stat = fs.statSync(filePath);
-      if (stat.mtimeMs < cutoff) {
-        fs.unlinkSync(filePath);
-      }
-    }
+    // 只清理普通 workbench 文件；execution journal 与维护回执有独立保留水位。
+    cleanupBoundedWorkbenchLogs(LOG_DIR, {
+      ...workbenchLogRetention(),
+      retentionDays: daysToKeep,
+    });
   } catch {
     // Cleanup is best-effort
   }

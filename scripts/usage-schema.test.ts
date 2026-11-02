@@ -18,11 +18,11 @@ function indexNames(db: Database.Database, table: string): string[] {
 }
 
 const db = new Database(':memory:');
-assert.deepEqual(USAGE_SCHEMA_MIGRATIONS.map((migration) => migration.version), [1, 2]);
+assert.deepEqual(USAGE_SCHEMA_MIGRATIONS.map((migration) => migration.version), [1, 2, 3, 4]);
 
 const firstReadiness = initUsageSchema(db);
 assert.equal(firstReadiness.available, true, 'fresh usage schema must be ready');
-assert.equal(firstReadiness.version, 2, 'fresh usage schema must apply migration v2');
+assert.equal(firstReadiness.version, 4, 'fresh usage schema must apply migration v4');
 assert.equal(firstReadiness.error, null, 'ready usage schema must not expose an error');
 assert.equal(isUsageSchemaReady(db), true);
 assert.deepEqual(getUsageSchemaReadiness(db), firstReadiness);
@@ -35,7 +35,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   db.prepare(`SELECT version FROM usage_schema_migrations ORDER BY version`).all(),
-  [{ version: 1 }, { version: 2 }],
+  [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }],
   'usage migrations must be recorded in the independent migration table',
 );
 
@@ -45,16 +45,18 @@ assert.deepEqual(
     'id', 'eventKey', 'coreModelKey', 'category', 'providerId', 'providerName', 'model',
     'pricingVersion', 'callCount', 'quantity', 'unit', 'priceScale', 'unitPriceMicros',
     'costMicros', 'detailJson', 'projectId', 'refType', 'refId', 'createdAt',
+    'actorUserId', 'executionAttemptId',
   ],
-  'usage_ledger must keep the complete v1 column contract',
+  'usage_ledger must keep the complete v4 column contract',
 );
 assert.deepEqual(
   (db.prepare(`PRAGMA table_info(usage_call_events)`).all() as Array<{ name: string }>).map((column) => column.name),
   [
     'eventKey', 'status', 'ownerInstanceId', 'snapshotJson', 'usageJson', 'projectId',
     'refType', 'refId', 'errorMessage', 'createdAt', 'updatedAt',
+    'actorUserId', 'executionAttemptId',
   ],
-  'usage_call_events must keep the complete v1 column contract',
+  'usage_call_events must keep the complete v4 column contract',
 );
 
 const ledgerIndexes = indexNames(db, 'usage_ledger');
@@ -81,7 +83,7 @@ assert.throws(
 
 const secondReadiness = initUsageSchema(db);
 assert.deepEqual(secondReadiness, firstReadiness, 're-running usage migrations must be idempotent');
-assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_schema_migrations`).get(), { count: 2 });
+assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_schema_migrations`).get(), { count: 4 });
 assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger`).get(), { count: 1 });
 
 const failedDb = new Database(':memory:');

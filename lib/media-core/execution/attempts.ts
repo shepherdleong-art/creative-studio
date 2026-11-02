@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   assertMoney,
   ExecutionError,
+  runWithExecutionAttempt,
   type AttachReceiptInput,
   type AttemptRecord,
   type CostQuote,
@@ -281,6 +282,24 @@ export async function attachReceipt(options: ExecutionFacadeOptions, input: Atta
   return readAttempt(options.db, attempt.id);
 }
 
+async function recordFailedAttempt(
+  options: ExecutionFacadeOptions,
+  input: SettleInput,
+  stage: 'remote_submit' | 'remote_poll',
+): Promise<void> {
+  if (input.outcome !== 'failed') return;
+  try {
+    await options.recordError?.({
+      attemptId: input.attemptId,
+      outcome: 'failed',
+      errorCode: input.errorCode,
+      stage: input.errorStage ?? stage,
+    });
+  } catch {
+    // 诊断与 usage 一样不得改变已提交的执行结果。
+  }
+}
+
 export async function settleAttempt(options: ExecutionFacadeOptions, input: SettleInput): Promise<AttemptRecord> {
   const before = readAttempt(options.db, input.attemptId);
   const actualCost = input.actualCost ?? null;
@@ -317,6 +336,7 @@ export async function settleAttempt(options: ExecutionFacadeOptions, input: Sett
         );
       }).immediate();
     }
+    await recordFailedAttempt(options, input, 'remote_submit');
     return readAttempt(options.db, before.id);
   }
   if (before.actualMinor !== null && before.actualMinor !== actualCost?.minor) {
@@ -375,6 +395,7 @@ export async function settleAttempt(options: ExecutionFacadeOptions, input: Sett
       // usage 只是镜像；执行台账已提交，失败不参与门禁也不回滚。
     }
   }
+  await recordFailedAttempt(options, input, 'remote_submit');
   return readAttempt(options.db, before.id);
 }
 
@@ -395,7 +416,7 @@ export async function transmitAttempt(
   }
   let receipt: ExecutionReceipt;
   try {
-    receipt = await send(intent);
+    receipt = await runWithExecutionAttempt(intent.attemptId, () => send(intent));
   } catch (error) {
     const operation = readOperation(options.db, before.operationId);
     const now = options.now?.() ?? new Date();

@@ -21,6 +21,7 @@ import type { ServerRuntimeConfig } from './config.ts';
 import { checkTeamServiceReadiness } from './readiness.ts';
 import { recoverTeamUploads } from './transfers/uploads.ts';
 import { teamTransferSpace } from './transfers/space.ts';
+import { recordTeamExecutionError } from './diagnostics.ts';
 import {
   initializeTeamRuntimeState,
   markTeamRuntimeFailed,
@@ -56,9 +57,12 @@ export function createTeamExecutionRuntime(options: {
   db: Database.Database;
 }): ExecutionRuntime {
   const { config, db } = options;
+  const serverReleaseId = process.env.CREATIVE_STUDIO_SERVER_RELEASE_ID?.trim() || 'unknown';
   return createExecutionFacade({
     db,
     deploymentId: config.deploymentId,
+    serverReleaseId,
+    recordError: (error) => { recordTeamExecutionError(db, { ...error, serverReleaseId }); },
     journal: createExecutionJournal({
       deploymentId: config.deploymentId,
       directory: path.join(config.dataRoot, 'storage', 'execution-journal', config.deploymentId),

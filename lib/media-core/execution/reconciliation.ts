@@ -140,6 +140,7 @@ export async function reconcileAttempt(options: ExecutionFacadeOptions, input: R
     actualCost: input.evidence.actualCost,
     remoteTerminal: true,
     errorCode: input.evidence.errorCode,
+    errorStage: 'remote_poll',
   });
 }
 

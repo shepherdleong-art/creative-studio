@@ -75,16 +75,32 @@ export default function Header({
   }, [server]);
 
   const clientCompatible = clientStatus?.compatible !== false;
+  const reportUpdateFailure = async (code: string, message: string) => {
+    setClientMessage(message);
+    try {
+      const response = await teamWrite('/api/team/errors/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientEventId: crypto.randomUUID(), stage: 'client_update', code }),
+      });
+      if (response.ok) {
+        const body = await response.json() as { errorId: string };
+        setClientMessage(`${message} 错误编号：${body.errorId}`);
+      }
+    } catch {
+      // 更新入口不可用时仍保留原可行动提示，诊断上报不能再次阻断客户端。
+    }
+  };
   const handleClientUpdate = async () => {
     if (clientUpdating) return;
     setClientUpdating(true);
     setClientMessage('');
     try {
       const result = await window.desktopBridge?.installClientUpdate?.();
-      if (!result?.started) setClientMessage(result?.message ?? '未找到受控更新入口，请联系管理员修复。');
+      if (!result?.started) await reportUpdateFailure('update_start_unavailable', result?.message ?? '未找到受控更新入口，请联系管理员修复。');
       else setClientMessage('更新助手已启动；验证完成前会暂停本机传输。');
-    } catch (error) {
-      setClientMessage(error instanceof Error ? error.message : '更新助手启动失败，请联系管理员修复。');
+    } catch {
+      await reportUpdateFailure('update_start_failed', '更新助手启动失败，请联系管理员修复。');
     } finally {
       setClientUpdating(false);
     }
@@ -126,6 +142,10 @@ export default function Header({
             >创作画布</Link>
           )}
           <Link href="/usage" className="text-ink-secondary transition-colors hover:text-ink">消耗</Link>
+          {server && <>
+            <Link href="/team/tasks" className="text-ink-secondary transition-colors hover:text-ink">任务</Link>
+            <Link href="/team/errors" className="text-ink-secondary transition-colors hover:text-ink">错误</Link>
+          </>}
           {(!server || principal?.role === 'admin') && <>
             {server && <Link href="/team/admin/users" className="text-ink-secondary transition-colors hover:text-ink">账号</Link>}
             <Link href="/settings" className="text-ink-secondary transition-colors hover:text-ink">供应商</Link>

@@ -598,7 +598,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       guard,
       now,
     });
-    recordCanvasTaskUsage(db, { taskId });
+    recordCanvasTaskUsage(db, { taskId, executionAttemptId: executionAttempt?.id });
   } else {
     const submittedIntent = updateCanvasTaskGuarded(db, {
       taskId,
@@ -623,7 +623,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         guard,
         now,
       });
-      recordCanvasTaskUsage(db, { taskId });
+      recordCanvasTaskUsage(db, { taskId, executionAttemptId: executionAttempt?.id });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const uncertain = (error instanceof CanvasAdapterError && error.uncertain) || error instanceof TypeError;
@@ -812,7 +812,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         });
       },
     });
-    recordCanvasTaskUsage(db, { taskId });
+    recordCanvasTaskUsage(db, { taskId, executionAttemptId: executionAttempt?.id });
     if (options.execution && executionAttempt?.actualMinor === null) {
       const latest = getCanvasTask(db, taskId);
       const actualCost = latest ? canvasTaskActualCost(db, latest) : null;

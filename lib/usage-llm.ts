@@ -21,6 +21,7 @@ export interface LlmUsageContext {
   projectId?: string;
   refType?: string;
   refId?: string;
+  executionAttemptId?: string | null;
 }
 
 /** Public call-site shape; the registry always merges enabled: true. */
@@ -156,6 +157,7 @@ export function beginLlmUsageCall(
       projectId,
       refType,
       refId,
+      executionAttemptId: context.executionAttemptId,
     });
     if (!started.ok) return null;
     return { callId, eventKey, db };
