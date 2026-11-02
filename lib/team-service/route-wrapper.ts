@@ -13,6 +13,7 @@ import {
 } from './resource-scopes.ts';
 import { runWithAccessContext } from '../media-core/access-context.ts';
 import { teamRoutePolicy, type TeamRoutePolicy } from './route-policy.ts';
+import { softDeleteResource } from './lifecycle/index.ts';
 
 interface RouteHandlerContext {
   params?: Promise<Record<string, string | string[] | undefined>> | Record<string, string | string[] | undefined>;
@@ -164,6 +165,15 @@ function primaryReference(policy: TeamRoutePolicy, data: RequestData): { resourc
   return id ? { resourceType: resource, resourceId: id } : null;
 }
 
+const SERVER_SOFT_DELETE_ROUTES = new Set([
+  '/api/projects/[id] DELETE',
+  '/api/images/[id] DELETE',
+  '/api/canvas/[id] DELETE',
+  '/api/batch-production/batches/[id] DELETE',
+  '/api/batch-production/scripts/[scriptId] DELETE',
+  '/api/projects/[id]/script-studio/scripts/[scriptId] DELETE',
+]);
+
 const PRIMARY_CHILDREN: Record<string, Set<string>> = {
   batch: new Set(['batch_version', 'batch_plan', 'batch_output_version', 'batch_artifact', 'batch_task']),
   batch_plan: new Set(['batch_output_version', 'batch_artifact']),
@@ -217,7 +227,7 @@ async function authorizeResource(
   context: RouteHandlerContext | undefined,
   policy: TeamRoutePolicy,
   principal: AuthPrincipal,
-): Promise<void> {
+): Promise<{ data: RequestData; primary: { resourceType: string; resourceId: string } | null }> {
   const db = getDb();
   const data = await requestData(request, policy.route, context);
   const references: Array<{ resourceType: string; resourceId: string }> = [];
@@ -245,6 +255,19 @@ async function authorizeResource(
       ? policy.action! : 'read',
   ));
   assertSameAuthorizedRoot(db, policy, primary, scopes);
+  return { data, primary };
+}
+
+function softDeleteReference(
+  policy: TeamRoutePolicy,
+  authorized: { data: RequestData; primary: { resourceType: string; resourceId: string } | null },
+): { resourceType: string; resourceId: string } | null {
+  if (!SERVER_SOFT_DELETE_ROUTES.has(`${policy.route} ${policy.method}`)) return null;
+  if (policy.route === '/api/projects/[id]/script-studio/scripts/[scriptId]') {
+    const resourceId = single(authorized.data.params.scriptId);
+    return resourceId ? { resourceType: 'project_script', resourceId } : null;
+  }
+  return authorized.primary;
 }
 
 function authorizationError(error: unknown): Response {
@@ -288,7 +311,14 @@ export function withTeamRoute<T>(route: string, method: string, handler: T): T &
         });
         context = createTeamAccessContext({ db: getDb(), principal });
         if (policy.category === 'resource') {
-          await authorizeResource(request, args[1] as RouteHandlerContext | undefined, policy, principal);
+          const authorized = await authorizeResource(request, args[1] as RouteHandlerContext | undefined, policy, principal);
+          const softDelete = softDeleteReference(policy, authorized);
+          if (softDelete) {
+            const deleted = softDeleteResource(getDb(), principal, softDelete);
+            return Response.json({ success: true, mode: 'soft', ...deleted }, {
+              headers: { 'Cache-Control': 'private, no-store' },
+            });
+          }
         }
       }
     } catch (error) {

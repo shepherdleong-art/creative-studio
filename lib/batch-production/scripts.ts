@@ -352,10 +352,17 @@ export function getBatchExternalScript(
 
 /** 项目脚本列表只展示第 3 步保存的项目脚本;批次内外部文案默认不出现在这里 */
 export function listProjectScripts(db: Database.Database, projectId: string): BatchScriptRow[] {
+  const access = requireAccessContext();
+  const lifecycle = access.kind === 'local' ? '' : `AND EXISTS (
+    SELECT 1 FROM team_resource_scopes scope
+    WHERE scope.resourceType = 'batch_script' AND scope.resourceId = batch_scripts.id
+      AND scope.deletedAt IS NULL
+  )`;
   return db.prepare(`
     SELECT * FROM batch_scripts
     WHERE projectId = ? AND sourceKind = 'script_draft'
       AND ownerBatchVersionId IS NULL AND sourceAvailable = 1
+      ${lifecycle}
     ORDER BY createdAt, id
   `).all(projectId) as BatchScriptRow[];
 }
