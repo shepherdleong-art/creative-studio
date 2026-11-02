@@ -25,7 +25,7 @@ type RequestData = {
 };
 
 const ID_RESOURCES: Record<string, string> = {
-  projectId: 'project', canvasId: 'canvas', shotSetId: 'shot_set', shotId: 'shot',
+  projectId: 'project', canvasId: 'canvas', sourceCanvasId: 'canvas', shotSetId: 'shot_set', shotId: 'shot',
   imageId: 'image', inputImageId: 'image', sourceImageId: 'image', sceneSeedImageId: 'image',
   tailFrameImageId: 'image', tailImageId: 'image', jobId: 'job', sourceJobId: 'job', videoJobId: 'video_job', batchId: 'batch',
   planId: 'batch_plan', batchVersionId: 'batch_version', ownerBatchVersionId: 'batch_version',
@@ -54,7 +54,7 @@ function single(value: string | string[] | undefined): string | undefined {
 function contextualResource(route: string, key: string, inferred: string): string {
   if (route.startsWith('/api/canvas')) {
     if (['jobId', 'taskId', 'sourceTaskId', 'upstreamTaskId'].includes(key)) return 'canvas_task';
-    if (['assetId', 'draftAssetId', 'resolvedAssetId'].includes(key)) return 'canvas_asset';
+    if (['assetId', 'draftAssetId', 'resolvedAssetId', 'resultAssetIds'].includes(key)) return 'canvas_asset';
   }
   if (route.startsWith('/api/batch-production')) {
     if (['taskId', 'sourceTaskId', 'upstreamTaskId'].includes(key)) return 'batch_task';
@@ -62,6 +62,10 @@ function contextualResource(route: string, key: string, inferred: string): strin
     if (key === 'artifactId') return 'batch_artifact';
     if (['versionId', 'currentVersionId'].includes(key)) return 'batch_output_version';
     if (key === 'scriptId') return 'batch_script';
+  }
+  if (route.startsWith('/api/script-studio/viral-templates') && key === 'revisionId') return 'viral_template_revision';
+  if (route.startsWith('/api/projects/') && route.includes('/script-studio/') && key === 'revisionId') {
+    return route.includes('/scripts/') ? 'project_script_revision' : 'script_library_revision';
   }
   if (route.includes('/script-studio/')) {
     if (key === 'taskId') return 'script_studio_task';
@@ -81,6 +85,8 @@ function addReference(
   resourceType: string,
   value: unknown,
 ) {
+  // 脚本领域的 templateId 是内置文案模板标识，不是视频提示词模板资源。
+  if (key === 'templateId' && (route.startsWith('/api/projects/[id]/script') || route.startsWith('/api/script-studio/'))) return;
   const resolved = contextualResource(route, key, resourceType);
   if (typeof value === 'string' && value.trim()) references.push({ resourceType: resolved, resourceId: value });
   if (Array.isArray(value)) {
@@ -134,7 +140,7 @@ async function requestData(request: Request, route: string, context?: RouteHandl
     const direct = ID_RESOURCES[key];
     if (direct) addReference(references, route, key, direct, value);
   }
-  scanReferences(route, Object.fromEntries(query.entries()), references);
+  for (const [key, value] of query.entries()) scanReferences(route, { [key]: value }, references);
   scanReferences(route, body, references);
   return { params, query, body };
 }
@@ -223,7 +229,7 @@ async function authorizeResource(
     const resourceType = ID_RESOURCES[key];
     if (value && resourceType) addReference(scanned, policy.route, key, resourceType, value);
   }
-  scanReferences(policy.route, Object.fromEntries(data.query.entries()), scanned);
+  for (const [key, value] of data.query.entries()) scanReferences(policy.route, { [key]: value }, scanned);
   scanReferences(policy.route, data.body, scanned);
   references.push(...scanned);
 
