@@ -3,7 +3,7 @@ import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { resolveVerifiedProjectAssetMedia, projectAssetMimeType } from '@/lib/batch-production/project-asset-media';
 import { projectAssetMediaResponse } from '@/lib/batch-production/project-asset-media-response';
-import { ensureBrowserPreview } from '@/lib/video-browser-preview';
+import { BrowserPreviewPendingError, ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { BATCH_NO_STORE_HEADERS, batchRouteErrorResponse } from '../../../batches/response';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
@@ -42,6 +42,9 @@ async function __teamRouteGET(
       served === media.filePath ? media.fileIdentity : undefined,
     );
   } catch (error) {
+    if (error instanceof BrowserPreviewPendingError) {
+      return NextResponse.json({ error: 'preview_pending', retryAfterMs: error.retryAfterMs }, { status: 202, headers: BATCH_NO_STORE_HEADERS });
+    }
     return batchRouteErrorResponse(error, 'asset_preview_failed', '素材预览失败');
   }
 }

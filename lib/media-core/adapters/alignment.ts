@@ -1,6 +1,17 @@
 import fs from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
+import {
+  executeSyncOperation,
+  MediaExecutionFailedError,
+  registerSyncOperationContinuation,
+  transmitSyncOperation,
+  type SyncOperationContext,
+  type SyncOperationOutcome,
+  type SyncOperationTransport,
+} from '../execution/sync-operation.ts';
+import { getExecutionModuleRuntime } from '../execution/module-runtime.ts';
+import { getDb } from '../../db.ts';
 
 export interface AlignmentWordTiming {
   text: string;
@@ -9,13 +20,14 @@ export interface AlignmentWordTiming {
 }
 export interface AlignmentAdapter {
   configured: boolean;
-  align(input: { audioPath: string; text: string; signal?: AbortSignal }): Promise<AlignmentWordTiming[]>;
+  align(input: { audioPath: string; text: string; signal?: AbortSignal; execution?: SyncOperationContext }): Promise<AlignmentWordTiming[]>;
 }
 
 export interface AlignmentAdapterConfig {
   baseUrl: string;
   apiKey: string;
   model?: string;
+  providerId?: string;
   /** 整次调用（含上传、响应体与重试）的上限；默认两分钟。 */
   timeoutMs?: number;
 }
@@ -29,7 +41,7 @@ export interface SpeechTranscription {
 export interface SpeechTranscriptionAdapter {
   configured: boolean;
   readonly identity: Readonly<{ adapterVersion: 'openai-word-transcription/1' | 'volc-flash-asr/1'; model: string; endpointHash: string }>;
-  transcribe(input: { audioPath: string; durationUs: number; signal?: AbortSignal }): Promise<SpeechTranscription>;
+  transcribe(input: { audioPath: string; durationUs: number; signal?: AbortSignal; execution?: SyncOperationContext }): Promise<SpeechTranscription>;
 }
 
 type AlignmentEnvironment = Readonly<Record<string, string | undefined>>;
@@ -59,12 +71,20 @@ function speechConfig(env: AlignmentEnvironment, fallback?: AlignmentAdapterConf
   const model = (envModel || fallback?.model || 'whisper-1').trim();
   const timeoutMs = fallback?.timeoutMs ?? 120_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300_000) throw new Error('声音识别超时配置无效');
-  return { baseUrl, apiKey, model, timeoutMs, configured: Boolean(baseUrl && apiKey && model) };
+  return { baseUrl, apiKey, model, providerId: fallback?.providerId, timeoutMs, configured: Boolean(baseUrl && apiKey && model) };
 }
 
-async function requestTranscription(config: ReturnType<typeof speechConfig>, input: {
+type TranscriptionPayload = {
+  text?: unknown;
+  words?: Array<{ word?: unknown; start?: unknown; end?: unknown }>;
+  status?: number;
+  retryAfterMs?: number;
+  invalidJson?: boolean;
+};
+
+async function requestTranscriptionDirect(config: ReturnType<typeof speechConfig>, input: {
   audioPath: string; prompt?: string; signal?: AbortSignal;
-}): Promise<{ text?: unknown; words?: Array<{ word?: unknown; start?: unknown; end?: unknown }> }> {
+}): Promise<TranscriptionPayload> {
   const { baseUrl, apiKey, model, configured } = config;
   const { audioPath } = input;
   input.signal?.throwIfAborted();
@@ -120,6 +140,150 @@ async function requestTranscription(config: ReturnType<typeof speechConfig>, inp
   } finally { clearTimeout(timer); }
 }
 
+type AlignmentOperationSnapshot = {
+  provider: { baseUrl: string; model: string; providerId?: string };
+  audioPath: string;
+  audioHash: string;
+  prompt?: string;
+  httpAttempt: number;
+};
+
+const ALIGNMENT_CONTINUATION_KEY = 'media-core.alignment.transcription.v1';
+
+function resolveAlignmentProvider(snapshot: AlignmentOperationSnapshot) {
+  const providerId = snapshot.provider.providerId;
+  if (providerId) {
+    const row = getDb().prepare('SELECT apiKey, keyEnv FROM final_edit_tts_providers WHERE id = ?').get(providerId) as {
+      apiKey: string; keyEnv: string;
+    } | undefined;
+    const apiKey = row?.apiKey.trim() || (row?.keyEnv ? (process.env[row.keyEnv] || '').trim() : '');
+    if (apiKey) return { ...snapshot.provider, apiKey };
+  }
+  const apiKey = (process.env.FINAL_EDIT_ALIGNMENT_API_KEY || '').trim();
+  if (!apiKey) throw new Error('转录持久操作的供应商凭据不可用');
+  return { ...snapshot.provider, apiKey };
+}
+
+async function executeAlignmentOperation(
+  transport: SyncOperationTransport,
+  snapshot: AlignmentOperationSnapshot,
+  liveConfig?: ReturnType<typeof speechConfig>,
+  signal?: AbortSignal,
+): Promise<TranscriptionPayload> {
+  const config = liveConfig ?? resolveAlignmentProvider(snapshot);
+  return transmitSyncOperation<TranscriptionPayload>(transport, {
+    requestSnapshot: snapshot,
+    send: async (): Promise<SyncOperationOutcome<TranscriptionPayload>> => {
+      const bytes = fs.readFileSync(snapshot.audioPath);
+      if (createHash('sha256').update(bytes).digest('hex') !== snapshot.audioHash) {
+        throw new Error('转录音频内容已变化，拒绝使用旧操作身份提交');
+      }
+      const form = new FormData();
+      form.append('file', new Blob([bytes], { type: 'audio/wav' }), 'segment.wav');
+      form.append('model', snapshot.provider.model);
+      form.append('response_format', 'verbose_json');
+      form.append('timestamp_granularities[]', 'word');
+      if (snapshot.prompt !== undefined) form.append('prompt', snapshot.prompt);
+      const response = await fetch(transcriptionUrl(config.baseUrl), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.apiKey}` },
+        body: form,
+        signal,
+      });
+      if (!response.ok) {
+        const status = response.status;
+        const retryAfterMs = retryDelayMs(response, snapshot.httpAttempt - 1);
+        await response.body?.cancel();
+        return {
+          value: { status, retryAfterMs },
+          terminalState: 'failed' as const,
+          errorCode: `http_${status}`,
+          actualCost: null,
+        };
+      }
+      try {
+        const payload = await response.json() as TranscriptionPayload;
+        return { value: payload, terminalState: 'succeeded' as const, result: payload, actualCost: null };
+      } catch {
+        return { value: { invalidJson: true }, terminalState: 'failed' as const, errorCode: 'invalid_json', actualCost: null };
+      }
+    },
+  });
+}
+
+registerSyncOperationContinuation(ALIGNMENT_CONTINUATION_KEY, async (transport, rawSnapshot) => {
+  await executeAlignmentOperation(transport, rawSnapshot as AlignmentOperationSnapshot);
+});
+
+async function requestTranscriptionServer(
+  config: ReturnType<typeof speechConfig>,
+  input: { audioPath: string; prompt?: string; signal?: AbortSignal; execution?: SyncOperationContext },
+): Promise<TranscriptionPayload> {
+  if (!config.configured) throw new Error('生产强制对齐尚未配置：需要 FINAL_EDIT_ALIGNMENT_BASE_URL / API_KEY / MODEL');
+  const bytes = fs.readFileSync(input.audioPath);
+  const audioHash = createHash('sha256').update(bytes).digest('hex');
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(new Error('声音识别请求超时，请重试或人工核对')), config.timeoutMs);
+  timer.unref();
+  const signal = input.signal ? AbortSignal.any([input.signal, timeout.signal]) : timeout.signal;
+  try {
+    for (let attempt = 0; attempt <= ALIGNMENT_RETRY_DELAYS_MS.length; attempt += 1) {
+      signal.throwIfAborted();
+      const snapshot: AlignmentOperationSnapshot = {
+        provider: { baseUrl: config.baseUrl, model: config.model, providerId: config.providerId },
+        audioPath: input.audioPath,
+        audioHash,
+        prompt: input.prompt,
+        httpAttempt: attempt + 1,
+      };
+      const baseStep = input.execution?.step ?? 'transcription';
+      try {
+        return await executeSyncOperation({
+          context: {
+            ...input.execution,
+            module: 'alignment',
+            taskId: input.execution?.taskId ?? `alignment:${audioHash}`,
+            step: `${baseStep}:http:${attempt + 1}`,
+            inputRevision: input.execution?.inputRevision ?? createHash('sha256').update(JSON.stringify({ audioHash, prompt: input.prompt, model: config.model })).digest('hex'),
+            scope: input.execution?.scope ?? { resourceType: 'narration', resourceId: input.audioPath },
+            requiredPools: input.execution?.requiredPools ?? ['tts:remote'],
+          },
+          inputSnapshot: snapshot,
+          continuationKey: ALIGNMENT_CONTINUATION_KEY,
+          providerSnapshot: snapshot.provider,
+          configVersion: `${config.baseUrl}:${config.model}`,
+          credentialVersionRef: config.providerId,
+          quote: { kind: 'unpriced', pricingSnapshot: null },
+          replay: (result) => result as TranscriptionPayload,
+          execute: (transport) => executeAlignmentOperation(transport, snapshot, config, signal),
+        });
+      } catch (error) {
+        if (!(error instanceof MediaExecutionFailedError)) throw error;
+        const detail = error.details as { status?: number; retryAfterMs?: number; invalidJson?: boolean } | undefined;
+        if (detail?.invalidJson) throw new Error('声音识别服务未返回有效的 JSON 结果');
+        const status = detail?.status ?? 0;
+        const retryable = status === 429 || status >= 500;
+        if (!retryable || attempt >= ALIGNMENT_RETRY_DELAYS_MS.length) {
+          throw new Error(`强制对齐服务返回 ${status || '未知状态'}，请检查服务配置后重试`);
+        }
+        await delay(detail?.retryAfterMs ?? ALIGNMENT_RETRY_DELAYS_MS[attempt], undefined, { signal });
+      }
+    }
+    throw new Error('强制对齐服务请求失败');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function requestTranscription(
+  config: ReturnType<typeof speechConfig>,
+  input: { audioPath: string; prompt?: string; signal?: AbortSignal; execution?: SyncOperationContext },
+): Promise<TranscriptionPayload> {
+  return getExecutionModuleRuntime()
+    ? requestTranscriptionServer(config, input)
+    : requestTranscriptionDirect(config, input);
+}
+
 export function createOpenAiAlignmentAdapter(
   env: AlignmentEnvironment = process.env,
   fallback?: AlignmentAdapterConfig,
@@ -127,8 +291,8 @@ export function createOpenAiAlignmentAdapter(
   const config = speechConfig(env, fallback);
   return {
     configured: config.configured,
-    async align({ audioPath, text, signal }) {
-      const payload = await requestTranscription(config, { audioPath, prompt: text, signal });
+    async align({ audioPath, text, signal, execution }) {
+      const payload = await requestTranscription(config, { audioPath, prompt: text, signal, execution });
       const words = (payload.words || []).map((word) => ({
         text: String(word.word || '').trim(),
         startUs: Math.round(Number(word.start || 0) * 1_000_000),
@@ -149,9 +313,9 @@ export function createOpenAiTranscriptionAdapter(
   return { configured: config.configured,
     identity: Object.freeze({ adapterVersion: 'openai-word-transcription/1', model: config.model,
       endpointHash: createHash('sha256').update(transcriptionUrl(config.baseUrl)).digest('hex') }),
-    async transcribe({ audioPath, durationUs, signal }) {
+    async transcribe({ audioPath, durationUs, signal, execution }) {
     if (!Number.isSafeInteger(durationUs) || durationUs <= 0) throw new Error('转写需要已核验的真实音频长度');
-    const payload = await requestTranscription(config, { audioPath, signal });
+    const payload = await requestTranscription(config, { audioPath, signal, execution });
     if (!payload || typeof payload.text !== 'string' || !payload.text.trim() || !Array.isArray(payload.words) || !payload.words.length) {
       throw new Error('未取得完整台词及逐词时间，请重试或人工核对原声');
     }

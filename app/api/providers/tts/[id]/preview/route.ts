@@ -47,9 +47,19 @@ async function __teamRoutePOST(request: Request, { params }: { params: Promise<{
       speed,
       text: adapter.previewText,
       outputPath,
+      execution: {
+        taskId: `tts-preview:${key}`,
+        step: 'preview:1',
+        inputRevision: key,
+        businessAttempt: { id: `tts-preview:${key}:attempt:1`, number: 1 },
+        scope: { resourceType: 'tts_provider', resourceId: id },
+      },
     });
     return mediaResponse(request, relativePath, 'audio/wav');
   } catch (error) {
+    if (['llm_execution_deferred', 'media_resource_deferred'].includes(String((error as { code?: unknown } | null)?.code))) {
+      return NextResponse.json({ error: 'voice_preview_pending', retryAfterMs: 1000 }, { status: 202 });
+    }
     return NextResponse.json({ error: 'voice_preview_failed', message: error instanceof Error ? error.message : String(error) }, { status: 400 });
   }
 }

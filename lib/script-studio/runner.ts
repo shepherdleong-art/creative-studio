@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3';
 import { runWithTaskAccessContext } from '../media-core/access-context.ts';
+import { isExecutionControlError, isExecutionDeferredError } from '../media-core/execution/waiting.ts';
+import { getExecutionModuleRuntime } from '../media-core/execution/module-runtime.ts';
 import { PAIN_SOLVING_VERSION, painPlanningFingerprint, parsePainPlanning, painPlan, painBrief, parsePainReview } from './pain-solving.ts';
 import type { EvidenceReprobe } from './adapters/reprobe.ts';
 import type { VisionExtractor } from './adapters/vision-extract.ts';
@@ -475,6 +477,7 @@ async function generateValidatedScript(
         return await reviewCandidate(repaired, false);
       } catch (error) {
         if (deps.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
+        if (isExecutionControlError(error)) throw error;
         if (error instanceof ScriptStudioError && error.code === 'request_budget_exhausted') throw error;
         return { status: 'ending_repair_failed', feedback: [error instanceof Error ? error.message : String(error)] };
       }
@@ -492,6 +495,7 @@ async function generateValidatedScript(
       verdict = parseReview(await deps.generator.reviewScriptContent({ ...baseInput, content: candidate }));
     } catch (error) {
       if (deps.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
+      if (isExecutionControlError(error)) throw error;
       if (error instanceof ScriptStudioError && error.code === 'request_budget_exhausted') throw error;
       // 审核调用失败 fail closed：不能默认通过，按修复失败进入下一轮。
       return { status: 'ending_repair_failed', feedback: [`语义审核调用失败：${error instanceof Error ? error.message : String(error)}`] };
@@ -819,7 +823,7 @@ async function executeAuthorizedScriptStudioTask(
         } else {
           try {
             if (deps.signal?.aborted) throw new DOMException('卖点提炼已取消', 'AbortError');
-            reserveDistillRequest(db, taskId, now ?? (() => new Date()));
+            if (!getExecutionModuleRuntime()) reserveDistillRequest(db, taskId, now ?? (() => new Date()));
             const rawDistill = await deps.distiller.distill({
               facts: usableFacts,
               productName: libraryRevision!.productName,
@@ -844,6 +848,7 @@ async function executeAuthorizedScriptStudioTask(
             }, null, now);
           } catch (distillError) {
             if (deps.signal?.aborted || (distillError instanceof Error && distillError.name === 'AbortError')) throw distillError;
+            if (isExecutionControlError(distillError)) throw distillError;
             finishStage(db, projectId, taskId, 'distill', 'skipped', {
               reason: distillError instanceof ScriptStudioError && distillError.code === 'request_budget_exhausted'
                 ? 'budget_exhausted'
@@ -922,7 +927,7 @@ async function executeAuthorizedScriptStudioTask(
         painPlanning = { ...parsePainPlanning(frozen, planningInput), fingerprint };
       } else {
         if (!deps.generator.planPainOpportunities) throw new ScriptStudioError('invalid_input', '当前生成器不支持痛点内容机会分析');
-        reservePlanAnalysisRequest(db, taskId, now);
+        if (!getExecutionModuleRuntime()) reservePlanAnalysisRequest(db, taskId, now);
         const raw = await deps.generator.planPainOpportunities(planningInput);
         if (signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
         painPlanning = { ...parsePainPlanning(raw, planningInput), fingerprint };
@@ -964,7 +969,7 @@ async function executeAuthorizedScriptStudioTask(
           audienceProfile = fallbackAudienceProfile('生成器不支持受众画像分析');
         } else {
           try {
-            reservePlanAnalysisRequest(db, taskId, now);
+            if (!getExecutionModuleRuntime()) reservePlanAnalysisRequest(db, taskId, now);
             const rawProfile = await deps.generator.analyzeAudienceProfile({
               libraryRevision: libraryRevision!,
               plans: plansWithRecommendations,
@@ -989,6 +994,7 @@ async function executeAuthorizedScriptStudioTask(
               : fallbackAudienceProfile('画像响应缺少主画像或结构非法');
           } catch (profileError) {
             if (deps.signal?.aborted || (profileError instanceof Error && profileError.name === 'AbortError')) throw profileError;
+            if (isExecutionControlError(profileError)) throw profileError;
             audienceProfile = fallbackAudienceProfile(profileError instanceof Error ? profileError.message : String(profileError));
           }
         }
@@ -1210,6 +1216,7 @@ async function executeAuthorizedScriptStudioTask(
       } catch (generationError) {
         // 中断/取消不是单条失败：直接上抛走任务级取消语义（queued 恢复或 cancelled）。
         if (deps.signal?.aborted || (generationError instanceof Error && generationError.name === 'AbortError')) throw generationError;
+        if (isExecutionControlError(generationError)) throw generationError;
         // 单条失败不阻断其余方案；部分成功由任务结束时的计数表达。
         generationErrors.push(generationError instanceof Error ? generationError.message : String(generationError));
       }
@@ -1301,6 +1308,23 @@ async function executeAuthorizedScriptStudioTask(
         failedCount: Math.max(0, plannedCount - scriptIds.length),
         scriptIds,
         errorCode: cancelled ? 'cancelled' : 'aborted',
+        errorMessage: message,
+      };
+    }
+    if (isExecutionDeferredError(error)) {
+      await updateTask(db, projectId, taskId, {
+        status: 'queued',
+        currentStage: '',
+        errorCode: 'execution_deferred',
+        errorMessage: message,
+        leaseUntil: null,
+      }, now);
+      return {
+        status: 'failed',
+        succeededCount: scriptIds.length,
+        failedCount: Math.max(0, plannedCount - scriptIds.length),
+        scriptIds,
+        errorCode: 'execution_deferred',
         errorMessage: message,
       };
     }

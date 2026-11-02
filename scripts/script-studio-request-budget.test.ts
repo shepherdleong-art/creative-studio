@@ -25,6 +25,8 @@ import {
 import { createScriptRequestBudget } from '../lib/script-studio/request-budget.ts';
 import { getScriptStudioLimits } from '../lib/script-studio/limits.ts';
 import { ScriptStudioError } from '../lib/script-studio/errors.ts';
+import { clearExecutionModuleRuntime, setExecutionModuleRuntime } from '../lib/media-core/execution/module-runtime.ts';
+import type { ExecutionFacade } from '../lib/media-core/execution/context.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'script-studio-request-budget-'));
 const now = () => new Date('2026-09-14T10:00:00.000Z');
@@ -253,6 +255,57 @@ function makeBudgetTask(requestedCount: number): string {
   assert.equal(generateCalls, 1, '修复失败应保留原因交给补跑');
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM project_script_revisions WHERE generationTaskId = ?').get(taskId) as { n: number }).n, 0);
 
+}
+
+// server 链内等待：预算只能在实际获准后占用，deferred 不得消耗方案余额。
+{
+  const taskId = makeBudgetTask(1);
+  const budget = createScriptRequestBudget({ db, taskId, requestedCount: 1, now });
+  const input: ScriptGeneratorInput = {
+    libraryRevision: library,
+    plan: { index: 1, templateId: 'pain_point', templateName: '直击痛点', templateVersion: 1, angle: '先讲痛点再给证据', direction: 'pain_point', rationale: '测试' },
+    brief: { planIndex: 1, templateId: 'pain_point', themeKey: 't', themeTitle: '躺靠支撑', requiredPointIds: [library.sellingPoints[0]!.id], optionalPointIds: [], candidateCount: 1, degraded: false, rationale: '测试' },
+    audience: '家居人群', platform: '通用', tone: '自然', creativeBrief: '', targetDurationSec: 15, previousScripts: [],
+  };
+  setExecutionModuleRuntime({ instanceId: 'budget-test', fence: 1, facade: {} as ExecutionFacade });
+  try {
+    let executionStep = '';
+    const generator = createScriptGenerator(async (request) => {
+      executionStep = request.executionStep ?? '';
+      throw Object.assign(new Error('等待名额'), { code: 'llm_execution_deferred', operationId: 'waiting-operation' });
+    }, { id: 'fake', model: 'fake' }, { budget });
+    await assert.rejects(generator.generate(input), (error: unknown) => (error as { code?: string }).code === 'llm_execution_deferred');
+    assert.equal(executionStep, 'plan:1:generate:1', '恢复 step 必须绑定方案/用途/请求序号，而非并发调用顺序');
+    assert.equal(budget.usedFor(1), 0, '未准入 deferred 不扣方案预算');
+    assert.equal(budget.taskTextUsed(), 0, '未准入 deferred 不扣任务预算');
+  } finally {
+    clearExecutionModuleRuntime();
+  }
+}
+
+// runner 不得把单方案 deferred 吞成方案失败；任务回到 queued 等下一次续跑。
+{
+  const taskId = makeBudgetTask(1);
+  const budget = createScriptRequestBudget({ db, taskId, requestedCount: 1, now });
+  setExecutionModuleRuntime({ instanceId: 'budget-runner-test', fence: 1, facade: {} as ExecutionFacade });
+  try {
+    const generator = createScriptGenerator(async (request) => {
+      const kind = JSON.parse(request.userPrompt).task as string;
+      if (kind === 'analyze_audience_profile_v1') return null;
+      throw Object.assign(new Error('等待名额'), { code: 'llm_execution_deferred', operationId: 'runner-waiting-operation' });
+    }, { id: 'fake', model: 'fake' }, { budget });
+    const result = await executeScriptStudioTask({
+      db, projectId: 'p1', taskId, libraryRevisionId: library.id,
+      inputSnapshot: { targetDurationSec: 15, requestedCount: 1 }, generator, now,
+      visionExtractor: { async extract() { throw new Error('不得重新提取图片'); } },
+      reprobe: { kind: 'vision_closed_question', async verify() { throw new Error('不得重新调用模型核验'); } },
+    });
+    assert.equal(result.errorCode, 'execution_deferred');
+    assert.equal(getTask(db, 'p1', taskId)?.status, 'queued');
+    assert.equal(budget.taskTextUsed(), 0);
+  } finally {
+    clearExecutionModuleRuntime();
+  }
 }
 
 // ScriptStudioError 语义守卫：预算错误使用专用错误码，任务级处理不会伪装成其他失败。

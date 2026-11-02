@@ -276,7 +276,7 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
         const alignment = createOpenAiAlignmentAdapter(
           process.env,
           adapter.alignmentModel
-            ? { baseUrl: row.baseUrl, apiKey: resolveProviderApiKey(row), model: adapter.alignmentModel }
+            ? { baseUrl: row.baseUrl, apiKey: resolveProviderApiKey(row), model: adapter.alignmentModel, providerId: row.id }
             : undefined,
         );
         const synthesized = await synthesize(providerId, {
@@ -348,6 +348,8 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
           : extractSellingPointsWithLLM(text, undefined, signal, {
             taskId: claim.task.id,
             scope: { resourceType: 'project', resourceId: claim.task.projectId },
+            inputRevision: claim.attempt.id,
+            businessAttempt: { id: claim.attempt.id, number: claim.attempt.attemptNumber },
           }),
       });
       if (signal.aborted) throw new Error('任务已中止');

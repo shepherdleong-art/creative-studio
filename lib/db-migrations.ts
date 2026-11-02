@@ -196,4 +196,16 @@ export const CORE_DB_MIGRATIONS = [
     rawText TEXT NOT NULL,
     createdAt TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS media_derivative_jobs (
+    jobKey TEXT PRIMARY KEY,
+    sourcePath TEXT NOT NULL,
+    derivativePath TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'ready', 'failed')),
+    leaseOwner TEXT,
+    leaseUntil INTEGER,
+    retryAfter INTEGER,
+    error TEXT,
+    createdAt INTEGER NOT NULL,
+    updatedAt INTEGER NOT NULL
+  )`,
 ];

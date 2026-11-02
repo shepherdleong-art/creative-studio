@@ -1,5 +1,4 @@
 import type Database from 'better-sqlite3';
-import { ScriptStudioError } from './errors.ts';
 import {
   recoverInterruptedTasks,
   updateTask,
@@ -89,11 +88,14 @@ export function claimNextScriptStudioTask(
     `).get() as TaskView | undefined;
     if (!row) return null;
     const leaseUntil = isoAfter(now(), options.leaseDurationMs ?? 5 * 60_000);
+    const resumedFromDeferred = row.errorCode === 'execution_deferred';
     const claimed = updateTask(db, row.projectId, row.id, {
       status: 'running',
       currentStage: '',
       leaseUntil,
-      attemptCount: Number(row.attemptCount || 0) + 1,
+      attemptCount: Number(row.attemptCount || 0) + (resumedFromDeferred ? 0 : 1),
+      errorCode: null,
+      errorMessage: null,
     }, now);
     return { task: claimed, leaseUntil };
   }).immediate();
@@ -134,9 +136,11 @@ export function startScriptStudioScheduler(options: {
   const concurrency = Math.max(1, Math.min(3, options.concurrency ?? 1));
   let stopped = false;
   let running = 0;
+  let roundRunning = false;
   let wake: (() => void) | null = null;
   const runPendingOnce = async (): Promise<number> => {
-    if (stopped || draining) return 0;
+    if (stopped || draining || roundRunning) return 0;
+    roundRunning = true;
     let handled = 0;
     const slot = async (): Promise<void> => {
       while (!stopped && !draining) {
@@ -165,8 +169,12 @@ export function startScriptStudioScheduler(options: {
         }
       }
     };
-    await Promise.all(Array.from({ length: concurrency }, () => slot()));
-    return handled;
+    try {
+      await Promise.all(Array.from({ length: concurrency }, () => slot()));
+      return handled;
+    } finally {
+      roundRunning = false;
+    }
   };
 
   const timer = setInterval(() => {

@@ -576,7 +576,7 @@ async function runAuthorizedVideoJob(
 
         // HEVC/10bit 产物（如 Seedance 2.5 1080p）浏览器放不动：先就地生成
         // H.264 预览衍生物再标记完成。内部已全兜底（失败回退原件），不会阻断任务。
-        const previewPath = await ensureBrowserPreview(videoPath);
+        const previewPath = await ensureBrowserPreview(videoPath, { waitForCompletion: true });
         if (originalFileId && previewPath !== videoPath) {
           registerManagedFile({
             absolutePath: previewPath,

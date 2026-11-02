@@ -107,17 +107,30 @@ export function claimNextTask(
     if (claimed.changes === 0) {
       return null;
     }
-    const attemptNumber = candidate.attemptCount + 1;
-    const attemptId = randomUUID();
     const leaseExpiresAt = new Date(new Date(startedAt).getTime() + leaseDurationMs).toISOString();
-    db.prepare(`
-      INSERT INTO batch_task_attempts
-        (id, taskId, attemptNumber, status, claimedBy, leaseExpiresAt, heartbeatAt, startedAt, createdAt)
-      VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
-    `).run(attemptId, candidate.id, attemptNumber, workerId, leaseExpiresAt, startedAt, startedAt, startedAt);
-    db.prepare(`
-      UPDATE batch_tasks SET attemptCount = ? WHERE id = ?
-    `).run(attemptNumber, candidate.id);
+    const deferred = db.prepare(`
+      SELECT id, attemptNumber FROM batch_task_attempts
+      WHERE taskId = ? AND attemptNumber = ? AND status = 'interrupted' AND errorCode = 'execution_deferred'
+    `).get(candidate.id, candidate.attemptCount) as { id: string; attemptNumber: number } | undefined;
+    const attemptNumber = deferred?.attemptNumber ?? candidate.attemptCount + 1;
+    const attemptId = deferred?.id ?? randomUUID();
+    if (deferred) {
+      db.prepare(`
+        UPDATE batch_task_attempts
+        SET status = 'running', claimedBy = ?, leaseExpiresAt = ?, heartbeatAt = ?,
+            finishedAt = NULL, errorCode = NULL, errorMessage = NULL
+        WHERE id = ? AND status = 'interrupted' AND errorCode = 'execution_deferred'
+      `).run(workerId, leaseExpiresAt, startedAt, deferred.id);
+    } else {
+      db.prepare(`
+        INSERT INTO batch_task_attempts
+          (id, taskId, attemptNumber, status, claimedBy, leaseExpiresAt, heartbeatAt, startedAt, createdAt)
+        VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
+      `).run(attemptId, candidate.id, attemptNumber, workerId, leaseExpiresAt, startedAt, startedAt, startedAt);
+      db.prepare(`
+        UPDATE batch_tasks SET attemptCount = ? WHERE id = ?
+      `).run(attemptNumber, candidate.id);
+    }
     return {
       task: {
         id: candidate.id,
@@ -232,6 +245,74 @@ export function completeTaskAttempt(
     `).run(taskStatus, finishedAt, attempt.taskId);
     refreshBatchProgress(db, attempt.taskId, input.now);
   })();
+}
+
+export interface DeferTaskAttemptInput {
+  workerId: string;
+  operationId?: string;
+  continuationKey?: string;
+  waitReason?: string | null;
+  progressJson?: unknown;
+  now?: () => Date;
+}
+
+/** 链内等待统一准入/媒体容量：保留原 attempt 身份与检查点，任务回到可领取队列。 */
+export function deferTaskAttempt(
+  db: Database.Database,
+  attemptId: string,
+  input: DeferTaskAttemptInput,
+): void {
+  const finishedAt = nowIso(input.now);
+  db.transaction(() => {
+    const attempt = db.prepare(`
+      SELECT a.taskId, a.status, a.claimedBy, a.leaseExpiresAt,
+             t.expectedState, COALESCE(p.controlState, 'running') AS controlState
+      FROM batch_task_attempts a
+      JOIN batch_tasks t ON t.id = a.taskId
+      LEFT JOIN batch_productions p ON p.id = t.batchId
+      WHERE a.id = ?
+    `).get(attemptId) as {
+      taskId: string;
+      status: string;
+      claimedBy: string | null;
+      leaseExpiresAt: string | null;
+      expectedState: BatchTaskExpectedState;
+      controlState: BatchControlState;
+    } | undefined;
+    if (!attempt || attempt.status !== 'running' || attempt.claimedBy !== input.workerId) {
+      throw new Error('deferred 尝试不再由该持有者运行');
+    }
+    if (!attempt.leaseExpiresAt || attempt.leaseExpiresAt <= finishedAt) {
+      throw new Error('deferred 尝试租约已到期');
+    }
+    db.prepare(`
+      UPDATE batch_task_attempts
+      SET status = 'interrupted', errorCode = 'execution_deferred', errorMessage = NULL,
+          resultJson = ?, progressJson = ?, finishedAt = ?
+      WHERE id = ? AND status = 'running'
+    `).run(
+      JSON.stringify({
+        operationId: input.operationId ?? null,
+        continuationKey: input.continuationKey ?? null,
+        waitReason: input.waitReason ?? null,
+      }),
+      JSON.stringify(input.progressJson ?? {}),
+      finishedAt,
+      attemptId,
+    );
+    const stopped = attempt.expectedState === 'stopped' || attempt.controlState === 'stopped';
+    db.prepare(`
+      UPDATE batch_tasks
+      SET status = ?, expectedState = ?, updatedAt = ?
+      WHERE id = ? AND status = 'running'
+    `).run(
+      stopped ? 'cancelled' : 'queued',
+      stopped ? 'stopped' : attempt.expectedState === 'paused' || attempt.controlState === 'paused' ? 'paused' : 'running',
+      finishedAt,
+      attempt.taskId,
+    );
+    refreshBatchProgress(db, attempt.taskId, input.now);
+  }).immediate();
 }
 
 /** 重算任务所属批次的汇总进度并写回批次。 */

@@ -35,7 +35,7 @@ function createFinalEditAlignmentAdapter(provider?: AlignmentFallbackProvider): 
     ? listFinalEditTtsAdapters().find((adapter) => adapter.id === provider.id)?.alignmentModel
     : undefined;
   const fallback = provider && alignmentModel
-    ? { baseUrl: provider.baseUrl, apiKey: resolveProviderApiKey(provider), model: alignmentModel }
+    ? { baseUrl: provider.baseUrl, apiKey: resolveProviderApiKey(provider), model: alignmentModel, providerId: provider.id }
     : undefined;
   return createOpenAiAlignmentAdapter(process.env, fallback);
 }

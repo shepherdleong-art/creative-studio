@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { completeJson, getAvailableProviders } from '../script-providers/index.ts';
+import { completeJson, getAvailableProviders, registerLlmExecutionRequestBudgetReserver } from '../script-providers/index.ts';
 import { ScriptStudioError } from './errors.ts';
 import type { ScriptStudioCompleteJsonRequest } from './llm-contract.ts';
 import {
@@ -16,7 +16,12 @@ import {
   selectScriptStudioRuntimeProviders,
   type ScriptStudioRuntimeProvider,
 } from './provider-selection.ts';
-import { createScriptRequestBudget } from './request-budget.ts';
+import {
+  createScriptRequestBudget,
+  reserveDistillRequest,
+  reservePlanAnalysisRequest,
+  type ScriptRequestPurpose,
+} from './request-budget.ts';
 import {
   createScriptStudioRunDeps,
   type ScriptStudioRunDeps,
@@ -31,7 +36,26 @@ export function resolveRuntimeProviders(requestedProviderId?: string | null): {
   return selectScriptStudioRuntimeProviders(getAvailableProviders(), requestedProviderId);
 }
 
-function providerCompleteJson(providerId: string, model: string, projectId: string, taskId: string, refType: string) {
+registerLlmExecutionRequestBudgetReserver((db, budget) => {
+  if (budget.kind === 'script-studio-phase') {
+    if (budget.purpose === 'distill') reserveDistillRequest(db, budget.taskId);
+    else reservePlanAnalysisRequest(db, budget.taskId);
+    return;
+  }
+  createScriptRequestBudget({ db, taskId: budget.taskId, requestedCount: budget.requestedCount }).reserve({
+    planIndex: budget.planIndex,
+    purpose: budget.purpose as ScriptRequestPurpose,
+  });
+});
+
+function providerCompleteJson(
+  providerId: string,
+  model: string,
+  projectId: string,
+  taskId: string,
+  refType: string,
+  execution: { requestedCount: number; attempt: { id: string; number: number } },
+) {
   let sequence = 0;
   return (input: ScriptStudioCompleteJsonRequest) => completeJson({
     providerId,
@@ -45,8 +69,27 @@ function providerCompleteJson(providerId: string, model: string, projectId: stri
     },
     executionContext: {
       taskId,
-      step: `${refType}:${++sequence}`,
+      step: input.executionStep ? `${refType}:${input.executionStep}` : `${refType}:${++sequence}`,
       scope: { resourceType: 'project', resourceId: projectId },
+      inputRevision: execution.attempt.id,
+      businessAttempt: execution.attempt,
+      ...(input.executionBudget ? {
+        requestBudget: {
+          kind: 'script-studio-text' as const,
+          taskId,
+          requestedCount: execution.requestedCount,
+          planIndex: input.executionBudget.planIndex,
+          purpose: input.executionBudget.purpose,
+        },
+      } : input.executionPhaseBudget ? {
+        requestBudget: {
+          kind: 'script-studio-phase' as const,
+          taskId,
+          requestedCount: execution.requestedCount,
+          planIndex: 0,
+          purpose: input.executionPhaseBudget,
+        },
+      } : {}),
     },
   } as Parameters<typeof completeJson>[0]);
 }
@@ -72,16 +115,28 @@ export function createRuntimeDeps(
   );
   const projectId = task.projectId;
   const taskId = task.id;
+  const requestedCount = (() => {
+    try {
+      return parseScriptStudioRequestedCount(inputSnapshot.requestedCount);
+    } catch {
+      return 1;
+    }
+  })();
+  const attemptNumber = Math.max(1, Number(task.attemptCount || 1));
+  const execution = {
+    requestedCount,
+    attempt: { id: `${taskId}:attempt:${attemptNumber}`, number: attemptNumber },
+  };
   const limits = getScriptStudioLimits();
   const visionExtractor = createDirectVisionExtractor(
-    providerCompleteJson(providers.vision.id, providers.vision.model, projectId, taskId, 'script-studio-vision'),
+    providerCompleteJson(providers.vision.id, providers.vision.model, projectId, taskId, 'script-studio-vision', execution),
     providers.vision,
   );
   const reprobe = createVisionClosedQuestionReprobe(
-    providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-reprobe'),
+    providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-reprobe', execution),
   );
   const generator = createScriptGenerator(
-    providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-generate'),
+    providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-generate', execution),
     providers.text,
     {
       maxTokens: limits.maxTokensPerPage,
@@ -90,13 +145,7 @@ export function createRuntimeDeps(
       budget: createScriptRequestBudget({
         db,
         taskId,
-        requestedCount: (() => {
-          try {
-            return parseScriptStudioRequestedCount(inputSnapshot.requestedCount);
-          } catch {
-            return 1;
-          }
-        })(),
+        requestedCount,
       }),
     },
   );
@@ -111,7 +160,7 @@ export function createRuntimeDeps(
     reprobe,
     generator,
     sellingPointOrganizer: createSellingPointOrganizer(
-      providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-organize'),
+      providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-organize', execution),
     ),
     signal: options.signal,
     fallbackOnInvalid: options.fallbackOnInvalid,

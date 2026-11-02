@@ -4,12 +4,32 @@ import path from 'node:path';
 import { probeDurationSec, runFfmpeg } from '../../ffmpeg.ts';
 import { assertTtsSpeed } from '../tts-speed.ts';
 import type { AlignmentAdapter, AlignmentWordTiming } from './alignment.ts';
-import { alignOrProportionallyTime, concatWavFiles, countTtsContent, isReusableNarrationChunk, splitTtsInput } from './tts-common.ts';
+import {
+  alignOrProportionallyTime,
+  concatWavFiles,
+  countTtsContent,
+  isReusableNarrationChunk,
+  readCachedSegmentAlignment,
+  splitTtsInput,
+  writeCachedSegmentAlignment,
+} from './tts-common.ts';
 import {
   beginDoubaoTtsUsage,
+  doubaoTtsActualCost,
+  doubaoTtsExecutionQuote,
   markDoubaoTtsUsageBillable,
   type TtsUsageContext,
 } from '../../usage-tts.ts';
+import {
+  executeSyncOperation,
+  registerSyncOperationContinuation,
+  transmitSyncOperation,
+  type SyncOperationContext,
+  type SyncOperationTransport,
+} from '../execution/sync-operation.ts';
+import { getExecutionModuleRuntime } from '../execution/module-runtime.ts';
+import { getDb } from '../../db.ts';
+import { withMediaResource } from '../media-resource-gate.ts';
 
 export const DOUBAO_PREVIEW_TEXT = '你好，我是豆包语音助手，这是当前音色和语速的试听效果。';
 
@@ -100,7 +120,9 @@ function parseChunkedJson(raw: string): DoubaoChunk[] {
   return chunks;
 }
 
-export async function requestDoubaoAudio(
+class DoubaoResponseError extends Error {}
+
+async function requestDoubaoAudioDirect(
   config: DoubaoProviderConfig,
   voice: string,
   text: string,
@@ -130,21 +152,21 @@ export async function requestDoubaoAudio(
   let chunks: DoubaoChunk[] = [];
   try { chunks = parseChunkedJson(raw); }
   catch (error) {
-    throw new Error(`豆包 TTS 响应无法解析${logId ? `（Log ID: ${logId}）` : ''}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new DoubaoResponseError(`豆包 TTS 响应无法解析${logId ? `（Log ID: ${logId}）` : ''}: ${error instanceof Error ? error.message : String(error)}`);
   }
   const failure = chunks.find((chunk) => chunk.code !== 0 && chunk.code !== 20_000_000);
   if (!response.ok || failure) {
     const detail = failure?.message || raw.slice(0, 300) || response.statusText;
-    throw new Error(`豆包 TTS ${response.status}${failure?.code == null ? '' : ` / ${failure.code}`}: ${detail}${logId ? `（Log ID: ${logId}）` : ''}`);
+    throw new DoubaoResponseError(`豆包 TTS ${response.status}${failure?.code == null ? '' : ` / ${failure.code}`}: ${detail}${logId ? `（Log ID: ${logId}）` : ''}`);
   }
   const audio = chunks.flatMap((chunk) => chunk.code === 0 && chunk.data ? [Buffer.from(chunk.data, 'base64')] : []);
   if (audio.length === 0 || audio.every((chunk) => chunk.length === 0)) {
-    throw new Error(`豆包 TTS 响应没有音频数据${logId ? `（Log ID: ${logId}）` : ''}`);
+    throw new DoubaoResponseError(`豆包 TTS 响应没有音频数据${logId ? `（Log ID: ${logId}）` : ''}`);
   }
   fs.writeFileSync(destination, Buffer.concat(audio));
   if (usage.enabled && !await isReusableNarrationChunk(destination)) {
     fs.rmSync(destination, { force: true });
-    throw new Error(`豆包 TTS 响应音频不可读取${logId ? `（Log ID: ${logId}）` : ''}`);
+    throw new DoubaoResponseError(`豆包 TTS 响应音频不可读取${logId ? `（Log ID: ${logId}）` : ''}`);
   }
   markDoubaoTtsUsageBillable(usage, text, config.usageContext);
   const seen = new Set<string>();
@@ -158,6 +180,113 @@ export async function requestDoubaoAudio(
     return [{ text: textValue, startUs, endUs }];
   }).sort((left, right) => left.startUs - right.startUs || left.endUs - right.endUs);
   return { wordTimings };
+}
+
+type DoubaoOperationSnapshot = {
+  provider: Omit<DoubaoProviderConfig, 'apiKey'>;
+  voice: string;
+  text: string;
+  destination: string;
+};
+
+const DOUBAO_CONTINUATION_KEY = 'media-core.tts.doubao.v1';
+
+function doubaoOperationSnapshot(
+  config: DoubaoProviderConfig,
+  voice: string,
+  text: string,
+  destination: string,
+): DoubaoOperationSnapshot {
+  return {
+    provider: {
+      providerId: config.providerId,
+      providerName: config.providerName,
+      providerType: config.providerType,
+      configuredModel: config.configuredModel,
+      requestModel: config.requestModel,
+      baseUrl: config.baseUrl,
+      model: config.model,
+      usageContext: config.usageContext,
+    },
+    voice,
+    text,
+    destination,
+  };
+}
+
+function resolveDoubaoSnapshotProvider(snapshot: DoubaoOperationSnapshot): DoubaoProviderConfig {
+  const providerId = snapshot.provider.providerId;
+  if (!providerId) throw new Error('TTS 持久操作缺少供应商身份，不能恢复传输');
+  const row = getDb().prepare('SELECT apiKey, keyEnv FROM final_edit_tts_providers WHERE id = ?').get(providerId) as {
+    apiKey: string; keyEnv: string;
+  } | undefined;
+  const apiKey = row?.apiKey.trim() || (row?.keyEnv ? (process.env[row.keyEnv] || '').trim() : '');
+  if (!apiKey) throw new Error('TTS 持久操作的供应商凭据不可用');
+  return { ...snapshot.provider, apiKey };
+}
+
+async function executeDoubaoOperation(
+  transport: SyncOperationTransport,
+  snapshot: DoubaoOperationSnapshot,
+  liveConfig?: DoubaoProviderConfig,
+  signal?: AbortSignal,
+): Promise<{ wordTimings: AlignmentWordTiming[] }> {
+  const config = liveConfig ?? resolveDoubaoSnapshotProvider(snapshot);
+  return transmitSyncOperation(transport, {
+    requestSnapshot: snapshot,
+    send: async () => {
+      try {
+        const value = await requestDoubaoAudioDirect(config, snapshot.voice, snapshot.text, snapshot.destination, signal);
+        return {
+          value,
+          terminalState: 'succeeded' as const,
+          result: { wordTimings: value.wordTimings },
+          actualCost: doubaoTtsActualCost(config, snapshot.text),
+        };
+      } catch (error) {
+        if (error instanceof DoubaoResponseError) {
+          return { terminalState: 'failed' as const, errorCode: 'doubao_response_failed', actualCost: null };
+        }
+        throw error;
+      }
+    },
+  });
+}
+
+registerSyncOperationContinuation(DOUBAO_CONTINUATION_KEY, async (transport, rawSnapshot) => {
+  await executeDoubaoOperation(transport, rawSnapshot as DoubaoOperationSnapshot);
+});
+
+export async function requestDoubaoAudio(
+  config: DoubaoProviderConfig,
+  voice: string,
+  text: string,
+  destination: string,
+  signal?: AbortSignal,
+  execution?: SyncOperationContext,
+): Promise<{ wordTimings: AlignmentWordTiming[] }> {
+  if (!getExecutionModuleRuntime()) return requestDoubaoAudioDirect(config, voice, text, destination, signal);
+  if (!execution) throw new Error('server TTS 调用缺少稳定 segment/chunk 执行上下文');
+  if (signal?.aborted) throw new DOMException('TTS 已取消', 'AbortError');
+  const snapshot = doubaoOperationSnapshot(config, voice, text, destination);
+  return executeSyncOperation({
+    context: { ...execution, module: 'tts', requiredPools: execution.requiredPools ?? ['tts:remote'] },
+    inputSnapshot: snapshot,
+    continuationKey: DOUBAO_CONTINUATION_KEY,
+    providerSnapshot: snapshot.provider,
+    configVersion: `${config.baseUrl}:${config.model}`,
+    credentialVersionRef: config.providerId,
+    quote: doubaoTtsExecutionQuote(config, text),
+    replay: (result) => {
+      if (!fs.existsSync(destination) || fs.statSync(destination).size === 0) {
+        throw new Error('TTS 已完成回执对应的音频缺失，请核查产物后再恢复');
+      }
+      const wordTimings = (result as { wordTimings?: AlignmentWordTiming[] }).wordTimings;
+      if (!Array.isArray(wordTimings)) throw new Error('TTS 已完成回执缺少词级时间戳');
+      return { wordTimings };
+    },
+    execute: (transport) => executeDoubaoOperation(transport, snapshot, config, signal),
+  });
 }
 
 function readCachedWordTimings(filePath: string): AlignmentWordTiming[] {
@@ -188,6 +317,24 @@ function validateNativeWordTimings(
   }
   const coverage = countTtsContent(words.map((word) => word.text).join('')) / Math.max(1, countTtsContent(narration));
   return coverage >= 0.95 ? words : null;
+}
+
+function doubaoNarrationExecution(input: DoubaoSynthesisInput, segmentId: string, step: string): SyncOperationContext {
+  const usage = input.provider.usageContext;
+  const taskId = usage?.refId ?? input.relativeOutputPath;
+  const rawAttempt = usage?.detail?.attempt;
+  const attemptNumber = typeof rawAttempt === 'number' && Number.isSafeInteger(rawAttempt) && rawAttempt > 0 ? rawAttempt : 1;
+  const attemptId = `${taskId}:attempt:${attemptNumber}`;
+  return {
+    taskId,
+    step,
+    inputRevision: attemptId,
+    businessAttempt: { id: attemptId, number: attemptNumber },
+    scope: {
+      resourceType: usage?.projectId ? 'project' : 'narration',
+      resourceId: usage?.projectId ?? taskId,
+    },
+  };
 }
 
 export async function synthesizeDoubaoNarration(input: DoubaoSynthesisInput) {
@@ -227,15 +374,16 @@ export async function synthesizeDoubaoNarration(input: DoubaoSynthesisInput) {
               chunkIndex,
             },
           },
-        }, input.voice, chunks[chunkIndex], rawPath, input.signal);
+        }, input.voice, chunks[chunkIndex], rawPath, input.signal,
+          doubaoNarrationExecution(input, segment.segmentId, `segment:${segment.segmentId}:chunk:${chunkIndex}:request:1`));
         const filters = input.speed === 1 ? ['aresample=48000'] : [`atempo=${input.speed.toFixed(2)}`, 'aresample=48000'];
         const temporaryPath = `${normalizedPath}.${process.pid}-${Date.now()}.tmp.wav`;
         const temporaryTimingPath = `${timingPath}.${process.pid}-${Date.now()}.tmp`;
         try {
-          await runFfmpeg([
+          await withMediaResource({ taskId: normalizedPath, step: 'tts-normalize', wait: false, signal: input.signal }, () => runFfmpeg([
             '-i', rawPath, '-vn', '-af', filters.join(','),
             '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', temporaryPath,
-          ], { timeoutMs: 180_000, signal: input.signal });
+          ], { timeoutMs: 180_000, signal: input.signal }));
           if (!await isReusableNarrationChunk(temporaryPath)) throw new Error('豆包 TTS 分段音频标准化后不可读取');
           fs.rmSync(normalizedPath, { force: true });
           fs.renameSync(temporaryPath, normalizedPath);
@@ -268,16 +416,20 @@ export async function synthesizeDoubaoNarration(input: DoubaoSynthesisInput) {
     await concatWavFiles(chunkFiles, segmentPath, input.signal);
     const durationUs = Math.round(await probeDurationSec(segmentPath) * 1_000_000);
     const nativeWords = validateNativeWordTimings(nativeWordTimings, segment.narration, durationUs);
-    const aligned = nativeWords
+    const alignmentCachePath = `${segmentPath}.alignment.json`;
+    const cachedAlignment = nativeWords ? null : readCachedSegmentAlignment(alignmentCachePath, durationUs);
+    const aligned: { words: AlignmentWordTiming[]; degraded: boolean } = nativeWords
       ? { words: nativeWords, degraded: false }
-      : await alignOrProportionallyTime({
+      : cachedAlignment ?? await alignOrProportionallyTime({
         alignment: input.alignment,
         audioPath: segmentPath,
         narration: segment.narration,
         durationUs,
         segmentId: segment.segmentId,
         signal: input.signal,
+        execution: doubaoNarrationExecution(input, segment.segmentId, `segment:${segment.segmentId}:alignment`),
       });
+    if (!aligned.degraded && !cachedAlignment) writeCachedSegmentAlignment(alignmentCachePath, { durationUs, words: aligned.words });
     if (aligned.degraded) alignmentDegradedSegmentIds.push(segment.segmentId);
     wordTimings.push(...aligned.words.map((word) => ({
       ...word,
@@ -309,6 +461,7 @@ export async function synthesizeDoubaoPreview(input: {
   text: string;
   outputPath: string;
   signal?: AbortSignal;
+  execution?: SyncOperationContext;
 }): Promise<void> {
   if (!DOUBAO_VOICES.some((voice) => voice.id === input.voice)) throw new Error('不支持的豆包音色');
   assertTtsSpeed(input.speed);
@@ -316,12 +469,12 @@ export async function synthesizeDoubaoPreview(input: {
   const rawPath = `${input.outputPath}.raw.mp3`;
   const temporaryOutputPath = `${input.outputPath}.${process.pid}-${Date.now()}.tmp.wav`;
   try {
-    await requestDoubaoAudio(input.provider, input.voice, input.text, rawPath, input.signal);
+    await requestDoubaoAudio(input.provider, input.voice, input.text, rawPath, input.signal, input.execution);
     const filters = input.speed === 1 ? ['aresample=48000'] : [`atempo=${input.speed.toFixed(2)}`, 'aresample=48000'];
-    await runFfmpeg([
+    await withMediaResource({ taskId: input.outputPath, step: 'tts-preview-normalize', wait: false, signal: input.signal }, () => runFfmpeg([
       '-i', rawPath, '-vn', '-af', filters.join(','),
       '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', temporaryOutputPath,
-    ], { timeoutMs: 180_000, signal: input.signal });
+    ], { timeoutMs: 180_000, signal: input.signal }));
     if (!await isReusableNarrationChunk(temporaryOutputPath)) throw new Error('豆包 TTS 试听音频标准化后不可读取');
     fs.rmSync(input.outputPath, { force: true });
     fs.renameSync(temporaryOutputPath, input.outputPath);
