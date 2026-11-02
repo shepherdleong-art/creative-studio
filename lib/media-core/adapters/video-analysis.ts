@@ -24,6 +24,7 @@ export async function analyzeVideoWithVision(input: {
   model?: string;
   cacheDir: string;
   signal?: AbortSignal;
+  executionScope?: { resourceType: string; resourceId: string };
 }) {
   const durationSec = await probeDurationSec(input.filePath);
   const durationUs = Math.round(durationSec * 1_000_000);
@@ -63,6 +64,15 @@ export async function analyzeVideoWithVision(input: {
     temperature: 0.2,
     images,
     signal: input.signal,
+    usageContext: {
+      refType: 'video-analysis',
+      refId: input.videoJobId,
+    },
+    executionContext: {
+      taskId: `video-analysis:${input.videoJobId}`,
+      step: 'analyze:1',
+      scope: input.executionScope ?? { resourceType: 'video_job', resourceId: input.videoJobId },
+    },
   });
   const rawScenes = Array.isArray(result.scenes) ? result.scenes : [];
   const scenes = detectedScenes.map((range, index) => {

@@ -181,6 +181,30 @@ assert.equal(typeof durationRow.generationDurationMs, 'number', '成功落库必
 // 假生成器会在 1 毫秒内返回，耗时记成 0 也是合法记录；只拒绝负数。
 assert.ok((durationRow.generationDurationMs ?? -1) >= 0);
 
+const replayedDraftResponse = await generateAndPersistScriptV3({
+  projectId: 'project-a', project,
+  body: {
+    shotSetId: 'set-owned',
+    selectedSellingPoints: [{ title: '112°承托', priority: 'highest', reason: '真实卖点' }],
+    templateId: 'scene_seeding', targetDurationSec: 15, providerId: 'fake-provider',
+  },
+}, {
+  db, storageRoot, createId: () => 'draft-v3',
+  providerMeta: () => ({
+    id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
+    apiStyle: 'openai-compatible', supportsVision: true, executionScope: 'external',
+  }),
+  completeJson: async () => ({}),
+  prepareVisualImage: async ({ imageBuffer, mimeType }) => ({
+    imageBuffer, mimeType: mimeType as 'image/jpeg', width: 1, height: 1,
+    originalSizeBytes: imageBuffer.length, processedSizeBytes: imageBuffer.length,
+  }),
+  generate: async () => ({ script, attempts: 2 }),
+});
+assert.equal(replayedDraftResponse.status, 200);
+assert.deepEqual(replayedDraftResponse.body, response.body, '崩溃恢复必须返回已持久草稿，而不是新建或改写');
+assert.equal(db.prepare("SELECT COUNT(*) FROM script_drafts WHERE id='draft-v3'").pluck().get(), 1);
+
 let nonVisionGenerateCalled = false;
 const nonVisionResponse = await generateAndPersistScriptV3({
   projectId: 'project-a', project,

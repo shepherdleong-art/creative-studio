@@ -18,6 +18,11 @@ export type SemanticScoreAdapter = (input: {
   userPrompt: string;
   temperature: number;
   maxTokens: number;
+  executionContext?: {
+    taskId: string;
+    step: string;
+    scope: { resourceType: string; resourceId: string };
+  };
 }) => Promise<unknown>;
 
 interface ResolveSemanticScoresInput {
@@ -25,6 +30,11 @@ interface ResolveSemanticScoresInput {
   sentences: SemanticSentence[];
   scenes: SemanticScene[];
   providerId: string;
+  executionContext?: {
+    taskId: string;
+    step: string;
+    scope: { resourceType: string; resourceId: string };
+  };
   score?: SemanticScoreAdapter;
   sleep?: (delayMs: number) => Promise<void>;
   onRetry?: (event: SemanticMatrixRetryEvent) => void;
@@ -40,7 +50,7 @@ function parseCachedJson(value: string): unknown {
  * 模型身份、重试或降级。只有真实成功矩阵才写缓存，暂时性失败不能永久绑定输入。
  */
 export async function resolveFinalEditSemanticScores({
-  db, sentences, scenes, providerId, score, sleep, onRetry, onFailure,
+  db, sentences, scenes, providerId, executionContext, score, sleep, onRetry, onFailure,
 }: ResolveSemanticScoresInput): Promise<SemanticMatrixResult> {
   const model = (() => {
     try { return String((db.prepare(`SELECT COALESCE(NULLIF(model, ''), defaultModel, '') AS model FROM script_providers WHERE id=?`).get(providerId) as { model?: string } | undefined)?.model || ''); }
@@ -74,6 +84,7 @@ export async function resolveFinalEditSemanticScores({
       temperature: 0.2,
       // 推理型模型的思考过程也消耗 max_tokens；1500 可能只剩空答案。
       maxTokens: 8000,
+      executionContext,
     }),
     sleep,
     onRetry,

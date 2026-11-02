@@ -399,6 +399,10 @@ export function createSemanticScoreExecutor(options: SemanticScoreExecutorOption
         scenes,
         providerId: provider.providerId,
         model: provider.model,
+        execution: {
+          taskId: claim.task.id,
+          scope: { resourceType: 'project', resourceId: projectId },
+        },
         signal,
         onProgress: (completed, total) => context.reportProgress({
           phase: 'semantic_score',

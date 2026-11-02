@@ -51,10 +51,14 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
     db,
     storageRoot,
     probeVideo: async ({ filePath }) => probeVideoMedia(filePath),
-    analyzeVideo: async ({ filePath, videoJobId, providerId }) => {
+    analyzeVideo: async ({ filePath, videoJobId, shotSetId, providerId }) => {
       const provider = getAvailableProviders().find((item) => item.id === providerId && item.configured && item.supportsVision);
       if (!provider) throw new Error('没有已启用并支持图片理解的视觉分析供应商');
-      return analyzeVideoWithVision({ filePath, videoJobId, providerId: provider.id, cacheDir: path.join(storageRoot, 'final-edits', 'analysis', videoJobId) });
+      return analyzeVideoWithVision({
+        filePath, videoJobId, providerId: provider.id,
+        cacheDir: path.join(storageRoot, 'final-edits', 'analysis', videoJobId),
+        executionScope: { resourceType: 'shot_set', resourceId: shotSetId },
+      });
     },
     scoreSemanticMatrix: (input) => completeJson({
       providerId: input.providerId,
@@ -62,13 +66,28 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
       userPrompt: input.userPrompt,
       temperature: input.temperature,
       maxTokens: input.maxTokens,
+      usageContext: input.executionContext ? {
+        projectId: input.executionContext.scope.resourceType === 'project' ? input.executionContext.scope.resourceId : undefined,
+        refType: 'final-edit-semantic',
+        refId: input.executionContext.taskId,
+      } : undefined,
+      executionContext: input.executionContext,
     }),
-    fitNarrationDuration: ({ providerId, script, actualNarrationUs, targetNarrationUs }) => fitNarrationTextToDuration({
+    fitNarrationDuration: ({ providerId, script, actualNarrationUs, targetNarrationUs, executionContext }) => fitNarrationTextToDuration({
       script,
       actualNarrationUs,
       targetNarrationUs,
     }, {
-      completeJson: (request) => completeJson({ providerId, ...request }),
+      completeJson: (request) => completeJson({
+        providerId,
+        ...request,
+        usageContext: executionContext ? {
+          projectId: executionContext.scope.resourceType === 'project' ? executionContext.scope.resourceId : undefined,
+          refType: 'final-edit-smart-fit',
+          refId: executionContext.taskId,
+        } : undefined,
+        executionContext,
+      }),
     }),
     log: (input) => writeLog(input),
     detectBeatPoints,

@@ -10,6 +10,9 @@ import { parseJsonResponse } from './openai-compatible.ts';
 import { createScriptProviderRequestControl } from './request-control.ts';
 import { readSseStream } from './sse.ts';
 import type { ApiStyle, ProviderConfig } from './types.ts';
+import { beginLlmUsageCall, finishLlmUsageCall, llmTransportActualCost } from '../usage-llm.ts';
+import { safeProviderErrorHint } from './error-diagnostics.ts';
+import { runLlmTransport } from './transport-execution.ts';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 const DEFAULT_ANTHROPIC_TIMEOUT_MS = 120_000;
@@ -73,46 +76,73 @@ export async function chatCompletion(
     timeoutMessage: (timeoutMs) => `${config.name} (anthropic-messages) 请求超时（${timeoutMs}ms）`,
   });
   try {
-    const response = await fetch(buildMessagesUrl(baseUrl), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: streaming ? 'text/event-stream' : 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-        'x-api-key': apiKey,
-        'anthropic-version': ANTHROPIC_VERSION,
-      },
-      body: JSON.stringify(body),
-      signal: requestControl.signal,
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`${config.name} (anthropic-messages) error ${response.status}: ${errorText.slice(0, 500)}`);
-    }
-
-    if (streaming) {
-      if (!response.body) throw new Error(`${config.name} (anthropic-messages) 返回了空响应流`);
-      const rawText = await readAnthropicStream(response.body, requestControl.signal, {
-        onTextDelta: options.onTextDelta,
-        onReasoningDelta: options.onReasoningDelta,
+    const perform = async () => {
+      const usageAttempt = runtime ? beginLlmUsageCall(runtime, model, options.usageContext) : null;
+      const response = await fetch(buildMessagesUrl(baseUrl), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: streaming ? 'text/event-stream' : 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+          'x-api-key': apiKey,
+          'anthropic-version': ANTHROPIC_VERSION,
+        },
+        body: JSON.stringify(body),
+        signal: requestControl.signal,
+      });
+      if (!response.ok) return { response, errText: await response.text(), rawText: '' };
+      let rawText = '';
+      let usage: unknown;
+      if (streaming) {
+        if (!response.body) throw new Error(`${config.name} (anthropic-messages) 返回了空响应流`);
+        const streamed = await readAnthropicStream(response.body, requestControl.signal, {
+          onTextDelta: options.onTextDelta,
+          onReasoningDelta: options.onReasoningDelta,
+        });
+        rawText = streamed.text;
+        usage = streamed.usage;
+      } else {
+        const data = await response.json() as {
+          content?: string | Array<{ type?: string; text?: string }>;
+          usage?: unknown;
+        };
+        usage = data.usage;
+        rawText = typeof data.content === 'string'
+          ? data.content
+          : (data.content || [])
+              .filter((block) => block.type === 'text' && typeof block.text === 'string')
+              .map((block) => block.text)
+              .join('');
+      }
+      finishLlmUsageCall(usageAttempt, {
+        usage,
+        serializedPrompt: JSON.stringify(body.messages),
+        rawOutput: rawText,
+        hasImages: Boolean(options.images?.length),
       });
       if (!rawText.trim()) throw new Error(`${config.name} (anthropic-messages) 返回了空响应`);
-      return rawText;
-    }
-
-    const data = await response.json() as {
-      content?: string | Array<{ type?: string; text?: string }>;
+      return { response, errText: '', rawText };
     };
-    const rawText = typeof data.content === 'string'
-      ? data.content
-      : (data.content || [])
-          .filter((block) => block.type === 'text' && typeof block.text === 'string')
-          .map((block) => block.text)
-          .join('');
-
-    if (!rawText.trim()) throw new Error(`${config.name} (anthropic-messages) 返回了空响应`);
-    return rawText;
+    const performed = options.executionTransport
+      ? await runLlmTransport(options.executionTransport, {
+          requestSnapshot: body,
+          send: async () => {
+            const value = await perform();
+            return {
+              value,
+              terminalState: value.response.ok ? 'succeeded' : 'failed',
+              result: value.response.ok ? value.rawText : undefined,
+              actualCost: value.response.ok && runtime ? llmTransportActualCost(runtime, model) : null,
+              remoteTerminal: true,
+              errorCode: value.response.ok ? undefined : `http_${value.response.status}`,
+            };
+          },
+        })
+      : await perform();
+    if (!performed.response.ok) {
+      throw new Error(`${config.name} (anthropic-messages) 请求失败（HTTP ${performed.response.status}）：${safeProviderErrorHint(performed.errText)}`);
+    }
+    return performed.rawText;
   } catch (error) {
     return requestControl.rethrow(error);
   } finally {
@@ -127,9 +157,10 @@ async function readAnthropicStream(
     onTextDelta?: (accumulated: string) => void;
     onReasoningDelta?: (accumulated: string) => void;
   },
-): Promise<string> {
+): Promise<{ text: string; usage: unknown }> {
   let text = '';
   let reasoning = '';
+  let usage: unknown;
   await readSseStream(body, signal, {
     onLine(payload) {
       let event: Record<string, unknown>;
@@ -137,6 +168,10 @@ async function readAnthropicStream(
         event = JSON.parse(payload) as Record<string, unknown>;
       } catch {
         throw new Error(`Anthropic Messages 返回了无效 SSE JSON: ${payload.slice(0, 300)}`);
+      }
+      if (event.usage) usage = event.usage;
+      if (event.message && typeof event.message === 'object' && 'usage' in event.message) {
+        usage = (event.message as { usage?: unknown }).usage;
       }
       if (event.error) {
         const message = event.error && typeof event.error === 'object' && 'message' in event.error
@@ -156,7 +191,7 @@ async function readAnthropicStream(
       }
     },
   });
-  return text;
+  return { text, usage };
 }
 
 export async function completeAnthropicMessagesJson<T>(

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { writeLog } from '@/lib/logger';
@@ -131,6 +132,8 @@ async function handleAnalyze(
 
   const input: AnalysisInput = { sellingPoints, targetAudience, platform };
   logScriptInfo(projectId, `开始分析卖点（${sellingPoints.length} 条，模型 ${providerId}，平台 ${platform}）`);
+  const analysisTaskId = randomUUID();
+  let sequence = 0;
   const result = await analyzeScriptStrategyV3(input, {
     completeJson: (request) => completeJson({
       providerId,
@@ -138,7 +141,12 @@ async function handleAnalyze(
       usageContext: {
         projectId,
         refType: 'script-analysis',
-        refId: projectId,
+        refId: analysisTaskId,
+      },
+      executionContext: {
+        taskId: analysisTaskId,
+        step: `analyze:${++sequence}`,
+        scope: { resourceType: 'project', resourceId: projectId },
       },
     }),
   });
