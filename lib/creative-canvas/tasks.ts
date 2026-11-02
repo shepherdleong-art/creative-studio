@@ -670,9 +670,10 @@ export function updateCanvasTaskGuarded(
 
   const update = () => {
     const before = getCanvasTask(db, taskId);
+    const cancelGuard = patch.phase === 'submitting' ? 'AND cancelRequestedAt IS NULL' : '';
     const info = db.prepare(`
       UPDATE creative_canvas_tasks SET ${sets.join(', ')}
-       WHERE id = @taskId AND fence = @fence AND leaseOwner = @workerId
+       WHERE id = @taskId AND fence = @fence AND leaseOwner = @workerId ${cancelGuard}
     `).run(values);
     if (info.changes === 1 && patch.phase === 'submitting') {
       // Preparation may be slow: start the spacing window again at the actual POST intent.

@@ -6,6 +6,7 @@ import { createTeamExecutionRuntime, createTeamServiceBootstrap, type TeamServic
 import { ExecutionError, type ExecutionFacade, type ExecutionRuntime } from '../../media-core/execution/context.ts';
 import { ensureServerDeploymentMarker, readRuntimeConfig } from '../config.ts';
 import { acquireTeamRuntimeOwner, type TeamRuntimeOwner } from './owner.ts';
+import { createCanvasExecutionLifecycle } from '../../creative-canvas/bootstrap.ts';
 import {
   getTeamRuntimeState,
   initializeTeamRuntimeState,
@@ -46,6 +47,7 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
         identity: owner,
         db,
         execution,
+        modules: [createCanvasExecutionLifecycle({ db, execution: execution.facade })],
         ...schemaUpgradeRuntimePaths(dataRoot()),
         assertOwnerActive: () => {
           owner?.assertActive();

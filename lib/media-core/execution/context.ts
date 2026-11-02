@@ -229,7 +229,7 @@ export interface SettleInput {
 
 export interface ExecutionFacade {
   enqueue(input: EnqueueInput): EnqueueResult;
-  admit(instance: InstanceFence & { leaseMs?: number }): AdmitResult;
+  admit(instance: InstanceFence & { leaseMs?: number; operationId?: string }): AdmitResult;
   markSubmitting(input: MarkSubmittingInput): Promise<SubmitIntent>;
   attachReceipt(input: AttachReceiptInput): Promise<AttemptRecord>;
   reconcile(input: ReconcileInput): Promise<AttemptRecord>;

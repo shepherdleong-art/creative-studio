@@ -8,6 +8,8 @@
  */
 
 import type Database from 'better-sqlite3';
+import { createLocalAccessContext, runWithAccessContext } from '../media-core/access-context.ts';
+import type { ExecutionFacade, InstanceFence } from '../media-core/execution/context.ts';
 import { dataRoot } from '../data-root.ts';
 import { canvasStorageRoot } from './assets.ts';
 import type { CanvasTaskAdapter } from './adapters/types.ts';
@@ -20,9 +22,15 @@ import {
   renewCanvasTaskLease,
 } from './tasks.ts';
 
+export interface CanvasSchedulerExecution {
+  facade: ExecutionFacade;
+  instance: InstanceFence;
+}
+
 export interface CanvasSchedulerOptions {
   db: Database.Database;
   workerId: string;
+  execution?: CanvasSchedulerExecution;
   /** 执行器：fixture 或公司适配器；P2 只要求可注入。 */
   adapter: CanvasTaskAdapter;
   storageRoot?: string;
@@ -77,16 +85,19 @@ export function createCanvasScheduler(options: CanvasSchedulerOptions): CanvasSc
   let ticking = false;
 
   async function tick(): Promise<CanvasTickResult> {
-    const resolved = resolveCanvasTaskInputs(db, now);
-    const claimed = claimCanvasTasks({
-      db,
-      workerId,
-      globalLimit,
-      leaseMs,
-      now,
-      skipTaskIds: new Set(inFlight.keys()),
-      ...(quotaLimits ? { quotaLimits } : {}),
-    });
+    // 调度扫描是内部维护动作；真正执行时 runCanvasTask 会按持久 principal 重建用户上下文。
+    const { resolved, claimed } = runWithAccessContext(createLocalAccessContext(), () => ({
+      resolved: resolveCanvasTaskInputs(db, now),
+      claimed: claimCanvasTasks({
+        db,
+        workerId,
+        globalLimit,
+        leaseMs,
+        now,
+        skipTaskIds: new Set(inFlight.keys()),
+        ...(quotaLimits ? { quotaLimits } : {}),
+      }),
+    }));
 
     for (const { task, fence } of claimed) {
       if (inFlight.has(task.id)) continue;
@@ -110,6 +121,7 @@ export function createCanvasScheduler(options: CanvasSchedulerOptions): CanvasSc
         now,
         pollIntervalMs,
         signal: aborter.signal,
+        ...(options.execution ? { execution: options.execution } : {}),
         ...(sleep ? { sleep } : {}),
       }).then((outcome) => {
         clearInterval(heartbeat);

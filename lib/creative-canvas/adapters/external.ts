@@ -566,7 +566,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
             code: 'external_result_persist_uncertain',
           });
         }
-        return { providerTaskId: `external-image:${context.task.id}` };
+        return { providerTaskId: `external-image:${context.task.id}`, terminalState: 'succeeded' };
       }
 
       // 视频：复用仓库里按供应商类型选择的适配器（当前配置的是即梦直连）

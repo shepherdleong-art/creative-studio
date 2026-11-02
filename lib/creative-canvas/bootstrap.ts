@@ -6,6 +6,10 @@
  * API readiness 恢复后也会补启动；恢复与实例创建共用进程内单例。
  */
 
+import type Database from 'better-sqlite3';
+import { createLocalAccessContext, runWithAccessContext } from '../media-core/access-context.ts';
+import type { ExecutionModuleContext, ExecutionModuleLifecycle } from '../media-core/execution/contracts.ts';
+import type { ExecutionFacade } from '../media-core/execution/context.ts';
 import { dataRoot } from '../data-root.ts';
 import { getDb } from '../db.ts';
 import { canvasStorageRoot } from './assets.ts';
@@ -15,10 +19,10 @@ import { canvasFeatureEnabled, readCanvasRuntimeConfig } from './config.ts';
 import { recoverCanvasTasks } from './recovery.ts';
 import { getCanvasReadiness, canvasReadinessUnavailable } from './runtime-readiness.ts';
 import type { CanvasReadiness } from './readiness.ts';
-import { createCanvasScheduler, type CanvasSchedulerController } from './scheduler.ts';
+import { createCanvasScheduler, type CanvasSchedulerController, type CanvasSchedulerExecution } from './scheduler.ts';
 
 // 任何改变任务实际执行语义的修改都必须递增此版本，使 HMR 下的旧闭包先停再换。
-const CANVAS_SCHEDULER_EXECUTOR_VERSION = 4;
+const CANVAS_SCHEDULER_EXECUTOR_VERSION = 5;
 const CANVAS_BOOTSTRAP_KEY = Symbol.for('creative-studio.creative-canvas-bootstrap');
 const CANVAS_SCHEDULER_KEY = Symbol.for('creative-studio.creative-canvas-scheduler');
 const CANVAS_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.creative-canvas-scheduler-version');
@@ -58,7 +62,10 @@ async function stopExistingScheduler(): Promise<void> {
  * 启动调度器单例。executor=disabled 时返回 null：编辑可用，但不启动生成。
  * 公司执行器在 P4 注册工厂前不启动，也不假装可用。
  */
-async function startCurrentCanvasScheduler(): Promise<CanvasSchedulerController | null> {
+async function startCurrentCanvasScheduler(
+  execution?: CanvasSchedulerExecution,
+  recover = true,
+): Promise<CanvasSchedulerController | null> {
   const scope = globalScope();
   await stopExistingScheduler();
 
@@ -74,13 +81,14 @@ async function startCurrentCanvasScheduler(): Promise<CanvasSchedulerController 
     return null;
   }
   // 启动失败后的 API 补启动也要恢复；仅在新建实例时运行，不能清空活跃任务的租约。
-  recoverCanvasTasks(db);
+  if (recover) runWithAccessContext(createLocalAccessContext(), () => recoverCanvasTasks(db));
   const scheduler = createCanvasScheduler({
     db,
     workerId: 'creative-canvas-scheduler',
     adapter,
     storageRoot,
     intervalMs: 2_000,
+    ...(execution ? { execution } : {}),
   });
   scheduler.start();
   scope[CANVAS_SCHEDULER_KEY] = scheduler;
@@ -96,6 +104,8 @@ export async function ensureCanvasSchedulerStarted(): Promise<CanvasSchedulerCon
   if (existing && scope[CANVAS_SCHEDULER_VERSION_KEY] === CANVAS_SCHEDULER_EXECUTOR_VERSION) {
     return existing;
   }
+  // server worker 只能由持有团队执行权的 lifecycle 创建，API 请求不得自行恢复。
+  if (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server') return null;
   const pending = scope[CANVAS_SCHEDULER_START_KEY] as Promise<CanvasSchedulerController | null> | undefined;
   if (pending) return pending;
   const starting = startCurrentCanvasScheduler();
@@ -114,12 +124,53 @@ export async function stopCanvasScheduler(): Promise<void> {
   await stopExistingScheduler();
 }
 
+/** server 组合根注入的执行 lifecycle；调用方必须先取得团队 owner 与 06 执行恢复。 */
+export function createCanvasExecutionLifecycle(options: {
+  db: Database.Database;
+  execution: ExecutionFacade;
+}): ExecutionModuleLifecycle {
+  let readiness: CanvasReadiness | null = null;
+  return {
+    name: 'creative-canvas',
+    async ensureSchemaReady() {
+      if (!canvasFeatureEnabled()) return;
+      readiness = await getCanvasReadiness();
+      const unavailable = canvasReadinessUnavailable(readiness);
+      if (unavailable) throw new Error(unavailable.message);
+    },
+    registerRecovery() {},
+    recover(context: ExecutionModuleContext) {
+      if (!canvasFeatureEnabled() || context.signal.aborted) return;
+      runWithAccessContext(createLocalAccessContext(), () => recoverCanvasTasks(options.db));
+    },
+    async start(context: ExecutionModuleContext) {
+      const config = readCanvasRuntimeConfig();
+      if (!canvasFeatureEnabled() || config.executor === 'disabled' || context.signal.aborted) return;
+      const scheduler = await startCurrentCanvasScheduler({
+        facade: options.execution,
+        instance: { instanceId: context.instanceId, fence: context.fence },
+      }, false);
+      readiness = readiness ?? await getCanvasReadiness();
+      globalScope()[CANVAS_BOOTSTRAP_KEY] = {
+        readiness,
+        executor: config.executor,
+        schedulerStarted: scheduler !== null,
+        startedAt: new Date().toISOString(),
+      } satisfies CanvasBootstrapState;
+    },
+    async drain() {
+      await stopCanvasScheduler();
+      return 0;
+    },
+  };
+}
+
 /**
  * 应用启动入口：只有显式开启画布功能才执行 readiness（含迁移）。
  * 不可用时返回 null 并保持旧功能可用。
  */
 export async function startCanvasAfterReadiness(): Promise<CanvasBootstrapState | null> {
-  if (!canvasFeatureEnabled()) return null;
+  if (!canvasFeatureEnabled() || process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server') return null;
   try {
     const readiness = await getCanvasReadiness();
     if (canvasReadinessUnavailable(readiness)) {
