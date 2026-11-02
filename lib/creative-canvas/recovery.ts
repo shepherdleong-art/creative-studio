@@ -54,9 +54,9 @@ export function recoverCanvasTasks(
       ? db.prepare(`
         SELECT a.remoteId, a.submissionState, a.terminalState
         FROM execution_operations o
-        JOIN execution_attempts a ON a.id = o.currentAttemptId
+        JOIN execution_attempts a ON a.operationId = o.id
         WHERE o.module = 'canvas' AND o.taskId = ?
-        ORDER BY o.createdAt DESC LIMIT 1
+        ORDER BY o.createdAt DESC, a.submitRound DESC, a.transportSeq DESC LIMIT 1
       `).get(task.id) as { remoteId: string | null; submissionState: string; terminalState: string | null } | undefined
       : undefined;
     if (execution?.terminalState === 'not_created') {

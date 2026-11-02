@@ -273,6 +273,39 @@ try {
   assert.equal(restarted.readTask()?.phase, 'succeeded');
   assert.equal(restartSubmitCount, 1, '重启恢复不得重复付费提交');
 
+  // 06 先恢复明确的 not_created 回执时会清空 currentAttemptId；画布仍须读取该尝试并收尾。
+  const notCreated = createSingleImageTask('未创建恢复画布', 'not-created-node', 'not-created-run');
+  const notCreatedOperation = runtime.facade.enqueue({
+    operationKey: `canvas/${notCreated.taskId}/submit/epoch-1-variant-0-stage-direct`,
+    actor: { userId: 'user-a' },
+    scope: { resourceType: 'canvas', resourceId: notCreated.canvasId },
+    module: 'canvas', taskId: notCreated.taskId, step: 'submit',
+    inputRevision: 'epoch-1-variant-0-stage-direct',
+    businessAttempt: { id: notCreated.taskId, number: 1 },
+    inputSnapshot: { taskId: notCreated.taskId }, inputHash: 'not-created-input-hash',
+    continuationKey: 'canvas.submit', providerSnapshot: { providerIdentity: 'shared-provider' },
+    requiredPools: ['shared-provider:remote'],
+    quote: { kind: 'priced' as const, reserve: { currency: 'CNY' as const, minor: 0 }, pricingSnapshot: { version: 1 } },
+  });
+  const notCreatedAdmission = runtime.facade.admit({ ...identity, operationId: notCreatedOperation.operation.id });
+  assert.equal(notCreatedAdmission.kind, 'admitted');
+  if (notCreatedAdmission.kind !== 'admitted') throw new Error('未创建恢复测试前置未获准入');
+  const notCreatedIntent = await runtime.facade.markSubmitting({
+    grant: notCreatedAdmission.grant, requestSnapshot: { taskId: notCreated.taskId },
+  });
+  await runtime.facade.transmit(notCreatedIntent, async () => ({ terminalState: 'not_created', errorCode: 'rejected' }));
+  db.prepare(`UPDATE creative_canvas_tasks
+    SET phase = 'submitting', providerTaskId = NULL, submissionState = 'maybe_sent',
+        slotHeld = 1, leaseOwner = 'dead-worker', leaseUntil = NULL
+    WHERE id = ?`).run(notCreated.taskId);
+  await runtime.lifecycle.recover({ ...identity, deploymentId: 'deployment-canvas-execution', signal: new AbortController().signal });
+  assert.equal((db.prepare(`SELECT currentAttemptId FROM execution_operations WHERE id = ?`)
+    .get(notCreatedOperation.operation.id) as { currentAttemptId: string | null }).currentAttemptId, null);
+  runWithAccessContext(createLocalAccessContext(), () => recoverCanvasTasks(db));
+  assert.equal(notCreated.readTask()?.phase, 'failed', '明确未创建不能恢复成无法核查的 unknown');
+  assert.equal(notCreated.readTask()?.errorCode, 'confirmed_not_created');
+  assert.equal(notCreated.readTask()?.slotHeld, false);
+
   // 新 nodeEpoch 已发布后，旧任务迟到的结果仍只登记为自己的资产，不覆盖新结果。
   updateActorPolicy(db, {
     actorId: 'user-a', monthlyLimitMinor: null, personalConcurrency: 2, paused: false, expectedVersion: 1,
