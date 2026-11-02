@@ -1,4 +1,5 @@
 import './accepted-access.ts';
+import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { SchemaUpgradeDiskSpaceProbe } from '../schema-upgrade/backup.ts';
 import type { SchemaUpgradeGateReadiness } from '../schema-upgrade/gate.ts';
@@ -13,6 +14,9 @@ import type {
   ExecutionModuleContext,
   ExecutionModuleLifecycle,
 } from '../media-core/execution/contracts.ts';
+import { createExecutionFacade } from '../media-core/execution/operations.ts';
+import { createExecutionJournal } from '../media-core/execution/journal.ts';
+import type { ExecutionRuntime } from '../media-core/execution/context.ts';
 import type { ServerRuntimeConfig } from './config.ts';
 import { checkTeamServiceReadiness } from './readiness.ts';
 import {
@@ -45,6 +49,49 @@ export interface BusinessReadiness {
   message?: string;
 }
 
+export function createTeamExecutionRuntime(options: {
+  config: ServerRuntimeConfig;
+  db: Database.Database;
+}): ExecutionRuntime {
+  const { config, db } = options;
+  return createExecutionFacade({
+    db,
+    deploymentId: config.deploymentId,
+    journal: createExecutionJournal({
+      deploymentId: config.deploymentId,
+      directory: path.join(config.dataRoot, 'storage', 'execution-journal', config.deploymentId),
+    }),
+    actorAllowed(actorId) {
+      try {
+        const user = db.prepare('SELECT status FROM team_users WHERE id = ?').get(actorId) as { status: string } | undefined;
+        return user?.status === 'active';
+      } catch {
+        return false;
+      }
+    },
+    scopeAllowed(actorId, scope) {
+      try {
+        const user = db.prepare('SELECT role, status FROM team_users WHERE id = ?').get(actorId) as
+          | { role: string; status: string } | undefined;
+        const resource = db.prepare(`
+          SELECT ownerUserId, deletedAt FROM team_resource_scopes WHERE resourceType = ? AND resourceId = ?
+        `).get(scope.resourceType, scope.resourceId) as { ownerUserId: string; deletedAt: string | null } | undefined;
+        return user?.status === 'active' && resource !== undefined && !resource.deletedAt
+          && (user.role === 'admin' || resource.ownerUserId === actorId);
+      } catch {
+        return false;
+      }
+    },
+    maintenance() {
+      try {
+        return Boolean(db.prepare('SELECT maintenance FROM team_service_state WHERE id = 1').pluck().get());
+      } catch {
+        return true;
+      }
+    },
+  });
+}
+
 function readinessFailure(readiness: SchemaUpgradeGateReadiness): never {
   if (readiness.available) throw new Error('unexpected readiness failure');
   throw new TeamRuntimeReadinessError(readiness.code, readiness.message);
@@ -58,11 +105,15 @@ export function createTeamServiceBootstrap(options: {
   lockDatabasePath: string;
   auditFilePath: string;
   modules?: ReadonlyArray<ExecutionModuleLifecycle>;
+  execution?: ExecutionRuntime;
   diskSpaceProbe?: SchemaUpgradeDiskSpaceProbe;
   assertOwnerActive?: () => void;
   checkBusinessReadiness?: () => Promise<BusinessReadiness>;
 }): TeamServiceBootstrap {
-  const modules = options.modules ?? [];
+  const modules = [
+    ...(options.execution ? [options.execution.lifecycle] : []),
+    ...(options.modules ?? []),
+  ];
   const checkBusinessReadiness = options.checkBusinessReadiness ?? (async () => ({
     available: true,
   }));

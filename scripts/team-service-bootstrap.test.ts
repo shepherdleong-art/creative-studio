@@ -27,7 +27,7 @@ const config = {
 const identity = { instanceId: 'instance-bootstrap', fence: 7 };
 const databases = new Set<Database.Database>();
 
-function setup(name: string, events: string[] = []) {
+function setup(name: string, events: string[] = [], withExecution = false) {
   const root = path.join(fixtureRoot, name);
   fs.mkdirSync(path.join(root, 'data'), { recursive: true });
   const db = new Database(path.join(root, 'data', 'workbench.db'));
@@ -50,6 +50,13 @@ function setup(name: string, events: string[] = []) {
     db,
     ...schemaUpgradeRuntimePaths(root),
     modules: [lifecycle('a'), lifecycle('b')],
+    ...(withExecution ? {
+      execution: {
+        facade: {} as never,
+        lifecycle: lifecycle('execution'),
+        closeNewWork() {},
+      },
+    } : {}),
     checkBusinessReadiness: async () => ({ available: true }),
   });
   return { root, db, bootstrap, events };
@@ -103,6 +110,24 @@ try {
       () => assertExecutionFence(identity, { instanceId: identity.instanceId, fence: 8 }),
       /fence/,
     );
+  }
+
+  {
+    resetTeamRuntimeStateForTests();
+    const { bootstrap, events } = setup('execution-order', [], true);
+    await bootstrap.ensureSchemaReady();
+    await bootstrap.registerRecovery();
+    await bootstrap.recover();
+    await bootstrap.start();
+    assert.deepEqual(events, [
+      'execution.schema', 'a.schema', 'b.schema',
+      'execution.register', 'a.register', 'b.register',
+      'execution.recover', 'a.recover', 'b.recover',
+      'execution.start', 'a.start', 'b.start',
+    ], '执行设施必须先于业务恢复和开放');
+    assert.deepEqual(await bootstrap.drain(), { stopped: false, pendingTasks: 2 });
+    assert.deepEqual(events.slice(-3), ['b.drain', 'a.drain', 'execution.drain'],
+      '业务必须先 drain，执行设施最后收尾');
   }
 
   {
