@@ -1166,6 +1166,9 @@ async function runAuthorizedJob(
 
       if (isNonRetryablePackyError(errorMessage)) {
         const msg = `${errorMessage}。${getNonRetryablePackyAdvice(errorMessage)}`;
+        failLegacyMediaOperation({
+          module: 'image', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+        });
         db.prepare(
           `UPDATE jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
            WHERE id = ? AND status = 'running'`

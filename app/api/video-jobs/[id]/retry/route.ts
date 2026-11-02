@@ -23,10 +23,11 @@ async function __teamRoutePOST(
         return { error: 'Only failed or canceled video jobs can be retried', status: 400 } as const;
       }
 
-      // Explicit manual retry may replace a confirmed remote failure only.
-      // Unknown/canceled/download failures retain the task ID for recovery.
-      const resubmit = job.status === 'failed' && job.providerStatus === 'failed'
-        && !!job.providerTaskId && !job.remoteVideoUrl && !job.localVideoPath;
+      // A terminal submit failure without a remote identity also needs a new operation.
+      // Unknown/canceled/download failures with a remote identity retain it for recovery.
+      const resubmit = !job.remoteVideoUrl && !job.localVideoPath && (
+        !job.providerTaskId || (job.status === 'failed' && job.providerStatus === 'failed')
+      );
       if (resubmit) {
         db.prepare(`UPDATE video_jobs SET status = 'pending', errorMessage = NULL,
           providerTaskId = NULL, providerStatus = NULL, providerRawResponse = NULL,

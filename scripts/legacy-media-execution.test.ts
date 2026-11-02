@@ -143,6 +143,12 @@ const fake = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'POST' && req.url === '/packy-terminal/v1/images/edits') {
+    req.resume();
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'bad request' } }));
+    return;
+  }
   req.resume();
   res.writeHead(404).end();
 });
@@ -239,6 +245,20 @@ try {
   });
   assert.equal(terminalAdmission.kind, 'idle', 'maxAttempts 耗尽的旧 operation 不得再次占名额');
   assert.equal(terminalOperation.status, 'failed', '业务终态必须保留失败台账');
+
+  provider('terminal-packy', 'packy-images', `${baseUrl}/packy-terminal`);
+  imageJob('job-terminal-packy', 'project-terminal', 'member-terminal', 'terminal-packy');
+  db.prepare("UPDATE jobs SET maxAttempts = 1 WHERE id = 'job-terminal-packy'").run();
+  await queue.runQueue({
+    projectId: 'project-terminal', jobId: 'job-terminal-packy', concurrency: 1, maxAttempts: 1, timeoutMs: 60_000,
+  });
+  const packyTerminalOperation = db.prepare(`SELECT id, status FROM execution_operations
+    WHERE module = 'image' AND taskId = 'job-terminal-packy'`).get() as { id: string; status: string };
+  assert.equal(packyTerminalOperation.status, 'failed', 'Packy 明确不可重试终态也必须关闭旧 operation');
+  const packyTerminalAdmission = getTeamExecutionFacade().admit({
+    instanceId: 'legacy-media-test-instance', fence: 1, operationId: packyTerminalOperation.id,
+  });
+  assert.equal(packyTerminalAdmission.kind, 'idle');
   console.log('legacy media terminal-operation test passed');
 
   provider('legacy-unknown-image', 'openai-compatible', `${baseUrl}/legacy-unknown`);
