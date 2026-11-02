@@ -3,6 +3,7 @@ import type { LibrarySellingPointInput } from '../libraries.ts';
 import type { ScriptStudioPointType } from '../types.ts';
 import { DIRECT_VISION, DIRECT_VISION_VERSION } from '../direct-vision-contract.ts';
 import { normalizeImportance } from '../selling-point-normalize.ts';
+import { isExecutionControlError } from '../../media-core/execution/waiting.ts';
 import type { VisionExtractor, VisionExtractionResult, VisionExtractionBatchMetric } from './vision-extract.ts';
 
 const pointTypes = new Set(['appearance', 'structure', 'scenario', 'spec', 'material', 'certification', 'efficacy', 'other']);
@@ -61,6 +62,7 @@ export function createDirectVisionExtractor(
                 }),
                 images: batch.map(({ mimeType, imageBase64 }) => ({ mimeType, imageBase64 })),
                 preserveImageBytes: true, temperature: 1, maxTokens: 8000, timeoutMs: 120_000, signal,
+                executionStep: `batch:${index}:request:${attempt + 1}`,
               }));
               if (!Array.isArray(raw.sellingPoints) || !raw.sellingPoints.length) throw new Error('识图结果未包含卖点，请重试');
               const sellingPoints: LibrarySellingPointInput[] = raw.sellingPoints.map((value) => {
@@ -99,7 +101,7 @@ export function createDirectVisionExtractor(
               break;
             } catch (error) {
               attemptElapsedMs.push(Date.now() - started);
-              if (signal?.aborted || attempt === 1) { failed = true; throw error; }
+              if (signal?.aborted || isExecutionControlError(error) || attempt === 1) { failed = true; throw error; }
             }
           }
         }

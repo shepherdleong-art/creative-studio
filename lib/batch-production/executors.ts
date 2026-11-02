@@ -32,6 +32,7 @@ import {
   type BatchSemanticProviderMetaLike,
 } from './semantic-match.ts';
 import type { BatchTaskWorkType, ClaimedBatchTask } from './tasks.ts';
+import { withMediaResource } from '../media-core/media-resource-gate.ts';
 
 /**
  * 统一进度报告。不可测的阶段 percent 必须为 null,不允许伪造
@@ -61,6 +62,12 @@ export interface BatchTaskExecutor {
   workTypes: BatchTaskWorkType[];
   execute(context: BatchTaskExecutionContext): Promise<{
     resultJson?: unknown;
+    /** 链内等待统一准入或媒体容量；runner 保存检查点并复用原 attempt 续跑。 */
+    deferred?: {
+      operationId?: string;
+      continuationKey: string;
+      waitReason?: string | null;
+    };
     /** 成功执行后若调度器拒绝迟到结果，用于删除本次未被接受的候选。 */
     discard?: () => Promise<void> | void;
     /**
@@ -100,6 +107,10 @@ export interface AnalyzeAssetExecutorOptions {
     cacheDir: string;
     signal: AbortSignal;
     mediaLease?: PreparedMediaLease;
+    executionTaskId?: string;
+    executionScope?: { resourceType: string; resourceId: string };
+    inputRevision?: string;
+    businessAttempt?: { id: string; number: number };
   }) => Promise<BatchContentAnalysisResult>;
   assertProviderReady?: (
     provider: ProviderExecutionIdentity,
@@ -126,8 +137,13 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
       filePath: input.filePath,
       videoJobId: input.assetId,
       providerId: input.providerId,
+      model: input.model,
       cacheDir: input.cacheDir,
       signal: input.signal,
+      executionTaskId: input.executionTaskId,
+      executionScope: input.executionScope,
+      inputRevision: input.inputRevision,
+      businessAttempt: input.businessAttempt,
     });
   });
   const assertProviderReady = options.assertProviderReady ?? assertProviderExecutionAvailable;
@@ -166,7 +182,10 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
     )) throw new Error('内容分析请求谱系无效');
     context.reportProgress({ phase: 'probing', description: '探测媒体属性', percent: null });
     assertNotAborted(signal);
-    const verified = await resolveVerifiedProjectAssetMedia(db, projectId, claim.task.targetId);
+    const verified = await withMediaResource(
+      { taskId: claim.task.id, step: 'asset-verify', wait: false, signal },
+      () => resolveVerifiedProjectAssetMedia(db, projectId, claim.task.targetId),
+    );
     // 完整指纹与 FFprobe 本身是不可中断的本地 I/O；在其返回后重新检查
     // 任务信号，避免取消后的迟到分析版本继续发布。
     assertNotAborted(signal);
@@ -223,6 +242,10 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
         cacheDir: path.join(dataRoot(), 'storage', 'batch-analysis', claim.task.targetId, claim.task.id),
         signal,
         mediaLease,
+        executionTaskId: claim.task.id,
+        executionScope: { resourceType: 'project', resourceId: projectId },
+        inputRevision: claim.attempt.id,
+        businessAttempt: { id: claim.attempt.id, number: claim.attempt.attemptNumber },
       });
       // 素材分析任务永远批次绑定(只有素材级 proxy_generate 允许没有批次),
       // 这里不会走到 null,但类型上必须有防御,不用空串伪装。
@@ -402,6 +425,8 @@ export function createSemanticScoreExecutor(options: SemanticScoreExecutorOption
         execution: {
           taskId: claim.task.id,
           scope: { resourceType: 'project', resourceId: projectId },
+          inputRevision: claim.attempt.id,
+          businessAttempt: { id: claim.attempt.id, number: claim.attempt.attemptNumber },
         },
         signal,
         onProgress: (completed, total) => context.reportProgress({

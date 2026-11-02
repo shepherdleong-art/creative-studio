@@ -625,6 +625,8 @@ export function createSellingPointDistiller(
         temperature: 1,
         maxTokens: options.maxTokens ?? 8000,
         signal: input.signal,
+        executionPhaseBudget: 'distill',
+        executionStep: 'distill:1',
       });
     },
   };

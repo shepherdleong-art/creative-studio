@@ -2,6 +2,7 @@ import type { AlignmentAdapter } from './alignment.ts';
 import { DOUBAO_PREVIEW_TEXT, DOUBAO_VOICES, doubaoSpeechUrl, synthesizeDoubaoNarration, synthesizeDoubaoPreview, type DoubaoProviderConfig } from './doubao-tts.ts';
 import { speechUrl, synthesizeVapiNarration, synthesizeVapiPreview, VAPI_PREVIEW_TEXT, VAPI_VOICES } from './vapi-qwen-tts.ts';
 import type { TtsUsageContext } from '../../usage-tts.ts';
+import type { SyncOperationContext } from '../execution/sync-operation.ts';
 
 export interface TtsAdapterInput {
   provider: {
@@ -35,7 +36,7 @@ export interface FinalEditTtsAdapter {
   defaultVoice: string;
   previewText: string;
   validateBaseUrl(value: string): string;
-  synthesizePreview(input: { provider: TtsAdapterInput['provider']; voice: string; speed: number; text: string; outputPath: string; signal?: AbortSignal; usageContext?: TtsUsageContext }): Promise<void>;
+  synthesizePreview(input: { provider: TtsAdapterInput['provider']; voice: string; speed: number; text: string; outputPath: string; signal?: AbortSignal; usageContext?: TtsUsageContext; execution?: SyncOperationContext }): Promise<void>;
   synthesize(input: TtsAdapterInput): Promise<{ relativePath: string; absolutePath: string; durationUs: number; segmentTimings: Array<{ segmentId: string; startUs: number; endUs: number }>; wordTimings: Array<{ text: string; startUs: number; endUs: number }>; alignmentDegradedSegmentIds?: string[] }>;
   estimateCost(input: { text: string; costPerThousandCharacters: number }): number;
 }

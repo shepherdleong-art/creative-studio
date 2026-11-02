@@ -12,6 +12,7 @@ import {
 } from './usage-ledger.ts';
 import { getDb } from './db.ts';
 import { isUsageSchemaReady } from './usage-schema.ts';
+import type { CostQuote, Money } from './media-core/execution/context.ts';
 
 export interface TtsUsageContext {
   projectId?: string | null;
@@ -27,6 +28,45 @@ export interface DoubaoTtsUsageProviderIdentity {
   providerType?: string;
   configuredModel?: string;
   requestModel?: string;
+}
+
+function doubaoUsagePlan(provider: DoubaoTtsUsageProviderIdentity) {
+  if (provider.model !== 'seed-tts-2.0') return null;
+  return resolveCoreUsagePlan({
+    providerTable: 'final_edit_tts_providers',
+    providerId: provider.providerId ?? '',
+    providerName: provider.providerName ?? '',
+    providerType: provider.providerType ?? '',
+    configuredModel: provider.configuredModel ?? '',
+    requestModel: provider.requestModel ?? '',
+  });
+}
+
+function doubaoTtsCost(provider: DoubaoTtsUsageProviderIdentity, text: string): { money: Money; pricingSnapshot: unknown } | null {
+  const plan = doubaoUsagePlan(provider);
+  if (!plan || plan.unit !== 'character') return null;
+  return {
+    money: {
+      currency: 'CNY',
+      minor: Math.ceil(Array.from(text).length * plan.unitPriceMicros / (plan.priceScale * 10_000)),
+    },
+    pricingSnapshot: {
+      coreModelKey: plan.coreModelKey,
+      pricingVersion: plan.pricingVersion,
+      priceComponents: plan.priceComponents,
+    },
+  };
+}
+
+export function doubaoTtsExecutionQuote(provider: DoubaoTtsUsageProviderIdentity, text: string): CostQuote {
+  const cost = doubaoTtsCost(provider, text);
+  return cost
+    ? { kind: 'priced', reserve: cost.money, pricingSnapshot: cost.pricingSnapshot }
+    : { kind: 'unpriced', pricingSnapshot: null };
+}
+
+export function doubaoTtsActualCost(provider: DoubaoTtsUsageProviderIdentity, text: string): Money | null {
+  return doubaoTtsCost(provider, text)?.money ?? null;
 }
 
 export interface DoubaoTtsUsageHandle {

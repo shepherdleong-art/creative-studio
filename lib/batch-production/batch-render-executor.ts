@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { BatchTaskExecutor } from './executors.ts';
 import { registerManagedFile } from '../media-core/access-context.ts';
+import { withMediaResource } from '../media-core/media-resource-gate.ts';
 import {
   discardBatchCoverRenderResult,
   discardBatchRenderResult,
@@ -71,7 +72,10 @@ export function createBatchRenderExecutor(options: BatchRenderExecutorOptions = 
             percent: progress.percent,
           }),
         };
-        const result = await renderBatchOutputCover(coverInput);
+        const result = await withMediaResource(
+          { taskId: claim.task.id, step: 'render-cover', wait: false, signal },
+          () => renderBatchOutputCover(coverInput),
+        );
         registerManagedFile({
           absolutePath: result.coverAbsolutePath,
           mimeType: 'image/png',
@@ -115,7 +119,10 @@ export function createBatchRenderExecutor(options: BatchRenderExecutorOptions = 
           percent: progress.percent,
         }),
       };
-      const result = await renderBatchOutputVersion(renderInput);
+      const result = await withMediaResource(
+        { taskId: claim.task.id, step: 'render-output', wait: false, signal },
+        () => renderBatchOutputVersion(renderInput),
+      );
       for (const [absolutePath, mimeType] of [
         [result.videoAbsolutePath, 'video/mp4'],
         [result.coverAbsolutePath, 'image/png'],

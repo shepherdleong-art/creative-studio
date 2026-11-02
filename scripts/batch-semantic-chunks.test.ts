@@ -60,4 +60,14 @@ await assert.rejects(scoreBatchSemanticMatrix({
   },
 }), { name: 'AbortError' });
 assert.equal(abortCalls, 1, '停止后不得继续付费评分');
-console.log('PASS: semantic chunk coverage, identity, bounded retries and cancellation');
+
+let deferredCalls = 0;
+await assert.rejects(scoreBatchSemanticMatrix({
+  sentences, scenes, providerId: 'fixture', sleep: async () => undefined,
+  score: async () => {
+    deferredCalls += 1;
+    throw Object.assign(new Error('等待执行名额'), { code: 'llm_execution_deferred', operationId: 'chunk-2' });
+  },
+}), (error: unknown) => (error as { code?: string }).code === 'llm_execution_deferred');
+assert.equal(deferredCalls, 1, 'deferred 必须透传给编排层，不得转为 semantic_fallback 或内部重试');
+console.log('PASS: semantic chunk coverage, identity, bounded retries, cancellation and deferred continuation');

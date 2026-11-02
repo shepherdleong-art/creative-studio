@@ -630,7 +630,7 @@ async function runAuthorizedVideoJob(
         mimeType: 'video/mp4',
         references: [{ resourceType: 'video_job', resourceId: job.id, role: 'output' }],
       });
-      const previewPath = await ensureBrowserPreview(videoPath);
+      const previewPath = await ensureBrowserPreview(videoPath, { waitForCompletion: true });
       if (originalFileId && previewPath !== videoPath) {
         registerManagedFile({
           absolutePath: previewPath,
@@ -792,6 +792,13 @@ async function runAuthorizedVideoJob(
       if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
         await settleVideoExecution('succeeded', pollResult.videoUrl);
         if (!await downloadVideoResult(pollResult.videoUrl)) return;
+
+
+
+
+
+
+
         polled = true;
         break;
       }

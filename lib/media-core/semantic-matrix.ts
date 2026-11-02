@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { isExecutionControlError } from './execution/waiting.ts';
 
 export const SEMANTIC_MATRIX_PROMPT_VERSION = '2';
 
@@ -142,6 +143,7 @@ export async function scoreSemanticMatrixWithRetry(input: {
       if (normalized.semanticFallback) throw new InvalidSemanticMatrixError();
       return normalized;
     } catch (error) {
+      if (isExecutionControlError(error)) throw error;
       lastError = error;
       if (attempt >= maxAttempts || !retryableSemanticError(error)) break;
       const delayMs = delays[attempt - 1];

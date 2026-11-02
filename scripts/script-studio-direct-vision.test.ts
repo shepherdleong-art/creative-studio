@@ -50,4 +50,18 @@ assert.equal(gate.points[0]!.usable, true);
 assert.equal(gate.points[0]!.riskLevel, 'high');
 assert.equal(gate.points[0]!.evidenceGate, 'skipped', '单次识图不得标记核验通过');
 assert.equal(gate.excludedStructural, 2);
+
+let deferredCalls = 0;
+const deferredSteps: Array<string | undefined> = [];
+const deferred = createDirectVisionExtractor(async (request) => {
+  deferredCalls += 1;
+  deferredSteps.push(request.executionStep);
+  throw Object.assign(new Error('等待执行名额'), { code: 'llm_execution_deferred', operationId: 'vision-waiting' });
+}, { id: 'luna', model: 'test' });
+await assert.rejects(
+  deferred.extract(input(2)),
+  (error: unknown) => (error as { code?: string }).code === 'llm_execution_deferred',
+);
+assert.equal(deferredCalls, 1, 'deferred 不得触发识图业务重试');
+assert.deepEqual(deferredSteps, ['batch:0:request:1'], '识图操作必须绑定稳定批次与请求序号');
 console.log('script-studio-direct-vision.test.ts: ok');

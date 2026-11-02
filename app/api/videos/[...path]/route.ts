@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
-import { ensureBrowserPreview } from '@/lib/video-browser-preview';
+import { BrowserPreviewPendingError, ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { fileResponse } from '@/lib/media-core/file-response';
 import { assertNoStorageSymlink } from '@/lib/media-core/storage-path';
 import { authorizeManagedFileRead, registerManagedFile } from '@/lib/media-core/access-context';
@@ -56,6 +56,9 @@ async function __teamRouteGET(
     };
     return fileResponse(request, served, mimeMap[ext] || 'video/mp4');
   } catch (error) {
+    if (error instanceof BrowserPreviewPendingError) {
+      return NextResponse.json({ error: 'preview_pending', retryAfterMs: error.retryAfterMs }, { status: 202 });
+    }
     if (error instanceof ResourceAccessError || (error as NodeJS.ErrnoException)?.code === 'ENOENT') {
       return NextResponse.json({ error: 'Video not found' }, { status: 404 });
     }

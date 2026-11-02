@@ -1,3 +1,5 @@
+import { isExecutionControlError } from './execution/waiting.ts';
+
 /** 二级回退：LLM 提取卖点（复用素材分析 provider 通道）。供应商取组分析供应商或首个已配置脚本供应商。 */
 export async function extractSellingPointsWithLLM(
   narrationText: string,
@@ -6,6 +8,8 @@ export async function extractSellingPointsWithLLM(
   execution?: {
     taskId: string;
     scope: { resourceType: string; resourceId: string };
+    inputRevision?: string;
+    businessAttempt?: { id: string; number: number };
   },
 ): Promise<string[]> {
   const text = (narrationText || '').trim();
@@ -19,7 +23,13 @@ export async function extractSellingPointsWithLLM(
     timeoutMs?: number;
     signal?: AbortSignal;
     usageContext?: { projectId?: string; refType: string; refId: string };
-    executionContext?: { taskId: string; step: string; scope: { resourceType: string; resourceId: string } };
+    executionContext?: {
+      taskId: string;
+      step: string;
+      scope: { resourceType: string; resourceId: string };
+      inputRevision?: string;
+      businessAttempt?: { id: string; number: number };
+    };
   }) => Promise<{ points?: unknown }>) | undefined;
   let providerId: string | null = null;
   try {
@@ -48,10 +58,15 @@ export async function extractSellingPointsWithLLM(
         taskId: execution.taskId,
         step: 'extract:1',
         scope: execution.scope,
+        inputRevision: execution.inputRevision,
+        businessAttempt: execution.businessAttempt,
       } : undefined,
     });
     const points = Array.isArray(result?.points) ? result.points.map(String).filter(Boolean) : [];
     return points;
-  } catch { return []; }
+  } catch (error) {
+    if (isExecutionControlError(error)) throw error;
+    return [];
+  }
 }
 

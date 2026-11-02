@@ -4,7 +4,7 @@ import { CanvasError } from '@/lib/creative-canvas/errors';
 import { canvasAssetAbsolutePath, canvasStorageRoot, requireCanvasAsset } from '@/lib/creative-canvas/assets';
 import { canvasAssetDownloadFilename } from '@/lib/creative-canvas/asset-naming';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
-import { ensureBrowserPreview } from '@/lib/video-browser-preview';
+import { BrowserPreviewPendingError, ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { fileResponse } from '@/lib/media-core/file-response';
 import { authorizeManagedFileRead, registerManagedFile } from '@/lib/media-core/access-context';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
@@ -39,6 +39,9 @@ async function __teamRouteGET(
       ...(download ? { downloadName: canvasAssetDownloadFilename(db, asset) } : {}),
     });
   } catch (error) {
+    if (error instanceof BrowserPreviewPendingError) {
+      return Response.json({ error: 'preview_pending', retryAfterMs: error.retryAfterMs }, { status: 202 });
+    }
     if (error instanceof CanvasError) return canvasJsonError(error);
     return canvasJsonError(error);
   }

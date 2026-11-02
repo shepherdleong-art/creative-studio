@@ -222,6 +222,8 @@ export async function scoreBatchSemanticMatrix(input: {
   execution?: {
     taskId: string;
     scope: { resourceType: string; resourceId: string };
+    inputRevision?: string;
+    businessAttempt?: { id: string; number: number };
   };
   /** 测试注入;默认 buildSemanticMatrixPrompt + completeJson(纯文本,无 COS 门禁)。 */
   score?: (chunk: BatchSemanticScoreChunk) => Promise<unknown>;
@@ -232,11 +234,18 @@ export async function scoreBatchSemanticMatrix(input: {
 }): Promise<BatchSemanticScoreOutcome> {
   input.signal?.throwIfAborted();
   if (!input.sentences.length || !input.scenes.length) return { fallback: true, diagnostic: '缺少句段或场景' };
+  const chunkAttempts = new Map<string, number>();
   const score = input.score ?? (async (chunk: BatchSemanticScoreChunk) => {
     const prompts = buildSemanticMatrixPrompt({ sentences: [...chunk.sentences], scenes: [...chunk.scenes] });
     const { completeJson } = await import('../script-providers/index.ts');
+    const sentenceOffset = input.sentences.indexOf(chunk.sentences[0]!);
+    const sceneOffset = input.scenes.indexOf(chunk.scenes[0]!);
+    const chunkKey = `${sentenceOffset}:${sceneOffset}`;
+    const requestAttempt = (chunkAttempts.get(chunkKey) ?? 0) + 1;
+    chunkAttempts.set(chunkKey, requestAttempt);
     return completeJson({
       providerId: input.providerId,
+      ...(input.model ? { model: input.model } : {}),
       systemPrompt: prompts.systemPrompt,
       userPrompt: prompts.userPrompt,
       temperature: 0.2,
@@ -251,8 +260,10 @@ export async function scoreBatchSemanticMatrix(input: {
       } : undefined,
       executionContext: input.execution ? {
         taskId: input.execution.taskId,
-        step: `semantic:${input.sentences.indexOf(chunk.sentences[0]!)}:${input.scenes.indexOf(chunk.scenes[0]!)}`,
+        step: `semantic:${sentenceOffset}:${sceneOffset}:request:${requestAttempt}`,
         scope: input.execution.scope,
+        inputRevision: input.execution.inputRevision,
+        businessAttempt: input.execution.businessAttempt,
       } : undefined,
     });
   });
