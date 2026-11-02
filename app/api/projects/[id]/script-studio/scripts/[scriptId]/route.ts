@@ -64,5 +64,22 @@ async function __teamRoutePOST(
     return NextResponse.json(result.body, { status: result.status });
   }
 }
+async function __teamRouteDELETE(
+  _request: Request,
+  { params }: { params: Promise<{ id: string; scriptId: string }> },
+) {
+  try {
+    await assertScriptStudioApiReady();
+    const { id: projectId, scriptId } = await params;
+    const result = getDb().prepare('DELETE FROM project_scripts WHERE id = ? AND projectId = ?').run(scriptId, projectId);
+    if (result.changes !== 1) throw new ScriptStudioError('not_found', '项目脚本不存在');
+    return NextResponse.json({ success: true, mode: 'hard' });
+  } catch (error) {
+    const result = errorResponse(error);
+    return NextResponse.json(result.body, { status: result.status });
+  }
+}
+
 export const GET = withTeamRoute('/api/projects/[id]/script-studio/scripts/[scriptId]', 'GET', __teamRouteGET);
 export const POST = withTeamRoute('/api/projects/[id]/script-studio/scripts/[scriptId]', 'POST', __teamRoutePOST);
+export const DELETE = withTeamRoute('/api/projects/[id]/script-studio/scripts/[scriptId]', 'DELETE', __teamRouteDELETE);

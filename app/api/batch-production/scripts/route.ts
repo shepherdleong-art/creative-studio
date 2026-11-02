@@ -5,6 +5,8 @@ import { normalizeManualScriptBatch, type ManualScriptDraftInput } from '@/lib/b
 import { createManualProjectScript, deleteProjectScripts } from '@/lib/batch-production/scripts';
 import { BATCH_NO_STORE_HEADERS, batchRouteErrorResponse } from '../batches/response';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { requireAccessContext } from '@/lib/media-core/access-context';
+import { softDeleteResource } from '@/lib/team-service/lifecycle/index';
 
 
 export const runtime = 'nodejs';
@@ -72,6 +74,15 @@ async function __teamRouteDELETE(request: NextRequest) {
   }
   try {
     await assertBatchApiReady();
+    const access = requireAccessContext();
+    if (access.kind === 'team') {
+      const db = getDb();
+      const deletedIds = db.transaction(() => (body.scriptIds as string[]).map((scriptId) => {
+        softDeleteResource(db, access.actor, { resourceType: 'batch_script', resourceId: scriptId });
+        return scriptId;
+      })).immediate();
+      return NextResponse.json({ deletedIds, mode: 'soft' }, { headers: BATCH_NO_STORE_HEADERS });
+    }
     const deletedIds = deleteProjectScripts(getDb(), projectId, body.scriptIds);
     return NextResponse.json({ deletedIds }, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {

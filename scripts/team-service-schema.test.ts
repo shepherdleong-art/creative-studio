@@ -33,7 +33,7 @@ try {
 
   const team = await checkTeamServiceReadiness(options(root, db));
   assert.equal(team.available, true);
-  assert.deepEqual(team.appliedVersions, [1, 2, 3, 4, 5]);
+  assert.deepEqual(team.appliedVersions, [1, 2, 3, 4, 5, 6]);
   const execution = await checkExecutionReadiness(options(root, db));
   assert.equal(execution.available, true);
   assert.deepEqual(execution.appliedVersions, [1, 2]);
@@ -43,12 +43,20 @@ try {
     { id: 1, maintenance: 0 },
   );
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'execution_instances'").get());
-  assert.deepEqual(db.prepare('SELECT version FROM team_schema_migrations').all(), [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
+  assert.deepEqual(db.prepare('SELECT version FROM team_schema_migrations').all(), [
+    { version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 },
+  ]);
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_files'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_file_references'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_resource_scopes'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_task_principals'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_font_favorites'").get());
+  for (const table of [
+    'team_lifecycle_events', 'team_lifecycle_event_scopes', 'team_lifecycle_barriers',
+    'team_backup_pins', 'team_cleanup_jobs', 'team_cleanup_files',
+  ]) {
+    assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table), `缺少 ${table}`);
+  }
   assert.equal((db.prepare("SELECT type FROM pragma_table_info('team_users') WHERE name = 'employeeId'").get() as { type: string }).type, 'TEXT');
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_sessions'").get());
   assert.deepEqual(db.prepare('SELECT version FROM execution_schema_migrations').all(), [{ version: 1 }, { version: 2 }]);
