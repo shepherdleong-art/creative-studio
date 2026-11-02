@@ -9,6 +9,9 @@ import { parseJsonResponse, resolveImageUrl } from './openai-compatible.ts';
 import { createScriptProviderRequestControl } from './request-control.ts';
 import { readSseStream } from './sse.ts';
 import type { ApiStyle, ProviderConfig } from './types.ts';
+import { beginLlmUsageCall, finishLlmUsageCall, llmTransportActualCost } from '../usage-llm.ts';
+import { safeProviderErrorHint } from './error-diagnostics.ts';
+import { runLlmTransport } from './transport-execution.ts';
 
 const DEFAULT_RESPONSES_TIMEOUT_MS = 120_000;
 
@@ -44,6 +47,7 @@ function consumeResponsesEvent(
   payload: string,
   onTextDelta: (accumulated: string) => void,
   onReasoningDelta: (accumulated: string) => void,
+  onUsage: (usage: unknown) => void,
 ): void {
   let event: Record<string, unknown>;
   try {
@@ -61,6 +65,10 @@ function consumeResponsesEvent(
     onReasoningDelta(String(event.delta || ''));
     return;
   }
+  if (type === 'response.completed' && event.response && typeof event.response === 'object') {
+    onUsage((event.response as { usage?: unknown }).usage);
+    return;
+  }
   if (type === 'response.failed' || type === 'error') {
     throw new Error(`OpenAI Responses 流失败: ${eventErrorMessage(event)}`);
   }
@@ -75,9 +83,10 @@ async function readResponsesText(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
   callbacks: ResponsesReadOptions,
-): Promise<string> {
+): Promise<{ text: string; usage: unknown }> {
   let text = '';
   let reasoning = '';
+  let usage: unknown;
   await readSseStream(body, signal, {
     onLine: (payload) => consumeResponsesEvent(
       payload,
@@ -89,9 +98,10 @@ async function readResponsesText(
         reasoning += delta;
         callbacks.onReasoningDelta?.(reasoning);
       },
+      (value) => { usage = value; },
     ),
   });
-  return text;
+  return { text, usage };
 }
 
 export async function chatCompletion(
@@ -129,28 +139,53 @@ export async function chatCompletion(
     timeoutMessage: (timeoutMs) => `${config.name} (openai-responses) 请求超时（${timeoutMs}ms）`,
   });
   try {
-    const response = await fetch(buildResponsesUrl(baseUrl), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: requestControl.signal,
-    });
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`${config.name} (openai-responses) error ${response.status}: ${errorText.slice(0, 500)}`);
+    const perform = async () => {
+      const usageAttempt = runtime ? beginLlmUsageCall(runtime, model, options.usageContext) : null;
+      const response = await fetch(buildResponsesUrl(baseUrl), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: requestControl.signal,
+      });
+      if (!response.ok) return { response, errText: await response.text(), rawText: '' };
+      if (!response.body) throw new Error('OpenAI Responses 返回了空响应流');
+      const streamed = await readResponsesText(response.body, requestControl.signal, {
+        onTextDelta: options.onTextDelta,
+        onReasoningDelta: options.onReasoningDelta,
+      });
+      finishLlmUsageCall(usageAttempt, {
+        usage: streamed.usage,
+        serializedPrompt: JSON.stringify(body.input),
+        rawOutput: streamed.text,
+        hasImages: Boolean(options.images?.length),
+      });
+      if (!streamed.text.trim()) throw new Error(`${config.name} (openai-responses) 返回了空响应`);
+      return { response, errText: '', rawText: streamed.text };
+    };
+    const performed = options.executionTransport
+      ? await runLlmTransport(options.executionTransport, {
+          requestSnapshot: body,
+          send: async () => {
+            const value = await perform();
+            return {
+              value,
+              terminalState: value.response.ok ? 'succeeded' : 'failed',
+              result: value.response.ok ? value.rawText : undefined,
+              actualCost: value.response.ok && runtime ? llmTransportActualCost(runtime, model) : null,
+              remoteTerminal: true,
+              errorCode: value.response.ok ? undefined : `http_${value.response.status}`,
+            };
+          },
+        })
+      : await perform();
+    if (!performed.response.ok) {
+      throw new Error(`${config.name} (openai-responses) 请求失败（HTTP ${performed.response.status}）：${safeProviderErrorHint(performed.errText)}`);
     }
-
-    if (!response.body) throw new Error('OpenAI Responses 返回了空响应流');
-    const rawText = await readResponsesText(response.body, requestControl.signal, {
-      onTextDelta: options.onTextDelta,
-      onReasoningDelta: options.onReasoningDelta,
-    });
-    if (!rawText.trim()) throw new Error(`${config.name} (openai-responses) 返回了空响应`);
-    return rawText;
+    return performed.rawText;
   } catch (error) {
     return requestControl.rethrow(error);
   } finally {

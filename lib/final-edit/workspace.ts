@@ -181,6 +181,11 @@ export interface FinalEditWorkspaceDependencies {
     script: MixcutTaskScriptSnapshot;
     actualNarrationUs: number;
     targetNarrationUs: number;
+    executionContext?: {
+      taskId: string;
+      step: string;
+      scope: { resourceType: string; resourceId: string };
+    };
   }): Promise<{ editedNarrationText: string }>;
   warmPreview?(input: {
     jobId: string;
@@ -1363,6 +1368,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         sentences: semanticSentences,
         scenes: semanticScenes,
         providerId: input.analysisProviderId || '',
+        executionContext: {
+          taskId: jobId,
+          step: 'semantic:1',
+          scope: { resourceType: 'project', resourceId: input.projectId },
+        },
         score: deps.scoreSemanticMatrix,
         sleep: deps.semanticRetrySleep,
         onRetry: ({ attempt, maxAttempts, delayMs, error }) => deps.log?.({
@@ -1520,7 +1530,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
               totalSec: coverSec + narration.durationUs / 1e6 / playbackRate,
               coverSec,
               narrationPlaybackRate: playbackRate,
-              extractPoints: (text) => extractSellingPointsWithLLM(text, input.analysisProviderId || undefined),
+              extractPoints: (text) => extractSellingPointsWithLLM(text, input.analysisProviderId || undefined, undefined, {
+                taskId: jobId,
+                scope: { resourceType: 'project', resourceId: input.projectId },
+              }),
             });
             packagingJsonWithPoints = mergePointCuesIntoPackagingJson(packagingRow?.packagingJson, built.pointCues, pointCuesKey, built.mode).packagingJson;
             extractedPointCount = built.pointCues.length;
@@ -1709,6 +1722,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           script,
           actualNarrationUs: gate.actualNarrationUs,
           targetNarrationUs: gate.targetNarrationUs,
+          executionContext: {
+            taskId: latestJob.id,
+            step: 'smart-fit:1',
+            scope: { resourceType: 'project', resourceId: String(row.projectId) },
+          },
         });
         editedNarrationText = normalizeNarrationText(fitted.editedNarrationText);
       }

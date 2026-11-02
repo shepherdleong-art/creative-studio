@@ -4,18 +4,22 @@ import { writeLog } from '@/lib/logger';
 import { completeJson, getProviderMeta } from '@/lib/script-providers';
 import { generateAndPersistScriptV3 } from '@/lib/script-generation-v3-service';
 import {
+  cancelPersistentScriptGeneration,
   cancelScriptGeneration,
+  getPersistentProjectScriptGeneration,
   getProjectScriptGeneration,
   isScriptGenerationShuttingDown,
+  startPersistentScriptGeneration,
   startScriptGeneration,
 } from '@/lib/script-generation-manager';
+import { SCRIPT_GENERATION_V3_EXECUTOR_KEY } from '@/lib/script-generation-v3-server';
 import {
   handleScriptGenerationDelete,
   handleScriptGenerationGet,
   handleScriptGenerationPost,
   type ScriptGenerationRouteResponse,
 } from '@/lib/script-generation-route-handler';
-import { requireAccessContext, runWithTaskAccessContext } from '@/lib/media-core/access-context';
+import { requireAccessContext } from '@/lib/media-core/access-context';
 import { requireTaskScope } from '@/lib/team-service/task-principals';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
@@ -54,61 +58,68 @@ function toResponse(result: ScriptGenerationRouteResponse): NextResponse {
 }
 
 function buildDeps(projectId: string, project: Record<string, unknown>) {
+  const access = requireAccessContext();
   return {
     projectExists: () => Boolean(project),
     isShuttingDown: () => isScriptGenerationShuttingDown(),
     start: (body: Record<string, unknown>) => {
-      const access = requireAccessContext();
       if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
       const generationId = String(body.generationId);
-      const started = startScriptGeneration({
-      projectId,
-      generationId,
-      accept: () => {
-        const accept = getDb().transaction(() => access.registerTaskPrincipal({
-          module: 'script_generation', taskId: generationId,
+      if (access.kind === 'team') {
+        const started = startPersistentScriptGeneration({
+          db: getDb(), projectId, generationId,
+          actor: { userId: access.actor.userId },
           scope: { resourceType: 'project', resourceId: projectId },
-          creationSnapshot: { shotSetId: body.shotSetId, providerId: body.providerId },
-        }));
-        accept.immediate();
-      },
-      execute: async ({ signal, onProgress }) => runWithTaskAccessContext(getDb(), 'script_generation', generationId, async () => {
-        logScriptInfo(projectId, `开始生成脚本（模型 ${(body.providerId as string) || '默认'}，任务化）`);
-        try {
-          const result = await generateAndPersistScriptV3({ projectId, project, body }, {
-            db: getDb(),
-            completeJson: (providerId, request) => completeJson({
-              providerId,
-              ...request,
-              usageContext: {
-                projectId,
-                refType: 'script-generation',
-                refId: String(body.generationId),
-              },
-            }),
-            providerMeta: getProviderMeta,
-            signal,
-            onProgress,
-          });
-          if (result.status >= 400) {
-            logScriptFailure(projectId, '脚本生成失败', result.body);
-          } else {
-            logScriptInfo(projectId, '脚本生成完成');
+          inputSnapshot: { project, body },
+          executorKey: SCRIPT_GENERATION_V3_EXECUTOR_KEY,
+          accept: () => access.registerTaskPrincipal({
+            module: 'script_generation', taskId: generationId,
+            scope: { resourceType: 'project', resourceId: projectId },
+            creationSnapshot: { shotSetId: body.shotSetId, providerId: body.providerId },
+          }),
+        });
+        if (!started.created) requireTaskScope(getDb(), 'script_generation', started.snapshot.generationId);
+        return started;
+      }
+      return startScriptGeneration({
+        projectId,
+        generationId,
+        execute: async ({ signal, onProgress }) => {
+          logScriptInfo(projectId, `开始生成脚本（模型 ${(body.providerId as string) || '默认'}，任务化）`);
+          try {
+            const result = await generateAndPersistScriptV3({ projectId, project, body }, {
+              db: getDb(),
+              completeJson: (providerId, request) => completeJson({
+                providerId,
+                ...request,
+                usageContext: {
+                  projectId,
+                  refType: 'script-generation',
+                  refId: String(body.generationId),
+                },
+              }),
+              providerMeta: getProviderMeta,
+              signal,
+              onProgress,
+            });
+            if (result.status >= 400) logScriptFailure(projectId, '脚本生成失败', result.body);
+            else logScriptInfo(projectId, '脚本生成完成');
+            return result;
+          } catch (error) {
+            if (!(error instanceof Error && (error.name === 'AbortError' || error.message === '脚本生成已取消'))) {
+              logScriptFailure(projectId, '脚本生成异常', error);
+            }
+            throw error;
           }
-          return result;
-        } catch (error) {
-          if (!(error instanceof Error && (error.name === 'AbortError' || error.message === '脚本生成已取消'))) {
-            logScriptFailure(projectId, '脚本生成异常', error);
-          }
-          throw error;
-        }
-      }),
+        },
       });
-      if (access.kind === 'team' && !started.created) requireTaskScope(getDb(), 'script_generation', started.snapshot.generationId);
-      return started;
     },
-    getCurrent: () => getProjectScriptGeneration(projectId),
-    cancel: (generationId: string) => cancelScriptGeneration(projectId, generationId),
+    getCurrent: () => access.kind === 'team'
+      ? getPersistentProjectScriptGeneration(getDb(), projectId)
+      : getProjectScriptGeneration(projectId),
+    cancel: (generationId: string) => access.kind === 'team'
+      ? cancelPersistentScriptGeneration(getDb(), projectId, generationId)
+      : cancelScriptGeneration(projectId, generationId),
   };
 }
 

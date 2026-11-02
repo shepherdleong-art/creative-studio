@@ -170,6 +170,32 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE video_prompt_templates ADD COLUMN ownerKey TEXT NOT NULL DEFAULT 'local'`,
   `DROP INDEX IF EXISTS idx_video_prompt_opening_code`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_video_prompt_opening_code ON video_prompt_templates(ownerKey, openingCode) WHERE openingCode IS NOT NULL AND openingCode <> ''`,
+  `CREATE TABLE IF NOT EXISTS script_generation_tasks (
+    generationId TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL,
+    actorId TEXT NOT NULL,
+    scopeType TEXT NOT NULL,
+    scopeId TEXT NOT NULL,
+    inputJson TEXT NOT NULL,
+    executorKey TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('running', 'succeeded', 'failed', 'cancelled')),
+    progressJson TEXT NOT NULL,
+    checkpointJson TEXT NOT NULL,
+    draftId TEXT NOT NULL,
+    errorJson TEXT,
+    cancellationReason TEXT CHECK(cancellationReason IS NULL OR cancellationReason IN ('user', 'shutdown')),
+    startedAt TEXT NOT NULL,
+    updatedAt TEXT NOT NULL,
+    finishedAt TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_script_generation_tasks_project ON script_generation_tasks(projectId, startedAt)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_script_generation_tasks_active_project ON script_generation_tasks(projectId) WHERE state = 'running'`,
+  `CREATE TABLE IF NOT EXISTS llm_execution_checkpoints (
+    operationId TEXT PRIMARY KEY,
+    attemptId TEXT NOT NULL,
+    rawText TEXT NOT NULL,
+    createdAt TEXT NOT NULL
+  )`,
   `ALTER TABLE jobs ADD COLUMN executionRevision INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE video_jobs ADD COLUMN executionRevision INTEGER NOT NULL DEFAULT 0`,
 ];

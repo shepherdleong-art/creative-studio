@@ -25,7 +25,7 @@ export function createAcceptedTaskAccessContext(
     mustChangePassword: false,
     absoluteExpiresAt: accepted.createdAt,
   };
-  return createTeamAccessContext({ db, principal });
+  return createTeamAccessContext({ db, principal, allowDeleted: true });
 }
 
 setTaskAccessContextFactory(createAcceptedTaskAccessContext);

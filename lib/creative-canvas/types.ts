@@ -238,7 +238,6 @@ export const CANVAS_SLOT_HOLDING_TASK_PHASES: ReadonlyArray<CanvasTaskPhase> = [
   'submitting',
   'polling',
   'downloading',
-  'uncertain',
 ];
 
 export function isTerminalTaskPhase(phase: CanvasTaskPhase): boolean {

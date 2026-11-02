@@ -119,5 +119,21 @@ async function __teamRoutePATCH(
     return canvasJsonError(error);
   }
 }
+async function __teamRouteDELETE(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    await assertCanvasApiReady();
+    const { id } = await params;
+    const result = getDb().prepare('DELETE FROM creative_canvases WHERE id = ?').run(id);
+    if (result.changes !== 1) throw new CanvasError('not_found', '画布不存在。');
+    return NextResponse.json({ success: true, mode: 'hard' });
+  } catch (error) {
+    return canvasJsonError(error);
+  }
+}
+
 export const GET = withTeamRoute('/api/canvas/[id]', 'GET', __teamRouteGET);
 export const PATCH = withTeamRoute('/api/canvas/[id]', 'PATCH', __teamRoutePATCH);
+export const DELETE = withTeamRoute('/api/canvas/[id]', 'DELETE', __teamRouteDELETE);
