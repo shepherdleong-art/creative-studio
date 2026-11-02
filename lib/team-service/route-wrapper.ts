@@ -14,6 +14,7 @@ import {
 import { runWithAccessContext } from '../media-core/access-context.ts';
 import { teamRoutePolicy, type TeamRoutePolicy } from './route-policy.ts';
 import { softDeleteResource } from './lifecycle/index.ts';
+import { assertCompatibleClientWrite } from './client-capabilities.ts';
 
 interface RouteHandlerContext {
   params?: Promise<Record<string, string | string[] | undefined>> | Record<string, string | string[] | undefined>;
@@ -302,6 +303,7 @@ export function withTeamRoute<T>(route: string, method: string, handler: T): T &
     const request = args[0] as Request | undefined;
     let context = null as ReturnType<typeof createTeamAccessContext> | null;
     try {
+      if (request && policy.csrf && !route.startsWith('/api/team/auth/')) assertCompatibleClientWrite(request);
       if (policy.csrf) {
         if (!request) throw new TeamAuthError('csrf_invalid', 'CSRF 校验失败。', 403);
         assertTrustedWriteRequest(request);

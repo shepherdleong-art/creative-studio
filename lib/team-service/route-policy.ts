@@ -213,6 +213,7 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/auth/login': 'POST',
   '/api/team/auth/logout': 'POST',
   '/api/team/auth/session': 'GET',
+  '/api/team/client-capabilities': 'GET',
   '/api/team/recycle-bin': 'GET',
   '/api/team/recycle-bin/restore': 'POST',
   '/api/team/cleanup': 'POST',
@@ -250,7 +251,7 @@ const ROUTE_METHODS: Record<string, string> = {
 
 const PUBLIC = new Set([
   '/api/team/auth/csrf GET', '/api/team/auth/login POST', '/api/team/auth/session GET',
-  '/api/team/health/live GET', '/api/team/health/ready GET',
+  '/api/team/client-capabilities GET', '/api/team/health/live GET', '/api/team/health/ready GET',
 ]);
 const AUTHENTICATED = new Set([
   '/api/team/auth/change-password POST', '/api/team/auth/logout POST',

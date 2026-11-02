@@ -80,6 +80,13 @@ async function launch() {
       registerIpcHandlers: () => () => { calls.clears += 1; },
     },
     './theme': {},
+    './client/remote-host': {
+      readRemoteClientConfig: () => ({ mode: 'local' }),
+      createRemoteClientHost: async () => { throw new Error('local test must not create remote host'); },
+      defaultClientStateRoot: () => '/fake-electron/client-state',
+      confirmRemoteClientHealth: async () => {},
+    },
+    './client/update-helper': { spawnIndependentUpdateHelper: async () => ({ jobId: 'unused' }) },
     // 没有待处理的实拍成片跳转请求时，主窗口照常打开首页。
     './reassembled-navigation': { consumeFilmNavigationRequest: () => null, completeFilmNavigation: () => {} },
     './service-spawn': {

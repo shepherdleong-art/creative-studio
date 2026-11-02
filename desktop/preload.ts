@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-import type { DesktopBridge } from './bridge-types';
+import type { DesktopBridge, RemoteUploadTarget } from './bridge-types';
 
 // Keep the sandboxed preload's runtime dependency surface limited to Electron.
 // The shared bridge-types file is intentionally type-only here; importing its
@@ -16,6 +16,13 @@ const REVEAL_ITEM_CHANNEL = 'desktop:reveal-item';
 const LINKED_IMPORT_PROGRESS_CHANNEL = 'desktop:linked-import-progress';
 const SET_THEME_PREFERENCE_CHANNEL = 'desktop:set-theme-preference';
 const QUIT_REQUESTED_CHANNEL = 'desktop:quit-requested';
+const CHOOSE_UPLOAD_FILES_CHANNEL = 'desktop:client-choose-upload-files';
+const PAUSE_TRANSFER_CHANNEL = 'desktop:client-pause-transfer';
+const RESUME_TRANSFER_CHANNEL = 'desktop:client-resume-transfer';
+const CANCEL_TRANSFER_CHANNEL = 'desktop:client-cancel-transfer';
+const REVEAL_DOWNLOAD_CHANNEL = 'desktop:client-reveal-download';
+const GET_CLIENT_STATUS_CHANNEL = 'desktop:client-get-status';
+const INSTALL_CLIENT_UPDATE_CHANNEL = 'desktop:client-install-update';
 
 // Remember an early close click until React has mounted the shared dialog.
 // No Electron event or payload crosses into the renderer.
@@ -59,6 +66,13 @@ const desktopBridge: DesktopBridge = Object.freeze({
     SET_THEME_PREFERENCE_CHANNEL,
     preference,
   ),
+  chooseUploadFiles: (target: RemoteUploadTarget) => ipcRenderer.invoke(CHOOSE_UPLOAD_FILES_CHANNEL, target),
+  pauseTransfer: (transferId: string) => ipcRenderer.invoke(PAUSE_TRANSFER_CHANNEL, transferId),
+  resumeTransfer: (transferId: string) => ipcRenderer.invoke(RESUME_TRANSFER_CHANNEL, transferId),
+  cancelTransfer: (transferId: string) => ipcRenderer.invoke(CANCEL_TRANSFER_CHANNEL, transferId),
+  revealDownload: (downloadId: string) => ipcRenderer.invoke(REVEAL_DOWNLOAD_CHANNEL, downloadId),
+  getClientStatus: () => ipcRenderer.invoke(GET_CLIENT_STATUS_CHANNEL),
+  installClientUpdate: () => ipcRenderer.invoke(INSTALL_CLIENT_UPDATE_CHANNEL),
   onQuitRequested: (callback: () => void) => {
     quitListener = callback;
     if (quitRequested) {
