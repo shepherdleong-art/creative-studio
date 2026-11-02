@@ -60,6 +60,6 @@ npx tsc --noEmit
 ```
 
 - 新测试覆盖重启仅凭记录恢复、固定草稿只建一次、deferred 零提交预算、SSE/网络 unknown、内部温度回退双 transport/双费用记录、持久正文与供应商配置漂移重放、断线继续及 A/B actor/scope 隔离。语义、视频分析、包装和详情相关既有测试均通过。
-- 01–04/06 分组回归通过，含 runtime/auth/scope/files、schema-upgrade/graceful-shutdown 与全部 execution 测试；`node scripts/team-api-coverage.test.mjs` 通过（217 routes / 271 methods）。`npm run check:main-path` 最终通过，真实付费调用 0 次。
+- 01–04/06 分组回归通过，含 runtime/auth/scope/files、schema-upgrade/graceful-shutdown 与全部 execution 测试；`node scripts/team-api-coverage.test.mjs` 通过（合入 ticket05 后为 225 routes / 283 methods）。`npm run check:main-path` 最终通过，真实付费调用 0 次。
 - 未调用真实供应商、未做生产容量或真实 Windows Server 验收。批量/详情调度细节与媒体资源恢复仍属 09；受控 `llm:remote` 池和成员额度需按 06 配置，未擅自填入生产容量。任务提到的独立 `module-adapters` 调研笔记未在仓库或既有工作树找到，实施以 06 已冻结 contracts、admission、attempts 与 reconciliation 源码为准。
 
