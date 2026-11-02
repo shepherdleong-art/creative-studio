@@ -170,4 +170,6 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE video_prompt_templates ADD COLUMN ownerKey TEXT NOT NULL DEFAULT 'local'`,
   `DROP INDEX IF EXISTS idx_video_prompt_opening_code`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_video_prompt_opening_code ON video_prompt_templates(ownerKey, openingCode) WHERE openingCode IS NOT NULL AND openingCode <> ''`,
+  `ALTER TABLE jobs ADD COLUMN executionRevision INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE video_jobs ADD COLUMN executionRevision INTEGER NOT NULL DEFAULT 0`,
 ];

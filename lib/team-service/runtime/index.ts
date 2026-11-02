@@ -6,6 +6,8 @@ import { createTeamExecutionRuntime, createTeamServiceBootstrap, type TeamServic
 import { ExecutionError, type ExecutionFacade, type ExecutionRuntime } from '../../media-core/execution/context.ts';
 import { ensureServerDeploymentMarker, readRuntimeConfig } from '../config.ts';
 import { acquireTeamRuntimeOwner, type TeamRuntimeOwner } from './owner.ts';
+import { setLegacyMediaExecutionRuntime } from '../../legacy-media-execution.ts';
+import { createLegacyMediaLifecycle } from '../../legacy-media-lifecycle.ts';
 import {
   getTeamRuntimeState,
   initializeTeamRuntimeState,
@@ -41,11 +43,13 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
     try {
       const db = getDb();
       execution = createTeamExecutionRuntime({ config, db });
+      setLegacyMediaExecutionRuntime({ facade: execution.facade, instance: owner });
       bootstrap = createTeamServiceBootstrap({
         config,
         identity: owner,
         db,
         execution,
+        modules: [createLegacyMediaLifecycle()],
         ...schemaUpgradeRuntimePaths(dataRoot()),
         assertOwnerActive: () => {
           owner?.assertActive();
@@ -91,6 +95,7 @@ export function releaseTeamRuntimeOwner(): void {
   draining = true;
   execution?.closeNewWork();
   execution = null;
+  setLegacyMediaExecutionRuntime(null);
   owner?.release();
   owner = null;
   if (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server') {

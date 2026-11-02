@@ -147,6 +147,7 @@ export async function editImagePackyGemini(
   apiKey: string,
   baseUrl: string,
   signal?: AbortSignal,
+  options?: { deferDownload?: boolean },
 ): Promise<PackyGeminiImageResult> {
   const startTime = Date.now();
   const cleanBase = baseUrl.replace(/\/$/, '');
@@ -193,6 +194,10 @@ export async function editImagePackyGemini(
 
   if (imageSource.startsWith('data:')) {
     return { imageBuffer: decodeDataUrl(imageSource), latencyMs, rawResponse: data };
+  }
+
+  if (options?.deferDownload) {
+    return { imageBuffer: Buffer.alloc(0), latencyMs, rawResponse: data, remoteImageUrl: imageSource };
   }
 
   return {

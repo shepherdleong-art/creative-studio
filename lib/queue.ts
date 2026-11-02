@@ -4,28 +4,38 @@ import { calculateUsageCostMicros } from './usage-pricing.ts';
 import { getDb } from './db.ts';
 import { runWithAcceptedTaskAccess } from './team-service/accepted-access.ts';
 import { registerManagedFile, requireAccessContext } from './media-core/access-context.ts';
-import { editImageArk } from './providers/ark-images';
-import { editImage as editImageOpenAI } from './providers/openai-compatible';
-import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json';
-import { submitGatewayTaskImage, pollGatewayTaskImage, downloadGatewayTaskImage, summarizeGatewayTaskResponse } from './providers/gateway-task-image';
+import { editImageArk } from './providers/ark-images.ts';
+import { editImage as editImageOpenAI } from './providers/openai-compatible.ts';
+import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json.ts';
+import { submitGatewayTaskImage, pollGatewayTaskImage, downloadGatewayTaskImage, summarizeGatewayTaskResponse } from './providers/gateway-task-image.ts';
 import { redactMediaUrlForLog } from './gateway-media-url.ts';
 import { describeGatewayDownloadFailure } from './media-download-policy.ts';
-import { editImagePacky } from './providers/packy-images';
-import { editImagePackyGemini } from './providers/packy-gemini-image';
-import { getNonRetryablePackyAdvice, isNonRetryablePackyError, isTimeoutLikeError } from './packy-errors';
-import { getEffectiveImageConcurrency } from './provider-concurrency';
-import { calculateEstimatedCost } from './cost';
-import { normalizeGeneratedImageToSize, normalizeGeneratedImageToNativeRatio } from './image-output-normalize';
+import { editImagePacky } from './providers/packy-images.ts';
+import { editImagePackyGemini } from './providers/packy-gemini-image.ts';
+import { getNonRetryablePackyAdvice, isNonRetryablePackyError, isTimeoutLikeError } from './packy-errors.ts';
+import { getEffectiveImageConcurrency } from './provider-concurrency.ts';
+import { calculateEstimatedCost } from './cost.ts';
+import { normalizeGeneratedImageToSize, normalizeGeneratedImageToNativeRatio } from './image-output-normalize.ts';
 import { companyImageCapsForModel, companyImageDeliverySize } from './company-gateway-size.ts';
-import { isPlaceholderValue } from './video-auth';
-import { getEffectiveProjectFinalStatus } from './project-status';
-import { writeLog } from './logger';
-import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from './output-filenames';
+import { isPlaceholderValue } from './video-auth.ts';
+import { getEffectiveProjectFinalStatus } from './project-status.ts';
+import { writeLog } from './logger.ts';
+import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from './output-filenames.ts';
 import { persistImageJobUsageSnapshot, recordImageJobUsage } from './usage-async-jobs.ts';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
-import { dataRoot } from './data-root';
+import { dataRoot } from './data-root.ts';
 import fs from 'fs';
+import {
+  cancelLegacyMediaNewStage,
+  isLegacyMediaSubmissionUnknown,
+  isServerMediaExecution,
+  legacyMediaExecutionRevision,
+  recoverLegacyMediaSubmission,
+  settleLegacyMediaRemote,
+  submitLegacyMediaOperation,
+} from './legacy-media-execution.ts';
+import type { ExecutionReceipt } from './media-core/execution/context.ts';
 
 export interface QueueOptions {
   /** Limit a local rework run to its immutable job. */
@@ -52,11 +62,22 @@ interface JobRecord {
   revision?: number;
   referenceGuidanceMode?: string;
   usageSnapshotJson?: string | null;
+  executionRevision?: number;
+  providerTaskId?: string | null;
+  providerStatus?: string | null;
+  remoteImageUrl?: string | null;
 }
 
 type QueueStatus = 'idle' | 'running' | 'paused';
 
-const runningQueues = new Map<string, { abort: AbortController; status: QueueStatus }>();
+interface RunningQueueEntry {
+  abort: AbortController;
+  status: QueueStatus;
+  done: Promise<void>;
+  finish: () => void;
+}
+
+const runningQueues = new Map<string, RunningQueueEntry>();
 
 export function getQueueStatus(projectId: string): QueueStatus {
   return runningQueues.get(projectId)?.status ?? 'idle';
@@ -91,14 +112,15 @@ export function cancelQueue(projectId: string) {
   const entry = runningQueues.get(projectId);
   if (entry) {
     entry.abort.abort();
-    runningQueues.delete(projectId);
+    if (!isServerMediaExecution()) runningQueues.delete(projectId);
 
-    // Only cancel jobs that haven't been claimed as running — running ones
-    // will be handled by the abort signal in-flight
     const db = getDb();
     db.prepare(
-      `UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user'
-       WHERE projectId = ? AND status IN ('pending', 'retrying', 'running')`
+      isServerMediaExecution()
+        ? `UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user'
+           WHERE projectId = ? AND status IN ('pending', 'retrying')`
+        : `UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user'
+           WHERE projectId = ? AND status IN ('pending', 'retrying', 'running')`
     ).run(projectId);
     db.prepare(
       `UPDATE projects SET status = 'canceled' WHERE id = ?`
@@ -120,7 +142,9 @@ export async function runQueue(options: QueueOptions): Promise<void> {
   }
 
   const abort = new AbortController();
-  runningQueues.set(projectId, { abort, status: 'running' });
+  let finish!: () => void;
+  const done = new Promise<void>((resolve) => { finish = resolve; });
+  runningQueues.set(projectId, { abort, status: 'running', done, finish });
 
   const db = getDb();
   const providerRow = db.prepare(`
@@ -132,19 +156,48 @@ export async function runQueue(options: QueueOptions): Promise<void> {
   const effectiveConcurrency = getEffectiveImageConcurrency(providerRow || {}, concurrency);
   concurrency = effectiveConcurrency;
 
-  // Recover any stuck "running" jobs from a previous crash
+  // Recover any stuck "running" jobs from a previous crash.
   protectReassembledQueue(db, projectId, 'generate_image', options.jobId);
-  db.prepare(
-    `UPDATE jobs SET status = 'retrying', errorMessage = 'Recovered from interrupted run'
-     WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)`
-  ).run(projectId, options.jobId || null, options.jobId || null);
+  if (isServerMediaExecution()) {
+    const interrupted = db.prepare(`
+      SELECT id, providerTaskId, executionRevision FROM jobs
+      WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)
+    `).all(projectId, options.jobId || null, options.jobId || null) as Array<{
+      id: string; providerTaskId: string | null; executionRevision: number;
+    }>;
+    for (const row of interrupted) {
+      const recovered = recoverLegacyMediaSubmission({
+        module: 'image', taskId: row.id,
+        inputRevision: legacyMediaExecutionRevision(row.executionRevision),
+        providerTaskId: row.providerTaskId,
+      });
+      if (recovered.status === 'pending') {
+        db.prepare("UPDATE jobs SET status = 'pending', errorMessage = NULL WHERE id = ? AND status = 'running'").run(row.id);
+      } else {
+        db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = ?,
+          providerTaskId = COALESCE(?, providerTaskId), remoteImageUrl = COALESCE(?, remoteImageUrl),
+          errorMessage = '中断前的提交结果需要核查，未自动重发'
+          WHERE id = ? AND status = 'running'`).run(
+          recovered.resultRef ? 'download_failed' : 'unknown',
+          recovered.remoteId ?? null,
+          recovered.resultRef ?? null,
+          row.id,
+        );
+      }
+    }
+  } else {
+    db.prepare(
+      `UPDATE jobs SET status = 'retrying', errorMessage = 'Recovered from interrupted run'
+       WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)`
+    ).run(projectId, options.jobId || null, options.jobId || null);
+  }
 
   try {
     db.prepare(`UPDATE projects SET status = 'running' WHERE id = ?`).run(projectId);
 
     // ── Worker pool: each worker independently claims and runs jobs ──
     // This prevents a single slow job from blocking the rest of the batch.
-    async function worker(workerId: number) {
+    async function worker() {
       while (!abort.signal.aborted) {
         const entry = runningQueues.get(projectId);
         if (entry?.status === 'paused') {
@@ -155,6 +208,14 @@ export async function runQueue(options: QueueOptions): Promise<void> {
         // Atomically claim next pending/retrying job
         const job = claimNextJob(projectId, options.jobId);
         if (!job) {
+          if (isServerMediaExecution()) {
+            const accepted = claimNeedsCheckImageJob(projectId, options.jobId);
+            if (accepted) {
+              await runJob(accepted, { timeoutMs, maxAttempts, abort: abort.signal });
+              await sleep(1000);
+              continue;
+            }
+          }
           // No pending jobs. Check if any are still running.
           const runningCount = db
             .prepare(`SELECT COUNT(*) as count FROM jobs WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)`)
@@ -169,7 +230,7 @@ export async function runQueue(options: QueueOptions): Promise<void> {
     }
 
     await Promise.allSettled(
-      Array.from({ length: concurrency }, (_, i) => worker(i + 1))
+      Array.from({ length: concurrency }, () => worker())
     );
 
     if (!abort.signal.aborted) {
@@ -178,10 +239,16 @@ export async function runQueue(options: QueueOptions): Promise<void> {
       db.prepare(`UPDATE projects SET status = ? WHERE id = ?`).run(finalStatus, projectId);
     }
   } finally {
-    if (!abort.signal.aborted) {
-      runningQueues.delete(projectId);
-    }
+    finish();
+    if (runningQueues.get(projectId)?.abort === abort) runningQueues.delete(projectId);
   }
+}
+
+export async function drainImageQueues(): Promise<number> {
+  const entries = [...runningQueues.values()];
+  for (const entry of entries) entry.abort.abort();
+  await Promise.all(entries.map((entry) => entry.done));
+  return entries.length;
 }
 
 /**
@@ -192,6 +259,23 @@ async function runJob(
   options: { timeoutMs: number; maxAttempts: number; abort: AbortSignal }
 ): Promise<void> {
   return runWithAcceptedTaskAccess(getDb(), 'image', job.id, () => runAuthorizedJob(job, options));
+}
+
+export async function resumeImageJobPolling(jobId: string, timeoutMs = 300_000): Promise<void> {
+  const db = getDb();
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId) as JobRecord | undefined;
+  if (!job?.providerTaskId && !(job?.providerStatus === 'download_failed' && job.remoteImageUrl)) {
+    throw new Error('No provider task ID or accepted image URL to resume');
+  }
+  const claimed = db.prepare(`
+    UPDATE jobs SET status = 'running', errorMessage = NULL, finishedAt = NULL
+    WHERE id = ? AND (status IN ('needs_check', 'pending') OR providerStatus = 'download_failed')
+  `).run(jobId);
+  if (claimed.changes !== 1) throw new Error('Only accepted jobs waiting for polling or download can be resumed');
+  await runJob(
+    { ...job, status: 'running' },
+    { timeoutMs, maxAttempts: Math.max(1, job.maxAttempts || 2), abort: new AbortController().signal },
+  );
 }
 
 async function runAuthorizedJob(
@@ -205,7 +289,7 @@ async function runAuthorizedJob(
 
   // Job was already claimed atomically by the worker pool.
   // attempt and startedAt were set during claimNextJob().
-  const attempt = job.attempt;
+  let attempt = job.attempt;
   const startedAt = new Date().toISOString();
 
   const logInfo = (msg: string) =>
@@ -310,30 +394,147 @@ async function runAuthorizedJob(
     let result: { imageBuffer: Buffer; latencyMs: number; rawResponse?: unknown; remoteImageUrl?: string } | undefined;
     let usageSnapshot: string | null = null;
 
-    if (providerType === 'geekai-json') {
+    async function executeImageSubmission<T>(
+      send: () => Promise<T>,
+      receipt: (value: T) => ExecutionReceipt,
+    ): Promise<T> {
+      if (!isServerMediaExecution()) return send();
+      if (!usageSnapshot) {
+        usageSnapshot = persistImageJobUsageSnapshot(db, {
+          jobId: job.id,
+          projectId: job.projectId,
+          requestModel: job.model,
+          provider: { id: provider!.id, name: provider!.name, type: provider!.type, model: provider!.model },
+          refType: 'job',
+          refId: job.id,
+          startedAt,
+        });
+      }
+      const parsed = parseUsageSnapshot(usageSnapshot);
+      const reserveMinor = parsed.ok
+        ? Math.ceil(calculateUsageCostMicros(parsed.parsed.snapshot.priceComponents, 1) / 10_000)
+        : typeof provider!.defaultCostPerImage === 'number' && Number.isFinite(provider!.defaultCostPerImage)
+          ? Math.ceil(provider!.defaultCostPerImage * 100)
+          : null;
+      const inputRevision = legacyMediaExecutionRevision(job.executionRevision);
+      const submitted = await submitLegacyMediaOperation<T>({
+        module: 'image',
+        taskId: job.id,
+        projectId: job.projectId,
+        inputRevision,
+        inputSnapshot: {
+          inputImageId: job.inputImageId,
+          referenceImageIds: refIds,
+          model: job.model,
+          prompt: job.prompt,
+          size: job.size,
+          quality: job.quality,
+          referenceGuidanceMode: job.referenceGuidanceMode || 'preserve_subject',
+        },
+        requestSnapshot: { providerType, model: job.model, size: job.size, quality: job.quality },
+        providerSnapshot: {
+          providerId: provider!.id, type: providerType, model: job.model, baseUrl: provider!.baseUrl,
+        },
+        baseUrl: provider!.baseUrl,
+        apiKey,
+        quote: reserveMinor === null
+          ? { kind: 'unpriced' }
+          : { kind: 'priced', reserve: { currency: 'CNY', minor: reserveMinor }, pricingSnapshot: usageSnapshot },
+        signal: reqAbort.signal,
+        onAdmitted() {
+          attempt += 1;
+          job.attempt = attempt;
+          db.prepare('UPDATE jobs SET attempt = ?, startedAt = datetime(\'now\') WHERE id = ? AND status = \'running\'')
+            .run(attempt, job.id);
+        },
+        send: async () => {
+          const value = await send();
+          return { value, receipt: receipt(value) };
+        },
+      });
+      if (submitted.resumed || submitted.value === undefined) {
+        throw new Error(`已受理图片任务 ${submitted.remoteId ?? ''} 需要续查，不能重新提交。`);
+      }
+      return submitted.value;
+    }
+
+    async function settleImageExecution(
+      outcome: 'succeeded' | 'failed',
+      resultRef?: string,
+      errorCode?: string,
+    ): Promise<void> {
+      const parsed = parseUsageSnapshot(usageSnapshot);
+      const reserveMinor = parsed.ok
+        ? Math.ceil(calculateUsageCostMicros(parsed.parsed.snapshot.priceComponents, 1) / 10_000)
+        : typeof provider!.defaultCostPerImage === 'number' && Number.isFinite(provider!.defaultCostPerImage)
+          ? Math.ceil(provider!.defaultCostPerImage * 100)
+          : null;
+      await settleLegacyMediaRemote({
+        module: 'image',
+        taskId: job.id,
+        inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+        outcome,
+        actualCost: outcome === 'succeeded' && reserveMinor !== null
+          ? { currency: 'CNY', minor: reserveMinor }
+          : null,
+        resultRef,
+        errorCode,
+      });
+    }
+
+    if (job.providerStatus === 'download_failed' && job.remoteImageUrl) {
+      try {
+        let imageBuffer: Buffer;
+        if (providerType === 'gateway-task-image') {
+          const downloaded = await downloadGatewayTaskImage(job.remoteImageUrl, provider.baseUrl, apiKey);
+          if (!downloaded.ok) throw new Error('网关图片补下载失败');
+          imageBuffer = downloaded.buffer;
+        } else {
+          const response = await fetch(job.remoteImageUrl, { signal: reqAbort.signal });
+          if (!response.ok) throw new Error(`图片下载失败（HTTP ${response.status}）`);
+          imageBuffer = Buffer.from(await response.arrayBuffer());
+        }
+        result = {
+          imageBuffer,
+          latencyMs: 0,
+          remoteImageUrl: job.remoteImageUrl,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'download_failed', errorMessage = ?
+          WHERE id = ? AND status = 'running'`).run(message, job.id);
+        return;
+      }
+    } else if (providerType === 'geekai-json') {
       // ── GeekAI async flow: submit → poll → download ──
       const geekaiStart = Date.now();
 
-      // Step 1: Submit task
-      logInfo('提交任务到 GeekAI...');
-      const submitResult = await submitGeekAITask(
-        {
-          model: job.model,
-          prompt: job.prompt,
-          inputImagePath: inputApiPath,
-          inputMimeType,
-          referenceImagePaths: refApiPaths,
-          referenceMimeTypes: refMimeTypes,
-          size: job.size,
-          quality: job.quality,
-          referenceGuidanceMode: (job.referenceGuidanceMode || 'preserve_subject') as 'preserve_subject' | 'none',
-        },
-        apiKey,
-        provider.baseUrl
+      // Step 1: Submit task；已有远端 ID 时只续查。
+      const existingTaskId = job.providerTaskId?.trim() || null;
+      logInfo(existingTaskId ? `续查 GeekAI 任务 ${existingTaskId}` : '提交任务到 GeekAI...');
+      const submitResult = existingTaskId ? null : await executeImageSubmission(
+        () => submitGeekAITask(
+          {
+            model: job.model,
+            prompt: job.prompt,
+            inputImagePath: inputApiPath,
+            inputMimeType,
+            referenceImagePaths: refApiPaths,
+            referenceMimeTypes: refMimeTypes,
+            size: job.size,
+            quality: job.quality,
+            referenceGuidanceMode: (job.referenceGuidanceMode || 'preserve_subject') as 'preserve_subject' | 'none',
+          },
+          apiKey,
+          provider.baseUrl
+        ),
+        (value) => value.immediateImageUrl || value.immediateImageBase64
+          ? { terminalState: 'succeeded', resultRef: value.immediateImageUrl }
+          : { remoteId: value.taskId },
       );
 
       // Handle sync response (immediate result, no taskId)
-      if (submitResult.immediateImageUrl || submitResult.immediateImageBase64) {
+      if (submitResult && (submitResult.immediateImageUrl || submitResult.immediateImageBase64)) {
         let buf: Buffer;
         if (submitResult.immediateImageBase64) {
           buf = Buffer.from(submitResult.immediateImageBase64, 'base64');
@@ -347,14 +548,16 @@ async function runAuthorizedJob(
           rawResponse: submitResult.rawResponse,
         };
         logInfo('GeekAI 同步返回结果');
-      } else if (submitResult.taskId) {
+      } else if (submitResult?.taskId || existingTaskId) {
         // Step 2: Save taskId and raw response, start polling
-        const taskId = submitResult.taskId;
-        db.prepare(
-          `UPDATE jobs SET providerTaskId = ?, providerStatus = 'submitted', providerRawResponse = ?, submittedAt = datetime('now')
-           WHERE id = ?`
-        ).run(taskId, safeJsonForDB(submitResult.rawResponse), job.id);
-        logInfo(`任务已提交, task_id=${taskId} raw=${summarizeGeekAIResponse(submitResult.rawResponse)}`);
+        const taskId = (submitResult?.taskId || existingTaskId)!;
+        if (submitResult) {
+          db.prepare(
+            `UPDATE jobs SET providerTaskId = ?, providerStatus = 'submitted', providerRawResponse = ?, submittedAt = datetime('now')
+             WHERE id = ?`
+          ).run(taskId, safeJsonForDB(submitResult.rawResponse), job.id);
+          logInfo(`任务已提交, task_id=${taskId} raw=${summarizeGeekAIResponse(submitResult.rawResponse)}`);
+        }
 
         // Step 3: Poll with graduated intervals
         let polled = false;
@@ -378,7 +581,8 @@ async function runAuthorizedJob(
           logInfo(`轮询 task_id=${taskId} raw=${summarizeGeekAIResponse(pollResult.rawResponse)} (${elapsedSec}s)`);
 
           if (pollResult.status === 'succeeded' && pollResult.imageUrl) {
-            // Step 4: Download image
+            await settleImageExecution('succeeded', pollResult.imageUrl);
+            // Step 4: Download image（独立阶段）
             logInfo(`远端生成成功，下载图片: ${pollResult.imageUrl}`);
             const imgBuffer = await downloadGeekAIImage(pollResult.imageUrl);
 
@@ -405,6 +609,7 @@ async function runAuthorizedJob(
           }
 
           if (pollResult.status === 'failed') {
+            await settleImageExecution('failed', undefined, 'provider_failed');
             throw new Error(`GeekAI task failed: ${pollResult.errorMessage || 'unknown'}`);
           }
         }
@@ -461,67 +666,74 @@ async function runAuthorizedJob(
         enterImageResumeCheck('无法确认远端图片任务身份，已暂停提交，请点“补抓结果”重试。');
         return;
       }
-      if (existingTaskId) {
+      if (existingTaskId && !isServerMediaExecution()) {
         enterImageResumeCheck(`已有远端图片任务 ${existingTaskId}，请点“补抓结果”继续查询。`);
         return;
       }
 
-      usageSnapshot = persistImageJobUsageSnapshot(db, {
-        jobId: job.id,
-        projectId: job.projectId,
-        requestModel: job.model,
-        provider: {
-          id: provider.id,
-          name: provider.name,
-          type: provider.type,
-          model: provider.model,
-        },
-        refType: 'job',
-        refId: job.id,
-        startedAt,
-      });
-      if (!usageSnapshot) {
-        // Snapshot persistence deliberately remains fail-open when the usage
-        // schema is unavailable. Re-read the remote identity, however, so a
-        // providerTaskId created between the preflight SELECT and the guarded
-        // snapshot UPDATE can never lead to a duplicate submit.
-        try {
-          const racedTask = db.prepare(`SELECT providerTaskId FROM jobs WHERE id = ?`).get(job.id) as
-            { providerTaskId?: unknown } | undefined;
-          const racedTaskId = typeof racedTask?.providerTaskId === 'string'
-            ? racedTask.providerTaskId.trim()
-            : '';
-          if (racedTaskId) {
-            enterImageResumeCheck(`已有远端图片任务 ${racedTaskId}，请点“补抓结果”继续查询。`);
+      if (!existingTaskId) {
+        usageSnapshot = persistImageJobUsageSnapshot(db, {
+          jobId: job.id,
+          projectId: job.projectId,
+          requestModel: job.model,
+          provider: {
+            id: provider.id,
+            name: provider.name,
+            type: provider.type,
+            model: provider.model,
+          },
+          refType: 'job',
+          refId: job.id,
+          startedAt,
+        });
+        if (!usageSnapshot) {
+          // Snapshot persistence deliberately remains fail-open when the usage
+          // schema is unavailable. Re-read the remote identity, however, so a
+          // providerTaskId created between the preflight SELECT and the guarded
+          // snapshot UPDATE can never lead to a duplicate submit.
+          try {
+            const racedTask = db.prepare(`SELECT providerTaskId FROM jobs WHERE id = ?`).get(job.id) as
+              { providerTaskId?: unknown } | undefined;
+            const racedTaskId = typeof racedTask?.providerTaskId === 'string'
+              ? racedTask.providerTaskId.trim()
+              : '';
+            if (racedTaskId) {
+              enterImageResumeCheck(`已有远端图片任务 ${racedTaskId}，请点“补抓结果”继续查询。`);
+              return;
+            }
+          } catch {
+            enterImageResumeCheck('无法确认远端图片任务身份，已暂停提交，请点“补抓结果”重试。');
             return;
           }
-        } catch {
-          enterImageResumeCheck('无法确认远端图片任务身份，已暂停提交，请点“补抓结果”重试。');
-          return;
         }
       }
-      logInfo('提交图片生成请求到网关...');
-      const submitResult = await submitGatewayTaskImage(
-        {
-          model: job.model,
-          prompt: job.prompt,
-          inputImagePath: inputApiPath,
-          inputMimeType,
-          referenceImagePaths: refApiPaths,
-          referenceMimeTypes: refMimeTypes,
-          size: job.size,
-          quality: job.quality,
-          referenceGuidanceMode: (job.referenceGuidanceMode || 'preserve_subject') as 'preserve_subject' | 'none',
-        },
-        apiKey,
-        provider.baseUrl,
-        { onProgress: logInfo, timeoutMs, signal: reqAbort.signal },
+      logInfo(existingTaskId ? `续查网关图片任务 ${existingTaskId}` : '提交图片生成请求到网关...');
+      const submitResult = existingTaskId ? null : await executeImageSubmission(
+        () => submitGatewayTaskImage(
+          {
+            model: job.model,
+            prompt: job.prompt,
+            inputImagePath: inputApiPath,
+            inputMimeType,
+            referenceImagePaths: refApiPaths,
+            referenceMimeTypes: refMimeTypes,
+            size: job.size,
+            quality: job.quality,
+            referenceGuidanceMode: (job.referenceGuidanceMode || 'preserve_subject') as 'preserve_subject' | 'none',
+          },
+          apiKey,
+          provider.baseUrl,
+          { onProgress: logInfo, timeoutMs, signal: reqAbort.signal },
+        ),
+        (value) => value.immediateImageUrl
+          ? { terminalState: 'succeeded', resultRef: value.immediateImageUrl }
+          : { remoteId: value.taskId },
       );
-      if (submitResult.imageTransports?.length) {
+      if (submitResult?.imageTransports?.length) {
         logInfo(`图片传输方式: ${submitResult.imageTransports.map((t, i) => `图${i + 1}=${t}`).join(', ')}`);
       }
 
-      if (submitResult.immediateImageUrl) {
+      if (submitResult?.immediateImageUrl) {
         const downloadResult = await downloadGatewayTaskImage(submitResult.immediateImageUrl, provider.baseUrl, apiKey);
         if (!downloadResult.ok) {
           const failure = describeGatewayDownloadFailure('image', submitResult.immediateImageUrl, downloadResult, apiKey);
@@ -539,13 +751,15 @@ async function runAuthorizedJob(
           remoteImageUrl: submitResult.immediateImageUrl,
         };
         logInfo('网关任务同步返回结果');
-      } else if (submitResult.taskId) {
-        const taskId = submitResult.taskId;
-        db.prepare(
-          `UPDATE jobs SET providerTaskId = ?, providerStatus = 'submitted', providerRawResponse = ?, submittedAt = datetime('now')
-           WHERE id = ?`
-        ).run(taskId, safeJsonForDB(submitResult.rawResponse), job.id);
-        logInfo(`任务已提交, task_id=${taskId} raw=${summarizeGatewayTaskResponse(submitResult.rawResponse, apiKey)}`);
+      } else if (submitResult?.taskId || existingTaskId) {
+        const taskId = (submitResult?.taskId || existingTaskId)!;
+        if (submitResult) {
+          db.prepare(
+            `UPDATE jobs SET providerTaskId = ?, providerStatus = 'submitted', providerRawResponse = ?, submittedAt = datetime('now')
+             WHERE id = ?`
+          ).run(taskId, safeJsonForDB(submitResult.rawResponse), job.id);
+          logInfo(`任务已提交, task_id=${taskId} raw=${summarizeGatewayTaskResponse(submitResult.rawResponse, apiKey)}`);
+        }
 
         let polled = false;
         const maxPollMs = timeoutMs || 300_000;
@@ -568,6 +782,7 @@ async function runAuthorizedJob(
           logInfo(`轮询 task_id=${taskId} raw=${summarizeGatewayTaskResponse(pollResult.rawResponse, apiKey)} (${elapsedSec}s)`);
 
           if (pollResult.status === 'succeeded' && pollResult.imageUrl) {
+            await settleImageExecution('succeeded', pollResult.imageUrl);
             logInfo(`远端生成成功，下载图片: ${redactMediaUrlForLog(pollResult.imageUrl, apiKey)}`);
             const downloadResult = await downloadGatewayTaskImage(pollResult.imageUrl, provider.baseUrl, apiKey);
 
@@ -595,6 +810,7 @@ async function runAuthorizedJob(
           }
 
           if (pollResult.status === 'failed') {
+            await settleImageExecution('failed', undefined, 'provider_failed');
             throw new Error(`网关任务失败: ${pollResult.errorMessage || 'unknown'}`);
           }
         }
@@ -629,7 +845,7 @@ async function runAuthorizedJob(
       const stopHeartbeat = startPackyHeartbeat(logInfo);
 
       try {
-        const packyRequest =
+        const packyRequest = () =>
           providerType === 'packy-gemini-image'
             ? editImagePackyGemini(
                 {
@@ -643,7 +859,8 @@ async function runAuthorizedJob(
                 },
                 apiKey,
                 provider.baseUrl,
-                reqAbort.signal
+                reqAbort.signal,
+                { deferDownload: isServerMediaExecution() }
               )
             : editImagePacky(
                 {
@@ -659,12 +876,12 @@ async function runAuthorizedJob(
                 },
                 apiKey,
                 provider.baseUrl,
-                reqAbort.signal
+                reqAbort.signal,
+                { deferDownload: isServerMediaExecution() }
               );
-        const packyResult = await withTimeout(
-          packyRequest,
-          timeoutMs,
-          reqAbort
+        const packyResult = await executeImageSubmission(
+          () => withTimeout(packyRequest(), timeoutMs, reqAbort),
+          (value) => ({ terminalState: 'succeeded', resultRef: value.remoteImageUrl }),
         );
         logInfo(`Packy 已返回并下载图片，耗时 ${Math.round(packyResult.latencyMs / 1000)}s，开始保存本地输出`);
         result = {
@@ -685,8 +902,9 @@ async function runAuthorizedJob(
       logInfo(`${providerLabel} 同步请求已开始，等待服务端返回...`);
       const stopHeartbeat = startRequestHeartbeat(`${providerLabel} 同步请求`, logInfo);
       try {
-        result = await withTimeout(
-          editImage(
+        result = await executeImageSubmission(
+          () => withTimeout(
+            editImage(
             {
               provider: {
                 id: provider.id,
@@ -709,10 +927,13 @@ async function runAuthorizedJob(
             },
             apiKey,
             provider.baseUrl,
-            reqAbort.signal
+            reqAbort.signal,
+            { deferDownload: isServerMediaExecution() }
           ),
           timeoutMs,
           reqAbort
+          ),
+          (value) => ({ terminalState: 'succeeded', resultRef: value.remoteImageUrl }),
         );
       } finally {
         stopHeartbeat();
@@ -724,6 +945,20 @@ async function runAuthorizedJob(
 
     // If GeekAI branch returned early (download_failed / needs_check), skip the rest
     if (!result) return;
+
+    if (isServerMediaExecution() && result.remoteImageUrl && result.imageBuffer.byteLength === 0) {
+      try {
+        const response = await fetch(result.remoteImageUrl, { signal: reqAbort.signal });
+        if (!response.ok) throw new Error(`图片下载失败（HTTP ${response.status}）`);
+        result.imageBuffer = Buffer.from(await response.arrayBuffer());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'download_failed',
+          remoteImageUrl = ?, errorMessage = ?, finishedAt = datetime('now') WHERE id = ? AND status = 'running'`)
+          .run(result.remoteImageUrl, message, job.id);
+        return;
+      }
+    }
 
     logInfo(`API call succeeded (latency: ${result.latencyMs}ms)`);
 
@@ -737,7 +972,7 @@ async function runAuthorizedJob(
       return;
     }
 
-    if (abort.aborted) {
+    if (abort.aborted && !isServerMediaExecution()) {
       logWarn('Queue aborted, discarding result');
       // Mark as canceled since the queue was aborted
       db.prepare(`UPDATE jobs SET status = 'canceled', errorMessage = 'Queue canceled' WHERE id = ? AND status = 'running'`).run(job.id);
@@ -810,6 +1045,7 @@ async function runAuthorizedJob(
     const completeResult = db.prepare(
       `UPDATE jobs SET
         status = 'succeeded',
+        providerStatus = 'succeeded',
         finishedAt = ?,
         latencyMs = ?,
         estimatedCost = ?,
@@ -856,7 +1092,35 @@ async function runAuthorizedJob(
   } catch (err: unknown) {
     let errorMessage = err instanceof Error ? err.message : String(err);
 
-    // If aborted by user, mark as canceled — never retry
+    if (isServerMediaExecution() && abort.aborted) {
+      const current = db.prepare('SELECT providerTaskId, executionRevision FROM jobs WHERE id = ?').get(job.id) as
+        { providerTaskId: string | null; executionRevision: number } | undefined;
+      const recovered = recoverLegacyMediaSubmission({
+        module: 'image', taskId: job.id,
+        inputRevision: legacyMediaExecutionRevision(current?.executionRevision),
+        providerTaskId: current?.providerTaskId,
+      });
+      if (recovered.status === 'needs_check') {
+        db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = ?,
+          providerTaskId = COALESCE(?, providerTaskId), remoteImageUrl = COALESCE(?, remoteImageUrl),
+          errorMessage = '已受理任务保留，等待续查或补下载'
+          WHERE id = ? AND status = 'running'`).run(
+          recovered.resultRef ? 'download_failed' : 'unknown',
+          recovered.remoteId ?? null,
+          recovered.resultRef ?? null,
+          job.id,
+        );
+      } else {
+        await cancelLegacyMediaNewStage({
+          module: 'image', taskId: job.id,
+          inputRevision: legacyMediaExecutionRevision(current?.executionRevision),
+        });
+        db.prepare("UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user' WHERE id = ? AND status = 'running'").run(job.id);
+      }
+      return;
+    }
+
+    // local 保留原有取消合同。
     if (abort.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
       errorMessage = 'Canceled by user';
       db.prepare(
@@ -864,6 +1128,13 @@ async function runAuthorizedJob(
          WHERE id = ? AND status = 'running'`
       ).run(errorMessage, job.id);
       logWarn('Job canceled by user');
+      return;
+    }
+
+    if (isServerMediaExecution() && isLegacyMediaSubmissionUnknown(err)) {
+      db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'unknown', errorMessage = ?, finishedAt = datetime('now')
+        WHERE id = ? AND status = 'running'`).run(`${errorMessage}。提交结果未知，已禁止自动重发。`, job.id);
+      logError('图片提交结果未知，进入 needs_check，禁止自动重发');
       return;
     }
 
@@ -923,6 +1194,24 @@ async function runAuthorizedJob(
   }
 }
 
+function claimNeedsCheckImageJob(projectId: string, jobId?: string): JobRecord | null {
+  const db = getDb();
+  const job = db.prepare(`
+    SELECT * FROM jobs
+    WHERE projectId = ?
+      AND (status = 'needs_check' ${isServerMediaExecution() ? "OR providerStatus = 'download_failed'" : ''})
+      AND (providerTaskId IS NOT NULL OR (providerStatus = 'download_failed' AND remoteImageUrl IS NOT NULL))
+      AND (? IS NULL OR id = ?)
+      ${isServerMediaExecution() ? "AND NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = jobs.id AND r.kind = 'generate_image')" : ''}
+    ORDER BY createdAt, rowid LIMIT 1
+  `).get(projectId, jobId || null, jobId || null) as JobRecord | undefined;
+  if (!job) return null;
+  const claimed = db.prepare(`UPDATE jobs SET status = 'running', errorMessage = NULL
+    WHERE id = ? AND (status = 'needs_check' ${isServerMediaExecution() ? "OR providerStatus = 'download_failed'" : ''})`)
+    .run(job.id);
+  return claimed.changes === 1 ? { ...job, status: 'running' } : null;
+}
+
 /**
  * Atomically claim the next pending/retrying job.
  * Returns the claimed job with attempt incremented, or null if none available.
@@ -933,12 +1222,13 @@ function claimNextJob(projectId: string, jobId?: string): (JobRecord & { attempt
   const job = db.prepare(`
     SELECT * FROM jobs
     WHERE projectId = ? AND status IN ('pending', 'retrying') AND (? IS NULL OR id = ?)
+      ${isServerMediaExecution() ? "AND NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = jobs.id AND r.kind = 'generate_image')" : ''}
     ORDER BY id LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as JobRecord | undefined;
 
   if (!job) return null;
 
-  const nextAttempt = job.attempt + 1;
+  const nextAttempt = isServerMediaExecution() ? job.attempt : job.attempt + 1;
   const result = db.prepare(`
     UPDATE jobs SET status = 'running', attempt = ?, startedAt = datetime('now'), errorMessage = NULL
     WHERE id = ? AND status IN ('pending', 'retrying')

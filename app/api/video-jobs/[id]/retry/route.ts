@@ -31,7 +31,8 @@ async function __teamRoutePOST(
         db.prepare(`UPDATE video_jobs SET status = 'pending', errorMessage = NULL,
           providerTaskId = NULL, providerStatus = NULL, providerRawResponse = NULL,
           lastPolledAt = NULL, pollCount = 0, startedAt = NULL, finishedAt = NULL,
-          attempt = 0, usageSnapshotJson = NULL WHERE id = ?`).run(id);
+          attempt = 0, usageSnapshotJson = NULL, executionRevision = COALESCE(executionRevision, 0) + 1
+        WHERE id = ?`).run(id);
       } else {
         db.prepare(`UPDATE video_jobs SET status = 'pending', errorMessage = NULL WHERE id = ?`).run(id);
       }

@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { imageModelSupportsQuality } from '@/lib/image-model-capabilities';
+import { imageModelSupportsQuality } from '../image-model-capabilities.ts';
 
 export interface PackyEditImageRequest {
   model: string;
@@ -54,7 +54,8 @@ export async function editImagePacky(
   request: PackyEditImageRequest,
   apiKey: string,
   baseUrl: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: { deferDownload?: boolean }
 ): Promise<PackyEditImageResult> {
   const startTime = Date.now();
   const cleanBase = baseUrl.replace(/\/$/, '');
@@ -140,6 +141,9 @@ export async function editImagePacky(
   }
 
   if (first.url) {
+    if (options?.deferDownload) {
+      return { imageBuffer: Buffer.alloc(0), latencyMs, rawResponse: data, remoteImageUrl: first.url };
+    }
     const imageBuffer = await downloadImage(first.url, signal);
     return { imageBuffer, latencyMs, rawResponse: data, remoteImageUrl: first.url };
   }
