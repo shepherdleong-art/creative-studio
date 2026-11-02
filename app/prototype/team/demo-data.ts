@@ -3,7 +3,7 @@ import type { IconName } from '@/components/ui/Icon';
 
 export type ModuleName = '常规项目' | '批量生产' | '详情页脚本' | '创作画布';
 export type JobStatus = 'running' | 'queued' | 'done' | 'unknown' | 'paused';
-export type Job = { id: string; title: string; project: string; module: ModuleName; owner: string; status: JobStatus; stage: string; progress: number; time: string; pauseNext?: boolean };
+export type Job = { id: string; title: string; project: string; module: ModuleName; owner: string; ownerId?: string; status: JobStatus; stage: string; progress: number; time: string; pauseNext?: boolean; estimatedCents?: number; reservedCents?: number };
 export type Project = { id: string; name: string; module: ModuleName; art: number; updated: string; description: string };
 export const modules: { name: ModuleName; icon: IconName; text: string; tone: string }[] = [
   { name: '常规项目', icon: 'film', text: '场景、分镜到成片', tone: 'blue' },

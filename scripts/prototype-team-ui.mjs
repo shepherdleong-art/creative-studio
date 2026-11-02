@@ -10,6 +10,7 @@ const sandbox = path.join(root, 'outputs', 'prototype-team-ui');
 const copies = [
   'app/prototype/team/page.tsx',
   'app/prototype/team/TeamPrototype.tsx',
+  'app/prototype/team/MemberUsagePrototype.tsx',
   'app/prototype/team/prototype.module.css',
   'app/prototype/team/demo-data.ts',
   'components/ui/Icon.tsx',
