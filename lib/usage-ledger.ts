@@ -15,6 +15,7 @@ import {
 } from './usage-pricing.ts';
 import { getUsageSchemaReadiness } from './usage-schema.ts';
 import { optionalAccessContext } from './media-core/access-context.ts';
+import { currentExecutionAttemptId } from './media-core/execution/context.ts';
 import { parseUsageSnapshot, type ParsedSnapshot } from './usage-snapshot.ts';
 
 /** One process-wide owner id used to distinguish interrupted call evidence. */
@@ -47,6 +48,7 @@ export interface UsageRecordInput {
   refType?: string;
   refId?: string;
   createdAt?: string;
+  executionAttemptId?: string | null;
 }
 
 export interface UsageOperationResult {
@@ -113,6 +115,7 @@ interface UsageCallRow {
   refType: string;
   refId: string;
   actorUserId: string;
+  executionAttemptId: string | null;
 }
 
 interface ReconcileImageJobRow {
@@ -257,7 +260,7 @@ function usageLedgerFields(
   eventKey: string,
   parsed: ParsedSnapshot,
   measurement: NormalizedMeasurement,
-  input: Pick<UsageRecordInput, 'projectId' | 'refType' | 'refId' | 'createdAt'>,
+  input: Pick<UsageRecordInput, 'projectId' | 'refType' | 'refId' | 'createdAt' | 'executionAttemptId'>,
 ): {
   id: string;
   eventKey: string;
@@ -279,6 +282,7 @@ function usageLedgerFields(
   refId: string;
   createdAt: string;
   actorUserId: string;
+  executionAttemptId: string | null;
 } {
   const { snapshot: usageSnapshot, category: snapshotCategory } = parsed;
   const components = usageSnapshot.priceComponents;
@@ -322,6 +326,7 @@ function usageLedgerFields(
     refId: input.refId ?? usageSnapshot.refId,
     createdAt: input.createdAt ?? new Date().toISOString(),
     actorUserId: optionalAccessContext()?.actor.userId ?? '',
+    executionAttemptId: input.executionAttemptId ?? currentExecutionAttemptId(),
   };
 }
 
@@ -330,8 +335,8 @@ function insertLedgerRow(db: Database.Database, fields: ReturnType<typeof usageL
     INSERT OR IGNORE INTO usage_ledger
       (id, eventKey, coreModelKey, category, providerId, providerName, model, pricingVersion,
        callCount, quantity, unit, priceScale, unitPriceMicros, costMicros, detailJson,
-       projectId, refType, refId, createdAt, actorUserId)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       projectId, refType, refId, createdAt, actorUserId, executionAttemptId)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     fields.id,
     fields.eventKey,
@@ -353,6 +358,7 @@ function insertLedgerRow(db: Database.Database, fields: ReturnType<typeof usageL
     fields.refId,
     fields.createdAt,
     fields.actorUserId,
+    fields.executionAttemptId,
   );
   return result.changes === 1;
 }
@@ -388,6 +394,7 @@ export interface BeginUsageCallInput {
   refType?: string;
   refId?: string;
   ownerInstanceId?: string;
+  executionAttemptId?: string | null;
 }
 
 /** Persist the price snapshot before a real upstream call starts. */
@@ -401,8 +408,8 @@ export function beginUsageCall(db: Database.Database, input: BeginUsageCallInput
   try {
     const result = db.prepare(`
       INSERT OR IGNORE INTO usage_call_events
-        (eventKey, status, ownerInstanceId, snapshotJson, usageJson, projectId, refType, refId, createdAt, updatedAt, actorUserId)
-      VALUES (?, 'started', ?, ?, '{}', ?, ?, ?, ?, ?, ?)
+        (eventKey, status, ownerInstanceId, snapshotJson, usageJson, projectId, refType, refId, createdAt, updatedAt, actorUserId, executionAttemptId)
+      VALUES (?, 'started', ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.eventKey,
       input.ownerInstanceId || USAGE_INSTANCE_ID,
@@ -413,6 +420,7 @@ export function beginUsageCall(db: Database.Database, input: BeginUsageCallInput
       now,
       now,
       optionalAccessContext()?.actor.userId ?? '',
+      input.executionAttemptId ?? currentExecutionAttemptId(),
     );
     const existing = db.prepare(`SELECT status FROM usage_call_events WHERE eventKey = ?`).get(input.eventKey) as { status?: UsageCallStatus } | undefined;
     return {
@@ -481,7 +489,7 @@ export function drainBillableUsageCalls(db: Database.Database): UsageDrainResult
   let rows: UsageCallRow[];
   try {
     rows = db.prepare(`
-      SELECT eventKey, status, snapshotJson, usageJson, projectId, refType, refId, actorUserId
+      SELECT eventKey, status, snapshotJson, usageJson, projectId, refType, refId, actorUserId, executionAttemptId
       FROM usage_call_events
       WHERE status = 'billable'
       ORDER BY updatedAt, eventKey
@@ -511,7 +519,7 @@ export function drainBillableUsageCalls(db: Database.Database): UsageDrainResult
         projectId: row.projectId,
         refType: row.refType,
         refId: row.refId,
-      }), actorUserId: row.actorUserId };
+      }), actorUserId: row.actorUserId, executionAttemptId: row.executionAttemptId };
       db.transaction(() => {
         insertLedgerRow(db, fields);
         db.prepare(`
@@ -747,6 +755,7 @@ function legacyImageLedgerFields(row: LegacyImageBackfillRow): ReturnType<typeof
     refId: row.id,
     createdAt: preferredLedgerTimestamp(row.finishedAt, row.startedAt),
     actorUserId: '',
+    executionAttemptId: null,
   };
 }
 
@@ -887,6 +896,7 @@ function legacyVideoLedgerFields(row: LegacyVideoBackfillRow): ReturnType<typeof
     refId: row.id,
     createdAt: preferredLedgerTimestamp(row.finishedAt, row.startedAt),
     actorUserId: '',
+    executionAttemptId: null,
   };
 }
 

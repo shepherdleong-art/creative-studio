@@ -319,6 +319,38 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
       CREATE INDEX idx_team_uploads_target_kind ON team_uploads(targetKind, state);
     `,
   },
+  {
+    version: 9,
+    sql: `
+      CREATE TABLE team_error_records (
+        id TEXT PRIMARY KEY,
+        actorUserId TEXT NOT NULL,
+        module TEXT NOT NULL,
+        taskId TEXT,
+        operationId TEXT,
+        attemptId TEXT,
+        scopeType TEXT,
+        scopeId TEXT,
+        stage TEXT NOT NULL CHECK(stage IN (
+          'upload', 'remote_submit', 'remote_poll', 'download', 'local_media',
+          'client_update', 'server_release', 'server_config'
+        )),
+        code TEXT NOT NULL,
+        statusCode INTEGER,
+        safeMessage TEXT NOT NULL,
+        clientVersion TEXT,
+        serverReleaseId TEXT,
+        configVersion TEXT,
+        clientEventId TEXT,
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY (actorUserId) REFERENCES team_users(id)
+      );
+      CREATE UNIQUE INDEX idx_team_error_client_event
+        ON team_error_records(actorUserId, clientEventId) WHERE clientEventId IS NOT NULL;
+      CREATE INDEX idx_team_error_actor_created ON team_error_records(actorUserId, createdAt DESC);
+      CREATE INDEX idx_team_error_attempt ON team_error_records(attemptId);
+    `,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;
@@ -345,7 +377,7 @@ function validateTeamServiceSchema(db: Database.Database): void {
     'team_resource_scopes', 'team_task_principals', 'team_font_favorites', 'team_files', 'team_file_references',
     'team_lifecycle_events', 'team_lifecycle_event_scopes', 'team_lifecycle_barriers',
     'team_backup_pins', 'team_cleanup_jobs', 'team_cleanup_files',
-    'team_uploads', 'team_upload_parts', 'team_devices', 'team_download_receipts',
+    'team_uploads', 'team_upload_parts', 'team_devices', 'team_download_receipts', 'team_error_records',
   ]) {
     if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table)) {
       throw new Error(`team-service 缺少 ${table} 结构`);

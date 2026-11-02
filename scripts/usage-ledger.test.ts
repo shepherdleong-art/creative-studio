@@ -11,6 +11,7 @@ import {
   type CoreUsageSnapshotV1,
 } from '../lib/usage-pricing.ts';
 import { initUsageSchema } from '../lib/usage-schema.ts';
+import { runWithExecutionAttempt } from '../lib/media-core/execution/context.ts';
 import {
   beginUsageCall,
   drainBillableUsageCalls,
@@ -213,6 +214,29 @@ function insertVideoProvider(db: Database.Database, input: {
     priceScale: 1,
     componentCostMicros: 3_160_000,
   }]);
+  db.close();
+}
+
+// Server billing mirrors retain the actual execution attempt across direct and drained writes.
+{
+  const db = setupDb();
+  runWithExecutionAttempt('execution-attempt-13', () => {
+    assert.equal(recordUsage(db, {
+      eventKey: 'execution-attempt:execution-attempt-13:settled',
+      snapshot: snapshot({}, { refId: 'attempt-direct' }),
+      usage: { quantity: 1, callCount: 1 },
+    }).ok, true);
+    assert.equal(beginUsageCall(db, {
+      eventKey: 'execution-attempt:execution-attempt-13:call',
+      snapshot: snapshot({}, { refId: 'attempt-call' }),
+    }).ok, true);
+    assert.equal(markUsageCallBillable(db, 'execution-attempt:execution-attempt-13:call', {
+      quantity: 1, callCount: 1,
+    }).ok, true);
+    assert.equal(drainBillableUsageCalls(db).ok, true);
+  });
+  assert.deepEqual(db.prepare('SELECT DISTINCT executionAttemptId FROM usage_ledger').all(), [{ executionAttemptId: 'execution-attempt-13' }]);
+  assert.deepEqual(db.prepare('SELECT DISTINCT executionAttemptId FROM usage_call_events').all(), [{ executionAttemptId: 'execution-attempt-13' }]);
   db.close();
 }
 

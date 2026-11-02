@@ -3,9 +3,9 @@ import fs from 'node:fs';
 
 const read = (relative) => fs.readFileSync(new URL(`../${relative}`, import.meta.url), 'utf8');
 const header = read('components/Header.tsx');
-const page = read('app/usage/page.tsx');
+const page = read('app/(workspace)/usage/page.tsx');
 const dashboard = read('components/UsageDashboard.tsx');
-const settings = read('app/settings/page.tsx');
+const settings = read('app/(workspace)/settings/page.tsx');
 const imageUpdate = read('app/api/providers/[id]/route.ts');
 const scriptUpdate = read('app/api/providers/script/[id]/route.ts');
 const ttsUpdate = read('app/api/providers/tts/[id]/route.ts');

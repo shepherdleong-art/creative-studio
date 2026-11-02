@@ -3,6 +3,7 @@ import {
   assertExecutionContext,
   assertMoney,
   ExecutionError,
+  currentExecutionClientVersion,
   type EnqueueInput,
   type EnqueueResult,
   type ExecutionFacadeOptions,
@@ -96,14 +97,15 @@ export function enqueueOperation(
       INSERT INTO execution_operations (
         id, operationKey, actorId, scopeType, scopeId, module, taskId, step, inputRevision,
         businessAttemptId, businessAttemptNo, inputHash, inputSnapshotJson, continuationKey,
-        providerSnapshotJson, configVersion, credentialVersionRef, requiredPoolsJson, quoteJson,
-        status, readySeq, createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+        providerSnapshotJson, configVersion, clientVersion, serverReleaseId,
+        credentialVersionRef, requiredPoolsJson, quoteJson, status, readySeq, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
     `).run(
       id, input.operationKey, input.actor.userId, input.scope.resourceType, input.scope.resourceId,
       input.module, input.taskId, input.step, input.inputRevision,
       input.businessAttempt.id, input.businessAttempt.number, input.inputHash, json(input.inputSnapshot),
       input.continuationKey, json(input.providerSnapshot), input.configVersion ?? null,
+      input.clientVersion ?? null, options.serverReleaseId ?? null,
       input.credentialVersionRef ?? null, json([...input.requiredPools]), json(input.quote),
       state.nextReadySeq, at, at,
     );
@@ -123,7 +125,10 @@ export function createExecutionFacade(options: ExecutionFacadeOptions): Executio
     if (!open) throw new ExecutionError('execution_not_ready', 'server 执行 readiness 尚未开放新付费工作。');
   };
   const facade: ExecutionRuntime['facade'] = {
-    enqueue: (input: EnqueueInput) => enqueueOperation({ ...options, assertOpen }, input),
+    enqueue: (input: EnqueueInput) => enqueueOperation({ ...options, assertOpen }, {
+      ...input,
+      clientVersion: input.clientVersion ?? currentExecutionClientVersion(),
+    }),
     admit: (instance) => admitOperation({ ...options, assertOpen }, instance),
     markSubmitting: (input) => markSubmitting({ ...options, assertOpen }, input),
     attachReceipt: (input) => attachReceipt(options, input),

@@ -15,6 +15,7 @@ import { runWithAccessContext } from '../media-core/access-context.ts';
 import { teamRoutePolicy, type TeamRoutePolicy } from './route-policy.ts';
 import { softDeleteResource } from './lifecycle/index.ts';
 import { assertCompatibleClientWrite } from './client-capabilities.ts';
+import { runWithExecutionRequestVersions } from '../media-core/execution/context.ts';
 
 interface RouteHandlerContext {
   params?: Promise<Record<string, string | string[] | undefined>> | Record<string, string | string[] | undefined>;
@@ -329,7 +330,9 @@ export function withTeamRoute<T>(route: string, method: string, handler: T): T &
     } catch (error) {
       return authorizationError(error);
     }
-    const invoke = () => (handler as (...handlerArgs: unknown[]) => unknown)(...args);
+    const invoke = () => runWithExecutionRequestVersions({
+      clientVersion: request?.headers.get('x-creative-studio-client-version')?.slice(0, 64) || undefined,
+    }, () => (handler as (...handlerArgs: unknown[]) => unknown)(...args));
     const response = await (context ? runWithAccessContext(context, invoke) : invoke()) as Response;
     if (response instanceof Response) {
       const cacheControl = response.headers.get('Cache-Control') ?? '';
