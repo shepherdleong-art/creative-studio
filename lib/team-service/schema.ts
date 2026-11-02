@@ -157,6 +157,81 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
         ON team_file_references(resourceType, resourceId, releasedAt);
     `,
   },
+  {
+    version: 6,
+    sql: `
+      CREATE TABLE team_lifecycle_events (
+        id TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK(action IN ('delete', 'restore')),
+        resourceType TEXT NOT NULL,
+        resourceId TEXT NOT NULL,
+        actorUserId TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY (actorUserId) REFERENCES team_users(id)
+      );
+      CREATE INDEX idx_team_lifecycle_event_resource
+        ON team_lifecycle_events(resourceType, resourceId, action, createdAt);
+
+      CREATE TABLE team_lifecycle_event_scopes (
+        eventId TEXT NOT NULL,
+        resourceType TEXT NOT NULL,
+        resourceId TEXT NOT NULL,
+        PRIMARY KEY (eventId, resourceType, resourceId),
+        FOREIGN KEY (eventId) REFERENCES team_lifecycle_events(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE team_lifecycle_barriers (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN ('backup', 'release', 'config')),
+        ownerUserId TEXT NOT NULL,
+        metadataJson TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        releasedAt TEXT,
+        FOREIGN KEY (ownerUserId) REFERENCES team_users(id)
+      );
+      CREATE INDEX idx_team_lifecycle_barriers_active
+        ON team_lifecycle_barriers(kind, releasedAt);
+
+      CREATE TABLE team_backup_pins (
+        id TEXT PRIMARY KEY,
+        ownerUserId TEXT NOT NULL,
+        releaseId TEXT NOT NULL,
+        configVersion TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        releasedAt TEXT,
+        FOREIGN KEY (ownerUserId) REFERENCES team_users(id)
+      );
+      CREATE INDEX idx_team_backup_pins_active ON team_backup_pins(releasedAt);
+
+      CREATE TABLE team_cleanup_jobs (
+        id TEXT PRIMARY KEY,
+        resourceType TEXT NOT NULL,
+        resourceId TEXT NOT NULL,
+        requestedBy TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'deferred', 'completed', 'failed')),
+        phase TEXT NOT NULL CHECK(phase IN ('plan', 'database', 'files', 'done')),
+        blockersJson TEXT NOT NULL DEFAULT '[]',
+        error TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        FOREIGN KEY (requestedBy) REFERENCES team_users(id)
+      );
+      CREATE INDEX idx_team_cleanup_jobs_resource
+        ON team_cleanup_jobs(resourceType, resourceId, status);
+
+      CREATE TABLE team_cleanup_files (
+        jobId TEXT NOT NULL,
+        fileId TEXT NOT NULL,
+        relativePath TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'unlinked', 'missing', 'verified')),
+        error TEXT,
+        updatedAt TEXT NOT NULL,
+        PRIMARY KEY (jobId, fileId),
+        FOREIGN KEY (jobId) REFERENCES team_cleanup_jobs(id) ON DELETE CASCADE,
+        FOREIGN KEY (fileId) REFERENCES team_files(id)
+      );
+    `,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;
@@ -179,7 +254,11 @@ function validateTeamServiceSchema(db: Database.Database): void {
     || tokenHash?.type.toUpperCase() !== 'TEXT' || tokenHash.notnull !== 1) {
     throw new Error('team-service 身份结构检查未通过');
   }
-  for (const table of ['team_resource_scopes', 'team_task_principals', 'team_font_favorites', 'team_files', 'team_file_references']) {
+  for (const table of [
+    'team_resource_scopes', 'team_task_principals', 'team_font_favorites', 'team_files', 'team_file_references',
+    'team_lifecycle_events', 'team_lifecycle_event_scopes', 'team_lifecycle_barriers',
+    'team_backup_pins', 'team_cleanup_jobs', 'team_cleanup_files',
+  ]) {
     if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table)) {
       throw new Error(`team-service 缺少 ${table} 结构`);
     }

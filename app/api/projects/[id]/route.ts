@@ -18,6 +18,7 @@ import { sortProjectJobsByCreation, type ProjectJobOrderRow } from '@/lib/projec
 import { deleteProjectRecords } from '@/lib/project-delete';
 import { syncShotPromptFromScene } from '@/lib/furniture-prompt';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { requireAccessContext } from '@/lib/media-core/access-context';
 
 
 async function __teamRouteGET(
@@ -40,8 +41,13 @@ async function __teamRouteGET(
     const project = db.prepare(`SELECT * FROM projects WHERE id = ?`).get(id) as Record<string, unknown>;
 
     // Get images with computed imageUrl
+    const imageLifecycle = requireAccessContext().kind === 'local' ? '' : `AND EXISTS (
+      SELECT 1 FROM team_resource_scopes scope
+      WHERE scope.resourceType = 'image' AND scope.resourceId = image_assets.id
+        AND scope.deletedAt IS NULL
+    )`;
     const images = (db.prepare(
-      `SELECT * FROM image_assets WHERE projectId = ? ORDER BY role, createdAt`
+      `SELECT * FROM image_assets WHERE projectId = ? ${imageLifecycle} ORDER BY role, createdAt`
     ).all(id) as Array<Record<string, unknown>>).map((img) => {
       const filePath = img.path as string;
       const relativePath = resolveStorageRelativePath(filePath)?.split(/[/\\]/).join('/') ?? '';

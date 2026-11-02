@@ -104,10 +104,17 @@ export function listProjectBatchProductions(
   projectId: string,
   options: { includeArchived?: boolean } = {},
 ): BatchProductionRow[] {
+  const access = requireAccessContext();
+  const lifecycle = access.kind === 'local' ? '' : `AND EXISTS (
+    SELECT 1 FROM team_resource_scopes scope
+    WHERE scope.resourceType = 'batch' AND scope.resourceId = batch_productions.id
+      AND scope.deletedAt IS NULL
+  )`;
   return db.prepare(`
     SELECT * FROM batch_productions
     WHERE projectId = ? AND deletedAt IS NULL
       AND (${options.includeArchived ? '1' : 'archivedAt IS NULL'})
+      ${lifecycle}
     ORDER BY createdAt, id
   `).all(projectId) as BatchProductionRow[];
 }
