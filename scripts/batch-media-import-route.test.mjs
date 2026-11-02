@@ -15,5 +15,7 @@ assert.match(route, /MAX_FILE_BYTES/);
 assert.match(route, /rm\(/);
 assert.match(route, /不支持|MP4|MOV|AVI|WebM/);
 assert.match(route, /BATCH_NO_STORE_HEADERS/);
+assert.match(route, /readRuntimeConfig\(\)\.mode === 'server'/);
+assert.ok(route.indexOf('return controlledUploadRequired()') < route.indexOf('request.formData()'), 'server guard 必须先于整批 formData 解析');
 
 console.log('batch media import route contract tests passed');

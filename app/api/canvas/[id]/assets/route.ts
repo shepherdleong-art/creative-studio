@@ -6,6 +6,8 @@ import { canvasStorageRoot, importCanvasAsset } from '@/lib/creative-canvas/asse
 import { requireCanvas } from '@/lib/creative-canvas/repository';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { controlledUploadRequired } from '@/lib/team-service/transfers/controlled-transfer';
 
 
 export const runtime = 'nodejs';
@@ -15,6 +17,7 @@ async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  if (readRuntimeConfig().mode === 'server') return controlledUploadRequired();
   try {
     await assertCanvasApiReady();
     const { id } = await params;

@@ -224,6 +224,13 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/health/live': 'GET',
   '/api/team/health/ready': 'GET',
   '/api/team/files/[id]': 'GET',
+  '/api/team/uploads': 'POST',
+  '/api/team/uploads/[id]': 'GET DELETE',
+  '/api/team/uploads/[id]/parts/[part]': 'PUT',
+  '/api/team/uploads/[id]/complete': 'POST',
+  '/api/team/devices': 'GET POST',
+  '/api/team/downloads': 'GET',
+  '/api/team/downloads/receipts': 'POST',
   '/api/team/models': 'GET',
   '/api/team/public-resources': 'POST',
   '/api/team/users': 'GET POST',
@@ -251,6 +258,10 @@ const AUTHENTICATED = new Set([
   '/api/canvas/models GET', '/api/final-edit/capabilities GET',
   '/api/system-fonts GET', '/api/packaging/system-fonts GET', '/api/team/models GET',
   '/api/team/files/[id] GET', '/api/images/[...path] GET', '/api/videos/[...path] GET',
+  '/api/team/uploads POST', '/api/team/uploads/[id] GET', '/api/team/uploads/[id] DELETE',
+  '/api/team/uploads/[id]/parts/[part] PUT', '/api/team/uploads/[id]/complete POST',
+  '/api/team/devices GET', '/api/team/devices POST', '/api/team/downloads GET', '/api/team/downloads/receipts POST',
+  '/api/upload POST', '/api/batch-production/assets/import POST', '/api/canvas/[id]/assets POST',
 ]);
 const ADMIN_PREFIXES = ['/api/providers', '/api/team/users'];
 const ADMIN = new Set([
@@ -265,7 +276,7 @@ const ADMIN = new Set([
 ]);
 const SERVER_DISABLED = new Set([
   '/api/packaging/templates/[...path] GET',
-  '/api/packaging/system-fonts/select POST', '/api/projects/[id]/script-studio/import-directory POST',
+  '/api/packaging/system-fonts/select POST',
   '/api/packaging/user-font GET', '/api/packaging/user-font POST', '/api/packaging/user-font DELETE',
   '/api/providers/tts/[id]/preview POST',
   '/api/final-edit-jobs/[id]/reveal POST', '/api/final-edit-jobs/[id]/publish-original POST',

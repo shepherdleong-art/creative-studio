@@ -12,6 +12,8 @@ import {
 import { validateUploadedImageBuffer } from '@/lib/image-upload-validation';
 import { registerManagedFile, requireAccessContext } from '@/lib/media-core/access-context';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { controlledUploadRequired } from '@/lib/team-service/transfers/controlled-transfer';
 
 
 /** Allowed image MIME types and their extensions. */
@@ -51,6 +53,7 @@ function detectMimeByMagic(buffer: Buffer): string | null {
 }
 
 async function __teamRoutePOST(request: NextRequest) {
+  if (readRuntimeConfig().mode === 'server') return controlledUploadRequired();
   let currentFilePaths: string[] = [];
   try {
     const formData = await request.formData();

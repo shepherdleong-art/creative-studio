@@ -19,6 +19,7 @@ import { createExecutionJournal } from '../media-core/execution/journal.ts';
 import type { ExecutionRuntime } from '../media-core/execution/context.ts';
 import type { ServerRuntimeConfig } from './config.ts';
 import { checkTeamServiceReadiness } from './readiness.ts';
+import { recoverTeamUploads } from './transfers/uploads.ts';
 import {
   initializeTeamRuntimeState,
   markTeamRuntimeFailed,
@@ -194,6 +195,7 @@ export function createTeamServiceBootstrap(options: {
     setTeamRuntimePhase('recovering', { ready: false, maintenance: true });
     try {
       for (const lifecycle of modules) await lifecycle.recover(context);
+      await recoverTeamUploads(options.db, { storageRoot: path.join(options.config.dataRoot, 'storage') });
       stage = 3;
       setTeamRuntimePhase('recovered', { ready: false, maintenance: true });
     } catch (error) {

@@ -232,6 +232,86 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
       );
     `,
   },
+  {
+    version: 7,
+    sql: `
+      CREATE TABLE team_uploads (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        deviceId TEXT,
+        targetResourceType TEXT NOT NULL,
+        targetResourceId TEXT NOT NULL,
+        usage TEXT NOT NULL,
+        relativeName TEXT NOT NULL,
+        mimeType TEXT NOT NULL,
+        expectedSize INTEGER NOT NULL CHECK(expectedSize > 0),
+        expectedSha256 TEXT NOT NULL CHECK(length(expectedSha256) = 64),
+        sourceFingerprint TEXT NOT NULL,
+        partSize INTEGER NOT NULL CHECK(partSize > 0),
+        idempotencyKey TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('receiving', 'validating', 'staged', 'ready', 'cancelled', 'failed')),
+        fileId TEXT NOT NULL UNIQUE,
+        resultResourceType TEXT,
+        resultResourceId TEXT,
+        errorCode TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        completedAt TEXT,
+        FOREIGN KEY (userId) REFERENCES team_users(id),
+        FOREIGN KEY (targetResourceType, targetResourceId) REFERENCES team_resource_scopes(resourceType, resourceId),
+        UNIQUE(userId, idempotencyKey)
+      );
+      CREATE INDEX idx_team_uploads_user_state ON team_uploads(userId, state, updatedAt);
+      CREATE INDEX idx_team_uploads_target ON team_uploads(targetResourceType, targetResourceId);
+
+      CREATE TABLE team_upload_parts (
+        uploadId TEXT NOT NULL,
+        partNumber INTEGER NOT NULL CHECK(partNumber > 0),
+        byteSize INTEGER NOT NULL CHECK(byteSize > 0),
+        sha256 TEXT NOT NULL CHECK(length(sha256) = 64),
+        state TEXT NOT NULL CHECK(state IN ('ready')),
+        createdAt TEXT NOT NULL,
+        PRIMARY KEY (uploadId, partNumber),
+        FOREIGN KEY (uploadId) REFERENCES team_uploads(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE team_devices (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        deploymentId TEXT NOT NULL,
+        clientDeviceId TEXT NOT NULL,
+        displayName TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        subscriptionCursor INTEGER NOT NULL CHECK(subscriptionCursor >= 0),
+        createdAt TEXT NOT NULL,
+        lastSeenAt TEXT NOT NULL,
+        revokedAt TEXT,
+        FOREIGN KEY (userId) REFERENCES team_users(id) ON DELETE CASCADE,
+        UNIQUE(deploymentId, userId, clientDeviceId)
+      );
+      CREATE INDEX idx_team_devices_user ON team_devices(userId, revokedAt, lastSeenAt);
+
+      CREATE TABLE team_download_receipts (
+        userId TEXT NOT NULL,
+        deviceId TEXT NOT NULL,
+        fileId TEXT NOT NULL,
+        artifactVersion INTEGER NOT NULL CHECK(artifactVersion > 0),
+        state TEXT NOT NULL CHECK(state IN ('pending', 'downloading', 'completed', 'failed', 'suppressed')),
+        etag TEXT,
+        verifiedSha256 TEXT,
+        failureCode TEXT,
+        attemptCount INTEGER NOT NULL DEFAULT 0 CHECK(attemptCount >= 0),
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        completedAt TEXT,
+        PRIMARY KEY (userId, deviceId, fileId),
+        FOREIGN KEY (userId) REFERENCES team_users(id) ON DELETE CASCADE,
+        FOREIGN KEY (deviceId) REFERENCES team_devices(id) ON DELETE CASCADE,
+        FOREIGN KEY (fileId) REFERENCES team_files(id)
+      );
+      CREATE INDEX idx_team_download_receipts_device ON team_download_receipts(deviceId, state, updatedAt);
+    `,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;
@@ -258,6 +338,7 @@ function validateTeamServiceSchema(db: Database.Database): void {
     'team_resource_scopes', 'team_task_principals', 'team_font_favorites', 'team_files', 'team_file_references',
     'team_lifecycle_events', 'team_lifecycle_event_scopes', 'team_lifecycle_barriers',
     'team_backup_pins', 'team_cleanup_jobs', 'team_cleanup_files',
+    'team_uploads', 'team_upload_parts', 'team_devices', 'team_download_receipts',
   ]) {
     if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table)) {
       throw new Error(`team-service 缺少 ${table} 结构`);
