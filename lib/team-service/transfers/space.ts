@@ -52,8 +52,16 @@ export function createTeamTransferSpace(options: {
   return {
     probe: availableAfterReservations,
     async reserve(requiredBytes) {
-      await availableAfterReservations(requiredBytes);
+      if (!Number.isSafeInteger(requiredBytes) || requiredBytes < 0) {
+        throw new TransferError('invalid_input', '空间预检字节数无效。');
+      }
       reservedBytes += requiredBytes;
+      try {
+        await availableAfterReservations(0);
+      } catch (error) {
+        reservedBytes = Math.max(0, reservedBytes - requiredBytes);
+        throw error;
+      }
       let released = false;
       return {
         async release() {
