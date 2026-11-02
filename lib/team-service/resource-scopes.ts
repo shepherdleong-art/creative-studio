@@ -460,7 +460,7 @@ export function requireCanvasAccess(
 
 export function createTeamAccessContext(options: {
   db: Database.Database;
-  principal: AuthPrincipal;
+  principal: AuthPrincipal | AccessActor;
   allowDeleted?: boolean;
 }): ResourceAccessContext {
   const { db, principal } = options;

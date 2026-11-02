@@ -15,6 +15,8 @@ import {
   batchRouteErrorResponse,
 } from '../../batches/response';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { controlledUploadRequired } from '@/lib/team-service/transfers/controlled-transfer';
 
 
 export const runtime = 'nodejs';
@@ -68,6 +70,7 @@ async function stageUploadedFile(file: File, targetPath: string, signal: AbortSi
 
 /** 浏览器上传视频到项目素材库;落库为托管副本,不依赖浏览器提供绝对路径。 */
 async function __teamRoutePOST(request: NextRequest) {
+  if (readRuntimeConfig().mode === 'server') return controlledUploadRequired();
   const projectId = request.nextUrl.searchParams.get('projectId');
   if (!projectId) {
     return NextResponse.json({ error: 'missing_project_id', message: '缺少 projectId 参数' }, {

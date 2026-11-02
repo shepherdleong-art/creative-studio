@@ -236,7 +236,10 @@ export async function createCanvasExport(params: CreateCanvasExportParams): Prom
         registerManagedFile({
           absolutePath: absoluteZipPath,
           mimeType: 'application/zip',
-          references: [{ resourceType: 'canvas_export', resourceId: exportId, role: 'export', pinKind: 'export' }],
+          references: [
+            { resourceType: 'canvas_export', resourceId: exportId, role: 'export', pinKind: 'export' },
+            { resourceType: 'canvas_export', resourceId: exportId, role: 'delivery', pinKind: 'export' },
+          ],
         });
       }
     });

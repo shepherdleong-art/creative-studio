@@ -291,7 +291,10 @@ export function withTeamRoute<T>(route: string, method: string, handler: T): T &
     }
     const policy = teamRoutePolicy(route, method);
     if (policy.category === 'server_disabled' || policy.category === 'local_only') {
-      return Response.json({ error: 'not_found', message: '入口不存在。' }, {
+      const transferEndpoint = policy.category === 'server_disabled'
+        ? policy.route.includes('reveal') || policy.route.includes('publish-original') ? '/api/team/downloads' : '/api/team/uploads'
+        : undefined;
+      return Response.json({ error: 'not_found', message: '入口不存在，请使用受控传输。', transferEndpoint }, {
         status: 404,
         headers: { 'Cache-Control': 'no-store' },
       });

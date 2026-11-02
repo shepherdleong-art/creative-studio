@@ -295,17 +295,13 @@ try {
   db.exec('DROP TRIGGER fail_batch_principal');
 
   const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: { r: 20, g: 30, b: 40 } } }).png().toBuffer();
+  const imageCountBefore = db.prepare('SELECT COUNT(*) FROM image_assets').pluck().get();
   const upload = await uploadRoute.POST(uploadRequest(userA.cookie, png));
-  const uploadBody = await upload.text();
-  assert.equal(upload.status, 200, uploadBody);
-  const uploadedId = (JSON.parse(uploadBody) as { files: Array<{ id: string }> }).files[0]!.id;
-  assert.equal(assertScopeConsistency(db, 'image', uploadedId).ownerUserId, userA.principal.userId);
-  db.exec(`CREATE TRIGGER fail_upload_scope BEFORE INSERT ON team_resource_scopes WHEN NEW.resourceType = 'image' BEGIN SELECT RAISE(ABORT, 'injected upload scope failure'); END;`);
-  const uploadRollback = await uploadRoute.POST(uploadRequest(userA.cookie, png));
-  assert.equal(uploadRollback.status, 500);
-  const inputDirectory = path.join(fixtureRoot, 'storage', 'originals', 'inputs');
-  assert.equal(fs.readdirSync(inputDirectory).filter((file) => file.endsWith('.png')).length, 1);
-  db.exec('DROP TRIGGER fail_upload_scope');
+  const uploadBody = await upload.json() as { error?: string; uploadEndpoint?: string };
+  assert.equal(upload.status, 409);
+  assert.equal(uploadBody.error, 'controlled_upload_required');
+  assert.equal(uploadBody.uploadEndpoint, '/api/team/uploads');
+  assert.equal(db.prepare('SELECT COUNT(*) FROM image_assets').pluck().get(), imageCountBefore, '旧 multipart 拒绝前不得创建图片实体');
 
   console.log('team atomic creation tests passed');
 } finally {
