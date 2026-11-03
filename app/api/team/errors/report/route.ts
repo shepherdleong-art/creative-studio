@@ -29,7 +29,7 @@ async function __teamRoutePOST(request: Request): Promise<Response> {
       operationId: typeof body.operationId === 'string' ? body.operationId : undefined,
       attemptId: typeof body.attemptId === 'string' ? body.attemptId : undefined,
     }, {
-      clientVersion: request.headers.get('x-creative-studio-client-version')?.slice(0, 80) || undefined,
+      clientVersion: request.headers.get('x-creative-studio-client-version') || undefined,
       serverReleaseId: process.env.CREATIVE_STUDIO_SERVER_RELEASE_ID?.trim() || 'unknown',
     });
     return Response.json(result, { status: 201, headers: { 'Cache-Control': 'no-store' } });
