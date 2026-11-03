@@ -244,6 +244,11 @@ try {
     { headers: { Cookie: userA.cookie } },
   ));
   assert.equal(duplicateProjectQuery.status, 403);
+  const duplicateProjectQueryAfterAuthorizedValues = await batchProductionsRoute.GET(new NextRequest(
+    'https://studio.example.test/api/batch-production/batches?projectId=project-a&projectId=project-a&projectId=project-b',
+    { headers: { Cookie: userA.cookie } },
+  ));
+  assert.equal(duplicateProjectQueryAfterAuthorizedValues.status, 403, '重复 query 必须逐值授权，不能在前面的同主体值后停止');
 
   const canvasCopy = await canvasCopiesRoute.POST(write('https://studio.example.test/api/canvas/canvas-a/copies', userA.cookie, {
     sourceCanvasId: 'canvas-a', snapshotKey: 'copy-with-result', nodes: copyGraph.nodes, edges: [],

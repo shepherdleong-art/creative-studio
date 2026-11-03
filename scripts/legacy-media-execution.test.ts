@@ -26,7 +26,8 @@ const [{ getDb, closeDb }, { startTeamServiceRuntime, drainTeamRuntime, releaseT
   import('../lib/video-queue.ts'),
   import('../lib/video-providers/index.ts'),
 ]);
-const { configureLegacyMediaProviderPool } = await import('../lib/legacy-media-execution.ts');
+const { configureLegacyMediaProviderPool, legacyMediaProviderPoolKey } = await import('../lib/legacy-media-execution.ts');
+const { createLegacyMediaLifecycle } = await import('../lib/legacy-media-lifecycle.ts');
 const { updateActorPolicy } = await import('../lib/media-core/execution/pools.ts');
 
 const runtime = await startTeamServiceRuntime();
@@ -143,6 +144,12 @@ const fake = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'POST' && ['/fair-a/v1/images/edits', '/fair-b/v1/images/edits', '/lifecycle-deferred/v1/images/edits'].includes(req.url ?? '')) {
+    req.resume();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+    return;
+  }
   if (req.method === 'POST' && req.url === '/packy-terminal/v1/images/edits') {
     req.resume();
     res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -157,6 +164,26 @@ const address = fake.address() as { port: number };
 const baseUrl = `http://127.0.0.1:${address.port}`;
 
 try {
+  provider('lifecycle-deferred-image', 'openai-compatible', `${baseUrl}/lifecycle-deferred`);
+  configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/lifecycle-deferred`, apiKey: 'shared-secret', capacity: 1 });
+  member('member-lifecycle-deferred');
+  project('project-lifecycle-deferred', 'member-lifecycle-deferred', 'lifecycle-deferred-image');
+  imageJob('job-lifecycle-deferred', 'project-lifecycle-deferred', 'member-lifecycle-deferred', 'lifecycle-deferred-image');
+  db.prepare("UPDATE jobs SET status = 'deferred' WHERE id = 'job-lifecycle-deferred'").run();
+  const deferredLifecycle = createLegacyMediaLifecycle();
+  const lifecycleContext = {
+    deploymentId: 'legacy-media-test', instanceId: 'legacy-media-test-instance', fence: 1,
+    signal: new AbortController().signal,
+  };
+  deferredLifecycle.start(lifecycleContext);
+  const lifecycleDeadline = Date.now() + 2_000;
+  while (Date.now() < lifecycleDeadline
+    && db.prepare("SELECT status FROM jobs WHERE id = 'job-lifecycle-deferred'").pluck().get() !== 'succeeded') await sleep(20);
+  assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-lifecycle-deferred'").pluck().get() as string), 'succeeded',
+    'server lifecycle 必须重新发现并领取持久 deferred 任务');
+  await deferredLifecycle.drain?.(lifecycleContext);
+  console.log('legacy media lifecycle deferred recovery test passed');
+
   const sharedPoolKey = configureLegacyMediaProviderPool({ baseUrl, apiKey: 'shared-secret', capacity: 1 });
   provider('shared-image', 'openai-compatible', baseUrl);
   videoProvider('shared-video', 'openai-video', baseUrl);
@@ -185,6 +212,11 @@ try {
   assert.equal((db.prepare("SELECT attempt FROM jobs WHERE id = 'job-shared-image'").pluck().get() as number), 1);
   assert.equal((db.prepare("SELECT attempt FROM video_jobs WHERE id = 'job-shared-video'").pluck().get() as number), 0,
     '等待共享池名额不得增加视频业务 attempt');
+  assert.equal((db.prepare("SELECT status FROM video_jobs WHERE id = 'job-shared-video'").pluck().get() as string), 'deferred',
+    '视频等待必须持久 deferred 并释放编排领取，而不是占 worker 循环 admit');
+  assert.equal((db.prepare(`SELECT COUNT(*) FROM execution_attempts a
+    JOIN execution_operations o ON o.id = a.operationId WHERE o.taskId = 'job-shared-video'`).pluck().get() as number), 0,
+  '跨模块 deferred 不得创建 execution attempt 或费用预留');
   releaseImage();
   await imageRun;
   await videoRun;
@@ -226,6 +258,7 @@ try {
   console.log('legacy media directed-admission test passed');
 
   provider('terminal-image', 'openai-compatible', `${baseUrl}/terminal`);
+  configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/terminal`, apiKey: 'shared-secret' });
   member('member-terminal');
   project('project-terminal', 'member-terminal', 'terminal-image');
   imageJob('job-terminal', 'project-terminal', 'member-terminal', 'terminal-image');
@@ -247,6 +280,7 @@ try {
   assert.equal(terminalOperation.status, 'failed', '业务终态必须保留失败台账');
 
   provider('terminal-packy', 'packy-images', `${baseUrl}/packy-terminal`);
+  configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/packy-terminal`, apiKey: 'shared-secret' });
   imageJob('job-terminal-packy', 'project-terminal', 'member-terminal', 'terminal-packy');
   db.prepare("UPDATE jobs SET maxAttempts = 1 WHERE id = 'job-terminal-packy'").run();
   await queue.runQueue({
@@ -321,6 +355,7 @@ try {
   console.log('legacy media accepted-recovery and download-only test passed');
 
   provider('sync-url-image', 'openai-compatible', `${baseUrl}/sync-url`);
+  configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/sync-url`, apiKey: 'shared-secret' });
   member('member-sync-url');
   project('project-sync-url', 'member-sync-url', 'sync-url-image');
   imageJob('job-sync-url', 'project-sync-url', 'member-sync-url', 'sync-url-image');
@@ -379,6 +414,76 @@ try {
   assert.equal(frozenRecovery.status, 'needs_check', frozenRecovery.errorMessage);
   assert.match(frozenRecovery.errorMessage, /配置|凭据/, '无凭据版本解析设施时必须明确 fail closed');
   console.log('legacy media frozen-provider recovery test passed');
+
+  provider('missing-pool-image', 'openai-compatible', `${baseUrl}/missing-pool`);
+  member('member-missing-pool');
+  project('project-missing-pool', 'member-missing-pool', 'missing-pool-image');
+  imageJob('job-missing-pool', 'project-missing-pool', 'member-missing-pool', 'missing-pool-image');
+  await queue.runQueue({ projectId: 'project-missing-pool', concurrency: 1, maxAttempts: 2, timeoutMs: 60_000 });
+  assert.equal(imageRequests.filter((url) => url.includes('/missing-pool/')).length, 0,
+    '缺少显式受控池时必须在 POST 前 fail closed');
+  assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-missing-pool'").pluck().get() as string), 'failed');
+  assert.equal((db.prepare("SELECT attempt FROM jobs WHERE id = 'job-missing-pool'").pluck().get() as number), 0,
+    '缺池不得消耗业务 attempt');
+  assert.equal((db.prepare(`SELECT COUNT(*) FROM execution_pools WHERE mappingSnapshotJson LIKE '%/missing-pool%'`)
+    .pluck().get() as number), 0, '缺池不得自动启用容量 10');
+  console.log('legacy media missing-pool fail-closed test passed');
+
+  provider('unverified-pool-image', 'openai-compatible', `${baseUrl}/unverified-pool`);
+  member('member-unverified-pool');
+  project('project-unverified-pool', 'member-unverified-pool', 'unverified-pool-image');
+  imageJob('job-unverified-pool', 'project-unverified-pool', 'member-unverified-pool', 'unverified-pool-image');
+  db.prepare(`INSERT INTO execution_pools (poolKey, kind, capacity, enabled, mappingSnapshotJson, version, updatedAt)
+    VALUES (?, 'remote', 10, 1, '{}', 1, ?)`)
+    .run(legacyMediaProviderPoolKey(`${baseUrl}/unverified-pool`, 'shared-secret'), new Date().toISOString());
+  await queue.runQueue({ projectId: 'project-unverified-pool', concurrency: 1, maxAttempts: 2, timeoutMs: 60_000 });
+  assert.equal(imageRequests.filter((url) => url.includes('/unverified-pool/')).length, 0,
+    '既有池映射未核验时也必须 fail closed');
+  assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-unverified-pool'").pluck().get() as string), 'failed');
+  assert.equal((db.prepare("SELECT attempt FROM jobs WHERE id = 'job-unverified-pool'").pluck().get() as number), 0);
+  console.log('legacy media unverified-pool fail-closed test passed');
+
+  const fairnessPool = configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/fair-a`, apiKey: 'shared-secret', capacity: 1 });
+  configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/fair-b`, apiKey: 'shared-secret', capacity: 1 });
+  member('member-fair');
+  provider('fair-image-a', 'openai-compatible', `${baseUrl}/fair-a`);
+  provider('fair-image-b', 'openai-compatible', `${baseUrl}/fair-b`);
+  project('project-fair', 'member-fair', 'fair-image-a');
+  imageJob('job-fair-a', 'project-fair', 'member-fair', 'fair-image-a');
+  imageJob('job-fair-b', 'project-fair', 'member-fair', 'fair-image-b');
+  const blocker = getTeamExecutionFacade().enqueue({
+    operationKey: 'image/fairness-blocker/submit/r0', actor: { userId: 'member-image' },
+    scope: { resourceType: 'project', resourceId: 'project-image' },
+    module: 'image', taskId: 'fairness-blocker', step: 'submit', inputRevision: 'r0',
+    businessAttempt: { id: 'fairness-blocker:r0', number: 1 },
+    inputSnapshot: { taskId: 'fairness-blocker' }, inputHash: 'fairness-blocker',
+    continuationKey: 'legacy-image.submit', providerSnapshot: { providerId: 'fair-image-a' },
+    requiredPools: [fairnessPool], quote: { kind: 'unpriced' },
+  });
+  const blockerAdmission = getTeamExecutionFacade().admit({
+    instanceId: 'legacy-media-test-instance', fence: 1, operationId: blocker.operation.id,
+  });
+  assert.equal(blockerAdmission.kind, 'admitted');
+  if (blockerAdmission.kind !== 'admitted') throw new Error('fairness blocker must hold the pool');
+  const fairRun = queue.runQueue({ projectId: 'project-fair', concurrency: 1, maxAttempts: 2, timeoutMs: 60_000 });
+  const fairDeadline = Date.now() + 2_000;
+  while (Date.now() < fairDeadline
+    && db.prepare("SELECT status FROM jobs WHERE id = 'job-fair-b'").pluck().get() !== 'succeeded') await sleep(20);
+  assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-fair-b'").pluck().get() as string), 'succeeded',
+    'A 等待不可用一个池时，B 的首步必须能领取并准入另一个池');
+  assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-fair-a'").pluck().get() as string), 'deferred');
+  assert.equal((db.prepare("SELECT attempt FROM jobs WHERE id = 'job-fair-a'").pluck().get() as number), 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) FROM execution_attempts WHERE operationId = ?`)
+    .pluck().get(db.prepare("SELECT id FROM execution_operations WHERE taskId = 'job-fair-a'").pluck().get()) as number), 0,
+  'deferred 等待不得创建 execution attempt 或预留预算');
+  await getTeamExecutionFacade().settle({
+    attemptId: blockerAdmission.grant.attempt.id, outcome: 'not_created', actualCost: null, remoteTerminal: true,
+  });
+  await fairRun;
+  assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-fair-a'").pluck().get() as string), 'succeeded');
+  assert.equal(imageRequests.filter((url) => url === '/fair-a/v1/images/edits').length, 1);
+  assert.equal(imageRequests.filter((url) => url === '/fair-b/v1/images/edits').length, 1);
+  console.log('legacy media persistent-deferred fairness test passed');
 } finally {
   releaseImage();
   await drainTeamRuntime(5_000);

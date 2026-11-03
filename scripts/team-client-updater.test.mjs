@@ -13,6 +13,7 @@ const {
   extractZipSafely,
   ClientUpdateCoordinator,
 } = require('../dist-desktop/client/index.js');
+const { atomicJson } = require('../dist-desktop/client/atomic-json.js');
 
 const ORIGIN = 'https://studio.example.test';
 const roots = [];
@@ -129,6 +130,7 @@ function runtime(root, options = {}) {
       pauseTransfers: async () => { events.push('pause'); },
       resumeTransfers: async () => { events.push('resume'); },
       stopCurrent: async () => { events.push('stop-old'); if (options.stopOldError) throw options.stopOldError; },
+      stopVersion: async (releaseId) => { events.push(`stop-${releaseId}`); },
       startVersion: async ({ releaseId, transfersEnabled }) => {
         events.push(`start-${releaseId}`);
         if (options.startError && releaseId !== 'old') throw options.startError;
@@ -152,6 +154,17 @@ function current(root) {
 }
 
 try {
+  {
+    const root = tempRoot();
+    const filePath = path.join(root, 'state', 'atomic.json');
+    atomicJson(filePath, { value: 1 });
+    atomicJson(filePath, { value: 2 });
+    const bytes = fs.readFileSync(filePath);
+    assert.equal(bytes[0], '{'.charCodeAt(0), '共享 atomicJson 必须写无 BOM JSON');
+    assert.deepEqual(JSON.parse(bytes.toString('utf8')), { value: 2 }, '共享 atomicJson 必须原子替换既有状态');
+    assert.deepEqual(fs.readdirSync(path.dirname(filePath)), ['atomic.json'], '成功发布后不得遗留临时文件');
+  }
+
   const goodPackage = packageFor('new');
   const good = manifest('new', goodPackage);
   assert.equal(verifyUpdateManifest(good, publicPem, {
@@ -216,6 +229,42 @@ try {
     packages: [[good.packageUrl, goodPackage]],
     stopOldError: new Error('EBUSY'), resume: true,
   }));
+
+  async function postStopFailureCase(name, shouldFailRename, expectStopNew = false) {
+    const root = tempRoot();
+    initialInstallation(root);
+    const { coordinator, events } = runtime(root, {
+      manifests: [[`${ORIGIN}/client-updates/stable.json`, good]],
+      packages: [[good.packageUrl, goodPackage]],
+    });
+    const originalRename = fs.renameSync;
+    fs.renameSync = function (source, destination) {
+      if (shouldFailRename(root, source, destination)) throw new Error(`${name} fixture`);
+      return originalRename.call(fs, source, destination);
+    };
+    let result;
+    try { result = await coordinator.applyFromUrl(`${ORIGIN}/client-updates/stable.json`); }
+    finally { fs.renameSync = originalRename; }
+    assert.equal(result.status, 'rolled_back', name);
+    assert.equal(current(root).releaseId, 'old', name);
+    assert.ok(events.includes('start-old'), `${name}: 失败后必须重启已验证旧版`);
+    if (expectStopNew) assert.ok(events.indexOf('stop-new') < events.indexOf('start-old'), `${name}: 回滚前必须停止可能的新进程`);
+    assert.ok(events.indexOf('health-old') > events.indexOf('start-old'), `${name}: 旧版必须重新健康确认`);
+    assert.equal(events.at(-1), 'resume', `${name}: 只有旧版健康后才恢复传输`);
+    assert.equal(fs.readFileSync(path.join(root, 'client-state', 'state.json'), 'utf8'), '{"schemaVersion":1,"owner":"old"}\n');
+    assert.equal(fs.readFileSync(path.join(root, 'client-state', 'downloads', 'keep.bin'), 'utf8'), 'keep');
+    assert.equal(fs.readFileSync(path.join(root, 'client-state', 'accounts', 'a', 'downloads', 'keep.bin'), 'utf8'), 'account-keep');
+  }
+  await postStopFailureCase('snapshot publication failure', (root, source, destination) =>
+    destination === path.join(root, 'updates', 'snapshots', 'new') && String(source).includes('.tmp'));
+  await postStopFailureCase('pointer publication failure', (root, source, destination) =>
+    destination === path.join(root, 'current.json') && String(source).includes('.tmp'));
+  let journalPublishes = 0;
+  await postStopFailureCase('post-pointer journal failure', (root, source, destination) => {
+    if (destination !== path.join(root, 'updates', 'new.json') || !String(source).includes('.tmp')) return false;
+    journalPublishes += 1;
+    return journalPublishes === 2;
+  }, true);
 
   async function rollbackCase(name, health, expectedStatus) {
     const root = tempRoot();

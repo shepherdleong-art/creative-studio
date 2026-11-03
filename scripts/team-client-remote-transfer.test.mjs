@@ -24,10 +24,29 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+function persistedTransfer(stateRoot, id) {
+  const pending = [path.join(stateRoot, 'accounts')];
+  while (pending.length) {
+    const directory = pending.pop();
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) pending.push(target);
+      else if (entry.name === 'transfers.json') {
+        const record = JSON.parse(fs.readFileSync(target, 'utf8')).transfers.find((item) => item.id === id);
+        if (record) return record;
+      }
+    }
+  }
+  throw new Error(`missing persisted transfer ${id}`);
+}
+
 const requests = [];
 let account = 'user-a';
 let authenticated = true;
 let firstPart = true;
+let fileDownloads = 0;
+let receiptAttempts = 0;
+let failNextReceipt = true;
 let releaseFirstPart = deferred();
 const session = {
   cookies: {
@@ -69,9 +88,17 @@ const session = {
       return Response.json({ items: [{ manifest: downloadManifest, deliveryState: 'pending' }], nextCursor: 1 });
     }
     if (pathname === '/api/team/files/file-a') {
+      fileDownloads += 1;
       return new Response(downloadPayload, { status: 200, headers: { etag: 'etag-a' } });
     }
-    if (pathname === '/api/team/downloads/receipts') return Response.json({ state: 'completed' });
+    if (pathname === '/api/team/downloads/receipts') {
+      receiptAttempts += 1;
+      if (failNextReceipt) {
+        failNextReceipt = false;
+        return Response.json({ error: 'temporary' }, { status: 500 });
+      }
+      return Response.json({ state: 'completed' });
+    }
     throw new Error(`unexpected request ${options.method ?? 'GET'} ${pathname}`);
   },
 };
@@ -115,11 +142,20 @@ try {
 
   await controller.syncDeliveries();
   await controller.waitForIdle();
+  const downloads = controller.listTransfers().filter((item) => item.kind === 'download');
+  assert.equal(downloads.length, 1);
+  const downloadId = downloads[0].id;
+  assert.equal(controller.listTransfers().find((item) => item.id === downloadId).state, 'failed',
+    '已发布文件的回执失败应保留可重试状态');
+  const downloadsBeforeReceiptRetry = fileDownloads;
+  controller.resumeTransfer(downloadId);
+  await controller.waitForIdle();
+  assert.equal(fileDownloads, downloadsBeforeReceiptRetry, '回执重试不得重新下载已完整发布的文件');
+  assert.equal(receiptAttempts, 2, '回执重试只需补交回执');
   await controller.syncDeliveries();
   await controller.waitForIdle();
-  const downloads = controller.listTransfers().filter((item) => item.kind === 'download');
-  assert.equal(downloads.length, 1, '设备清单重放不得创建重复下载');
-  const downloadId = downloads[0].id;
+  assert.equal(controller.listTransfers().filter((item) => item.kind === 'download').length, 1,
+    '设备清单重放不得创建重复下载');
   const download = controller.listTransfers().find((item) => item.id === downloadId);
   assert.equal(download.state, 'ready');
   assert.equal(await controller.revealDownload(downloadId), true);
@@ -127,6 +163,22 @@ try {
   assert.ok(path.resolve(revealed[0]).startsWith(path.resolve(root) + path.sep));
   await assert.rejects(() => controller.revealDownload(path.join(root, 'source.bin')), /download|下载|受管/);
   await assert.rejects(() => controller.revealDownload('unknown-download'), /download|下载|受管/);
+
+  downloadManifest.version = 2;
+  failNextReceipt = true;
+  await controller.syncDeliveries();
+  await controller.waitForIdle();
+  const mismatchedId = controller.listTransfers().find((item) => item.kind === 'download' && item.state === 'failed').id;
+  const mismatchedRecord = persistedTransfer(path.join(root, 'client-state'), mismatchedId);
+  fs.writeFileSync(mismatchedRecord.localPath, 'tampered');
+  const downloadsBeforeMismatch = fileDownloads;
+  const receiptsBeforeMismatch = receiptAttempts;
+  controller.resumeTransfer(mismatchedId);
+  await controller.waitForIdle();
+  assert.equal(controller.listTransfers().find((item) => item.id === mismatchedId).state, 'failed');
+  assert.equal(fs.readFileSync(mismatchedRecord.localPath, 'utf8'), 'tampered', '内容不符的既有文件不得被覆盖');
+  assert.equal(fileDownloads, downloadsBeforeMismatch, '内容不符时不得重新下载或重渲染');
+  assert.equal(receiptAttempts, receiptsBeforeMismatch, '内容不符时不得补交错误回执');
 
   const clearsBeforeLogout = session.cacheClears;
   authenticated = false;

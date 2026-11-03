@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { atomicJson } from './atomic-json';
 import { extractZipSafely } from './safe-zip';
 import {
   rangeIncludes,
@@ -55,13 +56,6 @@ export interface UpdateResult {
   status: 'committed' | 'rejected' | 'rolled_back' | 'recovery_required';
   releaseId?: string;
   message?: string;
-}
-
-function atomicJson(filePath: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
-  fs.renameSync(temporary, filePath);
 }
 
 function message(error: unknown): string {
@@ -231,6 +225,7 @@ export class ClientUpdateCoordinator {
     let rollbackStarted = false;
     let previous: CurrentPointer | null = null;
     let snapshot = '';
+    let oldStopped = false;
     try {
       const manifest = await this.fetchManifest(manifestUrl);
       releaseId = manifest.releaseId;
@@ -261,6 +256,7 @@ export class ClientUpdateCoordinator {
 
       await this.pause();
       await this.options.processControl.stopCurrent();
+      oldStopped = true;
       snapshot = this.snapshot(releaseId);
       atomicJson(this.journalPath(releaseId), {
         schemaVersion: 1, phase: 'pointer_pending', previous, next: manifest, snapshot, committed: false,
@@ -326,10 +322,47 @@ export class ClientUpdateCoordinator {
       return { status: 'rolled_back', releaseId };
     } catch (error) {
       if (newProcess) await newProcess.stop().catch(() => undefined);
-      else if (pointerChanged) await this.options.processControl.stopVersion?.(releaseId!).catch(() => undefined);
-      if (pointerChanged && previous) atomicJson(this.pointerPath, previous);
+      else if (oldStopped && releaseId) await this.options.processControl.stopVersion?.(releaseId).catch(() => undefined);
+      if (rollbackStarted) {
+        if (staging) this.cleanupStaging(staging);
+        return { status: 'recovery_required', releaseId, message: message(error) };
+      }
+      if (pointerChanged && previous) {
+        try { atomicJson(this.pointerPath, previous); }
+        catch (pointerError) {
+          if (staging) this.cleanupStaging(staging);
+          return { status: 'recovery_required', releaseId, message: message(pointerError) };
+        }
+      }
+      if (oldStopped && previous) {
+        rollbackStarted = true;
+        let oldProcess: VersionProcess | null = null;
+        try {
+          if (!this.compatible(previous.manifest, this.failedHealth())) {
+            return { status: 'recovery_required', releaseId, message: '当前状态与旧版不兼容，已停止业务传输并保留现场。' };
+          }
+          if (snapshot) this.restoreSnapshot(snapshot);
+          oldProcess = await this.options.processControl.startVersion({
+            releaseId: previous.releaseId,
+            directory: path.join(this.rootDir, previous.directory),
+            stateRoot: this.stateRoot,
+            transfersEnabled: false,
+          });
+          const oldHealth = await oldProcess.waitForHealth();
+          if (!oldHealth.healthy || !this.compatible(previous.manifest, oldHealth)) {
+            await oldProcess.stop();
+            return { status: 'recovery_required', releaseId, message: '旧版本健康确认失败，已保留快照和下载。' };
+          }
+          await this.resume();
+          if (staging) this.cleanupStaging(staging);
+          return { status: 'rolled_back', releaseId, message: message(error) };
+        } catch (rollbackError) {
+          if (oldProcess) await oldProcess.stop().catch(() => undefined);
+          if (staging) this.cleanupStaging(staging);
+          return { status: 'recovery_required', releaseId, message: message(rollbackError) };
+        }
+      }
       if (staging) this.cleanupStaging(staging);
-      if (rollbackStarted) return { status: 'recovery_required', releaseId, message: message(error) };
       return this.rejected(releaseId, error, this.paused && !pointerChanged);
     }
   }

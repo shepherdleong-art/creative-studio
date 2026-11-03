@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Session } from 'electron';
+import { atomicJson } from './atomic-json';
 
 export interface TeamFileDownloadManifest {
   fileId: string;
@@ -91,13 +92,6 @@ function hashFile(filePath: string): string {
   const hash = createHash('sha256');
   updateHashWithFile(hash, filePath);
   return hash.digest('hex');
-}
-
-function atomicJson(filePath: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
-  fs.renameSync(temporary, filePath);
 }
 
 function emptyAccount(): AccountState {
@@ -473,6 +467,23 @@ export class RemoteTransferController {
   private async runDownload(record: TransferRecord): Promise<void> {
     const manifest = record.manifest!;
     const abort = this.aborts.get(record.id)!;
+    const receipt = async (): Promise<void> => {
+      await this.request('/api/team/downloads/receipts', {
+        method: 'POST', signal: abort.signal, headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: await this.serverDeviceId(abort.signal), fileId: manifest.fileId,
+          artifactVersion: manifest.version, state: 'completed', etag: manifest.etag, verifiedSha256: manifest.sha256,
+        }),
+      });
+    };
+    if (fs.existsSync(record.localPath!)) {
+      if (fs.statSync(record.localPath!).size !== manifest.size || hashFile(record.localPath!) !== manifest.sha256) {
+        throw new Error('既有交付文件与当前版本清单不符，拒绝覆盖');
+      }
+      await receipt();
+      record.state = 'ready';
+      return;
+    }
     fs.mkdirSync(path.dirname(record.partPath!), { recursive: true });
     let offset = fs.existsSync(record.partPath!) ? fs.statSync(record.partPath!).size : 0;
     if (offset > manifest.size) { fs.rmSync(record.partPath!); offset = 0; }
@@ -503,13 +514,7 @@ export class RemoteTransferController {
     if (total !== manifest.size || hash.digest('hex') !== manifest.sha256) throw new Error('下载哈希校验失败');
     fs.copyFileSync(record.partPath!, record.localPath!, fs.constants.COPYFILE_EXCL);
     fs.rmSync(record.partPath!);
-    await this.request('/api/team/downloads/receipts', {
-      method: 'POST', signal: abort.signal, headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        deviceId: await this.serverDeviceId(abort.signal), fileId: manifest.fileId,
-        artifactVersion: manifest.version, state: 'completed', etag: manifest.etag, verifiedSha256: manifest.sha256,
-      }),
-    });
+    await receipt();
     record.state = 'ready';
   }
 

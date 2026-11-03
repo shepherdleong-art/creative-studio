@@ -25,6 +25,7 @@ type RequestData = {
   params: Record<string, string | string[] | undefined>;
   query: URLSearchParams;
   body: unknown;
+  references: Array<{ resourceType: string; resourceId: string }>;
 };
 
 const ID_RESOURCES: Record<string, string> = {
@@ -145,7 +146,7 @@ async function requestData(request: Request, route: string, context?: RouteHandl
   }
   for (const [key, value] of query.entries()) scanReferences(route, { [key]: value }, references);
   scanReferences(route, body, references);
-  return { params, query, body };
+  return { params, query, body, references };
 }
 
 function primaryReference(policy: TeamRoutePolicy, data: RequestData): { resourceType: string; resourceId: string } | null {
@@ -232,18 +233,9 @@ async function authorizeResource(
 ): Promise<{ data: RequestData; primary: { resourceType: string; resourceId: string } | null }> {
   const db = getDb();
   const data = await requestData(request, policy.route, context);
-  const references: Array<{ resourceType: string; resourceId: string }> = [];
+  const references = [...data.references];
   const primary = primaryReference(policy, data);
   if (primary) references.push(primary);
-  const scanned: Array<{ resourceType: string; resourceId: string }> = [];
-  for (const [key, raw] of Object.entries(data.params)) {
-    const value = single(raw);
-    const resourceType = ID_RESOURCES[key];
-    if (value && resourceType) addReference(scanned, policy.route, key, resourceType, value);
-  }
-  for (const [key, value] of data.query.entries()) scanReferences(policy.route, { [key]: value }, scanned);
-  scanReferences(policy.route, data.body, scanned);
-  references.push(...scanned);
 
   if (policy.resource === 'upload') {
     const projectId = data.body && typeof data.body === 'object'
