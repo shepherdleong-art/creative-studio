@@ -269,6 +269,8 @@ export function acquireLifecycleBarrier(
   db.transaction(() => {
     const running = db.prepare("SELECT 1 FROM team_cleanup_jobs WHERE status = 'running' LIMIT 1").get();
     if (running) throw new ResourceAccessError('scope_inconsistent', '物理清理正在执行，暂不能建立维护屏障。', 409);
+    const active = db.prepare('SELECT 1 FROM team_lifecycle_barriers WHERE releasedAt IS NULL LIMIT 1').get();
+    if (active) throw new ResourceAccessError('scope_inconsistent', '已有维护屏障生效，不能并发进入发布、配置或备份临界区。', 409);
     db.prepare(`
       INSERT INTO team_lifecycle_barriers (id, kind, ownerUserId, metadataJson, createdAt)
       VALUES (?, ?, ?, ?, ?)

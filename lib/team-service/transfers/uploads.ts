@@ -9,6 +9,7 @@ import { runWithAccessContext, type AccessActor } from '../../media-core/access-
 import { assertNoStorageSymlink, resolveStoragePath } from '../../media-core/storage-path.ts';
 import { createTeamAccessContext, requireResourceAccess } from '../resource-scopes.ts';
 import { teamFileEtag, type TeamFileRecord } from '../files/index.ts';
+import { assertTeamPublicationAllowed } from '../lifecycle/barrier.ts';
 import { TransferError, transferError } from './errors.ts';
 import type { TeamTransferSpace } from './space.ts';
 import { displayNameFromRelativePath, normalizeRelativeName } from './names.ts';
@@ -620,6 +621,7 @@ function publishReadyFile(
 ): TeamFileManifest {
   const at = now();
   db.transaction(() => {
+    assertTeamPublicationAllowed(db);
     const currentUpload = readUpload(db, upload.id)!;
     if (currentUpload.state === 'cancelled') throw new TransferError('upload_cancelled', '上传已取消。');
     const current = db.prepare('SELECT * FROM team_files WHERE id = ?').get(upload.fileId) as TeamFileRecord | undefined;
