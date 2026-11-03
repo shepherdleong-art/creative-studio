@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import {
+  chargedCostExpression,
   monthlyCostUsage,
   personalConcurrencyPoolKey,
   readActorPolicy,
@@ -215,14 +216,6 @@ interface MemberRow {
   mustChangePassword: number;
 }
 
-function chargedExpression(alias = 'r'): string {
-  return `CASE
-    WHEN ${alias}.state = 'held' THEN COALESCE(${alias}.reservedMinor, 0)
-    WHEN ${alias}.state = 'settled' THEN COALESCE(${alias}.actualMinor,
-      CASE WHEN ${alias}.costState = 'unknown' THEN ${alias}.reservedMinor ELSE 0 END, 0)
-    ELSE 0 END`;
-}
-
 export interface TeamMemberSummary {
   userId: string;
   employeeId: string;
@@ -251,7 +244,7 @@ function memberSummary(db: Database.Database, row: MemberRow, now: Date): TeamMe
   const periods = getShanghaiUsagePeriods(now);
   const monthChargedMinor = monthlyCostUsage(db, row.userId, period);
   const todayChargedMinor = Number(db.prepare(`
-    SELECT COALESCE(SUM(${chargedExpression()}), 0) AS amount
+    SELECT COALESCE(SUM(${chargedCostExpression()}), 0) AS amount
     FROM execution_reservations r JOIN execution_attempts a ON a.id = r.attemptId
     WHERE r.kind = 'cost' AND r.actorId = ? AND a.createdAt >= ? AND a.createdAt < ?
   `).pluck().get(row.userId, periods.today.from, periods.today.to) ?? 0);
@@ -276,7 +269,7 @@ function memberSummary(db: Database.Database, row: MemberRow, now: Date): TeamMe
     WHERE kind = 'cost' AND actorId = ? AND state IN ('held', 'settled') AND costState = 'unknown' LIMIT 1
   `).get(row.userId));
   const modules = db.prepare(`
-    SELECT o.module, COALESCE(SUM(${chargedExpression()}), 0) AS chargedMinor
+    SELECT o.module, COALESCE(SUM(${chargedCostExpression()}), 0) AS chargedMinor
     FROM execution_reservations r
     JOIN execution_attempts a ON a.id = r.attemptId
     JOIN execution_operations o ON o.id = a.operationId

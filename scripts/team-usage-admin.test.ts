@@ -279,8 +279,10 @@ try {
   assert.equal(unknownRow?.costStatus, 'uncertain', '已提交但未定价的终态必须显示费用不确定');
   assert.equal(unknownRow?.actualMinor, null);
   assert.deepEqual(carolFinal.totals, { settledMinor: 123, estimatedMinor: 0, unpricedCount: 0, uncertainCount: 1 });
-  assert.equal(listTeamMembers(db, adminView, { now }).items.find((member) => member.userId === 'carol')?.monthChargedMinor,
-    monthlyCostUsage(db, 'carol', '2026-11'));
+  const carolFinalMember = listTeamMembers(db, adminView, { now }).items.find((member) => member.userId === 'carol');
+  assert.equal(carolFinalMember?.monthChargedMinor, monthlyCostUsage(db, 'carol', '2026-11'));
+  assert.equal(carolFinalMember?.modules.reduce((sum, module) => sum + module.chargedMinor, 0),
+    carolFinalMember?.monthChargedMinor, '模块汇总与月度门禁必须共用 released/settled/unknown 费用口径');
   const carolUnknownCsvLine = exportTeamUsageCsv(db, adminView, { ...range, actorUserId: 'carol' })
     .split(/\r?\n/).find((line) => line.includes('c-unpriced-unknown'))?.split(',');
   assert.equal(carolUnknownCsvLine?.[21], 'uncertain');

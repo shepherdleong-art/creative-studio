@@ -58,6 +58,24 @@ async function copyVerified(source: string, destination: string, expectedHash: s
   if (await sha256File(destination) !== expectedHash) throw new Error('恢复文件哈希校验失败');
 }
 
+function readReconciliationState(db: Database.Database): { unknownAttemptIds: string[]; orphanAttemptIds: string[] } {
+  const unresolved = (db.prepare(`
+    SELECT id FROM execution_attempts WHERE submissionState = 'maybe_sent'
+    UNION SELECT currentAttemptId AS id FROM execution_operations
+    WHERE status = 'unknown' AND currentAttemptId IS NOT NULL
+  `).all() as Array<{ id: string }>).map((row) => row.id);
+  const unknownOrphans = (db.prepare(`
+    SELECT attemptId AS id FROM execution_reconciliation_orphans WHERE state = 'unknown'
+  `).all() as Array<{ id: string }>).map((row) => row.id);
+  const unresolvedOrphans = (db.prepare(`
+    SELECT attemptId AS id FROM execution_reconciliation_orphans WHERE state <> 'terminal'
+  `).all() as Array<{ id: string }>).map((row) => row.id);
+  return {
+    unknownAttemptIds: [...new Set([...unresolved, ...unknownOrphans])].sort(),
+    orphanAttemptIds: [...new Set(unresolvedOrphans)].sort(),
+  };
+}
+
 function captureExecution(currentDb: Database.Database | undefined): unknown {
   if (!currentDb) throw new Error('当前执行表不可读');
   return {
@@ -209,35 +227,26 @@ export async function restoreTeamBackup(options: RestoreTeamBackupOptions) {
       restoredDb.close();
     }
     const unresolvedDb = new Database(path.join(staging, 'data', 'workbench.db'), { readonly: true });
-    let unresolved: string[];
-    let unknownOrphans: string[];
+    let reconciliationState: ReturnType<typeof readReconciliationState>;
     try {
-      unresolved = (unresolvedDb.prepare(`
-        SELECT id FROM execution_attempts WHERE submissionState = 'maybe_sent'
-        UNION SELECT currentAttemptId AS id FROM execution_operations
-        WHERE status = 'unknown' AND currentAttemptId IS NOT NULL
-      `).all() as Array<{ id: string }>).map((row) => row.id);
-      unknownOrphans = (unresolvedDb.prepare(`
-        SELECT attemptId AS id FROM execution_reconciliation_orphans WHERE state = 'unknown'
-      `).all() as Array<{ id: string }>).map((row) => row.id);
+      reconciliationState = readReconciliationState(unresolvedDb);
     } finally {
       unresolvedDb.close();
     }
     const unknownAttemptIds = [...new Set([
-      ...unresolved,
-      ...unknownOrphans,
+      ...reconciliationState.unknownAttemptIds,
       ...(evidenceStatus === 'unavailable' ? unknownBefore.map((row) => row.id) : []),
     ])].sort();
     const report: ReconciliationReport = {
       schemaVersion: 1,
       backupId: manifest.backupId,
-      status: evidenceStatus === 'complete' && unknownAttemptIds.length === 0 && recovered.orphanAttemptIds.length === 0
+      status: evidenceStatus === 'complete' && unknownAttemptIds.length === 0 && reconciliationState.orphanAttemptIds.length === 0
         ? 'reconciled' : 'hold',
       evidenceStatus,
       journalWatermark: manifest.journal.watermarkSeq,
       postWatermarkRecords: journalEvidence.records.filter((record) => record.seq > manifest.journal.watermarkSeq).length,
       unknownAttemptIds,
-      orphanAttemptIds: recovered.orphanAttemptIds,
+      orphanAttemptIds: reconciliationState.orphanAttemptIds,
       recoveredReceiptAttemptIds: recovered.recoveredReceiptAttemptIds,
       scheduling: false,
       automaticRetries: 0,
@@ -263,15 +272,59 @@ export async function restoreTeamBackup(options: RestoreTeamBackupOptions) {
   }
 }
 
+async function recheckTeamRestore(dataRoot: string): Promise<ReconciliationReport> {
+  const reportPath = path.join(dataRoot, 'storage', 'maintenance', 'reconciliation.json');
+  const report = await readJsonFile<ReconciliationReport>(reportPath);
+  if (report.evidenceStatus !== 'complete') return report;
+  const deployment = await readJsonFile<{ deploymentId: string }>(path.join(dataRoot, 'deployment.json'));
+  safeMaintenanceId(deployment.deploymentId, 'deploymentId');
+  const restoredDb = new Database(path.join(dataRoot, 'data', 'workbench.db'));
+  let state: ReturnType<typeof readReconciliationState>;
+  let recovered: Awaited<ReturnType<typeof recoverExecution>>;
+  let journalRecords: ReturnType<ReturnType<typeof createExecutionJournal>['scan']>;
+  try {
+    restoredDb.pragma('foreign_keys = ON');
+    const journal = createExecutionJournal({
+      deploymentId: deployment.deploymentId,
+      directory: path.join(dataRoot, 'storage', 'execution-journal', deployment.deploymentId),
+    });
+    recovered = await recoverExecution({
+      db: restoredDb,
+      deploymentId: deployment.deploymentId,
+      journal,
+      actorAllowed: () => true,
+      scopeAllowed: () => true,
+      maintenance: () => true,
+    });
+    if (!recovered.available) throw new Error('恢复后的执行 journal 仍不可信，禁止解除 restore hold');
+    state = readReconciliationState(restoredDb);
+    journalRecords = journal.scan();
+  } finally {
+    restoredDb.close();
+  }
+  const next: ReconciliationReport = {
+    ...report,
+    status: state.unknownAttemptIds.length === 0 && state.orphanAttemptIds.length === 0 ? 'reconciled' : 'hold',
+    postWatermarkRecords: journalRecords.filter((record) => record.seq > report.journalWatermark).length,
+    unknownAttemptIds: state.unknownAttemptIds,
+    orphanAttemptIds: state.orphanAttemptIds,
+    recoveredReceiptAttemptIds: [...new Set([
+      ...report.recoveredReceiptAttemptIds, ...recovered.recoveredReceiptAttemptIds,
+    ])].sort(),
+    scheduling: false,
+    automaticRetries: 0,
+  };
+  await writeJsonAtomic(reportPath, next);
+  return next;
+}
+
 export async function releaseTeamRestoreHold(options: {
   dataRoot: string;
   operatorConfirmed: boolean;
 }): Promise<{ released: true }> {
   if (!options.operatorConfirmed) throw new Error('解除 restore hold 需要管理员明确确认核查完成');
   await readTeamRestoreHold(options.dataRoot);
-  const report = await readJsonFile<ReconciliationReport>(
-    path.join(options.dataRoot, 'storage', 'maintenance', 'reconciliation.json'),
-  );
+  const report = await recheckTeamRestore(options.dataRoot);
   if (report.status !== 'reconciled' || report.evidenceStatus !== 'complete'
     || report.unknownAttemptIds.length > 0 || report.orphanAttemptIds.length > 0) {
     throw new Error('仍有 unknown 或核查证据不完整，禁止解除 restore hold');

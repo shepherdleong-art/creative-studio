@@ -156,14 +156,18 @@ export function readExecutionPool(db: Database.Database, poolKey: string): Execu
   };
 }
 
+export function chargedCostExpression(alias = 'r'): string {
+  return `CASE
+    WHEN ${alias}.state = 'held' THEN COALESCE(${alias}.reservedMinor, 0)
+    WHEN ${alias}.state = 'settled' THEN COALESCE(${alias}.actualMinor,
+      CASE WHEN ${alias}.costState = 'unknown' THEN ${alias}.reservedMinor ELSE 0 END, 0)
+    ELSE 0 END`;
+}
+
 export function monthlyCostUsage(db: Database.Database, actorId: string, accountingPeriod: string): number {
   return db.prepare(`
-    SELECT COALESCE(SUM(CASE
-      WHEN state = 'held' THEN COALESCE(reservedMinor, 0)
-      WHEN state = 'settled' THEN COALESCE(actualMinor, CASE WHEN costState = 'unknown' THEN reservedMinor ELSE 0 END, 0)
-      ELSE 0
-    END), 0) AS amount
-    FROM execution_reservations
-    WHERE kind = 'cost' AND actorId = ? AND accountingPeriod = ? AND state IN ('held', 'settled')
+    SELECT COALESCE(SUM(${chargedCostExpression()}), 0) AS amount
+    FROM execution_reservations r
+    WHERE r.kind = 'cost' AND r.actorId = ? AND r.accountingPeriod = ? AND r.state IN ('held', 'settled')
   `).pluck().get(actorId, accountingPeriod) as number;
 }

@@ -102,6 +102,18 @@ try {
     return { remoteId: 'remote-receipt', terminalState: 'succeeded', actualCost: { currency: 'CNY', minor: 120 } };
   });
   assert.equal(remotePosts, 1);
+  const sourceIntent = journal.scan().find((record) => record.eventType === 'submit_intent');
+  assert.ok(sourceIntent);
+  const terminalOrphan = {
+    ...sourceIntent,
+    operationId: 'orphan-operation-terminal', attemptId: 'orphan-attempt-terminal', permitId: 'orphan-permit-terminal',
+    requestHash: 'orphan-request-terminal', transportSeq: 1,
+  };
+  journal.appendIntent(terminalOrphan);
+  journal.appendReceipt({
+    ...terminalOrphan, terminalState: 'succeeded', actualCost: { currency: 'CNY', minor: 30 },
+    reconciliationSource: 'journal',
+  });
   const originalJournal = fs.readFileSync(path.join(journal.directory, '000001.jsonl'), 'utf8');
   const originalDatabaseHash = (await import('node:crypto')).createHash('sha256')
     .update(fs.readFileSync(path.join(sourceRoot, 'data', 'workbench.db'))).digest('hex');
@@ -116,8 +128,10 @@ try {
   assert.equal(restored.remoteCalls, 0);
   assert.equal(restored.evidenceStatus, 'complete');
   assert.equal(restored.journalWatermark, 2);
-  assert.equal(restored.postWatermarkRecords, 1);
+  assert.equal(restored.postWatermarkRecords, 3);
   assert.ok(restored.recoveredReceiptAttemptIds.includes(receiptAdmission.grant.attempt.id));
+  assert.equal(restored.orphanAttemptIds.includes('orphan-attempt-terminal'), false,
+    '已有终态回执的 journal 孤儿必须核清，不得永久 hold');
   assert.ok(restored.unknownAttemptIds.includes(unknownAdmission.grant.attempt.id));
   assert.equal(remotePosts, 1, '隔离恢复不得重新 POST');
   assert.equal(fs.readFileSync(path.join(journal.directory, '000001.jsonl'), 'utf8'), originalJournal);
@@ -188,6 +202,29 @@ try {
   assert.ok(missing.unknownAttemptIds.includes(receiptAdmission.grant.attempt.id));
   assert.ok(missing.unknownAttemptIds.includes(unknownAdmission.grant.attempt.id));
   assert.equal(remotePosts, 1);
+  await assert.rejects(() => releaseTeamRestoreHold({ dataRoot: missingEvidenceRoot, operatorConfirmed: true }),
+    /unknown|证据|核查/, '缺证据 restore 重核后仍必须保持 hold');
+
+  const restoredJournal = createExecutionJournal({
+    deploymentId, directory: path.join(restoreRoot, 'storage', 'execution-journal', deploymentId),
+  });
+  const lateUnknownIntent = restoredJournal.scan().find((record) =>
+    record.eventType === 'submit_intent' && record.attemptId === unknownAdmission.grant.attempt.id);
+  assert.ok(lateUnknownIntent);
+  restoredJournal.appendReceipt({
+    ...lateUnknownIntent, terminalState: 'not_created', actualCost: null,
+    errorCode: 'operator_confirmed_not_created', reconciliationSource: 'operator',
+  });
+  assert.deepEqual(await releaseTeamRestoreHold({ dataRoot: restoreRoot, operatorConfirmed: true }), { released: true });
+  const recheckedReport = JSON.parse(fs.readFileSync(
+    path.join(restoreRoot, 'storage', 'maintenance', 'reconciliation.json'), 'utf8',
+  )) as { status: string; unknownAttemptIds: string[]; orphanAttemptIds: string[]; automaticRetries: number; remoteCalls: number };
+  assert.equal(recheckedReport.status, 'reconciled');
+  assert.deepEqual(recheckedReport.unknownAttemptIds, []);
+  assert.deepEqual(recheckedReport.orphanAttemptIds, []);
+  assert.equal(recheckedReport.automaticRetries, 0);
+  assert.equal(recheckedReport.remoteCalls, 0);
+  assert.equal(remotePosts, 1, '显式重核只能对账，不得自动重提或发起真实调用');
 
   const currentDatabaseHash = (await import('node:crypto')).createHash('sha256')
     .update(fs.readFileSync(path.join(sourceRoot, 'data', 'workbench.db'))).digest('hex');

@@ -648,11 +648,46 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
   // 4. 轮询远端（已保存远端 ID；本地超时不释放名额）
   let attempts = 0;
   const previousPollCount = getCanvasTask(db, taskId)?.pollCount ?? 0;
-  let pollState: 'succeeded' | 'failed' | 'aborted' = 'aborted';
+  let pollState: 'succeeded' | 'failed' | 'aborted' | 'cancelled' = 'aborted';
+  let serverCancelAttempted = false;
   while (attempts < maxPollAttempts) {
     if (signal?.aborted) {
       pollState = 'aborted';
       break;
+    }
+    const current = getCanvasTask(db, taskId);
+    if (current?.cancelRequestedAt && !options.execution) {
+      pollState = 'cancelled';
+      break;
+    }
+    if (current?.cancelRequestedAt && options.execution && adapter.cancel && !serverCancelAttempted) {
+      serverCancelAttempted = true;
+      let remoteCancelled = false;
+      try {
+        remoteCancelled = (await adapter.cancel({ ...context, providerTaskId }, signal)).remoteCancelled;
+      } catch {
+        remoteCancelled = false;
+      }
+      if (remoteCancelled) {
+        if (executionAttempt) {
+          executionAttempt = await options.execution.facade.reconcile({
+            attemptId: executionAttempt.id,
+            evidence: { kind: 'terminal', outcome: 'failed', actualCost: null, errorCode: 'cancelled' },
+            source: 'provider',
+          });
+        }
+        updateCanvasTaskGuarded(db, {
+          taskId,
+          patch: {
+            phase: 'cancelled', submissionState: 'terminal', errorCode: 'cancelled', errorMessage: null,
+            leaseOwner: null, leaseUntil: null,
+          },
+          guard,
+          now,
+        });
+        return finish('cancelled');
+      }
+      // server 上游未确认取消时继续收取已受理结果，permit 只能由终态结算释放。
     }
     await sleep(pollIntervalMs);
     attempts += 1;
@@ -714,6 +749,33 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       });
       return finish('failed');
     }
+  }
+
+  if (pollState === 'cancelled') {
+    let remoteCancelled = false;
+    if (adapter.cancel) {
+      try {
+        const cancelled = await adapter.cancel({ ...context, providerTaskId }, signal);
+        remoteCancelled = cancelled.remoteCancelled;
+      } catch {
+        remoteCancelled = false;
+      }
+    }
+    const phase: CanvasTaskPhase = remoteCancelled ? 'cancelled' : 'uncertain';
+    updateCanvasTaskGuarded(db, {
+      taskId,
+      patch: {
+        phase,
+        submissionState: remoteCancelled ? 'terminal' : 'accepted',
+        errorCode: remoteCancelled ? 'cancelled' : 'cancel_unconfirmed',
+        errorMessage: remoteCancelled ? null : '远端未确认取消，仍可能继续生成。',
+        leaseOwner: null,
+        leaseUntil: null,
+      },
+      guard,
+      now,
+    });
+    return finish(phase);
   }
 
   if (pollState === 'aborted') {

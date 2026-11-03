@@ -30,6 +30,8 @@ import {
   assertLegacyMediaProviderRecovery,
   cancelLegacyMediaNewStage,
   failLegacyMediaOperation,
+  isLegacyMediaExecutionDeferred,
+  isLegacyMediaPoolConfigurationError,
   isLegacyMediaProviderRecoveryBlocked,
   isLegacyMediaSubmissionUnknown,
   isServerMediaExecution,
@@ -121,7 +123,7 @@ export function cancelQueue(projectId: string) {
     db.prepare(
       isServerMediaExecution()
         ? `UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user'
-           WHERE projectId = ? AND status IN ('pending', 'retrying')`
+           WHERE projectId = ? AND status IN ('pending', 'retrying', 'deferred')`
         : `UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user'
            WHERE projectId = ? AND status IN ('pending', 'retrying', 'running')`
     ).run(projectId);
@@ -218,6 +220,12 @@ export async function runQueue(options: QueueOptions): Promise<void> {
               await sleep(1000);
               continue;
             }
+          }
+          const deferred = claimDeferredImageJob(projectId, options.jobId);
+          if (deferred) {
+            await runJob(deferred, { timeoutMs, maxAttempts, abort: abort.signal });
+            await sleep(100);
+            continue;
           }
           // No pending jobs. Check if any are still running.
           const runningCount = db
@@ -1141,6 +1149,19 @@ async function runAuthorizedJob(
       return;
     }
 
+    if (isServerMediaExecution() && isLegacyMediaExecutionDeferred(err)) {
+      db.prepare(`UPDATE jobs SET status = 'deferred', errorMessage = ? WHERE id = ? AND status = 'running'`)
+        .run(errorMessage, job.id);
+      return;
+    }
+
+    if (isServerMediaExecution() && isLegacyMediaPoolConfigurationError(err)) {
+      db.prepare(`UPDATE jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
+        WHERE id = ? AND status = 'running'`).run(errorMessage, job.id);
+      logError('图片供应商池缺失或映射未核验，已在提交前拒绝');
+      return;
+    }
+
     if (isServerMediaExecution() && (isLegacyMediaSubmissionUnknown(err) || isLegacyMediaProviderRecoveryBlocked(err))) {
       db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'unknown', errorMessage = ?, finishedAt = datetime('now')
         WHERE id = ? AND status = 'running'`).run(`${errorMessage}。提交结果未知，已禁止自动重发。`, job.id);
@@ -1225,6 +1246,22 @@ function claimNeedsCheckImageJob(projectId: string, jobId?: string): JobRecord |
   const claimed = db.prepare(`UPDATE jobs SET status = 'running', errorMessage = NULL
     WHERE id = ? AND (status = 'needs_check' ${isServerMediaExecution() ? "OR providerStatus = 'download_failed'" : ''})`)
     .run(job.id);
+  return claimed.changes === 1 ? { ...job, status: 'running' } : null;
+}
+
+function claimDeferredImageJob(projectId: string, jobId?: string): JobRecord | null {
+  const db = getDb();
+  const job = db.prepare(`
+    SELECT jobs.* FROM jobs
+    LEFT JOIN execution_operations AS deferred_operation
+      ON deferred_operation.module = 'image' AND deferred_operation.taskId = jobs.id
+      AND deferred_operation.operationKey = 'image/' || jobs.id || '/submit/r' || COALESCE(jobs.executionRevision, 0)
+    WHERE jobs.projectId = ? AND jobs.status = 'deferred' AND (? IS NULL OR jobs.id = ?)
+    ORDER BY COALESCE(deferred_operation.updatedAt, jobs.createdAt), jobs.createdAt, jobs.rowid LIMIT 1
+  `).get(projectId, jobId || null, jobId || null) as JobRecord | undefined;
+  if (!job) return null;
+  const claimed = db.prepare(`UPDATE jobs SET status = 'running', errorMessage = NULL
+    WHERE id = ? AND status = 'deferred'`).run(job.id);
   return claimed.changes === 1 ? { ...job, status: 'running' } : null;
 }
 

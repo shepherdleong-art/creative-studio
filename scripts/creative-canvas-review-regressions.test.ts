@@ -11,6 +11,7 @@ import { ensureCreativeCanvasSchemaReady } from '../lib/creative-canvas/schema.t
 import { createCanvas, saveCanvasGraph } from '../lib/creative-canvas/repository.ts';
 import { runCanvasTask } from '../lib/creative-canvas/runner.ts';
 import { startCanvasRun } from '../lib/creative-canvas/runs.ts';
+import { requestCanvasTaskCancel } from '../lib/creative-canvas/recovery.ts';
 import { claimCanvasTasks, getCanvasTask } from '../lib/creative-canvas/tasks.ts';
 import type {
   CanvasDownloadOutcome,
@@ -252,6 +253,47 @@ async function freshEnvironment(name: string): Promise<{
     const resultsDirectory = path.join(env.storageRoot, 'canvas', env.canvasId, 'results');
     const resultFiles = fs.existsSync(resultsDirectory) ? fs.readdirSync(resultsDirectory) : [];
     assert.deepEqual(resultFiles, [], '事务失败后不得留下结果文件');
+  } finally {
+    env.close();
+  }
+}
+
+// local 已受理任务保留原取消合同：确认取消才进入 cancelled，否则保守 uncertain。
+for (const remoteCancelled of [true, false]) {
+  const env = await freshEnvironment(`local-cancel-${remoteCancelled}`);
+  try {
+    let cancelCalls = 0;
+    let pollCalls = 0;
+    const adapter: CanvasTaskAdapter = {
+      kind: 'local-cancel-fixture',
+      async prepare(): Promise<void> {},
+      async submit(): Promise<CanvasSubmitOutcome> { return { providerTaskId: 'local-cancel-remote' }; },
+      async poll(): Promise<CanvasPollOutcome> {
+        pollCalls += 1;
+        if (pollCalls === 1) requestCanvasTaskCancel(env.db, { taskId: env.taskId });
+        return { status: 'running' };
+      },
+      async download(): Promise<CanvasDownloadOutcome> { return { bytes: await png('#ffffff'), mimeType: 'image/png' }; },
+      async cancel(): Promise<{ remoteCancelled: boolean }> {
+        cancelCalls += 1;
+        return { remoteCancelled };
+      },
+    };
+    const claim = claimCanvasTasks({ db: env.db, workerId: 'local-cancel-worker', limit: 1 });
+    const outcome = await runCanvasTask({
+      db: env.db,
+      taskId: env.taskId,
+      adapter,
+      workerId: 'local-cancel-worker',
+      fence: claim[0].fence,
+      storageRoot: env.storageRoot,
+      pollIntervalMs: 0,
+      maxPollAttempts: 3,
+      sleep: async () => {},
+    });
+    assert.equal(cancelCalls, 1, 'local 取消必须调用 adapter.cancel');
+    assert.equal(outcome.phase, remoteCancelled ? 'cancelled' : 'uncertain');
+    assert.equal(getCanvasTask(env.db, env.taskId)?.submissionState, remoteCancelled ? 'terminal' : 'accepted');
   } finally {
     env.close();
   }

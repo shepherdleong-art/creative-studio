@@ -31,6 +31,8 @@ import {
   assertLegacyMediaProviderRecovery,
   cancelLegacyMediaNewStage,
   failLegacyMediaOperation,
+  isLegacyMediaExecutionDeferred,
+  isLegacyMediaPoolConfigurationError,
   isLegacyMediaProviderRecoveryBlocked,
   isLegacyMediaSubmissionUnknown,
   isServerMediaExecution,
@@ -201,7 +203,7 @@ export function cancelVideoQueue(projectId: string) {
       // 有远端回执的转 needs_check，不能抹掉已付费任务身份。
       db.prepare(
         `UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
-         WHERE projectId = ? AND status = 'pending'`
+         WHERE projectId = ? AND status IN ('pending', 'deferred')`
       ).run(projectId);
     } else {
       db.prepare(
@@ -285,8 +287,14 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
           if (isServerMediaExecution()) await sleep(1000);
           continue;
         }
+        const deferred = claimDeferredVideoJob(projectId, options.jobId);
+        if (deferred) {
+          await runVideoJob(deferred, { timeoutMs, abort: abort.signal });
+          await sleep(100);
+          continue;
+        }
         if (claimed.gated) {
-          // 被每供应商闸门挡住:等待其他 running 任务释放名额,不能视为无活退出,
+          // 被每供应商闸门挡住:等待其他 running 任务释放名额,不能据此认为没活了,
           // 否则 pending 任务会留在库里没人跑。
           await sleep(1000);
           continue;
@@ -865,6 +873,19 @@ async function runAuthorizedVideoJob(
     const errorMessage = (err instanceof Error ? err.message : String(err)).slice(0, 2000);
     logError(`Video job failed: ${errorMessage}`);
 
+    if (isServerMediaExecution() && isLegacyMediaExecutionDeferred(err)) {
+      db.prepare(`UPDATE video_jobs SET status = 'deferred', errorMessage = ? WHERE id = ? AND status = 'running'`)
+        .run(errorMessage, job.id);
+      return;
+    }
+
+    if (isServerMediaExecution() && isLegacyMediaPoolConfigurationError(err)) {
+      db.prepare(`UPDATE video_jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
+        WHERE id = ? AND status = 'running'`).run(errorMessage, job.id);
+      logError('视频供应商池缺失或映射未核验，已在提交前拒绝');
+      return;
+    }
+
     if (isServerMediaExecution() && (isLegacyMediaSubmissionUnknown(err) || isLegacyMediaProviderRecoveryBlocked(err))) {
       db.prepare(`UPDATE video_jobs SET status = 'needs_check', providerStatus = 'unknown', errorMessage = ?, finishedAt = datetime('now')
         WHERE id = ? AND status = 'running'`).run(`${errorMessage}。提交结果未知，已禁止自动重发。`, job.id);
@@ -925,6 +946,22 @@ async function runAuthorizedVideoJob(
 
 interface ClaimedVideoJob extends VideoJobRecord {
   attempt: number;
+}
+
+function claimDeferredVideoJob(projectId: string, jobId?: string): ClaimedVideoJob | null {
+  const db = getDb();
+  const job = db.prepare(`
+    SELECT video_jobs.* FROM video_jobs
+    LEFT JOIN execution_operations AS deferred_operation
+      ON deferred_operation.module = 'video' AND deferred_operation.taskId = video_jobs.id
+      AND deferred_operation.operationKey = 'video/' || video_jobs.id || '/submit/r' || COALESCE(video_jobs.executionRevision, 0)
+    WHERE video_jobs.projectId = ? AND video_jobs.status = 'deferred' AND (? IS NULL OR video_jobs.id = ?)
+    ORDER BY COALESCE(deferred_operation.updatedAt, video_jobs.createdAt), video_jobs.createdAt, video_jobs.rowid LIMIT 1
+  `).get(projectId, jobId || null, jobId || null) as VideoJobRecord | undefined;
+  if (!job) return null;
+  const claimed = db.prepare(`UPDATE video_jobs SET status = 'running', errorMessage = NULL
+    WHERE id = ? AND status = 'deferred'`).run(job.id);
+  return claimed.changes === 1 ? { ...job, status: 'running' } : null;
 }
 
 export interface ClaimVideoJobResult {

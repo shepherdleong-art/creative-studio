@@ -63,22 +63,18 @@ export function configureLegacyMediaProviderPool(input: {
 
 function ensureProviderPool(baseUrl: string, apiKey: string): string {
   const poolKey = legacyMediaProviderPoolKey(baseUrl, apiKey);
-  try {
-    readExecutionPool(getDb(), poolKey);
-    return poolKey;
-  } catch (error) {
-    if (!(error instanceof ExecutionError) || error.code !== 'pool_missing') throw error;
+  const pool = readExecutionPool(getDb(), poolKey);
+  const mapping = pool.mappingSnapshot as { protocol?: unknown; baseUrl?: unknown; credentialFingerprint?: unknown } | null;
+  if (pool.kind !== 'remote' || mapping?.protocol !== 'legacy-media-upstream/1'
+    || mapping?.baseUrl !== normalizedBaseUrl(baseUrl)
+    || mapping?.credentialFingerprint !== upstreamFingerprint(baseUrl, apiKey)) {
+    throw new ExecutionError('pool_mapping_mismatch', `受控资源池 ${poolKey} 的供应商映射未核验，拒绝付费提交。`);
   }
-  const fingerprint = upstreamFingerprint(baseUrl, apiKey);
-  getDb().prepare(`
-    INSERT OR IGNORE INTO execution_pools (poolKey, kind, capacity, enabled, mappingSnapshotJson, version, updatedAt)
-    VALUES (?, 'remote', 10, 1, ?, 1, ?)
-  `).run(poolKey, JSON.stringify({
-    protocol: 'legacy-media-upstream/1',
-    baseUrl: normalizedBaseUrl(baseUrl),
-    credentialFingerprint: fingerprint,
-  }), new Date().toISOString());
   return poolKey;
+}
+
+export function isLegacyMediaPoolConfigurationError(error: unknown): boolean {
+  return error instanceof ExecutionError && ['pool_missing', 'pool_mapping_mismatch'].includes(error.code);
 }
 
 interface LegacyExecutionInjection {
@@ -156,18 +152,26 @@ function safeErrorCode(error: unknown): string {
   return status ? `provider_http_${status}` : 'provider_rejected';
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export class LegacyMediaExecutionDeferredError extends Error {
+  readonly reasons: string[];
+
+  constructor(reasons: string[]) {
+    super(`旧媒体操作已持久 deferred：${reasons.join(',') || '等待重新领取'}`);
+    this.name = 'LegacyMediaExecutionDeferredError';
+    this.reasons = reasons;
+  }
 }
 
-async function admitFor(operationId: string, signal?: AbortSignal): Promise<ExecutionGrant> {
+export function isLegacyMediaExecutionDeferred(error: unknown): error is LegacyMediaExecutionDeferredError {
+  return error instanceof LegacyMediaExecutionDeferredError;
+}
+
+function admitFor(operationId: string): ExecutionGrant {
   const { facade, instance } = injection();
-  for (;;) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    const result = facade.admit({ ...instance, operationId });
-    if (result.kind === 'admitted') return result.grant;
-    await sleep(50);
-  }
+  const result = facade.admit({ ...instance, operationId });
+  if (result.kind === 'admitted') return result.grant;
+  if (result.kind === 'deferred') throw new LegacyMediaExecutionDeferredError(result.reasons);
+  throw new ExecutionError('execution_not_ready', '旧媒体操作当前不可领取，禁止绕过定向准入。');
 }
 
 function currentAttempt(operationId: string): AttemptRecord | null {
@@ -274,7 +278,7 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
     return { attemptId: existing.id, remoteId: existing.remoteId, resumed: true };
   }
 
-  const grant = await admitFor(enqueued.operation.id, input.signal);
+  const grant = admitFor(enqueued.operation.id);
   input.onAdmitted?.();
   let intent;
   try {
