@@ -531,6 +531,21 @@ try {
   assert.equal(hash.digest('hex'), uploaded.expectedSha256);
   assertions.push('强制崩溃重启后会话、ready 上传与完整媒体哈希保持正确，未自动调用供应商');
 
+  const warmupStartedAt = performance.now();
+  const warmedLogin = await request(null, '/team/login', {
+    headers: { Accept: 'text/html' },
+    signal: AbortSignal.timeout(120_000),
+  });
+  assert.equal(warmedLogin.status, 200, `重启后登录页预热失败：${warmedLogin.status}`);
+  await warmedLogin.arrayBuffer();
+  result.pageWarmup = {
+    pathname: '/team/login',
+    status: warmedLogin.status,
+    durationMs: Math.round(performance.now() - warmupStartedAt),
+    timeoutMs: 120_000,
+  };
+  assertions.push('重启后真实 HTTP 登录页预热完成才启动 Chromium；浏览器 60s 导航阈值保持不变');
+
   const browserResultPath = path.join(evidenceDirectory, 'browser', 'browser.json');
   browser = spawn(process.execPath, ['scripts/team-acceptance-browser.playwright.test.mjs'], {
     cwd: repoRoot,
