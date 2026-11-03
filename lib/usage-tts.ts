@@ -19,6 +19,7 @@ export interface TtsUsageContext {
   refType?: string;
   refId?: string;
   detail?: Record<string, unknown>;
+  executionAttemptId?: string | null;
 }
 
 export interface DoubaoTtsUsageProviderIdentity {
@@ -119,6 +120,7 @@ export function beginDoubaoTtsUsage(
       projectId: context?.projectId,
       refType: context?.refType ?? 'tts',
       refId: context?.refId ?? eventKey,
+      executionAttemptId: context?.executionAttemptId,
     });
     return started.ok ? { enabled: true, eventKey, db } : disabledHandle();
   } catch {

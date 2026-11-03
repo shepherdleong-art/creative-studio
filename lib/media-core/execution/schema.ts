@@ -166,6 +166,13 @@ export const EXECUTION_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = [
       );
     `,
   },
+  {
+    version: 3,
+    sql: `
+      ALTER TABLE execution_operations ADD COLUMN serverReleaseId TEXT;
+      ALTER TABLE execution_operations ADD COLUMN clientVersion TEXT;
+    `,
+  },
 ];
 
 export type ExecutionSchemaReadiness = VersionedSchemaReadiness;

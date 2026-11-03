@@ -234,6 +234,14 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/devices': 'GET POST',
   '/api/team/downloads': 'GET',
   '/api/team/downloads/receipts': 'POST',
+  '/api/team/errors': 'GET',
+  '/api/team/errors/report': 'POST',
+  '/api/team/errors/[id]/diagnostics': 'GET',
+  '/api/team/members': 'GET',
+  '/api/team/members/[id]/policy': 'GET PATCH',
+  '/api/team/tasks': 'GET',
+  '/api/team/usage': 'GET',
+  '/api/team/usage/export': 'GET',
   '/api/team/models': 'GET',
   '/api/team/public-resources': 'POST',
   '/api/team/users': 'GET POST',
@@ -265,6 +273,8 @@ const AUTHENTICATED = new Set([
   '/api/team/uploads POST', '/api/team/uploads/[id] GET', '/api/team/uploads/[id] DELETE',
   '/api/team/uploads/[id]/parts/[part] PUT', '/api/team/uploads/[id]/complete POST',
   '/api/team/devices GET', '/api/team/devices POST', '/api/team/downloads GET', '/api/team/downloads/receipts POST',
+  '/api/team/errors GET', '/api/team/errors/report POST', '/api/team/errors/[id]/diagnostics GET',
+  '/api/team/members/[id]/policy GET', '/api/team/tasks GET', '/api/team/usage GET',
   '/api/upload POST', '/api/batch-production/assets/import POST', '/api/canvas/[id]/assets POST',
 ]);
 const ADMIN_PREFIXES = ['/api/providers', '/api/team/users'];
@@ -277,6 +287,7 @@ const ADMIN = new Set([
   '/api/team/cleanup/[id] GET', '/api/team/cleanup/[id] POST',
   '/api/team/maintenance/barriers POST', '/api/team/maintenance/barriers/[id] DELETE',
   '/api/team/backup-pins POST', '/api/team/backup-pins/[id] DELETE',
+  '/api/team/members GET', '/api/team/members/[id]/policy PATCH', '/api/team/usage/export GET',
 ]);
 const SERVER_DISABLED = new Set([
   '/api/packaging/templates/[...path] GET',

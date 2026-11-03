@@ -121,6 +121,7 @@ export function canvasTaskUsageEventKey(taskId: string): string {
 export interface RecordCanvasTaskUsageOptions {
   taskId: string;
   now?: () => Date;
+  executionAttemptId?: string | null;
 }
 
 /**
@@ -206,7 +207,9 @@ function recordCanvasTaskUsageUnsafe(
   let result: UsageOperationResult;
   try {
     result = recordUsage(db, {
-      eventKey: canvasTaskUsageEventKey(task.id),
+      eventKey: options.executionAttemptId
+        ? `execution-attempt:${options.executionAttemptId}:submitted`
+        : canvasTaskUsageEventKey(task.id),
       snapshot,
       usage: {
         quantity,
@@ -217,6 +220,7 @@ function recordCanvasTaskUsageUnsafe(
       refType: 'canvas-task',
       refId: task.id,
       createdAt: (options.now ?? (() => new Date()))().toISOString(),
+      executionAttemptId: options.executionAttemptId,
     });
   } catch {
     // 账本失败只漏记，由 reconcileUsageLedger 补记；绝不因此重发模型请求

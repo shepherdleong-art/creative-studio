@@ -20,7 +20,7 @@ const db = new Database(path.join(root, 'data', 'workbench.db'));
 db.pragma('foreign_keys = ON');
 const readiness = await checkExecutionReadiness({ db, ...schemaUpgradeRuntimePaths(root) });
 assert.equal(readiness.available, true);
-assert.deepEqual(readiness.appliedVersions, [1, 2]);
+assert.deepEqual(readiness.appliedVersions, [1, 2, 3]);
 
 registerExecutionInstance(db, { instanceId: 'instance-a', fence: 1, deploymentId: 'deployment-a' });
 const journal = {

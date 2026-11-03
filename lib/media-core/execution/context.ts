@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type Database from 'better-sqlite3';
 import type { ExecutionModuleContext, ExecutionModuleLifecycle } from './contracts.ts';
 
@@ -91,6 +92,7 @@ export interface EnqueueInput {
   continuationKey: string;
   providerSnapshot: unknown;
   configVersion?: string;
+  clientVersion?: string;
   credentialVersionRef?: string;
   requiredPools: readonly string[];
   quote: CostQuote;
@@ -225,6 +227,7 @@ export interface SettleInput {
   remoteTerminal: boolean;
   result?: unknown;
   errorCode?: string;
+  errorStage?: 'remote_submit' | 'remote_poll';
 }
 
 export interface ExecutionFacade {
@@ -246,7 +249,14 @@ export interface ExecutionFacadeOptions {
   maintenance(): boolean;
   now?: () => Date;
   newId?: () => string;
+  serverReleaseId?: string;
   mirrorUsage?: (record: { attemptId: string; actualCost: Money | null; outcome: TerminalState }) => void | Promise<void>;
+  recordError?: (record: {
+    attemptId: string;
+    outcome: 'failed';
+    errorCode?: string;
+    stage: 'remote_submit' | 'remote_poll';
+  }) => void | Promise<void>;
   faults?: {
     beforeIntentDatabase?: () => void;
     beforeReceiptDatabase?: () => void;
@@ -289,4 +299,27 @@ export function assertMoney(value: Money): void {
 
 export function executionContext(instance: InstanceFence, deploymentId: string, signal: AbortSignal): ExecutionModuleContext {
   return { ...instance, deploymentId, signal };
+}
+
+const requestVersionStorage = new AsyncLocalStorage<{ clientVersion?: string }>();
+
+export function runWithExecutionRequestVersions<T>(
+  versions: { clientVersion?: string },
+  operation: () => T,
+): T {
+  return requestVersionStorage.run(versions, operation);
+}
+
+export function currentExecutionClientVersion(): string | undefined {
+  return requestVersionStorage.getStore()?.clientVersion;
+}
+
+const attemptStorage = new AsyncLocalStorage<{ attemptId: string }>();
+
+export function runWithExecutionAttempt<T>(attemptId: string, operation: () => T): T {
+  return attemptStorage.run({ attemptId }, operation);
+}
+
+export function currentExecutionAttemptId(): string | null {
+  return attemptStorage.getStore()?.attemptId ?? null;
 }
