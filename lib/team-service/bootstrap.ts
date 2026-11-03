@@ -22,6 +22,7 @@ import { checkTeamServiceReadiness } from './readiness.ts';
 import { recoverTeamUploads } from './transfers/uploads.ts';
 import { teamTransferSpace } from './transfers/space.ts';
 import { recordTeamExecutionError } from './diagnostics.ts';
+import { hasTeamRestoreHold } from './maintenance/hold.ts';
 import {
   initializeTeamRuntimeState,
   markTeamRuntimeFailed,
@@ -90,7 +91,8 @@ export function createTeamExecutionRuntime(options: {
     },
     maintenance() {
       try {
-        return Boolean(db.prepare('SELECT maintenance FROM team_service_state WHERE id = 1').pluck().get());
+        return hasTeamRestoreHold(config.dataRoot)
+          || Boolean(db.prepare('SELECT maintenance FROM team_service_state WHERE id = 1').pluck().get());
       } catch {
         return true;
       }
@@ -199,11 +201,17 @@ export function createTeamServiceBootstrap(options: {
     active();
     setTeamRuntimePhase('recovering', { ready: false, maintenance: true });
     try {
-      for (const lifecycle of modules) await lifecycle.recover(context);
-      const storageRoot = path.join(options.config.dataRoot, 'storage');
-      await recoverTeamUploads(options.db, { storageRoot, space: teamTransferSpace(storageRoot) });
+      const restoreHold = hasTeamRestoreHold(options.config.dataRoot);
+      for (const lifecycle of modules) {
+        if (restoreHold && lifecycle.name !== 'execution') continue;
+        await lifecycle.recover(context);
+      }
+      if (!restoreHold) {
+        const storageRoot = path.join(options.config.dataRoot, 'storage');
+        await recoverTeamUploads(options.db, { storageRoot, space: teamTransferSpace(storageRoot) });
+      }
       stage = 3;
-      setTeamRuntimePhase('recovered', { ready: false, maintenance: true });
+      setTeamRuntimePhase(restoreHold ? 'restore_hold' : 'recovered', { ready: false, maintenance: true });
     } catch (error) {
       failed(error);
     }
@@ -215,9 +223,27 @@ export function createTeamServiceBootstrap(options: {
     active();
     setTeamRuntimePhase('starting', { ready: false, maintenance: true });
     try {
+      const restoreHold = hasTeamRestoreHold(options.config.dataRoot);
+      const maintenance = restoreHold || Boolean(options.db.prepare(
+        'SELECT maintenance FROM team_service_state WHERE id = 1',
+      ).pluck().get());
+      if (restoreHold) {
+        options.execution?.closeNewWork();
+        stage = 4;
+        setTeamRuntimePhase('restore_hold', {
+          ready: false,
+          maintenance: true,
+          code: 'restore_reconciliation_required',
+        });
+        return;
+      }
       for (const lifecycle of modules) await lifecycle.start(context);
       stage = 4;
-      setTeamRuntimePhase('ready', { ready: true, maintenance: false, code: undefined });
+      if (maintenance) {
+        setTeamRuntimePhase('maintenance', { ready: false, maintenance: true, code: 'maintenance' });
+      } else {
+        setTeamRuntimePhase('ready', { ready: true, maintenance: false, code: undefined });
+      }
     } catch (error) {
       failed(error);
     }

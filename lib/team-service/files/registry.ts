@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { assertNoStorageSymlink } from '../../media-core/storage-path.ts';
+import { assertTeamPublicationAllowed } from '../lifecycle/barrier.ts';
 
 export type TeamFileState = 'staged' | 'ready' | 'purge_pending';
 export type TeamFileRole = 'input' | 'output' | 'derivative' | 'export' | 'delivery' | 'backup';
@@ -76,6 +77,7 @@ export function registerReadyTeamFile(
   input: RegisterReadyTeamFileInput,
 ): TeamFileRecord {
   if (!input.ownerUserId.trim() || !input.mimeType.trim()) throw new Error('文件登记字段不完整');
+  assertTeamPublicationAllowed(db);
   const absolutePath = assertNoStorageSymlink(input.storageRoot, input.absolutePath, { allowAbsolute: true });
   const stat = fs.statSync(absolutePath);
   if (!stat.isFile()) throw new Error('只能登记普通文件');
@@ -103,10 +105,13 @@ export function registerReadyTeamFile(
       VALUES (?, ?, ?, ?, ?, ?)
     `);
     const at = (input.now?.() ?? new Date()).toISOString();
-    for (const reference of references) {
-      attach.run(existing.id, reference.resourceType, reference.resourceId,
-        reference.role ?? (input.derivedFromFileId ? 'derivative' : 'input'), reference.pinKind ?? 'entity', at);
-    }
+    db.transaction(() => {
+      assertTeamPublicationAllowed(db);
+      for (const reference of references) {
+        attach.run(existing.id, reference.resourceType, reference.resourceId,
+          reference.role ?? (input.derivedFromFileId ? 'derivative' : 'input'), reference.pinKind ?? 'entity', at);
+      }
+    }).immediate();
     return existing;
   }
 
@@ -114,6 +119,7 @@ export function registerReadyTeamFile(
   const seriesId = input.seriesId ?? source?.seriesId ?? id;
   const at = (input.now?.() ?? new Date()).toISOString();
   const publish = db.transaction(() => {
+    assertTeamPublicationAllowed(db);
     const version = ((db.prepare('SELECT MAX(version) AS version FROM team_files WHERE seriesId = ?')
       .get(seriesId) as { version: number | null }).version ?? 0) + 1;
     const readySeq = ((db.prepare('SELECT MAX(readySeq) AS readySeq FROM team_files')

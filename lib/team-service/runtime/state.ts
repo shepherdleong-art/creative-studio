@@ -7,6 +7,8 @@ export type TeamRuntimePhase =
   | 'recovering'
   | 'recovered'
   | 'starting'
+  | 'restore_hold'
+  | 'maintenance'
   | 'ready'
   | 'draining'
   | 'stopped'

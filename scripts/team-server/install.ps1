@@ -127,7 +127,7 @@ try {
     & $node $generator --config ([System.IO.Path]::GetFullPath($ConfigPath)) --output ([string]$resolved.serviceRoot) | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'SCM/Caddy 配置生成失败' }
 
-    foreach ($name in @('service-control.mjs', 'generate-config.mjs', 'distribution-lock.json', 'common.ps1', 'generate-config.ps1', 'install.ps1', 'status.ps1', 'stop.ps1', 'preflight.ps1')) {
+    foreach ($name in @('service-control.mjs', 'generate-config.mjs', 'distribution-lock.json', 'common.ps1', 'generate-config.ps1', 'install.ps1', 'status.ps1', 'stop.ps1', 'preflight.ps1', 'backup.ps1', 'restore.ps1', 'release.ps1')) {
         Copy-TeamFile -Source (Join-Path $PSScriptRoot $name) -Destination (Join-Path ([string]$resolved.serviceRoot) $name)
     }
     Copy-TeamFile -Source (Join-Path $PSScriptRoot '..\runtime\process-tree.mjs') -Destination (Join-Path ([string]$resolved.deploymentRoot) 'runtime\process-tree.mjs')

@@ -22,6 +22,25 @@ function Get-TeamBootstrapNode {
     throw '未找到锁定 Node 运行时'
 }
 
+function Get-TeamMaintenanceRunner {
+    param([object]$Resolved)
+    $releaseRoot = [string]$Resolved.releaseRoot
+    $pointer = Join-Path ([string]$Resolved.serviceRoot) 'current-release.json'
+    if (Test-Path -LiteralPath $pointer -PathType Leaf) {
+        $current = Get-Content -LiteralPath $pointer -Raw -Encoding UTF8 | ConvertFrom-Json
+        $releaseId = [string]$current.releaseId
+        if ($releaseId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' -or $releaseId.Contains('..')) {
+            throw '当前 release 指针包含无效标识'
+        }
+        $releaseRoot = Join-Path ([string]$Resolved.deploymentRoot) ('releases\' + $releaseId)
+    }
+    $runner = Join-Path $releaseRoot 'app\scripts\team-server\maintenance.mjs'
+    if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
+        throw '当前 release 缺少维护 runner，拒绝执行维护操作'
+    }
+    return [System.IO.Path]::GetFullPath($runner)
+}
+
 function Resolve-TeamDeployment {
     param(
         [Parameter(Mandatory = $true)][string]$ConfigPath,

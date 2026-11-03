@@ -127,15 +127,22 @@ try {
   copy(caddyExe, path.join(staging, 'tools', 'caddy', 'caddy.exe'));
   copy(winswExe, path.join(staging, 'tools', 'winsw', 'WinSW.exe'));
   copy(path.join(repoRoot, 'scripts', 'start-litellm-proxy.py'), path.join(staging, 'app', 'runtime', 'start-litellm-proxy.py'));
-  for (const name of ['init-admin.mjs', 'recover-admin.mjs', 'verify-provider-budgets.mjs']) {
+  copy(path.join(repoRoot, 'lib'), path.join(staging, 'app', 'lib'));
+  for (const name of [
+    'init-admin.mjs', 'recover-admin.mjs', 'verify-provider-budgets.mjs', 'maintenance.mjs',
+    'distribution.mjs', 'generate-config.mjs', 'service-control.mjs',
+  ]) {
     copy(path.join(repoRoot, 'scripts', 'team-server', name), path.join(staging, 'app', 'scripts', 'team-server', name));
   }
+  copy(path.join(repoRoot, 'scripts', 'runtime', 'process-tree.mjs'), path.join(staging, 'app', 'scripts', 'runtime', 'process-tree.mjs'));
+  copy(path.join(repoRoot, 'scripts', 'packaging', 'forbidden-paths.json'), path.join(staging, 'app', 'scripts', 'packaging', 'forbidden-paths.json'));
   copy(path.join(repoRoot, 'scripts', 'runtime', 'process-tree.mjs'), path.join(staging, 'runtime', 'process-tree.mjs'));
   copy(lockPath, path.join(staging, 'service', 'distribution-lock.json'));
   copy(path.join(repoRoot, 'scripts', 'packaging', 'forbidden-paths.json'), path.join(staging, 'service', 'packaging', 'forbidden-paths.json'));
   for (const name of [
     'distribution.mjs', 'generate-config.mjs', 'service-control.mjs', 'probe-team-server.mjs',
     'common.ps1', 'generate-config.ps1', 'install.ps1', 'status.ps1', 'stop.ps1', 'preflight.ps1',
+    'backup.ps1', 'restore.ps1', 'release.ps1',
   ]) copy(path.join(repoRoot, 'scripts', 'team-server', name), path.join(staging, 'service', name));
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));

@@ -226,8 +226,8 @@ export function createBackupPin(
     `).run(id, principal.userId, input.releaseId, input.configVersion, at);
     registerRootScope(db, { resourceType: 'backup_pin', resourceId: id, ownerUserId: principal.userId });
     for (const fileId of fileIds) {
-      const file = db.prepare("SELECT 1 FROM team_files WHERE id = ? AND state = 'ready'").get(fileId);
-      if (!file) throw new ResourceAccessError('resource_not_found', '只能 pin 已就绪的不可变文件。');
+      const file = db.prepare("SELECT 1 FROM team_files WHERE id = ? AND state IN ('ready', 'purge_pending')").get(fileId);
+      if (!file) throw new ResourceAccessError('resource_not_found', '只能 pin 已就绪或延期清理的不可变文件。');
       if (cleaning.get(fileId)) throw new ResourceAccessError('scope_inconsistent', '文件正在物理清理，不能建立备份 pin。', 409);
       insertReference.run(fileId, id, at);
     }
@@ -269,6 +269,8 @@ export function acquireLifecycleBarrier(
   db.transaction(() => {
     const running = db.prepare("SELECT 1 FROM team_cleanup_jobs WHERE status = 'running' LIMIT 1").get();
     if (running) throw new ResourceAccessError('scope_inconsistent', '物理清理正在执行，暂不能建立维护屏障。', 409);
+    const active = db.prepare('SELECT 1 FROM team_lifecycle_barriers WHERE releasedAt IS NULL LIMIT 1').get();
+    if (active) throw new ResourceAccessError('scope_inconsistent', '已有维护屏障生效，不能并发进入发布、配置或备份临界区。', 409);
     db.prepare(`
       INSERT INTO team_lifecycle_barriers (id, kind, ownerUserId, metadataJson, createdAt)
       VALUES (?, ?, ?, ?, ?)
