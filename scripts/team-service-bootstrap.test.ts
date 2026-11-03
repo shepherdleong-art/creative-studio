@@ -132,6 +132,25 @@ try {
 
   {
     resetTeamRuntimeStateForTests();
+    const { bootstrap, db, events } = setup('maintenance', [], true);
+    await bootstrap.ensureSchemaReady();
+    db.prepare("UPDATE team_service_state SET maintenance = 1, reason = 'fixture' WHERE id = 1").run();
+    await bootstrap.registerRecovery();
+    await bootstrap.recover();
+    await bootstrap.start();
+    assert.deepEqual(events, [
+      'execution.schema', 'a.schema', 'b.schema',
+      'execution.register', 'a.register', 'b.register',
+      'execution.recover', 'a.recover', 'b.recover',
+      'execution.start', 'a.start', 'b.start',
+    ], '普通维护态仍需恢复已受理业务，只有 restore hold 才跳过业务 recover/start');
+    assert.equal(getTeamRuntimeState().phase, 'maintenance');
+    assert.equal(getTeamRuntimeState().ready, false);
+    assert.equal(getTeamRuntimeState().maintenance, true);
+  }
+
+  {
+    resetTeamRuntimeStateForTests();
     const { bootstrap, db, events } = setup('migration-failure');
     db.exec('CREATE TABLE team_service_state (id INTEGER PRIMARY KEY)');
     await assert.rejects(

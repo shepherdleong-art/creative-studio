@@ -37,10 +37,7 @@ try {
         Assert-NoReparsePoint -Path ([string]$root)
     }
     $node = Get-TeamBootstrapNode -ConfigPath $ConfigPath
-    $runner = Join-Path $PSScriptRoot 'maintenance.mjs'
-    if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
-        $runner = Join-Path $PSScriptRoot '..\app\scripts\team-server\maintenance.mjs'
-    }
+    $runner = Get-TeamMaintenanceRunner -Resolved $resolved
     $command = if ($Mode -eq 'update') { 'release' } else { 'rollback' }
     $arguments = @($runner, $command, '--config', [System.IO.Path]::GetFullPath($ConfigPath),
         '--new-release-id', $NewReleaseId, '--operation-id', $OperationId)

@@ -108,7 +108,10 @@ try {
   let copied = 0;
   const result = await createTeamBackup({
     db, principal: admin, dataRoot, storageRoot, backupRoot, deploymentId: 'deployment-b01', type: 'manual',
-    release: { releaseId: 'release-1', packageSha256: 'a'.repeat(64) },
+    release: async () => {
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM team_lifecycle_barriers WHERE releasedAt IS NULL').pluck().get(), 1);
+      return { releaseId: 'release-1', packageSha256: 'a'.repeat(64) };
+    },
     config: { version: 'config-1', filePath: configPath },
     async copyFile(source, destination) {
       copied += 1;
@@ -149,6 +152,15 @@ try {
   assert.equal(JSON.parse(fs.readFileSync(path.join(result.directory, 'success.json'), 'utf8')).status, 'success');
   const pin = db.prepare('SELECT releasedAt FROM team_backup_pins WHERE id = ?').get(result.manifest.pin!.id) as { releasedAt: string | null };
   assert.equal(pin.releasedAt, null);
+
+  const deferredCleanup = await createTeamBackup({
+    db, principal: admin, dataRoot, storageRoot, backupRoot, deploymentId: 'deployment-b01', type: 'manual',
+    release: { releaseId: 'release-1', packageSha256: 'a'.repeat(64) },
+    config: { version: 'config-2', filePath: configPath }, backupId: 'deferred-cleanup',
+  });
+  assert.equal(deferredCleanup.manifest.files.find((file) => file.fileId === fileA.id)?.state, 'purge_pending');
+  assert.ok(deferredCleanup.manifest.pin?.id, '延期清理文件也必须在解冻前完成 pin');
+  assert.equal((await verifyTeamBackup(deferredCleanup.directory)).verified, true);
 
   console.log('team maintenance backup barrier tests passed');
 } finally {

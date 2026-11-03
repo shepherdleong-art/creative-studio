@@ -30,10 +30,7 @@ try {
         Assert-NoReparsePoint -Path ([string]$root)
     }
     $node = Get-TeamBootstrapNode -ConfigPath $ConfigPath
-    $runner = Join-Path $PSScriptRoot 'maintenance.mjs'
-    if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
-        $runner = Join-Path $PSScriptRoot '..\app\scripts\team-server\maintenance.mjs'
-    }
+    $runner = Get-TeamMaintenanceRunner -Resolved $resolved
     $arguments = @($runner, 'backup', '--config', [System.IO.Path]::GetFullPath($ConfigPath), '--type', $Type)
     if ($BackupId) { $arguments += @('--backup-id', $BackupId) }
     $raw = (& $node @arguments) -join "`n"

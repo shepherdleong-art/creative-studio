@@ -102,6 +102,16 @@ try {
   assert.equal(dailyJob.latestRecoveryEvidence, null);
   assert.notDeepEqual([...fs.readFileSync(dailyJobPath).subarray(0, 3)], [0xef, 0xbb, 0xbf]);
 
+  const serviceRoot = path.join(deploymentRoot, 'service');
+  fs.mkdirSync(serviceRoot, { recursive: true });
+  fs.writeFileSync(path.join(serviceRoot, 'current-release.json'), JSON.stringify({
+    schemaVersion: 1, releaseId: 'release-1', packageSha256: sha256(path.join(releaseRoot, 'release-manifest.json')),
+    switchedAt: new Date().toISOString(),
+  }));
+  const staleConfig = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { releaseId: string };
+  staleConfig.releaseId = 'stale-release-not-installed';
+  fs.writeFileSync(configPath, JSON.stringify(staleConfig));
+
   const restoreRoot = path.join(fixture, 'restored');
   const restored = invoke('restore', '--config', configPath, '--backup-type', 'daily', '--backup-id', 'daily-1',
     '--restore-root', restoreRoot, '--allow-fixture-release');
@@ -114,6 +124,8 @@ try {
 
   const second = invoke('backup', '--config', configPath, '--type', 'daily', '--backup-id', 'daily-2', '--allow-fixture-release');
   assert.equal(second.status, 0, `${second.stdout}${second.stderr}`);
+  const secondManifest = JSON.parse(fs.readFileSync(path.join(backupRoot, 'daily', 'daily-2', 'manifest.json'), 'utf8'));
+  assert.equal(secondManifest.release.releaseId, 'release-1', '备份必须固定 current release，而非过期配置 releaseId');
   dailyJob = JSON.parse(fs.readFileSync(dailyJobPath, 'utf8'));
   assert.equal(dailyJob.backupId, 'daily-2');
   assert.equal(dailyJob.latestRecoveryEvidence.backupId, 'daily-1');

@@ -100,7 +100,9 @@ export interface CreateTeamBackupOptions {
   backupRoot: string;
   deploymentId: string;
   type: TeamBackupType;
-  release: { releaseId: string; packageSha256: string };
+  release: { releaseId: string; packageSha256: string } | (() =>
+    | { releaseId: string; packageSha256: string }
+    | Promise<{ releaseId: string; packageSha256: string }>);
   config: { version?: string; filePath: string };
   backupId?: string;
   now?: () => Date;
@@ -182,8 +184,6 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
   const now = options.now ?? (() => new Date());
   const backupId = options.backupId ?? `${now().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
   safeMaintenanceId(options.deploymentId, 'deploymentId');
-  safeMaintenanceId(options.release.releaseId, 'releaseId');
-  if (!/^[0-9a-f]{64}$/.test(options.release.packageSha256)) throw new Error('release 包哈希无效');
   let configVersion = options.config.version?.trim() ?? '';
   if (options.config.version !== undefined && !configVersion) throw new Error('配置版本不能为空');
   const paths = backupPaths(options.backupRoot, options.type, backupId);
@@ -225,14 +225,20 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
       schemaVersion: 1, backupId, deploymentId: options.deploymentId, type: options.type,
     });
     const barrier = acquireLifecycleBarrier(options.db, options.principal, 'backup', {
-      backupId, releaseId: options.release.releaseId, configVersion: configVersion || 'snapshot-pending',
+      backupId,
+      releaseId: typeof options.release === 'function' ? 'snapshot-pending' : options.release.releaseId,
+      configVersion: configVersion || 'snapshot-pending',
     });
     barrierId = barrier.id;
+    let release: { releaseId: string; packageSha256: string };
     let files: TeamBackupFileEntry[];
     let configHash: string;
     let configBytes: number;
     let journal: TeamBackupManifest['journal'];
     try {
+      release = typeof options.release === 'function' ? await options.release() : options.release;
+      safeMaintenanceId(release.releaseId, 'releaseId');
+      if (!/^[0-9a-f]{64}$/.test(release.packageSha256)) throw new Error('release 包哈希无效');
       const databasePath = path.join(paths.staging, 'data', 'workbench.db');
       await options.db.backup(databasePath);
       validateDatabase(databasePath);
@@ -276,7 +282,7 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
 
       if (files.length > 0) {
         const pin = createBackupPin(options.db, options.principal, {
-          releaseId: options.release.releaseId,
+          releaseId: release.releaseId,
           configVersion,
           fileIds: files.map((file) => file.fileId),
         });
@@ -315,7 +321,7 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
       createdAt: now().toISOString(),
       deploymentId: options.deploymentId,
       dataRootIdentity: dataRootIdentity(options.dataRoot),
-      release: { ...options.release },
+      release: { ...release },
       config: {
         version: configVersion,
         relativePath: 'config/deployment.json',
@@ -332,7 +338,7 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
       },
       journal: journal!,
       files,
-      pin: pinId ? { id: pinId, releaseId: options.release.releaseId, configVersion } : null,
+      pin: pinId ? { id: pinId, releaseId: release.releaseId, configVersion } : null,
     };
     await writeJsonAtomic(path.join(paths.staging, 'manifest.json'), manifest);
     const stagingVerification = await verifyTeamBackup(paths.staging, { requireSuccess: false });

@@ -49,6 +49,14 @@ function releaseIdentity(config, releaseId, allowFixture = false) {
     packageSha256: sha256File(path.join(releaseRoot, 'release-manifest.json')),
   };
 }
+async function currentReleaseIdentity(config) {
+  const pointer = path.join(config.serviceRoot, 'current-release.json');
+  if (!fs.existsSync(pointer)) return releaseIdentity(config, config.releaseId, args.includes('--allow-fixture-release'));
+  const current = await readTeamReleasePointer(config.serviceRoot);
+  const verified = releaseIdentity(config, current.releaseId, args.includes('--allow-fixture-release'));
+  if (verified.packageSha256 !== current.packageSha256) throw new Error('当前 release 指针与不可变包哈希不符');
+  return verified;
+}
 function credential(config) {
   const file = config.controlCredentialFile;
   if (!fs.lstatSync(file).isFile() || fs.lstatSync(file).isSymbolicLink()) throw new Error('控制凭据必须是受保护普通文件');
@@ -189,7 +197,7 @@ async function drain(db) {
   return { pendingTasks: 1, unknownAttemptIds: [] };
 }
 async function makeBackup(config, db, principal, type, backupId, configPath, reuseExisting = false) {
-  const release = releaseIdentity(config, config.releaseId, args.includes('--allow-fixture-release'));
+  const release = await currentReleaseIdentity(config);
   if (backupId && reuseExisting) {
     const directory = backupDirectory(config, type, backupId);
     if (fs.existsSync(directory)) {
@@ -208,7 +216,17 @@ async function makeBackup(config, db, principal, type, backupId, configPath, reu
   }
   return createTeamBackup({
     db, principal, dataRoot: config.dataRoot, storageRoot: path.join(config.dataRoot, 'storage'),
-    backupRoot: config.backupRoot, deploymentId: config.deploymentId, type, release,
+    backupRoot: config.backupRoot, deploymentId: config.deploymentId, type,
+    release: async () => {
+      const pointer = path.join(config.serviceRoot, 'current-release.json');
+      if (fs.existsSync(pointer)) {
+        const current = await readTeamReleasePointer(config.serviceRoot);
+        if (current.releaseId !== release.releaseId || current.packageSha256 !== release.packageSha256) {
+          throw new Error('备份屏障建立前 current release 已变化，拒绝混用快照身份');
+        }
+      }
+      return release;
+    },
     config: { filePath: configPath }, ...(backupId ? { backupId } : {}),
     protectConfig: protectConfig(config),
   });
@@ -257,11 +275,11 @@ try {
     } else if (command === 'restore') {
       const type = required('--backup-type');
       const backupId = required('--backup-id');
-      releaseIdentity(config, config.releaseId, args.includes('--allow-fixture-release'));
+      const currentRelease = await currentReleaseIdentity(config);
       const result = await restoreTeamBackup({
         backupDirectory: backupDirectory(config, type, backupId),
         restoreRoot: required('--restore-root'), deploymentId: config.deploymentId,
-        expectedReleaseId: config.releaseId, currentDb: db,
+        expectedReleaseId: currentRelease.releaseId, currentDb: db,
         currentJournalDirectory: path.join(config.dataRoot, 'storage', 'execution-journal', config.deploymentId),
         protectConfig: protectConfig(config),
       });
@@ -269,9 +287,7 @@ try {
     } else if (command === 'release' || command === 'rollback') {
       const newReleaseId = required('--new-release-id');
       const operationId = safeId(required('--operation-id'));
-      const current = fs.existsSync(path.join(config.serviceRoot, 'current-release.json'))
-        ? await readTeamReleasePointer(config.serviceRoot)
-        : releaseIdentity(config, config.releaseId, args.includes('--allow-fixture-release'));
+      const current = await currentReleaseIdentity(config);
       const target = releaseIdentity(config, newReleaseId, args.includes('--allow-fixture-release'));
       const fromRelease = command === 'release' ? current : current;
       const toRelease = target;
@@ -332,11 +348,7 @@ try {
           currentRelease: current, targetRelease: target,
           adapters: {
             stopCurrentInstance: releaseAdapters.stopOldInstance,
-            async switchRelease() {
-              await switchTeamReleasePointerIdempotent({
-                serviceRoot: config.serviceRoot, release: target, expectedReleaseId: current.releaseId,
-              });
-            },
+            switchRelease: releaseAdapters.switchRelease,
             startMaintenance: releaseAdapters.startMaintenance,
             selfCheck: releaseAdapters.selfCheck,
             resume: releaseAdapters.resume,

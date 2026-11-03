@@ -78,10 +78,41 @@ test('维护脚本默认 dry-run，不创建部署、数据、备份或恢复根
   }
 });
 
+test('打包后的维护入口从 current release 定位真实 runner', { skip: process.platform !== 'win32' }, (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'team-maintenance-runner-path-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const deploymentRoot = path.join(directory, 'deployment');
+  const serviceRoot = path.join(deploymentRoot, 'service');
+  const oldRunner = path.join(deploymentRoot, 'releases', 'old-release', 'app', 'scripts', 'team-server', 'maintenance.mjs');
+  const newRunner = path.join(deploymentRoot, 'releases', 'new-release', 'app', 'scripts', 'team-server', 'maintenance.mjs');
+  for (const runner of [oldRunner, newRunner]) {
+    fs.mkdirSync(path.dirname(runner), { recursive: true });
+    fs.writeFileSync(runner, '// fixture\n');
+  }
+  fs.mkdirSync(serviceRoot, { recursive: true });
+  fs.writeFileSync(path.join(serviceRoot, 'current-release.json'), JSON.stringify({ releaseId: 'new-release' }));
+  const result = spawnSync('powershell.exe', [
+    '-NoProfile', '-Command',
+    '. $env:TEAM_COMMON; $resolved = $env:TEAM_RESOLVED | ConvertFrom-Json; Get-TeamMaintenanceRunner -Resolved $resolved',
+  ], {
+    encoding: 'utf8', windowsHide: true, timeout: 30_000,
+    env: {
+      ...process.env,
+      TEAM_COMMON: path.join(scriptRoot, 'common.ps1'),
+      TEAM_RESOLVED: JSON.stringify({
+        deploymentRoot, serviceRoot,
+        releaseRoot: path.join(deploymentRoot, 'releases', 'old-release'),
+      }),
+    },
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout.trim(), newRunner);
+});
+
 test('Apply 只调用维护 runner，PS 不复制 SQL 或 manifest 算法', () => {
   for (const name of scripts) {
     const source = fs.readFileSync(path.join(scriptRoot, name), 'utf8');
-    assert.match(source, /maintenance\.mjs/);
+    assert.match(source, /Get-TeamMaintenanceRunner/);
     assert.match(source, /if \(-not \$Apply\)/);
     assert.doesNotMatch(source, /better-sqlite3|CREATE TABLE|PRAGMA|sha256|Get-FileHash/i);
   }

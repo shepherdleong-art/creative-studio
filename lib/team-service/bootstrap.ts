@@ -202,14 +202,11 @@ export function createTeamServiceBootstrap(options: {
     setTeamRuntimePhase('recovering', { ready: false, maintenance: true });
     try {
       const restoreHold = hasTeamRestoreHold(options.config.dataRoot);
-      const maintenance = restoreHold || Boolean(options.db.prepare(
-        'SELECT maintenance FROM team_service_state WHERE id = 1',
-      ).pluck().get());
       for (const lifecycle of modules) {
-        if (maintenance && lifecycle.name !== 'execution') continue;
+        if (restoreHold && lifecycle.name !== 'execution') continue;
         await lifecycle.recover(context);
       }
-      if (!maintenance) {
+      if (!restoreHold) {
         const storageRoot = path.join(options.config.dataRoot, 'storage');
         await recoverTeamUploads(options.db, { storageRoot, space: teamTransferSpace(storageRoot) });
       }
@@ -230,19 +227,23 @@ export function createTeamServiceBootstrap(options: {
       const maintenance = restoreHold || Boolean(options.db.prepare(
         'SELECT maintenance FROM team_service_state WHERE id = 1',
       ).pluck().get());
-      if (maintenance) {
+      if (restoreHold) {
         options.execution?.closeNewWork();
         stage = 4;
-        setTeamRuntimePhase(restoreHold ? 'restore_hold' : 'maintenance', {
+        setTeamRuntimePhase('restore_hold', {
           ready: false,
           maintenance: true,
-          code: restoreHold ? 'restore_reconciliation_required' : 'maintenance',
+          code: 'restore_reconciliation_required',
         });
         return;
       }
       for (const lifecycle of modules) await lifecycle.start(context);
       stage = 4;
-      setTeamRuntimePhase('ready', { ready: true, maintenance: false, code: undefined });
+      if (maintenance) {
+        setTeamRuntimePhase('maintenance', { ready: false, maintenance: true, code: 'maintenance' });
+      } else {
+        setTeamRuntimePhase('ready', { ready: true, maintenance: false, code: undefined });
+      }
     } catch (error) {
       failed(error);
     }

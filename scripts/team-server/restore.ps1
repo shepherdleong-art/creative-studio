@@ -33,10 +33,7 @@ try {
         Assert-NoReparsePoint -Path ([string]$root)
     }
     $node = Get-TeamBootstrapNode -ConfigPath $ConfigPath
-    $runner = Join-Path $PSScriptRoot 'maintenance.mjs'
-    if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
-        $runner = Join-Path $PSScriptRoot '..\app\scripts\team-server\maintenance.mjs'
-    }
+    $runner = Get-TeamMaintenanceRunner -Resolved $resolved
     $raw = (& $node $runner 'restore' '--config' ([System.IO.Path]::GetFullPath($ConfigPath)) `
         '--backup-id' $BackupId '--backup-type' $BackupType '--restore-root' $fullRestoreRoot) -join "`n"
     if ($LASTEXITCODE -ne 0 -or -not $raw) { throw '隔离恢复失败；旧根与 journal 未改写' }
