@@ -224,6 +224,8 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/backup-pins/[id]': 'DELETE',
   '/api/team/health/live': 'GET',
   '/api/team/health/ready': 'GET',
+  '/api/team/operations/status': 'GET',
+  '/api/team/operations/shutdown': 'POST',
   '/api/team/files/[id]': 'GET',
   '/api/team/uploads': 'POST',
   '/api/team/uploads/[id]': 'GET DELETE',
@@ -252,6 +254,7 @@ const ROUTE_METHODS: Record<string, string> = {
 const PUBLIC = new Set([
   '/api/team/auth/csrf GET', '/api/team/auth/login POST', '/api/team/auth/session GET',
   '/api/team/client-capabilities GET', '/api/team/health/live GET', '/api/team/health/ready GET',
+  '/api/team/operations/status GET', '/api/team/operations/shutdown POST',
 ]);
 const AUTHENTICATED = new Set([
   '/api/team/auth/change-password POST', '/api/team/auth/logout POST',
@@ -352,7 +355,9 @@ export const TEAM_ROUTE_POLICIES: TeamRoutePolicy[] = Object.entries(ROUTE_METHO
       route,
       method: httpMethod,
       category,
-      csrf: !['GET', 'HEAD', 'OPTIONS'].includes(httpMethod),
+      csrf: key === '/api/team/operations/shutdown POST'
+        ? false
+        : !['GET', 'HEAD', 'OPTIONS'].includes(httpMethod),
       ...(category === 'resource' ? {
         resource: inferTeamResource(route, httpMethod),
         action: ['GET', 'HEAD', 'OPTIONS'].includes(httpMethod) ? 'read' as const : 'write' as const,

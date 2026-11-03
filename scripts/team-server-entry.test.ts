@@ -113,9 +113,10 @@ try {
               const base = 'http://127.0.0.1:' + options.port;
               const businessBefore = await fetch(base + '/api/projects').then((res) => res.status);
               const live = await fetch(base + '/api/team/health/live').then((res) => res.status);
+              const operationBefore = await fetch(base + '/api/team/operations/status').then((res) => res.status);
               await fetch(base + '/api/team/health/ready?fixtureReady=1');
               const businessAfter = await fetch(base + '/api/projects').then((res) => res.status);
-              globalThis.__entryChecks = { businessBefore, live, businessAfter };
+              globalThis.__entryChecks = { businessBefore, live, operationBefore, businessAfter };
               server.close((error) => error ? reject(error) : resolve(options));
             })().catch(reject);
           });
@@ -134,13 +135,13 @@ try {
   assert.equal(success.code, 0, success.stderr);
   const report = JSON.parse(success.stdout.trim().split('\n').at(-1) ?? '') as {
     options: { hostname: string; port: number };
-    checks: { businessBefore: number; live: number; businessAfter: number };
+    checks: { businessBefore: number; live: number; operationBefore: number; businessAfter: number };
     portEnv: string;
     hostnameEnv: string;
   };
   assert.deepEqual(report, {
     options: { hostname: '127.0.0.1', port },
-    checks: { businessBefore: 503, live: 200, businessAfter: 200 },
+    checks: { businessBefore: 503, live: 200, operationBefore: 200, businessAfter: 200 },
     portEnv: String(port),
     hostnameEnv: '127.0.0.1',
   }, '公共入口使用固定回环端口，且只在 team readiness 后开放业务处理器');
