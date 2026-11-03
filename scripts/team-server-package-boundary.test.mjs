@@ -126,6 +126,18 @@ test('server 独立白名单装配、受控 manifest 与精确敏感边界', (t)
   assert.notEqual(second.status, 0, '不得覆盖既有 release');
 });
 
+test('standalone 已含 lib 时用受控源码目录替换而不重复合并', (t) => {
+  const context = fixture(t);
+  const stale = path.join(context.standalone, 'lib', 'batch-production', 'stale.ts');
+  fs.mkdirSync(path.dirname(stale), { recursive: true });
+  fs.writeFileSync(stale, '// traced stale copy\n');
+  const output = path.join(context.directory, 'release');
+  const result = build(context, output);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(fs.existsSync(path.join(output, 'app', 'lib', 'batch-production', 'stale.ts')), false);
+  assert.ok(fs.existsSync(path.join(output, 'app', 'lib', 'team-service', 'maintenance', 'backup.ts')));
+});
+
 test('嵌套环境文件、私钥、数据库和目录链接均在发布前 fail closed', (t) => {
   for (const [relative, content] of [
     ['app/nested/.env.local', 'API_KEY=do-not-package'],

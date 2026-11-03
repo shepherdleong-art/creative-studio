@@ -127,6 +127,8 @@ try {
   copy(caddyExe, path.join(staging, 'tools', 'caddy', 'caddy.exe'));
   copy(winswExe, path.join(staging, 'tools', 'winsw', 'WinSW.exe'));
   copy(path.join(repoRoot, 'scripts', 'start-litellm-proxy.py'), path.join(staging, 'app', 'runtime', 'start-litellm-proxy.py'));
+  // Next 可能把部分 lib 追踪进 standalone；运维 CLI 需要完整且一致的源码副本。
+  fs.rmSync(path.join(staging, 'app', 'lib'), { recursive: true, force: true });
   copy(path.join(repoRoot, 'lib'), path.join(staging, 'app', 'lib'));
   for (const name of [
     'init-admin.mjs', 'recover-admin.mjs', 'verify-provider-budgets.mjs', 'maintenance.mjs',
