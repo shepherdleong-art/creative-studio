@@ -46,13 +46,17 @@ try {
   ].sort(), '轻客户端顶层必须等于独立白名单');
   for (const required of [
     'start-client.cmd', 'launcher.mjs', 'update-public-key.pem', 'current.json',
-    'helper/update-helper.js', 'runtime/electron.exe',
+    'helper/update-helper.js', 'helper/atomic-json.js', 'runtime/electron.exe',
     'versions/test-release/electron/electron.exe',
     'versions/test-release/package.json',
     'versions/test-release/dist-desktop/main.js',
     'versions/test-release/release.json',
     'updates/test-release.zip', 'updates/test-release.manifest.json',
   ]) assert.equal(fs.existsSync(path.join(output, required)), true, required);
+  const helperLoad = spawnSync(process.execPath, [
+    '-e', 'require(process.argv[1]);', path.join(output, 'helper', 'update-helper.js'),
+  ], { encoding: 'utf8' });
+  assert.equal(helperLoad.status, 0, `独立更新助手及其共享依赖必须可从装配目录加载：${helperLoad.stderr}`);
 
   const forbiddenDirectories = new Set([
     '.next', 'node_modules', 'data', 'storage', 'outputs', 'docs', 'scripts',

@@ -1252,9 +1252,12 @@ function claimNeedsCheckImageJob(projectId: string, jobId?: string): JobRecord |
 function claimDeferredImageJob(projectId: string, jobId?: string): JobRecord | null {
   const db = getDb();
   const job = db.prepare(`
-    SELECT * FROM jobs
-    WHERE projectId = ? AND status = 'deferred' AND (? IS NULL OR id = ?)
-    ORDER BY createdAt, rowid LIMIT 1
+    SELECT jobs.* FROM jobs
+    LEFT JOIN execution_operations AS deferred_operation
+      ON deferred_operation.module = 'image' AND deferred_operation.taskId = jobs.id
+      AND deferred_operation.operationKey = 'image/' || jobs.id || '/submit/r' || COALESCE(jobs.executionRevision, 0)
+    WHERE jobs.projectId = ? AND jobs.status = 'deferred' AND (? IS NULL OR jobs.id = ?)
+    ORDER BY COALESCE(deferred_operation.updatedAt, jobs.createdAt), jobs.createdAt, jobs.rowid LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as JobRecord | undefined;
   if (!job) return null;
   const claimed = db.prepare(`UPDATE jobs SET status = 'running', errorMessage = NULL

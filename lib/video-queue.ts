@@ -951,9 +951,12 @@ interface ClaimedVideoJob extends VideoJobRecord {
 function claimDeferredVideoJob(projectId: string, jobId?: string): ClaimedVideoJob | null {
   const db = getDb();
   const job = db.prepare(`
-    SELECT * FROM video_jobs
-    WHERE projectId = ? AND status = 'deferred' AND (? IS NULL OR id = ?)
-    ORDER BY createdAt, rowid LIMIT 1
+    SELECT video_jobs.* FROM video_jobs
+    LEFT JOIN execution_operations AS deferred_operation
+      ON deferred_operation.module = 'video' AND deferred_operation.taskId = video_jobs.id
+      AND deferred_operation.operationKey = 'video/' || video_jobs.id || '/submit/r' || COALESCE(video_jobs.executionRevision, 0)
+    WHERE video_jobs.projectId = ? AND video_jobs.status = 'deferred' AND (? IS NULL OR video_jobs.id = ?)
+    ORDER BY COALESCE(deferred_operation.updatedAt, video_jobs.createdAt), video_jobs.createdAt, video_jobs.rowid LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as VideoJobRecord | undefined;
   if (!job) return null;
   const claimed = db.prepare(`UPDATE video_jobs SET status = 'running', errorMessage = NULL

@@ -72,7 +72,7 @@ try {
   copy(electronDist, path.join(staging, 'runtime'));
   copy(path.join(repoRoot, 'scripts', 'team-client', 'launcher.mjs'), path.join(staging, 'launcher.mjs'));
   copy(path.join(repoRoot, 'scripts', 'team-client', 'start-client.cmd'), path.join(staging, 'start-client.cmd'));
-  for (const file of ['update-helper.js', 'update-coordinator.js', 'safe-zip.js', 'update-package.js']) {
+  for (const file of ['update-helper.js', 'update-coordinator.js', 'atomic-json.js', 'safe-zip.js', 'update-package.js']) {
     copy(path.join(repoRoot, 'dist-desktop', 'client', file), path.join(staging, 'helper', file));
   }
   write('update-public-key.pem', publicKey);

@@ -483,6 +483,36 @@ try {
   assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-fair-a'").pluck().get() as string), 'succeeded');
   assert.equal(imageRequests.filter((url) => url === '/fair-a/v1/images/edits').length, 1);
   assert.equal(imageRequests.filter((url) => url === '/fair-b/v1/images/edits').length, 1);
+
+  imageJob('job-fair-c', 'project-fair', 'member-fair', 'fair-image-a');
+  imageJob('job-fair-d', 'project-fair', 'member-fair', 'fair-image-b');
+  db.prepare("UPDATE jobs SET status = 'deferred' WHERE id IN ('job-fair-c', 'job-fair-d')").run();
+  const secondBlocker = getTeamExecutionFacade().enqueue({
+    operationKey: 'image/fairness-second-blocker/submit/r0', actor: { userId: 'member-image' },
+    scope: { resourceType: 'project', resourceId: 'project-image' },
+    module: 'image', taskId: 'fairness-second-blocker', step: 'submit', inputRevision: 'r0',
+    businessAttempt: { id: 'fairness-second-blocker:r0', number: 1 },
+    inputSnapshot: { taskId: 'fairness-second-blocker' }, inputHash: 'fairness-second-blocker',
+    continuationKey: 'legacy-image.submit', providerSnapshot: { providerId: 'fair-image-a' },
+    requiredPools: [fairnessPool], quote: { kind: 'unpriced' },
+  });
+  const secondBlockerAdmission = getTeamExecutionFacade().admit({
+    instanceId: 'legacy-media-test-instance', fence: 1, operationId: secondBlocker.operation.id,
+  });
+  assert.equal(secondBlockerAdmission.kind, 'admitted');
+  if (secondBlockerAdmission.kind !== 'admitted') throw new Error('second fairness blocker must hold the pool');
+  const deferredFairRun = queue.runQueue({ projectId: 'project-fair', concurrency: 1, maxAttempts: 2, timeoutMs: 60_000 });
+  const deferredFairDeadline = Date.now() + 2_000;
+  while (Date.now() < deferredFairDeadline
+    && db.prepare("SELECT status FROM jobs WHERE id = 'job-fair-d'").pluck().get() !== 'succeeded') await sleep(20);
+  assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-fair-d'").pluck().get() as string), 'succeeded',
+    '两个持久 deferred 任务也必须轮转，A 的不可用池不得让 B 永久饥饿');
+  assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-fair-c'").pluck().get() as string), 'deferred');
+  await getTeamExecutionFacade().settle({
+    attemptId: secondBlockerAdmission.grant.attempt.id, outcome: 'not_created', actualCost: null, remoteTerminal: true,
+  });
+  await deferredFairRun;
+  assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-fair-c'").pluck().get() as string), 'succeeded');
   console.log('legacy media persistent-deferred fairness test passed');
 } finally {
   releaseImage();
