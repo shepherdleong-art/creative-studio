@@ -33,13 +33,15 @@ copyDirectory(join(root, 'public'), join(standaloneDir, 'public'));
 // main process can learn the OS-assigned port and launch identity.
 // Keep the Next-starting wrapper outside desktop/ so the desktop shell's
 // dependency boundary cannot transitively include the business/native graph.
-const serverEntrySource = join(root, 'runtime', 'server-entry.js');
-if (!existsSync(serverEntrySource)) {
-  throw new Error(`Missing required runtime server entry: ${serverEntrySource}`);
-}
 rmSync(join(standaloneDir, 'runtime'), { recursive: true, force: true });
 mkdirSync(join(standaloneDir, 'runtime'), { recursive: true });
-copyFileSync(serverEntrySource, join(standaloneDir, 'runtime', 'server-entry.js'));
+for (const entryName of ['server-entry.js', 'team-server-entry.cjs']) {
+  const source = join(root, 'runtime', entryName);
+  if (!existsSync(source)) {
+    throw new Error(`Missing required runtime server entry: ${source}`);
+  }
+  copyFileSync(source, join(standaloneDir, 'runtime', entryName));
+}
 
 // ffmpeg/ffprobe 静态二进制不会被 Next 的文件追踪收录，强制拷入 standalone
 for (const pkg of ['ffmpeg-static', 'ffprobe-static']) {

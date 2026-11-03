@@ -16,6 +16,10 @@ const publicPem = publicKey.export({ type: 'spki', format: 'pem' });
 const privatePem = privateKey.export({ type: 'pkcs8', format: 'pem' });
 const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
 assert.match(packageJson.scripts['build:team-client'] ?? '', /build-team-client\.mjs/);
+const clientBuildSource = fs.readFileSync('scripts/build-team-client.mjs', 'utf8');
+assert.match(clientBuildSource, /assertExactTopLevel/, '轻客户端必须使用共享精确顶层白名单');
+assert.match(clientBuildSource, /scanDistributionPayload/, '轻客户端必须执行共享敏感内容扫描');
+assert.match(clientBuildSource, /secretCandidates|label: 'client-signing-key'/, '签名私钥必须作为扫描候选且不得写入产物');
 
 try {
   const built = spawnSync(process.execPath, [
@@ -36,6 +40,10 @@ try {
     encoding: 'utf8',
   });
   assert.equal(built.status, 0, `${built.stdout}\n${built.stderr}`);
+  assert.deepEqual(fs.readdirSync(output).sort(), [
+    'client-config.json', 'client-state', 'current.json', 'helper', 'launcher.mjs',
+    'runtime', 'start-client.cmd', 'update-public-key.pem', 'updates', 'versions',
+  ].sort(), '轻客户端顶层必须等于独立白名单');
   for (const required of [
     'start-client.cmd', 'launcher.mjs', 'update-public-key.pem', 'current.json',
     'helper/update-helper.js', 'runtime/electron.exe',

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { assertExactTopLevel, scanDistributionPayload } from './team-server/distribution.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
@@ -110,6 +111,9 @@ try {
     schemaVersion: 1, releaseId, directory: path.join('versions', releaseId), manifest,
   }, null, 2)}\n`);
 
+  assertExactTopLevel(staging, 'teamClientWhitelistGuard');
+  const secretCandidates = [{ label: 'client-signing-key', value: privateKey }];
+  scanDistributionPayload(staging, 'teamClient', secretCandidates);
   const forbiddenDirectories = new Set(['.next', 'node_modules', 'data', 'storage', 'outputs', 'docs', 'scripts', 'python-runtime', '.venv-litellm', 'app', 'components', 'lib', '.git']);
   const walk = (directory) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {

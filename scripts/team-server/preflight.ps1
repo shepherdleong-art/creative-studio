@@ -184,6 +184,23 @@ function Get-LiveSnapshot {
 
 try {
     $config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([int]$config.schemaVersion -eq 1 -and $null -eq $config.ports -and $null -ne $config.appPort) {
+        $config | Add-Member -NotePropertyName ports -NotePropertyValue @(
+            [pscustomobject]@{ name = 'app'; host = $(if ($config.appHost) { [string]$config.appHost } else { '127.0.0.1' }); port = [int]$config.appPort },
+            [pscustomobject]@{ name = 'litellm'; host = $(if ($config.liteLLMHost) { [string]$config.liteLLMHost } else { '127.0.0.1' }); port = [int]$config.liteLLMPort }
+        )
+    }
+    if ([int]$config.schemaVersion -eq 1 -and $null -eq $config.directories -and $null -ne $config.deploymentRoot) {
+        $derivedDirectories = @(
+            [pscustomobject]@{ name = 'deployment'; path = [string]$config.deploymentRoot; requiredAccess = 'read'; isOld = $false },
+            [pscustomobject]@{ name = 'data'; path = [string]$config.dataRoot; requiredAccess = 'modify'; isOld = $false },
+            [pscustomobject]@{ name = 'backup'; path = [string]$config.backupRoot; requiredAccess = 'modify'; isOld = $false }
+        )
+        foreach ($oldRoot in @($config.oldRoots)) {
+            $derivedDirectories += [pscustomobject]@{ name = 'old-data'; path = [string]$oldRoot; requiredAccess = 'read'; isOld = $true }
+        }
+        $config | Add-Member -NotePropertyName directories -NotePropertyValue $derivedDirectories
+    }
     if ([int]$config.schemaVersion -ne 1 -or $null -eq $config.ports -or $null -eq $config.directories) {
         throw 'Invalid deployment config'
     }

@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "platform": "win32",
+  "arch": "x64",
+  "winsw": {
+    "version": "2.12.0",
+    "prerelease": false,
+    "url": "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe",
+    "sha256": "05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da",
+    "assetName": "WinSW-x64.exe"
+  },
+  "caddy": {
+    "version": "2.10.2",
+    "url": "https://github.com/caddyserver/caddy/releases/download/v2.10.2/caddy_2.10.2_windows_amd64.zip",
+    "sha256": "9fd1ef9be5d9b05852b66ccc25f96f23d8651bcab20779861a745bdffa273722",
+    "officialSha512": "88347875f0cd4b5e26bb39cd1f359613f932d54158d560e03244004d1ba6e61aae0cd625ba7c913bd46df096ef973fef2249396b0bb81143414378cb4447aeb8",
+    "checksumsUrl": "https://github.com/caddyserver/caddy/releases/download/v2.10.2/caddy_2.10.2_checksums.txt",
+    "binarySha256": "586d4a4cd74bdfd2951b6b81766a32904ffa69c4f1c3d521da3870a2120f1d31"
+  },
+  "node": {
+    "version": "22.22.3",
+    "abi": 127,
+    "url": "https://nodejs.org/dist/v22.22.3/node-v22.22.3-win-x64.zip",
+    "sha256": "6c8d54f635feff4df76c2ca80f45332eb2ff57d25226edce36592e51a177ee33",
+    "checksumsUrl": "https://nodejs.org/dist/v22.22.3/SHASUMS256.txt",
+    "binarySha256": "780f44f2c53c108bae261ada21a525b4bfe733c020ac85e41bfe94479090ac9b"
+  },
+  "python": {
+    "version": "3.12.10",
+    "litellmVersion": "1.89.2",
+    "release": "20250529",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20250529/cpython-3.12.10%2B20250529-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+    "sha256": "ca22a9a9e64ecab6d0b5de7cdf8b679ccaa41e9def6aaa2b4aaa6bb23ec7aaba",
+    "dependencyLockSha256": "a7683e0fabbf38fb655023f2ec3bcb7550f22d390a9276757db8c8232ef516fa"
+  },
+  "media": [
+    {
+      "name": "ffmpeg-static",
+      "version": "5.3.0",
+      "binaryVersion": "b6.1.1",
+      "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64.gz",
+      "sha256": "8883a3dffbd0a16cf4ef95206ea05283f78908dbfb118f73c83f4951dcc06d77",
+      "npmIntegrity": "sha512-H+K6sW6TiIX6VGend0KQwthe+kaceeH/luE8dIZyOP35ik7ahYojDuqlTV1bOrtEwl01sy2HFNGQfi5IDJvotg==",
+      "files": [
+        { "path": "node_modules/ffmpeg-static/ffmpeg.exe", "sha256": "04e1307997530f9cf2fe35cba2ca7e8875ca91da02f89d6c7243df819c94ad00" }
+      ]
+    },
+    {
+      "name": "@ffprobe-installer/win32-x64",
+      "version": "5.1.0",
+      "binaryVersion": "20230213-2296078",
+      "url": "https://registry.npmjs.org/@ffprobe-installer/win32-x64/-/win32-x64-5.1.0.tgz",
+      "sha256": "97992b5e3b651c7df625831fd369eecc5ec0e9532ac98921138b1c4fbc8de96e",
+      "npmIntegrity": "sha512-jMGYeAgkrdn4e2vvYt/qakgHRE3CPju4bn5TmdPfoAm1BlX1mY9cyMd8gf5vSzI8gH8Zq5WQAyAkmekX/8TSTg==",
+      "files": [
+        { "path": "node_modules/@ffprobe-installer/win32-x64/ffprobe.exe", "sha256": "f28c4751e7367205267025aaf0fcfc921e34d9b7edaa46bd9c8abaf367fc9051" }
+      ]
+    },
+    {
+      "name": "better-sqlite3",
+      "version": "12.10.0",
+      "url": "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-12.10.0.tgz",
+      "sha256": "842b5442b62913e6b9378394ade4e80d5d2e4bbb537e0c20b11bc4cf58313d3f",
+      "npmIntegrity": "sha512-CyzaZRQKyHkB2ZInfTTl2nvT33EbDpjkLEbE8/Zck3Ll6O0qqvuGdrJ45HgtH+HykRg88ITY3AdreBGN70aBSQ==",
+      "files": [
+        { "path": "node_modules/better-sqlite3/build/Release/better_sqlite3.node", "sha256": "b936c55e4d59433fce3e84b6e98ccdc8af0e7eb9243d0c12f1570045da972b9f" }
+      ]
+    },
+    {
+      "name": "@img/sharp-win32-x64",
+      "version": "0.34.5",
+      "url": "https://registry.npmjs.org/@img/sharp-win32-x64/-/sharp-win32-x64-0.34.5.tgz",
+      "sha256": "e6c77a8f898da7c3fc17bc637e0b7af2bb99e50d61607996967930d97081c388",
+      "npmIntegrity": "sha512-+29YMsqY2/9eFEiW93eqWnuLcWcufowXewwSNIT6UwZdUUCrM3oFjMWH/Z6/TMmb4hlFenmfAVbpWeup2jryCw==",
+      "files": [
+        { "path": "node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64.node", "sha256": "afc813593f255968ddae8f1d66557e0f96484bb374606e4eb2267a7dbc7cb25a" },
+        { "path": "node_modules/@img/sharp-win32-x64/lib/libvips-42.dll", "sha256": "f8d356def73941668252347b825055310e99023ff77c7d3036e592d0771e1529" },
+        { "path": "node_modules/@img/sharp-win32-x64/lib/libvips-cpp-8.17.3.dll", "sha256": "f1b3c3eeea1b6a8292a69d78dd2cd1debacb9951cabdd9217a57e34137570cd1" }
+      ]
+    }
+  ]
+}

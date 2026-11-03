@@ -39,8 +39,9 @@ http.Server.prototype.listen = function patchedListen(...args) {
     this.on('request', (request, response) => {
       const pathname = request.url?.split('?', 1)[0]?.replace(/\/$/, '') || '/';
       const runtimeState = globalThis[runtimeStateKey]?.value;
-      const healthy = pathname === '/api/team/health/live' || pathname === '/api/team/health/ready';
-      if (healthy || (runtimeState?.ready === true && runtimeState.maintenance === false)) {
+      const infrastructure = pathname === '/api/team/health/live' || pathname === '/api/team/health/ready'
+        || pathname === '/api/team/operations/status' || pathname === '/api/team/operations/shutdown';
+      if (infrastructure || (runtimeState?.ready === true && runtimeState.maintenance === false)) {
         listener.call(this, request, response);
         return;
       }
