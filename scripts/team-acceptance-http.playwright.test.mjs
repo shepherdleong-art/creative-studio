@@ -585,6 +585,7 @@ try {
     }
   }
   await Promise.all(sessions.slice(0, concurrency).map((_, index) => loadUser(index)));
+  await stopMetrics();
   result.load = summarizeRequests(requests);
   result.load.actualDurationMs = Date.now() - loadStarted;
   result.load.independentSessions = users;
@@ -630,12 +631,12 @@ try {
   result.error = error instanceof Error ? error.stack ?? error.message : String(error);
   process.exitCode = 1;
 } finally {
-  await stopMetrics();
+  if (monitor || dbProbe) await stopMetrics();
   if (browser && browser.exitCode === null) browser.kill();
   await stopServer();
   fs.writeFileSync(path.join(evidenceDirectory, 'server.log'), sanitize(serverOutput).slice(-2_000_000));
   const safeResult = JSON.parse(sanitize(JSON.stringify(result)));
   fs.writeFileSync(resultPath, `${JSON.stringify(safeResult, null, 2)}\n`);
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   console.log(`team acceptance HTTP/browser ${result.result}: ${requests.length} measured requests, real paid calls 0`);
 }
