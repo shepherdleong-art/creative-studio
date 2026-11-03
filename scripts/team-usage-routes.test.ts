@@ -87,7 +87,7 @@ function request(url: string, cookie: string, init: RequestInit = {}): Request {
   headers.set('Cookie', `${cookie}; __Host-team_csrf=csrf-test`);
   headers.set('Origin', 'https://studio.example.test');
   headers.set('x-csrf-token', 'csrf-test');
-  headers.set('x-creative-studio-client-version', '0.7.1');
+  if (!headers.has('x-creative-studio-client-version')) headers.set('x-creative-studio-client-version', '0.7.1');
   headers.set('x-creative-studio-client-api', '1');
   return new Request(url, { ...init, headers });
 }
@@ -149,6 +149,19 @@ try {
   assert.equal(crossDiagnostic.status, 404);
   const adminErrors = await errorsRoute.GET(request(`https://studio.example.test/api/team/errors?errorId=${reported.errorId}`, adminCookie));
   assert.equal((await adminErrors.json()).items[0].actorUserId, alice.principal.userId);
+
+  const maliciousReport = await reportRoute.POST(request('https://studio.example.test/api/team/errors/report', alice.cookie, {
+    method: 'POST',
+    ...json({ clientEventId: 'route-client-malicious', stage: 'client_update', code: 'bad_signature' }),
+    headers: { 'content-type': 'application/json', 'x-creative-studio-client-version': 'Bearer SECRET' },
+  }));
+  assert.equal(maliciousReport.status, 426, '异常客户端版本应在兼容门禁被拒绝');
+  const maliciousReportText = await maliciousReport.text();
+  assert.equal(maliciousReportText.includes('Bearer'), false);
+  assert.equal(maliciousReportText.includes('SECRET'), false);
+  const errorsAfterMaliciousReport = await errorsRoute.GET(request('https://studio.example.test/api/team/errors', alice.cookie));
+  assert.equal((await errorsAfterMaliciousReport.json()).items.length, 1, '被拒绝的异常版本不得写入诊断记录');
+
   const tasks = await tasksRoute.GET(request('https://studio.example.test/api/team/tasks', alice.cookie));
   assert.equal(tasks.status, 200);
   assert.deepEqual((await tasks.json()).items, []);

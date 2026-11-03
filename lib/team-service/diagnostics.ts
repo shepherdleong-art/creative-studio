@@ -98,7 +98,9 @@ function requiredToken(value: unknown, fallback: string, maximum = 80): string {
 }
 
 function optionalVersion(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : null;
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return /^[a-z0-9][a-z0-9_.-]*$/i.test(normalized) && normalized.length <= 80 ? normalized : null;
 }
 
 function optionalStatus(value: unknown): number | null {
@@ -122,9 +124,9 @@ function mapError(row: ErrorRow): TeamErrorView {
     code: row.code,
     statusCode: row.statusCode,
     safeMessage: row.safeMessage,
-    clientVersion: row.clientVersion,
-    serverReleaseId: row.serverReleaseId,
-    configVersion: row.configVersion,
+    clientVersion: optionalVersion(row.clientVersion),
+    serverReleaseId: optionalVersion(row.serverReleaseId),
+    configVersion: optionalVersion(row.configVersion),
     createdAt: row.createdAt,
   };
 }
@@ -218,9 +220,9 @@ export function recordTeamError(db: Database.Database, input: RecordTeamErrorInp
     associated?.scopeId ?? input.scope?.resourceId ?? null,
     stage, requiredToken(input.code, 'unknown_error'), optionalStatus(input.statusCode),
     STAGE_MESSAGES[stage],
-    optionalVersion(input.clientVersion) ?? associated?.clientVersion ?? null,
-    optionalVersion(input.serverReleaseId) ?? associated?.serverReleaseId ?? null,
-    optionalVersion(input.configVersion) ?? associated?.configVersion ?? null,
+    optionalVersion(input.clientVersion) ?? optionalVersion(associated?.clientVersion),
+    optionalVersion(input.serverReleaseId) ?? optionalVersion(associated?.serverReleaseId),
+    optionalVersion(input.configVersion) ?? optionalVersion(associated?.configVersion),
     clientEventId, new Date().toISOString(),
   );
   return getError(db, id)!;

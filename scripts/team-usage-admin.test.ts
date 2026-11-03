@@ -79,9 +79,11 @@ function addUser(id: string, employeeId: string, displayName: string, role: 'emp
 addUser('admin', '0000', '管理员', 'admin');
 addUser('alice', '0001', '张三');
 addUser('bob', '0002', '=2+3');
+addUser('carol', '0003', '王五');
 for (const actorId of ['alice', 'bob']) {
   updateActorPolicy(db, { actorId, monthlyLimitMinor: actorId === 'alice' ? 500 : 1_000, personalConcurrency: 5, paused: false, expectedVersion: 0 });
 }
+updateActorPolicy(db, { actorId: 'carol', monthlyLimitMinor: null, personalConcurrency: 5, paused: false, expectedVersion: 0 });
 
 function operation(taskId: string, actorId: string, options: { module?: string; minor?: number; unpriced?: boolean; clientVersion?: string } = {}): EnqueueInput {
   const moduleName = options.module ?? 'images';
@@ -113,7 +115,7 @@ async function grant(taskId: string, actorId: string, options: Parameters<typeof
   return admitted.grant;
 }
 
-async function finish(grantValue: ExecutionGrant, outcome: 'succeeded' | 'failed', actualMinor: number | null, remoteTerminal = true) {
+async function finish(grantValue: ExecutionGrant, outcome: 'succeeded' | 'failed' | 'not_created', actualMinor: number | null, remoteTerminal = true) {
   const intent = await execution.markSubmitting({ grant: grantValue, requestSnapshot: { taskId: grantValue.operation.taskId } });
   await execution.transmit(intent, async () => ({ remoteId: `upstream-${grantValue.operation.taskId}-${intent.transportSeq}`, terminalState: outcome, actualCost: actualMinor === null ? null : { currency: 'CNY', minor: actualMinor } }));
   await execution.settle({
@@ -231,6 +233,59 @@ try {
   assert.equal(limited.kind, 'deferred');
   if (limited.kind === 'deferred') assert.ok(limited.reasons.includes('personal_concurrency'));
   assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE state = 'held'").pluck().get(), heldBefore);
+
+  const unpricedSettled = await grant('c-unpriced-settled', 'carol', { unpriced: true });
+  await finish(unpricedSettled, 'succeeded', 123);
+  const carolUsage = queryTeamUsage(db, adminView, { ...range, actorUserId: 'carol' });
+  assert.equal(carolUsage.items.length, 1);
+  assert.equal(carolUsage.items[0].costStatus, 'settled', '后补实际费用必须覆盖最初的未定价报价');
+  assert.equal(carolUsage.items[0].actualMinor, 123);
+  assert.deepEqual(carolUsage.totals, { settledMinor: 123, estimatedMinor: 0, unpricedCount: 0, uncertainCount: 0 });
+  const carolMember = listTeamMembers(db, adminView, { now }).items.find((member) => member.userId === 'carol');
+  assert.equal(carolMember?.todayChargedMinor, 123);
+  assert.equal(carolMember?.monthChargedMinor, monthlyCostUsage(db, 'carol', '2026-11'));
+  assert.equal(carolMember?.monthSettledMinor, 123);
+  assert.equal(carolMember?.heldMinor, 0);
+  assert.equal(carolMember?.modules.find((module) => module.module === 'images')?.chargedMinor, 123);
+  const carolSettledCsvLine = exportTeamUsageCsv(db, adminView, { ...range, actorUserId: 'carol' })
+    .split(/\r?\n/).find((line) => line.includes('c-unpriced-settled'));
+  assert.ok(carolSettledCsvLine?.includes(',settled,'));
+  assert.ok(carolSettledCsvLine?.includes(',123,'), '后补实际费用必须进入管理员 CSV');
+
+  const released = await grant('c-released', 'carol', { minor: 100 });
+  await finish(released, 'not_created', null);
+  const carolAfterRelease = queryTeamUsage(db, adminView, { ...range, actorUserId: 'carol' });
+  const releasedRow = carolAfterRelease.items.find((item) => item.taskId === 'c-released');
+  assert.equal(carolAfterRelease.items.length, 2);
+  assert.equal(releasedRow?.costStatus, 'released');
+  assert.equal(releasedRow?.actualMinor, null);
+  assert.deepEqual(carolAfterRelease.totals, { settledMinor: 123, estimatedMinor: 0, unpricedCount: 0, uncertainCount: 0 });
+  const carolAfterReleaseMember = listTeamMembers(db, adminView, { now }).items.find((member) => member.userId === 'carol');
+  assert.equal(carolAfterReleaseMember?.todayChargedMinor, 123);
+  assert.equal(carolAfterReleaseMember?.monthChargedMinor, monthlyCostUsage(db, 'carol', '2026-11'));
+  assert.equal(carolAfterReleaseMember?.monthSettledMinor, 123);
+  assert.equal(carolAfterReleaseMember?.heldMinor, 0);
+  const carolReleasedCsvLine = exportTeamUsageCsv(db, adminView, { ...range, actorUserId: 'carol' })
+    .split(/\r?\n/).find((line) => line.includes('c-released'))?.split(',');
+  assert.equal(carolReleasedCsvLine?.[21], 'released');
+  assert.equal(carolReleasedCsvLine?.[22], '', '已释放预留不得出现在 CSV 预估金额');
+  assert.equal(carolReleasedCsvLine?.[23], '', '已释放预留不得伪装成实际费用');
+
+  const unpricedUnknown = await grant('c-unpriced-unknown', 'carol', { unpriced: true });
+  await finish(unpricedUnknown, 'failed', null, false);
+  const carolFinal = queryTeamUsage(db, adminView, { ...range, actorUserId: 'carol' });
+  const unknownRow = carolFinal.items.find((item) => item.taskId === 'c-unpriced-unknown');
+  assert.equal(carolFinal.items.length, 3);
+  assert.equal(unknownRow?.costStatus, 'uncertain', '已提交但未定价的终态必须显示费用不确定');
+  assert.equal(unknownRow?.actualMinor, null);
+  assert.deepEqual(carolFinal.totals, { settledMinor: 123, estimatedMinor: 0, unpricedCount: 0, uncertainCount: 1 });
+  assert.equal(listTeamMembers(db, adminView, { now }).items.find((member) => member.userId === 'carol')?.monthChargedMinor,
+    monthlyCostUsage(db, 'carol', '2026-11'));
+  const carolUnknownCsvLine = exportTeamUsageCsv(db, adminView, { ...range, actorUserId: 'carol' })
+    .split(/\r?\n/).find((line) => line.includes('c-unpriced-unknown'))?.split(',');
+  assert.equal(carolUnknownCsvLine?.[21], 'uncertain');
+  assert.equal(carolUnknownCsvLine?.[22], '', '未知费用不得输出预留 0');
+  assert.equal(carolUnknownCsvLine?.[23], '', '未知费用不得伪装成实际 0');
 
   console.log('PASS: team attempt usage, member consistency, CSV and versioned policy authorization');
 } finally {

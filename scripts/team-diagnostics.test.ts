@@ -138,6 +138,33 @@ try {
   assert.equal(getTeamErrorDiagnostic(db, adminView, uploaded.errorId).errorId, uploaded.errorId);
   assert.equal(listTeamErrors(db, adminView).items.length, 3);
 
+  const maliciousMetadata = {
+    clientVersion: 'Bearer SECRET',
+    serverReleaseId: 'https://cos.example.test/file?q-signature=SECRET',
+    configVersion: 'C:\\private\\source.png',
+  };
+  const malicious = recordTeamError(db, {
+    actorUserId: 'alice', module: 'client', stage: 'server_config', code: 'invalid_metadata', ...maliciousMetadata,
+  });
+  assert.equal(malicious.clientVersion, null);
+  assert.equal(malicious.serverReleaseId, null);
+  assert.equal(malicious.configVersion, null);
+  const maliciousDiagnostic = getTeamErrorDiagnostic(db, aliceView, malicious.errorId);
+  const maliciousSerialized = JSON.stringify(maliciousDiagnostic);
+  for (const forbidden of ['Bearer', 'SECRET', 'q-signature', 'cos.example.test', 'C:\\private']) {
+    assert.equal(maliciousSerialized.includes(forbidden), false, `异常版本元数据不得泄露 ${forbidden}`);
+  }
+
+  db.prepare('UPDATE execution_operations SET clientVersion = ?, serverReleaseId = ?, configVersion = ? WHERE id = ?')
+    .run(maliciousMetadata.clientVersion, maliciousMetadata.serverReleaseId, maliciousMetadata.configVersion, enqueued.operation.id);
+  const associatedMalicious = recordTeamError(db, {
+    actorUserId: 'alice', module: 'images', attemptId: intent.attemptId, stage: 'remote_poll', code: 'poll_failed',
+  });
+  assert.equal(associatedMalicious.clientVersion, null, '执行关联中的异常客户端版本也必须在出口清洗');
+  assert.equal(associatedMalicious.serverReleaseId, null);
+  assert.equal(associatedMalicious.configVersion, null);
+  assert.equal(JSON.stringify(getTeamErrorDiagnostic(db, adminView, associatedMalicious.errorId)).includes('SECRET'), false);
+
   console.log('PASS: correlated error ids, client ownership, safe diagnostics and stage fidelity');
 } finally {
   runtime.closeNewWork();

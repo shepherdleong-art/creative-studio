@@ -31,6 +31,7 @@ function money(minor: number | null): string {
 }
 
 function amount(item: TeamUsageAttempt): string {
+  if (item.costStatus === 'released') return '已释放';
   if (item.costStatus === 'unpriced') return '未定价';
   if (item.costStatus === 'uncertain') return '不确定';
   if (item.costStatus === 'estimated') return `${money(item.reservedMinor)}（预估）`;

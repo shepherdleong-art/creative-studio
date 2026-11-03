@@ -31,7 +31,7 @@ export interface TeamUsageFilters {
   outcome?: 'succeeded' | 'failed';
 }
 
-export type TeamCostStatus = 'estimated' | 'settled' | 'unpriced' | 'uncertain';
+export type TeamCostStatus = 'estimated' | 'settled' | 'released' | 'unpriced' | 'uncertain';
 
 export interface TeamUsageAttempt {
   attemptId: string;
@@ -106,13 +106,17 @@ function scopedActor(viewer: TeamViewer, requested?: string): string | undefined
 }
 
 function mapAttempt(row: AttemptRow): TeamUsageAttempt {
-  const costStatus: TeamCostStatus = row.quoteKind === 'unpriced'
-    ? 'unpriced'
+  const costStatus: TeamCostStatus = row.costState === 'released'
+    ? 'released'
     : row.actualMinor !== null && row.costState === 'settled'
       ? 'settled'
-      : row.costState === 'unknown'
+      : row.costState === 'unknown' && row.outcome !== null
         ? 'uncertain'
-        : 'estimated';
+        : row.quoteKind === 'unpriced'
+          ? 'unpriced'
+          : row.costState === 'unknown'
+            ? 'uncertain'
+            : 'estimated';
   return {
     attemptId: row.attemptId,
     operationId: row.operationId,
