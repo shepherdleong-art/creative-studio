@@ -10,6 +10,7 @@ const forbiddenSpecPath = fs.existsSync(localForbiddenSpec)
   : path.join(moduleRoot, '..', 'packaging', 'forbidden-paths.json');
 export const forbiddenSpec = JSON.parse(fs.readFileSync(forbiddenSpecPath, 'utf8'));
 const TEXT_EXTENSIONS = new Set(['.cmd', '.css', '.html', '.js', '.json', '.map', '.md', '.mjs', '.cjs', '.ps1', '.py', '.txt', '.ts', '.tsx', '.xml', '.yaml', '.yml', '.pem', '.env']);
+const PRIVATE_KEY_PEM = /-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----\r?\n[A-Za-z0-9+/=\r\n]{64,}-----END (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/;
 
 export function sha256File(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -64,7 +65,7 @@ export function scanDistributionPayload(root, profile, secretCandidates = []) {
     }
     if (!TEXT_EXTENSIONS.has(path.extname(file).toLowerCase()) || fs.statSync(file).size > 32 * 1024 * 1024) continue;
     const text = fs.readFileSync(file, 'utf8');
-    if (/-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/.test(text)) errors.push(`私钥不得入包：${relative}`);
+    if (PRIVATE_KEY_PEM.test(text)) errors.push(`私钥不得入包：${relative}`);
     for (const candidate of secretCandidates) {
       if (typeof candidate.value === 'string' && candidate.value.length >= 8 && text.includes(candidate.value)) {
         errors.push(`敏感值 ${candidate.label} 出现在负载：${relative}`);

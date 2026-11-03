@@ -138,10 +138,31 @@ test('standalone 已含 lib 时用受控源码目录替换而不重复合并', (
   assert.ok(fs.existsSync(path.join(output, 'app', 'lib', 'team-service', 'maintenance', 'backup.ts')));
 });
 
+test('PEM 示例字符串不误报，完整私钥正文仍 fail closed', (t) => {
+  const examples = fixture(t);
+  const source = path.join(examples.standalone, 'python', 'example.py');
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, [
+    '_SK_START = b"-----BEGIN OPENSSH PRIVATE KEY-----"',
+    'placeholder = "-----BEGIN RSA PRIVATE KEY-----\\n...\\n-----END RSA PRIVATE KEY-----"',
+    'documentation = "...-----BEGIN PRIVATE KEY-----... in PEM format"',
+  ].join('\n'));
+  const exampleResult = build(examples, path.join(examples.directory, 'release'));
+  assert.equal(exampleResult.status, 0, exampleResult.stdout + exampleResult.stderr);
+
+  const sensitive = fixture(t);
+  const pem = path.join(sensitive.standalone, 'nested', 'private.pem');
+  fs.mkdirSync(path.dirname(pem), { recursive: true });
+  fs.writeFileSync(pem, `-----BEGIN PRIVATE KEY-----\n${'QUJD'.repeat(32)}\n-----END PRIVATE KEY-----`);
+  const sensitiveResult = build(sensitive, path.join(sensitive.directory, 'release'));
+  assert.notEqual(sensitiveResult.status, 0);
+  assert.equal(fs.existsSync(path.join(sensitive.directory, 'release')), false);
+});
+
 test('嵌套环境文件、私钥、数据库和目录链接均在发布前 fail closed', (t) => {
   for (const [relative, content] of [
     ['app/nested/.env.local', 'API_KEY=do-not-package'],
-    ['app/nested/private.pem', '-----BEGIN PRIVATE KEY-----\ninvalid-fixture\n-----END PRIVATE KEY-----'],
+    ['app/nested/private.pem', `-----BEGIN PRIVATE KEY-----\n${'QUJD'.repeat(32)}\n-----END PRIVATE KEY-----`],
     ['app/data/workbench.db', 'not-a-real-database'],
   ]) {
     const context = fixture(t);
