@@ -149,7 +149,7 @@ try {
         if ($actualHash -ne ([string]$lock.winsw.sha256).ToLowerInvariant()) { throw 'WinSW 哈希与受控 manifest 不符' }
     }
 
-    Grant-TeamAcl -Path ([string]$resolved.deploymentRoot) -Account ([string]$resolved.serviceAccount) -Permission 'R' -Recurse
+    Grant-TeamAcl -Path ([string]$resolved.deploymentRoot) -Account ([string]$resolved.serviceAccount) -Permission 'RX' -Recurse
     Grant-TeamAcl -Path ([string]$resolved.dataRoot) -Account ([string]$resolved.serviceAccount) -Permission 'M' -Recurse
     Grant-TeamAcl -Path ([string]$resolved.backupRoot) -Account ([string]$resolved.serviceAccount) -Permission 'M' -Recurse
     $phase = 'acl'

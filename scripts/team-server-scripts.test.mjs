@@ -104,3 +104,22 @@ test('apply 分支只认领精确服务路径，app 先于独立代理停机，�
   assert.match(stop, /if \(-not \$Apply\)[\s\S]*exit 0[\s\S]*service-control\.mjs/);
   assert.doesNotMatch(stop, /taskkill\s+\/IM|Get-Process\s+-Name/);
 });
+
+test('部署 ACL 允许执行，管理员与 SYSTEM 完整权限继承到已有子文件', { skip: process.platform !== 'win32' }, (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'team-server-acl-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const child = path.join(directory, 'child.txt');
+  fs.writeFileSync(child, 'acl probe');
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
+    . $env:ACL_HELPER
+    $account=[System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    Grant-TeamAcl -Path $env:ACL_DIRECTORY -Account $account -Permission 'M' -Recurse
+    $rules=([System.IO.File]::GetAccessControl($env:ACL_CHILD)).GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])
+    foreach($sid in @('S-1-5-18','S-1-5-32-544')) {
+      $found=@($rules | Where-Object {$_.IdentityReference.Value -eq $sid -and $_.IsInherited -and $_.AccessControlType -eq 'Allow' -and ($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq [System.Security.AccessControl.FileSystemRights]::FullControl})
+      if($found.Count -eq 0) {throw "Missing inherited full control for $sid"}
+    }
+  `], { encoding: 'utf8', windowsHide: true, env: { ...process.env, ACL_HELPER: path.join(scriptRoot, 'common.ps1'), ACL_DIRECTORY: directory, ACL_CHILD: child } });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(fs.readFileSync(path.join(scriptRoot, 'install.ps1'), 'utf8'), /deploymentRoot\) -Account .* -Permission 'RX' -Recurse/);
+});

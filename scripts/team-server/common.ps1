@@ -112,7 +112,8 @@ function Copy-TeamFile {
 
 function Grant-TeamAcl {
     param([string]$Path, [string]$Account, [string]$Permission, [switch]$Recurse)
-    $args = @($Path, '/inheritance:r', '/grant:r', '*S-1-5-18:F', '*S-1-5-32-544:F')
+    $inheritance = $(if ($Recurse) { '(OI)(CI)' } else { '' })
+    $args = @($Path, '/inheritance:r', '/grant:r', ('*S-1-5-18:' + $inheritance + 'F'), ('*S-1-5-32-544:' + $inheritance + 'F'))
     if ($Recurse) {
         $args += (@($Account + ':(OI)(CI)' + $Permission))
     } else {
