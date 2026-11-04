@@ -123,3 +123,15 @@ test('部署 ACL 允许执行，管理员与 SYSTEM 完整权限继承到已有�
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(fs.readFileSync(path.join(scriptRoot, 'install.ps1'), 'utf8'), /deploymentRoot\) -Account .* -Permission 'RX' -Recurse/);
 });
+
+test('重复安装识别 Windows 规范化子网掩码，但仍拒绝不同范围', {skip:process.platform!=='win32'},()=>{
+  const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',`
+    . $env:NETWORK_HELPER
+    if((ConvertTo-TeamNetworkKey '10.20.16.1/24') -ne (ConvertTo-TeamNetworkKey '10.20.16.0/255.255.255.0')) {throw 'Equivalent IPv4 ranges differ'}
+    if((ConvertTo-TeamNetworkKey '2001:db8::1/64') -ne (ConvertTo-TeamNetworkKey '2001:db8::/ffff:ffff:ffff:ffff::')) {throw 'Equivalent IPv6 ranges differ'}
+    if((ConvertTo-TeamNetworkKey '10.20.16.0/24') -eq (ConvertTo-TeamNetworkKey '10.20.0.0/16')) {throw 'Broader range accepted'}
+    $rejected=$false;try{ConvertTo-TeamNetworkKey '10.20.16.0/255.0.255.0' | Out-Null}catch{$rejected=$true}
+    if(-not $rejected){throw 'Invalid mask accepted'}
+  `],{encoding:'utf8',windowsHide:true,env:{...process.env,NETWORK_HELPER:path.join(scriptRoot,'common.ps1')}});
+  assert.equal(result.status,0,result.stdout+result.stderr);
+});

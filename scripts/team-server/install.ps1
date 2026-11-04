@@ -27,8 +27,10 @@ function Set-TeamFirewall {
         $port = $existing | Get-NetFirewallPortFilter
         $address = $existing | Get-NetFirewallAddressFilter
         $actualRemote = @($address.RemoteAddress | ForEach-Object { [string]$_ } | Sort-Object)
+        $actualKeys = @($actualRemote | ForEach-Object { ConvertTo-TeamNetworkKey $_ } | Sort-Object)
+        $expectedKeys = @($expectedRemote | ForEach-Object { ConvertTo-TeamNetworkKey $_ } | Sort-Object)
         if ($port.Protocol -ne 'TCP' -or [string]$port.LocalPort -ne [string]$Resolved.entryPort -or
-            ($actualRemote -join '|') -ne ($expectedRemote -join '|') -or $existing.Direction -ne 'Inbound') {
+            ($actualKeys -join '|') -ne ($expectedKeys -join '|') -or $existing.Direction -ne 'Inbound' -or $existing.Action -ne 'Allow') {
             throw '同名防火墙规则不属于本部署合同，拒绝覆盖'
         }
         return
