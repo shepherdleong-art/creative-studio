@@ -106,6 +106,22 @@ export function publishBuild(root, stage, syncAssets) {
   }
 }
 
+// Distribution builds can publish an independent payload while a workspace
+// server still holds .next open on Windows.
+export function publishStandaloneBuild(stage, destination, syncAssets) {
+  const target = path.resolve(destination);
+  const source = path.join(stage, '.next', 'standalone');
+  if (fs.existsSync(target)) throw new Error('独立构建目标已存在，拒绝覆盖');
+  const relative = path.relative(stage, target);
+  if (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)) {
+    throw new Error('独立构建目标不得位于临时构建目录内');
+  }
+  if (!fs.existsSync(path.join(source, 'server.js'))) throw new Error('隔离构建未生成 standalone/server.js');
+  syncAssets();
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  renameBuildDirectory(source, target);
+}
+
 function runBuild() {
   const root = fs.realpathSync(process.cwd());
   const cache = path.join(root, '.cache');
@@ -141,7 +157,14 @@ function runBuild() {
     if (scanWatchedSources(root).newestMs !== sourceSnapshot.newestMs) {
       throw new Error('构建期间源码有更新，保留原产物；请重新构建');
     }
-    publishBuild(root, stage, () => run(path.join(root, 'scripts/sync-standalone-assets.mjs'), [], root));
+    const outputIndex = process.argv.indexOf('--standalone-output');
+    if (outputIndex >= 0) {
+      const destination = process.argv[outputIndex + 1];
+      if (!destination) throw new Error('缺少 --standalone-output 目录');
+      publishStandaloneBuild(stage, destination, () => run(path.join(stage, 'scripts/sync-standalone-assets.mjs'), [], stage));
+    } else {
+      publishBuild(root, stage, () => run(path.join(root, 'scripts/sync-standalone-assets.mjs'), [], root));
+    }
     published = true;
   } finally {
     // Only remove the fresh mkdtemp directory owned by this invocation.
