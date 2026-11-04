@@ -1,11 +1,14 @@
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeBuildStamp } from './runtime/build-stamp.mjs';
 import { syncPackagingAssets } from './sync-packaging-assets.mjs';
 
 const root = process.cwd();
-const standaloneDir = join(root, '.next', 'standalone');
+const buildRootIndex = process.argv.indexOf('--build-root');
+if (buildRootIndex >= 0 && !process.argv[buildRootIndex + 1]) throw new Error('Missing --build-root directory');
+const buildRoot = buildRootIndex >= 0 ? resolve(process.argv[buildRootIndex + 1]) : root;
+const standaloneDir = join(buildRoot, '.next', 'standalone');
 
 const forbiddenPaths = JSON.parse(
   readFileSync(
@@ -26,7 +29,7 @@ if (!existsSync(standaloneDir)) {
   throw new Error(`Missing standalone build directory: ${standaloneDir}`);
 }
 
-copyDirectory(join(root, '.next', 'static'), join(standaloneDir, '.next', 'static'));
+copyDirectory(join(buildRoot, '.next', 'static'), join(standaloneDir, '.next', 'static'));
 copyDirectory(join(root, 'public'), join(standaloneDir, 'public'));
 
 // The standalone server is launched through this tiny wrapper so the Electron

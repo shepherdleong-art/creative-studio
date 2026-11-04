@@ -161,7 +161,7 @@ function runBuild() {
     if (outputIndex >= 0) {
       const destination = process.argv[outputIndex + 1];
       if (!destination) throw new Error('缺少 --standalone-output 目录');
-      publishStandaloneBuild(stage, destination, () => run(path.join(stage, 'scripts/sync-standalone-assets.mjs'), [], stage));
+      publishStandaloneBuild(stage, destination, () => run(path.join(root, 'scripts/sync-standalone-assets.mjs'), ['--build-root', stage], root));
     } else {
       publishBuild(root, stage, () => run(path.join(root, 'scripts/sync-standalone-assets.mjs'), [], root));
     }

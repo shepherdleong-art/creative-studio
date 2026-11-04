@@ -100,7 +100,7 @@ function environment() {
 }
 function startServer() {
   const nextBinary = path.join(repoRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
-  server = spawn(nodeExecutable, releaseRoot ? [path.join(appRoot, 'server.js')] : [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
+  server = spawn(nodeExecutable, releaseRoot ? [path.join(appRoot, 'runtime', 'team-server-entry.cjs')] : [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
     cwd: appRoot,
     env: environment(),
     windowsHide: true,
