@@ -16,6 +16,7 @@ const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const releaseRoot = process.env.TEAM_ACCEPTANCE_RELEASE_PATH ? path.resolve(process.env.TEAM_ACCEPTANCE_RELEASE_PATH) : null;
 const appRoot = releaseRoot ? path.join(releaseRoot, 'app') : repoRoot;
 const nodeExecutable = releaseRoot ? path.join(releaseRoot, 'runtimes', 'node', 'node.exe') : process.execPath;
+const packagedRelease = releaseRoot ? JSON.parse(fs.readFileSync(path.join(releaseRoot, 'release-manifest.json'), 'utf8')) : null;
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-team-acceptance-http-'));
 const resultPath = process.env.TEAM_ACCEPTANCE_RESULT_PATH;
 const evidenceDirectory = process.env.TEAM_ACCEPTANCE_EVIDENCE_DIR;
@@ -54,6 +55,8 @@ const result = {
   config: { users, concurrency, durationSeconds, requestDelayMs, sampleIntervalMs, largeFileMiB },
   realPaidProviderCalls: 0,
   runtime: releaseRoot ? 'packaged-standalone' : 'next-dev',
+  releaseId: packagedRelease?.releaseId ?? 'team-acceptance-local',
+  sourceCommit: packagedRelease?.sourceCommit ?? null,
   fakeProvider: true,
   capacityDurationTargetMet: durationSeconds >= 3600,
   capacitySignoff: false,
@@ -91,7 +94,7 @@ function environment() {
     CREATIVE_STUDIO_PORT: String(port),
     CREATIVE_STUDIO_DEPLOYMENT_ID: deploymentId,
     CREATIVE_STUDIO_TRUSTED_ORIGIN: baseUrl,
-    CREATIVE_STUDIO_SERVER_RELEASE_ID: 'team-acceptance-local',
+    CREATIVE_STUDIO_SERVER_RELEASE_ID: packagedRelease?.releaseId ?? 'team-acceptance-local',
     CREATIVE_STUDIO_CANVAS_ENABLE: '1',
     CREATIVE_STUDIO_CANVAS_EXECUTOR: productionScenario ? 'company' : 'fixture',
     CREATIVE_STUDIO_CANVAS_TEST_ROOT: '1',
