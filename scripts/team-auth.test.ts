@@ -46,7 +46,7 @@ try {
     kdf,
     passwordParams: { N: 1024, r: 8, p: 1 },
   });
-  assert.match(initialized.credential, /^[A-Za-z0-9_-]{32,}$/);
+  assert.match(initialized.credential, /^[1-9][0-9]{5}$/);
   await expectCode(initializeFirstAdministrator({
     db,
     employeeId: '00002',
@@ -81,6 +81,7 @@ try {
     role: 'employee',
   });
   assert.equal(employeeCredential.user.employeeId, '00123');
+  assert.match(employeeCredential.credential, /^[1-9][0-9]{5}$/);
   const employeePasswordRow = db.prepare('SELECT employeeId, passwordHash FROM team_users WHERE id = ?').get(employeeCredential.user.id) as { employeeId: string; passwordHash: string };
   assert.equal(employeePasswordRow.employeeId, '00123');
   assert.match(employeePasswordRow.passwordHash, /^scrypt\$N=1024,r=8,p=1\$[A-Za-z0-9_-]+\$[A-Za-z0-9_-]+$/);
@@ -132,11 +133,13 @@ try {
   assert.equal(service.resolveSession(employeeLogin.token)?.role, 'employee');
 
   const reset = await service.resetUserCredential(admin, employee.userId);
+  assert.match(reset.credential, /^[1-9][0-9]{5}$/);
   assert.equal(service.resolveSession(employeeLogin.token), null, '重置立即撤销旧会话');
   await expectCode(login('00123', 'employee-new-password-123'), 'invalid_credentials');
   const resetLogin = await login('00123', reset.credential);
   assert.equal(resetLogin.principal.mustChangePassword, true);
-  const afterReset = await service.changeOwnPassword(resetLogin.principal, reset.credential, 'employee-after-reset-123');
+  await expectCode(service.changeOwnPassword(resetLogin.principal, reset.credential, '12345'), 'invalid_password');
+  const afterReset = await service.changeOwnPassword(resetLogin.principal, reset.credential, '654321');
   await expectCode(login('00123', reset.credential), 'invalid_credentials');
 
   const secondLogin = await login('00124', secondEmployeeCredential.credential);
@@ -185,7 +188,7 @@ try {
       && 'code' in error && error.code === 'last_admin_required'));
   }
 
-  const logoutLogin = await login('00123', 'employee-after-reset-123');
+  const logoutLogin = await login('00123', '654321');
   service.logout(logoutLogin.principal);
   assert.equal(service.resolveSession(logoutLogin.token), null);
   assert.equal(afterReset.role, 'employee');

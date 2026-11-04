@@ -28,7 +28,7 @@ function run(script: string, employeeId: string) {
 }
 
 function credentialFrom(output: string): string {
-  const matches = output.match(/[A-Za-z0-9_-]{32}/g) ?? [];
+  const matches = [...output.matchAll(/一次性凭据（仅显示本次）：([1-9][0-9]{5})(?!\d)/g)].map(match => match[1]);
   assert.equal(matches.length, 1, `凭据只显示一次：${output}`);
   return matches[0];
 }
@@ -74,7 +74,7 @@ try {
 
   const missing = run(recoverScript, '00999');
   assert.notEqual(missing.status, 0);
-  assert.doesNotMatch(missing.stdout, /[A-Za-z0-9_-]{32}/);
+  assert.doesNotMatch(missing.stdout, /一次性凭据（仅显示本次）：[1-9][0-9]{5}/);
 
   console.log('team auth bootstrap tests passed');
 } finally {

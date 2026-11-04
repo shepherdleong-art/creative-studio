@@ -26,6 +26,11 @@ async function __teamRoutePATCH(request: Request, context: { params: Promise<{ i
     const { id } = await context.params;
     const body = await request.json() as Record<string, unknown>;
     const monthlyLimitMinor = body.unlimited === true ? null : body.monthlyLimitMinor;
+    if (body.allowedModels !== undefined && body.allowedModels !== null
+      && (!Array.isArray(body.allowedModels) || body.allowedModels.length > 500
+        || body.allowedModels.some(model => typeof model !== 'string' || !model.trim() || model.length > 200))) {
+      throw new TeamUsageError(400, 'invalid_policy', '模型权限列表无效。');
+    }
     if ((monthlyLimitMinor !== null && (!Number.isSafeInteger(monthlyLimitMinor) || Number(monthlyLimitMinor) < 0))
       || !Number.isSafeInteger(body.personalConcurrency) || Number(body.personalConcurrency) < 0
       || typeof body.paused !== 'boolean' || !Number.isSafeInteger(body.expectedVersion)) {
@@ -37,6 +42,7 @@ async function __teamRoutePATCH(request: Request, context: { params: Promise<{ i
       personalConcurrency: Number(body.personalConcurrency),
       paused: body.paused,
       expectedVersion: Number(body.expectedVersion),
+      allowedModels: body.allowedModels as string[] | null | undefined,
     }), { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     return teamServiceError(error, '成员策略保存失败。');

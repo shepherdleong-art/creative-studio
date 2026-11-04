@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Icon } from '@/components/ui/Icon';
 import ThemeToggle from '@/components/ThemeToggle';
+import TeamWorkspaceNavigation from '@/components/team/TeamWorkspaceNavigation';
 import { teamError, teamWrite } from '@/components/team/client';
 import type { ClientStatus } from '@/desktop/bridge-types';
 
@@ -127,12 +128,14 @@ export default function Header({
   const showWorkspace = clientCompatible && (!server || Boolean(principal && !principal.mustChangePassword));
 
   return (
-    <header className="toolbar h-12 gap-5 px-6 text-sm">
+    <>
+    {server && showWorkspace && principal && <TeamWorkspaceNavigation principal={principal} canvasEnabled={canvasEnabled} />}
+    <header data-team-shell={server && showWorkspace ? 'A' : undefined} className="toolbar h-12 gap-5 px-6 text-sm">
       <Link href="/" className="font-semibold tracking-tight text-ink transition-colors hover:text-accent">
-        产品素材工作台
+        {server && showWorkspace ? (principal?.role === 'admin' ? '团队生产控制台' : '我的创作空间') : '产品素材工作台'}
       </Link>
       <nav className="ml-auto flex items-center gap-4">
-        {showWorkspace && <>
+        {showWorkspace && !server && <>
           <Link href="/" className="text-ink-secondary transition-colors hover:text-ink">项目</Link>
           {canvasEnabled && (
             <Link
@@ -219,5 +222,6 @@ export default function Header({
         </div>
       )}
     </header>
+    </>
   );
 }

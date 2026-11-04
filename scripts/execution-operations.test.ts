@@ -12,7 +12,9 @@ process.env.CREATIVE_STUDIO_DATA_ROOT = fixtureRoot;
 const { schemaUpgradeRuntimePaths } = await import('../lib/schema-upgrade/runtime.ts');
 const { checkExecutionReadiness } = await import('../lib/media-core/execution/readiness.ts');
 const { createExecutionFacade } = await import('../lib/media-core/execution/operations.ts');
-const { registerExecutionInstance } = await import('../lib/media-core/execution/schema.ts');
+const { registerExecutionInstance, EXECUTION_MIGRATIONS } = await import('../lib/media-core/execution/schema.ts');
+const { ensureVersionedSchemaReady } = await import('../lib/schema-upgrade/versioned.ts');
+const { readActorPolicy } = await import('../lib/media-core/execution/pools.ts');
 
 const root = path.join(fixtureRoot, 'db');
 fs.mkdirSync(path.join(root, 'data'), { recursive: true });
@@ -20,7 +22,7 @@ const db = new Database(path.join(root, 'data', 'workbench.db'));
 db.pragma('foreign_keys = ON');
 const readiness = await checkExecutionReadiness({ db, ...schemaUpgradeRuntimePaths(root) });
 assert.equal(readiness.available, true);
-assert.deepEqual(readiness.appliedVersions, [1, 2, 3]);
+assert.deepEqual(readiness.appliedVersions, [1, 2, 3, 4, 5]);
 
 registerExecutionInstance(db, { instanceId: 'instance-a', fence: 1, deploymentId: 'deployment-a' });
 const journal = {
@@ -63,6 +65,20 @@ function input(overrides: Record<string, unknown> = {}): EnqueueInput {
 }
 
 try {
+  const legacyRoot = path.join(fixtureRoot, 'legacy-v4');
+  fs.mkdirSync(path.join(legacyRoot, 'data'), { recursive: true });
+  const legacyDb = new Database(path.join(legacyRoot, 'data', 'workbench.db'));
+  try {
+    const paths = schemaUpgradeRuntimePaths(legacyRoot);
+    const previous = await ensureVersionedSchemaReady({ db: legacyDb, scope: 'execution', migrations: EXECUTION_MIGRATIONS.slice(0, 4), migrationTable: 'execution_schema_migrations', backupRoot: paths.backupRoot, validate: () => {} });
+    assert.equal(previous.state, 'ready');
+    legacyDb.prepare("INSERT INTO execution_actor_policies VALUES ('existing', 2000, 'CNY', 3, 1, 'Asia/Shanghai', 7, ?)").run(new Date().toISOString());
+    const upgraded = await checkExecutionReadiness({ db: legacyDb, ...paths });
+    assert.equal(upgraded.available, true);
+    assert.deepEqual(readActorPolicy(legacyDb, 'existing'), { actorId: 'existing', monthlyLimitMinor: 2000, currency: 'CNY', personalConcurrency: 3, paused: true, timezone: 'Asia/Shanghai', version: 7, allowedModels: null });
+    assert.equal((await checkExecutionReadiness({ db: legacyDb, ...paths })).available, true, '重复启动不重复执行迁移');
+  } finally { legacyDb.close(); }
+
   let checkpoints = 0;
   const first = execution.enqueue({
     ...input(),

@@ -363,6 +363,19 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
       ALTER TABLE team_task_principals ADD COLUMN roleAtAcceptance TEXT;
     `,
   },
+  {
+    version: 12,
+    sql: `
+      ALTER TABLE team_service_state ADD COLUMN productionPaused INTEGER NOT NULL DEFAULT 0 CHECK(productionPaused IN (0, 1));
+      ALTER TABLE team_service_state ADD COLUMN productionVersion INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE team_service_state ADD COLUMN productionChangedBy TEXT;
+      ALTER TABLE team_service_state ADD COLUMN productionChangedAt TEXT;
+    `,
+  },
+  {
+    version: 13,
+    sql: `ALTER TABLE team_uploads ADD COLUMN imageOptionsJson TEXT;`,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;

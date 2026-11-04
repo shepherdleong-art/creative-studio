@@ -1,4 +1,4 @@
-import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomInt, scrypt, timingSafeEqual } from 'node:crypto';
 import { TeamAuthError } from './types.ts';
 
 export interface ScryptParams {
@@ -131,5 +131,5 @@ export async function verifyPassword(
 }
 
 export function generateOneTimeCredential(): string {
-  return randomBytes(24).toString('base64url');
+  return String(randomInt(100_000, 1_000_000));
 }

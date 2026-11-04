@@ -4,6 +4,9 @@ import path from 'node:path';
 import sharp from 'sharp';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../../data-root.ts';
+import { preprocessImage, type PreprocessResult } from '../../image-preprocess.ts';
+import { validateUploadedImageBuffer } from '../../image-upload-validation.ts';
+import { normalizeTeamImageOptions } from './image-options.ts';
 import { probeDurationSec, probeVideoMedia, type VideoMediaProbe } from '../../ffmpeg.ts';
 import { isDetectedVideoContainerCompatible, SUPPORTED_VIDEO_MIME_BY_EXTENSION } from '../../video-file-format.ts';
 import { createAsset } from '../../batch-production/assets.ts';
@@ -21,6 +24,7 @@ export const TEAM_UPLOAD_TARGET_KINDS = ['project_image', 'batch_asset', 'canvas
 export type TeamUploadTargetKind = typeof TEAM_UPLOAD_TARGET_KINDS[number];
 
 export interface BusinessUploadTarget {
+  imageOptionsJson?: string | null;
   fileId: string;
   targetKind: string | null;
   targetResourceType: string;
@@ -30,6 +34,7 @@ export interface BusinessUploadTarget {
 }
 
 export interface PreparedBusinessPublication {
+  preprocessedImage?: PreprocessResult;
   kind: TeamUploadTargetKind;
   absolutePath: string;
   image?: { width: number; height: number };
@@ -80,9 +85,17 @@ export async function prepareBusinessPublication(
   if (!kind) return null;
   if (kind === 'project_image' || kind === 'detail_page_source') {
     try {
+      if (kind === 'project_image' && !(await validateUploadedImageBuffer(fs.readFileSync(absolutePath), upload.mimeType))) {
+        throw new Error('invalid image');
+      }
       const metadata = await sharp(absolutePath, { failOn: 'error' }).metadata();
       if (!metadata.width || !metadata.height) throw new Error('missing dimensions');
-      return { kind, absolutePath, image: { width: metadata.width, height: metadata.height } };
+      const options = upload.imageOptionsJson ? normalizeTeamImageOptions(JSON.parse(upload.imageOptionsJson)) : null;
+      const preprocessedImage = options ? await preprocessImage(absolutePath, upload.mimeType,
+        path.join(path.dirname(absolutePath), 'processed'), {
+          enabled: options.preprocessEnabled, targetMaxSide: options.targetMaxSide, jpegQuality: options.jpegQuality,
+        }) : undefined;
+      return { kind, absolutePath, image: { width: metadata.width, height: metadata.height }, preprocessedImage };
     } catch {
       throw new TransferError('media_type_mismatch', '图片文件已损坏或无法读取尺寸。');
     }
@@ -143,6 +156,8 @@ export function publishBusinessEntity(
     }
     const id = randomUUID();
     const createdAt = new Date().toISOString();
+    const options = upload.imageOptionsJson ? normalizeTeamImageOptions(JSON.parse(upload.imageOptionsJson)) : null;
+    const processed = prepared.preprocessedImage;
     db.prepare(`INSERT INTO image_assets (
       id, projectId, role, filename, path, originalPath, processedPath, mimeType,
       originalWidth, originalHeight, originalSizeBytes, preprocessingEnabled, usage, createdAt
@@ -155,6 +170,15 @@ export function publishBusinessEntity(
       resourceType: 'image', resourceId: id,
       parent: { resourceType: 'project', resourceId: projectId },
     });
+    if (options && processed) {
+      db.prepare(`UPDATE image_assets SET role=?, usage=?, path=?, processedPath=?, mimeType=?,
+        processedWidth=?, processedHeight=?, processedSizeBytes=?, preprocessingEnabled=? WHERE id=?`).run(
+        options.role, options.usage, processed.processedPath,
+        options.preprocessEnabled ? processed.processedPath : null, processed.mimeType,
+        processed.processedWidth, processed.processedHeight, processed.processedSizeBytes,
+        options.preprocessEnabled ? 1 : 0, id,
+      );
+    }
     return {
       resourceType: 'image', resourceId: id,
       references: [{ resourceType: 'image', resourceId: id, role: 'input' }],

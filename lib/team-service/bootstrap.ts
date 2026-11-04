@@ -92,7 +92,7 @@ export function createTeamExecutionRuntime(options: {
     maintenance() {
       try {
         return hasTeamRestoreHold(config.dataRoot)
-          || Boolean(db.prepare('SELECT maintenance FROM team_service_state WHERE id = 1').pluck().get());
+          || Boolean(db.prepare('SELECT maintenance OR productionPaused FROM team_service_state WHERE id = 1').pluck().get());
       } catch {
         return true;
       }

@@ -1,5 +1,7 @@
 'use client';
 
+import { uploadImages } from '@/lib/image-upload-client';
+
 import { useState, useEffect, useRef, useMemo, useCallback, type DragEvent as ReactDragEvent } from 'react';
 import { createPortal } from 'react-dom';
 import HoverZoomImage from '@/components/HoverZoomImage';
@@ -498,7 +500,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       formData.append('role', 'input');
       formData.append('projectId', projectId);
       formData.append('usage', 'video_source');
-      const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
+      const uploadRes = await uploadImages(formData);
       const uploadData = await uploadRes.json().catch(() => ({})) as {
         error?: string;
         files?: Array<{ id: string }>;
@@ -725,7 +727,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       formData.append('role', 'input');
       formData.append('projectId', projectId);
       formData.append('usage', 'video_tail_frame');
-      const response = await fetch('/api/upload', { method: 'POST', body: formData });
+      const response = await uploadImages(formData);
       const data = await response.json().catch(() => ({})) as {
         error?: string;
         files?: Array<{ id: string; filename: string; imageUrl: string }>;

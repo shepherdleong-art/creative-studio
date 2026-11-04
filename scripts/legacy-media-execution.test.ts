@@ -164,6 +164,55 @@ const address = fake.address() as { port: number };
 const baseUrl = `http://127.0.0.1:${address.port}`;
 
 try {
+  provider('zero-image', 'openai-compatible', `${baseUrl}/lifecycle-deferred`);
+  configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/lifecycle-deferred`, apiKey: 'shared-secret', capacity: 1 });
+  member('member-zero');
+  updateActorPolicy(db, { actorId: 'member-zero', monthlyLimitMinor: null, personalConcurrency: 0, paused: false, expectedVersion: 1 });
+  project('project-zero', 'member-zero', 'zero-image');
+  imageJob('job-zero', 'project-zero', 'member-zero', 'zero-image');
+  db.prepare("UPDATE projects SET name='测试床场景项目' WHERE id='project-zero'").run();
+  db.prepare("UPDATE image_assets SET usage='scene_seed' WHERE projectId='project-zero'").run();
+  let zeroClaims = 0;
+  db.function('observe_zero_claim', () => { zeroClaims += 1; return 0; });
+  db.exec(`CREATE TEMP TRIGGER observe_zero_claim AFTER UPDATE OF status ON jobs
+    WHEN NEW.id='job-zero' AND NEW.status='running' AND OLD.status!='running'
+    BEGIN SELECT observe_zero_claim(); END`);
+  const zeroRun = queue.runQueue({ projectId: 'project-zero', concurrency: 4, maxAttempts: 2, timeoutMs: 60000 });
+  await sleep(1350);
+  const { listTeamTasks } = await import('../lib/team-service/tasks.ts');
+  const zeroViewer = { userId: 'member-zero', role: 'employee' as const };
+  const waitingTask = listTeamTasks(db, zeroViewer).items[0];
+  assert.equal(waitingTask.taskName, '新场景图生成');
+  assert.equal(waitingTask.scopeName, '测试床场景项目');
+  assert.equal(waitingTask.submissionCount, 0);
+  assert.match(waitingTask.waitLabel, /上限为 0/);
+  const zeroLogs = db.prepare("SELECT message FROM job_logs WHERE jobId='job-zero'").all() as { message: string }[];
+  queue.cancelQueue('project-zero');
+  await zeroRun;
+  db.exec('DROP TRIGGER observe_zero_claim');
+  assert.ok(zeroClaims <= 2, `等待期间重新领取过快：${zeroClaims} 次`);
+  assert.equal(imageRequests.length, 0, '零并发等待不得发送供应商请求');
+  assert.equal(zeroLogs.filter(row => /Job started|Calling API|请求已开始/.test(row.message)).length, 0,
+    '等待名额时不得反复输出已经启动/调用供应商的日志');
+  assert.ok(zeroLogs.length <= 2, `等待名额不能刷屏，实际 ${zeroLogs.length} 条`);
+  assert.equal(db.prepare("SELECT waitReason FROM execution_operations WHERE taskId='job-zero'").pluck().get(), 'stage_canceled');
+  assert.equal(listTeamTasks(db, zeroViewer, { status: 'canceled' }).items.length, 1);
+  assert.equal(listTeamTasks(db, zeroViewer, { status: 'deferred' }).items.length, 0);
+  // Older canceled jobs have a stale deferred ledger; display/filter must still agree.
+  db.prepare("UPDATE execution_operations SET status='deferred',waitReason='personal_concurrency' WHERE taskId='job-zero'").run();
+  assert.equal(listTeamTasks(db, zeroViewer).items[0].status, 'canceled');
+  assert.equal(listTeamTasks(db, zeroViewer, { status: 'deferred' }).items.length, 0);
+  assert.equal(listTeamTasks(db, { userId: 'other-member', role: 'employee' }).items.length, 0);
+  imageJob('job-zero-resume', 'project-zero', 'member-zero', 'zero-image');
+  const resumeRun = queue.runQueue({ projectId: 'project-zero', concurrency: 4, maxAttempts: 2, timeoutMs: 60000 });
+  await sleep(100);
+  updateActorPolicy(db, { actorId: 'member-zero', monthlyLimitMinor: null, personalConcurrency: 10, paused: false, expectedVersion: 2 });
+  await resumeRun;
+  assert.equal(imageRequests.length, 1, '解除并发等待后只能发送一次');
+  assert.equal(db.prepare("SELECT status FROM jobs WHERE id='job-zero-resume'").pluck().get(), 'succeeded');
+  assert.equal(listTeamTasks(db, zeroViewer, { status: 'succeeded' }).items[0].submissionCount, 1);
+  console.log('legacy media zero-concurrency, truthful logs, cancellation and task labels passed');
+
   provider('lifecycle-deferred-image', 'openai-compatible', `${baseUrl}/lifecycle-deferred`);
   configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/lifecycle-deferred`, apiKey: 'shared-secret', capacity: 1 });
   member('member-lifecycle-deferred');

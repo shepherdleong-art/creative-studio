@@ -4,6 +4,7 @@ import { readRuntimeConfig } from '@/lib/team-service/config';
 import { TEAM_SESSION_COOKIE } from '@/lib/team-service/auth/request';
 import { getTeamAuthService } from '@/lib/team-service/auth/runtime';
 import { readTeamModuleSwitches } from '@/lib/team-service/module-switches';
+import TeamProductionControl from '@/components/team/TeamProductionControl';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,11 +30,11 @@ export default async function TeamOperationsPage() {
       <div>
         <h1 className="text-3xl font-semibold tracking-tight text-ink">备份与维护</h1>
         <p className="mt-2 text-sm text-ink-secondary">
-          本页只显示真实状态与脚本入口说明。停止、发布、恢复和永久清理仍由受控 PowerShell 脚本执行，
-          浏览器不提供任意命令或远程 shell。
+          管理团队运行状态。暂停生成不影响成员登录、编辑和下载；备份与版本维护由服务器管理员执行。
         </p>
       </div>
 
+      <TeamProductionControl />
       <section className="card p-6">
         <h2 className="text-lg font-semibold text-ink">当前模块开关</h2>
         <p className="mt-1 text-xs text-ink-tertiary">来自部署配置生成的 app.env；关闭的模块不会启动 worker，也不影响登录、编辑和下载。</p>

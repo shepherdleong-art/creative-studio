@@ -13,7 +13,7 @@ import {
   type SettleInput,
   type SubmitIntent,
 } from './context.ts';
-import { readActorPolicy, monthlyCostUsage, shanghaiAccountingPeriod } from './pools.ts';
+import { readActorPolicy, monthlyCostUsage, shanghaiAccountingPeriod, actorModelAllowed } from './pools.ts';
 import { readAttempt, readOperation } from './records.ts';
 
 type AttemptOptions = ExecutionFacadeOptions & { assertOpen(): void };
@@ -102,6 +102,9 @@ function assertStageAllowed(options: AttemptOptions, operation: OperationRecord)
   })) throw new ExecutionError('scope_forbidden', 'scope 已阻止新付费提交。');
   const policy = readActorPolicy(options.db, operation.actorId);
   if (policy.paused) throw new ExecutionError('actor_paused', '成员已暂停新的付费生成。');
+  if (!actorModelAllowed(policy, operation.providerSnapshot)) {
+    throw new ExecutionError('model_forbidden', '未获准调用此模型，请联系管理员调整模型权限。');
+  }
   for (const poolKey of operation.requiredPools) {
     const pool = options.db.prepare('SELECT enabled FROM execution_pools WHERE poolKey = ?').get(poolKey) as { enabled: number } | undefined;
     if (!pool) throw new ExecutionError('pool_missing', `资源池 ${poolKey} 未配置。`);

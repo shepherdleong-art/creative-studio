@@ -5,6 +5,8 @@ import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { completeTeamUpload } from '@/lib/team-service/transfers';
 import { readTransferJson, teamTransferErrorResponse, teamTransferStorageRoot } from '@/lib/team-service/transfers/http';
 import { teamTransferSpace } from '@/lib/team-service/transfers/space';
+import path from 'node:path';
+import { toStorageImageUrl } from '@/lib/storage-url';
 
 export const runtime = 'nodejs';
 
@@ -20,7 +22,18 @@ async function __teamRoutePOST(request: Request, { params }: { params: Promise<{
       sourceFingerprint: typeof body.sourceFingerprint === 'string' ? body.sourceFingerprint : undefined,
       space: teamTransferSpace(teamTransferStorageRoot()),
     });
-    return Response.json(result, { headers: { 'Cache-Control': 'private, no-store' } });
+    const image = result.resultResourceType === 'image' ? getDb().prepare(`SELECT id, filename, mimeType,
+      role, usage, path, originalSizeBytes, processedSizeBytes, originalWidth, originalHeight,
+      processedWidth, processedHeight FROM image_assets WHERE id=?`).get(result.resultResourceId) as {
+        id: string; filename: string; mimeType: string; role: string; usage: string; path: string;
+        originalSizeBytes: number; processedSizeBytes: number | null;
+      } | undefined : undefined;
+    const uploadedFile = image ? {
+      ...image, path: undefined, size: image.processedSizeBytes ?? image.originalSizeBytes,
+      relativePath: path.relative(teamTransferStorageRoot(), image.path).split(path.sep).join('/'),
+      imageUrl: toStorageImageUrl(image.path),
+    } : undefined;
+    return Response.json({ ...result, uploadedFile }, { headers: { 'Cache-Control': 'private, no-store' } });
   } catch (error) {
     return teamTransferErrorResponse(error, 'upload_complete_failed');
   }

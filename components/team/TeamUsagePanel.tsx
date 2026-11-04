@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { addUsageDays, usagePresetRange } from '@/lib/usage-date-range';
+import { TASK_MODULE_LABELS, TASK_STATUS_LABELS } from '@/lib/team-task-labels';
 import type { TeamMemberSummary, TeamUsageAttempt } from '@/lib/team-service/usage';
 
 type TeamUsageResponse = {
@@ -11,6 +12,8 @@ type TeamUsageResponse = {
   localAgentIncluded: false;
   costNotice: string;
   member: TeamMemberSummary;
+  scope: 'self' | 'team';
+  canViewTeam: boolean;
 };
 
 const subscribe = () => () => {};
@@ -24,6 +27,7 @@ const WAITING_LABELS: Record<string, string> = {
   pricing_required: '定价缺失，请联系管理员',
   cost_unknown: '费用不确定，等待核查',
   pool_capacity: '共享并发等待',
+  model_forbidden: '模型未授权，请联系管理员',
 };
 
 function money(minor: number | null): string {
@@ -45,6 +49,8 @@ export default function TeamUsagePanel() {
   const [from, setFrom] = useState(initial.from);
   const [to, setTo] = useState(initial.to);
   const [model, setModel] = useState('');
+  const [scope, setScope] = useState<'self' | 'team'>('self');
+  const [canViewTeam, setCanViewTeam] = useState(false);
   const [outcome, setOutcome] = useState('');
   const [data, setData] = useState<TeamUsageResponse | null>(null);
   const [error, setError] = useState('');
@@ -58,7 +64,7 @@ export default function TeamUsagePanel() {
       setLoading(true);
       setError('');
     });
-    const params = new URLSearchParams({ period });
+    const params = new URLSearchParams({ period, scope });
     if (period === 'custom') {
       if (from) params.set('from', from);
       if (to) params.set('to', addUsageDays(to, 1));
@@ -69,7 +75,7 @@ export default function TeamUsagePanel() {
       .then(async (response) => {
         const body = await response.json() as TeamUsageResponse & { message?: string };
         if (!response.ok) throw new Error(body.message ?? '团队用量读取失败');
-        setData(body);
+        if (!controller.signal.aborted) { setData(body); setCanViewTeam(body.canViewTeam); }
       })
       .catch((cause: unknown) => {
         if (cause instanceof DOMException && cause.name === 'AbortError') return;
@@ -77,26 +83,36 @@ export default function TeamUsagePanel() {
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [server, period, from, to, model, outcome, nonce]);
+  }, [server, period, from, to, model, outcome, nonce, scope]);
 
   if (!server) return null;
   const member = data?.member;
   const waiting = member?.waitingReason ? WAITING_LABELS[member.waitingReason] ?? member.waitingReason : null;
 
   return (
-    <section className="card space-y-5 p-5" aria-label="团队费用与并发">
+    <section className="card space-y-5 p-5" aria-label="费用与用量">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><h2 className="text-lg font-semibold text-ink">团队费用与并发</h2><p className="mt-1 text-xs text-ink-tertiary">只读展示本人额度、预留、并发与每个实际上游尝试。</p></div>
+        <div><h1 className="text-3xl font-semibold text-ink">费用与用量</h1><p className="mt-2 text-sm text-ink-secondary">查看个人额度和实际调用记录。金额为工作台记录，不代表供应商最终账单。</p></div>
         {waiting && <p className="rounded-lg bg-surface-subtle px-3 py-2 text-xs text-warn" role="status">{waiting}</p>}
       </div>
+      <h2 className="text-sm font-semibold text-ink">我的额度{member ? ` · ${member.displayName}（${member.employeeId}）` : ''}</h2>
+      <p className="text-xs text-ink-tertiary">以下卡片仅统计当前登录人，按北京时间自然日 / 自然月计算。已计包含已结算与预留；预留已包含在已计中，不需要再相加。</p>
       {member && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <div className="rounded-xl bg-surface-subtle p-3"><p className="text-xs text-ink-tertiary">今日已计</p><p className="mt-1 font-semibold text-ink">{money(member.todayChargedMinor)}</p></div>
         <div className="rounded-xl bg-surface-subtle p-3"><p className="text-xs text-ink-tertiary">本月已计 / 额度</p><p className="mt-1 font-semibold text-ink">{money(member.monthChargedMinor)} / {money(member.monthlyLimitMinor)}</p></div>
-        <div className="rounded-xl bg-surface-subtle p-3"><p className="text-xs text-ink-tertiary">held 预留</p><p className="mt-1 font-semibold text-ink">{money(member.heldMinor)}</p></div>
+        <div className="rounded-xl bg-surface-subtle p-3"><p className="text-xs text-ink-tertiary">待结算预留</p><p className="mt-1 font-semibold text-ink">{money(member.heldMinor)}</p></div>
         <div className="rounded-xl bg-surface-subtle p-3"><p className="text-xs text-ink-tertiary">剩余可用</p><p className="mt-1 font-semibold text-ink">{money(member.remainingMinor)}</p></div>
         <div className="rounded-xl bg-surface-subtle p-3"><p className="text-xs text-ink-tertiary">当前并发 / 上限</p><p className="mt-1 font-semibold text-ink">{member.currentConcurrency} / {member.concurrencyLimit}</p></div>
       </div>}
       {member?.paused && <p className="text-xs text-warn">已暂停新的付费生成；仍可登录、编辑、查看和下载，已受理任务继续回收。</p>}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="font-semibold text-ink">{scope === 'team' ? '全团队调用明细' : '我的调用明细'}</h2>
+        {canViewTeam && <div className="flex gap-2" role="group" aria-label="用量统计范围">
+          <button className={`btn-sm ${scope === 'self' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { if (scope !== 'self') { setScope('self'); setData(null); } }}>仅看自己</button>
+          <button className={`btn-sm ${scope === 'team' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { if (scope !== 'team') { setScope('team'); setData(null); } }}>全团队</button>
+        </div>}
+      </div>
+      {scope === 'team' && <p className="text-xs text-ink-secondary">下方金额合计包含所有成员；个人额度请看上方卡片，成员额度请到“账号与权限”查看。</p>}
       <div className="flex flex-wrap items-end gap-3 border-y border-hairline py-4">
         <div className="flex gap-2" role="group" aria-label="团队用量账期">
           <button className={`btn-sm ${period === 'today' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setPeriod('today')}>今日</button>
@@ -110,8 +126,17 @@ export default function TeamUsagePanel() {
       </div>
       {error && <div role="alert" className="text-sm text-fail">{error}</div>}
       {loading && !data ? <p className="py-6 text-center text-sm text-ink-tertiary">读取团队用量…</p> : data && <>
-        <div className="flex flex-wrap gap-4 text-xs text-ink-secondary"><span>已结算 {money(data.totals.settledMinor)}</span><span>已知预估 {money(data.totals.estimatedMinor)}</span><span>未定价 {data.totals.unpricedCount} 次</span><span>不确定 {data.totals.uncertainCount} 次</span></div>
-        <div className="overflow-x-auto"><table className="w-full min-w-[850px] text-left text-sm"><thead className="border-b border-hairline text-xs text-ink-tertiary"><tr><th className="px-3 py-2">时间 / 模块</th><th className="px-3 py-2">任务 / 重试</th><th className="px-3 py-2">模型</th><th className="px-3 py-2">上游请求</th><th className="px-3 py-2">结果</th><th className="px-3 py-2 text-right">费用</th></tr></thead><tbody className="divide-y divide-hairline">{data.items.map((item) => <tr key={item.attemptId}><td className="px-3 py-3 text-ink-secondary"><div>{new Date(item.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</div><div className="text-xs">{item.module} / {item.step}</div></td><td className="px-3 py-3"><div className="font-mono text-xs text-ink">{item.taskId}</div><div className="text-xs text-ink-tertiary">业务 {item.businessAttemptNo} · 提交 {item.submitRound} · 传输 {item.transportSeq}</div>{item.errorId && <Link className="text-xs text-accent" href={`/team/errors?errorId=${item.errorId}`}>错误 {item.errorId.slice(0, 8)}</Link>}</td><td className="px-3 py-3 text-ink-secondary">{item.model}</td><td className="px-3 py-3 font-mono text-xs text-ink-tertiary">{item.remoteId ?? '尚无回执'}</td><td className="px-3 py-3 text-ink-secondary">{item.outcome ?? item.submissionState}</td><td className="px-3 py-3 text-right font-medium text-ink">{amount(item)}</td></tr>)}</tbody></table>{data.items.length === 0 && <p className="py-8 text-center text-sm text-ink-tertiary">当前范围没有服务器执行尝试。</p>}</div>
+        <div className="flex flex-wrap gap-4 text-xs text-ink-secondary"><span>{data.scope === 'team' ? '全团队' : '本人'} · 当前筛选范围</span><span>已结算 {money(data.totals.settledMinor)}</span><span>已知预估 {money(data.totals.estimatedMinor)}</span><span>未定价 {data.totals.unpricedCount} 次</span><span>不确定 {data.totals.uncertainCount} 次</span></div>
+        <div className="overflow-x-auto"><table className="w-full min-w-[760px] table-fixed text-left text-sm">
+          <thead className="border-b border-hairline text-xs text-ink-tertiary"><tr><th className="w-[19%] px-3 py-2">时间 / 成员</th><th className="w-[24%] px-3 py-2">模型 / 模块</th><th className="w-[17%] px-3 py-2">结果</th><th className="w-[16%] px-3 py-2 text-right">费用</th><th className="w-[24%] px-3 py-2">调用详情</th></tr></thead>
+          <tbody className="divide-y divide-hairline">{data.items.map(item => <tr key={item.attemptId} className="align-top">
+            <td className="px-3 py-3 text-ink-secondary"><div>{new Date(item.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</div><div className="mt-1 text-xs">{item.actorDisplayName} · {item.employeeId}</div></td>
+            <td className="break-all px-3 py-3 text-ink-secondary">{item.model}<div className="mt-1 text-xs text-ink-tertiary">{TASK_MODULE_LABELS[item.module] ?? item.module}</div></td>
+            <td className="px-3 py-3 text-ink-secondary">{TASK_STATUS_LABELS[item.outcome ?? item.submissionState] ?? item.outcome ?? item.submissionState}</td>
+            <td className="px-3 py-3 text-right font-medium text-ink">{amount(item)}</td>
+            <td className="px-3 py-3 text-xs text-ink-tertiary"><details><summary className="cursor-pointer text-accent">查看任务与请求</summary><div className="mt-2 space-y-2 break-all"><div>任务：{item.taskId}</div><div>上游请求：{item.remoteId ?? '尚无回执'}</div><div>业务 {item.businessAttemptNo} · 提交 {item.submitRound} · 传输 {item.transportSeq}</div>{item.errorId && <Link className="text-accent" href={`/team/errors?errorId=${item.errorId}`}>查看错误</Link>}</div></details></td>
+          </tr>)}</tbody>
+        </table>{data.items.length === 0 && <p className="py-8 text-center text-sm text-ink-tertiary">当前范围没有服务器调用记录。</p>}</div>
         <p className="text-xs leading-5 text-ink-tertiary">{data.costNotice} 本地 Agent 明确不计入；未定价与不确定费用不显示为 0，也不代表供应商最终账单。</p>
       </>}
     </section>

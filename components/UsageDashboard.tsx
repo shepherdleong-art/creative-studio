@@ -4,7 +4,6 @@ import { Fragment, useEffect, useMemo, useState, type PointerEvent } from 'react
 import { addUsageDays, usagePresetRange, USAGE_DATE_PRESETS, type UsageDatePreset } from '@/lib/usage-date-range';
 import { BILLING_MODEL_PRICES } from '@/lib/usage-pricing';
 import type { CoreUsageCategory, CoreUsageModelKey } from '@/lib/usage-pricing';
-import TeamUsagePanel from '@/components/team/TeamUsagePanel';
 import type {
   UsageDashboardResult,
   UsageRecord,
@@ -422,7 +421,6 @@ export default function UsageDashboard() {
 
   return (
     <div className="space-y-6">
-      <TeamUsagePanel />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-sm font-medium text-accent">Usage</p>

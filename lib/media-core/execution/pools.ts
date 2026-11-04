@@ -7,6 +7,7 @@ export interface ActorPolicy {
   currency: 'CNY';
   personalConcurrency: number;
   paused: boolean;
+  allowedModels: string[] | null;
   timezone: 'Asia/Shanghai';
   version: number;
 }
@@ -26,6 +27,7 @@ interface PolicyRow {
   currency: 'CNY';
   personalConcurrency: number;
   paused: number;
+  allowedModelsJson: string | null;
   timezone: 'Asia/Shanghai';
   version: number;
 }
@@ -35,6 +37,7 @@ export const DEFAULT_ACTOR_POLICY = Object.freeze({
   currency: 'CNY' as const,
   personalConcurrency: 0,
   paused: false,
+  allowedModels: null,
   timezone: 'Asia/Shanghai' as const,
 });
 
@@ -61,6 +64,7 @@ export function readActorPolicy(db: Database.Database, actorId: string): ActorPo
     currency: row.currency,
     personalConcurrency: row.personalConcurrency,
     paused: Boolean(row.paused),
+    allowedModels: row.allowedModelsJson == null ? null : JSON.parse(row.allowedModelsJson) as string[],
     timezone: row.timezone,
     version: row.version,
   };
@@ -72,6 +76,7 @@ export function updateActorPolicy(db: Database.Database, input: {
   personalConcurrency: number;
   paused: boolean;
   expectedVersion: number;
+  allowedModels?: string[] | null;
 }): ActorPolicy {
   if (!input.actorId.trim()) throw new ExecutionError('invalid_input', 'actorId 不能为空。');
   if (input.monthlyLimitMinor !== null
@@ -87,6 +92,11 @@ export function updateActorPolicy(db: Database.Database, input: {
       throw new ExecutionError('policy_version_conflict', `成员策略 version 已变化，期望 ${input.expectedVersion}，实际 ${current.version}。`);
     }
     const version = current.version + 1;
+    const allowedModels = input.allowedModels === undefined ? current.allowedModels : input.allowedModels;
+    if (allowedModels !== null && (!Array.isArray(allowedModels) || allowedModels.length > 500
+      || allowedModels.some(model => typeof model !== 'string' || !model.trim() || model.length > 200))) {
+      throw new ExecutionError('invalid_input', '模型权限必须为不限模型或有效的模型列表。');
+    }
     db.prepare(`
       INSERT INTO execution_actor_policies (
         actorId, monthlyLimitMinor, currency, personalConcurrency, paused, timezone, version, updatedAt
@@ -99,9 +109,27 @@ export function updateActorPolicy(db: Database.Database, input: {
         updatedAt = excluded.updatedAt
     `).run(input.actorId, input.monthlyLimitMinor, input.personalConcurrency, input.paused ? 1 : 0,
       version, new Date().toISOString());
+    db.prepare('UPDATE execution_actor_policies SET allowedModelsJson = ? WHERE actorId = ?')
+      .run(allowedModels === null ? null : JSON.stringify([...new Set(allowedModels.map(model => model.trim()))]), input.actorId);
     return readActorPolicy(db, input.actorId);
   });
   return run.immediate();
+}
+
+/** Use the configured model identity, not the pricing alias shared by multiple models. */
+export function executionModelIdentity(snapshot: unknown): string | null {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const value = snapshot as Record<string, unknown>;
+  for (const key of ['configuredModel', 'model', 'requestModel', 'modelAlias']) {
+    if (typeof value[key] === 'string' && value[key].trim()) return value[key].trim();
+  }
+  return null;
+}
+
+export function actorModelAllowed(policy: ActorPolicy, snapshot: unknown): boolean {
+  if (policy.allowedModels === null) return true;
+  const model = executionModelIdentity(snapshot);
+  return model !== null && policy.allowedModels.includes(model);
 }
 
 export function upsertExecutionPool(db: Database.Database, input: {

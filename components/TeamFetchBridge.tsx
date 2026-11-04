@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { withTeamCsrf } from '@/lib/team-fetch-client';
 
 let csrfToken: string | null = null;
 let csrfPromise: Promise<string> | null = null;
@@ -24,20 +25,20 @@ export default function TeamFetchBridge() {
     };
 
     window.fetch = async (input, init) => {
-      const request = new Request(input, init);
+      let request = new Request(input, init);
       const url = new URL(request.url, window.location.origin);
       const method = request.method.toUpperCase();
+      // teamWrite and legacy forms share one token; independently issuing tokens
+      // rotates the HttpOnly cookie and invalidates concurrent uploads.
+      if (url.origin === window.location.origin && url.pathname === '/api/team/auth/csrf' && method === 'GET') {
+        return Response.json({ csrfToken: await tokenForWrite() });
+      }
       const needsCsrf = url.origin === window.location.origin
         && url.pathname.startsWith('/api/')
         && !['GET', 'HEAD', 'OPTIONS'].includes(method)
         && url.pathname !== '/api/team/auth/csrf';
-      const headers = new Headers(request.headers);
-      if (needsCsrf && !headers.has('x-csrf-token')) headers.set('x-csrf-token', await tokenForWrite());
-      const response = await originalFetch(input, {
-        ...init,
-        headers,
-        credentials: init?.credentials ?? 'same-origin',
-      });
+      if (needsCsrf && !request.headers.has('x-csrf-token')) request = withTeamCsrf(request, await tokenForWrite());
+      const response = await originalFetch(request);
       if (response.status === 401 && url.pathname !== '/api/team/auth/login' && url.pathname !== '/api/team/auth/session') {
         csrfToken = null;
         const next = `${window.location.pathname}${window.location.search}`;

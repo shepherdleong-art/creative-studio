@@ -186,6 +186,12 @@ export const EXECUTION_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = [
       );
     `,
   },
+  {
+    version: 5,
+    // null keeps existing accounts unrestricted; [] denies every model.
+    sql: `ALTER TABLE execution_actor_policies ADD COLUMN allowedModelsJson TEXT
+      CHECK (allowedModelsJson IS NULL OR (json_valid(allowedModelsJson) AND json_type(allowedModelsJson) = 'array'));`,
+  },
 ];
 
 export type ExecutionSchemaReadiness = VersionedSchemaReadiness;
@@ -221,6 +227,9 @@ function validateExecutionSchema(db: Database.Database): void {
   if (schemaVersion >= 4
     && !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_pool_bindings'").get()) {
     throw new Error('execution 缺少 execution_pool_bindings 结构');
+  }
+  if (schemaVersion >= 5 && !(db.prepare('PRAGMA table_info(execution_actor_policies)').all() as Array<{ name: string }>).some(column => column.name === 'allowedModelsJson')) {
+    throw new Error('execution 缺少模型权限字段');
   }
 }
 

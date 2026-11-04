@@ -32,7 +32,10 @@ async function __teamRouteGET(
     const relativePath = pathSegments.join('/');
 
     // 1. Check: must be inside one of the allowed subdirectories
-    const allowedPrefix = ALLOWED_DIRS.some((dir) =>
+    const serverMode = readRuntimeConfig().mode === 'server';
+    // Controlled uploads live under team-files. Serving still goes through the
+    // authenticated registry below; local mode must not expose this directory.
+    const allowedPrefix = (serverMode && relativePath.startsWith('team-files/')) || ALLOWED_DIRS.some((dir) =>
       relativePath === dir || relativePath.startsWith(dir + '/')
     );
     if (!allowedPrefix) {
@@ -58,7 +61,7 @@ async function __teamRouteGET(
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    if (readRuntimeConfig().mode === 'server') {
+    if (serverMode) {
       const mimeTypes: Record<string, string> = {
         '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
       };

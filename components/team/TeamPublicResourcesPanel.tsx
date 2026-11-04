@@ -2,9 +2,9 @@
 
 import { useState, type FormEvent } from 'react';
 import { teamError, teamWrite } from './client';
+import TeamBgmLibrary from './TeamBgmLibrary';
 
 const PUBLISHABLE: Array<{ value: string; label: string }> = [
-  { value: 'bgm', label: 'BGM 曲目' },
   { value: 'video_prompt_template', label: '视频提示词模板' },
   { value: 'title_preset', label: '标题预设' },
   { value: 'lut', label: 'LUT' },
@@ -49,16 +49,16 @@ export default function TeamPublicResourcesPanel() {
       <div>
         <h1 className="text-3xl font-semibold tracking-tight text-ink">公共资源发布</h1>
         <p className="mt-2 text-sm text-ink-secondary">
-          把已有资源登记为团队公共可见。发布走真实 API 与资源归属校验；不复制文件、不改变已有版本。
-          不存在的资源类型会明确拒绝，不会显示模拟成功。
+          管理团队共用的音乐与素材。BGM 可直接上传，发布后成员即可在制作中选用。
         </p>
       </div>
 
       {error && <p role="alert" className="text-sm text-fail">{error}</p>}
       {notice && <p role="status" className="text-sm text-ok">{notice}</p>}
 
+      <TeamBgmLibrary />
       <section className="card p-6">
-        <h2 className="mb-5 text-lg font-semibold text-ink">发布已有资源</h2>
+        <h2 className="mb-5 text-lg font-semibold text-ink">发布其他已有资源</h2>
         <form onSubmit={publish} className="grid gap-4 md:grid-cols-[220px_1fr_auto] md:items-end">
           <label>
             <span id="public-resource-type-label" className="label">资源类型</span>

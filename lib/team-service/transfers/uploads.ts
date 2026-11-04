@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type Database from 'better-sqlite3';
-import { runWithAccessContext, type AccessActor } from '../../media-core/access-context.ts';
+import { registerManagedFile, runWithAccessContext, type AccessActor } from '../../media-core/access-context.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../../media-core/storage-path.ts';
 import { createTeamAccessContext, requireResourceAccess } from '../resource-scopes.ts';
 import { teamFileEtag, type TeamFileRecord } from '../files/index.ts';
@@ -13,6 +13,7 @@ import { assertTeamPublicationAllowed } from '../lifecycle/barrier.ts';
 import { TransferError, transferError } from './errors.ts';
 import type { TeamTransferSpace } from './space.ts';
 import { displayNameFromRelativePath, normalizeRelativeName } from './names.ts';
+import { normalizeTeamImageOptions, type TeamImageOptions } from './image-options.ts';
 import {
   expectedTeamUploadScope,
   expectedTeamUploadUsage,
@@ -37,6 +38,7 @@ export type TeamUploadState = 'receiving' | 'validating' | 'staged' | 'ready' | 
 export type ByteBody = AsyncIterable<Uint8Array> | ReadableStream<Uint8Array>;
 
 interface TeamUploadRow {
+  imageOptionsJson: string | null;
   id: string;
   userId: string;
   deviceId: string | null;
@@ -91,6 +93,7 @@ export interface TeamFileManifest {
 }
 
 export interface CreateTeamUploadInput {
+  imageOptions?: TeamImageOptions;
   storageRoot: string;
   target?: { resourceType: string; resourceId: string };
   targetKind?: string;
@@ -278,6 +281,7 @@ function sameUploadInput(
     && upload.expectedSize === input.expectedSize
     && upload.expectedSha256 === input.expectedSha256
     && upload.sourceFingerprint === input.sourceFingerprint
+    && (upload.imageOptionsJson ?? null) === (input.imageOptions == null ? null : JSON.stringify(normalizeTeamImageOptions(input.imageOptions)))
     && upload.partSize === partSize;
 }
 
@@ -293,6 +297,11 @@ export function createTeamUpload(
     throw new TransferError('invalid_input', '上传目标资源无效。');
   }
   const targetKind = normalizeTeamUploadTargetKind(input.targetKind);
+  const imageOptions = normalizeTeamImageOptions(input.imageOptions);
+  if (imageOptions && targetKind !== 'project_image') throw new TransferError('invalid_input', '只有项目图片可设置图片选项。');
+  if (targetKind === 'project_image' && input.expectedSize > 50 * 1024 * 1024) {
+    throw new TransferError('invalid_input', '单张图片不能超过 50 MB。');
+  }
   if (targetKind && (target.resourceType !== expectedTeamUploadScope(targetKind)
     || input.usage !== expectedTeamUploadUsage(targetKind))) {
     throw new TransferError('invalid_input', '上传业务类型、目标范围与用途不匹配。');
@@ -332,12 +341,13 @@ export function createTeamUpload(
       INSERT INTO team_uploads (
         id, userId, deviceId, targetKind, targetResourceType, targetResourceId, usage, relativeName, mimeType,
         expectedSize, expectedSha256, sourceFingerprint, partSize, idempotencyKey, state, fileId,
-        createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'receiving', ?, ?, ?)
+        createdAt, updatedAt, imageOptionsJson
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'receiving', ?, ?, ?, ?)
     `).run(
       id, actor.userId, input.deviceId ?? null, targetKind, target.resourceType, target.resourceId,
       input.usage, relativeName, input.mimeType, input.expectedSize, input.expectedSha256,
       input.sourceFingerprint, partSize, input.idempotencyKey, fileId, at, at,
+      imageOptions ? JSON.stringify(imageOptions) : null,
     );
   } catch (error) {
     if ((error as { code?: string }).code?.startsWith('SQLITE_CONSTRAINT')) {
@@ -647,6 +657,10 @@ function publishReadyFile(
       }
     }
     const resultResourceType = published?.resourceType ?? upload.targetResourceType;
+    const processed = prepared?.preprocessedImage;
+    if (processed && processed.processedPath !== prepared?.absolutePath) registerManagedFile({
+      absolutePath: processed.processedPath, mimeType: processed.mimeType, derivedFromFileId: upload.fileId,
+    });
     const resultResourceId = published?.resourceId ?? upload.targetResourceId;
     db.prepare(`UPDATE team_uploads SET state = 'ready', resultResourceType = ?, resultResourceId = ?,
       errorCode = NULL, updatedAt = ?, completedAt = ? WHERE id = ?`).run(

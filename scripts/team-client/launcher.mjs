@@ -62,10 +62,23 @@ if (dryRun) {
     CREATIVE_STUDIO_CLIENT_STATE_ROOT: path.join(root, 'client-state'),
     CREATIVE_STUDIO_CLIENT_RELEASE_ID: pointer.releaseId,
   });
-  const child = spawn(executable, launchArguments, { env, stdio: 'inherit', windowsHide: true });
-  child.on('error', (error) => fail(`轻客户端启动失败：${error.message}`));
-  child.on('exit', (code, signal) => {
-    if (signal) process.kill(process.pid, signal);
-    else process.exit(code ?? 1);
-  });
+  // This is the user-facing GUI, not a background helper. On Windows,
+  // windowsHide can keep the native window hidden even after ready-to-show.
+  // Do not keep start-client.cmd alive or inherit its console handles. The GUI
+  // must survive the launcher exiting; diagnostics go to the local state root.
+  let logFd;
+  try {
+    const logRoot = path.join(root, 'client-state', 'logs');
+    fs.mkdirSync(logRoot, { recursive: true });
+    logFd = fs.openSync(path.join(logRoot, 'client.log'), 'a');
+    const child = spawn(executable, launchArguments, {
+      env, detached: true, stdio: ['ignore', logFd, logFd], windowsHide: false,
+    });
+    child.once('error', (error) => fail(`轻客户端启动失败：${error.message}`));
+    child.once('spawn', () => child.unref());
+  } catch (error) {
+    fail(`轻客户端启动失败：${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    if (logFd !== undefined) fs.closeSync(logFd);
+  }
 }

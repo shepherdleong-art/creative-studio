@@ -62,6 +62,7 @@ interface JobRecord {
   size: string;
   quality: string;
   status: string;
+  errorMessage?: string | null;
   attempt: number;
   maxAttempts: number;
   revision?: number;
@@ -127,6 +128,12 @@ export function cancelQueue(projectId: string) {
         : `UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user'
            WHERE projectId = ? AND status IN ('pending', 'retrying', 'running')`
     ).run(projectId);
+    if (isServerMediaExecution()) {
+      db.prepare(`UPDATE execution_operations SET status = 'failed', waitReason = 'stage_canceled',
+        waitDetail = NULL, updatedAt = ? WHERE module = 'image' AND status IN ('pending', 'deferred')
+        AND taskId IN (SELECT id FROM jobs WHERE projectId = ? AND status = 'canceled')`)
+        .run(new Date().toISOString(), projectId);
+    }
     db.prepare(
       `UPDATE projects SET status = 'canceled' WHERE id = ?`
     ).run(projectId);
@@ -229,7 +236,7 @@ export async function runQueue(options: QueueOptions): Promise<void> {
           }
           // No pending jobs. Check if any are still running.
           const runningCount = db
-            .prepare(`SELECT COUNT(*) as count FROM jobs WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)`)
+            .prepare(`SELECT COUNT(*) as count FROM jobs WHERE projectId = ? AND status IN ('running', 'deferred') AND (? IS NULL OR id = ?)`)
             .get(projectId, options.jobId || null, options.jobId || null) as { count: number };
           if (runningCount.count === 0) break;
           await sleep(500);
@@ -303,14 +310,20 @@ async function runAuthorizedJob(
   let attempt = job.attempt;
   const startedAt = new Date().toISOString();
 
-  const logInfo = (msg: string) =>
+  // Preparation is not a provider call. Only publish these details after admission.
+  let admitted = !isServerMediaExecution() || Boolean(job.providerTaskId || job.remoteImageUrl);
+  const preparedLogs: string[] = [];
+  const logInfo = (msg: string) => {
+    if (!admitted) { preparedLogs.push(msg); return; }
     writeLog({ jobId: job.id, projectId: job.projectId, level: 'info', message: msg, attempt });
+  };
   const logError = (msg: string) =>
     writeLog({ jobId: job.id, projectId: job.projectId, level: 'error', message: msg, attempt });
   const logWarn = (msg: string) =>
     writeLog({ jobId: job.id, projectId: job.projectId, level: 'warn', message: msg, attempt });
 
-  logInfo(`Job started (attempt ${attempt}/${job.maxAttempts || maxAttempts})`);
+  if (admitted) logInfo(`图片任务开始（第 ${attempt} 次调用）`);
+  let cleanupRequestAbort: (() => void) | undefined;
 
   try {
     // Load input image (prefer processedPath for API calls)
@@ -409,6 +422,7 @@ async function runAuthorizedJob(
     const reqAbort = new AbortController();
     const onAbort = () => reqAbort.abort();
     abort.addEventListener('abort', onAbort, { once: true });
+    cleanupRequestAbort = () => abort.removeEventListener('abort', onAbort);
 
     // ── Route to correct adapter ──
     let result: { imageBuffer: Buffer; latencyMs: number; rawResponse?: unknown; remoteImageUrl?: string } | undefined;
@@ -466,6 +480,10 @@ async function runAuthorizedJob(
             .run(attempt, job.id);
         },
         send: async () => {
+          admitted = true;
+          logInfo(`图片任务已取得运行名额，开始第 ${attempt} 次调用`);
+          for (const message of preparedLogs) logInfo(message);
+          preparedLogs.length = 0;
           const value = await send();
           return { value, receipt: receipt(value) };
         },
@@ -1152,6 +1170,9 @@ async function runAuthorizedJob(
     if (isServerMediaExecution() && isLegacyMediaExecutionDeferred(err)) {
       db.prepare(`UPDATE jobs SET status = 'deferred', errorMessage = ? WHERE id = ? AND status = 'running'`)
         .run(errorMessage, job.id);
+      if (job.errorMessage !== errorMessage) {
+        logWarn('图片任务等待运行名额或额度，尚未发送请求；具体原因见团队任务。');
+      }
       return;
     }
 
@@ -1228,6 +1249,8 @@ async function runAuthorizedJob(
       ).run(errorMessage, job.id);
       logWarn(`Job will retry (attempt ${attempt}/${effectiveMaxAttempts})`);
     }
+  } finally {
+    cleanupRequestAbort?.();
   }
 }
 
@@ -1257,10 +1280,11 @@ function claimDeferredImageJob(projectId: string, jobId?: string): JobRecord | n
       ON deferred_operation.module = 'image' AND deferred_operation.taskId = jobs.id
       AND deferred_operation.operationKey = 'image/' || jobs.id || '/submit/r' || COALESCE(jobs.executionRevision, 0)
     WHERE jobs.projectId = ? AND jobs.status = 'deferred' AND (? IS NULL OR jobs.id = ?)
+      AND (deferred_operation.updatedAt IS NULL OR julianday(deferred_operation.updatedAt) <= julianday('now', '-1 second'))
     ORDER BY COALESCE(deferred_operation.updatedAt, jobs.createdAt), jobs.createdAt, jobs.rowid LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as JobRecord | undefined;
   if (!job) return null;
-  const claimed = db.prepare(`UPDATE jobs SET status = 'running', errorMessage = NULL
+  const claimed = db.prepare(`UPDATE jobs SET status = 'running'
     WHERE id = ? AND status = 'deferred'`).run(job.id);
   return claimed.changes === 1 ? { ...job, status: 'running' } : null;
 }

@@ -10,6 +10,7 @@ import {
 import { mapOperation, readAttempt } from './records.ts';
 import {
   monthlyCostUsage,
+  actorModelAllowed,
   personalConcurrencyPoolKey,
   readActorPolicy,
   shanghaiAccountingPeriod,
@@ -44,6 +45,7 @@ function candidateReason(
     resourceType: operation.scopeType, resourceId: operation.scopeId,
   })) return 'scope_forbidden';
   if (policy.paused) return 'actor_paused';
+  if (!actorModelAllowed(policy, operation.providerSnapshot)) return 'model_forbidden';
   for (const poolKey of operation.requiredPools) {
     const pool = options.db.prepare('SELECT * FROM execution_pools WHERE poolKey = ?').get(poolKey) as PoolState | undefined;
     if (!pool || !pool.mappingSnapshotJson || pool.mappingSnapshotJson === '{}') return 'pool_missing';

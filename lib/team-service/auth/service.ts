@@ -98,8 +98,8 @@ function validateDisplayName(value: string): string {
 }
 
 function validateNewPassword(value: string): void {
-  if (value.length < 12 || value.length > 128) {
-    throw new TeamAuthError('invalid_password', '新密码须为 12–128 个字符。');
+  if (value.length < 6 || value.length > 128) {
+    throw new TeamAuthError('invalid_password', '新密码须为 6–128 个字符。');
   }
 }
 

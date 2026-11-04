@@ -1,5 +1,7 @@
 'use client';
 
+import { uploadImages } from '@/lib/image-upload-client';
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type {
@@ -636,7 +638,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       form.append('preprocessEnabled', 'false');
       form.append('targetMaxSide', '4096');
       form.append('jpegQuality', '88');
-      const response = await fetch('/api/upload', { method: 'POST', body: form });
+      const response = await uploadImages(form);
       const data = await response.json().catch(() => ({ files: [] }));
       if (!response.ok) {
         setError(data.error || '上传失败');

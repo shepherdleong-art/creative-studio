@@ -33,6 +33,7 @@ async function __teamRoutePOST(request: Request) {
         sourceFingerprint: entry.sourceFingerprint,
         idempotencyKey: entry.idempotencyKey,
         partSize: entry.partSize,
+        imageOptions: entry.imageOptions,
       } as CreateTeamUploadInput;
       await teamTransferSpace(input.storageRoot).probe(input.expectedSize);
       uploads.push(createTeamUpload(getDb(), requireAccessContext().actor, input));

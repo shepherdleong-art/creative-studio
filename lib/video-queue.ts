@@ -205,6 +205,10 @@ export function cancelVideoQueue(projectId: string) {
         `UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
          WHERE projectId = ? AND status IN ('pending', 'deferred')`
       ).run(projectId);
+      db.prepare(`UPDATE execution_operations SET status = 'failed', waitReason = 'stage_canceled',
+        waitDetail = NULL, updatedAt = ? WHERE module = 'video' AND status IN ('pending', 'deferred')
+        AND taskId IN (SELECT id FROM video_jobs WHERE projectId = ? AND status = 'canceled')`)
+        .run(new Date().toISOString(), projectId);
     } else {
       db.prepare(
         `UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
@@ -301,7 +305,7 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
         }
 
         const runningCount = db
-          .prepare(`SELECT COUNT(*) as count FROM video_jobs WHERE projectId = ? AND status = 'running' AND (? IS NULL OR id = ?)`)
+          .prepare(`SELECT COUNT(*) as count FROM video_jobs WHERE projectId = ? AND status IN ('running', 'deferred') AND (? IS NULL OR id = ?)`)
           .get(projectId, options.jobId || null, options.jobId || null) as { count: number };
         if (runningCount.count === 0) break;
         await sleep(500);
@@ -956,6 +960,7 @@ function claimDeferredVideoJob(projectId: string, jobId?: string): ClaimedVideoJ
       ON deferred_operation.module = 'video' AND deferred_operation.taskId = video_jobs.id
       AND deferred_operation.operationKey = 'video/' || video_jobs.id || '/submit/r' || COALESCE(video_jobs.executionRevision, 0)
     WHERE video_jobs.projectId = ? AND video_jobs.status = 'deferred' AND (? IS NULL OR video_jobs.id = ?)
+      AND (deferred_operation.updatedAt IS NULL OR julianday(deferred_operation.updatedAt) <= julianday('now', '-1 second'))
     ORDER BY COALESCE(deferred_operation.updatedAt, video_jobs.createdAt), video_jobs.createdAt, video_jobs.rowid LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as VideoJobRecord | undefined;
   if (!job) return null;

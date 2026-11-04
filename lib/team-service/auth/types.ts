@@ -37,9 +37,19 @@ export interface InternalTaskPrincipal {
 
 export type IdentityOperation = 'session' | 'csrf' | 'change-password' | 'logout' | 'business' | 'users';
 
+const AUTH_ERROR_BRAND = Symbol.for('creative-studio.team-auth-error');
+
 export class TeamAuthError extends Error {
+  readonly [AUTH_ERROR_BRAND] = true;
   readonly code: string;
   readonly status: number;
+
+  // The process-wide auth service can be created by a different Next server bundle.
+  // Constructor identity is not stable across those bundles; the private brand is.
+  static [Symbol.hasInstance](value: unknown): boolean {
+    return typeof value === 'object' && value !== null
+      && (value as TeamAuthError)[AUTH_ERROR_BRAND] === true;
+  }
 
   constructor(code: string, message: string, status = 400) {
     super(message);

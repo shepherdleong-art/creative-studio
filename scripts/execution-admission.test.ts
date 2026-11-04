@@ -15,6 +15,7 @@ const { createExecutionFacade } = await import('../lib/media-core/execution/oper
 const { registerExecutionInstance } = await import('../lib/media-core/execution/schema.ts');
 const {
   readActorPolicy,
+  actorModelAllowed,
   shanghaiAccountingPeriod,
   updateActorPolicy,
   upsertExecutionPool,
@@ -74,7 +75,7 @@ try {
   assert.equal(shanghaiAccountingPeriod(new Date('2026-02-28T16:00:00.000Z')), '2026-03');
   assert.deepEqual(readActorPolicy((await setup('defaults')).db, 'new-user'), {
     actorId: 'new-user', monthlyLimitMinor: 0, currency: 'CNY', personalConcurrency: 0,
-    paused: false, timezone: 'Asia/Shanghai', version: 0,
+    paused: false, allowedModels: null, timezone: 'Asia/Shanghai', version: 0,
   });
 
   {
@@ -218,6 +219,37 @@ try {
       assert.deepEqual(resumed.grant.inputSnapshot, { previousResult: 'remote-a1', assetId: 'asset-a1' });
       assert.equal(resumed.grant.attempt.submitRound, 1);
     }
+  }
+
+  {
+    const { db, execution } = await setup('model-permissions');
+    upsertExecutionPool(db, { poolKey: 'shared', kind: 'remote', capacity: 10, enabled: true, mappingSnapshot: { providerId: 'provider-a' }, expectedVersion: 0 });
+    const policy = { actorId: 'restricted', monthlyLimitMinor: null, personalConcurrency: 10, paused: false };
+    updateActorPolicy(db, { ...policy, expectedVersion: 0, allowedModels: ['model-a'] });
+    for (const snapshot of [{ model: 'model-a' }, { requestModel: 'model-a' }, { configuredModel: 'model-a' }, { modelAlias: 'model-a' }]) {
+      assert.equal(actorModelAllowed(readActorPolicy(db, 'restricted'), snapshot), true, '图片、视频、文本、配音与画布模型快照均可识别');
+    }
+    assert.equal(actorModelAllowed(readActorPolicy(db, 'restricted'), { model: 'model-b', coreModelKey: 'model-a' }), false, '定价别名不得代替真实模型权限');
+    const denied = execution.enqueue({ ...operation('restricted', 'denied'), providerSnapshot: { model: 'model-a-fast' } });
+    assert.deepEqual(execution.admit({ ...identity, operationId: denied.operation.id }), { kind: 'deferred', reasons: ['model_forbidden'] });
+    assert.equal(db.prepare('SELECT COUNT(*) FROM execution_reservations').pluck().get(), 0, '拒绝模型不能预留费用或并发');
+    const allowed = execution.enqueue({ ...operation('restricted', 'allowed'), providerSnapshot: { model: 'model-a' } });
+    const grant = execution.admit({ ...identity, operationId: allowed.operation.id });
+    assert.equal(grant.kind, 'admitted');
+    updateActorPolicy(db, { ...policy, expectedVersion: 1, allowedModels: [] });
+    if (grant.kind === 'admitted') {
+      await assert.rejects(execution.markSubmitting({ grant: grant.grant, requestSnapshot: {} }), { code: 'model_forbidden' }, '准入后撤销权限也必须在提交前拦截');
+    }
+    assert.equal(readActorPolicy(db, 'restricted').allowedModels?.length, 0);
+    updateActorPolicy(db, { ...policy, expectedVersion: 2 });
+    assert.deepEqual(readActorPolicy(db, 'restricted').allowedModels, [], '旧客户端只改额度不得清除模型限制');
+    assert.throws(() => updateActorPolicy(db, { ...policy, expectedVersion: 2, allowedModels: null }), { code: 'policy_version_conflict' });
+    updateActorPolicy(db, { ...policy, expectedVersion: 3, allowedModels: ['model-a-fast'] });
+    assert.equal(execution.admit({ ...identity, operationId: denied.operation.id }).kind, 'admitted', '授权后排队任务可继续');
+    const missing = execution.enqueue({ ...operation('restricted', 'missing'), providerSnapshot: {} });
+    assert.deepEqual(execution.admit({ ...identity, operationId: missing.operation.id }), { kind: 'deferred', reasons: ['model_forbidden'] }, '缺少模型身份不能绕过限制');
+    updateActorPolicy(db, { ...policy, expectedVersion: 4, allowedModels: null });
+    assert.equal(execution.admit({ ...identity, operationId: missing.operation.id }).kind, 'admitted');
   }
 
   console.log('execution admission tests passed');

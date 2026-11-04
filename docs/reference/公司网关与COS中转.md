@@ -7,6 +7,8 @@
 
 ## 启动联动（macOS / Windows 源码运行）
 
+团队服务器的 SCM 配置从数据根读取 `.env.local` 与 `config.yaml`，代理端口以部署配置为准（当前试点为 4300，供应商地址必须同步）。生成的 `service/litellm-service.py` 在每次启动写入真实 PID/端口状态，并清除代理环境变量；停机由独立 SCM 管理。现场配置、共享池和验收边界见 [2026-11-04 服务器资源接入](../2026-11-04-服务器COS与LiteLLM资源接入.md)。
+
 公司网关联动（macOS / Windows 源码运行）：`.venv-litellm` 与 `config.yaml` 齐备时，macOS 的 `start.command` 与 `npm run dev` 的 `predev` 钩子都经 `scripts/start-litellm.sh`、Windows 的 `start-windows.cmd`（桌面壳）与 `scripts/start-windows.ps1`（dev server）都经 `scripts/start-stack.ps1 -SkipApp` 拉起 LiteLLM（端口 4000，启动参数必须显式 `--host 127.0.0.1`）；依赖锁定在 `requirements-litellm.txt`，组件缺失或 sidecar 失败只禁用公司供应商，不阻塞工作台。Windows 免安装包不走 venv：`start-stack.ps1 -Portable` 用包内 `python-runtime\python.exe scripts\start-litellm-proxy.py --config config.yaml --host 127.0.0.1 --port 4000` 启动，`stack.json` 记录 `litellmRuntime` 与实际解释器路径，`stop-stack.ps1` 按 PID + 路径归属停止。参考图的公网交付走腾讯云 COS（`CREATIVE_STUDIO_COS_*`，见 `lib/cos-media.ts`）。安全约束：本机服务（app 与代理）不得暴露到公网，公网交付只走 COS。两平台停止脚本、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读取 `storage/run/stack.json` 的受控 `stopScript`）都会把代理一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
 
 macOS 启动器只对 LiteLLM 子进程清除大小写两套 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，避免 Codex 或终端的公网代理接管公司网关请求；这不会改变 Codex、Next 或父 shell 的代理环境。若代理客户端启用 TUN/全局路由，还必须在客户端把公司网关域名及所需私网网段置于高优先级 `DIRECT` 规则，因为进程环境变量无法绕过系统路由层截流。

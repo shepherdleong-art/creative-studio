@@ -36,7 +36,7 @@ const stream = (bytes: Buffer, chunkSize = 8191) => Readable.from((function* () 
 
 try {
   for (const migration of TEAM_SERVICE_MIGRATIONS) db.exec(migration.sql);
-  assert.deepEqual(TEAM_SERVICE_MIGRATIONS.map((migration) => migration.version), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(TEAM_SERVICE_MIGRATIONS.map((migration) => migration.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
   const insertUser = db.prepare(`INSERT INTO team_users (
     id, employeeId, displayName, role, status, passwordHash, mustChangePassword, sessionVersion, createdAt, updatedAt
   ) VALUES (?, ?, ?, 'employee', 'active', 'test', 0, 1, '2026-11-02', '2026-11-02')`);

@@ -116,6 +116,55 @@ try {
   assert.equal(memberBody.items[0].monthlyLimitMinor, 12345);
   assert.equal(memberBody.items[0].paused, true);
 
+  const policyUrl = `https://studio.example.test/api/team/members/${alice.principal.userId}/policy`;
+  const policyContext = { params: Promise.resolve({ id: alice.principal.userId }) };
+  const modelPolicy = { monthlyLimitMinor: 12345, personalConcurrency: 2, paused: false, expectedVersion: 1, allowedModels: ['image2-medium'] };
+  const forbiddenModels = await policyRoute.PATCH(request(policyUrl, alice.cookie, { method: 'PATCH', ...json(modelPolicy) }), policyContext);
+  assert.equal(forbiddenModels.status, 403);
+  const invalidModels = await policyRoute.PATCH(request(policyUrl, adminCookie, { method: 'PATCH', ...json({ ...modelPolicy, allowedModels: [1] }) }), policyContext);
+  assert.equal(invalidModels.status, 400);
+  const modelPatch = await policyRoute.PATCH(request(policyUrl, adminCookie, { method: 'PATCH', ...json(modelPolicy) }), policyContext);
+  assert.equal(modelPatch.status, 200, await modelPatch.clone().text());
+  assert.deepEqual((await modelPatch.json()).allowedModels, ['image2-medium']);
+  const modelRead = await policyRoute.GET(request(policyUrl, adminCookie), policyContext);
+  assert.deepEqual((await modelRead.json()).allowedModels, ['image2-medium']);
+  const stalePatch = await policyRoute.PATCH(request(policyUrl, adminCookie, { method: 'PATCH', ...json({ ...modelPolicy, allowedModels: null }) }), policyContext);
+  assert.equal(stalePatch.status, 409);
+  assert.ok(memberBody.modelOptions.every((option: Record<string, unknown>) => Object.keys(option).every(key => ['model', 'label', 'category'].includes(key))));
+
+  // One actual admission by another member reproduces the old admin zero-vs-team mismatch.
+  const { createExecutionFacade } = await import('../lib/media-core/execution/operations.ts');
+  const { registerExecutionInstance } = await import('../lib/media-core/execution/schema.ts');
+  const { upsertExecutionPool, updateActorPolicy } = await import('../lib/media-core/execution/pools.ts');
+  const identity = { instanceId: 'usage-scope-test', fence: 1 };
+  registerExecutionInstance(db, { ...identity, deploymentId: 'deployment-usage-routes' });
+  upsertExecutionPool(db, { poolKey: 'scope-test', kind: 'remote', capacity: 2, enabled: true, mappingSnapshot: { test: true }, expectedVersion: 0 });
+  updateActorPolicy(db, { actorId: bob.principal.userId, monthlyLimitMinor: null, personalConcurrency: 2, paused: false, expectedVersion: 0 });
+  const runtime = createExecutionFacade({ db, deploymentId: 'deployment-usage-routes', actorAllowed: () => true, scopeAllowed: () => true, maintenance: () => false,
+    journal: { verify: () => ({ valid: true, records: [] }), scan: () => [], appendIntent: () => { throw new Error('no transport'); }, appendReceipt: () => { throw new Error('no transport'); } } });
+  await runtime.lifecycle.start({ ...identity, deploymentId: 'deployment-usage-routes', signal: new AbortController().signal });
+  const operation = runtime.facade.enqueue({ operationKey: 'image/scope-task/submit/1', actor: { userId: bob.principal.userId }, scope: { resourceType: 'project', resourceId: 'scope-fixture' }, module: 'image', taskId: 'scope-task', step: 'submit', inputRevision: '1', businessAttempt: { id: 'scope-business', number: 1 }, inputSnapshot: {}, inputHash: 'scope-hash', continuationKey: 'test', providerSnapshot: { model: 'image-test' }, requiredPools: ['scope-test'], quote: { kind: 'priced', reserve: { currency: 'CNY', minor: 25 }, pricingSnapshot: {} } });
+  assert.equal(runtime.facade.admit({ ...identity, operationId: operation.operation.id }).kind, 'admitted');
+  runtime.closeNewWork();
+
+  const adminOwn = await usageRoute.GET(request('https://studio.example.test/api/team/usage', adminCookie));
+  const adminOwnBody = await adminOwn.json();
+  assert.equal(adminOwnBody.scope, 'self');
+  assert.equal(adminOwnBody.items.length, 0);
+  assert.equal(adminOwnBody.totals.estimatedMinor, 0);
+  assert.equal(adminOwnBody.canViewTeam, true);
+  assert.equal(adminOwnBody.member.userId, admin.userId);
+  const adminTeam = await usageRoute.GET(request('https://studio.example.test/api/team/usage?scope=team', adminCookie));
+  const teamBody = await adminTeam.json();
+  assert.equal(teamBody.scope, 'team');
+  assert.equal(teamBody.items.length, 1);
+  assert.equal(teamBody.items[0].actorUserId, bob.principal.userId);
+  assert.equal(teamBody.totals.estimatedMinor, 25);
+  const employeeTeam = await usageRoute.GET(request('https://studio.example.test/api/team/usage?scope=team', alice.cookie));
+  const employeeTeamBody = await employeeTeam.json();
+  assert.equal(employeeTeamBody.scope, 'self');
+  assert.equal(employeeTeamBody.items.length, 0);
+
   const ownUsage = await usageRoute.GET(request('https://studio.example.test/api/team/usage', alice.cookie));
   assert.equal(ownUsage.status, 200, await ownUsage.clone().text());
   assert.equal((await ownUsage.json()).localAgentIncluded, false);

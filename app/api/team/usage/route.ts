@@ -10,10 +10,14 @@ async function __teamRouteGET(request: Request): Promise<Response> {
     const access = requireAccessContext();
     const viewer = { userId: access.actor.userId, role: access.actor.role };
     const filters = readTeamUsageFilters(request);
+    const teamScope = new URL(request.url).searchParams.get('scope') === 'team' && viewer.role === 'admin';
+    if (!teamScope && !filters.actorUserId) filters.actorUserId = viewer.userId;
     const result = queryTeamUsage(getDb(), viewer, filters);
     return Response.json({
       ...result,
       range: { from: filters.from, to: filters.to },
+      scope: teamScope ? 'team' : 'self',
+      canViewTeam: viewer.role === 'admin',
       policy: readTeamMemberPolicy(getDb(), viewer, viewer.userId),
       member: readTeamMemberSummary(getDb(), viewer, viewer.userId),
     }, { headers: { 'Cache-Control': 'no-store' } });

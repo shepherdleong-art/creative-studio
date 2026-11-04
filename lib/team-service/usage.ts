@@ -172,7 +172,8 @@ export function queryTeamUsage(
     CASE WHEN json_valid(a.pricingSnapshotJson) THEN json_extract(a.pricingSnapshotJson, '$.coreModelKey') END,
     CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.coreModelKey') END,
     CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.requestModel') END,
-    CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.model') END
+    CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.model') END,
+    CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.modelAlias') END
   )`;
   if (filters.model) { clauses.push(`${modelExpression} = ?`); values.push(filters.model); }
   const rows = db.prepare(`
@@ -232,6 +233,7 @@ export interface TeamMemberSummary {
   currentConcurrency: number;
   concurrencyLimit: number;
   paused: boolean;
+  allowedModels: string[] | null;
   policyVersion: number;
   waitingReason: string | null;
   attention: boolean;
@@ -290,6 +292,7 @@ function memberSummary(db: Database.Database, row: MemberRow, now: Date): TeamMe
     currentConcurrency,
     concurrencyLimit: policy.personalConcurrency,
     paused: policy.paused,
+    allowedModels: policy.allowedModels,
     policyVersion: policy.version,
     waitingReason: waitingReason ?? null,
     attention: row.accountStatus === 'disabled' || policy.paused || Boolean(waitingReason) || hasUnknown || nearLimit || currentConcurrency > policy.personalConcurrency,
@@ -356,6 +359,7 @@ export function updateTeamMemberPolicy(
     personalConcurrency: number;
     paused: boolean;
     expectedVersion: number;
+    allowedModels?: string[] | null;
   },
 ): ActorPolicy {
   if (viewer.role !== 'admin') {
@@ -370,6 +374,7 @@ export function updateTeamMemberPolicy(
     personalConcurrency: input.personalConcurrency,
     paused: input.paused,
     expectedVersion: input.expectedVersion,
+    allowedModels: input.allowedModels,
   });
 }
 

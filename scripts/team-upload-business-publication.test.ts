@@ -91,6 +91,7 @@ registerRootScope(db, { resourceType: 'canvas', resourceId: 'canvas-a', ownerUse
 const uploadsRoute = await import('../app/api/team/uploads/route.ts');
 const partRoute = await import('../app/api/team/uploads/[id]/parts/[part]/route.ts');
 const completeRoute = await import('../app/api/team/uploads/[id]/complete/route.ts');
+const imageFileRoute = await import('../app/api/images/[...path]/route.ts');
 const { runFfmpeg } = await import('../lib/ffmpeg.ts');
 
 function request(url: string, init: RequestInit = {}): Request {
@@ -111,6 +112,7 @@ async function publish(input: {
   mimeType: string;
   bytes: Buffer;
   idempotencyKey: string;
+  imageOptions?: { role: "input" | "reference"; usage: string; preprocessEnabled: boolean; targetMaxSide: number; jpegQuality: number };
   beforeComplete?: () => void;
   expectedCompleteStatus?: number;
 }) {
@@ -119,6 +121,7 @@ async function publish(input: {
   const createdResponse = await uploadsRoute.POST(request('https://studio.example.test/api/team/uploads', {
     method: 'POST', ...json({
       targetKind: input.targetKind,
+      imageOptions: input.imageOptions,
       targetScope: input.targetScope,
       usage: input.usage,
       relativeName: input.relativeName,
@@ -198,6 +201,33 @@ try {
   assert.equal(image.path, path.join(root, 'storage', normalFile.relativePath));
   assert.equal(image.originalPath, image.path);
   assert.equal(assertScopeConsistency(db, 'image', image.id).rootId, 'project-a');
+  for (const usage of ['scene_seed', 'shot_source', 'video_tail_frame']) {
+    const result = await publish({
+      targetKind: 'project_image', targetScope: { resourceType: 'project', resourceId: 'project-a' },
+      usage: 'image', relativeName: `${usage}.png`, mimeType: 'image/png', bytes: png,
+      idempotencyKey: `browser-${usage}`,
+      imageOptions: { role: 'input', usage, preprocessEnabled: true, targetMaxSide: 512, jpegQuality: 85 },
+    });
+    const stored = db.prepare('SELECT * FROM image_assets WHERE id=?').get(result.resultResourceId) as {
+      usage: string; role: string; processedPath: string; processedWidth: number; preprocessingEnabled: number;
+    };
+    assert.equal(stored.usage, usage);
+    assert.equal(stored.role, 'input');
+    assert.equal(stored.processedWidth, 512);
+    assert.equal(stored.preprocessingEnabled, 1);
+    assert.equal(result.uploadedFile.usage, usage);
+    assert.equal(result.uploadedFile.path, undefined, '不向客户端暴露服务器绝对路径');
+    assert.ok(result.uploadedFile.imageUrl.startsWith('/api/images/'));
+    const previewSegments = result.uploadedFile.relativePath.split('/');
+    const preview = await imageFileRoute.GET(request(`https://studio.example.test${result.uploadedFile.imageUrl}`) as never,
+      { params: Promise.resolve({ path: previewSegments }) });
+    assert.equal(preview.status, 200, await preview.clone().text());
+    assert.equal(preview.headers.get('content-type'), 'image/jpeg');
+    await preview.arrayBuffer();
+    const derived = db.prepare("SELECT id FROM team_files WHERE derivedFromFileId=? AND state='ready'").get(result.file.fileId) as {id: string};
+    assert.ok(derived, '预处理图必须登记为可读取的受管派生文件');
+  }
+
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM image_assets WHERE id = ?").pluck().get(image.id)), 1, '重放 complete 不得重复建普通素材');
 
   const videoPath = path.join(root, 'batch-source.mp4');
