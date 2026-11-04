@@ -58,6 +58,24 @@ function readJson(file) {
   return JSON.parse(bytes.toString('utf8'));
 }
 
+test('安装器 resolve-only 输出包含更新目录，与实际生成的托管目录一致', (t) => {
+  const context = fixture(t, { serviceAccount: 'NT AUTHORITY\\LocalService' });
+  const result = spawnSync(process.execPath, [generator, '--config', context.configPath, '--resolve-only'], {
+    cwd: root, encoding: 'utf8', windowsHide: true,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const resolved = JSON.parse(result.stdout);
+  assert.equal(resolved.clientUpdatesRoot, path.join(context.deploymentRoot, 'client-updates'));
+  assert.equal(fs.existsSync(resolved.clientUpdatesRoot), false, '解析不得创建系统目录');
+  assert.equal(resolved.serviceAccount, 'NT AUTHORITY\\LocalService');
+  const output = path.join(context.deploymentRoot, 'service');
+  const generated = spawnSync(process.execPath, [generator, '--config', context.configPath, '--output', output], {
+    cwd: root, encoding: 'utf8', windowsHide: true,
+  });
+  assert.equal(generated.status, 0, generated.stderr);
+  assert.equal(readJson(path.join(output, 'resolved-services.json')).clientUpdatesRoot, resolved.clientUpdatesRoot);
+});
+
 test('生成三个 SCM 服务、固定回环入口、环境文件、日志轮换和受控停机合同', (t) => {
   const { output, result, config } = generate(t);
   assert.equal(result.status, 0, result.stdout + result.stderr);

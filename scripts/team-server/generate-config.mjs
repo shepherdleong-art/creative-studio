@@ -251,6 +251,7 @@ export function resolveDeploymentConfig(input) {
   }
   config.serviceRoot = path.join(config.deploymentRoot, 'service');
   config.configRoot = path.join(config.deploymentRoot, 'config');
+  config.clientUpdatesRoot = path.join(config.deploymentRoot, 'client-updates');
   config.controlCredentialFile = path.join(config.configRoot, 'control-credential.json');
   config.services = [
     { role: 'caddy', id: `${config.servicePrefix}Caddy` },
@@ -330,7 +331,7 @@ function generate(config) {
       env: { PYTHONUTF8: '1', LITELLM_LOCAL_MODEL_COST_MAP: 'True', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' },
     });
   }
-  const clientUpdatesRoot = path.join(config.deploymentRoot, 'client-updates');
+  const clientUpdatesRoot = config.clientUpdatesRoot;
   const caddyConfig = `# Generated for ${config.deploymentId}; operations remain loopback-only.\n{\n\tadmin 127.0.0.1:2019\n\tauto_https disable_redirects\n}\n${config.origin} {\n\ttls ${caddyToken(config.certificate.certPath)} ${caddyToken(config.certificate.keyPath)}\n\trequest_body {\n\t\tmax_size ${config.maxRequestBytes}\n\t}\n\thandle /api/team/operations/* {\n\t\trespond 404\n\t}\n\thandle /api/shutdown {\n\t\trespond 404\n\t}\n\thandle /api/desktop/* {\n\t\trespond 404\n\t}\n\thandle /client-updates {\n\t\trespond 404\n\t}\n\thandle_path /client-updates/* {\n\t\troot * ${caddyToken(clientUpdatesRoot)}\n\t\tfile_server {\n\t\t\thide .*\n\t\t}\n\t\theader Cache-Control "no-store"\n\t}\n\thandle {\n\t\treverse_proxy 127.0.0.1:${config.appPort} {\n\t\t\tflush_interval -1\n\t\t}\n\t}\n}\n`;
   const resolved = {
     schemaVersion: 1,
