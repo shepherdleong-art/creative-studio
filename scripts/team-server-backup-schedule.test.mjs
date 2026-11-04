@@ -52,13 +52,14 @@ function invoke(context, args) {
 
 test('预览输出固定任务合同且不写系统或备份根', { skip }, (t) => {
   const context = fixture(t);
-  const preview = invoke(context, ['-Action', 'preview', '-Time', '02:30', '-TimeZone', 'China Standard Time']);
+  const localZone=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command','[System.TimeZoneInfo]::Local.Id'],{encoding:'utf8',windowsHide:true}).stdout.trim();
+  const preview = invoke(context, ['-Action', 'preview', '-Time', '02:30', '-TimeZone', localZone]);
   assert.equal(preview.status, 0, preview.stderr);
   const plan = preview.json.plan;
   assert.equal(plan.taskName, 'CreativeStudioTeamBackup-studio-prod');
   assert.equal(plan.account, 'CONTOSO\\svc_studio$');
   assert.equal(plan.logonType, 'S4U');
-  assert.equal(plan.timeZone, 'China Standard Time');
+  assert.equal(plan.timeZone, localZone);
   assert.match(plan.startBoundary, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00$/);
   assert.match(plan.command, /[\\/]WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/i);
   assert.ok(path.isAbsolute(plan.command));
@@ -71,6 +72,8 @@ test('预览输出固定任务合同且不写系统或备份根', { skip }, (t) 
   assert.equal(preview.json.existing.registered, false);
   assert.equal(fs.existsSync(context.config.backupRoot), false, 'preview 不得创建备份根');
   assert.equal(fs.existsSync(path.join(context.deploymentRoot, 'service')), false, 'preview 不得创建服务根');
+  const foreignZone=invoke(context,['-Action','preview','-TimeZone',localZone==='UTC'?'China Standard Time':'UTC']);
+  assert.notEqual(foreignZone.status,0,'不允许将其他时区的日历时间默认为本地时间');
 });
 
 test('时间/时区非法时 fail closed，不注册任何任务', { skip }, (t) => {
@@ -110,13 +113,24 @@ test('状态汇总每日结果、恢复证据与 restore hold，未注册时不�
 
 test('注册脚本固定多实例策略与归属校验，避免覆盖陌生任务', () => {
   const content = fs.readFileSync(schedule, 'utf8');
-  assert.match(content, /<MultipleInstancesPolicy>IgnoreNew<\/MultipleInstancesPolicy>/);
-  assert.match(content, /<StartWhenAvailable>true<\/StartWhenAvailable>/);
-  assert.match(content, /<ExecutionTimeLimit>PT6H<\/ExecutionTimeLimit>/);
-  assert.match(content, /<LogonType>\$\(\[string\]\$plan\.logonType\)<\/LogonType>/);
+  assert.match(content, /-MultipleInstances IgnoreNew/);
+  assert.match(content, /-StartWhenAvailable/);
+  assert.match(content, /New-TimeSpan -Hours 6/);
+  assert.match(content, /New-ScheduledTaskPrincipal.*-LogonType/);
+  assert.doesNotMatch(content, /<TimeZone>|<LogonType>ServiceAccount/);
   assert.match(content, /同名计划任务不属于本部署，拒绝修改或删除/);
   assert.match(content, /Get-ScheduledTask -TaskName/);
   assert.match(content, /Register-ScheduledTask -TaskName/);
   assert.match(content, /Unregister-ScheduledTask -TaskName/);
   assert.doesNotMatch(content, /Password/, '无人登录任务不接受明文口令参数');
+});
+
+test('内置受限账号默认使用 ServiceAccount，无需人工更改登录类型', { skip }, (t) => {
+  const context=fixture(t);
+  context.config.serviceAccount='NT AUTHORITY\\LocalService';
+  fs.writeFileSync(context.configPath,JSON.stringify(context.config));
+  const result=invoke(context,['-Action','preview']);
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.json.plan.logonType,'ServiceAccount');
+  assert.equal(result.json.applyPerformed,false);
 });

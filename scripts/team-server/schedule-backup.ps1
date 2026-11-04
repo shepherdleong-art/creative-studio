@@ -31,6 +31,8 @@ function Get-TeamDailyBackupPlan {
     if (-not $zoneId) { $zoneId = [System.TimeZoneInfo]::Local.Id }
     $zone = $null
     try { $zone = [System.TimeZoneInfo]::FindSystemTimeZoneById($zoneId) } catch { throw '时区标识在本机不可用' }
+    if ($zone.Id -ne [System.TimeZoneInfo]::Local.Id) { throw '每日任务必须使用服务器本地时区，避免重复日程在时区变化时偏移' }
+    if ($TaskAccount -match '^NT AUTHORITY\\(?:LocalService|NetworkService)$') { $TaskLogonType = 'ServiceAccount' }
     $nowZone = [System.TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $zone)
     $scheduled = $nowZone.Date.Add([TimeSpan]::Parse($TaskTime))
     if ($scheduled -le $nowZone) { $scheduled = $scheduled.AddDays(1) }
@@ -176,47 +178,20 @@ try {
     if (-not (Test-Path -LiteralPath ([string]$plan.backupScript) -PathType Leaf)) {
         throw '服务根缺少 backup.ps1，拒绝注册无法执行的计划任务'
     }
-    $enabledText = $(if ($enabled) { 'true' } else { 'false' })
-    $xml = @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>$([System.Security.SecurityElement]::Escape([string]$plan.description))</Description>
-    <URI>\$([System.Security.SecurityElement]::Escape([string]$plan.taskName))</URI>
-  </RegistrationInfo>
-  <Triggers>
-    <CalendarTrigger>
-      <StartBoundary>$([string]$plan.startBoundary)</StartBoundary>
-      <Enabled>true</Enabled>
-      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
-    </CalendarTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>$([System.Security.SecurityElement]::Escape([string]$plan.account))</UserId>
-      <LogonType>$([string]$plan.logonType)</LogonType>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <ExecutionTimeLimit>PT6H</ExecutionTimeLimit>
-    <Enabled>$enabledText</Enabled>
-    <TimeZone>$([System.Security.SecurityElement]::Escape([string]$plan.timeZone))</TimeZone>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>$([System.Security.SecurityElement]::Escape([string]$plan.command))</Command>
-      <Arguments>$([System.Security.SecurityElement]::Escape([string]$plan.arguments))</Arguments>
-      <WorkingDirectory>$([System.Security.SecurityElement]::Escape([string]$plan.workingDirectory))</WorkingDirectory>
-    </Exec>
-  </Actions>
-</Task>
-"@
-    Register-ScheduledTask -TaskName ([string]$plan.taskName) -Xml $xml -Force | Out-Null
+    # ServiceAccount 是 API 枚举而非 XML LogonType；Task Settings 也没有 TimeZone 元素。
+    # 让系统 cmdlet 生成合法定义，固定使用服务器本地日历时区。
+    $principalAccount = [string]$plan.account
+    if ($plan.logonType -eq 'ServiceAccount') {
+        $identity = New-Object System.Security.Principal.NTAccount($principalAccount)
+        $principalAccount = $identity.Translate([System.Security.Principal.SecurityIdentifier]).Value
+    }
+    $principal = New-ScheduledTaskPrincipal -UserId $principalAccount -LogonType ([string]$plan.logonType) -RunLevel Limited
+    $trigger = New-ScheduledTaskTrigger -Daily -At ([DateTime]::Parse([string]$plan.startBoundary))
+    $actionDefinition = New-ScheduledTaskAction -Execute ([string]$plan.command) -Argument ([string]$plan.arguments) -WorkingDirectory ([string]$plan.workingDirectory)
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 6) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    $settings.Enabled = $enabled
+    $taskDefinition = New-ScheduledTask -Action $actionDefinition -Trigger $trigger -Principal $principal -Settings $settings -Description ([string]$plan.description)
+    Register-ScheduledTask -TaskName ([string]$plan.taskName) -InputObject $taskDefinition -Force | Out-Null
     Write-TeamScheduleResult -Value ([ordered]@{
         schemaVersion = 1
         action = 'backup-schedule-apply'
