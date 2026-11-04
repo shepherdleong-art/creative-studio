@@ -19,6 +19,7 @@ try {
   config = JSON.parse(fs.readFileSync(path.join(root, 'client-config.json'), 'utf8'));
   const origin = new URL(config.serverOrigin);
   if (origin.protocol !== 'https:' || origin.origin !== config.serverOrigin) throw new Error('invalid origin');
+  if (config.connectionMode !== undefined && !['direct', 'system'].includes(config.connectionMode)) throw new Error('invalid connection mode');
   const expectedDirectory = path.join('versions', pointer.releaseId);
   if (pointer.schemaVersion !== 1 || pointer.directory !== expectedDirectory
     || path.resolve(root, pointer.directory) !== path.join(root, 'versions', pointer.releaseId)) {
@@ -48,8 +49,9 @@ const versionRoot = path.join(root, pointer.directory);
 const executable = process.platform === 'win32'
   ? path.join(versionRoot, 'electron', 'electron.exe')
   : path.join(versionRoot, 'electron', 'Electron.app', 'Contents', 'MacOS', 'Electron');
+const launchArguments = [...(config.connectionMode === 'direct' ? ['--no-proxy-server'] : []), versionRoot];
 if (dryRun) {
-  process.stdout.write(`${JSON.stringify({ releaseId: pointer.releaseId, versionRoot, executable })}\n`);
+  process.stdout.write(`${JSON.stringify({ releaseId: pointer.releaseId, versionRoot, executable, launchArguments })}\n`);
 } else {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -60,7 +62,7 @@ if (dryRun) {
     CREATIVE_STUDIO_CLIENT_STATE_ROOT: path.join(root, 'client-state'),
     CREATIVE_STUDIO_CLIENT_RELEASE_ID: pointer.releaseId,
   });
-  const child = spawn(executable, [versionRoot], { env, stdio: 'inherit', windowsHide: true });
+  const child = spawn(executable, launchArguments, { env, stdio: 'inherit', windowsHide: true });
   child.on('error', (error) => fail(`轻客户端启动失败：${error.message}`));
   child.on('exit', (code, signal) => {
     if (signal) process.kill(process.pid, signal);

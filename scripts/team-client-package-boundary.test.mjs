@@ -28,6 +28,7 @@ try {
     '--release-id', 'test-release',
     '--electron-dist', electronDist,
     '--skip-build',
+    '--direct-connection',
   ], {
     cwd: path.resolve(import.meta.dirname, '..'),
     env: {
@@ -88,6 +89,15 @@ try {
   const dryRun = spawnSync(process.execPath, [path.join(output, 'launcher.mjs'), '--root', output, '--dry-run'], { encoding: 'utf8' });
   assert.equal(dryRun.status, 0, dryRun.stderr);
   assert.equal(JSON.parse(dryRun.stdout).releaseId, 'test-release');
+  assert.equal(JSON.parse(dryRun.stdout).launchArguments[0], '--no-proxy-server');
+  const clientConfigPath=path.join(output,'client-config.json');
+  const clientConfig=JSON.parse(fs.readFileSync(clientConfigPath,'utf8'));
+  assert.equal(clientConfig.connectionMode,'direct');
+  delete clientConfig.connectionMode;
+  fs.writeFileSync(clientConfigPath,JSON.stringify(clientConfig));
+  const systemProxy=spawnSync(process.execPath,[path.join(output,'launcher.mjs'),'--root',output,'--dry-run'],{encoding:'utf8'});
+  assert.equal(systemProxy.status,0,systemProxy.stderr);
+  assert.deepEqual(JSON.parse(systemProxy.stdout).launchArguments,[path.join(output,'versions','test-release')],'旧配置继续遵循系统代理');
   const pointerPath = path.join(output, 'current.json');
   const pointer = JSON.parse(fs.readFileSync(pointerPath, 'utf8'));
   pointer.manifest.version = '9.9.9';

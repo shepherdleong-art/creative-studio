@@ -79,7 +79,7 @@ try {
     copy(path.join(repoRoot, 'dist-desktop', 'client', file), path.join(staging, 'helper', file));
   }
   write('update-public-key.pem', publicKey);
-  write('client-config.json', `${JSON.stringify({ schemaVersion: 1, serverOrigin: serverOrigin.origin }, null, 2)}\n`);
+  write('client-config.json', `${JSON.stringify({ schemaVersion: 1, serverOrigin: serverOrigin.origin, connectionMode: args.includes('--direct-connection') ? 'direct' : 'system' }, null, 2)}\n`);
   write(path.join('versions', releaseId, 'package.json'), `${JSON.stringify({
     name: 'creative-studio-team-client', version: packageJson.version, private: true,
     main: 'dist-desktop/main.js', license: 'GPL-3.0-only',
