@@ -73,8 +73,10 @@ test('server 独立白名单装配、受控 manifest 与精确敏感边界', (t)
   const result = build(context, output);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const topLevel = fs.readdirSync(output).sort();
-  assert.deepEqual(topLevel, ['app', 'release-manifest.json', 'runtime', 'runtimes', 'service', 'tools'].sort());
+  assert.deepEqual(topLevel, ['START-HERE.md', 'app', 'deployment.example.json', 'release-manifest.json', 'runtime', 'runtimes', 'service', 'tools'].sort());
   for (const required of [
+    'START-HERE.md',
+    'deployment.example.json',
     'app/runtime/team-server-entry.cjs',
     'app/runtime/start-litellm-proxy.py',
     'app/scripts/team-server/init-admin.mjs',
@@ -84,6 +86,8 @@ test('server 独立白名单装配、受控 manifest 与精确敏感边界', (t)
     'app/scripts/team-server/distribution.mjs',
     'app/scripts/team-server/generate-config.mjs',
     'app/scripts/team-server/service-control.mjs',
+    'app/scripts/team-server/configure-pools.mjs',
+    'app/scripts/team-server/publish-client-update.mjs',
     'app/scripts/runtime/process-tree.mjs',
     'app/lib/team-service/maintenance/backup.ts',
     'app/lib/team-service/maintenance/restore.ts',
@@ -94,14 +98,32 @@ test('server 独立白名单装配、受控 manifest 与精确敏感边界', (t)
     'tools/winsw/WinSW.exe',
     'service/generate-config.mjs',
     'service/service-control.mjs',
+    'service/configure-pools.mjs',
+    'service/publish-client-update.mjs',
     'service/install.ps1',
     'service/stop.ps1',
     'service/probe-team-server.mjs',
     'service/backup.ps1',
     'service/restore.ps1',
     'service/release.ps1',
+    'service/schedule-backup.ps1',
+    'service/admin-cli.ps1',
     'service/distribution-lock.json',
   ]) assert.ok(fs.existsSync(path.join(output, ...required.split('/'))), required);
+  const startHere = fs.readFileSync(path.join(output, 'START-HERE.md'), 'utf8');
+  assert.match(startHere, /runtimes\\node\\node\.exe/);
+  assert.match(startHere, /init-admin/);
+  assert.match(startHere, /start-client\.cmd/);
+  assert.match(startHere, /preflight\.ps1/);
+  assert.match(startHere, /schedule-backup\.ps1/);
+  const example = JSON.parse(fs.readFileSync(path.join(output, 'deployment.example.json'), 'utf8'));
+  assert.equal(example.schemaVersion, 1);
+  assert.match(example.releaseId, /^replace-with-/);
+  assert.equal(JSON.stringify(example).includes('PRIVATE KEY'), false);
+  for (const name of ['install.ps1', 'preflight.ps1', 'schedule-backup.ps1', 'admin-cli.ps1']) {
+    const bytes = fs.readFileSync(path.join(output, 'service', name));
+    assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], `${name} 必须保留 UTF-8 BOM`);
+  }
   for (const name of forbidden.consumers.serverReleaseGuard.forbidden) {
     assert.equal(fs.existsSync(path.join(output, name)), false, `server 包含禁入 ${name}`);
   }

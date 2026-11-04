@@ -85,9 +85,10 @@ test('生成三个 SCM 服务、固定回环入口、环境文件、日志轮换
   assert.match(proxy, /https:\/\/studio\.example\.test/);
   assert.match(proxy, /127\.0\.0\.1:3300/);
   assert.match(proxy, /tls C:\\controlled\\certs\\studio\.crt C:\\controlled\\certs\\studio\.key/);
-  for (const route of ['/api/team/operations/*', '/api/shutdown', '/api/desktop/*']) {
-    assert.ok(proxy.includes(route), `Caddy 必须阻断 ${route}`);
+  for (const route of ['/api/team/operations/*', '/api/shutdown', '/api/desktop/*', '/client-updates/*']) {
+    assert.ok(proxy.includes(route), `Caddy 必须覆盖 ${route}`);
   }
+  assert.ok(proxy.includes('file_server'), 'Caddy 必须同源托管更新包');
   assert.doesNotMatch(proxy, /127\.0\.0\.1:4300/);
 
   const lite = fs.readFileSync(path.join(output, 'CreativeStudioLiteLLM.xml'), 'utf8');
@@ -120,6 +121,60 @@ test('可选 LiteLLM 不生成第三个服务且仍保留其回环端口隔离�
   assert.deepEqual(readJson(path.join(output, 'resolved-services.json')).services.map((service) => service.id), [
     'CreativeStudioCaddy', 'CreativeStudioApp',
   ]);
+});
+
+test('releaseId 必须与包内 manifest 一致，且 app.env 写入发布身份与模块开关', (t) => {
+  const context = fixture(t);
+  const releaseRoot = path.join(context.deploymentRoot, 'releases', context.config.releaseId);
+  fs.mkdirSync(releaseRoot, { recursive: true });
+  fs.writeFileSync(path.join(releaseRoot, 'release-manifest.json'), JSON.stringify({
+    schemaVersion: 1, releaseId: context.config.releaseId, sourceCommit: 'abc123',
+  }));
+  const output = path.join(context.deploymentRoot, 'service');
+  const result = spawnSync(process.execPath, [generator, '--config', context.configPath, '--output', output], {
+    cwd: root, encoding: 'utf8', windowsHide: true,
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const env = fs.readFileSync(path.join(output, 'app.env'), 'utf8');
+  for (const expected of [
+    `CREATIVE_STUDIO_SERVER_RELEASE_ID=${context.config.releaseId}`,
+    'CREATIVE_STUDIO_MODULE_BATCH=1',
+    'CREATIVE_STUDIO_MODULE_SCRIPT_STUDIO=1',
+    'CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER=1',
+    'CREATIVE_STUDIO_CANVAS_ENABLE=1',
+  ]) assert.ok(env.includes(expected), expected);
+  const resolved = readJson(path.join(output, 'resolved-services.json'));
+  assert.equal(resolved.sourceCommit, 'abc123');
+  assert.deepEqual(resolved.modules, { batch: true, scriptStudio: true, canvas: true, scriptStudioScheduler: true });
+
+  fs.writeFileSync(path.join(releaseRoot, 'release-manifest.json'), JSON.stringify({
+    schemaVersion: 1, releaseId: 'different-release', sourceCommit: 'abc123',
+  }));
+  const mismatchOutput = path.join(context.deploymentRoot, 'service-mismatch');
+  const mismatch = spawnSync(process.execPath, [generator, '--config', context.configPath, '--output', mismatchOutput], {
+    cwd: root, encoding: 'utf8', windowsHide: true,
+  });
+  assert.notEqual(mismatch.status, 0);
+  assert.match(mismatch.stderr + mismatch.stdout, /releaseId.*manifest|manifest.*releaseId/);
+  assert.equal(fs.existsSync(mismatchOutput), false);
+});
+
+test('更新清单必须同源且落在受控 /client-updates/ 目录', (t) => {
+  const valid = generate(t, { clientUpdateManifestUrl: '/client-updates/current.manifest.json' });
+  assert.equal(valid.result.status, 0, valid.result.stdout + valid.result.stderr);
+  const env = fs.readFileSync(path.join(valid.output, 'app.env'), 'utf8');
+  assert.ok(env.includes('CREATIVE_STUDIO_CLIENT_UPDATE_MANIFEST_URL=https://studio.example.test/client-updates/current.manifest.json'));
+  assert.ok(fs.readFileSync(path.join(valid.output, 'Caddyfile'), 'utf8').includes('/client-updates/*'));
+
+  for (const overrides of [
+    { clientUpdateManifestUrl: 'https://evil.example.test/client-updates/current.json' },
+    { clientUpdateManifestUrl: '/updates/current.json' },
+    { clientUpdateManifestUrl: 'https://studio.example.test/client-updates/current.json?token=x' },
+  ]) {
+    const invalid = generate(t, overrides);
+    assert.notEqual(invalid.result.status, 0, JSON.stringify(overrides));
+    assert.equal(fs.existsSync(invalid.output), false);
+  }
 });
 
 test('拒绝新旧根重叠、非回环业务端口、HTTP origin 与普通口令账号', (t) => {

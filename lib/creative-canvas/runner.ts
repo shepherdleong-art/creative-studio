@@ -7,6 +7,7 @@ import type {
   OperationRecord,
 } from '../media-core/execution/context.ts';
 import { readAttempt, readOperation } from '../media-core/execution/records.ts';
+import { configuredProviderPool } from '../media-core/execution/configured-provider-pool.ts';
 import { recordCanvasTaskLog } from './logs.ts';
 import { recordCanvasVideoMetadata } from './video-metadata.ts';
 /**
@@ -476,7 +477,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         providerSnapshot: JSON.parse(task.providerSnapshot) as unknown,
         configVersion: createHash('sha256').update(task.providerSnapshot).digest('hex'),
         credentialVersionRef: context.providerIdentity,
-        requiredPools: [`${context.providerIdentity}:remote`],
+        requiredPools: [configuredProviderPool(db, context.mediaKind, context.providerIdentity) ?? `${context.providerIdentity}:remote`],
         quote: canvasTaskCostQuote(db, task),
       });
       admission = execution.facade.admit({ ...execution.instance, operationId: enqueued.operation.id });

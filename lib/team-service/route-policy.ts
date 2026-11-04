@@ -2,6 +2,47 @@ export const TEAM_ROUTE_CATEGORIES = ['public', 'authenticated', 'resource', 'ad
 export type TeamRouteCategory = typeof TEAM_ROUTE_CATEGORIES[number];
 export type TeamHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
 
+/**
+ * server 模式 DELETE 的领域语义分类（R03）。
+ *
+ * - soft：持久生产资源，删除后进入回收站并可恢复；
+ * - exceptional：取消/暂存清理/管理员配置等非资源删除，保留原 handler 语义。
+ * 新增 DELETE 入口必须先在这里分类，`team-delete-coverage.test.ts` 会检查遗漏。
+ */
+export const SERVER_SOFT_DELETE_TARGETS: Record<string, { resourceType: string; param?: string }> = {
+  '/api/projects/[id] DELETE': { resourceType: 'project' },
+  '/api/images/[id] DELETE': { resourceType: 'image' },
+  '/api/canvas/[id] DELETE': { resourceType: 'canvas' },
+  '/api/batch-production/batches/[id] DELETE': { resourceType: 'batch' },
+  '/api/batch-production/scripts/[scriptId] DELETE': { resourceType: 'batch_script', param: 'scriptId' },
+  '/api/projects/[id]/script-studio/scripts/[scriptId] DELETE': { resourceType: 'project_script', param: 'scriptId' },
+  '/api/scene-references/[id] DELETE': { resourceType: 'scene_reference' },
+  '/api/shot-sets/[id] DELETE': { resourceType: 'shot_set' },
+  '/api/video-reference-assets/[id] DELETE': { resourceType: 'video_reference_asset' },
+  '/api/projects/[id]/final-edit/shot-sets/[shotSetId]/external-assets/[assetId] DELETE': {
+    resourceType: 'final_external_asset', param: 'assetId',
+  },
+  '/api/final-edit-variants/[id] DELETE': { resourceType: 'final_variant' },
+  '/api/final-edit/title-presets/[id] DELETE': { resourceType: 'title_preset' },
+  '/api/video-prompt-templates/[id] DELETE': { resourceType: 'video_prompt_template' },
+};
+
+export const SERVER_DELETE_SEMANTICS: Record<string, 'soft' | 'exceptional'> = Object.fromEntries([
+  ...Object.keys(SERVER_SOFT_DELETE_TARGETS).map((key) => [key, 'soft' as const]),
+  ...([
+    ['/api/projects/[id]/script-generation DELETE', '取消脚本生成队列，不是持久资源'],
+    ['/api/shot-sets/[id]/shots/[shotId] DELETE', '生成前的自由工位暂存清理，图片删除另行判定'],
+    ['/api/batch-production/scripts DELETE', '批量脚本删除在 handler 内逐条走软删除'],
+    ['/api/providers/[id] DELETE', '管理员供应商配置，保留既有引用检查后硬删除'],
+    ['/api/providers/script/[id] DELETE', '管理员供应商配置，保留既有引用检查后硬删除'],
+    ['/api/providers/video/[id] DELETE', '管理员供应商配置，保留既有引用检查后硬删除'],
+    ['/api/packaging/user-font DELETE', 'server 模式已禁用本机字体入口'],
+    ['/api/team/uploads/[id] DELETE', '取消未完成上传，不是持久生产资源'],
+    ['/api/team/maintenance/barriers/[id] DELETE', '释放维护屏障，不是资源删除'],
+    ['/api/team/backup-pins/[id] DELETE', '释放备份 pin，不是资源删除'],
+  ] as const).map(([key]) => [key, 'exceptional' as const]),
+]);
+
 export interface TeamRoutePolicy {
   route: string;
   method: TeamHttpMethod;
@@ -244,6 +285,7 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/usage/export': 'GET',
   '/api/team/models': 'GET',
   '/api/team/public-resources': 'POST',
+  '/api/team/pools': 'GET POST',
   '/api/team/users': 'GET POST',
   '/api/team/users/[id]/reset-credential': 'POST',
   '/api/team/users/[id]': 'PATCH',
@@ -288,6 +330,7 @@ const ADMIN = new Set([
   '/api/team/maintenance/barriers POST', '/api/team/maintenance/barriers/[id] DELETE',
   '/api/team/backup-pins POST', '/api/team/backup-pins/[id] DELETE',
   '/api/team/members GET', '/api/team/members/[id]/policy PATCH', '/api/team/usage/export GET',
+  '/api/team/pools GET', '/api/team/pools POST',
 ]);
 const SERVER_DISABLED = new Set([
   '/api/packaging/templates/[...path] GET',

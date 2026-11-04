@@ -91,6 +91,12 @@ try {
   assert.equal(employeeLogin.principal.employeeId, '00123');
   assert.equal(employeeLogin.principal.role, 'employee');
   assert.equal(employeeLogin.token.length, 43, '32 字节不透明 token 的 base64url 长度');
+  // 一次性凭据只能消费一次；重复登录必须失败，但已建立的改密会话仍然有效。
+  await expectCode(login('00123', employeeCredential.credential), 'credential_consumed');
+  const consumedRow = db.prepare('SELECT credentialConsumedAt FROM team_users WHERE id = ?')
+    .get(employeeCredential.user.id) as { credentialConsumedAt: string | null };
+  assert.ok(consumedRow.credentialConsumedAt, '凭据消费时间已持久化');
+  assert.equal(service.resolveSession(employeeLogin.token)?.userId, employeeCredential.user.id, '消费不撤销本次会话');
   const storedSession = db.prepare('SELECT tokenHash, absoluteExpiresAt FROM team_sessions WHERE id = ?').get(employeeLogin.principal.sessionId) as { tokenHash: string; absoluteExpiresAt: string };
   assert.match(storedSession.tokenHash, /^[a-f0-9]{64}$/);
   assert.notEqual(storedSession.tokenHash, employeeLogin.token);
@@ -183,6 +189,37 @@ try {
   service.logout(logoutLogin.principal);
   assert.equal(service.resolveSession(logoutLogin.token), null);
   assert.equal(afterReset.role, 'employee');
+
+  // 并发使用同一一次性凭据：恰好一次成功，另一次只得到可恢复的明确原因。
+  const concurrentCredential = await service.createUser(freshSecondAdmin, {
+    employeeId: '00128', displayName: '并发登录', role: 'employee',
+  });
+  const attempts = await Promise.allSettled([
+    login('00128', concurrentCredential.credential),
+    login('00128', concurrentCredential.credential),
+  ]);
+  assert.equal(attempts.filter((attempt) => attempt.status === 'fulfilled').length, 1);
+  const rejected = attempts.find((attempt) => attempt.status === 'rejected') as PromiseRejectedResult;
+  assert.equal((rejected.reason as { code?: string }).code, 'credential_consumed');
+
+  // KDF 期间账号被重置：旧凭据登录不能成功，也不得消费新凭据。
+  const gatedKdf = new BoundedKdfScheduler({ maxConcurrent: 1, maxQueue: 8 });
+  const racingService = createTeamAuthService({
+    db, now, kdf: gatedKdf, passwordParams: { N: 1024, r: 8, p: 1 },
+  });
+  const racedCredential = await service.createUser(freshSecondAdmin, {
+    employeeId: '00129', displayName: 'KDF 竞态', role: 'employee',
+  });
+  let releaseKdf: (() => void) | undefined;
+  const blocker = gatedKdf.schedule(() => new Promise<void>((resolve) => { releaseKdf = resolve; }));
+  const racingLogin = racingService.login({ employeeId: '00129', password: racedCredential.credential });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const replaced = await service.resetUserCredential(freshSecondAdmin, racedCredential.user.id);
+  releaseKdf!();
+  await blocker;
+  await expectCode(racingLogin, 'invalid_credentials');
+  const replacedLogin = await racingService.login({ employeeId: '00129', password: replaced.credential });
+  assert.equal(replacedLogin.principal.mustChangePassword, true);
 
   const scheduler = new BoundedKdfScheduler({ maxConcurrent: 2, maxQueue: 2 });
   let active = 0;

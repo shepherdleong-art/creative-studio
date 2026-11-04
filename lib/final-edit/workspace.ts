@@ -977,7 +977,12 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   const load = (groupId: string): FinalEditGroupView => {
     const group = db.prepare(`SELECT * FROM final_edit_groups WHERE id = ?`).get(groupId) as Record<string, unknown> | undefined;
     if (!group) throw new FinalEditError('group_not_found', '成片组不存在', 404);
-    const variants = (db.prepare(`SELECT * FROM final_edit_variants WHERE groupId = ? ORDER BY indexNum`).all(groupId) as Array<Record<string, unknown>>).map((row) => ({
+    const variantLifecycle = requireAccessContext().kind === 'local' ? '' : `AND EXISTS (
+      SELECT 1 FROM team_resource_scopes scope
+      WHERE scope.resourceType = 'final_variant' AND scope.resourceId = final_edit_variants.id
+        AND scope.deletedAt IS NULL
+    )`;
+    const variants = (db.prepare(`SELECT * FROM final_edit_variants WHERE groupId = ? ${variantLifecycle} ORDER BY indexNum`).all(groupId) as Array<Record<string, unknown>>).map((row) => ({
       id: String(row.id),
       indexNum: Number(row.indexNum),
       outputPreset: String(row.outputPreset) as OutputPresetId,

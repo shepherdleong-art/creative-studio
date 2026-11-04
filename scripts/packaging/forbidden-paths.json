@@ -33,7 +33,7 @@
       "notes": "The portable build is whitelist-based (whitelist and forbidden lists are different things); this entry only drives windows-portable-payload.test.mjs assertions that the whitelists must not contain these items. config.yaml / .env.local / python-runtime / scripts are explicitly allowed exceptions of the portable build."
     },
     "serverReleaseGuard": {
-      "topLevel": ["app", "runtime", "runtimes", "service", "tools", "release-manifest.json"],
+      "topLevel": ["START-HERE.md", "app", "deployment.example.json", "release-manifest.json", "runtime", "runtimes", "service", "tools"],
       "forbidden": ["data", "storage", "outputs", "docs", "scripts", ".git", ".cache", "dist", "dist-desktop", "desktop", "installer", "node_modules", ".venv-litellm", "python-runtime", ".env", ".env.local", "config.yaml"],
       "notes": "Server releases use an independent whitelist. Service operations live under service/, Python under runtimes/python, and no credential/config/data root is packaged."
     },

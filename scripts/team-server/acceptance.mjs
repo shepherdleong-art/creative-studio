@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createEvidenceRun, redactEvidence } from './acceptance-lib.mjs';
 import {
+  FIRST_RUN_SUITE,
   L1_SUITE,
   L2_SUITE,
   LOCAL_CHECKS,
@@ -20,7 +21,7 @@ function argument(name, fallback = null) {
   return index >= 0 ? process.argv[index + 1] : fallback;
 }
 const level = argument('--level', 'all');
-if (!['L1', 'L2', 'checks', 'all', 'onsite'].includes(level)) throw new Error('--level 只支持 L1/L2/checks/all/onsite');
+if (!['L1', 'L2', 'first-run', 'checks', 'all', 'onsite'].includes(level)) throw new Error('--level 只支持 L1/L2/first-run/checks/all/onsite');
 const configPath = argument('--config');
 const smokeConfig = {
   schemaVersion: 1,
@@ -82,7 +83,7 @@ async function execute(entry) {
   const env = {
     ...process.env,
     NEXT_TELEMETRY_DISABLED: '1',
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(networkGuard)}`.trim(),
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require="${networkGuard.replaceAll('\\', '/')}"`.trim(),
     TEAM_ACCEPTANCE_EVIDENCE_DIR: path.join(run.runDirectory, 'http'),
     ...(metricPath ? { TEAM_ACCEPTANCE_RESULT_PATH: metricPath } : {}),
     TEAM_ACCEPTANCE_USERS: String(config.users),
@@ -155,8 +156,9 @@ async function execute(entry) {
 try {
   const suites = level === 'L1' ? L1_SUITE
     : level === 'L2' ? L2_SUITE
-      : level === 'checks' ? LOCAL_CHECKS
-        : level === 'all' ? [...L1_SUITE, ...L2_SUITE, ...LOCAL_CHECKS]
+      : level === 'first-run' ? FIRST_RUN_SUITE
+        : level === 'checks' ? LOCAL_CHECKS
+        : level === 'all' ? [...FIRST_RUN_SUITE, ...L1_SUITE, ...L2_SUITE, ...LOCAL_CHECKS]
           : [];
   for (const entry of suites) {
     if (entry.command.some((part) => part.startsWith('scripts/') && !fs.existsSync(path.join(repoRoot, part)))) {

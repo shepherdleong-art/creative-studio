@@ -141,6 +141,25 @@ export function upsertExecutionPool(db: Database.Database, input: {
   return run.immediate();
 }
 
+export interface ExecutionPoolSummary extends ExecutionPool {
+  updatedAt: string;
+}
+
+export function listExecutionPools(db: Database.Database): ExecutionPoolSummary[] {
+  const rows = db.prepare('SELECT * FROM execution_pools ORDER BY poolKey').all() as Array<
+    Omit<ExecutionPoolSummary, 'enabled' | 'mappingSnapshot'> & { enabled: number; mappingSnapshotJson: string }
+  >;
+  return rows.map((row) => ({
+    poolKey: row.poolKey,
+    kind: row.kind,
+    capacity: row.capacity,
+    enabled: Boolean(row.enabled),
+    mappingSnapshot: JSON.parse(row.mappingSnapshotJson) as unknown,
+    version: row.version,
+    updatedAt: row.updatedAt,
+  }));
+}
+
 export function readExecutionPool(db: Database.Database, poolKey: string): ExecutionPool {
   const row = db.prepare('SELECT * FROM execution_pools WHERE poolKey = ?').get(poolKey) as
     | (Omit<ExecutionPool, 'enabled' | 'mappingSnapshot'> & { enabled: number; mappingSnapshotJson: string })
@@ -154,6 +173,49 @@ export function readExecutionPool(db: Database.Database, poolKey: string): Execu
     mappingSnapshot: JSON.parse(row.mappingSnapshotJson) as unknown,
     version: row.version,
   };
+}
+
+export interface ExecutionPoolBinding {
+  bindingKey: string;
+  poolKey: string;
+  label: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 媒体上游共享池绑定键：同一凭证指纹的供应商行显式归入同一真实共享池。 */
+export function mediaUpstreamBindingKey(credentialFingerprint: string): string {
+  return `media-upstream:${credentialFingerprint}`;
+}
+
+export function listExecutionPoolBindings(db: Database.Database): ExecutionPoolBinding[] {
+  return db.prepare('SELECT * FROM execution_pool_bindings ORDER BY bindingKey').all() as ExecutionPoolBinding[];
+}
+
+export function readExecutionPoolBinding(db: Database.Database, bindingKey: string): ExecutionPoolBinding | undefined {
+  return db.prepare('SELECT * FROM execution_pool_bindings WHERE bindingKey = ?').get(bindingKey) as
+    | ExecutionPoolBinding | undefined;
+}
+
+export function upsertExecutionPoolBinding(
+  db: Database.Database,
+  input: { bindingKey: string; poolKey: string; label?: string },
+): ExecutionPoolBinding {
+  if (!input.bindingKey.trim() || !input.poolKey.trim()) {
+    throw new ExecutionError('invalid_input', '资源池绑定必须同时提供 bindingKey 与 poolKey。');
+  }
+  const at = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO execution_pool_bindings (bindingKey, poolKey, label, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(bindingKey) DO UPDATE SET
+      poolKey = excluded.poolKey, label = excluded.label, updatedAt = excluded.updatedAt
+  `).run(input.bindingKey, input.poolKey, input.label ?? '', at, at);
+  return readExecutionPoolBinding(db, input.bindingKey)!;
+}
+
+export function removeExecutionPoolBinding(db: Database.Database, bindingKey: string): boolean {
+  return db.prepare('DELETE FROM execution_pool_bindings WHERE bindingKey = ?').run(bindingKey).changes === 1;
 }
 
 export function chargedCostExpression(alias = 'r'): string {

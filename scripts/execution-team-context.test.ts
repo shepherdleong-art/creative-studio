@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { register as registerTypeScriptExtensions } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { EnqueueInput } from '../lib/media-core/execution/context.ts';
+
+// 团队 runtime 组合根会经 script-studio 拉到带无后缀相对导入的旧模块。
+registerTypeScriptExtensions('./typescript-extension-loader.mjs', import.meta.url);
 
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-execution-team-context-'));
 const previousEnv = { ...process.env };

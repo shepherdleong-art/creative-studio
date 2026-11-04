@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { runWithTaskAccessContext } from '../media-core/access-context.ts';
 import {
   recoverInterruptedTasks,
   updateTask,
@@ -89,14 +90,14 @@ export function claimNextScriptStudioTask(
     if (!row) return null;
     const leaseUntil = isoAfter(now(), options.leaseDurationMs ?? 5 * 60_000);
     const resumedFromDeferred = row.errorCode === 'execution_deferred';
-    const claimed = updateTask(db, row.projectId, row.id, {
+    const claimed = runWithTaskAccessContext(db, 'script_studio', row.id, () => updateTask(db, row.projectId, row.id, {
       status: 'running',
       currentStage: '',
       leaseUntil,
       attemptCount: Number(row.attemptCount || 0) + (resumedFromDeferred ? 0 : 1),
       errorCode: null,
       errorMessage: null,
-    }, now);
+    }, now));
     return { task: claimed, leaseUntil };
   }).immediate();
 }
@@ -112,7 +113,7 @@ export function renewScriptStudioLease(
   `).get(taskId, projectId) as TaskView | undefined;
   if (!task || task.status !== 'running') return false;
   const leaseUntil = isoAfter((options.now ?? (() => new Date()))(), options.leaseDurationMs ?? 5 * 60_000);
-  updateTask(db, projectId, taskId, { leaseUntil }, options.now);
+  runWithTaskAccessContext(db, 'script_studio', taskId, () => updateTask(db, projectId, taskId, { leaseUntil }, options.now));
   return true;
 }
 

@@ -83,6 +83,17 @@ export const L1_SUITE = [
   node('team-maintenance-release.test.ts', ['B01']),
 ];
 
+export const FIRST_RUN_SUITE = [
+  node('team-production-http.playwright.test.mjs', ['A03', 'Q01', 'Q08', 'C01', 'R03'], { timeoutMs: 900_000, realMedia: true }),
+  node('team-first-run.test.ts', ['A01', 'A03', 'Q01', 'Q02']),
+  node('creative-canvas-execution.test.ts', ['C01', 'Q01', 'Q08']),
+  node('batch-executors.test.ts', ['Q01', 'Q03', 'Q06']),
+  node('script-studio-runner.test.ts', ['Q03', 'Q06', 'Q08']),
+  node('final-edit-render.test.ts', ['Q07']),
+  node('team-maintenance-runner.test.ts', ['B01', 'B03']),
+  node('team-client-update-hosting.test.mjs', ['U02', 'U03']),
+];
+
 export const L2_SUITE = [
   npm('build:desktop', ['U01', 'U02', 'U03']),
   node('team-acceptance-http.playwright.test.mjs', ['A01', 'A03', 'A04', 'F01', 'F02', 'F03', 'F04', 'O01', 'O03', 'Q02', 'R03', 'U04'], {

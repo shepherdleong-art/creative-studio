@@ -146,6 +146,33 @@ function backupDirectory(config, type, backupId) {
   if (path.dirname(directory).toLowerCase() !== root.toLowerCase()) throw new Error('备份路径越界');
   return directory;
 }
+function acquireDailyLock(config) {
+  const directory = path.join(config.backupRoot, 'locks');
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const file = path.join(directory, 'daily.lock');
+  const staleBefore = Date.now() - 12 * 60 * 60 * 1000;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = fs.openSync(file, 'wx', 0o600);
+      try {
+        fs.writeFileSync(fd, `${JSON.stringify({ schemaVersion: 1, pid: process.pid, startedAt: new Date().toISOString() })}\n`);
+      } finally {
+        fs.closeSync(fd);
+      }
+      return () => fs.rmSync(file, { force: true });
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      let stale = false;
+      try {
+        const stat = fs.statSync(file);
+        stale = stat.mtimeMs < staleBefore;
+      } catch {}
+      if (!stale || attempt > 0) return null;
+      fs.rmSync(file, { force: true });
+    }
+  }
+  return null;
+}
 function compatibilityReport(file) {
   if (!file) throw new Error('更新/兼容回切必须提供隔离验证兼容性报告');
   const report = readJson(path.resolve(file));
@@ -248,29 +275,38 @@ try {
     if (command === 'backup') {
       const type = required('--type');
       const backupId = argument('--backup-id');
+      const releaseLock = type === 'daily' ? acquireDailyLock(config) : null;
+      if (type === 'daily' && !releaseLock) {
+        process.stdout.write(`${JSON.stringify({ status: 'skipped', reason: 'backup_in_progress' })}\n`);
+        process.exit(0);
+      }
       const startedAt = new Date().toISOString();
-      if (type === 'daily') writeDailyJob(config, { status: 'running', backupId: backupId || null, startedAt });
       try {
-        const result = await makeBackup(config, db, principal, type, backupId, configPath);
-        if (type === 'daily') {
-          const space = fs.statfsSync(config.backupRoot);
-          writeDailyJob(config, {
-            status: 'success', backupId: result.manifest.backupId, startedAt,
-            finishedAt: result.success.verifiedAt, durationMs: result.success.durationMs,
-            totalBytes: result.success.totalBytes, availableBytes: space.bavail * space.bsize,
+        if (type === 'daily') writeDailyJob(config, { status: 'running', backupId: backupId || null, startedAt });
+        try {
+          const result = await makeBackup(config, db, principal, type, backupId, configPath);
+          if (type === 'daily') {
+            const space = fs.statfsSync(config.backupRoot);
+            writeDailyJob(config, {
+              status: 'success', backupId: result.manifest.backupId, startedAt,
+              finishedAt: result.success.verifiedAt, durationMs: result.success.durationMs,
+              totalBytes: result.success.totalBytes, availableBytes: space.bavail * space.bsize,
+            });
+          }
+          process.stdout.write(`${JSON.stringify({
+            status: 'success', backupId: result.manifest.backupId, backupType: type,
+            durationMs: result.success.durationMs, totalBytes: result.success.totalBytes,
+            rotation: result.rotation ?? null,
+          })}\n`);
+        } catch (error) {
+          if (type === 'daily') writeDailyJob(config, {
+            status: 'failed', backupId: backupId || null, startedAt,
+            finishedAt: new Date().toISOString(), code: 'backup_failed',
           });
+          throw error;
         }
-        process.stdout.write(`${JSON.stringify({
-          status: 'success', backupId: result.manifest.backupId, backupType: type,
-          durationMs: result.success.durationMs, totalBytes: result.success.totalBytes,
-          rotation: result.rotation ?? null,
-        })}\n`);
-      } catch (error) {
-        if (type === 'daily') writeDailyJob(config, {
-          status: 'failed', backupId: backupId || null, startedAt,
-          finishedAt: new Date().toISOString(), code: 'backup_failed',
-        });
-        throw error;
+      } finally {
+        releaseLock?.();
       }
     } else if (command === 'restore') {
       const type = required('--backup-type');

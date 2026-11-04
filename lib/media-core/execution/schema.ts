@@ -173,6 +173,19 @@ export const EXECUTION_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = [
       ALTER TABLE execution_operations ADD COLUMN clientVersion TEXT;
     `,
   },
+  {
+    version: 4,
+    sql: `
+      CREATE TABLE execution_pool_bindings (
+        bindingKey TEXT PRIMARY KEY,
+        poolKey TEXT NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        FOREIGN KEY (poolKey) REFERENCES execution_pools(poolKey)
+      );
+    `,
+  },
 ];
 
 export type ExecutionSchemaReadiness = VersionedSchemaReadiness;
@@ -204,6 +217,10 @@ function validateExecutionSchema(db: Database.Database): void {
         throw new Error(`execution 缺少 ${table} 结构`);
       }
     }
+  }
+  if (schemaVersion >= 4
+    && !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_pool_bindings'").get()) {
+    throw new Error('execution 缺少 execution_pool_bindings 结构');
   }
 }
 

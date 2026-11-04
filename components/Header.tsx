@@ -145,9 +145,13 @@ export default function Header({
           {server && <>
             <Link href="/team/tasks" className="text-ink-secondary transition-colors hover:text-ink">任务</Link>
             <Link href="/team/errors" className="text-ink-secondary transition-colors hover:text-ink">错误</Link>
+            <Link href="/team/recycle-bin" className="text-ink-secondary transition-colors hover:text-ink">回收站</Link>
           </>}
           {(!server || principal?.role === 'admin') && <>
             {server && <Link href="/team/admin/users" className="text-ink-secondary transition-colors hover:text-ink">账号</Link>}
+            {server && <Link href="/team/admin/pools" className="text-ink-secondary transition-colors hover:text-ink">资源池</Link>}
+            {server && <Link href="/team/admin/resources" className="text-ink-secondary transition-colors hover:text-ink">公共资源</Link>}
+            {server && <Link href="/team/admin/operations" className="text-ink-secondary transition-colors hover:text-ink">运维</Link>}
             <Link href="/settings" className="text-ink-secondary transition-colors hover:text-ink">供应商</Link>
           </>}
           <Link href="/projects/new" className="btn-primary btn-sm">

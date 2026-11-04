@@ -3,7 +3,10 @@
 param(
     [Parameter(Mandatory = $true)][string]$ConfigPath,
     [string]$DeploymentId = '',
-    [switch]$Apply
+    [switch]$Apply,
+    [switch]$EnableDailyBackup,
+    [string]$BackupTime = '02:30',
+    [string]$BackupTimeZone = ''
 )
 . (Join-Path $PSScriptRoot 'common.ps1')
 
@@ -66,6 +69,7 @@ function Ensure-TeamControlCredential {
 
 try {
     $resolved = Resolve-TeamDeployment -ConfigPath $ConfigPath -DeploymentId $DeploymentId
+    $phase = 'resolve'
     if (-not $Apply) {
         Write-TeamOperationJson -Value ([ordered]@{
             schemaVersion = 1
@@ -117,17 +121,23 @@ try {
     $probeOutput = & ([string]$resolved.nodeExecutable) $probe --release ([string]$resolved.releaseRoot)
     if ($LASTEXITCODE -ne 0) { throw 'release 原生模块/媒体探针未通过，未安装服务' }
 
-    foreach ($directory in @($resolved.deploymentRoot, $resolved.dataRoot, $resolved.backupRoot, $resolved.configRoot, $resolved.serviceRoot)) {
+    foreach ($directory in @($resolved.deploymentRoot, $resolved.dataRoot, $resolved.backupRoot, $resolved.configRoot, $resolved.serviceRoot, $resolved.clientUpdatesRoot)) {
         if (-not (Test-Path -LiteralPath ([string]$directory) -PathType Container)) {
             New-Item -ItemType Directory -Path ([string]$directory) -Force | Out-Null
         }
+    }
+    $phase = 'directories'
+    # WinSW 不会递归创建日志目录；必须在身份判定通过后、启动服务前显式创建。
+    $serviceLogDirectory = Join-Path (Join-Path (Join-Path ([string]$resolved.dataRoot) 'storage') 'logs') 'services'
+    if (-not (Test-Path -LiteralPath $serviceLogDirectory -PathType Container)) {
+        New-Item -ItemType Directory -Path $serviceLogDirectory -Force | Out-Null
     }
     $node = Get-TeamBootstrapNode -ConfigPath $ConfigPath
     $generator = Join-Path $PSScriptRoot 'generate-config.mjs'
     & $node $generator --config ([System.IO.Path]::GetFullPath($ConfigPath)) --output ([string]$resolved.serviceRoot) | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'SCM/Caddy 配置生成失败' }
 
-    foreach ($name in @('service-control.mjs', 'generate-config.mjs', 'distribution-lock.json', 'common.ps1', 'generate-config.ps1', 'install.ps1', 'status.ps1', 'stop.ps1', 'preflight.ps1', 'backup.ps1', 'restore.ps1', 'release.ps1')) {
+    foreach ($name in @('service-control.mjs', 'generate-config.mjs', 'configure-pools.mjs', 'publish-client-update.mjs', 'distribution-lock.json', 'common.ps1', 'generate-config.ps1', 'install.ps1', 'status.ps1', 'stop.ps1', 'preflight.ps1', 'backup.ps1', 'restore.ps1', 'release.ps1', 'schedule-backup.ps1')) {
         Copy-TeamFile -Source (Join-Path $PSScriptRoot $name) -Destination (Join-Path ([string]$resolved.serviceRoot) $name)
     }
     Copy-TeamFile -Source (Join-Path $PSScriptRoot '..\runtime\process-tree.mjs') -Destination (Join-Path ([string]$resolved.deploymentRoot) 'runtime\process-tree.mjs')
@@ -142,6 +152,20 @@ try {
     Grant-TeamAcl -Path ([string]$resolved.deploymentRoot) -Account ([string]$resolved.serviceAccount) -Permission 'R' -Recurse
     Grant-TeamAcl -Path ([string]$resolved.dataRoot) -Account ([string]$resolved.serviceAccount) -Permission 'M' -Recurse
     Grant-TeamAcl -Path ([string]$resolved.backupRoot) -Account ([string]$resolved.serviceAccount) -Permission 'M' -Recurse
+    $phase = 'acl'
+    # 证书/私钥若在受控位置之外，显式授予服务账号读取权限；不扩大为全员可读。
+    foreach ($certificatePath in @($resolved.certificate.certPath, $resolved.certificate.keyPath)) {
+        $absoluteCertificate = [System.IO.Path]::GetFullPath([string]$certificatePath)
+        try {
+            $stream = [System.IO.File]::Open($absoluteCertificate, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            $stream.Dispose()
+        } catch {
+            throw '管理员无法读取证书或私钥，未开始启动服务'
+        }
+        if (-not $absoluteCertificate.StartsWith(([string]$resolved.deploymentRoot).TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            Grant-TeamAcl -Path $absoluteCertificate -Account ([string]$resolved.serviceAccount) -Permission 'R'
+        }
+    }
     Ensure-TeamControlCredential -Resolved $resolved
     Set-TeamFirewall -Resolved $resolved
 
@@ -152,6 +176,7 @@ try {
         }
     }
     $liteLLMWarning = $null
+    $phase = 'services'
     foreach ($role in @('litellm', 'app', 'caddy')) {
         $service = @($resolved.services | Where-Object { $_.role -eq $role } | Select-Object -First 1)
         if ($service.Count -eq 0) { continue }
@@ -164,13 +189,42 @@ try {
             else { throw }
         }
     }
+    $phase = 'ready'
+    # “服务进程存在”不等于可用：有界等待应用 readiness，超时返回失败阶段。
+    $readyDeadline = (Get-Date).AddSeconds(120)
+    $ready = $false
+    while ((Get-Date) -lt $readyDeadline) {
+        try {
+            $readyResponse = Invoke-WebRequest -Uri ('http://127.0.0.1:' + [string]$resolved.appPort + '/api/team/health/ready') -UseBasicParsing -TimeoutSec 5
+            if ([int]$readyResponse.StatusCode -eq 200) { $ready = $true; break }
+        } catch {}
+        Start-Sleep -Seconds 2
+    }
+    if (-not $ready) {
+        throw '应用未在有界等待内 ready；查看 status.ps1 与 storage\logs 定位，数据根保持可恢复'
+    }
     $state = [ordered]@{
         schemaVersion = 1
+        status = 'ready'
+        phase = 'ready'
         deploymentId = [string]$resolved.deploymentId
         releaseId = [string]$resolved.releaseId
         installedAt = [DateTime]::UtcNow.ToString('o')
     }
     [System.IO.File]::WriteAllText((Join-Path ([string]$resolved.serviceRoot) 'install-state.json'), (ConvertTo-Json $state -Compress), (New-Object System.Text.UTF8Encoding($false)))
+    $dailyBackupEnabled = $false
+    if ($EnableDailyBackup) {
+        $phase = 'backup-schedule'
+        $scheduleScript = Join-Path ([string]$resolved.serviceRoot) 'schedule-backup.ps1'
+        $scheduleArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $scheduleScript,
+            '-ConfigPath', [System.IO.Path]::GetFullPath($ConfigPath), '-DeploymentId', [string]$resolved.deploymentId,
+            '-Action', 'apply', '-Time', $BackupTime, '-Account', [string]$resolved.serviceAccount)
+        if ($BackupTimeZone) { $scheduleArguments += @('-TimeZone', $BackupTimeZone) }
+        & powershell.exe @scheduleArguments | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw '每日备份计划任务注册失败；备份未启用' }
+        $dailyBackupEnabled = $true
+        $phase = 'ready'
+    }
     Write-TeamOperationJson -Value ([ordered]@{
         schemaVersion = 1
         action = 'install'
@@ -180,11 +234,26 @@ try {
         releaseId = [string]$resolved.releaseId
         services = @($resolved.services | ForEach-Object { $_.id })
         liteLLMWarning = $liteLLMWarning
+        dailyBackupEnabled = $dailyBackupEnabled
         certificateTrustChanged = $false
         note = 'SCM installation only; no unattended-logoff/RDP/GPU acceptance is claimed.'
     })
     exit 0
 } catch {
+    if ($resolved -and $resolved.serviceRoot -and (Test-Path -LiteralPath ([string]$resolved.serviceRoot) -PathType Container)) {
+        try {
+            $failed = [ordered]@{
+                schemaVersion = 1
+                status = 'failed'
+                phase = $(if ($phase) { [string]$phase } else { 'unknown' })
+                deploymentId = [string]$resolved.deploymentId
+                releaseId = [string]$resolved.releaseId
+                failedAt = [DateTime]::UtcNow.ToString('o')
+                message = '安装未完成；保留数据根，修正后重跑只认领本部署对象'
+            }
+            [System.IO.File]::WriteAllText((Join-Path ([string]$resolved.serviceRoot) 'install-state.json'), (ConvertTo-Json $failed -Compress), (New-Object System.Text.UTF8Encoding($false)))
+        } catch {}
+    }
     [Console]::Error.WriteLine('安装失败：' + $_.Exception.Message)
     exit 1
 }

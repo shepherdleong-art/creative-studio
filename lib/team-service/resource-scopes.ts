@@ -12,7 +12,6 @@ import {
   type ResourceRef,
   type RootScopeRegistration,
   type InheritedScopeRegistration,
-  type TaskPrincipalRegistration,
 } from '../media-core/access-context.ts';
 
 export type ResourceVisibility = 'private' | 'public';
@@ -462,29 +461,54 @@ export function createTeamAccessContext(options: {
   db: Database.Database;
   principal: AuthPrincipal | AccessActor;
   allowDeleted?: boolean;
+  /** 已受理任务：只允许冻结 scope 及其后代，不受当前角色影响。 */
+  restrictToScope?: ResourceRef;
 }): ResourceAccessContext {
-  const { db, principal } = options;
+  const { db, principal, restrictToScope } = options;
   const accessOptions = { allowDeleted: options.allowDeleted === true };
+  const assertInRestrictedScope = (resourceType: string, resourceId: string): void => {
+    if (!restrictToScope) return;
+    if (resourceType === restrictToScope.resourceType && resourceId === restrictToScope.resourceId) return;
+    const scope = readScope(db, resourceType, resourceId);
+    if (!scope) throw new ResourceAccessError('resource_not_found', '资源不存在或不可用。');
+    if (scope.rootType === restrictToScope.resourceType && scope.rootId === restrictToScope.resourceId) return;
+    throw new ResourceAccessError('resource_forbidden', '已受理任务只能访问其冻结的资源范围。', 403);
+  };
   return {
     kind: 'team',
     actor: { userId: principal.userId, role: principal.role },
     assertAccess(resourceType, resourceId, action) {
       requireResourceAccess(db, principal, resourceType, resourceId, action, accessOptions);
+      assertInRestrictedScope(resourceType, resourceId);
     },
     resolveOwner(requestedOwnerUserId) {
-      return resolveOwnerUserId(principal, requestedOwnerUserId);
+      const owner = resolveOwnerUserId(principal, requestedOwnerUserId);
+      if (restrictToScope && owner !== principal.userId) {
+        throw new ResourceAccessError('resource_forbidden', '已受理任务不能改变资源所有者。', 403);
+      }
+      return owner;
     },
     visibilityOf(resourceType, resourceId) {
       return assertScopeConsistency(db, resourceType, resourceId).visibility;
     },
     registerRootScope(input) {
+      if (restrictToScope) {
+        throw new ResourceAccessError('resource_forbidden', '已受理任务不能登记新的根资源。', 403);
+      }
       registerRootScope(db, input);
     },
     registerInheritedScope(input) {
       registerInheritedScope(db, input, accessOptions);
+      assertInRestrictedScope(input.resourceType, input.resourceId);
     },
-    registerTaskPrincipal(input: TaskPrincipalRegistration) {
-      registerTaskPrincipal(db, { ...input, actorUserId: input.actorUserId ?? principal.userId });
+    registerTaskPrincipal(input) {
+      registerTaskPrincipal(db, {
+        ...input,
+        actorUserId: input.actorUserId ?? principal.userId,
+        roleAtAcceptance: input.actorUserId === undefined || input.actorUserId === principal.userId
+          ? (input.roleAtAcceptance ?? principal.role)
+          : input.roleAtAcceptance,
+      });
     },
     registerFile(input) {
       return registerReadyTeamFile(db, {
@@ -493,6 +517,7 @@ export function createTeamAccessContext(options: {
         ownerUserId: principal.userId,
         validateReference(reference) {
           requireResourceAccess(db, principal, reference.resourceType, reference.resourceId, input.derivedFromFileId ? 'read' : 'write', accessOptions);
+          assertInRestrictedScope(reference.resourceType, reference.resourceId);
         },
         validateExisting(file) {
           if (!authorizeTeamFileReferences(db, principal, file.id, accessOptions)) {
@@ -511,6 +536,7 @@ export function createTeamAccessContext(options: {
         throw new ResourceAccessError('resource_not_found', '文件不存在或不可用。');
       }
       requireResourceAccess(db, principal, reference.resourceType, reference.resourceId, 'write', accessOptions);
+      assertInRestrictedScope(reference.resourceType, reference.resourceId);
       db.prepare(`
         INSERT OR IGNORE INTO team_file_references (fileId, resourceType, resourceId, role, pinKind, createdAt)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -525,6 +551,17 @@ export function createTeamAccessContext(options: {
         .get(relativePath) as { id: string; seriesId: string; version: number; sha256: string } | undefined;
       if (!file || !authorizeTeamFileReferences(db, principal, file.id, accessOptions)) {
         throw new ResourceAccessError('resource_not_found', '文件不存在或不可用。');
+      }
+      if (restrictToScope) {
+        const references = db.prepare(`
+          SELECT resourceType, resourceId FROM team_file_references WHERE fileId = ? AND releasedAt IS NULL
+        `).all(file.id) as ResourceRef[];
+        const inScope = references.some((reference) => {
+          if (reference.resourceType === restrictToScope.resourceType && reference.resourceId === restrictToScope.resourceId) return true;
+          const scope = readScope(db, reference.resourceType, reference.resourceId);
+          return scope?.rootType === restrictToScope.resourceType && scope.rootId === restrictToScope.resourceId;
+        });
+        if (!inScope) throw new ResourceAccessError('resource_forbidden', '文件不属于已受理任务范围。', 403);
       }
       return { fileId: file.id, seriesId: file.seriesId, version: file.version, sha256: file.sha256 };
     },

@@ -93,7 +93,7 @@ test('apply 分支只认领精确服务路径，app 先于独立代理停机，�
     + fs.readFileSync(path.join(scriptRoot, 'common.ps1'), 'utf8').replace(/^\uFEFF/, '')
     + fs.readFileSync(path.join(scriptRoot, 'generate-config.mjs'), 'utf8');
   const stop = fs.readFileSync(path.join(scriptRoot, 'stop.ps1'), 'utf8').replace(/^\uFEFF/, '');
-  for (const required of ['Win32_Service', 'PathName', 'OrdinalIgnoreCase', 'New-NetFirewallRule', 'control-credential.json', 'Get-FileHash']) {
+  for (const required of ['Win32_Service', 'PathName', 'OrdinalIgnoreCase', 'New-NetFirewallRule', 'control-credential.json', 'Get-FileHash', 'serviceLogDirectory', '/api/team/health/ready', 'install-state.json']) {
     assert.ok(install.includes(required), `install 缺 ${required}`);
   }
   assert.match(install, /if \(-not \$Apply\)[\s\S]*exit 0[\s\S]*Set-TeamFirewall -Resolved/);

@@ -42,6 +42,8 @@ function makeFixtureRelease(): void {
   lock.winsw.sha256 = sha256(winsw);
   write('service/distribution-lock.json', JSON.stringify(lock));
   write('service/packaging/forbidden-paths.json', fs.readFileSync(path.resolve('scripts/packaging/forbidden-paths.json'), 'utf8'));
+  write('START-HERE.md', '# fixture server package\n');
+  write('deployment.example.json', '{"schemaVersion":1}\n');
   writeReleaseManifest(releaseRoot, { releaseId: 'release-1', appVersion: '0.7.1', sourceCommit: 'fixture', fixture: true });
 }
 
@@ -101,6 +103,21 @@ try {
   assert.ok(dailyJob.availableBytes > 0);
   assert.equal(dailyJob.latestRecoveryEvidence, null);
   assert.notDeepEqual([...fs.readFileSync(dailyJobPath).subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+
+  const lockFile = path.join(backupRoot, 'locks', 'daily.lock');
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+  fs.writeFileSync(lockFile, JSON.stringify({ schemaVersion: 1, pid: 1, startedAt: new Date().toISOString() }));
+  const overlapping = invoke('backup', '--config', configPath, '--type', 'daily', '--backup-id', 'daily-locked', '--allow-fixture-release');
+  assert.equal(overlapping.status, 0, `${overlapping.stdout}${overlapping.stderr}`);
+  assert.equal(JSON.parse(overlapping.stdout.trim()).status, 'skipped');
+  assert.equal(fs.existsSync(path.join(backupRoot, 'daily', 'daily-locked')), false, '重叠执行不得产生第二份备份');
+  assert.equal(JSON.parse(fs.readFileSync(dailyJobPath, 'utf8')).backupId, 'daily-1', '重叠执行不得覆盖最近成功状态');
+  const stale = new Date(Date.now() - 13 * 60 * 60 * 1000);
+  fs.utimesSync(lockFile, stale, stale);
+  const recovered = invoke('backup', '--config', configPath, '--type', 'daily', '--backup-id', 'daily-stale', '--allow-fixture-release');
+  assert.equal(recovered.status, 0, `${recovered.stdout}${recovered.stderr}`);
+  assert.equal(JSON.parse(recovered.stdout.trim()).status, 'success', '过期锁必须可自愈');
+  assert.equal(fs.existsSync(lockFile), false, '成功或失败后都必须释放每日锁');
 
   const serviceRoot = path.join(deploymentRoot, 'service');
   fs.mkdirSync(serviceRoot, { recursive: true });

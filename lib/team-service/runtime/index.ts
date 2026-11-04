@@ -12,6 +12,8 @@ import { setLegacyMediaExecutionRuntime } from '../../legacy-media-execution.ts'
 import { createLegacyMediaLifecycle } from '../../legacy-media-lifecycle.ts';
 import { createCanvasExecutionLifecycle } from '../../creative-canvas/bootstrap.ts';
 import { createFinalEditExecutionLifecycle } from '../../final-edit/lifecycle.ts';
+import { createBatchProductionLifecycle } from '../../batch-production/bootstrap.ts';
+import { createScriptStudioExecutionLifecycle } from '../../script-studio/bootstrap.ts';
 import {
   getTeamRuntimeState,
   initializeTeamRuntimeState,
@@ -58,6 +60,9 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
           createScriptGenerationV3Lifecycle(db),
           createCanvasExecutionLifecycle({ db, execution: execution.facade }),
           createLegacyMediaLifecycle(),
+          // 首版四类模块：批量与详情页脚本必须无需页面/API 触发即可恢复。
+          createBatchProductionLifecycle({ db }),
+          createScriptStudioExecutionLifecycle(db),
         ],
         ...schemaUpgradeRuntimePaths(dataRoot()),
         assertOwnerActive: () => {

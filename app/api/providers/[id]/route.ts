@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { providerPoolStatus } from '@/lib/team-service/pools';
+import { readRuntimeConfig } from '@/lib/team-service/config';
 
 
 function isRealKey(value: string | undefined | null): boolean {
@@ -107,6 +109,9 @@ async function __teamRoutePUT(
       missing: isRealKey(updated.apiKey as string) ? [] : ['API Key'],
       apiKey: undefined,
       hasApiKey: isRealKey(updated.apiKey as string),
+      ...(readRuntimeConfig().mode === 'server'
+        ? { pool: providerPoolStatus(db, 'image', id) }
+        : {}),
     };
 
     return NextResponse.json(safe);

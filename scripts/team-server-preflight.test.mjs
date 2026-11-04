@@ -160,3 +160,63 @@ test('目录 ACL 无法读取时保持权限未知而不是断言已授权', { s
   assert.ok(report.diagnostics.some((diagnostic) => diagnostic.code === 'DIRECTORY_PERMISSION_UNKNOWN'));
   assert.ok(!report.diagnostics.some((diagnostic) => diagnostic.subject === 'deployment' && diagnostic.code === 'DIRECTORY_PERMISSION_INSUFFICIENT'));
 });
+
+test('全新目录待创建、HTTPS/Caddy 管理端口与 release/证书状态可诊断', { skip: process.platform !== 'win32' }, (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'team-preflight-fresh-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const deploymentRoot = path.join(directory, 'deployment');
+  const releaseId = 'test-release';
+  const releaseRoot = path.join(deploymentRoot, 'releases', releaseId);
+  fs.mkdirSync(releaseRoot, { recursive: true });
+  fs.writeFileSync(path.join(releaseRoot, 'release-manifest.json'), JSON.stringify({ schemaVersion: 1, releaseId, sourceCommit: 'abc123' }));
+  const certPath = path.join(directory, 'studio.crt');
+  const keyPath = path.join(directory, 'studio.key');
+  fs.writeFileSync(certPath, 'fixture cert');
+  fs.writeFileSync(keyPath, 'fixture key');
+  const config = {
+    schemaVersion: 1,
+    deploymentId: 'studio-prod',
+    releaseId,
+    deploymentRoot,
+    dataRoot: path.join(directory, 'data'),
+    backupRoot: path.join(directory, 'backup'),
+    oldRoots: [],
+    origin: 'https://studio.example.test',
+    appPort: 3300,
+    liteLLMPort: 4300,
+    servicePrefix: 'CreativeStudio',
+    serviceAccount: 'CONTOSO\\svc_studio$',
+    certificate: { certPath, keyPath },
+    allowedNetworks: ['192.0.2.0/24'],
+    enableLiteLLM: false,
+    stopTimeoutSeconds: 240,
+  };
+  const snapshot = {
+    ...validSnapshot(),
+    tcpListeners: [],
+    directoryAccess: [
+      { path: deploymentRoot, exists: false, readAllowed: null, modifyAllowed: null },
+      { path: config.dataRoot, exists: false, readAllowed: null, modifyAllowed: null },
+      { path: config.backupRoot, exists: false, readAllowed: null, modifyAllowed: null },
+    ],
+  };
+  const { result, report } = runPreflight(t, { config, snapshot });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(report.status, 'passed');
+  assert.ok(report.directories.every((item) => item.status === 'pending-create'));
+  const httpsPort = report.ports.find((port) => port.name === 'https');
+  assert.ok(httpsPort && httpsPort.port === 443, 'HTTPS 入口端口必须被检查');
+  const adminPort = report.ports.find((port) => port.name === 'caddy-admin');
+  assert.ok(adminPort && adminPort.port === 2019, 'Caddy 管理端口必须被检查');
+  assert.equal(report.release.status, 'verified');
+  assert.equal(report.release.sourceCommit, 'abc123');
+  assert.equal(report.certificate.status, 'verified');
+
+  const mismatched = { ...config, releaseId: 'other-release' };
+  fs.mkdirSync(path.join(deploymentRoot, 'releases', 'other-release'), { recursive: true });
+  fs.writeFileSync(path.join(deploymentRoot, 'releases', 'other-release', 'release-manifest.json'), JSON.stringify({ schemaVersion: 1, releaseId }));
+  const mismatchSnapshot = { ...snapshot, directoryAccess: snapshot.directoryAccess.map((item) => ({ ...item })) };
+  const mismatch = runPreflight(t, { config: mismatched, snapshot: mismatchSnapshot });
+  assert.equal(mismatch.result.status, 1);
+  assert.ok(mismatch.report.diagnostics.some((diagnostic) => diagnostic.code === 'RELEASE_ID_MISMATCH'));
+});

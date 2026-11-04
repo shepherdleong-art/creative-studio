@@ -12,14 +12,14 @@ import {
   type TeamResourceScope,
 } from './resource-scopes.ts';
 import { runWithAccessContext } from '../media-core/access-context.ts';
-import { teamRoutePolicy, type TeamRoutePolicy } from './route-policy.ts';
+import { teamRoutePolicy, SERVER_SOFT_DELETE_TARGETS, type TeamRoutePolicy } from './route-policy.ts';
 import { softDeleteResource } from './lifecycle/index.ts';
 import { assertCompatibleClientWrite } from './client-capabilities.ts';
 import { runWithExecutionRequestVersions } from '../media-core/execution/context.ts';
 
-interface RouteHandlerContext {
+type RouteHandlerContext = {
   params?: Promise<Record<string, string | string[] | undefined>> | Record<string, string | string[] | undefined>;
-}
+};
 
 type RequestData = {
   params: Record<string, string | string[] | undefined>;
@@ -168,15 +168,6 @@ function primaryReference(policy: TeamRoutePolicy, data: RequestData): { resourc
   return id ? { resourceType: resource, resourceId: id } : null;
 }
 
-const SERVER_SOFT_DELETE_ROUTES = new Set([
-  '/api/projects/[id] DELETE',
-  '/api/images/[id] DELETE',
-  '/api/canvas/[id] DELETE',
-  '/api/batch-production/batches/[id] DELETE',
-  '/api/batch-production/scripts/[scriptId] DELETE',
-  '/api/projects/[id]/script-studio/scripts/[scriptId] DELETE',
-]);
-
 const PRIMARY_CHILDREN: Record<string, Set<string>> = {
   batch: new Set(['batch_version', 'batch_plan', 'batch_output_version', 'batch_artifact', 'batch_task']),
   batch_plan: new Set(['batch_output_version', 'batch_artifact']),
@@ -256,12 +247,18 @@ function softDeleteReference(
   policy: TeamRoutePolicy,
   authorized: { data: RequestData; primary: { resourceType: string; resourceId: string } | null },
 ): { resourceType: string; resourceId: string } | null {
-  if (!SERVER_SOFT_DELETE_ROUTES.has(`${policy.route} ${policy.method}`)) return null;
-  if (policy.route === '/api/projects/[id]/script-studio/scripts/[scriptId]') {
-    const resourceId = single(authorized.data.params.scriptId);
-    return resourceId ? { resourceType: 'project_script', resourceId } : null;
+  const target = SERVER_SOFT_DELETE_TARGETS[`${policy.route} ${policy.method}`];
+  if (!target) return null;
+  if (target.param) {
+    const resourceId = single(authorized.data.params[target.param]);
+    return resourceId ? { resourceType: target.resourceType, resourceId } : null;
   }
-  return authorized.primary;
+  if (authorized.primary?.resourceType === target.resourceType) return authorized.primary;
+  const parameter = Object.entries({
+    id: 'id', scriptId: 'scriptId', shotSetId: 'shotSetId', assetId: 'assetId',
+  }).find(([, value]) => authorized.data.params[value])?.[1];
+  const fallback = parameter ? single(authorized.data.params[parameter]) : undefined;
+  return fallback ? { resourceType: target.resourceType, resourceId: fallback } : null;
 }
 
 function authorizationError(error: unknown): Response {

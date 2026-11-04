@@ -10,8 +10,12 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import ffmpegPath from 'ffmpeg-static';
 import { summarizeRequests } from './team-server/acceptance-lib.mjs';
+import { runProductionScenario } from './team-server/production-scenario.mjs';
 
 const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
+const releaseRoot = process.env.TEAM_ACCEPTANCE_RELEASE_PATH ? path.resolve(process.env.TEAM_ACCEPTANCE_RELEASE_PATH) : null;
+const appRoot = releaseRoot ? path.join(releaseRoot, 'app') : repoRoot;
+const nodeExecutable = releaseRoot ? path.join(releaseRoot, 'runtimes', 'node', 'node.exe') : process.execPath;
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-team-acceptance-http-'));
 const resultPath = process.env.TEAM_ACCEPTANCE_RESULT_PATH;
 const evidenceDirectory = process.env.TEAM_ACCEPTANCE_EVIDENCE_DIR;
@@ -27,6 +31,8 @@ const apiP95Target = Number(process.env.TEAM_ACCEPTANCE_API_P95_MS ?? 2000);
 const acceptP95Target = Number(process.env.TEAM_ACCEPTANCE_ACCEPT_P95_MS ?? 3000);
 const serverErrorRateTarget = Number(process.env.TEAM_ACCEPTANCE_5XX_RATE_BELOW ?? 0.001);
 const deploymentId = 'deployment-team-acceptance-http';
+const productionScenario = process.env.TEAM_ACCEPTANCE_PRODUCTION === '1';
+let schedulersEnabled = false;
 const passwordByEmployee = new Map();
 const secrets = new Set();
 const requests = [];
@@ -47,6 +53,7 @@ const result = {
   schemaVersion: 1,
   config: { users, concurrency, durationSeconds, requestDelayMs, sampleIntervalMs, largeFileMiB },
   realPaidProviderCalls: 0,
+  runtime: releaseRoot ? 'packaged-standalone' : 'next-dev',
   fakeProvider: true,
   capacityDurationTargetMet: durationSeconds >= 3600,
   capacitySignoff: false,
@@ -77,6 +84,8 @@ function environment() {
   return {
     ...process.env,
     NEXT_TELEMETRY_DISABLED: '1',
+    ...(releaseRoot ? { NODE_ENV: 'production', HOSTNAME: '127.0.0.1', PORT: String(port) } : {}),
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require "${path.join(repoRoot, 'scripts', 'team-server', 'no-external-network.cjs').replaceAll('\\', '/')}"`,
     CREATIVE_STUDIO_DATA_ROOT: root,
     CREATIVE_STUDIO_DEPLOYMENT_MODE: 'server',
     CREATIVE_STUDIO_PORT: String(port),
@@ -84,23 +93,27 @@ function environment() {
     CREATIVE_STUDIO_TRUSTED_ORIGIN: baseUrl,
     CREATIVE_STUDIO_SERVER_RELEASE_ID: 'team-acceptance-local',
     CREATIVE_STUDIO_CANVAS_ENABLE: '1',
-    CREATIVE_STUDIO_CANVAS_EXECUTOR: 'fixture',
+    CREATIVE_STUDIO_CANVAS_EXECUTOR: productionScenario ? 'company' : 'fixture',
     CREATIVE_STUDIO_CANVAS_TEST_ROOT: '1',
-    CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER: '0',
+    CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER: schedulersEnabled ? '1' : '0',
   };
 }
 function startServer() {
   const nextBinary = path.join(repoRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
-  server = spawn(process.execPath, [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
-    cwd: repoRoot,
+  server = spawn(nodeExecutable, releaseRoot ? [path.join(appRoot, 'server.js')] : [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
+    cwd: appRoot,
     env: environment(),
     windowsHide: true,
     detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   serverPid = server.pid;
-  server.stdout.on('data', (chunk) => { serverOutput += String(chunk); });
-  server.stderr.on('data', (chunk) => { serverOutput += String(chunk); });
+  const capture = (chunk) => {
+    serverOutput += String(chunk);
+    fs.appendFileSync(path.join(evidenceDirectory, 'live-server.log'), sanitize(String(chunk)));
+  };
+  server.stdout.on('data', capture);
+  server.stderr.on('data', capture);
 }
 async function stopServer() {
   if (!server || server.exitCode !== null || server.signalCode !== null) return;
@@ -123,7 +136,7 @@ async function waitReady() {
       throw new Error(`隔离 Next 服务提前退出 ${server.exitCode}: ${sanitize(serverOutput).slice(-4000)}`);
     }
     try {
-      const response = await fetch(`${baseUrl}/api/team/health/ready`, { cache: 'no-store' });
+      const response = await fetch(`${baseUrl}/api/team/health/ready`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
       lastStatus = response.status;
       if (response.status === 200) return;
     } catch { /* startup wait */ }
@@ -150,6 +163,7 @@ async function request(session, pathname, options = {}) {
   }
   const { json, ...init } = options;
   return fetch(`${baseUrl}${pathname}`, {
+    signal: AbortSignal.timeout(120_000),
     ...init,
     headers,
     ...(json === undefined ? {} : { body: JSON.stringify(json) }),
@@ -410,20 +424,13 @@ async function prepareCanvas(session, index) {
 try {
   port = await availablePort();
   baseUrl = `http://127.0.0.1:${port}`;
-  const initialized = spawnSync(process.execPath, ['scripts/team-server/init-admin.mjs', '--employee-id', 'accept-admin', '--name', '隔离管理员'], {
-    cwd: repoRoot, env: environment(), encoding: 'utf8', timeout: 120_000, windowsHide: true,
+  const initialized = spawnSync(nodeExecutable, ['scripts/team-server/init-admin.mjs', '--employee-id', 'accept-admin', '--name', '隔离管理员'], {
+    cwd: appRoot, env: environment(), encoding: 'utf8', timeout: 120_000, windowsHide: true,
   });
-  assert.equal(initialized.status, 0, '隔离首管理员初始化失败');
+  assert.equal(initialized.status, 0, `隔离首管理员初始化失败：${initialized.error?.code ?? ''} ${sanitize(initialized.stderr ?? '')}`);
   const adminCredential = /一次性凭据（仅显示本次）：(\S+)/.exec(initialized.stdout)?.[1];
   assert.ok(adminCredential);
   secrets.add(adminCredential);
-  const seeded = spawnSync(process.execPath, ['--input-type=module', '--eval', `
-    const { getDb, closeDb } = await import('./lib/db.ts');
-    const db = getDb();
-    db.prepare("INSERT INTO providers (id, name, baseUrl, apiKey, model, type, enabled) VALUES ('provider-acceptance-fake', '隔离 fake 供应商', 'http://127.0.0.1:9', 'fixture-not-a-real-key', 'gpt-image-2', 'openai-compatible', 1)").run();
-    closeDb();
-  `], { cwd: repoRoot, env: environment(), encoding: 'utf8', timeout: 120_000, windowsHide: true });
-  assert.equal(seeded.status, 0, `隔离核心 schema/fake 供应商初始化失败：${seeded.stderr}`);
   startServer();
   await waitReady();
   assertions.push('独立 Next server 在临时 SQLite/数据根和固定回环端口完成真实启动与 readiness');
@@ -432,6 +439,14 @@ try {
   const adminPassword = `Accept-admin-${randomBytes(12).toString('base64url')}`;
   secrets.add(adminPassword);
   await changePassword(admin, adminCredential, adminPassword);
+  if (productionScenario) {
+    result.production = await runProductionScenario({ root, admin, jsonRequest, request, stopServer, startServer,
+      waitReady, enableSchedulers: () => { schedulersEnabled = true; }, makeMedia });
+  } else {
+  const provider = (await jsonRequest(admin, '/api/providers', { method: 'POST', json: {
+    name: '隔离 fake 供应商', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture-not-a-real-key',
+    model: 'gpt-image-2', type: 'openai-compatible',
+  } }, 200)).body;
   const sessions = [];
   for (let index = 1; index <= users; index += 1) {
     const employeeId = `accept-${String(index).padStart(2, '0')}`;
@@ -453,7 +468,7 @@ try {
   const projects = [];
   const canvases = [];
   for (let index = 0; index < sessions.length; index += 1) {
-    projects.push(await createProject(sessions[index], index + 1, 'provider-acceptance-fake'));
+    projects.push(await createProject(sessions[index], index + 1, provider.id));
     canvases.push(await prepareCanvas(sessions[index], index + 1));
   }
   const crossProject = await request(sessions[1], `/api/projects/${projects[0].id}`);
@@ -554,6 +569,9 @@ try {
       TEAM_ACCEPTANCE_BASE_URL: baseUrl,
       TEAM_ACCEPTANCE_EMPLOYEE_ID: 'accept-02',
       TEAM_ACCEPTANCE_PASSWORD: passwordByEmployee.get('accept-02'),
+      TEAM_ACCEPTANCE_ADMIN_ID: 'accept-admin',
+      TEAM_ACCEPTANCE_ADMIN_PASSWORD: adminPassword,
+      TEAM_ACCEPTANCE_PROVIDER_ID: provider.id,
       TEAM_ACCEPTANCE_BROWSER_EVIDENCE_DIR: path.join(evidenceDirectory, 'browser'),
       TEAM_ACCEPTANCE_BROWSER_RESULT_PATH: browserResultPath,
     },
@@ -640,6 +658,7 @@ try {
   assertions.push('20 独立会话完成列表/进度/编辑/画布受理混合负载，延迟、5xx、驱动 event-loop、WAL、DB busy、服务进程树 CPU/内存与磁盘均来自实际采样');
   if (durationSeconds < 3600) assertions.push(`本次为 ${durationSeconds}s 短烟测，明确不是 60 分钟容量签收`);
   assert.deepEqual(result.violations, [], '容量阈值或数据库断言失败，不能降低阈值放行');
+  }
   result.result = 'passed';
 } catch (error) {
   result.result = 'failed';

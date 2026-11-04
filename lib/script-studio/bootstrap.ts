@@ -1,7 +1,10 @@
+import type Database from 'better-sqlite3';
 import { getDb } from '../db.ts';
 import { executeScriptStudioTask } from './runner.ts';
 import { createRuntimeDeps } from './runtime.ts';
 import { getScriptStudioReadiness, scriptStudioReadinessUnavailable } from './runtime-readiness.ts';
+import { readTeamModuleSwitches } from '../team-service/module-switches.ts';
+import type { ExecutionModuleLifecycle } from '../media-core/execution/contracts.ts';
 import {
   getScriptStudioSchedulerController,
   recoverScriptStudioTasks,
@@ -39,7 +42,8 @@ import {
 // v23：普通长图切片复用一次整页缩放结果，避免每张切片重复缩放/编码整页。
 // v28：模板执行模块保留部分失败检查点，并统一恢复身份与冻结白名单。
 // v30：统一执行 deferred 续跑、准入后预算占用与稳定子请求身份。
-const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 30;
+// v31：后台领取和续租从持久任务身份恢复访问上下文。
+const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 31;
 const SCRIPT_STUDIO_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.script-studio-scheduler-version');
 const SCRIPT_STUDIO_SCHEDULER_START_KEY = Symbol.for('creative-studio.script-studio-scheduler-start');
 
@@ -80,7 +84,8 @@ export async function ensureScriptStudioSchedulerStarted(): Promise<ScriptStudio
   // 安全闸门：在没有明确真机授权前，生产调度器不得自动调用真实供应商。
   // 阶段 0-5 的验收通过直接注入假供应商的 runner 测试完成；部署到真机时
   // 由运行者显式设置 CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER=1。
-  if (process.env.CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER !== '1') {
+  if (!readTeamModuleSwitches().scriptStudio
+    || process.env.CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER !== '1') {
     throw new Error('script-studio scheduler disabled: real provider calls require explicit authorization');
   }
   const globalScope = globalThis as Record<PropertyKey, unknown>;
@@ -106,6 +111,7 @@ export async function ensureScriptStudioSchedulerStarted(): Promise<ScriptStudio
 
 export async function startScriptStudioSchedulerAfterReadiness(): Promise<ScriptStudioSchedulerController | null> {
   try {
+    if (!readTeamModuleSwitches().scriptStudio) return null;
     const readiness = await getScriptStudioReadiness();
     if (scriptStudioReadinessUnavailable(readiness)) return null;
     recoverScriptStudioTasks(getDb());
@@ -114,6 +120,43 @@ export async function startScriptStudioSchedulerAfterReadiness(): Promise<Script
   } catch {
     return null;
   }
+}
+
+/**
+ * server 组合根使用：无人访问页面/API 时也能恢复详情页脚本任务。
+ * 调度器实例仍由 globalThis 单例持有，API 懒启动与启动恢复共享同一 worker。
+ */
+export function createScriptStudioExecutionLifecycle(db: Database.Database): ExecutionModuleLifecycle {
+  let started = false;
+  return {
+    name: 'script-studio',
+    async ensureSchemaReady() {
+      if (!readTeamModuleSwitches().scriptStudio) return;
+      const readiness = await getScriptStudioReadiness();
+      const unavailable = scriptStudioReadinessUnavailable(readiness);
+      if (unavailable) throw new Error(unavailable.message);
+    },
+    registerRecovery() {},
+    recover(context) {
+      if (!readTeamModuleSwitches().scriptStudio || context.signal.aborted) return;
+      recoverScriptStudioTasks(db);
+    },
+    async start(context) {
+      if (!readTeamModuleSwitches().scriptStudio || context.signal.aborted) return;
+      if (process.env.CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER !== '1') return;
+      await ensureScriptStudioSchedulerStarted();
+      started = true;
+      context.signal.addEventListener('abort', () => {
+        void getScriptStudioSchedulerController()?.stop();
+      }, { once: true });
+    },
+    async drain() {
+      if (!started) return 0;
+      started = false;
+      await getScriptStudioSchedulerController()?.stop();
+      return 0;
+    },
+  };
 }
 
 export { getScriptStudioSchedulerController };

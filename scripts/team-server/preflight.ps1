@@ -204,6 +204,19 @@ try {
     if ([int]$config.schemaVersion -ne 1 -or $null -eq $config.ports -or $null -eq $config.directories) {
         throw 'Invalid deployment config'
     }
+    # HTTPS 入口端口与 Caddy 管理端口必须纳入检查；不能只查 app/LiteLLM 回环端口。
+    $portNames = @($config.ports | ForEach-Object { [string]$_.name })
+    if ($config.origin -and ($portNames -notcontains 'https')) {
+        $originUri = $null
+        if ([System.Uri]::TryCreate([string]$config.origin, [System.UriKind]::Absolute, [ref]$originUri)) {
+            $entryPort = 443
+            if (-not $originUri.IsDefaultPort) { $entryPort = $originUri.Port }
+            $config.ports = @($config.ports) + [pscustomobject]@{ name = 'https'; host = '0.0.0.0'; port = $entryPort }
+        }
+    }
+    if ($portNames -notcontains 'caddy-admin') {
+        $config.ports = @($config.ports) + [pscustomobject]@{ name = 'caddy-admin'; host = '127.0.0.1'; port = 2019 }
+    }
     $outputFullPath = [System.IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\')
     foreach ($oldDirectory in @($config.directories | Where-Object { $_.isOld })) {
         $oldFullPath = [System.IO.Path]::GetFullPath([string]$oldDirectory.path).TrimEnd('\')
@@ -298,12 +311,18 @@ try {
             [string]::Equals([string]$_.path, [string]$requested.path, [System.StringComparison]::OrdinalIgnoreCase)
         } | Select-Object -First 1)
         $status = 'ok'
+        $isNewDirectory = -not [bool]$requested.isOld
         if ($access.Count -eq 0 -or ($null -ne $access[0].exists -and -not $access[0].exists)) {
-            $status = 'missing'
-            $diagnostics += [pscustomobject]@{
-                code = 'DIRECTORY_MISSING'
-                subject = [string]$requested.name
-                message = '指定目录不存在或没有目录存在性证据'
+            if ($isNewDirectory) {
+                # 全新安装允许目标目录尚不存在；安装会在身份判定后创建。
+                $status = 'pending-create'
+            } else {
+                $status = 'missing'
+                $diagnostics += [pscustomobject]@{
+                    code = 'OLD_DIRECTORY_MISSING'
+                    subject = [string]$requested.name
+                    message = '旧数据/旧部署目录不存在或没有存在性证据；无法核对保留边界'
+                }
             }
         } elseif ($null -eq $access[0].readAllowed -or ($requested.requiredAccess -eq 'modify' -and $null -eq $access[0].modifyAllowed)) {
             $status = 'unknown'
@@ -326,6 +345,22 @@ try {
                 subject = [string]$requested.name
                 message = '当前账号缺少指定目录所需的读取权限'
             }
+        } else {
+            try {
+                if (Test-Path -LiteralPath ([string]$requested.path) -PathType Container) {
+                    $item = Get-Item -LiteralPath ([string]$requested.path) -Force
+                    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                        $status = 'unsafe-link'
+                        $diagnostics += [pscustomobject]@{
+                            code = 'DIRECTORY_UNSAFE_LINK'
+                            subject = [string]$requested.name
+                            message = '目录是链接或 reparse point，拒绝把部署写入未知位置'
+                        }
+                    }
+                }
+            } catch {
+                $status = 'unknown'
+            }
         }
         [pscustomobject]@{
             name = [string]$requested.name
@@ -338,6 +373,73 @@ try {
             modifyAllowed = $(if ($access.Count -eq 0) { $null } else { $access[0].modifyAllowed })
         }
     })
+
+    # release 身份与证书可读性：缺失时给出可修复诊断，不修改任何系统状态。
+    $release = [ordered]@{ releaseId = $(if ($config.releaseId) { [string]$config.releaseId } else { $null }); manifestPath = $null; sourceCommit = $null; status = 'not-configured' }
+    if ($config.releaseId -and $config.deploymentRoot) {
+        $manifestPath = Join-Path (Join-Path (Join-Path ([string]$config.deploymentRoot) 'releases') ([string]$config.releaseId)) 'release-manifest.json'
+        $release.manifestPath = $manifestPath
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            $release.status = 'missing'
+            $diagnostics += [pscustomobject]@{
+                code = 'RELEASE_MANIFEST_MISSING'
+                subject = 'release'
+                message = '部署根下没有与 releaseId 对应的 release-manifest.json；先把发布包放入 releases\<releaseId>'
+            }
+        } else {
+            try {
+                $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $release.sourceCommit = [string]$manifest.sourceCommit
+                if ([string]$manifest.releaseId -ne [string]$config.releaseId) {
+                    $release.status = 'mismatch'
+                    $diagnostics += [pscustomobject]@{
+                        code = 'RELEASE_ID_MISMATCH'
+                        subject = 'release'
+                        message = '配置 releaseId 与包内 manifest 不一致'
+                    }
+                } else {
+                    $release.status = 'verified'
+                }
+            } catch {
+                $release.status = 'invalid'
+                $diagnostics += [pscustomobject]@{
+                    code = 'RELEASE_MANIFEST_INVALID'
+                    subject = 'release'
+                    message = 'release manifest 无法解析；拒绝继续安装'
+                }
+            }
+        }
+    }
+    $certificate = [ordered]@{ status = 'not-configured'; certReadable = $null; keyReadable = $null }
+    if ($config.certificate -and $config.certificate.certPath) {
+        $certificate.status = 'verified'
+        foreach ($pair in @(@('cert', [string]$config.certificate.certPath), @('key', [string]$config.certificate.keyPath))) {
+            $label = [string]$pair[0]
+            $materialPath = [string]$pair[1]
+            if (-not $materialPath -or -not (Test-Path -LiteralPath $materialPath -PathType Leaf)) {
+                $certificate.status = 'missing'
+                $diagnostics += [pscustomobject]@{
+                    code = 'CERTIFICATE_MISSING'
+                    subject = $label
+                    message = '证书或私钥路径不存在；不会生成自签证书或改变信任'
+                }
+                continue
+            }
+            try {
+                $stream = [System.IO.File]::Open($materialPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                $stream.Dispose()
+                if ($label -eq 'cert') { $certificate.certReadable = $true } else { $certificate.keyReadable = $true }
+            } catch {
+                $certificate.status = 'unreadable'
+                if ($label -eq 'cert') { $certificate.certReadable = $false } else { $certificate.keyReadable = $false }
+                $diagnostics += [pscustomobject]@{
+                    code = 'CERTIFICATE_UNREADABLE'
+                    subject = $label
+                    message = '当前账号无法读取证书或私钥；服务账号 ACL 需在安装时显式验证'
+                }
+            }
+        }
+    }
 
     $report = [ordered]@{
         schemaVersion = 1
@@ -358,6 +460,8 @@ try {
         }
         ports = $ports
         directories = $directories
+        release = $release
+        certificate = $certificate
         diagnostics = @($diagnostics)
     }
     $reportPath = Write-PreflightReport -Directory $OutputDirectory -Report $report

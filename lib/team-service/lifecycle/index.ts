@@ -507,6 +507,69 @@ function uniqueBlockers(blockers: CleanupBlocker[]): CleanupBlocker[] {
   ])).values()];
 }
 
+function resourceBusinessBlockers(db: Database.Database, scopes: TeamResourceScope[]): CleanupBlocker[] {
+  const purgeScopes = new Set(scopes.map(scopeKey));
+  const ids = (type: string) => new Set(scopes.filter((scope) => scope.resourceType === type).map((scope) => scope.resourceId));
+  const blockers: CleanupBlocker[] = [];
+
+  const referenceAssets = ids('video_reference_asset');
+  if (referenceAssets.size > 0 && tableExists(db, 'video_job_references')) {
+    const rows = db.prepare('SELECT DISTINCT assetId, jobId FROM video_job_references').all() as
+      Array<{ assetId: string; jobId: string }>;
+    for (const row of rows) {
+      if (referenceAssets.has(row.assetId) && !purgeScopes.has(`video_job:${row.jobId}`)) {
+        blockers.push({
+          kind: 'cross_module', resourceType: 'video_job', resourceId: row.jobId,
+          detail: '视频任务仍引用该参考素材。',
+        });
+      }
+    }
+  }
+
+  const templates = ids('video_prompt_template');
+  if (templates.size > 0 && tableExists(db, 'video_jobs')) {
+    const rows = db.prepare('SELECT id, templateId FROM video_jobs WHERE templateId IS NOT NULL').all() as
+      Array<{ id: string; templateId: string }>;
+    for (const row of rows) {
+      if (templates.has(row.templateId) && !purgeScopes.has(`video_job:${row.id}`)) {
+        blockers.push({
+          kind: 'cross_module', resourceType: 'video_job', resourceId: row.id,
+          detail: '视频任务仍引用该提示词模板。',
+        });
+      }
+    }
+  }
+
+  const shotSets = ids('shot_set');
+  if (shotSets.size > 0) {
+    if (tableExists(db, 'video_jobs')) {
+      const rows = db.prepare('SELECT id, shotSetId FROM video_jobs WHERE shotSetId IS NOT NULL').all() as
+        Array<{ id: string; shotSetId: string }>;
+      for (const row of rows) {
+        if (shotSets.has(row.shotSetId) && !purgeScopes.has(`video_job:${row.id}`)) {
+          blockers.push({
+            kind: 'cross_module', resourceType: 'video_job', resourceId: row.id,
+            detail: '视频任务仍挂在该分镜组上，需先处理任务依赖。',
+          });
+        }
+      }
+    }
+    if (tableExists(db, 'final_edit_groups')) {
+      const rows = db.prepare('SELECT id, shotSetId FROM final_edit_groups').all() as
+        Array<{ id: string; shotSetId: string }>;
+      for (const row of rows) {
+        if (shotSets.has(row.shotSetId) && !purgeScopes.has(`final_group:${row.id}`)) {
+          blockers.push({
+            kind: 'cross_module', resourceType: 'final_group', resourceId: row.id,
+            detail: '成片组仍挂在该分镜组上，需先处理成片依赖。',
+          });
+        }
+      }
+    }
+  }
+  return blockers;
+}
+
 function planBlockers(db: Database.Database, scopes: TeamResourceScope[], fileIds: string[]): CleanupBlocker[] {
   return uniqueBlockers([
     ...activeBarriers(db),
@@ -514,17 +577,35 @@ function planBlockers(db: Database.Database, scopes: TeamResourceScope[], fileId
     ...executionBlockers(db, scopes),
     ...imageBusinessBlockers(db, scopes),
     ...batchHistoryBlockers(db, scopes),
+    ...resourceBusinessBlockers(db, scopes),
   ]);
 }
 
 const BUSINESS_TABLE: Record<string, string> = {
   project: 'projects', canvas: 'creative_canvases', image: 'image_assets', batch: 'batch_productions',
   batch_script: 'batch_scripts', project_script: 'project_scripts',
+  scene_reference: 'scene_references', video_reference_asset: 'video_reference_assets',
+  final_external_asset: 'final_edit_external_assets', title_preset: 'final_edit_title_presets',
+  video_prompt_template: 'video_prompt_templates',
 };
 
 function deleteBusinessResource(db: Database.Database, ref: ResourceRef): void {
   if (ref.resourceType === 'project') {
     if (deleteProjectRecords(db, ref.resourceId) === null) throw new Error('项目实体已不存在。');
+    return;
+  }
+  if (ref.resourceType === 'final_variant') {
+    db.prepare('DELETE FROM final_edit_usage WHERE variantId = ?').run(ref.resourceId);
+    db.prepare("DELETE FROM final_edit_revisions WHERE scopeKind = 'variant' AND scopeId = ?").run(ref.resourceId);
+    const result = db.prepare('DELETE FROM final_edit_variants WHERE id = ?').run(ref.resourceId);
+    if (result.changes !== 1) throw new Error('资源实体已不存在或仍受数据库引用保护。');
+    return;
+  }
+  if (ref.resourceType === 'shot_set') {
+    // 子实体必须先于分镜组删除；子实体或历史版本仍被引用时由外键拒绝并延期重试。
+    db.prepare('DELETE FROM shots WHERE shotSetId = ?').run(ref.resourceId);
+    const result = db.prepare('DELETE FROM shot_sets WHERE id = ?').run(ref.resourceId);
+    if (result.changes !== 1) throw new Error('资源实体已不存在或仍受数据库引用保护。');
     return;
   }
   const table = BUSINESS_TABLE[ref.resourceType];

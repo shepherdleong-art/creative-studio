@@ -80,7 +80,10 @@ export default function TeamUsersPanel() {
       const response = await action();
       if (!response.ok) throw new Error(await teamError(response, '账号操作失败'));
       const body = await response.json() as { credential?: string; user?: { employeeId: string } };
-      if (body.credential && body.user) setIssued({ employeeId: body.user.employeeId, credential: body.credential });
+      if (body.credential && body.user) {
+        setIssued({ employeeId: body.user.employeeId, credential: body.credential });
+        setNotice('新账号默认月度额度 0、个人并发 0，尚未开放生成；请在下方“费用与并发”里显式授权。停生成不影响登录、编辑、收取和下载。');
+      }
       success?.();
       await refresh();
     } catch (cause) {

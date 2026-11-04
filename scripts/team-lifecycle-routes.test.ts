@@ -104,6 +104,15 @@ const projectsRoute = await import('../app/api/projects/route.ts');
 const recycleRoute = await import('../app/api/team/recycle-bin/route.ts');
 const restoreRoute = await import('../app/api/team/recycle-bin/restore/route.ts');
 const cleanupRoute = await import('../app/api/team/cleanup/route.ts');
+const sceneReferenceRoute = await import('../app/api/scene-references/[id]/route.ts');
+const sceneReferenceListRoute = await import('../app/api/projects/[id]/scene-references/route.ts');
+const shotSetRoute = await import('../app/api/shot-sets/[id]/route.ts');
+const shotSetListRoute = await import('../app/api/projects/[id]/shot-sets/route.ts');
+const titlePresetRoute = await import('../app/api/final-edit/title-presets/[id]/route.ts');
+const titlePresetListRoute = await import('../app/api/final-edit/title-presets/route.ts');
+const videoTemplateRoute = await import('../app/api/video-prompt-templates/[id]/route.ts');
+const videoTemplateListRoute = await import('../app/api/video-prompt-templates/route.ts');
+const finalVariantRoute = await import('../app/api/final-edit-variants/[id]/route.ts');
 
 function request(method: string, url: string, cookie: string, body?: unknown) {
   return new Request(url, {
@@ -178,6 +187,100 @@ try {
   assert.equal(db.prepare("SELECT deletedAt FROM team_resource_scopes WHERE resourceType = 'project' AND resourceId = 'project-a'").pluck().get(), null,
     '删除详情脚本不得误删项目');
   assert.ok(adminCookie);
+
+  // 场景参考图、分镜组：server DELETE 进入回收站，正常列表隐藏。
+  db.prepare("INSERT INTO scene_references (id, projectId, imageAssetId, name) VALUES ('scene-a', 'project-a', 'image-a', '场景')").run();
+  registerInheritedScope(db, {
+    resourceType: 'scene_reference', resourceId: 'scene-a', parent: { resourceType: 'project', resourceId: 'project-a' },
+  });
+  const sceneDeleted = await sceneReferenceRoute.DELETE(
+    request('DELETE', 'https://studio.example.test/api/scene-references/scene-a', employeeCookie),
+    { params: Promise.resolve({ id: 'scene-a' }) },
+  );
+  assert.equal(sceneDeleted.status, 200, await sceneDeleted.clone().text());
+  assert.equal((await sceneDeleted.json()).mode, 'soft');
+  assert.ok(db.prepare("SELECT 1 FROM scene_references WHERE id = 'scene-a'").get(), '场景参考图不得硬删');
+  const scenes = await sceneReferenceListRoute.GET(
+    request('GET', 'https://studio.example.test/api/projects/project-a/scene-references', employeeCookie),
+    { params: Promise.resolve({ id: 'project-a' }) },
+  );
+  assert.deepEqual(await scenes.json(), [], '已软删场景参考图不得出现在列表');
+
+  db.prepare("INSERT INTO shot_sets (id, projectId, name) VALUES ('set-a', 'project-a', '分镜组')").run();
+  registerInheritedScope(db, {
+    resourceType: 'shot_set', resourceId: 'set-a', parent: { resourceType: 'project', resourceId: 'project-a' },
+  });
+  const setDeleted = await shotSetRoute.DELETE(
+    request('DELETE', 'https://studio.example.test/api/shot-sets/set-a', employeeCookie),
+    { params: Promise.resolve({ id: 'set-a' }) },
+  );
+  assert.equal(setDeleted.status, 200, await setDeleted.clone().text());
+  assert.ok(db.prepare("SELECT 1 FROM shot_sets WHERE id = 'set-a'").get(), '分镜组不得硬删');
+  const sets = await shotSetListRoute.GET(
+    request('GET', 'https://studio.example.test/api/projects/project-a/shot-sets', employeeCookie),
+    { params: Promise.resolve({ id: 'project-a' }) },
+  );
+  assert.deepEqual(await sets.json(), [], '已软删分镜组不得出现在列表');
+
+  // 个人模板与标题预设：软删后列表隐藏，管理员可永久清理且重复调用幂等。
+  db.prepare("INSERT INTO video_prompt_templates (id, name, prompt) VALUES ('template-a', '自建模板', '镜头推进')").run();
+  registerRootScope(db, { resourceType: 'video_prompt_template', resourceId: 'template-a', ownerUserId: employee.userId });
+  const templateDeleted = await videoTemplateRoute.DELETE(
+    request('DELETE', 'https://studio.example.test/api/video-prompt-templates/template-a', employeeCookie),
+    { params: Promise.resolve({ id: 'template-a' }) },
+  );
+  assert.equal(templateDeleted.status, 200, await templateDeleted.clone().text());
+  const templates = await videoTemplateListRoute.GET(
+    request('GET', 'https://studio.example.test/api/video-prompt-templates', employeeCookie),
+  );
+  assert.equal((await templates.json() as Array<{ id: string }>).some((row) => row.id === 'template-a'), false);
+
+  db.prepare("INSERT INTO final_edit_title_presets (id, name, stylesByPresetJson, createdAt, updatedAt) VALUES ('preset-a', '预设', '{}', '2026-11-04', '2026-11-04')").run();
+  registerRootScope(db, { resourceType: 'title_preset', resourceId: 'preset-a', ownerUserId: employee.userId });
+  const presetDeleted = await titlePresetRoute.DELETE(
+    request('DELETE', 'https://studio.example.test/api/final-edit/title-presets/preset-a', employeeCookie),
+    { params: Promise.resolve({ id: 'preset-a' }) },
+  );
+  assert.equal(presetDeleted.status, 200, await presetDeleted.clone().text());
+  const presets = await titlePresetListRoute.GET(
+    request('GET', 'https://studio.example.test/api/final-edit/title-presets', employeeCookie),
+  );
+  assert.equal((await presets.json() as Array<{ id: string }>).some((row) => row.id === 'preset-a'), false);
+
+  // 成片草稿：软删后仍保留数据，供恢复。
+  db.prepare("INSERT INTO shot_sets (id, projectId, name) VALUES ('set-b', 'project-a', '成片分镜组')").run();
+  registerInheritedScope(db, {
+    resourceType: 'shot_set', resourceId: 'set-b', parent: { resourceType: 'project', resourceId: 'project-a' },
+  });
+  db.prepare(`INSERT INTO final_edit_groups (
+      id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, narrationConfigJson,
+      coverTitleJson, textStylesJson, createdAt, updatedAt
+    ) VALUES ('group-a', 'project-a', '', 'set-b', '{}', 'hash', '{}', '{}', '{}', '2026-11-04', '2026-11-04')`).run();
+  registerInheritedScope(db, {
+    resourceType: 'final_group', resourceId: 'group-a', parent: { resourceType: 'shot_set', resourceId: 'set-b' },
+  });
+  db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, createdAt, updatedAt)
+    VALUES ('variant-a', 'group-a', 1, 'vertical', '{}', '{}', '{}', '2026-11-04', '2026-11-04')`).run();
+  registerInheritedScope(db, {
+    resourceType: 'final_variant', resourceId: 'variant-a', parent: { resourceType: 'final_group', resourceId: 'group-a' },
+  });
+  const variantDeleted = await finalVariantRoute.DELETE(
+    request('DELETE', 'https://studio.example.test/api/final-edit-variants/variant-a', employeeCookie),
+    { params: Promise.resolve({ id: 'variant-a' }) },
+  );
+  assert.equal(variantDeleted.status, 200, await variantDeleted.clone().text());
+  assert.ok(db.prepare("SELECT 1 FROM final_edit_variants WHERE id = 'variant-a'").get(), '成片草稿不得硬删');
+
+  const templateCleanup = await cleanupRoute.POST(request('POST', 'https://studio.example.test/api/team/cleanup', adminCookie, {
+    resourceType: 'video_prompt_template', resourceId: 'template-a',
+  }));
+  assert.equal(templateCleanup.status, 200, await templateCleanup.clone().text());
+  assert.equal(db.prepare("SELECT 1 FROM video_prompt_templates WHERE id = 'template-a'").get(), undefined);
+  const templateCleanupAgain = await cleanupRoute.POST(request('POST', 'https://studio.example.test/api/team/cleanup', adminCookie, {
+    resourceType: 'video_prompt_template', resourceId: 'template-a',
+  }));
+  assert.equal(templateCleanupAgain.status, 200, await templateCleanupAgain.clone().text());
+  assert.equal((await templateCleanupAgain.json() as { job: { status: string } }).job.status, 'completed', '重复清理必须幂等');
 
   console.log('PASS: server DELETE is soft, lists hide recycle items, owner restores and employees cannot permanently clean');
 } finally {

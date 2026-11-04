@@ -31,6 +31,7 @@ interface UserRow {
   passwordHash: string;
   mustChangePassword: number;
   credentialExpiresAt: string | null;
+  credentialConsumedAt: string | null;
   sessionVersion: number;
   createdAt: string;
   updatedAt: string;
@@ -203,7 +204,6 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
       recordFailure(employeeId);
       throw new TeamAuthError('invalid_credentials', '工号或凭据无效。', 401);
     }
-    failures.delete(employeeId);
     const token = randomBytes(32).toString('base64url');
     const session: SessionRow = {
       id: randomUUID(),
@@ -211,12 +211,54 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
       sessionVersion: user.sessionVersion,
       absoluteExpiresAt: new Date(timestamp.getTime() + SESSION_DURATION_MS).toISOString(),
     };
-    db.prepare(`
-      INSERT INTO team_sessions (id, tokenHash, userId, sessionVersion, createdAt, absoluteExpiresAt, revokedAt)
-      VALUES (?, ?, ?, ?, ?, ?, NULL)
-    `).run(session.id, tokenHash(token), session.userId, session.sessionVersion,
-      timestamp.toISOString(), session.absoluteExpiresAt);
-    return { principal: principalFrom(user, session), token };
+    // 一次性凭据的消费与会话创建必须在同一事务内完成：
+    // - KDF 期间账号被重置/停用时，passwordHash 或 status 已变化，登录失败；
+    // - 条件更新保证并发请求最多一个成功；
+    // - 建会话失败会回滚消费，不留下“已消费但无会话”的孤立状态。
+    const establish = db.transaction((): UserRow => {
+      const current = userById(user.id);
+      if (!current || current.status !== 'active'
+        || current.passwordHash !== user.passwordHash || current.employeeId !== employeeId) {
+        throw new TeamAuthError('invalid_credentials', '工号或凭据无效。', 401);
+      }
+      if (current.mustChangePassword === 1) {
+        if (current.credentialConsumedAt) {
+          throw new TeamAuthError(
+            'credential_consumed',
+            '该一次性凭据已被使用。如果没完成改密，请联系管理员重新发放一次性凭据。',
+            401,
+          );
+        }
+        if (!current.credentialExpiresAt
+          || new Date(current.credentialExpiresAt).getTime() <= timestamp.getTime()) {
+          throw new TeamAuthError('invalid_credentials', '工号或凭据无效。', 401);
+        }
+        const consumed = db.prepare(`
+          UPDATE team_users SET credentialConsumedAt = ?
+          WHERE id = ? AND mustChangePassword = 1 AND credentialConsumedAt IS NULL
+            AND passwordHash = ? AND credentialExpiresAt = ? AND status = 'active'
+        `).run(timestamp.toISOString(), current.id, current.passwordHash, current.credentialExpiresAt);
+        if (consumed.changes !== 1) {
+          throw new TeamAuthError('invalid_credentials', '工号或凭据无效。', 401);
+        }
+      }
+      session.sessionVersion = current.sessionVersion;
+      db.prepare(`
+        INSERT INTO team_sessions (id, tokenHash, userId, sessionVersion, createdAt, absoluteExpiresAt, revokedAt)
+        VALUES (?, ?, ?, ?, ?, ?, NULL)
+      `).run(session.id, tokenHash(token), session.userId, session.sessionVersion,
+        timestamp.toISOString(), session.absoluteExpiresAt);
+      return current;
+    });
+    let current: UserRow;
+    try {
+      current = establish.immediate();
+    } catch (error) {
+      if (error instanceof TeamAuthError) recordFailure(employeeId);
+      throw error;
+    }
+    failures.delete(employeeId);
+    return { principal: principalFrom(current, session), token };
   }
 
   function resolveSession(token: string): AuthPrincipal | null {
@@ -244,20 +286,23 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
     const nextHash = await hashPassword(newPassword, kdf, passwordParams);
     const timestamp = now().toISOString();
     const change = db.transaction(() => {
-      currentUserForSession(principal);
-      const nextVersion = user.sessionVersion + 1;
+      const current = currentUserForSession(principal);
+      if (current.passwordHash !== user.passwordHash) {
+        throw new TeamAuthError('session_invalid', '登录状态已失效，请重新登录。', 401);
+      }
+      const nextVersion = current.sessionVersion + 1;
       db.prepare(`
         UPDATE team_users
         SET passwordHash = ?, mustChangePassword = 0, credentialExpiresAt = NULL,
-            sessionVersion = ?, updatedAt = ?
-        WHERE id = ?
-      `).run(nextHash, nextVersion, timestamp, user.id);
+            credentialConsumedAt = NULL, sessionVersion = ?, updatedAt = ?
+        WHERE id = ? AND passwordHash = ?
+      `).run(nextHash, nextVersion, timestamp, current.id, user.passwordHash);
       db.prepare(`
         UPDATE team_sessions SET revokedAt = ? WHERE userId = ? AND id <> ? AND revokedAt IS NULL
-      `).run(timestamp, user.id, principal.sessionId);
+      `).run(timestamp, current.id, principal.sessionId);
       const kept = db.prepare(`
         UPDATE team_sessions SET sessionVersion = ? WHERE id = ? AND userId = ? AND revokedAt IS NULL
-      `).run(nextVersion, principal.sessionId, user.id);
+      `).run(nextVersion, principal.sessionId, current.id);
       if (kept.changes !== 1) throw new TeamAuthError('session_invalid', '登录状态已失效，请重新登录。', 401);
       return nextVersion;
     });
@@ -357,7 +402,7 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
       const timestamp = now().toISOString();
       db.prepare(`
         UPDATE team_users SET passwordHash = ?, mustChangePassword = 1, credentialExpiresAt = ?,
-          sessionVersion = sessionVersion + 1, updatedAt = ? WHERE id = ?
+          credentialConsumedAt = NULL, sessionVersion = sessionVersion + 1, updatedAt = ? WHERE id = ?
       `).run(issued.passwordHash, issued.expiresAt, timestamp, userId);
       db.prepare('UPDATE team_sessions SET revokedAt = ? WHERE userId = ? AND revokedAt IS NULL')
         .run(timestamp, userId);
@@ -420,7 +465,8 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
       const timestamp = now().toISOString();
       db.prepare(`
         UPDATE team_users SET role = 'admin', status = 'active', passwordHash = ?,
-          mustChangePassword = 1, credentialExpiresAt = ?, sessionVersion = sessionVersion + 1,
+          mustChangePassword = 1, credentialExpiresAt = ?, credentialConsumedAt = NULL,
+          sessionVersion = sessionVersion + 1,
           updatedAt = ? WHERE id = ?
       `).run(issued.passwordHash, issued.expiresAt, timestamp, current.id);
       db.prepare('UPDATE team_sessions SET revokedAt = ? WHERE userId = ? AND revokedAt IS NULL')

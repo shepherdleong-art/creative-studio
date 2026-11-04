@@ -5,6 +5,8 @@ import { describeVideoProvider } from '@/lib/video-model-capabilities';
 import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
 import { parseVideoDuration, videoDurationError } from '@/lib/video-duration';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { providerPoolStatus } from '@/lib/team-service/pools';
+import { readRuntimeConfig } from '@/lib/team-service/config';
 
 
 async function __teamRoutePUT(
@@ -61,7 +63,12 @@ async function __teamRoutePUT(
     values.push(id);
     db.prepare(`UPDATE video_providers SET ${updates.join(', ')} WHERE id = ?`).run(...values);
     const updated = db.prepare(`SELECT * FROM video_providers WHERE id = ?`).get(id) as Record<string, unknown>;
-    return NextResponse.json(describeVideoProvider(updated as unknown as VideoProviderEnvConfig));
+    return NextResponse.json({
+      ...describeVideoProvider(updated as unknown as VideoProviderEnvConfig),
+      ...(readRuntimeConfig().mode === 'server'
+        ? { pool: providerPoolStatus(db, 'video', id) }
+        : {}),
+    });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

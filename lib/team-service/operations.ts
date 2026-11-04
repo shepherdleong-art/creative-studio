@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { readRuntimeConfig } from './config.ts';
+import { readTeamModuleSwitches } from './module-switches.ts';
 import type { TeamRuntimeState } from './runtime/state.ts';
 
 interface OperationDependencies {
@@ -45,6 +46,19 @@ export async function handleTeamOperation(
   if (!authorized(request, config.deploymentId)) return json({ error: 'unauthorized' }, 401);
   const state = dependencies.getState();
   if (action === 'status') {
+    const modules: Record<string, unknown> = { ...readTeamModuleSwitches() };
+    try {
+      const { getBatchSchedulerController } = await import('../batch-production/runner.ts');
+      modules.batchWorkerRunning = Boolean(getBatchSchedulerController()?.running);
+    } catch {
+      modules.batchWorkerRunning = null;
+    }
+    try {
+      const { getScriptStudioSchedulerController } = await import('../script-studio/scheduler.ts');
+      modules.scriptStudioWorkerRunning = Boolean(getScriptStudioSchedulerController());
+    } catch {
+      modules.scriptStudioWorkerRunning = null;
+    }
     return json({
       deploymentId: config.deploymentId,
       instanceId: state.instanceId,
@@ -53,6 +67,7 @@ export async function handleTeamOperation(
       maintenance: state.maintenance,
       phase: state.phase,
       fence: state.fence,
+      modules,
     });
   }
   if (!dependencies.shutdown || !dependencies.scheduleExit) return json({ error: 'shutdown_unavailable' }, 503);

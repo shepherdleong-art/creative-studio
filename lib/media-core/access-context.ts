@@ -28,6 +28,8 @@ export interface TaskPrincipalRegistration {
   module: string;
   taskId: string;
   actorUserId?: string;
+  /** 受理时的角色快照；缺省表示由当前请求主体登记，不能事后从当前角色反推。 */
+  roleAtAcceptance?: AccessActorRole;
   scope: ResourceRef;
   creationSnapshot?: unknown;
 }

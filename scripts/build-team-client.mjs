@@ -26,6 +26,9 @@ if (serverOrigin.protocol !== 'https:' || serverOrigin.origin !== process.env.CR
   || updateBase.protocol !== 'https:' || updateBase.origin !== serverOrigin.origin) {
   throw new Error('轻客户端服务与更新包必须使用明确的同源 HTTPS 地址');
 }
+if (!/^\/client-updates\/?$/.test(updateBase.pathname) || updateBase.search || updateBase.hash) {
+  throw new Error('更新包地址必须落在服务端受控的 /client-updates/ 静态目录');
+}
 const privateKey = process.env.CREATIVE_STUDIO_CLIENT_SIGNING_KEY;
 const publicKey = process.env.CREATIVE_STUDIO_CLIENT_PUBLIC_KEY;
 if (!privateKey || !publicKey || !publicKey.includes('BEGIN PUBLIC KEY')) {

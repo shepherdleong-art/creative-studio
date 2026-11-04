@@ -397,9 +397,14 @@ export function listShotSetExternalAssets(
   const scope = getShotSetMaterialScope(deps.db, projectId, shotSetId);
   const access = requireAccessContext();
   if (access.kind === 'team') access.assertAccess('shot_set', shotSetId, 'read');
+  const lifecycle = access.kind === 'local' ? '' : `AND EXISTS (
+    SELECT 1 FROM team_resource_scopes scope
+    WHERE scope.resourceType = 'final_external_asset' AND scope.resourceId = final_edit_external_assets.id
+      AND scope.deletedAt IS NULL
+  )`;
   const rows = deps.db.prepare(`
     SELECT * FROM final_edit_external_assets
-    WHERE projectId=? AND shotSetId=? ORDER BY createdAt, id
+    WHERE projectId=? AND shotSetId=? ${lifecycle} ORDER BY createdAt, id
   `).all(scope.projectId, scope.shotSetId) as ExternalAssetRow[];
   return rows.map((row) => assetView(deps.storageRoot, row));
 }

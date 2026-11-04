@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "deploymentId": "replace-with-unique-deployment-id",
+  "releaseId": "replace-with-release-manifest-release-id",
+  "deploymentRoot": "C:\\CreativeStudio\\deployment",
+  "dataRoot": "C:\\CreativeStudio\\data",
+  "backupRoot": "C:\\CreativeStudio\\backup",
+  "oldRoots": [],
+  "origin": "https://replace-with-trusted-origin.example.internal",
+  "appPort": 3300,
+  "liteLLMPort": 4300,
+  "servicePrefix": "CreativeStudio",
+  "serviceAccount": "CONTOSO\\svc_studio$",
+  "certificate": {
+    "certPath": "C:\\CreativeStudio\\certs\\server.crt",
+    "keyPath": "C:\\CreativeStudio\\certs\\server.key"
+  },
+  "allowedNetworks": ["192.0.2.0/24"],
+  "enableLiteLLM": false,
+  "maxRequestBytes": 67108864,
+  "stopTimeoutSeconds": 240,
+  "modules": {
+    "batch": true,
+    "scriptStudio": true,
+    "canvas": true,
+    "scriptStudioScheduler": true
+  }
+}

@@ -12,11 +12,16 @@ async function __teamRouteGET(
   try {
     const { id } = await params;
     const db = getDb();
+    const lifecycle = requireAccessContext().kind === 'local' ? '' : `AND EXISTS (
+      SELECT 1 FROM team_resource_scopes scope
+      WHERE scope.resourceType = 'scene_reference' AND scope.resourceId = sr.id
+        AND scope.deletedAt IS NULL
+    )`;
     const refs = db.prepare(`
       SELECT sr.*, ia.filename as imageFilename
       FROM scene_references sr
       LEFT JOIN image_assets ia ON sr.imageAssetId = ia.id
-      WHERE sr.projectId = ?
+      WHERE sr.projectId = ? ${lifecycle}
       ORDER BY sr.createdAt DESC
     `).all(id);
     return NextResponse.json(refs);

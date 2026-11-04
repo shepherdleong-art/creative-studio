@@ -149,6 +149,47 @@ function normalizeNetwork(value) {
   return `${address}/${Number(prefix)}`;
 }
 
+const DEFAULT_MODULES = Object.freeze({
+  batch: true,
+  scriptStudio: true,
+  canvas: true,
+  scriptStudioScheduler: true,
+});
+
+function normalizeModules(value) {
+  if (value !== undefined && (value === null || typeof value !== 'object' || Array.isArray(value))) {
+    fail('modules 必须是显式模块开关对象');
+  }
+  const input = value ?? {};
+  const result = {};
+  for (const [key, fallback] of Object.entries(DEFAULT_MODULES)) {
+    if (input[key] === undefined) {
+      result[key] = fallback;
+    } else if (typeof input[key] === 'boolean') {
+      result[key] = input[key];
+    } else {
+      fail(`modules.${key} 必须是布尔值`);
+    }
+  }
+  for (const key of Object.keys(input)) {
+    if (!Object.hasOwn(DEFAULT_MODULES, key)) fail(`未知模块开关：modules.${key}`);
+  }
+  return result;
+}
+
+function normalizeClientUpdateUrl(value, origin) {
+  if (value === undefined || value === '') return undefined;
+  if (typeof value !== 'string') fail('clientUpdateManifestUrl 必须是同源路径或绝对 URL');
+  const candidate = value.startsWith('/') ? new URL(value, origin) : new URL(value);
+  if (candidate.origin !== origin.origin || candidate.username || candidate.password || candidate.search || candidate.hash) {
+    fail('clientUpdateManifestUrl 必须与受信 origin 同源，且不含凭据、查询或片段');
+  }
+  if (!candidate.pathname.startsWith('/client-updates/')) {
+    fail('clientUpdateManifestUrl 只能指向受控的 /client-updates/ 静态目录');
+  }
+  return candidate.toString();
+}
+
 export function resolveDeploymentConfig(input) {
   if (!input || input.schemaVersion !== 1) fail('部署配置 schemaVersion 必须为 1');
   const config = {
@@ -188,8 +229,26 @@ export function resolveDeploymentConfig(input) {
     keyPath: absolute(input.certificate.keyPath, 'certificate.keyPath'),
   };
   config.allowedNetworks = Array.isArray(input.allowedNetworks) ? [...new Set(input.allowedNetworks.map(normalizeNetwork))] : fail('allowedNetworks 必须是数组');
+  config.modules = normalizeModules(input.modules);
   assertSeparateRoots(config);
   config.releaseRoot = path.join(config.deploymentRoot, 'releases', config.releaseId);
+  config.clientUpdateManifestUrl = normalizeClientUpdateUrl(input.clientUpdateManifestUrl, origin);
+  // releaseId 必须与包内 manifest 一致，避免目录名、配置和实际发布身份三者漂移。
+  const manifestPath = path.join(config.releaseRoot, 'release-manifest.json');
+  if (fs.existsSync(manifestPath)) {
+    let manifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
+    } catch {
+      fail('release manifest 无法解析，拒绝生成部署配置');
+    }
+    if (manifest.releaseId !== config.releaseId) {
+      fail(`releaseId 与 manifest 不一致：配置 ${config.releaseId}，manifest ${String(manifest.releaseId)}`);
+    }
+    if (typeof manifest.sourceCommit === 'string' && manifest.sourceCommit.trim()) {
+      config.sourceCommit = manifest.sourceCommit;
+    }
+  }
   config.serviceRoot = path.join(config.deploymentRoot, 'service');
   config.configRoot = path.join(config.deploymentRoot, 'config');
   config.controlCredentialFile = path.join(config.configRoot, 'control-credential.json');
@@ -233,7 +292,15 @@ function generate(config) {
     CREATIVE_STUDIO_TRUSTED_ORIGIN: config.origin,
     CREATIVE_STUDIO_SERVER_ROOT: appRoot,
     CREATIVE_STUDIO_APPLICATION_ROOT: appRoot,
+    CREATIVE_STUDIO_SERVER_RELEASE_ID: config.releaseId,
     CREATIVE_STUDIO_CONTROL_CREDENTIAL_FILE: config.controlCredentialFile,
+    CREATIVE_STUDIO_MODULE_BATCH: config.modules.batch ? '1' : '0',
+    CREATIVE_STUDIO_MODULE_SCRIPT_STUDIO: config.modules.scriptStudio ? '1' : '0',
+    CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER: config.modules.scriptStudioScheduler ? '1' : '0',
+    CREATIVE_STUDIO_CANVAS_ENABLE: config.modules.canvas ? '1' : '0',
+    ...(config.clientUpdateManifestUrl
+      ? { CREATIVE_STUDIO_CLIENT_UPDATE_MANIFEST_URL: config.clientUpdateManifestUrl }
+      : {}),
   };
   const envText = `${Object.entries(appEnv).map(([key, value]) => `${key}=${value}`).join('\r\n')}\r\n`;
   const services = {
@@ -263,7 +330,8 @@ function generate(config) {
       env: { PYTHONUTF8: '1', LITELLM_LOCAL_MODEL_COST_MAP: 'True', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' },
     });
   }
-  const caddyConfig = `# Generated for ${config.deploymentId}; operations remain loopback-only.\n{\n\tadmin 127.0.0.1:2019\n\tauto_https disable_redirects\n}\n${config.origin} {\n\ttls ${caddyToken(config.certificate.certPath)} ${caddyToken(config.certificate.keyPath)}\n\trequest_body {\n\t\tmax_size ${config.maxRequestBytes}\n\t}\n\thandle /api/team/operations/* {\n\t\trespond 404\n\t}\n\thandle /api/shutdown {\n\t\trespond 404\n\t}\n\thandle /api/desktop/* {\n\t\trespond 404\n\t}\n\thandle {\n\t\treverse_proxy 127.0.0.1:${config.appPort} {\n\t\t\tflush_interval -1\n\t\t}\n\t}\n}\n`;
+  const clientUpdatesRoot = path.join(config.deploymentRoot, 'client-updates');
+  const caddyConfig = `# Generated for ${config.deploymentId}; operations remain loopback-only.\n{\n\tadmin 127.0.0.1:2019\n\tauto_https disable_redirects\n}\n${config.origin} {\n\ttls ${caddyToken(config.certificate.certPath)} ${caddyToken(config.certificate.keyPath)}\n\trequest_body {\n\t\tmax_size ${config.maxRequestBytes}\n\t}\n\thandle /api/team/operations/* {\n\t\trespond 404\n\t}\n\thandle /api/shutdown {\n\t\trespond 404\n\t}\n\thandle /api/desktop/* {\n\t\trespond 404\n\t}\n\thandle /client-updates {\n\t\trespond 404\n\t}\n\thandle_path /client-updates/* {\n\t\troot * ${caddyToken(clientUpdatesRoot)}\n\t\tfile_server {\n\t\t\thide .*\n\t\t}\n\t\theader Cache-Control "no-store"\n\t}\n\thandle {\n\t\treverse_proxy 127.0.0.1:${config.appPort} {\n\t\t\tflush_interval -1\n\t\t}\n\t}\n}\n`;
   const resolved = {
     schemaVersion: 1,
     dryRun: true,
@@ -281,6 +349,10 @@ function generate(config) {
     serviceAccount: `${config.serviceAccount.domain}\\${config.serviceAccount.user}`,
     controlCredentialFile: config.controlCredentialFile,
     releaseRoot: config.releaseRoot,
+    sourceCommit: config.sourceCommit ?? null,
+    modules: config.modules,
+    clientUpdateManifestUrl: config.clientUpdateManifestUrl ?? null,
+    clientUpdatesRoot,
     serviceRoot: config.serviceRoot,
     stopTimeoutSeconds: config.stopTimeoutSeconds,
     winswExecutable: winswExe,
@@ -355,6 +427,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (!configPath || (!output && !resolveOnly)) fail('用法：generate-config.mjs --config <deployment.json> [--output <deploymentRoot/service> | --resolve-only]');
     const input = JSON.parse(fs.readFileSync(path.resolve(configPath), 'utf8').replace(/^\uFEFF/, ''));
     const resolved = resolveOnly ? resolveDeploymentConfig(input) : generateDeploymentConfiguration(input, output);
+    if (resolveOnly) {
+      // resolve-only 供 PowerShell 直接调用；账号必须是与服务 XML 一致的 domain\user 字符串。
+      resolved.serviceAccount = `${resolved.serviceAccount.domain}\\${resolved.serviceAccount.user}`;
+    }
     process.stdout.write(resolveOnly
       ? `${JSON.stringify(resolved)}\n`
       : `${JSON.stringify({ ok: true, dryRun: true, applyPerformed: false, deploymentId: resolved.deploymentId, releaseId: resolved.releaseId, output: path.resolve(output), services: resolved.services.map((service) => service.id), ports: { https: resolved.entryPort, app: resolved.appPort, litellm: resolved.liteLLMPort } })}\n`);

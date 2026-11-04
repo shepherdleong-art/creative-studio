@@ -16,6 +16,7 @@ if (mode === 'local') {
 }
 
 const { getBatchSchedulerController } = await import('../lib/batch-production/runner.ts');
+const { getScriptStudioSchedulerController } = await import('../lib/script-studio/scheduler.ts');
 const { getTeamRuntimeState } = await import('../lib/team-service/runtime/state.ts');
 const { getDb } = await import('../lib/db.ts');
 const { gracefulShutdown } = await import('../lib/shutdown.ts');
@@ -29,6 +30,7 @@ const tableExists = (name: string) => {
 const report = {
   mode,
   batchSchedulerStarted: getBatchSchedulerController() !== null,
+  scriptStudioSchedulerStarted: Boolean(getScriptStudioSchedulerController()),
   ready: state.ready,
   code: state.code ?? null,
   teamSchema: tableExists('team_schema_migrations'),

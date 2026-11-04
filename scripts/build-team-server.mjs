@@ -126,13 +126,15 @@ try {
   fs.mkdirSync(path.join(staging, 'tools', 'winsw'), { recursive: true });
   copy(caddyExe, path.join(staging, 'tools', 'caddy', 'caddy.exe'));
   copy(winswExe, path.join(staging, 'tools', 'winsw', 'WinSW.exe'));
+  copy(path.join(repoRoot, 'scripts', 'team-server', 'package', 'START-HERE.md'), path.join(staging, 'START-HERE.md'));
+  copy(path.join(repoRoot, 'scripts', 'team-server', 'package', 'deployment.example.json'), path.join(staging, 'deployment.example.json'));
   copy(path.join(repoRoot, 'scripts', 'start-litellm-proxy.py'), path.join(staging, 'app', 'runtime', 'start-litellm-proxy.py'));
   // Next 可能把部分 lib 追踪进 standalone；运维 CLI 需要完整且一致的源码副本。
   fs.rmSync(path.join(staging, 'app', 'lib'), { recursive: true, force: true });
   copy(path.join(repoRoot, 'lib'), path.join(staging, 'app', 'lib'));
   for (const name of [
     'init-admin.mjs', 'recover-admin.mjs', 'verify-provider-budgets.mjs', 'maintenance.mjs',
-    'distribution.mjs', 'generate-config.mjs', 'service-control.mjs',
+    'distribution.mjs', 'generate-config.mjs', 'service-control.mjs', 'configure-pools.mjs', 'publish-client-update.mjs',
   ]) {
     copy(path.join(repoRoot, 'scripts', 'team-server', name), path.join(staging, 'app', 'scripts', 'team-server', name));
   }
@@ -142,9 +144,10 @@ try {
   copy(lockPath, path.join(staging, 'service', 'distribution-lock.json'));
   copy(path.join(repoRoot, 'scripts', 'packaging', 'forbidden-paths.json'), path.join(staging, 'service', 'packaging', 'forbidden-paths.json'));
   for (const name of [
-    'distribution.mjs', 'generate-config.mjs', 'service-control.mjs', 'probe-team-server.mjs',
+    'distribution.mjs', 'generate-config.mjs', 'service-control.mjs', 'probe-team-server.mjs', 'configure-pools.mjs',
+    'publish-client-update.mjs',
     'common.ps1', 'generate-config.ps1', 'install.ps1', 'status.ps1', 'stop.ps1', 'preflight.ps1',
-    'backup.ps1', 'restore.ps1', 'release.ps1',
+    'backup.ps1', 'restore.ps1', 'release.ps1', 'schedule-backup.ps1', 'admin-cli.ps1',
   ]) copy(path.join(repoRoot, 'scripts', 'team-server', name), path.join(staging, 'service', name));
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));

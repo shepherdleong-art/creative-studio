@@ -351,6 +351,18 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
       CREATE INDEX idx_team_error_attempt ON team_error_records(attemptId);
     `,
   },
+  {
+    version: 10,
+    sql: `
+      ALTER TABLE team_users ADD COLUMN credentialConsumedAt TEXT;
+    `,
+  },
+  {
+    version: 11,
+    sql: `
+      ALTER TABLE team_task_principals ADD COLUMN roleAtAcceptance TEXT;
+    `,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;
