@@ -332,7 +332,49 @@ function generate(config) {
     });
   }
   const clientUpdatesRoot = config.clientUpdatesRoot;
-  const caddyConfig = `# Generated for ${config.deploymentId}; operations remain loopback-only.\n{\n\tadmin 127.0.0.1:2019\n\tauto_https disable_redirects\n}\n${config.origin} {\n\ttls ${caddyToken(config.certificate.certPath)} ${caddyToken(config.certificate.keyPath)}\n\trequest_body {\n\t\tmax_size ${config.maxRequestBytes}\n\t}\n\thandle /api/team/operations/* {\n\t\trespond 404\n\t}\n\thandle /api/shutdown {\n\t\trespond 404\n\t}\n\thandle /api/desktop/* {\n\t\trespond 404\n\t}\n\thandle /client-updates {\n\t\trespond 404\n\t}\n\thandle_path /client-updates/* {\n\t\troot * ${caddyToken(clientUpdatesRoot)}\n\t\tfile_server {\n\t\t\thide .*\n\t\t}\n\t\theader Cache-Control "no-store"\n\t}\n\thandle {\n\t\treverse_proxy 127.0.0.1:${config.appPort} {\n\t\t\tflush_interval -1\n\t\t}\n\t}\n}\n`;
+  const networkMatcher = config.allowedNetworks.length
+    ? `\t@outside not remote_ip ${config.allowedNetworks.join(' ')}\n`
+    : '';
+  const networkResponse = config.allowedNetworks.length ? 'respond @outside 403' : 'respond 403';
+  const caddyConfig = `# Generated for ${config.deploymentId}; operations remain loopback-only.
+{
+	admin 127.0.0.1:2019
+	auto_https disable_redirects
+}
+${config.origin} {
+	tls ${caddyToken(config.certificate.certPath)} ${caddyToken(config.certificate.keyPath)}
+${networkMatcher}	route {
+		${networkResponse}
+		request_body {
+			max_size ${config.maxRequestBytes}
+		}
+		handle /api/team/operations/* {
+			respond 404
+		}
+		handle /api/shutdown {
+			respond 404
+		}
+		handle /api/desktop/* {
+			respond 404
+		}
+		handle /client-updates {
+			respond 404
+		}
+		handle_path /client-updates/* {
+			root * ${caddyToken(clientUpdatesRoot)}
+			file_server {
+				hide .*
+			}
+			header Cache-Control "no-store"
+		}
+		handle {
+			reverse_proxy 127.0.0.1:${config.appPort} {
+				flush_interval -1
+			}
+		}
+	}
+}
+`;
   const resolved = {
     schemaVersion: 1,
     dryRun: true,

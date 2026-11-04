@@ -102,6 +102,9 @@ test('生成三个 SCM 服务、固定回环入口、环境文件、日志轮换
   const proxy = fs.readFileSync(path.join(output, 'Caddyfile'), 'utf8');
   assert.match(proxy, /https:\/\/studio\.example\.test/);
   assert.match(proxy, /127\.0\.0\.1:3300/);
+  assert.match(proxy, /@outside not remote_ip 192\.0\.2\.0\/24/);
+  assert.ok(proxy.indexOf('respond @outside 403') < proxy.indexOf('handle /api/team/operations/'), '网段检查必须先于所有业务和更新路径');
+  assert.doesNotMatch(proxy, /client_ip|X-Forwarded-For/, '直接入口按 socket 来源限制，不信任客户端伪造的代理头');
   assert.match(proxy, /tls C:\\controlled\\certs\\studio\.crt C:\\controlled\\certs\\studio\.key/);
   for (const route of ['/api/team/operations/*', '/api/shutdown', '/api/desktop/*', '/client-updates/*']) {
     assert.ok(proxy.includes(route), `Caddy 必须覆盖 ${route}`);
@@ -130,6 +133,12 @@ test('生成三个 SCM 服务、固定回环入口、环境文件、日志轮换
   assert.deepEqual(network.loopbackOnlyPorts, [3300, 4300]);
   assert.equal(network.applyPerformed, false);
   assert.equal(readJson(path.join(output, 'resolved-services.json')).dryRun, true);
+});
+
+test('未配置获准网段时 HTTPS 路由默认拒绝', (t) => {
+  const {output,result}=generate(t,{allowedNetworks:[]});
+  assert.equal(result.status,0,result.stderr);
+  assert.match(fs.readFileSync(path.join(output,'Caddyfile'),'utf8'), /route \{\s+respond 403/);
 });
 
 test('可选 LiteLLM 不生成第三个服务且仍保留其回环端口隔离计划', (t) => {
