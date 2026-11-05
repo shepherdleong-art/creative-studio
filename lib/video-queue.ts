@@ -18,6 +18,7 @@ import { videoMultiShotFromStorage } from './video-multi-shot.ts';
 import type { SubmitReferenceVideoRequest, SubmitVideoRequest, SubmitVideoResult } from './video-providers/types.ts';
 import { persistVideoJobUsageSnapshot, recordVideoJobUsage } from './usage-async-jobs.ts';
 import { validateVideoReferenceRequest, videoReferenceCapability, type VideoReferenceKind } from './video-reference-contract.ts';
+import { prepareVideoJobImage, videoImageBudget } from './video-reference-preprocess.ts';
 import { assertCompanyTailFrameTransport } from './company-gateway-tail-frame.ts';
 import {
   deliverVideoReferenceMedia,
@@ -74,6 +75,11 @@ export const DEFAULT_VIDEO_TIMEOUT_MS = Number.isFinite(envTimeout) && envTimeou
 export const DEFAULT_VIDEO_MAX_ATTEMPTS = 2;
 
 type VideoFrameMime = 'image/png' | 'image/jpeg' | 'image/webp';
+
+/** 把预处理输出的 MIME 收窄成适配器合同的图片 MIME（未知时按 png 保守兜底）。 */
+function toVideoFrameMime(mimeType: string): VideoFrameMime {
+  return mimeType === 'image/jpeg' || mimeType === 'image/webp' ? mimeType : 'image/png';
+}
 
 /**
  * 按实际发给供应商的文件路径推 mime——image_assets.mimeType 记录的是预处理
@@ -344,6 +350,7 @@ async function prepareReferenceSubmitRequest(
   providerType: string,
   baseUrl: string,
   signal: AbortSignal,
+  prepared: ReferenceDeliveryMap = new Map(),
 ): Promise<SubmitReferenceVideoRequest> {
   if (!job.aspectRatio || !job.resolution) throw new Error('全能参考任务缺少冻结的输出比例或清晰度');
   const assets = db.prepare(`
@@ -358,12 +365,14 @@ async function prepareReferenceSubmitRequest(
 
   const capability = videoReferenceCapability(providerType, job.model);
   if (!capability.supported) throw new Error(`模型 ${job.model} 不支持全能参考`);
+
   for (const asset of assets) {
+    const delivery = prepared.get(asset.id);
     const media = {
       kind: asset.kind,
-      absolutePath: asset.path,
-      mimeType: asset.mimeType,
-      byteSize: asset.byteSize,
+      absolutePath: delivery?.absolutePath ?? asset.path,
+      mimeType: delivery?.mimeType ?? asset.mimeType,
+      byteSize: delivery?.byteSize ?? asset.byteSize,
       durationSec: asset.durationSec,
     };
     const rule = capability[asset.kind];
@@ -379,7 +388,10 @@ async function prepareReferenceSubmitRequest(
   const problems = validateVideoReferenceRequest({
     providerType,
     model: job.model,
-    references: assets,
+    references: assets.map((asset) => {
+      const delivery = prepared.get(asset.id);
+      return delivery ? { ...asset, delivery: { mimeType: delivery.mimeType, byteSize: delivery.byteSize } } : asset;
+    }),
     durationSec: job.durationSec,
     aspectRatio: job.aspectRatio,
     resolution: job.resolution,
@@ -390,20 +402,23 @@ async function prepareReferenceSubmitRequest(
   if (providerType === 'openai-video') await assertCompanyTailFrameTransport(baseUrl);
   const references = [];
   for (const asset of assets) {
+    const delivery = prepared.get(asset.id);
     const url = await deliverVideoReferenceMedia({
       kind: asset.kind,
-      absolutePath: asset.path,
-      mimeType: asset.mimeType,
-      byteSize: asset.byteSize,
+      absolutePath: delivery?.absolutePath ?? asset.path,
+      mimeType: delivery?.mimeType ?? asset.mimeType,
+      byteSize: delivery?.byteSize ?? asset.byteSize,
       durationSec: asset.durationSec,
       requireCos: providerType === 'openai-video',
       isFrameImage: false,
       imageFallback: 'data-url',
+      // 严格预算路径已按上游预算验过派生副本：COS 只传输，不再二次压缩。
+      preserveBytes: delivery !== undefined,
     }, signal);
     references.push({
       kind: asset.kind,
       url,
-      mimeType: asset.mimeType,
+      mimeType: delivery?.mimeType ?? asset.mimeType,
       durationSec: asset.durationSec,
     });
   }
@@ -416,6 +431,64 @@ async function prepareReferenceSubmitRequest(
     resolution: job.resolution,
     ...(job.model === SEEDANCE_25 ? { omniReferenceTaskType: 'reference' as const } : {}),
   };
+}
+
+export interface PreparedDeliveryImage {
+  absolutePath: string;
+  mimeType: string;
+  byteSize: number;
+  derived: boolean;
+}
+
+export type ReferenceDeliveryMap = Map<string, PreparedDeliveryImage>;
+
+/**
+ * 全能参考的预交付：按统一预算物化/复用派生副本，并按**实测交付事实**校验。
+ *
+ * 与创建阶段共用 `prepareVideoJobImage` 的同一份合同，不存在两套阈值。
+ * 这里必须在任何付费提交之前完成：预算不可达直接抛错，绝不回退原图。
+ * 非本轮模型（`videoImageBudget` 返回 null）原样跳过，行为不变。
+ */
+async function prepareReferenceDeliveryImages(
+  db: ReturnType<typeof getDb>,
+  job: VideoJobRecord,
+  providerType: string,
+  signal: AbortSignal,
+): Promise<ReferenceDeliveryMap> {
+  const prepared: ReferenceDeliveryMap = new Map();
+  const assets = db.prepare(`
+    SELECT asset.id, asset.kind, asset.path, asset.mimeType
+    FROM video_job_references link
+    JOIN video_reference_assets asset ON asset.id = link.assetId
+    WHERE link.jobId = ?
+    ORDER BY link.orderIndex ASC
+  `).all(job.id) as Array<{ id: string; kind: VideoReferenceKind; path: string; mimeType: string }>;
+  const targets = assets.length > 0
+    ? assets.filter((asset) => asset.kind === 'image').map((asset) => ({ id: asset.id, path: asset.path }))
+    : (() => {
+      // 隐式参考：直接读取任务冻结的 sourceImageId 原图。
+      return [{ id: job.sourceImageId, path: '' }];
+    })();
+  for (const target of targets) {
+    let absolutePath = target.path;
+    if (!absolutePath) {
+      const source = db.prepare('SELECT originalPath, processedPath, path FROM image_assets WHERE id = ?')
+        .get(job.sourceImageId) as { originalPath: string | null; processedPath: string | null; path: string } | undefined;
+      if (!source) throw new Error('Source image not found');
+      absolutePath = source.originalPath || source.processedPath || source.path;
+    }
+    const result = await prepareVideoJobImage({
+      providerType, model: job.model, role: 'reference', absolutePath, signal,
+    });
+    if (!result) continue;
+    prepared.set(target.id, {
+      absolutePath: result.prepared.absolutePath,
+      mimeType: result.prepared.mimeType,
+      byteSize: result.prepared.byteSize,
+      derived: result.prepared.derived,
+    });
+  }
+  return prepared;
 }
 
 async function runVideoJob(
@@ -716,10 +789,14 @@ async function runAuthorizedVideoJob(
       let submitResult: SubmitVideoResult;
       if (job.generationMode === 'reference-to-video') {
         if (!adapter.submitReference) throw new Error(`供应商 ${provider.type} 不支持全能参考`);
+        // 严格预算路径：先按统一合同物化/复用派生副本，未达标在付费 POST 前停。
+        const preparedReferences = await prepareReferenceDeliveryImages(db, job, provider.type, reqAbort.signal);
         persistUsage();
         submitResult = await executeVideoSubmission(async () => {
           // 准入后才生成/刷新短期 COS URL；等待名额期间不冻结即将过期的交付地址。
-          const referenceRequest = await prepareReferenceSubmitRequest(db, job, provider.type, runtime.baseUrl, reqAbort.signal);
+          const referenceRequest = await prepareReferenceSubmitRequest(
+            db, job, provider.type, runtime.baseUrl, reqAbort.signal, preparedReferences,
+          );
           return adapter.submitReference!(referenceRequest, apiKey, runtime.baseUrl, reqAbort.signal);
         });
       } else {
@@ -732,19 +809,48 @@ async function runAuthorizedVideoJob(
         });
         if (!tailValidation.ok) throw new Error(tailValidation.error);
         const tailImage = tailValidation.asset;
-        // 尾帧同首帧：优先未压缩原图，保住末帧收束的画质。
-        const tailPath = tailImage
+        // 首帧/尾帧各自按角色预算（尾帧比首帧严）；未达标在付费 POST 前停。
+        const firstFrame = await prepareVideoJobImage({
+          providerType: provider.type, model: job.model, role: 'first-frame',
+          absolutePath: imagePath, signal: reqAbort.signal,
+        });
+        const rawTailPath = tailImage
           ? (tailImage.originalPath || tailImage.processedPath || tailImage.path)
           : undefined;
-        const tailMimeType = tailPath ? videoFrameMimeFromPath(tailPath, tailImage?.mimeType) : undefined;
+        const lastFrame = rawTailPath
+          ? await prepareVideoJobImage({
+            providerType: provider.type, model: job.model, role: 'last-frame',
+            absolutePath: rawTailPath, signal: reqAbort.signal,
+          })
+          : null;
+        // 严格预算模型（本票覆盖的两个模型）必须交付已验副本；其余模型保持既有路径。
+        const strictBudget = videoImageBudget(provider.type, job.model, 'first-frame') !== null;
+        const submittedImagePath = firstFrame ? firstFrame.prepared.absolutePath : imagePath;
+        const submittedMimeType = firstFrame
+          ? toVideoFrameMime(firstFrame.prepared.mimeType)
+          : mimeType;
+        const tailPath = lastFrame ? lastFrame.prepared.absolutePath : rawTailPath;
+        const tailMimeType = lastFrame
+          ? toVideoFrameMime(lastFrame.prepared.mimeType)
+          : (rawTailPath ? videoFrameMimeFromPath(rawTailPath, tailImage?.mimeType) : undefined);
+        if (strictBudget && !firstFrame) throw new Error('视频首帧预处理未返回结果，任务未提交');
         const submitRequest: SubmitVideoRequest = {
           model: job.model,
           prompt: job.prompt,
-          sourceImagePath: imagePath,
-          sourceMimeType: mimeType,
+          sourceImagePath: submittedImagePath,
+          sourceMimeType: submittedMimeType,
           tailImagePath: tailPath,
           tailMimeType,
           durationSec: job.durationSec,
+          ...(firstFrame || lastFrame
+            ? {
+              preparedFrames: {
+                ...(firstFrame ? { firstFrame: { absolutePath: firstFrame.prepared.absolutePath, mimeType: firstFrame.prepared.mimeType } } : {}),
+                ...(lastFrame ? { lastFrame: { absolutePath: lastFrame.prepared.absolutePath, mimeType: lastFrame.prepared.mimeType } } : {}),
+              },
+              ...(firstFrame ? { preservedDelivery: true } : {}),
+            }
+            : {}),
         };
         const multiShot = videoMultiShotFromStorage(job.multiShot);
         if (multiShot !== undefined) submitRequest.multiShot = multiShot;

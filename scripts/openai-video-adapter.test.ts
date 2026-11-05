@@ -364,6 +364,78 @@ try {
   _resetCosMediaCacheForTest();
   process.env.CREATIVE_STUDIO_PUBLIC_BASE_URL = 'http://192.168.1.10:3000';
 
+  // ── 严格预算路径：preparedFrames 的字节必须原样上传，不被 COS 二次压缩 ──
+  // 公司门禁先于任何上传/提交，因此这里要先注入 ready 的公司运行时与 COS 配置。
+  _setCompanyTailFrameRuntimeInspectorForTest(async () => readyCompanyRuntime);
+  process.env.CREATIVE_STUDIO_COS_SECRET_ID = 'test-cos-id';
+  process.env.CREATIVE_STUDIO_COS_SECRET_KEY = 'test-cos-key';
+  process.env.CREATIVE_STUDIO_COS_DOMAIN = 'cos.example.com';
+  // 假 COS 捕获 PUT body，用 sha256 证明「COS 收到的」就是「预处理验过的」。
+  const preparedFirstPath = path.join(storageDir, 'prepared-first.jpg');
+  const preparedLastPath = path.join(storageDir, 'prepared-last.jpg');
+  // 3200x2400 噪声 JPEG q95 ≈ 0.55 MiB，远低于 COS 视频压缩阈值（4.8MB），
+  // 所以这里只验证「不二次压缩」的显式开关路径，不依赖阈值巧合。
+  await sharp(await sharp({ create: { width: 3200, height: 2400, channels: 3, background: '#22aa66' } })
+    .jpeg({ quality: 95 }).toBuffer()).rotate().toFile(preparedFirstPath);
+  await sharp({ create: { width: 3200, height: 2400, channels: 3, background: '#aa2266' } })
+    .jpeg({ quality: 95 }).toFile(preparedLastPath);
+  const preparedFirstBytes = fs.readFileSync(preparedFirstPath);
+  const preparedLastBytes = fs.readFileSync(preparedLastPath);
+  const putBodies: Buffer[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl = String(input);
+    if (init?.method === 'PUT') {
+      putBodies.push(Buffer.from(init.body as Buffer));
+      return new Response(null, { status: 200 });
+    }
+    if (new Headers(init?.headers).get('range') === 'bytes=0-0') return new Response(null, { status: 404 });
+    return mockFetch(input, init);
+  }) as typeof fetch;
+  _resetCosMediaCacheForTest();
+  await openaiVideoAdapter.submit({
+    model: 'minimax-h3',
+    prompt: 'prepared frames',
+    sourceImagePath: imagePath,
+    sourceMimeType: 'image/png',
+    tailImagePath,
+    tailMimeType: 'image/png',
+    durationSec: 4,
+    preparedFrames: {
+      firstFrame: { absolutePath: preparedFirstPath, mimeType: 'image/jpeg' },
+      lastFrame: { absolutePath: preparedLastPath, mimeType: 'image/jpeg' },
+    },
+  }, 'gateway-key', 'http://127.0.0.1:4000');
+  assert.equal(putBodies.length, 2, '首帧与尾帧都必须实际上传');
+  assert.ok(putBodies.some((body) => body.equals(preparedFirstBytes)), '首帧必须原样上传预处理副本（不得二次压缩）');
+  assert.ok(putBodies.some((body) => body.equals(preparedLastBytes)), '尾帧必须原样上传预处理副本（不得二次压缩）');
+  const preparedFrames = capturedBody?.FileInfos as Array<{ Usage: string; Url: string }>;
+  assert.deepEqual(preparedFrames.map((frame) => frame.Usage), ['FirstFrame', 'LastFrame'], '角色顺序不变');
+  assert.notEqual(preparedFrames[0].Url, preparedFrames[1].Url);
+
+  // 单帧路径：preservedDelivery 表示首帧已是验过的副本，同样禁止二次压缩。
+  putBodies.length = 0;
+  _resetCosMediaCacheForTest();
+  await openaiVideoAdapter.submit({
+    model: 'minimax-h3',
+    prompt: 'preserved single frame',
+    sourceImagePath: preparedFirstPath,
+    sourceMimeType: 'image/jpeg',
+    durationSec: 4,
+    preservedDelivery: true,
+  }, 'gateway-key', 'http://127.0.0.1:4000');
+  assert.equal(putBodies.length, 1);
+  assert.ok(putBodies[0].equals(preparedFirstBytes), 'preservedDelivery 下首帧必须原样上传');
+  assert.deepEqual((capturedBody?.FileInfos as Array<{ Usage: string }>).map((frame) => frame.Usage), ['FirstFrame']);
+  globalThis.fetch = mockFetch;
+  _resetCosMediaCacheForTest();
+  delete process.env.CREATIVE_STUDIO_COS_SECRET_ID;
+  delete process.env.CREATIVE_STUDIO_COS_SECRET_KEY;
+  delete process.env.CREATIVE_STUDIO_COS_DOMAIN;
+  process.env.CREATIVE_STUDIO_COS_SECRET_ID = 'test-cos-id';
+  process.env.CREATIVE_STUDIO_COS_SECRET_KEY = 'test-cos-key';
+  process.env.CREATIVE_STUDIO_COS_DOMAIN = 'cos.example.com';
+  _resetCosMediaCacheForTest();
+
   // ── 公司尾帧（D9 硬门禁：回环 LiteLLM + COS 预签名 URL，禁止公网回退）──
   // 能力合同：只有有文档或实测依据的精确别名开放，其余一律 contract_unverified
   assert.deepEqual(openaiVideoAdapter.tailFrameCapability?.('kling-3.0'), {

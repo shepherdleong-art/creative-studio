@@ -26,6 +26,16 @@ export interface SubmitVideoRequest extends SeedanceOutputOptions {
   durationSec: number;
   /** Company Tencent/Qiniu Kling 3.0 intelligent storyboard; omitted for other jobs. */
   multiShot?: boolean;
+  /**
+   * 严格预算路径（`prepareVideoJobImage`）产出的首帧/尾帧交付物。
+   * 传入时适配器只做传输，不再按 COS 默认阈值二次压缩。
+   */
+  preparedFrames?: {
+    firstFrame?: { absolutePath: string; mimeType: string };
+    lastFrame?: { absolutePath: string; mimeType: string };
+  };
+  /** 单帧路径：`sourceImagePath` 已是验过的交付副本，禁止二次压缩。 */
+  preservedDelivery?: boolean;
 }
 
 /**

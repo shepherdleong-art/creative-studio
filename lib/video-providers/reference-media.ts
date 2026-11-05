@@ -97,6 +97,11 @@ export interface VideoReferenceDeliveryRequest extends VideoReferenceMediaInput 
   requireCos: boolean;
   isFrameImage: boolean;
   imageFallback?: 'public-url' | 'data-url';
+  /**
+   * 交付字节必须与本地文件完全一致：调用方（严格预算路径）已经按模型预算
+   * 物化并验证过派生副本，COS 只做传输，不再叠加一次有损压缩。
+   */
+  preserveBytes?: boolean;
 }
 
 export class VideoReferenceMediaError extends Error {
@@ -121,7 +126,11 @@ export async function deliverVideoReferenceMedia(
       const signed = await tryUploadToCosAndSign(
         request.absolutePath,
         request.mimeType,
-        request.kind === 'image' && request.isFrameImage ? getCosVideoCompressOptions() : undefined,
+        // 严格预算路径的派生副本已经按预算验证过；preserveBytes 表示 COS 不再
+        // 二次压缩，保证「验过的字节」就是「发出去的字节」。
+        request.kind === 'image' && request.isFrameImage && !request.preserveBytes
+          ? getCosVideoCompressOptions()
+          : request.preserveBytes ? { compress: false } : undefined,
       );
       if (signed) return signed;
     } catch (error) {
