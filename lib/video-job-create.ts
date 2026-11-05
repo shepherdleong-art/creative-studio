@@ -9,6 +9,11 @@ import { parseVideoDuration, videoDurationError } from './video-duration.ts';
 import { normalizeVideoMultiShotForStorage } from './video-multi-shot.ts';
 import { countVideoJobsForShot, planVideoJobDisplayName } from './video-output-filenames.ts';
 import { validateVideoReferenceRequest, videoReferenceCapability, type VideoReferenceKind } from './video-reference-contract.ts';
+import {
+  prepareVideoJobImage,
+  VideoPreprocessError,
+  type VideoImageRole,
+} from './video-reference-preprocess.ts';
 import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
 import { requireAccessContext } from './media-core/access-context.ts';
@@ -198,6 +203,97 @@ export async function createVideoJobsForShot(input: {
   const preparationError = prepared.find((entry) => 'error' in entry);
   if (preparationError && 'error' in preparationError) return { ok: false, status: 400, error: preparationError.error! };
 
+  // ── 图片预处理（创建阶段）──────────────────────────────────────────────
+  // 规格 §7：创建阶段不能按「原图上游上限」直接拒绝，也不能为了绕过检查伪造
+  // byteSize。这里先按统一预算物化/复用派生副本，再把**实测的交付事实**交给
+  // 共享校验函数。原图字节与 image_assets 身份完全不变。
+  //
+  // 为什么在创建阶段就物化：预算可达性是创建契约的一部分（不可达必须在落任务
+  // 前拒绝），而且派生副本按 (源图内容, 预算) 内容寻址，执行阶段直接复用同一份
+  // 文件，不会二次编码；进程内去重避免并发重复压缩。
+  const deliveryByAssetId = new Map<string, { mimeType: string; byteSize: number }>();
+  const deliveryBySourceImageId = new Map<string, { mimeType: string; byteSize: number }>();
+  // 逐条预处理：错误信息必须指向真正失败的那一条运镜，不能统一报第 1 条。
+  const preprocessError = async (
+    index: number,
+    run: () => Promise<void>,
+  ): Promise<string | null> => {
+    try {
+      await run();
+      return null;
+    } catch (error) {
+      if (error instanceof VideoPreprocessError) return itemError(index, error.message);
+      throw error;
+    }
+  };
+  for (const [index, entry] of prepared.entries()) {
+    if ('error' in entry) continue;
+    const { item, provider } = entry;
+    if (item.generationMode === 'reference-to-video') {
+      const assetIds = item.referenceAssetIds;
+      const error = await preprocessError(index, async () => {
+        if (assetIds.length > 0) {
+          for (const assetId of new Set(assetIds)) {
+            const row = db.prepare(`SELECT id, path, mimeType FROM video_reference_assets WHERE id = ? AND projectId = ?`)
+              .get(assetId, shotSet.projectId) as { id: string; path: string; mimeType: string } | undefined;
+            if (!row) continue; // 归属错误留给下面的事务内校验报中文错误。
+            const preparedImage = await prepareVideoJobImage({
+              providerType: provider.type,
+              model: provider.model,
+              role: 'reference' satisfies VideoImageRole,
+              absolutePath: row.path,
+            });
+            if (preparedImage) {
+              deliveryByAssetId.set(row.id, {
+                mimeType: preparedImage.prepared.mimeType,
+                byteSize: preparedImage.prepared.byteSize,
+              });
+            }
+          }
+          return;
+        }
+        if (!sourceReference) return;
+        const preparedImage = await prepareVideoJobImage({
+          providerType: provider.type,
+          model: provider.model,
+          role: 'reference',
+          absolutePath: sourceReference.path,
+        });
+        if (preparedImage) {
+          deliveryBySourceImageId.set(sourceImageId, {
+            mimeType: preparedImage.prepared.mimeType,
+            byteSize: preparedImage.prepared.byteSize,
+          });
+        }
+      });
+      if (error) return { ok: false, status: 400, error };
+      continue;
+    }
+    // 首尾帧：首帧与尾帧预算不同（腾讯 FileInfos ≤10M / LastFrameUrl <5M）。
+    const frameAsset = db.prepare(`
+      SELECT originalPath, processedPath, path FROM image_assets WHERE id = ?
+    `).get(sourceImageId) as { originalPath: string | null; processedPath: string | null; path: string } | undefined;
+    const firstFramePath = frameAsset ? (frameAsset.originalPath || frameAsset.processedPath || frameAsset.path) : null;
+    if (!firstFramePath) return { ok: false, status: 400, error: itemError(index, '当前分镜图不存在或不属于当前项目') };
+    const tailAsset = item.tailImageId
+      ? db.prepare(`SELECT originalPath, processedPath, path FROM image_assets WHERE id = ?`)
+        .get(item.tailImageId) as { originalPath: string | null; processedPath: string | null; path: string } | undefined
+      : undefined;
+    const frameError = await preprocessError(index, async () => {
+      await prepareVideoJobImage({
+        providerType: provider.type, model: provider.model, role: 'first-frame', absolutePath: firstFramePath,
+      });
+      if (!tailAsset) return;
+      await prepareVideoJobImage({
+        providerType: provider.type,
+        model: provider.model,
+        role: 'last-frame',
+        absolutePath: tailAsset.originalPath || tailAsset.processedPath || tailAsset.path,
+      });
+    });
+    if (frameError) return { ok: false, status: 400, error: frameError };
+  }
+
   const videoJobIds: string[] = [];
   const createResult = db.transaction(() => {
     const referencesByItem: ReferenceAssetRow[][] = [];
@@ -228,10 +324,18 @@ export async function createVideoJobsForShot(input: {
         return asset;
       });
       const effectiveReferences = references.length ? references : [sourceReference!];
+      // 校验按**反而实际上游交付物**：有派生副本时用副本实测的 MIME/字节，
+      // 否则用原图；原图的 byteSize 保持真实值，绝不为绕过检查而改写或置空。
+      const validationReferences = effectiveReferences.map((reference) => {
+        const delivery = deliveryByAssetId.get(reference.id)
+          ?? (reference.id === sourceImageId ? deliveryBySourceImageId.get(sourceImageId) : undefined)
+          ?? null;
+        return { ...reference, ...(delivery ? { delivery } : {}) };
+      });
       const problems = validateVideoReferenceRequest({
         providerType: provider.type,
         model: provider.model,
-        references: effectiveReferences,
+        references: validationReferences,
         durationSec: item.durationSec,
         aspectRatio: aspectRatio ?? undefined,
         resolution: resolution ?? undefined,

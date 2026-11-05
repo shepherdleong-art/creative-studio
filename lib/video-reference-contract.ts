@@ -45,6 +45,13 @@ export interface VideoReferenceValidationInput {
   mimeType: string;
   byteSize: number | null;
   durationSec?: number | null;
+  /**
+   * 实际发往上游的交付事实。超上游预算的原图会先物化派生副本
+   * （见 `video-reference-preprocess.ts`），此时按派生副本的真实 MIME/字节校验；
+   * 缺省表示原图就是交付物。原图自身的 byteSize 与身份不受影响，
+   * 这里绝不为了绕过检查伪造数值。
+   */
+  delivery?: { mimeType: string; byteSize: number } | null;
 }
 
 export interface VideoReferenceValidationRequest {
@@ -165,13 +172,17 @@ export function validateVideoReferenceRequest(request: VideoReferenceValidationR
       problems.push(`参考${kind}最多 ${rule.maxCount} 份`);
     }
     for (const reference of references) {
-      if (!rule.mimeTypes.includes(reference.mimeType)) {
-        problems.push(`参考 ${reference.id} 的 MIME ${reference.mimeType} 不受支持`);
+      // 预算校验针对**实际上游交付物**：有派生副本时按副本的真实 MIME/字节，
+      // 否则按原图。原图的 byteSize 永远保持真实值，不因这里而改写或置空。
+      const deliveredMimeType = reference.delivery?.mimeType ?? reference.mimeType;
+      const deliveredByteSize = reference.delivery ? reference.delivery.byteSize : reference.byteSize;
+      if (!rule.mimeTypes.includes(deliveredMimeType)) {
+        problems.push(`参考 ${reference.id} 的 MIME ${deliveredMimeType} 不受支持`);
       }
-      if (reference.byteSize !== null) {
-        if (!Number.isFinite(reference.byteSize) || reference.byteSize < 0) {
+      if (deliveredByteSize !== null) {
+        if (!Number.isFinite(deliveredByteSize) || deliveredByteSize < 0) {
           problems.push(`参考 ${reference.id} 的文件大小无效`);
-        } else if (reference.byteSize > rule.maxBytes) {
+        } else if (deliveredByteSize > rule.maxBytes) {
           problems.push(`参考 ${reference.id} 超过 ${Math.round(rule.maxBytes / MIB)} MiB 上限`);
         }
       }

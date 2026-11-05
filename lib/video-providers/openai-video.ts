@@ -160,15 +160,17 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
         request.sourceImagePath,
         request.tailImagePath!,
         request.tailMimeType,
+        request.preparedFrames,
       );
     } else if (isCosMediaConfigured()) {
       try {
         // 视频首帧默认 >4.8MB 才压缩（质量 95）：腾讯首帧限 10M、尾帧限 5M，
         // 阈值以下原样上传，不动视频生成起点画质。
+        // 严格预算路径已按模型预算验过副本时，COS 只传输、不再二次压缩。
         imageRef = await tryUploadToCosAndSign(
           request.sourceImagePath,
           undefined,
-          getCosVideoCompressOptions(),
+          request.preservedDelivery ? { compress: false } : getCosVideoCompressOptions(),
         );
       } catch (error) {
         if (requiresCos) throw new Error('公司视频首帧上传 COS 失败，任务未提交');

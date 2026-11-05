@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 
+const MIB = 1024 * 1024;
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'video-reference-job-create-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = root;
 const { getDb, closeDb } = await import('../lib/db.ts');
@@ -173,6 +175,96 @@ try {
   assert.equal(oldRow.aspectRatio, null);
   assert.equal(oldRow.resolution, null);
   assert.deepEqual(links(oldRow.id), []);
+
+  // ══ 规格 §7：11 MiB 以上真实图片必须在创建阶段通过，且最终交付合规副本 ══
+  // 真实 sharp 编码的大图（3200x3000 模糊噪声 PNG ≈ 13 MiB），不是短字符串冒充。
+  async function writeLargePng(filePath: string): Promise<number> {
+    const width = 3200;
+    const height = 3000;
+    await sharp(crypto.randomBytes(width * height * 3), { raw: { width, height, channels: 3 } })
+      .blur(5)
+      .png({ compressionLevel: 6 })
+      .toFile(filePath);
+    return fs.statSync(filePath).size;
+  }
+  function sha256File(filePath: string): string {
+    return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  }
+
+  // H3 单图参考（无显式参考列表，走冻结的 sourceImageId）
+  const largeSourcePath = path.join(root, 'large-source.png');
+  const largeSourceBytes = await writeLargePng(largeSourcePath);
+  assert.ok(largeSourceBytes > 11 * MIB, `创建阶段测试素材必须 >11 MiB，实得 ${largeSourceBytes}`);
+  const largeSourceHash = sha256File(largeSourcePath);
+  db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, originalWidth, originalHeight, mimeType)
+    VALUES ('large', 'project', 'input', 'large.png', ?, 3200, 3000, 'image/png')`).run(largeSourcePath);
+  db.exec('DELETE FROM video_jobs');
+  db.prepare("UPDATE shots SET latestGeneratedImageId = 'large' WHERE id = 'shot'").run();
+  for (const [providerId, model] of [['h3', 'minimax-h3'], ['wan', 'wan-3.0']] as const) {
+    if (!db.prepare('SELECT 1 FROM video_providers WHERE id = ?').get(providerId)) {
+      db.prepare(`INSERT INTO video_providers
+        (id, name, type, defaultModel, baseUrlEnv, apiKeyEnv, modelEnv, baseUrl, apiKey, enabled)
+        VALUES (?, ?, 'openai-video', ?, '', '', '', 'http://127.0.0.1:4000', 'key', 1)`).run(providerId, providerId, model);
+    }
+    // H3 与 Wan 各一张 11 MiB+ 原图都必须能创建任务；Wan 需要显式比例。
+    const created = await create([item({ providerId, referenceAssetIds: [], durationSec: 5, ...(model === 'wan-3.0' ? { aspectRatio: '4:3' } : {}) })]);
+    assert.equal(created.ok, true, `${model} 11 MiB 以上原图必须能创建任务：${created.ok ? '' : created.error}`);
+    assert.equal(stored().at(-1)!.sourceImageId, 'large', '来源图身份必须保持');
+    db.exec('DELETE FROM video_jobs');
+  }
+  // 原图字节与身份不变
+  assert.equal(sha256File(largeSourcePath), largeSourceHash, '创建阶段不得修改原图字节');
+  assert.equal(fs.statSync(largeSourcePath).size, largeSourceBytes, '创建阶段不得重写原图');
+  // byteSize 不得伪造：数据库里的来源图记录不能出现被改小的值。
+  assert.deepEqual(
+    db.prepare("SELECT originalSizeBytes FROM image_assets WHERE id = 'large'").get(),
+    { originalSizeBytes: null },
+    '不得为绕过检查篡改来源图字节记录',
+  );
+
+  // 首尾帧：两张都超上游预算时分别处理；角色与顺序正确，原图哈希不变。
+  const largeTailPath = path.join(root, 'large-tail.png');
+  const largeTailBytes = await writeLargePng(largeTailPath);
+  assert.ok(largeTailBytes > 11 * MIB);
+  const largeTailHash = sha256File(largeTailPath);
+  db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, usage, mimeType)
+    VALUES ('large-tail', 'project', 'input', 'large-tail.png', ?, 'video_tail_frame', 'image/png')`).run(largeTailPath);
+  db.exec('DELETE FROM video_jobs');
+  for (const [providerId, model, extra] of [
+    ['h3', 'minimax-h3', {}],
+    ['wan', 'wan-3.0', { aspectRatio: '4:3' }],
+  ] as const) {
+    const created = await create([item({
+      providerId, generationMode: 'image-to-video', referenceAssetIds: [], tailImageId: 'large-tail',
+      durationSec: 4, ...extra,
+    })]);
+    assert.equal(created.ok, true, `${model} 首尾帧两张超预算图必须能创建任务：${created.ok ? '' : created.error}`);
+    const row = db.prepare('SELECT sourceImageId, tailImageId FROM video_jobs WHERE id = ?')
+      .get(stored()[0].id) as { sourceImageId: string; tailImageId: string };
+    assert.equal(row.sourceImageId, 'large', '首帧角色必须保持来源图');
+    assert.equal(row.tailImageId, 'large-tail', '尾帧角色必须保持尾帧图');
+    db.exec('DELETE FROM video_jobs');
+  }
+  assert.equal(sha256File(largeTailPath), largeTailHash, '尾帧原图字节不得被修改');
+  assert.equal(fs.statSync(largeTailPath).size, largeTailBytes, '尾帧原图不得被重写');
+
+  // 无法压到预算 / 超出本机保护：创建阶段必须拒绝，且不落任务。
+  db.exec('DELETE FROM video_jobs');
+  db.prepare("UPDATE shots SET latestGeneratedImageId = 'large' WHERE id = 'shot'").run();
+  process.env.CREATIVE_STUDIO_VIDEO_SOURCE_MAX_BYTES = '1024';
+  try {
+    const rejected = await create([item({ providerId: 'h3', referenceAssetIds: [], durationSec: 5 })]);
+    assert.equal(rejected.ok, false, '超出本机保护上限的源图必须拒绝创建');
+    if (!rejected.ok) {
+      assert.equal(rejected.status, 400);
+      assert.match(rejected.error, /本机可安全处理上限/);
+    }
+    assert.equal(stored().length, 0, '预处理失败不得落任务');
+  } finally {
+    delete process.env.CREATIVE_STUDIO_VIDEO_SOURCE_MAX_BYTES;
+  }
+  db.prepare("UPDATE shots SET latestGeneratedImageId = NULL WHERE id = 'shot'").run();
+  db.exec('DELETE FROM video_jobs');
 
   console.log('video reference job creation tests passed');
 } finally {

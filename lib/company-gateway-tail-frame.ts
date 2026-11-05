@@ -101,21 +101,40 @@ export async function assertCompanyTailFrameTransport(baseUrl: string): Promise<
 }
 
 /**
+ * 严格预算路径产出的首帧/尾帧交付物。传入 `uploadCompanyTailFrameImages`
+ * 时 COS 只做传输，不再二次压缩。
+ */
+export interface PreparedTailFrameDelivery {
+  absolutePath: string;
+  mimeType: string;
+}
+
+/**
  * 首帧 + 尾帧都上传 COS 并返回预签名 URL。公司尾帧禁止本机/公网 URL 兜底：
  * 任一图片上传失败直接抛错，调用方必须失败关闭、不得发出生成请求。
+ *
+ * `delivery` 由严格预算路径（`prepareVideoJobImage`）产出：传入时 COS 只传输
+ * 已经按模型预算验证过的副本，不再叠加二次压缩，保证「验过的字节」就是
+ * 「发出去的字节」。未传时保持既有默认压缩行为。
  */
 export async function uploadCompanyTailFrameImages(
   sourceImagePath: string,
   tailImagePath: string,
   tailMimeType?: string,
+  delivery?: { firstFrame?: PreparedTailFrameDelivery; lastFrame?: PreparedTailFrameDelivery },
 ): Promise<[string, string]> {
+  const firstOptions = delivery?.firstFrame ? { compress: false } : getCosVideoCompressOptions();
+  const tailOptions = delivery?.lastFrame ? { compress: false } : getCosVideoCompressOptions();
   let firstRef: string | null = null;
   try {
     // 首帧/尾帧默认 >4.8MB 才压缩（质量 95）：腾讯尾帧 LastFrameUrl 限 5M、
     // 首帧 FileInfos 限 10M。压缩只影响发给上游的 COS 中转副本；
     // 本地文件与最终成片仍以原始质量保存。
-    const videoOptions = getCosVideoCompressOptions();
-    firstRef = await tryUploadToCosAndSign(sourceImagePath, undefined, videoOptions);
+    firstRef = await tryUploadToCosAndSign(
+      delivery?.firstFrame?.absolutePath ?? sourceImagePath,
+      delivery?.firstFrame?.mimeType,
+      firstOptions,
+    );
   } catch (error) {
     throw new Error(`首帧图上传 COS 失败，公司尾帧任务未提交：${error instanceof Error ? error.message : error}`);
   }
@@ -125,8 +144,11 @@ export async function uploadCompanyTailFrameImages(
 
   let tailRef: string | null = null;
   try {
-    const videoOptions = getCosVideoCompressOptions();
-    tailRef = await tryUploadToCosAndSign(tailImagePath, tailMimeType, videoOptions);
+    tailRef = await tryUploadToCosAndSign(
+      delivery?.lastFrame?.absolutePath ?? tailImagePath,
+      delivery?.lastFrame?.mimeType ?? tailMimeType,
+      tailOptions,
+    );
   } catch (error) {
     throw new Error(`尾帧图上传 COS 失败，公司尾帧任务未提交：${error instanceof Error ? error.message : error}`);
   }
