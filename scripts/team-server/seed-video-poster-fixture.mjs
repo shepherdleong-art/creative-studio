@@ -56,19 +56,31 @@ async function writePosterImage() {
   return file;
 }
 
-function writeVideoFile() {
+function writeVideoFile(destinationDirectory) {
   if (!ffmpegPath) throw new Error('真实 FFmpeg 不可用');
-  const file = path.join(videosDir, `clip-${randomUUID()}.mp4`);
-  const generated = spawnSync(ffmpegPath, [
-    '-f', 'lavfi', '-i', 'testsrc2=duration=3:size=480x270:rate=24',
-    '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-    '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-y', file,
-  ], { encoding: 'utf8', timeout: 120_000, windowsHide: true });
-  if (generated.status !== 0) throw new Error(`生成测试视频失败：${generated.stderr?.slice(-2000)}`);
+  // ffmpeg 子进程在部分环境里写不进 %TEMP% 数据根（权限被拦），但能写仓库内目录。
+  // 所以先在仓库内的 scratch 目录编码，再把字节复制进隔离数据根 —— 数据根仍是
+  // 唯一权威位置，/api/videos 读到的就是这份字节。
+  const scratch = path.join(repoRoot, 'outputs', 'video-poster-fixture-scratch');
+  fs.mkdirSync(scratch, { recursive: true });
+  const encoded = path.join(scratch, `clip-${randomUUID()}.mp4`);
+  const file = path.join(destinationDirectory, `clip-${randomUUID()}.mp4`);
+  try {
+    const generated = spawnSync(ffmpegPath, [
+      '-f', 'lavfi', '-i', 'testsrc2=duration=3:size=480x270:rate=24',
+      '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+      '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-y', encoded,
+    ], { encoding: 'utf8', timeout: 120_000, windowsHide: true });
+    if (generated.status !== 0) throw new Error(`生成测试视频失败：${generated.stderr?.slice(-2000)}`);
+    fs.copyFileSync(encoded, file);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
   return file;
 }
 
 const providerId = randomUUID();
+const videoProviderId = randomUUID();
 const projectId = randomUUID();
 const imageId = randomUUID();
 const shotSetId = randomUUID();
@@ -76,7 +88,7 @@ const shotId = randomUUID();
 const videoJobId = randomUUID();
 
 const posterPath = await writePosterImage();
-const videoPath = writeVideoFile();
+const videoPath = writeVideoFile(videosDir);
 const createdAt = nowIso();
 
 const insertProvider = db.prepare(`
@@ -86,6 +98,11 @@ const insertProvider = db.prepare(`
 
 db.transaction(() => {
   insertProvider.run(providerId, '缩略图验收夹具供应商', 'http://127.0.0.1:9', 'fixture-not-a-real-key', 'gpt-image-2', 'openai-compatible');
+  // video_jobs.providerId 有外键；内置播种只保证 canonical 行，不保证 kling-3 存在。
+  db.prepare(`
+    INSERT INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec)
+    VALUES (?, '缩略图验收夹具视频供应商', 'kling', '', '', '', 'kling-v3', 1, 5)
+  `).run(videoProviderId);
   db.prepare(`
     INSERT INTO projects (id, name, createdAt, providerId, model, prompt, size, status, storeCode, productCode, productionType, editorName)
     VALUES (?, ?, ?, ?, 'gpt-image-2', '缩略图鉴权验收夹具：不调用任何真实供应商。', '1024x1024', 'draft', 'B店', 'POSTER-FIXTURE', 'AI种草', '缩略图验收')
@@ -106,10 +123,10 @@ db.transaction(() => {
       id, projectId, shotSetId, shotId, sourceImageId, providerId, model, templateId, prompt,
       durationSec, generationMode, status, localVideoPath, filename, displayName, createdAt,
       startedAt, finishedAt, attempt, maxAttempts, executionRevision
-    ) VALUES (?, ?, ?, ?, ?, 'kling-3', 'kling-v3', NULL, '夹具：已完成视频，不重新提交。',
+    ) VALUES (?, ?, ?, ?, ?, ?, 'kling-v3', NULL, '夹具：已完成视频，不重新提交。',
       3, 'image-to-video', 'succeeded', ?, ?, ?, ?, ?, ?, 1, 2, 0)
   `).run(
-    videoJobId, projectId, shotSetId, shotId, imageId,
+    videoJobId, projectId, shotSetId, shotId, imageId, videoProviderId,
     videoPath, path.basename(videoPath), '01-海报验收-自定义-V01.mp4', createdAt, createdAt, createdAt,
   );
 }).immediate();
