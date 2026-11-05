@@ -58,3 +58,22 @@
   - 上游真实付费任务的末帧画面**未**验收：本票只到「mock 请求合同 + 真实上传 UI/请求字段」层。FileInfos Usage 由 `openai-video-adapter.test.ts` 锁定，冻结字段由 `video-reference-job-create.test.ts` 锁定。
   - 未跑 `npm run build`（按简报由 Lead 统一跑）。
 
+- **06 横向验收复核（2026-11-05，`ticket/06-acceptance` @ `33e8b48`）：通过。**
+
+  06 独立复跑 `video-auto-mode.test.ts`、`video-bulk-provider-state.test.mjs`、
+  `video-tail-frame-ui-state.test.ts`、`video-tail-frame-api.test.mjs`、`video-model-capabilities.test.ts`、
+  `video-reference-job-create.test.ts`、`video-queue-reference.test.ts`、`openai-video-adapter.test.ts`，
+  以及浏览器 `video-auto-mode.playwright.test.mjs`（端口 3210）—— 全部 PASS。
+
+  **跨功能复验**（`scripts/ticket-06-cross-acceptance.mjs`，与其余四项同一构建/同一数据根）：
+  - H3 与 Wan 在**同一页面**切模型后都渲染出 `[data-testid="video-frame-pair"]` 双卡片、
+    尾帧卡处于空态（`.video-frame-empty`）、提示「未添加尾帧：按单图参考生成」，
+    且**无人工模式切换控件**。
+  - 服务端决策 `decideVideoGenerationMode()`：两模型 × 单图/有效尾帧/上传中 三态正确，
+    **故意传入相反的 `explicitMode` 也会被忽略**（证明「服务端不能只信前端 generationMode」）。
+  - 精确 allowlist 复验：`minimax-h3-pro` / `wan-3` / `minimax-h3 `（尾空格）/ `MINIMAX-H3` /
+    `jimeng+minimax-h3` 均**不**进入自动模式；可灵 3.0 沿用显式模式。
+
+  **未做**：真实上游付费任务的末帧画面（本轮全 mock，未向生产补跑）；生产部署
+  （生产 release `sourceCommit=ce4a62e`，不含本票修复）。
+
