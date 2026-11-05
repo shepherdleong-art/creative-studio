@@ -10,7 +10,11 @@ import { Icon } from '@/components/ui/Icon';
  */
 
 interface ViralLibraryView {
-  library: { id: string; currentRevisionId: string | null };
+  library: { id: string; currentRevisionId: string | null } | null;
+  /** local = 本机设置页导入的个人/单例库；team = 管理员发布的团队当前版本。 */
+  source: 'local' | 'team' | null;
+  /** 管理员可上传/切版本；员工只能读团队当前版本。 */
+  canManage: boolean;
   current: {
     id: string;
     revisionNumber: number;
@@ -53,7 +57,6 @@ export default function ViralTemplateSettings() {
   const [preview, setPreview] = useState<{ file: File; report: PreviewReport } | null>(null);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-
   const load = useCallback(async () => {
     try {
       const res = await fetch('/api/script-studio/viral-templates');
@@ -134,6 +137,12 @@ export default function ViralTemplateSettings() {
 
   const current = view?.current ?? null;
   const currentIssues = current?.report?.issues ?? [];
+  // 团队模式：员工只读团队当前版本，上传/切版本只在管理员可见；local 行为保持不变。
+  const teamSource = view?.source === 'team';
+  const canManage = view === null ? true : view.canManage;
+  const uploadHint = teamSource
+    ? '管理员在「公共资源 → 爆文模板库」上传发布；此处展示团队当前已发布版本。'
+    : '';
 
   return (
     <div className="card p-5">
@@ -151,27 +160,32 @@ export default function ViralTemplateSettings() {
           </div>
           <p className="text-xs text-ink-tertiary">
             强尼精选爆文文案（种草爆文库，按类目）。用于「爆文模板改写」模式：推荐模板 → 勾选 → 按模板改写成自己家脚本。
+            {uploadHint}
           </p>
         </div>
-        <button
-          type="button"
-          className="btn-primary btn-sm shrink-0"
-          disabled={busy}
-          onClick={() => fileRef.current?.click()}
-        >
-          <Icon name="upload" size={14} /> {busy ? '解析中...' : '导入 .xlsx'}
-        </button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".xlsx"
-          className="hidden"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            event.target.value = '';
-            if (file) void previewFile(file);
-          }}
-        />
+        {canManage && (
+          <>
+            <button
+              type="button"
+              className="btn-primary btn-sm shrink-0"
+              disabled={busy}
+              onClick={() => fileRef.current?.click()}
+            >
+              <Icon name="upload" size={14} /> {busy ? '解析中...' : '导入 .xlsx'}
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".xlsx"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) void previewFile(file);
+              }}
+            />
+          </>
+        )}
       </div>
 
       {error && (
@@ -233,7 +247,9 @@ export default function ViralTemplateSettings() {
         </div>
       ) : (
         <p className="mb-4 rounded-[14px] bg-surface-subtle p-4 text-sm text-ink-tertiary">
-          尚未导入。上传后先预览去重结果与异常行，确认后才保存为不可变版本；相同文件重复导入不会产生新版本。
+          {teamSource
+            ? '团队还没有发布爆文模板库，请联系管理员在「公共资源 → 爆文模板库」上传并发布。'
+            : '尚未导入。上传后先预览去重结果与异常行，确认后才保存为不可变版本；相同文件重复导入不会产生新版本。'}
         </p>
       )}
 
@@ -247,9 +263,9 @@ export default function ViralTemplateSettings() {
         </div>
       )}
 
-      {view && view.revisions.length > 0 && (
+      {canManage && view && view.revisions.length > 0 && (
         <div>
-          <p className="label mb-2">历史版本</p>
+          <p className="label mb-2">{teamSource ? '团队历史版本' : '历史版本'}</p>
           <div className="space-y-1.5">
             {view.revisions.map((revision) => (
               <div key={revision.id} className="flex items-center justify-between gap-3 rounded-[12px] border border-hairline px-3 py-2 text-sm">
