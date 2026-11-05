@@ -118,10 +118,8 @@ for (const [type, model] of [
   assert.equal(select({ providerId: 'h3' }).generationMode, 'reference-to-video');
   assert.equal(select({ providerId: 'h3' }).automaticMode, true);
   assert.equal(select({ providerId: 'h3', tailImageId: 'tail' }).generationMode, 'image-to-video');
-  assert.equal(select({ providerId: 'h3', tailUploadState: 'uploading' }).modeBlocked, true);
   assert.equal(select({ providerId: 'k25' }).automaticMode, false);
   assert.equal(select({ providerId: 'k25' }).generationMode, 'image-to-video', '可灵仍按既有显式模式');
-  assert.equal(select({ providerId: 'k25', tailUploadState: 'failed' }).modeBlocked, false, '非自动模式不套用阻止规则');
 }
 
 console.log('video auto mode decision tests passed');

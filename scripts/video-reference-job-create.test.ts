@@ -192,11 +192,15 @@ try {
     durationSec: 4, modeIntent: 'auto',
   })]);
   assert.equal(missingTailState.ok, false, '缺 autoTailState 的自动模式请求必须拒绝');
-  assert.match(String(missingTailState.ok ? '' : missingTailState.error), /autoTailState/);
+  if (!missingTailState.ok) {
+    assert.equal(missingTailState.status, 400, '缺尾帧状态必须是 400 拒绝，不是 500 也不是放行');
+    assert.match(missingTailState.error, /autoTailState/);
+  }
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM video_jobs').get() as { n: number }).n, 0);
   // 声明 pending（上传中/删除中/失败）也必须拒绝，且不落任务。
   const pendingTail = await create([autoItem({ autoTailState: 'pending' })]);
   assert.equal(pendingTail.ok, false, '尾帧上传中不得提交');
+  if (!pendingTail.ok) assert.equal(pendingTail.status, 400, '尾帧操作未完成必须是 400 拒绝');
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM video_jobs').get() as { n: number }).n, 0);
 
   // 没有尾帧 → 单图参考；冻结 sourceImageId 作唯一 Reference

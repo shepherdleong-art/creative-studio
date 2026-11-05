@@ -22,7 +22,13 @@ export type VideoTailFrameDraftState = 'none' | 'ready' | 'pending';
 
 export const VIDEO_AUTO_MODE_PROVIDER_TYPE = 'openai-video' as const;
 
-/** 精确模型 allowlist；不许放宽成前缀匹配（与尾帧 allowlist 同一纪律）。 */
+/**
+ * 精确模型 allowlist；不许放宽成前缀匹配（与尾帧 allowlist 同一纪律）。
+ *
+ * 这份清单与网关侧 `company-gateway-tail-frame.ts`、`company-gateway-video-models.ts`
+ * 的 allowlist **同源**：改这里必须同步网关，否则自动模式会按「有尾帧能力」放行
+ * 一个网关实际不支持的模型。AGENTS.md 红线：精确 allowlist 不许放宽成前缀匹配。
+ */
 export const VIDEO_AUTO_MODE_MODELS = ['minimax-h3', 'wan-3.0'] as const;
 
 /** 是否自动模式目标：仅 `openai-video` + 精确模型。 */

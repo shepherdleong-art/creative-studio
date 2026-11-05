@@ -15,6 +15,7 @@ try {
   const { resolveVideoGenerationSelection } = await import('../lib/video-generation-options.ts');
   const { videoReferenceCapability, validateVideoReferenceRequest } = await import('../lib/video-reference-contract.ts');
   const { getVideoMotionRowIssue, createVideoMotionRow } = await import('../components/video-tail-frame-state.ts');
+  const { videoTailFrameDraftState } = await import('../lib/video-auto-mode.ts');
   const provider = (id: string, type: string, model: string) => describeVideoProvider({
     id, name: id, type, defaultModel: model, defaultDurationSec: 10,
     baseUrlEnv: '', apiKeyEnv: '', baseUrl: 'http://invalid.test', apiKey: 'test-key',
@@ -34,7 +35,6 @@ try {
     const noTail = resolveVideoGenerationSelection(providers, '', { providerId: id });
     assert.equal(noTail.automaticMode, true, `${id} 必须命中自动模式`);
     assert.equal(noTail.generationMode, 'reference-to-video', `${id} 没有尾帧时应走单图参考`);
-    assert.equal(noTail.modeBlocked, false);
     assert.equal(
       resolveVideoGenerationSelection(providers, id, { providerId: '' }).generationMode,
       'reference-to-video',
@@ -42,13 +42,23 @@ try {
     );
     const withTail = resolveVideoGenerationSelection(providers, '', { providerId: id, tailImageId: 'tail-a' });
     assert.equal(withTail.generationMode, 'image-to-video', `${id} 有有效尾帧时应走首尾帧`);
-    assert.equal(withTail.modeBlocked, false);
+    // 尾帧操作中必须阻止提交（不能退回单图）——判据在行级校验接缝上：
+    // 三态折叠出 pending，且该行拿到可读的阻止原因。
     for (const uploadState of ['uploading', 'deleting', 'failed'] as const) {
-      const pending = resolveVideoGenerationSelection(providers, '', {
+      assert.equal(
+        videoTailFrameDraftState({ tailImageId: null, uploadState }),
+        'pending',
+        `${id} 尾帧 ${uploadState} 必须折叠成 pending`,
+      );
+      const pendingRow = {
+        ...createVideoMotionRow('pending-row', 5),
         providerId: id, tailImageId: null, tailUploadState: uploadState,
-      });
-      assert.equal(pending.modeBlocked, true, `${id} 尾帧 ${uploadState} 时必须阻止提交，不能退回单图`);
-      assert.equal(pending.automaticMode, true);
+      };
+      assert.match(
+        getVideoMotionRowIssue(pendingRow, noTail.capabilities.tailFrame, noTail.capabilities.reference, { automaticMode: true }) ?? '',
+        /尾帧|上传|移除|失败/,
+        `${id} 尾帧 ${uploadState} 时行级校验必须阻止提交，不能退回单图`,
+      );
     }
   }
   // 显式模式只对非自动模式模型生效；自动模式模型忽略前端传入的 generationMode。
