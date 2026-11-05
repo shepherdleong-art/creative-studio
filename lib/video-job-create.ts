@@ -16,7 +16,7 @@ import { countVideoJobsForShot, planVideoJobDisplayName } from './video-output-f
 import { validateVideoReferenceRequest, videoReferenceCapability, type VideoReferenceKind } from './video-reference-contract.ts';
 import {
   prepareVideoJobImage,
-  VideoPreprocessError,
+  videoPreprocessErrorCode,
   type VideoImageRole,
 } from './video-reference-preprocess.ts';
 import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
@@ -160,10 +160,18 @@ function reconcileAutoModeItems(input: {
         error: itemError(index, `自动模式只适用于公司 MiniMax H3 / Wan 3.0，模型 ${provider.model} 必须显式指定生成模式`),
       };
     }
-    // 三态推导：`pending`（上传中/删除中/失败）只有前端看得见，声明即采纳并阻止提交；
-    // 其余一律以**库里真实存在的尾帧 id** 为准——服务端不采信前端自称的 ready/none，
-    // 否则「声明 ready 却不带尾帧」就能绕过核对拿到首尾帧任务。
+    // 三态必须由前端显式声明：`pending`（上传中/删除中/失败）只有前端看得见。
+    // 缺字段时**不能**按 tailImageId 猜成 none——「尾帧上传中」恰好暂时没有 id，
+    // 猜成 none 就会静默退回单图，正是规格 §6 行2 禁止的行为。缺声明即拒绝。
     const declared = item.autoTailState ?? null;
+    if (!declared) {
+      return {
+        ok: false,
+        error: itemError(index, '自动模式请求必须声明尾帧状态（autoTailState：none/ready/pending）'),
+      };
+    }
+    // pending 一律阻止提交；ready/none 仍以**库里真实存在的尾帧 id** 为准复核，
+    // 服务端不采信前端自称的 ready——否则「声明 ready 却不带尾帧」可绕过核对。
     const draftState: VideoTailFrameDraftState = declared === 'pending'
       ? 'pending'
       : item.tailImageId ? 'ready' : 'none';
@@ -344,7 +352,8 @@ export async function createVideoJobsForShot(input: {
       await run();
       return null;
     } catch (error) {
-      if (error instanceof VideoPreprocessError) return itemError(index, error.message);
+      // 按错误码判，不用跨模块 instanceof（预处理模块导出的判码函数两者都兼容）。
+      if (videoPreprocessErrorCode(error)) return itemError(index, (error as Error).message);
       throw error;
     }
   };

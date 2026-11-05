@@ -181,9 +181,23 @@ try {
   // 这一节只证明「服务端按真实素材核对模式、拒绝矛盾请求」；上游画面未验收。
   const autoItem = (overrides: Record<string, unknown> = {}) => item({
     providerId: 'h3', generationMode: 'reference-to-video', referenceAssetIds: [],
-    durationSec: 4, modeIntent: 'auto', ...overrides,
+    durationSec: 4, modeIntent: 'auto', autoTailState: 'none', ...overrides,
   });
   db.exec('DELETE FROM video_jobs');
+
+  // 缺 autoTailState 的自动模式请求必须被拒绝（§6 行2 禁止静默退回单图）：
+  // 「尾帧上传中」恰好暂时没有 tailImageId，漏声明就按 none 猜会把上传中当成没尾帧。
+  const missingTailState = await create([item({
+    providerId: 'h3', generationMode: 'reference-to-video', referenceAssetIds: [],
+    durationSec: 4, modeIntent: 'auto',
+  })]);
+  assert.equal(missingTailState.ok, false, '缺 autoTailState 的自动模式请求必须拒绝');
+  assert.match(String(missingTailState.ok ? '' : missingTailState.error), /autoTailState/);
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM video_jobs').get() as { n: number }).n, 0);
+  // 声明 pending（上传中/删除中/失败）也必须拒绝，且不落任务。
+  const pendingTail = await create([autoItem({ autoTailState: 'pending' })]);
+  assert.equal(pendingTail.ok, false, '尾帧上传中不得提交');
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM video_jobs').get() as { n: number }).n, 0);
 
   // 没有尾帧 → 单图参考；冻结 sourceImageId 作唯一 Reference
   const autoSingle = await create([autoItem()]);

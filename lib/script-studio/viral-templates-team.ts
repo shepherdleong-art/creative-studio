@@ -31,9 +31,6 @@ import {
 
 export const TEAM_VIRAL_TEMPLATE_MAX_BYTES = 32 * 1024 * 1024;
 
-/** 团队模板库唯一发布入口（前端与旧个人导入路由此端点引导管理员）。 */
-export const TEAM_VIRAL_TEMPLATE_PUBLISH_ENDPOINT = '/api/team/public-resources/viral-templates';
-
 function nowIso(now?: () => Date): string {
   return (now ?? (() => new Date()))().toISOString();
 }
@@ -45,32 +42,6 @@ function requireManageableAccess(resourceId: string, action: 'read' | 'write'): 
     throw new ScriptStudioError('forbidden', '只有管理员可以维护团队公共爆文模板库。');
   }
   access.assertAccess('viral_template_library', resourceId, action);
-}
-
-/** 团队库（不存在就创建）。唯一性由 schema v13 的部分唯一索引保证。 */
-export function ensureTeamViralTemplateLibrary(db: Database.Database, now?: () => Date): ViralTemplateLibraryRecord {
-  const access = requireAccessContext();
-  if (access.kind === 'team' && access.actor.role !== 'admin') {
-    throw new ScriptStudioError('forbidden', '只有管理员可以创建团队公共爆文模板库。');
-  }
-  const existing = findTeamViralTemplateLibrary(db);
-  if (existing) return existing;
-  const id = randomUUID();
-  const ts = nowIso(now);
-  const create = db.transaction(() => {
-    db.prepare(`
-      INSERT INTO script_studio_viral_tpl_libraries (id, currentRevisionId, ownerKey, createdAt, updatedAt)
-      VALUES (?, NULL, ?, ?, ?)
-    `).run(id, TEAM_VIRAL_TEMPLATE_OWNER_KEY, ts, ts);
-    if (access.kind === 'team') {
-      access.registerRootScope({
-        resourceType: 'viral_template_library', resourceId: id,
-        ownerUserId: access.actor.userId, visibility: 'public',
-      });
-    }
-  });
-  create.immediate();
-  return findTeamViralTemplateLibrary(db)!;
 }
 
 export interface TeamViralTemplateRevisionView extends ViralTemplateRevisionRecord {
@@ -111,9 +82,11 @@ function entryCountsFor(db: Database.Database, revisionId: string): TeamViralTem
 
 /** 管理视图：当前团队版本、全部历史版本，以及可发布的既有修订候选。 */
 export function getTeamViralTemplateView(db: Database.Database): TeamViralTemplateLibraryView {
+  const access = requireAccessContext();
+  const actorUserId = access.actor.userId;
   const library = findTeamViralTemplateLibrary(db);
   if (!library) {
-    return { libraryId: '', current: null, revisions: [], candidates: buildCandidates(db, null) };
+    return { libraryId: '', current: null, revisions: [], candidates: buildCandidates(db, null, actorUserId) };
   }
   requireManageableAccess(library.id, 'read');
   const revisions = (db.prepare(`
@@ -130,21 +103,29 @@ export function getTeamViralTemplateView(db: Database.Database): TeamViralTempla
     libraryId: library.id,
     current: revisions.find((revision) => revision.current) ?? null,
     revisions,
-    candidates: buildCandidates(db, library.id),
+    candidates: buildCandidates(db, library.id, actorUserId),
   };
 }
 
-function buildCandidates(db: Database.Database, teamLibraryId: string | null): TeamViralTemplateLibraryView['candidates'] {
+function buildCandidates(
+  db: Database.Database,
+  teamLibraryId: string | null,
+  actorUserId: string,
+): TeamViralTemplateLibraryView['candidates'] {
+  // 候选只允许两类来源（规格 §3「不能批量公开员工的私人历史资源」）：
+  //   · 团队库自己的旧修订（可重激活）
+  //   · **当前管理员本人**的私人库修订
+  // 其他员工的私人库一律排除——assertAccess 对 admin 无条件放行，不能靠它兜底。
   const rows = db.prepare(`
     SELECT r.id AS revisionId, r.sourceFilename, r.revisionNumber, r.createdAt,
            l.ownerKey AS ownerKey, l.id AS libraryId,
            (SELECT COUNT(*) FROM script_studio_viral_tpl_entries e WHERE e.revisionId = r.id) AS entryCount
     FROM script_studio_viral_tpl_revisions r
     JOIN script_studio_viral_tpl_libraries l ON l.id = r.libraryId
-    WHERE (? IS NULL OR l.id <> ?)
+    WHERE (l.id <> ?) AND (l.ownerKey = ? OR l.ownerKey = ?)
     ORDER BY r.createdAt DESC, r.revisionNumber DESC
     LIMIT 200
-  `).all(teamLibraryId, teamLibraryId) as Array<{
+  `).all(teamLibraryId ?? '', TEAM_VIRAL_TEMPLATE_OWNER_KEY, actorUserId) as Array<{
     revisionId: string; sourceFilename: string; revisionNumber: number; createdAt: string;
     ownerKey: string; libraryId: string; entryCount: number;
   }>;
@@ -206,7 +187,7 @@ export async function publishTeamViralTemplate(
       structureOrigin: 'source' | 'fallback'; rawColumns: Record<string, string>; sourceSheet: string;
       sourceRow: number; contentHash: string; status: 'usable' | 'unusable' | 'review'; statusReason: string;
     }> } | null = null;
-  let sourceRevision: ViralTemplateRevisionRecord | null = null;
+  let sourceRevision: (ViralTemplateRevisionRecord & { libraryOwnerKey: string }) | null = null;
 
   if (hasBuffer) {
     const buffer = input.buffer!;
@@ -240,7 +221,15 @@ export async function publishTeamViralTemplate(
       JOIN script_studio_viral_tpl_libraries l ON l.id = r.libraryId WHERE r.id = ?
     `).get(revisionIdInput) as (ViralTemplateRevisionRecord & { libraryOwnerKey: string }) | undefined) ?? null;
     if (!sourceRevision) throw new ScriptStudioError('not_found', '要发布的模板修订不存在。');
-    // 只能发布自己能读到的修订；跨员工私人修订一律不可见。
+    // 只能发布团队库自己的修订，或**发布者本人**的私人修订。
+    // 不能只靠 assertAccess：admin 在该处无条件放行，会允许发布他人的私人修订
+    // （规格 §3「不能批量公开员工的私人历史资源」）。按 ownerKey 直接判归属。
+    const ownerKey = sourceRevision.libraryOwnerKey;
+    const ownedByTeam = ownerKey === TEAM_VIRAL_TEMPLATE_OWNER_KEY;
+    const ownedByActor = access.kind === 'local' ? ownerKey === 'local' : ownerKey === access.actor.userId;
+    if (!ownedByTeam && !ownedByActor) {
+      throw new ScriptStudioError('not_found', '要发布的模板修订不存在。');
+    }
     try {
       access.assertAccess('viral_template_revision', sourceRevision.id, 'read');
     } catch {

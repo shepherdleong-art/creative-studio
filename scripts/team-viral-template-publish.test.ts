@@ -323,12 +323,28 @@ try {
   assert.equal(runWithAccessContext(contextB, () => getViralTemplateLibraryView(db)).current?.id, first.revisionId);
 
   // ---- 11. 从既有修订发布（无需重新上传文件） ----
+  // 规格 §3「不能公开员工的私人历史资源」：admin 的 assertAccess 无条件放行，
+  // 所以发布路径必须自己按 ownerKey 判归属。user-a 的私人修订对管理员不可发布。
+  await assert.rejects(
+    () => runWithAccessContext(contextAdmin, () => publishTeamViralTemplate(db, {
+      revisionId: 'legacy-rev-a', baseRevisionId: first.revisionId,
+    })),
+    (error: unknown) => error instanceof ScriptStudioError && error.code === 'not_found',
+    '管理员不得发布他人的私人修订',
+  );
+  // 候选列表同样不得列出他人的私人修订。
+  assert.equal(
+    adminView().candidates.some((candidate) => candidate.revisionId === 'legacy-rev-a'),
+    false,
+    '他人的私人修订不得出现在管理员的候选列表里',
+  );
+  // 管理员发布**自己**的私人修订仍然可用（正则路径不能被误伤）。
+  seedLegacyPersonalLibrary('admin', { libraryId: 'legacy-lib-admin', revisionId: 'legacy-rev-admin', withEntry: true });
   const fromRevision = await runWithAccessContext(contextAdmin, () => publishTeamViralTemplate(db, {
-    revisionId: 'legacy-rev-a', baseRevisionId: first.revisionId,
+    revisionId: 'legacy-rev-admin', baseRevisionId: first.revisionId,
   }));
   assert.equal(fromRevision.created, true);
   assert.equal(fromRevision.revisionNumber, 3);
-  assert.equal(fromRevision.sourceFilename, '个人历史.xlsx', '发布沿用源修订的文件名');
   assert.equal(adminView().current?.id, fromRevision.revisionId);
   assert.deepEqual(
     runWithAccessContext(contextC, () => listViralTemplateEntries(db, { status: 'all' })).map((entry) => entry.sourceTemplateId),
@@ -354,8 +370,13 @@ try {
   assert.deepEqual(teamView.revisions.map((revision) => revision.entryCount), [1, 2, 3]);
   assert.deepEqual(teamView.revisions.map((revision) => revision.current), [true, false, false]);
   assert.ok(
-    teamView.candidates.some((candidate) => candidate.revisionId === 'legacy-rev-a' && candidate.libraryOwner === 'personal'),
-    '既有个人修订必须作为候选版本出现在发布入口，由管理员显式选择',
+    teamView.candidates.some((candidate) => candidate.revisionId === 'legacy-rev-admin' && candidate.libraryOwner === 'personal'),
+    '管理员本人的既有私人修订作为候选版本出现在发布入口',
+  );
+  assert.equal(
+    teamView.candidates.some((candidate) => candidate.revisionId === 'legacy-rev-a'),
+    false,
+    '他人（user-a）的私人修订不得作为候选出现',
   );
 
   // ---- 13. 员工不能切团队版本；管理员可以 ----

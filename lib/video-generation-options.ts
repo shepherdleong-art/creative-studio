@@ -96,7 +96,11 @@ export function resolveVideoGenerationSelection(
     generationMode: modeDecision.generationMode,
     /** 自动模式（H3/Wan）标记：UI 据此展示双卡片与单图/首尾帧提示。 */
     automaticMode: modeDecision.automatic,
-    /** 尾帧草稿不可提交（上传中/删除中/失败）。 */
+    /**
+     * 尾帧草稿不可提交（上传中/删除中/失败）。
+     * 这是 UI 行级校验的输入信号（见 video-tail-frame-state 的 automaticMode 分支），
+     * 由 `video-auto-mode.test.ts` / `video-model-capabilities.test.ts` 锁住；不要删。
+     */
     modeBlocked: modeDecision.blocked,
     capabilities,
     durationSec,

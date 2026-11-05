@@ -17,6 +17,7 @@ const {
   VideoPreprocessError,
   videoPreprocessErrorCode,
   videoSourceImageLocalLimits,
+  cleanupVideoDerivatives,
 } = await import('../lib/video-reference-preprocess.ts');
 
 /** 真实 sharp 编码的大图：3200x3000 模糊噪声 PNG，稳定大于 11 MiB。 */
@@ -368,6 +369,51 @@ try {
   assert.equal(await prepareVideoJobImage({
     providerType: 'openai-video', model: 'kling-3.0', role: 'first-frame', absolutePath: largePath,
   }), null);
+
+  // ── 派生物有界回收（规格 §7「并发、取消与清理有界」）──────────────────
+  const derivativeDir = path.join(storageRoot, 'video-derivatives');
+  fs.rmSync(derivativeDir, { recursive: true, force: true });
+  // 目录不存在时安全返回，不抛错。
+  assert.deepEqual(cleanupVideoDerivatives(), { scanned: 0, deleted: 0, freedBytes: 0 });
+
+  fs.mkdirSync(derivativeDir, { recursive: true });
+  const nowMs = Date.UTC(2026, 10, 5, 12, 0, 0);
+  const makeDerivative = (name: string, bytes: number, ageMs: number) => {
+    const filePath = path.join(derivativeDir, name);
+    fs.writeFileSync(filePath, Buffer.alloc(bytes, 7));
+    const stamp = new Date(nowMs - ageMs);
+    fs.utimesSync(filePath, stamp, stamp);
+    return filePath;
+  };
+  const day = 24 * 60 * 60 * 1000;
+  const stale = makeDerivative('stale.bin', 100, 30 * day);      // 超龄
+  const fresh = makeDerivative('fresh.bin', 100, 1 * day);       // 未超龄
+  // 只按龄回收：超龄的删掉，未超龄的留下。
+  const aged = cleanupVideoDerivatives({ maxAgeMs: 7 * day, maxBytes: 1_000_000, now: () => nowMs });
+  assert.equal(aged.deleted, 1);
+  assert.equal(fs.existsSync(stale), false, '超龄派生物必须被回收');
+  assert.equal(fs.existsSync(fresh), true, '未超龄派生物不得被删');
+
+  // 总量超限：从最旧的开始删，删到回落到上限内就停（不是一次清空）。
+  const older = makeDerivative('older.bin', 400, 6 * day);
+  const newer = makeDerivative('newer.bin', 400, 5 * day);
+  // 当前总量 100(fresh)+400(older)+400(newer)=900，上限 500 → 删掉最旧的 older 后恰好 500，停。
+  const bySize = cleanupVideoDerivatives({ maxAgeMs: 365 * day, maxBytes: 500, now: () => nowMs });
+  assert.equal(bySize.deleted, 1, '超总量时从最旧删起，回落到上限即停');
+  assert.equal(fs.existsSync(older), false, '最旧的先删');
+  assert.equal(fs.existsSync(newer), true, '已回落到上限内，较新的保留');
+  assert.equal(fs.existsSync(fresh), true);
+  assert.equal(bySize.freedBytes, 400);
+
+  // 正在进行中的编码不得被删（inFlight 保护）——用同名 .tmp 之外的正式文件模拟：
+  // 这里只断言 .tmp 文件不会被当作派生物统计（取消时的半成品不属于交付物）。
+  const halfWritten = path.join(derivativeDir, 'in-flight.tmp');
+  fs.writeFileSync(halfWritten, Buffer.alloc(10, 1));
+  const withTmp = cleanupVideoDerivatives({ maxAgeMs: 0, maxBytes: 0, now: () => nowMs + 365 * day });
+  assert.equal(fs.existsSync(halfWritten), true, '.tmp 半成品不参与派生物回收');
+  // 此时正式派生物还剩 fresh.bin 与 newer.bin 两个（older.bin 已回收），.tmp 不计入。
+  assert.equal(withTmp.scanned, 2, '只统计正式派生物，不含 .tmp 半成品');
+  assert.equal(withTmp.deleted, 2, 'maxAgeMs=0 时两个正式派生物都算超龄');
 
   console.log('video reference preprocess tests passed');
 } finally {

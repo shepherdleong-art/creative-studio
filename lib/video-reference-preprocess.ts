@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { dataRoot } from './data-root.ts';
 import { videoReferenceCapability } from './video-reference-contract.ts';
 import { companyNativeVideoModel } from './company-gateway-video-models.ts';
+import { DEFAULT_VIDEO_MAX_BYTES } from './cos-media.ts';
 import { authorizeManagedFileRead, registerManagedFile } from './media-core/access-context.ts';
 
 /**
@@ -45,7 +46,8 @@ const MIB = 1024 * 1024;
  * 见 docs/reference/公司网关与COS中转.md。
  */
 const TENCENT_FIRST_FRAME_MAX_BYTES = 10 * MIB;
-const TENCENT_LAST_FRAME_MAX_BYTES = 4_800_000;
+/** 复用 COS 的单一来源，别再写一份字面量。 */
+const TENCENT_LAST_FRAME_MAX_BYTES = DEFAULT_VIDEO_MAX_BYTES;
 /** 上游对图片单边的实际限制；公司网关实测 4096 内安全（沿用既有 COS MAX_DIM）。 */
 const COMPANY_IMAGE_MAX_DIMENSION = 4_096;
 
@@ -191,6 +193,69 @@ const DIMENSION_LADDER = [1, 0.75, 0.5, 0.375];
 
 /** 同进程内对同一 (源图, 预算) 只编码一次，避免并发任务重复压缩。 */
 const inFlight = new Map<string, Promise<PreparedVideoImage>>();
+
+/**
+ * 派生物保留策略（规格 §7「并发、取消与清理有界」）。
+ *
+ * 派生物按 (源图哈希, 预算) 内容寻址，同一张图重复用不会无限增长；但源图会累积，
+ * 所以这里给一条确定性的有界回收：超过 `maxAgeMs` 且总量超过 `maxBytes` 时，
+ * 从最旧的开始删，直到回落到上限。只删 `DERIVATIVE_DIR` 下的文件。
+ *
+ * 安全约束：
+ * - **跳过正在进行中的编码**（`inFlight`），否则会删掉刚要交付的副本；
+ * - 只碰 `dataRoot()/storage/video-derivatives`，绝不碰原图；
+ * - 返回的统计只含数量与字节，不含路径或签名，可直接写日志。
+ */
+export interface VideoDerivativeCleanupResult {
+  scanned: number;
+  deleted: number;
+  freedBytes: number;
+}
+
+export function cleanupVideoDerivatives(options: {
+  maxAgeMs?: number;
+  maxBytes?: number;
+  now?: () => number;
+} = {}): VideoDerivativeCleanupResult {
+  const maxAgeMs = options.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000;
+  const maxBytes = options.maxBytes ?? 2 * 1024 * 1024 * 1024;
+  const now = options.now ?? Date.now;
+  const dir = path.join(dataRoot(), DERIVATIVE_DIR);
+  const result: VideoDerivativeCleanupResult = { scanned: 0, deleted: 0, freedBytes: 0 };
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return result; // 目录还没建：无事可做。
+  }
+  const files = entries
+    .filter((entry) => entry.isFile() && !entry.name.endsWith('.tmp'))
+    .map((entry) => {
+      const absolutePath = path.join(dir, entry.name);
+      try {
+        const stat = fs.statSync(absolutePath);
+        return { absolutePath, size: stat.size, mtimeMs: stat.mtimeMs };
+      } catch {
+        return null;
+      }
+    })
+    .filter((item): item is { absolutePath: string; size: number; mtimeMs: number } => Boolean(item));
+  result.scanned = files.length;
+  let totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  // 最旧的先删，保证回收结果与输入顺序无关（确定性）。
+  for (const file of files.sort((left, right) => left.mtimeMs - right.mtimeMs)) {
+    const tooOld = now() - file.mtimeMs > maxAgeMs;
+    if (!tooOld && totalBytes <= maxBytes) break;
+    if (inFlight.has(file.absolutePath)) continue; // 正在编码/交付，绝不删。
+    try {
+      fs.unlinkSync(file.absolutePath);
+      result.deleted += 1;
+      result.freedBytes += file.size;
+      totalBytes -= file.size;
+    } catch { /* 单个文件删不掉不影响其余回收 */ }
+  }
+  return result;
+}
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new VideoPreprocessError('aborted', '图片预处理已取消，任务未提交');
@@ -385,7 +450,12 @@ export async function prepareVideoJobImage(
   const job = (async (): Promise<PreparedVideoImage> => {
     // 已物化过（例如上一个任务压过同一张图）：复用，并重新按磁盘字节验证一次。
     const reuse = await verifyExistingDerivative(targetPath, outputMimeType, budget, input.absolutePath);
-    if (reuse) return reuse;
+    if (reuse) {
+      // 复用命中同样要登记团队读取权限（规格 §7）：否则只有「本次新编码」的派生物
+      // 有登记，复用路径会让团队上下文读不到既有副本。登记是幂等的。
+      registerDerivativeForTeam(targetPath, reuse.mimeType, input.absolutePath);
+      return reuse;
+    }
 
     const result = await compressToBudget(source, budget, outputMimeType, input);
     const bytes = result.buffer;
