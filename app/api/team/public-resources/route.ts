@@ -9,15 +9,31 @@ import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 const PUBLISHABLE = new Set([
   'bgm', 'video_prompt_template', 'title_preset', 'lut',
   'script_catalog', 'script_catalog_revision', 'script_template_asset',
-  'viral_template_library', 'viral_template_revision', 'viral_template_entry',
 ]);
+
+/**
+ * 爆文模板库不走这个逐条发布入口：团队版本必须原子发布（修订 + 全部条目 +
+ * 当前指针一次写入），否则会出现「只公开库根、条目仍私有」的撕裂状态。
+ * 见 /api/team/public-resources/viral-templates。
+ */
+const VIRAL_TEMPLATE_TYPES = new Set(['viral_template_library', 'viral_template_revision', 'viral_template_entry']);
 
 async function __teamRoutePOST(request: Request) {
   if (readRuntimeConfig().mode !== 'server') return NextResponse.json({ error: 'not_found' }, { status: 404 });
   const principal = requirePrincipal(request, { admin: true });
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body || typeof body.resourceType !== 'string' || typeof body.resourceId !== 'string'
-    || !PUBLISHABLE.has(body.resourceType) || !body.resourceId.trim()) {
+    || !body.resourceId.trim()) {
+    return NextResponse.json({ error: 'invalid_resource' }, { status: 400 });
+  }
+  if (VIRAL_TEMPLATE_TYPES.has(body.resourceType)) {
+    return NextResponse.json({
+      error: 'use_team_publish',
+      message: '爆文模板库请使用「上传→预览→发布给团队」流程，保证版本与条目一起原子发布。',
+      endpoint: '/api/team/public-resources/viral-templates',
+    }, { status: 400 });
+  }
+  if (!PUBLISHABLE.has(body.resourceType)) {
     return NextResponse.json({ error: 'invalid_resource' }, { status: 400 });
   }
   try {
