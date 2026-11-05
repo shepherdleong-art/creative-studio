@@ -134,6 +134,37 @@ try {
   assert.equal(again.prepared.absolutePath, prepared.absolutePath, '同源图 + 同预算必须复用缓存派生物');
   assert.equal(again.prepared.byteSize, prepared.byteSize);
 
+  // ── 扩展名与内容一致：交付物不会出现「jpeg 字节写成 .png」的错扩展名 ──
+  const deliveredExt = path.extname(prepared.absolutePath).toLowerCase();
+  const deliveredFormat = (await measure(preparedBuffer)).format;
+  const extMatchesFormat = deliveredFormat === 'jpeg'
+    ? ['.jpg', '.jpeg'].includes(deliveredExt)
+    : deliveredExt === `.${deliveredFormat}`;
+  assert.ok(extMatchesFormat, `派生物扩展名 ${deliveredExt} 必须与实际格式 ${deliveredFormat} 一致`);
+
+  // ── 并发：同一源图并行请求只落一份派生物，不串项目、不改原图 ──
+  const concurrencySource = path.join(storageRoot, 'concurrent.png');
+  await writeLargePng(concurrencySource);
+  const concurrencyHash = sha256File(concurrencySource);
+  const concurrentResults = await Promise.all([
+    prepareVideoJobImage({ providerType: 'openai-video', model: 'minimax-h3', role: 'reference', absolutePath: concurrencySource }),
+    prepareVideoJobImage({ providerType: 'openai-video', model: 'wan-3.0', role: 'reference', absolutePath: concurrencySource }),
+    // 尾帧预算（4.8MB）比参考/首帧（10 MiB）严，必须各自物化。
+    prepareVideoJobImage({ providerType: 'openai-video', model: 'minimax-h3', role: 'last-frame', absolutePath: concurrencySource }),
+  ]);
+  assert.ok(concurrentResults.every((entry) => entry !== null));
+  // H3 参考与 Wan 参考预算相同 → 同一份派生物；尾帧预算不同 → 不同派生物。
+  assert.equal(concurrentResults[0]!.prepared.absolutePath, concurrentResults[1]!.prepared.absolutePath,
+    '同预算的两个模型必须复用同一份派生物');
+  assert.notEqual(concurrentResults[0]!.prepared.absolutePath, concurrentResults[2]!.prepared.absolutePath,
+    '不同预算必须各自物化，不能互相覆盖');
+  assert.ok(concurrentResults[2]!.prepared.byteSize <= 4_800_000, '尾帧派生物必须满足更严的尾帧预算');
+  assert.equal(sha256File(concurrencySource), concurrencyHash, '并发不得修改原图');
+  // 只留下上面两份派生物，没有半成品或临时文件。
+  for (const file of derivativeFiles()) {
+    assert.ok(!file.endsWith('.tmp'), `并发不得留下临时文件：${file}`);
+  }
+
   // ── 小型合规图片：原样交付，不做无谓的有损重编码 ──
   const smallPath = path.join(storageRoot, 'small.jpg');
   await sharp({ create: { width: 1200, height: 900, channels: 3, background: '#336699' } })
@@ -264,6 +295,23 @@ try {
     );
   } finally {
     delete process.env.CREATIVE_STUDIO_VIDEO_SOURCE_MAX_BYTES;
+  }
+
+  // ── 关闭可选 COS 压缩不得绕过硬性模型限制 ──
+  // CREATIVE_STUDIO_COS_COMPRESS=0 只管 COS 上传那一步；预算判断在预处理阶段，
+  // 因此超限图仍然必须得到合规副本（或明确拒绝），不会因为关了 COS 压缩就放行。
+  process.env.CREATIVE_STUDIO_COS_COMPRESS = '0';
+  try {
+    const withCompressOff = await prepareVideoJobImage({
+      providerType: 'openai-video', model: 'minimax-h3', role: 'reference', absolutePath: largePath,
+    });
+    assert.ok(withCompressOff, '关闭 COS 压缩不得让预处理跳过预算');
+    assert.equal(withCompressOff.prepared.derived, true, '超限图仍必须物化合规副本');
+    assert.ok(withCompressOff.prepared.byteSize <= 10 * MIB, '关闭 COS 压缩时副本仍必须满足上游预算');
+    const compressOffMeasured = await measure(fs.readFileSync(withCompressOff.prepared.absolutePath));
+    assert.ok(['jpeg', 'png'].includes(String(compressOffMeasured.format)));
+  } finally {
+    delete process.env.CREATIVE_STUDIO_COS_COMPRESS;
   }
 
   // ── 有限阶梯压不到预算：抛错，绝不回退发送不合格原图 ──
