@@ -213,12 +213,25 @@ export async function createVideoJobsForShot(input: {
   // 文件，不会二次编码；进程内去重避免并发重复压缩。
   const deliveryByAssetId = new Map<string, { mimeType: string; byteSize: number }>();
   const deliveryBySourceImageId = new Map<string, { mimeType: string; byteSize: number }>();
-  try {
-    for (const [index, entry] of prepared.entries()) {
-      if ('error' in entry) continue;
-      const { item, provider } = entry;
-      if (item.generationMode === 'reference-to-video') {
-        const assetIds = item.referenceAssetIds;
+  // 逐条预处理：错误信息必须指向真正失败的那一条运镜，不能统一报第 1 条。
+  const preprocessError = async (
+    index: number,
+    run: () => Promise<void>,
+  ): Promise<string | null> => {
+    try {
+      await run();
+      return null;
+    } catch (error) {
+      if (error instanceof VideoPreprocessError) return itemError(index, error.message);
+      throw error;
+    }
+  };
+  for (const [index, entry] of prepared.entries()) {
+    if ('error' in entry) continue;
+    const { item, provider } = entry;
+    if (item.generationMode === 'reference-to-video') {
+      const assetIds = item.referenceAssetIds;
+      const error = await preprocessError(index, async () => {
         if (assetIds.length > 0) {
           for (const assetId of new Set(assetIds)) {
             const row = db.prepare(`SELECT id, path, mimeType FROM video_reference_assets WHERE id = ? AND projectId = ?`)
@@ -237,50 +250,48 @@ export async function createVideoJobsForShot(input: {
               });
             }
           }
-        } else if (sourceReference) {
-          const preparedImage = await prepareVideoJobImage({
-            providerType: provider.type,
-            model: provider.model,
-            role: 'reference',
-            absolutePath: sourceReference.path,
-          });
-          if (preparedImage) {
-            deliveryBySourceImageId.set(sourceImageId, {
-              mimeType: preparedImage.prepared.mimeType,
-              byteSize: preparedImage.prepared.byteSize,
-            });
-          }
+          return;
         }
-      } else {
-        // 首尾帧：首帧与尾帧预算不同（腾讯 FileInfos ≤10M / LastFrameUrl <5M）。
-        const frameAsset = db.prepare(`
-          SELECT originalPath, processedPath, path FROM image_assets WHERE id = ?
-        `).get(sourceImageId) as { originalPath: string | null; processedPath: string | null; path: string } | undefined;
-        const firstFramePath = frameAsset ? (frameAsset.originalPath || frameAsset.processedPath || frameAsset.path) : null;
-        if (!firstFramePath) return { ok: false, status: 400, error: itemError(index, '当前分镜图不存在或不属于当前项目') };
-        await prepareVideoJobImage({
-          providerType: provider.type, model: provider.model, role: 'first-frame', absolutePath: firstFramePath,
+        if (!sourceReference) return;
+        const preparedImage = await prepareVideoJobImage({
+          providerType: provider.type,
+          model: provider.model,
+          role: 'reference',
+          absolutePath: sourceReference.path,
         });
-        if (item.tailImageId) {
-          const tailAsset = db.prepare(`
-            SELECT originalPath, processedPath, path FROM image_assets WHERE id = ?
-          `).get(item.tailImageId) as { originalPath: string | null; processedPath: string | null; path: string } | undefined;
-          if (tailAsset) {
-            await prepareVideoJobImage({
-              providerType: provider.type,
-              model: provider.model,
-              role: 'last-frame',
-              absolutePath: tailAsset.originalPath || tailAsset.processedPath || tailAsset.path,
-            });
-          }
+        if (preparedImage) {
+          deliveryBySourceImageId.set(sourceImageId, {
+            mimeType: preparedImage.prepared.mimeType,
+            byteSize: preparedImage.prepared.byteSize,
+          });
         }
-      }
+      });
+      if (error) return { ok: false, status: 400, error };
+      continue;
     }
-  } catch (error) {
-    if (error instanceof VideoPreprocessError) {
-      return { ok: false, status: 400, error: input.batch ? `第 1 条运镜：${error.message}` : error.message };
-    }
-    throw error;
+    // 首尾帧：首帧与尾帧预算不同（腾讯 FileInfos ≤10M / LastFrameUrl <5M）。
+    const frameAsset = db.prepare(`
+      SELECT originalPath, processedPath, path FROM image_assets WHERE id = ?
+    `).get(sourceImageId) as { originalPath: string | null; processedPath: string | null; path: string } | undefined;
+    const firstFramePath = frameAsset ? (frameAsset.originalPath || frameAsset.processedPath || frameAsset.path) : null;
+    if (!firstFramePath) return { ok: false, status: 400, error: itemError(index, '当前分镜图不存在或不属于当前项目') };
+    const tailAsset = item.tailImageId
+      ? db.prepare(`SELECT originalPath, processedPath, path FROM image_assets WHERE id = ?`)
+        .get(item.tailImageId) as { originalPath: string | null; processedPath: string | null; path: string } | undefined
+      : undefined;
+    const frameError = await preprocessError(index, async () => {
+      await prepareVideoJobImage({
+        providerType: provider.type, model: provider.model, role: 'first-frame', absolutePath: firstFramePath,
+      });
+      if (!tailAsset) return;
+      await prepareVideoJobImage({
+        providerType: provider.type,
+        model: provider.model,
+        role: 'last-frame',
+        absolutePath: tailAsset.originalPath || tailAsset.processedPath || tailAsset.path,
+      });
+    });
+    if (frameError) return { ok: false, status: 400, error: frameError };
   }
 
   const videoJobIds: string[] = [];
