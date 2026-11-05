@@ -36,15 +36,27 @@ function sanitize(text) {
   return String(text).split(root).join('[isolated-data-root]');
 }
 
+/**
+ * 挑一个空闲的回环端口。
+ *
+ * 刻意从 3200 起扫：3000 是开发服务器默认端口，可能被主检出或其他票占用；
+ * 32xx 段给本票的浏览器验收用，撞车时逐个往上试。
+ */
 async function availablePort() {
-  const probe = net.createServer();
-  await new Promise((resolve, reject) => {
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', resolve);
-  });
-  const selected = probe.address().port;
-  await new Promise((resolve) => probe.close(resolve));
-  return selected;
+  for (let candidate = 3200; candidate < 3300; candidate += 1) {
+    const probe = net.createServer();
+    try {
+      await new Promise((resolve, reject) => {
+        probe.once('error', reject);
+        probe.listen(candidate, '127.0.0.1', resolve);
+      });
+      await new Promise((resolve) => probe.close(resolve));
+      return candidate;
+    } catch {
+      probe.close();
+    }
+  }
+  throw new Error('3200–3299 没有空闲端口可用');
 }
 
 function environment() {
