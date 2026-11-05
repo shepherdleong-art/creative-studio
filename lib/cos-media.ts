@@ -64,7 +64,11 @@ const DEFAULT_URL_TTL_SEC = 86_400;
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_DIM = 4_096;
 const DEFAULT_QUALITY = 90;
-const DEFAULT_VIDEO_MAX_BYTES = 4_800_000;
+/**
+ * 腾讯尾帧（LastFrameUrl <5M）留余量阈值。**单一来源**：
+ * `video-reference-preprocess.ts` 的上游交付预算直接复用这个常量，别再存第二份。
+ */
+export const DEFAULT_VIDEO_MAX_BYTES = 4_800_000;
 const DEFAULT_VIDEO_MAX_DIM = 4_096;
 const DEFAULT_VIDEO_QUALITY = 95;
 const EXISTS_CHECK_TIMEOUT_MS = 30_000;

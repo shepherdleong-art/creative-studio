@@ -1,6 +1,7 @@
 import {
   getVideoMotionGenerationMode,
   type ReferenceUploadState,
+  type TailFrameUploadState,
   type VideoGenerationMode,
   type VideoReferenceAsset,
 } from './video-tail-frame-state.ts';
@@ -18,6 +19,8 @@ export interface BulkPromptRow {
   prompt: string;
   templateId?: string | null;
   tailImageId?: string | null;
+  /** 尾帧上传操作状态；自动模式据此判断「上传中/删除中/失败」不可提交。 */
+  tailUploadState?: TailFrameUploadState;
   generationMode?: VideoGenerationMode;
   referenceAssets?: readonly VideoReferenceAsset[];
   referenceUploadState?: ReferenceUploadState;
@@ -58,9 +61,18 @@ export function serializeVideoGenerationFields(
   };
   if (options.automaticMode) {
     fields.modeIntent = 'auto';
-    fields.autoTailState = options.autoTailState ?? 'none';
+    // 必须带三态：服务端拒绝缺声明的自动模式请求（§6 行2 禁止静默退回单图）。
+    // 调用方漏传时按本行草稿推导，绝不默认成 'none'——那会把「上传中」说成「没有尾帧」。
+    fields.autoTailState = options.autoTailState ?? rowTailDraftState(row);
   }
   return fields;
+}
+
+/** 由行草稿推导三态；上传中/删除中/失败都算 pending（不可提交）。 */
+function rowTailDraftState(row: BulkPromptRow): 'none' | 'ready' | 'pending' {
+  const state = row.tailUploadState;
+  if (state === 'uploading' || state === 'deleting' || state === 'failed') return 'pending';
+  return row.tailImageId ? 'ready' : 'none';
 }
 
 export interface BulkPromptShot<Row extends BulkPromptRow = BulkPromptRow> {
