@@ -37,8 +37,8 @@ export function relativePayloadPath(root, file) {
 }
 
 export function assertExactTopLevel(root, consumer) {
-  const expected = [...forbiddenSpec.consumers[consumer].topLevel].sort();
-  const actual = fs.readdirSync(root).sort();
+  const expected = [...forbiddenSpec.consumers[consumer].topLevel].toSorted();
+  const actual = fs.readdirSync(root).toSorted();
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(`${consumer} 顶层白名单不符：${actual.join(',')}`);
   }
