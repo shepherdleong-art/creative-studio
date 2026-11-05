@@ -1,4 +1,5 @@
 import { getShanghaiUsagePeriods, parseUsageBoundary } from '../usage-query.ts';
+import { usagePresetRange } from '../usage-date-range.ts';
 import { TeamUsageError, type TeamUsageFilters } from './usage.ts';
 
 function boundary(value: string | null): string | undefined {
@@ -13,8 +14,10 @@ export function readTeamUsageFilters(request: Request): TeamUsageFilters {
   const params = new URL(request.url).searchParams;
   const periods = getShanghaiUsagePeriods();
   const period = params.get('period') || 'today';
-  if (!['today', 'month', 'custom'].includes(period)) throw new TeamUsageError(400, 'invalid_usage_query', '用量账期无效。');
-  const defaults = period === 'month' ? periods.month : periods.today;
+  if (!['today', 'last7', 'week', 'month', 'custom'].includes(period)) throw new TeamUsageError(400, 'invalid_usage_query', '用量账期无效。');
+  const last7Range = usagePresetRange('last7');
+  const last7 = { from: boundary(last7Range.from) as string, to: periods.today.to };
+  const defaults = period === 'month' ? periods.month : period === 'last7' ? last7 : period === 'week' ? periods.week : periods.today;
   const from = boundary(params.get('from')) ?? defaults.from;
   const to = boundary(params.get('to')) ?? defaults.to;
   if (from >= to) throw new TeamUsageError(400, 'invalid_usage_query', '开始时间必须早于结束时间。');

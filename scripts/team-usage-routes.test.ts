@@ -160,10 +160,26 @@ try {
   assert.equal(teamBody.items.length, 1);
   assert.equal(teamBody.items[0].actorUserId, bob.principal.userId);
   assert.equal(teamBody.totals.estimatedMinor, 25);
+  assert.equal(teamBody.teamQuota.chargedMinor, 25);
+  assert.equal(teamBody.teamQuota.heldMinor, 25);
+  assert.equal(teamBody.teamQuota.accountingPeriod, '2026-11');
+  assert.equal(teamBody.models[0].model, 'image-test');
+  assert.equal(teamBody.models[0].chargedMinor, 25);
+  assert.equal(teamBody.trend.reduce((sum: number, point: { chargedMinor: number }) => sum + point.chargedMinor, 0), 25);
+  assert.equal(teamBody.members.find((member: { userId: string }) => member.userId === bob.principal.userId).rangeChargedMinor, 25);
+  const drilldown = await usageRoute.GET(request(`https://studio.example.test/api/team/usage?period=month&scope=team&actorUserId=${bob.principal.userId}`, adminCookie));
+  const drilldownBody = await drilldown.json();
+  assert.equal(drilldownBody.items.length, 1);
+  assert.equal(drilldownBody.member.userId, bob.principal.userId);
+  assert.equal(drilldownBody.models[0].callCount, 1);
+  const teamToday = await usageRoute.GET(request('https://studio.example.test/api/team/usage?period=today&scope=team', adminCookie));
+  assert.equal((await teamToday.json()).teamQuota.chargedMinor, 25, '团队额度不随分析日期筛选变化');
   const employeeTeam = await usageRoute.GET(request('https://studio.example.test/api/team/usage?scope=team', alice.cookie));
   const employeeTeamBody = await employeeTeam.json();
   assert.equal(employeeTeamBody.scope, 'self');
   assert.equal(employeeTeamBody.items.length, 0);
+  assert.equal(employeeTeamBody.teamQuota, null);
+  assert.deepEqual(employeeTeamBody.members, []);
 
   const ownUsage = await usageRoute.GET(request('https://studio.example.test/api/team/usage', alice.cookie));
   assert.equal(ownUsage.status, 200, await ownUsage.clone().text());
