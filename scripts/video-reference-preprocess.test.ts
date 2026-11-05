@@ -415,6 +415,40 @@ try {
   assert.equal(withTmp.scanned, 2, '只统计正式派生物，不含 .tmp 半成品');
   assert.equal(withTmp.deleted, 2, 'maxAgeMs=0 时两个正式派生物都算超龄');
 
+  // 正在进行中的编码/交付不得被删（inFlight 保护）。
+  // 真的并发跑：先物化一份大图派生物，再对同一源图重复 prepare（命中复用校验路径，
+  // 该路径会在 inFlight 里挂住 targetPath），同时不断以「全部超龄」的激进参数回收。
+  // 保护生效时派生物始终在盘上且复用返回的仍是同一个可读文件；缺保护则会被删掉。
+  fs.mkdirSync(derivativeDir, { recursive: true });
+  const largeCleanupSource = path.join(storageRoot, 'cleanup-large.png');
+  await writeLargePng(largeCleanupSource);
+  const seeded = await prepareVideoJobImage({
+    providerType: 'openai-video', model: 'minimax-h3', role: 'reference', absolutePath: largeCleanupSource,
+  });
+  assert.ok(seeded?.prepared.derived);
+  const derivativePath = seeded.prepared.absolutePath;
+  const derivativeBytes = seeded.prepared.byteSize;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const inflight = prepareVideoJobImage({
+      providerType: 'openai-video', model: 'minimax-h3', role: 'reference', absolutePath: largeCleanupSource,
+    });
+    // 回收循环与 prepare 并发；每次都用「全部超龄 + 零字节上限」的最激进策略。
+    const aggressive = setInterval(() => {
+      try {
+        cleanupVideoDerivatives({ maxAgeMs: 0, maxBytes: 0, now: () => nowMs + 400 * day });
+      } catch { /* 回收失败不影响这里的断言 */ }
+    }, 1);
+    let reused: Awaited<ReturnType<typeof prepareVideoJobImage>>;
+    try {
+      reused = await inflight;
+    } finally {
+      clearInterval(aggressive);
+    }
+    assert.equal(reused?.prepared.absolutePath, derivativePath, '复用必须仍指向同一份派生物');
+    assert.equal(fs.existsSync(derivativePath), true, `第 ${attempt + 1} 次：inFlight 中的派生物不得被回收`);
+    assert.equal(fs.statSync(derivativePath).size, derivativeBytes, 'inFlight 中的派生物字节不得被改动');
+  }
+
   console.log('video reference preprocess tests passed');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
