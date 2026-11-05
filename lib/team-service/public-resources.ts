@@ -59,32 +59,8 @@ export async function publishBuiltinResources(db: Database.Database, principal: 
       }
     }
   }
-  if (tableExists(db, 'script_studio_viral_tpl_libraries')) {
-    for (const library of db.prepare('SELECT id FROM script_studio_viral_tpl_libraries').all() as Array<{ id: string }>) {
-      if (!hasScope(db, 'viral_template_library', library.id)) {
-        registerRootScope(db, { resourceType: 'viral_template_library', resourceId: library.id, ownerUserId: principal.userId, visibility: 'public' });
-      }
-    }
-  }
-  if (tableExists(db, 'script_studio_viral_tpl_revisions')) {
-    for (const revision of db.prepare('SELECT id, libraryId FROM script_studio_viral_tpl_revisions').all() as Array<{ id: string; libraryId: string }>) {
-      if (!hasScope(db, 'viral_template_revision', revision.id)) {
-        registerInheritedScope(db, {
-          resourceType: 'viral_template_revision', resourceId: revision.id,
-          parent: { resourceType: 'viral_template_library', resourceId: revision.libraryId }, visibility: 'public',
-        });
-      }
-    }
-  }
-  if (tableExists(db, 'script_studio_viral_tpl_entries')) {
-    for (const entry of db.prepare('SELECT id, revisionId FROM script_studio_viral_tpl_entries').all() as Array<{ id: string; revisionId: string }>) {
-      if (!hasScope(db, 'viral_template_entry', entry.id)) {
-        registerInheritedScope(db, {
-          resourceType: 'viral_template_entry', resourceId: entry.id,
-          parent: { resourceType: 'viral_template_revision', resourceId: entry.revisionId }, visibility: 'public',
-        });
-      }
-    }
-  }
+  // 爆文模板库不在这里批量公开：团队版本必须由管理员经「上传→预览→发布」原子发布
+  // （规格 §3），逐条/批量把库根设为 public 会留下「库公开、条目私有」的撕裂状态，
+  // 也会连带公开管理员或员工的私人历史修订。既有个人修订由发布入口作为候选列出。
   await runWithAccessContext(createTeamAccessContext({ db, principal }), () => ensureBundledViralPresets(db));
 }

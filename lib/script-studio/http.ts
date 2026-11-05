@@ -30,7 +30,8 @@ export function errorResponse(error: unknown): { status: number; body: Record<st
     : 'script_studio_error';
   const message = error instanceof Error ? error.message : String(error);
   const status = code === 'not_found' ? 404
-    : code === 'invalid_input' || code === 'resource_limit' ? 400
+    : code === 'forbidden' ? 403
+      : code === 'invalid_input' || code === 'resource_limit' ? 400
       : code === 'conflict' ? 409
         : code === 'provider_unavailable' || code === 'unavailable' ? 503
           : 500;

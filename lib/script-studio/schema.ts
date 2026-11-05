@@ -470,6 +470,16 @@ export const SCRIPT_STUDIO_MIGRATIONS: ReadonlyArray<ScriptStudioMigration> = [
       CREATE INDEX IF NOT EXISTS idx_ssvl_owner ON script_studio_viral_tpl_libraries(ownerKey, createdAt);
     `,
   },
+  {
+    // 团队公共爆文模板库的唯一身份（2026-11-05，票 01）：团队库不是「管理员当前个人库」，
+    // 而是 ownerKey 为固定哨兵值的独立库——唯一性由部分索引在数据库层保证，
+    // 发布时对当前指针做 CAS，避免无提示覆盖其他管理员刚发布的版本。
+    // 只追加，不改 v12 已有条目。
+    version: 13,
+    sql: `
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ssvl_team ON script_studio_viral_tpl_libraries(ownerKey) WHERE ownerKey = '__team__';
+    `,
+  },
 ];
 
 export type ScriptStudioSchemaFailureCode =

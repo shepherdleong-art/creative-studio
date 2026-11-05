@@ -63,35 +63,35 @@ export interface ViralTemplateEntryRecord {
   createdAt: string;
 }
 
+/**
+ * 团队公共爆文模板库的固定身份。团队库不是「管理员当前个人库」：
+ * 它是一条 ownerKey 为哨兵值的独立库记录，唯一性由部分唯一索引保证
+ * （schema v13）。个人库仍以 ownerKey = 用户 ID 保存，二者互不顶替。
+ */
+export const TEAM_VIRAL_TEMPLATE_OWNER_KEY = '__team__';
+
 function nowIso(now?: () => Date): string {
   return (now ?? (() => new Date()))().toISOString();
 }
 
-export function getOrCreateViralTemplateLibrary(db: Database.Database, now?: () => Date): ViralTemplateLibraryRecord {
+export function findTeamViralTemplateLibrary(db: Database.Database): ViralTemplateLibraryRecord | null {
+  return (db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries WHERE ownerKey = ? ORDER BY createdAt, id LIMIT 1`)
+    .get(TEAM_VIRAL_TEMPLATE_OWNER_KEY) as ViralTemplateLibraryRecord | undefined) ?? null;
+}
+
+/** 本地模式的单例库（local 行为保持不变：首次读写即建库）。 */
+export function getOrCreateLocalViralTemplateLibrary(db: Database.Database, now?: () => Date): ViralTemplateLibraryRecord {
+  const existing = db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries WHERE ownerKey = 'local' ORDER BY createdAt, id LIMIT 1`)
+    .get() as ViralTemplateLibraryRecord | undefined;
+  if (existing) return existing;
   const access = requireAccessContext();
-  const records = db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries ORDER BY createdAt, id`)
-    .all() as ViralTemplateLibraryRecord[];
-  let publicRecord: ViralTemplateLibraryRecord | undefined;
-  for (const record of records) {
-    if (access.kind === 'team') {
-      try {
-        access.assertAccess('viral_template_library', record.id, 'read');
-      } catch {
-        continue;
-      }
-    }
-    if (access.kind === 'local' || record.ownerKey === access.actor.userId) return record;
-    publicRecord ??= record;
-  }
-  if (publicRecord) return publicRecord;
   const id = randomUUID();
   const ts = nowIso(now);
-  const ownerKey = access.kind === 'team' ? access.actor.userId : 'local';
   const create = db.transaction(() => {
     db.prepare(`
       INSERT INTO script_studio_viral_tpl_libraries (id, currentRevisionId, ownerKey, createdAt, updatedAt)
-      VALUES (?, NULL, ?, ?, ?)
-    `).run(id, ownerKey, ts, ts);
+      VALUES (?, NULL, 'local', ?, ?)
+    `).run(id, ts, ts);
     access.registerRootScope({
       resourceType: 'viral_template_library', resourceId: id,
       ownerUserId: access.actor.userId, visibility: 'private',
@@ -99,6 +99,64 @@ export function getOrCreateViralTemplateLibrary(db: Database.Database, now?: () 
   });
   create.immediate();
   return db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries WHERE id = ?`).get(id) as ViralTemplateLibraryRecord;
+}
+
+/**
+ * 当前主体自己的（个人）模板库。团队模式下只有管理员可以创建个人库——
+ * 员工不得导入私人模板库；读路径一律先看团队当前版本，个人库永不遮住团队版本。
+ */
+export function getOrCreateViralTemplateLibrary(db: Database.Database, now?: () => Date): ViralTemplateLibraryRecord {
+  const access = requireAccessContext();
+  if (access.kind === 'local') return getOrCreateLocalViralTemplateLibrary(db, now);
+  const existing = db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries WHERE ownerKey = ? ORDER BY createdAt, id LIMIT 1`)
+    .get(access.actor.userId) as ViralTemplateLibraryRecord | undefined;
+  if (existing) return existing;
+  if (access.actor.role !== 'admin') {
+    throw new ScriptStudioError('forbidden', '员工不能创建私人爆文模板库，请使用管理员发布的团队版本。');
+  }
+  const id = randomUUID();
+  const ts = nowIso(now);
+  const create = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO script_studio_viral_tpl_libraries (id, currentRevisionId, ownerKey, createdAt, updatedAt)
+      VALUES (?, NULL, ?, ?, ?)
+    `).run(id, access.actor.userId, ts, ts);
+    access.registerRootScope({
+      resourceType: 'viral_template_library', resourceId: id,
+      ownerUserId: access.actor.userId, visibility: 'private',
+    });
+  });
+  create.immediate();
+  return db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries WHERE id = ?`).get(id) as ViralTemplateLibraryRecord;
+}
+
+export type ViralTemplateLibrarySource = 'local' | 'team' | null;
+
+export interface ViralTemplateLibraryResolution {
+  library: ViralTemplateLibraryRecord | null;
+  source: ViralTemplateLibrarySource;
+  /** 管理员（可上传/发布/切团队版本）；local 模式恒为 true。 */
+  canManage: boolean;
+}
+
+/**
+ * 读路径的唯一解析入口：团队模式解析**团队当前库**，个人空库/非空库都不参与，
+ * 且绝不创建任何库（读请求不能顺手为员工建空私人库）。local 模式仍是单例库。
+ */
+export function resolveViralTemplateLibrary(db: Database.Database): ViralTemplateLibraryResolution {
+  const access = requireAccessContext();
+  if (access.kind === 'local') {
+    return { library: getOrCreateLocalViralTemplateLibrary(db), source: 'local', canManage: true };
+  }
+  const canManage = access.actor.role === 'admin';
+  const team = findTeamViralTemplateLibrary(db);
+  if (!team) return { library: null, source: null, canManage };
+  try {
+    access.assertAccess('viral_template_library', team.id, 'read');
+  } catch {
+    return { library: null, source: null, canManage };
+  }
+  return { library: team, source: 'team', canManage };
 }
 
 export interface ViralTemplateImportOutcome {
@@ -117,7 +175,7 @@ export async function previewViralTemplateImport(buffer: Buffer): Promise<ViralT
   return { ...parsed.report, entries: parsed.entries };
 }
 
-/** 确认导入：指纹幂等 + 单事务发布库修订。 */
+/** 确认导入（个人库）：指纹幂等 + 单事务发布库修订。团队模式仅管理员可导入个人库。 */
 export async function importViralTemplateLibrary(
   db: Database.Database,
   buffer: Buffer,
@@ -125,6 +183,10 @@ export async function importViralTemplateLibrary(
   now?: () => Date,
   options?: { onlyIfEmpty?: boolean },
 ): Promise<ViralTemplateImportOutcome> {
+  const actor = requireAccessContext();
+  if (actor.kind === 'team' && actor.actor.role !== 'admin') {
+    throw new ScriptStudioError('forbidden', '员工不能导入私人爆文模板库，请使用管理员发布的团队版本。');
+  }
   assertXlsxBuffer(buffer);
   const workbook = await loadWorkbook(buffer);
   const sheets = workbook.worksheets.map((worksheet) => sheetToWorkbookSheet(worksheet));
@@ -198,14 +260,23 @@ export async function importViralTemplateLibrary(
 }
 
 export interface ViralTemplateLibraryView {
-  library: ViralTemplateLibraryRecord;
+  /** null 表示当前主体没有可读的库（团队模式未发布任何版本）。 */
+  library: ViralTemplateLibraryRecord | null;
+  source: ViralTemplateLibrarySource;
+  canManage: boolean;
   current: (ViralTemplateRevisionRecord & { report: ViralTemplateImportReport; entryCounts: { total: number; usable: number; unusable: number; review: number } }) | null;
   revisions: Array<ViralTemplateRevisionRecord & { current: boolean; entryCount: number }>;
 }
 
+/**
+ * 状态视图是只读入口：团队模式只解析团队当前版本，不创建库、不列私人历史；
+ * 旧任务读到的已发布旧修订由条目级读取（listViralTemplateEntries 指定 revisionId）保证。
+ */
 export function getViralTemplateLibraryView(db: Database.Database): ViralTemplateLibraryView {
-  const library = getOrCreateViralTemplateLibrary(db);
   const access = requireAccessContext();
+  const resolution = resolveViralTemplateLibrary(db);
+  const library = resolution.library;
+  if (!library) return { library: null, source: resolution.source, canManage: resolution.canManage, current: null, revisions: [] };
   const revisions = (db.prepare(`
     SELECT r.*, (SELECT COUNT(*) FROM script_studio_viral_tpl_entries e WHERE e.revisionId = r.id) AS entryCount
     FROM script_studio_viral_tpl_revisions r WHERE r.libraryId = ? ORDER BY r.revisionNumber DESC
@@ -221,6 +292,11 @@ export function getViralTemplateLibraryView(db: Database.Database): ViralTemplat
       return [{ ...row, current: row.id === library.currentRevisionId }];
     });
   const currentRow = revisions.find((row) => row.current);
+  // 员工统一使用团队当前已发布版本，不提供版本列表（也不能切版本）；
+  // 已发布旧版本的条目仍可按 revisionId 读取，历史任务/断连重试不受影响。
+  const visibleRevisions = access.kind === 'team' && access.actor.role !== 'admin' && currentRow
+    ? revisions.filter((row) => row.current)
+    : revisions;
   let current: ViralTemplateLibraryView['current'] = null;
   if (currentRow) {
     const counts = db.prepare(`
@@ -235,18 +311,27 @@ export function getViralTemplateLibraryView(db: Database.Database): ViralTemplat
     try { report = JSON.parse(currentRow.importReportJson) as ViralTemplateImportReport; } catch { /* 保留空报告 */ }
     current = { ...currentRow, report, entryCounts };
   }
-  return { library, current, revisions };
+  return { library, source: resolution.source, canManage: resolution.canManage, current, revisions: visibleRevisions };
 }
 
-/** 激活历史修订（只切当前指针，不改条目；与 catalogs 同语义）。 */
+/**
+ * 激活历史修订（只切当前指针，不改条目；与 catalogs 同语义）。
+ * 团队模式要求可管理的当前库（管理员），员工直接被拒绝。
+ */
 export function setViralTemplateCurrentRevision(
   db: Database.Database,
   revisionId: string,
   now?: () => Date,
 ): { libraryId: string; currentRevisionId: string } {
-  const library = getOrCreateViralTemplateLibrary(db, now);
   const access = requireAccessContext();
-  if (access.kind === 'team') access.assertAccess('viral_template_library', library.id, 'write');
+  const library = access.kind === 'local'
+    ? getOrCreateLocalViralTemplateLibrary(db, now)
+    : resolveViralTemplateLibrary(db).library;
+  if (!library) throw new ScriptStudioError('not_found', '团队尚未发布爆文模板库');
+  if (access.kind === 'team') {
+    if (access.actor.role !== 'admin') throw new ScriptStudioError('forbidden', '只有管理员可以切换团队模板版本');
+    access.assertAccess('viral_template_library', library.id, 'write');
+  }
   const revision = db.prepare(`
     SELECT id FROM script_studio_viral_tpl_revisions WHERE id = ? AND libraryId = ?
   `).get(revisionId, library.id) as { id: string } | undefined;
@@ -261,8 +346,8 @@ export function listViralTemplateEntries(
   db: Database.Database,
   options: { revisionId?: string; status?: ViralTemplateStatus | 'all'; category?: string; q?: string; limit?: number } = {},
 ): ViralTemplateEntryRecord[] {
-  const library = getOrCreateViralTemplateLibrary(db);
-  const revisionId = options.revisionId || library.currentRevisionId;
+  // 显式 revisionId 优先（旧任务/已发布旧版本仍可读）；否则取当前解析出的库指针。
+  const revisionId = options.revisionId || resolveViralTemplateLibrary(db).library?.currentRevisionId;
   if (!revisionId) return [];
   const conditions = ['revisionId = ?'];
   const params: unknown[] = [revisionId];
@@ -373,10 +458,19 @@ function templateMatchText(entry: ViralTemplateEntryRecord): string {
   return [entry.name, entry.title, entry.refText.slice(0, 200), entry.structureSummary].join('\n');
 }
 
+export interface ViralTemplateRecommendResult {
+  recommendations: ViralTemplateRecommendation[];
+  usableCount: number;
+  /** 是否有可读的当前模板版本；false 时前端应展示「联系管理员发布」的真实空状态。 */
+  hasCurrentRevision: boolean;
+  librarySource: ViralTemplateLibrarySource;
+}
+
 export function recommendViralTemplates(
   db: Database.Database,
   input: ViralTemplateRecommendInput,
-): { recommendations: ViralTemplateRecommendation[]; usableCount: number } {
+): ViralTemplateRecommendResult {
+  const resolution = resolveViralTemplateLibrary(db);
   const usable = listViralTemplateEntries(db, { status: 'usable', limit: 500 });
   const sellingTokens = new Set<string>();
   for (const text of input.sellingPointTexts) {
@@ -413,7 +507,12 @@ export function recommendViralTemplates(
   // 稳定排序：分数降序，同分按条目内部 ID 升序（相同输入排序稳定）。
   scored.sort((a, b) => (b.score - a.score) || (a.entry.id < b.entry.id ? -1 : 1));
   const limit = Math.max(1, Math.min(50, Math.floor(input.limit ?? 12) || 12));
-  return { recommendations: scored.slice(0, limit), usableCount: usable.length };
+  return {
+    recommendations: scored.slice(0, limit),
+    usableCount: usable.length,
+    hasCurrentRevision: Boolean(resolution.library?.currentRevisionId),
+    librarySource: resolution.source,
+  };
 }
 
 // ---------------------------------------------------------------------------

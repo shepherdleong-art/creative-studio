@@ -3,7 +3,14 @@
 import { useState, type FormEvent } from 'react';
 import { teamError, teamWrite } from './client';
 import TeamBgmLibrary from './TeamBgmLibrary';
+import TeamViralTemplateLibrary from './TeamViralTemplateLibrary';
 
+/**
+ * 公共资源页（票 01 / 规格 §3）。
+ *
+ * 爆文模板走独立的「上传 → 预览 → 发布」闭环（TeamViralTemplateLibrary），
+ * 不再依赖手工填写的「资源类型 + 资源 ID」表单；该表单只保留其余资源类型。
+ */
 const PUBLISHABLE: Array<{ value: string; label: string }> = [
   { value: 'video_prompt_template', label: '视频提示词模板' },
   { value: 'title_preset', label: '标题预设' },
@@ -11,9 +18,6 @@ const PUBLISHABLE: Array<{ value: string; label: string }> = [
   { value: 'script_catalog', label: '脚本目录' },
   { value: 'script_catalog_revision', label: '脚本目录修订' },
   { value: 'script_template_asset', label: '模板素材' },
-  { value: 'viral_template_library', label: '爆文模板库' },
-  { value: 'viral_template_revision', label: '爆文模板修订' },
-  { value: 'viral_template_entry', label: '爆文模板条目' },
 ];
 
 export default function TeamPublicResourcesPanel() {
@@ -49,13 +53,14 @@ export default function TeamPublicResourcesPanel() {
       <div>
         <h1 className="text-3xl font-semibold tracking-tight text-ink">公共资源发布</h1>
         <p className="mt-2 text-sm text-ink-secondary">
-          管理团队共用的音乐与素材。BGM 可直接上传，发布后成员即可在制作中选用。
+          管理团队共用的爆文模板、音乐与素材。上传后发布给团队，成员即可在制作中选用。
         </p>
       </div>
 
       {error && <p role="alert" className="text-sm text-fail">{error}</p>}
       {notice && <p role="status" className="text-sm text-ok">{notice}</p>}
 
+      <TeamViralTemplateLibrary />
       <TeamBgmLibrary />
       <section className="card p-6">
         <h2 className="mb-5 text-lg font-semibold text-ink">发布其他已有资源</h2>
@@ -73,7 +78,8 @@ export default function TeamPublicResourcesPanel() {
           <button className="btn-primary" disabled={busy || !resourceId.trim()} type="submit">发布为公共资源</button>
         </form>
         <p className="mt-4 text-xs leading-5 text-ink-tertiary">
-          公共资源只在 server 模式可用；本机字体、打包模板等入口在 server 模式下保持禁用。
+          爆文模板库在上方卡片内直接上传发布，不需要填写资源 ID。公共资源只在 server 模式可用；
+          本机字体、打包模板等入口在 server 模式下保持禁用。
         </p>
       </section>
     </div>

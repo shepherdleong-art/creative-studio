@@ -102,6 +102,8 @@ export default function TemplateRewritePicker({
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<ViralTemplateEntryView[] | null>(null);
   const [expandBeyond, setExpandBeyond] = useState(false);
+  const [hasCurrentRevision, setHasCurrentRevision] = useState(true);
+  const [librarySource, setLibrarySource] = useState<'local' | 'team' | null>(null);
 
   const loadRecommend = useCallback(async (expand: boolean) => {
     setLoading(true);
@@ -112,10 +114,15 @@ export default function TemplateRewritePicker({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expandBeyondCategory: expand, limit: 12 }),
       });
-      const body = (await res.json().catch(() => ({}))) as { message?: string; recommendations?: RecommendationView[]; usableCount?: number };
+      const body = (await res.json().catch(() => ({}))) as {
+        message?: string; recommendations?: RecommendationView[]; usableCount?: number;
+        hasCurrentRevision?: boolean; librarySource?: 'local' | 'team' | null;
+      };
       if (!res.ok) throw new Error(body.message || `推荐加载失败：HTTP ${res.status}`);
       setRecommendations(Array.isArray(body.recommendations) ? body.recommendations : []);
       setUsableCount(Number(body.usableCount ?? 0));
+      setHasCurrentRevision(body.hasCurrentRevision !== false);
+      setLibrarySource(body.librarySource ?? null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -262,9 +269,13 @@ export default function TemplateRewritePicker({
         <>
           {recommendations.length === 0 ? (
             <p className="rounded-[14px] bg-surface-subtle p-4 text-sm text-ink-tertiary">
-              {usableCount === 0
-                ? '爆文模板库还是空的：请先到「设置 → 脚本知识与模板 → 爆文模板库」导入 .xlsx。'
-                : `当前卖点库与模板库没有匹配项（库内共 ${usableCount} 个可用模板）。可用搜索查找其他模板，或勾选「类目不足时扩大搜索」。`}
+              {!hasCurrentRevision
+                ? (librarySource === 'team'
+                  ? '团队还没有发布爆文模板库，请联系管理员在「公共资源 → 爆文模板库」上传并发布。'
+                  : '爆文模板库还是空的：请先到「设置 → 脚本知识与模板 → 爆文模板库」导入 .xlsx。')
+                : usableCount === 0
+                  ? '当前团队模板版本里没有可用模板，请联系管理员重新发布。'
+                  : `当前卖点库与模板库没有匹配项（团队版本共 ${usableCount} 个可用模板）。可用搜索查找其他模板，或勾选「类目不足时扩大搜索」。`}
             </p>
           ) : (
             <div className="space-y-2">
