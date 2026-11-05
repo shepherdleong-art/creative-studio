@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
-import type { SubmitReferenceVideoRequest } from '../lib/video-providers/types.ts';
+import type { SubmitReferenceVideoRequest, SubmitVideoRequest } from '../lib/video-providers/types.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'video-queue-reference-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = root;
@@ -427,6 +427,95 @@ try {
   assert.equal(unreachableSubmitCalls, 0, '预处理拒绝必须零生成 POST');
   assert.equal(fake.cosPosts, 0);
   clearCos();
+
+  // ══ 规格 §6：老任务按**冻结字段**执行，不在 worker 重新推导当前 UI 规则 ══
+  // 老 reference 任务重试仍是 Reference；老 image 任务仍是首尾帧；
+  // 两者都只读任务冻结的 sourceImageId，不读分镜最新图。
+  project('frozen-modes');
+  provider('frozen-h3', 'openai-video', 'minimax-h3', 'http://127.0.0.1:4000');
+  const latestPath = path.join(root, 'frozen-latest.png');
+  await sharp({ create: { width: 1600, height: 900, channels: 3, background: '#22aa55' } }).png().toFile(latestPath);
+  db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path)
+    VALUES ('frozen-latest-image', 'frozen-modes', 'input', 'latest.png', ?)`).run(latestPath);
+  db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, usage)
+    VALUES ('frozen-tail', 'frozen-modes', 'input', 'frozen-tail.png', ?, 'video_tail_frame')`).run(referenceOtherPath);
+  db.prepare("INSERT INTO shot_sets (id, projectId, name) VALUES ('frozen-set', 'frozen-modes', 'frozen')").run();
+  db.prepare("INSERT INTO shots (id, shotSetId, sourceImageId, indexNum, latestGeneratedImageId) VALUES ('frozen-shot', 'frozen-set', 'poster-frozen-modes', 1, 'frozen-latest-image')").run();
+  // 老 reference 任务（冻结 generationMode=reference-to-video，无显式参考列表）
+  db.prepare(`INSERT INTO video_jobs
+    (id, projectId, shotSetId, shotId, sourceImageId, providerId, model, prompt, durationSec, generationMode, aspectRatio, resolution, status, maxAttempts)
+    VALUES ('frozen-reference-job', 'frozen-modes', 'frozen-set', 'frozen-shot', 'poster-frozen-modes', 'frozen-h3', 'minimax-h3',
+      '老参考任务', 5, 'reference-to-video', '16:9', '2K', 'pending', 1)`).run();
+  // 老 image 任务（冻结 generationMode=image-to-video，冻结 tailImageId）
+  db.prepare(`INSERT INTO video_jobs
+    (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, prompt, durationSec, generationMode, status, maxAttempts)
+    VALUES ('frozen-image-job', 'frozen-modes', 'frozen-set', 'frozen-shot', 'poster-frozen-modes', 'frozen-tail', 'frozen-h3', 'minimax-h3',
+      '老首尾帧任务', 4, 'image-to-video', 'pending', 1)`).run();
+  companyRuntime();
+  const frozenReferenceRequests: SubmitReferenceVideoRequest[] = [];
+  const frozenFrameRequests: SubmitVideoRequest[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('/v1/videos') && init?.method === 'POST') {
+      return new Response(JSON.stringify({ id: `remote-${frozenFrameRequests.length}`, status: 'queued' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (init?.method === 'PUT') return new Response(null, { status: 200 });
+    if (new Headers(init?.headers).get('range') === 'bytes=0-0') return new Response(null, { status: 404 });
+    return new Response(null, { status: 500 });
+  }) as typeof fetch;
+  // 用真适配器：只有真适配器才能证明 FileInfos 角色来自冻结模式，而不是我们伪造的请求。
+  providers.registerTestVideoAdapter('openai-video', {
+    ...openaiVideoAdapter,
+    poll: async () => ({ status: 'failed' as const, errorMessage: 'test complete', rawResponse: null }),
+    minimumPollingTimeoutMs: () => 0,
+  });
+  const originalSubmitReference = openaiVideoAdapter.submitReference!;
+  const originalSubmit = openaiVideoAdapter.submit;
+  providers.registerTestVideoAdapter('openai-video', {
+    ...openaiVideoAdapter,
+    submitReference: async (request, apiKey, baseUrl, signal) => {
+      frozenReferenceRequests.push(request);
+      return originalSubmitReference(request, apiKey, baseUrl, signal);
+    },
+    submit: async (request, apiKey, baseUrl, signal) => {
+      frozenFrameRequests.push(request);
+      return originalSubmit(request, apiKey, baseUrl, signal);
+    },
+    poll: async () => ({ status: 'failed' as const, errorMessage: 'test complete', rawResponse: null }),
+    minimumPollingTimeoutMs: () => 0,
+  });
+  await queue.runVideoQueue({ projectId: 'frozen-modes', concurrency: 2, timeoutMs: 60_000 });
+  assert.equal(frozenReferenceRequests.length, 1, '老 reference 任务必须仍走 submitReference');
+  assert.equal(frozenFrameRequests.length, 1, '老 image 任务必须仍走首尾帧 submit');
+  const frozenReference = frozenReferenceRequests[0];
+  assert.ok(!('sourceImagePath' in frozenReference), '参考请求不得携带首帧字段');
+  const frozenFrame = frozenFrameRequests[0];
+  assert.ok(frozenFrame.tailImagePath, '老首尾帧任务的尾帧路径必须来自冻结的 tailImageId');
+  assert.ok(frozenFrame.preparedFrames?.lastFrame, '尾帧必须走严格预算的预处理副本');
+  // 冻结来源图：两个任务都必须用 poster（不是最新的 latest 图）
+  const frozenPosterBytes = fs.readFileSync(posterPath);
+  assert.equal(
+    crypto.createHash('sha256').update(fs.readFileSync(frozenFrame.preparedFrames!.firstFrame!.absolutePath)).digest('hex'),
+    crypto.createHash('sha256').update(frozenPosterBytes).digest('hex'),
+    '首尾帧任务的首帧必须来自任务冻结的 sourceImageId，不得改读最新分镜图',
+  );
+  for (const request of frozenReferenceRequests) {
+    assert.ok(request.references.length > 0, '老参考任务必须有参考素材');
+  }
+  // 三个老任务都没有被改写成另一种模式
+  const frozenModes = db.prepare(`SELECT id, generationMode FROM video_jobs WHERE id LIKE 'frozen-%' ORDER BY id`).all() as Array<{ id: string; generationMode: string }>;
+  assert.deepEqual(
+    frozenModes,
+    [
+      { id: 'frozen-image-job', generationMode: 'image-to-video' },
+      { id: 'frozen-reference-job', generationMode: 'reference-to-video' },
+    ],
+    'worker 不得按当前 UI 规则改写历史任务的冻结模式',
+  );
+  clearCos();
+  globalThis.fetch = originalFetch;
 
   console.log('video queue reference tests passed');
 } finally {

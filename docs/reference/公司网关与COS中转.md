@@ -25,7 +25,7 @@ Seedream 5.0 Pro 同步生图的应用超时单独沿用项目 `timeoutMs`，默
 
 ## `video-reference-preprocess.ts` — 视频源图预处理（本机保护 / 上游预算分离）
 
-`minimax-h3` / `wan-3.0` 两个模型新工作台任务（单图参考与可选尾帧）的源图预处理合同，规格 §7。**处理顺序**（创建阶段与队列阶段一致，共用同一份定义，不存在两套阈值）：
+`minimax-h3` / `wan-3.0` 两个模型新工作台任务（单图参考与可选尾帧）的源图预处理合同，规格 §7。两个模型的**生成模式**由自动模式规则决定（规格 §6，见 `lib/video-auto-mode.ts`）：单图走 `reference` 预算，首尾帧走 `first-frame` + `last-frame` 两份预算——模式变了预算角色也跟着变，不要把两个角色混用。**处理顺序**（创建阶段与队列阶段一致，共用同一份定义，不存在两套阈值）：
 
 1. **本机原图保护**（`videoSourceImageLocalLimits()`）：文件存在且是普通文件 → 文件字节 ≤ `CREATIVE_STUDIO_VIDEO_SOURCE_MAX_BYTES`（默认 60 MiB）→ 可解码、像素总量 ≤ `CREATIVE_STUDIO_VIDEO_SOURCE_MAX_PIXELS`（默认 8000 万）→ 非多帧动画。任一不过抛 `VideoPreprocessError`（`source_missing` / `source_too_large` / `source_pixels_exceeded` / `source_unreadable` / `source_animated`），**不提交生成**。
 2. **原图是否已合规**：MIME 在上游白名单内、字节 ≤ 预算、单边 ≤ 预算时**原样交付**（`derived: false`），不做无谓的有损重编码。

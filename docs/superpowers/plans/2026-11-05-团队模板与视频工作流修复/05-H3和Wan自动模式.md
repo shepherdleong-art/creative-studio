@@ -1,6 +1,6 @@
 # 05 H3 和 Wan 自动模式
 
-**状态：** `ready-for-agent`
+**状态：** `ready-for-human`
 
 **依赖：** 04 完成定向验收。
 
@@ -24,13 +24,13 @@
 
 ## 验收
 
-- [ ] 两模型各自验证单图→上传尾图→移除尾图三种提交，捕获实际 FileInfos Usage 与任务冻结字段。
-- [ ] 上传中、失败、失效/跨项目尾图均不能付费提交；错误草稿不会被序列化为合法单图。
-- [ ] 批量混合两个模型、单图/双图，各行独立分流；切换供应商无隐式丢图。
-- [ ] 服务器拒绝伪造/矛盾的自动模式请求；显式多参考 API 与画布合同兼容。
-- [ ] 老 reference 任务重试仍 Reference，老 image 任务仍首尾帧，不改读最新分镜图。
-- [ ] 其他可灵/Seedance 模型、合法时长及 multiShot=false 行为不回归。
-- [ ] 结合 04，大首图单图及大首尾图两种模式均通过创建与交付。
+- [x] 两模型各自验证单图→上传尾图→移除尾图三种提交，捕获实际 FileInfos Usage 与任务冻结字段。
+- [x] 上传中、失败、失效/跨项目尾图均不能付费提交；错误草稿不会被序列化为合法单图。
+- [x] 批量混合两个模型、单图/双图，各行独立分流；切换供应商无隐式丢图。
+- [x] 服务器拒绝伪造/矛盾的自动模式请求；显式多参考 API 与画布合同兼容。
+- [x] 老 reference 任务重试仍 Reference，老 image 任务仍首尾帧，不改读最新分镜图。
+- [x] 其他可灵/Seedance 模型、合法时长及 multiShot=false 行为不回归。
+- [x] 结合 04，大首图单图及大首尾图两种模式均通过创建与交付。
 
 ## 测试与完成证据
 
@@ -40,4 +40,21 @@
 
 ## Comments
 
-- 尚未实施。
+- 2026-11-05 实施完成（状态 `ready-for-agent` → 待 06 综合验收）。分支 `ticket/05-auto-mode`，已 merge `integration/team-template-video-20261105`。
+
+  **改动**
+  - 新增 `lib/video-auto-mode.ts`：浏览器安全的纯决策规则（精确 `openai-video` + `minimax-h3`/`wan-3.0`，三态 `none`/`ready`/`pending`）。前端提交与服务端创建共用同一份，`resolveVideoGenerationSelection` 改为调用它并额外返回 `automaticMode` / `modeBlocked`。
+  - `lib/video-job-create.ts`：新增向后兼容字段 `modeIntent`（缺省 `'explicit'`）与 `autoTailState`；`reconcileAutoModeItems` 用库里真实尾帧素材重算模式，矛盾/未完成/带参考素材/非目标模型一律 400 零落任务。缺省 explicit 的显式 API 与画布合同完全不经过此段。
+  - `components/video-tail-frame-state.ts`、`components/video-bulk-prompt.ts`、`components/VideoGenerationPanel.tsx`：两模型常显「首帧卡＋添加尾帧卡」双卡片（单图时也走这个布局）、简短模式提示、逐行与批量按行独立分流、阻止原因写进批量状态。
+  - 文档：更新 `docs/reference/供应商与队列.md`「固定全能参考」旧描述 + 新增服务端核对段落；`docs/reference/公司网关与COS中转.md` 补模式与预算角色对应关系。
+
+  **实际运行命令与结果**（全绿）
+  - 27 个视频相关测试逐个 `node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/<name>`：新增 `video-auto-mode.test.ts`；重写 `video-bulk-provider-state.test.mjs` 的 H3/Wan 段（旧断言 "Automatic reference ignores stale tail drafts" 已按新合同替换）；扩展 `video-tail-frame-ui-state.test.ts`、`video-tail-frame-api.test.mjs`、`video-reference-job-create.test.ts`、`video-queue-reference.test.ts`、`openai-video-adapter.test.ts`、`video-model-capabilities.test.ts`、`video-tail-frame-ui-contract.test.mjs`。
+  - 浏览器验收 `scripts/video-auto-mode.playwright.test.mjs`（端口 3210，真 `next dev` + 真登录 + Chromium）：PASS，证据在 `outputs/video-auto-mode-evidence/`。
+  - `npm run check:main-path` 7 步全通过；`npx eslint` 改动文件无新增 error；`tsc --noEmit` 干净。
+  - 既存失败：`scripts/video-duration-api.test.ts` 在干净 HEAD 上也失败（测试未为 `@/lib/team-service/route-wrapper` 提供桩），非本票引入。
+
+  **未完成 / 边界**
+  - 上游真实付费任务的末帧画面**未**验收：本票只到「mock 请求合同 + 真实上传 UI/请求字段」层。FileInfos Usage 由 `openai-video-adapter.test.ts` 锁定，冻结字段由 `video-reference-job-create.test.ts` 锁定。
+  - 未跑 `npm run build`（按简报由 Lead 统一跑）。
+

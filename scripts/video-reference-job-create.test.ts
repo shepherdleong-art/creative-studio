@@ -25,6 +25,7 @@ for (const [id, type, model] of [
   ['sd25', 'jimeng', 'doubao-seedance-2-5-260628'],
   ['sd20', 'jimeng', 'doubao-seedance-2-0-260128'],
   ['wan', 'openai-video', 'wan-3.0'],
+  ['h3', 'openai-video', 'minimax-h3'],
 ] as const) {
   db.prepare(`INSERT INTO video_providers
     (id, name, type, defaultModel, baseUrlEnv, apiKeyEnv, modelEnv, baseUrl, apiKey, enabled)
@@ -175,6 +176,94 @@ try {
   assert.equal(oldRow.aspectRatio, null);
   assert.equal(oldRow.resolution, null);
   assert.deepEqual(links(oldRow.id), []);
+
+  // ══ 规格 §6：H3/Wan 自动模式（modeIntent='auto'）服务端核对 ══════════════
+  // 这一节只证明「服务端按真实素材核对模式、拒绝矛盾请求」；上游画面未验收。
+  const autoItem = (overrides: Record<string, unknown> = {}) => item({
+    providerId: 'h3', generationMode: 'reference-to-video', referenceAssetIds: [],
+    durationSec: 4, modeIntent: 'auto', ...overrides,
+  });
+  db.exec('DELETE FROM video_jobs');
+
+  // 没有尾帧 → 单图参考；冻结 sourceImageId 作唯一 Reference
+  const autoSingle = await create([autoItem()]);
+  assert.equal(autoSingle.ok, true, autoSingle.ok ? '' : autoSingle.error);
+  assert.equal(stored()[0].generationMode, 'reference-to-video');
+  assert.equal(stored()[0].sourceImageId, 'source', '单图参考必须冻结当前分镜图');
+  assert.deepEqual(links(stored()[0].id), [], '隐式参考不写 video_job_references');
+  db.exec('DELETE FROM video_jobs');
+
+  // 有有效尾帧 → 首尾帧；角色冻结在 sourceImageId / tailImageId
+  db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, usage, mimeType)
+    VALUES ('auto-tail', 'project', 'input', 'auto-tail.png', ?, 'video_tail_frame', 'image/png')`).run(sourcePath);
+  for (const [providerId, model, extra] of [
+    ['h3', 'minimax-h3', {}],
+    ['wan', 'wan-3.0', { aspectRatio: '4:3' }],
+  ] as const) {
+    db.exec('DELETE FROM video_jobs');
+    const created = await create([autoItem({
+      providerId, model, generationMode: 'image-to-video', tailImageId: 'auto-tail', ...extra,
+    })]);
+    assert.equal(created.ok, true, `${model} 有效尾帧必须创建首尾帧任务：${created.ok ? '' : created.error}`);
+    const row = db.prepare('SELECT generationMode, sourceImageId, tailImageId FROM video_jobs').get() as {
+      generationMode: string; sourceImageId: string; tailImageId: string | null;
+    };
+    assert.equal(row.generationMode, 'image-to-video', `${model} 有有效尾帧必须 image-to-video`);
+    assert.equal(row.sourceImageId, 'source', `${model} 首帧角色保持来源图`);
+    assert.equal(row.tailImageId, 'auto-tail', `${model} 尾帧角色保持尾帧图`);
+  }
+  db.exec('DELETE FROM video_jobs');
+
+  // 伪造/矛盾请求：一律 400 且零落任务
+  for (const [label, draft, pattern] of [
+    ['声明首尾帧但库里没有尾帧', autoItem({ generationMode: 'image-to-video' }), /没有找到有效尾帧/],
+    ['声明单图但仍带着有效尾帧', autoItem({ generationMode: 'reference-to-video', tailImageId: 'auto-tail' }), /该尾帧有效/],
+    ['尾帧上传中却当成单图提交', autoItem({ generationMode: 'reference-to-video', autoTailState: 'pending' }), /尾帧正在上传或移除/],
+    ['尾帧删除中却当成单图提交', autoItem({ generationMode: 'reference-to-video', autoTailState: 'pending', tailImageId: 'auto-tail' }), /尾帧正在上传或移除/],
+    ['自动模式携带显式参考素材', autoItem({ referenceAssetIds: ['image'] }), /只使用当前分镜图作为唯一参考/],
+    ['自动模式指向不支持尾帧的模型', autoItem({ providerId: 'sd20', model: 'doubao-seedance-2-0-260128' }), /自动模式只适用于公司 MiniMax H3 \/ Wan 3.0/],
+    ['自动模式尾帧跨项目', autoItem({ generationMode: 'image-to-video', tailImageId: 'foreign-image' }), /不是视频工位上传的尾帧图|不存在|不属于当前项目/],
+  ] as const) {
+    db.exec('DELETE FROM video_jobs');
+    const result = await create([draft]);
+    assert.equal(result.ok, false, label);
+    if (!result.ok) {
+      assert.equal(result.status, 400, label);
+      assert.match(result.error, pattern, `${label}：${result.error}`);
+    }
+    assert.equal(stored().length, 0, `${label} 不得落任务`);
+  }
+
+  // 尾帧图不存在（跨项目/无效 id）同样零落任务
+  db.exec('DELETE FROM video_jobs');
+  assert.equal((await create([autoItem({ generationMode: 'image-to-video', tailImageId: 'tail-not-exist' })])).ok, false);
+
+  // ── 老任务兼容：显式意图（缺省）完全不走自动模式核对 ──
+  // 老 reference 任务（H3 单图参考）重试用同一冻结字段仍然成功。
+  db.exec('DELETE FROM video_jobs');
+  const legacyReference = await create([item({
+    providerId: 'h3', generationMode: 'reference-to-video', referenceAssetIds: [], durationSec: 4,
+  })]);
+  assert.equal(legacyReference.ok, true, legacyReference.ok ? '' : legacyReference.error);
+  assert.equal(stored()[0].generationMode, 'reference-to-video', '显式参考任务不因自动模式规则改变模式');
+  // 老 image（首尾帧）任务同样按冻结字段执行，不会被「没有尾帧」改写成单图。
+  const legacyImage = await create([item({
+    providerId: 'h3', generationMode: 'image-to-video', referenceAssetIds: [], tailImageId: 'auto-tail', durationSec: 4,
+  })]);
+  assert.equal(legacyImage.ok, true, legacyImage.ok ? '' : legacyImage.error);
+  assert.equal(stored()[1].generationMode, 'image-to-video', '显式首尾帧任务不因自动模式规则改变模式');
+  assert.equal(
+    (db.prepare(`SELECT tailImageId FROM video_jobs ORDER BY rowid`).all() as Array<{ tailImageId: string | null }>)[1].tailImageId,
+    'auto-tail',
+    '显式首尾帧任务的尾帧保持冻结',
+  );
+  // 显式请求缺尾帧也不会被自动判定改写成单图（合同由调用方负责）。
+  const legacyImageNoTail = await create([item({
+    providerId: 'h3', generationMode: 'image-to-video', referenceAssetIds: [], tailImageId: null, durationSec: 4,
+  })]);
+  assert.equal(legacyImageNoTail.ok, true, '显式首尾帧模式缺尾帧是既有合法合同（单首帧）');
+  assert.equal(stored()[2].generationMode, 'image-to-video');
+  db.exec('DELETE FROM video_jobs');
 
   // ══ 规格 §7：11 MiB 以上真实图片必须在创建阶段通过，且最终交付合规副本 ══
   // 真实 sharp 编码的大图（3200x3000 模糊噪声 PNG ≈ 13 MiB），不是短字符串冒充。

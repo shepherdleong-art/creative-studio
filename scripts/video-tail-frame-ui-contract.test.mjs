@@ -22,8 +22,22 @@ assert.match(panel, /<HoverZoomImage[\s\S]*alt="尾帧预览"/, 'loaded tail fra
 assert.doesNotMatch(panel, /className="flex h-14 cursor-pointer/, 'the old compact tail-frame upload strip must not return');
 assert.match(results, /job\.tailImageId[\s\S]*首尾帧/, 'result cards must identify tail-frame jobs');
 
-assert.match(panel, /generationMode === 'image-to-video' && \([\s\S]*data-testid="video-frame-pair"/, 'the existing first/tail-frame editor must remain in image-to-video mode');
-assert.match(panel, /generationMode === 'reference-to-video' && \([\s\S]*data-testid="video-reference-editor"/, 'reference mode replaces the frame editor');
+// 规格 §6：H3/Wan 常显「首图＋添加尾帧卡」；单图时也走双卡片，而不是退回只显示
+// 参考图的编辑器。所以渲染条件是「首尾帧模式 或 自动模式」。
+assert.match(
+  panel,
+  /\(generationMode === 'image-to-video' \|\| automaticMode\) && \([\s\S]*data-testid="video-frame-pair"/,
+  'the first/tail-frame pair must render in image-to-video mode and for automatic-mode models',
+);
+assert.match(
+  panel,
+  /generationMode === 'reference-to-video' && !automaticMode && \([\s\S]*data-testid="video-reference-editor"/,
+  'reference-only editor is for explicit reference mode; automatic mode keeps the frame pair',
+);
+assert.match(panel, /data-testid="video-auto-mode-hint"/, 'automatic mode must state whether it will generate single-image or first/last frames');
+assert.match(panel, /按单图参考生成/, 'single-image automatic hint must be visible');
+assert.match(panel, /按首尾帧生成/, 'first/last-frame automatic hint must be visible');
+assert.doesNotMatch(panel, /aria-label="生成模式"|模式切换/, 'no manual mode toggle may be added');
 assert.match(panel, /const deleteReferenceAsset[\s\S]*response\.status !== 404 && response\.status !== 409/, 'reference delete must detach drafts on missing or job-protected assets');
 assert.match(panel, /releaseDraftReferenceAssets/, 'unsubmitted references must be released on reset/unmount');
 assert.match(panel, /pendingCreationReferenceIdsRef/, 'references in an active create request must be protected from draft cleanup');

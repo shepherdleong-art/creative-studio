@@ -4,6 +4,7 @@ import {
   collectVideoMotionTailImageIds,
   createVideoMotionRow,
   getVideoMotionRowIssue,
+  getVideoMotionRowTailDraftState,
   removeVideoMotionRowByKey,
   reorderVideoReferenceAssets,
   updateVideoMotionRowByKey,
@@ -190,6 +191,99 @@ const referenceCapability = {
     ) ?? '',
     /总时长不能超过 6 秒/,
   );
+}
+
+// ── 规格 §6：H3/Wan 自动模式的行级校验与序列化 ──────────────────────────
+{
+  // 自动模式三态：none / ready / pending。失败也算 pending——绝不能当成「没有尾帧」。
+  assert.equal(getVideoMotionRowTailDraftState({ tailImageId: null, tailUploadState: 'idle' }), 'none');
+  assert.equal(getVideoMotionRowTailDraftState({ tailImageId: 'tail', tailUploadState: 'idle' }), 'ready');
+  for (const state of ['uploading', 'deleting'] as const) {
+    assert.equal(getVideoMotionRowTailDraftState({ tailImageId: 'tail', tailUploadState: state }), 'pending', state);
+  }
+  assert.equal(
+    getVideoMotionRowTailDraftState({ tailImageId: null, tailUploadState: 'failed' }),
+    'pending',
+    '上传失败时 tailImageId 暂空，也必须算 pending 而不是「没有尾帧」',
+  );
+
+  const autoTail = { supported: true as const, protocol: 'company-gateway-tencent-file-infos' };
+  const autoOptions = { automaticMode: true };
+
+  // 单图：允许提交，不带尾帧
+  const single = { ...first, prompt: '运镜', tailImageId: null, tailUploadState: 'idle' as const };
+  assert.equal(getVideoMotionRowIssue(single, autoTail, undefined, autoOptions), null);
+
+  // 双图：允许提交，但提示词必须有
+  const withTail = { ...single, tailImageId: 'tail-a' };
+  assert.equal(getVideoMotionRowIssue(withTail, autoTail, undefined, autoOptions), null);
+  assert.match(
+    getVideoMotionRowIssue({ ...withTail, prompt: '' }, autoTail, undefined, autoOptions) ?? '',
+    /提示词/,
+  );
+
+  // 上传中 / 删除中 / 失败：一律阻止提交
+  for (const state of ['uploading', 'deleting'] as const) {
+    assert.match(
+      getVideoMotionRowIssue({ ...withTail, tailUploadState: state }, autoTail, undefined, autoOptions) ?? '',
+      /等待尾帧/,
+      state,
+    );
+  }
+  const failed = { ...single, tailUploadState: 'failed' as const, tailUploadError: '网络断了' };
+  assert.equal(getVideoMotionRowIssue(failed, autoTail, undefined, autoOptions), '网络断了');
+  assert.match(
+    getVideoMotionRowIssue({ ...single, tailUploadState: 'failed' as const }, autoTail, undefined, autoOptions) ?? '',
+    /上传失败/,
+  );
+
+  // 切换供应商保留的参考素材不得静默丢弃：自动模式下明确告知不会提交
+  const withLeftoverReference = { ...single, referenceAssets: [referenceImage('leftover')] };
+  assert.match(
+    getVideoMotionRowIssue(withLeftoverReference, autoTail, referenceCapability, autoOptions) ?? '',
+    /参考素材不会提交/,
+  );
+
+  // 自动模式不受可能过期的参考能力快照影响（不误挡合法双图行）
+  assert.equal(
+    getVideoMotionRowIssue(withTail, autoTail, { supported: false, reason: 'contract_unverified' }, autoOptions),
+    null,
+  );
+
+  // 序列化：自动模式带意图标记与三态；非自动模式请求体保持原样（向后兼容）
+  assert.deepEqual(
+    serializeVideoGenerationFields(single, { automaticMode: true, autoTailState: 'none' }),
+    { generationMode: 'image-to-video', referenceAssetIds: [], tailImageId: null, modeIntent: 'auto', autoTailState: 'none' },
+  );
+  assert.deepEqual(
+    serializeVideoGenerationFields(withTail, { automaticMode: true, autoTailState: 'ready' }),
+    { generationMode: 'image-to-video', referenceAssetIds: [], tailImageId: 'tail-a', modeIntent: 'auto', autoTailState: 'ready' },
+  );
+  assert.deepEqual(
+    serializeVideoGenerationFields({ ...first, prompt: '旧草稿', tailImageId: 'tail-old' }),
+    { generationMode: 'image-to-video', referenceAssetIds: [], tailImageId: 'tail-old' },
+    '非自动模式序列化结果必须与本次改动前完全一致（不带自动意图字段）',
+  );
+
+  // 批量逐行分流：同行组里单图/双图各走各的；未完成的那一行整组阻止
+  const autoRows = [
+    { ...single, key: 'a', prompt: '单图行' },
+    { ...withTail, key: 'b', prompt: '双图行' },
+  ];
+  const autoPlan = planBulkVideoGeneration(
+    [{ shotId: 'shot-auto', rows: autoRows }],
+    { rowIssue: (row) => getVideoMotionRowIssue(row as typeof first, autoTail, undefined, autoOptions) },
+  );
+  assert.equal(autoPlan.ready.length, 1);
+  assert.equal(autoPlan.totalClips, 2, '两种模式的行都能进入同一批次');
+
+  const blockedRows = [autoRows[0], { ...autoRows[1], tailUploadState: 'uploading' as const }];
+  const blockedPlan = planBulkVideoGeneration(
+    [{ shotId: 'shot-blocked', rows: blockedRows }],
+    { rowIssue: (row) => getVideoMotionRowIssue(row as typeof first, autoTail, undefined, autoOptions) },
+  );
+  assert.equal(blockedPlan.ready.length, 0, '含未完成尾帧的批次不得提交');
+  assert.match(blockedPlan.blocked[0].reason, /尾帧/);
 }
 
 console.log('video tail-frame and reference UI state tests passed');
