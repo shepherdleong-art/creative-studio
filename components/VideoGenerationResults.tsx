@@ -49,6 +49,62 @@ const STATUS_LABELS: Record<string, string> = {
   canceled: '已取消',
 };
 
+/**
+ * 受保护海报的失败占位。
+ *
+ * 不保留破图图标的唯一可靠做法是：加载失败后把 <img> 从 DOM 摘掉，换成这条占位。
+ * 不做任何重试 —— 重试只会对着同一个 401/404 无限请求。
+ */
+function PosterFallback({ note }: { note: string }) {
+  return (
+    <div
+      data-testid="video-poster-fallback"
+      role="img"
+      aria-label={`缩略图不可用：${note}`}
+      style={{
+        width: '100%',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        background: 'var(--color-surface-subtle)',
+        color: 'var(--color-ink-tertiary)',
+        fontSize: '0.7rem',
+        textAlign: 'center',
+        padding: '0 8px',
+      }}
+    >
+      <Icon name="image" size={20} />
+      <span>缩略图不可用</span>
+    </div>
+  );
+}
+
+/**
+ * 结果卡海报缩略图。
+ *
+ * 必须 unoptimized：海报是 /api/images/... 下的会话鉴权资源，Next 图片优化器由
+ * 服务端内部发请求、不带入站 Cookie，在 server 模式下必然 401 破图。unoptimized
+ * 让浏览器用自带会话的同源请求直接取图 —— 鉴权、私有缓存策略都保持原样。
+ */
+function PosterThumb({ url }: { url: string }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  if (failedUrl === url) return <PosterFallback note="读取失败或无权访问" />;
+  return (
+    <Image
+      src={url}
+      alt="视频缩略图"
+      fill
+      sizes="300px"
+      className="object-cover"
+      unoptimized
+      onError={() => setFailedUrl(url)}
+    />
+  );
+}
+
 export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, onResumePoll, onCancel, onReject, onUnreject, activePreviewJobId }: Props) {
   const [showRejected, setShowRejected] = useState(false);
   const [rejectingJobId, setRejectingJobId] = useState<string | null>(null);
@@ -120,7 +176,7 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
               {isSucceeded ? (
                 <>
                   {job.posterImageUrl ? (
-                    <Image src={job.posterImageUrl} alt="视频缩略图" fill sizes="300px" className="object-cover" />
+                    <PosterThumb url={job.posterImageUrl} />
                   ) : (
                     <video
                       src={job.videoUrl ? `${job.videoUrl}?preview=1` : undefined}
