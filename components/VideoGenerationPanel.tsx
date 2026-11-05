@@ -15,6 +15,7 @@ import {
   collectVideoMotionTailImageIds,
   createVideoMotionRow,
   getVideoMotionRowIssue as validateVideoMotionRow,
+  getVideoMotionRowTailDraftState,
   removeVideoMotionRowByKey,
   updateVideoMotionRowByKey,
   type VideoMotionRow,
@@ -160,8 +161,17 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const storageKey = `creative-studio:video-shot-set:${projectId}`;
   const configuredProviders = providers.filter((provider) => provider.configured !== false);
 
-  const getRowSelection = (row: { providerId: string; durationSec?: number; multiShot?: boolean }) =>
-    resolveVideoGenerationSelection(providers, bulkProviderId, row);
+  // H3/Wan 自动模式（规格 §6）：模式由「模型 + 尾帧草稿状态」决定，所以选择函数
+  // 必须看到行里的尾帧 id 与上传状态；只看 providerId 会把「上传中/失败」读成
+  // 「没有尾帧」而偷偷退回单图。
+  const getRowSelection = (row: {
+    providerId: string;
+    durationSec?: number;
+    multiShot?: boolean;
+    tailImageId?: string | null;
+    tailUploadState?: VideoMotionRow['tailUploadState'];
+    generationMode?: VideoMotionRow['generationMode'];
+  }) => resolveVideoGenerationSelection(providers, bulkProviderId, row);
   const getRowProviderId = (row: { providerId: string }) => getRowSelection(row).providerId;
   const getRowTailCapability = (row: { providerId: string }): VideoTailFrameCapability =>
     getRowSelection(row).capabilities.tailFrame;
@@ -172,11 +182,26 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     getRowSelection({ ...row, durationSec: value }).durationSec;
   const getRowMultiShotCapability = (row: { providerId: string }) => getRowSelection(row).capabilities.multiShot;
 
-  const getRowGenerationMode = (row: { providerId: string }) => getRowSelection(row).generationMode;
-  const getVideoMotionRowIssue = (row: VideoMotionRow, tail: VideoTailFrameCapability, reference?: VideoReferenceCapability) =>
-    validateVideoMotionRow({ ...row, generationMode: getRowGenerationMode(row) }, tail, reference);
-  const serializeVideoGenerationFields = (row: VideoMotionRow) =>
-    serializeDraftGenerationFields({ ...row, generationMode: getRowGenerationMode(row), referenceAssets: [] });
+  const getRowGenerationMode = (row: { providerId: string; tailImageId?: string | null; tailUploadState?: VideoMotionRow['tailUploadState']; generationMode?: VideoMotionRow['generationMode'] }) =>
+    getRowSelection(row).generationMode;
+  const getVideoMotionRowIssue = (row: VideoMotionRow, tail: VideoTailFrameCapability, reference?: VideoReferenceCapability) => {
+    const selection = getRowSelection(row);
+    return validateVideoMotionRow(
+      { ...row, generationMode: selection.generationMode },
+      tail,
+      reference,
+      { automaticMode: selection.automaticMode },
+    );
+  };
+  const serializeVideoGenerationFields = (row: VideoMotionRow) => {
+    const selection = getRowSelection(row);
+    return serializeDraftGenerationFields(
+      { ...row, generationMode: selection.generationMode, referenceAssets: [] },
+      selection.automaticMode
+        ? { automaticMode: true, autoTailState: getVideoMotionRowTailDraftState(row) }
+        : {},
+    );
+  };
 
   const makeEmptyRow = (): VideoMotionRow => {
     const row = createVideoMotionRow(crypto.randomUUID(), defaultDuration);
@@ -469,17 +494,21 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     return ids.values().next().value || getRowProviderId({ providerId: '' });
   };
 
-  /** 带尾帧但提示词为空的行，自动补上首尾帧转场提示词（用户再手改的内容不动）。 */
+  /**
+   * 带尾帧但提示词为空的行，自动补上首尾帧转场提示词（用户再手改的内容不动）。
+   *
+   * H3/Wan 自动模式下「有有效尾帧 ⇒ 首尾帧」，所以这两个模型的行同样适用；
+   * 不能用 `getRowGenerationMode` 判——那正是随尾帧状态变化的量。
+   */
   const autoFillTailTransitionPrompts = () => {
+    const needsTailPrompt = (row: VideoMotionRow) => Boolean(row.tailImageId)
+      && row.tailUploadState === 'idle'
+      && !row.prompt.trim();
     for (const shot of safeShots) {
       const rows = getShotRows(shot.id);
-      if (!rows.some((row) => (
-        getRowGenerationMode(row) === 'image-to-video' && row.tailImageId && !row.prompt.trim()
-      ))) continue;
+      if (!rows.some(needsTailPrompt)) continue;
       setShotRows(shot.id, rows.map((row) => (
-        getRowGenerationMode(row) === 'image-to-video' && row.tailImageId && !row.prompt.trim()
-          ? { ...row, prompt: TAIL_TRANSITION_DEFAULT_PROMPT }
-          : row
+        needsTailPrompt(row) ? { ...row, prompt: TAIL_TRANSITION_DEFAULT_PROMPT } : row
       )));
     }
   };
@@ -997,13 +1026,22 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     );
 
     if (plan.ready.length === 0) {
+      // 被挡住的具体原因要直接说出来：自动模式下「尾帧上传中/失败」是最常见的
+      // 阻止原因，只说「N 个有问题」会让人以为要改提示词。
+      const blockedReasons = plan.blocked
+        .map((shot) => {
+          const shotNumber = safeShots.find((item) => item.id === shot.shotId)?.indexNum ?? shot.shotId;
+          return `分镜 ${shotNumber}：${shot.reason}`;
+        })
+        .slice(0, 3);
+      const blockedDetail = blockedReasons.length > 0 ? ` ${blockedReasons.join('；')}` : '';
       if (plan.skippedExisting.length === safeShots.length && safeShots.length > 0) {
         setBulkStatus('全部分镜都已有任务，未提交新任务。');
       } else {
         setBulkStatus(
           `没有可提交的分镜：${plan.skippedExisting.length} 个已有任务、` +
           `${plan.skippedEmpty.length} 个未填写、${plan.blocked.length} 个有问题、` +
-          `${plan.overflow.length} 个超过 ${MAX_ROWS_PER_SHOT} 条上限。`,
+          `${plan.overflow.length} 个超过 ${MAX_ROWS_PER_SHOT} 条上限。` + blockedDetail,
         );
       }
       return;
@@ -1016,13 +1054,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       return;
     }
 
+    // 以**实际序列化结果**收集受保护素材，而不是再按模式推一遍：
+    // 自动模式下模式本身由尾帧状态决定，重复推导容易和真正发出去的请求脱节。
+    const serializedReadyRows = plan.ready.flatMap((shot) => shot.rows.map((row) => serializeVideoGenerationFields(row)));
     const submittedTailIds = new Set(
-      plan.ready.flatMap((shot) => shot.rows.flatMap((row) => (
-        getRowGenerationMode(row) === 'image-to-video' && row.tailImageId ? [row.tailImageId] : []
-      ))),
+      serializedReadyRows.flatMap((fields) => fields.tailImageId ? [fields.tailImageId] : []),
     );
     const submittedReferenceIds = new Set(
-      plan.ready.flatMap((shot) => shot.rows.flatMap((row) => serializeVideoGenerationFields(row).referenceAssetIds)),
+      serializedReadyRows.flatMap((fields) => fields.referenceAssetIds),
     );
     pendingCreationTailIdsRef.current = submittedTailIds;
     pendingCreationReferenceIdsRef.current = submittedReferenceIds;
@@ -1483,12 +1522,23 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                 {motionRows.map((row, idx) => {
                   const tailCapability = getRowTailCapability(row);
                   const referenceCapability = getRowReferenceCapability(row);
-                  const generationMode = getRowGenerationMode(row);
+                  const selection = getRowSelection(row);
+                  const generationMode = selection.generationMode;
+                  const automaticMode = selection.automaticMode;
                   const multiShotCapability = getRowMultiShotCapability(row);
                   const tailIssue = getVideoMotionRowIssue(row, tailCapability, referenceCapability);
                   const tailBusy = row.tailUploadState === 'uploading' || row.tailUploadState === 'deleting';
-                  const tailDropEnabled = tailCapability?.supported === true && !tailBusy && !creating;
+                  // 自动模式下这两个模型常显「首图＋添加尾帧卡」，所以尾帧卡可用性
+                  // 不再取决于尾帧协议快照，而是由自动模式本身保证。
+                  const tailTileEnabled = tailCapability?.supported === true || automaticMode;
+                  const tailDropEnabled = tailTileEnabled && !tailBusy && !creating;
                   const tailDragging = tailFrameDragRowKey === row.key;
+                  // 规格 §6「允许简短提示当前会按单图还是首尾帧生成」。
+                  const automaticModeHint = automaticMode
+                    ? row.tailImageId
+                      ? '已添加尾帧：按首尾帧生成（第一帧 / 最后一帧）'
+                      : '未添加尾帧：按单图参考生成'
+                    : null;
                   const tailDropHandlers = {
                     onDragEnter: (event: ReactDragEvent<HTMLElement>) => handleTailFrameDragEnter(event, row.key, tailDropEnabled),
                     onDragOver: (event: ReactDragEvent<HTMLElement>) => handleTailFrameDragOver(event, tailDropEnabled),
@@ -1501,7 +1551,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
 
 
-                    {generationMode === 'image-to-video' && (
+                    {/* H3/Wan 自动模式常显「首图＋添加尾帧卡」双卡片布局（规格 §6）：
+                        单图时也走这里，而不是退回只显示参考图的编辑器。 */}
+                    {(generationMode === 'image-to-video' || automaticMode) && (
                     <div className="video-frame-pair" data-testid="video-frame-pair">
                       <div className="video-frame-tile video-frame-source">
                         {selectedShotData?.imageUrl ? (
@@ -1547,7 +1599,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                           )}
                           <span className="video-frame-chip">尾帧</span>
                           <div className="video-frame-actions">
-                            {tailCapability?.supported && (
+                            {tailTileEnabled && (
                               <label className="video-frame-action">
                                 <Icon name="upload" size={12} />
                                 更换
@@ -1587,7 +1639,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                             </div>
                           )}
                         </div>
-                      ) : tailCapability?.supported ? (
+                      ) : tailTileEnabled ? (
                         <label
                           className={`video-frame-tile video-frame-empty ${tailBusy ? 'is-busy' : ''} ${tailDragging ? 'is-dragging' : ''}`}
                           aria-live="polite"
@@ -1627,7 +1679,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     </div>
                     )}
 
-                    {generationMode === 'reference-to-video' && (
+                    {generationMode === 'reference-to-video' && !automaticMode && (
                       <div className="video-reference-editor" data-testid="video-reference-editor">
                         <div className="video-frame-tile video-frame-source">
                           {selectedShotData?.imageUrl && (
@@ -1645,10 +1697,16 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       </div>
                     )}
 
-                    {tailIssue && (generationMode === 'reference-to-video' || row.tailImageId || row.tailUploadState === 'failed') && (
+                    {tailIssue && (automaticMode || generationMode === 'reference-to-video' || row.tailImageId || row.tailUploadState === 'failed') && (
                       <p className="video-tail-frame-warning" role="status">
                         <Icon name="alert" size={12} className="mt-0.5 shrink-0" />
                         {tailIssue}
+                      </p>
+                    )}
+
+                    {automaticModeHint && (!tailIssue || Boolean(row.tailImageId)) && (
+                      <p className="generation-helper" data-testid="video-auto-mode-hint">
+                        {automaticModeHint}
                       </p>
                     )}
 
@@ -1957,13 +2015,22 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                               {getRowDurationOptions(row).map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
                             </select>
                             <div className="video-bulk-row-status" aria-label="运镜状态">
-                              {getRowGenerationMode(row) === 'reference-to-video' ? (
+                              {getRowSelection(row).automaticMode ? (
+                                getRowGenerationMode(row) === 'reference-to-video' ? (
+                                  <span className="video-bulk-badge is-reference">单图参考 · 自动</span>
+                                ) : (
+                                  <span className="video-bulk-badge is-tail">首尾帧 · 自动</span>
+                                )
+                              ) : getRowGenerationMode(row) === 'reference-to-video' ? (
                                 <span className="video-bulk-badge is-reference">全能参考 · 当前分镜图</span>
                               ) : (
                                 <span className="video-bulk-badge is-tail">首尾帧</span>
                               )}
                               {getRowGenerationMode(row) === 'image-to-video' && row.tailImageId && (
                                 <span className="video-bulk-badge is-tail">带尾帧</span>
+                              )}
+                              {getRowGenerationMode(row) === 'reference-to-video' && (row.referenceAssets ?? []).length > 0 && (
+                                <span className="video-bulk-badge is-reference">参考素材不会提交</span>
                               )}
                               {isAutoTransition && <span className="video-bulk-badge is-tail">转场提示词</span>}
                               {!row.prompt.trim() && <span className="video-bulk-badge is-empty">未填写</span>}

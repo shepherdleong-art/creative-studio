@@ -1,4 +1,7 @@
 import type { VideoReferenceCapability } from '@/lib/video-reference-contract';
+// 值导入必须用相对路径带扩展名：`@/` 别名只在 Next 构建里成立，
+// 这些 UI 纯逻辑模块要能被 `node scripts/*.test.ts` 直接加载。
+import { videoTailFrameDraftState, type VideoTailFrameDraftState } from '../lib/video-auto-mode.ts';
 
 export interface VideoTailFrameCapability {
   supported: boolean;
@@ -208,7 +211,30 @@ export function getVideoMotionRowIssue(
   row: VideoMotionRow,
   capability: VideoTailFrameCapability | undefined,
   referenceCapability?: VideoReferenceCapability,
+  options?: { automaticMode?: boolean },
 ): string | null {
+  // ── H3/Wan 自动模式（规格 §6）──────────────────────────────────────────
+  // 模式由模型＋尾帧状态决定，因此这里只报「尾帧操作未完成」与
+  // 「参考素材不会提交」两类行级问题；参考能力由服务端按真实模型判定，
+  // 不拿可能过期的前端快照阻止自动模式提交。
+  if (options?.automaticMode) {
+    if (row.tailUploadState === 'uploading' || row.tailUploadState === 'deleting') {
+      return '请等待尾帧上传或移除完成';
+    }
+    if (row.tailUploadState === 'failed') {
+      return row.tailUploadError || '尾帧上传失败，请重试';
+    }
+    // 自动模式的目标模型就是已核验的首尾帧模型，模式只由尾帧草稿状态决定；
+    // 这里不拿可能过期的能力快照二次判定，否则会把合法的双图行误挡下来。
+    if (row.tailImageId) {
+      if (!row.prompt.trim()) return '已添加尾帧，请同时填写运镜提示词';
+      return null;
+    }
+    if ((row.referenceAssets ?? []).length > 0) {
+      return '当前模型自动按单图参考生成，已保留的全能参考素材不会提交；需要它们请切回全能参考模型';
+    }
+    return null;
+  }
   if (getVideoMotionGenerationMode(row) === 'reference-to-video') {
     return getReferenceModeIssue(row, referenceCapability);
   }
@@ -226,4 +252,9 @@ export function getVideoMotionRowIssue(
   }
   if (!row.prompt.trim()) return '已添加尾帧，请同时填写运镜提示词';
   return null;
+}
+
+/** 草稿的尾帧三态：`pending` 覆盖上传中/删除中/失败，绝不等同于「没有尾帧」。 */
+export function getVideoMotionRowTailDraftState(row: Pick<VideoMotionRow, 'tailImageId' | 'tailUploadState'>): VideoTailFrameDraftState {
+  return videoTailFrameDraftState({ tailImageId: row.tailImageId, uploadState: row.tailUploadState });
 }

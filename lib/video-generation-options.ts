@@ -1,3 +1,8 @@
+import {
+  decideVideoGenerationMode,
+  videoTailFrameDraftState,
+  type VideoGenerationModeValue,
+} from './video-auto-mode.ts';
 import { normalizeVideoDraftDuration, videoDurationOptions } from './video-duration.ts';
 import type { TailFrameCapability } from './video-providers/types.ts';
 import type { VideoReferenceCapability } from './video-reference-contract.ts';
@@ -25,6 +30,16 @@ interface VideoGenerationDraft {
   providerId: string;
   durationSec?: number;
   multiShot?: boolean;
+  /**
+   * H3/Wan 自动模式（规格 §6）需要看到草稿里尾帧的真实状态；
+   * 只看 `tailImageId` 会把「上传中/失败」误当成「没有尾帧」而偷偷降级。
+   */
+  tailImageId?: string | null;
+  tailUploadState?: 'idle' | 'uploading' | 'failed' | 'deleting' | null;
+  /**
+   * 非自动模式模型仍然遵守调用方显式选择的模式；自动模式模型永远忽略它。
+   */
+  generationMode?: VideoGenerationModeValue | null;
 }
 
 // No provider selected: retain the historical draft duration choices, never enable tail frames.
@@ -65,12 +80,24 @@ export function resolveVideoGenerationSelection(
   // Preserve the panel's five-second starting point, independent of settings defaults.
   const durationSec = normalizeVideoDraftDuration(draft.durationSec ?? 5, capabilities.durations);
   const multiShot = draft.multiShot ?? capabilities.multiShot.defaultEnabled;
-  const generationMode = provider?.type === 'openai-video'
-    && ['minimax-h3', 'wan-3.0'].includes(provider.defaultModel)
-    ? 'reference-to-video' as const : 'image-to-video' as const;
+  // 规格 §6：H3/Wan 只有单图时自动 reference、有有效尾帧时自动首尾帧、
+  // 尾帧操作未完成时阻止提交。其余模型沿用既有显式模式。
+  const modeDecision = decideVideoGenerationMode({
+    providerType: provider?.type ?? null,
+    model: provider?.defaultModel ?? null,
+    tailFrameState: videoTailFrameDraftState({
+      tailImageId: draft.tailImageId ?? null,
+      uploadState: draft.tailUploadState ?? 'idle',
+    }),
+    explicitMode: draft.generationMode ?? null,
+  });
   return {
     providerId,
-    generationMode,
+    generationMode: modeDecision.generationMode,
+    /** 自动模式（H3/Wan）标记：UI 据此展示双卡片与单图/首尾帧提示。 */
+    automaticMode: modeDecision.automatic,
+    /** 尾帧草稿不可提交（上传中/删除中/失败）。 */
+    modeBlocked: modeDecision.blocked,
     capabilities,
     durationSec,
     requestOptions: {
@@ -79,3 +106,4 @@ export function resolveVideoGenerationSelection(
     },
   };
 }
+

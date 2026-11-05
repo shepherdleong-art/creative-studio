@@ -533,6 +533,41 @@ try {
     assert.equal(openaiVideoAdapter.tailFrameCapability?.(model).supported, false);
   }
 
+  // ── 规格 §6 自动模式：两种草稿状态对应**两个不同的请求合同** ──────────────
+  // 适配器不参与模式决策（决策在 lib/video-auto-mode.ts + 创建/队列），这里只锁定
+  // 「单图 ⇒ Usage=Reference」「双图 ⇒ Usage=FirstFrame/LastFrame」这两条实际上游合同。
+  // 注意：这只是本地 mock 请求合同，不等于上游画面已验收。
+  for (const [model, resolution] of [['minimax-h3', '2K'], ['wan-3.0', '1080P']] as const) {
+    const aspectRatio = model === 'wan-3.0' ? '4:3' : '16:9';
+    // 单图参考（自动模式第一行）：FileInfos 只有一条 Usage=Reference，无首尾帧字段。
+    await openaiVideoAdapter.submitReference!({
+      model, prompt: '自动模式单图', durationSec: 5, aspectRatio,
+      references: [{ kind: 'image', url: 'https://cos.example.com/single.png', mimeType: 'image/png' }],
+    }, 'gateway-key', 'http://127.0.0.1:4000');
+    assert.deepEqual(capturedBody?.FileInfos, [
+      { Type: 'Url', Category: 'Image', Url: 'https://cos.example.com/single.png', Usage: 'Reference' },
+    ], `${model}: 单图参考必须是唯一 Reference，不得夹带 FirstFrame/LastFrame`);
+    assert.deepEqual(capturedBody?.OutputConfig, { Duration: 5, Resolution: resolution, AspectRatio: aspectRatio });
+
+    // 首尾帧（自动模式第三行）：FileInfos 恰好两条，Usage 顺序 FirstFrame → LastFrame。
+    await openaiVideoAdapter.submit({
+      model, prompt: '自动模式首尾帧', sourceImagePath: imagePath, sourceMimeType: 'image/png',
+      tailImagePath, tailMimeType: 'image/png', durationSec: 5,
+    }, 'gateway-key', 'http://127.0.0.1:4000');
+    const autoFrames = capturedBody?.FileInfos as Array<{ Usage: string; Url: string }>;
+    assert.deepEqual(autoFrames.map((frame) => frame.Usage), ['FirstFrame', 'LastFrame'], `${model}: 首尾帧角色顺序`);
+    assert.equal(new Set(autoFrames.map((frame) => frame.Url)).size, 2, `${model}: 两帧不得指向同一交付物`);
+    // 单帧（老作业/显式单首帧）保持既有 FirstFrame-only 合同，不被自动模式改写。
+    await openaiVideoAdapter.submit({
+      model, prompt: '显式单首帧', sourceImagePath: imagePath, sourceMimeType: 'image/png', durationSec: 5,
+    }, 'gateway-key', 'http://127.0.0.1:4000');
+    assert.deepEqual(
+      (capturedBody?.FileInfos as Array<{ Usage: string }>).map((frame) => frame.Usage),
+      ['FirstFrame'],
+      `${model}: 单首帧任务不得被自动模式补出 LastFrame`,
+    );
+  }
+
   // 公司全能参考：调用方已交付 URL，适配器只发一次 POST，不上传、不改用首尾帧字段。
   for (const [model, resolution, aspectRatio] of [
     ['minimax-h3', '2K', '21:9'], ['wan-3.0', '1080P', '4:3'],

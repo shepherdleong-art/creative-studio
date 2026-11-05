@@ -7,6 +7,11 @@ import { resolveTemplateOpeningCode } from './media-core/production-code-reader.
 import { getVideoProviderConfigState } from './video-auth.ts';
 import { parseVideoDuration, videoDurationError } from './video-duration.ts';
 import { normalizeVideoMultiShotForStorage } from './video-multi-shot.ts';
+import {
+  decideVideoGenerationMode,
+  isVideoAutoModeTarget,
+  type VideoTailFrameDraftState,
+} from './video-auto-mode.ts';
 import { countVideoJobsForShot, planVideoJobDisplayName } from './video-output-filenames.ts';
 import { validateVideoReferenceRequest, videoReferenceCapability, type VideoReferenceKind } from './video-reference-contract.ts';
 import {
@@ -20,6 +25,16 @@ import { requireAccessContext } from './media-core/access-context.ts';
 
 export type VideoJobGenerationMode = 'image-to-video' | 'reference-to-video';
 
+/**
+ * 模式意图标记（向后兼容的新增字段，规格 §6「需要自动意图标记时由实现者定义」）。
+ *
+ * - `'auto'`：受控工作台（H3/Wan）请求，服务端按**已授权尾帧素材**自行确定模式，
+ *   并与前端声明核对；不一致或矛盾直接拒绝，不静默纠正。
+ * - `'explicit'`（缺省）：显式 API / 画布 / 外部集成的既有合同，模式由调用方指定，
+ *   行为与本次改动前完全一致——这条边界保证不全局改写所有 API 请求。
+ */
+export type VideoJobModeIntent = 'auto' | 'explicit';
+
 export interface VideoJobCreationItem {
   prompt: string;
   templateId: string | null;
@@ -28,6 +43,14 @@ export interface VideoJobCreationItem {
   tailImageId: string | null;
   multiShot: unknown;
   generationMode: VideoJobGenerationMode;
+  /** 缺省视为 `'explicit'`，兼容直接构造条目的内部/历史调用方。 */
+  modeIntent?: VideoJobModeIntent;
+  /**
+   * 自动模式草稿的尾帧三态（`none` / `ready` / `pending`）。
+   * 前端才看得到「上传中/删除中/失败」，服务端凭它拒绝未完成的尾帧操作；
+   * 缺省由 `tailImageId` 是否存在推导。非自动模式忽略此字段。
+   */
+  autoTailState?: VideoTailFrameDraftState | null;
   referenceAssetIds: string[];
   aspectRatio: string | null;
   resolution: string | null;
@@ -43,6 +66,15 @@ export function parseVideoJobCreationItem(value: unknown): VideoJobCreationItemP
   if (generationMode !== 'image-to-video' && generationMode !== 'reference-to-video') {
     return { ok: false, error: 'generationMode 必须是 image-to-video 或 reference-to-video' };
   }
+  const modeIntent = body.modeIntent ?? 'explicit';
+  if (modeIntent !== 'auto' && modeIntent !== 'explicit') {
+    return { ok: false, error: 'modeIntent 必须是 auto 或 explicit' };
+  }
+  const rawAutoTailState = body.autoTailState;
+  if (rawAutoTailState !== undefined && rawAutoTailState !== null
+    && !['none', 'ready', 'pending'].includes(String(rawAutoTailState))) {
+    return { ok: false, error: 'autoTailState 必须是 none、ready 或 pending' };
+  }
   const rawReferenceIds = body.referenceAssetIds ?? [];
   if (!Array.isArray(rawReferenceIds) || rawReferenceIds.some((id) => typeof id !== 'string' || !id.trim())) {
     return { ok: false, error: 'referenceAssetIds 必须是非空字符串数组' };
@@ -57,6 +89,10 @@ export function parseVideoJobCreationItem(value: unknown): VideoJobCreationItemP
       tailImageId: typeof body.tailImageId === 'string' && body.tailImageId.trim() ? body.tailImageId.trim() : null,
       multiShot: body.multiShot,
       generationMode,
+      modeIntent,
+      ...(rawAutoTailState === undefined || rawAutoTailState === null
+        ? {}
+        : { autoTailState: String(rawAutoTailState) as VideoTailFrameDraftState }),
       referenceAssetIds: rawReferenceIds.map((id) => id.trim()),
       aspectRatio: optionalString(body.aspectRatio),
       resolution: optionalString(body.resolution),
@@ -93,6 +129,78 @@ interface ReferenceAssetRow {
 export type VideoJobCreationResult =
   | { ok: true; videoJobIds: string[] }
   | { ok: false; status: number; error: string };
+
+/**
+ * 服务端自动模式核对（规格 §6）。返回**已核对**的条目：自动模式条目的
+ * `generationMode` 由服务端按库里的真实尾帧素材重算，前端声明只用来发现矛盾。
+ *
+ * 这里不读取任何前端装饰性字段作为模式依据；`autoTailState` 仅用于把
+ * 「尾帧上传中/删除中/失败」这一**前端才可见**的操作状态显式带过来，
+ * 声明成 pending 时直接拒绝（否则 tailImageId 暂空会被读成「没有尾帧」，
+ * 正好是规格禁止的偷偷降级）。
+ */
+function reconcileAutoModeItems(input: {
+  db: Database.Database;
+  items: VideoJobCreationItem[];
+  providerCache: Map<string, VideoProviderRow & { model: string }>;
+  projectId: string;
+  itemError: (index: number, error: string) => string;
+}): { ok: true; items: VideoJobCreationItem[] } | { ok: false; error: string } {
+  const { db, items, providerCache, projectId, itemError } = input;
+  const reconciled: VideoJobCreationItem[] = [];
+  for (const [index, item] of items.entries()) {
+    if (item.modeIntent !== 'auto') {
+      reconciled.push(item);
+      continue;
+    }
+    const provider = providerCache.get(item.providerId)!;
+    if (!isVideoAutoModeTarget(provider.type, provider.model)) {
+      return {
+        ok: false,
+        error: itemError(index, `自动模式只适用于公司 MiniMax H3 / Wan 3.0，模型 ${provider.model} 必须显式指定生成模式`),
+      };
+    }
+    // 三态推导：`pending`（上传中/删除中/失败）只有前端看得见，声明即采纳并阻止提交；
+    // 其余一律以**库里真实存在的尾帧 id** 为准——服务端不采信前端自称的 ready/none，
+    // 否则「声明 ready 却不带尾帧」就能绕过核对拿到首尾帧任务。
+    const declared = item.autoTailState ?? null;
+    const draftState: VideoTailFrameDraftState = declared === 'pending'
+      ? 'pending'
+      : item.tailImageId ? 'ready' : 'none';
+    const decision = decideVideoGenerationMode({
+      providerType: provider.type,
+      model: provider.model,
+      tailFrameState: draftState,
+      explicitMode: item.generationMode,
+    });
+    if (decision.blocked) {
+      return { ok: false, error: itemError(index, '尾帧正在上传或移除、或上一次上传失败，请等待完成或先移除尾帧再提交') };
+    }
+    // 自动模式只用当前冻结分镜图作唯一参考，不接受显式参考素材列表，
+    // 也不接受把尾帧当参考素材的混合草稿。
+    if (item.referenceAssetIds.length > 0) {
+      return { ok: false, error: itemError(index, '自动模式只使用当前分镜图作为唯一参考，不能携带参考素材') };
+    }
+    // 用库里真实素材核对尾帧（归属、用途、模型能力）；任一不合法都在 POST 前失败。
+    const tail = validateVideoTailFrameAsset({
+      db,
+      tailImageId: item.tailImageId,
+      projectId,
+      providerType: provider.type,
+      model: provider.model,
+    });
+    if (!tail.ok) return { ok: false, error: itemError(index, tail.error) };
+    const verifiedMode = decision.generationMode;
+    if (item.generationMode !== verifiedMode) {
+      const detail = verifiedMode === 'reference-to-video'
+        ? '自动模式请求声明为首尾帧，但服务端没有找到有效尾帧，请刷新尾帧状态后重试'
+        : '自动模式请求声明为单图参考，但该尾帧有效，应提交首尾帧（FirstFrame/LastFrame）';
+      return { ok: false, error: itemError(index, detail) };
+    }
+    reconciled.push({ ...item, generationMode: verifiedMode });
+  }
+  return { ok: true, items: reconciled };
+}
 
 export async function createVideoJobsForShot(input: {
   shotSetId: string;
@@ -141,8 +249,22 @@ export async function createVideoJobsForShot(input: {
       for (const assetId of item.referenceAssetIds) access.assertAccess('video_reference_asset', assetId, 'read');
     }
   }
+
+  // ── H3/Wan 自动模式核对（规格 §6）────────────────────────────────────────
+  // 服务端不能只信前端 generationMode：受控工作台用 `modeIntent='auto'` 声明
+  // 「按模型与已授权尾帧状态核对模式」。这里用**库里的真实素材**重算一次：
+  //   · 有合法尾帧 → image-to-video（FileInfos FirstFrame/LastFrame）
+  //   · 没有尾帧   → reference-to-video（冻结首图作唯一 Reference）
+  // 与前端声明矛盾、给自动模式带显式参考素材/比例档位、或把尾帧操作中的草稿
+  // 当成单图提交，全部在付费 POST 与落任务前 400 拒绝，绝不静默纠正。
+  // 缺省 `modeIntent='explicit'` 的显式 API / 画布 / 外部集成完全不走这段，
+  // 既有合同与历史任务行为不变。
+  const reconciled = reconcileAutoModeItems({ db, items, providerCache, projectId: shotSet.projectId, itemError });
+  if (!reconciled.ok) return { ok: false, status: 400, error: reconciled.error };
+  const effectiveItems = reconciled.items;
+
   let sourceReference: Awaited<ReturnType<typeof readVideoSourceReference>> | null = null;
-  if (items.some((item) => item.generationMode === 'reference-to-video' && item.referenceAssetIds.length === 0)) {
+  if (effectiveItems.some((item) => item.generationMode === 'reference-to-video' && item.referenceAssetIds.length === 0)) {
     try { sourceReference = await readVideoSourceReference(db, sourceImageId, shotSet.projectId); }
     catch (error) { return { ok: false, status: 400, error: (error as Error).message }; }
   }
@@ -150,7 +272,7 @@ export async function createVideoJobsForShot(input: {
   let sourceDimensions: { width: number; height: number } | null = null;
   // 只有参考模式在未显式指定比例时才需要按分镜来源图吸附；
   // 读取失败不阻断创建，改用 16:9 或模型比例表首项兜底。
-  if (items.some((item) => item.generationMode === 'reference-to-video' && !item.aspectRatio)) {
+  if (effectiveItems.some((item) => item.generationMode === 'reference-to-video' && !item.aspectRatio)) {
     const source = db.prepare(`
       SELECT originalWidth, originalHeight, originalPath, processedPath, path FROM image_assets WHERE id = ?
     `).get(sourceImageId) as {
@@ -172,7 +294,7 @@ export async function createVideoJobsForShot(input: {
     }
   }
 
-  const prepared = items.map((item, index) => {
+  const prepared = effectiveItems.map((item, index) => {
     const provider = providerCache.get(item.providerId)!;
     if (item.generationMode === 'image-to-video') {
       if (item.referenceAssetIds.length > 0) return { error: itemError(index, '首尾帧模式不得携带全能参考素材') };

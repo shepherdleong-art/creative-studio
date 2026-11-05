@@ -28,4 +28,19 @@ assert.match(
 );
 assert.match(batchRoute, /validateVideoTailFrameBatchDrafts/, 'batch creation must reject tail rows with blank prompts before filtering');
 
+// ── 规格 §6：自动模式意图标记与「不能只信前端 generationMode」 ──
+assert.match(sharedCreate, /modeIntent/, 'shared creation must accept the backward-compatible auto-mode intent marker');
+assert.match(sharedCreate, /reconcileAutoModeItems/, 'shared creation must reconcile auto-mode items on the server');
+assert.match(sharedCreate, /decideVideoGenerationMode/, 'server must reuse the same pure mode rule as the browser');
+for (const [label, route] of [['single', singleRoute], ['batch', batchRoute]]) {
+  assert.match(route, /parseVideoJobCreationItem/, `${label} route must go through the shared parser`);
+}
+// 自动模式核对必须先于图片预处理与落任务事务，保证「付费 POST 前失败」。
+const reconcileAt = sharedCreate.indexOf('reconcileAutoModeItems({');
+const insertAt = sharedCreate.indexOf('INSERT INTO video_jobs');
+const preprocessAt = sharedCreate.indexOf('prepareVideoJobImage({');
+assert.notEqual(reconcileAt, -1);
+assert.ok(reconcileAt < insertAt, 'auto-mode reconciliation must run before the insert transaction');
+assert.ok(reconcileAt < preprocessAt, 'auto-mode reconciliation must run before image preprocessing');
+
 console.log('video tail-frame API contract tests passed');

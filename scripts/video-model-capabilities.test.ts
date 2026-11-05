@@ -29,12 +29,38 @@ try {
     provider('wan', 'openai-video', 'wan-3.0'),
     provider('future', 'openai-video', 'kling-3.0-future'),
   ].map(p => ({ ...p, id: p.id!, name: p.name! }));
+  // 规格 §6：H3/Wan 的模式由「模型＋尾帧草稿状态」决定，不再是固定全能参考。
   for (const id of ['h3', 'wan']) {
-    assert.equal(resolveVideoGenerationSelection(providers, '', { providerId: id }).generationMode, 'reference-to-video');
-    assert.equal(resolveVideoGenerationSelection(providers, id, { providerId: '' }).generationMode, 'reference-to-video', 'Bulk defaults use the same mode');
+    const noTail = resolveVideoGenerationSelection(providers, '', { providerId: id });
+    assert.equal(noTail.automaticMode, true, `${id} 必须命中自动模式`);
+    assert.equal(noTail.generationMode, 'reference-to-video', `${id} 没有尾帧时应走单图参考`);
+    assert.equal(noTail.modeBlocked, false);
+    assert.equal(
+      resolveVideoGenerationSelection(providers, id, { providerId: '' }).generationMode,
+      'reference-to-video',
+      'Bulk defaults use the same mode',
+    );
+    const withTail = resolveVideoGenerationSelection(providers, '', { providerId: id, tailImageId: 'tail-a' });
+    assert.equal(withTail.generationMode, 'image-to-video', `${id} 有有效尾帧时应走首尾帧`);
+    assert.equal(withTail.modeBlocked, false);
+    for (const uploadState of ['uploading', 'deleting', 'failed'] as const) {
+      const pending = resolveVideoGenerationSelection(providers, '', {
+        providerId: id, tailImageId: null, tailUploadState: uploadState,
+      });
+      assert.equal(pending.modeBlocked, true, `${id} 尾帧 ${uploadState} 时必须阻止提交，不能退回单图`);
+      assert.equal(pending.automaticMode, true);
+    }
   }
+  // 显式模式只对非自动模式模型生效；自动模式模型忽略前端传入的 generationMode。
+  assert.equal(
+    resolveVideoGenerationSelection(providers, '', { providerId: 'h3', generationMode: 'image-to-video' }).generationMode,
+    'reference-to-video',
+    '自动模式不得被前端 generationMode 影响',
+  );
   for (const id of ['sd20', 'sd25', 'k25', 'q30', 'future']) {
-    assert.equal(resolveVideoGenerationSelection(providers, 'h3', { providerId: id }).generationMode, 'image-to-video', 'Switching back restores first/tail mode');
+    const selection = resolveVideoGenerationSelection(providers, 'h3', { providerId: id });
+    assert.equal(selection.automaticMode, false, `${id} 不属于自动模式`);
+    assert.equal(selection.generationMode, 'image-to-video', 'Switching back restores first/tail mode');
   }
   const resolve = (providerId: string, durationSec: number, multiShot = false) =>
     resolveVideoGenerationSelection(providers, '', { providerId, durationSec, multiShot });
@@ -199,8 +225,9 @@ try {
     import { registerHooks } from 'node:module';
     registerHooks({ resolve(specifier, context, nextResolve) {
       if (!specifier.endsWith('/video-generation-options.ts')
+        && !specifier.endsWith('/video-auto-mode.ts')
         && !specifier.endsWith('/video-reference-contract.ts')
-        && !['./video-duration.ts', './company-gateway-video-models.ts', './video-providers/seedance-contract.ts'].includes(specifier)) {
+        && !['./video-duration.ts', './video-auto-mode.ts', './company-gateway-video-models.ts', './video-providers/seedance-contract.ts'].includes(specifier)) {
         throw new Error('Unexpected client runtime dependency: ' + specifier);
       }
       return nextResolve(specifier, context);

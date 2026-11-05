@@ -28,18 +28,39 @@ export interface SerializedVideoGenerationFields {
   generationMode: VideoGenerationMode;
   referenceAssetIds: string[];
   tailImageId: string | null;
+  /**
+   * H3/Wan 自动模式意图标记：服务端据此用真实尾帧素材核对模式，
+   * 而不是只信前端 `generationMode`。非自动模式模型不带此字段。
+   */
+  modeIntent?: 'auto';
+  /** 自动模式专用的尾帧三态；`pending` 表示上传中/删除中/失败，必须阻止提交。 */
+  autoTailState?: 'none' | 'ready' | 'pending';
+}
+
+export interface SerializeVideoGenerationOptions {
+  /** 自动模式（H3/Wan 受控工作台）：附带意图标记与尾帧三态。 */
+  automaticMode?: boolean;
+  autoTailState?: 'none' | 'ready' | 'pending';
 }
 
 /** 单条与批量共用；模式切换保留另一套草稿，但请求只携带当前模式的素材。 */
-export function serializeVideoGenerationFields(row: BulkPromptRow): SerializedVideoGenerationFields {
+export function serializeVideoGenerationFields(
+  row: BulkPromptRow,
+  options: SerializeVideoGenerationOptions = {},
+): SerializedVideoGenerationFields {
   const generationMode = getVideoMotionGenerationMode(row);
-  return {
+  const fields: SerializedVideoGenerationFields = {
     generationMode,
     referenceAssetIds: generationMode === 'reference-to-video'
       ? (row.referenceAssets ?? []).map((asset) => asset.id)
       : [],
     tailImageId: generationMode === 'image-to-video' ? row.tailImageId ?? null : null,
   };
+  if (options.automaticMode) {
+    fields.modeIntent = 'auto';
+    fields.autoTailState = options.autoTailState ?? 'none';
+  }
+  return fields;
 }
 
 export interface BulkPromptShot<Row extends BulkPromptRow = BulkPromptRow> {
