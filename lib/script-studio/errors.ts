@@ -2,6 +2,7 @@ export type ScriptStudioErrorCode =
   | 'not_found'
   | 'invalid_input'
   | 'conflict'
+  | 'forbidden'
   | 'unavailable'
   | 'provider_unavailable'
   | 'resource_limit'
