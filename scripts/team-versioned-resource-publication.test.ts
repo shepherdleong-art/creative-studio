@@ -67,14 +67,17 @@ const initialized = await initializeFirstAdministrator({ db, employeeId: '0000',
 const service = createTeamAuthService({ db, kdf, passwordParams: { N: 1024, r: 8, p: 1 } });
 setTeamAuthServiceForTests(service);
 const adminLogin = await service.login({ employeeId: '0000', password: initialized.credential });
-const adminPrincipal = await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-versioned-password');
+await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-versioned-password');
+const adminSession = await service.login({ employeeId: '0000', password: 'admin-versioned-password' });
+const adminPrincipal = adminSession.principal;
 async function employee(employeeId: string, displayName: string) {
   const created = await service.createUser(adminPrincipal, { employeeId, displayName, role: 'employee' });
   const login = await service.login({ employeeId, password: created.credential });
   await service.changeOwnPassword(login.principal, created.credential, `${employeeId}-versioned-password`);
-  return { principal: login.principal, cookie: sessionCookie(login.token).split(';', 1)[0] };
+  const session = await service.login({ employeeId, password: `${employeeId}-versioned-password` });
+  return { principal: session.principal, cookie: sessionCookie(session.token).split(';', 1)[0] };
 }
-const adminCookie = sessionCookie(adminLogin.token).split(';', 1)[0];
+const adminCookie = sessionCookie(adminSession.token).split(';', 1)[0];
 const userA = await employee('0001', '员工甲');
 const userB = await employee('0002', '员工乙');
 const publicRoute = await import('../app/api/team/public-resources/route.ts');
