@@ -16,8 +16,8 @@ function Get-TeamBootstrapNode {
     } catch {}
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            # Node 22 的 Undici 实验警告写 stderr；PS 5.1 会将其升级为 NativeCommandError。
-            return '--disable-warning=UNDICI-EHPA', [System.IO.Path]::GetFullPath($candidate)
+            # Callers invoke this value as an executable; command arguments must not be returned here.
+            return [System.IO.Path]::GetFullPath($candidate)
         }
     }
     $command = Get-Command node.exe -ErrorAction SilentlyContinue

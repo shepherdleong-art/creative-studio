@@ -37,6 +37,16 @@ function invoke(script, args) {
   });
 }
 
+test('bootstrap returns one executable path even when an explicit runtime is selected', { skip: process.platform !== 'win32' }, () => {
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-Command',
+    '. $env:BOOTSTRAP_HELPER; $node = Get-TeamBootstrapNode -ConfigPath "missing.json"; if ($node -isnot [string]) { throw "Expected executable path" }; & $node --version; exit $LASTEXITCODE',
+  ], { encoding: 'utf8', windowsHide: true, env: { ...process.env,
+    BOOTSTRAP_HELPER: path.join(scriptRoot, 'common.ps1'), CREATIVE_STUDIO_TEAM_NODE: process.execPath,
+  } });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^v\d+\./);
+});
+
 test('所有团队服务 PS1 为 UTF-8 BOM 且可由 PowerShell 5.1 解析', { skip: process.platform !== 'win32' }, () => {
   for (const name of scripts) {
     const file = path.join(scriptRoot, name);
