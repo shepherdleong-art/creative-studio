@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-import type { DesktopBridge, RemoteUploadTarget } from './bridge-types';
+import type { DesktopBridge, RemoteUploadTarget, ClientDiagnosticInput } from './bridge-types';
 
 // Keep the sandboxed preload's runtime dependency surface limited to Electron.
 // The shared bridge-types file is intentionally type-only here; importing its
@@ -73,6 +73,7 @@ const desktopBridge: DesktopBridge = Object.freeze({
   revealDownload: (downloadId: string) => ipcRenderer.invoke(REVEAL_DOWNLOAD_CHANNEL, downloadId),
   getClientStatus: () => ipcRenderer.invoke(GET_CLIENT_STATUS_CHANNEL),
   installClientUpdate: () => ipcRenderer.invoke(INSTALL_CLIENT_UPDATE_CHANNEL),
+  reportClientError: (input: ClientDiagnosticInput) => ipcRenderer.invoke('desktop:client-report-error', input),
   onQuitRequested: (callback: () => void) => {
     quitListener = callback;
     if (quitRequested) {

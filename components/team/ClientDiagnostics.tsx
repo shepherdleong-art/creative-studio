@@ -62,7 +62,7 @@ function writeQueues(accounts: StoredQueue[]): void {
 
 export default function ClientDiagnostics() {
   useEffect(() => {
-    if (document.documentElement.dataset.deploymentMode !== 'server') return;
+    if (document.documentElement.dataset.deploymentMode !== 'server' || window.desktopBridge) return;
     let identity: string | null = null;
     let active = true;
     let flushing = false;

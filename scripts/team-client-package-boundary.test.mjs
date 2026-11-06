@@ -47,7 +47,7 @@ try {
   ].sort(), '轻客户端顶层必须等于独立白名单');
   for (const required of [
     'start-client.cmd', 'launcher.mjs', 'update-public-key.pem', 'current.json',
-    'helper/update-helper.js', 'helper/atomic-json.js', 'runtime/electron.exe',
+    'helper/update-helper.js', 'helper/atomic-json.js', 'helper/client-diagnostics.js', 'runtime/electron.exe',
     'versions/test-release/electron/electron.exe',
     'versions/test-release/package.json',
     'versions/test-release/dist-desktop/main.js',

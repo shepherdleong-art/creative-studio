@@ -5,7 +5,7 @@ import { readdir } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { CHANNELS, registerIpcHandlers, sameOrigin, type DesktopIpcHandlers } from './ipc';
-import type { ClientStatus, RemoteUploadTarget } from './bridge-types';
+import type { ClientStatus, RemoteUploadTarget, ClientDiagnosticInput } from './bridge-types';
 import type { DesktopService } from './service-spawn';
 import { applyThemePreference } from './theme';
 
@@ -51,6 +51,7 @@ export interface RemoteClientIpc {
   revealDownload(downloadId: string): Promise<{ revealed: boolean }>;
   getClientStatus(): Promise<ClientStatus>;
   installClientUpdate(): Promise<{ started: boolean; message?: string }>;
+  reportUiError(input: ClientDiagnosticInput): void;
   pauseForUpdate(): Promise<void>;
   resumeAfterUpdate(): Promise<void>;
   stop(): Promise<void>;
@@ -303,6 +304,7 @@ function createDesktopIpcHandlers(
     revealDownload: async () => { throw new Error('仅轻客户端支持受管下载'); },
     getClientStatus: async () => { throw new Error('当前不是轻客户端'); },
     installClientUpdate: async () => { throw new Error('本地工作台不使用轻客户端更新入口'); },
+    reportClientError: () => { throw new Error('本地工作台不使用轻客户端错误上报入口'); },
   };
 }
 
@@ -324,6 +326,7 @@ function createRemoteIpcHandlers(window: BrowserWindow, host: RemoteDesktopWindo
     revealDownload: (downloadId) => host.remote.revealDownload(downloadId),
     getClientStatus: () => host.remote.getClientStatus(),
     installClientUpdate: () => host.remote.installClientUpdate(),
+    reportClientError: (input) => host.remote.reportUiError(input),
   };
 }
 
@@ -385,6 +388,13 @@ export function createWindow(host: DesktopWindowHost): BrowserWindow {
   installIpcHandlers(window, host);
 
   window.once('ready-to-show', () => window.show());
+  if (host.mode === 'remote') {
+    window.webContents.on('did-finish-load', () => {
+      void import('./client/ui-diagnostics').then(({ CLIENT_UI_DIAGNOSTICS_SCRIPT }) =>
+        window.webContents.executeJavaScript(CLIENT_UI_DIAGNOSTICS_SCRIPT, true),
+      ).catch(() => undefined);
+    });
+  }
   window.on('closed', () => {
     host.onWindowClosed();
     host.clearIpcHandlers();
