@@ -1,5 +1,5 @@
 import { requirePrincipal } from '@/lib/team-service/auth/request';
-import { listMaintenanceJobs, submitMaintenanceJob } from '@/lib/team-service/maintenance/control';
+import { listMaintenanceJobs, readRestoreActivityForAdmin, submitMaintenanceJob } from '@/lib/team-service/maintenance/control';
 import { MaintenanceControlError } from '@/lib/team-service/maintenance/jobs';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 async function __teamRouteGET(request: Request) {
   requirePrincipal(request, { admin: true });
-  return Response.json(listMaintenanceJobs(), { headers: { 'Cache-Control': 'private, no-store' } });
+  return Response.json({ ...listMaintenanceJobs(), activity: readRestoreActivityForAdmin() }, { headers: { 'Cache-Control': 'private, no-store' } });
 }
 
 async function __teamRoutePOST(request: Request) {

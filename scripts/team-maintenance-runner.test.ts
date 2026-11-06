@@ -17,6 +17,7 @@ const configPath = path.join(fixture, 'deployment.json');
 const runner = path.resolve('scripts/team-server/maintenance.mjs');
 const sha256 = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const databases = new Set<Database.Database>();
+const jobStores = new Set<{ close(): void }>();
 
 function write(relative: string, content: string): string {
   const file = path.join(releaseRoot, ...relative.split('/'));
@@ -188,6 +189,29 @@ try {
   }).job.id, failedSubmission.job.id);
   failedJobs.close();
 
+  const restoreJobs = new MaintenanceJobStore({ backupRoot, deploymentId });
+  jobStores.add(restoreJobs);
+  const restoreSubmission = restoreJobs.submit({
+    action: 'restore.execute', target: { kind: 'restore', backupType: 'manual', backupId: manualBackupId },
+    principal: { userId: 'admin', employeeId: '00042', displayName: '真实网页管理员', role: 'admin' }, idempotencyKey: 'full-restore-operation-13',
+  });
+  const prepare = invoke('worker', '--config', configPath, '--job-id', restoreSubmission.job.id, '--once', '--allow-fixture-release', '--test-isolated-cutover');
+  assert.equal(prepare.status, 0, `${prepare.stdout}${prepare.stderr}`);
+  const waitingRestore = restoreJobs.get(restoreSubmission.job.id).job;
+  assert.equal(waitingRestore.status, 'awaiting_confirmation');
+  assert.equal(waitingRestore.result?.awaitingConfirmation, true);
+  assert.ok(waitingRestore.result?.preRestoreBackupId);
+  assert.equal(restoreJobs.audit(restoreSubmission.job.id)[0]?.actor.displayName, '真实网页管理员');
+  const repeatWaiting = invoke('worker', '--config', configPath, '--job-id', restoreSubmission.job.id, '--once', '--allow-fixture-release', '--test-isolated-cutover');
+  assert.equal(repeatWaiting.status, 0, `${repeatWaiting.stdout}${repeatWaiting.stderr}`);
+  assert.equal(restoreJobs.get(restoreSubmission.job.id).job.status, 'awaiting_confirmation');
+  restoreJobs.confirm({ jobId: restoreSubmission.job.id, principal: { userId: 'admin', employeeId: '00042', displayName: '真实网页管理员', role: 'admin' } });
+  const cutover = invoke('worker', '--config', configPath, '--job-id', restoreSubmission.job.id, '--once', '--allow-fixture-release', '--test-isolated-cutover');
+  assert.notEqual(cutover.status, 0, '未经受控重新认证不得实际切换');
+  assert.equal(restoreJobs.get(restoreSubmission.job.id).job.status, 'failed');
+  assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).dataRoot, dataRoot);
+  restoreJobs.close();
+
   const first = invoke('backup', '--config', configPath, '--type', 'daily', '--backup-id', 'daily-1', '--allow-fixture-release');
   assert.equal(first.status, 0, `${first.stdout}${first.stderr}`);
   assert.equal(JSON.parse(first.stdout.trim()).status, 'success');
@@ -198,7 +222,7 @@ try {
   assert.ok(dailyJob.durationMs >= 0);
   assert.ok(dailyJob.totalBytes > 0);
   assert.ok(dailyJob.availableBytes > 0);
-  assert.equal(dailyJob.latestRecoveryEvidence, null);
+  assert.equal(dailyJob.latestRecoveryEvidence.backupId, manualBackupId);
   assert.notDeepEqual([...fs.readFileSync(dailyJobPath).subarray(0, 3)], [0xef, 0xbb, 0xbf]);
 
   const lockFile = path.join(backupRoot, 'locks', 'daily.lock');
@@ -251,6 +275,7 @@ try {
   console.error('maintenance runner assertion', error);
   throw error;
 } finally {
+  for (const store of jobStores) store.close();
   for (const db of databases) if (db.open) db.close();
   fs.rmSync(fixture, { recursive: true, force: true });
 }

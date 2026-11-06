@@ -30,6 +30,9 @@ const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'team-maintenance-routes-'
 const dataRoot = path.join(fixture, 'data-root');
 const backupRoot = path.join(fixture, 'backups');
 const deploymentRoot = path.join(fixture, 'deployment');
+const serviceRoot = path.join(deploymentRoot, 'service');
+fs.mkdirSync(serviceRoot, { recursive: true });
+fs.writeFileSync(path.join(serviceRoot, 'current-release.json'), JSON.stringify({ schemaVersion: 1, releaseId: 'release-route-13', packageSha256: 'e'.repeat(64), switchedAt: new Date().toISOString() }));
 const previousEnv = { ...process.env };
 Object.assign(process.env, {
   CREATIVE_STUDIO_DATA_ROOT: dataRoot,
@@ -117,9 +120,56 @@ try {
   assert.equal(auditBody.audit[0].event, 'submitted');
   const deniedAudit = await auditRoute.GET(request(`/api/team/maintenance/jobs/${accepted.job.id}/audit`, employeeCookie), { params: Promise.resolve({ id: accepted.job.id }) });
   assert.equal(deniedAudit.status, 403);
+  const { createTeamBackup } = await import('../lib/team-service/maintenance/backup.ts');
+  const configFile = path.join(deploymentRoot, 'config', 'maintenance-deployment.json');
+  fs.mkdirSync(path.dirname(configFile), { recursive: true });
+  fs.writeFileSync(configFile, JSON.stringify({ deploymentRoot, dataRoot }));
+  await createTeamBackup({ db, principal, dataRoot, storageRoot: path.join(dataRoot, 'storage'), backupRoot,
+    deploymentId: 'deployment-maintenance-routes', type: 'manual', backupId: 'verified-point-a',
+    release: { releaseId: 'release-route-13', packageSha256: 'e'.repeat(64) }, config: { filePath: configFile } });
   const listed = await backupsRoute.GET(request('/api/team/maintenance/backups', adminCookie));
-  assert.equal(listed.status, 200);
-  assert.deepEqual((await listed.json()).backups, []);
+  assert.equal(listed.status, 200, await listed.clone().text());
+  assert.equal((await listed.json()).backups[0].restorable, true);
+  const restoresRoute = await import('../app/api/team/maintenance/restores/route.ts');
+  const badRestore = await restoresRoute.POST(request('/api/team/maintenance/restores', adminCookie, {
+    idempotencyKey: 'restore-bad-backup-13', target: { kind: 'restore', backupType: 'manual', backupId: 'not-a-valid-backup' },
+  }));
+  assert.equal(badRestore.status, 409);
+  const arbitraryRestore = await restoresRoute.POST(request('/api/team/maintenance/restores', adminCookie, {
+    idempotencyKey: 'restore-arbitrary-path-13', target: { kind: 'restore', backupType: 'manual', backupId: 'x', path: 'C:\\outside' },
+  }));
+  assert.equal(arbitraryRestore.status, 400);
+  const employeeRestore = await restoresRoute.POST(request('/api/team/maintenance/restores', employeeCookie, {
+    idempotencyKey: 'restore-employee-13', target: { kind: 'restore', backupType: 'manual', backupId: 'x' },
+  }));
+  assert.equal(employeeRestore.status, 403);
+  const confirmRoute = await import('../app/api/team/maintenance/restores/[id]/confirm/route.ts');
+  const missingConfirm = await confirmRoute.POST(request(`/api/team/maintenance/restores/${accepted.job.id}/confirm`, adminCookie, { password: 'admin-password' }), { params: Promise.resolve({ id: accepted.job.id }) });
+  assert.equal(missingConfirm.status, 409, '备份作业未完成隔离还原，不能伪装成待确认还原');
+  const { MaintenanceJobStore } = await import('../lib/team-service/maintenance/jobs.ts');
+  const store = new MaintenanceJobStore({ backupRoot, deploymentId: 'deployment-maintenance-routes' });
+  store.claimNext({ workerId: 'route-fixture-worker' });
+  store.complete({ jobId: accepted.job.id, workerId: 'route-fixture-worker', result: { backupId: 'verified-point-a' } });
+  const submittedRestore = await restoresRoute.POST(request('/api/team/maintenance/restores', adminCookie, {
+    idempotencyKey: 'restore-valid-point-13', target: { kind: 'restore', backupType: 'manual', backupId: 'verified-point-a' },
+  }));
+  assert.equal(submittedRestore.status, 202, await submittedRestore.clone().text());
+  const restoreJob = (await submittedRestore.json()).job;
+  store.claimNext({ workerId: 'route-fixture-worker' });
+  store.awaitConfirmation({ jobId: restoreJob.id, workerId: 'route-fixture-worker', result: { awaitingConfirmation: true, preRestoreBackupId: 'verified-pre-restore' } });
+  const wrongPassword = await confirmRoute.POST(request(`/api/team/maintenance/restores/${restoreJob.id}/confirm`, adminCookie, { password: 'incorrect-password' }), { params: Promise.resolve({ id: restoreJob.id }) });
+  assert.equal(wrongPassword.status, 401);
+  assert.equal(store.get(restoreJob.id).job.status, 'awaiting_confirmation');
+  assert.equal(store.get(restoreJob.id).job.integrity, 'ok');
+  const confirmed = await confirmRoute.POST(request(`/api/team/maintenance/restores/${restoreJob.id}/confirm`, adminCookie, { password: 'admin-password' }), { params: Promise.resolve({ id: restoreJob.id }) });
+  assert.equal(confirmed.status, 200, await confirmed.clone().text());
+  assert.equal((await confirmed.json()).accessVerified, true);
+  assert.ok(confirmed.headers.get('set-cookie')?.includes('__Host-team_session='));
+  assert.equal(store.get(restoreJob.id).job.status, 'queued');
+  assert.equal(store.audit(restoreJob.id).at(-1)?.actor.displayName, '网页管理员');
+  const duplicateConfirmation = await confirmRoute.POST(request(`/api/team/maintenance/restores/${restoreJob.id}/confirm`, adminCookie, { password: 'admin-password' }), { params: Promise.resolve({ id: restoreJob.id }) });
+  assert.equal(duplicateConfirmation.status, 409, '重复确认不能重新排队已确认切换');
+  store.close();
   console.log('team maintenance administrator route tests passed');
 } finally {
   setTeamAuthServiceForTests(null);

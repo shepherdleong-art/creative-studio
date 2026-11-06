@@ -273,6 +273,13 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
     return principalFrom(user, session);
   }
 
+  async function reauthenticate(principal: AuthPrincipal, password: string): Promise<{ principal: AuthPrincipal; token: string }> {
+    currentUserForSession(principal);
+    if (principal.role !== 'admin') throw new TeamAuthError('admin_required', '需要管理员权限。', 403);
+    const loginResult = await login({ employeeId: principal.employeeId, password });
+    return loginResult;
+  }
+
   async function changeOwnPassword(
     principal: AuthPrincipal,
     currentPassword: string,
@@ -478,6 +485,7 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
   return {
     login,
     resolveSession,
+    reauthenticate,
     changeOwnPassword,
     logout,
     initializeFirstAdministrator,

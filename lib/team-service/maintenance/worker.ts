@@ -60,6 +60,8 @@ export async function runMaintenanceWorker(options: {
   configPath: string; jobId?: string;
   makeBackup: (params: { job: MaintenanceJob; backupId: string; onStage: (stage: 'snapshotting' | 'copying_media' | 'verifying') => void }) =>
     Promise<{ backupId: string; type: string; verifiedAt: string; totalBytes: number }>;
+  makeRestore?: (params: { job: MaintenanceJob; onStage: (stage: import('./restore-operation.ts').RestoreStage) => void }) =>
+    Promise<{ awaitingConfirmation: boolean; [key: string]: unknown }>;
   once?: boolean; pollIntervalMs?: number;
 }): Promise<void> {
   // deployment config 已在应用外解析，worker 不接受任意配置、路径或命令。
@@ -91,11 +93,45 @@ export async function runMaintenanceWorker(options: {
       }
       try {
         if (claimed) {
-          await executeClaimedBackupJob({ ...claimed, workerId, store, configPath: options.configPath, deploymentId: config.deploymentId,
-            makeBackup: (params) => options.makeBackup({ ...params, job: claimed.job }) });
+          if (claimed.job.action === 'restore.execute') {
+            if (!options.makeRestore) throw new Error('还原执行器未配置，保持原业务不变');
+            try {
+              const heartbeat = setInterval(() => {
+                try {
+                  const current = store.get(claimed.job.id).job;
+                  if (current.status === 'running' && current.leaseOwner === workerId) {
+                    store.updateStage({ jobId: claimed.job.id, workerId, stage: current.stage, leaseMs: 120_000 });
+                    lastLeaseRenewal = Date.now();
+                  }
+                } catch { /* 长阶段实际提交点会 fail closed；不掩盖租约丢失。 */ }
+              }, 20_000);
+              heartbeat.unref();
+              let result: { awaitingConfirmation: boolean; [key: string]: unknown };
+              let lastLeaseRenewal = Date.now();
+              const renewLease = (stage: import('./jobs.ts').MaintenanceJob['stage']) => {
+                lastLeaseRenewal = Date.now();
+                return store.updateStage({ jobId: claimed.job.id, workerId, stage, leaseMs: 120_000 });
+              };
+              try { result = await options.makeRestore({ job: claimed.job, onStage: renewLease }); }
+              finally { clearInterval(heartbeat); }
+              if (Date.now() - lastLeaseRenewal > 55_000) renewLease(claimed.job.stage);
+              if (result.awaitingConfirmation) store.awaitConfirmation({ jobId: claimed.job.id, workerId, result });
+              else store.complete({ jobId: claimed.job.id, workerId, result });
+            } catch (error) {
+              const current = store.get(claimed.job.id).job;
+              if (current.leaseOwner === workerId && current.status === 'running') {
+                store.fail({ jobId: claimed.job.id, workerId, code: 'restore_failed',
+                  message: error instanceof Error ? error.message.slice(0, 500) : '还原未完成，原业务保持不切换。' });
+              }
+              throw error;
+            }
+          } else {
+            await executeClaimedBackupJob({ ...claimed, workerId, store, configPath: options.configPath, deploymentId: config.deploymentId,
+              makeBackup: (params) => options.makeBackup({ ...params, job: claimed.job }) });
+          }
         }
       } finally { lock?.release(); lock = null; }
-      if (claimed || options.once) return;
+      if (options.once) return;
       await delay(options.pollIntervalMs ?? 1000);
     }
   } finally {

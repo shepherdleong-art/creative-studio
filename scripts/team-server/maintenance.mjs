@@ -14,6 +14,7 @@ import { restoreTeamBackup } from '../../lib/team-service/maintenance/restore.ts
 import { runTeamRelease, rollbackTeamRelease, readTeamReleasePointer, switchTeamReleasePointerIdempotent } from '../../lib/team-service/maintenance/release.ts';
 import { acquireLifecycleBarrier, releaseLifecycleBarrier } from '../../lib/team-service/lifecycle/index.ts';
 import { createExecutionJournal } from '../../lib/media-core/execution/journal.ts';
+import { executeTeamRestoreOperation } from '../../lib/team-service/maintenance/restore-operation.ts';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -66,6 +67,7 @@ function credential(config) {
   return readJson(file);
 }
 function serviceAccountText(config) {
+  if (args.includes('--test-isolated-cutover') && process.platform === 'win32') return '*S-1-5-18';
   return typeof config.serviceAccount === 'string'
     ? config.serviceAccount
     : `${config.serviceAccount.domain}\\${config.serviceAccount.user}`;
@@ -119,7 +121,7 @@ function protectConfig(config) {
       file, '/inheritance:r', '/grant:r', `${identity.stdout.trim()}:F`,
       '*S-1-5-18:F', '*S-1-5-32-544:F', `${account}:R`,
     ], { encoding: 'utf8', windowsHide: true, timeout: 15_000 });
-    if (result.status !== 0) throw new Error('秘密配置副本 ACL 设置失败');
+    if (result.status !== 0) throw new Error(`秘密配置副本 ACL 设置失败：${(result.stderr || result.stdout || '').trim().slice(-300)}`);
   };
 }
 function latestRecoveryEvidence(config) {
@@ -226,6 +228,37 @@ async function drain(db) {
   }
   return { pendingTasks: 1, unknownAttemptIds: [] };
 }
+async function activateRestoredService(config, restoredDataRoot, jobId) {
+  const { generateDeploymentConfiguration } = await import('./generate-config.mjs');
+  const current = readJson(configPathForMaintenance(config));
+  const resolvedPath = path.join(config.serviceRoot, 'resolved-services.json');
+  const previousResolved = fs.readFileSync(resolvedPath, 'utf8');
+  const nextConfig = { ...current, dataRoot: restoredDataRoot };
+  try {
+    generateDeploymentConfiguration(nextConfig, config.serviceRoot);
+    const resolved = readJson(resolvedPath);
+    if (resolved.dataRoot !== restoredDataRoot) throw new Error('受管数据根指针未指向已验证还原根');
+    if (args.includes('--test-cutover-failure')) throw new Error('injected activation failure');
+    startApp(config);
+    await waitService(config, config.releaseId, 'maintenance');
+    const temporary = `${configPathForMaintenance(config)}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, `${JSON.stringify(nextConfig, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    fs.renameSync(temporary, configPathForMaintenance(config));
+    return resolved.dataRoot;
+  } catch (error) {
+    fs.writeFileSync(resolvedPath, previousResolved);
+    if (args.includes('--test-cutover-failure')) throw error;
+    // 真实 SCM 启动失败时先停止可能已启动的新根，再恢复旧配置。
+    try { await controlled('stop', config, current.releaseId); } catch { /* 启动失败后实例可能已不在运行。 */ }
+    generateDeploymentConfiguration(readJson(configPathForMaintenance(config)), config.serviceRoot);
+    startApp(config);
+    await waitService(config, config.releaseId, 'maintenance');
+    throw error;
+  }
+}
+function configPathForMaintenance(config) {
+  return path.join(config.configRoot, 'maintenance-deployment.json');
+}
 async function makeBackup(config, db, principal, type, backupId, configPath, reuseExisting = false, lockAlreadyHeld = false, onStage) {
   const lock = lockAlreadyHeld ? null : await acquireSchemaUpgradeLock({ lockDatabasePath: maintenanceGlobalLockPath(config.backupRoot), timeoutMs: 100 });
   try {
@@ -283,12 +316,13 @@ try {
       once: args.includes('--once'),
       jobId: argument('--job-id') || undefined,
       makeBackup: async ({ job, backupId, onStage }) => {
-        const workerDb = openDatabase(config.dataRoot);
+        const activeConfig = resolveDeploymentConfig(readJson(configPath));
+        const workerDb = openDatabase(activeConfig.dataRoot);
         try {
           if (job.target.kind !== 'backup') throw new Error('维护作业目标不是备份');
           const principal = job.requestedBy;
           const backupType = job.target.backupType;
-          const result = await makeBackup(config, workerDb, principal, backupType, backupId, configPath, false, true, onStage);
+          const result = await makeBackup(activeConfig, workerDb, principal, backupType, backupId, configPath, false, true, onStage);
           const verified = await verifyTeamBackup(result.directory);
           if (!verified.verified || verified.manifest.backupId !== result.manifest.backupId) throw new Error('备份作业结果复核失败');
           onStage('verifying');
@@ -297,6 +331,37 @@ try {
             verifiedAt: result.success.verifiedAt, totalBytes: result.success.totalBytes,
           };
         } finally { workerDb.close(); }
+      },
+      makeRestore: async ({ job, onStage }) => {
+        const activeBaseConfig = resolveDeploymentConfig(readJson(configPath));
+        const runningRelease = await currentReleaseIdentity(activeBaseConfig);
+        const activeConfig = { ...activeBaseConfig, releaseId: runningRelease.releaseId };
+        return executeTeamRestoreOperation({
+        job, configPath, config: activeConfig, currentRelease: runningRelease, onStage,
+        protectConfig: protectConfig(activeConfig),
+        beforeMove: args.includes('--test-isolated-cutover') ? undefined : async () => {
+          const stopped = await controlled('stop', activeConfig, activeConfig.releaseId);
+          if (!stopped.stopped) throw new Error('旧应用未明确停止，拒绝切换活动数据根');
+        },
+        rollbackService: args.includes('--test-isolated-cutover') ? undefined : async () => {
+          const current = readJson(configPathForMaintenance(config));
+          generateDeploymentConfiguration(current, activeConfig.serviceRoot);
+          startApp(activeConfig);
+          await waitService(activeConfig, activeConfig.releaseId, 'maintenance');
+        },
+        reauthenticatedSession: fs.existsSync(path.join(config.deploymentRoot, 'restore-operations', job.id, 'reauthenticated-session.json'))
+          ? readJson(path.join(config.deploymentRoot, 'restore-operations', job.id, 'reauthenticated-session.json')) : undefined,
+        diskSpaceProbe: args.includes('--test-disk-space-zero') ? async () => 0 : undefined,
+        activate: args.includes('--test-isolated-cutover') ? async (restoredRoot) => {
+          const { generateDeploymentConfiguration } = await import('./generate-config.mjs');
+          const next = { ...readJson(configPath), dataRoot: restoredRoot };
+          generateDeploymentConfiguration(next, config.serviceRoot);
+          if (args.includes('--test-cutover-failure')) throw new Error('injected activation failure');
+          const temporary = `${configPath}.${process.pid}.tmp`;
+          fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+          fs.renameSync(temporary, configPath);
+        } : (restoredRoot) => activateRestoredService(activeConfig, restoredRoot, job.id),
+        });
       },
     });
     process.stdout.write(`${JSON.stringify({ status: 'success', worker: true })}\n`);
