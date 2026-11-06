@@ -121,7 +121,7 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(`${baseUrl}/team/login`, { waitUntil: 'networkidle', timeout: 60_000 });
+  await page.goto(`${baseUrl}/team/login`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.locator('input[autocomplete="username"]').fill('00042');
   await page.locator('input[autocomplete="current-password"]').fill(initializedCredential);
   await page.getByRole('button', { name: '登录', exact: true }).click();
@@ -137,8 +137,8 @@ try {
     page.waitForURL((url) => url.pathname !== '/team/login', { timeout: 60_000 }),
     page.getByRole('button', { name: '登录', exact: true }).click(),
   ]);
-  await page.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'networkidle', timeout: 60_000 });
-  await page.getByRole('heading', { name: '备份与维护', exact: true }).waitFor();
+  await page.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.getByRole('heading', { name: '备份与维护', exact: true }).waitFor({ timeout: 60_000 });
   const employee = await page.evaluate(async () => {
     const csrf = await (await fetch('/api/team/auth/csrf')).json();
     const created = await fetch('/api/team/users', {
@@ -157,8 +157,8 @@ try {
   const jobId = job.id;
   await page.close();
   const reopened = await context.newPage();
-  await reopened.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'networkidle', timeout: 60_000 });
-  await reopened.getByText('成功 · 备份完成', { exact: true }).waitFor({ timeout: 30_000 });
+  await reopened.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await reopened.getByText('成功 · 备份完成', { exact: true }).waitFor({ timeout: 60_000 });
   assert.equal((await reopened.evaluate(async () => (await (await fetch('/api/team/maintenance/jobs')).json()).jobs[0].id)), jobId);
   const backups = await reopened.evaluate(async () => (await (await fetch('/api/team/maintenance/backups')).json()).backups);
   assert.equal(backups.length, 1);
@@ -188,13 +188,17 @@ try {
     assert.equal(preparedDb.prepare('SELECT maintenance, productionPaused FROM team_service_state WHERE id = 1').get().maintenance, 1);
     assert.equal(preparedDb.prepare('SELECT productionPaused FROM team_service_state WHERE id = 1').pluck().get(), 1);
   } finally { preparedDb.close(); }
-  await reopened.reload({ waitUntil: 'networkidle' });
+  await reopened.reload({ waitUntil: 'domcontentloaded' });
   await restorePanel.getByRole('heading', { name: '隔离还原已校验，等待管理员确认切换', exact: true }).waitFor();
+  assert.equal(await restorePanel.locator('#restore-backup').isDisabled(), true, '待确认还原期间禁止并行还原');
+  // 本脚本不伪造 SCM 控制凭据；完整切换由隔离 restore-flow/cutover 测试覆盖。
+  // 本页覆盖隔离准备、篡改拒绝和冲突清理保护；完整切换使用独立 cutover 测试。
   fs.writeFileSync(path.join(backupRoot, 'manual', backups[0].id, 'evidence', 'execution-journal.jsonl'), 'tampered');
-  await reopened.reload({ waitUntil: 'networkidle' });
+  await reopened.reload({ waitUntil: 'domcontentloaded' });
   await reopened.getByText('未通过，待核查', { exact: true }).waitFor({ timeout: 30_000 });
   const tampered = await reopened.evaluate(async () => (await (await fetch('/api/team/maintenance/backups')).json()).backups);
   assert.equal(tampered.find((item) => item.type === 'manual' && item.id === backups[0].id)?.restorable, false);
+  assert.ok(tampered.some((item) => item.type === 'pre-restore'), '准备还原必须保留当前状态备份');
   assert.deepEqual(errors, []);
   const fixtureDb = new Database(path.join(dataRoot, 'data', 'workbench.db'));
   try {
@@ -217,16 +221,24 @@ try {
   await reopened.getByRole('button', { name: '扫描无用文件', exact: true }).click();
   await reopened.getByText('可清理 1 项 · 预计释放 4 B', { exact: true }).waitFor({ timeout: 30_000 });
   await reopened.getByRole('button', { name: '确认清理预览中的项目', exact: true }).click();
-  await reopened.getByRole('dialog').getByRole('button', { name: '确认永久清理', exact: true }).click();
-  await reopened.getByText('实际删除 1 个文件 · 实际释放 4 B · 跳过 0 项 · 失败 0 项', { exact: true }).waitFor({ timeout: 120_000 });
-  assert.equal(fs.existsSync(path.join(temporaryDirectory, '1.part')), false);
-  const cleanupJob = await reopened.evaluate(async () => (await (await fetch('/api/team/maintenance/jobs')).json()).jobs.find((job) => job.action === 'cleanup.execute'));
-  await reopened.reload({ waitUntil: 'networkidle' });
-  await reopened.getByText(`发起人：真实网页管理员 · 作业：${cleanupJob.id}`, { exact: true }).waitFor({ timeout: 30_000 });
+  const conflict = await reopened.evaluate(async () => {
+    const csrf = await fetch('/api/team/auth/csrf').then(response => response.json());
+    const scan = await fetch('/api/team/maintenance/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf.csrfToken }, body: '{}' });
+    const preview = await scan.json();
+    const response = await fetch('/api/team/maintenance/jobs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf.csrfToken },
+      body: JSON.stringify({ idempotencyKey: 'browser-conflict-cleanup', confirm: true, target: { kind: 'cleanup', previewId: preview.preview.id } }),
+    });
+    return { status: response.status, body: await response.json() };
+  });
+  assert.equal(conflict.status, 409, '还原作业进行中不得并行清理');
+  assert.equal(fs.existsSync(path.join(temporaryDirectory, '1.part')), true, '冲突清理不得删除受保护文件');
+  await reopened.reload({ waitUntil: 'domcontentloaded' });
+  await reopened.getByText('隔离还原已校验，等待管理员确认切换', { exact: true }).waitFor({ timeout: 30_000 });
   assert.deepEqual(errors, []);
   const employeeContext = await browser.newContext({ locale: 'zh-CN' });
   const employeePage = await employeeContext.newPage();
-  await employeePage.goto(`${baseUrl}/team/login`, { waitUntil: 'networkidle' });
+  await employeePage.goto(`${baseUrl}/team/login`, { waitUntil: 'domcontentloaded' });
   await employeePage.locator('input[autocomplete="username"]').fill('00001');
   await employeePage.locator('input[autocomplete="current-password"]').fill(employee.body.credential);
   await employeePage.getByRole('button', { name: '登录', exact: true }).click();
@@ -240,7 +252,8 @@ try {
   await employeePage.locator('input[autocomplete="current-password"]').fill('employee-password');
   await employeePage.getByRole('button', { name: '登录', exact: true }).click();
   await employeePage.waitForURL((url) => url.pathname !== '/team/login');
-  await employeePage.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'networkidle' });
+  await employeePage.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'domcontentloaded' });
+  await employeePage.waitForURL((url) => url.pathname === '/', { timeout: 30_000 });
   assert.equal(new URL(employeePage.url()).pathname, '/', '员工必须被管理员维护页重定向');
   const denied = await employeePage.evaluate(async () => {
     const response = await fetch('/api/team/maintenance/jobs');

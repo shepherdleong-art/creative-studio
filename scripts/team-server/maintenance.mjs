@@ -328,7 +328,6 @@ try {
       configPath,
       once: args.includes('--once'),
       jobId: argument('--job-id') || undefined,
-<<<<<<< HEAD
       executeRelease: async ({ job, onStage }) => {
         if (job.target.kind !== 'release') throw new Error('升级目标无效');
         const operationId = job.id;

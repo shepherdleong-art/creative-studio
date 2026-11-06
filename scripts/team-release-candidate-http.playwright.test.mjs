@@ -108,13 +108,20 @@ try {
     body: JSON.stringify({ currentPassword: credential, newPassword: 'isolated-admin-password-11' }),
   });
   assert.equal(changed.status, 200, await changed.clone().text());
+  // 改密撤销包括当前设备在内的所有旧会话，按真实认证契约重新登录。
+  const reauthenticated = await fetch(`${origin}/api/team/auth/login`, {
+    method: 'POST', headers: { Cookie: csrfCookie, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ employeeId: '00001', password: 'isolated-admin-password-11' }),
+  });
+  assert.equal(reauthenticated.status, 200, await reauthenticated.clone().text());
+  const activeAdminSession = `${csrfCookie}; ${reauthenticated.headers.get('set-cookie').split(';')[0]}`;
   const employeeCreated = await fetch(`${origin}/api/team/users`, {
-    method: 'POST', headers: { Cookie: adminSession, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/json' },
+    method: 'POST', headers: { Cookie: activeAdminSession, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/json' },
     body: JSON.stringify({ employeeId: '00002', displayName: '隔离员工', role: 'employee' }),
   });
   assert.equal(employeeCreated.status, 201, await employeeCreated.clone().text());
   const employee = await employeeCreated.json();
-  const get = async (session = adminSession) => fetch(`${origin}/api/team/release-candidates`, {
+  const get = async (session = activeAdminSession) => fetch(`${origin}/api/team/release-candidates`, {
     headers: { Cookie: session },
   });
   let response = await get('');
@@ -124,9 +131,9 @@ try {
   const preview = await response.json();
   assert.equal(preview.current.appVersion, '0.7.1');
   assert.deepEqual(preview.candidates, []);
-  assert.equal(preview.executableUpgrade, false);
+  assert.equal(preview.executableUpgrade, true, '11 的候选准备与 12 的独立确认执行已集成；上传本身仍不得切换版本');
   response = await fetch(`${origin}/api/team/release-candidates`, {
-    method: 'POST', headers: { Cookie: adminSession, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/zip' },
+    method: 'POST', headers: { Cookie: activeAdminSession, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/zip' },
     body: fs.readFileSync(path.resolve('package.json')),
   });
   assert.equal(response.status, 422, await response.clone().text());
@@ -137,7 +144,7 @@ try {
   assert.equal(afterFailure.failures.length, 1);
   assert.equal(afterFailure.candidates.length, 0);
   response = await fetch(`${origin}/api/team/release-candidates`, {
-    method: 'POST', headers: { Cookie: adminSession, Origin: origin, 'x-csrf-token': csrfToken,
+    method: 'POST', headers: { Cookie: activeAdminSession, Origin: origin, 'x-csrf-token': csrfToken,
       'Content-Type': 'application/zip' },
     body: Buffer.from('truncated ZIP'),
   });
@@ -153,16 +160,23 @@ try {
     body: JSON.stringify({ currentPassword: employee.credential, newPassword: 'isolated-employee-password-11' }),
   });
   assert.equal(employeePassword.status, 200);
-  assert.equal((await get(employeeSession)).status, 403);
+  const employeeReauthenticated = await fetch(`${origin}/api/team/auth/login`, {
+    method: 'POST', headers: { Cookie: csrfCookie, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ employeeId: '00002', password: 'isolated-employee-password-11' }),
+  });
+  assert.equal(employeeReauthenticated.status, 200);
+  const activeEmployeeSession = `${csrfCookie}; ${employeeReauthenticated.headers.get('set-cookie').split(';')[0]}`;
+  assert.equal((await get(employeeSession)).status, 401, '改密前的员工会话必须失效');
+  assert.equal((await get(activeEmployeeSession)).status, 403, '重新登录的员工仍不得管理候选升级包');
   assert.equal((await fetch(`${origin}/api/team/release-candidates`, {
-    method: 'POST', headers: { Cookie: adminSession, Origin: origin, 'x-csrf-token': 'forged-csrf', 'Content-Type': 'application/zip' },
+    method: 'POST', headers: { Cookie: activeAdminSession, Origin: origin, 'x-csrf-token': 'forged-csrf', 'Content-Type': 'application/zip' },
     body: Buffer.from('forged'),
   })).status, 403);
   {
     const form = new FormData();
     form.append('file', new Blob([fs.readFileSync(validZip)], { type: 'application/zip' }), 'isolated-server-release.zip');
     response = await fetch(`${origin}/api/team/release-candidates`, {
-      method: 'POST', headers: { Cookie: adminSession, Origin: origin, 'x-csrf-token': csrfToken }, body: form,
+      method: 'POST', headers: { Cookie: activeAdminSession, Origin: origin, 'x-csrf-token': csrfToken }, body: form,
     });
     assert.equal(response.status, 201, await response.clone().text());
     const uploaded = (await response.json()).candidate;
@@ -174,7 +188,7 @@ try {
     const duplicateForm = new FormData();
     duplicateForm.append('file', new Blob([fs.readFileSync(validZip)], { type: 'application/zip' }), 'duplicate.zip');
     response = await fetch(`${origin}/api/team/release-candidates`, {
-      method: 'POST', headers: { Cookie: adminSession, Origin: origin, 'x-csrf-token': csrfToken }, body: duplicateForm,
+      method: 'POST', headers: { Cookie: activeAdminSession, Origin: origin, 'x-csrf-token': csrfToken }, body: duplicateForm,
     });
     assert.equal(response.status, 201, await response.clone().text());
     assert.equal((await response.json()).candidate.duplicate, true);
@@ -199,7 +213,7 @@ try {
       if (attempt === 239) throw new Error(`隔离服务重启后候选未恢复：${logs.slice(-3000)}`);
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    const page = await fetch(`${origin}/team/admin/operations`, { headers: { Cookie: adminSession } });
+    const page = await fetch(`${origin}/team/admin/operations`, { headers: { Cookie: activeAdminSession } });
     assert.equal(page.status, 200);
     assert.match(await page.text(), /上传服务器升级包/);
     const { chromium } = await import('@playwright/test');
@@ -213,7 +227,8 @@ try {
       await page.getByLabel('密码或 6 位一次性密码').fill('isolated-admin-password-11');
       await page.getByRole('button', { name: '登录', exact: true }).click();
       await page.waitForURL((url) => !url.pathname.includes('/team/login'));
-      await page.goto(`${origin}/team/admin/operations`, { waitUntil: 'networkidle' });
+      await page.goto(`${origin}/team/admin/operations`, { waitUntil: 'domcontentloaded' });
+      await page.getByLabel('选择服务器升级包').waitFor({ timeout: 60_000 });
       await page.getByLabel('选择服务器升级包').setInputFiles(validZip);
       await page.getByRole('button', { name: '上传并校验' }).click();
       await page.getByText('候选包已准备完成；尚未执行升级，当前运行版本不变。').waitFor({ timeout: 120_000 });

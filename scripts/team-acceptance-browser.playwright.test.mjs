@@ -159,14 +159,15 @@ try {
       const memberFilter = adminPage.getByLabel('发起人', { exact: true });
       await memberFilter.selectOption({ label: '逻辑用户 2（accept-02）' });
       await adminPage.getByText('历史脚本模型-fixture-A', { exact: false }).first().waitFor();
-      assert.equal(await adminPage.getByText('其他成员模型-fixture-B', { exact: false }).isVisible(), false);
+      assert.equal(await adminPage.getByText('其他成员模型-fixture-B', { exact: false }).first().isVisible(), false);
       const employeeGroup = adminPage.getByRole('region', { name: /逻辑用户 2/ });
       await employeeGroup.getByRole('button', { name: '折叠', exact: true }).click();
       await employeeGroup.getByRole('button', { name: '展开', exact: true }).waitFor();
-      assert.equal(await adminPage.getByText('历史脚本模型-fixture-A', { exact: false }).isVisible(), false);
+      await employeeGroup.locator('table').waitFor({ state: 'detached' });
+      assert.equal(await employeeGroup.locator('table').count(), 0, '折叠后该成员的任务表格不可见');
       await adminPage.getByRole('button', { name: '刷新', exact: true }).click();
       await adminPage.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 30_000 }).catch(() => undefined);
-      assert.equal(await adminPage.getByText('历史脚本模型-fixture-A', { exact: false }).isVisible(), false, '刷新保留筛选与折叠状态');
+      assert.equal(await adminPage.getByText('历史脚本模型-fixture-A', { exact: false }).first().isVisible(), false, '刷新保留筛选与折叠状态');
       await adminPage.getByRole('button', { name: '平铺', exact: true }).click();
       await adminPage.getByText('历史脚本模型-fixture-A', { exact: false }).first().waitFor();
       result.assertions.push('管理员保留按发起人分组/折叠、服务端成员筛选、平铺与刷新状态');
@@ -264,7 +265,7 @@ try {
       ['/team/admin/operations', '备份与维护'], ['/team/recycle-bin', '回收站'], ['/team/admin/pools', '资源池与共享预算'],
       ['/team/admin/resources', '公共资源发布'],
     ]) {
-      const response = await adminPage.goto(`${baseUrl}${route}`, { waitUntil: 'networkidle', timeout: 60_000 });
+      const response = await adminPage.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
       assert.equal(response.status(), 200);
       await adminPage.getByRole('heading', { name: heading, exact: true }).waitFor();
       for (const theme of ['light', 'dark']) {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { teamError, teamWrite } from './client';
 import TeamCredentialDialog from './TeamCredentialDialog';
 import type { TeamModelOption } from '@/lib/team-service/model-permissions';
@@ -83,6 +83,8 @@ export default function TeamUsersPanel() {
   const [allModels, setAllModels] = useState(true);
   const [allowedModels, setAllowedModels] = useState<string[]>([]);
   const [customModel, setCustomModel] = useState('');
+  const teamPolicyDraftInitialized = useRef(false);
+  const teamModeSelect = useRef<HTMLSelectElement>(null);
 
   const refresh = useCallback(async () => {
     const params = new URLSearchParams();
@@ -99,8 +101,11 @@ export default function TeamUsersPanel() {
     setUsers(body.items);
     setModelOptions(body.modelOptions);
     setTeamPolicy(policy);
-    setTeamMode(policy.mode);
-    setTeamDefault(String(policy.manualDefaultConcurrency));
+    if (!teamPolicyDraftInitialized.current) {
+      teamPolicyDraftInitialized.current = true;
+      setTeamMode(policy.mode);
+      setTeamDefault(String(policy.manualDefaultConcurrency));
+    }
   }, [attentionOnly, search]);
 
   useEffect(() => {
@@ -136,16 +141,21 @@ export default function TeamUsersPanel() {
       setTeamPolicyError('团队默认并发须为非负整数。');
       return;
     }
+    const selectedMode = teamModeSelect.current?.value;
+    if (selectedMode !== 'auto' && selectedMode !== 'manual') {
+      setTeamPolicyError('团队并发模式无效。');
+      return;
+    }
     setTeamPolicyBusy(true);
     setTeamPolicyError('');
     setTeamPolicyNotice('');
     try {
       const response = await teamWrite('/api/team/concurrency-policy', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: teamMode, manualDefaultConcurrency, expectedVersion: teamPolicy.version }),
+        body: JSON.stringify({ mode: selectedMode, manualDefaultConcurrency, expectedVersion: teamPolicy.version }),
       });
       if (!response.ok) throw new Error(await teamError(response, '团队并发默认保存失败'));
-      setTeamPolicyNotice(teamMode === 'auto' ? '团队自动公平共享已启用。按实际排队与运行需求分配容量，不按在线人数分配。' : '团队手动固定默认已保存。仅后续准入使用新值。');
+      setTeamPolicyNotice(selectedMode === 'auto' ? '团队自动公平共享已启用。按实际排队与运行需求分配容量，不按在线人数分配。' : '团队手动固定默认已保存。仅后续准入使用新值。');
       await refresh();
     } catch (cause) {
       setTeamPolicyError(cause instanceof Error ? cause.message : '团队并发默认保存失败');
@@ -225,7 +235,7 @@ export default function TeamUsersPanel() {
             <p className="mt-2 text-sm leading-6 text-ink-secondary">自动模式按各共享池的合格排队与真实运行需求公平分配容量；单人可借用空闲名额，多人按顺序轮转。手动模式使用固定的团队个人默认。两者都不是保留席位，也不放宽权限、费用或暂停状态。</p>
           </div>
           <label className="text-sm text-ink-secondary">团队并发模式
-            <select aria-label="团队并发模式" className="input-field mt-1" value={teamMode} onChange={event => setTeamMode(event.target.value as 'auto' | 'manual')}>
+            <select ref={teamModeSelect} name="team-concurrency-mode" aria-label="团队并发模式" className="input-field mt-1" value={teamMode} disabled={!teamPolicy || teamPolicyBusy} onChange={event => setTeamMode(event.target.value as 'auto' | 'manual')}>
               <option value="auto">自动公平共享</option><option value="manual">手动固定默认</option>
             </select>
           </label>

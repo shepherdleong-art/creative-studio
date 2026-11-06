@@ -475,6 +475,7 @@ try {
 
   let sessions = [];
   let projects = [];
+  const canvases = [];
   let provider;
   let browserResultPath;
   let browserOutput = '';
@@ -482,17 +483,19 @@ try {
   const adminPassword = `Accept-admin-${randomBytes(12).toString('base64url')}`;
   secrets.add(adminPassword);
   await changePassword(admin, adminCredential, adminPassword);
+  // 改密会撤销所有旧会话，包括当前设备；验收继续使用真实重新登录的新会话。
+  const activeAdmin = await login('accept-admin', adminPassword);
   if (productionScenario) {
-    result.production = await runProductionScenario({ root, admin, jsonRequest, request, stopServer, startServer,
+    result.production = await runProductionScenario({ root, admin: activeAdmin, jsonRequest, request, stopServer, startServer,
       waitReady, enableSchedulers: () => { schedulersEnabled = true; }, makeMedia, sessions: [], projects: [] });
   } else if (process.env.TEAM_ACCEPTANCE_TASK_HISTORY === '1') {
-    provider = (await jsonRequest(admin, '/api/providers', { method: 'POST', json: {
+    provider = (await jsonRequest(activeAdmin, '/api/providers', { method: 'POST', json: {
       name: '历史场景备用图片供应商', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture-not-a-real-key', model: 'gpt-image-2', type: 'openai-compatible',
     } }, 200)).body;
-    sessions = [admin];
+    sessions = [activeAdmin];
     projects = [await createProject(sessions[0], 1, provider.id)];
     const { runProductionScenario } = await import('./team-server/production-scenario.mjs');
-    result.production = await runProductionScenario({ root, admin, sessions, projects, jsonRequest, request, stopServer, startServer,
+    result.production = await runProductionScenario({ root, admin: activeAdmin, sessions, projects, jsonRequest, request, stopServer, startServer,
       waitReady, enableSchedulers: () => { schedulersEnabled = true; }, makeMedia, taskHistoryOnly: true });
     result.taskDisplayFixture = {
       employee: { operationId: null, taskId: result.production.taskDisplay.taskId },
@@ -514,14 +517,14 @@ try {
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
   } else if (process.env.TEAM_ACCEPTANCE_TASK_HISTORY !== '1') {
-  provider = (await jsonRequest(admin, '/api/providers', { method: 'POST', json: {
+  provider = (await jsonRequest(activeAdmin, '/api/providers', { method: 'POST', json: {
     name: '隔离 fake 供应商', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture-not-a-real-key',
     model: 'gpt-image-2', type: 'openai-compatible',
   } }, 200)).body;
   sessions = [];
   for (let index = 1; index <= users; index += 1) {
     const employeeId = `accept-${String(index).padStart(2, '0')}`;
-    const created = await jsonRequest(admin, '/api/team/users', {
+    const created = await jsonRequest(activeAdmin, '/api/team/users', {
       method: 'POST', json: { employeeId, displayName: `逻辑用户 ${index}`, role: 'employee' },
     }, 201);
     const credential = created.body.credential;
@@ -530,21 +533,21 @@ try {
     const password = `Accept-user-${randomBytes(12).toString('base64url')}`;
     secrets.add(password);
     await changePassword(session, credential, password);
+    const activeSession = await login(employeeId, password);
     passwordByEmployee.set(employeeId, password);
-    sessions.push(session);
+    sessions.push(activeSession);
   }
   assert.equal(new Set(sessions.map((session) => session.cookies[1])).size, users);
   assertions.push(`${users} 个员工分别经真实 HTTP 登录、改密并持有不同 session cookie`);
 
   projects = [];
-  const canvases = [];
   for (let index = 0; index < sessions.length; index += 1) {
     projects.push(await createProject(sessions[index], index + 1, provider.id));
     canvases.push(await prepareCanvas(sessions[index], index + 1));
   }
   const crossProject = await request(sessions[1], `/api/projects/${projects[0].id}`);
   assert.equal(crossProject.status, 403);
-  const adminProject = await request(admin, `/api/projects/${projects[0].id}`);
+  const adminProject = await request(activeAdmin, `/api/projects/${projects[0].id}`);
   assert.equal(adminProject.status, 200);
   const unauthenticated = await request(null, '/api/projects');
   assert.equal(unauthenticated.status, 401);
