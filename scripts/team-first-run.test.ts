@@ -129,7 +129,7 @@ try {
   const provider = JSON.parse(providerText) as { id: string; configured: boolean };
   assert.equal(provider.configured, true);
 
-  // 新员工默认零额度；管理员通过正式成员策略入口授权。
+  // 新员工默认零额度并继承尚未配置的团队零并发；管理员通过正式成员策略入口授权。
   const createdEmployee = await usersRoute.POST(request('POST', '/api/team/users', adminCookie, {
     employeeId: 'first-employee', displayName: '首启员工', role: 'employee',
   }));
@@ -143,12 +143,18 @@ try {
     { params: Promise.resolve({ id: employee.userId }) },
   );
   assert.equal(policy.status, 200);
-  const policyBody = await policy.json() as { monthlyLimitMinor: number | null; personalConcurrency: number };
+  const policyBody = await policy.json() as {
+    monthlyLimitMinor: number | null; personalConcurrency: number; version: number;
+    concurrencyMode: 'legacy' | 'inherit' | 'fixed'; effectiveConcurrency: number;
+  };
   assert.equal(policyBody.monthlyLimitMinor, 0, '新账号默认零额度');
   assert.equal(policyBody.personalConcurrency, 0, '新账号默认零并发');
+  assert.equal(policyBody.version, 1, '新账号建号事务写入一次继承标记');
+  assert.equal(policyBody.concurrencyMode, 'inherit');
+  assert.equal(policyBody.effectiveConcurrency, 0, '未配置团队默认前安全保持零并发');
   const granted = await memberPolicyRoute.PATCH(
     request('PATCH', `/api/team/members/${employee.userId}/policy`, adminCookie, {
-      monthlyLimitMinor: 100000, personalConcurrency: 1, paused: false, expectedVersion: 0,
+      monthlyLimitMinor: 100000, personalConcurrency: 1, concurrencyMode: 'fixed', paused: false, expectedVersion: 1,
     }),
     { params: Promise.resolve({ id: employee.userId }) },
   );

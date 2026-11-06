@@ -34,6 +34,7 @@ export const L1_SUITE = [
   node('team-file-routes.test.ts', ['A04', 'F01']),
   node('file-response.test.ts', ['F01', 'F04']),
   node('team-public-resources.test.ts', ['A05']),
+  node('team-public-resource-candidates.test.ts', ['A05']),
   node('team-transfers.test.ts', ['F02', 'F03']),
   node('team-transfer-routes.test.ts', ['A01', 'F01', 'F02', 'F04']),
   node('team-transfer-space.test.ts', ['F02']),

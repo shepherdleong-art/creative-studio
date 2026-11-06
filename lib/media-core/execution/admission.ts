@@ -33,38 +33,49 @@ function heldPoolCount(options: AdmissionOptions, poolKey: string): number {
   `).pluck().get(poolKey) as number;
 }
 
+export interface AdmissionWaitDetail {
+  reason: AdmissionWaitReason;
+  concurrencySource?: ActorPolicy['concurrencySource'];
+  currentConcurrency?: number;
+  effectiveConcurrency?: number;
+  poolKey?: string;
+  capacity?: number;
+}
+
 function candidateReason(
   options: AdmissionOptions,
   operation: OperationRecord,
   policy: ActorPolicy,
   accountingPeriod: string,
-): AdmissionWaitReason | null {
-  if (options.maintenance()) return 'maintenance';
-  if (!options.actorAllowed(operation.actorId)) return 'actor_disabled';
+): { reason: AdmissionWaitReason; detail?: Omit<AdmissionWaitDetail, 'reason'> } | null {
+  if (options.maintenance()) return { reason: 'maintenance' };
+  if (!options.actorAllowed(operation.actorId)) return { reason: 'actor_disabled' };
   if (!options.scopeAllowed(operation.actorId, {
     resourceType: operation.scopeType, resourceId: operation.scopeId,
-  })) return 'scope_forbidden';
-  if (policy.paused) return 'actor_paused';
-  if (!actorModelAllowed(policy, operation.providerSnapshot)) return 'model_forbidden';
+  })) return { reason: 'scope_forbidden' };
+  if (policy.paused) return { reason: 'actor_paused' };
+  if (!actorModelAllowed(policy, operation.providerSnapshot)) return { reason: 'model_forbidden' };
   for (const poolKey of operation.requiredPools) {
     const pool = options.db.prepare('SELECT * FROM execution_pools WHERE poolKey = ?').get(poolKey) as PoolState | undefined;
-    if (!pool || !pool.mappingSnapshotJson || pool.mappingSnapshotJson === '{}') return 'pool_missing';
-    if (!pool.enabled) return 'pool_disabled';
-    if (heldPoolCount(options, poolKey) >= pool.capacity) return 'pool_capacity';
+    if (!pool || !pool.mappingSnapshotJson || pool.mappingSnapshotJson === '{}') return { reason: 'pool_missing', detail: { poolKey } };
+    if (!pool.enabled) return { reason: 'pool_disabled', detail: { poolKey } };
+    const currentConcurrency = heldPoolCount(options, poolKey);
+    if (currentConcurrency >= pool.capacity) return { reason: 'pool_capacity', detail: { poolKey, currentConcurrency, capacity: pool.capacity } };
   }
-  if (heldPoolCount(options, personalConcurrencyPoolKey(operation.actorId)) >= policy.personalConcurrency) {
-    return 'personal_concurrency';
+  const currentConcurrency = heldPoolCount(options, personalConcurrencyPoolKey(operation.actorId));
+  if (currentConcurrency >= policy.effectiveConcurrency) {
+    return { reason: 'personal_concurrency', detail: { concurrencySource: policy.concurrencySource, currentConcurrency, effectiveConcurrency: policy.effectiveConcurrency } };
   }
-  if (operation.quote.kind === 'unpriced' && policy.monthlyLimitMinor !== null) return 'pricing_required';
+  if (operation.quote.kind === 'unpriced' && policy.monthlyLimitMinor !== null) return { reason: 'pricing_required' };
   if (policy.monthlyLimitMinor !== null) {
     const unknown = options.db.prepare(`
       SELECT 1 FROM execution_reservations
       WHERE kind = 'cost' AND actorId = ? AND state IN ('held', 'settled') AND costState = 'unknown' LIMIT 1
     `).get(operation.actorId);
-    if (unknown) return 'cost_unknown';
+    if (unknown) return { reason: 'cost_unknown' };
     const reserve = operation.quote.kind === 'priced' ? operation.quote.reserve.minor : 0;
     if (monthlyCostUsage(options.db, operation.actorId, accountingPeriod) + reserve > policy.monthlyLimitMinor) {
-      return 'monthly_budget';
+      return { reason: 'monthly_budget' };
     }
   }
   return null;
@@ -116,13 +127,14 @@ export function admitOperation(
       const operation = mapOperation(row);
       const policy = readActorPolicy(options.db, actorId);
       const accountingPeriod = shanghaiAccountingPeriod(now);
-      const reason = candidateReason(options, operation, policy, accountingPeriod);
-      if (reason) {
+      const blocked = candidateReason(options, operation, policy, accountingPeriod);
+      if (blocked) {
+        const { reason } = blocked;
         if (!reasons.includes(reason)) reasons.push(reason);
         options.db.prepare(`
           UPDATE execution_operations SET status = 'deferred', waitReason = ?, waitDetail = ?, updatedAt = ?
           WHERE id = ?
-        `).run(reason, JSON.stringify([reason]), now.toISOString(), operation.id);
+        `).run(reason, JSON.stringify({ reason, ...blocked.detail }), now.toISOString(), operation.id);
         continue;
       }
 

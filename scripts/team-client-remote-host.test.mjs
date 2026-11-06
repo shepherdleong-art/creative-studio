@@ -69,6 +69,8 @@ const modules = {
     },
   },
   './client/update-helper': { spawnIndependentUpdateHelper: async () => ({ jobId: 'test-job' }) },
+  './client/client-diagnostic-reporter': { ClientDiagnosticReporter: class {} },
+  './client/ui-diagnostics': { installClientUiDiagnostics: () => () => {} },
   './window': { createWindow: (host) => { assert.equal(host, remoteHost); return fakeWindow; } },
   './ipc': { CHANNELS: { quitRequested: 'desktop:quit-requested' } },
   './reassembled-navigation': {
@@ -81,6 +83,8 @@ process.env.CREATIVE_STUDIO_SERVER_ORIGIN = 'https://studio.example.test/path-th
 const { readRemoteClientConfig } = load('desktop/client/remote-host.ts', {
   electron: { app },
   './remote-transfer': { RemoteTransferController: class {} },
+  './client-diagnostic-reporter': { ClientDiagnosticReporter: class {} },
+  './ui-diagnostics': { installClientUiDiagnostics: () => () => {} },
 }, { process: { ...process, env: { ...process.env, CREATIVE_STUDIO_CLIENT_MODE: 'local' } } });
 assert.throws(() => readRemoteClientConfig(process.env), /origin|来源|地址/i);
 process.env.CREATIVE_STUDIO_SERVER_ORIGIN = 'https://studio.example.test';

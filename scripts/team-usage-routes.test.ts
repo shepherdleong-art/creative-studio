@@ -80,6 +80,7 @@ const usageRoute = await import('../app/api/team/usage/route.ts');
 const exportRoute = await import('../app/api/team/usage/export/route.ts');
 const membersRoute = await import('../app/api/team/members/route.ts');
 const policyRoute = await import('../app/api/team/members/[id]/policy/route.ts');
+const concurrencyRoute = await import('../app/api/team/concurrency-policy/route.ts');
 const tasksRoute = await import('../app/api/team/tasks/route.ts');
 const reportRoute = await import('../app/api/team/errors/report/route.ts');
 const errorsRoute = await import('../app/api/team/errors/route.ts');
@@ -99,19 +100,20 @@ const json = (value: unknown) => ({ body: JSON.stringify(value), headers: { 'con
 try {
   const ownPolicy = await policyRoute.GET(request(`https://studio.example.test/api/team/members/${alice.principal.userId}/policy`, alice.cookie), { params: Promise.resolve({ id: alice.principal.userId }) });
   assert.equal(ownPolicy.status, 200, await ownPolicy.clone().text());
-  assert.equal((await ownPolicy.json()).version, 0);
+  assert.equal((await ownPolicy.json()).version, 1);
   const crossPolicy = await policyRoute.GET(request(`https://studio.example.test/api/team/members/${bob.principal.userId}/policy`, alice.cookie), { params: Promise.resolve({ id: bob.principal.userId }) });
   assert.equal(crossPolicy.status, 403);
   const employeePatch = await policyRoute.PATCH(request(`https://studio.example.test/api/team/members/${alice.principal.userId}/policy`, alice.cookie, {
-    method: 'PATCH', ...json({ monthlyLimitMinor: null, personalConcurrency: 9, paused: false, expectedVersion: 0 }),
+    method: 'PATCH', ...json({ monthlyLimitMinor: null, personalConcurrency: 9, paused: false, expectedVersion: 1 }),
   }), { params: Promise.resolve({ id: alice.principal.userId }) });
   assert.equal(employeePatch.status, 403, '员工直接 PATCH 自己策略也必须被拒绝');
 
   const adminPatch = await policyRoute.PATCH(request(`https://studio.example.test/api/team/members/${alice.principal.userId}/policy`, adminCookie, {
-    method: 'PATCH', ...json({ monthlyLimitMinor: 12345, personalConcurrency: 3, paused: true, expectedVersion: 0 }),
+    method: 'PATCH', ...json({ monthlyLimitMinor: 12345, personalConcurrency: 3, paused: true, expectedVersion: 1 }),
   }), { params: Promise.resolve({ id: alice.principal.userId }) });
   assert.equal(adminPatch.status, 200, await adminPatch.clone().text());
   assert.equal((await adminPatch.json()).monthlyLimitMinor, 12345);
+  const teamConcurrencyUrl = 'https://studio.example.test/api/team/concurrency-policy';
   const members = await membersRoute.GET(request('https://studio.example.test/api/team/members?search=0001', adminCookie));
   assert.equal(members.status, 200);
   const memberBody = await members.json();
@@ -119,9 +121,78 @@ try {
   assert.equal(memberBody.items[0].monthlyLimitMinor, 12345);
   assert.equal(memberBody.items[0].paused, true);
 
+  const employeeTeamPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, alice.cookie, {
+    method: 'PATCH', ...json({ manualDefaultConcurrency: 3, expectedVersion: 0 }),
+  }));
+  assert.equal(employeeTeamPolicy.status, 403, '员工不得保存团队默认并发');
+  const employeeTeamPolicyRead = await concurrencyRoute.GET(request(teamConcurrencyUrl, alice.cookie));
+  assert.equal(employeeTeamPolicyRead.status, 403);
+  const invalidTeamPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, adminCookie, {
+    method: 'PATCH', ...json({ manualDefaultConcurrency: -1, expectedVersion: 0 }),
+  }));
+  assert.equal(invalidTeamPolicy.status, 400);
+  const unavailableAutoPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, adminCookie, {
+    method: 'PATCH', ...json({ mode: 'auto', manualDefaultConcurrency: 3, expectedVersion: 0 }),
+  }));
+  assert.equal(unavailableAutoPolicy.status, 400, '本票不得提前启用自动模式');
+  const teamPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, adminCookie, {
+    method: 'PATCH', ...json({ manualDefaultConcurrency: 3, expectedVersion: 0 }),
+  }));
+  assert.equal(teamPolicy.status, 200, await teamPolicy.clone().text());
+  assert.deepEqual(await teamPolicy.json(), { mode: 'manual', manualDefaultConcurrency: 3, version: 1 });
+  const staleTeamPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, adminCookie, {
+    method: 'PATCH', ...json({ manualDefaultConcurrency: 9, expectedVersion: 0 }),
+  }));
+  assert.equal(staleTeamPolicy.status, 409, '另一管理员先保存后必须拒绝旧版本覆盖');
+  const usersRoute = await import('../app/api/team/users/route.ts');
+  const created = await usersRoute.POST(request('https://studio.example.test/api/team/users', adminCookie, {
+    method: 'POST', ...json({ employeeId: '0003', displayName: '新继承成员', role: 'employee' }),
+  }));
+  assert.equal(created.status, 201, await created.clone().text());
+  const createdUser = (await created.json()).user;
+  const inherited = await policyRoute.GET(request(`https://studio.example.test/api/team/members/${createdUser.id}/policy`, adminCookie), { params: Promise.resolve({ id: createdUser.id }) });
+  const inheritedBody = await inherited.json();
+  assert.equal(inheritedBody.concurrencyMode, 'inherit', '建号事务必须明确标记继承');
+  assert.equal(inheritedBody.concurrencySource, 'team_default');
+  assert.equal(inheritedBody.effectiveConcurrency, 3);
+  assert.equal(inheritedBody.personalConcurrency, 0);
+  assert.equal(inheritedBody.monthlyLimitMinor, 0, '团队并发默认不得放宽费用');
+  const inheritedPatch = await policyRoute.PATCH(request(`https://studio.example.test/api/team/members/${createdUser.id}/policy`, adminCookie, {
+    method: 'PATCH', ...json({ monthlyLimitMinor: 5000, personalConcurrency: 0, concurrencyMode: 'fixed', paused: false, expectedVersion: 1 }),
+  }), { params: Promise.resolve({ id: createdUser.id }) });
+  assert.equal(inheritedPatch.status, 200);
+  const inheritedPatchBody = await inheritedPatch.json();
+  assert.equal(inheritedPatchBody.effectiveConcurrency, 0, '显式零上限不等于暂停');
+  const restoreInheritance = await policyRoute.PATCH(request(`https://studio.example.test/api/team/members/${createdUser.id}/policy`, adminCookie, {
+    method: 'PATCH', ...json({ monthlyLimitMinor: 5000, personalConcurrency: 0, concurrencyMode: 'inherit', paused: false, expectedVersion: 2 }),
+  }), { params: Promise.resolve({ id: createdUser.id }) });
+  assert.equal(restoreInheritance.status, 200);
+  const restoreInheritanceBody = await restoreInheritance.json();
+  assert.equal(restoreInheritanceBody.effectiveConcurrency, 3);
+  assert.equal(restoreInheritanceBody.monthlyLimitMinor, 5000, '恢复继承不能改动费用');
+  assert.equal(restoreInheritanceBody.paused, false);
+  const inheritedFixed = await policyRoute.PATCH(request(`https://studio.example.test/api/team/members/${createdUser.id}/policy`, adminCookie, {
+    method: 'PATCH', ...json({ monthlyLimitMinor: 5000, personalConcurrency: 1, concurrencyMode: 'fixed', paused: true, expectedVersion: 3, allowedModels: ['model-only'] }),
+  }), { params: Promise.resolve({ id: createdUser.id }) });
+  const inheritedFixedBody = await inheritedFixed.json();
+  assert.equal(inheritedFixedBody.concurrencySource, 'personal_fixed');
+  assert.equal(inheritedFixedBody.paused, true, '个人并发 1 与显式暂停分别保存');
+  assert.deepEqual(inheritedFixedBody.allowedModels, ['model-only'], '覆盖保存不得改动模型权限');
+  await policyRoute.PATCH(request(`https://studio.example.test/api/team/members/${createdUser.id}/policy`, adminCookie, {
+    method: 'PATCH', ...json({ monthlyLimitMinor: 5000, personalConcurrency: 0, concurrencyMode: 'inherit', paused: false, expectedVersion: 4, allowedModels: ['model-only'] }),
+  }), { params: Promise.resolve({ id: createdUser.id }) });
+  const inheritedMembers = await membersRoute.GET(request('https://studio.example.test/api/team/members?search=0003', adminCookie));
+  const inheritedMember = (await inheritedMembers.json()).items[0];
+  assert.equal(inheritedMember.concurrencyLimit, 3, '成员列表必须展示生效团队默认而不是内部存储的 0');
+  assert.equal(inheritedMember.concurrencySource, 'team_default');
+  assert.equal(inheritedMember.concurrencyMode, 'inherit');
+  assert.equal(inheritedMember.paused, false, '恢复继承不得静默解除暂停');
+  assert.deepEqual(inheritedMember.allowedModels, ['model-only']);
+  assert.deepEqual((await concurrencyRoute.GET(request(teamConcurrencyUrl, adminCookie)).then(response => response.json())), { mode: 'manual', manualDefaultConcurrency: 3, version: 1 });
+
   const policyUrl = `https://studio.example.test/api/team/members/${alice.principal.userId}/policy`;
   const policyContext = { params: Promise.resolve({ id: alice.principal.userId }) };
-  const modelPolicy = { monthlyLimitMinor: 12345, personalConcurrency: 2, paused: false, expectedVersion: 1, allowedModels: ['image2-medium'] };
+  const modelPolicy = { monthlyLimitMinor: 12345, personalConcurrency: 2, paused: false, expectedVersion: 2, allowedModels: ['image2-medium'] };
   const forbiddenModels = await policyRoute.PATCH(request(policyUrl, alice.cookie, { method: 'PATCH', ...json(modelPolicy) }), policyContext);
   assert.equal(forbiddenModels.status, 403);
   const invalidModels = await policyRoute.PATCH(request(policyUrl, adminCookie, { method: 'PATCH', ...json({ ...modelPolicy, allowedModels: [1] }) }), policyContext);
@@ -142,7 +213,7 @@ try {
   const identity = { instanceId: 'usage-scope-test', fence: 1 };
   registerExecutionInstance(db, { ...identity, deploymentId: 'deployment-usage-routes' });
   upsertExecutionPool(db, { poolKey: 'scope-test', kind: 'remote', capacity: 2, enabled: true, mappingSnapshot: { test: true }, expectedVersion: 0 });
-  updateActorPolicy(db, { actorId: bob.principal.userId, monthlyLimitMinor: null, personalConcurrency: 2, paused: false, expectedVersion: 0 });
+  updateActorPolicy(db, { actorId: bob.principal.userId, monthlyLimitMinor: null, personalConcurrency: 2, paused: false, expectedVersion: 1 });
   const runtime = createExecutionFacade({ db, deploymentId: 'deployment-usage-routes', actorAllowed: () => true, scopeAllowed: () => true, maintenance: () => false,
     journal: { verify: () => ({ valid: true, records: [] }), scan: () => [], appendIntent: () => { throw new Error('no transport'); }, appendReceipt: () => { throw new Error('no transport'); } } });
   await runtime.lifecycle.start({ ...identity, deploymentId: 'deployment-usage-routes', signal: new AbortController().signal });
