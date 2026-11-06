@@ -150,6 +150,9 @@ try {
   const restoredDb = new Database(path.join(restoreRoot, 'data', 'workbench.db'));
   databases.add(restoredDb);
   restoredDb.pragma('foreign_keys = ON');
+  // 只允许在隔离恢复副本上追加当前版本迁移；旧业务库及维护审计保持原样。
+  const restoredReadiness = await checkExecutionReadiness({ db: restoredDb, ...schemaUpgradeRuntimePaths(restoreRoot) });
+  assert.equal(restoredReadiness.available, true, JSON.stringify(restoredReadiness));
   const recoveredAttempt = restoredDb.prepare('SELECT * FROM execution_attempts WHERE id = ?')
     .get(receiptAdmission.grant.attempt.id) as Record<string, unknown>;
   assert.equal(recoveredAttempt.submissionState, 'terminal');
