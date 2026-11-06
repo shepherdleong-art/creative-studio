@@ -16,7 +16,7 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
 export function taskWaitLabel(reason: string | null, concurrency?: number | null): string {
   if (!reason) return '';
   if (reason === 'personal_concurrency') return concurrency === 0
-    ? '个人并发上限为 0，无法启动；请管理员在成员管理中调整'
+    ? '生效并发上限为 0，无法启动；请管理员检查团队默认或个人固定覆盖'
     : `个人运行名额已满${concurrency == null ? '' : `（上限 ${concurrency}）`}，名额释放后自动继续`;
   const labels: Record<string, string> = {
     maintenance: '系统维护或团队生产已暂停', actor_disabled: '账号已停用，请联系管理员',

@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { createInheritedActorPolicy } from '../../media-core/execution/pools.ts';
 import {
   BoundedKdfScheduler,
   generateOneTimeCredential,
@@ -374,6 +375,9 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
             credentialExpiresAt, sessionVersion, createdAt, updatedAt
           ) VALUES (?, ?, ?, ?, 'active', ?, 1, ?, 1, ?, ?)
         `).run(id, employeeId, displayName, input.role, issued.passwordHash, issued.expiresAt, timestamp, timestamp);
+        // This explicit create-time marker is not a migration of existing members.
+        // Until ticket 04 supplies an automatic default it safely inherits zero.
+        createInheritedActorPolicy(db, id);
       } catch (error) {
         if (error instanceof Error && error.message.includes('UNIQUE')) {
           throw new TeamAuthError('employee_id_exists', '工号已存在。', 409);
