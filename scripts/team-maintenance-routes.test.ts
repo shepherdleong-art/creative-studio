@@ -173,10 +173,11 @@ try {
   console.log('team maintenance administrator route tests passed');
 
   const cleanupRoute = await import('../app/api/team/maintenance/cleanup/route.ts');
-  const claimed = store.claimNext({ workerId: 'backup-worker' });
+  const cleanupStore = new MaintenanceJobStore({ backupRoot, deploymentId: 'deployment-maintenance-routes' });
+  const claimed = cleanupStore.claimNext({ workerId: 'backup-worker' });
   assert.equal(claimed?.job.id, accepted.job.id);
-  store.complete({ jobId: accepted.job.id, workerId: 'backup-worker', result: { backupId: 'test-only', verifiedAt: '2026-11-06', totalBytes: 0, type: 'manual' } });
-  store.close();
+  cleanupStore.complete({ jobId: accepted.job.id, workerId: 'backup-worker', result: { backupId: 'test-only', verifiedAt: '2026-11-06', totalBytes: 0, type: 'manual' } });
+  cleanupStore.close();
   fs.mkdirSync(path.join(deploymentRoot, 'config'), { recursive: true });
   fs.writeFileSync(path.join(deploymentRoot, 'config', 'maintenance-deployment.json'), JSON.stringify({ dataRoot, oldRoots: [path.join(fixture, 'retained-root')] }));
   const uploadId = 'failed-upload-route';
