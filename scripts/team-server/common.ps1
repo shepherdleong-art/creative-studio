@@ -15,7 +15,10 @@ function Get-TeamBootstrapNode {
         }
     } catch {}
     foreach ($candidate in $candidates) {
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return [System.IO.Path]::GetFullPath($candidate) }
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            # Node 22 的 Undici 实验警告写 stderr；PS 5.1 会将其升级为 NativeCommandError。
+            return '--disable-warning=UNDICI-EHPA', [System.IO.Path]::GetFullPath($candidate)
+        }
     }
     $command = Get-Command node.exe -ErrorAction SilentlyContinue
     if ($command) { return $command.Source }
@@ -49,8 +52,13 @@ function Resolve-TeamDeployment {
     $fullConfigPath = [System.IO.Path]::GetFullPath($ConfigPath)
     $node = Get-TeamBootstrapNode -ConfigPath $fullConfigPath
     $generator = Join-Path $PSScriptRoot 'generate-config.mjs'
+    # 纯 JS 生成器的退出码与 JSON 是成功凭据；PS 5.1 不应把其 Node 警告升级为异常。
+    $previousErrorPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     $raw = (& $node $generator --config $fullConfigPath --resolve-only 2>$null) -join "`n"
-    if ($LASTEXITCODE -ne 0 -or -not $raw) { throw '部署配置无效；未创建目录或更改系统' }
+    $generatorExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $previousErrorPreference
+    if ($generatorExitCode -ne 0 -or -not $raw) { throw '部署配置无效；未创建目录或更改系统' }
     $resolved = $raw | ConvertFrom-Json
     if ($DeploymentId -and -not [string]::Equals([string]$resolved.deploymentId, $DeploymentId, [System.StringComparison]::Ordinal)) {
         throw '部署 ID 与选定配置不一致'

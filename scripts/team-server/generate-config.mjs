@@ -255,6 +255,7 @@ export function resolveDeploymentConfig(input) {
   config.services = [
     { role: 'caddy', id: `${config.servicePrefix}Caddy` },
     { role: 'app', id: `${config.servicePrefix}App` },
+    { role: 'maintenance', id: `${config.servicePrefix}Maintenance` },
     ...(config.enableLiteLLM ? [{ role: 'litellm', id: `${config.servicePrefix}LiteLLM` }] : []),
   ];
   if (new Set(config.services.map((service) => service.id.toLowerCase())).size !== config.services.length) fail('服务名不得重复');
@@ -294,6 +295,8 @@ function generate(config) {
     CREATIVE_STUDIO_APPLICATION_ROOT: appRoot,
     CREATIVE_STUDIO_SERVER_RELEASE_ID: config.releaseId,
     CREATIVE_STUDIO_CONTROL_CREDENTIAL_FILE: config.controlCredentialFile,
+    CREATIVE_STUDIO_MAINTENANCE_DEPLOYMENT_ROOT: config.deploymentRoot,
+    CREATIVE_STUDIO_MAINTENANCE_BACKUP_ROOT: config.backupRoot,
     CREATIVE_STUDIO_MODULE_BATCH: config.modules.batch ? '1' : '0',
     CREATIVE_STUDIO_MODULE_SCRIPT_STUDIO: config.modules.scriptStudio ? '1' : '0',
     CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER: config.modules.scriptStudioScheduler ? '1' : '0',
@@ -314,6 +317,12 @@ function generate(config) {
         arguments: `${quoteArgument(controlHelper)} stop --config ${quoteArgument(path.join(config.serviceRoot, 'resolved-services.json'))} --credential-file ${quoteArgument(config.controlCredentialFile)} --apply --force-after-timeout`,
       },
     }).replace('<stoptimeout>180 sec</stoptimeout>', `<stoptimeout>${config.stopTimeoutSeconds} sec</stoptimeout>`),
+    [`${config.servicePrefix}Maintenance.xml`]: serviceXml({
+      id: `${config.servicePrefix}Maintenance`, description: `Creative Studio controlled maintenance (${config.deploymentId})`,
+      executable: nodeExe,
+      startArguments: `${quoteArgument(path.join(appRoot, 'scripts', 'team-server', 'maintenance.mjs'))} worker --config ${quoteArgument(path.join(config.configRoot, 'maintenance-deployment.json'))}`,
+      workingDirectory: appRoot, account: config.serviceAccount, logPath: logs,
+    }),
     [`${config.servicePrefix}Caddy.xml`]: serviceXml({
       id: `${config.servicePrefix}Caddy`, description: `Creative Studio HTTPS ingress (${config.deploymentId})`,
       executable: caddyExe, startArguments: `run --config ${quoteArgument(caddyfile)} --adapter caddyfile`,

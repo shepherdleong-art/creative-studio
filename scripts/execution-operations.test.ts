@@ -22,7 +22,7 @@ const db = new Database(path.join(root, 'data', 'workbench.db'));
 db.pragma('foreign_keys = ON');
 const readiness = await checkExecutionReadiness({ db, ...schemaUpgradeRuntimePaths(root) });
 assert.equal(readiness.available, true);
-assert.deepEqual(readiness.appliedVersions, [1, 2, 3, 4, 5]);
+assert.deepEqual(readiness.appliedVersions, [1, 2, 3, 4, 5, 6]);
 
 registerExecutionInstance(db, { instanceId: 'instance-a', fence: 1, deploymentId: 'deployment-a' });
 const journal = {
@@ -75,8 +75,32 @@ try {
     legacyDb.prepare("INSERT INTO execution_actor_policies VALUES ('existing', 2000, 'CNY', 3, 1, 'Asia/Shanghai', 7, ?)").run(new Date().toISOString());
     const upgraded = await checkExecutionReadiness({ db: legacyDb, ...paths });
     assert.equal(upgraded.available, true);
-    assert.deepEqual(readActorPolicy(legacyDb, 'existing'), { actorId: 'existing', monthlyLimitMinor: 2000, currency: 'CNY', personalConcurrency: 3, paused: true, timezone: 'Asia/Shanghai', version: 7, allowedModels: null });
-    assert.equal((await checkExecutionReadiness({ db: legacyDb, ...paths })).available, true, '重复启动不重复执行迁移');
+    assert.deepEqual(upgraded.appliedVersions, [5, 6]);
+    const preUpgradeDb = new Database(path.join(fixtureRoot, 'pre-upgrade.sqlite'));
+    try {
+      const prePaths = schemaUpgradeRuntimePaths(path.join(fixtureRoot, 'pre-upgrade'));
+      await ensureVersionedSchemaReady({ db: preUpgradeDb, scope: 'execution', migrations: EXECUTION_MIGRATIONS.slice(0, 4), migrationTable: 'execution_schema_migrations', backupRoot: prePaths.backupRoot, validate: () => {} });
+      const { createInheritedActorPolicy } = await import('../lib/media-core/execution/pools.ts');
+      createInheritedActorPolicy(preUpgradeDb, 'account-created-during-team-upgrade');
+      assert.equal(preUpgradeDb.prepare('SELECT COUNT(*) FROM execution_actor_policies').pluck().get(), 0, '旧结构建号不得伪造新继承记录');
+    } finally { preUpgradeDb.close(); }
+    assert.deepEqual(readActorPolicy(legacyDb, 'existing'), {
+      actorId: 'existing', monthlyLimitMinor: 2000, currency: 'CNY', personalConcurrency: 3,
+      paused: true, timezone: 'Asia/Shanghai', version: 7, allowedModels: null,
+      concurrencyMode: 'legacy', concurrencySource: 'legacy_fixed', effectiveConcurrency: 3,
+    }, '安全升级不得改写旧成员固定策略、暂停或额度');
+    const { createInheritedActorPolicy } = await import('../lib/media-core/execution/pools.ts');
+    const { updateTeamConcurrencyPolicy, readTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+    createInheritedActorPolicy(legacyDb, 'inheriting');
+    updateTeamConcurrencyPolicy(legacyDb, { manualDefaultConcurrency: 4, expectedVersion: 0 });
+    legacyDb.close();
+    const reopened = new Database(path.join(legacyRoot, 'data', 'workbench.db'));
+    try {
+      assert.equal((await checkExecutionReadiness({ db: reopened, ...paths })).available, true, '重复启动不重复执行迁移');
+      assert.equal(readTeamConcurrencyPolicy(reopened).manualDefaultConcurrency, 4);
+      assert.equal(readActorPolicy(reopened, 'inheriting').effectiveConcurrency, 4, '重启后继承来源仍生效');
+      assert.equal(readActorPolicy(reopened, 'existing').effectiveConcurrency, 3, '重启不得迁移旧成员');
+    } finally { reopened.close(); }
   } finally { legacyDb.close(); }
 
   let checkpoints = 0;

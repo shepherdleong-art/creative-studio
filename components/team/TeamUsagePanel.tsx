@@ -36,11 +36,19 @@ const WAITING_LABELS: Record<string, string> = {
   monthly_budget: '余额不足', personal_concurrency: '并发等待', actor_paused: '已暂停新的付费生成',
   actor_disabled: '账号停用', pricing_required: '定价缺失，请联系管理员', cost_unknown: '费用不确定，等待核查',
   pool_capacity: '共享并发等待', model_forbidden: '模型未授权，请联系管理员',
+  maintenance: '团队维护等待', pool_missing: '资源池未配置', pool_disabled: '资源池已停用',
+  scope_forbidden: '项目访问权限不足',
 };
 
 function money(minor: number | null): string {
   return minor === null ? '不限额' : `¥${(minor / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
+
+const CONCURRENCY_SOURCE_LABELS = {
+  legacy_fixed: '旧个人固定值（未迁移）',
+  team_default: '继承团队手动默认',
+  personal_fixed: '个人固定覆盖',
+} as const;
 
 function amount(item: TeamUsageAttempt): string {
   if (item.costStatus === 'released') return '已释放';
@@ -78,6 +86,7 @@ function QuotaCards({ member, quota, detail }: { member: TeamMemberSummary; quot
       </div>)}
     </div>
     {member.paused && <p className="mt-4 text-xs text-warn">已暂停新的付费生成；仍可登录、编辑、查看和下载，已受理任务继续回收。</p>}
+    <p className="mt-3 text-xs leading-5 text-ink-tertiary">并发来源：{CONCURRENCY_SOURCE_LABELS[member.concurrencySource]}。个人上限不预留共享池名额；{member.waitingReason ? `等待原因：${WAITING_LABELS[member.waitingReason] ?? member.waitingReason}。` : '当前没有等待中的任务。'}</p>
   </section>;
 }
 

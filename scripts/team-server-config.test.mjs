@@ -114,12 +114,27 @@ test('生成三个 SCM 服务、固定回环入口、环境文件、日志轮换
   assert.equal(readJson(path.join(output, 'resolved-services.json')).dryRun, true);
 });
 
+test('维护执行器独立运行且只接收受管配置，不向浏览器下发控制凭据', (t) => {
+  const { output, result, config } = generate(t, { enableLiteLLM: false });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const xml = fs.readFileSync(path.join(output, 'CreativeStudioMaintenance.xml'), 'utf8');
+  assert.match(xml, /maintenance\.mjs/);
+  assert.match(xml, /worker/);
+  assert.match(xml, /maintenance-deployment\.json/);
+  const env = fs.readFileSync(path.join(output, 'app.env'), 'utf8');
+  assert.ok(env.includes(`CREATIVE_STUDIO_MAINTENANCE_DEPLOYMENT_ROOT=${config.deploymentRoot}`));
+  assert.ok(env.includes(`CREATIVE_STUDIO_MAINTENANCE_BACKUP_ROOT=${config.backupRoot}`));
+  assert.equal(env.includes('CREATIVE_STUDIO_CONTROL_TOKEN'), false);
+  assert.equal(fs.existsSync(path.join(contextDirectory(output), 'config', 'maintenance-deployment.json')), false, '生成预览不应创建受管配置目录');
+});
+function contextDirectory(output) { return path.dirname(output); }
+
 test('可选 LiteLLM 不生成第三个服务且仍保留其回环端口隔离计划', (t) => {
   const { output, result } = generate(t, { enableLiteLLM: false });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(fs.existsSync(path.join(output, 'CreativeStudioLiteLLM.xml')), false);
   assert.deepEqual(readJson(path.join(output, 'resolved-services.json')).services.map((service) => service.id), [
-    'CreativeStudioCaddy', 'CreativeStudioApp',
+    'CreativeStudioCaddy', 'CreativeStudioApp', 'CreativeStudioMaintenance',
   ]);
 });
 

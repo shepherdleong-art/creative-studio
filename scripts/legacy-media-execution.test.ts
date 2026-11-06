@@ -200,13 +200,23 @@ try {
   assert.equal(listTeamTasks(db, zeroViewer, { status: 'deferred' }).items.length, 0);
   // Older canceled jobs have a stale deferred ledger; display/filter must still agree.
   db.prepare("UPDATE execution_operations SET status='deferred',waitReason='personal_concurrency' WHERE taskId='job-zero'").run();
+  db.prepare("UPDATE jobs SET status='pending' WHERE id='job-zero'").run();
+  const { createInheritedActorPolicy } = await import('../lib/media-core/execution/pools.ts');
+  const { updateTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+  db.prepare('DELETE FROM execution_actor_policies WHERE actorId=?').run('member-zero');
+  createInheritedActorPolicy(db, 'member-zero');
+  updateTeamConcurrencyPolicy(db, { manualDefaultConcurrency: 2, expectedVersion: 0 });
+  assert.equal(listTeamTasks(db, { userId: 'member-zero', role: 'admin' }).items[0].waitLabel, '个人运行名额已满（上限 2），名额释放后自动继续', '继承成员等待提示必须使用生效团队默认');
+  db.prepare('DELETE FROM execution_actor_policies WHERE actorId=?').run('member-zero');
+  updateActorPolicy(db, { actorId: 'member-zero', monthlyLimitMinor: null, personalConcurrency: 0, paused: false, expectedVersion: 0 });
+  db.prepare("UPDATE jobs SET status='canceled' WHERE id='job-zero'").run();
   assert.equal(listTeamTasks(db, zeroViewer).items[0].status, 'canceled');
   assert.equal(listTeamTasks(db, zeroViewer, { status: 'deferred' }).items.length, 0);
   assert.equal(listTeamTasks(db, { userId: 'other-member', role: 'employee' }).items.length, 0);
   imageJob('job-zero-resume', 'project-zero', 'member-zero', 'zero-image');
   const resumeRun = queue.runQueue({ projectId: 'project-zero', concurrency: 4, maxAttempts: 2, timeoutMs: 60000 });
   await sleep(100);
-  updateActorPolicy(db, { actorId: 'member-zero', monthlyLimitMinor: null, personalConcurrency: 10, paused: false, expectedVersion: 2 });
+  updateActorPolicy(db, { actorId: 'member-zero', monthlyLimitMinor: null, personalConcurrency: 10, paused: false, expectedVersion: 1 });
   await resumeRun;
   assert.equal(imageRequests.length, 1, '解除并发等待后只能发送一次');
   assert.equal(db.prepare("SELECT status FROM jobs WHERE id='job-zero-resume'").pluck().get(), 'succeeded');

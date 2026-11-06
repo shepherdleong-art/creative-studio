@@ -376,6 +376,49 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
     version: 13,
     sql: `ALTER TABLE team_uploads ADD COLUMN imageOptionsJson TEXT;`,
   },
+  {
+    version: 14,
+    sql: `
+      ALTER TABLE team_error_records RENAME TO team_error_records_v13;
+      CREATE TABLE team_error_records (
+        id TEXT PRIMARY KEY,
+        actorUserId TEXT NOT NULL,
+        module TEXT NOT NULL,
+        taskId TEXT,
+        operationId TEXT,
+        attemptId TEXT,
+        scopeType TEXT,
+        scopeId TEXT,
+        stage TEXT NOT NULL CHECK(stage IN (
+          'upload', 'remote_submit', 'remote_poll', 'download', 'local_media',
+          'client_update', 'client_ui', 'server_release', 'server_config'
+        )),
+        code TEXT NOT NULL,
+        statusCode INTEGER,
+        safeMessage TEXT NOT NULL,
+        clientVersion TEXT,
+        serverReleaseId TEXT,
+        configVersion TEXT,
+        clientEventId TEXT,
+        transferId TEXT,
+        phase TEXT,
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY (actorUserId) REFERENCES team_users(id)
+      );
+      INSERT INTO team_error_records (
+        id, actorUserId, module, taskId, operationId, attemptId, scopeType, scopeId,
+        stage, code, statusCode, safeMessage, clientVersion, serverReleaseId,
+        configVersion, clientEventId, createdAt
+      ) SELECT id, actorUserId, module, taskId, operationId, attemptId, scopeType, scopeId,
+        stage, code, statusCode, safeMessage, clientVersion, serverReleaseId,
+        configVersion, clientEventId, createdAt FROM team_error_records_v13;
+      DROP TABLE team_error_records_v13;
+      CREATE UNIQUE INDEX idx_team_error_client_event
+        ON team_error_records(actorUserId, clientEventId) WHERE clientEventId IS NOT NULL;
+      CREATE INDEX idx_team_error_actor_created ON team_error_records(actorUserId, createdAt DESC);
+      CREATE INDEX idx_team_error_attempt ON team_error_records(attemptId);
+    `,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;

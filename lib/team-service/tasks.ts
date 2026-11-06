@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { TeamUsageError } from './usage.ts';
 import type { TeamViewer } from './diagnostics.ts';
 import { TASK_MODULE_LABELS, taskStepLabel, taskWaitLabel } from '../team-task-labels.ts';
+import { readActorPolicy } from '../media-core/execution/pools.ts';
 import { projectModelCall, summarizeModelCalls, type TeamModelCall } from './task-model.ts';
 
 type TaskRow = Record<string, unknown>;
@@ -119,7 +120,7 @@ export function listTeamTasks(
         attemptCount: Number(item.attemptCount ?? 0),
         status: isCanceled ? 'canceled' : item.status,
         waitReason: isCanceled ? 'stage_canceled' : item.waitReason,
-        waitLabel: taskWaitLabel(isCanceled ? 'stage_canceled' : item.waitReason as string | null, Number(item.personalConcurrency ?? 0)),
+        waitLabel: taskWaitLabel(isCanceled ? 'stage_canceled' : item.waitReason as string | null, readActorPolicy(db, String(item.actorUserId)).effectiveConcurrency),
         configVersion: item.configVersion, clientVersion: item.clientVersion, serverReleaseId: item.serverReleaseId,
         currentAttemptId: item.currentAttemptId, errorId: item.errorId, createdAt: item.createdAt, updatedAt: item.updatedAt,
         taskName: moduleLabel,

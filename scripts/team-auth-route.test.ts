@@ -64,6 +64,13 @@ const initialized = await initializeFirstAdministrator({
 const service = createTeamAuthService({ db, kdf, passwordParams });
 setTeamAuthServiceForTests(service);
 
+const { sessionCookie: issueSessionCookie } = await import('../lib/team-service/auth/request.ts');
+const fixedNow = Date.now;
+try {
+  Date.now = () => Date.parse('2026-11-06T08:00:00.000Z');
+  assert.match(issueSessionCookie('opaque-token', true), /Expires=Sun, 06 Dec 2026 08:00:00 GMT/i, '持久 Cookie 必须从本次认证起固定 30 天到期');
+  assert.doesNotMatch(issueSessionCookie('opaque-token', false), /Max-Age|Expires/i);
+} finally { Date.now = fixedNow; }
 const { GET: csrfGET } = await import('../app/api/team/auth/csrf/route.ts');
 const { POST: loginPOST } = await import('../app/api/team/auth/login/route.ts');
 const { GET: sessionGET } = await import('../app/api/team/auth/session/route.ts');
@@ -106,9 +113,9 @@ function writeRequest(pathname: string, body: unknown, options: {
   return new Request(endpoint(pathname), { method: 'POST', headers, body: JSON.stringify(body) });
 }
 
-async function loginWithCsrf(employeeId: string, password: string) {
+async function loginWithCsrf(employeeId: string, password: string, remember = true) {
   const csrf = await bootstrapCsrf();
-  const response = await loginPOST(writeRequest('/api/team/auth/login', { employeeId, password }, {
+  const response = await loginPOST(writeRequest('/api/team/auth/login', { employeeId, password, remember }, {
     cookie: csrf.cookie, csrf: csrf.token,
   }));
   const sessionCookie = response.headers.get('set-cookie')
@@ -159,7 +166,6 @@ try {
   assert.match(sessionSetCookie, /SameSite=Strict/i);
   assert.match(sessionSetCookie, /Path=\//i);
   assert.equal(JSON.stringify(db.prepare('SELECT * FROM team_sessions').all()).includes(admin.sessionCookie.split('=', 2)[1]), false);
-
   let response = await usersGET(new Request(endpoint('/api/team/users'), { headers: { Cookie: admin.cookie } }));
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error, 'password_change_required');
@@ -169,8 +175,13 @@ try {
     newPassword: 'admin-route-password',
   }, { cookie: admin.cookie, csrf: admin.csrf.token }));
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).mustChangePassword, false);
-
+  assert.equal((await response.json()).requiresReauthentication, true);
+  assert.match(response.headers.get('set-cookie') ?? '', /Max-Age=0/i);
+  response = await sessionGET(new Request(endpoint('/api/team/auth/session'), { headers: { Cookie: admin.cookie } }));
+  assert.equal((await response.json()).authenticated, false);
+  const adminAfterPasswordChange = await loginWithCsrf('00001', 'admin-route-password');
+  admin.cookie = adminAfterPasswordChange.cookie;
+  admin.csrf = adminAfterPasswordChange.csrf;
   response = await sessionGET(new Request(endpoint('/api/team/auth/session'), { headers: { Cookie: admin.cookie } }));
   assert.equal((await response.json()).authenticated, true);
 
@@ -190,6 +201,14 @@ try {
   response = await usersGET(new Request(endpoint('/api/team/users'), { headers: { Cookie: admin.cookie } }));
   const users = (await response.json()).users;
   assert.equal(users.length, 3);
+  response = await usersPOST(writeRequest('/api/team/users', { employeeId: '00125', displayName: '仅会话', role: 'employee' }, {
+    cookie: admin.cookie, csrf: admin.csrf.token,
+  }));
+  assert.equal(response.status, 201);
+  const sessionOnlyCredential = (await response.json()).credential;
+  const sessionOnlyLogin = await loginWithCsrf('00125', sessionOnlyCredential, false);
+  assert.equal(sessionOnlyLogin.response.status, 200);
+  assert.doesNotMatch(sessionOnlyLogin.response.headers.get('set-cookie') ?? '', /Max-Age|Expires/i, '未勾选记住时只能建立当前浏览器会话 Cookie');
   assert.equal(JSON.stringify(users).includes('passwordHash'), false);
   assert.equal(JSON.stringify(users).includes(initialized.credential), false);
 
@@ -198,6 +217,9 @@ try {
     currentPassword: createdCredentials.get('00123')!, newPassword: 'employee-route-password',
   }, { cookie: employee.cookie, csrf: employee.csrf.token }));
   assert.equal(response.status, 200);
+  const employeeAfterPasswordChange = await loginWithCsrf('00123', 'employee-route-password');
+  employee.cookie = employeeAfterPasswordChange.cookie;
+  employee.csrf = employeeAfterPasswordChange.csrf;
 
   for (const denied of [
     () => usersGET(new Request(endpoint('/api/team/users'), { headers: { Cookie: employee.cookie } })),

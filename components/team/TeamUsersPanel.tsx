@@ -20,6 +20,8 @@ type Member = {
   remainingMinor: number | null;
   currentConcurrency: number;
   concurrencyLimit: number;
+  concurrencyMode: 'legacy' | 'inherit' | 'fixed';
+  concurrencySource: 'legacy_fixed' | 'team_default' | 'personal_fixed';
   paused: boolean;
   allowedModels: string[] | null;
   policyVersion: number;
@@ -28,9 +30,17 @@ type Member = {
   modules: Array<{ module: string; chargedMinor: number }>;
 };
 
+type TeamConcurrencyPolicy = { mode: 'manual'; manualDefaultConcurrency: number; version: number };
+
+const CONCURRENCY_SOURCE_LABELS = {
+  legacy_fixed: '旧个人固定值（未迁移）',
+  team_default: '继承团队手动默认',
+  personal_fixed: '个人固定覆盖',
+} as const;
+
 const WAITING_LABELS: Record<string, string> = {
   monthly_budget: '余额不足',
-  personal_concurrency: '并发等待',
+  personal_concurrency: '个人生效上限已满，等待名额',
   actor_paused: '暂停生成',
   actor_disabled: '账号停用',
   pricing_required: '定价缺失',
@@ -60,6 +70,12 @@ export default function TeamUsersPanel() {
   const [limitYuan, setLimitYuan] = useState('0');
   const [unlimited, setUnlimited] = useState(false);
   const [concurrency, setConcurrency] = useState(0);
+  const [concurrencyMode, setConcurrencyMode] = useState<'inherit' | 'fixed'>('inherit');
+  const [teamPolicy, setTeamPolicy] = useState<TeamConcurrencyPolicy | null>(null);
+  const [teamDefault, setTeamDefault] = useState('0');
+  const [teamPolicyBusy, setTeamPolicyBusy] = useState(false);
+  const [teamPolicyError, setTeamPolicyError] = useState('');
+  const [teamPolicyNotice, setTeamPolicyNotice] = useState('');
   const [paused, setPaused] = useState(false);
   const [modelOptions, setModelOptions] = useState<TeamModelOption[]>([]);
   const [allModels, setAllModels] = useState(true);
@@ -70,11 +86,18 @@ export default function TeamUsersPanel() {
     const params = new URLSearchParams();
     if (search.trim()) params.set('search', search.trim());
     if (attentionOnly) params.set('attentionOnly', '1');
-    const response = await fetch(`/api/team/members?${params}`, { credentials: 'same-origin', cache: 'no-store' });
+    const [response, policyResponse] = await Promise.all([
+      fetch(`/api/team/members?${params}`, { credentials: 'same-origin', cache: 'no-store' }),
+      fetch('/api/team/concurrency-policy', { credentials: 'same-origin', cache: 'no-store' }),
+    ]);
     if (!response.ok) throw new Error(await teamError(response, '无法读取成员列表'));
+    if (!policyResponse.ok) throw new Error(await teamError(policyResponse, '无法读取团队并发默认'));
     const body = await response.json() as { items: Member[]; modelOptions: TeamModelOption[] };
+    const policy = await policyResponse.json() as TeamConcurrencyPolicy;
     setUsers(body.items);
     setModelOptions(body.modelOptions);
+    setTeamPolicy(policy);
+    setTeamDefault(String(policy.manualDefaultConcurrency));
   }, [attentionOnly, search]);
 
   useEffect(() => {
@@ -91,7 +114,7 @@ export default function TeamUsersPanel() {
       const body = await response.json() as { credential?: string; user?: { employeeId: string } };
       if (body.credential && body.user) {
         setIssued({ employeeId: body.user.employeeId, credential: body.credential });
-        setNotice('一次性密码已生成。新成员还需在“模型与额度”里配置可调用模型和生成额度；这不影响首次登录和改密。');
+        setNotice(`一次性密码已生成。新成员继承团队手动默认并发 ${teamPolicy?.manualDefaultConcurrency ?? 0}；还需配置可调用模型和生成额度，不影响首次登录和改密。`);
       }
       success?.();
       await refresh();
@@ -99,6 +122,32 @@ export default function TeamUsersPanel() {
       setError(cause instanceof Error ? cause.message : '账号操作失败');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function saveTeamPolicy(event: FormEvent) {
+    event.preventDefault();
+    if (!teamPolicy) return;
+    const manualDefaultConcurrency = Number(teamDefault);
+    if (!Number.isSafeInteger(manualDefaultConcurrency) || manualDefaultConcurrency < 0) {
+      setTeamPolicyError('团队默认并发须为非负整数。');
+      return;
+    }
+    setTeamPolicyBusy(true);
+    setTeamPolicyError('');
+    setTeamPolicyNotice('');
+    try {
+      const response = await teamWrite('/api/team/concurrency-policy', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'manual', manualDefaultConcurrency, expectedVersion: teamPolicy.version }),
+      });
+      if (!response.ok) throw new Error(await teamError(response, '团队并发默认保存失败'));
+      setTeamPolicyNotice('团队手动默认已保存。仅后续准入使用新值，旧个人固定值不迁移。');
+      await refresh();
+    } catch (cause) {
+      setTeamPolicyError(cause instanceof Error ? cause.message : '团队并发默认保存失败');
+    } finally {
+      setTeamPolicyBusy(false);
     }
   }
 
@@ -118,7 +167,8 @@ export default function TeamUsersPanel() {
     setEditing(member);
     setLimitYuan(member.monthlyLimitMinor === null ? '0' : String(member.monthlyLimitMinor / 100));
     setUnlimited(member.monthlyLimitMinor === null);
-    setConcurrency(member.concurrencyLimit);
+    setConcurrency(member.concurrencySource === 'team_default' ? 0 : member.concurrencyLimit);
+    setConcurrencyMode(member.concurrencyMode === 'inherit' ? 'inherit' : 'fixed');
     setPaused(member.paused);
     setAllModels(member.allowedModels === null);
     setAllowedModels(member.allowedModels ?? []);
@@ -134,6 +184,10 @@ export default function TeamUsersPanel() {
       setError('月度金额必须是非负数字。');
       return;
     }
+    if (!Number.isSafeInteger(concurrency) || concurrency < 0) {
+      setError('个人固定并发须为非负整数；零表示禁止新的生成，与暂停不同。');
+      return;
+    }
     void run(() => teamWrite(`/api/team/members/${editing.userId}/policy`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -141,6 +195,7 @@ export default function TeamUsersPanel() {
         monthlyLimitMinor: unlimited ? null : Math.round(amount * 100),
         unlimited,
         personalConcurrency: concurrency,
+        concurrencyMode,
         paused,
         expectedVersion: editing.policyVersion,
         allowedModels: allModels ? null : allowedModels,
@@ -159,6 +214,27 @@ export default function TeamUsersPanel() {
       </div>
 
       {issued && <TeamCredentialDialog {...issued} onClose={() => setIssued(null)} />}
+
+      <section className="card p-6" aria-labelledby="team-concurrency-default-heading">
+        <div className="flex flex-wrap items-start justify-between gap-5">
+          <div className="max-w-2xl">
+            <h2 id="team-concurrency-default-heading" className="text-lg font-semibold text-ink">团队并发默认</h2>
+            <p className="mt-2 text-sm leading-6 text-ink-secondary">手动固定模式下，新成员自动继承此上限，无需逐人填写。它是最大占用约束，不是保留席位，仍受真实上游共享容量限制。</p>
+          </div>
+          <span className="rounded-full bg-surface-subtle px-3 py-1 text-xs text-ink-secondary">手动模式</span>
+        </div>
+        <form onSubmit={saveTeamPolicy} className="mt-5 flex flex-wrap items-end gap-3">
+          <label className="block text-sm text-ink-secondary">团队手动默认上限
+            <input aria-label="团队手动默认上限" className="input-field mt-1 w-44" type="number" min="0" step="1" value={teamDefault} onChange={event => setTeamDefault(event.target.value)} required />
+          </label>
+          <button className="btn-primary" type="submit" disabled={teamPolicyBusy || !teamPolicy}>保存团队默认</button>
+          <span className="pb-2 text-xs text-ink-tertiary">策略版本 {teamPolicy?.version ?? '—'}</span>
+        </form>
+        <p className="mt-3 text-xs leading-5 text-ink-tertiary">零表示不能开始新的生成，与“暂停新的付费生成”分别生效。调低上限或恢复继承只影响后续提交，已受理及受理不明的请求继续收取结果。</p>
+        <p className="mt-2 text-xs leading-5 text-ink-tertiary">已有成员的旧固定值保持不变，本页不会自动迁移。自动公平共享尚未开放。</p>
+        {teamPolicyError && <p role="alert" className="mt-3 text-sm text-fail">{teamPolicyError}</p>}
+        {teamPolicyNotice && <p role="status" className="mt-3 text-sm text-ok">{teamPolicyNotice}</p>}
+      </section>
 
       <section className="card p-6">
         <h2 className="mb-5 text-lg font-semibold text-ink">新建账号</h2>
@@ -198,7 +274,7 @@ export default function TeamUsersPanel() {
                 <td className="px-4 py-4 text-ink-secondary"><div>{money(user.monthChargedMinor)} / {money(user.monthlyLimitMinor)}</div><div className="mt-1 text-xs text-ink-tertiary">已结算 {money(user.monthSettledMinor)}</div></td>
                 <td className="px-4 py-4 text-ink-secondary">{money(user.heldMinor)}</td>
                 <td className="px-4 py-4 text-ink-secondary">{money(user.remainingMinor)}</td>
-                <td className="px-4 py-4 text-ink-secondary">{user.currentConcurrency} / {user.concurrencyLimit}</td>
+                <td className="px-4 py-4 text-ink-secondary"><div>{user.currentConcurrency} / {user.concurrencyLimit}</div><div className="mt-1 max-w-36 text-xs text-ink-tertiary">{CONCURRENCY_SOURCE_LABELS[user.concurrencySource]}</div></td>
                 <td className="px-4 py-4 text-ink-secondary"><div>{user.accountStatus === 'disabled' ? '账号停用' : user.paused ? '暂停新付费' : '启用'}</div>{user.waitingReason && <div className="mt-1 text-xs text-warn">{WAITING_LABELS[user.waitingReason] ?? user.waitingReason}</div>}<div className="mt-1 text-xs text-ink-tertiary">{user.mustChangePassword ? '待首次改密' : '已改密'}</div></td>
                 <td className="px-4 py-4"><select aria-label={`${user.displayName}角色`} className="input-field" value={user.role} disabled={busy} onChange={(event) => void run(() => teamWrite(`/api/team/users/${user.userId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: event.target.value }) }))}><option value="employee">员工</option><option value="admin">管理员</option></select></td>
                 <td className="px-4 py-4"><div className="flex justify-end gap-2"><button className="btn-secondary btn-sm" disabled={busy} onClick={() => openPolicy(user)}>模型与额度</button><button className="btn-secondary btn-sm" disabled={busy} onClick={() => { if (window.confirm(`确定重置 ${user.displayName} 的凭据并撤销其会话吗？`)) void run(() => teamWrite(`/api/team/users/${user.userId}/reset-credential`, { method: 'POST' })); }}>重置一次性密码</button><button className="btn-secondary btn-sm" disabled={busy} onClick={() => void run(() => teamWrite(`/api/team/users/${user.userId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: user.accountStatus === 'active' ? 'disabled' : 'active' }) }))}>{user.accountStatus === 'active' ? '停用' : '启用'}</button></div></td>
@@ -230,8 +306,14 @@ export default function TeamUsersPanel() {
           {error && <p role="alert" className="text-sm text-fail">{error}</p>}
           <label className="flex items-center gap-2 text-sm text-ink-secondary"><input type="checkbox" checked={unlimited} onChange={(event) => setUnlimited(event.target.checked)} />不限月度金额（仍受并发限制）</label>
           <label className="block text-sm text-ink-secondary">月度金额（元）<input className="input-field mt-1" type="number" min="0" step="0.01" value={limitYuan} disabled={unlimited} onChange={(event) => setLimitYuan(event.target.value)} required={!unlimited} /></label>
-          <label className="block text-sm text-ink-secondary">个人云端并发上限<input className="input-field mt-1" type="number" min="0" step="1" value={concurrency} onChange={(event) => setConcurrency(Number(event.target.value))} required /></label>
-          <p className="text-xs text-warn">设为 0 会阻止所有新的生成任务；同时运行 10 个任务请填写 10。</p>
+          <fieldset className="space-y-3 rounded-xl border border-hairline p-4">
+            <legend className="px-1 text-sm font-medium text-ink">并发规则</legend>
+            <label className="flex items-start gap-2 text-sm text-ink-secondary"><input className="mt-1" type="radio" name="member-concurrency-mode" value="inherit" checked={concurrencyMode === 'inherit'} onChange={() => setConcurrencyMode('inherit')} /><span>继承团队手动默认<span className="block text-xs text-ink-tertiary">当前生效上限 {teamPolicy?.manualDefaultConcurrency ?? 0}，团队设置变化后自动采用。</span></span></label>
+            <label className="flex items-start gap-2 text-sm text-ink-secondary"><input className="mt-1" type="radio" name="member-concurrency-mode" value="fixed" checked={concurrencyMode === 'fixed'} onChange={() => setConcurrencyMode('fixed')} /><span>使用个人固定上限<span className="block text-xs text-ink-tertiary">只限制自己的最大占用，不预留共享池名额。</span></span></label>
+            <label className="block text-sm text-ink-secondary">个人固定并发上限<input aria-label="个人固定并发上限" className="input-field mt-1" type="number" min="0" step="1" value={concurrency} disabled={concurrencyMode === 'inherit'} onChange={(event) => setConcurrency(event.target.value === '' ? Number.NaN : event.target.valueAsNumber)} required={concurrencyMode === 'fixed'} /></label>
+            <p className="text-xs text-warn">固定值设为 0 会阻止新的生成任务，但不等于暂停，也不取消已受理任务。</p>
+            {editing.concurrencySource === 'legacy_fixed' && <p className="text-xs leading-5 text-ink-tertiary">此成员当前使用旧个人固定值。选择“个人固定上限”并保存后才会标记为明确的个人覆盖；仅打开或查看页面不会迁移。</p>}
+          </fieldset>
           <label className="flex items-center gap-2 text-sm text-ink-secondary"><input type="checkbox" checked={paused} onChange={(event) => setPaused(event.target.checked)} />暂停新的付费生成</label>
           <p className="text-xs leading-5 text-ink-tertiary">暂停或降低上限只影响后续付费步骤；已受理任务不会被中断。</p>
           <div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={() => setEditing(null)}>取消</button><button type="submit" className="btn-primary" disabled={busy}>保存策略</button></div>

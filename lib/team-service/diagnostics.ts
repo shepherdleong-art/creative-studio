@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 
 export const TEAM_ERROR_STAGES = [
   'upload', 'remote_submit', 'remote_poll', 'download', 'local_media',
-  'client_update', 'server_release', 'server_config',
+  'client_update', 'client_ui', 'server_release', 'server_config',
 ] as const;
 export type TeamErrorStage = typeof TEAM_ERROR_STAGES[number];
 
@@ -33,6 +33,8 @@ export interface TeamErrorView {
   taskId: string | null;
   operationId: string | null;
   attemptId: string | null;
+  transferId: string | null;
+  phase: string | null;
   scope: { resourceType: string; resourceId: string } | null;
   stage: TeamErrorStage;
   code: string;
@@ -53,6 +55,8 @@ interface ErrorRow {
   taskId: string | null;
   operationId: string | null;
   attemptId: string | null;
+  transferId: string | null;
+  phase: string | null;
   scopeType: string | null;
   scopeId: string | null;
   stage: TeamErrorStage;
@@ -63,6 +67,28 @@ interface ErrorRow {
   serverReleaseId: string | null;
   configVersion: string | null;
   createdAt: string;
+}
+
+function associationForResource(db: Database.Database, resourceType: string, resourceId: string): ExecutionAssociation | null {
+  const operation = db.prepare(`
+    SELECT id AS operationId, actorId, module, taskId, scopeType, scopeId,
+      configVersion, clientVersion, serverReleaseId, currentAttemptId
+    FROM execution_operations WHERE scopeType = ? AND scopeId = ? ORDER BY updatedAt DESC, id DESC LIMIT 1
+  `).get(resourceType, resourceId) as ExecutionAssociation | undefined;
+  if (operation) return operation;
+  const principal = db.prepare(`
+    SELECT actorUserId, module, taskId, scopeType, scopeId FROM team_task_principals
+    WHERE scopeType = ? AND scopeId = ? ORDER BY createdAt DESC LIMIT 1
+  `).get(resourceType, resourceId) as {
+    actorUserId: string; module: string; taskId: string; scopeType: string; scopeId: string;
+  } | undefined;
+  if (!principal) return null;
+  return {
+    operationId: '', actorId: principal.actorUserId, module: principal.module,
+    taskId: principal.taskId, scopeType: principal.scopeType, scopeId: principal.scopeId,
+    configVersion: null, clientVersion: null, serverReleaseId: null,
+    currentAttemptId: null,
+  };
 }
 
 interface ExecutionAssociation {
@@ -76,6 +102,7 @@ interface ExecutionAssociation {
   clientVersion: string | null;
   serverReleaseId: string | null;
   currentAttemptId: string | null;
+  attemptId?: string | null;
 }
 
 const STAGE_MESSAGES: Record<TeamErrorStage, string> = {
@@ -85,6 +112,7 @@ const STAGE_MESSAGES: Record<TeamErrorStage, string> = {
   download: '下载失败，请检查网络和本机磁盘后重试。',
   local_media: '本地媒体处理失败，请凭错误编号联系管理员核查。',
   client_update: '客户端更新失败，当前版本仍保留，请联系管理员修复。',
+  client_ui: '客户端界面运行失败，请凭错误编号联系管理员核查。',
   server_release: '服务端发布失败，请联系管理员检查发布记录。',
   server_config: '服务端配置不可用，请联系管理员检查配置版本。',
 };
@@ -95,6 +123,10 @@ function requiredToken(value: unknown, fallback: string, maximum = 80): string {
   return /^[a-z][a-z0-9_.-]*$/i.test(normalized) && normalized.length <= maximum
     ? normalized
     : fallback;
+}
+
+function optionalId(value: unknown): string | null {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9-]{0,127}$/i.test(value) ? value : null;
 }
 
 function optionalVersion(value: unknown): string | null {
@@ -117,6 +149,8 @@ function mapError(row: ErrorRow): TeamErrorView {
     taskId: row.taskId,
     operationId: row.operationId,
     attemptId: row.attemptId,
+    transferId: row.transferId ?? null,
+    phase: row.phase ?? null,
     scope: row.scopeType && row.scopeId
       ? { resourceType: row.scopeType, resourceId: row.scopeId }
       : null,
@@ -179,6 +213,8 @@ export interface RecordTeamErrorInput {
   taskId?: string | null;
   operationId?: string | null;
   attemptId?: string | null;
+  transferId?: string | null;
+  phase?: string | null;
   scope?: { resourceType: string; resourceId: string } | null;
   stage: TeamErrorStage;
   code: string;
@@ -196,7 +232,7 @@ export function recordTeamError(db: Database.Database, input: RecordTeamErrorInp
   }
   const associated = input.attemptId ? associationForAttempt(db, input.attemptId) : null;
   const actorUserId = associated?.actorId ?? input.actorUserId;
-  const clientEventId = input.clientEventId?.trim().slice(0, 120) || null;
+  const clientEventId = optionalId(input.clientEventId);
   if (clientEventId) {
     const existing = db.prepare('SELECT id FROM team_error_records WHERE actorUserId = ? AND clientEventId = ?')
       .pluck().get(actorUserId, clientEventId) as string | undefined;
@@ -208,8 +244,8 @@ export function recordTeamError(db: Database.Database, input: RecordTeamErrorInp
     INSERT INTO team_error_records (
       id, actorUserId, module, taskId, operationId, attemptId, scopeType, scopeId,
       stage, code, statusCode, safeMessage, clientVersion, serverReleaseId,
-      configVersion, clientEventId, createdAt
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      configVersion, clientEventId, transferId, phase, createdAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, actorUserId,
     associated?.module ?? requiredToken(input.module, 'unknown', 60),
@@ -223,7 +259,8 @@ export function recordTeamError(db: Database.Database, input: RecordTeamErrorInp
     optionalVersion(input.clientVersion) ?? optionalVersion(associated?.clientVersion),
     optionalVersion(input.serverReleaseId) ?? optionalVersion(associated?.serverReleaseId),
     optionalVersion(input.configVersion) ?? optionalVersion(associated?.configVersion),
-    clientEventId, new Date().toISOString(),
+    clientEventId, optionalId(input.transferId),
+    requiredToken(input.phase, '', 80) || null, new Date().toISOString(),
   );
   return getError(db, id)!;
 }
@@ -265,16 +302,31 @@ export function reportClientError(
     actorUserId?: string;
     operationId?: string;
     attemptId?: string;
+    resourceType?: string;
+    resourceId?: string;
+    transferId?: string;
+    phase?: string;
   },
   versions: { clientVersion?: string; serverReleaseId?: string },
 ): TeamErrorView {
-  const association = input.taskId?.trim() ? associationForTask(db, input.taskId.trim()) : null;
-  if (input.taskId?.trim() && (!association || (viewer.role !== 'admin' && association.actorId !== viewer.userId))) {
+  const association = input.taskId?.trim()
+    ? associationForTask(db, input.taskId.trim())
+    : input.resourceType && input.resourceId
+      ? associationForResource(db, requiredToken(input.resourceType, ''), input.resourceId)
+      : null;
+  const associationRequested = Boolean(input.taskId?.trim() || (input.resourceType && input.resourceId));
+  if (associationRequested && (!association || (viewer.role !== 'admin' && association.actorId !== viewer.userId))) {
     throw new TeamDiagnosticsError(403, 'error_task_forbidden', '无法核验该任务的归属，错误上报已拒绝。');
   }
   const actorUserId = association?.actorId ?? viewer.userId;
   if (viewer.role !== 'admin' && actorUserId !== viewer.userId) {
     throw new TeamDiagnosticsError(403, 'error_actor_forbidden', '不能代其他成员上报错误。');
+  }
+  const clientEventId = optionalId(input.clientEventId);
+  if (clientEventId) {
+    const existing = db.prepare('SELECT id FROM team_error_records WHERE actorUserId = ? AND clientEventId = ?')
+      .pluck().get(actorUserId, clientEventId) as string | undefined;
+    if (existing) return getError(db, existing)!;
   }
   return recordTeamError(db, {
     actorUserId,
@@ -287,6 +339,8 @@ export function reportClientError(
     code: input.code,
     statusCode: input.statusCode,
     clientEventId: input.clientEventId,
+    transferId: input.transferId,
+    phase: input.phase,
     clientVersion: versions.clientVersion ?? association?.clientVersion,
     serverReleaseId: versions.serverReleaseId ?? association?.serverReleaseId,
     configVersion: association?.configVersion,
@@ -343,6 +397,8 @@ export function getTeamErrorDiagnostic(
     taskId: error.taskId,
     operationId: error.operationId,
     attemptId: error.attemptId,
+    transferId: error.transferId,
+    phase: error.phase,
     scope: error.scope,
     clientVersion: error.clientVersion,
     serverReleaseId: error.serverReleaseId,

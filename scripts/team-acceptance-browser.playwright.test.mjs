@@ -196,10 +196,12 @@ try {
     const templateId = template.body.template.id;
     assert.equal((await api(page, '/api/video-prompt-templates')).body.some((item) => item.id === templateId), false);
     await adminPage.goto(`${baseUrl}/team/admin/resources`, { waitUntil: 'networkidle', timeout: 60_000 });
-    await adminPage.getByLabel('资源类型', { exact: true }).selectOption('video_prompt_template');
-    await adminPage.getByLabel('资源 ID', { exact: true }).fill(templateId);
+    assert.equal(await adminPage.getByLabel('资源 ID', { exact: true }).count(), 0, '正常发布流程不能要求手填资源 ID');
+    const templateCandidate = adminPage.getByRole('listitem').filter({ hasText: '浏览器公共发布验收' });
+    await templateCandidate.getByText('待发布', { exact: true }).waitFor();
+    await templateCandidate.getByText('保持产品结构，镜头缓慢推进，展示真实产品细节。', { exact: true }).waitFor();
     const published = adminPage.waitForResponse((response) => response.url().endsWith('/api/team/public-resources') && response.request().method() === 'POST');
-    await adminPage.getByRole('button', { name: '发布为公共资源' }).click();
+    await templateCandidate.getByRole('button', { name: '发布给团队', exact: true }).click();
     assert.equal((await published).status(), 200);
     assert.equal((await api(page, '/api/video-prompt-templates')).body.some((item) => item.id === templateId), true);
     result.assertions.push('管理员从页面发布私人模板后员工才可读取，发布结果来自正式 API');
@@ -207,6 +209,7 @@ try {
 
     for (const [route, heading] of [
       ['/team/admin/operations', '备份与维护'], ['/team/recycle-bin', '回收站'], ['/team/admin/pools', '资源池与共享预算'],
+      ['/team/admin/resources', '公共资源发布'],
     ]) {
       const response = await adminPage.goto(`${baseUrl}${route}`, { waitUntil: 'networkidle', timeout: 60_000 });
       assert.equal(response.status(), 200);
