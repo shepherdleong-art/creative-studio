@@ -344,6 +344,12 @@ const ADMIN = new Set([
   '/api/team/members GET', '/api/team/members/[id]/policy PATCH', '/api/team/usage/export GET',
   '/api/team/concurrency-policy GET', '/api/team/concurrency-policy PATCH',
   '/api/team/pools GET', '/api/team/pools POST',
+  '/api/script-studio/catalogs/strategy/import POST',
+  '/api/script-studio/catalogs/template/import POST',
+  '/api/script-studio/catalogs/[catalogId]/current PUT',
+  '/api/script-studio/viral-templates/import POST',
+  '/api/script-studio/viral-templates/current PUT',
+  '/api/script-studio/viral-templates/entries/[entryId] PATCH',
 ]);
 const SERVER_DISABLED = new Set([
   '/api/packaging/templates/[...path] GET',

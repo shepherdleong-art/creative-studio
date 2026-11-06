@@ -470,6 +470,22 @@ export const SCRIPT_STUDIO_MIGRATIONS: ReadonlyArray<ScriptStudioMigration> = [
       CREATE INDEX IF NOT EXISTS idx_ssvl_owner ON script_studio_viral_tpl_libraries(ownerKey, createdAt);
     `,
   },
+  {
+    // 团队当前版本独立于导入者的私人 currentRevisionId：上传仅形成待发布修订，
+    // 管理员在统一候选中显式发布后才切换此指针。不修改既有历史修订或 scope。
+    version: 13,
+    sql: `
+      CREATE TABLE IF NOT EXISTS script_studio_team_publications (
+        resourceType TEXT NOT NULL CHECK(resourceType IN ('strategy', 'template', 'viral')),
+        rootId TEXT NOT NULL,
+        currentRevisionId TEXT NOT NULL,
+        publishedBy TEXT NOT NULL,
+        publishedAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        PRIMARY KEY (resourceType)
+      );
+    `,
+  },
 ];
 
 export type ScriptStudioSchemaFailureCode =
@@ -582,6 +598,7 @@ function assertTablesExist(db: Database.Database): void {
     'script_studio_viral_tpl_revisions',
     'script_studio_viral_tpl_entries',
     'script_studio_viral_tpl_style_cache',
+    'script_studio_team_publications',
   ];
   for (const table of tables) {
     const row = db.prepare(

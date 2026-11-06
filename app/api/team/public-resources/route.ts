@@ -30,10 +30,27 @@ async function __teamRoutePOST(request: Request) {
     return NextResponse.json({ error: 'invalid_resource', message: '请从候选列表选择有效资源。' }, { status: 400 });
   }
   if (VERSIONED.has(body.resourceType)) {
-    return NextResponse.json({
-      error: 'versioned_publication_required',
-      message: '知识库与模板库需要完整版本发布，当前版本尚不支持此操作。',
-    }, { status: 409 });
+    if (body.resourceType !== 'script_catalog_revision' && body.resourceType !== 'viral_template_revision') {
+      return NextResponse.json({ error: 'versioned_publication_required', message: '请从候选列表选择完整版本，不能单独发布库根或条目。' }, { status: 409 });
+    }
+    try {
+      const { listPublicResourceCandidates } = await import('@/lib/team-service/resource-candidates');
+      const candidate = listPublicResourceCandidates(getDb(), principal).find((item) => item.resourceType === body.resourceType && item.resourceId === body.resourceId);
+      if (!candidate) return NextResponse.json({ error: 'candidate_unavailable', message: '目标版本不存在、无权处理或已失效，请刷新候选列表。' }, { status: 404 });
+      const { publishVersionedTeamResource } = await import('@/lib/team-service/versioned-publication');
+      const result = publishVersionedTeamResource(getDb(), principal, {
+        resourceType: body.resourceType, resourceId: body.resourceId,
+        baseRevisionId: typeof body.baseRevisionId === 'string' ? body.baseRevisionId : null,
+      });
+      return NextResponse.json({ published: true, ...result });
+    } catch (error) {
+      if (error instanceof ResourceAccessError) return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
+      const { teamPublicationConflict } = await import('@/lib/script-studio/team-publications');
+      return NextResponse.json({
+        error: teamPublicationConflict(error) ? 'publication_conflict' : 'publish_failed',
+        message: error instanceof Error ? error.message : '完整版本发布失败，团队当前版本未改变。',
+      }, { status: 409 });
+    }
   }
   if (!PUBLISHABLE.has(body.resourceType)) {
     return NextResponse.json({ error: 'invalid_resource', message: '请从候选列表选择有效资源。' }, { status: 400 });
