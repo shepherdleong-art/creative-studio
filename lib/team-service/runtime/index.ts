@@ -71,6 +71,13 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
         },
       });
       await bootstrap.ensureSchemaReady();
+      try {
+        const { cleanupVideoDerivatives } = await import('../../video-reference-preprocess.ts');
+        cleanupVideoDerivatives({ db });
+      } catch {
+        // 可重建缓存清理失败不得阻断团队 readiness 与历史任务恢复。
+        console.error('[video-preprocess] 启动派生物清理已跳过');
+      }
       await bootstrap.registerRecovery();
       await bootstrap.recover();
       setExecutionModuleRuntime({

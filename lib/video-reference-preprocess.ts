@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import type Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { dataRoot } from './data-root.ts';
 import { videoReferenceCapability } from './video-reference-contract.ts';
@@ -191,7 +192,7 @@ const DERIVATIVE_DIR = path.join('storage', 'video-derivatives');
 const QUALITY_LADDER = [92, 86, 78, 70, 62];
 const DIMENSION_LADDER = [1, 0.75, 0.5, 0.375];
 
-/** 同进程内对同一 (源图, 预算) 只编码一次，避免并发任务重复压缩。 */
+/** 同一目标串行物化；每个调用仍使用自己的来源路径与取消信号。 */
 const inFlight = new Map<string, Promise<PreparedVideoImage>>();
 
 /**
@@ -212,10 +213,28 @@ export interface VideoDerivativeCleanupResult {
   freedBytes: number;
 }
 
+/** 启动清理时同步移除可重建派生物的团队登记；原文件与生命周期中的文件不动。 */
+function removeDerivativeRegistration(db: Database.Database, absolutePath: string): boolean {
+  const relativePath = path.relative(path.join(dataRoot(), 'storage'), absolutePath).split(path.sep).join('/');
+  return db.transaction(() => {
+    const file = db.prepare('SELECT id, state, derivedFromFileId FROM team_files WHERE relativePath = ?')
+      .get(relativePath) as { id: string; state: string; derivedFromFileId: string | null } | undefined;
+    if (!file) return true;
+    if (file.state !== 'ready' || !file.derivedFromFileId) return false;
+    if (db.prepare('SELECT 1 FROM team_cleanup_files WHERE fileId = ? LIMIT 1').get(file.id)) return false;
+    if (db.prepare("SELECT 1 FROM team_file_references WHERE fileId = ? AND releasedAt IS NULL AND pinKind <> 'entity' LIMIT 1").get(file.id)) return false;
+    if (db.prepare('SELECT 1 FROM team_files WHERE derivedFromFileId = ? LIMIT 1').get(file.id)) return false;
+    return db.prepare("DELETE FROM team_files WHERE id = ? AND state = 'ready' AND derivedFromFileId IS NOT NULL")
+      .run(file.id).changes === 1;
+  }).immediate();
+}
+
 export function cleanupVideoDerivatives(options: {
   maxAgeMs?: number;
   maxBytes?: number;
   now?: () => number;
+  /** server 启动清理传入，用于同步删除派生物的 team_files 登记。 */
+  db?: Database.Database;
 } = {}): VideoDerivativeCleanupResult {
   const maxAgeMs = options.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000;
   const maxBytes = options.maxBytes ?? 2 * 1024 * 1024 * 1024;
@@ -246,8 +265,11 @@ export function cleanupVideoDerivatives(options: {
   for (const file of files.sort((left, right) => left.mtimeMs - right.mtimeMs)) {
     const tooOld = now() - file.mtimeMs > maxAgeMs;
     if (!tooOld && totalBytes <= maxBytes) break;
-    if (inFlight.has(file.absolutePath)) continue; // 正在编码/交付，绝不删。
+    if (inFlight.has(file.absolutePath)) continue; // 正在编码或排队复用，绝不删。
     try {
+      // 先删可重建登记再删字节；若 unlink 失败，下次会按未登记缓存重试，
+      // 不会留下指向已删除磁盘的 ready 记录。
+      if (options.db && !removeDerivativeRegistration(options.db, file.absolutePath)) continue;
       fs.unlinkSync(file.absolutePath);
       result.deleted += 1;
       result.freedBytes += file.size;
@@ -378,10 +400,10 @@ async function encode(
   return { buffer: data as Buffer<ArrayBuffer>, width: info.width, height: info.height };
 }
 
-/** 派生物内容寻址：同一源图内容 + 同一预算 → 同一文件名，天然幂等。 */
-function derivativeKey(sourceHash: string, budget: VideoImageDeliveryBudget, mimeType: string): string {
+/** 同一来源身份 + 内容 + 预算 → 同一文件名；不同来源不共享团队派生物身份。 */
+function derivativeKey(sourceHash: string, budget: VideoImageDeliveryBudget, mimeType: string, sourcePath: string): string {
   return crypto.createHash('sha256')
-    .update(`${sourceHash}\0${budget.maxBytes}\0${budget.maxDimension}\0${mimeType}\0${budget.mimeTypes.join(',')}`)
+    .update(`${sourceHash}\0${path.resolve(sourcePath)}\0${budget.maxBytes}\0${budget.maxDimension}\0${mimeType}\0${budget.mimeTypes.join(',')}`)
     .digest('hex');
 }
 
@@ -440,14 +462,15 @@ export async function prepareVideoJobImage(
   }
 
   const outputMimeType = chooseOutputMimeType(budget, source);
-  const key = derivativeKey(sourceHash, budget, outputMimeType);
+  const key = derivativeKey(sourceHash, budget, outputMimeType, input.absolutePath);
   const targetRelative = path.join(DERIVATIVE_DIR, `${key}${extensionForMime(outputMimeType)}`);
   const targetPath = path.join(dataRoot(), targetRelative);
 
-  const cached = inFlight.get(targetPath);
-  if (cached) return { prepared: await cached };
-
-  const job = (async (): Promise<PreparedVideoImage> => {
+  // 不直接共享首个调用的 Promise：前者被取消时，后续调用要能在轮到自己后重试；
+  // 成功时后续调用走磁盘复用，仍避免重复编码，也不会继承前者的来源或信号。
+  const previous = inFlight.get(targetPath);
+  const job = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(async (): Promise<PreparedVideoImage> => {
+    throwIfAborted(input.signal);
     // 已物化过（例如上一个任务压过同一张图）：复用，并重新按磁盘字节验证一次。
     const reuse = await verifyExistingDerivative(targetPath, outputMimeType, budget, input.absolutePath);
     if (reuse) {
@@ -496,7 +519,7 @@ export async function prepareVideoJobImage(
         derived: true,
       },
     };
-  })();
+  });
 
   inFlight.set(targetPath, job);
   try {

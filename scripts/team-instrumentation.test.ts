@@ -11,6 +11,14 @@ const workerPath = fileURLToPath(new URL('./team-instrumentation-worker.ts', imp
 function run(mode: 'local' | 'server', corruptCore = false, env: Record<string, string> = {}): Promise<Record<string, unknown>> {
   const root = path.join(fixtureRoot, corruptCore ? `${mode}-corrupt` : mode);
   fs.mkdirSync(root, { recursive: true });
+  if (!corruptCore) {
+    const derivativeDir = path.join(root, 'storage', 'video-derivatives');
+    fs.mkdirSync(derivativeDir, { recursive: true });
+    const stale = path.join(derivativeDir, 'stale.bin');
+    fs.writeFileSync(stale, Buffer.alloc(128, 1));
+    const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(stale, old, old);
+  }
   if (corruptCore) {
     fs.mkdirSync(path.join(root, 'data'), { recursive: true });
     fs.writeFileSync(path.join(root, 'data', 'workbench.db'), 'not a sqlite database');
@@ -67,6 +75,11 @@ try {
     executionSchema: true,
     shutdown: { stopped: true, pendingTasks: 0 },
   }, 'server 在受控 runtime 阶段启动批量恢复；身份结构就绪后开放登录，不依赖页面访问');
+  assert.equal(
+    fs.existsSync(path.join(fixtureRoot, 'server', 'storage', 'video-derivatives', 'stale.bin')),
+    false,
+    'server readiness 后、worker 恢复前必须实际清理超龄视频派生物',
+  );
 
   const corruptCore = await run('server', true);
   assert.deepEqual(corruptCore, {
@@ -100,6 +113,11 @@ try {
     executionSchema: false,
     shutdown: { stopped: true, pendingTasks: 0 },
   }, 'local 保留旧 instrumentation 自动恢复，且不创建团队/执行设施');
+  assert.equal(
+    fs.existsSync(path.join(fixtureRoot, 'local', 'storage', 'video-derivatives', 'stale.bin')),
+    false,
+    'local 启动必须实际清理超龄视频派生物，而不是只提供未调用的 helper',
+  );
 
   console.log('team instrumentation tests passed');
 } finally {

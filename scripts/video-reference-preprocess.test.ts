@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import sharp from 'sharp';
 
 const MIB = 1024 * 1024;
@@ -161,6 +162,40 @@ try {
     '不同预算必须各自物化，不能互相覆盖');
   assert.ok(concurrentResults[2]!.prepared.byteSize <= 4_800_000, '尾帧派生物必须满足更严的尾帧预算');
   assert.equal(sha256File(concurrencySource), concurrencyHash, '并发不得修改原图');
+
+  // 同字节但不同来源（例如两个项目各自上传）必须隔离派生物身份、来源路径与取消状态。
+  const sameBytesSourceA = path.join(storageRoot, 'same-bytes-a.png');
+  const sameBytesSourceB = path.join(storageRoot, 'same-bytes-b.png');
+  fs.copyFileSync(concurrencySource, sameBytesSourceA);
+  fs.copyFileSync(concurrencySource, sameBytesSourceB);
+  const [sameBytesA, sameBytesB] = await Promise.all([
+    prepareVideoJobImage({ providerType: 'openai-video', model: 'minimax-h3', role: 'reference', absolutePath: sameBytesSourceA }),
+    prepareVideoJobImage({ providerType: 'openai-video', model: 'minimax-h3', role: 'reference', absolutePath: sameBytesSourceB }),
+  ]);
+  assert.ok(sameBytesA && sameBytesB);
+  assert.notEqual(sameBytesA.prepared.absolutePath, sameBytesB.prepared.absolutePath,
+    '不同来源不得共享只能绑定一个 derivedFromFileId 的派生物');
+  assert.equal(sameBytesA.prepared.sourcePath, sameBytesSourceA, '来源 A 不得继承来源 B 的路径');
+  assert.equal(sameBytesB.prepared.sourcePath, sameBytesSourceB, '来源 B 不得继承来源 A 的路径');
+
+  // 同源并发也不能共享首个调用的取消状态：前者取消后，后者必须独立复用或重做成功。
+  const cancelSource = path.join(storageRoot, 'cancel-shared-source.png');
+  fs.copyFileSync(concurrencySource, cancelSource);
+  const cancelController = new AbortController();
+  const cancelled = prepareVideoJobImage({
+    providerType: 'openai-video', model: 'minimax-h3', role: 'reference',
+    absolutePath: cancelSource, signal: cancelController.signal,
+  });
+  const waiting = prepareVideoJobImage({
+    providerType: 'openai-video', model: 'minimax-h3', role: 'reference', absolutePath: cancelSource,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  cancelController.abort();
+  await assert.rejects(cancelled, (error: unknown) => videoPreprocessErrorCode(error) === 'aborted');
+  const waited = await waiting;
+  assert.ok(waited?.prepared.derived, '前一个调用取消不得让后一个调用失败');
+  assert.equal(waited.prepared.sourcePath, cancelSource);
+
   // 只留下上面两份派生物，没有半成品或临时文件。
   for (const file of derivativeFiles()) {
     assert.ok(!file.endsWith('.tmp'), `并发不得留下临时文件：${file}`);
@@ -414,6 +449,45 @@ try {
   // 此时正式派生物还剩 fresh.bin 与 newer.bin 两个（older.bin 已回收），.tmp 不计入。
   assert.equal(withTmp.scanned, 2, '只统计正式派生物，不含 .tmp 半成品');
   assert.equal(withTmp.deleted, 2, 'maxAgeMs=0 时两个正式派生物都算超龄');
+
+  // server 启动清理必须同时删除派生物登记，并避让正在走团队生命周期的文件。
+  const db = new Database(':memory:');
+  try {
+    db.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE team_files (
+        id TEXT PRIMARY KEY, relativePath TEXT UNIQUE, state TEXT NOT NULL, derivedFromFileId TEXT
+      );
+      CREATE TABLE team_file_references (
+        fileId TEXT NOT NULL, pinKind TEXT NOT NULL DEFAULT 'entity', releasedAt TEXT,
+        FOREIGN KEY (fileId) REFERENCES team_files(id) ON DELETE CASCADE
+      );
+      CREATE TABLE team_cleanup_files (
+        jobId TEXT NOT NULL, fileId TEXT NOT NULL,
+        PRIMARY KEY (jobId, fileId),
+        FOREIGN KEY (fileId) REFERENCES team_files(id)
+      );
+    `);
+    const registeredPath = makeDerivative('registered.bin', 100, 30 * day);
+    db.prepare("INSERT INTO team_files (id, relativePath, state, derivedFromFileId) VALUES ('derived', 'video-derivatives/registered.bin', 'ready', 'source')").run();
+    db.prepare("INSERT INTO team_file_references (fileId) VALUES ('derived')").run();
+    const lifecyclePath = makeDerivative('lifecycle.bin', 100, 30 * day);
+    db.prepare("INSERT INTO team_files (id, relativePath, state, derivedFromFileId) VALUES ('lifecycle', 'video-derivatives/lifecycle.bin', 'ready', 'source')").run();
+    db.prepare("INSERT INTO team_cleanup_files (jobId, fileId) VALUES ('cleanup-1', 'lifecycle')").run();
+    const acceptedPath = makeDerivative('accepted.bin', 100, 30 * day);
+    db.prepare("INSERT INTO team_files (id, relativePath, state, derivedFromFileId) VALUES ('accepted', 'video-derivatives/accepted.bin', 'ready', 'source')").run();
+    db.prepare("INSERT INTO team_file_references (fileId, pinKind) VALUES ('accepted', 'accepted_task')").run();
+    const registeredCleanup = cleanupVideoDerivatives({ db, maxAgeMs: 0, maxBytes: 0, now: () => nowMs + 400 * day });
+    assert.equal(registeredCleanup.deleted, 1, '只有未进入生命周期的派生物被清理');
+    assert.equal(fs.existsSync(registeredPath), false, '已清理派生物的磁盘副本必须删除');
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM team_files WHERE id = 'derived'").pluck().get(), 0, '派生物登记必须同步删除');
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM team_file_references WHERE fileId = 'derived'").pluck().get(), 0, '派生物引用应随登记级联删除');
+    assert.equal(fs.existsSync(lifecyclePath), true, '生命周期清理中的文件不得被启动回收重复删除');
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM team_files WHERE id = 'lifecycle'").pluck().get(), 1);
+    assert.equal(fs.existsSync(acceptedPath), true, '已受理任务引用的派生物不得被启动回收删除');
+  } finally {
+    db.close();
+  }
 
   // 正在进行中的编码/交付不得被删（inFlight 保护）。
   // 真的并发跑：先物化一份大图派生物，再对同一源图重复 prepare（命中复用校验路径，

@@ -220,7 +220,7 @@ try {
   ] as const) {
     db.exec('DELETE FROM video_jobs');
     const created = await create([autoItem({
-      providerId, model, generationMode: 'image-to-video', tailImageId: 'auto-tail', ...extra,
+      providerId, model, generationMode: 'image-to-video', autoTailState: 'ready', tailImageId: 'auto-tail', ...extra,
     })]);
     assert.equal(created.ok, true, `${model} 有效尾帧必须创建首尾帧任务：${created.ok ? '' : created.error}`);
     const row = db.prepare('SELECT generationMode, sourceImageId, tailImageId FROM video_jobs').get() as {
@@ -235,12 +235,14 @@ try {
   // 伪造/矛盾请求：一律 400 且零落任务
   for (const [label, draft, pattern] of [
     ['声明首尾帧但库里没有尾帧', autoItem({ generationMode: 'image-to-video' }), /没有找到有效尾帧/],
-    ['声明单图但仍带着有效尾帧', autoItem({ generationMode: 'reference-to-video', tailImageId: 'auto-tail' }), /该尾帧有效/],
+    ['声明单图但仍带着有效尾帧', autoItem({ generationMode: 'reference-to-video', autoTailState: 'ready', tailImageId: 'auto-tail' }), /该尾帧有效/],
+    ['ready 却没有尾帧 ID', autoItem({ generationMode: 'reference-to-video', autoTailState: 'ready' }), /尾帧状态与 tailImageId 矛盾/],
+    ['none 却带着尾帧 ID', autoItem({ generationMode: 'image-to-video', autoTailState: 'none', tailImageId: 'auto-tail' }), /尾帧状态与 tailImageId 矛盾/],
     ['尾帧上传中却当成单图提交', autoItem({ generationMode: 'reference-to-video', autoTailState: 'pending' }), /尾帧正在上传或移除/],
     ['尾帧删除中却当成单图提交', autoItem({ generationMode: 'reference-to-video', autoTailState: 'pending', tailImageId: 'auto-tail' }), /尾帧正在上传或移除/],
     ['自动模式携带显式参考素材', autoItem({ referenceAssetIds: ['image'] }), /只使用当前分镜图作为唯一参考/],
     ['自动模式指向不支持尾帧的模型', autoItem({ providerId: 'sd20', model: 'doubao-seedance-2-0-260128' }), /自动模式只适用于公司 MiniMax H3 \/ Wan 3.0/],
-    ['自动模式尾帧跨项目', autoItem({ generationMode: 'image-to-video', tailImageId: 'foreign-image' }), /不是视频工位上传的尾帧图|不存在|不属于当前项目/],
+    ['自动模式尾帧跨项目', autoItem({ generationMode: 'image-to-video', autoTailState: 'ready', tailImageId: 'foreign-image' }), /不是视频工位上传的尾帧图|不存在|不属于当前项目/],
   ] as const) {
     db.exec('DELETE FROM video_jobs');
     const result = await create([draft]);
@@ -254,7 +256,7 @@ try {
 
   // 尾帧图不存在（跨项目/无效 id）同样零落任务
   db.exec('DELETE FROM video_jobs');
-  assert.equal((await create([autoItem({ generationMode: 'image-to-video', tailImageId: 'tail-not-exist' })])).ok, false);
+  assert.equal((await create([autoItem({ generationMode: 'image-to-video', autoTailState: 'ready', tailImageId: 'tail-not-exist' })])).ok, false);
 
   // ── 老任务兼容：显式意图（缺省）完全不走自动模式核对 ──
   // 老 reference 任务（H3 单图参考）重试用同一冻结字段仍然成功。

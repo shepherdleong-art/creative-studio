@@ -377,7 +377,11 @@ export function listViralTemplateEntries(
   return rows;
 }
 
-export function getViralTemplateEntriesByIds(db: Database.Database, entryIds: string[]): ViralTemplateEntryRecord[] {
+export function getViralTemplateEntriesByIds(
+  db: Database.Database,
+  entryIds: string[],
+  options: { teamPublishedOnly?: boolean } = {},
+): ViralTemplateEntryRecord[] {
   if (!entryIds.length) return [];
   const placeholders = entryIds.map(() => '?').join(', ');
   const rows = db.prepare(`
@@ -387,9 +391,17 @@ export function getViralTemplateEntriesByIds(db: Database.Database, entryIds: st
   if (access.kind === 'team') {
     for (const row of rows) access.assertAccess('viral_template_entry', row.id, 'read');
   }
+  const team = options.teamPublishedOnly && access.kind === 'team' ? findTeamViralTemplateLibrary(db) : null;
+  const publishedRevisionIds = options.teamPublishedOnly && access.kind === 'team'
+    ? new Set(team
+      ? (db.prepare('SELECT id FROM script_studio_viral_tpl_revisions WHERE libraryId = ?').all(team.id) as Array<{ id: string }>).map((row) => row.id)
+      : [])
+    : null;
   const byId = new Map(rows.map((row) => [row.id, row]));
   // 按调用方给定的选择顺序返回（选择顺序是任务身份的一部分）。
-  return entryIds.map((id) => byId.get(id)).filter((row): row is ViralTemplateEntryRecord => Boolean(row));
+  // 新团队任务必须额外限制在团队库内；历史读取不加此选项，保留旧任务快照。
+  return entryIds.map((id) => byId.get(id))
+    .filter((row): row is ViralTemplateEntryRecord => row !== undefined && (!publishedRevisionIds || publishedRevisionIds.has(row.revisionId)));
 }
 
 /** 人工调整条目可用状态（内容字段不可变；状态调整标记 manual，不改写历史修订内容）。 */

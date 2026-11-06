@@ -244,6 +244,11 @@ try {
     /无权|不存在/,
     '私人未发布条目必须不可读',
   );
+  assert.deepEqual(
+    runWithAccessContext(contextA, () => getViralTemplateEntriesByIds(db, ['legacy-rev-a-entry'], { teamPublishedOnly: true })),
+    [],
+    '新团队任务不得使用员工自己的历史私人条目',
+  );
 
   // ---- 5. 发布后团队公共推荐与详情可读 ----
   const recommendations = runWithAccessContext(contextB, () => recommendViralTemplates(db, {
@@ -255,6 +260,11 @@ try {
   assert.equal(recommendations.librarySource, 'team');
   const teamEntryId = runWithAccessContext(contextB, () => listViralTemplateEntries(db, { status: 'usable' }))[0]!.id;
   assert.equal(runWithAccessContext(contextB, () => getViralTemplateEntriesByIds(db, [teamEntryId]))[0]!.id, teamEntryId);
+  assert.equal(
+    runWithAccessContext(contextB, () => getViralTemplateEntriesByIds(db, [teamEntryId], { teamPublishedOnly: true }))[0]!.id,
+    teamEntryId,
+    '新团队任务可以使用当前团队条目',
+  );
 
   // ---- 6. 同内容重复提交幂等 ----
   const replay = await runWithAccessContext(contextAdmin, () => publishTeamViralTemplate(db, {
@@ -280,6 +290,11 @@ try {
   );
   const oldSnapshot = runWithAccessContext(contextB, () => getViralTemplateEntriesByIds(db, [teamEntryId]));
   assert.equal(oldSnapshot[0]?.refText.includes('睡十年都不塌'), true, '旧团队版本条目仍可读（历史任务/断连重试）');
+  assert.equal(
+    runWithAccessContext(contextB, () => getViralTemplateEntriesByIds(db, [teamEntryId], { teamPublishedOnly: true }))[0]?.refText,
+    oldSnapshot[0]?.refText,
+    '陈旧页面仍可提交曾经正式发布过的旧团队条目',
+  );
   assert.equal(
     runWithAccessContext(contextB, () => listViralTemplateEntries(db, { revisionId: first.revisionId, status: 'all' })).length,
     3,

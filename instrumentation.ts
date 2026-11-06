@@ -48,6 +48,13 @@ export async function register(): Promise<void> {
     // prevent the existing batch scheduler from recovering its work.
     console.error('[usage-ledger] startup reconciliation skipped');
   }
+  try {
+    const { cleanupVideoDerivatives } = await import('./lib/video-reference-preprocess.ts');
+    cleanupVideoDerivatives();
+  } catch {
+    // 可重建缓存清理失败不得阻断 local 调度器恢复。
+    console.error('[video-preprocess] 启动派生物清理已跳过');
+  }
   const { startBatchSchedulerAfterReadiness } = await import('./lib/batch-production/bootstrap');
   void startBatchSchedulerAfterReadiness();
   const { startScriptStudioSchedulerAfterReadiness } = await import('./lib/script-studio/bootstrap');

@@ -170,11 +170,12 @@ function reconcileAutoModeItems(input: {
         error: itemError(index, '自动模式请求必须声明尾帧状态（autoTailState：none/ready/pending）'),
       };
     }
-    // pending 一律阻止提交；ready/none 仍以**库里真实存在的尾帧 id** 为准复核，
-    // 服务端不采信前端自称的 ready——否则「声明 ready 却不带尾帧」可绕过核对。
-    const draftState: VideoTailFrameDraftState = declared === 'pending'
-      ? 'pending'
-      : item.tailImageId ? 'ready' : 'none';
+    // pending 一律阻止提交；ready/none 必须与 tailImageId 一致，不能把矛盾声明
+    // 重新猜成另一种合法状态（例如 ready + 无尾图被静默降级成单图）。
+    if ((declared === 'ready') !== Boolean(item.tailImageId) && declared !== 'pending') {
+      return { ok: false, error: itemError(index, '自动模式尾帧状态与 tailImageId 矛盾，请刷新尾帧状态后重试') };
+    }
+    const draftState: VideoTailFrameDraftState = declared;
     const decision = decideVideoGenerationMode({
       providerType: provider.type,
       model: provider.model,

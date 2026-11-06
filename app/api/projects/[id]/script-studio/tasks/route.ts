@@ -106,7 +106,7 @@ async function __teamRoutePOST(
     let templatePlan: { templates: FrozenViralTemplateSpec[]; fingerprint: string } | undefined;
     if (productionMode === 'template_rewrite') {
       const entryIds = parseTemplateRewriteEntryIds(body.templateEntryIds, requestedCount);
-      const entries = getViralTemplateEntriesByIds(db, entryIds);
+      const entries = getViralTemplateEntriesByIds(db, entryIds, { teamPublishedOnly: true });
       if (entries.length !== entryIds.length) {
         throw new ScriptStudioError('not_found', '部分模板不存在或已被移除，请刷新模板列表');
       }

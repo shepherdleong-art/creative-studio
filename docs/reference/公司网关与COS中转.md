@@ -29,7 +29,7 @@ Seedream 5.0 Pro 同步生图的应用超时单独沿用项目 `timeoutMs`，默
 
 1. **本机原图保护**（`videoSourceImageLocalLimits()`）：文件存在且是普通文件 → 文件字节 ≤ `CREATIVE_STUDIO_VIDEO_SOURCE_MAX_BYTES`（默认 60 MiB）→ 可解码、像素总量 ≤ `CREATIVE_STUDIO_VIDEO_SOURCE_MAX_PIXELS`（默认 8000 万）→ 非多帧动画。任一不过抛 `VideoPreprocessError`（`source_missing` / `source_too_large` / `source_pixels_exceeded` / `source_unreadable` / `source_animated`），**不提交生成**。
 2. **原图是否已合规**：MIME 在上游白名单内、字节 ≤ 预算、单边 ≤ 预算时**原样交付**（`derived: false`），不做无谓的有损重编码。
-3. **物化派生副本**（`derived: true`）：超预算或格式不可交付时才压。按固定阶梯（质量 92/86/78/70/62 × 边长 1/0.75/0.5/0.375，PNG 另加 1024/640/320 降边）试到第一个达标，落盘到 `dataRoot()/storage/video-derivatives/<内容指纹>.<ext>`，再**按磁盘实际字节重新解码验证 MIME/字节/尺寸**。全部阶梯试完仍不达标抛 `budget_unreachable`——该模型链路**不提供**「压缩失败就回退发送不合格原图」的兜底。
+3. **物化派生副本**（`derived: true`）：超预算或格式不可交付时才压。按固定阶梯（质量 92/86/78/70/62 × 边长 1/0.75/0.5/0.375，PNG 另加 1024/640/320 降边）试到第一个达标，落盘到 `dataRoot()/storage/video-derivatives/<来源身份+内容指纹>.<ext>`，再**按磁盘实际字节重新解码验证 MIME/字节/尺寸**。不同来源的同字节原图不共享 `derivedFromFileId` 或取消状态；同一来源目标串行物化，前者取消后后者可独立重做。全部阶梯试完仍不达标抛 `budget_unreachable`——该模型链路**不提供**「压缩失败就回退发送不合格原图」的兜底。
 4. **交付**：派生副本按 `preserveBytes` 交给 COS（只传输、不再二次压缩），保证「验过的字节」就是「发出去的字节」。
 
 预算按「供应商类型 + 精确模型 + 图片角色」定（`videoImageBudget()`）：
@@ -42,7 +42,7 @@ Seedream 5.0 Pro 同步生图的应用超时单独沿用项目 `timeoutMs`，默
 
 其他模型 `videoImageBudget()` 返回 `null`，调用方沿用各自既有处理行为——本票的阈值不扩散到所有图片供应商。
 
-**调用点**：`lib/video-job-create.ts`（创建阶段，按实测交付事实校验）、`lib/video-queue.ts`（`prepareReferenceDeliveryImages` / 首尾帧提交前）。源图身份与原始字节永远不变；派生物按内容指纹寻址、天然幂等，团队模式下挂到原图的 `team_files` 记录上（`derivedFromFileId`）。错误类型 `VideoPreprocessError`，稳定错误码用 `videoPreprocessErrorCode(error)` 读取（跨模块 `instanceof` 不作为判据）。
+**调用点**：`lib/video-job-create.ts`（创建阶段，按实测交付事实校验）、`lib/video-queue.ts`（`prepareReferenceDeliveryImages` / 首尾帧提交前）。源图身份与原始字节永远不变；派生物按来源身份与内容指纹寻址、天然幂等，团队模式下挂到原图的 `team_files` 记录上（`derivedFromFileId`）。local 与 server 都会在 worker 恢复前按龄和总量执行有界清理；server 同步删除可重建派生物登记，并避让团队生命周期、已受理任务、导出或备份引用的文件，清理失败不阻断启动。错误类型 `VideoPreprocessError`，稳定错误码用 `videoPreprocessErrorCode(error)` 读取（跨模块 `instanceof` 不作为判据）。
 
 ## `cos-media.ts` — 腾讯云 COS 参考图中转
 
