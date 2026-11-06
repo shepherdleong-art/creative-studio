@@ -46,7 +46,7 @@ try {
     kdf,
     passwordParams: { N: 1024, r: 8, p: 1 },
   });
-  assert.match(initialized.credential, /^[A-Za-z0-9_-]{32,}$/);
+  assert.match(initialized.credential, /^\d{6}$/, '首次管理员使用 6 位一次性凭据');
   await expectCode(initializeFirstAdministrator({
     db,
     employeeId: '00002',
@@ -68,14 +68,16 @@ try {
     'admin-new-password-001',
   );
   assert.equal(admin.mustChangePassword, false);
+  const adminSession = await login('00001', 'admin-new-password-001');
+  const activeAdmin = adminSession.principal;
   await expectCode(login('00001', initialized.credential), 'invalid_credentials');
 
-  const employeeCredential = await service.createUser(admin, {
+  const employeeCredential = await service.createUser(activeAdmin, {
     employeeId: '00123',
     displayName: '员工甲',
     role: 'employee',
   });
-  const secondEmployeeCredential = await service.createUser(admin, {
+  const secondEmployeeCredential = await service.createUser(activeAdmin, {
     employeeId: '00124',
     displayName: '员工乙',
     role: 'employee',
@@ -120,18 +122,21 @@ try {
     employeeCredential.credential,
     'employee-new-password-123',
   );
-  await expectCode(service.createUser(employee, {
+  assert.equal(service.resolveSession(employeeLogin.token), null, '改密后原会话必须重新认证');
+  const relogin = await login('00123', 'employee-new-password-123');
+  await expectCode(service.createUser(relogin.principal, {
     employeeId: '00999', displayName: '越权', role: 'employee',
   }), 'admin_required');
   await expectCode(login('00123', employeeCredential.credential), 'invalid_credentials');
-  await expectCode(service.changeOwnPassword(employee, 'wrong-current-password', 'another-new-password-123'), 'invalid_credentials');
+  await expectCode(service.changeOwnPassword(relogin.principal, 'wrong-current-password', 'another-new-password-123'), 'invalid_credentials');
 
-  await service.setUserRole(admin, employee.userId, 'admin');
-  assert.equal(service.resolveSession(employeeLogin.token)?.role, 'admin', '角色每请求联查，而不是封进 cookie');
-  await service.setUserRole(admin, employee.userId, 'employee');
-  assert.equal(service.resolveSession(employeeLogin.token)?.role, 'employee');
+  assert.ok(relogin.principal.sessionId);
+  await service.setUserRole(activeAdmin, employee.userId, 'admin');
+  assert.equal(service.resolveSession(relogin.token)?.role, 'admin', '角色每请求联查，而不是封进 cookie');
+  await service.setUserRole(activeAdmin, employee.userId, 'employee');
+  assert.equal(service.resolveSession(relogin.token)?.role, 'employee');
 
-  const reset = await service.resetUserCredential(admin, employee.userId);
+  const reset = await service.resetUserCredential(activeAdmin, employee.userId);
   assert.equal(service.resolveSession(employeeLogin.token), null, '重置立即撤销旧会话');
   await expectCode(login('00123', 'employee-new-password-123'), 'invalid_credentials');
   const resetLogin = await login('00123', reset.credential);
@@ -147,21 +152,21 @@ try {
   assert.equal(internal.kind, 'internal_task');
   assert.equal('sessionId' in internal, false);
   assert.equal(JSON.stringify(internal).includes(secondLogin.token), false);
-  await service.setUserStatus(admin, secondLogin.principal.userId, 'disabled');
+  await service.setUserStatus(activeAdmin, secondLogin.principal.userId, 'disabled');
   assert.equal(service.resolveSession(secondLogin.token), null, '停用立即撤销会话');
   await expectCode(login('00124', 'employee-two-new-password'), 'invalid_credentials');
   assert.equal(internal.actorUserId, secondLogin.principal.userId, '已受理任务主体不依赖请求 cookie');
-  await service.setUserStatus(admin, secondLogin.principal.userId, 'active');
+  await service.setUserStatus(activeAdmin, secondLogin.principal.userId, 'active');
   await login('00124', 'employee-two-new-password');
 
-  const expiringCredential = await service.createUser(admin, {
+  const expiringCredential = await service.createUser(activeAdmin, {
     employeeId: '00125', displayName: '过期凭据', role: 'employee',
   });
   clock = new Date('2026-11-03T08:00:00.001Z');
   await expectCode(login('00125', expiringCredential.credential), 'invalid_credentials');
   clock = new Date('2026-11-02T08:00:00.000Z');
 
-  const limitedCredential = await service.createUser(admin, {
+  const limitedCredential = await service.createUser(activeAdmin, {
     employeeId: '00126', displayName: '限流员工', role: 'employee',
   });
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -169,14 +174,27 @@ try {
   }
   await expectCode(login('00126', limitedCredential.credential), 'login_rate_limited');
 
-  const secondAdminCredential = await service.createUser(admin, {
+  const passwordChangeCredential = await service.createUser(activeAdmin, {
+    employeeId: '00127', displayName: '双设备改密', role: 'employee',
+  });
+  const passwordChangeInitial = await login('00127', passwordChangeCredential.credential);
+  await service.changeOwnPassword(passwordChangeInitial.principal, passwordChangeCredential.credential, 'before-password-change');
+  const currentDevice = await login('00127', 'before-password-change');
+  const otherDevice = await login('00127', 'before-password-change');
+  await service.changeOwnPassword(currentDevice.principal, 'before-password-change', 'after-password-change');
+  assert.equal(service.resolveSession(currentDevice.token), null, '改密后当前设备旧凭据必须失效');
+  assert.equal(service.resolveSession(otherDevice.token), null, '改密后其他设备旧凭据必须撤销');
+  const reauthenticated = await login('00127', 'after-password-change');
+  assert.equal(reauthenticated.principal.mustChangePassword, false);
+
+  const secondAdminCredential = await service.createUser(activeAdmin, {
     employeeId: '00002', displayName: '第二管理员', role: 'admin',
   });
   const secondAdminLogin = await login('00002', secondAdminCredential.credential);
   const secondAdmin = await service.changeOwnPassword(secondAdminLogin.principal, secondAdminCredential.credential, 'second-admin-password');
-  await service.setUserRole(admin, admin.userId, 'employee');
-  const freshSecondAdmin = service.resolveSession(secondAdminLogin.token);
-  assert.ok(freshSecondAdmin);
+  const activeSecondAdmin = (await login('00002', 'second-admin-password')).principal;
+  await service.setUserRole(activeSecondAdmin, activeAdmin.userId, 'employee');
+  const freshSecondAdmin = activeSecondAdmin;
   for (const operation of [
     () => service.setUserRole(freshSecondAdmin, secondAdmin.userId, 'employee'),
     () => service.setUserStatus(freshSecondAdmin, secondAdmin.userId, 'disabled'),

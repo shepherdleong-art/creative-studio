@@ -24,16 +24,19 @@ function load(file, modules, globals = {}) {
   return loaded.exports;
 }
 
-const calls = { starts: 0, stops: 0, remoteHosts: 0, remoteStops: 0, exits: 0, shutdownRequests: 0, errors: [] };
+process.env.CREATIVE_STUDIO_CLIENT_INSTALL_ROOT = path.join('fake-electron', 'stable-install');
+process.env.CREATIVE_STUDIO_CLIENT_STATE_ROOT = path.join(process.env.CREATIVE_STUDIO_CLIENT_INSTALL_ROOT, 'client-state');
+const calls = { starts: 0, stops: 0, remoteHosts: 0, remoteStops: 0, exits: 0, shutdownRequests: 0, flushes: 0, userDataPaths: [], errors: [] };
 const app = new EventEmitter();
 app.requestSingleInstanceLock = () => true;
 app.isPackaged = false;
 app.getPath = (name) => path.join('fake-electron', name);
 app.getVersion = () => '0.7.1';
+app.setPath = (name, value) => { if (name === 'userData') calls.userDataPaths.push(value); };
 app.whenReady = () => Promise.resolve();
 app.quit = () => {};
 app.exit = () => { calls.exits += 1; };
-const remoteSession = { name: 'shared-team-session' };
+const remoteSession = { name: 'shared-team-session', async flushStorageData() { calls.flushes += 1; } };
 const remoteController = { async stop() { calls.remoteStops += 1; }, async pauseForUpdate() {}, async resumeAfterUpdate() {} };
 const remoteHost = {
   mode: 'remote', origin: 'https://studio.example.test', preloadPath: 'preload.js',
@@ -57,7 +60,7 @@ const modules = {
   },
   './client/remote-host': {
     readRemoteClientConfig: (env = process.env) => ({ mode: 'remote', origin: env.CREATIVE_STUDIO_SERVER_ORIGIN }),
-    defaultClientStateRoot: () => path.join('fake-electron', 'client-state'),
+    defaultClientStateRoot: () => process.env.CREATIVE_STUDIO_CLIENT_STATE_ROOT ?? path.join('fake-electron', 'client-state'),
     confirmRemoteClientHealth: async () => {},
     createRemoteClientHost: async (options) => {
       calls.remoteHosts += 1;
@@ -78,21 +81,41 @@ process.env.CREATIVE_STUDIO_SERVER_ORIGIN = 'https://studio.example.test/path-th
 const { readRemoteClientConfig } = load('desktop/client/remote-host.ts', {
   electron: { app },
   './remote-transfer': { RemoteTransferController: class {} },
-});
+}, { process: { ...process, env: { ...process.env, CREATIVE_STUDIO_CLIENT_MODE: 'local' } } });
 assert.throws(() => readRemoteClientConfig(process.env), /origin|来源|地址/i);
 process.env.CREATIVE_STUDIO_SERVER_ORIGIN = 'https://studio.example.test';
-load('desktop/main.ts', modules, { setInterval, clearInterval });
+const safeSetTimeout = (...args) => { const timer = setTimeout(...args); timer.unref(); return timer; };
+load('desktop/main.ts', modules, { setInterval, clearInterval, setTimeout: safeSetTimeout, clearTimeout });
 await tick();
 await tick();
 assert.equal(calls.remoteHosts, 1, calls.errors.join('\n'));
 assert.equal(calls.starts, 0, 'remote Host 不得 spawn 生产后台');
+assert.deepEqual(calls.userDataPaths, [path.join(process.env.CREATIVE_STUDIO_CLIENT_STATE_ROOT, 'electron')], '稳定 userData 必须在单实例锁与持久 Session 前设置');
 assert.equal(calls.shutdownRequests, 0, 'remote 启动不得发公共 shutdown');
 app.emit('before-quit', { preventDefault() {} });
 await tick();
 await tick();
 assert.equal(calls.remoteStops, 1, 'remote 关闭必须停止本机传输控制器');
+assert.equal(calls.flushes, 1, '退出必须等待持久 Session 的存储落盘');
 assert.equal(calls.exits, 1, 'remote 关闭必须退出本机客户端');
 assert.equal(calls.shutdownRequests, 0, 'remote 关闭不得发公共 shutdown');
+remoteSession.flushStorageData = async () => { throw new Error('isolated storage failure'); };
+load('desktop/main.ts', modules, { setInterval, clearInterval, setTimeout: safeSetTimeout, clearTimeout });
+await tick();
+await tick();
+app.emit('before-quit', { preventDefault() {} });
+await tick();
+await tick();
+assert.equal(calls.exits, 2, 'Cookie 持久化失败也不能阻止本机客户端退出');
+remoteSession.flushStorageData = () => new Promise(() => {});
+load('desktop/main.ts', modules, { setInterval, clearInterval, setTimeout: safeSetTimeout, clearTimeout });
+await tick();
+await tick();
+const beforeBoundedQuit = Date.now();
+app.emit('before-quit', { preventDefault() {} });
+await new Promise(resolve => setTimeout(resolve, 2300));
+assert.equal(calls.exits, 3, 'Cookie 持久化超时后仍必须有界退出本机客户端');
+assert.ok(Date.now() - beforeBoundedQuit >= 1800 && Date.now() - beforeBoundedQuit < 6000, '异常持久化必须有明确的短超时边界');
 
 const remoteSource = fs.readFileSync('desktop/window.ts', 'utf8');
 assert.match(remoteSource, /session:\s*host\.session/, 'remote BrowserWindow 与原生传输必须共用 Session');

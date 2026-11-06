@@ -10,7 +10,8 @@ export async function requireTeamPageAccess(options: { admin?: boolean; projectI
   if (readRuntimeConfig().mode === 'local') return null;
   const token = (await cookies()).get(TEAM_SESSION_COOKIE)?.value;
   const principal = token ? getTeamAuthService().resolveSession(token) : null;
-  if (!principal || principal.mustChangePassword) redirect('/team/login');
+  if (!principal) redirect(token ? '/team/login?reason=session-expired' : '/team/login');
+  if (principal.mustChangePassword) redirect('/team/login');
   if (options.admin && principal.role !== 'admin') redirect('/');
   if (options.projectId) {
     try { requireProjectAccess(getDb(), principal, options.projectId, 'read'); }

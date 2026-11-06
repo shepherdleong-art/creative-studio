@@ -68,11 +68,15 @@ const initialized = await initializeFirstAdministrator({ db, employeeId: '0000',
 const service = createTeamAuthService({ db, kdf, passwordParams });
 setTeamAuthServiceForTests(service);
 const adminLogin = await service.login({ employeeId: '0000', password: initialized.credential });
-const admin = await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-upload-business-password');
+await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-upload-business-password');
+const adminSession = await service.login({ employeeId: '0000', password: 'admin-upload-business-password' });
+const admin = adminSession.principal;
 const createdUser = await service.createUser(admin, { employeeId: '0001', displayName: '甲', role: 'employee' });
 const login = await service.login({ employeeId: '0001', password: createdUser.credential });
-const principal = await service.changeOwnPassword(login.principal, createdUser.credential, 'employee-upload-business-password');
-const user = { principal, cookie: sessionCookie(login.token).split(';', 1)[0] };
+await service.changeOwnPassword(login.principal, createdUser.credential, 'employee-upload-business-password');
+const authenticated = await service.login({ employeeId: '0001', password: 'employee-upload-business-password' });
+const principal = authenticated.principal;
+const user = { principal, cookie: sessionCookie(authenticated.token).split(';', 1)[0] };
 
 db.prepare("INSERT INTO providers (id, name, baseUrl, apiKey, model) VALUES ('provider-test', '测试', '', 'test-key', 'gpt-image-2')").run();
 db.prepare("INSERT INTO projects (id, name, providerId, model, prompt) VALUES ('project-a', '项目甲', 'provider-test', 'gpt-image-2', '')").run();

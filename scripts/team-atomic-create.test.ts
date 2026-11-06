@@ -69,13 +69,16 @@ const initialized = await initializeFirstAdministrator({ db, employeeId: '0000',
 const service = createTeamAuthService({ db, kdf, passwordParams });
 setTeamAuthServiceForTests(service);
 const adminLogin = await service.login({ employeeId: '0000', password: initialized.credential });
-const adminPrincipal = await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-atomic-password');
-const admin = { principal: adminPrincipal, cookie: sessionCookie(adminLogin.token).split(';', 1)[0] };
+await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-atomic-password');
+const adminSession = await service.login({ employeeId: '0000', password: 'admin-atomic-password' });
+const adminPrincipal = adminSession.principal;
+const admin = { principal: adminPrincipal, cookie: sessionCookie(adminSession.token).split(';', 1)[0] };
 async function account(employeeId: string) {
   const created = await service.createUser(adminPrincipal, { employeeId, displayName: employeeId, role: 'employee' });
   const login = await service.login({ employeeId, password: created.credential });
-  const principal = await service.changeOwnPassword(login.principal, created.credential, `${employeeId}-atomic-password`);
-  return { principal, cookie: sessionCookie(login.token).split(';', 1)[0] };
+  await service.changeOwnPassword(login.principal, created.credential, `${employeeId}-atomic-password`);
+  const authenticated = await service.login({ employeeId, password: `${employeeId}-atomic-password` });
+  return { principal: authenticated.principal, cookie: sessionCookie(authenticated.token).split(';', 1)[0] };
 }
 const userA = await account('0001');
 const userB = await account('0002');

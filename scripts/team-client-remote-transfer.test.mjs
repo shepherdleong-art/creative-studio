@@ -42,6 +42,7 @@ function persistedTransfer(stateRoot, id) {
 
 const requests = [];
 let account = 'user-a';
+let networkOffline = false;
 let authenticated = true;
 let firstPart = true;
 let fileDownloads = 0;
@@ -62,6 +63,7 @@ const session = {
   async clearCache() { this.cacheClears += 1; },
   async clearStorageData() { this.storageClears += 1; },
   async fetch(url, options = {}) {
+    if (networkOffline) throw new TypeError('fetch failed: isolated offline');
     const pathname = new URL(url).pathname;
     requests.push({ pathname, method: options.method ?? 'GET', headers: options.headers ?? {}, account });
     if (pathname === '/api/team/auth/session') {
@@ -105,6 +107,16 @@ const session = {
 
 try {
   const revealed = [];
+  networkOffline = true;
+  const offlineController = new RemoteTransferController({
+    origin: 'https://studio.example.test', deploymentId: 'deployment-fixture',
+    stateRoot: path.join(root, 'offline-client-state'), session, platform: 'windows', reveal: () => {},
+  });
+  await assert.rejects(() => offlineController.synchronizeIdentity(), /fetch failed/);
+  assert.equal(session.cacheClears, 0, '断网握手不得清掉缓存');
+  assert.equal(session.storageClears, 0, '断网握手不得清掉本地登录相关存储');
+  assert.deepEqual(offlineController.listTransfers(), [], '离线时尚未认证不得暴露其他账号传输');
+  networkOffline = false;
   const controller = new RemoteTransferController({
     origin: 'https://studio.example.test',
     deploymentId: 'deployment-fixture',
