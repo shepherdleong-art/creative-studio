@@ -15,6 +15,7 @@ import { runTeamRelease, rollbackTeamRelease, readTeamReleasePointer, switchTeam
 import { acquireLifecycleBarrier, releaseLifecycleBarrier } from '../../lib/team-service/lifecycle/index.ts';
 import { createExecutionJournal } from '../../lib/media-core/execution/journal.ts';
 import { executeTeamRestoreOperation } from '../../lib/team-service/maintenance/restore-operation.ts';
+import { executeCleanupPreview } from '../../lib/team-service/maintenance/cleanup.ts';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -315,6 +316,16 @@ try {
       configPath,
       once: args.includes('--once'),
       jobId: argument('--job-id') || undefined,
+      executeCleanup: async (job) => {
+        if (job.target.kind !== 'cleanup') throw new Error('维护作业目标不是清理预览');
+        const workerDb = openDatabase(config.dataRoot);
+        try {
+          return executeCleanupPreview({
+            db: workerDb, previewId: job.target.previewId, storageRoot: path.join(config.dataRoot, 'storage'),
+            backupRoot: config.backupRoot, protectedDataRoots: [config.dataRoot, ...(config.oldRoots ?? [])],
+          });
+        } finally { workerDb.close(); }
+      },
       makeBackup: async ({ job, backupId, onStage }) => {
         const activeConfig = resolveDeploymentConfig(readJson(configPath));
         const workerDb = openDatabase(activeConfig.dataRoot);

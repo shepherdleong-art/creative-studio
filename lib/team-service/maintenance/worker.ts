@@ -62,6 +62,7 @@ export async function runMaintenanceWorker(options: {
     Promise<{ backupId: string; type: string; verifiedAt: string; totalBytes: number }>;
   makeRestore?: (params: { job: MaintenanceJob; onStage: (stage: import('./restore-operation.ts').RestoreStage) => void }) =>
     Promise<{ awaitingConfirmation: boolean; [key: string]: unknown }>;
+  executeCleanup?: (job: MaintenanceJob) => Promise<Record<string, unknown>>;
   once?: boolean; pollIntervalMs?: number;
 }): Promise<void> {
   // deployment config 已在应用外解析，worker 不接受任意配置、路径或命令。
@@ -96,6 +97,7 @@ export async function runMaintenanceWorker(options: {
           if (claimed.job.action === 'restore.execute') {
             if (!options.makeRestore) throw new Error('还原执行器未配置，保持原业务不变');
             try {
+              let lastLeaseRenewal = Date.now();
               const heartbeat = setInterval(() => {
                 try {
                   const current = store.get(claimed.job.id).job;
@@ -107,7 +109,6 @@ export async function runMaintenanceWorker(options: {
               }, 20_000);
               heartbeat.unref();
               let result: { awaitingConfirmation: boolean; [key: string]: unknown };
-              let lastLeaseRenewal = Date.now();
               const renewLease = (stage: import('./jobs.ts').MaintenanceJob['stage']) => {
                 lastLeaseRenewal = Date.now();
                 return store.updateStage({ jobId: claimed.job.id, workerId, stage, leaseMs: 120_000 });
@@ -125,10 +126,18 @@ export async function runMaintenanceWorker(options: {
               }
               throw error;
             }
-          } else {
-            await executeClaimedBackupJob({ ...claimed, workerId, store, configPath: options.configPath, deploymentId: config.deploymentId,
-              makeBackup: (params) => options.makeBackup({ ...params, job: claimed.job }) });
-          }
+          } else if (claimed.job.action === 'cleanup.execute' && options.executeCleanup) {
+            try {
+              store.updateStage({ jobId: claimed.job.id, workerId, stage: 'verifying' });
+              const result = await options.executeCleanup(claimed.job);
+              store.updateStage({ jobId: claimed.job.id, workerId, stage: 'finishing' });
+              store.complete({ jobId: claimed.job.id, workerId, result });
+            } catch (error) {
+              store.fail({ jobId: claimed.job.id, workerId, code: 'cleanup_failed', message: error instanceof Error ? error.message : '清理执行失败，未确认完成。' });
+              throw error;
+            }
+          } else await executeClaimedBackupJob({ ...claimed, workerId, store, configPath: options.configPath, deploymentId: config.deploymentId,
+            makeBackup: (params) => options.makeBackup({ ...params, job: claimed.job }) });
         }
       } finally { lock?.release(); lock = null; }
       if (options.once) return;

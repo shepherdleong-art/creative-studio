@@ -171,6 +171,78 @@ try {
   assert.equal(duplicateConfirmation.status, 409, '重复确认不能重新排队已确认切换');
   store.close();
   console.log('team maintenance administrator route tests passed');
+
+  const cleanupRoute = await import('../app/api/team/maintenance/cleanup/route.ts');
+  const { MaintenanceJobStore } = await import('../lib/team-service/maintenance/jobs.ts');
+  const store = new MaintenanceJobStore({ backupRoot, deploymentId: 'deployment-maintenance-routes' });
+  const claimed = store.claimNext({ workerId: 'backup-worker' });
+  assert.equal(claimed?.job.id, accepted.job.id);
+  store.complete({ jobId: accepted.job.id, workerId: 'backup-worker', result: { backupId: 'test-only', verifiedAt: '2026-11-06', totalBytes: 0, type: 'manual' } });
+  store.close();
+  fs.mkdirSync(path.join(deploymentRoot, 'config'), { recursive: true });
+  fs.writeFileSync(path.join(deploymentRoot, 'config', 'maintenance-deployment.json'), JSON.stringify({ dataRoot, oldRoots: [path.join(fixture, 'retained-root')] }));
+  const uploadId = 'failed-upload-route';
+  const { registerRootScope } = await import('../lib/team-service/resource-scopes.ts');
+  db.prepare("INSERT INTO providers (id, name, baseUrl) VALUES ('test', '隔离供应商', 'http://127.0.0.1')").run();
+  db.prepare("INSERT INTO projects (id, name, providerId, model, prompt) VALUES ('route-project', '路由隔离项目', 'test', 'test', 'test')").run();
+  registerRootScope(db, { resourceType: 'project', resourceId: 'route-project', ownerUserId: principal.userId });
+  db.prepare(`INSERT INTO team_uploads (
+    id, userId, targetResourceType, targetResourceId, usage, relativeName, mimeType,
+    expectedSize, expectedSha256, sourceFingerprint, partSize, idempotencyKey, state, fileId, createdAt, updatedAt
+  ) VALUES (?, ?, 'project', 'route-project', 'input', 'failed.part', 'application/octet-stream',
+    4, ?, 'fingerprint', 1024, 'route-upload', 'failed', 'route-file', '2026-01-01', '2026-01-01')`)
+    .run(uploadId, principal.userId, '0'.repeat(64));
+  const temporary = path.join(dataRoot, 'storage', 'team-staging', uploadId, 'parts');
+  fs.mkdirSync(temporary, { recursive: true });
+  fs.writeFileSync(path.join(temporary, '1.part'), '1234');
+  const employeeScan = await cleanupRoute.POST(request('/api/team/maintenance/cleanup', employeeCookie, {}));
+  assert.equal(employeeScan.status, 403);
+  const wrongOriginScan = await cleanupRoute.POST(request('/api/team/maintenance/cleanup', adminCookie, {}, 'https://attacker.example'));
+  assert.equal(wrongOriginScan.status, 403);
+  const scanned = await cleanupRoute.POST(request('/api/team/maintenance/cleanup', adminCookie, {}));
+  assert.equal(scanned.status, 201, await scanned.clone().text());
+  const preview = (await scanned.json()).preview;
+  assert.equal(preview.totals.cleanableCount, 1);
+  assert.equal(preview.totals.estimatedBytes, 4);
+  assert.equal(JSON.stringify(preview).includes(dataRoot), false);
+  const notConfirmed = await jobsRoute.POST(request('/api/team/maintenance/jobs', adminCookie, {
+    idempotencyKey: 'cleanup-not-confirmed', target: { kind: 'cleanup', previewId: preview.id },
+  }));
+  assert.equal(notConfirmed.status, 400);
+  assert.equal(fs.existsSync(path.join(temporary, '1.part')), true);
+  for (const target of [
+    { kind: 'cleanup', previewId: preview.id, path: 'C:\\outside' },
+    { kind: 'cleanup', previewId: '../../other' },
+    { kind: 'shell', command: 'remove-item' },
+  ]) {
+    const denied = await jobsRoute.POST(request('/api/team/maintenance/jobs', adminCookie, {
+      idempotencyKey: `cleanup-denied-${JSON.stringify(target).length}`, confirm: true, target,
+    }));
+    assert.equal(denied.status, 400, await denied.clone().text());
+  }
+  const confirmed = await jobsRoute.POST(request('/api/team/maintenance/jobs', adminCookie, {
+    idempotencyKey: 'cleanup-confirmed-route', confirm: true, target: { kind: 'cleanup', previewId: preview.id },
+  }));
+  assert.equal(confirmed.status, 202, await confirmed.clone().text());
+  const cleanupJob = (await confirmed.json()).job;
+  assert.equal(cleanupJob.requestedBy.userId, principal.userId);
+  const cleanupAudit = await auditRoute.GET(request(`/api/team/maintenance/jobs/${cleanupJob.id}/audit`, adminCookie), { params: Promise.resolve({ id: cleanupJob.id }) });
+  assert.equal((await cleanupAudit.json()).audit[0].actor.displayName, '网页管理员');
+  assert.equal(fs.existsSync(path.join(temporary, '1.part')), true, 'HTTP确认只排队，不在网页进程直接删除');
+  const cleanupStore = new MaintenanceJobStore({ backupRoot, deploymentId: 'deployment-maintenance-routes' });
+  const cleanupClaim = cleanupStore.claimNext({ workerId: 'cleanup-worker' });
+  assert.equal(cleanupClaim?.job.id, cleanupJob.id);
+  const { executeCleanupPreview } = await import('../lib/team-service/maintenance/cleanup.ts');
+  const cleanupResult = executeCleanupPreview({ db, previewId: preview.id, storageRoot: path.join(dataRoot, 'storage'), backupRoot, protectedDataRoots: [dataRoot, path.join(fixture, 'retained-root')] });
+  cleanupStore.complete({ jobId: cleanupJob.id, workerId: 'cleanup-worker', result: { ...cleanupResult } });
+  cleanupStore.close();
+  const reconnectedCleanup = await jobRoute.GET(request(`/api/team/maintenance/jobs/${cleanupJob.id}`, adminCookie), { params: Promise.resolve({ id: cleanupJob.id }) });
+  const cleanupBody = (await reconnectedCleanup.json()).job;
+  assert.equal(cleanupBody.id, cleanupJob.id);
+  assert.equal(cleanupBody.result.deletedCount, 1);
+  assert.equal(cleanupBody.result.freedBytes, 4);
+  assert.equal(fs.existsSync(path.join(temporary, '1.part')), false);
+  console.log('team cleanup administrator routes, binding, confirmation and reconnected result passed');
 } finally {
   setTeamAuthServiceForTests(null);
   closeDb();
