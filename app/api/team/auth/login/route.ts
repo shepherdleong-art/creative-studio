@@ -12,7 +12,7 @@ async function __teamRoutePOST(request: Request): Promise<Response> {
       employeeId: typeof body.employeeId === 'string' ? body.employeeId : '',
       password: typeof body.password === 'string' ? body.password : '',
     });
-    return authJson(principalBody(result.principal), { setCookie: sessionCookie(result.token) });
+    return authJson(principalBody(result.principal), { setCookie: sessionCookie(result.token, body.remember === true) });
   } catch (error) {
     return authError(error);
   }

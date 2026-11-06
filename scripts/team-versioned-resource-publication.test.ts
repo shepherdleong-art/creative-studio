@@ -67,14 +67,17 @@ const initialized = await initializeFirstAdministrator({ db, employeeId: '0000',
 const service = createTeamAuthService({ db, kdf, passwordParams: { N: 1024, r: 8, p: 1 } });
 setTeamAuthServiceForTests(service);
 const adminLogin = await service.login({ employeeId: '0000', password: initialized.credential });
-const adminPrincipal = await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-versioned-password');
+await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-versioned-password');
+const adminSession = await service.login({ employeeId: '0000', password: 'admin-versioned-password' });
+const adminPrincipal = adminSession.principal;
 async function employee(employeeId: string, displayName: string) {
   const created = await service.createUser(adminPrincipal, { employeeId, displayName, role: 'employee' });
   const login = await service.login({ employeeId, password: created.credential });
   await service.changeOwnPassword(login.principal, created.credential, `${employeeId}-versioned-password`);
-  return { principal: login.principal, cookie: sessionCookie(login.token).split(';', 1)[0] };
+  const authenticated = await service.login({ employeeId, password: `${employeeId}-versioned-password` });
+  return { principal: authenticated.principal, cookie: sessionCookie(authenticated.token).split(';', 1)[0] };
 }
-const adminCookie = sessionCookie(adminLogin.token).split(';', 1)[0];
+const adminCookie = sessionCookie(adminSession.token).split(';', 1)[0];
 const userA = await employee('0001', '员工甲');
 const userB = await employee('0002', '员工乙');
 const publicRoute = await import('../app/api/team/public-resources/route.ts');
@@ -202,8 +205,6 @@ try {
   }
   const currentCatalogs = await catalogsRoute.GET(request('/api/script-studio/catalogs', userA.cookie));
   const currentBody = await currentCatalogs.json() as { catalogs: Array<{ kind: string; current: { id: string } }> };
-  const { findTeamVersionedRoot } = await import('../lib/script-studio/team-publications.ts');
-  if (!currentBody.catalogs.find((item) => item.kind === 'strategy')?.current) console.error('CURRENT_DEBUG', currentBody, db.prepare('SELECT * FROM script_studio_team_publications').all(), db.prepare("SELECT resourceType, resourceId, visibility, ownerUserId FROM team_resource_scopes WHERE resourceType IN ('script_catalog', 'script_catalog_revision')").all(), findTeamVersionedRoot(db, 'strategy'));
   assert.equal(currentBody.catalogs.find((item) => item.kind === 'strategy')?.current.id, imported.strategy.revisionId);
   assert.equal(currentBody.catalogs.find((item) => item.kind === 'template')?.current.id, imported.template.revisionId);
   const entries = await viralEntriesRoute.GET(request('/api/script-studio/viral-templates/entries?q=V1', userB.cookie));

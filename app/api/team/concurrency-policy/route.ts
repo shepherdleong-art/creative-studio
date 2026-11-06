@@ -25,10 +25,11 @@ async function __teamRoutePATCH(request: Request): Promise<Response> {
     const body = await request.json() as Record<string, unknown>;
     if (!Number.isSafeInteger(body.manualDefaultConcurrency) || Number(body.manualDefaultConcurrency) < 0
       || !Number.isSafeInteger(body.expectedVersion) || Number(body.expectedVersion) < 0
-      || (body.mode !== undefined && body.mode !== 'manual')) {
-      throw new TeamUsageError(400, 'invalid_policy', '团队手动默认并发和策略版本必须是非负安全整数；本版本仅支持手动模式。');
+      || (body.mode !== undefined && body.mode !== 'manual' && body.mode !== 'auto')) {
+      throw new TeamUsageError(400, 'invalid_policy', '自动／手动模式、团队手动默认并发和策略版本无效。');
     }
     return Response.json(updateTeamConcurrencyPolicy(getDb(), {
+      mode: body.mode as 'auto' | 'manual' | undefined,
       manualDefaultConcurrency: Number(body.manualDefaultConcurrency),
       expectedVersion: Number(body.expectedVersion),
     }), { headers: { 'Cache-Control': 'no-store' } });

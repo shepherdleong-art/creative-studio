@@ -410,7 +410,7 @@ async function runAuthorizedJob(
     }
 
     const providerSnapshot = {
-      providerId: provider.id, type: providerType, model: job.model, baseUrl: provider.baseUrl,
+      providerId: provider.id, providerName: provider.name, type: providerType, model: job.model, baseUrl: provider.baseUrl,
     };
     assertLegacyMediaProviderRecovery({
       module: 'image', taskId: job.id,

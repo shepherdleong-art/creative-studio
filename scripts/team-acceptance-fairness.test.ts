@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import type { EnqueueInput } from '../lib/media-core/execution/context.ts';
+import type { AdmitResult, EnqueueInput, ExecutionGrant } from '../lib/media-core/execution/context.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-team-acceptance-fairness-'));
 const previousEnv = { ...process.env };
@@ -46,7 +46,7 @@ try {
   let fakeTransportCalls = 0;
   let maxHeldRemotePermits = 0;
   function operation(actorId: string, round: number): EnqueueInput {
-    const moduleName = modules[users.indexOf(actorId) % modules.length];
+    const moduleName = modules[Math.max(0, users.indexOf(actorId)) % modules.length];
     const taskId = `${actorId}-round-${round}`;
     return {
       operationKey: `${moduleName}/${taskId}/submit/r1`, actor: { userId: actorId },
@@ -64,7 +64,7 @@ try {
     for (const actorId of users) runtime.facade.enqueue(operation(actorId, round));
     for (const expectedActor of users) {
       const started = performance.now();
-      const admitted = runtime.facade.admit(identity);
+      const admitted: AdmitResult = runtime.facade.admit(identity);
       admissionMs.push(performance.now() - started);
       assert.equal(admitted.kind, 'admitted');
       if (admitted.kind !== 'admitted') throw new Error('必须获得准入');
@@ -94,6 +94,68 @@ try {
   assert.equal(fakeTransportCalls, 40);
   assert.equal(maxHeldRemotePermits, 1);
   assert.equal(journal.verify().valid, true);
+
+  const { updateTeamConcurrencyPolicy, readTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+  updateTeamConcurrencyPolicy(db, { mode: 'auto', manualDefaultConcurrency: 1, expectedVersion: readTeamConcurrencyPolicy(db).version });
+  upsertExecutionPool(db, {
+    poolKey: 'shared', kind: 'remote', capacity: 10, enabled: true,
+    mappingSnapshot: { providerId: 'fake-provider' }, expectedVersion: 1,
+  });
+  for (const actorId of ['auto-a', 'auto-b']) updateActorPolicy(db, {
+    actorId, monthlyLimitMinor: null, personalConcurrency: 0, concurrencyMode: 'inherit', paused: false, expectedVersion: 0,
+  });
+  const borrowed: ExecutionGrant[] = [];
+  for (let index = 0; index < 10; index += 1) {
+    const queued = runtime.facade.enqueue(operation('auto-a', index + 1));
+    const admitted: AdmitResult = runtime.facade.admit({ ...identity, operationId: queued.operation.id });
+    assert.equal(admitted.kind, 'admitted', '唯一有需求的成员可以借满十个空闲名额');
+    if (admitted.kind === 'admitted') borrowed.push(admitted.grant);
+  }
+  const newcomer = runtime.facade.enqueue(operation('auto-b', 1));
+  const firstRelease = borrowed.shift()!;
+  const firstIntent = await runtime.facade.markSubmitting({ grant: firstRelease, requestSnapshot: { fixture: true } });
+  await runtime.facade.settle({ attemptId: firstIntent.attemptId, outcome: 'succeeded', actualCost: { currency: 'CNY', minor: 0 }, remoteTerminal: true });
+  const fairNewcomer = runtime.facade.admit({ ...identity, operationId: newcomer.operation.id });
+  assert.equal(fairNewcomer.kind, 'admitted', '后来者获得释放名额，不取消先入者的其他请求');
+  if (fairNewcomer.kind === 'admitted') assert.equal(fairNewcomer.grant.operation.actorId, 'auto-b');
+  const waitingBorrower = runtime.facade.enqueue(operation('auto-a', 11));
+  assert.deepEqual(runtime.facade.admit({ ...identity, operationId: waitingBorrower.operation.id }), {
+    kind: 'deferred', reasons: ['pool_capacity'],
+  }, '两人持续竞争时先借满者不能继续占用所有后续名额；池满如实报告共享容量等待');
+
+  const remainingBorrowers = [...borrowed];
+  if (fairNewcomer.kind === 'admitted') remainingBorrowers.push(fairNewcomer.grant);
+  for (const grant of remainingBorrowers) {
+    const intent = await runtime.facade.markSubmitting({ grant, requestSnapshot: { fixture: true } });
+    await runtime.facade.settle({ attemptId: intent.attemptId, outcome: 'succeeded', actualCost: { currency: 'CNY', minor: 0 }, remoteTerminal: true });
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE poolKey='shared' AND state='held'").pluck().get(), 0);
+  for (const actorId of users) {
+    runtime.facade.enqueue(operation(actorId, 100));
+    runtime.facade.enqueue(operation(actorId, 200));
+  }
+  const rotating: ExecutionGrant[] = [];
+  for (let index = 0; index < 10; index += 1) {
+    const admitted: AdmitResult = runtime.facade.admit(identity);
+    assert.equal(admitted.kind, 'admitted', '容量小于人数时每轮仍至少准入一人');
+    if (admitted.kind === 'admitted') {
+      assert.equal(admitted.grant.operation.actorId, users[index], '自动模式保留同一公平轮转顺序');
+      rotating.push(admitted.grant);
+    }
+  }
+  assert.deepEqual(runtime.facade.admit(identity), { kind: 'deferred', reasons: ['pool_capacity'] }, '真实容量耗尽后正常等待，而不是用零份额停滞');
+  assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE poolKey='shared' AND state='held'").pluck().get(), 10, '多人竞争仍不得超过共享池真实容量');
+  for (let index = 0; index < 10; index += 1) {
+    const grant = rotating[index];
+    const intent = await runtime.facade.markSubmitting({ grant, requestSnapshot: { fixture: true } });
+    await runtime.facade.transmit(intent, async () => ({ remoteId: `auto-${intent.attemptId}` }));
+    await runtime.facade.settle({ attemptId: intent.attemptId, outcome: 'succeeded', actualCost: { currency: 'CNY', minor: 0 }, remoteTerminal: true });
+    const successor: AdmitResult = runtime.facade.admit(identity);
+    assert.equal(successor.kind, 'admitted', '每次释放后等待成员必须继续准入');
+    if (successor.kind === 'admitted') assert.equal(successor.grant.operation.actorId, users[10 + index], '后半组成员按公平顺序获得释放名额');
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) FROM execution_actor_policies WHERE actorId='new-user-without-work'").pluck().get(), 0, '无登录或无工作成员不产生需求或预留');
+
   const sorted = [...admissionMs].sort((a, b) => a - b);
   const pick = (ratio: number) => sorted[Math.ceil(sorted.length * ratio) - 1];
   const result = {

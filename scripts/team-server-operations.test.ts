@@ -61,6 +61,10 @@ test('status 需要本机控制凭据并返回实例、PID 和生命周期证据
   assert.deepEqual(body, {
     deploymentId: 'studio-prod', instanceId: 'instance-a', pid: 456,
     ready: true, maintenance: false, phase: 'ready', fence: 7,
+    modules: {
+      batch: true, batchWorkerRunning: false, canvas: false,
+      scriptStudio: true, scriptStudioScheduler: false, scriptStudioWorkerRunning: false,
+    },
   });
   assert.equal(JSON.stringify(body).includes(context.token), false);
 });

@@ -36,9 +36,9 @@ try {
     $app = $raw | ConvertFrom-Json
     if (-not $app.stopped) { throw '应用仍有残留进程，未继续停止依赖服务' }
 
-    # Dependency order: app helper -> CreativeStudioLiteLLM -> CreativeStudioCaddy (role equivalents).
+    # app 停止后才回收独立维护 worker；升级作业不依赖已停止的 app 进程。
     $stopped = @()
-    foreach ($role in @('litellm', 'caddy')) {
+    foreach ($role in @('litellm', 'maintenance', 'caddy')) {
         $service = @($resolved.services | Where-Object { $_.role -eq $role } | Select-Object -First 1)
         if ($service.Count -eq 0) { continue }
         $id = [string]$service[0].id

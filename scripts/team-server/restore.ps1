@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ConfigPath,
     [string]$DeploymentId = '',
     [Parameter(Mandatory = $true)][string]$BackupId,
-    [Parameter(Mandatory = $true)][ValidateSet('daily', 'manual', 'pre-upgrade')][string]$BackupType,
+    [Parameter(Mandatory = $true)][ValidateSet('daily', 'manual', 'pre-upgrade', 'pre-restore')][string]$BackupType,
     [Parameter(Mandatory = $true)][string]$RestoreRoot,
     [switch]$Apply
 )
