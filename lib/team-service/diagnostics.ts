@@ -102,6 +102,7 @@ interface ExecutionAssociation {
   clientVersion: string | null;
   serverReleaseId: string | null;
   currentAttemptId: string | null;
+  attemptId?: string | null;
 }
 
 const STAGE_MESSAGES: Record<TeamErrorStage, string> = {
