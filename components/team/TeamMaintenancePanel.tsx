@@ -5,10 +5,11 @@ import { teamError, teamWrite } from './client';
 import TeamRestorePanel, { type RestoreActivity, type RestoreJob } from './TeamRestorePanel';
 import TeamCleanupPanel from './TeamCleanupPanel';
 
-type Job = RestoreJob & {
+export type Job = RestoreJob & {
   stage: string; progress: number | null;
   startedAt: string | null; finishedAt: string | null;
-  result?: (RestoreJob['result'] & { backupId?: string; verifiedAt?: string; totalBytes?: number; previewId?: string; deletedCount?: number; freedBytes?: number;
+  target: { kind: string; previewId?: string };
+  result?: (RestoreJob['result'] & { backupId?: string; verifiedAt?: string; totalBytes?: number; previewId?: string; deletedCount?: number; deletedFileCount?: number; freedBytes?: number;
     skipped?: Array<{ id: string; label?: string; reasonCode: string; reason: string }>;
     failures?: Array<{ id: string; label?: string; reasonCode: string; reason: string; error?: string }> }) | null;
   integrity?: 'ok' | 'audit_corrupt'; message?: string;
