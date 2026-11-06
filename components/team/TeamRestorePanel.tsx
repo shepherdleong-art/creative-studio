@@ -22,6 +22,7 @@ export type RestoreActivity = {
   recovery?: { preRestoreBackupId: string; path: string; message: string } | null;
 };
 const time = (value: string) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
+const backupTypeLabels: Record<string, string> = { daily: '每日', manual: '手动', 'pre-upgrade': '升级前', 'pre-restore': '还原前' };
 
 export default function TeamRestorePanel({ backups, jobs, activity, busy, onRefresh }: {
   backups: RestoreBackup[]; jobs: RestoreJob[]; activity: RestoreActivity; busy: boolean;
@@ -76,7 +77,7 @@ export default function TeamRestorePanel({ backups, jobs, activity, busy, onRefr
       onChange={(event) => { setSelected(event.target.value); setAcknowledged(false); setIdempotency(null); }}>
       <option value="">请选择还原点</option>
       {backups.filter((item) => item.restorable).map((item) => <option key={`${item.type}/${item.id}`} value={`${item.type}/${item.id}`}>
-        {time(item.createdAt)} · {item.type} · {item.id}
+        {time(item.createdAt)} · {backupTypeLabels[item.type] ?? item.type} · {item.id}
       </option>)}
     </select>
     {backup && <div className="mt-3 rounded-xl border border-hairline p-4 text-sm leading-6 text-ink-secondary">
