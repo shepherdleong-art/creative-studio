@@ -280,6 +280,7 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/errors/[id]/diagnostics': 'GET',
   '/api/team/members': 'GET',
   '/api/team/members/[id]/policy': 'GET PATCH',
+  '/api/team/concurrency-policy': 'GET PATCH',
   '/api/team/tasks': 'GET',
   '/api/team/usage': 'GET',
   '/api/team/usage/export': 'GET',
@@ -334,6 +335,7 @@ const ADMIN = new Set([
   '/api/team/maintenance/barriers POST', '/api/team/maintenance/barriers/[id] DELETE',
   '/api/team/backup-pins POST', '/api/team/backup-pins/[id] DELETE',
   '/api/team/members GET', '/api/team/members/[id]/policy PATCH', '/api/team/usage/export GET',
+  '/api/team/concurrency-policy GET', '/api/team/concurrency-policy PATCH',
   '/api/team/pools GET', '/api/team/pools POST',
 ]);
 const SERVER_DISABLED = new Set([
