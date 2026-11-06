@@ -211,7 +211,7 @@ try {
       ['/team/admin/operations', '备份与维护'], ['/team/recycle-bin', '回收站'], ['/team/admin/pools', '资源池与共享预算'],
       ['/team/admin/resources', '公共资源发布'],
     ]) {
-      const response = await adminPage.goto(`${baseUrl}${route}`, { waitUntil: 'networkidle', timeout: 60_000 });
+      const response = await adminPage.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
       assert.equal(response.status(), 200);
       await adminPage.getByRole('heading', { name: heading, exact: true }).waitFor();
       for (const theme of ['light', 'dark']) {

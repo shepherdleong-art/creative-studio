@@ -12,7 +12,8 @@ export interface ActorPolicy {
   personalConcurrency: number;
   concurrencyMode: ActorConcurrencyMode;
   concurrencySource: ActorConcurrencySource;
-  effectiveConcurrency: number;
+  /** null means demand-driven automatic fairness, never unlimited shared-pool capacity. */
+  effectiveConcurrency: number | null;
   paused: boolean;
   allowedModels: string[] | null;
   timezone: 'Asia/Shanghai';
@@ -81,7 +82,9 @@ export function readActorPolicy(db: Database.Database, actorId: string): ActorPo
     personalConcurrency,
     concurrencyMode: mode,
     concurrencySource: mode === 'inherit' ? 'team_default' : mode === 'fixed' ? 'personal_fixed' : 'legacy_fixed',
-    effectiveConcurrency: mode === 'inherit' ? teamDefault.manualDefaultConcurrency : personalConcurrency,
+    effectiveConcurrency: mode === 'inherit'
+    ? teamDefault.mode === 'auto' ? null : teamDefault.manualDefaultConcurrency
+    : personalConcurrency,
   };
 }
 

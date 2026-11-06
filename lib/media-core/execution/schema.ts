@@ -208,6 +208,49 @@ export const EXECUTION_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = [
         CHECK(concurrencyMode IS NULL OR concurrencyMode IN ('inherit', 'fixed'));
     `,
   },
+  {
+    version: 7,
+    // Ticket 04: extend the policy CHECK without modifying v6, migrate only
+    // legacy NULL sources once, and retain the old limit for audit.
+    sql: `
+      CREATE TABLE execution_team_concurrency_policy_v7 (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        mode TEXT NOT NULL CHECK(mode IN ('manual', 'auto')),
+        manualDefaultConcurrency INTEGER NOT NULL CHECK(manualDefaultConcurrency >= 0),
+        version INTEGER NOT NULL CHECK(version > 0),
+        updatedAt TEXT NOT NULL
+      );
+      INSERT INTO execution_team_concurrency_policy_v7
+        SELECT id, mode, manualDefaultConcurrency, version, updatedAt
+        FROM execution_team_concurrency_policy;
+      DROP TABLE execution_team_concurrency_policy;
+      ALTER TABLE execution_team_concurrency_policy_v7 RENAME TO execution_team_concurrency_policy;
+      INSERT INTO execution_team_concurrency_policy (id, mode, manualDefaultConcurrency, version, updatedAt)
+        SELECT 1, 'auto', 1, 1, CURRENT_TIMESTAMP
+        WHERE NOT EXISTS (SELECT 1 FROM execution_team_concurrency_policy WHERE id = 1)
+          AND EXISTS (SELECT 1 FROM execution_actor_policies);
+      UPDATE execution_team_concurrency_policy
+        SET mode = 'auto', version = version + 1, updatedAt = CURRENT_TIMESTAMP
+        WHERE id = 1 AND mode = 'manual'
+          AND EXISTS (SELECT 1 FROM execution_actor_policies);
+
+      CREATE TABLE execution_actor_concurrency_migration_audit (
+        actorId TEXT PRIMARY KEY,
+        previousConcurrency INTEGER NOT NULL CHECK(previousConcurrency >= 0),
+        previousPolicyVersion INTEGER NOT NULL CHECK(previousPolicyVersion > 0),
+        migrationVersion INTEGER NOT NULL CHECK(migrationVersion = 7),
+        migratedAt TEXT NOT NULL
+      );
+      INSERT INTO execution_actor_concurrency_migration_audit (
+        actorId, previousConcurrency, previousPolicyVersion, migrationVersion, migratedAt
+      )
+        SELECT actorId, personalConcurrency, version, 7, CURRENT_TIMESTAMP
+        FROM execution_actor_policies WHERE concurrencyMode IS NULL;
+      UPDATE execution_actor_policies
+        SET concurrencyMode = 'inherit', version = version + 1, updatedAt = CURRENT_TIMESTAMP
+        WHERE concurrencyMode IS NULL;
+    `,
+  },
 ];
 
 export type ExecutionSchemaReadiness = VersionedSchemaReadiness;
@@ -253,6 +296,15 @@ function validateExecutionSchema(db: Database.Database): void {
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_team_concurrency_policy'").get()) {
       throw new Error('execution 缺少团队手动并发策略结构');
     }
+  }
+  if (schemaVersion >= 7) {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_actor_concurrency_migration_audit'").get()) {
+      throw new Error('execution 缺少旧个人并发迁移审计');
+    }
+    const modeSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'execution_team_concurrency_policy'").pluck().get() as string;
+    if (!modeSql.includes("'auto'")) throw new Error('execution 缺少团队自动并发模式');
+    const unMigrated = db.prepare('SELECT COUNT(*) FROM execution_actor_policies WHERE concurrencyMode IS NULL').pluck().get() as number;
+    if (unMigrated > 0) throw new Error('execution 旧个人固定并发尚未一次性迁移');
   }
 }
 

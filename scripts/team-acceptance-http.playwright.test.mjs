@@ -198,6 +198,8 @@ async function changePassword(session, currentPassword, newPassword) {
   await jsonRequest(session, '/api/team/auth/change-password', {
     method: 'POST', json: { currentPassword, newPassword },
   }, 200);
+  // Password changes revoke every previous session by contract; establish a fresh one.
+  return login(session.employeeId, newPassword);
 }
 function recordRequest(kind, started, status) {
   requests.push({ kind, status, durationMs: performance.now() - started });
@@ -443,10 +445,10 @@ try {
   let provider;
   let browserResultPath;
   let browserOutput = '';
-  const admin = await login('accept-admin', adminCredential);
+  const initialAdmin = await login('accept-admin', adminCredential);
   const adminPassword = `Accept-admin-${randomBytes(12).toString('base64url')}`;
   secrets.add(adminPassword);
-  await changePassword(admin, adminCredential, adminPassword);
+  const admin = await changePassword(initialAdmin, adminCredential, adminPassword);
   if (productionScenario) {
     result.production = await runProductionScenario({ root, admin, jsonRequest, request, stopServer, startServer,
       waitReady, enableSchedulers: () => { schedulersEnabled = true; }, makeMedia, sessions: [], projects: [] });
@@ -494,9 +496,9 @@ try {
     const session = await login(employeeId, credential);
     const password = `Accept-user-${randomBytes(12).toString('base64url')}`;
     secrets.add(password);
-    await changePassword(session, credential, password);
+    const activeSession = await changePassword(session, credential, password);
     passwordByEmployee.set(employeeId, password);
-    sessions.push(session);
+    sessions.push(activeSession);
   }
   assert.equal(new Set(sessions.map((session) => session.cookies[1])).size, users);
   assertions.push(`${users} 个员工分别经真实 HTTP 登录、改密并持有不同 session cookie`);
