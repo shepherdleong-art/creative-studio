@@ -263,7 +263,7 @@ export default function TemplateRewritePicker({
           {recommendations.length === 0 ? (
             <p className="rounded-[14px] bg-surface-subtle p-4 text-sm text-ink-tertiary">
               {usableCount === 0
-                ? '爆文模板库还是空的：请先到「设置 → 脚本知识与模板 → 爆文模板库」导入 .xlsx。'
+                ? '暂无团队发布的爆文模板，请联系管理员发布；你无需上传或导入公共版本。'
                 : `当前卖点库与模板库没有匹配项（库内共 ${usableCount} 个可用模板）。可用搜索查找其他模板，或勾选「类目不足时扩大搜索」。`}
             </p>
           ) : (

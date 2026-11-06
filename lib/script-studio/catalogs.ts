@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { managedResourceVisibility, registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { normalizeModelKey } from './catalog-import/normalize.ts';
+import { findTeamVersionedRoot } from './team-publications.ts';
 
 const TEMPLATE_ASSET_MIME: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -276,26 +277,41 @@ function toVisualHookTemplateView(record: VisualHookTemplateRecord, assetIds: st
   };
 }
 
-function findAccessibleCatalog(db: Database.Database, kind: CatalogKind): CatalogRecord | undefined {
+function findAccessibleCatalog(
+  db: Database.Database,
+  kind: CatalogKind,
+  options: { privateWrite?: boolean } = {},
+): CatalogRecord | undefined {
   const access = requireAccessContext();
   const records = db.prepare(`SELECT * FROM script_studio_catalogs WHERE kind = ? ORDER BY createdAt, id`)
     .all(kind) as CatalogRecord[];
   if (access.kind === 'local') return records[0];
-  let publicRecord: CatalogRecord | undefined;
+  if (options.privateWrite) return records.find((record) => record.ownerKey === access.actor.userId);
+  const team = findTeamVersionedRoot(db, kind);
+  if (team) {
+    const record = records.find((item) => item.id === team.rootId);
+    if (!record) return undefined;
+    access.assertAccess('script_catalog', record.id, 'read');
+    access.assertAccess('script_catalog_revision', team.revisionId!, 'read');
+    return record;
+  }
+  // v13 升级前的公共版本兼容：仅接受“已公开且正是根当前指针”的修订。
+  // 私人非空/空目录都不参与回退，避免遮住团队内容或提前公开上传内容。
   for (const record of records) {
+    if (!record.currentRevisionId) continue;
     try {
       access.assertAccess('script_catalog', record.id, 'read');
+      access.assertAccess('script_catalog_revision', record.currentRevisionId, 'read');
+      return record;
     } catch {
-      continue;
+      // 私人历史版本不属于公共读取。
     }
-    if (record.ownerKey === access.actor.userId) return record;
-    publicRecord ??= record;
   }
-  return publicRecord;
+  return undefined;
 }
 
 export function getOrCreateCatalog(db: Database.Database, kind: CatalogKind, now?: Date): CatalogRecord {
-  const existing = findAccessibleCatalog(db, kind);
+  const existing = findAccessibleCatalog(db, kind, { privateWrite: true });
   if (existing) return existing;
   const access = requireAccessContext();
   const ownerKey = access.kind === 'team' ? access.actor.userId : 'local';
@@ -355,7 +371,7 @@ export function createCatalogRevision(
 ): { revisionId: string; created: boolean } {
   const access = requireAccessContext();
   if (access.kind === 'team') access.assertAccess('script_catalog', input.catalogId, 'write');
-  const visibility = managedResourceVisibility('script_catalog', input.catalogId);
+  const visibility = access.kind === 'team' ? 'private' as const : managedResourceVisibility('script_catalog', input.catalogId);
   const existing = db.prepare(`SELECT id FROM script_studio_catalog_revisions WHERE catalogId = ? AND sourceSha256 = ?`)
     .get(input.catalogId, input.sourceSha256) as { id: string } | undefined;
   if (existing) {
@@ -462,11 +478,13 @@ export function setCatalogCurrentRevision(db: Database.Database, catalogId: stri
 }
 
 export function getCatalogCurrentRevisionId(db: Database.Database, kind: CatalogKind): string | null {
-  const catalog = findAccessibleCatalog(db, kind);
-  if (!catalog?.currentRevisionId) return null;
   const access = requireAccessContext();
-  if (access.kind === 'team') access.assertAccess('script_catalog_revision', catalog.currentRevisionId, 'read');
-  return catalog.currentRevisionId;
+  const catalog = findAccessibleCatalog(db, kind);
+  if (!catalog) return null;
+  const revisionId = access.kind === 'team' ? findTeamVersionedRoot(db, kind)?.revisionId ?? catalog.currentRevisionId : catalog.currentRevisionId;
+  if (!revisionId) return null;
+  if (access.kind === 'team') access.assertAccess('script_catalog_revision', revisionId, 'read');
+  return revisionId;
 }
 
 export function getCatalogRevision(db: Database.Database, revisionId: string): CatalogRevisionRecord | null {
@@ -478,10 +496,15 @@ export function getCatalogRevision(db: Database.Database, revisionId: string): C
   return record ?? null;
 }
 
+function kindOfCatalog(db: Database.Database, catalogId: string): CatalogKind {
+  return (db.prepare('SELECT kind FROM script_studio_catalogs WHERE id = ?').pluck().get(catalogId) as CatalogKind);
+}
+
 export function listCatalogRevisions(db: Database.Database, catalogId: string): Array<CatalogRevisionRecord & { current: boolean }> {
   const access = requireAccessContext();
   if (access.kind === 'team') access.assertAccess('script_catalog', catalogId, 'read');
-  const currentId = (db.prepare(`SELECT currentRevisionId FROM script_studio_catalogs WHERE id = ?`).get(catalogId) as { currentRevisionId: string | null }).currentRevisionId;
+  const team = access.kind === 'team' ? findTeamVersionedRoot(db, kindOfCatalog(db, catalogId)) : null;
+  const currentId = team?.rootId === catalogId ? team.revisionId : (db.prepare(`SELECT currentRevisionId FROM script_studio_catalogs WHERE id = ?`).get(catalogId) as { currentRevisionId: string | null }).currentRevisionId;
   const records = db.prepare(`
     SELECT * FROM script_studio_catalog_revisions WHERE catalogId = ? ORDER BY revisionNumber DESC
   `).all(catalogId) as Array<CatalogRevisionRecord & { current: boolean }>;
@@ -501,6 +524,9 @@ export function getCatalogRevisionView(db: Database.Database, revisionId: string
   const revision = getCatalogRevision(db, revisionId);
   if (!revision) return null;
   const catalog = db.prepare(`SELECT * FROM script_studio_catalogs WHERE id = ?`).get(revision.catalogId) as CatalogRecord;
+  const access = requireAccessContext();
+  const team = access.kind === 'team' ? findTeamVersionedRoot(db, catalog.kind) : null;
+  const current = team?.rootId === catalog.id ? team.revisionId === revisionId : catalog.currentRevisionId === revision.id;
   const strategyEntries = (db.prepare(`SELECT * FROM script_studio_strategy_entries WHERE revisionId = ? ORDER BY normalizedModelKey`).all(revisionId) as StrategyEntryRecord[]).map(toStrategyEntryView);
   const frameworkTemplates = (db.prepare(`SELECT * FROM script_studio_framework_templates WHERE revisionId = ? ORDER BY sourceRow`).all(revisionId) as FrameworkTemplateRecord[]).map(toFrameworkTemplateView);
   const copyHookTemplates = (db.prepare(`SELECT * FROM script_studio_copy_hook_templates WHERE revisionId = ? ORDER BY sourceRow`).all(revisionId) as CopyHookTemplateRecord[]).map(toCopyHookTemplateView);
@@ -517,7 +543,7 @@ export function getCatalogRevisionView(db: Database.Database, revisionId: string
     sourceSha256: revision.sourceSha256,
     importReport: parseJsonObject(revision.importReportJson),
     createdAt: revision.createdAt,
-    current: catalog.currentRevisionId === revision.id,
+    current,
     strategyEntries,
     frameworkTemplates,
     copyHookTemplates,
