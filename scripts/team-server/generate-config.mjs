@@ -321,7 +321,8 @@ function generate(config) {
       id: `${config.servicePrefix}Maintenance`, description: `Creative Studio controlled maintenance (${config.deploymentId})`,
       executable: nodeExe,
       startArguments: `${quoteArgument(path.join(appRoot, 'scripts', 'team-server', 'maintenance.mjs'))} worker --config ${quoteArgument(path.join(config.configRoot, 'maintenance-deployment.json'))}`,
-      workingDirectory: appRoot, account: config.serviceAccount, logPath: logs,
+      workingDirectory: appRoot, account: config.serviceAccount,
+      logPath: path.join(config.serviceRoot, 'logs', 'maintenance'),
     }),
     [`${config.servicePrefix}Caddy.xml`]: serviceXml({
       id: `${config.servicePrefix}Caddy`, description: `Creative Studio HTTPS ingress (${config.deploymentId})`,

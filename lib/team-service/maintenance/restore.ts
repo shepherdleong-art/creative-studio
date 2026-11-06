@@ -40,6 +40,7 @@ export interface RestoreTeamBackupOptions {
   restoreRoot: string;
   deploymentId: string;
   expectedReleaseId: string;
+  operationId?: string;
   currentDb?: Database.Database;
   currentJournalDirectory?: string;
   now?: () => Date;
@@ -128,7 +129,8 @@ export async function restoreTeamBackup(options: RestoreTeamBackupOptions) {
     throw new Error('恢复根与备份目录不得重叠');
   }
   assertNoSymlinkPath(path.dirname(restoreRoot));
-  const operationId = `restore-${manifest.backupId}-${randomUUID().slice(0, 8)}`;
+  if (options.operationId) safeMaintenanceId(options.operationId, 'operationId');
+  const operationId = options.operationId ?? `restore-${manifest.backupId}-${randomUUID().slice(0, 8)}`;
   const backupRoot = backupRootFor(backupDirectory);
   appendMaintenanceReceipt({
     backupRoot, deploymentId: options.deploymentId, kind: 'restore', operationId, phase: 'started',
