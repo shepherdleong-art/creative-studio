@@ -53,7 +53,8 @@ try {
     passwordParams: { N: 1024, r: 8, p: 1 },
   });
   const adminLogin = await service.login({ employeeId: '00001', password: firstCredential });
-  const admin = await service.changeOwnPassword(adminLogin.principal, firstCredential, 'bootstrap-admin-password');
+  await service.changeOwnPassword(adminLogin.principal, firstCredential, 'bootstrap-admin-password');
+  const admin = (await service.login({ employeeId: '00001', password: 'bootstrap-admin-password' })).principal;
   const second = await service.createUser(admin, {
     employeeId: '00002', displayName: '第二管理员', role: 'admin',
   });
