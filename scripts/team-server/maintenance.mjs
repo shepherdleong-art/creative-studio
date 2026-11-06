@@ -14,11 +14,11 @@ import { restoreTeamBackup } from '../../lib/team-service/maintenance/restore.ts
 import { runTeamRelease, rollbackTeamRelease, readTeamReleasePointer, switchTeamReleasePointerIdempotent } from '../../lib/team-service/maintenance/release.ts';
 import { acquireLifecycleBarrier, releaseLifecycleBarrier } from '../../lib/team-service/lifecycle/index.ts';
 import { createExecutionJournal } from '../../lib/media-core/execution/journal.ts';
-import { executeTeamRestoreOperation } from '../../lib/team-service/maintenance/restore-operation.ts';
-import { executeCleanupPreview } from '../../lib/team-service/maintenance/cleanup.ts';
 import { getTeamReleaseCandidateForExecution } from '../../lib/team-service/maintenance/release-candidates.ts';
 import { materializeTeamReleaseCandidate } from '../../lib/team-service/maintenance/release-install.ts';
 import { teamMaintenanceStateDirectory } from '../../lib/team-service/maintenance/state.ts';
+import { executeTeamRestoreOperation } from '../../lib/team-service/maintenance/restore-operation.ts';
+import { executeCleanupPreview } from '../../lib/team-service/maintenance/cleanup.ts';
 
 const args = process.argv.slice(2);
 const command = args[0];

@@ -170,7 +170,11 @@ try {
   const duplicateConfirmation = await confirmRoute.POST(request(`/api/team/maintenance/restores/${restoreJob.id}/confirm`, adminCookie, { password: 'admin-password' }), { params: Promise.resolve({ id: restoreJob.id }) });
   assert.equal(duplicateConfirmation.status, 409, '重复确认不能重新排队已确认切换');
   store.close();
-
+  const { MaintenanceJobStore: ReleaseStore } = await import('../lib/team-service/maintenance/jobs.ts');
+  const releaseStore = new ReleaseStore({ backupRoot, deploymentId: 'deployment-maintenance-routes' });
+  releaseStore.close();
+  const releaseList = await jobsRoute.GET(request('/api/team/maintenance/jobs', adminCookie));
+  assert.ok(Array.isArray((await releaseList.json()).jobs));
   const releasesRoute = await import('../app/api/team/maintenance/releases/route.ts');
   const releaseBody = {
     candidateId: 'a'.repeat(64), idempotencyKey: 'confirm-release-001',
@@ -187,8 +191,8 @@ try {
   const cleanupRoute = await import('../app/api/team/maintenance/cleanup/route.ts');
   const backupStore = new MaintenanceJobStore({ backupRoot, deploymentId: 'deployment-maintenance-routes' });
   const claimed = backupStore.claimNext({ workerId: 'backup-worker' });
-  assert.equal(claimed?.job.id, accepted.job.id);
-  backupStore.complete({ jobId: accepted.job.id, workerId: 'backup-worker', result: { backupId: 'test-only', verifiedAt: '2026-11-06', totalBytes: 0, type: 'manual' } });
+  assert.equal(claimed?.job.id, restoreJob.id, '还原确认后，公共队列应继续同一还原作业，不能重新领取已完成备份');
+  backupStore.complete({ jobId: restoreJob.id, workerId: 'backup-worker', result: { status: 'reconciled', scheduling: false } });
   backupStore.close();
   fs.mkdirSync(path.join(deploymentRoot, 'config'), { recursive: true });
   fs.writeFileSync(path.join(deploymentRoot, 'config', 'maintenance-deployment.json'), JSON.stringify({ dataRoot, oldRoots: [path.join(fixture, 'retained-root')] }));
@@ -258,12 +262,12 @@ try {
   setTeamAuthServiceForTests(null);
   closeDb();
   // Windows 上 SQLite WAL 文件可能在连接关闭后仍被短暂锁定，等待并重试清理。
-  await new Promise(resolve => setTimeout(resolve, 100));
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  await new Promise(resolve => setTimeout(resolve, 250));
+  for (let attempt = 0; attempt < 20; attempt += 1) {
     try { fs.rmSync(fixture, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 }); break; }
     catch (error) {
-      if (attempt === 4) throw error;
-      await new Promise(resolve => setTimeout(resolve, 200 * (attempt + 1)));
+      if (attempt === 19) throw error;
+      await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
     }
   }
   process.env = previousEnv;

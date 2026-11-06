@@ -6,9 +6,9 @@ import TeamRestorePanel, { type RestoreActivity, type RestoreJob } from './TeamR
 import TeamCleanupPanel from './TeamCleanupPanel';
 
 export type Job = RestoreJob & {
+  target: { kind: string; previewId?: string };
   stage: string; progress: number | null;
   startedAt: string | null; finishedAt: string | null;
-  target: { kind: string; previewId?: string };
   result?: (RestoreJob['result'] & { backupId?: string; verifiedAt?: string; totalBytes?: number; previewId?: string; deletedCount?: number; deletedFileCount?: number; freedBytes?: number;
     skipped?: Array<{ id: string; label?: string; reasonCode: string; reason: string }>;
     failures?: Array<{ id: string; label?: string; reasonCode: string; reason: string; error?: string }> }) | null;

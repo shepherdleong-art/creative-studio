@@ -30,6 +30,38 @@ export function submitMaintenanceJob(input: {
   } finally { store.close(); }
 }
 
+export async function submitTeamReleaseExecution(input: {
+  principal: AuthPrincipal; candidateId: string; idempotencyKey: string;
+  confirmation: { expectedReleaseId: string; targetAppVersion: string; impactAcknowledged: true };
+}) {
+  const { store } = control();
+  try {
+    const existing = store.list(100).jobs.find((job) => job.action === 'release.execute'
+      && job.target.kind === 'release' && job.target.candidateId === input.candidateId
+      && ['queued', 'running'].includes(job.status));
+    if (existing) {
+      if (existing.requestedBy.userId !== input.principal.userId) throw new MaintenanceControlError('maintenance_conflict', '另一管理员的升级正在执行。');
+      return { job: existing, created: false };
+    }
+    const { readCurrentTeamReleaseVersion } = await import('../release-candidates.ts');
+    const { readTeamReleaseCandidate } = await import('./release-candidates.ts');
+    const { teamReleaseCandidateRoot } = await import('../release-candidates.ts');
+    const { assertFixtureReleaseUploadAllowed } = await import('../release-candidates.ts');
+    const current = await readCurrentTeamReleaseVersion();
+    const candidate = await readTeamReleaseCandidate(
+      teamReleaseCandidateRoot(), input.candidateId, current, assertFixtureReleaseUploadAllowed(),
+    );
+    if (candidate.status !== 'ready' || candidate.target.appVersion !== input.confirmation.targetAppVersion
+      || current.releaseId !== input.confirmation.expectedReleaseId) {
+      throw new MaintenanceControlError('release_confirmation_changed', '当前版本或目标版本已变化，请刷新并重新确认影响。');
+    }
+    return store.submit({
+      action: 'release.execute', target: { kind: 'release', candidateId: candidate.candidateId },
+      principal: principalForMaintenance(input.principal), idempotencyKey: input.idempotencyKey, retryRelease: true,
+    });
+  } finally { store.close(); }
+}
+
 export function holdProductionForRestore(principal: AuthPrincipal, jobId: string) {
   principalForMaintenance(principal);
   getDb().prepare(`UPDATE team_service_state SET maintenance = 1, reason = ?, productionPaused = 1,
@@ -79,38 +111,6 @@ function publicMaintenanceJob(job: import('./jobs.ts').MaintenanceJob) {
       message: activity.recovery?.message,
     },
   } } };
-}
-
-export async function submitTeamReleaseExecution(input: {
-  principal: AuthPrincipal; candidateId: string; idempotencyKey: string;
-  confirmation: { expectedReleaseId: string; targetAppVersion: string; impactAcknowledged: true };
-}) {
-  const { store } = control();
-  try {
-    const existing = store.list(100).jobs.find((job) => job.action === 'release.execute'
-      && job.target.kind === 'release' && job.target.candidateId === input.candidateId
-      && ['queued', 'running'].includes(job.status));
-    if (existing) {
-      if (existing.requestedBy.userId !== input.principal.userId) throw new MaintenanceControlError('maintenance_conflict', '另一管理员的升级正在执行。');
-      return { job: existing, created: false };
-    }
-    const { readCurrentTeamReleaseVersion } = await import('../release-candidates.ts');
-    const { readTeamReleaseCandidate } = await import('./release-candidates.ts');
-    const { teamReleaseCandidateRoot } = await import('../release-candidates.ts');
-    const { assertFixtureReleaseUploadAllowed } = await import('../release-candidates.ts');
-    const current = await readCurrentTeamReleaseVersion();
-    const candidate = await readTeamReleaseCandidate(
-      teamReleaseCandidateRoot(), input.candidateId, current, assertFixtureReleaseUploadAllowed(),
-    );
-    if (candidate.status !== 'ready' || candidate.target.appVersion !== input.confirmation.targetAppVersion
-      || current.releaseId !== input.confirmation.expectedReleaseId) {
-      throw new MaintenanceControlError('release_confirmation_changed', '当前版本或目标版本已变化，请刷新并重新确认影响。');
-    }
-    return store.submit({
-      action: 'release.execute', target: { kind: 'release', candidateId: candidate.candidateId },
-      principal: principalForMaintenance(input.principal), idempotencyKey: input.idempotencyKey, retryRelease: true,
-    });
-  } finally { store.close(); }
 }
 
 export function getMaintenanceJob(id: string) {

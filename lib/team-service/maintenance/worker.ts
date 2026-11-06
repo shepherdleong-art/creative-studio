@@ -60,13 +60,13 @@ export async function runMaintenanceWorker(options: {
   configPath: string; jobId?: string;
   makeBackup: (params: { job: MaintenanceJob; backupId: string; onStage: (stage: 'snapshotting' | 'copying_media' | 'verifying') => void }) =>
     Promise<{ backupId: string; type: string; verifiedAt: string; totalBytes: number }>;
-  makeRestore?: (params: { job: MaintenanceJob; onStage: (stage: import('./restore-operation.ts').RestoreStage) => void }) =>
-    Promise<{ awaitingConfirmation: boolean; [key: string]: unknown }>;
-  executeCleanup?: (job: MaintenanceJob) => Promise<Record<string, unknown>>;
   executeRelease?: (params: {
     job: MaintenanceJob; workerId: string;
     onStage: (stage: Extract<MaintenanceJob['stage'], 'preflight' | 'maintenance' | 'drain' | 'capture' | 'stop' | 'backup' | 'switch' | 'start_maintenance' | 'migrate' | 'self_check' | 'resume'>) => void;
   }) => Promise<Record<string, unknown>>;
+  makeRestore?: (params: { job: MaintenanceJob; onStage: (stage: import('./restore-operation.ts').RestoreStage) => void }) =>
+    Promise<{ awaitingConfirmation: boolean; [key: string]: unknown }>;
+  executeCleanup?: (job: MaintenanceJob) => Promise<Record<string, unknown>>;
   once?: boolean; pollIntervalMs?: number;
 }): Promise<void> {
   // deployment config 已在应用外解析，worker 不接受任意配置、路径或命令。
@@ -99,7 +99,60 @@ export async function runMaintenanceWorker(options: {
       }
       try {
         if (claimed) {
-          if (claimed.job.action === 'restore.execute') {
+          if (claimed.job.action === 'release.execute' && claimed.job.target.kind === 'release') {
+            const stateFile = path.join(config.backupRoot, 'maintenance-control', 'release-state', config.deploymentId, `${claimed.job.id}.json`);
+            let state: { status?: string } | null = null;
+            if (fs.existsSync(stateFile)) {
+              try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as { status?: string }; }
+              catch { throw new MaintenanceControlError('release_state_corrupt', '升级持久状态损坏，请核查，拒绝自动重跑。'); }
+            }
+            if (state?.status === 'failed') {
+              // A crash leaves no terminal state and resumes. An explicit failure keeps its failed
+              // audit result rather than silently becoming a success or starting another operation.
+              store.failWithResult({
+                jobId: claimed.job.id, workerId, code: 'release_failed', result: state as unknown as Record<string, unknown>,
+                message: '升级未恢复生产；请查看持久失败阶段、实际版本与兼容条件后按受控流程处理。',
+              });
+              continue;
+            }
+            if (!options.executeRelease) throw new Error('未配置受控升级执行器，保持维护作业待核查');
+            const heartbeat = setInterval(() => {
+              try {
+                const current = store.get(claimed.job.id).job;
+                if (current.status === 'running' && current.leaseOwner === workerId) {
+                  store.updateStage({ jobId: claimed.job.id, workerId, stage: current.stage, leaseMs: 120_000 });
+                }
+              } catch { /* the next durable stage/lease takeover determines the visible result */ }
+            }, 15_000);
+            heartbeat.unref();
+            try {
+              const result = await options.executeRelease({
+                ...claimed, workerId,
+                onStage: (stage) => store.updateStage({ jobId: claimed.job.id, workerId, stage, leaseMs: 120_000 }),
+              });
+              store.complete({ jobId: claimed.job.id, workerId, result });
+            } catch (error) {
+              const current = store.get(claimed.job.id).job;
+              if (current.status === 'running' && current.leaseOwner === workerId) {
+                let failureEvidence: Record<string, unknown> | undefined;
+                if (fs.existsSync(stateFile)) {
+                  try {
+                    const persisted = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as Record<string, unknown>;
+                    if (persisted.status === 'failed') failureEvidence = persisted;
+                  } catch {
+                    // 损坏状态由下一次受控核查拒绝；失败作业仍保留原错误，不伪造版本。
+                  }
+                }
+                const failure = {
+                  jobId: claimed.job.id, workerId, code: 'release_failed',
+                  message: error instanceof Error ? error.message.slice(0, 500) : '升级失败，保持维护状态，请按失败阶段继续处理。',
+                };
+                if (failureEvidence) store.failWithResult({ ...failure, result: failureEvidence });
+                else store.fail(failure);
+              }
+              throw error;
+            } finally { clearInterval(heartbeat); }
+          } else if (claimed.job.action === 'restore.execute') {
             if (!options.makeRestore) throw new Error('还原执行器未配置，保持原业务不变');
             try {
               let lastLeaseRenewal = Date.now();
@@ -153,63 +206,8 @@ export async function runMaintenanceWorker(options: {
               }
               throw error;
             } finally { clearInterval(heartbeat); }
-          } else if (claimed.job.action === 'release.execute' && claimed.job.target.kind === 'release') {
-            const stateFile = path.join(config.backupRoot, 'maintenance-control', 'release-state', config.deploymentId, `${claimed.job.id}.json`);
-            let state: { status?: string } | null = null;
-            if (fs.existsSync(stateFile)) {
-              try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as { status?: string }; }
-              catch { throw new MaintenanceControlError('release_state_corrupt', '升级持久状态损坏，请核查，拒绝自动重跑。'); }
-            }
-            if (state?.status === 'failed') {
-              // A crash leaves no terminal state and resumes. An explicit failure keeps its failed
-              // audit result rather than silently becoming a success or starting another operation.
-              store.failWithResult({
-                jobId: claimed.job.id, workerId, code: 'release_failed', result: state as unknown as Record<string, unknown>,
-                message: '升级未恢复生产；请查看持久失败阶段、实际版本与兼容条件后按受控流程处理。',
-              });
-              continue;
-            }
-            if (!options.executeRelease) throw new Error('未配置受控升级执行器，保持维护作业待核查');
-            const heartbeat = setInterval(() => {
-              try {
-                const current = store.get(claimed.job.id).job;
-                if (current.status === 'running' && current.leaseOwner === workerId) {
-                  store.updateStage({ jobId: claimed.job.id, workerId, stage: current.stage, leaseMs: 120_000 });
-                }
-              } catch { /* the next durable stage/lease takeover determines the visible result */ }
-            }, 15_000);
-            heartbeat.unref();
-            try {
-              const result = await options.executeRelease({
-                ...claimed, workerId,
-                onStage: (stage) => store.updateStage({ jobId: claimed.job.id, workerId, stage, leaseMs: 120_000 }),
-              });
-              store.complete({ jobId: claimed.job.id, workerId, result });
-            } catch (error) {
-              const current = store.get(claimed.job.id).job;
-              if (current.status === 'running' && current.leaseOwner === workerId) {
-                let failureEvidence: Record<string, unknown> | undefined;
-                if (fs.existsSync(stateFile)) {
-                  try {
-                    const persisted = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as Record<string, unknown>;
-                    if (persisted.status === 'failed') failureEvidence = persisted;
-                  } catch {
-                    // 损坏状态由下一次受控核查拒绝；失败作业仍保留原错误，不伪造版本。
-                  }
-                }
-                const failure = {
-                  jobId: claimed.job.id, workerId, code: 'release_failed',
-                  message: error instanceof Error ? error.message.slice(0, 500) : '升级失败，保持维护状态，请按失败阶段继续处理。',
-                };
-                if (failureEvidence) store.failWithResult({ ...failure, result: failureEvidence });
-                else store.fail(failure);
-              }
-              throw error;
-            } finally { clearInterval(heartbeat); }
-          } else {
-            await executeClaimedBackupJob({ ...claimed, workerId, store, configPath: options.configPath, deploymentId: config.deploymentId,
-              makeBackup: (params) => options.makeBackup({ ...params, job: claimed.job }) });
-          }
+          } else await executeClaimedBackupJob({ ...claimed, workerId, store, configPath: options.configPath, deploymentId: config.deploymentId,
+            makeBackup: (params) => options.makeBackup({ ...params, job: claimed.job }) });
         }
       } finally { lock?.release(); lock = null; }
       if (options.once) return;

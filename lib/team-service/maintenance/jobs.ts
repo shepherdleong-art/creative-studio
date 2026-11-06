@@ -28,7 +28,8 @@ export interface MaintenanceJob {
   action: MaintenanceAction;
   target: MaintenanceTarget;
   status: MaintenanceJobStatus;
-  stage: 'queued' | 'starting' | 'snapshotting' | 'copying_media' | 'verifying' | 'awaiting_confirmation' | 'cutting_over' | 'finishing' | 'completed' | 'failed'
+  stage: 'queued' | 'starting' | 'snapshotting' | 'copying_media' | 'verifying'
+    | 'awaiting_confirmation' | 'cutting_over' | 'finishing' | 'completed' | 'failed'
     | 'preflight' | 'maintenance' | 'drain' | 'capture' | 'stop' | 'backup'
     | 'switch' | 'start_maintenance' | 'migrate' | 'self_check' | 'resume';
   progress: number | null;
