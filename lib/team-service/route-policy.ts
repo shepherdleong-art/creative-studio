@@ -282,6 +282,7 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/errors': 'GET',
   '/api/team/errors/report': 'POST',
   '/api/team/errors/[id]/diagnostics': 'GET',
+  '/api/team/errors/[id]/task': 'GET',
   '/api/team/members': 'GET',
   '/api/team/members/[id]/policy': 'GET PATCH',
   '/api/team/concurrency-policy': 'GET PATCH',
@@ -323,6 +324,7 @@ const AUTHENTICATED = new Set([
   '/api/team/uploads/[id]/parts/[part] PUT', '/api/team/uploads/[id]/complete POST',
   '/api/team/devices GET', '/api/team/devices POST', '/api/team/downloads GET', '/api/team/downloads/receipts POST',
   '/api/team/errors GET', '/api/team/errors/report POST', '/api/team/errors/[id]/diagnostics GET',
+  '/api/team/errors/[id]/task GET',
   '/api/team/members/[id]/policy GET', '/api/team/tasks GET', '/api/team/usage GET',
   '/api/upload POST', '/api/batch-production/assets/import POST', '/api/canvas/[id]/assets POST',
 ]);

@@ -35,7 +35,7 @@ try {
 
   const team = await checkTeamServiceReadiness(options(root, db));
   assert.equal(team.available, true);
-  assert.deepEqual(team.appliedVersions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  assert.deepEqual(team.appliedVersions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
   const execution = await checkExecutionReadiness(options(root, db));
   assert.equal(execution.available, true);
   assert.deepEqual(execution.appliedVersions, executionVersions);
@@ -46,7 +46,7 @@ try {
   );
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'execution_instances'").get());
   assert.deepEqual(db.prepare('SELECT version FROM team_schema_migrations').all(), [
-    { version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 },
+    { version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 },
   ]);
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_files'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_file_references'").get());
@@ -124,6 +124,32 @@ try {
   const future = await checkTeamServiceReadiness(options(futureRoot, futureDb));
   assert.equal(future.available, false);
   assert.equal(future.code, 'schema_too_new');
+
+  const legacyRoot = path.join(fixtureRoot, 'legacy-errors');
+  const legacyDb = openDatabase(legacyRoot);
+  databases.add(legacyDb);
+  const { TEAM_SERVICE_MIGRATIONS } = await import('../lib/team-service/schema.ts');
+  legacyDb.exec('CREATE TABLE team_schema_migrations (version INTEGER PRIMARY KEY, appliedAt TEXT NOT NULL)');
+  for (const migration of TEAM_SERVICE_MIGRATIONS.filter((item) => item.version < 14)) {
+    legacyDb.exec(migration.sql);
+    legacyDb.prepare('INSERT INTO team_schema_migrations (version, appliedAt) VALUES (?, ?)').run(migration.version, '2026-11-02T08:00:00.000Z');
+  }
+  legacyDb.prepare(`INSERT INTO team_users (id, employeeId, displayName, role, status, passwordHash, createdAt, updatedAt)
+    VALUES ('legacy-user', '0001', '旧成员', 'employee', 'active', 'not-used', '2026-11-02T08:00:00.000Z', '2026-11-02T08:00:00.000Z')`).run();
+  legacyDb.prepare(`INSERT INTO team_error_records (id, actorUserId, module, stage, code, safeMessage, clientEventId, createdAt)
+    VALUES ('legacy-error', 'legacy-user', 'client', 'upload', 'legacy_failed', '旧错误', 'legacy-event', '2026-11-02T08:00:00.000Z')`).run();
+  const upgraded = await checkTeamServiceReadiness(options(legacyRoot, legacyDb));
+  assert.equal(upgraded.available, true);
+  assert.deepEqual(upgraded.appliedVersions, [14, 15]);
+  assert.deepEqual(legacyDb.prepare('SELECT id, code, clientEventId, origin, outcome FROM team_error_records WHERE id = ?').get('legacy-error'), {
+    id: 'legacy-error', code: 'legacy_failed', clientEventId: 'legacy-event', origin: 'client', outcome: 'final',
+  }, 'v13 既有错误必须经 v14/v15 保留并安全映射');
+  const { listTeamErrors, reportClientError } = await import('../lib/team-service/diagnostics.ts');
+  assert.equal(listTeamErrors(legacyDb, { userId: 'legacy-user', role: 'employee' }).items[0]?.origin, 'client', '旧客户端阶段在出口正确投影');
+  const legacyRepeat = reportClientError(legacyDb, { userId: 'legacy-user', role: 'employee' }, {
+    clientEventId: 'legacy-event', stage: 'upload', code: 'legacy_failed',
+  }, {});
+  assert.equal(legacyRepeat.errorId, 'legacy-error', '旧客户端事件升级后仍须幂等');
 
   console.log('team service schema tests passed');
 } finally {

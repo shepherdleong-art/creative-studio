@@ -419,6 +419,62 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
       CREATE INDEX idx_team_error_attempt ON team_error_records(attemptId);
     `,
   },
+  {
+    version: 15,
+    sql: `
+      DROP INDEX IF EXISTS idx_team_error_client_event;
+      DROP INDEX IF EXISTS idx_team_error_actor_created;
+      DROP INDEX IF EXISTS idx_team_error_attempt;
+      ALTER TABLE team_error_records RENAME TO team_error_records_v14;
+      CREATE TABLE team_error_records (
+        id TEXT PRIMARY KEY,
+        actorUserId TEXT NOT NULL,
+        module TEXT NOT NULL,
+        taskId TEXT,
+        operationId TEXT,
+        attemptId TEXT,
+        scopeType TEXT,
+        scopeId TEXT,
+        stage TEXT NOT NULL CHECK(stage IN (
+          'upload', 'remote_submit', 'remote_poll', 'download', 'local_media',
+          'client_update', 'client_ui', 'server_release', 'server_config', 'server_api', 'storage'
+        )),
+        code TEXT NOT NULL,
+        statusCode INTEGER,
+        safeMessage TEXT NOT NULL,
+        clientVersion TEXT,
+        serverReleaseId TEXT,
+        configVersion TEXT,
+        clientEventId TEXT,
+        transferId TEXT,
+        phase TEXT,
+        eventKey TEXT,
+        origin TEXT NOT NULL DEFAULT 'server' CHECK(origin IN ('server', 'server_api', 'worker', 'client')),
+        outcome TEXT NOT NULL DEFAULT 'final' CHECK(outcome IN ('final', 'recovered')),
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY (actorUserId) REFERENCES team_users(id)
+      );
+      INSERT INTO team_error_records (
+        id, actorUserId, module, taskId, operationId, attemptId, scopeType, scopeId,
+        stage, code, statusCode, safeMessage, clientVersion, serverReleaseId, configVersion,
+        clientEventId, transferId, phase, createdAt
+      ) SELECT
+        id, actorUserId, module, taskId, operationId, attemptId, scopeType, scopeId,
+        stage, code, statusCode, safeMessage, clientVersion, serverReleaseId, configVersion,
+        clientEventId, transferId, phase, createdAt FROM team_error_records_v14;
+      DROP TABLE team_error_records_v14;
+      CREATE UNIQUE INDEX idx_team_error_client_event
+        ON team_error_records(actorUserId, clientEventId) WHERE clientEventId IS NOT NULL;
+      CREATE INDEX idx_team_error_actor_created ON team_error_records(actorUserId, createdAt DESC);
+      CREATE INDEX idx_team_error_attempt ON team_error_records(attemptId);
+      CREATE UNIQUE INDEX idx_team_error_event ON team_error_records(eventKey) WHERE eventKey IS NOT NULL;
+      CREATE INDEX idx_team_error_created ON team_error_records(createdAt DESC);
+      UPDATE team_error_records SET origin = 'client'
+        WHERE clientEventId IS NOT NULL OR stage IN ('upload', 'download', 'client_update', 'client_ui');
+      UPDATE team_error_records SET origin = 'worker'
+        WHERE attemptId IS NOT NULL AND origin = 'server';
+    `,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;

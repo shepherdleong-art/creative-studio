@@ -145,8 +145,9 @@ try {
     assert.equal(serialized.includes(forbidden), false, `诊断包不得包含 ${forbidden}`);
   }
   assert.deepEqual(Object.keys(diagnostic).sort(), [
-    'attemptId', 'clientVersion', 'code', 'configVersion', 'createdAt', 'errorId', 'module', 'phase',
-    'operationId', 'safeMessage', 'schemaVersion', 'scope', 'serverReleaseId', 'stage', 'statusCode', 'taskId', 'transferId',
+    'actionHint', 'actorUserId', 'attemptId', 'clientVersion', 'code', 'configVersion', 'createdAt', 'errorId',
+    'eventKey', 'model', 'module', 'operationId', 'origin', 'outcome', 'phase',
+    'safeMessage', 'schemaVersion', 'scope', 'serverReleaseId', 'stage', 'statusCode', 'taskId', 'transferId',
   ].sort());
   assert.equal(diagnostic.schemaVersion, 1);
   assert.throws(() => getTeamErrorDiagnostic(db, bobView, uploaded.errorId), (error: unknown) => (error as { status?: number }).status === 404);

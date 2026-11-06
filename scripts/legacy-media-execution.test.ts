@@ -280,6 +280,13 @@ try {
   await imageRun;
   await videoRun;
   assert.equal(videoSubmits, 1);
+  const { listTeamErrors: listExecutionErrors } = await import('../lib/team-service/diagnostics.ts');
+  const pollErrors = listExecutionErrors(db, { userId: 'member-video', role: 'employee' }).items
+    .filter((item) => item.taskId === 'job-shared-video');
+  assert.equal(pollErrors.length, 1, '真实视频轮询终态失败必须进入错误中心');
+  assert.equal(pollErrors[0]?.stage, 'remote_poll');
+  assert.equal(pollErrors[0]?.origin, 'worker');
+  assert.equal(pollErrors[0]?.model, 'model-a');
   const held = db.prepare(`
     SELECT COUNT(*) FROM execution_reservations
     WHERE poolKey = ? AND kind = 'concurrency' AND state = 'held'
@@ -402,6 +409,15 @@ try {
   await videoQueue.runVideoQueue({ projectId: 'project-restart', concurrency: 1, timeoutMs: 60_000 });
   assert.equal(restartSubmits, 1, '重启和停用成员后的已受理续查不得重新付费');
   assert.equal((db.prepare("SELECT providerStatus FROM video_jobs WHERE id = 'job-restart'").pluck().get() as string), 'download_failed');
+  const { listTeamErrors, getTeamErrorDiagnostic } = await import('../lib/team-service/diagnostics.ts');
+  const downloadErrors = listTeamErrors(db, { userId: 'member-restart', role: 'employee' }).items
+    .filter((item) => item.taskId === 'job-restart');
+  assert.equal(downloadErrors.length, 1, '真实视频 worker 的 loopback 下载失败必须自动产生诊断');
+  assert.equal(downloadErrors[0]?.stage, 'download');
+  assert.equal(downloadErrors[0]?.origin, 'worker');
+  assert.equal(downloadErrors[0]?.model, 'model-a');
+  assert.equal(downloadErrors[0]?.outcome, 'final');
+  assert.equal(JSON.stringify(getTeamErrorDiagnostic(db, { userId: 'member-restart', role: 'employee' }, downloadErrors[0]!.errorId)).includes('shared-secret'), false);
   const pollsBeforeDownloadRepair = restartPolls;
   await videoQueue.resumeVideoJobPolling('job-restart');
   assert.equal(restartSubmits, 1);
@@ -409,6 +425,7 @@ try {
   assert.equal(videoDownloads, 2);
   const repaired = db.prepare("SELECT status, errorMessage FROM video_jobs WHERE id = 'job-restart'").get() as { status: string; errorMessage: string };
   assert.equal(repaired.status, 'succeeded', repaired.errorMessage);
+  assert.equal(listTeamErrors(db, { userId: 'member-restart', role: 'employee' }, { errorId: downloadErrors[0]!.errorId }).items[0]?.outcome, 'recovered', '补下载成功后原错误必须标成已恢复');
   assert.equal((db.prepare("SELECT attempt FROM video_jobs WHERE id = 'job-restart'").pluck().get() as number), 1,
     '续查和补下载不增加业务 attempt');
   console.log('legacy media accepted-recovery and download-only test passed');
