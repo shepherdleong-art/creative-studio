@@ -237,6 +237,30 @@ try {
   await reopened.reload({ waitUntil: 'domcontentloaded' });
   await reopened.getByText('隔离还原已校验，等待管理员确认切换', { exact: true }).waitFor({ timeout: 30_000 });
   assert.deepEqual(errors, []);
+  const restorePanel = reopened.getByRole('region', { name: '整套业务还原', exact: true });
+  await restorePanel.locator('#restore-backup').selectOption(`manual/${backups[0].id}`);
+  await restorePanel.getByText('还原点之后新增／修改的数据', { exact: false }).waitFor();
+  await restorePanel.getByRole('checkbox').check();
+  await restorePanel.getByRole('button', { name: '保存当前状态并准备隔离还原', exact: true }).click();
+  await restorePanel.getByRole('heading', { name: '隔离还原已校验，等待管理员确认切换', exact: true }).waitFor({ timeout: 120_000 });
+  const preparedJobs = await reopened.evaluate(async () => (await (await fetch('/api/team/maintenance/jobs')).json()).jobs);
+  const prepared = preparedJobs.find((item) => item.action === 'restore.execute');
+  assert.equal(prepared.status, 'awaiting_confirmation');
+  assert.ok(prepared.result.preRestoreBackupId);
+  assert.equal(prepared.result.reconciliation.scheduling, false);
+  assert.equal(prepared.result.reconciliation.automaticRetries, 0);
+  const preparedDb = new Database(path.join(dataRoot, 'data', 'workbench.db'), { readonly: true });
+  try {
+    assert.equal(preparedDb.prepare('SELECT maintenance, productionPaused FROM team_service_state WHERE id = 1').get().maintenance, 1);
+    assert.equal(preparedDb.prepare('SELECT productionPaused FROM team_service_state WHERE id = 1').pluck().get(), 1);
+  } finally { preparedDb.close(); }
+  await reopened.reload({ waitUntil: 'networkidle' });
+  await restorePanel.getByRole('heading', { name: '隔离还原已校验，等待管理员确认切换', exact: true }).waitFor();
+  fs.writeFileSync(path.join(backupRoot, 'manual', backups[0].id, 'evidence', 'execution-journal.jsonl'), 'tampered');
+  await reopened.reload({ waitUntil: 'networkidle' });
+  await reopened.getByText('未通过，待核查', { exact: true }).waitFor({ timeout: 30_000 });
+  const tampered = await reopened.evaluate(async () => (await (await fetch('/api/team/maintenance/backups')).json()).backups);
+  assert.equal(tampered.find((item) => item.type === 'manual' && item.id === backups[0].id)?.restorable, false);
   const employeeContext = await browser.newContext({ locale: 'zh-CN' });
   const employeePage = await employeeContext.newPage();
   await employeePage.goto(`${baseUrl}/team/login`, { waitUntil: 'domcontentloaded' });

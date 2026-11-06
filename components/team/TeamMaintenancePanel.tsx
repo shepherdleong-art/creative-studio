@@ -9,7 +9,8 @@ export type Job = RestoreJob & {
   target: { kind: string; previewId?: string };
   stage: string; progress: number | null;
   startedAt: string | null; finishedAt: string | null;
-  result?: (RestoreJob['result'] & { backupId?: string; verifiedAt?: string; totalBytes?: number; previewId?: string; deletedCount?: number; deletedFileCount?: number; freedBytes?: number;
+  result?: (RestoreJob['result'] & { backupId?: string; verifiedAt?: string; totalBytes?: number;
+    previewId?: string; deletedCount?: number; deletedFileCount?: number; freedBytes?: number;
     skipped?: Array<{ id: string; label?: string; reasonCode: string; reason: string }>;
     failures?: Array<{ id: string; label?: string; reasonCode: string; reason: string; error?: string }> }) | null;
   integrity?: 'ok' | 'audit_corrupt'; message?: string;

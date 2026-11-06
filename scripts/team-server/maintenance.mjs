@@ -426,11 +426,12 @@ try {
       },
       executeCleanup: async (job) => {
         if (job.target.kind !== 'cleanup') throw new Error('维护作业目标不是清理预览');
-        const workerDb = openDatabase(config.dataRoot);
+        const activeConfig = resolveDeploymentConfig(readJson(configPath));
+        const workerDb = openDatabase(activeConfig.dataRoot);
         try {
           return executeCleanupPreview({
-            db: workerDb, previewId: job.target.previewId, storageRoot: path.join(config.dataRoot, 'storage'),
-            backupRoot: config.backupRoot, protectedDataRoots: [config.dataRoot, ...(config.oldRoots ?? [])],
+            db: workerDb, previewId: job.target.previewId, storageRoot: path.join(activeConfig.dataRoot, 'storage'),
+            backupRoot: activeConfig.backupRoot, protectedDataRoots: [activeConfig.dataRoot, ...(activeConfig.oldRoots ?? [])],
           });
         } finally { workerDb.close(); }
       },
