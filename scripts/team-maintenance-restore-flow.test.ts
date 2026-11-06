@@ -41,6 +41,7 @@ function addProject(db: Database.Database, id: string) {
 
 try {
   write('app/server.js', '// fixture'); write('runtime/process-tree.mjs', '// fixture');
+  write('app/runtime/team-server-entry.cjs', '// fixture'); write('app/scripts/team-server/maintenance.mjs', '// fixture');
   const node = write('runtimes/node/node.exe', 'node'); const caddy = write('tools/caddy/caddy.exe', 'caddy');
   const winsw = write('tools/winsw/WinSW.exe', 'winsw');
   const hash = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -52,7 +53,7 @@ try {
   write('service/packaging/forbidden-paths.json', fs.readFileSync(path.resolve('scripts/packaging/forbidden-paths.json'), 'utf8'));
   write('START-HERE.md', 'fixture'); write('deployment.example.json', '{}');
   writeReleaseManifest(releaseRoot, {
-    releaseId: 'release-1', appVersion: '1', sourceCommit: 'fixture', fixture: true,
+    releaseId: 'release-1', appVersion: '0.7.1', sourceCommit: 'fixture', fixture: true,
     compatibility: { minAppVersion: '0.7.1', maxAppVersion: '0.7.1', dataSchemaMin: 1, dataSchemaMax: 99 },
   });
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -91,7 +92,12 @@ try {
   const jobs = new MaintenanceJobStore({ backupRoot, deploymentId }); stores.add(jobs);
   const backupJob = jobs.submit({ action: 'backup.create', target: { kind: 'backup', backupType: 'manual' },
     principal: { userId: 'admin', employeeId: 'admin', displayName: '管理员', role: 'admin' }, idempotencyKey: 'backup-point-a-13' });
-  assert.equal(worker(backupJob.job.id).status, 0);
+  const backupWorkerResult = worker(backupJob.job.id);
+  if (backupWorkerResult.status !== 0) {
+    console.error('backup worker stdout:', backupWorkerResult.stdout);
+    console.error('backup worker stderr:', backupWorkerResult.stderr);
+  }
+  assert.equal(backupWorkerResult.status, 0);
   const backupId = String(jobs.get(backupJob.job.id).job.result?.backupId);
   const { registerExecutionInstance } = await import('../lib/media-core/execution/schema.ts');
   const { createExecutionJournal } = await import('../lib/media-core/execution/journal.ts');

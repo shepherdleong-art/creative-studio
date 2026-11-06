@@ -173,8 +173,6 @@ try {
   console.log('team maintenance administrator route tests passed');
 
   const cleanupRoute = await import('../app/api/team/maintenance/cleanup/route.ts');
-  const { MaintenanceJobStore } = await import('../lib/team-service/maintenance/jobs.ts');
-  const store = new MaintenanceJobStore({ backupRoot, deploymentId: 'deployment-maintenance-routes' });
   const claimed = store.claimNext({ workerId: 'backup-worker' });
   assert.equal(claimed?.job.id, accepted.job.id);
   store.complete({ jobId: accepted.job.id, workerId: 'backup-worker', result: { backupId: 'test-only', verifiedAt: '2026-11-06', totalBytes: 0, type: 'manual' } });
