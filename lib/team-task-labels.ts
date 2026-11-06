@@ -13,6 +13,40 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
   accepted: '供应商已受理', reconciling: '核查结果中', succeeded: '成功', failed: '失败',
   unknown: '提交结果待核查', canceled: '已取消',
 };
+const SCRIPT_STEP_PURPOSE_LABELS: Record<string, string> = {
+  generate: '生成', repair: '正文修正', review: '内容检查', fallback: '兜底生成',
+  title_repair: '标题修复', distill: '卖点提炼', filter: '模板筛选', style: '风格分析',
+  polish: '润色', note: '修改说明',
+};
+
+/** Only the documented Script Studio step grammar supplies business plan numbers. */
+export function taskStepLabel(step: string, module?: string): string {
+  if (module === 'llm') {
+    const match = /^script-studio-generate:plan:(\d+):([a-z_]+):(\d+)$/.exec(step);
+    if (match && SCRIPT_STEP_PURPOSE_LABELS[match[2]]) {
+      const planIndex = Number(match[1]);
+      if (Number.isSafeInteger(planIndex) && planIndex > 0) {
+        return `第 ${planIndex} 条文案 · ${SCRIPT_STEP_PURPOSE_LABELS[match[2]]}`;
+      }
+    }
+    const generic: Record<string, string> = {
+      'script-studio-generate': '文案生成', 'script-studio-reprobe': '视觉信息复核',
+      'script-studio-organize': '卖点整理', 'script-studio-vision': '详情页素材分析',
+    };
+    const [area, subtype] = step.split(':');
+    return generic[area] ?? (area === 'script' && subtype === 'vision' ? '详情页素材分析' : undefined)
+      ?? TASK_STEP_LABELS[step] ?? '脚本制作步骤';
+  }
+  if (module === 'tts') {
+    if (/^segment:.+:alignment$/.test(step)) return '配音字幕对齐';
+    if (/^segment:.+:(?:chunk:\d+(?::request:\d+)?|chunk:\d+)$/.test(step)) return '配音片段';
+    return '配音生成';
+  }
+  if (module === 'alignment') return step.startsWith('transcription:') ? '声音识别' : '字幕对齐';
+  if (module === 'canvas_export') return '画布文件打包';
+  return TASK_STEP_LABELS[step] ?? '其他制作步骤';
+}
+
 export function taskWaitLabel(reason: string | null, concurrency?: number | null): string {
   if (!reason) return '';
   if (reason === 'personal_concurrency') return concurrency === 0
