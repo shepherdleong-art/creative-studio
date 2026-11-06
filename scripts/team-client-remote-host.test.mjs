@@ -37,7 +37,7 @@ app.whenReady = () => Promise.resolve();
 app.quit = () => {};
 app.exit = () => { calls.exits += 1; };
 const remoteSession = { name: 'shared-team-session', async flushStorageData() { calls.flushes += 1; } };
-const remoteController = { async stop() { calls.remoteStops += 1; }, async pauseForUpdate() {}, async resumeAfterUpdate() {} };
+const remoteController = { async stop() { calls.remoteStops += 1; }, async pauseForUpdate() {}, async resumeAfterUpdate() {}, reportUiError() {} };
 const remoteHost = {
   mode: 'remote', origin: 'https://studio.example.test', preloadPath: 'preload.js',
   session: remoteSession, remote: remoteController,
@@ -82,7 +82,7 @@ const { readRemoteClientConfig } = load('desktop/client/remote-host.ts', {
   electron: { app },
   './remote-transfer': { RemoteTransferController: class {} },
   './client-diagnostic-reporter': { ClientDiagnosticReporter: class { setIdentity() {} report() {} } },
-  './ui-diagnostics': { installClientUiDiagnostics: () => {} },
+  './ui-diagnostics': {}, './client-diagnostics': {},
 }, { process: { ...process, env: { ...process.env, CREATIVE_STUDIO_CLIENT_MODE: 'local' } } });
 assert.throws(() => readRemoteClientConfig(process.env), /origin|来源|地址/i);
 process.env.CREATIVE_STUDIO_SERVER_ORIGIN = 'https://studio.example.test';

@@ -18,6 +18,13 @@ export interface ClientTransferStatus {
   displayName?: string;
 }
 
+export interface ClientDiagnosticInput {
+  clientEventId?: string;
+  stage: 'client_ui';
+  phase: 'error' | 'unhandledrejection';
+  code: 'ui_runtime_error' | 'unhandled_rejection';
+}
+
 export interface ClientStatus {
   mode: 'remote';
   origin: string;
@@ -47,6 +54,7 @@ export interface DesktopBridge {
   revealDownload(downloadId: string): Promise<{ revealed: boolean }>;
   getClientStatus(): Promise<ClientStatus>;
   installClientUpdate(): Promise<{ started: boolean; message?: string }>;
+  reportClientError(input: ClientDiagnosticInput): Promise<void>;
   onQuitRequested(callback: () => void): () => void;
 }
 

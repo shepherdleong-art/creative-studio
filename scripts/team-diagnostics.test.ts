@@ -116,6 +116,13 @@ try {
   assert.throws(() => reportClientError(db, aliceView, {
     clientEventId: 'client-forged-task', taskId: 'task-bob', stage: 'download', code: 'offline',
   }, { clientVersion: '0.7.1', serverReleaseId: 'server-release-13' }), (error: unknown) => (error as { status?: number }).status === 403);
+  assert.throws(() => reportClientError(db, aliceView, {
+    clientEventId: 'client-forged-resource', resourceType: 'test_resource', resourceId: 'bob-project', stage: 'upload', code: 'offline',
+  }, { clientVersion: '0.7.1' }), (error: unknown) => (error as { status?: number }).status === 403);
+  const associatedUpload = reportClientError(db, aliceView, {
+    clientEventId: 'client-resource-alice', resourceType: 'test_resource', resourceId: 'alice-project', stage: 'upload', code: 'offline',
+  }, { clientVersion: '0.7.1' });
+  assert.equal(associatedUpload.taskId, 'task-alice', '上传资源必须由服务器解析为真实任务');
   const repeated = reportClientError(db, aliceView, {
     clientEventId: 'client-upload-1', taskId: 'task-alice', stage: 'upload', code: 'disk_full',
   }, { clientVersion: '0.7.1', serverReleaseId: 'server-release-13' });
@@ -144,7 +151,7 @@ try {
   assert.equal(diagnostic.schemaVersion, 1);
   assert.throws(() => getTeamErrorDiagnostic(db, bobView, uploaded.errorId), (error: unknown) => (error as { status?: number }).status === 404);
   assert.equal(getTeamErrorDiagnostic(db, adminView, uploaded.errorId).errorId, uploaded.errorId);
-  assert.equal(listTeamErrors(db, adminView).items.length, 4);
+  assert.equal(listTeamErrors(db, adminView).items.length, 5);
 
   const maliciousMetadata = {
     clientVersion: 'Bearer SECRET',
