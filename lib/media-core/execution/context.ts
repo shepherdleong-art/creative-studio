@@ -112,6 +112,7 @@ export type AdmissionWaitReason =
   | 'actor_paused'
   | 'model_forbidden'
   | 'personal_concurrency'
+  | 'fair_share'
   | 'pool_missing'
   | 'pool_disabled'
   | 'pool_capacity'
