@@ -17,6 +17,7 @@ async function __teamRouteGET() {
       models: ensureCanvasCapabilitiesRegistered(getDb()).map((capability) => ({
         key: capability.key,
         displayName: capability.displayName,
+        selectionAliasOf: capability.selectionAliasOf,
         mediaKind: capability.mediaKind,
         modes: capability.modes,
         legacyModes: capability.legacyModes,

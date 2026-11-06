@@ -1,7 +1,25 @@
 import type Database from 'better-sqlite3';
 import type { AuthPrincipal } from './auth/types.ts';
 import { assertScopeConsistency, ResourceAccessError } from './resource-scopes.ts';
-import { assertTeamPublicationTarget, switchTeamVersionedRoot, type TeamVersionedResourceKind } from '../script-studio/team-publications.ts';
+import { assertTeamPublicationTarget, switchTeamVersionedRoot, TeamPublicationConflictError, type TeamVersionedResourceKind } from '../script-studio/team-publications.ts';
+
+/** 停止向新任务提供当前版本；冻结输入和历史修订仍可追溯。 */
+export function withdrawVersionedTeamResource(
+  db: Database.Database,
+  principal: AuthPrincipal,
+  input: { resourceType: 'script_catalog_revision' | 'viral_template_revision'; resourceId: string; baseRevisionId: string | null },
+): void {
+  if (principal.role !== 'admin') throw new ResourceAccessError('resource_forbidden', '只有管理员可以撤回公共版本', 403);
+  assertScopeConsistency(db, input.resourceType, input.resourceId);
+  if (input.baseRevisionId !== input.resourceId) throw new TeamPublicationConflictError('团队当前版本已改变，请刷新后再撤回。');
+  const kind = input.resourceType === 'viral_template_revision' ? 'viral'
+    : db.prepare('SELECT c.kind FROM script_studio_catalog_revisions r JOIN script_studio_catalogs c ON c.id = r.catalogId WHERE r.id = ?').pluck().get(input.resourceId);
+  const at = new Date().toISOString();
+  const result = db.prepare(`UPDATE script_studio_team_publications SET withdrawnAt = ?, updatedAt = ?, publishedBy = ?
+    WHERE resourceType = ? AND currentRevisionId = ? AND withdrawnAt IS NULL`)
+    .run(at, at, principal.userId, kind, input.resourceId);
+  if (result.changes !== 1) throw new TeamPublicationConflictError('团队当前版本已改变或已撤回，请刷新后重试。');
+}
 
 export interface VersionedPublicationResult {
   alreadyPublished: boolean;

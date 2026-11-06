@@ -2,6 +2,13 @@ import type Database from 'better-sqlite3';
 
 export type TeamVersionedResourceKind = 'strategy' | 'template' | 'viral';
 
+export class TeamPublicationConflictError extends Error {
+  constructor(message = '团队当前版本已被其他管理员变更，请刷新候选并确认后再发布。') {
+    super(message);
+    this.name = 'TeamPublicationConflictError';
+  }
+}
+
 export interface TeamVersionedRoot {
   resourceType: 'script_catalog' | 'viral_template_library';
   rootId: string;
@@ -13,6 +20,7 @@ interface PublicationRow {
   resourceType: TeamVersionedResourceKind;
   rootId: string;
   currentRevisionId: string;
+  withdrawnAt?: string | null;
 }
 
 /** 团队唯一指针。缺表表示旧版尚未就绪，调用方 fail closed，不隐退回私人版本。 */
@@ -26,9 +34,10 @@ export function findTeamVersionedRoot(
 ): TeamVersionedRoot | null {
   const row = publication(db, kind);
   if (!row) return null;
+  const revisionId = row.withdrawnAt ? null : row.currentRevisionId;
   return kind === 'viral'
-    ? { resourceType: 'viral_template_library', rootKind: 'viral_template_library', rootId: row.rootId, revisionId: row.currentRevisionId }
-    : { resourceType: 'script_catalog', rootKind: 'script_catalog', rootId: row.rootId, revisionId: row.currentRevisionId };
+    ? { resourceType: 'viral_template_library', rootKind: 'viral_template_library', rootId: row.rootId, revisionId }
+    : { resourceType: 'script_catalog', rootKind: 'script_catalog', rootId: row.rootId, revisionId };
 }
 
 export function assertTeamPublicationTarget(
@@ -42,8 +51,8 @@ export function assertTeamPublicationTarget(
       JOIN script_studio_catalogs c ON c.id = r.catalogId AND c.kind = ? WHERE r.id = ?`).get(kind, revisionId);
   if (!relation) throw new Error('目标版本不存在或不属于该资源类型');
   const rootId = String((relation as { rootId: string }).rootId);
-  const currentRevisionId = findTeamVersionedRoot(db, kind)?.rootId === rootId
-    ? publication(db, kind)?.currentRevisionId ?? null : null;
+  const current = findTeamVersionedRoot(db, kind);
+  const currentRevisionId = current?.rootId === rootId ? current.revisionId : null;
   return { rootId, currentRevisionId };
 }
 
@@ -61,16 +70,14 @@ export function switchTeamVersionedRoot(
   const actual = current?.rootId === rootId ? current.revisionId : null;
   if (actual === revisionId) return true;
   if (actual !== baseRevisionId) {
-    const error = new Error('团队当前版本已被其他管理员变更，请刷新候选并确认后再发布。');
-    error.name = 'TeamPublicationConflictError';
-    throw error;
+    throw new TeamPublicationConflictError();
   }
   db.prepare(`INSERT INTO script_studio_team_publications (
     resourceType, rootId, currentRevisionId, publishedBy, publishedAt, updatedAt
   ) VALUES (?, ?, ?, ?, ?, ?)
   ON CONFLICT(resourceType) DO UPDATE SET rootId = excluded.rootId,
     currentRevisionId = excluded.currentRevisionId, publishedBy = excluded.publishedBy,
-    publishedAt = excluded.publishedAt, updatedAt = excluded.updatedAt`)
+    publishedAt = excluded.publishedAt, updatedAt = excluded.updatedAt, withdrawnAt = NULL`)
     .run(kind, rootId, revisionId, publishedBy, now, now);
   return false;
 }

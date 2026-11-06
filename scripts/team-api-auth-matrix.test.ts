@@ -303,6 +303,31 @@ try {
   assert.equal(modelText.includes('"keyEnv"'), false);
   assert.equal(modelText.includes('test-key'), false);
 
+  const failures: string[] = [];
+  const { withTeamRoute } = await import('../lib/team-service/route-wrapper.ts');
+  for (const route of [
+    '/api/projects/[id]/final-edit/draft',
+    '/api/projects/[id]/final-edit/preflight',
+    '/api/projects/[id]/final-edit/start',
+  ]) {
+    // These requests still call the field scriptDraftId, but the UI sends a project_scripts ID.
+    const handler = withTeamRoute(route, 'POST', async () => Response.json({ accepted: true }));
+    const own = await handler(write(`https://studio.example.test${route.replace('[id]', 'project-a')}`, userA.cookie, {
+      scriptDraftId: 'script-a',
+    }), params('project-a'));
+    if (own.status !== 200) failures.push(`${route}: expected 200, got ${own.status} ${await own.text()}`);
+    const cross = await handler(write(`https://studio.example.test${route.replace('[id]', 'project-b')}`, userB.cookie, {
+      scriptDraftId: 'script-a',
+    }), params('project-b'));
+    assert.notEqual(cross.status, 200, '不能把他人的项目脚本带入混剪');
+  }
+  const batchReadinessRoute = await import('../app/api/batch-production/readiness/route.ts');
+  const readiness = await batchReadinessRoute.GET(get('https://studio.example.test/api/batch-production/readiness', userA.cookie));
+  if (readiness.status !== 200) failures.push(`batch readiness: expected 200, got ${readiness.status} ${await readiness.text()}`);
+  const recovery = withTeamRoute('/api/batch-production/recovery', 'GET', async () => Response.json({ accepted: true }));
+  assert.equal((await recovery(get('https://studio.example.test/api/batch-production/recovery', userA.cookie))).status, 403, '开放状态读取不能开放管理员恢复检查');
+  assert.deepEqual(failures, [], '员工混剪与批量生产入口应可访问');
+
   console.log('team API A/B/admin matrix tests passed');
 } finally {
   await stopCanvasScheduler();

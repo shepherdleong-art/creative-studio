@@ -120,7 +120,7 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
               {isSucceeded ? (
                 <>
                   {job.posterImageUrl ? (
-                    <Image src={job.posterImageUrl} alt="视频缩略图" fill sizes="300px" className="object-cover" />
+                    <Image src={job.posterImageUrl} alt="视频缩略图" fill sizes="300px" className="object-cover" unoptimized />
                   ) : (
                     <video
                       src={job.videoUrl ? `${job.videoUrl}?preview=1` : undefined}

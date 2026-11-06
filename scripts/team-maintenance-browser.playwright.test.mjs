@@ -26,6 +26,7 @@ const password = `Admin-${randomBytes(12).toString('base64url')}`;
 const children = new Set();
 let browser;
 let serverOutput = '';
+const errors = [];
 function write(relative, content) {
   const target = path.join(releaseRoot, ...relative.split('/'));
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -119,14 +120,13 @@ try {
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ locale: 'zh-CN' });
   const page = await context.newPage();
-  const errors = [];
   page.on('pageerror', (error) => { errors.push(error.message); console.error('maintenance browser pageerror', error.message); });
   page.on('response', (response) => {
     if (response.url().includes('/api/team/auth/') && response.request().method() !== 'GET') {
       console.error('maintenance auth response', response.request().method(), response.status(), response.url());
     }
   });
-  await page.goto(`${baseUrl}/team/login`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.goto(`${baseUrl}/team/login`, { waitUntil: 'domcontentloaded', timeout: 180_000 });
   await page.locator('input[autocomplete="username"]').fill('00042');
   await page.locator('input[autocomplete="current-password"]').fill(initializedCredential);
   await page.getByRole('button', { name: '登录', exact: true }).click();
@@ -143,8 +143,57 @@ try {
     page.waitForURL((url) => url.pathname !== '/team/login', { timeout: 60_000 }),
     page.getByRole('button', { name: '登录', exact: true }).click(),
   ]);
-  await page.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  // 界面使用大列表，资源权限与回收站行为由独立真实 API 回归覆盖。
+  let candidates = Array.from({ length: 45 }, (_, index) => ({
+    resourceType: 'video_prompt_template', resourceId: `ui-template-${index}`, typeLabel: '视频提示词模板',
+    name: `模板 ${String(index).padStart(2, '0')}`, preview: '缓慢推进，展示真实产品细节',
+    sourceInfo: '测试模板', sourceFilename: '', published: true, previouslyPublished: false,
+    currentRevisionId: null, revisionNumber: null, entryCount: null, parseStatus: 'ready', settingsHref: '/settings',
+  }));
+  await page.route('**/api/team/public-resources', async route => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: { candidates } });
+    const { resourceId, action } = route.request().postDataJSON();
+    if (action === 'trash') candidates = candidates.filter(item => item.resourceId !== resourceId);
+    else candidates = candidates.map(item => item.resourceId === resourceId ? { ...item, published: action === 'publish' } : item);
+    return route.fulfill({ json: { success: true } });
+  });
+  const acceptDialog = dialog => void dialog.accept();
+  page.on('dialog', acceptDialog);
+  await page.goto(`${baseUrl}/team/admin/resources`, { waitUntil: 'domcontentloaded', timeout: 180_000 });
+  const category = page.getByRole('button', { name: /视频提示词模板.*45 项/ });
+  await category.waitFor();
+  assert.equal(await page.getByRole('listitem').count(), 0, '大列表默认折叠');
+  await category.click();
+  assert.equal(await page.getByRole('listitem').count(), 20, '展开每页最多 20 项');
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await page.getByRole('heading', { name: '模板 20', exact: true }).waitFor();
+  await page.getByRole('textbox', { name: '搜索公共资源' }).fill('模板 44');
+  assert.equal(await page.getByRole('listitem').count(), 1);
+  await page.getByRole('button', { name: '撤回发布', exact: true }).click();
+  await page.getByRole('button', { name: '发布给团队', exact: true }).waitFor();
+  await page.getByRole('combobox', { name: '发布状态' }).selectOption('published');
+  await page.getByText('没有匹配的资源，请调整搜索或发布状态。').waitFor();
+  await page.getByRole('combobox', { name: '发布状态' }).selectOption('unpublished');
+  await page.getByRole('button', { name: '移入回收站', exact: true }).click();
+  await page.getByText('「模板 44」已移入回收站，可在那里恢复。', { exact: true }).waitFor();
+  page.off('dialog', acceptDialog);
+  await page.unroute('**/api/team/public-resources');
+  console.log('PASS: resource categories, bounded pagination, search, withdrawal and recycle controls');
+
+  // 即使完整备份校验尚未返回，实际活动数据与作业状态也必须能显示。
+  let releaseCatalog;
+  const catalogGate = new Promise(resolve => { releaseCatalog = resolve; });
+  let catalogRequests = 0;
+  await page.route('**/api/team/maintenance/backups', async route => { catalogRequests += 1; await catalogGate; await route.continue(); });
+  await page.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'domcontentloaded', timeout: 180_000 });
   await page.getByRole('heading', { name: '备份与维护', exact: true }).waitFor({ timeout: 60_000 });
+  await page.getByText('当前实际状态：当前业务数据', { exact: true }).waitFor();
+  await page.getByText('正在读取并校验备份文件，素材较多时可能需要一些时间。', { exact: true }).waitFor();
+  await page.waitForResponse(response => response.url().endsWith('/api/team/maintenance/jobs'));
+  assert.equal(catalogRequests, 1, '作业轮询不能重复触发完整备份扫描');
+  releaseCatalog();
+  await page.getByRole('button', { name: '刷新备份列表', exact: true }).waitFor();
+  await page.unroute('**/api/team/maintenance/backups');
   const employee = await page.evaluate(async () => {
     const csrf = await (await fetch('/api/team/auth/csrf')).json();
     const created = await fetch('/api/team/users', {

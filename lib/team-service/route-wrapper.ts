@@ -106,6 +106,8 @@ function single(value: string | string[] | undefined): string | undefined {
 }
 
 function contextualResource(route: string, key: string, inferred: string): string {
+  // 混剪沿用 scriptDraftId 字段名，实际读写的是统一项目脚本库。
+  if (route.includes('/final-edit') && key === 'scriptDraftId') return 'project_script';
   if (route.startsWith('/api/canvas')) {
     if (['jobId', 'taskId', 'sourceTaskId', 'upstreamTaskId'].includes(key)) return 'canvas_task';
     if (['assetId', 'draftAssetId', 'resolvedAssetId', 'resultAssetIds'].includes(key)) return 'canvas_asset';

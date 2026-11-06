@@ -370,6 +370,28 @@ try {
   const employeePatch = await (await import('../app/api/script-studio/viral-templates/entries/[entryId]/route.ts')).PATCH(request(`/api/script-studio/viral-templates/entries/${secondViralEntry}`, userA.cookie, 'PATCH', { status: 'unusable', reason: '越权' }), { params: Promise.resolve({ entryId: secondViralEntry }) });
   assert.equal(employeePatch.status, 403);
   console.log('PASS: new-task current revision, stale selection rejection and old-task retry snapshot');
+  const withdraw = (resourceType: string, resourceId: string, baseRevisionId: string, cookie = adminCookie) => publicRoute.POST(request('/api/team/public-resources', cookie, 'POST', { action: 'withdraw', resourceType, resourceId, baseRevisionId }));
+  assert.equal((await withdraw('viral_template_revision', second.viral.revisionId, imported.viral.revisionId)).status, 409, '过期基准不能撤回新版本');
+  assert.equal((await withdraw('viral_template_revision', second.viral.revisionId, second.viral.revisionId, userA.cookie)).status, 403);
+  assert.equal((await withdraw('viral_template_revision', second.viral.revisionId, second.viral.revisionId)).status, 200);
+  const withdrawnEntries = await viralEntriesRoute.GET(request('/api/script-studio/viral-templates/entries', userA.cookie));
+  assert.equal(withdrawnEntries.status, 200);
+  assert.equal((await withdrawnEntries.json() as { entries: unknown[] }).entries.length, 0, '撤回不能退回旧公开爆文或员工私人版本');
+  assert.equal((await withdraw('script_catalog_revision', imported.strategy.revisionId, imported.strategy.revisionId)).status, 200);
+  const withdrawnCatalogs = await catalogsRoute.GET(request('/api/script-studio/catalogs', userA.cookie));
+  const withdrawnCatalogBody = await withdrawnCatalogs.json() as { catalogs: Array<{ kind: string; current: { id: string } | null }> };
+  assert.equal(withdrawnCatalogBody.catalogs.find(item => item.kind === 'strategy')?.current?.id ?? null, null, '撤回不能回退到私人知识库');
+  const withdrawn = (await candidates()).find(item => item.resourceId === second.viral.revisionId)!;
+  assert.equal(withdrawn.published, false);
+  assert.equal(withdrawn.currentRevisionId, null);
+  db.prepare("UPDATE script_studio_tasks SET status = 'failed' WHERE id = ?").run(retryBody.task.id);
+  const retryAfterWithdrawal = await retryRoute.POST(request(`/api/projects/versioned-project/script-studio/tasks/${retryBody.task.id}/retry`, userA.cookie, 'POST', {}), taskParams(retryBody.task.id));
+  assert.equal(retryAfterWithdrawal.status, 202, await retryAfterWithdrawal.clone().text());
+  const retryAfterWithdrawalBody = await retryAfterWithdrawal.json() as { task: { id: string } };
+  assert.match(db.prepare('SELECT inputSnapshotJson FROM script_studio_tasks WHERE id = ?').pluck().get(retryAfterWithdrawalBody.task.id) as string, /V1/, '撤回仍保留旧任务冻结输入');
+  assert.equal((await publish(withdrawn, null)).status, 200, '撤回后可以重新发布');
+  assert.equal((await (await viralEntriesRoute.GET(request('/api/script-studio/viral-templates/entries', userA.cookie))).json() as { entries: Array<{ revisionId: string }> }).entries[0]?.revisionId, second.viral.revisionId);
+  console.log('PASS: guarded withdrawal, no old-version fallback, frozen retry and republishing');
 } finally {
   closeDb();
   process.env = previousEnv;

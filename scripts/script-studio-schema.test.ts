@@ -266,7 +266,8 @@ const legacyMigration = await ensureScriptStudioSchemaReady({
   now: () => new Date('2026-08-31T00:07:00.000Z'),
 });
 assert.equal(legacyMigration.state, 'ready');
-assert.deepEqual(legacyMigration.state === 'ready' ? legacyMigration.appliedVersions : [], [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], '老库只追加新版本，不改写已发布的 v1');
+assert.deepEqual(legacyMigration.state === 'ready' ? legacyMigration.appliedVersions : [], [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], '老库只追加新版本，不改写已发布的 v1');
+assert.ok((legacyDb.pragma('table_info(script_studio_team_publications)') as Array<{ name: string }>).some(column => column.name === 'withdrawnAt'), '升级后保留发布指针并支持显式撤回');
 const legacyPoint = legacyDb.prepare(`SELECT * FROM script_studio_selling_points WHERE id = 'legacy-point'`).get() as {
   themeKey: string; themeTitle: string; hierarchyRole: string; importance: number; evidenceRefsJson: string;
   detailText: string; detailStatus: string;

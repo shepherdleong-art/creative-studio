@@ -308,6 +308,14 @@ try {
   assert.equal(carolUnknownCsvLine?.[22], '', '未知费用不得输出预留 0');
   assert.equal(carolUnknownCsvLine?.[23], '', '未知费用不得伪装成实际 0');
 
+  const canceled = execution.enqueue(operation('c-canceled', 'carol')).operation;
+  db.prepare("UPDATE execution_operations SET status = 'failed', waitReason = 'stage_canceled', updatedAt = '2099-01-01' WHERE id = ?").run(canceled.id);
+  assert.equal(readTeamMemberPolicy(db, adminView, 'carol').waitingReason, null, '历史取消不能成为当前等待原因');
+  assert.equal(listTeamMembers(db, adminView, { now }).items.find(member => member.userId === 'carol')?.waitingReason, null);
+  db.prepare("UPDATE execution_operations SET status = 'deferred', waitReason = 'pool_capacity' WHERE id = ?").run(canceled.id);
+  assert.equal(readTeamMemberPolicy(db, adminView, 'carol').waitingReason, 'pool_capacity');
+  assert.equal(listTeamMembers(db, adminView, { now }).items.find(member => member.userId === 'carol')?.waitingReason, 'pool_capacity');
+
   console.log('PASS: team attempt usage, member consistency, CSV and versioned policy authorization');
 } finally {
   runtime.closeNewWork();

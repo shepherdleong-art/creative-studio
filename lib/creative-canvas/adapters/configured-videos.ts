@@ -24,7 +24,7 @@ export function configuredCanvasVideos(db: Database.Database): CanvasModelCapabi
   const rows = db.prepare(`SELECT id, name, defaultModel FROM video_providers
     WHERE type = 'openai-video' AND enabled = 1 AND length(trim(baseUrl)) > 0 AND length(trim(apiKey)) > 0
     ORDER BY name, id`).all() as Array<{ id: string; name: string; defaultModel: string }>;
-  return rows.flatMap((row) => {
+  const capabilities: CanvasModelCapability[] = rows.flatMap((row) => {
     const spec = SPECS.find((entry) => entry.modelAlias === row.defaultModel);
     if (!spec) return [];
     const key = row.id === spec.providerIdentity ? spec.key : `${spec.key}:provider:${encodeURIComponent(row.id)}`;
@@ -37,5 +37,20 @@ export function configuredCanvasVideos(db: Database.Database): CanvasModelCapabi
     return [{ ...spec, key,
       providerIdentity: row.id, displayName: row.name,
     }];
+  });
+  // 比较只在数据库内完成，避免把凭据带入能力对象或 API。
+  const equivalent = db.prepare(`SELECT a.id AS sourceId, b.id AS targetId
+    FROM video_providers a JOIN video_providers b
+      ON a.type = b.type AND a.defaultModel = b.defaultModel
+      AND RTRIM(TRIM(a.baseUrl), '/') = RTRIM(TRIM(b.baseUrl), '/') AND a.apiKey = b.apiKey
+    WHERE a.type = 'openai-video' AND a.enabled = 1 AND b.enabled = 1`).all() as Array<{ sourceId: string; targetId: string }>;
+  return capabilities.map((capability) => {
+    const ids = new Set(equivalent.filter(pair => pair.sourceId === capability.providerIdentity).map(pair => pair.targetId));
+    const matches = capabilities.filter(candidate => ids.has(candidate.providerIdentity));
+    const builtinId = SPECS.find(spec => spec.modelAlias === capability.modelAlias)?.providerIdentity;
+    const canonical = matches.find(candidate => candidate.providerIdentity === builtinId) ?? matches[0] ?? capability;
+    return canonical.key === capability.key ? capability : {
+      ...capability, selectionAliasOf: canonical.key, displayName: canonical.displayName,
+    };
   });
 }

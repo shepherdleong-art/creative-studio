@@ -389,7 +389,8 @@ function memberSummary(db: Database.Database, row: MemberRow, now: Date): TeamMe
   `).pluck().get(personalConcurrencyPoolKey(row.userId)) ?? 0);
   const waitingReason = db.prepare(`
     SELECT waitReason FROM execution_operations
-    WHERE actorId = ? AND waitReason IS NOT NULL ORDER BY updatedAt DESC LIMIT 1
+    WHERE actorId = ? AND status IN ('pending', 'deferred') AND waitReason IS NOT NULL
+    ORDER BY updatedAt DESC LIMIT 1
   `).pluck().get(row.userId) as string | undefined;
   const hasUnknown = Boolean(db.prepare(`
     SELECT 1 FROM execution_reservations
@@ -472,7 +473,8 @@ export function readTeamMemberPolicy(
   const user = db.prepare('SELECT status FROM team_users WHERE id = ?').pluck().get(targetUserId) as string | undefined;
   if (!user) throw new TeamUsageError(404, 'user_not_found', '成员不存在。');
   const waitingReason = db.prepare(`
-    SELECT waitReason FROM execution_operations WHERE actorId = ? AND waitReason IS NOT NULL
+    SELECT waitReason FROM execution_operations
+    WHERE actorId = ? AND status IN ('pending', 'deferred') AND waitReason IS NOT NULL
     ORDER BY updatedAt DESC LIMIT 1
   `).pluck().get(targetUserId) as string | undefined;
   return { ...readActorPolicy(db, targetUserId), accountStatus: user, waitingReason: waitingReason ?? null };

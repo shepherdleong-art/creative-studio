@@ -5,6 +5,7 @@ const read = (relative) => fs.readFileSync(new URL(`../${relative}`, import.meta
 const header = read('components/Header.tsx');
 const members = read('components/team/TeamUsersPanel.tsx');
 const usage = read('components/team/TeamUsagePanel.tsx');
+const waitingLabels = read('lib/team-task-labels.ts');
 const tasks = read('components/team/TeamTasksPanel.tsx');
 const errors = read('components/team/TeamErrorsPanel.tsx');
 
@@ -19,7 +20,9 @@ assert.match(members, /teamModeSelect\.current\?\.value/, '保存必须读取当
 assert.match(members, /monthlyLimitMinor/);
 assert.match(members, /paused/);
 assert.match(members, /\/api\/team\/members/);
-for (const label of ['额度', '预留', '并发', '本地 Agent', '余额不足', '并发等待', '暂停']) assert.ok(usage.includes(label), `员工只读用量必须覆盖 ${label}`);
+for (const label of ['额度', '预留', '并发', '本地 Agent', '暂停']) assert.ok(usage.includes(label), `员工只读用量必须覆盖 ${label}`);
+assert.match(usage, /WAITING_REASON_LABELS/, '用量页使用共享中文等待标签');
+for (const label of ['余额不足', '并发等待', '任务已取消']) assert.ok(waitingLabels.includes(label), `共享等待标签必须覆盖 ${label}`);
 assert.match(usage, /\/api\/team\/usage/);
 assert.doesNotMatch(usage, /teamWrite\(|method:\s*['"]PATCH/, '员工用量 UI 不得提供策略写入');
 assert.match(tasks, /\/api\/team\/tasks/);

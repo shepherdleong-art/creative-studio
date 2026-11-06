@@ -66,9 +66,11 @@ function readFile(db: Database.Database, fileId: string): TeamFileRecord | undef
 }
 
 function sourceReferences(db: Database.Database, fileId: string): TeamFileReference[] {
+  // 备份 pin 只保护备份清单中的原件，不是派生文件的业务归属或读取权限。
+  // 继承它既会让员工被管理员私有 scope 拦住，也会伪造新文件已在旧备份中。
   return db.prepare(`
     SELECT resourceType, resourceId, role, pinKind
-    FROM team_file_references WHERE fileId = ? AND releasedAt IS NULL
+    FROM team_file_references WHERE fileId = ? AND releasedAt IS NULL AND pinKind <> 'backup'
   `).all(fileId) as TeamFileReference[];
 }
 

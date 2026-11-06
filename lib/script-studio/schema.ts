@@ -486,6 +486,10 @@ export const SCRIPT_STUDIO_MIGRATIONS: ReadonlyArray<ScriptStudioMigration> = [
       );
     `,
   },
+  {
+    version: 14,
+    sql: `ALTER TABLE script_studio_team_publications ADD COLUMN withdrawnAt TEXT;`,
+  },
 ];
 
 export type ScriptStudioSchemaFailureCode =

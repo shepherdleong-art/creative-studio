@@ -289,6 +289,7 @@ function findAccessibleCatalog(
   if (options.privateWrite) return records.find((record) => record.ownerKey === access.actor.userId);
   const team = findTeamVersionedRoot(db, kind);
   if (team) {
+    if (!team.revisionId) return undefined; // 显式撤回后不得回退到旧公开版本。
     const record = records.find((item) => item.id === team.rootId);
     if (!record) return undefined;
     access.assertAccess('script_catalog', record.id, 'read');

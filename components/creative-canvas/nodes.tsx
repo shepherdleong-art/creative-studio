@@ -16,6 +16,7 @@ import {
   type MentionQuery,
 } from '@/lib/creative-canvas/mention-completion';
 import { nodeKindSpec } from '@/lib/creative-canvas/node-kinds';
+import { canvasModelOptions } from '@/lib/creative-canvas/model-options';
 import type { CanvasGenerationMode, CanvasNodeKind, CanvasReferenceSlot } from '@/lib/creative-canvas/types';
 import { canvasApi, canvasAssetUrl } from './api';
 import type { CanvasFlowNode, CanvasEditorController } from './editor-store';
@@ -824,7 +825,7 @@ export const GenerationNode = memo(function GenerationNode({
           {data.modelKey && !available.some((candidate) => candidate.key === data.modelKey) ? (
             <option value={data.modelKey}>原模型配置已更新，请重新选择模型</option>
           ) : null}
-          {available.map((candidate) => (
+          {canvasModelOptions(available, data.modelKey).map((candidate) => (
             <option key={candidate.key} value={candidate.key}>
               {candidate.displayName}
               {candidate.evidence === 'verified' ? ' · 已验证' : candidate.evidence === 'mapped' ? ' · 已映射' : ''}

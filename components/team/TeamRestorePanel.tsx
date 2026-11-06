@@ -24,8 +24,9 @@ export type RestoreActivity = {
 const time = (value: string) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
 const backupTypeLabels: Record<string, string> = { daily: '每日', manual: '手动', 'pre-upgrade': '升级前', 'pre-restore': '还原前' };
 
-export default function TeamRestorePanel({ backups, jobs, activity, busy, onRefresh }: {
+export default function TeamRestorePanel({ backups, jobs, activity, busy, backupsLoading = false, backupsError = '', onRefresh }: {
   backups: RestoreBackup[]; jobs: RestoreJob[]; activity: RestoreActivity; busy: boolean;
+  backupsLoading?: boolean; backupsError?: string;
   onRefresh: () => Promise<void>;
 }) {
   const [selected, setSelected] = useState('');
@@ -64,7 +65,7 @@ export default function TeamRestorePanel({ backups, jobs, activity, busy, onRefr
     } catch (cause) { setError(cause instanceof Error ? cause.message : '确认失败，活动数据尚未切换'); }
     finally { setPending(false); }
   }
-  return <section className="card p-6" aria-label="整套业务还原">
+  return <section id="team-restore" className="card scroll-mt-6 p-6" aria-label="整套业务还原">
     <h2 className="text-lg font-semibold text-ink">整套业务还原</h2>
     <p className="mt-2 max-w-3xl text-sm leading-6 text-ink-secondary">将项目、资源、任务、文件与执行引用恢复至同一备份时间点。单项目找回请使用回收站；此操作不自动合并新旧数据，也不还原操作系统、证书、系统服务账号或部署密钥。</p>
     <div className="mt-4 rounded-xl border border-hairline bg-surface-subtle p-4 text-sm" aria-live="polite">
@@ -80,6 +81,7 @@ export default function TeamRestorePanel({ backups, jobs, activity, busy, onRefr
         {time(item.createdAt)} · {backupTypeLabels[item.type] ?? item.type} · {item.id}
       </option>)}
     </select>
+    {!backups.some(item => item.restorable) && <p className="mt-2 text-sm text-ink-secondary">{backupsLoading ? '备份校验完成后，这里会显示可用还原点。' : backupsError ? '备份列表读取失败，请在上方重试。' : backups.length ? '现有备份尚未通过校验或与当前程序版本不匹配，具体原因见上方备份列表。' : '暂无可用还原点，请先创建备份。'}</p>}
     {backup && <div className="mt-3 rounded-xl border border-hairline p-4 text-sm leading-6 text-ink-secondary">
       <p>还原点：<strong className="text-ink">{time(backup.createdAt)}</strong> · 兼容版本：{backup.releaseId}</p>
       <p>业务范围：{backup.scope}</p>

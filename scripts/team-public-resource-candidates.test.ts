@@ -132,10 +132,28 @@ try {
   const missing = await publicRoute.POST(request('POST', adminCookie, { resourceType: 'video_prompt_template', resourceId: 'not-a-resource' }));
   assert.equal(missing.status, 404, '伪造不存在的身份必须失败且不能报假成功');
 
-  db.prepare("UPDATE team_resource_scopes SET deletedAt = '2026-11-06' WHERE resourceType = 'video_prompt_template' AND resourceId = ?").run(template.id);
+  const templateRef = { resourceType: 'video_prompt_template', resourceId: template.id };
+  const employeeTemplates = async () => {
+    const response = await templateRoute.GET(new Request('https://studio.example.test/api/video-prompt-templates', { headers: { Cookie: employeeCookie } }));
+    assert.equal(response.status, 200);
+    return await response.json() as Array<{ id: string }>;
+  };
+  for (const action of ['withdraw', 'trash']) {
+    assert.equal((await publicRoute.POST(request('POST', employeeCookie, { ...templateRef, action }))).status, 403, '员工不能撤回或删除公共资源');
+  }
+  assert.equal((await employeeTemplates()).some(item => item.id === template.id), true);
+  assert.equal((await publicRoute.POST(request('POST', adminCookie, { ...templateRef, action: 'withdraw' }))).status, 200);
+  assert.equal((await employeeTemplates()).some(item => item.id === template.id), false, '撤回后新创作不能选用');
+  assert.equal((await publicRoute.POST(request('POST', adminCookie, { ...templateRef, action: 'publish' }))).status, 200);
+  assert.equal((await employeeTemplates()).some(item => item.id === template.id), true, '撤回后可重新发布');
+  assert.equal((await publicRoute.POST(request('POST', adminCookie, { ...templateRef, action: 'trash' }))).status, 200);
   const afterDelete = await publicRoute.GET(request('GET', adminCookie));
   const deletedBody = await afterDelete.json() as { candidates: Array<{ resourceId: string }> };
   assert.equal(deletedBody.candidates.some((item) => item.resourceId === template.id), false, '已失效资源不能留作假候选');
+  assert.equal((await employeeTemplates()).some(item => item.id === template.id), false);
+  const { restoreResource } = await import('../lib/team-service/lifecycle/index.ts');
+  assert.equal(restoreResource(db, admin, templateRef).restored, true, '使用真实回收站记录恢复');
+  assert.equal((await employeeTemplates()).some(item => item.id === template.id), true);
   console.log('PASS: unified resource candidates, publication permissions and idempotency');
 
   // 下一条纵向切片：管理员创建的标题与 LUT 必须在员工真实制作入口生效。

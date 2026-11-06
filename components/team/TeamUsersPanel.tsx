@@ -228,7 +228,6 @@ export default function TeamUsersPanel() {
             <input aria-label="团队手动默认上限" className="input-field mt-1 w-44" type="number" min="0" step="1" value={teamDefault} disabled={teamMode === 'auto'} onChange={event => setTeamDefault(event.target.value)} required={teamMode === 'manual'} />
           </label>
           <button className="btn-primary" type="submit" disabled={teamPolicyBusy || !teamPolicy}>保存团队默认</button>
-          <span className="pb-2 text-xs text-ink-tertiary">策略版本 {teamPolicy?.version ?? '—'}</span>
         </form>
         <p className="mt-3 text-xs leading-5 text-ink-tertiary">零表示不能开始新的生成，与“暂停新的付费生成”分别生效。调低上限或恢复继承只影响后续提交，已受理及受理不明的请求继续收取结果。</p>
         <p className="mt-2 text-xs leading-5 text-ink-tertiary">升级时旧个人固定值已一次性迁移为继承，并保留原值审计；之后明确设置的个人固定覆盖不会在重启时重置。自动上限随实际需求变化，不是承诺给个人的永久配额。</p>

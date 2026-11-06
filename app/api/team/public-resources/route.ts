@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { readRuntimeConfig } from '@/lib/team-service/config';
 import { requirePrincipal } from '@/lib/team-service/auth/request';
-import { publishTeamResource } from '@/lib/team-service/files/publication';
+import { publishTeamResource, withdrawTeamResource } from '@/lib/team-service/files/publication';
+import { softDeleteResource } from '@/lib/team-service/lifecycle';
 import { ResourceAccessError } from '@/lib/team-service/resource-scopes';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
@@ -29,7 +30,12 @@ async function __teamRoutePOST(request: Request) {
     || !body.resourceId.trim()) {
     return NextResponse.json({ error: 'invalid_resource', message: '请从候选列表选择有效资源。' }, { status: 400 });
   }
+  const action = body.action ?? 'publish';
+  if (!['publish', 'withdraw', 'trash'].includes(String(action))) {
+    return NextResponse.json({ error: 'invalid_action', message: '不支持此资源操作。' }, { status: 400 });
+  }
   if (VERSIONED.has(body.resourceType)) {
+    if (action === 'trash') return NextResponse.json({ error: 'invalid_action', message: '版本资源请使用撤回发布，保留历史任务引用。' }, { status: 400 });
     if (body.resourceType !== 'script_catalog_revision' && body.resourceType !== 'viral_template_revision') {
       return NextResponse.json({ error: 'versioned_publication_required', message: '请从候选列表选择完整版本，不能单独发布库根或条目。' }, { status: 409 });
     }
@@ -37,6 +43,14 @@ async function __teamRoutePOST(request: Request) {
       const { listPublicResourceCandidates } = await import('@/lib/team-service/resource-candidates');
       const candidate = listPublicResourceCandidates(getDb(), principal).find((item) => item.resourceType === body.resourceType && item.resourceId === body.resourceId);
       if (!candidate) return NextResponse.json({ error: 'candidate_unavailable', message: '目标版本不存在、无权处理或已失效，请刷新候选列表。' }, { status: 404 });
+      if (action === 'withdraw') {
+        const { withdrawVersionedTeamResource } = await import('@/lib/team-service/versioned-publication');
+        withdrawVersionedTeamResource(getDb(), principal, {
+          resourceType: body.resourceType, resourceId: body.resourceId,
+          baseRevisionId: typeof body.baseRevisionId === 'string' ? body.baseRevisionId : null,
+        });
+        return NextResponse.json({ published: false });
+      }
       const { publishVersionedTeamResource } = await import('@/lib/team-service/versioned-publication');
       const result = publishVersionedTeamResource(getDb(), principal, {
         resourceType: body.resourceType, resourceId: body.resourceId,
@@ -65,6 +79,14 @@ async function __teamRoutePOST(request: Request) {
         error: scope ? 'candidate_unavailable' : 'resource_not_found',
         message: '资源不存在、文件已失效或当前不可发布，请刷新候选列表。',
       }, { status: scope ? 409 : 404 });
+    }
+    if (action === 'withdraw') {
+      withdrawTeamResource(db, principal, { resourceType: body.resourceType, resourceId: body.resourceId });
+      return NextResponse.json({ published: false });
+    }
+    if (action === 'trash') {
+      const result = softDeleteResource(db, principal, { resourceType: body.resourceType, resourceId: body.resourceId });
+      return NextResponse.json({ trashed: true, ...result });
     }
     const result = publishTeamResource(db, principal, { resourceType: body.resourceType, resourceId: body.resourceId });
     return NextResponse.json({ published: true, ...result });

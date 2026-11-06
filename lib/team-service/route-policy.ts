@@ -323,6 +323,7 @@ const AUTHENTICATED = new Set([
   '/api/team/auth/change-password POST', '/api/team/auth/logout POST',
   '/api/team/recycle-bin GET', '/api/team/recycle-bin/restore POST',
   '/api/canvas/models GET', '/api/final-edit/capabilities GET',
+  '/api/batch-production/readiness GET',
   '/api/system-fonts GET', '/api/packaging/system-fonts GET', '/api/team/models GET',
   '/api/team/files/[id] GET', '/api/images/[...path] GET', '/api/videos/[...path] GET',
   '/api/team/uploads POST', '/api/team/uploads/[id] GET', '/api/team/uploads/[id] DELETE',
@@ -337,7 +338,7 @@ const ADMIN_PREFIXES = ['/api/providers', '/api/team/users'];
 const ADMIN = new Set([
   '/api/company-provider/health GET',
   '/api/batch-production/proxies/cleanup POST', '/api/batch-production/proxies/usage GET',
-  '/api/batch-production/readiness GET', '/api/batch-production/recovery GET',
+  '/api/batch-production/recovery GET',
   '/api/team/public-resources GET', '/api/team/public-resources POST',
   '/api/team/public-resources/bgm GET', '/api/team/public-resources/bgm POST',
   '/api/team/production-control GET', '/api/team/production-control PATCH',

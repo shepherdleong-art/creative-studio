@@ -49,7 +49,7 @@ const { initializeFirstAdministrator } = await import('../lib/team-service/auth/
 const { createTeamAuthService, BoundedKdfScheduler } = await import('../lib/team-service/auth/service.ts');
 const { setTeamAuthServiceForTests } = await import('../lib/team-service/auth/runtime.ts');
 const { sessionCookie } = await import('../lib/team-service/auth/request.ts');
-const { registerRootScope } = await import('../lib/team-service/resource-scopes.ts');
+const { registerRootScope, registerInheritedScope } = await import('../lib/team-service/resource-scopes.ts');
 const { registerReadyTeamFile } = await import('../lib/team-service/files/index.ts');
 
 ensureServerDeploymentMarker({
@@ -132,7 +132,39 @@ try {
   assert.equal((await imagesRoute.GET(get('https://studio.example.test/api/images/inputs/unregistered.png', userA.cookie), {
     params: Promise.resolve({ path: ['inputs', 'unregistered.png'] }),
   })).status, 404);
-  console.log('PASS: legacy media paths and team file route enforce session + entity + ready file authorization');
+  // Exercise the same authenticated frame route used by the mixcut material cards.
+  const { runFfmpeg } = await import('../lib/ffmpeg.ts');
+  const thumbnailRoute = await import('../app/api/projects/[id]/final-edit/shot-sets/[shotSetId]/module4-assets/[videoJobId]/thumbnail/route.ts');
+  db.prepare("INSERT INTO providers (id, name, baseUrl, apiKey, model) VALUES ('image-provider', 'test', '', '', 'test')").run();
+  db.prepare("INSERT INTO projects (id, name, providerId, model, prompt) VALUES ('project-a', 'test', 'image-provider', 'test', '')").run();
+  registerRootScope(db, { resourceType: 'project', resourceId: 'project-a', ownerUserId: userA.principal.userId });
+  db.prepare("INSERT INTO image_assets (id, projectId, role, filename, path) VALUES ('image-a', 'project-a', 'input', 'a.png', 'inputs/a.png')").run();
+  registerInheritedScope(db, { resourceType: 'image', resourceId: 'image-a', parent: { resourceType: 'project', resourceId: 'project-a' } });
+  db.prepare("INSERT INTO shot_sets (id, projectId, name) VALUES ('set-a', 'project-a', 'test')").run();
+  registerInheritedScope(db, { resourceType: 'shot_set', resourceId: 'set-a', parent: { resourceType: 'project', resourceId: 'project-a' } });
+  db.prepare("INSERT INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel) VALUES ('vp', 'test', 'jimeng', '', '', '', 'test')").run();
+  const videoPath = path.join(storageRoot, 'videos', 'thumbnail-source.mp4');
+  await runFfmpeg(['-f', 'lavfi', '-i', 'color=c=blue:s=160x120:r=24:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', videoPath], { timeoutMs: 15_000 });
+  db.prepare(`INSERT INTO video_jobs (id, projectId, shotSetId, sourceImageId, providerId, model, prompt, status, localVideoPath)
+    VALUES ('video-a', 'project-a', 'set-a', 'image-a', 'vp', 'test', '', 'succeeded', 'videos/thumbnail-source.mp4')`).run();
+  registerInheritedScope(db, { resourceType: 'video_job', resourceId: 'video-a', parent: { resourceType: 'project', resourceId: 'project-a' } });
+  const videoFile = registerReadyTeamFile(db, { storageRoot, absolutePath: videoPath, mimeType: 'video/mp4', ownerUserId: userA.principal.userId,
+    references: [{ resourceType: 'video_job', resourceId: 'video-a' }] });
+  const { createBackupPin } = await import('../lib/team-service/lifecycle/index.ts');
+  const backupPin = createBackupPin(db, admin, { releaseId: 'test-release', configVersion: 'test-config', fileIds: [videoFile.id] });
+  const thumbnailUrl = 'https://studio.example.test/api/projects/project-a/final-edit/shot-sets/set-a/module4-assets/video-a/thumbnail';
+  const thumbnailParams = () => ({ params: Promise.resolve({ id: 'project-a', shotSetId: 'set-a', videoJobId: 'video-a' }) });
+  for (const iteration of ['first frame', 'cached frame']) {
+    const thumbnail = await thumbnailRoute.GET(get(thumbnailUrl, userA.cookie), thumbnailParams());
+    assert.equal(thumbnail.status, 200, `${iteration}: ${thumbnail.status === 200 ? '' : await thumbnail.text()}`);
+    assert.equal(thumbnail.headers.get('Content-Type'), 'image/jpeg');
+    assert.ok((await thumbnail.arrayBuffer()).byteLength > 100);
+  }
+  assert.equal((await thumbnailRoute.GET(get(thumbnailUrl, userB.cookie), thumbnailParams())).status, 403);
+  assert.equal(db.prepare("SELECT COUNT(*) FROM team_file_references WHERE fileId = ? AND resourceId = ? AND pinKind = 'backup' AND releasedAt IS NULL").pluck().get(videoFile.id, backupPin.id), 1, '备份对原件的保护必须保留');
+  assert.equal(db.prepare("SELECT COUNT(*) FROM team_file_references r JOIN team_files f ON f.id = r.fileId WHERE f.derivedFromFileId = ? AND r.pinKind = 'backup'").pluck().get(videoFile.id), 0, '新缩略图不应冒充已进入旧备份清单');
+
+  console.log('PASS: legacy media paths, generated/cached thumbnails and team file routes enforce entity authorization');
 } finally {
   setTeamAuthServiceForTests(null);
   closeDb();

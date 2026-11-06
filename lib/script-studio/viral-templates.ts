@@ -75,6 +75,7 @@ export function findReadableViralTemplateLibrary(db: Database.Database): ViralTe
   if (access.kind === 'local') return records[0] ?? null;
   const team = findTeamVersionedRoot(db, 'viral');
   if (team) {
+    if (!team.revisionId) return null;
     const record = records.find((item) => item.id === team.rootId);
     if (!record) return null;
     access.assertAccess('viral_template_library', record.id, 'read');

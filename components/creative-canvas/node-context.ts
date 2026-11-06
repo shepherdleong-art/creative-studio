@@ -20,6 +20,7 @@ export interface CanvasCapabilityParameterDto {
 export interface CanvasModelCapabilityDto {
   key: string;
   displayName: string;
+  selectionAliasOf?: string;
   mediaKind: Exclude<CanvasMediaKind, 'audio'>;
   modes: CanvasGenerationMode[];
   legacyModes?: CanvasGenerationMode[];

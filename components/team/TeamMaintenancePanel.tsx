@@ -33,32 +33,60 @@ export default function TeamMaintenancePanel() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [backups, setBackups] = useState<Backup[]>([]);
   const [loading, setLoading] = useState(true);
+  const [backupLoading, setBackupLoading] = useState(true);
+  const [backupError, setBackupError] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [activity, setActivity] = useState<RestoreActivity>({ state: 'original', activeLabel: '正在读取实际活动数据', protectedCopies: 0 });
   const idempotency = useRef<string | null>(null);
-  const refresh = useCallback(async () => {
-    try {
-      const [jobResponse, backupResponse] = await Promise.all([
-        fetch('/api/team/maintenance/jobs', { cache: 'no-store' }),
-        fetch('/api/team/maintenance/backups', { cache: 'no-store' }),
-      ]);
-      if (!jobResponse.ok) throw new Error(await teamError(jobResponse, '无法读取维护作业'));
-      if (!backupResponse.ok) throw new Error(await teamError(backupResponse, '无法读取备份列表'));
-      const jobBody = await jobResponse.json() as { jobs: Job[]; activity: RestoreActivity };
-      setJobs(jobBody.jobs);
-      setActivity(jobBody.activity);
-      setBackups((await backupResponse.json() as { backups: Backup[] }).backups);
-      if (!jobBody.jobs.some((job) => activeStatuses.has(job.status))) idempotency.current = null;
-      setError('');
-    } catch (cause) { setError(cause instanceof Error ? cause.message : '维护状态读取失败'); }
-    finally { setLoading(false); }
+  const backupRequest = useRef<Promise<void> | null>(null);
+  const jobRequest = useRef<Promise<void> | null>(null);
+  const completedBackups = useRef<string | null>(null);
+  const refreshBackups = useCallback((): Promise<void> => {
+    if (backupRequest.current) return backupRequest.current;
+    setBackupLoading(true);
+    backupRequest.current = (async () => {
+      try {
+        const response = await fetch('/api/team/maintenance/backups', { cache: 'no-store' });
+        if (!response.ok) throw new Error(await teamError(response, '无法读取备份列表'));
+        setBackups((await response.json() as { backups: Backup[] }).backups);
+        setBackupError('');
+      } catch (cause) { setBackupError(cause instanceof Error ? cause.message : '备份列表读取失败'); }
+      finally { setBackupLoading(false); backupRequest.current = null; }
+    })();
+    return backupRequest.current;
   }, []);
+  const refreshJobs = useCallback((): Promise<void> => {
+    if (jobRequest.current) return jobRequest.current;
+    jobRequest.current = (async () => {
+      try {
+        const jobResponse = await fetch('/api/team/maintenance/jobs', { cache: 'no-store' });
+        if (!jobResponse.ok) throw new Error(await teamError(jobResponse, '无法读取维护作业'));
+        const jobBody = await jobResponse.json() as { jobs: Job[]; activity: RestoreActivity };
+        setJobs(jobBody.jobs);
+        setActivity(jobBody.activity);
+        const completed = jobBody.jobs.filter(job => job.result?.backupId || job.result?.preRestoreBackupId).map(job => job.id).sort().join(',');
+        if (completedBackups.current !== null && completedBackups.current !== completed) void refreshBackups();
+        completedBackups.current = completed;
+        if (!jobBody.jobs.some((job) => activeStatuses.has(job.status))) idempotency.current = null;
+        setError('');
+      } catch (cause) { setError(cause instanceof Error ? cause.message : '维护状态读取失败'); }
+      finally { setLoading(false); jobRequest.current = null; }
+    })();
+    return jobRequest.current;
+  }, [refreshBackups]);
+  const refresh = useCallback(async () => { await Promise.all([refreshJobs(), refreshBackups()]); }, [refreshJobs, refreshBackups]);
   useEffect(() => {
-    const timer = setInterval(() => void refresh(), 2000);
-    queueMicrotask(() => void refresh());
-    return () => clearInterval(timer);
-  }, [refresh]);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function pollJobs() {
+      await refreshJobs();
+      if (!stopped) timer = setTimeout(() => void pollJobs(), 2000);
+    }
+    // 完整备份校验只在打开、手动刷新或产生新备份时进行，避免反复扫描媒体。
+    queueMicrotask(() => { if (!stopped) { void pollJobs(); void refreshBackups(); } });
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [refreshJobs, refreshBackups]);
   async function submit() {
     if (busy) return;
     setBusy(true); setError('');
@@ -69,16 +97,18 @@ export default function TeamMaintenancePanel() {
         body: JSON.stringify({ idempotencyKey: idempotency.current, target: { kind: 'backup', backupType: 'manual' } }),
       });
       if (!response.ok) throw new Error(await teamError(response, '无法提交备份作业'));
-      await refresh();
-    } catch (cause) { setError(cause instanceof Error ? cause.message : '备份提交失败，正在重连原作业'); await refresh(); }
+      await refreshJobs();
+    } catch (cause) { await refreshJobs(); setError(cause instanceof Error ? cause.message : '备份提交失败，正在重连原作业'); }
     finally { setBusy(false); }
   }
   const active = jobs.some((job) => activeStatuses.has(job.status));
+  const latestDaily = backups.find(backup => backup.type === 'daily' && backup.verification === 'verified');
   return <>
     <section className="card p-6" aria-label="立即备份">
       <div className="flex flex-wrap items-start justify-between gap-5">
         <div><h2 className="text-lg font-semibold text-ink">立即备份</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-secondary">固定数据库、配置、媒体引用和执行证据，完成完整性校验后才可用于还原。由独立维护执行器完成，关闭此页面不会取消作业。</p>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-ink-secondary">备份包含项目、任务、资源配置、已登记的上传素材和生成文件，以及任务执行记录。完整性校验通过后可恢复整套业务数据；服务器程序版本由独立的版本维护流程管理。</p>
+          <p className="mt-2 text-sm text-ink-secondary">备份由服务器执行，关闭此页面不会取消。下方可查看每日自动备份和手动备份，并选择还原点。</p>
         </div>
         <button className="btn-primary" disabled={busy || active} onClick={() => void submit()}>{busy ? '正在提交…' : active ? '备份执行中' : '立即备份'}</button>
       </div>
@@ -98,11 +128,15 @@ export default function TeamMaintenancePanel() {
         {!loading && jobs.length === 0 && <p className="text-sm text-ink-secondary">尚未通过网页发起维护作业。</p>}
       </div>
     </section>
-    <TeamRestorePanel backups={backups} jobs={jobs} activity={activity} busy={busy} onRefresh={refresh} />
-    <TeamCleanupPanel jobs={jobs} />
     <section className="card p-6" aria-label="备份列表">
-      <h2 className="text-lg font-semibold text-ink">备份列表</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold text-ink">备份列表</h2>
+        <button className="btn-secondary btn-sm" disabled={backupLoading} onClick={() => void refreshBackups()}>{backupLoading ? '正在校验备份…' : '刷新备份列表'}</button>
+      </div>
+      {latestDaily && <p className="mt-3 text-sm text-ok">最近成功的每日自动备份：{time(latestDaily.createdAt)}</p>}
       <p className="mt-2 text-sm text-ink-secondary">只有重新通过数据库、配置、媒体和证据校验的完整备份才标记为可用于还原。</p>
+      {backupLoading && <p role="status" className="mt-3 text-sm text-ink-secondary">正在读取并校验备份文件，素材较多时可能需要一些时间。</p>}
+      {backupError && <p role="alert" className="mt-3 text-sm text-fail">{backupError}</p>}
       <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[650px] text-left text-sm">
         <thead><tr className="border-b border-hairline text-xs text-ink-tertiary"><th className="py-2 font-medium">类型</th><th className="py-2 font-medium">备份时间</th><th className="py-2 font-medium">大小</th><th className="py-2 font-medium">校验状态</th><th className="py-2 font-medium">可用于还原</th></tr></thead>
         <tbody>{backups.map((backup) => <tr key={`${backup.type}/${backup.id}`} className="border-b border-hairline last:border-0">
@@ -110,10 +144,12 @@ export default function TeamMaintenancePanel() {
           <td className="py-3 text-ink-secondary">{time(backup.createdAt)}<div className="mt-1 break-all font-mono text-[11px] text-ink-tertiary">{backup.id}</div></td>
           <td className="py-3 text-ink-secondary">{backup.totalBytes > 0 ? bytes(backup.totalBytes) : '—'}</td>
           <td className={`py-3 ${backup.verification === 'verified' ? 'text-ok' : 'text-warn'}`}>{backup.verification === 'verified' ? `已校验 · ${time(backup.verifiedAt)}` : '未通过，待核查'}</td>
-          <td className="py-3 text-ink-secondary">{backup.restorable ? '可以' : '不可以'}</td>
+          <td className="py-3 text-ink-secondary">{backup.restorable ? <a className="text-accent underline" href="#team-restore">可用 · 前往还原</a> : backup.verification === 'verified' && !backup.compatible ? `程序版本不匹配（${backup.releaseId}）` : '校验未通过'}</td>
         </tr>)}</tbody>
       </table></div>
-      {!loading && backups.length === 0 && <p className="mt-4 text-sm text-ink-secondary">尚无备份。定时备份频率和保留规则保持不变。</p>}
+      {!backupLoading && !backupError && backups.length === 0 && <p className="mt-4 text-sm text-ink-secondary">尚无备份记录。可先点击「立即备份」；自动备份是否启用需由服务器计划任务确认。</p>}
     </section>
+    <TeamRestorePanel backups={backups} jobs={jobs} activity={activity} busy={busy} backupsLoading={backupLoading} backupsError={backupError} onRefresh={refresh} />
+    <TeamCleanupPanel jobs={jobs} />
   </>;
 }

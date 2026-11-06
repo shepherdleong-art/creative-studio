@@ -67,6 +67,7 @@ export const WAITING_REASON_LABELS: Record<string, string> = {
   maintenance: '维护等待',
   model_forbidden: '模型未授权',
   scope_forbidden: '项目访问权限不足',
+  stage_canceled: '任务已取消',
 };
 
 export function taskWaitLabel(reason: string | null, concurrency?: number | null): string {

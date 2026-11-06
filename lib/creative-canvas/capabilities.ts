@@ -51,6 +51,8 @@ export interface CanvasModelCapability {
   /** 画布内部稳定键，写入节点 data.modelKey 与任务快照。 */
   key: string;
   displayName: string;
+  /** 配置完全相同的可选别名；保留旧键供历史画布和任务使用。 */
+  selectionAliasOf?: string;
   providerKind: 'company' | 'external';
   /** 供应商路由身份，例如 company-qiniuyun-kling-3-0。 */
   providerIdentity: string;
