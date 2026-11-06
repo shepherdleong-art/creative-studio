@@ -146,7 +146,6 @@ export class RemoteTransferController {
   private updateBlocked = false;
   private synchronizing: Promise<void> | null = null;
   private csrfToken: string | null = null;
-  private transferPhase = 'transport';
   private readonly diagnostics: RemoteTransferOptions['diagnostics'];
 
   constructor(options: RemoteTransferOptions) {
@@ -369,7 +368,7 @@ export class RemoteTransferController {
         if (record.state === 'paused' || record.state === 'cancelled' || abort.signal.aborted) return;
         record.state = 'failed';
         record.failureCode = transferFailure(error);
-        record.diagnosticPhase = this.transferPhase;
+        record.diagnosticPhase = record.diagnosticPhase ?? 'transport';
         if (!record.diagnosticEventId) {
           const actorUserId = record.diagnosticActorUserId;
           if (actorUserId) {
@@ -439,7 +438,7 @@ export class RemoteTransferController {
   }
 
   private async runUpload(record: TransferRecord): Promise<void> {
-    this.transferPhase = 'registration';
+    record.diagnosticPhase = 'registration';
     const abort = this.aborts.get(record.id)!;
     const stat = fs.statSync(record.sourcePath!);
     const fingerprint = `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
@@ -470,7 +469,7 @@ export class RemoteTransferController {
       this.save();
     }
     const fd = fs.openSync(record.sourcePath!, 'r');
-    this.transferPhase = 'parts';
+    record.diagnosticPhase = 'parts';
     try {
       for (const part of record.missingParts ?? []) {
         if (abort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -488,7 +487,7 @@ export class RemoteTransferController {
     if (hashFile(record.sourcePath!) !== record.expectedSha256) {
       throw new Error('源文件已变化，请重新上传');
     }
-    this.transferPhase = 'completion';
+    record.diagnosticPhase = 'completion';
     await this.request(`/api/team/uploads/${encodeURIComponent(record.uploadId)}/complete`, {
       method: 'POST', signal: abort.signal,
       headers: { 'content-type': 'application/json' },
@@ -545,9 +544,9 @@ export class RemoteTransferController {
   private async runDownload(record: TransferRecord): Promise<void> {
     const manifest = record.manifest!;
     const abort = this.aborts.get(record.id)!;
-    this.transferPhase = 'receipt';
+    record.diagnosticPhase = 'receipt';
     const receipt = async (): Promise<void> => {
-      this.transferPhase = 'receipt';
+      record.diagnosticPhase = 'receipt';
       await this.request('/api/team/downloads/receipts', {
         method: 'POST', signal: abort.signal, headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -557,6 +556,7 @@ export class RemoteTransferController {
       });
     };
     if (fs.existsSync(record.localPath!)) {
+      record.diagnosticPhase = 'verification';
       if (fs.statSync(record.localPath!).size !== manifest.size || hashFile(record.localPath!) !== manifest.sha256) {
         throw new Error('既有交付文件与当前版本清单不符，拒绝覆盖');
       }
@@ -565,7 +565,7 @@ export class RemoteTransferController {
       return;
     }
     fs.mkdirSync(path.dirname(record.partPath!), { recursive: true });
-    this.transferPhase = 'content';
+    record.diagnosticPhase = 'content';
     let offset = fs.existsSync(record.partPath!) ? fs.statSync(record.partPath!).size : 0;
     if (offset > manifest.size) { fs.rmSync(record.partPath!); offset = 0; }
     const headers: Record<string, string> = {};
@@ -593,7 +593,7 @@ export class RemoteTransferController {
       }
     } finally { fs.closeSync(fd); }
     if (total !== manifest.size || hash.digest('hex') !== manifest.sha256) throw new Error('下载哈希校验失败');
-    this.transferPhase = 'publication';
+    record.diagnosticPhase = 'publication';
     fs.copyFileSync(record.partPath!, record.localPath!, fs.constants.COPYFILE_EXCL);
     fs.rmSync(record.partPath!);
     await receipt();
@@ -638,6 +638,8 @@ export class RemoteTransferController {
     record.state = 'queued';
     delete record.pauseReason;
     delete record.failureCode;
+    delete record.diagnosticEventId;
+    delete record.diagnosticPhase;
     this.save();
     this.track(record, () => record.kind === 'upload' ? this.runUpload(record) : this.runDownload(record));
   }

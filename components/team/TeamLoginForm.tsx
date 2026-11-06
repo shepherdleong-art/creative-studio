@@ -12,8 +12,17 @@ export default function TeamLoginForm({ changePassword = false }: { changePasswo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [remember, setRemember] = useState(false);
   const nextPasswordInput = useRef<HTMLInputElement>(null);
   useEffect(() => { if (mode === 'change') nextPasswordInput.current?.focus(); }, [mode]);
+
+  useEffect(() => {
+    const reason = new URLSearchParams(window.location.search).get('reason');
+    if (reason === 'password-changed') setError('密码已修改，请使用新密码重新登录。');
+    else if (reason === 'session-expired') setError('登录状态已到期或失效，请重新登录。');
+    try { setRemember(window.localStorage.getItem('creative-studio-remember-login') === 'true'); }
+    catch { /* preference store unavailable */ }
+  }, []);
 
   useEffect(() => {
     void fetch('/api/team/auth/session', { credentials: 'same-origin', cache: 'no-store' })
@@ -40,17 +49,21 @@ export default function TeamLoginForm({ changePassword = false }: { changePasswo
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(changing
           ? { currentPassword, newPassword }
-          : { employeeId, password: currentPassword }),
+          : { employeeId, password: currentPassword, remember }),
       });
       if (!response.ok) throw new Error(await teamError(response, changing ? '改密失败' : '登录失败'));
       const result = await response.json() as { mustChangePassword: boolean };
+      if (!changing) {
+        try { window.localStorage.setItem('creative-studio-remember-login', String(remember)); }
+        catch { /* A blocked preference store must not turn login into a password store. */ }
+      }
       if (!changing && result.mustChangePassword) {
         setMode('change');
         setNewPassword('');
         setConfirmation('');
         setShowPassword(false);
       } else {
-        window.location.assign('/');
+        window.location.assign(changing ? '/team/login?reason=password-changed' : '/');
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '操作失败，请重试');
@@ -85,6 +98,10 @@ export default function TeamLoginForm({ changePassword = false }: { changePasswo
             <input className="input-field" type={showPassword ? 'text' : 'password'} autoComplete="new-password" minLength={6} maxLength={128} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required />
           </label>
         </>}
+        {mode === 'login' && <label className="flex items-center gap-2 text-sm text-ink-secondary">
+          <input type="checkbox" checked={remember} onChange={event => setRemember(event.target.checked)} />
+          记住登录状态（30 天）
+        </label>}
         <label className="flex items-center gap-2 text-sm text-ink-secondary"><input type="checkbox" checked={showPassword} onChange={event => setShowPassword(event.target.checked)} />显示密码</label>
         {error && <p role="alert" className="text-sm text-fail">{error}</p>}
         <button className="btn-primary w-full" disabled={busy} type="submit">

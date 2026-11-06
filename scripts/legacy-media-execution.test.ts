@@ -504,7 +504,10 @@ try {
 
   const fairnessPool = configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/fair-a`, apiKey: 'shared-secret', capacity: 1 });
   configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/fair-b`, apiKey: 'shared-secret', capacity: 1 });
+  const { readTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+  updateTeamConcurrencyPolicy(db, { mode: 'auto', manualDefaultConcurrency: 1, expectedVersion: readTeamConcurrencyPolicy(db).version });
   member('member-fair');
+  updateActorPolicy(db, { actorId: 'member-fair', monthlyLimitMinor: null, personalConcurrency: 0, concurrencyMode: 'inherit', paused: false, expectedVersion: 1 });
   provider('fair-image-a', 'openai-compatible', `${baseUrl}/fair-a`);
   provider('fair-image-b', 'openai-compatible', `${baseUrl}/fair-b`);
   project('project-fair', 'member-fair', 'fair-image-a');
@@ -542,6 +545,13 @@ try {
   assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-fair-a'").pluck().get() as string), 'succeeded');
   assert.equal(imageRequests.filter((url) => url === '/fair-a/v1/images/edits').length, 1);
   assert.equal(imageRequests.filter((url) => url === '/fair-b/v1/images/edits').length, 1);
+
+  imageJob('job-fair-auto-a', 'project-fair', 'member-fair', 'fair-image-a');
+  imageJob('job-fair-auto-b', 'project-fair', 'member-fair', 'fair-image-b');
+  await queue.runQueue({ projectId: 'project-fair', concurrency: 2, maxAttempts: 2, timeoutMs: 60_000 });
+  assert.equal(imageRequests.filter((url) => url === '/fair-a/v1/images/edits').length, 2, '自动继承成员在真实图片入口借用空闲 A 池容量');
+  assert.equal(imageRequests.filter((url) => url === '/fair-b/v1/images/edits').length, 2, '自动继承成员在真实图片入口借用空闲 B 池容量');
+  assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE state='held' AND kind='concurrency' AND actorId='member-fair'").pluck().get(), 0, '真实图片完成后释放自动借用名额，不改变费用台账');
 
   imageJob('job-fair-c', 'project-fair', 'member-fair', 'fair-image-a');
   imageJob('job-fair-d', 'project-fair', 'member-fair', 'fair-image-b');

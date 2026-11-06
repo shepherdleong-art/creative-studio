@@ -62,16 +62,19 @@ const initialized = await initializeFirstAdministrator({ db, employeeId: '0000',
 const service = createTeamAuthService({ db, kdf, passwordParams });
 setTeamAuthServiceForTests(service);
 const adminLogin = await service.login({ employeeId: '0000', password: initialized.credential });
-const admin = await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-usage-routes-password');
+await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-usage-routes-password');
+const adminSession = await service.login({ employeeId: '0000', password: 'admin-usage-routes-password' });
+const admin = adminSession.principal;
 async function account(employeeId: string) {
   const created = await service.createUser(admin, { employeeId, displayName: employeeId, role: 'employee' });
   const login = await service.login({ employeeId, password: created.credential });
-  const principal = await service.changeOwnPassword(login.principal, created.credential, `${employeeId}-usage-routes-password`);
-  return { principal, cookie: sessionCookie(login.token).split(';', 1)[0] };
+  await service.changeOwnPassword(login.principal, created.credential, `${employeeId}-usage-routes-password`);
+  const authenticated = await service.login({ employeeId, password: `${employeeId}-usage-routes-password` });
+  return { principal: authenticated.principal, cookie: sessionCookie(authenticated.token).split(';', 1)[0] };
 }
 const alice = await account('0001');
 const bob = await account('0002');
-const adminCookie = sessionCookie(adminLogin.token).split(';', 1)[0];
+const adminCookie = sessionCookie(adminSession.token).split(';', 1)[0];
 
 const usageRoute = await import('../app/api/team/usage/route.ts');
 const exportRoute = await import('../app/api/team/usage/export/route.ts');
@@ -119,7 +122,7 @@ try {
   assert.equal(memberBody.items[0].paused, true);
 
   const employeeTeamPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, alice.cookie, {
-    method: 'PATCH', ...json({ manualDefaultConcurrency: 3, expectedVersion: 0 }),
+    method: 'PATCH', ...json({ mode: 'manual', manualDefaultConcurrency: 3, expectedVersion: 1 }),
   }));
   assert.equal(employeeTeamPolicy.status, 403, '员工不得保存团队默认并发');
   const employeeTeamPolicyRead = await concurrencyRoute.GET(request(teamConcurrencyUrl, alice.cookie));
@@ -131,12 +134,15 @@ try {
   const unavailableAutoPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, adminCookie, {
     method: 'PATCH', ...json({ mode: 'auto', manualDefaultConcurrency: 3, expectedVersion: 0 }),
   }));
-  assert.equal(unavailableAutoPolicy.status, 400, '本票不得提前启用自动模式');
+  assert.equal(unavailableAutoPolicy.status, 200, await unavailableAutoPolicy.clone().text());
+  assert.deepEqual(await unavailableAutoPolicy.json(), { mode: 'auto', manualDefaultConcurrency: 3, version: 1 });
+  const autoInherited = await policyRoute.GET(request(`https://studio.example.test/api/team/members/${alice.principal.userId}/policy`, adminCookie), { params: Promise.resolve({ id: alice.principal.userId }) });
+  assert.equal((await autoInherited.json()).effectiveConcurrency, null, '自动继承没有永久承诺的个人固定配额');
   const teamPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, adminCookie, {
-    method: 'PATCH', ...json({ manualDefaultConcurrency: 3, expectedVersion: 0 }),
+    method: 'PATCH', ...json({ mode: 'manual', manualDefaultConcurrency: 3, expectedVersion: 1 }),
   }));
   assert.equal(teamPolicy.status, 200, await teamPolicy.clone().text());
-  assert.deepEqual(await teamPolicy.json(), { mode: 'manual', manualDefaultConcurrency: 3, version: 1 });
+  assert.deepEqual(await teamPolicy.json(), { mode: 'manual', manualDefaultConcurrency: 3, version: 2 });
   const staleTeamPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, adminCookie, {
     method: 'PATCH', ...json({ manualDefaultConcurrency: 9, expectedVersion: 0 }),
   }));
@@ -185,7 +191,7 @@ try {
   assert.equal(inheritedMember.concurrencyMode, 'inherit');
   assert.equal(inheritedMember.paused, false, '恢复继承不得静默解除暂停');
   assert.deepEqual(inheritedMember.allowedModels, ['model-only']);
-  assert.deepEqual((await concurrencyRoute.GET(request(teamConcurrencyUrl, adminCookie)).then(response => response.json())), { mode: 'manual', manualDefaultConcurrency: 3, version: 1 });
+  assert.deepEqual((await concurrencyRoute.GET(request(teamConcurrencyUrl, adminCookie)).then(response => response.json())), { mode: 'manual', manualDefaultConcurrency: 3, version: 2 });
 
   const policyUrl = `https://studio.example.test/api/team/members/${alice.principal.userId}/policy`;
   const policyContext = { params: Promise.resolve({ id: alice.principal.userId }) };

@@ -31,6 +31,7 @@ import { resolveCoverContractHash } from './cover-contract.ts';
 import { BATCH_OUTPUT_PRESETS, type BatchOutputPreset } from './output-presets.ts';
 import { parsePackagingConfig } from '../media-core/packaging-vars.ts';
 import { renderVideoPackaging } from '../media-core/packaging-render.ts';
+import { managedResourceVisibility } from '../media-core/access-context.ts';
 
 export { BATCH_OUTPUT_PRESETS, type BatchOutputPreset } from './output-presets.ts';
 export type BatchRenderAudioMode = 'narration' | 'silent_placeholder';
@@ -501,7 +502,10 @@ async function resolveFrozenLut(
   if (colorSnapshot.lutId === null) return null;
   if (!colorSnapshot.lutFingerprint || colorSnapshot.lutFingerprint.startsWith('unresolved:')) throw error('冻结 LUT 缺少完整内容指纹');
   const row = db.prepare(`SELECT projectId, relativePath, contentFingerprint FROM batch_luts WHERE id = ?`).get(colorSnapshot.lutId) as { projectId: string; relativePath: string; contentFingerprint: string } | undefined;
-  if (!row || row.projectId !== projectId) throw error('冻结 LUT 不属于当前项目或记录不存在');
+  if (!row) throw error('冻结 LUT 记录不存在');
+  if (row.projectId !== projectId && managedResourceVisibility('lut', colorSnapshot.lutId) !== 'public') {
+    throw error('冻结 LUT 不属于当前项目且不是团队公开资源');
+  }
   let filePath: string;
   try {
     filePath = dataRootPath === dataRoot()

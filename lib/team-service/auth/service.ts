@@ -298,13 +298,8 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
             credentialConsumedAt = NULL, sessionVersion = ?, updatedAt = ?
         WHERE id = ? AND passwordHash = ?
       `).run(nextHash, nextVersion, timestamp, current.id, user.passwordHash);
-      db.prepare(`
-        UPDATE team_sessions SET revokedAt = ? WHERE userId = ? AND id <> ? AND revokedAt IS NULL
-      `).run(timestamp, current.id, principal.sessionId);
-      const kept = db.prepare(`
-        UPDATE team_sessions SET sessionVersion = ? WHERE id = ? AND userId = ? AND revokedAt IS NULL
-      `).run(nextVersion, principal.sessionId, current.id);
-      if (kept.changes !== 1) throw new TeamAuthError('session_invalid', '登录状态已失效，请重新登录。', 401);
+      db.prepare('UPDATE team_sessions SET revokedAt = ? WHERE userId = ? AND revokedAt IS NULL')
+        .run(timestamp, current.id);
       return nextVersion;
     });
     const nextVersion = change.immediate();

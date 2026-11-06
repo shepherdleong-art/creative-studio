@@ -104,7 +104,9 @@ export class ClientDiagnosticQueue {
       return { kind: 'duplicate', clientEventId: event.clientEventId };
     }
     this.events = [...this.events.filter((candidate) => candidate.clientEventId !== event.clientEventId
-      && Date.now() - Date.parse(candidate.capturedAt!) <= 7 * 24 * 60 * 60 * 1000), event].slice(-this.maximum);
+      && Date.now() - Date.parse(candidate.capturedAt!) <= 7 * 24 * 60 * 60 * 1000), event]
+      .filter((candidate) => Date.now() - Date.parse(candidate.capturedAt!) <= 7 * 24 * 60 * 60 * 1000)
+      .slice(-this.maximum);
     this.save();
     return { kind: 'pending', clientEventId: event.clientEventId };
   }

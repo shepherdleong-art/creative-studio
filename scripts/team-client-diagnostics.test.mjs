@@ -25,6 +25,8 @@ try {
   const persisted = fs.readFileSync(filePath, 'utf8');
   for (const forbidden of ['secret', 'sensitive', 'requestBody', 'cookies', 'signature', 'private']) assert.equal(persisted.includes(forbidden), false, forbidden);
 
+  queue.capture({ ...input, clientEventId: 'expired-event', capturedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString() });
+  assert.equal(queue.pending().some((event) => event.clientEventId === 'expired-event'), false, '过期事件不得继续占用离线队列');
   const restarted = new ClientDiagnosticQueue(filePath, { maxEvents: 2 });
   assert.deepEqual(restarted.pending().map((event) => event.clientEventId), ['transfer-event-b', 'update-event-c'], '重开后保留待报事件');
   assert.equal(restarted.acknowledge('missing-event'), false);

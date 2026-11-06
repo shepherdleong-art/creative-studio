@@ -113,7 +113,7 @@ try {
   );
   const admin = await auth.changeOwnPassword(adminLogin.principal, credential, 'first-run-admin-password');
   assert.equal(admin.mustChangePassword, false);
-  const adminCookie = cookieOf(adminLogin.token);
+  const adminCookie = cookieOf((await auth.login({ employeeId: 'first-admin', password: 'first-run-admin-password' })).token);
 
   // 供应商通过正式 POST 入口创建，响应不回显密钥。
   const providerResponse = await providersRoute.POST(request('POST', '/api/providers', adminCookie, {
@@ -129,7 +129,7 @@ try {
   const provider = JSON.parse(providerText) as { id: string; configured: boolean };
   assert.equal(provider.configured, true);
 
-  // 新员工默认零额度并继承尚未配置的团队零并发；管理员通过正式成员策略入口授权。
+  // 新员工默认零额度并继承团队自动公平规则；管理员通过正式成员策略入口授权。
   const createdEmployee = await usersRoute.POST(request('POST', '/api/team/users', adminCookie, {
     employeeId: 'first-employee', displayName: '首启员工', role: 'employee',
   }));
@@ -137,7 +137,7 @@ try {
   const employeeRecord = await createdEmployee.json() as { user: { id: string }; credential: string };
   const employeeLogin = await auth.login({ employeeId: 'first-employee', password: employeeRecord.credential });
   const employee = await auth.changeOwnPassword(employeeLogin.principal, employeeRecord.credential, 'first-run-employee-password');
-  const employeeCookie = cookieOf(employeeLogin.token);
+  const employeeCookie = cookieOf((await auth.login({ employeeId: 'first-employee', password: 'first-run-employee-password' })).token);
   const policy = await memberPolicyRoute.GET(
     request('GET', `/api/team/members/${employee.userId}/policy`, adminCookie),
     { params: Promise.resolve({ id: employee.userId }) },
@@ -145,13 +145,14 @@ try {
   assert.equal(policy.status, 200);
   const policyBody = await policy.json() as {
     monthlyLimitMinor: number | null; personalConcurrency: number; version: number;
-    concurrencyMode: 'legacy' | 'inherit' | 'fixed'; effectiveConcurrency: number;
+    concurrencyMode: 'legacy' | 'inherit' | 'fixed'; effectiveConcurrency: number | null;
   };
   assert.equal(policyBody.monthlyLimitMinor, 0, '新账号默认零额度');
   assert.equal(policyBody.personalConcurrency, 0, '新账号默认零并发');
   assert.equal(policyBody.version, 1, '新账号建号事务写入一次继承标记');
   assert.equal(policyBody.concurrencyMode, 'inherit');
-  assert.equal(policyBody.effectiveConcurrency, 0, '未配置团队默认前安全保持零并发');
+  assert.equal(policyBody.effectiveConcurrency, null, '新账号默认继承自动公平共享，不承诺个人固定配额');
+  assert.equal(policyBody.monthlyLimitMinor, 0, '自动并发不得放宽新账号的零费用额度');
   const granted = await memberPolicyRoute.PATCH(
     request('PATCH', `/api/team/members/${employee.userId}/policy`, adminCookie, {
       monthlyLimitMinor: 100000, personalConcurrency: 1, concurrencyMode: 'fixed', paused: false, expectedVersion: 1,

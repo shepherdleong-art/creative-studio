@@ -54,6 +54,7 @@ try {
   const context = await browser.newContext();
   const page = await context.newPage();
   const errors = [];
+  page.on('pageerror', (error) => { if (!error.message.includes('private source')) errors.push(error.message); });
   await page.addInitScript(() => {
     window.userId = 'alice';
     window.sent = [];
@@ -77,7 +78,6 @@ try {
   const origin = `http://127.0.0.1:${server.address().port}`;
   await page.goto(origin);
   await page.waitForFunction(() => window.userId === 'alice' && localStorage.length === 0);
-  const reason = new Error('private source https://example.test/?signature=secret');
   await page.evaluate(() => {
     const rejection = new PromiseRejectionEvent('unhandledrejection', { reason: window.failure, promise: Promise.reject(window.failure) });
     rejection.preventDefault();
@@ -118,7 +118,8 @@ try {
   await reopened.waitForFunction(() => localStorage.getItem('creative-studio-client-diagnostics-v1') === null);
   await reopened.evaluate(() => { window.userId = 'bob'; });
   await reopened.evaluate(() => window.dispatchEvent(new Event('online')));
-  await reopened.waitForTimeout(100);  assert.equal(await reopened.evaluate(() => window.sent.length), 1, '换账号不得补报旧账号记录');
+  await reopened.waitForTimeout(100);
+  assert.equal(await reopened.evaluate(() => window.sent.length), 1, '换账号不得补报旧账号记录');
   assert.deepEqual(errors, []);
   console.log('PASS real browser UI capture, offline persistence, stable retry and account isolation');
 } finally {

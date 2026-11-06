@@ -53,6 +53,15 @@ export default function ViralTemplateSettings() {
   const [preview, setPreview] = useState<{ file: File; report: PreviewReport } | null>(null);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [teamAdmin, setTeamAdmin] = useState(false);
+
+  useEffect(() => {
+    void fetch('/api/team/auth/session', { cache: 'no-store' }).then(async (response) => {
+      if (!response.ok) return;
+      const body = await response.json() as { principal?: { role?: string } };
+      setTeamAdmin(body.principal?.role === 'admin');
+    }).catch(() => {});
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -105,7 +114,7 @@ export default function ViralTemplateSettings() {
       const counts = body.report?.statusCounts;
       const suffix = body.created === false
         ? '内容指纹相同，未产生新版本。'
-        : `已保存为新版本（可用 ${counts?.usable ?? 0} · 占位 ${counts?.unusable ?? 0} · 待检查 ${counts?.review ?? 0}）。`;
+        : `已保存为${teamAdmin ? '待发布' : '新'}版本（可用 ${counts?.usable ?? 0} · 占位 ${counts?.unusable ?? 0} · 待检查 ${counts?.review ?? 0}）。${teamAdmin ? '请到「公共资源 → 已有资源候选」选择并发布。' : ''}`;
       setMessage({ text: `导入完成，${suffix}`, success: true });
       setPreview(null);
       await load();
@@ -143,7 +152,7 @@ export default function ViralTemplateSettings() {
             <h3 className="font-semibold">爆文模板库</h3>
             {current ? (
               <span className="status-badge status-succeeded">
-                <Icon name="check" size={12} /> 已启用 v{current.revisionNumber}
+                <Icon name="check" size={12} /> 团队当前 v{current.revisionNumber}
               </span>
             ) : (
               <span className="status-badge status-canceled">未导入</span>
@@ -263,8 +272,11 @@ export default function ViralTemplateSettings() {
                 {revision.current ? (
                   <span className="status-badge status-succeeded shrink-0">当前</span>
                 ) : (
-                  <button type="button" className="btn-secondary btn-sm shrink-0" onClick={() => void activate(revision.id)}>
-                    激活
+                  <button type="button" className="btn-secondary btn-sm shrink-0" onClick={() => {
+                    if (teamAdmin) window.location.assign('/team/admin/resources#resource-candidates-heading');
+                    else void activate(revision.id);
+                  }}>
+                    {teamAdmin ? '去发布' : '激活'}
                   </button>
                 )}
               </div>

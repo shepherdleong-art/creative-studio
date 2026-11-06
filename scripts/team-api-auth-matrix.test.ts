@@ -71,15 +71,18 @@ const service = createTeamAuthService({ db, kdf, passwordParams });
 setTeamAuthServiceForTests(service);
 
 const adminLogin = await service.login({ employeeId: '0000', password: initialized.credential });
-const adminPrincipal = await service.changeOwnPassword(
+await service.changeOwnPassword(
   adminLogin.principal, initialized.credential, 'admin-matrix-password',
 );
-const admin = { principal: adminPrincipal, cookie: sessionCookie(adminLogin.token).split(';', 1)[0] };
+const adminSession = await service.login({ employeeId: '0000', password: 'admin-matrix-password' });
+const adminPrincipal = adminSession.principal;
+const admin = { principal: adminPrincipal, cookie: sessionCookie(adminSession.token).split(';', 1)[0] };
 async function account(employeeId: string, displayName: string) {
   const created = await service.createUser(adminPrincipal, { employeeId, displayName, role: 'employee' });
   const login = await service.login({ employeeId, password: created.credential });
-  const principal = await service.changeOwnPassword(login.principal, created.credential, `${employeeId}-matrix-password`);
-  return { principal, cookie: sessionCookie(login.token).split(';', 1)[0] };
+  await service.changeOwnPassword(login.principal, created.credential, `${employeeId}-matrix-password`);
+  const authenticated = await service.login({ employeeId, password: `${employeeId}-matrix-password` });
+  return { principal: authenticated.principal, cookie: sessionCookie(authenticated.token).split(';', 1)[0] };
 }
 
 const userA = await account('0001', '甲');
