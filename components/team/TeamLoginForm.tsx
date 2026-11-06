@@ -10,19 +10,19 @@ export default function TeamLoginForm({ changePassword = false }: { changePasswo
   const [newPassword, setNewPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(() => {
-    const reason = new URLSearchParams(window.location.search).get('reason');
-    if (reason === 'password-changed') return '密码已修改，请使用新密码重新登录。';
-    if (reason === 'session-expired') return '登录状态已到期或失效，请重新登录。';
-    return '';
-  });
+  const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [remember, setRemember] = useState(() => {
-    try { return window.localStorage.getItem('creative-studio-remember-login') === 'true'; }
-    catch { return false; }
-  });
+  const [remember, setRemember] = useState(false);
   const nextPasswordInput = useRef<HTMLInputElement>(null);
   useEffect(() => { if (mode === 'change') nextPasswordInput.current?.focus(); }, [mode]);
+
+  useEffect(() => {
+    const reason = new URLSearchParams(window.location.search).get('reason');
+    if (reason === 'password-changed') setError('密码已修改，请使用新密码重新登录。');
+    else if (reason === 'session-expired') setError('登录状态已到期或失效，请重新登录。');
+    try { setRemember(window.localStorage.getItem('creative-studio-remember-login') === 'true'); }
+    catch { /* preference store unavailable */ }
+  }, []);
 
   useEffect(() => {
     void fetch('/api/team/auth/session', { credentials: 'same-origin', cache: 'no-store' })
