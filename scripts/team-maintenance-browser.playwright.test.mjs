@@ -120,7 +120,12 @@ try {
   const context = await browser.newContext({ locale: 'zh-CN' });
   const page = await context.newPage();
   const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('pageerror', (error) => { errors.push(error.message); console.error('maintenance browser pageerror', error.message); });
+  page.on('response', (response) => {
+    if (response.url().includes('/api/team/auth/') && response.request().method() !== 'GET') {
+      console.error('maintenance auth response', response.request().method(), response.status(), response.url());
+    }
+  });
   await page.goto(`${baseUrl}/team/login`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.locator('input[autocomplete="username"]').fill('00042');
   await page.locator('input[autocomplete="current-password"]').fill(initializedCredential);
@@ -239,6 +244,12 @@ try {
   assert.deepEqual(errors, []);
   const employeeContext = await browser.newContext({ locale: 'zh-CN' });
   const employeePage = await employeeContext.newPage();
+  employeePage.on('pageerror', (error) => console.error('employee browser pageerror', error.message));
+  employeePage.on('response', (response) => {
+    if (response.url().includes('/api/team/auth/') && response.request().method() !== 'GET') {
+      console.error('employee auth response', response.request().method(), response.status(), response.url());
+    }
+  });
   await employeePage.goto(`${baseUrl}/team/login`, { waitUntil: 'domcontentloaded' });
   await employeePage.locator('input[autocomplete="username"]').fill('00001');
   await employeePage.locator('input[autocomplete="current-password"]').fill(employee.body.credential);
@@ -272,6 +283,7 @@ try {
     jobStore.close();
   } catch (stateError) { console.error('job state unavailable', stateError); }
   console.error(serverOutput.slice(-5000));
+  console.error('maintenance browser page errors', errors);
   throw error;
 } finally {
   if (browser) await browser.close();
