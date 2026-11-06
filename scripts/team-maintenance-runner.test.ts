@@ -28,6 +28,8 @@ function write(relative: string, content: string): string {
 function makeFixtureRelease(): void {
   write('app/server.js', '// fixture\n');
   write('runtime/process-tree.mjs', '// fixture\n');
+  write('app/runtime/team-server-entry.cjs', '// fixture entry\n');
+  write('app/scripts/team-server/maintenance.mjs', '// fixture maintenance\n');
   const node = write('runtimes/node/node.exe', 'fixture node');
   const caddy = write('tools/caddy/caddy.exe', 'fixture caddy');
   const winsw = write('tools/winsw/WinSW.exe', 'fixture winsw');
@@ -44,7 +46,10 @@ function makeFixtureRelease(): void {
   write('service/packaging/forbidden-paths.json', fs.readFileSync(path.resolve('scripts/packaging/forbidden-paths.json'), 'utf8'));
   write('START-HERE.md', '# fixture server package\n');
   write('deployment.example.json', '{"schemaVersion":1}\n');
-  writeReleaseManifest(releaseRoot, { releaseId: 'release-1', appVersion: '0.7.1', sourceCommit: 'fixture', fixture: true });
+  writeReleaseManifest(releaseRoot, {
+    releaseId: 'release-1', appVersion: '0.7.1', sourceCommit: 'fixture', fixture: true,
+    compatibility: { minAppVersion: '0.7.1', maxAppVersion: '0.7.1', dataSchemaMin: 1, dataSchemaMax: 1 },
+  });
 }
 
 function invoke(...args: string[]) {

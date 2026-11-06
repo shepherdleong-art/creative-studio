@@ -10,6 +10,7 @@ import {
   verifyReleaseManifest,
   writeReleaseManifest,
 } from './team-server/distribution.mjs';
+import { TEAM_SERVICE_MIGRATIONS } from '../lib/team-service/schema.ts';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -153,7 +154,14 @@ try {
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
   const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
   const sourceCommit = commit.status === 0 ? commit.stdout.trim() : 'unknown';
-  const manifest = writeReleaseManifest(staging, { releaseId, appVersion: packageJson.version, sourceCommit, fixture });
+  const manifest = writeReleaseManifest(staging, {
+    releaseId, appVersion: packageJson.version, sourceCommit, fixture,
+    compatibility: {
+      minAppVersion: packageJson.version, maxAppVersion: packageJson.version,
+      dataSchemaMin: TEAM_SERVICE_MIGRATIONS.at(-1)?.version,
+      dataSchemaMax: TEAM_SERVICE_MIGRATIONS.at(-1)?.version,
+    },
+  });
   assertExactTopLevel(staging, 'serverReleaseGuard');
   scanDistributionPayload(staging, 'server');
   verifyReleaseManifest(staging, { allowFixture: fixture });
