@@ -1,5 +1,5 @@
 import { authError, authJson, principalBody, readJson } from '../../../../../lib/team-service/auth/http.ts';
-import { assertTrustedWriteRequest, requirePrincipal } from '../../../../../lib/team-service/auth/request.ts';
+import { assertTrustedWriteRequest, clearSessionCookie, requirePrincipal } from '../../../../../lib/team-service/auth/request.ts';
 import { getTeamAuthService } from '../../../../../lib/team-service/auth/runtime.ts';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
@@ -14,7 +14,7 @@ async function __teamRoutePOST(request: Request): Promise<Response> {
       typeof body.currentPassword === 'string' ? body.currentPassword : '',
       typeof body.newPassword === 'string' ? body.newPassword : '',
     );
-    return authJson(principalBody(updated));
+    return authJson({ ...principalBody(updated), requiresReauthentication: true, message: '密码已修改，请使用新密码重新登录。' }, { setCookie: clearSessionCookie() });
   } catch (error) {
     return authError(error);
   }

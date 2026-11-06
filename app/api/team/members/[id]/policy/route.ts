@@ -33,6 +33,7 @@ async function __teamRoutePATCH(request: Request, context: { params: Promise<{ i
     }
     if ((monthlyLimitMinor !== null && (!Number.isSafeInteger(monthlyLimitMinor) || Number(monthlyLimitMinor) < 0))
       || !Number.isSafeInteger(body.personalConcurrency) || Number(body.personalConcurrency) < 0
+      || (body.concurrencyMode !== undefined && body.concurrencyMode !== 'inherit' && body.concurrencyMode !== 'fixed')
       || typeof body.paused !== 'boolean' || !Number.isSafeInteger(body.expectedVersion)) {
       throw new TeamUsageError(400, 'invalid_policy', '额度、并发、暂停状态或策略版本无效。');
     }
@@ -40,6 +41,7 @@ async function __teamRoutePATCH(request: Request, context: { params: Promise<{ i
       targetUserId: id,
       monthlyLimitMinor: monthlyLimitMinor as number | null,
       personalConcurrency: Number(body.personalConcurrency),
+      concurrencyMode: body.concurrencyMode as 'inherit' | 'fixed' | undefined,
       paused: body.paused,
       expectedVersion: Number(body.expectedVersion),
       allowedModels: body.allowedModels as string[] | null | undefined,

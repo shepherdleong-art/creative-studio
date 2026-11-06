@@ -28,6 +28,10 @@ async function __teamRoutePOST(request: Request): Promise<Response> {
       actorUserId: typeof body.actorUserId === 'string' ? body.actorUserId : undefined,
       operationId: typeof body.operationId === 'string' ? body.operationId : undefined,
       attemptId: typeof body.attemptId === 'string' ? body.attemptId : undefined,
+      transferId: typeof body.transferId === 'string' ? body.transferId : undefined,
+      phase: typeof body.phase === 'string' ? body.phase : undefined,
+      resourceType: typeof body.resourceType === 'string' ? body.resourceType : undefined,
+      resourceId: typeof body.resourceId === 'string' ? body.resourceId : undefined,
     }, {
       clientVersion: request.headers.get('x-creative-studio-client-version') || undefined,
       serverReleaseId: process.env.CREATIVE_STUDIO_SERVER_RELEASE_ID?.trim() || 'unknown',

@@ -355,6 +355,8 @@ export interface TeamMemberSummary {
   remainingMinor: number | null;
   currentConcurrency: number;
   concurrencyLimit: number;
+  concurrencyMode: ActorPolicy['concurrencyMode'];
+  concurrencySource: ActorPolicy['concurrencySource'];
   paused: boolean;
   allowedModels: string[] | null;
   policyVersion: number;
@@ -413,12 +415,14 @@ function memberSummary(db: Database.Database, row: MemberRow, now: Date): TeamMe
     monthlyLimitMinor: policy.monthlyLimitMinor,
     remainingMinor: policy.monthlyLimitMinor === null ? null : Math.max(0, policy.monthlyLimitMinor - monthChargedMinor),
     currentConcurrency,
-    concurrencyLimit: policy.personalConcurrency,
+    concurrencyLimit: policy.effectiveConcurrency,
+    concurrencyMode: policy.concurrencyMode,
+    concurrencySource: policy.concurrencySource,
     paused: policy.paused,
     allowedModels: policy.allowedModels,
     policyVersion: policy.version,
     waitingReason: waitingReason ?? null,
-    attention: row.accountStatus === 'disabled' || policy.paused || Boolean(waitingReason) || hasUnknown || nearLimit || currentConcurrency > policy.personalConcurrency,
+    attention: row.accountStatus === 'disabled' || policy.paused || Boolean(waitingReason) || hasUnknown || nearLimit || currentConcurrency > policy.effectiveConcurrency,
     modules: modules.map((module) => ({ module: module.module, chargedMinor: Number(module.chargedMinor) })),
   };
 }
@@ -480,6 +484,7 @@ export function updateTeamMemberPolicy(
     targetUserId: string;
     monthlyLimitMinor: number | null;
     personalConcurrency: number;
+    concurrencyMode?: 'inherit' | 'fixed';
     paused: boolean;
     expectedVersion: number;
     allowedModels?: string[] | null;
@@ -495,6 +500,7 @@ export function updateTeamMemberPolicy(
     actorId: input.targetUserId,
     monthlyLimitMinor: input.monthlyLimitMinor,
     personalConcurrency: input.personalConcurrency,
+    concurrencyMode: input.concurrencyMode,
     paused: input.paused,
     expectedVersion: input.expectedVersion,
     allowedModels: input.allowedModels,
