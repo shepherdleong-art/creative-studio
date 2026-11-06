@@ -42,6 +42,7 @@ function persistedTransfer(stateRoot, id) {
 
 const requests = [];
 let account = 'user-a';
+let networkOffline = false;
 let authenticated = true;
 let firstPart = true;
 let fileDownloads = 0;
@@ -62,6 +63,7 @@ const session = {
   async clearCache() { this.cacheClears += 1; },
   async clearStorageData() { this.storageClears += 1; },
   async fetch(url, options = {}) {
+    if (networkOffline) throw new TypeError('fetch failed: isolated offline');
     const pathname = new URL(url).pathname;
     requests.push({ pathname, method: options.method ?? 'GET', headers: options.headers ?? {}, account });
     if (pathname === '/api/team/auth/session') {
@@ -105,6 +107,17 @@ const session = {
 
 try {
   const revealed = [];
+  const diagnostics = [];
+  networkOffline = true;
+  const offlineController = new RemoteTransferController({
+    origin: 'https://studio.example.test', deploymentId: 'deployment-fixture',
+    stateRoot: path.join(root, 'offline-client-state'), session, platform: 'windows', reveal: () => {},
+  });
+  await assert.rejects(() => offlineController.synchronizeIdentity(), /fetch failed/);
+  assert.equal(session.cacheClears, 0, '断网握手不得清掉缓存');
+  assert.equal(session.storageClears, 0, '断网握手不得清掉本地登录相关存储');
+  assert.deepEqual(offlineController.listTransfers(), [], '离线时尚未认证不得暴露其他账号传输');
+  networkOffline = false;
   const controller = new RemoteTransferController({
     origin: 'https://studio.example.test',
     deploymentId: 'deployment-fixture',
@@ -112,6 +125,7 @@ try {
     session,
     platform: 'windows',
     reveal: (target) => revealed.push(target),
+    onDiagnostic: (event) => diagnostics.push(event),
   });
   await controller.synchronizeIdentity();
   const [transferId] = await controller.createUploads([source], {
@@ -152,6 +166,12 @@ try {
   await controller.waitForIdle();
   assert.equal(fileDownloads, downloadsBeforeReceiptRetry, '回执重试不得重新下载已完整发布的文件');
   assert.equal(receiptAttempts, 2, '回执重试只需补交回执');
+  assert.equal(diagnostics.length, 1, '同一传输终态失败只自动上报一次');
+  assert.equal(diagnostics[0].stage, 'download');
+  assert.equal(diagnostics[0].transferId, downloadId);
+  assert.equal(diagnostics[0].phase, 'receipt');
+  assert.match(diagnostics[0].clientEventId, /^[a-f0-9-]{36}$/);
+  assert.equal(Object.hasOwn(diagnostics[0], 'message'), false, '本地诊断不得保留原始异常或路径');
   await controller.syncDeliveries();
   await controller.waitForIdle();
   assert.equal(controller.listTransfers().filter((item) => item.kind === 'download').length, 1,
@@ -185,6 +205,10 @@ try {
   await controller.synchronizeIdentity();
   assert.equal(session.cacheClears, clearsBeforeLogout + 1, '登出必须清除前账号缓存');
   assert.equal(session.storageClears, clearsBeforeLogout + 1, '登出必须清除前账号存储');
+  assert.equal(diagnostics.filter((event) => event.transferId === downloadId).length, 1, '同一下载重试不得重复诊断');
+  assert.equal(diagnostics.filter((event) => event.transferId === mismatchedId && event.phase === 'receipt').length, 1, '另一传输回执失败也必须保留');
+  assert.equal(diagnostics.filter((event) => event.transferId === mismatchedId && event.phase === 'verification').length, 1, '既有文件内容不符是另一失败');
+  assert.equal(new Set(diagnostics.map((event) => event.clientEventId)).size, diagnostics.length, '独立失败使用不同稳定身份');
   account = 'user-b';
   authenticated = true;
   await controller.synchronizeIdentity();

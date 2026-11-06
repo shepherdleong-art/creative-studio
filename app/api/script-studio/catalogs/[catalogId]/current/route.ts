@@ -19,6 +19,10 @@ async function __teamRoutePUT(
       return NextResponse.json({ error: 'invalid_input', message: '缺少 revisionId' }, { status: 400 });
     }
     const db = getDb();
+    const { readRuntimeConfig } = await import('@/lib/team-service/config');
+    if (readRuntimeConfig().mode === 'server') {
+      return NextResponse.json({ error: 'versioned_publication_required', message: '请到公共资源候选列表选择此完整版本并发布给团队。' }, { status: 409 });
+    }
     const catalog = db.prepare(`SELECT id, kind FROM script_studio_catalogs WHERE id = ?`).get(catalogId) as { id: string; kind: string } | undefined;
     if (!catalog) return NextResponse.json({ error: 'not_found', message: '目录不存在' }, { status: 404 });
     setCatalogCurrentRevision(db, catalogId, body.revisionId);

@@ -96,6 +96,98 @@ try {
   const journalDirectory = path.join(dataRoot, 'storage', 'execution-journal', deploymentId);
   fs.mkdirSync(journalDirectory, { recursive: true });
 
+  const { MaintenanceJobStore } = await import('../lib/team-service/maintenance/jobs.ts');
+  const jobs = new MaintenanceJobStore({ backupRoot, deploymentId });
+  const submitted = jobs.submit({
+    action: 'backup.create', target: { kind: 'backup', backupType: 'manual' },
+    principal: { userId: 'admin', employeeId: '00042', displayName: '真实网页管理员', role: 'admin' },
+    idempotencyKey: 'frontend-request-10',
+  });
+  assert.equal(submitted.job.progress, null);
+  const worker = invoke('worker', '--config', configPath, '--job-id', submitted.job.id, '--once', '--allow-fixture-release');
+  assert.equal(worker.status, 0, `${worker.stdout}${worker.stderr}`);
+  const finished = jobs.get(submitted.job.id).job;
+  assert.equal(finished.status, 'succeeded');
+  assert.equal(finished.requestedBy.displayName, '真实网页管理员');
+  const manualBackupId = String(finished.result?.backupId);
+  assert.ok(manualBackupId);
+  const manualDirectory = path.join(backupRoot, 'manual', manualBackupId);
+  const { verifyTeamBackup } = await import('../lib/team-service/maintenance/backup.ts');
+  assert.equal((await verifyTeamBackup(manualDirectory)).verified, true);
+  const { listTeamBackups } = await import('../lib/team-service/maintenance/catalog.ts');
+  assert.equal((await listTeamBackups(backupRoot, deploymentId)).backups.find((backup) => backup.id === manualBackupId)?.restorable, true);
+  const manualDb = new Database(path.join(manualDirectory, 'data', 'workbench.db'), { readonly: true });
+  databases.add(manualDb);
+  assert.equal(manualDb.pragma('integrity_check', { simple: true }), 'ok');
+  assert.equal(manualDb.prepare("SELECT displayName FROM team_users WHERE id = 'admin'").pluck().get(), 'Admin');
+  const persistedBackupPin = db.prepare('SELECT ownerUserId FROM team_backup_pins ORDER BY createdAt DESC LIMIT 1').get() as { ownerUserId: string } | undefined;
+  assert.equal(persistedBackupPin, undefined, '空媒体快照不应伪造 pin');
+  assert.equal(jobs.audit(submitted.job.id).some((record) => record.event === 'verifying'), true);
+  const repeated = invoke('worker', '--config', configPath, '--job-id', submitted.job.id, '--once', '--allow-fixture-release');
+  assert.equal(repeated.status, 0, `${repeated.stdout}${repeated.stderr}`);
+  assert.equal(fs.readdirSync(path.join(backupRoot, 'manual')).length, 1, '重复领取不得重复备份');
+  const duplicate = jobs.submit({
+    action: 'backup.create', target: { kind: 'backup', backupType: 'manual' },
+    principal: { userId: 'admin', employeeId: '00042', displayName: '真实网页管理员', role: 'admin' },
+    idempotencyKey: 'frontend-request-10',
+  });
+  assert.equal(duplicate.job.id, submitted.job.id);
+  assert.equal(duplicate.created, false);
+  jobs.close();
+
+  const { acquireSchemaUpgradeLock } = await import('../lib/schema-upgrade/lock.ts');
+  const { maintenanceGlobalLockPath } = await import('../lib/team-service/maintenance/worker.ts');
+  const globalLock = await acquireSchemaUpgradeLock({ lockDatabasePath: maintenanceGlobalLockPath(backupRoot) });
+  const blockedJobs = new MaintenanceJobStore({ backupRoot, deploymentId });
+  blockedJobs.submit({
+    action: 'backup.create', target: { kind: 'backup', backupType: 'manual' },
+    principal: { userId: 'admin', employeeId: '00042', displayName: '真实网页管理员', role: 'admin' }, idempotencyKey: 'blocked-global-lock-10',
+  });
+  blockedJobs.close();
+  const overlappingWeb = invoke('worker', '--config', configPath, '--once', '--allow-fixture-release');
+  assert.notEqual(overlappingWeb.status, 0, '全局维护锁被持有时不能另起网页备份');
+  assert.match(overlappingWeb.stderr, /维护|锁|冲突/);
+  const overlappingDaily = invoke('backup', '--config', configPath, '--type', 'daily', '--backup-id', 'daily-locked-global', '--allow-fixture-release');
+  assert.notEqual(overlappingDaily.status, 0, '定时备份也必须服从全局维护锁');
+  assert.equal(fs.existsSync(path.join(backupRoot, 'daily', 'daily-locked-global')), false);
+  globalLock.release();
+  const heldJobs = new MaintenanceJobStore({ backupRoot, deploymentId });
+  const resumedBlocked = invoke('worker', '--config', configPath, '--once', '--allow-fixture-release');
+  assert.equal(resumedBlocked.status, 0, resumedBlocked.stderr);
+  assert.equal(heldJobs.list().jobs.find((job) => job.status === 'queued'), undefined);
+  const waiting = heldJobs.submit({
+    action: 'backup.create', target: { kind: 'backup', backupType: 'manual' },
+    principal: { userId: 'admin', employeeId: '00042', displayName: '真实网页管理员', role: 'admin' }, idempotencyKey: 'waiting-for-global-lock',
+  });
+  const held = await acquireSchemaUpgradeLock({ lockDatabasePath: maintenanceGlobalLockPath(backupRoot) });
+  const waitingWorker = invoke('worker', '--config', configPath, '--once', '--allow-fixture-release');
+  held.release();
+  assert.notEqual(waitingWorker.status, 0, '锁冲突必须明确退出，不得假成功');
+  assert.equal(heldJobs.get(waiting.job.id).job.status, 'queued', '锁冲突必须保留原作业等待重试，不能伪造失败或成功');
+  const resumed = invoke('worker', '--config', configPath, '--once', '--allow-fixture-release');
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.equal(heldJobs.get(waiting.job.id).job.status, 'succeeded');
+  heldJobs.close();
+
+  const failedJobs = new MaintenanceJobStore({ backupRoot, deploymentId });
+  const failedSubmission = failedJobs.submit({
+    action: 'backup.create', target: { kind: 'backup', backupType: 'manual' },
+    principal: { userId: 'admin', employeeId: '00042', displayName: '真实网页管理员', role: 'admin' }, idempotencyKey: 'disk-space-failure-10',
+  });
+  const diskFailure = invoke('worker', '--config', configPath, '--job-id', failedSubmission.job.id, '--once', '--test-disk-space-zero', '--allow-fixture-release');
+  assert.notEqual(diskFailure.status, 0);
+  const failedJob = failedJobs.get(failedSubmission.job.id).job;
+  assert.equal(failedJob.status, 'failed');
+  assert.match(failedJob.error?.message ?? '', /空间不足/);
+  assert.equal(failedJob.result, null);
+  assert.equal(fs.existsSync(path.join(backupRoot, 'manual', `job-${failedSubmission.job.id}`)), false);
+  assert.equal((await listTeamBackups(backupRoot, deploymentId)).backups.some((backup) => backup.id === `job-${failedSubmission.job.id}`), false);
+  assert.equal(failedJobs.submit({
+    action: 'backup.create', target: { kind: 'backup', backupType: 'manual' },
+    principal: { userId: 'admin', employeeId: '00042', displayName: '真实网页管理员', role: 'admin' }, idempotencyKey: 'disk-space-failure-10',
+  }).job.id, failedSubmission.job.id);
+  failedJobs.close();
+
   const first = invoke('backup', '--config', configPath, '--type', 'daily', '--backup-id', 'daily-1', '--allow-fixture-release');
   assert.equal(first.status, 0, `${first.stdout}${first.stderr}`);
   assert.equal(JSON.parse(first.stdout.trim()).status, 'success');
@@ -155,6 +247,9 @@ try {
   assert.doesNotMatch(first.stdout + first.stderr + restored.stdout + restored.stderr + second.stdout + second.stderr,
     /fixtureSecret|apiKey|Bearer\s+/i);
   console.log('team maintenance runner daily job and restore tests passed');
+} catch (error) {
+  console.error('maintenance runner assertion', error);
+  throw error;
 } finally {
   for (const db of databases) if (db.open) db.close();
   fs.rmSync(fixture, { recursive: true, force: true });

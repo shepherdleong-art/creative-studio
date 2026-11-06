@@ -8,19 +8,23 @@ import path from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import ExcelJS from 'exceljs';
 import ffmpegPath from 'ffmpeg-static';
 import { summarizeRequests } from './team-server/acceptance-lib.mjs';
 import { runProductionScenario } from './team-server/production-scenario.mjs';
 
-const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
+const repoRoot = process.env.TEAM_ACCEPTANCE_RELEASE_PATH ? path.resolve(fileURLToPath(new URL('..', import.meta.url))) : process.cwd();
 const releaseRoot = process.env.TEAM_ACCEPTANCE_RELEASE_PATH ? path.resolve(process.env.TEAM_ACCEPTANCE_RELEASE_PATH) : null;
 const appRoot = releaseRoot ? path.join(releaseRoot, 'app') : repoRoot;
 const nodeExecutable = releaseRoot ? path.join(releaseRoot, 'runtimes', 'node', 'node.exe') : process.execPath;
 const packagedRelease = releaseRoot ? JSON.parse(fs.readFileSync(path.join(releaseRoot, 'release-manifest.json'), 'utf8')) : null;
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-team-acceptance-http-'));
+const root = fs.mkdtempSync(process.env.TEAM_ACCEPTANCE_TEST_TEMP_ROOT
+  ? path.join(path.resolve(process.env.TEAM_ACCEPTANCE_TEST_TEMP_ROOT), 'creative-studio-team-acceptance-http-')
+  : path.join(os.tmpdir(), 'creative-studio-team-acceptance-http-'));
 const resultPath = process.env.TEAM_ACCEPTANCE_RESULT_PATH;
 const evidenceDirectory = process.env.TEAM_ACCEPTANCE_EVIDENCE_DIR;
 if (!resultPath || !evidenceDirectory) throw new Error('HTTP 验收必须指定独立结果与证据目录');
+if (process.env.TEAM_ACCEPTANCE_TEST_TEMP_ROOT) fs.mkdirSync(path.resolve(process.env.TEAM_ACCEPTANCE_TEST_TEMP_ROOT), { recursive: true });
 fs.mkdirSync(evidenceDirectory, { recursive: true });
 const users = Number(process.env.TEAM_ACCEPTANCE_USERS ?? 20);
 const concurrency = Number(process.env.TEAM_ACCEPTANCE_CONCURRENCY ?? 20);
@@ -102,7 +106,7 @@ function environment() {
   };
 }
 function startServer() {
-  const nextBinary = path.join(repoRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
+  const nextBinary = fileURLToPath(import.meta.resolve('next/dist/bin/next'));
   server = spawn(nodeExecutable, releaseRoot ? [path.join(appRoot, 'runtime', 'team-server-entry.cjs')] : [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
     cwd: appRoot,
     env: environment(),
@@ -216,7 +220,7 @@ async function sha256File(file) {
 }
 async function makeMedia() {
   if (!ffmpegPath) throw new Error('真实 FFmpeg 不可用');
-  const mediaPath = path.join(root, 'acceptance-source.mp4');
+  const mediaPath = path.join(evidenceDirectory, 'acceptance-source.mp4');
   const generated = spawnSync(ffmpegPath, [
     '-f', 'lavfi', '-i', 'testsrc2=duration=6:size=640x480:rate=24',
     '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '16', '-pix_fmt', 'yuv420p', '-y', mediaPath,
@@ -346,6 +350,37 @@ async function sampleServer() {
   const stats = await fs.promises.statfs(root);
   if (dbSamples.length) dbSamples[dbSamples.length - 1].diskFreeBytes = stats.bavail * stats.bsize;
 }
+async function buildVersionedResourceFixtures() {
+  const directory = path.join(evidenceDirectory, 'versioned-uploads');
+  fs.mkdirSync(directory, { recursive: true });
+  for (const kind of ['strategy', 'template', 'viral']) {
+    const book = new ExcelJS.Workbook();
+    if (kind === 'strategy') {
+      const sheet = book.addWorksheet('产品策略');
+      sheet.addRow(['型号', '产品信息']);
+      sheet.addRow(['BROWSER-RESOURCE', '型号']);
+      sheet.addRow(['统一名称', '品类心智', '主卖点', '差异化', '搜索词']);
+      sheet.addRow(['浏览器产品', '生活', '真实卖点', '材质差异', '浏览器搜索词']);
+    } else if (kind === 'template') {
+      const framework = book.addWorksheet('脚本核心框架');
+      framework.addRow(['视频类型', '核心结构', '适用产品', '首选钩子']);
+      framework.addRow(['01 浏览器框架', '痛点+解决', '全品类', '痛点式']);
+      const copy = book.addWorksheet('开头钩子文案');
+      copy.addRow(['钩子类型', '核心机制', '公式', '文案示例']);
+      copy.addRow(['痛点式', '共鸣', '为什么更好用', '浏览器示例']);
+      const visual = book.addWorksheet('开头钩子画面（待优化）');
+      visual.addRow(['核心玩法', '裂变玩法', '画面公式', '适用品类', '搭配钩子']);
+      visual.addRow(['实拍', '浏览器画面', '产品→细节', '全品类', '痛点式']);
+    } else {
+      const sheet = book.addWorksheet('全部模板');
+      sheet.addRow(['类目', '子类目', '模板名称', '标题', '参考文案', '结构拆解', '结构摘要', '模板ID', '是否私有', '脚本编号']);
+      sheet.addRow(['床', '实木床', '浏览器爆文', '真实使用', '标题：真实使用\n正文：整块实木框架和静音床板，展示具体材质和使用体验。', '', '钩子>卖点>行动', 'browser-template', '否', 'J1']);
+    }
+    const filename = `browser-${kind}.xlsx`;
+    await book.xlsx.writeFile(path.join(directory, filename));
+  }
+  return directory;
+}
 function startMetrics() {
   const dbPath = path.join(root, 'data', 'workbench.db');
   dbProbe = new Database(dbPath, { readonly: true, fileMustExist: true });
@@ -438,19 +473,52 @@ try {
   await waitReady();
   assertions.push('独立 Next server 在临时 SQLite/数据根和固定回环端口完成真实启动与 readiness');
 
+  let sessions = [];
+  let projects = [];
+  let provider;
+  let browserResultPath;
+  let browserOutput = '';
   const admin = await login('accept-admin', adminCredential);
   const adminPassword = `Accept-admin-${randomBytes(12).toString('base64url')}`;
   secrets.add(adminPassword);
   await changePassword(admin, adminCredential, adminPassword);
   if (productionScenario) {
     result.production = await runProductionScenario({ root, admin, jsonRequest, request, stopServer, startServer,
-      waitReady, enableSchedulers: () => { schedulersEnabled = true; }, makeMedia });
-  } else {
-  const provider = (await jsonRequest(admin, '/api/providers', { method: 'POST', json: {
+      waitReady, enableSchedulers: () => { schedulersEnabled = true; }, makeMedia, sessions: [], projects: [] });
+  } else if (process.env.TEAM_ACCEPTANCE_TASK_HISTORY === '1') {
+    provider = (await jsonRequest(admin, '/api/providers', { method: 'POST', json: {
+      name: '历史场景备用图片供应商', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture-not-a-real-key', model: 'gpt-image-2', type: 'openai-compatible',
+    } }, 200)).body;
+    sessions = [admin];
+    projects = [await createProject(sessions[0], 1, provider.id)];
+    const { runProductionScenario } = await import('./team-server/production-scenario.mjs');
+    result.production = await runProductionScenario({ root, admin, sessions, projects, jsonRequest, request, stopServer, startServer,
+      waitReady, enableSchedulers: () => { schedulersEnabled = true; }, makeMedia, taskHistoryOnly: true });
+    result.taskDisplayFixture = {
+      employee: { operationId: null, taskId: result.production.taskDisplay.taskId },
+      otherMember: null, projectName: projects[0].name, syntheticHistoryOnly: false,
+      model: result.production.taskDisplay.model, providerName: result.production.taskDisplay.providerName,
+      currentProviderModel: result.production.taskDisplay.currentProviderModel,
+    };
+      assertions.push('真实回环 LLM 产生执行快照后修改当前模型；历史任务仍显示原模型，调用总数不变');
+    await request(null, '/team/login', { headers: { Accept: 'text/html' } }).then(response => response.arrayBuffer());
+    browserResultPath = path.join(evidenceDirectory, 'browser', 'browser.json');
+    browser = spawn(process.execPath, ['scripts/team-acceptance-browser.playwright.test.mjs'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env, TEAM_ACCEPTANCE_BASE_URL: baseUrl, TEAM_ACCEPTANCE_EMPLOYEE_ID: 'accept-admin',
+        TEAM_ACCEPTANCE_PASSWORD: adminPassword, TEAM_ACCEPTANCE_PROVIDER_ID: provider.id,
+        TEAM_ACCEPTANCE_TASK_FIXTURE: JSON.stringify(result.taskDisplayFixture),
+        TEAM_ACCEPTANCE_BROWSER_EVIDENCE_DIR: path.join(evidenceDirectory, 'browser'), TEAM_ACCEPTANCE_BROWSER_RESULT_PATH: browserResultPath,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
+  } else if (process.env.TEAM_ACCEPTANCE_TASK_HISTORY !== '1') {
+  provider = (await jsonRequest(admin, '/api/providers', { method: 'POST', json: {
     name: '隔离 fake 供应商', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture-not-a-real-key',
     model: 'gpt-image-2', type: 'openai-compatible',
   } }, 200)).body;
-  const sessions = [];
+  sessions = [];
   for (let index = 1; index <= users; index += 1) {
     const employeeId = `accept-${String(index).padStart(2, '0')}`;
     const created = await jsonRequest(admin, '/api/team/users', {
@@ -468,7 +536,7 @@ try {
   assert.equal(new Set(sessions.map((session) => session.cookies[1])).size, users);
   assertions.push(`${users} 个员工分别经真实 HTTP 登录、改密并持有不同 session cookie`);
 
-  const projects = [];
+  projects = [];
   const canvases = [];
   for (let index = 0; index < sessions.length; index += 1) {
     projects.push(await createProject(sessions[index], index + 1, provider.id));
@@ -486,6 +554,43 @@ try {
   });
   assert.equal(oldClient.status, 426);
   assertions.push('真实 HTTP 下员工跨项目 403、管理员 200、未认证 401、不兼容旧客户端写入 426');
+
+  // Historical display fixture only: isolated SQLite, no provider execution or paid call.
+  const taskFixtureDb = new Database(path.join(root, 'data', 'workbench.db'));
+  try {
+    const fixtureUsers = taskFixtureDb.prepare("SELECT id, employeeId FROM team_users WHERE employeeId IN ('accept-01', 'accept-02')").all();
+    const fixtureActors = Object.fromEntries(fixtureUsers.map((user) => [user.employeeId, user.id]));
+    const fixtureAt = new Date().toISOString();
+    const insertOperation = taskFixtureDb.prepare(`INSERT INTO execution_operations (
+      id, operationKey, actorId, scopeType, scopeId, module, taskId, step, inputRevision,
+      businessAttemptId, businessAttemptNo, inputHash, inputSnapshotJson, continuationKey,
+      providerSnapshotJson, configVersion, clientVersion, serverReleaseId, requiredPoolsJson,
+      quoteJson, status, readySeq, createdAt, updatedAt
+    ) VALUES (?, ?, ?, 'project', ?, 'llm', ?, ?, 'history-r1', ?, 1, ?, ?, 'history.fixture', ?, 'history-config', '0.7.1', 'acceptance-history', '[]', ?, 'succeeded', ?, ?, ?)`);
+    const insertAttempt = taskFixtureDb.prepare(`INSERT INTO execution_attempts (
+      id, operationId, permitId, actorId, businessAttemptNo, submitRound, transportSeq,
+      providerSnapshotJson, submissionState, terminalState, instanceId, fence, leaseOwner,
+      leaseUntil, intentJournalSeq, policyVersion, accountingPeriod, currency, reservedMinor, costState, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, 1, 1, 1, ?, 'terminal', 'succeeded', 'acceptance-history', 1, 'acceptance-history', ?, 1, 1, '2026-11', 'CNY', 0, 'released', ?, ?)`);
+    const addHistory = taskFixtureDb.transaction((suffix, actorId, projectId, model) => {
+      const operationId = `history-operation-${suffix}`;
+      const taskId = `11111111-2222-4333-8444-${suffix.padStart(12, '0')}`;
+      const step = 'script-studio-generate:plan:2:polish:1';
+      const provider = JSON.stringify({ name: '历史脚本供应商（fixture）', model: '当前默认模型（fixture）', apiKey: 'must-not-leak', baseUrl: 'https://must-not-leak.invalid' });
+      const input = JSON.stringify({ request: { model, userPrompt: 'must-not-leak-input' }, provider: JSON.parse(provider) });
+      insertOperation.run(operationId, `llm/${taskId}/${step}/history-r1`, actorId, projectId, taskId, step, `history-business-${suffix}`, `history-hash-${suffix}`, input, provider, '{"kind":"unpriced"}', 900 + Number(suffix), fixtureAt, fixtureAt);
+      insertAttempt.run(`history-attempt-${suffix}`, operationId, `history-permit-${suffix}`, actorId, provider, fixtureAt, fixtureAt, fixtureAt);
+      return { operationId, taskId };
+    });
+    result.taskDisplayFixture = {
+      employee: addHistory('1', fixtureActors['accept-02'], projects[1].id, '历史脚本模型-fixture-A'),
+      otherMember: addHistory('2', fixtureActors['accept-01'], projects[0].id, '其他成员模型-fixture-B'),
+      projectName: projects[1].name,
+      syntheticHistoryOnly: true,
+      providerCalls: 0,
+    };
+  } finally { taskFixtureDb.close(); }
+  assertions.push('隔离历史执行夹具已写入，不调用供应商；首页/任务页验证真实查询与安全投影');
 
   await jsonRequest(sessions[0], `/api/batch-production/batches?projectId=${encodeURIComponent(projects[0].id)}`, {}, 200);
   const firstDevice = await registerDevice(sessions[0], 'original');
@@ -564,33 +669,42 @@ try {
   };
   assertions.push('重启后真实 HTTP 登录页预热完成才启动 Chromium；浏览器 60s 导航阈值保持不变');
 
-  const browserResultPath = path.join(evidenceDirectory, 'browser', 'browser.json');
+  browserResultPath = path.join(evidenceDirectory, 'browser', 'browser.json');
   browser = spawn(process.execPath, ['scripts/team-acceptance-browser.playwright.test.mjs'], {
     cwd: repoRoot,
     env: {
       ...process.env,
       TEAM_ACCEPTANCE_BASE_URL: baseUrl,
-      TEAM_ACCEPTANCE_EMPLOYEE_ID: 'accept-02',
-      TEAM_ACCEPTANCE_PASSWORD: passwordByEmployee.get('accept-02'),
+      TEAM_ACCEPTANCE_EMPLOYEE_ID: process.env.TEAM_ACCEPTANCE_TASK_HISTORY === '1' ? 'accept-admin' : 'accept-02',
+      TEAM_ACCEPTANCE_PASSWORD: process.env.TEAM_ACCEPTANCE_TASK_HISTORY === '1' ? adminPassword : passwordByEmployee.get('accept-02'),
       TEAM_ACCEPTANCE_ADMIN_ID: 'accept-admin',
       TEAM_ACCEPTANCE_ADMIN_PASSWORD: adminPassword,
       TEAM_ACCEPTANCE_PROVIDER_ID: provider.id,
+      TEAM_ACCEPTANCE_TASK_FIXTURE: JSON.stringify(result.taskDisplayFixture),
+      TEAM_ACCEPTANCE_VERSIONED_FIXTURE_DIR: await buildVersionedResourceFixtures(),
       TEAM_ACCEPTANCE_BROWSER_EVIDENCE_DIR: path.join(evidenceDirectory, 'browser'),
       TEAM_ACCEPTANCE_BROWSER_RESULT_PATH: browserResultPath,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
-  let browserOutput = '';
   browser.stdout.on('data', (chunk) => { browserOutput += String(chunk); });
   browser.stderr.on('data', (chunk) => { browserOutput += String(chunk); });
-  const browserExit = await new Promise((resolve) => browser.once('exit', resolve));
+  }
+  const runningBrowser = browser;
+  assert.ok(runningBrowser, '浏览器进程必须已启动');
+  const browserExit = await new Promise((resolve) => runningBrowser.once('exit', resolve));
   assert.equal(browserExit, 0, sanitize(browserOutput).slice(-2000));
   const browserResult = JSON.parse(fs.readFileSync(browserResultPath, 'utf8'));
   result.browser = browserResult;
+  if (process.env.TEAM_ACCEPTANCE_TASK_HISTORY === '1') {
+    assert.equal(browserResult.result, 'passed', '真实历史场景必须完成实际浏览器验收');
+    assert.ok(browserResult.assertions.some((entry) => entry.includes('首页/任务页共享中文步骤')));
+  }
   result.evidence.push('http/browser/browser.json', ...browserResult.evidence);
   assertions.push(...browserResult.assertions);
 
+  if (process.env.TEAM_ACCEPTANCE_TASK_HISTORY !== '1') {
   startMetrics();
   const loadStarted = Date.now();
   const deadline = loadStarted + durationSeconds * 1000;

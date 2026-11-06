@@ -336,7 +336,10 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
           ? input.quote.reserve
           : null;
       await facade.settle({ attemptId: attempt.id, outcome, actualCost, remoteTerminal: true });
-      if (outcome === 'failed') throw new Error('供应商同步返回失败。');
+      if (outcome === 'failed') {
+        await facade.captureError({ attemptId: attempt.id, outcome: 'failed', stage: 'remote_submit', errorCode: attempt.errorCode ?? 'provider_failed' });
+        throw new Error('供应商同步返回失败。');
+      }
     }
     return { value, attemptId: attempt.id, remoteId: attempt.remoteId ?? undefined, resumed: false };
   } catch (error) {
@@ -371,6 +374,7 @@ export async function settleLegacyMediaRemote(input: {
   actualCost?: { currency: 'CNY'; minor: number } | null;
   resultRef?: string;
   errorCode?: string;
+  errorStage?: 'remote_submit' | 'remote_poll' | 'download' | 'local_media' | 'storage';
 }): Promise<void> {
   if (!isServerMediaExecution()) return;
   const access = requireAccessContext();
@@ -379,6 +383,13 @@ export async function settleLegacyMediaRemote(input: {
     SELECT currentAttemptId FROM execution_operations WHERE actorId = ? AND operationKey = ?
   `).get(access.actor.userId, operationKey) as { currentAttemptId: string | null } | undefined;
   if (!row?.currentAttemptId) return;
+  if (input.outcome === 'failed' && input.errorStage && !['remote_submit', 'remote_poll'].includes(input.errorStage)) {
+    await injection().facade.captureError({
+      attemptId: row.currentAttemptId,
+      outcome: 'failed', stage: input.errorStage, errorCode: input.errorCode,
+    });
+    return;
+  }
   await injection().facade.settle({
     attemptId: row.currentAttemptId,
     outcome: input.outcome,
@@ -386,7 +397,41 @@ export async function settleLegacyMediaRemote(input: {
     remoteTerminal: true,
     result: input.resultRef ? { resultRef: input.resultRef } : undefined,
     errorCode: input.errorCode,
+    errorStage: input.errorStage === 'remote_poll' ? 'remote_poll' : undefined,
   });
+}
+
+/** 已受理下载/媒体处理失败：关联原尝试，不篡改已成功的远端终态或费用。 */
+export async function captureLegacyMediaFailure(input: {
+  module: 'image' | 'video';
+  taskId: string;
+  inputRevision: string;
+  stage: 'download' | 'storage' | 'local_media';
+  errorCode: string;
+}): Promise<void> {
+  if (!isServerMediaExecution()) return;
+  const access = requireAccessContext();
+  const operationKey = `${input.module}/${input.taskId}/submit/${input.inputRevision}`;
+  const row = getDb().prepare(`SELECT currentAttemptId FROM execution_operations WHERE actorId = ? AND operationKey = ?`)
+    .get(access.actor.userId, operationKey) as { currentAttemptId: string | null } | undefined;
+  if (!row?.currentAttemptId) return;
+  await injection().facade.captureError({
+    attemptId: row.currentAttemptId, outcome: 'failed', stage: input.stage, errorCode: input.errorCode,
+  });
+}
+
+export async function recoverLegacyMediaDownload(input: {
+  module: 'image' | 'video';
+  taskId: string;
+  inputRevision: string;
+}): Promise<void> {
+  if (!isServerMediaExecution()) return;
+  const access = requireAccessContext();
+  const operationKey = `${input.module}/${input.taskId}/submit/${input.inputRevision}`;
+  const row = getDb().prepare(`SELECT currentAttemptId FROM execution_operations WHERE actorId = ? AND operationKey = ?`)
+    .get(access.actor.userId, operationKey) as { currentAttemptId: string | null } | undefined;
+  if (!row?.currentAttemptId) return;
+  await injection().facade.captureRecovery({ taskId: input.taskId, module: input.module, stage: 'download' });
 }
 
 export async function cancelLegacyMediaNewStage(input: {

@@ -63,12 +63,16 @@ const initialized = await initializeFirstAdministrator({ db, employeeId: '0000',
 const service = createTeamAuthService({ db, kdf, passwordParams });
 setTeamAuthServiceForTests(service);
 const adminLogin = await service.login({ employeeId: '0000', password: initialized.credential });
-const admin = await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-lifecycle-password');
+await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-lifecycle-password');
+const adminSession = await service.login({ employeeId: '0000', password: 'admin-lifecycle-password' });
+const admin = adminSession.principal;
 const created = await service.createUser(admin, { employeeId: '0001', displayName: '员工', role: 'employee' });
 const employeeLogin = await service.login({ employeeId: '0001', password: created.credential });
-const employee = await service.changeOwnPassword(employeeLogin.principal, created.credential, 'employee-lifecycle-password');
-const adminCookie = sessionCookie(adminLogin.token).split(';', 1)[0];
-const employeeCookie = sessionCookie(employeeLogin.token).split(';', 1)[0];
+await service.changeOwnPassword(employeeLogin.principal, created.credential, 'employee-lifecycle-password');
+const employeeSession = await service.login({ employeeId: '0001', password: 'employee-lifecycle-password' });
+const employee = employeeSession.principal;
+const adminCookie = sessionCookie(adminSession.token).split(';', 1)[0];
+const employeeCookie = sessionCookie(employeeSession.token).split(';', 1)[0];
 
 db.prepare("INSERT INTO providers (id, name, baseUrl) VALUES ('provider', '测试', 'http://127.0.0.1')").run();
 db.prepare("INSERT INTO projects (id, name, providerId, model, prompt) VALUES ('project-a', '项目', 'provider', 'model', '')").run();

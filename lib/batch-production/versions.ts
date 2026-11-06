@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { requireAccessContext } from '../media-core/access-context.ts';
+import { managedResourceVisibility, requireAccessContext } from '../media-core/access-context.ts';
 import { type ColorSnapshotV1, type ColorSnapshotIdentity } from './color-pipeline.ts';
 import { fingerprintsEqual } from './fingerprint.ts';
 import { isBatchAssetEligible } from './media-catalog.ts';
@@ -355,7 +355,7 @@ export function addAssetToPool(
       if (!lut) {
         throw new Error('LUT 不存在');
       }
-      if (lut.projectId !== owner.projectId) {
+      if (lut.projectId !== owner.projectId && managedResourceVisibility('lut', colorSnapshot.lutId) !== 'public') {
         throw new Error('LUT 不属于该批次所在项目');
       }
       if (lut.status !== 'active') {

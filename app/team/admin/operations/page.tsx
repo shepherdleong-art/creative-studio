@@ -6,12 +6,13 @@ import { getTeamAuthService } from '@/lib/team-service/auth/runtime';
 import { readTeamModuleSwitches } from '@/lib/team-service/module-switches';
 import TeamProductionControl from '@/components/team/TeamProductionControl';
 import TeamReleaseUpload from '@/components/team/TeamReleaseUpload';
+import TeamMaintenancePanel from '@/components/team/TeamMaintenancePanel';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * 运维入口说明页：只展示真实脚本路径与当前模块开关，不提供任意命令执行按钮。
- * 危险动作（安装、发布、恢复、永久清理）继续由受控 PowerShell 脚本完成。
+ * 管理员备份入口：业务 API 只接受固定目标，由独立受控执行器完成。
+ * 安装、发布、恢复、永久清理不在这里提供任意命令执行按钮。
  */
 export default async function TeamOperationsPage() {
   if (readRuntimeConfig().mode !== 'server') redirect('/');
@@ -35,6 +36,7 @@ export default async function TeamOperationsPage() {
         </p>
       </div>
 
+      <TeamMaintenancePanel />
       <TeamProductionControl />
       <TeamReleaseUpload />
       <section className="card p-6">

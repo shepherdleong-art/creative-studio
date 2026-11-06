@@ -102,12 +102,18 @@ try {
     body: JSON.stringify({ employeeId: '00001', password: credential }),
   });
   assert.equal(login.status, 200, await login.text());
-  const adminSession = `${csrfCookie}; ${login.headers.get('set-cookie').split(';')[0]}`;
+  const initialAdminSession = `${csrfCookie}; ${login.headers.get('set-cookie').split(';')[0]}`;
   const changed = await fetch(`${origin}/api/team/auth/change-password`, {
-    method: 'POST', headers: { Cookie: adminSession, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/json' },
+    method: 'POST', headers: { Cookie: initialAdminSession, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/json' },
     body: JSON.stringify({ currentPassword: credential, newPassword: 'isolated-admin-password-11' }),
   });
   assert.equal(changed.status, 200, await changed.clone().text());
+  const authenticated = await fetch(`${origin}/api/team/auth/login`, {
+    method: 'POST', headers: { Cookie: csrfCookie, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ employeeId: '00001', password: 'isolated-admin-password-11' }),
+  });
+  assert.equal(authenticated.status, 200);
+  const adminSession = `${csrfCookie}; ${authenticated.headers.get('set-cookie').split(';')[0]}`;
   const employeeCreated = await fetch(`${origin}/api/team/users`, {
     method: 'POST', headers: { Cookie: adminSession, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/json' },
     body: JSON.stringify({ employeeId: '00002', displayName: '隔离员工', role: 'employee' }),
@@ -147,12 +153,18 @@ try {
     body: JSON.stringify({ employeeId: '00002', password: employee.credential }),
   });
   assert.equal(employeeLogin.status, 200);
-  const employeeSession = `${csrfCookie}; ${employeeLogin.headers.get('set-cookie').split(';')[0]}`;
+  const initialEmployeeSession = `${csrfCookie}; ${employeeLogin.headers.get('set-cookie').split(';')[0]}`;
   const employeePassword = await fetch(`${origin}/api/team/auth/change-password`, {
-    method: 'POST', headers: { Cookie: employeeSession, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/json' },
+    method: 'POST', headers: { Cookie: initialEmployeeSession, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/json' },
     body: JSON.stringify({ currentPassword: employee.credential, newPassword: 'isolated-employee-password-11' }),
   });
   assert.equal(employeePassword.status, 200);
+  const employeeAuthenticated = await fetch(`${origin}/api/team/auth/login`, {
+    method: 'POST', headers: { Cookie: csrfCookie, Origin: origin, 'x-csrf-token': csrfToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ employeeId: '00002', password: 'isolated-employee-password-11' }),
+  });
+  assert.equal(employeeAuthenticated.status, 200);
+  const employeeSession = `${csrfCookie}; ${employeeAuthenticated.headers.get('set-cookie').split(';')[0]}`;
   assert.equal((await get(employeeSession)).status, 403);
   assert.equal((await fetch(`${origin}/api/team/release-candidates`, {
     method: 'POST', headers: { Cookie: adminSession, Origin: origin, 'x-csrf-token': 'forged-csrf', 'Content-Type': 'application/zip' },
@@ -213,7 +225,10 @@ try {
       await page.getByLabel('密码或 6 位一次性密码').fill('isolated-admin-password-11');
       await page.getByRole('button', { name: '登录', exact: true }).click();
       await page.waitForURL((url) => !url.pathname.includes('/team/login'));
-      await page.goto(`${origin}/team/admin/operations`, { waitUntil: 'networkidle' });
+      await page.goto(`${origin}/team/admin/operations`, { waitUntil: 'domcontentloaded' });
+      await page.getByLabel('选择服务器升级包').waitFor();
+      await page.getByRole('button', { name: '上传并校验' }).waitFor();
+      await page.evaluate(() => document.fonts.ready);
       await page.getByLabel('选择服务器升级包').setInputFiles(validZip);
       await page.getByRole('button', { name: '上传并校验' }).click();
       await page.getByText('候选包已准备完成；尚未执行升级，当前运行版本不变。').waitFor({ timeout: 120_000 });

@@ -99,8 +99,8 @@ test('apply 分支只认领精确服务路径，app 先于独立代理停机，�
   assert.match(install, /if \(-not \$Apply\)[\s\S]*exit 0[\s\S]*Set-TeamFirewall -Resolved/);
   assert.doesNotMatch(install, /Stop-Service|taskkill|stop-stack|stop-litellm/);
   assert.match(stop, /service-control\.mjs/);
-  assert.ok(stop.indexOf('service-control.mjs') < stop.indexOf('CreativeStudioLiteLLM'));
-  assert.ok(stop.indexOf('CreativeStudioLiteLLM') < stop.indexOf('CreativeStudioCaddy'));
+  assert.ok(stop.indexOf('service-control.mjs') < stop.indexOf("foreach ($role in @('litellm', 'maintenance', 'caddy'))"),
+    '应用优雅停机必须先于独立依赖 SCM 停止');
   assert.match(stop, /if \(-not \$Apply\)[\s\S]*exit 0[\s\S]*service-control\.mjs/);
   assert.doesNotMatch(stop, /taskkill\s+\/IM|Get-Process\s+-Name/);
 });

@@ -5,6 +5,9 @@ import path from 'node:path';
 import type { ClientStatus, RemoteUploadTarget } from '../bridge-types';
 import type { RemoteDesktopWindowHost } from '../window';
 import { RemoteTransferController, type TeamFileDownloadManifest } from './remote-transfer';
+import { ClientDiagnosticReporter } from './client-diagnostic-reporter';
+import { sanitizeClientDiagnostic, type ClientDiagnosticInput as DiagnosticInput } from './client-diagnostics';
+import type { ClientDiagnosticInput } from '../bridge-types';
 
 export type RemoteClientConfig = { mode: 'local' } | { mode: 'remote'; origin: string };
 
@@ -34,7 +37,7 @@ interface RemoteHostOptions {
   clearIpcHandlers: () => void;
   onWindowClosed: () => void;
   shutdown: () => Promise<void>;
-  installUpdate?: (manifestUrl: string) => Promise<{ started: boolean; message?: string }>;
+  installUpdate?: (manifestUrl: string, transfers: RemoteTransferController) => Promise<{ started: boolean; message?: string }>;
 }
 
 interface Capabilities {
@@ -64,10 +67,18 @@ export class RemoteClientController {
   private capabilities: Capabilities | null = null;
   private transfers: RemoteTransferController | null = null;
   private identityTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly diagnostics: ClientDiagnosticReporter;
   private readonly installUpdateHandler?: RemoteHostOptions['installUpdate'];
 
   constructor(private readonly options: RemoteHostOptions, private readonly session: Session) {
     this.installUpdateHandler = options.installUpdate;
+    let device: { clientDeviceId?: string } = {};
+    try { device = JSON.parse(fs.readFileSync(path.join(options.stateRoot, 'device.json'), 'utf8')) as typeof device; } catch { /* transfer binds its persisted device below */ }
+    this.diagnostics = new ClientDiagnosticReporter({
+      origin: options.origin, stateRoot: options.stateRoot,
+      clientDeviceId: device.clientDeviceId ?? '00000000-0000-4000-8000-000000000000',
+      clientVersion: app.getVersion(), session: this.session,
+    });
   }
 
   async start(): Promise<void> {
@@ -79,6 +90,7 @@ export class RemoteClientController {
       session: this.session,
       platform: process.platform === 'win32' ? 'windows' : 'macos',
       reveal: (target) => shell.showItemInFolder(target),
+      diagnostics: this.diagnostics,
     });
     if (!this.capabilities!.compatible || this.capabilities!.maintenance || this.updateGateBlocked()) {
       await this.transfers.pauseForUpdate();
@@ -123,6 +135,10 @@ export class RemoteClientController {
 
   async resumeAfterUpdate(): Promise<void> {
     await this.syncUpdateGate();
+  }
+
+  reportUiError(input: ClientDiagnosticInput): void {
+    this.diagnostics.report(sanitizeClientDiagnostic({ ...input, stage: 'client_ui' }) as DiagnosticInput);
   }
 
   private async handshake(): Promise<void> {
@@ -182,7 +198,7 @@ export class RemoteClientController {
     const manifestUrl = this.capabilities?.update?.manifestUrl;
     if (!manifestUrl) return { started: false, message: '服务尚未提供受控更新入口，请联系管理员修复。' };
     if (!this.installUpdateHandler) return { started: false, message: '此安装尚未配置独立更新助手，请使用受控修复包。' };
-    return this.installUpdateHandler(manifestUrl);
+    return this.installUpdateHandler(manifestUrl, this.requireTransfers());
   }
 
   async stop(): Promise<void> {

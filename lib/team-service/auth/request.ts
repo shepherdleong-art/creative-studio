@@ -52,8 +52,9 @@ export function issueCsrfToken(): { token: string; cookie: string } {
   };
 }
 
-export function sessionCookie(token: string): string {
-  return `${TEAM_SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000`;
+export function sessionCookie(token: string, remember = false): string {
+  const persistence = remember ? `; Max-Age=2592000; Expires=${new Date(Date.now() + 2592000 * 1000).toUTCString()}` : '';
+  return `${TEAM_SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict${persistence}`;
 }
 
 export function clearSessionCookie(): string {

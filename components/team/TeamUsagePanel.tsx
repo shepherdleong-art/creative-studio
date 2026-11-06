@@ -35,12 +35,20 @@ const MODEL_COLORS = ['var(--color-accent)', 'var(--color-check)', 'var(--color-
 const WAITING_LABELS: Record<string, string> = {
   monthly_budget: '余额不足', personal_concurrency: '并发等待', actor_paused: '已暂停新的付费生成',
   actor_disabled: '账号停用', pricing_required: '定价缺失，请联系管理员', cost_unknown: '费用不确定，等待核查',
-  pool_capacity: '共享并发等待', model_forbidden: '模型未授权，请联系管理员',
+  pool_capacity: '共享并发等待', fair_share: '等待公平共享名额，释放后按顺序继续', model_forbidden: '模型未授权，请联系管理员',
+  maintenance: '团队维护等待', pool_missing: '资源池未配置', pool_disabled: '资源池已停用',
+  scope_forbidden: '项目访问权限不足',
 };
 
 function money(minor: number | null): string {
   return minor === null ? '不限额' : `¥${(minor / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
+
+const CONCURRENCY_SOURCE_LABELS = {
+  legacy_fixed: '旧个人固定值（未迁移）',
+  team_default: '继承团队规则（自动或手动）',
+  personal_fixed: '个人固定覆盖',
+} as const;
 
 function amount(item: TeamUsageAttempt): string {
   if (item.costStatus === 'released') return '已释放';
@@ -67,7 +75,7 @@ function QuotaCards({ member, quota, detail }: { member: TeamMemberSummary; quot
     ['本月已计 / 额度', `${money(member.monthChargedMinor)} / ${money(member.monthlyLimitMinor)}`, `已结算 ${money(member.monthSettledMinor)}`],
     ['待结算预留', money(member.heldMinor), '已包含在本月已计'],
     ['剩余可用', money(member.remainingMinor), '含预留后的可用金额'],
-    ['当前并发 / 上限', `${member.currentConcurrency} / ${member.concurrencyLimit}`, `今日已计 ${money(member.todayChargedMinor)}`],
+    ['当前并发 / 上限', `${member.currentConcurrency} / ${member.concurrencyLimit ?? '自动'}`, `今日已计 ${money(member.todayChargedMinor)}`],
   ];
   return <section className="card p-5" aria-label={quota && !detail ? '团队额度' : '我的额度'}>
     <SectionTitle title={quota && !detail ? '团队额度' : `${member.displayName}的额度`}
@@ -78,6 +86,7 @@ function QuotaCards({ member, quota, detail }: { member: TeamMemberSummary; quot
       </div>)}
     </div>
     {member.paused && <p className="mt-4 text-xs text-warn">已暂停新的付费生成；仍可登录、编辑、查看和下载，已受理任务继续回收。</p>}
+    <p className="mt-3 text-xs leading-5 text-ink-tertiary">并发来源：{CONCURRENCY_SOURCE_LABELS[member.concurrencySource]}。个人上限不预留共享池名额；{member.waitingReason ? `等待原因：${WAITING_LABELS[member.waitingReason] ?? member.waitingReason}。` : '当前没有等待中的任务。'}</p>
   </section>;
 }
 

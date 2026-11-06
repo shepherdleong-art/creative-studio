@@ -11,6 +11,7 @@ import {
   type ViralTemplateStatus,
 } from './catalog-import/viral-templates.ts';
 import { normalizeText } from './catalog-import/normalize.ts';
+import { findTeamVersionedRoot } from './team-publications.ts';
 
 /**
  * 爆文模板库（迁移方案 §3.1/§3.2）：独立于 catalogs 的版本化设施。
@@ -67,23 +68,42 @@ function nowIso(now?: () => Date): string {
   return (now ?? (() => new Date()))().toISOString();
 }
 
-export function getOrCreateViralTemplateLibrary(db: Database.Database, now?: () => Date): ViralTemplateLibraryRecord {
+export function findReadableViralTemplateLibrary(db: Database.Database): ViralTemplateLibraryRecord | null {
   const access = requireAccessContext();
   const records = db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries ORDER BY createdAt, id`)
     .all() as ViralTemplateLibraryRecord[];
-  let publicRecord: ViralTemplateLibraryRecord | undefined;
-  for (const record of records) {
-    if (access.kind === 'team') {
-      try {
-        access.assertAccess('viral_template_library', record.id, 'read');
-      } catch {
-        continue;
-      }
-    }
-    if (access.kind === 'local' || record.ownerKey === access.actor.userId) return record;
-    publicRecord ??= record;
+  if (access.kind === 'local') return records[0] ?? null;
+  const team = findTeamVersionedRoot(db, 'viral');
+  if (team) {
+    const record = records.find((item) => item.id === team.rootId);
+    if (!record) return null;
+    access.assertAccess('viral_template_library', record.id, 'read');
+    access.assertAccess('viral_template_revision', team.revisionId!, 'read');
+    return record;
   }
-  if (publicRecord) return publicRecord;
+  for (const record of records) {
+    if (!record.currentRevisionId) continue;
+    try {
+      access.assertAccess('viral_template_library', record.id, 'read');
+      access.assertAccess('viral_template_revision', record.currentRevisionId, 'read');
+      return record;
+    } catch {
+      // 私人库不参与员工读取回退。
+    }
+  }
+  return null;
+}
+
+function findOwnedViralTemplateLibrary(db: Database.Database): ViralTemplateLibraryRecord | undefined {
+  const access = requireAccessContext();
+  if (access.kind === 'local') return db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries ORDER BY createdAt, id LIMIT 1`).get() as ViralTemplateLibraryRecord | undefined;
+  return db.prepare(`SELECT * FROM script_studio_viral_tpl_libraries WHERE ownerKey = ? ORDER BY createdAt, id LIMIT 1`).get(access.actor.userId) as ViralTemplateLibraryRecord | undefined;
+}
+
+export function getOrCreateViralTemplateLibrary(db: Database.Database, now?: () => Date): ViralTemplateLibraryRecord {
+  const access = requireAccessContext();
+  const owned = findOwnedViralTemplateLibrary(db);
+  if (owned) return owned;
   const id = randomUUID();
   const ts = nowIso(now);
   const ownerKey = access.kind === 'team' ? access.actor.userId : 'local';
@@ -133,7 +153,7 @@ export async function importViralTemplateLibrary(
   const library = getOrCreateViralTemplateLibrary(db, now);
   const access = requireAccessContext();
   if (access.kind === 'team') access.assertAccess('viral_template_library', library.id, 'write');
-  const visibility = managedResourceVisibility('viral_template_library', library.id);
+  const visibility = access.kind === 'team' ? 'private' as const : managedResourceVisibility('viral_template_library', library.id);
   const sourceSha256 = createHash('sha256').update(buffer).digest('hex');
 
   const existing = db.prepare(`
@@ -203,9 +223,18 @@ export interface ViralTemplateLibraryView {
   revisions: Array<ViralTemplateRevisionRecord & { current: boolean; entryCount: number }>;
 }
 
+export function emptyViralTemplateLibraryView(): ViralTemplateLibraryView {
+  return {
+    library: { id: '', currentRevisionId: null, ownerKey: '', createdAt: '', updatedAt: '' },
+    current: null, revisions: [],
+  };
+}
+
 export function getViralTemplateLibraryView(db: Database.Database): ViralTemplateLibraryView {
-  const library = getOrCreateViralTemplateLibrary(db);
+  const library = findReadableViralTemplateLibrary(db);
+  if (!library) return emptyViralTemplateLibraryView();
   const access = requireAccessContext();
+  const currentRevisionId = access.kind === 'team' ? findTeamVersionedRoot(db, 'viral')?.revisionId ?? library.currentRevisionId : library.currentRevisionId;
   const revisions = (db.prepare(`
     SELECT r.*, (SELECT COUNT(*) FROM script_studio_viral_tpl_entries e WHERE e.revisionId = r.id) AS entryCount
     FROM script_studio_viral_tpl_revisions r WHERE r.libraryId = ? ORDER BY r.revisionNumber DESC
@@ -218,7 +247,7 @@ export function getViralTemplateLibraryView(db: Database.Database): ViralTemplat
           return [];
         }
       }
-      return [{ ...row, current: row.id === library.currentRevisionId }];
+      return [{ ...row, current: row.id === currentRevisionId }];
     });
   const currentRow = revisions.find((row) => row.current);
   let current: ViralTemplateLibraryView['current'] = null;
@@ -244,7 +273,7 @@ export function setViralTemplateCurrentRevision(
   revisionId: string,
   now?: () => Date,
 ): { libraryId: string; currentRevisionId: string } {
-  const library = getOrCreateViralTemplateLibrary(db, now);
+  const library = findReadableViralTemplateLibrary(db) ?? getOrCreateViralTemplateLibrary(db, now);
   const access = requireAccessContext();
   if (access.kind === 'team') access.assertAccess('viral_template_library', library.id, 'write');
   const revision = db.prepare(`
@@ -261,8 +290,10 @@ export function listViralTemplateEntries(
   db: Database.Database,
   options: { revisionId?: string; status?: ViralTemplateStatus | 'all'; category?: string; q?: string; limit?: number } = {},
 ): ViralTemplateEntryRecord[] {
-  const library = getOrCreateViralTemplateLibrary(db);
-  const revisionId = options.revisionId || library.currentRevisionId;
+  const access = requireAccessContext();
+  const library = findReadableViralTemplateLibrary(db);
+  if (!library) return [];
+  const revisionId = options.revisionId || (access.kind === 'team' ? findTeamVersionedRoot(db, 'viral')?.revisionId ?? library.currentRevisionId : library.currentRevisionId);
   if (!revisionId) return [];
   const conditions = ['revisionId = ?'];
   const params: unknown[] = [revisionId];
@@ -285,7 +316,6 @@ export function listViralTemplateEntries(
     WHERE ${conditions.join(' AND ')}
     ORDER BY category, subCategory, sourceRow LIMIT ?
   `).all(...params, limit) as ViralTemplateEntryRecord[];
-  const access = requireAccessContext();
   if (access.kind === 'team') {
     for (const row of rows) access.assertAccess('viral_template_entry', row.id, 'read');
   }
@@ -300,7 +330,12 @@ export function getViralTemplateEntriesByIds(db: Database.Database, entryIds: st
   `).all(...entryIds) as ViralTemplateEntryRecord[];
   const access = requireAccessContext();
   if (access.kind === 'team') {
-    for (const row of rows) access.assertAccess('viral_template_entry', row.id, 'read');
+    const library = findReadableViralTemplateLibrary(db);
+    const currentRevisionId = library ? findTeamVersionedRoot(db, 'viral')?.revisionId ?? library.currentRevisionId : null;
+    for (const row of rows) {
+      if (row.revisionId !== currentRevisionId) throw new ScriptStudioError('conflict', '模板库当前版本已变更，请刷新选择后再创建任务');
+      access.assertAccess('viral_template_entry', row.id, 'read');
+    }
   }
   const byId = new Map(rows.map((row) => [row.id, row]));
   // 按调用方给定的选择顺序返回（选择顺序是任务身份的一部分）。

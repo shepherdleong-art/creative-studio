@@ -112,6 +112,7 @@ export type AdmissionWaitReason =
   | 'actor_paused'
   | 'model_forbidden'
   | 'personal_concurrency'
+  | 'fair_share'
   | 'pool_missing'
   | 'pool_disabled'
   | 'pool_capacity'
@@ -231,6 +232,19 @@ export interface SettleInput {
   errorStage?: 'remote_submit' | 'remote_poll';
 }
 
+export type ExecutionErrorStage = 'remote_submit' | 'remote_poll' | 'download' | 'local_media' | 'storage';
+export interface ExecutionErrorCapture {
+  attemptId?: string;
+  taskId?: string;
+  actorUserId?: string;
+  module?: string;
+  scope?: ExecutionScope;
+  outcome: 'failed';
+  errorCode?: string;
+  stage: ExecutionErrorStage;
+  eventKey?: string;
+}
+
 export interface ExecutionFacade {
   enqueue(input: EnqueueInput): EnqueueResult;
   admit(instance: InstanceFence & { leaseMs?: number; operationId?: string }): AdmitResult;
@@ -239,6 +253,8 @@ export interface ExecutionFacade {
   reconcile(input: ReconcileInput): Promise<AttemptRecord>;
   settle(input: SettleInput): Promise<AttemptRecord>;
   transmit(intent: SubmitIntent, send: (intent: SubmitIntent) => Promise<ExecutionReceipt>): Promise<AttemptRecord>;
+  captureError(record: ExecutionErrorCapture): Promise<void>;
+  captureRecovery(record: { taskId: string; module: string; stage: 'download' | 'storage' }): Promise<void>;
 }
 
 export interface ExecutionFacadeOptions {
@@ -252,12 +268,8 @@ export interface ExecutionFacadeOptions {
   newId?: () => string;
   serverReleaseId?: string;
   mirrorUsage?: (record: { attemptId: string; actualCost: Money | null; outcome: TerminalState }) => void | Promise<void>;
-  recordError?: (record: {
-    attemptId: string;
-    outcome: 'failed';
-    errorCode?: string;
-    stage: 'remote_submit' | 'remote_poll';
-  }) => void | Promise<void>;
+  recordError?: (record: ExecutionErrorCapture) => void | Promise<void>;
+  recordRecovery?: (record: { taskId: string; module: string; stage: 'download' | 'storage' }) => void | Promise<void>;
   faults?: {
     beforeIntentDatabase?: () => void;
     beforeReceiptDatabase?: () => void;
