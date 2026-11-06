@@ -245,6 +245,14 @@ try {
 } finally {
   setTeamAuthServiceForTests(null);
   closeDb();
-  fs.rmSync(fixture, { recursive: true, force: true });
+  // Windows 上 SQLite WAL 文件可能在连接关闭后仍被短暂锁定，等待并重试清理。
+  await new Promise(resolve => setTimeout(resolve, 100));
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try { fs.rmSync(fixture, { recursive: true, force: true }); break; }
+    catch (error) {
+      if (attempt === 4) throw error;
+      await new Promise(resolve => setTimeout(resolve, 200 * (attempt + 1)));
+    }
+  }
   process.env = previousEnv;
 }
