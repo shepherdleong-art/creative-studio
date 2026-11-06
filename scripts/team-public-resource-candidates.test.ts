@@ -61,12 +61,14 @@ const initialized = await initializeFirstAdministrator({ db, employeeId: '0000',
 const service = createTeamAuthService({ db, kdf, passwordParams: { N: 1024, r: 8, p: 1 } });
 setTeamAuthServiceForTests(service);
 const adminLogin = await service.login({ employeeId: '0000', password: initialized.credential });
-const admin = await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-resource-password');
-const created = await service.createUser(admin, { employeeId: '0001', displayName: '员工', role: 'employee' });
+await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-resource-password');
+const adminSession = await service.login({ employeeId: '0000', password: 'admin-resource-password' });
+const created = await service.createUser(adminSession.principal, { employeeId: '0001', displayName: '员工', role: 'employee' });
 const employeeLogin = await service.login({ employeeId: '0001', password: created.credential });
 await service.changeOwnPassword(employeeLogin.principal, created.credential, 'employee-resource-password');
-const adminCookie = sessionCookie(adminLogin.token).split(';', 1)[0];
-const employeeCookie = sessionCookie(employeeLogin.token).split(';', 1)[0];
+const employeeSession = await service.login({ employeeId: '0001', password: 'employee-resource-password' });
+const adminCookie = sessionCookie(adminSession.token).split(';', 1)[0];
+const employeeCookie = sessionCookie(employeeSession.token).split(';', 1)[0];
 const { ensureScriptStudioSchemaReady } = await import('../lib/script-studio/schema.ts');
 assert.notEqual((await ensureScriptStudioSchemaReady({ db, backupRoot: path.join(root, 'script-backups') })).state, 'compatibility_only');
 const publicRoute = await import('../app/api/team/public-resources/route.ts');
