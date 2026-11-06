@@ -150,6 +150,10 @@ try {
     'common.ps1', 'generate-config.ps1', 'install.ps1', 'status.ps1', 'stop.ps1', 'preflight.ps1',
     'backup.ps1', 'restore.ps1', 'release.ps1', 'schedule-backup.ps1', 'admin-cli.ps1',
   ]) copy(path.join(repoRoot, 'scripts', 'team-server', name), path.join(staging, 'service', name));
+  // service/ is one level below the release root, unlike app/scripts/team-server/.
+  // Keep its adapter pointed at the packaged implementation, never the source tree.
+  fs.writeFileSync(path.join(staging, 'service', 'distribution.mjs'),
+    "export * from '../app/scripts/team-server/distribution.mjs';\n", 'utf8');
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
   const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });

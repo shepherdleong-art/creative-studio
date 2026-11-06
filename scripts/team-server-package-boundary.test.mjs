@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const buildScript = path.join(root, 'scripts', 'build-team-server.mjs');
@@ -139,6 +139,12 @@ test('server 独立白名单装配、受控 manifest 与精确敏感边界', (t)
   assert.equal(manifest.fixture, true);
   assert.equal(manifest.releaseId, 'test-release');
   assert.ok(manifest.files.length > 10);
+  // Load the actual packaged verifier away from the repository and package cwd.
+  // Fixture assembly alone does not execute the native probe that imports this file.
+  const verifier = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `const { verifyReleaseManifest } = await import(${JSON.stringify(pathToFileURL(path.join(output, 'service/distribution.mjs')).href)}); verifyReleaseManifest(${JSON.stringify(output)}, { allowFixture: true });`,
+  ], { cwd: os.tmpdir(), encoding: 'utf8', env: { ...process.env, CREATIVE_STUDIO_APPLICATION_ROOT: '' } });
+  assert.equal(verifier.status, 0, `${verifier.stdout}\n${verifier.stderr}`);
   for (const entry of manifest.files) {
     assert.ok(!path.isAbsolute(entry.path) && !entry.path.includes('..'));
     assert.match(entry.sha256, /^[0-9a-f]{64}$/);

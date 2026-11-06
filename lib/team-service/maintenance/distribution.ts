@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 const forbiddenPath = process.env.CREATIVE_STUDIO_APPLICATION_ROOT?.trim()
   ? path.join(process.env.CREATIVE_STUDIO_APPLICATION_ROOT, 'scripts', 'packaging', 'forbidden-paths.json')
-  : path.resolve('scripts/packaging/forbidden-paths.json');
+  : new URL('../../../scripts/packaging/forbidden-paths.json', import.meta.url);
 const forbiddenSpec = JSON.parse(fs.readFileSync(forbiddenPath, 'utf8')) as {
   consumers: Record<string, { topLevel: string[]; forbidden: string[] }>;
 };
