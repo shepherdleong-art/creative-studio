@@ -353,12 +353,13 @@ function cleanupCandidates(db: Database.Database, scopes: TeamResourceScope[]): 
   return [...candidates];
 }
 
-function referenceBlockers(
+export function cleanupReferenceBlockers(
   db: Database.Database,
   scopes: TeamResourceScope[],
   fileIds: string[],
+  additionalPurgeScopes: ResourceRef[] = [],
 ): CleanupBlocker[] {
-  const purgeScopes = new Set(scopes.map(scopeKey));
+  const purgeScopes = new Set([...scopes, ...additionalPurgeScopes].map(scopeKey));
   const blockers: CleanupBlocker[] = [];
   const readReferences = db.prepare(`
     SELECT fileId, resourceType, resourceId, pinKind FROM team_file_references
@@ -570,16 +571,17 @@ function resourceBusinessBlockers(db: Database.Database, scopes: TeamResourceSco
   return blockers;
 }
 
-function planBlockers(db: Database.Database, scopes: TeamResourceScope[], fileIds: string[]): CleanupBlocker[] {
+export function planCleanupBlockers(db: Database.Database, scopes: TeamResourceScope[], fileIds: string[], additionalPurgeScopes: ResourceRef[] = []): CleanupBlocker[] {
   return uniqueBlockers([
     ...activeBarriers(db),
-    ...referenceBlockers(db, scopes, fileIds),
+    ...cleanupReferenceBlockers(db, scopes, fileIds, additionalPurgeScopes),
     ...executionBlockers(db, scopes),
     ...imageBusinessBlockers(db, scopes),
     ...batchHistoryBlockers(db, scopes),
     ...resourceBusinessBlockers(db, scopes),
   ]);
 }
+
 
 const BUSINESS_TABLE: Record<string, string> = {
   project: 'projects', canvas: 'creative_canvases', image: 'image_assets', batch: 'batch_productions',
@@ -663,12 +665,18 @@ export function runPermanentCleanup(
     storageRoot: string;
     now?: () => Date;
     unlink?: (absolutePath: string) => void;
+    additionalPurgeScopes?: ResourceRef[];
   },
 ): CleanupJobView {
   const now = options.now ?? (() => new Date());
   const unlink = options.unlink ?? ((absolutePath: string) => fs.unlinkSync(absolutePath));
   let job = cleanupJob(db, options.jobId);
   if (job.status === 'completed') return cleanupView(job);
+  if (job.status === 'failed' && readScope(db, { resourceType: job.resourceType, resourceId: job.resourceId })) {
+    db.prepare("UPDATE team_cleanup_jobs SET status = 'pending', phase = 'plan', error = NULL, updatedAt = ? WHERE id = ?")
+      .run(now().toISOString(), job.id);
+    job = cleanupJob(db, options.jobId);
+  }
   if (job.phase === 'plan' || job.phase === 'database') {
     const ref = { resourceType: job.resourceType, resourceId: job.resourceId };
     const scope = readScope(db, ref);
@@ -676,9 +684,12 @@ export function runPermanentCleanup(
       throw new ResourceAccessError('scope_inconsistent', '资源已恢复，不再处于回收站，已停止永久清理。', 409);
     }
     if (scope) {
+      if (job.phase === 'database') {
+        return saveDeferred(db, job.id, 'plan', [{ kind: 'cross_module', ...ref, detail: '上次清理未进入文件阶段，请从回收站重新确认。' }], now().toISOString());
+      }
       const scopes = descendants(db, ref);
       const fileIds = cleanupCandidates(db, scopes);
-      const blockers = planBlockers(db, scopes, fileIds);
+      const blockers = planCleanupBlockers(db, scopes, fileIds, options.additionalPurgeScopes);
       if (blockers.length > 0) return saveDeferred(db, job.id, 'plan', blockers, now().toISOString());
       const at = now().toISOString();
       try {
@@ -687,7 +698,7 @@ export function runPermanentCleanup(
           if (!currentScope?.deletedAt) {
             throw new ResourceAccessError('scope_inconsistent', '资源已恢复，不再处于回收站，已停止永久清理。', 409);
           }
-          const rechecked = planBlockers(db, descendants(db, ref), fileIds);
+          const rechecked = planCleanupBlockers(db, descendants(db, ref), fileIds, options.additionalPurgeScopes);
           if (rechecked.length > 0) throw new Error(`清理引用复核失败：${JSON.stringify(rechecked)}`);
           db.prepare(`
             UPDATE team_cleanup_jobs SET status = 'running', phase = 'database', blockersJson = '[]', error = NULL, updatedAt = ? WHERE id = ?

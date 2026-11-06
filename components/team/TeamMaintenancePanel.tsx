@@ -2,12 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { teamError, teamWrite } from './client';
+import TeamCleanupPanel from './TeamCleanupPanel';
 
 type Job = {
   id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'needs_review';
   stage: string; progress: number | null; requestedBy: { displayName: string };
+  action: 'backup.create' | 'cleanup.execute'; target: { kind: string; previewId?: string };
   createdAt: string; startedAt: string | null; finishedAt: string | null;
-  result?: { backupId?: string; verifiedAt?: string; totalBytes?: number } | null;
+  result?: { backupId?: string; verifiedAt?: string; totalBytes?: number; previewId?: string; deletedCount?: number; freedBytes?: number;
+    skipped?: Array<{ id: string; label?: string; reasonCode: string; reason: string }>;
+    failures?: Array<{ id: string; label?: string; reasonCode: string; reason: string; error?: string }> } | null;
   error?: { message?: string } | null; reviewReason?: string | null; integrity?: 'ok' | 'audit_corrupt'; message?: string;
 };
 type Backup = { id: string; type: string; createdAt: string; totalBytes: number; verification: string; verifiedAt: string | null; restorable: boolean };
@@ -75,7 +79,7 @@ export default function TeamMaintenancePanel() {
       </div>
       {error && <p role="alert" className="mt-4 text-sm text-fail">{error}</p>}
       <div className="mt-5 space-y-3" aria-live="polite">
-        {jobs.slice(0, 5).map((job) => <article key={job.id} className="rounded-xl border border-hairline p-4">
+        {jobs.filter((job) => job.action === 'backup.create').slice(0, 5).map((job) => <article key={job.id} className="rounded-xl border border-hairline p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-sm font-medium text-ink">{job.integrity === 'audit_corrupt' ? '待核查' : statusLabels[job.status]} · {stageLabels[job.stage] ?? job.stage}</h3>
             <span className={`text-xs ${job.status === 'succeeded' ? 'text-ok' : ['failed', 'needs_review'].includes(job.status) ? 'text-warn' : 'text-ink-secondary'}`}>{job.status === 'succeeded' ? '已通过完整性校验' : job.progress === null ? '阶段进度，无可用百分比' : `${job.progress}%`}</span>
@@ -89,6 +93,7 @@ export default function TeamMaintenancePanel() {
         {!loading && jobs.length === 0 && <p className="text-sm text-ink-secondary">尚未通过网页发起维护作业。</p>}
       </div>
     </section>
+    <TeamCleanupPanel jobs={jobs} />
     <section className="card p-6" aria-label="备份列表">
       <h2 className="text-lg font-semibold text-ink">备份列表</h2>
       <p className="mt-2 text-sm text-ink-secondary">只有重新通过数据库、配置、媒体和证据校验的完整备份才标记为可用于还原。</p>

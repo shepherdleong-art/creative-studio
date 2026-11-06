@@ -60,6 +60,7 @@ export async function runMaintenanceWorker(options: {
   configPath: string; jobId?: string;
   makeBackup: (params: { job: MaintenanceJob; backupId: string; onStage: (stage: 'snapshotting' | 'copying_media' | 'verifying') => void }) =>
     Promise<{ backupId: string; type: string; verifiedAt: string; totalBytes: number }>;
+  executeCleanup?: (job: MaintenanceJob) => Promise<Record<string, unknown>>;
   once?: boolean; pollIntervalMs?: number;
 }): Promise<void> {
   // deployment config 已在应用外解析，worker 不接受任意配置、路径或命令。
@@ -91,7 +92,17 @@ export async function runMaintenanceWorker(options: {
       }
       try {
         if (claimed) {
-          await executeClaimedBackupJob({ ...claimed, workerId, store, configPath: options.configPath, deploymentId: config.deploymentId,
+          if (claimed.job.action === 'cleanup.execute' && options.executeCleanup) {
+            try {
+              store.updateStage({ jobId: claimed.job.id, workerId, stage: 'verifying' });
+              const result = await options.executeCleanup(claimed.job);
+              store.updateStage({ jobId: claimed.job.id, workerId, stage: 'finishing' });
+              store.complete({ jobId: claimed.job.id, workerId, result });
+            } catch (error) {
+              store.fail({ jobId: claimed.job.id, workerId, code: 'cleanup_failed', message: error instanceof Error ? error.message : '清理执行失败，未确认完成。' });
+              throw error;
+            }
+          } else await executeClaimedBackupJob({ ...claimed, workerId, store, configPath: options.configPath, deploymentId: config.deploymentId,
             makeBackup: (params) => options.makeBackup({ ...params, job: claimed.job }) });
         }
       } finally { lock?.release(); lock = null; }
