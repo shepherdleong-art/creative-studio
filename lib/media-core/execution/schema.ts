@@ -192,6 +192,22 @@ export const EXECUTION_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = [
     sql: `ALTER TABLE execution_actor_policies ADD COLUMN allowedModelsJson TEXT
       CHECK (allowedModelsJson IS NULL OR (json_valid(allowedModelsJson) AND json_type(allowedModelsJson) = 'array'));`,
   },
+  {
+    version: 6,
+    // Manual team defaults do not rewrite existing actor policies. Ticket 04 owns
+    // any automatic mode and the one-time migration of legacy fixed values.
+    sql: `
+      CREATE TABLE execution_team_concurrency_policy (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        mode TEXT NOT NULL CHECK(mode = 'manual'),
+        manualDefaultConcurrency INTEGER NOT NULL CHECK(manualDefaultConcurrency >= 0),
+        version INTEGER NOT NULL CHECK(version > 0),
+        updatedAt TEXT NOT NULL
+      );
+      ALTER TABLE execution_actor_policies ADD COLUMN concurrencyMode TEXT
+        CHECK(concurrencyMode IS NULL OR concurrencyMode IN ('inherit', 'fixed'));
+    `,
+  },
 ];
 
 export type ExecutionSchemaReadiness = VersionedSchemaReadiness;
@@ -230,6 +246,13 @@ function validateExecutionSchema(db: Database.Database): void {
   }
   if (schemaVersion >= 5 && !(db.prepare('PRAGMA table_info(execution_actor_policies)').all() as Array<{ name: string }>).some(column => column.name === 'allowedModelsJson')) {
     throw new Error('execution 缺少模型权限字段');
+  }
+  if (schemaVersion >= 6) {
+    const actorColumns = (db.prepare('PRAGMA table_info(execution_actor_policies)').all() as Array<{ name: string }>).map(column => column.name);
+    if (!actorColumns.includes('concurrencyMode')) throw new Error('execution 缺少成员并发来源字段');
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_team_concurrency_policy'").get()) {
+      throw new Error('execution 缺少团队手动并发策略结构');
+    }
   }
 }
 

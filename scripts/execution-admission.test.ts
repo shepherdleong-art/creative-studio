@@ -73,10 +73,75 @@ function operation(actorId: string, key: string, options: {
 try {
   assert.equal(shanghaiAccountingPeriod(new Date('2026-02-28T15:59:59.000Z')), '2026-02');
   assert.equal(shanghaiAccountingPeriod(new Date('2026-02-28T16:00:00.000Z')), '2026-03');
-  assert.deepEqual(readActorPolicy((await setup('defaults')).db, 'new-user'), {
+  const defaultPolicy = readActorPolicy((await setup('defaults')).db, 'new-user');
+  assert.deepEqual(defaultPolicy, {
     actorId: 'new-user', monthlyLimitMinor: 0, currency: 'CNY', personalConcurrency: 0,
     paused: false, allowedModels: null, timezone: 'Asia/Shanghai', version: 0,
+    concurrencyMode: 'legacy', concurrencySource: 'legacy_fixed', effectiveConcurrency: 0,
   });
+
+  {
+    const { db } = await setup('manual-team-default');
+    const { readTeamConcurrencyPolicy, updateTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+    updateActorPolicy(db, {
+      actorId: 'legacy-member', monthlyLimitMinor: null, personalConcurrency: 2, paused: false, expectedVersion: 0,
+    });
+    const team = updateTeamConcurrencyPolicy(db, { manualDefaultConcurrency: 4, expectedVersion: 0 });
+    assert.deepEqual(team, { mode: 'manual', manualDefaultConcurrency: 4, version: 1 });
+    db.prepare(`INSERT INTO execution_actor_policies (
+      actorId, monthlyLimitMinor, currency, personalConcurrency, paused, timezone, version, concurrencyMode, updatedAt
+    ) VALUES ('new-member', 0, 'CNY', 0, 0, 'Asia/Shanghai', 1, 'inherit', ?)`).run(new Date().toISOString());
+    const inherited = readActorPolicy(db, 'new-member');
+    assert.equal(inherited.concurrencyMode, 'inherit');
+    assert.equal(inherited.concurrencySource, 'team_default');
+    assert.equal(inherited.effectiveConcurrency, 4, '新成员无需逐人填写即可继承团队默认');
+    assert.equal(inherited.personalConcurrency, 0, '并发继承不得发放费用额度');
+    const legacy = readActorPolicy(db, 'legacy-member');
+    assert.equal(legacy.concurrencyMode, 'legacy');
+    assert.equal(legacy.concurrencySource, 'legacy_fixed');
+    assert.equal(legacy.effectiveConcurrency, 2, '保存团队默认不得迁移已有固定值');
+    assert.equal(readTeamConcurrencyPolicy(db).version, 1);
+  }
+
+  {
+    const { db, execution } = await setup('inherited-admission');
+    const { updateTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+    upsertExecutionPool(db, { poolKey: 'shared', kind: 'remote', capacity: 5, enabled: true, mappingSnapshot: { providerId: 'provider-a' }, expectedVersion: 0 });
+    updateTeamConcurrencyPolicy(db, { manualDefaultConcurrency: 1, expectedVersion: 0 });
+    for (const actorId of ['inherited-a', 'inherited-b']) {
+      db.prepare(`INSERT INTO execution_actor_policies (
+        actorId, monthlyLimitMinor, currency, personalConcurrency, paused, timezone, version, concurrencyMode, updatedAt
+      ) VALUES (?, NULL, 'CNY', 0, 0, 'Asia/Shanghai', 1, 'inherit', ?)`).run(actorId, new Date().toISOString());
+    }
+    execution.enqueue(operation('inherited-a', 'inherited-a1'));
+    const firstId = db.prepare("SELECT id FROM execution_operations WHERE taskId='inherited-a1'").pluck().get() as string;
+    assert.equal(execution.admit({ ...identity, operationId: firstId }).kind, 'admitted');
+    execution.enqueue(operation('inherited-a', 'inherited-a2'));
+    const secondId = db.prepare("SELECT id FROM execution_operations WHERE taskId='inherited-a2'").pluck().get() as string;
+    assert.deepEqual(execution.admit({ ...identity, operationId: secondId }), { kind: 'deferred', reasons: ['personal_concurrency'] }, '团队默认必须限制真实准入');
+    assert.deepEqual(db.prepare("SELECT waitDetail FROM execution_operations WHERE id = ?").pluck().get(secondId), JSON.stringify({
+      reason: 'personal_concurrency', concurrencySource: 'team_default', currentConcurrency: 1, effectiveConcurrency: 1,
+    }), '等待详情必须能解释团队继承来源和实际占用');
+    execution.enqueue(operation('inherited-b', 'inherited-b1'));
+    const otherId = db.prepare("SELECT id FROM execution_operations WHERE taskId='inherited-b1'").pluck().get() as string;
+    assert.equal(execution.admit({ ...identity, operationId: otherId }).kind, 'admitted', '个人上限不预占团队共享池名额');
+    execution.enqueue(operation('inherited-b', 'inherited-b2'));
+    const poolWaitId = db.prepare("SELECT id FROM execution_operations WHERE taskId='inherited-b2'").pluck().get() as string;
+    upsertExecutionPool(db, { poolKey: 'shared', kind: 'remote', capacity: 2, enabled: true, mappingSnapshot: { providerId: 'provider-a' }, expectedVersion: 1 });
+    assert.deepEqual(execution.admit({ ...identity, operationId: poolWaitId }), { kind: 'deferred', reasons: ['pool_capacity'] });
+    assert.deepEqual(db.prepare("SELECT waitDetail FROM execution_operations WHERE id=?").pluck().get(poolWaitId), JSON.stringify({
+      reason: 'pool_capacity', poolKey: 'shared', currentConcurrency: 2, capacity: 2,
+    }), '共享池等待不能误报个人上限');
+    assert.equal(readActorPolicy(db, 'inherited-b').concurrencySource, 'team_default');
+    updateActorPolicy(db, { actorId: 'inherited-b', monthlyLimitMinor: null, personalConcurrency: 0, paused: false, expectedVersion: 1 });
+    assert.equal(readActorPolicy(db, 'inherited-b').concurrencyMode, 'inherit', '旧客户端只改费用/暂停不得丢失继承来源');
+    updateActorPolicy(db, { actorId: 'inherited-b', monthlyLimitMinor: null, personalConcurrency: 1, paused: false, expectedVersion: 2, concurrencyMode: 'fixed' });
+    assert.equal(readActorPolicy(db, 'inherited-b').concurrencySource, 'personal_fixed');
+    updateActorPolicy(db, { actorId: 'inherited-b', monthlyLimitMinor: null, personalConcurrency: 0, paused: false, expectedVersion: 3, concurrencyMode: 'inherit' });
+    assert.equal(readActorPolicy(db, 'inherited-b').effectiveConcurrency, 1);
+    updateTeamConcurrencyPolicy(db, { manualDefaultConcurrency: 0, expectedVersion: 1 });
+    assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE kind='concurrency' AND state='held'").pluck().get(), 4, '降额不得释放已受理名额');
+  }
 
   {
     const { db, execution } = await setup('fairness');
