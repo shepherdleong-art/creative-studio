@@ -120,6 +120,19 @@ try {
   const listed = await backupsRoute.GET(request('/api/team/maintenance/backups', adminCookie));
   assert.equal(listed.status, 200);
   assert.deepEqual((await listed.json()).backups, []);
+  const releaseList = await jobsRoute.GET(request('/api/team/maintenance/jobs', adminCookie));
+  assert.ok(Array.isArray((await releaseList.json()).jobs));
+  const releasesRoute = await import('../app/api/team/maintenance/releases/route.ts');
+  const releaseBody = {
+    candidateId: 'a'.repeat(64), idempotencyKey: 'confirm-release-001',
+    confirmation: { expectedReleaseId: 'old-release', targetAppVersion: '0.8.0', impactAcknowledged: true },
+  };
+  assert.equal((await releasesRoute.POST(request('/api/team/maintenance/releases', employeeCookie, releaseBody))).status, 403);
+  assert.equal((await releasesRoute.POST(request('/api/team/maintenance/releases', adminCookie, {
+    ...releaseBody, command: 'whoami',
+  }))).status, 400);
+  const unavailable = await releasesRoute.POST(request('/api/team/maintenance/releases', adminCookie, releaseBody));
+  assert.notEqual(unavailable.status, 202, '没有通过候选和当前版本复核时不得启动升级');
   console.log('team maintenance administrator route tests passed');
 } finally {
   setTeamAuthServiceForTests(null);

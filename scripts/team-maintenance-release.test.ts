@@ -87,6 +87,27 @@ try {
   assert.equal(fs.readFileSync(path.join(deploymentRoot, 'releases', 'old', 'release.txt'), 'utf8'), 'old-immutable');
   assert.equal(fs.readFileSync(path.join(deploymentRoot, 'releases', 'new', 'release.txt'), 'utf8'), 'new-immutable');
 
+  context.failSelfCheckOnce();
+  const selfCheckRoot = path.join(fixtureRoot, 'self-check');
+  const selfCheckFailure = operation({ operationId: 'release-operation-self-check', stateDirectory: selfCheckRoot });
+  selfCheckFailure.adapters.switchRelease = async () => {};
+  selfCheckFailure.failSelfCheckOnce();
+  await assert.rejects(() => runTeamRelease(selfCheckFailure), (error: unknown) => (error as { stage?: string }).stage === 'self_check');
+  const failedCheck = JSON.parse(fs.readFileSync(path.join(fixtureRoot, 'self-check', 'release-operation-self-check.json'), 'utf8'));
+  assert.equal(failedCheck.actualRelease.releaseId, 'new');
+  assert.equal(failedCheck.maintenance, true);
+  assert.equal(failedCheck.recovery.automaticRollbackAllowed, false);
+  assert.equal(selfCheckFailure.events.includes('resume'), false);
+  selfCheckFailure.clearFailures();
+  assert.equal((await runTeamRelease(selfCheckFailure)).status, 'completed');
+  assert.equal(selfCheckFailure.backupCalls, 1);
+
+  const backupFailure = operation({ operationId: 'release-operation-backup', stateDirectory: path.join(fixtureRoot, 'backup') });
+  backupFailure.adapters.createPreUpgradeBackup = async () => ({ backupId: 'not-verified', verified: false });
+  await assert.rejects(() => runTeamRelease(backupFailure), (error: unknown) => (error as { stage?: string }).stage === 'backup');
+  assert.equal(backupFailure.events.includes('switch'), false, '备份未验证不得越过切换');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(fixtureRoot, 'backup', 'release-operation-backup.json'), 'utf8')).maintenance, true);
+
   const migration = operation({ operationId: 'release-operation-migration', stateDirectory: path.join(fixtureRoot, 'migration') });
   migration.adapters.switchRelease = async () => {};
   let failMigration = true;
