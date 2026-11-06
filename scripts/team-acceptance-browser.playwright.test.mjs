@@ -157,9 +157,12 @@ try {
       await adminPage.getByText('其他成员模型-fixture-B', { exact: false }).first().waitFor();
       await adminPage.getByText('历史脚本模型-fixture-A', { exact: false }).first().waitFor();
       const memberFilter = adminPage.getByLabel('发起人', { exact: true });
-      await memberFilter.selectOption({ label: '逻辑用户 2（accept-02）' });
+      await Promise.all([
+        adminPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/team/tasks' && response.url().includes('actorUserId=') && response.status() === 200),
+        memberFilter.selectOption({ label: '逻辑用户 2（accept-02）' }),
+      ]);
       await adminPage.getByText('历史脚本模型-fixture-A', { exact: false }).first().waitFor();
-      assert.equal(await adminPage.getByText('其他成员模型-fixture-B', { exact: false }).first().isVisible(), false);
+      assert.equal(await adminPage.getByText('其他成员模型-fixture-B', { exact: false }).count(), 0, '成员筛选响应完成后另一成员不可见');
       const employeeGroup = adminPage.getByRole('region', { name: /逻辑用户 2/ });
       await employeeGroup.getByRole('button', { name: '折叠', exact: true }).click();
       await employeeGroup.getByRole('button', { name: '展开', exact: true }).waitFor();
