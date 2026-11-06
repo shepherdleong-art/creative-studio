@@ -1,6 +1,14 @@
 import crypto from 'node:crypto';
+import path from 'node:path';
 import type Database from 'better-sqlite3';
+import { dataRoot } from '../data-root.ts';
+import { managedResourceVisibility, registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { normalizeModelKey } from './catalog-import/normalize.ts';
+
+const TEMPLATE_ASSET_MIME: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+};
 
 /**
  * 全局产品策略知识库 + 脚本模板库领域（方案 `docs/superpowers/plans/2026-09-03-项目生产身份与脚本知识模板-执行方案.md`
@@ -22,6 +30,7 @@ export interface CatalogRecord {
   id: string;
   kind: CatalogKind;
   currentRevisionId: string | null;
+  ownerKey: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -267,31 +276,58 @@ function toVisualHookTemplateView(record: VisualHookTemplateRecord, assetIds: st
   };
 }
 
+function findAccessibleCatalog(db: Database.Database, kind: CatalogKind): CatalogRecord | undefined {
+  const access = requireAccessContext();
+  const records = db.prepare(`SELECT * FROM script_studio_catalogs WHERE kind = ? ORDER BY createdAt, id`)
+    .all(kind) as CatalogRecord[];
+  if (access.kind === 'local') return records[0];
+  let publicRecord: CatalogRecord | undefined;
+  for (const record of records) {
+    try {
+      access.assertAccess('script_catalog', record.id, 'read');
+    } catch {
+      continue;
+    }
+    if (record.ownerKey === access.actor.userId) return record;
+    publicRecord ??= record;
+  }
+  return publicRecord;
+}
+
 export function getOrCreateCatalog(db: Database.Database, kind: CatalogKind, now?: Date): CatalogRecord {
-  const existing = db.prepare(`SELECT * FROM script_studio_catalogs WHERE kind = ?`).get(kind) as CatalogRecord | undefined;
+  const existing = findAccessibleCatalog(db, kind);
   if (existing) return existing;
+  const access = requireAccessContext();
+  const ownerKey = access.kind === 'team' ? access.actor.userId : 'local';
   const record: CatalogRecord = {
     id: crypto.randomUUID(),
     kind,
     currentRevisionId: null,
+    ownerKey,
     createdAt: (now ?? new Date()).toISOString(),
     updatedAt: (now ?? new Date()).toISOString(),
   };
-  db.prepare(`INSERT INTO script_studio_catalogs (id, kind, currentRevisionId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)`)
-    .run(record.id, record.kind, record.currentRevisionId, record.createdAt, record.updatedAt);
+  const create = db.transaction(() => {
+    db.prepare(`INSERT INTO script_studio_catalogs (id, kind, currentRevisionId, ownerKey, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(record.id, record.kind, record.currentRevisionId, record.ownerKey, record.createdAt, record.updatedAt);
+    access.registerRootScope({
+      resourceType: 'script_catalog', resourceId: record.id,
+      ownerUserId: access.actor.userId, visibility: 'private',
+    });
+  });
+  create.immediate();
   return record;
 }
 
 export function getCatalog(db: Database.Database, kind: CatalogKind): CatalogRecord {
-  const record = db.prepare(`SELECT * FROM script_studio_catalogs WHERE kind = ?`).get(kind) as CatalogRecord | undefined;
+  const record = findAccessibleCatalog(db, kind);
   if (!record) throw new Error(`catalog 不存在: ${kind}`);
   return record;
 }
 
-/** 容错查找：目录尚未导入时不抛错（设置页空状态/列表用），未找到返回 null。 */
+/** 容错查找：个人目录优先，其次为已发布公共目录；不可见目录等同不存在。 */
 export function findCatalog(db: Database.Database, kind: CatalogKind): CatalogRecord | null {
-  const record = db.prepare(`SELECT * FROM script_studio_catalogs WHERE kind = ?`).get(kind) as CatalogRecord | undefined;
-  return record ?? null;
+  return findAccessibleCatalog(db, kind) ?? null;
 }
 
 export interface CreateCatalogRevisionInput {
@@ -317,6 +353,9 @@ export function createCatalogRevision(
   db: Database.Database,
   input: CreateCatalogRevisionInput,
 ): { revisionId: string; created: boolean } {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('script_catalog', input.catalogId, 'write');
+  const visibility = managedResourceVisibility('script_catalog', input.catalogId);
   const existing = db.prepare(`SELECT id FROM script_studio_catalog_revisions WHERE catalogId = ? AND sourceSha256 = ?`)
     .get(input.catalogId, input.sourceSha256) as { id: string } | undefined;
   if (existing) {
@@ -333,6 +372,11 @@ export function createCatalogRevision(
       INSERT INTO script_studio_catalog_revisions (id, catalogId, revisionNumber, sourceFilename, sourceSha256, importReportJson, createdAt)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(revisionId, input.catalogId, revisionNumber, input.sourceFilename, input.sourceSha256, JSON.stringify(input.importReport), now);
+    access.registerInheritedScope({
+      resourceType: 'script_catalog_revision', resourceId: revisionId,
+      parent: { resourceType: 'script_catalog', resourceId: input.catalogId },
+      visibility,
+    });
 
     const insertStrategy = db.prepare(`
       INSERT INTO script_studio_strategy_entries (id, revisionId, modelKey, normalizedModelKey, canonicalName, categoryMindsetsJson, primarySellingPointsJson, differentiatorsJson, searchTermsJson, auxiliaryJson, sourceRowsJson, status)
@@ -382,8 +426,21 @@ export function createCatalogRevision(
       const visualHookId = asset.visualHookId.startsWith('row:')
         ? visualIdByRow.get(Number(asset.visualHookId.slice(4))) ?? asset.visualHookId
         : asset.visualHookId;
-      insertAsset.run(crypto.randomUUID(), revisionId, visualHookId, asset.relativePath, asset.contentSha256,
+      const assetId = crypto.randomUUID();
+      insertAsset.run(assetId, revisionId, visualHookId, asset.relativePath, asset.contentSha256,
         asset.sourceAnchor, asset.width, asset.height, now);
+      access.registerInheritedScope({
+        resourceType: 'script_template_asset', resourceId: assetId,
+        parent: { resourceType: 'script_catalog_revision', resourceId: revisionId },
+        visibility,
+      });
+      if (access.kind === 'team') {
+        registerManagedFile({
+          absolutePath: path.join(dataRoot(), 'storage', asset.relativePath),
+          mimeType: TEMPLATE_ASSET_MIME[path.extname(asset.relativePath).toLowerCase()] ?? 'application/octet-stream',
+          references: [{ resourceType: 'script_template_asset', resourceId: assetId, role: 'input' }],
+        });
+      }
     }
 
     db.prepare(`UPDATE script_studio_catalogs SET currentRevisionId = ?, updatedAt = ? WHERE id = ?`)
@@ -396,6 +453,8 @@ export function createCatalogRevision(
 
 /** 设置页激活历史修订：只改当前指针，不修改任何条目内容。 */
 export function setCatalogCurrentRevision(db: Database.Database, catalogId: string, revisionId: string, now?: Date): void {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('script_catalog', catalogId, 'write');
   const revision = db.prepare(`SELECT id FROM script_studio_catalog_revisions WHERE id = ? AND catalogId = ?`).get(revisionId, catalogId);
   if (!revision) throw new Error('目录修订不存在');
   db.prepare(`UPDATE script_studio_catalogs SET currentRevisionId = ?, updatedAt = ? WHERE id = ?`)
@@ -403,21 +462,39 @@ export function setCatalogCurrentRevision(db: Database.Database, catalogId: stri
 }
 
 export function getCatalogCurrentRevisionId(db: Database.Database, kind: CatalogKind): string | null {
-  const row = db.prepare(`SELECT currentRevisionId FROM script_studio_catalogs WHERE kind = ?`).get(kind) as { currentRevisionId: string | null } | undefined;
-  return row?.currentRevisionId ?? null;
+  const catalog = findAccessibleCatalog(db, kind);
+  if (!catalog?.currentRevisionId) return null;
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('script_catalog_revision', catalog.currentRevisionId, 'read');
+  return catalog.currentRevisionId;
 }
 
 export function getCatalogRevision(db: Database.Database, revisionId: string): CatalogRevisionRecord | null {
   const record = db.prepare(`SELECT * FROM script_studio_catalog_revisions WHERE id = ?`).get(revisionId) as CatalogRevisionRecord | undefined;
+  if (record) {
+    const access = requireAccessContext();
+    if (access.kind === 'team') access.assertAccess('script_catalog_revision', revisionId, 'read');
+  }
   return record ?? null;
 }
 
 export function listCatalogRevisions(db: Database.Database, catalogId: string): Array<CatalogRevisionRecord & { current: boolean }> {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('script_catalog', catalogId, 'read');
   const currentId = (db.prepare(`SELECT currentRevisionId FROM script_studio_catalogs WHERE id = ?`).get(catalogId) as { currentRevisionId: string | null }).currentRevisionId;
   const records = db.prepare(`
     SELECT * FROM script_studio_catalog_revisions WHERE catalogId = ? ORDER BY revisionNumber DESC
   `).all(catalogId) as Array<CatalogRevisionRecord & { current: boolean }>;
-  return records.map((record) => ({ ...record, current: record.id === currentId }));
+  return records.flatMap((record) => {
+    if (access.kind === 'team') {
+      try {
+        access.assertAccess('script_catalog_revision', record.id, 'read');
+      } catch {
+        return [];
+      }
+    }
+    return [{ ...record, current: record.id === currentId }];
+  });
 }
 
 export function getCatalogRevisionView(db: Database.Database, revisionId: string): CatalogRevisionView | null {

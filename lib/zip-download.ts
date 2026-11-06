@@ -4,6 +4,7 @@ import path from 'path';
 import { PassThrough } from 'stream';
 import { Readable } from 'stream';
 import { dataRoot } from './data-root';
+import { authorizeManagedFileRead } from './media-core/access-context.ts';
 
 export interface ZipImageEntry {
   filePath: string;
@@ -117,6 +118,7 @@ function buildZipStreamWithExts(entries: ZipImageEntry[], allowedExts: string[])
   archive.pipe(pass);
 
   for (const entry of entries) {
+    authorizeManagedFileRead(entry.filePath);
     const resolved = assertStoragePath(entry.filePath, allowedExts);
     const zipName = reserveZipFilename(entry.filename, registry);
     archive.file(resolved, { name: zipName });

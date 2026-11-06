@@ -11,6 +11,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -25,7 +27,7 @@ export const dynamic = 'force-dynamic';
  * 片段）会让封面渲染任务重跑：封面任务 requestKey 是统一的 coverContractHash，
  * 同一契约重复触发幂等命中既有任务；与封面无关的编辑不会产生任何新任务。
  */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
   const { id, planId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -378,3 +380,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return batchRouteErrorResponse(error, 'batch_clip_edit_failed', '编辑成片片段失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/outputs/[planId]/clips', 'POST', __teamRoutePOST);

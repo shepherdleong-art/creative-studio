@@ -6,6 +6,7 @@ import { dataRoot } from '../data-root.ts';
 import { probeVideoMedia, runFfmpeg } from '../ffmpeg.ts';
 import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts';
 import { resolveSourceFilePath } from './media-catalog.ts';
+import { authorizeManagedFileRead, registerManagedFile } from '../media-core/access-context.ts';
 import {
   acquireProxyWriteLease,
   resolveControlledProxyPath,
@@ -13,6 +14,7 @@ import {
   type BatchProxyRequestRow,
 } from './proxy-cache.ts';
 import type { BatchTaskExecutor } from './executors.ts';
+import { withMediaResource } from '../media-core/media-resource-gate.ts';
 
 /**
  * 首个代理规格(profile 版本 proxy-v1,与 §5.4 要求对应)。参数不是永远不变的产品合同,
@@ -42,21 +44,6 @@ async function assertEnoughDiskSpaceForProxy(directory: string): Promise<void> {
   if (availableBytes < MIN_FREE_BYTES_FOR_PROXY) {
     const availableMb = Math.floor(availableBytes / (1024 * 1024));
     throw new Error(`磁盘剩余空间不足(可用 ${availableMb}MB),已阻塞代理生成;请清理空间或代理缓存后重试`);
-  }
-}
-
-// proxy executor 是重本地任务,默认单并发(§5.4):进程内一条 FIFO 互斥链,
-// 不占用调度并发槽等待,只序列化真正的 FFmpeg 编码本身。
-let proxyGenerationLock: Promise<void> = Promise.resolve();
-async function withProxyGenerationSlot<T>(fn: () => Promise<T>): Promise<T> {
-  const previous = proxyGenerationLock;
-  let release!: () => void;
-  proxyGenerationLock = new Promise((resolve) => { release = resolve; });
-  await previous;
-  try {
-    return await fn();
-  } finally {
-    release();
   }
 }
 
@@ -213,7 +200,7 @@ export const proxyGenerateExecutor: BatchTaskExecutor = {
       throw new Error('所有原片来源均已离线、内容已变化或无法重新核验,代理生成失败');
     }
 
-    return withProxyGenerationSlot(async () => {
+    return withMediaResource({ taskId: claim.task.id, step: 'proxy-generate', wait: false, signal }, async () => {
       // 写租约:从准备临时文件开始,到原子发布与 ready 数据库更新完成为止。
       const releaseWriteLease = acquireProxyWriteLease(cacheItem.id, db);
       let tempAbsolutePath = '';
@@ -269,6 +256,8 @@ export const proxyGenerateExecutor: BatchTaskExecutor = {
           markCacheFailed(db, cacheItem.id, request.id);
           throw new Error('无法读取原片媒体信息,无法生成代理');
         }
+
+        const originalFileId = authorizeManagedFileRead(verifiedSourcePath)?.fileId ?? null;
 
         // 进入写租约保护段:临时文件准备从这一刻开始
         const finalAbsolutePath = resolveControlledProxyPath(cacheItem.relativePath);
@@ -328,6 +317,13 @@ export const proxyGenerateExecutor: BatchTaskExecutor = {
         // 原子发布:先写临时文件、探测校验通过后再改名,避免半成品被当作可用代理提供预览。
         fs.renameSync(tempAbsolutePath, finalAbsolutePath);
         tempAbsolutePath = '';
+        if (originalFileId) {
+          registerManagedFile({
+            absolutePath: finalAbsolutePath,
+            mimeType: 'video/mp4',
+            derivedFromFileId: originalFileId,
+          });
+        }
 
         db.prepare(`
           UPDATE batch_proxy_cache_items

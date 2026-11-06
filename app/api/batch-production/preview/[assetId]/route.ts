@@ -7,8 +7,11 @@ import { PROXY_PROFILE_VERSION } from '@/lib/batch-production/proxy-executor';
 import { acquireProxyReadLease, resolveControlledProxyPath } from '@/lib/batch-production/proxy-cache';
 import { projectAssetMimeType } from '@/lib/batch-production/project-asset-media';
 import { buildMediaEtag, projectAssetMediaResponse } from '@/lib/batch-production/project-asset-media-response';
-import { ensureBrowserPreview } from '@/lib/video-browser-preview';
+import { BrowserPreviewPendingError, ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { BATCH_NO_STORE_HEADERS, batchProjectIdFromRequest } from '../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { authorizeManagedFileRead, registerManagedFile } from '@/lib/media-core/access-context';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -33,7 +36,7 @@ function previewMediaEtag(parts: string[], stat: fs.Stats): string {
   return buildMediaEtag([...parts, String(stat.size), String(stat.mtimeMs)]);
 }
 
-export async function GET(request: NextRequest, context: { params: Promise<{ assetId: string }> }) {
+async function __teamRouteGET(request: NextRequest, context: { params: Promise<{ assetId: string }> }) {
   const { assetId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -146,6 +149,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ ass
       }, { status: 404, headers: BATCH_NO_STORE_HEADERS });
     }
     if (source.kind === 'original') {
+      const originalGrant = authorizeManagedFileRead(source.sourcePath);
       if (!fs.existsSync(source.sourcePath)) {
         return NextResponse.json({
           error: 'preview_unavailable',
@@ -159,6 +163,9 @@ export async function GET(request: NextRequest, context: { params: Promise<{ ass
       const served = originalMime.startsWith('video/')
         ? await ensureBrowserPreview(source.sourcePath)
         : source.sourcePath;
+      if (originalGrant && served !== source.sourcePath) {
+        registerManagedFile({ absolutePath: served, mimeType: 'video/mp4', derivedFromFileId: originalGrant.fileId });
+      }
       const stat = fs.statSync(served);
       const etagParts = [
         source.kind,
@@ -195,6 +202,14 @@ export async function GET(request: NextRequest, context: { params: Promise<{ ass
     let streaming = false;
     try {
       const absolutePath = resolveControlledProxyPath(source.relativePath);
+      if (source.originalSourcePath) {
+        const originalGrant = authorizeManagedFileRead(source.originalSourcePath);
+        if (originalGrant) {
+          registerManagedFile({ absolutePath, mimeType: 'video/mp4', derivedFromFileId: originalGrant.fileId });
+        }
+      } else {
+        authorizeManagedFileRead(absolutePath);
+      }
       if (!fs.existsSync(absolutePath)) {
         return NextResponse.json({
           error: 'preview_unavailable',
@@ -231,10 +246,14 @@ export async function GET(request: NextRequest, context: { params: Promise<{ ass
     } finally {
       if (!streaming) releaseOnce();
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof BrowserPreviewPendingError) {
+      return NextResponse.json({ error: 'preview_pending', retryAfterMs: error.retryAfterMs }, { status: 202, headers: BATCH_NO_STORE_HEADERS });
+    }
     return NextResponse.json({
       error: 'preview_failed',
       message: '预览解析失败',
     }, { status: 500, headers: BATCH_NO_STORE_HEADERS });
   }
 }
+export const GET = withTeamRoute('/api/batch-production/preview/[assetId]', 'GET', __teamRouteGET);

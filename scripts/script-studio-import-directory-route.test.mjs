@@ -5,6 +5,7 @@ import ts from 'typescript';
 
 // Exercise the real route guard without touching user files, SQLite or providers.
 const calls = [];
+let deploymentMode = 'local';
 const exports = {};
 const source = ts.transpileModule(fs.readFileSync('app/api/projects/[id]/script-studio/import-directory/route.ts', 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -20,6 +21,14 @@ vm.runInNewContext(source, {
       errorResponse: error => ({ status: 400, body: { message: error.message } }),
     };
     if (name === '@/lib/script-studio/errors') return { ScriptStudioError: class extends Error {} };
+    // local 部署下 wrapper 原样调用 handler；server 授权矩阵另行覆盖。
+    if (name === '@/lib/team-service/route-wrapper') return { withTeamRoute: (_route, _method, handler) => handler };
+    if (name === '@/lib/team-service/config') return { readRuntimeConfig: () => ({ mode: deploymentMode }) };
+    if (name === '@/lib/team-service/transfers/controlled-transfer') return {
+      controlledUploadRequired: () => Response.json({
+        error: 'controlled_upload_required', uploadEndpoint: '/api/team/uploads',
+      }, { status: 409 }),
+    };
     if (name === '@/lib/script-studio/import-directory') return {
       importImageDirectory: async (_db, projectId, directoryPath) => {
         calls.push({ projectId, directoryPath });
@@ -57,4 +66,8 @@ await check('opaque origin', { host: '127.0.0.1:8298', origin: 'null' }, 403);
 await check('cross-site metadata', { host: '127.0.0.1:8298', origin: 'http://127.0.0.1:8298', 'sec-fetch-site': 'cross-site' }, 403);
 await check('cross-site metadata without Origin', { 'sec-fetch-site': 'cross-site' }, 403);
 await check('forwarded Host cannot grant access', { host: '127.0.0.1:8298', origin: 'https://example.com', 'x-forwarded-host': 'example.com', 'x-forwarded-proto': 'https' }, 403);
+deploymentMode = 'server';
+await check('server absolute directory import switches to controlled upload', {
+  host: '127.0.0.1:8298', origin: 'http://127.0.0.1:8298',
+}, 409);
 console.log('script-studio-import-directory-route.test.mjs: ok');

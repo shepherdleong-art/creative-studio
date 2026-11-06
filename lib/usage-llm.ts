@@ -14,12 +14,14 @@ import {
   markUsageCallBillable,
 } from './usage-ledger.ts';
 import { getDb } from './db.ts';
+import type { CostQuote, Money } from './media-core/execution/context.ts';
 
 export interface LlmUsageContext {
   enabled: true;
   projectId?: string;
   refType?: string;
   refId?: string;
+  executionAttemptId?: string | null;
 }
 
 /** Public call-site shape; the registry always merges enabled: true. */
@@ -88,6 +90,39 @@ function createProviderSnapshot(
   };
 }
 
+function requestCost(
+  runtime: Pick<ScriptProviderRuntimeConfig, 'id' | 'name' | 'type' | 'apiStyle' | 'model' | 'executionScope' | 'baseUrl'>,
+  requestModel: string,
+): { money: Money; pricingSnapshot: unknown } | null {
+  const plan = resolveCoreUsagePlan(createProviderSnapshot(runtime, requestModel));
+  if (!plan || plan.unit !== 'request') return null;
+  return {
+    money: { currency: 'CNY', minor: Math.ceil(plan.unitPriceMicros / 10_000) },
+    pricingSnapshot: {
+      coreModelKey: plan.coreModelKey,
+      pricingVersion: plan.pricingVersion,
+      priceComponents: plan.priceComponents,
+    },
+  };
+}
+
+export function llmExecutionQuote(
+  runtime: Pick<ScriptProviderRuntimeConfig, 'id' | 'name' | 'type' | 'apiStyle' | 'model' | 'executionScope' | 'baseUrl'>,
+  requestModel: string,
+): CostQuote {
+  const cost = requestCost(runtime, requestModel);
+  return cost
+    ? { kind: 'priced', reserve: cost.money, pricingSnapshot: cost.pricingSnapshot }
+    : { kind: 'unpriced', pricingSnapshot: null };
+}
+
+export function llmTransportActualCost(
+  runtime: Pick<ScriptProviderRuntimeConfig, 'id' | 'name' | 'type' | 'apiStyle' | 'model' | 'executionScope' | 'baseUrl'>,
+  requestModel: string,
+): Money | null {
+  return requestCost(runtime, requestModel)?.money ?? null;
+}
+
 /** Create durable started evidence only for the exact company GPT core identity. */
 export function beginLlmUsageCall(
   runtime: Pick<ScriptProviderRuntimeConfig, 'id' | 'name' | 'type' | 'apiStyle' | 'model' | 'executionScope' | 'baseUrl'>,
@@ -122,6 +157,7 @@ export function beginLlmUsageCall(
       projectId,
       refType,
       refId,
+      executionAttemptId: context.executionAttemptId,
     });
     if (!started.ok) return null;
     return { callId, eventKey, db };

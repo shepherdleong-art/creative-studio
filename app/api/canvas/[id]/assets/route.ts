@@ -5,14 +5,19 @@ import { CanvasError } from '@/lib/creative-canvas/errors';
 import { canvasStorageRoot, importCanvasAsset } from '@/lib/creative-canvas/assets';
 import { requireCanvas } from '@/lib/creative-canvas/repository';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { controlledUploadRequired } from '@/lib/team-service/transfers/controlled-transfer';
+
 
 export const runtime = 'nodejs';
 
 /** 导入本地素材：只接受上传文件，不接受客户端传来的任意本机路径。 */
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  if (readRuntimeConfig().mode === 'server') return controlledUploadRequired();
   try {
     await assertCanvasApiReady();
     const { id } = await params;
@@ -43,7 +48,7 @@ export async function POST(
   }
 }
 
-export async function GET(
+async function __teamRouteGET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -60,3 +65,5 @@ export async function GET(
     return canvasJsonError(error);
   }
 }
+export const POST = withTeamRoute('/api/canvas/[id]/assets', 'POST', __teamRoutePOST);
+export const GET = withTeamRoute('/api/canvas/[id]/assets', 'GET', __teamRouteGET);

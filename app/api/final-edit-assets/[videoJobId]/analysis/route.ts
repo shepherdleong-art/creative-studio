@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function PATCH(request: Request, { params }: { params: Promise<{ videoJobId: string }> }) {
+
+async function __teamRoutePATCH(request: Request, { params }: { params: Promise<{ videoJobId: string }> }) {
   const { videoJobId } = await params;
   const current = getDb().prepare(`SELECT manualOverrideJson, autoUseDisabled FROM final_edit_asset_analysis WHERE videoJobId=?`).get(videoJobId) as { manualOverrideJson: string; autoUseDisabled: number } | undefined;
   if (!current) return NextResponse.json({ error: 'analysis_not_found' }, { status: 404 });
@@ -15,3 +17,4 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ vi
   getDb().prepare(`UPDATE final_edit_asset_analysis SET manualOverrideJson=?, autoUseDisabled=?, updatedAt=? WHERE videoJobId=?`).run(JSON.stringify(allowed), body.autoUseDisabled == null ? current.autoUseDisabled : (body.autoUseDisabled ? 1 : 0), new Date().toISOString(), videoJobId);
   return NextResponse.json({ videoJobId, manualOverride: allowed, autoUseDisabled: body.autoUseDisabled == null ? Boolean(current.autoUseDisabled) : body.autoUseDisabled });
 }
+export const PATCH = withTeamRoute('/api/final-edit-assets/[videoJobId]/analysis', 'PATCH', __teamRoutePATCH);

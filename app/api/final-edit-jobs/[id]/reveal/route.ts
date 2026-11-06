@@ -7,8 +7,10 @@ import { desktopRevealAvailable, resolvePublishedVideoForReveal, revealPublished
 import { verifyDeliveryDirectory } from '@/lib/final-edit/reassembled/delivery';
 import { projectFile, sha256 } from '@/lib/film-render/files';
 import type { FilmBinding } from '@/lib/final-edit/reassembled/types';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   if (!desktopRevealAvailable()) return NextResponse.json({ error: 'desktop_reveal_unavailable', message: '当前运行方式不支持在文件夹中查看' }, { status: 403 });
   if (request.headers.get('x-creative-studio-action') !== 'reveal') return NextResponse.json({ error: 'invalid_reveal_request', message: '文件定位请求缺少工作台标记' }, { status: 403 });
   if (!isSameOriginRequest(request)) return NextResponse.json({ error: 'cross_origin_reveal_denied', message: '不允许跨站触发文件定位' }, { status: 403 });
@@ -31,3 +33,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'reveal_failed', message: error instanceof Error ? error.message : String(error) }, { status: 409 });
   }
 }
+export const POST = withTeamRoute('/api/final-edit-jobs/[id]/reveal', 'POST', __teamRoutePOST);

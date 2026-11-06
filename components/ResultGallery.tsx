@@ -1,5 +1,7 @@
 'use client';
 
+import { uploadImages } from '@/lib/image-upload-client';
+
 import { useState, useEffect, useRef } from 'react';
 import HoverZoomImage from '@/components/HoverZoomImage';
 import { Icon } from '@/components/ui/Icon';
@@ -91,7 +93,7 @@ function InlineUploader({
       form.append('targetMaxSide', '1536');
       form.append('jpegQuality', '85');
       if (projectId) form.append('projectId', projectId);
-      const res = await fetch('/api/upload', { method: 'POST', body: form });
+      const res = await uploadImages(form);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `Upload failed (${res.status})`);

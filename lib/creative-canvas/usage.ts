@@ -11,10 +11,13 @@
 
 import type Database from 'better-sqlite3';
 import {
+  calculateUsageCostMicros,
   createCoreUsageSnapshot,
   resolveCoreUsagePlan,
+  type CoreUsagePlan,
   type CoreUsageProviderSnapshot,
 } from '../usage-pricing.ts';
+import type { CostQuote, Money } from '../media-core/execution/context.ts';
 import { recordUsage, type UsageOperationResult } from '../usage-ledger.ts';
 import { requireCanvasTask, type CanvasTaskRecord } from './tasks.ts';
 
@@ -36,6 +39,80 @@ function parseJsonObject(raw: string): Record<string, unknown> {
   }
 }
 
+function canvasPricingBasis(db: Database.Database, task: CanvasTaskRecord): {
+  plan: CoreUsagePlan;
+  quantity: number | null;
+} | null {
+  const providerSnapshot = parseJsonObject(task.providerSnapshot);
+  const modelAlias = String(providerSnapshot.modelAlias ?? '');
+  const providerIdentity = String(providerSnapshot.providerIdentity ?? '');
+  if (!modelAlias || !providerIdentity || !providerIdentity.startsWith('company-')) return null;
+  const table: CoreUsageProviderSnapshot['providerTable'] = task.mediaKind === 'video' ? 'video_providers' : 'providers';
+  const row = db.prepare(
+    table === 'video_providers'
+      ? `SELECT id, name, type, baseUrl FROM video_providers WHERE id = ? OR defaultModel = ? LIMIT 1`
+      : `SELECT id, name, type, baseUrl FROM providers WHERE id = ? OR model = ? LIMIT 1`,
+  ).get(providerIdentity, modelAlias) as
+    | { id: string; name: string; type: string; baseUrl: string }
+    | undefined;
+  const plan = resolveCoreUsagePlan({
+    providerTable: table,
+    providerId: row?.id ?? providerIdentity,
+    providerName: row?.name ?? providerIdentity,
+    providerType: row?.type ?? (task.mediaKind === 'video' ? 'openai-video' : 'gateway-task-image'),
+    executionScope: 'company',
+    configuredModel: modelAlias,
+    requestModel: modelAlias,
+    baseUrl: row?.baseUrl ?? '',
+  });
+  if (!plan) return null;
+  const snapshotFields = parseJsonObject(task.parameterSnapshot);
+  const nodeParameters = parseJsonObject(
+    typeof snapshotFields.parameters === 'string'
+      ? snapshotFields.parameters
+      : JSON.stringify(snapshotFields.parameters ?? {}),
+  );
+  if (nodeParameters.generationStage === 'draft' || nodeParameters.generationStage === 'final-from-draft') return null;
+  let durationSec = Number(nodeParameters.durationSec ?? 0);
+  if (task.mediaKind === 'video' && durationSec <= 0) {
+    const output = task.outputAssetId ? db.prepare('SELECT durationSec FROM creative_canvas_assets WHERE id = ?')
+      .get(task.outputAssetId) as { durationSec: number | null } | undefined : undefined;
+    durationSec = Number(output?.durationSec ?? 0);
+  }
+  return {
+    plan,
+    quantity: task.mediaKind === 'video' ? (durationSec > 0 ? durationSec : null) : 1,
+  };
+}
+
+function minorFromMicros(micros: number): Money {
+  return { currency: 'CNY', minor: Math.ceil(micros / 10_000) };
+}
+
+/** 06 提交前费用预留与现有画布账本共用同一计价表，未知时长/价格不按零放行。 */
+export function canvasTaskCostQuote(db: Database.Database, task: CanvasTaskRecord): CostQuote {
+  const basis = canvasPricingBasis(db, task);
+  if (!basis || basis.quantity === null) {
+    return { kind: 'unpriced', pricingSnapshot: { source: 'canvas-usage' } };
+  }
+  return {
+    kind: 'priced',
+    reserve: minorFromMicros(calculateUsageCostMicros(basis.plan, basis.quantity)),
+    pricingSnapshot: {
+      pricingVersion: basis.plan.pricingVersion,
+      coreModelKey: basis.plan.coreModelKey,
+      quantity: basis.quantity,
+    },
+  };
+}
+
+/** 固定时长可直接结算；自动时长等产物探测后由同一入口晚到结算。 */
+export function canvasTaskActualCost(db: Database.Database, task: CanvasTaskRecord): Money | null {
+  const basis = canvasPricingBasis(db, task);
+  if (!basis || basis.quantity === null) return null;
+  return minorFromMicros(calculateUsageCostMicros(basis.plan, basis.quantity));
+}
+
 /** 任务身份 → 稳定 eventKey：同一任务无论重试多少次都只记一次生成调用。 */
 export function canvasTaskUsageEventKey(taskId: string): string {
   return `canvas-task:${taskId}:submitted`;
@@ -44,6 +121,7 @@ export function canvasTaskUsageEventKey(taskId: string): string {
 export interface RecordCanvasTaskUsageOptions {
   taskId: string;
   now?: () => Date;
+  executionAttemptId?: string | null;
 }
 
 /**
@@ -129,7 +207,9 @@ function recordCanvasTaskUsageUnsafe(
   let result: UsageOperationResult;
   try {
     result = recordUsage(db, {
-      eventKey: canvasTaskUsageEventKey(task.id),
+      eventKey: options.executionAttemptId
+        ? `execution-attempt:${options.executionAttemptId}:submitted`
+        : canvasTaskUsageEventKey(task.id),
       snapshot,
       usage: {
         quantity,
@@ -140,6 +220,7 @@ function recordCanvasTaskUsageUnsafe(
       refType: 'canvas-task',
       refId: task.id,
       createdAt: (options.now ?? (() => new Date()))().toISOString(),
+      executionAttemptId: options.executionAttemptId,
     });
   } catch {
     // 账本失败只漏记，由 reconcileUsageLedger 补记；绝不因此重发模型请求

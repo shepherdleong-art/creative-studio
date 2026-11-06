@@ -14,6 +14,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
+import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { probeVideoMedia, probeDurationSec } from '../ffmpeg.ts';
 import { CanvasError } from './errors.ts';
 import type { CanvasMediaKind } from './types.ts';
@@ -161,6 +162,8 @@ function rowToAsset(row: Record<string, unknown>): CanvasAssetRecord {
 }
 
 export function getCanvasAsset(db: Database.Database, assetId: string): CanvasAssetRecord | null {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas_asset', assetId, 'read');
   const row = db.prepare(`SELECT * FROM creative_canvas_assets WHERE id = ?`).get(assetId) as
     | Record<string, unknown>
     | undefined;
@@ -197,6 +200,8 @@ export interface ImportCanvasAssetParams {
  */
 export async function importCanvasAsset(params: ImportCanvasAssetParams): Promise<CanvasAssetRecord> {
   const { db, canvasId, storageRoot, filename, mimeType, data, now = () => new Date() } = params;
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas', canvasId, 'write');
   const canvas = db.prepare(`SELECT id FROM creative_canvases WHERE id = ?`).get(canvasId);
   if (!canvas) throw new CanvasError('not_found', '画布不存在。');
 
@@ -218,7 +223,10 @@ export async function importCanvasAsset(params: ImportCanvasAssetParams): Promis
   const existing = db.prepare(
     `SELECT * FROM creative_canvas_assets WHERE canvasId = ? AND contentHash = ? AND ready = 1 LIMIT 1`,
   ).get(canvasId, contentHash) as Record<string, unknown> | undefined;
-  if (existing) return rowToAsset(existing);
+  if (existing) {
+    if (access.kind === 'team') access.assertAccess('canvas_asset', String(existing.id), 'read');
+    return rowToAsset(existing);
+  }
 
   const dimensions = mediaKind === 'image' ? await probeImage(data, storageRoot) : { width: null, height: null };
   const assetId = randomUUID();
@@ -237,26 +245,44 @@ export async function importCanvasAsset(params: ImportCanvasAssetParams): Promis
 
   // 视频／音频尽力探测时长：探测失败不阻塞导入，Seedance 交付前会重新探测，仍未知则拒绝提交。
   const durationSec = mediaKind === 'image' ? null : await probeDurationSafe(absolutePath);
-  db.prepare(`
-    INSERT INTO creative_canvas_assets
-      (id, canvasId, mediaKind, relativePath, contentHash, mimeType, byteSize, width, height, durationSec, sourceTaskId, ready, createdAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-  `).run(
-    assetId,
-    canvasId,
-    mediaKind,
-    relativePath,
-    contentHash,
-    MIME_MEDIA_KIND[mimeType.toLowerCase()] ? mimeType.toLowerCase() : CANVAS_MIME_BY_EXTENSION[extension] ?? 'application/octet-stream',
-    data.byteLength,
-    dimensions.width,
-    dimensions.height,
-    durationSec,
-    null,
-    createdAt,
-  );
-
-  return requireCanvasAsset(db, assetId);
+  try {
+    const publish = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO creative_canvas_assets
+          (id, canvasId, mediaKind, relativePath, contentHash, mimeType, byteSize, width, height, durationSec, sourceTaskId, ready, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+      `).run(
+        assetId,
+        canvasId,
+        mediaKind,
+        relativePath,
+        contentHash,
+        MIME_MEDIA_KIND[mimeType.toLowerCase()] ? mimeType.toLowerCase() : CANVAS_MIME_BY_EXTENSION[extension] ?? 'application/octet-stream',
+        data.byteLength,
+        dimensions.width,
+        dimensions.height,
+        durationSec,
+        null,
+        createdAt,
+      );
+      access.registerInheritedScope({
+        resourceType: 'canvas_asset', resourceId: assetId,
+        parent: { resourceType: 'canvas', resourceId: canvasId },
+      });
+      if (access.kind === 'team') {
+        registerManagedFile({
+          absolutePath,
+          mimeType: MIME_MEDIA_KIND[mimeType.toLowerCase()] ? mimeType.toLowerCase() : CANVAS_MIME_BY_EXTENSION[extension] ?? 'application/octet-stream',
+          references: [{ resourceType: 'canvas_asset', resourceId: assetId, role: 'input' }],
+        });
+      }
+    });
+    publish.immediate();
+    return requireCanvasAsset(db, assetId);
+  } catch (error) {
+    await fsPromises.rm(absolutePath, { force: true });
+    throw error;
+  }
 }
 
 async function probeDurationSafe(filePath: string): Promise<number | null> {
@@ -309,6 +335,8 @@ export async function registerCanvasResultAsset(
   params: RegisterCanvasResultAssetParams,
 ): Promise<CanvasAssetRecord | null> {
   const { db, canvasId, storageRoot, taskId, mediaKind, mimeType, data, now = () => new Date() } = params;
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas_task', taskId, 'write');
   if (data.byteLength === 0) {
     throw new CanvasError('invalid_input', '生成结果为空文件。');
   }
@@ -363,6 +391,17 @@ export async function registerCanvasResultAsset(
         taskId,
         createdAt,
       );
+      access.registerInheritedScope({
+        resourceType: 'canvas_asset', resourceId: assetId,
+        parent: { resourceType: 'canvas', resourceId: canvasId },
+      });
+      if (access.kind === 'team') {
+        registerManagedFile({
+          absolutePath,
+          mimeType,
+          references: [{ resourceType: 'canvas_asset', resourceId: assetId, role: 'output' }],
+        });
+      }
 
       if (videoProbe) db.prepare(`UPDATE creative_canvas_assets SET width = ?, height = ?, durationSec = ?, videoCodec = ?, pixelFormat = ? WHERE id = ?`)
         .run(videoProbe.width || null, videoProbe.height || null, videoProbe.durationUs > 0 ? videoProbe.durationUs / 1_000_000 : null, videoProbe.videoCodec || null, videoProbe.pixelFormat || null, assetId);

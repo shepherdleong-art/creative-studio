@@ -4,8 +4,10 @@ import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { resolveCoverCandidateFile } from '@/lib/final-edit/cover-candidates';
 import { mediaResponse } from '@/lib/final-edit/media-response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(request: Request, { params }: { params: Promise<{ id: string; coverKey: string }> }) {
+
+async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string; coverKey: string }> }) {
   const { id, coverKey } = await params;
   const db = getDb();
   const group = db.prepare(`SELECT id, projectId, shotSetId FROM final_edit_groups WHERE id=?`).get(id) as { id: string; projectId: string; shotSetId: string } | undefined;
@@ -17,3 +19,4 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: 'cover_not_found' }, { status: 404 });
   }
 }
+export const GET = withTeamRoute('/api/final-edit-groups/[id]/cover-candidates/[coverKey]', 'GET', __teamRouteGET);

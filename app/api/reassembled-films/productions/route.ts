@@ -4,8 +4,10 @@ import { assertAgentRequest, checkLocalRequest } from '@/lib/final-edit/reassemb
 import { beginProduction, readProduction } from '@/lib/final-edit/reassembled/production';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { FinalEditError } from '@/lib/final-edit/errors';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(request: Request) {
+
+async function __teamRoutePOST(request: Request) {
   try {
     assertAgentRequest(request);
     const raw = await request.text();
@@ -13,7 +15,7 @@ export async function POST(request: Request) {
     return NextResponse.json(beginProduction(getDb(), JSON.parse(raw)));
   } catch (error) { return finalEditErrorResponse(error); }
 }
-export function GET(request: Request) {
+function __teamRouteGET(request: Request) {
   try {
     checkLocalRequest(request);
     const projectId = new URL(request.url).searchParams.get('projectId');
@@ -22,3 +24,5 @@ export function GET(request: Request) {
     return NextResponse.json(ids.map(({ id }) => readProduction(db, id)), { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const POST = withTeamRoute('/api/reassembled-films/productions', 'POST', __teamRoutePOST);
+export const GET = withTeamRoute('/api/reassembled-films/productions', 'GET', __teamRouteGET);

@@ -1,3 +1,4 @@
+import { requireAccessContext, runWithTaskAccessContext } from '../media-core/access-context.ts';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
@@ -107,7 +108,7 @@ async function drain() {
           continue;
         }
         if (job.kind === 'packaging') {
-          await drainPackagingJob(db, job, controller);
+          await runWithTaskAccessContext(db, 'final_edit', job.id, () => drainPackagingJob(db, job, controller));
           continue;
         }
         let snapshot = JSON.parse(job.inputSnapshotJson) as FinalEditRenderSnapshot;
@@ -172,12 +173,25 @@ async function drain() {
           };
           const finishedAt = new Date().toISOString();
           try {
-            db.transaction(() => {
-              registerSingleArtifact(db, { id: `final-edit:${job.id}:cover`, projectId: job.projectId, kind: 'final_cover', displayName: exportTarget.coverFilename, relativePath: exportTarget.coverRelativePath, mimeType: 'image/jpeg', sourceJobId: job.id, createdAt: finishedAt });
-              db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, variantId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, ?, 'packaging', 'queued', 'queued', 0, ?, ?, 0, 'CNY', ?)`).run(packagingJobId, job.projectId, job.groupId, snapshot.variant.id, sha256(JSON.stringify({ packagingJobId, packagingSnapshot })), JSON.stringify(packagingSnapshot), finishedAt);
-              db.prepare(`UPDATE final_edit_jobs SET status='succeeded', phase='succeeded', progress=1, outputJson=?, errorCode=NULL, errorMessage=NULL, finishedAt=? WHERE id=?`).run(JSON.stringify(result), finishedAt, job.id);
-              db.prepare(`UPDATE final_edit_variants SET lastRenderedRevision=? WHERE id=?`).run(snapshot.variantRevision, snapshot.variant.id);
-            })();
+            await runWithTaskAccessContext(db, 'final_edit', job.id, () => {
+              const access = requireAccessContext();
+              const publish = db.transaction(() => {
+                registerSingleArtifact(db, { id: `final-edit:${job.id}:cover`, projectId: job.projectId, kind: 'final_cover', displayName: exportTarget.coverFilename, relativePath: exportTarget.coverRelativePath, mimeType: 'image/jpeg', sourceJobId: job.id, createdAt: finishedAt });
+                db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, variantId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, ?, 'packaging', 'queued', 'queued', 0, ?, ?, 0, 'CNY', ?)`).run(packagingJobId, job.projectId, job.groupId, snapshot.variant.id, sha256(JSON.stringify({ packagingJobId, packagingSnapshot })), JSON.stringify(packagingSnapshot), finishedAt);
+                access.registerInheritedScope({
+                  resourceType: 'final_job', resourceId: packagingJobId,
+                  parent: { resourceType: 'project', resourceId: job.projectId },
+                });
+                access.registerTaskPrincipal({
+                  module: 'final_edit', taskId: packagingJobId,
+                  scope: { resourceType: 'project', resourceId: job.projectId },
+                  creationSnapshot: packagingSnapshot,
+                });
+                db.prepare(`UPDATE final_edit_jobs SET status='succeeded', phase='succeeded', progress=1, outputJson=?, errorCode=NULL, errorMessage=NULL, finishedAt=? WHERE id=?`).run(JSON.stringify(result), finishedAt, job.id);
+                db.prepare(`UPDATE final_edit_variants SET lastRenderedRevision=? WHERE id=?`).run(snapshot.variantRevision, snapshot.variant.id);
+              });
+              publish.immediate();
+            });
           } catch (error) {
             await restorePublishedExportReservation(storageRoot, exportTarget);
             throw error;
@@ -197,11 +211,14 @@ async function drain() {
         const result = buildPublishedJobOutput({ internal, target });
         const finishedAt = new Date().toISOString();
         try {
-          db.transaction(() => {
-            registerPublishedArtifacts(db, { projectId: job.projectId, sourceJobId: job.id, target, createdAt: finishedAt });
-            db.prepare(`UPDATE final_edit_jobs SET status='succeeded', phase='succeeded', progress=1, outputJson=?, errorCode=NULL, errorMessage=NULL, finishedAt=? WHERE id=?`).run(JSON.stringify(result), finishedAt, job.id);
-            db.prepare(`UPDATE final_edit_variants SET lastRenderedRevision=? WHERE id=?`).run(snapshot.variantRevision, snapshot.variant.id);
-          })();
+          await runWithTaskAccessContext(db, 'final_edit', job.id, () => {
+            const publish = db.transaction(() => {
+              registerPublishedArtifacts(db, { projectId: job.projectId, sourceJobId: job.id, target, createdAt: finishedAt });
+              db.prepare(`UPDATE final_edit_jobs SET status='succeeded', phase='succeeded', progress=1, outputJson=?, errorCode=NULL, errorMessage=NULL, finishedAt=? WHERE id=?`).run(JSON.stringify(result), finishedAt, job.id);
+              db.prepare(`UPDATE final_edit_variants SET lastRenderedRevision=? WHERE id=?`).run(snapshot.variantRevision, snapshot.variant.id);
+            });
+            publish.immediate();
+          });
           refreshMixcutReview(db, job.groupId);
         } catch (error) {
           await restorePublishedExportReservation(storageRoot, target);

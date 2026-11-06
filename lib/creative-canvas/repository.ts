@@ -9,6 +9,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import { CanvasError } from './errors.ts';
 import {
   cloneCanvasGraph,
@@ -113,24 +114,43 @@ function rowToCanvas(row: Record<string, unknown>): CanvasRecord {
 
 export function createCanvas(
   db: Database.Database,
-  params: { name: string; now?: () => Date },
+  params: { name: string; ownerUserId?: string; now?: () => Date },
 ): CanvasRecord {
+  const access = requireAccessContext();
   const name = params.name.trim();
   if (!name) throw new CanvasError('invalid_input', '画布名称不能为空。');
   if (name.length > 120) throw new CanvasError('invalid_input', '画布名称不能超过 120 个字符。');
   const id = randomUUID();
   const at = (params.now ?? (() => new Date()))().toISOString();
-  db.prepare(`
-    INSERT INTO creative_canvases (id, name, graphRevision, graphJson, viewportJson, createdAt, updatedAt)
-    VALUES (?, ?, 0, ?, ?, ?, ?)
-  `).run(id, name, serializeCanvasGraph(emptyCanvasGraph()), JSON.stringify(DEFAULT_CANVAS_VIEWPORT), at, at);
-  return requireCanvas(db, id);
+  const create = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO creative_canvases (id, name, graphRevision, graphJson, viewportJson, createdAt, updatedAt)
+      VALUES (?, ?, 0, ?, ?, ?, ?)
+    `).run(id, name, serializeCanvasGraph(emptyCanvasGraph()), JSON.stringify(DEFAULT_CANVAS_VIEWPORT), at, at);
+    access.registerRootScope({
+      resourceType: 'canvas', resourceId: id,
+      ownerUserId: access.resolveOwner(params.ownerUserId), visibility: 'private',
+    });
+    return requireCanvas(db, id);
+  });
+  return create.immediate();
 }
 
 export function listCanvases(db: Database.Database): CanvasSummary[] {
+  const access = requireAccessContext();
+  const visibility = access.kind === 'local'
+    ? { sql: '', params: [] }
+    : {
+        sql: ` WHERE EXISTS (
+          SELECT 1 FROM team_resource_scopes scope
+          WHERE scope.resourceType = 'canvas' AND scope.resourceId = creative_canvases.id
+            AND scope.deletedAt IS NULL ${access.actor.role === 'admin' ? '' : 'AND scope.ownerUserId = ?'}
+        )`,
+        params: access.actor.role === 'admin' ? [] : [access.actor.userId],
+      };
   const rows = db.prepare(
-    `SELECT id, name, graphRevision, graphJson, createdAt, updatedAt FROM creative_canvases ORDER BY updatedAt DESC`,
-  ).all() as Array<Record<string, unknown>>;
+    `SELECT id, name, graphRevision, graphJson, createdAt, updatedAt FROM creative_canvases${visibility.sql} ORDER BY updatedAt DESC`,
+  ).all(...visibility.params) as Array<Record<string, unknown>>;
   return rows.map((row) => {
     const graph = readGraph(String(row.graphJson));
     return {
@@ -157,6 +177,8 @@ export function listCanvases(db: Database.Database): CanvasSummary[] {
 }
 
 export function getCanvas(db: Database.Database, canvasId: string): CanvasRecord | null {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas', canvasId, 'read');
   const row = db.prepare(`SELECT * FROM creative_canvases WHERE id = ?`).get(canvasId) as
     | Record<string, unknown>
     | undefined;
@@ -184,6 +206,8 @@ export function listCanvasNodeStates(
   db: Database.Database,
   canvasId: string,
 ): CanvasNodeRunProjection[] {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas', canvasId, 'read');
   const rows = db.prepare(
     `SELECT * FROM creative_canvas_node_states WHERE canvasId = ? ORDER BY nodeId`,
   ).all(canvasId) as Array<Record<string, unknown>>;
@@ -264,6 +288,8 @@ export interface SaveCanvasGraphParams {
  */
 export function saveCanvasGraph(params: SaveCanvasGraphParams): CanvasSaveResult {
   const { db, canvasId, expectedGraphRevision, graph, viewport } = params;
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas', canvasId, 'write');
   const now = params.now ?? (() => new Date());
   requireCanvas(db, canvasId);
   const parsed = reconcileCanvasGraph(parseCanvasGraph(graph));
@@ -310,6 +336,8 @@ export function renameCanvas(
   db: Database.Database,
   params: { canvasId: string; name: string; now?: () => Date },
 ): CanvasRecord {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas', params.canvasId, 'write');
   const name = params.name.trim();
   if (!name) throw new CanvasError('invalid_input', '画布名称不能为空。');
   if (name.length > 120) throw new CanvasError('invalid_input', '画布名称不能超过 120 个字符。');
@@ -323,6 +351,8 @@ export function saveCanvasViewport(
   db: Database.Database,
   params: { canvasId: string; viewport: unknown; now?: () => Date },
 ): CanvasRecord {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas', params.canvasId, 'write');
   requireCanvas(db, params.canvasId);
   db.prepare(`UPDATE creative_canvases SET viewportJson = ?, updatedAt = ? WHERE id = ?`)
     .run(JSON.stringify(parseViewport(params.viewport)), (params.now ?? (() => new Date()))().toISOString(), params.canvasId);
@@ -368,6 +398,8 @@ export type PublishNodeResultOutcome =
  */
 export function publishCanvasNodeResult(params: PublishNodeResultParams): PublishNodeResultOutcome {
   const { db, canvasId, nodeId, taskId, nodeEpoch, assetId } = params;
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas', canvasId, 'write');
   const at = (params.now ?? (() => new Date()))().toISOString();
   const row = db.prepare(
     `SELECT * FROM creative_canvas_node_states WHERE canvasId = ? AND nodeId = ?`,
@@ -407,6 +439,8 @@ export interface CanvasNodeCandidate {
 }
 
 export function listCanvasNodeCandidates(db: Database.Database, canvasId: string): CanvasNodeCandidate[] {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas', canvasId, 'read');
   const rows = db.prepare(
     `SELECT t.nodeId, t.id AS taskId, t.outputAssetId, t.variantIndex, t.createdAt,
             json_extract(m.metadataJson, '$.tailAssetId') AS tailAssetId

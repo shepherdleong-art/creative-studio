@@ -7,12 +7,14 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 批量写入审核决定(通过/返工/撤销),一次请求处理整组选中集。 */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -39,3 +41,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return batchRouteErrorResponse(error, 'batch_review_failed', '审核操作失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/outputs/review', 'POST', __teamRoutePOST);

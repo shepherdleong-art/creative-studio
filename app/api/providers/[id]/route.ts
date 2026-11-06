@@ -2,13 +2,17 @@ import { resolveCoreUsagePlan } from '@/lib/usage-pricing';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { isPlaceholderValue } from '@/lib/video-auth';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { providerPoolStatus } from '@/lib/team-service/pools';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+
 
 function isRealKey(value: string | undefined | null): boolean {
   const s = (value || '').trim();
   return !!s && !isPlaceholderValue(s);
 }
 
-export async function GET(
+async function __teamRouteGET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -38,7 +42,7 @@ export async function GET(
   }
 }
 
-export async function PUT(
+async function __teamRoutePUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -105,6 +109,9 @@ export async function PUT(
       missing: isRealKey(updated.apiKey as string) ? [] : ['API Key'],
       apiKey: undefined,
       hasApiKey: isRealKey(updated.apiKey as string),
+      ...(readRuntimeConfig().mode === 'server'
+        ? { pool: providerPoolStatus(db, 'image', id) }
+        : {}),
     };
 
     return NextResponse.json(safe);
@@ -113,7 +120,7 @@ export async function PUT(
   }
 }
 
-export async function DELETE(
+async function __teamRouteDELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -136,3 +143,6 @@ export async function DELETE(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/providers/[id]', 'GET', __teamRouteGET);
+export const PUT = withTeamRoute('/api/providers/[id]', 'PUT', __teamRoutePUT);
+export const DELETE = withTeamRoute('/api/providers/[id]', 'DELETE', __teamRouteDELETE);

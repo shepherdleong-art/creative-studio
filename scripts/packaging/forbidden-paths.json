@@ -31,6 +31,16 @@
     "portableWhitelistGuard": {
       "forbidden": [".venv-litellm", "data", "storage", "outputs", "docs", ".git", ".cache", "dist", "installer", "desktop"],
       "notes": "The portable build is whitelist-based (whitelist and forbidden lists are different things); this entry only drives windows-portable-payload.test.mjs assertions that the whitelists must not contain these items. config.yaml / .env.local / python-runtime / scripts are explicitly allowed exceptions of the portable build."
+    },
+    "serverReleaseGuard": {
+      "topLevel": ["START-HERE.md", "app", "deployment.example.json", "release-manifest.json", "runtime", "runtimes", "service", "tools"],
+      "forbidden": ["data", "storage", "outputs", "docs", "scripts", ".git", ".cache", "dist", "dist-desktop", "desktop", "installer", "node_modules", ".venv-litellm", "python-runtime", ".env", ".env.local", "config.yaml"],
+      "notes": "Server releases use an independent whitelist. Service operations live under service/, Python under runtimes/python, and no credential/config/data root is packaged."
+    },
+    "teamClientWhitelistGuard": {
+      "topLevel": ["versions", "runtime", "helper", "updates", "client-state", "launcher.mjs", "start-client.cmd", "update-public-key.pem", "client-config.json", "current.json"],
+      "forbidden": [".next", "node_modules", "data", "storage", "outputs", "docs", "scripts", "python-runtime", ".venv-litellm", "app", "components", "lib", ".git", "dist-desktop", "desktop"],
+      "notes": "The remote client is independently assembled and never produced by deleting server/portable files. Native production backends, media tools, Python and private keys are forbidden."
     }
   }
 }

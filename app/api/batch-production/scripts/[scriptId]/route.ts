@@ -6,6 +6,8 @@ import {
   BATCH_NO_STORE_HEADERS,
   batchRouteErrorResponse,
 } from '../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,7 +17,7 @@ export const dynamic = 'force-dynamic';
  * AI 同步脚本每次 prepare 都会被 syncProjectScripts 按草稿内容重新覆盖,
  * 直接编辑会被静默回滚,因此这里一律按 not_found 拒绝。
  */
-export async function PUT(request: NextRequest, context: { params: Promise<{ scriptId: string }> }) {
+async function __teamRoutePUT(request: NextRequest, context: { params: Promise<{ scriptId: string }> }) {
   const { scriptId } = await context.params;
   const projectId = request.nextUrl.searchParams.get('projectId');
   if (!projectId) {
@@ -48,7 +50,7 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ scr
 }
 
 /** 删除一条手动脚本:未被快照引用物理删,已被引用软删(历史快照保留)。 */
-export async function DELETE(request: NextRequest, context: { params: Promise<{ scriptId: string }> }) {
+async function __teamRouteDELETE(request: NextRequest, context: { params: Promise<{ scriptId: string }> }) {
   const { scriptId } = await context.params;
   const projectId = request.nextUrl.searchParams.get('projectId');
   if (!projectId) {
@@ -65,3 +67,5 @@ export async function DELETE(request: NextRequest, context: { params: Promise<{ 
     return batchRouteErrorResponse(error, 'manual_script_delete_failed', '手动脚本删除失败');
   }
 }
+export const PUT = withTeamRoute('/api/batch-production/scripts/[scriptId]', 'PUT', __teamRoutePUT);
+export const DELETE = withTeamRoute('/api/batch-production/scripts/[scriptId]', 'DELETE', __teamRouteDELETE);

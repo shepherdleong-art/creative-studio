@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(
+
+async function __teamRoutePOST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -40,7 +42,8 @@ export async function POST(
 
     db.prepare(`
       UPDATE jobs SET status = 'pending', attempt = 0, errorMessage = NULL,
-        startedAt = NULL, finishedAt = NULL, latencyMs = NULL, estimatedCost = NULL
+        startedAt = NULL, finishedAt = NULL, latencyMs = NULL, estimatedCost = NULL,
+        executionRevision = COALESCE(executionRevision, 0) + 1
       WHERE id = ?
     `).run(id);
 
@@ -49,3 +52,4 @@ export async function POST(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const POST = withTeamRoute('/api/jobs/[id]/retry', 'POST', __teamRoutePOST);

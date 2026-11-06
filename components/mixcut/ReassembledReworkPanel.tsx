@@ -40,7 +40,7 @@ export function ReassembledReworkPanel({ groupId, clipId, step }: { groupId: str
     let cancelled = false;
     const load = async () => {
       try {
-        const [next, choices] = await Promise.all([fetch(url).then(r => read<View>(r)), fetch(step === 'storyboard' ? '/api/providers' : '/api/providers/video').then(r => read<Provider[]>(r))]);
+        const [next, choices] = await Promise.all([fetch(url).then(r => read<View>(r)), fetch(step === 'storyboard' ? '/api/team/models?kind=image' : '/api/team/models?kind=video').then(r => read<Provider[]>(r))]);
         if (cancelled) return;
         setView(next); setEditingRevision(next.revision); setProviders(choices.filter(p => p.enabled && p.configured));
         const kind = step === 'storyboard' ? 'generate_image' : 'generate_video';

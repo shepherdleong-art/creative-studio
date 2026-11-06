@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import type Database from 'better-sqlite3';
 import type { ScriptGenerationProgress } from './script-generation-v3.ts';
 
 // ── 类型 ──
@@ -39,6 +41,8 @@ export interface ScriptGenerationExecutionResult {
 export interface ScriptGenerationTaskInput {
   projectId: string;
   generationId: string;
+  /** 在任务进入 running 且执行器启动前同步完成持久受理登记。 */
+  accept?(): void;
   /** 由调用方注入的真实生成执行器；必须尊重 signal 取消。 */
   execute(context: {
     signal: AbortSignal;
@@ -225,6 +229,7 @@ export function startScriptGeneration(input: ScriptGenerationTaskInput): ScriptG
   }
 
   if (reg.shuttingDown) throw new ScriptGenerationShuttingDownError();
+  input.accept?.();
 
   const record: ScriptGenerationTaskRecord = {
     projectId: input.projectId,
@@ -343,6 +348,279 @@ export async function waitForScriptGenerationsIdle(timeoutMs: number): Promise<n
     if (running === 0 || reg.now() >= deadline) return running;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+}
+
+// ── server 持久任务 ──
+
+export interface PersistentScriptGenerationTaskInput {
+  db: Database.Database;
+  projectId: string;
+  generationId: string;
+  actor: { userId: string };
+  scope: { resourceType: string; resourceId: string };
+  inputSnapshot: unknown;
+  executorKey: string;
+  draftId?: string;
+  accept?(db: Database.Database): void;
+}
+
+export interface PersistentScriptGenerationExecutorContext {
+  projectId: string;
+  generationId: string;
+  actor: { userId: string };
+  scope: { resourceType: string; resourceId: string };
+  inputSnapshot: unknown;
+  draftId: string;
+  checkpoint: unknown;
+  signal: AbortSignal;
+  onProgress(progress: ScriptGenerationProgress): void;
+  onCheckpoint(checkpoint: unknown): void;
+}
+
+export type PersistentScriptGenerationExecutor = (
+  context: PersistentScriptGenerationExecutorContext,
+) => Promise<ScriptGenerationExecutionResult>;
+
+interface PersistentScriptGenerationRow {
+  generationId: string;
+  projectId: string;
+  actorId: string;
+  scopeType: string;
+  scopeId: string;
+  inputJson: string;
+  executorKey: string;
+  state: ScriptGenerationState;
+  progressJson: string;
+  checkpointJson: string;
+  draftId: string;
+  errorJson: string | null;
+  cancellationReason: 'user' | 'shutdown' | null;
+  startedAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
+interface PersistentWorkerRegistry {
+  running: Map<string, Promise<void>>;
+  controllers: Map<string, AbortController>;
+  executors: Map<string, PersistentScriptGenerationExecutor>;
+}
+
+const PERSISTENT_WORKERS_KEY = Symbol.for('creative-studio.persistent-script-generation-workers');
+
+function persistentWorkers(): PersistentWorkerRegistry {
+  const scope = globalThis as Record<PropertyKey, unknown>;
+  if (!scope[PERSISTENT_WORKERS_KEY]) {
+    scope[PERSISTENT_WORKERS_KEY] = {
+      running: new Map(), controllers: new Map(), executors: new Map(),
+    } satisfies PersistentWorkerRegistry;
+  }
+  return scope[PERSISTENT_WORKERS_KEY] as PersistentWorkerRegistry;
+}
+
+function readPersistentGeneration(db: Database.Database, generationId: string): PersistentScriptGenerationRow | undefined {
+  return db.prepare('SELECT * FROM script_generation_tasks WHERE generationId = ?').get(generationId) as
+    | PersistentScriptGenerationRow | undefined;
+}
+
+function persistentSnapshot(row: PersistentScriptGenerationRow): ScriptGenerationSnapshot {
+  return {
+    generationId: row.generationId,
+    projectId: row.projectId,
+    state: row.state,
+    progress: JSON.parse(row.progressJson) as ScriptGenerationProgress,
+    draftId: row.draftId,
+    error: row.errorJson ? JSON.parse(row.errorJson) as ScriptGenerationSnapshot['error'] : null,
+    cancellationReason: row.cancellationReason,
+    startedAt: row.startedAt,
+    finishedAt: row.finishedAt,
+  };
+}
+
+export function registerPersistentScriptGenerationExecutor(
+  key: string,
+  executor: PersistentScriptGenerationExecutor,
+): void {
+  persistentWorkers().executors.set(key, executor);
+}
+
+function schedulePersistentGeneration(db: Database.Database, row: PersistentScriptGenerationRow): void {
+  const workers = persistentWorkers();
+  if (workers.running.has(row.generationId) || row.state !== 'running') return;
+  const executor = workers.executors.get(row.executorKey);
+  if (!executor) return;
+  const controller = new AbortController();
+  workers.controllers.set(row.generationId, controller);
+  const promise = (async () => {
+    try {
+      const result = await executor({
+        projectId: row.projectId,
+        generationId: row.generationId,
+        actor: { userId: row.actorId },
+        scope: { resourceType: row.scopeType, resourceId: row.scopeId },
+        inputSnapshot: JSON.parse(row.inputJson) as unknown,
+        draftId: row.draftId,
+        checkpoint: JSON.parse(row.checkpointJson) as unknown,
+        signal: controller.signal,
+        onProgress(progress) {
+          db.prepare(`
+            UPDATE script_generation_tasks SET progressJson = ?, updatedAt = ?
+            WHERE generationId = ? AND state = 'running'
+          `).run(JSON.stringify(progress), new Date().toISOString(), row.generationId);
+        },
+        onCheckpoint(checkpoint) {
+          db.prepare(`
+            UPDATE script_generation_tasks SET checkpointJson = ?, updatedAt = ?
+            WHERE generationId = ? AND state = 'running'
+          `).run(JSON.stringify(checkpoint), new Date().toISOString(), row.generationId);
+        },
+      });
+      const current = readPersistentGeneration(db, row.generationId);
+      if (!current || current.state !== 'running' || controller.signal.aborted) return;
+      const succeeded = result.status < 400 && result.body.draftId === row.draftId;
+      const at = new Date().toISOString();
+      db.prepare(`
+        UPDATE script_generation_tasks SET state = ?, errorJson = ?, finishedAt = ?, updatedAt = ?
+        WHERE generationId = ? AND state = 'running'
+      `).run(
+        succeeded ? 'succeeded' : 'failed',
+        succeeded ? null : JSON.stringify(sanitizeError(result.body)),
+        at, at, row.generationId,
+      );
+    } catch (error) {
+      const current = readPersistentGeneration(db, row.generationId);
+      if (!current || current.state !== 'running' || controller.signal.aborted) return;
+      const code = error instanceof Error && 'code' in error ? String(error.code) : '';
+      if (code === 'llm_execution_deferred' || code === 'llm_execution_unknown') {
+        db.prepare(`
+          UPDATE script_generation_tasks SET checkpointJson = ?, updatedAt = ?
+          WHERE generationId = ? AND state = 'running'
+        `).run(JSON.stringify({
+          deferred: code === 'llm_execution_deferred',
+          unknown: code === 'llm_execution_unknown',
+          operationId: (error as { operationId?: string }).operationId,
+        }), new Date().toISOString(), row.generationId);
+        return;
+      }
+      const at = new Date().toISOString();
+      const cancelled = controller.signal.aborted || isAbortError(error);
+      db.prepare(`
+        UPDATE script_generation_tasks SET state = ?, errorJson = ?, cancellationReason = ?,
+          finishedAt = ?, updatedAt = ? WHERE generationId = ? AND state = 'running'
+      `).run(
+        cancelled ? 'cancelled' : 'failed',
+        cancelled ? null : JSON.stringify({
+          code: 'script_generation_error',
+          message: error instanceof Error ? error.message : String(error),
+        }),
+        cancelled ? 'user' : null, at, at, row.generationId,
+      );
+    } finally {
+      if (workers.controllers.get(row.generationId) === controller) {
+        workers.controllers.delete(row.generationId);
+        workers.running.delete(row.generationId);
+      }
+    }
+  })();
+  workers.running.set(row.generationId, promise);
+}
+
+export function startPersistentScriptGeneration(
+  input: PersistentScriptGenerationTaskInput,
+): ScriptGenerationStartResult {
+  const draftId = input.draftId ?? randomUUID();
+  const at = new Date().toISOString();
+  const create = input.db.transaction((): ScriptGenerationStartResult => {
+    const existing = readPersistentGeneration(input.db, input.generationId);
+    if (existing) {
+      if (existing.projectId !== input.projectId) throw new Error('生成任务不属于当前项目');
+      return { created: false, snapshot: persistentSnapshot(existing) };
+    }
+    const active = input.db.prepare(`
+      SELECT * FROM script_generation_tasks WHERE projectId = ? AND state = 'running'
+    `).get(input.projectId) as PersistentScriptGenerationRow | undefined;
+    if (active) return { created: false, snapshot: persistentSnapshot(active) };
+    input.accept?.(input.db);
+    input.db.prepare(`
+      INSERT INTO script_generation_tasks (
+        generationId, projectId, actorId, scopeType, scopeId, inputJson, executorKey,
+        state, progressJson, checkpointJson, draftId, startedAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, '{}', ?, ?, ?)
+    `).run(
+      input.generationId, input.projectId, input.actor.userId, input.scope.resourceType, input.scope.resourceId,
+      JSON.stringify(input.inputSnapshot), input.executorKey, JSON.stringify(INITIAL_PROGRESS), draftId, at, at,
+    );
+    return { created: true, snapshot: persistentSnapshot(readPersistentGeneration(input.db, input.generationId)!) };
+  });
+  const started = create.immediate();
+  if (started.created) schedulePersistentGeneration(input.db, readPersistentGeneration(input.db, input.generationId)!);
+  return started;
+}
+
+export function getPersistentProjectScriptGeneration(
+  db: Database.Database,
+  projectId: string,
+): ScriptGenerationSnapshot | null {
+  const row = db.prepare(`
+    SELECT * FROM script_generation_tasks WHERE projectId = ?
+    ORDER BY CASE WHEN state = 'running' THEN 0 ELSE 1 END, startedAt DESC LIMIT 1
+  `).get(projectId) as PersistentScriptGenerationRow | undefined;
+  return row ? persistentSnapshot(row) : null;
+}
+
+export function getPersistentScriptGeneration(
+  db: Database.Database,
+  projectId: string,
+  generationId: string,
+): ScriptGenerationSnapshot | null {
+  const row = readPersistentGeneration(db, generationId);
+  return row?.projectId === projectId ? persistentSnapshot(row) : null;
+}
+
+export function cancelPersistentScriptGeneration(
+  db: Database.Database,
+  projectId: string,
+  generationId: string,
+): boolean {
+  const row = readPersistentGeneration(db, generationId);
+  if (!row || row.projectId !== projectId || row.state !== 'running') return false;
+  const at = new Date().toISOString();
+  db.prepare(`
+    UPDATE script_generation_tasks SET state = 'cancelled', cancellationReason = 'user',
+      finishedAt = ?, updatedAt = ? WHERE generationId = ? AND state = 'running'
+  `).run(at, at, generationId);
+  persistentWorkers().controllers.get(generationId)?.abort();
+  return true;
+}
+
+export async function recoverPersistentScriptGenerations(db: Database.Database): Promise<void> {
+  const rows = db.prepare("SELECT * FROM script_generation_tasks WHERE state = 'running' ORDER BY startedAt").all() as
+    PersistentScriptGenerationRow[];
+  for (const row of rows) schedulePersistentGeneration(db, row);
+}
+
+export async function waitForPersistentScriptGenerationsIdle(
+  db: Database.Database,
+  timeoutMs: number,
+): Promise<number> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
+    const running = db.prepare("SELECT COUNT(*) FROM script_generation_tasks WHERE state = 'running'").pluck().get() as number;
+    if (running === 0 || Date.now() >= deadline) return running;
+    await Promise.allSettled([...persistentWorkers().running.values()]);
+    if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+export function stopPersistentScriptGenerationWorkers(): void {
+  const workers = persistentWorkers();
+  for (const controller of workers.controllers.values()) controller.abort();
+  workers.controllers.clear();
+  workers.running.clear();
+}
+
+export function resetPersistentScriptGenerationWorkersForTests(): void {
+  stopPersistentScriptGenerationWorkers();
 }
 
 // ── 测试专用 ──

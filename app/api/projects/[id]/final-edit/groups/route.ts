@@ -3,8 +3,10 @@ import { getDb } from '@/lib/db';
 import { getFinalEditWorkspace, recoverFinalEditPrepareJobs } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { startFinalEditFromHttp, type FinalEditStartBody } from '@/lib/final-edit/start-http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRouteGET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     recoverFinalEditPrepareJobs();
     const { id: projectId } = await params;
@@ -13,9 +15,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   } catch (error) { return finalEditErrorResponse(error); }
 }
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: projectId } = await params;
     return NextResponse.json(await startFinalEditFromHttp(projectId, await request.json() as FinalEditStartBody), { status: 202 });
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const GET = withTeamRoute('/api/projects/[id]/final-edit/groups', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/projects/[id]/final-edit/groups', 'POST', __teamRoutePOST);

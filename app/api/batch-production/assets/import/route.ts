@@ -14,6 +14,10 @@ import {
   BATCH_NO_STORE_HEADERS,
   batchRouteErrorResponse,
 } from '../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { controlledUploadRequired } from '@/lib/team-service/transfers/controlled-transfer';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -65,7 +69,8 @@ async function stageUploadedFile(file: File, targetPath: string, signal: AbortSi
 }
 
 /** 浏览器上传视频到项目素材库;落库为托管副本,不依赖浏览器提供绝对路径。 */
-export async function POST(request: NextRequest) {
+async function __teamRoutePOST(request: NextRequest) {
+  if (readRuntimeConfig().mode === 'server') return controlledUploadRequired();
   const projectId = request.nextUrl.searchParams.get('projectId');
   if (!projectId) {
     return NextResponse.json({ error: 'missing_project_id', message: '缺少 projectId 参数' }, {
@@ -157,3 +162,4 @@ export async function POST(request: NextRequest) {
     return batchRouteErrorResponse(error, 'batch_media_import_failed', '自定义素材导入失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/assets/import', 'POST', __teamRoutePOST);

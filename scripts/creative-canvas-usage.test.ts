@@ -11,7 +11,7 @@ import { canvasStorageRoot } from '../lib/creative-canvas/assets.ts';
 import { startCanvasRun } from '../lib/creative-canvas/runs.ts';
 import { runCanvasTask } from '../lib/creative-canvas/runner.ts';
 import { claimCanvasTasks, getCanvasTask } from '../lib/creative-canvas/tasks.ts';
-import { canvasTaskUsageEventKey, canvasTaskUsageRows, recordCanvasTaskUsage } from '../lib/creative-canvas/usage.ts';
+import { canvasTaskActualCost, canvasTaskCostQuote, canvasTaskUsageEventKey, canvasTaskUsageRows, recordCanvasTaskUsage } from '../lib/creative-canvas/usage.ts';
 import { retryCanvasTaskDownload } from '../lib/creative-canvas/recovery.ts';
 import { createCanvasFixtureAdapter } from '../lib/creative-canvas/adapters/fixture.ts';
 import { COMPANY_CANVAS_SEEDANCE_2_5_CAPABILITY, COMPANY_CANVAS_QINIUYUN_KLING_CAPABILITY } from '../lib/creative-canvas/adapters/company-capabilities.ts';
@@ -119,6 +119,14 @@ let seedanceTaskId = '';
 {
   save([videoNode('v-seedance', COMPANY_CANVAS_SEEDANCE_2_5_CAPABILITY.key, { durationSec: 8 })]);
   seedanceTaskId = await prepareRun('v-seedance');
+  const quote = canvasTaskCostQuote(db, getCanvasTask(db, seedanceTaskId)!);
+  assert.deepEqual(quote, {
+    kind: 'priced',
+    reserve: { currency: 'CNY', minor: 1512 },
+    pricingSnapshot: {
+      pricingVersion: 'core-usage-pricing-2026-09-30', coreModelKey: 'company-seedance-2-5', quantity: 8,
+    },
+  });
   const { fence } = claimOne('usage-worker');
 
   const adapter = createCanvasFixtureAdapter({ defaultScript: { delayMs: 1 } });
@@ -138,6 +146,7 @@ let seedanceTaskId = '';
   assert.equal(Number(ledger.quantity), 8, '视频按实际时长计费');
   assert.equal(String(ledger.unit).length > 0, true);
   assert.ok(Number(ledger.costMicros) > 0, '已计价模型应算出金额');
+  assert.deepEqual(canvasTaskActualCost(db, getCanvasTask(db, seedanceTaskId)!), { currency: 'CNY', minor: 1512 });
 }
 
 // --- 2. 重复记账与补下载都不增加生成调用数 ------------------------------------
@@ -193,6 +202,8 @@ let seedanceTaskId = '';
   db.prepare('UPDATE creative_canvas_tasks SET providerSnapshot = ? WHERE id = ?')
     .run(JSON.stringify(unpriced), taskId);
 
+  assert.equal(canvasTaskCostQuote(db, getCanvasTask(db, taskId)!).kind, 'unpriced');
+  assert.equal(canvasTaskActualCost(db, getCanvasTask(db, taskId)!), null);
   const result = recordCanvasTaskUsage(db, { taskId });
   assert.equal(result.priced, false, '没有价格依据的模型必须按未计价返回');
   assert.equal(result.reason, 'pricing_unavailable');

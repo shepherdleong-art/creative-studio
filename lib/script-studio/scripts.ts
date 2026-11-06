@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import { resolveScriptCode } from '../media-core/production-code-reader.ts';
 import { ScriptStudioError } from './errors.ts';
 import { getScriptStudioLimits } from './limits.ts';
@@ -87,6 +88,7 @@ function insertRevision(
   `).get(scriptId) as { revisionNumber: number };
   const revisionNumber = Number(row.revisionNumber) + 1;
   const id = randomUUID();
+  const access = requireAccessContext();
   db.prepare(`
     INSERT INTO project_script_revisions
       (id, scriptId, revisionNumber, generationTaskId, libraryRevisionId, templateId, templateVersion,
@@ -113,6 +115,10 @@ function insertRevision(
     input.templateCatalogRevisionId || '',
     JSON.stringify(input.recommendationJson || {}),
   );
+  access.registerInheritedScope({
+    resourceType: 'project_script_revision', resourceId: id,
+    parent: { resourceType: 'project_script', resourceId: scriptId },
+  });
   return db.prepare(`
     SELECT * FROM project_script_revisions WHERE id = ? AND scriptId = ? AND revisionNumber = ?
   `).get(id, scriptId, revisionNumber) as ProjectScriptRevisionRecord;
@@ -124,6 +130,8 @@ export function createProjectScript(
   input: ProjectScriptRevisionInput & { shotSetId?: string | null; generationTaskId?: string | null },
   now?: () => Date,
 ): ProjectScriptWithRevision {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
   return db.transaction(() => {
     const createdAt = nowIso(now);
     const id = randomUUID();
@@ -139,6 +147,10 @@ export function createProjectScript(
       createdAt,
       createdAt,
     );
+    access.registerInheritedScope({
+      resourceType: 'project_script', resourceId: id,
+      parent: { resourceType: 'project', resourceId: projectId },
+    });
     const revision = insertRevision(db, id, { ...input, generationTaskId: input.generationTaskId }, createdAt);
     db.prepare(`
       UPDATE project_scripts SET currentRevisionId = ?, updatedAt = ? WHERE id = ?
@@ -154,6 +166,8 @@ export function addProjectScriptRevision(
   input: ProjectScriptRevisionInput,
   now?: () => Date,
 ): ProjectScriptWithRevision {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project_script', scriptId, 'write');
   return db.transaction(() => {
     const script = getProjectScript(db, projectId, scriptId);
     if (!script) throw new ScriptStudioError('not_found', '项目脚本不存在或不属于当前项目');
@@ -171,6 +185,8 @@ export function getProjectScript(
   projectId: string,
   scriptId: string,
 ): ProjectScriptWithRevision | undefined {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
   const script = db.prepare(`
     SELECT * FROM project_scripts WHERE id = ? AND projectId = ?
   `).get(scriptId, projectId) as ProjectScriptRecord | undefined;
@@ -202,11 +218,18 @@ export function listProjectScripts(
   options: { cursor?: string; limit?: number; includeArchived?: boolean } = {},
 ): { scripts: ProjectScriptWithRevision[]; nextCursor: string | null } {
   const limit = Math.max(1, Math.min(100, Number(options.limit) || 50));
+  const access = requireAccessContext();
+  const lifecycle = access.kind === 'local' ? '' : `AND EXISTS (
+    SELECT 1 FROM team_resource_scopes scope
+    WHERE scope.resourceType = 'project_script' AND scope.resourceId = project_scripts.id
+      AND scope.deletedAt IS NULL
+  )`;
   const rows = db.prepare(`
     SELECT * FROM project_scripts
     WHERE projectId = ?
       AND (? = '' OR id > ?)
       AND (? = 1 OR archivedAt IS NULL)
+      ${lifecycle}
     ORDER BY updatedAt DESC, id DESC
     LIMIT ?
   `).all(

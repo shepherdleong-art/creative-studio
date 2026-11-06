@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { fileResponse } from '@/lib/media-core/file-response';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { ResourceAccessError } from '@/lib/team-service/resource-scopes';
+
 
 /** Only these subdirectories under storage/ are allowed to be served. */
 const ALLOWED_DIRS = ['inputs', 'outputs', 'references', 'originals', 'processed'];
@@ -18,8 +23,8 @@ const BLOCKED_PATTERNS = [
   /^logs$/,
 ];
 
-export async function GET(
-  _request: NextRequest,
+async function __teamRouteGET(
+  request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
   try {
@@ -27,7 +32,10 @@ export async function GET(
     const relativePath = pathSegments.join('/');
 
     // 1. Check: must be inside one of the allowed subdirectories
-    const allowedPrefix = ALLOWED_DIRS.some((dir) =>
+    const serverMode = readRuntimeConfig().mode === 'server';
+    // Controlled uploads live under team-files. Serving still goes through the
+    // authenticated registry below; local mode must not expose this directory.
+    const allowedPrefix = (serverMode && relativePath.startsWith('team-files/')) || ALLOWED_DIRS.some((dir) =>
       relativePath === dir || relativePath.startsWith(dir + '/')
     );
     if (!allowedPrefix) {
@@ -51,6 +59,13 @@ export async function GET(
     const storagePath = path.resolve(path.join(dataRoot(), 'storage'));
     if (!resolvedPath.startsWith(storagePath)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    if (serverMode) {
+      const mimeTypes: Record<string, string> = {
+        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+      };
+      return fileResponse(request, resolvedPath, mimeTypes[ext] || 'application/octet-stream');
     }
 
     if (!fs.existsSync(resolvedPath)) {
@@ -81,6 +96,10 @@ export async function GET(
       },
     });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    if (err instanceof ResourceAccessError || (err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+    return NextResponse.json({ error: 'Failed to read image' }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/images/[...path]', 'GET', __teamRouteGET);

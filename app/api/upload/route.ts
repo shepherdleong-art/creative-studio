@@ -10,6 +10,11 @@ import {
   VIDEO_TAIL_FRAME_USAGE,
 } from '@/lib/video-tail-frame';
 import { validateUploadedImageBuffer } from '@/lib/image-upload-validation';
+import { registerManagedFile, requireAccessContext } from '@/lib/media-core/access-context';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { controlledUploadRequired } from '@/lib/team-service/transfers/controlled-transfer';
+
 
 /** Allowed image MIME types and their extensions. */
 const ALLOWED_MIME: Record<string, string> = {
@@ -47,7 +52,9 @@ function detectMimeByMagic(buffer: Buffer): string | null {
   return null;
 }
 
-export async function POST(request: NextRequest) {
+async function __teamRoutePOST(request: NextRequest) {
+  if (readRuntimeConfig().mode === 'server') return controlledUploadRequired();
+  let currentFilePaths: string[] = [];
   try {
     const formData = await request.formData();
     const files = formData.getAll('files') as File[];
@@ -69,6 +76,9 @@ export async function POST(request: NextRequest) {
     }
 
     const db = getDb();
+    const access = requireAccessContext();
+    if (projectId && access.kind === 'team') access.assertAccess('project', projectId, 'write');
+    const unboundOwnerUserId = projectId ? null : access.resolveOwner(formData.get('ownerUserId'));
     const tailFrameUploadError = validateVideoTailFrameUpload({
       db,
       usage,
@@ -120,6 +130,7 @@ export async function POST(request: NextRequest) {
     }> = [];
 
     for (const file of files) {
+      currentFilePaths = [];
       // Validate MIME
       const browserMime = file.type.toLowerCase();
       if (!ALLOWED_MIME[browserMime] && browserMime !== '') {
@@ -145,6 +156,7 @@ export async function POST(request: NextRequest) {
       // ── Save original ──
       const originalPath = path.join(originalsDir, savedFilename);
       fs.writeFileSync(originalPath, buffer);
+      currentFilePaths.push(originalPath);
 
       // ── Preprocess for API calls ──
       const preprocessResult = await preprocessImage(
@@ -158,28 +170,59 @@ export async function POST(request: NextRequest) {
         }
       );
 
+      currentFilePaths.push(preprocessResult.processedPath);
+
       // ── The "path" for preview is the smaller of the two ──
       const previewPath = preprocessEnabled ? preprocessResult.processedPath : originalPath;
 
-      // ── Insert into DB ──
-      insertAsset.run(
-        id,
-        projectId,
-        role,
-        file.name,
-        previewPath,
-        originalPath,
-        preprocessEnabled ? preprocessResult.processedPath : null,
-        preprocessResult.mimeType,
-        preprocessResult.originalWidth || null,
-        preprocessResult.originalHeight || null,
-        preprocessResult.processedWidth || null,
-        preprocessResult.processedHeight || null,
-        preprocessResult.originalSizeBytes || null,
-        preprocessResult.processedSizeBytes || null,
-        preprocessEnabled ? 1 : 0,
-        usage
-      );
+      // ── Insert into DB：实体与个人根/项目继承 scope 同事务 ──
+      const publish = db.transaction(() => {
+        insertAsset.run(
+          id,
+          projectId,
+          role,
+          file.name,
+          previewPath,
+          originalPath,
+          preprocessEnabled ? preprocessResult.processedPath : null,
+          preprocessResult.mimeType,
+          preprocessResult.originalWidth || null,
+          preprocessResult.originalHeight || null,
+          preprocessResult.processedWidth || null,
+          preprocessResult.processedHeight || null,
+          preprocessResult.originalSizeBytes || null,
+          preprocessResult.processedSizeBytes || null,
+          preprocessEnabled ? 1 : 0,
+          usage
+        );
+        if (access.kind === 'team') {
+          if (projectId) {
+            access.registerInheritedScope({
+              resourceType: 'image', resourceId: id,
+              parent: { resourceType: 'project', resourceId: projectId },
+            });
+          } else {
+            access.registerRootScope({
+              resourceType: 'image', resourceId: id,
+              ownerUserId: unboundOwnerUserId!, visibility: 'private',
+            });
+          }
+          const originalFileId = registerManagedFile({
+            absolutePath: originalPath,
+            mimeType,
+            references: [{ resourceType: 'image', resourceId: id, role: 'input' }],
+          });
+          if (originalFileId && preprocessEnabled && preprocessResult.processedPath !== originalPath) {
+            registerManagedFile({
+              absolutePath: preprocessResult.processedPath,
+              mimeType: preprocessResult.mimeType,
+              derivedFromFileId: originalFileId,
+            });
+          }
+        }
+      });
+      publish.immediate();
+      currentFilePaths = [];
 
       // Relative path for the preview image (will be used for imageUrl)
       const relToStorage = path.relative(storageRoot, previewPath);
@@ -205,6 +248,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ files: results });
   } catch (err) {
+    for (const filePath of currentFilePaths) {
+      try { fs.rmSync(filePath, { force: true }); } catch { /* 清理失败由后续文件对账处理 */ }
+    }
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const POST = withTeamRoute('/api/upload', 'POST', __teamRoutePOST);

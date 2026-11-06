@@ -8,16 +8,18 @@ import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { getQueueStatus, runQueue } from '@/lib/queue';
 import { getVideoQueueStatus, runVideoQueue } from '@/lib/video-queue';
 import { FinalEditError } from '@/lib/final-edit/errors';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 type Params = { params: Promise<{ id: string; clipId: string }> };
-export async function GET(request: Request, { params }: Params) {
+async function __teamRouteGET(request: Request, { params }: Params) {
   try {
     checkLocalRequest(request);
     const { id, clipId } = await params;
     return NextResponse.json(readFilmRework(getDb(), id, clipId));
   } catch (error) { return finalEditErrorResponse(error); }
 }
-export async function POST(request: Request, { params }: Params) {
+async function __teamRoutePOST(request: Request, { params }: Params) {
   try {
     const actor = filmWriteActor(request);
     const { id, clipId } = await params;
@@ -38,3 +40,5 @@ export async function POST(request: Request, { params }: Params) {
     return NextResponse.json(result);
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const GET = withTeamRoute('/api/final-edit-groups/[id]/rework/[clipId]', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/final-edit-groups/[id]/rework/[clipId]', 'POST', __teamRoutePOST);

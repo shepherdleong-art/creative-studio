@@ -275,6 +275,27 @@ export const FINAL_EDIT_MIGRATIONS: ReadonlyArray<{ version: number; sql: string
       );
     `,
   },
+  {
+    version: 16,
+    sql: `
+      ALTER TABLE final_edit_bgm_tracks RENAME TO final_edit_bgm_tracks_v15;
+      CREATE TABLE final_edit_bgm_tracks (
+        id TEXT PRIMARY KEY, relativePath TEXT NOT NULL, fileFingerprint TEXT NOT NULL,
+        ownerKey TEXT NOT NULL DEFAULT 'local',
+        durationUs INTEGER NOT NULL, format TEXT NOT NULL, loudnessJson TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL, errorMessage TEXT, scannedAt TEXT NOT NULL,
+        UNIQUE(ownerKey, fileFingerprint)
+      );
+      INSERT INTO final_edit_bgm_tracks (
+        id, relativePath, fileFingerprint, ownerKey, durationUs, format,
+        loudnessJson, status, errorMessage, scannedAt
+      )
+      SELECT id, relativePath, fileFingerprint, 'local', durationUs, format,
+        loudnessJson, status, errorMessage, scannedAt
+      FROM final_edit_bgm_tracks_v15;
+      DROP TABLE final_edit_bgm_tracks_v15;
+    `,
+  },
 ];
 
 export function initFinalEditSchema(db: Database.Database): void {

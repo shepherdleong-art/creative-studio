@@ -18,6 +18,8 @@ const fixtureRoot = mkdtempSync(path.join(tmpdir(), 'creative-studio-standalone-
 const standalone = path.join(fixtureRoot, '.next', 'standalone');
 const runtimeSource = path.join(fixtureRoot, 'runtime', 'server-entry.js');
 const runtimeCopy = path.join(standalone, 'runtime', 'server-entry.js');
+const teamRuntimeSource = path.join(fixtureRoot, 'runtime', 'team-server-entry.cjs');
+const teamRuntimeCopy = path.join(standalone, 'runtime', 'team-server-entry.cjs');
 
 const forbiddenSpec = JSON.parse(
   readFileSync(path.join(repositoryRoot, 'scripts', 'packaging', 'forbidden-paths.json'), 'utf8'),
@@ -102,6 +104,7 @@ try {
   writeFixture('.next/static/chunk.js');
   writeFixture('public/asset.txt');
   writeFixture('runtime/server-entry.js', 'module.exports = "fixture-runtime";\n');
+  writeFixture('runtime/team-server-entry.cjs', 'module.exports = "fixture-team-runtime";\n');
   writeFixture('node_modules/ffmpeg-static/package.json', '{}\n');
   writeFixture('node_modules/ffprobe-static/package.json', '{}\n');
   writeFixture('node_modules/@ffprobe-installer/ffprobe/package.json', '{}\n');
@@ -176,6 +179,11 @@ try {
     readFileSync(runtimeCopy, 'utf8'),
     readFileSync(runtimeSource, 'utf8'),
     'standalone runtime/server-entry.js 必须与根 runtime/server-entry.js 内容一致',
+  );
+  assert.equal(
+    readFileSync(teamRuntimeCopy, 'utf8'),
+    readFileSync(teamRuntimeSource, 'utf8'),
+    'standalone 必须显式携带固定回环端口的 server 入口',
   );
   assert.ok(
     existsSync(path.join(standalone, 'node_modules', 'exceljs', 'lib', 'exceljs.nodejs.js')),

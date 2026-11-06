@@ -1,14 +1,14 @@
-import { dataRoot } from '../data-root';
-import { getDb } from '../db';
+import { dataRoot } from '../data-root.ts';
+import { getDb } from '../db.ts';
 import {
   cacheSuccessfulReadiness,
   schemaUpgradeRuntimePaths,
-} from '../schema-upgrade/runtime';
+} from '../schema-upgrade/runtime.ts';
 import {
   batchReadinessUnavailable,
   checkBatchProductionReadiness,
   type BatchProductionReadiness,
-} from './readiness';
+} from './readiness.ts';
 
 const checkRuntimeReadiness = cacheSuccessfulReadiness<BatchProductionReadiness>(() => (
   checkBatchProductionReadiness({

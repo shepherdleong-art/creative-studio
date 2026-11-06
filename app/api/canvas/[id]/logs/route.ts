@@ -3,10 +3,12 @@ import { getDb } from '@/lib/db';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
 import { requireCanvas } from '@/lib/creative-canvas/repository';
 import { getCanvasLogs } from '@/lib/creative-canvas/logs';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     await assertCanvasApiReady();
     const { id } = await params;
@@ -21,3 +23,4 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     return canvasJsonError(error);
   }
 }
+export const GET = withTeamRoute('/api/canvas/[id]/logs', 'GET', __teamRouteGET);

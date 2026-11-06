@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { completeJson } from '@/lib/script-providers';
@@ -6,11 +7,13 @@ import { ScriptStudioError } from '@/lib/script-studio/errors';
 import { resolveRuntimeProviders } from '@/lib/script-studio/runtime';
 import { createSellingPointOrganizer } from '@/lib/script-studio/selling-point-organizer';
 import { reorganizeLibrary } from '@/lib/script-studio/reorganize-library';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     await assertScriptStudioApiReady();
     const { id: projectId } = await params;
@@ -19,9 +22,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       throw new ScriptStudioError('invalid_input', '请选择整理卖点使用的模型，并提供当前卖点库版本');
     }
     const provider = resolveRuntimeProviders(body.providerId).text;
+    const organizeTaskId = randomUUID();
+    let sequence = 0;
     const organizer = createSellingPointOrganizer((input) => completeJson({
       ...input, providerId: provider.id, model: provider.model,
       usageContext: { enabled: true, projectId, refType: 'script-studio-organize', refId: body.baseRevisionId as string },
+      executionContext: {
+        taskId: organizeTaskId,
+        step: `organize:${++sequence}`,
+        scope: { resourceType: 'project', resourceId: projectId },
+      },
     } as Parameters<typeof completeJson>[0]));
     const revision = await reorganizeLibrary(getDb(), projectId, body.baseRevisionId, organizer, {
       signal: request.signal, providerId: provider.id, model: provider.model,
@@ -32,3 +42,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json(result.body, { status: result.status });
   }
 }
+export const POST = withTeamRoute('/api/projects/[id]/script-studio/library/organize', 'POST', __teamRoutePOST);

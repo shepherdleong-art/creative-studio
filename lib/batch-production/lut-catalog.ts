@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
+import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { dataRoot } from '../data-root.ts';
 import { runFfmpeg } from '../ffmpeg.ts';
+import { withMediaResource } from '../media-core/media-resource-gate.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
 import {
   buildLutVerificationArgs,
@@ -64,6 +66,8 @@ export function resolveColorSnapshot(
   if (!lut) {
     throw new BatchDomainError('not_found', 'LUT 不存在');
   }
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('lut', lutId, 'read');
   if (lut.projectId !== projectId) {
     throw new BatchDomainError('invalid_input', 'LUT 不属于该批次所在项目');
   }
@@ -98,6 +102,8 @@ export function createManagedLut(
     now?: () => Date;
   },
 ): string {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
   const fingerprint = normalizeFingerprint(input.contentFingerprint);
   const createdAt = nowIso(input.now);
   return db.transaction(() => {
@@ -105,6 +111,7 @@ export function createManagedLut(
       SELECT id FROM batch_luts WHERE projectId = ? AND contentFingerprint = ?
     `).get(projectId, fingerprint) as { id: string } | undefined;
     if (existing) {
+      if (access.kind === 'team') access.assertAccess('lut', existing.id, 'read');
       return existing.id;
     }
     const id = randomUUID();
@@ -123,11 +130,24 @@ export function createManagedLut(
       createdAt,
       createdAt,
     );
+    access.registerInheritedScope({
+      resourceType: 'lut', resourceId: id,
+      parent: { resourceType: 'project', resourceId: projectId },
+    });
+    if (access.kind === 'team') {
+      registerManagedFile({
+        absolutePath: path.join(dataRoot(), 'storage', input.relativePath),
+        mimeType: 'application/octet-stream',
+        references: [{ resourceType: 'lut', resourceId: id, role: 'input' }],
+      });
+    }
     return id;
-  })();
+  }).immediate();
 }
 
 export function getLut(db: Database.Database, projectId: string, lutId: string): BatchLutRow | undefined {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
   return db.prepare(`
     SELECT * FROM batch_luts WHERE id = ? AND projectId = ?
   `).get(lutId, projectId) as BatchLutRow | undefined;
@@ -266,10 +286,10 @@ function validateLutUpload(upload: LutUpload): { originalFilename: string } {
 async function verifyLutWithFfmpeg(lutAbsolutePath: string): Promise<void> {
   const probeOutput = `${lutAbsolutePath}.verify-${randomUUID()}.jpg`;
   try {
-    await runFfmpeg([
+    await withMediaResource({ taskId: lutAbsolutePath, step: 'lut-verify', wait: true }, () => runFfmpeg([
       ...buildLutVerificationArgs(lutAbsolutePath),
       probeOutput,
-    ], { timeoutMs: 10_000 });
+    ], { timeoutMs: 10_000 }));
   } catch {
     throw new LutImportError('invalid_lut_content', 'LUT 文件验证失败,可能已损坏或格式不受支持');
   } finally {

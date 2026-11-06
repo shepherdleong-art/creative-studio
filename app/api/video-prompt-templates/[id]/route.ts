@@ -2,6 +2,8 @@ import { normalizeProductionCode } from '@/lib/media-core/production-codes';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { normalizeVideoPromptTemplateInput } from '@/lib/video-prompt-template';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 const SELECT_ONE = `
   SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, lower(openingCode) AS openingCode, createdAt
@@ -14,6 +16,7 @@ interface TemplateRow {
   isBuiltin: number;
   inRandomPool: number;
   openingCode: string | null;
+  ownerKey: string;
 }
 
 /**
@@ -23,14 +26,14 @@ interface TemplateRow {
  * 想改先「复制一份」。inRandomPool 与 openingCode 允许单独维护，
  * seed 只补初始值，保留用户已修改的入池选择和开头编号（含主动清空）。
  */
-export async function PATCH(
+async function __teamRoutePATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await params;
     const db = getDb();
-    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode FROM video_prompt_templates WHERE id = ?`)
+    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode, ownerKey FROM video_prompt_templates WHERE id = ?`)
       .get(id) as TemplateRow | undefined;
     if (!row) return NextResponse.json({ error: '模板不存在' }, { status: 404 });
 
@@ -44,7 +47,7 @@ export async function PATCH(
     if (body.openingCode !== undefined && (typeof body.openingCode !== 'string' || (body.openingCode.trim() && !openingCode))) {
       return NextResponse.json({ error: '开头编号请填写 k1、k2 等（最多 6 位数字）' }, { status: 400 });
     }
-    if (openingCode && db.prepare('SELECT id FROM video_prompt_templates WHERE openingCode=? COLLATE NOCASE AND id<>?').get(openingCode, id)) {
+    if (openingCode && db.prepare('SELECT id FROM video_prompt_templates WHERE openingCode=? COLLATE NOCASE AND ownerKey=? AND id<>?').get(openingCode, row.ownerKey, id)) {
       return NextResponse.json({ error: `开头编号 ${openingCode} 已被其他模板使用` }, { status: 409 });
     }
     const inPool = body.inRandomPool === undefined ? row.inRandomPool : (body.inRandomPool ? 1 : 0);
@@ -74,8 +77,8 @@ export async function PATCH(
     const { name, description, prompt, inRandomPool } = normalized.value;
 
     const duplicate = db.prepare(
-      `SELECT id FROM video_prompt_templates WHERE name = ? AND id != ?`,
-    ).get(name, id) as { id: string } | undefined;
+      `SELECT id FROM video_prompt_templates WHERE name = ? AND ownerKey = ? AND id != ?`,
+    ).get(name, row.ownerKey, id) as { id: string } | undefined;
     if (duplicate) {
       return NextResponse.json({ error: `已有同名模板「${name}」` }, { status: 409 });
     }
@@ -102,14 +105,14 @@ export async function PATCH(
  * 已被视频任务引用的也删不掉：video_jobs.templateId 是外键，那条模板是那些
  * 视频的出处，删掉历史记录就断了。两种情况都给出能照着做的说明。
  */
-export async function DELETE(
+async function __teamRouteDELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await params;
     const db = getDb();
-    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode FROM video_prompt_templates WHERE id = ?`)
+    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode, ownerKey FROM video_prompt_templates WHERE id = ?`)
       .get(id) as TemplateRow | undefined;
     if (!row) return NextResponse.json({ error: '模板不存在' }, { status: 404 });
 
@@ -138,3 +141,5 @@ export async function DELETE(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const PATCH = withTeamRoute('/api/video-prompt-templates/[id]', 'PATCH', __teamRoutePATCH);
+export const DELETE = withTeamRoute('/api/video-prompt-templates/[id]', 'DELETE', __teamRouteDELETE);

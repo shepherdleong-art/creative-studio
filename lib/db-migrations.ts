@@ -166,4 +166,48 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE video_jobs ADD COLUMN generationMode TEXT NOT NULL DEFAULT 'image-to-video'`,
   `ALTER TABLE video_jobs ADD COLUMN aspectRatio TEXT`,
   `ALTER TABLE video_jobs ADD COLUMN resolution TEXT`,
+  // 团队模板的编号只在所有者命名空间唯一；local 全部使用 local，保留原全局唯一行为。
+  `ALTER TABLE video_prompt_templates ADD COLUMN ownerKey TEXT NOT NULL DEFAULT 'local'`,
+  `DROP INDEX IF EXISTS idx_video_prompt_opening_code`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_video_prompt_opening_code ON video_prompt_templates(ownerKey, openingCode) WHERE openingCode IS NOT NULL AND openingCode <> ''`,
+  `CREATE TABLE IF NOT EXISTS script_generation_tasks (
+    generationId TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL,
+    actorId TEXT NOT NULL,
+    scopeType TEXT NOT NULL,
+    scopeId TEXT NOT NULL,
+    inputJson TEXT NOT NULL,
+    executorKey TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('running', 'succeeded', 'failed', 'cancelled')),
+    progressJson TEXT NOT NULL,
+    checkpointJson TEXT NOT NULL,
+    draftId TEXT NOT NULL,
+    errorJson TEXT,
+    cancellationReason TEXT CHECK(cancellationReason IS NULL OR cancellationReason IN ('user', 'shutdown')),
+    startedAt TEXT NOT NULL,
+    updatedAt TEXT NOT NULL,
+    finishedAt TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_script_generation_tasks_project ON script_generation_tasks(projectId, startedAt)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_script_generation_tasks_active_project ON script_generation_tasks(projectId) WHERE state = 'running'`,
+  `CREATE TABLE IF NOT EXISTS llm_execution_checkpoints (
+    operationId TEXT PRIMARY KEY,
+    attemptId TEXT NOT NULL,
+    rawText TEXT NOT NULL,
+    createdAt TEXT NOT NULL
+  )`,
+  `ALTER TABLE jobs ADD COLUMN executionRevision INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE video_jobs ADD COLUMN executionRevision INTEGER NOT NULL DEFAULT 0`,
+  `CREATE TABLE IF NOT EXISTS media_derivative_jobs (
+    jobKey TEXT PRIMARY KEY,
+    sourcePath TEXT NOT NULL,
+    derivativePath TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'ready', 'failed')),
+    leaseOwner TEXT,
+    leaseUntil INTEGER,
+    retryAfter INTEGER,
+    error TEXT,
+    createdAt INTEGER NOT NULL,
+    updatedAt INTEGER NOT NULL
+  )`,
 ];

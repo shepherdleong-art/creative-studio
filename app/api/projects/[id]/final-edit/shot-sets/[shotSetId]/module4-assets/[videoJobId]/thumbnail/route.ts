@@ -9,8 +9,10 @@ import { mediaResponse } from '@/lib/final-edit/media-response';
 import { findModule4Video } from '@/lib/final-edit/module4-asset';
 import { resolveStoragePath } from '@/lib/final-edit/storage-path';
 import { materializeVideoFrame } from '@/lib/final-edit/video-frame';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(
+
+async function __teamRouteGET(
   request: Request,
   { params }: { params: Promise<{ id: string; shotSetId: string; videoJobId: string }> },
 ) {
@@ -42,3 +44,4 @@ export async function GET(
     return NextResponse.json({ error: 'thumbnail_failed', message: '无法生成视频缩略图' }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/projects/[id]/final-edit/shot-sets/[shotSetId]/module4-assets/[videoJobId]/thumbnail', 'GET', __teamRouteGET);

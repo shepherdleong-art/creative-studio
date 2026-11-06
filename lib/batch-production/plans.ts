@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import { assertBatchVersionEditable } from './versions.ts';
 
 export interface BatchOutputPlanRow {
@@ -62,6 +63,7 @@ function insertOutputPlan(
     throw new Error('该批次版本已存在相同序号的成片计划');
   }
   const id = randomUUID();
+  const access = requireAccessContext();
   db.prepare(`
     INSERT INTO batch_output_plans
       (id, batchVersionId, scriptSnapshotId, seq, planJson, currentVersionId, createdAt)
@@ -74,6 +76,10 @@ function insertOutputPlan(
     JSON.stringify(input.planJson ?? {}),
     input.createdAt,
   );
+  access.registerInheritedScope({
+    resourceType: 'batch_plan', resourceId: id,
+    parent: { resourceType: 'batch_version', resourceId: input.batchVersionId },
+  });
   return id;
 }
 
@@ -176,6 +182,8 @@ export function createOutputVersion(
   },
 ): string {
   const createdAt = nowIso(input.now);
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('batch_plan', planId, 'write');
   return db.transaction(() => {
     const plan = db.prepare(`SELECT 1 FROM batch_output_plans WHERE id = ?`).get(planId);
     if (!plan) {
@@ -190,6 +198,10 @@ export function createOutputVersion(
       INSERT INTO batch_output_versions (id, planId, versionNumber, arrangementJson, createdAt)
       VALUES (?, ?, ?, ?, ?)
     `).run(id, planId, versionNumber, JSON.stringify(input.arrangementJson ?? {}), createdAt);
+    access.registerInheritedScope({
+      resourceType: 'batch_output_version', resourceId: id,
+      parent: { resourceType: 'batch_plan', resourceId: planId },
+    });
     db.prepare(`
       UPDATE batch_output_plans SET currentVersionId = ? WHERE id = ?
     `).run(id, planId);

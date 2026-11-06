@@ -9,6 +9,9 @@ import { dataRoot } from '@/lib/data-root';
 import { resolveFfprobePath } from '@/lib/ffmpeg';
 import { validateUploadedImageBuffer } from '@/lib/image-upload-validation';
 import { assertNoStorageSymlink } from '@/lib/media-core/storage-path';
+import { registerManagedFile, requireAccessContext } from '@/lib/media-core/access-context';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
@@ -85,13 +88,14 @@ function originalFilename(file: File): string {
   return path.basename(file.name.replace(/\\/g, '/')) || '未命名';
 }
 
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const writtenPaths = new Set<string>();
   const insertedIds: string[] = [];
   let db: ReturnType<typeof getDb> | undefined;
+  let teamMode = false;
   try {
     const { id: projectId } = await params;
     db = getDb();
@@ -101,6 +105,9 @@ export async function POST(
     if (!/^[A-Za-z0-9_-]+$/.test(projectId)) {
       return NextResponse.json({ error: 'Invalid project id' }, { status: 400 });
     }
+    const access = requireAccessContext();
+    teamMode = access.kind === 'team';
+    if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
 
     const formData = await request.formData();
     const files = formData.getAll('files').filter((value): value is File => typeof value !== 'string');
@@ -172,7 +179,21 @@ export async function POST(
         writtenPaths.delete(temporaryPath);
       }
 
-      insert.run(id, projectId, detected.kind, filename, savedPath, detected.mimeType, buffer.length, detected.durationSec);
+      const publish = db.transaction(() => {
+        insert.run(id, projectId, detected.kind, filename, savedPath, detected.mimeType, buffer.length, detected.durationSec);
+        access.registerInheritedScope({
+          resourceType: 'video_reference_asset', resourceId: id,
+          parent: { resourceType: 'project', resourceId: projectId },
+        });
+        if (access.kind === 'team') {
+          registerManagedFile({
+            absolutePath: savedPath,
+            mimeType: detected.mimeType,
+            references: [{ resourceType: 'video_reference_asset', resourceId: id, role: 'input' }],
+          });
+        }
+      });
+      publish.immediate();
       insertedIds.push(id);
       results.push({
         id,
@@ -190,7 +211,10 @@ export async function POST(
     if (db) {
       const remove = db.prepare('DELETE FROM video_reference_assets WHERE id = ?');
       for (const id of insertedIds) {
-        try { remove.run(id); } catch { /* best-effort request rollback */ }
+        try {
+          if (teamMode) db.prepare("DELETE FROM team_resource_scopes WHERE resourceType = 'video_reference_asset' AND resourceId = ?").run(id);
+          remove.run(id);
+        } catch { /* best-effort request rollback */ }
       }
     }
     for (const filePath of writtenPaths) {
@@ -202,3 +226,4 @@ export async function POST(
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
+export const POST = withTeamRoute('/api/projects/[id]/video-reference-assets', 'POST', __teamRoutePOST);

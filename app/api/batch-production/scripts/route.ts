@@ -4,6 +4,10 @@ import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { normalizeManualScriptBatch, type ManualScriptDraftInput } from '@/lib/batch-production/manual-script-import';
 import { createManualProjectScript, deleteProjectScripts } from '@/lib/batch-production/scripts';
 import { BATCH_NO_STORE_HEADERS, batchRouteErrorResponse } from '../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { requireAccessContext } from '@/lib/media-core/access-context';
+import { softDeleteResource } from '@/lib/team-service/lifecycle/index';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -13,7 +17,7 @@ export const dynamic = 'force-dynamic';
  * 单条即长度 1 的数组;批量粘贴由前端切好再提交。整批一个事务,全成功或全失败;
  * 条数与总字符上限在服务端独立校验,不能只信前端。
  */
-export async function POST(request: NextRequest) {
+async function __teamRoutePOST(request: NextRequest) {
   const body = await request.json().catch(() => null) as {
     projectId?: unknown;
     scripts?: unknown;
@@ -62,7 +66,7 @@ export async function POST(request: NextRequest) {
 }
 
 /** 批量目录删除：一次提交、一次事务，历史批次与第 3 步原脚本保持不变。 */
-export async function DELETE(request: NextRequest) {
+async function __teamRouteDELETE(request: NextRequest) {
   const body = await request.json().catch(() => null);
   const projectId = typeof body?.projectId === 'string' ? body.projectId.trim() : '';
   if (!projectId || !Array.isArray(body?.scriptIds)) {
@@ -70,9 +74,20 @@ export async function DELETE(request: NextRequest) {
   }
   try {
     await assertBatchApiReady();
+    const access = requireAccessContext();
+    if (access.kind === 'team') {
+      const db = getDb();
+      const deletedIds = db.transaction(() => (body.scriptIds as string[]).map((scriptId) => {
+        softDeleteResource(db, access.actor, { resourceType: 'batch_script', resourceId: scriptId });
+        return scriptId;
+      })).immediate();
+      return NextResponse.json({ deletedIds, mode: 'soft' }, { headers: BATCH_NO_STORE_HEADERS });
+    }
     const deletedIds = deleteProjectScripts(getDb(), projectId, body.scriptIds);
     return NextResponse.json({ deletedIds }, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'script_delete_failed', '脚本删除失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/scripts', 'POST', __teamRoutePOST);
+export const DELETE = withTeamRoute('/api/batch-production/scripts', 'DELETE', __teamRouteDELETE);

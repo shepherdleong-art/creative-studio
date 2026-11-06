@@ -1,3 +1,13 @@
+import { createHash } from 'node:crypto';
+import { requireAccessContext, runWithTaskAccessContext } from '../media-core/access-context.ts';
+import type {
+  AttemptRecord,
+  ExecutionFacade,
+  InstanceFence,
+  OperationRecord,
+} from '../media-core/execution/context.ts';
+import { readAttempt, readOperation } from '../media-core/execution/records.ts';
+import { configuredProviderPool } from '../media-core/execution/configured-provider-pool.ts';
 import { recordCanvasTaskLog } from './logs.ts';
 import { recordCanvasVideoMetadata } from './video-metadata.ts';
 /**
@@ -32,13 +42,19 @@ import {
   updateCanvasTaskGuarded,
   type CanvasTaskRecord,
 } from './tasks.ts';
-import { recordCanvasTaskUsage } from './usage.ts';
+import { canvasTaskActualCost, canvasTaskCostQuote, recordCanvasTaskUsage } from './usage.ts';
 import { isTerminalTaskPhase, type CanvasGenerationMode, type CanvasTaskPhase } from './types.ts';
+
+export interface CanvasTaskExecution {
+  facade: ExecutionFacade;
+  instance: InstanceFence;
+}
 
 export interface RunCanvasTaskOptions {
   db: Database.Database;
   taskId: string;
   adapter: CanvasTaskAdapter;
+  execution?: CanvasTaskExecution;
   workerId: string;
   fence: number;
   storageRoot?: string;
@@ -161,6 +177,67 @@ export function buildCanvasTaskContext(
   };
 }
 
+function currentCanvasExecution(db: Database.Database, taskId: string): {
+  operation: OperationRecord;
+  attempt: AttemptRecord | null;
+} | null {
+  const row = db.prepare(`
+    SELECT id FROM execution_operations WHERE module = 'canvas' AND taskId = ?
+    ORDER BY createdAt DESC LIMIT 1
+  `).get(taskId) as { id: string } | undefined;
+  if (!row) return null;
+  const operation = readOperation(db, row.id);
+  return {
+    operation,
+    attempt: operation.currentAttemptId ? readAttempt(db, operation.currentAttemptId) : null,
+  };
+}
+
+function canvasOperationInput(task: CanvasTaskRecord, context: CanvasTaskContext) {
+  const generationStage = typeof context.parameters.generationStage === 'string'
+    ? context.parameters.generationStage
+    : 'direct';
+  const inputRevision = `epoch-${task.nodeEpoch}-variant-${task.variantIndex}-stage-${generationStage}`;
+  const inputSnapshot = {
+    nodeId: task.nodeId,
+    nodeEpoch: task.nodeEpoch,
+    variantIndex: task.variantIndex,
+    generationStage,
+    providerSnapshot: JSON.parse(task.providerSnapshot) as unknown,
+    parameterSnapshot: JSON.parse(task.parameterSnapshot) as unknown,
+    inputs: context.inputs.map((input) => ({
+      refId: input.refId,
+      orderIndex: input.orderIndex,
+      role: input.role,
+      assetId: input.assetId,
+      upstreamTaskId: input.upstreamTaskId,
+      textContent: input.textContent,
+    })),
+  };
+  return {
+    inputRevision,
+    inputSnapshot,
+    inputHash: createHash('sha256').update(JSON.stringify(inputSnapshot)).digest('hex'),
+  };
+}
+
+function executionWaitMessage(reason: string): string {
+  const messages: Record<string, string> = {
+    maintenance: '服务维护中，新付费生成已暂停；已受理结果会继续收取。',
+    actor_disabled: '账号已停用，新付费生成已暂停；已受理结果会继续收取。',
+    scope_forbidden: '当前资源已停止新的付费生成。',
+    actor_paused: '成员已暂停新的付费生成；已受理结果会继续收取。',
+    personal_concurrency: '等待个人云端生成名额，尚未提交。',
+    pool_missing: '公共生成池尚未配置，尚未提交。',
+    pool_disabled: '公共生成池已停用，尚未提交。',
+    pool_capacity: '等待公共云端生成名额，尚未提交。',
+    pricing_required: '缺少可信价格，等待管理员补齐后再提交。',
+    monthly_budget: '本月费用额度不足，尚未提交。',
+    cost_unknown: '上一笔费用仍待核查，暂不能开始新的付费生成。',
+  };
+  return messages[reason] ?? '等待统一执行准入，尚未提交。';
+}
+
 function assetAbsolutePath(db: Database.Database, assetId: string, storageRoot: string): string {
   const row = db.prepare(
     `SELECT id, canvasId, mediaKind, relativePath, contentHash, mimeType, byteSize, width, height, durationSec, sourceTaskId, ready, createdAt
@@ -264,6 +341,10 @@ function commitRecordedOutput(
 }
 
 export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<CanvasRunTaskOutcome> {
+  return runWithTaskAccessContext(options.db, 'canvas', options.taskId, () => runAuthorizedCanvasTask(options));
+}
+
+async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<CanvasRunTaskOutcome> {
   const {
     db,
     taskId,
@@ -314,8 +395,39 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
   };
 
   // 恢复路径：只要已经有远端身份，就绝不重新 prepare／POST，只续查原任务。
-  // （调度器只会把「已提交」的任务交回执行器，这里不依赖 submissionState 的具体取值。）
   const resuming = task.providerTaskId !== null;
+  let executionAttempt = options.execution
+    ? currentCanvasExecution(db, taskId)?.attempt ?? null
+    : null;
+
+  const deferExecution = (reason: string): CanvasRunTaskOutcome => {
+    updateCanvasTaskGuarded(db, {
+      taskId,
+      patch: {
+        phase: 'queued', submissionState: 'not_sent', errorCode: reason,
+        errorMessage: executionWaitMessage(reason), leaseOwner: null, leaseUntil: null,
+      },
+      guard,
+      now,
+    });
+    return finish('queued');
+  };
+  const cancelBeforeSubmit = (): CanvasRunTaskOutcome => {
+    updateCanvasTaskGuarded(db, {
+      taskId,
+      patch: {
+        phase: 'cancelled', submissionState: 'terminal', errorCode: 'cancelled',
+        errorMessage: '用户已停止该任务，未发起新的付费提交。', leaseOwner: null, leaseUntil: null,
+      },
+      guard,
+      now,
+    });
+    db.prepare(`
+      UPDATE creative_canvas_node_states SET activeTaskId = NULL, updatedAt = ?
+      WHERE canvasId = ? AND nodeId = ? AND activeTaskId = ?
+    `).run(now().toISOString(), task.canvasId, task.nodeId, task.id);
+    return finish('cancelled');
+  };
 
   // 1. 素材交付：失败说明还没提交，按普通失败结束
   try {
@@ -348,65 +460,235 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
       guard,
       now,
     });
-  } else {
-  const submittedIntent = updateCanvasTaskGuarded(db, {
-    taskId,
-    patch: { phase: 'submitting', submissionState: 'maybe_sent' },
-    guard,
-    now,
-  });
-  if (!submittedIntent) {
-    return finish(getCanvasTask(db, taskId)?.phase ?? 'queued');
-  }
+  } else if (options.execution) {
+    const execution = options.execution;
+    const operationInput = canvasOperationInput(task, context);
+    let admission;
+    try {
+      const enqueued = execution.facade.enqueue({
+        operationKey: `canvas/${task.id}/submit/${operationInput.inputRevision}`,
+        actor: { userId: requireAccessContext().actor.userId },
+        scope: { resourceType: 'canvas', resourceId: task.canvasId },
+        module: 'canvas', taskId: task.id, step: 'submit', inputRevision: operationInput.inputRevision,
+        businessAttempt: { id: task.id, number: 1 },
+        inputSnapshot: operationInput.inputSnapshot,
+        inputHash: operationInput.inputHash,
+        continuationKey: 'canvas.submit',
+        providerSnapshot: JSON.parse(task.providerSnapshot) as unknown,
+        configVersion: createHash('sha256').update(task.providerSnapshot).digest('hex'),
+        credentialVersionRef: context.providerIdentity,
+        requiredPools: [configuredProviderPool(db, context.mediaKind, context.providerIdentity) ?? `${context.providerIdentity}:remote`],
+        quote: canvasTaskCostQuote(db, task),
+      });
+      admission = execution.facade.admit({ ...execution.instance, operationId: enqueued.operation.id });
+    } catch (error) {
+      const reason = error && typeof error === 'object' && 'code' in error
+        ? String(error.code)
+        : 'execution_not_ready';
+      return deferExecution(reason);
+    }
+    if (admission.kind !== 'admitted') {
+      return deferExecution(admission.kind === 'deferred' ? admission.reasons[0] ?? 'execution_deferred' : 'execution_deferred');
+    }
+    const submittedIntent = updateCanvasTaskGuarded(db, {
+      taskId,
+      patch: { phase: 'submitting', submissionState: 'not_sent' },
+      guard,
+      now,
+    });
+    if (!submittedIntent) {
+      await execution.facade.settle({
+        attemptId: admission.grant.attempt.id, outcome: 'not_created', actualCost: null, remoteTerminal: true,
+      }).catch(() => undefined);
+      const current = getCanvasTask(db, taskId);
+      if (current?.phase === 'cancelled' || current?.cancelRequestedAt) return cancelBeforeSubmit();
+      return finish(current?.phase ?? 'queued');
+    }
+    let intent;
+    try {
+      intent = await execution.facade.markSubmitting({
+        grant: admission.grant,
+        requestSnapshot: operationInput.inputSnapshot,
+      });
+    } catch (error) {
+      await execution.facade.settle({
+        attemptId: admission.grant.attempt.id, outcome: 'not_created', actualCost: null, remoteTerminal: true,
+      }).catch(() => undefined);
+      const reason = error && typeof error === 'object' && 'code' in error
+        ? String(error.code)
+        : 'execution_not_ready';
+      return deferExecution(reason);
+    }
+    if (!updateCanvasTaskGuarded(db, {
+      taskId,
+      patch: { submissionState: 'maybe_sent' },
+      guard,
+      now,
+    })) {
+      return finish(getCanvasTask(db, taskId)?.phase ?? 'uncertain');
+    }
 
-  // 3. 单次生成 POST
-  try {
-    const submitted = await adapter.submit(context, signal);
-    providerTaskId = submitted.providerTaskId;
+    let submittedProviderTaskId: string | null = null;
+    let submitFailure: { code: string; message: string } | null = null;
+    try {
+      executionAttempt = await execution.facade.transmit(intent, async () => {
+        if (getCanvasTask(db, taskId)?.cancelRequestedAt) {
+          submitFailure = { code: 'cancelled', message: '用户已停止该任务，未发起新的付费提交。' };
+          return { terminalState: 'not_created', errorCode: 'cancelled' };
+        }
+        try {
+          const submitted = await adapter.submit(context, signal);
+          submittedProviderTaskId = submitted.providerTaskId;
+          return {
+            remoteId: submitted.providerTaskId,
+            ...(submitted.terminalState ? { terminalState: submitted.terminalState } : {}),
+          };
+        } catch (error) {
+          const uncertain = (error instanceof CanvasAdapterError && error.uncertain) || error instanceof TypeError;
+          if (uncertain) throw error;
+          const code = error instanceof CanvasAdapterError ? error.code : 'submit_failed';
+          submitFailure = { code, message: error instanceof Error ? error.message : String(error) };
+          return { terminalState: 'not_created', errorCode: code.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 200) };
+        }
+      });
+    } catch (error) {
+      updateCanvasTaskGuarded(db, {
+        taskId,
+        patch: {
+          phase: 'uncertain', submissionState: 'maybe_sent',
+          errorCode: error instanceof CanvasAdapterError ? error.code : 'submit_uncertain',
+          errorMessage: error instanceof Error ? error.message : String(error),
+          leaseOwner: null, leaseUntil: null,
+        },
+        guard,
+        now,
+      });
+      return finish('uncertain');
+    }
+    if (executionAttempt.terminalState === 'not_created') {
+      const failure = submitFailure as { code: string; message: string } | null;
+      await execution.facade.settle({
+        attemptId: executionAttempt.id, outcome: 'not_created', actualCost: null, remoteTerminal: true,
+        errorCode: failure?.code,
+      });
+      if (failure?.code === 'cancelled') return cancelBeforeSubmit();
+      updateCanvasTaskGuarded(db, {
+        taskId,
+        patch: {
+          phase: 'failed', submissionState: 'terminal',
+          errorCode: failure?.code ?? 'submit_failed',
+          errorMessage: failure?.message ?? '供应商未创建任务。',
+          leaseOwner: null, leaseUntil: null,
+        },
+        guard,
+        now,
+      });
+      return finish('failed');
+    }
+    if (executionAttempt.terminalState === 'succeeded') {
+      executionAttempt = await execution.facade.settle({
+        attemptId: executionAttempt.id,
+        outcome: 'succeeded', actualCost: canvasTaskActualCost(db, task), remoteTerminal: true,
+      });
+    }
+    if (!submittedProviderTaskId) throw new Error('执行回执缺少远端任务身份。');
+    providerTaskId = submittedProviderTaskId;
     updateCanvasTaskGuarded(db, {
       taskId,
       patch: { providerTaskId, submissionState: 'accepted', phase: 'polling', errorCode: null, errorMessage: null },
       guard,
       now,
     });
-    // 提交被接受后才记账：eventKey 按任务稳定，重试／补下载不会重复计生成费用
-    recordCanvasTaskUsage(db, { taskId });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    // 外部 fetch 的普通 TypeError（网络断开、连接重置等）无法证明 POST 未到达，必须保守待核查。
-    const uncertain = (error instanceof CanvasAdapterError && error.uncertain)
-      || error instanceof TypeError;
-    const phase: CanvasTaskPhase = uncertain ? 'uncertain' : 'failed';
-    updateCanvasTaskGuarded(db, {
+    recordCanvasTaskUsage(db, { taskId, executionAttemptId: executionAttempt?.id });
+  } else {
+    const submittedIntent = updateCanvasTaskGuarded(db, {
       taskId,
-      patch: {
-        phase,
-        submissionState: uncertain ? 'maybe_sent' : 'terminal',
-        errorCode: error instanceof CanvasAdapterError ? error.code : (uncertain ? 'submit_uncertain' : 'submit_failed'),
-        errorMessage: message,
-        leaseOwner: null,
-        leaseUntil: null,
-      },
+      patch: { phase: 'submitting', submissionState: 'maybe_sent' },
       guard,
       now,
     });
-    return finish(phase);
-  }
+    if (!submittedIntent) {
+      const current = getCanvasTask(db, taskId);
+      if (current?.phase === 'cancelled' || current?.cancelRequestedAt) return cancelBeforeSubmit();
+      return finish(current?.phase ?? 'queued');
+    }
+    if (getCanvasTask(db, taskId)?.cancelRequestedAt) return cancelBeforeSubmit();
+
+    // 本地模式保留原有单次 POST 与恢复合同。
+    try {
+      const submitted = await adapter.submit(context, signal);
+      providerTaskId = submitted.providerTaskId;
+      updateCanvasTaskGuarded(db, {
+        taskId,
+        patch: { providerTaskId, submissionState: 'accepted', phase: 'polling', errorCode: null, errorMessage: null },
+        guard,
+        now,
+      });
+      recordCanvasTaskUsage(db, { taskId, executionAttemptId: executionAttempt?.id });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const uncertain = (error instanceof CanvasAdapterError && error.uncertain) || error instanceof TypeError;
+      const phase: CanvasTaskPhase = uncertain ? 'uncertain' : 'failed';
+      updateCanvasTaskGuarded(db, {
+        taskId,
+        patch: {
+          phase,
+          submissionState: uncertain ? 'maybe_sent' : 'terminal',
+          errorCode: error instanceof CanvasAdapterError ? error.code : (uncertain ? 'submit_uncertain' : 'submit_failed'),
+          errorMessage: message,
+          leaseOwner: null,
+          leaseUntil: null,
+        },
+        guard,
+        now,
+      });
+      return finish(phase);
+    }
   }
 
   // 4. 轮询远端（已保存远端 ID；本地超时不释放名额）
   let attempts = 0;
   const previousPollCount = getCanvasTask(db, taskId)?.pollCount ?? 0;
   let pollState: 'succeeded' | 'failed' | 'aborted' | 'cancelled' = 'aborted';
+  let serverCancelAttempted = false;
   while (attempts < maxPollAttempts) {
     if (signal?.aborted) {
       pollState = 'aborted';
       break;
     }
     const current = getCanvasTask(db, taskId);
-    if (current?.cancelRequestedAt) {
+    if (current?.cancelRequestedAt && !options.execution) {
       pollState = 'cancelled';
       break;
+    }
+    if (current?.cancelRequestedAt && options.execution && adapter.cancel && !serverCancelAttempted) {
+      serverCancelAttempted = true;
+      let remoteCancelled = false;
+      try {
+        remoteCancelled = (await adapter.cancel({ ...context, providerTaskId }, signal)).remoteCancelled;
+      } catch {
+        remoteCancelled = false;
+      }
+      if (remoteCancelled) {
+        if (executionAttempt) {
+          executionAttempt = await options.execution.facade.reconcile({
+            attemptId: executionAttempt.id,
+            evidence: { kind: 'terminal', outcome: 'failed', actualCost: null, errorCode: 'cancelled' },
+            source: 'provider',
+          });
+        }
+        updateCanvasTaskGuarded(db, {
+          taskId,
+          patch: {
+            phase: 'cancelled', submissionState: 'terminal', errorCode: 'cancelled', errorMessage: null,
+            leaseOwner: null, leaseUntil: null,
+          },
+          guard,
+          now,
+        });
+        return finish('cancelled');
+      }
+      // server 上游未确认取消时继续收取已受理结果，permit 只能由终态结算释放。
     }
     await sleep(pollIntervalMs);
     attempts += 1;
@@ -435,10 +717,24 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
       now,
     });
     if (outcome.status === 'succeeded') {
+      if (options.execution && executionAttempt) {
+        executionAttempt = await options.execution.facade.reconcile({
+          attemptId: executionAttempt.id,
+          evidence: { kind: 'terminal', outcome: 'succeeded', actualCost: canvasTaskActualCost(db, task) },
+          source: 'provider',
+        });
+      }
       pollState = 'succeeded';
       break;
     }
     if (outcome.status === 'failed') {
+      if (options.execution && executionAttempt) {
+        executionAttempt = await options.execution.facade.reconcile({
+          attemptId: executionAttempt.id,
+          evidence: { kind: 'terminal', outcome: 'failed', actualCost: null, errorCode: outcome.code },
+          source: 'provider',
+        });
+      }
       updateCanvasTaskGuarded(db, {
         taskId,
         patch: {
@@ -579,7 +875,17 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
         });
       },
     });
-    recordCanvasTaskUsage(db, { taskId });
+    recordCanvasTaskUsage(db, { taskId, executionAttemptId: executionAttempt?.id });
+    if (options.execution && executionAttempt?.actualMinor === null) {
+      const latest = getCanvasTask(db, taskId);
+      const actualCost = latest ? canvasTaskActualCost(db, latest) : null;
+      if (actualCost) {
+        executionAttempt = await options.execution.facade.settle({
+          attemptId: executionAttempt.id,
+          outcome: 'succeeded', actualCost, remoteTerminal: true,
+        });
+      }
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     updateCanvasTaskGuarded(db, {

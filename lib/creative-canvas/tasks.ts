@@ -10,6 +10,7 @@ import { recordCanvasTaskLog } from './logs.ts';
 
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import { CanvasError } from './errors.ts';
 import type { CanvasPlan, CanvasPlanTask } from './planner.ts';
 import {
@@ -136,6 +137,8 @@ function rowToInput(row: Record<string, unknown>): CanvasTaskInputRecord {
 }
 
 export function getCanvasTask(db: Database.Database, taskId: string): CanvasTaskRecord | null {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas_task', taskId, 'read');
   const row = db.prepare(`SELECT * FROM creative_canvas_tasks WHERE id = ?`).get(taskId) as
     | Record<string, unknown>
     | undefined;
@@ -165,6 +168,24 @@ export function listCanvasTasks(
   params: { canvasId?: string; phases?: CanvasTaskPhase[]; limit?: number } = {},
 ): CanvasTaskRecord[] {
   const limit = Math.min(Math.max(params.limit ?? 100, 1), 500);
+  const access = requireAccessContext();
+  if (params.canvasId && access.kind === 'team') access.assertAccess('canvas', params.canvasId, 'read');
+  if (!params.canvasId && access.kind === 'team') {
+    const conditions = [`EXISTS (
+      SELECT 1 FROM team_resource_scopes scope
+      WHERE scope.resourceType = 'canvas' AND scope.resourceId = creative_canvas_tasks.canvasId
+        AND scope.deletedAt IS NULL ${access.actor.role === 'admin' ? '' : 'AND scope.ownerUserId = ?'}
+    )`];
+    const values: Array<string | number> = access.actor.role === 'admin' ? [] : [access.actor.userId];
+    if (params.phases && params.phases.length > 0) {
+      conditions.push(`phase IN (${params.phases.map(() => '?').join(',')})`);
+      values.push(...params.phases);
+    }
+    values.push(limit);
+    return (db.prepare(
+      `SELECT * FROM creative_canvas_tasks WHERE ${conditions.join(' AND ')} ORDER BY createdAt DESC LIMIT ?`,
+    ).all(...values) as Array<Record<string, unknown>>).map(rowToTask);
+  }
   if (params.canvasId && params.phases && params.phases.length > 0) {
     const placeholders = params.phases.map(() => '?').join(',');
     return (db.prepare(
@@ -234,6 +255,8 @@ export function createCanvasRun(
   params: { plan: CanvasPlan; requestHash: string; now?: () => Date },
 ): CreateCanvasRunResult {
   const { plan, requestHash } = params;
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('canvas', plan.canvasId, 'write');
   const now = params.now ?? (() => new Date());
   const runId = randomUUID();
 
@@ -299,6 +322,10 @@ export function createCanvasRun(
         (id, canvasId, requestKey, requestHash, mode, planSnapshot, status, resumeRequired, createdAt, updatedAt)
       VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?)
     `).run(runId, plan.canvasId, plan.requestKey, requestHash, plan.mode, JSON.stringify(plan), at, at);
+    access.registerInheritedScope({
+      resourceType: 'canvas_run', resourceId: runId,
+      parent: { resourceType: 'canvas', resourceId: plan.canvasId },
+    });
 
     const taskIdByNode = new Map<string, string>();
     // 与 plan.tasks 顺序一致的 taskId（single 多变体同 nodeId，不能只用 Map）
@@ -348,6 +375,15 @@ export function createCanvasRun(
         at,
         at,
       );
+      access.registerInheritedScope({
+        resourceType: 'canvas_task', resourceId: taskId,
+        parent: { resourceType: 'canvas', resourceId: plan.canvasId },
+      });
+      access.registerTaskPrincipal({
+        module: 'canvas', taskId,
+        scope: { resourceType: 'canvas', resourceId: plan.canvasId },
+        creationSnapshot: { runId, nodeId: taskPlan.nodeId, nodeEpoch: taskPlan.nodeEpoch, capabilityKey: taskPlan.capabilityKey },
+      });
       const createdTask = requireCanvasTask(db, taskId);
       recordCanvasTaskLog(db, createdTask);
       created.push(createdTask);
@@ -634,9 +670,10 @@ export function updateCanvasTaskGuarded(
 
   const update = () => {
     const before = getCanvasTask(db, taskId);
+    const cancelGuard = patch.phase === 'submitting' ? 'AND cancelRequestedAt IS NULL' : '';
     const info = db.prepare(`
       UPDATE creative_canvas_tasks SET ${sets.join(', ')}
-       WHERE id = @taskId AND fence = @fence AND leaseOwner = @workerId
+       WHERE id = @taskId AND fence = @fence AND leaseOwner = @workerId ${cancelGuard}
     `).run(values);
     if (info.changes === 1 && patch.phase === 'submitting') {
       // Preparation may be slow: start the spacing window again at the actual POST intent.

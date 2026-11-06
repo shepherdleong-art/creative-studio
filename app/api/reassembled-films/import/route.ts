@@ -7,7 +7,9 @@ import { importFilm } from '@/lib/final-edit/reassembled/import';
 import { refreshFilmReview } from '@/lib/final-edit/reassembled/review';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { FinalEditError } from '@/lib/final-edit/errors';
-export async function POST(request: Request) {
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
+async function __teamRoutePOST(request: Request) {
   try {
     const identity = assertAgentRequest(request);
     const raw = await request.text();
@@ -17,3 +19,4 @@ export async function POST(request: Request) {
     return NextResponse.json({ ...identity, id: binding.id, projectId: binding.projectId, groupId: binding.groupId, variantId: binding.variantId, shotSetId: binding.shotSetId, reviewFile, reviewUrl: `${identity.origin}/api/reassembled-films/${binding.id}/review` });
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const POST = withTeamRoute('/api/reassembled-films/import', 'POST', __teamRoutePOST);

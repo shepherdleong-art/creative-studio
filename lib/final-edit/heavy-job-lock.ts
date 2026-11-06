@@ -1,8 +1,6 @@
-let tail: Promise<void> = Promise.resolve();
+import { withMediaResource } from '../media-core/media-resource-gate.ts';
 
-/** Serializes analysis, TTS, proposals and FFmpeg work across the local process. */
+/** Serializes analysis, TTS, proposals and FFmpeg work through the shared media lease. */
 export function runFinalEditHeavyJob<T>(task: () => Promise<T>): Promise<T> {
-  const result = tail.then(task, task);
-  tail = result.then(() => undefined, () => undefined);
-  return result;
+  return withMediaResource({ taskId: 'final-edit-heavy', step: 'heavy-job', wait: true }, task);
 }

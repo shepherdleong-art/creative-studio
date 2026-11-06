@@ -6,8 +6,10 @@ import {
   type ImageReferenceCounts,
 } from '@/lib/image-delete-policy';
 import fs from 'fs';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function DELETE(
+
+async function __teamRouteDELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -78,3 +80,4 @@ export async function DELETE(
     return NextResponse.json({ error: '删除失败，请稍后重试' }, { status: 500 });
   }
 }
+export const DELETE = withTeamRoute('/api/images/[id]', 'DELETE', __teamRouteDELETE);

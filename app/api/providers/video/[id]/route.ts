@@ -4,8 +4,12 @@ import type { VideoProviderEnvConfig } from '@/lib/video-auth';
 import { describeVideoProvider } from '@/lib/video-model-capabilities';
 import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
 import { parseVideoDuration, videoDurationError } from '@/lib/video-duration';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { providerPoolStatus } from '@/lib/team-service/pools';
+import { readRuntimeConfig } from '@/lib/team-service/config';
 
-export async function PUT(
+
+async function __teamRoutePUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -59,13 +63,18 @@ export async function PUT(
     values.push(id);
     db.prepare(`UPDATE video_providers SET ${updates.join(', ')} WHERE id = ?`).run(...values);
     const updated = db.prepare(`SELECT * FROM video_providers WHERE id = ?`).get(id) as Record<string, unknown>;
-    return NextResponse.json(describeVideoProvider(updated as unknown as VideoProviderEnvConfig));
+    return NextResponse.json({
+      ...describeVideoProvider(updated as unknown as VideoProviderEnvConfig),
+      ...(readRuntimeConfig().mode === 'server'
+        ? { pool: providerPoolStatus(db, 'video', id) }
+        : {}),
+    });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
 
-export async function DELETE(
+async function __teamRouteDELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -83,3 +92,5 @@ export async function DELETE(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const PUT = withTeamRoute('/api/providers/video/[id]', 'PUT', __teamRoutePUT);
+export const DELETE = withTeamRoute('/api/providers/video/[id]', 'DELETE', __teamRouteDELETE);

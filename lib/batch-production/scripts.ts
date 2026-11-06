@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import { splitCoverTitle } from '../media-core/cover-domain.ts';
 import { BatchDomainError } from './errors.ts';
 import { normalizeManualScriptInput, type ManualScriptDraftInput } from './manual-script-import.ts';
@@ -79,6 +80,8 @@ export function createProjectScript(
     now?: () => Date;
   },
 ): string {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
   const updatedAt = nowIso(input.now);
   const coverTitleJson = JSON.stringify(input.metadata?.coverTitleJson ?? {});
   const shotSetId = input.metadata?.shotSetId ?? '';
@@ -95,6 +98,7 @@ export function createProjectScript(
     WHERE projectId = ? AND sourceId = ? AND sourceKind = 'script_draft' AND ownerBatchVersionId IS NULL
   `).get(projectId, input.sourceId) as { id: string } | undefined;
   if (existing) {
+    if (access.kind === 'team') access.assertAccess('batch_script', existing.id, 'write');
     db.prepare(`
       UPDATE batch_scripts
       SET scriptCode = ?, title = ?, bodyText = ?, sourceVersion = ?, coverTitleJson = ?, shotSetId = ?, contentRevision = ?,
@@ -104,29 +108,36 @@ export function createProjectScript(
     return existing.id;
   }
   const id = randomUUID();
-  db.prepare(`
-    INSERT INTO batch_scripts
-      (scriptCode, id, projectId, sourceKind, sourceId, title, bodyText, sourceVersion,
-       targetDurationSec, narrationConfigJson, coverTitleJson, shotSetId, contentRevision,
-       sourceAvailable, catalogManaged, ownerBatchVersionId, externalSourceId, createdAt, updatedAt)
-    VALUES (?, ?, ?, 'script_draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, ?)
-  `).run(
-    scriptCode,
-    id,
-    projectId,
-    input.sourceId,
-    input.title,
-    input.bodyText,
-    input.sourceVersion,
-    targetDurationSec,
-    narrationConfigJson,
-    coverTitleJson,
-    shotSetId,
-    contentRevision,
-    catalogManaged,
-    updatedAt,
-    updatedAt,
-  );
+  const create = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO batch_scripts
+        (scriptCode, id, projectId, sourceKind, sourceId, title, bodyText, sourceVersion,
+         targetDurationSec, narrationConfigJson, coverTitleJson, shotSetId, contentRevision,
+         sourceAvailable, catalogManaged, ownerBatchVersionId, externalSourceId, createdAt, updatedAt)
+      VALUES (?, ?, ?, 'script_draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, ?)
+    `).run(
+      scriptCode,
+      id,
+      projectId,
+      input.sourceId,
+      input.title,
+      input.bodyText,
+      input.sourceVersion,
+      targetDurationSec,
+      narrationConfigJson,
+      coverTitleJson,
+      shotSetId,
+      contentRevision,
+      catalogManaged,
+      updatedAt,
+      updatedAt,
+    );
+    access.registerInheritedScope({
+      resourceType: 'batch_script', resourceId: id,
+      parent: { resourceType: 'project', resourceId: projectId },
+    });
+  });
+  create.immediate();
   return id;
 }
 
@@ -143,6 +154,8 @@ export function createBatchExternalScript(
   },
 ): string {
   const updatedAt = nowIso(input.now);
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('batch_version', batchVersionId, 'write');
   return db.transaction(() => {
     const owner = assertBatchVersionEditable(db, batchVersionId);
     const existing = db.prepare(`
@@ -175,8 +188,12 @@ export function createBatchExternalScript(
       updatedAt,
       updatedAt,
     );
+    access.registerInheritedScope({
+      resourceType: 'batch_script', resourceId: id,
+      parent: { resourceType: 'project', resourceId: owner.projectId },
+    });
     return id;
-  })();
+  }).immediate();
 }
 
 /**
@@ -287,6 +304,8 @@ export function deleteManualProjectScript(
 
 /** 从批量脚本目录删除，保留上游正文和历史快照；整批校验通过后原子生效。 */
 export function deleteProjectScripts(db: Database.Database, projectId: string, scriptIds: unknown): string[] {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
   if (!Array.isArray(scriptIds) || scriptIds.length === 0 || scriptIds.length > 1000
     || scriptIds.some(id => typeof id !== 'string' || !id.trim())) {
     throw new BatchDomainError('invalid_input', '请选择 1–1000 条脚本');
@@ -297,6 +316,7 @@ export function deleteProjectScripts(db: Database.Database, projectId: string, s
       AND sourceKind='script_draft' AND ownerBatchVersionId IS NULL`);
     for (const id of ids) {
       if (!find.get(id, projectId)) throw new BatchDomainError('not_found', '所选脚本不存在或不属于当前项目，请刷新后重试');
+      if (access.kind === 'team') access.assertAccess('batch_script', id, 'write');
     }
     const update = db.prepare('UPDATE batch_scripts SET catalogDeleted=1, sourceAvailable=0, updatedAt=? WHERE id=? AND projectId=?');
     const now = nowIso();
@@ -310,6 +330,8 @@ export function getProjectScript(
   projectId: string,
   scriptId: string,
 ): BatchScriptRow | undefined {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
   return db.prepare(`
     SELECT * FROM batch_scripts
     WHERE id = ? AND projectId = ? AND sourceKind = 'script_draft'
@@ -330,10 +352,17 @@ export function getBatchExternalScript(
 
 /** 项目脚本列表只展示第 3 步保存的项目脚本;批次内外部文案默认不出现在这里 */
 export function listProjectScripts(db: Database.Database, projectId: string): BatchScriptRow[] {
+  const access = requireAccessContext();
+  const lifecycle = access.kind === 'local' ? '' : `AND EXISTS (
+    SELECT 1 FROM team_resource_scopes scope
+    WHERE scope.resourceType = 'batch_script' AND scope.resourceId = batch_scripts.id
+      AND scope.deletedAt IS NULL
+  )`;
   return db.prepare(`
     SELECT * FROM batch_scripts
     WHERE projectId = ? AND sourceKind = 'script_draft'
       AND ownerBatchVersionId IS NULL AND sourceAvailable = 1
+      ${lifecycle}
     ORDER BY createdAt, id
   `).all(projectId) as BatchScriptRow[];
 }

@@ -1,10 +1,13 @@
 import type Database from 'better-sqlite3';
+import { runWithTaskAccessContext } from '../media-core/access-context.ts';
+import { isExecutionDeferredError } from '../media-core/execution/waiting.ts';
 import { writeLog } from '../logger.ts';
 import { semanticFallbackMessage } from './semantic-score-policy.ts';
 import { findExecutor, type BatchTaskExecutor, type BatchTaskProgress } from './executors.ts';
 import {
   claimNextTask,
   completeTaskAttempt,
+  deferTaskAttempt,
   expireStaleLeases,
   hasValidLease,
   recoverInterruptedWork,
@@ -109,7 +112,7 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-type ExecuteOneOutcome = 'completed' | 'lease_lost';
+type ExecuteOneOutcome = 'completed' | 'lease_lost' | 'deferred';
 type InterruptionReason = 'batch_control' | 'lease_lost' | 'superseded';
 
 /**
@@ -141,7 +144,7 @@ export async function runPendingOnce(options: SchedulerRunOptions): Promise<numb
       }
       handled += 1;
       const controller = new AbortController();
-      const outcome = await executeOne(claim, controller, {
+      const outcome = await runWithTaskAccessContext(db, 'batch', claim.task.id, () => executeOne(claim, controller, {
         db,
         workerId,
         executors,
@@ -152,10 +155,10 @@ export async function runPendingOnce(options: SchedulerRunOptions): Promise<numb
         now,
         signal: options.signal,
         shutdownSignal: options.shutdownSignal,
-      });
-      if (outcome === 'lease_lost') {
-        // 本 worker 已失去提交资格。本轮不要立即重新领取同一任务;
-        // 让下一轮或其他 worker 在新的租约下安全恢复。
+      }));
+      if (outcome === 'lease_lost' || outcome === 'deferred') {
+        // 失去租约或链内等待时，本轮不要立即重新领取同一任务；
+        // 其他编排槽/后续 tick 可让就绪工作先获得名额。
         return;
       }
     }
@@ -267,6 +270,17 @@ async function executeOne(
       signal: executorSignal,
       reportProgress,
     });
+    if (execution.deferred) {
+      deferTaskAttempt(db, claim.attempt.id, {
+        workerId,
+        operationId: execution.deferred.operationId,
+        continuationKey: execution.deferred.continuationKey,
+        waitReason: execution.deferred.waitReason,
+        progressJson: lastProgress,
+        now,
+      });
+      return 'deferred';
+    }
     let resultJson = execution.resultJson;
     discardUnacceptedResult = execution.discard;
     // 执行器可能没有及时响应 AbortSignal。结果发布前必须重新核对持久化
@@ -377,6 +391,26 @@ async function executeOne(
     // 外部停止信号 → 停止终态;内部控制检查(批次暂停/停止) → 按批次期望落账
     const abortedByUserStop = Boolean(options.signal?.aborted);
     const abortedBySchedulerShutdown = Boolean(options.shutdownSignal?.aborted);
+    const executionError = error as { code?: unknown; operationId?: unknown; waitReason?: unknown } | null;
+    if (
+      isExecutionDeferredError(error)
+      && !abortedByUserStop
+      && !abortedBySchedulerShutdown
+      && !controller.signal.aborted
+      && hasValidLease(db, claim.attempt.id, workerId, now)
+    ) {
+      deferTaskAttempt(db, claim.attempt.id, {
+        workerId,
+        operationId: typeof executionError?.operationId === 'string' ? executionError.operationId : undefined,
+        continuationKey: executionError?.code === 'media_resource_deferred'
+          ? 'media-core.media-resource-gate.v1'
+          : 'script-providers.completeJson.v1',
+        waitReason: typeof executionError?.waitReason === 'string' ? executionError.waitReason : null,
+        progressJson: lastProgress,
+        now,
+      });
+      return 'deferred';
+    }
     if (abortedByUserStop) {
       // 外部停止信号:任务进入停止终态,尝试记录为 interrupted
       settleInterruptedTask(db, claim.attempt.id, now, 'user_stop');

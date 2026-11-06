@@ -7,6 +7,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,7 +17,7 @@ export const dynamic = 'force-dynamic';
  * LUT 生命周期控制:归档(从新批次选择器隐藏,可恢复)、恢复,或在没有任何
  * 引用时物理清理(仍被引用时安全拒绝,只能归档——见 deleteLutIfUnreferenced)。
  */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id: lutId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -49,3 +51,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return batchRouteErrorResponse(error, 'lut_control_failed', 'LUT 操作失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/luts/[id]/control', 'POST', __teamRoutePOST);

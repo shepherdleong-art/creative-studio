@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { mediaResponse } from '@/lib/final-edit/media-response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const row = getDb().prepare(`SELECT status, outputJson FROM final_edit_jobs WHERE id=? AND kind IN ('render','packaging')`).get(id) as { status: string; outputJson: string | null } | undefined;
   if (!row || row.status !== 'succeeded' || !row.outputJson) return NextResponse.json({ error: 'artifact_not_ready' }, { status: 404 });
@@ -10,3 +12,4 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   const download = new URL(request.url).searchParams.get('download') === '1';
   return mediaResponse(request, output.publishedVideoRelativePath || output.videoRelativePath, 'video/mp4', download ? output.videoFilename || `final-edit-${id}.mp4` : undefined);
 }
+export const GET = withTeamRoute('/api/final-edit-jobs/[id]/video', 'GET', __teamRouteGET);

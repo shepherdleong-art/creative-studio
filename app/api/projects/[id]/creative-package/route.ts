@@ -9,10 +9,12 @@ import { resolveProjectExportDirName } from '@/lib/project-export-dir';
 import { getCurrentExportDirName, getCurrentExportIdentity, listExportIdentities } from '@/lib/project-export-identity';
 import { assertNoStorageSymlink } from '@/lib/final-edit/storage-path';
 import { listReadableProjectScripts } from '@/lib/media-core/project-script-reader';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
-export async function GET(
+async function __teamRouteGET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -306,3 +308,4 @@ export async function GET(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/projects/[id]/creative-package', 'GET', __teamRouteGET);

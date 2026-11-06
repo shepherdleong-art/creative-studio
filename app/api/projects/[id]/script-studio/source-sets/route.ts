@@ -13,11 +13,13 @@ import {
 } from '@/lib/script-studio/source-sets';
 import { getCurrentLibraryRevision } from '@/lib/script-studio/libraries';
 import { ScriptStudioError } from '@/lib/script-studio/errors';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET(
+async function __teamRouteGET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -42,7 +44,7 @@ export async function GET(
   }
 }
 
-export async function POST(
+async function __teamRoutePOST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -74,3 +76,5 @@ export async function POST(
     return NextResponse.json(errorResponse(error).body, { status: errorResponse(error).status });
   }
 }
+export const GET = withTeamRoute('/api/projects/[id]/script-studio/source-sets', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/projects/[id]/script-studio/source-sets', 'POST', __teamRoutePOST);

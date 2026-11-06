@@ -6,6 +6,7 @@ import { dataRoot } from '../data-root.ts';
 import { probeVideoMedia, type VideoMediaProbe } from '../ffmpeg.ts';
 import { isVideoJobRejected } from '../media-core/video-job-rejection.ts';
 import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../media-core/storage-path.ts';
+import { referenceManagedFile, registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { resolveVideoJobDisplayNames } from '../video-output-filenames.ts';
 import {
   isDetectedVideoContainerCompatible,
@@ -281,6 +282,19 @@ function resolveAssetId(
       mediaJson,
       now: () => new Date(createdAt),
     });
+    const access = requireAccessContext();
+    if (access.kind === 'team') {
+      const absolutePath = resolveSourceFilePath(location);
+      if (sourceKind === 'module4') {
+        referenceManagedFile(absolutePath, { resourceType: 'batch_asset', resourceId: assetId, role: 'input' });
+      } else {
+        registerManagedFile({
+          absolutePath,
+          mimeType: SUPPORTED_VIDEO_MIME_BY_EXTENSION[path.extname(absolutePath).toLowerCase()] ?? 'application/octet-stream',
+          references: [{ resourceType: 'batch_asset', resourceId: assetId, role: 'input' }],
+        });
+      }
+    }
     insertSource(db, assetId, sourceKind, location, createdAt);
     if (mediaJson && typeof mediaJson === 'object' && 'role' in mediaJson && (mediaJson as Record<string, unknown>).role) {
       const role = (mediaJson as Record<string, unknown>).role;

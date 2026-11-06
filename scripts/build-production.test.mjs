@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { prepareBuildInputs, materializeBuildLinks, publishBuild } from './build-production.mjs';
+import { prepareBuildInputs, materializeBuildLinks, publishBuild, publishStandaloneBuild } from './build-production.mjs';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-isolated-build-test-'));
 const stage = path.join(root, '.cache', 'stage');
@@ -56,6 +56,15 @@ try {
   assert.equal(fs.readFileSync(path.join(root, '.next/standalone/.next/node_modules/example-hashed/index.js'), 'utf8'), 'fixture', 'external package must survive deletion of the build stage');
   assert.equal(fs.readFileSync(path.join(root, 'node_modules/example/index.js'), 'utf8'), 'fixture', 'stage cleanup must preserve original dependencies');
   assert.ok(fs.existsSync(path.join(root, 'storage/movie.mp4')));
+  write('.cache/export-stage/.next/standalone/server.js', 'independent');
+  const exportStage = path.join(root, '.cache/export-stage');
+  const target = path.join(root, 'outputs/new-standalone');
+  assert.throws(() => publishStandaloneBuild(exportStage, target, () => { throw new Error('sync failed'); }), /sync failed/);
+  assert.equal(fs.existsSync(target), false);
+  publishStandaloneBuild(exportStage, target, () => {});
+  assert.equal(fs.readFileSync(path.join(target, 'server.js'), 'utf8'), 'independent');
+  assert.equal(fs.readFileSync(path.join(root, '.next/standalone/server.js'), 'utf8'), 'new build', 'independent output must not replace the workspace build');
+  assert.throws(() => publishStandaloneBuild(exportStage, target, () => {}), /拒绝覆盖/);
   console.log('isolated production build tests passed');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

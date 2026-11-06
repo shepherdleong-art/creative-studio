@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "users": 20,
+  "concurrency": 20,
+  "durationSeconds": 3600,
+  "requestDelayMs": 25,
+  "sampleIntervalMs": 1000,
+  "largeFileMiB": 300,
+  "targets": {
+    "apiP95Ms": 2000,
+    "acceptP95Ms": 3000,
+    "serverErrorRateBelow": 0.001
+  }
+}

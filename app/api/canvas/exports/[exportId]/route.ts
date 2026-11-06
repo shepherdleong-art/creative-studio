@@ -1,15 +1,17 @@
-import fs from 'node:fs';
 import { NextResponse } from 'next/server';
 import { dataRoot } from '@/lib/data-root';
 import { getDb } from '@/lib/db';
 import { canvasExportAbsolutePath, requireCanvasExport } from '@/lib/creative-canvas/export';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
 import { canvasAttachmentHeader, sanitizeCanvasFilename } from '@/lib/creative-canvas/asset-naming';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { fileResponse } from '@/lib/media-core/file-response';
+
 
 export const runtime = 'nodejs';
 
 /** 查询导出状态；带 ?download=1 时交付完整 ZIP。 */
-export async function GET(
+async function __teamRouteGET(
   request: Request,
   { params }: { params: Promise<{ exportId: string }> },
 ) {
@@ -33,16 +35,15 @@ export async function GET(
       return NextResponse.json({ error: 'conflict', message: '导出还没有完成。' }, { status: 409 });
     }
     const absolutePath = canvasExportAbsolutePath(record, `${dataRoot()}/storage`);
-    const body = fs.readFileSync(absolutePath);
     const safeName = sanitizeCanvasFilename(record.manifest.canvasName, '画布成果', 80);
-    return new NextResponse(new Uint8Array(body), {
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Length': String(body.byteLength),
-        'Content-Disposition': canvasAttachmentHeader(`${safeName}.zip`),
-      },
+    const response = fileResponse(request, absolutePath, 'application/zip', {
+      cacheControl: 'private, max-age=3600',
+      downloadName: `${safeName}.zip`,
     });
+    response.headers.set('Content-Disposition', canvasAttachmentHeader(`${safeName}.zip`));
+    return response;
   } catch (error) {
     return canvasJsonError(error);
   }
 }
+export const GET = withTeamRoute('/api/canvas/exports/[exportId]', 'GET', __teamRouteGET);

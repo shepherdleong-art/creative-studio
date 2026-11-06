@@ -5,6 +5,8 @@ import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { fileResponse } from '@/lib/media-core/file-response';
 import { assertNoStorageSymlink } from '@/lib/media-core/storage-path';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,7 +40,7 @@ function resolveAssetPath(asset: VideoReferenceAssetRow): string {
   return assertNoStorageSymlink(storageRoot, resolved, { allowAbsolute: true });
 }
 
-export async function GET(
+async function __teamRouteGET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -65,7 +67,7 @@ export async function GET(
   }
 }
 
-export async function DELETE(
+async function __teamRouteDELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -102,3 +104,5 @@ export async function DELETE(
   }
   return NextResponse.json({ success: true });
 }
+export const GET = withTeamRoute('/api/video-reference-assets/[id]', 'GET', __teamRouteGET);
+export const DELETE = withTeamRoute('/api/video-reference-assets/[id]', 'DELETE', __teamRouteDELETE);

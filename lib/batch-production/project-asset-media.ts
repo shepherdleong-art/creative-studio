@@ -5,6 +5,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { runFfmpeg, probeVideoMedia, type VideoMediaProbe } from '../ffmpeg.ts';
+import { withMediaResource } from '../media-core/media-resource-gate.ts';
 import {
   isDetectedVideoContainerCompatible,
   SUPPORTED_VIDEO_MIME_BY_EXTENSION,
@@ -18,6 +19,7 @@ import {
 } from './media-catalog.ts';
 import { getAsset, syncAssetStatusFromSources, type BatchAssetRow } from './assets.ts';
 import { assertNoStorageSymlink } from '../media-core/storage-path.ts';
+import { authorizeManagedFileRead, registerManagedFile } from '../media-core/access-context.ts';
 
 export interface VerifiedProjectAssetMedia {
   asset: BatchAssetRow;
@@ -218,8 +220,15 @@ async function materializeThumbnail(
   absolutePath: string,
   relativePath: string,
 ): Promise<MaterializedAssetThumbnail> {
+  const originalFileId = authorizeManagedFileRead(source.filePath)?.fileId ?? null;
+  const registerDerivative = () => {
+    if (originalFileId) {
+      registerManagedFile({ absolutePath, mimeType: 'image/jpeg', derivedFromFileId: originalFileId });
+    }
+  };
   if (fs.existsSync(absolutePath)) {
     assertRegularFile(absolutePath);
+    registerDerivative();
     return { absolutePath, relativePath, fingerprint: source.fingerprint };
   }
   await mkdir(path.dirname(absolutePath), { recursive: true });
@@ -227,14 +236,14 @@ async function materializeThumbnail(
   try {
     assertProjectAssetFileIdentity(source.filePath, source.fileIdentity);
     const frameUs = Math.max(0, Math.min(1_000_000, Math.floor(source.media.durationUs * 0.1)));
-    await runFfmpeg([
+    await withMediaResource({ taskId: source.fingerprint, step: 'asset-thumbnail', wait: true }, () => runFfmpeg([
       '-ss', (frameUs / 1_000_000).toFixed(6),
       '-i', source.filePath,
       '-frames:v', '1',
       '-vf', 'scale=960:540:force_original_aspect_ratio=increase,crop=960:540',
       '-q:v', '3',
       '-y', temporaryPath,
-    ], { timeoutMs: 60_000 });
+    ], { timeoutMs: 60_000 }));
 
     // Do not publish a frame derived from a file that changed while FFmpeg read it.
     const beforeAfterHash = assertRegularFile(source.filePath);
@@ -255,6 +264,7 @@ async function materializeThumbnail(
   } finally {
     await unlink(temporaryPath).catch(() => undefined);
   }
+  registerDerivative();
   return { absolutePath, relativePath, fingerprint: source.fingerprint };
 }
 
@@ -313,6 +323,10 @@ async function resolvePublishedAssetThumbnail(
     }
     if (fs.existsSync(absolutePath)) {
       assertRegularFile(absolutePath);
+      const originalFileId = authorizeManagedFileRead(filePath)?.fileId ?? null;
+      if (originalFileId) {
+        registerManagedFile({ absolutePath, mimeType: 'image/jpeg', derivedFromFileId: originalFileId });
+      }
       markSourceHealth(db, source, 'healthy');
       return { absolutePath, relativePath, fingerprint };
     }

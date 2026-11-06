@@ -6,8 +6,10 @@ import { describeVideoProvider } from '@/lib/video-model-capabilities';
 import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
 import { v4 as uuidv4 } from 'uuid';
 import { isVisibleVideoProvider } from '@/lib/provider-list-visibility';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET(request: Request) {
+
+async function __teamRouteGET(request: Request) {
   try {
     const url = new URL(request.url);
     const includeAll = url.searchParams.get('all') === '1';
@@ -38,7 +40,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+async function __teamRoutePOST(request: Request) {
   try {
     const body = await request.json();
     const id = uuidv4();
@@ -80,3 +82,5 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/providers/video', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/providers/video', 'POST', __teamRoutePOST);

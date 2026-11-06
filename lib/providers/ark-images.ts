@@ -32,6 +32,7 @@ export async function buildArkImageBody(request: {
 
 export async function editImageArk(
   request: EditImageRequest, apiKey: string, baseUrl: string, signal?: AbortSignal,
+  options?: { deferDownload?: boolean },
 ): Promise<EditImageResult> {
   const started = Date.now();
   const body = await buildArkImageBody({
@@ -52,6 +53,9 @@ export async function editImageArk(
   let imageBuffer: Buffer;
   if (result?.b64_json) imageBuffer = Buffer.from(result.b64_json, 'base64');
   else if (result?.url) {
+    if (options?.deferDownload) {
+      return { imageBuffer: Buffer.alloc(0), latencyMs: Date.now() - started, remoteImageUrl: result.url };
+    }
     // 结果地址不附带方舟 API Key。
     const downloaded = await fetch(result.url, { signal: requestSignal });
     if (!downloaded.ok) throw new Error(`方舟图片下载失败（HTTP ${downloaded.status}）`);

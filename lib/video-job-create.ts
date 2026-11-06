@@ -11,6 +11,7 @@ import { countVideoJobsForShot, planVideoJobDisplayName } from './video-output-f
 import { validateVideoReferenceRequest, videoReferenceCapability, type VideoReferenceKind } from './video-reference-contract.ts';
 import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
+import { requireAccessContext } from './media-core/access-context.ts';
 
 export type VideoJobGenerationMode = 'image-to-video' | 'reference-to-video';
 
@@ -96,7 +97,9 @@ export async function createVideoJobsForShot(input: {
   db?: Database.Database;
 }): Promise<VideoJobCreationResult> {
   const db = input.db ?? getDb();
+  const access = requireAccessContext();
   const { shotSetId, shotId, items } = input;
+  if (access.kind === 'team') access.assertAccess('shot_set', shotSetId, 'write');
   const itemError = (index: number, error: string) => input.batch ? `第 ${index + 1} 条运镜：${error}` : error;
 
   const shot = db.prepare(`SELECT id, latestGeneratedImageId, sourceImageId FROM shots WHERE id = ? AND shotSetId = ?`)
@@ -124,6 +127,15 @@ export async function createVideoJobsForShot(input: {
   const shotSet = db.prepare(`SELECT projectId FROM shot_sets WHERE id = ?`).get(shotSetId) as { projectId: string } | undefined;
   if (!shotSet) return { ok: false, status: 404, error: 'Shot set not found' };
   const sourceImageId = shot.latestGeneratedImageId || shot.sourceImageId;
+  if (access.kind === 'team') {
+    access.assertAccess('shot', shotId, 'read');
+    access.assertAccess('image', sourceImageId, 'read');
+    for (const item of items) {
+      if (item.tailImageId) access.assertAccess('image', item.tailImageId, 'read');
+      if (item.templateId) access.assertAccess('video_prompt_template', item.templateId, 'read');
+      for (const assetId of item.referenceAssetIds) access.assertAccess('video_reference_asset', assetId, 'read');
+    }
+  }
   let sourceReference: Awaited<ReturnType<typeof readVideoSourceReference>> | null = null;
   if (items.some((item) => item.generationMode === 'reference-to-video' && item.referenceAssetIds.length === 0)) {
     try { sourceReference = await readVideoSourceReference(db, sourceImageId, shotSet.projectId); }
@@ -257,12 +269,21 @@ export async function createVideoJobsForShot(input: {
       for (const [orderIndex, asset] of referencesByItem[index].entries()) {
         insertReference.run(videoJobId, orderIndex, asset.id);
       }
+      access.registerInheritedScope({
+        resourceType: 'video_job', resourceId: videoJobId,
+        parent: { resourceType: 'project', resourceId: shotSet.projectId },
+      });
+      access.registerTaskPrincipal({
+        module: 'video', taskId: videoJobId,
+        scope: { resourceType: 'project', resourceId: shotSet.projectId },
+        creationSnapshot: { shotSetId, shotId, sourceImageId, model: provider.model },
+      });
       videoJobIds.push(videoJobId);
     }
     return { ok: true as const };
   });
   try {
-    const result = createResult();
+    const result = createResult.immediate();
     if (!result.ok) return { ok: false, status: 400, error: result.error };
     return { ok: true, videoJobIds };
   } catch (error) {

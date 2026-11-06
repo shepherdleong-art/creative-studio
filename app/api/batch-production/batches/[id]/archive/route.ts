@@ -7,12 +7,14 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 归档/恢复批次。归档不删除任何数据,恢复后成片与导出文件完好。 */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -31,3 +33,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return batchRouteErrorResponse(error, 'batch_archive_failed', archived ? '批次归档失败' : '批次恢复失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/archive', 'POST', __teamRoutePOST);

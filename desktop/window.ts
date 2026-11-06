@@ -1,10 +1,11 @@
-import { app, dialog, shell, BrowserWindow } from 'electron';
+import { app, dialog, shell, BrowserWindow, type Session } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { CHANNELS, registerIpcHandlers, sameOrigin, type DesktopIpcHandlers } from './ipc';
+import type { ClientStatus, RemoteUploadTarget } from './bridge-types';
 import type { DesktopService } from './service-spawn';
 import { applyThemePreference } from './theme';
 
@@ -24,18 +25,44 @@ interface RelocateLinkedSourceResponse {
 // native integration live here; the shell owns service/secret/dataRoot state
 // and hands it over as a snapshot plus callbacks, so this module never
 // reaches back into main.ts.
-export interface DesktopWindowHost {
+interface DesktopWindowHostBase {
   readonly origin: string;
   readonly preloadPath: string;
-  readonly service: DesktopService;
-  readonly desktopSecret: string;
-  readonly dataRoot: string;
+  readonly session?: Session;
   isQuitRequested(): boolean;
   setIpcHandlerRemover(remover: (() => void) | null): void;
   clearIpcHandlers(): void;
   onWindowClosed(): void;
   shutdown(): Promise<void>;
 }
+
+export interface LocalDesktopWindowHost extends DesktopWindowHostBase {
+  readonly mode: 'local';
+  readonly service: DesktopService;
+  readonly desktopSecret: string;
+  readonly dataRoot: string;
+}
+
+export interface RemoteClientIpc {
+  chooseUploadFiles(window: BrowserWindow, target: RemoteUploadTarget): Promise<{ transferIds: string[] }>;
+  pauseTransfer(transferId: string): void;
+  resumeTransfer(transferId: string): void;
+  cancelTransfer(transferId: string): Promise<void>;
+  revealDownload(downloadId: string): Promise<{ revealed: boolean }>;
+  getClientStatus(): Promise<ClientStatus>;
+  installClientUpdate(): Promise<{ started: boolean; message?: string }>;
+  pauseForUpdate(): Promise<void>;
+  resumeAfterUpdate(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface RemoteDesktopWindowHost extends DesktopWindowHostBase {
+  readonly mode: 'remote';
+  readonly session: Session;
+  readonly remote: RemoteClientIpc;
+}
+
+export type DesktopWindowHost = LocalDesktopWindowHost | RemoteDesktopWindowHost;
 
 function isLinkedImportResponse(value: unknown): value is LinkedImportResponse {
   if (!value || typeof value !== 'object') return false;
@@ -160,7 +187,7 @@ async function postRelocatedSource(
 
 function createDesktopIpcHandlers(
   window: BrowserWindow,
-  host: DesktopWindowHost,
+  host: LocalDesktopWindowHost,
 ): DesktopIpcHandlers {
   return {
     platform: () => {
@@ -269,6 +296,34 @@ function createDesktopIpcHandlers(
     setThemePreference: (preference) => {
       applyThemePreference(preference);
     },
+    chooseUploadFiles: async () => { throw new Error('仅轻客户端支持受控上传'); },
+    pauseTransfer: () => { throw new Error('仅轻客户端支持受管传输'); },
+    resumeTransfer: () => { throw new Error('仅轻客户端支持受管传输'); },
+    cancelTransfer: async () => { throw new Error('仅轻客户端支持受管传输'); },
+    revealDownload: async () => { throw new Error('仅轻客户端支持受管下载'); },
+    getClientStatus: async () => { throw new Error('当前不是轻客户端'); },
+    installClientUpdate: async () => { throw new Error('本地工作台不使用轻客户端更新入口'); },
+  };
+}
+
+function createRemoteIpcHandlers(window: BrowserWindow, host: RemoteDesktopWindowHost): DesktopIpcHandlers {
+  const localOnly = (): never => { throw new Error('本机实拍协议与工作台 dataRoot 操作仅在本地桌面可用'); };
+  return {
+    platform: () => process.platform === 'darwin' ? 'macos' : 'windows',
+    chooseMediaFiles: async () => { localOnly(); throw new Error('unreachable'); },
+    chooseFolder: async () => { localOnly(); throw new Error('unreachable'); },
+    getAppVersion: () => app.getVersion(),
+    relocateLinkedSource: async () => { localOnly(); throw new Error('unreachable'); },
+    openFolder: async () => { localOnly(); throw new Error('unreachable'); },
+    revealItem: async () => { localOnly(); throw new Error('unreachable'); },
+    setThemePreference: (preference) => applyThemePreference(preference),
+    chooseUploadFiles: (target) => host.remote.chooseUploadFiles(window, target),
+    pauseTransfer: (transferId) => host.remote.pauseTransfer(transferId),
+    resumeTransfer: (transferId) => host.remote.resumeTransfer(transferId),
+    cancelTransfer: (transferId) => host.remote.cancelTransfer(transferId),
+    revealDownload: (downloadId) => host.remote.revealDownload(downloadId),
+    getClientStatus: () => host.remote.getClientStatus(),
+    installClientUpdate: () => host.remote.installClientUpdate(),
   };
 }
 
@@ -276,7 +331,9 @@ function installIpcHandlers(window: BrowserWindow, host: DesktopWindowHost): voi
   const removeHandlers = registerIpcHandlers({
     window,
     origin: host.origin,
-    handlers: createDesktopIpcHandlers(window, host),
+    handlers: host.mode === 'remote'
+      ? createRemoteIpcHandlers(window, host)
+      : createDesktopIpcHandlers(window, host),
   });
   host.setIpcHandlerRemover(removeHandlers);
 }
@@ -291,6 +348,7 @@ export function createWindow(host: DesktopWindowHost): BrowserWindow {
     show: false,
     webPreferences: {
       preload: host.preloadPath,
+      session: host.session,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,

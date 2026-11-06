@@ -2,10 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertScriptStudioApiReady, errorResponse } from '@/lib/script-studio/http';
 import { setCatalogCurrentRevision } from '@/lib/script-studio/catalogs';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
-export async function PUT(
+async function __teamRoutePUT(
   request: NextRequest,
   { params }: { params: Promise<{ catalogId: string }> },
 ) {
@@ -26,3 +28,4 @@ export async function PUT(
     return NextResponse.json(body, { status });
   }
 }
+export const PUT = withTeamRoute('/api/script-studio/catalogs/[catalogId]/current', 'PUT', __teamRoutePUT);

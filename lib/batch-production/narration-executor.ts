@@ -15,6 +15,7 @@ import {
 } from '../media-core/adapters/tts-registry.ts';
 import { assertNoStorageSymlink } from '../media-core/storage-path.ts';
 import { computeFingerprintFromFile } from './fingerprint.ts';
+import { registerManagedFile } from '../media-core/access-context.ts';
 import {
   buildBatchNarrationSegments,
   createLocalNarrationSnapshot,
@@ -275,7 +276,7 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
         const alignment = createOpenAiAlignmentAdapter(
           process.env,
           adapter.alignmentModel
-            ? { baseUrl: row.baseUrl, apiKey: resolveProviderApiKey(row), model: adapter.alignmentModel }
+            ? { baseUrl: row.baseUrl, apiKey: resolveProviderApiKey(row), model: adapter.alignmentModel, providerId: row.id }
             : undefined,
         );
         const synthesized = await synthesize(providerId, {
@@ -344,7 +345,12 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
         sellingPoints: loadProjectPackagingData(db, claim.task.projectId).sellingPoints ?? [],
         extractPoints: text => cachedPoints ? Promise.resolve(cachedPoints) : options.extractPackagingPoints
           ? options.extractPackagingPoints(text, signal)
-          : extractSellingPointsWithLLM(text, undefined, signal),
+          : extractSellingPointsWithLLM(text, undefined, signal, {
+            taskId: claim.task.id,
+            scope: { resourceType: 'project', resourceId: claim.task.projectId },
+            inputRevision: claim.attempt.id,
+            businessAttempt: { id: claim.attempt.id, number: claim.attempt.attemptNumber },
+          }),
       });
       if (signal.aborted) throw new Error('任务已中止');
       narrationSnapshot.packagingPoints = points.candidates;
@@ -361,6 +367,11 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
         commit: () => {
           if (signal.aborted) throw new Error('任务已中止');
           const now = new Date().toISOString();
+          registerManagedFile({
+            absolutePath,
+            mimeType: 'audio/wav',
+            references: [{ resourceType: 'batch_task', resourceId: claim.task.id, role: 'output' }],
+          });
           // 权威表:新分配的候选版本与重试渲染都能回落到这条已核验配音。
           db.prepare(`
             INSERT INTO batch_script_narrations

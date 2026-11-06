@@ -4,6 +4,8 @@ import { assertScriptStudioApiReady, errorResponse, jsonOrNull } from '@/lib/scr
 import { getCurrentLibraryRevision, getLibraryRevision } from '@/lib/script-studio/libraries';
 import { isSellingPointEvidenceUsable } from '@/lib/script-studio/selling-point-normalize';
 import { recommendViralTemplates } from '@/lib/script-studio/viral-templates';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
@@ -11,7 +13,7 @@ export const runtime = 'nodejs';
  * 爆文模板本地推荐（迁移方案 §3.1）：同类目优先，其次子类目与卖点关键词匹配；
  * 排序稳定、原因真实，不返回人群标签/转化率等杜撰指标。
  */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
     await assertScriptStudioApiReady();
     const { id: projectId } = await context.params;
@@ -43,3 +45,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return NextResponse.json(body, { status });
   }
 }
+export const POST = withTeamRoute('/api/projects/[id]/script-studio/viral-template-recommend', 'POST', __teamRoutePOST);

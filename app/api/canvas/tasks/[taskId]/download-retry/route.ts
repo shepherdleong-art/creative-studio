@@ -2,11 +2,13 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { retryCanvasTaskDownload } from '@/lib/creative-canvas/recovery';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
 /** 补下载原任务产物：用已保存的远端身份重新取回，不新增生成调用。 */
-export async function POST(
+async function __teamRoutePOST(
   _request: Request,
   { params }: { params: Promise<{ taskId: string }> },
 ) {
@@ -19,3 +21,4 @@ export async function POST(
     return canvasJsonError(error);
   }
 }
+export const POST = withTeamRoute('/api/canvas/tasks/[taskId]/download-retry', 'POST', __teamRoutePOST);

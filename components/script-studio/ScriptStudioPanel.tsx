@@ -1,5 +1,7 @@
 'use client';
 
+import { uploadImages } from '@/lib/image-upload-client';
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type {
@@ -466,7 +468,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const taskPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadProviders = useCallback(async () => {
-    const response = await fetch('/api/providers/script', { cache: 'no-store' });
+    const response = await fetch('/api/team/models?kind=script', { cache: 'no-store' });
     const data = await response.json().catch(() => []);
     if (!response.ok || !Array.isArray(data)) {
       setError('无法读取脚本模型配置，请稍后重试');
@@ -636,7 +638,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       form.append('preprocessEnabled', 'false');
       form.append('targetMaxSide', '4096');
       form.append('jpegQuality', '88');
-      const response = await fetch('/api/upload', { method: 'POST', body: form });
+      const response = await uploadImages(form);
       const data = await response.json().catch(() => ({ files: [] }));
       if (!response.ok) {
         setError(data.error || '上传失败');

@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+const main = fs.readFileSync('desktop/main.ts', 'utf8');
+const remote = fs.readFileSync('desktop/client/remote-host.ts', 'utf8');
+const transfer = fs.readFileSync('desktop/client/remote-transfer.ts', 'utf8');
+const header = fs.readFileSync('components/Header.tsx', 'utf8');
+assert.match(main, /spawnIndependentUpdateHelper/);
+assert.match(main, /onPauseRequested/);
+assert.match(main, /onStopRequested/);
+assert.match(main, /CREATIVE_STUDIO_CLIENT_INSTALL_ROOT/);
+assert.match(remote, /transfer-gate\.json/);
+assert.match(remote, /client-health\.json/);
+assert.match(remote, /CREATIVE_STUDIO_CLIENT_RELEASE_ID/);
+assert.match(remote, /pauseForUpdate/);
+assert.match(transfer, /stop\(\):[\s\S]*updateBlocked/, '更新暂停原因不得在旧进程退出时变成 identity');
+assert.match(header, /getClientStatus/);
+assert.match(header, /installClientUpdate/);
+assert.match(header, /修复并更新/);
+assert.match(header, /clientCompatible/);
+console.log('team client update wiring contract passed');

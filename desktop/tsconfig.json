@@ -12,6 +12,6 @@
     "sourceMap": true,
     "types": ["node", "electron"]
   },
-  "include": ["./*.ts"],
+  "include": ["./**/*.ts"],
   "exclude": ["../node_modules", "../dist-desktop"]
 }

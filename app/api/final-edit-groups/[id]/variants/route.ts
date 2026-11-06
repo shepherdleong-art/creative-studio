@@ -3,8 +3,10 @@ import { getDb } from '@/lib/db';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import type { OutputPresetId } from '@/lib/final-edit/types';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRoutePOST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const group = getDb().prepare(`SELECT projectId, scriptDraftId, narrationConfigJson, analysisProviderId FROM final_edit_groups WHERE id=?`).get(id) as { projectId: string; scriptDraftId: string; narrationConfigJson: string; analysisProviderId: string } | undefined;
@@ -15,3 +17,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json(job, { status: 202 });
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const POST = withTeamRoute('/api/final-edit-groups/[id]/variants', 'POST', __teamRoutePOST);

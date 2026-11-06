@@ -208,6 +208,24 @@ start-desktop.command
 
 注意 `stop.command` 只负责网页版（3000 端口），停不了桌面版监听随机端口的私有服务。
 
+## 服务器账号初始化与恢复
+
+服务器模式不提供公共自助认领。部署配置就绪后，在服务器本机用 Node.js 22+ 初始化首位管理员（工号按文本保存，`00001` 等前导零不会丢失）：
+
+```powershell
+node scripts/team-server/init-admin.mjs --employee-id 00001 --name 系统管理员
+```
+
+命令只显示一次 24 小时有效的一次性凭据；员工在 `/team/login` 登录后必须立即改密。管理员可在 `/team/admin/users` 建号、调整角色、启停账号或重置凭据，最后一名可用管理员不能被降级或停用。
+
+需要恢复既有管理员时，先停止团队服务，再在本机执行（不会创建陌生账号，也不经过公共 API）：
+
+```powershell
+node scripts/team-server/recover-admin.mjs --employee-id 00001
+```
+
+恢复会重发一次性凭据并撤销该账号既有会话。服务器界面的“退出登录”和窗口关闭只退出账号，不调用本地工作台的公共 shutdown；本地模式仍保留原“停止服务”行为。
+
 ## 首次使用
 
 1. 打开 `/settings`。

@@ -63,6 +63,8 @@ export interface CanvasTaskContext {
 
 export interface CanvasSubmitOutcome {
   providerTaskId: string;
+  /** 同步图片在 submit 已完成生成；server 可在下载前立即释放远端 permit。 */
+  terminalState?: 'succeeded';
   raw?: unknown;
 }
 

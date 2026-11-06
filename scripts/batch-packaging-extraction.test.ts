@@ -37,5 +37,9 @@ try {
   assert.equal(calls, 0, '有项目卖点库时不请求 AI');
   const offline = await buildPointCues({ narrationText: view.subtitleCues.map(c => c.text).join('，'), sellingPoints: [], words: [], subtitleCues: view.subtitleCues, coverSec: 20 / 24, totalSec: 13, narrationPlaybackRate: 1, extractPoints: async () => { throw new Error('offline'); } });
   assert.deepEqual(offline.pointCues.map(c => c.text), config.pointCues?.map(c => c.text), 'AI 失败时按分句筛选具体卖点');
-  console.log('batch packaging extraction: intro rejection, cached AI, word timing, cover text and offline fallback passed');
+  await assert.rejects(buildPointCandidates({
+    narrationText: '需要等待名额的口播', sellingPoints: [],
+    extractPoints: async () => { throw Object.assign(new Error('等待名额'), { code: 'llm_execution_deferred' }); },
+  }), (error: unknown) => (error as { code?: string }).code === 'llm_execution_deferred');
+  console.log('batch packaging extraction: intro rejection, cached AI, word timing, cover text, offline fallback and deferred passthrough passed');
 } finally { db.close(); }

@@ -5,8 +5,10 @@ import type { FinalEditCommand } from '@/lib/final-edit/workspace';
 import { getDb } from '@/lib/db';
 import { filmWriteActor } from '@/lib/final-edit/reassembled/access';
 import { FinalEditError } from '@/lib/final-edit/errors';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+
+async function __teamRoutePATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     if (getDb().prepare('SELECT 1 FROM final_edit_film_bindings WHERE variantId=?').get(id) && filmWriteActor(request) === 'agent') {
@@ -17,7 +19,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   } catch (error) { return finalEditErrorResponse(error); }
 }
 
-export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+async function __teamRouteDELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     if (getDb().prepare('SELECT 1 FROM final_edit_film_bindings WHERE variantId=?').get(id)) throw new FinalEditError('film_edit_unsupported', '已接管成片保留修订历史，不能删除草稿', 409);
@@ -31,3 +33,5 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
     return result.changes ? new NextResponse(null, { status: 204 }) : NextResponse.json({ error: 'variant_not_found' }, { status: 404 });
   } catch (error) { return finalEditErrorResponse(error); }
 }
+export const PATCH = withTeamRoute('/api/final-edit-variants/[id]', 'PATCH', __teamRoutePATCH);
+export const DELETE = withTeamRoute('/api/final-edit-variants/[id]', 'DELETE', __teamRouteDELETE);

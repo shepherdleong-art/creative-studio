@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
+import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { v4 as uuidv4 } from 'uuid';
 import { runFfmpeg, type VideoMediaProbe } from '../ffmpeg.ts';
 import {
@@ -394,9 +395,16 @@ export function listShotSetExternalAssets(
   shotSetId: string,
 ): FinalEditExternalAssetView[] {
   const scope = getShotSetMaterialScope(deps.db, projectId, shotSetId);
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('shot_set', shotSetId, 'read');
+  const lifecycle = access.kind === 'local' ? '' : `AND EXISTS (
+    SELECT 1 FROM team_resource_scopes scope
+    WHERE scope.resourceType = 'final_external_asset' AND scope.resourceId = final_edit_external_assets.id
+      AND scope.deletedAt IS NULL
+  )`;
   const rows = deps.db.prepare(`
     SELECT * FROM final_edit_external_assets
-    WHERE projectId=? AND shotSetId=? ORDER BY createdAt, id
+    WHERE projectId=? AND shotSetId=? ${lifecycle} ORDER BY createdAt, id
   `).all(scope.projectId, scope.shotSetId) as ExternalAssetRow[];
   return rows.map((row) => assetView(deps.storageRoot, row));
 }
@@ -587,7 +595,26 @@ async function importExternalAssetsForScope(
             row.thumbnailRelativePath, row.mimeType, row.mediaKind, row.durationUs,
             row.width, row.height, row.fileFingerprint, row.status, row.errorMessage, row.createdAt,
           );
-        })();
+          const access = requireAccessContext();
+          access.registerInheritedScope({
+            resourceType: 'final_external_asset', resourceId: row.id,
+            parent: { resourceType: 'shot_set', resourceId: row.shotSetId },
+          });
+          if (access.kind === 'team') {
+            const originalFileId = registerManagedFile({
+              absolutePath: path.join(deps.storageRoot, row.relativePath),
+              mimeType: row.mimeType,
+              references: [{ resourceType: 'final_external_asset', resourceId: row.id, role: 'input' }],
+            });
+            if (originalFileId && row.thumbnailRelativePath) {
+              registerManagedFile({
+                absolutePath: path.join(deps.storageRoot, row.thumbnailRelativePath),
+                mimeType: 'image/jpeg',
+                derivedFromFileId: originalFileId,
+              });
+            }
+          }
+        }).immediate();
       } catch (error) {
         const constraint = (error as { code?: string })?.code?.startsWith('SQLITE_CONSTRAINT');
         const winner = constraint
@@ -638,6 +665,8 @@ export async function importShotSetExternalAssets(
   // real atomic group command with revision CAS, not a wrapper around this
   // pre-group operation.
   const scope = getShotSetMaterialScope(deps.db, input.projectId, input.shotSetId);
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('shot_set', input.shotSetId, 'write');
   return importExternalAssetsForScope(deps, scope, input.files, input.signal);
 }
 
@@ -696,6 +725,8 @@ export function resolveShotSetExternalAssetMedia(
   kind: 'video' | 'thumbnail',
 ): { relativePath: string; mimeType: string } {
   const scope = getShotSetMaterialScope(deps.db, projectId, shotSetId);
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('final_external_asset', assetId, 'read');
   const row = deps.db.prepare(`
     SELECT * FROM final_edit_external_assets WHERE id=? AND projectId=? AND shotSetId=?
   `).get(assetId, scope.projectId, scope.shotSetId) as ExternalAssetRow | undefined;
@@ -756,5 +787,7 @@ export function deleteShotSetExternalAsset(
   input: { projectId: string; shotSetId: string; assetId: string },
 ): { deleted: true } {
   const scope = getShotSetMaterialScope(deps.db, input.projectId, input.shotSetId);
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('final_external_asset', input.assetId, 'write');
   return deleteExternalAssetForScope(deps, scope, input.assetId);
 }

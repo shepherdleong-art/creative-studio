@@ -17,8 +17,11 @@ import { hasExportIdentity, createExportIdentity, activateNewExportIdentity } fr
 import { sortProjectJobsByCreation, type ProjectJobOrderRow } from '@/lib/project-job-order';
 import { deleteProjectRecords } from '@/lib/project-delete';
 import { syncShotPromptFromScene } from '@/lib/furniture-prompt';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { requireAccessContext } from '@/lib/media-core/access-context';
 
-export async function GET(
+
+async function __teamRouteGET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -38,8 +41,13 @@ export async function GET(
     const project = db.prepare(`SELECT * FROM projects WHERE id = ?`).get(id) as Record<string, unknown>;
 
     // Get images with computed imageUrl
+    const imageLifecycle = requireAccessContext().kind === 'local' ? '' : `AND EXISTS (
+      SELECT 1 FROM team_resource_scopes scope
+      WHERE scope.resourceType = 'image' AND scope.resourceId = image_assets.id
+        AND scope.deletedAt IS NULL
+    )`;
     const images = (db.prepare(
-      `SELECT * FROM image_assets WHERE projectId = ? ORDER BY role, createdAt`
+      `SELECT * FROM image_assets WHERE projectId = ? ${imageLifecycle} ORDER BY role, createdAt`
     ).all(id) as Array<Record<string, unknown>>).map((img) => {
       const filePath = img.path as string;
       const relativePath = resolveStorageRelativePath(filePath)?.split(/[/\\]/).join('/') ?? '';
@@ -80,7 +88,7 @@ export async function GET(
   }
 }
 
-export async function DELETE(
+async function __teamRouteDELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -117,7 +125,7 @@ export async function DELETE(
   }
 }
 
-export async function PATCH(
+async function __teamRoutePATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -255,3 +263,6 @@ export async function PATCH(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/projects/[id]', 'GET', __teamRouteGET);
+export const DELETE = withTeamRoute('/api/projects/[id]', 'DELETE', __teamRouteDELETE);
+export const PATCH = withTeamRoute('/api/projects/[id]', 'PATCH', __teamRoutePATCH);

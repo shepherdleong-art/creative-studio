@@ -3,14 +3,16 @@ import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { resolveVerifiedProjectAssetMedia, projectAssetMimeType } from '@/lib/batch-production/project-asset-media';
 import { projectAssetMediaResponse } from '@/lib/batch-production/project-asset-media-response';
-import { ensureBrowserPreview } from '@/lib/video-browser-preview';
+import { BrowserPreviewPendingError, ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { BATCH_NO_STORE_HEADERS, batchRouteErrorResponse } from '../../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 项目素材原片预览：只接受 projectId + assetId，按 Range 流式读取。 */
-export async function GET(
+async function __teamRouteGET(
   request: NextRequest,
   context: { params: Promise<{ assetId: string }> },
 ) {
@@ -40,6 +42,10 @@ export async function GET(
       served === media.filePath ? media.fileIdentity : undefined,
     );
   } catch (error) {
+    if (error instanceof BrowserPreviewPendingError) {
+      return NextResponse.json({ error: 'preview_pending', retryAfterMs: error.retryAfterMs }, { status: 202, headers: BATCH_NO_STORE_HEADERS });
+    }
     return batchRouteErrorResponse(error, 'asset_preview_failed', '素材预览失败');
   }
 }
+export const GET = withTeamRoute('/api/batch-production/assets/[assetId]/preview', 'GET', __teamRouteGET);

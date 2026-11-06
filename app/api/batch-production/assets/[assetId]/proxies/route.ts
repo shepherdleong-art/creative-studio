@@ -10,6 +10,8 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../batches/response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -20,7 +22,7 @@ export const dynamic = 'force-dynamic';
  * (共识 2);幂等由数据库部分唯一索引 UNIQUE(projectId, assetId, proxyKey)
  * 保证,冲突时返回现存请求。
  */
-export async function POST(
+async function __teamRoutePOST(
   request: NextRequest,
   context: { params: Promise<{ assetId: string }> },
 ) {
@@ -57,3 +59,4 @@ export async function POST(
     return batchRouteErrorResponse(error, 'proxy_request_failed', '代理请求失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/assets/[assetId]/proxies', 'POST', __teamRoutePOST);

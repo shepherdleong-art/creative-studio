@@ -3,13 +3,15 @@ import { getDb } from '@/lib/db';
 import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { createVideoJobsForShot, parseVideoJobCreationItem, type VideoJobCreationItem } from '@/lib/video-job-create';
 import { validateVideoTailFrameBatchDrafts } from '@/lib/video-tail-frame';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 const MAX_ITEMS = 10;
 
 // Create multiple "运镜" video jobs for a single shot in one call, then start
 // the video queue with multi-worker concurrency so they run in parallel.
 // Each item can specify its own provider and duration for maximum flexibility.
-export async function POST(
+async function __teamRoutePOST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -60,3 +62,4 @@ export async function POST(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const POST = withTeamRoute('/api/shot-sets/[id]/video-jobs/batch', 'POST', __teamRoutePOST);

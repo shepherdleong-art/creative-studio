@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getFinalEditTtsAdapter } from '@/lib/final-edit/adapters/tts-registry';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET() {
+
+async function __teamRouteGET() {
   const rows = getDb().prepare(`SELECT id, name, type, baseUrl, keyEnv, model, enabled, isBuiltin, apiKey, costPerThousandCharacters FROM final_edit_tts_providers ORDER BY name`).all() as Array<Record<string, unknown>>;
   const providers = rows.map(({ apiKey, ...row }) => {
     const adapter = getFinalEditTtsAdapter(String(row.id));
@@ -28,3 +30,4 @@ export async function GET() {
   });
   return NextResponse.json(providers);
 }
+export const GET = withTeamRoute('/api/providers/tts', 'GET', __teamRouteGET);

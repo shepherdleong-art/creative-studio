@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import { type ColorSnapshotV1, type ColorSnapshotIdentity } from './color-pipeline.ts';
 import { fingerprintsEqual } from './fingerprint.ts';
 import { isBatchAssetEligible } from './media-catalog.ts';
@@ -66,12 +67,21 @@ export function createBatchProduction(
   name: string,
   now?: () => Date,
 ): string {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'write');
   const createdAt = nowIso(now);
   const id = randomUUID();
-  db.prepare(`
-    INSERT INTO batch_productions (id, projectId, name, status, currentVersionId, progressJson, createdAt, updatedAt)
-    VALUES (?, ?, ?, 'draft', NULL, '{}', ?, ?)
-  `).run(id, projectId, name, createdAt, createdAt);
+  const create = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO batch_productions (id, projectId, name, status, currentVersionId, progressJson, createdAt, updatedAt)
+      VALUES (?, ?, ?, 'draft', NULL, '{}', ?, ?)
+    `).run(id, projectId, name, createdAt, createdAt);
+    access.registerInheritedScope({
+      resourceType: 'batch', resourceId: id,
+      parent: { resourceType: 'project', resourceId: projectId },
+    });
+  });
+  create.immediate();
   return id;
 }
 
@@ -80,6 +90,8 @@ export function getBatchProduction(
   projectId: string,
   batchId: string,
 ): (BatchProductionRow & { progressJson: unknown }) | undefined {
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
   const row = db.prepare(`
     SELECT * FROM batch_productions WHERE id = ? AND projectId = ? AND deletedAt IS NULL
   `).get(batchId, projectId) as BatchProductionRow | undefined;
@@ -92,10 +104,17 @@ export function listProjectBatchProductions(
   projectId: string,
   options: { includeArchived?: boolean } = {},
 ): BatchProductionRow[] {
+  const access = requireAccessContext();
+  const lifecycle = access.kind === 'local' ? '' : `AND EXISTS (
+    SELECT 1 FROM team_resource_scopes scope
+    WHERE scope.resourceType = 'batch' AND scope.resourceId = batch_productions.id
+      AND scope.deletedAt IS NULL
+  )`;
   return db.prepare(`
     SELECT * FROM batch_productions
     WHERE projectId = ? AND deletedAt IS NULL
       AND (${options.includeArchived ? '1' : 'archivedAt IS NULL'})
+      ${lifecycle}
     ORDER BY createdAt, id
   `).all(projectId) as BatchProductionRow[];
 }
@@ -183,6 +202,8 @@ export function createBatchProductionVersion(
   },
 ): string {
   const createdAt = nowIso(input.now);
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('batch', batchId, 'write');
   const versionNumber = db.transaction(() => {
     const batch = db.prepare(`
       SELECT id FROM batch_productions WHERE id = ? AND deletedAt IS NULL
@@ -205,13 +226,17 @@ export function createBatchProductionVersion(
         (id, batchId, versionNumber, copyCount, defaultsJson, inputState, frozenAt, createdAt)
       VALUES (?, ?, ?, ?, ?, 'draft', NULL, ?)
     `).run(id, batchId, next, input.copyCount, JSON.stringify(input.defaultsJson ?? {}), createdAt);
+    access.registerInheritedScope({
+      resourceType: 'batch_version', resourceId: id,
+      parent: { resourceType: 'batch', resourceId: batchId },
+    });
     db.prepare(`
       UPDATE batch_productions
       SET currentVersionId = ?, status = 'draft', progressJson = '{}', updatedAt = ?
       WHERE id = ?
     `).run(id, createdAt, batchId);
     return id;
-  })();
+  }).immediate();
   return versionNumber;
 }
 

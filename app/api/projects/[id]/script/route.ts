@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { writeLog } from '@/lib/logger';
@@ -11,6 +12,8 @@ import {
   ScriptGenerationV3Error,
 } from '@/lib/script-generation-v3';
 import { listScriptDraftHistoryPage } from '@/lib/script-draft-history';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 // ── POST: 只保留 analyze；生成/取消已迁移到 /script-generation（任务化接口）──
 
@@ -37,7 +40,7 @@ const ENDPOINT_MOVED = {
   message: '脚本生成/取消接口已迁移，请刷新页面后重试',
 };
 
-export async function POST(
+async function __teamRoutePOST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -69,7 +72,7 @@ export async function POST(
 
 // ── GET: drafts + analysis, or models ──
 
-export async function GET(
+async function __teamRouteGET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -129,6 +132,8 @@ async function handleAnalyze(
 
   const input: AnalysisInput = { sellingPoints, targetAudience, platform };
   logScriptInfo(projectId, `开始分析卖点（${sellingPoints.length} 条，模型 ${providerId}，平台 ${platform}）`);
+  const analysisTaskId = randomUUID();
+  let sequence = 0;
   const result = await analyzeScriptStrategyV3(input, {
     completeJson: (request) => completeJson({
       providerId,
@@ -136,7 +141,12 @@ async function handleAnalyze(
       usageContext: {
         projectId,
         refType: 'script-analysis',
-        refId: projectId,
+        refId: analysisTaskId,
+      },
+      executionContext: {
+        taskId: analysisTaskId,
+        step: `analyze:${++sequence}`,
+        scope: { resourceType: 'project', resourceId: projectId },
       },
     }),
   });
@@ -169,3 +179,5 @@ function scriptAnalysisFailure(error: unknown): { status: number; body: Record<s
     body: { error: error instanceof Error ? error.message : String(error) },
   };
 }
+export const POST = withTeamRoute('/api/projects/[id]/script', 'POST', __teamRoutePOST);
+export const GET = withTeamRoute('/api/projects/[id]/script', 'GET', __teamRouteGET);

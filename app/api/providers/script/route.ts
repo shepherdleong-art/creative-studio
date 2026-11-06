@@ -2,8 +2,10 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { listScriptProviderMeta } from '@/lib/script-providers/store';
 import { v4 as uuidv4 } from 'uuid';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
-export async function GET() {
+
+async function __teamRouteGET() {
   try {
     return NextResponse.json(listScriptProviderMeta());
   } catch (err) {
@@ -11,7 +13,7 @@ export async function GET() {
   }
 }
 
-export async function POST(request: Request) {
+async function __teamRoutePOST(request: Request) {
   try {
     const db = getDb();
     const body = await request.json();
@@ -47,3 +49,5 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+export const GET = withTeamRoute('/api/providers/script', 'GET', __teamRouteGET);
+export const POST = withTeamRoute('/api/providers/script', 'POST', __teamRoutePOST);

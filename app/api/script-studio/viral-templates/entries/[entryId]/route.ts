@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertScriptStudioApiReady, errorResponse, jsonOrNull } from '@/lib/script-studio/http';
 import { updateViralTemplateEntryStatus } from '@/lib/script-studio/viral-templates';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
 
 export const runtime = 'nodejs';
 
 /** 人工调整模板条目可用状态（占位/待检查可改为可用，或反向标记）。 */
-export async function PATCH(request: NextRequest, context: { params: Promise<{ entryId: string }> }) {
+async function __teamRoutePATCH(request: NextRequest, context: { params: Promise<{ entryId: string }> }) {
   try {
     await assertScriptStudioApiReady();
     const { entryId } = await context.params;
@@ -23,3 +25,4 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ e
     return NextResponse.json(body, { status });
   }
 }
+export const PATCH = withTeamRoute('/api/script-studio/viral-templates/entries/[entryId]', 'PATCH', __teamRoutePATCH);

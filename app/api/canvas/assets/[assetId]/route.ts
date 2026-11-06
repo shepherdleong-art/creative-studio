@@ -1,44 +1,49 @@
-import { NextResponse } from 'next/server';
 import { dataRoot } from '@/lib/data-root';
 import { getDb } from '@/lib/db';
 import { CanvasError } from '@/lib/creative-canvas/errors';
-import { canvasStorageRoot, readCanvasAsset, readCanvasAssetPreview, requireCanvasAsset } from '@/lib/creative-canvas/assets';
-import { canvasAssetDownloadFilename, canvasAttachmentHeader } from '@/lib/creative-canvas/asset-naming';
+import { canvasAssetAbsolutePath, canvasStorageRoot, requireCanvasAsset } from '@/lib/creative-canvas/assets';
+import { canvasAssetDownloadFilename } from '@/lib/creative-canvas/asset-naming';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
+import { BrowserPreviewPendingError, ensureBrowserPreview } from '@/lib/video-browser-preview';
+import { fileResponse } from '@/lib/media-core/file-response';
+import { authorizeManagedFileRead, registerManagedFile } from '@/lib/media-core/access-context';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
 export const runtime = 'nodejs';
 
-/** 读取素材内容：经过所属画布与文件边界检查，视频支持 Range 按需加载。 */
-export async function GET(
+async function __teamRouteGET(
   request: Request,
   { params }: { params: Promise<{ assetId: string }> },
 ) {
   try {
     await assertCanvasApiReady();
     const { assetId } = await params;
+    const db = getDb();
+    const asset = requireCanvasAsset(db, assetId);
+    const originalPath = canvasAssetAbsolutePath(asset, canvasStorageRoot(dataRoot()));
+    const originalGrant = authorizeManagedFileRead(originalPath);
     const download = new URL(request.url).searchParams.get('download') === '1';
-    const result = await (download ? readCanvasAsset : readCanvasAssetPreview)({
-      db: getDb(),
-      storageRoot: canvasStorageRoot(dataRoot()),
-      assetId,
-      rangeHeader: request.headers.get('range'),
-    });
-    if (result.status === 416 || !result.body) {
-      return new NextResponse(null, { status: 416, headers: result.headers });
+    let served = originalPath;
+    let mimeType = asset.mimeType;
+    if (!download && asset.mediaKind === 'video') {
+      served = await ensureBrowserPreview(originalPath);
+      if (served !== originalPath) {
+        mimeType = 'video/mp4';
+        if (originalGrant) {
+          registerManagedFile({ absolutePath: served, mimeType, derivedFromFileId: originalGrant.fileId });
+        }
+      }
     }
-    const headers = { ...result.headers };
-    if (new URL(request.url).searchParams.get('download') === '1') {
-      // 单文件下载：文件名按节点当前结果的真实媒体类型给出，不用缩略图代替成品
-      headers['Content-Disposition'] = canvasAttachmentHeader(canvasAssetDownloadFilename(getDb(), requireCanvasAsset(getDb(), assetId)));
-    }
-    return new NextResponse(new Uint8Array(result.body), {
-      status: result.status,
-      headers,
+    return fileResponse(request, served, mimeType, {
+      cacheControl: 'private, max-age=3600',
+      ...(download ? { downloadName: canvasAssetDownloadFilename(db, asset) } : {}),
     });
   } catch (error) {
-    if (error instanceof CanvasError) {
-      return canvasJsonError(error);
+    if (error instanceof BrowserPreviewPendingError) {
+      return Response.json({ error: 'preview_pending', retryAfterMs: error.retryAfterMs }, { status: 202 });
     }
+    if (error instanceof CanvasError) return canvasJsonError(error);
     return canvasJsonError(error);
   }
 }
+export const GET = withTeamRoute('/api/canvas/assets/[assetId]', 'GET', __teamRouteGET);

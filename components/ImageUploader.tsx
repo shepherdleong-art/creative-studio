@@ -1,5 +1,7 @@
 'use client';
 
+import { uploadImages } from '@/lib/image-upload-client';
+
 import { useCallback, useState, useId } from 'react';
 import { Icon } from '@/components/ui/Icon';
 
@@ -84,10 +86,7 @@ export default function ImageUploader({
         if (projectId) form.append('projectId', projectId);
         if (usage) form.append('usage', usage);
 
-        const res = await fetch('/api/upload', {
-          method: 'POST',
-          body: form,
-        });
+        const res = await uploadImages(form);
 
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
