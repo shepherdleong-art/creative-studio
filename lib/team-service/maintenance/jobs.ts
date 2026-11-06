@@ -20,7 +20,7 @@ export interface MaintenancePrincipal {
   role: 'admin';
 }
 
-export type MaintenanceJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'needs_review';
+export type MaintenanceJobStatus = 'queued' | 'running' | 'awaiting_confirmation' | 'succeeded' | 'failed' | 'needs_review';
 export interface MaintenanceJob {
   schemaVersion: 1;
   id: string;
@@ -28,7 +28,8 @@ export interface MaintenanceJob {
   action: MaintenanceAction;
   target: MaintenanceTarget;
   status: MaintenanceJobStatus;
-  stage: 'queued' | 'starting' | 'snapshotting' | 'copying_media' | 'verifying' | 'finishing' | 'completed' | 'failed'
+  stage: 'queued' | 'starting' | 'snapshotting' | 'copying_media' | 'verifying'
+    | 'awaiting_confirmation' | 'cutting_over' | 'finishing' | 'completed' | 'failed'
     | 'preflight' | 'maintenance' | 'drain' | 'capture' | 'stop' | 'backup'
     | 'switch' | 'start_maintenance' | 'migrate' | 'self_check' | 'resume';
   progress: number | null;
@@ -206,7 +207,7 @@ export class MaintenanceJobStore {
           return { job: this.read(job.id)!, created: true };
         }
       }
-      const conflict = this.db.prepare("SELECT id FROM maintenance_jobs WHERE deploymentId = ? AND status IN ('queued', 'running')")
+      const conflict = this.db.prepare("SELECT id FROM maintenance_jobs WHERE deploymentId = ? AND status IN ('queued', 'running', 'awaiting_confirmation')")
         .get(this.options.deploymentId);
       if (conflict) {
         const current = this.read((conflict as { id: string }).id)!;
@@ -256,7 +257,7 @@ export class MaintenanceJobStore {
         } catch { corrupt = true; }
       }
     }
-    if (corrupt || !hasSubmitted || (!terminal && !['queued', 'running'].includes(job.status))) {
+    if (corrupt || !hasSubmitted || (!terminal && !['queued', 'running', 'awaiting_confirmation'].includes(job.status))) {
       return { ...job, integrity: 'audit_corrupt', message: '维护审计记录损坏或不完整，请核查，不要重跑。' };
     }
     return job;
@@ -285,14 +286,19 @@ export class MaintenanceJobStore {
       const running = this.db.prepare("SELECT * FROM maintenance_jobs WHERE deploymentId = ? AND status = 'running'")
         .get(this.options.deploymentId) as Record<string, unknown> | undefined;
       if (running) throw new MaintenanceControlError('maintenance_conflict', '已有作业处于执行状态。');
+      if (options.jobId) {
+        const awaited = this.db.prepare(`SELECT id FROM maintenance_jobs WHERE id = ? AND deploymentId = ? AND status = 'awaiting_confirmation'`)
+          .get(options.jobId, this.options.deploymentId);
+        if (awaited) return null;
+      }
       const row = this.db.prepare(`SELECT * FROM maintenance_jobs WHERE deploymentId = ? AND status = 'queued'
         ${options.jobId ? 'AND id = ?' : ''} ORDER BY createdAt LIMIT 1`)
         .get(...(options.jobId ? [this.options.deploymentId, options.jobId] : [this.options.deploymentId])) as Record<string, unknown> | undefined;
       if (!row) return null;
       const job = mapJob(row);
-      this.db.prepare(`UPDATE maintenance_jobs SET status = 'running', stage = 'starting', startedAt = ?,
+      this.db.prepare(`UPDATE maintenance_jobs SET status = 'running', stage = ?, startedAt = COALESCE(startedAt, ?),
         updatedAt = ?, leaseOwner = ?, leaseExpiresAt = ? WHERE id = ?`)
-        .run(at, at, options.workerId, new Date(new Date(at).getTime() + (options.leaseMs ?? 60_000)).toISOString(), job.id);
+        .run(job.result ? 'cutting_over' : 'starting', at, at, options.workerId, new Date(new Date(at).getTime() + (options.leaseMs ?? 60_000)).toISOString(), job.id);
       this.db.prepare('INSERT INTO maintenance_lease (deploymentId, jobId, workerId, expiresAt) VALUES (?, ?, ?, ?)')
         .run(this.options.deploymentId, job.id, options.workerId, new Date(new Date(at).getTime() + (options.leaseMs ?? 60_000)).toISOString());
       this.appendAudit(job, 'started', at, { workerId: options.workerId });
@@ -312,6 +318,36 @@ export class MaintenanceJobStore {
       this.db.prepare('UPDATE maintenance_lease SET expiresAt = ? WHERE deploymentId = ?').run(expiresAt, this.options.deploymentId);
       this.appendAudit(job, options.stage, at);
       return this.read(job.id)!;
+    })();
+  }
+
+  awaitConfirmation(options: { jobId: string; workerId: string; result: Record<string, unknown>; now?: Date }): MaintenanceJob {
+    const at = this.now(options.now);
+    return this.db.transaction(() => {
+      const job = this.assertLease(options.jobId, options.workerId, at);
+      this.db.prepare(`UPDATE maintenance_jobs SET status = 'awaiting_confirmation', stage = 'awaiting_confirmation',
+        resultJson = ?, updatedAt = ?, leaseOwner = NULL, leaseExpiresAt = NULL WHERE id = ?`)
+        .run(JSON.stringify(options.result), at, job.id);
+      this.db.prepare('DELETE FROM maintenance_lease WHERE deploymentId = ?').run(this.options.deploymentId);
+      this.appendAudit(job, 'awaiting_confirmation', at, options.result);
+      return this.read(job.id)!;
+    })();
+  }
+
+  confirm(options: { jobId: string; principal: MaintenancePrincipal; now?: Date }): { job: MaintenanceJob } {
+    const at = this.now(options.now);
+    return this.db.transaction(() => {
+      const job = this.read(options.jobId);
+      if (!job || job.action !== 'restore.execute' || job.status !== 'awaiting_confirmation') {
+        throw new MaintenanceControlError('restore_not_ready', '备份尚未完成隔离还原与校验，不能确认切换。');
+      }
+      if (job.requestedBy.userId !== options.principal.userId) {
+        throw new MaintenanceControlError('restore_initiator_required', '只能由发起本次还原的管理员确认切换。');
+      }
+      this.db.prepare(`UPDATE maintenance_jobs SET status = 'queued', stage = 'queued', updatedAt = ? WHERE id = ?`)
+        .run(at, job.id);
+      this.appendAudit(job, 'cutover_confirmed', at);
+      return { job: this.read(job.id)! };
     })();
   }
 
