@@ -317,6 +317,66 @@ try {
     assert.equal(execution.admit({ ...identity, operationId: missing.operation.id }).kind, 'admitted');
   }
 
+  {
+    const { db, execution } = await setup('automatic-pools');
+    const { updateTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+    updateTeamConcurrencyPolicy(db, { mode: 'auto', manualDefaultConcurrency: 1, expectedVersion: 0 });
+    for (const [poolKey, capacity] of [['busy', 1], ['idle', 4]] as const) {
+      upsertExecutionPool(db, { poolKey, kind: 'remote', capacity, enabled: true, mappingSnapshot: { providerId: poolKey }, expectedVersion: 0 });
+    }
+    updateActorPolicy(db, { actorId: 'auto-user', monthlyLimitMinor: null, personalConcurrency: 0, concurrencyMode: 'inherit', paused: false, expectedVersion: 0 });
+    const busy = execution.enqueue(operation('auto-user', 'busy-first', { pools: ['busy'] }));
+    assert.equal(execution.admit({ ...identity, operationId: busy.operation.id }).kind, 'admitted');
+    execution.enqueue(operation('auto-user', 'busy-waiting', { pools: ['busy'] }));
+    const independent = execution.enqueue(operation('auto-user', 'independent-idle', { pools: ['idle'] }));
+    assert.equal(execution.admit({ ...identity, operationId: independent.operation.id }).kind, 'admitted', '同一成员的忙碌池队首不能阻塞空闲池独立任务');
+    execution.enqueue(operation('auto-user', 'busy-still-waiting', { pools: ['busy'] }));
+    const secondBusyResult = execution.admit(identity);
+    assert.equal(secondBusyResult.kind, 'deferred');
+    assert.equal(secondBusyResult.kind, 'deferred');
+    upsertExecutionPool(db, { poolKey: 'idle', kind: 'remote', capacity: 4, enabled: true, mappingSnapshot: { providerId: 'idle' }, expectedVersion: 1 });
+    const anotherIndependent = execution.enqueue(operation('auto-user', 'another-independent-idle', { pools: ['idle'] }));
+    const ordinary = execution.admit(identity);
+    assert.equal(ordinary.kind, 'admitted', '普通轮转路径也不得被忙碌池队首阻塞');
+    if (ordinary.kind === 'admitted') assert.equal(ordinary.grant.operation.id, anotherIndependent.operation.id);
+    assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE poolKey='idle' AND state='held'").pluck().get(), 2, '空闲池的两个独立任务各占一个名额');
+    const multiPool = execution.enqueue(operation('auto-user', 'atomic-two-pools', { pools: ['idle', 'busy'] }));
+    assert.equal(execution.admit({ ...identity, operationId: multiPool.operation.id }).kind, 'deferred');
+    assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations r JOIN execution_operations o ON o.id=r.operationId WHERE o.taskId='atomic-two-pools'").pluck().get(), 0, '多池请求不得获得部分名额');
+  }
+
+  {
+    const { db, execution } = await setup('automatic-ordinary-borrow');
+    const { updateTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+    updateTeamConcurrencyPolicy(db, { mode: 'auto', manualDefaultConcurrency: 1, expectedVersion: 0 });
+    upsertExecutionPool(db, { poolKey: 'shared', kind: 'remote', capacity: 2, enabled: true, mappingSnapshot: { providerId: 'provider-a' }, expectedVersion: 0 });
+    db.prepare(`INSERT INTO execution_actor_policies (actorId, monthlyLimitMinor, currency, personalConcurrency, paused, timezone, version, concurrencyMode, updatedAt)
+      VALUES ('borrower', NULL, 'CNY', 0, 0, 'Asia/Shanghai', 1, 'inherit', ?)`).run(new Date().toISOString());
+    execution.enqueue(operation('borrower', 'borrow-first'));
+    execution.enqueue(operation('borrower', 'borrow-second'));
+    assert.equal(execution.admit(identity).kind, 'admitted');
+    const second = execution.admit(identity);
+    assert.equal(second.kind, 'admitted', '普通路径在真实池未满时不得误跳过同池借用任务');
+    if (second.kind === 'admitted') assert.equal(second.grant.operation.taskId, 'borrow-second');
+  }
+
+  {
+    const { db, execution } = await setup('automatic-eligible-demand');
+    const { updateTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+    updateTeamConcurrencyPolicy(db, { mode: 'auto', manualDefaultConcurrency: 1, expectedVersion: 0 });
+    upsertExecutionPool(db, { poolKey: 'shared', kind: 'remote', capacity: 10, enabled: true, mappingSnapshot: { providerId: 'provider-a' }, expectedVersion: 0 });
+    for (const actorId of ['productive', 'zero-budget', 'not-logged-in']) {
+      db.prepare(`INSERT INTO execution_actor_policies (actorId, monthlyLimitMinor, currency, personalConcurrency, paused, timezone, version, concurrencyMode, updatedAt)
+        VALUES (?, ?, 'CNY', 0, 0, 'Asia/Shanghai', 1, 'inherit', ?)`).run(actorId, actorId === 'zero-budget' ? 0 : null, new Date().toISOString());
+    }
+    for (let index = 0; index < 10; index += 1) {
+      execution.enqueue(operation('zero-budget', `ineligible-${index}`));
+      const queued = execution.enqueue(operation('productive', `productive-${index}`));
+      const admitted = execution.admit({ ...identity, operationId: queued.operation.id });
+      assert.equal(admitted.kind, 'admitted', '无费用资格或没有实际任务的成员不得稀释唯一生产成员的借用容量');
+    }
+  }
+
   console.log('execution admission tests passed');
 } finally {
   for (const cleanup of cleanups) cleanup();

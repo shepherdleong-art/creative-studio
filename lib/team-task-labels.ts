@@ -22,7 +22,7 @@ export function taskWaitLabel(reason: string | null, concurrency?: number | null
     maintenance: '系统维护或团队生产已暂停', actor_disabled: '账号已停用，请联系管理员',
     scope_forbidden: '项目访问权限不足，请联系管理员', actor_paused: '该成员已暂停生成',
     pool_missing: '供应商资源池尚未配置，请联系管理员', pool_disabled: '供应商资源池已停用',
-    pool_capacity: '供应商名额已满，释放后自动继续', pricing_required: '模型价格尚未配置',
+    pool_capacity: '供应商名额已满，释放后自动继续', fair_share: '其他成员正在公平使用共享名额，释放后按顺序继续', pricing_required: '模型价格尚未配置',
     currency_mismatch: '计费币种不一致，请联系管理员', monthly_budget: '月度额度不足，请联系管理员',
     cost_unknown: '存在待核实费用，请管理员核查', stage_canceled: '已取消，尚未发送的请求已停止',
     business_failed: '生成失败，请查看项目运行日志',

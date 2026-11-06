@@ -354,7 +354,7 @@ export interface TeamMemberSummary {
   monthlyLimitMinor: number | null;
   remainingMinor: number | null;
   currentConcurrency: number;
-  concurrencyLimit: number;
+  concurrencyLimit: number | null;
   concurrencyMode: ActorPolicy['concurrencyMode'];
   concurrencySource: ActorPolicy['concurrencySource'];
   paused: boolean;
@@ -422,7 +422,8 @@ function memberSummary(db: Database.Database, row: MemberRow, now: Date): TeamMe
     allowedModels: policy.allowedModels,
     policyVersion: policy.version,
     waitingReason: waitingReason ?? null,
-    attention: row.accountStatus === 'disabled' || policy.paused || Boolean(waitingReason) || hasUnknown || nearLimit || currentConcurrency > policy.effectiveConcurrency,
+    attention: row.accountStatus === 'disabled' || policy.paused || Boolean(waitingReason) || hasUnknown || nearLimit
+      || (policy.effectiveConcurrency !== null && currentConcurrency > policy.effectiveConcurrency),
     modules: modules.map((module) => ({ module: module.module, chargedMinor: Number(module.chargedMinor) })),
   };
 }
