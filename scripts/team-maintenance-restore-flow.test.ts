@@ -52,8 +52,10 @@ try {
   write('service/distribution-lock.json', JSON.stringify(lock));
   write('service/packaging/forbidden-paths.json', fs.readFileSync(path.resolve('scripts/packaging/forbidden-paths.json'), 'utf8'));
   write('START-HERE.md', 'fixture'); write('deployment.example.json', '{}');
-  writeReleaseManifest(releaseRoot, { releaseId: 'release-1', appVersion: '0.7.1', sourceCommit: 'fixture', fixture: true,
-    compatibility: { minAppVersion: '0.7.1', maxAppVersion: '0.7.1', dataSchemaMin: 1, dataSchemaMax: 1 } });
+  writeReleaseManifest(releaseRoot, {
+    releaseId: 'release-1', appVersion: '0.7.1', sourceCommit: 'fixture', fixture: true,
+    compatibility: { minAppVersion: '0.7.1', maxAppVersion: '0.7.1', dataSchemaMin: 1, dataSchemaMax: 99 },
+  });
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify({
     schemaVersion: 1, deploymentId, releaseId: 'release-1', deploymentRoot, dataRoot, backupRoot,
