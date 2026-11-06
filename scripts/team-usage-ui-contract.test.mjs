@@ -14,6 +14,8 @@ for (const label of ['今日', '本月', '预留', '剩余', '并发', '需要�
 assert.match(members, /search/);
 assert.match(members, /attentionOnly/);
 assert.match(members, /expectedVersion/);
+assert.match(members, /teamPolicyDraftInitialized/, '后台刷新不得覆盖正在编辑的自动/手动与个人草稿');
+assert.match(members, /teamModeSelect\.current\?\.value/, '保存必须读取当前表单选择，而不是过期状态');
 assert.match(members, /monthlyLimitMinor/);
 assert.match(members, /paused/);
 assert.match(members, /\/api\/team\/members/);

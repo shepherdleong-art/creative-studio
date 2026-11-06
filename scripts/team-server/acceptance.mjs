@@ -83,7 +83,7 @@ async function execute(entry) {
   const env = {
     ...process.env,
     NEXT_TELEMETRY_DISABLED: '1',
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require="${networkGuard.replaceAll('\\', '/')}"`.trim(),
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(networkGuard)}`.trim(),
     TEAM_ACCEPTANCE_EVIDENCE_DIR: path.join(run.runDirectory, 'http'),
     ...(metricPath ? { TEAM_ACCEPTANCE_RESULT_PATH: metricPath } : {}),
     TEAM_ACCEPTANCE_USERS: String(config.users),

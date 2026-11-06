@@ -200,13 +200,23 @@ try {
   assert.equal(listTeamTasks(db, zeroViewer, { status: 'deferred' }).items.length, 0);
   // Older canceled jobs have a stale deferred ledger; display/filter must still agree.
   db.prepare("UPDATE execution_operations SET status='deferred',waitReason='personal_concurrency' WHERE taskId='job-zero'").run();
+  db.prepare("UPDATE jobs SET status='pending' WHERE id='job-zero'").run();
+  const { createInheritedActorPolicy } = await import('../lib/media-core/execution/pools.ts');
+  const { updateTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+  db.prepare('DELETE FROM execution_actor_policies WHERE actorId=?').run('member-zero');
+  createInheritedActorPolicy(db, 'member-zero');
+  updateTeamConcurrencyPolicy(db, { manualDefaultConcurrency: 2, expectedVersion: 0 });
+  assert.equal(listTeamTasks(db, { userId: 'member-zero', role: 'admin' }).items[0].waitLabel, '个人运行名额已满（上限 2），名额释放后自动继续', '继承成员等待提示必须使用生效团队默认');
+  db.prepare('DELETE FROM execution_actor_policies WHERE actorId=?').run('member-zero');
+  updateActorPolicy(db, { actorId: 'member-zero', monthlyLimitMinor: null, personalConcurrency: 0, paused: false, expectedVersion: 0 });
+  db.prepare("UPDATE jobs SET status='canceled' WHERE id='job-zero'").run();
   assert.equal(listTeamTasks(db, zeroViewer).items[0].status, 'canceled');
   assert.equal(listTeamTasks(db, zeroViewer, { status: 'deferred' }).items.length, 0);
   assert.equal(listTeamTasks(db, { userId: 'other-member', role: 'employee' }).items.length, 0);
   imageJob('job-zero-resume', 'project-zero', 'member-zero', 'zero-image');
   const resumeRun = queue.runQueue({ projectId: 'project-zero', concurrency: 4, maxAttempts: 2, timeoutMs: 60000 });
   await sleep(100);
-  updateActorPolicy(db, { actorId: 'member-zero', monthlyLimitMinor: null, personalConcurrency: 10, paused: false, expectedVersion: 2 });
+  updateActorPolicy(db, { actorId: 'member-zero', monthlyLimitMinor: null, personalConcurrency: 10, paused: false, expectedVersion: 1 });
   await resumeRun;
   assert.equal(imageRequests.length, 1, '解除并发等待后只能发送一次');
   assert.equal(db.prepare("SELECT status FROM jobs WHERE id='job-zero-resume'").pluck().get(), 'succeeded');
@@ -270,6 +280,13 @@ try {
   await imageRun;
   await videoRun;
   assert.equal(videoSubmits, 1);
+  const { listTeamErrors: listExecutionErrors } = await import('../lib/team-service/diagnostics.ts');
+  const pollErrors = listExecutionErrors(db, { userId: 'member-video', role: 'employee' }).items
+    .filter((item) => item.taskId === 'job-shared-video');
+  assert.equal(pollErrors.length, 1, '真实视频轮询终态失败必须进入错误中心');
+  assert.equal(pollErrors[0]?.stage, 'remote_poll');
+  assert.equal(pollErrors[0]?.origin, 'worker');
+  assert.equal(pollErrors[0]?.model, 'model-a');
   const held = db.prepare(`
     SELECT COUNT(*) FROM execution_reservations
     WHERE poolKey = ? AND kind = 'concurrency' AND state = 'held'
@@ -392,6 +409,15 @@ try {
   await videoQueue.runVideoQueue({ projectId: 'project-restart', concurrency: 1, timeoutMs: 60_000 });
   assert.equal(restartSubmits, 1, '重启和停用成员后的已受理续查不得重新付费');
   assert.equal((db.prepare("SELECT providerStatus FROM video_jobs WHERE id = 'job-restart'").pluck().get() as string), 'download_failed');
+  const { listTeamErrors, getTeamErrorDiagnostic } = await import('../lib/team-service/diagnostics.ts');
+  const downloadErrors = listTeamErrors(db, { userId: 'member-restart', role: 'employee' }).items
+    .filter((item) => item.taskId === 'job-restart');
+  assert.equal(downloadErrors.length, 1, '真实视频 worker 的 loopback 下载失败必须自动产生诊断');
+  assert.equal(downloadErrors[0]?.stage, 'download');
+  assert.equal(downloadErrors[0]?.origin, 'worker');
+  assert.equal(downloadErrors[0]?.model, 'model-a');
+  assert.equal(downloadErrors[0]?.outcome, 'final');
+  assert.equal(JSON.stringify(getTeamErrorDiagnostic(db, { userId: 'member-restart', role: 'employee' }, downloadErrors[0]!.errorId)).includes('shared-secret'), false);
   const pollsBeforeDownloadRepair = restartPolls;
   await videoQueue.resumeVideoJobPolling('job-restart');
   assert.equal(restartSubmits, 1);
@@ -399,6 +425,7 @@ try {
   assert.equal(videoDownloads, 2);
   const repaired = db.prepare("SELECT status, errorMessage FROM video_jobs WHERE id = 'job-restart'").get() as { status: string; errorMessage: string };
   assert.equal(repaired.status, 'succeeded', repaired.errorMessage);
+  assert.equal(listTeamErrors(db, { userId: 'member-restart', role: 'employee' }, { errorId: downloadErrors[0]!.errorId }).items[0]?.outcome, 'recovered', '补下载成功后原错误必须标成已恢复');
   assert.equal((db.prepare("SELECT attempt FROM video_jobs WHERE id = 'job-restart'").pluck().get() as number), 1,
     '续查和补下载不增加业务 attempt');
   console.log('legacy media accepted-recovery and download-only test passed');
@@ -494,7 +521,10 @@ try {
 
   const fairnessPool = configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/fair-a`, apiKey: 'shared-secret', capacity: 1 });
   configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/fair-b`, apiKey: 'shared-secret', capacity: 1 });
+  const { readTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+  updateTeamConcurrencyPolicy(db, { mode: 'auto', manualDefaultConcurrency: 1, expectedVersion: readTeamConcurrencyPolicy(db).version });
   member('member-fair');
+  updateActorPolicy(db, { actorId: 'member-fair', monthlyLimitMinor: null, personalConcurrency: 0, concurrencyMode: 'inherit', paused: false, expectedVersion: 1 });
   provider('fair-image-a', 'openai-compatible', `${baseUrl}/fair-a`);
   provider('fair-image-b', 'openai-compatible', `${baseUrl}/fair-b`);
   project('project-fair', 'member-fair', 'fair-image-a');
@@ -532,6 +562,13 @@ try {
   assert.equal((db.prepare("SELECT status FROM jobs WHERE id = 'job-fair-a'").pluck().get() as string), 'succeeded');
   assert.equal(imageRequests.filter((url) => url === '/fair-a/v1/images/edits').length, 1);
   assert.equal(imageRequests.filter((url) => url === '/fair-b/v1/images/edits').length, 1);
+
+  imageJob('job-fair-auto-a', 'project-fair', 'member-fair', 'fair-image-a');
+  imageJob('job-fair-auto-b', 'project-fair', 'member-fair', 'fair-image-b');
+  await queue.runQueue({ projectId: 'project-fair', concurrency: 2, maxAttempts: 2, timeoutMs: 60_000 });
+  assert.equal(imageRequests.filter((url) => url === '/fair-a/v1/images/edits').length, 2, '自动继承成员在真实图片入口借用空闲 A 池容量');
+  assert.equal(imageRequests.filter((url) => url === '/fair-b/v1/images/edits').length, 2, '自动继承成员在真实图片入口借用空闲 B 池容量');
+  assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE state='held' AND kind='concurrency' AND actorId='member-fair'").pluck().get(), 0, '真实图片完成后释放自动借用名额，不改变费用台账');
 
   imageJob('job-fair-c', 'project-fair', 'member-fair', 'fair-image-a');
   imageJob('job-fair-d', 'project-fair', 'member-fair', 'fair-image-b');

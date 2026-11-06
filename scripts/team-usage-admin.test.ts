@@ -22,6 +22,7 @@ const {
   exportTeamUsageCsv,
   listTeamMembers,
   queryTeamUsage,
+  queryTeamUsageAnalytics,
   readTeamMemberPolicy,
   updateTeamMemberPolicy,
 } = await import('../lib/team-service/usage.ts');
@@ -167,6 +168,24 @@ try {
   assert.equal(admin.items.find((item) => item.taskId === 'a-unpriced')?.costStatus, 'unpriced');
   assert.equal(admin.items.find((item) => item.taskId === 'a-unpriced')?.actualMinor, null);
   assert.equal(admin.items.find((item) => item.taskId === 'a-uncertain')?.costStatus, 'uncertain');
+  const analytics = queryTeamUsageAnalytics(db, adminView, range, now);
+  const model = analytics.models.find((item) => item.model === 'company-image2-medium');
+  assert.equal(model?.callCount, 7);
+  assert.equal(model?.chargedMinor, 840);
+  assert.equal(model?.settledMinor, 720);
+  assert.equal(model?.estimatedMinor, 50);
+  assert.equal(model?.unpricedCount, 1);
+  assert.equal(model?.uncertainCount, 1);
+  assert.equal(model?.percentage, 100);
+  assert.equal(analytics.trend.reduce((sum, point) => sum + point.chargedMinor, 0), 840);
+  assert.ok(analytics.trend.every((point) => point.chargedMinor === 0 || point.date === '2026-11-02'));
+  assert.equal(analytics.teamQuota?.chargedMinor, 840);
+  assert.equal(analytics.teamQuota?.settledMinor, 720);
+  assert.equal(analytics.teamQuota?.heldMinor, 120);
+  assert.equal(analytics.teamQuota?.limitedTotalMinor, 1500);
+  assert.equal(analytics.teamQuota?.limitedRemainingMinor, 660);
+  assert.equal(analytics.teamQuota?.unlimitedCount, 1);
+  assert.equal(analytics.members.find((member) => member.userId === 'bob')?.rangeChargedMinor, 500);
 
   const alice = queryTeamUsage(db, aliceView, range);
   assert.equal(alice.items.length, 6);

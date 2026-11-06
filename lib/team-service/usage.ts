@@ -9,6 +9,7 @@ import {
   type ActorPolicy,
 } from '../media-core/execution/pools.ts';
 import { getShanghaiUsagePeriods } from '../usage-query.ts';
+import { addUsageDays, usageDateLabel } from '../usage-date-range.ts';
 import type { TeamViewer } from './diagnostics.ts';
 
 export class TeamUsageError extends Error {
@@ -63,6 +64,40 @@ export interface TeamUsageAttempt {
   errorId: string | null;
   usageMirrorStatus: 'recorded' | 'missing';
   createdAt: string;
+}
+
+export interface TeamModelUsage {
+  model: string;
+  modules: string[];
+  callCount: number;
+  chargedMinor: number;
+  settledMinor: number;
+  estimatedMinor: number;
+  unpricedCount: number;
+  uncertainCount: number;
+  percentage: number;
+}
+
+export interface TeamUsageTrendPoint {
+  date: string;
+  chargedMinor: number;
+  byModel: Record<string, number>;
+}
+
+export interface TeamQuotaSummary {
+  accountingPeriod: string;
+  chargedMinor: number;
+  settledMinor: number;
+  heldMinor: number;
+  limitedCount: number;
+  limitedTotalMinor: number;
+  limitedRemainingMinor: number;
+  unlimitedCount: number;
+}
+
+export interface TeamUsageMember extends TeamMemberSummary {
+  callCount: number;
+  rangeChargedMinor: number;
 }
 
 interface AttemptRow {
@@ -208,6 +243,94 @@ export function queryTeamUsage(
   };
 }
 
+function attemptChargedMinor(item: TeamUsageAttempt): number {
+  if (item.costStatus === 'settled') return item.actualMinor ?? 0;
+  if (item.costStatus === 'estimated' || item.costStatus === 'uncertain') return item.reservedMinor;
+  return 0;
+}
+
+function usageTrend(from: string, to: string, items: TeamUsageAttempt[]): TeamUsageTrendPoint[] {
+  const firstDay = usageDateLabel(new Date(from));
+  const endDay = usageDateLabel(new Date(to));
+  const points: TeamUsageTrendPoint[] = [];
+  for (let date = firstDay; date < endDay; date = addUsageDays(date, 1)) {
+    points.push({ date, chargedMinor: 0, byModel: {} });
+  }
+  const byDate = new Map(points.map((point) => [point.date, point]));
+  for (const item of items) {
+    const point = byDate.get(usageDateLabel(new Date(item.createdAt)));
+    if (!point) continue;
+    const chargedMinor = attemptChargedMinor(item);
+    point.chargedMinor += chargedMinor;
+    point.byModel[item.model] = (point.byModel[item.model] ?? 0) + chargedMinor;
+  }
+  return points;
+}
+
+export function queryTeamUsageAnalytics(
+  db: Database.Database,
+  viewer: TeamViewer,
+  filters: TeamUsageFilters = {},
+  now = new Date(),
+): {
+  models: TeamModelUsage[];
+  trend: TeamUsageTrendPoint[];
+  members: TeamUsageMember[];
+  teamQuota: TeamQuotaSummary | null;
+  modelOptions: string[];
+} {
+  const items = queryTeamUsage(db, viewer, filters).items;
+  const modelMap = new Map<string, TeamModelUsage>();
+  for (const item of items) {
+    const current = modelMap.get(item.model) ?? {
+      model: item.model, modules: [], callCount: 0, chargedMinor: 0,
+      settledMinor: 0, estimatedMinor: 0, unpricedCount: 0, uncertainCount: 0, percentage: 0,
+    };
+    current.callCount += 1;
+    current.chargedMinor += attemptChargedMinor(item);
+    if (!current.modules.includes(item.module)) current.modules.push(item.module);
+    if (item.costStatus === 'settled') current.settledMinor += item.actualMinor ?? 0;
+    if (item.costStatus === 'estimated') current.estimatedMinor += item.reservedMinor;
+    if (item.costStatus === 'unpriced') current.unpricedCount += 1;
+    if (item.costStatus === 'uncertain') current.uncertainCount += 1;
+    modelMap.set(item.model, current);
+  }
+  const chargedTotal = items.reduce((sum, item) => sum + attemptChargedMinor(item), 0);
+  const models = [...modelMap.values()].map((model) => ({
+    ...model,
+    modules: model.modules.sort((left, right) => left.localeCompare(right)),
+    percentage: chargedTotal > 0 ? model.chargedMinor / chargedTotal * 100 : 0,
+  })).sort((left, right) => right.chargedMinor - left.chargedMinor || right.callCount - left.callCount || left.model.localeCompare(right.model));
+
+  const defaults = getShanghaiUsagePeriods(now).month;
+  const trend = usageTrend(filters.from ?? defaults.from, filters.to ?? defaults.to, items);
+  if (viewer.role !== 'admin') {
+    const modelOptions = queryTeamUsage(db, viewer, { actorUserId: viewer.userId }).items.map((item) => item.model);
+    return { models, trend, members: [], teamQuota: null, modelOptions: [...new Set(modelOptions)].sort() };
+  }
+
+  const memberRows = listTeamMembers(db, viewer, { now }).items;
+  const members = memberRows.map((member) => ({
+    ...member,
+    callCount: items.filter((item) => item.actorUserId === member.userId).length,
+    rangeChargedMinor: items.filter((item) => item.actorUserId === member.userId)
+      .reduce((sum, item) => sum + attemptChargedMinor(item), 0),
+  })).sort((left, right) => right.rangeChargedMinor - left.rangeChargedMinor || left.employeeId.localeCompare(right.employeeId));
+  const limited = memberRows.filter((member) => member.monthlyLimitMinor !== null);
+  const teamQuota: TeamQuotaSummary = {
+    accountingPeriod: shanghaiAccountingPeriod(now),
+    chargedMinor: memberRows.reduce((sum, member) => sum + member.monthChargedMinor, 0),
+    settledMinor: memberRows.reduce((sum, member) => sum + member.monthSettledMinor, 0),
+    heldMinor: memberRows.reduce((sum, member) => sum + member.heldMinor, 0),
+    limitedCount: limited.length,
+    limitedTotalMinor: limited.reduce((sum, member) => sum + (member.monthlyLimitMinor ?? 0), 0),
+    limitedRemainingMinor: limited.reduce((sum, member) => sum + (member.remainingMinor ?? 0), 0),
+    unlimitedCount: memberRows.length - limited.length,
+  };
+  const modelOptions = queryTeamUsage(db, viewer).items.map((item) => item.model);
+  return { models, trend, members, teamQuota, modelOptions: [...new Set(modelOptions)].sort() };
+}
+
 interface MemberRow {
   userId: string;
   employeeId: string;
@@ -231,7 +354,9 @@ export interface TeamMemberSummary {
   monthlyLimitMinor: number | null;
   remainingMinor: number | null;
   currentConcurrency: number;
-  concurrencyLimit: number;
+  concurrencyLimit: number | null;
+  concurrencyMode: ActorPolicy['concurrencyMode'];
+  concurrencySource: ActorPolicy['concurrencySource'];
   paused: boolean;
   allowedModels: string[] | null;
   policyVersion: number;
@@ -290,12 +415,15 @@ function memberSummary(db: Database.Database, row: MemberRow, now: Date): TeamMe
     monthlyLimitMinor: policy.monthlyLimitMinor,
     remainingMinor: policy.monthlyLimitMinor === null ? null : Math.max(0, policy.monthlyLimitMinor - monthChargedMinor),
     currentConcurrency,
-    concurrencyLimit: policy.personalConcurrency,
+    concurrencyLimit: policy.effectiveConcurrency,
+    concurrencyMode: policy.concurrencyMode,
+    concurrencySource: policy.concurrencySource,
     paused: policy.paused,
     allowedModels: policy.allowedModels,
     policyVersion: policy.version,
     waitingReason: waitingReason ?? null,
-    attention: row.accountStatus === 'disabled' || policy.paused || Boolean(waitingReason) || hasUnknown || nearLimit || currentConcurrency > policy.personalConcurrency,
+    attention: row.accountStatus === 'disabled' || policy.paused || Boolean(waitingReason) || hasUnknown || nearLimit
+      || (policy.effectiveConcurrency !== null && currentConcurrency > policy.effectiveConcurrency),
     modules: modules.map((module) => ({ module: module.module, chargedMinor: Number(module.chargedMinor) })),
   };
 }
@@ -357,6 +485,7 @@ export function updateTeamMemberPolicy(
     targetUserId: string;
     monthlyLimitMinor: number | null;
     personalConcurrency: number;
+    concurrencyMode?: 'inherit' | 'fixed';
     paused: boolean;
     expectedVersion: number;
     allowedModels?: string[] | null;
@@ -372,6 +501,7 @@ export function updateTeamMemberPolicy(
     actorId: input.targetUserId,
     monthlyLimitMinor: input.monthlyLimitMinor,
     personalConcurrency: input.personalConcurrency,
+    concurrencyMode: input.concurrencyMode,
     paused: input.paused,
     expectedVersion: input.expectedVersion,
     allowedModels: input.allowedModels,

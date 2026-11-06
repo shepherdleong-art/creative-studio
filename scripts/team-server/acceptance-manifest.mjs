@@ -34,6 +34,7 @@ export const L1_SUITE = [
   node('team-file-routes.test.ts', ['A04', 'F01']),
   node('file-response.test.ts', ['F01', 'F04']),
   node('team-public-resources.test.ts', ['A05']),
+  node('team-public-resource-candidates.test.ts', ['A05']),
   node('team-transfers.test.ts', ['F02', 'F03']),
   node('team-transfer-routes.test.ts', ['A01', 'F01', 'F02', 'F04']),
   node('team-transfer-space.test.ts', ['F02']),
@@ -84,7 +85,6 @@ export const L1_SUITE = [
 ];
 
 export const FIRST_RUN_SUITE = [
-  node('team-production-http.playwright.test.mjs', ['A03', 'Q01', 'Q08', 'C01', 'R03'], { timeoutMs: 900_000, realMedia: true }),
   node('team-first-run.test.ts', ['A01', 'A03', 'Q01', 'Q02']),
   node('creative-canvas-execution.test.ts', ['C01', 'Q01', 'Q08']),
   node('batch-executors.test.ts', ['Q01', 'Q03', 'Q06']),

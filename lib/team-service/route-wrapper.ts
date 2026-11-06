@@ -16,6 +16,56 @@ import { teamRoutePolicy, SERVER_SOFT_DELETE_TARGETS, type TeamRoutePolicy } fro
 import { softDeleteResource } from './lifecycle/index.ts';
 import { assertCompatibleClientWrite } from './client-capabilities.ts';
 import { runWithExecutionRequestVersions } from '../media-core/execution/context.ts';
+import { recordTeamError } from './diagnostics.ts';
+
+const DIAGNOSTIC_TIMEOUT_MS = 250;
+
+function safeErrorCode(error: unknown): string {
+  const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+  return /^[a-z][a-z0-9_.-]{0,79}$/i.test(code) ? code : 'route_handler_failed';
+}
+
+async function captureRouteFailure(input: {
+  actorUserId: string;
+  route: string;
+  method: string;
+  scope: { resourceType: string; resourceId: string } | null;
+  taskId: string | null;
+  error?: unknown;
+  code?: string;
+}): Promise<string | null> {
+  const code = input.code && /^[a-z][a-z0-9_.-]{0,79}$/i.test(input.code) ? input.code : safeErrorCode(input.error);
+  const capture = async () => {
+    try {
+      return recordTeamError(getDb(), {
+        actorUserId: input.actorUserId,
+        module: input.route.split('/')[2] ?? 'unknown',
+        taskId: input.taskId,
+        scope: input.scope,
+        stage: 'server_api',
+        origin: 'server_api',
+        code,
+        statusCode: 500,
+        eventKey: `server-api:${input.method}:${input.route}:${input.actorUserId}:${input.scope ? `${input.scope.resourceType}:${input.scope.resourceId}` : 'global'}:${input.taskId ?? 'no-task'}:${code}`,
+        serverReleaseId: process.env.CREATIVE_STUDIO_SERVER_RELEASE_ID?.trim() || 'unknown',
+      }).errorId;
+    } catch {
+      return null;
+    }
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      capture(),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), DIAGNOSTIC_TIMEOUT_MS);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 type RouteHandlerContext = {
   params?: Promise<Record<string, string | string[] | undefined>> | Record<string, string | string[] | undefined>;
@@ -292,6 +342,8 @@ export function withTeamRoute<T>(route: string, method: string, handler: T): T &
     }
     const request = args[0] as Request | undefined;
     let context = null as ReturnType<typeof createTeamAccessContext> | null;
+    let diagnosticScope: { resourceType: string; resourceId: string } | null = null;
+    let diagnosticTaskId: string | null = null;
     try {
       if (request && policy.csrf && !route.startsWith('/api/team/auth/')) assertCompatibleClientWrite(request);
       if (policy.csrf) {
@@ -307,6 +359,11 @@ export function withTeamRoute<T>(route: string, method: string, handler: T): T &
         context = createTeamAccessContext({ db: getDb(), principal });
         if (policy.category === 'resource') {
           const authorized = await authorizeResource(request, args[1] as RouteHandlerContext | undefined, policy, principal);
+          diagnosticScope = authorized.primary ?? authorized.data.references[0] ?? null;
+          diagnosticTaskId = single(authorized.data.params.taskId)
+            ?? (typeof authorized.data.body === 'object' && authorized.data.body !== null
+              && typeof (authorized.data.body as Record<string, unknown>).taskId === 'string'
+              ? (authorized.data.body as Record<string, string>).taskId : null);
           const softDelete = softDeleteReference(policy, authorized);
           if (softDelete) {
             const deleted = softDeleteResource(getDb(), principal, softDelete);
@@ -322,10 +379,33 @@ export function withTeamRoute<T>(route: string, method: string, handler: T): T &
     const invoke = () => runWithExecutionRequestVersions({
       clientVersion: request?.headers.get('x-creative-studio-client-version')?.slice(0, 64) || undefined,
     }, () => (handler as (...handlerArgs: unknown[]) => unknown)(...args));
-    const response = await (context ? runWithAccessContext(context, invoke) : invoke()) as Response;
+    let response: Response;
+    try {
+      response = await (context ? runWithAccessContext(context, invoke) : invoke()) as Response;
+    } catch (error) {
+      if (!context || route.startsWith('/api/team/errors/')) throw error;
+      const errorId = await captureRouteFailure({
+        actorUserId: context.actor.userId, route, method, scope: diagnosticScope, taskId: diagnosticTaskId, error,
+      });
+      return Response.json({
+        error: 'internal_error', message: '服务端处理失败，请稍后重试或凭错误编号联系管理员。',
+        ...(errorId ? { errorId } : {}),
+      }, { status: 500, headers: { 'Cache-Control': 'no-store' } });
+    }
     if (response instanceof Response) {
       const cacheControl = response.headers.get('Cache-Control') ?? '';
       response.headers.set('Cache-Control', cacheControl.includes('private') ? 'private, no-store' : 'no-store');
+      if (context && response.status >= 500 && !route.startsWith('/api/team/errors/')) {
+        let code = 'route_response_failed';
+        try {
+          const body = await response.clone().json() as { error?: unknown };
+          if (typeof body.error === 'string' && /^[a-z][a-z0-9_.-]{0,79}$/i.test(body.error)) code = body.error;
+        } catch { /* 流式媒体/文件响应不读取，也不改变原响应 */ }
+        const errorId = await captureRouteFailure({
+          actorUserId: context.actor.userId, route, method, scope: diagnosticScope, taskId: diagnosticTaskId, code,
+        });
+        if (errorId) response.headers.set('x-creative-studio-error-id', errorId);
+      }
     }
     return response;
   };

@@ -10,11 +10,37 @@ import {
   type ExecutionReceipt,
   type InstanceFence,
 } from './media-core/execution/context.ts';
-import { ensureMediaProviderPool, normalizedBaseUrl, legacyMediaProviderPoolKey, legacyMediaProviderCredentialFingerprint as upstreamFingerprint } from './media-core/execution/media-provider-pool.ts';
-export { legacyMediaProviderPoolKey, legacyMediaProviderCredentialFingerprint } from './media-core/execution/media-provider-pool.ts';
+import { readExecutionPool, readExecutionPoolBinding, mediaUpstreamBindingKey } from './media-core/execution/pools.ts';
 
 export function isServerMediaExecution(): boolean {
   return (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE?.trim() || 'local') === 'server';
+}
+
+function normalizedBaseUrl(value: string): string {
+  const trimmed = value.trim();
+  try {
+    const url = new URL(trimmed);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    url.hostname = url.hostname.toLowerCase();
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return trimmed.replace(/\/$/, '');
+  }
+}
+
+function upstreamFingerprint(baseUrl: string, apiKey: string): string {
+  return createHash('sha256').update(`${normalizedBaseUrl(baseUrl)}\0${apiKey.trim()}`).digest('hex');
+}
+
+export function legacyMediaProviderPoolKey(baseUrl: string, apiKey: string): string {
+  return `media-upstream:${upstreamFingerprint(baseUrl, apiKey).slice(0, 32)}`;
+}
+
+export function legacyMediaProviderCredentialFingerprint(baseUrl: string, apiKey: string): string {
+  return upstreamFingerprint(baseUrl, apiKey);
 }
 
 export function configureLegacyMediaProviderPool(input: {
@@ -36,6 +62,32 @@ export function configureLegacyMediaProviderPool(input: {
     baseUrl: normalizedBaseUrl(input.baseUrl),
     credentialFingerprint: fingerprint,
   }), new Date().toISOString());
+  return poolKey;
+}
+
+function ensureProviderPool(baseUrl: string, apiKey: string): string {
+  const fingerprint = upstreamFingerprint(baseUrl, apiKey);
+  const binding = readExecutionPoolBinding(getDb(), mediaUpstreamBindingKey(fingerprint));
+  const poolKey = binding?.poolKey ?? legacyMediaProviderPoolKey(baseUrl, apiKey);
+  const pool = readExecutionPool(getDb(), poolKey);
+  const mapping = pool.mappingSnapshot as {
+    protocol?: unknown; baseUrl?: unknown; credentialFingerprint?: unknown; credentialFingerprints?: unknown;
+  } | null;
+  if (binding) {
+    const members = Array.isArray(mapping?.credentialFingerprints)
+      ? mapping!.credentialFingerprints.filter((item): item is string => typeof item === 'string') : [];
+    if (pool.kind !== 'remote' || mapping?.protocol !== 'media-upstream-pool/1'
+      || mapping?.baseUrl !== normalizedBaseUrl(baseUrl)
+      || !members.includes(fingerprint)) {
+      throw new ExecutionError('pool_mapping_mismatch', `受控资源池 ${poolKey} 的共享账户映射未核验，拒绝付费提交。`);
+    }
+    return poolKey;
+  }
+  if (pool.kind !== 'remote' || mapping?.protocol !== 'legacy-media-upstream/1'
+    || mapping?.baseUrl !== normalizedBaseUrl(baseUrl)
+    || mapping?.credentialFingerprint !== fingerprint) {
+    throw new ExecutionError('pool_mapping_mismatch', `受控资源池 ${poolKey} 的供应商映射未核验，拒绝付费提交。`);
+  }
   return poolKey;
 }
 
@@ -217,7 +269,7 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
   const operationKey = `${input.module}/${input.taskId}/submit/${input.inputRevision}`;
   const revisionNumber = Number(input.inputRevision.replace(/\D/g, '')) + 1 || 1;
   const credentialIdentity = input.credentialIdentity ?? input.apiKey;
-  const poolKey = ensureMediaProviderPool(getDb(), input.baseUrl, credentialIdentity);
+  const poolKey = ensureProviderPool(input.baseUrl, credentialIdentity);
   const enqueued = facade.enqueue({
     operationKey,
     actor: { userId: access.actor.userId },
@@ -284,7 +336,10 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
           ? input.quote.reserve
           : null;
       await facade.settle({ attemptId: attempt.id, outcome, actualCost, remoteTerminal: true });
-      if (outcome === 'failed') throw new Error('供应商同步返回失败。');
+      if (outcome === 'failed') {
+        await facade.captureError({ attemptId: attempt.id, outcome: 'failed', stage: 'remote_submit', errorCode: attempt.errorCode ?? 'provider_failed' });
+        throw new Error('供应商同步返回失败。');
+      }
     }
     return { value, attemptId: attempt.id, remoteId: attempt.remoteId ?? undefined, resumed: false };
   } catch (error) {
@@ -319,6 +374,7 @@ export async function settleLegacyMediaRemote(input: {
   actualCost?: { currency: 'CNY'; minor: number } | null;
   resultRef?: string;
   errorCode?: string;
+  errorStage?: 'remote_submit' | 'remote_poll' | 'download' | 'local_media' | 'storage';
 }): Promise<void> {
   if (!isServerMediaExecution()) return;
   const access = requireAccessContext();
@@ -327,6 +383,13 @@ export async function settleLegacyMediaRemote(input: {
     SELECT currentAttemptId FROM execution_operations WHERE actorId = ? AND operationKey = ?
   `).get(access.actor.userId, operationKey) as { currentAttemptId: string | null } | undefined;
   if (!row?.currentAttemptId) return;
+  if (input.outcome === 'failed' && input.errorStage && !['remote_submit', 'remote_poll'].includes(input.errorStage)) {
+    await injection().facade.captureError({
+      attemptId: row.currentAttemptId,
+      outcome: 'failed', stage: input.errorStage, errorCode: input.errorCode,
+    });
+    return;
+  }
   await injection().facade.settle({
     attemptId: row.currentAttemptId,
     outcome: input.outcome,
@@ -334,7 +397,41 @@ export async function settleLegacyMediaRemote(input: {
     remoteTerminal: true,
     result: input.resultRef ? { resultRef: input.resultRef } : undefined,
     errorCode: input.errorCode,
+    errorStage: input.errorStage === 'remote_poll' ? 'remote_poll' : undefined,
   });
+}
+
+/** 已受理阶段的失败：关联原尝试，不篡改已成功的远端终态或费用；轮询异常继续保留原远端身份。 */
+export async function captureLegacyMediaFailure(input: {
+  module: 'image' | 'video';
+  taskId: string;
+  inputRevision: string;
+  stage: 'download' | 'storage' | 'local_media' | 'remote_poll';
+  errorCode: string;
+}): Promise<void> {
+  if (!isServerMediaExecution()) return;
+  const access = requireAccessContext();
+  const operationKey = `${input.module}/${input.taskId}/submit/${input.inputRevision}`;
+  const row = getDb().prepare(`SELECT currentAttemptId FROM execution_operations WHERE actorId = ? AND operationKey = ?`)
+    .get(access.actor.userId, operationKey) as { currentAttemptId: string | null } | undefined;
+  if (!row?.currentAttemptId) return;
+  await injection().facade.captureError({
+    attemptId: row.currentAttemptId, outcome: 'failed', stage: input.stage, errorCode: input.errorCode,
+  });
+}
+
+export async function recoverLegacyMediaDownload(input: {
+  module: 'image' | 'video';
+  taskId: string;
+  inputRevision: string;
+}): Promise<void> {
+  if (!isServerMediaExecution()) return;
+  const access = requireAccessContext();
+  const operationKey = `${input.module}/${input.taskId}/submit/${input.inputRevision}`;
+  const row = getDb().prepare(`SELECT currentAttemptId FROM execution_operations WHERE actorId = ? AND operationKey = ?`)
+    .get(access.actor.userId, operationKey) as { currentAttemptId: string | null } | undefined;
+  if (!row?.currentAttemptId) return;
+  await injection().facade.captureRecovery({ taskId: input.taskId, module: input.module, stage: 'download' });
 }
 
 export async function cancelLegacyMediaNewStage(input: {

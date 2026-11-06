@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
-import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
+import { managedResourceVisibility, registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { dataRoot } from '../data-root.ts';
 import { runFfmpeg } from '../ffmpeg.ts';
 import { withMediaResource } from '../media-core/media-resource-gate.ts';
@@ -67,8 +67,9 @@ export function resolveColorSnapshot(
     throw new BatchDomainError('not_found', 'LUT 不存在');
   }
   const access = requireAccessContext();
+  const publiclyShared = access.kind === 'team' && managedResourceVisibility('lut', lutId) === 'public';
   if (access.kind === 'team') access.assertAccess('lut', lutId, 'read');
-  if (lut.projectId !== projectId) {
+  if (lut.projectId !== projectId && !publiclyShared) {
     throw new BatchDomainError('invalid_input', 'LUT 不属于该批次所在项目');
   }
   if (lut.status !== 'active') {
@@ -136,7 +137,7 @@ export function createManagedLut(
     });
     if (access.kind === 'team') {
       registerManagedFile({
-        absolutePath: path.join(dataRoot(), 'storage', input.relativePath),
+        absolutePath: resolveManagedLutPath(input.relativePath),
         mimeType: 'application/octet-stream',
         references: [{ resourceType: 'lut', resourceId: id, role: 'input' }],
       });
@@ -147,10 +148,14 @@ export function createManagedLut(
 
 export function getLut(db: Database.Database, projectId: string, lutId: string): BatchLutRow | undefined {
   const access = requireAccessContext();
-  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
+  const publiclyShared = access.kind === 'team' && managedResourceVisibility('lut', lutId) === 'public';
+  if (access.kind === 'team') {
+    access.assertAccess('lut', lutId, 'read');
+    if (!publiclyShared) access.assertAccess('project', projectId, 'read');
+  }
   return db.prepare(`
-    SELECT * FROM batch_luts WHERE id = ? AND projectId = ?
-  `).get(lutId, projectId) as BatchLutRow | undefined;
+    SELECT * FROM batch_luts WHERE id = ? ${publiclyShared ? '' : 'AND projectId = ?'}
+  `).get(...(publiclyShared ? [lutId] : [lutId, projectId])) as BatchLutRow | undefined;
 }
 
 /** 项目可选 LUT 列表;默认只列出 active,供批次选择器使用。 */
@@ -164,8 +169,16 @@ export function listProjectLuts(
       SELECT * FROM batch_luts WHERE projectId = ? ORDER BY createdAt, id
     `).all(projectId) as BatchLutRow[];
   }
+  const access = requireAccessContext();
+  if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
   return db.prepare(`
-    SELECT * FROM batch_luts WHERE projectId = ? AND status = 'active' ORDER BY createdAt, id
+    SELECT * FROM batch_luts
+    WHERE status = 'active' AND (projectId = ? ${access.kind === 'team' ? `OR EXISTS (
+      SELECT 1 FROM team_resource_scopes scope
+      WHERE scope.resourceType = 'lut' AND scope.resourceId = batch_luts.id
+        AND scope.deletedAt IS NULL AND scope.visibility = 'public'
+    )` : ''})
+    ORDER BY createdAt, id
   `).all(projectId) as BatchLutRow[];
 }
 

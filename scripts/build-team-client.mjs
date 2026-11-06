@@ -75,11 +75,13 @@ try {
   copy(electronDist, path.join(staging, 'runtime'));
   copy(path.join(repoRoot, 'scripts', 'team-client', 'launcher.mjs'), path.join(staging, 'launcher.mjs'));
   copy(path.join(repoRoot, 'scripts', 'team-client', 'start-client.cmd'), path.join(staging, 'start-client.cmd'));
-  for (const file of ['update-helper.js', 'update-coordinator.js', 'atomic-json.js', 'safe-zip.js', 'update-package.js']) {
+  for (const file of ['update-helper.js', 'update-coordinator.js', 'atomic-json.js', 'safe-zip.js', 'update-package.js', 'client-diagnostics.js']) {
     copy(path.join(repoRoot, 'dist-desktop', 'client', file), path.join(staging, 'helper', file));
   }
   write('update-public-key.pem', publicKey);
-  write('client-config.json', `${JSON.stringify({ schemaVersion: 1, serverOrigin: serverOrigin.origin, connectionMode: args.includes('--direct-connection') ? 'direct' : 'system' }, null, 2)}\n`);
+  write('client-config.json', `${JSON.stringify({ schemaVersion: 1, serverOrigin: serverOrigin.origin,
+    ...(args.includes('--direct-connection') ? { connectionMode: 'direct' } : {}),
+  }, null, 2)}\n`);
   write(path.join('versions', releaseId, 'package.json'), `${JSON.stringify({
     name: 'creative-studio-team-client', version: packageJson.version, private: true,
     main: 'dist-desktop/main.js', license: 'GPL-3.0-only',

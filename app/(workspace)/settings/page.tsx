@@ -2,6 +2,7 @@
 
 import { resolveCoreUsagePlan } from '@/lib/usage-pricing';
 import { useEffect, useState, type ReactNode } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import ProxyCacheSettingsSection from '@/components/batch-production/ProxyCacheSettingsSection';
 import MotionTemplateSettings from '@/components/MotionTemplateSettings';
@@ -145,7 +146,10 @@ const sections: Array<{ id: Category; title: string; description: string; icon: 
 ];
 
 export default function SettingsPage() {
-  const [active, setActive] = useState<Category>('image');
+  const searchParams = useSearchParams();
+  const requestedSection = searchParams.get('section');
+  const [active, setActive] = useState<Category>(() => sections.some((section) => section.id === requestedSection)
+    ? requestedSection as Category : 'image');
   const [imageProviders, setImageProviders] = useState<ImageProvider[]>([]);
   const [scriptProviders, setScriptProviders] = useState<ScriptProvider[]>([]);
   const [videoProviders, setVideoProviders] = useState<VideoProvider[]>([]);

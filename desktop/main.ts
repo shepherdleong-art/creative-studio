@@ -18,6 +18,10 @@ import { completeFilmNavigation, consumeFilmNavigationRequest } from './reassemb
 import { createRemoteClientHost, confirmRemoteClientHealth, defaultClientStateRoot, readRemoteClientConfig } from './client/remote-host';
 import { spawnIndependentUpdateHelper } from './client/update-helper';
 
+if (process.env.CREATIVE_STUDIO_CLIENT_MODE === 'remote') {
+  const remoteStateRoot = defaultClientStateRoot();
+  app.setPath('userData', join(remoteStateRoot, 'electron'));
+}
 const singleInstanceLock = app.requestSingleInstanceLock();
 
 let mainWindow: BrowserWindow | null = null;
@@ -59,13 +63,18 @@ async function boot(): Promise<void> {
       },
       onWindowClosed: () => { mainWindow = null; },
       shutdown: () => shutdown(),
-      installUpdate: async (manifestUrl) => {
+      installUpdate: async (manifestUrl, transfers) => {
         if (!installRoot) return { started: false, message: '未找到稳定安装根，请使用受控修复包。' };
-        await spawnIndependentUpdateHelper({
+        const actorUserId = await transfers.currentUser();
+        try {
+          await spawnIndependentUpdateHelper({
           installRoot,
           manifestUrl,
           serverOrigin: clientConfig.origin,
           currentPid: process.pid,
+          actorUserId: actorUserId ?? undefined,
+          clientDeviceId: transfers?.clientIdentity,
+          clientVersion: app.getVersion(),
           onPauseRequested: async () => {
             if (windowHost?.mode === 'remote') await windowHost.remote.pauseForUpdate();
           },
@@ -77,6 +86,7 @@ async function boot(): Promise<void> {
             await shutdown();
           },
           onResult: (result) => {
+            if (result.status !== 'committed' && actorUserId) transfers?.reportUpdateResult(result, actorUserId);
             if ((result.status === 'rejected' || result.status === 'recovery_required') && !shutdownPromise) {
               void dialog.showMessageBox({
                 type: 'error', title: '轻客户端更新未完成',
@@ -85,6 +95,12 @@ async function boot(): Promise<void> {
             }
           },
         });
+        } catch {
+          if (actorUserId) transfers?.reportUpdateResult({
+            status: 'rejected', phase: 'helper_start', clientEventId: randomUUID(),
+          }, actorUserId);
+          throw new Error('独立更新助手启动失败，已保留当前版本。');
+        }
         return { started: true };
       },
     });
@@ -163,7 +179,13 @@ async function shutdown(): Promise<void> {
     removeIpcHandlers = null;
     const currentService = service;
     service = null;
-    if (windowHost?.mode === 'remote') await windowHost.remote.stop();
+    if (windowHost?.mode === 'remote') {
+      await windowHost.remote.stop();
+      await Promise.race([
+        windowHost.session.flushStorageData(),
+        new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+      ]).catch(() => undefined);
+    }
     await currentService?.stop();
     desktopSecret = null;
     app.exit(0);

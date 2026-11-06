@@ -30,7 +30,13 @@ export interface TeamReleaseState {
   completedStages: TeamReleaseStage[];
   fromRelease: TeamReleaseIdentity;
   toRelease: TeamReleaseIdentity;
+  actualRelease?: TeamReleaseIdentity;
   unknownAttemptIds: string[];
+  recovery?: {
+    status: 'maintenance_required' | 'rollback_available' | 'restore_hold' | 'rolled_back';
+    reason: string;
+    automaticRollbackAllowed: boolean;
+  };
   executionEvidenceSha256?: string;
   preUpgradeBackupId?: string;
   errorCode?: string;
@@ -61,6 +67,7 @@ export interface RunTeamReleaseOptions {
   fromRelease: TeamReleaseIdentity;
   toRelease: TeamReleaseIdentity;
   adapters: TeamReleaseAdapters;
+  onStage?: (stage: TeamReleaseStage, state: TeamReleaseState) => void;
   now?: () => Date;
 }
 
@@ -151,6 +158,17 @@ export async function runTeamRelease(options: RunTeamReleaseOptions): Promise<Te
       throw new Error('发布续跑身份或输入哈希不匹配');
     }
     if (state.status === 'completed') return state;
+    if (!Array.isArray(state.completedStages) || state.completedStages.some((stage) => !TEAM_RELEASE_STAGES.includes(stage))
+      || !Array.isArray(state.unknownAttemptIds) || state.unknownAttemptIds.some((id) => typeof id !== 'string' || !id)) {
+      throw new Error('发布续跑状态损坏，拒绝继续');
+    }
+    const stageOrder = state.completedStages.map((stage) => TEAM_RELEASE_STAGES.indexOf(stage));
+    if (new Set(state.completedStages).size !== state.completedStages.length
+      || stageOrder.some((position, index) => index > 0 && position <= stageOrder[index - 1])
+      || JSON.stringify(state.fromRelease) !== JSON.stringify(options.fromRelease)
+      || JSON.stringify(state.toRelease) !== JSON.stringify(options.toRelease)) {
+      throw new Error('发布续跑阶段、版本或执行证据身份不匹配');
+    }
     state = { ...state, status: 'running', maintenance: true, errorCode: undefined, updatedAt: now().toISOString() };
   } else {
     state = {
@@ -165,6 +183,7 @@ export async function runTeamRelease(options: RunTeamReleaseOptions): Promise<Te
       fromRelease: options.fromRelease,
       toRelease: options.toRelease,
       unknownAttemptIds: [],
+      actualRelease: { ...options.fromRelease },
       updatedAt: now().toISOString(),
     };
   }
@@ -181,6 +200,7 @@ export async function runTeamRelease(options: RunTeamReleaseOptions): Promise<Te
     state.status = 'running';
     state.maintenance = true;
     await persist();
+    options.onStage?.(stage, { ...state });
     appendMaintenanceReceipt({
       backupRoot: options.backupRoot, deploymentId: options.deploymentId, kind: 'release',
       operationId: options.operationId, phase: 'stage', at: now().toISOString(), details: { stage, outcome: 'started' },
@@ -199,6 +219,13 @@ export async function runTeamRelease(options: RunTeamReleaseOptions): Promise<Te
       state.maintenance = true;
       state.currentStage = stage;
       state.errorCode = 'release_stage_failed';
+      const switched = completed.has('switch');
+      state.recovery = {
+        status: 'maintenance_required', automaticRollbackAllowed: false,
+        reason: switched
+          ? '已切换发布，只有确认代码与数据结构兼容后才允许回切；当前保持维护且禁止新付费提交。'
+          : '尚未完成发布切换，保持维护状态；修复失败原因后可续跑同一作业，不会重复已保存的备份或执行证据。',
+      };
       await persist();
       appendMaintenanceReceipt({
         backupRoot: options.backupRoot, deploymentId: options.deploymentId, kind: 'release',
@@ -237,9 +264,12 @@ export async function runTeamRelease(options: RunTeamReleaseOptions): Promise<Te
     if (!result.verified) throw new Error('pre-upgrade 完整备份未验证');
     state.preUpgradeBackupId = safeMaintenanceId(result.backupId, 'backupId');
   });
-  await execute('switch', () => options.adapters.switchRelease({
-    fromRelease: options.fromRelease, toRelease: options.toRelease,
-  }));
+  await execute('switch', async () => {
+    await options.adapters.switchRelease({
+      fromRelease: options.fromRelease, toRelease: options.toRelease,
+    });
+    state.actualRelease = { ...options.toRelease };
+  });
   await execute('start_maintenance', () => options.adapters.startMaintenance());
   await execute('migrate', () => options.adapters.migrate());
   await execute('self_check', async () => {
@@ -251,6 +281,8 @@ export async function runTeamRelease(options: RunTeamReleaseOptions): Promise<Te
   state.maintenance = false;
   state.currentStage = 'done';
   state.errorCode = undefined;
+  state.actualRelease = { ...options.toRelease };
+  state.recovery = undefined;
   await persist();
   appendMaintenanceReceipt({
     backupRoot: options.backupRoot, deploymentId: options.deploymentId, kind: 'release',

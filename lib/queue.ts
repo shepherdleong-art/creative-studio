@@ -38,6 +38,8 @@ import {
   legacyMediaExecutionRevision,
   recoverLegacyMediaSubmission,
   settleLegacyMediaRemote,
+  captureLegacyMediaFailure,
+  recoverLegacyMediaDownload,
   submitLegacyMediaOperation,
 } from './legacy-media-execution.ts';
 import type { ExecutionReceipt } from './media-core/execution/context.ts';
@@ -410,7 +412,7 @@ async function runAuthorizedJob(
     }
 
     const providerSnapshot = {
-      providerId: provider.id, type: providerType, model: job.model, baseUrl: provider.baseUrl,
+      providerId: provider.id, providerName: provider.name, type: providerType, model: job.model, baseUrl: provider.baseUrl,
     };
     assertLegacyMediaProviderRecovery({
       module: 'image', taskId: job.id,
@@ -515,6 +517,7 @@ async function runAuthorizedJob(
           : null,
         resultRef,
         errorCode,
+        errorStage: outcome === 'failed' ? 'remote_poll' : undefined,
       });
     }
 
@@ -537,6 +540,7 @@ async function runAuthorizedJob(
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        await captureLegacyMediaFailure({ module: 'image', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision), stage: 'download', errorCode: 'result_download_failed' });
         db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'download_failed', errorMessage = ?
           WHERE id = ? AND status = 'running'`).run(message, job.id);
         return;
@@ -602,13 +606,24 @@ async function runAuthorizedJob(
         while (Date.now() - geekaiStart < maxPollMs) {
           if (reqAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-          const pollResult = await pollGeekAITask(
-            taskId,
-            apiKey,
-            provider.baseUrl,
-            geekaiStart,
-            reqAbort.signal
-          );
+          let pollResult;
+          try {
+            pollResult = await pollGeekAITask(
+              taskId,
+              apiKey,
+              provider.baseUrl,
+              geekaiStart,
+              reqAbort.signal
+            );
+          } catch (error) {
+            if (reqAbort.signal.aborted) throw error;
+            await captureLegacyMediaFailure({
+              module: 'image', taskId: job.id,
+              inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+              stage: 'remote_poll', errorCode: 'provider_poll_failed',
+            });
+            throw error;
+          }
 
           const elapsedSec = Math.round((Date.now() - geekaiStart) / 1000);
           db.prepare(
@@ -636,6 +651,7 @@ async function runAuthorizedJob(
             } else {
               // Remote success, local download failed
               logError(`远端成功但本地下载失败: ${pollResult.imageUrl}`);
+              await captureLegacyMediaFailure({ module: 'image', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision), stage: 'download', errorCode: 'result_download_failed' });
               db.prepare(
                 `UPDATE jobs SET status = 'failed', errorMessage = ?, providerStatus = 'download_failed', remoteImageUrl = ?
                  WHERE id = ? AND status = 'running'`
@@ -803,13 +819,24 @@ async function runAuthorizedJob(
         while (Date.now() - gatewayStart < maxPollMs) {
           if (reqAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-          const pollResult = await pollGatewayTaskImage(
-            taskId,
-            apiKey,
-            provider.baseUrl,
-            gatewayStart,
-            reqAbort.signal
-          );
+          let pollResult;
+          try {
+            pollResult = await pollGatewayTaskImage(
+              taskId,
+              apiKey,
+              provider.baseUrl,
+              gatewayStart,
+              reqAbort.signal
+            );
+          } catch (error) {
+            if (reqAbort.signal.aborted) throw error;
+            await captureLegacyMediaFailure({
+              module: 'image', taskId: job.id,
+              inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+              stage: 'remote_poll', errorCode: 'provider_poll_failed',
+            });
+            throw error;
+          }
 
           const elapsedSec = Math.round((Date.now() - gatewayStart) / 1000);
           db.prepare(
@@ -989,6 +1016,7 @@ async function runAuthorizedJob(
         result.imageBuffer = Buffer.from(await response.arrayBuffer());
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        await captureLegacyMediaFailure({ module: 'image', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision), stage: 'download', errorCode: 'result_download_failed' });
         db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'download_failed',
           remoteImageUrl = ?, errorMessage = ?, finishedAt = datetime('now') WHERE id = ? AND status = 'running'`)
           .run(result.remoteImageUrl, message, job.id);
@@ -1015,6 +1043,7 @@ async function runAuthorizedJob(
       return;
     }
 
+    try {
     // Save output image
     const outputsDir = path.join(dataRoot(), 'storage', 'outputs');
     if (!fs.existsSync(outputsDir)) {
@@ -1103,6 +1132,7 @@ async function runAuthorizedJob(
         logWarn(`实时 usage 记账失败，将由 reconciler 补记 (${usageResult.reason ?? 'unknown'})`);
       }
       logInfo(`任务完成 (成本: ¥${estimatedCost.toFixed(4)})`);
+      await recoverLegacyMediaDownload({ module: 'image', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision) });
       // Sync shot candidates even if a newer redo job already replaced latestJobId.
       const linkedShots = db.prepare(`
         SELECT s.id
@@ -1124,6 +1154,15 @@ async function runAuthorizedJob(
       db.prepare(`UPDATE shots SET latestGeneratedImageId = ? WHERE latestJobId = ?`).run(outputImageId, job.id);
     } else {
       logWarn('Job was no longer running when trying to mark succeeded, discarding');
+    }
+    } catch (error) {
+      if (!abort.aborted) {
+        await captureLegacyMediaFailure({
+          module: 'image', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+          stage: 'storage', errorCode: 'output_storage_failed',
+        });
+      }
+      throw error;
     }
   } catch (err: unknown) {
     let errorMessage = err instanceof Error ? err.message : String(err);
@@ -1188,6 +1227,16 @@ async function runAuthorizedJob(
         WHERE id = ? AND status = 'running'`).run(`${errorMessage}。提交结果未知，已禁止自动重发。`, job.id);
       logError('图片提交结果未知，进入 needs_check，禁止自动重发');
       return;
+    }
+
+    if (isServerMediaExecution()) {
+      const submitted = db.prepare('SELECT providerTaskId FROM jobs WHERE id = ?').get(job.id) as { providerTaskId: string | null } | undefined;
+      if (submitted?.providerTaskId?.trim()) {
+        db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'needs_check', errorMessage = ?, finishedAt = datetime('now')
+          WHERE id = ? AND status = 'running'`).run(`${sanitizeErrorMessage(errorMessage)}。已有远端任务，请续查，不会重新提交。`, job.id);
+        logError('图片轮询异常，保留远端任务并进入续查，不重新提交');
+        return;
+      }
     }
 
     const pType = getProviderTypeForJob(job.id);

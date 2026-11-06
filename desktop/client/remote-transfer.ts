@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Session } from 'electron';
 import { atomicJson } from './atomic-json';
+import type { ClientDiagnosticInput } from './client-diagnostics';
 
 export interface TeamFileDownloadManifest {
   fileId: string;
@@ -45,6 +46,9 @@ interface TransferRecord {
   localPath?: string;
   partPath?: string;
   serverDeviceId?: string;
+  diagnosticEventId?: string;
+  diagnosticActorUserId?: string;
+  diagnosticPhase?: string;
 }
 
 interface AccountState {
@@ -72,6 +76,8 @@ interface RemoteTransferOptions {
   session: Pick<Session, 'fetch' | 'cookies' | 'clearCache' | 'clearStorageData'>;
   platform: 'windows' | 'macos';
   reveal: (absolutePath: string) => void | Promise<void>;
+  onDiagnostic?: (event: ClientDiagnosticInput & { actorUserId: string }) => void;
+  diagnostics?: import('./client-diagnostic-reporter').ClientDiagnosticReporter;
 }
 
 const MANAGED_ID = /^[a-f0-9-]{36}$/;
@@ -110,9 +116,12 @@ function transferFailure(error: unknown): string {
   if (error && typeof error === 'object' && typeof (error as NodeJS.ErrnoException).code === 'string') {
     return (error as NodeJS.ErrnoException).code!;
   }
-  const message = error instanceof Error ? error.message : 'transfer_failed';
-  if (message.length <= 200 && !/(?:[A-Za-z]:[\\/]|^\/|\\\\)/.test(message)) return message;
+  if (error instanceof Error && /^[a-z][a-z0-9_.-]*$/i.test(error.message)) return error.message;
   return 'transfer_failed';
+}
+
+function safeFailureCode(value: string): string {
+  return /^[a-z][a-z0-9_.-]{0,79}$/i.test(value) ? value : 'transfer_failed';
 }
 
 function contained(root: string, candidate: string): boolean {
@@ -127,6 +136,7 @@ export class RemoteTransferController {
   private readonly session: RemoteTransferOptions['session'];
   private readonly platform: 'windows' | 'macos';
   private readonly reveal: RemoteTransferOptions['reveal'];
+  private readonly onDiagnostic: RemoteTransferOptions['onDiagnostic'];
   private readonly clientDeviceId: string;
   private accountKey: string | null = null;
   private currentUserId: string | null = null;
@@ -136,6 +146,7 @@ export class RemoteTransferController {
   private updateBlocked = false;
   private synchronizing: Promise<void> | null = null;
   private csrfToken: string | null = null;
+  private readonly diagnostics: RemoteTransferOptions['diagnostics'];
 
   constructor(options: RemoteTransferOptions) {
     this.origin = new URL(options.origin).origin;
@@ -144,6 +155,8 @@ export class RemoteTransferController {
     this.session = options.session;
     this.platform = options.platform;
     this.reveal = options.reveal;
+    this.onDiagnostic = options.onDiagnostic;
+    this.diagnostics = options.diagnostics;
     const devicePath = path.join(this.stateRoot, 'device.json');
     let existing: { clientDeviceId?: string } = {};
     if (fs.existsSync(devicePath)) {
@@ -152,6 +165,31 @@ export class RemoteTransferController {
     this.clientDeviceId = existing.clientDeviceId && MANAGED_ID.test(existing.clientDeviceId)
       ? existing.clientDeviceId : randomUUID();
     if (this.clientDeviceId !== existing.clientDeviceId) atomicJson(devicePath, { schemaVersion: 1, clientDeviceId: this.clientDeviceId });
+    if (options.diagnostics) options.diagnostics.rebindIdentity({
+      deploymentId: this.deploymentId, clientDeviceId: this.clientDeviceId,
+    });
+  }
+
+  get clientIdentity(): string {
+    return this.clientDeviceId;
+  }
+
+  async currentUser(): Promise<string | null> {
+    await this.synchronizeIdentity();
+    return this.currentUserId;
+  }
+
+  reportUpdateResult(result: { status: string; clientEventId?: string; phase?: string }, actorUserId: string): void {
+    if (result.status === 'committed' || !result.clientEventId) return;
+    this.diagnostics?.capture({
+      actorUserId, clientEventId: result.clientEventId, stage: 'client_update',
+      phase: result.phase ?? (result.status === 'rolled_back' ? 'recovery' : 'installation'), code: result.status === 'rejected' ? 'update_rejected' : 'update_recovery_failed',
+    });
+    void this.diagnostics?.flush().catch(() => undefined);
+  }
+
+  async flushDiagnostics(): Promise<void> {
+    await this.diagnostics?.flush().catch(() => undefined);
   }
 
   private keyFor(userId: string): string {
@@ -165,6 +203,13 @@ export class RemoteTransferController {
 
   private accountPath(key = this.accountKey): string {
     return path.join(this.accountRoot(key), 'transfers.json');
+  }
+
+  private inAccount<T>(key: string, action: () => T): T {
+    const currentKey = this.accountKey;
+    const currentAccount = this.account;
+    try { this.accountKey = key; this.account = this.loadAccount(key); return action(); }
+    finally { this.account = currentAccount; this.accountKey = currentKey; }
   }
 
   private loadAccount(key: string): AccountState {
@@ -245,7 +290,12 @@ export class RemoteTransferController {
         }),
       ])
       : await fetchPromise;
-    if (!response.ok) throw new Error(`传输请求失败（HTTP ${response.status}）`);
+    if (!response.ok) {
+      const failure = new Error('transfer_failed') as NodeJS.ErrnoException & { statusCode?: number };
+      failure.code = `http_${response.status}`;
+      failure.statusCode = response.status;
+      throw failure;
+    }
     return response;
   }
 
@@ -274,6 +324,8 @@ export class RemoteTransferController {
       const response = await this.request('/api/team/auth/session', { csrf: false });
       const body = await response.json() as { authenticated?: boolean; user?: { id?: unknown } };
       const userId = body.authenticated && typeof body.user?.id === 'string' ? body.user.id : null;
+      this.diagnostics?.setIdentity(userId);
+      if (userId) void this.diagnostics?.flush().catch(() => undefined);
       if (userId === this.currentUserId) return;
       const previousKey = this.accountKey;
       if (previousKey) this.pauseForIdentity();
@@ -316,6 +368,26 @@ export class RemoteTransferController {
         if (record.state === 'paused' || record.state === 'cancelled' || abort.signal.aborted) return;
         record.state = 'failed';
         record.failureCode = transferFailure(error);
+        record.diagnosticPhase = record.diagnosticPhase ?? 'transport';
+        if (!record.diagnosticEventId) {
+          const actorUserId = record.diagnosticActorUserId;
+          if (actorUserId) {
+            record.diagnosticEventId = randomUUID();
+            if (key === this.accountKey) this.save();
+            else this.inAccount(key, () => { this.save(); });
+            const diagnostic = {
+              actorUserId, clientEventId: record.diagnosticEventId, stage: record.kind,
+              phase: record.diagnosticPhase ?? 'transport', code: safeFailureCode(record.failureCode),
+              transferId: record.id,
+              resourceType: record.kind === 'upload' ? record.target?.resourceType : undefined,
+              resourceId: record.kind === 'upload' ? record.target?.resourceId : undefined,
+            };
+            try {
+              this.diagnostics?.report(diagnostic);
+              this.onDiagnostic?.(diagnostic);
+            } catch { /* Diagnostics never change the transfer result. */ }
+          }
+        }
       })
       .finally(() => {
         this.aborts.delete(record.id);
@@ -355,6 +427,7 @@ export class RemoteTransferController {
         sourceFingerprint: `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`,
         expectedSha256, expectedSize: stat.size, relativeName: path.basename(sourcePath),
         mimeType: 'application/octet-stream', idempotencyKey: randomUUID(), target: { ...target },
+        diagnosticActorUserId: this.currentUserId!,
       };
       this.account.transfers.push(record);
       ids.push(record.id);
@@ -365,6 +438,7 @@ export class RemoteTransferController {
   }
 
   private async runUpload(record: TransferRecord): Promise<void> {
+    record.diagnosticPhase = 'registration';
     const abort = this.aborts.get(record.id)!;
     const stat = fs.statSync(record.sourcePath!);
     const fingerprint = `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
@@ -395,6 +469,7 @@ export class RemoteTransferController {
       this.save();
     }
     const fd = fs.openSync(record.sourcePath!, 'r');
+    record.diagnosticPhase = 'parts';
     try {
       for (const part of record.missingParts ?? []) {
         if (abort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -412,6 +487,7 @@ export class RemoteTransferController {
     if (hashFile(record.sourcePath!) !== record.expectedSha256) {
       throw new Error('源文件已变化，请重新上传');
     }
+    record.diagnosticPhase = 'completion';
     await this.request(`/api/team/uploads/${encodeURIComponent(record.uploadId)}/complete`, {
       method: 'POST', signal: abort.signal,
       headers: { 'content-type': 'application/json' },
@@ -455,6 +531,7 @@ export class RemoteTransferController {
       const record: TransferRecord = {
         id, kind: 'download', state: 'queued', manifest: { ...manifest, displayName },
         localPath: path.join(directory, displayName), partPath: path.join(directory, `${displayName}.part`),
+        diagnosticActorUserId: this.currentUserId!,
       };
       this.account.transfers.push(record);
       ids.push(id);
@@ -467,7 +544,9 @@ export class RemoteTransferController {
   private async runDownload(record: TransferRecord): Promise<void> {
     const manifest = record.manifest!;
     const abort = this.aborts.get(record.id)!;
+    record.diagnosticPhase = 'receipt';
     const receipt = async (): Promise<void> => {
+      record.diagnosticPhase = 'receipt';
       await this.request('/api/team/downloads/receipts', {
         method: 'POST', signal: abort.signal, headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -477,6 +556,7 @@ export class RemoteTransferController {
       });
     };
     if (fs.existsSync(record.localPath!)) {
+      record.diagnosticPhase = 'verification';
       if (fs.statSync(record.localPath!).size !== manifest.size || hashFile(record.localPath!) !== manifest.sha256) {
         throw new Error('既有交付文件与当前版本清单不符，拒绝覆盖');
       }
@@ -485,6 +565,7 @@ export class RemoteTransferController {
       return;
     }
     fs.mkdirSync(path.dirname(record.partPath!), { recursive: true });
+    record.diagnosticPhase = 'content';
     let offset = fs.existsSync(record.partPath!) ? fs.statSync(record.partPath!).size : 0;
     if (offset > manifest.size) { fs.rmSync(record.partPath!); offset = 0; }
     const headers: Record<string, string> = {};
@@ -512,6 +593,7 @@ export class RemoteTransferController {
       }
     } finally { fs.closeSync(fd); }
     if (total !== manifest.size || hash.digest('hex') !== manifest.sha256) throw new Error('下载哈希校验失败');
+    record.diagnosticPhase = 'publication';
     fs.copyFileSync(record.partPath!, record.localPath!, fs.constants.COPYFILE_EXCL);
     fs.rmSync(record.partPath!);
     await receipt();
@@ -556,6 +638,8 @@ export class RemoteTransferController {
     record.state = 'queued';
     delete record.pauseReason;
     delete record.failureCode;
+    delete record.diagnosticEventId;
+    delete record.diagnosticPhase;
     this.save();
     this.track(record, () => record.kind === 'upload' ? this.runUpload(record) : this.runDownload(record));
   }

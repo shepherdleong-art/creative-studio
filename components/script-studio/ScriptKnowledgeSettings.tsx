@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import ViralTemplateSettings from './ViralTemplateSettings';
+import { useTeamAdmin } from '@/components/team/useTeamAdmin';
 
 /**
  * 设置页「脚本知识与模板」区块（方案 §6.4）：
@@ -94,6 +95,7 @@ export default function ScriptKnowledgeSettings() {
   const templateFileRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState<'strategy' | 'template' | null>(null);
   const [message, setMessage] = useState<{ text: string; success: boolean } | null>(null);
+  const teamAdmin = useTeamAdmin();
 
   const load = useCallback(async () => {
     try {
@@ -135,7 +137,7 @@ export default function ScriptKnowledgeSettings() {
       }
       const issues = body.report?.issues?.length ?? 0;
       const canActivate = body.report?.canActivate ?? true;
-      const suffix = body.created === false ? '内容指纹相同，未产生新版本。' : canActivate ? '已导入并激活为新版本。' : `已导入（${issues} 条警告）。`;
+      const suffix = body.created === false ? '内容指纹相同，未产生新版本。' : canActivate ? (teamAdmin ? '已保存为待发布版本，请到「公共资源 → 已有资源候选」选择并发布。' : '已导入并激活为新版本。') : `已导入（${issues} 条警告）。`;
       setMessage({ text: `导入完成，${suffix}`, success: true });
       await load();
     } catch (cause) {
@@ -188,7 +190,7 @@ export default function ScriptKnowledgeSettings() {
               <h3 className="font-semibold">{KIND_LABEL[catalog.kind]}</h3>
               {current ? (
                 <span className="status-badge status-succeeded">
-                  <Icon name="check" size={12} /> 已启用 v{current.revisionNumber}
+                  <Icon name="check" size={12} /> 团队当前 v{current.revisionNumber}
                 </span>
               ) : (
                 <span className="status-badge status-canceled">未导入</span>
@@ -278,8 +280,11 @@ export default function ScriptKnowledgeSettings() {
                   {revision.current ? (
                     <span className="status-badge status-succeeded shrink-0">当前</span>
                   ) : (
-                    <button type="button" className="btn-secondary btn-sm shrink-0" onClick={() => void activate(catalog.id, revision.id)}>
-                      激活
+                    <button type="button" className="btn-secondary btn-sm shrink-0" onClick={() => {
+                      if (teamAdmin) window.location.assign('/team/admin/resources#resource-candidates-heading');
+                      else void activate(catalog.id, revision.id);
+                    }}>
+                      {teamAdmin ? '去发布' : '激活'}
                     </button>
                   )}
                 </div>

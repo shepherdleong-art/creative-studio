@@ -12,6 +12,7 @@ import {
   type ResourceRef,
   type RootScopeRegistration,
   type InheritedScopeRegistration,
+  type TaskPrincipalRegistration,
 } from '../media-core/access-context.ts';
 
 export type ResourceVisibility = 'private' | 'public';

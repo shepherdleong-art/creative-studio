@@ -7,10 +7,18 @@ import { resolveDeploymentConfig } from './generate-config.mjs';
 import { sha256File, verifyReleaseManifest } from './distribution.mjs';
 import { runControlledServiceAction } from './service-control.mjs';
 import { createTeamBackup, verifyTeamBackup } from '../../lib/team-service/maintenance/backup.ts';
+import { MaintenanceJobStore } from '../../lib/team-service/maintenance/jobs.ts';
+import { runMaintenanceWorker, maintenanceGlobalLockPath } from '../../lib/team-service/maintenance/worker.ts';
+import { acquireSchemaUpgradeLock } from '../../lib/schema-upgrade/lock.ts';
 import { restoreTeamBackup } from '../../lib/team-service/maintenance/restore.ts';
 import { runTeamRelease, rollbackTeamRelease, readTeamReleasePointer, switchTeamReleasePointerIdempotent } from '../../lib/team-service/maintenance/release.ts';
 import { acquireLifecycleBarrier, releaseLifecycleBarrier } from '../../lib/team-service/lifecycle/index.ts';
 import { createExecutionJournal } from '../../lib/media-core/execution/journal.ts';
+import { getTeamReleaseCandidateForExecution } from '../../lib/team-service/maintenance/release-candidates.ts';
+import { materializeTeamReleaseCandidate } from '../../lib/team-service/maintenance/release-install.ts';
+import { teamMaintenanceStateDirectory } from '../../lib/team-service/maintenance/state.ts';
+import { executeTeamRestoreOperation } from '../../lib/team-service/maintenance/restore-operation.ts';
+import { executeCleanupPreview } from '../../lib/team-service/maintenance/cleanup.ts';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -63,6 +71,7 @@ function credential(config) {
   return readJson(file);
 }
 function serviceAccountText(config) {
+  if (args.includes('--test-isolated-cutover') && process.platform === 'win32') return '*S-1-5-18';
   return typeof config.serviceAccount === 'string'
     ? config.serviceAccount
     : `${config.serviceAccount.domain}\\${config.serviceAccount.user}`;
@@ -116,7 +125,7 @@ function protectConfig(config) {
       file, '/inheritance:r', '/grant:r', `${identity.stdout.trim()}:F`,
       '*S-1-5-18:F', '*S-1-5-32-544:F', `${account}:R`,
     ], { encoding: 'utf8', windowsHide: true, timeout: 15_000 });
-    if (result.status !== 0) throw new Error('秘密配置副本 ACL 设置失败');
+    if (result.status !== 0) throw new Error(`秘密配置副本 ACL 设置失败：${(result.stderr || result.stdout || '').trim().slice(-300)}`);
   };
 }
 function latestRecoveryEvidence(config) {
@@ -140,7 +149,7 @@ function writeDailyJob(config, value) {
 }
 function backupDirectory(config, type, backupId) {
   safeId(backupId);
-  if (!['daily', 'manual', 'pre-upgrade'].includes(type)) throw new Error('备份类型无效');
+  if (!['daily', 'manual', 'pre-upgrade', 'pre-restore'].includes(type)) throw new Error('备份类型无效');
   const root = path.resolve(config.backupRoot, type);
   const directory = path.resolve(root, backupId);
   if (path.dirname(directory).toLowerCase() !== root.toLowerCase()) throw new Error('备份路径越界');
@@ -180,6 +189,14 @@ function compatibilityReport(file) {
     || typeof report.irreversibleChanges !== 'boolean') throw new Error('兼容性报告缺少隔离验证或兼容结论');
   return report;
 }
+function dbVersion(dataRoot) {
+  const db = openDatabase(dataRoot);
+  try {
+    const version = db.prepare('SELECT MAX(version) AS version FROM team_schema_migrations').pluck().get();
+    if (!Number.isSafeInteger(version) || version < 1) throw new Error('当前数据版本无法复核');
+    return version;
+  } finally { db.close(); }
+}
 function setMaintenance(db, maintenance, reason) {
   db.prepare('UPDATE team_service_state SET maintenance = ?, reason = ?, updatedAt = ? WHERE id = 1')
     .run(maintenance ? 1 : 0, reason, new Date().toISOString());
@@ -213,7 +230,8 @@ function captureExecution(config, db, operationId) {
 }
 async function drain(db) {
   for (let attempt = 0; attempt < 480; attempt += 1) {
-    const pendingTasks = db.prepare("SELECT COUNT(*) AS count FROM execution_attempts WHERE submissionState IN ('not_sent', 'maybe_sent', 'accepted')").pluck().get();
+    // 只等待尚未提交或提交结果不明的请求；accepted 的已受理任务继续执行并保留占额，不阻塞升级。
+    const pendingTasks = db.prepare("SELECT COUNT(*) AS count FROM execution_attempts WHERE submissionState IN ('not_sent', 'maybe_sent')").pluck().get();
     if (pendingTasks === 0) {
       const unknownAttemptIds = db.prepare("SELECT currentAttemptId AS id FROM execution_operations WHERE status = 'unknown' AND currentAttemptId IS NOT NULL")
         .all().map((row) => row.id);
@@ -223,7 +241,40 @@ async function drain(db) {
   }
   return { pendingTasks: 1, unknownAttemptIds: [] };
 }
-async function makeBackup(config, db, principal, type, backupId, configPath, reuseExisting = false) {
+async function activateRestoredService(config, restoredDataRoot, jobId) {
+  const { generateDeploymentConfiguration } = await import('./generate-config.mjs');
+  const current = readJson(configPathForMaintenance(config));
+  const resolvedPath = path.join(config.serviceRoot, 'resolved-services.json');
+  const previousResolved = fs.readFileSync(resolvedPath, 'utf8');
+  const nextConfig = { ...current, dataRoot: restoredDataRoot };
+  try {
+    generateDeploymentConfiguration(nextConfig, config.serviceRoot);
+    const resolved = readJson(resolvedPath);
+    if (resolved.dataRoot !== restoredDataRoot) throw new Error('受管数据根指针未指向已验证还原根');
+    if (args.includes('--test-cutover-failure')) throw new Error('injected activation failure');
+    startApp(config);
+    await waitService(config, config.releaseId, 'maintenance');
+    const temporary = `${configPathForMaintenance(config)}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, `${JSON.stringify(nextConfig, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    fs.renameSync(temporary, configPathForMaintenance(config));
+    return resolved.dataRoot;
+  } catch (error) {
+    fs.writeFileSync(resolvedPath, previousResolved);
+    if (args.includes('--test-cutover-failure')) throw error;
+    // 真实 SCM 启动失败时先停止可能已启动的新根，再恢复旧配置。
+    try { await controlled('stop', config, current.releaseId); } catch { /* 启动失败后实例可能已不在运行。 */ }
+    generateDeploymentConfiguration(readJson(configPathForMaintenance(config)), config.serviceRoot);
+    startApp(config);
+    await waitService(config, config.releaseId, 'maintenance');
+    throw error;
+  }
+}
+function configPathForMaintenance(config) {
+  return path.join(config.configRoot, 'maintenance-deployment.json');
+}
+async function makeBackup(config, db, principal, type, backupId, configPath, reuseExisting = false, lockAlreadyHeld = false, onStage) {
+  const lock = lockAlreadyHeld ? null : await acquireSchemaUpgradeLock({ lockDatabasePath: maintenanceGlobalLockPath(config.backupRoot), timeoutMs: 100 });
+  try {
   const release = await currentReleaseIdentity(config);
   if (backupId && reuseExisting) {
     const directory = backupDirectory(config, type, backupId);
@@ -256,19 +307,185 @@ async function makeBackup(config, db, principal, type, backupId, configPath, reu
     },
     config: { filePath: configPath }, ...(backupId ? { backupId } : {}),
     protectConfig: protectConfig(config),
+    ...(args.includes('--test-disk-space-zero') ? { diskSpaceProbe: async () => 0 } : {}),
+    ...(onStage ? { onStage } : {}),
   });
+  } finally { lock?.release(); }
 }
 async function resumeService(config, db, releaseId) {
-  setMaintenance(db, false, '');
   const stopped = await controlled('stop', config, releaseId);
   if (!stopped.stopped) throw new Error('恢复接单前旧维护实例未退出');
   startApp({ ...config, releaseId });
+  await waitService(config, releaseId, 'maintenance');
+  setMaintenance(db, false, '');
   await waitService(config, releaseId, 'ready');
 }
 
 try {
   const configPath = path.resolve(required('--config'));
   const config = resolveDeploymentConfig(readJson(configPath));
+  if (command === 'worker') {
+    await runMaintenanceWorker({
+      configPath,
+      once: args.includes('--once'),
+      jobId: argument('--job-id') || undefined,
+      executeRelease: async ({ job, onStage }) => {
+        if (job.target.kind !== 'release') throw new Error('升级目标无效');
+        const operationId = job.id;
+        const allowFixture = args.includes('--allow-fixture-release');
+        const stateDirectory = teamMaintenanceStateDirectory(config.backupRoot, config.deploymentId);
+        const persistedPath = path.join(stateDirectory, `${operationId}.json`);
+        const persisted = fs.existsSync(persistedPath) ? readJson(persistedPath) : null;
+        const pointerNow = await currentReleaseIdentity(config);
+        const current = persisted?.fromRelease ?? pointerNow;
+        if (persisted && (persisted.fromRelease.releaseId !== pointerNow.releaseId
+          && persisted.toRelease.releaseId !== pointerNow.releaseId)) throw new Error('实际版本不属于升级来源或目标，拒绝接管');
+        const currentManifest = verifyReleaseManifest(path.join(config.deploymentRoot, 'releases', current.releaseId), { allowFixture });
+        const currentVersion = { appVersion: currentManifest.appVersion,
+          dataSchemaVersion: dbVersion(config.dataRoot) };
+        const candidate = await getTeamReleaseCandidateForExecution({
+          candidateRoot: path.join(config.dataRoot, 'storage', 'maintenance', 'release-candidates'),
+          candidateId: job.target.candidateId, current: currentVersion, allowFixtureForTests: allowFixture,
+        });
+        const target = candidate.release;
+        if (target.releaseId === current.releaseId) throw new Error('目标版本已是当前版本，不重复执行切换');
+        const workerDb = openDatabase(config.dataRoot);
+        try {
+          const principal = job.requestedBy;
+          const adapters = {
+            async preflight() {
+              const from = await currentReleaseIdentity(config);
+              if (from.releaseId !== current.releaseId || from.packageSha256 !== current.packageSha256) throw new Error('当前版本已漂移，拒绝开始升级');
+              await materializeTeamReleaseCandidate({
+                deploymentRoot: config.deploymentRoot, release: candidate.release,
+                files: candidate.files, compatibility: candidate.manifest.compatibility,
+                manifestContent: candidate.manifestContent,
+                allowFixtureForTests: allowFixture,
+              });
+            },
+            async enterMaintenance() { setMaintenance(workerDb, true, `maintenance:${operationId}`); },
+            async drainInflight() { return drain(workerDb); },
+            async captureExecution() { return captureExecution(config, workerDb, operationId); },
+            async stopOldInstance() {
+              const state = fs.existsSync(persistedPath) ? readJson(persistedPath) : null;
+              const releaseId = state?.completedStages?.includes('switch') ? target.releaseId : current.releaseId;
+              try {
+                const stopped = await controlled('stop', config, releaseId);
+                if (stopped.stopped) return stopped;
+                if (stopped.instanceId && Array.isArray(stopped.residualPids)) return stopped;
+              } catch (error) {
+                if (!state?.completedStages?.includes('stop')) throw error;
+              }
+              if (state?.completedStages?.includes('stop')) {
+                // The previous stop was durable, so a later backup failure must not require the
+                // old instance to exist again. Ownership was verified before its first stop.
+                return { deploymentId: config.deploymentId, instanceId: 'verified-stopped-instance', stopped: true, residualPids: [] };
+              }
+              throw new Error('受控停机未确认全部退出，禁止继续切换');
+            },
+            async createPreUpgradeBackup() {
+              const backup = await makeBackup(config, workerDb, principal, 'pre-upgrade', `${operationId}-pre-upgrade`, configPath, true, true);
+              const verification = await verifyTeamBackup(backup.directory);
+              return { backupId: backup.manifest.backupId, verified: verification.verified };
+            },
+            async switchRelease() {
+              const barrier = acquireLifecycleBarrier(workerDb, principal, 'release', { operationId, releaseId: target.releaseId });
+              try {
+                await switchTeamReleasePointerIdempotent({ serviceRoot: config.serviceRoot, release: target, expectedReleaseId: current.releaseId });
+              } finally { releaseLifecycleBarrier(workerDb, principal, barrier.id); }
+            },
+            async startMaintenance() {
+              const { generateDeploymentConfiguration } = await import('./generate-config.mjs');
+              generateDeploymentConfiguration({ ...readJson(configPath), releaseId: target.releaseId }, config.serviceRoot);
+              const state = fs.existsSync(persistedPath) ? readJson(persistedPath) : null;
+              if (!state?.completedStages?.includes('start_maintenance')) startApp({ ...config, releaseId: target.releaseId });
+              await waitService(config, target.releaseId, 'maintenance');
+            },
+            async migrate() {
+              const team = workerDb.prepare('SELECT MAX(version) AS version FROM team_schema_migrations').pluck().get();
+              const execution = workerDb.prepare('SELECT MAX(version) AS version FROM execution_schema_migrations').pluck().get();
+              if (!team || !execution) throw new Error('追加迁移证据不完整');
+              if (team > candidate.manifest.compatibility.dataSchemaMax || team < candidate.manifest.compatibility.dataSchemaMin) {
+                throw new Error('迁移后的数据结构超出候选兼容声明，禁止自动回切或恢复生产');
+              }
+            },
+            async selfCheck() {
+              const status = await controlled('status', config, target.releaseId);
+              const integrity = workerDb.pragma('integrity_check', { simple: true });
+              return { available: status.maintenance === true && status.ready === false && integrity === 'ok', automaticRetries: 0 };
+            },
+            async resume() { await resumeService(config, workerDb, target.releaseId); },
+          };
+          const state = await runTeamRelease({
+            operationId, deploymentId: config.deploymentId, backupRoot: config.backupRoot,
+            stateDirectory,
+            fromRelease: current, toRelease: target, adapters, onStage,
+          });
+          return { ...state, actualRelease: target };
+        } finally { workerDb.close(); }
+      },
+      executeCleanup: async (job) => {
+        if (job.target.kind !== 'cleanup') throw new Error('维护作业目标不是清理预览');
+        const activeConfig = resolveDeploymentConfig(readJson(configPath));
+        const workerDb = openDatabase(activeConfig.dataRoot);
+        try {
+          return executeCleanupPreview({
+            db: workerDb, previewId: job.target.previewId, storageRoot: path.join(activeConfig.dataRoot, 'storage'),
+            backupRoot: activeConfig.backupRoot, protectedDataRoots: [activeConfig.dataRoot, ...(activeConfig.oldRoots ?? [])],
+          });
+        } finally { workerDb.close(); }
+      },
+      makeBackup: async ({ job, backupId, onStage }) => {
+        const activeConfig = resolveDeploymentConfig(readJson(configPath));
+        const workerDb = openDatabase(activeConfig.dataRoot);
+        try {
+          if (job.target.kind !== 'backup') throw new Error('维护作业目标不是备份');
+          const principal = job.requestedBy;
+          const backupType = job.target.backupType;
+          const result = await makeBackup(activeConfig, workerDb, principal, backupType, backupId, configPath, false, true, onStage);
+          const verified = await verifyTeamBackup(result.directory);
+          if (!verified.verified || verified.manifest.backupId !== result.manifest.backupId) throw new Error('备份作业结果复核失败');
+          onStage('verifying');
+          return {
+            backupId: result.manifest.backupId, type: result.manifest.type,
+            verifiedAt: result.success.verifiedAt, totalBytes: result.success.totalBytes,
+          };
+        } finally { workerDb.close(); }
+      },
+      makeRestore: async ({ job, onStage }) => {
+        const activeBaseConfig = resolveDeploymentConfig(readJson(configPath));
+        const runningRelease = await currentReleaseIdentity(activeBaseConfig);
+        const activeConfig = { ...activeBaseConfig, releaseId: runningRelease.releaseId };
+        return executeTeamRestoreOperation({
+        job, configPath, config: activeConfig, currentRelease: runningRelease, onStage,
+        protectConfig: protectConfig(activeConfig),
+        beforeMove: args.includes('--test-isolated-cutover') ? undefined : async () => {
+          const stopped = await controlled('stop', activeConfig, activeConfig.releaseId);
+          if (!stopped.stopped) throw new Error('旧应用未明确停止，拒绝切换活动数据根');
+        },
+        rollbackService: args.includes('--test-isolated-cutover') ? undefined : async () => {
+          const current = readJson(configPathForMaintenance(config));
+          generateDeploymentConfiguration(current, activeConfig.serviceRoot);
+          startApp(activeConfig);
+          await waitService(activeConfig, activeConfig.releaseId, 'maintenance');
+        },
+        reauthenticatedSession: fs.existsSync(path.join(config.deploymentRoot, 'restore-operations', job.id, 'reauthenticated-session.json'))
+          ? readJson(path.join(config.deploymentRoot, 'restore-operations', job.id, 'reauthenticated-session.json')) : undefined,
+        diskSpaceProbe: args.includes('--test-disk-space-zero') ? async () => 0 : undefined,
+        activate: args.includes('--test-isolated-cutover') ? async (restoredRoot) => {
+          const { generateDeploymentConfiguration } = await import('./generate-config.mjs');
+          const next = { ...readJson(configPath), dataRoot: restoredRoot };
+          generateDeploymentConfiguration(next, config.serviceRoot);
+          if (args.includes('--test-cutover-failure')) throw new Error('injected activation failure');
+          const temporary = `${configPath}.${process.pid}.tmp`;
+          fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+          fs.renameSync(temporary, configPath);
+        } : (restoredRoot) => activateRestoredService(activeConfig, restoredRoot, job.id),
+        });
+      },
+    });
+    process.stdout.write(`${JSON.stringify({ status: 'success', worker: true })}\n`);
+  } else {
   const db = openDatabase(config.dataRoot);
   try {
     const principal = adminPrincipal(db);
@@ -407,6 +624,7 @@ try {
     }
   } finally {
     db.close();
+  }
   }
 } catch (error) {
   const message = error instanceof Error ? error.message : '未知错误';

@@ -21,7 +21,7 @@ import type { ServerRuntimeConfig } from './config.ts';
 import { checkTeamServiceReadiness } from './readiness.ts';
 import { recoverTeamUploads } from './transfers/uploads.ts';
 import { teamTransferSpace } from './transfers/space.ts';
-import { recordTeamExecutionError } from './diagnostics.ts';
+import { recordTeamExecutionError, markTeamTaskErrorRecovered } from './diagnostics.ts';
 import { hasTeamRestoreHold } from './maintenance/hold.ts';
 import {
   initializeTeamRuntimeState,
@@ -64,6 +64,7 @@ export function createTeamExecutionRuntime(options: {
     deploymentId: config.deploymentId,
     serverReleaseId,
     recordError: (error) => { recordTeamExecutionError(db, { ...error, serverReleaseId }); },
+    recordRecovery: (record) => { markTeamTaskErrorRecovered(db, record); },
     journal: createExecutionJournal({
       deploymentId: config.deploymentId,
       directory: path.join(config.dataRoot, 'storage', 'execution-journal', config.deploymentId),

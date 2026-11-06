@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { createInheritedActorPolicy } from '../../media-core/execution/pools.ts';
 import {
   BoundedKdfScheduler,
   generateOneTimeCredential,
@@ -272,6 +273,13 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
     return principalFrom(user, session);
   }
 
+  async function reauthenticate(principal: AuthPrincipal, password: string): Promise<{ principal: AuthPrincipal; token: string }> {
+    currentUserForSession(principal);
+    if (principal.role !== 'admin') throw new TeamAuthError('admin_required', '需要管理员权限。', 403);
+    const loginResult = await login({ employeeId: principal.employeeId, password });
+    return loginResult;
+  }
+
   async function changeOwnPassword(
     principal: AuthPrincipal,
     currentPassword: string,
@@ -297,13 +305,8 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
             credentialConsumedAt = NULL, sessionVersion = ?, updatedAt = ?
         WHERE id = ? AND passwordHash = ?
       `).run(nextHash, nextVersion, timestamp, current.id, user.passwordHash);
-      db.prepare(`
-        UPDATE team_sessions SET revokedAt = ? WHERE userId = ? AND id <> ? AND revokedAt IS NULL
-      `).run(timestamp, current.id, principal.sessionId);
-      const kept = db.prepare(`
-        UPDATE team_sessions SET sessionVersion = ? WHERE id = ? AND userId = ? AND revokedAt IS NULL
-      `).run(nextVersion, principal.sessionId, current.id);
-      if (kept.changes !== 1) throw new TeamAuthError('session_invalid', '登录状态已失效，请重新登录。', 401);
+      db.prepare('UPDATE team_sessions SET revokedAt = ? WHERE userId = ? AND revokedAt IS NULL')
+        .run(timestamp, current.id);
       return nextVersion;
     });
     const nextVersion = change.immediate();
@@ -374,6 +377,9 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
             credentialExpiresAt, sessionVersion, createdAt, updatedAt
           ) VALUES (?, ?, ?, ?, 'active', ?, 1, ?, 1, ?, ?)
         `).run(id, employeeId, displayName, input.role, issued.passwordHash, issued.expiresAt, timestamp, timestamp);
+        // This explicit create-time marker is not a migration of existing members.
+        // Until ticket 04 supplies an automatic default it safely inherits zero.
+        createInheritedActorPolicy(db, id);
       } catch (error) {
         if (error instanceof Error && error.message.includes('UNIQUE')) {
           throw new TeamAuthError('employee_id_exists', '工号已存在。', 409);
@@ -479,6 +485,7 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
   return {
     login,
     resolveSession,
+    reauthenticate,
     changeOwnPassword,
     logout,
     initializeFirstAdministrator,

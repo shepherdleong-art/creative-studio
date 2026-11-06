@@ -16,6 +16,7 @@ import { deletePackagedPublish, executePackagingJob, registerPackagedArtifact, t
 import { FinalEditError } from './errors.ts';
 import { executeFilmJob } from './reassembled/jobs.ts';
 import { refreshMixcutReview } from './reassembled/review.ts';
+import { getExecutionModuleRuntime } from '../media-core/execution/module-runtime.ts';
 
 const sha256 = (input: string) => crypto.createHash('sha256').update(input).digest('hex');
 
@@ -230,7 +231,18 @@ async function drain() {
           db.prepare(`UPDATE final_edit_jobs SET status='queued', phase='recovered_after_shutdown', progress=0, errorCode=NULL, errorMessage=NULL, startedAt=NULL, finishedAt=NULL WHERE id=? AND status='running'`).run(job.id);
           break;
         }
-        db.prepare(`UPDATE final_edit_jobs SET status='failed', phase='failed', errorCode=?, errorMessage=?, finishedAt=? WHERE id=?`).run(error instanceof FinalEditError ? error.code : 'render_failed', error instanceof Error ? error.message.slice(0, 1500) : String(error).slice(0, 1500), new Date().toISOString(), job.id);
+        const errorCode = error instanceof FinalEditError ? error.code : 'render_failed';
+        db.prepare(`UPDATE final_edit_jobs SET status='failed', phase='failed', errorCode=?, errorMessage=?, finishedAt=? WHERE id=?`).run(errorCode, error instanceof Error ? error.message.slice(0, 1500) : String(error).slice(0, 1500), new Date().toISOString(), job.id);
+        if (!isAbortError(error)) {
+          const principal = db.prepare('SELECT actorUserId FROM team_task_principals WHERE module = ? AND taskId = ?')
+            .pluck().get('final_edit', job.id) as string | undefined;
+          await getExecutionModuleRuntime()?.facade.captureError({
+            taskId: job.id, module: 'final_edit', actorUserId: principal,
+            scope: { resourceType: 'project', resourceId: job.projectId },
+            outcome: 'failed', stage: 'local_media', errorCode,
+            eventKey: `final-edit:${job.id}:local_media:${errorCode}`,
+          });
+        }
       } finally {
         renderControllers.delete(job.id);
         registration.release();

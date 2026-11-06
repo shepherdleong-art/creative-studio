@@ -5,12 +5,15 @@ import { TEAM_SESSION_COOKIE } from '@/lib/team-service/auth/request';
 import { getTeamAuthService } from '@/lib/team-service/auth/runtime';
 import { readTeamModuleSwitches } from '@/lib/team-service/module-switches';
 import TeamProductionControl from '@/components/team/TeamProductionControl';
+import TeamMaintenancePanel from '@/components/team/TeamMaintenancePanel';
+import TeamReleaseUpload from '@/components/team/TeamReleaseUpload';
+import TeamReleaseExecution from '@/components/team/TeamReleaseExecution';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * 运维入口说明页：只展示真实脚本路径与当前模块开关，不提供任意命令执行按钮。
- * 危险动作（安装、发布、恢复、永久清理）继续由受控 PowerShell 脚本完成。
+ * 管理员备份入口：业务 API 只接受固定目标，由独立受控执行器完成。
+ * 安装、发布、恢复、永久清理不在这里提供任意命令执行按钮。
  */
 export default async function TeamOperationsPage() {
   if (readRuntimeConfig().mode !== 'server') redirect('/');
@@ -34,7 +37,10 @@ export default async function TeamOperationsPage() {
         </p>
       </div>
 
+      <TeamMaintenancePanel />
       <TeamProductionControl />
+      <TeamReleaseUpload />
+      <TeamReleaseExecution />
       <section className="card p-6">
         <h2 className="text-lg font-semibold text-ink">当前模块开关</h2>
         <p className="mt-1 text-xs text-ink-tertiary">来自部署配置生成的 app.env；关闭的模块不会启动 worker，也不影响登录、编辑和下载。</p>

@@ -1,11 +1,19 @@
 import type Database from 'better-sqlite3';
 import { ExecutionError } from './context.ts';
+import { readTeamConcurrencyPolicy } from './team-policy.ts';
+
+export type ActorConcurrencyMode = 'legacy' | 'inherit' | 'fixed';
+export type ActorConcurrencySource = 'legacy_fixed' | 'team_default' | 'personal_fixed';
 
 export interface ActorPolicy {
   actorId: string;
   monthlyLimitMinor: number | null;
   currency: 'CNY';
   personalConcurrency: number;
+  concurrencyMode: ActorConcurrencyMode;
+  concurrencySource: ActorConcurrencySource;
+  /** null means demand-driven automatic fairness, never unlimited shared-pool capacity. */
+  effectiveConcurrency: number | null;
   paused: boolean;
   allowedModels: string[] | null;
   timezone: 'Asia/Shanghai';
@@ -28,6 +36,7 @@ interface PolicyRow {
   personalConcurrency: number;
   paused: number;
   allowedModelsJson: string | null;
+  concurrencyMode: 'inherit' | 'fixed' | null;
   timezone: 'Asia/Shanghai';
   version: number;
 }
@@ -57,23 +66,45 @@ export function shanghaiAccountingPeriod(date: Date): string {
 
 export function readActorPolicy(db: Database.Database, actorId: string): ActorPolicy {
   const row = db.prepare('SELECT * FROM execution_actor_policies WHERE actorId = ?').get(actorId) as PolicyRow | undefined;
-  if (!row) return { actorId, ...DEFAULT_ACTOR_POLICY, version: 0 };
+  const mode: ActorConcurrencyMode = row?.concurrencyMode ?? 'legacy';
+  const personalConcurrency = row?.personalConcurrency ?? DEFAULT_ACTOR_POLICY.personalConcurrency;
+  const teamDefault = readTeamConcurrencyPolicy(db);
   return {
-    actorId: row.actorId,
-    monthlyLimitMinor: row.monthlyLimitMinor,
-    currency: row.currency,
-    personalConcurrency: row.personalConcurrency,
-    paused: Boolean(row.paused),
-    allowedModels: row.allowedModelsJson == null ? null : JSON.parse(row.allowedModelsJson) as string[],
-    timezone: row.timezone,
-    version: row.version,
+    actorId,
+    ...(row ? {
+      monthlyLimitMinor: row.monthlyLimitMinor,
+      currency: row.currency,
+      paused: Boolean(row.paused),
+      allowedModels: row.allowedModelsJson == null ? null : JSON.parse(row.allowedModelsJson) as string[],
+      timezone: row.timezone,
+      version: row.version,
+    } : { ...DEFAULT_ACTOR_POLICY, version: 0 }),
+    personalConcurrency,
+    concurrencyMode: mode,
+    concurrencySource: mode === 'inherit' ? 'team_default' : mode === 'fixed' ? 'personal_fixed' : 'legacy_fixed',
+    effectiveConcurrency: mode === 'inherit'
+    ? teamDefault.mode === 'auto' ? null : teamDefault.manualDefaultConcurrency
+    : personalConcurrency,
   };
+}
+
+export function createInheritedActorPolicy(db: Database.Database, actorId: string): void {
+  if (!actorId.trim()) throw new ExecutionError('invalid_input', 'actorId 不能为空。');
+  // First-admin initialization runs before execution readiness; its absent row
+  // stays legacy zero. Later account creation always has execution schema ready.
+  if (!(db.prepare('PRAGMA table_info(execution_actor_policies)').all() as Array<{ name: string }>).some(column => column.name === 'concurrencyMode')) return;
+  db.prepare(`
+    INSERT INTO execution_actor_policies (
+      actorId, monthlyLimitMinor, currency, personalConcurrency, paused, timezone, version, concurrencyMode, updatedAt
+    ) VALUES (?, 0, 'CNY', 0, 0, 'Asia/Shanghai', 1, 'inherit', ?)
+  `).run(actorId, new Date().toISOString());
 }
 
 export function updateActorPolicy(db: Database.Database, input: {
   actorId: string;
   monthlyLimitMinor: number | null;
   personalConcurrency: number;
+  concurrencyMode?: 'inherit' | 'fixed';
   paused: boolean;
   expectedVersion: number;
   allowedModels?: string[] | null;
@@ -99,16 +130,17 @@ export function updateActorPolicy(db: Database.Database, input: {
     }
     db.prepare(`
       INSERT INTO execution_actor_policies (
-        actorId, monthlyLimitMinor, currency, personalConcurrency, paused, timezone, version, updatedAt
-      ) VALUES (?, ?, 'CNY', ?, ?, 'Asia/Shanghai', ?, ?)
+        actorId, monthlyLimitMinor, currency, personalConcurrency, paused, timezone, version, concurrencyMode, updatedAt
+      ) VALUES (?, ?, 'CNY', ?, ?, 'Asia/Shanghai', ?, ?, ?)
       ON CONFLICT(actorId) DO UPDATE SET
         monthlyLimitMinor = excluded.monthlyLimitMinor,
         personalConcurrency = excluded.personalConcurrency,
         paused = excluded.paused,
+        concurrencyMode = excluded.concurrencyMode,
         version = excluded.version,
         updatedAt = excluded.updatedAt
     `).run(input.actorId, input.monthlyLimitMinor, input.personalConcurrency, input.paused ? 1 : 0,
-      version, new Date().toISOString());
+      version, input.concurrencyMode ?? (current.concurrencyMode === 'legacy' ? null : current.concurrencyMode), new Date().toISOString());
     db.prepare('UPDATE execution_actor_policies SET allowedModelsJson = ? WHERE actorId = ?')
       .run(allowedModels === null ? null : JSON.stringify([...new Set(allowedModels.map(model => model.trim()))]), input.actorId);
     return readActorPolicy(db, input.actorId);

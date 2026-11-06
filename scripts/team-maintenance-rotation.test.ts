@@ -69,7 +69,7 @@ registerReadyTeamFile(db, {
 });
 const release = { releaseId: 'release-1', packageSha256: 'b'.repeat(64) };
 let sequence = 0;
-function input(type: 'daily' | 'manual' | 'pre-upgrade', backupId: string) {
+function input(type: 'daily' | 'manual' | 'pre-upgrade' | 'pre-restore', backupId: string) {
   sequence += 1;
   const at = new Date(Date.UTC(2026, 0, 1, 0, 0, sequence));
   return {
@@ -95,6 +95,7 @@ try {
 
   await createTeamBackup(input('manual', 'manual-keep'));
   await createTeamBackup(input('pre-upgrade', 'pre-upgrade-keep'));
+  await createTeamBackup(input('pre-restore', 'pre-restore-keep'));
   await assert.rejects(() => createTeamBackup({
     ...input('daily', 'daily-16'), diskSpaceProbe: async () => 0,
   }), /空间不足/);
@@ -114,6 +115,7 @@ try {
   assert.equal(publishedIds('daily').length, 14);
   assert.deepEqual(publishedIds('manual'), ['manual-keep']);
   assert.deepEqual(publishedIds('pre-upgrade'), ['pre-upgrade-keep']);
+  assert.deepEqual(publishedIds('pre-restore'), ['pre-restore-keep']);
   assert.equal(fs.existsSync(path.join(backupRoot, 'daily', 'daily-16', 'success.json')), true);
   assert.equal(fs.existsSync(path.join(fixtureRoot, 'data', 'backups')), false, 'schema-upgrade 区域不属于 daily 轮换');
   const receipt = fs.readFileSync(path.join(backupRoot, 'maintenance-receipts', 'deployment-rotation.jsonl'), 'utf8');
