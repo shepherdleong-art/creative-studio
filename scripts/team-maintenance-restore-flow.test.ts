@@ -92,12 +92,8 @@ try {
   const jobs = new MaintenanceJobStore({ backupRoot, deploymentId }); stores.add(jobs);
   const backupJob = jobs.submit({ action: 'backup.create', target: { kind: 'backup', backupType: 'manual' },
     principal: { userId: 'admin', employeeId: 'admin', displayName: '管理员', role: 'admin' }, idempotencyKey: 'backup-point-a-13' });
-  const backupWorkerResult = worker(backupJob.job.id);
-  if (backupWorkerResult.status !== 0) {
-    console.error('backup worker stdout:', backupWorkerResult.stdout);
-    console.error('backup worker stderr:', backupWorkerResult.stderr);
-  }
-  assert.equal(backupWorkerResult.status, 0);
+  const initialBackup = worker(backupJob.job.id);
+  assert.equal(initialBackup.status, 0, `${initialBackup.stdout}${initialBackup.stderr}`);
   const backupId = String(jobs.get(backupJob.job.id).job.result?.backupId);
   const { registerExecutionInstance } = await import('../lib/media-core/execution/schema.ts');
   const { createExecutionJournal } = await import('../lib/media-core/execution/journal.ts');
@@ -106,7 +102,7 @@ try {
   registerExecutionInstance(db, { instanceId: 'restore-flow', fence: 1, deploymentId });
   upsertExecutionPool(db, { poolKey: 'shared', kind: 'remote', capacity: 1, enabled: true,
     mappingSnapshot: { providerId: 'provider-project-a' }, expectedVersion: 0 });
-  updateActorPolicy(db, { actorId: 'admin', monthlyLimitMinor: 1000, personalConcurrency: 1, paused: false, expectedVersion: 0 });
+  updateActorPolicy(db, { actorId: 'admin', monthlyLimitMinor: 1000, personalConcurrency: 1, concurrencyMode: 'fixed', paused: false, expectedVersion: 0 });
   db.prepare(`INSERT INTO team_resource_scopes (resourceType, resourceId, ownerUserId, rootType, rootId, createdAt, updatedAt)
     VALUES ('project', 'project-a', 'admin', 'project', 'project-a', ?, ?)`).run(at, at);
   const execution = createExecutionFacade({ db, deploymentId,
