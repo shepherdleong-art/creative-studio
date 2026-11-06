@@ -123,9 +123,13 @@ try {
   await page.locator('input[autocomplete="current-password"]').fill(initializedCredential);
   await page.locator('input[autocomplete="new-password"]').first().fill(password);
   await page.locator('input[autocomplete="new-password"]').nth(1).fill(password);
+  await page.getByRole('button', { name: '保存新密码并进入' }).click();
+  await page.locator('input[autocomplete="username"]').waitFor({ timeout: 60_000 });
+  await page.locator('input[autocomplete="username"]').fill('00042');
+  await page.locator('input[autocomplete="current-password"]').fill(password);
   await Promise.all([
     page.waitForURL((url) => url.pathname !== '/team/login', { timeout: 60_000 }),
-    page.getByRole('button', { name: '保存新密码并进入' }).click(),
+    page.getByRole('button', { name: '登录', exact: true }).click(),
   ]);
   await page.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'networkidle', timeout: 60_000 });
   await page.getByRole('heading', { name: '备份与维护', exact: true }).waitFor();
@@ -177,6 +181,10 @@ try {
   await employeePage.locator('input[autocomplete="new-password"]').first().fill('employee-password');
   await employeePage.locator('input[autocomplete="new-password"]').nth(1).fill('employee-password');
   await employeePage.getByRole('button', { name: '保存新密码并进入' }).click();
+  await employeePage.locator('input[autocomplete="username"]').waitFor();
+  await employeePage.locator('input[autocomplete="username"]').fill('00001');
+  await employeePage.locator('input[autocomplete="current-password"]').fill('employee-password');
+  await employeePage.getByRole('button', { name: '登录', exact: true }).click();
   await employeePage.waitForURL((url) => url.pathname !== '/team/login');
   await employeePage.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'networkidle' });
   assert.equal(new URL(employeePage.url()).pathname, '/', '员工必须被管理员维护页重定向');

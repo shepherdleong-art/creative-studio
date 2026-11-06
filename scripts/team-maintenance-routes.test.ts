@@ -55,13 +55,15 @@ const auth = createTeamAuthService({ db, kdf, passwordParams: { N: 1024, r: 8, p
 setTeamAuthServiceForTests(auth);
 const adminLogin = await auth.login({ employeeId: '00042', password: initialized.credential });
 await auth.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-password');
-const adminCookie = sessionCookie(adminLogin.token).split(';', 1)[0];
+const adminSession = await auth.login({ employeeId: '00042', password: 'admin-password' });
+const adminCookie = sessionCookie(adminSession.token).split(';', 1)[0];
 const adminRequest = new Request('https://studio.example.test/api/team/maintenance/jobs', { headers: { Cookie: adminCookie } });
 const principal = requirePrincipal(adminRequest, { admin: true });
 const created = await auth.createUser(principal, { employeeId: '00001', displayName: '普通员工', role: 'employee' });
 const employeeLogin = await auth.login({ employeeId: '00001', password: created.credential });
 await auth.changeOwnPassword(employeeLogin.principal, created.credential, 'employee-password');
-const employeeCookie = sessionCookie(employeeLogin.token).split(';', 1)[0];
+const employeeSession = await auth.login({ employeeId: '00001', password: 'employee-password' });
+const employeeCookie = sessionCookie(employeeSession.token).split(';', 1)[0];
 
 const jobsRoute = await import('../app/api/team/maintenance/jobs/route.ts');
 const jobRoute = await import('../app/api/team/maintenance/jobs/[id]/route.ts');
