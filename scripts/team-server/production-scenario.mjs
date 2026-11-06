@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import sharp from 'sharp';
 
-export async function runProductionScenario({ root, admin, jsonRequest, request, stopServer, startServer, waitReady, enableSchedulers, makeMedia }) {
+export async function runProductionScenario({ root, admin, sessions, projects, jsonRequest, request, stopServer, startServer, waitReady, enableSchedulers, makeMedia, taskHistoryOnly = false }) {
   const output = await sharp({ create: { width: 1024, height: 1024, channels: 3, background: '#547799' } }).png().toBuffer();
   const calls = { images: 0, llm: 0 };
   const fake = http.createServer(async (req, res) => {
@@ -85,37 +85,43 @@ export async function runProductionScenario({ root, admin, jsonRequest, request,
       }),
     ];
     await call('/api/team/pools', 'POST', { changes });
-    const imageUpload = await upload(project.id, 'project_image', 'image', output, 'scene.png', 'image/png');
-    const scene = await call(`/api/projects/${project.id}/scene-jobs`, 'POST', {
-      sceneSeedImageId: imageUpload.resultResourceId, scenePrompt: '保持产品并生成客厅场景', generationCount: 1, maxAttempts: 1,
-    });
+    const scene = taskHistoryOnly ? { jobIds: [] } : await (async () => {
+      const imageUpload = await upload(project.id, 'project_image', 'image', output, 'scene.png', 'image/png');
+      return call(`/api/projects/${project.id}/scene-jobs`, 'POST', {
+        sceneSeedImageId: imageUpload.resultResourceId, scenePrompt: '保持产品并生成客厅场景', generationCount: 1, maxAttempts: 1,
+      });
+    })();
     const detailUpload = await upload(project.id, 'detail_page_source', 'detail_page', output, 'detail.png', 'image/png');
     const source = detailUpload.resultResourceId;
     const script = await call(`/api/projects/${project.id}/script-studio/tasks`, 'POST', {
       sourceSetId: source, providerId: llmProvider.id, targetDurationSec: 15, requestedCount: 1,
       extractOnly: true, requestKey: 'production-extract-once',
     }, 202);
-    const canvas = (await call('/api/canvas', 'POST', { name: '同根生产画布' }, 201)).canvas;
-    const models = (await call('/api/canvas/models')).models;
-    const model = models.find((item) => item.displayName.includes('同根生产图片'));
-    assert.ok(model, 'configured provider must be available on canvas');
-    const graph = { schemaVersion: 1, nodes: [{ id: 'image', kind: 'image-generation', position: { x: 0, y: 0 },
-      data: { title: '同根图片', modelKey: model.key, generationMode: 'text-to-image', prompt: '蓝色沙发',
-        parameters: {}, references: [], referenceLabelCounter: 0 } }], edges: [] };
-    const saved = await call(`/api/canvas/${canvas.id}`, 'PATCH', { graph, expectedGraphRevision: 0 });
-    const planBody = { mode: 'single', targetNodeId: 'image', requestKey: 'production-canvas-once',
-      expectedGraphRevision: saved.canvas.graphRevision };
-    const plan = await call(`/api/canvas/${canvas.id}/plan`, 'POST', planBody);
-    const canvasRun = await call(`/api/canvas/${canvas.id}/runs`, 'POST', { ...planBody, planFingerprint: plan.plan.fingerprint });
-    const video = fs.readFileSync(await makeMedia());
-    const batchUpload = await upload(project.id, 'batch_asset', 'batch_asset', video, 'batch.mp4', 'video/mp4');
+    let canvasRun = { tasks: [] };
+    let batchUpload = null;
+    if (!taskHistoryOnly) {
+      const canvas = (await call('/api/canvas', 'POST', { name: '同根生产画布' }, 201)).canvas;
+      const models = (await call('/api/canvas/models')).models;
+      const model = models.find((item) => item.displayName.includes('同根生产图片'));
+      assert.ok(model, 'configured provider must be available on canvas');
+      const graph = { schemaVersion: 1, nodes: [{ id: 'image', kind: 'image-generation', position: { x: 0, y: 0 },
+        data: { title: '同根图片', modelKey: model.key, generationMode: 'text-to-image', prompt: '蓝色沙发',
+          parameters: {}, references: [], referenceLabelCounter: 0 } }], edges: [] };
+      const saved = await call(`/api/canvas/${canvas.id}`, 'PATCH', { graph, expectedGraphRevision: 0 });
+      const planBody = { mode: 'single', targetNodeId: 'image', requestKey: 'production-canvas-once',
+        expectedGraphRevision: saved.canvas.graphRevision };
+      const plan = await call(`/api/canvas/${canvas.id}/plan`, 'POST', planBody);
+      canvasRun = await call(`/api/canvas/${canvas.id}/runs`, 'POST', { ...planBody, planFingerprint: plan.plan.fingerprint });
+      const video = fs.readFileSync(await makeMedia());
+      batchUpload = await upload(project.id, 'batch_asset', 'batch_asset', video, 'batch.mp4', 'video/mp4');
+    }
 
     // Pools stay closed until all work is persisted. No manual database writes.
     const configured = await call('/api/team/pools');
     await call('/api/team/pools', 'POST', { changes: changes.map((change) => ({
       ...change, capacity: 2, expectedVersion: configured.pools.find((pool) => pool.poolKey === change.poolKey).version,
     })) });
-    const proxy = await call(`/api/batch-production/assets/${batchUpload.resultResourceId}/proxies?projectId=${project.id}`, 'POST', {});
+    const proxy = taskHistoryOnly ? { requested: [] } : await call(`/api/batch-production/assets/${batchUpload.resultResourceId}/proxies?projectId=${project.id}`, 'POST', {});
     await stopServer();
     db = new Database(path.join(root, 'data', 'workbench.db'), { readonly: true, fileMustExist: true });
     const scriptBefore = db.prepare('SELECT status FROM script_studio_tasks WHERE id = ?').get(script.task.id);
@@ -137,32 +143,59 @@ export async function runProductionScenario({ root, admin, jsonRequest, request,
       }
       throw new Error(`${label} timeout: ${JSON.stringify(current)}`);
     };
-    const image = await until(() => db.prepare('SELECT status, errorMessage, outputImageId FROM jobs WHERE id = ?').get(scene.jobIds[0]),
+    const image = taskHistoryOnly ? {} : await until(() => db.prepare('SELECT status, errorMessage, outputImageId FROM jobs WHERE id = ?').get(scene.jobIds[0]),
       (row) => row.status === 'succeeded', 'legacy image');
     const detail = await until(() => db.prepare('SELECT status, errorMessage FROM script_studio_tasks WHERE id = ?').get(script.task.id),
       (row) => row.status === 'succeeded', 'script studio');
-    const canvasTask = await until(() => db.prepare('SELECT phase, errorMessage, outputAssetId FROM creative_canvas_tasks WHERE id = ?').get(canvasRun.tasks[0].id),
+    const canvasTask = taskHistoryOnly ? {} : await until(() => db.prepare('SELECT phase, errorMessage, outputAssetId FROM creative_canvas_tasks WHERE id = ?').get(canvasRun.tasks[0].id),
       (row) => row.phase === 'succeeded', 'canvas');
-    const batchTask = await until(() => db.prepare('SELECT status FROM batch_tasks WHERE id = ?').get(proxy.requested[0].taskId),
+    const batchTask = taskHistoryOnly ? {} : await until(() => db.prepare('SELECT status FROM batch_tasks WHERE id = ?').get(proxy.requested[0].taskId),
       (row) => row.status === 'succeeded', 'batch proxy');
-    evidence.chains = [
+    evidence.chains = taskHistoryOnly ? [{ module: 'script-studio', taskId: script.task.id, ...detail }] : [
       { module: 'regular', taskId: scene.jobIds[0], ...image },
       { module: 'script-studio', taskId: script.task.id, ...detail },
       { module: 'canvas', taskId: canvasRun.tasks[0].id, ...canvasTask },
       { module: 'batch', taskId: proxy.requested[0].taskId, ...batchTask },
     ];
-    const mediaPools = db.prepare("SELECT requiredPoolsJson FROM execution_operations WHERE module IN ('image', 'canvas')").all();
-    assert.equal(mediaPools.length, 2);
-    for (const operation of mediaPools) assert.deepEqual(JSON.parse(operation.requiredPoolsJson), ['media:production-test']);
-    evidence.sharedMediaPool = 'media:production-test';
+    if (!taskHistoryOnly) {
+      const mediaPools = db.prepare("SELECT requiredPoolsJson FROM execution_operations WHERE module IN ('image', 'canvas')").all();
+      assert.equal(mediaPools.length, 2);
+      for (const operation of mediaPools) assert.deepEqual(JSON.parse(operation.requiredPoolsJson), ['media:production-test']);
+      evidence.sharedMediaPool = 'media:production-test';
+    }
     const counts = { ...calls };
     await stopServer();
     startServer();
     await waitReady();
     await new Promise((resolve) => setTimeout(resolve, 5000));
     assert.deepEqual(calls, counts, 'completed tasks must never repeat provider POST after restart');
-    assert.equal(calls.images, 2, 'one legacy image and one canvas image');
+    assert.equal(calls.images, taskHistoryOnly ? 0 : 2, taskHistoryOnly ? 'script-only history must not submit image work' : 'one legacy image and one canvas image');
     assert.equal(calls.llm, 1, 'one persisted direct-vision extraction');
+    const employee = sessions[1] ?? sessions[0];
+    if (taskHistoryOnly) {
+      const historyBefore = await until(() => db.prepare('SELECT status FROM script_studio_tasks WHERE id = ?').get(script.task.id),
+        (row) => row.status === 'succeeded', 'script-only task display history');
+      assert.equal(historyBefore.status, 'succeeded');
+      db.close();
+      db = null;
+    }
+    const scriptProvider = (await call(`/api/providers/script/${llmProvider.id}`, 'PUT', {
+      name: '修改后的当前供应商', model: 'changed-current-default-model',
+    }));
+    assert.equal(scriptProvider.model, 'changed-current-default-model');
+    const history = (await jsonRequest(employee, '/api/team/tasks', {}, 200)).body.items.filter((item) => item.taskId === script.task.id);
+    assert.equal(history.length, 1);
+    assert.equal(history[0].model, 'gpt-4o', '历史任务必须使用冻结请求模型，不读修改后的默认模型');
+    assert.equal(history[0].providerName, '同根生产识图');
+    assert.equal(history[0].scopeName, projects[1]?.name ?? project.name);
+    assert.equal(history[0].stepName, '详情页素材分析');
+    assert.equal(history[0].stepName.includes('plan'), false);
+    assert.equal(history[0].stepName.includes('batch'), false);
+    assert.equal(JSON.stringify(history[0]).includes('isolated-production-fixture'), false);
+    assert.equal(JSON.stringify(history[0]).includes('providerSnapshot'), false);
+    assert.equal(JSON.stringify(history[0]).includes('inputSnapshot'), false);
+    evidence.taskDisplay = { taskId: script.task.id, model: history[0].model, providerName: history[0].providerName,
+      currentProviderModel: scriptProvider.model, stepName: history[0].stepName };
     evidence.recovery = { scriptQueuedBeforeRestart: true, businessRequestsDuringRecovery: 0, repeatedPosts: 0 };
     return evidence;
   } finally {

@@ -24,7 +24,7 @@ const result = {
 try {
   browser = await chromium.launch({ headless: true });
   result.browser = await browser.version();
-  const context = await browser.newContext({ locale: 'zh-CN', ignoreHTTPSErrors: false });
+  const context = await browser.newContext({ locale: 'zh-CN', ignoreHTTPSErrors: false, permissions: ['clipboard-read', 'clipboard-write'] });
   const page = await context.newPage();
   page.on('pageerror', (error) => result.pageErrors.push(error.message));
   const loginResponse = await page.goto(`${baseUrl}/team/login`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
@@ -40,6 +40,47 @@ try {
   assert.equal(tasksResponse?.ok(), true);
   await page.getByRole('heading', { name: '团队任务', exact: true }).waitFor({ timeout: 30_000 });
   await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 30_000 }).catch(() => undefined);
+  const taskFixture = JSON.parse(process.env.TEAM_ACCEPTANCE_TASK_FIXTURE ?? 'null');
+  if (taskFixture) {
+    await page.getByText(taskFixture.syntheticHistoryOnly ? '第 2 条文案 · 润色' : '详情页素材分析', { exact: false }).first().waitFor({ timeout: 30_000 });
+    await page.getByText(taskFixture.syntheticHistoryOnly ? '历史脚本模型-fixture-A' : taskFixture.model, { exact: false }).first().waitFor();
+    await page.getByText(taskFixture.syntheticHistoryOnly ? '历史脚本供应商（fixture）' : taskFixture.providerName, { exact: false }).first().waitFor();
+    assert.equal(await page.getByText(taskFixture.employee.taskId, { exact: true }).count(), 0, '完整 UUID 不得直接出现在正常任务阅读入口');
+    await page.getByRole('button', { name: '复制排查信息', exact: true }).first().click();
+    await page.getByRole('button', { name: '已复制排查信息', exact: true }).waitFor();
+    const copied = await page.evaluate(() => navigator.clipboard.readText());
+    for (const expected of [taskFixture.employee.taskId, taskFixture.syntheticHistoryOnly ? 'script-studio-generate:plan:2:polish:1' : 'script-studio-vision', taskFixture.syntheticHistoryOnly ? '历史脚本模型-fixture-A' : taskFixture.model]) assert.ok(copied.includes(expected), `排查信息应保留 ${expected}`);
+    await page.locator('details').filter({ hasText: '编号与版本' }).first().locator('summary').click();
+    await page.getByText(taskFixture.employee.taskId, { exact: false }).first().waitFor();
+    await page.getByLabel('查找任务', { exact: true }).fill('不存在的任务-search');
+    await page.getByText('当前筛选没有团队任务。', { exact: true }).waitFor();
+    await page.getByLabel('查找任务', { exact: true }).fill('');
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
+      await page.screenshot({ path: path.join(evidenceDirectory, `tasks-${theme}.png`), fullPage: true });
+      result.evidence.push(`http/browser/tasks-${theme}.png`);
+    }
+    await Promise.all([
+      page.waitForResponse((response) => new URL(response.url()).pathname === '/api/team/tasks' && response.status() === 200, { timeout: 60_000 }),
+      page.goto(`${baseUrl}/`, { waitUntil: 'networkidle', timeout: 60_000 }),
+    ]);
+    await page.getByText(taskFixture.syntheticHistoryOnly ? '第 2 条文案 · 润色' : '详情页素材分析', { exact: false }).first().waitFor();
+    await page.getByText(taskFixture.syntheticHistoryOnly ? '历史脚本模型-fixture-A' : taskFixture.model, { exact: false }).first().waitFor();
+    assert.equal(await page.getByText(taskFixture.employee.taskId, { exact: true }).count(), 0);
+    const historyApi = await page.evaluate(async () => {
+      const response = await fetch('/api/team/tasks', { cache: 'no-store' });
+      return { status: response.status, body: await response.json() };
+    });
+    assert.equal(historyApi.status, 200);
+    assert.ok(historyApi.body.items.some((item) => item.model === (taskFixture.syntheticHistoryOnly ? '历史脚本模型-fixture-A' : taskFixture.model) && item.providerName === (taskFixture.syntheticHistoryOnly ? '历史脚本供应商（fixture）' : taskFixture.providerName)));
+    if (taskFixture.currentProviderModel) assert.equal(historyApi.body.items.some((item) => item.model === taskFixture.currentProviderModel), false, '修改当前配置不得改变历史任务模型');
+    assert.equal(historyApi.body.items.some((item) => item.model === '其他成员模型-fixture-B'), false, '员工只能看到自己的历史任务');
+    const serialized = JSON.stringify(historyApi.body);
+    for (const forbidden of ['must-not-leak', 'providerSnapshot', 'inputSnapshot', 'apiKey', 'baseUrl']) assert.equal(serialized.includes(forbidden), false);
+    await page.screenshot({ path: path.join(evidenceDirectory, 'dashboard-task-display.png'), fullPage: true });
+    result.evidence.push('http/browser/dashboard-task-display.png');
+    result.assertions.push('首页/任务页共享中文步骤与历史供应商模型；员工隔离、安全投影、搜索、复制详情和浅深主题通过');
+  }
   const observed = await page.evaluate(async () => {
     const [sessionResponse, projectsResponse] = await Promise.all([
       fetch('/api/team/auth/session', { cache: 'no-store' }),
@@ -111,6 +152,27 @@ try {
     assert.equal(poolState.body.bindings.filter((item) => item.poolKey === 'media:browser-shared').length, 2);
     result.assertions.push('管理员在真实页面把两个供应商绑定同一共享池，刷新后持久化正确');
 
+    if (taskFixture?.syntheticHistoryOnly) {
+      await adminPage.goto(`${baseUrl}/team/tasks`, { waitUntil: 'networkidle' });
+      await adminPage.getByText('其他成员模型-fixture-B', { exact: false }).first().waitFor();
+      await adminPage.getByText('历史脚本模型-fixture-A', { exact: false }).first().waitFor();
+      const memberFilter = adminPage.getByLabel('发起人', { exact: true });
+      await memberFilter.selectOption({ label: '逻辑用户 2（accept-02）' });
+      await adminPage.getByText('历史脚本模型-fixture-A', { exact: false }).first().waitFor();
+      assert.equal(await adminPage.getByText('其他成员模型-fixture-B', { exact: false }).isVisible(), false);
+      const employeeGroup = adminPage.getByRole('region', { name: /逻辑用户 2/ });
+      await employeeGroup.getByRole('button', { name: '折叠', exact: true }).click();
+      await employeeGroup.getByRole('button', { name: '展开', exact: true }).waitFor();
+      assert.equal(await adminPage.getByText('历史脚本模型-fixture-A', { exact: false }).isVisible(), false);
+      await adminPage.getByRole('button', { name: '刷新', exact: true }).click();
+      await adminPage.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 30_000 }).catch(() => undefined);
+      assert.equal(await adminPage.getByText('历史脚本模型-fixture-A', { exact: false }).isVisible(), false, '刷新保留筛选与折叠状态');
+      await adminPage.getByRole('button', { name: '平铺', exact: true }).click();
+      await adminPage.getByText('历史脚本模型-fixture-A', { exact: false }).first().waitFor();
+      result.assertions.push('管理员保留按发起人分组/折叠、服务端成员筛选、平铺与刷新状态');
+    }
+
+    if (process.env.TEAM_ACCEPTANCE_TASK_HISTORY !== '1') {
     const project = await api(page, '/api/projects', 'POST', {
       storeCode: 'B店', productCode: 'BROWSER-RECYCLE', productionType: '新品种草', editorName: '浏览器验收',
       providerId: process.env.TEAM_ACCEPTANCE_PROVIDER_ID, model: 'gpt-image-2', size: '1024x1024',
@@ -141,6 +203,7 @@ try {
     assert.equal((await published).status(), 200);
     assert.equal((await api(page, '/api/video-prompt-templates')).body.some((item) => item.id === templateId), true);
     result.assertions.push('管理员从页面发布私人模板后员工才可读取，发布结果来自正式 API');
+    }
 
     for (const [route, heading] of [
       ['/team/admin/operations', '备份与维护'], ['/team/recycle-bin', '回收站'], ['/team/admin/pools', '资源池与共享预算'],
@@ -164,6 +227,15 @@ try {
 } catch (error) {
   result.result = 'failed';
   result.error = error instanceof Error ? error.message : String(error);
+  try {
+    const activePages = browser?.contexts().flatMap((item) => item.pages()) ?? [];
+    result.failurePages = await Promise.all(activePages.map(async (item) => ({ url: item.url(), text: (await item.locator('body').innerText()).slice(0, 8000) })));
+    for (const [index, item] of activePages.entries()) {
+      const failurePath = path.join(evidenceDirectory, `failure-${index}.png`);
+      await item.screenshot({ path: failurePath, fullPage: true });
+      result.evidence.push(`http/browser/failure-${index}.png`);
+    }
+  } catch (captureError) { result.captureError = String(captureError); }
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close();

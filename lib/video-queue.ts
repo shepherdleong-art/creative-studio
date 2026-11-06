@@ -487,7 +487,7 @@ async function runAuthorizedVideoJob(
       ? `${runtime.accessKey}\0${runtime.secretKey}`
       : runtime.apiKey;
     const providerSnapshot = {
-      providerId: provider.id, type: provider.type, model: job.model, baseUrl: runtime.baseUrl,
+      providerId: provider.id, providerName: provider.name, type: provider.type, model: job.model, baseUrl: runtime.baseUrl,
     };
     assertLegacyMediaProviderRecovery({
       module: 'video', taskId: job.id,
