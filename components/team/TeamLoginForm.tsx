@@ -13,15 +13,16 @@ export default function TeamLoginForm({ changePassword = false }: { changePasswo
   const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [remember, setRemember] = useState(false);
+  const nextPasswordInput = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (mode === 'change') nextPasswordInput.current?.focus(); }, [mode]);
+
   useEffect(() => {
     const reason = new URLSearchParams(window.location.search).get('reason');
     if (reason === 'password-changed') setError('密码已修改，请使用新密码重新登录。');
     else if (reason === 'session-expired') setError('登录状态已到期或失效，请重新登录。');
     try { setRemember(window.localStorage.getItem('creative-studio-remember-login') === 'true'); }
-    catch { /* 无持久偏好时只使用当前会话。 */ }
+    catch { /* preference store unavailable */ }
   }, []);
-  const nextPasswordInput = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (mode === 'change') nextPasswordInput.current?.focus(); }, [mode]);
 
   useEffect(() => {
     void fetch('/api/team/auth/session', { credentials: 'same-origin', cache: 'no-store' })
