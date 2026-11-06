@@ -293,6 +293,8 @@ function generate(config) {
     CREATIVE_STUDIO_SERVER_ROOT: appRoot,
     CREATIVE_STUDIO_APPLICATION_ROOT: appRoot,
     CREATIVE_STUDIO_SERVER_RELEASE_ID: config.releaseId,
+    CREATIVE_STUDIO_SERVICE_ROOT: config.serviceRoot,
+    CREATIVE_STUDIO_RELEASE_ROOT: config.releaseRoot,
     CREATIVE_STUDIO_CONTROL_CREDENTIAL_FILE: config.controlCredentialFile,
     CREATIVE_STUDIO_MODULE_BATCH: config.modules.batch ? '1' : '0',
     CREATIVE_STUDIO_MODULE_SCRIPT_STUDIO: config.modules.scriptStudio ? '1' : '0',

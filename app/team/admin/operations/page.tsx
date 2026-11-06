@@ -5,6 +5,7 @@ import { TEAM_SESSION_COOKIE } from '@/lib/team-service/auth/request';
 import { getTeamAuthService } from '@/lib/team-service/auth/runtime';
 import { readTeamModuleSwitches } from '@/lib/team-service/module-switches';
 import TeamProductionControl from '@/components/team/TeamProductionControl';
+import TeamReleaseUpload from '@/components/team/TeamReleaseUpload';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,6 +36,7 @@ export default async function TeamOperationsPage() {
       </div>
 
       <TeamProductionControl />
+      <TeamReleaseUpload />
       <section className="card p-6">
         <h2 className="text-lg font-semibold text-ink">当前模块开关</h2>
         <p className="mt-1 text-xs text-ink-tertiary">来自部署配置生成的 app.env；关闭的模块不会启动 worker，也不影响登录、编辑和下载。</p>
