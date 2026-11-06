@@ -606,13 +606,24 @@ async function runAuthorizedJob(
         while (Date.now() - geekaiStart < maxPollMs) {
           if (reqAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-          const pollResult = await pollGeekAITask(
-            taskId,
-            apiKey,
-            provider.baseUrl,
-            geekaiStart,
-            reqAbort.signal
-          );
+          let pollResult;
+          try {
+            pollResult = await pollGeekAITask(
+              taskId,
+              apiKey,
+              provider.baseUrl,
+              geekaiStart,
+              reqAbort.signal
+            );
+          } catch (error) {
+            if (reqAbort.signal.aborted) throw error;
+            await captureLegacyMediaFailure({
+              module: 'image', taskId: job.id,
+              inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+              stage: 'remote_poll', errorCode: 'provider_poll_failed',
+            });
+            throw error;
+          }
 
           const elapsedSec = Math.round((Date.now() - geekaiStart) / 1000);
           db.prepare(
@@ -808,13 +819,24 @@ async function runAuthorizedJob(
         while (Date.now() - gatewayStart < maxPollMs) {
           if (reqAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-          const pollResult = await pollGatewayTaskImage(
-            taskId,
-            apiKey,
-            provider.baseUrl,
-            gatewayStart,
-            reqAbort.signal
-          );
+          let pollResult;
+          try {
+            pollResult = await pollGatewayTaskImage(
+              taskId,
+              apiKey,
+              provider.baseUrl,
+              gatewayStart,
+              reqAbort.signal
+            );
+          } catch (error) {
+            if (reqAbort.signal.aborted) throw error;
+            await captureLegacyMediaFailure({
+              module: 'image', taskId: job.id,
+              inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+              stage: 'remote_poll', errorCode: 'provider_poll_failed',
+            });
+            throw error;
+          }
 
           const elapsedSec = Math.round((Date.now() - gatewayStart) / 1000);
           db.prepare(
@@ -1205,6 +1227,16 @@ async function runAuthorizedJob(
         WHERE id = ? AND status = 'running'`).run(`${errorMessage}。提交结果未知，已禁止自动重发。`, job.id);
       logError('图片提交结果未知，进入 needs_check，禁止自动重发');
       return;
+    }
+
+    if (isServerMediaExecution()) {
+      const submitted = db.prepare('SELECT providerTaskId FROM jobs WHERE id = ?').get(job.id) as { providerTaskId: string | null } | undefined;
+      if (submitted?.providerTaskId?.trim()) {
+        db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'needs_check', errorMessage = ?, finishedAt = datetime('now')
+          WHERE id = ? AND status = 'running'`).run(`${sanitizeErrorMessage(errorMessage)}。已有远端任务，请续查，不会重新提交。`, job.id);
+        logError('图片轮询异常，保留远端任务并进入续查，不重新提交');
+        return;
+      }
     }
 
     const pType = getProviderTypeForJob(job.id);

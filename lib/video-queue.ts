@@ -807,7 +807,18 @@ async function runAuthorizedVideoJob(
         return;
       }
 
-      const pollResult = await adapter.poll(taskId, apiKey, runtime.baseUrl, reqAbort.signal);
+      let pollResult;
+      try {
+        pollResult = await adapter.poll(taskId, apiKey, runtime.baseUrl, reqAbort.signal);
+      } catch (error) {
+        if (reqAbort.signal.aborted) throw error;
+        await captureLegacyMediaFailure({
+          module: 'video', taskId: job.id,
+          inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+          stage: 'remote_poll', errorCode: 'provider_poll_failed',
+        });
+        throw error;
+      }
 
       const elapsedSec = Math.round((Date.now() - pollStartedAt) / 1000);
       db.prepare(

@@ -401,12 +401,12 @@ export async function settleLegacyMediaRemote(input: {
   });
 }
 
-/** 已受理下载/媒体处理失败：关联原尝试，不篡改已成功的远端终态或费用。 */
+/** 已受理阶段的失败：关联原尝试，不篡改已成功的远端终态或费用；轮询异常继续保留原远端身份。 */
 export async function captureLegacyMediaFailure(input: {
   module: 'image' | 'video';
   taskId: string;
   inputRevision: string;
-  stage: 'download' | 'storage' | 'local_media';
+  stage: 'download' | 'storage' | 'local_media' | 'remote_poll';
   errorCode: string;
 }): Promise<void> {
   if (!isServerMediaExecution()) return;

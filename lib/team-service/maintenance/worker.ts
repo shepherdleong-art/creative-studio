@@ -132,15 +132,27 @@ export async function runMaintenanceWorker(options: {
               throw error;
             }
           } else if (claimed.job.action === 'cleanup.execute' && options.executeCleanup) {
+            const heartbeat = setInterval(() => {
+              try {
+                const current = store.get(claimed.job.id).job;
+                if (current.status === 'running' && current.leaseOwner === workerId) {
+                  store.updateStage({ jobId: claimed.job.id, workerId, stage: current.stage, leaseMs: 120_000 });
+                }
+              } catch { /* 最终提交以实际租约为准，不伪造清理完成。 */ }
+            }, 15_000);
+            heartbeat.unref();
             try {
-              store.updateStage({ jobId: claimed.job.id, workerId, stage: 'verifying' });
+              store.updateStage({ jobId: claimed.job.id, workerId, stage: 'verifying', leaseMs: 120_000 });
               const result = await options.executeCleanup(claimed.job);
-              store.updateStage({ jobId: claimed.job.id, workerId, stage: 'finishing' });
+              store.updateStage({ jobId: claimed.job.id, workerId, stage: 'finishing', leaseMs: 120_000 });
               store.complete({ jobId: claimed.job.id, workerId, result });
             } catch (error) {
-              store.fail({ jobId: claimed.job.id, workerId, code: 'cleanup_failed', message: error instanceof Error ? error.message : '清理执行失败，未确认完成。' });
+              const current = store.get(claimed.job.id).job;
+              if (current.status === 'running' && current.leaseOwner === workerId) {
+                store.fail({ jobId: claimed.job.id, workerId, code: 'cleanup_failed', message: error instanceof Error ? error.message : '清理执行失败，未确认完成。' });
+              }
               throw error;
-            }
+            } finally { clearInterval(heartbeat); }
           } else if (claimed.job.action === 'release.execute' && claimed.job.target.kind === 'release') {
             const stateFile = path.join(config.backupRoot, 'maintenance-control', 'release-state', config.deploymentId, `${claimed.job.id}.json`);
             let state: { status?: string } | null = null;
@@ -151,8 +163,10 @@ export async function runMaintenanceWorker(options: {
             if (state?.status === 'failed') {
               // A crash leaves no terminal state and resumes. An explicit failure keeps its failed
               // audit result rather than silently becoming a success or starting another operation.
-              store.fail({ jobId: claimed.job.id, workerId, code: 'release_failed',
-                message: '升级未恢复生产；请查看持久失败阶段、实际版本与兼容条件后按受控流程处理。' });
+              store.failWithResult({
+                jobId: claimed.job.id, workerId, code: 'release_failed', result: state as unknown as Record<string, unknown>,
+                message: '升级未恢复生产；请查看持久失败阶段、实际版本与兼容条件后按受控流程处理。',
+              });
               continue;
             }
             if (!options.executeRelease) throw new Error('未配置受控升级执行器，保持维护作业待核查');
@@ -174,10 +188,21 @@ export async function runMaintenanceWorker(options: {
             } catch (error) {
               const current = store.get(claimed.job.id).job;
               if (current.status === 'running' && current.leaseOwner === workerId) {
-                store.fail({
+                let failureEvidence: Record<string, unknown> | undefined;
+                if (fs.existsSync(stateFile)) {
+                  try {
+                    const persisted = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as Record<string, unknown>;
+                    if (persisted.status === 'failed') failureEvidence = persisted;
+                  } catch {
+                    // 损坏状态由下一次受控核查拒绝；失败作业仍保留原错误，不伪造版本。
+                  }
+                }
+                const failure = {
                   jobId: claimed.job.id, workerId, code: 'release_failed',
                   message: error instanceof Error ? error.message.slice(0, 500) : '升级失败，保持维护状态，请按失败阶段继续处理。',
-                });
+                };
+                if (failureEvidence) store.failWithResult({ ...failure, result: failureEvidence });
+                else store.fail(failure);
               }
               throw error;
             } finally { clearInterval(heartbeat); }

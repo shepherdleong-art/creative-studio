@@ -243,6 +243,26 @@ try {
     assert.equal(fs.existsSync(path.join(storageRoot, 'team-staging', 'restore-hold-upload', 'parts', '1.part')), true);
   } finally { heldStore.close(); }
   console.log('cleanup replacement rejection, cross-root rejection and restore-hold protection passed');
+
+  const { MaintenanceJobStore } = await import('../lib/team-service/maintenance/jobs.ts');
+  const jobStore = new MaintenanceJobStore({ backupRoot, deploymentId: 'cleanup-lease-test' });
+  try {
+    const cleanupJob = jobStore.submit({
+      action: 'cleanup.execute', target: { kind: 'cleanup', previewId: heldPreview.id },
+      principal: { userId: 'admin', employeeId: '0000', displayName: '管理员', role: 'admin' },
+      idempotencyKey: 'cleanup-expired-lease', now: new Date('2026-11-06T00:00:00.000Z'),
+    });
+    jobStore.claimNext({ workerId: 'cleanup-worker', jobId: cleanupJob.job.id, leaseMs: 1, now: new Date('2026-11-06T00:00:00.000Z') });
+    jobStore.reconcile({ workerId: 'cleanup-recovery', now: new Date('2026-11-06T00:01:00.000Z') });
+    assert.equal(jobStore.get(cleanupJob.job.id).job.status, 'needs_review', '过期清理必须进入待核查而不是永久 running');
+    assert.throws(() => jobStore.submit({
+      action: 'cleanup.execute', target: { kind: 'cleanup', previewId: heldPreview.id },
+      principal: { userId: 'admin', employeeId: '0000', displayName: '管理员', role: 'admin' },
+      idempotencyKey: 'cleanup-after-unknown', now: new Date('2026-11-06T00:01:01.000Z'),
+    }), (error: unknown) => (error as { code?: string }).code === 'maintenance_review_required');
+    assert.equal(fs.existsSync(path.join(storageRoot, 'team-staging', 'restore-hold-upload', 'parts', '1.part')), true);
+  } finally { jobStore.close(); }
+  console.log('cleanup expired lease requires review and does not delete protected files');
 } finally {
   replacementStore?.close();
   previewStore?.close();

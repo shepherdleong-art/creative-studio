@@ -123,19 +123,30 @@ try {
     const failed = store.submit({ action: 'release.execute', target: { kind: 'release', candidateId: 'e'.repeat(64) },
       principal: { userId: 'real-admin', employeeId: '00042', displayName: '真实管理员', role: 'admin' }, idempotencyKey: 'failure-original-001' });
     const failedJobId = failed.job.id;
-    const failureWorkerId = 'failure-worker';
-    const failedClaim = store.claimNext({ workerId: failureWorkerId, jobId: failedJobId })!;
-    console.log('failed claim before fail', failedClaim.job.id, failedClaim.job.leaseOwner);
-    const previousResult = store.get(failedJobId).job.result;
-    if (!previousResult) {
-      // 生成真实的失败证据（不覆盖业务状态），用于验证续跑保留而非清空恢复信息。
-      const evidenceStore = store as unknown as { db: Database.Database };
-      evidenceStore.db.prepare('UPDATE maintenance_jobs SET resultJson = ? WHERE id = ?').run(JSON.stringify({ currentStage: 'self_check', actualRelease: { releaseId: 'new-release', packageSha256: 'c'.repeat(64) } }), failedJobId);
-    }
-    store.fail({ jobId: failedJobId, workerId: failureWorkerId, code: 'release_failed', message: 'injected' });
+    const failureAdapters = {
+      ...adapters,
+      async selfCheck() { calls.push('failed-self-check'); return { available: false, automaticRetries: 0 }; },
+    };
+    await assert.rejects(() => runMaintenanceWorker({
+      configPath, jobId: failedJobId, once: true,
+      makeBackup: async () => { throw new Error('not a backup'); },
+      executeRelease: async ({ job, onStage }) => {
+        assert.equal(job.id, failedJobId);
+        const { runTeamRelease } = await import('../lib/team-service/maintenance/release.ts');
+        const result = await runTeamRelease({
+          operationId: job.id, deploymentId, backupRoot,
+          stateDirectory: path.dirname(teamMaintenanceStatePath(backupRoot, deploymentId, job.id)),
+          fromRelease: { releaseId: 'old-release', packageSha256: 'b'.repeat(64) },
+          toRelease: { releaseId: 'new-release', packageSha256: 'c'.repeat(64) },
+          adapters: failureAdapters, onStage: (stage) => onStage(stage),
+        });
+        return result as unknown as Record<string, unknown>;
+      },
+    }), /维护态自检未通过/, '真实自检失败必须进入受控失败路径');
     const failureResult = store.get(failedJobId).job.result as Record<string, unknown>;
     assert.equal(failureResult.currentStage, 'self_check');
     assert.equal((failureResult.actualRelease as { releaseId: string }).releaseId, 'new-release');
+    assert.equal((failureResult.recovery as { automaticRollbackAllowed: boolean }).automaticRollbackAllowed, false);
     const retried = store.submit({ action: 'release.execute', target: { kind: 'release', candidateId: 'e'.repeat(64) },
       principal: { userId: 'real-admin', employeeId: '00042', displayName: '真实管理员', role: 'admin' },
       idempotencyKey: 'failure-retry-0001', retryRelease: true });
@@ -148,6 +159,22 @@ try {
     assert.equal(store.submit({ action: 'release.execute', target: { kind: 'release', candidateId: 'e'.repeat(64) },
       principal: { userId: 'real-admin', employeeId: '00042', displayName: '真实管理员', role: 'admin' },
       idempotencyKey: 'failure-retry-0001', retryRelease: true }).job.id, failedJobId);
+    assert.equal(store.submit({ action: 'release.execute', target: { kind: 'release', candidateId: 'e'.repeat(64) },
+      principal: { userId: 'real-admin', employeeId: '00042', displayName: '真实管理员', role: 'admin' },
+      idempotencyKey: 'failure-retry-0001', retryRelease: true }).job.id, failedJobId);
     console.log('failed release retry preserves job identity and history');
+    await runMaintenanceWorker({ configPath, jobId: failedJobId, once: true,
+      makeBackup: async () => { throw new Error('not a backup'); } });
+    const recoveredFailure = store.get(failedJobId).job;
+    assert.equal(recoveredFailure.status, 'failed');
+    assert.deepEqual(recoveredFailure.result, failureResult, '崩溃恢复也不得丢弃失败升级证据');
+    const retryConflictFixture = store.submit({ action: 'backup.create', target: { kind: 'backup', backupType: 'manual' },
+      principal: { userId: 'real-admin', employeeId: '00042', displayName: '真实管理员', role: 'admin' }, idempotencyKey: 'retry-conflict-fixture' });
+    assert.throws(() => store.submit({ action: 'release.execute', target: { kind: 'release', candidateId: 'e'.repeat(64) },
+      principal: { userId: 'real-admin', employeeId: '00042', displayName: '真实管理员', role: 'admin' },
+      idempotencyKey: 'failure-retry-conflict', retryRelease: true }), (error: unknown) => error instanceof Error && (error as { code?: string }).code === 'maintenance_conflict');
+    assert.equal(store.get(failedJobId).job.status, 'failed');
+    store.claimNext({ workerId: 'conflict-worker', jobId: retryConflictFixture.job.id });
+    store.complete({ jobId: retryConflictFixture.job.id, workerId: 'conflict-worker', result: { backupId: 'conflict-fixture-done' } });
   } finally { store.close(); }
 } finally { db.close(); fs.rmSync(root, { recursive: true, force: true }); }

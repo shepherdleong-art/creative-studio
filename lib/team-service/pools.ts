@@ -446,7 +446,7 @@ function readPoolOccupancy(db: Database.Database): PoolAdminState['occupancy'] {
       (SELECT COUNT(*) FROM execution_reservations r
         WHERE r.kind = 'concurrency' AND r.poolKey = p.poolKey AND r.state = 'held') AS held,
       (SELECT COUNT(*) FROM execution_attempts a
-        WHERE a.submissionState IN ('not_sent', 'maybe_sent', 'accepted') AND EXISTS (
+        WHERE a.submissionState = 'accepted' AND EXISTS (
           SELECT 1 FROM execution_reservations r
           WHERE r.attemptId = a.id AND r.kind = 'concurrency' AND r.poolKey = p.poolKey AND r.state = 'held')) AS accepted,
       (SELECT COUNT(*) FROM execution_attempts a
