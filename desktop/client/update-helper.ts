@@ -140,8 +140,11 @@ export function createNativeUpdateProcessControl(job: UpdateHelperJob, timeouts:
 export async function runIndependentUpdateJob(jobFile: string): Promise<UpdateResult> {
   const job = JSON.parse(fs.readFileSync(jobFile, 'utf8')) as UpdateHelperJob;
   if (job.schemaVersion !== 1 || !/^[a-f0-9-]{36}$/.test(job.jobId)
+    || path.resolve(jobFile) !== path.join(job.installRoot, 'updates', 'jobs', `${job.jobId}.json`)
     || path.resolve(job.installRoot) !== path.resolve(path.join(jobFile, '..', '..', '..'))
-    || !Number.isSafeInteger(job.currentPid) || job.currentPid === process.pid) {
+    || !Number.isSafeInteger(job.currentPid) || job.currentPid === process.pid
+    || (job.actorUserId !== undefined && !/^[a-z0-9][a-z0-9-]{0,127}$/i.test(job.actorUserId))
+    || (job.clientDeviceId !== undefined && !/^[a-f0-9-]{36}$/.test(job.clientDeviceId))) {
     throw new Error('独立更新任务文件或安装根无效');
   }
   if (new URL(job.manifestUrl).origin !== new URL(job.serverOrigin).origin
