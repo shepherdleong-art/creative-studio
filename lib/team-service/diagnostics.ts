@@ -1,11 +1,15 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import type { ExecutionErrorCapture } from '../media-core/execution/context.ts';
+import { getTaskPrincipal } from './task-principals.ts';
 
 export const TEAM_ERROR_STAGES = [
   'upload', 'remote_submit', 'remote_poll', 'download', 'local_media',
-  'client_update', 'client_ui', 'server_release', 'server_config',
+  'client_update', 'client_ui', 'server_release', 'server_config', 'server_api', 'storage',
 ] as const;
 export type TeamErrorStage = typeof TEAM_ERROR_STAGES[number];
+export type TeamErrorOrigin = 'server' | 'server_api' | 'worker' | 'client';
+export type TeamErrorOutcome = 'final' | 'recovered';
 
 export interface TeamViewer {
   userId: string;
@@ -40,6 +44,13 @@ export interface TeamErrorView {
   code: string;
   statusCode: number | null;
   safeMessage: string;
+  actionHint: string;
+  origin: TeamErrorOrigin;
+  outcome: TeamErrorOutcome;
+  eventKey: string | null;
+  scopeName: string | null;
+  model: string | null;
+  taskHref: string | null;
   clientVersion: string | null;
   serverReleaseId: string | null;
   configVersion: string | null;
@@ -47,6 +58,7 @@ export interface TeamErrorView {
 }
 
 interface ErrorRow {
+  providerSnapshotJson?: string | null;
   id: string;
   actorUserId: string;
   employeeId?: string;
@@ -63,19 +75,30 @@ interface ErrorRow {
   code: string;
   statusCode: number | null;
   safeMessage: string;
+  actionHint: string;
+  origin: TeamErrorOrigin;
+  outcome: TeamErrorOutcome;
+  eventKey: string | null;
+  scopeName: string | null;
+  model: string | null;
+  taskHref: string | null;
   clientVersion: string | null;
   serverReleaseId: string | null;
   configVersion: string | null;
   createdAt: string;
 }
 
-function associationForResource(db: Database.Database, resourceType: string, resourceId: string): ExecutionAssociation | null {
+function associationForResource(db: Database.Database, resourceType: string, resourceId: string): (ExecutionAssociation & { attemptId: string | null }) | null {
   const operation = db.prepare(`
     SELECT id AS operationId, actorId, module, taskId, scopeType, scopeId,
       configVersion, clientVersion, serverReleaseId, currentAttemptId
     FROM execution_operations WHERE scopeType = ? AND scopeId = ? ORDER BY updatedAt DESC, id DESC LIMIT 1
   `).get(resourceType, resourceId) as ExecutionAssociation | undefined;
-  if (operation) return operation;
+  if (operation) {
+    const latestAttempt = db.prepare('SELECT id FROM execution_attempts WHERE operationId = ? ORDER BY transportSeq DESC LIMIT 1')
+      .pluck().get(operation.operationId) as string | undefined;
+    return { ...operation, attemptId: latestAttempt ?? operation.currentAttemptId };
+  }
   const principal = db.prepare(`
     SELECT actorUserId, module, taskId, scopeType, scopeId FROM team_task_principals
     WHERE scopeType = ? AND scopeId = ? ORDER BY createdAt DESC LIMIT 1
@@ -87,7 +110,7 @@ function associationForResource(db: Database.Database, resourceType: string, res
     operationId: '', actorId: principal.actorUserId, module: principal.module,
     taskId: principal.taskId, scopeType: principal.scopeType, scopeId: principal.scopeId,
     configVersion: null, clientVersion: null, serverReleaseId: null,
-    currentAttemptId: null,
+    currentAttemptId: null, attemptId: null,
   };
 }
 
@@ -103,6 +126,7 @@ interface ExecutionAssociation {
   serverReleaseId: string | null;
   currentAttemptId: string | null;
   attemptId?: string | null;
+  model?: string | null;
 }
 
 const STAGE_MESSAGES: Record<TeamErrorStage, string> = {
@@ -115,7 +139,56 @@ const STAGE_MESSAGES: Record<TeamErrorStage, string> = {
   client_ui: '客户端界面运行失败，请凭错误编号联系管理员核查。',
   server_release: '服务端发布失败，请联系管理员检查发布记录。',
   server_config: '服务端配置不可用，请联系管理员检查配置版本。',
+  server_api: '服务端处理请求时发生故障，请稍后重试；若持续失败，请凭错误编号联系管理员。',
+  storage: '结果保存或存储处理失败，请检查服务磁盘后重试；若持续失败，请联系管理员。',
 };
+
+export function teamErrorActionHint(stage: TeamErrorStage): string {
+  if (stage === 'download') return '确认网络和服务磁盘可用后重试下载，不要重新提交已受理的生成任务。';
+  if (stage === 'storage' || stage === 'local_media') return '保留当前任务，检查服务磁盘与媒体运行环境后重试；不要重复提交已受理任务。';
+  if (stage === 'server_api') return '稍后重试当前操作；若持续失败，请将错误编号提供给管理员排查。';
+  if (stage === 'remote_poll') return '保留任务并继续核查远端结果；不要重复提交生成，必要时凭错误编号联系管理员。';
+  return '按当前任务提供的重试入口操作；若仍失败，请凭错误编号联系管理员。';
+}
+
+function teamErrorOrigin(stage: TeamErrorStage): TeamErrorOrigin {
+  if (['upload', 'download', 'client_update', 'client_ui'].includes(stage)) return 'client';
+  if (stage === 'server_api') return 'server_api';
+  if (['local_media', 'storage'].includes(stage)) return 'worker';
+  return 'server';
+}
+
+const EXPECTED_ERROR_CODES = new Set([
+  'cancelled', 'stage_canceled', 'aborted', 'abort_error', 'invalid_input', 'invalid_request',
+  'invalid_receipt', 'validation_failed', 'bad_request', 'not_found', 'csrf_invalid',
+  'execution_deferred', 'execution_not_ready', 'pool_capacity', 'personal_concurrency',
+]);
+
+export function isReportableTeamError(code: string): boolean {
+  return !EXPECTED_ERROR_CODES.has(code) && !/^(?:cancel|abort)/i.test(code);
+}
+
+export function safeTeamProviderModel(snapshot: unknown): string | null {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
+  const safeToken = (value: unknown): string | null => {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return /^[a-z0-9][a-z0-9_./:+-]{0,119}$/i.test(trimmed) ? trimmed : null;
+  };
+  const record = snapshot as Record<string, unknown>;
+  for (const key of ['requestModel', 'model', 'modelAlias']) {
+    const model = safeToken(record[key]);
+    if (model) return model;
+  }
+  for (const key of ['provider', 'providerConfig', 'snapshot']) {
+    const nested = record[key];
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      const model = safeTeamProviderModel(nested);
+      if (model) return model;
+    }
+  }
+  return null;
+}
 
 function requiredToken(value: unknown, fallback: string, maximum = 80): string {
   if (typeof value !== 'string') return fallback;
@@ -139,6 +212,11 @@ function optionalStatus(value: unknown): number | null {
   return Number.isInteger(value) && Number(value) >= 100 && Number(value) <= 599 ? Number(value) : null;
 }
 
+function safeProviderSnapshotModel(serialized: string | null | undefined): string | null {
+  if (!serialized) return null;
+  try { return safeTeamProviderModel(JSON.parse(serialized)); } catch { return null; }
+}
+
 function mapError(row: ErrorRow): TeamErrorView {
   return {
     errorId: row.id,
@@ -157,7 +235,15 @@ function mapError(row: ErrorRow): TeamErrorView {
     stage: row.stage,
     code: row.code,
     statusCode: row.statusCode,
-    safeMessage: row.safeMessage,
+    safeMessage: STAGE_MESSAGES[row.stage] ?? '发生故障，请凭错误编号联系管理员。',
+    actionHint: teamErrorActionHint(row.stage),
+    origin: ['server', 'server_api', 'worker', 'client'].includes(row.origin)
+      ? row.origin as TeamErrorOrigin : teamErrorOrigin(row.stage),
+    outcome: row.outcome === 'recovered' ? 'recovered' : 'final',
+    eventKey: row.eventKey ?? null,
+    scopeName: row.scopeName ?? null,
+    model: row.model ?? safeProviderSnapshotModel(row.providerSnapshotJson),
+    taskHref: row.taskId ? `/team/errors/${encodeURIComponent(row.id)}/task` : null,
     clientVersion: optionalVersion(row.clientVersion),
     serverReleaseId: optionalVersion(row.serverReleaseId),
     configVersion: optionalVersion(row.configVersion),
@@ -224,6 +310,9 @@ export interface RecordTeamErrorInput {
   serverReleaseId?: string | null;
   configVersion?: string | null;
   clientEventId?: string | null;
+  eventKey?: string | null;
+  origin?: TeamErrorOrigin;
+  outcome?: TeamErrorOutcome;
 }
 
 export function recordTeamError(db: Database.Database, input: RecordTeamErrorInput): TeamErrorView {
@@ -233,6 +322,15 @@ export function recordTeamError(db: Database.Database, input: RecordTeamErrorInp
   const associated = input.attemptId ? associationForAttempt(db, input.attemptId) : null;
   const actorUserId = associated?.actorId ?? input.actorUserId;
   const clientEventId = optionalId(input.clientEventId);
+  const eventKey = input.eventKey?.trim().slice(0, 240) || null;
+  const outcome = input.outcome === 'recovered' ? 'recovered' : 'final';
+  if (eventKey) {
+    const existing = db.prepare('SELECT id FROM team_error_records WHERE eventKey = ?').pluck().get(eventKey) as string | undefined;
+    if (existing) {
+      if (outcome === 'recovered') db.prepare("UPDATE team_error_records SET outcome = 'recovered' WHERE id = ? AND outcome = 'final'").run(existing);
+      return getError(db, existing)!;
+    }
+  }
   if (clientEventId) {
     const existing = db.prepare('SELECT id FROM team_error_records WHERE actorUserId = ? AND clientEventId = ?')
       .pluck().get(actorUserId, clientEventId) as string | undefined;
@@ -244,8 +342,8 @@ export function recordTeamError(db: Database.Database, input: RecordTeamErrorInp
     INSERT INTO team_error_records (
       id, actorUserId, module, taskId, operationId, attemptId, scopeType, scopeId,
       stage, code, statusCode, safeMessage, clientVersion, serverReleaseId,
-      configVersion, clientEventId, transferId, phase, createdAt
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      configVersion, clientEventId, transferId, phase, eventKey, origin, outcome, createdAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, actorUserId,
     associated?.module ?? requiredToken(input.module, 'unknown', 60),
@@ -260,33 +358,58 @@ export function recordTeamError(db: Database.Database, input: RecordTeamErrorInp
     optionalVersion(input.serverReleaseId) ?? optionalVersion(associated?.serverReleaseId),
     optionalVersion(input.configVersion) ?? optionalVersion(associated?.configVersion),
     clientEventId, optionalId(input.transferId),
-    requiredToken(input.phase, '', 80) || null, new Date().toISOString(),
+    requiredToken(input.phase, '', 80) || null,
+    eventKey, input.origin ?? teamErrorOrigin(stage), outcome, new Date().toISOString(),
   );
   return getError(db, id)!;
 }
 
-export function recordTeamExecutionError(db: Database.Database, input: {
-  attemptId: string;
-  outcome: 'failed';
-  errorCode?: string;
-  stage: 'remote_submit' | 'remote_poll';
+export function recordTeamExecutionError(db: Database.Database, input: ExecutionErrorCapture & {
   serverReleaseId?: string;
-}): TeamErrorView {
-  const association = associationForAttempt(db, input.attemptId);
+  diagnosticOutcome?: TeamErrorOutcome;
+}): TeamErrorView | null {
+  const executionAssociation = input.attemptId ? associationForAttempt(db, input.attemptId) : null;
+  const principal = !executionAssociation && input.module && input.taskId
+    ? getTaskPrincipal(db, input.module, input.taskId) : null;
+  if (principal && input.actorUserId && principal.actorUserId !== input.actorUserId) return null;
+  const association = executionAssociation ?? (principal ? {
+    operationId: '', actorId: principal.actorUserId, module: principal.module, taskId: principal.taskId,
+    scopeType: principal.scope.resourceType, scopeId: principal.scope.resourceId,
+    configVersion: null, clientVersion: null, serverReleaseId: null, currentAttemptId: null,
+  } : null);
   if (!association) throw new TeamDiagnosticsError(404, 'attempt_not_found', '执行尝试不存在。');
   const code = requiredToken(input.errorCode, 'execution_failed');
-  const existing = db.prepare(`
+  if (!isReportableTeamError(code)) return null;
+  const existing = input.attemptId ? db.prepare(`
     SELECT id FROM team_error_records WHERE attemptId = ? AND stage = ? AND code = ?
-  `).pluck().get(input.attemptId, input.stage, code) as string | undefined;
+  `).pluck().get(input.attemptId, input.stage, code) as string | undefined : undefined;
   if (existing) return getError(db, existing)!;
+  const taskIdentity = `${association.actorId}:${association.module}:${association.taskId}:${input.stage}:${code}`;
+  const eventKey = input.eventKey ?? (input.attemptId
+    ? `attempt:${input.attemptId}:${input.stage}:${code}`
+    : `task:${createHash('sha256').update(taskIdentity).digest('hex')}`);
   return recordTeamError(db, {
     actorUserId: association.actorId,
     module: association.module,
-    attemptId: input.attemptId,
+    attemptId: input.attemptId ?? null,
+    operationId: executionAssociation?.operationId || null,
+    taskId: association.taskId,
+    scope: { resourceType: association.scopeType, resourceId: association.scopeId },
     stage: input.stage,
     code,
     serverReleaseId: input.serverReleaseId,
+    eventKey,
+    origin: 'worker',
+    outcome: input.diagnosticOutcome,
   });
+}
+
+export function markTeamTaskErrorRecovered(
+  db: Database.Database,
+  input: { taskId: string; module: string; stage: 'download' | 'storage' },
+): void {
+  db.prepare("UPDATE team_error_records SET outcome = 'recovered' WHERE taskId = ? AND module = ? AND stage IN ('download', 'storage') AND outcome = 'final'")
+    .run(input.taskId, input.module);
 }
 
 export function reportClientError(
@@ -341,10 +464,43 @@ export function reportClientError(
     clientEventId: input.clientEventId,
     transferId: input.transferId,
     phase: input.phase,
+    origin: 'client',
     clientVersion: versions.clientVersion ?? association?.clientVersion,
     serverReleaseId: versions.serverReleaseId ?? association?.serverReleaseId,
     configVersion: association?.configVersion,
   });
+}
+
+export function getTeamErrorTask(
+  db: Database.Database,
+  viewer: TeamViewer,
+  errorId: string,
+) {
+  const row = db.prepare('SELECT taskId FROM team_error_records WHERE id = ?').get(errorId) as { taskId: string | null } | undefined;
+  if (!row?.taskId || !listTeamErrors(db, viewer, { errorId }).items.length) {
+    throw new TeamDiagnosticsError(404, 'error_not_found', '错误记录不存在。');
+  }
+  return db.prepare(`SELECT o.id AS operationId, o.taskId, o.step, o.module,
+    o.businessAttemptNo, o.inputRevision, o.createdAt, o.updatedAt,
+    a.id AS attemptId, a.transportSeq, a.terminalState, a.errorCode,
+    a.providerSnapshotJson
+    FROM execution_operations o LEFT JOIN execution_attempts a ON a.operationId = o.id
+    WHERE o.taskId = ? ORDER BY o.updatedAt DESC, a.transportSeq DESC LIMIT 100`).all(row.taskId)
+    .map((value) => {
+      const item = value as Record<string, unknown>;
+      return {
+        operationId: item.operationId, taskId: item.taskId, step: item.step, module: item.module,
+        businessAttemptNo: item.businessAttemptNo, inputRevision: item.inputRevision,
+        createdAt: item.createdAt, updatedAt: item.updatedAt,
+        attemptId: item.attemptId ?? null, transportSeq: item.transportSeq ?? null,
+        terminalState: item.terminalState ?? null, errorCode: item.errorCode ?? null,
+        model: safeProviderSnapshotModel(item.providerSnapshotJson as string | null),
+      };
+    });
+}
+
+function tableExists(db: Database.Database, table: string): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
 }
 
 export function listTeamErrors(
@@ -367,12 +523,28 @@ export function listTeamErrors(
     values.push(filters.errorId);
   }
   const rows = db.prepare(`
-    SELECT e.*, u.employeeId, u.displayName FROM team_error_records e
+    SELECT e.*, u.employeeId, u.displayName,
+      ${tableExists(db, 'execution_attempts')
+        ? '(SELECT providerSnapshotJson FROM execution_attempts a WHERE a.id = e.attemptId)'
+        : 'NULL'} AS providerSnapshotJson
+    FROM team_error_records e
     JOIN team_users u ON u.id = e.actorUserId
     ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
     ORDER BY e.createdAt DESC, e.id DESC LIMIT 500
   `).all(...values) as ErrorRow[];
-  return { items: rows.map(mapError) };
+  return { items: rows.map((row) => {
+    const value = row as ErrorRow & { providerSnapshotJson?: string | null };
+    let model: string | null = null;
+    if (value.providerSnapshotJson) {
+      try { model = safeTeamProviderModel(JSON.parse(value.providerSnapshotJson)); } catch { model = null; }
+    }
+    const scopeName = value.scopeType === 'project' && tableExists(db, 'projects')
+      ? db.prepare('SELECT name FROM projects WHERE id = ?').pluck().get(value.scopeId) as string | undefined
+      : value.scopeType === 'canvas' && tableExists(db, 'creative_canvases')
+        ? db.prepare('SELECT name FROM creative_canvases WHERE id = ?').pluck().get(value.scopeId) as string | undefined
+        : undefined;
+    return mapError({ ...value, model, scopeName: scopeName ?? null });
+  }) };
 }
 
 export function getTeamErrorDiagnostic(
@@ -380,7 +552,8 @@ export function getTeamErrorDiagnostic(
   viewer: TeamViewer,
   errorId: string,
 ) {
-  const row = db.prepare('SELECT * FROM team_error_records WHERE id = ?').get(errorId) as ErrorRow | undefined;
+  const row = db.prepare(`SELECT e.*, a.providerSnapshotJson FROM team_error_records e
+    LEFT JOIN execution_attempts a ON a.id = e.attemptId WHERE e.id = ?`).get(errorId) as ErrorRow | undefined;
   if (!row || (viewer.role !== 'admin' && row.actorUserId !== viewer.userId)) {
     throw new TeamDiagnosticsError(404, 'error_not_found', '错误记录不存在。');
   }
@@ -394,6 +567,12 @@ export function getTeamErrorDiagnostic(
     code: error.code,
     statusCode: error.statusCode,
     safeMessage: error.safeMessage,
+    actionHint: error.actionHint,
+    origin: error.origin,
+    outcome: error.outcome,
+    eventKey: error.eventKey,
+    actorUserId: error.actorUserId,
+    model: error.model,
     taskId: error.taskId,
     operationId: error.operationId,
     attemptId: error.attemptId,

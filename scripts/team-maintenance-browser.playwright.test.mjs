@@ -35,6 +35,8 @@ function write(relative, content) {
 function releaseFixture() {
   write('app/server.js', '// fixture\n');
   write('runtime/process-tree.mjs', '// fixture\n');
+  write('app/runtime/team-server-entry.cjs', '// fixture\n');
+  write('app/scripts/team-server/maintenance.mjs', '// fixture\n');
   const node = write('runtimes/node/node.exe', 'fixture node');
   const caddy = write('tools/caddy/caddy.exe', 'fixture caddy');
   const winsw = write('tools/winsw/WinSW.exe', 'fixture winsw');
@@ -45,7 +47,8 @@ function releaseFixture() {
   write('service/distribution-lock.json', JSON.stringify(lock));
   write('service/packaging/forbidden-paths.json', fs.readFileSync(path.resolve('scripts/packaging/forbidden-paths.json'), 'utf8'));
   write('START-HERE.md', '# isolated fixture\n'); write('deployment.example.json', '{"schemaVersion":1}\n');
-  writeReleaseManifest(releaseRoot, { releaseId: 'release-maintenance-browser', appVersion: '0.7.1', sourceCommit: 'fixture', fixture: true });
+  writeReleaseManifest(releaseRoot, { releaseId: 'release-maintenance-browser', appVersion: '0.7.1', sourceCommit: 'fixture', fixture: true,
+    compatibility: { minAppVersion: '0.7.1', maxAppVersion: '0.7.1', dataSchemaMin: 1, dataSchemaMax: 1 } });
 }
 function launch(executable, args, env) {
   const child = spawn(executable, args, { cwd: repoRoot, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });

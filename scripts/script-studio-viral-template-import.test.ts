@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import ExcelJS from 'exceljs';
-import { ensureScriptStudioSchemaReady } from '../lib/script-studio/schema.ts';
+import { ensureScriptStudioSchemaReady, SCRIPT_STUDIO_MIGRATIONS } from '../lib/script-studio/schema.ts';
 import { parseViralTemplateWorkbook } from '../lib/script-studio/catalog-import/viral-templates.ts';
 import { loadWorkbook, sheetToWorkbookSheet } from '../lib/script-studio/catalog-import/workbook.ts';
 import {
@@ -62,7 +62,7 @@ fs.mkdirSync(path.join(root, 'backups'), { recursive: true });
 const db = createDb(root);
 const migration = await ensureScriptStudioSchemaReady({ db, backupRoot: path.join(root, 'backups'), now: () => new Date('2026-09-17T00:00:00.000Z') });
 assert.equal(migration.state, 'ready');
-assert.equal(migration.targetVersion, 12);
+assert.equal(migration.targetVersion, SCRIPT_STUDIO_MIGRATIONS.at(-1)?.version);
 for (const table of ['script_studio_viral_tpl_libraries', 'script_studio_viral_tpl_revisions', 'script_studio_viral_tpl_entries', 'script_studio_viral_tpl_style_cache']) {
   assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(table), `缺少 ${table}`);
 }

@@ -158,7 +158,7 @@ export async function markSubmitting(options: AttemptOptions, input: MarkSubmitt
       const personalHeld = options.db.prepare(`
         SELECT COUNT(*) FROM execution_reservations WHERE kind = 'concurrency' AND poolKey = ? AND state = 'held'
       `).pluck().get(`actor:${operation.actorId}:remote`) as number;
-      if (personalHeld > policy.effectiveConcurrency) {
+      if (policy.effectiveConcurrency !== null && personalHeld > policy.effectiveConcurrency) {
         throw new ExecutionError('personal_concurrency', '个人并发降额后阻止尚未发送的提交。');
       }
       options.faults?.beforeIntentDatabase?.();

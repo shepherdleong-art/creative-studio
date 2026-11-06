@@ -83,6 +83,8 @@ export interface CanvasPlanTask {
   capabilityKey: string;
   providerIdentity: string;
   modelAlias: string;
+  /** 创建计划时冻结的供应商显示名，历史任务不能回读当前设置。 */
+  providerName?: string;
   generationMode: CanvasGenerationNode['data']['generationMode'];
   /** 冻结的完整文本：节点自己的提示词 + 连接的提示词节点文本。 */
   prompt: string;
@@ -538,6 +540,7 @@ function buildTaskPlan(
     capabilityKey: capability.key,
     providerIdentity: capability.providerIdentity,
     modelAlias: capability.modelAlias,
+    providerName: capability.displayName,
     generationMode: node.data.generationMode,
     prompt: promptParts.join('\n\n'),
     parameters: { ...effectiveParameters },

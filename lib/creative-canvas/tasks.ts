@@ -362,6 +362,7 @@ export function createCanvasRun(
         JSON.stringify({
           capabilityKey: taskPlan.capabilityKey,
           providerIdentity: taskPlan.providerIdentity,
+          providerName: taskPlan.providerName,
           modelAlias: taskPlan.modelAlias,
         }),
         JSON.stringify({

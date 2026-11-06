@@ -25,6 +25,8 @@ try {
   const persisted = fs.readFileSync(filePath, 'utf8');
   for (const forbidden of ['secret', 'sensitive', 'requestBody', 'cookies', 'signature', 'private']) assert.equal(persisted.includes(forbidden), false, forbidden);
 
+  queue.capture({ ...input, clientEventId: 'expired-event', capturedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString() });
+  assert.equal(queue.pending().some((event) => event.clientEventId === 'expired-event'), false, '过期事件不得继续占用离线队列');
   const restarted = new ClientDiagnosticQueue(filePath, { maxEvents: 2 });
   assert.deepEqual(restarted.pending().map((event) => event.clientEventId), ['transfer-event-b', 'update-event-c'], '重开后保留待报事件');
   assert.equal(restarted.acknowledge('missing-event'), false);
@@ -74,6 +76,12 @@ try {
   reporter.capture({ ...event, clientEventId: 'transfer-bob' });
   reporter.setIdentity('alice');
   assert.equal(reporter.pending().length, 0, '切回原账号不得读到其他账号事件');
+  reporter.setIdentity('bob');
+  reporter.capture({ ...event, actorUserId: 'alice', clientEventId: 'delayed-alice' });
+  assert.equal(reporter.pending().some((event) => event.clientEventId === 'delayed-alice'), false, '延迟事件不得出现在当前 B 账号');
+  reporter.setIdentity('alice');
+  assert.equal(reporter.pending().some((event) => event.clientEventId === 'delayed-alice'), true, '延迟事件仍归原账号持久化');
+  reporter.setIdentity('bob');
   reporter.setIdentity('bob');
   assert.equal(reporter.pending().length, 1);
   assert.ok(csrf >= 1);

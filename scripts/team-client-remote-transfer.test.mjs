@@ -205,7 +205,10 @@ try {
   await controller.synchronizeIdentity();
   assert.equal(session.cacheClears, clearsBeforeLogout + 1, '登出必须清除前账号缓存');
   assert.equal(session.storageClears, clearsBeforeLogout + 1, '登出必须清除前账号存储');
-  assert.equal(diagnostics.length, 2, '暂停、取消、重试不得重复诊断同一失败');
+  assert.equal(diagnostics.filter((event) => event.transferId === downloadId).length, 1, '同一下载重试不得重复诊断');
+  assert.equal(diagnostics.filter((event) => event.transferId === mismatchedId && event.phase === 'receipt').length, 1, '另一传输回执失败也必须保留');
+  assert.equal(diagnostics.filter((event) => event.transferId === mismatchedId && event.phase === 'verification').length, 1, '既有文件内容不符是另一失败');
+  assert.equal(new Set(diagnostics.map((event) => event.clientEventId)).size, diagnostics.length, '独立失败使用不同稳定身份');
   account = 'user-b';
   authenticated = true;
   await controller.synchronizeIdentity();

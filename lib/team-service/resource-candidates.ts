@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { resolveStoragePath } from '../media-core/storage-path.ts';
 import type { AuthPrincipal } from './auth/types.ts';
+import { findTeamVersionedRoot } from '../script-studio/team-publications.ts';
 
 function managedFileAvailable(relativePath: string): boolean {
   try {
@@ -14,15 +15,22 @@ function managedFileAvailable(relativePath: string): boolean {
 }
 
 export type NonVersionedResourceType = 'video_prompt_template' | 'title_preset' | 'lut' | 'bgm';
+export type VersionedResourceType = 'script_catalog_revision' | 'viral_template_revision';
 
 export interface PublicResourceCandidate {
-  resourceType: NonVersionedResourceType;
+  resourceType: NonVersionedResourceType | VersionedResourceType;
   resourceId: string;
   typeLabel: string;
   name: string;
   preview: string;
   sourceInfo: string;
+  sourceFilename: string;
   published: boolean;
+  previouslyPublished: boolean;
+  currentRevisionId: string | null;
+  revisionNumber: number | null;
+  entryCount: number | null;
+  parseStatus: 'ready' | 'failed';
   settingsHref: string;
 }
 
@@ -45,6 +53,7 @@ export function listPublicResourceCandidates(
   principal: AuthPrincipal,
 ): PublicResourceCandidate[] {
   if (principal.role !== 'admin') return [];
+  const versioned = listVersionedCandidates(db, principal.userId);
   // 管理员在既有项目权限边界内处理 LUT；候选自己的 visibility 决定待发布状态。
   // 尚未公开的根资源只向所有者展示，不能泄露其他员工的私人模板或音乐。
   const tableExists = (table: string) => Boolean(
@@ -52,7 +61,7 @@ export function listPublicResourceCandidates(
   );
   const lutJoin = tableExists('batch_luts')
     ? 'LEFT JOIN batch_luts lut ON scope.resourceType = \'lut\' AND lut.id = scope.resourceId' : '';
-  return db.prepare(`
+  const nonVersioned = db.prepare(`
     SELECT scope.resourceType, scope.resourceId, scope.visibility,
       template.name AS templateName, template.description AS templateDescription,
       template.prompt AS templatePrompt,
@@ -71,13 +80,16 @@ export function listPublicResourceCandidates(
         OR (scope.resourceType = 'lut' AND scope.parentType = 'project'))
       AND scope.resourceType IN ('video_prompt_template', 'title_preset', 'lut', 'bgm')
     ORDER BY scope.resourceType, scope.updatedAt DESC, scope.resourceId
-  `).all(principal.userId).flatMap((value) => {
+  `).all(principal.userId).flatMap((value): PublicResourceCandidate[] => {
     const row = value as Record<string, unknown>;
     const resourceType = String(row.resourceType) as NonVersionedResourceType;
     const base = {
       resourceType,
       resourceId: String(row.resourceId),
       published: row.visibility === 'public',
+      previouslyPublished: row.visibility === 'public',
+      sourceFilename: '', currentRevisionId: null, revisionNumber: null,
+      entryCount: null, parseStatus: 'ready' as const,
     };
     if (resourceType === 'video_prompt_template') {
       if (typeof row.templateName !== 'string') return [];
@@ -110,4 +122,64 @@ export function listPublicResourceCandidates(
       settingsHref: '/team/admin/resources#public-bgm-heading',
     }];
   });
+  return [...nonVersioned, ...versioned];
+}
+
+function listVersionedCandidates(db: Database.Database, adminUserId: string): PublicResourceCandidate[] {
+  const catalogRows = db.prepare(`
+    SELECT r.*, c.kind, c.ownerKey,
+      (SELECT COUNT(*) FROM script_studio_strategy_entries e WHERE e.revisionId = r.id) AS strategyCount,
+      (SELECT COUNT(*) FROM script_studio_framework_templates e WHERE e.revisionId = r.id) AS frameworkCount,
+      (SELECT COUNT(*) FROM script_studio_copy_hook_templates e WHERE e.revisionId = r.id) AS copyCount,
+      (SELECT COUNT(*) FROM script_studio_visual_hook_templates e WHERE e.revisionId = r.id) AS visualCount,
+      (SELECT COUNT(*) FROM script_studio_template_assets a WHERE a.revisionId = r.id) AS assetCount,
+      (SELECT COALESCE((SELECT e.canonicalName FROM script_studio_strategy_entries e WHERE e.revisionId = r.id ORDER BY e.normalizedModelKey LIMIT 1), '')) AS strategyPreview,
+      (SELECT COALESCE((SELECT e.name FROM script_studio_framework_templates e WHERE e.revisionId = r.id ORDER BY e.sourceRow LIMIT 1), '')) AS frameworkPreview
+    FROM script_studio_catalog_revisions r
+    JOIN script_studio_catalogs c ON c.id = r.catalogId
+    JOIN team_resource_scopes s ON s.resourceType = 'script_catalog_revision' AND s.resourceId = r.id
+    WHERE (c.ownerKey = ? OR s.visibility = 'public') AND s.deletedAt IS NULL
+    ORDER BY c.kind, r.revisionNumber DESC
+  `).all(adminUserId) as Array<Record<string, unknown>>;
+  const viralRows = db.prepare(`
+    SELECT r.*, l.ownerKey,
+      (SELECT COUNT(*) FROM script_studio_viral_tpl_entries e WHERE e.revisionId = r.id) AS entryCount,
+      (SELECT COALESCE((SELECT e.name FROM script_studio_viral_tpl_entries e WHERE e.revisionId = r.id ORDER BY e.sourceRow LIMIT 1), '')) AS firstName,
+      (SELECT COALESCE((SELECT e.refText FROM script_studio_viral_tpl_entries e WHERE e.revisionId = r.id ORDER BY e.sourceRow LIMIT 1), '')) AS firstText
+    FROM script_studio_viral_tpl_revisions r
+    JOIN script_studio_viral_tpl_libraries l ON l.id = r.libraryId
+    JOIN team_resource_scopes s ON s.resourceType = 'viral_template_revision' AND s.resourceId = r.id
+    WHERE (l.ownerKey = ? OR s.visibility = 'public') AND s.deletedAt IS NULL
+    ORDER BY r.revisionNumber DESC
+  `).all(adminUserId) as Array<Record<string, unknown>>;
+  const results: PublicResourceCandidate[] = [];
+  for (const row of [...catalogRows, ...viralRows]) {
+    const viral = typeof row.libraryId === 'string';
+    const kind = viral ? 'viral' : String(row.kind) as 'strategy' | 'template';
+    const team = findTeamVersionedRoot(db, kind);
+    const currentRevisionId = team?.revisionId ?? null;
+    const count = viral ? Number(row.entryCount) : kind === 'strategy' ? Number(row.strategyCount)
+      : Number(row.frameworkCount) + Number(row.copyCount) + Number(row.visualCount);
+    const preview = viral ? String(row.firstText || row.firstName)
+      : kind === 'strategy' ? `${String(row.strategyPreview || '产品策略知识库')} · 型号匹配、统一名称与搜索词埋词`
+        : `${String(row.frameworkPreview || '脚本模板库')} · 核心框架、文案钩子与画面钩子`;
+    results.push({
+      resourceType: viral ? 'viral_template_revision' : 'script_catalog_revision',
+      resourceId: String(row.id),
+      typeLabel: kind === 'strategy' ? '产品策略知识库' : kind === 'template' ? '脚本模板库' : '爆文模板',
+      name: `${kind === 'strategy' ? '产品策略知识库' : kind === 'template' ? '脚本模板库' : '爆文模板'} v${Number(row.revisionNumber)}`,
+      preview,
+      sourceInfo: `源文件：${String(row.sourceFilename)} · 版本 v${Number(row.revisionNumber)} · ${count} 条`,
+      sourceFilename: String(row.sourceFilename),
+      published: currentRevisionId === String(row.id),
+      previouslyPublished: (db.prepare(`SELECT visibility FROM team_resource_scopes WHERE resourceType = ? AND resourceId = ?`)
+        .pluck().get(viral ? 'viral_template_revision' : 'script_catalog_revision', String(row.id)) as string) === 'public',
+      currentRevisionId,
+      revisionNumber: Number(row.revisionNumber),
+      entryCount: count,
+      parseStatus: count > 0 ? 'ready' : 'failed',
+      settingsHref: '/settings?section=script-knowledge',
+    });
+  }
+  return results.sort((a, b) => a.typeLabel.localeCompare(b.typeLabel, 'zh-CN') || (b.revisionNumber ?? 0) - (a.revisionNumber ?? 0));
 }

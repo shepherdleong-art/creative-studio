@@ -399,6 +399,16 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
   let executionAttempt = options.execution
     ? currentCanvasExecution(db, taskId)?.attempt ?? null
     : null;
+  const captureFailure = (stage: 'remote_submit' | 'remote_poll' | 'download' | 'storage', code: string): void => {
+    if (!options.execution) return;
+    void options.execution.facade.captureError({
+      attemptId: executionAttempt?.id,
+      taskId, module: 'canvas', actorUserId: requireAccessContext().actor.userId,
+      scope: { resourceType: 'canvas', resourceId: task.canvasId },
+      outcome: 'failed', errorCode: code, stage,
+      eventKey: executionAttempt ? undefined : `canvas:${taskId}:${stage}:${code}`,
+    });
+  };
 
   const deferExecution = (reason: string): CanvasRunTaskOutcome => {
     updateCanvasTaskGuarded(db, {
@@ -434,6 +444,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     if (!resuming) await adapter.prepare(context, signal);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    captureFailure('storage', error instanceof CanvasAdapterError ? error.code : 'prepare_failed');
     updateCanvasTaskGuarded(db, {
       taskId,
       patch: {
@@ -572,6 +583,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         errorCode: failure?.code,
       });
       if (failure?.code === 'cancelled') return cancelBeforeSubmit();
+      captureFailure('remote_submit', failure?.code ?? 'submit_failed');
       updateCanvasTaskGuarded(db, {
         taskId,
         patch: {
@@ -813,6 +825,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     downloaded = await adapter.download({ ...context, providerTaskId }, signal);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    captureFailure('download', error instanceof CanvasAdapterError ? error.code : 'download_failed');
     updateCanvasTaskGuarded(db, {
       taskId,
       patch: {
@@ -888,6 +901,24 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (getCanvasTask(db, taskId)?.cancelRequestedAt) {
+      if (executionAttempt && options.execution) {
+        await options.execution.facade.reconcile({
+          attemptId: executionAttempt.id,
+          evidence: { kind: 'terminal', outcome: 'failed', actualCost: null, errorCode: 'cancelled' },
+          source: 'provider',
+        }).catch(() => undefined);
+      }
+      updateCanvasTaskGuarded(db, {
+        taskId,
+        patch: {
+          phase: 'cancelled', submissionState: 'terminal', errorCode: 'cancelled',
+          errorMessage: '用户已停止该任务，未保存后续结果。', leaseOwner: null, leaseUntil: null,
+        }, guard, now,
+      });
+      return finish('cancelled');
+    }
+    captureFailure('storage', 'output_validation_failed');
     updateCanvasTaskGuarded(db, {
       taskId,
       patch: {
@@ -908,6 +939,9 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
   if (!asset) {
     const latest = getCanvasTask(db, taskId);
     return finish(latest?.phase ?? 'polling');
+  }
+  if (options.execution) {
+    await options.execution.facade.captureRecovery({ taskId, module: 'canvas', stage: 'download' });
   }
   return {
     taskId,

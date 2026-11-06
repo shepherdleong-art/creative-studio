@@ -328,7 +328,7 @@ export class ClientUpdateCoordinator {
           schemaVersion: 1, phase: 'recovery_required', previous, next: manifest, snapshot, committed: false, health,
         });
         this.cleanupStaging(staging);
-        return { status: 'recovery_required', releaseId, message: '新版 API 或本机状态 schema 与旧版不兼容，已保留现场并停止业务传输。' };
+        return this.diagnosticResult({ status: 'recovery_required', releaseId, message: '新版 API 或本机状态 schema 与旧版不兼容，已保留现场并停止业务传输。' });
       }
       rollbackStarted = true;
       this.restoreSnapshot(snapshot);
@@ -341,7 +341,7 @@ export class ClientUpdateCoordinator {
       const oldHealth = await oldProcess.waitForHealth();
       if (!oldHealth.healthy || !this.compatible(previous.manifest, oldHealth)) {
         await oldProcess.stop();
-        return { status: 'recovery_required', releaseId, message: '旧版本健康确认失败，已保留快照和下载。' };
+        return this.diagnosticResult({ status: 'recovery_required', releaseId, message: '旧版本健康确认失败，已保留快照和下载。' });
       }
       atomicJson(this.journalPath(releaseId), {
         schemaVersion: 1, phase: 'rolled_back', previous, next: manifest, snapshot, committed: false, health,
@@ -349,20 +349,20 @@ export class ClientUpdateCoordinator {
       await this.resume();
       this.cleanupStaging(staging);
       this.cleanupSupersededVersions([previous.releaseId, releaseId]);
-      return { status: 'rolled_back', releaseId };
+      return this.diagnosticResult({ status: 'rolled_back', releaseId });
     } catch (error) {
       this.failure(error);
       if (newProcess) await newProcess.stop().catch(() => undefined);
       else if (oldStopped && releaseId) await this.options.processControl.stopVersion?.(releaseId).catch(() => undefined);
       if (rollbackStarted) {
         if (staging) this.cleanupStaging(staging);
-        return { status: 'recovery_required', releaseId, message: message(error) };
+        return this.diagnosticResult({ status: 'recovery_required', releaseId, message: message(error) });
       }
       if (pointerChanged && previous) {
         try { atomicJson(this.pointerPath, previous); }
         catch (pointerError) {
           if (staging) this.cleanupStaging(staging);
-          return { status: 'recovery_required', releaseId, message: message(pointerError) };
+          return this.diagnosticResult({ status: 'recovery_required', releaseId, message: message(pointerError) });
         }
       }
       if (oldStopped && previous) {
@@ -370,7 +370,7 @@ export class ClientUpdateCoordinator {
         let oldProcess: VersionProcess | null = null;
         try {
           if (!this.compatible(previous.manifest, this.failedHealth())) {
-            return { status: 'recovery_required', releaseId, message: '当前状态与旧版不兼容，已停止业务传输并保留现场。' };
+            return this.diagnosticResult({ status: 'recovery_required', releaseId, message: '当前状态与旧版不兼容，已停止业务传输并保留现场。' });
           }
           if (snapshot) this.restoreSnapshot(snapshot);
           oldProcess = await this.options.processControl.startVersion({
@@ -382,15 +382,15 @@ export class ClientUpdateCoordinator {
           const oldHealth = await oldProcess.waitForHealth();
           if (!oldHealth.healthy || !this.compatible(previous.manifest, oldHealth)) {
             await oldProcess.stop();
-            return { status: 'recovery_required', releaseId, message: '旧版本健康确认失败，已保留快照和下载。' };
+            return this.diagnosticResult({ status: 'recovery_required', releaseId, message: '旧版本健康确认失败，已保留快照和下载。' });
           }
           await this.resume();
           if (staging) this.cleanupStaging(staging);
-          return { status: 'rolled_back', releaseId, message: message(error) };
+          return this.diagnosticResult({ status: 'rolled_back', releaseId, message: message(error) });
         } catch (rollbackError) {
           if (oldProcess) await oldProcess.stop().catch(() => undefined);
           if (staging) this.cleanupStaging(staging);
-          return { status: 'recovery_required', releaseId, message: message(rollbackError) };
+          return this.diagnosticResult({ status: 'recovery_required', releaseId, message: message(rollbackError) });
         }
       }
       if (staging) this.cleanupStaging(staging);

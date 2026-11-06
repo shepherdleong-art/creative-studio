@@ -135,6 +135,16 @@ export function createExecutionFacade(options: ExecutionFacadeOptions): Executio
     reconcile: (input) => reconcileAttempt(options, input),
     settle: (input) => settleAttempt(options, input),
     transmit: (intent, send) => transmitAttempt(options, intent, send),
+    async captureError(record) {
+      try {
+        await options.recordError?.(record);
+      } catch {
+        // 诊断不可用不得改变 worker 已确定的业务状态。
+      }
+    },
+    async captureRecovery(record) {
+      try { await options.recordRecovery?.(record); } catch { /* 与 usage 同为旁路镜像 */ }
+    },
   };
   return {
     facade,
