@@ -477,6 +477,7 @@ try {
 
   let sessions = [];
   let projects = [];
+  let canvases = [];
   let provider;
   let browserResultPath;
   let browserOutput = '';
@@ -539,7 +540,7 @@ try {
   assertions.push(`${users} 个员工分别经真实 HTTP 登录、改密并持有不同 session cookie`);
 
   projects = [];
-  const canvases = [];
+  canvases = [];
   for (let index = 0; index < sessions.length; index += 1) {
     projects.push(await createProject(sessions[index], index + 1, provider.id));
     canvases.push(await prepareCanvas(sessions[index], index + 1));
