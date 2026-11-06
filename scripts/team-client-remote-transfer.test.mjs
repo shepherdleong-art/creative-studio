@@ -105,6 +105,7 @@ const session = {
 
 try {
   const revealed = [];
+  const diagnostics = [];
   const controller = new RemoteTransferController({
     origin: 'https://studio.example.test',
     deploymentId: 'deployment-fixture',
@@ -112,6 +113,7 @@ try {
     session,
     platform: 'windows',
     reveal: (target) => revealed.push(target),
+    onDiagnostic: (event) => diagnostics.push(event),
   });
   await controller.synchronizeIdentity();
   const [transferId] = await controller.createUploads([source], {
@@ -152,6 +154,12 @@ try {
   await controller.waitForIdle();
   assert.equal(fileDownloads, downloadsBeforeReceiptRetry, '回执重试不得重新下载已完整发布的文件');
   assert.equal(receiptAttempts, 2, '回执重试只需补交回执');
+  assert.equal(diagnostics.length, 1, '同一传输终态失败只自动上报一次');
+  assert.equal(diagnostics[0].stage, 'download');
+  assert.equal(diagnostics[0].transferId, downloadId);
+  assert.equal(diagnostics[0].phase, 'receipt');
+  assert.match(diagnostics[0].clientEventId, /^[a-f0-9-]{36}$/);
+  assert.equal(Object.hasOwn(diagnostics[0], 'message'), false, '本地诊断不得保留原始异常或路径');
   await controller.syncDeliveries();
   await controller.waitForIdle();
   assert.equal(controller.listTransfers().filter((item) => item.kind === 'download').length, 1,
@@ -185,6 +193,7 @@ try {
   await controller.synchronizeIdentity();
   assert.equal(session.cacheClears, clearsBeforeLogout + 1, '登出必须清除前账号缓存');
   assert.equal(session.storageClears, clearsBeforeLogout + 1, '登出必须清除前账号存储');
+  assert.equal(diagnostics.length, 2, '暂停、取消、重试不得重复诊断同一失败');
   account = 'user-b';
   authenticated = true;
   await controller.synchronizeIdentity();
