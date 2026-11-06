@@ -2,6 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { teamError, teamWrite } from './client';
+import type { Job } from './TeamMaintenancePanel';
 
 type ProtectedItem = { id: string; label?: string; reasonCode: string; reason: string };
 type Category = { kind: string; label: string; cleanableCount: number; estimatedBytes: number; protected: ProtectedItem[] };
@@ -10,13 +11,7 @@ type Preview = {
   totals: { cleanableCount: number; estimatedBytes: number }; categories: Category[];
   protectedSummary: Array<{ kind: string; reason: string }>;
 };
-type CleanupJob = {
-  id: string; status: string; action: string; requestedBy: { displayName: string }; createdAt: string;
-  target: { kind: string; previewId?: string };
-  result?: { previewId?: string; deletedCount?: number; deletedFileCount?: number; freedBytes?: number;
-    skipped?: ProtectedItem[]; failures?: Array<ProtectedItem & { error?: string }> } | null;
-  error?: { message?: string } | null; reviewReason?: string | null;
-};
+type CleanupJob = Job;
 const bytes = (value: number) => value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`;
 const time = (value: string) => new Date(value).toLocaleString('zh-CN', { hour12: false });
 const statusText: Record<string, string> = { queued: '等待受控执行器', running: '正在重新核验并清理', succeeded: '已完成', failed: '执行失败', needs_review: '结果待核查' };
