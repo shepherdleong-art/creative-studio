@@ -218,11 +218,11 @@ try {
     }));
     assert.equal(denied.status, 400, await denied.clone().text());
   }
-  const confirmed = await jobsRoute.POST(request('/api/team/maintenance/jobs', adminCookie, {
+  const cleanupConfirmed = await jobsRoute.POST(request('/api/team/maintenance/jobs', adminCookie, {
     idempotencyKey: 'cleanup-confirmed-route', confirm: true, target: { kind: 'cleanup', previewId: preview.id },
   }));
-  assert.equal(confirmed.status, 202, await confirmed.clone().text());
-  const cleanupJob = (await confirmed.json()).job;
+  assert.equal(cleanupConfirmed.status, 202, await cleanupConfirmed.clone().text());
+  const cleanupJob = (await cleanupConfirmed.json()).job;
   assert.equal(cleanupJob.requestedBy.userId, principal.userId);
   const cleanupAudit = await auditRoute.GET(request(`/api/team/maintenance/jobs/${cleanupJob.id}/audit`, adminCookie), { params: Promise.resolve({ id: cleanupJob.id }) });
   assert.equal((await cleanupAudit.json()).audit[0].actor.displayName, '网页管理员');
