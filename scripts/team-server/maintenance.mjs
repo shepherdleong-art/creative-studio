@@ -16,6 +16,9 @@ import { acquireLifecycleBarrier, releaseLifecycleBarrier } from '../../lib/team
 import { createExecutionJournal } from '../../lib/media-core/execution/journal.ts';
 import { executeTeamRestoreOperation } from '../../lib/team-service/maintenance/restore-operation.ts';
 import { executeCleanupPreview } from '../../lib/team-service/maintenance/cleanup.ts';
+import { getTeamReleaseCandidateForExecution } from '../../lib/team-service/maintenance/release-candidates.ts';
+import { materializeTeamReleaseCandidate } from '../../lib/team-service/maintenance/release-install.ts';
+import { teamMaintenanceStateDirectory } from '../../lib/team-service/maintenance/state.ts';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -186,6 +189,14 @@ function compatibilityReport(file) {
     || typeof report.irreversibleChanges !== 'boolean') throw new Error('兼容性报告缺少隔离验证或兼容结论');
   return report;
 }
+function dbVersion(dataRoot) {
+  const db = openDatabase(dataRoot);
+  try {
+    const version = db.prepare('SELECT MAX(version) AS version FROM team_schema_migrations').pluck().get();
+    if (!Number.isSafeInteger(version) || version < 1) throw new Error('当前数据版本无法复核');
+    return version;
+  } finally { db.close(); }
+}
 function setMaintenance(db, maintenance, reason) {
   db.prepare('UPDATE team_service_state SET maintenance = ?, reason = ?, updatedAt = ? WHERE id = 1')
     .run(maintenance ? 1 : 0, reason, new Date().toISOString());
@@ -301,10 +312,11 @@ async function makeBackup(config, db, principal, type, backupId, configPath, reu
   } finally { lock?.release(); }
 }
 async function resumeService(config, db, releaseId) {
-  setMaintenance(db, false, '');
   const stopped = await controlled('stop', config, releaseId);
   if (!stopped.stopped) throw new Error('恢复接单前旧维护实例未退出');
   startApp({ ...config, releaseId });
+  await waitService(config, releaseId, 'maintenance');
+  setMaintenance(db, false, '');
   await waitService(config, releaseId, 'ready');
 }
 
@@ -316,6 +328,102 @@ try {
       configPath,
       once: args.includes('--once'),
       jobId: argument('--job-id') || undefined,
+<<<<<<< HEAD
+      executeRelease: async ({ job, onStage }) => {
+        if (job.target.kind !== 'release') throw new Error('升级目标无效');
+        const operationId = job.id;
+        const allowFixture = args.includes('--allow-fixture-release');
+        const stateDirectory = teamMaintenanceStateDirectory(config.backupRoot, config.deploymentId);
+        const persistedPath = path.join(stateDirectory, `${operationId}.json`);
+        const persisted = fs.existsSync(persistedPath) ? readJson(persistedPath) : null;
+        const pointerNow = await currentReleaseIdentity(config);
+        const current = persisted?.fromRelease ?? pointerNow;
+        if (persisted && (persisted.fromRelease.releaseId !== pointerNow.releaseId
+          && persisted.toRelease.releaseId !== pointerNow.releaseId)) throw new Error('实际版本不属于升级来源或目标，拒绝接管');
+        const currentManifest = verifyReleaseManifest(path.join(config.deploymentRoot, 'releases', current.releaseId), { allowFixture });
+        const currentVersion = { appVersion: currentManifest.appVersion,
+          dataSchemaVersion: dbVersion(config.dataRoot) };
+        const candidate = await getTeamReleaseCandidateForExecution({
+          candidateRoot: path.join(config.dataRoot, 'storage', 'maintenance', 'release-candidates'),
+          candidateId: job.target.candidateId, current: currentVersion, allowFixtureForTests: allowFixture,
+        });
+        const target = candidate.release;
+        if (target.releaseId === current.releaseId) throw new Error('目标版本已是当前版本，不重复执行切换');
+        const workerDb = openDatabase(config.dataRoot);
+        try {
+          const principal = job.requestedBy;
+          const adapters = {
+            async preflight() {
+              const from = await currentReleaseIdentity(config);
+              if (from.releaseId !== current.releaseId || from.packageSha256 !== current.packageSha256) throw new Error('当前版本已漂移，拒绝开始升级');
+              await materializeTeamReleaseCandidate({
+                deploymentRoot: config.deploymentRoot, release: candidate.release,
+                files: candidate.files, compatibility: candidate.manifest.compatibility,
+                manifestContent: candidate.manifestContent,
+                allowFixtureForTests: allowFixture,
+              });
+            },
+            async enterMaintenance() { setMaintenance(workerDb, true, `maintenance:${operationId}`); },
+            async drainInflight() { return drain(workerDb); },
+            async captureExecution() { return captureExecution(config, workerDb, operationId); },
+            async stopOldInstance() {
+              const state = fs.existsSync(persistedPath) ? readJson(persistedPath) : null;
+              const releaseId = state?.completedStages?.includes('switch') ? target.releaseId : current.releaseId;
+              try {
+                const stopped = await controlled('stop', config, releaseId);
+                if (stopped.stopped) return stopped;
+                if (stopped.instanceId && Array.isArray(stopped.residualPids)) return stopped;
+              } catch (error) {
+                if (!state?.completedStages?.includes('stop')) throw error;
+              }
+              if (state?.completedStages?.includes('stop')) {
+                // The previous stop was durable, so a later backup failure must not require the
+                // old instance to exist again. Ownership was verified before its first stop.
+                return { deploymentId: config.deploymentId, instanceId: 'verified-stopped-instance', stopped: true, residualPids: [] };
+              }
+              throw new Error('受控停机未确认全部退出，禁止继续切换');
+            },
+            async createPreUpgradeBackup() {
+              const backup = await makeBackup(config, workerDb, principal, 'pre-upgrade', `${operationId}-pre-upgrade`, configPath, true, true);
+              const verification = await verifyTeamBackup(backup.directory);
+              return { backupId: backup.manifest.backupId, verified: verification.verified };
+            },
+            async switchRelease() {
+              const barrier = acquireLifecycleBarrier(workerDb, principal, 'release', { operationId, releaseId: target.releaseId });
+              try {
+                await switchTeamReleasePointerIdempotent({ serviceRoot: config.serviceRoot, release: target, expectedReleaseId: current.releaseId });
+              } finally { releaseLifecycleBarrier(workerDb, principal, barrier.id); }
+            },
+            async startMaintenance() {
+              const { generateDeploymentConfiguration } = await import('./generate-config.mjs');
+              generateDeploymentConfiguration({ ...readJson(configPath), releaseId: target.releaseId }, config.serviceRoot);
+              const state = fs.existsSync(persistedPath) ? readJson(persistedPath) : null;
+              if (!state?.completedStages?.includes('start_maintenance')) startApp({ ...config, releaseId: target.releaseId });
+              await waitService(config, target.releaseId, 'maintenance');
+            },
+            async migrate() {
+              const team = workerDb.prepare('SELECT MAX(version) AS version FROM team_schema_migrations').pluck().get();
+              const execution = workerDb.prepare('SELECT MAX(version) AS version FROM execution_schema_migrations').pluck().get();
+              if (!team || !execution) throw new Error('追加迁移证据不完整');
+              if (team > candidate.manifest.compatibility.dataSchemaMax || team < candidate.manifest.compatibility.dataSchemaMin) {
+                throw new Error('迁移后的数据结构超出候选兼容声明，禁止自动回切或恢复生产');
+              }
+            },
+            async selfCheck() {
+              const status = await controlled('status', config, target.releaseId);
+              const integrity = workerDb.pragma('integrity_check', { simple: true });
+              return { available: status.maintenance === true && status.ready === false && integrity === 'ok', automaticRetries: 0 };
+            },
+            async resume() { await resumeService(config, workerDb, target.releaseId); },
+          };
+          const state = await runTeamRelease({
+            operationId, deploymentId: config.deploymentId, backupRoot: config.backupRoot,
+            stateDirectory,
+            fromRelease: current, toRelease: target, adapters, onStage,
+          });
+          return { ...state, actualRelease: target };
+        } finally { workerDb.close(); }
+      },
       executeCleanup: async (job) => {
         if (job.target.kind !== 'cleanup') throw new Error('维护作业目标不是清理预览');
         const workerDb = openDatabase(config.dataRoot);

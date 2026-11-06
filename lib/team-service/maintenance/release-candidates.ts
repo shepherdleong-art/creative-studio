@@ -266,7 +266,8 @@ export async function listTeamReleaseCandidates(candidateRoot: string,
 export async function getTeamReleaseCandidateForExecution(options: {
   candidateRoot: string; candidateId: string; current: TeamReleaseCurrentVersion; allowFixtureForTests?: boolean;
 }): Promise<{ storageFormat: 'neutral-v1'; payloadDirectory: string; manifest: DistributionManifest;
-  files: TeamReleaseCandidatePayloadFile[]; release: TeamReleaseIdentity; candidate: TeamReleaseCandidate }> {
+  files: TeamReleaseCandidatePayloadFile[]; release: TeamReleaseIdentity; candidate: TeamReleaseCandidate;
+  manifestContent: Buffer }> {
   const { candidateRoot, candidateId, current, allowFixtureForTests } = options;
   validateCurrent(current);
   const file = candidatePath(candidateRoot, candidateId);
@@ -308,5 +309,6 @@ export async function getTeamReleaseCandidateForExecution(options: {
     },
   }));
   return { storageFormat: 'neutral-v1', payloadDirectory, manifest, files,
-    release: { ...state.candidate.release }, candidate: { ...state.candidate, status: 'ready' } };
+    release: { ...state.candidate.release }, candidate: { ...state.candidate, status: 'ready' },
+    manifestContent: fs.readFileSync(held) };
 }

@@ -8,3 +8,5 @@ export * from './control.ts';
 export { executeClaimedBackupJob, maintenanceGlobalLockPath, protectedDeploymentConfigPath, readMaintenanceExecutionConfig, runMaintenanceWorker } from './worker.ts';
 export * from './distribution.ts';
 export * from './release-candidates.ts';
+export * from './release-install.ts';
+export * from './state.ts';

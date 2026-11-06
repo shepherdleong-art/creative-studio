@@ -28,7 +28,9 @@ export interface MaintenanceJob {
   action: MaintenanceAction;
   target: MaintenanceTarget;
   status: MaintenanceJobStatus;
-  stage: 'queued' | 'starting' | 'snapshotting' | 'copying_media' | 'verifying' | 'awaiting_confirmation' | 'cutting_over' | 'finishing' | 'completed' | 'failed';
+  stage: 'queued' | 'starting' | 'snapshotting' | 'copying_media' | 'verifying' | 'awaiting_confirmation' | 'cutting_over' | 'finishing' | 'completed' | 'failed'
+    | 'preflight' | 'maintenance' | 'drain' | 'capture' | 'stop' | 'backup'
+    | 'switch' | 'start_maintenance' | 'migrate' | 'self_check' | 'resume';
   progress: number | null;
   requestedBy: MaintenancePrincipal;
   createdAt: string;
@@ -168,7 +170,7 @@ export class MaintenanceJobStore {
 
   submit(options: {
     action: MaintenanceAction; target: MaintenanceTarget; principal: MaintenancePrincipal;
-    idempotencyKey: string; now?: Date;
+    idempotencyKey: string; retryRelease?: boolean; now?: Date;
   }): { job: MaintenanceJob; created: boolean } {
     if (!MAINTENANCE_ACTIONS.includes(options.action)) throw new MaintenanceControlError('invalid_action', '维护动作无效。');
     if (options.action.split('.')[0] !== options.target.kind) throw new MaintenanceControlError('invalid_target', '动作与维护目标不匹配。');
@@ -188,6 +190,21 @@ export class MaintenanceJobStore {
         const job = mapJob(existing);
         if (job.requestedBy.userId !== options.principal.userId) throw new MaintenanceControlError('idempotency_conflict', '请求标识已被另一管理员使用。');
         return { job, created: false };
+      }
+      if (options.retryRelease === true && options.action === 'release.execute') {
+        const previous = this.db.prepare(`SELECT * FROM maintenance_jobs WHERE deploymentId = ? AND action = 'release.execute'
+          AND targetHash = ? AND status = 'failed' ORDER BY createdAt DESC LIMIT 1`)
+          .get(this.options.deploymentId, targetHash(options.target)) as Record<string, unknown> | undefined;
+        if (previous) {
+          const job = mapJob(previous);
+          if (job.requestedBy.userId !== options.principal.userId) throw new MaintenanceControlError('maintenance_conflict', '只能由原管理员续跑失败升级。');
+          if (this.withIntegrity(job).integrity !== 'ok') throw new MaintenanceControlError('maintenance_review_required', '升级审计不完整，拒绝续跑。');
+          this.db.prepare(`UPDATE maintenance_jobs SET status = 'queued', stage = 'queued', errorJson = NULL,
+            finishedAt = NULL, leaseOwner = NULL, leaseExpiresAt = NULL, resultJson = NULL, updatedAt = ?,
+            idempotencyKey = ? WHERE id = ?`).run(at, options.idempotencyKey, job.id);
+          this.appendAudit(job, 'retry_requested', at);
+          return { job: this.read(job.id)!, created: true };
+        }
       }
       const conflict = this.db.prepare("SELECT id FROM maintenance_jobs WHERE deploymentId = ? AND status IN ('queued', 'running', 'awaiting_confirmation')")
         .get(this.options.deploymentId);
@@ -258,6 +275,9 @@ export class MaintenanceJobStore {
     if (options.jobId) this.get(options.jobId);
     const at = this.now(options.now);
     this.reconcile({ workerId: options.workerId, now: new Date(at) });
+    const interruptedRelease = this.db.prepare("SELECT id FROM maintenance_jobs WHERE deploymentId = ? AND status = 'running' AND action = 'release.execute'")
+      .get(this.options.deploymentId);
+    if (interruptedRelease) return null;
     return this.db.transaction(() => {
       const held = this.db.prepare('SELECT * FROM maintenance_lease WHERE deploymentId = ? AND expiresAt > ?')
         .get(this.options.deploymentId, at) as { jobId: string; workerId: string } | undefined;
@@ -341,6 +361,33 @@ export class MaintenanceJobStore {
     return job;
   }
 
+  /** Application replacement is a lease-safe state machine, not a killable backup lease. */
+  resumeRelease(options: { workerId: string; now?: Date; leaseMs?: number }): { job: MaintenanceJob } | null {
+    safeMaintenanceId(options.workerId, 'workerId');
+    const at = this.now(options.now);
+    this.reconcile({ workerId: options.workerId, now: new Date(at) });
+    return this.db.transaction(() => {
+      const row = this.db.prepare("SELECT * FROM maintenance_jobs WHERE deploymentId = ? AND status = 'running' AND action = 'release.execute'")
+        .get(this.options.deploymentId) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      const job = mapJob(row);
+      const lease = this.db.prepare('SELECT * FROM maintenance_lease WHERE deploymentId = ?').get(this.options.deploymentId) as { workerId: string } | undefined;
+      if (lease && lease.workerId !== options.workerId && new Date(job.leaseExpiresAt ?? 0).getTime() > new Date(at).getTime()) {
+        // The global schema-upgrade lock is still held by this new worker. Its old lease proves
+        // only the dead process's identity, not a live executor that can advance this operation.
+        this.appendAudit(job, 'executor_replaced', at, { previousWorkerId: lease.workerId, nextWorkerId: options.workerId });
+      }
+      const expiresAt = new Date(new Date(at).getTime() + (options.leaseMs ?? 60_000)).toISOString();
+      this.db.prepare('UPDATE maintenance_jobs SET leaseOwner = ?, leaseExpiresAt = ?, updatedAt = ? WHERE id = ?')
+        .run(options.workerId, expiresAt, at, job.id);
+      this.db.prepare('DELETE FROM maintenance_lease WHERE deploymentId = ?').run(this.options.deploymentId);
+      this.db.prepare('INSERT INTO maintenance_lease (deploymentId, jobId, workerId, expiresAt) VALUES (?, ?, ?, ?)')
+        .run(this.options.deploymentId, job.id, options.workerId, expiresAt);
+      this.appendAudit(job, 'resumed', at, { workerId: options.workerId });
+      return { job: this.read(job.id)! };
+    })();
+  }
+
   complete(options: { jobId: string; workerId: string; result: Record<string, unknown>; now?: Date }): MaintenanceJob {
     const at = this.now(options.now);
     return this.db.transaction(() => {
@@ -371,7 +418,7 @@ export class MaintenanceJobStore {
   reconcile(options: { workerId: string; now?: Date }): { needsReviewJobIds: string[] } {
     const at = this.now(options.now);
     return this.db.transaction(() => {
-      const expired = this.db.prepare("SELECT * FROM maintenance_jobs WHERE deploymentId = ? AND status = 'running' AND leaseExpiresAt <= ?")
+      const expired = this.db.prepare("SELECT * FROM maintenance_jobs WHERE deploymentId = ? AND status = 'running' AND action = 'backup.create' AND leaseExpiresAt <= ?")
         .all(this.options.deploymentId, at) as Array<Record<string, unknown>>;
       const ids: string[] = [];
       for (const row of expired) {

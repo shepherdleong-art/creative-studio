@@ -170,6 +170,18 @@ try {
   const duplicateConfirmation = await confirmRoute.POST(request(`/api/team/maintenance/restores/${restoreJob.id}/confirm`, adminCookie, { password: 'admin-password' }), { params: Promise.resolve({ id: restoreJob.id }) });
   assert.equal(duplicateConfirmation.status, 409, '重复确认不能重新排队已确认切换');
   store.close();
+
+  const releasesRoute = await import('../app/api/team/maintenance/releases/route.ts');
+  const releaseBody = {
+    candidateId: 'a'.repeat(64), idempotencyKey: 'confirm-release-001',
+    confirmation: { expectedReleaseId: 'old-release', targetAppVersion: '0.8.0', impactAcknowledged: true },
+  };
+  assert.equal((await releasesRoute.POST(request('/api/team/maintenance/releases', employeeCookie, releaseBody))).status, 403);
+  assert.equal((await releasesRoute.POST(request('/api/team/maintenance/releases', adminCookie, {
+    ...releaseBody, command: 'whoami',
+  }))).status, 400);
+  const unavailable = await releasesRoute.POST(request('/api/team/maintenance/releases', adminCookie, releaseBody));
+  assert.notEqual(unavailable.status, 202, '没有通过候选和当前版本复核时不得启动升级');
   console.log('team maintenance administrator route tests passed');
 
   const cleanupRoute = await import('../app/api/team/maintenance/cleanup/route.ts');

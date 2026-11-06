@@ -22,8 +22,8 @@ async function __teamRouteGET(): Promise<Response> {
       current,
       candidates: await listTeamReleaseCandidates(teamReleaseCandidateRoot(), current, assertFixtureReleaseUploadAllowed()),
       failures: await listTeamReleaseUploadFailures(),
-      executableUpgrade: false,
-      note: '这里只准备并预览候选版本，不会停止服务、切换发布或修改业务数据。',
+      executableUpgrade: true,
+      note: '上传只准备候选；管理员另行确认版本和维护影响后，才由独立执行器升级。',
     });
   } catch (error) {
     return Response.json({ error: 'release_preview_unavailable', message: error instanceof Error ? error.message : '无法读取版本预览。' }, { status: 503 });
