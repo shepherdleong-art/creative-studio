@@ -11,6 +11,10 @@ export const runtime = 'nodejs';
 async function __teamRoutePUT(request: NextRequest) {
   try {
     await assertScriptStudioApiReady();
+    const { readRuntimeConfig } = await import('@/lib/team-service/config');
+    if (readRuntimeConfig().mode === 'server') {
+      return NextResponse.json({ error: 'versioned_publication_required', message: '请到公共资源候选列表选择此完整版本并发布给团队。' }, { status: 409 });
+    }
     const body = await jsonOrNull(request);
     const revisionId = typeof body?.revisionId === 'string' ? body.revisionId : '';
     if (!revisionId) {

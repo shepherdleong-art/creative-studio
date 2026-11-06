@@ -8,6 +8,7 @@ import path from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import ExcelJS from 'exceljs';
 import ffmpegPath from 'ffmpeg-static';
 import { summarizeRequests } from './team-server/acceptance-lib.mjs';
 import { runProductionScenario } from './team-server/production-scenario.mjs';
@@ -17,10 +18,13 @@ const releaseRoot = process.env.TEAM_ACCEPTANCE_RELEASE_PATH ? path.resolve(proc
 const appRoot = releaseRoot ? path.join(releaseRoot, 'app') : repoRoot;
 const nodeExecutable = releaseRoot ? path.join(releaseRoot, 'runtimes', 'node', 'node.exe') : process.execPath;
 const packagedRelease = releaseRoot ? JSON.parse(fs.readFileSync(path.join(releaseRoot, 'release-manifest.json'), 'utf8')) : null;
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-team-acceptance-http-'));
+const root = fs.mkdtempSync(process.env.TEAM_ACCEPTANCE_TEST_TEMP_ROOT
+  ? path.join(path.resolve(process.env.TEAM_ACCEPTANCE_TEST_TEMP_ROOT), 'creative-studio-team-acceptance-http-')
+  : path.join(os.tmpdir(), 'creative-studio-team-acceptance-http-'));
 const resultPath = process.env.TEAM_ACCEPTANCE_RESULT_PATH;
 const evidenceDirectory = process.env.TEAM_ACCEPTANCE_EVIDENCE_DIR;
 if (!resultPath || !evidenceDirectory) throw new Error('HTTP 验收必须指定独立结果与证据目录');
+if (process.env.TEAM_ACCEPTANCE_TEST_TEMP_ROOT) fs.mkdirSync(path.resolve(process.env.TEAM_ACCEPTANCE_TEST_TEMP_ROOT), { recursive: true });
 fs.mkdirSync(evidenceDirectory, { recursive: true });
 const users = Number(process.env.TEAM_ACCEPTANCE_USERS ?? 20);
 const concurrency = Number(process.env.TEAM_ACCEPTANCE_CONCURRENCY ?? 20);
@@ -102,7 +106,7 @@ function environment() {
   };
 }
 function startServer() {
-  const nextBinary = path.join(repoRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
+  const nextBinary = fileURLToPath(import.meta.resolve('next/dist/bin/next'));
   server = spawn(nodeExecutable, releaseRoot ? [path.join(appRoot, 'runtime', 'team-server-entry.cjs')] : [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
     cwd: appRoot,
     env: environment(),
@@ -218,7 +222,7 @@ async function sha256File(file) {
 }
 async function makeMedia() {
   if (!ffmpegPath) throw new Error('真实 FFmpeg 不可用');
-  const mediaPath = path.join(root, 'acceptance-source.mp4');
+  const mediaPath = path.join(evidenceDirectory, 'acceptance-source.mp4');
   const generated = spawnSync(ffmpegPath, [
     '-f', 'lavfi', '-i', 'testsrc2=duration=6:size=640x480:rate=24',
     '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '16', '-pix_fmt', 'yuv420p', '-y', mediaPath,
@@ -347,6 +351,37 @@ async function sampleServer() {
   processSamples.push(sample);
   const stats = await fs.promises.statfs(root);
   if (dbSamples.length) dbSamples[dbSamples.length - 1].diskFreeBytes = stats.bavail * stats.bsize;
+}
+async function buildVersionedResourceFixtures() {
+  const directory = path.join(evidenceDirectory, 'versioned-uploads');
+  fs.mkdirSync(directory, { recursive: true });
+  for (const kind of ['strategy', 'template', 'viral']) {
+    const book = new ExcelJS.Workbook();
+    if (kind === 'strategy') {
+      const sheet = book.addWorksheet('产品策略');
+      sheet.addRow(['型号', '产品信息']);
+      sheet.addRow(['BROWSER-RESOURCE', '型号']);
+      sheet.addRow(['统一名称', '品类心智', '主卖点', '差异化', '搜索词']);
+      sheet.addRow(['浏览器产品', '生活', '真实卖点', '材质差异', '浏览器搜索词']);
+    } else if (kind === 'template') {
+      const framework = book.addWorksheet('脚本核心框架');
+      framework.addRow(['视频类型', '核心结构', '适用产品', '首选钩子']);
+      framework.addRow(['01 浏览器框架', '痛点+解决', '全品类', '痛点式']);
+      const copy = book.addWorksheet('开头钩子文案');
+      copy.addRow(['钩子类型', '核心机制', '公式', '文案示例']);
+      copy.addRow(['痛点式', '共鸣', '为什么更好用', '浏览器示例']);
+      const visual = book.addWorksheet('开头钩子画面（待优化）');
+      visual.addRow(['核心玩法', '裂变玩法', '画面公式', '适用品类', '搭配钩子']);
+      visual.addRow(['实拍', '浏览器画面', '产品→细节', '全品类', '痛点式']);
+    } else {
+      const sheet = book.addWorksheet('全部模板');
+      sheet.addRow(['类目', '子类目', '模板名称', '标题', '参考文案', '结构拆解', '结构摘要', '模板ID', '是否私有', '脚本编号']);
+      sheet.addRow(['床', '实木床', '浏览器爆文', '真实使用', '标题：真实使用\n正文：整块实木框架和静音床板，展示具体材质和使用体验。', '', '钩子>卖点>行动', 'browser-template', '否', 'J1']);
+    }
+    const filename = `browser-${kind}.xlsx`;
+    await book.xlsx.writeFile(path.join(directory, filename));
+  }
+  return directory;
 }
 function startMetrics() {
   const dbPath = path.join(root, 'data', 'workbench.db');
@@ -648,6 +683,7 @@ try {
       TEAM_ACCEPTANCE_ADMIN_PASSWORD: adminPassword,
       TEAM_ACCEPTANCE_PROVIDER_ID: provider.id,
       TEAM_ACCEPTANCE_TASK_FIXTURE: JSON.stringify(result.taskDisplayFixture),
+      TEAM_ACCEPTANCE_VERSIONED_FIXTURE_DIR: await buildVersionedResourceFixtures(),
       TEAM_ACCEPTANCE_BROWSER_EVIDENCE_DIR: path.join(evidenceDirectory, 'browser'),
       TEAM_ACCEPTANCE_BROWSER_RESULT_PATH: browserResultPath,
     },

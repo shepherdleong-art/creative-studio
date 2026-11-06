@@ -32,59 +32,44 @@ export async function publishBuiltinResources(db: Database.Database, principal: 
       }
     }
   }
-  if (tableExists(db, 'script_studio_catalogs')) {
-    for (const catalog of db.prepare('SELECT id FROM script_studio_catalogs').all() as Array<{ id: string }>) {
-      if (!hasScope(db, 'script_catalog', catalog.id)) {
-        registerRootScope(db, { resourceType: 'script_catalog', resourceId: catalog.id, ownerUserId: principal.userId, visibility: 'public' });
-      }
-    }
-  }
-  if (tableExists(db, 'script_studio_catalog_revisions')) {
-    for (const revision of db.prepare('SELECT id, catalogId FROM script_studio_catalog_revisions').all() as Array<{ id: string; catalogId: string }>) {
-      if (!hasScope(db, 'script_catalog_revision', revision.id)) {
-        registerInheritedScope(db, {
-          resourceType: 'script_catalog_revision', resourceId: revision.id,
-          parent: { resourceType: 'script_catalog', resourceId: revision.catalogId }, visibility: 'public',
-        });
-      }
-    }
-  }
-  if (tableExists(db, 'script_studio_template_assets')) {
-    for (const asset of db.prepare('SELECT id, revisionId FROM script_studio_template_assets').all() as Array<{ id: string; revisionId: string }>) {
-      if (!hasScope(db, 'script_template_asset', asset.id)) {
-        registerInheritedScope(db, {
-          resourceType: 'script_template_asset', resourceId: asset.id,
-          parent: { resourceType: 'script_catalog_revision', resourceId: asset.revisionId }, visibility: 'public',
-        });
-      }
-    }
-  }
-  if (tableExists(db, 'script_studio_viral_tpl_libraries')) {
-    for (const library of db.prepare('SELECT id FROM script_studio_viral_tpl_libraries').all() as Array<{ id: string }>) {
-      if (!hasScope(db, 'viral_template_library', library.id)) {
-        registerRootScope(db, { resourceType: 'viral_template_library', resourceId: library.id, ownerUserId: principal.userId, visibility: 'public' });
-      }
-    }
-  }
-  if (tableExists(db, 'script_studio_viral_tpl_revisions')) {
-    for (const revision of db.prepare('SELECT id, libraryId FROM script_studio_viral_tpl_revisions').all() as Array<{ id: string; libraryId: string }>) {
-      if (!hasScope(db, 'viral_template_revision', revision.id)) {
-        registerInheritedScope(db, {
-          resourceType: 'viral_template_revision', resourceId: revision.id,
-          parent: { resourceType: 'viral_template_library', resourceId: revision.libraryId }, visibility: 'public',
-        });
-      }
-    }
-  }
-  if (tableExists(db, 'script_studio_viral_tpl_entries')) {
-    for (const entry of db.prepare('SELECT id, revisionId FROM script_studio_viral_tpl_entries').all() as Array<{ id: string; revisionId: string }>) {
-      if (!hasScope(db, 'viral_template_entry', entry.id)) {
-        registerInheritedScope(db, {
-          resourceType: 'viral_template_entry', resourceId: entry.id,
-          parent: { resourceType: 'viral_template_revision', resourceId: entry.revisionId }, visibility: 'public',
-        });
-      }
-    }
-  }
   await runWithAccessContext(createTeamAccessContext({ db, principal }), () => ensureBundledViralPresets(db));
+  if (tableExists(db, 'script_studio_team_publications')) {
+    const { publishVersionedTeamResource } = await import('./versioned-publication.ts');
+    const catalogs = db.prepare(`SELECT c.id, c.kind, c.currentRevisionId FROM script_studio_catalogs c
+      WHERE c.ownerKey = ? AND c.currentRevisionId IS NOT NULL`).all(principal.userId) as Array<{ id: string; kind: 'strategy' | 'template'; currentRevisionId: string }>;
+    for (const catalog of catalogs) {
+      if (!hasScope(db, 'script_catalog', catalog.id)) {
+        registerRootScope(db, { resourceType: 'script_catalog', resourceId: catalog.id, ownerUserId: principal.userId, visibility: 'private' });
+      }
+      if (!hasScope(db, 'script_catalog_revision', catalog.currentRevisionId)) {
+        registerInheritedScope(db, { resourceType: 'script_catalog_revision', resourceId: catalog.currentRevisionId,
+          parent: { resourceType: 'script_catalog', resourceId: catalog.id }, visibility: 'private' });
+      }
+      for (const asset of db.prepare('SELECT id FROM script_studio_template_assets WHERE revisionId = ?').all(catalog.currentRevisionId) as Array<{ id: string }>) {
+        if (!hasScope(db, 'script_template_asset', asset.id)) {
+          registerInheritedScope(db, { resourceType: 'script_template_asset', resourceId: asset.id,
+            parent: { resourceType: 'script_catalog_revision', resourceId: catalog.currentRevisionId }, visibility: 'private' });
+        }
+      }
+      publishVersionedTeamResource(db, principal, { resourceType: 'script_catalog_revision', resourceId: catalog.currentRevisionId, baseRevisionId: null });
+    }
+    const library = db.prepare(`SELECT id, currentRevisionId FROM script_studio_viral_tpl_libraries
+      WHERE ownerKey = ? AND currentRevisionId IS NOT NULL ORDER BY createdAt LIMIT 1`).get(principal.userId) as { id: string; currentRevisionId: string } | undefined;
+    if (library) {
+      if (!hasScope(db, 'viral_template_library', library.id)) {
+        registerRootScope(db, { resourceType: 'viral_template_library', resourceId: library.id, ownerUserId: principal.userId, visibility: 'private' });
+      }
+      if (!hasScope(db, 'viral_template_revision', library.currentRevisionId)) {
+        registerInheritedScope(db, { resourceType: 'viral_template_revision', resourceId: library.currentRevisionId,
+          parent: { resourceType: 'viral_template_library', resourceId: library.id }, visibility: 'private' });
+      }
+      for (const entry of db.prepare('SELECT id FROM script_studio_viral_tpl_entries WHERE revisionId = ?').all(library.currentRevisionId) as Array<{ id: string }>) {
+        if (!hasScope(db, 'viral_template_entry', entry.id)) {
+          registerInheritedScope(db, { resourceType: 'viral_template_entry', resourceId: entry.id,
+            parent: { resourceType: 'viral_template_revision', resourceId: library.currentRevisionId }, visibility: 'private' });
+        }
+      }
+      publishVersionedTeamResource(db, principal, { resourceType: 'viral_template_revision', resourceId: library.currentRevisionId, baseRevisionId: null });
+    }
+  }
 }

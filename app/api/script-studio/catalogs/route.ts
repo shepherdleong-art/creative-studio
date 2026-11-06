@@ -7,17 +7,22 @@ import {
   listCatalogRevisions,
   getCatalogRevisionView,
 } from '@/lib/script-studio/catalogs';
+import { requirePrincipal } from '@/lib/team-service/auth/request';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { getOrCreateCatalog } from '@/lib/script-studio/catalogs';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
 
 export const runtime = 'nodejs';
 
-async function __teamRouteGET() {
+async function __teamRouteGET(request: Request) {
   try {
     await assertScriptStudioApiReady();
+    const admin = readRuntimeConfig().mode === 'server' && requirePrincipal(request).role === 'admin';
     const db = getDb();
     const kinds = ['strategy', 'template'] as const;
     const catalogs = kinds.map((kind) => {
+      if (admin) getOrCreateCatalog(db, kind);
       const catalog = findCatalog(db, kind);
       // 尚未导入时仍返回空条目，让设置页渲染空状态（“尚未导入 + 上传按钮”）
       if (!catalog) {
@@ -61,7 +66,7 @@ async function __teamRouteGET() {
       return {
         id: catalog.id,
         kind,
-        currentRevisionId: catalog.currentRevisionId,
+        currentRevisionId: currentId,
         createdAt: catalog.createdAt,
         updatedAt: catalog.updatedAt,
         current: current ? {

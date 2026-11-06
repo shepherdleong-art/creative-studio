@@ -207,6 +207,59 @@ try {
     result.assertions.push('管理员从页面发布私人模板后员工才可读取，发布结果来自正式 API');
     }
 
+    const versionedFixtureDirectory = process.env.TEAM_ACCEPTANCE_VERSIONED_FIXTURE_DIR;
+    assert.ok(versionedFixtureDirectory, '三类资源页面验收必须有隔离 XLSX 夹具');
+    await adminPage.goto(`${baseUrl}/settings?section=script-knowledge`, { waitUntil: 'networkidle', timeout: 60_000 });
+    const catalogCard = (kind) => adminPage.locator('.card').filter({ has: adminPage.getByRole('heading', { name: kind === 'strategy' ? '产品策略知识库' : '脚本模板库', exact: true }) });
+    for (const kind of ['strategy', 'template']) {
+      const card = catalogCard(kind);
+      await card.locator('input[type="file"]').setInputFiles(path.join(versionedFixtureDirectory, `browser-${kind}.xlsx`));
+      await card.getByText('团队当前 v1', { exact: true }).waitFor({ timeout: 60_000 });
+    }
+    const viralCard = adminPage.locator('.card').filter({ has: adminPage.getByRole('heading', { name: '爆文模板库', exact: true }) });
+    await viralCard.locator('input[type="file"]').setInputFiles(path.join(versionedFixtureDirectory, 'browser-viral.xlsx'));
+    await viralCard.getByRole('button', { name: '确认保存为模板库版本', exact: true }).click();
+    await viralCard.getByText('团队当前 v1', { exact: true }).waitFor({ timeout: 60_000 });
+    assert.equal((await api(page, '/api/script-studio/catalogs')).body.catalogs.every((catalog) => catalog.current === null), true, '设置上传不能直接让员工提前读取');
+    assert.equal((await api(page, '/api/script-studio/viral-templates/entries')).body.entries.length, 0);
+    await adminPage.goto(`${baseUrl}/team/admin/resources`, { waitUntil: 'networkidle', timeout: 60_000 });
+    const versionedPublished = [];
+    for (const [kind, typeLabel] of [['strategy', '产品策略知识库'], ['template', '脚本模板库'], ['viral', '爆文模板']]) {
+      const candidate = adminPage.getByRole('listitem').filter({ hasText: `browser-${kind}.xlsx` });
+      await candidate.getByText(typeLabel, { exact: true }).waitFor();
+      await candidate.getByText('待发布', { exact: true }).waitFor();
+      await candidate.getByText(kind === 'template' ? '3 条' : '1 条', { exact: false }).first().waitFor();
+      await candidate.getByRole('button', { name: '发布给团队', exact: true }).click();
+      await candidate.getByText('团队当前版本', { exact: true }).waitFor({ timeout: 30_000 });
+      versionedPublished.push(candidate);
+    }
+    const teamCatalogs = (await api(page, '/api/script-studio/catalogs')).body.catalogs;
+    for (const kind of ['strategy', 'template']) {
+      const catalog = teamCatalogs.find((item) => item.kind === kind);
+      assert.ok(catalog.current, `${kind} 发布后员工读取团队当前版本`);
+      assert.equal(catalog.current.sourceFilename, `browser-${kind}.xlsx`);
+      const detail = await api(page, `/api/script-studio/catalogs/${catalog.id}/revisions/${catalog.current.id}`);
+      assert.equal(detail.status, 200);
+      if (kind === 'strategy') assert.equal(detail.body.revision.strategyEntries[0].canonicalName, '浏览器产品');
+      else assert.equal(detail.body.revision.frameworkTemplates[0].name, '01 浏览器框架');
+    }
+    const teamEntries = await api(page, '/api/script-studio/viral-templates/entries');
+    assert.equal(teamEntries.body.entries[0].name, '浏览器爆文');
+    assert.equal((await api(page, '/api/script-studio/viral-templates')).body.library.id !== '', true);
+    assert.equal((await api(page, '/api/script-studio/viral-templates/current', 'PUT', { revisionId: teamEntries.body.entries[0].revisionId })).status, 403);
+    for (const kind of ['strategy', 'template', 'viral']) {
+      const importPath = kind === 'viral' ? '/api/script-studio/viral-templates/import' : `/api/script-studio/catalogs/${kind}/import`;
+      const response = await page.evaluate(async (pathname) => {
+        const csrf = await fetch('/api/team/auth/csrf').then((res) => res.json());
+        const form = new FormData();
+        form.append('file', new File([new Uint8Array([80, 75, 3, 4])], 'forbidden.xlsx'));
+        const res = await fetch(pathname, { method: 'POST', headers: { 'x-csrf-token': csrf.csrfToken }, body: form });
+        return res.status;
+      }, importPath);
+      assert.equal(response, 403, `员工不能在页面会话中导入 ${kind}`);
+    }
+    result.assertions.push('三类真实 XLSX 经设置上传／爆文预览→统一候选预览→完整发布，员工搜索／详情读取实际条目且不能导入或切换');
+
     for (const [route, heading] of [
       ['/team/admin/operations', '备份与维护'], ['/team/recycle-bin', '回收站'], ['/team/admin/pools', '资源池与共享预算'],
       ['/team/admin/resources', '公共资源发布'],
