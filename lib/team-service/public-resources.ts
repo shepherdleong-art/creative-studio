@@ -51,7 +51,7 @@ export async function publishBuiltinResources(db: Database.Database, principal: 
             parent: { resourceType: 'script_catalog_revision', resourceId: catalog.currentRevisionId }, visibility: 'private' });
         }
       }
-      publishVersionedTeamResource(db, principal, { resourceType: 'script_catalog_revision', resourceId: catalog.currentRevisionId, baseRevisionId: null });
+      // 首管理员初始化只登记私有 scope，不自动发布；必须由管理员显式点击"发布给团队"。
     }
     const library = db.prepare(`SELECT id, currentRevisionId FROM script_studio_viral_tpl_libraries
       WHERE ownerKey = ? AND currentRevisionId IS NOT NULL ORDER BY createdAt LIMIT 1`).get(principal.userId) as { id: string; currentRevisionId: string } | undefined;
@@ -69,7 +69,7 @@ export async function publishBuiltinResources(db: Database.Database, principal: 
             parent: { resourceType: 'viral_template_revision', resourceId: library.currentRevisionId }, visibility: 'private' });
         }
       }
-      publishVersionedTeamResource(db, principal, { resourceType: 'viral_template_revision', resourceId: library.currentRevisionId, baseRevisionId: null });
+      // 首管理员初始化只登记私有 scope，不自动发布；必须由管理员显式点击"发布给团队"。
     }
   }
 }
