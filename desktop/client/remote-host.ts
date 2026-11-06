@@ -6,7 +6,8 @@ import type { ClientStatus, RemoteUploadTarget } from '../bridge-types';
 import type { RemoteDesktopWindowHost } from '../window';
 import { RemoteTransferController, type TeamFileDownloadManifest } from './remote-transfer';
 import { ClientDiagnosticReporter } from './client-diagnostic-reporter';
-import { installClientUiDiagnostics } from './ui-diagnostics';
+import { sanitizeClientDiagnostic, type ClientDiagnosticInput as DiagnosticInput } from './client-diagnostics';
+import type { ClientDiagnosticInput } from '../bridge-types';
 
 export type RemoteClientConfig = { mode: 'local' } | { mode: 'remote'; origin: string };
 
@@ -36,7 +37,7 @@ interface RemoteHostOptions {
   clearIpcHandlers: () => void;
   onWindowClosed: () => void;
   shutdown: () => Promise<void>;
-  installUpdate?: (manifestUrl: string) => Promise<{ started: boolean; message?: string }>;
+  installUpdate?: (manifestUrl: string, transfers: RemoteTransferController) => Promise<{ started: boolean; message?: string }>;
 }
 
 interface Capabilities {
@@ -66,7 +67,6 @@ export class RemoteClientController {
   private capabilities: Capabilities | null = null;
   private transfers: RemoteTransferController | null = null;
   private identityTimer: ReturnType<typeof setInterval> | null = null;
-  private detachUiDiagnostics: (() => void) | null = null;
   private readonly diagnostics: ClientDiagnosticReporter;
   private readonly installUpdateHandler?: RemoteHostOptions['installUpdate'];
 
@@ -96,7 +96,6 @@ export class RemoteClientController {
       await this.transfers.pauseForUpdate();
     }
     await this.transfers.synchronizeIdentity();
-    this.detachUiDiagnostics = this.transfers.attachUiDiagnostics(window);
     void this.transfers.syncDeliveries().catch(() => undefined);
     this.session.cookies.on('changed', (_event, cookie) => {
       if (cookie.name === '__Host-team_session') void this.transfers?.synchronizeIdentity().catch(() => undefined);
@@ -136,6 +135,10 @@ export class RemoteClientController {
 
   async resumeAfterUpdate(): Promise<void> {
     await this.syncUpdateGate();
+  }
+
+  reportUiError(input: ClientDiagnosticInput): void {
+    this.diagnostics.report(sanitizeClientDiagnostic({ ...input, stage: 'client_ui' }) as DiagnosticInput);
   }
 
   private async handshake(): Promise<void> {
@@ -195,12 +198,10 @@ export class RemoteClientController {
     const manifestUrl = this.capabilities?.update?.manifestUrl;
     if (!manifestUrl) return { started: false, message: '服务尚未提供受控更新入口，请联系管理员修复。' };
     if (!this.installUpdateHandler) return { started: false, message: '此安装尚未配置独立更新助手，请使用受控修复包。' };
-    return this.installUpdateHandler(manifestUrl);
+    return this.installUpdateHandler(manifestUrl, this.requireTransfers());
   }
 
   async stop(): Promise<void> {
-    this.detachUiDiagnostics?.();
-    this.detachUiDiagnostics = null;
     if (this.identityTimer) clearInterval(this.identityTimer);
     this.identityTimer = null;
     await this.transfers?.stop();

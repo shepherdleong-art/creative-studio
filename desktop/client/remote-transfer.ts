@@ -4,7 +4,6 @@ import path from 'node:path';
 import type { Session } from 'electron';
 import { atomicJson } from './atomic-json';
 import type { ClientDiagnosticInput } from './client-diagnostics';
-import { installClientUiDiagnostics } from './ui-diagnostics';
 
 export interface TeamFileDownloadManifest {
   fileId: string;
@@ -50,8 +49,6 @@ interface TransferRecord {
   diagnosticEventId?: string;
   diagnosticActorUserId?: string;
   diagnosticPhase?: string;
-  diagnostics?: import('./client-diagnostic-reporter').ClientDiagnosticReporter;
-  taskId?: string;
 }
 
 interface AccountState {
@@ -174,8 +171,8 @@ export class RemoteTransferController {
     });
   }
 
-  attachUiDiagnostics(window: Parameters<typeof installClientUiDiagnostics>[0]): () => void {
-    return installClientUiDiagnostics(window, { report: (event) => this.diagnostics?.report(event) });
+  get clientIdentity(): string {
+    return this.clientDeviceId;
   }
 
   async currentUser(): Promise<string | null> {
@@ -187,7 +184,7 @@ export class RemoteTransferController {
     if (result.status === 'committed' || !result.clientEventId) return;
     this.diagnostics?.capture({
       actorUserId, clientEventId: result.clientEventId, stage: 'client_update',
-      phase: result.phase ?? (result.status === 'rolled_back' ? 'recovery' : 'installation'), code: 'update_failed',
+      phase: result.phase ?? (result.status === 'rolled_back' ? 'recovery' : 'installation'), code: result.status === 'rejected' ? 'update_rejected' : 'update_recovery_failed',
     });
     void this.diagnostics?.flush().catch(() => undefined);
   }
@@ -379,14 +376,16 @@ export class RemoteTransferController {
             record.diagnosticEventId = randomUUID();
             if (key === this.accountKey) this.save();
             else this.inAccount(key, () => { this.save(); });
+            const diagnostic = {
+              actorUserId, clientEventId: record.diagnosticEventId, stage: record.kind,
+              phase: record.diagnosticPhase ?? 'transport', code: safeFailureCode(record.failureCode),
+              transferId: record.id,
+              resourceType: record.kind === 'upload' ? record.target?.resourceType : undefined,
+              resourceId: record.kind === 'upload' ? record.target?.resourceId : undefined,
+            };
             try {
-              this.onDiagnostic?.({
-                actorUserId, clientEventId: record.diagnosticEventId, stage: record.kind,
-                phase: record.diagnosticPhase ?? 'transport', code: safeFailureCode(record.failureCode),
-                transferId: record.id, taskId: record.taskId,
-                resourceType: record.kind === 'upload' ? record.target?.resourceType : undefined,
-                resourceId: record.kind === 'upload' ? record.target?.resourceId : undefined,
-              });
+              this.diagnostics?.report(diagnostic);
+              this.onDiagnostic?.(diagnostic);
             } catch { /* Diagnostics never change the transfer result. */ }
           }
         }
@@ -429,7 +428,7 @@ export class RemoteTransferController {
         sourceFingerprint: `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`,
         expectedSha256, expectedSize: stat.size, relativeName: path.basename(sourcePath),
         mimeType: 'application/octet-stream', idempotencyKey: randomUUID(), target: { ...target },
-        taskId: target.resourceId, diagnosticActorUserId: this.currentUserId!,
+        diagnosticActorUserId: this.currentUserId!,
       };
       this.account.transfers.push(record);
       ids.push(record.id);

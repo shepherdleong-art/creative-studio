@@ -18,6 +18,7 @@ export class ClientDiagnosticReporter {
   private identity: string | null = null;
   private queue: ClientDiagnosticQueue | null = null;
   private readonly queues = new Map<string, ClientDiagnosticQueue>();
+  private readonly verifiedAccounts = new Set<string>();
   private csrfToken: string | null = null;
   private flushing: Promise<void> | null = null;
 
@@ -45,6 +46,7 @@ export class ClientDiagnosticReporter {
   setIdentity(userId: string | null): void {
     if (this.identity === userId) return;
     this.identity = userId;
+    if (userId) this.verifiedAccounts.add(userId);
     this.csrfToken = null;
     this.queue = userId
       ? this.queues.get(userId) ?? new ClientDiagnosticQueue(path.join(this.accountRoot(userId), 'diagnostics.json'))
@@ -54,7 +56,7 @@ export class ClientDiagnosticReporter {
 
   capture(input: ClientDiagnosticInput): void {
     const owner = input.actorUserId ?? this.identity;
-    if (!owner || (input.actorUserId && input.actorUserId !== this.identity)) return;
+    if (!owner || !this.verifiedAccounts.has(owner)) return;
     try {
       let queue = this.queues.get(owner);
       if (!queue) {

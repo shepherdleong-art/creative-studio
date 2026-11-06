@@ -69,13 +69,17 @@ interface ErrorRow {
   createdAt: string;
 }
 
-function associationForResource(db: Database.Database, resourceType: string, resourceId: string): ExecutionAssociation | null {
+function associationForResource(db: Database.Database, resourceType: string, resourceId: string): (ExecutionAssociation & { attemptId: string | null }) | null {
   const operation = db.prepare(`
     SELECT id AS operationId, actorId, module, taskId, scopeType, scopeId,
       configVersion, clientVersion, serverReleaseId, currentAttemptId
     FROM execution_operations WHERE scopeType = ? AND scopeId = ? ORDER BY updatedAt DESC, id DESC LIMIT 1
   `).get(resourceType, resourceId) as ExecutionAssociation | undefined;
-  if (operation) return operation;
+  if (operation) {
+    const latestAttempt = db.prepare('SELECT id FROM execution_attempts WHERE operationId = ? ORDER BY transportSeq DESC LIMIT 1')
+      .pluck().get(operation.operationId) as string | undefined;
+    return { ...operation, attemptId: latestAttempt ?? operation.currentAttemptId };
+  }
   const principal = db.prepare(`
     SELECT actorUserId, module, taskId, scopeType, scopeId FROM team_task_principals
     WHERE scopeType = ? AND scopeId = ? ORDER BY createdAt DESC LIMIT 1
@@ -87,7 +91,7 @@ function associationForResource(db: Database.Database, resourceType: string, res
     operationId: '', actorId: principal.actorUserId, module: principal.module,
     taskId: principal.taskId, scopeType: principal.scopeType, scopeId: principal.scopeId,
     configVersion: null, clientVersion: null, serverReleaseId: null,
-    currentAttemptId: null,
+    currentAttemptId: null, attemptId: null,
   };
 }
 
