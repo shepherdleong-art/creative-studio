@@ -1,4 +1,4 @@
-﻿﻿#Requires -Version 5.1
+﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$ConfigPath,
@@ -149,6 +149,10 @@ try {
         if ($actualHash -ne ([string]$lock.winsw.sha256).ToLowerInvariant()) { throw 'WinSW 哈希与受控 manifest 不符' }
     }
 
+    $maintenanceConfig = Join-Path ([string]$resolved.configRoot) 'maintenance-deployment.json'
+    if (-not (Test-Path -LiteralPath $maintenanceConfig -PathType Leaf)) {
+        Copy-TeamFile -Source ([System.IO.Path]::GetFullPath($ConfigPath)) -Destination $maintenanceConfig
+    }
     Grant-TeamAcl -Path ([string]$resolved.deploymentRoot) -Account ([string]$resolved.serviceAccount) -Permission 'R' -Recurse
     Grant-TeamAcl -Path ([string]$resolved.dataRoot) -Account ([string]$resolved.serviceAccount) -Permission 'M' -Recurse
     Grant-TeamAcl -Path ([string]$resolved.backupRoot) -Account ([string]$resolved.serviceAccount) -Permission 'M' -Recurse
@@ -177,7 +181,7 @@ try {
     }
     $liteLLMWarning = $null
     $phase = 'services'
-    foreach ($role in @('litellm', 'app', 'caddy')) {
+    foreach ($role in @('litellm', 'app', 'maintenance', 'caddy')) {
         $service = @($resolved.services | Where-Object { $_.role -eq $role } | Select-Object -First 1)
         if ($service.Count -eq 0) { continue }
         try {

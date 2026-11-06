@@ -8,7 +8,7 @@ param(
     [ValidateSet('update', 'compatible-rollback', 'restore-rollback')][string]$Mode = 'update',
     [string]$CompatibilityReportPath = '',
     [string]$BackupId = '',
-    [ValidateSet('daily', 'manual', 'pre-upgrade')][string]$BackupType = 'pre-upgrade',
+    [ValidateSet('daily', 'manual', 'pre-upgrade', 'pre-restore')][string]$BackupType = 'pre-upgrade',
     [string]$RestoreRoot = '',
     [switch]$Apply
 )

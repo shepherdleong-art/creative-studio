@@ -7,6 +7,9 @@ import { resolveDeploymentConfig } from './generate-config.mjs';
 import { sha256File, verifyReleaseManifest } from './distribution.mjs';
 import { runControlledServiceAction } from './service-control.mjs';
 import { createTeamBackup, verifyTeamBackup } from '../../lib/team-service/maintenance/backup.ts';
+import { MaintenanceJobStore } from '../../lib/team-service/maintenance/jobs.ts';
+import { runMaintenanceWorker, maintenanceGlobalLockPath } from '../../lib/team-service/maintenance/worker.ts';
+import { acquireSchemaUpgradeLock } from '../../lib/schema-upgrade/lock.ts';
 import { restoreTeamBackup } from '../../lib/team-service/maintenance/restore.ts';
 import { runTeamRelease, rollbackTeamRelease, readTeamReleasePointer, switchTeamReleasePointerIdempotent } from '../../lib/team-service/maintenance/release.ts';
 import { acquireLifecycleBarrier, releaseLifecycleBarrier } from '../../lib/team-service/lifecycle/index.ts';
@@ -140,7 +143,7 @@ function writeDailyJob(config, value) {
 }
 function backupDirectory(config, type, backupId) {
   safeId(backupId);
-  if (!['daily', 'manual', 'pre-upgrade'].includes(type)) throw new Error('备份类型无效');
+  if (!['daily', 'manual', 'pre-upgrade', 'pre-restore'].includes(type)) throw new Error('备份类型无效');
   const root = path.resolve(config.backupRoot, type);
   const directory = path.resolve(root, backupId);
   if (path.dirname(directory).toLowerCase() !== root.toLowerCase()) throw new Error('备份路径越界');
@@ -223,7 +226,9 @@ async function drain(db) {
   }
   return { pendingTasks: 1, unknownAttemptIds: [] };
 }
-async function makeBackup(config, db, principal, type, backupId, configPath, reuseExisting = false) {
+async function makeBackup(config, db, principal, type, backupId, configPath, reuseExisting = false, lockAlreadyHeld = false, onStage) {
+  const lock = lockAlreadyHeld ? null : await acquireSchemaUpgradeLock({ lockDatabasePath: maintenanceGlobalLockPath(config.backupRoot), timeoutMs: 100 });
+  try {
   const release = await currentReleaseIdentity(config);
   if (backupId && reuseExisting) {
     const directory = backupDirectory(config, type, backupId);
@@ -256,7 +261,10 @@ async function makeBackup(config, db, principal, type, backupId, configPath, reu
     },
     config: { filePath: configPath }, ...(backupId ? { backupId } : {}),
     protectConfig: protectConfig(config),
+    ...(args.includes('--test-disk-space-zero') ? { diskSpaceProbe: async () => 0 } : {}),
+    ...(onStage ? { onStage } : {}),
   });
+  } finally { lock?.release(); }
 }
 async function resumeService(config, db, releaseId) {
   setMaintenance(db, false, '');
@@ -269,6 +277,30 @@ async function resumeService(config, db, releaseId) {
 try {
   const configPath = path.resolve(required('--config'));
   const config = resolveDeploymentConfig(readJson(configPath));
+  if (command === 'worker') {
+    await runMaintenanceWorker({
+      configPath,
+      once: args.includes('--once'),
+      jobId: argument('--job-id') || undefined,
+      makeBackup: async ({ job, backupId, onStage }) => {
+        const workerDb = openDatabase(config.dataRoot);
+        try {
+          if (job.target.kind !== 'backup') throw new Error('维护作业目标不是备份');
+          const principal = job.requestedBy;
+          const backupType = job.target.backupType;
+          const result = await makeBackup(config, workerDb, principal, backupType, backupId, configPath, false, true, onStage);
+          const verified = await verifyTeamBackup(result.directory);
+          if (!verified.verified || verified.manifest.backupId !== result.manifest.backupId) throw new Error('备份作业结果复核失败');
+          onStage('verifying');
+          return {
+            backupId: result.manifest.backupId, type: result.manifest.type,
+            verifiedAt: result.success.verifiedAt, totalBytes: result.success.totalBytes,
+          };
+        } finally { workerDb.close(); }
+      },
+    });
+    process.stdout.write(`${JSON.stringify({ status: 'success', worker: true })}\n`);
+  } else {
   const db = openDatabase(config.dataRoot);
   try {
     const principal = adminPrincipal(db);
@@ -407,6 +439,7 @@ try {
     }
   } finally {
     db.close();
+  }
   }
 } catch (error) {
   const message = error instanceof Error ? error.message : '未知错误';
