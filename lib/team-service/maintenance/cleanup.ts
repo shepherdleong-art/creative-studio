@@ -8,6 +8,7 @@ import type { TeamResourceScope } from '../resource-scopes.ts';
 import { assertNoStorageSymlink } from '../../media-core/storage-path.ts';
 import { assertNoSymlinkPath, assertSafeRelativePath, dataRootIdentity, safeMaintenanceId } from './paths.ts';
 import { hasTeamRestoreHold } from './hold.ts';
+import { MaintenanceControlError } from './jobs.ts';
 
 export type CleanupCategory = 'failed_task_temporary' | 'expired_cache' | 'recycle_bin';
 export type CleanupReasonCode = 'backup_pin' | 'inflight_operation' | 'valid_reference' | 'recoverable_task'
@@ -150,7 +151,7 @@ export class CleanupPreviewStore {
   bind(previewId: string, requestedBy: string, at = new Date().toISOString()): void {
     const result = this.controlDb.prepare(`UPDATE previews SET requestedBy = ?, status = 'submitted', updatedAt = ?
       WHERE id = ? AND (status = 'ready' OR (status IN ('submitted', 'completed') AND requestedBy = ?))`).run(requestedBy, at, previewId, requestedBy);
-    if (result.changes !== 1) throw new Error('清理预览不存在、已提交给其他人或已完成');
+    if (result.changes !== 1) throw new MaintenanceControlError('cleanup_initiator_required', '清理预览不存在，或已由其他管理员确认。');
   }
   candidates(previewId: string): CandidateRow[] { this.get(previewId); return candidateRows(this.controlDb, previewId); }
   requestedBy(previewId: string): string {

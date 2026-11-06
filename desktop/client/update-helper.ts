@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { atomicJson } from './atomic-json';
 import { ClientUpdateCoordinator, type UpdateResult } from './update-coordinator';
+import { ClientDiagnosticQueue } from './client-diagnostics';
 
 export interface UpdateHelperJob {
   schemaVersion: 1;
@@ -15,6 +16,9 @@ export interface UpdateHelperJob {
   currentPid: number;
   platform: 'win32' | 'darwin';
   arch: 'x64' | 'arm64';
+  actorUserId?: string;
+  clientDeviceId?: string;
+  clientVersion?: string;
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -136,8 +140,11 @@ export function createNativeUpdateProcessControl(job: UpdateHelperJob, timeouts:
 export async function runIndependentUpdateJob(jobFile: string): Promise<UpdateResult> {
   const job = JSON.parse(fs.readFileSync(jobFile, 'utf8')) as UpdateHelperJob;
   if (job.schemaVersion !== 1 || !/^[a-f0-9-]{36}$/.test(job.jobId)
+    || path.resolve(jobFile) !== path.join(job.installRoot, 'updates', 'jobs', `${job.jobId}.json`)
     || path.resolve(job.installRoot) !== path.resolve(path.join(jobFile, '..', '..', '..'))
-    || !Number.isSafeInteger(job.currentPid) || job.currentPid === process.pid) {
+    || !Number.isSafeInteger(job.currentPid) || job.currentPid === process.pid
+    || (job.actorUserId !== undefined && !/^[a-z0-9][a-z0-9-]{0,127}$/i.test(job.actorUserId))
+    || (job.clientDeviceId !== undefined && !/^[a-f0-9-]{36}$/.test(job.clientDeviceId))) {
     throw new Error('独立更新任务文件或安装根无效');
   }
   if (new URL(job.manifestUrl).origin !== new URL(job.serverOrigin).origin
@@ -153,6 +160,14 @@ export async function runIndependentUpdateJob(jobFile: string): Promise<UpdateRe
     processControl: createNativeUpdateProcessControl(job),
   });
   const result = await coordinator.applyFromUrl(job.manifestUrl);
+  if (job.actorUserId && job.clientDeviceId && result.status !== 'committed' && result.clientEventId) {
+    const accountKey = createHash('sha256').update(`\n${new URL(job.serverOrigin).origin}\n${job.actorUserId}\n${job.clientDeviceId}`).digest('hex');
+    const queue = new ClientDiagnosticQueue(path.join(job.installRoot, 'client-state', 'accounts', accountKey, 'diagnostics.json'));
+    queue.capture({
+      clientEventId: result.clientEventId, stage: 'client_update', phase: result.phase ?? 'installation',
+      code: 'update_failed', clientVersion: job.clientVersion ?? 'unknown',
+    });
+  }
   atomicJson(paths.result, { schemaVersion: 1, jobId: job.jobId, ...result });
   return result;
 }
@@ -162,6 +177,9 @@ export interface SpawnHelperOptions {
   manifestUrl: string;
   serverOrigin: string;
   currentPid: number;
+  actorUserId?: string;
+  clientDeviceId?: string;
+  clientVersion?: string;
   onPauseRequested(): Promise<void>;
   onResumeRequested(): Promise<void>;
   onStopRequested(): Promise<void>;
@@ -180,7 +198,8 @@ export async function spawnIndependentUpdateHelper(options: SpawnHelperOptions):
   const jobId = randomUUID();
   const job: UpdateHelperJob = {
     schemaVersion: 1, jobId, installRoot, manifestUrl: manifest.href, serverOrigin: server.origin,
-    currentPid: options.currentPid, platform: process.platform === 'win32' ? 'win32' : 'darwin',
+    currentPid: options.currentPid, actorUserId: options.actorUserId,
+    clientDeviceId: options.clientDeviceId, clientVersion: options.clientVersion, platform: process.platform === 'win32' ? 'win32' : 'darwin',
     arch: process.arch === 'arm64' ? 'arm64' : 'x64',
   };
   const paths = jobPaths(job);
@@ -196,6 +215,15 @@ export async function spawnIndependentUpdateHelper(options: SpawnHelperOptions):
   let busy = false;
   const finish = (result: UpdateResult) => {
     if (settled) return;
+    if (result.status !== 'committed' && options.actorUserId && options.clientDeviceId) {
+      try {
+        const accountKey = createHash('sha256').update(`\n${server.origin}\n${options.actorUserId}\n${options.clientDeviceId}`).digest('hex');
+        new ClientDiagnosticQueue(path.join(installRoot, 'client-state', 'accounts', accountKey, 'diagnostics.json')).capture({
+          clientEventId: result.clientEventId ?? jobId, stage: 'client_update',
+          phase: result.phase ?? 'installation', code: 'update_failed', clientVersion: options.clientVersion ?? 'unknown',
+        });
+      } catch { /* Diagnostics do not block the update result. */ }
+    }
     settled = true;
     clearInterval(timer);
     options.onResult(result);
@@ -232,10 +260,10 @@ export async function spawnIndependentUpdateHelper(options: SpawnHelperOptions):
     }
     if (!stopping) {
       void options.onResumeRequested().catch(() => undefined).finally(() => finish({
-        status: 'rejected', message: '更新助手异常退出，已保留当前版本并恢复本机传输。',
+        status: 'rejected', clientEventId: jobId, phase: 'installation', message: '更新助手异常退出，已保留当前版本并恢复本机传输。',
       }));
     } else {
-      finish({ status: 'recovery_required', message: '更新助手在版本切换期间退出；已保留版本、快照和下载，请重新启动修复。' });
+      finish({ status: 'recovery_required', clientEventId: jobId, phase: 'recovery', message: '更新助手在版本切换期间退出；已保留版本、快照和下载，请重新启动修复。' });
     }
   });
   return { jobId };

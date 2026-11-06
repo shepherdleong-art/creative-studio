@@ -1,6 +1,6 @@
 import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 
-import type { DesktopBridge, RemoteUploadTarget, ThemePreference } from './bridge-types';
+import type { DesktopBridge, RemoteUploadTarget, ThemePreference, ClientDiagnosticInput } from './bridge-types';
 
 export const CHANNELS = {
   platform: 'desktop:platform',
@@ -20,6 +20,7 @@ export const CHANNELS = {
   revealDownload: 'desktop:client-reveal-download',
   getClientStatus: 'desktop:client-get-status',
   installClientUpdate: 'desktop:client-install-update',
+  reportClientError: 'desktop:client-report-error',
 } as const;
 
 export type DesktopPlatform = Awaited<ReturnType<DesktopBridge['platform']>>;
@@ -55,6 +56,7 @@ export interface DesktopIpcHandlers {
   revealDownload(downloadId: string): Promise<{ revealed: boolean }>;
   getClientStatus(): ReturnType<DesktopBridge['getClientStatus']>;
   installClientUpdate(): Promise<{ started: boolean; message?: string }>;
+  reportClientError(input: ClientDiagnosticInput): void;
 }
 
 interface RegisterIpcOptions {
@@ -159,6 +161,11 @@ export function registerIpcHandlers(options: RegisterIpcOptions): () => void {
   ipcMain.handle(
     CHANNELS.installClientUpdate,
     protectedHandler(() => options.handlers.installClientUpdate()),
+  );
+
+  ipcMain.handle(
+    CHANNELS.reportClientError,
+    protectedHandler((input: ClientDiagnosticInput) => options.handlers.reportClientError(input)),
   );
 
   return () => {

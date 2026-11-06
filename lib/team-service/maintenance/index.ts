@@ -6,3 +6,5 @@ export * from './jobs.ts';
 export * from './catalog.ts';
 export * from './control.ts';
 export { executeClaimedBackupJob, maintenanceGlobalLockPath, protectedDeploymentConfigPath, readMaintenanceExecutionConfig, runMaintenanceWorker } from './worker.ts';
+export * from './distribution.ts';
+export * from './release-candidates.ts';

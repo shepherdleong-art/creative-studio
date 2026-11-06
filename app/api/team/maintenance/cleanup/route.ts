@@ -1,5 +1,5 @@
 import { requirePrincipal } from '@/lib/team-service/auth/request';
-import { bindCleanupForAdministrator, getCleanupPreviewForAdministrator, scanCleanupForAdministrator } from '@/lib/team-service/maintenance/control';
+import { getCleanupPreviewForAdministrator, scanCleanupForAdministrator } from '@/lib/team-service/maintenance/control';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { MaintenanceControlError } from '@/lib/team-service/maintenance/jobs';
 
@@ -24,4 +24,3 @@ async function __teamRouteGET(request: Request) {
 
 export const POST = withTeamRoute('/api/team/maintenance/cleanup', 'POST', __teamRoutePOST);
 export const GET = withTeamRoute('/api/team/maintenance/cleanup', 'GET', __teamRouteGET);
-export { bindCleanupForAdministrator };

@@ -122,7 +122,7 @@ try {
   assert.equal(memberBody.items[0].paused, true);
 
   const employeeTeamPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, alice.cookie, {
-    method: 'PATCH', ...json({ manualDefaultConcurrency: 3, expectedVersion: 0 }),
+    method: 'PATCH', ...json({ mode: 'manual', manualDefaultConcurrency: 3, expectedVersion: 1 }),
   }));
   assert.equal(employeeTeamPolicy.status, 403, '员工不得保存团队默认并发');
   const employeeTeamPolicyRead = await concurrencyRoute.GET(request(teamConcurrencyUrl, alice.cookie));
@@ -134,12 +134,15 @@ try {
   const unavailableAutoPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, adminCookie, {
     method: 'PATCH', ...json({ mode: 'auto', manualDefaultConcurrency: 3, expectedVersion: 0 }),
   }));
-  assert.equal(unavailableAutoPolicy.status, 400, '本票不得提前启用自动模式');
+  assert.equal(unavailableAutoPolicy.status, 200, await unavailableAutoPolicy.clone().text());
+  assert.deepEqual(await unavailableAutoPolicy.json(), { mode: 'auto', manualDefaultConcurrency: 3, version: 1 });
+  const autoInherited = await policyRoute.GET(request(`https://studio.example.test/api/team/members/${alice.principal.userId}/policy`, adminCookie), { params: Promise.resolve({ id: alice.principal.userId }) });
+  assert.equal((await autoInherited.json()).effectiveConcurrency, null, '自动继承没有永久承诺的个人固定配额');
   const teamPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, adminCookie, {
-    method: 'PATCH', ...json({ manualDefaultConcurrency: 3, expectedVersion: 0 }),
+    method: 'PATCH', ...json({ mode: 'manual', manualDefaultConcurrency: 3, expectedVersion: 1 }),
   }));
   assert.equal(teamPolicy.status, 200, await teamPolicy.clone().text());
-  assert.deepEqual(await teamPolicy.json(), { mode: 'manual', manualDefaultConcurrency: 3, version: 1 });
+  assert.deepEqual(await teamPolicy.json(), { mode: 'manual', manualDefaultConcurrency: 3, version: 2 });
   const staleTeamPolicy = await concurrencyRoute.PATCH(request(teamConcurrencyUrl, adminCookie, {
     method: 'PATCH', ...json({ manualDefaultConcurrency: 9, expectedVersion: 0 }),
   }));
@@ -188,7 +191,7 @@ try {
   assert.equal(inheritedMember.concurrencyMode, 'inherit');
   assert.equal(inheritedMember.paused, false, '恢复继承不得静默解除暂停');
   assert.deepEqual(inheritedMember.allowedModels, ['model-only']);
-  assert.deepEqual((await concurrencyRoute.GET(request(teamConcurrencyUrl, adminCookie)).then(response => response.json())), { mode: 'manual', manualDefaultConcurrency: 3, version: 1 });
+  assert.deepEqual((await concurrencyRoute.GET(request(teamConcurrencyUrl, adminCookie)).then(response => response.json())), { mode: 'manual', manualDefaultConcurrency: 3, version: 2 });
 
   const policyUrl = `https://studio.example.test/api/team/members/${alice.principal.userId}/policy`;
   const policyContext = { params: Promise.resolve({ id: alice.principal.userId }) };

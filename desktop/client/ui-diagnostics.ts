@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { ClientDiagnosticInput } from './client-diagnostics';
 
 interface UiDiagnosticTarget {
-  addEventListener(type: string, listener: (event: any) => void): void;
-  removeEventListener(type: string, listener: (event: any) => void): void;
+  addEventListener(type: string, listener: (event: unknown) => void): void;
+  removeEventListener(type: string, listener: (event: unknown) => void): void;
 }
 
 function aborted(reason: unknown): boolean {
@@ -18,6 +18,30 @@ function expectedFormFailure(reason: unknown): boolean {
 }
 
 /** Never retain error.message, stack, URL, request data or rejected values. */
+export const CLIENT_UI_DIAGNOSTICS_SCRIPT = `(() => {
+  if (window.__creativeStudioDiagnosticsInstalled) return;
+  window.__creativeStudioDiagnosticsInstalled = true;
+  const seen = new WeakSet();
+  const reported = new Set();
+  const emit = (reason, phase) => {
+    if (reason && reason.name === 'AbortError') return;
+    if (reason && (typeof reason === 'object' || typeof reason === 'function')) {
+      if (seen.has(reason)) return;
+      seen.add(reason);
+    } else {
+      const identity = phase + ':' + typeof reason + ':' + String(reason).slice(0, 80);
+      if (reported.has(identity)) return;
+      reported.add(identity);
+    }
+    try { void window.desktopBridge?.reportClientError({
+      clientEventId: crypto.randomUUID(), stage: 'client_ui', phase,
+      code: phase === 'error' ? 'ui_runtime_error' : 'unhandled_rejection',
+    }); } catch { /* Diagnostics never interrupt the workbench. */ }
+  };
+  window.addEventListener('error', (event) => emit(event.error || 'unknown_ui_error', 'error'));
+  window.addEventListener('unhandledrejection', (event) => emit(event.reason, 'unhandledrejection'));
+})();`;
+
 export function installClientUiDiagnostics(
   target: UiDiagnosticTarget,
   reporter: { report(input: ClientDiagnosticInput): void },

@@ -39,6 +39,8 @@ import {
   legacyMediaExecutionRevision,
   recoverLegacyMediaSubmission,
   settleLegacyMediaRemote,
+  captureLegacyMediaFailure,
+  recoverLegacyMediaDownload,
   submitLegacyMediaOperation,
 } from './legacy-media-execution.ts';
 import type { ExecutionReceipt } from './media-core/execution/context.ts';
@@ -487,7 +489,7 @@ async function runAuthorizedVideoJob(
       ? `${runtime.accessKey}\0${runtime.secretKey}`
       : runtime.apiKey;
     const providerSnapshot = {
-      providerId: provider.id, type: provider.type, model: job.model, baseUrl: runtime.baseUrl,
+      providerId: provider.id, providerName: provider.name, type: provider.type, model: job.model, baseUrl: runtime.baseUrl,
     };
     assertLegacyMediaProviderRecovery({
       module: 'video', taskId: job.id,
@@ -612,6 +614,7 @@ async function runAuthorizedVideoJob(
         actualCost,
         resultRef,
         errorCode,
+        errorStage: outcome === 'failed' ? 'remote_poll' : undefined,
       });
     }
 
@@ -626,6 +629,7 @@ async function runAuthorizedVideoJob(
       if (!downloadResult.ok) {
         const failure = describeGatewayDownloadFailure('video', videoUrl, downloadResult, apiKey);
         logError(`${failure.errorMessage} URL: ${failure.logUrl}`);
+        await captureLegacyMediaFailure({ module: 'video', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision), stage: 'download', errorCode: 'result_download_failed' });
         db.prepare(
           `UPDATE video_jobs SET status = ?, errorMessage = ?, providerStatus = ?, remoteVideoUrl = ?, finishedAt = datetime('now')
            WHERE id = ? AND status = 'running'`
@@ -633,6 +637,7 @@ async function runAuthorizedVideoJob(
         return false;
       }
 
+      try {
       const videosDir = path.join(dataRoot(), 'storage', 'videos');
       if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
       const displayName = resolveVideoJobDisplayNames(db, [job.id]).get(job.id) || '未命名视频.mp4';
@@ -671,7 +676,17 @@ async function runAuthorizedVideoJob(
         }
       }
       logInfo(`Video job completed, saved as ${videoFilename}`);
+      if (completeResult.changes === 1) {
+        await recoverLegacyMediaDownload({ module: 'video', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision) });
+      }
       return completeResult.changes === 1;
+      } catch (error) {
+        await captureLegacyMediaFailure({
+          module: 'video', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+          stage: 'storage', errorCode: 'output_storage_failed',
+        });
+        throw error;
+      }
     }
 
     let taskId: string;

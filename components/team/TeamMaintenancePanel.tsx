@@ -3,25 +3,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { teamError, teamWrite } from './client';
 import TeamCleanupPanel from './TeamCleanupPanel';
+import TeamRestorePanel, { type RestoreActivity, type RestoreJob } from './TeamRestorePanel';
 
-type Job = {
-  id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'needs_review';
-  stage: string; progress: number | null; requestedBy: { displayName: string };
-  action: 'backup.create' | 'cleanup.execute'; target: { kind: string; previewId?: string };
-  createdAt: string; startedAt: string | null; finishedAt: string | null;
-  result?: { backupId?: string; verifiedAt?: string; totalBytes?: number; previewId?: string; deletedCount?: number; freedBytes?: number;
+type Job = RestoreJob & {
+  stage: string; progress: number | null;
+  startedAt: string | null; finishedAt: string | null;
+  target: { kind: string; previewId?: string };
+  result?: (RestoreJob['result'] & { backupId?: string; verifiedAt?: string; totalBytes?: number;
+    previewId?: string; deletedCount?: number; deletedFileCount?: number; freedBytes?: number;
     skipped?: Array<{ id: string; label?: string; reasonCode: string; reason: string }>;
-    failures?: Array<{ id: string; label?: string; reasonCode: string; reason: string; error?: string }> } | null;
-  error?: { message?: string } | null; reviewReason?: string | null; integrity?: 'ok' | 'audit_corrupt'; message?: string;
+    failures?: Array<{ id: string; label?: string; reasonCode: string; reason: string; error?: string }> }) | null;
+  integrity?: 'ok' | 'audit_corrupt'; message?: string;
 };
-type Backup = { id: string; type: string; createdAt: string; totalBytes: number; verification: string; verifiedAt: string | null; restorable: boolean };
+type Backup = { id: string; type: string; createdAt: string; totalBytes: number; verification: string; verifiedAt: string | null; restorable: boolean;
+  compatible: boolean; releaseId: string | null; scope: string; newerDataPolicy: string };
 const activeStatuses = new Set(['queued', 'running']);
 const stageLabels: Record<string, string> = {
   queued: '等待受控执行器领取', starting: '正在准备一致性快照', snapshotting: '正在固定数据库、配置与媒体引用',
   copying_media: '正在复制已固定媒体', verifying: '正在核验数据库与备份内容', finishing: '正在保存校验结果',
-  completed: '备份完成', failed: '备份失败',
+  awaiting_confirmation: '隔离还原已校验，等待确认切换', cutting_over: '正在切换受管活动数据根',
+  completed: '维护完成', failed: '维护失败',
 };
-const statusLabels: Record<Job['status'], string> = { queued: '待执行', running: '运行中', succeeded: '成功', failed: '失败', needs_review: '待核查' };
+const statusLabels: Record<Job['status'], string> = { queued: '待执行', running: '运行中', awaiting_confirmation: '待确认', succeeded: '成功', failed: '失败', needs_review: '待核查' };
 const backupTypeLabels: Record<string, string> = { daily: '每日', manual: '手动', 'pre-upgrade': '升级前', 'pre-restore': '还原前' };
 const bytes = (value: number) => value < 1024 * 1024 ? `${Math.ceil(value / 1024)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`;
 const time = (value: string | null) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
@@ -32,6 +35,7 @@ export default function TeamMaintenancePanel() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [activity, setActivity] = useState<RestoreActivity>({ state: 'original', activeLabel: '正在读取实际活动数据', protectedCopies: 0 });
   const idempotency = useRef<string | null>(null);
   const refresh = useCallback(async () => {
     try {
@@ -41,8 +45,9 @@ export default function TeamMaintenancePanel() {
       ]);
       if (!jobResponse.ok) throw new Error(await teamError(jobResponse, '无法读取维护作业'));
       if (!backupResponse.ok) throw new Error(await teamError(backupResponse, '无法读取备份列表'));
-      const jobBody = await jobResponse.json() as { jobs: Job[] };
+      const jobBody = await jobResponse.json() as { jobs: Job[]; activity: RestoreActivity };
       setJobs(jobBody.jobs);
+      setActivity(jobBody.activity);
       setBackups((await backupResponse.json() as { backups: Backup[] }).backups);
       if (!jobBody.jobs.some((job) => activeStatuses.has(job.status))) idempotency.current = null;
       setError('');
@@ -81,7 +86,7 @@ export default function TeamMaintenancePanel() {
       <div className="mt-5 space-y-3" aria-live="polite">
         {jobs.filter((job) => job.action === 'backup.create').slice(0, 5).map((job) => <article key={job.id} className="rounded-xl border border-hairline p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h3 className="text-sm font-medium text-ink">{job.integrity === 'audit_corrupt' ? '待核查' : statusLabels[job.status]} · {stageLabels[job.stage] ?? job.stage}</h3>
+            <h3 className="text-sm font-medium text-ink">{job.integrity === 'audit_corrupt' ? '待核查' : statusLabels[job.status]} · {job.stage === 'completed' && job.action === 'backup.create' ? '备份完成' : stageLabels[job.stage] ?? job.stage}</h3>
             <span className={`text-xs ${job.status === 'succeeded' ? 'text-ok' : ['failed', 'needs_review'].includes(job.status) ? 'text-warn' : 'text-ink-secondary'}`}>{job.status === 'succeeded' ? '已通过完整性校验' : job.progress === null ? '阶段进度，无可用百分比' : `${job.progress}%`}</span>
           </div>
           <p className="mt-2 text-xs leading-5 text-ink-secondary">发起人：{job.requestedBy.displayName} · 提交：{time(job.createdAt)}</p>
@@ -94,6 +99,7 @@ export default function TeamMaintenancePanel() {
       </div>
     </section>
     <TeamCleanupPanel jobs={jobs} />
+    <TeamRestorePanel backups={backups} jobs={jobs} activity={activity} busy={busy} onRefresh={refresh} />
     <section className="card p-6" aria-label="备份列表">
       <h2 className="text-lg font-semibold text-ink">备份列表</h2>
       <p className="mt-2 text-sm text-ink-secondary">只有重新通过数据库、配置、媒体和证据校验的完整备份才标记为可用于还原。</p>

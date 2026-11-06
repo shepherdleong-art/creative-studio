@@ -35,6 +35,8 @@ function write(relative, content) {
 function releaseFixture() {
   write('app/server.js', '// fixture\n');
   write('runtime/process-tree.mjs', '// fixture\n');
+  write('app/runtime/team-server-entry.cjs', '// isolated server entry\n');
+  write('app/scripts/team-server/maintenance.mjs', '// isolated maintenance entry\n');
   const node = write('runtimes/node/node.exe', 'fixture node');
   const caddy = write('tools/caddy/caddy.exe', 'fixture caddy');
   const winsw = write('tools/winsw/WinSW.exe', 'fixture winsw');
@@ -45,7 +47,8 @@ function releaseFixture() {
   write('service/distribution-lock.json', JSON.stringify(lock));
   write('service/packaging/forbidden-paths.json', fs.readFileSync(path.resolve('scripts/packaging/forbidden-paths.json'), 'utf8'));
   write('START-HERE.md', '# isolated fixture\n'); write('deployment.example.json', '{"schemaVersion":1}\n');
-  writeReleaseManifest(releaseRoot, { releaseId: 'release-maintenance-browser', appVersion: '0.7.1', sourceCommit: 'fixture', fixture: true });
+  writeReleaseManifest(releaseRoot, { releaseId: 'release-maintenance-browser', appVersion: '0.7.1', sourceCommit: 'fixture', fixture: true,
+    compatibility: { minAppVersion: '0.7.1', maxAppVersion: '0.7.1', dataSchemaMin: 1, dataSchemaMax: 99 } });
 }
 function launch(executable, args, env) {
   const child = spawn(executable, args, { cwd: repoRoot, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -54,11 +57,14 @@ function launch(executable, args, env) {
   child.stderr.on('data', (chunk) => { serverOutput += String(chunk); });
   return child;
 }
-function stopChildren() {
+async function stopChildren() {
+  const exits = [];
   for (const child of children) if (child.exitCode === null && child.signalCode === null) {
+    exits.push(new Promise((resolve) => child.once('close', resolve)));
     if (process.platform === 'win32') spawnSync('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
     else child.kill('SIGKILL');
   }
+  await Promise.all(exits);
   children.clear();
 }
 async function availablePort() {
@@ -123,9 +129,13 @@ try {
   await page.locator('input[autocomplete="current-password"]').fill(initializedCredential);
   await page.locator('input[autocomplete="new-password"]').first().fill(password);
   await page.locator('input[autocomplete="new-password"]').nth(1).fill(password);
+  await page.getByRole('button', { name: '保存新密码并进入' }).click();
+  await page.getByText('密码已修改，请使用新密码重新登录。', { exact: true }).waitFor();
+  await page.locator('input[autocomplete="username"]').fill('00042');
+  await page.locator('input[autocomplete="current-password"]').fill(password);
   await Promise.all([
     page.waitForURL((url) => url.pathname !== '/team/login', { timeout: 60_000 }),
-    page.getByRole('button', { name: '保存新密码并进入' }).click(),
+    page.getByRole('button', { name: '登录', exact: true }).click(),
   ]);
   await page.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'networkidle', timeout: 60_000 });
   await page.getByRole('heading', { name: '备份与维护', exact: true }).waitFor();
@@ -160,11 +170,6 @@ try {
     assert.equal(backupDb.pragma('integrity_check', { simple: true }), 'ok');
     assert.equal(backupDb.prepare("SELECT displayName FROM team_users WHERE employeeId = '00042'").pluck().get(), '真实网页管理员');
   } finally { backupDb.close(); }
-  fs.writeFileSync(path.join(backupRoot, 'manual', backups[0].id, 'evidence', 'execution-journal.jsonl'), 'tampered');
-  await reopened.reload({ waitUntil: 'networkidle' });
-  await reopened.getByText('未通过，待核查', { exact: true }).waitFor({ timeout: 30_000 });
-  const tampered = await reopened.evaluate(async () => (await (await fetch('/api/team/maintenance/backups')).json()).backups);
-  assert.equal(tampered[0].restorable, false);
   assert.deepEqual(errors, []);
   const fixtureDb = new Database(path.join(dataRoot, 'data', 'workbench.db'));
   try {
@@ -194,6 +199,30 @@ try {
   await reopened.reload({ waitUntil: 'networkidle' });
   await reopened.getByText(`发起人：真实网页管理员 · 作业：${cleanupJob.id}`, { exact: true }).waitFor({ timeout: 30_000 });
   assert.deepEqual(errors, []);
+  const restorePanel = reopened.getByRole('region', { name: '整套业务还原', exact: true });
+  await restorePanel.locator('#restore-backup').selectOption(`manual/${backups[0].id}`);
+  await restorePanel.getByText('还原点之后新增／修改的数据', { exact: false }).waitFor();
+  await restorePanel.getByRole('checkbox').check();
+  await restorePanel.getByRole('button', { name: '保存当前状态并准备隔离还原', exact: true }).click();
+  await restorePanel.getByRole('heading', { name: '隔离还原已校验，等待管理员确认切换', exact: true }).waitFor({ timeout: 120_000 });
+  const preparedJobs = await reopened.evaluate(async () => (await (await fetch('/api/team/maintenance/jobs')).json()).jobs);
+  const prepared = preparedJobs.find((item) => item.action === 'restore.execute');
+  assert.equal(prepared.status, 'awaiting_confirmation');
+  assert.ok(prepared.result.preRestoreBackupId);
+  assert.equal(prepared.result.reconciliation.scheduling, false);
+  assert.equal(prepared.result.reconciliation.automaticRetries, 0);
+  const preparedDb = new Database(path.join(dataRoot, 'data', 'workbench.db'), { readonly: true });
+  try {
+    assert.equal(preparedDb.prepare('SELECT maintenance, productionPaused FROM team_service_state WHERE id = 1').get().maintenance, 1);
+    assert.equal(preparedDb.prepare('SELECT productionPaused FROM team_service_state WHERE id = 1').pluck().get(), 1);
+  } finally { preparedDb.close(); }
+  await reopened.reload({ waitUntil: 'networkidle' });
+  await restorePanel.getByRole('heading', { name: '隔离还原已校验，等待管理员确认切换', exact: true }).waitFor();
+  fs.writeFileSync(path.join(backupRoot, 'manual', backups[0].id, 'evidence', 'execution-journal.jsonl'), 'tampered');
+  await reopened.reload({ waitUntil: 'networkidle' });
+  await reopened.getByText('未通过，待核查', { exact: true }).waitFor({ timeout: 30_000 });
+  const tampered = await reopened.evaluate(async () => (await (await fetch('/api/team/maintenance/backups')).json()).backups);
+  assert.equal(tampered.find((item) => item.type === 'manual' && item.id === backups[0].id)?.restorable, false);
   const employeeContext = await browser.newContext({ locale: 'zh-CN' });
   const employeePage = await employeeContext.newPage();
   await employeePage.goto(`${baseUrl}/team/login`, { waitUntil: 'networkidle' });
@@ -205,6 +234,10 @@ try {
   await employeePage.locator('input[autocomplete="new-password"]').first().fill('employee-password');
   await employeePage.locator('input[autocomplete="new-password"]').nth(1).fill('employee-password');
   await employeePage.getByRole('button', { name: '保存新密码并进入' }).click();
+  await employeePage.getByText('密码已修改，请使用新密码重新登录。', { exact: true }).waitFor();
+  await employeePage.locator('input[autocomplete="username"]').fill('00001');
+  await employeePage.locator('input[autocomplete="current-password"]').fill('employee-password');
+  await employeePage.getByRole('button', { name: '登录', exact: true }).click();
   await employeePage.waitForURL((url) => url.pathname !== '/team/login');
   await employeePage.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'networkidle' });
   assert.equal(new URL(employeePage.url()).pathname, '/', '员工必须被管理员维护页重定向');
@@ -226,6 +259,6 @@ try {
   throw error;
 } finally {
   if (browser) await browser.close();
-  stopChildren();
-  fs.rmSync(fixture, { recursive: true, force: true });
+  await stopChildren();
+  fs.rmSync(fixture, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }

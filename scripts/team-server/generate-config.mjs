@@ -294,6 +294,8 @@ function generate(config) {
     CREATIVE_STUDIO_SERVER_ROOT: appRoot,
     CREATIVE_STUDIO_APPLICATION_ROOT: appRoot,
     CREATIVE_STUDIO_SERVER_RELEASE_ID: config.releaseId,
+    CREATIVE_STUDIO_SERVICE_ROOT: config.serviceRoot,
+    CREATIVE_STUDIO_RELEASE_ROOT: config.releaseRoot,
     CREATIVE_STUDIO_CONTROL_CREDENTIAL_FILE: config.controlCredentialFile,
     CREATIVE_STUDIO_MAINTENANCE_DEPLOYMENT_ROOT: config.deploymentRoot,
     CREATIVE_STUDIO_MAINTENANCE_BACKUP_ROOT: config.backupRoot,
@@ -321,7 +323,8 @@ function generate(config) {
       id: `${config.servicePrefix}Maintenance`, description: `Creative Studio controlled maintenance (${config.deploymentId})`,
       executable: nodeExe,
       startArguments: `${quoteArgument(path.join(appRoot, 'scripts', 'team-server', 'maintenance.mjs'))} worker --config ${quoteArgument(path.join(config.configRoot, 'maintenance-deployment.json'))}`,
-      workingDirectory: appRoot, account: config.serviceAccount, logPath: logs,
+      workingDirectory: appRoot, account: config.serviceAccount,
+      logPath: path.join(config.serviceRoot, 'logs', 'maintenance'),
     }),
     [`${config.servicePrefix}Caddy.xml`]: serviceXml({
       id: `${config.servicePrefix}Caddy`, description: `Creative Studio HTTPS ingress (${config.deploymentId})`,
