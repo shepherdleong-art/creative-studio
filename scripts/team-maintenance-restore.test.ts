@@ -69,7 +69,7 @@ try {
     poolKey: 'shared', kind: 'remote', capacity: 2, enabled: true,
     mappingSnapshot: { providerId: 'provider-a' }, expectedVersion: 0,
   });
-  updateActorPolicy(db, { actorId: 'admin', monthlyLimitMinor: 500, personalConcurrency: 2, paused: false, expectedVersion: 0 });
+  updateActorPolicy(db, { actorId: 'admin', monthlyLimitMinor: 500, personalConcurrency: 2, concurrencyMode: 'fixed', paused: false, expectedVersion: 0 });
   const journal = createExecutionJournal({
     deploymentId, directory: path.join(sourceRoot, 'storage', 'execution-journal', deploymentId),
   });

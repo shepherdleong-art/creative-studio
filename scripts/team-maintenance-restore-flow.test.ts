@@ -100,7 +100,7 @@ try {
   registerExecutionInstance(db, { instanceId: 'restore-flow', fence: 1, deploymentId });
   upsertExecutionPool(db, { poolKey: 'shared', kind: 'remote', capacity: 1, enabled: true,
     mappingSnapshot: { providerId: 'provider-project-a' }, expectedVersion: 0 });
-  updateActorPolicy(db, { actorId: 'admin', monthlyLimitMinor: 1000, personalConcurrency: 1, paused: false, expectedVersion: 0 });
+  updateActorPolicy(db, { actorId: 'admin', monthlyLimitMinor: 1000, personalConcurrency: 1, concurrencyMode: 'fixed', paused: false, expectedVersion: 0 });
   db.prepare(`INSERT INTO team_resource_scopes (resourceType, resourceId, ownerUserId, rootType, rootId, createdAt, updatedAt)
     VALUES ('project', 'project-a', 'admin', 'project', 'project-a', ?, ?)`).run(at, at);
   const execution = createExecutionFacade({ db, deploymentId,
