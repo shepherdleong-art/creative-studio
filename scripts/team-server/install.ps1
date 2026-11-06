@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$ConfigPath,
@@ -27,10 +27,8 @@ function Set-TeamFirewall {
         $port = $existing | Get-NetFirewallPortFilter
         $address = $existing | Get-NetFirewallAddressFilter
         $actualRemote = @($address.RemoteAddress | ForEach-Object { [string]$_ } | Sort-Object)
-        $actualKeys = @($actualRemote | ForEach-Object { ConvertTo-TeamNetworkKey $_ } | Sort-Object)
-        $expectedKeys = @($expectedRemote | ForEach-Object { ConvertTo-TeamNetworkKey $_ } | Sort-Object)
         if ($port.Protocol -ne 'TCP' -or [string]$port.LocalPort -ne [string]$Resolved.entryPort -or
-            ($actualKeys -join '|') -ne ($expectedKeys -join '|') -or $existing.Direction -ne 'Inbound' -or $existing.Action -ne 'Allow') {
+            ($actualRemote -join '|') -ne ($expectedRemote -join '|') -or $existing.Direction -ne 'Inbound') {
             throw '同名防火墙规则不属于本部署合同，拒绝覆盖'
         }
         return
@@ -151,7 +149,7 @@ try {
         if ($actualHash -ne ([string]$lock.winsw.sha256).ToLowerInvariant()) { throw 'WinSW 哈希与受控 manifest 不符' }
     }
 
-    Grant-TeamAcl -Path ([string]$resolved.deploymentRoot) -Account ([string]$resolved.serviceAccount) -Permission 'RX' -Recurse
+    Grant-TeamAcl -Path ([string]$resolved.deploymentRoot) -Account ([string]$resolved.serviceAccount) -Permission 'R' -Recurse
     Grant-TeamAcl -Path ([string]$resolved.dataRoot) -Account ([string]$resolved.serviceAccount) -Permission 'M' -Recurse
     Grant-TeamAcl -Path ([string]$resolved.backupRoot) -Account ([string]$resolved.serviceAccount) -Permission 'M' -Recurse
     $phase = 'acl'

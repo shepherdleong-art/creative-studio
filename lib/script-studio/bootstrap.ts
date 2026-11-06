@@ -42,8 +42,7 @@ import {
 // v23：普通长图切片复用一次整页缩放结果，避免每张切片重复缩放/编码整页。
 // v28：模板执行模块保留部分失败检查点，并统一恢复身份与冻结白名单。
 // v30：统一执行 deferred 续跑、准入后预算占用与稳定子请求身份。
-// v31：后台领取和续租从持久任务身份恢复访问上下文。
-const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 31;
+const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 30;
 const SCRIPT_STUDIO_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.script-studio-scheduler-version');
 const SCRIPT_STUDIO_SCHEDULER_START_KEY = Symbol.for('creative-studio.script-studio-scheduler-start');
 

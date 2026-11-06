@@ -251,7 +251,6 @@ export function resolveDeploymentConfig(input) {
   }
   config.serviceRoot = path.join(config.deploymentRoot, 'service');
   config.configRoot = path.join(config.deploymentRoot, 'config');
-  config.clientUpdatesRoot = path.join(config.deploymentRoot, 'client-updates');
   config.controlCredentialFile = path.join(config.configRoot, 'control-credential.json');
   config.services = [
     { role: 'caddy', id: `${config.servicePrefix}Caddy` },
@@ -281,8 +280,8 @@ function generate(config) {
   const controlHelper = path.join(config.serviceRoot, 'service-control.mjs');
   const appEnvPath = path.join(config.serviceRoot, 'app.env');
   const caddyfile = path.join(config.serviceRoot, 'Caddyfile');
-  const liteConfig = path.join(config.dataRoot, 'config.yaml');
-  const liteEntry = path.join(config.serviceRoot, 'litellm-service.py');
+  const liteConfig = path.join(config.configRoot, 'litellm', 'config.yaml');
+  const liteEntry = path.join(appRoot, 'runtime', 'start-litellm-proxy.py');
   const logs = path.join(config.dataRoot, 'storage', 'logs', 'services');
   const appEnv = {
     NODE_ENV: 'production',
@@ -308,7 +307,7 @@ function generate(config) {
     [`${config.servicePrefix}App.xml`]: serviceXml({
       id: `${config.servicePrefix}App`, description: `Creative Studio application (${config.deploymentId})`,
       executable: nodeExe,
-      startArguments: `--env-file-if-exists=${quoteArgument(path.join(config.dataRoot, '.env.local'))} --env-file=${quoteArgument(appEnvPath)} ${quoteArgument(appEntry)}`,
+      startArguments: `--env-file=${quoteArgument(appEnvPath)} ${quoteArgument(appEntry)}`,
       workingDirectory: appRoot, account: config.serviceAccount, logPath: logs,
       stop: {
         executable: nodeExe,
@@ -328,53 +327,11 @@ function generate(config) {
       executable: pythonExe,
       startArguments: `${quoteArgument(liteEntry)} --config ${quoteArgument(liteConfig)} --host 127.0.0.1 --port ${config.liteLLMPort}`,
       workingDirectory: path.dirname(liteConfig), account: config.serviceAccount, logPath: logs,
-      env: { PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1', CREATIVE_STUDIO_DATA_ROOT: config.dataRoot, LITELLM_LOCAL_MODEL_COST_MAP: 'True', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' },
+      env: { PYTHONUTF8: '1', LITELLM_LOCAL_MODEL_COST_MAP: 'True', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' },
     });
   }
-  const clientUpdatesRoot = config.clientUpdatesRoot;
-  const networkMatcher = config.allowedNetworks.length
-    ? `\t@outside not remote_ip ${config.allowedNetworks.join(' ')}\n`
-    : '';
-  const networkResponse = config.allowedNetworks.length ? 'respond @outside 403' : 'respond 403';
-  const caddyConfig = `# Generated for ${config.deploymentId}; operations remain loopback-only.
-{
-	admin 127.0.0.1:2019
-	auto_https disable_redirects
-}
-${config.origin} {
-	tls ${caddyToken(config.certificate.certPath)} ${caddyToken(config.certificate.keyPath)}
-${networkMatcher}	route {
-		${networkResponse}
-		request_body {
-			max_size ${config.maxRequestBytes}
-		}
-		handle /api/team/operations/* {
-			respond 404
-		}
-		handle /api/shutdown {
-			respond 404
-		}
-		handle /api/desktop/* {
-			respond 404
-		}
-		handle /client-updates {
-			respond 404
-		}
-		handle_path /client-updates/* {
-			root * ${caddyToken(clientUpdatesRoot)}
-			file_server {
-				hide .*
-			}
-			header Cache-Control "no-store"
-		}
-		handle {
-			reverse_proxy 127.0.0.1:${config.appPort} {
-				flush_interval -1
-			}
-		}
-	}
-}
-`;
+  const clientUpdatesRoot = path.join(config.deploymentRoot, 'client-updates');
+  const caddyConfig = `# Generated for ${config.deploymentId}; operations remain loopback-only.\n{\n\tadmin 127.0.0.1:2019\n\tauto_https disable_redirects\n}\n${config.origin} {\n\ttls ${caddyToken(config.certificate.certPath)} ${caddyToken(config.certificate.keyPath)}\n\trequest_body {\n\t\tmax_size ${config.maxRequestBytes}\n\t}\n\thandle /api/team/operations/* {\n\t\trespond 404\n\t}\n\thandle /api/shutdown {\n\t\trespond 404\n\t}\n\thandle /api/desktop/* {\n\t\trespond 404\n\t}\n\thandle /client-updates {\n\t\trespond 404\n\t}\n\thandle_path /client-updates/* {\n\t\troot * ${caddyToken(clientUpdatesRoot)}\n\t\tfile_server {\n\t\t\thide .*\n\t\t}\n\t\theader Cache-Control "no-store"\n\t}\n\thandle {\n\t\treverse_proxy 127.0.0.1:${config.appPort} {\n\t\t\tflush_interval -1\n\t\t}\n\t}\n}\n`;
   const resolved = {
     schemaVersion: 1,
     dryRun: true,
@@ -419,42 +376,6 @@ ${networkMatcher}	route {
       'Caddyfile': caddyConfig,
       'app.env': envText,
       'litellm.env': 'PYTHONUTF8=1\r\nLITELLM_LOCAL_MODEL_COST_MAP=True\r\nNO_PROXY=127.0.0.1,localhost\r\nno_proxy=127.0.0.1,localhost\r\n',
-      'litellm-service.py': `"""SCM-owned LiteLLM: publish the live launcher identity for the app gate."""
-import datetime
-import json
-import os
-from pathlib import Path
-
-root = Path(os.environ["CREATIVE_STUDIO_DATA_ROOT"])
-state_file = root / "storage" / "run" / "stack.json"
-state_file.parent.mkdir(parents=True, exist_ok=True)
-for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
-    os.environ.pop(key, None)
-
-def main():
-    import sys
-    from litellm import run_server
-    args = sys.argv[1:]
-    if args[args.index("--host") + 1] != "127.0.0.1":
-        raise RuntimeError("LiteLLM service must bind loopback")
-    proxy_port = int(args[args.index("--port") + 1])
-    state = {"startedAt": datetime.datetime.now().isoformat(timespec="seconds"),
-             "proxyPort": proxy_port, "litellmPid": os.getpid(), "owner": "team-server-scm"}
-    pending = state_file.with_name("stack." + str(os.getpid()) + ".tmp")
-    pending.write_text(json.dumps(state), encoding="utf-8")
-    pending.replace(state_file)
-    try:
-        run_server()
-    finally:
-        try:
-            if json.loads(state_file.read_text(encoding="utf-8")).get("litellmPid") == os.getpid():
-                state_file.unlink()
-        except (OSError, ValueError):
-            pass
-
-if __name__ == "__main__":
-    main()
-`,
       'network-plan.json': `${JSON.stringify(network, null, 2)}\n`,
       'resolved-services.json': `${JSON.stringify(resolved, null, 2)}\n`,
     },

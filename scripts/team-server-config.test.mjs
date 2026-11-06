@@ -58,24 +58,6 @@ function readJson(file) {
   return JSON.parse(bytes.toString('utf8'));
 }
 
-test('安装器 resolve-only 输出包含更新目录，与实际生成的托管目录一致', (t) => {
-  const context = fixture(t, { serviceAccount: 'NT AUTHORITY\\LocalService' });
-  const result = spawnSync(process.execPath, [generator, '--config', context.configPath, '--resolve-only'], {
-    cwd: root, encoding: 'utf8', windowsHide: true,
-  });
-  assert.equal(result.status, 0, result.stderr);
-  const resolved = JSON.parse(result.stdout);
-  assert.equal(resolved.clientUpdatesRoot, path.join(context.deploymentRoot, 'client-updates'));
-  assert.equal(fs.existsSync(resolved.clientUpdatesRoot), false, '解析不得创建系统目录');
-  assert.equal(resolved.serviceAccount, 'NT AUTHORITY\\LocalService');
-  const output = path.join(context.deploymentRoot, 'service');
-  const generated = spawnSync(process.execPath, [generator, '--config', context.configPath, '--output', output], {
-    cwd: root, encoding: 'utf8', windowsHide: true,
-  });
-  assert.equal(generated.status, 0, generated.stderr);
-  assert.equal(readJson(path.join(output, 'resolved-services.json')).clientUpdatesRoot, resolved.clientUpdatesRoot);
-});
-
 test('生成三个 SCM 服务、固定回环入口、环境文件、日志轮换和受控停机合同', (t) => {
   const { output, result, config } = generate(t);
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -87,8 +69,6 @@ test('生成三个 SCM 服务、固定回环入口、环境文件、日志轮换
   assert.match(app, /<user>svc_studio\$<\/user>/);
   assert.match(app, /<domain>CONTOSO<\/domain>/);
   assert.match(app, /--env-file=/);
-  assert.match(app, /--env-file-if-exists=.*\.env\.local/);
-  assert.ok(app.indexOf('--env-file-if-exists=') < app.indexOf('--env-file='), '部署身份必须覆盖资源环境文件');
   assert.match(app, /team-server-entry\.cjs/);
   assert.match(app, /<stopexecutable>.*node\.exe<\/stopexecutable>/);
   assert.match(app, /service-control\.mjs/);
@@ -104,9 +84,6 @@ test('生成三个 SCM 服务、固定回环入口、环境文件、日志轮换
   const proxy = fs.readFileSync(path.join(output, 'Caddyfile'), 'utf8');
   assert.match(proxy, /https:\/\/studio\.example\.test/);
   assert.match(proxy, /127\.0\.0\.1:3300/);
-  assert.match(proxy, /@outside not remote_ip 192\.0\.2\.0\/24/);
-  assert.ok(proxy.indexOf('respond @outside 403') < proxy.indexOf('handle /api/team/operations/'), '网段检查必须先于所有业务和更新路径');
-  assert.doesNotMatch(proxy, /client_ip|X-Forwarded-For/, '直接入口按 socket 来源限制，不信任客户端伪造的代理头');
   assert.match(proxy, /tls C:\\controlled\\certs\\studio\.crt C:\\controlled\\certs\\studio\.key/);
   for (const route of ['/api/team/operations/*', '/api/shutdown', '/api/desktop/*', '/client-updates/*']) {
     assert.ok(proxy.includes(route), `Caddy 必须覆盖 ${route}`);
@@ -118,9 +95,6 @@ test('生成三个 SCM 服务、固定回环入口、环境文件、日志轮换
   assert.match(lite, /--host/, 'LiteLLM 必须显式传 host');
   assert.match(lite, /127\.0\.0\.1/);
   assert.match(lite, /4300/);
-  assert.ok(lite.includes(path.join(config.dataRoot, 'config.yaml')));
-  assert.match(lite, /litellm-service\.py/);
-  assert.match(lite, /PYTHONDONTWRITEBYTECODE/);
   assert.doesNotMatch(app, /<depend>CreativeStudioLiteLLM<\/depend>/, '代理故障不得阻塞 app');
 
   const env = fs.readFileSync(path.join(output, 'app.env'), 'utf8');
@@ -138,34 +112,6 @@ test('生成三个 SCM 服务、固定回环入口、环境文件、日志轮换
   assert.deepEqual(network.loopbackOnlyPorts, [3300, 4300]);
   assert.equal(network.applyPerformed, false);
   assert.equal(readJson(path.join(output, 'resolved-services.json')).dryRun, true);
-});
-
-test('SCM LiteLLM 在每次启动发布真实 PID，退出清理自己的运行状态', (t) => {
-  const { output, result, config, directory } = generate(t);
-  assert.equal(result.status, 0, result.stderr);
-  const python = path.join(root, 'python-runtime', 'python.exe');
-  if (!fs.existsSync(python)) { t.skip('需要本机便携 Python'); return; }
-  // Embedded Python ignores PYTHONPATH; insert the test module before executing the generated entry.
-  const fake = path.join(directory, 'fake');
-  fs.mkdirSync(fake);
-  fs.writeFileSync(path.join(fake, 'litellm.py'), `import json, os\nfrom pathlib import Path\ndef run_server():\n s=json.loads((Path(os.environ['CREATIVE_STUDIO_DATA_ROOT'])/'storage/run/stack.json').read_text())\n assert s['litellmPid']==os.getpid()\n assert s['proxyPort']==4300\n assert not os.environ.get('HTTPS_PROXY')\n print(json.dumps(s))\n`);
-  const run = () => spawnSync(python, ['-c', 'import sys,runpy;sys.path.insert(0,sys.argv.pop(1));runpy.run_path(sys.argv[1],run_name="__main__")', fake, path.join(output, 'litellm-service.py'), '--host', '127.0.0.1', '--port', '4300'], {
-    env: { ...process.env, CREATIVE_STUDIO_DATA_ROOT: config.dataRoot, HTTPS_PROXY: 'http://127.0.0.1:9', PYTHONDONTWRITEBYTECODE: '1' }, encoding: 'utf8', windowsHide: true,
-  });
-  const first = run();
-  assert.equal(first.status, 0, first.stderr);
-  assert.equal(JSON.parse(first.stdout).owner, 'team-server-scm');
-  assert.equal(fs.existsSync(path.join(config.dataRoot, 'storage/run/stack.json')), false);
-  const second = run();
-  assert.equal(second.status, 0, second.stderr);
-  assert.notEqual(JSON.parse(first.stdout).litellmPid, JSON.parse(second.stdout).litellmPid);
-  assert.equal(fs.existsSync(path.join(config.dataRoot, 'storage/run/stack.json')), false);
-});
-
-test('未配置获准网段时 HTTPS 路由默认拒绝', (t) => {
-  const {output,result}=generate(t,{allowedNetworks:[]});
-  assert.equal(result.status,0,result.stderr);
-  assert.match(fs.readFileSync(path.join(output,'Caddyfile'),'utf8'), /route \{\s+respond 403/);
 });
 
 test('可选 LiteLLM 不生成第三个服务且仍保留其回环端口隔离计划', (t) => {

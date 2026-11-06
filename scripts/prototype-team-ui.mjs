@@ -13,6 +13,10 @@ const copies = [
   'app/prototype/team/MemberUsagePrototype.tsx',
   'app/prototype/team/prototype.module.css',
   'app/prototype/team/demo-data.ts',
+  'app/prototype/team/usage-analytics/page.tsx',
+  'app/prototype/team/usage-analytics/UsageAnalyticsPrototype.tsx',
+  'app/prototype/team/usage-analytics/usage-prototype.module.css',
+  'app/prototype/team/usage-analytics/usage-prototype.module.css.d.ts',
   'components/ui/Icon.tsx',
   'components/ui/TeamPrototypeSwitcher.tsx',
 ];
@@ -30,7 +34,7 @@ fs.writeFileSync(path.join(sandbox, 'package.json'), JSON.stringify({ name: 'cre
 fs.writeFileSync(path.join(sandbox, 'tsconfig.json'), JSON.stringify({ compilerOptions: { target: 'ES2017', lib: ['dom', 'dom.iterable', 'esnext'], strict: true, skipLibCheck: true, noEmit: true, esModuleInterop: true, module: 'esnext', moduleResolution: 'bundler', jsx: 'react-jsx', isolatedModules: true, resolveJsonModule: true, plugins: [{ name: 'next' }], paths: { '@/*': ['./*'] } }, include: ['next-env.d.ts', '**/*.ts', '**/*.tsx', '.next/dev/types/**/*.ts'], exclude: ['node_modules'] }, null, 2));
 fs.writeFileSync(path.join(sandbox, 'next.config.mjs'), `export default { outputFileTracingRoot: ${JSON.stringify(root)}, devIndicators: false };\n`);
 const port = process.env.PROTOTYPE_TEAM_PORT || '3317';
-console.log(`\nTHROWAWAY / MEMORY ONLY\n客户端 http://127.0.0.1:${port}/prototype/team?role=client&variant=A\n管理端 http://127.0.0.1:${port}/prototype/team?role=server&variant=A\n`);
+console.log(`\nTHROWAWAY / MEMORY ONLY\n客户端 http://127.0.0.1:${port}/prototype/team?role=client&variant=A\n管理端 http://127.0.0.1:${port}/prototype/team?role=server&variant=A\n用量设计 http://127.0.0.1:${port}/prototype/team/usage-analytics?variant=local\n`);
 const child = spawn(process.execPath, [path.join(root, 'node_modules/next/dist/bin/next'), 'dev', sandbox, '--webpack', '--hostname', '127.0.0.1', '--port', port], {
   cwd: sandbox, stdio: 'inherit', windowsHide: true,
   env: { ...process.env, CREATIVE_STUDIO_TEAM_UI_PROTOTYPE: '1', NEXT_TELEMETRY_DISABLED: '1' },

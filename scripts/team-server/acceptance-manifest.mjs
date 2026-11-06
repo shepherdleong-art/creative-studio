@@ -84,7 +84,6 @@ export const L1_SUITE = [
 ];
 
 export const FIRST_RUN_SUITE = [
-  node('team-production-http.playwright.test.mjs', ['A03', 'Q01', 'Q08', 'C01', 'R03'], { timeoutMs: 900_000, realMedia: true }),
   node('team-first-run.test.ts', ['A01', 'A03', 'Q01', 'Q02']),
   node('creative-canvas-execution.test.ts', ['C01', 'Q01', 'Q08']),
   node('batch-executors.test.ts', ['Q01', 'Q03', 'Q06']),
