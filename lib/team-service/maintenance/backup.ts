@@ -26,7 +26,7 @@ import {
   writeJsonAtomic,
 } from './paths.ts';
 
-export const TEAM_BACKUP_TYPES = ['daily', 'manual', 'pre-upgrade'] as const;
+export const TEAM_BACKUP_TYPES = ['daily', 'manual', 'pre-upgrade', 'pre-restore'] as const;
 export type TeamBackupType = typeof TEAM_BACKUP_TYPES[number];
 
 export interface TeamBackupFileEntry {
@@ -110,6 +110,7 @@ export interface CreateTeamBackupOptions {
   copyFile?: (source: string, destination: string) => Promise<void>;
   protectConfig?: (filePath: string) => Promise<void>;
   removeDirectory?: (root: string, target: string) => Promise<void>;
+  onStage?: (stage: 'snapshotting' | 'copying_media' | 'verifying') => void;
 }
 
 export interface TeamBackupResult {
@@ -208,6 +209,7 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
     backupRoot: options.backupRoot, deploymentId: options.deploymentId, kind: 'backup', operationId: backupId,
     phase: 'started', at: now().toISOString(), details: { backupId, backupType: options.type },
   });
+  options.onStage?.('snapshotting');
 
   let barrierId: string | null = null;
   let pinId: string | null = null;
@@ -298,6 +300,7 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
       await fsPromises.copyFile(source, destination, fs.constants.COPYFILE_EXCL);
     });
     for (const file of files) {
+      options.onStage?.('copying_media');
       const source = path.resolve(options.storageRoot, ...file.relativePath.split('/'));
       if (path.relative(path.resolve(options.storageRoot), source).split(path.sep).join('/') !== file.relativePath) {
         throw new Error('媒体来源越出 storage 根');
@@ -311,6 +314,7 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
       }
     }
 
+    options.onStage?.('verifying');
     const databasePath = path.join(paths.staging, 'data', 'workbench.db');
     validateDatabase(databasePath);
     const manifest: TeamBackupManifest = {

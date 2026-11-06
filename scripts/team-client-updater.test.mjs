@@ -108,10 +108,12 @@ function initialInstallation(root, oldManifest = manifest('old', Buffer.alloc(0)
 }
 function runtime(root, options = {}) {
   const events = [];
+  const diagnostics = [];
   const packageByUrl = new Map(options.packages ?? []);
   const manifestByUrl = new Map(options.manifests ?? []);
   const coordinator = new ClientUpdateCoordinator({
     rootDir: root,
+    onDiagnostic: (event) => diagnostics.push(event),
     publicKey: publicPem,
     platform: 'win32',
     arch: 'x64',
@@ -147,7 +149,7 @@ function runtime(root, options = {}) {
       },
     },
   });
-  return { coordinator, events };
+  return { coordinator, events, diagnostics };
 }
 function current(root) {
   return JSON.parse(fs.readFileSync(path.join(root, 'current.json'), 'utf8'));
@@ -201,12 +203,17 @@ try {
     const root = tempRoot();
     initialInstallation(root);
     const fixture = setup(root);
-    const { coordinator, events } = runtime(root, fixture);
+    const { coordinator, events, diagnostics } = runtime(root, fixture);
     const result = await coordinator.applyFromUrl(`${ORIGIN}/client-updates/stable.json`);
     assert.equal(result.status, 'rejected', name);
     assert.equal(current(root).releaseId, 'old', name);
     assert.equal(fs.readFileSync(path.join(root, 'client-state', 'state.json'), 'utf8'), '{"schemaVersion":1,"owner":"old"}\n');
     assert.equal(events.includes('resume'), fixture.resume ?? false);
+    assert.equal(diagnostics.length, 1, `${name}: 更新失败须关联一个客户端事件`);
+    assert.equal(diagnostics[0].stage, 'client_update');
+    assert.ok(['check', 'download', 'verification', 'installation'].includes(diagnostics[0].phase));
+    assert.match(diagnostics[0].clientEventId, /^[a-f0-9-]{36}$/);
+    assert.equal(Object.hasOwn(diagnostics[0], 'message'), false);
     return { root, result, events };
   }
   await rejectedCase('bad signature', () => ({

@@ -18,6 +18,10 @@ import { completeFilmNavigation, consumeFilmNavigationRequest } from './reassemb
 import { createRemoteClientHost, confirmRemoteClientHealth, defaultClientStateRoot, readRemoteClientConfig } from './client/remote-host';
 import { spawnIndependentUpdateHelper } from './client/update-helper';
 
+if (process.env.CREATIVE_STUDIO_CLIENT_MODE === 'remote') {
+  const remoteStateRoot = defaultClientStateRoot();
+  app.setPath('userData', join(remoteStateRoot, 'electron'));
+}
 const singleInstanceLock = app.requestSingleInstanceLock();
 
 let mainWindow: BrowserWindow | null = null;
@@ -163,7 +167,13 @@ async function shutdown(): Promise<void> {
     removeIpcHandlers = null;
     const currentService = service;
     service = null;
-    if (windowHost?.mode === 'remote') await windowHost.remote.stop();
+    if (windowHost?.mode === 'remote') {
+      await windowHost.remote.stop();
+      await Promise.race([
+        windowHost.session.flushStorageData(),
+        new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+      ]).catch(() => undefined);
+    }
     await currentService?.stop();
     desktopSecret = null;
     app.exit(0);

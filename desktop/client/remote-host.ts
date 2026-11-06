@@ -5,6 +5,8 @@ import path from 'node:path';
 import type { ClientStatus, RemoteUploadTarget } from '../bridge-types';
 import type { RemoteDesktopWindowHost } from '../window';
 import { RemoteTransferController, type TeamFileDownloadManifest } from './remote-transfer';
+import { ClientDiagnosticReporter } from './client-diagnostic-reporter';
+import { installClientUiDiagnostics } from './ui-diagnostics';
 
 export type RemoteClientConfig = { mode: 'local' } | { mode: 'remote'; origin: string };
 
@@ -64,10 +66,19 @@ export class RemoteClientController {
   private capabilities: Capabilities | null = null;
   private transfers: RemoteTransferController | null = null;
   private identityTimer: ReturnType<typeof setInterval> | null = null;
+  private detachUiDiagnostics: (() => void) | null = null;
+  private readonly diagnostics: ClientDiagnosticReporter;
   private readonly installUpdateHandler?: RemoteHostOptions['installUpdate'];
 
   constructor(private readonly options: RemoteHostOptions, private readonly session: Session) {
     this.installUpdateHandler = options.installUpdate;
+    let device: { clientDeviceId?: string } = {};
+    try { device = JSON.parse(fs.readFileSync(path.join(options.stateRoot, 'device.json'), 'utf8')) as typeof device; } catch { /* transfer binds its persisted device below */ }
+    this.diagnostics = new ClientDiagnosticReporter({
+      origin: options.origin, stateRoot: options.stateRoot,
+      clientDeviceId: device.clientDeviceId ?? '00000000-0000-4000-8000-000000000000',
+      clientVersion: app.getVersion(), session: this.session,
+    });
   }
 
   async start(): Promise<void> {
@@ -79,11 +90,13 @@ export class RemoteClientController {
       session: this.session,
       platform: process.platform === 'win32' ? 'windows' : 'macos',
       reveal: (target) => shell.showItemInFolder(target),
+      diagnostics: this.diagnostics,
     });
     if (!this.capabilities!.compatible || this.capabilities!.maintenance || this.updateGateBlocked()) {
       await this.transfers.pauseForUpdate();
     }
     await this.transfers.synchronizeIdentity();
+    this.detachUiDiagnostics = this.transfers.attachUiDiagnostics(window);
     void this.transfers.syncDeliveries().catch(() => undefined);
     this.session.cookies.on('changed', (_event, cookie) => {
       if (cookie.name === '__Host-team_session') void this.transfers?.synchronizeIdentity().catch(() => undefined);
@@ -186,6 +199,8 @@ export class RemoteClientController {
   }
 
   async stop(): Promise<void> {
+    this.detachUiDiagnostics?.();
+    this.detachUiDiagnostics = null;
     if (this.identityTimer) clearInterval(this.identityTimer);
     this.identityTimer = null;
     await this.transfers?.stop();

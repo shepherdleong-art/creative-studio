@@ -113,7 +113,7 @@ try {
   );
   const admin = await auth.changeOwnPassword(adminLogin.principal, credential, 'first-run-admin-password');
   assert.equal(admin.mustChangePassword, false);
-  const adminCookie = cookieOf(adminLogin.token);
+  const adminCookie = cookieOf((await auth.login({ employeeId: 'first-admin', password: 'first-run-admin-password' })).token);
 
   // 供应商通过正式 POST 入口创建，响应不回显密钥。
   const providerResponse = await providersRoute.POST(request('POST', '/api/providers', adminCookie, {
@@ -137,7 +137,7 @@ try {
   const employeeRecord = await createdEmployee.json() as { user: { id: string }; credential: string };
   const employeeLogin = await auth.login({ employeeId: 'first-employee', password: employeeRecord.credential });
   const employee = await auth.changeOwnPassword(employeeLogin.principal, employeeRecord.credential, 'first-run-employee-password');
-  const employeeCookie = cookieOf(employeeLogin.token);
+  const employeeCookie = cookieOf((await auth.login({ employeeId: 'first-employee', password: 'first-run-employee-password' })).token);
   const policy = await memberPolicyRoute.GET(
     request('GET', `/api/team/members/${employee.userId}/policy`, adminCookie),
     { params: Promise.resolve({ id: employee.userId }) },

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { atomicJson } from './atomic-json';
+import type { ClientDiagnosticInput } from './client-diagnostics';
 import { extractZipSafely } from './safe-zip';
 import {
   rangeIncludes,
@@ -50,12 +51,16 @@ interface CoordinatorOptions {
   fetch: (url: string) => Promise<Response>;
   spaceProbe?: (requiredBytes: number) => void | Promise<void>;
   processControl: ProcessControl;
+  onDiagnostic?: (event: ClientDiagnosticInput) => void;
+  clientEventId?: string;
 }
 
 export interface UpdateResult {
   status: 'committed' | 'rejected' | 'rolled_back' | 'recovery_required';
   releaseId?: string;
   message?: string;
+  clientEventId?: string;
+  phase?: string;
 }
 
 function message(error: unknown): string {
@@ -72,11 +77,13 @@ export class ClientUpdateCoordinator {
   private readonly pointerPath: string;
   private readonly stateRoot: string;
   private paused = false;
+  private diagnosticPhase = 'check';
 
   constructor(private readonly options: CoordinatorOptions) {
     this.rootDir = path.resolve(options.rootDir);
     this.pointerPath = path.join(this.rootDir, 'current.json');
     this.stateRoot = path.join(this.rootDir, 'client-state');
+    this.options.clientEventId ??= randomUUID();
   }
 
   private pointer(): CurrentPointer {
@@ -99,9 +106,22 @@ export class ClientUpdateCoordinator {
     this.paused = false;
   }
 
+  private failure(error: unknown): string {
+    const code = error && typeof error === 'object' && typeof (error as NodeJS.ErrnoException).code === 'string'
+      && /^[a-z][a-z0-9_.-]{0,79}$/i.test((error as NodeJS.ErrnoException).code!)
+      ? (error as NodeJS.ErrnoException).code! : 'update_failed';
+    try {
+      this.options.onDiagnostic?.({
+        clientEventId: this.options.clientEventId ?? randomUUID(),
+        stage: 'client_update', phase: this.diagnosticPhase, code,
+      });
+    } catch { /* Updating must not be blocked by diagnostic storage. */ }
+    return code;
+  }
+
   private async rejected(releaseId: string | undefined, error: unknown, resume: boolean): Promise<UpdateResult> {
     if (resume) await this.resume();
-    return { status: 'rejected', releaseId, message: message(error) };
+    return { status: 'rejected', releaseId, message: message(error), clientEventId: this.options.clientEventId, phase: this.diagnosticPhase };
   }
 
   private async fetchManifest(url: string): Promise<SignedUpdateManifest> {
@@ -217,6 +237,10 @@ export class ClientUpdateCoordinator {
     }
   }
 
+  private diagnosticResult(result: UpdateResult): UpdateResult {
+    return result.status === 'committed' ? result : { ...result, clientEventId: this.options.clientEventId, phase: this.diagnosticPhase };
+  }
+
   async applyFromUrl(manifestUrl: string): Promise<UpdateResult> {
     let releaseId: string | undefined;
     let staging = '';
@@ -227,10 +251,12 @@ export class ClientUpdateCoordinator {
     let snapshot = '';
     let oldStopped = false;
     try {
+      this.diagnosticPhase = 'check';
       const manifest = await this.fetchManifest(manifestUrl);
       releaseId = manifest.releaseId;
       previous = this.pointer();
       if (previous.releaseId === releaseId) throw new Error('目标版本已是当前版本');
+      this.diagnosticPhase = 'download';
       const requiredBytes = manifest.size * 2 + 64 * 1024 ** 2;
       if (this.options.spaceProbe) await this.options.spaceProbe(requiredBytes);
       else {
@@ -240,6 +266,7 @@ export class ClientUpdateCoordinator {
       staging = path.join(this.rootDir, 'updates', 'staging', `${releaseId}-${randomUUID()}`);
       const archive = path.join(staging, 'package.zip.part');
       await this.download(manifest, archive);
+      this.diagnosticPhase = 'verification';
       const payload = path.join(staging, 'payload');
       extractZipSafely(archive, payload);
       const releaseMetadata = JSON.parse(fs.readFileSync(path.join(payload, 'release.json'), 'utf8')) as {
@@ -255,6 +282,7 @@ export class ClientUpdateCoordinator {
       fs.renameSync(payload, versionDirectory);
 
       await this.pause();
+      this.diagnosticPhase = 'installation';
       await this.options.processControl.stopCurrent();
       oldStopped = true;
       snapshot = this.snapshot(releaseId);
@@ -291,6 +319,8 @@ export class ClientUpdateCoordinator {
       }
 
       await newProcess.stop();
+      this.diagnosticPhase = 'recovery';
+      this.failure(new Error('client_health_failed'));
       atomicJson(this.pointerPath, previous);
       pointerChanged = false;
       if (!this.compatible(previous.manifest, health)) {
@@ -321,6 +351,7 @@ export class ClientUpdateCoordinator {
       this.cleanupSupersededVersions([previous.releaseId, releaseId]);
       return { status: 'rolled_back', releaseId };
     } catch (error) {
+      this.failure(error);
       if (newProcess) await newProcess.stop().catch(() => undefined);
       else if (oldStopped && releaseId) await this.options.processControl.stopVersion?.(releaseId).catch(() => undefined);
       if (rollbackStarted) {

@@ -92,7 +92,7 @@ test('打包后的维护入口从 current release 定位真实 runner', { skip: 
   fs.mkdirSync(serviceRoot, { recursive: true });
   fs.writeFileSync(path.join(serviceRoot, 'current-release.json'), JSON.stringify({ releaseId: 'new-release' }));
   const result = spawnSync('powershell.exe', [
-    '-NoProfile', '-Command',
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
     '. $env:TEAM_COMMON; $resolved = $env:TEAM_RESOLVED | ConvertFrom-Json; Get-TeamMaintenanceRunner -Resolved $resolved',
   ], {
     encoding: 'utf8', windowsHide: true, timeout: 30_000,

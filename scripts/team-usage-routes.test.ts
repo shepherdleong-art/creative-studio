@@ -62,16 +62,19 @@ const initialized = await initializeFirstAdministrator({ db, employeeId: '0000',
 const service = createTeamAuthService({ db, kdf, passwordParams });
 setTeamAuthServiceForTests(service);
 const adminLogin = await service.login({ employeeId: '0000', password: initialized.credential });
-const admin = await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-usage-routes-password');
+await service.changeOwnPassword(adminLogin.principal, initialized.credential, 'admin-usage-routes-password');
+const adminSession = await service.login({ employeeId: '0000', password: 'admin-usage-routes-password' });
+const admin = adminSession.principal;
 async function account(employeeId: string) {
   const created = await service.createUser(admin, { employeeId, displayName: employeeId, role: 'employee' });
   const login = await service.login({ employeeId, password: created.credential });
-  const principal = await service.changeOwnPassword(login.principal, created.credential, `${employeeId}-usage-routes-password`);
-  return { principal, cookie: sessionCookie(login.token).split(';', 1)[0] };
+  await service.changeOwnPassword(login.principal, created.credential, `${employeeId}-usage-routes-password`);
+  const authenticated = await service.login({ employeeId, password: `${employeeId}-usage-routes-password` });
+  return { principal: authenticated.principal, cookie: sessionCookie(authenticated.token).split(';', 1)[0] };
 }
 const alice = await account('0001');
 const bob = await account('0002');
-const adminCookie = sessionCookie(adminLogin.token).split(';', 1)[0];
+const adminCookie = sessionCookie(adminSession.token).split(';', 1)[0];
 
 const usageRoute = await import('../app/api/team/usage/route.ts');
 const exportRoute = await import('../app/api/team/usage/export/route.ts');
