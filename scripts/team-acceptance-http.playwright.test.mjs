@@ -199,10 +199,11 @@ async function login(employeeId, password) {
   return { employeeId, csrf, cookies: [csrfCookie, sessionCookie] };
 }
 async function changePassword(session, currentPassword, newPassword) {
-  await jsonRequest(session, '/api/team/auth/change-password', {
+  const changed = await jsonRequest(session, '/api/team/auth/change-password', {
     method: 'POST', json: { currentPassword, newPassword },
   }, 200);
-  // Password changes revoke every previous session by contract; establish a fresh one.
+  assert.equal(changed.body.requiresReauthentication, true);
+  // 改密撤销全部旧会话，包括当前设备；必须重新认证。
   return login(session.employeeId, newPassword);
 }
 function recordRequest(kind, started, status) {
@@ -686,8 +687,8 @@ try {
       TEAM_ACCEPTANCE_ADMIN_ID: 'accept-admin',
       TEAM_ACCEPTANCE_ADMIN_PASSWORD: adminPassword,
       TEAM_ACCEPTANCE_PROVIDER_ID: provider.id,
-      TEAM_ACCEPTANCE_TASK_FIXTURE: JSON.stringify(result.taskDisplayFixture),
       TEAM_ACCEPTANCE_VERSIONED_FIXTURE_DIR: await buildVersionedResourceFixtures(),
+      TEAM_ACCEPTANCE_TASK_FIXTURE: JSON.stringify(result.taskDisplayFixture),
       TEAM_ACCEPTANCE_BROWSER_EVIDENCE_DIR: path.join(evidenceDirectory, 'browser'),
       TEAM_ACCEPTANCE_BROWSER_RESULT_PATH: browserResultPath,
     },
