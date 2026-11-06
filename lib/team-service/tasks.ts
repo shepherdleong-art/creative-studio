@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { TeamUsageError } from './usage.ts';
 import type { TeamViewer } from './diagnostics.ts';
-import { TASK_MODULE_LABELS, TASK_STEP_LABELS, taskStepLabel, taskWaitLabel } from '../team-task-labels.ts';
+import { TASK_MODULE_LABELS, taskStepLabel, taskWaitLabel } from '../team-task-labels.ts';
 import { readActorPolicy } from '../media-core/execution/pools.ts';
 import { projectModelCall, summarizeModelCalls, type TeamModelCall } from './task-model.ts';
 
