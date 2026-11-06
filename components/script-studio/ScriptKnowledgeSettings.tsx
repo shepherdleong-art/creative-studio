@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import ViralTemplateSettings from './ViralTemplateSettings';
+import { useTeamAdmin } from '@/components/team/useTeamAdmin';
 
 /**
  * 设置页「脚本知识与模板」区块（方案 §6.4）：
@@ -94,15 +95,7 @@ export default function ScriptKnowledgeSettings() {
   const templateFileRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState<'strategy' | 'template' | null>(null);
   const [message, setMessage] = useState<{ text: string; success: boolean } | null>(null);
-  const [teamAdmin, setTeamAdmin] = useState(false);
-
-  useEffect(() => {
-    void fetch('/api/team/auth/session', { cache: 'no-store' }).then(async (response) => {
-      if (!response.ok) return;
-      const body = await response.json() as { principal?: { role?: string } };
-      setTeamAdmin(body.principal?.role === 'admin');
-    }).catch(() => {});
-  }, []);
+  const teamAdmin = useTeamAdmin();
 
   const load = useCallback(async () => {
     try {

@@ -250,7 +250,7 @@ try {
   const failedTaskId = runWithAccessContext(access, () => startCanvasRun({
     db, request: { canvasId, mode: 'single', targetNodeId: 'generate', requestKey: 'submit-failure' },
   })).tasks[0]!.id;
-  adapter.setScriptForNode('generate', { submit: 'fail', delayMs: 1 });
+  adapter.setScriptForNode('generate', { submit: 'succeed', poll: 'fail', download: 'succeed', delayMs: 1 });
   const submitScheduler = createCanvasScheduler({
     db, workerId: 'error-automation-submit', adapter, storageRoot: path.join(root, 'storage', 'canvas'),
     execution: { facade: runtime.facade, instance: identity }, pollIntervalMs: 0, sleep: async () => {},
@@ -262,10 +262,16 @@ try {
     await submitScheduler.stop();
   }
   const submitErrors = listTeamErrors(db, { userId: alice.principal.userId, role: 'employee' }).items
-    .filter((item) => item.taskId === failedTaskId && item.stage === 'remote_submit');
+    .filter((item) => item.taskId === failedTaskId && item.stage === 'remote_poll');
+  if (submitErrors.length !== 1) {
+    console.error('poll diagnostic candidates', listTeamErrors(db, { userId: alice.principal.userId, role: 'employee' }).items.map((item) => ({ taskId: item.taskId, stage: item.stage, code: item.code, origin: item.origin })));
+    console.error('failed task', failedTaskId);
+  }
   assert.equal(submitErrors.length, 1, '供应商明确拒绝提交也必须自动记录');
-  assert.equal(submitErrors[0]?.code, 'fixture_submit_rejected');
+  assert.equal(submitErrors[0]?.code, 'fixture_poll_failed');
   assert.equal(submitErrors[0]?.model, 'fixture-image-v3');
+  assert.equal(submitErrors[0]?.stage, 'remote_poll', '真实轮询失败必须关联 remote_poll 而非仅修改任务状态');
+  assert.equal(submitErrors[0]?.outcome, 'final');
 
   const beforeCancelCount = listTeamErrors(db, { userId: alice.principal.userId, role: 'employee' }).items.length;
   const cancelledTaskId = runWithAccessContext(access, () => startCanvasRun({

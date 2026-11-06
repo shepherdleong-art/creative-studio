@@ -47,6 +47,28 @@ export function taskStepLabel(step: string, module?: string): string {
   return TASK_STEP_LABELS[step] ?? '其他制作步骤';
 }
 
+export const CONCURRENCY_SOURCE_LABELS: Record<string, string> = {
+  legacy_fixed: '旧个人固定值（未迁移）',
+  team_default: '继承团队规则（自动或手动，以团队当前设置为准）',
+  personal_fixed: '个人固定覆盖',
+};
+
+export const WAITING_REASON_LABELS: Record<string, string> = {
+  monthly_budget: '余额不足',
+  personal_concurrency: '个人生效上限已满，等待名额',
+  actor_paused: '暂停生成',
+  actor_disabled: '账号停用',
+  pricing_required: '定价缺失',
+  cost_unknown: '费用待核查',
+  pool_capacity: '共享并发等待',
+  fair_share: '等待公平共享名额，释放后按顺序继续',
+  pool_missing: '资源池未配置',
+  pool_disabled: '资源池已停用',
+  maintenance: '维护等待',
+  model_forbidden: '模型未授权',
+  scope_forbidden: '项目访问权限不足',
+};
+
 export function taskWaitLabel(reason: string | null, concurrency?: number | null): string {
   if (!reason) return '';
   if (reason === 'personal_concurrency') return concurrency === 0

@@ -295,8 +295,9 @@ async function recordFailedAttempt(
     await options.recordError?.({
       attemptId: input.attemptId,
       outcome: 'failed',
-      errorCode: input.errorCode,
+      errorCode: input.errorCode ?? 'execution_failed',
       stage: input.errorStage ?? stage,
+      // attempt 的原始错误不附带请求正文；诊断只使用安全代码与已验证关联。
     });
   } catch {
     // 诊断与 usage 一样不得改变已提交的执行结果。

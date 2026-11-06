@@ -34,7 +34,6 @@ export async function publishBuiltinResources(db: Database.Database, principal: 
   }
   await runWithAccessContext(createTeamAccessContext({ db, principal }), () => ensureBundledViralPresets(db));
   if (tableExists(db, 'script_studio_team_publications')) {
-    const { publishVersionedTeamResource } = await import('./versioned-publication.ts');
     const catalogs = db.prepare(`SELECT c.id, c.kind, c.currentRevisionId FROM script_studio_catalogs c
       WHERE c.ownerKey = ? AND c.currentRevisionId IS NOT NULL`).all(principal.userId) as Array<{ id: string; kind: 'strategy' | 'template'; currentRevisionId: string }>;
     for (const catalog of catalogs) {

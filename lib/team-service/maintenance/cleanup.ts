@@ -185,12 +185,20 @@ export function createCleanupPreview(input: Context & { now?: () => Date }): Cle
   const at = (input.now?.() ?? new Date()).toISOString();
   const protectedItems: Record<CleanupCategory, CleanupProtectedItem[]> = { failed_task_temporary: [], expired_cache: [], recycle_bin: [] };
   const candidates: CandidateRow[] = [];
-  const countedPaths = new Set<string>();
+  const countedFingerprints = new Set<string>();
   const add = (candidate: CandidateRow): void => {
     const paths = [...new Set(candidate.relativePaths)].map(assertSafeRelativePath).sort();
-    const bytes = paths.reduce((total, relativePath) => countedPaths.has(relativePath) ? total : total + (statBytes(input.storageRoot, relativePath) ?? 0), 0);
-    paths.forEach((relativePath) => countedPaths.add(relativePath));
-    const fingerprintsJson = JSON.stringify(paths.map((file) => fingerprint(input.storageRoot, file)));
+    const fingerprints = paths.map((file) => fingerprint(input.storageRoot, file));
+    const bytes = paths.reduce((total, relativePath, index) => {
+      const fp = fingerprints[index];
+      // 只有可证明同一物理文件（受管相对路径或相同内容指纹）才合并估算；
+      // 指纹缺失的不同文件不能因路径碰巧相同而被忽略。
+      const identity = fp ?? `path:${relativePath}`;
+      if (countedFingerprints.has(identity)) return total;
+      countedFingerprints.add(identity);
+      return total + (statBytes(input.storageRoot, relativePath) ?? 0);
+    }, 0);
+    const fingerprintsJson = JSON.stringify(fingerprints);
     candidates.push({ ...candidate, relativePaths: paths, estimatedBytes: bytes, fingerprintsJson });
   };
   if (tableExists(input.db, 'team_uploads')) {

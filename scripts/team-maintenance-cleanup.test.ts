@@ -117,7 +117,7 @@ try {
     VALUES (?, 'history', 'history-1', 'output', 'entity', '2026-01-01')`).run(history.id);
   softDeleteResource(db, admin, { resourceType: 'image', resourceId: 'historical-artifact' });
 
-  const { createCleanupPreview } = await import('../lib/team-service/maintenance/cleanup.ts');
+  const { createCleanupPreview, executeCleanupPreview } = await import('../lib/team-service/maintenance/cleanup.ts');
   const first = createCleanupPreview({
     db, storageRoot, backupRoot, protectedDataRoots: [dataRoot, oldRoot],
     now: () => new Date('2026-11-06T00:00:00.000Z'),
@@ -148,11 +148,18 @@ try {
   softDeleteResource(db, admin, { resourceType: 'image', resourceId: 'cross-shared-second' });
   const sharedProtection = createCleanupPreview({ db, storageRoot, backupRoot, protectedDataRoots: [dataRoot, oldRoot] });
   assert.ok(sharedProtection.categories.find((item) => item.kind === 'recycle_bin')?.cleanableCount === 2, '跨已删除根共享文件合并为一个组');
-  assert.equal(sharedProtection.totals.estimatedBytes, 34, '跨根共享物理文件不可重复计数');
+  assert.equal(sharedProtection.totals.estimatedBytes, 28, '跨根同一物理文件只计一次，不因根不同而重复计数');
+  db.prepare("INSERT INTO image_assets VALUES ('distinct-artifact', 'project-a')").run();
+  const distinctFile = readyFile('distinct-artifact', 'project-a', 'distinct');
+  softDeleteResource(db, admin, { resourceType: 'image', resourceId: 'distinct-artifact' });
+  const distinctProtection = createCleanupPreview({ db, storageRoot, backupRoot, protectedDataRoots: [dataRoot, oldRoot] });
+  assert.equal(distinctProtection.totals.estimatedBytes, 28 + 'distinct'.length, '不同内容的文件不能被相同路径或同名引用误去重');
+  assert.ok(distinctFile.id);
+  assert.throws(() => executeCleanupPreview({ db, previewId: sharedProtection.id, storageRoot, backupRoot, protectedDataRoots: [dataRoot, oldRoot] }), /尚未确认/, '未确认预览不能执行清理');
   console.log('cleanup slice 1 preview categories, protection and shared file accounting passed');
 
   // Slice 2：执行前重新核验，部分失败不会中断其他候选，重试只报告实际释放。
-  const { executeCleanupPreview, CleanupPreviewStore } = await import('../lib/team-service/maintenance/cleanup.ts');
+  const { CleanupPreviewStore } = await import('../lib/team-service/maintenance/cleanup.ts');
   previewStore = new CleanupPreviewStore(backupRoot);
   previewStore.bind(first.id, 'admin');
   const sharedPath = path.join(storageRoot, ...shared.relativePath.split('/'));
@@ -205,15 +212,19 @@ try {
   upload('replacement-upload', 'failed');
   temporaryFile('team-staging/replacement-upload/parts/1.part', '1234');
   const replacementPreview = createCleanupPreview({ db, storageRoot, backupRoot, protectedDataRoots: [dataRoot, oldRoot] });
+  assert.ok(replacementPreview.totals.cleanableCount > 0, '替换场景需先存在受管失败临时文件候选');
   replacementStore = new CleanupPreviewStore(backupRoot);
   replacementStore.bind(replacementPreview.id, 'admin');
   const replacementCandidate = replacementStore.candidates(replacementPreview.id).find((candidate) => candidate.sourceType === 'failed_upload')!;
   const replacementPath = path.join(storageRoot, ...replacementCandidate.relativePaths[0].split('/'));
   fs.mkdirSync(path.dirname(replacementPath), { recursive: true });
   fs.writeFileSync(replacementPath, 'replaced-not-the-same-file');
-  const rejectedReplacement = executeCleanupPreview({ db, previewId: replacementPreview.id, storageRoot, backupRoot, protectedDataRoots: [dataRoot, oldRoot], store: replacementStore });
-  assert.equal(rejectedReplacement.deletedCount, 0);
-  assert.equal(rejectedReplacement.failures[0]?.reasonCode, 'path_changed');
+  const rejectedReplacement = executeCleanupPreview({ db, previewId: replacementPreview.id, storageRoot, backupRoot, protectedDataRoots: [dataRoot, oldRoot] });
+  if (!rejectedReplacement.failures.some((item) => item.id === replacementCandidate.candidateId && item.reasonCode === 'path_changed')) {
+    console.error('replacement diagnostics', JSON.stringify({ rejectedReplacement, replacementCandidate, replacementPreview }));
+  }
+  assert.equal(rejectedReplacement.failures.some((item) => item.id === replacementCandidate.candidateId && item.reasonCode === 'path_changed'), true, '同名替换文件必须被识别为路径变化');
+  assert.equal(rejectedReplacement.deletedFileCount, 1, '其他独立候选可以删除，替换文件本身不能计入删除文件数');
   assert.equal(fs.existsSync(replacementPath), true, '同名替换文件不得被旧预览删除');
   const foreignRoot = path.join(fixture, 'foreign-storage');
   fs.mkdirSync(foreignRoot, { recursive: true });

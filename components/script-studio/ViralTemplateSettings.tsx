@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { useTeamAdmin } from '@/components/team/useTeamAdmin';
 
 /**
  * 设置页「爆文模板库」卡片（迁移方案 §3.1.1）：
@@ -53,15 +54,7 @@ export default function ViralTemplateSettings() {
   const [preview, setPreview] = useState<{ file: File; report: PreviewReport } | null>(null);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const [teamAdmin, setTeamAdmin] = useState(false);
-
-  useEffect(() => {
-    void fetch('/api/team/auth/session', { cache: 'no-store' }).then(async (response) => {
-      if (!response.ok) return;
-      const body = await response.json() as { principal?: { role?: string } };
-      setTeamAdmin(body.principal?.role === 'admin');
-    }).catch(() => {});
-  }, []);
+  const teamAdmin = useTeamAdmin();
 
   const load = useCallback(async () => {
     try {

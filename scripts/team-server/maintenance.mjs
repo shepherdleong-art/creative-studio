@@ -230,7 +230,8 @@ function captureExecution(config, db, operationId) {
 }
 async function drain(db) {
   for (let attempt = 0; attempt < 480; attempt += 1) {
-    const pendingTasks = db.prepare("SELECT COUNT(*) AS count FROM execution_attempts WHERE submissionState IN ('not_sent', 'maybe_sent', 'accepted')").pluck().get();
+    // 只等待尚未提交或提交结果不明的请求；accepted 的已受理任务继续执行并保留占额，不阻塞升级。
+    const pendingTasks = db.prepare("SELECT COUNT(*) AS count FROM execution_attempts WHERE submissionState IN ('not_sent', 'maybe_sent')").pluck().get();
     if (pendingTasks === 0) {
       const unknownAttemptIds = db.prepare("SELECT currentAttemptId AS id FROM execution_operations WHERE status = 'unknown' AND currentAttemptId IS NOT NULL")
         .all().map((row) => row.id);

@@ -199,10 +199,11 @@ export class MaintenanceJobStore {
           const job = mapJob(previous);
           if (job.requestedBy.userId !== options.principal.userId) throw new MaintenanceControlError('maintenance_conflict', '只能由原管理员续跑失败升级。');
           if (this.withIntegrity(job).integrity !== 'ok') throw new MaintenanceControlError('maintenance_review_required', '升级审计不完整，拒绝续跑。');
+          if (!job.result || typeof job.result !== 'object') throw new MaintenanceControlError('maintenance_review_required', '失败升级缺少实际版本与恢复证据，需人工核查后继续。');
           this.db.prepare(`UPDATE maintenance_jobs SET status = 'queued', stage = 'queued', errorJson = NULL,
-            finishedAt = NULL, leaseOwner = NULL, leaseExpiresAt = NULL, resultJson = NULL, updatedAt = ?,
+            finishedAt = NULL, leaseOwner = NULL, leaseExpiresAt = NULL, updatedAt = ?,
             idempotencyKey = ? WHERE id = ?`).run(at, options.idempotencyKey, job.id);
-          this.appendAudit(job, 'retry_requested', at);
+          this.appendAudit(job, 'retry_requested', at, { previousResult: job.result });
           return { job: this.read(job.id)!, created: true };
         }
       }

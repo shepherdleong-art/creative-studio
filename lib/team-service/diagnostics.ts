@@ -259,7 +259,8 @@ function getError(db: Database.Database, errorId: string): TeamErrorView | null 
 function associationForAttempt(db: Database.Database, attemptId: string): (ExecutionAssociation & { attemptId: string }) | null {
   const row = db.prepare(`
     SELECT o.id AS operationId, o.actorId, o.module, o.taskId, o.scopeType, o.scopeId,
-      o.configVersion, o.clientVersion, o.serverReleaseId, o.currentAttemptId, a.id AS attemptId
+      o.configVersion, o.clientVersion, o.serverReleaseId, o.currentAttemptId,
+      a.providerSnapshotJson, a.id AS attemptId
     FROM execution_attempts a JOIN execution_operations o ON o.id = a.operationId
     WHERE a.id = ?
   `).get(attemptId) as (ExecutionAssociation & { attemptId: string }) | undefined;

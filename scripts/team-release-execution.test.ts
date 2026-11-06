@@ -122,17 +122,32 @@ try {
 
     const failed = store.submit({ action: 'release.execute', target: { kind: 'release', candidateId: 'e'.repeat(64) },
       principal: { userId: 'real-admin', employeeId: '00042', displayName: '真实管理员', role: 'admin' }, idempotencyKey: 'failure-original-001' });
-    const failedClaim = store.claimNext({ workerId: 'failure-worker' })!;
-    store.fail({ jobId: failedClaim.job.id, workerId: 'failure-worker', code: 'release_failed', message: 'injected' });
+    const failedJobId = failed.job.id;
+    const failureWorkerId = 'failure-worker';
+    const failedClaim = store.claimNext({ workerId: failureWorkerId, jobId: failedJobId })!;
+    console.log('failed claim before fail', failedClaim.job.id, failedClaim.job.leaseOwner);
+    const previousResult = store.get(failedJobId).job.result;
+    if (!previousResult) {
+      // 生成真实的失败证据（不覆盖业务状态），用于验证续跑保留而非清空恢复信息。
+      const evidenceStore = store as unknown as { db: Database.Database };
+      evidenceStore.db.prepare('UPDATE maintenance_jobs SET resultJson = ? WHERE id = ?').run(JSON.stringify({ currentStage: 'self_check', actualRelease: { releaseId: 'new-release', packageSha256: 'c'.repeat(64) } }), failedJobId);
+    }
+    store.fail({ jobId: failedJobId, workerId: failureWorkerId, code: 'release_failed', message: 'injected' });
+    const failureResult = store.get(failedJobId).job.result as Record<string, unknown>;
+    assert.equal(failureResult.currentStage, 'self_check');
+    assert.equal((failureResult.actualRelease as { releaseId: string }).releaseId, 'new-release');
     const retried = store.submit({ action: 'release.execute', target: { kind: 'release', candidateId: 'e'.repeat(64) },
       principal: { userId: 'real-admin', employeeId: '00042', displayName: '真实管理员', role: 'admin' },
       idempotencyKey: 'failure-retry-0001', retryRelease: true });
-    assert.equal(retried.job.id, failed.job.id);
+    assert.equal(retried.job.id, failedJobId);
     assert.equal(retried.job.status, 'queued');
-    assert.equal(store.audit(failed.job.id).some((event) => event.event === 'retry_requested'), true);
+    assert.equal(retried.job.result?.currentStage, failureResult.currentStage, '续跑不得丢失失败阶段与实际版本恢复证据');
+    assert.deepEqual(retried.job.result?.actualRelease, failureResult.actualRelease);
+    assert.equal(store.audit(failedJobId).find((event) => event.event === 'retry_requested')?.details?.previousResult !== undefined, true, '续跑审计保留前次结果证据');
+    assert.equal(store.audit(failedJobId).some((event) => event.event === 'retry_requested'), true);
     assert.equal(store.submit({ action: 'release.execute', target: { kind: 'release', candidateId: 'e'.repeat(64) },
       principal: { userId: 'real-admin', employeeId: '00042', displayName: '真实管理员', role: 'admin' },
-      idempotencyKey: 'failure-retry-0001', retryRelease: true }).job.id, failed.job.id);
+      idempotencyKey: 'failure-retry-0001', retryRelease: true }).job.id, failedJobId);
     console.log('failed release retry preserves job identity and history');
   } finally { store.close(); }
 } finally { db.close(); fs.rmSync(root, { recursive: true, force: true }); }

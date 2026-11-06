@@ -92,6 +92,8 @@ try {
   assert.deepEqual(configured.pools.map((pool) => pool.poolKey).sort(), ['llm:remote', 'media:shared']);
   assert.equal(configured.bindings.length, 1);
   assert.equal(configured.requirements.find((item) => item.key === 'image:img-1')!.poolKey, 'media:shared');
+  const sharedOccupancy = configured.occupancy.find((pool) => pool.poolKey === 'media:shared');
+  assert.deepEqual(sharedOccupancy, { poolKey: 'media:shared', capacity: 1, held: 0, accepted: 0, maybeSent: 0, notSent: 0, activeMembers: [] });
 
   // 同一真实上游的第二个 Key 只有在管理员显式绑定时才共享容量。
   db.prepare(`INSERT INTO providers (id, name, baseUrl, apiKey, model, type, enabled)
@@ -108,6 +110,7 @@ try {
   assert.equal((sharedMapping.mappingSnapshot as { protocol: string }).protocol, 'media-upstream-pool/1');
   assert.equal((sharedMapping.mappingSnapshot as { credentialFingerprints: string[] }).credentialFingerprints.length, 2);
   assert.equal(readPoolAdminState(db, admin).requirements.find((item) => item.key === 'image:img-2')!.poolKey, 'media:shared');
+  assert.equal(readPoolAdminState(db, admin).occupancy.every((pool) => !JSON.stringify(pool).includes('secret')), true, '占用投影不得泄露供应商凭据或映射快照');
 
   // 不同上游地址不能合并计容。
   db.prepare(`INSERT INTO providers (id, name, baseUrl, apiKey, model, type, enabled)

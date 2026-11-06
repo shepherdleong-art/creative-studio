@@ -60,6 +60,15 @@ export interface PoolAdminState {
   requirements: PoolRequirement[];
   ready: boolean;
   blockers: string[];
+  occupancy: Array<{
+    poolKey: string;
+    capacity: number;
+    held: number;
+    accepted: number;
+    maybeSent: number;
+    notSent: number;
+    activeMembers: Array<{ actorId: string; held: number; pending: number; running: number }>;
+  }>;
 }
 
 export type PoolChange =
@@ -431,6 +440,43 @@ export function listPoolRequirements(db: Database.Database): PoolRequirement[] {
   return requirements;
 }
 
+function readPoolOccupancy(db: Database.Database): PoolAdminState['occupancy'] {
+  return db.prepare(`
+    SELECT p.poolKey, p.capacity,
+      (SELECT COUNT(*) FROM execution_reservations r
+        WHERE r.kind = 'concurrency' AND r.poolKey = p.poolKey AND r.state = 'held') AS held,
+      (SELECT COUNT(*) FROM execution_attempts a
+        WHERE a.submissionState IN ('not_sent', 'maybe_sent', 'accepted') AND EXISTS (
+          SELECT 1 FROM execution_reservations r
+          WHERE r.attemptId = a.id AND r.kind = 'concurrency' AND r.poolKey = p.poolKey AND r.state = 'held')) AS accepted,
+      (SELECT COUNT(*) FROM execution_attempts a
+        WHERE a.submissionState = 'maybe_sent' AND EXISTS (
+          SELECT 1 FROM execution_reservations r
+          WHERE r.attemptId = a.id AND r.kind = 'concurrency' AND r.poolKey = p.poolKey AND r.state = 'held')) AS maybeSent,
+      (SELECT COUNT(*) FROM execution_attempts a
+        WHERE a.submissionState = 'not_sent' AND EXISTS (
+          SELECT 1 FROM execution_reservations r
+          WHERE r.attemptId = a.id AND r.kind = 'concurrency' AND r.poolKey = p.poolKey AND r.state = 'held')) AS notSent
+    FROM execution_pools p ORDER BY p.poolKey
+  `).all().map((row) => {
+    const pool = row as { poolKey: string; capacity: number; held: number; accepted: number; maybeSent: number; notSent: number };
+    const activeMembers = db.prepare(`
+      SELECT r.actorId,
+        SUM(CASE WHEN r.state = 'held' THEN 1 ELSE 0 END) AS held,
+        SUM(CASE WHEN o.status IN ('pending', 'deferred') THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN a.submissionState IN ('not_sent', 'maybe_sent', 'accepted') THEN 1 ELSE 0 END) AS running
+      FROM execution_reservations r
+      JOIN execution_operations o ON o.id = r.operationId
+      LEFT JOIN execution_attempts a ON a.id = r.attemptId
+      WHERE r.kind = 'concurrency' AND r.poolKey = ?
+      GROUP BY r.actorId
+      HAVING held > 0 OR pending > 0 OR running > 0
+      ORDER BY r.actorId
+    `).all(pool.poolKey) as PoolAdminState['occupancy'][number]['activeMembers'];
+    return { ...pool, activeMembers };
+  });
+}
+
 export function readPoolAdminState(db: Database.Database, viewer: TeamViewer): PoolAdminState {
   assertAdmin(viewer);
   const requirements = listPoolRequirements(db);
@@ -443,6 +489,7 @@ export function readPoolAdminState(db: Database.Database, viewer: TeamViewer): P
     requirements,
     ready: blockers.length === 0,
     blockers,
+    occupancy: readPoolOccupancy(db),
   };
 }
 

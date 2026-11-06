@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, type PointerEvent } from 'react';
 import Link from 'next/link';
 import { addUsageDays, usagePresetRange, type UsageDatePreset } from '@/lib/usage-date-range';
-import { TASK_MODULE_LABELS, TASK_STATUS_LABELS } from '@/lib/team-task-labels';
+import { CONCURRENCY_SOURCE_LABELS, TASK_MODULE_LABELS, TASK_STATUS_LABELS, WAITING_REASON_LABELS } from '@/lib/team-task-labels';
 import type { TeamMemberSummary, TeamModelUsage, TeamUsageAttempt, TeamUsageMember, TeamUsageTrendPoint } from '@/lib/team-service/usage';
 
 type Period = UsageDatePreset | 'custom';
@@ -32,23 +32,11 @@ const PERIODS: Array<{ key: Period; label: string }> = [
   { key: 'week', label: '本周' }, { key: 'month', label: '本月' }, { key: 'custom', label: '自选日期' },
 ];
 const MODEL_COLORS = ['var(--color-accent)', 'var(--color-check)', 'var(--color-ok)', 'var(--color-warn)', 'var(--color-fail)', 'var(--color-ink-secondary)'];
-const WAITING_LABELS: Record<string, string> = {
-  monthly_budget: '余额不足', personal_concurrency: '并发等待', actor_paused: '已暂停新的付费生成',
-  actor_disabled: '账号停用', pricing_required: '定价缺失，请联系管理员', cost_unknown: '费用不确定，等待核查',
-  pool_capacity: '共享并发等待', fair_share: '等待公平共享名额，释放后按顺序继续', model_forbidden: '模型未授权，请联系管理员',
-  maintenance: '团队维护等待', pool_missing: '资源池未配置', pool_disabled: '资源池已停用',
-  scope_forbidden: '项目访问权限不足',
-};
+const WAITING_LABELS = WAITING_REASON_LABELS;
 
 function money(minor: number | null): string {
   return minor === null ? '不限额' : `¥${(minor / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
-
-const CONCURRENCY_SOURCE_LABELS = {
-  legacy_fixed: '旧个人固定值（未迁移）',
-  team_default: '继承团队规则（自动或手动）',
-  personal_fixed: '个人固定覆盖',
-} as const;
 
 function amount(item: TeamUsageAttempt): string {
   if (item.costStatus === 'released') return '已释放';

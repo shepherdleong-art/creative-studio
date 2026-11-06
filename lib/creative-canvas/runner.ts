@@ -709,12 +709,14 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       outcome = await adapter.poll({ ...context, providerTaskId }, signal);
     } catch (error) {
       // 查询失败不改写远端身份，继续按下一次轮询重试
+      const pollErrorCode = error instanceof CanvasAdapterError ? error.code : 'poll_failed';
+      captureFailure('remote_poll', pollErrorCode);
       updateCanvasTaskGuarded(db, {
         taskId,
         patch: {
           lastPolledAt: now().toISOString(),
           pollCount: previousPollCount + attempts,
-          errorCode: error instanceof CanvasAdapterError ? error.code : 'poll_failed',
+          errorCode: pollErrorCode,
           errorMessage: error instanceof Error ? error.message : String(error),
         },
         guard,
@@ -740,6 +742,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       break;
     }
     if (outcome.status === 'failed') {
+      captureFailure('remote_poll', outcome.code ?? 'provider_failed');
       if (options.execution && executionAttempt) {
         executionAttempt = await options.execution.facade.reconcile({
           attemptId: executionAttempt.id,

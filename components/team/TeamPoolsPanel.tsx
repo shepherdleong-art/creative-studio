@@ -26,6 +26,10 @@ type PoolState = {
   requirements: Requirement[];
   ready: boolean;
   blockers: string[];
+  occupancy: Array<{
+    poolKey: string; capacity: number; held: number; accepted: number; maybeSent: number; notSent: number;
+    activeMembers: Array<{ actorId: string; held: number; pending: number; running: number }>;
+  }>;
 };
 
 const STATUS_LABELS: Record<RequirementStatus, string> = {
@@ -197,6 +201,16 @@ export default function TeamPoolsPanel() {
           </table>
         </div>
         {state && state.requirements.length === 0 && <p className="px-5 py-10 text-center text-sm text-ink-tertiary">尚未配置任何供应商；先到“供应商”页配置后回来分配资源池。</p>}
+      </section>
+
+      <section className="card space-y-3 p-5" aria-label="共享池实际占用">
+        <h2 className="text-lg font-semibold text-ink">共享池实际占用</h2>
+        <p className="text-xs leading-5 text-ink-tertiary">占用按实际持有名额统计，不按登录人数推算；待发送和受理不明继续占额，已受理生成继续执行。</p>
+        {state?.occupancy.length ? <div className="grid gap-3 md:grid-cols-2">{state.occupancy.map((pool) => <article key={pool.poolKey} className="rounded-lg border border-hairline p-3">
+          <div className="flex items-center justify-between gap-2"><strong className="break-all font-mono text-xs text-ink">{pool.poolKey}</strong><span className={pool.held >= pool.capacity && pool.capacity > 0 ? 'text-warn' : 'text-ok'}>{pool.held} / {pool.capacity} 个名额</span></div>
+          <p className="mt-2 text-xs text-ink-secondary">已受理 {pool.accepted} · 受理不明 {pool.maybeSent} · 待发送 {pool.notSent}</p>
+          {pool.activeMembers.length > 0 && <p className="mt-1 text-xs text-ink-tertiary">需求成员：{pool.activeMembers.map((member) => `${member.actorId}（占用 ${member.held}，排队 ${member.pending}，运行 ${member.running}）`).join('；')}</p>}
+        </article>)}</div> : <p className="text-sm text-ink-tertiary">尚未配置资源池，暂无实际占用。</p>}
       </section>
 
       <section className="card space-y-3 p-5">

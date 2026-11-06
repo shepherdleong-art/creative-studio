@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { teamError, teamWrite } from './client';
 import TeamCredentialDialog from './TeamCredentialDialog';
 import type { TeamModelOption } from '@/lib/team-service/model-permissions';
+import { CONCURRENCY_SOURCE_LABELS, WAITING_REASON_LABELS } from '@/lib/team-task-labels';
 
 type Member = {
   userId: string;
@@ -32,25 +33,7 @@ type Member = {
 
 type TeamConcurrencyPolicy = { mode: 'auto' | 'manual'; manualDefaultConcurrency: number; version: number };
 
-const CONCURRENCY_SOURCE_LABELS = {
-  legacy_fixed: '旧个人固定值（未迁移）',
-  team_default: '继承团队规则（自动或手动，以团队当前设置为准）',
-  personal_fixed: '个人固定覆盖',
-} as const;
-
-const WAITING_LABELS: Record<string, string> = {
-  monthly_budget: '余额不足',
-  personal_concurrency: '个人生效上限已满，等待名额',
-  actor_paused: '暂停生成',
-  actor_disabled: '账号停用',
-  pricing_required: '定价缺失',
-  cost_unknown: '费用待核查',
-  pool_capacity: '共享并发等待',
-  fair_share: '等待公平共享名额，释放后按顺序继续',
-  pool_missing: '资源池未配置',
-  maintenance: '维护等待',
-  model_forbidden: '模型未授权',
-};
+const WAITING_LABELS = WAITING_REASON_LABELS;
 
 function money(minor: number | null): string {
   return minor === null ? '不限额' : `¥${(minor / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
