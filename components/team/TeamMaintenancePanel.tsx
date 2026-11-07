@@ -105,10 +105,6 @@ export default function TeamMaintenancePanel() {
   const active = jobs.some((job) => activeStatuses.has(job.status));
   const latestDaily = backups.find(backup => backup.type === 'daily' && backup.verification === 'verified');
   return <>
-    <section className="card p-5" aria-labelledby="maintenance-backup-heading">
-      <h2 id="maintenance-backup-heading" className="text-[15px] font-semibold text-ink">备份与维护</h2>
-      <p className="mt-1 text-[12px] leading-5 text-ink-tertiary">备份、还原与无用文件清理都在这一块；版本切换由下方的发布包流程负责。</p>
-    </section>
     <section className="card p-5" aria-label="立即备份">
       <div className="flex flex-wrap items-start justify-between gap-5">
         <div><h2 className="text-[15px] font-semibold text-ink">立即备份</h2>

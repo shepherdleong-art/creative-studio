@@ -22,9 +22,9 @@ export function useTeamRole(): WorkspaceRole | null {
     void fetch('/api/team/auth/session', { cache: 'no-store', credentials: 'same-origin' })
       .then(async (response) => {
         if (!response.ok) return;
-        const body = await response.json() as { authenticated?: boolean; principal?: { role?: string } };
+        const body = await response.json() as { authenticated?: boolean; user?: { role?: string } };
         if (!active || !body.authenticated) return;
-        if (body.principal?.role === 'admin' || body.principal?.role === 'employee') setRole(body.principal.role);
+        if (body.user?.role === 'admin' || body.user?.role === 'employee') setRole(body.user.role);
       })
       .catch(() => {});
     return () => { active = false; };
