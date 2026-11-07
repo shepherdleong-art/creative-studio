@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { normalizeProductionDefaults, type ProductionDefaults } from './production-defaults.ts';
 
 export type RuntimeEnvironment = Record<string, string | undefined>;
 
@@ -12,6 +13,17 @@ export type RuntimeConfig =
       port: number;
       deploymentId: string;
       trustedOrigin: string;
+      /**
+       * 服务器统一管理的生产参数默认值（06 号票）。
+       *
+       * 首版没有修改界面：这里给的是「起步默认值 = 改动前客户端的默认值」。
+       * 想要换值时改 `production-defaults.ts` 的 `BUILTIN_PRODUCTION_DEFAULTS`；
+       * server 模式下新建项目、提交图片/视频任务一律取这份，忽略请求里的同名字段。
+       *
+       * 可选是为了让守护测试可以只构造必要字段；真实入口（`readRuntimeConfig`）
+       * 总会填上，缺省时裁决函数回退到同一套起步默认值。
+       */
+      productionDefaults?: ProductionDefaults;
     };
 
 export type ServerRuntimeConfig = Extract<RuntimeConfig, { mode: 'server' }>;
@@ -26,6 +38,37 @@ function required(env: RuntimeEnvironment, key: string): string {
   const value = env[key]?.trim();
   if (!value) throw new Error(`server 模式必须显式配置 ${key}`);
   return value;
+}
+
+/**
+ * 服务器默认生产参数的运维覆盖（06 号票）。
+ *
+ * 「首版不做修改界面」不等于写死：部署方要调默认超时/并发/预处理时改这几个环境变量，
+ * 与 `CREATIVE_STUDIO_*` 其他运行配置同一层。缺省 = 改动前客户端默认值。
+ * 解析失败按启动配置错误处理（早失败），不会把 0 并发带进队列。
+ */
+function productionDefaultsFromEnv(env: RuntimeEnvironment): ProductionDefaults {
+  const optionalNumber = (key: string): number | undefined => {
+    const text = env[key]?.trim();
+    if (!text) return undefined;
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed)) throw new Error(`${key} 必须是数字`);
+    return parsed;
+  };
+  const enabledText = env.CREATIVE_STUDIO_PRODUCTION_IMAGE_PREPROCESS_ENABLED?.trim().toLowerCase();
+  if (enabledText && !['true', 'false', '1', '0'].includes(enabledText)) {
+    throw new Error('CREATIVE_STUDIO_PRODUCTION_IMAGE_PREPROCESS_ENABLED 只支持 true/false');
+  }
+  return normalizeProductionDefaults({
+    timeoutMs: optionalNumber('CREATIVE_STUDIO_PRODUCTION_TIMEOUT_MS'),
+    projectConcurrency: optionalNumber('CREATIVE_STUDIO_PRODUCTION_PROJECT_CONCURRENCY'),
+    videoConcurrency: optionalNumber('CREATIVE_STUDIO_PRODUCTION_VIDEO_CONCURRENCY'),
+    imagePreprocess: {
+      enabled: enabledText ? enabledText === 'true' || enabledText === '1' : undefined,
+      targetMaxSide: optionalNumber('CREATIVE_STUDIO_PRODUCTION_IMAGE_MAX_SIDE'),
+      jpegQuality: optionalNumber('CREATIVE_STUDIO_PRODUCTION_IMAGE_JPEG_QUALITY'),
+    },
+  });
 }
 
 export function readRuntimeConfig(env: RuntimeEnvironment = process.env): RuntimeConfig {
@@ -61,6 +104,7 @@ export function readRuntimeConfig(env: RuntimeEnvironment = process.env): Runtim
     port,
     deploymentId,
     trustedOrigin,
+    productionDefaults: productionDefaultsFromEnv(env),
   };
 }
 
