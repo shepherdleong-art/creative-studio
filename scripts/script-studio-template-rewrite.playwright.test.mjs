@@ -46,9 +46,13 @@ try {
   let submitted;
   let savedSelection;
   let state = { status: 'succeeded', succeededCount: 2, failedCount: 0 };
+  // 08 号票：参考文案要够长（>100 字）才能验「默认摊开但截断 4 行 + 展开全文」。
   const tplEntry = (id, name, category) => ({
     id, scriptCode: `J${id.slice(1)}`, revisionId: 'vtpl-rev-1', sourceTemplateId: `src-${id}`, category, subCategory: '伸缩餐桌',
-    name, title: `${name}标题`, refText: `标题：${name}\n正文：这是${name}的参考文案，姐妹们真的要看看，小户型也能用上，真心推荐。`,
+    name, title: `${name}标题`,
+    refText: `标题：${name}\n正文：这是${name}的参考文案，姐妹们真的要看看，小户型也能用上，真心推荐。`
+      + '平时四个人吃饭刚好，来客人拉开就是六人位，桌面是岩板的，热锅直接放也不怕烫，'
+      + '桌腿是实木的，擦起来也方便，用了大半年还是跟新的一样，家里人也都说买得值。',
     structureRaw: '', structureSummary: '', structure: '钩子>痛点>卖点>逼单', structureOrigin: 'fallback',
     rawColumnsJson: '{}', sourceSheet: '全部模板', sourceRow: 2, sourceFileSha256: 'f', contentHash: `h-${id}`,
     status: 'usable', statusReason: '', statusUpdatedBy: 'import', createdAt: startedAt,
@@ -159,6 +163,10 @@ try {
         body = { revision: library };
       } else body = { current: library };
     }
+    // 面板读的是团队模型接口（`/api/team/models?kind=script`）；旧路径一并留作兼容。
+    else if (pathname === '/api/team/models' && url.searchParams.get('kind') === 'script') {
+      body = [{ id: 'fixture-provider', name: '测试模型', model: 'fixture', configured: true, supportsVision: true, executionScope: 'external' }];
+    }
     else if (pathname === '/api/providers/script') body = [{ id: 'fixture-provider', name: '测试模型', model: 'fixture', configured: true, supportsVision: true, executionScope: 'external' }];
     else if (pathname === '/api/providers') body = { providers: [] };
     await route.fulfill({ status: pathname.endsWith('/script-studio/tasks') && method === 'POST' ? 202 : 200, contentType: 'application/json', body: JSON.stringify(body) });
@@ -194,8 +202,15 @@ try {
   await expect(page.getByText('命中卖点关键词：伸缩、桌面').first()).toBeVisible();
   await expect(page.getByText('j1 · 小户型餐桌爆款', { exact: true })).toBeVisible();
   // 参考全文预览
-  await page.getByRole('button', { name: '查看参考全文' }).first().click();
+  // 08 号票（V11）：参考文案、结构、匹配原因**不用点开**就能看到。
+  const refCard = page.locator('[data-testid="viral-template-card"]').first();
+  await expect(refCard.locator('[data-testid="viral-template-ref"]')).toContainText('这是小户型餐桌爆款的参考文案');
+  await expect(refCard.locator('[data-testid="viral-template-structure"]')).not.toBeEmpty();
+  await expect(refCard.locator('[data-testid="viral-template-reasons"]')).toContainText('命中卖点关键词');
+  // 长文仍能展开全文（默认 4 行截断）。
+  await page.getByRole('button', { name: '展开全文' }).first().click();
   await expect(page.getByText(/这是小户型餐桌爆款的参考文案/).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: '收起全文' }).first()).toBeVisible();
   // 勾选 2 个模板
   await page.getByRole('checkbox', { name: '选择模板：小户型餐桌爆款' }).check();
   await page.getByRole('checkbox', { name: '选择模板：岩板餐桌测评' }).check();

@@ -98,6 +98,11 @@ try {
         body = { revision: library };
       } else body = { current: library };
     } else if (pathname.endsWith('/script-studio/distilled-points')) { distillRequests++; body = { points: [] }; }
+    // 面板读的是团队模型接口（`/api/team/models?kind=script`，自「团队 API 收归」后就没变过）；
+    // 下面这条旧路径 `/api/providers/script` 一并保留，免得别的调用点再踩空。
+    else if (pathname === '/api/team/models' && new URL(route.request().url()).searchParams.get('kind') === 'script') {
+      body = [{ id: 'fixture-provider', name: '测试模型', model: 'fixture', configured: true, supportsVision: true, executionScope: 'external' }];
+    }
     else if (pathname === '/api/providers/script') body = [{ id: 'fixture-provider', name: '测试模型', model: 'fixture', configured: true, supportsVision: true, executionScope: 'external' }];
     else if (pathname === '/api/providers') body = { providers: [] };
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
@@ -121,7 +126,21 @@ try {
   await expect(page.getByText('Gemini 返回了无效 JSON。', { exact: true })).toBeVisible();
   await expect(page.getByText('差异检查', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '确认可用', exact: true })).toHaveCount(0);
+  // 08 号票起卖点库**默认收起**（规格 V11：默认收起、默认全选，点「展开卖点」才逐个排除），
+  // 所以下面的勾选要先展开卖点库。这是外层结构变化导致的流程调整，断言本身没变：
+  // 默认全选、未通过核验的不可勾、取消勾选后保存为新修订、再刷新仍是排除状态。
+  const expandLibrary = async () => {
+    // 先等卖点库真的画出来（刷新后是异步拉取），再按 aria-expanded 判断要不要展开。
+    const toggle = page.getByRole('button', { name: /^(展开卖点|收起卖点)$/ });
+    await toggle.first().waitFor({ timeout: 15_000 });
+    if ((await toggle.first().getAttribute('aria-expanded')) === 'false') await toggle.first().click();
+    await expect(toggle.first()).toHaveAttribute('aria-expanded', 'true');
+  };
+  await expandLibrary();
+  // 默认收起 + 默认全选：副标题如实写「默认全选」，且没被排除的可用卖点都是勾上的。
+  await expect(page.getByTestId('selling-point-summary')).toContainText('默认全选');
   await page.getByRole('button', { name: '选择 / 排除卖点', exact: true }).click();
+  // 默认全选：可用卖点已经是勾上的（不用先勾一遍），未通过核验的禁用。
   await expect(page.getByRole('checkbox', { name: '保留卖点：高靠背', exact: true })).toBeChecked();
   await expect(page.getByRole('checkbox', { name: '保留卖点：未核验参数', exact: true })).toBeDisabled();
   await page.getByRole('checkbox', { name: '保留卖点：高靠背', exact: true }).uncheck();
@@ -129,6 +148,9 @@ try {
   await expect(page.getByRole('button', { name: '选择 / 排除卖点', exact: true })).toBeVisible();
   assert.equal(savedSelection.edits.find((edit) => edit.sellingPointId === 'point-1').disabledByUser, true);
   await page.reload();
+  await expandLibrary();
+  // 有排除项之后副标题不再是「默认全选」。
+  await expect(page.getByTestId('selling-point-summary')).toContainText('排除 1 个');
   await page.getByRole('button', { name: '选择 / 排除卖点', exact: true }).click();
   await expect(page.getByRole('checkbox', { name: '保留卖点：高靠背', exact: true })).not.toBeChecked();
   await page.getByRole('checkbox', { name: '保留卖点：高靠背', exact: true }).check();

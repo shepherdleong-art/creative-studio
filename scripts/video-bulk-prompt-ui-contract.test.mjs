@@ -95,15 +95,16 @@ assert.doesNotMatch(
   '结果卡不得重排列表 API 顺序：状态排序会让卡片随任务状态跳位',
 );
 
-// 抽屉必须 portal 到 body，且这条约束的成因要能被验证：
-// .video-generation-section 用 transform 做全宽布局，transform 会给后代的
-// position: fixed 造包含块，抽屉留在原地就会被按进页面流，笔记本视口下
-// 底部的「全部生成」会掉到屏幕外。只要那个 transform 还在，portal 就不能撤。
+// 抽屉必须 portal 到 body：`.video-generation-section` 历史上用 transform 做全宽布局，
+// transform 会给后代的 position: fixed 造包含块，抽屉留在原地就会被按进页面流，笔记本
+// 视口下底部的「全部生成」会掉到屏幕外。08 号票把外壳改成占满内容区（不再用 transform），
+// 但 portal 仍是必需的防御：抽屉必须脱离任何会形成包含块的祖先。
+// 这条约束的**成因**改为断言「外壳不再用 transform 制造包含块」，portal 断言保留。
 const css = readFileSync(new URL('../app/globals.css', import.meta.url), 'utf8');
-assert.match(
+assert.doesNotMatch(
   css,
-  /\.video-generation-section\s*\{[^}]*transform:\s*translateX\(-50%\)/s,
-  '全宽布局仍依赖 transform，下面的 portal 约束因此仍然必要',
+  /\.video-generation-section\s*\{[^}]*transform:/s,
+  '第 4 步外壳若重新引入 transform，就会给抽屉的 position:fixed 造包含块',
 );
 assert.match(
   css,
@@ -114,7 +115,7 @@ assert.match(panel, /createPortal/, '批量抽屉必须通过 portal 渲染');
 assert.match(
   panel,
   /createPortal\(\([\s\S]*?video-bulk-drawer[\s\S]*?\), document\.body\)/,
-  '批量抽屉必须 portal 到 document.body，才能逃出被 transform 的祖先',
+  '批量抽屉必须 portal 到 document.body，才能脱离任何会形成包含块的祖先',
 );
 
 console.log('video bulk prompt UI contract tests passed');
