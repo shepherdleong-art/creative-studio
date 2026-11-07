@@ -138,15 +138,24 @@ try {
       assert.equal(created.status, 200);
     }
     await adminPage.goto(`${baseUrl}/team/admin/pools`, { waitUntil: 'networkidle', timeout: 60_000 });
+    // 13 号票后页面是「一个名额池一行」的分组列表，不再是按模型的表格：
+    // 行定位改成分组列表行（`pool-row`），两个供应商通过展开体里的「合并到另一个名额池」并进同一个池。
+    // 行为断言不变：两个供应商都必须能经真实页面绑进同一个共享池，并且第二个用目标池的版本号保存成功。
     for (const suffix of ['A', 'B']) {
-      const row = adminPage.getByRole('row').filter({ hasText: `浏览器共享供应商${suffix}` });
-      await row.getByRole('textbox').fill('media:browser-shared');
-      await row.getByRole('spinbutton').fill('2');
+      const row = adminPage.getByTestId('pool-row')
+        .filter({ hasText: `浏览器共享供应商${suffix}` }).first();
+      await row.waitFor({ timeout: 60_000 });
+      await row.getByRole('button', { name: /^展开 / }).click();
+      await row.getByLabel(`浏览器共享供应商${suffix} 名额`).fill('2');
+      await row.getByLabel(`浏览器共享供应商${suffix} 合并到名额池编号`).fill('media:browser-shared');
       const saved = adminPage.waitForResponse((response) => response.url().endsWith('/api/team/pools') && response.request().method() === 'POST');
-      await row.getByRole('button', { name: '保存该池' }).click();
+      await row.getByRole('button', { name: '合并', exact: true }).click();
+      const dialog = adminPage.getByRole('dialog');
+      await dialog.waitFor({ timeout: 30_000 });
+      await dialog.getByRole('button', { name: '确认合并', exact: true }).click();
       assert.equal((await saved).status(), 200, '第二个供应商应使用目标共享池的版本号');
-      await row.getByText('已就绪', { exact: true }).waitFor();
-      await row.getByRole('button', { name: '保存该池' }).waitFor({ state: 'visible' });
+      await adminPage.getByText(/名额已保存为 2/).first().waitFor({ timeout: 60_000 });
+      await adminPage.getByText(/名额已保存为 2/).first().waitFor({ state: 'detached', timeout: 30_000 }).catch(() => undefined);
     }
     const poolState = await api(adminPage, '/api/team/pools');
     assert.equal(poolState.body.bindings.filter((item) => item.poolKey === 'media:browser-shared').length, 2);
@@ -268,13 +277,20 @@ try {
     }
     result.assertions.push('三类真实 XLSX 经设置上传／爆文预览→统一候选预览→完整发布，员工搜索／详情读取实际条目且不能导入或切换');
 
-    for (const [route, heading] of [
-      ['/team/admin/operations', '备份与维护'], ['/team/recycle-bin', '回收站'], ['/team/admin/pools', '资源池与共享预算'],
-      ['/team/admin/resources', '公共资源发布'],
+    // 页面落点：13 号票把「资源池与共享预算」换成了工具栏标题「模型与名额」+ 账号行，
+    // 所以这里按「这条路由独有的可断言落点」写，而不是硬等某个 heading（结构变了，不是行为放宽）。
+    for (const [route, ready] of [
+      ['/team/admin/operations', async (page) => { await page.getByRole('heading', { name: '备份与维护', exact: true }).waitFor(); }],
+      ['/team/recycle-bin', async (page) => { await page.getByRole('heading', { name: '回收站', exact: true }).waitFor(); }],
+      ['/team/admin/pools', async (page) => {
+        await page.getByTestId('page-toolbar-title').first().getByText('模型与名额', { exact: true }).waitFor();
+        await page.getByTestId('pool-row').first().waitFor();
+      }],
+      ['/team/admin/resources', async (page) => { await page.getByRole('heading', { name: '公共资源发布', exact: true }).waitFor(); }],
     ]) {
       const response = await adminPage.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
       assert.equal(response.status(), 200);
-      await adminPage.getByRole('heading', { name: heading, exact: true }).waitFor();
+      await ready(adminPage);
       for (const theme of ['light', 'dark']) {
         await adminPage.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
         const name = `${route.split('/').at(-1)}-${theme}.png`;
