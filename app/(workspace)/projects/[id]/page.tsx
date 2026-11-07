@@ -403,7 +403,8 @@ export default function ProjectDetailPage() {
   const hasJobs = project.jobs.length > 0;
   const hasSceneResult = sceneJobs.some((job) => job.status === 'succeeded' || job.status === 'failed');
   const hasShotSources = shotSourceImages.length > 0;
-  const hasVideo = false;
+  // 新项目 = 一张图都没有、也没有任何任务：第 3/4/5 步都在内容组件前面挂一条空状态。
+  const hasAnyMaterial = project.images.length > 0 || hasJobs;
 
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3">
@@ -494,7 +495,7 @@ export default function ProjectDetailPage() {
 
         {activeTab === 'script' ? (
           <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3">
-            {!hasSceneResult && !hasShotSources ? (
+            {!hasAnyMaterial ? (
               <StepEmptyBanner
                 title="还没有可以写脚本的素材"
                 description="先在「场景图」或「分镜」做出素材，再来写口播脚本。"
@@ -524,7 +525,7 @@ export default function ProjectDetailPage() {
 
         {activeTab === 'final-edit' ? (
           <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3">
-            {!hasShotSources && !hasVideo && sceneJobs.length === 0 ? (
+            {!hasAnyMaterial ? (
               <StepEmptyBanner
                 title="还没有可用视频"
                 description="先在「视频」做好视频，这里才能混剪。"

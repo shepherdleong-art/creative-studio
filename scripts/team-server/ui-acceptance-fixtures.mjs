@@ -237,6 +237,19 @@ export const FIXTURE_HOOKS = {
     ctx.shotSet = created;
     return ctx;
   },
+
+  /**
+   * 07 号票：新项目（一张图都没有）用于验收「每步都有空状态」。
+   * 只建项目本身，不传任何素材 —— 这样三步的空状态才有可断言的前提。
+   */
+  async emptyProject(ctx) {
+    const project = await ctx.api.createProject(ctx.employeeSession, {
+      providerId: ctx.provider.id, productCode: 'UI-ACCEPT-EMPTY', editorName: '空项目验收',
+    });
+    assert.ok(project?.id, '空项目必须创建成功');
+    ctx.emptyProject = project;
+    return ctx;
+  },
 };
 
 /** 屏幕声明的 skipUnless 用它判断；缺钩子时该屏记 blocked，绝不静默当通过。 */

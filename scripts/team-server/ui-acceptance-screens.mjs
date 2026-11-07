@@ -86,6 +86,14 @@ const MIXCUT_KNOWN_CHECKS = ['horizontalScroll', 'clippedControls'];
  */
 const SHELL_KNOWN_FAILURE = 'ui-05';
 const SHELL_KNOWN_CHECKS = ['clippedControls', 'hiddenOverflowContent'];
+
+/** 新项目每一步的空状态落点：工具栏 + 五步切换 + data-testid="step-empty"。
+ * 第 1/2 步的空状态在中间栏，第 3/4/5 步是内容组件上面的提示条，两者同一个 testid。 */
+const emptyStepReady = async (page) => {
+  await page.getByTestId('page-toolbar').first().waitFor({ timeout: 60_000 });
+  await page.getByRole('tab', { name: '场景图', exact: true }).waitFor({ timeout: 60_000 });
+  await page.getByTestId('step-empty').first().waitFor({ timeout: 60_000 });
+};
 const SHELL_KNOWN_REASON = '团队版外壳（05 号票）：侧栏底部头像按钮 247px 超出 224px 侧栏被切；'
   + '侧栏 overflow-x:hidden 藏住 24px 内容；PageToolbar 的 a.sr-only 把 27px 文本压进 1px。'
   + '07 号票已实测同一失败在 ui-06 的 projects 屏上逐字复现，与本票页面无关。';
@@ -257,6 +265,37 @@ export const SCREENS = [
     knownFailureChecks: SHELL_KNOWN_CHECKS,
     knownFailureReason: SHELL_KNOWN_REASON,
   }),
+  // 新项目每一步都有空状态（07 号票）：用空项目夹具，断言空状态真的画出来。
+  // 注意 checks 的差别：
+  //   - 第 1/2/3 步：整页尺寸照量（外壳的已知失败只豁免 clippedControls / hiddenOverflowContent）；
+  //   - 第 4/5 步：**只断言空状态存在**，不再量整页尺寸 —— 这两步的尺寸归 08/09
+  //     （project-video 与 mixcut-single / mixcut-batch 已经在量同一页），
+  //     这里重复量只会把别人的溢出记成 07 的失败。
+  ...['scene', 'storyboard', 'script'].map((step) => base(
+    `project-empty-${step}`,
+    `项目工作台 · 新项目空状态（${step}）`,
+    'ui-07',
+    {
+      href: ({ emptyProject }) => `/projects/${emptyProject.id}?tab=${step}`,
+      skipUnless: 'emptyProject',
+      ready: emptyStepReady,
+      knownFailure: SHELL_KNOWN_FAILURE,
+      knownFailureChecks: SHELL_KNOWN_CHECKS,
+      knownFailureReason: SHELL_KNOWN_REASON,
+    },
+  )),
+  ...['video', 'final-edit'].map((step) => base(
+    `project-empty-${step}`,
+    `项目工作台 · 新项目空状态（${step}）`,
+    'ui-07',
+    {
+      href: ({ emptyProject }) => `/projects/${emptyProject.id}?tab=${step}`,
+      skipUnless: 'emptyProject',
+      ready: emptyStepReady,
+      checks: [],
+    },
+  )),
+
   base('project-script', '项目工作台 · 第 3 步 脚本生成', 'ui-08', {
     href: ({ project }) => `/projects/${project.id}?tab=script`,
     ready: async (page) => { await page.getByRole('heading', { name: '详情页智能脚本生成', exact: true }).waitFor({ timeout: 60_000 }); },
