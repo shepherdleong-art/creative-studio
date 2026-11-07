@@ -156,7 +156,7 @@ export default function NewProjectPage() {
     <PageToolbar
       role={session?.role ?? 'employee'}
       title="新建项目"
-      subtitle="填完生产身份和图片参数就能开工；超时、并发和图片预处理由服务器统一管理。"
+      subtitle="填完生产身份和图片参数就能开工；生产参数由服务器统一管理，这里不用填。"
     />
 
     <form onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>

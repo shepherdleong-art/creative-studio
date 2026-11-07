@@ -194,6 +194,8 @@ try {
   // ── 本月用量：只读，来自额度汇总 ──
   assert.equal(typeof aliceBody.usage.monthChargedMinor, 'number');
   assert.equal(aliceBody.usage.monthChargedMinor, 0, '没有计费记录时本月已计为 0');
+  assert.equal(aliceBody.usage.monthlyLimitMinor, null,
+    '额度 0 表示「还没设额度」，首页按不限额显示，不能写成「额度 ¥0.00」');
   assert.equal(typeof aliceBody.usage.accountingPeriod, 'string');
 
   // ── 员工 B：完全看不到 A 的项目与任务 ──

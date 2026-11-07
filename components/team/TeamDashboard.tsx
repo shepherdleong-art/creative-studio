@@ -133,7 +133,7 @@ export default function TeamDashboard({
     <PageToolbar
       role={role}
       title={greeting}
-      subtitle={productionLine}
+      subtitle={<span data-testid="workbench-production-line">{productionLine}</span>}
       actions={<>
         <Link className="cap" href="/projects"><Icon name="search" size={15} />找项目</Link>
         <Link className="cap cap-primary" href="/projects/new"><Icon name="plus" size={15} />新建项目</Link>

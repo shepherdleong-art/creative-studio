@@ -77,19 +77,63 @@ const MIXCUT_KNOWN_CHECKS = ['horizontalScroll', 'clippedControls'];
  * 一屏一个对象。改这一屏的选择器/等待点 = 改这一屏的「怎么算画出来了」，
  * 不是放宽断言；尺寸判定本身在 ui-acceptance-checks.mjs，不要在这里写阈值。
  */
+/**
+ * 已知问题：团队版侧栏头像行横向溢出（05 号票修）。
+ *
+ * 现象（2026-11-08，集成分支 tip 干净检出即复现，与 06 的两屏无关）：
+ *   - `clippedControls`：侧栏底部头像按钮「姓名 / 工号」被右边切掉（12–247px，可见到 224px）；
+ *   - `hiddenOverflowContent`：`aside[data-testid='workspace-sidebar']` 内容 247px / 可见 223px。
+ *
+ * 根因（page.evaluate 实测量到）：`components/team/workspace.module.css` 的 `.wsFooter`
+ * 用 `display:grid`，隐式列按 min-content 撑开；`.wsUserCopy` 的两行是
+ * `white-space:nowrap`，所以「界面验收员工 / ui-accept-employee」这种稍长的姓名+工号
+ * 会把头像行撑到 235px，而 footer 可视只有 199px。
+ *
+ * 一行级修法（归 05）：`.wsFooter { grid-template-columns: minmax(0, 1fr); }`
+ * 或给 `.wsMenuAnchor` 加 `min-width: 0` + `.wsUser` 加 `overflow: hidden`。
+ * 05 修好后删掉这两条标记，检查会自动变回硬失败。
+ */
+const SIDEBAR_KNOWN_FAILURE = 'ui-05';
+const SIDEBAR_KNOWN_CHECKS = ['clippedControls', 'hiddenOverflowContent'];
+const SIDEBAR_KNOWN_REASON = '团队版侧栏底部头像行在稍长的「姓名/工号」下横向溢出：'
+  + '.wsFooter 是 display:grid（隐式列按 min-content 撑开）+ .wsUserCopy 两行 white-space:nowrap，'
+  + '头像行量到 235px 而 footer 可视仅 199px，导致侧栏 scrollWidth 247 > clientWidth 223。'
+  + '与页面内容无关（项目空间等所有团队页同样失败）。修法归 05：.wsFooter 加 grid-template-columns:minmax(0,1fr) '
+  + '或 .wsMenuAnchor 加 min-width:0 且 .wsUser 加 overflow:hidden。';
+
 export const SCREENS = [
   // ---------- 员工侧 ----------
-  base('home', '首页 · 运行总览（员工）', 'ui-06', {
+  // 06 号票：员工首页改版后标题是「问候语」，不再有「让今天的灵感，成为作品。」。
+  // ready 等的是这一屏特有的落点：工具栏标题条 + 「接着做」里的项目卡片/空状态。
+  base('home', '首页 · 工作台（员工）', 'ui-06', {
     href: () => '/',
-    ready: async (page) => { await page.getByRole('heading', { name: '让今天的灵感，成为作品。' }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.locator('[data-testid="page-toolbar"]').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('workbench-production-line').first().waitFor({ timeout: 60_000 });
+      // 「接着做」区块必须先画出来：有项目就是卡片，没项目就是空状态。
+      await page.getByRole('link', { name: '新建项目', exact: true }).first().waitFor({ timeout: 60_000 });
+      await page.getByText('接着做', { exact: true }).first().waitFor({ timeout: 60_000 });
+    },
+    knownFailure: SIDEBAR_KNOWN_FAILURE,
+    knownFailureChecks: SIDEBAR_KNOWN_CHECKS,
+    knownFailureReason: SIDEBAR_KNOWN_REASON,
   }),
   base('projects', '项目空间', 'ui-06', {
     href: () => '/projects',
     ready: async (page) => { await page.getByRole('heading', { name: '项目空间', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
+  // 06 号票：新建项目页改版后不再有 h1（标题交给工具栏），ready 等生产身份表单的
+  // 首个字段 + 项目名预览 + 创建按钮，三者都是这一屏特有的。
   base('projects-new', '新建项目', 'ui-06', {
     href: () => '/projects/new',
-    ready: async (page) => { await page.getByRole('heading', { name: '新建项目', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.getByLabel('店铺', { exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByTestId('project-name-preview').waitFor({ timeout: 60_000 });
+      await page.getByTestId('new-project-submit').waitFor({ timeout: 60_000 });
+    },
+    knownFailure: SIDEBAR_KNOWN_FAILURE,
+    knownFailureChecks: SIDEBAR_KNOWN_CHECKS,
+    knownFailureReason: SIDEBAR_KNOWN_REASON,
   }),
   base('canvas', '创作画布列表', 'ui-14', {
     href: () => '/canvas',

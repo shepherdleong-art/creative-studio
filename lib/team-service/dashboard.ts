@@ -213,6 +213,9 @@ export function readEmployeeDashboard(
   const running = [...renderItems, ...runningItems].slice(0, MAX_RUNNING);
 
   const member = readTeamMemberSummary(db, viewer, viewer.userId, now);
+  // 额度为 0 表示「还没给这个人设额度」，不是「额度用完了」。首页要把它当成
+  // 未设置来写，否则会显示「已用 ¥0.00 / 额度 ¥0.00」，看起来像被卡住了。
+  const monthlyLimitMinor = member.monthlyLimitMinor === 0 ? null : member.monthlyLimitMinor;
 
   return {
     greetingName: displayName,
@@ -241,8 +244,8 @@ export function readEmployeeDashboard(
     usage: {
       monthChargedMinor: member.monthChargedMinor,
       monthSettledMinor: member.monthSettledMinor,
-      monthlyLimitMinor: member.monthlyLimitMinor,
-      remainingMinor: member.remainingMinor,
+      monthlyLimitMinor,
+      remainingMinor: monthlyLimitMinor === null ? null : Math.max(0, monthlyLimitMinor - member.monthChargedMinor),
       accountingPeriod: now.toISOString().slice(0, 7),
     },
   };
