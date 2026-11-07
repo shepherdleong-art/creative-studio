@@ -305,11 +305,13 @@ export default function SceneStep({
                     ? <img src={url} alt={getJobDisplayName(job, `候选 ${index + 1}`)} />
                     : <span className={s.itemThumb}><Icon name={kind === 'failed' ? 'alert' : 'logs'} size={15} /></span>}
                   <span className={s.itemBody}>
-                    <b>{kind === 'succeeded' ? '候选' : '未生成'} {index + 1}</b>
+                    <b>{kind === 'succeeded' ? '候选' : kind === 'failed' ? '失败' : '生成中'} {index + 1}</b>
                     <small className={s.itemDot}>
-                      {job.reviewMark
-                        ? <Tag tone={markTone(job.reviewMark)}>{MARK_LABELS[job.reviewMark]}</Tag>
-                        : kind === 'failed' ? <Tag tone="fail">失败</Tag> : <Tag tone="idle">未标记</Tag>}
+                      {kind === 'succeeded' || kind === 'failed' ? (
+                        job.reviewMark
+                          ? <Tag tone={markTone(job.reviewMark)}>{MARK_LABELS[job.reviewMark]}</Tag>
+                          : kind === 'failed' ? <Tag tone="fail">失败</Tag> : <Tag tone="idle">未标记</Tag>
+                      ) : <Tag tone="run">{job.status === 'pending' ? '排队中' : '生成中'}</Tag>}
                       {reference ? <Tag tone="run">参考图</Tag> : null}
                     </small>
                   </span>

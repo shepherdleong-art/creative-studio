@@ -366,7 +366,7 @@ export default function ShotSetStep({
           prompt: redoPrompt.trim(),
           markOriginal: true,
           inputSource: 'original',
-          referenceImageIds: [],
+          // 不传 referenceImageIds：沿用这个分镜原任务的参考图（传空数组会把场景参考图清掉）。
           providerId: effectiveProviderId || undefined,
         }),
       });
