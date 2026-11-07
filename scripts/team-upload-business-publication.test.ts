@@ -205,10 +205,17 @@ try {
   assert.equal(image.path, path.join(root, 'storage', normalFile.relativePath));
   assert.equal(image.originalPath, image.path);
   assert.equal(assertScopeConsistency(db, 'image', image.id).rootId, 'project-a');
+  // 06 号票：受控上传的图片预处理参数由服务器统一管理——客户端传 512 必须被忽略，
+  // 实际按服务器默认最长边 1536 处理。所以这里用一张比 1536 大的图，
+  // 断言落库宽度是服务器默认值而不是客户端值（这条断言比原来更严，不是放宽）。
+  const largePng = await sharp(randomBytes(1600 * 1600 * 3), {
+    raw: { width: 1600, height: 1600, channels: 3 },
+  }).png().toBuffer();
+  assert.ok(largePng.length > 1024 * 1024, '大图必须大于 1 MiB，避免假大文件');
   for (const usage of ['scene_seed', 'shot_source', 'video_tail_frame']) {
     const result = await publish({
       targetKind: 'project_image', targetScope: { resourceType: 'project', resourceId: 'project-a' },
-      usage: 'image', relativeName: `${usage}.png`, mimeType: 'image/png', bytes: png,
+      usage: 'image', relativeName: `${usage}.png`, mimeType: 'image/png', bytes: largePng,
       idempotencyKey: `browser-${usage}`,
       imageOptions: { role: 'input', usage, preprocessEnabled: true, targetMaxSide: 512, jpegQuality: 85 },
     });
@@ -217,7 +224,8 @@ try {
     };
     assert.equal(stored.usage, usage);
     assert.equal(stored.role, 'input');
-    assert.equal(stored.processedWidth, 512);
+    assert.equal(stored.processedWidth, 1536,
+      '团队版必须忽略客户端传来的 targetMaxSide=512，改用服务器默认最长边 1536');
     assert.equal(stored.preprocessingEnabled, 1);
     assert.equal(result.uploadedFile.usage, usage);
     assert.equal(result.uploadedFile.path, undefined, '不向客户端暴露服务器绝对路径');

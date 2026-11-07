@@ -79,17 +79,31 @@ const MIXCUT_KNOWN_CHECKS = ['horizontalScroll', 'clippedControls'];
  */
 export const SCREENS = [
   // ---------- 员工侧 ----------
-  base('home', '首页 · 运行总览（员工）', 'ui-06', {
+  // 06 号票：员工首页改版后标题是「问候语」，不再有「让今天的灵感，成为作品。」。
+  // ready 等的是这一屏特有的落点：工具栏标题条 + 「接着做」里的项目卡片/空状态。
+  base('home', '首页 · 工作台（员工）', 'ui-06', {
     href: () => '/',
-    ready: async (page) => { await page.getByRole('heading', { name: '让今天的灵感，成为作品。' }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.locator('[data-testid="page-toolbar"]').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('workbench-production-line').first().waitFor({ timeout: 60_000 });
+      // 「接着做」区块必须先画出来：有项目就是卡片，没项目就是空状态。
+      await page.getByRole('link', { name: '新建项目', exact: true }).first().waitFor({ timeout: 60_000 });
+      await page.getByText('接着做', { exact: true }).first().waitFor({ timeout: 60_000 });
+    },
   }),
   base('projects', '项目空间', 'ui-06', {
     href: () => '/projects',
     ready: async (page) => { await page.getByRole('heading', { name: '项目空间', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
+  // 06 号票：新建项目页改版后不再有 h1（标题交给工具栏），ready 等生产身份表单的
+  // 首个字段 + 项目名预览 + 创建按钮，三者都是这一屏特有的。
   base('projects-new', '新建项目', 'ui-06', {
     href: () => '/projects/new',
-    ready: async (page) => { await page.getByRole('heading', { name: '新建项目', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.getByLabel('店铺', { exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByTestId('project-name-preview').waitFor({ timeout: 60_000 });
+      await page.getByTestId('new-project-submit').waitFor({ timeout: 60_000 });
+    },
   }),
   base('canvas', '创作画布列表', 'ui-14', {
     href: () => '/canvas',
