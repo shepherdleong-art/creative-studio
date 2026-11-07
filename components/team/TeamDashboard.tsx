@@ -3,20 +3,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Icon, type IconName } from '@/components/ui/Icon';
-import { EmptyState, GroupHeading, GroupList, ToolbarButton } from '@/components/ui/Appearance';
+import { EmptyState, GroupHeading, GroupList } from '@/components/ui/Appearance';
 import { teamError } from './client';
 import PageToolbar from './PageToolbar';
-import TeamProductionControl from './TeamProductionControl';
-import TeamTaskModel, { type TeamTaskModelCall } from './TeamTaskModel';
-import { TASK_STATUS_LABELS } from '@/lib/team-task-labels';
+import TeamConsoleOverview from './TeamConsoleOverview';
 import type { EmployeeDashboard } from '@/lib/team-service/dashboard';
 import type { WorkspaceRole } from '@/lib/workspace-navigation';
-
-type Task = { operationId: string; taskName: string; stepName: string; scopeName: string; scope: { resourceType: string; resourceId: string }; status: string; actorDisplayName: string; model: string | null; providerName: string; modelStatus: string; modelCalls: TeamTaskModelCall[] };
-type Project = { id: string; name: string; thumbnailImageUrl?: string; totalJobs: number; completedJobs: number };
-type Pools = { ready: boolean; blockers: string[]; pools: Array<{ poolKey: string; capacity: number; enabled: boolean }> };
-type Runtime = { proxyAvailable: boolean; cosConfigured: boolean };
-const taskLabels = TASK_STATUS_LABELS;
 
 async function read<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: 'no-store', credentials: 'same-origin' });
@@ -68,14 +60,14 @@ function SectionHead({ title, action }: { title: string; action?: React.ReactNod
 }
 
 /**
- * 员工首页（06 号票）。
+ * 团队首页的**分流点**。
  *
- * 五块内容：出错的任务 → 接着做（左栏）；正在生产 → 新建 → 本月用量（右栏）。
- * 数据全部来自 `/api/team/dashboard` 这个只读聚合，页面不自己算「第几步」「百分比」：
- * 那两个规则在 `lib/project-progress.ts` 与 `lib/task-progress.ts` 里，
- * 并由接口测试钉住「非渲染阶段不显示百分比」。
+ * - 管理员 → `TeamConsoleOverview`（运行总览，归 12 号票）。
+ * - 员工 → `EmployeeWorkbench`（员工工作台，归 06 号票）。
  *
- * 管理员分支（运行总览）归 12 号票，这里原样保留。
+ * 用「两个组件」而不是「一个组件里按 admin 分支」，是因为两边分属不同票：分开后各自的
+ * 数据请求与 JSX 互不影响，也不会出现「先 return 再调 hook」这种条件 hook 写法。
+ * 员工分支的实现原样来自 06 号票，12 号票没有改动它的任何一块。
  */
 export default function TeamDashboard({
   admin,
@@ -88,28 +80,35 @@ export default function TeamDashboard({
   canvasEnabled: boolean;
   role: WorkspaceRole;
 }) {
-  const [tasks, setTasks] = useState<Task[] | null>(null);
-  const [projects, setProjects] = useState<Project[] | null>(null);
-  const [pools, setPools] = useState<Pools | null>(null);
-  const [runtime, setRuntime] = useState<Runtime | null>(null);
+  if (admin) return <TeamConsoleOverview role={role} displayName={displayName} />;
+  return <EmployeeWorkbench displayName={displayName} canvasEnabled={canvasEnabled} role={role} />;
+}
+
+/**
+ * 员工首页（06 号票）。
+ *
+ * 五块内容：出错的任务 → 接着做（左栏）；正在生产 → 新建 → 本月用量（右栏）。
+ * 数据全部来自 `/api/team/dashboard` 这个只读聚合，页面不自己算「第几步」「百分比」：
+ * 那两个规则在 `lib/project-progress.ts` 与 `lib/task-progress.ts` 里，
+ * 并由接口测试钉住「非渲染阶段不显示百分比」。
+ */
+function EmployeeWorkbench({
+  displayName,
+  canvasEnabled,
+  role,
+}: {
+  displayName: string;
+  canvasEnabled: boolean;
+  role: WorkspaceRole;
+}) {
   const [dashboard, setDashboard] = useState<EmployeeDashboard | null>(null);
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
   const refresh = useCallback(async () => {
-    setBusy(true);
     const results = await Promise.allSettled([
-      ...(admin
-        ? [
-            read<{ items: Task[] }>('/api/team/tasks').then(data => setTasks(data.items)),
-            read<Project[]>('/api/projects').then(setProjects),
-            read<Pools>('/api/team/pools').then(setPools),
-            read<Runtime>('/api/company-provider/health').then(setRuntime),
-          ]
-        : [read<EmployeeDashboard>('/api/team/dashboard').then(setDashboard)]),
+      read<EmployeeDashboard>('/api/team/dashboard').then(setDashboard),
     ]);
     setError(results.some(result => result.status === 'rejected') ? '部分状态读取失败，下面保留上次成功读取的数据。请刷新重试。' : '');
-    setBusy(false);
-  }, [admin]);
+  }, []);
   useEffect(() => {
     void Promise.resolve().then(refresh);
     const timer = setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 30_000);
@@ -121,13 +120,6 @@ export default function TeamDashboard({
   const productionLine = runningTotal > 0
     ? `还有 ${runningTotal} 条在生产，关掉窗口也不会停`
     : '现在没有在生产的任务，新建一个马上开始';
-
-  if (admin) {
-    return <AdminDashboard
-      busy={busy} error={error} pools={pools} projects={projects}
-      refresh={refresh} runtime={runtime} tasks={tasks} role={role} displayName={displayName}
-    />;
-  }
 
   return <div className="flex min-w-0 flex-col gap-4">
     <PageToolbar
@@ -261,95 +253,5 @@ export default function TeamDashboard({
         </GroupList>
       </div>
     </div>}
-  </div>;
-}
-
-/**
- * 管理员首页（运行总览）——**12 号票重做这一块**。
- * 06 号票只保证员工分支改版时不动它：这里保留原有的统计卡、全员任务与资源块。
- */
-function AdminDashboard({
-  busy, displayName, error, pools, projects, refresh, role, runtime, tasks,
-}: {
-  busy: boolean;
-  displayName: string;
-  error: string;
-  pools: Pools | null;
-  projects: Project[] | null;
-  refresh: () => Promise<void>;
-  role: WorkspaceRole;
-  runtime: Runtime | null;
-  tasks: Task[] | null;
-}) {
-  const stats: Array<{ label: string; statuses: string[]; icon: IconName; hint: string }> = [
-    { label: '进行中的任务', statuses: ['admitted', 'maybe_sent', 'accepted'], icon: 'play', hint: '服务器持续处理' },
-    { label: '等待中的任务', statuses: ['pending', 'deferred'], icon: 'logs', hint: '等待执行条件就绪' },
-    { label: '已完成的任务', statuses: ['succeeded'], icon: 'check', hint: '成果保存在服务器' },
-    { label: '待核查的提交', statuses: ['unknown', 'reconciling'], icon: 'alert', hint: '先核对结果，再决定重试' },
-  ];
-  return <div className="flex min-w-0 flex-col gap-4">
-    <TeamProductionControl />
-    <PageToolbar
-      role={role}
-      title="生产有序，状态清楚。"
-      subtitle={`${displayName}，集中查看任务、资源和异常。`}
-      actions={<ToolbarButton icon="retry" disabled={busy} onClick={() => void refresh()}>{busy ? '读取中…' : '刷新状态'}</ToolbarButton>}
-    />
-    {error && <p role="alert" className="text-warn">{error}</p>}
-    <section aria-label="任务统计">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {stats.map((stat) => <div key={stat.label} className="rounded-xl border border-hairline bg-card p-4">
-          <header className="flex items-center justify-between text-label text-ink-secondary">{stat.label}<Icon name={stat.icon} size={16} /></header>
-          <strong className="mt-2 block text-2xl font-semibold tabular-nums text-ink">
-            {tasks === null ? '—' : tasks.filter((task) => stat.statuses.includes(task.status)).length.toString().padStart(2, '0')}
-          </strong>
-          <small className="text-label text-ink-secondary">{stat.hint}</small>
-        </div>)}
-      </div>
-      <p className="mt-2 text-label text-ink-tertiary">统计最近最多 500 条已登记任务；每 30 秒更新。</p>
-    </section>
-    {pools && !pools.ready && <div className="flex flex-wrap items-center gap-3 rounded-xl border border-hairline bg-warn-tint px-4 py-3">
-      <Icon name="alert" size={17} className="text-warn" />
-      <div className="min-w-0 flex-1">
-        <strong className="block text-ink">生产资源尚未配置完成</strong>
-        <small className="block text-label text-ink-secondary">{pools.blockers.length} 项资源需求待处理，配置完成后才能使用对应生成能力。</small>
-      </div>
-      <Link className="cap" href="/team/admin/pools">去配置</Link>
-    </div>}
-    <div className="grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
-      <section>
-        <SectionHead title="全员任务" action={<Link href="/team/tasks">查看全部 →</Link>} />
-        <GroupList>
-          {tasks?.length
-            ? tasks.slice(0, 5).map((task) => <div key={task.operationId} className="flex items-center justify-between gap-3 px-4 py-3">
-              <div className="min-w-0">
-                <strong className="block truncate text-ink">{task.taskName} · {task.stepName}</strong>
-                <small className="block truncate text-label text-ink-secondary">
-                  {['project', 'canvas'].includes(task.scope.resourceType)
-                    ? <Link className="text-accent" href={task.scope.resourceType === 'project' ? `/projects/${encodeURIComponent(task.scope.resourceId)}` : `/canvas/${encodeURIComponent(task.scope.resourceId)}`}>{task.scopeName}</Link>
-                    : task.scopeName} · {task.actorDisplayName}
-                </small>
-                <TeamTaskModel compact providerName={task.providerName} model={task.model} modelStatus={task.modelStatus} calls={task.modelCalls} />
-              </div>
-              <span className="flex-none text-label text-ink-secondary">{taskLabels[task.status] ?? task.status}</span>
-            </div>)
-            : <p className="px-4 py-6 text-ink-secondary">{tasks === null ? '读取任务中…' : '暂无已登记的生产任务'}</p>}
-        </GroupList>
-      </section>
-      <section>
-        <SectionHead title="资源与容量" action={<Link href="/team/admin/pools">管理 →</Link>} />
-        <GroupList>
-          <div className="flex justify-between gap-3 px-4 py-3 text-ink-secondary"><span>已启用资源池</span><strong className="text-ink">{pools ? pools.pools.filter((pool) => pool.enabled).length : '—'}</strong></div>
-          <div className="flex justify-between gap-3 border-t border-hairline-soft px-4 py-3 text-ink-secondary"><span>公司模型代理</span><strong className="text-ink">{runtime ? runtime.proxyAvailable ? '已就绪' : '未就绪' : '—'}</strong></div>
-          <div className="flex justify-between gap-3 border-t border-hairline-soft px-4 py-3 text-ink-secondary"><span>参考图中转 COS</span><strong className="text-ink">{runtime ? runtime.cosConfigured ? '已配置' : '未配置' : '—'}</strong></div>
-        </GroupList>
-        <p className="mt-3 text-label leading-5 text-ink-secondary">供应商 Key、代理和共享并发需分别配置。</p>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Link className="cap" href="/settings">配置供应商</Link>
-          <Link className="cap" href="/projects">打开项目空间</Link>
-        </div>
-        <p className="mt-3 text-label text-ink-tertiary">按账号权限展示团队数据 · 最近项目 {projects?.length ?? 0} 个</p>
-      </section>
-    </div>
   </div>;
 }

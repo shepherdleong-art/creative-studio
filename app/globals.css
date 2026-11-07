@@ -1617,6 +1617,19 @@ html[data-theme='dark'] .react-flow__controls-button:hover:not(:disabled) { back
 html[data-theme='dark'] .react-flow__controls-button svg { fill: currentColor; }
 html[data-theme='dark'] .react-flow__minimap { background: var(--color-surface); }
 html[data-theme='dark'] .react-flow__attribution { background: transparent; }
+/* 小地图遮罩与节点：React Flow 自带浅色调（遮罩 rgba(240,240,240,.6)、节点 #e2e2e2），
+ * 深色下会在深色小地图上铺出一块浅色，必须换成本地令牌。只动这几行 React Flow 属性。 */
+html[data-theme='dark'] .react-flow__minimap-mask {
+  fill: color-mix(in srgb, var(--color-preview) 62%, transparent);
+  stroke: var(--color-hairline);
+}
+html[data-theme='dark'] .react-flow__minimap-node {
+  fill: var(--color-ink-tertiary);
+  stroke: var(--color-hairline);
+}
+/* 连线未选中时由 `.sc-canvas-edge` 直接取令牌（同特异性+更靠后，两态都生效）；
+ * 这里只补 React Flow 自绘的连接预览线（深色默认值偏亮）。 */
+html[data-theme='dark'] .react-flow__connection-path { stroke: var(--color-accent); }
 
 /* 创作画布编辑器全幅：编辑器页不受内容栏 980px 居中约束，点阵画布铺满剩余视口。
  * 未分层规则天然压过 main 上的 Tailwind 工具类（max-w / px / py）。 */

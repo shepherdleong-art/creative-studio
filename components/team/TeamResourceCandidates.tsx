@@ -4,12 +4,17 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { PublicResourceCandidate } from '@/lib/team-service/resource-candidates';
 import { teamError, teamWrite } from './client';
+import { EmptyState, GroupHeading, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
 
 export type TeamResourceCandidate = PublicResourceCandidate;
 const PAGE_SIZE = 20;
 const CATEGORIES = ['视频提示词模板', '标题预设', '产品策略知识库', '脚本模板库', '爆文模板', 'LUT', 'BGM'];
 type ResourceAction = 'publish' | 'withdraw' | 'trash';
 
+/**
+ * 资源分类与发布（团队版）。14 号票只换外观：分类折叠、分页与逐项操作
+ * 的结构不动，标签、状态点、按钮与空状态换成 02 号票的共用部件。
+ */
 export default function TeamResourceCandidates({ refreshKey = 0 }: { refreshKey?: number }) {
   const [candidates, setCandidates] = useState<TeamResourceCandidate[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -66,25 +71,25 @@ export default function TeamResourceCandidates({ refreshKey = 0 }: { refreshKey?
     && (status === 'all' || candidate.published === (status === 'published')));
   const categories = [...new Set([...CATEGORIES, ...candidates.map(candidate => candidate.typeLabel)])];
 
-  return <section className="card p-6" aria-labelledby="resource-candidates-heading">
+  return <section className="card p-5" aria-labelledby="resource-candidates-heading">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div>
-        <h2 id="resource-candidates-heading" className="text-lg font-semibold text-ink">资源分类</h2>
-        <p className="mt-2 text-sm leading-6 text-ink-secondary">共 {candidates.length} 项资源。展开分类后可试听、发布或撤回；移入回收站的资源可以恢复。</p>
+        <h2 id="resource-candidates-heading" className="text-[15px] font-semibold text-ink">资源分类</h2>
+        <p className="mt-1.5 text-[13px] leading-6 text-ink-secondary">共 {candidates.length} 项资源。展开分类后可试听、发布或撤回；移入回收站的资源可以恢复。</p>
       </div>
-      <button className="btn-secondary btn-sm" type="button" disabled={!loaded || Boolean(busyId)} onClick={() => void refresh().catch(cause => setError(cause instanceof Error ? cause.message : '刷新失败'))}>刷新资源</button>
+      <ToolbarButton icon="retry" disabled={!loaded || Boolean(busyId)} onClick={() => void refresh().catch(cause => setError(cause instanceof Error ? cause.message : '刷新失败'))}>刷新资源</ToolbarButton>
     </div>
-    <div className="mt-5 flex flex-wrap gap-3">
+    <div className="mt-4 flex flex-wrap gap-3">
       <input aria-label="搜索公共资源" className="input-field min-w-0 flex-1" placeholder="搜索名称、文件名或内容" value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} />
       <select aria-label="发布状态" className="input-field w-auto" value={status} onChange={event => { setStatus(event.target.value); setPage(1); }}>
         <option value="all">全部状态</option><option value="published">已发布</option><option value="unpublished">未发布 / 已撤回</option>
       </select>
     </div>
-    {error && <p role="alert" className="mt-4 text-sm text-fail">{error}</p>}
-    {notice && <p role="status" className="mt-4 text-sm text-ok">{notice}</p>}
-    {!loaded && <p role="status" className="mt-6 text-sm text-ink-secondary">正在读取资源…</p>}
-    {loaded && !filtered.length && <p className="mt-6 text-sm text-ink-secondary">{candidates.length ? '没有匹配的资源，请调整搜索或发布状态。' : '暂无资源。可在设置中创建模板或上传知识库，也可在下方添加 BGM。'}</p>}
-    <div className="mt-5 space-y-3">
+    {error && <p role="alert" className="mt-3 text-[13px] text-fail">{error}</p>}
+    {notice && <p role="status" className="mt-3 flex items-center gap-2 text-[13px] text-ok"><StatusDot tone="ok" />{notice}</p>}
+    {!loaded && <p role="status" className="mt-4 text-[13px] text-ink-secondary">正在读取资源…</p>}
+    {loaded && !filtered.length && <EmptyState icon="image" title={candidates.length ? '没有匹配的资源' : '暂无资源'} description={candidates.length ? '请调整搜索或发布状态。' : '可在设置中创建模板或上传知识库，也可在下方添加 BGM。'} />}
+    <div className="mt-4 space-y-3">
       {categories.map((category, index) => {
         const items = filtered.filter(candidate => candidate.typeLabel === category);
         const total = candidates.filter(candidate => candidate.typeLabel === category).length;
@@ -92,39 +97,42 @@ export default function TeamResourceCandidates({ refreshKey = 0 }: { refreshKey?
         const open = expanded === category;
         const pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
         const currentPage = Math.min(page, pages);
-        return <div key={category} className="overflow-hidden rounded-xl border border-hairline">
-          <button type="button" className="flex w-full items-center justify-between gap-4 bg-surface-subtle px-4 py-4 text-left" aria-expanded={open} aria-controls={`resource-category-${index}`} onClick={() => { setExpanded(open ? null : category); setPage(1); }}>
-            <span className="font-medium text-ink">{category} <span className="ml-2 text-sm font-normal text-ink-secondary">{items.length} 项 · 已发布 {items.filter(item => item.published).length} 项</span></span>
-            <span className="text-sm text-ink-secondary">{open ? '收起 −' : '展开 +'}</span>
+        return <div key={category} className="overflow-hidden rounded-[11px] border border-hairline">
+          <button type="button" className="flex w-full items-center justify-between gap-4 bg-group px-4 py-3 text-left" aria-expanded={open} aria-controls={`resource-category-${index}`} onClick={() => { setExpanded(open ? null : category); setPage(1); }}>
+            <span className="text-[13px] font-medium text-ink">{category} <span className="ml-2 text-[12px] font-normal text-ink-secondary">{items.length} 项 · 已发布 {items.filter(item => item.published).length} 项</span></span>
+            <span className="text-[12px] text-ink-secondary">{open ? '收起 −' : '展开 +'}</span>
           </button>
           {open && <div id={`resource-category-${index}`} className="px-4">
             <div className="divide-y divide-hairline" role="list" aria-label={`${category}资源列表`}>
               {items.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE).map(candidate => <article role="listitem" key={`${candidate.resourceType}:${candidate.resourceId}`} className="grid gap-3 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="break-words font-medium text-ink">{candidate.name}</h3>
-                    <span className={`text-xs ${candidate.published ? 'text-ok' : 'text-ink-tertiary'}`}>{candidate.published ? '已发布' : candidate.previouslyPublished ? '历史版本 / 已撤回' : '未发布'}</span>
-                    {candidate.revisionNumber !== null && <span className="text-xs text-ink-secondary">v{candidate.revisionNumber} · {candidate.entryCount ?? 0} 条</span>}
+                    <h3 className="break-words text-[13px] font-medium text-ink">{candidate.name}</h3>
+                    <Tag tone={candidate.published ? 'ok' : 'idle'}>{candidate.published ? '已发布' : candidate.previouslyPublished ? '历史版本 / 已撤回' : '未发布'}</Tag>
+                    {candidate.revisionNumber !== null && <span className="tnum text-[12px] text-ink-secondary">v{candidate.revisionNumber} · {candidate.entryCount ?? 0} 条</span>}
                   </div>
-                  {candidate.resourceType === 'bgm' ? <audio controls preload="none" aria-label={`试听 ${candidate.name}`} src={`/api/final-edit-bgm/${encodeURIComponent(candidate.resourceId)}/file`} className="mt-2 h-9 max-w-full" /> : <p className="mt-1 line-clamp-2 whitespace-pre-wrap text-sm leading-6 text-ink-secondary">{candidate.preview}</p>}
-                  {candidate.resourceType !== 'bgm' && <p className="mt-1 break-all text-xs text-ink-tertiary">{candidate.sourceInfo}</p>}
+                  {candidate.resourceType === 'bgm' ? <audio controls preload="none" aria-label={`试听 ${candidate.name}`} src={`/api/final-edit-bgm/${encodeURIComponent(candidate.resourceId)}/file`} className="mt-2 h-9 max-w-full" /> : <p className="mt-1 line-clamp-2 whitespace-pre-wrap text-[13px] leading-6 text-ink-secondary">{candidate.preview}</p>}
+                  {candidate.resourceType !== 'bgm' && <p className="mt-1 break-all text-[12px] text-ink-tertiary">{candidate.sourceInfo}</p>}
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  {candidate.resourceType !== 'bgm' && <Link className="text-sm text-accent underline underline-offset-4" href={candidate.settingsHref}>管理资源</Link>}
-                  {candidate.published ? <button className="btn-secondary btn-sm" type="button" disabled={Boolean(busyId)} onClick={() => void update(candidate, 'withdraw')}>撤回发布</button> : candidate.parseStatus === 'ready' && <button className="btn-primary btn-sm" type="button" disabled={Boolean(busyId)} onClick={() => void update(candidate, 'publish')}>发布给团队</button>}
-                  {candidate.revisionNumber === null && <button className="btn-secondary btn-sm text-fail" type="button" disabled={Boolean(busyId)} onClick={() => void update(candidate, 'trash')}>移入回收站</button>}
+                <div className="flex flex-wrap items-center gap-2">
+                  {candidate.resourceType !== 'bgm' && <Link className="text-[13px] text-accent underline underline-offset-4" href={candidate.settingsHref}>管理资源</Link>}
+                  {candidate.published ? <ToolbarButton disabled={Boolean(busyId)} onClick={() => void update(candidate, 'withdraw')}>撤回发布</ToolbarButton> : candidate.parseStatus === 'ready' && <ToolbarButton variant="primary" disabled={Boolean(busyId)} onClick={() => void update(candidate, 'publish')}>发布给团队</ToolbarButton>}
+                  {candidate.revisionNumber === null && <ToolbarButton icon="trash" disabled={Boolean(busyId)} onClick={() => void update(candidate, 'trash')}>移入回收站</ToolbarButton>}
                 </div>
               </article>)}
             </div>
-            {pages > 1 && <nav aria-label={`${category}分页`} className="flex items-center justify-end gap-4 border-t border-hairline py-4 text-sm text-ink-secondary">
-              <span>第 {currentPage} / {pages} 页 · 每页 {PAGE_SIZE} 项</span>
-              <button className="btn-secondary btn-sm" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)}>上一页</button>
-              <button className="btn-secondary btn-sm" disabled={currentPage === pages} onClick={() => setPage(currentPage + 1)}>下一页</button>
+            {pages > 1 && <nav aria-label={`${category}分页`} className="flex flex-wrap items-center justify-end gap-3 border-t border-hairline py-3 text-[12px] text-ink-secondary">
+              <span className="tnum">第 {currentPage} / {pages} 页 · 每页 {PAGE_SIZE} 项</span>
+              <ToolbarButton disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)}>上一页</ToolbarButton>
+              <ToolbarButton disabled={currentPage === pages} onClick={() => setPage(currentPage + 1)}>下一页</ToolbarButton>
             </nav>}
           </div>}
         </div>;
       })}
     </div>
-    <p className="mt-4 text-xs leading-5 text-ink-tertiary">知识库与模板库按完整版本发布或撤回，保留历史版本供已有任务追溯。若其他管理员已切换版本，请刷新后操作。</p>
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      <GroupHeading>发布规则</GroupHeading>
+      <p className="text-[12px] leading-5 text-ink-tertiary">知识库与模板库按完整版本发布或撤回，保留历史版本供已有任务追溯。若其他管理员已切换版本，请刷新后操作。</p>
+    </div>
   </section>;
 }
