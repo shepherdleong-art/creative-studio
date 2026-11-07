@@ -1,49 +1,13 @@
 'use client';
 
-import Link from 'next/link';
-
-export type WorkbenchTabId = 'scene' | 'storyboard' | 'script' | 'video' | 'final-edit';
-
-const TABS: Array<{ id: WorkbenchTabId; label: string; description: string }> = [
-  { id: 'scene', label: '新场景图生成', description: '上传场景图 A，生成候选场景' },
-  { id: 'storyboard', label: '分镜生成', description: '整理原始分镜并批量生成' },
-  { id: 'script', label: '脚本生成', description: '卖点、人群和口播脚本' },
-  { id: 'video', label: '视频生成', description: '选择分镜组创建视频任务' },
-  { id: 'final-edit', label: '智能混剪', description: '智能匹配、预览调整和成片导出' },
-];
-
-interface Props {
-  projectId: string;
-  activeTab: WorkbenchTabId;
-}
-
-export default function ProjectWorkbenchTabs({ projectId, activeTab }: Props) {
-  return (
-    <nav className="segmented mb-5 w-full" aria-label="项目工作台分区">
-      <div className="grid gap-2 md:grid-cols-5">
-        {TABS.map((tab, index) => {
-          const active = tab.id === activeTab;
-          return (
-            <Link
-              key={tab.id}
-              href={`/projects/${projectId}?tab=${tab.id}`}
-              className={`rounded-lg border px-4 py-3 transition ${
-                active
-                  ? 'border-accent bg-surface text-accent shadow-sm'
-                  : 'border-transparent text-ink-secondary hover:border-hairline hover:bg-surface-hover'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold ${active ? 'bg-accent text-white' : 'bg-surface-subtle text-ink-tertiary'}`}>
-                  {index + 1}
-                </span>
-                <span className="text-sm font-semibold">{tab.label}</span>
-              </div>
-              <div className="mt-1 truncate pl-8 text-xs opacity-75">{tab.description}</div>
-            </Link>
-          );
-        })}
-      </div>
-    </nav>
-  );
-}
+/**
+ * 五步 tab 的**旧入口**（07 号票已换成工具栏里的分段按钮）。
+ *
+ * 现在真正的实现与权威清单在 `components/workbench/WorkbenchStepNav.tsx`：
+ * `WorkbenchStepNav`（`Segmented` 分段按钮）+ `WORKBENCH_STEPS` / `parseWorkbenchTab`。
+ *
+ * 本文件只为「还在 import 旧名字」的代码留兼容导出，**不要再用它渲染导航**：
+ * 规格要求五步是工具栏里的一条分段按钮，不是卡片网格（V09）。
+ */
+export type { WorkbenchTabId } from './workbench/WorkbenchStepNav';
+export { WORKBENCH_STEPS, parseWorkbenchTab, getWorkbenchStepLabel, WorkbenchStepNav } from './workbench/WorkbenchStepNav';
