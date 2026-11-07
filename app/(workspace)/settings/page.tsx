@@ -4,6 +4,9 @@ import { resolveCoreUsagePlan } from '@/lib/usage-pricing';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Icon, type IconName } from '@/components/ui/Icon';
+import PageToolbar from '@/components/team/PageToolbar';
+import { useTeamRole } from '@/components/team/useTeamRole';
+import { EmptyState, GroupHeading, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
 import ProxyCacheSettingsSection from '@/components/batch-production/ProxyCacheSettingsSection';
 import MotionTemplateSettings from '@/components/MotionTemplateSettings';
 import VideoDurationInput from '@/components/VideoDurationInput';
@@ -146,6 +149,7 @@ const sections: Array<{ id: Category; title: string; description: string; icon: 
 ];
 
 export default function SettingsPage() {
+  const teamRole = useTeamRole();
   const searchParams = useSearchParams();
   const requestedSection = searchParams.get('section');
   const [active, setActive] = useState<Category>(() => sections.some((section) => section.id === requestedSection)
@@ -334,45 +338,54 @@ export default function SettingsPage() {
     active === 'image' ? imageProviders : active === 'script' ? scriptProviders : active === 'video' ? videoProviders : [];
 
   return (
-    <div className="mx-auto max-w-5xl">
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-[-0.02em]">供应商配置</h1>
-          <p className="mt-1 text-sm text-ink-secondary">
-            管理图片、脚本和视频生成模型。所有密钥统一从这里配置，避免和环境变量产生冲突。
-          </p>
+    <div className="mx-auto w-full max-w-5xl space-y-4">
+      {teamRole ? (
+        <PageToolbar
+          role={teamRole}
+          subtitle="管理图片、脚本和视频生成模型。所有密钥统一从这里配置，避免和环境变量产生冲突。"
+          actions={active !== 'tts' && active !== 'storage' && active !== 'motion-template' && active !== 'script-knowledge'
+            ? <ToolbarButton icon="plus" variant="primary" onClick={() => beginCreate(active)}>添加供应商</ToolbarButton>
+            : undefined}
+        />
+      ) : (
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h1 className="text-[1.6rem] font-semibold tracking-[-0.02em] text-ink">供应商配置</h1>
+            <p className="mt-1 text-[13px] text-ink-secondary">
+              管理图片、脚本和视频生成模型。所有密钥统一从这里配置，避免和环境变量产生冲突。
+            </p>
+          </div>
+          {active !== 'tts' && active !== 'storage' && active !== 'motion-template' && active !== 'script-knowledge' && <ToolbarButton icon="plus" variant="primary" onClick={() => beginCreate(active)}>添加供应商</ToolbarButton>}
         </div>
-        {active !== 'tts' && active !== 'storage' && active !== 'motion-template' && active !== 'script-knowledge' && <button onClick={() => beginCreate(active)} className="btn-primary shrink-0">
-          <Icon name="plus" size={15} /> 添加供应商
-        </button>}
-      </div>
+      )}
 
-      <div className="mb-5">
+      <div>
         <CompanyProviderRuntimeStatus />
       </div>
 
-      <div className="mb-5 grid grid-cols-1 gap-2 md:grid-cols-4">
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
         {sections.map((section) => (
           <button
             key={section.id}
             onClick={() => setActive(section.id)}
-            className={`rounded-[14px] border p-4 text-left transition-colors ${
+            aria-pressed={active === section.id}
+            className={`rounded-[11px] border p-3.5 text-left transition-colors ${
               active === section.id
-                ? 'border-accent/35 bg-accent-tint/10'
-                : 'border-hairline bg-surface hover:border-accent/20'
+                ? 'border-accent bg-run-tint'
+                : 'border-hairline bg-surface hover:border-accent/40'
             }`}
           >
-            <div className="flex items-center gap-2 font-semibold text-ink">
+            <div className="flex items-center gap-2 text-[13px] font-semibold text-ink">
               <Icon name={section.icon} size={16} />
               {section.title}
             </div>
-            <p className="mt-1 text-xs text-ink-tertiary">{section.description}</p>
+            <p className="mt-1 text-[12px] text-ink-tertiary">{section.description}</p>
           </button>
         ))}
       </div>
 
       {loading ? (
-        <div className="py-12 text-center text-sm text-ink-tertiary">加载中...</div>
+        <div className="card py-12 text-center text-[13px] text-ink-tertiary">加载中...</div>
       ) : (
         <div className="space-y-4">
           {active === 'storage' && <ProxyCacheSettingsSection />}
@@ -380,19 +393,17 @@ export default function SettingsPage() {
           {active === 'motion-template' && <MotionTemplateSettings />}
           {active === 'script-knowledge' && <ScriptKnowledgeSettings />}
           {(creating === active || editing?.category === active) && (
-            <div className="card border-accent/30 bg-accent/[0.04] p-5">
-              <h3 className="mb-4 font-semibold">{creating ? '新建供应商' : '编辑供应商'}</h3>
+            <div className="card border-accent/30 bg-run-tint p-5">
+              <GroupHeading>{creating ? '新建供应商' : '编辑供应商'}</GroupHeading>
               <ProviderForm category={active} providerId={editing?.id ?? null} form={form} onChange={setForm} />
               <div className="mt-4 flex flex-wrap justify-end gap-2">
                 {editing && (
-                  <button onClick={() => void saveProvider(true)} disabled={saving} className="btn-secondary btn-sm text-fail">
-                    清除密钥
-                  </button>
+                  <ToolbarButton onClick={() => void saveProvider(true)} disabled={saving}>清除密钥</ToolbarButton>
                 )}
-                <button onClick={cancelForm} className="btn-secondary btn-sm">取消</button>
-                <button onClick={() => void saveProvider(false)} disabled={saving} className="btn-primary btn-sm">
+                <ToolbarButton onClick={cancelForm}>取消</ToolbarButton>
+                <ToolbarButton variant="primary" onClick={() => void saveProvider(false)} disabled={saving}>
                   {saving ? '保存中...' : '保存'}
-                </button>
+                </ToolbarButton>
               </div>
             </div>
           )}
@@ -410,16 +421,17 @@ export default function SettingsPage() {
           ))}
 
           {active !== 'tts' && active !== 'storage' && active !== 'script-knowledge' && currentProviders.length === 0 && (
-            <div className="flex flex-col items-center py-12 text-center text-ink-tertiary">
-              <Icon name="settings" size={34} className="mb-2" />
-              <p>暂无供应商配置</p>
-              <p className="mt-1 text-xs">点击“添加供应商”开始。</p>
-            </div>
+            <EmptyState
+              icon="settings"
+              title="暂无供应商配置"
+              description="点击「添加供应商」开始。"
+              action={<ToolbarButton icon="plus" variant="primary" onClick={() => beginCreate(active)}>添加供应商</ToolbarButton>}
+            />
           )}
         </div>
       )}
 
-      <div className="mt-8 flex gap-2 rounded-[18px] bg-surface-subtle p-4 text-sm text-ink-secondary">
+      <div className="flex gap-2 rounded-[11px] bg-group p-4 text-[13px] text-ink-secondary">
         <Icon name="lock" size={16} className="mt-0.5 shrink-0 text-ink-tertiary" />
         <p>
           <strong className="text-ink">安全提示：</strong>
@@ -457,27 +469,24 @@ function ProviderCard({
     && isFixedCompanyLuna(provider.id, provider.executionScope, provider.model, provider.apiStyle, provider.type);
 
   return (
-    <div className={`card p-5 ${editing ? 'border-accent/40' : ''}`}>
+    <div className={`card p-5${editing ? ' border-accent/40' : ''}`}>
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="mb-2 flex flex-wrap items-center gap-2">
-            <h3 className="font-semibold">{provider.name}</h3>
-            <span className={`status-badge ${configured ? 'status-succeeded' : 'status-failed'}`}>
-              <Icon name={configured ? 'key' : 'alert'} size={12} />
-              {configured ? '已配置' : '未配置'}
-            </span>
-            {!provider.enabled && <span className="status-badge status-canceled">已禁用</span>}
+            <h3 className="text-[15px] font-semibold text-ink">{provider.name}</h3>
+            <Tag tone={configured ? 'ok' : 'warn'}>{configured ? '已配置' : '未配置'}</Tag>
+            {!provider.enabled && <Tag tone="idle">已禁用</Tag>}
             {category === 'script' && 'executionScope' in provider && (
-              <span className="status-badge status-canceled">
+              <Tag tone="idle">
                 {provider.executionScope === 'company' ? '公司 LiteLLM' : '外部直连'}
-              </span>
+              </Tag>
             )}
           </div>
-          <div className="grid grid-cols-1 gap-x-8 gap-y-1 text-sm text-ink-secondary sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-x-8 gap-y-1 text-[13px] text-ink-secondary sm:grid-cols-2">
             {baseUrl && (
               <div className="min-w-0">
                 <span className="text-ink-tertiary">Base URL:</span>{' '}
-                <code className="break-all rounded bg-surface-subtle px-1 text-xs">{baseUrl}</code>
+                <code className="break-all rounded bg-group px-1 text-[12px]">{baseUrl}</code>
               </div>
             )}
             <div><span className="text-ink-tertiary">模型:</span> {model || '-'}</div>
@@ -493,18 +502,16 @@ function ProviderCard({
             )}
           </div>
           {missing.length > 0 && (
-            <p className="mt-2 text-xs text-fail">缺少配置：{missing.join(', ')}</p>
+            <p className="mt-2 flex items-center gap-1.5 text-[12px] text-fail"><StatusDot tone="fail" />缺少配置：{missing.join(', ')}</p>
           )}
           {(fixedImagePrice || fixedCompanyLuna) && (
-            <p className="mt-2 text-xs text-ink-tertiary">固定单价由后台计算</p>
+            <p className="mt-2 text-[12px] text-ink-tertiary">固定单价由后台计算</p>
           )}
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
-          <button onClick={onToggle} className={provider.enabled ? 'btn-secondary btn-sm' : 'btn-primary btn-sm'}>
-            {provider.enabled ? '禁用' : '启用'}
-          </button>
-          <button onClick={onEdit} className="btn-secondary btn-sm">编辑</button>
-          <button onClick={onDelete} className="icon-btn text-fail" title="删除" aria-label={`删除 ${provider.name}`}>
+          <ToolbarButton onClick={onToggle} variant={provider.enabled ? 'default' : 'primary'}>{provider.enabled ? '禁用' : '启用'}</ToolbarButton>
+          <ToolbarButton onClick={onEdit}>编辑</ToolbarButton>
+          <button onClick={onDelete} className="cap cap-icon text-fail" title="删除" aria-label={`删除 ${provider.name}`}>
             <Icon name="trash" size={15} />
           </button>
         </div>
@@ -599,13 +606,13 @@ function ProviderForm({
               onChange={(e) => onChange({ ...form, supportsVision: e.target.checked })}
               className="h-4 w-4 rounded border-hairline accent-accent"
             />
-            <span className="text-sm text-ink-secondary">支持图片理解</span>
+            <span className="text-[13px] text-ink-secondary">支持图片理解</span>
           </label>
         </div>
       )}
 
       <Field label="Base URL">
-        <input value={form.baseUrl} onChange={(e) => onChange({ ...form, baseUrl: e.target.value })} className="input-field font-mono text-xs" placeholder="https://api.example.net" />
+        <input value={form.baseUrl} onChange={(e) => onChange({ ...form, baseUrl: e.target.value })} className="input-field font-mono text-[12px]" placeholder="https://api.example.net" />
       </Field>
 
       <Field label={category === 'video' ? '默认模型' : '模型名'}>
@@ -636,11 +643,11 @@ function ProviderForm({
       )}
 
       {fixedImagePrice && (
-        <p className="rounded-xl bg-surface-subtle px-3 py-2.5 text-sm text-ink-secondary">固定单价由后台计算</p>
+        <p className="rounded-[11px] bg-group px-3 py-2.5 text-[13px] text-ink-secondary">固定单价由后台计算</p>
       )}
 
       {category === 'script' && (
-        <><Field label="最大输出 Token"><input type="number" min="512" step="512" value={form.maxTokens} onChange={(e) => onChange({ ...form, maxTokens: Number(e.target.value) || 8192 })} className="input-field" /></Field>{fixedCompanyLuna ? <p className="rounded-xl bg-surface-subtle px-3 py-2.5 text-sm text-ink-secondary">固定单价由后台计算</p> : <Field label="视觉分析成本（元 / 次）"><input type="number" min="0" step="0.0001" value={form.visionCostPerRequest} onChange={(e) => onChange({ ...form, visionCostPerRequest: Math.max(0, Number(e.target.value) || 0) })} className="input-field" /></Field>}</>
+        <><Field label="最大输出 Token"><input type="number" min="512" step="512" value={form.maxTokens} onChange={(e) => onChange({ ...form, maxTokens: Number(e.target.value) || 8192 })} className="input-field" /></Field>{fixedCompanyLuna ? <p className="rounded-[11px] bg-group px-3 py-2.5 text-[13px] text-ink-secondary">固定单价由后台计算</p> : <Field label="视觉分析成本（元 / 次）"><input type="number" min="0" step="0.0001" value={form.visionCostPerRequest} onChange={(e) => onChange({ ...form, visionCostPerRequest: Math.max(0, Number(e.target.value) || 0) })} className="input-field" /></Field>}</>
       )}
 
       {category === 'video' && (
@@ -652,7 +659,7 @@ function ProviderForm({
       <div className="flex items-end pb-2">
         <label className="flex cursor-pointer items-center gap-2">
           <input type="checkbox" checked={form.enabled} onChange={(e) => onChange({ ...form, enabled: e.target.checked })} className="h-4 w-4 rounded border-hairline accent-accent" />
-          <span className="text-sm text-ink-secondary">启用</span>
+          <span className="text-[13px] text-ink-secondary">启用</span>
         </label>
       </div>
     </div>
@@ -696,7 +703,7 @@ function TtsSettingsCard() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  if (providers.length === 0) return <div className="card p-8 text-center text-sm text-ink-tertiary">正在加载口播配音设置…</div>;
+  if (providers.length === 0) return <div className="card p-8 text-center text-[13px] text-ink-tertiary">正在加载口播配音设置…</div>;
   return <div className="space-y-4">
     {providers.map((provider) => <TtsProviderSettingsCard key={provider.id} provider={provider} onSaved={load} />)}
   </div>;
@@ -736,16 +743,16 @@ function TtsProviderSettingsCard({ provider, onSaved }: { provider: TtsProviderS
 
   return <div className="card p-5">
     <div className="flex items-start justify-between gap-4">
-      <div><div className="flex items-center gap-2"><h3 className="font-semibold">{provider.name}</h3><span className={`status-badge ${provider.configured ? 'status-succeeded' : 'status-failed'}`}>{provider.configured ? '已配置' : '未配置'}</span></div><p className="mt-1 text-xs text-ink-tertiary">{provider.description}</p></div>
-      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="accent-accent" />启用</label>
+      <div><div className="flex items-center gap-2"><h3 className="text-[15px] font-semibold text-ink">{provider.name}</h3><Tag tone={provider.configured ? 'ok' : 'warn'}>{provider.configured ? '已配置' : '未配置'}</Tag></div><p className="mt-1 text-[12px] text-ink-tertiary">{provider.description}</p></div>
+      <label className="flex items-center gap-2 text-[13px] text-ink-secondary"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="accent-accent" />启用</label>
     </div>
-    <div className="mt-5 grid gap-4 sm:grid-cols-2">
-      <Field label="Base URL"><input className="input-field font-mono text-xs" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></Field>
-      <Field label="模型（只读）"><input className="input-field bg-surface-subtle" value={provider.model} readOnly /></Field>
+    <div className="mt-4 grid gap-4 sm:grid-cols-2">
+      <Field label="Base URL"><input className="input-field font-mono text-[12px]" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></Field>
+      <Field label="模型（只读）"><input className="input-field bg-group" value={provider.model} readOnly /></Field>
       <Field label="API Key"><input type="password" className="input-field font-mono" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="留空则不修改" autoComplete="off" /></Field>
-      {fixedPrice ? <p className="rounded-xl bg-surface-subtle px-3 py-2.5 text-sm text-ink-secondary">固定单价由后台计算</p> : <Field label="成本（元 / 千字符）"><input type="number" min="0" step="0.0001" className="input-field" value={costPerThousandCharacters} onChange={(event) => setCostPerThousandCharacters(Math.max(0, Number(event.target.value) || 0))} /></Field>}
-      <div><label className="label">固定音色</label><p className="rounded-xl bg-surface-subtle px-3 py-2.5 text-sm text-ink-secondary">{provider.voices.length} 项 · 含 {voiceExamples} 等</p></div>
+      {fixedPrice ? <p className="rounded-[11px] bg-group px-3 py-2.5 text-[13px] text-ink-secondary">固定单价由后台计算</p> : <Field label="成本（元 / 千字符）"><input type="number" min="0" step="0.0001" className="input-field" value={costPerThousandCharacters} onChange={(event) => setCostPerThousandCharacters(Math.max(0, Number(event.target.value) || 0))} /></Field>}
+      <div><label className="label">固定音色</label><p className="rounded-[11px] bg-group px-3 py-2.5 text-[13px] text-ink-secondary">{provider.voices.length} 项 · 含 {voiceExamples} 等</p></div>
     </div>
-    <div className="mt-4 flex items-center justify-between"><p className={`text-sm ${message === '已保存' ? 'text-success' : 'text-fail'}`}>{message}</p><div className="flex gap-2"><button type="button" className="btn-secondary btn-sm text-fail" disabled={saving} onClick={() => void save(true)}>清除密钥</button><button type="button" className="btn-primary btn-sm" disabled={saving} onClick={() => void save(false)}>{saving ? '保存中…' : '保存'}</button></div></div>
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className={`flex items-center gap-1.5 text-[13px] ${message === '已保存' ? 'text-ok' : 'text-fail'}`}>{message ? <StatusDot tone={message === '已保存' ? 'ok' : 'fail'} /> : null}{message}</p><div className="flex gap-2"><ToolbarButton onClick={() => void save(true)} disabled={saving}>清除密钥</ToolbarButton><ToolbarButton variant="primary" onClick={() => void save(false)} disabled={saving}>{saving ? '保存中…' : '保存'}</ToolbarButton></div></div>
   </div>;
 }

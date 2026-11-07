@@ -1,0 +1,322 @@
+/* 模型与名额（13 号票）：一个名额池一行的卡片式分组列表。
+ *
+ * 颜色、字号、圆角一律走 `app/globals.css` 的令牌（02 号票），这里不写死浅色值，
+ * 深色随令牌自动跟随。共用壳（GroupList / GroupRow / Tag / StatusDot）直接用
+ * 02 的类，本文件只补「账号行」这一处网格几何与展开体。 */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.lead {
+  max-width: 76ch;
+  padding: 0 4px;
+  font-size: var(--text-body);
+  line-height: 1.55;
+  color: var(--color-ink-secondary);
+}
+.lead b { font-weight: 600; color: var(--color-ink); }
+
+.warning {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-warn-tint);
+  border-radius: var(--radius-tile);
+  background: var(--color-warn-tint);
+  font-size: var(--text-label);
+  line-height: 1.5;
+  color: var(--color-warn);
+}
+.warning strong { font-size: var(--text-body); font-weight: 600; }
+.warning ul { display: grid; gap: 4px; padding-left: 16px; list-style: disc; }
+
+.blockers {
+  padding: 12px 14px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-tile);
+  background: var(--color-group);
+  font-size: var(--text-label);
+  line-height: 1.5;
+  color: var(--color-ink-secondary);
+}
+.blockers b { display: block; margin-bottom: 4px; font-size: var(--text-body); font-weight: 600; color: var(--color-ink); }
+.blockers ul { display: grid; gap: 3px; padding-left: 14px; list-style: disc; }
+
+/* ---------- 账号行 ---------- */
+
+.account { min-width: 0; }
+.account + .account { border-top: 1px solid var(--color-hairline); }
+
+.head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 112px 184px 96px 40px 24px;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.identity { min-width: 0; }
+.name {
+  display: block;
+  overflow: hidden;
+  font-size: var(--text-body);
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink);
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  margin-top: 2px;
+  font-size: var(--text-label);
+  line-height: 1.4;
+  color: var(--color-ink-secondary);
+}
+.detailLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: var(--text-label);
+  line-height: 1.4;
+  color: var(--color-warn);
+}
+.detailLine a { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; }
+
+/* 名额步进器：−  [n]  + */
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.stepperButton {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--color-seg);
+  color: var(--color-ink);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.stepperButton:hover:not(:disabled) { background: var(--color-surface-hover); box-shadow: inset 0 0 0 1px var(--color-hairline); }
+.stepperButton:disabled { opacity: .45; cursor: not-allowed; }
+.capacityInput {
+  width: 48px;
+  height: 28px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--color-seg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-input);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  text-align: center;
+}
+.capacityInput:focus,
+.poolKeyInput:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgb(0 113 227 / 24%);
+}
+.capacityInput[aria-invalid='true'] { border-color: var(--color-fail); }
+
+/* 正在用 x / y + 进度条 */
+.usage { display: grid; gap: 4px; min-width: 0; }
+.usageText {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: var(--text-label);
+  line-height: 1.2;
+  color: var(--color-ink-secondary);
+  white-space: nowrap;
+}
+.usageText b { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--color-ink); }
+/* 行上的占用明细：已占 / 已受理 / 可能已发 / 未发。每项自己不换行，窄栏整项折行。
+ * 字号跟着 `--text-label`（12px）走：界面上的说明文字不小于 12px。 */
+.usageDetail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  font-size: var(--text-label);
+  line-height: 1.35;
+  color: var(--color-ink-secondary);
+}
+.usageDetail > span { white-space: nowrap; }
+.bar {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-track);
+  overflow: hidden;
+}
+.bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+.barFull > i { background: var(--color-warn); }
+
+.statusCell { display: flex; justify-content: flex-start; min-width: 0; }
+.save { height: 26px; padding: 0 10px; font-size: var(--text-label); }
+
+/* 启用开关 */
+.switch {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-dot-idle);
+  cursor: pointer;
+  transition: background .15s ease;
+}
+.switch[aria-checked='true'] { background: var(--color-accent); }
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 24%);
+  transition: transform .15s ease;
+}
+.switch[aria-checked='true']::after { transform: translateX(16px); }
+.switch:disabled { opacity: .45; cursor: not-allowed; }
+
+.expand {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-secondary);
+  cursor: pointer;
+}
+.expand:hover { background: var(--color-surface-subtle); }
+
+/* ---------- 展开体 ---------- */
+
+.body {
+  display: grid;
+  gap: 10px;
+  padding: 2px 12px 12px;
+  border-top: 1px solid var(--color-hairline-soft);
+  font-size: var(--text-body);
+}
+.bodyInner { display: grid; gap: 10px; padding-top: 10px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--color-seg);
+  color: var(--color-ink);
+  font-size: var(--text-label);
+  white-space: nowrap;
+}
+.chipBad { color: var(--color-warn); }
+
+.members { display: grid; gap: 3px; font-size: var(--text-body); }
+.member {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  min-width: 0;
+}
+.member span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member small { color: var(--color-ink-secondary); font-size: var(--text-label); white-space: nowrap; }
+.muted { font-size: var(--text-label); color: var(--color-ink-secondary); }
+
+.occupancy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: var(--text-label);
+  color: var(--color-ink-secondary);
+}
+.occupancy b { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--color-ink); }
+
+.mergeRow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.poolKeyInput {
+  width: 240px;
+  max-width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-control);
+  background: var(--color-card);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+}
+
+/* 内部编号：默认收起，点开才看 */
+.internal { font-size: var(--text-label); color: var(--color-ink-secondary); }
+.internal > summary { cursor: pointer; list-style: none; }
+.internal > summary::-webkit-details-marker { display: none; }
+.internal > summary::before { content: '▸ '; color: var(--color-ink-tertiary); }
+.internal[open] > summary::before { content: '▾ '; }
+.internal code {
+  display: block;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--color-group);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink);
+  word-break: break-all;
+}
+
+.footerHint {
+  padding: 0 4px;
+  font-size: var(--text-label);
+  line-height: 1.5;
+  color: var(--color-ink-secondary);
+}
+
+/* 窄窗口：只收起进度条；「已占 / 已受理 / 可能已发 / 未发」这四项在行上必须一直看得见
+ * （需求对每一行的要求），所以让明细在窄栏里换行，而不是把数字藏起来。 */
+@media (max-width: 1180px) {
+  .head { grid-template-columns: minmax(0, 1fr) 104px 150px 88px 36px 22px; gap: 6px; }
+  .usage .bar { display: none; }
+}
+
+@media (max-width: 1000px) {
+  .head { grid-template-columns: minmax(0, 1fr) 104px 140px 36px 22px; }
+  .statusCell { display: none; }
+}
+
+@media (max-width: 760px) {
+  .head { grid-template-columns: minmax(0, 1fr) 108px 40px 24px; gap: 6px; padding: 10px 8px; }
+  .statusCell { display: none; }
+  .poolKeyInput { width: 100%; }
+}

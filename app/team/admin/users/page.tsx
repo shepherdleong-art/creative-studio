@@ -11,5 +11,5 @@ export default async function TeamUsersPage() {
   const principal = token ? getTeamAuthService().resolveSession(token) : null;
   if (!principal || principal.mustChangePassword) redirect('/team/login');
   if (principal.role !== 'admin') redirect('/');
-  return <TeamUsersPanel />;
+  return <TeamUsersPanel role={principal.role} />;
 }
