@@ -38,7 +38,8 @@ try {
   ]);
   const tasksResponse = await page.goto(`${baseUrl}/team/tasks`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   assert.equal(tasksResponse?.ok(), true);
-  await page.getByRole('heading', { name: '团队任务', exact: true }).waitFor({ timeout: 30_000 });
+  // 12 号票起标题由外壳工具栏按路径解析（页面不再自己写 <h1>），选择器跟着换，断言不放宽。
+  await page.getByTestId('page-toolbar-title').filter({ hasText: '我的任务' }).first().waitFor({ timeout: 30_000 });
   await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 30_000 }).catch(() => undefined);
   const taskFixture = JSON.parse(process.env.TEAM_ACCEPTANCE_TASK_FIXTURE ?? 'null');
   if (taskFixture) {

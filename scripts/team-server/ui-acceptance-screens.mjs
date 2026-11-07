@@ -97,7 +97,13 @@ export const SCREENS = [
   }),
   base('tasks-employee', '我的任务', 'ui-12', {
     href: () => '/team/tasks',
-    ready: async (page) => { await page.getByRole('heading', { name: '团队任务', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 12 号票改版：员工页标题改由外壳工具栏按路径解析成「我的任务」，页面里不再有自己的 <h1>。
+    ready: async (page) => {
+      await page.getByTestId('page-toolbar-title').first().waitFor({ timeout: 60_000 });
+      await page.getByRole('region', { name: '筛选' }).waitFor({ timeout: 60_000 });
+      await page.getByLabel('查找任务', { exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
   }),
   base('downloads', '下载与交付', 'ui-14', {
     href: () => '/team/downloads',
@@ -176,15 +182,61 @@ export const SCREENS = [
   }),
 
   // ---------- 管理员侧 ----------
+  // 12 号票：运行总览 + 全员任务。ready 等的是「这一屏真的画出来」的落点：
+  // 数量卡的固定标题 + 最近任务表/空状态；全员任务等筛选栏与结果说明。
   base('admin-overview', '运行总览（管理员）', 'ui-12', {
     audience: 'admin',
     href: () => '/',
-    ready: async (page) => { await page.getByText('生产有序，状态清楚。', { exact: false }).first().waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.getByRole('region', { name: '任务数量' }).waitFor({ timeout: 60_000 });
+      await page.getByTestId('count-running').waitFor({ timeout: 60_000 });
+      await page.getByRole('region', { name: '最近任务' }).waitFor({ timeout: 60_000 });
+      await page.getByRole('region', { name: '开工前还差几件事' }).waitFor({ timeout: 60_000 });
+      // 等「读取运行总览…」消失，否则数量卡还是占位符。
+      await page.getByText('读取运行总览…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
+  }),
+  base('admin-overview-pause-dialog', '运行总览 · 暂停生产确认', 'ui-12', {
+    audience: 'admin',
+    href: () => '/',
+    ready: async (page) => {
+      await page.getByRole('region', { name: '任务数量' }).waitFor({ timeout: 60_000 });
+      await page.getByText('读取运行总览…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
+    actions: [async (page) => {
+      const pause = page.getByRole('button', { name: '暂停运行', exact: true });
+      // 维护中时按钮禁用、没有确认框可量；这种情况下不硬点，交给下面这条断言说明。
+      if (!(await pause.isEnabled().catch(() => false))) return;
+      await pause.click();
+      await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
+      await page.getByRole('button', { name: '取消', exact: true }).click();
+      await page.getByRole('dialog').first().waitFor({ state: 'detached', timeout: 30_000 });
+    }],
   }),
   base('admin-tasks', '全员任务', 'ui-12', {
     audience: 'admin',
     href: () => '/team/tasks',
-    ready: async (page) => { await page.getByRole('heading', { name: '团队任务', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.getByRole('region', { name: '筛选' }).waitFor({ timeout: 60_000 });
+      await page.getByLabel('查找任务', { exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByRole('region', { name: '任务列表' }).waitFor({ timeout: 60_000 });
+      await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
+  }),
+  base('admin-tasks-detail', '全员任务 · 任务详情', 'ui-12', {
+    audience: 'admin',
+    href: () => '/team/tasks',
+    // 详情需要一条真实任务；验收夹具只造了项目和供应商，所以这一屏只在有行时量。
+    ready: async (page) => {
+      await page.getByRole('region', { name: '筛选' }).waitFor({ timeout: 60_000 });
+      await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
+    actions: [async (page) => {
+      const row = page.getByTestId('task-row').first();
+      if (await row.count() === 0) return;
+      await row.click();
+      await page.getByTestId('task-detail').waitFor({ timeout: 30_000 });
+    }],
   }),
   base('admin-pools', '模型与名额（资源池与共享预算）', 'ui-13', {
     audience: 'admin',
