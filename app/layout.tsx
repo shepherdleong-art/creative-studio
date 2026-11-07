@@ -57,6 +57,10 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const deploymentMode = readRuntimeConfig().mode;
+  // 团队版不再套 980px 居中栏：宽度由各页自己决定（侧栏让位规则在
+  // components/team/workspace.module.css 里按同一份 deployment 标记生效）。
+  // 本地版保持原样，避免影响个人工作台。
+  const team = deploymentMode === 'server';
   return (
     <html lang="zh-CN" className="h-full antialiased" suppressHydrationWarning data-deployment-mode={deploymentMode}>
       <body className="min-h-full flex flex-col bg-surface text-ink">
@@ -66,7 +70,12 @@ export default function RootLayout({
         <Suspense fallback={<Header deploymentMode={process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server' ? 'server' : 'local'} />}>
           <RuntimeHeader />
         </Suspense>
-        <main className="flex-1 w-full max-w-[980px] mx-auto px-6 py-10">
+        <main
+          data-workspace-shell={team ? 'team' : undefined}
+          className={team
+            ? 'flex-1 flex min-h-0 w-full min-w-0 flex-col'
+            : 'flex-1 w-full max-w-[980px] mx-auto px-6 py-10'}
+        >
           <Suspense fallback={
             <div className="flex items-center justify-center py-20">
               <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />

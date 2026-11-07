@@ -1,17 +1,267 @@
-.sidebar { position: fixed; inset: 0 auto 0 0; width: 218px; z-index: 40; display: flex; flex-direction: column; padding: 30px 17px 18px; border-right: 1px solid var(--color-hairline); background: var(--color-surface); overflow-y: auto; font-size: 13px; }
-.brand { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 650; letter-spacing: -.35px; white-space: nowrap; }
-.brand small { display: block; color: var(--color-ink-tertiary); font-size: 10px; font-weight: 400; letter-spacing: 1.5px; margin-top: 2px; }
-.brandMark { display: grid; place-items: center; width: 35px; height: 35px; background: var(--color-ink); color: var(--color-surface); border-radius: 11px; }
-.navCaption { color: var(--color-ink-tertiary); font-size: 10px; margin: 38px 14px 12px; letter-spacing: .5px; }
-.sidebar nav { display: grid; gap: 4px; }
-.sidebar nav a { display: flex; align-items: center; gap: 11px; padding: 10px 14px; border-radius: 8px; color: var(--color-ink-secondary); }
-.sidebar nav a:hover { background: var(--color-surface-subtle); }
-.sidebar nav a[aria-current] { color: var(--color-accent); background: var(--color-run-tint); font-weight: 600; }
-.sideBottom { display: flex; gap: 10px; align-items: center; margin-top: auto; padding-top: 30px; }
-.sideBottom strong { display: block; font-size: 12px; font-weight: 550; }
-.sideBottom small, .sideHint { color: var(--color-ink-tertiary); font-size: 10px; }
-.avatar { display: grid; place-items: center; border-radius: 50%; width: 32px; height: 32px; border: 1px solid var(--color-hairline); background: var(--color-surface-subtle); }
-.sideHint { margin-top: 18px; font-size: 9px; text-align: center; }
+/* 团队版外壳（05 号票）：左侧分组侧栏 + 头像菜单 + 每页工具栏。
+ *
+ * 替换点：颜色一律走 `app/globals.css` 的令牌（02 号票会调整取值、补新用途令牌）。
+ * 这里不写死浅色值，深色由令牌自动跟随；确需深浅分区时用 `html[data-theme='dark']`。
+ * 侧栏宽度、圆角、行高按原型「方案一 Mac 原生」：224 / 18px / 30px。
+ */
+
+/* ---------- 外壳几何：侧栏固定左侧，主区让出宽度 ---------- */
+:global(:root) {
+  --workspace-sidebar-width: 224px;
+  --workspace-content-max: 1500px;
+}
+
+/* 主区：团队版不再套 980px 居中栏，宽度由各页自己决定。
+ * `:global` 是因为这些规则要命中 app/layout.tsx 里的 <main>。 */
+:global(body:has(> aside[data-testid='workspace-sidebar'])) > main {
+  width: calc(100% - var(--workspace-sidebar-width));
+  max-width: none;
+  min-width: 0;
+  margin-left: var(--workspace-sidebar-width);
+  margin-right: 0;
+  padding: 24px 32px 48px;
+}
+
+/* 编辑器类整幅页面（画布）：去掉外壳内边距，自己铺满。 */
+:global(body:has(> aside[data-testid='workspace-sidebar'])) > main:has(> [data-testid='canvas-editor']) {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* 团队版内容不许横向溢出：
+ * - direct children 允许收缩（表格自己有 overflow-x-auto）；
+ * - 视频工作区原本按 100vw 居中突破，侧栏占了宽度，这里改成按内容区算。
+ *   混剪页的宽度规则归 09 号票，本票只保证不比旧外壳更糟（旧外壳也没有混剪覆盖）。 */
+:global(body:has(> aside[data-testid='workspace-sidebar'])) > main > * {
+  min-width: 0;
+  max-width: 100%;
+}
+:global(body:has(> aside[data-testid='workspace-sidebar'])) .video-generation-section {
+  left: auto;
+  transform: none;
+  width: 100%;
+  max-width: min(calc(100vw - var(--workspace-sidebar-width) - 64px), 1400px);
+}
+
+/* 窄窗口：15 号票会重做收法。这里只保留现有「收成图标条」的雏形，
+ * 同时把主区宽度让给同一套令牌，避免出现横向滚动。 */
+@media (max-width: 760px) {
+  :global(:root) { --workspace-sidebar-width: 68px; }
+  :global(body:has(> aside[data-testid='workspace-sidebar'])) > main { padding: 20px 16px 40px; }
+}
+
+/* ---------- 侧栏 ---------- */
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--workspace-sidebar-width);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px 12px 14px;
+  border-right: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+  overflow-y: auto;
+  overflow-x: hidden;
+  font-size: 13px;
+}
+
+.wsBrand { display: flex; align-items: center; gap: 9px; padding: 2px 8px 14px; min-width: 0; }
+.wsBrandMark { display: grid; place-items: center; width: 28px; height: 28px; flex: none; }
+.wsBrandCopy { min-width: 0; }
+.wsBrandCopy strong { display: block; font-size: 14px; font-weight: 600; letter-spacing: -.02em; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wsBrandCopy small { display: block; font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--color-ink-tertiary); margin-top: 1px; }
+
+/* 中间导航区：可滚动、吃满剩余高度，底部工具区永远贴在底部 */
+.wsNav { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -2px; padding: 0 2px; }
+.wsGroupTitle {
+  margin: 14px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  color: var(--color-ink-tertiary);
+}
+.wsNavRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 9px;
+  color: var(--color-ink);
+  font-size: 13px;
+  white-space: nowrap;
+  transition: background .15s ease, color .15s ease;
+}
+.wsNavRow:hover { background: var(--color-surface-subtle); }
+.wsNavRow:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.wsNavRow svg { flex: none; color: var(--color-ink-secondary); }
+.wsNavRow[aria-current='page'] { background: var(--color-run-tint); color: var(--color-accent); font-weight: 600; }
+.wsNavRow[aria-current='page'] svg { color: var(--color-accent); }
+.wsNavLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wsBadge {
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-tertiary);
+}
+.wsNavRow[aria-current='page'] .wsBadge { color: var(--color-accent); }
+
+/* 底部：更新提示条 + 头像 */
+.wsFooter { flex: none; padding-top: 10px; display: grid; gap: 8px; }
+.wsUpdateBar {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--color-warn-tint);
+  border-radius: 11px;
+  background: var(--color-warn-tint);
+  color: var(--color-warn);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.wsUpdateBar strong { font-weight: 600; }
+.wsUpdateBar button {
+  justify-self: start;
+  padding: 5px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-solid);
+  color: var(--color-accent-foreground);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.wsUpdateBar button:disabled { opacity: .5; cursor: default; }
+.wsUpdateMessage { font-size: 11px; color: var(--color-ink-secondary); }
+
+.wsUser {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.wsUser:hover { background: var(--color-surface-subtle); }
+.wsUser:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.wsAvatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--color-ink);
+  color: var(--color-surface);
+  font-size: 12px;
+  font-weight: 600;
+}
+.wsUserCopy { min-width: 0; flex: 1; }
+.wsUserCopy strong { display: block; font-size: 12.5px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wsUserCopy small { display: block; font-size: 10.5px; color: var(--color-ink-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wsUserChevron { flex: none; color: var(--color-ink-tertiary); }
+
+/* 头像菜单：向上弹出，贴在侧栏底部 */
+.wsMenuAnchor { position: relative; }
+.wsMenu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 50;
+  min-width: 208px;
+  padding: 6px;
+  border: 1px solid var(--color-hairline);
+  border-radius: 14px;
+  background: var(--color-surface);
+  box-shadow: 0 16px 48px rgb(0 0 0 / 18%);
+}
+.wsMenuWho { padding: 6px 9px 8px; }
+.wsMenuWho strong { display: block; font-size: 12.5px; font-weight: 600; }
+.wsMenuWho small { display: block; font-size: 11px; color: var(--color-ink-tertiary); margin-top: 1px; }
+.wsMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--color-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.wsMenuItem:hover { background: var(--color-surface-subtle); }
+.wsMenuItem svg { color: var(--color-ink-secondary); flex: none; }
+.wsMenuDanger { color: var(--color-fail); }
+.wsMenuDanger svg { color: var(--color-fail); }
+.wsMenuHr { height: 1px; margin: 5px 8px; border: 0; background: var(--color-hairline); }
+.wsMenuTheme { display: flex; align-items: center; gap: 8px; padding: 2px 9px 6px; font-size: 12px; color: var(--color-ink-secondary); }
+.wsThemeSeg {
+  margin-left: auto;
+  display: flex;
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-subtle);
+  gap: 2px;
+}
+.wsThemeSeg button {
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 11.5px;
+  color: var(--color-ink-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.wsThemeSeg button[aria-checked='true'] { background: var(--color-surface); color: var(--color-ink); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 10%); }
+.wsMenuHint { padding: 4px 9px 2px; font-size: 10.5px; line-height: 1.45; color: var(--color-ink-tertiary); }
+
+/* ---------- 每页工具栏 ---------- */
+.pageToolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  margin-bottom: 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-hairline-soft);
+}
+.pageToolbarTitle { min-width: 0; margin-right: auto; }
+.pageToolbarTitle h1 { font-size: clamp(21px, 1.9vw, 27px); font-weight: 600; line-height: 1.2; letter-spacing: -.045em; color: var(--color-ink); }
+.pageToolbarActions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: none; }
+.pageToolbarBack { display: inline-flex; align-items: center; gap: 4px; flex: none; color: var(--color-ink-secondary); font-size: 12.5px; }
+.pageToolbarBack:hover { color: var(--color-ink); }
+
+/* 外壳级紧凑标题条：每页一进来就有的定位行。
+ * 页面接管工具栏（挂 PageToolbar）后这条自动撤下，所以它只需要存在感够用的最小尺寸。 */
+.pageCrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  margin-bottom: 14px;
+  color: var(--color-ink-tertiary);
+  font-size: 12px;
+  letter-spacing: .01em;
+}
+.pageCrumb::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-dot-ok);
+  flex: none;
+}
+
+/* ---------- 团队首页 / 面板共用（沿用原有类名） ---------- */
 .dashboard { display: grid; gap: 30px; font-size: 13px; line-height: 1.55; }
 .title { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .eyebrow { display: block; font-size: 9px; letter-spacing: 1.6px; color: var(--color-ink-tertiary); margin-bottom: 11px; font-weight: 600; }
@@ -49,5 +299,24 @@
 .projectCopy { padding: 16px; }
 .projectCopy strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
 .projectCopy small { display: block; color: var(--color-ink-tertiary); margin-top: 6px; font-size: 11px; }
-@media (max-width: 1100px) { .stats, .modules { grid-template-columns: repeat(2, minmax(0, 1fr)); } .columns { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .sidebar { width: 68px; padding: 22px 10px; } .brand > span:last-child, .navCaption, .sidebar nav a span, .sideBottom, .sideHint { display: none; } .sidebar nav { margin-top: 28px; } .sidebar nav a { justify-content: center; padding: 12px 0; } .title { align-items: flex-start; } .projects { grid-template-columns: 1fr; } .module { padding: 12px; } .notice { flex-wrap: wrap; } }
+
+@media (max-width: 1100px) {
+  .stats, .modules { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .columns { grid-template-columns: 1fr; }
+}
+
+/* 窄窗口：保留现有「收成图标条」的行为（完整方案归 15 号票）。 */
+@media (max-width: 760px) {
+  .sidebar { padding: 16px 10px 12px; }
+  .wsBrandCopy, .wsGroupTitle, .wsNavLabel, .wsBadge, .wsUserCopy, .wsUserChevron,
+  .wsMenuHint, .wsUpdateBar { display: none; }
+  .wsBrand { justify-content: center; padding: 2px 0 12px; }
+  .wsNavRow { justify-content: center; padding: 0; }
+  .wsUser { justify-content: center; padding: 6px 0; }
+  .wsMenu { left: calc(100% + 8px); right: auto; bottom: 0; width: 208px; }
+  .title { align-items: flex-start; }
+  .projects { grid-template-columns: 1fr; }
+  .module { padding: 12px; }
+  .notice { flex-wrap: wrap; }
+  .pageToolbar { flex-wrap: wrap; }
+}
