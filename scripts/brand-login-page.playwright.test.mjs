@@ -27,6 +27,9 @@ await new Promise((resolve) => socket.close(resolve));
 const baseUrl = `http://127.0.0.1:${port}`;
 const deploymentId = 'deployment-brand-login';
 
+const OLD_NAMES = ['产品素材工作台', 'Creative Studio', '团队生产控制台', '我的创作空间'];
+const NEW_PASSWORD = 'Brand-login-2026';
+
 const environment = () => ({
   ...process.env,
   NEXT_TELEMETRY_DISABLED: '1',
@@ -36,25 +39,40 @@ const environment = () => ({
   CREATIVE_STUDIO_DEPLOYMENT_ID: deploymentId,
   CREATIVE_STUDIO_TRUSTED_ORIGIN: baseUrl,
   CREATIVE_STUDIO_SERVER_RELEASE_ID: 'brand-login-test',
+  // 隔离环境只能跑在 http://127.0.0.1。`__Host-` Cookie 强制 Secure，
+  // WebKit 在纯 HTTP 下会直接丢弃它（Chromium 对 loopback 宽松），
+  // 登录就会因为拿不到 CSRF Cookie 而 403。这里用仓库已有的 local-team
+  // 回环 Cookie 模式（团队桌面版走的就是它），让两个内核都能跑真实流程。
+  CREATIVE_STUDIO_TEAM_LOCAL_HTTP: '1',
   CREATIVE_STUDIO_CANVAS_ENABLE: '0',
   CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER: '0',
 });
 
-// 首管理员：一次性凭据只显示一次，改密流程就从它开始。
-const initialized = spawnSync(
-  process.execPath,
-  ['scripts/team-server/init-admin.mjs', '--employee-id', 'brand-admin', '--name', '品牌验收管理员'],
-  { cwd: repoRoot, env: environment(), encoding: 'utf8', timeout: 180_000, windowsHide: true },
-);
-assert.equal(initialized.status, 0, `隔离首管理员初始化失败：${initialized.stderr ?? ''}`);
-const initialCredential = /一次性凭据（仅显示本次）：(\S+)/.exec(initialized.stdout ?? '')?.[1];
-assert.ok(initialCredential, `初始化输出里没有一次性凭据：${initialized.stdout ?? ''}`);
-const newPassword = 'Brand-login-2026';
+/**
+ * 首管理员的初始化与恢复。一次性凭据只能用一次，而每个浏览器内核都要走一遍
+ * 首次登录改密：第一个内核用 init-admin，之后用 recover-admin 重置同一个人，
+ * 两条命令都会把 mustChangePassword 置回 1，所以每个内核拿到的都是「首次登录」。
+ */
+function issueAdministratorCredential(employeeId, displayName, { recover }) {
+  const script = recover ? 'scripts/team-server/recover-admin.mjs' : 'scripts/team-server/init-admin.mjs';
+  const args = recover
+    ? [script, '--employee-id', employeeId]
+    : [script, '--employee-id', employeeId, '--name', displayName];
+  const result = spawnSync(process.execPath, args, {
+    cwd: repoRoot, env: environment(), encoding: 'utf8', timeout: 180_000, windowsHide: true,
+  });
+  assert.equal(result.status, 0, `管理员凭据签发失败：${result.stdout ?? ''}${result.stderr ?? ''}`);
+  const credential = /一次性凭据（仅显示本次）：(\S+)/.exec(result.stdout ?? '')?.[1];
+  assert.ok(credential, `输出里没有一次性凭据：${result.stdout ?? ''}`);
+  return credential;
+}
 
 const nextBinary = path.join(repoRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
-let server = spawn(process.execPath, [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
-  cwd: repoRoot, env: environment(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-});
+const server = spawn(
+  process.execPath,
+  [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)],
+  { cwd: repoRoot, env: environment(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+);
 let serverOutput = '';
 server.stdout?.on('data', (chunk) => { serverOutput += String(chunk); });
 server.stderr?.on('data', (chunk) => { serverOutput += String(chunk); });
@@ -78,7 +96,13 @@ const results = [];
 try {
   await waitReady();
 
+  // 先建一个管理员账号；之后每个内核都用 recover 重置它，拿到新的首次登录凭据。
+  const employeeId = 'brand-admin';
+  let recover = false;
+
   for (const [name, launcher] of [['chromium', chromium], ['webkit', webkit]]) {
+    const credential = issueAdministratorCredential(employeeId, `${name} 验收管理员`, { recover });
+    recover = true;
     const browser = await launcher.launch({ headless: true });
     browsers.push(browser);
     const version = browser.version();
@@ -102,20 +126,18 @@ try {
     const markHtml = await card.locator('svg').first().innerHTML();
     assert.match(markHtml, /#46A97B/, `${name}：登录页标志必须用新品牌绿色`);
     assert.match(markHtml, /rotate\(-45 50 50\)/, `${name}：登录页标志必须是旋转 −45° 的叶子`);
-    // 旧显示名一个都不许出现在登录页自己的界面文字里。
+    // 旧显示名不得出现在登录页自己的界面文字里。
     const loginText = await page.locator('main').innerText();
-    for (const oldName of ['产品素材工作台', 'Creative Studio', '团队生产控制台', '我的创作空间']) {
+    for (const oldName of OLD_NAMES) {
       assert.ok(!loginText.includes(oldName), `${name}：登录页残留旧显示名「${oldName}」`);
     }
-    // 全局顶栏（components/Header.tsx）归 05 号票，本票不改也不许改它的归属；
-    // 这里只记录它是否还带旧名字，不判失败——05 改完后这里自然变成空数组。
+    // 全局顶栏（components/Header.tsx）归 05 号票；这里只记录，不判失败。
     const headerText = await page.locator('header').first().innerText().catch(() => '');
-    const pendingInHeader = ['产品素材工作台', 'Creative Studio', '团队生产控制台', '我的创作空间']
-      .filter((oldName) => headerText.includes(oldName));
-    results.push({ browser: name, oldNamesPendingInSharedHeader: pendingInHeader });
+    const pendingInHeader = OLD_NAMES.filter((oldName) => headerText.includes(oldName));
 
     // ---------- 浅色 / 深色截图无错位（未登录态，登录后会被重定向走） ----------
     const screenshots = [];
+    const backgrounds = {};
     for (const theme of ['light', 'dark']) {
       await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
       await page.waitForTimeout(300);
@@ -123,7 +145,6 @@ try {
       await page.screenshot({ path: file, fullPage: false });
       screenshots.push(file);
 
-      // 卡片必须完整落在视口内、不被切；归属文字必须在卡片下方。
       const cardBox = await card.boundingBox();
       const viewport = page.viewportSize();
       assert.ok(cardBox && viewport, `${name}/${theme}：卡片与视口必须可测`);
@@ -138,16 +159,20 @@ try {
         attribution.y >= cardBox.y + cardBox.height - 1,
         `${name}/${theme}：归属文字必须在登录卡片下方`,
       );
-      // 卡片背景必须是计算出的令牌值（深色下真的换了色，而不是写死浅色）。
       const background = await card.evaluate((element) => getComputedStyle(element).backgroundColor);
-      assert.match(background, /^rgba?\(/, `${name}/${theme}：卡片背景色必须是计算出的令牌值`);
+      assert.ok(background && background !== 'transparent', `${name}/${theme}：卡片背景不能是透明的`);
+      backgrounds[theme] = background;
     }
+    assert.notEqual(
+      backgrounds.light,
+      backgrounds.dark,
+      `${name}：浅色与深色下登录卡片背景必须不同（说明走的是主题令牌，不是写死浅色）`,
+    );
     const lightShot = fs.statSync(screenshots[0]).size;
     const darkShot = fs.statSync(screenshots[1]).size;
     assert.ok(lightShot > 5_000 && darkShot > 5_000, `${name}：浅色/深色截图内容可疑（${lightShot}/${darkShot} 字节）`);
     assert.notEqual(lightShot, darkShot, `${name}：浅色与深色截图不应是同一张图`);
 
-    // 截图后回到浅色，避免影响后面的可读性判断。
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
 
     // ---------- 四种校验提示都在输入框旁 ----------
@@ -161,7 +186,6 @@ try {
     await employeeError.waitFor({ timeout: 15_000 });
     assert.equal(await employeeError.innerText(), '请输入工号');
     assert.equal(await employeeInput.getAttribute('aria-invalid'), 'true');
-    // 提示必须紧贴输入框，而不是页面顶部/底部的一条总错误。
     const employeeBox = await employeeInput.boundingBox();
     const employeeErrorBox = await employeeError.boundingBox();
     assert.ok(employeeBox && employeeErrorBox, `${name}：工号框与提示必须可见`);
@@ -182,14 +206,23 @@ try {
       `${name}：空密码提示必须紧贴在密码输入框旁`,
     );
 
-    // 真密码 + 工号 → 首次登录必须进入改密模式（而不是直接放行）。
-    await employeeInput.fill('brand-admin');
-    await passwordInput.fill(initialCredential);
+    // 真凭据 + 工号 → 首次登录必须进入改密模式（而不是直接放行）。
+    await employeeInput.fill(employeeId);
+    await passwordInput.fill(credential);
+    const loginResponsePending = page.waitForResponse(
+      (server_response) => server_response.url().includes('/api/team/auth/login'),
+      { timeout: 120_000 },
+    );
     await submit.click();
-    await page.locator('#login-new-password').waitFor({ timeout: 60_000 });
+    const loginResponse = await loginResponsePending;
+    assert.equal(loginResponse.status(), 200, `${name}：登录接口必须成功（HTTP ${loginResponse.status()}）`);
+    await page.locator('#login-new-password').waitFor({ timeout: 60_000 }).catch(async (cause) => {
+      const text = (await page.locator('body').innerText()).slice(0, 600);
+      throw new Error(`${name}：登录后未进入改密模式；页面文字=${text}`, { cause });
+    });
 
     // ③ 新密码太短
-    await page.locator('#login-current-password').fill(initialCredential);
+    await page.locator('#login-current-password').fill(credential);
     await page.locator('#login-new-password').fill('123');
     await page.locator('#login-confirmation').fill('123');
     await page.getByRole('button', { name: '保存新密码并进入', exact: true }).click();
@@ -204,8 +237,8 @@ try {
     );
 
     // ④ 两次不一致
-    await page.locator('#login-new-password').fill(newPassword);
-    await page.locator('#login-confirmation').fill(`${newPassword}-x`);
+    await page.locator('#login-new-password').fill(NEW_PASSWORD);
+    await page.locator('#login-confirmation').fill(`${NEW_PASSWORD}-x`);
     await page.getByRole('button', { name: '保存新密码并进入', exact: true }).click();
     const mismatch = page.locator('#login-confirmation-error');
     await mismatch.waitFor({ timeout: 15_000 });
@@ -225,20 +258,31 @@ try {
     );
 
     // ---------- 改密完成，回到登录页 ----------
-    await page.locator('#login-confirmation').fill(newPassword);
+    await page.locator('#login-confirmation').fill(NEW_PASSWORD);
     await Promise.all([
       page.waitForURL((url) => url.searchParams.get('reason') === 'password-changed', { timeout: 60_000 }),
       page.getByRole('button', { name: '保存新密码并进入', exact: true }).click(),
     ]);
     await page.getByText('密码已修改，请使用新密码重新登录。', { exact: true }).waitFor({ timeout: 60_000 });
 
-    // 新密码可以真正登录进工作台首页。
-    await page.locator('#login-employee-id').fill('brand-admin');
-    await page.locator('#login-current-password').fill(newPassword);
-    await Promise.all([
-      page.waitForURL((url) => url.pathname !== '/team/login', { timeout: 120_000 }),
-      page.getByRole('button', { name: '登录', exact: true }).click(),
-    ]);
+    // 新密码可以真正登录进工作台。
+    // 改密后会整页跳转，先等 React 重新水合完再填表——否则点击落在
+    // 尚未绑定 onSubmit 的表单上，什么都不会发生（纯测试竞态）。
+    await page.waitForLoadState('networkidle', { timeout: 120_000 });
+    await page.getByRole('button', { name: '登录', exact: true }).waitFor({ timeout: 60_000 });
+    await page.locator('#login-employee-id').fill(employeeId);
+    await page.locator('#login-current-password').fill(NEW_PASSWORD);
+    const reloginPending = page.waitForResponse(
+      (server_response) => server_response.url().includes('/api/team/auth/login'),
+      { timeout: 120_000 },
+    );
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    const relogin = await reloginPending;
+    assert.equal(relogin.status(), 200, `${name}：改密后用新密码登录必须成功（HTTP ${relogin.status()}）`);
+    await page.waitForURL((url) => url.pathname !== '/team/login', { timeout: 120_000 }).catch(async (cause) => {
+      const text = (await page.locator('body').innerText()).slice(0, 600);
+      throw new Error(`${name}：改密后未进入工作台；页面文字=${text}`, { cause });
+    });
     // 管理员端页面标题必须是「林视控制台」。
     await page.waitForFunction(() => document.title.includes('林视'), null, { timeout: 120_000 });
     const workbenchTitle = await page.title();
@@ -247,13 +291,16 @@ try {
     assert.deepEqual(pageErrors, [], `${name}：登录流程不应有页面脚本错误`);
 
     results.push({
-      browser: name, version,
+      browser: name,
+      version,
+      employeeId,
+      oldNamesPendingInSharedHeader: pendingInHeader,
       evidence: screenshots.map((file) => path.relative(root, file)),
       assertions: [
         '新品牌名与主张', '底部归属文字', '新叶子标志',
         '空工号提示贴身', '空密码提示贴身', '新密码太短提示贴身', '两次不一致提示贴身',
         '首次登录强制改密', '改密后可用新密码登录', '管理员端标题=林视控制台',
-        '浅色/深色截图无切裁',
+        '浅色/深色截图无切裁', '浅色/深色卡片背景不同',
       ],
     });
     await context.close();
@@ -264,6 +311,6 @@ try {
   for (const browser of browsers) await browser.close().catch(() => undefined);
   if (server.exitCode === null) {
     server.kill();
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 800));
   }
 }
