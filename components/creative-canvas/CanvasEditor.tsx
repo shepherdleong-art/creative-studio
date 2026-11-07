@@ -41,6 +41,7 @@ import { findOpenPosition } from './placement';
 import { CanvasToastProvider, useCanvasToasts } from './canvas-toasts';
 import { canvasErrorText } from './error-copy';
 import { ContextMenu, type ContextMenuItem } from './context-menu';
+import { StatusDot } from '@/components/ui/Appearance';
 
 /** 模型证据等级排序权重：verified > mapped > candidate。 */
 const EVIDENCE_RANK: Record<string, number> = { verified: 3, mapped: 2, candidate: 1 };
@@ -59,6 +60,16 @@ const SAVE_LABELS: Record<string, string> = {
   error: '保存失败',
   conflict: '保存冲突',
   disabled: '功能未开启',
+};
+
+/** 保存状态点语气（14 号票）：与文案一一对应，颜色取 `--color-dot-*`。 */
+const SAVE_TONES: Record<string, 'ok' | 'warn' | 'fail' | 'run' | 'idle'> = {
+  idle: 'idle',
+  saving: 'run',
+  saved: 'ok',
+  error: 'fail',
+  conflict: 'warn',
+  disabled: 'idle',
 };
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -541,15 +552,16 @@ function EditorInner({ canvasId }: { canvasId: string }) {
       <div className="flex min-h-0 w-full flex-1 flex-col bg-surface" data-testid="canvas-editor">
         <header className="sc-canvas-toolbar">
           <Link className="sc-canvas-button" href="/canvas">← 画布列表</Link>
-          <span className="text-[13px] font-semibold" data-testid="canvas-name">{controller.name || '创作画布'}</span>
+          <span className="text-[13px] font-semibold text-ink" data-testid="canvas-name">{controller.name || '创作画布'}</span>
           {/* 固定最小宽度：保存状态文案在「保存中…／已保存」之间切换时不能挤动右侧按钮 */}
           <span
-            className="inline-block min-w-[56px] text-[11px] text-ink-secondary"
+            className="inline-flex min-w-[56px] items-center gap-1.5 text-[11px] text-ink-secondary"
             data-testid="save-state"
           >
+            <StatusDot tone={SAVE_TONES[controller.saveState] ?? 'idle'} />
             {SAVE_LABELS[controller.saveState] ?? controller.saveState}
           </span>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
             {CANVAS_NODE_KIND_SPECS.map((spec) => (
               <button
                 key={spec.kind}

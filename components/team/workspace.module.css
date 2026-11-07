@@ -37,12 +37,16 @@
 /* 团队版内容不许横向溢出：
  * - direct children 允许收缩（表格自己有 overflow-x-auto）；
  * - 视频工作区原本按 100vw 居中突破，侧栏占了宽度，这里改成按内容区算。
- *   混剪页的宽度规则归 09 号票，本票只保证不比旧外壳更糟。 */
+ *   混剪页的宽度规则归 09 号票，本票只保证不比旧外壳更糟。
+ * 注意：`.video-generation-section` 是 `app/globals.css` 里的**全局**类名，
+ * 在 CSS Module 里必须裹成 `:global(...)`，否则会被哈希成
+ * `workspace-module__xxx__video-generation-section`，和页面上的类名永远不匹配、
+ * 整条规则静默失效（界面尺寸验收实测：1536 宽横向溢出 88px）。 */
 :global(body:has(> aside[data-testid='workspace-sidebar'])) > main > * {
   min-width: 0;
   max-width: 100%;
 }
-:global(body:has(> aside[data-testid='workspace-sidebar'])) .video-generation-section {
+:global(body:has(> aside[data-testid='workspace-sidebar'])) :global(.video-generation-section) {
   left: auto;
   transform: none;
   width: 100%;
@@ -122,7 +126,16 @@
 .wsNavRow[aria-current='page'] .wsBadge { color: var(--color-accent); }
 
 /* 底部：更新提示条 + 头像 */
-.wsFooter { flex: none; padding-top: 10px; display: grid; gap: 8px; }
+.wsFooter {
+  flex: none;
+  padding-top: 10px;
+  display: grid;
+  /* grid 的隐式列按 min-content 排版：头像行里的姓名/工号是 nowrap，长工号会把整列撑到
+     超过侧栏可视宽度（实测 235px > 199px），侧栏 overflow-x:hidden 再把它裁掉。
+     显式给一列 minmax(0,1fr) 让列可以收缩，配合子项的 ellipsis 正常截断（ui-05 修复）。 */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
 .wsUpdateBar {
   display: grid;
   gap: 6px;
@@ -154,7 +167,12 @@
   display: flex;
   align-items: center;
   gap: 9px;
+  /* 侧栏有横向内边距，`width:100%` 会按 content-box 再撑满一次而溢出 23px，
+     被界面尺寸验收判成「控件被切掉」（ui-05 修复）。用 100% + box-sizing 抵消。 */
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
   padding: 7px 8px;
   border-radius: var(--radius-control);
   text-align: left;
@@ -180,20 +198,35 @@
 .wsUserChevron { flex: none; color: var(--color-ink-secondary); }
 
 /* 头像菜单：向上弹出，贴在侧栏底部 */
-.wsMenuAnchor { position: relative; }
+.wsMenuAnchor { position: relative; min-width: 0; }
 .wsMenu {
   position: absolute;
   left: 0;
   right: 0;
   bottom: calc(100% + 8px);
   z-index: 50;
-  min-width: 216px;
+  /* 菜单是侧栏（overflow-y:auto / overflow-x:hidden）的绝对定位后代，会被算进侧栏的
+     可滚动宽度：原来 min-width:216px 比锚点（200px）宽 16px，侧栏内容变成 228px、
+     可见只有 223px，被界面尺寸验收判成「内容被藏起来」。这里让它不超出锚点宽度。 */
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 6px;
   border: 1px solid var(--color-hairline);
   border-radius: 14px;
   background: var(--color-card);
   box-shadow: 0 16px 48px rgb(0 0 0 / 18%);
 }
+/* 菜单变窄后，三个外观选项按一行放不下（`.seg` 是 inline-flex + flex:none，
+   每个按钮 padding 0 14px，三项加起来超过侧栏内容宽度 199px，会把菜单撑出
+   `overflow-x:hidden` 的可见区，被界面尺寸验收判成「内容被藏起来」）。
+   这里让分段控件可以收缩、按钮内边距变小。 */
+.wsMenuTheme { flex-wrap: wrap; }
+.wsMenuTheme > :last-child { flex: 1 1 auto; min-width: 0; }
+.wsMenu .seg { flex: 1 1 auto; min-width: 0; width: 100%; }
+.wsMenu .seg > button { min-width: 0; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; }
+.wsMenuWho strong, .wsMenuWho small { overflow-wrap: anywhere; }
 .wsMenuWho { padding: 6px 9px 8px; }
 .wsMenuWho strong { display: block; font-size: 12.5px; font-weight: 600; color: var(--color-ink); }
 .wsMenuWho small { display: block; font-size: 11px; color: var(--color-ink-secondary); margin-top: 1px; }

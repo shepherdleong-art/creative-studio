@@ -186,7 +186,9 @@ try {
   let catalogRequests = 0;
   await page.route('**/api/team/maintenance/backups', async route => { catalogRequests += 1; await catalogGate; await route.continue(); });
   await page.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'domcontentloaded', timeout: 180_000 });
-  await page.getByRole('heading', { name: '备份与维护', exact: true }).waitFor({ timeout: 60_000 });
+  // 14 号票起页面标题由每页工具栏按导航名渲染（「版本与备份」），不再是页内 <h1>。
+  // 断言的意图不变：进到的是管理员维护页、不是登录页或空壳。
+  await page.getByTestId('page-toolbar-title').filter({ hasText: '版本与备份' }).waitFor({ timeout: 60_000 });
   await page.getByText('当前实际状态：当前业务数据', { exact: true }).waitFor();
   await page.getByText('正在读取并校验备份文件，素材较多时可能需要一些时间。', { exact: true }).waitFor();
   await page.waitForResponse(response => response.url().endsWith('/api/team/maintenance/jobs'));
