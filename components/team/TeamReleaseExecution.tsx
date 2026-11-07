@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { teamError, teamWrite } from './client';
-import { GroupHeading, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
+import { StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
 
 type Candidate = {
   candidateId: string;
@@ -108,7 +108,7 @@ export default function TeamReleaseExecution() {
     <label className="mt-3 flex items-start gap-2 text-[13px] text-ink-secondary"><input type="checkbox" className="mt-1" checked={acknowledged} disabled={jobs.some(active) || busy} onChange={(event) => setAcknowledged(event.target.checked)} />我已核对当前／目标版本，并确认上述停服、备份、证据保留和失败恢复影响。</label>
     <div className="mt-3"><ToolbarButton variant="primary" disabled={busy || !selected || !acknowledged || jobs.some(active)} onClick={() => void submit()}>{busy ? '正在复核并提交…' : jobs.some(active) ? '升级执行中，页面重连不会取消' : jobs.some((job) => job.status === 'failed') ? '修复后复核并续跑原作业' : '确认并开始升级'}</ToolbarButton></div>
     {error && <p role="alert" className="mt-3 text-[13px] leading-6 text-fail">{error}</p>}
-    <div className="mt-4"><GroupHeading>{jobs.length === 0 ? '尚无升级作业' : '最近升级作业'}</GroupHeading></div>
+    <div className="mt-4"><h3 className="text-[13px] font-semibold text-ink">{jobs.length === 0 ? '尚无升级作业' : '最近升级作业'}</h3></div>
     <div className="mt-2 space-y-3" aria-live="polite">
       {jobs.slice(0, 5).map((job) => <article key={job.id} className="rounded-[11px] border border-hairline p-4">
         <div className="flex flex-wrap justify-between gap-2"><h3 className="flex items-center gap-2 text-[13px] font-medium text-ink"><StatusDot tone={job.status === 'succeeded' ? 'ok' : job.status === 'failed' ? 'warn' : job.status === 'needs_review' ? 'warn' : 'run'} />{stageNames[job.stage] ?? job.stage}</h3><Tag tone={job.status === 'succeeded' ? 'ok' : job.status === 'failed' ? 'warn' : job.status === 'needs_review' ? 'warn' : 'run'}>{job.status === 'succeeded' ? '已完成' : job.status === 'failed' ? '未完成 · 保持维护' : job.status === 'needs_review' ? '待核查' : '进行中'}</Tag></div>

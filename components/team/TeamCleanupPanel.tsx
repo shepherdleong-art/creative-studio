@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import { teamError, teamWrite } from './client';
 import { Dialog } from '@/components/ui/Dialog';
-import { GroupHeading, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
+import { StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
 import type { Job } from './TeamMaintenancePanel';
 
 type ProtectedItem = { id: string; label?: string; reasonCode: string; reason: string };
@@ -66,7 +66,7 @@ export default function TeamCleanupPanel({ jobs }: { jobs: CleanupJob[] }) {
     {preview && <div className="mt-4">
       <p className="tnum text-[12px] text-ink-tertiary">预览时间：{time(preview.createdAt)} · {preview.estimateNote}</p>
       <div className="mt-3 grid gap-3 md:grid-cols-3">{preview.categories.map((category) => <article key={category.kind} className="rounded-[11px] border border-hairline p-4">
-        <GroupHeading>{category.label}</GroupHeading>
+        <h3 className="text-[13px] font-semibold text-ink">{category.label}</h3>
         <p className="mt-1.5 text-[13px] text-ink-secondary">可清理 {category.cleanableCount} 项 · 预计释放 {bytes(category.estimatedBytes)}</p>
         {category.protected.length > 0 && <details className="mt-2 text-[12px] text-ink-secondary"><summary className="cursor-pointer">不可清理原因（{category.protected.length}）</summary>
           <ul className="mt-2 space-y-2">{category.protected.map((item, index) => <li key={`${item.id}-${index}`} className="leading-5">{item.reason}</li>)}</ul>
