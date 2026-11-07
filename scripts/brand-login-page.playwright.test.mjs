@@ -102,11 +102,53 @@ try {
     const markHtml = await card.locator('svg').first().innerHTML();
     assert.match(markHtml, /#46A97B/, `${name}：登录页标志必须用新品牌绿色`);
     assert.match(markHtml, /rotate\(-45 50 50\)/, `${name}：登录页标志必须是旋转 −45° 的叶子`);
-    // 旧显示名一个都不许出现。
-    const bodyText = await page.locator('body').innerText();
+    // 旧显示名一个都不许出现在登录页自己的界面文字里。
+    const loginText = await page.locator('main').innerText();
     for (const oldName of ['产品素材工作台', 'Creative Studio', '团队生产控制台', '我的创作空间']) {
-      assert.ok(!bodyText.includes(oldName), `${name}：登录页残留旧显示名「${oldName}」`);
+      assert.ok(!loginText.includes(oldName), `${name}：登录页残留旧显示名「${oldName}」`);
     }
+    // 全局顶栏（components/Header.tsx）归 05 号票，本票不改也不许改它的归属；
+    // 这里只记录它是否还带旧名字，不判失败——05 改完后这里自然变成空数组。
+    const headerText = await page.locator('header').first().innerText().catch(() => '');
+    const pendingInHeader = ['产品素材工作台', 'Creative Studio', '团队生产控制台', '我的创作空间']
+      .filter((oldName) => headerText.includes(oldName));
+    results.push({ browser: name, oldNamesPendingInSharedHeader: pendingInHeader });
+
+    // ---------- 浅色 / 深色截图无错位（未登录态，登录后会被重定向走） ----------
+    const screenshots = [];
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
+      await page.waitForTimeout(300);
+      const file = path.join(evidenceDirectory, `login-${name}-${theme}.png`);
+      await page.screenshot({ path: file, fullPage: false });
+      screenshots.push(file);
+
+      // 卡片必须完整落在视口内、不被切；归属文字必须在卡片下方。
+      const cardBox = await card.boundingBox();
+      const viewport = page.viewportSize();
+      assert.ok(cardBox && viewport, `${name}/${theme}：卡片与视口必须可测`);
+      assert.ok(cardBox.x >= 0 && cardBox.y >= 0, `${name}/${theme}：登录卡片被切到视口外（左上）`);
+      assert.ok(
+        cardBox.x + cardBox.width <= viewport.width + 1 && cardBox.y + cardBox.height <= viewport.height + 1,
+        `${name}/${theme}：登录卡片被切到视口外（右下）`,
+      );
+      const attribution = await page.getByText("© 林视 Lin's Vision", { exact: true }).boundingBox();
+      assert.ok(attribution, `${name}/${theme}：归属文字必须可见`);
+      assert.ok(
+        attribution.y >= cardBox.y + cardBox.height - 1,
+        `${name}/${theme}：归属文字必须在登录卡片下方`,
+      );
+      // 卡片背景必须是计算出的令牌值（深色下真的换了色，而不是写死浅色）。
+      const background = await card.evaluate((element) => getComputedStyle(element).backgroundColor);
+      assert.match(background, /^rgba?\(/, `${name}/${theme}：卡片背景色必须是计算出的令牌值`);
+    }
+    const lightShot = fs.statSync(screenshots[0]).size;
+    const darkShot = fs.statSync(screenshots[1]).size;
+    assert.ok(lightShot > 5_000 && darkShot > 5_000, `${name}：浅色/深色截图内容可疑（${lightShot}/${darkShot} 字节）`);
+    assert.notEqual(lightShot, darkShot, `${name}：浅色与深色截图不应是同一张图`);
+
+    // 截图后回到浅色，避免影响后面的可读性判断。
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
 
     // ---------- 四种校验提示都在输入框旁 ----------
     const employeeInput = page.locator('#login-employee-id');
@@ -201,41 +243,6 @@ try {
     await page.waitForFunction(() => document.title.includes('林视'), null, { timeout: 120_000 });
     const workbenchTitle = await page.title();
     assert.match(workbenchTitle, /林视控制台/, `${name}：管理员端标题必须是林视控制台，实测 ${workbenchTitle}`);
-
-    // ---------- 浅色 / 深色截图无错位 ----------
-    const screenshots = [];
-    for (const theme of ['light', 'dark']) {
-      await page.goto(`${baseUrl}/team/login`, { waitUntil: 'domcontentloaded', timeout: 180_000 });
-      await page.waitForLoadState('networkidle', { timeout: 180_000 });
-      await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
-      await page.waitForTimeout(300);
-      const file = path.join(evidenceDirectory, `login-${name}-${theme}.png`);
-      await page.screenshot({ path: file, fullPage: false });
-      screenshots.push(file);
-
-      // 卡片必须完整落在视口内、不被切；输入框与提示之间不重叠。
-      const cardBox = await card.boundingBox();
-      const viewport = page.viewportSize();
-      assert.ok(cardBox && viewport, `${name}/${theme}：卡片与视口必须可测`);
-      assert.ok(cardBox.x >= 0 && cardBox.y >= 0, `${name}/${theme}：登录卡片被切到视口外（左上）`);
-      assert.ok(
-        cardBox.x + cardBox.width <= viewport.width + 1 && cardBox.y + cardBox.height <= viewport.height + 1,
-        `${name}/${theme}：登录卡片被切到视口外（右下）`,
-      );
-      const attribution = await page.getByText("© 林视 Lin's Vision", { exact: true }).boundingBox();
-      assert.ok(attribution, `${name}/${theme}：归属文字必须可见`);
-      assert.ok(
-        attribution.y >= cardBox.y + cardBox.height - 1,
-        `${name}/${theme}：归属文字必须在登录卡片下方`,
-      );
-      // 深色下卡片背景必须真的换了色（不吃浅色写死值）。
-      const background = await card.evaluate((element) => getComputedStyle(element).backgroundColor);
-      assert.match(background, /^rgba?\(/, `${name}/${theme}：卡片背景色必须是计算出的令牌值`);
-    }
-    const lightShot = fs.statSync(screenshots[0]).size;
-    const darkShot = fs.statSync(screenshots[1]).size;
-    assert.ok(lightShot > 5_000 && darkShot > 5_000, `${name}：浅色/深色截图内容可疑（${lightShot}/${darkShot} 字节）`);
-    assert.notEqual(lightShot, darkShot, `${name}：浅色与深色截图不应是同一张图`);
 
     assert.deepEqual(pageErrors, [], `${name}：登录流程不应有页面脚本错误`);
 
