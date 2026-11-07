@@ -227,6 +227,47 @@ assert.deepEqual(
   assert.equal(wrong.keptRows, 1, 'all 传错成 pool 时那一行会被误判为手写——这正是不能混用的原因');
 }
 
+// ── onlyFillEmpty：批量检查的「一键填充」只填空着的（08 号票 / 规格 60）──
+{
+  const onlyEmpty = planBulkPromptFill(
+    [
+      {
+        shotId: 'shot-fill',
+        rows: [
+          makeRow('blank', ''),
+          makeRow('spaces', '   \n'),
+          makeRow('manual', '用户手写内容'),
+          makeRow('auto', templates[2]!.prompt, templates[2]!.id),
+        ],
+      },
+    ],
+    { pool: templates, all: templates },
+    { onlyFillEmpty: true, random: seededRandom(11) },
+  );
+  assert.equal(onlyEmpty.filledRows, 2, '只填空着的（含纯空白）两行');
+  assert.equal(onlyEmpty.keptRows, 2, '已有内容的两行一律保留');
+  assert.equal(onlyEmpty.shots[0]!.rows[2]!.prompt, '用户手写内容', '手写内容不得被覆盖');
+  assert.equal(
+    onlyEmpty.shots[0]!.rows[3]!.templateId,
+    templates[2]!.id,
+    '之前自动填过的行也算「已有内容」，不再重洗',
+  );
+  assert.deepEqual(
+    [onlyEmpty.shots[0]!.rows[0]!, onlyEmpty.shots[0]!.rows[1]!].map((row) => row.templateId),
+    buildTemplateSequence(templates, 2, seededRandom(11)).map((template) => template.id),
+    '填充顺序仍按分镜显示顺序洗牌',
+  );
+
+  // 全都写好了 → 什么都不填（界面据此提示「没有空着的提示词需要填」）。
+  const nothing = planBulkPromptFill(
+    [{ shotId: 'shot-done', rows: [makeRow('done-1', '一'), makeRow('done-2', '二')] }],
+    { pool: templates, all: templates },
+    { onlyFillEmpty: true },
+  );
+  assert.equal(nothing.filledRows, 0);
+  assert.equal(nothing.keptRows, 2);
+}
+
 const overflowRows = Array.from({ length: MAX_ROWS_PER_SHOT + 1 }, (_, index) => makeRow(`overflow-${index}`, `片段 ${index}`));
 const generationShots = [
   { shotId: 'ready', rows: [makeRow('ready-1', '准备一'), makeRow('ready-2', '准备二')] },

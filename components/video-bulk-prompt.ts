@@ -50,6 +50,14 @@ export interface BulkPromptShot<Row extends BulkPromptRow = BulkPromptRow> {
 export interface BulkPromptFillOptions {
   random?: () => number;
   overwriteEdited?: boolean;
+  /**
+   * 「一键填充」只填空着的提示词（08 号票 / 原型 `vFill`）：
+   * 已经有内容的行一律保留，包括用户手写的和之前自动填过的。
+   *
+   * 默认 `false` 保留历史行为（`isPromptReplaceable`：空行 + 仍是模板原文的行会被重新洗牌），
+   * 供单行模板切换等既有调用点使用；批量检查窗口的一键填充传 `true`。
+   */
+  onlyFillEmpty?: boolean;
 }
 
 export interface BulkPromptFillShotPlan<Row extends BulkPromptRow = BulkPromptRow> {
@@ -189,11 +197,13 @@ export function planBulkPromptFill<Row extends BulkPromptRow>(
   options: BulkPromptFillOptions = {},
 ): BulkPromptFillPlan<Row> {
   const overwriteEdited = options.overwriteEdited === true;
+  const onlyFillEmpty = options.onlyFillEmpty === true;
+  const fillable = (row: BulkPromptRow) => (
+    onlyFillEmpty ? !row.prompt.trim() : (overwriteEdited || isPromptReplaceable(row, templates.all))
+  );
   const fillableCount = templates.pool.length === 0
     ? 0
-    : shots.reduce((count, shot) => count + shot.rows.filter((row) => (
-      overwriteEdited || isPromptReplaceable(row, templates.all)
-    )).length, 0);
+    : shots.reduce((count, shot) => count + shot.rows.filter(fillable).length, 0);
   const sequence = buildTemplateSequence(templates.pool, fillableCount, options.random);
   let sequenceIndex = 0;
   let filledRows = 0;
@@ -201,7 +211,7 @@ export function planBulkPromptFill<Row extends BulkPromptRow>(
 
   const plannedShots = shots.map((shot) => {
     const rows = shot.rows.map((row) => {
-      const replaceable = overwriteEdited || isPromptReplaceable(row, templates.all);
+      const replaceable = fillable(row);
       if (!replaceable || sequenceIndex >= sequence.length) {
         keptRows += 1;
         return row;
