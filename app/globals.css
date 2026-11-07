@@ -31,7 +31,7 @@
   /* hairlines：分隔线为 9% 透明度的黑色 */
   --color-hairline: rgb(0 0 0 / 9%);
   --color-hairline-soft: rgb(0 0 0 / 6%);
-  /* accent：强调色只有蓝色 */
+  /* accent：强调色只有蓝色。深色下用原型里的深蓝 (--ac-d 为亮蓝，用于选中文字) */
   --color-accent: #0071e3;
   --color-accent-hover: #0060c2;
   --color-accent-foreground: #ffffff;
@@ -1078,7 +1078,7 @@ html[data-theme='dark'] {
   --color-hairline-soft: rgb(255 255 255 / 7%);
   /* accent：暗色下用亮一点的蓝保证对比度 */
   --color-accent: #0a72e0;
-  --color-accent-hover: #7dbbff;
+  --color-accent-hover: #409cff;
   --color-accent-solid: #0a72e0;
   --color-accent-solid-hover: #0a84ff;
   /* 画布点阵背景（对齐 infinite-canvas demo：深色 #3c3c40） */
