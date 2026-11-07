@@ -280,13 +280,47 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
     },
   )),
 
+  // 第 3 步（08 号票）：三页表单 + 卖点库 + 爆文模板。空项目夹具下也有这一屏，
+  // 所以 ready 只等「这一屏真的画出来」的落点：标题、三步切换、提供素材的重心上传区。
   base('project-script', '项目工作台 · 第 3 步 脚本生成', 'ui-08', {
     href: ({ project }) => `/projects/${project.id}?tab=script`,
-    ready: async (page) => { await page.getByRole('heading', { name: '详情页智能脚本生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.getByRole('heading', { name: '详情页智能脚本生成', exact: true }).waitFor({ timeout: 60_000 });
+      // 第 1 页的素材投放区（data-testid 由面板自己给，是这一屏独有的落点）。
+      await page.getByTestId('script-studio-upload-dropzone').waitFor({ timeout: 30_000 });
+      // 生产模式与目标时长：字数/时长提示就挂在这套参数旁边。
+      await page.getByLabel('生产模式', { exact: true }).waitFor({ timeout: 30_000 });
+    },
   }),
+  // 第 4 步（08 号票）：点选分镜组之后才是三栏工作台（左编辑 / 中预览 / 右「这条视频用的设置」+ 结果卡）。
+  // 只等标题会漏掉整页溢出——那一屏真正的排版在选中分镜组之后才出现，所以 ready 先选组。
   base('project-video', '项目工作台 · 第 4 步 视频生成', 'ui-08', {
     href: ({ project }) => `/projects/${project.id}?tab=video`,
-    ready: async (page) => { await page.getByRole('heading', { name: '视频生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => {
+      await page.getByRole('heading', { name: '视频生成', exact: true }).waitFor({ timeout: 60_000 });
+      const setSelect = page.getByLabel('选择分镜组', { exact: true });
+      await setSelect.waitFor({ timeout: 60_000 });
+      // 选验收夹具建的那个分镜组（它的名字是「验收分镜组」，选项文案带张数）。
+      const options = await setSelect.locator('option').allTextContents();
+      const target = options.find((label) => label.includes('验收分镜组'));
+      if (!target) throw new Error(`分镜组下拉里没有验收夹具的分镜组，实际选项：${options.join(' | ')}`);
+      await setSelect.selectOption({ label: target });
+      // 三栏工作台的落点：批量检查按钮（左栏）与结果栏（右栏）。
+      await page.getByRole('button', { name: /^批量检查 \d+ 个分镜$/ }).waitFor({ timeout: 60_000 });
+      await page.getByRole('button', { name: /^分镜 1$/ }).waitFor({ timeout: 30_000 });
+    },
+    actions: [
+      // 批量检查窗口：统一供应商 / 统一秒数在顶部，且秒数只列交集。
+      async (page) => {
+        await page.getByRole('button', { name: /^批量检查 \d+ 个分镜$/ }).click();
+        const dialog = page.getByRole('dialog', { name: '批量检查分镜' });
+        await dialog.waitFor({ timeout: 30_000 });
+        await dialog.getByTestId('bulk-provider').waitFor({ timeout: 30_000 });
+        await dialog.getByTestId('bulk-duration').waitFor({ timeout: 30_000 });
+        await dialog.getByTestId('bulk-duration-hint').waitFor({ timeout: 30_000 });
+      },
+    ],
   }),
   base('mixcut-single', '项目工作台 · 第 5 步 智能混剪（单条精准混剪）', 'ui-09', {
     href: ({ project }) => `/projects/${project.id}?tab=final-edit`,

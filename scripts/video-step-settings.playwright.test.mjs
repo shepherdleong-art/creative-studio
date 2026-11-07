@@ -116,6 +116,8 @@ try {
 
   const submittedBatches = [];
   const projectPatches = [];
+  const rejectedReasons = [];
+  const unrejectedJobIds = [];
 
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1536, height: 900 } });
@@ -147,6 +149,18 @@ try {
       submittedBatches.push(route.request().postDataJSON());
       body = { videoJobIds: ['job-new'] };
     } else if (pathname === '/api/projects/p1/video-run') {
+      body = { success: true };
+    } else if (pathname === '/api/video-jobs/job-a') {
+      const payload = route.request().postDataJSON();
+      if (payload.action === 'reject') {
+        rejectedReasons.push({ jobId: 'job-a', reason: payload.reason });
+        videoJobs[0].rejectedAt = new Date().toISOString();
+        videoJobs[0].rejectReason = payload.reason ?? null;
+      } else if (payload.action === 'unreject') {
+        unrejectedJobIds.push('job-a');
+        videoJobs[0].rejectedAt = null;
+        videoJobs[0].rejectReason = null;
+      }
       body = { success: true };
     } else if (pathname === '/api/team/models' && url.searchParams.get('kind') === 'video') {
       body = providers;
@@ -208,6 +222,29 @@ try {
 
   // 再生成一条不会删除原来的：素材 A/B 仍在列表里。
   await expect(cards).toHaveCount(2);
+
+  // ── 6. 剔除要写原因、能恢复、能隐藏已剔除 ───────────────────────────
+  const jobA = cards.filter({ hasText: '素材 A' });
+  await jobA.getByRole('button', { name: '剔除', exact: true }).click();
+  const reasonInput = jobA.getByLabel('剔除原因，可选');
+  await expect(reasonInput).toBeVisible({ timeout: 10_000 });
+  await reasonInput.fill('手部变形');
+  await jobA.getByRole('button', { name: '确认剔除' }).click();
+  await expect.poll(() => rejectedReasons.length).toBe(1);
+  assert.equal(rejectedReasons[0].jobId, 'job-a', '剔除请求要带上这条任务的 id');
+  assert.equal(rejectedReasons[0].reason, '手部变形', '剔除原因要传给服务端');
+
+  // 已剔除的默认隐藏，可以「显示已剔除」把它找回来，再「恢复使用」。
+  await expect(page.getByRole('button', { name: /显示已剔除（\d+）/ })).toBeVisible({ timeout: 10_000 });
+  await page.getByRole('button', { name: /显示已剔除（\d+）/ }).click();
+  const restoredCard = cards.filter({ hasText: '素材 A' });
+  await expect(restoredCard).toBeVisible();
+  await expect(restoredCard).toContainText('剔除原因：手部变形');
+  await restoredCard.getByRole('button', { name: '恢复使用', exact: true }).click();
+  await expect.poll(() => unrejectedJobIds.length).toBe(1);
+  assert.equal(unrejectedJobIds[0], 'job-a');
+  // 恢复后可以再隐藏已剔除（此时没有已剔除项，按钮消失）。
+  await expect(page.getByRole('button', { name: /显示已剔除（\d+）/ })).toHaveCount(0);
 
   // ── 3/4. 批量检查窗口 ────────────────────────────────────────────────
   await page.getByRole('button', { name: /^批量检查 2 个分镜$/ }).click();
@@ -275,7 +312,7 @@ try {
   await page.screenshot({ path: path.resolve('outputs/video-step-bulk-drawer.png'), fullPage: true });
   assert.deepEqual(pageErrors, [], '页面不应出现运行时异常');
   assert.deepEqual(projectPatches, [], '视频页不得再提交并发设置等生产参数');
-  console.log('video-step-settings.playwright.test.mjs: ok (saved settings follow the selected clip, change hint + revert, intersection durations + provider switch, editable prompts without focus loss, fill-empty-only, generate-missing-only, no concurrency control)');
+  console.log('video-step-settings.playwright.test.mjs: ok (saved settings follow the selected clip, change hint + revert, intersection durations + provider switch, editable prompts without focus loss, fill-empty-only, generate-missing-only, reject with reason + restore + hide-rejected, no concurrency control)');
 } finally {
   await browser?.close();
   const exited = new Promise((resolve) => server.once('exit', resolve));

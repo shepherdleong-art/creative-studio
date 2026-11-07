@@ -20,9 +20,7 @@ import { diffMarkWords } from '@/lib/script-studio/diff-mark';
 import {
   describeTemplateSelection,
   scriptLiveMetrics,
-  setTemplateEntryCount,
   summarizeSellingPoints,
-  toggleTemplateEntry,
 } from '@/lib/script-studio/panel-rules';
 
 interface Props {
