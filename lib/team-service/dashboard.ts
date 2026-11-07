@@ -80,8 +80,11 @@ type ProjectRow = {
   completedJobs: number;
 };
 
+/**
+ * 员工首页的「接着做」只列**本人**项目——包括管理员调这个接口时也一样：
+ * 管理员的运行总览（全员数据）归 12 号票的接口，不在这里。
+ */
 function visibleProjectsSql(viewer: TeamViewer): { sql: string; params: string[] } {
-  if (viewer.role === 'admin') return { sql: '', params: [] };
   return {
     sql: `WHERE EXISTS (
       SELECT 1 FROM team_resource_scopes scope
@@ -169,7 +172,7 @@ export function readEmployeeDashboard(
   const displayName = options.displayName?.trim()
     || String(db.prepare('SELECT displayName FROM team_users WHERE id = ?').pluck().get(viewer.userId) ?? '');
 
-  const errors = listTeamErrors(db, viewer).items.slice(0, MAX_ERRORS).map((item) => ({
+  const errors = listTeamErrors(db, viewer, { actorUserId: viewer.userId }).items.slice(0, MAX_ERRORS).map((item) => ({
     errorId: item.errorId,
     stage: item.stage,
     safeMessage: item.safeMessage,
@@ -179,7 +182,9 @@ export function readEmployeeDashboard(
     createdAt: item.createdAt,
   }));
 
-  const tasks = listTeamTasks(db, viewer).items;
+  // 管理员分支（运行总览）归 12 号票，用自己的接口；这里即使被管理员调用，
+  // 也只按「本人」取数，避免为首页把全团队的 500 条任务拉出来。
+  const tasks = listTeamTasks(db, viewer, { actorUserId: viewer.userId }).items;
   const inFlight = tasks.filter((task) => isTaskInFlight(String(task.status)));
   const projectIds = [...new Set(inFlight.map((task) => task.scope?.resourceId).filter((id): id is string => Boolean(id)))];
 

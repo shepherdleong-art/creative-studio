@@ -224,6 +224,17 @@ try {
   assert.deepEqual(carolBody.running.items, []);
   assert.deepEqual(carolBody.errors, []);
 
+  // ── 管理员调这个聚合也只取本人数据（运行总览归 12，用自己的接口） ──
+  const adminAccess = createTeamAccessContext({ db, principal: adminPrincipal });
+  const adminCookie = sessionCookie(adminSession.token).split(';', 1)[0];
+  const adminBody = await runWithAccessContext(adminAccess, async () => {
+    const response = await dashboardRoute.GET(get(adminCookie));
+    assert.equal(response.status, 200, await response.clone().text());
+    return response.json() as Promise<import('../lib/team-service/dashboard.ts').EmployeeDashboard>;
+  });
+  assert.deepEqual(adminBody.projects, [], '管理员在员工首页聚合里不拿全团队项目（那归 12 的运行总览）');
+  assert.deepEqual(adminBody.running.items, [], '管理员也不拿全团队任务');
+
   console.log('employee dashboard tests passed');
 } finally {
   setTeamAuthServiceForTests(null);
