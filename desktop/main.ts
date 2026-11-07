@@ -18,7 +18,7 @@ import { completeFilmNavigation, consumeFilmNavigationRequest } from './reassemb
 import { createRemoteClientHost, confirmRemoteClientHealth, defaultClientStateRoot, readRemoteClientConfig } from './client/remote-host';
 import { spawnIndependentUpdateHelper } from './client/update-helper';
 
-if (process.env.CREATIVE_STUDIO_CLIENT_MODE === 'remote') {
+if (['remote', 'local-team'].includes(process.env.CREATIVE_STUDIO_CLIENT_MODE ?? '')) {
   const remoteStateRoot = defaultClientStateRoot();
   app.setPath('userData', join(remoteStateRoot, 'electron'));
 }

@@ -87,6 +87,23 @@ const { readRemoteClientConfig } = load('desktop/client/remote-host.ts', {
   './ui-diagnostics': { installClientUiDiagnostics: () => () => {} }, './client-diagnostics': {},
 }, { process: { ...process, env: { ...process.env, CREATIVE_STUDIO_CLIENT_MODE: 'local' } } });
 assert.throws(() => readRemoteClientConfig(process.env), /origin|来源|地址/i);
+const localTeamConfig = {
+  CREATIVE_STUDIO_CLIENT_MODE: 'local-team',
+  CREATIVE_STUDIO_SERVER_ORIGIN: 'http://127.0.0.1:3400',
+};
+const localTeam = readRemoteClientConfig(localTeamConfig);
+assert.equal(localTeam.mode, 'remote');
+assert.equal(localTeam.origin, 'http://127.0.0.1:3400');
+for (const origin of [
+  'https://127.0.0.1:3400', 'http://localhost:3400', 'http://0.0.0.0:3400',
+  'http://example.test:3400', 'http://127.0.0.1:3400/path',
+]) {
+  assert.throws(() => readRemoteClientConfig({ ...localTeamConfig, CREATIVE_STUDIO_SERVER_ORIGIN: origin }),
+    /127\.0\.0\.1/, 'local-team 只允许无路径的 HTTP 回环 origin');
+}
+assert.throws(() => readRemoteClientConfig({
+  CREATIVE_STUDIO_CLIENT_MODE: 'remote', CREATIVE_STUDIO_SERVER_ORIGIN: 'http://127.0.0.1:3400',
+}), /HTTPS/, 'remote 的 HTTPS 要求不得被本地模式放宽');
 process.env.CREATIVE_STUDIO_SERVER_ORIGIN = 'https://studio.example.test';
 const safeSetTimeout = (...args) => { const timer = setTimeout(...args); timer.unref(); return timer; };
 load('desktop/main.ts', modules, { setInterval, clearInterval, setTimeout: safeSetTimeout, clearTimeout });
@@ -124,5 +141,7 @@ assert.ok(Date.now() - beforeBoundedQuit >= 1800 && Date.now() - beforeBoundedQu
 const remoteSource = fs.readFileSync('desktop/window.ts', 'utf8');
 assert.match(remoteSource, /session:\s*host\.session/, 'remote BrowserWindow 与原生传输必须共用 Session');
 assert.doesNotMatch(remoteSource, /webSecurity:\s*false|contextIsolation:\s*false|sandbox:\s*false/);
-assert.match(fs.readFileSync('desktop/main.ts', 'utf8'), /client\/remote-host/);
+const mainSource = fs.readFileSync('desktop/main.ts', 'utf8');
+assert.match(mainSource, /client\/remote-host/);
+assert.match(mainSource, /\['remote', 'local-team'\]/, 'local-team 必须在单实例锁前使用独立 userData');
 console.log('team client remote host tests passed');

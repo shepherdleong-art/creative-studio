@@ -14,15 +14,23 @@ export type RemoteClientConfig = { mode: 'local' } | { mode: 'remote'; origin: s
 export function readRemoteClientConfig(env: Record<string, string | undefined> = process.env): RemoteClientConfig {
   const mode = env.CREATIVE_STUDIO_CLIENT_MODE?.trim() || 'local';
   if (mode === 'local') return { mode };
-  if (mode !== 'remote') throw new Error('CREATIVE_STUDIO_CLIENT_MODE 只支持 local 或 remote');
+  if (mode !== 'remote' && mode !== 'local-team') {
+    throw new Error('CREATIVE_STUDIO_CLIENT_MODE 只支持 local、remote 或 local-team');
+  }
   const value = env.CREATIVE_STUDIO_SERVER_ORIGIN?.trim();
   try {
     if (!value) throw new Error('missing');
     const url = new URL(value);
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash
+    const originAllowed = mode === 'local-team'
+      ? url.protocol === 'http:' && url.hostname === '127.0.0.1'
+      : url.protocol === 'https:';
+    if (!originAllowed || url.username || url.password || url.search || url.hash
       || (url.pathname !== '/' && url.pathname !== '')) throw new Error('invalid');
-    return { mode, origin: url.origin };
+    return { mode: 'remote', origin: url.origin };
   } catch {
+    if (mode === 'local-team') {
+      throw new Error('local-team 的 CREATIVE_STUDIO_SERVER_ORIGIN 必须是无路径、凭据或查询参数的 http://127.0.0.1 origin');
+    }
     throw new Error('CREATIVE_STUDIO_SERVER_ORIGIN 必须是无路径、凭据或查询参数的 HTTPS origin');
   }
 }
@@ -98,7 +106,10 @@ export class RemoteClientController {
     await this.transfers.synchronizeIdentity();
     void this.transfers.syncDeliveries().catch(() => undefined);
     this.session.cookies.on('changed', (_event, cookie) => {
-      if (cookie.name === '__Host-team_session') void this.transfers?.synchronizeIdentity().catch(() => undefined);
+      const sessionCookie = process.env.CREATIVE_STUDIO_CLIENT_MODE === 'local-team'
+        ? 'creative_studio_team_session_local'
+        : '__Host-team_session';
+      if (cookie.name === sessionCookie) void this.transfers?.synchronizeIdentity().catch(() => undefined);
     });
     this.identityTimer = setInterval(() => {
       void this.syncUpdateGate().catch(() => undefined);

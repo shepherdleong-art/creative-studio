@@ -7,8 +7,25 @@ import {
   type AuthPrincipal,
 } from './types.ts';
 
-export const TEAM_SESSION_COOKIE = '__Host-team_session';
-export const TEAM_CSRF_COOKIE = '__Host-team_csrf';
+export function teamCookiePolicy(env: NodeJS.ProcessEnv = process.env): {
+  session: string;
+  csrf: string;
+  secure: boolean;
+} {
+  const localHttp = env.CREATIVE_STUDIO_DEPLOYMENT_MODE === 'server'
+    && env.CREATIVE_STUDIO_TEAM_LOCAL_HTTP === '1'
+    && /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(env.CREATIVE_STUDIO_TRUSTED_ORIGIN ?? '');
+  return {
+    session: localHttp ? 'creative_studio_team_session_local' : '__Host-team_session',
+    csrf: localHttp ? 'creative_studio_team_csrf_local' : '__Host-team_csrf',
+    secure: !localHttp,
+  };
+}
+
+const cookiePolicy = teamCookiePolicy();
+const secureAttribute = cookiePolicy.secure ? '; Secure' : '';
+export const TEAM_SESSION_COOKIE = cookiePolicy.session;
+export const TEAM_CSRF_COOKIE = cookiePolicy.csrf;
 export const TEAM_CSRF_HEADER = 'x-csrf-token';
 
 export function parseCookies(request: Request): Record<string, string> {
@@ -48,17 +65,17 @@ export function issueCsrfToken(): { token: string; cookie: string } {
   const token = randomBytes(32).toString('base64url');
   return {
     token,
-    cookie: `${TEAM_CSRF_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict`,
+    cookie: `${TEAM_CSRF_COOKIE}=${token}; Path=/; HttpOnly${secureAttribute}; SameSite=Strict`,
   };
 }
 
 export function sessionCookie(token: string, remember = false): string {
   const persistence = remember ? `; Max-Age=2592000; Expires=${new Date(Date.now() + 2592000 * 1000).toUTCString()}` : '';
-  return `${TEAM_SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict${persistence}`;
+  return `${TEAM_SESSION_COOKIE}=${token}; Path=/; HttpOnly${secureAttribute}; SameSite=Strict${persistence}`;
 }
 
 export function clearSessionCookie(): string {
-  return `${TEAM_SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
+  return `${TEAM_SESSION_COOKIE}=; Path=/; HttpOnly${secureAttribute}; SameSite=Strict; Max-Age=0`;
 }
 
 export function optionalPrincipal(request: Request): AuthPrincipal | null {

@@ -18,7 +18,13 @@ start-desktop.command
 ./start-desktop.command --rebuild
 ```
 
-注意：
+## 本地团队控制台
+
+如果需要带管理员登录、成员与团队任务的界面，改为双击 `team-desktop/start.command`。这个入口在 Mac 本机同时启动团队服务器与 Electron 客户端，不连接 Windows 或内网。
+
+首次启动会显示工号 `0001` 的一次性管理员凭据，登录后立即修改密码。数据保存在独立的 `team-desktop/data-root/`，不会读写上述个人工作台的数据根。停止、凭据恢复与端口配置见 `team-desktop/README.md`。
+
+## 本地桌面版注意：
 
 - 数据根是**项目目录**（`data/`、`storage/`），不是 `~/Library/Application Support/CreativeStudio`；与网页版共用同一个 `data/workbench.db`，不要和 `start.command` 同时运行。
 - 依赖本机 Node 和 `node_modules`，不使用打包的私有运行时。

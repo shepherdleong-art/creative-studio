@@ -32,6 +32,8 @@ npm run build:win-portable   # Windows 免安装包（PowerShell，须在 Window
 
 **终端用户快启脚本**（非开发用途）：`start.command` / `stop.command`（macOS 网页版）、`start-desktop.command` / `stop-desktop.command`（macOS 桌面版）、`start-windows.cmd` / `stop-windows.cmd`（Windows）。两个 macOS 入口共用同一数据根，**不能同时跑**（桌面入口在 3000 被占用时会告警）；`start-desktop.command --rebuild` 强制重跑一次 `npm run build`。免安装包装配、便携 Node/Python 运行时与 manifest 校验见 `docs/reference/打包与桌面运行.md`。
 
+Mac 本地团队控制台用 `team-desktop/start.command` / `stop.command`，数据根与上述个人工作台隔离；首次启动与管理员恢复见 `team-desktop/README.md`。
+
 **公司网关联动**（macOS / Windows 源码运行）：`.venv-litellm` 与 `config.yaml` 齐备时，各启动入口会先拉起本机 LiteLLM 代理（端口 4000，启动参数**必须显式 `--host 127.0.0.1`**）。组件缺失或 sidecar 失败**只禁用公司供应商，不阻塞工作台**。停止脚本、启动窗口 Ctrl+C、UI 关闭按钮都会把代理一并关掉。完整启停链路与免安装模式差异见 `docs/reference/公司网关与COS中转.md`。
 
 ## 测试
