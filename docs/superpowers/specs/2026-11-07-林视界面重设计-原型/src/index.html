@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>林视界面方案</title>
+<style>
+@font-face{font-family:NSans;src:url("font://NotoSansSC") format("woff2");font-weight:300 900}
+:root{--ink:#17171A;--sec:#5C5C63;--hair:#E5E5E3;--soft:#F6F6F5;--bg:#FFFFFF;--ac:#0071E3}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--ink:#EDEDF0;--sec:#A3A3AB;--hair:#2A2A2F;--soft:#18181B;--bg:#0F0F11}}
+*{box-sizing:border-box;margin:0;padding:0}
+html{font-synthesis:none;-webkit-font-smoothing:antialiased;line-break:strict}
+body{background:var(--bg);color:var(--ink);font:400 14.5px/1.65 -apple-system,"PingFang SC",NSans,"Microsoft YaHei",sans-serif}
+a{color:inherit}
+.w{max-width:1320px;margin:0 auto;padding:0 28px}
+header.top{padding:34px 0 22px;display:flex;gap:18px;align-items:center;border-bottom:1px solid var(--hair)}
+header.top svg{width:56px;height:56px;flex:none}
+h1{font-size:23px;font-weight:600;line-height:1.3}
+header.top p{color:var(--sec);margin-top:2px;max-width:60em}
+.open{flex:none;margin-left:auto;display:inline-flex;align-items:center;height:38px;padding:0 20px;border-radius:999px;background:var(--ac);color:#fff;font-weight:500;text-decoration:none;white-space:nowrap}
+.open:hover{filter:brightness(1.08)}
+section{padding:24px 0;border-bottom:1px solid var(--hair)}
+h2{font-size:16px;font-weight:600;margin-bottom:8px}
+ul{padding-left:1.2em}li{margin:3px 0}
+ol{padding-left:1.4em}ol li{margin:5px 0}
+.sec{color:var(--sec)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:28px}
+.bar{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:10px;color:var(--sec);font-size:14px}
+.bar b{color:var(--ink);font-weight:500}
+.rows{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 16px}
+.hd{font-size:13px;font-weight:600;color:var(--sec);position:sticky;top:0;background:var(--bg);padding:6px 0;z-index:2}
+.lab{grid-column:1/-1;font-size:15px;font-weight:600;padding-top:18px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.lab a{font-size:13px;font-weight:400;color:var(--sec);text-decoration:none}.lab a:hover{color:var(--ink);text-decoration:underline}
+.lab span{font-size:13px;font-weight:400;color:var(--sec)}
+.lab em{font-style:normal;font-size:12px;font-weight:500;color:#7A4A00;background:#FFEFC7;padding:0 7px;border-radius:5px;line-height:20px}
+.rows img{display:block;width:100%;height:auto;border-radius:6px;box-shadow:0 0 0 1px var(--hair);cursor:zoom-in;background:var(--soft)}
+.none{display:grid;place-items:center;min-height:180px;border-radius:6px;background:var(--soft);color:var(--sec);text-align:center;padding:20px}
+footer{padding:20px 0 40px;color:var(--sec);font-size:13px}
+#zoom{position:fixed;inset:0;background:rgba(0,0,0,.86);display:none;align-items:center;justify-content:center;z-index:9;cursor:zoom-out;padding:20px}
+#zoom.on{display:flex}#zoom img{max-width:100%;max-height:100%;border-radius:6px}
+@media (max-width:860px){.two,.rows{grid-template-columns:1fr}.hd{display:none}header.top{flex-wrap:wrap}.open{margin-left:0}}
+</style>
+</head>
+<body>
+<div class="w">
+<header class="top"><svg viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#46A97B"/><stop offset="1" stop-color="#1D6A4B"/></linearGradient></defs><rect x="2" y="2" width="96" height="96" rx="22" fill="url(#mg)"/><g transform="rotate(-45 50 50)"><path fill="#fff" fill-rule="evenodd" d="M12 50C28 20 72 20 88 50 72 80 28 80 12 50zM50 39a11 11 0 100 22 11 11 0 000-22z"/></g></svg>
+  <div><h1>林视 Lin's Vision 品牌与界面方案</h1><p>定稿方案一 Mac 原生，共 13 屏。选场景图、分镜、视频都把原图和结果并排对照。全部能点，断网也能看。</p></div>
+  <a class="open" href="方案一-Mac原生.html">打开原型</a></header>
+
+<section class="two">
+  <div><h2>第七轮改了这几处</h2><ol>
+    <li><b>剪辑区用回正式产品的操作：</b>左栏「素材调整」，先选素材，再点「替换当前片段」或「添加到缺口」。下面的时间轴有字幕、卖点、视频、口播、配乐五条轨道：单击选中，拖动排序，拖两端修剪，双击视频片段打开截取条，双击字幕或卖点直接改字，右键有删除和口播变速。快捷键也一样：空格、V、B、⌘B、N、左右键走帧、Delete、⌘Z。</li>
+    <li><b>右栏回到一列卡片：</b>选中视频片段时，最上面出现倍速和画面调整；下面依次是视频包装、字幕样式、背景音乐、口播音频变速、口播音量、视频封面设置。字幕样式不再另放小预览，改动直接显示在中间的预览上。</li>
+    <li><b>批量检查成片也照正式产品：</b>成片属性五页（包装、字幕、画面、封面、配音BGM），改完点「应用」。时间轴拖两端修剪、拖中间移动；素材拖到片段上替换，拖到空位插入，拖到末尾追加；鼠标在素材缩略图上左右滑能看画面。</li>
+    <li><b>导出成功后：</b>点成片卡片弹出大预览，能点或拖进度条跳转，左右键换上一条、下一条，空格播放暂停；还没导出的成片会说明播放的是合成预览。「一键下载全部」可以选成片和封面一起打包、只要成片或只要封面。单条混剪导出后，点成片也能预览。</li>
+  </ol>
+  <h2 style="margin-top:14px">之前几轮改过的</h2><ol>
+    <li><b>第六轮：</b>小图悬停看大图；混剪右栏补齐正式产品的全部设置；加了批量生产的四步原型。</li>
+    <li><b>第五轮：</b>分镜能上传、全选、设开场；新建项目、场景图、视频页拿掉超时、并发和预处理；爆文模板内容直接摊开，卖点库默认收起、默认全选；视频页点哪条就显示它的提示词，批量检查加「统一秒数」。</li>
+  </ol>
+  <p class="sec" style="margin-top:8px">原来的看点还在：选场景图、分镜都是原图和结果并排；脚本字数和时长实时算；视频和混剪用的是这个案例的真实素材。</p></div>
+  <div><h2>真的和示例的</h2><ul>
+    <li><b>真的：</b>案例 LH122K3 的实拍图、分镜图、视频、详情页和成片；第 1 条脚本；模型清单、时长限制、运镜模板和提示词。</li>
+    <li><b>示例：</b>金额和任务数；脚本方案 2、3 的文案；切入角度和模板理由；详情页的文件名和屏号；分镜 4、5 的手写提示词；每段视频标的模型（按时长推断）；爆文模板名。提交和生成是定时模拟的，不调用模型。</li>
+    <li><b>没验证：</b>还没在真实的 Windows 电脑上看过。这台 Mac 上用 Chromium 和 Safari 内核测过，也模拟了 Windows 窗口和字体。</li></ul></div>
+</section>
+
+<section><h2>原型下面的黑色评审条，它不属于设计</h2><p class="sec">用来切换 13 屏和下面这些状态。键盘左右键翻屏；选场景图、分镜、视频页的左右键切图。</p>
+  <div class="bar"><span><b>第一批 / 加新能力：</b>第一批上线的样子，和加上待审汇总、通过重做、多版本并排之后的样子</span><span><b>系统 / 浅 / 深：</b>外观</span><span><b>Mac 样子 / Windows 样子：</b>窗口按钮和字体一起切。员工用的是 Windows 样子</span></div></section>
+
+<section><div class="rows"><div class="hd">现在</div><div class="hd">定稿</div><!--ROWS--></div>
+  <p class="sec" style="margin-top:16px">分镜、脚本、视频三屏的「现在」是空项目截图，因为探查用的测试数据里没有生成结果，看的时候以页面结构为主。</p></section>
+
+<section class="two">
+  <div><h2>第一批不做、第二批再加的</h2><ul>
+    <li>工作台的「等你处理」跨项目汇总</li><li>成片的「通过 / 这条重做」操作</li><li>成片多个版本并排比较</li></ul>
+    <p class="sec" style="margin-top:6px">这些现在产品里没有，是这次设计提议新增的。</p>
+    <h2 style="margin-top:18px">不做原型，落地时按同样规则延伸</h2><ul>
+    <li>创作画布、成员与账号、用量、供应商配置、公共资源、版本与备份</li><li>个人本地版，跟在团队版之后</li></ul>
+    <h2 style="margin-top:18px">这几轮新加、产品里原来没有的</h2><ul>
+    <li>导出页点成片卡片弹出大预览（正式产品是每张卡片里嵌一个小播放器）</li><li>「一键下载全部」：成片和封面一起打包（正式产品只能逐条下载）</li>
+    <li>新建分镜组的「全选」和「设为开场」</li><li>视频页右栏跟着所选视频显示当时的设置</li><li>批量检查里的「统一秒数」原来就有，这次只是放到显眼的位置</li></ul></div>
+  <div><h2>落地时要留意</h2><ul>
+    <li>超时、并发和图片预处理改由服务器统一管理：要把它们从新建项目、场景图、视频页拿掉，默认值放到服务器</li>
+    <li>「正在生产」的百分比：现在只有渲染有真实进度，图片和视频生成落地时只能显示第几条</li>
+    <li>「模型与名额」按账号合并：数据已有，要改页面和保存方式</li>
+    <li>总览里「今天的成员」和「开工前还差几件事」：数据已有，页面是新的</li>
+    <li>改显示名会牵动几个守护测试，要一起改</li>
+    <li>混剪被侧栏盖住的问题一起解决，同时保留为小屏监看加宽的布局</li>
+    <li>剪辑区和批量审片的操作照搬现在的混剪时间轴和截取条，只换外观，不改操作习惯</li>
+    <li>一键下载全部：网页版要在服务器打包成 ZIP，桌面版可以直接存到下载目录</li>
+    <li>商标还没检索</li></ul></div>
+</section>
+<footer>设计依据见同目录 brand-spec.md 和 direction-approved.md。选型过程留档：<a href="方案三-精密工具.html">方案三 精密工具</a>（不再往下做）、design-demos/（第一、二轮方向）。</footer>
+</div>
+<div id="zoom"><img alt=""></div>
+<script>
+(function(){var z=document.getElementById('zoom'),i=z.querySelector('img');
+document.addEventListener('click',function(e){if(e.target.closest('.rows img')){i.src=e.target.src;z.classList.add('on');}else if(e.target.closest('#zoom')){z.classList.remove('on');}});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')z.classList.remove('on');});})();
+</script>
+</body>
+</html>

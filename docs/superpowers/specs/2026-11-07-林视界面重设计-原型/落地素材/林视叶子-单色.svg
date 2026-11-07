@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- 林视单色叶子：颜色跟随文字色（currentColor），当图片单独使用时显示为黑色。 -->
+  <g transform="rotate(-45 50 50)">
+    <path fill="currentColor" fill-rule="evenodd" d="M12 50C28 20 72 20 88 50 72 80 28 80 12 50zM50 39a11 11 0 100 22 11 11 0 000-22z"/>
+  </g>
+</svg>

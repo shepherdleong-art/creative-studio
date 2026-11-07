@@ -1,0 +1,20 @@
+/* 评审条：不属于设计本身，所以用中性深色并贴在窗口之外 */
+#review{position:fixed;left:0;right:0;bottom:0;height:38px;background:#1A1A1C;color:#C9C9CE;display:flex;align-items:center;gap:8px;padding:0 10px;font:400 12px/1 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;z-index:1000;white-space:nowrap;overflow-x:auto;scrollbar-width:none}
+#review button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+.rv-name{color:#fff;font-weight:600;margin-right:4px}
+.rv-tabs{display:flex;gap:1px;background:#2A2A2D;border-radius:6px;padding:2px}
+.rv-tabs button{height:24px;padding:0 8px;border-radius:4px}
+.rv-tabs button:hover{background:#38383C}
+.rv-tabs button.on{background:#fff;color:#111}
+.rv-sp{flex:1}
+.rv-seg{display:flex;gap:1px;background:#2A2A2D;border-radius:6px;padding:2px}
+.rv-seg button{height:24px;padding:0 7px;border-radius:4px}
+.rv-seg button.on{background:#55555A;color:#fff}
+.rv-flag{height:28px;padding:0 8px;border-radius:6px;background:#2A2A2D!important}
+.rv-flag.on{color:#FFD479!important}
+.rv-link{color:#8FBEFF;text-decoration:none;padding:0 4px}
+.rv-link:hover{text-decoration:underline}
+@media (max-width:1320px){.rv-name{display:none}}
+#toast{position:fixed;left:50%;top:64px;transform:translate(-50%,-8px);background:rgba(28,28,30,.94);color:#fff;font-size:13.5px;padding:9px 16px;border-radius:10px;opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;z-index:1001;max-width:640px;text-align:center}
+#toast.on{opacity:1;transform:translate(-50%,0)}
+html[data-flags=off] .newcap{display:none!important}

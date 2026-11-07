@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>林视 方案一 Mac 原生</title>
+<style><!--@include ../fonts-one.css--></style>
+<style><!--@include one.css--></style>
+<style><!--@include steps.css--></style>
+<style><!--@include edit.css--></style>
+<style><!--@include ../brand.css--></style>
+<style><!--@include ../review.css--></style>
+</head>
+<body>
+<!--@include ../../icons.html-->
+<svg style="position:absolute;width:0;height:0" aria-hidden="true">
+  <defs><linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#46A97B"/><stop offset="1" stop-color="#1D6A4B"/></linearGradient></defs>
+  <symbol id="leaf" viewBox="0 0 100 100"><g transform="rotate(-45 50 50)"><path fill="currentColor" fill-rule="evenodd" d="M12 50C28 20 72 20 88 50 72 80 28 80 12 50zM50 39a11 11 0 100 22 11 11 0 000-22z"/></g></symbol>
+  <symbol id="mark" viewBox="0 0 100 100"><rect x="2" y="2" width="96" height="96" rx="22" fill="url(#mg)"/><rect x="2.5" y="2.5" width="95" height="95" rx="21.5" fill="none" stroke="rgba(255,255,255,.22)"/><g transform="rotate(-45 50 50)"><path fill="#fff" fill-rule="evenodd" d="M12 50C28 20 72 20 88 50 72 80 28 80 12 50zM50 39a11 11 0 100 22 11 11 0 000-22z"/></g></symbol>
+</svg>
+<div id="app"></div><div id="pop"></div><div id="toast"></div><div id="review"></div>
+<input id="sb-pick" type="file" accept="image/*" multiple hidden><input id="sc-pick" type="file" accept="image/*" multiple hidden><input id="free-pick" type="file" accept="image/*" multiple hidden>
+<script><!--@include ../wave.js--></script>
+<script><!--@include ../data.js--></script>
+<script><!--@include ../core.js--></script>
+<script><!--@include ../brand.js--></script>
+<script><!--@include one.js--></script>
+<script><!--@include steps.js--></script>
+<script><!--@include edit.js--></script>
+<script><!--@include editor.js--></script>
+<script><!--@include batch.js--></script>
+<script><!--@include brand-one.js--></script>
+<script>boot();</script>
+</body>
+</html>
