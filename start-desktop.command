@@ -1,5 +1,5 @@
 #!/bin/bash
-# 产品素材工作台 — 桌面版（Electron）一键启动脚本
+# 林视 Lin's Vision — 桌面版（Electron）一键启动脚本
 # 双击此文件，或在终端运行: bash start-desktop.command [--rebuild]
 #
 # 与 start.command（网页版）的区别：
@@ -23,7 +23,7 @@ for arg in "$@"; do
 done
 
 echo "========================================"
-echo "   🖥️  产品素材工作台 · 桌面版"
+echo "   🖥️  林视 Lin's Vision · 桌面版"
 echo "========================================"
 echo ""
 

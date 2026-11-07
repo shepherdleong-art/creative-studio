@@ -104,6 +104,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 | `docs/reference/视频包装.md` | 改共享包装、四套模板、单条或批量包装入口、离线包装运行资源 |
 | `docs/reference/单条素材分析.md` | 改单条混剪的素材分析缓存、重新分析及分析记录写入 |
 | `docs/reference/固定渲染命令.md` | 改 `lib/film-render/`、`scripts/film-render.ts` 或 classic 渲染验收 |
+| `docs/reference/界面尺寸验收.md` | 改界面外观、加一屏页面，或跑 `node scripts/team-server/acceptance.mjs --level ui` 前 |
 
 ### `lib/` 核心模块
 

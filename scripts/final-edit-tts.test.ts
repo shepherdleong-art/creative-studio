@@ -7,7 +7,8 @@ import { assertTtsSpeed } from '../lib/final-edit/tts-speed.ts';
 
 assert.equal(VAPI_VOICES.length, 17);
 assert.equal(VAPI_VOICES.find((voice) => voice.label.includes('南京'))?.id, 'li');
-assert.equal(VAPI_PREVIEW_TEXT, '你好，我是产品素材工作台语音助手，这是当前音色和语速的试听效果。');
+assert.equal(VAPI_PREVIEW_TEXT, '你好，我是林视创作台语音助手，这是当前音色和语速的试听效果。');
+assert.doesNotMatch(VAPI_PREVIEW_TEXT, /产品素材工作台|Creative Studio/);
 assert.equal(speechUrl('https://api.v3.cm'), 'https://api.v3.cm/v1/audio/speech');
 assert.equal(speechUrl('https://api.v3.cm/v1/'), 'https://api.v3.cm/v1/audio/speech');
 assert.equal(validateVapiAudioUrl('http://dashscope-result-sh.oss-cn-shanghai.aliyuncs.com/a.wav?x=1').protocol, 'https:');

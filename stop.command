@@ -1,8 +1,8 @@
 #!/bin/bash
-# 产品素材工作台 — 关闭服务脚本
+# 林视 Lin's Vision — 关闭服务脚本
 # 双击此文件或在终端运行: bash stop.sh
 
-echo "🛑 正在关闭产品素材工作台..."
+echo "🛑 正在关闭林视 Lin's Vision..."
 
 cd "$(dirname "$0")"
 PROJECT_ROOT="$(pwd -P)"

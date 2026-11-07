@@ -11,6 +11,7 @@ import {
   LOCAL_CHECKS,
   MATRIX_IDS,
   ONSITE_GAPS,
+  UI_SUITE,
 } from './acceptance-manifest.mjs';
 
 const repoRoot = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
@@ -21,7 +22,7 @@ function argument(name, fallback = null) {
   return index >= 0 ? process.argv[index + 1] : fallback;
 }
 const level = argument('--level', 'all');
-if (!['L1', 'L2', 'first-run', 'checks', 'all', 'onsite'].includes(level)) throw new Error('--level 只支持 L1/L2/first-run/checks/all/onsite');
+if (!['L1', 'L2', 'first-run', 'checks', 'all', 'onsite', 'ui'].includes(level)) throw new Error('--level 只支持 L1/L2/first-run/checks/all/onsite/ui');
 const configPath = argument('--config');
 const smokeConfig = {
   schemaVersion: 1,
@@ -79,13 +80,21 @@ async function execute(entry) {
   const evidencePath = path.join(run.runDirectory, evidenceName);
   const metricPath = entry.name.includes('http.playwright')
     ? path.join(run.runDirectory, 'http-metrics.json')
-    : entry.name.includes('fairness') ? path.join(run.runDirectory, 'fairness.json') : null;
+    : entry.name.includes('fairness') ? path.join(run.runDirectory, 'fairness.json')
+      : entry.uiAcceptance ? path.join(run.runDirectory, 'ui-acceptance.json') : null;
   const env = {
     ...process.env,
     NEXT_TELEMETRY_DISABLED: '1',
     NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(networkGuard)}`.trim(),
     TEAM_ACCEPTANCE_EVIDENCE_DIR: path.join(run.runDirectory, 'http'),
     ...(metricPath ? { TEAM_ACCEPTANCE_RESULT_PATH: metricPath } : {}),
+    // 界面尺寸验收（ui-04）读这两个：证据目录与结果 JSON。
+    ...(entry.uiAcceptance
+      ? {
+          TEAM_ACCEPTANCE_BROWSER_EVIDENCE_DIR: path.join(run.runDirectory, 'ui'),
+          TEAM_ACCEPTANCE_UI_RESULT_PATH: metricPath,
+        }
+      : {}),
     TEAM_ACCEPTANCE_USERS: String(config.users),
     TEAM_ACCEPTANCE_CONCURRENCY: String(config.concurrency),
     TEAM_ACCEPTANCE_DURATION_SECONDS: String(config.durationSeconds),
@@ -158,7 +167,8 @@ try {
     : level === 'L2' ? L2_SUITE
       : level === 'first-run' ? FIRST_RUN_SUITE
         : level === 'checks' ? LOCAL_CHECKS
-        : level === 'all' ? [...FIRST_RUN_SUITE, ...L1_SUITE, ...L2_SUITE, ...LOCAL_CHECKS]
+        : level === 'ui' ? UI_SUITE
+        : level === 'all' ? [...UI_SUITE, ...FIRST_RUN_SUITE, ...L1_SUITE, ...L2_SUITE, ...LOCAL_CHECKS]
           : [];
   for (const entry of suites) {
     if (entry.command.some((part) => part.startsWith('scripts/') && !fs.existsSync(path.join(repoRoot, part)))) {
