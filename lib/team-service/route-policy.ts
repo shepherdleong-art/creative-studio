@@ -296,6 +296,7 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/tasks/detail': 'GET',
   '/api/team/tasks/retry': 'POST',
   '/api/team/usage': 'GET',
+  '/api/team/dashboard': 'GET',
   '/api/team/usage/export': 'GET',
   '/api/team/models': 'GET',
   '/api/team/public-resources': 'GET POST',
@@ -336,6 +337,7 @@ const AUTHENTICATED = new Set([
   '/api/team/errors/[id]/task GET',
   '/api/team/members/[id]/policy GET', '/api/team/tasks GET', '/api/team/usage GET',
   '/api/team/tasks/detail GET', '/api/team/tasks/retry POST',
+  '/api/team/dashboard GET',
   '/api/upload POST', '/api/batch-production/assets/import POST', '/api/canvas/[id]/assets POST',
 ]);
 const ADMIN_PREFIXES = ['/api/providers', '/api/team/users'];

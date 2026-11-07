@@ -6,6 +6,8 @@ import { writeLog } from '@/lib/logger';
 import { getEffectiveImageConcurrency } from '@/lib/provider-concurrency';
 import { v4 as uuidv4 } from 'uuid';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { productionParamsFor } from '@/lib/team-service/production-defaults';
 
 
 async function __teamRoutePOST(
@@ -43,16 +45,23 @@ async function __teamRoutePOST(
           );
         }
 
-        const requestedConcurrency = body.concurrency || project.concurrency || 10;
+        // ── 生产参数：server 模式一律取服务器默认值（含「已有项目新提交的任务」）；
+        //    本地版沿用「请求值 > 项目已存值 > 内置默认值」的原有顺序。 ──
+        const production = productionParamsFor(readRuntimeConfig(), {
+          timeoutMs: body.timeoutMs ?? project.timeoutMs,
+          concurrency: body.concurrency ?? project.concurrency,
+        });
+        const requestedConcurrency = production.projectConcurrency;
         const provider = db.prepare(`SELECT id, name, type, baseUrl FROM providers WHERE id = ?`).get(project.providerId) as {
           id?: string;
           name?: string;
           type?: string;
           baseUrl?: string;
         } | undefined;
+        // 名额池 / 成员并发上限 / 公平共享保持不变，只是输入换成裁决后的值。
         const concurrency = getEffectiveImageConcurrency(provider || {}, requestedConcurrency);
         const maxAttempts = body.maxAttempts || project.maxAttempts || 2;
-        const timeoutMs = body.timeoutMs || project.timeoutMs || 600000;
+        const timeoutMs = production.timeoutMs;
 
         // Generate runId for this run
         const runId = uuidv4().slice(0, 8);
@@ -96,7 +105,12 @@ async function __teamRoutePOST(
           );
         }
 
-        const requestedConcurrency = body.concurrency || project.concurrency || 10;
+        // 与 start 同一套裁决：server 模式丢弃请求里的并发 / 超时。
+        const production = productionParamsFor(readRuntimeConfig(), {
+          timeoutMs: body.timeoutMs ?? project.timeoutMs,
+          concurrency: body.concurrency ?? project.concurrency,
+        });
+        const requestedConcurrency = production.projectConcurrency;
         const provider = db.prepare(`SELECT id, name, type, baseUrl FROM providers WHERE id = ?`).get(project.providerId) as {
           id?: string;
           name?: string;
@@ -105,7 +119,7 @@ async function __teamRoutePOST(
         } | undefined;
         const concurrency = getEffectiveImageConcurrency(provider || {}, requestedConcurrency);
         const maxAttempts = body.maxAttempts || project.maxAttempts || 2;
-        const timeoutMs = body.timeoutMs || project.timeoutMs || 600000;
+        const timeoutMs = production.timeoutMs;
 
         resumeQueue(id, { projectId: id, concurrency, maxAttempts, timeoutMs });
         writeLog({ jobId: '', projectId: id, level: 'info', message: `队列已恢复 (concurrency=${concurrency}, requested=${requestedConcurrency})` });

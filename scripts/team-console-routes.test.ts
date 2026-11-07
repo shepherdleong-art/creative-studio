@@ -156,7 +156,17 @@ try {
   assert.deepEqual(emptyBody.members, []);
   assert.equal(emptyBody.setup.ready, false, '新环境三件事都没配好');
   assert.equal(emptyBody.setup.items.length, 3);
-  assert.equal(emptyBody.productionDefaults, null, '06 尚未接入服务器默认值时不得伪造');
+  // 06 号票的服务器默认参数若已接入，控制台必须读到真实值；未接入时是 null。
+  // 两种都不算错，但**绝不能**出现「接入了一半」的半成品形状。
+  if (emptyBody.productionDefaults === null) {
+    console.log('PASS: 服务器默认值未接入（06 未合并时的预期）');
+  } else {
+    const defaults = emptyBody.productionDefaults as Record<string, unknown>;
+    assert.equal(typeof defaults.timeoutMs, 'number');
+    assert.equal(typeof defaults.projectConcurrency, 'number');
+    assert.ok((defaults.timeoutMs as number) > 0 && (defaults.projectConcurrency as number) > 0);
+    console.log('PASS: 服务器默认值已接入且形状完整');
+  }
   console.log('PASS: 管理员可读运行总览；空环境给出全 0 空状态与三件待办');
 
   // ---- 造任务：正在跑 / 排队 / 今天完成 / 出错 / 已取消 ----
