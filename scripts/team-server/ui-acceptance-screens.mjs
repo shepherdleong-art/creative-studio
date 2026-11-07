@@ -372,10 +372,24 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       await page.getByTestId('task-detail').waitFor({ timeout: 30_000 });
     }],
   }),
-  base('admin-pools', '模型与名额（资源池与共享预算）', 'ui-13', {
+  base('admin-pools', '模型与名额（一个名额池一行）', 'ui-13', {
     audience: 'admin',
     href: () => '/team/admin/pools',
-    ready: async (page) => { await page.getByRole('heading', { name: '资源池与共享预算', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      // 这一屏特有的落点：至少一个账号行（「一个名额池一行」），标题取第一条工具栏
+      // （外壳那条在页面登记占用后就撤下，过渡瞬间可能并存）。
+      await page.getByTestId('pool-row').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('page-toolbar-title').first().getByText('模型与名额', { exact: true }).waitFor({ timeout: 60_000 });
+    },
+    actions: [async (page) => {
+      // 展开一行：模型列表 + 正在使用的成员 + 默认收起的内部编号。
+      await page.getByRole('button', { name: /^展开 / }).first().click();
+      await page.getByText('包含的模型', { exact: true }).first().waitFor({ timeout: 30_000 });
+      const internal = page.getByText('排查用的内部编号', { exact: true }).first();
+      await internal.waitFor({ timeout: 30_000 });
+      await internal.click();
+      await page.getByText(/映射协议：|版本：/).first().waitFor({ timeout: 30_000 });
+    }],
   }),
   base('admin-users', '成员与账号', 'ui-14', {
     audience: 'admin',
