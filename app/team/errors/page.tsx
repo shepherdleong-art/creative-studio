@@ -12,5 +12,5 @@ export default async function TeamErrorsPage() {
   const token = (await cookies()).get(TEAM_SESSION_COOKIE)?.value;
   const principal = token ? getTeamAuthService().resolveSession(token) : null;
   if (!principal || principal.mustChangePassword) redirect('/team/login');
-  return <TeamErrorsPanel />;
+  return <TeamErrorsPanel role={principal.role} />;
 }

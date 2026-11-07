@@ -1,6 +1,7 @@
 'use client';
 import { useState, type FormEvent, type InputHTMLAttributes } from 'react';
 import { teamWrite } from './client';
+import { StatusDot, ToolbarButton } from '@/components/ui/Appearance';
 
 const directoryAttributes = { webkitdirectory: '', directory: '' } as InputHTMLAttributes<HTMLInputElement>;
 const audioFilename = /\.(mp3|wav|m4a|aac|flac|ogg)$/i;
@@ -41,19 +42,19 @@ export default function TeamBgmLibrary({ onUploaded }: { onUploaded: () => void 
     onUploaded();
   }
   return <div>
-    <p className="mt-2 text-sm leading-6 text-ink-secondary">从电脑选择音乐，上传后自动发布给团队。支持 MP3、WAV、M4A、AAC、FLAC、OGG。</p>
-    <form onSubmit={event => void upload(event)} className="mt-5 flex flex-wrap items-end gap-4">
+    <p className="mt-2 text-[13px] leading-6 text-ink-secondary">从电脑选择音乐，上传后自动发布给团队。支持 MP3、WAV、M4A、AAC、FLAC、OGG。</p>
+    <form onSubmit={event => void upload(event)} className="mt-4 flex flex-wrap items-end gap-4">
       <label className="min-w-0 flex-1"><span className="label">选择音乐文件（可多选）</span>
         <input aria-label="选择 BGM 音乐" className="input-field" type="file" accept=".mp3,.wav,.m4a,.aac,.flac,.ogg" multiple disabled={busy} onChange={event => selectFiles(event.target.files)} />
       </label>
       <label className="min-w-0 flex-1"><span className="label">选择音乐文件夹（含子文件夹）</span>
         <input aria-label="选择 BGM 文件夹" className="input-field" type="file" {...directoryAttributes} multiple disabled={busy} onChange={event => selectFiles(event.target.files)} />
       </label>
-      <button className="btn-primary" type="submit" disabled={busy || !files.length}>{busy ? '正在处理…' : '上传并发布 BGM'}</button>
+      <ToolbarButton type="submit" variant="primary" disabled={busy || !files.length}>{busy ? '正在处理…' : '上传并发布 BGM'}</ToolbarButton>
     </form>
-    <p className="mt-2 text-xs text-ink-tertiary">可直接选择共享盘音乐库文件夹，自动包含子文件夹中的音频。逐首上传，每首不超过 60 MB；非音频自动跳过，相同文件自动复用。上传期间请保持页面打开。</p>
-    {progress && <p role="status" className="mt-4 text-sm text-ink-secondary">{progress}</p>}
-    {notice && <p role="status" className="mt-4 text-sm text-ok">{notice}</p>}
-    {error && <p role="alert" className="mt-4 text-sm text-fail">{error}</p>}
+    <p className="mt-2 text-[12px] text-ink-tertiary">可直接选择共享盘音乐库文件夹，自动包含子文件夹中的音频。逐首上传，每首不超过 60 MB；非音频自动跳过，相同文件自动复用。上传期间请保持页面打开。</p>
+    {progress && <p role="status" className="mt-3 flex items-center gap-2 text-[13px] text-ink-secondary"><StatusDot tone="run" />{progress}</p>}
+    {notice && <p role="status" className="mt-3 flex items-center gap-2 text-[13px] text-ok"><StatusDot tone="ok" />{notice}</p>}
+    {error && <p role="alert" className="mt-3 text-[13px] text-fail">{error}</p>}
   </div>;
 }

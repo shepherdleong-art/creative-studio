@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { teamError, teamWrite } from './client';
 import TeamRestorePanel, { type RestoreActivity, type RestoreJob } from './TeamRestorePanel';
 import TeamCleanupPanel from './TeamCleanupPanel';
+import { StatusDot, Tag } from '@/components/ui/Appearance';
 
 export type Job = RestoreJob & {
   target: { kind: string; previewId?: string };
@@ -104,50 +105,54 @@ export default function TeamMaintenancePanel() {
   const active = jobs.some((job) => activeStatuses.has(job.status));
   const latestDaily = backups.find(backup => backup.type === 'daily' && backup.verification === 'verified');
   return <>
-    <section className="card p-6" aria-label="立即备份">
+    <section className="card p-5" aria-labelledby="maintenance-backup-heading">
+      <h2 id="maintenance-backup-heading" className="text-[15px] font-semibold text-ink">备份与维护</h2>
+      <p className="mt-1 text-[12px] leading-5 text-ink-tertiary">备份、还原与无用文件清理都在这一块；版本切换由下方的发布包流程负责。</p>
+    </section>
+    <section className="card p-5" aria-label="立即备份">
       <div className="flex flex-wrap items-start justify-between gap-5">
-        <div><h2 className="text-lg font-semibold text-ink">立即备份</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-ink-secondary">备份包含项目、任务、资源配置、已登记的上传素材和生成文件，以及任务执行记录。完整性校验通过后可恢复整套业务数据；服务器程序版本由独立的版本维护流程管理。</p>
-          <p className="mt-2 text-sm text-ink-secondary">备份由服务器执行，关闭此页面不会取消。下方可查看每日自动备份和手动备份，并选择还原点。</p>
+        <div><h2 className="text-[15px] font-semibold text-ink">立即备份</h2>
+          <p className="mt-1.5 max-w-3xl text-[13px] leading-6 text-ink-secondary">备份包含项目、任务、资源配置、已登记的上传素材和生成文件，以及任务执行记录。完整性校验通过后可恢复整套业务数据；服务器程序版本由独立的版本维护流程管理。</p>
+          <p className="mt-1.5 text-[13px] text-ink-secondary">备份由服务器执行，关闭此页面不会取消。下方可查看每日自动备份和手动备份，并选择还原点。</p>
         </div>
-        <button className="btn-primary" disabled={busy || active} onClick={() => void submit()}>{busy ? '正在提交…' : active ? '备份执行中' : '立即备份'}</button>
+        <button className="cap cap-primary" disabled={busy || active} onClick={() => void submit()}>{busy ? '正在提交…' : active ? '备份执行中' : '立即备份'}</button>
       </div>
-      {error && <p role="alert" className="mt-4 text-sm text-fail">{error}</p>}
-      <div className="mt-5 space-y-3" aria-live="polite">
-        {jobs.filter((job) => job.action === 'backup.create').slice(0, 5).map((job) => <article key={job.id} className="rounded-xl border border-hairline p-4">
+      {error && <p role="alert" className="mt-3 text-[13px] text-fail">{error}</p>}
+      <div className="mt-4 space-y-3" aria-live="polite">
+        {jobs.filter((job) => job.action === 'backup.create').slice(0, 5).map((job) => <article key={job.id} className="rounded-[11px] border border-hairline p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h3 className="text-sm font-medium text-ink">{job.integrity === 'audit_corrupt' ? '待核查' : statusLabels[job.status]} · {job.stage === 'completed' && job.action === 'backup.create' ? '备份完成' : stageLabels[job.stage] ?? job.stage}</h3>
-            <span className={`text-xs ${job.status === 'succeeded' ? 'text-ok' : ['failed', 'needs_review'].includes(job.status) ? 'text-warn' : 'text-ink-secondary'}`}>{job.status === 'succeeded' ? '已通过完整性校验' : job.progress === null ? '阶段进度，无可用百分比' : `${job.progress}%`}</span>
+            <h3 className="text-[13px] font-medium text-ink">{job.integrity === 'audit_corrupt' ? '待核查' : statusLabels[job.status]} · {job.stage === 'completed' && job.action === 'backup.create' ? '备份完成' : stageLabels[job.stage] ?? job.stage}</h3>
+            <span className={`inline-flex items-center gap-1.5 text-[12px] ${job.status === 'succeeded' ? 'text-ok' : ['failed', 'needs_review'].includes(job.status) ? 'text-warn' : 'text-ink-secondary'}`}>{job.status === 'succeeded' ? <Tag tone="ok">已通过完整性校验</Tag> : job.progress === null ? '阶段进度，无可用百分比' : `${job.progress}%`}</span>
           </div>
-          <p className="mt-2 text-xs leading-5 text-ink-secondary">发起人：{job.requestedBy.displayName} · 提交：{time(job.createdAt)}</p>
-          {job.error && <p className="mt-2 text-sm text-fail">{job.error.message}</p>}
-          {job.message && <p className="mt-2 text-sm text-warn">{job.message}</p>}
-          {job.reviewReason && <p className="mt-2 text-sm text-warn">{job.reviewReason}</p>}
-          {job.result?.backupId && <p className="mt-2 break-all font-mono text-xs text-ink-tertiary">备份：{job.result.backupId}</p>}
+          <p className="mt-2 text-[12px] leading-5 text-ink-secondary">发起人：{job.requestedBy.displayName} · 提交：{time(job.createdAt)}</p>
+          {job.error && <p className="mt-2 text-[13px] text-fail">{job.error.message}</p>}
+          {job.message && <p className="mt-2 text-[13px] text-warn">{job.message}</p>}
+          {job.reviewReason && <p className="mt-2 text-[13px] text-warn">{job.reviewReason}</p>}
+          {job.result?.backupId && <p className="mt-2 break-all font-mono text-[12px] text-ink-tertiary">备份：{job.result.backupId}</p>}
         </article>)}
-        {!loading && jobs.length === 0 && <p className="text-sm text-ink-secondary">尚未通过网页发起维护作业。</p>}
+        {!loading && jobs.length === 0 && <p className="text-[13px] text-ink-secondary">尚未通过网页发起维护作业。</p>}
       </div>
     </section>
-    <section className="card p-6" aria-label="备份列表">
+    <section className="card p-5" aria-label="备份列表">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold text-ink">备份列表</h2>
-        <button className="btn-secondary btn-sm" disabled={backupLoading} onClick={() => void refreshBackups()}>{backupLoading ? '正在校验备份…' : '刷新备份列表'}</button>
+        <h2 className="text-[15px] font-semibold text-ink">备份列表</h2>
+        <button className="cap" disabled={backupLoading} onClick={() => void refreshBackups()}>{backupLoading ? '正在校验备份…' : '刷新备份列表'}</button>
       </div>
-      {latestDaily && <p className="mt-3 text-sm text-ok">最近成功的每日自动备份：{time(latestDaily.createdAt)}</p>}
-      <p className="mt-2 text-sm text-ink-secondary">只有重新通过数据库、配置、媒体和证据校验的完整备份才标记为可用于还原。</p>
-      {backupLoading && <p role="status" className="mt-3 text-sm text-ink-secondary">正在读取并校验备份文件，素材较多时可能需要一些时间。</p>}
-      {backupError && <p role="alert" className="mt-3 text-sm text-fail">{backupError}</p>}
-      <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[650px] text-left text-sm">
-        <thead><tr className="border-b border-hairline text-xs text-ink-tertiary"><th className="py-2 font-medium">类型</th><th className="py-2 font-medium">备份时间</th><th className="py-2 font-medium">大小</th><th className="py-2 font-medium">校验状态</th><th className="py-2 font-medium">可用于还原</th></tr></thead>
-        <tbody>{backups.map((backup) => <tr key={`${backup.type}/${backup.id}`} className="border-b border-hairline last:border-0">
-          <td className="py-3 text-ink">{backupTypeLabels[backup.type] ?? backup.type}</td>
-          <td className="py-3 text-ink-secondary">{time(backup.createdAt)}<div className="mt-1 break-all font-mono text-[11px] text-ink-tertiary">{backup.id}</div></td>
-          <td className="py-3 text-ink-secondary">{backup.totalBytes > 0 ? bytes(backup.totalBytes) : '—'}</td>
-          <td className={`py-3 ${backup.verification === 'verified' ? 'text-ok' : 'text-warn'}`}>{backup.verification === 'verified' ? `已校验 · ${time(backup.verifiedAt)}` : '未通过，待核查'}</td>
-          <td className="py-3 text-ink-secondary">{backup.restorable ? <a className="text-accent underline" href="#team-restore">可用 · 前往还原</a> : backup.verification === 'verified' && !backup.compatible ? `程序版本不匹配（${backup.releaseId}）` : '校验未通过'}</td>
+      {latestDaily && <p className="mt-3 flex items-center gap-2 text-[13px] text-ok"><StatusDot tone="ok" />最近成功的每日自动备份：{time(latestDaily.createdAt)}</p>}
+      <p className="mt-1.5 text-[13px] text-ink-secondary">只有重新通过数据库、配置、媒体和证据校验的完整备份才标记为可用于还原。</p>
+      {backupLoading && <p role="status" className="mt-3 text-[13px] text-ink-secondary">正在读取并校验备份文件，素材较多时可能需要一些时间。</p>}
+      {backupError && <p role="alert" className="mt-3 text-[13px] text-fail">{backupError}</p>}
+      <div className="mt-4 overflow-x-auto"><table className="data-table min-w-[650px]">
+        <thead><tr><th>类型</th><th>备份时间</th><th>大小</th><th>校验状态</th><th>可用于还原</th></tr></thead>
+        <tbody>{backups.map((backup) => <tr key={`${backup.type}/${backup.id}`}>
+          <td className="text-ink">{backupTypeLabels[backup.type] ?? backup.type}</td>
+          <td className="text-ink-secondary">{time(backup.createdAt)}<div className="mt-1 break-all font-mono text-[11px] text-ink-tertiary">{backup.id}</div></td>
+          <td className="tnum text-ink-secondary">{backup.totalBytes > 0 ? bytes(backup.totalBytes) : '—'}</td>
+          <td><Tag tone={backup.verification === 'verified' ? 'ok' : 'warn'}>{backup.verification === 'verified' ? `已校验 · ${time(backup.verifiedAt)}` : '未通过，待核查'}</Tag></td>
+          <td className="text-ink-secondary">{backup.restorable ? <a className="text-accent underline" href="#team-restore">可用 · 前往还原</a> : backup.verification === 'verified' && !backup.compatible ? `程序版本不匹配（${backup.releaseId}）` : '校验未通过'}</td>
         </tr>)}</tbody>
       </table></div>
-      {!backupLoading && !backupError && backups.length === 0 && <p className="mt-4 text-sm text-ink-secondary">尚无备份记录。可先点击「立即备份」；自动备份是否启用需由服务器计划任务确认。</p>}
+      {!backupLoading && !backupError && backups.length === 0 && <p className="mt-4 text-[13px] text-ink-secondary">尚无备份记录。可先点击「立即备份」；自动备份是否启用需由服务器计划任务确认。</p>}
     </section>
     <TeamRestorePanel backups={backups} jobs={jobs} activity={activity} busy={busy} backupsLoading={backupLoading} backupsError={backupError} onRefresh={refresh} />
     <TeamCleanupPanel jobs={jobs} />
