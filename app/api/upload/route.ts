@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
-import { preprocessImage, DEFAULT_OPTIONS } from '@/lib/image-preprocess';
+import { preprocessImage } from '@/lib/image-preprocess';
 import fs from 'fs';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
@@ -13,6 +13,7 @@ import { validateUploadedImageBuffer } from '@/lib/image-upload-validation';
 import { registerManagedFile, requireAccessContext } from '@/lib/media-core/access-context';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { readRuntimeConfig } from '@/lib/team-service/config';
+import { productionParamsFor } from '@/lib/team-service/production-defaults';
 import { controlledUploadRequired } from '@/lib/team-service/transfers/controlled-transfer';
 
 
@@ -63,9 +64,15 @@ async function __teamRoutePOST(request: NextRequest) {
     const usage = (formData.get('usage') as string) || '';
     const allowedUsage = ['', 'scene_seed', 'shot_source', 'video_source', 'detail_page', VIDEO_TAIL_FRAME_USAGE];
     if (!allowedUsage.includes(usage)) return NextResponse.json({ error: '非法的 usage 值' }, { status: 400 });
-    const preprocessEnabled = formData.get('preprocessEnabled') !== 'false'; // default true
-    const targetMaxSide = parseInt(formData.get('targetMaxSide') as string) || DEFAULT_OPTIONS.targetMaxSide;
-    const jpegQuality = parseInt(formData.get('jpegQuality') as string) || DEFAULT_OPTIONS.jpegQuality;
+    // ── 图片预处理：server 模式一律取服务器默认值（请求里的开关/最长边/质量作废）──
+    const imagePreprocess = productionParamsFor(readRuntimeConfig(), {
+      preprocessEnabled: formData.get('preprocessEnabled'),
+      targetMaxSide: formData.get('targetMaxSide'),
+      jpegQuality: formData.get('jpegQuality'),
+    }).imagePreprocess;
+    const preprocessEnabled = imagePreprocess.enabled;
+    const targetMaxSide = imagePreprocess.targetMaxSide;
+    const jpegQuality = imagePreprocess.jpegQuality;
 
     if (!files || files.length === 0) {
       return NextResponse.json({ error: 'No files uploaded' }, { status: 400 });

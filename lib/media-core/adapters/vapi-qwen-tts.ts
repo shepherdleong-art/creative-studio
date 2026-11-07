@@ -25,7 +25,7 @@ import { withMediaResource } from '../media-resource-gate.ts';
 
 export { isReusableNarrationChunk, proportionalWordTimings } from './tts-common.ts';
 
-export const VAPI_PREVIEW_TEXT = '你好，我是产品素材工作台语音助手，这是当前音色和语速的试听效果。';
+export const VAPI_PREVIEW_TEXT = '你好，我是林视创作台语音助手，这是当前音色和语速的试听效果。';
 
 export const VAPI_VOICES = [
   { id: 'Cherry', label: '芊悦' }, { id: 'Ethan', label: '晨煦' },

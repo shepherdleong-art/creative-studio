@@ -11,7 +11,7 @@ $Root = Split-Path -Parent $ScriptDir
 Set-Location $Root
 
 Write-Host '========================================'
-Write-Host '  产品素材工作台 - Windows 启动器'
+Write-Host '  林视 Lin's Vision - Windows 启动器'
 Write-Host '========================================'
 Write-Host ''
 

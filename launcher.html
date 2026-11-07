@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>产品素材工作台</title>
+<title>林视 Lin's Vision</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -48,12 +48,12 @@
   .logo-area { text-align: center; margin-bottom: 40px; }
   .logo-icon {
     width: 72px; height: 72px; margin: 0 auto 16px;
-    background: linear-gradient(135deg, var(--accent), #a78bfa);
+    background: transparent;
     border-radius: 20px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 36px;
-    box-shadow: 0 8px 32px var(--accent-glow);
+    box-shadow: 0 8px 32px rgba(29, 106, 75, 0.32);
   }
+  .logo-icon svg { display: block; width: 72px; height: 72px; border-radius: 20px; }
   .logo-title {
     font-size: 24px; font-weight: 700; letter-spacing: 0.02em;
     background: linear-gradient(135deg, #e8e8f0, #a78bfa);
@@ -176,9 +176,24 @@
 
 <div class="container">
   <div class="logo-area">
-    <div class="logo-icon">🖼️</div>
-    <h1 class="logo-title">产品素材工作台</h1>
-    <p class="logo-sub">AI 驱动的产品素材生成与编辑</p>
+    <div class="logo-icon">
+      <!-- 林视标志：绿色渐变圆角方块 + 白色叶子形眼睛，旋转 −45°，与 app/icon.svg 同源。 -->
+      <svg viewBox="0 0 100 100" width="72" height="72" role="presentation" focusable="false">
+        <defs>
+          <linearGradient id="launcher-mark-gradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#46A97B"/>
+            <stop offset="1" stop-color="#1D6A4B"/>
+          </linearGradient>
+        </defs>
+        <rect x="2" y="2" width="96" height="96" rx="22" fill="url(#launcher-mark-gradient)"/>
+        <rect x="2.5" y="2.5" width="95" height="95" rx="21.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.22"/>
+        <g transform="rotate(-45 50 50)">
+          <path fill="#FFFFFF" fill-rule="evenodd" d="M12 50C28 20 72 20 88 50 72 80 28 80 12 50zM50 39a11 11 0 100 22 11 11 0 000-22z"/>
+        </g>
+      </svg>
+    </div>
+    <h1 class="logo-title">林视 Lin's Vision</h1>
+    <p class="logo-sub">AI 产品图与短视频创作工作台</p>
   </div>
 
   <div class="card fade-enter" id="card">
@@ -214,11 +229,11 @@
     </div>
     <div class="tip-item">
       <span class="tip-icon">🛑</span>
-      <span>用完记得用开始菜单的"停止产品素材工作台"释放资源。</span>
+      <span>用完记得用开始菜单的"停止林视 Lin's Vision"释放资源。</span>
     </div>
   </div>
 
-  <div class="footer">Creative Studio · 本地 AI 工作台</div>
+  <div class="footer">林视 Lin's Vision · 本地 AI 工作台</div>
 </div>
 
 <script>

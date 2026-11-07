@@ -1,0 +1,161 @@
+/* 登录页：真实产品场景图虚化做背景，中间一张登录卡片。
+   颜色全部走 app/globals.css 的设计令牌，不写死浅色值；深色只补丁差异。 */
+
+.screen {
+  /* 登录页要满出血：根布局的 <main> 是 980 居中栏，改用 fixed 铺满视口，
+     不依赖也不改动全局外壳（那一段归 05 号票）。 */
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: auto;
+  background: var(--color-surface-subtle);
+}
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  background-image: url('/brand/login-background.jpg');
+  background-size: cover;
+  background-position: center 60%;
+  filter: blur(26px) saturate(1.1);
+  /* 图片放大一点，避免虚化后边缘露出底色。 */
+  transform: scale(1.08);
+}
+
+.shade {
+  position: absolute;
+  inset: 0;
+  background: rgba(240, 240, 244, 0.28);
+}
+
+:global(html[data-theme='dark']) .shade {
+  background: rgba(10, 10, 12, 0.58);
+}
+
+.body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+  max-width: 372px;
+}
+
+.card {
+  width: 100%;
+  padding: 26px 26px 22px;
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--color-surface) 88%, transparent);
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.3),
+    0 24px 70px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(30px);
+}
+
+:global(html[data-theme='dark']) .card {
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.12),
+    0 24px 70px rgba(0, 0, 0, 0.6);
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.mark {
+  display: block;
+  margin: 0 auto;
+  width: 56px;
+  height: 56px;
+}
+
+.name {
+  margin: 10px 0 0;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--color-ink);
+}
+
+.sub {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--color-ink-secondary);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fieldLabel {
+  padding-left: 2px;
+  font-size: 12.5px;
+  color: var(--color-ink-secondary);
+}
+
+/* 字段级校验提示：贴在输入框正下方，不弹浏览器对话框。 */
+.fieldError {
+  padding-left: 2px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-fail);
+}
+
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--color-ink-secondary);
+  cursor: pointer;
+}
+
+.error {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-fail);
+}
+
+.notice {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-ok);
+}
+
+.submit {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.attribution {
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+:global(html[data-theme='light']) .attribution {
+  color: var(--color-ink-secondary);
+  text-shadow: 0 1px 3px rgba(255, 255, 255, 0.6);
+}
