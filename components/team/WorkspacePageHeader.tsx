@@ -11,8 +11,9 @@ import {
 } from './page-toolbar-claim';
 import s from './workspace.module.css';
 
-/** 整幅编辑器页面（画布编辑器）自己铺满，不要外壳标题条。 */
-const FULL_BLEED = [/^\/canvas\/[^/]+$/, /^\/projects\/[^/]+$/, /^\/team\/login$/];
+/** 整幅编辑器页面（画布编辑器、项目工作台）自己铺满，不要外壳标题条。
+ * 注意 `/projects/new` 是普通表单页，必须排除在 `/projects/[id]` 之外。 */
+const FULL_BLEED = [/^\/canvas\/[^/]+$/, /^\/projects\/(?!new$)[^/]+$/];
 
 /**
  * 外壳级页面标题（05 号票）。

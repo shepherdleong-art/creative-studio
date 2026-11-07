@@ -5,6 +5,7 @@ import { cookies } from "next/headers";
 import Header, { type HeaderPrincipal } from "@/components/Header";
 import TeamFetchBridge from "@/components/TeamFetchBridge";
 import ClientDiagnostics from "@/components/team/ClientDiagnostics";
+import WorkspacePageChrome from "@/components/team/WorkspacePageChrome";
 import { canvasFeatureEnabled } from "@/lib/creative-canvas/config";
 import { readRuntimeConfig } from "@/lib/team-service/config";
 import { TEAM_SESSION_COOKIE } from "@/lib/team-service/auth/request";
@@ -76,6 +77,12 @@ export default function RootLayout({
             ? 'flex-1 flex min-h-0 w-full min-w-0 flex-col'
             : 'flex-1 w-full max-w-[980px] mx-auto px-6 py-10'}
         >
+          {/* 团队版：每页标题一次接全（含 app/team/** 这条路由树）。本地版不渲染。 */}
+          {team && (
+            <Suspense fallback={null}>
+              <WorkspacePageChrome />
+            </Suspense>
+          )}
           <Suspense fallback={
             <div className="flex items-center justify-center py-20">
               <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />

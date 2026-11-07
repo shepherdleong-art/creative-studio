@@ -39,6 +39,7 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
   const productName = workspaceProductName(principal.role);
   const groups = buildWorkspaceNavigation({ role: principal.role, canvasEnabled });
   const [counts, setCounts] = useState<BadgeCounts>(EMPTY_COUNTS);
+  const [countsReady, setCountsReady] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState('');
@@ -58,6 +59,7 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
       .then((response) => (response.ok ? response.json() : null)).catch(() => null),
   ]).then(([tasks, errors]) => {
     setCounts(workspaceBadgeCounts({ tasks, errors }));
+    setCountsReady(true);
   }), []);
 
   useEffect(() => { void refreshCounts(); }, [refreshCounts, pathname]);
@@ -139,7 +141,7 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
   const badgeValue = (key: 'tasks' | 'errors') => formatBadgeCount(counts[key]);
 
   return (
-    <aside className={s.sidebar} aria-label="工作台侧栏" data-testid="workspace-sidebar">
+    <aside className={s.sidebar} aria-label="工作台侧栏" data-testid="workspace-sidebar" data-badges-ready={countsReady ? 'true' : 'false'}>
       <Link href="/" className={s.wsBrand} aria-label={productName} data-testid="workspace-brand">
         <span className={s.wsBrandMark}><WorkspaceBrandMark size={26} /></span>
         <span className={s.wsBrandCopy}>

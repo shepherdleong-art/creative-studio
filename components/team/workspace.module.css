@@ -82,7 +82,20 @@
   font-size: 11px;
   font-weight: 600;
   letter-spacing: .03em;
-  color: var(--color-ink-tertiary);
+  color: var(--color-ink-secondary);
+}
+
+/* 深色下三级文字在深底上对比度不足（--color-ink-tertiary 是给浅色为主的界面配的），
+ * 侧栏的说明性文字改用二级文字，保证浅深两套都 ≥ 4.5:1。 */
+:global(html[data-theme='dark']) .wsGroupTitle,
+:global(html[data-theme='dark']) .wsBrandCopy small,
+:global(html[data-theme='dark']) .wsUserCopy small,
+:global(html[data-theme='dark']) .wsMenuWho small,
+:global(html[data-theme='dark']) .wsMenuHint,
+:global(html[data-theme='dark']) .wsMenuTheme,
+:global(html[data-theme='dark']) .wsBadge,
+:global(html[data-theme='dark']) .wsUserChevron {
+  color: var(--color-ink-secondary);
 }
 .wsNavRow {
   display: flex;
