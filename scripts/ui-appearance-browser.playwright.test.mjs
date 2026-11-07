@@ -188,6 +188,8 @@ for (const [name, launcher] of [['chromium', chromium], ['webkit', webkit]]) {
 
     for (const theme of ['light', 'dark']) {
       await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+      // 页面里有 transition-colors 的元素，等过渡结束再量颜色/截图，避免抓到过渡中间帧。
+      await page.waitForTimeout(300);
       const layout = await page.evaluate(() => {
         const scrollWidth = document.documentElement.scrollWidth;
         const clientWidth = document.documentElement.clientWidth;
@@ -207,6 +209,48 @@ for (const [name, launcher] of [['chromium', chromium], ['webkit', webkit]]) {
       await page.screenshot({ path: path.join(evidenceDirectory, `account-${name}-${theme}.png`), fullPage: true });
       record('account-layout', { browser: name, theme, ...layout });
     }
+
+    // 6) 对话框外壳：填好三个字段后点主按钮会弹出确认框，Esc 能关掉，弹窗也不横向溢出。
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+    const inputs = page.locator('.group-row input');
+    await inputs.nth(0).fill(accountPassword);
+    await inputs.nth(1).fill(`${accountPassword}-x`);
+    await inputs.nth(2).fill(`${accountPassword}-x`);
+    await page.getByRole('button', { name: '保存新密码' }).click();
+    const dialog = page.getByRole('dialog', { name: '确认修改密码' });
+    await dialog.waitFor({ timeout: 30_000 });
+    const dialogLayout = await page.evaluate(() => {
+      const sheet = document.querySelector('.dialog-sheet');
+      const rect = sheet.getBoundingClientRect();
+      return {
+        width: Math.round(rect.width),
+        leftOk: rect.left >= -0.5,
+        rightOk: rect.right <= window.innerWidth + 0.5,
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+        background: getComputedStyle(sheet).backgroundColor,
+      };
+    });
+    assert.equal(dialogLayout.leftOk && dialogLayout.rightOk, true, `${name}: 对话框必须在视口内`);
+    assert.equal(dialogLayout.scrollWidth <= dialogLayout.clientWidth + 1, true, `${name}: 打开对话框后不得横向滚动`);
+    await page.screenshot({ path: path.join(evidenceDirectory, `dialog-${name}.png`) });
+    await page.keyboard.press('Escape');
+    await dialog.waitFor({ state: 'detached', timeout: 30_000 });
+    record('dialog', { browser: name, ...dialogLayout });
+
+    // 7) 之前保存的外观偏好继续生效：只写 localStorage 同一个键，刷新后由首屏脚本套上深色。
+    await page.evaluate(() => { window.localStorage.setItem('creative-studio-theme', 'dark'); });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    const restored = await page.evaluate(() => ({
+      theme: document.documentElement.dataset.theme,
+      color: getComputedStyle(document.body).color,
+      contentToken: getComputedStyle(document.documentElement).getPropertyValue('--color-content').trim(),
+    }));
+    assert.equal(restored.theme, 'dark', `${name}: 保存过的深色偏好必须在刷新后自动生效`);
+    assert.equal(restored.color, 'rgb(245, 245, 247)', `${name}: 恢复深色后正文颜色必须来自深色 --color-ink`);
+    assert.equal(restored.contentToken.toLowerCase(), '#1e1e20', `${name}: 恢复深色后内容区令牌必须是深色取值`);
+    await page.evaluate(() => { window.localStorage.removeItem('creative-studio-theme'); });
+    record('saved-preference', { browser: name, ...restored });
     await context.close();
   } finally {
     await browser.close();

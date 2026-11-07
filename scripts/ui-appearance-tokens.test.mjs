@@ -170,4 +170,22 @@ for (const content of layoutFiles) {
     '样式表里不得出现联网字体地址，字体必须来自 public/fonts/');
 }
 
+// ── 发布链路：standalone 与免安装包都要带上字体和许可证 ──
+// standalone：sync-standalone-assets.mjs 整体拷贝 public/，字体在 public/fonts/ 下自动进产物；
+// 该脚本的禁入清单来自 forbidden-paths.json（禁入而非白名单），不得包含 public 或 fonts。
+const forbidden = JSON.parse(fs.readFileSync(path.join(root, 'scripts', 'packaging', 'forbidden-paths.json'), 'utf8'));
+const forbiddenEntries = [...forbidden.core, ...forbidden.consumers.standaloneSyncPurge.extra];
+for (const entry of forbiddenEntries) {
+  assert.ok(!/^public/.test(entry), `禁入清单不得包含 public（会连带把字体挡在产物外）：${entry}`);
+  assert.ok(!/font/i.test(entry), `禁入清单不得包含字体目录：${entry}`);
+}
+const sync = fs.readFileSync(path.join(root, 'scripts', 'sync-standalone-assets.mjs'), 'utf8');
+assert.match(sync, /copyDirectory\(join\(root, 'public'\), join\(standaloneDir, 'public'\)\)/,
+  'standalone 同步必须整体拷贝 public/，字体与许可证才能随产物发布');
+// 免安装包：白名单整体拷贝 .next/standalone，字体随 standalone 一起进包。
+const portable = fs.readFileSync(path.join(root, 'scripts', 'build-windows-portable.ps1'), 'utf8');
+assert.match(portable, /Copy-PayloadDirectory \(Join-Path \$Root '\.next\\standalone'\)/,
+  '免安装包必须整体拷贝 .next/standalone，字体与许可证才能随包发布');
+assert.doesNotMatch(portable, /public\\?fonts/, '免安装包不应把 public/fonts 当成需要单独排除的目录');
+
 console.log('PASS appearance tokens, font slices and packaging contract');
