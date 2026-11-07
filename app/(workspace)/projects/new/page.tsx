@@ -1,16 +1,13 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import ProviderSettings from '@/components/ProviderSettings';
-import {
-  getImageModelCapabilities,
-} from '@/lib/image-model-capabilities';
-import {
-  GPT_IMAGE_2_SIZE_MAP,
-  resolveGptImage2Size,
-} from '@/lib/gpt-image-2-size-presets';
+import PageToolbar from '@/components/team/PageToolbar';
+import { GroupList, GroupRow } from '@/components/ui/Appearance';
+import { getImageModelCapabilities } from '@/lib/image-model-capabilities';
+import { GPT_IMAGE_2_SIZE_MAP, resolveGptImage2Size } from '@/lib/gpt-image-2-size-presets';
 import { companyImageCapsForModel } from '@/lib/company-gateway-size';
 import { getSupportedImageAspectRatios, getSupportedImageResolutions } from '@/lib/image-generation-settings';
 import {
@@ -19,32 +16,66 @@ import {
   buildProjectBaseName,
   formatShanghaiIdentityDate,
 } from '@/lib/project-production-identity';
+import { FIRST_STEP_EMPTY_HINT, REMOVED_NEW_PROJECT_CONTROLS, validateNewProjectDraft, type NewProjectDraft } from '@/lib/new-project-form';
+import type { WorkspaceRole } from '@/lib/workspace-navigation';
 
 interface Provider {
   id: string; name: string; model: string; type: string; hasApiKey?: boolean;
 }
 
+interface SessionUser { displayName: string; role: WorkspaceRole }
+
+type Draft = NewProjectDraft;
+
+const EMPTY_DRAFT: Draft = { storeCode: '', productCode: '', productSubmodel: '', productionType: '', editorName: '' };
+
+/**
+ * 新建项目（06 号票）。
+ *
+ * 只留「员工要决定的事」：店铺 / 型号 / 子型号 / 生产类型 / 剪辑师（默认当前登录人），
+ * 以及图片的模型 / 画面比例 / 清晰度 / 质量。超时、并发、图片预处理四个控件已拿掉——
+ * 团队版由服务器统一管理（见 `lib/team-service/production-defaults.ts`），
+ * 请求里也不再发送这些字段。
+ *
+ * 项目名按服务器的规则实时预览；输入框保持受控 + 稳定 key，打字不丢焦点。
+ */
 export default function NewProjectPage() {
   const router = useRouter();
 
-  // ── 生产身份：店铺/型号/子型号/生产类型/剪辑师；项目名由服务端生成 ──
-  const [storeCode, setStoreCode] = useState<string>('');
-  const [productCode, setProductCode] = useState('');
-  const [productSubmodel, setProductSubmodel] = useState('');
-  const [productionType, setProductionType] = useState<string>('');
-  const [editorName, setEditorName] = useState('');
+  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
+  const [session, setSession] = useState<SessionUser | null>(null);
+
+  // 剪辑师默认当前登录人；用户改过之后不再覆盖。
+  const [editorTouched, setEditorTouched] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch('/api/team/auth/session', { credentials: 'same-origin', cache: 'no-store' })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body: { authenticated?: boolean; user?: { displayName?: string; role?: WorkspaceRole } } | null) => {
+        if (cancelled || !body?.authenticated || !body.user) return;
+        setSession({ displayName: body.user.displayName ?? '', role: body.user.role ?? 'employee' });
+        setDraft((current) => (current.editorName.trim() ? current : { ...current, editorName: body.user?.displayName ?? '' }));
+      })
+      .catch(() => { /* 读不到会话时按员工渲染，剪辑师留空由校验提示兜住 */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const previewDate = useMemo(() => formatShanghaiIdentityDate(new Date()), []);
   const namePreview = useMemo(() => {
-    if (!storeCode || !productCode.trim() || !productionType || !editorName.trim()) return '';
+    if (!draft.storeCode || !draft.productCode.trim() || !draft.productionType || !draft.editorName.trim()) return '';
     try {
       return buildProjectBaseName({
-        namingDate: previewDate, storeCode, productCode: productCode.trim(), productSubmodel: productSubmodel.trim(), productionType, editorName: editorName.trim(),
+        namingDate: previewDate,
+        storeCode: draft.storeCode,
+        productCode: draft.productCode.trim(),
+        productSubmodel: draft.productSubmodel.trim(),
+        productionType: draft.productionType,
+        editorName: draft.editorName.trim(),
       });
     } catch {
       return '';
     }
-  }, [storeCode, productCode, productSubmodel, productionType, editorName, previewDate]);
+  }, [draft, previewDate]);
 
   // ── Provider / Model ──
   const [provider, setProvider] = useState<Provider | null>(null);
@@ -52,12 +83,9 @@ export default function NewProjectPage() {
   const [aspectRatio, setAspectRatio] = useState('1:1');
   const [resolution, setResolution] = useState('1k');
   const [quality, setQuality] = useState('medium');
-  const [timeoutMs, setTimeoutMs] = useState(600000);
-  const [concurrency, setConcurrency] = useState(10);
 
   const modelCapabilities = useMemo(() => getImageModelCapabilities(model), [model]);
   const supportsQuality = modelCapabilities.supportsQuality;
-  // 原生像素交付的公司模型（qiniuyun/* 与 image2）只承诺档位与比例，标签不展示像素
   const companyCaps = useMemo(() => companyImageCapsForModel(model), [model]);
   const nativePixelUi = !!companyCaps?.nativeDelivery;
   const aspectRatioOptions = useMemo(() => getSupportedImageAspectRatios(model), [model]);
@@ -68,232 +96,226 @@ export default function NewProjectPage() {
     () => getSupportedImageResolutions(model, selectedAspectRatio),
     [model, selectedAspectRatio],
   );
-  const selectedResolution = availableResolutions.includes(resolution)
-    ? resolution
-    : availableResolutions[0] || '1k';
+  const selectedResolution = availableResolutions.includes(resolution) ? resolution : availableResolutions[0] || '1k';
   const size = useMemo(() => {
     try { return resolveGptImage2Size(selectedAspectRatio, selectedResolution); }
     catch { return ''; }
   }, [selectedAspectRatio, selectedResolution]);
 
-  // ── Preprocessing ──
-  const [preprocessEnabled, setPreprocessEnabled] = useState(true);
-  const [targetMaxSide, setTargetMaxSide] = useState(1536);
-  const [jpegQuality, setJpegQuality] = useState(85);
-
   const [creating, setCreating] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [submitted, setSubmitted] = useState(false);
 
   const effectiveQuality = supportsQuality ? quality : 'auto';
+  const validation = validateNewProjectDraft(draft, provider);
+  // 只在「点过创建」或「已经开始填」之后提示，避免一进页面就红一片。
+  const started = submitted || Boolean(draft.storeCode || draft.productCode.trim() || draft.productionType);
+  const hint = started ? validation.message : '';
 
-  const handleSubmitComplex = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!storeCode) { alert('请选择店铺'); return; }
-    if (!productCode.trim()) { alert('请输入型号'); return; }
-    if (!productionType) { alert('请选择生产类型'); return; }
-    if (!editorName.trim()) { alert('请输入剪辑师'); return; }
-    if (!provider) { alert('请选择供应商'); return; }
-    if (!provider.hasApiKey) { alert('当前供应商未配置 API Key'); return; }
-
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSubmitted(true);
+    setSubmitError('');
+    if (validation.missing.length > 0) return;
     setCreating(true);
     try {
       const res = await fetch('/api/projects', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          storeCode, productCode, productSubmodel: productSubmodel.trim(), productionType, editorName: editorName.trim(),
+          storeCode: draft.storeCode,
+          productCode: draft.productCode.trim(),
+          productSubmodel: draft.productSubmodel.trim(),
+          productionType: draft.productionType,
+          editorName: draft.editorName.trim(),
           workflowType: 'complex_product',
-          providerId: provider.id, model, size, quality: effectiveQuality, timeoutMs,
-          aspectRatio: selectedAspectRatio, resolution: selectedResolution,
-          concurrency,
-          preprocessEnabled, targetMaxSide, jpegQuality,
+          providerId: provider!.id,
+          model,
+          size,
+          quality: effectiveQuality,
+          aspectRatio: selectedAspectRatio,
+          resolution: selectedResolution,
         }),
       });
-      const data = await res.json();
+      const data = await res.json() as { id?: string; message?: string; error?: string };
       if (data.id) {
         router.push(`/projects/${data.id}`);
-      } else {
-        alert('创建失败: ' + (data.message || data.error || '未知错误'));
+        return;
       }
-    } catch (err) { alert('创建失败: ' + String(err)); }
-    finally { setCreating(false); }
+      setSubmitError(data.message || data.error || '创建失败，请稍后重试。');
+    } catch (error) {
+      setSubmitError(`创建失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setCreating(false);
+    }
   };
 
-  const modelControlClass = 'input-field h-11 w-full text-sm leading-none';
   const providerLocksModel = provider?.type === 'packy-images' || provider?.type === 'packy-gemini-image';
 
-  const renderModelParams = (showConcurrency = false) => (
-    <div className="card p-4">
-      <h3 className="text-sm font-semibold mb-3 text-ink">模型参数</h3>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-        <div>
-          <label className="label">模型</label>
-          <input
-            type="text"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            readOnly={providerLocksModel}
-            className={modelControlClass}
-          />
-        </div>
-        <div>
-          <label className="label">画面比例</label>
-          <select value={selectedAspectRatio} onChange={(e) => { setAspectRatio(e.target.value); const avail = getSupportedImageResolutions(model, e.target.value); if (!avail.includes(resolution)) setResolution(avail[0] || '1k'); }} className={modelControlClass}>
-            {aspectRatioOptions.map((r) => (<option key={r} value={r}>{r}</option>))}
-          </select>
-        </div>
-        {selectedAspectRatio !== 'auto' && (
-        <div>
-          <label className="label">清晰度</label>
-          <select value={selectedResolution} onChange={(e) => setResolution(e.target.value)} className={modelControlClass}>
-            {availableResolutions.map((r) => {
-              const presetSize = GPT_IMAGE_2_SIZE_MAP[selectedAspectRatio]?.[r];
-              // 原生像素交付的公司模型只承诺档位与比例，不展示具体像素
-              const label = !presetSize ? `${r} — 不支持` : (nativePixelUi ? r : `${r} → ${presetSize}`);
-              return <option key={r} value={r} disabled={!presetSize}>{label}</option>;
-            })}
-          </select>
-          {nativePixelUi && (
-            <p className="mt-1 text-xs text-ink-tertiary">公司网关按原生像素交付，保证比例与清晰度档位，具体像素以实际交付为准。</p>
-          )}
-        </div>
-        )}
-        {supportsQuality && (
-          <div>
-            <label className="label">质量</label>
-            <select value={quality} onChange={(e) => setQuality(e.target.value)} className={modelControlClass}>
+  return <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+    <PageToolbar
+      role={session?.role ?? 'employee'}
+      title="新建项目"
+      subtitle="填完生产身份和图片参数就能开工；超时、并发和图片预处理由服务器统一管理。"
+    />
+
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>
+      <section>
+        <h2 className="mb-2 px-1 text-label font-semibold text-ink-secondary">生产身份</h2>
+        <GroupList>
+          <GroupRow label="店铺" hint="必填">
+            <select
+              aria-label="店铺"
+              value={draft.storeCode}
+              onChange={(event) => setDraft((current) => ({ ...current, storeCode: event.target.value }))}
+              className="input-field w-52"
+            >
+              <option value="">请选择</option>
+              {STORE_CODES.map((store) => <option key={store} value={store}>{store}</option>)}
+            </select>
+          </GroupRow>
+          <GroupRow label="型号" hint="必填，例如 XQ9A 或 PC672-A">
+            <input
+              aria-label="型号"
+              type="text"
+              value={draft.productCode}
+              onChange={(event) => setDraft((current) => ({ ...current, productCode: event.target.value }))}
+              className="input-field w-52"
+              placeholder="例如 XQ9A"
+            />
+          </GroupRow>
+          <GroupRow label="子型号" hint="可选">
+            <input
+              aria-label="子型号"
+              type="text"
+              value={draft.productSubmodel}
+              onChange={(event) => setDraft((current) => ({ ...current, productSubmodel: event.target.value }))}
+              className="input-field w-52"
+              placeholder="可选"
+            />
+          </GroupRow>
+          <GroupRow label="生产类型" hint="必填">
+            <select
+              aria-label="生产类型"
+              value={draft.productionType}
+              onChange={(event) => setDraft((current) => ({ ...current, productionType: event.target.value }))}
+              className="input-field w-52"
+            >
+              <option value="">请选择</option>
+              {PRODUCTION_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+            </select>
+          </GroupRow>
+          <GroupRow label="剪辑师" hint="默认当前登录人">
+            <input
+              aria-label="剪辑师"
+              type="text"
+              value={draft.editorName}
+              onChange={(event) => {
+                setEditorTouched(true);
+                setDraft((current) => ({ ...current, editorName: event.target.value }));
+              }}
+              className="input-field w-52"
+              placeholder="例如 紫菜卷"
+            />
+          </GroupRow>
+          <GroupRow label="项目名称" hint="按「日期-店铺-型号-生产类型-剪辑师」由系统生成">
+            <span
+              className="block max-w-[22rem] truncate text-ink"
+              data-testid="project-name-preview"
+              title={namePreview}
+            >
+              {namePreview || <span className="text-ink-tertiary">填完生产身份后自动生成</span>}
+            </span>
+          </GroupRow>
+        </GroupList>
+        {!editorTouched && session?.displayName ? <p className="mt-2 px-1 text-label text-ink-tertiary">剪辑师已填成你（{session.displayName}），可以直接改。</p> : null}
+      </section>
+
+      <section>
+        <h2 className="mb-2 px-1 text-label font-semibold text-ink-secondary">图片参数</h2>
+        <GroupList>
+          <GroupRow label="模型">
+            <input
+              aria-label="模型"
+              type="text"
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              readOnly={providerLocksModel}
+              className="input-field w-52"
+            />
+          </GroupRow>
+          <GroupRow label="画面比例">
+            <select
+              aria-label="画面比例"
+              value={selectedAspectRatio}
+              onChange={(event) => {
+                const next = event.target.value;
+                setAspectRatio(next);
+                const available = getSupportedImageResolutions(model, next);
+                if (!available.includes(resolution)) setResolution(available[0] || '1k');
+              }}
+              className="input-field w-52"
+            >
+              {aspectRatioOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+          </GroupRow>
+          {selectedAspectRatio !== 'auto' && <GroupRow label="清晰度" hint={nativePixelUi ? '公司网关按原生像素交付，保证比例与档位' : undefined}>
+            <select
+              aria-label="清晰度"
+              value={selectedResolution}
+              onChange={(event) => setResolution(event.target.value)}
+              className="input-field w-52"
+            >
+              {availableResolutions.map((value) => {
+                const presetSize = GPT_IMAGE_2_SIZE_MAP[selectedAspectRatio]?.[value];
+                const label = !presetSize ? `${value} — 不支持` : (nativePixelUi ? value : `${value} → ${presetSize}`);
+                return <option key={value} value={value} disabled={!presetSize}>{label}</option>;
+              })}
+            </select>
+          </GroupRow>}
+          {supportsQuality && <GroupRow label="质量">
+            <select aria-label="质量" value={quality} onChange={(event) => setQuality(event.target.value)} className="input-field w-52">
               <option value="low">低</option><option value="medium">中</option><option value="high">高</option>
             </select>
-          </div>
-        )}
-        <div>
-          <label className="label">超时(秒)</label>
-          <input type="number" min={30} max={600} value={Math.floor(timeoutMs / 1000)}
-            onChange={(e) => setTimeoutMs(Number(e.target.value) * 1000)} className={modelControlClass} />
-        </div>
-        {showConcurrency && (
-          <div>
-            <label className="label">并发数</label>
-            <input
-              type="number"
-              min={1}
-              max={10}
-              value={concurrency}
-              onChange={(e) => setConcurrency(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
-              className={modelControlClass}
-            />
-            <p className="mt-1 text-xs text-ink-tertiary">失败或限流时调回 1。</p>
-          </div>
-        )}
+          </GroupRow>}
+        </GroupList>
+        <p className="mt-2 px-1 text-label text-ink-tertiary">
+          {supportsQuality ? '以上为参考价格，实际以中转站后台扣费为准。' : '当前模型不支持质量参数，实际扣费以供应商后台为准。'}
+        </p>
+      </section>
+
+      <ProviderSettings
+        selectedId={provider?.id}
+        onSelect={(next) => {
+          setProvider(next);
+          setModel(next.model);
+        }}
+      />
+
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {/* 校验提示写在按钮旁，不用浏览器弹窗。 */}
+        <p
+          className={`mr-auto text-label ${validation.missing.length > 0 && started ? 'text-warn' : 'text-ink-tertiary'}`}
+          role={validation.missing.length > 0 && started ? 'alert' : undefined}
+          data-testid="new-project-hint"
+        >
+          {submitError
+            ? <span className="text-fail">{submitError}</span>
+            : hint || (namePreview ? `创建后会直接进入第 1 步：${FIRST_STEP_EMPTY_HINT}` : '填完生产身份后，这里会显示项目名。')}
+        </p>
+        <Link href="/" className="cap">取消</Link>
+        <button type="submit" disabled={creating} className="cap cap-primary" data-testid="new-project-submit">
+          {creating ? '创建中…' : '创建项目'}
+        </button>
       </div>
-      <p className="text-xs text-ink-tertiary mt-2">
-        {supportsQuality
-          ? '以上为参考价格，实际以中转站后台扣费为准'
-          : '当前模型不支持质量参数，实际扣费以供应商后台为准'}
-      </p>
-    </div>
-  );
+    </form>
+  </div>;
+}
 
-  const renderPreprocessing = () => (
-    <div className="card p-4">
-      <h3 className="text-sm font-semibold mb-3 text-ink">图片预处理</h3>
-      <div className="grid grid-cols-3 gap-4">
-        <div>
-          <label className="label">启用压缩</label>
-          <select value={preprocessEnabled ? '1' : '0'} onChange={(e) => setPreprocessEnabled(e.target.value === '1')} className="input-field">
-            <option value="1">开启</option><option value="0">关闭（使用原图）</option>
-          </select>
-        </div>
-        <div>
-          <label className="label">最长边</label>
-          <select value={targetMaxSide} onChange={(e) => setTargetMaxSide(Number(e.target.value))} className="input-field" disabled={!preprocessEnabled}>
-            <option value={1024}>1024</option><option value={1536}>1536（推荐）</option><option value={2048}>2048</option><option value={4096}>4096（原图）</option>
-          </select>
-        </div>
-        <div>
-          <label className="label">JPEG 质量</label>
-          <select value={jpegQuality} onChange={(e) => setJpegQuality(Number(e.target.value))} className="input-field" disabled={!preprocessEnabled}>
-            <option value={70}>70</option><option value={85}>85（推荐）</option><option value={95}>95</option>
-          </select>
-        </div>
-      </div>
-    </div>
-  );
+/** 供页面级测试断言：新建项目页不得再出现这四个控件。 */
+export const NEW_PROJECT_REMOVED_CONTROLS = REMOVED_NEW_PROJECT_CONTROLS;
 
-  return (
-    <div className="max-w-3xl mx-auto">
-      <h1 className="text-3xl font-semibold tracking-[-0.02em] mb-8">
-        新建项目
-      </h1>
-
-      <form onSubmit={handleSubmitComplex} className="space-y-10">
-          {/* Production identity */}
-          <div className="card p-4">
-            <h3 className="text-sm font-semibold mb-3 text-ink">生产身份</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="label">店铺 *</label>
-                <select value={storeCode} onChange={(e) => setStoreCode(e.target.value)} className="input-field">
-                  <option value="">请选择</option>
-                  {STORE_CODES.map((store) => (<option key={store} value={store}>{store}</option>))}
-                </select>
-              </div>
-              <div>
-                <label className="label">型号 *</label>
-                <input type="text" value={productCode} onChange={(e) => setProductCode(e.target.value)} className="input-field" placeholder="例如：XQ9A 或 PC672-A" />
-              </div>
-              <div>
-                <label className="label">子型号</label>
-                <input type="text" value={productSubmodel} onChange={(e) => setProductSubmodel(e.target.value)} className="input-field" placeholder="可选" />
-              </div>
-              <div>
-                <label className="label">生产类型 *</label>
-                <select value={productionType} onChange={(e) => setProductionType(e.target.value)} className="input-field">
-                  <option value="">请选择</option>
-                  {PRODUCTION_TYPES.map((type) => (<option key={type} value={type}>{type}</option>))}
-                </select>
-              </div>
-              <div>
-                <label className="label">剪辑师 *</label>
-                <input type="text" value={editorName} onChange={(e) => setEditorName(e.target.value)} className="input-field" placeholder="例如：紫菜卷" />
-              </div>
-              <div>
-                <label className="label">项目名称（自动生成）</label>
-                <input type="text" value={namePreview} readOnly className="input-field bg-transparent text-ink-secondary" placeholder="填写完生产身份后自动生成" />
-              </div>
-            </div>
-            <p className="text-xs text-ink-tertiary mt-3">
-              项目名称由系统按「日期-店铺-型号-生产类型-剪辑师」自动生成，创建后可在项目工作台中按需上传素材、生成场景图、分镜图、脚本和视频。
-            </p>
-          </div>
-
-          {/* Provider */}
-          <ProviderSettings
-            selectedId={provider?.id}
-            onSelect={(p) => {
-              setProvider(p);
-              setModel(p.model);
-              setTimeoutMs(getImageModelCapabilities(p.model).recommendedTimeoutMs);
-            }}
-          />
-
-          {/* Model params */}
-          {renderModelParams(true)}
-
-          {/* Preprocessing (collapsible) */}
-          <details className="card p-4">
-            <summary className="text-sm font-semibold text-ink cursor-pointer">图片预处理（高级设置）</summary>
-            <div className="mt-3">
-              {renderPreprocessing()}
-            </div>
-          </details>
-
-          {/* Submit */}
-          <div className="flex gap-3 justify-end">
-            <Link href="/" className="btn-secondary">取消</Link>
-            <button type="submit" disabled={creating} className="btn-primary">
-              {creating ? '创建中...' : '创建项目'}
-            </button>
-          </div>
-      </form>
-    </div>
-  );
+/** 空状态文案（创建后第 1 步用）：告诉用户先放一张原始场景图。 */
+export function firstStepEmptyHint(): string {
+  return FIRST_STEP_EMPTY_HINT;
 }
