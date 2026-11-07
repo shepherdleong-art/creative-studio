@@ -268,6 +268,17 @@ function evaluateChecks(measurement, screen) {
   return outcomes;
 }
 
+/**
+ * 增量落盘：整套矩阵要跑半小时，中途被 OOM 杀掉时不能一行证据都不剩。
+ * 每跑完一屏就写一次（脱敏后），崩溃后至少能看到「跑到哪、红了什么」。
+ */
+function flushResults() {
+  try {
+    const safe = JSON.parse(sanitize(JSON.stringify(result)));
+    fs.writeFileSync(resultPath, `${JSON.stringify(safe, null, 2)}\n`, 'utf8');
+  } catch { /* 落盘失败不能反过来中断检查 */ }
+}
+
 async function importPlaywright() {
   const playwrightModule = await import('@playwright/test');
   for (const engine of result.engines) {
@@ -490,10 +501,12 @@ async function runMatrix() {
                   kind: 'server-died', screen: screen.id,
                   reason: `隔离服务不可达：${String(finalRow.error).slice(0, 600)}`,
                 });
+                flushResults();
                 return;
               }
               result.failures.push(finalRow);
             }
+            flushResults();
           }
           await context.close();
         }
