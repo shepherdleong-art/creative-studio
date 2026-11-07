@@ -55,12 +55,30 @@ const CASES = [
   {
     id: 'clipped-button',
     expectation: 'clippedControls-fails',
-    html: `<div class="clip-outer"><div class="clip-inner"><button style="width: 250px; height: 32px">放不下的按钮</button></div></div>`,
+    // 按钮左边越出视口（负 left 不会撑大 scrollWidth）：
+    // 只触发「控件被视口切掉」，不触发横向滚动，也不触发容器藏内容。
+    html: `<button style="position: absolute; left: -30px; top: 20px; width: 120px; height: 32px">被左边切掉的按钮</button>`,
   },
   {
     id: 'hidden-overflow',
     expectation: 'hiddenOverflowContent-fails',
     html: `<div class="hidden-scroll"><div>被藏起来的工具栏内容</div></div>`,
+  },
+  {
+    id: 'clipped-overflow',
+    expectation: 'hiddenOverflowContent-fails',
+    html: `<div class="clip-outer"><div style="width: 320px; height: 40px; background: #ccc">被裁掉且滚不到的工具栏</div></div>`,
+  },
+  {
+    id: 'ellipsis-ok',
+    expectation: 'all-pass',
+    // 单行截断带省略号是设计上有意的，不算藏内容。
+    html: `<div class="clip-outer" style="white-space: nowrap; text-overflow: ellipsis"><span>这是一段很长很长、被省略号截断的说明文字</span></div>`,
+  },
+  {
+    id: 'plain-scroll-ok',
+    expectation: 'all-pass',
+    html: `<div style="width: 200px; height: 40px; overflow-x: auto"><div style="width: 320px; height: 20px; background: #ccc"></div></div>`,
   },
   {
     id: 'media-wrong-ratio',

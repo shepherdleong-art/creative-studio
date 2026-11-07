@@ -68,11 +68,10 @@ const base = (id, title, owner, extra) => ({
 // 已知问题：混剪工作台横向溢出（09 号票修）。修好后删掉这两条 knownFailure。
 const MIXCUT_KNOWN_FAILURE = 'ui-09';
 const MIXCUT_KNOWN_REASON = '混剪工作台固定为 min(1440px, 100vw-48px) 并按视口居中，凌驾于全局 980px 主栏之上，'
-  + '窗口越靠近 1440 越溢出：1536 宽多出 61px、1440/1280/1024 宽多出 85px（批量模式再加 8px）。'
-  + '横向溢出连带出两个后果，也都是同一个根因：(a) 顶栏「画幅 3:4 / 9:16」按钮被推到视口右边界外，'
-  + '被切掉一截；(b) 1024 宽时步骤条 nav 内容 201px 挤进 189px，滚动条被隐藏，内容被藏。'
-  + '09 号票把工作台改成占满内容区后，这三项必须一起改回硬失败。';
-const MIXCUT_KNOWN_CHECKS = ['horizontalScroll', 'clippedControls', 'hiddenOverflowContent'];
+  + '窗口越靠近 1440 越溢出：1536 宽多出 61px、1440/1280/1024 宽多出 85px（批量模式再宽 8px，1536 宽时宽 32px）。'
+  + '连带后果同属这个根因：顶栏「画幅 3:4 / 9:16」按钮被推到视口右边界外，被切掉一截。'
+  + '09 号票把工作台改成占满内容区后，横向滚动与按钮被切两项必须一起改回硬失败。';
+const MIXCUT_KNOWN_CHECKS = ['horizontalScroll', 'clippedControls'];
 
 /**
  * 一屏一个对象。改这一屏的选择器/等待点 = 改这一屏的「怎么算画出来了」，
@@ -144,7 +143,9 @@ export const SCREENS = [
   }),
   base('project-storyboard', '项目工作台 · 第 2 步 分镜生成', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
-    ready: async (page) => { await page.getByRole('heading', { name: '新分镜图', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 「新分镜图」在这一屏出现两次（区块标题 + 上传区标题），按标题取会撞 strict mode；
+    // 用「上传原始分镜图」这个这一屏独有的落点。
+    ready: async (page) => { await page.getByText('上传原始分镜图', { exact: true }).first().waitFor({ timeout: 60_000 }); },
   }),
   base('project-script', '项目工作台 · 第 3 步 脚本生成', 'ui-08', {
     href: ({ project }) => `/projects/${project.id}?tab=script`,

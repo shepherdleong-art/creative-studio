@@ -43,10 +43,16 @@ assert.match(clipped.detail, /被右边切掉/);
 // ---------- 检查三：工具栏藏内容 ----------
 assert.equal(evaluateHiddenOverflowContent([]).passed, true);
 const hidden = evaluateHiddenOverflowContent([
-  { signature: 'div.toolbar', scrollWidth: 800, clientWidth: 640, overflowPx: 160, scrollbarGutter: 0 },
+  { signature: 'div.toolbar', overflowX: 'hidden', scrollWidth: 800, clientWidth: 640, overflowPx: 160, reason: 'overflow-x: hidden，内容被裁掉且滚不到，也没有省略号提示' },
 ]);
 assert.equal(hidden.passed, false);
 assert.match(hidden.detail, /800px \/ 可见 640px/);
+// 显式关掉滚动条的 auto/scroll 容器也算藏内容（原型意图）。
+assert.equal(evaluateHiddenOverflowContent([
+  { signature: 'div.x', overflowX: 'auto', scrollWidth: 800, clientWidth: 640, overflowPx: 160, reason: 'overflow-x 可滚动但滚动条被显式隐藏（scrollbar-width: none）' },
+]).passed, false);
+// 普通横向滚动容器与带省略号的单行截断都由采集端过滤，不产生条目
+// （headless Chromium 用 overlay 滚动条，gutter 恒为 0，不能当作「滚动条被隐藏」的证据）。
 
 // ---------- 检查四：画面比例 ----------
 const base = { innerWidth: 1536, innerHeight: 864, top: 100, right: 800, bottom: 600, width: 300, height: 400, ratio: 0.75 };
@@ -83,13 +89,14 @@ for (const screen of SCREENS) {
   assert.ok(screen.owner.match(/^ui-\d{2}$/), `屏幕 ${screen.id} 必须写明负责票号`);
   assert.deepEqual([...screen.checks], [...ALL_CHECKS], `屏幕 ${screen.id} 默认要跑全部四项检查`);
 }
-// 已知失败必须挂在 09 上，并且只豁免「横向溢出连带」的三项 —— 画面比例真失败不许被豁免。
+// 已知失败必须挂在 09 上，并且只豁免「横向溢出连带」的两项 —— 画面比例与藏内容真失败不许被豁免。
 const mixcut = SCREENS.filter((screen) => screen.id.startsWith('mixcut-'));
 assert.equal(mixcut.length, 2);
 for (const screen of mixcut) {
   assert.equal(screen.knownFailure, 'ui-09');
-  assert.deepEqual([...screen.knownFailureChecks], ['horizontalScroll', 'clippedControls', 'hiddenOverflowContent']);
+  assert.deepEqual([...screen.knownFailureChecks], ['horizontalScroll', 'clippedControls']);
   assert.equal(screen.knownFailureChecks.includes('mediaFrames'), false, '画面比例不属于 09 的已知问题，不许豁免');
+  assert.equal(screen.knownFailureChecks.includes('hiddenOverflowContent'), false, '藏内容不属于 09 的已知问题，不许豁免');
   assert.match(screen.knownFailureReason, /85px/);
   assert.match(screen.knownFailureReason, /61px/);
 }

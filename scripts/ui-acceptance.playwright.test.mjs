@@ -264,11 +264,11 @@ function evaluateChecks(measurement, screen) {
 }
 
 async function importPlaywright() {
-  const module = await import('@playwright/test');
+  const playwrightModule = await import('@playwright/test');
   for (const engine of result.engines) {
-    if (typeof module[engine]?.launch !== 'function') throw new Error(`Playwright 没有 ${engine} 内核`);
+    if (typeof playwrightModule[engine]?.launch !== 'function') throw new Error(`Playwright 没有 ${engine} 内核`);
   }
-  return module;
+  return playwrightModule;
 }
 
 /**

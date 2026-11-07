@@ -151,44 +151,69 @@ export function evaluateClippedControls(items) {
 // ---------------------------------------------------------------------------
 
 /**
- * 浏览器侧测量。原型判据：横向可滚动（overflowX auto/scroll）但滚动条被隐藏、且内容比可视区宽
- * —— 内容被悄悄藏起来，用户看不到也点不到。
- * 滚动条是否可见用「没有滚动条槽位」+ 显式 `scrollbar-width: none` 判断，Chromium/WebKit 都适用。
+ * 浏览器侧测量。原型判据是「横向可滚动但滚动条被隐藏、内容比可视区宽」，意图是
+ * 「内容被藏起来、用户看不到也点不到」。
+ *
+ * 原型原写法有两处不能照搬：
+ *   - 判定字段 `getComputedStyle(el).scrollbarWidth === 'none'` 在 Chromium 里永远不成立
+ *     （那是 Firefox 属性，Chromium 只作 legacy 别名返回 `auto`）；
+ *   - headless Chromium 用 overlay 滚动条，`offsetHeight - clientHeight` 恒为 0
+ *     （本票实测确认），「没有滚动条槽位」不能当作滚动条被隐藏的证据。
+ *
+ * 所以改成测两种真正「内容不可达」的情形：
+ *   1. `overflow-x: auto|scroll` 且显式关掉滚动条（`scrollbar-width: none`）——
+ *      能滚但没有可见提示，按原型意图算藏内容；
+ *   2. `overflow-x: hidden|clip` 且内容比可视区宽 —— 内容被裁掉且滚不到。
+ *      例外：单行截断（`text-overflow: ellipsis`，即 Tailwind `truncate`）是设计上有意的省略号，
+ *      用户看得见「…」，不算藏内容。表单控件（input/textarea/select）自己的内部横向滚动是
+ *      浏览器原生行为（输入长了就能左右看），也不属于「工具栏藏内容」；控件本身被切掉由
+ *      检查二（clippedControls）单独负责。
  */
+const FORM_CONTROL_TAGS = 'input, textarea, select';
+
 export function collectHiddenOverflowContent(options = {}) {
   const limit = options.limit ?? 12;
   const results = [];
   for (const element of document.querySelectorAll('body *')) {
+    if (element.matches(FORM_CONTROL_TAGS)) continue;
     const style = getComputedStyle(element);
-    if (!/^(auto|scroll)$/.test(style.overflowX)) continue;
+    const overflowX = style.overflowX;
+    if (!/^(auto|scroll|hidden|clip)$/.test(overflowX)) continue;
     const overflowPx = element.scrollWidth - element.clientWidth;
     if (overflowPx <= 1) continue;
-    const borderY = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
-    const scrollbarGutter = element.offsetHeight - element.clientHeight - borderY;
-    const declaredHidden = style.scrollbarWidth === 'none';
-    if (!declaredHidden && scrollbarGutter > 4) continue;
+    const explicitlyScrollable = overflowX === 'auto' || overflowX === 'scroll';
+    const scrollbarSuppressed = style.scrollbarWidth === 'none';
+    const ellipsisTruncated = style.textOverflow === 'ellipsis';
+    let reason = null;
+    if (explicitlyScrollable) {
+      if (scrollbarSuppressed) reason = 'overflow-x 可滚动但滚动条被显式隐藏（scrollbar-width: none）';
+    } else if (!ellipsisTruncated) {
+      reason = `overflow-x: ${overflowX}，内容被裁掉且滚不到，也没有省略号提示`;
+    }
+    if (!reason) continue;
     const text = (element.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 24);
     const firstClass = String(element.className ?? '').split(' ')[0];
     results.push({
       signature: `${element.tagName.toLowerCase()}${firstClass ? `.${firstClass}` : ''}「${text}」`,
+      overflowX,
       scrollWidth: element.scrollWidth,
       clientWidth: element.clientWidth,
       overflowPx,
-      scrollbarGutter: Math.round(scrollbarGutter * 10) / 10,
+      reason,
     });
     if (results.length >= limit) break;
   }
   return results;
 }
 
-/** 判定：发现即失败（内容被藏起来就是不可达）。 */
+/** 判定：发现即失败（内容不可达就是不可达）。 */
 export function evaluateHiddenOverflowContent(items) {
   if (!Array.isArray(items)) return { passed: false, detail: '没有拿到滚动容器测量结果' };
-  if (items.length === 0) return { passed: true, detail: '没有「能横向滚但滚动条被隐藏」的容器' };
+  if (items.length === 0) return { passed: true, detail: '没有「内容被裁掉或藏起来且用户够不到」的容器' };
   const detail = items.slice(0, 4)
-    .map((item) => `${item.signature} 内容 ${item.scrollWidth}px / 可见 ${item.clientWidth}px`)
+    .map((item) => `${item.signature} 内容 ${item.scrollWidth}px / 可见 ${item.clientWidth}px（${item.reason}）`)
     .join('；');
-  return { passed: false, detail: `${items.length} 处内容被藏起来且没有可见滚动条：${detail}` };
+  return { passed: false, detail: `${items.length} 处内容被藏起来：${detail}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +310,7 @@ export function evaluateMediaFrames(frames, options = {}) {
 }
 
 /** 一次把四项测量在同一帧里取回：避免主题切换/重排让四次测量落在不同状态。 */
-export function collectAllChecks(options = {}) {
+export function collectAllChecks() {
   const innerWidth = window.innerWidth;
   const bodyWidth = document.body ? document.body.scrollWidth : 0;
   const scrollWidth = Math.max(document.documentElement.scrollWidth, bodyWidth);
@@ -353,19 +378,28 @@ export function collectAllChecks(options = {}) {
 
   const hidden = [];
   for (const element of document.querySelectorAll('body *')) {
+    if (element.matches('input, textarea, select')) continue;
     const style = getComputedStyle(element);
-    if (!/^(auto|scroll)$/.test(style.overflowX)) continue;
+    const overflowX = style.overflowX;
+    if (!/^(auto|scroll|hidden|clip)$/.test(overflowX)) continue;
     const elementOverflow = element.scrollWidth - element.clientWidth;
     if (elementOverflow <= 1) continue;
-    const borderY = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
-    const scrollbarGutter = element.offsetHeight - element.clientHeight - borderY;
-    if (!(style.scrollbarWidth === 'none') && scrollbarGutter > 4) continue;
+    const explicitlyScrollable = overflowX === 'auto' || overflowX === 'scroll';
+    const scrollbarSuppressed = style.scrollbarWidth === 'none';
+    const ellipsisTruncated = style.textOverflow === 'ellipsis';
+    let reason = null;
+    if (explicitlyScrollable) {
+      if (scrollbarSuppressed) reason = 'overflow-x 可滚动但滚动条被显式隐藏（scrollbar-width: none）';
+    } else if (!ellipsisTruncated) {
+      reason = `overflow-x: ${overflowX}，内容被裁掉且滚不到，也没有省略号提示`;
+    }
+    if (!reason) continue;
     const text = (element.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 24);
     const firstClass = String(element.className ?? '').split(' ')[0];
     hidden.push({
       signature: `${element.tagName.toLowerCase()}${firstClass ? `.${firstClass}` : ''}「${text}」`,
-      scrollWidth: element.scrollWidth, clientWidth: element.clientWidth,
-      overflowPx: elementOverflow, scrollbarGutter: Math.round(scrollbarGutter * 10) / 10,
+      overflowX, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth,
+      overflowPx: elementOverflow, reason,
     });
     if (hidden.length >= 12) break;
   }
