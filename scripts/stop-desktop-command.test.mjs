@@ -79,6 +79,8 @@ test('服务意外退出会带着整个应用一起退出', () => {
 });
 
 test('关闭确认弹窗在桌面壳里说明应用会自动退出', () => {
+  // 「停止服务」只属于个人本地版；团队版走侧栏，不再有这条确认弹窗。
+  // 团队版没有顶栏的断言见 scripts/team-usage-ui-contract.test.mjs。
   const header = read('components/Header.tsx');
 
   assert.match(header, /desktopBridge/);
