@@ -154,19 +154,14 @@ function isNonMediaModulePool(mapping: unknown): boolean {
   return protocol !== null && protocol !== 'media-upstream-pool/1' && protocol !== 'legacy-media-upstream/1';
 }
 
-/**
- * 没有绑定、也没有模型名的池：用映射快照里的上游地址当账号名（绝不用内部池键）。
- * `https://gateway.example.test/v1` → `gateway.example.test`。
- */
-function upstreamHost(mapping: unknown): string | null {
+/** 没有绑定、也没有模型名的池：用映射快照里的上游地址当账号名（绝不用内部池键）。 */
+function upstreamLabel(mapping: unknown): string | null {
   if (!mapping || typeof mapping !== 'object') return null;
   const baseUrl = (mapping as { baseUrl?: unknown }).baseUrl;
   if (typeof baseUrl !== 'string' || !baseUrl.trim()) return null;
-  try {
-    return new URL(baseUrl).hostname || null;
-  } catch {
-    return baseUrl.trim();
-  }
+  let host = baseUrl.trim();
+  try { host = new URL(baseUrl).hostname || host; } catch { /* 非标准地址就原样用 */ }
+  return `${host} 上游账号`;
 }
 
 /** 同一模型可能在 requirements 里出现两次（image/video 与从它派生的 canvas 视图）。 */
@@ -306,7 +301,7 @@ export function buildPoolAdminView(
       ? labels[0]
       : labels.length > 1
         ? `${labels[0]} 等 ${labels.length} ${bindingLabels.length > 0 ? '个账号' : '个模型'}`
-        : upstreamHost(pool?.mappingSnapshot ?? requirements[0]?.mappingSnapshot) ?? '还没登记模型的上游账号';
+        : upstreamLabel(pool?.mappingSnapshot ?? requirements[0]?.mappingSnapshot) ?? '还没登记模型的上游账号';
     const derived = deriveState({ pool, requirements });
     const media = requirements.find((item) => item.entityType === 'image' || item.entityType === 'video');
     rows.push({

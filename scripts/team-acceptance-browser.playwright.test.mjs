@@ -154,8 +154,11 @@ try {
       await dialog.waitFor({ timeout: 30_000 });
       await dialog.getByRole('button', { name: '确认合并', exact: true }).click();
       assert.equal((await saved).status(), 200, '第二个供应商应使用目标共享池的版本号');
-      await adminPage.getByText(/名额已保存为 2/).first().waitFor({ timeout: 60_000 });
-      await adminPage.getByText(/名额已保存为 2/).first().waitFor({ state: 'detached', timeout: 30_000 }).catch(() => undefined);
+      // 合并后这一行应落到目标池上（同一池的两个模型合成一行），不再等提示文字消失。
+      await adminPage.locator('[data-testid="pool-row"][data-pool-key="media:browser-shared"]')
+        .filter({ hasText: `浏览器共享供应商${suffix}` })
+        .first()
+        .waitFor({ timeout: 60_000 });
     }
     const poolState = await api(adminPage, '/api/team/pools');
     assert.equal(poolState.body.bindings.filter((item) => item.poolKey === 'media:browser-shared').length, 2);
