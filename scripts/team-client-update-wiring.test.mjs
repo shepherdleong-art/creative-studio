@@ -4,7 +4,9 @@ import fs from 'node:fs';
 const main = fs.readFileSync('desktop/main.ts', 'utf8');
 const remote = fs.readFileSync('desktop/client/remote-host.ts', 'utf8');
 const transfer = fs.readFileSync('desktop/client/remote-transfer.ts', 'utf8');
-const header = fs.readFileSync('components/Header.tsx', 'utf8');
+// 05 号票起团队版不再有全局顶栏：客户端更新入口与诊断上报搬到侧栏底部提示条。
+// 断言不变（仍必须走同一套 bridge + report），只是 grep 的目标换成了新的持有者。
+const header = fs.readFileSync('components/team/TeamWorkspaceNavigation.tsx', 'utf8');
 assert.match(main, /spawnIndependentUpdateHelper/);
 assert.match(main, /onPauseRequested/);
 assert.match(main, /onStopRequested/);

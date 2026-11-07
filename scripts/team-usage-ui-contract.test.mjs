@@ -3,14 +3,24 @@ import fs from 'node:fs';
 
 const read = (relative) => fs.readFileSync(new URL(`../${relative}`, import.meta.url), 'utf8');
 const header = read('components/Header.tsx');
+// 05 号票起团队版导航搬到左侧分组侧栏：任务/错误入口 href 的权威源变成导航数据，
+// 侧栏负责渲染。断言不变（入口必须可达、员工不能越权），只是换到新的持有者。
+const sidebar = read('components/team/TeamWorkspaceNavigation.tsx');
+const navigation = read('lib/workspace-navigation.ts');
 const members = read('components/team/TeamUsersPanel.tsx');
 const usage = read('components/team/TeamUsagePanel.tsx');
 const waitingLabels = read('lib/team-task-labels.ts');
 const tasks = read('components/team/TeamTasksPanel.tsx');
 const errors = read('components/team/TeamErrorsPanel.tsx');
 
-assert.match(header, /href=["']\/team\/tasks["']/);
-assert.match(header, /href=["']\/team\/errors["']/);
+assert.match(navigation, /href: '\/team\/tasks'/, '侧栏必须有「我的任务/全员任务」入口');
+assert.match(navigation, /href: '\/team\/errors'/, '侧栏必须有「出错的任务」入口');
+assert.match(sidebar, /buildWorkspaceNavigation/, '侧栏必须渲染导航数据，而不是自带一份入口清单');
+// 团队版不渲染全局顶栏：Header 的 server 分支必须在 <header> 之前返回。
+const serverBranch = header.slice(header.indexOf('if (server) {'), header.indexOf('// ---- 个人本地版'));
+assert.ok(serverBranch.length > 0, 'Header 必须有独立的团队版分支');
+assert.doesNotMatch(serverBranch, /<header\b/, '团队版分支不得渲染全局顶栏');
+assert.equal(header.indexOf('<header className="toolbar'), header.lastIndexOf('<header className="toolbar'), '本地版顶栏只应出现一处（团队版走侧栏）');
 for (const label of ['今日', '本月', '预留', '剩余', '并发', '需要关注', '模块明细']) assert.ok(members.includes(label), `成员管理必须显示 ${label}`);
 assert.match(members, /search/);
 assert.match(members, /attentionOnly/);

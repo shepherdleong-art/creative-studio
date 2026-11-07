@@ -1,4 +1,4 @@
-﻿# 一键停止：关闭 Creative Studio app、litellm 代理
+﻿# 一键停止：关闭林视 Lin's Vision app、litellm 代理
 # 端口探测/进程归属/stack.json 状态管理统一委托 scripts/runtime/*.mjs 共享工具。
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
@@ -66,7 +66,7 @@ function Stop-OwnedProcessTree([int]$TargetPid) {
 }
 
 # ── 1. app：状态文件 PID 归属当前根目录时才请求优雅停机，再强杀该进程树 ──
-Write-Host '[1/2] 停止 Creative Studio...'
+Write-Host '[1/2] 停止林视 Lin's Vision...'
 $appStopped = $false
 if ($stack -and $stack.appCmdPid) {
   $appCmdPid = [int]$stack.appCmdPid

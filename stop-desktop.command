@@ -1,5 +1,5 @@
 #!/bin/bash
-# 产品素材工作台 — 桌面版（Electron）停止脚本
+# 林视 Lin's Vision — 桌面版（Electron）停止脚本
 # 双击此文件，或在终端运行: bash stop-desktop.command
 #
 # 正常退出请用应用菜单的「退出」，或在启动窗口按 Ctrl+C。
@@ -50,7 +50,7 @@ if [ -z "$NODE_BIN" ] || ! command -v "$NODE_BIN" >/dev/null 2>&1; then
 fi
 export CREATIVE_STUDIO_NODE="$NODE_BIN"
 
-echo "🛑 正在停止产品素材工作台（桌面版）..."
+echo "🛑 正在停止林视 Lin's Vision（桌面版）..."
 echo ""
 
 # 桌面版有两个受控数据根：源码运行用项目目录，安装版用应用支持目录。
@@ -147,10 +147,16 @@ terminate_shell() {
     done
 }
 
+# 安装版外壳改名了：升级用户的机器上可能还留着旧名字的应用，两个都要认，
+# 否则用旧名字装着的人点停止脚本会以为「没有运行中的实例」。
+terminate_shell \
+    "/Applications/林视 Lin's Vision.app" \
+    "/Applications/林视 Lin's Vision.app/Contents/MacOS/CreativeStudio" \
+    "安装版外壳（林视 Lin's Vision）"
 terminate_shell \
     "/Applications/产品素材工作台.app" \
     "/Applications/产品素材工作台.app/Contents/MacOS/CreativeStudio" \
-    "安装版外壳"
+    "安装版外壳（旧名 产品素材工作台）"
 terminate_shell \
     "$PROJECT_ROOT" \
     "$PROJECT_ROOT/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" \

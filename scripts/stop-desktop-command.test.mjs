@@ -45,6 +45,9 @@ test('停止脚本覆盖源码态与安装版两个数据根', () => {
 test('停止脚本按可执行文件路径匹配回收残留进程，不按端口或进程名误杀', () => {
   const stopDesktop = read('stop-desktop.command');
 
+  // 安装版改名后要同时认新旧两个应用路径：只认新名字会让仍装着旧名字的
+  // 机器点停止脚本时误以为「没有运行中的实例」。
+  assert.match(stopDesktop, /\/Applications\/林视 Lin's Vision\.app\/Contents\/MacOS\/CreativeStudio/);
   assert.match(stopDesktop, /\/Applications\/产品素材工作台\.app\/Contents\/MacOS\/CreativeStudio/);
   assert.match(stopDesktop, /node_modules\/electron\/dist\/Electron\.app\/Contents\/MacOS\/Electron/);
   // 发现用 pgrep（按精确路径），归属复核与终止委托给共享 process-tree 工具。
@@ -79,6 +82,8 @@ test('服务意外退出会带着整个应用一起退出', () => {
 });
 
 test('关闭确认弹窗在桌面壳里说明应用会自动退出', () => {
+  // 「停止服务」只属于个人本地版；团队版走侧栏，不再有这条确认弹窗。
+  // 团队版没有顶栏的断言见 scripts/team-usage-ui-contract.test.mjs。
   const header = read('components/Header.tsx');
 
   assert.match(header, /desktopBridge/);
