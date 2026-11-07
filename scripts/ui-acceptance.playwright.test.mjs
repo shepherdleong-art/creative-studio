@@ -330,8 +330,8 @@ async function measureScreen({ screen, engine, page, theme, viewport }) {
   }, theme);
   await page.waitForTimeout(400);
 
-  const baseMeasurement = await page.evaluate(collectAllChecks);
-  const baseOutcomes = evaluateChecks(baseMeasurement, screen);
+  const measurement = await page.evaluate(collectAllChecks, screen.scope);
+  const baseOutcomes = evaluateChecks(measurement, screen);
   row.outcomes.base = baseOutcomes;
   for (const outcome of Object.values(baseOutcomes)) if (!outcome.passed) row.result = 'failed';
 
@@ -353,7 +353,7 @@ async function measureScreen({ screen, engine, page, theme, viewport }) {
     const popupName = `${screen.id}-${engine}-${viewport.label}-${suffix}-popup${index + 1}.png`;
     await page.screenshot({ path: path.join(screenshotDirectory, popupName) }).catch(() => undefined);
     row.evidence.push(`screens/${popupName}`);
-    const popupOutcomes = evaluateChecks(await page.evaluate(collectAllChecks), screen);
+    const popupOutcomes = evaluateChecks(await page.evaluate(collectAllChecks, screen.scope), screen);
     row.outcomes[`popup${index + 1}`] = popupOutcomes;
     for (const outcome of Object.values(popupOutcomes)) if (!outcome.passed) row.result = 'failed';
   }

@@ -114,6 +114,17 @@ assert.throws(() => selectScreens(['no-such-screen']), /未知的屏幕 id/);
 assert.deepEqual(selectScreens(['mixcut-single']).map((screen) => screen.id), ['mixcut-single']);
 assert.equal(selectScreens([]).length, SCREENS.length);
 
+// 共享外壳单独成屏：普通屏量 'page'（跳过外壳），外壳屏量 'shell'。
+// 侧栏坏了只应该让外壳那一屏红，不能把 20 多屏同时拖红。
+const sidebar = SCREENS.find((screen) => screen.id === 'workspace-sidebar');
+assert.ok(sidebar, '必须有 workspace-sidebar 这一屏');
+assert.equal(sidebar.scope, 'shell');
+assert.equal(sidebar.owner, 'ui-05');
+for (const screen of SCREENS) {
+  if (screen.id === 'workspace-sidebar') continue;
+  assert.equal(screen.scope, 'page', `屏幕 ${screen.id} 应只量自己的内容区，不重复量共享外壳`);
+}
+
 // ---------- 数据钩子入口 ----------
 assert.equal(typeof FIXTURE_HOOKS.base, 'function', '基础数据钩子必须在');
 assert.deepEqual(resolveHooks({}, ['base', 'videos']).missing, ['videos']);

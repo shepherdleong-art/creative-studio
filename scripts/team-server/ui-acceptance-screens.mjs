@@ -71,6 +71,10 @@ const base = (id, title, owner, extra) => ({
   owner,
   audience: 'employee',
   checks: ALL_CHECKS,
+  // 量哪一块：'page'（默认，跳过共享外壳）/ 'shell'（只量外壳）/ 'all'（全量）。
+  // 外壳单独成屏，所以普通屏默认跳过外壳 —— 否则侧栏一坏，27 屏同时红，
+  // 就看不出「这一屏自己」的问题了。
+  scope: 'page',
   ...extra,
 });
 
@@ -134,6 +138,8 @@ export const SCREENS = [
   base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
     href: () => '/',
     ready: async (page) => { await page.getByTestId('workspace-sidebar').waitFor({ timeout: 60_000 }); },
+    // 这一屏就是外壳本身：只量外壳子树。
+    scope: 'shell',
     actions: [async (page) => {
       // 头像菜单是这一屏的第二个状态：展开后同样要量。
       await page.locator("[class*='wsUser']").first().click();
@@ -258,6 +264,8 @@ export function validateScreens(screens = SCREENS) {
     if (typeof screen.href !== 'function') throw new Error(`屏幕 ${screen.id} 缺少 href 函数`);
     if (typeof screen.ready !== 'function') throw new Error(`屏幕 ${screen.id} 缺少 ready 函数（必须等这一屏真的画出来）`);
     if (!['employee', 'admin'].includes(screen.audience)) throw new Error(`屏幕 ${screen.id} 的 audience 只能是 employee/admin`);
+    if (screen.scope === undefined) screen.scope = 'page';
+    if (!['page', 'shell', 'all'].includes(screen.scope)) throw new Error(`屏幕 ${screen.id} 的 scope 只能是 page/shell/all`);
     const checks = Array.isArray(screen.checks) ? screen.checks : ALL_CHECKS;
     for (const key of checks) if (!CHECK_KEYS.includes(key)) throw new Error(`屏幕 ${screen.id} 用了未知检查：${key}`);
     for (const key of screen.knownFailureChecks ?? []) {
