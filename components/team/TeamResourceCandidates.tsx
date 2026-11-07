@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { PublicResourceCandidate } from '@/lib/team-service/resource-candidates';
 import { teamError, teamWrite } from './client';
-import { EmptyState, GroupHeading, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
+import { EmptyState, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
 
 export type TeamResourceCandidate = PublicResourceCandidate;
 const PAGE_SIZE = 20;
@@ -88,7 +88,10 @@ export default function TeamResourceCandidates({ refreshKey = 0 }: { refreshKey?
     {error && <p role="alert" className="mt-3 text-[13px] text-fail">{error}</p>}
     {notice && <p role="status" className="mt-3 flex items-center gap-2 text-[13px] text-ok"><StatusDot tone="ok" />{notice}</p>}
     {!loaded && <p role="status" className="mt-4 text-[13px] text-ink-secondary">正在读取资源…</p>}
-    {loaded && !filtered.length && <EmptyState icon="image" title={candidates.length ? '没有匹配的资源' : '暂无资源'} description={candidates.length ? '请调整搜索或发布状态。' : '可在设置中创建模板或上传知识库，也可在下方添加 BGM。'} />}
+    {loaded && !filtered.length && <EmptyState
+      icon="image"
+      title={candidates.length ? '没有匹配的资源，请调整搜索或发布状态。' : '暂无资源。可在设置中创建模板或上传知识库，也可在下方添加 BGM。'}
+    />}
     <div className="mt-4 space-y-3">
       {categories.map((category, index) => {
         const items = filtered.filter(candidate => candidate.typeLabel === category);
@@ -131,7 +134,6 @@ export default function TeamResourceCandidates({ refreshKey = 0 }: { refreshKey?
       })}
     </div>
     <div className="mt-3 flex flex-wrap items-center gap-2">
-      <GroupHeading>发布规则</GroupHeading>
       <p className="text-[12px] leading-5 text-ink-tertiary">知识库与模板库按完整版本发布或撤回，保留历史版本供已有任务追溯。若其他管理员已切换版本，请刷新后操作。</p>
     </div>
   </section>;

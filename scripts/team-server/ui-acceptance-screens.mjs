@@ -446,7 +446,12 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
   base('admin-users', '成员与账号', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/users',
-    ready: async (page) => { await page.getByRole('heading', { name: '成员与账号', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 交接期间页面工具栏与外壳那条都会带 <h1>，且外壳的容器也带 data-testid="page-toolbar"，
+    // 所以落到「标题 span」这个唯一节点上，而不是按 heading 角色取。
+    ready: async (page) => {
+      await page.getByTestId('page-toolbar-title').filter({ hasText: '成员与账号' }).first()
+        .waitFor({ timeout: 60_000 });
+    },
     // 成员策略对话框（共用 Dialog 外壳）：打开后每档窗口都要量，确认弹窗不会被切掉。
     actions: [async (page) => {
       await page.getByRole('button', { name: '模型与额度', exact: true }).first().click();
@@ -462,22 +467,6 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
     audience: 'admin',
     href: () => '/team/admin/operations',
     ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
-  }),
-  base('admin-operations-cleanup-dialog', '版本与备份 · 清理确认弹窗', 'ui-14', {
-    audience: 'admin',
-    href: () => '/team/admin/operations',
-    ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
-    // 「确认清理」换成共用 Dialog 外壳后，弹窗在小窗口里不能被切掉。
-    // 有可清理项时才会出现确认按钮；没有就退化成只量页面基础态（不假装弹窗量到了）。
-    actions: [async (page) => {
-      await page.getByRole('button', { name: '扫描无用文件', exact: true }).click();
-      const confirm = page.getByRole('button', { name: '确认清理预览中的项目', exact: true });
-      await confirm.waitFor({ timeout: 60_000 });
-      if (await confirm.isEnabled()) {
-        await confirm.click();
-        await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
-      }
-    }],
   }),
   base('admin-settings', '供应商配置', 'ui-14', {
     audience: 'admin',

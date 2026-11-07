@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { teamError, teamWrite } from './client';
-import { GroupHeading, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
+import { StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
 
 export type RestoreJob = {
   id: string; action: string; status: 'queued' | 'running' | 'awaiting_confirmation' | 'succeeded' | 'failed' | 'needs_review';
@@ -103,7 +103,7 @@ export default function TeamRestorePanel({ backups, jobs, activity, busy, backup
       {pending ? '正在提交…' : '保存当前状态并准备隔离还原'}
     </ToolbarButton>
     {waiting && <div className="mt-4 rounded-[11px] border border-warn p-4">
-      <GroupHeading>隔离还原已校验，等待管理员确认切换</GroupHeading>
+      <h3 className="text-[13px] font-semibold text-ink">隔离还原已校验，等待管理员确认切换</h3>
       <p className="mt-2 text-[13px] text-ink-secondary">还原前备份：{waiting.result?.preRestoreBackupId}。确认后才会切换活动数据根，旧根保留为受保护副本。</p>
       {waiting.result?.reconciliation && <p className="mt-2 flex items-start gap-1.5 text-[13px] text-warn"><StatusDot tone="warn" /><span>核查状态：{waiting.result.reconciliation.status === 'reconciled' ? '证据已核清' : '仍须核查'}；未知受理 {waiting.result.reconciliation.unknownAttemptIds.length} 项。核查完成前保持禁调度、禁止自动重试，不恢复付费生产。</span></p>}
       <label className="mt-3 block text-[13px] text-ink" htmlFor="restore-password">输入当前管理员密码以重新认证并确认切换</label>
