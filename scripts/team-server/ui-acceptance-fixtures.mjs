@@ -33,6 +33,48 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
+
+/** 造一张纯色 PNG（验收夹具用；不联网、不依赖 sharp）。 */
+export function makeSolidPng(width = 96, height = 128, rgb = [200, 200, 205]) {
+  const crcTable = Array.from({ length: 256 }, (_, index) => {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    return value >>> 0;
+  });
+  const crc32 = (buffer) => {
+    let crc = 0xffffffff;
+    for (const byte of buffer) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length, 0);
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body), 0);
+    return Buffer.concat([length, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // truecolor
+  const row = Buffer.alloc(1 + width * 3);
+  for (let x = 0; x < width; x += 1) {
+    row[1 + x * 3] = rgb[0];
+    row[2 + x * 3] = rgb[1];
+    row[3 + x * 3] = rgb[2];
+  }
+  const raw = Buffer.concat(Array.from({ length: height }, () => row));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
 
 /** 正式 HTTP 客户端：与 scripts/team-acceptance-http.playwright.test.mjs 同一套登录/CSRF 约定。 */
 export function createUiAcceptanceApi(baseUrl) {
@@ -99,6 +141,45 @@ export function createUiAcceptanceApi(baseUrl) {
     login,
     activate,
     secrets,
+    /**
+     * 走正式分片上传接口往项目里放一张真图（07 号票加的：第 1/2 步要有素材才画得出对照）。
+     * 团队版 `/api/upload` 在 server 模式下是关闭的（controlledUploadRequired），
+     * 所以这里和三段式上传走同一条路：create → put parts → complete。
+     */
+    async uploadProjectImage(session, projectId, { bytes, name, usage = 'scene_seed', mimeType = 'image/png' }) {
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const created = await json(session, '/api/team/uploads', 'POST', {
+        targetKind: 'project_image',
+        targetScope: { resourceType: 'project', resourceId: projectId },
+        usage: 'image',
+        relativeName: name,
+        mimeType,
+        expectedSize: bytes.length,
+        expectedSha256: sha256,
+        sourceFingerprint: `${bytes.length}:0:${sha256}`,
+        idempotencyKey: randomUUID(),
+        imageOptions: { role: 'input', usage, preprocessEnabled: true, targetMaxSide: 1536, jpegQuality: 85 },
+      });
+      const upload = created.upload ?? created.uploads?.[0];
+      assert.ok(upload?.id, '分片上传必须返回 uploadId');
+      for (const part of upload.missingParts ?? []) {
+        const start = (part - 1) * upload.partSize;
+        const end = Math.min(start + upload.partSize, bytes.length);
+        const response = await raw(session, `/api/team/uploads/${upload.id}/parts/${part}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: bytes.subarray(start, end),
+        });
+        const text = await response.text();
+        assert.equal(response.status, 200, `上传分片 ${part} 失败（${response.status}）：${text.slice(0, 400)}`);
+      }
+      const completed = await json(session, `/api/team/uploads/${upload.id}/complete`, 'POST', {
+        expectedSha256: sha256,
+        sourceFingerprint: `${bytes.length}:0:${sha256}`,
+      });
+      assert.ok(completed.uploadedFile?.id, '上传完成必须返回归库后的图片');
+      return completed.uploadedFile;
+    },
     async createEmployee(adminSession, { employeeId, displayName, role = 'employee' }) {
       const created = await json(adminSession, '/api/team/users', 'POST', { employeeId, displayName, role }, 201);
       return created;
@@ -128,6 +209,45 @@ export const FIXTURE_HOOKS = {
     ctx.provider = provider;
     ctx.project = await ctx.api.createProject(ctx.employeeSession, { providerId: provider.id });
     assert.ok(ctx.project?.id, '基础数据必须产出一个项目');
+    return ctx;
+  },
+
+  /**
+   * 07 号票：第 1/2 步要有素材与分镜组才画得出对照视图。
+   * 只走正式接口 —— 项目图片用分片上传，分镜组用 `/api/projects/[id]/shot-sets`，
+   * 不直接写 SQLite（不然绕过业务校验，量出来的界面也不是真实数据）。
+   */
+  async workbenchAssets(ctx) {
+    const projectId = ctx.project.id;
+    const upload = (usage, name, rgb) => ctx.api.uploadProjectImage(ctx.employeeSession, projectId, {
+      bytes: makeSolidPng(96, 128, rgb),
+      name,
+      usage,
+    });
+    // 一张原始场景图 A（第 1 步左栏）
+    ctx.sceneSeed = await upload('scene_seed', '验收-原始场景图.png', [210, 210, 214]);
+    // 两张原始分镜图（第 2 步左栏 + 新建分镜组窗口）
+    ctx.shotSourceA = await upload('shot_source', '验收-分镜图-1.png', [214, 208, 200]);
+    ctx.shotSourceB = await upload('shot_source', '验收-分镜图-2.png', [200, 208, 214]);
+    const created = await ctx.api.json(ctx.employeeSession, `/api/projects/${projectId}/shot-sets`, 'POST', {
+      name: '验收分镜组',
+      shotImageIds: [ctx.shotSourceA.id, ctx.shotSourceB.id],
+    });
+    assert.ok(created?.id, '分镜组创建必须返回 id');
+    ctx.shotSet = created;
+    return ctx;
+  },
+
+  /**
+   * 07 号票：新项目（一张图都没有）用于验收「每步都有空状态」。
+   * 只建项目本身，不传任何素材 —— 这样三步的空状态才有可断言的前提。
+   */
+  async emptyProject(ctx) {
+    const project = await ctx.api.createProject(ctx.employeeSession, {
+      providerId: ctx.provider.id, productCode: 'UI-ACCEPT-EMPTY', editorName: '空项目验收',
+    });
+    assert.ok(project?.id, '空项目必须创建成功');
+    ctx.emptyProject = project;
     return ctx;
   },
 };
