@@ -74,29 +74,14 @@ const MIXCUT_KNOWN_REASON = '混剪工作台固定为 min(1440px, 100vw-48px) �
 const MIXCUT_KNOWN_CHECKS = ['horizontalScroll', 'clippedControls'];
 
 /**
- * 团队版外壳（05 号票）在两处固定被判失败，**每一屏都中**（07 号票实测：
- * 连 ui-06 的 `projects` 屏也一样，数值逐字相同），所以不是 07 页面的问题：
- *
- * 1. `clippedControls`：侧栏底部头像按钮 247px 塞进 224px 宽的侧栏，右边被切 23px；
- * 2. `hiddenOverflowContent`：① 同一个侧栏 `overflow-x: hidden`、内容 247px 可见 223px；
- *    ② `components/team/PageToolbar.tsx` 为「返回」渲染的 `a.sr-only`（1px 可见区装 27px 文本）。
- *
- * 07 的两屏 42 次测量里 `horizontalScroll` 与 `mediaFrames` 全过，唯二失败就是这两条。
- * 05 修好后本标记会自动触发 `known-failure-not-reproduced`，逼着删掉它。
+ * 新项目每一步的空状态落点（07 号票）：工具栏 + 五步切换 + `data-testid="step-empty"`。
+ * 第 1/2 步的空状态在中间栏，第 3/4/5 步是内容组件上面的提示条，两者用同一个 testid。
  */
-const SHELL_KNOWN_FAILURE = 'ui-05';
-const SHELL_KNOWN_CHECKS = ['clippedControls', 'hiddenOverflowContent'];
-
-/** 新项目每一步的空状态落点：工具栏 + 五步切换 + data-testid="step-empty"。
- * 第 1/2 步的空状态在中间栏，第 3/4/5 步是内容组件上面的提示条，两者同一个 testid。 */
 const emptyStepReady = async (page) => {
   await page.getByTestId('page-toolbar').first().waitFor({ timeout: 60_000 });
   await page.getByRole('tab', { name: '场景图', exact: true }).waitFor({ timeout: 60_000 });
   await page.getByTestId('step-empty').first().waitFor({ timeout: 60_000 });
 };
-const SHELL_KNOWN_REASON = '团队版外壳（05 号票）：侧栏底部头像按钮 247px 超出 224px 侧栏被切；'
-  + '侧栏 overflow-x:hidden 藏住 24px 内容；PageToolbar 的 a.sr-only 把 27px 文本压进 1px。'
-  + '07 号票已实测同一失败在 ui-06 的 projects 屏上逐字复现，与本票页面无关。';
 
 /**
  * 一屏一个对象。改这一屏的选择器/等待点 = 改这一屏的「怎么算画出来了」，
@@ -181,9 +166,6 @@ export const SCREENS = [
         throw new Error('第 1 步右栏不该再有并发设置');
       }
     },
-    knownFailure: SHELL_KNOWN_FAILURE,
-    knownFailureChecks: SHELL_KNOWN_CHECKS,
-    knownFailureReason: SHELL_KNOWN_REASON,
   }),
   // 第 1 步的网格视图单独量一屏：网格是另一种排版，同样不能溢出/切控件。
   base('project-scene-grid', '项目工作台 · 第 1 步 网格视图', 'ui-07', {
@@ -194,9 +176,6 @@ export const SCREENS = [
       await page.getByRole('button', { name: '网格', exact: true }).click();
       await page.locator('[data-testid="workbench-scene"][data-view="grid"]').waitFor({ timeout: 30_000 });
     },
-    knownFailure: SHELL_KNOWN_FAILURE,
-    knownFailureChecks: SHELL_KNOWN_CHECKS,
-    knownFailureReason: SHELL_KNOWN_REASON,
   }),
   base('project-scene-project-info-dialog', '项目工作台 · 项目信息弹窗', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=scene`,
@@ -206,9 +185,6 @@ export const SCREENS = [
       await page.getByRole('button', { name: '项目信息', exact: true }).first().click();
       await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
     }],
-    knownFailure: SHELL_KNOWN_FAILURE,
-    knownFailureChecks: SHELL_KNOWN_CHECKS,
-    knownFailureReason: SHELL_KNOWN_REASON,
   }),
   base('project-scene-log-drawer', '项目工作台 · 运行日志抽屉', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=scene`,
@@ -218,9 +194,6 @@ export const SCREENS = [
       await page.getByRole('button', { name: '运行日志', exact: true }).first().click();
       await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
     }],
-    knownFailure: SHELL_KNOWN_FAILURE,
-    knownFailureChecks: SHELL_KNOWN_CHECKS,
-    knownFailureReason: SHELL_KNOWN_REASON,
   }),
   base('project-storyboard', '项目工作台 · 第 2 步 分镜生成', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
@@ -235,9 +208,6 @@ export const SCREENS = [
       // 删除分镜组必须走确认：按钮在，点开后要有 dialog（由 actions 量）
       await page.getByRole('button', { name: '删除', exact: true }).first().waitFor({ timeout: 30_000 });
     },
-    knownFailure: SHELL_KNOWN_FAILURE,
-    knownFailureChecks: SHELL_KNOWN_CHECKS,
-    knownFailureReason: SHELL_KNOWN_REASON,
   }),
   base('project-storyboard-new-set', '项目工作台 · 第 2 步 新建分镜组窗口', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
@@ -260,9 +230,6 @@ export const SCREENS = [
         await dialog.locator('[data-testid="set-opening"]').first().click({ force: true });
       }
     }],
-    knownFailure: SHELL_KNOWN_FAILURE,
-    knownFailureChecks: SHELL_KNOWN_CHECKS,
-    knownFailureReason: SHELL_KNOWN_REASON,
   }),
   base('project-storyboard-delete-dialog', '项目工作台 · 第 2 步 删除分镜组确认', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
@@ -275,9 +242,6 @@ export const SCREENS = [
       await dialog.getByRole('button', { name: '取消', exact: true }).click();
       await dialog.waitFor({ state: 'detached', timeout: 10_000 });
     }],
-    knownFailure: SHELL_KNOWN_FAILURE,
-    knownFailureChecks: SHELL_KNOWN_CHECKS,
-    knownFailureReason: SHELL_KNOWN_REASON,
   }),
   // 新项目每一步都有空状态（07 号票）：用空项目夹具，断言空状态真的画出来。
   // 注意 checks 的差别：
@@ -293,9 +257,6 @@ export const SCREENS = [
       href: ({ emptyProject }) => `/projects/${emptyProject.id}?tab=${step}`,
       skipUnless: 'emptyProject',
       ready: emptyStepReady,
-      knownFailure: SHELL_KNOWN_FAILURE,
-      knownFailureChecks: SHELL_KNOWN_CHECKS,
-      knownFailureReason: SHELL_KNOWN_REASON,
     },
   )),
   ...['video', 'final-edit'].map((step) => base(
