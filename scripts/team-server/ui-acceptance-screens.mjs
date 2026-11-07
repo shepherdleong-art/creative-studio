@@ -114,23 +114,30 @@ export const SCREENS = [
   }),
   base('canvas', '创作画布列表', 'ui-14', {
     href: () => '/canvas',
-    ready: async (page) => { await page.getByRole('heading', { name: '创作画布', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 14 号票起标题由每页工具栏渲染（= 导航名「创作画布」），不再是页内 h1。
+    ready: async (page) => { await page.getByTestId('page-toolbar-title').first().waitFor({ timeout: 60_000 }); },
   }),
   base('tasks-employee', '我的任务', 'ui-12', {
     href: () => '/team/tasks',
-    ready: async (page) => { await page.getByRole('heading', { name: '团队任务', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 12 号票改版：员工页标题改由外壳工具栏按路径解析成「我的任务」，页面里不再有自己的 <h1>。
+    ready: async (page) => {
+      await page.getByTestId('page-toolbar-title').first().waitFor({ timeout: 60_000 });
+      await page.getByRole('region', { name: '筛选' }).waitFor({ timeout: 60_000 });
+      await page.getByLabel('查找任务', { exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
   }),
   base('downloads', '下载与交付', 'ui-14', {
     href: () => '/team/downloads',
-    ready: async (page) => { await page.getByRole('heading', { name: '下载与交付', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByTestId('page-toolbar-title').first().waitFor({ timeout: 60_000 }); },
   }),
-  base('errors', '错误中心', 'ui-14', {
+  base('errors', '出错的任务', 'ui-14', {
     href: () => '/team/errors',
-    ready: async (page) => { await page.getByRole('heading', { name: '错误中心', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByRole('heading', { name: '出错的任务', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
   base('usage-employee', '我的用量', 'ui-14', {
     href: () => '/usage',
-    ready: async (page) => { await page.getByRole('heading', { name: '费用与用量', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByRole('heading', { name: '我的用量', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
   base('recycle-bin', '回收站', 'ui-14', {
     href: () => '/team/recycle-bin',
@@ -327,45 +334,130 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
   }),
 
   // ---------- 管理员侧 ----------
+  // 12 号票：运行总览 + 全员任务。ready 等的是「这一屏真的画出来」的落点：
+  // 数量卡的固定标题 + 最近任务表/空状态；全员任务等筛选栏与结果说明。
   base('admin-overview', '运行总览（管理员）', 'ui-12', {
     audience: 'admin',
     href: () => '/',
-    ready: async (page) => { await page.getByText('生产有序，状态清楚。', { exact: false }).first().waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.getByRole('region', { name: '任务数量' }).waitFor({ timeout: 60_000 });
+      await page.getByTestId('count-running').waitFor({ timeout: 60_000 });
+      await page.getByRole('region', { name: '最近任务' }).waitFor({ timeout: 60_000 });
+      await page.getByRole('region', { name: '开工前还差几件事' }).waitFor({ timeout: 60_000 });
+      // 等「读取运行总览…」消失，否则数量卡还是占位符。
+      await page.getByText('读取运行总览…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
+  }),
+  base('admin-overview-pause-dialog', '运行总览 · 暂停生产确认', 'ui-12', {
+    audience: 'admin',
+    href: () => '/',
+    ready: async (page) => {
+      await page.getByRole('region', { name: '任务数量' }).waitFor({ timeout: 60_000 });
+      await page.getByText('读取运行总览…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
+    actions: [async (page) => {
+      const pause = page.getByRole('button', { name: '暂停运行', exact: true });
+      // 维护中时按钮禁用、没有确认框可量；这种情况下不硬点，交给下面这条断言说明。
+      if (!(await pause.isEnabled().catch(() => false))) return;
+      await pause.click();
+      await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
+      await page.getByRole('button', { name: '取消', exact: true }).click();
+      await page.getByRole('dialog').first().waitFor({ state: 'detached', timeout: 30_000 });
+    }],
   }),
   base('admin-tasks', '全员任务', 'ui-12', {
     audience: 'admin',
     href: () => '/team/tasks',
-    ready: async (page) => { await page.getByRole('heading', { name: '团队任务', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.getByRole('region', { name: '筛选' }).waitFor({ timeout: 60_000 });
+      await page.getByLabel('查找任务', { exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByRole('region', { name: '任务列表' }).waitFor({ timeout: 60_000 });
+      await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
   }),
-  base('admin-pools', '模型与名额（资源池与共享预算）', 'ui-13', {
+  base('admin-tasks-detail', '全员任务 · 任务详情', 'ui-12', {
+    audience: 'admin',
+    href: () => '/team/tasks',
+    // 详情需要一条真实任务；验收夹具只造了项目和供应商，所以这一屏只在有行时量。
+    ready: async (page) => {
+      await page.getByRole('region', { name: '筛选' }).waitFor({ timeout: 60_000 });
+      await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
+    actions: [async (page) => {
+      const row = page.getByTestId('task-row').first();
+      if (await row.count() === 0) return;
+      await row.click();
+      await page.getByTestId('task-detail').waitFor({ timeout: 30_000 });
+    }],
+  }),
+  base('admin-pools', '模型与名额（一个名额池一行）', 'ui-13', {
     audience: 'admin',
     href: () => '/team/admin/pools',
-    ready: async (page) => { await page.getByRole('heading', { name: '资源池与共享预算', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      // 这一屏特有的落点：至少一个账号行（「一个名额池一行」），标题取第一条工具栏
+      // （外壳那条在页面登记占用后就撤下，过渡瞬间可能并存）。
+      await page.getByTestId('pool-row').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('page-toolbar-title').first().getByText('模型与名额', { exact: true }).waitFor({ timeout: 60_000 });
+    },
+    actions: [async (page) => {
+      // 展开一行：模型列表 + 正在使用的成员 + 默认收起的内部编号。
+      await page.getByRole('button', { name: /^展开 / }).first().click();
+      await page.getByText('包含的模型', { exact: true }).first().waitFor({ timeout: 30_000 });
+      const internal = page.getByText('排查用的内部编号', { exact: true }).first();
+      await internal.waitFor({ timeout: 30_000 });
+      await internal.click();
+      await page.getByText(/映射协议：|版本：/).first().waitFor({ timeout: 30_000 });
+    }],
   }),
-  base('admin-users', '成员与账号', 'ui-13', {
+  base('admin-users', '成员与账号', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/users',
-    ready: async (page) => { await page.getByRole('heading', { name: '账号与权限', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByRole('heading', { name: '成员与账号', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 成员策略对话框（共用 Dialog 外壳）：打开后每档窗口都要量，确认弹窗不会被切掉。
+    actions: [async (page) => {
+      await page.getByRole('button', { name: '模型与额度', exact: true }).first().click();
+      await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
+    }],
   }),
   base('admin-resources', '公共资源发布', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/resources',
-    ready: async (page) => { await page.getByRole('heading', { name: '公共资源发布', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByRole('heading', { name: '公共资源', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
   base('admin-operations', '版本与备份', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/operations',
-    ready: async (page) => { await page.getByRole('heading', { name: '备份与维护', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
+  }),
+  base('admin-operations-cleanup-dialog', '版本与备份 · 清理确认弹窗', 'ui-14', {
+    audience: 'admin',
+    href: () => '/team/admin/operations',
+    ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 「确认清理」换成共用 Dialog 外壳后，弹窗在小窗口里不能被切掉。
+    // 有可清理项时才会出现确认按钮；没有就退化成只量页面基础态（不假装弹窗量到了）。
+    actions: [async (page) => {
+      await page.getByRole('button', { name: '扫描无用文件', exact: true }).click();
+      const confirm = page.getByRole('button', { name: '确认清理预览中的项目', exact: true });
+      await confirm.waitFor({ timeout: 60_000 });
+      if (await confirm.isEnabled()) {
+        await confirm.click();
+        await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
+      }
+    }],
   }),
   base('admin-settings', '供应商配置', 'ui-14', {
     audience: 'admin',
     href: () => '/settings',
-    ready: async (page) => { await page.getByRole('heading', { name: '供应商配置', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 供应商配置页有筛选/图表要点，等「添加供应商」这条本页操作出现再量。
+    ready: async (page) => {
+      await page.getByRole('heading', { name: '供应商配置', exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByRole('button', { name: '添加供应商', exact: true }).first().waitFor({ timeout: 60_000 });
+    },
   }),
   base('admin-usage', '团队用量', 'ui-14', {
     audience: 'admin',
     href: () => '/usage',
-    ready: async (page) => { await page.getByRole('heading', { name: '费用与用量', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByRole('heading', { name: '团队用量', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
 ];
 
