@@ -352,60 +352,106 @@ async function runBrowser(name, launcher, credentials) {
     await page.getByTestId('workspace-sidebar').waitFor({ timeout: 60_000 });
 
     for (const theme of ['light', 'dark']) {
-      await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
       await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded', timeout: 120_000 });
       await page.getByTestId('workspace-sidebar').waitFor({ timeout: 60_000 });
+      // 主题必须在导航**之后**设：整页 goto 会跑 layout.tsx 的水合前脚本，它按
+      // localStorage 重新决定 data-theme，导航前设的值会被冲掉（截图就变回浅色，
+      // 对比度检查也会把同一套颜色验两遍）。这里两份都写，模拟真实用户选择。
+      await page.evaluate((value) => {
+        localStorage.setItem('creative-studio-theme', value);
+        document.documentElement.dataset.theme = value;
+      }, theme);
+      await page.waitForFunction((value) => document.documentElement.dataset.theme === value, theme);
+      // 侧栏行有 .15s 的 color 过渡：切完主题立刻量颜色会量到过渡中间态（灰），
+      // 既会误导对比度断言，也会让截图拍到半透明的中间帧。等颜色稳定再往下走。
+      await page.waitForFunction(() => {
+        const sample = () => document.querySelector('[data-testid="workspace-nav-item"]');
+        const colorOf = () => {
+          const element = sample();
+          return element ? getComputedStyle(element).color : null;
+        };
+        const first = colorOf();
+        return new Promise((resolve) => {
+          setTimeout(() => resolve(colorOf() === first && first !== null), 220);
+        });
+      });
       const sidebar = await readSidebar(page);
       assert.deepEqual(sidebar.groups.map((group) => group.title), EXPECTED.employee.map(([title]) => title), `${name}/${theme} 员工分组顺序`);
       assert.deepEqual(sidebar.groups.map((group) => group.items.map((item) => item.label)), EXPECTED.employee.map(([, items]) => items), `${name}/${theme} 员工分组项`);
       assert.equal(sidebar.brand, '林视创作台', `${name}/${theme} 员工端名`);
       assert.equal(sidebar.globalHeader, false, `${name}/${theme} 团队版不得有全局顶栏`);
       // 浅深两套下侧栏文字都必须可读：分组标题、导航行、角标与背景的对比度 ≥ 4.5:1。
+      // 侧栏底色是半透明的（--color-sidebar 带 alpha），要沿祖先链合成出实际渲染色再算。
       const contrast = await page.evaluate(() => {
         const parse = (value) => {
-          const match = value.match(/rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)/);
-          return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+          if (!value || value === 'transparent') return null;
+          const numbers = value.match(/[\d.]+/g)?.map(Number);
+          if (!numbers || numbers.length < 3) return null;
+          return { rgb: numbers.slice(0, 3), alpha: numbers.length > 3 ? numbers[3] : 1 };
         };
-        const luminance = ([red, green, blue]) => {
+        const compose = (top, bottom) => {
+          const alpha = top.alpha + bottom.alpha * (1 - top.alpha);
+          if (alpha === 0) return { rgb: [255, 255, 255], alpha: 0 };
+          const rgb = top.rgb.map((channel, index) =>
+            (channel * top.alpha + bottom.rgb[index] * bottom.alpha * (1 - top.alpha)) / alpha);
+          return { rgb, alpha };
+        };
+        /** 从元素往上叠到不透明底为止，得到该元素实际所处的背景色。 */
+        const effectiveBackground = (element) => {
+          const layers = [];
+          for (let node = element; node; node = node.parentElement) {
+            const parsed = parse(getComputedStyle(node).backgroundColor);
+            if (parsed) layers.push(parsed);
+            if (parsed && parsed.alpha >= 1) break;
+          }
+          let composed = { rgb: [255, 255, 255], alpha: 1 };
+          for (let index = layers.length - 1; index >= 0; index -= 1) {
+            composed = compose(layers[index], composed);
+          }
+          return composed.rgb;
+        };
+        const luminance = (rgb) => {
           const channel = (value) => {
             const scaled = value / 255;
             return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4;
           };
-          return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue);
+          return 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]);
         };
         const ratio = (foreground, background) => {
           const [light, dark] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
           return (light + 0.05) / (dark + 0.05);
         };
         const sidebar = document.querySelector('[data-testid="workspace-sidebar"]');
-        const background = parse(getComputedStyle(sidebar).backgroundColor);
-        const sample = (selector) => {
-          const element = sidebar.querySelector(selector);
-          return element ? parse(getComputedStyle(element).color) : null;
-        };
         const rows = [...sidebar.querySelectorAll('[data-testid="workspace-nav-item"]')];
+        const measure = (element) => {
+          if (!element) return null;
+          const color = parse(getComputedStyle(element).color)?.rgb;
+          if (!color) return null;
+          return { color, ratio: ratio(color, effectiveBackground(element)), label: element.textContent?.trim() ?? '' };
+        };
+        // 选中行与未选中行分别量：只量第一项（当前页）会漏掉未选中行的颜色问题。
+        const current = rows.find((row) => row.getAttribute('aria-current') === 'page') ?? null;
+        const other = rows.find((row) => row.getAttribute('aria-current') !== 'page') ?? null;
         return {
-          group: sample('[data-testid="workspace-nav-group"]'),
-          row: sample('[data-testid="workspace-nav-item"]'),
-          badge: sample('[data-testid="workspace-badge-errors"]'),
-          current: rows.find((row) => row.getAttribute('aria-current') === 'page')
-            ? parse(getComputedStyle(rows.find((row) => row.getAttribute('aria-current') === 'page')).color) : null,
-          background,
-          ratios: {
-            group: background && sample('[data-testid="workspace-nav-group"]') ? ratio(sample('[data-testid="workspace-nav-group"]'), background) : null,
-            row: background && sample('[data-testid="workspace-nav-item"]') ? ratio(sample('[data-testid="workspace-nav-item"]'), background) : null,
-            badge: background && sample('[data-testid="workspace-badge-errors"]') ? ratio(sample('[data-testid="workspace-badge-errors"]'), background) : null,
-          },
+          group: measure(sidebar.querySelector('[data-testid="workspace-nav-group"]')),
+          current: measure(current),
+          other: measure(other),
+          brand: measure(sidebar.querySelector('[data-testid="workspace-brand"] strong')),
+          user: measure(sidebar.querySelector('[data-testid="workspace-user-button"] strong')),
         };
       });
-      for (const [key, value] of Object.entries(contrast.ratios)) {
-        if (value === null) continue;
-        assert.ok(value >= 4.5, `${name}/${theme} 侧栏「${key}」对比度 ${value.toFixed(2)}:1 低于 4.5:1（${JSON.stringify(contrast)}）`);
+      for (const [key, value] of Object.entries(contrast)) {
+        if (!value) continue;
+        assert.ok(value.ratio >= 4.5, `${name}/${theme} 侧栏「${key}」对比度 ${value.ratio.toFixed(2)}:1 低于 4.5:1（${JSON.stringify(value)}）`);
       }
       await page.screenshot({ path: path.join(evidenceDirectory, `${name}-employee-${theme}.png`), fullPage: false });
       result.evidence.push(`${name}-employee-${theme}.png`);
-      await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, 'light');
     }
+    // 后续断言在浅色下进行，恢复用户偏好（下一张截图不受深色影响）。
+    await page.evaluate(() => {
+      localStorage.setItem('creative-studio-theme', 'light');
+      document.documentElement.dataset.theme = 'light';
+    });
 
     // 数量角标 = 对应页面的条目数。
     // 角标由侧栏挂载后的异步取数填入：先等侧栏自己报告取数完成，再读回来比对，
@@ -437,9 +483,10 @@ async function runBrowser(name, launcher, credentials) {
     }
     await menu.getByTestId('workspace-menu-hint').waitFor();
     assert.match(await menu.getByTestId('workspace-menu-hint').textContent(), /关闭窗口不会中断服务器任务/);
-    // 三档切换：立即生效 + 落到同一个存储键
+    // 三档切换：立即生效 + 落到同一个存储键。
+    // 复用 02 号票的 Segmented 共用件（semantics="toggle" → aria-pressed）。
     for (const [label, expected] of [['深色', 'dark'], ['浅色', 'light'], ['跟随系统', null]]) {
-      await menu.getByRole('radio', { name: label, exact: true }).click();
+      await menu.getByRole('button', { name: label, exact: true }).click();
       const observed = await page.evaluate(() => ({
         theme: document.documentElement.dataset.theme,
         stored: localStorage.getItem('creative-studio-theme'),
@@ -471,11 +518,17 @@ async function runBrowser(name, launcher, credentials) {
       assert.equal(title, expected, `${name} ${pathname} 工具栏标题应为「${expected}」，实际「${title}」`);
       const metrics = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
       if (metrics.scrollWidth > metrics.clientWidth + 1) overflow.push([pathname, metrics]);
-      const theme = 'dark';
-      await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
-      await page.screenshot({ path: path.join(evidenceDirectory, `${name}-page-${pathname.replaceAll('/', '_') || 'root'}-${theme}.png`) });
-      result.evidence.push(`${name}-page-${pathname.replaceAll('/', '_') || 'root'}-${theme}.png`);
-      await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, 'light');
+      // 每页截一张深色图；主题在导航之后设，否则被水合前脚本按 localStorage 冲掉。
+      await page.evaluate(() => {
+        localStorage.setItem('creative-studio-theme', 'dark');
+        document.documentElement.dataset.theme = 'dark';
+      });
+      await page.screenshot({ path: path.join(evidenceDirectory, `${name}-page-${pathname.replaceAll('/', '_') || 'root'}-dark.png`) });
+      result.evidence.push(`${name}-page-${pathname.replaceAll('/', '_') || 'root'}-dark.png`);
+      await page.evaluate(() => {
+        localStorage.setItem('creative-studio-theme', 'light');
+        document.documentElement.dataset.theme = 'light';
+      });
     }
     assert.deepEqual(overflow, [], `${name} 1536×864 下所有团队版页面都不应横向滚动：${JSON.stringify(overflow)}`);
     run.assertions.push('每个团队版页面工具栏标题正确；1536×864 下不横向滚动', pageTitles);
@@ -506,7 +559,10 @@ async function runBrowser(name, launcher, credentials) {
     assert.equal(adminSidebar.brand, '林视控制台', `${name} 管理员端名`);
     assert.equal(adminSidebar.globalHeader, false, `${name} 管理员端不得有全局顶栏`);
     for (const theme of ['light', 'dark']) {
-      await adminPage.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+      await adminPage.evaluate((value) => {
+        localStorage.setItem('creative-studio-theme', value);
+        document.documentElement.dataset.theme = value;
+      }, theme);
       await adminPage.screenshot({ path: path.join(evidenceDirectory, `${name}-admin-${theme}.png`) });
       result.evidence.push(`${name}-admin-${theme}.png`);
     }

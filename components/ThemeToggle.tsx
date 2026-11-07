@@ -12,7 +12,10 @@ export type ThemePreference = 'light' | 'dark' | 'system';
  * 外观偏好的存储键。**不得更改**：它是既有内部标识（见 AGENTS.md / 简报红线），
  * 改了会丢掉所有老用户的外观选择。头像菜单与顶栏开关共用这一个键。
  */
-export const THEME_STORAGE_KEY = 'creative-studio-theme';
+const STORAGE_KEY = 'creative-studio-theme';
+
+/** 供头像菜单等其它入口复用同一个键（不要在别处另写字符串）。 */
+export const THEME_STORAGE_KEY = STORAGE_KEY;
 
 const ORDER: ThemePreference[] = ['light', 'dark', 'system'];
 

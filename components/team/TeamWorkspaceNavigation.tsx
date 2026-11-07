@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Icon } from '@/components/ui/Icon';
+import { Segmented } from '@/components/ui/Appearance';
 import type { HeaderPrincipal } from '@/components/Header';
 import {
   buildWorkspaceNavigation,
@@ -197,17 +198,14 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
               </div>
               <div className={s.wsMenuTheme}>
                 <span>外观</span>
-                <div className={s.wsThemeSeg} role="radiogroup" aria-label="外观">
-                  {THEME_MENU_ORDER.map((key) => (
-                    <button
-                      key={key}
-                      type="button"
-                      role="radio"
-                      aria-checked={theme === key}
-                      onClick={() => chooseTheme(key)}
-                    >{THEME_OPTIONS[key].shortLabel}</button>
-                  ))}
-                </div>
+                <Segmented
+                  value={theme}
+                  label="外观"
+                  size="small"
+                  semantics="toggle"
+                  options={THEME_MENU_ORDER.map((key) => ({ value: key, label: THEME_OPTIONS[key].shortLabel }))}
+                  onChange={(next) => chooseTheme(next)}
+                />
               </div>
               <hr className={s.wsMenuHr} />
               {WORKSPACE_MENU_LINKS.map((link) => (
