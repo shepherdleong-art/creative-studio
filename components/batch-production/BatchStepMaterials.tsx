@@ -12,6 +12,9 @@ import {
   BatchAssetSelectionCard,
   type PrepareAssetCardView,
 } from './BatchInputSelectionCards';
+import { Tag } from '@/components/ui/Appearance';
+import { Icon } from '@/components/ui/Icon';
+import styles from './batch-steps.module.css';
 
 export interface AssetSelectionState {
   analysisId: string;
@@ -295,12 +298,13 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
   const analysisActive = assetPrepareTasks.filter(({ status }) => status === 'queued' || status === 'running').length;
 
   return (
-    <div className="min-h-0 flex-1 space-y-4 p-2">
+    <div className={styles.page}>
       {frozen && (
-        <div className="card flex flex-wrap items-center justify-between gap-4 p-5">
+        <div className={styles.lock}>
+          <Icon name="lock" size={15} />
           <div>
-            <h3 className="font-semibold text-ink">已锁定的批次设置</h3>
-            <p className="mt-1 text-sm text-ink-secondary">以下素材、分析版本与调色来自锁定快照，不随项目当前内容变化。</p>
+            <h3>已锁定的批次设置</h3>
+            <small>以下素材、分析版本与调色来自锁定快照，不随项目当前内容变化。</small>
           </div>
           <div className="flex flex-wrap gap-2">
             {workspace && workspace.cards.some(({ versionId }) => !versionId) && (
@@ -313,18 +317,18 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
         </div>
       )}
 
-      <section className="card flex min-h-0 flex-col space-y-4 p-5" aria-label="素材区">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+      <section className={styles.group} aria-label="素材区">
+        <div className={styles.head}>
           <div>
-            <h3 className="font-semibold text-ink">素材区</h3>
-            <p className="mt-1 text-sm text-ink-secondary">
+            <h3>素材区</h3>
+            <small>
               当前在线 {onlineAssetCount} 条，可用（已分析）{selectableAssets} 条{unanalyzedCount > 0 ? `，${unanalyzedCount} 条待分析` : ''}。
-            </p>
+            </small>
             {!frozen && (
-              <p className="mt-1 text-xs text-ink-tertiary">先提取文件名描述或进行 AI 画面分析，再勾选进入本批次的素材。</p>
+              <small className="mt-1 block">先提取文件名描述或进行 AI 画面分析，再勾选进入本批次的素材。</small>
             )}
             {!frozen && (
-              <p className="mt-1 text-xs text-ink-tertiary">文件名已写明内容时，可点击“提取文件名描述”跳过 AI 画面识别。提取后整条视频按一个镜头匹配，后续文字语义匹配仍可能产生调用费用。</p>
+              <small className="mt-1 block">文件名已写明内容时，可点击“提取文件名描述”跳过 AI 画面识别。提取后整条视频按一个镜头匹配，后续文字语义匹配仍可能产生调用费用。</small>
             )}
             {!frozen && analysisActive > 0 && (
               <div className="mt-2">
@@ -352,8 +356,8 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
             )}
           </div>
           {!frozen && (
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm text-ink-secondary">已选 {Object.keys(selectedAssets).length} / 可用 {selectableAssets} 条</span>
+            <div className={styles.tools}>
+              <span className={styles.count}>已选 {Object.keys(selectedAssets).length} / 可用 {selectableAssets} 条</span>
               {visionProviderMissing ? (
                 <p className="text-xs text-warn">没有开启图片理解的供应商 —— 请到「供应商设置」为任一脚本供应商开启视觉能力后再做内容分析。</p>
               ) : (
@@ -361,7 +365,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                   aria-label="内容分析模型"
                   value={visionProviderId}
                   onChange={(event) => props.onVisionProviderChange(event.target.value)}
-                  className="h-10 max-w-60 rounded-xl border border-hairline bg-surface px-3 text-sm text-ink"
+                  className="h-9 max-w-60 rounded-xl border border-hairline bg-surface px-3 text-sm text-ink"
                 >
                   {visionProviderOptions.length === 0 && <option value="">未配置视觉供应商</option>}
                   {visionProviderOptions.map((provider) => (
@@ -443,19 +447,21 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
           </p>
         )}
         {frozen && (
-          <div className="rounded-2xl bg-surface-subtle p-3" aria-label="已锁定素材列表">
-            <p className="mb-2 px-1 text-sm font-medium text-ink">已锁定素材 · {Object.keys(selectedAssets).length} 条</p>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <div className={styles.groupPlain} aria-label="已锁定素材列表">
+            <div className={styles.head}>
+              <div><h3>已锁定素材 · {Object.keys(selectedAssets).length} 条</h3></div>
+            </div>
+            <div className={styles.materialGrid}>
               {Object.entries(selectedAssets).map(([assetId, selection]) => {
                 const asset = prep.assets.find((item) => item.id === assetId);
                 const exclusion = workspace?.exclusions.find((item) => item.assetId === assetId);
                 const displayName = asset?.media.displayName || asset?.media.filename || `素材 ${assetId.slice(0, 8)}`;
                 const lutName = selection.lutId ? luts.find((lut) => lut.id === selection.lutId)?.displayName : null;
                 return (
-                  <article key={assetId} className="overflow-hidden rounded-2xl border border-accent/30 bg-surface shadow-sm">
+                  <article key={assetId} className={styles.materialCard}>
                     <button
                       type="button"
-                      className="group relative block aspect-video w-full overflow-hidden bg-black text-left"
+                      className={`${styles.materialThumb} group text-left`}
                       aria-label={`播放锁定素材 ${displayName}`}
                       onClick={() => props.onPreviewFrozenAsset(assetId)}
                     >
@@ -466,24 +472,22 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                             src={asset.thumbnailUrl}
                             alt={`${displayName} 缩略图`}
                             loading="lazy"
-                            className="h-full w-full object-cover transition group-hover:scale-[1.02]"
+                            className="transition group-hover:scale-[1.02]"
                           />
-                          <span className="absolute inset-0 flex items-center justify-center bg-black/0 transition group-hover:bg-black/15">
-                            <span className="rounded-full bg-black/65 px-3 py-1.5 text-xs font-medium text-white">播放</span>
+                          <span className={styles.thumbHover}>
+                            <span className={styles.thumbPlay}>播放</span>
                           </span>
                         </>
                       ) : (
                         <span className="flex h-full w-full items-center justify-center text-xs text-ink-tertiary">缩略图暂不可用</span>
                       )}
                     </button>
-                    <div className="space-y-2 p-3">
+                    <div className={styles.materialBody}>
                       <div className="flex items-start justify-between gap-2">
-                        <p className="min-w-0 truncate text-xs font-medium text-ink">{displayName}</p>
-                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${exclusion ? 'bg-warn/20 text-warn' : 'bg-ok/10 text-ok'}`}>
-                          {exclusion ? '已排除' : '已锁定'}
-                        </span>
+                        <p className={styles.materialName} title={displayName}>{displayName}</p>
+                        <Tag tone={exclusion ? 'warn' : 'ok'}>{exclusion ? '已排除' : '已锁定'}</Tag>
                       </div>
-                      <p className="text-[11px] text-ink-tertiary">
+                      <p className={styles.materialMeta}>
                         分析版本 {selection.analysisId.slice(0, 8)}
                         {lutName && <> · 调色 {lutName}</>}
                         {exclusion && <span className="block">已排除:{exclusion.reason || '未填写原因'}</span>}
@@ -506,9 +510,9 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
           </div>
         )}
         {!frozen && (
-          <div className="rounded-2xl bg-surface-subtle p-3" aria-label="素材列表">
+          <div className={styles.groupPlain} aria-label="素材列表">
           {assetCards.length > 0 ? (
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div className={styles.materialGrid}>
               {assetCards.map((asset) => {
                 const analysisTask = analysisTaskByAsset.get(asset.id);
                 const assetAnalysisBusy = analysisBusy === asset.id
@@ -545,7 +549,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
               })}
             </div>
           ) : (
-            <div className="tile p-6 text-sm text-ink-secondary">暂无可用视频素材，请先导入自定义素材或在第 4 步完成视频生成。</div>
+            <div className={styles.empty}>暂无可用视频素材，请先导入自定义素材或在第 4 步完成视频生成。</div>
           )}
         </div>
         )}
@@ -556,7 +560,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
           role="dialog"
           aria-modal="true"
           aria-labelledby="batch-media-prep-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-media-scrim p-4"
         >
           <div className="max-h-[85vh] w-full max-w-2xl space-y-4 overflow-y-auto rounded-2xl bg-surface p-5 shadow-xl">
             <div className="flex flex-wrap items-start justify-between gap-3">

@@ -1,0 +1,188 @@
+/* 批量生产侧栏（10 号票，只换外观）。
+ *
+ * 对齐原型 `edit.css` 的批次菜单段：`.bq-row` / `.bq-pick` / `.bq-new`，以及 `.grp` 分组标题。
+ * 颜色全部引用 app/globals.css 的令牌；深浅由 `html[data-theme='dark']` 换令牌取值跟随，
+ * 本文件不写第二套写死颜色。
+ *
+ * 结构：两块面板（新建批次 / 批次概览 + 批次列表），都是「分组底 + 无描边」，
+ * 不再用白卡 + 多层圆角套壳。
+ */
+
+.panel {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 14px;
+  background: var(--color-card);
+}
+
+.panelGrow {
+  flex: 1 1 auto;
+  min-height: 160px;
+}
+
+.panelHead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.panelHead svg { color: var(--color-ink-secondary); }
+
+/* 新建批次：输入 + 胶囊按钮同行 */
+.newRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.newInput {
+  height: 30px;
+  min-width: 0;
+  flex: 1;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--color-seg);
+  color: var(--color-ink);
+  font-size: 12.5px;
+}
+
+.newInput::placeholder { color: var(--color-ink-tertiary); }
+
+/* ---- 批次概览统计（原型 .stat：分组底小格，数字在上） ---- */
+.statGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.stat {
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--color-group);
+}
+
+.stat b {
+  display: block;
+  color: var(--color-ink);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.stat span {
+  display: block;
+  margin-top: 3px;
+  color: var(--color-ink-secondary);
+  font-size: var(--text-label);
+}
+
+.statAccent b { color: var(--color-accent); }
+
+/* ---- 批次列表（原型 .bq-row） ---- */
+.search {
+  height: 30px;
+  width: 100%;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--color-seg);
+  color: var(--color-ink);
+  font-size: 12.5px;
+}
+
+.search::placeholder { color: var(--color-ink-tertiary); }
+
+.list {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+
+.row:hover { background: var(--color-seg); }
+.rowOn { background: var(--color-run-tint); }
+.rowOn:hover { background: var(--color-run-tint); }
+
+.rowPick {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 7px 8px;
+  color: var(--color-ink);
+  text-align: left;
+}
+
+.rowName {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.rowNameText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowMeta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-ink-secondary);
+  font-size: var(--text-label);
+}
+
+.rowAction {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: var(--color-ink-tertiary);
+  font-size: 11px;
+}
+
+.rowAction:hover { color: var(--color-ink); }
+
+.archivedToggle {
+  display: flex;
+  flex: none;
+  cursor: pointer;
+  align-items: center;
+  gap: 6px;
+  padding-top: 2px;
+  color: var(--color-ink-secondary);
+  font-size: var(--text-label);
+}
+
+.hint {
+  padding: 4px 2px;
+  color: var(--color-ink-tertiary);
+  font-size: var(--text-label);
+  line-height: 1.5;
+}
