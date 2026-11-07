@@ -20,7 +20,7 @@
  *      audience: 'employee',                      // 'employee' | 'admin'，决定用哪个账号登录
  *      href: ({ project }) => `/projects/${project.id}?tab=video`,
  *      ready: async (page) => {                   // 必须等到「这一屏真的画出来了」再量
- *        await page.getByRole('heading', { name: '视频生成', exact: true }).waitFor({ timeout: 60_000 });
+ *        await heading(page, '视频生成');
  *      },
  *      actions: [                                 // 可选：每弹窗都量，就把「怎么打开它」写在这里
  *        async (page) => {
@@ -55,6 +55,15 @@
 import { CHECK_KEYS } from './ui-acceptance-checks.mjs';
 
 export const ALL_CHECKS = [...CHECK_KEYS];
+
+/**
+ * 按标题等「这一屏出现了」的落点等它画出来。
+ * 统一 `.first()`：每页工具条（`data-testid="page-toolbar"`，05 号票加的）会和页面自带标题
+ * 出现同名 h1，Playwright 的 strict mode 会因此报「resolved to 2 elements」。这是选择器写法问题，
+ * 不是界面问题 —— 用 first() 精确表达「只要这一屏画出来了就算」。
+ */
+const heading = (page, name) => page.getByRole('heading', { name, exact: true }).first().waitFor({ timeout: 60_000 });
+const text = (page, value, exact = true) => page.getByText(value, { exact }).first().waitFor({ timeout: 60_000 });
 
 const base = (id, title, owner, extra) => ({
   id,
@@ -93,7 +102,7 @@ export const SCREENS = [
   }),
   base('projects', '项目空间', 'ui-06', {
     href: () => '/projects',
-    ready: async (page) => { await page.getByRole('heading', { name: '项目空间', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '项目空间'); },
   }),
   // 06 号票：新建项目页改版后不再有 h1（标题交给工具栏），ready 等生产身份表单的
   // 首个字段 + 项目名预览 + 创建按钮，三者都是这一屏特有的。
@@ -107,41 +116,53 @@ export const SCREENS = [
   }),
   base('canvas', '创作画布列表', 'ui-14', {
     href: () => '/canvas',
-    ready: async (page) => { await page.getByRole('heading', { name: '创作画布', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '创作画布'); },
   }),
   base('tasks-employee', '我的任务', 'ui-12', {
     href: () => '/team/tasks',
-    ready: async (page) => { await page.getByRole('heading', { name: '团队任务', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '团队任务'); },
   }),
   base('downloads', '下载与交付', 'ui-14', {
     href: () => '/team/downloads',
-    ready: async (page) => { await page.getByRole('heading', { name: '下载与交付', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '下载与交付'); },
   }),
   base('errors', '错误中心', 'ui-14', {
     href: () => '/team/errors',
-    ready: async (page) => { await page.getByRole('heading', { name: '错误中心', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '错误中心'); },
   }),
   base('usage-employee', '我的用量', 'ui-14', {
     href: () => '/usage',
-    ready: async (page) => { await page.getByRole('heading', { name: '费用与用量', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '费用与用量'); },
   }),
   base('recycle-bin', '回收站', 'ui-14', {
     href: () => '/team/recycle-bin',
-    ready: async (page) => { await page.getByRole('heading', { name: '回收站', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '回收站'); },
   }),
   base('account', '修改密码', 'ui-14', {
     href: () => '/team/account',
-    ready: async (page) => { await page.getByRole('heading', { name: /设置新密码|修改密码/ }).first().waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, /设置新密码|修改密码/); },
+  }),
+  // 侧栏在每一屏都在，05 号票改它时这一屏最先红。单独一条屏，方便 05 只看自己。
+  // 注意：不要因为侧栏出问题就把 knownFailure 挂到所有屏上 —— 那会让三条尺寸检查
+  // 对全部屏幕同时失效。已知问题只标注在真正属于那张票的屏上。
+  base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
+    href: () => '/',
+    ready: async (page) => { await page.getByTestId('workspace-sidebar').waitFor({ timeout: 60_000 }); },
+    actions: [async (page) => {
+      // 头像菜单是这一屏的第二个状态：展开后同样要量。
+      await page.locator("[class*='wsUser']").first().click();
+      await page.locator("[class*='wsMenu']").first().waitFor({ timeout: 30_000 });
+    }],
   }),
 
   // ---------- 项目工作台五步 ----------
   base('project-scene', '项目工作台 · 第 1 步 新场景图', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=scene`,
-    ready: async (page) => { await page.getByRole('heading', { name: '新场景图生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '新场景图生成'); },
   }),
   base('project-scene-project-info-dialog', '项目工作台 · 项目信息弹窗', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=scene`,
-    ready: async (page) => { await page.getByRole('heading', { name: '新场景图生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '新场景图生成'); },
     actions: [async (page) => {
       await page.getByRole('button', { name: '项目信息', exact: true }).first().click();
       await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
@@ -149,7 +170,7 @@ export const SCREENS = [
   }),
   base('project-scene-log-drawer', '项目工作台 · 运行日志抽屉', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=scene`,
-    ready: async (page) => { await page.getByRole('heading', { name: '新场景图生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '新场景图生成'); },
     actions: [async (page) => {
       await page.getByRole('button', { name: '运行日志', exact: true }).first().click();
       await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
@@ -159,26 +180,26 @@ export const SCREENS = [
     href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
     // 「新分镜图」在这一屏出现两次（区块标题 + 上传区标题），按标题取会撞 strict mode；
     // 用「上传原始分镜图」这个这一屏独有的落点。
-    ready: async (page) => { await page.getByText('上传原始分镜图', { exact: true }).first().waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await text(page, '上传原始分镜图'); },
   }),
   base('project-script', '项目工作台 · 第 3 步 脚本生成', 'ui-08', {
     href: ({ project }) => `/projects/${project.id}?tab=script`,
-    ready: async (page) => { await page.getByRole('heading', { name: '详情页智能脚本生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '详情页智能脚本生成'); },
   }),
   base('project-video', '项目工作台 · 第 4 步 视频生成', 'ui-08', {
     href: ({ project }) => `/projects/${project.id}?tab=video`,
-    ready: async (page) => { await page.getByRole('heading', { name: '视频生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '视频生成'); },
   }),
   base('mixcut-single', '项目工作台 · 第 5 步 智能混剪（单条精准混剪）', 'ui-09', {
     href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
-    ready: async (page) => { await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await text(page, '当前素材组'); },
     knownFailure: MIXCUT_KNOWN_FAILURE,
     knownFailureChecks: MIXCUT_KNOWN_CHECKS,
     knownFailureReason: MIXCUT_KNOWN_REASON,
   }),
   base('mixcut-batch', '项目工作台 · 第 5 步 批量生产', 'ui-10', {
     href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
-    ready: async (page) => { await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await text(page, '当前素材组'); },
     actions: [async (page) => {
       await page.getByRole('tab', { name: '批量生产', exact: true }).click();
       await page.getByRole('tab', { name: '批量生产', exact: true }).waitFor({ state: 'visible', timeout: 30_000 });
@@ -193,42 +214,42 @@ export const SCREENS = [
   base('admin-overview', '运行总览（管理员）', 'ui-12', {
     audience: 'admin',
     href: () => '/',
-    ready: async (page) => { await page.getByText('生产有序，状态清楚。', { exact: false }).first().waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await text(page, '生产有序，状态清楚。', false); },
   }),
   base('admin-tasks', '全员任务', 'ui-12', {
     audience: 'admin',
     href: () => '/team/tasks',
-    ready: async (page) => { await page.getByRole('heading', { name: '团队任务', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '团队任务'); },
   }),
   base('admin-pools', '模型与名额（资源池与共享预算）', 'ui-13', {
     audience: 'admin',
     href: () => '/team/admin/pools',
-    ready: async (page) => { await page.getByRole('heading', { name: '资源池与共享预算', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '资源池与共享预算'); },
   }),
   base('admin-users', '成员与账号', 'ui-13', {
     audience: 'admin',
     href: () => '/team/admin/users',
-    ready: async (page) => { await page.getByRole('heading', { name: '账号与权限', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '账号与权限'); },
   }),
   base('admin-resources', '公共资源发布', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/resources',
-    ready: async (page) => { await page.getByRole('heading', { name: '公共资源发布', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '公共资源发布'); },
   }),
   base('admin-operations', '版本与备份', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/operations',
-    ready: async (page) => { await page.getByRole('heading', { name: '备份与维护', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '备份与维护'); },
   }),
   base('admin-settings', '供应商配置', 'ui-14', {
     audience: 'admin',
     href: () => '/settings',
-    ready: async (page) => { await page.getByRole('heading', { name: '供应商配置', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '供应商配置'); },
   }),
   base('admin-usage', '团队用量', 'ui-14', {
     audience: 'admin',
     href: () => '/usage',
-    ready: async (page) => { await page.getByRole('heading', { name: '费用与用量', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await heading(page, '费用与用量'); },
   }),
 ];
 
