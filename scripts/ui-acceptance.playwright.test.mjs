@@ -222,6 +222,11 @@ async function stopServer() {
   await Promise.race([exited, sleep(15_000)]);
 }
 
+/** 隔离服务是否还活着。next dev 会因内存或同目录 .next 争用而中断，必须能和界面失败区分开。 */
+function serverAlive() {
+  return Boolean(server && server.exitCode === null && server.signalCode === null);
+}
+
 /** next dev 首次编译慢：readiness 给 300s（现有验收脚本用 120s，这里更保守）。 */
 async function waitReady(timeoutMs = 300_000) {
   const deadline = Date.now() + timeoutMs;
@@ -291,10 +296,16 @@ async function measureScreen({ screen, engine, page, theme, viewport }) {
   const href = screen.href(fixtureContext);
   let response;
   try {
+    if (!serverAlive()) throw new Error('隔离服务已经不在运行（next dev 中断），本次不是界面问题');
     response = await page.goto(`${baseUrl}${href}`, { waitUntil: 'domcontentloaded', timeout: 240_000 });
   } catch (error) {
     row.result = 'failed';
-    row.error = sanitize(error instanceof Error ? error.message : error);
+    const message = sanitize(error instanceof Error ? error.message : error);
+    // 服务挂了 / 连不上是基础设施故障，不能算成「这一屏的尺寸不合格」。
+    row.kind = !serverAlive() || /ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_EMPTY_RESPONSE/.test(message)
+      ? 'infrastructure'
+      : 'ui';
+    row.error = message;
     return row;
   }
   if (response && !response.ok()) {
@@ -307,7 +318,9 @@ async function measureScreen({ screen, engine, page, theme, viewport }) {
     await screen.ready(page);
   } catch (error) {
     row.result = 'failed';
-    row.error = `这一屏没有画出来（ready 断言超时）：${sanitize(error instanceof Error ? error.message : error).slice(0, 800)}`;
+    const message = sanitize(error instanceof Error ? error.message : error);
+    row.kind = !serverAlive() || /ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET/.test(message) ? 'infrastructure' : 'ui';
+    row.error = `这一屏没有画出来（ready 断言超时）：${message.slice(0, 800)}`;
     return row;
   }
   // 主题挂在 <html> 上，和产品自身的 themeInitScript / ThemeToggle 用同一个属性与存储键。
@@ -408,7 +421,6 @@ async function runMatrix() {
     const required = screen.skipUnless ? [screen.skipUnless].flat() : [];
     return !required.some((id) => missingHooks.includes(id));
   });
-
   for (const engine of result.engines) {
     const browser = await playwright[engine].launch({ headless: true });
     openBrowsers.push(browser);
@@ -457,11 +469,31 @@ async function runMatrix() {
             kind: 'pageerror', engine, audience, viewport: viewport.label, theme, message: sanitize(error.message),
           }));
           for (const screen of audienceScreens) {
+            // 隔离服务中途死掉时，后面的导航只会全部 ERR_CONNECTION_REFUSED。
+            // 这时候停下并记 blocked，别把基础设施故障伪装成几十条界面失败。
+            if (!serverAlive()) {
+              result.blocked.push({
+                kind: 'server-died',
+                screen: screen.id,
+                reason: `隔离的 next dev 在跑 ${screen.id} 之前就退出了（同类屏幕剩余部分未测量）；`
+                  + `本次结果不能作为界面判定，请重跑。服务输出尾部：${sanitize(serverOutput).slice(-600)}`,
+              });
+              return;
+            }
             const row = await measureScreen({ screen, engine, page, theme, viewport });
             const finalRow = applyKnownFailure(row, screen);
             result.runs.push(finalRow);
             if (finalRow.result === 'known-failure') result.knownFailures.push(finalRow);
-            else if (finalRow.result === 'failed') result.failures.push(finalRow);
+            else if (finalRow.result === 'failed') {
+              if (finalRow.kind === 'infrastructure') {
+                result.blocked.push({
+                  kind: 'server-died', screen: screen.id,
+                  reason: `隔离服务不可达：${String(finalRow.error).slice(0, 600)}`,
+                });
+                return;
+              }
+              result.failures.push(finalRow);
+            }
           }
           await context.close();
         }

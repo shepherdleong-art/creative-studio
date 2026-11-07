@@ -56,6 +56,17 @@ import { CHECK_KEYS } from './ui-acceptance-checks.mjs';
 
 export const ALL_CHECKS = [...CHECK_KEYS];
 
+const heading = (page, name) => page.getByRole('heading', { name, exact: true }).first().waitFor({ timeout: 60_000 });
+const text = (page, value, exact = true) => page.getByText(value, { exact }).first().waitFor({ timeout: 60_000 });
+
+/** 新项目每一步的空状态落点：工具栏 + 五步切换 + data-testid="step-empty"。
+ * 第 1/2 步的空状态在中间栏，第 3/4/5 步是内容组件上面的提示条，两者同一个 testid。 */
+const emptyStepReady = async (page) => {
+  await page.getByTestId('page-toolbar').first().waitFor({ timeout: 60_000 });
+  await page.getByRole('tab', { name: '场景图', exact: true }).waitFor({ timeout: 60_000 });
+  await page.getByTestId('step-empty').first().waitFor({ timeout: 60_000 });
+};
+
 const base = (id, title, owner, extra) => ({
   id,
   title,
@@ -107,7 +118,8 @@ export const SCREENS = [
   }),
   base('canvas', '创作画布列表', 'ui-14', {
     href: () => '/canvas',
-    ready: async (page) => { await page.getByRole('heading', { name: '创作画布', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 14 号票起标题由每页工具栏渲染（= 导航名「创作画布」），不再是页内 h1。
+    ready: async (page) => { await page.getByTestId('page-toolbar-title').first().waitFor({ timeout: 60_000 }); },
   }),
   base('tasks-employee', '我的任务', 'ui-12', {
     href: () => '/team/tasks',
@@ -121,15 +133,15 @@ export const SCREENS = [
   }),
   base('downloads', '下载与交付', 'ui-14', {
     href: () => '/team/downloads',
-    ready: async (page) => { await page.getByRole('heading', { name: '下载与交付', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByTestId('page-toolbar-title').first().waitFor({ timeout: 60_000 }); },
   }),
-  base('errors', '错误中心', 'ui-14', {
+  base('errors', '出错的任务', 'ui-14', {
     href: () => '/team/errors',
-    ready: async (page) => { await page.getByRole('heading', { name: '错误中心', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByRole('heading', { name: '出错的任务', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
   base('usage-employee', '我的用量', 'ui-14', {
     href: () => '/usage',
-    ready: async (page) => { await page.getByRole('heading', { name: '费用与用量', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByRole('heading', { name: '我的用量', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
   base('recycle-bin', '回收站', 'ui-14', {
     href: () => '/team/recycle-bin',
@@ -140,14 +152,53 @@ export const SCREENS = [
     ready: async (page) => { await page.getByRole('heading', { name: /设置新密码|修改密码/ }).first().waitFor({ timeout: 60_000 }); },
   }),
 
+base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
+    href: () => '/',
+    ready: async (page) => { await page.getByTestId('workspace-sidebar').waitFor({ timeout: 60_000 }); },
+    actions: [async (page) => {
+      // 头像菜单是这一屏的第二个状态：展开后同样要量。
+      await page.locator("[class*='wsUser']").first().click();
+      await page.locator("[class*='wsMenu']").first().waitFor({ timeout: 30_000 });
+    }],
+  }),
+
   // ---------- 项目工作台五步 ----------
+  // 第 1/2 步（07 号票）：对照视图要求原图与结果**真的并排**，所以既量尺寸，
+  // 也断言「这一屏的关键控件画出来了」。控件断言放在 ready / actions 里，
+  // 尺寸判定仍旧只用 ui-acceptance-checks.mjs 的阈值。
   base('project-scene', '项目工作台 · 第 1 步 新场景图', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=scene`,
-    ready: async (page) => { await page.getByRole('heading', { name: '新场景图生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => {
+      await page.getByTestId('workbench-scene').waitFor({ timeout: 60_000 });
+      // 工具栏：返回 + 项目名 + 五步分段按钮 + 项目信息 + 导出项目包
+      await page.getByTestId('page-toolbar').first().waitFor({ timeout: 60_000 });
+      await page.getByRole('tab', { name: '场景图', exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByRole('button', { name: '项目信息', exact: true }).first().waitFor({ timeout: 30_000 });
+      await page.getByRole('link', { name: /导出项目包/ }).first().waitFor({ timeout: 30_000 });
+      // 默认就是对照视图：原图与结果并排两张
+      await page.getByAltText('原始场景图', { exact: true }).first().waitFor({ timeout: 30_000 });
+      // 右栏必须有「生成 N 张」按钮，且不能出现并发设置
+      await page.getByRole('button', { name: /^生成 \d+ 张$/ }).first().waitFor({ timeout: 30_000 });
+      if (await page.getByText('并发', { exact: false }).count() > 0) {
+        throw new Error('第 1 步右栏不该再有并发设置');
+      }
+    },
+  }),
+  // 第 1 步的网格视图单独量一屏：网格是另一种排版，同样不能溢出/切控件。
+  base('project-scene-grid', '项目工作台 · 第 1 步 网格视图', 'ui-07', {
+    href: ({ project }) => `/projects/${project.id}?tab=scene`,
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => {
+      await page.getByTestId('workbench-scene').waitFor({ timeout: 60_000 });
+      await page.getByRole('button', { name: '网格', exact: true }).click();
+      await page.locator('[data-testid="workbench-scene"][data-view="grid"]').waitFor({ timeout: 30_000 });
+    },
   }),
   base('project-scene-project-info-dialog', '项目工作台 · 项目信息弹窗', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=scene`,
-    ready: async (page) => { await page.getByRole('heading', { name: '新场景图生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => { await page.getByTestId('workbench-scene').waitFor({ timeout: 60_000 }); },
     actions: [async (page) => {
       await page.getByRole('button', { name: '项目信息', exact: true }).first().click();
       await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
@@ -155,7 +206,8 @@ export const SCREENS = [
   }),
   base('project-scene-log-drawer', '项目工作台 · 运行日志抽屉', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=scene`,
-    ready: async (page) => { await page.getByRole('heading', { name: '新场景图生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => { await page.getByTestId('workbench-scene').waitFor({ timeout: 60_000 }); },
     actions: [async (page) => {
       await page.getByRole('button', { name: '运行日志', exact: true }).first().click();
       await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
@@ -163,10 +215,78 @@ export const SCREENS = [
   }),
   base('project-storyboard', '项目工作台 · 第 2 步 分镜生成', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
-    // 「新分镜图」在这一屏出现两次（区块标题 + 上传区标题），按标题取会撞 strict mode；
-    // 用「上传原始分镜图」这个这一屏独有的落点。
-    ready: async (page) => { await page.getByText('上传原始分镜图', { exact: true }).first().waitFor({ timeout: 60_000 }); },
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => {
+      await page.getByTestId('workbench-storyboard').waitFor({ timeout: 60_000 });
+      // 「上传原始分镜图」是这一屏左栏独有的落点（同时用于拖入与多选）。
+      await page.getByRole('button', { name: /上传原始分镜图/ }).first().waitFor({ timeout: 60_000 });
+      // 默认对照：原图与结果并排（结果可能还没生成，但两个 figcaption 必须在）
+      await page.getByAltText('原图', { exact: true }).first().waitFor({ timeout: 30_000 });
+      await page.getByText('结果', { exact: true }).first().waitFor({ timeout: 30_000 });
+      // 删除分镜组必须走确认：按钮在，点开后要有 dialog（由 actions 量）
+      await page.getByRole('button', { name: '删除', exact: true }).first().waitFor({ timeout: 30_000 });
+    },
   }),
+  base('project-storyboard-new-set', '项目工作台 · 第 2 步 新建分镜组窗口', 'ui-07', {
+    href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => { await page.getByTestId('workbench-storyboard').waitFor({ timeout: 60_000 }); },
+    actions: [async (page) => {
+      await page.getByRole('button', { name: /^新建分镜组$/ }).first().click();
+      const dialog = page.getByRole('dialog').first();
+      await dialog.waitFor({ timeout: 30_000 });
+      // 全选 → 再点一次取消全选（这一屏的核心交互，窗口里必须真的能点）
+      const selectAll = dialog.getByRole('button', { name: /^(全选|取消全选)$/ }).first();
+      await selectAll.waitFor({ timeout: 30_000 });
+      if (!/取消全选/.test(await selectAll.innerText())) {
+        await selectAll.click();
+        await dialog.getByRole('button', { name: '取消全选' }).waitFor({ timeout: 10_000 });
+      }
+      // 悬停出现「设为开场」，点一下把第二张移到第一位
+      const picks = dialog.locator('[data-testid="shot-pick"][data-picked="true"]');
+      if (await picks.count() > 1) {
+        await dialog.locator('[data-testid="set-opening"]').first().click({ force: true });
+      }
+    }],
+  }),
+  base('project-storyboard-delete-dialog', '项目工作台 · 第 2 步 删除分镜组确认', 'ui-07', {
+    href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => { await page.getByTestId('workbench-storyboard').waitFor({ timeout: 60_000 }); },
+    actions: [async (page) => {
+      await page.getByRole('button', { name: '删除', exact: true }).first().click();
+      const dialog = page.getByRole('dialog', { name: '删除这个分镜组？' });
+      await dialog.waitFor({ timeout: 30_000 });
+      await dialog.getByRole('button', { name: '取消', exact: true }).click();
+      await dialog.waitFor({ state: 'detached', timeout: 10_000 });
+    }],
+  }),
+  // 新项目每一步都有空状态（07 号票）：用空项目夹具，断言空状态真的画出来。
+  // Lead 合并 04 与 07 时的裁定：07 原本给第 4/5 步写 `checks: []`（理由是不重复量
+  // project-video / mixcut 已经在量的同一页）。但「一屏零检查」等于没量，且 04 的
+  // 清单自检要求每屏默认跑满四项。改为：这两屏照常量四项，但 **owner 指向该步的归属票**
+  // （第 4 步 ui-08、第 5 步 ui-09）——溢出归谁负责由 owner 表达，而不是靠不量来回避。
+  ...['scene', 'storyboard', 'script'].map((step) => base(
+    `project-empty-${step}`,
+    `项目工作台 · 新项目空状态（${step}）`,
+    'ui-07',
+    {
+      href: ({ emptyProject }) => `/projects/${emptyProject.id}?tab=${step}`,
+      skipUnless: 'emptyProject',
+      ready: emptyStepReady,
+    },
+  )),
+  ...['video', 'final-edit'].map((step) => base(
+    `project-empty-${step}`,
+    `项目工作台 · 新项目空状态（${step}）`,
+    step === 'video' ? 'ui-08' : 'ui-09',
+    {
+      href: ({ emptyProject }) => `/projects/${emptyProject.id}?tab=${step}`,
+      skipUnless: 'emptyProject',
+      ready: emptyStepReady,
+    },
+  )),
+
   base('project-script', '项目工作台 · 第 3 步 脚本生成', 'ui-08', {
     href: ({ project }) => `/projects/${project.id}?tab=script`,
     ready: async (page) => { await page.getByRole('heading', { name: '详情页智能脚本生成', exact: true }).waitFor({ timeout: 60_000 }); },
@@ -257,30 +377,55 @@ export const SCREENS = [
     href: () => '/team/admin/pools',
     ready: async (page) => { await page.getByRole('heading', { name: '资源池与共享预算', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
-  base('admin-users', '成员与账号', 'ui-13', {
+  base('admin-users', '成员与账号', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/users',
-    ready: async (page) => { await page.getByRole('heading', { name: '账号与权限', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByRole('heading', { name: '成员与账号', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 成员策略对话框（共用 Dialog 外壳）：打开后每档窗口都要量，确认弹窗不会被切掉。
+    actions: [async (page) => {
+      await page.getByRole('button', { name: '模型与额度', exact: true }).first().click();
+      await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
+    }],
   }),
   base('admin-resources', '公共资源发布', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/resources',
-    ready: async (page) => { await page.getByRole('heading', { name: '公共资源发布', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByRole('heading', { name: '公共资源', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
   base('admin-operations', '版本与备份', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/operations',
-    ready: async (page) => { await page.getByRole('heading', { name: '备份与维护', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
+  }),
+  base('admin-operations-cleanup-dialog', '版本与备份 · 清理确认弹窗', 'ui-14', {
+    audience: 'admin',
+    href: () => '/team/admin/operations',
+    ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 「确认清理」换成共用 Dialog 外壳后，弹窗在小窗口里不能被切掉。
+    // 有可清理项时才会出现确认按钮；没有就退化成只量页面基础态（不假装弹窗量到了）。
+    actions: [async (page) => {
+      await page.getByRole('button', { name: '扫描无用文件', exact: true }).click();
+      const confirm = page.getByRole('button', { name: '确认清理预览中的项目', exact: true });
+      await confirm.waitFor({ timeout: 60_000 });
+      if (await confirm.isEnabled()) {
+        await confirm.click();
+        await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
+      }
+    }],
   }),
   base('admin-settings', '供应商配置', 'ui-14', {
     audience: 'admin',
     href: () => '/settings',
-    ready: async (page) => { await page.getByRole('heading', { name: '供应商配置', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 供应商配置页有筛选/图表要点，等「添加供应商」这条本页操作出现再量。
+    ready: async (page) => {
+      await page.getByRole('heading', { name: '供应商配置', exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByRole('button', { name: '添加供应商', exact: true }).first().waitFor({ timeout: 60_000 });
+    },
   }),
   base('admin-usage', '团队用量', 'ui-14', {
     audience: 'admin',
     href: () => '/usage',
-    ready: async (page) => { await page.getByRole('heading', { name: '费用与用量', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await page.getByRole('heading', { name: '团队用量', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
 ];
 
