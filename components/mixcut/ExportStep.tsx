@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { ProjectInfoDialog, type ProjectInfoDialogIntent, type ProjectInfoValue } from '@/components/ProjectInfoDialog';
+import { FilmPreviewDialog, type FilmPreviewItem } from '@/components/media/FilmPreviewDialog';
 import { createOverlayBundlePayload, TextOverflowError } from '@/components/final-edit/text-canvas-renderer';
 import { previewExportBaseName } from '@/lib/final-edit/export-identity';
 import { withProductionCodes } from '@/lib/media-core/production-codes';
@@ -111,6 +112,7 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
   const [projectInfoIntent, setProjectInfoIntent] = useState<ProjectInfoDialogIntent | null>(null);
   const [packagingJob, setPackagingJob] = useState<PackagingJobView | null>(null);
   const [skipping, setSkipping] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const pollTokenRef = useRef<symbol | null>(null);
   const packagingPollTokenRef = useRef<symbol | null>(null);
   const variant = group.variants.find((item) => item.id === selectedVariantId) || group.variants[0] || null;
@@ -402,6 +404,31 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
     { pass: Boolean(group.reassembled) || Boolean(variant.bgm.trackId), label: group.reassembled ? 'BGM：沿用原片配乐' : `BGM：${variant.bgm.trackId ? '已选择' : '不使用'}` },
   ] : [];
 
+  // 预览对话框条目：播放**真实导出的成片**（包装版优先），并显示时长 / 画幅 / 包装 / 文件名。
+  // 状态由 job 与当前 revision 的关系决定（「当前修改已导出」/「上一版可下载」）。
+  const previewOutput = job?.output ?? null;
+  const previewVideoUrl = packagingSucceeded && packagingJob?.output
+    ? packagingJob.output.videoUrl
+    : previewOutput?.videoUrl || '';
+  const previewItem: FilmPreviewItem | null = previewVideoUrl ? {
+    id: job?.id || variant?.id || group.id,
+    title: group.script?.title || effectiveTarget.taskName,
+    src: previewVideoUrl,
+    poster: previewOutput?.coverUrl,
+    preset: variant?.outputPreset ?? '3x4',
+    durationSec: group.totalDurationUs / 1_000_000,
+    resolution: variant ? `${OUTPUT_PRESETS[variant.outputPreset].width}×${OUTPUT_PRESETS[variant.outputPreset].height}` : undefined,
+    packaging: group.packaging?.enabled ? (group.packaging.template || '已启用') : '未启用',
+    filename: packagingSucceeded && packagingJob?.output?.videoFilename
+      ? packagingJob.output.videoFilename
+      : previewOutput?.videoFilename || effectiveTarget.videoFilename,
+    status: statusText,
+    downloadVideoUrl: packagingSucceeded && packagingJob?.output
+      ? packagingJob.output.videoDownloadUrl
+      : previewOutput?.videoDownloadUrl,
+    downloadCoverUrl: previewOutput?.coverDownloadUrl,
+  } : null;
+
   return (
     <>
       <header className={styles.stepHead}>
@@ -562,11 +589,36 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
 
         {job?.status === 'succeeded' && job.output && !packagingRunning && !packagingFailed && (
           <section className={styles.exportResult} aria-label="导出结果">
-            <video controls preload="metadata" src={packagingSucceeded && packagingJob?.output ? packagingJob.output.videoUrl : job.output.videoUrl} />
+            {/* 导出成功后点成片打开大预览（09 号票共用件）。这里不再内嵌播放器：
+                video 只做封面帧（无 controls、静音、preload=metadata），点击整块打开预览对话框，
+                对话框里播放真实导出的成片且有声音。 */}
+            <button
+              type="button"
+              className={styles.exportResultFigure}
+              onClick={() => setPreviewOpen(true)}
+              aria-label="打开成片预览"
+            >
+              <video
+                muted
+                playsInline
+                preload="metadata"
+                src={packagingSucceeded && packagingJob?.output ? packagingJob.output.videoUrl : job.output.videoUrl}
+              />
+              <span className={styles.exportResultPlay}><Icon name="play" size={22} /></span>
+              <span className={styles.exportResultCaption}>点成片打开大预览</span>
+            </button>
             {job.output.coverUrl && <img src={job.output.coverUrl} alt="导出封面" />}
           </section>
         )}
       </div>
+
+      <FilmPreviewDialog
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        items={previewItem ? [previewItem] : []}
+        title="成片预览"
+        subtitle={group.reassembled ? '实拍成片 · 真实导出的成片，有声音' : '真实导出的成片，有声音'}
+      />
 
       <ProjectInfoDialog
         open={projectInfoIntent !== null}
