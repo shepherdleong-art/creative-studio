@@ -270,8 +270,10 @@ try {
     result.assertions.push('三类真实 XLSX 经设置上传／爆文预览→统一候选预览→完整发布，员工搜索／详情读取实际条目且不能导入或切换');
 
     for (const [route, heading] of [
-      ['/team/admin/operations', '备份与维护'], ['/team/recycle-bin', '回收站'], ['/team/admin/pools', '资源池与共享预算'],
-      ['/team/admin/resources', '公共资源发布'],
+      // 14 号票起标题由每页工具栏按导航名渲染（见 lib/workspace-navigation.ts），
+      // 原来是页内 <h1> 的自由文案；断言本身不变，只跟上权威标题。
+      ['/team/admin/operations', '版本与备份'], ['/team/recycle-bin', '回收站'], ['/team/admin/pools', '资源池与共享预算'],
+      ['/team/admin/resources', '公共资源'],
     ]) {
       const response = await adminPage.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
       assert.equal(response.status(), 200);
