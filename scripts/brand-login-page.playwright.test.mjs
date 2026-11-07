@@ -288,6 +288,76 @@ try {
     const workbenchTitle = await page.title();
     assert.match(workbenchTitle, /林视控制台/, `${name}：管理员端标题必须是林视控制台，实测 ${workbenchTitle}`);
 
+    // 同一份 HTML 的 <title> 与静态首屏也对得上（不是只在客户端改的）。
+    // 必须带会话 Cookie 取，否则看到的是登录页（未登录标题＝正式写法）。
+    const adminHtml = await page.evaluate(() => fetch('/', {
+      credentials: 'same-origin',
+      headers: { accept: 'text/html' },
+    }).then((response) => response.text()));
+    const adminServerTitle = /<title>([^<]*)<\/title>/.exec(adminHtml)?.[1] ?? '';
+    assert.match(adminServerTitle, /林视控制台/, `${name}：服务端 HTML 的标题也必须是林视控制台，实测 ${adminServerTitle}`);
+
+    // 未登录（登录页）的标题必须是正式写法，不能猜端点。
+    const anonymousContext = await browser.newContext({ locale: 'zh-CN' });
+    try {
+      const anonymousHtml = await anonymousContext.newPage()
+        .then((anonymous) => anonymous.goto(`${baseUrl}/team/login`, { waitUntil: 'domcontentloaded', timeout: 180_000 })
+          .then((anonymousResponse) => anonymousResponse.text()));
+      const anonymousTitle = /<title>([^<]*)<\/title>/.exec(anonymousHtml)?.[1] ?? '';
+      assert.match(anonymousTitle, /林视 Lin/, `${name}：登录页标题必须是正式写法，实测 ${anonymousTitle}`);
+      assert.doesNotMatch(anonymousTitle, /控制台|创作台/, `${name}：未登录时不得猜端点`);
+    } finally {
+      await anonymousContext.close();
+    }
+
+    // 员工端标题：管理员建一个员工账号，用它登录后标题必须是「林视创作台」。
+    const created = await page.evaluate(async () => {
+      const csrf = await fetch('/api/team/auth/csrf', { credentials: 'same-origin' })
+        .then((response) => response.json());
+      const response = await fetch('/api/team/users', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', 'x-csrf-token': csrf.csrfToken },
+        body: JSON.stringify({
+          employeeId: `brand-emp-${Date.now().toString(36)}`,
+          displayName: '员工端标题验收',
+          role: 'employee',
+        }),
+      });
+      return { status: response.status, body: await response.json().catch(() => null) };
+    });
+    assert.equal(created.status, 201, `${name}：管理员必须能创建员工账号（HTTP ${created.status}）`);
+    const employeeIdForTitle = created.body.user.employeeId;
+    const employeeCredential = created.body.credential;
+
+    const employeeContext = await browser.newContext({ locale: 'zh-CN' });
+    const employeePage = await employeeContext.newPage();
+    try {
+      await employeePage.goto(`${baseUrl}/team/login`, { waitUntil: 'domcontentloaded', timeout: 180_000 });
+      await employeePage.waitForLoadState('networkidle', { timeout: 180_000 });
+      await employeePage.locator('#login-employee-id').fill(employeeIdForTitle);
+      await employeePage.locator('#login-current-password').fill(employeeCredential);
+      await employeePage.getByRole('button', { name: '登录', exact: true }).click();
+      // 首次登录仍要先改密；改完再用新密码进工作台。
+      await employeePage.locator('#login-new-password').waitFor({ timeout: 60_000 });
+      await employeePage.locator('#login-current-password').fill(employeeCredential);
+      await employeePage.locator('#login-new-password').fill('Brand-employee-2026');
+      await employeePage.locator('#login-confirmation').fill('Brand-employee-2026');
+      await employeePage.getByRole('button', { name: '保存新密码并进入', exact: true }).click();
+      await employeePage.waitForURL((url) => url.searchParams.get('reason') === 'password-changed', { timeout: 60_000 });
+      await employeePage.waitForLoadState('networkidle', { timeout: 120_000 });
+      await employeePage.locator('#login-employee-id').fill(employeeIdForTitle);
+      await employeePage.locator('#login-current-password').fill('Brand-employee-2026');
+      await employeePage.getByRole('button', { name: '登录', exact: true }).click();
+      await employeePage.waitForURL((url) => url.pathname !== '/team/login', { timeout: 120_000 });
+      await employeePage.waitForFunction(() => document.title.includes('林视'), null, { timeout: 120_000 });
+      const employeeTitle = await employeePage.title();
+      assert.match(employeeTitle, /林视创作台/, `${name}：员工端标题必须是林视创作台，实测 ${employeeTitle}`);
+      assert.doesNotMatch(employeeTitle, /控制台/, `${name}：员工端不得出现控制台`);
+    } finally {
+      await employeeContext.close();
+    }
+
     assert.deepEqual(pageErrors, [], `${name}：登录流程不应有页面脚本错误`);
 
     results.push({
@@ -299,7 +369,7 @@ try {
       assertions: [
         '新品牌名与主张', '底部归属文字', '新叶子标志',
         '空工号提示贴身', '空密码提示贴身', '新密码太短提示贴身', '两次不一致提示贴身',
-        '首次登录强制改密', '改密后可用新密码登录', '管理员端标题=林视控制台',
+        '首次登录强制改密', '改密后可用新密码登录', '管理员端标题=林视控制台', '员工端标题=林视创作台',
         '浅色/深色截图无切裁', '浅色/深色卡片背景不同',
       ],
     });
