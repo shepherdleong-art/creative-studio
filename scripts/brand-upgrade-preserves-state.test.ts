@@ -75,7 +75,9 @@ const initialized = await runLocalAdministratorCommand('initialize', {
 });
 const credential = initialized.credential;
 
-const db = getDb();
+// 让第一次启动真的把数据库打开并落盘（用户表、会话表都在这里建）。
+getDb();
+
 // 「本机数据」：一条真实的下载目录记录 + 一个落到磁盘的文件。
 const downloadsRoot = path.join(root, 'storage', 'downloads', 'upgrade-admin');
 fs.mkdirSync(downloadsRoot, { recursive: true });
