@@ -80,8 +80,10 @@ const base = (id, title, owner, extra) => ({
 
 // 已知问题：混剪工作台横向溢出（09 号票修）。修好后删掉这两条 knownFailure。
 const MIXCUT_KNOWN_FAILURE = 'ui-09';
-const MIXCUT_KNOWN_REASON = '混剪工作台固定为 min(1440px, 100vw-48px) 并按视口居中，凌驾于全局 980px 主栏之上，'
-  + '窗口越靠近 1440 越溢出：1536 宽多出 61px、1440/1280/1024 宽多出 85px（批量模式再宽 8px，1536 宽时宽 32px）。'
+const MIXCUT_KNOWN_REASON = '混剪工作台以固定宽度（min(1440px, 100vw-48px)）按视口居中，凌驾于外层内容区之上，'
+  + '窗口越靠近 1440 越溢出，且溢出量随外层内容区变窄而变大：'
+  + '05 号票加左侧栏前实测 1536 宽多出 61px、1440/1280/1024 宽多出 85px；加侧栏后内容区左移 224px，'
+  + '实测 1536 宽多出 64px、1280/1024 宽多出 88px（批量模式 1536 宽再多出 32px）。'
   + '连带后果同属这个根因：顶栏「画幅 3:4 / 9:16」按钮被推到视口右边界外，被切掉一截。'
   + '09 号票把工作台改成占满内容区后，横向滚动与按钮被切两项必须一起改回硬失败。';
 const MIXCUT_KNOWN_CHECKS = ['horizontalScroll', 'clippedControls'];

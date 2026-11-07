@@ -97,8 +97,8 @@ for (const screen of mixcut) {
   assert.deepEqual([...screen.knownFailureChecks], ['horizontalScroll', 'clippedControls']);
   assert.equal(screen.knownFailureChecks.includes('mediaFrames'), false, '画面比例不属于 09 的已知问题，不许豁免');
   assert.equal(screen.knownFailureChecks.includes('hiddenOverflowContent'), false, '藏内容不属于 09 的已知问题，不许豁免');
-  assert.match(screen.knownFailureReason, /85px/);
-  assert.match(screen.knownFailureReason, /61px/);
+  assert.match(screen.knownFailureReason, /88px/);
+  assert.match(screen.knownFailureReason, /64px/);
 }
 assert.throws(() => validateScreens([{ id: 'Bad_Id', title: 'x', owner: 'ui-01', audience: 'employee', href: () => '/', ready: async () => {} }]), /kebab-case/);
 assert.throws(() => validateScreens([{ id: 'a', title: 'x', owner: 'ui-01', audience: 'employee', href: () => '/' }]), /ready/);
