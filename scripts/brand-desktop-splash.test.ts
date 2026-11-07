@@ -164,6 +164,14 @@ assert.equal(loadedUrls().length, 1, '窗口创建后应立刻显示启动画面
 assert.match(decodeURIComponent(loadedUrls()[0]), /正在连接服务器/);
 assert.doesNotMatch(loadedUrls()[0], /^https?:/, '启动画面必须是本地 data: 文档');
 assert.equal(window.options.title, "林视 Lin's Vision", '窗口标题必须是新名字');
+// 任务栏 / 窗口图标必须指向新标志产物，而不是交给 Electron 的默认图标。
+const windowIcon = window.options.icon as string | undefined;
+assert.ok(windowIcon, '窗口必须显式设置图标（任务栏才能显示新标志）');
+assert.match(String(windowIcon), /public[\\/]icons[\\/]app-icon-256\.png$/, `窗口图标必须是新标志：${windowIcon}`);
+assert.equal(fs.existsSync(String(windowIcon)), true, '窗口图标文件必须真实存在');
+// 系统标题栏：不画自绘标题栏（规格明确 Windows 也保留系统标题栏）。
+assert.equal(window.options.frame, undefined, '不得关闭系统标题栏');
+assert.equal(window.options.titleBarStyle, undefined, '不得改用自绘标题栏样式');
 
 // 连不上：画出原因并带重试。
 startup.failed('私有 Node 服务在就绪前退出（code=1）');
