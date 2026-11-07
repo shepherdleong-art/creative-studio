@@ -209,6 +209,7 @@ export default function MixcutShell({
       ref={shellRef}
       className={`${styles.shell} ${topSteps ? styles.topStepsShell : ''} ${pageScroll ? styles.pageScrollShell : ''}`}
       data-active-step={activeStep}
+      data-testid="mixcut-shell"
       style={fitViewport && viewportFitH != null ? { height: viewportFitH, maxHeight: viewportFitH } : undefined}
       {...dataAttributes}
     >

@@ -76,13 +76,9 @@ const base = (id, title, owner, extra) => ({
   ...extra,
 });
 
-// 已知问题：混剪工作台横向溢出（09 号票修）。修好后删掉这两条 knownFailure。
-const MIXCUT_KNOWN_FAILURE = 'ui-09';
-const MIXCUT_KNOWN_REASON = '混剪工作台固定为 min(1440px, 100vw-48px) 并按视口居中，凌驾于全局 980px 主栏之上，'
-  + '窗口越靠近 1440 越溢出：1536 宽多出 61px、1440/1280/1024 宽多出 85px（批量模式再宽 8px，1536 宽时宽 32px）。'
-  + '连带后果同属这个根因：顶栏「画幅 3:4 / 9:16」按钮被推到视口右边界外，被切掉一截。'
-  + '09 号票把工作台改成占满内容区后，横向滚动与按钮被切两项必须一起改回硬失败。';
-const MIXCUT_KNOWN_CHECKS = ['horizontalScroll', 'clippedControls'];
+// 09 号票：混剪页宽度已改成「团队版占满侧栏右侧内容区」，横向溢出与顶栏按钮被切
+// 两项都真修好了 —— knownFailure 标记已删除，现在必须硬通过（再挂标记会触发
+// known-failure-not-reproduced 让整轮失败）。
 
 /**
  * 一屏一个对象。改这一屏的选择器/等待点 = 改这一屏的「怎么算画出来了」，
@@ -297,10 +293,35 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
   }),
   base('mixcut-single', '项目工作台 · 第 5 步 智能混剪（单条精准混剪）', 'ui-09', {
     href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
-    ready: async (page) => { await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 }); },
-    knownFailure: MIXCUT_KNOWN_FAILURE,
-    knownFailureChecks: MIXCUT_KNOWN_CHECKS,
-    knownFailureReason: MIXCUT_KNOWN_REASON,
+    ready: async (page) => {
+      await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 });
+      // 09 号票：混剪页必须占满侧栏右侧的内容区，不被侧栏盖住、不横向滚动。
+      // 这是「团队版宽度」的硬事实，只量几何不放宽尺寸阈值（阈值仍在 checks 里）。
+      await page.getByTestId('mixcut-shell').first().waitFor({ timeout: 60_000 });
+      const shell = await page.evaluate(() => {
+        const box = document.querySelector('[data-testid="mixcut-shell"]')?.getBoundingClientRect();
+        const sidebar = document.querySelector("aside[data-testid='workspace-sidebar']")?.getBoundingClientRect();
+        const frame = document.querySelector('[data-testid="mixcut-shell"]')?.parentElement?.parentElement?.getBoundingClientRect();
+        return box ? {
+          left: box.left,
+          right: box.right,
+          width: box.width,
+          sidebarRight: sidebar ? sidebar.right : null,
+          contentLeft: frame ? frame.left : null,
+          contentWidth: frame ? frame.width : null,
+        } : null;
+      });
+      if (!shell) throw new Error('混剪外壳没有画出来');
+      if (!(shell.sidebarRight !== null && shell.left >= shell.sidebarRight - 1)) {
+        throw new Error(`混剪外壳被侧栏盖住：外壳 left ${Math.round(shell.left)}px，侧栏 right ${Math.round(shell.sidebarRight ?? -1)}px`);
+      }
+      if (!(shell.contentLeft !== null && Math.abs(shell.left - shell.contentLeft) <= 1.5)) {
+        throw new Error(`混剪外壳必须从内容区左边界开始：外壳 left ${Math.round(shell.left)}px，内容区 left ${Math.round(shell.contentLeft ?? -1)}px`);
+      }
+      if (!(shell.contentWidth !== null && Math.abs(shell.width - shell.contentWidth) <= 1.5)) {
+        throw new Error(`混剪外壳必须占满内容区：外壳宽 ${Math.round(shell.width)}px，内容区宽 ${Math.round(shell.contentWidth ?? -1)}px`);
+      }
+    },
   }),
   base('mixcut-batch', '项目工作台 · 第 5 步 批量生产', 'ui-10', {
     href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
@@ -310,9 +331,6 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       await page.getByRole('tab', { name: '批量生产', exact: true }).waitFor({ state: 'visible', timeout: 30_000 });
       await page.waitForTimeout(1500);
     }],
-    knownFailure: MIXCUT_KNOWN_FAILURE,
-    knownFailureChecks: MIXCUT_KNOWN_CHECKS,
-    knownFailureReason: `${MIXCUT_KNOWN_REASON}批量面板嵌在同一个工作台外壳里，根因相同；10/11 号票改批量外壳时一并确认。`,
   }),
 
   // ---------- 管理员侧 ----------
