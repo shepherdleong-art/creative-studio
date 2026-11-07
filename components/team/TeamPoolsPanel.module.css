@@ -53,7 +53,7 @@
 
 .head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 112px 96px 96px 40px 24px;
+  grid-template-columns: minmax(0, 1fr) 112px 184px 96px 40px 24px;
   gap: 8px;
   align-items: center;
   padding: 10px 12px;
@@ -147,6 +147,17 @@
   white-space: nowrap;
 }
 .usageText b { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--color-ink); }
+/* 行上的占用明细：已占 / 已受理 / 可能已发 / 未发。每项自己不换行，窄栏整项折行。
+ * 字号跟着 `--text-label`（12px）走：界面上的说明文字不小于 12px。 */
+.usageDetail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  font-size: var(--text-label);
+  line-height: 1.35;
+  color: var(--color-ink-secondary);
+}
+.usageDetail > span { white-space: nowrap; }
 .bar {
   height: 4px;
   border-radius: 999px;
@@ -292,10 +303,16 @@
   color: var(--color-ink-secondary);
 }
 
-/* 窄窗口：先从行里去掉占用条，占用明细仍在展开体里。 */
-@media (max-width: 1100px) {
-  .head { grid-template-columns: minmax(0, 1fr) 108px 96px 40px 24px; }
-  .usage { display: none; }
+/* 窄窗口：只收起进度条；「已占 / 已受理 / 可能已发 / 未发」这四项在行上必须一直看得见
+ * （需求对每一行的要求），所以让明细在窄栏里换行，而不是把数字藏起来。 */
+@media (max-width: 1180px) {
+  .head { grid-template-columns: minmax(0, 1fr) 104px 150px 88px 36px 22px; gap: 6px; }
+  .usage .bar { display: none; }
+}
+
+@media (max-width: 1000px) {
+  .head { grid-template-columns: minmax(0, 1fr) 104px 140px 36px 22px; }
+  .statusCell { display: none; }
 }
 
 @media (max-width: 760px) {

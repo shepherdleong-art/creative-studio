@@ -363,6 +363,14 @@ export default function TeamPoolsPanel() {
                     <span className={`${styles.bar}${full ? ` ${styles.barFull}` : ''}`}>
                       <i style={{ width: `${row.capacity > 0 ? Math.min(100, (row.occupancy.held / row.capacity) * 100) : 0}%` }} />
                     </span>
+                    {/* 行上就要看得全：已占 / 已受理 / 可能已发 / 未发，不用展开。
+                     * 每项各自不换行，窄窗口整项折行，不会把「未发 0」拆成两行。 */}
+                    <span className={styles.usageDetail}>
+                      <span>已占 {row.occupancy.held}</span>
+                      <span>已受理 {row.occupancy.accepted}</span>
+                      <span>可能已发 {row.occupancy.maybeSent}</span>
+                      <span>未发 {row.occupancy.notSent}</span>
+                    </span>
                   </div>
 
                   <div className={styles.statusCell}>
