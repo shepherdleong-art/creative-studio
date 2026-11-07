@@ -1,10 +1,9 @@
 'use client';
 
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Icon } from '@/components/ui/Icon';
-import ResultGallery, { RegeneratePayload } from '@/components/ResultGallery';
 import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
 import ScriptStudioPanel from '@/components/script-studio/ScriptStudioPanel';
 import VideoGenerationPanel from '@/components/VideoGenerationPanel';
@@ -261,16 +260,16 @@ export default function ProjectDetailPage() {
   };
 
   const handleRegenerate = async (jobId: string, prompt: string, providerId: string) => {
-    const payload: RegeneratePayload = {
-      prompt,
-      inputSource: 'original',
-      referenceImageIds: [],
-      providerId: providerId || undefined,
-    };
+    // 不传 referenceImageIds：沿用这个任务原来的参考图（传空数组会把参考图清掉）。
     const res = await fetch(`/api/jobs/${jobId}/regenerate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, markOriginal: true }),
+      body: JSON.stringify({
+        prompt,
+        inputSource: 'original',
+        providerId: providerId || undefined,
+        markOriginal: true,
+      }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -455,6 +454,8 @@ export default function ProjectDetailPage() {
             images={project.images}
             providers={providers}
             sceneReferences={sceneReferenceByImageId}
+            defaultPrompt={project.scenePrompt || ''}
+            defaultProviderId={project.providerId || ''}
             queueStatus={queueStatus}
             onStart={() => void handleAction('start')}
             onPause={() => void handleAction('pause')}

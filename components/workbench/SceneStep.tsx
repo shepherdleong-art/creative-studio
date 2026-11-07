@@ -57,6 +57,8 @@ export default function SceneStep({
   images,
   providers,
   sceneReferences,
+  defaultPrompt,
+  defaultProviderId,
   queueStatus,
   onStart,
   onPause,
@@ -78,6 +80,9 @@ export default function SceneStep({
   images: WorkbenchImage[];
   providers: WorkbenchProvider[];
   sceneReferences: Map<string, SceneReferenceSummary>;
+  /** 项目里已保存的场景提示词（选类目会同步到项目，再读回来）。 */
+  defaultPrompt: string;
+  defaultProviderId: string;
   queueStatus: 'idle' | 'running' | 'paused';
   onStart: () => void;
   onPause: () => void;
@@ -92,15 +97,14 @@ export default function SceneStep({
 }) {
   const [view, setView] = useState<SceneViewMode>('compare');
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState('');
+  const [prompt, setPrompt] = useState(defaultPrompt);
   const [count, setCount] = useState(4);
-  const [providerId, setProviderId] = useState('');
+  const [providerId, setProviderId] = useState(defaultProviderId);
   const [generating, setGenerating] = useState(false);
   const [promptError, setPromptError] = useState('');
   const [regenOpen, setRegenOpen] = useState(false);
   const [regenPrompt, setRegenPrompt] = useState('');
   const promptSaveRef = useRef(Promise.resolve());
-  const promptLoadedRef = useRef(false);
 
   const imageById = useMemo(() => new Map(images.map((image) => [image.id, image])), [images]);
   const selectableProviders = useMemo(
@@ -111,27 +115,12 @@ export default function SceneStep({
     ? providerId
     : selectableProviders[0]?.id ?? '';
 
-  // 默认场景提示词与供应商来自项目（选类目会同步到项目，再读回来）。
-  useEffect(() => {
-    if (promptLoadedRef.current) return;
-    let active = true;
-    fetch(`/api/projects/${projectId}`)
-      .then((response) => response.json())
-      .then((data: { scenePrompt?: string; providerId?: string }) => {
-        if (!active) return;
-        promptLoadedRef.current = true;
-        setPrompt((current) => (current ? current : data.scenePrompt || ''));
-        if (data.providerId) setProviderId((current) => current || data.providerId || '');
-      })
-      .catch(() => { /* 提示词读不到就留空，用户自己填 */ });
-    return () => { active = false; };
-  }, [projectId]);
-
-  // 候选 = 已出结果或已失败的任务；排队/生成中的任务只占位、不可选中。
+  // 候选 = 已出结果、已失败、以及**还在生成**的任务（生成中的先占位，好了自动换成图片）。
+  // 排队/生成中的任务可以选中、看占位，但不能标可用（见 hasShotResult）。
   const candidates = useMemo(
     () => jobs.filter((job) => {
       const kind = getResultJobKind(job);
-      return kind === 'succeeded' || kind === 'failed';
+      return kind !== 'empty';
     }),
     [jobs],
   );
@@ -256,7 +245,7 @@ export default function SceneStep({
   };
 
   return (
-    <div className={s.page}>
+    <div className={s.page} data-testid="workbench-scene" data-view={view} data-empty={showEmpty ? 'true' : 'false'}>
       <StepFrame
         left={<>
           <PaneHead action={<Tag tone={seedImages.length > 0 ? 'ok' : 'idle'}>{seedImages.length} 张</Tag>}>

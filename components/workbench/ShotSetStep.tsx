@@ -417,7 +417,7 @@ export default function ShotSetStep({
   const groupCounts = (set: ShotSet) => `${set.shotCount} 张 · ${set.generatedCount} 已生成 · ${set.approvedCount} 可用`;
 
   return (
-    <div className={s.page}>
+    <div className={s.page} data-testid="workbench-storyboard" data-view={view} data-empty={activeSet ? 'false' : 'true'}>
       <StepFrame
         left={<>
           <PaneHead action={
@@ -579,6 +579,12 @@ export default function ShotSetStep({
                             <b>这张没生成出来</b>
                             <span>{currentShot.jobStatus === 'failed' ? '生成失败，可以重新生成' : '结果文件缺失，可以重试'}</span>
                             {canRetry ? <button type="button" className="cap" onClick={() => void retryShot()}>重试</button> : null}
+                          </>
+                        ) : shotState === 'empty' ? (
+                          <>
+                            <Icon name="image" size={22} />
+                            <b>还没有生成</b>
+                            <span>在右栏「生成分镜」里用场景参考图生成这一组。</span>
                           </>
                         ) : (
                           <><span className={s.spin} /><span>{shotState === 'checking' ? '等待补抓结果' : '生成中'}</span></>
@@ -898,6 +904,8 @@ function CreateShotSetDialog({
                     type="button"
                     className={s.pick}
                     aria-pressed={selected}
+                    data-testid="shot-pick"
+                    data-picked={selected ? 'true' : 'false'}
                     aria-label={
                       isOpeningShot(effectivePicks, asset.id)
                         ? `${asset.filename}，开场图，第 1 张`
@@ -915,6 +923,7 @@ function CreateShotSetDialog({
                     <button
                       type="button"
                       className={s.setOpening}
+                      data-testid="set-opening"
                       onClick={() => updatePicks((current) => movePickedToFront(current, asset.id))}
                     >设为开场</button>
                   ) : null}
