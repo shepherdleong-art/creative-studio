@@ -45,7 +45,17 @@ try {
   if (taskFixture) {
     await page.getByText(taskFixture.syntheticHistoryOnly ? '第 2 条文案 · 润色' : '详情页素材分析', { exact: false }).first().waitFor({ timeout: 30_000 });
     await page.getByText(taskFixture.syntheticHistoryOnly ? '历史脚本模型-fixture-A' : taskFixture.model, { exact: false }).first().waitFor();
-    await page.getByText(taskFixture.syntheticHistoryOnly ? '历史脚本供应商（fixture）' : taskFixture.providerName, { exact: false }).first().waitFor();
+    // 12 号票把「本次供应商」从列表列挪进了任务详情面板（列表只保留模型），
+    // 详情由点击行打开（`data-testid="task-row"` → `data-testid="task-detail"`）。
+    // 仍然断言供应商可见，只是现在要点开详情读 —— 覆盖范围没变，位置变了。
+    {
+      const detail = page.getByTestId('task-detail');
+      const providerText = detail.getByText(taskFixture.syntheticHistoryOnly ? '历史脚本供应商（fixture）' : taskFixture.providerName, { exact: false }).first();
+      if (!(await providerText.count())) {
+        await page.getByTestId('task-row').first().click({ timeout: 30_000 });
+      }
+      await providerText.waitFor({ timeout: 30_000 });
+    }
     assert.equal(await page.getByText(taskFixture.employee.taskId, { exact: true }).count(), 0, '完整 UUID 不得直接出现在正常任务阅读入口');
     await page.getByRole('button', { name: '复制排查信息', exact: true }).first().click();
     await page.getByRole('button', { name: '已复制排查信息', exact: true }).waitFor();
@@ -218,8 +228,15 @@ try {
     assert.equal((await api(page, '/api/video-prompt-templates')).body.some((item) => item.id === templateId), false);
     await adminPage.goto(`${baseUrl}/team/admin/resources`, { waitUntil: 'networkidle', timeout: 60_000 });
     assert.equal(await adminPage.getByLabel('资源 ID', { exact: true }).count(), 0, '正常发布流程不能要求手填资源 ID');
+    // 14 号票把资源页换成分组列表：分类默认折叠、状态文案改成「未发布」。
+    // 这不是放宽断言 —— 仍然要求「待发布项 + 提示词全文 + 发布给团队按钮」都在页面上，
+    // 只是先展开所在分类（有意为之的信息结构变化，不是行为退让）。
+    const templateCategory = adminPage.getByRole('button', { name: /提示词模板/ }).first();
+    if (await templateCategory.count()) {
+      if ((await templateCategory.getAttribute('aria-expanded')) !== 'true') await templateCategory.click();
+    }
     const templateCandidate = adminPage.getByRole('listitem').filter({ hasText: '浏览器公共发布验收' });
-    await templateCandidate.getByText('待发布', { exact: true }).waitFor();
+    await templateCandidate.getByText('未发布', { exact: true }).waitFor();
     await templateCandidate.getByText('保持产品结构，镜头缓慢推进，展示真实产品细节。', { exact: true }).waitFor();
     const published = adminPage.waitForResponse((response) => response.url().endsWith('/api/team/public-resources') && response.request().method() === 'POST');
     await templateCandidate.getByRole('button', { name: '发布给团队', exact: true }).click();
@@ -246,9 +263,14 @@ try {
     await adminPage.goto(`${baseUrl}/team/admin/resources`, { waitUntil: 'networkidle', timeout: 60_000 });
     const versionedPublished = [];
     for (const [kind, typeLabel] of [['strategy', '产品策略知识库'], ['template', '脚本模板库'], ['viral', '爆文模板']]) {
+      // 同上：14 号票把分类改成默认折叠，先展开该分类再断言列表项。
+      const categoryButton = adminPage.getByRole('button', { name: new RegExp(typeLabel) }).first();
+      if (await categoryButton.count()) {
+        if ((await categoryButton.getAttribute('aria-expanded')) !== 'true') await categoryButton.click();
+      }
       const candidate = adminPage.getByRole('listitem').filter({ hasText: `browser-${kind}.xlsx` });
       await candidate.getByText(typeLabel, { exact: true }).waitFor();
-      await candidate.getByText('待发布', { exact: true }).waitFor();
+      await candidate.getByText('未发布', { exact: true }).waitFor();
       await candidate.getByText(kind === 'template' ? '3 条' : '1 条', { exact: false }).first().waitFor();
       await candidate.getByRole('button', { name: '发布给团队', exact: true }).click();
       await candidate.getByText('团队当前版本', { exact: true }).waitFor({ timeout: 30_000 });
