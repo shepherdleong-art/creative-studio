@@ -1,30 +1,29 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Icon } from '@/components/ui/Icon';
-import FurniturePromptControls from '@/components/FurniturePromptControls';
-import ResultGallery, { RegeneratePayload } from '@/components/ResultGallery';
-import ShotSetPanel from '@/components/ShotSetPanel';
 import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
 import ScriptStudioPanel from '@/components/script-studio/ScriptStudioPanel';
-// 旧版 ScriptPanel 保留但不挂载为主入口：历史数据仍走旧路由兼容读取。
 import VideoGenerationPanel from '@/components/VideoGenerationPanel';
 import MixcutWorkspace from '@/components/mixcut/MixcutWorkspace';
 import { ReassembledReworkPanel } from '@/components/mixcut/ReassembledReworkPanel';
-import AssetUploadGrid, { AssetGridItem } from '@/components/AssetUploadGrid';
-import ProjectWorkbenchTabs, { WorkbenchTabId } from '@/components/ProjectWorkbenchTabs';
 import LogDrawer from '@/components/LogDrawer';
 import { ProjectInfoDialog, type ProjectInfoValue } from '@/components/ProjectInfoDialog';
-import { MAX_SHOTS_PER_SET } from '@/lib/shot-set-domain';
+import { ToolbarButton } from '@/components/ui/Appearance';
+import PageToolbar from '@/components/team/PageToolbar';
+import type { WorkspaceRole } from '@/lib/workspace-navigation';
+import SceneStep from '@/components/workbench/SceneStep';
+import ShotSetStep from '@/components/workbench/ShotSetStep';
+import { StepEmptyBanner } from '@/components/workbench/StepEmpty';
+import { parseWorkbenchTab, WorkbenchStepNav, type WorkbenchTabId } from '@/components/workbench/WorkbenchStepNav';
+import type { WorkbenchImage, WorkbenchJob, WorkbenchProvider } from '@/components/workbench/types';
 import {
   buildSceneReferenceByImageId,
   getActiveSceneReferences,
   SceneReferenceRecord,
-  SceneReferenceSummary,
 } from '@/lib/result-gallery-jobs';
-import { getGptImage2AspectRatio } from '@/lib/gpt-image-2-size-presets';
 
 interface Project {
   id: string;
@@ -42,85 +41,39 @@ interface Project {
   model: string;
   size?: string;
   prompt: string;
+  scenePrompt?: string;
+  shotPrompt?: string;
   status: string;
   concurrency: number;
   maxAttempts: number;
   timeoutMs?: number;
-  scenePrompt?: string;
-  shotPrompt?: string;
-  images: ImageAsset[];
-  jobs: Job[];
+  images: WorkbenchImage[];
+  jobs: WorkbenchJob[];
   provider: { id: string; name: string; model: string } | null;
 }
 
-interface ImageProvider {
-  id: string;
-  name: string;
-  model: string;
-  type: string;
-  enabled: number;
-  hasApiKey: boolean;
+function toWorkbenchProvider(provider: { id: string; name: string; model: string; type?: string; enabled?: number; hasApiKey?: boolean }): WorkbenchProvider {
+  return {
+    id: provider.id,
+    name: provider.name,
+    model: provider.model,
+    enabled: provider.enabled ?? 1,
+    hasApiKey: provider.hasApiKey ?? true,
+  };
 }
 
-interface ImageAsset {
-  id: string;
-  role: string;
-  filename: string;
-  path: string;
-  imageUrl?: string;
-  usage?: string;
-}
-
-interface Job {
-  id: string;
-  inputFilename: string;
-  outputFilename?: string;
-  status: string;
-  attempt: number;
-  maxAttempts: number;
-  latencyMs?: number;
-  estimatedCost?: number;
-  errorMessage?: string;
-  outputImageId?: string;
-  inputImageId?: string;
-  referenceImageIds?: string;
-  providerId?: string;
-  model?: string;
-  size?: string;
-  quality?: string;
-  prompt?: string;
-  parentJobId?: string;
-  revision?: number;
-  reviewMark?: string;
-  /** 场景结果稳定排序字段：同一创建请求同一 createdAt、批内按 creationIndex 排列。 */
-  createdAt?: string | null;
-  creationIndex?: number | null;
-  /** rowid 的历史兼容投影，仅用于旧数据排序兜底，不是任务身份。 */
-  creationSequence?: number | null;
-}
-
-const STATUS_LABELS: Record<string, string> = {
-  draft: '草稿',
-  running: '运行中',
-  completed: '已完成',
-  partial_failed: '部分失败',
-  failed: '全部失败',
-  canceled: '已取消',
-  needs_check: '待补抓',
-};
-
-const WORKBENCH_TABS: WorkbenchTabId[] = ['scene', 'storyboard', 'script', 'video', 'final-edit'];
-
-function parseWorkbenchTab(value: string | null): WorkbenchTabId {
-  return WORKBENCH_TABS.includes(value as WorkbenchTabId) ? (value as WorkbenchTabId) : 'scene';
-}
-
-function toAssetGridItem(img: ImageAsset): AssetGridItem {
-  return { id: img.id, filename: img.filename, imageUrl: img.imageUrl, role: img.role, usage: img.usage };
-}
-
+/**
+ * 项目工作台（07 号票）：工具栏 + 五步分段按钮 + 三步容器。
+ *
+ * - 工具栏：**本页自己出**（外壳的紧凑标题已排除 `/projects/[id]`），
+ *   内容按规格：返回、项目名、五步分段按钮、项目信息、导出项目包。
+ * - 第 1/2 步是 07 的实现（`components/workbench/SceneStep.tsx`、`ShotSetStep.tsx`）；
+ *   第 3/4/5 步只放进新框架，内容仍由 08/09 号票改动。
+ * - 路由与 `?tab=` 标识不变：`scene | storyboard | script | video | final-edit`。
+ */
 export default function ProjectDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const id = params.id as string;
   const activeTab = parseWorkbenchTab(searchParams.get('tab'));
@@ -128,27 +81,23 @@ export default function ProjectDetailPage() {
   type QueueStatus = 'idle' | 'running' | 'paused';
 
   const [project, setProject] = useState<Project | null>(null);
-  const [providers, setProviders] = useState<ImageProvider[]>([]);
+  const [providers, setProviders] = useState<WorkbenchProvider[]>([]);
   const [loading, setLoading] = useState(true);
+  const [role, setRole] = useState<WorkspaceRole>('employee');
   const [queueStatus, setQueueStatus] = useState<QueueStatus>('idle');
-  const running = queueStatus === 'running';
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [sceneRefModal, setSceneRefModal] = useState<{ jobId: string; imageAssetId: string } | null>(null);
   const [sceneRefName, setSceneRefName] = useState('');
-  const [editingShotPrompt, setEditingShotPrompt] = useState(false);
-  const editingShotPromptRef = useRef(false);
-  const [shotPromptDraft, setShotPromptDraft] = useState('');
   const [sceneRefs, setSceneRefs] = useState<SceneReferenceRecord[]>([]);
   const [applySceneModal, setApplySceneModal] = useState<string | null>(null);
   const [applySceneRefId, setApplySceneRefId] = useState('');
   const [applyScenePrompt, setApplyScenePrompt] = useState('图1是待编辑分镜图，是本次修改的主要对象。图2是场景参考图。参考图2，修改图1，保持图中床和模特的一致性不变，更换卧室的其他家具和软装布置，构图和机位景别严格参考图1。');
   const [applySceneProviderId, setApplySceneProviderId] = useState('');
-  const [applySceneConcurrency, setApplySceneConcurrency] = useState(3);
   const [logOpen, setLogOpen] = useState(false);
   const [projectInfoOpen, setProjectInfoOpen] = useState(false);
   const [selectedSceneSeedIds, setSelectedSceneSeedIds] = useState<string[]>([]);
-  const [selectedShotSourceIds, setSelectedShotSourceIds] = useState<string[]>([]);
-  const [shotSetRefreshKey, setShotSetRefreshKey] = useState(0);
+
+  const running = queueStatus === 'running';
 
   const handleProjectInfoSaved = useCallback((nextProject: ProjectInfoValue) => {
     setProject((current) => current ? { ...current, ...nextProject } : current);
@@ -162,8 +111,7 @@ export default function ProjectDetailPage() {
         console.error(data.error);
         return;
       }
-      setProject(data);
-      if (!editingShotPromptRef.current) setShotPromptDraft(data.shotPrompt || '');
+      setProject(data as Project);
 
       const queueRes = await fetch(`/api/projects/${id}/run`);
       const queueData = await queueRes.json();
@@ -184,13 +132,25 @@ export default function ProjectDetailPage() {
     let active = true;
     fetch('/api/team/models?kind=image')
       .then((res) => res.json())
-      .then((data: ImageProvider[]) => {
-        if (active && Array.isArray(data)) setProviders(data);
+      .then((data: Array<{ id: string; name: string; model: string; type?: string; enabled?: number; hasApiKey?: boolean }>) => {
+        if (active && Array.isArray(data)) setProviders(data.map(toWorkbenchProvider));
       })
       .catch(console.error);
     return () => { active = false; };
   }, []);
-  useEffect(() => { editingShotPromptRef.current = editingShotPrompt; }, [editingShotPrompt]);
+
+  // 角色决定工具栏标题（团队版外壳按角色命名），本地版拿不到就按员工。
+  useEffect(() => {
+    let active = true;
+    fetch('/api/team/auth/session', { credentials: 'same-origin', cache: 'no-store' })
+      .then((response) => response.json())
+      .then((data: { role?: string }) => {
+        if (!active) return;
+        if (data.role === 'admin' || data.role === 'employee') setRole(data.role);
+      })
+      .catch(() => { /* 本地版没有团队会话，保持员工标题 */ });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     if (queueStatus === 'idle') return;
@@ -199,15 +159,19 @@ export default function ProjectDetailPage() {
   }, [queueStatus, loadProject]);
 
   const sceneSeedImages = useMemo(
-    () => (project?.images || []).filter((img) => img.role === 'input' && img.usage === 'scene_seed').map(toAssetGridItem),
-    [project]
+    () => (project?.images || []).filter((img) => img.role === 'input' && img.usage === 'scene_seed'),
+    [project],
   );
   const shotSourceImages = useMemo(
-    () => (project?.images || []).filter((img) => img.role === 'input' && img.usage === 'shot_source').map(toAssetGridItem),
-    [project]
+    () => (project?.images || []).filter((img) => img.role === 'input' && img.usage === 'shot_source'),
+    [project],
   );
+  const validSelectedSceneSeedIds = useMemo(
+    () => selectedSceneSeedIds.filter((assetId) => sceneSeedImages.some((img) => img.id === assetId)),
+    [selectedSceneSeedIds, sceneSeedImages],
+  );
+  const activeSceneSeedId = validSelectedSceneSeedIds[0] || sceneSeedImages[0]?.id || '';
 
-  // Pre-compute image usage lookup to avoid O(m*n) per filter
   const imageUsageMap = useMemo(() => {
     const map = new Map<string, string>();
     (project?.images || []).forEach((img) => { if (img.id) map.set(img.id, img.usage || ''); });
@@ -215,34 +179,21 @@ export default function ProjectDetailPage() {
   }, [project]);
 
   const sceneJobs = useMemo(
-    () => (project?.jobs || []).filter((j) => {
-      const u = j.inputImageId ? (imageUsageMap.get(j.inputImageId) || '') : '';
-      return !u || u === 'scene_seed'; // KNOWN LIMITATION: !u also matches jobs whose image was deleted or has no usage tag
+    () => (project?.jobs || []).filter((job) => {
+      const usage = job.inputImageId ? (imageUsageMap.get(job.inputImageId) || '') : '';
+      return !usage || usage === 'scene_seed';
     }),
-    [project, imageUsageMap]
+    [project, imageUsageMap],
   );
   const shotJobs = useMemo(
-    () => (project?.jobs || []).filter((j) => {
-      const u = j.inputImageId ? (imageUsageMap.get(j.inputImageId) || '') : '';
-      return u === 'shot_source';
+    () => (project?.jobs || []).filter((job) => {
+      const usage = job.inputImageId ? (imageUsageMap.get(job.inputImageId) || '') : '';
+      return usage === 'shot_source';
     }),
-    [project, imageUsageMap]
+    [project, imageUsageMap],
   );
 
-  const sceneReferenceByImageId = useMemo(
-    () => buildSceneReferenceByImageId(sceneRefs),
-    [sceneRefs]
-  );
-
-
-  const validSelectedSceneSeedIds = useMemo(
-    () => selectedSceneSeedIds.filter((assetId) => sceneSeedImages.some((img) => img.id === assetId)),
-    [selectedSceneSeedIds, sceneSeedImages]
-  );
-  const validSelectedShotSourceIds = useMemo(
-    () => selectedShotSourceIds.filter((assetId) => shotSourceImages.some((img) => img.id === assetId)),
-    [selectedShotSourceIds, shotSourceImages]
-  );
+  const sceneReferenceByImageId = useMemo(() => buildSceneReferenceByImageId(sceneRefs), [sceneRefs]);
 
   const handleAction = async (action: string) => {
     setActionLoading(action);
@@ -268,8 +219,32 @@ export default function ProjectDetailPage() {
     }
   };
 
+  const ensureQueueRunning = useCallback(async (): Promise<boolean> => {
+    const statusRes = await fetch(`/api/projects/${id}/run`);
+    const statusData = await statusRes.json().catch(() => ({}));
+    const currentStatus = (statusData.queueStatus || queueStatus || 'idle') as QueueStatus;
+    if (currentStatus === 'running') {
+      setQueueStatus('running');
+      return true;
+    }
+    const res = await fetch(`/api/projects/${id}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: currentStatus === 'paused' ? 'resume' : 'start', timeoutMs: project?.timeoutMs }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(data.error || `启动队列失败: ${res.status}`);
+      await loadProject();
+      return false;
+    }
+    setQueueStatus('running');
+    await loadProject();
+    return true;
+  }, [id, project?.timeoutMs, queueStatus, loadProject]);
+
   const handleRetry = async (jobId: string) => {
-    const job = project?.jobs.find((j) => j.id === jobId);
+    const job = project?.jobs.find((item) => item.id === jobId);
     if (job?.status === 'needs_check') await fetch(`/api/jobs/${jobId}/resume-poll`, { method: 'POST' });
     else await fetch(`/api/jobs/${jobId}/retry`, { method: 'POST' });
     await loadProject();
@@ -284,44 +259,17 @@ export default function ProjectDetailPage() {
     await loadProject();
   };
 
-  const ensureQueueRunning = async (concurrencyOverride?: number): Promise<boolean> => {
-    const statusRes = await fetch(`/api/projects/${id}/run`);
-    const statusData = await statusRes.json().catch(() => ({}));
-    const currentStatus = (statusData.queueStatus || queueStatus || 'idle') as QueueStatus;
-
-    if (currentStatus === 'running') {
-      setQueueStatus('running');
-      return true;
-    }
-
-    const action = currentStatus === 'paused' ? 'resume' : 'start';
-    const res = await fetch(`/api/projects/${id}/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action,
-        timeoutMs: project?.timeoutMs,
-        ...(concurrencyOverride ? { concurrency: concurrencyOverride } : {}),
-      }),
-    });
-
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      alert(data.error || `启动队列失败: ${res.status}`);
-      await loadProject();
-      return false;
-    }
-
-    setQueueStatus('running');
-    await loadProject();
-    return true;
-  };
-
-  const handleRegenerate = async (jobId: string, payload: RegeneratePayload) => {
+  const handleRegenerate = async (jobId: string, prompt: string, providerId: string) => {
+    // 不传 referenceImageIds：沿用这个任务原来的参考图（传空数组会把参考图清掉）。
     const res = await fetch(`/api/jobs/${jobId}/regenerate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, markOriginal: true }),
+      body: JSON.stringify({
+        prompt,
+        inputSource: 'original',
+        providerId: providerId || undefined,
+        markOriginal: true,
+      }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -331,23 +279,6 @@ export default function ProjectDetailPage() {
     await ensureQueueRunning();
   };
 
-  // Per-shot redo: regenerate + repoint happen inside ShotSetPanel; here we just
-  // kick the queue and refresh project state.
-  const handleShotChanged = async () => {
-    await ensureQueueRunning();
-    await loadProject();
-  };
-
-  const handleBatchDownload = () => {
-    const succeededJobs = project?.jobs.filter((j) => j.status === 'succeeded' && j.outputFilename) || [];
-    if (succeededJobs.length === 0) {
-      alert('没有可下载的图片');
-      return;
-    }
-    window.location.href = `/api/projects/${id}/download`;
-  };
-
-  const handleExportCSV = () => { window.open(`/api/projects/${id}/export`, '_blank'); };
   const handleSetSceneRef = (jobId: string, imageAssetId: string) => { setSceneRefModal({ jobId, imageAssetId }); };
 
   const handleDeleteAsset = async (assetId: string) => {
@@ -355,17 +286,14 @@ export default function ProjectDetailPage() {
       const res = await fetch(`/api/images/${assetId}`, { method: 'DELETE' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const message = data.error || '未知错误';
-        alert(res.status === 409 ? message : `删除失败: ${message}`);
+        alert(res.status === 409 ? (data.error || '这张图已经被引用，不能删') : `删除失败: ${data.error || '未知错误'}`);
         return;
       }
     } catch {
       alert('删除失败: 网络错误，请稍后重试');
       return;
     }
-    // Remove deleted asset from selection
-    setSelectedSceneSeedIds((prev) => prev.filter((id) => id !== assetId));
-    setSelectedShotSourceIds((prev) => prev.filter((id) => id !== assetId));
+    setSelectedSceneSeedIds((prev) => prev.filter((assetId2) => assetId2 !== assetId));
     await loadProject();
   };
 
@@ -385,7 +313,8 @@ export default function ProjectDetailPage() {
   const handleCreateSceneRef = async () => {
     if (!sceneRefModal || !sceneRefName.trim()) return;
     const res = await fetch(`/api/projects/${id}/scene-references`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: sceneRefName.trim(), imageAssetId: sceneRefModal.imageAssetId, sourceJobId: sceneRefModal.jobId }),
     });
     if (res.ok) {
@@ -399,32 +328,12 @@ export default function ProjectDetailPage() {
     }
   };
 
-  const handleSaveShotPrompt = async () => {
-    if (!shotPromptDraft.trim()) {
-      alert('分镜生成模板不能为空');
-      return;
-    }
-    const res = await fetch(`/api/projects/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ shotPrompt: shotPromptDraft.trim() }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      alert('保存失败: ' + (data.error || res.status));
-      return;
-    }
-    setProject((prev) => prev ? { ...prev, shotPrompt: data.shotPrompt } : prev);
-    setEditingShotPrompt(false);
-  };
-
   const openApplySceneModal = async (shotSetId: string) => {
     await loadSceneRefs();
     setApplySceneModal(shotSetId);
     setApplySceneRefId('');
     setApplyScenePrompt(project?.shotPrompt || '');
     setApplySceneProviderId(project?.providerId || '');
-    setApplySceneConcurrency(clampImageConcurrency(project?.concurrency || 3));
   };
 
   const handleApplySceneSubmit = async () => {
@@ -432,29 +341,31 @@ export default function ProjectDetailPage() {
       alert('请选择场景参考图并填写提示词');
       return;
     }
-    const selectedProviderId = resolveSelectableImageProviderId(providers, applySceneProviderId);
-    if (!selectedProviderId) {
-      alert('请选择可用供应商');
-      return;
-    }
     const res = await fetch(`/api/shot-sets/${applySceneModal}/apply-scene`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sceneReferenceId: applySceneRefId, prompt: applyScenePrompt.trim(), providerId: selectedProviderId }),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sceneReferenceId: applySceneRefId, prompt: applyScenePrompt.trim(), providerId: applySceneProviderId || undefined }),
     });
     const data = await res.json();
     if (res.ok) {
       alert(`已创建 ${data.jobCount} 个任务`);
       setApplySceneModal(null);
-      await ensureQueueRunning(applySceneConcurrency);
+      await ensureQueueRunning();
     } else {
       alert('应用失败: ' + (data.error || '未知错误'));
     }
   };
 
   const handleShotSetCreated = async () => {
-    setSelectedShotSourceIds([]);
-    setShotSetRefreshKey((prev) => prev + 1);
     await loadProject();
+  };
+
+  const goTab = (next: WorkbenchTabId) => {
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.set('tab', next);
+    // 用 Next 的客户端路由推地址：与链接跳转一致（地址栏可分享、后退可用），
+    // 但不会触发整页刷新，切步骤时第 3/4/5 步的组件状态保留在各自 tab 里。
+    router.replace(`/projects/${id}?${nextParams.toString()}`, { scroll: false });
   };
 
   if (loading) {
@@ -470,13 +381,10 @@ export default function ProjectDetailPage() {
     return (
       <div className="text-center py-20">
         <p className="text-ink-secondary">项目不存在</p>
-        <Link href="/" className="link-accent mt-2 inline-block">返回列表</Link>
+        <Link href="/projects" className="link-accent mt-2 inline-block">返回项目空间</Link>
       </div>
     );
   }
-
-  const succeededJobs = project.jobs.filter((j) => j.status === 'succeeded');
-  const hasPendingJobs = project.jobs.some((j) => ['pending', 'retrying'].includes(j.status));
 
   const projectInfo: ProjectInfoValue = {
     id: project.id,
@@ -484,161 +392,158 @@ export default function ProjectDetailPage() {
     productName: project.productName || '',
     productCode: project.productCode || '',
     productCategory: project.productCategory || '',
-    storeCode: (project as { storeCode?: string }).storeCode || '',
-    productSubmodel: (project as { productSubmodel?: string }).productSubmodel || '',
-    productionType: (project as { productionType?: string }).productionType || '',
-    editorName: (project as { editorName?: string }).editorName || '',
-    namingDate: (project as { namingDate?: string }).namingDate || '',
-    hasExportIdentity: Boolean((project as { currentExportIdentityId?: string }).currentExportIdentityId),
+    storeCode: project.storeCode || '',
+    productSubmodel: project.productSubmodel || '',
+    productionType: project.productionType || '',
+    editorName: project.editorName || '',
+    namingDate: project.namingDate || '',
+    hasExportIdentity: Boolean(project.currentExportIdentityId),
   };
-  return (
-    <div>
-      <div className="project-header mb-6">
-        <div>
-          <div className="flex flex-wrap items-center gap-3">
-            <Link href="/" className="flex items-center gap-1 text-ink-tertiary hover:text-ink transition-colors">
-              <Icon name="chevron-left" size={16} /> 返回
-            </Link>
-            <h1 className="text-xl font-semibold tracking-[-0.01em]">{project.name}</h1>
-            <span className={`status-badge status-${project.status}`}>
-              {STATUS_LABELS[project.status] || project.status}
-            </span>
-          </div>
-          <div className="mt-1 flex flex-wrap gap-4 text-xs text-ink-secondary">
-            <span>供应商: {project.provider?.name || '-'}</span>
-            <span>模型: {project.model}</span>
-            <span>任务数: {project.jobs.length}</span>
-            <span>成功: {succeededJobs.length}</span>
-            <span
-              className="cursor-pointer hover:underline"
-              onClick={() => document.querySelector('[data-section="jobs"]')?.scrollIntoView({ behavior: 'smooth' })}
-              title="点击查看失败任务"
-            >失败: {project.jobs.filter((j) => j.status === 'failed').length}</span>
-          </div>
-        </div>
 
-        <div className="flex flex-wrap gap-2">
-          <button onClick={() => setLogOpen(true)} className="btn-secondary">运行日志</button>
-          <button type="button" onClick={() => setProjectInfoOpen(true)} className="btn-secondary">
-            <Icon name="settings" size={15} />项目信息
-          </button>
-          {!running && hasPendingJobs && queueStatus !== 'paused' && (
-            <button onClick={() => handleAction('start')} disabled={!!actionLoading} className="btn-primary">
-              {actionLoading === 'start' ? '...' : '开始运行'}
-            </button>
-          )}
-          {queueStatus === 'paused' && (
-            <button onClick={() => handleAction('resume')} disabled={!!actionLoading} className="btn-primary">
-              {actionLoading === 'resume' ? '...' : '继续运行'}
-            </button>
-          )}
-          {running && (
-            <button onClick={() => handleAction('pause')} disabled={!!actionLoading} className="btn-secondary">
-              {actionLoading === 'pause' ? '...' : '暂停'}
-            </button>
-          )}
-          {(running || queueStatus === 'paused') && (
-            <button onClick={() => handleAction('cancel')} disabled={!!actionLoading} className="btn-danger">
-              {actionLoading === 'cancel' ? '...' : '取消'}
-            </button>
-          )}
-          {succeededJobs.length > 0 && (
-            <>
-              <button onClick={handleBatchDownload} className="btn-secondary">导出 ZIP</button>
-              <button onClick={handleExportCSV} className="btn-secondary">导出 CSV</button>
-            </>
-          )}
-          <a href={`/api/projects/${id}/creative-package`} className="btn-secondary">创意包</a>
-        </div>
+  const hasJobs = project.jobs.length > 0;
+  const hasSceneResult = sceneJobs.some((job) => job.status === 'succeeded' || job.status === 'failed');
+  const hasShotSources = shotSourceImages.length > 0;
+  // 新项目 = 一张图都没有、也没有任何任务：第 3/4/5 步都在内容组件前面挂一条空状态。
+  const hasAnyMaterial = project.images.length > 0 || hasJobs;
+
+  return (
+    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3">
+      <PageToolbar
+        role={role}
+        title={project.name}
+        back={{ href: '/projects', label: '返回' }}
+        actions={<>
+          <ToolbarButton icon="logs" label="运行日志" onClick={() => setLogOpen(true)} />
+          <ToolbarButton icon="settings" onClick={() => setProjectInfoOpen(true)}>项目信息</ToolbarButton>
+          <a className="cap" href={`/api/projects/${id}/creative-package`}>
+            <Icon name="download" size={15} />导出项目包
+          </a>
+        </>}
+      />
+
+      <div className="flex flex-wrap items-center gap-3">
+        <WorkbenchStepNav active={activeTab} onChange={goTab} />
+        {running ? (
+          <div className="ml-auto flex flex-wrap items-center gap-2 text-xs text-ink-secondary">
+            <span className="inline-flex items-center gap-1.5"><i className="status-dot-run" />队列运行中</span>
+            <ToolbarButton onClick={() => void handleAction('pause')} disabled={!!actionLoading}>暂停</ToolbarButton>
+            <ToolbarButton onClick={() => void handleAction('cancel')} disabled={!!actionLoading}>取消</ToolbarButton>
+          </div>
+        ) : queueStatus === 'paused' ? (
+          <div className="ml-auto flex flex-wrap items-center gap-2 text-xs text-ink-secondary">
+            <span className="inline-flex items-center gap-1.5"><i className="status-dot-warn" />队列已暂停</span>
+            <ToolbarButton onClick={() => void handleAction('resume')} disabled={!!actionLoading}>继续</ToolbarButton>
+            <ToolbarButton onClick={() => void handleAction('cancel')} disabled={!!actionLoading}>取消</ToolbarButton>
+          </div>
+        ) : hasJobs ? (
+          <div className="ml-auto flex flex-wrap items-center gap-2 text-xs text-ink-secondary">
+            <span className="inline-flex items-center gap-1.5"><i className="status-dot-idle" />队列空闲</span>
+            <ToolbarButton onClick={() => void handleAction('start')} disabled={!!actionLoading}>开始</ToolbarButton>
+          </div>
+        ) : null}
       </div>
 
-      {project.prompt && activeTab !== 'final-edit' && (
-        <div className="card mb-6 p-4">
-          <h3 className="label">提示词</h3>
-          <p className="whitespace-pre-wrap text-sm text-ink">{project.prompt}</p>
-        </div>
-      )}
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col">
+        {activeTab === 'scene' ? (
+          <SceneStep
+            projectId={project.id}
+            imageSize={project.size}
+            seedImages={sceneSeedImages}
+            selectedSeedId={activeSceneSeedId}
+            onSelectSeed={(nextId) => setSelectedSceneSeedIds([nextId])}
+            jobs={sceneJobs}
+            images={project.images}
+            providers={providers}
+            sceneReferences={sceneReferenceByImageId}
+            defaultPrompt={project.scenePrompt || ''}
+            defaultProviderId={project.providerId || ''}
+            queueStatus={queueStatus}
+            onStart={() => void handleAction('start')}
+            onPause={() => void handleAction('pause')}
+            onResume={() => void handleAction('resume')}
+            onCancel={() => void handleAction('cancel')}
+            onMark={handleMark}
+            onRetry={handleRetry}
+            onRegenerate={handleRegenerate}
+            onSetSceneRef={handleSetSceneRef}
+            onDeleteAsset={handleDeleteAsset}
+            loadProject={loadProject}
+          />
+        ) : null}
 
-      <ProjectWorkbenchTabs projectId={project.id} activeTab={activeTab} />
-      {activeTab !== 'final-edit' && project.jobs.length > 0 && (
-        <div data-section="jobs">
-        <QueueCompactBar
-          jobs={project.jobs}
-          queueStatus={queueStatus}
-          running={running}
-          actionLoading={actionLoading}
-          onStart={() => handleAction('start')}
-          onPause={() => handleAction('pause')}
-          onResume={() => handleAction('resume')}
-          onCancel={() => handleAction('cancel')}
-        />
-        </div>
-      )}
+        {(activeTab === 'storyboard' || activeTab === 'video') && searchParams.get('filmGroup') && searchParams.get('filmClip') ? (
+          <ReassembledReworkPanel
+            key={`${activeTab}:${searchParams.get('filmGroup')}:${searchParams.get('filmClip')}`}
+            groupId={searchParams.get('filmGroup')!}
+            clipId={searchParams.get('filmClip')!}
+            step={activeTab}
+          />
+        ) : null}
 
-      <div className="space-y-6">
-        <>
-            {activeTab === 'scene' && (
-              <SceneWorkspace
-                project={project}
-                providers={providers}
-                sceneSeedImages={sceneSeedImages}
-                selectedSceneSeedIds={validSelectedSceneSeedIds}
-                onSelectSceneSeed={setSelectedSceneSeedIds}
-                onUploaded={loadProject}
-                onJobsCreated={async (concurrency) => { await loadProject(); await ensureQueueRunning(concurrency); }}
-                onRetry={handleRetry}
-                onMark={handleMark}
-                onRegenerate={handleRegenerate}
-                onSetSceneRef={handleSetSceneRef}
-                onDeleteAsset={handleDeleteAsset}
-                jobs={sceneJobs}
-                sceneReferenceByImageId={sceneReferenceByImageId}
+        {activeTab === 'storyboard' && !(searchParams.get('filmGroup') && searchParams.get('filmClip')) ? (
+          <ShotSetStep
+            projectId={project.id}
+            providerOptions={providers}
+            shotSourceImages={shotSourceImages}
+            jobs={shotJobs}
+            onUploaded={loadProject}
+            onApplyScene={(shotSetId) => void openApplySceneModal(shotSetId)}
+            onShotChanged={async () => { await ensureQueueRunning(); await loadProject(); }}
+            onDeleteAsset={handleDeleteAsset}
+          />
+        ) : null}
+
+        {activeTab === 'script' ? (
+          <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3">
+            {!hasAnyMaterial ? (
+              <StepEmptyBanner
+                title="还没有可以写脚本的素材"
+                description="先在「场景图」或「分镜」做出素材，再来写口播脚本。"
               />
-            )}
-            {(activeTab === 'storyboard' || activeTab === 'video') && searchParams.get('filmGroup') && searchParams.get('filmClip') && <ReassembledReworkPanel key={`${activeTab}:${searchParams.get('filmGroup')}:${searchParams.get('filmClip')}`} groupId={searchParams.get('filmGroup')!} clipId={searchParams.get('filmClip')!} step={activeTab} />}
-            {activeTab === 'storyboard' && !(searchParams.get('filmGroup') && searchParams.get('filmClip')) && (
-                <StoryboardWorkspace
-                  project={project}
-                  providers={providers}
-                  shotSourceImages={shotSourceImages}
-                selectedShotSourceIds={validSelectedShotSourceIds}
-                onSelectShotSources={setSelectedShotSourceIds}
-                onUploaded={loadProject}
-                onShotSetCreated={handleShotSetCreated}
-                shotSetRefreshKey={shotSetRefreshKey}
-                jobs={shotJobs}
-                onApplyScene={openApplySceneModal}
-                editingShotPrompt={editingShotPrompt}
-                setEditingShotPrompt={setEditingShotPrompt}
-                shotPromptDraft={shotPromptDraft}
-                setShotPromptDraft={setShotPromptDraft}
-                onSaveShotPrompt={handleSaveShotPrompt}
-                onShotChanged={handleShotChanged}
-                onDeleteAsset={handleDeleteAsset}
+            ) : null}
+            <ScriptStudioPanel projectId={project.id} />
+          </div>
+        ) : null}
+
+        {activeTab === 'video' && !(searchParams.get('filmGroup') && searchParams.get('filmClip')) ? (
+          <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3">
+            {!hasShotSources && !hasSceneResult ? (
+              <StepEmptyBanner
+                title="还没有分镜组"
+                description="先在「分镜」建一个分镜组，或者用自由素材工位直接传图做视频。"
               />
-            )}
-            {activeTab === 'script' && <ScriptStudioPanel projectId={project.id} />}
-            {activeTab === 'video' && !(searchParams.get('filmGroup') && searchParams.get('filmClip')) && (
-              <div className="video-generation-section">
-                <div className="video-generation-heading">
-                  <h2 className="text-base font-semibold">视频生成</h2>
-                  <p className="mt-1 text-sm text-ink-secondary">选择分镜组和视频供应商，创建图生视频任务。</p>
-                </div>
-                <VideoGenerationPanel projectId={project.id} />
+            ) : null}
+            {/* 08 号票：第 4 步占满内容区（三栏由面板自己排），不再用整页宽的
+                `.video-generation-section` 全宽壳——它按 100vw 计算会越过侧栏、横向溢出。 */}
+            <div className="video-generation-section flex min-h-0 min-w-0 flex-1 flex-col">
+              <div className="video-generation-heading">
+                <h2 className="text-base font-semibold">视频生成</h2>
+                <p className="mt-1 text-sm text-ink-secondary">选择分镜组和视频供应商，创建图生视频任务。</p>
               </div>
-            )}
-            {activeTab === 'final-edit' && (
-              <MixcutWorkspace projectId={project.id}
-                projectName={project.name}
-                projectInfo={projectInfo}
-                onProjectInfoChange={handleProjectInfoSaved}
+              <VideoGenerationPanel projectId={project.id} />
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab === 'final-edit' ? (
+          <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3">
+            {!hasAnyMaterial ? (
+              <StepEmptyBanner
+                title="还没有可用视频"
+                description="先在「视频」做好视频，这里才能混剪。"
               />
-            )}
-        </>
+            ) : null}
+            <MixcutWorkspace
+              projectId={project.id}
+              projectName={project.name}
+              projectInfo={projectInfo}
+              onProjectInfoChange={handleProjectInfoSaved}
+            />
+          </div>
+        ) : null}
       </div>
 
       <LogDrawer open={logOpen} projectId={project.id} autoRefresh={logOpen} onClose={() => setLogOpen(false)} />
-
 
       <ProjectInfoDialog
         open={projectInfoOpen}
@@ -647,647 +552,58 @@ export default function ProjectDetailPage() {
         onClose={() => setProjectInfoOpen(false)}
         onSaved={handleProjectInfoSaved}
       />
-      {sceneRefModal && (
+
+      {sceneRefModal ? (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 backdrop-blur-sm p-4" onClick={() => setSceneRefModal(null)}>
-          <div className="card w-full max-w-sm p-6 shadow-[0_20px_60px_rgba(0,0,0,.18)]" onClick={(e) => e.stopPropagation()}>
+          <div className="card w-full max-w-sm p-6 shadow-[0_20px_60px_rgba(0,0,0,.18)]" onClick={(event) => event.stopPropagation()}>
             <h3 className="mb-4 text-base font-semibold">设为场景参考图</h3>
             <div>
               <label className="label">名称</label>
-              <input value={sceneRefName} onChange={(e) => setSceneRefName(e.target.value)} className="input-field mt-1" placeholder="例如: 现代奶油风卧室场景" autoFocus />
+              <input
+                value={sceneRefName}
+                onChange={(event) => setSceneRefName(event.target.value)}
+                className="input-field mt-1"
+                placeholder="例如: 现代奶油风卧室场景"
+                autoFocus
+              />
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => setSceneRefModal(null)} className="btn-secondary btn-sm">取消</button>
-              <button onClick={handleCreateSceneRef} disabled={!sceneRefName.trim()} className="btn-primary btn-sm">创建</button>
+              <button onClick={() => void handleCreateSceneRef()} disabled={!sceneRefName.trim()} className="btn-primary btn-sm">创建</button>
             </div>
           </div>
         </div>
-      )}
+      ) : null}
 
-      {applySceneModal && (
+      {applySceneModal ? (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 backdrop-blur-sm p-4" onClick={() => setApplySceneModal(null)}>
-          <div className="card apply-scene-dialog" onClick={(e) => e.stopPropagation()}>
+          <div className="card apply-scene-dialog" onClick={(event) => event.stopPropagation()}>
             <h3 className="mb-5 text-lg font-semibold tracking-[-0.01em]">选择新场景图并生成分镜</h3>
             <div className="apply-scene-dialog-body space-y-5">
               <div>
                 <label className="label generation-label">选择场景参考图</label>
                 {(() => {
                   const applySceneItems: ImagePickerItem[] = sceneRefs.map((ref) => {
-                    const asset = project?.images.find((img) => img.id === ref.imageAssetId);
+                    const asset = project.images.find((img) => img.id === ref.imageAssetId);
                     return { id: ref.id, label: ref.name, filename: ref.imageFilename, imageUrl: asset?.imageUrl };
                   });
                   return <ImagePickerGrid items={applySceneItems} selectedId={applySceneRefId} onSelect={setApplySceneRefId} emptyText="当前项目没有可用的场景参考图，请先在「场景参考图」面板中创建。" />;
                 })()}
-                {sceneRefs.length === 0 && <p className="mt-1 text-xs text-fail">当前项目没有可用的场景参考图，请先在「场景参考图」面板中创建。</p>}
+                {sceneRefs.length === 0 ? <p className="mt-1 text-xs text-fail">当前项目没有可用的场景参考图，请先在第 1 步把候选设为场景参考图。</p> : null}
               </div>
               <div>
-                <FurniturePromptControls prompt={applyScenePrompt} onChange={setApplyScenePrompt} />
                 <label className="label generation-label">提示词模板</label>
-                <textarea value={applyScenePrompt} onChange={(e) => setApplyScenePrompt(e.target.value)} rows={4} className="input-field generation-control generation-textarea apply-scene-textarea" />
+                <textarea value={applyScenePrompt} onChange={(event) => setApplyScenePrompt(event.target.value)} rows={4} className="input-field generation-control generation-textarea apply-scene-textarea" />
                 <p className="generation-helper">每张分镜图会作为图1（底图），场景参考图作为图2（参考图）</p>
               </div>
-              <ImageProviderRunControls
-                providers={providers}
-                providerId={resolveSelectableImageProviderId(providers, applySceneProviderId)}
-                onProviderIdChange={setApplySceneProviderId}
-                concurrency={applySceneConcurrency}
-                onConcurrencyChange={setApplySceneConcurrency}
-              />
             </div>
             <div className="apply-scene-dialog-actions">
               <button onClick={() => setApplySceneModal(null)} className="btn-secondary btn-sm">取消</button>
-              <button onClick={handleApplySceneSubmit} disabled={!applySceneRefId || !applyScenePrompt.trim() || !resolveSelectableImageProviderId(providers, applySceneProviderId)} className="btn-primary btn-sm">创建任务并开始</button>
+              <button onClick={() => void handleApplySceneSubmit()} disabled={!applySceneRefId || !applyScenePrompt.trim()} className="btn-primary btn-sm">创建任务并开始</button>
             </div>
           </div>
         </div>
-      )}
-    </div>
-  );
-}
-
-function QueueCompactBar({
-  jobs, queueStatus, running, actionLoading, onStart, onPause, onResume, onCancel,
-}: {
-  jobs: Job[];
-  queueStatus: 'idle' | 'running' | 'paused';
-  running: boolean;
-  actionLoading: string | null;
-  onStart: () => void;
-  onPause: () => void;
-  onResume: () => void;
-  onCancel: () => void;
-}) {
-  const pending = jobs.filter((job) => ['pending', 'retrying'].includes(job.status)).length;
-  const active = jobs.filter((job) => ['running', 'needs_check'].includes(job.status)).length;
-  const failed = jobs.filter((job) => job.status === 'failed').length;
-  const succeeded = jobs.filter((job) => job.status === 'succeeded').length;
-
-  return (
-    <div className="tile flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex flex-wrap items-center gap-3 text-sm">
-        <span className="font-medium text-ink">任务状态</span>
-        <span className="text-ink-secondary">队列: {queueStatus === 'running' ? '运行中' : queueStatus === 'paused' ? '已暂停' : '空闲'}</span>
-        <span className="text-ink-secondary">等待 {pending}</span>
-        <span className="text-ink-secondary">活跃 {active}</span>
-        <span className="text-ok">成功 {succeeded}</span>
-        {failed > 0 && <span className="text-fail">失败 {failed}</span>}
-      </div>
-      <div className="flex gap-2">
-        {!running && pending > 0 && queueStatus !== 'paused' && <button className="btn-primary btn-sm" disabled={!!actionLoading} onClick={onStart}>开始</button>}
-        {running && <button className="btn-secondary btn-sm" disabled={!!actionLoading} onClick={onPause}>暂停</button>}
-        {queueStatus === 'paused' && <button className="btn-primary btn-sm" disabled={!!actionLoading} onClick={onResume}>继续</button>}
-        {(running || queueStatus === 'paused') && <button className="btn-danger btn-sm" disabled={!!actionLoading} onClick={onCancel}>取消</button>}
-      </div>
-    </div>
-  );
-}
-
-function SceneWorkspace({
-  project,
-  providers,
-  sceneSeedImages,
-  selectedSceneSeedIds,
-  onSelectSceneSeed,
-  onUploaded,
-  onJobsCreated,
-  onRetry,
-  onMark,
-  onRegenerate,
-  onSetSceneRef,
-  onDeleteAsset,
-  jobs,
-  sceneReferenceByImageId,
-}: {
-  project: Project;
-  providers: ImageProvider[];
-  sceneSeedImages: AssetGridItem[];
-  selectedSceneSeedIds: string[];
-  onSelectSceneSeed: (ids: string[]) => void;
-  onUploaded: () => void | Promise<void>;
-  onJobsCreated: (concurrency?: number) => void | Promise<void>;
-  onRetry: (jobId: string) => void;
-  onMark: (jobId: string, mark: string) => void;
-  onRegenerate: (jobId: string, payload: RegeneratePayload) => void;
-  onSetSceneRef: (jobId: string, imageAssetId: string) => void;
-  onDeleteAsset: (assetId: string) => void | Promise<void>;
-  jobs: Job[];
-  sceneReferenceByImageId: Map<string, SceneReferenceSummary>;
-}) {
-  return (
-    <div className="space-y-6">
-      <section className="card p-5">
-        <div className="mb-4">
-          <h2 className="text-base font-semibold tracking-[-0.01em]">新场景图生成</h2>
-          <p className="mt-1 text-sm text-ink-secondary">先上传原始场景图 A，再选择 1 张作为生成输入。</p>
-        </div>
-        <AssetUploadGrid
-          projectId={project.id}
-          assets={sceneSeedImages}
-          selectedIds={selectedSceneSeedIds}
-          usage="scene_seed"
-          uploadTitle="上传原始场景图 A"
-          uploadHint="拖拽或点击上传。上传成功后会出现在右侧宫格。"
-          emptyText="还没有原始场景图 A。上传后会在这里显示缩略图。"
-          selectionLabel="可选择 1 张作为原始场景图 A。"
-          maxSelection={1}
-          onSelectionChange={onSelectSceneSeed}
-          onUploaded={onUploaded}
-          onDelete={onDeleteAsset}
-        />
-      </section>
-
-      <SceneGenerationForm
-        project={project}
-        providers={providers}
-        selectedImageId={selectedSceneSeedIds[0] || ''}
-        defaultPrompt={project.scenePrompt || ''}
-        onJobsCreated={onJobsCreated}
-        onPromptSaved={onUploaded}
-      />
-
-      <section className="card p-5">
-        <SceneResultsSection
-          jobs={jobs}
-          images={project.images}
-          providers={providers}
-          onRetry={onRetry}
-          onMark={onMark}
-          onRegenerate={onRegenerate}
-          onSetSceneRef={onSetSceneRef}
-          projectId={project.id}
-          sceneReferenceByImageId={sceneReferenceByImageId}
-        />
-      </section>
-    </div>
-  );
-}
-
-function SceneResultsSection({
-  jobs, images, providers, onRetry, onMark, onRegenerate, onSetSceneRef, projectId, sceneReferenceByImageId,
-}: {
-  jobs: Job[];
-  images: ImageAsset[];
-  providers: ImageProvider[];
-  onRetry: (jobId: string) => void;
-  onMark: (jobId: string, mark: string) => void;
-  onRegenerate: (jobId: string, payload: RegeneratePayload) => void;
-  onSetSceneRef?: (jobId: string, imageAssetId: string) => void;
-  projectId?: string;
-  sceneReferenceByImageId: Map<string, SceneReferenceSummary>;
-}) {
-  const total = jobs.length;
-  const activeCount = jobs.filter((j) => ['pending', 'running', 'retrying', 'needs_check'].includes(j.status)).length;
-  const succeededCount = jobs.filter((j) => j.status === 'succeeded' && j.outputFilename).length;
-  const failedCount = jobs.filter((j) => j.status === 'failed').length;
-  const isEmpty = total === 0;
-  const isGenerating = activeCount > 0;
-
-  return (
-    <>
-      <div className="mb-4">
-        <h2 className="text-base font-semibold tracking-[-0.01em]">生成结果</h2>
-        <p className="mt-1 text-sm text-ink-secondary">
-          {isEmpty
-            ? '还没有开始生成。选择原始场景图 A 后，点击生成按钮。'
-            : isGenerating
-              ? `正在生成 ${activeCount} 张图片，已完成 ${succeededCount}/${total}。`
-              : succeededCount > 0
-                ? '生成完成。挑选可用图并保存为场景参考图。'
-                : '本次生成未成功，可查看失败原因或重新生成。'}
-        </p>
-      </div>
-
-      {isEmpty && (
-        <div className="scene-result-state">
-          <Icon name="image" size={32} />
-          <div className="font-medium text-ink-secondary">等待生成</div>
-          <div className="text-xs text-ink-tertiary">生成的场景图会出现在这里。</div>
-        </div>
-      )}
-
-      {!isEmpty && (
-        <>
-          <div className="scene-result-summary">
-            {activeCount > 0 && <span className="status-badge status-running">生成中 {activeCount}</span>}
-            {succeededCount > 0 && <span className="status-badge status-succeeded">成功 {succeededCount}</span>}
-            {failedCount > 0 && <span className="status-badge status-failed">失败 {failedCount}</span>}
-          </div>
-
-          <ResultGallery
-            jobs={jobs}
-            images={images}
-            providers={providers}
-            onRetry={onRetry}
-            onMark={onMark}
-            onRegenerate={onRegenerate}
-            onSetSceneRef={onSetSceneRef}
-            projectId={projectId}
-            sceneReferenceByImageId={sceneReferenceByImageId}
-          />
-        </>
-      )}
-    </>
-  );
-}
-
-function clampImageConcurrency(value: number): number {
-  return Math.max(1, Math.min(10, Math.floor(value) || 1));
-}
-
-/**
- * 受限数字输入：点击聚焦时全选现有值，输入过程中不逐键夹取，失焦才夹到 [min, max]。
- * 直接受控 + 逐键 clamp 会让「在 2 后面接着敲 5」变成 25 → 上限值，
- * 用户体验就是"点一下数字自己跳成了 9/10"。
- */
-function ClampedNumberInput({
-  value,
-  min,
-  max,
-  onCommit,
-  ariaLabel,
-}: {
-  value: number;
-  min: number;
-  max: number;
-  onCommit: (value: number) => void;
-  ariaLabel?: string;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const clampDraft = (raw: string): number | null => {
-    const parsed = Math.floor(Number(raw));
-    if (!raw.trim() || !Number.isFinite(parsed)) return null;
-    return Math.max(min, Math.min(max, parsed));
-  };
-  return (
-    <input
-      type="number"
-      min={min}
-      max={max}
-      aria-label={ariaLabel}
-      value={draft ?? String(value)}
-      onFocus={(e) => e.target.select()}
-      onChange={(e) => {
-        setDraft(e.target.value);
-        const next = clampDraft(e.target.value);
-        if (next !== null) onCommit(next);
-      }}
-      onBlur={() => {
-        const next = clampDraft(draft ?? '');
-        if (next !== null && next !== value) onCommit(next);
-        setDraft(null);
-      }}
-      className="input-field generation-control generation-number"
-    />
-  );
-}
-
-function getSelectableImageProviders(providers: ImageProvider[]): ImageProvider[] {
-  return providers.filter((provider) => provider.enabled && provider.hasApiKey);
-}
-
-function resolveSelectableImageProviderId(providers: ImageProvider[], providerId: string): string {
-  const selectableProviders = getSelectableImageProviders(providers);
-  return selectableProviders.some((provider) => provider.id === providerId)
-    ? providerId
-    : selectableProviders[0]?.id || '';
-}
-
-function ImageProviderSelect({
-  providers,
-  providerId,
-  onProviderIdChange,
-}: {
-  providers: ImageProvider[];
-  providerId: string;
-  onProviderIdChange: (providerId: string) => void;
-}) {
-  const selectedProvider = providers.find((provider) => provider.id === providerId);
-
-  return (
-    <div>
-      <label className="label generation-label">供应商</label>
-      <select
-        value={providerId}
-        onChange={(e) => onProviderIdChange(e.target.value)}
-        className="input-field generation-control generation-select"
-      >
-        {providers.map((provider) => (
-          <option key={provider.id} value={provider.id}>
-            {provider.name} ({provider.model})
-          </option>
-        ))}
-      </select>
-      <p className="generation-helper">
-        当前模型：{selectedProvider?.model || '未选择'}。如果供应商临时不可用，可以换另一个再创建新任务。
-      </p>
-    </div>
-  );
-}
-
-function ImageConcurrencyField({
-  concurrency,
-  onConcurrencyChange,
-}: {
-  concurrency: number;
-  onConcurrencyChange: (concurrency: number) => void;
-}) {
-  return (
-    <div>
-      <label className="label generation-label">并发数</label>
-      <ClampedNumberInput
-        value={concurrency}
-        min={1}
-        max={10}
-        onCommit={onConcurrencyChange}
-        ariaLabel="并发数"
-      />
-      <p className="generation-helper">失败或限流时调回 1。</p>
-    </div>
-  );
-}
-
-function ImageProviderRunControls({
-  providers,
-  providerId,
-  onProviderIdChange,
-  concurrency,
-  onConcurrencyChange,
-}: {
-  providers: ImageProvider[];
-  providerId: string;
-  onProviderIdChange: (providerId: string) => void;
-  concurrency: number;
-  onConcurrencyChange: (concurrency: number) => void;
-}) {
-  const selectableProviders = getSelectableImageProviders(providers);
-
-  if (selectableProviders.length === 0) {
-    return (
-      <div className="generation-empty-provider">
-        当前没有可用图片供应商，请先到 <a href="/settings" className="underline">供应商配置</a> 启用并填写 Key。
-      </div>
-    );
-  }
-
-  return (
-    <div className="provider-run-grid">
-      <ImageProviderSelect
-        providers={selectableProviders}
-        providerId={providerId}
-        onProviderIdChange={onProviderIdChange}
-      />
-      <ImageConcurrencyField
-        concurrency={concurrency}
-        onConcurrencyChange={onConcurrencyChange}
-      />
-    </div>
-  );
-}
-
-function SceneGenerationForm({
-  project, providers, selectedImageId, defaultPrompt, onJobsCreated, onPromptSaved,
-}: {
-  project: Project;
-  providers: ImageProvider[];
-  selectedImageId: string;
-  defaultPrompt: string;
-  onJobsCreated: (concurrency?: number) => void | Promise<void>;
-  onPromptSaved: () => void | Promise<void>;
-}) {
-  const [prompt, setPrompt] = useState(defaultPrompt);
-  const [count, setCount] = useState(4);
-  const [providerId, setProviderId] = useState(project.providerId);
-  const [concurrency, setConcurrency] = useState(clampImageConcurrency(project.concurrency || 3));
-  const [creating, setCreating] = useState(false);
-  const promptSaveRef = useRef(Promise.resolve());
-  const [promptSaveError, setPromptSaveError] = useState('');
-  const savePrompt = (nextPrompt: string) => {
-    // 快速连续选择按顺序保存，避免旧请求最后落库覆盖新选择。
-    promptSaveRef.current = promptSaveRef.current.catch(() => {}).then(async () => {
-      const response = await fetch(`/api/projects/${project.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scenePrompt: nextPrompt }),
-      });
-      if (!response.ok) throw new Error('类目与场景同步失败，请重新选择');
-      setPromptSaveError('');
-      await onPromptSaved();
-    }).catch((error) => { setPromptSaveError(error instanceof Error ? error.message : '同步失败'); });
-  };
-  const selectableProviders = getSelectableImageProviders(providers);
-  const selectedProviderId = resolveSelectableImageProviderId(providers, providerId);
-
-  return (
-    <section className="card generation-card p-6">
-      <div className="mb-4">
-        <h2 className="text-base font-semibold tracking-[-0.01em]">生成参数</h2>
-        <p className="mt-1 text-sm text-ink-secondary">选中原始场景图 A 后，确认提示词和数量再开始生成。</p>
-        <p className="mt-1 text-xs text-ink-tertiary">
-          输出画幅：{getGptImage2AspectRatio(project.size) || '自定义'}{project.size ? ` · ${project.size}` : ''}（项目创建时锁定）
-        </p>
-      </div>
-      <div className="generation-form-grid">
-        <div className="generation-main-stack">
-          <div>
-            <FurniturePromptControls prompt={prompt} onChange={(next) => { setPrompt(next); savePrompt(next); }} />
-            <label className="label generation-label">场景提示词</label>
-            <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} onBlur={() => savePrompt(prompt)} rows={4} className="input-field generation-control generation-textarea" />
-            <p className="generation-helper" role="status">{promptSaveError || '类目和场景会自动同步到分镜提示词。'}</p>
-          </div>
-          {selectableProviders.length > 0 ? (
-            <ImageProviderSelect
-              providers={selectableProviders}
-              providerId={selectedProviderId}
-              onProviderIdChange={setProviderId}
-            />
-          ) : (
-            <div className="generation-empty-provider">
-              当前没有可用图片供应商，请先到 <a href="/settings" className="underline">供应商配置</a> 启用并填写 Key。
-            </div>
-          )}
-        </div>
-        <div className="generation-side-stack">
-          <div>
-            <label className="label generation-label">数量</label>
-            <ClampedNumberInput
-              value={count}
-              min={1}
-              max={9}
-              onCommit={setCount}
-              ariaLabel="生成数量"
-            />
-            <p className="generation-helper">一次最多 9 张。</p>
-          </div>
-          <ImageConcurrencyField
-            concurrency={concurrency}
-            onConcurrencyChange={setConcurrency}
-          />
-        </div>
-      </div>
-      <div className="generation-actions">
-        <button
-          onClick={async () => {
-            if (!selectedImageId) { alert('请先在上方宫格选择原始场景图 A'); return; }
-            if (!prompt.trim()) { alert('请输入场景提示词'); return; }
-            if (!selectedProviderId) { alert('请选择可用供应商'); return; }
-            setCreating(true);
-            try {
-              await promptSaveRef.current;
-              const res = await fetch(`/api/projects/${project.id}/scene-jobs`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sceneSeedImageId: selectedImageId, scenePrompt: prompt.trim(), generationCount: count, providerId: selectedProviderId }),
-              });
-              const data = await res.json();
-              if (res.ok) await onJobsCreated(concurrency);
-              else alert('创建失败: ' + (data.error || '未知错误'));
-            } catch (err) { alert('创建失败: ' + String(err)); }
-            finally { setCreating(false); }
-          }}
-          disabled={creating || !selectedImageId || !selectedProviderId}
-          className="btn-primary generation-primary-action"
-        >
-          {creating ? '创建中...' : `生成 ${count} 张新场景图`}
-        </button>
-        {!selectedImageId && <span className="text-sm text-ink-tertiary">请先选择 1 张原始场景图 A</span>}
-      </div>
-    </section>
-  );
-}
-
-function StoryboardWorkspace({
-  project,
-  providers,
-  shotSourceImages,
-  selectedShotSourceIds,
-  onSelectShotSources,
-  onUploaded,
-  onShotSetCreated,
-  shotSetRefreshKey,
-  jobs,
-  onApplyScene,
-  editingShotPrompt,
-  setEditingShotPrompt,
-  shotPromptDraft,
-  setShotPromptDraft,
-  onSaveShotPrompt,
-  onShotChanged,
-  onDeleteAsset,
-}: {
-  project: Project;
-  providers: ImageProvider[];
-  shotSourceImages: AssetGridItem[];
-  selectedShotSourceIds: string[];
-  onSelectShotSources: (ids: string[]) => void;
-  onUploaded: () => void | Promise<void>;
-  onShotSetCreated: () => void | Promise<void>;
-  shotSetRefreshKey: number;
-  jobs: Job[];
-  onApplyScene: (shotSetId: string) => void;
-  editingShotPrompt: boolean;
-  setEditingShotPrompt: (value: boolean) => void;
-  shotPromptDraft: string;
-  setShotPromptDraft: (value: string) => void;
-  onSaveShotPrompt: () => void;
-  onShotChanged: () => void | Promise<void>;
-  onDeleteAsset: (assetId: string) => void | Promise<void>;
-}) {
-  return (
-    <div className="space-y-6">
-      <section className="card p-5">
-        <div className="mb-4">
-          <h2 className="text-base font-semibold tracking-[-0.01em]">新分镜图</h2>
-          <p className="mt-1 text-sm text-ink-secondary">{`上传后在宫格里按顺序选择 1-${MAX_SHOTS_PER_SET} 张，再创建分镜组。`}</p>
-        </div>
-        <AssetUploadGrid
-          projectId={project.id}
-          assets={shotSourceImages}
-          selectedIds={selectedShotSourceIds}
-          usage="shot_source"
-          uploadTitle="上传原始分镜图"
-          uploadHint="拖拽或点击上传。上传成功后会出现在右侧宫格。"
-          emptyText="还没有原始分镜图。上传后会在这里显示缩略图。"
-          selectionLabel="点击图片选择，选择顺序就是分镜顺序。"
-          maxSelection={MAX_SHOTS_PER_SET}
-          onSelectionChange={onSelectShotSources}
-          onUploaded={onUploaded}
-          onDelete={onDeleteAsset}
-        />
-        <StoryboardGroupCreator projectId={project.id} selectedImageIds={selectedShotSourceIds} onCreated={onShotSetCreated} />
-      </section>
-
-      <section className="card p-5">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold tracking-[-0.01em]">分镜生成模板</h2>
-            <p className="mt-1 text-sm text-ink-secondary">分镜生成时会使用这个模板描述图1和场景参考图的关系。</p>
-          </div>
-          {!editingShotPrompt && (
-            <button onClick={() => { setShotPromptDraft(project.shotPrompt || ''); setEditingShotPrompt(true); }} className="btn-secondary btn-sm">
-              编辑模板
-            </button>
-          )}
-        </div>
-        {editingShotPrompt ? (
-          <div className="space-y-2">
-            <FurniturePromptControls prompt={shotPromptDraft} onChange={setShotPromptDraft} />
-            <textarea value={shotPromptDraft} onChange={(e) => setShotPromptDraft(e.target.value)} rows={6} className="input-field font-mono text-xs" />
-            <div className="flex gap-2">
-              <button onClick={onSaveShotPrompt} className="btn-primary btn-sm">保存</button>
-              <button onClick={() => { setShotPromptDraft(project.shotPrompt || ''); setEditingShotPrompt(false); }} className="btn-secondary btn-sm">取消</button>
-            </div>
-          </div>
-        ) : (
-          <pre className="whitespace-pre-wrap rounded-[18px] bg-surface-subtle p-4 text-xs text-ink-secondary">{project.shotPrompt || '未设置'}</pre>
-        )}
-      </section>
-
-      <ShotSetPanel
-        key={shotSetRefreshKey}
-        projectId={project.id}
-        providers={providers}
-        images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))}
-        jobs={jobs}
-        onApplyScene={onApplyScene}
-        onImagesUploaded={onUploaded}
-        onShotChanged={onShotChanged}
-        showUploader={false}
-        showCreateControls={false}
-      />
-    </div>
-  );
-}
-
-function StoryboardGroupCreator({ projectId, selectedImageIds, onCreated }: { projectId: string; selectedImageIds: string[]; onCreated: () => void | Promise<void> }) {
-  const [name, setName] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  return (
-    <div className="mt-4 tile p-4">
-      <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
-        <div>
-          <label className="label">分镜组名称</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} className="input-field" placeholder="例如：卧室场景分镜 1-6" />
-        </div>
-        <button
-          onClick={async () => {
-            if (!name.trim() || selectedImageIds.length === 0) return;
-            setSaving(true);
-            try {
-              const res = await fetch(`/api/projects/${projectId}/shot-sets`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name.trim(), shotImageIds: selectedImageIds }),
-              });
-              const data = await res.json().catch(() => ({}));
-              if (res.ok) { setName(''); await onCreated(); }
-              else alert('创建失败: ' + (data.error || '未知错误'));
-            } catch (err) { alert('创建失败: ' + String(err)); }
-            finally { setSaving(false); }
-          }}
-          disabled={!name.trim() || selectedImageIds.length === 0 || saving}
-          className="btn-primary"
-        >
-          {saving ? '创建中...' : `创建分镜组 (${selectedImageIds.length})`}
-        </button>
-      </div>
-      <p className="mt-2 text-xs text-ink-tertiary">已选择 {selectedImageIds.length}/{MAX_SHOTS_PER_SET} 张。点击宫格图片可调整选择和顺序。</p>
+      ) : null}
     </div>
   );
 }

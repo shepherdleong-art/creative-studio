@@ -89,16 +89,16 @@ for (const screen of SCREENS) {
   assert.ok(screen.owner.match(/^ui-\d{2}$/), `屏幕 ${screen.id} 必须写明负责票号`);
   assert.deepEqual([...screen.checks], [...ALL_CHECKS], `屏幕 ${screen.id} 默认要跑全部四项检查`);
 }
-// 已知失败必须挂在 09 上，并且只豁免「横向溢出连带」的两项 —— 画面比例与藏内容真失败不许被豁免。
+// 09 号票已经修好混剪页的横向溢出，所以这两个屏**必须没有** knownFailure 豁免 ——
+// 任何「豁免了横向滚动/控件被切」的标记都会让这两项检查对该屏失效。
+// 这条断言同时守住「修好之后忘了删标记」这个反向错误（工具侧另有
+// known-failure-not-reproduced 兜底）。
 const mixcut = SCREENS.filter((screen) => screen.id.startsWith('mixcut-'));
 assert.equal(mixcut.length, 2);
 for (const screen of mixcut) {
-  assert.equal(screen.knownFailure, 'ui-09');
-  assert.deepEqual([...screen.knownFailureChecks], ['horizontalScroll', 'clippedControls']);
-  assert.equal(screen.knownFailureChecks.includes('mediaFrames'), false, '画面比例不属于 09 的已知问题，不许豁免');
-  assert.equal(screen.knownFailureChecks.includes('hiddenOverflowContent'), false, '藏内容不属于 09 的已知问题，不许豁免');
-  assert.match(screen.knownFailureReason, /85px/);
-  assert.match(screen.knownFailureReason, /61px/);
+  assert.equal(screen.knownFailure, undefined, `混剪屏 ${screen.id} 不许再挂已知失败豁免（09 已修好）`);
+  assert.equal(screen.knownFailureChecks, undefined, `混剪屏 ${screen.id} 不许再豁免任何检查项`);
+  assert.match(screen.owner, /^ui-(09|10)$/);
 }
 assert.throws(() => validateScreens([{ id: 'Bad_Id', title: 'x', owner: 'ui-01', audience: 'employee', href: () => '/', ready: async () => {} }]), /kebab-case/);
 assert.throws(() => validateScreens([{ id: 'a', title: 'x', owner: 'ui-01', audience: 'employee', href: () => '/' }]), /ready/);

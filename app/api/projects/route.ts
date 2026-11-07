@@ -20,6 +20,8 @@ import { ProjectInfoValidationError } from '@/lib/project-info';
 import { requireAccessContext, type ResourceAccessContext } from '@/lib/media-core/access-context';
 import { bindImageScopeToProject } from '@/lib/team-service/resource-scopes';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { productionParamsFor } from '@/lib/team-service/production-defaults';
 
 
 function isRealApiKey(value: string | null | undefined): boolean {
@@ -173,9 +175,11 @@ async function __teamRoutePOST(request: NextRequest) {
     const access = requireAccessContext();
     const ownerUserId = access.resolveOwner(body.ownerUserId);
     const quality = body.quality || 'medium';
-    const timeoutMs = body.timeoutMs || 600000;
+    // ── 生产参数：server 模式一律取服务器默认值（请求里的同名字段作废）；本地版沿用请求值 ──
+    const production = productionParamsFor(readRuntimeConfig(), body);
+    const timeoutMs = production.timeoutMs;
     const maxAttempts = body.maxAttempts || 2;
-    const concurrency = body.concurrency || 10;
+    const concurrency = production.projectConcurrency;
 
     // ── Complex product workflow ──
     const sceneSeedImageId: string | undefined = body.sceneSeedImageId;
@@ -200,9 +204,9 @@ async function __teamRoutePOST(request: NextRequest) {
     db.transaction(() => {
       // Create project shell：项目名由服务端按生产身份生成，旧 productName/productCategory 不写入。
       db.prepare(`
-        INSERT INTO projects (id, name, productName, productCode, productCategory, providerId, model, prompt, negativePrompt, size, quality, concurrency, maxAttempts, status, referenceGuidanceMode, timeoutMs, workflowType, scenePrompt, shotPrompt, storeCode, productSubmodel, productionType, editorName, namingDate)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(projectId, baseName, '', identity.productCode, '', body.providerId, model, '', '', resolvedSize, quality, concurrency, maxAttempts, 'draft', 'none', timeoutMs, 'complex_product',
+        INSERT INTO projects (id, name, productName, productCode, productCategory, providerId, model, prompt, negativePrompt, size, quality, concurrency, videoConcurrency, maxAttempts, status, referenceGuidanceMode, timeoutMs, workflowType, scenePrompt, shotPrompt, storeCode, productSubmodel, productionType, editorName, namingDate)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(projectId, baseName, '', identity.productCode, '', body.providerId, model, '', '', resolvedSize, quality, concurrency, production.videoConcurrency, maxAttempts, 'draft', 'none', timeoutMs, 'complex_product',
         scenePrompt || defaultScenePrompt, syncShotPromptFromScene(scenePrompt || defaultScenePrompt, shotPrompt || defaultShotPrompt),
         identity.storeCode, identity.productSubmodel, identity.productionType, identity.editorName, namingDate);
       access.registerRootScope({ resourceType: 'project', resourceId: projectId, ownerUserId, visibility: 'private' });

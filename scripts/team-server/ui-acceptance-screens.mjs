@@ -56,6 +56,17 @@ import { CHECK_KEYS } from './ui-acceptance-checks.mjs';
 
 export const ALL_CHECKS = [...CHECK_KEYS];
 
+const heading = (page, name) => page.getByRole('heading', { name, exact: true }).first().waitFor({ timeout: 60_000 });
+const text = (page, value, exact = true) => page.getByText(value, { exact }).first().waitFor({ timeout: 60_000 });
+
+/** 新项目每一步的空状态落点：工具栏 + 五步切换 + data-testid="step-empty"。
+ * 第 1/2 步的空状态在中间栏，第 3/4/5 步是内容组件上面的提示条，两者同一个 testid。 */
+const emptyStepReady = async (page) => {
+  await page.getByTestId('page-toolbar').first().waitFor({ timeout: 60_000 });
+  await page.getByRole('tab', { name: '场景图', exact: true }).waitFor({ timeout: 60_000 });
+  await page.getByTestId('step-empty').first().waitFor({ timeout: 60_000 });
+};
+
 const base = (id, title, owner, extra) => ({
   id,
   title,
@@ -65,13 +76,9 @@ const base = (id, title, owner, extra) => ({
   ...extra,
 });
 
-// 已知问题：混剪工作台横向溢出（09 号票修）。修好后删掉这两条 knownFailure。
-const MIXCUT_KNOWN_FAILURE = 'ui-09';
-const MIXCUT_KNOWN_REASON = '混剪工作台固定为 min(1440px, 100vw-48px) 并按视口居中，凌驾于全局 980px 主栏之上，'
-  + '窗口越靠近 1440 越溢出：1536 宽多出 61px、1440/1280/1024 宽多出 85px（批量模式再宽 8px，1536 宽时宽 32px）。'
-  + '连带后果同属这个根因：顶栏「画幅 3:4 / 9:16」按钮被推到视口右边界外，被切掉一截。'
-  + '09 号票把工作台改成占满内容区后，横向滚动与按钮被切两项必须一起改回硬失败。';
-const MIXCUT_KNOWN_CHECKS = ['horizontalScroll', 'clippedControls'];
+// 09 号票：混剪页宽度已改成「团队版占满侧栏右侧内容区」，横向溢出与顶栏按钮被切
+// 两项都真修好了 —— knownFailure 标记已删除，现在必须硬通过（再挂标记会触发
+// known-failure-not-reproduced 让整轮失败）。
 
 /**
  * 一屏一个对象。改这一屏的选择器/等待点 = 改这一屏的「怎么算画出来了」，
@@ -79,17 +86,31 @@ const MIXCUT_KNOWN_CHECKS = ['horizontalScroll', 'clippedControls'];
  */
 export const SCREENS = [
   // ---------- 员工侧 ----------
-  base('home', '首页 · 运行总览（员工）', 'ui-06', {
+  // 06 号票：员工首页改版后标题是「问候语」，不再有「让今天的灵感，成为作品。」。
+  // ready 等的是这一屏特有的落点：工具栏标题条 + 「接着做」里的项目卡片/空状态。
+  base('home', '首页 · 工作台（员工）', 'ui-06', {
     href: () => '/',
-    ready: async (page) => { await page.getByRole('heading', { name: '让今天的灵感，成为作品。' }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.locator('[data-testid="page-toolbar"]').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('workbench-production-line').first().waitFor({ timeout: 60_000 });
+      // 「接着做」区块必须先画出来：有项目就是卡片，没项目就是空状态。
+      await page.getByRole('link', { name: '新建项目', exact: true }).first().waitFor({ timeout: 60_000 });
+      await page.getByText('接着做', { exact: true }).first().waitFor({ timeout: 60_000 });
+    },
   }),
   base('projects', '项目空间', 'ui-06', {
     href: () => '/projects',
     ready: async (page) => { await page.getByRole('heading', { name: '项目空间', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
+  // 06 号票：新建项目页改版后不再有 h1（标题交给工具栏），ready 等生产身份表单的
+  // 首个字段 + 项目名预览 + 创建按钮，三者都是这一屏特有的。
   base('projects-new', '新建项目', 'ui-06', {
     href: () => '/projects/new',
-    ready: async (page) => { await page.getByRole('heading', { name: '新建项目', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.getByLabel('店铺', { exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByTestId('project-name-preview').waitFor({ timeout: 60_000 });
+      await page.getByTestId('new-project-submit').waitFor({ timeout: 60_000 });
+    },
   }),
   base('canvas', '创作画布列表', 'ui-14', {
     href: () => '/canvas',
@@ -98,7 +119,13 @@ export const SCREENS = [
   }),
   base('tasks-employee', '我的任务', 'ui-12', {
     href: () => '/team/tasks',
-    ready: async (page) => { await page.getByRole('heading', { name: '团队任务', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 12 号票改版：员工页标题改由外壳工具栏按路径解析成「我的任务」，页面里不再有自己的 <h1>。
+    ready: async (page) => {
+      await page.getByTestId('page-toolbar-title').first().waitFor({ timeout: 60_000 });
+      await page.getByRole('region', { name: '筛选' }).waitFor({ timeout: 60_000 });
+      await page.getByLabel('查找任务', { exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
   }),
   base('downloads', '下载与交付', 'ui-14', {
     href: () => '/team/downloads',
@@ -121,14 +148,53 @@ export const SCREENS = [
     ready: async (page) => { await page.getByRole('heading', { name: /设置新密码|修改密码/ }).first().waitFor({ timeout: 60_000 }); },
   }),
 
+base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
+    href: () => '/',
+    ready: async (page) => { await page.getByTestId('workspace-sidebar').waitFor({ timeout: 60_000 }); },
+    actions: [async (page) => {
+      // 头像菜单是这一屏的第二个状态：展开后同样要量。
+      await page.locator("[class*='wsUser']").first().click();
+      await page.locator("[class*='wsMenu']").first().waitFor({ timeout: 30_000 });
+    }],
+  }),
+
   // ---------- 项目工作台五步 ----------
+  // 第 1/2 步（07 号票）：对照视图要求原图与结果**真的并排**，所以既量尺寸，
+  // 也断言「这一屏的关键控件画出来了」。控件断言放在 ready / actions 里，
+  // 尺寸判定仍旧只用 ui-acceptance-checks.mjs 的阈值。
   base('project-scene', '项目工作台 · 第 1 步 新场景图', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=scene`,
-    ready: async (page) => { await page.getByRole('heading', { name: '新场景图生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => {
+      await page.getByTestId('workbench-scene').waitFor({ timeout: 60_000 });
+      // 工具栏：返回 + 项目名 + 五步分段按钮 + 项目信息 + 导出项目包
+      await page.getByTestId('page-toolbar').first().waitFor({ timeout: 60_000 });
+      await page.getByRole('tab', { name: '场景图', exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByRole('button', { name: '项目信息', exact: true }).first().waitFor({ timeout: 30_000 });
+      await page.getByRole('link', { name: /导出项目包/ }).first().waitFor({ timeout: 30_000 });
+      // 默认就是对照视图：原图与结果并排两张
+      await page.getByAltText('原始场景图', { exact: true }).first().waitFor({ timeout: 30_000 });
+      // 右栏必须有「生成 N 张」按钮，且不能出现并发设置
+      await page.getByRole('button', { name: /^生成 \d+ 张$/ }).first().waitFor({ timeout: 30_000 });
+      if (await page.getByText('并发', { exact: false }).count() > 0) {
+        throw new Error('第 1 步右栏不该再有并发设置');
+      }
+    },
+  }),
+  // 第 1 步的网格视图单独量一屏：网格是另一种排版，同样不能溢出/切控件。
+  base('project-scene-grid', '项目工作台 · 第 1 步 网格视图', 'ui-07', {
+    href: ({ project }) => `/projects/${project.id}?tab=scene`,
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => {
+      await page.getByTestId('workbench-scene').waitFor({ timeout: 60_000 });
+      await page.getByRole('button', { name: '网格', exact: true }).click();
+      await page.locator('[data-testid="workbench-scene"][data-view="grid"]').waitFor({ timeout: 30_000 });
+    },
   }),
   base('project-scene-project-info-dialog', '项目工作台 · 项目信息弹窗', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=scene`,
-    ready: async (page) => { await page.getByRole('heading', { name: '新场景图生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => { await page.getByTestId('workbench-scene').waitFor({ timeout: 60_000 }); },
     actions: [async (page) => {
       await page.getByRole('button', { name: '项目信息', exact: true }).first().click();
       await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
@@ -136,7 +202,8 @@ export const SCREENS = [
   }),
   base('project-scene-log-drawer', '项目工作台 · 运行日志抽屉', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=scene`,
-    ready: async (page) => { await page.getByRole('heading', { name: '新场景图生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => { await page.getByTestId('workbench-scene').waitFor({ timeout: 60_000 }); },
     actions: [async (page) => {
       await page.getByRole('button', { name: '运行日志', exact: true }).first().click();
       await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
@@ -144,24 +211,151 @@ export const SCREENS = [
   }),
   base('project-storyboard', '项目工作台 · 第 2 步 分镜生成', 'ui-07', {
     href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
-    // 「新分镜图」在这一屏出现两次（区块标题 + 上传区标题），按标题取会撞 strict mode；
-    // 用「上传原始分镜图」这个这一屏独有的落点。
-    ready: async (page) => { await page.getByText('上传原始分镜图', { exact: true }).first().waitFor({ timeout: 60_000 }); },
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => {
+      await page.getByTestId('workbench-storyboard').waitFor({ timeout: 60_000 });
+      // 「上传原始分镜图」是这一屏左栏独有的落点（同时用于拖入与多选）。
+      await page.getByRole('button', { name: /上传原始分镜图/ }).first().waitFor({ timeout: 60_000 });
+      // 默认对照：原图与结果并排（结果可能还没生成，但两个 figcaption 必须在）
+      await page.getByAltText('原图', { exact: true }).first().waitFor({ timeout: 30_000 });
+      await page.getByText('结果', { exact: true }).first().waitFor({ timeout: 30_000 });
+      // 删除分镜组必须走确认：按钮在，点开后要有 dialog（由 actions 量）
+      await page.getByRole('button', { name: '删除', exact: true }).first().waitFor({ timeout: 30_000 });
+    },
   }),
+  base('project-storyboard-new-set', '项目工作台 · 第 2 步 新建分镜组窗口', 'ui-07', {
+    href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => { await page.getByTestId('workbench-storyboard').waitFor({ timeout: 60_000 }); },
+    actions: [async (page) => {
+      await page.getByRole('button', { name: /^新建分镜组$/ }).first().click();
+      const dialog = page.getByRole('dialog').first();
+      await dialog.waitFor({ timeout: 30_000 });
+      // 全选 → 再点一次取消全选（这一屏的核心交互，窗口里必须真的能点）
+      const selectAll = dialog.getByRole('button', { name: /^(全选|取消全选)$/ }).first();
+      await selectAll.waitFor({ timeout: 30_000 });
+      if (!/取消全选/.test(await selectAll.innerText())) {
+        await selectAll.click();
+        await dialog.getByRole('button', { name: '取消全选' }).waitFor({ timeout: 10_000 });
+      }
+      // 悬停出现「设为开场」，点一下把第二张移到第一位
+      const picks = dialog.locator('[data-testid="shot-pick"][data-picked="true"]');
+      if (await picks.count() > 1) {
+        await dialog.locator('[data-testid="set-opening"]').first().click({ force: true });
+      }
+    }],
+  }),
+  base('project-storyboard-delete-dialog', '项目工作台 · 第 2 步 删除分镜组确认', 'ui-07', {
+    href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => { await page.getByTestId('workbench-storyboard').waitFor({ timeout: 60_000 }); },
+    actions: [async (page) => {
+      await page.getByRole('button', { name: '删除', exact: true }).first().click();
+      const dialog = page.getByRole('dialog', { name: '删除这个分镜组？' });
+      await dialog.waitFor({ timeout: 30_000 });
+      await dialog.getByRole('button', { name: '取消', exact: true }).click();
+      await dialog.waitFor({ state: 'detached', timeout: 10_000 });
+    }],
+  }),
+  // 新项目每一步都有空状态（07 号票）：用空项目夹具，断言空状态真的画出来。
+  // Lead 合并 04 与 07 时的裁定：07 原本给第 4/5 步写 `checks: []`（理由是不重复量
+  // project-video / mixcut 已经在量的同一页）。但「一屏零检查」等于没量，且 04 的
+  // 清单自检要求每屏默认跑满四项。改为：这两屏照常量四项，但 **owner 指向该步的归属票**
+  // （第 4 步 ui-08、第 5 步 ui-09）——溢出归谁负责由 owner 表达，而不是靠不量来回避。
+  ...['scene', 'storyboard', 'script'].map((step) => base(
+    `project-empty-${step}`,
+    `项目工作台 · 新项目空状态（${step}）`,
+    'ui-07',
+    {
+      href: ({ emptyProject }) => `/projects/${emptyProject.id}?tab=${step}`,
+      skipUnless: 'emptyProject',
+      ready: emptyStepReady,
+    },
+  )),
+  ...['video', 'final-edit'].map((step) => base(
+    `project-empty-${step}`,
+    `项目工作台 · 新项目空状态（${step}）`,
+    step === 'video' ? 'ui-08' : 'ui-09',
+    {
+      href: ({ emptyProject }) => `/projects/${emptyProject.id}?tab=${step}`,
+      skipUnless: 'emptyProject',
+      ready: emptyStepReady,
+    },
+  )),
+
+  // 第 3 步（08 号票）：三页表单 + 卖点库 + 爆文模板。空项目夹具下也有这一屏，
+  // 所以 ready 只等「这一屏真的画出来」的落点：标题、三步切换、提供素材的重心上传区。
   base('project-script', '项目工作台 · 第 3 步 脚本生成', 'ui-08', {
     href: ({ project }) => `/projects/${project.id}?tab=script`,
-    ready: async (page) => { await page.getByRole('heading', { name: '详情页智能脚本生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.getByRole('heading', { name: '详情页智能脚本生成', exact: true }).waitFor({ timeout: 60_000 });
+      // 第 1 页的素材投放区（data-testid 由面板自己给，是这一屏独有的落点）。
+      await page.getByTestId('script-studio-upload-dropzone').waitFor({ timeout: 30_000 });
+      // 生产模式与目标时长：字数/时长提示就挂在这套参数旁边。
+      await page.getByLabel('生产模式', { exact: true }).waitFor({ timeout: 30_000 });
+    },
   }),
+  // 第 4 步（08 号票）：点选分镜组之后才是三栏工作台（左编辑 / 中预览 / 右「这条视频用的设置」+ 结果卡）。
+  // 只等标题会漏掉整页溢出——那一屏真正的排版在选中分镜组之后才出现，所以 ready 先选组。
   base('project-video', '项目工作台 · 第 4 步 视频生成', 'ui-08', {
     href: ({ project }) => `/projects/${project.id}?tab=video`,
-    ready: async (page) => { await page.getByRole('heading', { name: '视频生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => {
+      await page.getByRole('heading', { name: '视频生成', exact: true }).waitFor({ timeout: 60_000 });
+      const setSelect = page.getByLabel('选择分镜组', { exact: true });
+      await setSelect.waitFor({ timeout: 60_000 });
+      // 选验收夹具建的那个分镜组（它的名字是「验收分镜组」，选项文案带张数）。
+      const options = await setSelect.locator('option').allTextContents();
+      const target = options.find((label) => label.includes('验收分镜组'));
+      if (!target) throw new Error(`分镜组下拉里没有验收夹具的分镜组，实际选项：${options.join(' | ')}`);
+      await setSelect.selectOption({ label: target });
+      // 三栏工作台的落点：批量检查按钮（左栏）与结果栏（右栏）。
+      await page.getByRole('button', { name: /^批量检查 \d+ 个分镜$/ }).waitFor({ timeout: 60_000 });
+      await page.getByRole('button', { name: /^分镜 1$/ }).waitFor({ timeout: 30_000 });
+    },
+    actions: [
+      // 批量检查窗口：统一供应商 / 统一秒数在顶部，且秒数只列交集。
+      async (page) => {
+        await page.getByRole('button', { name: /^批量检查 \d+ 个分镜$/ }).click();
+        const dialog = page.getByRole('dialog', { name: '批量检查分镜' });
+        await dialog.waitFor({ timeout: 30_000 });
+        await dialog.getByTestId('bulk-provider').waitFor({ timeout: 30_000 });
+        await dialog.getByTestId('bulk-duration').waitFor({ timeout: 30_000 });
+        await dialog.getByTestId('bulk-duration-hint').waitFor({ timeout: 30_000 });
+      },
+    ],
   }),
   base('mixcut-single', '项目工作台 · 第 5 步 智能混剪（单条精准混剪）', 'ui-09', {
     href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
-    ready: async (page) => { await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 }); },
-    knownFailure: MIXCUT_KNOWN_FAILURE,
-    knownFailureChecks: MIXCUT_KNOWN_CHECKS,
-    knownFailureReason: MIXCUT_KNOWN_REASON,
+    ready: async (page) => {
+      await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 });
+      // 09 号票：混剪页必须占满侧栏右侧的内容区，不被侧栏盖住、不横向滚动。
+      // 这是「团队版宽度」的硬事实，只量几何不放宽尺寸阈值（阈值仍在 checks 里）。
+      await page.getByTestId('mixcut-shell').first().waitFor({ timeout: 60_000 });
+      const shell = await page.evaluate(() => {
+        const box = document.querySelector('[data-testid="mixcut-shell"]')?.getBoundingClientRect();
+        const sidebar = document.querySelector("aside[data-testid='workspace-sidebar']")?.getBoundingClientRect();
+        const frame = document.querySelector('[data-testid="mixcut-shell"]')?.parentElement?.parentElement?.getBoundingClientRect();
+        return box ? {
+          left: box.left,
+          right: box.right,
+          width: box.width,
+          sidebarRight: sidebar ? sidebar.right : null,
+          contentLeft: frame ? frame.left : null,
+          contentWidth: frame ? frame.width : null,
+        } : null;
+      });
+      if (!shell) throw new Error('混剪外壳没有画出来');
+      if (!(shell.sidebarRight !== null && shell.left >= shell.sidebarRight - 1)) {
+        throw new Error(`混剪外壳被侧栏盖住：外壳 left ${Math.round(shell.left)}px，侧栏 right ${Math.round(shell.sidebarRight ?? -1)}px`);
+      }
+      if (!(shell.contentLeft !== null && Math.abs(shell.left - shell.contentLeft) <= 1.5)) {
+        throw new Error(`混剪外壳必须从内容区左边界开始：外壳 left ${Math.round(shell.left)}px，内容区 left ${Math.round(shell.contentLeft ?? -1)}px`);
+      }
+      if (!(shell.contentWidth !== null && Math.abs(shell.width - shell.contentWidth) <= 1.5)) {
+        throw new Error(`混剪外壳必须占满内容区：外壳宽 ${Math.round(shell.width)}px，内容区宽 ${Math.round(shell.contentWidth ?? -1)}px`);
+      }
+    },
   }),
   base('mixcut-batch', '项目工作台 · 第 5 步 批量生产', 'ui-10', {
     href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
@@ -171,26 +365,83 @@ export const SCREENS = [
       await page.getByRole('tab', { name: '批量生产', exact: true }).waitFor({ state: 'visible', timeout: 30_000 });
       await page.waitForTimeout(1500);
     }],
-    knownFailure: MIXCUT_KNOWN_FAILURE,
-    knownFailureChecks: MIXCUT_KNOWN_CHECKS,
-    knownFailureReason: `${MIXCUT_KNOWN_REASON}批量面板嵌在同一个工作台外壳里，根因相同；10/11 号票改批量外壳时一并确认。`,
   }),
 
   // ---------- 管理员侧 ----------
+  // 12 号票：运行总览 + 全员任务。ready 等的是「这一屏真的画出来」的落点：
+  // 数量卡的固定标题 + 最近任务表/空状态；全员任务等筛选栏与结果说明。
   base('admin-overview', '运行总览（管理员）', 'ui-12', {
     audience: 'admin',
     href: () => '/',
-    ready: async (page) => { await page.getByText('生产有序，状态清楚。', { exact: false }).first().waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.getByRole('region', { name: '任务数量' }).waitFor({ timeout: 60_000 });
+      await page.getByTestId('count-running').waitFor({ timeout: 60_000 });
+      await page.getByRole('region', { name: '最近任务' }).waitFor({ timeout: 60_000 });
+      await page.getByRole('region', { name: '开工前还差几件事' }).waitFor({ timeout: 60_000 });
+      // 等「读取运行总览…」消失，否则数量卡还是占位符。
+      await page.getByText('读取运行总览…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
+  }),
+  base('admin-overview-pause-dialog', '运行总览 · 暂停生产确认', 'ui-12', {
+    audience: 'admin',
+    href: () => '/',
+    ready: async (page) => {
+      await page.getByRole('region', { name: '任务数量' }).waitFor({ timeout: 60_000 });
+      await page.getByText('读取运行总览…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
+    actions: [async (page) => {
+      const pause = page.getByRole('button', { name: '暂停运行', exact: true });
+      // 维护中时按钮禁用、没有确认框可量；这种情况下不硬点，交给下面这条断言说明。
+      if (!(await pause.isEnabled().catch(() => false))) return;
+      await pause.click();
+      await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
+      await page.getByRole('button', { name: '取消', exact: true }).click();
+      await page.getByRole('dialog').first().waitFor({ state: 'detached', timeout: 30_000 });
+    }],
   }),
   base('admin-tasks', '全员任务', 'ui-12', {
     audience: 'admin',
     href: () => '/team/tasks',
-    ready: async (page) => { await page.getByRole('heading', { name: '团队任务', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.getByRole('region', { name: '筛选' }).waitFor({ timeout: 60_000 });
+      await page.getByLabel('查找任务', { exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByRole('region', { name: '任务列表' }).waitFor({ timeout: 60_000 });
+      await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
   }),
-  base('admin-pools', '模型与名额（资源池与共享预算）', 'ui-13', {
+  base('admin-tasks-detail', '全员任务 · 任务详情', 'ui-12', {
+    audience: 'admin',
+    href: () => '/team/tasks',
+    // 详情需要一条真实任务；验收夹具只造了项目和供应商，所以这一屏只在有行时量。
+    ready: async (page) => {
+      await page.getByRole('region', { name: '筛选' }).waitFor({ timeout: 60_000 });
+      await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+    },
+    actions: [async (page) => {
+      const row = page.getByTestId('task-row').first();
+      if (await row.count() === 0) return;
+      await row.click();
+      await page.getByTestId('task-detail').waitFor({ timeout: 30_000 });
+    }],
+  }),
+  base('admin-pools', '模型与名额（一个名额池一行）', 'ui-13', {
     audience: 'admin',
     href: () => '/team/admin/pools',
-    ready: async (page) => { await page.getByRole('heading', { name: '资源池与共享预算', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      // 这一屏特有的落点：至少一个账号行（「一个名额池一行」），标题取第一条工具栏
+      // （外壳那条在页面登记占用后就撤下，过渡瞬间可能并存）。
+      await page.getByTestId('pool-row').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('page-toolbar-title').first().getByText('模型与名额', { exact: true }).waitFor({ timeout: 60_000 });
+    },
+    actions: [async (page) => {
+      // 展开一行：模型列表 + 正在使用的成员 + 默认收起的内部编号。
+      await page.getByRole('button', { name: /^展开 / }).first().click();
+      await page.getByText('包含的模型', { exact: true }).first().waitFor({ timeout: 30_000 });
+      const internal = page.getByText('排查用的内部编号', { exact: true }).first();
+      await internal.waitFor({ timeout: 30_000 });
+      await internal.click();
+      await page.getByText(/映射协议：|版本：/).first().waitFor({ timeout: 30_000 });
+    }],
   }),
   base('admin-users', '成员与账号', 'ui-14', {
     audience: 'admin',

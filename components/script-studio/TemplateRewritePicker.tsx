@@ -2,13 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { describeTemplateSelection, setTemplateEntryCount, toggleTemplateEntry } from '@/lib/script-studio/panel-rules';
 
 /**
- * 爆文模板勾选（迁移方案 §3.1.4 + 2026-09-17 流程修正）：
+ * 爆文模板勾选（迁移方案 §3.1.4 + 2026-09-17 流程修正 + 08 号票改版）：
  * - 系统按卖点库本地推荐（同类目优先 + 关键词命中），展示真实命中原因；
  * - 用户能看标题、参考全文、类目，勾选 1–6 个；可搜索其他可用模板；
  * - 每个模板可选生成 1 条或多条变体，全部模板合计不超过 6 条；
  * - 不自动替用户提交生成；对外 selectedIds 为展开数组（同一 id 重复 = 该模板条数）。
+ *
+ * 08 号票（V11）：规格要求「模板的参考文案、结构和匹配原因直接显示，长文能展开全文」。
+ * 所以卡片里 **参考文案默认摊开**（长文截断到若干行，按钮是「展开全文 / 收起全文」），
+ * 结构、匹配原因、类目也一律常显，不再需要先点开才能看到。
  */
 
 export interface ViralTemplateEntryView {
@@ -45,9 +50,18 @@ function TemplateCard({
   disabled: boolean;
   onToggle: () => void;
 }) {
+  // 参考文案默认摊开：长文先用 4 行截断，按钮只负责「展开全文 / 收起全文」。
   const [showFull, setShowFull] = useState(false);
+  const refText = entry.refText?.trim() || '';
+  const longRef = refText.length > 100;
+  const structureText = entry.structure?.trim()
+    ? entry.structure.trim()
+    : (entry.structureOrigin === 'fallback' ? '默认（表格未提供）' : '');
   return (
-    <label className={`block rounded-[14px] border p-3 text-sm transition-colors ${checked ? 'border-accent bg-accent/[0.04]' : 'border-hairline bg-surface'} ${disabled && !checked ? 'opacity-55' : ''}`}>
+    <label
+      className={`block rounded-[14px] border p-3 text-sm transition-colors ${checked ? 'border-accent bg-accent/[0.04]' : 'border-hairline bg-surface'} ${disabled && !checked ? 'opacity-55' : ''}`}
+      data-testid="viral-template-card"
+    >
       <span className="flex items-start gap-2.5">
         <input type="checkbox" className="mt-1" checked={checked} disabled={disabled && !checked} onChange={onToggle} aria-label={`选择模板：${entry.name || entry.title}`} />
         <span className="min-w-0 flex-1">
@@ -57,22 +71,42 @@ function TemplateCard({
             {entry.structureOrigin === 'fallback' && <span className="rounded-full bg-surface-subtle px-2 py-0.5 text-[0.62rem] text-ink-tertiary" title="表格未提供结构，使用默认结构">结构默认</span>}
           </span>
           {entry.title && entry.title !== entry.name && <span className="mt-0.5 block text-xs text-ink-secondary">{entry.title}</span>}
+
+          {/* 结构：常显，不用点开。 */}
+          <span className="mt-1 block text-[0.68rem] text-ink-secondary" data-testid="viral-template-structure">
+            <span className="font-semibold text-ink">结构</span>：{structureText || '未提供'}
+          </span>
+
+          {/* 匹配原因：常显，如实展示命中项。 */}
           {reasons && reasons.length > 0 && (
-            <span className="mt-1 flex flex-wrap gap-1">
+            <span className="mt-1 flex flex-wrap gap-1" data-testid="viral-template-reasons">
               {reasons.map((reason) => (
                 <span key={reason} className="rounded-full bg-ok-tint px-2 py-0.5 text-[0.62rem] font-semibold text-ok">{reason}</span>
               ))}
             </span>
           )}
-          <button
-            type="button"
-            className="mt-1.5 text-xs text-accent"
-            onClick={(event) => { event.preventDefault(); setShowFull((current) => !current); }}
-          >
-            {showFull ? '收起参考文案' : '查看参考全文'}
-          </button>
-          {showFull && (
-            <pre className="mt-1.5 max-h-44 overflow-y-auto whitespace-pre-wrap rounded-[10px] bg-surface-subtle p-2.5 text-xs leading-5 text-ink-secondary">{entry.refText}</pre>
+
+          {/* 参考文案：默认摊开。长文先截断到 4 行，点按钮展开全文。 */}
+          {refText ? (
+            <span className="mt-1.5 block" data-testid="viral-template-ref">
+              {showFull || !longRef ? (
+                <span className="block max-h-44 overflow-y-auto whitespace-pre-wrap rounded-[10px] bg-surface-subtle p-2.5 text-xs leading-5 text-ink-secondary">{refText}</span>
+              ) : (
+                <span className="line-clamp-4 block whitespace-pre-wrap rounded-[10px] bg-surface-subtle p-2.5 text-xs leading-5 text-ink-secondary">{refText}</span>
+              )}
+            </span>
+          ) : (
+            <span className="mt-1.5 block text-[0.68rem] text-ink-tertiary" data-testid="viral-template-ref">这条模板没有参考文案。</span>
+          )}
+          {longRef && (
+            <button
+              type="button"
+              className="mt-1.5 text-xs text-accent"
+              aria-expanded={showFull}
+              onClick={(event) => { event.preventDefault(); setShowFull((current) => !current); }}
+            >
+              {showFull ? '收起全文' : '展开全文'}
+            </button>
           )}
         </span>
       </span>
@@ -149,38 +183,26 @@ export default function TemplateRewritePicker({
     }
   }, []);
 
+  /** 勾选 / 取消：合计上限沿用 `panel-rules`（现有 6 条规则），不在这里另写一份。 */
   const toggle = (id: string) => {
     if (disabled) return;
-    if (selectedIds.includes(id)) {
-      onChange(selectedIds.filter((item) => item !== id));
-    } else if (maxCount === 1) {
-      onChange([id]);
-    } else if (selectedIds.length < maxCount) {
-      onChange([...selectedIds, id]);
+    if (maxCount === 1) {
+      onChange(selectedIds.includes(id) ? [] : [id]);
+      return;
     }
+    onChange(toggleTemplateEntry(selectedIds, id, maxCount));
   };
 
-  /** 调整某个模板的生成条数：保持该模板在生成顺序中的首个位置，总量不超过 6 条。 */
+  /** 调整某个模板的生成条数：保持该模板在生成顺序中的首个位置，总量不超过上限。 */
   const setCount = (id: string, nextCount: number) => {
     if (disabled) return;
-    const othersTotal = selectedIds.filter((item) => item !== id).length;
-    if (nextCount < 1 || othersTotal + nextCount > maxCount) return;
-    const next: string[] = [];
-    let placed = false;
-    for (const item of selectedIds) {
-      if (item !== id) {
-        next.push(item);
-        continue;
-      }
-      if (!placed) {
-        for (let index = 0; index < nextCount; index++) next.push(id);
-        placed = true;
-      }
-    }
-    onChange(next);
+    const next = setTemplateEntryCount(selectedIds, id, nextCount, maxCount);
+    if (next.join('\u0000') !== selectedIds.join('\u0000')) onChange(next);
   };
 
   const recommendedIds = useMemo(() => new Set(recommendations.map((item) => item.entry.id)), [recommendations]);
+  /** 合计条数 / 剩余可加：与面板同一份纯函数（上限 6 条沿用现有规则）。 */
+  const selection = useMemo(() => describeTemplateSelection(selectedIds, maxCount), [selectedIds, maxCount]);
   /** 已勾选按模板分组（首个出现位置 = 生成顺序），count 为该模板生成条数。 */
   const selectedGroups = useMemo(() => {
     const all = [...recommendations.map((item) => item.entry), ...(searchResults ?? [])];
@@ -208,8 +230,8 @@ export default function TemplateRewritePicker({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-ink-secondary">
-          已选 <strong className={selectedGroups.length > 0 ? 'text-accent' : ''}>{selectedGroups.length}</strong> 个模板 · 共 <strong className={selectedIds.length > 0 ? 'text-accent' : ''}>{selectedIds.length}</strong> / {maxCount} 条{maxCount === 1 ? '（为当前脚本生成一个新版本）' : '（同一模板多条生成不同变体）'}
+        <p className="text-xs text-ink-secondary" data-testid="template-selection-summary">
+          已选 <strong className={selection.templateCount > 0 ? 'text-accent' : ''}>{selection.templateCount}</strong> 个模板 · 共 <strong className={selection.totalCount > 0 ? 'text-accent' : ''}>{selection.totalCount}</strong> / {maxCount} 条{maxCount === 1 ? '（为当前脚本生成一个新版本）' : '（同一模板多条生成不同变体）'}
         </p>
         <label className="flex items-center gap-1.5 text-xs text-ink-secondary">
           <input type="checkbox" checked={expandBeyond} onChange={(event) => setExpandBeyond(event.target.checked)} disabled={disabled} />
