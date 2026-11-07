@@ -2,6 +2,8 @@ import { getDb } from './db.ts';
 import { writeLog } from './logger.ts';
 import type { ExecutionModuleLifecycle } from './media-core/execution/contracts.ts';
 import { drainImageQueues, runQueue } from './queue.ts';
+import { readRuntimeConfig } from './team-service/config.ts';
+import { productionParamsFor } from './team-service/production-defaults.ts';
 import {
   DEFAULT_VIDEO_CONCURRENCY,
   DEFAULT_VIDEO_TIMEOUT_MS,
@@ -17,6 +19,8 @@ export function createLegacyMediaLifecycle(): ExecutionModuleLifecycle {
     recover() {},
     start() {
       const db = getDb();
+      const runtimeConfig = readRuntimeConfig();
+      const serverMode = runtimeConfig.mode === 'server';
       const imageProjects = db.prepare(`
         SELECT p.id, p.concurrency, p.maxAttempts, p.timeoutMs
         FROM projects p
@@ -31,11 +35,16 @@ export function createLegacyMediaLifecycle(): ExecutionModuleLifecycle {
         )
       `).all() as Array<{ id: string; concurrency: number; maxAttempts: number; timeoutMs: number }>;
       for (const project of imageProjects) {
+        // 恢复也走同一套裁决：server 模式用服务器默认并发/超时，本地版沿用项目存值。
+        const production = productionParamsFor(runtimeConfig, {
+          concurrency: project.concurrency,
+          timeoutMs: project.timeoutMs,
+        });
         void runQueue({
           projectId: project.id,
-          concurrency: Math.max(1, project.concurrency || 1),
+          concurrency: Math.max(1, production.projectConcurrency),
           maxAttempts: Math.max(1, project.maxAttempts || 2),
-          timeoutMs: Math.max(1, project.timeoutMs || 600_000),
+          timeoutMs: Math.max(1, production.timeoutMs),
         }).catch((error) => {
           writeLog({
             jobId: '', projectId: project.id, level: 'error',
@@ -57,10 +66,15 @@ export function createLegacyMediaLifecycle(): ExecutionModuleLifecycle {
             )
         )
       `).all() as Array<{ id: string; videoConcurrency: number | null }>;
+      // server 模式下队列恢复也按服务器统一的视频并发；本地版仍按项目存值。
+      const serverVideoConcurrency = serverMode
+        ? productionParamsFor(readRuntimeConfig()).videoConcurrency
+        : null;
       for (const project of videoProjects) {
         void runVideoQueue({
           projectId: project.id,
-          concurrency: Math.max(1, Math.min(10, Number(project.videoConcurrency) || DEFAULT_VIDEO_CONCURRENCY)),
+          concurrency: serverVideoConcurrency
+            ?? Math.max(1, Math.min(10, Number(project.videoConcurrency) || DEFAULT_VIDEO_CONCURRENCY)),
           timeoutMs: DEFAULT_VIDEO_TIMEOUT_MS,
         }).catch((error) => {
           writeLog({

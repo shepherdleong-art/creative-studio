@@ -5,6 +5,9 @@ import Link from 'next/link';
 import { addUsageDays, usagePresetRange, type UsageDatePreset } from '@/lib/usage-date-range';
 import { CONCURRENCY_SOURCE_LABELS, TASK_MODULE_LABELS, TASK_STATUS_LABELS, WAITING_REASON_LABELS } from '@/lib/team-task-labels';
 import type { TeamMemberSummary, TeamModelUsage, TeamUsageAttempt, TeamUsageMember, TeamUsageTrendPoint } from '@/lib/team-service/usage';
+import PageToolbar from './PageToolbar';
+import { useTeamRole } from './useTeamRole';
+import { EmptyState, GroupList, GroupRow, Segmented, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
 
 type Period = UsageDatePreset | 'custom';
 type TeamUsageResponse = {
@@ -46,10 +49,11 @@ function amount(item: TeamUsageAttempt): string {
   return money(item.actualMinor);
 }
 
+/** 区块标题（原型 `.h4` + 说明）：右侧留一块给范围摘要。 */
 function SectionTitle({ title, note, aside }: { title: string; note: string; aside?: string }) {
   return <div className="flex flex-wrap items-start justify-between gap-3">
-    <div><h2 className="text-lg font-semibold tracking-tight text-ink">{title}</h2><p className="mt-1 text-xs leading-5 text-ink-tertiary">{note}</p></div>
-    {aside && <span className="text-xs text-ink-tertiary">{aside}</span>}
+    <div><h2 className="text-[15px] font-semibold tracking-tight text-ink">{title}</h2><p className="mt-1 text-[12px] leading-5 text-ink-tertiary">{note}</p></div>
+    {aside && <span className="tnum text-[12px] text-ink-tertiary">{aside}</span>}
   </div>;
 }
 
@@ -68,13 +72,13 @@ function QuotaCards({ member, quota, detail }: { member: TeamMemberSummary; quot
   return <section className="card p-5" aria-label={quota && !detail ? '团队额度' : '我的额度'}>
     <SectionTitle title={quota && !detail ? '团队额度' : `${member.displayName}的额度`}
       note={`${member.displayName}（${member.employeeId}） · 北京时间自然月，不随用量筛选变化`} aside={quota?.accountingPeriod} />
-    <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {cards.map(([label, value, note]) => <div key={label} className="min-w-0 rounded-xl bg-surface-subtle p-4">
-        <p className="text-xs text-ink-tertiary">{label}</p><p className="mt-2 break-words text-xl font-semibold tracking-tight text-ink">{value}</p><p className="mt-1 text-xs text-ink-tertiary">{note}</p>
+    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {cards.map(([label, value, note]) => <div key={label} className="tile min-w-0 p-4">
+        <p className="text-[12px] text-ink-tertiary">{label}</p><p className="tnum mt-1.5 break-words text-[20px] font-semibold tracking-tight text-ink">{value}</p><p className="mt-1 text-[12px] text-ink-tertiary">{note}</p>
       </div>)}
     </div>
-    {member.paused && <p className="mt-4 text-xs text-warn">已暂停新的付费生成；仍可登录、编辑、查看和下载，已受理任务继续回收。</p>}
-    <p className="mt-3 text-xs leading-5 text-ink-tertiary">并发来源：{CONCURRENCY_SOURCE_LABELS[member.concurrencySource]}。个人上限不预留共享池名额；{member.waitingReason ? `等待原因：${WAITING_LABELS[member.waitingReason] ?? member.waitingReason}。` : '当前没有等待中的任务。'}</p>
+    {member.paused && <p className="mt-3 flex items-center gap-2 text-[12px] text-warn"><StatusDot tone="warn" />已暂停新的付费生成；仍可登录、编辑、查看和下载，已受理任务继续回收。</p>}
+    <p className="mt-2 text-[12px] leading-5 text-ink-tertiary">并发来源：{CONCURRENCY_SOURCE_LABELS[member.concurrencySource]}。个人上限不预留共享池名额；{member.waitingReason ? `等待原因：${WAITING_LABELS[member.waitingReason] ?? member.waitingReason}。` : '当前没有等待中的任务。'}</p>
   </section>;
 }
 
@@ -101,7 +105,7 @@ function TrendChart({ trend, models }: { trend: TeamUsageTrendPoint[]; models: T
     setInspected({ index, model: closest.model });
   };
   return <div className="relative min-w-0">
-    <div className="overflow-x-auto rounded-xl bg-surface-subtle/60 px-2 py-3">
+    <div className="overflow-x-auto rounded-[11px] bg-group px-2 py-3">
       <svg viewBox={`0 0 ${width} ${height}`} className="h-auto w-full min-w-[620px]" role="img" aria-label="当前范围每日模型费用趋势" onPointerMove={inspect} onPointerLeave={() => setInspected(null)} onPointerCancel={() => setInspected(null)}>
         {[0, 0.5, 1].map(ratio => <g key={ratio}><line x1={padding.left} x2={width - padding.right} y1={padding.top + plotHeight * ratio} y2={padding.top + plotHeight * ratio} stroke="var(--color-hairline)" /><text x={padding.left - 12} y={padding.top + plotHeight * ratio + 4} textAnchor="end" className="fill-ink-tertiary text-[12px]">{money(Math.round(maximum * (1 - ratio)))}</text></g>)}
         {trend.map((point, index) => {
@@ -113,8 +117,8 @@ function TrendChart({ trend, models }: { trend: TeamUsageTrendPoint[]; models: T
         {!activeModels.length && <text x={width / 2} y={height / 2} textAnchor="middle" className="fill-ink-tertiary text-sm">当前范围暂无已知费用记录</text>}
       </svg>
     </div>
-    {inspected && trend[inspected.index] && <div role="tooltip" className="pointer-events-none absolute top-3 z-10 rounded-xl border border-hairline bg-surface px-4 py-3 text-xs shadow-lg" style={inspected.index < trend.length / 2 ? { right: 16 } : { left: 16 }}><p className="text-ink-tertiary">{trend[inspected.index].date}</p><p className="mt-1 max-w-64 break-all font-medium text-ink">{inspected.model}</p><p className="mt-1 font-semibold text-ink">{money(trend[inspected.index].byModel[inspected.model] ?? 0)}</p></div>}
-    <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-xs text-ink-secondary">{models.map(model => <button type="button" key={model.model} className="inline-flex max-w-full items-center gap-2 text-left" onFocus={() => setInspected({ index: Math.max(0, trend.length - 1), model: model.model })} onBlur={() => setInspected(null)} onKeyDown={event => {
+    {inspected && trend[inspected.index] && <div role="tooltip" className="pointer-events-none absolute top-3 z-10 rounded-[11px] border border-hairline bg-surface px-4 py-3 text-[12px] shadow-lg" style={inspected.index < trend.length / 2 ? { right: 16 } : { left: 16 }}><p className="text-ink-tertiary">{trend[inspected.index].date}</p><p className="mt-1 max-w-64 break-all font-medium text-ink">{inspected.model}</p><p className="tnum mt-1 font-semibold text-ink">{money(trend[inspected.index].byModel[inspected.model] ?? 0)}</p></div>}
+    <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-[12px] text-ink-secondary">{models.map(model => <button type="button" key={model.model} className="inline-flex max-w-full items-center gap-2 text-left" onFocus={() => setInspected({ index: Math.max(0, trend.length - 1), model: model.model })} onBlur={() => setInspected(null)} onKeyDown={event => {
       if (event.key === 'Escape') setInspected(null);
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
       event.preventDefault();
@@ -127,23 +131,28 @@ function ModelAnalysis({ models, trend, totals }: { models: TeamModelUsage[]; tr
   const total = models.reduce((sum, model) => sum + model.chargedMinor, 0);
   return <section className="card p-5" aria-label="模型消耗排行与趋势">
     <SectionTitle title="模型消耗排行与趋势" note="按当前日期和筛选范围汇总 · 已计含已结算、预留与不确定费用" aside={`${models.reduce((sum, model) => sum + model.callCount, 0)} 次调用 · ${money(total)}`} />
-    <div className="mt-5 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,1fr)] xl:items-start">
-      <div className="min-w-0"><h3 className="mb-3 text-sm font-medium text-ink">每日模型费用</h3><TrendChart trend={trend} models={models} /></div>
-      <div className="min-w-0"><h3 className="mb-3 text-sm font-medium text-ink">模型费用统计</h3><div className="overflow-x-auto"><table className="w-full min-w-[480px] text-left text-sm"><thead className="border-b border-hairline text-xs text-ink-tertiary"><tr><th className="px-2 py-2 font-medium">模型 / 模块</th><th className="px-2 py-2 font-medium">调用</th><th className="px-2 py-2 text-right font-medium">已计费用</th><th className="px-2 py-2 text-right font-medium">占比</th></tr></thead><tbody className="divide-y divide-hairline">{models.map(model => <tr key={model.model} className="align-top"><td className="max-w-56 px-2 py-3"><p className="break-all font-medium text-ink">{model.model}</p><p className="mt-1 text-xs text-ink-tertiary">{model.modules.map(module => TASK_MODULE_LABELS[module] ?? module).join('、')}</p></td><td className="whitespace-nowrap px-2 py-3 text-ink-secondary">{model.callCount} 次</td><td className="whitespace-nowrap px-2 py-3 text-right font-medium text-ink">{money(model.chargedMinor)}</td><td className="px-2 py-3 text-right text-xs text-ink-secondary">{model.percentage.toFixed(1)}%<div className="ml-auto mt-2 h-1.5 w-20 overflow-hidden rounded-full bg-surface-subtle"><div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, model.percentage)}%` }} /></div></td></tr>)}</tbody></table>{models.length === 0 && <p className="py-10 text-center text-sm text-ink-tertiary">当前范围暂无模型调用</p>}</div><p className="mt-4 text-xs leading-5 text-ink-tertiary">未定价 {totals.unpricedCount} 次 · 不确定 {totals.uncertainCount} 次，不显示为零元。</p></div>
+    <div className="mt-4 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,1fr)] xl:items-start">
+      <div className="min-w-0"><h3 className="mb-3 text-[13px] font-medium text-ink">每日模型费用</h3><TrendChart trend={trend} models={models} /></div>
+      <div className="min-w-0"><h3 className="mb-3 text-[13px] font-medium text-ink">模型费用统计</h3><div className="overflow-x-auto"><table className="data-table min-w-[480px]"><thead><tr><th>模型 / 模块</th><th>调用</th><th className="num">已计费用</th><th className="num">占比</th></tr></thead><tbody>{models.map(model => <tr key={model.model} className="align-top"><td className="max-w-56"><p className="break-all font-medium text-ink">{model.model}</p><p className="mt-1 text-[12px] text-ink-tertiary">{model.modules.map(module => TASK_MODULE_LABELS[module] ?? module).join('、')}</p></td><td className="whitespace-nowrap text-ink-secondary">{model.callCount} 次</td><td className="num whitespace-nowrap font-medium text-ink">{money(model.chargedMinor)}</td><td className="num"><span className="text-[12px] text-ink-secondary">{model.percentage.toFixed(1)}%</span><span className="ml-auto mt-2 block h-1.5 w-20 overflow-hidden rounded-full" style={{ background: 'var(--color-track)' }}><span className="block h-full rounded-full" style={{ width: `${Math.min(100, model.percentage)}%`, background: 'var(--color-accent)' }} /></span></td></tr>)}</tbody></table>{models.length === 0 && <EmptyState icon="table" title="当前范围暂无模型调用" description="换个日期范围或清空模型筛选再试。" />}</div><p className="mt-3 text-[12px] leading-5 text-ink-tertiary">未定价 {totals.unpricedCount} 次 · 不确定 {totals.uncertainCount} 次，不显示为零元。</p></div>
     </div>
   </section>;
 }
 
 function MemberTable({ members, onOpen }: { members: TeamUsageMember[]; onOpen: (id: string) => void }) {
-  return <section className="card p-5" aria-label="成员用量"><SectionTitle title="成员用量" note="调用与筛选费用属于当前范围；额度与本月已计属于北京时间自然月" aside={`${members.length} 位成员`} /><div className="mt-4 overflow-x-auto"><table className="w-full min-w-[960px] text-left text-sm"><thead className="border-b border-hairline text-xs text-ink-tertiary"><tr><th className="px-3 py-2 font-medium">成员</th><th className="px-3 py-2 font-medium">调用</th><th className="px-3 py-2 font-medium">筛选期已计</th><th className="px-3 py-2 font-medium">本月已计</th><th className="px-3 py-2 font-medium">月度额度</th><th className="px-3 py-2 font-medium">剩余可用</th><th className="px-3 py-2" /></tr></thead><tbody className="divide-y divide-hairline">{members.map(member => <tr key={member.userId}><td className="px-3 py-3"><p className="font-medium text-ink">{member.displayName}</p><p className="mt-1 text-xs text-ink-tertiary">{member.employeeId} · {member.role === 'admin' ? '管理员' : '员工'}</p></td><td className="px-3 py-3 text-ink-secondary">{member.callCount} 次</td><td className="px-3 py-3 font-medium text-ink">{money(member.rangeChargedMinor)}</td><td className="px-3 py-3 text-ink-secondary">{money(member.monthChargedMinor)}</td><td className="px-3 py-3 text-ink-secondary">{money(member.monthlyLimitMinor)}</td><td className="px-3 py-3 text-ink-secondary">{money(member.remainingMinor)}</td><td className="px-3 py-3 text-right"><button className="btn-secondary btn-sm whitespace-nowrap" onClick={() => onOpen(member.userId)} aria-label={`查看${member.displayName}的用量`}>查看用量</button></td></tr>)}</tbody></table></div></section>;
+  return <section className="card p-5" aria-label="成员用量"><SectionTitle title="成员用量" note="调用与筛选费用属于当前范围；额度与本月已计属于北京时间自然月" aside={`${members.length} 位成员`} /><div className="mt-4 overflow-x-auto"><table className="data-table min-w-[960px]"><thead><tr><th>成员</th><th>调用</th><th>筛选期已计</th><th>本月已计</th><th>月度额度</th><th>剩余可用</th><th /></tr></thead><tbody>{members.map(member => <tr key={member.userId}><td><p className="font-medium text-ink">{member.displayName}</p><p className="mt-1 text-[12px] text-ink-tertiary">{member.employeeId} · {member.role === 'admin' ? '管理员' : '员工'}</p></td><td className="text-ink-secondary">{member.callCount} 次</td><td className="font-medium text-ink">{money(member.rangeChargedMinor)}</td><td className="text-ink-secondary">{money(member.monthChargedMinor)}</td><td className="text-ink-secondary">{money(member.monthlyLimitMinor)}</td><td className="text-ink-secondary">{money(member.remainingMinor)}</td><td className="text-right"><button className="cap" onClick={() => onOpen(member.userId)} aria-label={`查看${member.displayName}的用量`}>查看用量</button></td></tr>)}</tbody></table></div></section>;
 }
 
 function UsageDetails({ items, canViewTeam }: { items: TeamUsageAttempt[]; canViewTeam: boolean }) {
-  return <section className="card p-5" aria-label="调用明细"><SectionTitle title="调用明细" note="按时间倒序 · 展开查看任务、请求与错误关联" aside={`${items.length} 条记录`} /><div className="mt-4 overflow-x-auto"><table className="w-full min-w-[800px] table-fixed text-left text-sm"><thead className="border-b border-hairline text-xs text-ink-tertiary"><tr><th className="w-[19%] px-3 py-2 font-medium">时间{canViewTeam ? ' / 成员' : ''}</th><th className="w-[24%] px-3 py-2 font-medium">模型 / 模块</th><th className="w-[16%] px-3 py-2 font-medium">结果</th><th className="w-[17%] px-3 py-2 text-right font-medium">费用</th><th className="w-[24%] px-3 py-2 font-medium">调用详情</th></tr></thead><tbody className="divide-y divide-hairline">{items.map(item => <tr key={item.attemptId} className="align-top"><td className="px-3 py-3 text-ink-secondary"><div>{new Date(item.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</div>{canViewTeam && <div className="mt-1 text-xs">{item.actorDisplayName} · {item.employeeId}</div>}</td><td className="break-all px-3 py-3 text-ink-secondary">{item.model}<div className="mt-1 text-xs text-ink-tertiary">{TASK_MODULE_LABELS[item.module] ?? item.module}</div></td><td className="px-3 py-3 text-ink-secondary">{TASK_STATUS_LABELS[item.outcome ?? item.submissionState] ?? item.outcome ?? item.submissionState}</td><td className="px-3 py-3 text-right font-medium text-ink">{amount(item)}</td><td className="px-3 py-3 text-xs text-ink-tertiary"><details><summary className="cursor-pointer text-accent">查看任务与请求</summary><div className="mt-2 space-y-2 break-all"><div>任务：{item.taskId}</div><div>上游请求：{item.remoteId ?? '尚无回执'}</div><div>业务 {item.businessAttemptNo} · 提交 {item.submitRound} · 传输 {item.transportSeq}</div>{item.errorId && <Link className="text-accent" href={`/team/errors?errorId=${item.errorId}`}>查看错误</Link>}</div></details></td></tr>)}</tbody></table>{items.length === 0 && <p className="py-10 text-center text-sm text-ink-tertiary">当前范围没有服务器调用记录。</p>}</div></section>;
+  return <section className="card p-5" aria-label="调用明细"><SectionTitle title="调用明细" note="按时间倒序 · 展开查看任务、请求与错误关联" aside={`${items.length} 条记录`} /><div className="mt-4 overflow-x-auto">{items.length === 0 ? <EmptyState icon="logs" title="当前范围没有服务器调用记录" description="换个日期范围后重试，本地 Agent 调用不计入这里。" /> : <table className="data-table min-w-[800px] table-fixed"><thead><tr><th className="w-[19%]">时间{canViewTeam ? ' / 成员' : ''}</th><th className="w-[24%]">模型 / 模块</th><th className="w-[16%]">结果</th><th className="num w-[17%]">费用</th><th className="w-[24%]">调用详情</th></tr></thead><tbody>{items.map(item => <tr key={item.attemptId} className="align-top"><td className="text-ink-secondary"><div className="tnum">{new Date(item.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</div>{canViewTeam && <div className="mt-1 text-[12px]">{item.actorDisplayName} · {item.employeeId}</div>}</td><td className="break-all text-ink-secondary">{item.model}<div className="mt-1 text-[12px] text-ink-tertiary">{TASK_MODULE_LABELS[item.module] ?? item.module}</div></td><td className="text-ink-secondary">{TASK_STATUS_LABELS[item.outcome ?? item.submissionState] ?? item.outcome ?? item.submissionState}</td><td className="num font-medium text-ink">{amount(item)}</td><td className="text-[12px] text-ink-tertiary"><details><summary className="cursor-pointer text-accent">查看任务与请求</summary><div className="mt-2 space-y-2 break-all"><div>任务：{item.taskId}</div><div>上游请求：{item.remoteId ?? '尚无回执'}</div><div>业务 {item.businessAttemptNo} · 提交 {item.submitRound} · 传输 {item.transportSeq}</div>{item.errorId && <Link className="text-accent" href={`/team/errors?errorId=${item.errorId}`}>查看错误</Link>}</div></details></td></tr>)}</tbody></table>}</div></section>;
 }
 
+/**
+ * 费用与用量（团队版）。14 号票只换外观：工具栏、分段按钮、分组列表、标签、
+ * 空状态与表格换成 02 号票的共用部件；接口、字段与信息结构不变。
+ */
 export default function TeamUsagePanel() {
   const server = useSyncExternalStore(subscribe, isServer, serverSnapshot);
+  const teamRole = useTeamRole();
   const [period, setPeriod] = useState<Period>('month');
   const initial = useMemo(() => usagePresetRange('month'), []);
   const [from, setFrom] = useState(initial.from); const [to, setTo] = useState(initial.to);
@@ -186,14 +195,58 @@ export default function TeamUsagePanel() {
   if (model) exportParams.set('model', model);
   if (outcome) exportParams.set('outcome', outcome);
   if (selectedMember) exportParams.set('actorUserId', selectedMember);
+  const showingTeam = Boolean(selectedMember) || data?.scope === 'team';
 
-  return <div className="min-w-0 space-y-5 overflow-hidden" aria-label="费用与用量">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="text-3xl font-semibold tracking-tight text-ink">费用与用量</h1><p className="mt-2 text-sm leading-6 text-ink-secondary">{selectedMember && member ? `${member.displayName}的模型消耗与调用记录。` : data?.scope === 'team' ? '团队额度、模型消耗和成员调用，一处看清。' : '查看个人额度、模型消耗和实际调用记录。'}金额为工作台记录，不代表供应商最终账单。</p></div><div className="flex flex-wrap items-center gap-2">{data?.canViewTeam && <div className="flex gap-2" role="group" aria-label="用量统计范围"><button className={`btn-sm ${!selectedMember && scope === 'self' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => changeScope('self')}>仅看自己</button><button className={`btn-sm ${selectedMember || scope === 'team' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => changeScope('team')}>全团队</button></div>}{data?.canViewTeam && <a className="btn-secondary btn-sm" href={`/api/team/usage/export?${exportParams}`}>导出 CSV</a>}</div></div>
-    {waiting && <p className="rounded-lg bg-warn-tint px-3 py-2 text-xs text-warn" role="status">{waiting}</p>}
-    {selectedMember && <button className="btn-secondary btn-sm" onClick={() => { setSelectedMember(null); setData(null); }}>← 返回全团队</button>}
+  return <div className="min-w-0 space-y-4" aria-label="费用与用量">
+    {teamRole ? <PageToolbar
+      role={teamRole}
+      subtitle={selectedMember && member
+        ? `${member.displayName}的模型消耗与调用记录。金额为工作台记录，不代表供应商最终账单。`
+        : showingTeam
+          ? '团队额度、模型消耗和成员调用，一处看清。金额为工作台记录，不代表供应商最终账单。'
+          : '查看个人额度、模型消耗和实际调用记录。金额为工作台记录，不代表供应商最终账单。'}
+      actions={data?.canViewTeam ? <a className="cap" href={`/api/team/usage/export?${exportParams}`}>导出 CSV</a> : undefined}
+    /> : null}
+
+    {data?.canViewTeam && (
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Segmented
+          label="用量统计范围"
+          value={showingTeam ? 'team' : 'self'}
+          onChange={(next) => changeScope(next)}
+          options={[{ value: 'self', label: '仅看自己' }, { value: 'team', label: '全团队' }]}
+        />
+        {selectedMember && <ToolbarButton onClick={() => { setSelectedMember(null); setData(null); }}>← 返回全团队</ToolbarButton>}
+      </div>
+    )}
+
+    {waiting && (
+      <p className="flex items-center gap-2 rounded-[var(--radius-control)] bg-warn-tint px-3 py-2 text-[12px] text-warn" role="status">
+        <StatusDot tone="warn" />{waiting}
+      </p>
+    )}
     {member && <QuotaCards member={member} quota={data?.teamQuota ?? null} detail={Boolean(selectedMember) || data?.scope === 'self'} />}
-    <section className="card p-5" aria-label="用量筛选"><div className="flex flex-wrap items-end gap-3"><div className="flex flex-wrap gap-2" role="group" aria-label="团队用量账期">{PERIODS.map(item => <button key={item.key} className={`btn-sm ${period === item.key ? 'btn-primary' : 'btn-secondary'}`} aria-pressed={period === item.key} onClick={() => selectPeriod(item.key)}>{item.label}</button>)}</div>{period === 'custom' && <><label className="text-xs text-ink-secondary">开始<input type="date" className="input-field mt-1" value={from} max={to} onChange={event => setFrom(event.target.value)} /></label><label className="text-xs text-ink-secondary">结束（含）<input type="date" className="input-field mt-1" value={to} min={from} onChange={event => setTo(event.target.value)} /></label></>}<label className="min-w-48 flex-1 text-xs text-ink-secondary">模型<select className="input-field mt-1" value={model} onChange={event => setModel(event.target.value)}><option value="">全部模型</option>{data?.modelOptions.map(option => <option key={option} value={option}>{option}</option>)}</select></label><label className="text-xs text-ink-secondary">结果<select className="input-field mt-1" value={outcome} onChange={event => setOutcome(event.target.value)}><option value="">全部结果</option><option value="succeeded">成功</option><option value="failed">失败</option></select></label><button className="btn-secondary btn-sm" onClick={() => setNonce(value => value + 1)}>刷新</button></div></section>
-    {error && <div role="alert" className="card border-fail/25 bg-fail-tint p-5 text-sm text-fail"><p>{error}</p><button className="btn-secondary btn-sm mt-3" onClick={() => setNonce(value => value + 1)}>重新加载</button></div>}
-    {loading && !data ? <div className="card py-20 text-center text-sm text-ink-tertiary" role="status">读取团队用量…</div> : data && <><ModelAnalysis models={data.models} trend={data.trend} totals={data.totals} />{data.canViewTeam && data.scope === 'team' && !selectedMember && <MemberTable members={data.members} onOpen={id => { setSelectedMember(id); setData(null); }} />}<UsageDetails items={data.items} canViewTeam={data.canViewTeam} /><p className="text-xs leading-5 text-ink-tertiary">{data.costNotice} 本地 Agent 不计入；未定价与不确定费用不显示为 0，也不代表供应商最终账单。</p></>}
+
+    <GroupList>
+      <GroupRow label="账期" stacked>
+        <div className="flex flex-wrap items-center gap-2">
+          <Segmented label="团队用量账期" size="small" value={period} onChange={selectPeriod} options={PERIODS.map(item => ({ value: item.key, label: item.label }))} />
+          {period === 'custom' && <>
+            <label className="text-[12px] text-ink-secondary">开始<input type="date" className="input-field mt-1" value={from} max={to} onChange={event => setFrom(event.target.value)} /></label>
+            <label className="text-[12px] text-ink-secondary">结束（含）<input type="date" className="input-field mt-1" value={to} min={from} onChange={event => setTo(event.target.value)} /></label>
+          </>}
+        </div>
+      </GroupRow>
+      <GroupRow label="筛选" stacked>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="min-w-48 flex-1 text-[12px] text-ink-secondary">模型<select className="input-field mt-1" value={model} onChange={event => setModel(event.target.value)}><option value="">全部模型</option>{data?.modelOptions.map(option => <option key={option} value={option}>{option}</option>)}</select></label>
+          <label className="text-[12px] text-ink-secondary">结果<select className="input-field mt-1" value={outcome} onChange={event => setOutcome(event.target.value)}><option value="">全部结果</option><option value="succeeded">成功</option><option value="failed">失败</option></select></label>
+          <ToolbarButton icon="retry" onClick={() => setNonce(value => value + 1)}>刷新</ToolbarButton>
+        </div>
+      </GroupRow>
+    </GroupList>
+
+    {error && <div role="alert" className="card border-fail/25 bg-fail-tint p-4 text-[13px] text-fail"><p>{error}</p><button className="cap mt-3" onClick={() => setNonce(value => value + 1)}>重新加载</button></div>}
+    {loading && !data ? <div className="card py-16 text-center text-[13px] text-ink-tertiary" role="status">读取团队用量…</div> : data && <><ModelAnalysis models={data.models} trend={data.trend} totals={data.totals} />{data.canViewTeam && data.scope === 'team' && !selectedMember && <MemberTable members={data.members} onOpen={id => { setSelectedMember(id); setData(null); }} />}<UsageDetails items={data.items} canViewTeam={data.canViewTeam} /><p className="flex flex-wrap items-center gap-2 text-[12px] leading-5 text-ink-tertiary"><Tag tone="idle">口径</Tag>{data.costNotice} 本地 Agent 不计入；未定价与不确定费用不显示为 0，也不代表供应商最终账单。</p></>}
   </div>;
 }

@@ -38,7 +38,8 @@ try {
   ]);
   const tasksResponse = await page.goto(`${baseUrl}/team/tasks`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   assert.equal(tasksResponse?.ok(), true);
-  await page.getByRole('heading', { name: '团队任务', exact: true }).waitFor({ timeout: 30_000 });
+  // 12 号票起标题由外壳工具栏按路径解析（页面不再自己写 <h1>），选择器跟着换，断言不放宽。
+  await page.getByTestId('page-toolbar-title').filter({ hasText: '我的任务' }).first().waitFor({ timeout: 30_000 });
   await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 30_000 }).catch(() => undefined);
   const taskFixture = JSON.parse(process.env.TEAM_ACCEPTANCE_TASK_FIXTURE ?? 'null');
   if (taskFixture) {
@@ -280,16 +281,17 @@ try {
     }
     result.assertions.push('三类真实 XLSX 经设置上传／爆文预览→统一候选预览→完整发布，员工搜索／详情读取实际条目且不能导入或切换');
 
-    // 页面落点：13 号票把「资源池与共享预算」换成了工具栏标题「模型与名额」+ 账号行，
-    // 所以这里按「这条路由独有的可断言落点」写，而不是硬等某个 heading（结构变了，不是行为放宽）。
+    // 页面落点：14 号票起标题由每页工具栏按导航名渲染（见 lib/workspace-navigation.ts），
+    // 13 号票又把「模型与名额」换成一个账号一行，所以这里按「这条路由独有的可断言落点」写：
+    // 标题取权威导航名，池页额外等第一行真的画出来（结构变了，不是行为放宽）。
     for (const [route, ready] of [
-      ['/team/admin/operations', async (page) => { await page.getByRole('heading', { name: '备份与维护', exact: true }).waitFor(); }],
+      ['/team/admin/operations', async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor(); }],
       ['/team/recycle-bin', async (page) => { await page.getByRole('heading', { name: '回收站', exact: true }).waitFor(); }],
       ['/team/admin/pools', async (page) => {
         await page.getByTestId('page-toolbar-title').first().getByText('模型与名额', { exact: true }).waitFor();
         await page.getByTestId('pool-row').first().waitFor();
       }],
-      ['/team/admin/resources', async (page) => { await page.getByRole('heading', { name: '公共资源发布', exact: true }).waitFor(); }],
+      ['/team/admin/resources', async (page) => { await page.getByRole('heading', { name: '公共资源', exact: true }).waitFor(); }],
     ]) {
       const response = await adminPage.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
       assert.equal(response.status(), 200);

@@ -38,8 +38,45 @@ try {
     port: 3300,
     deploymentId: 'deployment-a',
     trustedOrigin: 'https://studio.example.test',
+    // 06：服务器统一管理的生产参数默认值，起步值 = 改动前客户端默认值。
+    productionDefaults: {
+      timeoutMs: 600_000,
+      projectConcurrency: 10,
+      videoConcurrency: 10,
+      imagePreprocess: { enabled: true, targetMaxSide: 1536, jpegQuality: 85 },
+    },
   });
+  if (server.mode !== 'server') throw new Error('必须解析为 server 配置');
   ensureServerDeploymentMarker(server);
+
+  // 服务器默认值可由部署方用环境变量覆盖（首版不做界面，但运维要能调）。
+  const tuned = readRuntimeConfig({
+    CREATIVE_STUDIO_DEPLOYMENT_MODE: 'server',
+    CREATIVE_STUDIO_DATA_ROOT: root,
+    CREATIVE_STUDIO_PORT: '3300',
+    CREATIVE_STUDIO_DEPLOYMENT_ID: 'deployment-a',
+    CREATIVE_STUDIO_TRUSTED_ORIGIN: 'https://studio.example.test',
+    CREATIVE_STUDIO_PRODUCTION_TIMEOUT_MS: '900000',
+    CREATIVE_STUDIO_PRODUCTION_PROJECT_CONCURRENCY: '4',
+    CREATIVE_STUDIO_PRODUCTION_VIDEO_CONCURRENCY: '3',
+    CREATIVE_STUDIO_PRODUCTION_IMAGE_PREPROCESS_ENABLED: 'false',
+    CREATIVE_STUDIO_PRODUCTION_IMAGE_MAX_SIDE: '2048',
+    CREATIVE_STUDIO_PRODUCTION_IMAGE_JPEG_QUALITY: '92',
+  });
+  assert.deepEqual(tuned.mode === 'server' ? tuned.productionDefaults : null, {
+    timeoutMs: 900_000,
+    projectConcurrency: 4,
+    videoConcurrency: 3,
+    imagePreprocess: { enabled: false, targetMaxSide: 2048, jpegQuality: 92 },
+  }, '部署方环境变量必须能改服务器生产默认值');
+  assert.throws(() => readRuntimeConfig({
+    CREATIVE_STUDIO_DEPLOYMENT_MODE: 'server',
+    CREATIVE_STUDIO_DATA_ROOT: root,
+    CREATIVE_STUDIO_PORT: '3300',
+    CREATIVE_STUDIO_DEPLOYMENT_ID: 'deployment-a',
+    CREATIVE_STUDIO_TRUSTED_ORIGIN: 'https://studio.example.test',
+    CREATIVE_STUDIO_PRODUCTION_PROJECT_CONCURRENCY: '0',
+  }), /项目并发/, '0 并发必须当作启动配置错误');
 
   process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE = 'local';
   const { getDb, closeDb } = await import('../lib/db.ts');

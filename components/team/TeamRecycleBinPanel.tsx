@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { teamError, teamWrite } from './client';
+import PageToolbar from './PageToolbar';
+import { EmptyState, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
+import type { WorkspaceRole } from '@/lib/workspace-navigation';
 
 type RecycleItem = {
   resourceType: string;
@@ -26,7 +29,11 @@ const RESOURCE_LABELS: Record<string, string> = {
   final_variant: '成片草稿', title_preset: '标题预设', video_prompt_template: '视频提示词模板',
 };
 
-export default function TeamRecycleBinPanel({ role }: { role: 'employee' | 'admin' }) {
+/**
+ * 回收站（团队版）。14 号票只换外观：工具栏、标签、状态点、空状态与表格换成
+ * 02 号票的共用部件，接口、列与信息结构与改版前一致。
+ */
+export default function TeamRecycleBinPanel({ role }: { role: WorkspaceRole }) {
   const [items, setItems] = useState<RecycleItem[]>([]);
   const [jobs, setJobs] = useState<Record<string, CleanupJob>>({});
   const [busy, setBusy] = useState(false);
@@ -86,62 +93,70 @@ export default function TeamRecycleBinPanel({ role }: { role: 'employee' | 'admi
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight text-ink">回收站</h1>
-        <p className="mt-2 text-sm text-ink-secondary">
-          删除的持久资源会先进入回收站并可恢复；正常列表和新任务不会引用已删除资源。
-          已受理任务仍可读取它冻结的依赖并收取结果。
-        </p>
-      </div>
+    <div className="space-y-4">
+      <PageToolbar
+        role={role}
+        subtitle="删除的持久资源会先进入回收站并可恢复；正常列表和新任务不会引用已删除资源。已受理任务仍可读取它冻结的依赖并收取结果。"
+        actions={<ToolbarButton icon="retry" onClick={() => void refresh()} disabled={busy}>刷新</ToolbarButton>}
+      />
 
-      {error && <p role="alert" className="text-sm text-fail">{error}</p>}
-      {notice && <p role="status" className="text-sm text-ok">{notice}</p>}
+      {error && <p role="alert" className="text-[13px] text-fail">{error}</p>}
+      {notice && (
+        <p role="status" className="flex items-center gap-2 text-[13px] text-ok">
+          <StatusDot tone="ok" />{notice}
+        </p>
+      )}
 
       <section className="card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[820px] text-left text-sm">
-            <thead className="bg-surface-subtle text-xs text-ink-tertiary">
-              <tr>
-                <th className="px-4 py-3">资源</th>
-                <th className="px-4 py-3">删除时间</th>
-                <th className="px-4 py-3">阻止原因</th>
-                <th className="px-4 py-3 text-right">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-hairline">
-              {items.map((item) => {
-                const key = `${item.resourceType}:${item.resourceId}`;
-                const job = jobs[key];
-                return <tr key={key} className="align-top">
-                  <td className="px-4 py-4">
-                    <div className="font-medium text-ink">{RESOURCE_LABELS[item.resourceType] ?? item.resourceType}</div>
-                    <div className="font-mono text-xs text-ink-tertiary">{item.resourceId}</div>
-                  </td>
-                  <td className="px-4 py-4 text-ink-secondary">{new Date(item.deletedAt).toLocaleString('zh-CN')}</td>
-                  <td className="px-4 py-4 text-xs text-ink-secondary">
-                    {job?.status === 'deferred' && job.blockers.length > 0
-                      ? <ul className="space-y-1">{job.blockers.map((blocker, index) => <li key={index}>· {blocker.detail}</li>)}</ul>
-                      : job?.error ? <span className="text-fail">{job.error}</span> : '—'}
-                  </td>
-                  <td className="px-4 py-4">
-                    <div className="flex justify-end gap-2">
-                      <button className="btn-secondary btn-sm" disabled={busy} onClick={() => restore(item)}>恢复</button>
-                      {role === 'admin' && <button className="btn-secondary btn-sm" disabled={busy} onClick={() => cleanup(item)}>永久清理</button>}
-                    </div>
-                  </td>
-                </tr>;
-              })}
-            </tbody>
-          </table>
-        </div>
-        {items.length === 0 && <p className="px-5 py-10 text-center text-sm text-ink-tertiary">回收站为空。</p>}
+        {items.length === 0 ? (
+          <EmptyState icon="trash" title="回收站为空" description="删除的持久资源会出现在这里，可以恢复或由管理员永久清理。" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="data-table min-w-[820px]">
+              <thead>
+                <tr>
+                  <th>资源</th>
+                  <th>删除时间</th>
+                  <th>阻止原因</th>
+                  <th className="text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item) => {
+                  const key = `${item.resourceType}:${item.resourceId}`;
+                  const job = jobs[key];
+                  return <tr key={key} className="align-top">
+                    <td>
+                      <div className="font-medium text-ink">{RESOURCE_LABELS[item.resourceType] ?? item.resourceType}</div>
+                      <div className="font-mono text-[12px] text-ink-tertiary">{item.resourceId}</div>
+                    </td>
+                    <td className="tnum text-ink-secondary">{new Date(item.deletedAt).toLocaleString('zh-CN')}</td>
+                    <td className="text-[12px] text-ink-secondary">
+                      {job?.status === 'deferred' && job.blockers.length > 0
+                        ? <ul className="space-y-1">{job.blockers.map((blocker, index) => <li key={index}>· {blocker.detail}</li>)}</ul>
+                        : job?.error ? <span className="text-fail">{job.error}</span> : '—'}
+                    </td>
+                    <td>
+                      <div className="flex justify-end gap-2">
+                        <ToolbarButton icon="retry" disabled={busy} onClick={() => restore(item)}>恢复</ToolbarButton>
+                        {role === 'admin' && <ToolbarButton icon="trash" disabled={busy} onClick={() => cleanup(item)}>永久清理</ToolbarButton>}
+                      </div>
+                    </td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
-      <p className="text-xs leading-5 text-ink-tertiary">
-        永久清理只能由管理员执行；清理前会检查跨模块历史版本、共享文件、在途任务和备份 pin。
-        未完成上传、取消任务和撤销会话不是回收站资源，按各自入口处理。
-      </p>
+      <div className="flex flex-wrap items-center gap-2 text-[12px] leading-5 text-ink-tertiary">
+        <Tag tone="idle">管理员专属</Tag>
+        <span>
+          永久清理只能由管理员执行；清理前会检查跨模块历史版本、共享文件、在途任务和备份 pin。
+          未完成上传、取消任务和撤销会话不是回收站资源，按各自入口处理。
+        </span>
+      </div>
     </div>
   );
 }

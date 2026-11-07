@@ -1,6 +1,8 @@
 import { getDb } from '@/lib/db';
 import { requireAccessContext } from '@/lib/media-core/access-context';
 import { readRuntimeConfig } from '@/lib/team-service/config';
+import { applyServerImageDefaults } from '@/lib/team-service/transfers/image-options';
+import { productionParamsFor } from '@/lib/team-service/production-defaults';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { createTeamUpload, type CreateTeamUploadInput } from '@/lib/team-service/transfers';
 import { readTransferJson, teamTransferErrorResponse, teamTransferStorageRoot } from '@/lib/team-service/transfers/http';
@@ -9,12 +11,15 @@ import { teamTransferSpace } from '@/lib/team-service/transfers/space';
 export const runtime = 'nodejs';
 
 async function __teamRoutePOST(request: Request) {
-  if (readRuntimeConfig().mode !== 'server') return Response.json({ error: 'not_found' }, { status: 404 });
+  const config = readRuntimeConfig();
+  if (config.mode !== 'server') return Response.json({ error: 'not_found' }, { status: 404 });
   try {
     const body = await readTransferJson(request);
     const entries = Array.isArray(body.files) ? body.files : [body];
     if (entries.length < 1 || entries.length > 100) return Response.json({ error: 'invalid_input' }, { status: 400 });
     const uploads = [];
+    // 服务器统一管理的图片预处理：客户端 imageOptions 里的开关/最长边/质量作废。
+    const imageDefaults = productionParamsFor(config).imagePreprocess;
     for (const value of entries) {
       const entry = value as Record<string, unknown>;
       const target = entry.target as { resourceType: string; resourceId: string } | undefined;
@@ -33,7 +38,8 @@ async function __teamRoutePOST(request: Request) {
         sourceFingerprint: entry.sourceFingerprint,
         idempotencyKey: entry.idempotencyKey,
         partSize: entry.partSize,
-        imageOptions: entry.imageOptions,
+        // 服务器统一管理的图片预处理参数：客户端值在这里被替换掉。
+        imageOptions: applyServerImageDefaults(entry.imageOptions, imageDefaults),
       } as CreateTeamUploadInput;
       await teamTransferSpace(input.storageRoot).probe(input.expectedSize);
       uploads.push(createTeamUpload(getDb(), requireAccessContext().actor, input));
