@@ -45,6 +45,9 @@ test('停止脚本覆盖源码态与安装版两个数据根', () => {
 test('停止脚本按可执行文件路径匹配回收残留进程，不按端口或进程名误杀', () => {
   const stopDesktop = read('stop-desktop.command');
 
+  // 安装版改名后要同时认新旧两个应用路径：只认新名字会让仍装着旧名字的
+  // 机器点停止脚本时误以为「没有运行中的实例」。
+  assert.match(stopDesktop, /\/Applications\/林视 Lin's Vision\.app\/Contents\/MacOS\/CreativeStudio/);
   assert.match(stopDesktop, /\/Applications\/产品素材工作台\.app\/Contents\/MacOS\/CreativeStudio/);
   assert.match(stopDesktop, /node_modules\/electron\/dist\/Electron\.app\/Contents\/MacOS\/Electron/);
   // 发现用 pgrep（按精确路径），归属复核与终止委托给共享 process-tree 工具。
