@@ -291,7 +291,10 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/members': 'GET',
   '/api/team/members/[id]/policy': 'GET PATCH',
   '/api/team/concurrency-policy': 'GET PATCH',
+  '/api/team/console/overview': 'GET',
   '/api/team/tasks': 'GET',
+  '/api/team/tasks/detail': 'GET',
+  '/api/team/tasks/retry': 'POST',
   '/api/team/usage': 'GET',
   '/api/team/usage/export': 'GET',
   '/api/team/models': 'GET',
@@ -332,6 +335,7 @@ const AUTHENTICATED = new Set([
   '/api/team/errors GET', '/api/team/errors/report POST', '/api/team/errors/[id]/diagnostics GET',
   '/api/team/errors/[id]/task GET',
   '/api/team/members/[id]/policy GET', '/api/team/tasks GET', '/api/team/usage GET',
+  '/api/team/tasks/detail GET', '/api/team/tasks/retry POST',
   '/api/upload POST', '/api/batch-production/assets/import POST', '/api/canvas/[id]/assets POST',
 ]);
 const ADMIN_PREFIXES = ['/api/providers', '/api/team/users'];
@@ -354,6 +358,7 @@ const ADMIN = new Set([
   '/api/team/backup-pins POST', '/api/team/backup-pins/[id] DELETE',
   '/api/team/members GET', '/api/team/members/[id]/policy PATCH', '/api/team/usage/export GET',
   '/api/team/concurrency-policy GET', '/api/team/concurrency-policy PATCH',
+  '/api/team/console/overview GET',
   '/api/team/pools GET', '/api/team/pools POST',
   '/api/script-studio/catalogs/strategy/import POST',
   '/api/script-studio/catalogs/template/import POST',
