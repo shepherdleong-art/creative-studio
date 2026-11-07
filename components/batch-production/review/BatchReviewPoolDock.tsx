@@ -130,7 +130,6 @@ export default function BatchReviewPoolDock({
           <button
             type="button"
             className="flex-1"
-            aria-selected={tab === 'opening'}
             aria-pressed={tab === 'opening'}
             onClick={() => setTab('opening')}
           >
@@ -139,7 +138,6 @@ export default function BatchReviewPoolDock({
           <button
             type="button"
             className="flex-1"
-            aria-selected={tab === 'body'}
             aria-pressed={tab === 'body'}
             onClick={() => setTab('body')}
           >

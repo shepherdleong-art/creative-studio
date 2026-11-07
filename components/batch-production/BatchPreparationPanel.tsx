@@ -5,7 +5,6 @@ import { Icon } from '@/components/ui/Icon';
 import { Tag, Segmented } from '@/components/ui/Appearance';
 import { requestPackagingExport } from '@/components/packaging/request-packaging-export';
 import MixcutShell, { type MixcutStepDef } from '@/components/mixcut/MixcutShell';
-import shellStyles from '@/components/mixcut/mixcut-shell.module.css';
 import sidebarStyles from './batch-sidebar.module.css';
 import stepStyles from './batch-steps.module.css';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';

@@ -16,7 +16,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
-import { chromium } from 'playwright';
+import { chromium, webkit } from 'playwright';
 import postcss from 'postcss';
 import tailwind from '@tailwindcss/postcss';
 
@@ -52,6 +52,7 @@ function bundle(filename) {
 const timelineId = bundle(path.join(root, 'components/batch-production/review/BatchReviewTimelineDock.tsx'));
 const poolId = bundle(path.join(root, 'components/batch-production/review/BatchReviewPoolDock.tsx'));
 const inspectorId = bundle(path.join(root, 'components/batch-production/review/BatchReviewInspectorDock.tsx'));
+const previewId = bundle(path.join(root, 'components/batch-production/review/BatchReviewPreviewDock.tsx'));
 const require = createRequire(import.meta.url);
 const reactId = bundle(require.resolve('react'));
 const domId = bundle(require.resolve('react-dom/client'));
@@ -65,6 +66,8 @@ const React = load(${reactId});
 const Timeline = load(${timelineId}).default;
 const Pool = load(${poolId}).default;
 const Inspector = load(${inspectorId}).default;
+
+const PreviewDock = load(${previewId}).default;
 
 const poolAssets = [
   { assetId: 'asset-a', displayName: '素材 A', durationSec: 6, previewUrl: '/blank.mp4', thumbnailUrl: '/blank.png', role: 'opening', useCountByPlanId: { one: 1 }, coverUsedByPlanIds: [] },
@@ -95,6 +98,7 @@ function makeView() {
 
 window.edits = [];
 window.reviews = [];
+window.__preset = new URLSearchParams(location.search).get('preset') || '3x4';
 function App() {
   const [view, setView] = React.useState(makeView);
   const [selection, setSelection] = React.useState(null);
@@ -137,10 +141,17 @@ function App() {
     onMediaEdit: save, onRefreshFilm: async () => {}, onOpenCoverEditor: () => {},
   };
   return React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '260px minmax(0,1fr) 320px', gridTemplateRows: '320px 520px', gap: 8, height: 860 } },
-    React.createElement('div', { style: { gridColumn: 1, gridRow: 1, minHeight: 0 } },
+    React.createElement('div', { style: { gridColumn: 1, gridRow: 1, minHeight: 0, minWidth: 0 } },
       React.createElement(Pool, {
         projectId: 'test', batchId: 'test', selectedPlanId: 'one', poolAssets, focusedAssetId: null,
         onSelectFocusedAsset: () => {}, onPreviewAsset: () => {}, onAssetImported: () => {},
+      })),
+    // 成片实时预览：画幅标注在舞台元素上，验收的「画面比例」直接量它。
+    React.createElement('div', { style: { gridColumn: 2, gridRow: 1, minHeight: 0, minWidth: 0 } },
+      React.createElement(PreviewDock, {
+        projectId: 'test', batchId: 'test', outputPreset: window.__preset || '3x4',
+        previewFilm: film, previewAsset: null, onClearPreviewAsset: () => {}, playheadSec: 0, onSeek: () => {},
+        poolAssets, packagingEditable: false,
       })),
     React.createElement('div', { style: { gridColumn: '1 / 3', gridRow: 2, minHeight: 0, minWidth: 0 } },
       React.createElement(Timeline, timelineProps)),
@@ -368,8 +379,102 @@ try {
   await page.getByRole('button', { name: '撤销审核', exact: true }).click();
   await page.waitForFunction(() => window.reviews.some(r => r.decision === 'cancelled'));
 
+  // ---- 7. 审片预览的画面比例：3:4 / 9:16 / 16:9 都要正确 ----
+  for (const [preset, ratio] of [['3x4', 3 / 4], ['9x16', 9 / 16], ['16x9', 16 / 9]]) {
+    await page.goto(`http://127.0.0.1:${server.address().port}/?preset=${preset}`);
+    await page.locator('[data-output-preset]').first().waitFor();
+    const box = await page.locator('[data-output-preset]').first().boundingBox();
+    assert.ok(box && box.height > 0, `画幅 ${preset} 的预览必须真的画出来`);
+    const actual = box.width / box.height;
+    assert.ok(Math.abs(actual - ratio) < 0.02, `审片预览画幅 ${preset} 比例应为 ${ratio.toFixed(3)}，实际 ${actual.toFixed(3)}`);
+    assert.ok(box.width >= 100, `审片预览画幅 ${preset} 宽 ${box.width}px，太小了`);
+  }
+
   assert.deepEqual(errors, []);
-  console.log('batch review interactions: replace / insert / append drop, thumbnail scrub, five-tab apply, filter and review passed');
+  console.log('batch review interactions: replace / insert / append drop, thumbnail scrub, five-tab apply, filter, review and preview ratio passed');
+
+  // ---- 8. 两内核 × 三窗口 × 浅深：审片工作台不横向滚动、控件不被切 ----
+  // 复用 04 的判定意图（整页不横向滚动、控件不被祖先裁掉），矩阵同 04 的默认值。
+  for (const [engineName, engine] of [['chromium', chromium], ['webkit', webkit]]) {
+    const matrixBrowser = await engine.launch({ headless: true });
+    try {
+      for (const viewport of [{ width: 1536, height: 864 }, { width: 1280, height: 720 }, { width: 1024, height: 720 }]) {
+        for (const theme of ['light', 'dark']) {
+          const context = await matrixBrowser.newContext({ viewport, deviceScaleFactor: 1 });
+          const matrixPage = await context.newPage();
+          try {
+            await matrixPage.goto(`http://127.0.0.1:${server.address().port}`, { waitUntil: 'domcontentloaded' });
+            await matrixPage.locator('[data-output-preset]').first().waitFor({ timeout: 30_000 });
+            await matrixPage.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+            await matrixPage.waitForTimeout(250);
+            const label = `${engineName} ${viewport.width}x${viewport.height} ${theme}`;
+
+            const overflow = await matrixPage.evaluate(() => ({
+              innerWidth: window.innerWidth,
+              scrollWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+            }));
+            assert.ok(overflow.scrollWidth <= overflow.innerWidth + 1,
+              `${label}: 审片工作台横向多出 ${overflow.scrollWidth - overflow.innerWidth}px`);
+
+            const clipped = await matrixPage.evaluate(() => {
+              const selector = 'button, input, select, textarea, label, [role="button"], [role="tab"], [role="switch"], [role="checkbox"]';
+              const bad = [];
+              for (const element of document.querySelectorAll(selector)) {
+                const rect = element.getBoundingClientRect();
+                if (rect.width < 2 || rect.height < 2) continue;
+                const style = getComputedStyle(element);
+                if (style.visibility === 'hidden' || style.display === 'none') continue;
+                let clipper = null;
+                for (let parent = element.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+                  const parentStyle = getComputedStyle(parent);
+                  if (/(hidden|clip|auto|scroll)/.test(parentStyle.overflowX)) { clipper = parent; break; }
+                }
+                if (clipper && /(auto|scroll)/.test(getComputedStyle(clipper).overflowX)) continue;
+                const band = clipper ? clipper.getBoundingClientRect() : { left: 0, right: window.innerWidth };
+                const right = Math.min(window.innerWidth, band.right);
+                if (rect.right > right + 1.5 && rect.left < right - 2) {
+                  bad.push(`${element.tagName.toLowerCase()}「${(element.innerText || element.getAttribute('aria-label') || '').trim().slice(0, 16)}」`);
+                }
+              }
+              return bad;
+            });
+            assert.deepEqual(clipped, [], `${label}: 这些控件被切掉了一截 ${clipped.join('；')}`);
+
+            const preview = await matrixPage.locator('[data-output-preset]').first().boundingBox();
+            assert.ok(preview && Math.abs(preview.width / preview.height - 0.75) < 0.02,
+              `${label}: 审片预览画面比例不对 ${preview ? (preview.width / preview.height).toFixed(3) : 'missing'}`);
+
+            // 深色下不能残留写死浅色块：审片四区与时间轴行的底色必须真的变暗。
+            if (theme === 'dark') {
+              const lightBlocks = await matrixPage.evaluate(() => {
+                const probe = (selector) => {
+                  const element = document.querySelector(selector);
+                  if (!element) return null;
+                  const match = /rgba?\(([^)]+)\)/.exec(getComputedStyle(element).backgroundColor);
+                  if (!match) return null;
+                  const [r, g, b] = match[1].split(',').map(Number);
+                  return Math.round((r + g + b) / 3);
+                };
+                return {
+                  dock: probe('[aria-label="成片属性"], [aria-label="素材池"]'),
+                  workbench: probe('[class*="reviewWorkbench"]'),
+                };
+              });
+              for (const [name, brightness] of Object.entries(lightBlocks)) {
+                if (brightness === null) continue;
+                assert.ok(brightness < 120, `${label}: ${name} 深色下仍然偏亮（平均亮度 ${brightness}），疑似写死了浅色底`);
+              }
+            }
+          } finally {
+            await context.close();
+          }
+        }
+      }
+    } finally {
+      await matrixBrowser.close();
+    }
+  }
+  console.log('batch review workbench: 2 engines x 3 windows x light/dark — no horizontal scroll, no clipped controls, preview ratio and dark surfaces passed');
 } catch (error) {
   console.error(error);
   throw error;
