@@ -122,7 +122,16 @@
 .wsNavRow[aria-current='page'] .wsBadge { color: var(--color-accent); }
 
 /* 底部：更新提示条 + 头像 */
-.wsFooter { flex: none; padding-top: 10px; display: grid; gap: 8px; }
+.wsFooter {
+  flex: none;
+  padding-top: 10px;
+  display: grid;
+  /* grid 的隐式列按 min-content 排版：头像行里的姓名/工号是 nowrap，长工号会把整列撑到
+     超过侧栏可视宽度（实测 235px > 199px），侧栏 overflow-x:hidden 再把它裁掉。
+     显式给一列 minmax(0,1fr) 让列可以收缩，配合子项的 ellipsis 正常截断（ui-05 修复）。 */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
 .wsUpdateBar {
   display: grid;
   gap: 6px;
@@ -154,7 +163,12 @@
   display: flex;
   align-items: center;
   gap: 9px;
+  /* 侧栏有横向内边距，`width:100%` 会按 content-box 再撑满一次而溢出 23px，
+     被界面尺寸验收判成「控件被切掉」（ui-05 修复）。用 100% + box-sizing 抵消。 */
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
   padding: 7px 8px;
   border-radius: var(--radius-control);
   text-align: left;
@@ -180,7 +194,7 @@
 .wsUserChevron { flex: none; color: var(--color-ink-secondary); }
 
 /* 头像菜单：向上弹出，贴在侧栏底部 */
-.wsMenuAnchor { position: relative; }
+.wsMenuAnchor { position: relative; min-width: 0; }
 .wsMenu {
   position: absolute;
   left: 0;
