@@ -33,6 +33,8 @@ let port = 0;
 let passwordByEmployee = new Map();
 /** 画布开关的当前值；验收里会临时关掉再重启服务验证「关闭时无画布入口」。 */
 let canvasFeatureEnabled = true;
+/** 本地版验收阶段会临时切到 local 模式重启服务。 */
+let localMode = false;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function sanitize(text) {
@@ -53,7 +55,7 @@ function environment() {
     NEXT_TELEMETRY_DISABLED: '1',
     NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require "${path.join(repoRoot, 'scripts', 'team-server', 'no-external-network.cjs').replaceAll('\\', '/')}"`,
     CREATIVE_STUDIO_DATA_ROOT: root,
-    CREATIVE_STUDIO_DEPLOYMENT_MODE: 'server',
+    CREATIVE_STUDIO_DEPLOYMENT_MODE: localMode ? 'local' : 'server',
     CREATIVE_STUDIO_PORT: String(port),
     CREATIVE_STUDIO_DEPLOYMENT_ID: 'deployment-workspace-shell-test',
     CREATIVE_STUDIO_TRUSTED_ORIGIN: baseUrl,
@@ -334,6 +336,64 @@ async function runCanvasDisabledPhase(employeeId, employeePassword, adminPasswor
     phase.assertions.push('画布开关关闭时，员工与管理员侧栏都不出现创作画布，其余入口不变');
     result.assertions.push(phase.assertions[0]);
     result.canvasDisabledPhase = phase;
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
+ * 本地版（`CREATIVE_STUDIO_DEPLOYMENT_MODE=local`）的验收：顶栏照旧存在、
+ * 显示新端名和叶子标志、没有团队侧栏；「停止服务」只在这一版出现。
+ *
+ * 用同一个数据根另起一个 local 模式服务（团队数据不影响 local 版渲染）。
+ */
+async function runLocalModePhase() {
+  await stopServer();
+  localMode = true;
+  port = await availablePort();
+  baseUrl = `http://127.0.0.1:${port}`;
+  startServer();
+  // 本地模式没有团队 readiness 端点：能拿到任意 HTTP 响应就说明服务起来了。
+  const deadline = Date.now() + 240_000;
+  while (Date.now() < deadline) {
+    if (server?.exitCode !== null && server?.exitCode !== undefined) throw new Error(`本地模式服务提前退出 ${server.exitCode}`);
+    try {
+      await fetch(`${baseUrl}/`, { signal: AbortSignal.timeout(15_000) });
+      break;
+    } catch { await sleep(500); }
+  }
+  const browser = await chromium.launch({ headless: true });
+  const phase = { localMode: true, assertions: [] };
+  try {
+    const context = await browser.newContext({ locale: 'zh-CN', viewport: { width: 1536, height: 864 } });
+    const page = await context.newPage();
+    page.on('pageerror', recordPageError('local'));
+    await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded', timeout: 180_000 });
+    await page.locator('body > header').waitFor({ timeout: 180_000 });
+    const observed = await page.evaluate(() => {
+      const header = document.querySelector('body > header');
+      return {
+        hasHeader: Boolean(header),
+        headerText: header?.textContent ?? '',
+        hasSidebar: Boolean(document.querySelector('[data-testid="workspace-sidebar"]')),
+        hasLeafMark: Boolean(header?.querySelector('svg')),
+        hasStopButton: Boolean(header?.querySelector('[aria-label="停止服务"]')),
+        productName: header?.querySelector('a')?.textContent?.trim() ?? '',
+        mainMaxWidth: getComputedStyle(document.querySelector('main')).maxWidth,
+      };
+    });
+    assert.equal(observed.hasHeader, true, '本地版必须保留顶栏');
+    assert.equal(observed.hasSidebar, false, '本地版不渲染团队侧栏');
+    assert.ok(observed.headerText.includes("林视 Lin's Vision"), `本地版顶栏必须显示新端名，实际「${observed.headerText.slice(0, 80)}」`);
+    assert.equal(observed.hasLeafMark, true, '本地版顶栏必须有叶子标志');
+    assert.equal(observed.hasStopButton, true, '「停止服务」必须只出现在本地版');
+    assert.notEqual(observed.mainMaxWidth, 'none', '本地版保留 980px 居中栏');
+    await page.screenshot({ path: path.join(evidenceDirectory, 'local-mode-header.png') });
+    result.evidence.push('local-mode-header.png');
+    phase.assertions.push('本地版保留顶栏、显示「林视 Lin\'s Vision」与叶子标志、有停止服务、无团队侧栏、保留 980 居中栏');
+    result.assertions.push(phase.assertions[0]);
+    result.localModePhase = phase;
+    await context.close();
   } finally {
     await browser.close();
   }
@@ -691,6 +751,9 @@ try {
   // 画布开关关闭：重启同一个数据根的隔离服务（开关是启动期环境变量），
   // 断言员工与管理员侧栏都不再出现「创作画布」入口。
   await runCanvasDisabledPhase(employeeId, employeePassword, adminPassword);
+
+  // 本地版：顶栏照旧、换新名字和标志、停止服务只在本地版出现。
+  await runLocalModePhase();
 
   result.result = 'passed';
   console.log(`team workspace shell browser tests passed (${browsersToRun.join(', ')}); evidence in ${path.relative(repoRoot, evidenceDirectory)}`);
