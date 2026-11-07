@@ -2,9 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { Tag, Segmented } from '@/components/ui/Appearance';
 import { requestPackagingExport } from '@/components/packaging/request-packaging-export';
 import MixcutShell, { type MixcutStepDef } from '@/components/mixcut/MixcutShell';
 import shellStyles from '@/components/mixcut/mixcut-shell.module.css';
+import sidebarStyles from './batch-sidebar.module.css';
+import stepStyles from './batch-steps.module.css';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { FilenameAnalysisProgress, FilenameAnalysisResult } from '@/lib/batch-production/filename-analysis';
 import { readFilenameAnalysisStream } from '@/lib/batch-production/filename-analysis-stream';
@@ -1981,28 +1984,31 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         <div className="flex min-w-0 flex-1 items-center gap-3 px-1">
           <strong className="truncate text-ink">{currentBatch?.name ?? '未选择批次'}</strong>
           {selectedBatchId && (
-            <span className={`rounded-full px-2.5 py-0.5 text-[11px] ${batchStatus === 'running' ? 'bg-accent/10 text-accent' : batchStatus === 'failed' ? 'bg-fail/10 text-fail' : batchStatus === 'completed' ? 'bg-ok/10 text-ok' : 'bg-surface-subtle text-ink-secondary'}`}>
+            <Tag tone={batchStatus === 'running' ? 'run' : batchStatus === 'failed' ? 'fail' : batchStatus === 'completed' ? 'ok' : 'idle'}>
               {BATCH_STATUS_LABELS[batchStatus]}
-            </span>
+            </Tag>
           )}
-          {frozen && <span className="rounded-full bg-accent/10 px-2.5 py-0.5 text-[11px] text-accent">已锁定</span>}
+          {frozen && <Tag tone="run">已锁定</Tag>}
         </div>
       )}
       topbarRight={(
         <>
-          <span className={shellStyles.segLabel}>画幅</span>
-          <span className={shellStyles.seg} role="group" aria-label="全局画幅">
-            {(['3:4', '9:16', '16:9'] as const).map((preset) => (
-              <button type="button" key={preset} className={outputPreset === preset ? shellStyles.segOn : ''} onClick={() => setOutputPreset(preset)}>{preset}</button>
-            ))}
-          </span>
+          <span className="text-xs text-ink-secondary">画幅</span>
+          <Segmented
+            value={outputPreset}
+            onChange={(value: OutputPreset) => setOutputPreset(value)}
+            label="全局画幅"
+            size="small"
+            semantics="toggle"
+            options={(['3:4', '9:16', '16:9'] as const).map((preset) => ({ value: preset, label: preset }))}
+          />
         </>
       )}
       sidebar={(
         <div className="space-y-3">
-          <div className={shellStyles.panel}>
-            <h3 className="mb-2 flex items-center gap-2 text-[13px] font-semibold"><Icon name="plus" size={15} />新建批次</h3>
-            <div className="flex gap-2">
+          <div className={sidebarStyles.panel}>
+            <h3 className={sidebarStyles.panelHead}><Icon name="plus" size={14} />新建批次</h3>
+            <div className={sidebarStyles.newRow}>
               <input
                 type="text"
                 aria-label="新批次名称"
@@ -2012,11 +2018,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                   if (event.key === 'Enter' && busy === null) void createBatch();
                 }}
                 placeholder="例如：8 月产品口播"
-                className="h-9 min-w-0 flex-1 rounded-xl border border-hairline bg-surface px-3 text-sm text-ink"
+                className={sidebarStyles.newInput}
               />
               <button
                 type="button"
-                className="btn-primary h-9 px-3 text-sm"
+                className="btn-primary h-8 px-3 text-xs"
                 disabled={busy !== null}
                 onClick={() => void createBatch()}
               >{busy === 'create' ? '创建中…' : '创建'}</button>
@@ -2035,12 +2041,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       previewActive={false}
       main={() => {
         const commonMain = (content: React.ReactNode) => (
-          <main className={shellStyles.mainCol}>
+          <main className={stepStyles.mainCol}>
             {feedback && (
               <div
                 role={feedback.kind === 'error' ? 'alert' : 'status'}
                 aria-live="polite"
-                className={`mb-2 flex items-start gap-2 rounded-xl px-4 py-3 text-sm ${feedback.kind === 'error' ? 'bg-fail/10 text-fail' : 'bg-ok/10 text-ok'}`}
+                className={`${stepStyles.banner} ${feedback.kind === 'error' ? stepStyles.bannerFail : stepStyles.bannerOk}`}
               >
                 <span className="min-w-0 flex-1">{feedback.message}</span>
                 <button
@@ -2053,39 +2059,43 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
             )}
             {/* B4：选中项失效列表——编辑后 workspace 刷新移除的既有选择,常驻可见,不静默消失。 */}
             {selectionDropped.length > 0 && (
-              <div className="mb-2 rounded-xl border border-hairline bg-surface p-4 text-sm" role="status">
-                <p className="font-medium text-warn">以下成片已取消选择：{selectionDropped.length} 条</p>
-                <ul className="mt-1 space-y-1 text-xs text-warn">
-                  {selectionDropped.map((item) => (
-                    <li key={`drop-${item.planId}`}>
-                      成片 {item.seq != null ? String(item.seq).padStart(2, '0') : '--'} · {item.title}：{item.reason}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {/* B4：正式导出结构化结果——成功数、服务端跳过项、前端取消项分栏展示。 */}
-            {exportResult && (
-              <div className="mb-2 rounded-xl border border-hairline bg-surface p-4 text-sm" role="status">
-                <p className="font-medium text-ink">导出结果：成功 {exportResult.published} 条{exportResult.skipped.length > 0 ? ` · 跳过 ${exportResult.skipped.length} 条` : ''}{exportResult.removed.length > 0 ? ` · 已取消 ${exportResult.removed.length} 条` : ''}</p>
-                {exportResult.skipped.length > 0 && (
-                  <ul className="mt-1 space-y-1 text-xs text-warn">
-                    {exportResult.skipped.map((item) => (
-                      <li key={`skip-${item.planId}`}>
+              <div className={`${stepStyles.banner} ${stepStyles.bannerWarn}`} role="status">
+                <div className="min-w-0 flex-1">
+                  <b>以下成片已取消选择：{selectionDropped.length} 条</b>
+                  <ul className="mt-1 space-y-1">
+                    {selectionDropped.map((item) => (
+                      <li key={`drop-${item.planId}`}>
                         成片 {item.seq != null ? String(item.seq).padStart(2, '0') : '--'} · {item.title}：{item.reason}
                       </li>
                     ))}
                   </ul>
-                )}
-                {exportResult.removed.length > 0 && (
-                  <ul className="mt-1 space-y-1 text-xs text-warn">
-                    {exportResult.removed.map((item) => (
-                      <li key={`removed-${item.planId}`}>
-                        成片 {item.seq != null ? String(item.seq).padStart(2, '0') : '--'} · {item.title}：{item.reason}（已取消勾选）
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                </div>
+              </div>
+            )}
+            {/* B4：正式导出结构化结果——成功数、服务端跳过项、前端取消项分栏展示。 */}
+            {exportResult && (
+              <div className={stepStyles.banner} role="status">
+                <div className="min-w-0 flex-1">
+                  <b className="text-ink">导出结果：成功 {exportResult.published} 条{exportResult.skipped.length > 0 ? ` · 跳过 ${exportResult.skipped.length} 条` : ''}{exportResult.removed.length > 0 ? ` · 已取消 ${exportResult.removed.length} 条` : ''}</b>
+                  {exportResult.skipped.length > 0 && (
+                    <ul className={`mt-1 space-y-1 ${stepStyles.bannerWarn}`}>
+                      {exportResult.skipped.map((item) => (
+                        <li key={`skip-${item.planId}`}>
+                          成片 {item.seq != null ? String(item.seq).padStart(2, '0') : '--'} · {item.title}：{item.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {exportResult.removed.length > 0 && (
+                    <ul className={`mt-1 space-y-1 ${stepStyles.bannerWarn}`}>
+                      {exportResult.removed.map((item) => (
+                        <li key={`removed-${item.planId}`}>
+                          成片 {item.seq != null ? String(item.seq).padStart(2, '0') : '--'} · {item.title}：{item.reason}（已取消勾选）
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
             )}
             {/* 第 3 步显示生产进度；第 4 步单独统计导出用时。
@@ -2119,22 +2129,22 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               const exported = cards.some(card => card.exportStatus === 'exported');
               const status = rendering ? '导出中' : failed ? '导出失败' : exported ? '已完成' : '尚未导出';
               return (
-                <section className="card mb-2 shrink-0 p-4" aria-label="导出用时">
-                  <h3 className="text-sm font-semibold text-ink">导出用时</h3>
-                  <p className="mt-1 text-xs text-ink-secondary">
-                    {status} · 累计 {Math.floor(elapsedSec / 60)} 分 {elapsedSec % 60} 秒
-                  </p>
-                  <p className="mt-1 text-xs text-ink-tertiary">仅统计实际导出时间，不含准备与审片等待。</p>
+                <section className={stepStyles.banner} aria-label="导出用时">
+                  <div className="min-w-0 flex-1">
+                    <b className="text-ink">导出用时 · {status}</b>
+                    <p className="mt-0.5">累计 {Math.floor(elapsedSec / 60)} 分 {elapsedSec % 60} 秒</p>
+                    <p className="mt-0.5">仅统计实际导出时间，不含准备与审片等待。</p>
+                  </div>
                 </section>
               );
             })()}
             {activeStep === 0 && !frozen && (
-              <div className="card mx-2 flex flex-wrap items-center justify-between gap-3 p-4">
-                <div>
-                  <p className="text-sm font-medium text-ink">已有写好的脚本？</p>
-                  <p className="mt-1 text-xs text-ink-secondary">可先上传 TXT / Markdown 或粘贴文案，再选择素材、设置配音继续生产。</p>
+              <div className={stepStyles.banner}>
+                <div className="min-w-0 flex-1">
+                  <b className="text-ink">已有写好的脚本？</b>
+                  <p className="mt-0.5">可先上传 TXT / Markdown 或粘贴文案，再选择素材、设置配音继续生产。</p>
                 </div>
-                <button type="button" className="btn-secondary" onClick={() => setActiveStep(1)}>导入自己的脚本</button>
+                <button type="button" className="btn-secondary shrink-0" onClick={() => setActiveStep(1)}>导入自己的脚本</button>
               </div>
             )}
             {content}
@@ -2297,26 +2307,36 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         }
         if (activeStep === 2) {
           if (!workspace && outputPlans.length === 0) {
-            return commonMain(<div className={shellStyles.emptyState}><strong>还没有成片</strong><span>先完成第 1、2 步确认并开始生产。</span></div>);
+            return commonMain(
+              <div className={stepStyles.empty}>
+                <strong>还没有成片</strong>
+                <span>先完成第 1、2 步确认并开始生产。</span>
+              </div>,
+            );
           }
           if (!workspace) {
             return commonMain(
-              <section aria-label="成片计划">
-                <div className="mb-3 flex items-end justify-between gap-3">
-                  <div><h3 className="font-semibold text-ink">待生成成片</h3><p className="mt-1 text-sm text-ink-secondary">一张卡片对应一条目标成片，重试不会增加卡片数量。</p></div>
-                  <strong className="text-sm text-ink">共 {outputPlans.length} 张</strong>
+              <section className={stepStyles.groupPlain} aria-label="成片计划">
+                <div className={stepStyles.head}>
+                  <div>
+                    <h3>待生成成片</h3>
+                    <small>一张卡片对应一条目标成片，重试不会增加卡片数量。</small>
+                  </div>
+                  <strong className={stepStyles.count}>共 {outputPlans.length} 张</strong>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div className={stepStyles.materialGrid}>
                   {outputPlans.map((plan, index) => (
-                    <article key={plan.id} data-testid="batch-output-card" className="tile p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-xs text-ink-tertiary">待生成成片</p>
-                          <h4 className="mt-1 font-semibold text-ink">成片 {String(plan.seq || index + 1).padStart(2, '0')}</h4>
+                    <article key={plan.id} data-testid="batch-output-card" className={stepStyles.materialCard}>
+                      <div className={stepStyles.materialBody}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="text-xs text-ink-tertiary">待生成成片</p>
+                            <h4 className="mt-1 font-semibold text-ink">成片 {String(plan.seq || index + 1).padStart(2, '0')}</h4>
+                          </div>
+                          <Tag tone={batchStatus === 'running' ? 'run' : 'idle'}>
+                            {batchStatus === 'running' ? '等待调度' : BATCH_STATUS_LABELS[batchStatus]}
+                          </Tag>
                         </div>
-                        <span className={`rounded-full px-2 py-1 text-[11px] ${batchStatus === 'running' ? 'bg-accent/10 text-accent' : 'bg-surface-subtle text-ink-secondary'}`}>
-                          {batchStatus === 'running' ? '等待调度' : BATCH_STATUS_LABELS[batchStatus]}
-                        </span>
                       </div>
                     </article>
                   ))}

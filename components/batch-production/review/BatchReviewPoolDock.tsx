@@ -124,14 +124,13 @@ export default function BatchReviewPoolDock({
         </div>
       </div>
 
-      {/* v14:开场/正文页签,数量动态变化(M-01) */}
+      {/* v14:开场/正文页签,数量动态变化(M-01)。外观对齐原型 .seg.sm：轨道底 + 白块选中。 */}
       <div className="px-3 pt-2.5">
-        <div className="flex rounded-lg bg-surface-subtle p-0.5" role="group" aria-label="素材分类">
+        <div className="seg seg-small" role="group" aria-label="素材分类">
           <button
             type="button"
-            className={`flex-1 rounded-md px-2.5 py-1 text-xs font-medium transition ${
-              tab === 'opening' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary hover:text-ink'
-            }`}
+            className="flex-1"
+            aria-selected={tab === 'opening'}
             aria-pressed={tab === 'opening'}
             onClick={() => setTab('opening')}
           >
@@ -139,9 +138,8 @@ export default function BatchReviewPoolDock({
           </button>
           <button
             type="button"
-            className={`flex-1 rounded-md px-2.5 py-1 text-xs font-medium transition ${
-              tab === 'body' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary hover:text-ink'
-            }`}
+            className="flex-1"
+            aria-selected={tab === 'body'}
             aria-pressed={tab === 'body'}
             onClick={() => setTab('body')}
           >
@@ -230,7 +228,7 @@ export default function BatchReviewPoolDock({
                   </>
                 )}
 
-                <span className="absolute top-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[9px] font-medium text-white">
+                <span className="absolute top-1.5 left-1.5 rounded bg-media-scrim px-1.5 py-0.5 text-[9px] font-medium text-media-foreground">
                   {asset.durationSec != null ? `${asset.durationSec.toFixed(1)}s` : '未知'}
                 </span>
               </div>

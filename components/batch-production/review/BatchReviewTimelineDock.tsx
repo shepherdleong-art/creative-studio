@@ -1131,8 +1131,8 @@ export default function BatchReviewTimelineDock({
             </span>
             <span>
               {focusedAssetId ? '已定位素材' : '已选素材'}：<strong className="text-ink">{repeatStats.displayName}</strong> · 在{' '}
-              <strong className="text-[#99570f]">{repeatStats.filmCount}</strong> 条成片中被使用{' '}
-              <strong className="text-[#99570f]">{repeatStats.totalCount}</strong> 次
+              <strong className="text-warn">{repeatStats.filmCount}</strong> 条成片中被使用{' '}
+              <strong className="text-warn">{repeatStats.totalCount}</strong> 次
             </span>
             {focusedAssetId && (
               <button
@@ -1379,7 +1379,7 @@ export default function BatchReviewTimelineDock({
                         alt={`成片 ${film.seq} 封面`}
                       />
                     ) : (
-                      <div className="flex h-full w-full items-center justify-center text-[8px] text-white/50">
+                      <div className="flex h-full w-full items-center justify-center text-[8px] text-ink-tertiary">
                         封面
                       </div>
                     )}

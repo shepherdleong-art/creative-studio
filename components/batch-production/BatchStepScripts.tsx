@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { Tag } from '@/components/ui/Appearance';
 import SystemFontPicker from '@/components/ui/SystemFontPicker';
 import BatchProductionProgressCard, { type BatchProgressView } from './BatchProductionProgressCard';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
@@ -18,6 +19,7 @@ import {
 } from '@/lib/final-edit/types';
 import { BatchFrozenScriptCard } from './BatchInputSelectionCards';
 import { BatchScriptImportDialog, type ManualScriptDraft } from './BatchScriptImportDialog';
+import styles from './batch-steps.module.css';
 
 export interface BatchTtsProviderView {
   id: string;
@@ -1349,121 +1351,113 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   }
 
   return (
-    <div className="min-h-0 flex-1 space-y-4 p-2">
+    <div className={styles.page}>
       {frozen && (
-        <div className="card flex flex-wrap items-center justify-between gap-4 p-5">
+        <div className={styles.lock}>
+          <Icon name="lock" size={15} />
           <div>
-            <h3 className="font-semibold text-ink">已锁定的脚本与口播</h3>
-            <p className="mt-1 text-sm text-ink-secondary">
+            <h3>已锁定的脚本与口播</h3>
+            <small>
               以下正文、标题、份数与配音设置来自锁定快照，不随项目当前内容变化。时长按每份脚本自身设定，锁定后不可改。
-            </p>
+            </small>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <span className={`rounded-full px-3 py-1 text-xs ${batchStatus === 'running' ? 'bg-accent/10 text-accent' : 'bg-surface-subtle text-ink-secondary'}`}>
-              {BATCH_STATUS_LABELS[batchStatus] ?? batchStatus}
-            </span>
-          </div>
+          <Tag tone={batchStatus === 'running' ? 'run' : 'idle'}>
+            {BATCH_STATUS_LABELS[batchStatus] ?? batchStatus}
+          </Tag>
         </div>
       )}
 
       {!frozen && (
-        <section aria-label="脚本与口播">
-          <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+        <section className={styles.groupPlain} aria-label="脚本与口播">
+          <div className={styles.head}>
             <div>
-              <h3 className="font-semibold text-ink">脚本</h3>
-              <p className="mt-1 text-sm text-ink-secondary">每份脚本是一个独立创作单元：各自份数出 N 条成片，共用同一条配音，只有画面不同。时长来自脚本自身设定，此处只读。</p>
+              <h3>脚本</h3>
+              <small>每份脚本是一个独立创作单元：各自份数出 N 条成片，共用同一条配音，只有画面不同。时长来自脚本自身设定，此处只读。</small>
             </div>
-            <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
-              <span className="text-xs text-ink-secondary" role="status">已选 {selectedListedScripts.length} / {prep.scripts.length} 条</span>
-              <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={scriptActionsDisabled || prep.scripts.length === 0}
-                onClick={() => onSetScriptsSelected(prep.scripts.map(script => script.id), !allScriptsSelected)}>{allScriptsSelected ? '取消全选' : '全选脚本'}</button>
-              <button type="button" className="btn-secondary h-8 px-3 text-xs text-fail" disabled={scriptActionsDisabled || selectedListedScripts.length === 0}
-                onClick={() => void deleteScripts(selectedListedScripts)}>{deletingScriptId === 'bulk' ? '删除中…' : '删除已选（' + selectedListedScripts.length + '）'}</button>
-              <button
-                type="button"
-                className="btn-secondary h-8 px-3 text-xs"
-                aria-label="导入自定义脚本"
-                disabled={scriptActionsDisabled}
-                onClick={() => { setScriptActionError(''); setEditingScript(null); setScriptDialogOpen(true); }}
-              >+ 导入自定义脚本</button>
-              <span className="text-sm text-ink-secondary">已选 {scriptCount} 份 · 目标成片 {plannedCount} 条</span>
-            </div>
+          </div>
+          <div className={styles.tools}>
+            <span className={styles.count} role="status">已选 {selectedListedScripts.length} / {prep.scripts.length} 条</span>
+            <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={scriptActionsDisabled || prep.scripts.length === 0}
+              onClick={() => onSetScriptsSelected(prep.scripts.map(script => script.id), !allScriptsSelected)}>{allScriptsSelected ? '取消全选' : '全选脚本'}</button>
+            <button type="button" className="btn-secondary h-8 px-3 text-xs text-fail" disabled={scriptActionsDisabled || selectedListedScripts.length === 0}
+              onClick={() => void deleteScripts(selectedListedScripts)}>{deletingScriptId === 'bulk' ? '删除中…' : '删除已选（' + selectedListedScripts.length + '）'}</button>
+            <button
+              type="button"
+              className="btn-secondary h-8 px-3 text-xs"
+              aria-label="导入自定义脚本"
+              disabled={scriptActionsDisabled}
+              onClick={() => { setScriptActionError(''); setEditingScript(null); setScriptDialogOpen(true); }}
+            >+ 导入自定义脚本</button>
+            <span className={styles.count}>已选 {scriptCount} 份 · 目标成片 {plannedCount} 条</span>
           </div>
           {scriptActionError && <p className="mb-3 text-xs text-fail" role="alert">{scriptActionError}</p>}
           {prep.scripts.length > 0 ? (
-            <div className="grid gap-3 lg:grid-cols-2">
+            <div className={styles.scriptList}>
               {prep.scripts.map((script) => {
                 const selected = selectedScripts[script.id] !== undefined;
                 const durationSec = script.targetDurationSec ?? 15;
                 const title = `${script.scriptCode ? `${script.scriptCode.toLowerCase()} · ` : ''}${script.title || '未命名脚本'}`;
                 return selected ? (
-                  <article key={script.id} className={`rounded-2xl border bg-surface p-4 shadow-sm ${selected ? 'border-accent ring-2 ring-accent/10' : 'border-hairline'}`}>
-                    <div className="flex items-start gap-3">
-                      <input
-                        type="checkbox"
-                        aria-label={`选择脚本 ${title}`}
-                        disabled={scriptActionsDisabled}
-                        checked={selected}
-                        onChange={(event) => onToggleScript(script.id, event.target.checked)}
-                        className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="text-xs font-medium text-accent">{script.coverTitle.primary || '项目脚本'}</p>
-                            <h4 className="mt-1 font-semibold text-ink">{title}</h4>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            {script.manual && (
-                              <span className="rounded-full bg-accent/10 px-2 py-1 text-[11px] text-accent">手动</span>
-                            )}
-                            <span className="rounded-full bg-surface-subtle px-2 py-1 text-[11px] text-ink-secondary">V{script.sourceVersion}</span>
-                            <span className="rounded-full bg-surface-subtle px-2 py-1 text-[11px] text-ink-secondary">
-                              {durationSec} 秒{durationSec === 15 && !script.targetDurationSec ? '（默认 15 秒）' : ''}
-                            </span>
-                            {script.manual && (
-                              <>
-                                <button
-                                  type="button"
-                                  className="text-xs text-accent underline"
-                                  aria-label={`编辑手动脚本 ${title}`}
-                                  disabled={scriptActionsDisabled}
-                                  onClick={() => openEditScriptDialog(script)}
-                                >编辑</button>
-                              </>
-                            )}
-                                <button
-                                  type="button"
-                                  className="text-xs text-fail underline"
-                                  aria-label={`删除脚本 ${title}`}
-                                  disabled={scriptActionsDisabled}
-                                  onClick={() => void deleteScripts([script])}
-                                >{deletingScriptId === script.id ? '删除中…' : '删除'}</button>
-                          </div>
+                  <article key={script.id} className={`${styles.scriptRow} ${styles.scriptRowOn}`}>
+                    <input
+                      type="checkbox"
+                      aria-label={`选择脚本 ${title}`}
+                      disabled={scriptActionsDisabled}
+                      checked={selected}
+                      onChange={(event) => onToggleScript(script.id, event.target.checked)}
+                      className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-accent">{script.coverTitle.primary || '项目脚本'}</p>
+                          <h4 className="mt-1 font-semibold text-ink">{title}</h4>
                         </div>
-                        <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-ink-secondary">{script.bodyText}</p>
-                        <label className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-surface-subtle px-3 py-2 text-sm text-ink-secondary">
-                          <span>生成份数</span>
-                          <input
-                            type="number"
-                            min={1}
-                            max={99}
-                            step={1}
-                            aria-label={`${title} 生成份数`}
-                            value={selectedScripts[script.id] ?? 1}
-                            onChange={(event) => onCopyCountChange(script.id, Math.max(1, Number.parseInt(event.target.value, 10) || 1))}
-                            className="w-20 rounded-lg border border-hairline bg-surface px-2 py-1 text-right text-ink"
-                          />
-                        </label>
-                        {renderNarrationConfig(script.id)}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {script.manual && <Tag tone="run">手动</Tag>}
+                          <Tag tone="idle">V{script.sourceVersion}</Tag>
+                          <Tag tone="idle">{durationSec} 秒{durationSec === 15 && !script.targetDurationSec ? '（默认 15 秒）' : ''}</Tag>
+                          {script.manual && (
+                            <button
+                              type="button"
+                              className="text-xs text-accent underline"
+                              aria-label={`编辑手动脚本 ${title}`}
+                              disabled={scriptActionsDisabled}
+                              onClick={() => openEditScriptDialog(script)}
+                            >编辑</button>
+                          )}
+                          <button
+                            type="button"
+                            className="text-xs text-fail underline"
+                            aria-label={`删除脚本 ${title}`}
+                            disabled={scriptActionsDisabled}
+                            onClick={() => void deleteScripts([script])}
+                          >{deletingScriptId === script.id ? '删除中…' : '删除'}</button>
+                        </div>
                       </div>
+                      <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-ink-secondary">{script.bodyText}</p>
+                      <label className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-surface-subtle px-3 py-2 text-sm text-ink-secondary">
+                        <span>生成份数</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={99}
+                          step={1}
+                          aria-label={`${title} 生成份数`}
+                          value={selectedScripts[script.id] ?? 1}
+                          onChange={(event) => onCopyCountChange(script.id, Math.max(1, Number.parseInt(event.target.value, 10) || 1))}
+                          className="w-20 rounded-lg border border-hairline bg-surface px-2 py-1 text-right text-ink"
+                        />
+                      </label>
+                      {renderNarrationConfig(script.id)}
                     </div>
                   </article>
                 ) : (
                   <button
                     key={script.id}
                     type="button"
-                    className="flex items-center gap-3 rounded-2xl border border-hairline bg-surface px-4 py-3 text-left shadow-sm transition hover:border-accent/40"
+                    className={`${styles.scriptRow} text-left transition hover:bg-surface-subtle`}
+                    style={{ gridTemplateColumns: '22px minmax(0, 1fr) auto' }}
                     disabled={scriptActionsDisabled}
                     onClick={() => onToggleScript(script.id, true)}
                   >
@@ -1472,9 +1466,9 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                       aria-label={`选择脚本 ${title}`}
                       checked={false}
                       readOnly
-                      className="h-4 w-4 accent-[var(--color-accent)]"
+                      className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
                     />
-                    <span className="min-w-0 flex-1">
+                    <span className="min-w-0">
                       <span className="block truncate text-sm font-medium text-ink">{title}</span>
                       <span className="mt-0.5 block text-[11px] text-ink-tertiary">
                         {durationSec} 秒 · {script.sourceVersion ? `V${script.sourceVersion}` : '项目脚本'}
@@ -1487,7 +1481,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               })}
             </div>
           ) : (
-            <div className="tile p-6 text-sm text-ink-secondary">暂无可用项目脚本。点击「导入自定义脚本」上传文件或粘贴文案，也可以使用第 3 步生成并保存的脚本。</div>
+            <div className={styles.empty}>暂无可用项目脚本。点击「导入自定义脚本」上传文件或粘贴文案，也可以使用第 3 步生成并保存的脚本。</div>
           )}
         </section>
       )}
@@ -1505,48 +1499,50 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
       {renderSubtitleStyleSection()}
 
       {!frozen && (
-        <section className="card space-y-4 p-5" aria-label="输出设置与开始">
-          <div className="flex flex-wrap items-start justify-between gap-4">
+        <section className={styles.group} aria-label="输出设置与开始">
+          <div className={styles.head}>
             <div>
-              <h3 className="font-semibold text-ink">输出设置</h3>
-              <p className="mt-1 text-sm text-ink-secondary">
+              <h3>输出设置</h3>
+              <small>
                 画幅 {outputPreset.label}（顶栏统一设置）；背景音乐在上方卡片中设置。自定义脚本的目标时长可在「编辑」中修改。
-              </p>
+              </small>
               {inputChangedWarning && (
-                <p className="mt-1 text-xs text-warn">输入已修改，重新确认后才会覆盖当前批次版本。</p>
-              )}
-            </div>
-            <div className="flex flex-col items-end gap-2">
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className={`btn-secondary ${startDisabledReason === '请先确认整体输入' ? 'btn-callout' : ''}`}
-                  disabled={scriptActionsDisabled || !props.batchSelected}
-                  onClick={onConfirmSnapshot}
-                >
-                  {busy === 'snapshot' ? '确认中…' : '确认整体输入'}
-                </button>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  disabled={scriptActionsDisabled || Boolean(startDisabledReason)}
-                  onClick={onStartBatch}
-                >{busy === 'start' ? '启动中…' : '开始批量生产'}</button>
-              </div>
-              {startDisabledReason && (
-                <p className="max-w-80 text-right text-xs leading-5 text-warn">
-                  {startDisabledReason === '请先确认整体输入' ? '还差一步：请先点击「确认整体输入」' : `暂时无法开始：${startDisabledReason}`}
-                  {onlineAssets === 0 && '；当前项目没有在线素材。'}
-                </p>
+                <small className="mt-1 block text-warn">输入已修改，重新确认后才会覆盖当前批次版本。</small>
               )}
             </div>
           </div>
-          {scriptCount > 0 && (
-            <p className="text-xs text-ink-tertiary">
-              确认信息：{scriptCount} 份脚本 × 各自份数 = {plannedCount} 条成片，{onlineAssets} 条在线素材，画幅 {outputPreset.label}。
-              点击开始后本次设置即锁定，后续修改项目内容不影响本批次。
-            </p>
-          )}
+          <div className={styles.goBar}>
+            <div className={styles.goBarText}>
+              <b>确认信息</b>
+              <small>
+                {scriptCount > 0
+                  ? `${scriptCount} 份脚本 × 各自份数 = ${plannedCount} 条成片，${onlineAssets} 条在线素材，画幅 ${outputPreset.label}。点击开始后本次设置即锁定，后续修改项目内容不影响本批次。`
+                  : '先在上方选择脚本并设定份数。'}
+              </small>
+              {startDisabledReason && (
+                <small className="mt-1 block text-warn">
+                  {startDisabledReason === '请先确认整体输入' ? '还差一步：请先点击「确认整体输入」' : `暂时无法开始：${startDisabledReason}`}
+                  {onlineAssets === 0 && '；当前项目没有在线素材。'}
+                </small>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className={`btn-secondary ${startDisabledReason === '请先确认整体输入' ? 'btn-callout' : ''}`}
+                disabled={scriptActionsDisabled || !props.batchSelected}
+                onClick={onConfirmSnapshot}
+              >
+                {busy === 'snapshot' ? '确认中…' : '确认整体输入'}
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={scriptActionsDisabled || Boolean(startDisabledReason)}
+                onClick={onStartBatch}
+              >{busy === 'start' ? '启动中…' : '开始批量生产'}</button>
+            </div>
+          </div>
         </section>
       )}
       {/* 进度卡放在本步最末:BGM 是开跑前的输入,必须排在进度之上。
