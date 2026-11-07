@@ -502,7 +502,7 @@ export class RemoteTransferController {
     const response = await this.request('/api/team/devices', {
       method: 'POST', signal, headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        clientDeviceId: this.clientDeviceId, displayName: 'Creative Studio 轻客户端', platform: this.platform,
+        clientDeviceId: this.clientDeviceId, displayName: "林视 Lin's Vision 轻客户端", platform: this.platform,
       }),
     });
     const body = await response.json() as { id?: unknown };
