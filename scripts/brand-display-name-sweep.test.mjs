@@ -61,19 +61,12 @@ for (const entry of shellEntries) {
 }
 
 /**
- * 还不归本票改的位置（跨票文件归属见 .ticket-ownership.md）：
- *   - components/Header.tsx、components/team/TeamWorkspaceNavigation.tsx、workspace.module.css
- *     归 05 号票（侧栏与顶栏）。
- *   - app/globals.css 归 02 号票；命中的只是文件头的 CSS 注释，不是界面文字。
- * 这些位置必须<b>恰好</b>只剩它们，别处出现旧名字一律判失败——这样 05 改完
- * 之后只要删掉对应条目，扫描就自动收紧到全仓。
+ * 还不归本票改的位置（跨票文件归属见 .ticket-ownership.md）。
+ * 侧栏与顶栏已经完全改名，所以这张表是空的；留着入口是为了以后再有
+ * 跨票文件先占位时，能明确写出「谁负责」，而不是把断言放宽。
+ * 注意：这台表里的文件仍会被扫描，会整条被跳过——只用于确实还没轮到的情况。
  */
-const PENDING_BY_OTHER_TICKETS = new Set([
-  'components/Header.tsx',
-  'components/team/TeamWorkspaceNavigation.tsx',
-  'components/team/workspace.module.css',
-  'app/globals.css',
-]);
+const PENDING_BY_OTHER_TICKETS = new Set();
 
 const offenders = [];
 for (const relativePath of scanned) {
@@ -96,5 +89,14 @@ assert.deepEqual(offenders, [], `旧显示名仍在界面源码里：\n${offende
 const layout = fs.readFileSync(path.join(root, 'app', 'layout.tsx'), 'utf8');
 assert.doesNotMatch(layout, /title:\s*["']产品素材工作台["']/, '根布局不得再写死旧标题');
 assert.match(layout, /generateMetadata/, '根布局标题必须按端动态生成');
+
+// 侧栏与顶栏（05 号票）也已经是新名字：仓库里两个「端名」来源必须给出同一组
+// 字符串。这条只读两边、不要求改谁——两边一旦漂移，用户就会在不同位置看到
+// 两个名字，而这正是这次改版要消灭的问题。
+const brand = await import('../lib/brand.ts');
+const navigation = await import('../lib/workspace-navigation.ts');
+assert.equal(navigation.workspaceProductName(null), brand.BRAND_NAME, '顶栏/侧栏的默认名必须与 lib/brand.ts 一致');
+assert.equal(navigation.workspaceProductName('employee'), brand.EMPLOYEE_WORKSPACE_TITLE, '员工端名必须一致');
+assert.equal(navigation.workspaceProductName('admin'), brand.ADMIN_CONSOLE_TITLE, '管理员端名必须一致');
 
 console.log(`display name sweep passed (${scanned.length} files)`);
