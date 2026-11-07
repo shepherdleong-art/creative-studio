@@ -20,6 +20,7 @@ export const MATRIX_IDS = [
   'Q01', 'Q02', 'Q03', 'Q04', 'Q05', 'Q06', 'Q07', 'Q08', 'Q09', 'Q10',
   'C01', 'R01', 'R02', 'R03', 'R04', 'U01', 'U02', 'U03', 'U04',
   'O01', 'O02', 'O03', 'B01', 'B02', 'B03', 'B04',
+  'W01', 'W02', 'W03', 'W04',
 ];
 
 export const L1_SUITE = [
@@ -124,6 +125,21 @@ export const LOCAL_CHECKS = [
   node('team-server-package-boundary.test.mjs', ['R01', 'R04']),
   node('team-client-package-boundary.test.mjs', ['U01']),
   node('team-acceptance-harness.test.mjs', ['O01']),
+];
+
+/**
+ * 界面尺寸验收（第 04 号票，林视界面重设计）。矩阵项 W01–W04 是本套件新增的：
+ *   W01 从 1536×864 到 1024×720 都不横向滚动；W02 控件不被切掉、工具栏不藏内容；
+ *   W03 视频画面比例正确且够大；W04 浅色深色两主题都成立。
+ * 只跑它：node scripts/team-server/acceptance.mjs --level ui
+ */
+export const UI_SUITE = [
+  node('ui-acceptance-checks.test.mjs', ['W01', 'W02', 'W03', 'W04']),
+  node('ui-acceptance.playwright.test.mjs', ['W01', 'W02', 'W03', 'W04'], {
+    timeoutMs: 3_600_000,
+    realMedia: true,
+    uiAcceptance: true,
+  }),
 ];
 
 export const ONSITE_GAPS = [
