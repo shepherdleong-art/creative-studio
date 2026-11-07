@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { PageToolbar as SharedPageToolbar } from '@/components/ui/Appearance';
 import { workspacePageTitle, type WorkspaceRole } from '@/lib/workspace-navigation';
@@ -51,8 +50,15 @@ export default function PageToolbar({
   // 页面一旦渲染自己的工具栏，外壳那条只带标题的自动撤下（避免两条工具栏）。
   usePageToolbarClaim(claim);
   const resolved = title ?? workspacePageTitle(pathname, role) ?? '';
+  // 「返回」本身就是可用键盘聚焦的按钮（共用 PageToolbar 渲染 `<button aria-label>`），
+  // 再补一个 sr-only 链接既重复又会被界面尺寸验收判成「内容被藏起来」（27px 内容压进 1px）。
+  // 中键新开/预取的需求改用真正可见的语义：把目标地址放进 data 属性，供需要时读取。
   return (
-    <div data-testid="page-toolbar" {...(resolved ? { 'data-page-title': resolved } : {})}>
+    <div
+      data-testid="page-toolbar"
+      {...(resolved ? { 'data-page-title': resolved } : {})}
+      {...(back ? { 'data-back-href': back.href } : {})}
+    >
       <SharedPageToolbar
         title={<span data-testid="page-toolbar-title">{resolved}</span>}
         subtitle={subtitle}
@@ -66,7 +72,6 @@ export default function PageToolbar({
             }
           : {})}
       />
-      {back ? <Link href={back.href} className="sr-only" data-testid="page-toolbar-back-link">{back.label}</Link> : null}
     </div>
   );
 }
