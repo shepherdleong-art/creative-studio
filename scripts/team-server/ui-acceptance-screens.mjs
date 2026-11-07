@@ -292,6 +292,11 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       href: ({ emptyProject }) => `/projects/${emptyProject.id}?tab=${step}`,
       skipUnless: 'emptyProject',
       ready: emptyStepReady,
+      // 第 5 步空状态和 mixcut-single 是同一个工作台外壳，溢出量与根因完全一致
+      // （实测同为 1536 宽 64px、1280/1024 宽 88px），所以同属 09 的已知问题。
+      ...(step === 'final-edit'
+        ? { knownFailure: MIXCUT_KNOWN_FAILURE, knownFailureChecks: MIXCUT_KNOWN_CHECKS, knownFailureReason: MIXCUT_KNOWN_REASON }
+        : {}),
     },
   )),
 
@@ -424,11 +429,17 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
     href: () => '/team/admin/operations',
     ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
     // 「确认清理」换成共用 Dialog 外壳后，弹窗在小窗口里不能被切掉。
-    // 有可清理项时才会出现确认按钮；没有就退化成只量页面基础态（不假装弹窗量到了）。
+    // 确认按钮只在「扫描到可清理项」时出现；隔离数据根里通常扫不到东西，
+    // 所以这里等不到按钮就 throw —— 由 runner 记 blocked（前置条件不满足），
+    // 不能假装弹窗量到了，也不该记成「这一屏的尺寸不合格」。
     actions: [async (page) => {
       await page.getByRole('button', { name: '扫描无用文件', exact: true }).click();
       const confirm = page.getByRole('button', { name: '确认清理预览中的项目', exact: true });
-      await confirm.waitFor({ timeout: 60_000 });
+      try {
+        await confirm.waitFor({ timeout: 30_000 });
+      } catch {
+        throw new Error('隔离数据根里没有可清理项，清理确认弹窗不会出现（前置条件不满足，不算尺寸不合格）');
+      }
       if (await confirm.isEnabled()) {
         await confirm.click();
         await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });

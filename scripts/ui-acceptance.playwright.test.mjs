@@ -357,8 +357,17 @@ async function measureScreen({ screen, engine, page, theme, viewport }) {
       await action(page, { fixture: fixtureContext, theme, viewport });
       await page.waitForTimeout(400);
     } catch (error) {
+      const message = sanitize(error instanceof Error ? error.message : error);
+      // 「前置条件不满足」（隔离数据根里没有可清理项、没有可删的分镜组……）不是界面缺陷。
+      // 记 blocked，让结果如实说「这个浮层本次没量到」，而不是冒充尺寸不合格。
+      if (message.includes('前置条件不满足')) {
+        row.result = 'blocked';
+        row.kind = 'precondition';
+        row.error = `第 ${index + 1} 个浮层本次量不到：${message.slice(0, 600)}`;
+        return row;
+      }
       row.result = 'failed';
-      row.error = `打开第 ${index + 1} 个浮层失败：${sanitize(error instanceof Error ? error.message : error).slice(0, 800)}`;
+      row.error = `打开第 ${index + 1} 个浮层失败：${message.slice(0, 800)}`;
       return row;
     }
     const popupName = `${screen.id}-${engine}-${viewport.label}-${suffix}-popup${index + 1}.png`;
@@ -495,7 +504,13 @@ async function runMatrix() {
             const finalRow = applyKnownFailure(row, screen);
             result.runs.push(finalRow);
             if (finalRow.result === 'known-failure') result.knownFailures.push(finalRow);
-            else if (finalRow.result === 'failed') {
+            else if (finalRow.result === 'blocked') {
+              result.blocked.push({
+                kind: finalRow.kind ?? 'precondition',
+                screen: screen.id, engine, viewport: viewport.label, theme,
+                reason: String(finalRow.error).slice(0, 600),
+              });
+            } else if (finalRow.result === 'failed') {
               if (finalRow.kind === 'infrastructure') {
                 result.blocked.push({
                   kind: 'server-died', screen: screen.id,

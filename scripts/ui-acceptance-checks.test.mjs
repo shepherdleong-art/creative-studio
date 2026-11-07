@@ -124,6 +124,13 @@ for (const screen of SCREENS) {
   if (screen.id === 'workspace-sidebar') continue;
   assert.equal(screen.scope, 'page', `屏幕 ${screen.id} 应只量自己的内容区，不重复量共享外壳`);
 }
+// 新项目空状态的第 5 步和 mixcut 是同一个工作台外壳、同一个已知问题：
+// 归 09 的 owner、挂 09 的 knownFailure，而不是当成本票的新缺陷或干脆不量。
+const emptyFinalEdit = SCREENS.find((screen) => screen.id === 'project-empty-final-edit');
+assert.ok(emptyFinalEdit);
+assert.equal(emptyFinalEdit.owner, 'ui-09');
+assert.equal(emptyFinalEdit.knownFailure, 'ui-09');
+assert.deepEqual([...emptyFinalEdit.knownFailureChecks], ['horizontalScroll', 'clippedControls']);
 
 // ---------- 数据钩子入口 ----------
 assert.equal(typeof FIXTURE_HOOKS.base, 'function', '基础数据钩子必须在');
