@@ -176,7 +176,8 @@ export default function TeamPoolsPanel() {
       summary: target
         ? `把「${row.accountName}」并进「${target.accountName}」：两个账号共用一个名额池，名额会改成 ${capacity}`
           + `（原来是 ${target.capacity}），实际并发不会超过这个数。`
-        : `把「${row.accountName}」改到新的名额池编号 ${targetPoolKey}，名额 ${capacity}。`
+        // 新池还没有账号名，只能用管理员刚输入的那串编号说清楚目标。
+        : `把「${row.accountName}」改到一个新的名额池（编号 ${targetPoolKey}），名额 ${capacity}。`
           + '如果这是同一个上游账号，请改成已有那个池的编号，才能真正共享名额。',
     });
   }
@@ -213,11 +214,15 @@ export default function TeamPoolsPanel() {
         body: JSON.stringify({ changes: [built.apply] }),
       });
       if (!response.ok) throw new Error(await teamError(response, '名额保存失败'));
-      const rowsInTarget = view?.rows.find((item) => item.poolKey === built.targetPoolKey)?.modelCount ?? row.modelCount;
+      // 提示里只说账号名，不念内部池编号（编号默认是藏起来的）。
+      const targetName = targetPoolKey
+        ? (targetRow?.accountName ?? '目标名额池')
+        : null;
+      const rowsInTarget = targetRow?.modelCount ?? row.modelCount;
       setNotice(
         preview.action === 'noop'
           ? `${row.accountName} 的名额已是 ${capacity}，未产生变更。`
-          : `${row.accountName} ${targetPoolKey ? `已并入「${targetPoolKey}」，` : ''}名额已保存为 ${capacity}`
+          : `${row.accountName} ${targetName ? `已并入「${targetName}」，` : ''}名额已保存为 ${capacity}`
             + `（版本 ${preview.currentVersion} → ${preview.nextVersion}）；共用这个账号的 ${rowsInTarget} 个模型一起生效。`,
       );
       await refresh();

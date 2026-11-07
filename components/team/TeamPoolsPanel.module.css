@@ -131,7 +131,7 @@
 .poolKeyInput:focus {
   outline: none;
   border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px rgb(0 113 227 / 24%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 30%, transparent);
 }
 .capacityInput[aria-invalid='true'] { border-color: var(--color-fail); }
 
@@ -175,7 +175,7 @@
 .statusCell { display: flex; justify-content: flex-start; min-width: 0; }
 .save { height: 26px; padding: 0 10px; font-size: var(--text-label); }
 
-/* 启用开关 */
+/* 启用开关：样式照原型 `.switch`（轨道灰 → 打开是绿色），滑块固定白色。 */
 .switch {
   position: relative;
   flex: none;
@@ -184,11 +184,11 @@
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: var(--color-dot-idle);
+  background: var(--color-seg);
   cursor: pointer;
   transition: background .15s ease;
 }
-.switch[aria-checked='true'] { background: var(--color-accent); }
+.switch[aria-checked='true'] { background: var(--color-ok); }
 .switch::after {
   content: '';
   position: absolute;
@@ -198,7 +198,7 @@
   height: 16px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 24%);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-media-background) 30%, transparent);
   transition: transform .15s ease;
 }
 .switch[aria-checked='true']::after { transform: translateX(16px); }
