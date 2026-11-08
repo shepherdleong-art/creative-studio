@@ -1,6 +1,6 @@
 import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 
-import type { DesktopBridge, RemoteUploadTarget, ThemePreference, ClientDiagnosticInput } from './bridge-types';
+import type { DesktopBridge, RemoteUploadTarget, ThemePreference, ClientDiagnosticInput, ClientDownloadManifest } from './bridge-types';
 
 export const CHANNELS = {
   platform: 'desktop:platform',
@@ -14,6 +14,7 @@ export const CHANNELS = {
   setThemePreference: 'desktop:set-theme-preference',
   quitRequested: 'desktop:quit-requested',
   chooseUploadFiles: 'desktop:client-choose-upload-files',
+  createDownloads: 'desktop:client-create-downloads',
   pauseTransfer: 'desktop:client-pause-transfer',
   resumeTransfer: 'desktop:client-resume-transfer',
   cancelTransfer: 'desktop:client-cancel-transfer',
@@ -50,6 +51,7 @@ export interface DesktopIpcHandlers {
   revealItem(relativePath: string): Promise<RevealItemResult>;
   setThemePreference(preference: ThemePreference): void;
   chooseUploadFiles(target: RemoteUploadTarget): Promise<{ transferIds: string[] }>;
+  createDownloads(manifests: ClientDownloadManifest[]): Promise<{ transferIds: string[] }>;
   pauseTransfer(transferId: string): void;
   resumeTransfer(transferId: string): void;
   cancelTransfer(transferId: string): Promise<void>;
@@ -137,6 +139,10 @@ export function registerIpcHandlers(options: RegisterIpcOptions): () => void {
   ipcMain.handle(
     CHANNELS.chooseUploadFiles,
     protectedHandler((target: RemoteUploadTarget) => options.handlers.chooseUploadFiles(target)),
+  );
+  ipcMain.handle(
+    CHANNELS.createDownloads,
+    protectedHandler((manifests: ClientDownloadManifest[]) => options.handlers.createDownloads(manifests)),
   );
   ipcMain.handle(
     CHANNELS.pauseTransfer,

@@ -48,8 +48,7 @@ async function __teamRouteGET(request: Request, context: { params: Promise<{ id:
     await assertBatchApiReady();
     const { manifest, files } = await registerBatchDownloadFiles(
       getDb(), projectId, batchId, { scope, references: 'export' },
-    );
-    if (manifest.items.length === 0 || files.length === 0) {
+    );    if (manifest.items.length === 0 || files.length === 0) {
       return NextResponse.json(
         { error: 'no_exported_films', message: BATCH_NO_EXPORTED_FILMS_MESSAGE },
         { status: 404, headers: BATCH_NO_STORE_HEADERS },

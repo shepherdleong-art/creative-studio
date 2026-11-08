@@ -240,31 +240,26 @@ export async function registerBatchDownloadFiles(
   options: BatchDownloadManifestOptions & { references?: BatchDownloadReferenceMode } = {},
 ): Promise<{
   manifest: BatchDownloadManifest;
-  files: Array<{ absolutePath: string; filename: string }>;
-  registeredFileIds: string[];
+  files: Array<{ absolutePath: string; filename: string; item: BatchDownloadItem; fileId: string | null }>;
 }> {
   const mode: BatchDownloadReferenceMode = options.references ?? 'both';
   const { manifest, resolved } = resolveBatchDownloadItems(db, projectId, batchId, options);
   const storageRoot = path.resolve(options.storageRoot ?? path.join(dataRoot(), 'storage'));
-  const files = resolved.map((entry) => ({
-    absolutePath: assertNoStorageSymlink(storageRoot, entry.storageRelativePath),
-    filename: entry.item.relativeName,
-  }));
   const access = requireAccessContext();
-  if (access.kind !== 'team' || resolved.length === 0) {
-    return { manifest, files, registeredFileIds: [] };
-  }
+  const register = access.kind === 'team';
   const roles: Array<'export' | 'delivery'> = mode === 'both' ? ['export', 'delivery'] : [mode];
-  const registeredFileIds: string[] = [];
-  for (const [index, entry] of resolved.entries()) {
-    const fileId = registerManagedFile({
-      absolutePath: files[index].absolutePath,
-      mimeType: entry.item.kind === 'video' ? 'video/mp4' : 'image/jpeg',
-      references: roles.map((role) => ({
-        resourceType: 'batch_artifact', resourceId: entry.artifactId, role, pinKind: 'export' as const,
-      })),
-    });
-    if (fileId) registeredFileIds.push(fileId);
-  }
-  return { manifest, files, registeredFileIds };
+  const files = resolved.map((entry) => {
+    const absolutePath = assertNoStorageSymlink(storageRoot, entry.storageRelativePath);
+    const fileId = register
+      ? registerManagedFile({
+          absolutePath,
+          mimeType: entry.item.kind === 'video' ? 'video/mp4' : 'image/jpeg',
+          references: roles.map((role) => ({
+            resourceType: 'batch_artifact', resourceId: entry.artifactId, role, pinKind: 'export' as const,
+          })),
+        }) ?? null
+      : null;
+    return { absolutePath, filename: entry.item.relativeName, item: entry.item, fileId };
+  });
+  return { manifest, files };
 }
