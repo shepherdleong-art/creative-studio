@@ -372,6 +372,35 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       await page.waitForTimeout(1500);
     }],
   }),
+  // 11 号票：批量导出的第 4 步（封面卡 + 大预览 + 一键下载全部）。
+  // 夹具保证那四条成片覆盖「已导出 / 修改未导出 / 从没导出 / 渲染失败」。
+  base('batch-export', '项目工作台 · 第 5 步 批量导出成片', 'ui-11', {
+    href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
+    skipUnless: 'batchExportStates',
+    ready: async (page) => {
+      await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 });
+      await page.getByRole('tab', { name: '批量生产', exact: true }).click();
+      // 第 4 步「导出成片」：等卡片与封面真的画出来（不是 sleep）。
+      await page.getByRole('button', { name: /导出成片/ }).click();
+      await page.getByTestId('batch-export-card').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('batch-download-all').waitFor({ timeout: 30_000 });
+    },
+  }),
+  // 11 号票：导出页的大预览（3:4 画面 + 信息栏）。弹窗单独量一次。
+  base('batch-export-preview', '项目工作台 · 批量成片大预览', 'ui-11', {
+    href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
+    skipUnless: 'batchExportStates',
+    ready: async (page) => {
+      await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 });
+      await page.getByRole('tab', { name: '批量生产', exact: true }).click();
+      await page.getByRole('button', { name: /导出成片/ }).click();
+      await page.getByTestId('batch-export-card').first().waitFor({ timeout: 60_000 });
+    },
+    actions: [async (page) => {
+      await page.locator('[data-testid^="batch-export-card-open-"]').first().click();
+      await page.getByTestId('film-preview-dialog').waitFor({ timeout: 30_000 });
+    }],
+  }),
 
   // ---------- 管理员侧 ----------
   // 12 号票：运行总览 + 全员任务。ready 等的是「这一屏真的画出来」的落点：

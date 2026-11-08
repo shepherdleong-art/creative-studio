@@ -23,5 +23,6 @@ export {
   listTeamDownloads,
   recordTeamDownloadReceipt,
   registerTeamDevice,
+  teamFileDeliveryManifest,
 } from './devices.ts';
 export { publishVerifiedTeamDownload } from './local-download.ts';
