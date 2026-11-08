@@ -16,6 +16,14 @@ const DOWNLOAD_OPTIONS: Array<{ scope: BatchDownloadScope; label: string; hint: 
   { scope: 'cover', label: '只要封面', hint: '只取封面图' },
 ];
 
+/** 卡片缩略图：按画幅比例、**按高度**算宽高（与预览对话框同一口径，不靠 aspect-ratio）。 */
+const THUMBNAIL_HEIGHT = 236;
+const PRESET_RATIOS: Record<OutputPresetId, number> = {
+  '3x4': 3 / 4,
+  '9x16': 9 / 16,
+  '16x9': 16 / 9,
+};
+
 interface DownloadManifestResponse {
   scope: BatchDownloadScope;
   exportDirName: string;
@@ -472,20 +480,31 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                 }`} data-state={state.tone}>{state.text}</span>
               </div>
 
-              {/* 卡片只显示封面 + 悬停播放图标；点卡片打开大预览（不再嵌播放器）。 */}
+              {/* 卡片只显示封面 + 悬停播放图标；点卡片打开大预览（不再嵌播放器）。
+                  缩略图宽高按画幅**从高度算出来**显式写死，和预览对话框同一口径
+                  （Safari 不靠 aspect-ratio 反推；也不会把卡片撑出窗口）。 */}
               <button
                 type="button"
-                className="group relative block w-full overflow-hidden rounded-xl bg-black/80 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                className="group relative mx-auto block overflow-hidden rounded-xl bg-black/80 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                 data-testid={`batch-export-card-open-${card.planId}`}
                 aria-label={`打开成片 ${card.seq} 的大预览`}
                 onClick={() => openPreview(card)}
               >
-                <span className="block" data-media-frame="" data-preset={outputPreset}>
+                {/* 封面缩略图不声明 data-preset / data-media-frame：
+                    「视频画面保持 3:4」量的是真画面（预览对话框），不是列表封面。
+                    比例本身仍由下面的显式宽高保证（高度 → 宽度，不靠 aspect-ratio）。 */}
+                <span
+                  className="relative block"
+                  style={{
+                    height: THUMBNAIL_HEIGHT,
+                    width: Math.round(THUMBNAIL_HEIGHT * (PRESET_RATIOS[outputPreset] ?? 3 / 4)),
+                  }}
+                >
                   {poster ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={poster} alt={`成片 ${String(card.seq).padStart(2, '0')} 封面`} className="aspect-[3/4] w-full object-cover opacity-95 transition group-hover:opacity-70" />
+                    <img src={poster} alt={`成片 ${String(card.seq).padStart(2, '0')} 封面`} className="h-full w-full object-cover opacity-95 transition group-hover:opacity-70" />
                   ) : (
-                    <span className="flex aspect-[3/4] w-full items-center justify-center text-xs text-ink-tertiary">
+                    <span className="flex h-full w-full items-center justify-center text-xs text-ink-tertiary">
                       还没有封面
                     </span>
                   )}
