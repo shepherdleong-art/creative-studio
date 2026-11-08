@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 检查器的自测（第 04 号票）——「证明检查真的有效」。
  *
  * 光靠现有页面通过并不能证明检查有效：一个永远返回 passed 的检查器也会通过。
@@ -107,7 +107,7 @@ export async function runCheckSelfTest(page, { collectAllChecks, engine, viewpor
   for (const testCase of CASES) {
     await page.setContent(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">${STYLE}</head><body>${testCase.html}</body></html>`, { waitUntil: 'load' });
     await page.waitForTimeout(60);
-    const measurement = await page.evaluate(collectAllChecks);
+    const measurement = await page.evaluate(collectAllChecks, 'all');
     const outcomes = {
       horizontalScroll: evaluateHorizontalOverflow(measurement.horizontalScroll),
       clippedControls: evaluateClippedControls(measurement.clippedControls),

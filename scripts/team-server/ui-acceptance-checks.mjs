@@ -29,6 +29,19 @@ export const CONTROL_SELECTOR = 'button, input, select, textarea, label, [role="
 /** 四个检查的稳定键名；屏幕清单里用这些键开关。 */
 export const CHECK_KEYS = Object.freeze(['horizontalScroll', 'clippedControls', 'hiddenOverflowContent', 'mediaFrames']);
 
+/**
+ * 共享外壳（每屏都长同一样的那部分）的选择器。
+ *
+ * 为什么要有它：左侧栏这种外壳在每一屏都出现，它坏了会让全部屏幕同时红，
+ * 掩盖掉「这一屏自己」的问题（比如混剪页溢出 61px 就分不出来了）。所以：
+ *   - 普通屏幕只量「自己的内容区」，跳过外壳子树；
+ *   - 外壳单独由 `workspace-sidebar` 屏来量（owner 就是改外壳的那张票）。
+ * 这只改变「在哪一屏量」，不改变「量什么」—— 外壳的缺陷照样会被抓出来。
+ */
+export const SHELL_SELECTOR = "aside[data-testid='workspace-sidebar'], header[data-team-shell], [data-testid='page-toolbar']";
+
+const inShell = (element) => Boolean(element.closest && element.closest("aside[data-testid='workspace-sidebar']"));
+
 // ---------------------------------------------------------------------------
 // 检查一：页面有没有横向滚动
 // ---------------------------------------------------------------------------
@@ -309,8 +322,25 @@ export function evaluateMediaFrames(frames, options = {}) {
   return { passed: true, detail: `${measured} 处画面的比例、尺寸与窗口内位置全部正确`, measured, problems: [] };
 }
 
-/** 一次把四项测量在同一帧里取回：避免主题切换/重排让四次测量落在不同状态。 */
-export function collectAllChecks() {
+/**
+ * 一次把四项测量在同一帧里取回：避免主题切换/重排让四次测量落在不同状态。
+ *
+ * `scope` 决定量哪些元素（跨不进 page.evaluate 的闭包，所以用字符串表达）：
+ *   - 'page'（默认）：跳过共享外壳子树（`SHELL_SELECTOR`）。左侧栏这种每屏都在的外壳
+ *     坏了不该让 27 屏同时红，那样就看不出「这一屏自己」的问题了；外壳由
+ *     `workspace-sidebar` 屏单独量。
+ *   - 'shell'：只量共享外壳子树（侧栏、顶栏、页工具条）。
+ *   - 'all'：全量，含外壳。
+ * 整页横向滚动始终按整页量 —— 那是页面级事实，和量哪个子树无关。
+ */
+export function collectAllChecks(scope = 'page') {
+  const shellOf = (element) => element.closest("aside[data-testid='workspace-sidebar'], header[data-team-shell], [data-testid='page-toolbar']");
+  const included = (element) => {
+    const shell = shellOf(element);
+    if (scope === 'shell') return Boolean(shell);
+    if (scope === 'all') return true;
+    return !shell;
+  };
   const innerWidth = window.innerWidth;
   const bodyWidth = document.body ? document.body.scrollWidth : 0;
   const scrollWidth = Math.max(document.documentElement.scrollWidth, bodyWidth);
@@ -338,6 +368,7 @@ export function collectAllChecks() {
   const clipped = [];
   const seenClip = new Set();
   for (const element of document.querySelectorAll(selector)) {
+    if (!included(element)) continue;
     const rect = element.getBoundingClientRect();
     if (rect.width < 2 || rect.height < 2) continue;
     const style = getComputedStyle(element);
@@ -378,6 +409,7 @@ export function collectAllChecks() {
 
   const hidden = [];
   for (const element of document.querySelectorAll('body *')) {
+    if (!included(element)) continue;
     if (element.matches('input, textarea, select')) continue;
     const style = getComputedStyle(element);
     const overflowX = style.overflowX;
@@ -408,6 +440,7 @@ export function collectAllChecks() {
   const media = [];
   const seenMedia = new Set();
   for (const element of document.querySelectorAll('video, [data-output-preset], [data-preset], [data-media-frame]')) {
+    if (!included(element)) continue;
     const rect = element.getBoundingClientRect();
     if (rect.width < 2 || rect.height < 2) continue;
     const style = getComputedStyle(element);
