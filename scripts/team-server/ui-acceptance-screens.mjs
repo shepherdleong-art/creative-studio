@@ -80,13 +80,6 @@ const base = (id, title, owner, extra) => ({
   ...extra,
 });
 
-/** 15 号票：三种窄窗口收法的报告用名字。 */
-const NARROW_STYLE_TITLES = {
-  icon: '图标窄条 + 悬停浮出名称',
-  hover: '图标窄条 + 悬停整条展开',
-  drawer: '窄轨 + 覆盖式抽屉',
-};
-
 // 09 号票：混剪页宽度已改成「团队版占满侧栏右侧内容区」，横向溢出与顶栏按钮被切
 // 两项都真修好了 —— knownFailure 标记已删除，现在必须硬通过（再挂标记会触发
 // known-failure-not-reproduced 让整轮失败）。
@@ -171,43 +164,32 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
     }],
   }),
 
-  // 15 号票：窄窗口（<1280）三种收法各量一屏，`?narrow=` 是只用一次的试用开关。
-  // 宽窗口下侧栏不收起，这三屏在 1536/1280 上等同「完整侧栏」，所以 ready 只断言
-  // 「这一屏真的画出来了」，收法是否生效由 action 里按窗口宽度分别验证。
-  ...['icon', 'hover', 'drawer'].map((style) => base(`narrow-${style}`, `窄窗口收法 · ${NARROW_STYLE_TITLES[style]}`, 'ui-15', {
-    href: () => `/?narrow=${style}`,
+  // 15 号票：窄窗口（<1280）收法。用户在三种候选里选了「图标窄条 + 悬停浮出名称」
+  // （= 规格原文写法），另外两套与 `?narrow=` 试用开关已删除，所以这里只剩一屏。
+  // 宽窗口下侧栏不收起，ready 只断言「这一屏真的画出来了」，收法是否生效按窗口宽度分别验证。
+  base('narrow-icon-rail', '窄窗口收法 · 图标窄条 + 悬停浮出名称', 'ui-15', {
+    href: () => '/',
     ready: async (page) => {
       await page.getByTestId('workspace-sidebar').waitFor({ timeout: 60_000 });
-      // Playwright 的指针默认停在 (0,0)，那正是侧栏顶部：hover 收法会被这一下「悬停」
-      // 直接展开，收起态的截图就拍成了展开态。量之前先把指针挪到内容区中间。
+      // Playwright 的指针默认停在 (0,0)，那正是侧栏顶部：悬停会让浮层冒出来，
+      // 收起态的截图就拍花了。量之前先把指针挪到内容区中间。
       const size = page.viewportSize();
       if (size) await page.mouse.move(Math.round(size.width * 0.7), Math.round(size.height * 0.6));
       // 收法必须真的落到 DOM 上（窄窗口下才有这个属性）。
-      const applied = await page.getByTestId('workspace-sidebar').getAttribute('data-narrow-style');
+      const applied = await page.getByTestId('workspace-sidebar').getAttribute('data-narrow');
       const narrow = await page.evaluate(() => window.matchMedia('(max-width: 1279px)').matches);
-      if (narrow && applied !== style) throw new Error(`窄窗口下侧栏收法应为 ${style}，实际 ${applied ?? '（未设置）'}`);
+      if (narrow && applied !== 'rail') throw new Error(`窄窗口下侧栏应收成图标条，实际 ${applied ?? '（未设置）'}`);
       if (!narrow && applied !== null) throw new Error(`宽窗口下侧栏不该收起，实际 ${applied}`);
     },
     actions: [async (page) => {
       const narrow = await page.evaluate(() => window.matchMedia('(max-width: 1279px)').matches);
       if (!narrow) return;
-      // 收起态截图已经在上一步拍过；这里拍「名称可见」的那一面（验收硬要求：悬停显示名称）。
-      if (style === 'icon') {
-        await page.getByTestId('workspace-nav-item').first().hover();
-        await page.getByTestId('workspace-nav-flyout').first().waitFor({ timeout: 15_000 });
-      } else if (style === 'hover') {
-        // 悬停展开是纯 CSS：等侧栏实际变宽再截图，比等 React 状态更贴近用户看到的画面。
-        await page.getByTestId('workspace-sidebar').hover();
-        await page.waitForFunction(() => {
-          const box = document.querySelector('[data-testid="workspace-sidebar"]')?.getBoundingClientRect();
-          return Boolean(box && box.width > 200);
-        }, undefined, { timeout: 15_000 });
-      } else {
-        await page.getByTestId('workspace-drawer-toggle').click();
-        await page.locator('[data-testid="workspace-sidebar"][data-narrow="full"]').waitFor({ timeout: 15_000 });
-      }
+      // 收起态截图在上一步拍过；这里拍「悬停某行 → 浮出名称」的那一面
+      // （验收硬要求：窄条下悬停显示名称）。
+      await page.getByTestId('workspace-nav-item').first().hover();
+      await page.getByTestId('workspace-nav-flyout').first().waitFor({ timeout: 15_000 });
     }],
-  })),
+  }),
 
   // ---------- 项目工作台五步 ----------
   // 第 1/2 步（07 号票）：对照视图要求原图与结果**真的并排**，所以既量尺寸，
