@@ -315,7 +315,7 @@ try {
   await employeePage.screenshot({ path: path.join(evidenceDirectory, 'console-tasks-employee.png'), fullPage: true });
   result.evidence.push('console-tasks-employee.png');
 
-  // 深色两态各截一张（供人工比对）。
+  // 深色两态各截一张（供人工比对）。等数量卡真的读到数字再拍，否则截到的是占位符。
   for (const theme of ['light', 'dark']) {
     await page.evaluate((value) => {
       localStorage.setItem('creative-studio-theme', value);
@@ -323,6 +323,8 @@ try {
     }, theme);
     await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded', timeout: 120_000 });
     await page.getByTestId('count-running').waitFor({ timeout: 90_000 });
+    await page.locator('[data-testid="count-running"] strong').filter({ hasNotText: '—' }).waitFor({ timeout: 90_000 });
+    await page.getByText('读取运行总览…', { exact: true }).waitFor({ state: 'detached', timeout: 90_000 }).catch(() => undefined);
     await page.screenshot({ path: path.join(evidenceDirectory, `console-overview-${theme}.png`), fullPage: true });
     result.evidence.push(`console-overview-${theme}.png`);
   }
