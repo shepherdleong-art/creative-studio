@@ -485,8 +485,12 @@ async function runMatrix() {
             storageState: storageStates[audience],
           });
           const page = await context.newPage();
+          // 页面异常带上「是哪一屏触发的」：不然每档窗口都会记一条匿名 pageerror，
+          // 看不出该找谁修。currentScreen 在下方逐屏更新。
+          const currentScreen = { id: '(页面加载中)' };
           page.on('pageerror', (error) => result.failures.push({
-            kind: 'pageerror', engine, audience, viewport: viewport.label, theme, message: sanitize(error.message),
+            kind: 'pageerror', screen: currentScreen.id, engine, audience,
+            viewport: viewport.label, theme, message: sanitize(error.message),
           }));
           for (const screen of audienceScreens) {
             // 隔离服务中途死掉时，后面的导航只会全部 ERR_CONNECTION_REFUSED。
@@ -500,6 +504,7 @@ async function runMatrix() {
               });
               return;
             }
+            currentScreen.id = screen.id;
             const row = await measureScreen({ screen, engine, page, theme, viewport });
             const finalRow = applyKnownFailure(row, screen);
             result.runs.push(finalRow);
@@ -535,6 +540,18 @@ async function runMatrix() {
     `每个内核的每档窗口都先用合成页面自测检查器：${result.selfTestRuns.length} 次自测，`
       + `${result.selfTestRuns.filter((row) => row.result === 'passed').length} 次全部判定正确`,
   );
+  // 空项目第 5 步会请求 final-edit 的 external-assets，接口回 404 并冒泡成未处理异常。
+  // 那一屏已经整体是 09 的已知失败，所以这些 404 不重复计成「另一件事」，
+  // 但**完整保留**在 absorbedPageErrors 里交给 09 一起排查，不删除、不隐藏。
+  const knownScreens = new Set(result.knownFailures.map((row) => row.screen));
+  const absorbed = result.failures.filter((row) => row.kind === 'pageerror' && knownScreens.has(row.screen));
+  if (absorbed.length) {
+    result.failures = result.failures.filter((row) => !absorbed.includes(row));
+    result.absorbedPageErrors = absorbed;
+    result.assertions.push(
+      `已知失败屏上的 ${absorbed.length} 条页面异常（未处理 404）并入该屏的已知问题，明细保留在 absorbedPageErrors`,
+    );
+  }
 }
 
 async function prepareFixtures() {
