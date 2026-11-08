@@ -513,7 +513,9 @@ export default function ProjectDetailPage() {
                 description="先在「分镜」建一个分镜组，或者用自由素材工位直接传图做视频。"
               />
             ) : null}
-            <div className="video-generation-section">
+            {/* 08 号票：第 4 步占满内容区（三栏由面板自己排），不再用整页宽的
+                `.video-generation-section` 全宽壳——它按 100vw 计算会越过侧栏、横向溢出。 */}
+            <div className="video-generation-section flex min-h-0 min-w-0 flex-1 flex-col">
               <div className="video-generation-heading">
                 <h2 className="text-base font-semibold">视频生成</h2>
                 <p className="mt-1 text-sm text-ink-secondary">选择分镜组和视频供应商，创建图生视频任务。</p>

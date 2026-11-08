@@ -361,30 +361,68 @@ body {
   }
 
 	  /* Three-column video workspace */
+  /* 08 号票：第 4 步占满内容区（侧栏右边整块），不再用 100vw 全宽壳——
+     那样会越过侧栏、在 1280/1024 等窗口把「选择分镜组」推到视口外。 */
   .video-generation-section {
-    overflow: visible;
-    position: relative;
-    left: 50%;
-    width: min(calc(100vw - 48px), 1680px);
-    transform: translateX(-50%);
-    padding: 18px;
-    border: 1px solid rgba(0,0,0,.06);
-    border-radius: 22px;
-    background:
-      linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,248,250,.86)),
-      var(--color-surface);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.88), 0 20px 70px rgba(0,0,0,.06);
-  }
-  .video-generation-heading { margin-bottom: 16px; }
-  .video-workspace {
-    display: grid;
-    grid-template-columns: minmax(380px, 420px) minmax(540px, 1fr) minmax(220px, 260px);
-    gap: 16px;
-    align-items: stretch;
+    min-width: 0;
     width: 100%;
-    height: clamp(720px, calc(100vh - 168px), 1040px);
+    flex: 1;
     min-height: 0;
   }
+  .video-generation-heading { margin-bottom: 12px; }
+  .video-workspace {
+    display: grid;
+    grid-template-columns: minmax(320px, 400px) minmax(0, 1fr) minmax(220px, 280px);
+    gap: 12px;
+    align-items: stretch;
+    width: 100%;
+    min-height: 0;
+    flex: 1;
+    height: 100%;
+  }
+  /* 右栏「这条视频用的设置」：一条视频当时保存的字段，逐项列出。 */
+  .video-saved-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-control);
+    background: var(--color-card);
+  }
+  .video-saved-settings-head { display: flex; flex-direction: column; gap: 4px; }
+  .video-saved-settings-head > b { font-size: var(--text-body); font-weight: 600; color: var(--color-ink); }
+  .video-saved-settings-head > small { font-size: var(--text-label); color: var(--color-ink-tertiary); }
+  .video-saved-settings-dirty {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--text-label);
+    line-height: 1.45;
+    color: var(--color-warn);
+  }
+  .video-saved-settings-list { display: grid; gap: 4px; margin: 0; }
+  .video-saved-settings-list > div,
+  .video-saved-settings-prompt {
+    display: grid;
+    grid-template-columns: 62px minmax(0, 1fr);
+    gap: 8px;
+    min-width: 0;
+    font-size: var(--text-label);
+  }
+  .video-saved-settings-list dt,
+  .video-saved-settings-prompt dt { margin: 0; color: var(--color-ink-tertiary); }
+  .video-saved-settings-list dd,
+  .video-saved-settings-prompt dd {
+    margin: 0;
+    min-width: 0;
+    color: var(--color-ink);
+    overflow-wrap: anywhere;
+  }
+  .video-saved-settings-prompt { margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--color-hairline-soft); }
+  .video-saved-settings-prompt dd { white-space: pre-wrap; line-height: 1.5; max-height: 96px; overflow-y: auto; }
   .video-workspace > .panel-col {
     min-width: 0;
     min-height: 0;
@@ -658,8 +696,8 @@ body {
   }
 
   @media (max-width: 1280px) {
-    .video-generation-section { width: min(calc(100vw - 32px), 1180px); padding: 14px; }
-    .video-workspace { grid-template-columns: minmax(340px, 380px) minmax(400px, 1fr) 220px; }
+    .video-generation-section { width: 100%; padding: 0; }
+    .video-workspace { grid-template-columns: minmax(300px, 360px) minmax(0, 1fr) minmax(200px, 250px); }
     .video-preview-fit { max-width: min(100%, 680px); }
   }
 
@@ -1162,10 +1200,10 @@ html[data-theme='dark'] .script-select.input-field {
 /* video workspace */
 html[data-theme='dark'] .video-generation-section {
   border-color: rgba(255, 255, 255, .09);
-  background:
-    linear-gradient(180deg, rgba(44, 44, 46, .55), rgba(28, 28, 30, .75)),
-    var(--color-surface);
-  box-shadow: 0 20px 70px rgba(0, 0, 0, .5);
+}
+html[data-theme='dark'] .video-saved-settings {
+  border-color: rgba(255, 255, 255, .09);
+  background: rgba(255, 255, 255, .05);
 }
 html[data-theme='dark'] .video-workspace > .panel-col {
   background: rgba(255, 255, 255, .05);
@@ -1607,7 +1645,7 @@ main:has(> [data-testid='canvas-editor']) {
 body:has(> header[data-team-shell='A']) { --team-sidebar-width: 218px; background: var(--color-surface-hover); }
 header[data-team-shell='A'] { margin-left: var(--team-sidebar-width); min-height: 68px; padding: 0 36px; background: var(--color-surface); }
 body:has(> header[data-team-shell='A']) > main { width: calc(100% - var(--team-sidebar-width)); max-width: 1500px; margin-left: var(--team-sidebar-width); margin-right: 0; padding: 39px 36px 60px; }
-body:has(> header[data-team-shell='A']) .video-generation-section { width: min(calc(100vw - var(--team-sidebar-width) - 72px), 1400px); }
+body:has(> header[data-team-shell='A']) .video-generation-section { width: 100%; }
 body:has(> header[data-team-shell='A']) > main:has(> [data-testid='canvas-editor']) { max-width: none; padding: 0; }
 @media (max-width: 760px) {
   body:has(> header[data-team-shell='A']) { --team-sidebar-width: 68px; }

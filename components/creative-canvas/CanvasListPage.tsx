@@ -181,7 +181,14 @@ export default function CanvasListPage({ role }: { role?: WorkspaceRole }) {
             if (event.key === 'Enter') void create();
           }}
         />
-        <ToolbarButton variant="primary" onClick={() => { void create(); }} label="新建画布">新建画布</ToolbarButton>
+        <button
+          type="button"
+          className="cap cap-primary"
+          data-testid="create-canvas-button"
+          onClick={() => { void create(); }}
+        >
+          新建画布
+        </button>
       </section>
 
       {message ? (
