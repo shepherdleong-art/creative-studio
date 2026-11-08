@@ -65,6 +65,10 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/batch-production/batches/[id]/assets/analyze': 'POST',
   '/api/batch-production/batches/[id]/assets/[assetId]/exclusion': 'POST',
   '/api/batch-production/batches/[id]/control': 'POST',
+  // 11 号票：可下载文件清单 + 只用浏览器时的 ZIP。两者都只读当前正式产物，
+  // 归属由 batch scope（`[id]`）检查 —— 别人的批次在 handler 之前就被拒。
+  '/api/batch-production/batches/[id]/downloads': 'GET',
+  '/api/batch-production/batches/[id]/downloads/zip': 'GET',
   '/api/batch-production/batches/[id]/export-preflight': 'GET',
   '/api/batch-production/batches/[id]/exports/reveal': 'POST',
   '/api/batch-production/batches/[id]/exports': 'POST',
