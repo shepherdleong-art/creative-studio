@@ -89,7 +89,7 @@ function makeView() {
       { id: 'cue-2', startUs: 1500000, endUs: 3000000, text: '第二句字幕' },
     ],
     narration: { durationUs: 6000000, audioRelativePath: null, gainDb: 0 },
-    music: { trackId: null }, musicLibrary: [],
+    music: { trackId: null }, musicLibrary: [{ id: 'bgm-1', filename: '验收音乐.mp3', durationUs: 8000000 }],
     packaging: { enabled: false, template: 'overlay-poster', varsOverrides: {}, pointCues: [] },
     batchMusicDefaults: { trackId: null, gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 },
     subtitleStyle: null, subtitleStyleOverride: false, subtitleOverride: false,
@@ -347,13 +347,18 @@ try {
   await speedInput.press('Tab');
   await page.waitForFunction(() => window.edits.some(e => e.type === 'set_clip_playback_rate' && e.playbackRate === 1.5));
 
-  // 5.4 配音BGM：口播增益草稿 + 「应用音量」（音量条在右栏「成片口播音量」卡片里）
+  // 5.4 配音BGM：口播增益 + BGM 曲目各自「应用」
   await page.getByRole('button', { name: '配音BGM', exact: true }).click();
   const narrationGain = page.locator('aside[aria-label="成片属性"] input[type="range"]').first();
   await narrationGain.waitFor();
   await narrationGain.fill('-6');
   await page.getByRole('button', { name: '应用音量', exact: true }).click();
   await page.waitForFunction(() => window.edits.some(e => e.type === 'set_narration_gain' && e.gainDb === -6));
+  // 曲目下拉（aria-label 由 select 自身的可访问名给出）+「应用 BGM 更改」
+  const bgmTrackSelect = page.locator('aside[aria-label="成片属性"] select').first();
+  await bgmTrackSelect.selectOption('bgm-1');
+  await page.getByRole('button', { name: '应用 BGM 更改', exact: true }).click();
+  await page.waitForFunction(() => window.edits.some(e => e.type === 'set_music' && e.trackId === 'bgm-1'));
 
   // 5.5 封面：走「封面精调」抽屉（「应用封面」在 review-packaging-source 里覆盖）
   await page.evaluate(() => window.setTab('cover'));
