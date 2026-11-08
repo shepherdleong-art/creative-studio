@@ -200,8 +200,8 @@ export class RemoteClientController {
   async revealDownload(id: string): Promise<{ revealed: boolean }> {
     return { revealed: await this.requireTransfers().revealDownload(id) };
   }
-  async createDownloads(manifests: TeamFileDownloadManifest[]): Promise<string[]> {
-    return this.requireTransfers().createDownloads(manifests);
+  async createDownloads(manifests: TeamFileDownloadManifest[]): Promise<{ transferIds: string[] }> {
+    return { transferIds: await this.requireTransfers().createDownloads(manifests) };
   }
 
   async installClientUpdate(): Promise<{ started: boolean; message?: string }> {

@@ -532,7 +532,16 @@ async function prepareFixtures() {
   const created = await api.createEmployee(adminSession, { employeeId: EMPLOYEE_ID, displayName: '界面验收员工' });
   employeeSession = await api.activate(EMPLOYEE_ID, created.credential, EMPLOYEE_PASSWORD);
 
-  fixtureContext = { api, adminSession, employeeSession, employee: { employeeId: EMPLOYEE_ID }, admin: { employeeId: ADMIN_ID } };
+  fixtureContext = {
+    api, adminSession, employeeSession, employee: { employeeId: EMPLOYEE_ID }, admin: { employeeId: ADMIN_ID },
+    // 隔离数据根的 SQLite（只读/定向写，供需要复杂领域状态的数据钩子用；
+    // 钩子守则允许「正式接口或隔离数据根 SQLite」，不许碰真实数据根）。
+    dataRoot,
+    openIsolatedDatabase: async () => {
+      const { default: Database } = await import('better-sqlite3');
+      return new Database(path.join(dataRoot, 'data', 'workbench.db'));
+    },
+  };
   const { missing } = await runFixtureHooks(fixtureContext, ['base']);
   assert.deepEqual(missing, [], '基础数据钩子必须存在');
   assert.ok(fixtureContext.project?.id, '基础数据必须产出一个项目');

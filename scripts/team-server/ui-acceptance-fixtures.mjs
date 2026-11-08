@@ -239,6 +239,126 @@ export const FIXTURE_HOOKS = {
   },
 
   /**
+   * 11 号票：导出页要有四种状态的成片才量得出来
+   * （已导出 / 修改未导出 / 从没导出 / 渲染失败）。
+   *
+   * 只用**正式接口 + 隔离数据根 SQLite**：
+   * - 批次与项目走 `/api/batch-production/batches`；
+   * - 成片计划、版本、正式产物与渲染任务用隔离库里的领域表造（这些没有对外
+   *   「直接造一条已导出成片」的接口，强行调渲染会真的跑 ffmpeg）。
+   * - 正式产物文件写进隔离 `storage/`，字节数与指纹与 artifact 行一致，
+   *   这样清单接口的「每项带大小」在 UI 上也是真的。
+   */
+  async batchExportStates(ctx) {
+    const projectId = ctx.project.id;
+    const created = await ctx.api.json(ctx.employeeSession, '/api/batch-production/batches', 'POST', {
+      projectId, name: '导出验收批次',
+    }, 201);
+    assert.ok(created?.id, '批次创建必须返回 id');
+    const batchId = created.id;
+
+    // 写正式产物文件（隔离 storage，绝不碰真实数据根）。
+    const fs = await import('node:fs');
+    const nodePath = await import('node:path');
+    const { createHash } = await import('node:crypto');
+    const storageRoot = nodePath.join(ctx.dataRoot ?? process.env.CREATIVE_STUDIO_DATA_ROOT, 'storage');
+    const identityDir = 'UI-ACCEPT-20261101';
+    const writeArtifact = (filename, bytes) => {
+      const relativePath = nodePath.join('projects', identityDir, '成片', filename).split(nodePath.sep).join('/');
+      const absolute = nodePath.join(storageRoot, relativePath);
+      fs.mkdirSync(nodePath.dirname(absolute), { recursive: true });
+      fs.writeFileSync(absolute, bytes);
+      return { relativePath, checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}` };
+    };
+
+    const db = await ctx.openIsolatedDatabase();
+    try {
+      const { resolveCoverContractHash } = await import('../../lib/batch-production/cover-contract.ts');
+      const now = new Date().toISOString();
+      const batchVersionId = 'ui-accept-bv';
+      const arrangementJson = JSON.stringify({
+        productionReady: true, preset: '3:4', editRevision: 0,
+        review: { decision: 'approved', decidedAt: now },
+        clips: [{ clipId: 'ui-clip', assetId: 'ui-asset', sourceStartUs: 0, sourceEndUs: 2_000_000, timelineStartUs: 0, timelineEndUs: 2_000_000 }],
+        cover: { assetId: 'ui-asset', timeUs: 0 },
+        warnings: [], blockers: [],
+      });
+      db.prepare(`INSERT INTO batch_production_versions (id,batchId,versionNumber,copyCount,defaultsJson,inputState,frozenAt,createdAt)
+        VALUES (?,?,1,4,'{}','frozen',?,?)`).run(batchVersionId, batchId, now, now);
+      db.prepare(`UPDATE batch_productions SET currentVersionId = ?, status = 'running', controlState = 'running' WHERE id = ?`)
+        .run(batchVersionId, batchId);
+      db.prepare(`INSERT INTO batch_assets (id,projectId,sourceKind,locationJson,contentFingerprint,mediaKind,mediaJson,status,currentAnalysisId,createdAt,updatedAt)
+        VALUES (?,?,'managed','{}','sha256:ui-accept-asset','video',?,'online','ui-analysis',?,?)`)
+        .run('ui-asset', projectId, JSON.stringify({ durationSec: 6 }), now, now);
+      db.prepare(`INSERT INTO batch_asset_analysis (id,assetId,analyzerVersion,providerId,model,analysisJson,status,analyzedAt,createdAt)
+        VALUES ('ui-analysis','ui-asset','fixture','fixture','fixture',?,'ready',?,?)`)
+        .run(JSON.stringify({ durationUs: 6_000_000 }), now, now);
+      db.prepare(`INSERT INTO batch_asset_pool_items (id,batchVersionId,assetId,analysisId,selectionState,createdAt)
+        VALUES ('ui-pool',?, 'ui-asset','ui-analysis','selected',?)`).run(batchVersionId, now);
+      db.prepare(`INSERT INTO batch_scripts (id,projectId,sourceKind,sourceId,title,bodyText,sourceVersion,createdAt,updatedAt)
+        VALUES ('ui-batch-script',?,'script_draft','ui-src','导出验收脚本','正文','v1',?,?)`).run(projectId, now, now);
+      db.prepare(`INSERT INTO batch_script_snapshots (id,batchVersionId,sourceScriptId,title,bodyText,sourceVersion,copyCount,createdAt)
+        VALUES ('ui-ss',?, 'ui-batch-script','导出验收脚本','正文','v1',4,?)`).run(batchVersionId, now);
+
+      const insertPlan = db.prepare(`INSERT INTO batch_output_plans (id,batchVersionId,scriptSnapshotId,seq,planJson,currentVersionId,currentArtifactId,createdAt)
+        VALUES (?,?,?,?,'{}',?,?,?)`);
+      const insertVersion = db.prepare(`INSERT INTO batch_output_versions (id,planId,versionNumber,arrangementJson,createdAt) VALUES (?,?,?,?,?)`);
+      const insertArtifact = db.prepare(`INSERT INTO batch_artifacts (id,projectId,batchId,batchVersionId,outputPlanId,outputVersionId,kind,relativePath,checksum,createdAt)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`);
+
+      // 01 已导出
+      insertPlan.run('ui-plan-exported', batchVersionId, 'ui-ss', 1, 'ui-ov-exported', 'ui-video-exported', now);
+      insertVersion.run('ui-ov-exported', 'ui-plan-exported', 1, arrangementJson, now);
+      // 02 修改未导出：正式产物属于旧版本，当前版本是 v2
+      insertPlan.run('ui-plan-reworked', batchVersionId, 'ui-ss', 2, 'ui-ov-reworked', 'ui-video-reworked', now);
+      insertVersion.run('ui-ov-reworked-old', 'ui-plan-reworked', 1, arrangementJson, now);
+      insertVersion.run('ui-ov-reworked', 'ui-plan-reworked', 2, arrangementJson, now);
+      // 03 从没导出
+      insertPlan.run('ui-plan-never', batchVersionId, 'ui-ss', 3, 'ui-ov-never', null, now);
+      insertVersion.run('ui-ov-never', 'ui-plan-never', 1, arrangementJson, now);
+      // 04 渲染失败
+      insertPlan.run('ui-plan-failed', batchVersionId, 'ui-ss', 4, 'ui-ov-failed', null, now);
+      insertVersion.run('ui-ov-failed', 'ui-plan-failed', 1, arrangementJson, now);
+
+      const exportedVideo = writeArtifact('UI-ACCEPT-01.mp4', Buffer.alloc(4096, 7));
+      const exportedCover = writeArtifact('UI-ACCEPT-01-封面.jpg', Buffer.alloc(1024, 8));
+      const reworkedVideo = writeArtifact('UI-ACCEPT-02.mp4', Buffer.alloc(2048, 9));
+      const reworkedCover = writeArtifact('UI-ACCEPT-02-封面.jpg', Buffer.alloc(512, 10));
+      for (const [id, planId, versionId, kind, file] of [
+        ['ui-video-exported', 'ui-plan-exported', 'ui-ov-exported', 'video', exportedVideo],
+        ['ui-cover-exported', 'ui-plan-exported', 'ui-ov-exported', 'cover', exportedCover],
+        ['ui-video-reworked', 'ui-plan-reworked', 'ui-ov-reworked-old', 'video', reworkedVideo],
+        ['ui-cover-reworked', 'ui-plan-reworked', 'ui-ov-reworked-old', 'cover', reworkedCover],
+      ]) {
+        insertArtifact.run(id, projectId, batchId, batchVersionId, planId, versionId, kind, file.relativePath, file.checksum, now);
+      }
+
+      // 已导出的那条要「新鲜」：一条成功的完整渲染 = 当前封面契约。
+      const coverContractHash = resolveCoverContractHash(db, 'ui-ov-exported');
+      db.prepare(`INSERT INTO batch_tasks (id,projectId,batchId,workType,targetKind,targetId,status,requestKey,expectedState,progressJson,attemptCount,createdAt,updatedAt)
+        VALUES ('ui-cover-task',?,?,'render','output_version_cover','ui-ov-exported','succeeded',?,'running','{}',1,?,?)`)
+        .run(projectId, batchId, `cover:ui-ov-exported:${coverContractHash}`, now, now);
+      // 修改未导出：那条成片不应有「当前契约」的成功渲染，所以不建整片任务。
+      db.prepare(`INSERT INTO batch_tasks (id,projectId,batchId,workType,targetKind,targetId,status,requestKey,expectedState,progressJson,attemptCount,createdAt,updatedAt)
+        VALUES ('ui-failed-task',?,?,'render','output_version','ui-ov-failed','failed',NULL,'running','{}',1,?,?)`)
+        .run(projectId, batchId, now, now);
+      db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,errorCode,errorMessage,startedAt,finishedAt,createdAt)
+        VALUES ('ui-failed-attempt','ui-failed-task',1,'failed','{}','render_failed','验收夹具：模拟渲染失败',?,?,?)`).run(now, now, now);
+
+      // 从没导出：给它一条成功的封面尝试，检查成片里就有合成预览可播。
+      const neverCoverHash = resolveCoverContractHash(db, 'ui-ov-never');
+      db.prepare(`INSERT INTO batch_tasks (id,projectId,batchId,workType,targetKind,targetId,status,requestKey,expectedState,progressJson,attemptCount,createdAt,updatedAt)
+        VALUES ('ui-never-cover-task',?,?,'render','output_version_cover','ui-ov-never','succeeded',?,'running','{}',1,?,?)`)
+        .run(projectId, batchId, `cover:ui-ov-never:${neverCoverHash}`, now, now);
+    } finally {
+      db.close();
+    }
+
+    ctx.batch = { id: batchId, name: '导出验收批次' };
+    return ctx;
+  },
+
+  /**
    * 07 号票：新项目（一张图都没有）用于验收「每步都有空状态」。
    * 只建项目本身，不传任何素材 —— 这样三步的空状态才有可断言的前提。
    */

@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3';
 import type { AccessActor } from '../../media-core/access-context.ts';
 import { isAutomaticDeliverySuppressed } from '../lifecycle/index.ts';
 import { teamFileEtag, type TeamFileRecord } from '../files/index.ts';
+import { authorizeTeamFileReferences } from '../resource-scopes.ts';
 import { TransferError } from './errors.ts';
 import { displayNameFromRelativePath } from './names.ts';
 import type { TeamFileManifest } from './uploads.ts';
@@ -89,6 +90,30 @@ export function registerTeamDevice(
 export function listTeamDevices(db: Database.Database, actor: AccessActor): TeamDeviceRow[] {
   return db.prepare('SELECT * FROM team_devices WHERE userId = ? AND revokedAt IS NULL ORDER BY createdAt, id')
     .all(actor.userId) as TeamDeviceRow[];
+}
+
+/**
+ * 单个交付文件的 manifest（11 号票「一键下载全部」用）。
+ *
+ * 与设备清单走同一套 `manifest()` 字段（fileId / version / size / sha256 / etag），
+ * 轻客户端拿到后交给现有的 `createDownloads` —— 下载、校验、回执全部复用，
+ * 不另造链路。这里只做「当前主体确实能看到这个交付引用」的检查；
+ * 真正的字节下载仍由 `/api/team/files/[id]` 再授权一次。
+ */
+export function teamFileDeliveryManifest(
+  db: Database.Database,
+  actor: AccessActor,
+  fileId: string,
+): TeamFileManifest {
+  const file = db.prepare("SELECT * FROM team_files WHERE id = ? AND state = 'ready' AND ownerUserId = ?")
+    .get(fileId, actor.userId) as TeamFileRecord | undefined;
+  if (!file) throw new TransferError('download_not_found', '交付文件不存在或不可用。');
+  const reference = deliveryReference(db, file.id);
+  if (!reference || reference.deletedAt) throw new TransferError('download_not_found', '交付文件不存在或不可用。');
+  if (!authorizeTeamFileReferences(db, actor, file.id)) {
+    throw new TransferError('download_not_found', '交付文件不存在或不可用。');
+  }
+  return manifest(file);
 }
 
 function manifest(file: TeamFileRecord): TeamFileManifest {

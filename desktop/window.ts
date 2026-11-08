@@ -5,7 +5,7 @@ import { readdir } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { CHANNELS, registerIpcHandlers, sameOrigin, type DesktopIpcHandlers } from './ipc';
-import type { ClientStatus, RemoteUploadTarget, ClientDiagnosticInput } from './bridge-types';
+import type { ClientStatus, RemoteUploadTarget, ClientDiagnosticInput, ClientDownloadManifest } from './bridge-types';
 import type { DesktopService } from './service-spawn';
 import { applyThemePreference } from './theme';
 
@@ -211,6 +211,7 @@ export interface LocalDesktopWindowHost extends DesktopWindowHostBase {
 
 export interface RemoteClientIpc {
   chooseUploadFiles(window: BrowserWindow, target: RemoteUploadTarget): Promise<{ transferIds: string[] }>;
+  createDownloads(manifests: ClientDownloadManifest[]): Promise<{ transferIds: string[] }>;
   pauseTransfer(transferId: string): void;
   resumeTransfer(transferId: string): void;
   cancelTransfer(transferId: string): Promise<void>;
@@ -464,6 +465,7 @@ function createDesktopIpcHandlers(
       applyThemePreference(preference);
     },
     chooseUploadFiles: async () => { throw new Error('仅轻客户端支持受控上传'); },
+    createDownloads: async () => { throw new Error('仅轻客户端支持受管下载'); },
     pauseTransfer: () => { throw new Error('仅轻客户端支持受管传输'); },
     resumeTransfer: () => { throw new Error('仅轻客户端支持受管传输'); },
     cancelTransfer: async () => { throw new Error('仅轻客户端支持受管传输'); },
@@ -486,6 +488,7 @@ function createRemoteIpcHandlers(window: BrowserWindow, host: RemoteDesktopWindo
     revealItem: async () => { localOnly(); throw new Error('unreachable'); },
     setThemePreference: (preference) => applyThemePreference(preference),
     chooseUploadFiles: (target) => host.remote.chooseUploadFiles(window, target),
+    createDownloads: (manifests) => host.remote.createDownloads(manifests),
     pauseTransfer: (transferId) => host.remote.pauseTransfer(transferId),
     resumeTransfer: (transferId) => host.remote.resumeTransfer(transferId),
     cancelTransfer: (transferId) => host.remote.cancelTransfer(transferId),
