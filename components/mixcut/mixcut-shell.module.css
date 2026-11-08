@@ -142,7 +142,19 @@
   font: 400 var(--text-input) var(--font-sans);
   padding: 7px 12px; transition: border-color .15s, box-shadow .15s;
 }
-.shell select { appearance: none; -webkit-appearance: none; padding-right: 26px; background-color: var(--color-card); background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 10px center; }
+.shell select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px;
+  background-color: var(--color-card);
+  /* 箭头图标必须用长属性分开写：把 "no-repeat right 10px center" 塞进
+     background-image 会让整条声明无效（浅色下没有箭头）；深色只覆盖 image 时
+     repeat / position 回默认，箭头会被平铺成斜纹。10 号票实测发现。 */
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: auto;
+}
 .shell textarea { box-shadow: none; line-height: 1.7; }
 .shell select:focus, .shell input[type='text']:focus, .shell input[type='number']:focus, .shell textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--color-accent) 15%, transparent); }
 .shell input[type='range'] { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 99px; background: var(--color-track); outline: none; }
@@ -360,6 +372,8 @@
 }
 :global(html[data-theme='dark']) .shell select {
   background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2398989d' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
 }
 :global(html[data-theme='dark']) .shell input[type='range'] { background: var(--color-track); }
 :global(html[data-theme='dark']) .navToggle:hover { background: color-mix(in srgb, var(--color-ink) 10%, transparent); }
