@@ -80,15 +80,9 @@ const base = (id, title, owner, extra) => ({
   ...extra,
 });
 
-// 已知问题：混剪工作台横向溢出（09 号票修）。修好后删掉这两条 knownFailure。
-const MIXCUT_KNOWN_FAILURE = 'ui-09';
-const MIXCUT_KNOWN_REASON = '混剪工作台以固定宽度（min(1440px, 100vw-48px)）按视口居中，凌驾于外层内容区之上，'
-  + '窗口越靠近 1440 越溢出，且溢出量随外层内容区变窄而变大：'
-  + '05 号票加左侧栏前实测 1536 宽多出 61px、1440/1280/1024 宽多出 85px；加侧栏后内容区左移 224px，'
-  + '实测 1536 宽多出 64px、1280/1024 宽多出 88px（批量模式 1536 宽再多出 32px）。'
-  + '连带后果同属这个根因：顶栏「画幅 3:4 / 9:16」按钮被推到视口右边界外，被切掉一截。'
-  + '09 号票把工作台改成占满内容区后，横向滚动与按钮被切两项必须一起改回硬失败。';
-const MIXCUT_KNOWN_CHECKS = ['horizontalScroll', 'clippedControls'];
+// 09 号票：混剪页宽度已改成「团队版占满侧栏右侧内容区」，横向溢出与顶栏按钮被切
+// 两项都真修好了 —— knownFailure 标记已删除，现在必须硬通过（再挂标记会触发
+// known-failure-not-reproduced 让整轮失败）。
 
 /**
  * 一屏一个对象。改这一屏的选择器/等待点 = 改这一屏的「怎么算画出来了」，
@@ -292,28 +286,82 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       href: ({ emptyProject }) => `/projects/${emptyProject.id}?tab=${step}`,
       skipUnless: 'emptyProject',
       ready: emptyStepReady,
-      // 第 5 步空状态和 mixcut-single 是同一个工作台外壳，溢出量与根因完全一致
-      // （实测同为 1536 宽 64px、1280/1024 宽 88px），所以同属 09 的已知问题。
-      ...(step === 'final-edit'
-        ? { knownFailure: MIXCUT_KNOWN_FAILURE, knownFailureChecks: MIXCUT_KNOWN_CHECKS, knownFailureReason: MIXCUT_KNOWN_REASON }
-        : {}),
     },
   )),
 
+  // 第 3 步（08 号票）：三页表单 + 卖点库 + 爆文模板。空项目夹具下也有这一屏，
+  // 所以 ready 只等「这一屏真的画出来」的落点：标题、三步切换、提供素材的重心上传区。
   base('project-script', '项目工作台 · 第 3 步 脚本生成', 'ui-08', {
     href: ({ project }) => `/projects/${project.id}?tab=script`,
-    ready: async (page) => { await page.getByRole('heading', { name: '详情页智能脚本生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      await page.getByRole('heading', { name: '详情页智能脚本生成', exact: true }).waitFor({ timeout: 60_000 });
+      // 第 1 页的素材投放区（data-testid 由面板自己给，是这一屏独有的落点）。
+      await page.getByTestId('script-studio-upload-dropzone').waitFor({ timeout: 30_000 });
+      // 生产模式与目标时长：字数/时长提示就挂在这套参数旁边。
+      await page.getByLabel('生产模式', { exact: true }).waitFor({ timeout: 30_000 });
+    },
   }),
+  // 第 4 步（08 号票）：点选分镜组之后才是三栏工作台（左编辑 / 中预览 / 右「这条视频用的设置」+ 结果卡）。
+  // 只等标题会漏掉整页溢出——那一屏真正的排版在选中分镜组之后才出现，所以 ready 先选组。
   base('project-video', '项目工作台 · 第 4 步 视频生成', 'ui-08', {
     href: ({ project }) => `/projects/${project.id}?tab=video`,
-    ready: async (page) => { await page.getByRole('heading', { name: '视频生成', exact: true }).waitFor({ timeout: 60_000 }); },
+    skipUnless: 'workbenchAssets',
+    ready: async (page) => {
+      await page.getByRole('heading', { name: '视频生成', exact: true }).waitFor({ timeout: 60_000 });
+      const setSelect = page.getByLabel('选择分镜组', { exact: true });
+      await setSelect.waitFor({ timeout: 60_000 });
+      // 选验收夹具建的那个分镜组（它的名字是「验收分镜组」，选项文案带张数）。
+      const options = await setSelect.locator('option').allTextContents();
+      const target = options.find((label) => label.includes('验收分镜组'));
+      if (!target) throw new Error(`分镜组下拉里没有验收夹具的分镜组，实际选项：${options.join(' | ')}`);
+      await setSelect.selectOption({ label: target });
+      // 三栏工作台的落点：批量检查按钮（左栏）与结果栏（右栏）。
+      await page.getByRole('button', { name: /^批量检查 \d+ 个分镜$/ }).waitFor({ timeout: 60_000 });
+      await page.getByRole('button', { name: /^分镜 1$/ }).waitFor({ timeout: 30_000 });
+    },
+    actions: [
+      // 批量检查窗口：统一供应商 / 统一秒数在顶部，且秒数只列交集。
+      async (page) => {
+        await page.getByRole('button', { name: /^批量检查 \d+ 个分镜$/ }).click();
+        const dialog = page.getByRole('dialog', { name: '批量检查分镜' });
+        await dialog.waitFor({ timeout: 30_000 });
+        await dialog.getByTestId('bulk-provider').waitFor({ timeout: 30_000 });
+        await dialog.getByTestId('bulk-duration').waitFor({ timeout: 30_000 });
+        await dialog.getByTestId('bulk-duration-hint').waitFor({ timeout: 30_000 });
+      },
+    ],
   }),
   base('mixcut-single', '项目工作台 · 第 5 步 智能混剪（单条精准混剪）', 'ui-09', {
     href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
-    ready: async (page) => { await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 }); },
-    knownFailure: MIXCUT_KNOWN_FAILURE,
-    knownFailureChecks: MIXCUT_KNOWN_CHECKS,
-    knownFailureReason: MIXCUT_KNOWN_REASON,
+    ready: async (page) => {
+      await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 });
+      // 09 号票：混剪页必须占满侧栏右侧的内容区，不被侧栏盖住、不横向滚动。
+      // 这是「团队版宽度」的硬事实，只量几何不放宽尺寸阈值（阈值仍在 checks 里）。
+      await page.getByTestId('mixcut-shell').first().waitFor({ timeout: 60_000 });
+      const shell = await page.evaluate(() => {
+        const box = document.querySelector('[data-testid="mixcut-shell"]')?.getBoundingClientRect();
+        const sidebar = document.querySelector("aside[data-testid='workspace-sidebar']")?.getBoundingClientRect();
+        const frame = document.querySelector('[data-testid="mixcut-shell"]')?.parentElement?.parentElement?.getBoundingClientRect();
+        return box ? {
+          left: box.left,
+          right: box.right,
+          width: box.width,
+          sidebarRight: sidebar ? sidebar.right : null,
+          contentLeft: frame ? frame.left : null,
+          contentWidth: frame ? frame.width : null,
+        } : null;
+      });
+      if (!shell) throw new Error('混剪外壳没有画出来');
+      if (!(shell.sidebarRight !== null && shell.left >= shell.sidebarRight - 1)) {
+        throw new Error(`混剪外壳被侧栏盖住：外壳 left ${Math.round(shell.left)}px，侧栏 right ${Math.round(shell.sidebarRight ?? -1)}px`);
+      }
+      if (!(shell.contentLeft !== null && Math.abs(shell.left - shell.contentLeft) <= 1.5)) {
+        throw new Error(`混剪外壳必须从内容区左边界开始：外壳 left ${Math.round(shell.left)}px，内容区 left ${Math.round(shell.contentLeft ?? -1)}px`);
+      }
+      if (!(shell.contentWidth !== null && Math.abs(shell.width - shell.contentWidth) <= 1.5)) {
+        throw new Error(`混剪外壳必须占满内容区：外壳宽 ${Math.round(shell.width)}px，内容区宽 ${Math.round(shell.contentWidth ?? -1)}px`);
+      }
+    },
   }),
   base('mixcut-batch', '项目工作台 · 第 5 步 批量生产', 'ui-10', {
     href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
@@ -323,9 +371,6 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       await page.getByRole('tab', { name: '批量生产', exact: true }).waitFor({ state: 'visible', timeout: 30_000 });
       await page.waitForTimeout(1500);
     }],
-    knownFailure: MIXCUT_KNOWN_FAILURE,
-    knownFailureChecks: MIXCUT_KNOWN_CHECKS,
-    knownFailureReason: `${MIXCUT_KNOWN_REASON}批量面板嵌在同一个工作台外壳里，根因相同；10/11 号票改批量外壳时一并确认。`,
   }),
 
   // ---------- 管理员侧 ----------
@@ -407,7 +452,12 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
   base('admin-users', '成员与账号', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/users',
-    ready: async (page) => { await page.getByRole('heading', { name: '成员与账号', exact: true }).waitFor({ timeout: 60_000 }); },
+    // 交接期间页面工具栏与外壳那条都会带 <h1>，且外壳的容器也带 data-testid="page-toolbar"，
+    // 所以落到「标题 span」这个唯一节点上，而不是按 heading 角色取。
+    ready: async (page) => {
+      await page.getByTestId('page-toolbar-title').filter({ hasText: '成员与账号' }).first()
+        .waitFor({ timeout: 60_000 });
+    },
     // 成员策略对话框（共用 Dialog 外壳）：打开后每档窗口都要量，确认弹窗不会被切掉。
     actions: [async (page) => {
       await page.getByRole('button', { name: '模型与额度', exact: true }).first().click();
@@ -424,14 +474,13 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
     href: () => '/team/admin/operations',
     ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
+  // 集成分支曾整体删掉这一屏（隔离数据根扫不到可清理项，弹窗打不开）。
+  // 04 号票保留它并把「打不开」降级为 gaps：基础态照样量四项，
+  // 弹窗这一档如实记「本次量不到」，既不冒充通过，也不让整轮结果作废。
   base('admin-operations-cleanup-dialog', '版本与备份 · 清理确认弹窗', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/operations',
     ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
-    // 「确认清理」换成共用 Dialog 外壳后，弹窗在小窗口里不能被切掉。
-    // 确认按钮只在「扫描到可清理项」时出现；隔离数据根里通常扫不到东西，
-    // 所以这里等不到按钮就 throw —— 由 runner 记 blocked（前置条件不满足），
-    // 不能假装弹窗量到了，也不该记成「这一屏的尺寸不合格」。
     actions: [async (page) => {
       await page.getByRole('button', { name: '扫描无用文件', exact: true }).click();
       const confirm = page.getByRole('button', { name: '确认清理预览中的项目', exact: true });

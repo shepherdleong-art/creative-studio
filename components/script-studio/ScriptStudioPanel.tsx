@@ -17,6 +17,11 @@ import TemplateRewritePicker from './TemplateRewritePicker';
 import ScriptTemplateSwitchDialog from './ScriptTemplateSwitchDialog';
 import SellingPointEvidence from './SellingPointEvidence';
 import { diffMarkWords } from '@/lib/script-studio/diff-mark';
+import {
+  describeTemplateSelection,
+  scriptLiveMetrics,
+  summarizeSellingPoints,
+} from '@/lib/script-studio/panel-rules';
 
 interface Props {
   projectId: string;
@@ -436,6 +441,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const [requestedCount, setRequestedCount] = useState(3);
   /** 爆文模板改写：勾选的模板条目 ID（选择顺序即生成顺序；数量=勾选数）。 */
   const [templateEntryIds, setTemplateEntryIds] = useState<string[]>([]);
+  /** 合计条数上限沿用现有 6 条规则（`TemplateRewritePicker` 内部同一份纯函数）。 */
+  const templateSelection = useMemo(() => describeTemplateSelection(templateEntryIds), [templateEntryIds]);
   const [templateSwitchScript, setTemplateSwitchScript] = useState<{ scriptId: string; targetDurationSec: number } | null>(null);
   /** 「再生成一组」本次专用参数:与第 1 页表单不共享隐式状态,切换结果组时按 inputSnapshot 初始化一次。 */
   const [regenerateDuration, setRegenerateDuration] = useState(15);
@@ -458,6 +465,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const [historyFor, setHistoryFor] = useState('');
   const [historyRevisions, setHistoryRevisions] = useState<RevisionView[]>([]);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  /** 08 号票（V11）：卖点库**默认收起**，点「展开卖点」才逐个排除。 */
   const [libraryExpanded, setLibraryExpanded] = useState(false);
   const [organizingLibrary, setOrganizingLibrary] = useState(false);
   const organizeInFlight = useRef(false);
@@ -1150,6 +1158,11 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const usablePoints = useMemo(() => (
     libraryRevision?.sellingPoints.filter((point) => point.usable === 1 && point.disabledByUser !== 1 && point.evidenceGate !== 'failed') || []
   ), [libraryRevision]);
+  /** 08 号票：卖点库默认收起、默认全选；副标题如实写「默认全选」或「排除 N 个」。 */
+  const sellingPointSummary = useMemo(
+    () => summarizeSellingPoints(libraryRevision?.sellingPoints ?? []),
+    [libraryRevision],
+  );
 
   const historyScript = useMemo(() => (
     currentScripts.find(({ script }) => script.id === historyFor) || null
@@ -1173,14 +1186,18 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const totalElapsed = task ? elapsedSeconds(taskStart, taskEnd, nowMs) : 0;
 
   const libraryPanel = libraryRevision && (
-              <section className="rounded-[18px] border border-hairline p-4">
+              <section className="rounded-[18px] border border-hairline p-4" data-testid="selling-point-library">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <h3 className="flex items-center gap-2 text-base font-semibold">
                       <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-ok-tint text-xs text-ok">✓</span>
                       产品卖点库
                     </h3>
-                    <p className="mt-1 text-xs text-ink-secondary">{usablePoints.length} 个有效卖点 · V{libraryRevision.revisionNumber} · 已保存</p>
+                    <p className="mt-1 text-xs text-ink-secondary" data-testid="selling-point-summary">
+                      {sellingPointSummary.selected} 个有效卖点
+                      {sellingPointSummary.excluded > 0 ? `，排除 ${sellingPointSummary.excluded} 个` : '，默认全选'}
+                      {' · '}V{libraryRevision.revisionNumber} · 已保存
+                    </p>
                   </div>
                   <button
                     type="button"
@@ -1193,7 +1210,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                   </button>
                 </div>
                 <div id={`selling-point-library-${projectId}`} hidden={!libraryExpanded}>
-                  <p className="mt-3 text-xs text-ink-secondary">每条卖点包含完整详解，相关参数与使用意义一起呈现。展开可查看支撑事实，也可选择保留或排除。</p>
+                  <p className="mt-3 text-xs text-ink-secondary">卖点库默认全选：没被排除的可用卖点都会进脚本。展开后可查看支撑事实，也能逐个排除或重新保留。</p>
                   <div className="my-3 flex flex-wrap items-center gap-2">
                     <span className="rounded-full bg-ok-tint px-2.5 py-1 text-[0.68rem] font-semibold text-ok">✓ 已保存 · 可无限复用</span>
                     <button type="button" onClick={() => void organizeLibrary()} disabled={organizingLibrary || taskRunning || !providerId} className="btn-secondary btn-sm">{organizingLibrary ? '正在整理卖点…' : '重新整理卖点'}</button>
@@ -1501,16 +1518,25 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                 disabled={submitting}
               />
             </section>
-            <div className="flex items-center justify-between gap-4 border-t border-hairline pt-4">
-              <button type="button" onClick={() => setStep(1)} className="btn-secondary">返回素材</button>
-              <button
-                type="button"
-                onClick={() => void handleAnalyze()}
-                disabled={submitting || organizingLibrary || !providerId || (!regeneratePending && templateEntryIds.length === 0)}
-                className="btn-primary"
-              >
-                {submitting ? '正在创建任务…' : regeneratePending ? '重试本次提交' : `按 ${new Set(templateEntryIds).size} 个模板生成脚本（共 ${templateEntryIds.length} 条）`}
-              </button>
+            <div className="flex flex-wrap items-center justify-between gap-4 border-t border-hairline pt-4">
+              <div className="min-w-0 text-xs text-ink-secondary">
+                <p>✓ 复用已有卖点库，不重新识图；只有上传了新详情页才会重新识别。</p>
+                <p className="mt-0.5 text-ink-tertiary" data-testid="template-next-summary">
+                  按此选择将生成 {templateSelection.totalCount} 条脚本（单次上限 {templateSelection.maxCount} 条）
+                  {templateSelection.atLimit ? '，已达上限' : ''}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button type="button" onClick={() => setStep(1)} className="btn-secondary">返回素材</button>
+                <button
+                  type="button"
+                  onClick={() => void handleAnalyze()}
+                  disabled={submitting || organizingLibrary || !providerId || (!regeneratePending && templateEntryIds.length === 0)}
+                  className="btn-primary"
+                >
+                  {submitting ? '正在创建任务…' : regeneratePending ? '重试本次提交' : `按 ${templateSelection.templateCount} 个模板生成脚本（共 ${templateSelection.totalCount} 条）`}
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -2157,9 +2183,16 @@ function EditBox({
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(content.fullScript);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  // 08 号票（V11）：边打字边按现有每秒字数与片头时长算字数/预计时长，并提示偏长或在预算内。
+  // 规则来自 `lib/script-studio/panel-rules.ts`（与生成侧 `durationStatus` 同一口径）。
+  const targetDurationSec = content.targetDurationSec || 15;
+  const metrics = scriptLiveMetrics(text, targetDurationSec);
   const save = async () => {
     setSaving(true);
+    setSaveError('');
     try {
+      // 手改一律形成新的项目脚本版本（origin=manual_edit），旧版本留在版本历史里可切回。
       const nextContent: ScriptStudioScriptContent = {
         ...content,
         fullScript: text,
@@ -2168,32 +2201,68 @@ function EditBox({
           narration: text.split('\n')[index] || segment.narration,
           subtitle: segment.subtitle,
         })),
+        contentCharacterCount: metrics.characterCount,
+        estimatedNarrationDurationSec: metrics.estimatedNarrationSec,
+        durationStatus: metrics.status,
       };
-      await fetch(`/api/projects/${projectId}/script-studio/scripts/${script.id}`, {
+      const response = await fetch(`/api/projects/${projectId}/script-studio/scripts/${script.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contentJson: nextContent,
-          targetDurationSec: content.targetDurationSec,
+          targetDurationSec,
+          estimatedDurationSec: metrics.estimatedNarrationSec,
           origin: 'manual_edit',
         }),
       });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({})) as { message?: string; error?: string };
+        setSaveError(data.message || data.error || `保存失败（HTTP ${response.status}）`);
+        return;
+      }
       onSaved();
       setEditing(false);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : '保存失败，请重试');
     } finally {
       setSaving(false);
     }
   };
+  const metricsBar = (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.68rem] text-ink-secondary" data-testid="script-live-metrics">
+      <span>目标 {targetDurationSec} 秒</span>
+      <span>
+        预计口播 <span className="tabular-nums">{metrics.estimatedNarrationSec.toFixed(1)}</span> 秒
+        <span
+          className={`ml-1 font-semibold ${metrics.status === 'qualified' ? 'text-ok' : 'text-warn'}`}
+          data-testid="script-budget-status"
+        >
+          {metrics.label}
+        </span>
+      </span>
+      <span><span className="tabular-nums" data-testid="script-character-count">{metrics.characterCount}</span> 字</span>
+      <span className="text-ink-tertiary">预算 {metrics.minContentCharacters}–{metrics.maxContentCharacters} 字（每秒 4.2 字，片头 {metrics.introDurationSec} 秒不算口播）</span>
+    </div>
+  );
   if (!editing) {
     return (
-      <div className="mt-3 flex justify-end">
-        <button type="button" onClick={() => { setText(content.fullScript); setEditing(true); }} className="btn-secondary btn-sm">编辑</button>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+        {metricsBar}
+        <button type="button" onClick={() => { setText(content.fullScript); setSaveError(''); setEditing(true); }} className="btn-secondary btn-sm">编辑</button>
       </div>
     );
   }
   return (
     <div className="mt-3 space-y-2">
-      <textarea value={text} onChange={(event) => setText(event.target.value)} rows={8} className="input-field" />
+      <textarea
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        rows={8}
+        className="input-field"
+        aria-label="完整配音稿（可手改）"
+      />
+      {metricsBar}
+      {saveError && <p className="text-xs text-fail" role="alert">{saveError}</p>}
       <div className="flex justify-end gap-2">
         <button type="button" onClick={() => setEditing(false)} className="btn-secondary btn-sm">取消</button>
         <button type="button" onClick={() => void save()} disabled={saving} className="btn-primary btn-sm">{saving ? '保存中…' : '保存为新版本'}</button>

@@ -60,7 +60,8 @@
   overflow: hidden;
   gap: 8px;
   padding: 8px;
-  background: var(--color-surface-subtle);
+  /* 原型批量审片的监视区底（--mon）：浅色 #EFEFF2 / 深色 #141416，直接吃预览区令牌。 */
+  background: var(--color-preview);
 }
 
 /* Splitters */
@@ -123,9 +124,10 @@
   width: 100%;
 }
 
-/* Dock cards */
+/* Dock cards — 四区共用的卡片壳（原型 .bt-pool / .bt-mon / .bt-ins / .bt-tl 的外壳）。
+ * 底与描边全部走令牌：card 是「卡片」语义，在 --color-preview 的监视区底上才分得开。 */
 .dock {
-  background: var(--color-surface);
+  background: var(--color-card);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-tile, 14px);
   display: flex;
@@ -220,7 +222,7 @@
   left: 0;
   right: 0;
   height: 3px;
-  background: rgba(255, 255, 255, 0.4);
+  background: var(--color-media-control);
   z-index: 5;
 }
 
@@ -234,8 +236,8 @@
   position: absolute;
   bottom: 6px;
   left: 6px;
-  background: rgba(0, 0, 0, 0.7);
-  color: #fff;
+  background: var(--color-media-scrim);
+  color: var(--color-media-foreground);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   padding: 2px 4px;
@@ -442,13 +444,14 @@
   flex-shrink: 0;
 }
 
+/* 图例色块取「复用分组」令牌（浅深两套都有取值），不再写死浅色。 */
 .legendSwatch {
   display: inline-block;
   width: 9px;
   height: 9px;
   border-radius: 2px;
   margin-right: 5px;
-  background: #aacac0;
+  background: var(--color-review-3);
 }
 
 .legendStripe {
@@ -457,7 +460,7 @@
   height: 9px;
   border-radius: 2px;
   margin-right: 5px;
-  background: repeating-linear-gradient(135deg, #ce8d37 0, #ce8d37 2px, #f7d9a7 2px, #f7d9a7 4px);
+  background: repeating-linear-gradient(135deg, var(--color-warn) 0, var(--color-warn) 2px, var(--color-warn-tint) 2px, var(--color-warn-tint) 4px);
 }
 
 /* 主体移动草稿:拖动中的即时反馈,松手才持久化 */
@@ -625,8 +628,9 @@
   border-radius: 4px;
   overflow: hidden;
   position: relative;
-  background: #000;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  /* 封面缩略图底是媒体底（原型 .bt-cv 里也是黑底），走媒体令牌。 */
+  background: var(--color-media-background);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 15%);
 }
 
 .filmCoverThumb img {
@@ -667,9 +671,11 @@
   top: 0;
   bottom: 0;
   border-radius: 4px;
-  background: #f1eef8;
-  color: #55447c;
-  border: 1px solid #e5e0ef;
+  /* 字幕轨取中性轨道色（原型 .bt-trk.sub 用 --track + hairline 内描边）。
+   * 颜色全部走令牌，浅深两套自动跟随，不再写死淡紫。 */
+  background: var(--color-track);
+  color: var(--color-ink);
+  border: 1px solid var(--color-hairline);
   font-size: 10px;
   padding: 2px 6px;
   overflow: hidden;
@@ -857,7 +863,8 @@
   height: 30%;
   width: 2px;
   left: 4px;
-  background: #fff;
+  /* 手柄画在强调色上，用「强调色上的前景色」令牌（浅深都是白）。 */
+  background: var(--color-accent-foreground);
   border-radius: 1px;
 }
 
@@ -896,16 +903,18 @@
   pointer-events: none;
 }
 
+/* 口播 / BGM 轨：原型 .bt-trk.nar 用 --ac-t + --ac-d，.bt-trk.bgm 用 --ok-t + --ok。
+ * 浅深两套都在令牌里，写死浅色会是深色下的浅底白字。 */
 .audioTts {
-  color: #276879;
-  background: #e4f1f5;
-  border-color: #c0dfe8;
+  color: var(--color-accent);
+  background: var(--color-run-tint);
+  border-color: color-mix(in srgb, var(--color-accent) 32%, transparent);
 }
 
 .audioBgm {
-  color: #42794f;
-  background: #edf4e8;
-  border-color: #cbdcbe;
+  color: var(--color-ok);
+  background: var(--color-ok-tint);
+  border-color: color-mix(in srgb, var(--color-ok) 32%, transparent);
 }
 
 .audioEmpty {
@@ -952,7 +961,7 @@
   left: 50%;
   transform: translateX(-50%);
   background: var(--color-accent);
-  color: #fff;
+  color: var(--color-accent-foreground);
   font-size: 9px;
   padding: 1px 4px;
   border-radius: 3px;
@@ -961,16 +970,16 @@
   pointer-events: none;
 }
 
-/* Snap line */
+/* Snap line — 原型没有独立的磁吸色，统一用唯一的强调色令牌。 */
 .snapLine {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 2px;
-  background: #0785f7;
+  background: var(--color-accent);
   z-index: 16;
   pointer-events: none;
-  box-shadow: 0 0 0 2px rgba(7, 133, 247, 0.2);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
 
 .snapLineTag {
@@ -978,7 +987,7 @@
   bottom: 4px;
   left: 6px;
   background: var(--color-accent);
-  color: #fff;
+  color: var(--color-accent-foreground);
   font-size: 9px;
   padding: 2px 4px;
   border-radius: 3px;
@@ -1038,52 +1047,10 @@
   outline: 2px solid var(--color-accent) !important;
 }
 
-/* Dark mode overrides */
-:global(html[data-theme='dark']) .dock {
-  background: #1c1c1e;
-  border-color: #2c2c2e;
-}
-
-:global(html[data-theme='dark']) .reviewWorkbench {
-  background: #121214;
-}
-
-:global(html[data-theme='dark']) .filmRow {
-  background: #1c1c1e;
-  border-color: #2c2c2e;
-}
-
-:global(html[data-theme='dark']) .filmInfo {
-  background: #1c1c1e;
-  border-color: #2c2c2e;
-}
-
-:global(html[data-theme='dark']) .rulerRow {
-  background: #1c1c1e;
-  border-color: #2c2c2e;
-}
-
-:global(html[data-theme='dark']) .rulerLabel {
-  background: #1c1c1e;
-  border-color: #2c2c2e;
-}
-
-:global(html[data-theme='dark']) .clipBlock {
-  background: #252528;
-  border-color: #38383a;
-}
-
-:global(html[data-theme='dark']) .audioTts {
-  background: rgba(39, 104, 121, 0.25);
-  border-color: rgba(108, 171, 191, 0.4);
-  color: #79cadc;
-}
-
-:global(html[data-theme='dark']) .audioBgm {
-  background: rgba(66, 121, 79, 0.25);
-  border-color: rgba(136, 175, 112, 0.4);
-  color: #92d89f;
-}
+/* Dark mode overrides — 只补丁「令牌里没有对应语义」的写法。
+ * 颜色本身一律来自 app/globals.css 的令牌：规则里不再写死 #1c1c1e / #2c2c2e 这类浅色值的深色孪生，
+ * 深色由 html[data-theme='dark'] 换令牌取值自动跟随（02 号票的令牌表）。
+ * 审片四区、时间轴行、素材池、音轨的深色一律由令牌取值切换，这里不再需要覆盖块。 */
 
 .subtitleChip .trimHandle { width: 6px; touch-action: none; }
 .subtitleChip .trimHandle::after { left: 2px; width: 2px; }

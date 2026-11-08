@@ -10,6 +10,7 @@ import VideoGenerationResults from '@/components/VideoGenerationResults';
 import { Icon } from '@/components/ui/Icon';
 import { resolveVideoGenerationSelection, type VideoGenerationProvider } from '@/lib/video-generation-options';
 import { normalizeVideoDraftDuration } from '@/lib/video-duration';
+import { describeDurationIntersection, intersectDurations } from '@/lib/video-duration-intersection';
 import {
   collectVideoMotionReferenceAssetIds,
   collectVideoMotionTailImageIds,
@@ -29,6 +30,12 @@ import {
   serializeVideoGenerationFields as serializeDraftGenerationFields,
 } from '@/components/video-bulk-prompt';
 import type { VideoReferenceCapability } from '@/lib/video-reference-contract';
+import {
+  VIDEO_SETTINGS_CHANGED_HINT,
+  savedSettingsFromJob,
+  videoSettingsDiffer,
+  type VideoJobSavedSettings,
+} from '@/components/video-job-settings';
 
 function releaseDraftTailFrameAssets(
   rowGroups: Iterable<VideoMotionRow[]>,
@@ -88,6 +95,9 @@ interface VideoJob {
   templateName?: string;
   posterImageUrl?: string;
   tailImageId?: string | null;
+  /** 08 号票：都来自 `video_jobs` 已保存字段（只读展示「这条视频用的设置」）。 */
+  generationMode?: string | null;
+  multiShot?: number | null;
   rejectedAt?: string | null;
   rejectReason?: string | null;
 }
@@ -144,12 +154,16 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [videoPreviewJobId, setVideoPreviewJobId] = useState<string | null>(null);
   const [videoPreviewPlaySignal, setVideoPreviewPlaySignal] = useState(0);
   const previewSuppressedRef = useRef(false);
-  const [videoConcurrency, setVideoConcurrency] = useState(10);
   const [bulkStatus, setBulkStatus] = useState<string | null>(null);
   const [bulkProgress, setBulkProgress] = useState<{ submitted: number; total: number } | null>(null);
   const [bulkDrawerOpen, setBulkDrawerOpen] = useState(false);
   const [bulkProviderId, setBulkProviderId] = useState('');
   const [bulkDuration, setBulkDuration] = useState('5');
+  /**
+   * 08 号票（V12）：点选一条已生成素材时，右栏切到「这条视频用的设置」。
+   * `baseline` 是那条任务的保存字段（冻结，用于比较与还原），`loadedJobId` 标记是哪一条。
+   */
+  const [savedSettingsBaseline, setSavedSettingsBaseline] = useState<{ jobId: string; saved: VideoJobSavedSettings } | null>(null);
   const selectVideoPreview = (jobId: string) => {
     previewSuppressedRef.current = false;
     setVideoPreviewJobId(jobId);
@@ -265,30 +279,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     return () => { active = false; };
   }, []);
 
-  // Load project video concurrency once
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const res = await fetch(`/api/projects/${projectId}`);
-        const data = await res.json();
-        if (active && Number.isFinite(Number(data.videoConcurrency))) {
-          setVideoConcurrency(Math.max(1, Math.min(10, Math.floor(Number(data.videoConcurrency)))));
-        }
-      } catch { /* ignore */ }
-    })();
-    return () => { active = false; };
-  }, [projectId]);
-
-  const handleVideoConcurrencyChange = (value: number) => {
-    const clamped = Math.max(1, Math.min(10, Math.floor(value) || 1));
-    setVideoConcurrency(clamped);
-    fetch(`/api/projects/${projectId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ videoConcurrency: clamped }),
-    }).catch(() => { /* best-effort */ });
-  };
+  // 08 号票（V06）：视频并发由服务器统一管理（`lib/team-service/production-defaults.ts`），
+  // 团队版 `project.videoConcurrency` 恒等于服务器默认值，界面不再读取也不再提交。
 
   // Load shot sets for selector
   const loadAvailableSets = useCallback(async () => {
@@ -964,10 +956,16 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     }
     autoFillTailTransitionPrompts();
     const drafts = materializeAllDrafts();
-    const plan = planBulkPromptFill(drafts, { pool: randomPoolTemplates, all: templates });
+    // 08 号票（规格 60）：一键填充**只填空着的**提示词——已经写了内容的一律不动，
+    // 包括之前自动填过的（用户要重洗就自己先清空）。
+    const plan = planBulkPromptFill(drafts, { pool: randomPoolTemplates, all: templates }, { onlyFillEmpty: true });
     for (const shot of plan.shots) setShotRows(shot.shotId, shot.rows);
     setBulkProgress(null);
-    setBulkStatus(`已填 ${plan.filledRows} 条，保留 ${plan.keptRows} 条手写没动。`);
+    setBulkStatus(
+      plan.filledRows > 0
+        ? `已填 ${plan.filledRows} 条空提示词，保留 ${plan.keptRows} 条已有内容没动。`
+        : '每个分镜都写好了，没有空着的提示词需要填。',
+    );
   };
 
   const handleGenerateAll = async () => {
@@ -1140,11 +1138,24 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     setBulkStatus(`已将供应商应用到 ${safeShots.length} 个分镜。`);
   };
 
+  /**
+   * 08 号票（V12）：统一秒数 = **所选分镜的模型都支持**的秒数交集。
+   *
+   * 改前这里只取第一行模型的 `durations`（`getRowDurationOptions(rows[0])`），换个统一供应商、
+   * 或某行换了更严格的模型之后，下拉里会给到别的模型根本不接受的秒数。
+   * 交集本身是纯函数（`lib/video-duration-intersection.ts`），有单元测试钉住边界。
+   */
   const getBulkDurationOptions = () => {
     const rows = safeShots.flatMap((shot) => getShotRows(shot.id));
-    const options = getRowDurationOptions(rows[0] || { providerId: bulkProviderId });
-    return options.filter((duration) => rows.every((row) => getRowDurationOptions(row).includes(duration)));
+    if (rows.length === 0) return getRowDurationOptions({ providerId: bulkProviderId });
+    return intersectDurations(rows.map((row) => getRowDurationOptions(row)));
   };
+
+  /** 交集为空时界面必须给出说明（不能静默给一个空下拉）。 */
+  const getBulkDurationModels = () =>
+    [...new Set(safeShots.flatMap((shot) => getShotRows(shot.id)).map((row) => (
+      providers.find((provider) => provider.id === getRowProviderId(row))?.name || row.providerId
+    )))];
 
   const applyBulkDuration = (raw: string) => {
     if (creatingRef.current) return;
@@ -1230,6 +1241,92 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     }
   };
 
+  /**
+   * 08 号票（V12）：点一条已生成素材 → 右栏切到「这条视频用的设置」。
+   *
+   * 数据全部来自 `video_jobs` 已保存字段（`savedSettingsFromJob`），不改数据结构；
+   * 同时把这份设置写进该分镜当前编辑行，让右栏的控件直接显示当时的提示词/模型/秒数/尾帧/智能分镜。
+   * 之后任何编辑都与这份基线比较，出现「改过了，再生成会多做一条，原来那条不变」与「还原」。
+   */
+  const adoptSavedSettings = (job: VideoJob) => {
+    if (creatingRef.current) return;
+    const saved = savedSettingsFromJob(job);
+    setSavedSettingsBaseline({ jobId: job.id, saved });
+    // 只作用于这条视频所属的分镜；遥控到该分镜，右栏显示的才是它。
+    const shotId = job.shotId;
+    const shotExists = safeShots.some((shot) => shot.id === shotId);
+    if (shotExists && selectedShotRef.current !== shotId) activate(shotId);
+    if (!shotExists) return;
+    const rows = getShotRows(shotId);
+    const baseRow = rows[0] ?? makeEmptyRow();
+    const nextRow: VideoMotionRow = {
+      ...baseRow,
+      prompt: saved.prompt,
+      providerId: saved.providerId,
+      durationSec: saved.durationSec,
+      templateId: saved.templateId,
+      multiShot: saved.multiShot,
+      generationMode: saved.generationMode,
+      // 素材只读展示：已提交的尾帧/参考素材由任务行引用，不能在这里改动或释放。
+      tailImageId: saved.tailImageId,
+      tailImageUrl: null,
+      tailImageName: null,
+      tailUploadState: 'idle',
+      tailUploadError: null,
+      referenceAssets: [],
+      referenceUploadState: 'idle',
+      referenceUploadError: null,
+    };
+    setShotRows(shotId, [nextRow, ...rows.slice(1)]);
+  };
+
+  /** 当前基线（点选的那条视频）。 */
+  const activeBaseline = savedSettingsBaseline && videoJobs.some((job) => job.id === savedSettingsBaseline.jobId)
+    ? savedSettingsBaseline
+    : null;
+
+  /**
+   * 草稿相对基线是否改过：取该分镜的第一行（= 基线被写进的那一行）。
+   * `videoSettingsDiffer` 是纯函数，逐字段比较，有单元测试钉住。
+   */
+  const savedSettingsDirty = (() => {
+    if (!activeBaseline || !selectedShot) return false;
+    const row = getShotRows(selectedShot)[0];
+    if (!row) return false;
+    return videoSettingsDiffer(activeBaseline.saved, {
+      prompt: row.prompt,
+      providerId: getRowProviderId(row),
+      durationSec: getRowDuration(row),
+      templateId: row.templateId,
+      multiShot: row.multiShot,
+      generationMode: getRowGenerationMode(row),
+      tailImageId: row.tailImageId,
+    });
+  })();
+
+  /** 「还原」：把基线原样写回第一行，提示随之消失。 */
+  const revertToSavedSettings = () => {
+    if (!activeBaseline || !selectedShot || creatingRef.current) return;
+    const saved = activeBaseline.saved;
+    const rows = getShotRows(selectedShot);
+    const baseRow = rows[0] ?? makeEmptyRow();
+    setShotRows(selectedShot, [{
+      ...baseRow,
+      prompt: saved.prompt,
+      providerId: saved.providerId,
+      durationSec: saved.durationSec,
+      templateId: saved.templateId,
+      multiShot: saved.multiShot,
+      generationMode: saved.generationMode,
+      tailImageId: saved.tailImageId,
+      tailImageUrl: null,
+      tailImageName: null,
+      tailUploadState: 'idle',
+      tailUploadError: null,
+    }, ...rows.slice(1)]);
+  };
+
+
   if (loading) return <p className="text-xs text-ink-tertiary">加载视频功能...</p>;
   const storyboardSets = availableSets.filter((s) => s.kind !== 'free');
   const freeSet = availableSets.find((s) => s.kind === 'free');
@@ -1239,6 +1336,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       <label className="label">选择分镜组</label>
       <div className="flex items-center gap-2">
         <select
+          aria-label="选择分镜组"
           value={selectedSetId}
           onChange={(e) => {
             const value = e.target.value;
@@ -1309,10 +1407,10 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     : null;
 
   return (
-    <div className="mt-3 min-w-0 max-w-full">
+    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col">
       {shotSetSelector}
 
-      <div className="video-workspace">
+      <div className="video-workspace flex-1">
         {/* ═══ LEFT: Shot selector + params ═══ */}
         <div className="panel-col left-col">
           <div className="panel-col-header">
@@ -1459,18 +1557,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                 <button className="btn-secondary btn-sm w-full video-add-action" disabled>
                   <Icon name="plus" size={12} /> 添加描述
                 </button>
-                <div>
-                  <label className="label generation-label">并发数</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={videoConcurrency}
-                    onChange={(event) => handleVideoConcurrencyChange(Number(event.target.value))}
-                    className="input-field generation-control generation-number"
-                  />
-                  <p className="generation-helper">失败或限流时调回 1。</p>
-                </div>
                 <button className="btn-primary btn-sm w-full video-create-action" disabled>
                   生成 0 条视频
                 </button>
@@ -1734,18 +1820,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                 <button onClick={addMotionRow} disabled={creating} className="btn-secondary btn-sm w-full video-add-action">
                   <Icon name="plus" size={12} /> 添加描述
                 </button>
-                <div>
-                  <label className="label generation-label">并发数</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={videoConcurrency}
-                    onChange={(e) => handleVideoConcurrencyChange(Number(e.target.value))}
-                    className="input-field generation-control generation-number"
-                  />
-                  <p className="generation-helper">失败或限流时调回 1。</p>
-                </div>
                 <button
                   onClick={() => handleCreateVideos(selectedShot)}
                   disabled={creating
@@ -1786,12 +1860,53 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           />
         </div>
 
-        {/* ═══ RIGHT: Result cards ═══ */}
+        {/* ═══ RIGHT: 这条视频用的设置 + 结果卡 ═══ */}
         <div className="panel-col right-col">
           <div className="panel-scroll-area">
+            {/* 08 号票（V12）：点哪条素材，这里就是哪条视频当时用的设置；
+                改动后提示会多做一条并给「还原」。数据全部来自 video_jobs 已保存字段。 */}
+            {activeBaseline ? (
+              <section className="video-saved-settings" data-testid="video-saved-settings">
+                <div className="video-saved-settings-head">
+                  <b>这条视频用的设置</b>
+                  {savedSettingsDirty ? (
+                    <span className="video-saved-settings-dirty" data-testid="video-settings-changed">
+                      {VIDEO_SETTINGS_CHANGED_HINT}
+                      <button type="button" onClick={revertToSavedSettings} disabled={creating} className="link-accent">还原</button>
+                    </span>
+                  ) : (
+                    <small>改过的设置不会影响这条视频</small>
+                  )}
+                </div>
+                <dl className="video-saved-settings-list">
+                  {[
+                    { label: '模型', value: activeBaseline.saved.model || '未记录' },
+                    { label: '秒数', value: `${activeBaseline.saved.durationSec} 秒` },
+                    {
+                      label: '首尾帧',
+                      value: activeBaseline.saved.generationMode === 'reference-to-video'
+                        ? '全能参考 · 当前分镜图'
+                        : (activeBaseline.saved.tailImageId ? '带尾帧' : '仅首帧'),
+                    },
+                    { label: '智能分镜', value: activeBaseline.saved.multiShot ? '开' : '关' },
+                    { label: '模板', value: templates.find((template) => template.id === activeBaseline.saved.templateId)?.name || '自定义' },
+                  ].map((item) => (
+                    <div key={item.label}>
+                      <dt>{item.label}</dt>
+                      <dd>{item.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <div className="video-saved-settings-prompt">
+                  <dt>提示词</dt>
+                  <dd>{activeBaseline.saved.prompt || '（空）'}</dd>
+                </div>
+              </section>
+            ) : null}
             <VideoGenerationResults
               videoJobs={videoJobs}
               onPreview={selectVideoPreview}
+              onSelect={(job) => { selectVideoPreview(job.id); adoptSavedSettings(job); }}
               onRetry={handleRetry}
               onResumePoll={handleResumePoll}
               onCancel={handleCancelVideoJob}
@@ -1828,10 +1943,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
             <div className="video-bulk-global-controls">
               <div className="video-bulk-global-control">
-                <label htmlFor="bulk-provider">供应商</label>
+                <label htmlFor="bulk-provider">统一供应商</label>
                 <div className="video-bulk-global-control-row">
                   <select
                     id="bulk-provider"
+                    data-testid="bulk-provider"
                     className="input-field video-control"
                     value={getBulkProviderId()}
                     onChange={(event) => applyBulkProvider(event.target.value)}
@@ -1849,21 +1965,36 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     ))}
                   </select>
                 </div>
+                <p className="mt-1.5 text-[11px] leading-4 text-ink-tertiary">
+                  换供应商后，统一秒数自动收成新模型也支持的值；逐条秒数仍可单独改。
+                </p>
               </div>
               <div className="video-bulk-global-control">
-                <label htmlFor="bulk-duration">时长</label>
+                <label htmlFor="bulk-duration">统一秒数</label>
                 <div className="video-bulk-global-control-row">
                   <select
                     id="bulk-duration"
+                    data-testid="bulk-duration"
                     className="input-field video-control text-center"
-                    value={normalizeVideoDraftDuration(Number(bulkDuration), getBulkDurationOptions())}
+                    value={getBulkDurationOptions().includes(normalizeVideoDraftDuration(Number(bulkDuration), getBulkDurationOptions()))
+                      ? normalizeVideoDraftDuration(Number(bulkDuration), getBulkDurationOptions())
+                      : ''}
                     onChange={(event) => applyBulkDuration(event.target.value)}
-                    disabled={creating}
+                    disabled={creating || getBulkDurationOptions().length === 0}
                   >
-                    {getBulkDurationOptions().map((seconds) => <option key={seconds} value={seconds}>{seconds}</option>)}
+                    {/* 交集为空时不能静默给一个空下拉：先给一条说明项。 */}
+                    {getBulkDurationOptions().length === 0 && (
+                      <option value="">没有共同支持的秒数</option>
+                    )}
+                    {getBulkDurationOptions().map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
                   </select>
                   <span className="video-bulk-unit">秒</span>
                 </div>
+                <p className="mt-1.5 text-[11px] leading-4 text-ink-tertiary" data-testid="bulk-duration-hint">
+                  {getBulkDurationOptions().length > 0
+                    ? `只列出这些模型都支持的秒数：${describeDurationIntersection(getBulkDurationOptions())}`
+                    : `所选模型没有共同支持的秒数（${getBulkDurationModels().join('、') || '未选模型'}）；请统一供应商，或逐条改秒数。`}
+                </p>
               </div>
             </div>
 

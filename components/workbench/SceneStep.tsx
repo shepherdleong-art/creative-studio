@@ -343,7 +343,7 @@ export default function SceneStep({
             <div className={s.emptyWrap}>
               <StepEmpty
                 title="先放一张原始场景图"
-                description="放一张实拍或产品图，AI 换场景时会保持产品不变。"
+                description="先上传一张实拍或产品图，AI 换场景时会保持产品不变。"
                 icon="image"
                 action={<UploadDrop projectId={projectId} usage="scene_seed" label="上传图片" hint="支持多选" onUploaded={loadProject} solid />}
               />

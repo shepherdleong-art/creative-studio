@@ -32,6 +32,11 @@ interface VideoJob {
 interface Props {
   videoJobs: VideoJob[];
   onPreview: (jobId: string) => void;
+  /**
+   * 08 号票（V12）：点这条素材 → 右栏切到「这条视频用的设置」。
+   * 与 `onPreview` 分开：预览只换播放器，选中还会把该任务保存的设置读进右栏。
+   */
+  onSelect?: (job: VideoJob) => void;
   onRetry: (jobId: string) => void | Promise<void>;
   onResumePoll: (jobId: string) => void | Promise<void>;
   onCancel: (jobId: string) => void | Promise<void>;
@@ -49,7 +54,7 @@ const STATUS_LABELS: Record<string, string> = {
   canceled: '已取消',
 };
 
-export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, onResumePoll, onCancel, onReject, onUnreject, activePreviewJobId }: Props) {
+export default function VideoGenerationResults({ videoJobs, onPreview, onSelect, onRetry, onResumePoll, onCancel, onReject, onUnreject, activePreviewJobId }: Props) {
   const [showRejected, setShowRejected] = useState(false);
   const [rejectingJobId, setRejectingJobId] = useState<string | null>(null);
   const [rejectReasonDraft, setRejectReasonDraft] = useState('');
@@ -115,7 +120,15 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
         const isNeedsCheck = job.status === 'needs_check';
 
         return (
-          <div key={job.id} className={`result-card ${isActive ? 'active' : ''} ${isRejected ? 'is-rejected' : ''}`}>
+          <div
+            key={job.id}
+            className={`result-card ${isActive ? 'active' : ''} ${isRejected ? 'is-rejected' : ''}`}
+            data-testid="video-result-card"
+            data-job-id={job.id}
+            data-selected={isActive ? 'true' : 'false'}
+            onClick={() => onSelect?.(job)}
+            aria-current={isActive ? 'true' : undefined}
+          >
             <div className="result-thumb" onClick={() => isSucceeded && job.filename && onPreview(job.id)}>
               {isSucceeded ? (
                 <>

@@ -1,0 +1,322 @@
+/* 批量生产前三步页面样式（10 号票，只换外观）。
+ *
+ * 取值与结构对齐原型 `docs/superpowers/specs/2026-11-07-林视界面重设计-原型/src/app/one/edit.css`
+ * 的「批量生产」段（`.bt-main` / `.bt-head` / `.bt-lock` / `.bms` / `.bm` / `.bss` / `.bs` / `.bt-go`）。
+ * 颜色一律引用 app/globals.css 的令牌，深浅两套由 `html[data-theme='dark']` 换令牌取值自动跟随，
+ * 本文件不写第二套写死颜色。
+ *
+ * 纪律：只改外观。下面所有类只被用来套壳、排版、配色，不携带任何交互或数据语义；
+ * 现有浏览器测试依赖的选择器（aria-label / role / 文案）保持不变。
+ */
+
+/* ---- 原生控件：批量面板里的 select 走自己的箭头 ----
+ *
+ * 壳文件 `components/mixcut/mixcut-shell.module.css` 的 `.shell select` 把
+ * `no-repeat / right 10px center` 写进了 `background-image` 长属性，而那是简写值——
+ * 整条声明无效，浅色下箭头不出现；深色覆盖只换 image，repeat/position 保持默认，
+ * 于是箭头被平铺成一条斜纹（1024 宽深色下实测可见）。
+ * 那个文件归 09 号票，本票不改；批量页面在这里重新声明一份合法的箭头。
+ *
+ * 选择器必须写成双类（`select.shellSelect.shellSelect`）：批量的 select 都在
+ * `.shell` 里，`.shell select` 的特异度是 (0,1,1)，单个类 (0,1,0) 压不过它；
+ * 深色覆盖 `html[data-theme='dark'] .shell select` 是 (0,2,1)，所以深色那份再加一层类。 */
+select.shellSelect.shellSelect {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px;
+  background-color: var(--color-card);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px 6px;
+}
+
+:global(html[data-theme='dark']) select.shellSelect.shellSelect.shellSelect {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2398989d' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px 6px;
+  background-color: color-mix(in srgb, var(--color-ink) 7%, transparent);
+}
+
+/* ---- 主区（与 mixcut-shell 的 .mainCol 同构：批量四步在顶栏模式下，
+ * 骨架给左侧下一步条让位后，主区四周各留 12px） ---- */
+.mainCol {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+/* 顶部提示条（反馈 / 取消选择 / 导出结果）：一条分组底色，不加卡片描边。 */
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 9px 12px;
+  border-radius: 11px;
+  background: var(--color-group);
+  color: var(--color-ink-secondary);
+  font-size: var(--text-label);
+  line-height: 1.5;
+}
+
+.bannerFail { background: var(--color-fail-tint); color: var(--color-fail); }
+.bannerOk { background: var(--color-ok-tint); color: var(--color-ok); }
+.bannerWarn { background: var(--color-warn-tint); color: var(--color-warn); }
+.banner b { color: inherit; font-weight: 600; }
+
+/* ---- 页面骨架：纵向节奏 ---- */
+.page {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 4px;
+}
+
+/* ---- 步骤标题区（原型 .bt-head） ---- */
+.head {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.head > div { min-width: 0; margin-right: auto; }
+/* 标题保持真正的 h3（角色/无障碍名字是既有浏览器测试的契约），只改字号字重与颜色。
+ * 用选择器统一压平 h1–h4，避免每处再写一层排版工具类。 */
+.head h2,
+.head h3,
+.head h4 {
+  display: block;
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+.head small {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-ink-secondary);
+  font-size: var(--text-label);
+  line-height: 1.5;
+}
+
+.lock h3 {
+  display: block;
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.count {
+  flex: none;
+  color: var(--color-ink-secondary);
+  font-size: var(--text-label);
+  white-space: nowrap;
+}
+
+/* ---- 工具条（原型 .bt-tools） ---- */
+.tools {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- 锁定横幅（原型 .bt-lock）：分组底 + 钥匙文字，不用卡片描边 ---- */
+.lock {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 11px;
+  background: var(--color-group);
+}
+
+.lock > div { min-width: 0; margin-right: auto; }
+.lock b { display: block; color: var(--color-ink); font-size: 13px; font-weight: 500; }
+.lock small { color: var(--color-ink-secondary); font-size: var(--text-label); }
+.lock svg { flex: none; color: var(--color-ink-secondary); }
+
+/* ---- 分组容器（原型用 --well 底，不再层层套白卡描边） ---- */
+.group {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--color-group);
+}
+
+.groupPlain {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 11px;
+}
+
+/* ---- 素材网格（原型 .bms：170px 起，4:3 缩略图） ---- */
+.materialGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.materialCard {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: var(--color-card);
+  box-shadow: inset 0 0 0 0.5px var(--color-hairline-soft);
+  text-align: left;
+  transition: box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.materialCard:hover { box-shadow: inset 0 0 0 0.5px var(--color-hairline); }
+.materialCardOn { box-shadow: inset 0 0 0 1.5px var(--color-accent); }
+
+.materialThumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+  background: var(--color-preview);
+}
+
+.materialThumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.materialDur {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--color-media-scrim);
+  color: var(--color-media-foreground);
+  font-size: var(--text-label);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 缩略图悬停蒙层与播放徽标：压在媒体上，深浅主题都应保持深底白字（媒体令牌）。 */
+.thumbHover {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.materialThumb:hover .thumbHover { background: color-mix(in srgb, var(--color-media-background) 45%, transparent); }
+
+.thumbPlay {
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--color-media-scrim);
+  color: var(--color-media-foreground);
+  font-size: var(--text-label);
+  font-weight: 500;
+}
+
+.materialBody {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 9px 9px;
+}
+
+.materialName {
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.materialMeta {
+  color: var(--color-ink-secondary);
+  font-size: var(--text-label);
+  line-height: 1.45;
+}
+
+/* ---- 脚本行（原型 .bs：分组底 + 选中描边，勾选在左，份数在右） ---- */
+.scriptRow {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: var(--color-card);
+  box-shadow: inset 0 0 0 0.5px var(--color-hairline-soft);
+}
+
+.scriptRowOn { box-shadow: inset 0 0 0 1.5px var(--color-accent); }
+
+.scriptList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---- 底部确认条（原型 .bt-go）：只有一条分隔线，文字在左、按钮在右 ---- */
+.goBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 0.5px solid var(--color-hairline);
+}
+
+.goBarText { min-width: 260px; flex: 1; }
+.goBarText b { display: block; color: var(--color-ink); font-size: 13px; font-weight: 600; }
+.goBarText small { color: var(--color-ink-secondary); font-size: var(--text-label); }
+
+/* ---- 空状态（原型 .ph）：居中一行说明 + 一行下一步 ---- */
+.empty {
+  display: grid;
+  min-height: 280px;
+  place-items: center;
+  align-content: center;
+  gap: 9px;
+  padding: 24px 12px;
+  color: var(--color-ink-tertiary);
+  font-size: var(--text-label);
+  text-align: center;
+}
+
+.empty strong { color: var(--color-ink); font-size: 13px; }
+.empty span { max-width: 360px; line-height: 1.6; }
+.empty small { max-width: 360px; line-height: 1.6; }

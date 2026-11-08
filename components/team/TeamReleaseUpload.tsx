@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { teamError } from './client';
-import { GroupHeading, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
+import { StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
 
 type Candidate = {
   candidateId: string;
@@ -102,7 +102,7 @@ export default function TeamReleaseUpload() {
     {phase === 'done' && <p role="status" className="mt-3 flex items-center gap-2 text-[13px] text-ok"><StatusDot tone="ok" />候选包已准备完成；尚未执行升级，当前运行版本不变。</p>}
     {error && <p role="alert" className="mt-3 text-[13px] leading-6 text-fail">{error}</p>}
     {preview && preview.candidates.length > 0 && <div className="mt-5 space-y-3">
-      <GroupHeading>已保存的候选版本</GroupHeading>
+      <h3 className="text-[13px] font-semibold text-ink">已保存的候选版本</h3>
       {preview.candidates.map((candidate) => <article key={candidate.candidateId} className="rounded-[11px] border border-hairline p-4">
         <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-[13px] text-ink">{candidate.release.releaseId} · {candidate.target.appVersion}</strong><Tag tone={candidate.status === 'ready' ? 'ok' : 'fail'}>{candidate.status === 'ready' ? '校验通过，可供后续升级复核' : '不可用于升级'}</Tag></div>
         <p className="mt-2 text-[12px] leading-5 text-ink-secondary">{candidate.compatibility.message}</p>
@@ -115,6 +115,6 @@ export default function TeamReleaseUpload() {
         <p className="mt-2.5 break-all font-mono text-[11px] text-ink-tertiary">候选身份：{candidate.candidateId}</p>
       </article>)}
     </div>}
-    {preview && preview.failures.length > 0 && <div className="mt-4"><GroupHeading>最近失败的上传</GroupHeading><ul className="mt-2 space-y-2 text-[12px] leading-5 text-ink-secondary">{preview.failures.slice(0, 5).map((failure) => <li key={failure.uploadId}>{new Date(failure.createdAt).toLocaleString('zh-CN')} · {failure.message}</li>)}</ul></div>}
+    {preview && preview.failures.length > 0 && <div className="mt-4"><h3 className="text-[13px] font-semibold text-ink">最近失败的上传</h3><ul className="mt-2 space-y-2 text-[12px] leading-5 text-ink-secondary">{preview.failures.slice(0, 5).map((failure) => <li key={failure.uploadId}>{new Date(failure.createdAt).toLocaleString('zh-CN')} · {failure.message}</li>)}</ul></div>}
   </section>;
 }

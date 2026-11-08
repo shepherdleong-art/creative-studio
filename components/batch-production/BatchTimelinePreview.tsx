@@ -842,6 +842,11 @@ export default function BatchTimelinePreview({
         <div
           ref={stageRef}
           className={`${styles.stage} relative overflow-hidden rounded-xl bg-black`}
+          /* 审片预览的画面比例是需求（规格 V05「所有画面保持 3:4 或 9:16」）。
+           * 这里把成片画幅标在舞台元素上，界面验收的「画面比例」检查据此实测宽高比，
+           * 而不是只靠 canvas 内部尺寸推断。纯数据标注，不影响任何交互。 */
+          data-output-preset={outputPreset}
+          data-media-frame="成片预览"
           style={compact
             ? undefined
             : size.width >= size.height

@@ -327,7 +327,17 @@ try {
       if (pathname === '/api/projects/e2e-project') return json(project);
       if (pathname === '/api/projects/e2e-project/run') return json({ queueStatus: 'idle' });
       if (pathname === '/api/providers') return json([]);
-      if (pathname === '/api/providers/tts') return json([{ id: 'tts-e2e', name: 'Mock TTS', model: 'mock-tts', configured: true, voices: [{ id: 'voice-e2e', label: '测试音色' }, { id: longVoiceId, label: '魅力女友' }] }]);
+      // MixcutPanel 在 commit 00347640 起改从 /api/team/models 取配音与视觉模型
+      // （旧的 /api/providers/tts、/api/providers/script 已不再被调用）。
+      // 新路径是真正在用的；旧路径留着兼容。音色列表必须与旧路径一致，
+      // 否则「魅力女友」这类断言会因为列表为空而超时。
+      const ttsProvidersBody = [{ id: 'tts-e2e', name: 'Mock TTS', model: 'mock-tts', enabled: true, hasApiKey: true, configured: true, voices: [{ id: 'voice-e2e', label: '测试音色' }, { id: longVoiceId, label: '魅力女友' }] }];
+      if (pathname === '/api/team/models' && url.searchParams.get('kind') === 'tts') return json(ttsProvidersBody);
+      if (pathname === '/api/team/models' && url.searchParams.get('kind') === 'script') {
+        return json([{ id: 'vision-e2e', name: 'Mock Vision', model: 'mock-vision', configured: true, supportsVision: true }]);
+      }
+      if (pathname === '/api/team/models') return json([]);
+      if (pathname === '/api/providers/tts') return json(ttsProvidersBody);
       if (pathname === '/api/providers/script') return json([{ id: 'vision-e2e', configured: true, supportsVision: true }]);
       if (pathname === '/api/system-fonts') {
         if (fontListDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, fontListDelayMs));
