@@ -413,7 +413,12 @@ async function loginAndCaptureState(browser, engine, audience) {
     const page = await context.newPage();
     const pageErrors = [];
     page.on('pageerror', (error) => pageErrors.push(sanitize(error.message)));
-    await page.goto(`${baseUrl}/team/login`, { waitUntil: 'networkidle', timeout: 240_000 });
+    // 用 networkidle：登录表单是先渲染 HTML、再 React 水合后才可提交。
+    // 只等 domcontentloaded 的话输入框已经可见但还没有事件处理器，点了「登录」
+    // 什么都不会发生（实测：服务端日志里一条登录请求都没有）。
+    // 超时给到 10 分钟：这台机器上 dev 首次编译 /team/login 实测要 4 分钟以上。
+    await page.goto(`${baseUrl}/team/login`, { waitUntil: 'networkidle', timeout: 600_000 });
+    await page.locator('input[autocomplete="username"]').waitFor({ timeout: 600_000 });
     await page.locator('input[autocomplete="username"]').fill(audience === 'admin' ? ADMIN_ID : EMPLOYEE_ID);
     await page.locator('input[autocomplete="current-password"]').fill(audience === 'admin' ? ADMIN_PASSWORD : EMPLOYEE_PASSWORD);
     await page.getByRole('button', { name: '登录', exact: true }).click();

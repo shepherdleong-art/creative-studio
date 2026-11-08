@@ -97,7 +97,7 @@ export function createUiAcceptanceApi(baseUrl) {
     const { json, ...init } = options;
     if (json !== undefined && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
     const response = await fetch(`${baseUrl}${pathname}`, {
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(300_000),
       ...init,
       headers,
       ...(json === undefined ? {} : { body: JSON.stringify(json) }),
