@@ -20,7 +20,6 @@ import {
 import { THEME_MENU_ORDER, THEME_OPTIONS, useThemePreference } from '@/components/ThemeToggle';
 import { teamError, teamWrite } from '@/components/team/client';
 import { WorkspaceBrandMark } from './WorkspaceBrandMark';
-import { resolveNarrowStyle } from './narrow-window';
 import s from './workspace.module.css';
 
 type BadgeCounts = ReturnType<typeof workspaceBadgeCounts>;
@@ -47,17 +46,6 @@ const readNarrowOnServer = () => false;
 type Flyout = { label: string; top: number } | null;
 
 /**
- * 收法试用开关读的是地址栏 query（`?narrow=…`）：只用于截图比较，不写存储、不落库。
- * 用 `popstate` 订阅：Next 的客户端路由变化也会触发它，试用时不刷新页面也能换。
- */
-const subscribeSearch = (onChange: () => void) => {
-  window.addEventListener('popstate', onChange);
-  return () => window.removeEventListener('popstate', onChange);
-};
-const readSearch = () => window.location.search;
-const readSearchOnServer = () => '';
-
-/**
  * 团队版侧栏（05 号票）：顶部小标志 + 端名，中间分组导航，底部头像菜单。
  *
  * 数据全部来自 `lib/workspace-navigation.ts`——分组、顺序、文案、href、角标字段都在那里，
@@ -80,33 +68,21 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
   const isDesktop = useSyncExternalStore(subscribeToDesktopShell, readDesktopShell, readDesktopShellOnServer);
   const footerRef = useRef<HTMLDivElement>(null);
 
-  // ---- 窄窗口收法（15 号票）----
-  const style = useSyncExternalStore(subscribeSearch, readSearch, readSearchOnServer);
-  const narrowStyle = resolveNarrowStyle(style);
+  // ---- 窄窗口收法（15 号票，用户已选定：图标窄条 + 悬停浮出名称）----
+  // 规格「小窗口与画面尺寸」：<1280 时侧栏收成只有图标的窄条、悬停显示名称。
+  // 用户从三种收法（图标窄条 / 悬停整条展开 / 覆盖式抽屉）里选了第一种，
+  // 另外两套与 `?narrow=` 试用开关已按 15 号票 Comments 的清单删掉。
   const narrow = useSyncExternalStore(subscribeNarrow, readNarrow, readNarrowOnServer);
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const [flyout, setFlyout] = useState<Flyout>(null);
-  // 窗口变宽后抽屉与浮层都不该继续存在（遮罩会挡住整页）。
+  // 窗口变宽后浮层不该继续存在（会悬在内容上挡字）。
   // 渲染期就地重置，避免 effect 里的级联渲染（与 MixcutShell 的 autoExpandOverride 同一手法）。
   const [prevNarrow, setPrevNarrow] = useState(narrow);
   if (narrow !== prevNarrow) {
     setPrevNarrow(narrow);
-    if (!narrow) {
-      setDrawerOpen(false);
-      setFlyout(null);
-    }
+    if (!narrow) setFlyout(null);
   }
-  // 抽屉：Esc 收起。
-  useEffect(() => {
-    if (!drawerOpen) return undefined;
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setDrawerOpen(false); };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [drawerOpen]);
-  // hover 收法的展开完全交给 CSS `:hover / :focus-within`，这里只决定窄条本身。
-  const rail = narrow && !(narrowStyle === 'drawer' && drawerOpen);
-  // 名称浮层：icon 收法靠它显示名称；hover/drawer 有展开态，但仍给一层兜底。
-  const showFlyout = rail && narrowStyle === 'icon';
+  // 名称浮层：窄条下靠它显示这一行的名称（悬停或键盘聚焦）。
+  const showFlyout = narrow;
 
   const flyoutProps = (label: string) => {
     if (!showFlyout) return {};
@@ -216,38 +192,14 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
 
   return (
     <>
-    {narrow && narrowStyle === 'drawer' && drawerOpen && (
-      <button
-        type="button"
-        className={s.wsDrawerScrim}
-        aria-label="收起导航"
-        tabIndex={-1}
-        data-testid="workspace-drawer-scrim"
-        onClick={() => setDrawerOpen(false)}
-      />
-    )}
     <aside
       id="workspace-sidebar"
       className={s.sidebar}
       aria-label="工作台侧栏"
       data-testid="workspace-sidebar"
       data-badges-ready={countsReady ? 'true' : 'false'}
-      data-narrow={narrow ? (rail ? 'rail' : 'full') : undefined}
-      data-narrow-style={narrow ? narrowStyle : undefined}
-      data-drawer-open={narrow && narrowStyle === 'drawer' ? String(drawerOpen) : undefined}
+      {...(narrow ? { 'data-narrow': 'rail' } : {})}
     >
-      {narrow && narrowStyle === 'drawer' && (
-        <button
-          type="button"
-          className={s.wsDrawerToggle}
-          aria-label={drawerOpen ? '收起导航' : '展开导航'}
-          aria-expanded={drawerOpen}
-          data-testid="workspace-drawer-toggle"
-          onClick={() => setDrawerOpen((open) => !open)}
-        >
-          <Icon name={drawerOpen ? 'chevron-left' : 'logs'} size={16} />
-        </button>
-      )}
       <Link href="/" className={s.wsBrand} aria-label={productName} data-testid="workspace-brand" {...flyoutProps(productName)}>
         <span className={s.wsBrandMark}><WorkspaceBrandMark size={26} /></span>
         <span className={s.wsBrandCopy}>
