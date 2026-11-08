@@ -9,6 +9,36 @@
  * 现有浏览器测试依赖的选择器（aria-label / role / 文案）保持不变。
  */
 
+/* ---- 原生控件：批量面板里的 select 走自己的箭头 ----
+ *
+ * 壳文件 `components/mixcut/mixcut-shell.module.css` 的 `.shell select` 把
+ * `no-repeat / right 10px center` 写进了 `background-image` 长属性，而那是简写值——
+ * 整条声明无效，浅色下箭头不出现；深色覆盖只换 image，repeat/position 保持默认，
+ * 于是箭头被平铺成一条斜纹（1024 宽深色下实测可见）。
+ * 那个文件归 09 号票，本票不改；批量页面在这里重新声明一份合法的箭头。
+ *
+ * 选择器必须写成双类（`select.shellSelect.shellSelect`）：批量的 select 都在
+ * `.shell` 里，`.shell select` 的特异度是 (0,1,1)，单个类 (0,1,0) 压不过它；
+ * 深色覆盖 `html[data-theme='dark'] .shell select` 是 (0,2,1)，所以深色那份再加一层类。 */
+select.shellSelect.shellSelect {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px;
+  background-color: var(--color-card);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px 6px;
+}
+
+:global(html[data-theme='dark']) select.shellSelect.shellSelect.shellSelect {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2398989d' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px 6px;
+  background-color: color-mix(in srgb, var(--color-ink) 7%, transparent);
+}
+
 /* ---- 主区（与 mixcut-shell 的 .mainCol 同构：批量四步在顶栏模式下，
  * 骨架给左侧下一步条让位后，主区四周各留 12px） ---- */
 .mainCol {
