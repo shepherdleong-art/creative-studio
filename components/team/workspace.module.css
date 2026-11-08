@@ -53,10 +53,167 @@
   max-width: min(calc(100vw - var(--workspace-sidebar-width) - 64px), 1400px);
 }
 
-/* 窄窗口：15 号票会重做收法。这里只保留现有「收成图标条」的雏形。 */
-@media (max-width: 760px) {
+/* ---------- 窄窗口（<1280）收法（15 号票） ----------
+ *
+ * 规格「小窗口与画面尺寸」：宽度小于 1280 时侧栏收成只有图标的窄条（悬停显示名称）。
+ * 原型没有覆盖这一条，实施时必须先出截图请用户确认，所以这里同时实现三种收法：
+ *
+ *   icon   图标窄条 68px，悬停/聚焦浮出该行名称（**规格原文的写法，默认**）
+ *   hover  图标窄条 68px，悬停或键盘进入时整条展开成完整侧栏（覆盖在内容上，纯 CSS）
+ *   drawer 44px 让位 + 侧栏收成只放开关的窄轨，点开是 224px 覆盖式抽屉（点遮罩或 Esc 收起）
+ *
+ * 选哪套由 aside 上的 `data-narrow-style` 决定，值来自 `components/team/narrow-window.ts`
+ * （默认 icon，可用 `?narrow=` 临时试用以便截图比较）。用户选定后删掉另外两套与该开关。
+ *
+ * `data-narrow="rail|full"` 只表达「JS 决定的状态」（窄窗口且抽屉未开 / 抽屉已开）；
+ * hover 收法的展开完全交给 CSS `:hover / :focus-within`——WebKit 下比依赖 React 指针事件稳。
+ */
+@media (max-width: 1279px) {
   :global(:root) { --workspace-sidebar-width: 68px; }
-  :global(body:has(> aside[data-testid='workspace-sidebar'])) > main { padding: 20px 16px 40px; }
+  /* 抽屉收法只让出窄轨那一条，抽屉本身覆盖在内容上。变量挂在 body 上，
+     侧栏与 main 都是它的后代，两边一起生效。 */
+  :global(body:has(> aside[data-narrow-style='drawer'])) { --workspace-sidebar-width: 44px; }
+
+  :global(body:has(> aside[data-testid='workspace-sidebar'])) > main { padding: 20px 20px 40px; }
+
+  /* ---- 收起态：只留图标（三种收法共用） ---- */
+  .sidebar[data-narrow='rail'] { padding: 12px 8px 10px; }
+  .sidebar[data-narrow='rail'] .wsBrand { justify-content: center; padding: 2px 0 10px; }
+  .sidebar[data-narrow='rail'] .wsBrandCopy,
+  .sidebar[data-narrow='rail'] .wsNavLabel,
+  .sidebar[data-narrow='rail'] .wsBadge,
+  .sidebar[data-narrow='rail'] .wsUserCopy,
+  .sidebar[data-narrow='rail'] .wsUserChevron,
+  .sidebar[data-narrow='rail'] .wsMenuHint { display: none; }
+  .sidebar[data-narrow='rail'] .wsNavRow { justify-content: center; padding: 0; }
+  .sidebar[data-narrow='rail'] .wsUser { justify-content: center; padding: 6px 0; }
+  /* 分组标题收起后换成一条细线：分组的存在感不丢，但不占窄条宽度。 */
+  .sidebar[data-narrow='rail'] .wsGroupTitle {
+    height: 1px;
+    margin: 8px 12px;
+    overflow: hidden;
+    font-size: 0;
+    background: var(--color-hairline);
+    color: transparent;
+  }
+  .sidebar[data-narrow='rail'] .wsNav > div:first-child .wsGroupTitle { display: none; }
+  /* 「客户端版本过旧」是必须看到的提示，不能随窄条一起藏掉：改成浮在内容区左上角，
+     按钮照样能点，也不会被窄轨切掉。 */
+  .sidebar[data-narrow='rail'] .wsUpdateBar {
+    position: fixed;
+    top: 12px;
+    left: calc(var(--workspace-sidebar-width) + 12px);
+    z-index: 60;
+    width: 320px;
+    max-width: calc(100vw - var(--workspace-sidebar-width) - 24px);
+  }
+  /* 头像菜单：窄轨放不下 248px 菜单，且侧栏是 overflow 滚动容器（绝对定位后代会按
+     侧栏宽度被裁）。改用固定定位贴窄轨右缘弹出，不受祖先 overflow 影响。 */
+  .sidebar[data-narrow='rail'] .wsMenu {
+    position: fixed;
+    left: calc(var(--workspace-sidebar-width) + 10px);
+    right: auto;
+    bottom: 16px;
+    width: 248px;
+    min-width: 0;
+    max-width: 248px;
+  }
+
+  /* ---- hover 收法：窄条 + 悬停整条展开（纯 CSS，键盘聚焦也展开） ---- */
+  .sidebar[data-narrow-style='hover'][data-narrow='rail'] { transition: width .16s ease, box-shadow .16s ease; }
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:hover,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:focus-within {
+    width: 224px;
+    z-index: 60;
+    box-shadow: 0 16px 48px rgb(0 0 0 / 24%);
+  }
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:hover .wsBrand,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:focus-within .wsBrand {
+    justify-content: flex-start;
+    padding: 2px 8px 10px;
+  }
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:hover .wsBrandCopy,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:hover .wsNavLabel,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:hover .wsBadge,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:hover .wsUserCopy,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:hover .wsUserChevron,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:focus-within .wsBrandCopy,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:focus-within .wsNavLabel,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:focus-within .wsBadge,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:focus-within .wsUserCopy,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:focus-within .wsUserChevron { display: block; }
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:hover .wsNavLabel,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:focus-within .wsNavLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:hover .wsNavRow,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:focus-within .wsNavRow { justify-content: flex-start; padding: 0 10px; }
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:hover .wsUser,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:focus-within .wsUser { justify-content: flex-start; padding: 7px 8px; }
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:hover .wsGroupTitle,
+  .sidebar[data-narrow-style='hover'][data-narrow='rail']:focus-within .wsGroupTitle {
+    height: auto;
+    margin: 14px 10px 4px;
+    overflow: visible;
+    font-size: var(--text-label);
+    background: none;
+    color: var(--color-ink-secondary);
+  }
+
+  /* ---- drawer 收法：让位 44px，侧栏收成只放开关的窄轨 ---- */
+  .sidebar[data-narrow-style='drawer'][data-narrow='rail'] { padding: 10px 5px; }
+  .sidebar[data-narrow-style='drawer'][data-narrow='rail'] > :not(.wsDrawerToggle) { display: none; }
+
+  /* ---- 抽屉打开：完整侧栏覆盖在内容上 ---- */
+  .sidebar[data-narrow='full'] {
+    width: 224px;
+    z-index: 60;
+    box-shadow: 0 16px 48px rgb(0 0 0 / 24%);
+  }
+}
+/* 窄窗口的悬停名称浮层：固定定位，不受侧栏 overflow 裁剪。 */
+.wsFlyout {
+  position: fixed;
+  left: calc(var(--workspace-sidebar-width) + 10px);
+  z-index: 70;
+  transform: translateY(-50%);
+  padding: 5px 10px;
+  border: 1px solid var(--color-hairline);
+  border-radius: 8px;
+  background: var(--color-card);
+  color: var(--color-ink);
+  font-size: var(--text-label);
+  white-space: nowrap;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 16%);
+  pointer-events: none;
+}
+
+/* 抽屉开关与遮罩。开关是 aside 的直接子元素，位置按收起/展开两态分别给。 */
+.wsDrawerToggle {
+  position: fixed;
+  top: 12px;
+  left: 7px;
+  z-index: 65;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--color-hairline);
+  border-radius: 9px;
+  background: var(--color-card);
+  color: var(--color-ink);
+  cursor: pointer;
+}
+/* 抽屉展开时开关变成「收起」，挪到抽屉右上角，不压品牌位。 */
+.sidebar[data-narrow='full'] .wsDrawerToggle { left: 186px; }
+.wsDrawerToggle:hover { background: var(--color-surface-subtle); }
+.wsDrawerToggle:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.wsDrawerScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  border: 0;
+  padding: 0;
+  background: rgb(0 0 0 / 22%);
+  cursor: default;
 }
 
 /* ---------- 侧栏 ---------- */
@@ -295,15 +452,9 @@
   .columns { grid-template-columns: 1fr; }
 }
 
-/* 窄窗口：保留现有「收成图标条」的行为（完整方案归 15 号票）。 */
+/* 更窄（<760）时布局本身的收法：首页卡片网格降列、提示条换行。
+ * 侧栏的收法在 1279px 那条媒体查询里统一处理（三种收法共用一套图标窄条几何）。 */
 @media (max-width: 760px) {
-  .sidebar { padding: 16px 10px 12px; }
-  .wsBrandCopy, .wsGroupTitle, .wsNavLabel, .wsBadge, .wsUserCopy, .wsUserChevron,
-  .wsMenuHint, .wsUpdateBar { display: none; }
-  .wsBrand { justify-content: center; padding: 2px 0 12px; }
-  .wsNavRow { justify-content: center; padding: 0; }
-  .wsUser { justify-content: center; padding: 6px 0; }
-  .wsMenu { left: calc(100% + 8px); right: auto; bottom: 0; width: 216px; }
   .title { align-items: flex-start; }
   .projects { grid-template-columns: 1fr; }
   .module { padding: 12px; }

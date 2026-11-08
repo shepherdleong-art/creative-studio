@@ -1,6 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  useCallback, useEffect, useRef, useState, useSyncExternalStore,
+  type FocusEvent as ReactFocusEvent, type PointerEvent as ReactPointerEvent,
+} from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Icon } from '@/components/ui/Icon';
@@ -17,6 +20,7 @@ import {
 import { THEME_MENU_ORDER, THEME_OPTIONS, useThemePreference } from '@/components/ThemeToggle';
 import { teamError, teamWrite } from '@/components/team/client';
 import { WorkspaceBrandMark } from './WorkspaceBrandMark';
+import { resolveNarrowStyle } from './narrow-window';
 import s from './workspace.module.css';
 
 type BadgeCounts = ReturnType<typeof workspaceBadgeCounts>;
@@ -27,6 +31,31 @@ const EMPTY_COUNTS: BadgeCounts = { tasks: null, errors: null };
 const subscribeToDesktopShell = () => () => {};
 const readDesktopShell = () => Boolean((window as { desktopBridge?: unknown }).desktopBridge);
 const readDesktopShellOnServer = () => false;
+
+/** 窄窗口判定：规格「小窗口与画面尺寸」的 1280 是断点。 */
+const NARROW_QUERY = '(max-width: 1279px)';
+const subscribeNarrow = (onChange: () => void) => {
+  const query = window.matchMedia(NARROW_QUERY);
+  query.addEventListener('change', onChange);
+  return () => query.removeEventListener('change', onChange);
+};
+const readNarrow = () => window.matchMedia(NARROW_QUERY).matches;
+// 服务端不知道窗口宽度：按宽窗口渲染（完整侧栏），水合后按实际宽度收。
+const readNarrowOnServer = () => false;
+
+/** 悬停浮层：只记被指的那一行文案与它的纵向中线（浮层的左缘由 CSS 算）。 */
+type Flyout = { label: string; top: number } | null;
+
+/**
+ * 收法试用开关读的是地址栏 query（`?narrow=…`）：只用于截图比较，不写存储、不落库。
+ * 用 `popstate` 订阅：Next 的客户端路由变化也会触发它，试用时不刷新页面也能换。
+ */
+const subscribeSearch = (onChange: () => void) => {
+  window.addEventListener('popstate', onChange);
+  return () => window.removeEventListener('popstate', onChange);
+};
+const readSearch = () => window.location.search;
+const readSearchOnServer = () => '';
 
 /**
  * 团队版侧栏（05 号票）：顶部小标志 + 端名，中间分组导航，底部头像菜单。
@@ -50,6 +79,50 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
   const [clientMessage, setClientMessage] = useState('');
   const isDesktop = useSyncExternalStore(subscribeToDesktopShell, readDesktopShell, readDesktopShellOnServer);
   const footerRef = useRef<HTMLDivElement>(null);
+
+  // ---- 窄窗口收法（15 号票）----
+  const style = useSyncExternalStore(subscribeSearch, readSearch, readSearchOnServer);
+  const narrowStyle = resolveNarrowStyle(style);
+  const narrow = useSyncExternalStore(subscribeNarrow, readNarrow, readNarrowOnServer);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [flyout, setFlyout] = useState<Flyout>(null);
+  // 窗口变宽后抽屉与浮层都不该继续存在（遮罩会挡住整页）。
+  // 渲染期就地重置，避免 effect 里的级联渲染（与 MixcutShell 的 autoExpandOverride 同一手法）。
+  const [prevNarrow, setPrevNarrow] = useState(narrow);
+  if (narrow !== prevNarrow) {
+    setPrevNarrow(narrow);
+    if (!narrow) {
+      setDrawerOpen(false);
+      setFlyout(null);
+    }
+  }
+  // 抽屉：Esc 收起。
+  useEffect(() => {
+    if (!drawerOpen) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setDrawerOpen(false); };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [drawerOpen]);
+  // hover 收法的展开完全交给 CSS `:hover / :focus-within`，这里只决定窄条本身。
+  const rail = narrow && !(narrowStyle === 'drawer' && drawerOpen);
+  // 名称浮层：icon 收法靠它显示名称；hover/drawer 有展开态，但仍给一层兜底。
+  const showFlyout = rail && narrowStyle === 'icon';
+
+  const flyoutProps = (label: string) => {
+    if (!showFlyout) return {};
+    return {
+      onPointerEnter: (event: ReactPointerEvent<HTMLElement>) => {
+        const box = event.currentTarget.getBoundingClientRect();
+        setFlyout({ label, top: box.top + box.height / 2 });
+      },
+      onPointerLeave: () => setFlyout(null),
+      onFocus: (event: ReactFocusEvent<HTMLElement>) => {
+        const box = event.currentTarget.getBoundingClientRect();
+        setFlyout({ label, top: box.top + box.height / 2 });
+      },
+      onBlur: () => setFlyout(null),
+    };
+  };
 
   // 数量角标：直接数页面同一个接口的 items，口径与对应页一致（见 workspace-navigation）。
   // 只取一次，路由变化时重取——页面自己刷新时角标不必实时跟随，但切页一定会更新。
@@ -142,8 +215,40 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
   const badgeValue = (key: 'tasks' | 'errors') => formatBadgeCount(counts[key]);
 
   return (
-    <aside className={s.sidebar} aria-label="工作台侧栏" data-testid="workspace-sidebar" data-badges-ready={countsReady ? 'true' : 'false'}>
-      <Link href="/" className={s.wsBrand} aria-label={productName} data-testid="workspace-brand">
+    <>
+    {narrow && narrowStyle === 'drawer' && drawerOpen && (
+      <button
+        type="button"
+        className={s.wsDrawerScrim}
+        aria-label="收起导航"
+        tabIndex={-1}
+        data-testid="workspace-drawer-scrim"
+        onClick={() => setDrawerOpen(false)}
+      />
+    )}
+    <aside
+      id="workspace-sidebar"
+      className={s.sidebar}
+      aria-label="工作台侧栏"
+      data-testid="workspace-sidebar"
+      data-badges-ready={countsReady ? 'true' : 'false'}
+      data-narrow={narrow ? (rail ? 'rail' : 'full') : undefined}
+      data-narrow-style={narrow ? narrowStyle : undefined}
+      data-drawer-open={narrow && narrowStyle === 'drawer' ? String(drawerOpen) : undefined}
+    >
+      {narrow && narrowStyle === 'drawer' && (
+        <button
+          type="button"
+          className={s.wsDrawerToggle}
+          aria-label={drawerOpen ? '收起导航' : '展开导航'}
+          aria-expanded={drawerOpen}
+          data-testid="workspace-drawer-toggle"
+          onClick={() => setDrawerOpen((open) => !open)}
+        >
+          <Icon name={drawerOpen ? 'chevron-left' : 'logs'} size={16} />
+        </button>
+      )}
+      <Link href="/" className={s.wsBrand} aria-label={productName} data-testid="workspace-brand" {...flyoutProps(productName)}>
         <span className={s.wsBrandMark}><WorkspaceBrandMark size={26} /></span>
         <span className={s.wsBrandCopy}>
           <strong>{productName}</strong>
@@ -166,6 +271,7 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
                   aria-label={badge ? `${item.label}，${badge} 条` : item.label}
                   aria-current={isWorkspaceNavActive(pathname, item.href) ? 'page' : undefined}
                   data-testid="workspace-nav-item"
+                  {...flyoutProps(badge ? `${item.label}（${badge}）` : item.label)}
                 >
                   <Icon name={item.icon} size={17} />
                   <span className={s.wsNavLabel}>{item.label}</span>
@@ -249,5 +355,14 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
         </div>
       </div>
     </aside>
+    {flyout && (
+      <div
+        className={s.wsFlyout}
+        role="tooltip"
+        style={{ top: flyout.top }}
+        data-testid="workspace-nav-flyout"
+      >{flyout.label}</div>
+    )}
+    </>
   );
 }

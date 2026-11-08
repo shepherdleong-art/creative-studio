@@ -72,7 +72,9 @@ app/                    Next.js 页面与 API 路由
                         final-edit-assets / final-edit-bgm / final-edit-proposals
 components/             React UI（工作台各面板）；components/mixcut/ 是正式第五步“智能混剪”；
                         components/final-edit/ 保留预览、检查器和 Canvas 等共享编辑能力；
-                        components/ui/ 是通用原语（目前只有 Icon.tsx）
+                        components/workbench/ 是五步工作台框架，components/media/ 是共享预览对话框；
+                        components/ui/ 是通用原语：Icon 与共用外观部件（页面工具栏、分组列表、
+                        分段按钮、标签、状态点、空状态、对话框）
 lib/                    核心业务逻辑（见下）
 data/                   本地 SQLite 库 workbench.db（gitignored）
 storage/                上传素材、生成产物、日志（gitignored；含 bgm/final-edits/videos 等子目录）
@@ -105,6 +107,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 | `docs/reference/单条素材分析.md` | 改单条混剪的素材分析缓存、重新分析及分析记录写入 |
 | `docs/reference/固定渲染命令.md` | 改 `lib/film-render/`、`scripts/film-render.ts` 或 classic 渲染验收 |
 | `docs/reference/界面尺寸验收.md` | 改界面外观、加一屏页面，或跑 `node scripts/team-server/acceptance.mjs --level ui` 前 |
+| `docs/reference/界面外观规范.md` | 改配色/令牌/字体/共用部件，或新增一屏界面 |
 
 ### `lib/` 核心模块
 
@@ -154,6 +157,8 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 - `data-root.ts` — 本地数据根解析（`CREATIVE_STUDIO_DATA_ROOT` 优先，否则 `process.cwd()`）。**所有本地路径一律走 `dataRoot()`，不要硬编码 `data/`、`storage/`。**
 - `logger.ts` — 同时写数据库与 `storage/logs/`，主动脱敏 API Key。新增日志点不要打印请求头、密钥或完整鉴权串。
+- `brand.ts` / `workspace-navigation.ts` — 团队版的**文案与导航唯一来源**：端名、页面标题、侧栏分组与顺序、角标字段都在这里，别在页面里再写一份；两处端名由 `scripts/brand-identity-guard.test.ts` 钉住必须一致。导航数据零 React 依赖，可直接在 Node 测试里 import。
+- `team-service/production-defaults.ts` — 服务器统一生产参数（超时、并发、图片预处理）的**唯一裁决点**。团队版忽略客户端传来的这三个值；个人本地版行为不变。
 
 ### 数据流
 
@@ -172,7 +177,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - **并发**：`projects.concurrency` 控制单个项目的最大并行任务提交数。
 - **路径**：所有本地文件路径基于 `dataRoot()`。
 - **TypeScript**：strict 模式；路径别名 `@/*` 指向仓库根。ESLint 用 Next.js 官方 flat config，无额外自定义规则。
-- **UI**：界面文案为中文；视觉风格为 Apple 官网式精致极简（见 `docs/2026-06-12-session-summary.md`）。
+- **UI**：界面文案为中文。外观（配色令牌、字体、共用部件、字号三档、深色红线）以 [林视界面重设计功能方案](docs/superpowers/specs/2026-11-07-林视界面重设计-功能方案.md) 为准，常驻参考见 `docs/reference/界面外观规范.md`。中文字体族名是 **`Lins Sans SC`**（OFL 保留字体名条款要求子集改名，字形仍是思源黑体）——代码里不要写 `Source Han Sans`，改字体先读那份参考。
 - **批量统一审片改造**：修改统一工作台、轨道编辑或开场归库前，先读 [确认版 PRD](docs/superpowers/specs/2026-09-25-批量统一审片-PRD.md) 与 [执行文档](docs/superpowers/plans/2026-09-25-批量统一审片-执行文档.md)，按冻结 v14 和逐项验收执行。
 - **外观主题**：全局三态（浅色/深色/跟随系统）由 `html[data-theme="dark"]` 驱动——暗色令牌与组件覆盖集中在 `app/globals.css` 末尾，mixcut 两个 CSS module 各自带暗色覆盖块；偏好存 `localStorage["creative-studio-theme"]`，水合前初始化脚本在 `app/layout.tsx`，切换按钮是 `components/ThemeToggle.tsx`。新增 UI 颜色一律走设计令牌，不要新增硬编码浅色值（深色覆盖只补丁存量）。
 - **文档**：常驻架构参考放 `docs/reference/`；设计、评审、会话记录放 `docs/`，文件名带日期前缀（`YYYY-MM-DD-主题.md`）；较大功能的规格与计划放 `docs/superpowers/{specs,plans}/`——**这个目录名是历史沿革，与当前使用的任何 skill 无关**，新文档照旧往里放，不要按名字另起炉灶。

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import styles from './mixcut-shell.module.css';
 
@@ -50,6 +50,31 @@ export interface MixcutShellProps {
   /** 此步骤随页面滚动；内部工作区自行使用视口高度，顶部信息不挤占编辑空间。 */
   pageScrollOnStep?: number;
 }
+
+/**
+ * 窄窗口（<1280）默认收起「素材调整」：规格「小窗口与画面尺寸」。
+ *
+ * 只在**团队版**生效（`html[data-deployment-mode='server']`）：个人本地版的破格宽度
+ * 与按窗口高度撑满是 8 月为小屏监看定的有意设计，不能顺手改掉。
+ *
+ * 只影响当前显示，不写进布局记忆：`repOff` 仍是用户自己的选择，从窄窗口回到宽窗口时
+ * 不会把用户原本展开的素材调整永久收起；窄窗口下点 › 展开也不会被下一次渲染抹掉。
+ */
+const NARROW_QUERY = '(max-width: 1279px)';
+
+function subscribeNarrow(onChange: () => void): () => void {
+  const query = window.matchMedia(NARROW_QUERY);
+  query.addEventListener('change', onChange);
+  return () => query.removeEventListener('change', onChange);
+}
+
+function readNarrow(): boolean {
+  return window.matchMedia(NARROW_QUERY).matches
+    && document.documentElement.dataset.deploymentMode === 'server';
+}
+
+/** 服务端渲染时不知道窗口宽度：一律按宽窗口渲染，水合后再按实际宽度收（不会闪空）。 */
+const readNarrowOnServer = () => false;
 
 /**
  * 混剪工作台共用骨架:顶栏 + 左步骤条 + 左辅栏 + 主区。
@@ -112,6 +137,19 @@ export default function MixcutShell({
     if (activeStep !== collapseSidebarOnStep) setAutoExpandOverride(false);
   }
   const effectiveColOffA = colOffA || (collapseSidebarOnStep !== undefined && activeStep === collapseSidebarOnStep && !autoExpandOverride);
+  const narrow = useSyncExternalStore(subscribeNarrow, readNarrow, readNarrowOnServer);
+  // 窄窗口下「素材调整」默认收起；用户点 › 就地展开，切回宽窗口后回到用户自己的选择。
+  const [narrowRepOpen, setNarrowRepOpen] = useState(false);
+  const [prevNarrow, setPrevNarrow] = useState(narrow);
+  if (narrow !== prevNarrow) {
+    setPrevNarrow(narrow);
+    if (!narrow) setNarrowRepOpen(false);
+  }
+  const effectiveRepOff = repOff || (narrow && !narrowRepOpen);
+  const handleRepCollapse = (collapsed: boolean) => {
+    if (!narrow) { setRepOff(collapsed); return; }
+    setNarrowRepOpen(!collapsed);
+  };
 
   // 顶部导航模式的四个步骤使用同一工作区高度与滚动锚点。
   const pageScroll = activeStep === pageScrollOnStep;
@@ -155,7 +193,7 @@ export default function MixcutShell({
     const move = (pointer: PointerEvent) => {
       const dx = pointer.clientX - startX;
       const width = Math.min(max, Math.max(min, side === 'rep' ? startW + dx : startW - dx));
-      if (side === 'rep') { setRepW(width); setRepOff(false); } else { setRgtW(width); setRgtOff(false); }
+      if (side === 'rep') { setRepW(width); setRepOff(false); setNarrowRepOpen(true); } else { setRgtW(width); setRgtOff(false); }
     };
     const up = () => {
       window.removeEventListener('pointermove', move);
@@ -173,7 +211,7 @@ export default function MixcutShell({
   ].filter(Boolean).join(' ');
   const bodyAttrs: Record<string, string> = {
     'data-layout': previewActive ? 'preview' : 'normal',
-    'data-rep-off': repOff ? '1' : '0',
+    'data-rep-off': effectiveRepOff ? '1' : '0',
     'data-rgt-off': rgtOff ? '1' : '0',
   };
 
@@ -231,7 +269,7 @@ export default function MixcutShell({
       </header>
       <div
         className={bodyClass}
-        style={{ '--repw': `${repOff ? 36 : repW}px`, '--rgtw': `${rgtOff ? 36 : rgtW}px` } as React.CSSProperties}
+        style={{ '--repw': `${effectiveRepOff ? 36 : repW}px`, '--rgtw': `${rgtOff ? 36 : rgtW}px` } as React.CSSProperties}
         {...bodyAttrs}
       >
         {!topSteps && stepNavigation}
@@ -242,7 +280,7 @@ export default function MixcutShell({
           {sidebar}
         </div>
 
-        {main({ repOff, rgtOff, onRepCollapse: setRepOff, onRgtCollapse: setRgtOff, onResizeStart: beginResize })}
+        {main({ repOff: effectiveRepOff, rgtOff, onRepCollapse: handleRepCollapse, onRgtCollapse: setRgtOff, onResizeStart: beginResize })}
       </div>
       {children}
     </div>
