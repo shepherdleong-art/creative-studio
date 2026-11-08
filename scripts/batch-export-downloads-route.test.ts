@@ -307,6 +307,37 @@ try {
   );
   assert.equal(missingProject.status, 400);
 
+  // ---- 2b. delivery=1：轻客户端要的那份受管文件 manifest ----
+  const deliveryBody = await readManifest(
+    await downloadsRoute.GET(
+      request(downloadsUrl(seeded.batchId, seeded.projectId, '&delivery=1'), userA), params(seeded.batchId),
+    ),
+  ) as ManifestBody & { deliveryManifests: Array<{ fileId: string; version: number; size: number; sha256: string; etag: string; displayName: string }> };
+  assert.equal(deliveryBody.deliveryManifests.length, deliveryBody.items.length,
+    'delivery=1 的每个清单项都必须有一条受管文件 manifest');
+  for (const delivered of deliveryBody.deliveryManifests) {
+    assert.match(delivered.fileId, /^[a-f0-9-]{36}$/, '受管文件必须是真实登记过的 team_files');
+    assert.ok(Number.isSafeInteger(delivered.size) && delivered.size > 0);
+    assert.match(delivered.sha256, /^[a-f0-9]{64}$/);
+    assert.match(delivered.etag, /^"|^$/, 'ETag 由服务端生成');
+    const item = deliveryBody.items.find((candidate) => candidate.relativeName === delivered.displayName);
+    assert.ok(item, `交付 manifest 的 displayName 必须是清单里的相对名：${delivered.displayName}`);
+    assert.equal(delivered.size, item.byteSize, '交付大小必须与清单一致');
+    assert.equal(delivered.sha256, item.sha256, '交付指纹必须与清单一致');
+  }
+  // 重复请求不新增文件版本（登记幂等）。
+  const repeatedDelivery = await downloadsRoute.GET(
+    request(downloadsUrl(seeded.batchId, seeded.projectId, '&delivery=1'), userA), params(seeded.batchId),
+  );
+  const repeatedBody = await readManifest(repeatedDelivery) as ManifestBody & {
+    deliveryManifests: Array<{ fileId: string; version: number }>;
+  };
+  assert.deepEqual(
+    repeatedBody.deliveryManifests.map((item) => `${item.fileId}:${item.version}`).sort(),
+    deliveryBody.deliveryManifests.map((item) => `${item.fileId}:${item.version}`).sort(),
+    '重复取交付清单不得新增文件版本',
+  );
+
   // ---- 3. 请求别人的批次被拒绝 ----
   for (const url of [downloadsUrl(seeded.batchId, seeded.projectId), zipUrl(seeded.batchId, seeded.projectId)]) {
     const response = await (url.includes('/zip')
