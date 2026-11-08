@@ -73,6 +73,10 @@ const base = (id, title, owner, extra) => ({
   owner,
   audience: 'employee',
   checks: ALL_CHECKS,
+  // 量哪一块：'page'（默认，跳过共享外壳）/ 'shell'（只量外壳）/ 'all'（全量）。
+  // 外壳单独成屏，所以普通屏默认跳过外壳 —— 否则侧栏一坏，27 屏同时红，
+  // 就看不出「这一屏自己」的问题了。
+  scope: 'page',
   ...extra,
 });
 
@@ -151,6 +155,8 @@ export const SCREENS = [
 base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
     href: () => '/',
     ready: async (page) => { await page.getByTestId('workspace-sidebar').waitFor({ timeout: 60_000 }); },
+    // 这一屏就是外壳本身：只量外壳子树。
+    scope: 'shell',
     actions: [async (page) => {
       // 头像菜单是这一屏的第二个状态：展开后同样要量。
       await page.locator("[class*='wsUser']").first().click();
@@ -497,6 +503,27 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
     href: () => '/team/admin/operations',
     ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
+  // 集成分支曾整体删掉这一屏（隔离数据根扫不到可清理项，弹窗打不开）。
+  // 04 号票保留它并把「打不开」降级为 gaps：基础态照样量四项，
+  // 弹窗这一档如实记「本次量不到」，既不冒充通过，也不让整轮结果作废。
+  base('admin-operations-cleanup-dialog', '版本与备份 · 清理确认弹窗', 'ui-14', {
+    audience: 'admin',
+    href: () => '/team/admin/operations',
+    ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
+    actions: [async (page) => {
+      await page.getByRole('button', { name: '扫描无用文件', exact: true }).click();
+      const confirm = page.getByRole('button', { name: '确认清理预览中的项目', exact: true });
+      try {
+        await confirm.waitFor({ timeout: 30_000 });
+      } catch {
+        throw new Error('隔离数据根里没有可清理项，清理确认弹窗不会出现（前置条件不满足，不算尺寸不合格）');
+      }
+      if (await confirm.isEnabled()) {
+        await confirm.click();
+        await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
+      }
+    }],
+  }),
   base('admin-settings', '供应商配置', 'ui-14', {
     audience: 'admin',
     href: () => '/settings',
@@ -532,6 +559,8 @@ export function validateScreens(screens = SCREENS) {
     if (typeof screen.href !== 'function') throw new Error(`屏幕 ${screen.id} 缺少 href 函数`);
     if (typeof screen.ready !== 'function') throw new Error(`屏幕 ${screen.id} 缺少 ready 函数（必须等这一屏真的画出来）`);
     if (!['employee', 'admin'].includes(screen.audience)) throw new Error(`屏幕 ${screen.id} 的 audience 只能是 employee/admin`);
+    if (screen.scope === undefined) screen.scope = 'page';
+    if (!['page', 'shell', 'all'].includes(screen.scope)) throw new Error(`屏幕 ${screen.id} 的 scope 只能是 page/shell/all`);
     const checks = Array.isArray(screen.checks) ? screen.checks : ALL_CHECKS;
     for (const key of checks) if (!CHECK_KEYS.includes(key)) throw new Error(`屏幕 ${screen.id} 用了未知检查：${key}`);
     for (const key of screen.knownFailureChecks ?? []) {

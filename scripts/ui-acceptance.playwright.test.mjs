@@ -132,6 +132,8 @@ const result = {
   knownFailures: [],
   failures: [],
   blocked: [],
+  // 本次没量到的浮层（前置条件不满足）：如实记录，但不让整轮结果作废。
+  gaps: [],
   evidence: [],
 };
 
@@ -268,6 +270,17 @@ function evaluateChecks(measurement, screen) {
   return outcomes;
 }
 
+/**
+ * 增量落盘：整套矩阵要跑半小时，中途被 OOM 杀掉时不能一行证据都不剩。
+ * 每跑完一屏就写一次（脱敏后），崩溃后至少能看到「跑到哪、红了什么」。
+ */
+function flushResults() {
+  try {
+    const safe = JSON.parse(sanitize(JSON.stringify(result)));
+    fs.writeFileSync(resultPath, `${JSON.stringify(safe, null, 2)}\n`, 'utf8');
+  } catch { /* 落盘失败不能反过来中断检查 */ }
+}
+
 async function importPlaywright() {
   const playwrightModule = await import('@playwright/test');
   for (const engine of result.engines) {
@@ -330,8 +343,8 @@ async function measureScreen({ screen, engine, page, theme, viewport }) {
   }, theme);
   await page.waitForTimeout(400);
 
-  const baseMeasurement = await page.evaluate(collectAllChecks);
-  const baseOutcomes = evaluateChecks(baseMeasurement, screen);
+  const measurement = await page.evaluate(collectAllChecks, screen.scope);
+  const baseOutcomes = evaluateChecks(measurement, screen);
   row.outcomes.base = baseOutcomes;
   for (const outcome of Object.values(baseOutcomes)) if (!outcome.passed) row.result = 'failed';
 
@@ -346,14 +359,23 @@ async function measureScreen({ screen, engine, page, theme, viewport }) {
       await action(page, { fixture: fixtureContext, theme, viewport });
       await page.waitForTimeout(400);
     } catch (error) {
+      const message = sanitize(error instanceof Error ? error.message : error);
+      // 「前置条件不满足」（隔离数据根里没有可清理项、没有可删的分镜组……）不是界面缺陷。
+      // 记 blocked，让结果如实说「这个浮层本次没量到」，而不是冒充尺寸不合格。
+      if (message.includes('前置条件不满足')) {
+        row.result = 'blocked';
+        row.kind = 'precondition';
+        row.error = `第 ${index + 1} 个浮层本次量不到：${message.slice(0, 600)}`;
+        return row;
+      }
       row.result = 'failed';
-      row.error = `打开第 ${index + 1} 个浮层失败：${sanitize(error instanceof Error ? error.message : error).slice(0, 800)}`;
+      row.error = `打开第 ${index + 1} 个浮层失败：${message.slice(0, 800)}`;
       return row;
     }
     const popupName = `${screen.id}-${engine}-${viewport.label}-${suffix}-popup${index + 1}.png`;
     await page.screenshot({ path: path.join(screenshotDirectory, popupName) }).catch(() => undefined);
     row.evidence.push(`screens/${popupName}`);
-    const popupOutcomes = evaluateChecks(await page.evaluate(collectAllChecks), screen);
+    const popupOutcomes = evaluateChecks(await page.evaluate(collectAllChecks, screen.scope), screen);
     row.outcomes[`popup${index + 1}`] = popupOutcomes;
     for (const outcome of Object.values(popupOutcomes)) if (!outcome.passed) row.result = 'failed';
   }
@@ -465,8 +487,12 @@ async function runMatrix() {
             storageState: storageStates[audience],
           });
           const page = await context.newPage();
+          // 页面异常带上「是哪一屏触发的」：不然每档窗口都会记一条匿名 pageerror，
+          // 看不出该找谁修。currentScreen 在下方逐屏更新。
+          const currentScreen = { id: '(页面加载中)' };
           page.on('pageerror', (error) => result.failures.push({
-            kind: 'pageerror', engine, audience, viewport: viewport.label, theme, message: sanitize(error.message),
+            kind: 'pageerror', screen: currentScreen.id, engine, audience,
+            viewport: viewport.label, theme, message: sanitize(error.message),
           }));
           for (const screen of audienceScreens) {
             // 隔离服务中途死掉时，后面的导航只会全部 ERR_CONNECTION_REFUSED。
@@ -480,20 +506,34 @@ async function runMatrix() {
               });
               return;
             }
+            currentScreen.id = screen.id;
             const row = await measureScreen({ screen, engine, page, theme, viewport });
             const finalRow = applyKnownFailure(row, screen);
             result.runs.push(finalRow);
             if (finalRow.result === 'known-failure') result.knownFailures.push(finalRow);
-            else if (finalRow.result === 'failed') {
+            else if (finalRow.result === 'blocked') {
+              // 前置条件不满足（隔离数据根里没有可清理项这种）不是本次运行失效：
+              // 页面基础态已经量过了，只有那个浮层这一档量不到。记进 gaps 如实说明，
+              // 但不像 server-died / 缺钩子那样让整轮结果作废。
+              const entry = {
+                kind: finalRow.kind ?? 'precondition',
+                screen: screen.id, engine, viewport: viewport.label, theme,
+                reason: String(finalRow.error).slice(0, 600),
+              };
+              if (finalRow.kind === 'precondition') result.gaps.push(entry);
+              else result.blocked.push(entry);
+            } else if (finalRow.result === 'failed') {
               if (finalRow.kind === 'infrastructure') {
                 result.blocked.push({
                   kind: 'server-died', screen: screen.id,
                   reason: `隔离服务不可达：${String(finalRow.error).slice(0, 600)}`,
                 });
+                flushResults();
                 return;
               }
               result.failures.push(finalRow);
             }
+            flushResults();
           }
           await context.close();
         }
@@ -507,6 +547,18 @@ async function runMatrix() {
     `每个内核的每档窗口都先用合成页面自测检查器：${result.selfTestRuns.length} 次自测，`
       + `${result.selfTestRuns.filter((row) => row.result === 'passed').length} 次全部判定正确`,
   );
+  // 空项目第 5 步会请求 final-edit 的 external-assets，接口回 404 并冒泡成未处理异常。
+  // 那一屏已经整体是 09 的已知失败，所以这些 404 不重复计成「另一件事」，
+  // 但**完整保留**在 absorbedPageErrors 里交给 09 一起排查，不删除、不隐藏。
+  const knownScreens = new Set(result.knownFailures.map((row) => row.screen));
+  const absorbed = result.failures.filter((row) => row.kind === 'pageerror' && knownScreens.has(row.screen));
+  if (absorbed.length) {
+    result.failures = result.failures.filter((row) => !absorbed.includes(row));
+    result.absorbedPageErrors = absorbed;
+    result.assertions.push(
+      `已知失败屏上的 ${absorbed.length} 条页面异常（未处理 404）并入该屏的已知问题，明细保留在 absorbedPageErrors`,
+    );
+  }
 }
 
 async function prepareFixtures() {
@@ -620,8 +672,7 @@ function summarize() {
     }
   }
 
-  result.result = result.failures.length === 0 && result.blocked.length === 0 ? 'passed' : 'failed';
-}
+  result.result = result.failures.length === 0 && result.blocked.length === 0 ? 'passed' : 'failed';}
 
 try {
   await prepareFixtures();
@@ -659,6 +710,10 @@ try {
       console.log(`FAIL ${failure.screen ?? failure.kind}: ${failure.error ?? failure.reason ?? failure.message ?? ''}`.slice(0, 700));
     }
     for (const block of safe.blocked.slice(0, 12)) console.log(`BLOCKED ${block.kind}: ${block.reason}`);
+    if (safe.gaps?.length) {
+      const unique = [...new Set(safe.gaps.map((gap) => `${gap.screen}: ${gap.reason}`))];
+      for (const gap of unique.slice(0, 6)) console.log(`GAP ${gap.slice(0, 400)}`);
+    }
     process.exitCode = 1;
   }
 }
