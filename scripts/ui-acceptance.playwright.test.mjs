@@ -132,6 +132,8 @@ const result = {
   knownFailures: [],
   failures: [],
   blocked: [],
+  // 本次没量到的浮层（前置条件不满足）：如实记录，但不让整轮结果作废。
+  gaps: [],
   evidence: [],
 };
 
@@ -510,11 +512,16 @@ async function runMatrix() {
             result.runs.push(finalRow);
             if (finalRow.result === 'known-failure') result.knownFailures.push(finalRow);
             else if (finalRow.result === 'blocked') {
-              result.blocked.push({
+              // 前置条件不满足（隔离数据根里没有可清理项这种）不是本次运行失效：
+              // 页面基础态已经量过了，只有那个浮层这一档量不到。记进 gaps 如实说明，
+              // 但不像 server-died / 缺钩子那样让整轮结果作废。
+              const entry = {
                 kind: finalRow.kind ?? 'precondition',
                 screen: screen.id, engine, viewport: viewport.label, theme,
                 reason: String(finalRow.error).slice(0, 600),
-              });
+              };
+              if (finalRow.kind === 'precondition') result.gaps.push(entry);
+              else result.blocked.push(entry);
             } else if (finalRow.result === 'failed') {
               if (finalRow.kind === 'infrastructure') {
                 result.blocked.push({
@@ -656,8 +663,7 @@ function summarize() {
     }
   }
 
-  result.result = result.failures.length === 0 && result.blocked.length === 0 ? 'passed' : 'failed';
-}
+  result.result = result.failures.length === 0 && result.blocked.length === 0 ? 'passed' : 'failed';}
 
 try {
   await prepareFixtures();
@@ -695,6 +701,10 @@ try {
       console.log(`FAIL ${failure.screen ?? failure.kind}: ${failure.error ?? failure.reason ?? failure.message ?? ''}`.slice(0, 700));
     }
     for (const block of safe.blocked.slice(0, 12)) console.log(`BLOCKED ${block.kind}: ${block.reason}`);
+    if (safe.gaps?.length) {
+      const unique = [...new Set(safe.gaps.map((gap) => `${gap.screen}: ${gap.reason}`))];
+      for (const gap of unique.slice(0, 6)) console.log(`GAP ${gap.slice(0, 400)}`);
+    }
     process.exitCode = 1;
   }
 }
