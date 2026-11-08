@@ -178,6 +178,10 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
     href: () => `/?narrow=${style}`,
     ready: async (page) => {
       await page.getByTestId('workspace-sidebar').waitFor({ timeout: 60_000 });
+      // Playwright 的指针默认停在 (0,0)，那正是侧栏顶部：hover 收法会被这一下「悬停」
+      // 直接展开，收起态的截图就拍成了展开态。量之前先把指针挪到内容区中间。
+      const size = page.viewportSize();
+      if (size) await page.mouse.move(Math.round(size.width * 0.7), Math.round(size.height * 0.6));
       // 收法必须真的落到 DOM 上（窄窗口下才有这个属性）。
       const applied = await page.getByTestId('workspace-sidebar').getAttribute('data-narrow-style');
       const narrow = await page.evaluate(() => window.matchMedia('(max-width: 1279px)').matches);
