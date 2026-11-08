@@ -355,24 +355,27 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
               </p>
             )}
           </div>
-          {!frozen && (
-            <div className={styles.tools}>
-              <span className={styles.count}>已选 {Object.keys(selectedAssets).length} / 可用 {selectableAssets} 条</span>
-              {visionProviderMissing ? (
-                <p className="text-xs text-warn">没有开启图片理解的供应商 —— 请到「供应商设置」为任一脚本供应商开启视觉能力后再做内容分析。</p>
-              ) : (
-                <select
-                  aria-label="内容分析模型"
-                  value={visionProviderId}
-                  onChange={(event) => props.onVisionProviderChange(event.target.value)}
-                  className="h-9 max-w-60 rounded-xl border border-hairline bg-surface px-3 text-sm text-ink"
-                >
-                  {visionProviderOptions.length === 0 && <option value="">未配置视觉供应商</option>}
-                  {visionProviderOptions.map((provider) => (
-                    <option key={provider.id} value={provider.id}>{provider.name} · {provider.model}</option>
-                  ))}
-                </select>
-              )}
+        </div>
+        {!frozen && (
+          /* 工具行独立成行（原型 .bt-tools）：挤在标题行里时，一排按钮的固有宽度会把
+             整行撑出容器、右侧按钮被切掉一截。 */
+          <div className={styles.tools}>
+            <span className={styles.count}>已选 {Object.keys(selectedAssets).length} / 可用 {selectableAssets} 条</span>
+            {visionProviderMissing ? (
+              <p className="text-xs text-warn">没有开启图片理解的供应商 —— 请到「供应商设置」为任一脚本供应商开启视觉能力后再做内容分析。</p>
+            ) : (
+              <select
+                aria-label="内容分析模型"
+                value={visionProviderId}
+                onChange={(event) => props.onVisionProviderChange(event.target.value)}
+                className={`${styles.shellSelect} h-9 max-w-60 rounded-xl border border-hairline bg-surface px-3 text-sm text-ink`}
+              >
+                {visionProviderOptions.length === 0 && <option value="">未配置视觉供应商</option>}
+                {visionProviderOptions.map((provider) => (
+                  <option key={provider.id} value={provider.id}>{provider.name} · {provider.model}</option>
+                ))}
+              </select>
+            )}
               <button
                 type="button"
                 className="btn-primary"
@@ -438,9 +441,8 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                     : '选择原片文件夹'}</button>
                 </>
               )}
-            </div>
-          )}
-        </div>
+          </div>
+        )}
         {linkedImportFeedback && (
           <p className="rounded-xl bg-surface-subtle px-3 py-2 text-xs text-ink-secondary" role="status" aria-live="polite">
             {linkedImportFeedback}
