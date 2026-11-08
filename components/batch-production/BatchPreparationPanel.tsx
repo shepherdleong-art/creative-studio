@@ -2407,6 +2407,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
             projectId={projectId}
             selectedBatchId={selectedBatchId}
             productCode={prep.project.productCode}
+            outputPreset={reviewOutputPreset}
           />
         );
       }}

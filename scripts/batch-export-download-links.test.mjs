@@ -8,12 +8,21 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 // Exercise rendered download links, including replacement of the formal artifact.
 // The media resolver binds both video and paired cover to the video artifact ID.
-const require = createRequire(import.meta.url);
+//
+// 11 号票：卡片改成封面 + 大预览后，组件多了两个 UI 依赖（共用预览对话框与图标）。
+// 这里只渲染静态 HTML（预览对话框 open=false 本来就返回 null），所以用最小桩解析别名，
+// 断言原样保留：下载链接仍必须绑定同一个正式视频产物、带 download=1。
+const realRequire = createRequire(import.meta.url);
+const require = (id) => {
+  if (id === '@/components/media/FilmPreviewDialog') return { FilmPreviewDialog: () => null };
+  if (id === '@/components/ui/Icon') return { Icon: () => null };
+  return realRequire(id);
+};
 const mod = { exports: {} };
 const source = fs.readFileSync('components/batch-production/BatchStepExport.tsx', 'utf8');
 vm.runInNewContext(ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
-}).outputText, { require, module: mod, exports: mod.exports, URLSearchParams });
+}).outputText, { require, module: mod, exports: mod.exports, URLSearchParams, window: { location: { assign: () => {} } } });
 
 function downloads(formal) {
   const card = { planId: 'plan-1', seq: 1, versionNumber: 1, exportEligible: true,
