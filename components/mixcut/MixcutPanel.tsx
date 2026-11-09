@@ -115,7 +115,12 @@ export default function MixcutPanel({
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploadingShotSetIds, setUploadingShotSetIds] = useState<string[]>([]);
-  const [message, setMessage] = useState('');
+  const [message, setMessageValue] = useState('');
+  const [messageTone, setMessageTone] = useState<'error' | 'info' | 'success'>('error');
+  const setMessage = useCallback((value: string, tone: 'error' | 'info' | 'success' = 'error') => {
+    setMessageValue(value);
+    setMessageTone(tone);
+  }, []);
   const [persistVersion, setPersistVersion] = useState(0);
 
   const requestRef = useRef<{ sequence: number; controller: AbortController } | null>(null);
@@ -250,7 +255,7 @@ export default function MixcutPanel({
     } finally {
       if (requestRef.current?.sequence === sequence) setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, setMessage]);
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
@@ -275,7 +280,7 @@ export default function MixcutPanel({
           setActiveJob(job);
           setDurationReviewGroup(reviewGroup);
           setPreparedGroup(null);
-          setMessage('检测到旧版时长审核任务，正在按实际时长自动继续');
+          setMessage('检测到旧版时长审核任务，正在按实际时长自动继续', 'info');
         } else if (job.status === 'succeeded') {
           const completedGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${job.groupId}`));
           if (jobPollRef.current !== token) return;
@@ -283,7 +288,7 @@ export default function MixcutPanel({
           setPreparedGroup(completedGroup);
           setRecentGroups((current) => [completedGroup, ...current.filter((group) => group.id !== completedGroup.id)]);
           setDurationReviewGroup(null);
-          setMessage('智能创作任务已完成，可以进入预览调整');
+          setMessage('智能创作任务已完成，可以进入预览调整', 'success');
         } else {
           setActiveJob(job);
           if (job.status === 'failed') setMessage(job.errorMessage || '智能创作任务失败');
@@ -299,7 +304,7 @@ export default function MixcutPanel({
       window.clearTimeout(immediate);
       window.clearInterval(timer);
     };
-  }, [activeJobId, activeJobStatus]);
+  }, [activeJobId, activeJobStatus, setMessage]);
 
   useEffect(() => {
     if (!activeJobId || !isLegacyDurationReviewJob(activeJob) || activeJob?.durationReview) return;
@@ -313,7 +318,7 @@ export default function MixcutPanel({
       });
     }, 0);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [activeJob, activeJobId]);
+  }, [activeJob, activeJobId, setMessage]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -566,7 +571,7 @@ export default function MixcutPanel({
     const queued = saveQueueRef.current.then(save, save);
     saveQueueRef.current = queued.catch(() => undefined);
     return queued;
-  }, [activeShotSetId, projectId, scriptEditor.activeDraftId, scriptEditor.editedNarrationText, selectedIds, speed, ttsProviderId, visionProviderId, voice]);
+  }, [activeShotSetId, projectId, scriptEditor.activeDraftId, scriptEditor.editedNarrationText, selectedIds, speed, ttsProviderId, visionProviderId, voice, setMessage]);
 
   useEffect(() => {
     if (persistVersion <= lastSavedVersionRef.current) return;
@@ -720,10 +725,10 @@ export default function MixcutPanel({
       if (isLegacyDurationReviewJob(job)) {
         const reviewGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${jobRef.groupId}`, { signal: controller.signal }));
         setDurationReviewGroup(reviewGroup);
-        setMessage('正在按实际时长自动继续');
+        setMessage('正在按实际时长自动继续', 'info');
       } else {
         setDurationReviewGroup(null);
-        setMessage('后台任务已创建，可以离开页面后再返回查看');
+        setMessage('后台任务已创建，可以离开页面后再返回查看', 'info');
       }
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError') && startRequestRef.current?.sequence === sequence) {
@@ -758,7 +763,7 @@ export default function MixcutPanel({
     durationAutoContinueRef.current = recoveryKey;
     submittingRef.current = true;
     setSubmitting(true);
-    setMessage('检测到旧版时长审核任务，正在按实际时长自动继续');
+    setMessage('检测到旧版时长审核任务，正在按实际时长自动继续', 'info');
     try {
       const jobRef = await readJson<{ id: string; groupId: string; status: string }>(await fetch(`/api/final-edit-groups/${encodeURIComponent(durationReviewGroup.id)}/duration-resolution`, {
         method: 'POST',
@@ -783,10 +788,10 @@ export default function MixcutPanel({
         syncResolvedGroupScript(completedGroup);
         setPreparedGroup(completedGroup);
         setRecentGroups((current) => [completedGroup, ...current.filter((group) => group.id !== completedGroup.id)]);
-        setMessage('实际口播时长已记录，智能创作已继续完成');
+        setMessage('实际口播时长已记录，智能创作已继续完成', 'success');
       } else {
         setPreparedGroup(null);
-        setMessage('实际口播时长已记录，任务正在继续处理');
+        setMessage('实际口播时长已记录，任务正在继续处理', 'info');
       }
     } catch (error) {
       durationAutoContinueRef.current = '';
@@ -795,7 +800,7 @@ export default function MixcutPanel({
       submittingRef.current = false;
       setSubmitting(false);
     }
-  }, [activeJob, durationReviewGroup, syncResolvedGroupScript]);
+  }, [activeJob, durationReviewGroup, syncResolvedGroupScript, setMessage]);
 
   useEffect(() => {
     if (!isLegacyDurationReviewJob(activeJob) || !durationReviewGroup) return;
@@ -883,13 +888,13 @@ export default function MixcutPanel({
             />
           ) : (
             <main className={styles.mainCol}>
-              {message && <div className={styles.errorBanner}><Icon name="alert" size={15} />{message}</div>}
+              {message && <div role="status" className={messageTone === 'error' ? styles.errorBanner : styles.infoBanner} data-tone={messageTone}><Icon name={messageTone === 'success' ? 'check' : 'alert'} size={15} />{message}</div>}
               <div className={styles.emptyState}><strong>预览草稿尚未准备完成</strong><span>完成四阶段智能创作后，第三步会自动开放。</span></div>
             </main>
           )
         ) : (
           <main className={styles.mainCol}>
-            {message && <div className={styles.errorBanner}><Icon name="alert" size={15} />{message}</div>}
+            {message && <div role="status" className={messageTone === 'error' ? styles.errorBanner : styles.infoBanner} data-tone={messageTone}><Icon name={messageTone === 'success' ? 'check' : 'alert'} size={15} />{message}</div>}
             {!context && loading ? (
               <div className={styles.loadingState}><span /><strong>正在读取真实分镜组和视频…</strong></div>
             ) : (

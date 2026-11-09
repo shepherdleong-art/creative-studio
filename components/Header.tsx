@@ -6,8 +6,9 @@ import { usePathname } from 'next/navigation';
 import { Icon } from '@/components/ui/Icon';
 import ThemeToggle from '@/components/ThemeToggle';
 import TeamWorkspaceNavigation from '@/components/team/TeamWorkspaceNavigation';
+import { WorkspaceLeafMark } from '@/components/team/WorkspaceBrandMark';
 import { teamError, teamWrite } from '@/components/team/client';
-import type { ClientStatus } from '@/desktop/bridge-types';
+import { workspaceProductName } from '@/lib/workspace-navigation';
 
 // Read-only probe for the desktop shell. The bridge is injected by the preload
 // before any React code runs and never changes afterwards, so the subscription
@@ -23,6 +24,19 @@ export interface HeaderPrincipal {
   mustChangePassword?: boolean;
 }
 
+/**
+ * 应用外壳（05 号票）。
+ *
+ * 两种模式共存：
+ * - **个人本地版**（`deploymentMode === 'local'`）：保留原有顶栏结构，只换名字和标志；
+ *   「停止服务」只在这里出现。
+ * - **团队版**（`deploymentMode === 'server'`）：**不渲染全局顶栏**，改由
+ *   `TeamWorkspaceNavigation` 的左侧分组侧栏承担导航、头像菜单、外观、退出登录与
+ *   客户端更新提示条；每页标题由 `PageToolbar` 负责。
+ *
+ * 团队版里本组件只剩两件事：挂侧栏、把桌面壳的「关闭窗口」意图接到退出登录。
+ * 侧栏底部仍保留「关闭窗口不会中断服务器任务」这行说明。
+ */
 export default function Header({
   canvasEnabled = false,
   deploymentMode = 'local',
@@ -38,10 +52,9 @@ export default function Header({
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  // 团队版退出登录在侧栏头像菜单里（见 TeamWorkspaceNavigation），这里的错误只用于
+  // 桌面壳「关闭窗口 = 退出登录」失败时留痕。
   const [logoutError, setLogoutError] = useState('');
-  const [clientStatus, setClientStatus] = useState<ClientStatus | null>(null);
-  const [clientUpdating, setClientUpdating] = useState(false);
-  const [clientMessage, setClientMessage] = useState('');
   // In the shell, stopping the service also takes the application down, so the
   // copy must not tell the user to close the window themselves.
   const isDesktop = useSyncExternalStore(
@@ -64,49 +77,6 @@ export default function Header({
     }
   }, [loggingOut]);
 
-  useEffect(() => {
-    if (!server) return;
-    let active = true;
-    const refresh = () => Promise.resolve()
-      .then(() => window.desktopBridge?.getClientStatus?.())
-      .then((status) => { if (active && status) setClientStatus(status); })
-      .catch(() => undefined);
-    void refresh();
-    return () => { active = false; };
-  }, [server]);
-
-  const clientCompatible = clientStatus?.compatible !== false;
-  const reportUpdateFailure = async (code: string, message: string) => {
-    setClientMessage(message);
-    try {
-      const response = await teamWrite('/api/team/errors/report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientEventId: crypto.randomUUID(), stage: 'client_update', code }),
-      });
-      if (response.ok) {
-        const body = await response.json() as { errorId: string };
-        setClientMessage(`${message} 错误编号：${body.errorId}`);
-      }
-    } catch {
-      // 更新入口不可用时仍保留原可行动提示，诊断上报不能再次阻断客户端。
-    }
-  };
-  const handleClientUpdate = async () => {
-    if (clientUpdating) return;
-    setClientUpdating(true);
-    setClientMessage('');
-    try {
-      const result = await window.desktopBridge?.installClientUpdate?.();
-      if (!result?.started) await reportUpdateFailure('update_start_unavailable', result?.message ?? '未找到受控更新入口，请联系管理员修复。');
-      else setClientMessage('更新助手已启动；验证完成前会暂停本机传输。');
-    } catch {
-      await reportUpdateFailure('update_start_failed', '更新助手启动失败，请联系管理员修复。');
-    } finally {
-      setClientUpdating(false);
-    }
-  };
-
   useEffect(() => window.desktopBridge?.onQuitRequested?.(() => {
     if (server) void handleLogout();
     else setShowStopConfirm(true);
@@ -125,67 +95,49 @@ export default function Header({
     }, 2000);
   };
 
-  const showWorkspace = clientCompatible && (!server || Boolean(principal && !principal.mustChangePassword));
+  // ---- 团队版：没有全局顶栏，只有侧栏（客户端版本过旧时侧栏底部出现更新提示条） ----
+  if (server) {
+    const showSidebar = Boolean(principal && !principal.mustChangePassword);
+    return <>
+      {showSidebar && principal && <TeamWorkspaceNavigation principal={principal} canvasEnabled={canvasEnabled} />}
+      {logoutError && <span className="sr-only" role="alert">{logoutError}</span>}
+    </>;
+  }
 
+  // ---- 个人本地版：保留原顶栏结构，只换名字、标志与令牌 ----
   return (
     <>
-    {server && showWorkspace && principal && <TeamWorkspaceNavigation principal={principal} canvasEnabled={canvasEnabled} />}
-    <header data-team-shell={server && showWorkspace ? 'A' : undefined} className="toolbar h-12 gap-5 px-6 text-sm">
-      <Link href="/" className="font-semibold tracking-tight text-ink transition-colors hover:text-accent">
-        {server && showWorkspace ? (principal?.role === 'admin' ? '团队生产控制台' : '我的创作空间') : '产品素材工作台'}
+    <header className="toolbar h-12 gap-5 px-6 text-sm">
+      <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight text-ink transition-colors hover:text-accent">
+        <WorkspaceLeafMark size={17} />
+        {workspaceProductName(null)}
       </Link>
       <nav className="ml-auto flex items-center gap-4">
-        {showWorkspace && !server && <>
-          <Link href="/" className="text-ink-secondary transition-colors hover:text-ink">项目</Link>
-          {canvasEnabled && (
-            <Link
-              href="/canvas"
-              aria-current={onCanvas ? 'page' : undefined}
-              className={`whitespace-nowrap transition-colors hover:text-ink ${onCanvas ? 'font-medium text-accent' : 'text-ink-secondary'}`}
-            >创作画布</Link>
-          )}
-          <Link href="/usage" className="text-ink-secondary transition-colors hover:text-ink">消耗</Link>
-          {server && <>
-            <Link href="/team/tasks" className="text-ink-secondary transition-colors hover:text-ink">任务</Link>
-            <Link href="/team/errors" className="text-ink-secondary transition-colors hover:text-ink">错误</Link>
-            <Link href="/team/recycle-bin" className="text-ink-secondary transition-colors hover:text-ink">回收站</Link>
-          </>}
-          {(!server || principal?.role === 'admin') && <>
-            {server && <Link href="/team/admin/users" className="text-ink-secondary transition-colors hover:text-ink">账号</Link>}
-            {server && <Link href="/team/admin/pools" className="text-ink-secondary transition-colors hover:text-ink">资源池</Link>}
-            {server && <Link href="/team/admin/resources" className="text-ink-secondary transition-colors hover:text-ink">公共资源</Link>}
-            {server && <Link href="/team/admin/operations" className="text-ink-secondary transition-colors hover:text-ink">运维</Link>}
-            <Link href="/settings" className="text-ink-secondary transition-colors hover:text-ink">供应商</Link>
-          </>}
-          <Link href="/projects/new" className="btn-primary btn-sm">
-            <Icon name="plus" size={15} /> 新建项目
-          </Link>
-        </>}
-        {server && !clientCompatible && <button
-          onClick={handleClientUpdate}
-          disabled={clientUpdating}
-          className="btn-primary btn-sm"
-        >{clientUpdating ? '正在启动更新…' : '修复并更新'}</button>}
+        <Link href="/" className="text-ink-secondary transition-colors hover:text-ink">项目</Link>
+        {canvasEnabled && (
+          <Link
+            href="/canvas"
+            aria-current={onCanvas ? 'page' : undefined}
+            className={`whitespace-nowrap transition-colors hover:text-ink ${onCanvas ? 'font-medium text-accent' : 'text-ink-secondary'}`}
+          >创作画布</Link>
+        )}
+        <Link href="/usage" className="text-ink-secondary transition-colors hover:text-ink">消耗</Link>
+        <Link href="/settings" className="text-ink-secondary transition-colors hover:text-ink">供应商</Link>
+        <Link href="/projects/new" className="btn-primary btn-sm">
+          <Icon name="plus" size={15} /> 新建项目
+        </Link>
         <ThemeToggle />
-        {server && principal && <>
-          <span className="text-xs text-ink-tertiary">{principal.displayName}</span>
-          <button onClick={handleLogout} disabled={loggingOut} className="btn-secondary btn-sm" aria-label="退出登录">
-            {loggingOut ? '退出中…' : '退出登录'}
-          </button>
-        </>}
-        {!server && <button
+        <button
           onClick={() => setShowStopConfirm(true)}
           className="icon-btn text-ink-tertiary hover:text-fail"
           title="停止服务"
           aria-label="停止服务"
         >
           <Icon name="power" size={16} />
-        </button>}
-        {logoutError && <span className="text-xs text-fail">{logoutError}</span>}
-        {clientMessage && <span className="max-w-72 text-xs text-ink-secondary">{clientMessage}</span>}
+        </button>
       </nav>
 
-      {!server && showStopConfirm && (
+      {showStopConfirm && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm">
           <div className="card w-full max-w-sm p-6 shadow-[0_20px_60px_rgba(0,0,0,.18)]">
             <h3 className="mb-2 text-lg font-semibold text-ink">{isDesktop ? '停止服务并退出' : '停止服务'}</h3>

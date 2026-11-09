@@ -212,6 +212,24 @@ insertUsage.run('usage-b', 'usage-b', 'project-b', 'job-b', userB.principal.user
 insertUsage.run('usage-b-legacy', 'usage-b-legacy', 'project-b', 'job-b', '');
 
 try {
+  const packagingResources = await import('../app/api/packaging/templates/[...path]/route.ts');
+  const packagingResource = (segments: string[], cookie?: string) => packagingResources.GET(
+    get(`https://studio.example.test/api/packaging/templates/${segments.join('/')}`, cookie),
+    { params: Promise.resolve({ path: segments }) },
+  );
+  assert.equal((await packagingResource(['overlay-journal', 'gsap.min.js'])).status, 401);
+  for (const [resource, mime] of [
+    ['gsap.min.js', 'text/javascript'], ['assets/bg-mask.png', 'image/png'],
+    ['assets/cover-frame.png', 'image/png'], ['fonts/FZZDHJW.TTF', 'font/ttf'],
+  ]) {
+    const response = await packagingResource(['overlay-journal', ...resource.split('/')], userA.cookie);
+    assert.equal(response.status, 200, `员工必须能加载包装资源 ${resource}`);
+    assert.ok(response.headers.get('content-type')?.startsWith(mime));
+    assert.ok((await response.arrayBuffer()).byteLength > 100);
+  }
+  assert.equal((await packagingResource(['overlay-journal', 'fonts', 'user', 'private.ttf'], userA.cookie)).status, 404);
+  assert.equal((await packagingResource(['unknown-template', 'index.html'], userA.cookie)).status, 404);
+  assert.equal((await packagingResource(['overlay-journal', '..', 'index.html'], userA.cookie)).status, 400);
   assert.equal((await projectsRoute.GET(get('https://studio.example.test/api/projects'))).status, 401);
   const listA = await projectsRoute.GET(get('https://studio.example.test/api/projects', userA.cookie));
   assert.equal(listA.status, 200);
@@ -304,7 +322,35 @@ try {
   assert.equal(modelText.includes('test-key'), false);
 
   const failures: string[] = [];
+  const resolveRoute = await import('../app/api/team/errors/[id]/resolve/route.ts');
+  const { recordTeamError, listTeamErrors } = await import('../lib/team-service/diagnostics.ts');
+  const errorToResolve = recordTeamError(db, { actorUserId: userA.principal.userId, module: 'projects', stage: 'server_api', code: 'thumbnail_failed' });
+  const resolveUrl = `https://studio.example.test/api/team/errors/${errorToResolve.errorId}/resolve`;
+  assert.equal((await resolveRoute.POST(new Request(resolveUrl, { method: 'POST', headers: { Cookie: userA.cookie } }), params(errorToResolve.errorId))).status, 403, '处理接口必须校验 CSRF');
+  assert.equal((await resolveRoute.POST(write(resolveUrl, '', {}), params(errorToResolve.errorId))).status, 401);
+  assert.equal((await resolveRoute.POST(write(resolveUrl, userB.cookie, {}), params(errorToResolve.errorId))).status, 404);
+  assert.equal((await resolveRoute.POST(write(resolveUrl, userA.cookie, {}), params(errorToResolve.errorId))).status, 200);
+  assert.equal((await resolveRoute.POST(write(resolveUrl, admin.cookie, {}), params(errorToResolve.errorId))).status, 200);
+  assert.equal(listTeamErrors(db, userA.principal, { errorId: errorToResolve.errorId }).items.length, 1);
+  assert.equal(listTeamErrors(db, userA.principal, { errorId: errorToResolve.errorId, actionableOnly: true }).items.length, 0);
   const { withTeamRoute } = await import('../lib/team-service/route-wrapper.ts');
+  for (const suffix of ['a', 'b']) {
+    db.prepare(`INSERT INTO batch_assets (id, projectId, sourceKind, locationJson, contentFingerprint,
+      mediaKind, mediaJson, status, createdAt, updatedAt)
+      VALUES (?, ?, 'managed', '{}', ?, 'video', '{}', 'online', '2026-11-09', '2026-11-09')`)
+      .run(`batch-asset-${suffix}`, `project-${suffix}`, `fingerprint-${suffix}`);
+    registerInheritedScope(db, { resourceType: 'batch_asset', resourceId: `batch-asset-${suffix}`,
+      parent: { resourceType: 'project', resourceId: `project-${suffix}` } });
+  }
+  // 用真实路由授权层复现 AI 分析的 assetIds 数组，不启动付费生成。
+  const analyzeAssets = withTeamRoute('/api/batch-production/batches/[id]/assets/analyze', 'POST', async () => Response.json({ accepted: true }));
+  const analyzeUrl = 'https://studio.example.test/api/batch-production/batches/batch-a/assets/analyze?projectId=project-a';
+  const ownAssets = await analyzeAssets(write(analyzeUrl, userA.cookie, { assetIds: ['batch-asset-a'] }), params('batch-a'));
+  assert.equal(ownAssets.status, 200, await ownAssets.clone().text());
+  assert.equal((await analyzeAssets(write(analyzeUrl, userA.cookie, { assetIds: ['batch-asset-b'] }), params('batch-a'))).status, 403);
+  assert.equal((await analyzeAssets(write(analyzeUrl, admin.cookie, { assetIds: ['batch-asset-b'] }), params('batch-a'))).status, 403,
+    '管理员也不能把别的项目素材放进当前批次');
+  assert.equal((await analyzeAssets(write(analyzeUrl, userA.cookie, { assetIds: ['missing-asset'] }), params('batch-a'))).status, 404);
   for (const route of [
     '/api/projects/[id]/final-edit/draft',
     '/api/projects/[id]/final-edit/preflight',

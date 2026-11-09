@@ -13,6 +13,14 @@ export interface TeamFileDownloadManifest {
   sha256: string;
   etag: string;
   displayName: string;
+  /**
+   * 下载根下的相对子目录（`<项目导出身份>/<两位序号>-v<成片版本>`）。
+   *
+   * 11 号票「一键下载全部」：清单按项目与导出版本分目录，`displayName` 仍是单层
+   * 文件名（Windows 保留名与非法字符的校验照旧），目录只允许受管的相对分段。
+   * 缺省时仍落在 `<账号>/downloads/<transferId>/`（旧行为不变）。
+   */
+  relativeDirectory?: string;
 }
 
 export interface RemoteUploadTarget {
@@ -112,6 +120,28 @@ function safeDisplayName(value: string): string {
   return value;
 }
 
+/**
+ * 受管的相对子目录：只接受 `a/b` 这样的普通分段，拒绝绝对路径、穿越与 Windows 保留名。
+ * 用于「一键下载全部」按项目与导出版本分目录的落盘位置。
+ */
+function safeRelativeDirectory(value: string): string {
+  if (!value) return '';
+  if (value.length > 512 || path.isAbsolute(value) || path.win32.isAbsolute(value)
+    || /[\u0000-\u001f]/.test(value)) {
+    throw new Error('交付目录无效');
+  }
+  const segments = value.split('/');
+  if (segments.length > 6) throw new Error('交付目录层级过多');
+  for (const segment of segments) {
+    if (!segment || segment === '.' || segment === '..') throw new Error('交付目录无效');
+    if (/[\\<>:"|?*]/.test(segment) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(segment)
+      || /[. ]$/.test(segment)) {
+      throw new Error('交付目录包含非法名称');
+    }
+  }
+  return segments.join(path.sep);
+}
+
 function transferFailure(error: unknown): string {
   if (error && typeof error === 'object' && typeof (error as NodeJS.ErrnoException).code === 'string') {
     return (error as NodeJS.ErrnoException).code!;
@@ -127,6 +157,46 @@ function safeFailureCode(value: string): string {
 function contained(root: string, candidate: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+/**
+ * 校验通过的 `.part` 原子发布到目标名；目标已存在时换名（`名字 (2).ext`），
+ * 绝不覆盖已有文件。与服务器侧的 `publishVerifiedTeamDownload` 同一语义，
+ * 但这里在客户端主进程内跑（桌面端的下载目录可能已有同名旧文件）。
+ */
+function publishWithoutOverwrite(partPath: string, desiredPath: string): string {
+  const directory = path.dirname(desiredPath);
+  const displayName = path.basename(desiredPath);
+  for (let index = 0; index < 10_000; index += 1) {
+    const candidate = index === 0
+      ? desiredPath
+      : (() => {
+          const extension = path.extname(displayName);
+          const stem = displayName.slice(0, displayName.length - extension.length);
+          return path.join(directory, `${stem} (${index})${extension}`);
+        })();
+    try {
+      fs.linkSync(partPath, candidate);
+      fs.unlinkSync(partPath);
+      return candidate;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') continue;
+      if (code === 'EXDEV' || code === 'EPERM' || code === 'ENOTSUP') {
+        // 跨卷或文件系统不支持硬链接时回落到排他复制（同样不覆盖）。
+        try {
+          fs.copyFileSync(partPath, candidate, fs.constants.COPYFILE_EXCL);
+          fs.unlinkSync(partPath);
+          return candidate;
+        } catch (copyError) {
+          if ((copyError as NodeJS.ErrnoException).code === 'EEXIST') continue;
+          throw copyError;
+        }
+      }
+      throw error;
+    }
+  }
+  throw new Error('同名文件过多，无法选择不覆盖的目标名');
 }
 
 export class RemoteTransferController {
@@ -265,13 +335,14 @@ export class RemoteTransferController {
     const method = options.method ?? 'GET';
     const headers: Record<string, string> = {
       accept: 'application/json, application/octet-stream',
-      cookie: await this.cookieHeader(),
       ...options.headers,
     };
     if (method !== 'GET' && method !== 'HEAD') {
       headers.origin = this.origin;
       if (options.csrf !== false) headers['x-csrf-token'] = await this.ensureCsrf(options.signal);
     }
+    // CSRF bootstrap can set the Cookie: read the jar after it has completed.
+    headers.cookie = await this.cookieHeader();
     const fetchPromise = this.session.fetch(`${this.origin}${pathname}`, {
       method,
       headers,
@@ -502,7 +573,7 @@ export class RemoteTransferController {
     const response = await this.request('/api/team/devices', {
       method: 'POST', signal, headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        clientDeviceId: this.clientDeviceId, displayName: 'Creative Studio 轻客户端', platform: this.platform,
+        clientDeviceId: this.clientDeviceId, displayName: "林视 Lin's Vision 轻客户端", platform: this.platform,
       }),
     });
     const body = await response.json() as { id?: unknown };
@@ -522,14 +593,19 @@ export class RemoteTransferController {
         throw new Error('下载清单无效');
       }
       const displayName = safeDisplayName(manifest.displayName);
+      const relativeDirectory = safeRelativeDirectory(manifest.relativeDirectory ?? '');
       const existing = this.account.transfers.find((record) => record.kind === 'download'
         && record.manifest?.fileId === manifest.fileId && record.manifest.version === manifest.version
         && record.state !== 'cancelled');
       if (existing) { ids.push(existing.id); continue; }
       const id = randomUUID();
-      const directory = path.join(this.accountRoot(), 'downloads', id);
+      // 11 号票：按项目与导出版本分目录（`<账号>/downloads/<相对目录>/<文件名>`）。
+      // 目录由受管分段拼成，落盘端仍用硬链接发布、EEXIST 换名，同名绝不覆盖。
+      const directory = relativeDirectory
+        ? path.join(this.accountRoot(), 'downloads', relativeDirectory)
+        : path.join(this.accountRoot(), 'downloads', id);
       const record: TransferRecord = {
-        id, kind: 'download', state: 'queued', manifest: { ...manifest, displayName },
+        id, kind: 'download', state: 'queued', manifest: { ...manifest, displayName, relativeDirectory },
         localPath: path.join(directory, displayName), partPath: path.join(directory, `${displayName}.part`),
         diagnosticActorUserId: this.currentUserId!,
       };
@@ -594,8 +670,10 @@ export class RemoteTransferController {
     } finally { fs.closeSync(fd); }
     if (total !== manifest.size || hash.digest('hex') !== manifest.sha256) throw new Error('下载哈希校验失败');
     record.diagnosticPhase = 'publication';
-    fs.copyFileSync(record.partPath!, record.localPath!, fs.constants.COPYFILE_EXCL);
-    fs.rmSync(record.partPath!);
+    // 同名不覆盖：与 `lib/team-service/transfers/local-download.ts` 的发布语义一致 ——
+    // 目标已存在就换名（`名字 (2).ext`），绝不覆盖已有文件。
+    const destination = publishWithoutOverwrite(record.partPath!, record.localPath!);
+    record.localPath = destination;
     await receipt();
     record.state = 'ready';
   }

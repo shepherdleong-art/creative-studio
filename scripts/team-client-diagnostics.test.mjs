@@ -39,12 +39,16 @@ try {
   let csrf = 0;
   const sent = [];
   let offline = true;
+  let csrfCookie = null;
+  const reportCookies = [];
   const session = {
-    cookies: { async get() { return [{ name: '__Host-team_session', value: 'do-not-report' }]; } },
+    cookies: { async get() { return [{ name: '__Host-team_session', value: 'do-not-report' },
+      ...(csrfCookie ? [{ name: '__Host-team_csrf', value: csrfCookie }] : [])]; } },
     async fetch(url, options) {
       const pathname = new URL(url).pathname;
-      if (pathname === '/api/team/auth/csrf') { csrf += 1; return Response.json({ csrfToken: 'csrf-token' }); }
+      if (pathname === '/api/team/auth/csrf') { csrf += 1; csrfCookie = 'csrf-token'; return Response.json({ csrfToken: csrfCookie }); }
       assert.equal(pathname, '/api/team/errors/report');
+      reportCookies.push(options.headers.cookie);
       if (offline) throw new Error('network_offline');
       sent.push(JSON.parse(options.body));
       return Response.json({ errorId: `server-${sent.length}` }, { status: 201 });
@@ -61,6 +65,7 @@ try {
   reporter.capture(event);
   reporter.capture(event);
   await reporter.flush();
+  assert.ok(reportCookies[0].includes(`__Host-team_csrf=${csrfCookie}`), '首个诊断写入必须携带刚签发的 CSRF Cookie');
   assert.equal(sent.length, 0);
   assert.equal(reporter.pending().length, 1, '离线失败和重复通知只保留一个事件');
   offline = false;

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { createShotSet } from '@/lib/shot-set-service';
+import { readProjectShotSetStatuses } from '@/lib/shot-set-status';
 import { requireAccessContext } from '@/lib/media-core/access-context';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
@@ -25,8 +26,9 @@ async function __teamRouteGET(
       FROM shot_sets ss
       WHERE ss.projectId = ? ${lifecycle}
       ORDER BY ss.createdAt DESC
-    `).all(id);
-    return NextResponse.json(sets);
+    `).all(id) as Array<{ id: string; status: string }>;
+    const statuses = readProjectShotSetStatuses(db, id);
+    return NextResponse.json(sets.map((set) => ({ ...set, status: statuses.get(set.id) ?? set.status })));
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

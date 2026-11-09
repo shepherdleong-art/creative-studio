@@ -71,6 +71,35 @@ function runEntry(options: {
 }
 
 try {
+  // Production keeps private provider/COS settings in the data root, outside releases.
+  const privateRoot = path.join(fixtureRoot, 'private-data');
+  fs.mkdirSync(privateRoot, { recursive: true });
+  fs.writeFileSync(path.join(privateRoot, '.env.local'), [
+    'CREATIVE_STUDIO_COS_SECRET_ID=fixture-id',
+    'CREATIVE_STUDIO_COS_SECRET_KEY="fixture-secret"',
+    'CREATIVE_STUDIO_COS_DOMAIN=https://media.example.test',
+    'CREATIVE_STUDIO_CANVAS_EXECUTOR=company',
+    'CREATIVE_STUDIO_PORT=9999',
+    'HOSTNAME=0.0.0.0',
+  ].join('\n'));
+  const envProbe = path.join(fixtureRoot, 'env-probe.cjs');
+  fs.writeFileSync(envProbe, `
+    const assert = require('node:assert/strict');
+    assert.equal(process.env.CREATIVE_STUDIO_COS_SECRET_ID, 'fixture-id');
+    assert.equal(process.env.CREATIVE_STUDIO_COS_SECRET_KEY, 'fixture-secret');
+    assert.equal(process.env.CREATIVE_STUDIO_CANVAS_EXECUTOR, 'company');
+    assert.equal(process.env.PORT, '3300');
+    assert.equal(process.env.HOSTNAME, '127.0.0.1');
+  `);
+  const privateEnv = await runEntry({ serverRoot: fixtureRoot, env: {
+    CREATIVE_STUDIO_DATA_ROOT: privateRoot,
+    CREATIVE_STUDIO_STANDALONE_SERVER: envProbe,
+    CREATIVE_STUDIO_COS_SECRET_ID: undefined,
+    CREATIVE_STUDIO_COS_SECRET_KEY: undefined,
+    CREATIVE_STUDIO_CANVAS_EXECUTOR: undefined,
+  } });
+  assert.equal(privateEnv.code, 0, privateEnv.stderr);
+
   const serverRoot = path.join(fixtureRoot, 'standalone');
   fs.mkdirSync(serverRoot, { recursive: true });
   const standaloneServer = path.join(serverRoot, 'server.js');

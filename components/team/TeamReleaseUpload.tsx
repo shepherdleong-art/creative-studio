@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { teamError } from './client';
+import { StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
 
 type Candidate = {
   candidateId: string;
@@ -78,42 +79,42 @@ export default function TeamReleaseUpload() {
     }
   }
 
-  return <section className="card p-6" aria-label="服务器升级包准备">
+  return <section className="card p-5" aria-label="服务器升级包准备">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div>
-        <h2 className="text-lg font-semibold text-ink">上传服务器升级包</h2>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-secondary">选择受控 Windows 服务器发布 ZIP。完整清单、逐文件内容哈希、发布信任、运行时锁和版本兼容性全部通过后才会保存为候选。</p>
+        <h2 className="text-[15px] font-semibold text-ink">上传服务器升级包</h2>
+        <p className="mt-1.5 max-w-2xl text-[13px] leading-6 text-ink-secondary">选择受控 Windows 服务器发布 ZIP。完整清单、逐文件内容哈希、发布信任、运行时锁和版本兼容性全部通过后才会保存为候选。</p>
       </div>
-      <span className="rounded-full bg-surface-subtle px-3 py-1 text-xs font-medium text-ink-secondary">只准备 · 不执行升级</span>
+      <Tag tone="idle">只准备 · 不执行升级</Tag>
     </div>
-    {preview && <div className="mt-5 grid gap-3 sm:grid-cols-2">
-      <div className="rounded-lg border border-hairline p-4"><p className="text-xs text-ink-tertiary">当前运行版本</p><p className="mt-1 text-lg font-semibold text-ink">{preview.current.appVersion}</p><p className="mt-1 text-xs text-ink-secondary">数据结构 {preview.current.dataSchemaVersion} · {preview.current.releaseId}</p></div>
-      <div className="rounded-lg border border-hairline p-4"><p className="text-xs text-ink-tertiary">准备后目标版本</p><p className="mt-1 text-lg font-semibold text-ink">{preview.candidates.find((item) => item.status === 'ready')?.target.appVersion ?? '尚未选择'}</p><p className="mt-1 text-xs text-ink-secondary">准备过程不会改变当前运行版本</p></div>
+    {preview && <div className="mt-4 grid gap-3 sm:grid-cols-2">
+      <div className="rounded-[11px] border border-hairline p-4"><p className="text-[12px] text-ink-tertiary">当前运行版本</p><p className="tnum mt-1 text-[15px] font-semibold text-ink">{preview.current.appVersion}</p><p className="tnum mt-1 text-[12px] text-ink-secondary">数据结构 {preview.current.dataSchemaVersion} · {preview.current.releaseId}</p></div>
+      <div className="rounded-[11px] border border-hairline p-4"><p className="text-[12px] text-ink-tertiary">准备后目标版本</p><p className="tnum mt-1 text-[15px] font-semibold text-ink">{preview.candidates.find((item) => item.status === 'ready')?.target.appVersion ?? '尚未选择'}</p><p className="mt-1 text-[12px] text-ink-secondary">准备过程不会改变当前运行版本</p></div>
     </div>}
-    <div className="mt-5 flex flex-wrap items-center gap-3">
-      <input ref={inputRef} type="file" accept=".zip,application/zip" aria-label="选择服务器升级包" className="max-w-full text-sm text-ink-secondary file:mr-3 file:rounded-lg file:border-0 file:bg-surface-subtle file:px-4 file:py-2 file:text-ink" disabled={phase === 'uploading' || phase === 'validating'} onChange={(event) => { setFile(event.target.files?.[0] ?? null); setError(''); }} />
-      <button className="btn-primary" disabled={!file || phase === 'uploading' || phase === 'validating'} onClick={() => void upload()}>上传并校验</button>
+    <div className="mt-4 flex flex-wrap items-center gap-3">
+      <input ref={inputRef} type="file" accept=".zip,application/zip" aria-label="选择服务器升级包" className="max-w-full text-[13px] text-ink-secondary file:mr-3 file:rounded-[var(--radius-control)] file:border-0 file:bg-group file:px-4 file:py-2 file:text-ink" disabled={phase === 'uploading' || phase === 'validating'} onChange={(event) => { setFile(event.target.files?.[0] ?? null); setError(''); }} />
+      <ToolbarButton variant="primary" disabled={!file || phase === 'uploading' || phase === 'validating'} onClick={() => void upload()}>上传并校验</ToolbarButton>
     </div>
-    {(phase === 'uploading' || phase === 'validating') && <div className="mt-4" role="status">
-      <div className="flex justify-between text-xs text-ink-secondary"><span>{phase === 'uploading' ? '正在上传至受管暂存区' : '上传完成，正在校验发布清单与兼容性'}</span><span>{phase === 'uploading' ? `${progress}%` : '请稍候'}</span></div>
+    {(phase === 'uploading' || phase === 'validating') && <div className="mt-3" role="status">
+      <div className="flex justify-between text-[12px] text-ink-secondary"><span>{phase === 'uploading' ? '正在上传至受管暂存区' : '上传完成，正在校验发布清单与兼容性'}</span><span className="tnum">{phase === 'uploading' ? `${progress}%` : '请稍候'}</span></div>
       <progress className="mt-2 h-2 w-full" aria-label="上传进度" value={phase === 'uploading' ? progress : undefined} max={100} />
     </div>}
-    {phase === 'done' && <p role="status" className="mt-4 text-sm text-ok">候选包已准备完成；尚未执行升级，当前运行版本不变。</p>}
-    {error && <p role="alert" className="mt-4 text-sm leading-6 text-fail">{error}</p>}
-    {preview && preview.candidates.length > 0 && <div className="mt-6 space-y-3">
-      <h3 className="text-sm font-semibold text-ink">已保存的候选版本</h3>
-      {preview.candidates.map((candidate) => <article key={candidate.candidateId} className="rounded-lg border border-hairline p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-sm text-ink">{candidate.release.releaseId} · {candidate.target.appVersion}</strong><span className={candidate.status === 'ready' ? 'text-xs font-medium text-ok' : 'text-xs font-medium text-fail'}>{candidate.status === 'ready' ? '校验通过，可供后续升级复核' : '不可用于升级'}</span></div>
-        <p className="mt-2 text-xs leading-5 text-ink-secondary">{candidate.compatibility.message}</p>
-        <dl className="mt-3 grid grid-cols-2 gap-2 text-xs text-ink-secondary sm:grid-cols-3">
+    {phase === 'done' && <p role="status" className="mt-3 flex items-center gap-2 text-[13px] text-ok"><StatusDot tone="ok" />候选包已准备完成；尚未执行升级，当前运行版本不变。</p>}
+    {error && <p role="alert" className="mt-3 text-[13px] leading-6 text-fail">{error}</p>}
+    {preview && preview.candidates.length > 0 && <div className="mt-5 space-y-3">
+      <h3 className="text-[13px] font-semibold text-ink">已保存的候选版本</h3>
+      {preview.candidates.map((candidate) => <article key={candidate.candidateId} className="rounded-[11px] border border-hairline p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-[13px] text-ink">{candidate.release.releaseId} · {candidate.target.appVersion}</strong><Tag tone={candidate.status === 'ready' ? 'ok' : 'fail'}>{candidate.status === 'ready' ? '校验通过，可供后续升级复核' : '不可用于升级'}</Tag></div>
+        <p className="mt-2 text-[12px] leading-5 text-ink-secondary">{candidate.compatibility.message}</p>
+        <dl className="mt-2.5 grid grid-cols-2 gap-2 text-[12px] text-ink-secondary sm:grid-cols-3">
           <div><dt>完整清单</dt><dd className="mt-1 text-ink">{candidate.checks.manifestComplete ? '已核验' : '未通过'}</dd></div>
           <div><dt>内容哈希与信任</dt><dd className="mt-1 text-ink">{candidate.checks.contentHashes && candidate.checks.trustedDistribution && candidate.checks.runtimeLocks ? '已核验' : '未通过'}</dd></div>
           <div><dt>应用／数据兼容</dt><dd className="mt-1 text-ink">{candidate.checks.compatibility ? '兼容' : '不兼容'}</dd></div>
         </dl>
-        {candidate.failure && <p className="mt-2 text-xs text-fail">{candidate.failure.message}</p>}
-        <p className="mt-3 break-all font-mono text-[11px] text-ink-tertiary">候选身份：{candidate.candidateId}</p>
+        {candidate.failure && <p className="mt-2 text-[12px] text-fail">{candidate.failure.message}</p>}
+        <p className="mt-2.5 break-all font-mono text-[11px] text-ink-tertiary">候选身份：{candidate.candidateId}</p>
       </article>)}
     </div>}
-    {preview && preview.failures.length > 0 && <div className="mt-5"><h3 className="text-sm font-semibold text-ink">最近失败的上传</h3><ul className="mt-2 space-y-2 text-xs leading-5 text-ink-secondary">{preview.failures.slice(0, 5).map((failure) => <li key={failure.uploadId}>{new Date(failure.createdAt).toLocaleString('zh-CN')} · {failure.message}</li>)}</ul></div>}
+    {preview && preview.failures.length > 0 && <div className="mt-4"><h3 className="text-[13px] font-semibold text-ink">最近失败的上传</h3><ul className="mt-2 space-y-2 text-[12px] leading-5 text-ink-secondary">{preview.failures.slice(0, 5).map((failure) => <li key={failure.uploadId}>{new Date(failure.createdAt).toLocaleString('zh-CN')} · {failure.message}</li>)}</ul></div>}
   </section>;
 }

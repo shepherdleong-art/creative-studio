@@ -210,4 +210,8 @@ export const CORE_DB_MIGRATIONS = [
     createdAt INTEGER NOT NULL,
     updatedAt INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS script_provider_seed_suppressions (
+    providerId TEXT PRIMARY KEY,
+    deletedAt TEXT NOT NULL
+  )`,
 ];

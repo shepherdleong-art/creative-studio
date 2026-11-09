@@ -47,6 +47,8 @@ export interface TeamErrorView {
   actionHint: string;
   origin: TeamErrorOrigin;
   outcome: TeamErrorOutcome;
+  resolvedAt: string | null;
+  resolvedByUserId: string | null;
   eventKey: string | null;
   scopeName: string | null;
   model: string | null;
@@ -78,6 +80,8 @@ interface ErrorRow {
   actionHint: string;
   origin: TeamErrorOrigin;
   outcome: TeamErrorOutcome;
+  resolvedAt: string | null;
+  resolvedByUserId: string | null;
   eventKey: string | null;
   scopeName: string | null;
   model: string | null;
@@ -240,6 +244,8 @@ function mapError(row: ErrorRow): TeamErrorView {
     origin: ['server', 'server_api', 'worker', 'client'].includes(row.origin)
       ? row.origin as TeamErrorOrigin : teamErrorOrigin(row.stage),
     outcome: row.outcome === 'recovered' ? 'recovered' : 'final',
+    resolvedAt: row.resolvedAt ?? null,
+    resolvedByUserId: row.resolvedByUserId ?? null,
     eventKey: row.eventKey ?? null,
     scopeName: row.scopeName ?? null,
     model: row.model ?? safeProviderSnapshotModel(row.providerSnapshotJson),
@@ -329,6 +335,10 @@ export function recordTeamError(db: Database.Database, input: RecordTeamErrorInp
     const existing = db.prepare('SELECT id FROM team_error_records WHERE eventKey = ?').pluck().get(eventKey) as string | undefined;
     if (existing) {
       if (outcome === 'recovered') db.prepare("UPDATE team_error_records SET outcome = 'recovered' WHERE id = ? AND outcome = 'final'").run(existing);
+      // 接口事件按路由去重；再次请求失败时需要重新提醒，不能被过去的处理永久隐藏。
+      if (input.stage === 'server_api' && outcome === 'final') {
+        db.prepare("UPDATE team_error_records SET resolvedAt = NULL, resolvedByUserId = NULL, outcome = 'final' WHERE id = ?").run(existing);
+      }
       return getError(db, existing)!;
     }
   }
@@ -504,16 +514,27 @@ function tableExists(db: Database.Database, table: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
 }
 
+export function resolveTeamError(db: Database.Database, viewer: TeamViewer, errorId: string): TeamErrorView {
+  const row = getError(db, errorId);
+  if (!row || (viewer.role !== 'admin' && row.actorUserId !== viewer.userId)) {
+    throw new TeamDiagnosticsError(404, 'error_not_found', '错误记录不存在。');
+  }
+  db.prepare(`UPDATE team_error_records SET resolvedAt = ?, resolvedByUserId = ?
+    WHERE id = ? AND resolvedAt IS NULL`).run(new Date().toISOString(), viewer.userId, errorId);
+  return getError(db, errorId)!;
+}
+
 export function listTeamErrors(
   db: Database.Database,
   viewer: TeamViewer,
-  filters: { errorId?: string; actorUserId?: string } = {},
+  filters: { errorId?: string; actorUserId?: string; actionableOnly?: boolean } = {},
 ): { items: TeamErrorView[] } {
   if (viewer.role !== 'admin' && filters.actorUserId && filters.actorUserId !== viewer.userId) {
     throw new TeamDiagnosticsError(403, 'error_query_forbidden', '只能查询本人的错误。');
   }
   const clauses: string[] = [];
   const values: string[] = [];
+  if (filters.actionableOnly) clauses.push("e.outcome = 'final' AND e.resolvedAt IS NULL");
   const actorUserId = viewer.role === 'admin' ? filters.actorUserId : viewer.userId;
   if (actorUserId) {
     clauses.push('e.actorUserId = ?');

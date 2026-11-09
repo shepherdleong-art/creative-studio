@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { cancelVideoQueue, getVideoQueueStatus, runVideoQueue, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
+import { cancelVideoQueue, getVideoQueueStatus, runVideoQueue, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { writeLog } from '@/lib/logger';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { productionParamsFor } from '@/lib/team-service/production-defaults';
 
 
 async function __teamRoutePOST(
@@ -27,7 +29,10 @@ async function __teamRoutePOST(
     writeLog({ jobId: '', projectId: id, level: 'info', message: 'Video queue auto-started from frontend' });
 
     const projectRow = getDb().prepare(`SELECT videoConcurrency FROM projects WHERE id = ?`).get(id) as { videoConcurrency?: number } | undefined;
-    const concurrency = Math.max(1, Math.min(10, Number(projectRow?.videoConcurrency) || DEFAULT_VIDEO_CONCURRENCY));
+    // 视频并发同样由服务器统一管理：server 模式取服务器默认值，本地版沿用项目里的值。
+    const concurrency = productionParamsFor(readRuntimeConfig(), {
+      videoConcurrency: projectRow?.videoConcurrency,
+    }).videoConcurrency;
 
     runVideoQueue({
       projectId: id,

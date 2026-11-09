@@ -475,6 +475,13 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
         WHERE attemptId IS NOT NULL AND origin = 'server';
     `,
   },
+  {
+    version: 16,
+    sql: `
+      ALTER TABLE team_error_records ADD COLUMN resolvedAt TEXT;
+      ALTER TABLE team_error_records ADD COLUMN resolvedByUserId TEXT REFERENCES team_users(id);
+    `,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;

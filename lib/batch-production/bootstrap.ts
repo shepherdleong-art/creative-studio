@@ -9,6 +9,7 @@ import { assertBatchApiReady } from './runtime-readiness.ts';
 import { startBatchScheduler, type SchedulerController } from './runner.ts';
 import { readTeamModuleSwitches } from '../team-service/module-switches.ts';
 import type { ExecutionModuleLifecycle } from '../media-core/execution/contracts.ts';
+import { MATERIAL_ANALYSIS_CONCURRENCY } from '../media-core/analysis-concurrency.ts';
 
 /**
  * 进程内单例调度 bootstrap。
@@ -27,6 +28,7 @@ export function ensureBatchSchedulerStarted(db: Database.Database = getDb()): Sc
     workerId: 'batch-scheduler',
     executors: [analyzeAssetExecutor, proxyGenerateExecutor, batchNarrationExecutor, semanticScoreExecutor, batchRenderExecutor],
     intervalMs: 2_000,
+    analysisConcurrency: MATERIAL_ANALYSIS_CONCURRENCY,
   });
 }
 

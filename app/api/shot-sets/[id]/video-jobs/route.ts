@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
+import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { toStorageImageUrl, toStorageVideoUrl } from '@/lib/storage-url';
 import { createVideoJobsForShot, parseVideoJobCreationItem } from '@/lib/video-job-create';
 import { resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { productionParamsFor } from '@/lib/team-service/production-defaults';
 
 
 async function __teamRoutePOST(
@@ -33,7 +35,10 @@ async function __teamRoutePOST(
     const qStatus = getVideoQueueStatus(projectId);
     if (qStatus === 'idle') {
       const projectRow = db.prepare(`SELECT videoConcurrency FROM projects WHERE id = ?`).get(projectId) as { videoConcurrency?: number } | undefined;
-      const concurrency = Math.max(1, Math.min(10, Number(projectRow?.videoConcurrency) || DEFAULT_VIDEO_CONCURRENCY));
+      // server 模式取服务器默认值；本地版沿用项目里的值。
+      const concurrency = productionParamsFor(readRuntimeConfig(), {
+        videoConcurrency: projectRow?.videoConcurrency,
+      }).videoConcurrency;
       runVideoQueue({
         projectId,
         concurrency,

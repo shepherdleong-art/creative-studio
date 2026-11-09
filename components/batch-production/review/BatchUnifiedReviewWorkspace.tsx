@@ -588,14 +588,14 @@ export default function BatchUnifiedReviewWorkspace({
       {/* 导出统一在第 4 步进行；检查页只保留审核数量。 */}
       <header className={styles.reviewHeader}>
         <div className="flex min-w-0 items-baseline gap-3">
-          <h2 className="shrink-0 text-base font-semibold text-ink">批量剪辑 · 统一审片</h2>
+          <h2 className="shrink-0 text-sm font-semibold text-ink">批量剪辑 · 统一审片</h2>
           <p className="truncate text-xs text-ink-secondary hidden lg:inline">
             拖动分隔线调整各区大小，双击恢复默认。共用播放头，只播放最上层可见成片。
           </p>
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
-          <div className="text-xs text-ink-secondary flex items-center gap-1">
+          <div className="flex items-center gap-1 text-xs text-ink-secondary">
             <span>已确认</span>
             <strong className="text-sm font-semibold text-ink">{approvedCount}</strong>
             <span>/ {films.length}</span>

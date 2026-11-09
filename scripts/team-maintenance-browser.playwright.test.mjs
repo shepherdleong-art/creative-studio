@@ -131,10 +131,10 @@ try {
   await page.locator('input[autocomplete="current-password"]').fill(initializedCredential);
   await page.getByRole('button', { name: '登录', exact: true }).click();
   await page.getByRole('heading', { name: '设置新密码', exact: true }).waitFor({ timeout: 60_000 });
-  await page.locator('input[autocomplete="current-password"]').fill(initializedCredential);
+  assert.equal(await page.locator('input[autocomplete="current-password"]').count(), 0);
   await page.locator('input[autocomplete="new-password"]').first().fill(password);
   await page.locator('input[autocomplete="new-password"]').nth(1).fill(password);
-  await page.getByRole('button', { name: '保存新密码并进入' }).click();
+  await page.getByRole('button', { name: '保存新密码' }).click();
   await page.locator('input[autocomplete="username"]').waitFor({ timeout: 60_000 });
   await page.getByText('密码已修改，请使用新密码重新登录。', { exact: true }).waitFor();
   await page.locator('input[autocomplete="username"]').fill('00042');
@@ -186,7 +186,11 @@ try {
   let catalogRequests = 0;
   await page.route('**/api/team/maintenance/backups', async route => { catalogRequests += 1; await catalogGate; await route.continue(); });
   await page.goto(`${baseUrl}/team/admin/operations`, { waitUntil: 'domcontentloaded', timeout: 180_000 });
-  await page.getByRole('heading', { name: '备份与维护', exact: true }).waitFor({ timeout: 60_000 });
+  // 14 号票起页面标题由每页工具栏按导航名渲染（「版本与备份」），不再是页内 <h1>。
+  // 断言的意图不变：进到的是管理员维护页、不是登录页或空壳。
+  const maintenanceTitle = page.getByTestId('page-toolbar-title').first();
+  await maintenanceTitle.waitFor({ timeout: 60_000 });
+  assert.match(await maintenanceTitle.innerText(), /版本与备份/, '管理员页工具栏标题应为「版本与备份」');
   await page.getByText('当前实际状态：当前业务数据', { exact: true }).waitFor();
   await page.getByText('正在读取并校验备份文件，素材较多时可能需要一些时间。', { exact: true }).waitFor();
   await page.waitForResponse(response => response.url().endsWith('/api/team/maintenance/jobs'));
@@ -304,10 +308,10 @@ try {
   await employeePage.locator('input[autocomplete="current-password"]').fill(employee.body.credential);
   await employeePage.getByRole('button', { name: '登录', exact: true }).click();
   await employeePage.getByRole('heading', { name: '设置新密码', exact: true }).waitFor();
-  await employeePage.locator('input[autocomplete="current-password"]').fill(employee.body.credential);
+  assert.equal(await employeePage.locator('input[autocomplete="current-password"]').count(), 0);
   await employeePage.locator('input[autocomplete="new-password"]').first().fill('employee-password');
   await employeePage.locator('input[autocomplete="new-password"]').nth(1).fill('employee-password');
-  await employeePage.getByRole('button', { name: '保存新密码并进入' }).click();
+  await employeePage.getByRole('button', { name: '保存新密码' }).click();
   await employeePage.locator('input[autocomplete="username"]').waitFor();
   await employeePage.getByText('密码已修改，请使用新密码重新登录。', { exact: true }).waitFor();
   await employeePage.locator('input[autocomplete="username"]').fill('00001');

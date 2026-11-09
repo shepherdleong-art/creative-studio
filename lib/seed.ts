@@ -239,6 +239,7 @@ export function seedScriptProviders() {
   `);
 
   for (const config of defaultScriptProviderConfigs) {
+    if (db.prepare('SELECT 1 FROM script_provider_seed_suppressions WHERE providerId = ?').get(config.id)) continue;
     const isCompanyGpt = config.id === 'gpt';
     insert.run(
       config.id,

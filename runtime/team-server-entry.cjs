@@ -26,6 +26,14 @@ if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.
   throw new Error('CREATIVE_STUDIO_TRUSTED_ORIGIN 必须是有效的 HTTP(S) origin');
 }
 
+// Private business configuration belongs to the persistent data root, never a release.
+// loadEnvFile preserves the service's explicitly supplied deployment/module settings.
+try {
+  process.loadEnvFile(path.join(dataRoot, '.env.local'));
+} catch (error) {
+  if (error.code !== 'ENOENT') throw new Error('无法读取数据目录的 .env.local 配置，请检查服务账号权限');
+}
+
 process.env.CREATIVE_STUDIO_DATA_ROOT = dataRoot;
 process.env.HOSTNAME = '127.0.0.1';
 process.env.PORT = String(port);

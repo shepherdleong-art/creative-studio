@@ -14,6 +14,7 @@ import { chromium } from 'playwright';
 import postcss from 'postcss';
 import tailwind from '@tailwindcss/postcss';
 import { packagingPreviewHtml } from '../lib/media-core/packaging-preview.ts';
+import sharp from 'sharp';
 
 const root = process.cwd();
 const modules = new Map();
@@ -89,8 +90,8 @@ const group={id:'group',narrationDurationUs:6000000,script:{narrationConfig:{gai
 const variant={id:'v',outputPreset:new URLSearchParams(location.search).get('ratio')||'3x4',cover:{sourceUrl:''},timeline:{clips:[{id:'one',videoJobId:'single',sourceInFrame:0,sourceOutFrame:144,timelineInFrame:0,timelineOutFrame:144,playbackRate:1}],bodyFrames:144},bgm:{trackId:null,gainDb:0,fadeInSec:0,fadeOutSec:0}};
 function Single(){const [t,setT]=React.useState(1.2);return React.createElement('div',{style:{height:650,width:800,display:'flex',flexDirection:'column'}},React.createElement(Preview,{group,variant,assets:[{videoJobId:'single',previewUrl:'/source.mp4',durationUs:8000000}],selectedAsset:null,playheadSec:t,textTarget:null,onPlayheadChange:setT,onTextPositionChange:()=>{}}));}
 function SingleEditor(){
- const [current,setCurrent]=React.useState(()=>({...group,revision:0,bgmTracks:[],packaging:{enabled:false,template:'overlay-poster',varsOverrides:{},pointCues:[]},
-   textStyles:{'3x4':Object.fromEntries(['coverPrimary','coverSecondary','subtitle'].map(kind=>[kind,load(${textStyleId}).defaultTextStyle(kind,1080)]))},
+ const [current,setCurrent]=React.useState(()=>({...group,revision:0,bgmTracks:[],packaging:{enabled:new URLSearchParams(location.search).has('packaged'),template:'overlay-journal',varsOverrides:{},pointCues:[]},
+   textStyles:Object.fromEntries(['3x4','9x16','16x9'].map(ratio=>[ratio,Object.fromEntries(['coverPrimary','coverSecondary','subtitle'].map(kind=>[kind,load(${textStyleId}).defaultTextStyle(kind,1080)]))])),
    assets:[{assetKey:'single',videoJobId:'single',filename:'source.mp4',previewUrl:'/source.mp4',durationUs:8000000}],
    variants:[{...variant,indexNum:1,revision:0,issues:[],timeline:{...variant.timeline,clips:[
      {...variant.timeline.clips[0],id:'first',sourceOutFrame:48,timelineOutFrame:48,framing:{scale:1,offsetX:0,offsetY:0}},
@@ -110,6 +111,15 @@ const globalCss=(await postcss([tailwind()]).process(fs.readFileSync(path.join(r
 const css = `${globalCss}*{box-sizing:border-box}body{margin:0}button,input{font:inherit}video{max-height:100%;max-width:100%}.h-full{height:100%}.w-full{width:100%}.min-h-0{min-height:0}.flex{display:flex}.flex-col{flex-direction:column}.flex-1{flex:1}.shrink-0{flex-shrink:0}.object-contain{object-fit:contain}.previewColumn{flex:1}${styles.join('\n')}`;
 const draftRequests=[];
 const server=http.createServer(async(req,res)=>{
+ if(req.url.includes('/packaging-preview')&&req.method==='GET'){
+   const config={enabled:true,template:'overlay-journal',varsOverrides:{},pointCues:[]};
+   const vars={title:'舒适沙发',subtitle:'洁净省心',point1:'',point2:'',point3:''};
+   if(new URL(req.url,'http://localhost').searchParams.get('format')==='html'){
+     res.setHeader('Content-Type','text/html; charset=utf-8');
+     res.end(packagingPreviewHtml({config,vars,totalSec:6.833,coverSec:20/24,edit:true}));
+   }else{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({vars,defaults:vars,template:config.template,frameUrl:'',timeline:{coverSec:20/24,totalSec:6.833,pointCues:[],pointCuesMode:'none'},layouts:{}}));}
+   return;
+ }
  if(req.url.startsWith('/api/packaging/system-fonts')){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({fonts:[]}));return;}
  if(req.url.includes('/packaging-preview')&&req.method==='POST'){
    let body='';for await(const chunk of req)body+=chunk;
@@ -156,6 +166,28 @@ try{
    assert.equal(await video.evaluate(v=>v.paused),true,'拖动入点时暂停播放');
  };
  if(!process.argv.includes('--shortcuts-only')&&!process.argv.includes('--cover-only')){
+ const evidence=path.join(root,'outputs/04-测试与验收/2026-11-09-preview-fixes');
+ fs.mkdirSync(evidence,{recursive:true});
+ for(const theme of ['light','dark'])for(const [width,height] of [[1536,864],[1024,720]])for(const [ratio,expected] of [['3x4',.75],['9x16',9/16],['16x9',16/9]]){
+   await page.setViewportSize({width,height});
+   await page.goto(origin+'/?mode=single-editor&packaged&ratio='+ratio);
+   await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+   const overlay=page.frameLocator('[data-packaging-overlay]');
+   await overlay.locator('body').waitFor();
+   await page.getByLabel('播放位置',{exact:true}).fill('2');
+   await page.waitForFunction(()=>{const c=document.querySelector('.previewStage canvas.previewMedia:not(.previewInactive)');if(!c)return false;const p=c.getContext('2d').getImageData(c.width/2,c.height/2,1,1).data;return p[0]+p[1]+p[2]>50;});
+   const stage=page.locator('.previewStage');
+   const box=await stage.boundingBox(),wrap=await page.locator('.previewStageWrap').boundingBox();
+   assert.ok(box.width>=100&&box.height>=100,'真实画面不能收缩成不可见区域');
+   assert.ok(Math.abs(box.width/box.height-expected)<.005,'包含播放控件后，真实画面仍保持输出画幅');
+   assert.ok(box.x>=wrap.x-1&&box.y>=wrap.y-1&&box.x+box.width<=wrap.x+wrap.width+1&&box.y+box.height<=wrap.y+wrap.height+1,'完整预览画面必须位于可见区域内');
+   const shot=await stage.screenshot();
+   const {data,info}=await sharp(shot).removeAlpha().raw().toBuffer({resolveWithObject:true});
+   const center=(Math.floor(info.height/2)*info.width+Math.floor(info.width/2))*info.channels;
+   assert.ok(data[center]+data[center+1]+data[center+2]>50,`${theme}/${ratio}: 包装 iframe 不能遮黑底下正常的视频`);
+   await page.screenshot({path:path.join(evidence,`single-${theme}-${width}-${ratio}.png`)});
+ }
+ await page.setViewportSize({width:1440,height:900});
  const singleSaves=[];
  await page.route('**/api/final-edit-variants/v',async route=>{
    const edit=route.request().postDataJSON();singleSaves.push(edit);

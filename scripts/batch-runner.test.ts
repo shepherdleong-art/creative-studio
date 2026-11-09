@@ -203,6 +203,31 @@ try {
   `).all(batchA) as Array<{ status: string }>;
   assert.ok(renderAttempts.every(({ status }) => status === 'succeeded'), '全部 render 尝试必须成功');
 
+  // 素材分析独立占 4 位，不能把渲染并发从 2 一并抬高；取消排空两条队列。
+  const mixedBatch = setupBatch(db, 'analysis-lanes', 5);
+  const mixedAsset = (db.prepare('SELECT id FROM batch_assets LIMIT 1').get() as { id: string }).id;
+  for (let i = 0; i < 9; i++) createBatchTask(db, 'project-1', {
+    batchId: mixedBatch, workType: 'asset_prepare', targetKind: 'asset', targetId: mixedAsset,
+    requestKey: `analysis-lanes-${i}`,
+  });
+  const renders = controlledExecutor();
+  const analyses = controlledExecutor();
+  analyses.executor.workTypes = ['asset_prepare'];
+  const mixedStop = new AbortController();
+  const mixedRun = runPendingOnce({ db, workerId: 'analysis-lanes',
+    executors: [renders.executor, analyses.executor], concurrency: 2, analysisConcurrency: 4,
+    signal: mixedStop.signal });
+  await waitFor(() => renders.releases.length === 2 && analyses.releases.length === 4);
+  analyses.releases.shift()!();
+  await waitFor(() => analyses.releases.length === 4);
+  assert.equal(analyses.activePeak.value, 4, '独立分析位应补位且保持 4 路');
+  assert.equal(renders.activePeak.value, 2, '通用执行位不得领取分析或抬高渲染并发');
+  mixedStop.abort();
+  await mixedRun;
+  assert(analyses.aborts.every(aborted => aborted()));
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM batch_tasks WHERE batchId=? AND status='running'").get(mixedBatch) as { n: number }).n, 0);
+  stopBatch(db, 'project-1', mixedBatch);
+
   // --- 场景 2:暂停中止运行任务,resume 后重新可领取 ---
   const batchB = setupBatch(db, 'batch-b', 2);
   const controlledB = controlledExecutor();

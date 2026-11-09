@@ -17,6 +17,36 @@ const configExample = fs.readFileSync(path.join(root, 'litellm-config.example.ya
 const healthRoute = fs.readFileSync(path.join(root, 'app', 'api', 'company-provider', 'health', 'route.ts'), 'utf8');
 const runtimeComponent = fs.readFileSync(path.join(root, 'components', 'company-provider', 'CompanyProviderRuntimeStatus.tsx'), 'utf8');
 
+test('Windows 启停脚本保留 UTF-8 BOM，且通过 PowerShell 5.1 语法解析', () => {
+  const names = ['start-windows.ps1', 'start-desktop-windows.ps1', 'start-stack.ps1', 'stop-stack.ps1', 'stop-windows.ps1'];
+  for (const name of names) {
+    const bytes = fs.readFileSync(path.join(root, 'scripts', name));
+    assert.equal(bytes.subarray(0, 3).toString('hex'), 'efbbbf', `${name} 必须保留 UTF-8 BOM`);
+  }
+  if (process.platform !== 'win32') return;
+  // Parse the actual scripts without executing startup/shutdown or touching user data.
+  const command = `
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+    $failed = $false
+    foreach ($name in @('${names.join("','")}')) {
+      $tokens = $null
+      $parseErrors = $null
+      $file = Join-Path $env:CREATIVE_STUDIO_PS_PARSE_ROOT (Join-Path 'scripts' $name)
+      [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$parseErrors) | Out-Null
+      foreach ($errorRecord in $parseErrors) {
+        Write-Output ($name + ':' + $errorRecord.Extent.StartLineNumber + ' ' + $errorRecord.Message)
+        $failed = $true
+      }
+    }
+    if ($failed) { exit 1 }
+  `;
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', command], {
+    env: { ...process.env, CREATIVE_STUDIO_PS_PARSE_ROOT: root },
+    encoding: 'utf8', timeout: 30_000, windowsHide: true,
+  });
+  assert.equal(result.status, 0, `${result.stdout ?? ''}${result.stderr ?? ''}`);
+});
+
 test('Windows 启动器把公司 sidecar 失败降级为警告并继续启动工作台', () => {
   const companyBlockStart = startWindows.indexOf('# ── 公司网关联动');
   const installBlockStart = startWindows.indexOf('if ($needsInstall)');

@@ -112,7 +112,7 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
     // 否则不透明 iframe 盖住底下正常播放的视频，用户看到「视频卡在第一帧、只有包装在动」
     // （2026-10-09 诊断实锤：视频全程正常，被封面背景图遮挡，性能排查三轮的幻影根源）
     const backgroundStyle = syncMode
-      ? '<style>html,body{background:transparent !important;background-image:none !important}</style>'
+      ? '<style>:root{color-scheme:light}html,body{background:transparent !important;background-image:none !important}</style>'
       : `<style>html,body{background:#0b0b0d}body{background-image:url("${frameUrl}");background-size:cover;background-position:center;background-repeat:no-repeat}</style>`;
     const headEnd = [
       backgroundStyle,

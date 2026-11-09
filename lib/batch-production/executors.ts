@@ -183,7 +183,7 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
     context.reportProgress({ phase: 'probing', description: '探测媒体属性', percent: null });
     assertNotAborted(signal);
     const verified = await withMediaResource(
-      { taskId: claim.task.id, step: 'asset-verify', wait: false, signal },
+      { taskId: claim.task.id, step: 'asset-verify', wait: true, signal },
       () => resolveVerifiedProjectAssetMedia(db, projectId, claim.task.targetId),
     );
     // 完整指纹与 FFprobe 本身是不可中断的本地 I/O；在其返回后重新检查

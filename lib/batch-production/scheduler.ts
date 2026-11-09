@@ -18,6 +18,8 @@ export interface ClaimTaskOptions {
   workerId: string;
   now?: () => Date;
   leaseDurationMs?: number;
+  /** 独立素材分析执行位与通用执行位互斥领取。 */
+  lane?: 'analysis' | 'general';
 }
 
 export interface CompleteTaskAttemptInput {
@@ -62,6 +64,7 @@ export function claimNextTask(
       FROM batch_tasks t
       LEFT JOIN batch_productions p ON p.id = t.batchId
       WHERE t.status = 'queued'
+        AND (? IS NULL OR (? = 'analysis' AND t.workType = 'asset_prepare') OR (? = 'general' AND t.workType <> 'asset_prepare'))
         AND t.expectedState = 'running'
         AND (
           (p.controlState = 'running' AND p.deletedAt IS NULL)
@@ -87,7 +90,7 @@ export function claimNextTask(
         )
       ORDER BY t.createdAt, t.id
       LIMIT 1
-    `).get() as {
+    `).get(options.lane ?? null, options.lane ?? null, options.lane ?? null) as {
       id: string;
       batchId: string;
       projectId: string;

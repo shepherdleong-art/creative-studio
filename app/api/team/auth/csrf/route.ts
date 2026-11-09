@@ -3,9 +3,9 @@ import { issueCsrfToken } from '../../../../../lib/team-service/auth/request.ts'
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
 
-async function __teamRouteGET(): Promise<Response> {
+async function __teamRouteGET(request?: Request): Promise<Response> {
   try {
-    const csrf = issueCsrfToken();
+    const csrf = issueCsrfToken(request);
     return authJson({ csrfToken: csrf.token }, { setCookie: csrf.cookie });
   } catch (error) {
     return authError(error);

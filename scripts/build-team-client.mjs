@@ -47,7 +47,9 @@ const { signUpdateManifest, verifyUpdateManifest } = require(path.join(repoRoot,
 
 function copy(source, destination) {
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.cpSync(source, destination, { recursive: true, force: false, errorOnExist: true });
+  // Node 22's native recursive-copy fast path can skip Unicode Windows paths.
+  // A filter selects the JS traversal, retaining collision checks for every file.
+  fs.cpSync(source, destination, { recursive: true, force: false, errorOnExist: true, filter: () => true });
 }
 function write(relative, content) {
   const target = path.join(staging, relative);
@@ -91,6 +93,12 @@ try {
   write('client-state/run/transfer-gate.json', '{"schemaVersion":1,"blocked":false}\n');
   fs.mkdirSync(path.join(staging, 'client-state', 'accounts'), { recursive: true });
   fs.mkdirSync(path.join(staging, 'client-state', 'downloads'), { recursive: true });
+
+  for (const entry of ['dist-desktop/main.js', 'dist-desktop/preload.js', 'electron/electron.exe']) {
+    if (process.platform === 'win32' || !entry.endsWith('.exe')) {
+      assert.ok(fs.statSync(path.join(versionRoot, entry)).isFile(), `客户端启动文件缺失：${entry}`);
+    }
+  }
 
   const archive = path.join(staging, 'updates', `${releaseId}.zip`);
   await zipDirectory(versionRoot, archive);

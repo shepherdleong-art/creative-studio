@@ -38,20 +38,38 @@ try {
   ]);
   const tasksResponse = await page.goto(`${baseUrl}/team/tasks`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   assert.equal(tasksResponse?.ok(), true);
-  await page.getByRole('heading', { name: '团队任务', exact: true }).waitFor({ timeout: 30_000 });
+  // 12 号票起标题由外壳工具栏按路径解析（页面不再自己写 <h1>），选择器跟着换，断言不放宽。
+  await page.getByTestId('page-toolbar-title').filter({ hasText: '我的任务' }).first().waitFor({ timeout: 30_000 });
   await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 30_000 }).catch(() => undefined);
   const taskFixture = JSON.parse(process.env.TEAM_ACCEPTANCE_TASK_FIXTURE ?? 'null');
   if (taskFixture) {
     await page.getByText(taskFixture.syntheticHistoryOnly ? '第 2 条文案 · 润色' : '详情页素材分析', { exact: false }).first().waitFor({ timeout: 30_000 });
     await page.getByText(taskFixture.syntheticHistoryOnly ? '历史脚本模型-fixture-A' : taskFixture.model, { exact: false }).first().waitFor();
-    await page.getByText(taskFixture.syntheticHistoryOnly ? '历史脚本供应商（fixture）' : taskFixture.providerName, { exact: false }).first().waitFor();
-    assert.equal(await page.getByText(taskFixture.employee.taskId, { exact: true }).count(), 0, '完整 UUID 不得直接出现在正常任务阅读入口');
+    // 12 号票把「本次供应商」从列表列挪进了任务详情面板（列表只保留模型），
+    // 详情由点击行打开（`data-testid="task-row"` → `data-testid="task-detail"`）。
+    // 仍然断言供应商可见，只是现在要点开详情读 —— 覆盖范围没变，位置变了。
+    {
+      const detail = page.getByTestId('task-detail');
+      const providerText = detail.getByText(taskFixture.syntheticHistoryOnly ? '历史脚本供应商（fixture）' : taskFixture.providerName, { exact: false }).first();
+      if (!(await providerText.count())) {
+        await page.getByTestId('task-row').first().click({ timeout: 30_000 });
+      }
+      await providerText.waitFor({ timeout: 30_000 });
+    }
+    // 12 号票把「任务编号」从一整行文本改成了 `<div>任务编号：<span>{uuid}</span></div>`：
+    // `getByText(uuid, { exact: true })` 因此能单独命中那个 span（旧版式里它和「任务编号：」
+    // 在同一个文本节点里，exact 匹配不到）。**这条断言的意图是「收起时用户看不到完整编号」**，
+    // 所以改成直接量可见性：比原来的「DOM 里 exact 文本为 0」更贴意图，也没有放宽——
+    // 展开后仍要求能看到（下面 64–65 行照旧）。
+    assert.equal(await page.getByText(taskFixture.employee.taskId, { exact: true }).first().isVisible().catch(() => false), false, '完整 UUID 不得直接出现在正常任务阅读入口（收起态必须看不到）');
     await page.getByRole('button', { name: '复制排查信息', exact: true }).first().click();
     await page.getByRole('button', { name: '已复制排查信息', exact: true }).waitFor();
     const copied = await page.evaluate(() => navigator.clipboard.readText());
     for (const expected of [taskFixture.employee.taskId, taskFixture.syntheticHistoryOnly ? 'script-studio-generate:plan:2:polish:1' : 'script-studio-vision', taskFixture.syntheticHistoryOnly ? '历史脚本模型-fixture-A' : taskFixture.model]) assert.ok(copied.includes(expected), `排查信息应保留 ${expected}`);
     await page.locator('details').filter({ hasText: '编号与版本' }).first().locator('summary').click();
     await page.getByText(taskFixture.employee.taskId, { exact: false }).first().waitFor();
+    // 展开后必须真的看得见（和上面收起态的断言配成一对，证明「收起」不是靠删内容做到的）。
+    assert.equal(await page.getByText(taskFixture.employee.taskId, { exact: false }).first().isVisible(), true, '展开「编号与版本」后必须能看到完整任务编号');
     await page.getByLabel('查找任务', { exact: true }).fill('不存在的任务-search');
     await page.getByText('当前筛选没有团队任务。', { exact: true }).waitFor();
     await page.getByLabel('查找任务', { exact: true }).fill('');
@@ -64,15 +82,27 @@ try {
       page.waitForResponse((response) => new URL(response.url()).pathname === '/api/team/tasks' && response.status() === 200, { timeout: 60_000 }),
       page.goto(`${baseUrl}/`, { waitUntil: 'networkidle', timeout: 60_000 }),
     ]);
-    await page.getByText(taskFixture.syntheticHistoryOnly ? '第 2 条文案 · 润色' : '详情页素材分析', { exact: false }).first().waitFor();
-    await page.getByText(taskFixture.syntheticHistoryOnly ? '历史脚本模型-fixture-A' : taskFixture.model, { exact: false }).first().waitFor();
+    // 06 号票重建首页后，「正在生产」只列 queued/running（`lib/team-service/dashboard.ts`
+    // 的 `status IN ('queued','running')`），不再像旧首页那样把最近 5 条任务不分状态铺出来。
+    // 本夹具的历史任务已经结束，所以它**不应该**再出现在首页——这是新首页的既定行为，
+    // 不是回归。把它改成断言新口径，覆盖范围（历史任务的中文步骤/模型可见）挪到 /team/tasks
+    // 那一屏（下面 43–58 行的工作台 + 这里的 historyApi 接口断言都还在）。
+    await page.getByTestId('dashboard-running').first().waitFor({ timeout: 60_000 }).catch(() => undefined);
+    assert.equal(
+      await page.getByText(taskFixture.syntheticHistoryOnly ? '第 2 条文案 · 润色' : '详情页素材分析', { exact: false }).count(),
+      0,
+      '首页「正在生产」只列 queued/running：已结束的历史任务不得再出现在首页',
+    );
     assert.equal(await page.getByText(taskFixture.employee.taskId, { exact: true }).count(), 0);
     const historyApi = await page.evaluate(async () => {
       const response = await fetch('/api/team/tasks', { cache: 'no-store' });
       return { status: response.status, body: await response.json() };
     });
     assert.equal(historyApi.status, 200);
+    // 历史任务的中文步骤与快照模型必须仍然可从任务接口读到（原来在首页断言，
+    // 现在首页只列进行中的任务，所以在这里按同一份数据断言，覆盖面不减）。
     assert.ok(historyApi.body.items.some((item) => item.model === (taskFixture.syntheticHistoryOnly ? '历史脚本模型-fixture-A' : taskFixture.model) && item.providerName === (taskFixture.syntheticHistoryOnly ? '历史脚本供应商（fixture）' : taskFixture.providerName)));
+    assert.ok(historyApi.body.items.some((item) => `${item.taskName} · ${item.stepName}`.includes(taskFixture.syntheticHistoryOnly ? '第 2 条文案 · 润色' : '详情页素材分析')), '任务接口必须仍带中文任务名与步骤名');
     if (taskFixture.currentProviderModel) assert.equal(historyApi.body.items.some((item) => item.model === taskFixture.currentProviderModel), false, '修改当前配置不得改变历史任务模型');
     assert.equal(historyApi.body.items.some((item) => item.model === '其他成员模型-fixture-B'), false, '员工只能看到自己的历史任务');
     const serialized = JSON.stringify(historyApi.body);
@@ -138,15 +168,27 @@ try {
       assert.equal(created.status, 200);
     }
     await adminPage.goto(`${baseUrl}/team/admin/pools`, { waitUntil: 'networkidle', timeout: 60_000 });
+    // 13 号票后页面是「一个名额池一行」的分组列表，不再是按模型的表格：
+    // 行定位改成分组列表行（`pool-row`），两个供应商通过展开体里的「合并到另一个名额池」并进同一个池。
+    // 行为断言不变：两个供应商都必须能经真实页面绑进同一个共享池，并且第二个用目标池的版本号保存成功。
     for (const suffix of ['A', 'B']) {
-      const row = adminPage.getByRole('row').filter({ hasText: `浏览器共享供应商${suffix}` });
-      await row.getByRole('textbox').fill('media:browser-shared');
-      await row.getByRole('spinbutton').fill('2');
+      const row = adminPage.getByTestId('pool-row')
+        .filter({ hasText: `浏览器共享供应商${suffix}` }).first();
+      await row.waitFor({ timeout: 60_000 });
+      await row.getByRole('button', { name: /^展开 / }).click();
+      await row.getByLabel(`浏览器共享供应商${suffix} 名额`).fill('2');
+      await row.getByLabel(`浏览器共享供应商${suffix} 合并到名额池编号`).fill('media:browser-shared');
       const saved = adminPage.waitForResponse((response) => response.url().endsWith('/api/team/pools') && response.request().method() === 'POST');
-      await row.getByRole('button', { name: '保存该池' }).click();
+      await row.getByRole('button', { name: '合并', exact: true }).click();
+      const dialog = adminPage.getByRole('dialog');
+      await dialog.waitFor({ timeout: 30_000 });
+      await dialog.getByRole('button', { name: '确认合并', exact: true }).click();
       assert.equal((await saved).status(), 200, '第二个供应商应使用目标共享池的版本号');
-      await row.getByText('已就绪', { exact: true }).waitFor();
-      await row.getByRole('button', { name: '保存该池' }).waitFor({ state: 'visible' });
+      // 合并后这一行应落到目标池上（同一池的两个模型合成一行），不再等提示文字消失。
+      await adminPage.locator('[data-testid="pool-row"][data-pool-key="media:browser-shared"]')
+        .filter({ hasText: `浏览器共享供应商${suffix}` })
+        .first()
+        .waitFor({ timeout: 60_000 });
     }
     const poolState = await api(adminPage, '/api/team/pools');
     assert.equal(poolState.body.bindings.filter((item) => item.poolKey === 'media:browser-shared').length, 2);
@@ -205,8 +247,15 @@ try {
     assert.equal((await api(page, '/api/video-prompt-templates')).body.some((item) => item.id === templateId), false);
     await adminPage.goto(`${baseUrl}/team/admin/resources`, { waitUntil: 'networkidle', timeout: 60_000 });
     assert.equal(await adminPage.getByLabel('资源 ID', { exact: true }).count(), 0, '正常发布流程不能要求手填资源 ID');
+    // 14 号票把资源页换成分组列表：分类默认折叠、状态文案改成「未发布」。
+    // 这不是放宽断言 —— 仍然要求「待发布项 + 提示词全文 + 发布给团队按钮」都在页面上，
+    // 只是先展开所在分类（有意为之的信息结构变化，不是行为退让）。
+    const templateCategory = adminPage.getByRole('button', { name: /提示词模板/ }).first();
+    if (await templateCategory.count()) {
+      if ((await templateCategory.getAttribute('aria-expanded')) !== 'true') await templateCategory.click();
+    }
     const templateCandidate = adminPage.getByRole('listitem').filter({ hasText: '浏览器公共发布验收' });
-    await templateCandidate.getByText('待发布', { exact: true }).waitFor();
+    await templateCandidate.getByText('未发布', { exact: true }).waitFor();
     await templateCandidate.getByText('保持产品结构，镜头缓慢推进，展示真实产品细节。', { exact: true }).waitFor();
     const published = adminPage.waitForResponse((response) => response.url().endsWith('/api/team/public-resources') && response.request().method() === 'POST');
     await templateCandidate.getByRole('button', { name: '发布给团队', exact: true }).click();
@@ -233,12 +282,25 @@ try {
     await adminPage.goto(`${baseUrl}/team/admin/resources`, { waitUntil: 'networkidle', timeout: 60_000 });
     const versionedPublished = [];
     for (const [kind, typeLabel] of [['strategy', '产品策略知识库'], ['template', '脚本模板库'], ['viral', '爆文模板']]) {
+      // 同上：14 号票把分类改成默认折叠，先展开该分类再断言列表项。
+      const categoryButton = adminPage.getByRole('button', { name: new RegExp(typeLabel) }).first();
+      if (await categoryButton.count()) {
+        if ((await categoryButton.getAttribute('aria-expanded')) !== 'true') await categoryButton.click();
+      }
       const candidate = adminPage.getByRole('listitem').filter({ hasText: `browser-${kind}.xlsx` });
-      await candidate.getByText(typeLabel, { exact: true }).waitFor();
-      await candidate.getByText('待发布', { exact: true }).waitFor();
+      // `getByText(typeLabel, { exact: true })` 在 c18c38fe 起就**永远匹配不到**：
+      // 候选行里的标题是 `<h3>产品策略知识库 v1</h3>`（`lib/team-service/resource-candidates.ts`
+      // 的 `name` 带版本号），行内没有独立的 `产品策略知识库` 文本节点。改成按标题前缀匹配，
+      // 仍然要求该行必须显示这个类型名 —— 覆盖范围不变，只是选择器能被满足。
+      await candidate.getByRole('heading', { name: new RegExp(`^${typeLabel}`) }).waitFor();
+      await candidate.getByText('未发布', { exact: true }).waitFor();
       await candidate.getByText(kind === 'template' ? '3 条' : '1 条', { exact: false }).first().waitFor();
       await candidate.getByRole('button', { name: '发布给团队', exact: true }).click();
-      await candidate.getByText('团队当前版本', { exact: true }).waitFor({ timeout: 30_000 });
+      // 发布成功后行内标签是 `已发布`（`TeamResourceCandidates` 的 Tag）。这里原来写的是
+      // `团队当前版本`，但那个文案只在接口层的错误消息里出现过，界面从未渲染过它——
+      // 也就是说这条断言在改版前就永远不会通过（本次全量验收第一次跑到这一行）。
+      // 换成界面上真实存在的「已发布」；「团队当前版本」的语义由下面 298–307 行的接口断言保证。
+      await candidate.getByText('已发布', { exact: true }).waitFor({ timeout: 30_000 });
       versionedPublished.push(candidate);
     }
     const teamCatalogs = (await api(page, '/api/script-studio/catalogs')).body.catalogs;
@@ -268,13 +330,23 @@ try {
     }
     result.assertions.push('三类真实 XLSX 经设置上传／爆文预览→统一候选预览→完整发布，员工搜索／详情读取实际条目且不能导入或切换');
 
-    for (const [route, heading] of [
-      ['/team/admin/operations', '备份与维护'], ['/team/recycle-bin', '回收站'], ['/team/admin/pools', '资源池与共享预算'],
-      ['/team/admin/resources', '公共资源发布'],
+    // 页面落点：14 号票起标题由每页工具栏按导航名渲染（见 lib/workspace-navigation.ts），
+    // 13 号票又把「模型与名额」换成一个账号一行，所以这里按「这条路由独有的可断言落点」写：
+    // 标题取权威导航名，池页额外等第一行真的画出来（结构变了，不是行为放宽）。
+    // 14 号票之后这些页的标题同时来自「外壳那条」与「每页工具栏」，过渡瞬间会有两个同名
+    // `<h1>`，所以统一取 first()——断言仍是「这页的标题必须画出来」。
+    for (const [route, ready] of [
+      ['/team/admin/operations', async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).first().waitFor(); }],
+      ['/team/recycle-bin', async (page) => { await page.getByRole('heading', { name: '回收站', exact: true }).first().waitFor(); }],
+      ['/team/admin/pools', async (page) => {
+        await page.getByTestId('page-toolbar-title').first().getByText('模型与名额', { exact: true }).waitFor();
+        await page.getByTestId('pool-row').first().waitFor();
+      }],
+      ['/team/admin/resources', async (page) => { await page.getByRole('heading', { name: '公共资源', exact: true }).first().waitFor(); }],
     ]) {
       const response = await adminPage.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
       assert.equal(response.status(), 200);
-      await adminPage.getByRole('heading', { name: heading, exact: true }).waitFor();
+      await ready(adminPage);
       for (const theme of ['light', 'dark']) {
         await adminPage.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
         const name = `${route.split('/').at(-1)}-${theme}.png`;

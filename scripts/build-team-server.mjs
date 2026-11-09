@@ -26,7 +26,8 @@ function requiredOption(name) {
 function copy(source, destination) {
   if (!fs.existsSync(source)) throw new Error(`缺少装配输入：${source}`);
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.cpSync(source, destination, { recursive: true, force: false, errorOnExist: true });
+  // Force JS traversal: Node 22 native recursive copying can omit Unicode paths.
+  fs.cpSync(source, destination, { recursive: true, force: false, errorOnExist: true, filter: () => true });
 }
 function resolveInstalledPackage(packageDirectory, dependency) {
   let current = packageDirectory;

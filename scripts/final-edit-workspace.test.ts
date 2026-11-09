@@ -134,6 +134,8 @@ let semanticScoreCalls = 0;
 const analysisFailures = new Set<string>();
 let degradeAlignment = false;
 let analyzeVideoCalls = 0;
+let activeAnalyses = 0;
+let analysisPeak = 0;
 let failPreview = false;
 let failSemanticScore = false;
 let abortNextPrepare = false;
@@ -147,6 +149,9 @@ const workspace = createFinalEditWorkspace({
   probeVideo: async () => ({ durationUs: 12_000_000, width: 720, height: 960, fps: 24 }),
   analyzeVideo: async ({ videoJobId }) => {
     analyzeVideoCalls += 1;
+    analysisPeak = Math.max(analysisPeak, ++activeAnalyses);
+    await new Promise(resolve => setTimeout(resolve, videoJobId === 'v1' ? 15 : 1));
+    activeAnalyses--;
     if (analysisFailures.has(videoJobId)) throw new Error('模拟素材分析失败');
     return {
       summary: videoJobId === 'v1' ? '沙发全景' : '面料细节',
@@ -181,6 +186,7 @@ const workspace = createFinalEditWorkspace({
     };
   },
   synthesize: async (input) => {
+    assert.equal(activeAnalyses, 0, '全部素材分析排空后才能开始口播');
     const { segments } = input;
     lastSynthesisProjectId = (input as unknown as { projectId?: string }).projectId;
     if (holdPrepareSynthesis) {
@@ -225,6 +231,7 @@ const job = await workspace.start({
   providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision',
 });
 assert.equal(job.status, 'succeeded');
+assert.equal(analysisPeak, 2, '两个选中素材必须实际并行分析');
 assert.equal(lastSynthesisProjectId, 'p1', '成片 TTS usage 必须沿 seam 传递 projectId');
 assert.equal((db.prepare(`SELECT estimatedCost FROM final_edit_jobs WHERE id=?`).get(job.id) as { estimatedCost: number }).estimatedCost, 0.2);
 assert.equal(semanticScoreCalls, 1, '一次 prepare 只能生成一次句段 × 场景语义矩阵');

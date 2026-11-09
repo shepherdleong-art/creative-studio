@@ -60,9 +60,13 @@ export function assertTrustedWriteRequest(request: Request): void {
   }
 }
 
-export function issueCsrfToken(): { token: string; cookie: string } {
+export function issueCsrfToken(request?: Request): { token: string; cookie: string } {
   assertServerAuthEnabled();
-  const token = randomBytes(32).toString('base64url');
+  // The renderer, other tabs and Electron background requests share this Cookie.
+  // Bootstrapping another caller must not invalidate tokens already in use.
+  const existing = request ? parseCookies(request)[TEAM_CSRF_COOKIE] : undefined;
+  const token = existing && /^[A-Za-z0-9_-]{43}$/.test(existing)
+    ? existing : randomBytes(32).toString('base64url');
   return {
     token,
     cookie: `${TEAM_CSRF_COOKIE}=${token}; Path=/; HttpOnly${secureAttribute}; SameSite=Strict`,

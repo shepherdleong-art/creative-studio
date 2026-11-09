@@ -62,7 +62,7 @@ async function main() {
         return media;
       },
       analyzeVideo: async (value) => {
-        assert.deepEqual(value, { filePath, videoJobId: 'video', shotSetId: input.shotSetId, providerId: input.providerId });
+        assert.deepEqual({ ...value, signal: undefined }, { filePath, videoJobId: 'video', shotSetId: input.shotSetId, providerId: input.providerId, signal: undefined });
         calls.push('analyze');
         return analysis;
       },
@@ -100,6 +100,25 @@ async function main() {
   }
 
   assert.equal(FINAL_EDIT_ANALYZER_VERSION, '2');
+  await check('cancelled analysis preserves previous successful record', async f => {
+    await f.run();
+    const before = f.row();
+    const controller = new AbortController();
+    f.deps.analyzeVideo = async ({ signal }) => {
+      assert.equal(signal, controller.signal);
+      controller.abort();
+      return analysis;
+    };
+    await assert.rejects(f.run({ mode: 'refresh', signal: controller.signal }), { name: 'AbortError' });
+    assert.deepEqual(f.row(), before);
+  });
+  for (const code of ['llm_execution_deferred', 'llm_execution_unknown']) {
+    await check(`${code} is not an analysis failure`, async f => {
+      f.deps.analyzeVideo = async () => { throw Object.assign(new Error(code), { code }); };
+      await assert.rejects(f.run(), { message: code });
+      assert.equal(f.row(), undefined);
+    });
+  }
   await check('prepare persists complete metadata and probes again on cache hit', async f => {
     const first = await f.run();
     assert.deepEqual(first, { fingerprint: f.row()!.fileFingerprint, media, analysis, status: 'succeeded', cacheHit: false });
@@ -234,6 +253,7 @@ async function main() {
       'node:path': path,
       'next/server': { NextResponse: { json: (body: unknown, init?: ResponseInit) => Response.json(body, init) } },
       '@/lib/db': { getDb: () => f.db },
+      '@/lib/team-service/route-wrapper': { withTeamRoute: (_path: string, _method: string, handler: unknown) => handler },
       '@/lib/data-root': { dataRoot: () => f.dir },
       '@/lib/script-providers': { getAvailableProviders: () => providers },
       '@/lib/ffmpeg': { probeVideoMedia: (filePath: string) => f.deps.probeVideo({ filePath, videoJobId: 'video' }) },

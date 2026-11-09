@@ -137,12 +137,25 @@ async function launch() {
       'next/navigation': { usePathname: () => '/' },
       '@/components/ui/Icon': { Icon: () => null },
       '@/components/ThemeToggle': () => null,
+      // 05 号票起团队版外壳是左侧分组侧栏：Header 的 server 分支渲染它。
+      // 这个测试只关心窗口关闭/退出登录链路，侧栏本身在浏览器测试里覆盖。
+      '@/components/team/TeamWorkspaceNavigation': () => null,
+      '@/components/team/WorkspaceBrandMark': { WorkspaceLeafMark: () => null, WorkspaceBrandMark: () => null },
+      '@/lib/workspace-navigation': {
+        workspaceProductName: () => "林视 Lin's Vision",
+        buildWorkspaceNavigation: () => [],
+        isWorkspaceNavActive: () => false,
+        workspaceBadgeCounts: () => ({ tasks: null, errors: null }),
+        formatBadgeCount: () => null,
+        WORKSPACE_MENU_LINKS: [],
+      },
       '@/components/team/client': {
         teamWrite: async (url, options = {}) => {
           const csrf = await fakeFetch('/api/team/auth/csrf');
           const token = (await csrf.json()).csrfToken;
           return fakeFetch(url, { ...options, headers: { ...(options.headers ?? {}), 'x-csrf-token': token } });
         },
+        teamError: async (response, fallback) => fallback,
       },
     }, {
       window: rendererWindow,

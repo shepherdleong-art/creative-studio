@@ -1,4 +1,4 @@
-// Windows native launcher check: run the actual CMD, with an isolated Electron GUI.
+// Windows native launcher check: actual CMD or --gui-launcher <EXE|source>, with an isolated Electron GUI.
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -14,12 +14,19 @@ if (process.platform !== 'win32') {
 const repo = path.resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const { signUpdateManifest } = require('../dist-desktop/client/update-package.js');
-const electron = path.join(repo, 'node_modules', 'electron', 'dist');
+const electronFlag = process.argv.indexOf('--electron-dist');
+assert.ok(electronFlag < 0 || process.argv[electronFlag + 1], '--electron-dist requires a runtime directory');
+const electron = electronFlag >= 0 ? path.resolve(process.argv[electronFlag + 1]) : path.join(repo, 'node_modules', 'electron', 'dist');
 assert.ok(fs.existsSync(path.join(electron, 'electron.exe')), 'Requires the installed Electron runtime');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'team-client-中文 launch-'));
 const version = path.join(root, 'versions', 'fixture');
 const reportPath = path.join(root, 'window.json');
 const stopPath = path.join(root, 'stop');
+// Exercise the outer Windows GUI launcher too; the CMD alone cannot verify
+// process flags and environment passed by the EXE distributed to users.
+const guiFlag = process.argv.indexOf('--gui-launcher');
+let guiLauncher = guiFlag >= 0 ? process.argv[guiFlag + 1] : undefined;
+assert.ok(guiFlag < 0 || guiLauncher, '--gui-launcher requires an EXE path or "source"');
 const deadlineWait = async (predicate, message, timeout = 15_000) => {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -68,18 +75,32 @@ try {
       setTimeout(() => app.quit(), 25_000);
     });
   `);
-  cmd = spawn(process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', 'start-client.cmd'], {
-    cwd: root, windowsHide: true, stdio: 'ignore',
-  });
+  if (guiLauncher) {
+    const destination = path.join(root, 'Creative Studio.exe');
+    if (guiLauncher === 'source') {
+      const compiler = path.join(process.env.SystemRoot, 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
+      const built = spawnSync(compiler, ['/nologo', '/target:winexe', '/reference:System.Windows.Forms.dll',
+        `/out:${destination}`, path.join(repo, 'installer/windows/team-client-launcher.cs')], { encoding: 'utf8', windowsHide: true });
+      assert.equal(built.status, 0, built.stdout + built.stderr);
+    } else {
+      fs.copyFileSync(path.resolve(guiLauncher), destination);
+    }
+    guiLauncher = destination;
+  }
+  cmd = guiLauncher
+    ? spawn(guiLauncher, [], { cwd: root, windowsHide: false, stdio: 'ignore' })
+    : spawn(process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', 'start-client.cmd'], {
+      cwd: root, windowsHide: true, stdio: 'ignore',
+    });
   let spawnError;
   cmd.once('error', error => { spawnError = error; });
-  await deadlineWait(() => cmd.exitCode !== null || spawnError, 'CMD must exit without waiting for the GUI');
+  await deadlineWait(() => cmd.exitCode !== null || spawnError, 'Launcher must exit without waiting for the GUI');
   if (spawnError) throw spawnError;
   assert.equal(cmd.exitCode, 0);
-  await deadlineWait(() => fs.existsSync(reportPath), 'Electron must create a visible window after CMD exits');
+  await deadlineWait(() => fs.existsSync(reportPath), 'Electron must create a visible window after the launcher exits');
   const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
   guiPid = report.pid;
-  assert.equal(report.visible, true);
+  assert.equal(report.visible, true, 'The first launch must show its native window without a second invocation');
   assert.equal(report.nodeMode, null, 'GUI must not inherit ELECTRON_RUN_AS_NODE');
   process.kill(guiPid, 0);
   const log = fs.readFileSync(path.join(root, 'client-state', 'logs', 'client.log'), 'utf8');
@@ -92,7 +113,7 @@ try {
   const missing = spawnSync(process.execPath, [path.join(root, 'launcher.mjs'), '--root', root], { encoding: 'utf8', windowsHide: true });
   assert.equal(missing.status, 2, 'Missing executable must still fail, rather than report successful detachment');
   assert.match(missing.stderr, /启动失败/);
-  console.log('PASS: actual CMD exits; detached native Electron stays visible; stdout/stderr go to file; missing executable fails');
+  console.log(`PASS: actual ${guiLauncher ? 'EXE' : 'CMD'} exits; detached native Electron stays visible; stdout/stderr go to file; missing executable fails`);
 } finally {
   fs.writeFileSync(stopPath, 'stop');
   if (cmd?.exitCode === null) cmd.kill();

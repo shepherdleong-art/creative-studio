@@ -6,22 +6,35 @@ import { Icon, type IconName } from '@/components/ui/Icon';
 // 三态外观切换：浅色 / 深色 / 自动（跟随系统）。真实主题由 html[data-theme] 表达
 // （globals.css 按它切换设计令牌），这里只负责读写外观偏好并应用到 <html>。
 // 页面加载时的首次应用由 layout.tsx 的内联脚本在水合前完成，避免白闪。
-type ThemePreference = 'light' | 'dark' | 'system';
+export type ThemePreference = 'light' | 'dark' | 'system';
 
+/**
+ * 外观偏好的存储键。**不得更改**：它是既有内部标识（见 AGENTS.md / 简报红线），
+ * 改了会丢掉所有老用户的外观选择。头像菜单与顶栏开关共用这一个键。
+ */
 const STORAGE_KEY = 'creative-studio-theme';
+
+/** 供头像菜单等其它入口复用同一个键（不要在别处另写字符串）。 */
+export const THEME_STORAGE_KEY = STORAGE_KEY;
+
 const ORDER: ThemePreference[] = ['light', 'dark', 'system'];
-const META: Record<ThemePreference, { icon: IconName; label: string; desc: string }> = {
-  light: { icon: 'sun', label: '浅色模式', desc: '始终使用浅色主题' },
-  dark: { icon: 'moon', label: '深色模式', desc: '始终使用深色主题' },
-  system: { icon: 'monitor', label: '自动模式', desc: '跟随系统主题设置' },
+
+/** 三档的文案与图标；头像菜单和顶栏开关共用同一份，避免两处文案漂移。 */
+export const THEME_OPTIONS: Record<ThemePreference, { icon: IconName; label: string; shortLabel: string; desc: string }> = {
+  light: { icon: 'sun', label: '浅色模式', shortLabel: '浅色', desc: '始终使用浅色主题' },
+  dark: { icon: 'moon', label: '深色模式', shortLabel: '深色', desc: '始终使用深色主题' },
+  system: { icon: 'monitor', label: '自动模式', shortLabel: '跟随系统', desc: '跟随系统主题设置' },
 };
+
+/** 头像菜单里三档的展示顺序（与原型一致：跟随系统 / 浅色 / 深色）。 */
+export const THEME_MENU_ORDER: ThemePreference[] = ['system', 'light', 'dark'];
 
 function isThemePreference(value: string | null): value is ThemePreference {
   return value === 'light' || value === 'dark' || value === 'system';
 }
 
 // 偏好存 localStorage，走 useSyncExternalStore 读取（localStorage 是浏览器外部系统，
-// 且能在 effect 里避免同步 setState）。listeners 让本组件写入后立刻重渲染，
+// 且能在 effect 里避免同步 setState）。listeners 让同页写入后立刻重渲染，
 // storage 事件则兜住同一浏览器其他标签页的修改。
 const listeners = new Set<() => void>();
 
@@ -35,19 +48,27 @@ function subscribePreference(callback: () => void) {
 }
 
 function readPreference(): ThemePreference {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  return isThemePreference(saved) ? saved : 'system';
+  try {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    return isThemePreference(saved) ? saved : 'system';
+  } catch {
+    return 'system';
+  }
 }
 
 // 服务端快照固定为 system，与内联脚本不设置属性时的初始渲染一致
 const readPreferenceOnServer = (): ThemePreference => 'system';
 
-function writePreference(pref: ThemePreference) {
-  localStorage.setItem(STORAGE_KEY, pref);
+export function writeThemePreference(pref: ThemePreference) {
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, pref);
+  } catch {
+    // 隐私模式下偏好丢失即可，不影响功能
+  }
   listeners.forEach((callback) => callback());
 }
 
-function applyPreference(pref: ThemePreference) {
+export function applyThemePreference(pref: ThemePreference) {
   const resolved =
     pref === 'system'
       ? window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -57,8 +78,23 @@ function applyPreference(pref: ThemePreference) {
   document.documentElement.dataset.theme = resolved;
 }
 
-export default function ThemeToggle() {
+/**
+ * 外观偏好 hook：返回当前偏好和写入函数。写入后**立刻**应用到 `<html>`（不等 React 提交），
+ * 所以三档切换是同步生效的；重渲染只用于更新「哪一档被选中」的高亮。
+ */
+export function useThemePreference(): [ThemePreference, (next: ThemePreference) => void] {
   const pref = useSyncExternalStore(subscribePreference, readPreference, readPreferenceOnServer);
+  const choose = (next: ThemePreference) => {
+    // 顺序很重要：先落盘、再改 DOM、最后通知订阅者重渲染。
+    writeThemePreference(next);
+    applyThemePreference(next);
+    window.desktopBridge?.setThemePreference(next).catch(() => {});
+  };
+  return [pref, choose];
+}
+
+export default function ThemeToggle() {
+  const [pref, choose] = useThemePreference();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const isFirstCommit = useRef(true);
@@ -72,21 +108,21 @@ export default function ThemeToggle() {
       // 偏好修正提交去应用。
       if (pref === 'system') {
         try {
-          const stored = localStorage.getItem(STORAGE_KEY);
+          const stored = localStorage.getItem(THEME_STORAGE_KEY);
           if (stored === 'light' || stored === 'dark') return;
         } catch {
           // 读取失败按正常流程应用
         }
       }
     }
-    applyPreference(pref);
+    applyThemePreference(pref);
     // 桌面壳：原生控件（select 弹出列表、右键菜单）主题由主进程 nativeTheme 决定，
     // 不吃页面 CSS 的 color-scheme，偏好变化时同步过去；浏览器环境无 bridge，忽略即可。
     window.desktopBridge?.setThemePreference(pref).catch(() => {});
     if (pref !== 'system') return;
     // 自动模式：监听系统外观变化实时切换
     const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const onChange = () => applyPreference('system');
+    const onChange = () => applyThemePreference('system');
     media.addEventListener('change', onChange);
     return () => media.removeEventListener('change', onChange);
   }, [pref]);
@@ -108,11 +144,6 @@ export default function ThemeToggle() {
     };
   }, [open]);
 
-  const choose = (next: ThemePreference) => {
-    writePreference(next);
-    setOpen(false);
-  };
-
   return (
     <div ref={rootRef} className="relative">
       <button
@@ -124,7 +155,7 @@ export default function ThemeToggle() {
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        <Icon name={META[pref].icon} size={16} />
+        <Icon name={THEME_OPTIONS[pref].icon} size={16} />
       </button>
 
       {open && (
@@ -134,7 +165,7 @@ export default function ThemeToggle() {
           className="absolute right-0 top-full z-50 mt-2 w-60 rounded-[14px] border border-hairline bg-surface-subtle p-1.5 shadow-[0_16px_48px_rgba(0,0,0,.24)]"
         >
           {ORDER.map((key) => {
-            const meta = META[key];
+            const meta = THEME_OPTIONS[key];
             const active = pref === key;
             return (
               <button
@@ -142,7 +173,7 @@ export default function ThemeToggle() {
                 type="button"
                 role="menuitemradio"
                 aria-checked={active}
-                onClick={() => choose(key)}
+                onClick={() => { choose(key); setOpen(false); }}
                 className={`flex w-full items-center gap-3 rounded-[10px] px-3 py-2.5 text-left transition-colors hover:bg-surface-hover ${
                   active ? 'bg-surface shadow-sm' : ''
                 }`}

@@ -1,4 +1,5 @@
 import { TransferError } from './errors.ts';
+import type { ProductionDefaults } from '../production-defaults.ts';
 
 export interface TeamImageOptions {
   role: 'input' | 'reference';
@@ -6,6 +7,28 @@ export interface TeamImageOptions {
   preprocessEnabled: boolean;
   targetMaxSide: number;
   jpegQuality: number;
+}
+
+/**
+ * 服务器统一管理的图片预处理（06 号票）。
+ *
+ * 受控上传的 `imageOptions` 里，`role` / `usage` 是业务身份（谁被编辑、用途是什么），
+ * 仍由客户端决定；`preprocessEnabled` / `targetMaxSide` / `jpegQuality` 是生产参数，
+ * 团队版一律换成服务器默认值——客户端传了也丢弃，旧客户端同样受管。
+ */
+export function applyServerImageDefaults(
+  value: unknown,
+  defaults: ProductionDefaults['imagePreprocess'],
+): TeamImageOptions | null {
+  const normalized = normalizeTeamImageOptions(value);
+  if (!normalized) return null;
+  return {
+    role: normalized.role,
+    usage: normalized.usage,
+    preprocessEnabled: defaults.enabled,
+    targetMaxSide: defaults.targetMaxSide,
+    jpegQuality: defaults.jpegQuality,
+  };
 }
 
 export function normalizeTeamImageOptions(value: unknown): TeamImageOptions | null {

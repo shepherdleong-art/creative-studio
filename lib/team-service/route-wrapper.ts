@@ -114,7 +114,7 @@ function contextualResource(route: string, key: string, inferred: string): strin
   }
   if (route.startsWith('/api/batch-production')) {
     if (['taskId', 'sourceTaskId', 'upstreamTaskId'].includes(key)) return 'batch_task';
-    if (['assetId', 'draftAssetId', 'resolvedAssetId'].includes(key)) return 'batch_asset';
+    if (['assetId', 'assetIds', 'draftAssetId', 'resolvedAssetId'].includes(key)) return 'batch_asset';
     if (key === 'artifactId') return 'batch_artifact';
     if (['versionId', 'currentVersionId'].includes(key)) return 'batch_output_version';
     if (key === 'scriptId') return 'batch_script';

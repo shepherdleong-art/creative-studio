@@ -34,13 +34,13 @@ start-desktop.command
 
 以下任一方式都会触发服务优雅关闭和进程树回收，并停止受控的 LiteLLM 代理。需要继续后台任务时请最小化窗口。
 
-- 应用菜单选择“退出 Creative Studio”。
+- 应用菜单选择“退出 林视 Lin's Vision”。
 - 点击桌面窗口的关闭按钮：显示与电源按钮相同的“停止服务并退出”弹窗，确认后停止服务，取消后继续运行。
 - 界面右上角的电源按钮“停止服务并退出”：服务停止后应用会自动退出，不会留下指向已关闭端口的空窗口。
 - 从源码运行时，关闭启动窗口或按 `Ctrl+C`。
 - 双击仓库根目录的 `stop-desktop.command`。
 
-`stop-desktop.command` 用于应用失去响应，或从 Finder 启动后没有终端窗口可用的情况。它会依次检查 `CREATIVE_STUDIO_DATA_ROOT`、项目目录和 `~/Library/Application Support/CreativeStudio` 三个受控数据根，用 `/api/desktop/health` 校验 `instanceId` 与状态文件一致后才请求 `/api/shutdown`，最后才按可执行文件绝对路径做有界兜底回收——不会按端口或进程名误杀其他进程。
+`stop-desktop.command` 用于应用失去响应，或从 Finder 启动后没有终端窗口可用的情况。它会依次检查 `CREATIVE_STUDIO_DATA_ROOT`、项目目录和 `~/Library/Application Support/CreativeStudio` 三个受控数据根，用 `/api/desktop/health` 校验 `instanceId` 与状态文件一致后才请求 `/api/shutdown`，最后才按可执行文件绝对路径做有界兜底回收——不会按端口或进程名误杀其他进程。安装版改名后仍会同时认新旧两个应用路径（`林视 Lin's Vision.app` 与旧名 `产品素材工作台.app`）。
 
 如果应用已经完全失去响应，也可在“活动监视器”中强制退出，下次启动时持久化租约会负责恢复任务状态。
 
@@ -63,7 +63,7 @@ storage/run/electron-service.json  # 当前 loopback origin/instance，退出时
 
 DMG 安装包已于 2026-10-25 停止提供。以前装过的机器可以这样清理（旧数据在 `~/Library/Application Support/CreativeStudio`）：
 
-1. 把 `/Applications/产品素材工作台.app` 移到废纸篓。
+1. 把 `/Applications/林视 Lin's Vision.app` 移到废纸篓。旧版本装的 `/Applications/产品素材工作台.app` 也要一起移走——停止脚本两个名字都认，但清理时别只删一个。
 2. 如需同时删除本地数据：
 
 ```bash

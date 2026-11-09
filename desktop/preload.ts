@@ -17,6 +17,7 @@ const LINKED_IMPORT_PROGRESS_CHANNEL = 'desktop:linked-import-progress';
 const SET_THEME_PREFERENCE_CHANNEL = 'desktop:set-theme-preference';
 const QUIT_REQUESTED_CHANNEL = 'desktop:quit-requested';
 const CHOOSE_UPLOAD_FILES_CHANNEL = 'desktop:client-choose-upload-files';
+const CREATE_DOWNLOADS_CHANNEL = 'desktop:client-create-downloads';
 const PAUSE_TRANSFER_CHANNEL = 'desktop:client-pause-transfer';
 const RESUME_TRANSFER_CHANNEL = 'desktop:client-resume-transfer';
 const CANCEL_TRANSFER_CHANNEL = 'desktop:client-cancel-transfer';
@@ -67,6 +68,10 @@ const desktopBridge: DesktopBridge = Object.freeze({
     preference,
   ),
   chooseUploadFiles: (target: RemoteUploadTarget) => ipcRenderer.invoke(CHOOSE_UPLOAD_FILES_CHANNEL, target),
+  createDownloads: (manifests: import('./bridge-types').ClientDownloadManifest[]) => ipcRenderer.invoke(
+    CREATE_DOWNLOADS_CHANNEL,
+    manifests,
+  ),
   pauseTransfer: (transferId: string) => ipcRenderer.invoke(PAUSE_TRANSFER_CHANNEL, transferId),
   resumeTransfer: (transferId: string) => ipcRenderer.invoke(RESUME_TRANSFER_CHANNEL, transferId),
   cancelTransfer: (transferId: string) => ipcRenderer.invoke(CANCEL_TRANSFER_CHANNEL, transferId),

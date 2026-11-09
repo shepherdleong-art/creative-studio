@@ -174,13 +174,18 @@ function insertNewProject(db: Database.Database, row: { id: string; name: string
   );
   assert.match(
     projectInsertBlock,
-    /VALUES \(\?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?\)/,
+    /VALUES \(\?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?\)/,
     '项目创建必须用完整占位符，避免静态空值让绑定参数错位',
   );
   assert.match(
     projectInsertBlock,
-    /\.run\(projectId, baseName, '', identity\.productCode, '', body\.providerId, model, '', '', resolvedSize, quality, concurrency, maxAttempts, 'draft', 'none', timeoutMs, 'complex_product'/,
-    'prompt 必须为空，resolvedSize 必须绑定到 size，项目状态必须是 draft',
+    /concurrency, videoConcurrency, maxAttempts, status/,
+    'projects INSERT 的列顺序必须与绑定参数一致（06 号票新增 videoConcurrency）',
+  );
+  assert.match(
+    projectInsertBlock,
+    /\.run\(projectId, baseName, '', identity\.productCode, '', body\.providerId, model, '', '', resolvedSize, quality, concurrency, production\.videoConcurrency, maxAttempts, 'draft', 'none', timeoutMs, 'complex_product'/,
+    'prompt 必须为空，resolvedSize 必须绑定到 size，项目状态必须是 draft；视频并发取服务器裁决值',
   );
 
   const patchSource = readFileSync(new URL('../app/api/projects/[id]/route.ts', import.meta.url), 'utf8');

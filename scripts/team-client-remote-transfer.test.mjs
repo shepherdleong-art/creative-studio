@@ -42,6 +42,7 @@ function persistedTransfer(stateRoot, id) {
 
 const requests = [];
 let account = 'user-a';
+const csrfCookies = new Map();
 let networkOffline = false;
 let authenticated = true;
 let firstPart = true;
@@ -54,7 +55,7 @@ const session = {
     async get() {
       return [
         { name: '__Host-team_session', value: `session-${account}` },
-        { name: '__Host-team_csrf', value: `csrf-${account}` },
+        ...(csrfCookies.has(account) ? [{ name: '__Host-team_csrf', value: csrfCookies.get(account) }] : []),
       ];
     },
   },
@@ -72,7 +73,10 @@ const session = {
         user: { id: account, employeeId: account, displayName: account, role: 'employee' },
       } : { authenticated: false });
     }
-    if (pathname === '/api/team/auth/csrf') return Response.json({ csrfToken: `csrf-${account}` });
+    if (pathname === '/api/team/auth/csrf') {
+      csrfCookies.set(account, `csrf-${account}`);
+      return Response.json({ csrfToken: `csrf-${account}` });
+    }
     if (pathname === '/api/team/devices') return Response.json({ id: `device-${account}` });
     if (pathname === '/api/team/uploads') {
       const upload = JSON.parse(options.body);

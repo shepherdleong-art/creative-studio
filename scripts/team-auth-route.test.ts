@@ -170,11 +170,26 @@ try {
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error, 'password_change_required');
 
+  // Electron's background transfer/diagnostic session shares the renderer Cookie jar.
+  // Its CSRF bootstrap must not invalidate the login page's already-cached token.
+  const backgroundCsrf = await csrfGET(new Request(endpoint('/api/team/auth/csrf'), {
+    headers: { Cookie: admin.cookie },
+  }));
+  assert.equal(backgroundCsrf.status, 200);
+  const backgroundCookie = cookiePair(backgroundCsrf.headers.get('set-cookie'));
+  assert.equal((await backgroundCsrf.json()).csrfToken, admin.csrf.token);
+  for (const invalidToken of ['short', 'x'.repeat(44), '!'.repeat(43)]) {
+    const replaced = await csrfGET(new Request(endpoint('/api/team/auth/csrf'), {
+      headers: { Cookie: `__Host-team_csrf=${invalidToken}` },
+    }));
+    const replacement = (await replaced.json()).csrfToken;
+    assert.match(replacement, /^[A-Za-z0-9_-]{43}$/);
+    assert.notEqual(replacement, invalidToken, '畸形 Cookie 必须重新签发');
+  }
   response = await changePasswordPOST(writeRequest('/api/team/auth/change-password', {
-    currentPassword: initialized.credential,
     newPassword: 'admin-route-password',
-  }, { cookie: admin.cookie, csrf: admin.csrf.token }));
-  assert.equal(response.status, 200);
+  }, { cookie: `${backgroundCookie}; ${admin.sessionCookie}`, csrf: admin.csrf.token }));
+  assert.equal(response.status, 200, '后台获取 CSRF 后，首次登录页面缓存的令牌仍须能完成改密');
   assert.equal((await response.json()).requiresReauthentication, true);
   assert.match(response.headers.get('set-cookie') ?? '', /Max-Age=0/i);
   response = await sessionGET(new Request(endpoint('/api/team/auth/session'), { headers: { Cookie: admin.cookie } }));
@@ -184,6 +199,15 @@ try {
   admin.csrf = adminAfterPasswordChange.csrf;
   response = await sessionGET(new Request(endpoint('/api/team/auth/session'), { headers: { Cookie: admin.cookie } }));
   assert.equal((await response.json()).authenticated, true);
+
+  response = await changePasswordPOST(writeRequest('/api/team/auth/change-password', {
+    newPassword: 'must-not-change-without-current', mustChangePassword: true,
+  }, { cookie: admin.cookie, csrf: admin.csrf.token }));
+  assert.equal(response.status, 401, '普通改密不能靠请求体绕过当前密码');
+  response = await changePasswordPOST(writeRequest('/api/team/auth/change-password', {
+    newPassword: 'must-not-change-without-session',
+  }, { cookie: csrf.cookie, csrf: csrf.token }));
+  assert.equal(response.status, 401, '无会话不能设置新密码');
 
   const createdCredentials = new Map<string, string>();
   for (const [employeeId, displayName] of [['00123', '员工甲'], ['00124', '员工乙']] as const) {

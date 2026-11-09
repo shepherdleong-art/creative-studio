@@ -65,6 +65,10 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/batch-production/batches/[id]/assets/analyze': 'POST',
   '/api/batch-production/batches/[id]/assets/[assetId]/exclusion': 'POST',
   '/api/batch-production/batches/[id]/control': 'POST',
+  // 11 号票：可下载文件清单 + 只用浏览器时的 ZIP。两者都只读当前正式产物，
+  // 归属由 batch scope（`[id]`）检查 —— 别人的批次在 handler 之前就被拒。
+  '/api/batch-production/batches/[id]/downloads': 'GET',
+  '/api/batch-production/batches/[id]/downloads/zip': 'GET',
   '/api/batch-production/batches/[id]/export-preflight': 'GET',
   '/api/batch-production/batches/[id]/exports/reveal': 'POST',
   '/api/batch-production/batches/[id]/exports': 'POST',
@@ -288,11 +292,16 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/errors/report': 'POST',
   '/api/team/errors/[id]/diagnostics': 'GET',
   '/api/team/errors/[id]/task': 'GET',
+  '/api/team/errors/[id]/resolve': 'POST',
   '/api/team/members': 'GET',
   '/api/team/members/[id]/policy': 'GET PATCH',
   '/api/team/concurrency-policy': 'GET PATCH',
+  '/api/team/console/overview': 'GET',
   '/api/team/tasks': 'GET',
+  '/api/team/tasks/detail': 'GET',
+  '/api/team/tasks/retry': 'POST',
   '/api/team/usage': 'GET',
+  '/api/team/dashboard': 'GET',
   '/api/team/usage/export': 'GET',
   '/api/team/models': 'GET',
   '/api/team/public-resources': 'GET POST',
@@ -320,6 +329,7 @@ const PUBLIC = new Set([
   '/api/team/operations/status GET', '/api/team/operations/shutdown POST',
 ]);
 const AUTHENTICATED = new Set([
+  '/api/packaging/templates/[...path] GET',
   '/api/team/auth/change-password POST', '/api/team/auth/logout POST',
   '/api/team/recycle-bin GET', '/api/team/recycle-bin/restore POST',
   '/api/canvas/models GET', '/api/final-edit/capabilities GET',
@@ -331,7 +341,10 @@ const AUTHENTICATED = new Set([
   '/api/team/devices GET', '/api/team/devices POST', '/api/team/downloads GET', '/api/team/downloads/receipts POST',
   '/api/team/errors GET', '/api/team/errors/report POST', '/api/team/errors/[id]/diagnostics GET',
   '/api/team/errors/[id]/task GET',
+  '/api/team/errors/[id]/resolve POST',
   '/api/team/members/[id]/policy GET', '/api/team/tasks GET', '/api/team/usage GET',
+  '/api/team/tasks/detail GET', '/api/team/tasks/retry POST',
+  '/api/team/dashboard GET',
   '/api/upload POST', '/api/batch-production/assets/import POST', '/api/canvas/[id]/assets POST',
 ]);
 const ADMIN_PREFIXES = ['/api/providers', '/api/team/users'];
@@ -354,6 +367,7 @@ const ADMIN = new Set([
   '/api/team/backup-pins POST', '/api/team/backup-pins/[id] DELETE',
   '/api/team/members GET', '/api/team/members/[id]/policy PATCH', '/api/team/usage/export GET',
   '/api/team/concurrency-policy GET', '/api/team/concurrency-policy PATCH',
+  '/api/team/console/overview GET',
   '/api/team/pools GET', '/api/team/pools POST',
   '/api/script-studio/catalogs/strategy/import POST',
   '/api/script-studio/catalogs/template/import POST',
@@ -363,7 +377,6 @@ const ADMIN = new Set([
   '/api/script-studio/viral-templates/entries/[entryId] PATCH',
 ]);
 const SERVER_DISABLED = new Set([
-  '/api/packaging/templates/[...path] GET',
   '/api/packaging/system-fonts/select POST',
   '/api/packaging/user-font GET', '/api/packaging/user-font POST', '/api/packaging/user-font DELETE',
   '/api/providers/tts/[id]/preview POST',
