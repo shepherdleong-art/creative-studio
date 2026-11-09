@@ -110,7 +110,14 @@ registerRootScope(db, { resourceType: 'project', resourceId: 'project-bob', owne
 
 // alice 的项目已走过第 1 步（有场景候选），第 2 步还没有产出。
 const insertImage = db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, usage) VALUES (?, ?, ?, ?, ?, ?)`);
-insertImage.run('image-alice-scene', 'project-alice', 'output', 'scene.png', 'outputs/scene.png', 'scene_gen');
+// Production image paths are absolute; include URL-special characters so the
+// homepage must use the same storage URL conversion as the project list.
+const sceneFilename = '场景 #1.png';
+const scenePath = path.join(fixtureRoot, 'storage', 'outputs', sceneFilename);
+fs.mkdirSync(path.dirname(scenePath), { recursive: true });
+const sceneBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7X8AAAAASUVORK5CYII=', 'base64');
+fs.writeFileSync(scenePath, sceneBytes);
+insertImage.run('image-alice-scene', 'project-alice', 'output', sceneFilename, scenePath, 'scene_gen');
 insertImage.run('image-alice-input', 'project-alice', 'input', 'input.png', 'inputs/input.png', 'scene_seed');
 insertImage.run('image-bob-scene', 'project-bob', 'output', 'scene.png', 'outputs/scene.png', 'scene_gen');
 for (const [imageId, projectId] of [
@@ -158,6 +165,10 @@ const errorRecord = await recordTeamError(db, {
 try {
   // ── 员工 A：只看得到自己的东西 ──
   const aliceAccess = createTeamAccessContext({ db, principal: alice.principal });
+  aliceAccess.registerFile!({
+    absolutePath: scenePath, mimeType: 'image/png',
+    references: [{ resourceType: 'image', resourceId: 'image-alice-scene', role: 'output' }],
+  });
   const aliceBody = await runWithAccessContext(aliceAccess, async () => {
     const response = await dashboardRoute.GET(get(alice.cookie));
     assert.equal(response.status, 200, await response.clone().text());
@@ -171,7 +182,21 @@ try {
     '有场景候选、还没分镜产出 → 第 2 步');
   assert.equal(aliceBody.projects[0].storeCode, 'B店');
   assert.equal(aliceBody.projects[0].productionType, 'AI种草');
-  assert.match(aliceBody.projects[0].thumbnailImageUrl ?? '', /^\/api\/images\//, '「接着做」要有封面');
+  const thumbnailUrl = aliceBody.projects[0].thumbnailImageUrl!;
+  assert.equal(thumbnailUrl, `/api/images/outputs/${encodeURIComponent(sceneFilename)}`,
+    '首页封面必须转换绝对磁盘路径，并编码文件名，不能将磁盘路径直接拼入 URL');
+  const imageRoute = await import('../app/api/images/[...path]/route.ts');
+  const imageRequest = (cookie: string) => new Request(new URL(thumbnailUrl, 'https://studio.example.test'), {
+    headers: { Cookie: cookie },
+  });
+  const imageParams = { params: Promise.resolve({ path: ['outputs', sceneFilename] }) };
+  const imageResponse = await runWithAccessContext(aliceAccess, () => imageRoute.GET(imageRequest(alice.cookie), imageParams));
+  assert.equal(imageResponse.status, 200, '首页返回的封面链接必须实际可读取');
+  assert.equal(imageResponse.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await imageResponse.arrayBuffer()), sceneBytes);
+  const deniedImage = await runWithAccessContext(createTeamAccessContext({ db, principal: bob.principal }),
+    () => imageRoute.GET(imageRequest(bob.cookie), imageParams));
+  assert.equal(deniedImage.status, 404, '修复封面地址不能让其他成员读取该图片');
 
   // ── 非渲染阶段不显示百分比；渲染阶段才有 ──
   const percented = aliceBody.running.items.filter((item) => item.percent !== null);
@@ -234,6 +259,15 @@ try {
   });
   assert.deepEqual(adminBody.projects, [], '管理员在员工首页聚合里不拿全团队项目（那归 12 的运行总览）');
   assert.deepEqual(adminBody.running.items, [], '管理员也不拿全团队任务');
+
+  const { resolveTeamError, listTeamErrors, getTeamErrorDiagnostic } = await import('../lib/team-service/diagnostics.ts');
+  resolveTeamError(db, alice.principal, errorRecord.errorId);
+  const recovered = recordTeamError(db, { actorUserId: alice.principal.userId, module: 'images', stage: 'download', code: 'download_retry', outcome: 'recovered' });
+  const afterResolution = await (await dashboardRoute.GET(get(alice.cookie))).json();
+  assert.deepEqual(afterResolution.errors, [], '首页隐藏已处理及已自动恢复的记录');
+  assert.equal(listTeamErrors(db, alice.principal).items.length, 2, '历史记录保留在错误中心');
+  assert.equal(getTeamErrorDiagnostic(db, alice.principal, errorRecord.errorId).errorId, errorRecord.errorId);
+  assert.equal(getTeamErrorDiagnostic(db, alice.principal, recovered.errorId).outcome, 'recovered');
 
   console.log('employee dashboard tests passed');
 } finally {

@@ -106,12 +106,13 @@ export class ClientDiagnosticReporter {
           const { clientEventId, stage, phase, code, transferId } = event;
           const taskId = event.taskId;
           const { resourceType, resourceId } = event;
+          const csrfToken = await this.csrf();
           const response = await this.options.session.fetch(`${this.origin}/api/team/errors/report`, {
             method: 'POST',
             headers: {
               accept: 'application/json', 'content-type': 'application/json',
               cookie: await this.cookieHeader(), origin: this.origin,
-              'x-csrf-token': await this.csrf(),
+              'x-csrf-token': csrfToken,
               'x-creative-studio-client-version': this.options.clientVersion,
               'x-creative-studio-client-api': '1',
             },

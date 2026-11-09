@@ -23,7 +23,6 @@ export function validateLoginFields(input: LoginValidationInput): LoginFieldErro
     if (!input.currentPassword) errors.currentPassword = '请输入密码';
     return errors;
   }
-  if (!input.currentPassword) errors.currentPassword = '请输入当前密码';
   if (!input.newPassword) errors.newPassword = '请设置新密码';
   else if (input.newPassword.length < MIN_PASSWORD_LENGTH) {
     errors.newPassword = `新密码至少 ${MIN_PASSWORD_LENGTH} 位，可以使用 ${MIN_PASSWORD_LENGTH} 位数字`;

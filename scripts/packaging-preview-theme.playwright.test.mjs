@@ -45,11 +45,16 @@ try {
     await page.goto(`http://127.0.0.1:${server.address().port}/?theme=${theme}`);
     const frame = page.frames().find(f => f.url().endsWith('/overlay'));
     await frame.waitForFunction(() => !!window.__timelines?.overlay);
+    await frame.evaluate(() => document.fonts.ready);
+    await frame.waitForFunction(() => [...document.images].every(image => image.complete && image.naturalWidth > 0));
     for (const time of [.4, 2]) {
       await frame.evaluate(t => { window.__timelines.overlay.pause(); window.__timelines.overlay.seek(t); }, time);
       const { data } = await sharp(await page.screenshot()).extract({left:180,top:240,width:1,height:1}).removeAlpha().raw().toBuffer({resolveWithObject:true});
       console.log(theme, time, [...data]);
       assert.deepEqual([...data], [0,180,60], `${theme} preview must show media through the packaging window`);
+      const evidence = path.resolve('outputs/04-测试与验收/2026-11-08-seven-fixes');
+      fs.mkdirSync(evidence, { recursive: true });
+      await page.screenshot({ path: path.join(evidence, `packaging-f2-${theme}-${time}.png`) });
     }
   }
 } finally {

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'team-client-package-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'team-client-package-中文 空格-'));
 const output = path.join(root, 'installed');
 const electronDist = path.join(root, 'electron');
 fs.mkdirSync(electronDist, { recursive: true });

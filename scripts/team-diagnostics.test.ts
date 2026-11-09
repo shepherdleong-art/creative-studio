@@ -20,6 +20,7 @@ const {
   getTeamErrorDiagnostic,
   listTeamErrors,
   recordTeamError,
+  resolveTeamError,
   recordTeamExecutionError,
   reportClientError,
 } = await import('../lib/team-service/diagnostics.ts');
@@ -181,7 +182,27 @@ try {
   assert.equal(associatedMalicious.configVersion, null);
   assert.equal(JSON.stringify(getTeamErrorDiagnostic(db, adminView, associatedMalicious.errorId)).includes('SECRET'), false);
 
-  console.log('PASS: correlated error ids, client ownership, safe diagnostics and stage fidelity');
+  const resolvable = recordTeamError(db, {
+    actorUserId: 'alice', module: 'projects', stage: 'server_api', code: 'thumbnail_failed', eventKey: 'resolve-thumbnail',
+  });
+  assert.throws(() => resolveTeamError(db, bobView, resolvable.errorId), (error: unknown) => (error as { status?: number }).status === 404);
+  assert.throws(() => resolveTeamError(db, adminView, 'missing'), (error: unknown) => (error as { status?: number }).status === 404);
+  const resolved = resolveTeamError(db, aliceView, resolvable.errorId);
+  assert.ok(resolved.resolvedAt);
+  assert.equal(resolved.resolvedByUserId, 'alice');
+  assert.equal(resolveTeamError(db, adminView, resolvable.errorId).resolvedAt, resolved.resolvedAt, '重复处理不改时间');
+  assert.equal(resolveTeamError(db, adminView, resolvable.errorId).resolvedByUserId, 'alice');
+  assert.equal(listTeamErrors(db, aliceView, { actionableOnly: true }).items.some(item => item.errorId === resolved.errorId), false);
+  assert.equal(listTeamErrors(db, aliceView, { errorId: resolved.errorId }).items.length, 1, '错误中心保留记录');
+  assert.equal(getTeamErrorDiagnostic(db, aliceView, resolved.errorId).code, 'thumbnail_failed', '诊断包仍可读取');
+  recordTeamError(db, { actorUserId: 'alice', module: 'projects', stage: 'server_api', code: 'thumbnail_failed', eventKey: 'resolve-thumbnail' });
+  assert.equal(listTeamErrors(db, aliceView, { actionableOnly: true, errorId: resolved.errorId }).items.length, 1, '再次发生的接口失败重新提醒');
+  const recovered = recordTeamError(db, { actorUserId: 'alice', module: 'images', stage: 'download', code: 'recovered_download', outcome: 'recovered' });
+  assert.equal(listTeamErrors(db, aliceView, { actionableOnly: true, errorId: recovered.errorId }).items.length, 0);
+  assert.equal(listTeamErrors(db, aliceView, { errorId: recovered.errorId }).items.length, 1);
+  assert.equal(resolveTeamError(db, adminView, recovered.errorId).resolvedByUserId, 'admin');
+
+  console.log('PASS: correlated error ids, client ownership, safe diagnostics, resolution and stage fidelity');
 } finally {
   runtime.closeNewWork();
   db.close();

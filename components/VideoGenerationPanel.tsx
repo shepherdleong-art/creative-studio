@@ -174,7 +174,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const storageKey = `creative-studio:video-shot-set:${projectId}`;
   const configuredProviders = providers.filter((provider) => provider.configured !== false);
 
-  const getRowSelection = (row: { providerId: string; durationSec?: number; multiShot?: boolean }) =>
+  const getRowSelection = (row: Pick<VideoMotionRow, 'providerId'> & Partial<VideoMotionRow>) =>
     resolveVideoGenerationSelection(providers, bulkProviderId, row);
   const getRowProviderId = (row: { providerId: string }) => getRowSelection(row).providerId;
   const getRowTailCapability = (row: { providerId: string }): VideoTailFrameCapability =>
@@ -186,14 +186,20 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     getRowSelection({ ...row, durationSec: value }).durationSec;
   const getRowMultiShotCapability = (row: { providerId: string }) => getRowSelection(row).capabilities.multiShot;
 
-  const getRowGenerationMode = (row: { providerId: string }) => getRowSelection(row).generationMode;
-  const getVideoMotionRowIssue = (row: VideoMotionRow, tail: VideoTailFrameCapability, reference?: VideoReferenceCapability) =>
-    validateVideoMotionRow({ ...row, generationMode: getRowGenerationMode(row) }, tail, reference);
+  const getRowGenerationMode = (row: Pick<VideoMotionRow, 'providerId' | 'generationMode' | 'tailImageId'>) => getRowSelection(row).generationMode;
+  const getVideoMotionRowIssue = (row: VideoMotionRow, tail: VideoTailFrameCapability, reference?: VideoReferenceCapability) => {
+    // The tail slot remains visible in reference mode. Never submit the one-image
+    // request while a second image is still uploading or has failed to attach.
+    if (row.tailUploadState === 'uploading' || row.tailUploadState === 'deleting') return '请等待尾帧上传或移除完成';
+    if (row.tailUploadState === 'failed') return row.tailUploadError || '尾帧上传失败，请重试';
+    return validateVideoMotionRow({ ...row, generationMode: getRowGenerationMode(row) }, tail, reference);
+  };
   const serializeVideoGenerationFields = (row: VideoMotionRow) =>
     serializeDraftGenerationFields({ ...row, generationMode: getRowGenerationMode(row), referenceAssets: [] });
 
   const makeEmptyRow = (): VideoMotionRow => {
     const row = createVideoMotionRow(crypto.randomUUID(), defaultDuration);
+    row.generationMode = undefined;
     row.providerId = getRowProviderId(row);
     row.durationSec = getRowDuration(row);
     return row;
@@ -309,10 +315,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     jobs.find((j) => j.status === 'succeeded' && j.filename && !j.rejectedAt)?.id || null;
 
   const syncPreviewSelection = (jobs: VideoJob[]) => {
+    const shotJobs = jobs.filter((job) => job.shotId === selectedShotRef.current);
     setVideoPreviewJobId((current) => {
-      if (current && jobs.some((j) => j.id === current && j.status === 'succeeded' && j.filename && !j.rejectedAt)) return current;
+      if (current && shotJobs.some((j) => j.id === current && j.status === 'succeeded' && j.filename && !j.rejectedAt)) return current;
       if (previewSuppressedRef.current) return null;
-      return getDefaultPreviewJobId(jobs);
+      return getDefaultPreviewJobId(shotJobs);
     });
   };
 
@@ -608,9 +615,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   // Switch the active shot, preserving per-shot 运镜 rows
   const activate = (shotId: string) => {
     if (creatingRef.current) return;
-    const leavingFreeHeadFrameSlot = Boolean(
-      isFreeSet && freeHeadFrameSlotOpen && selectedShot === null,
-    );
     tailFrameDragDepthRef.current.clear();
     setTailFrameDragRowKey(null);
     if (selectedShot !== shotId) {
@@ -622,13 +626,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       // Restore cached rows or start fresh
       const cached = perShotMotionCache.current.get(shotId);
       replaceActiveMotionRows(cached ? [...cached] : [makeEmptyRow()]);
-      if (leavingFreeHeadFrameSlot) {
-        const shotPreviewJobId = videoJobs.find((j) => (
-          j.shotId === shotId && j.status === 'succeeded' && j.filename
-        ))?.id || null;
-        previewSuppressedRef.current = !shotPreviewJobId;
-        setVideoPreviewJobId(shotPreviewJobId);
-      }
+      previewSuppressedRef.current = false;
+      setVideoPreviewJobId(getDefaultPreviewJobId(videoJobs.filter((job) => job.shotId === shotId)));
     }
   };
 
@@ -1281,7 +1280,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   /** 当前基线（点选的那条视频）。 */
-  const activeBaseline = savedSettingsBaseline && videoJobs.some((job) => job.id === savedSettingsBaseline.jobId)
+  const activeBaseline = savedSettingsBaseline && videoJobs.some((job) => job.id === savedSettingsBaseline.jobId && job.shotId === selectedShot)
     ? savedSettingsBaseline
     : null;
 
@@ -1408,24 +1407,24 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col">
-      {shotSetSelector}
-
-      <div className="video-workspace flex-1">
-        {/* ═══ LEFT: Shot selector + params ═══ */}
-        <div className="panel-col left-col">
+      <div className="video-workspace video-workspace-prototype flex-1">
+        <aside className="panel-col source-col" aria-label="选择分镜">
+          {shotSetSelector}
           <div className="panel-col-header">
             {/* Shot tabs */}
             {(safeShots.length > 0 || isFreeSet) && (
-              <div className="shot-tab-row">
+              <div className="shot-tab-row" aria-label="分镜列表">
                 {safeShots.map((shot) => (
                   <button
                     key={shot.id}
                     type="button"
                     onClick={() => activate(shot.id)}
+                    aria-label={isFreeSet ? `图 ${shot.indexNum}` : `分镜 ${shot.indexNum}`}
                     disabled={creating}
                     className={`shot-tab-item ${selectedShot === shot.id ? 'active' : ''}`}
                   >
-                    {isFreeSet ? `图 ${shot.indexNum}` : `分镜 ${shot.indexNum}`}
+                    {shot.imageUrl && <HoverZoomImage src={shot.imageUrl} alt={`分镜 ${shot.indexNum} 图片`} className="video-shot-thumb" zoomMaxWidth={520} zoomMaxHeight={520} />}
+                    <span>{isFreeSet ? `图 ${shot.indexNum}` : `分镜 ${shot.indexNum}`}<small>{videoJobs.filter((job) => job.shotId === shot.id && job.status === 'succeeded').length} 条已完成</small></span>
                   </button>
                 ))}
                 {isFreeSet && freeHeadFrameSlotOpen && (
@@ -1483,10 +1482,49 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
             )}
           </div>
 
+        </aside>
+        {/* ═══ CENTER: Video preview ═══ */}
+        <div className="panel-col center-col video-preview-col">
+          <VideoGenerationPreview
+            videoUrl={previewVideoUrl}
+            posterUrl={previewPosterUrl}
+            placeholderText={freeHeadFrameSlotSelected
+              ? '添加首帧图后开始生成'
+              : safeShots.length > 0 ? '选择左侧分镜并生成视频' : '暂无分镜'}
+            videoJobs={videoJobs}
+            currentJobId={videoPreviewJobId}
+            playSignal={videoPreviewPlaySignal}
+            onNavigate={(jobId) => { const job = videoJobs.find((item) => item.id === jobId); if (job) adoptSavedSettings(job); selectVideoPreview(jobId); }}
+            onClose={() => {
+              previewSuppressedRef.current = true;
+              setVideoPreviewJobId(null);
+            }}
+          />
+          <div className="video-result-strip" aria-label="当前分镜的视频">
+            <VideoGenerationResults
+              videoJobs={videoJobs.filter((job) => job.shotId === selectedShot)}
+              onPreview={(jobId) => { const job = videoJobs.find((item) => item.id === jobId); if (job) adoptSavedSettings(job); selectVideoPreview(jobId); }}
+              onSelect={(job) => { adoptSavedSettings(job); selectVideoPreview(job.id); }}
+              onRetry={handleRetry}
+              onResumePoll={handleResumePoll}
+              onCancel={handleCancelVideoJob}
+              onReject={handleRejectVideoJob}
+              onUnreject={handleUnrejectVideoJob}
+              activePreviewJobId={videoPreviewJobId}
+            />
+          </div>
+        </div>
+        <aside className="panel-col settings-col" aria-label="视频生成参数">
+            {savedSettingsDirty && (
+              <div className="video-saved-settings-dirty" data-testid="video-settings-changed" role="status">
+                {VIDEO_SETTINGS_CHANGED_HINT}
+                <button type="button" onClick={revertToSavedSettings} disabled={creating} className="link-accent">还原</button>
+              </div>
+            )}
           {/* Motion form — scrollable independently */}
           {freeHeadFrameSlotSelected && (
             <div className="panel-scroll-area">
-              <div className="space-y-3">
+              <div className="video-motion-list">
                 <div className="video-motion-card">
                   <span className="video-motion-label">描述 1</span>
 
@@ -1553,7 +1591,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                 </div>
               </div>
 
-              <div className="flex flex-col gap-2">
+              <div className="video-generation-actions">
                 <button className="btn-secondary btn-sm w-full video-add-action" disabled>
                   <Icon name="plus" size={12} /> 添加描述
                 </button>
@@ -1565,7 +1603,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           )}
           {selectedShot && (
             <div className="panel-scroll-area">
-              <div className="space-y-3">
+              <div className="video-motion-list">
                 {motionRows.map((row, idx) => {
                   const tailCapability = getRowTailCapability(row);
                   const referenceCapability = getRowReferenceCapability(row);
@@ -1584,16 +1622,15 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                   return (
                   <div key={row.key} className="video-motion-card">
                     <span className="video-motion-label">描述 {idx + 1}</span>
-
-
-
-                    {generationMode === 'image-to-video' && (
+                    <p className="generation-helper" data-testid="video-generation-mode" aria-live="polite">
+                      {generationMode === 'reference-to-video' ? '全能参考 · 添加尾帧后自动切换为首尾帧生成' : row.tailImageId ? '首尾帧生成' : '首帧生成 · 可添加尾帧'}
+                    </p>
                     <div className="video-frame-pair" data-testid="video-frame-pair">
                       <div className="video-frame-tile video-frame-source">
                         {selectedShotData?.imageUrl ? (
                           <HoverZoomImage
                             src={selectedShotData.imageUrl}
-                            alt={`分镜 ${selectedShotData.indexNum} 首帧`}
+                            alt={`分镜 ${selectedShotData.indexNum} ${generationMode === 'reference-to-video' ? '参考图' : '首帧'}`}
                             className="video-frame-image"
                             zoomMaxWidth={520}
                             zoomMaxHeight={390}
@@ -1604,7 +1641,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                             <span>首帧不可用</span>
                           </div>
                         )}
-                        <span className="video-frame-chip">首帧</span>
+                        <span className="video-frame-chip">{generationMode === 'reference-to-video' ? '参考图' : '首帧'}</span>
                       </div>
 
                       <div className="video-frame-bridge" aria-hidden="true">
@@ -1711,25 +1748,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         </div>
                       )}
                     </div>
-                    )}
-
-                    {generationMode === 'reference-to-video' && (
-                      <div className="video-reference-editor" data-testid="video-reference-editor">
-                        <div className="video-frame-tile video-frame-source">
-                          {selectedShotData?.imageUrl && (
-                            <HoverZoomImage
-                              src={selectedShotData.imageUrl}
-                              alt="当前分镜参考图"
-                              className="video-frame-image"
-                              zoomMaxWidth={520}
-                              zoomMaxHeight={390}
-                            />
-                          )}
-                          <span className="video-frame-tag">参考图</span>
-                        </div>
-                        <p className="generation-helper">使用当前分镜图</p>
-                      </div>
-                    )}
 
                     {tailIssue && (generationMode === 'reference-to-video' || row.tailImageId || row.tailUploadState === 'failed') && (
                       <p className="video-tail-frame-warning" role="status">
@@ -1816,7 +1834,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                 })}
               </div>
 
-              <div className="flex flex-col gap-2">
+              <div className="video-generation-actions">
                 <button onClick={addMotionRow} disabled={creating} className="btn-secondary btn-sm w-full video-add-action">
                   <Icon name="plus" size={12} /> 添加描述
                 </button>
@@ -1839,83 +1857,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               </div>
             </div>
           )}
-        </div>
-
-        {/* ═══ CENTER: Video preview ═══ */}
-        <div className="panel-col center-col video-preview-col">
-          <VideoGenerationPreview
-            videoUrl={previewVideoUrl}
-            posterUrl={previewPosterUrl}
-            placeholderText={freeHeadFrameSlotSelected
-              ? '添加首帧图后开始生成'
-              : safeShots.length > 0 ? '选择左侧分镜并生成视频' : '暂无分镜'}
-            videoJobs={videoJobs}
-            currentJobId={videoPreviewJobId}
-            playSignal={videoPreviewPlaySignal}
-            onNavigate={selectVideoPreview}
-            onClose={() => {
-              previewSuppressedRef.current = true;
-              setVideoPreviewJobId(null);
-            }}
-          />
-        </div>
-
-        {/* ═══ RIGHT: 这条视频用的设置 + 结果卡 ═══ */}
-        <div className="panel-col right-col">
-          <div className="panel-scroll-area">
-            {/* 08 号票（V12）：点哪条素材，这里就是哪条视频当时用的设置；
-                改动后提示会多做一条并给「还原」。数据全部来自 video_jobs 已保存字段。 */}
-            {activeBaseline ? (
-              <section className="video-saved-settings" data-testid="video-saved-settings">
-                <div className="video-saved-settings-head">
-                  <b>这条视频用的设置</b>
-                  {savedSettingsDirty ? (
-                    <span className="video-saved-settings-dirty" data-testid="video-settings-changed">
-                      {VIDEO_SETTINGS_CHANGED_HINT}
-                      <button type="button" onClick={revertToSavedSettings} disabled={creating} className="link-accent">还原</button>
-                    </span>
-                  ) : (
-                    <small>改过的设置不会影响这条视频</small>
-                  )}
-                </div>
-                <dl className="video-saved-settings-list">
-                  {[
-                    { label: '模型', value: activeBaseline.saved.model || '未记录' },
-                    { label: '秒数', value: `${activeBaseline.saved.durationSec} 秒` },
-                    {
-                      label: '首尾帧',
-                      value: activeBaseline.saved.generationMode === 'reference-to-video'
-                        ? '全能参考 · 当前分镜图'
-                        : (activeBaseline.saved.tailImageId ? '带尾帧' : '仅首帧'),
-                    },
-                    { label: '智能分镜', value: activeBaseline.saved.multiShot ? '开' : '关' },
-                    { label: '模板', value: templates.find((template) => template.id === activeBaseline.saved.templateId)?.name || '自定义' },
-                  ].map((item) => (
-                    <div key={item.label}>
-                      <dt>{item.label}</dt>
-                      <dd>{item.value}</dd>
-                    </div>
-                  ))}
-                </dl>
-                <div className="video-saved-settings-prompt">
-                  <dt>提示词</dt>
-                  <dd>{activeBaseline.saved.prompt || '（空）'}</dd>
-                </div>
-              </section>
-            ) : null}
-            <VideoGenerationResults
-              videoJobs={videoJobs}
-              onPreview={selectVideoPreview}
-              onSelect={(job) => { selectVideoPreview(job.id); adoptSavedSettings(job); }}
-              onRetry={handleRetry}
-              onResumePoll={handleResumePoll}
-              onCancel={handleCancelVideoJob}
-              onReject={handleRejectVideoJob}
-              onUnreject={handleUnrejectVideoJob}
-              activePreviewJobId={videoPreviewJobId}
-            />
-          </div>
-        </div>
+        </aside>
       </div>
 
       {/* 必须 portal 到 body：外层 .video-generation-section 用 transform: translateX(-50%)

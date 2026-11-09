@@ -37,6 +37,7 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
   const fitRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<HTMLDivElement>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -62,7 +63,8 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
     const naturalAspect = video.videoWidth / video.videoHeight;
     const rect = shell.getBoundingClientRect();
     const availableW = rect.width;
-    const availableH = Math.max(160, rect.height - CONTROLS_HEIGHT);
+    const controlsHeight = controlsRef.current?.getBoundingClientRect().height || CONTROLS_HEIGHT;
+    const availableH = Math.max(1, rect.height - controlsHeight - 2);
     const containerAspect = availableW / availableH;
 
     let w: number;
@@ -75,8 +77,13 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
       w = availableH * naturalAspect;
     }
 
-    player.style.width = `${Math.floor(w)}px`;
+    // 竖视频在小窗口中可能比控制条更窄；给控制条保留宽度，避免换行后
+    // 反复挤占视频高度，产生越算越小的 ResizeObserver 反馈。
+    player.style.width = `${Math.floor(Math.max(w, Math.min(320, availableW)))}px`;
     stage.style.height = `${Math.floor(h)}px`;
+    video.style.width = `${Math.floor(w)}px`;
+    video.style.height = `${Math.floor(h)}px`;
+    video.style.margin = '0 auto';
   }, []);
 
   useEffect(() => {
@@ -96,6 +103,7 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
     applyStageSize();
     const ro = new ResizeObserver(applyStageSize);
     ro.observe(shellRef.current);
+    if (controlsRef.current) ro.observe(controlsRef.current);
     return () => ro.disconnect();
   }, [videoUrl, applyStageSize]);
 
@@ -180,7 +188,7 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
           )}
         </div>
 
-        <div className="stage-controls">
+        <div ref={controlsRef} className="stage-controls">
           {/* Far left: prev */}
           <button
             onClick={() => { if (currentIndex > 0) onNavigate(succeededJobs[currentIndex - 1].id); }}

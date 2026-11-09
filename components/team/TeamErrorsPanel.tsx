@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { teamError } from './client';
 import PageToolbar from './PageToolbar';
+import ResolveErrorButton from './ResolveErrorButton';
 import {
   EmptyState,
   GroupList,
@@ -35,6 +36,7 @@ type ErrorItem = {
   actionHint: string;
   origin: 'server' | 'server_api' | 'worker' | 'client';
   outcome: 'final' | 'recovered';
+  resolvedAt: string | null;
   model: string | null;
   taskHref: string | null;
   clientVersion: string | null;
@@ -102,7 +104,7 @@ export default function TeamErrorsPanel({ role }: { role: WorkspaceRole }) {
     <div className="space-y-4">
       <PageToolbar
         role={role}
-        subtitle="系统自动捕获失败并关联制作任务，无需填写技术错误码。员工只看本人，管理员可排查团队记录。"
+        subtitle="已处理和已自动恢复的错误不再显示在首页，诊断记录保留。员工只看本人，管理员可排查团队记录。"
         actions={<ToolbarButton icon="retry" onClick={() => void refresh()}>刷新</ToolbarButton>}
       />
 
@@ -143,6 +145,7 @@ export default function TeamErrorsPanel({ role }: { role: WorkspaceRole }) {
                   <Tag tone={item.outcome === 'recovered' ? 'ok' : 'fail'}>
                     {item.outcome === 'recovered' ? '已自动恢复' : '最终失败'}
                   </Tag>
+                  {item.resolvedAt && <Tag tone="ok">已处理</Tag>}
                 </div>
                 <p className="mt-2.5 text-[13px] text-ink">{item.safeMessage}</p>
                 <p className="mt-1.5 text-[13px] leading-6 text-ink-secondary">下一步：{item.actionHint}</p>
@@ -151,6 +154,10 @@ export default function TeamErrorsPanel({ role }: { role: WorkspaceRole }) {
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
+                {!item.resolvedAt && item.outcome !== 'recovered' && <ResolveErrorButton errorId={item.errorId} onResolved={() => {
+                  setNotice('已标记处理，首页不再显示；诊断记录已保留。');
+                  void refresh();
+                }} />}
                 {item.taskHref && <Link className="cap" href={item.taskHref}>查看关联任务</Link>}
                 <button className="cap" type="button" onClick={() => void copyDetails(item)}>
                   {copied === item.errorId ? '已复制排查信息' : '复制排查信息'}

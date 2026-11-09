@@ -63,8 +63,10 @@ export interface SchedulerRunOptions {
   executors: BatchTaskExecutor[];
   /** 默认写入项目日志；测试可捕获生命周期与降级日志。 */
   log?: typeof writeLog;
-  /** 全局同时运行的任务数上限(资源保护) */
+  /** 通用任务执行位；未配置 analysisConcurrency 时也负责素材分析。 */
   concurrency?: number;
+  /** 大于 0 时独立运行素材分析，通用执行位不再领取 asset_prepare。 */
+  analysisConcurrency?: number;
   leaseDurationMs?: number;
   /** 执行期间独立心跳与批次控制检查间隔 */
   heartbeatMs?: number;
@@ -117,7 +119,7 @@ type InterruptionReason = 'batch_control' | 'lease_lost' | 'superseded';
 
 /**
  * 领取并执行一轮可执行任务(受控 worker pool)。
- * 同时运行的任务数永远不超过 concurrency:每个并发槽独立循环领取,
+ * 通用任务不超过 concurrency，独立分析不超过 analysisConcurrency；每个槽独立领取，
  * 领取由数据库原子性保证不重复,所有槽执行完才返回。
  * 执行期间独立心跳续租(不依赖执行器是否报告进度),并监视批次控制状态:
  * 批次暂停/停止时中止运行任务并按期望落账。
@@ -128,17 +130,22 @@ export async function runPendingOnce(options: SchedulerRunOptions): Promise<numb
     workerId,
     executors,
     concurrency = 2,
+    analysisConcurrency = 0,
     leaseDurationMs = 5 * 60_000,
     heartbeatMs = Math.max(200, Math.min(1_000, Math.floor(leaseDurationMs / 3))),
     progressThrottleMs = 1_000,
   } = options;
   const now = options.now;
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32
+    || !Number.isSafeInteger(analysisConcurrency) || analysisConcurrency < 0 || analysisConcurrency > 8) {
+    throw new Error('批量任务并发配置无效');
+  }
   let handled = 0;
 
   // 一个并发槽:循环领取执行,直到没有可领取任务
-  const slot = async (): Promise<void> => {
+  const slot = async (lane?: 'analysis' | 'general'): Promise<void> => {
     while (!options.signal?.aborted && !options.shutdownSignal?.aborted) {
-      const claim = claimNextTask(db, { workerId, now, leaseDurationMs });
+      const claim = claimNextTask(db, { workerId, now, leaseDurationMs, lane });
       if (!claim) {
         return;
       }
@@ -164,7 +171,10 @@ export async function runPendingOnce(options: SchedulerRunOptions): Promise<numb
     }
   };
 
-  await Promise.all(Array.from({ length: concurrency }, () => slot()));
+  await Promise.all([
+    ...Array.from({ length: concurrency }, () => slot(analysisConcurrency ? 'general' : undefined)),
+    ...Array.from({ length: analysisConcurrency }, () => slot('analysis')),
+  ]);
   return handled;
 }
 

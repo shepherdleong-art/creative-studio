@@ -66,7 +66,7 @@ function Stop-OwnedProcessTree([int]$TargetPid) {
 }
 
 # ── 1. app：状态文件 PID 归属当前根目录时才请求优雅停机，再强杀该进程树 ──
-Write-Host '[1/2] 停止林视 Lin's Vision...'
+Write-Host "[1/2] 停止林视 Lin's Vision..."
 $appStopped = $false
 if ($stack -and $stack.appCmdPid) {
   $appCmdPid = [int]$stack.appCmdPid

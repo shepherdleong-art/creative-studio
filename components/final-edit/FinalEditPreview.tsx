@@ -542,7 +542,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
     <main ref={previewRootRef} className={styles.previewColumn} aria-label="成片预览">
       <div className={styles.previewToolbar}><span>{variant.outputPreset.replace('x', ':')} · {FPS} fps</span><span>{showSelectedMaterial ? '素材预览' : activeClip ? `片段 ${activeClipIndex + 1}` : playheadSec < INTRO_SEC ? '封面' : '画面缺口'}</span></div>
       <div className={styles.previewStageWrap}>
-        <div className={`${styles.previewStage} ${previewClass}`}>
+        <div className={`${styles.previewStage} ${previewClass}`} data-output-preset={variant.outputPreset}>
           {showSelectedMaterial && selectedAsset && <img className={`${styles.previewMedia} ${variant.outputPreset === '16x9' ? styles.previewContain : ''}`} src={selectedAsset.thumbnailUrl} alt="当前素材预览" />}
           <canvas ref={coverImageCanvasRef} width={previewSize.width} height={previewSize.height} className={`${styles.previewMedia} ${showSelectedMaterial || playheadSec >= INTRO_SEC || !variant.cover.sourceUrl ? styles.previewInactive : ''}`} aria-label="封面预览" />
           <video ref={videoARef} src={videoAAsset?.previewUrl} className={`${styles.previewMedia} ${styles.previewInactive}`} muted playsInline preload="auto" aria-hidden="true" />

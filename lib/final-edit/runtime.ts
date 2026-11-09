@@ -1,4 +1,6 @@
 import path from 'node:path';
+import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { getDb } from '../db';
 import { dataRoot } from '../data-root';
 import { probeVideoMedia } from '../ffmpeg';
@@ -51,14 +53,20 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
     db,
     storageRoot,
     probeVideo: async ({ filePath }) => probeVideoMedia(filePath),
-    analyzeVideo: async ({ filePath, videoJobId, shotSetId, providerId }) => {
+    analyzeVideo: async ({ filePath, videoJobId, shotSetId, providerId, signal }) => {
       const provider = getAvailableProviders().find((item) => item.id === providerId && item.configured && item.supportsVision);
       if (!provider) throw new Error('没有已启用并支持图片理解的视觉分析供应商');
-      return analyzeVideoWithVision({
-        filePath, videoJobId, providerId: provider.id,
-        cacheDir: path.join(storageRoot, 'final-edits', 'analysis', videoJobId),
-        executionScope: { resourceType: 'shot_set', resourceId: shotSetId },
-      });
+      const cacheDir = path.join(storageRoot, 'final-edits', 'analysis', videoJobId, randomUUID());
+      try {
+        return await analyzeVideoWithVision({
+          filePath, videoJobId, providerId: provider.id,
+          signal, waitForExecution: true,
+          cacheDir,
+          executionScope: { resourceType: 'shot_set', resourceId: shotSetId },
+        });
+      } finally {
+        fs.rmSync(cacheDir, { recursive: true, force: true });
+      }
     },
     scoreSemanticMatrix: (input) => completeJson({
       providerId: input.providerId,

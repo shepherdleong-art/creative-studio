@@ -68,10 +68,13 @@ function issueAdministratorCredential(employeeId, displayName, { recover }) {
 }
 
 const nextBinary = path.join(repoRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
+// Use an already-built isolated payload when the workspace contains large runtime trees.
+const standaloneRoot = process.env.CREATIVE_STUDIO_AUTH_TEST_STANDALONE;
 const server = spawn(
   process.execPath,
-  [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)],
-  { cwd: repoRoot, env: environment(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+  standaloneRoot ? [path.join(standaloneRoot, 'server.js')]
+    : [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)],
+  { cwd: standaloneRoot ?? repoRoot, env: { ...environment(), ...(standaloneRoot ? { NODE_ENV: 'production', PORT: String(port), HOSTNAME: '127.0.0.1' } : {}) }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
 );
 let serverOutput = '';
 server.stdout?.on('data', (chunk) => { serverOutput += String(chunk); });
@@ -222,10 +225,13 @@ try {
     });
 
     // ③ 新密码太短
-    await page.locator('#login-current-password').fill(credential);
+    assert.equal(await page.locator('#login-current-password').count(), 0, '首次改密不应重复索要一次性密码');
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.locator('#login-new-password').waitFor({ timeout: 60_000 });
+    assert.equal(await page.locator('#login-current-password').count(), 0, '刷新后继续凭会话设置新密码');
     await page.locator('#login-new-password').fill('123');
     await page.locator('#login-confirmation').fill('123');
-    await page.getByRole('button', { name: '保存新密码并进入', exact: true }).click();
+    await page.getByRole('button', { name: '保存新密码', exact: true }).click();
     const tooShort = page.locator('#login-newPassword-error');
     await tooShort.waitFor({ timeout: 15_000 });
     assert.match(await tooShort.innerText(), /至少 6 位/);
@@ -239,7 +245,7 @@ try {
     // ④ 两次不一致
     await page.locator('#login-new-password').fill(NEW_PASSWORD);
     await page.locator('#login-confirmation').fill(`${NEW_PASSWORD}-x`);
-    await page.getByRole('button', { name: '保存新密码并进入', exact: true }).click();
+    await page.getByRole('button', { name: '保存新密码', exact: true }).click();
     const mismatch = page.locator('#login-confirmation-error');
     await mismatch.waitFor({ timeout: 15_000 });
     assert.equal(await mismatch.innerText(), '两次输入的新密码不一致');
@@ -258,10 +264,14 @@ try {
     );
 
     // ---------- 改密完成，回到登录页 ----------
+    // A desktop/background caller shares Cookies but bypasses TeamFetchBridge.
+    // Its bootstrap must not rotate the token cached by the first-login form.
+    const backgroundCsrf = await context.request.get(`${baseUrl}/api/team/auth/csrf`);
+    assert.equal(backgroundCsrf.status(), 200);
     await page.locator('#login-confirmation').fill(NEW_PASSWORD);
     await Promise.all([
       page.waitForURL((url) => url.searchParams.get('reason') === 'password-changed', { timeout: 60_000 }),
-      page.getByRole('button', { name: '保存新密码并进入', exact: true }).click(),
+      page.getByRole('button', { name: '保存新密码', exact: true }).click(),
     ]);
     await page.getByText('密码已修改，请使用新密码重新登录。', { exact: true }).waitFor({ timeout: 60_000 });
 
@@ -340,10 +350,10 @@ try {
       await employeePage.getByRole('button', { name: '登录', exact: true }).click();
       // 首次登录仍要先改密；改完再用新密码进工作台。
       await employeePage.locator('#login-new-password').waitFor({ timeout: 60_000 });
-      await employeePage.locator('#login-current-password').fill(employeeCredential);
+      assert.equal(await employeePage.locator('#login-current-password').count(), 0);
       await employeePage.locator('#login-new-password').fill('Brand-employee-2026');
       await employeePage.locator('#login-confirmation').fill('Brand-employee-2026');
-      await employeePage.getByRole('button', { name: '保存新密码并进入', exact: true }).click();
+      await employeePage.getByRole('button', { name: '保存新密码', exact: true }).click();
       await employeePage.waitForURL((url) => url.searchParams.get('reason') === 'password-changed', { timeout: 60_000 });
       await employeePage.waitForLoadState('networkidle', { timeout: 120_000 });
       await employeePage.locator('#login-employee-id').fill(employeeIdForTitle);

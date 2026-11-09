@@ -8,6 +8,8 @@ import path from 'node:path';
 import { NextResponse } from 'next/server';
 import { resolvePackagingDir } from '@/lib/media-core/packaging-runtime';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import { PACKAGING_TEMPLATE_IDS } from '@/lib/media-core/packaging-vars';
 
 
 const MIME_BY_EXTENSION: Record<string, string> = {
@@ -39,6 +41,13 @@ async function __teamRouteGET(_request: Request, { params }: { params: Promise<{
   if (!segments?.length || segments.some((segment) => !isSafeSegment(segment))) {
     return NextResponse.json({ error: 'unsafe_path', message: '模板资源路径无效' }, { status: 400 });
   }
+  const serverMode = readRuntimeConfig().mode === 'server';
+  if (serverMode && (
+    ![...PACKAGING_TEMPLATE_IDS, 'overlay-basic'].includes(segments[0])
+    || (segments[1] === 'fonts' && segments[2] === 'user')
+  )) {
+    return NextResponse.json({ error: 'not_found', message: '模板资源不存在' }, { status: 404 });
+  }
   const packagingDir = resolvePackagingDir();
   const templatesRoot = path.resolve(packagingDir, 'templates');
   let file = resolveWithin(templatesRoot, segments);
@@ -55,6 +64,6 @@ async function __teamRouteGET(_request: Request, { params }: { params: Promise<{
   const contentType = MIME_BY_EXTENSION[extension];
   if (!contentType) return NextResponse.json({ error: 'unsupported_type', message: '不支持的模板资源类型' }, { status: 415 });
   const buffer = fs.readFileSync(file);
-  return new Response(new Uint8Array(buffer), { headers: { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=300' } });
+  return new Response(new Uint8Array(buffer), { headers: { 'Content-Type': contentType, 'Cache-Control': 'private, max-age=300', 'X-Content-Type-Options': 'nosniff' } });
 }
 export const GET = withTeamRoute('/api/packaging/templates/[...path]', 'GET', __teamRouteGET);

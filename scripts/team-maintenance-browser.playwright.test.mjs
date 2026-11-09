@@ -131,10 +131,10 @@ try {
   await page.locator('input[autocomplete="current-password"]').fill(initializedCredential);
   await page.getByRole('button', { name: '登录', exact: true }).click();
   await page.getByRole('heading', { name: '设置新密码', exact: true }).waitFor({ timeout: 60_000 });
-  await page.locator('input[autocomplete="current-password"]').fill(initializedCredential);
+  assert.equal(await page.locator('input[autocomplete="current-password"]').count(), 0);
   await page.locator('input[autocomplete="new-password"]').first().fill(password);
   await page.locator('input[autocomplete="new-password"]').nth(1).fill(password);
-  await page.getByRole('button', { name: '保存新密码并进入' }).click();
+  await page.getByRole('button', { name: '保存新密码' }).click();
   await page.locator('input[autocomplete="username"]').waitFor({ timeout: 60_000 });
   await page.getByText('密码已修改，请使用新密码重新登录。', { exact: true }).waitFor();
   await page.locator('input[autocomplete="username"]').fill('00042');
@@ -308,10 +308,10 @@ try {
   await employeePage.locator('input[autocomplete="current-password"]').fill(employee.body.credential);
   await employeePage.getByRole('button', { name: '登录', exact: true }).click();
   await employeePage.getByRole('heading', { name: '设置新密码', exact: true }).waitFor();
-  await employeePage.locator('input[autocomplete="current-password"]').fill(employee.body.credential);
+  assert.equal(await employeePage.locator('input[autocomplete="current-password"]').count(), 0);
   await employeePage.locator('input[autocomplete="new-password"]').first().fill('employee-password');
   await employeePage.locator('input[autocomplete="new-password"]').nth(1).fill('employee-password');
-  await employeePage.getByRole('button', { name: '保存新密码并进入' }).click();
+  await employeePage.getByRole('button', { name: '保存新密码' }).click();
   await employeePage.locator('input[autocomplete="username"]').waitFor();
   await employeePage.getByText('密码已修改，请使用新密码重新登录。', { exact: true }).waitFor();
   await employeePage.locator('input[autocomplete="username"]').fill('00001');

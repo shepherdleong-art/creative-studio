@@ -15,7 +15,7 @@ const { registerHooks } = module as unknown as {
 };
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (specifier === '../../script-providers/index.ts') return {
-    url: `data:text/javascript,${encodeURIComponent('export async function completeJson(request) { return { summary: JSON.stringify(request) }; }')}`,
+    url: `data:text/javascript,${encodeURIComponent('export async function completeJson(request) { await globalThis.__holdAnalysisModel?.(); return { summary: JSON.stringify(request) }; }')}`,
     shortCircuit: true,
   };
   return next(specifier, context);
@@ -62,6 +62,32 @@ try {
   const short = await check(shortPath, 'one-frame');
   assert.equal(short.frames.length, 1);
   assert.equal(short.frames[0].timeUs, 0, 'single-frame clips must fall back within the short scene');
+
+  // Four analyses must queue for the local media lease, then overlap in the model stage.
+  // All actual FFmpeg work remains real; only the paid model call is held by a barrier.
+  const testGlobals = globalThis as typeof globalThis & { __holdAnalysisModel?: () => Promise<void> };
+  const releases: Array<() => void> = [];
+  let allModelsReady!: () => void;
+  const ready = new Promise<void>(resolve => { allModelsReady = resolve; });
+  testGlobals.__holdAnalysisModel = () => new Promise<void>(resolve => {
+    releases.push(resolve);
+    if (releases.length === 4) allModelsReady();
+  });
+  const parallel = Array.from({ length: 4 }, (_, i) => check(shortPath, `parallel-${i}`));
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([ready, new Promise<void>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error('parallel analysis did not reach all model calls')), 30_000);
+    })]);
+    const { getMediaResourceSnapshot } = await import('../lib/media-core/media-resource-gate.ts');
+    assert.equal(getMediaResourceSnapshot().active, 0, 'remote analysis must release local FFmpeg capacity');
+  } finally {
+    clearTimeout(timeout);
+    delete testGlobals.__holdAnalysisModel;
+    releases.forEach(release => release());
+    await Promise.allSettled(parallel);
+  }
+  await Promise.all(parallel);
 
   const normalPath = path.join(root, 'normal.mp4');
   await runFfmpeg(['-f', 'lavfi', '-i', 'color=c=green:s=96x128:r=24:d=2',

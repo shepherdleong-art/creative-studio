@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 
 interface HoverZoomImageProps {
   src: string;
@@ -82,6 +83,9 @@ export default function HoverZoomImage({
   const overlaySrc = zoomSrc || src;
   // Suppress overlay when src is empty (avoids broken-image icon)
   const showOverlay = pos && overlaySrc.length > 0;
+  // 留出边框、内边距和单行说明，不能只按图片高度夹紧浮层。
+  const imageMaxWidth = showOverlay ? Math.min(zoomMaxWidth, Math.max(1, window.innerWidth - 42)) : zoomMaxWidth;
+  const imageMaxHeight = showOverlay ? Math.min(zoomMaxHeight, Math.max(1, window.innerHeight - 66)) : zoomMaxHeight;
 
   return (
     <>
@@ -100,26 +104,26 @@ export default function HoverZoomImage({
         onBlur={onBlur}
         onKeyDown={onKeyDown}
       />
-      {showOverlay && (
+      {showOverlay && createPortal((
         <div
           className="theme-preview-popover"
           style={{
-            left: Math.min(pos.x + gap, window.innerWidth - zoomMaxWidth - 12),
-            top: Math.min(pos.y + gap, window.innerHeight - zoomMaxHeight - 12),
-            maxWidth: zoomMaxWidth,
+            left: Math.max(12, Math.min(pos.x + gap, window.innerWidth - imageMaxWidth - 30)),
+            top: Math.max(12, Math.min(pos.y + gap, window.innerHeight - imageMaxHeight - 54)),
+            maxWidth: imageMaxWidth + 18,
           }}
         >
           <img
             src={overlaySrc}
             alt={alt}
             className="block rounded object-contain"
-            style={{ maxHeight: zoomMaxHeight, maxWidth: zoomMaxWidth }}
+            style={{ maxHeight: imageMaxHeight, maxWidth: imageMaxWidth }}
           />
           <div className="theme-preview-caption max-w-[260px] text-[10px]">
             {alt}
           </div>
         </div>
-      )}
+      ), document.body)}
     </>
   );
 }

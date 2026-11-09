@@ -64,6 +64,25 @@ if (process.env[childFlag] !== '1') {
       '内置供应商播种不得覆盖用户保存的协议、模型或最大输出 Token',
     );
 
+    // Exercise the real DELETE route, then the same seeding used by every list request.
+    const ts = await import('typescript');
+    const routeSource = fs.readFileSync(path.resolve('app/api/providers/script/[id]/route.ts'), 'utf8');
+    const compiled = ts.transpileModule(routeSource, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+    const route: { DELETE?: (request: unknown, context: unknown) => Promise<Response> } = {};
+    new Function('require', 'exports', compiled)((id: string) => {
+      if (id === 'next/server') return { NextResponse: { json: Response.json } };
+      if (id === '@/lib/db') return { getDb: () => db };
+      if (id === '@/lib/script-providers/store') return {};
+      if (id === '@/lib/team-service/route-wrapper') return { withTeamRoute: (_path: string, _method: string, handler: unknown) => handler };
+      throw new Error(`Unexpected import: ${id}`);
+    }, route);
+    const deleted = await route.DELETE!(null, { params: Promise.resolve({ id: 'gemini' }) });
+    assert.equal(deleted.status, 200, '内置但不用的脚本供应商也应允许删除');
+    seedScriptProviders();
+    assert.equal(db.prepare('SELECT id FROM script_providers WHERE id = ?').get('gemini'), undefined,
+      '删除后刷新列表或重启不得自动补回供应商');
+    assert.ok(db.prepare('SELECT id FROM script_providers WHERE id = ?').get('gpt'));
+
   } finally {
     closeDatabase?.();
     fs.rmSync(dataRoot, { recursive: true, force: true });

@@ -22,8 +22,6 @@ assert.match(panel, /<HoverZoomImage[\s\S]*alt="尾帧预览"/, 'loaded tail fra
 assert.doesNotMatch(panel, /className="flex h-14 cursor-pointer/, 'the old compact tail-frame upload strip must not return');
 assert.match(results, /job\.tailImageId[\s\S]*首尾帧/, 'result cards must identify tail-frame jobs');
 
-assert.match(panel, /generationMode === 'image-to-video' && \([\s\S]*data-testid="video-frame-pair"/, 'the existing first/tail-frame editor must remain in image-to-video mode');
-assert.match(panel, /generationMode === 'reference-to-video' && \([\s\S]*data-testid="video-reference-editor"/, 'reference mode replaces the frame editor');
 assert.match(panel, /const deleteReferenceAsset[\s\S]*response\.status !== 404 && response\.status !== 409/, 'reference delete must detach drafts on missing or job-protected assets');
 assert.match(panel, /releaseDraftReferenceAssets/, 'unsubmitted references must be released on reset/unmount');
 assert.match(panel, /pendingCreationReferenceIdsRef/, 'references in an active create request must be protected from draft cleanup');
@@ -32,10 +30,9 @@ assert.match(panel, /\.\.\.serializeVideoGenerationFields\(row\)/, 'bulk request
 assert.doesNotMatch(panel, /from ['"]@\/lib\/video-job-create/, 'browser draft code must not import the server creation module');
 
 
-assert.doesNotMatch(panel, /aria-label="生成模式"/, 'Modes are selected automatically by model');
+assert.doesNotMatch(panel, /<Segmented label="生成模式"/, 'mode follows the images without a manual toggle');
 assert.match(panel, /getRowSelection\(row\)\.generationMode/);
-assert.match(panel, /video-reference-editor/);
-assert.match(panel, /使用当前分镜图/);
+assert.match(panel, /添加尾帧后自动切换为首尾帧生成/);
 assert.match(panel, /src=\{selectedShotData\.imageUrl\}/);
 assert.doesNotMatch(panel, /handleReferenceUpload|添加参考素材|参考素材上移|参考素材下移/);
 

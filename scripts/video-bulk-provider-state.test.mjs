@@ -26,7 +26,7 @@ const providers = [
 for (const provider of providers) provider.capabilities = { durations: provider.id === 'k25' ? [5, 10] : Array.from({ length: 13 }, (_, i) => i + 3), tailFrame: { supported: false }, multiShot: { supported: provider.id === 'q30', defaultEnabled: true } };
 providers.push(...['minimax-h3', 'wan-3.0'].map(model => ({
   id: model, name: model, type: 'openai-video', defaultModel: model, configured: true,
-  capabilities: { durations: [5, 10], tailFrame: { supported: false }, multiShot: { supported: false }, reference: { supported: true } },
+  capabilities: { durations: [5, 10], tailFrame: { supported: true }, multiShot: { supported: false }, reference: { supported: true } },
 })));
 const drafts = new Map();
 const requests = [];
@@ -89,14 +89,25 @@ assert.ok(requests.slice(1).every(request => request.body.items.every(item => it
 
 for (const model of ['minimax-h3', 'wan-3.0']) {
   ui.applyBulkProvider(model);
-  for (const row of drafts.get('next-shot')) { row.tailImageId = 'old-tail'; row.tailUploadState = 'error'; }
+  const pendingRow = { ...drafts.get('next-shot')[0], tailImageId: null, tailUploadState: 'uploading' };
+  assert.equal(ui.getRowGenerationMode(pendingRow), 'reference-to-video');
+  assert.match(ui.getVideoMotionRowIssue(pendingRow, ui.getRowTailCapability(pendingRow), ui.getRowReferenceCapability(pendingRow)), /等待尾帧/);
+  for (const row of drafts.get('next-shot')) { row.tailImageId = 'old-tail'; row.tailUploadState = 'idle'; row.generationMode = 'image-to-video'; }
   const start = requests.length;
   await ui.handleGenerateAll();
   assert.ok(requests.length > start);
-  for (const request of requests.slice(start)) for (const item of request.body.items) {
+  for (const request of requests.slice(start).filter(request => request.body.shotId === 'next-shot')) for (const item of request.body.items) {
+    assert.equal(item.generationMode, 'image-to-video');
+    assert.equal(item.tailImageId, 'old-tail', 'H3/Wan bulk requests must retain selected tail frames');
+  }
+  for (const row of drafts.get('next-shot')) { row.tailImageId = null; row.generationMode = 'image-to-video'; }
+  const referenceStart = requests.length;
+  await ui.handleGenerateAll();
+  assert.ok(requests.length > referenceStart);
+  for (const request of requests.slice(referenceStart)) for (const item of request.body.items) {
     assert.equal(item.generationMode, 'reference-to-video');
     assert.deepEqual(item.referenceAssetIds, []);
-    assert.equal(item.tailImageId, null, 'Automatic reference ignores stale tail drafts');
+    assert.equal(item.tailImageId, null, 'Removing the tail restores reference mode even for an older explicit frame-mode draft');
   }
 }
 ui.applyBulkProvider('q30');

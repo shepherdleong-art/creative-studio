@@ -335,13 +335,14 @@ export class RemoteTransferController {
     const method = options.method ?? 'GET';
     const headers: Record<string, string> = {
       accept: 'application/json, application/octet-stream',
-      cookie: await this.cookieHeader(),
       ...options.headers,
     };
     if (method !== 'GET' && method !== 'HEAD') {
       headers.origin = this.origin;
       if (options.csrf !== false) headers['x-csrf-token'] = await this.ensureCsrf(options.signal);
     }
+    // CSRF bootstrap can set the Cookie: read the jar after it has completed.
+    headers.cookie = await this.cookieHeader();
     const fetchPromise = this.session.fetch(`${this.origin}${pathname}`, {
       method,
       headers,

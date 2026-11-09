@@ -288,7 +288,10 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
     assertIdentityOperationAllowed(principal, 'change-password');
     const user = currentUserForSession(principal);
     validateNewPassword(newPassword);
-    if (!await verifyPassword(currentPassword, user.passwordHash, kdf)) {
+    // 一次性凭据已在登录时消费，首次改密凭有效会话继续；普通改密仍校验旧密码。
+    // 以数据库中的账号状态为准，不能信任调用方传来的 mustChangePassword。
+    const initialPasswordSetup = user.mustChangePassword === 1 && Boolean(user.credentialConsumedAt);
+    if (!initialPasswordSetup && !await verifyPassword(currentPassword, user.passwordHash, kdf)) {
       throw new TeamAuthError('invalid_credentials', '当前密码或一次性凭据无效。', 401);
     }
     const nextHash = await hashPassword(newPassword, kdf, passwordParams);

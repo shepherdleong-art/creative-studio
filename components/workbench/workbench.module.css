@@ -247,7 +247,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 14px;
-  flex: 1;
+  flex: 0 0 auto;
   min-height: 0;
   min-width: 0;
   padding: 12px 14px 0;
@@ -264,7 +264,8 @@
 .frameBox {
   position: relative;
   display: flex;
-  flex: 1;
+  flex: none;
+  height: clamp(220px, calc(100dvh - 440px), 560px);
   align-items: center;
   justify-content: center;
   min-height: 140px;

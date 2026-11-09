@@ -244,6 +244,9 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   const [editingScript, setEditingScript] = useState<ManualScriptDraft | null>(null);
   const [deletingScriptId, setDeletingScriptId] = useState<string | null>(null);
   const [scriptActionError, setScriptActionError] = useState('');
+  // Selection controls production; expansion only controls the editor. Selecting
+  // all scripts must never open every narration form at once.
+  const [expandedScriptId, setExpandedScriptId] = useState<string | null>(null);
 
   // 封面标题预设来自全局(与单条共用),一次拉取,失败不阻塞其他输入。
   useEffect(() => {
@@ -254,6 +257,9 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
 
   const scriptCount = Object.keys(selectedScripts).length;
   const selectedListedScripts = prep.scripts.filter(script => selectedScripts[script.id] !== undefined);
+  const activeScriptId = expandedScriptId === '' ? null
+    : prep.scripts.some(script => script.id === expandedScriptId) ? expandedScriptId
+    : selectedListedScripts[0]?.id ?? null;
   const allScriptsSelected = prep.scripts.length > 0 && selectedListedScripts.length === prep.scripts.length;
   const scriptActionsDisabled = busy !== null || deletingScriptId !== null;
   const onlineAssets = prep.assets.filter(({ status }) => status === 'online').length;
@@ -575,7 +581,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
 
         <div>
           <p className="mb-2 text-xs text-ink-secondary">精选音色（点击选中，可单独试听）</p>
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+          <div className={styles.voiceGrid}>
             {filtered.map((item) => (
               <div
                 key={item.id}
@@ -1392,13 +1398,14 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
           </div>
           {scriptActionError && <p className="mb-3 text-xs text-fail" role="alert">{scriptActionError}</p>}
           {prep.scripts.length > 0 ? (
-            <div className={styles.scriptList}>
+            <div className={styles.scriptList} role="region" aria-label="脚本列表" tabIndex={0}>
               {prep.scripts.map((script) => {
                 const selected = selectedScripts[script.id] !== undefined;
+                const expanded = activeScriptId === script.id;
                 const durationSec = script.targetDurationSec ?? 15;
                 const title = `${script.scriptCode ? `${script.scriptCode.toLowerCase()} · ` : ''}${script.title || '未命名脚本'}`;
-                return selected ? (
-                  <article key={script.id} className={`${styles.scriptRow} ${styles.scriptRowOn}`}>
+                return (
+                  <article key={script.id} className={`${styles.scriptRow} ${selected ? styles.scriptRowOn : ''} ${expanded ? styles.scriptRowExpanded : ''}`}>
                     <input
                       type="checkbox"
                       aria-label={`选择脚本 ${title}`}
@@ -1408,10 +1415,23 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                       className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
                     />
                     <div className="min-w-0">
+                      <button type="button" className={styles.scriptToggle}
+                        aria-label={`${expanded ? '收起' : '展开'}脚本 ${title}`}
+                        aria-expanded={expanded} aria-controls={`script-editor-${script.id}`}
+                        onClick={() => setExpandedScriptId(expanded ? '' : script.id)}>
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-ink" title={title}>{title}</span>
+                          <span className="mt-0.5 block text-[11px] text-ink-tertiary">
+                            {durationSec} 秒 · V{script.sourceVersion}{selected ? ` · ${selectedScripts[script.id]} 份` : ''}
+                            {configs[script.id] ? ' · 已配置配音' : ''}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-xs text-accent">{expanded ? '收起' : '展开'}</span>
+                      </button>
+                      {expanded && <div id={`script-editor-${script.id}`} className="mt-3" data-testid="batch-script-editor">
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <div className="min-w-0">
                           <p className="text-xs font-medium text-accent">{script.coverTitle.primary || '项目脚本'}</p>
-                          <h4 className="mt-1 font-semibold text-ink">{title}</h4>
                         </div>
                         <div className="flex flex-wrap items-center gap-1.5">
                           {script.manual && <Tag tone="run">手动</Tag>}
@@ -1443,6 +1463,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                           min={1}
                           max={99}
                           step={1}
+                          disabled={!selected || scriptActionsDisabled}
                           aria-label={`${title} 生成份数`}
                           value={selectedScripts[script.id] ?? 1}
                           onChange={(event) => onCopyCountChange(script.id, Math.max(1, Number.parseInt(event.target.value, 10) || 1))}
@@ -1450,33 +1471,9 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                         />
                       </label>
                       {renderNarrationConfig(script.id)}
+                      </div>}
                     </div>
                   </article>
-                ) : (
-                  <button
-                    key={script.id}
-                    type="button"
-                    className={`${styles.scriptRow} text-left transition hover:bg-surface-subtle`}
-                    style={{ gridTemplateColumns: '22px minmax(0, 1fr) auto' }}
-                    disabled={scriptActionsDisabled}
-                    onClick={() => onToggleScript(script.id, true)}
-                  >
-                    <input
-                      type="checkbox"
-                      aria-label={`选择脚本 ${title}`}
-                      checked={false}
-                      readOnly
-                      className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
-                    />
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-ink">{title}</span>
-                      <span className="mt-0.5 block text-[11px] text-ink-tertiary">
-                        {durationSec} 秒 · {script.sourceVersion ? `V${script.sourceVersion}` : '项目脚本'}
-                        {configs[script.id] ? ' · 已配置配音' : ''}
-                      </span>
-                    </span>
-                    <span className="text-xs text-accent">展开</span>
-                  </button>
                 );
               })}
             </div>

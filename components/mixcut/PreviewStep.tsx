@@ -999,7 +999,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           </div>
         )}
 
-        <div className={styles.bigPaper} data-output-preset={variant.outputPreset}>
+        <div className={styles.bigPaper} data-preview-preset={variant.outputPreset}>
           <div className={styles.previewModeHeader}>
             <div
               className={styles.previewModeTabs}
@@ -1047,7 +1047,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             className={styles.previewModePanel}
           >
             <div className={styles.previewWrap}>
-              <div className={styles.previewFrame} data-output-preset={variant.outputPreset} onPointerDown={probePackagingCueHit}>
+              <div className={styles.previewFrame} data-preview-preset={variant.outputPreset} onPointerDown={probePackagingCueHit}>
                 {previewMode === 'material' ? (
                   <div className={styles.materialPreview} data-testid="mixcut-material-preview">
                     {previewMaterial?.previewUrl ? (
@@ -1092,7 +1092,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                     title="包装效果叠加层"
                     aria-hidden="true"
                     tabIndex={-1}
-                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, pointerEvents: packagingEditActive ? 'auto' : 'none' }}
+                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, colorScheme: 'light', pointerEvents: packagingEditActive ? 'auto' : 'none' }}
                   />
                 ) : null}
                     onPlaybackStart={() => setAuditionStopRequestId((value) => value + 1)}

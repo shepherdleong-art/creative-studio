@@ -25,6 +25,8 @@ interface VideoGenerationDraft {
   providerId: string;
   durationSec?: number;
   multiShot?: boolean;
+  generationMode?: 'image-to-video' | 'reference-to-video';
+  tailImageId?: string | null;
 }
 
 // No provider selected: retain the historical draft duration choices, never enable tail frames.
@@ -65,8 +67,11 @@ export function resolveVideoGenerationSelection(
   // Preserve the panel's five-second starting point, independent of settings defaults.
   const durationSec = normalizeVideoDraftDuration(draft.durationSec ?? 5, capabilities.durations);
   const multiShot = draft.multiShot ?? capabilities.multiShot.defaultEnabled;
-  const generationMode = provider?.type === 'openai-video'
-    && ['minimax-h3', 'wan-3.0'].includes(provider.defaultModel)
+  const usesReferenceDefault = provider?.type === 'openai-video'
+    && ['minimax-h3', 'wan-3.0'].includes(provider.defaultModel);
+  // This workbench uses the current shot as the reference. A tail image switches
+  // H3/Wan to first/last-frame generation, including drafts saved by older UIs.
+  const generationMode = usesReferenceDefault && capabilities.reference.supported && !draft.tailImageId
     ? 'reference-to-video' as const : 'image-to-video' as const;
   return {
     providerId,

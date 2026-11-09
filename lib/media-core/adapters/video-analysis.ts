@@ -4,6 +4,7 @@ import { runFfmpeg, probeDurationSec } from '../../ffmpeg.ts';
 import { detectVideoScenes } from '../scene-detect.ts';
 import { buildVideoAnalysisPrompt, buildVideoFrameSamples, type VideoFrameSample } from './video-analysis-prompt.ts';
 import { withMediaResource } from '../media-resource-gate.ts';
+import { waitForAnalysisAdmission } from '../analysis-concurrency.ts';
 
 interface RawAnalysis {
   summary?: unknown;
@@ -25,6 +26,7 @@ export async function analyzeVideoWithVision(input: {
   model?: string;
   cacheDir: string;
   signal?: AbortSignal;
+  waitForExecution?: boolean;
   executionScope?: { resourceType: string; resourceId: string };
   executionTaskId?: string;
   inputRevision?: string;
@@ -33,7 +35,7 @@ export async function analyzeVideoWithVision(input: {
   const prepared = await withMediaResource({
     taskId: input.executionTaskId ?? `video-analysis:${input.videoJobId}`,
     step: 'analysis-frames',
-    wait: false,
+    wait: true,
     signal: input.signal,
   }, async () => {
     const durationSec = await probeDurationSec(input.filePath);
@@ -74,7 +76,7 @@ export async function analyzeVideoWithVision(input: {
   });
   const { durationSec, durationUs, detectedScenes, frames, images } = prepared;
   const { completeJson } = await import('../../script-providers/index.ts');
-  const result = await completeJson<RawAnalysis>({
+  const request = () => completeJson<RawAnalysis>({
     providerId: input.providerId,
     ...(input.model ? { model: input.model } : {}),
     systemPrompt: '你是视频素材分析器。只描述视频本身，严格返回 JSON，不推断脚本文案。',
@@ -94,6 +96,7 @@ export async function analyzeVideoWithVision(input: {
       businessAttempt: input.businessAttempt,
     },
   });
+  const result = await (input.waitForExecution ? waitForAnalysisAdmission(request, input.signal) : request());
   const rawScenes = Array.isArray(result.scenes) ? result.scenes : [];
   const scenes = detectedScenes.map((range, index) => {
     const raw = rawScenes[index] && typeof rawScenes[index] === 'object' ? rawScenes[index] as Record<string, unknown> : {};

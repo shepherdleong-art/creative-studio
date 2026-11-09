@@ -89,9 +89,12 @@ async function __teamRouteDELETE(
     const db = getDb();
     const row = db.prepare(`SELECT isBuiltin FROM script_providers WHERE id = ?`).get(id) as { isBuiltin: number } | undefined;
     if (!row) return NextResponse.json({ error: 'Script provider not found' }, { status: 404 });
-    if (row.isBuiltin) return NextResponse.json({ error: '内置脚本供应商不能删除，可以禁用' }, { status: 400 });
-
-    db.prepare(`DELETE FROM script_providers WHERE id = ?`).run(id);
+    db.transaction(() => {
+      if (row.isBuiltin) {
+        db.prepare(`INSERT OR IGNORE INTO script_provider_seed_suppressions (providerId, deletedAt) VALUES (?, ?)`).run(id, new Date().toISOString());
+      }
+      db.prepare(`DELETE FROM script_providers WHERE id = ?`).run(id);
+    })();
     return NextResponse.json({ success: true });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

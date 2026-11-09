@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useState } from 'react';
+import styles from './batch-asset-card.module.css';
 import type { PrepareAssetView, PrepareScriptView, PrepareSourceView } from '@/lib/batch-production/prepare';
 import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
@@ -303,113 +304,43 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   }
 
   return (
-    <article className={`rounded-2xl border bg-surface p-4 shadow-sm transition ${selected ? 'border-accent ring-2 ring-accent/10' : 'border-hairline'}`}>
-      <div className="space-y-3">
-        <div className="relative aspect-video overflow-hidden rounded-xl border border-hairline bg-surface-subtle">
-          {asset.thumbnailUrl && !thumbnailFailed ? (
-            <button
-              type="button"
-              className="block h-full w-full cursor-pointer text-left"
-              aria-label={`预览素材 ${displayName}`}
-              disabled={!previewAvailable}
-              onClick={onPreview}
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={asset.thumbnailUrl}
-                alt={`${displayName} 缩略图`}
-                loading="lazy"
-                onError={() => setThumbnailFailedUrl(asset.thumbnailUrl ?? null)}
-                className="h-full w-full object-cover"
-              />
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="flex h-full w-full items-center justify-center text-sm text-ink-tertiary"
-              aria-label={`预览素材 ${displayName}`}
-              disabled={!previewAvailable}
-              onClick={onPreview}
-            >
-              缩略图暂不可用
-            </button>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {onPreview && (
-            <button type="button" className="text-xs text-accent underline" disabled={!previewAvailable} onClick={onPreview}>
-              预览
-            </button>
-          )}
-        </div>
-        <div className="flex items-start gap-3">
-        <input
-          type="checkbox"
-          aria-label={`选择素材 ${displayName}`}
-          checked={selected}
-          disabled={!selectable}
-          onChange={(event) => onSelectedChange(event.target.checked)}
-          className="mt-1 h-4 w-4 accent-[var(--accent)] disabled:opacity-40"
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-xs font-medium text-ink-tertiary">项目素材</p>
-              <h3 className="mt-1 font-semibold text-ink">{displayName}</h3>
-            </div>
-            <span className={`rounded-full px-2 py-1 text-[11px] ${selectable ? 'bg-ok/10 text-ok' : 'bg-fail/10 text-fail'}`}>
-              {asset.status === 'online' ? (asset.analysisSource === 'filename' ? '文件名描述可用' : analysisLevel === 'content' ? '内容分析可用' : '未内容分析') : asset.status === 'archived' ? '已归档' : '离线'}
-            </span>
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2 text-xs text-ink-secondary">
-            {typeof asset.media.durationSec === 'number' && <span>{asset.media.durationSec.toFixed(1)} 秒</span>}
-            {asset.media.width && asset.media.height && <span>{asset.media.width}×{asset.media.height}</span>}
-          </div>
+    <article className={styles.card} data-selected={selected} data-testid="batch-material-card">
+      <button type="button" className={styles.preview} aria-label={`预览素材 ${displayName}`} disabled={!previewAvailable} onClick={onPreview}>
+        {asset.thumbnailUrl && !thumbnailFailed ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={asset.thumbnailUrl} alt={`${displayName} 缩略图`} loading="lazy" onError={() => setThumbnailFailedUrl(asset.thumbnailUrl ?? null)} />
+        ) : <span>缩略图暂不可用</span>}
+        {previewAvailable && <span className={styles.play}>▶ 预览</span>}
+        {typeof asset.media.durationSec === 'number' && <span className={styles.duration}>{asset.media.durationSec.toFixed(1)} 秒</span>}
+      </button>
+      <div className={styles.body}>
+        <label className={styles.selection}>
+          <input type="checkbox" aria-label={`选择素材 ${displayName}`} checked={selected} disabled={!selectable} onChange={(event) => onSelectedChange(event.target.checked)} />
+          <span className={styles.name} title={displayName}>{displayName}</span>
+        </label>
+        <div className={styles.meta}>
+          <span className={styles.status} data-tone={selectable ? 'ok' : asset.status === 'online' ? 'warn' : 'fail'}>
+            {asset.status === 'online' ? (asset.analysisSource === 'filename' ? '文件名描述可用' : analysisLevel === 'content' ? '内容分析可用' : '待分析') : asset.status === 'archived' ? '已归档' : '离线'}
+          </span>
+          {asset.media.width && asset.media.height ? <span>{asset.media.width}×{asset.media.height}</span> : null}
           {previewBadge}
-          {asset.analysisSource === 'filename' && (
-            <p className="mt-2 rounded-xl bg-surface-subtle px-3 py-2 text-xs leading-5 text-ink-secondary" title={asset.filenameDescription}>
-              文件名描述 · 已跳过画面识别<br />{asset.filenameDescription}
-            </p>
-          )}
-          {onRequestProxy && asset.status === 'online' && (
-            <button
-              type="button"
-              className="btn-secondary mt-2 h-8 px-3 text-xs"
-              disabled={proxyBusy}
-              onClick={onRequestProxy}
-            >{renderProxyButtonLabel()}</button>
-          )}
-          {renderAnalysisAction()}
-          <div className="mt-4 space-y-2">
-            {asset.sources.map((source) => (
-              <SourceRow
-                key={source.id}
-                source={source}
-                onRelocate={onRelocateLinkedSource}
-                relocating={relocatingSourceId === source.id}
-              />
-            ))}
-          </div>
-          {selected && luts && onLutChange && (
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <label className="flex-1 text-xs text-ink-secondary">
-                <span className="mb-1 block">LUT</span>
-                <select
-                  aria-label={`${displayName} 的 LUT`}
-                  value={lutId ?? ''}
-                  onChange={(event) => onLutChange(event.target.value || null)}
-                  className="h-9 w-full rounded-lg border border-hairline bg-surface px-2 text-ink"
-                >
-                  <option value="">关闭</option>
-                  {luts.filter((lut) => lut.status === 'active').map((lut) => (
-                    <option key={lut.id} value={lut.id}>{lut.displayName}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-          )}
         </div>
-      </div>
+        {asset.analysisSource === 'filename' && <p className={styles.description} title={asset.filenameDescription}>{asset.filenameDescription}</p>}
+        <div className={styles.analysis}>{renderAnalysisAction()}</div>
+        <div className={styles.actions}>
+          {onRequestProxy && asset.status === 'online' && <button type="button" className="cap" disabled={proxyBusy} onClick={onRequestProxy}>{renderProxyButtonLabel()}</button>}
+        </div>
+        <details className={styles.sources}>
+          <summary>{asset.sources.length} 个素材来源{asset.sources.every(source => source.health === 'healthy') ? ' · 可用' : ' · 请检查'}</summary>
+          {asset.sources.map(source => <SourceRow key={source.id} source={source} onRelocate={onRelocateLinkedSource} relocating={relocatingSourceId === source.id} />)}
+        </details>
+        {selected && luts && onLutChange && <label className={styles.lut}>
+          调色滤镜
+          <select aria-label={`${displayName} 的 LUT`} value={lutId ?? ''} onChange={event => onLutChange(event.target.value || null)}>
+            <option value="">关闭</option>
+            {luts.filter(lut => lut.status === 'active').map(lut => <option key={lut.id} value={lut.id}>{lut.displayName}</option>)}
+          </select>
+        </label>}
       </div>
     </article>
   );

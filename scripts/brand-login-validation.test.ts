@@ -49,10 +49,10 @@ assert.equal(tooLong.newPassword, `新密码不能超过 ${MAX_PASSWORD_LENGTH} 
 const mismatch = validateLoginFields({ ...changeBase, newPassword: '123456', confirmation: '1234567' });
 assert.deepEqual(mismatch, { confirmation: '两次输入的新密码不一致' });
 
-// 改密模式下空当前密码也要报。
+// 首次改密已通过会话验证，不再要求一次性密码。
 assert.equal(
   validateLoginFields({ ...changeBase, currentPassword: '', newPassword: '123456', confirmation: '123456' }).currentPassword,
-  '请输入当前密码',
+  undefined,
 );
 
 // 没填新密码 / 没填确认 → 各自的空值提示，优先级高于长度与不一致。

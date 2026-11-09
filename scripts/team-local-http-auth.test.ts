@@ -42,7 +42,7 @@ for (const env of [
   { CREATIVE_STUDIO_DEPLOYMENT_MODE: 'server', CREATIVE_STUDIO_TRUSTED_ORIGIN: 'http://127.0.0.1:3400' },
   { CREATIVE_STUDIO_DEPLOYMENT_MODE: 'local', CREATIVE_STUDIO_TRUSTED_ORIGIN: 'http://127.0.0.1:3400', CREATIVE_STUDIO_TEAM_LOCAL_HTTP: '1' },
 ]) {
-  const policy = teamCookiePolicy(env);
+  const policy = teamCookiePolicy({ NODE_ENV: 'test', ...env });
   assert.equal(policy.secure, true, '只有显式本机回环模式可以取消 Secure');
   assert.ok(policy.session.startsWith('__Host-'));
   assert.ok(policy.csrf.startsWith('__Host-'));

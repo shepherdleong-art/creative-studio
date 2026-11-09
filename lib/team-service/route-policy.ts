@@ -292,6 +292,7 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/errors/report': 'POST',
   '/api/team/errors/[id]/diagnostics': 'GET',
   '/api/team/errors/[id]/task': 'GET',
+  '/api/team/errors/[id]/resolve': 'POST',
   '/api/team/members': 'GET',
   '/api/team/members/[id]/policy': 'GET PATCH',
   '/api/team/concurrency-policy': 'GET PATCH',
@@ -328,6 +329,7 @@ const PUBLIC = new Set([
   '/api/team/operations/status GET', '/api/team/operations/shutdown POST',
 ]);
 const AUTHENTICATED = new Set([
+  '/api/packaging/templates/[...path] GET',
   '/api/team/auth/change-password POST', '/api/team/auth/logout POST',
   '/api/team/recycle-bin GET', '/api/team/recycle-bin/restore POST',
   '/api/canvas/models GET', '/api/final-edit/capabilities GET',
@@ -339,6 +341,7 @@ const AUTHENTICATED = new Set([
   '/api/team/devices GET', '/api/team/devices POST', '/api/team/downloads GET', '/api/team/downloads/receipts POST',
   '/api/team/errors GET', '/api/team/errors/report POST', '/api/team/errors/[id]/diagnostics GET',
   '/api/team/errors/[id]/task GET',
+  '/api/team/errors/[id]/resolve POST',
   '/api/team/members/[id]/policy GET', '/api/team/tasks GET', '/api/team/usage GET',
   '/api/team/tasks/detail GET', '/api/team/tasks/retry POST',
   '/api/team/dashboard GET',
@@ -374,7 +377,6 @@ const ADMIN = new Set([
   '/api/script-studio/viral-templates/entries/[entryId] PATCH',
 ]);
 const SERVER_DISABLED = new Set([
-  '/api/packaging/templates/[...path] GET',
   '/api/packaging/system-fonts/select POST',
   '/api/packaging/user-font GET', '/api/packaging/user-font POST', '/api/packaging/user-font DELETE',
   '/api/providers/tts/[id]/preview POST',

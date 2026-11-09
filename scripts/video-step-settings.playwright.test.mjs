@@ -16,14 +16,21 @@
  * （TEAM_ACCEPTANCE_UI_SCREENS=project-video）。
  */
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium, expect } from '@playwright/test';
+import sharp from 'sharp';
+import ffmpeg from 'ffmpeg-static';
+
+const imageFixture = await sharp({ create: { width: 480, height: 640, channels: 3, background: '#b7a68e' } }).png().toBuffer();
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'video-step-settings-'));
+const clipPath = path.join(root, 'preview.mp4');
+execFileSync(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'color=c=tan:s=360x480:r=24', '-t', '1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', clipPath], { windowsHide: true, stdio: 'ignore' });
+const videoFixture = fs.readFileSync(clipPath);
 const socket = net.createServer();
 await new Promise((resolve) => socket.listen(0, '127.0.0.1', resolve));
 const port = socket.address().port;
@@ -86,9 +93,18 @@ try {
     },
   ];
 
+  providers.push(...['minimax-h3', 'wan-3.0'].map((model) => ({
+    id: model, name: model, category: 'video', type: 'openai-video', defaultModel: model,
+    enabled: 1, configured: true, hasApiKey: true, missing: [],
+    capabilities: {
+      durations: [5, 10], tailFrame: { supported: true, protocol: 'company-gateway-tencent-fileinfos' },
+      multiShot: { supported: false, defaultEnabled: false }, reference: { supported: true },
+    },
+  })));
+
   const shots = [
-    { id: 'shot-1', indexNum: 1, sourceImageId: 'img-1', imageUrl: '/api/images/uploads/shot-1.png' },
-    { id: 'shot-2', indexNum: 2, sourceImageId: 'img-2', imageUrl: '/api/images/uploads/shot-2.png' },
+    { id: 'shot-1', indexNum: 1, sourceImageId: 'img-1', sourceImageUrl: '/api/images/uploads/shot-1.png' },
+    { id: 'shot-2', indexNum: 2, sourceImageId: 'img-2', sourceImageUrl: '/api/images/uploads/shot-2.png' },
   ];
 
   const templates = [
@@ -135,7 +151,7 @@ try {
         body = { success: true };
       } else {
         body = {
-          id: 'p1', name: '视频设置测试', images: [], jobs: [], provider: null, model: 'fixture',
+          id: 'p1', name: '视频设置测试', images: shots.map(shot => ({ id: shot.sourceImageId, role: 'input', usage: 'shot_source', filename: `${shot.id}.png`, imageUrl: shot.sourceImageUrl })), jobs: [], provider: null, model: 'fixture',
           status: 'draft', concurrency: 2, maxAttempts: 1, prompt: '',
         };
       }
@@ -168,13 +184,15 @@ try {
       body = templates;
     } else if (pathname === '/api/team/auth/session') {
       body = { role: 'employee' };
+    } else if (pathname === '/api/upload') {
+      body = { files: [{ id: 'uploaded-tail', filename: 'tail.png', imageUrl: '/api/images/uploads/tail.png' }] };
     }
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
   });
 
-  // 视频地址与缩略图本次不验，给个空响应避免请求卡住。
-  await page.route('**/api/videos/**', (route) => route.fulfill({ status: 204, body: '' }));
-  await page.route('**/api/images/**', (route) => route.fulfill({ status: 204, body: '' }));
+  // 可解码的竖视频用于检查描述增加时，预览比例与可用高度保持稳定。
+  await page.route('**/api/videos/**', (route) => route.fulfill({ status: 200, contentType: 'video/mp4', body: videoFixture }));
+  await page.route('**/api/images/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: imageFixture }));
 
   await page.goto(`${baseUrl}/projects/p1?tab=video`);
   await expect(page.getByRole('heading', { name: '视频生成', exact: true })).toBeVisible({ timeout: 30_000 });
@@ -187,27 +205,45 @@ try {
   await setSelect.selectOption('set-1');
   await expect(page.getByRole('button', { name: /^批量检查 2 个分镜$/ })).toBeVisible({ timeout: 15_000 });
 
+  // 左栏缩略图悬浮显示可辨认的完整大图，并在小窗口内保持可见。
+  for (const width of [1536, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    const thumbnail = page.locator('.video-shot-thumb').first();
+    await thumbnail.hover();
+    const preview = page.locator('.theme-preview-popover');
+    await expect(preview).toBeVisible();
+    await preview.locator('img').evaluate((img) => img.decode());
+    const box = await preview.boundingBox();
+    assert.ok(box.width >= 250 && box.height >= 300, '悬浮图应明显大于缩略图');
+    await page.screenshot({ path: path.resolve(`outputs/video-hover-${width}.png`) });
+    assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= width && box.y + box.height <= 900, `悬浮预览完整位于窗口内：${JSON.stringify(box)}`);
+    await page.mouse.move(width - 10, 10);
+    await expect(preview).toHaveCount(0);
+  }
+  await page.setViewportSize({ width: 1536, height: 900 });
+
   // ── 1. 点不同视频 → 右栏换成各自保存的设置 ─────────────────────────
   const cards = page.getByTestId('video-result-card');
-  await expect(cards).toHaveCount(2);
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText('素材 A');
   const savedPanel = page.getByTestId('video-saved-settings');
   await expect(savedPanel).toHaveCount(0, { timeout: 5_000 }); // 还没点选时不显示
 
   // 先点素材 A（Kling 2.5 · 5 秒 · 带尾帧 · 智能分镜开）
   await cards.filter({ hasText: '素材 A' }).click();
-  await expect(savedPanel).toBeVisible({ timeout: 10_000 });
-  await expect(savedPanel).toContainText('kling-2.5');
-  await expect(savedPanel).toContainText('5 秒');
-  await expect(savedPanel).toContainText('带尾帧');
-  await expect(savedPanel).toContainText('智能分镜');
-  await expect(savedPanel).toContainText('镜头推进');
+  await expect(savedPanel).toHaveCount(0);
+  const promptInput = page.getByPlaceholder('运镜描述（提示词）').first();
+  const durationInput = page.locator('.video-motion-card .video-control.text-center').first();
+  await expect(promptInput).toHaveValue(videoJobs[0].prompt);
+  await expect(durationInput).toHaveValue('5');
 
-  // 再点素材 B（Seedance 2.5 · 12 秒 · 仅首帧 · 智能分镜关）
+  // 点击另一条视频，直接回填可编辑描述，不能再出现重复的只读设置卡。
+  await page.getByRole('button', { name: '分镜 2', exact: true }).click();
+  await expect(cards).toHaveCount(1);
   await cards.filter({ hasText: '素材 B' }).click();
-  await expect(savedPanel).toContainText('doubao-seedance-2-5');
-  await expect(savedPanel).toContainText('12 秒');
-  await expect(savedPanel).toContainText('仅首帧');
-  await expect(savedPanel).toContainText('一只手掀开沙发坐垫');
+  await expect(savedPanel).toHaveCount(0);
+  await expect(promptInput).toHaveValue(videoJobs[1].prompt);
+  await expect(durationInput).toHaveValue('12');
 
   // ── 2. 改动后提示、还原恢复原值 ────────────────────────────────────
   // 改一下这条视频的秒数（右栏第一行的秒数下拉）。
@@ -220,8 +256,11 @@ try {
   await expect(page.getByTestId('video-settings-changed')).toHaveCount(0);
   await expect(durationSelect).toHaveValue('12');
 
-  // 再生成一条不会删除原来的：素材 A/B 仍在列表里。
-  await expect(cards).toHaveCount(2);
+  // 切换分镜只筛选展示，不丢失 A/B 或各自编辑设置。
+  await expect(cards).toHaveCount(1);
+  await page.getByRole('button', { name: '分镜 1', exact: true }).click();
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText('素材 A');
 
   // ── 6. 剔除要写原因、能恢复、能隐藏已剔除 ───────────────────────────
   const jobA = cards.filter({ hasText: '素材 A' });
@@ -310,6 +349,68 @@ try {
   assert.equal(submittedBatches.length, 0, '已有任务的分镜不得再次提交');
 
   await page.screenshot({ path: path.resolve('outputs/video-step-bulk-drawer.png'), fullPage: true });
+  await page.getByRole('button', { name: '关闭批量检查' }).click();
+  await page.getByRole('button', { name: '分镜 2', exact: true }).click();
+  const motionCard = page.locator('.video-motion-card').first();
+  for (const model of ['minimax-h3', 'wan-3.0']) {
+    await motionCard.locator('select').first().selectOption(model);
+    await expect(motionCard.getByTestId('video-generation-mode')).toContainText('全能参考');
+    await expect(motionCard.getByText('添加尾帧图', { exact: true })).toBeVisible();
+    await expect(motionCard.getByTestId('video-frame-pair')).toBeVisible();
+    await motionCard.locator('input[type=file]').first().setInputFiles({ name: 'tail.png', mimeType: 'image/png', buffer: imageFixture });
+    await expect(motionCard.getByAltText('尾帧预览', { exact: true })).toBeVisible();
+    await expect(motionCard.getByTestId('video-generation-mode')).toHaveText('首尾帧生成');
+    await promptInput.fill('从首帧平滑过渡到尾帧');
+    const before = submittedBatches.length;
+    await page.getByRole('button', { name: '生成 1 条视频', exact: true }).click();
+    await expect.poll(() => submittedBatches.length).toBe(before + 1);
+    const item = submittedBatches.at(-1).items[0];
+    assert.equal(item.providerId, model);
+    assert.equal(item.generationMode, 'image-to-video');
+    assert.equal(item.tailImageId, 'uploaded-tail');
+    assert.deepEqual(item.referenceAssetIds, []);
+    assert.equal('multiShot' in item, false, 'H3/Wan 不发送可灵智能分镜参数');
+    await motionCard.locator('.video-frame-tail').hover();
+    await motionCard.getByRole('button', { name: '移除尾帧', exact: true }).click();
+    await expect(motionCard.getByTestId('video-generation-mode')).toContainText('全能参考');
+    await expect(motionCard.getByText('添加尾帧图', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '生成 1 条视频', exact: true }).click();
+    await expect.poll(() => submittedBatches.length).toBe(before + 2);
+    assert.equal(submittedBatches.at(-1).items[0].generationMode, 'reference-to-video');
+    assert.equal(submittedBatches.at(-1).items[0].tailImageId, null);
+  }
+  await page.screenshot({ path: path.resolve('outputs/video-step-tail-frame-restored.png'), fullPage: true });
+
+  await cards.filter({ hasText: '素材 B' }).click();
+  const workspace = page.locator('.video-workspace-prototype');
+  const initialBox = await workspace.boundingBox();
+  for (const count of [4, 10]) {
+    while (await page.locator('.video-motion-card').count() < count) {
+      await page.getByRole('button', { name: '添加描述', exact: true }).click();
+    }
+    const box = await workspace.boundingBox();
+    assert.ok(Math.abs(box.height - initialBox.height) <= 1, '描述数量不得撑高工作区');
+    const list = page.locator('.video-motion-list').first();
+    assert.ok(await list.evaluate(el => el.scrollHeight > el.clientHeight), '多条描述在右栏内部滚动');
+  }
+  for (const [width, height] of [[1536, 900], [1280, 720], [1024, 720]]) {
+    await page.setViewportSize({ width, height });
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
+      await expect.poll(async () => page.locator('.video-player').evaluate(video => video.videoWidth)).toBe(360);
+      await expect.poll(async () => {
+        const video = await page.locator('.video-player').boundingBox();
+        const controls = await page.locator('.stage-controls').boundingBox();
+        return video && controls && Math.abs(video.width / video.height - 0.75) < 0.02 && controls.y + controls.height <= height;
+      }).toBe(true);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1 && document.documentElement.scrollWidth <= innerWidth + 1), '整页不因多条描述产生滚动');
+      for (const selector of ['.video-add-action', '.video-create-action']) {
+        const button = await page.locator(selector).boundingBox();
+        assert.ok(button.y >= 0 && button.y + button.height <= height, '添加与生成按钮固定在当前窗口内');
+      }
+      await page.screenshot({ path: path.resolve(`outputs/video-layout-10-descriptions-${width}-${theme}.png`) });
+    }
+  }
   assert.deepEqual(pageErrors, [], '页面不应出现运行时异常');
   assert.deepEqual(projectPatches, [], '视频页不得再提交并发设置等生产参数');
   console.log('video-step-settings.playwright.test.mjs: ok (saved settings follow the selected clip, change hint + revert, intersection durations + provider switch, editable prompts without focus loss, fill-empty-only, generate-missing-only, reject with reason + restore + hide-rejected, no concurrency control)');

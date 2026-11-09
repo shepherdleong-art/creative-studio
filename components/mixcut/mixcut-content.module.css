@@ -69,6 +69,7 @@
 [data-layout='preview'] .mainCol { padding-left: 0; }
 .stepScroll { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 16px; padding: 2px 2px 12px; overflow-y: auto; }
 .stepScrollGap24 { gap: 24px; }
+.stepScroll > * { flex-shrink: 0; }
 .stepHead { display: flex; flex-shrink: 0; align-items: flex-end; justify-content: space-between; gap: 14px; padding: 14px 6px 12px; }
 .stepTitle { margin-top: 2px; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
 .stepTitle .eyebrow { color: var(--blue); }
@@ -285,10 +286,8 @@
 .previewModeLabel { min-width: 0; overflow: hidden; color: var(--faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .previewModePanel { min-width: 0; }
 .previewWrap { display: flex; flex: 0 0 auto; justify-content: center; margin-bottom: 12px; }
-.previewFrame { position: relative; height: clamp(360px, 58vh, 560px); max-width: 100%; border-radius: 14px; box-shadow: var(--sh-md); overflow: hidden; background: #000; container-type: inline-size; }
-.previewFrame[data-output-preset='3x4'] { aspect-ratio: 3/4; }
-.previewFrame[data-output-preset='9x16'] { aspect-ratio: 9/16; }
-.previewFrame[data-output-preset='16x9'] { aspect-ratio: 16/9; }
+.previewFrame { position: relative; width: min(100%, 560px); height: clamp(300px, 42vh, 480px); border-radius: 14px; box-shadow: var(--sh-md); overflow: hidden; background: var(--color-preview); container-type: inline-size; }
+.previewFrame[data-preview-preset='16x9'] { width: min(100%, 760px); }
 .previewFrame > * { height: 100%; }
 .previewFrame main { height: 100%; }
 .materialPreview { display: flex; box-sizing: border-box; width: 100%; height: 100%; min-height: 0; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px; background: #111; color: #fff; }

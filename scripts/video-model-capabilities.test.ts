@@ -32,6 +32,9 @@ try {
   for (const id of ['h3', 'wan']) {
     assert.equal(resolveVideoGenerationSelection(providers, '', { providerId: id }).generationMode, 'reference-to-video');
     assert.equal(resolveVideoGenerationSelection(providers, id, { providerId: '' }).generationMode, 'reference-to-video', 'Bulk defaults use the same mode');
+    assert.equal(resolveVideoGenerationSelection(providers, '', { providerId: id, generationMode: 'image-to-video' }).generationMode, 'reference-to-video', '单图草稿自动使用全能参考');
+    assert.equal(resolveVideoGenerationSelection(providers, '', { providerId: id, tailImageId: 'tail' }).generationMode, 'image-to-video', '已有尾帧不能被静默忽略');
+    assert.equal(resolveVideoGenerationSelection(providers, '', { providerId: id, tailImageId: 'tail', generationMode: 'reference-to-video' }).generationMode, 'image-to-video', '旧草稿的参考模式不能隐藏或忽略已添加的尾帧');
   }
   for (const id of ['sd20', 'sd25', 'k25', 'q30', 'future']) {
     assert.equal(resolveVideoGenerationSelection(providers, 'h3', { providerId: id }).generationMode, 'image-to-video', 'Switching back restores first/tail mode');

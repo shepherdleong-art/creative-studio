@@ -6,6 +6,7 @@ import { Icon } from '@/components/ui/Icon';
 import { MAX_SHOTS_PER_SET } from '@/lib/shot-set-domain';
 import { getGptImage2AspectRatio } from '@/lib/gpt-image-2-size-presets';
 import FurniturePromptControls from '@/components/FurniturePromptControls';
+import ImagePreview from '@/components/media/ImagePreview';
 import { getResultJobKind, type SceneReferenceSummary } from '@/lib/result-gallery-jobs';
 import {
   clampIndex,
@@ -389,7 +390,7 @@ export default function SceneStep({
               <figure className={s.figure}>
                 <div className={s.frameBox}>
                   {selectedSeed?.imageUrl
-                    ? <img src={selectedSeed.imageUrl} alt="原始场景图" />
+                    ? <ImagePreview src={selectedSeed.imageUrl} alt="原始场景图" />
                     : <span className={s.placeholder}><Icon name="image" size={22} /><span>原图不可用</span></span>}
                 </div>
                 <figcaption className={s.caption}>
@@ -401,7 +402,7 @@ export default function SceneStep({
                 <div className={s.frameBox}>
                   {selectedJob ? (
                     selectedResultUrl
-                      ? <img src={selectedResultUrl} alt="候选结果" />
+                      ? <ImagePreview src={selectedResultUrl} alt="候选结果" />
                       : <span className={`${s.placeholder} ${selectedKind === 'failed' ? s.placeholderFail : ''}`}>
                           {selectedKind === 'failed'
                             ? <><b>这张没生成出来</b><span>{selectedJob.errorMessage || '可以重新生成'}</span>

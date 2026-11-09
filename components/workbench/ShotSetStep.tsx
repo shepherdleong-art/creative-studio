@@ -5,7 +5,10 @@ import { Segmented, Tag } from '@/components/ui/Appearance';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
 import HoverZoomImage from '@/components/HoverZoomImage';
+import ImagePreview from '@/components/media/ImagePreview';
 import { MAX_SHOTS_PER_SET } from '@/lib/shot-set-domain';
+import { parseRedoReferenceIds } from '@/lib/shot-redo-state';
+import type { SceneReferenceRecord } from '@/lib/result-gallery-jobs';
 import {
   clampIndex,
   canMarkShotAvailable,
@@ -81,6 +84,7 @@ interface ShotSet {
 }
 
 interface ShotSetDetail {
+  status?: string;
   shots: Shot[];
   sceneRefName?: string | null;
   sceneRefImageUrl?: string | null;
@@ -117,6 +121,8 @@ export default function ShotSetStep({
   projectId,
   providerOptions,
   shotSourceImages,
+  images,
+  sceneReferences,
   jobs,
   onUploaded,
   onApplyScene,
@@ -126,6 +132,8 @@ export default function ShotSetStep({
   projectId: string;
   providerOptions: WorkbenchProvider[];
   shotSourceImages: WorkbenchImage[];
+  images: WorkbenchImage[];
+  sceneReferences: SceneReferenceRecord[];
   jobs: Array<{ id: string; status: string; outputImageId?: string }>;
   onUploaded: () => void | Promise<void>;
   onApplyScene: (shotSetId: string) => void;
@@ -143,6 +151,9 @@ export default function ShotSetStep({
   const [versionBusy, setVersionBusy] = useState(false);
   const [redoPrompt, setRedoPrompt] = useState('');
   const [redoProviderId, setRedoProviderId] = useState('');
+  // null 表示未改动，提交时沿用原任务；[] 表示用户明确取消所有参考图。
+  const [redoReferenceIds, setRedoReferenceIds] = useState<string[] | null>(null);
+  const [referencePickerOpen, setReferencePickerOpen] = useState(false);
   const [redoing, setRedoing] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ShotSet | null>(null);
@@ -190,7 +201,7 @@ export default function ShotSetStep({
         setError(data.error || '分镜组读取失败');
         return;
       }
-      setDetail({ shots: data.shots || [], sceneRefName: data.sceneRefName, sceneRefImageUrl: data.sceneRefImageUrl });
+      setDetail({ status: data.status, shots: data.shots || [], sceneRefName: data.sceneRefName, sceneRefImageUrl: data.sceneRefImageUrl });
       setDetailSetId(setId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '分镜组读取失败');
@@ -225,14 +236,29 @@ export default function ShotSetStep({
   const hasActiveShot = (currentDetail?.shots || []).some((shot) => ['pending', 'running', 'retrying', 'needs_check'].includes(shot.jobStatus || ''));
   useEffect(() => {
     if (!activeSetId || !hasActiveShot) return;
-    const timer = window.setInterval(() => { void loadShots(activeSetId); }, 2500);
+    const timer = window.setInterval(() => { void loadShots(activeSetId); void loadSets(); }, 2500);
     return () => window.clearInterval(timer);
-  }, [activeSetId, hasActiveShot, loadShots]);
+  }, [activeSetId, hasActiveShot, loadShots, loadSets]);
 
   const shots = currentDetail?.shots || [];
   const activeSet = sets.find((set) => set.id === activeSetId) ?? null;
   const currentShot = shots[clampIndex(shotIndex, shots.length)] as Shot | undefined;
   const currentIndex = shots.length > 0 ? clampIndex(shotIndex, shots.length) : 0;
+  const selectedReferenceIds = [...new Set(redoReferenceIds ?? parseRedoReferenceIds(currentShot?.referenceImageIds))]
+    .filter((id) => id !== currentShot?.sourceImageId);
+  const referenceCandidates = (() => {
+    const candidates = new Map<string, { id: string; label: string; imageUrl?: string }>();
+    const add = (id: string, label: string, imageUrl?: string) => {
+      if (id === currentShot?.sourceImageId || candidates.has(id)) return;
+      candidates.set(id, { id, label, imageUrl: imageUrl || images.find((image) => image.id === id)?.imageUrl });
+    };
+    sceneReferences.forEach((ref) => add(ref.imageAssetId, ref.name));
+    images.filter((image) => image.role === 'reference' || image.role === 'output')
+      .forEach((image) => add(image.id, image.filename, image.imageUrl));
+    currentShot?.resultCandidates?.forEach((candidate, index) => add(candidate.imageAssetId, `结果 ${index + 1}`, candidate.imageUrl));
+    selectedReferenceIds.forEach((id, index) => add(id, `参考图 ${index + 1}`));
+    return [...candidates.values()];
+  })();
 
   const versionCandidates = useMemo(() => {
     if (!currentShot) return [] as ShotCandidate[];
@@ -271,6 +297,8 @@ export default function ShotSetStep({
     redoInitKeyRef.current = redoKey;
     setRedoPrompt(currentShot?.jobPrompt || '');
     setRedoProviderId(currentShot?.providerId || '');
+    setRedoReferenceIds(null);
+    setReferencePickerOpen(false);
   }, [redoKey, currentShot]);
 
   // 左右键切分镜、不翻页。
@@ -366,7 +394,7 @@ export default function ShotSetStep({
           prompt: redoPrompt.trim(),
           markOriginal: true,
           inputSource: 'original',
-          // 不传 referenceImageIds：沿用这个分镜原任务的参考图（传空数组会把场景参考图清掉）。
+          referenceImageIds: redoReferenceIds === null ? undefined : selectedReferenceIds,
           providerId: effectiveProviderId || undefined,
         }),
       });
@@ -557,7 +585,7 @@ export default function ShotSetStep({
                 <figure className={s.figure}>
                   <div className={s.frameBox}>
                     {currentShot.sourceImageUrl
-                      ? <HoverZoomImage src={currentShot.sourceImageUrl} alt="原图" className={s.frameImage} zoomMaxWidth={520} zoomMaxHeight={520} />
+                      ? <ImagePreview src={currentShot.sourceImageUrl} alt="原图" />
                       : <span className={s.placeholder}><Icon name="image" size={22} /><span>原图不可用</span></span>}
                   </div>
                   <figcaption className={s.caption}>
@@ -569,7 +597,7 @@ export default function ShotSetStep({
                   <div className={s.frameBox}>
                     {resultUrl ? (
                       <>
-                        <HoverZoomImage src={resultUrl} alt="结果" className={s.frameImage} zoomMaxWidth={520} zoomMaxHeight={520} />
+                        <ImagePreview src={resultUrl} alt="结果" />
                         {currentShot.indexNum === 1 ? <span className={s.refBadge} title="这张产品全景图将用于视频开头">开场：产品全景图</span> : null}
                       </>
                     ) : (
@@ -680,7 +708,7 @@ export default function ShotSetStep({
               <div className={s.groupList}>
                 <div className={s.groupRow}>
                   <span>状态</span>
-                  <Tag tone={activeSet.status === 'approved' ? 'ok' : 'idle'}>{STATUS_LABELS[activeSet.status] || activeSet.status}</Tag>
+                  <Tag tone={(currentDetail?.status ?? activeSet.status) === 'approved' ? 'ok' : 'idle'}>{STATUS_LABELS[currentDetail?.status ?? activeSet.status] || currentDetail?.status || activeSet.status}</Tag>
                 </div>
                 <div className={s.groupRow}>
                   <span>分镜</span>
@@ -691,6 +719,10 @@ export default function ShotSetStep({
                   <span>{`${activeSet.approvedCount} 张`}</span>
                 </div>
               </div>
+              <button type="button" className="cap" onClick={() => onApplyScene(activeSet.id)}>
+                <Icon name="image" size={14} />{activeSet.sceneReferenceId ? '更换整组场景参考图' : '选择场景参考图'}
+              </button>
+              <p className={s.note}>{currentDetail?.sceneRefName ? `整组场景参考：${currentDetail.sceneRefName}` : '先选择场景参考图，再生成这一组分镜。'}</p>
               <div className={s.rowButtons}>
                 <a className="cap" href={`/api/shot-sets/${activeSet.id}/download`}><Icon name="download" size={14} />下载 ZIP</a>
                 <button type="button" className="cap" onClick={() => onApplyScene(activeSet.id)}>生成分镜</button>
@@ -708,13 +740,23 @@ export default function ShotSetStep({
                     {currentShot.sourceImageUrl ? <HoverZoomImage src={currentShot.sourceImageUrl} alt="图1 底图" className={s.contextImage} /> : null}
                     <figcaption>图1 底图</figcaption>
                   </figure>
-                  <figure>
-                    {currentDetail?.sceneRefImageUrl
-                      ? <HoverZoomImage src={currentDetail.sceneRefImageUrl} alt="图2 场景参考" className={s.contextImage} />
-                      : <span className={s.contextImageEmpty}>无参考图</span>}
-                    <figcaption>{currentDetail?.sceneRefName ? `图2 ${currentDetail.sceneRefName}` : '图2 场景参考'}</figcaption>
-                  </figure>
+                  {selectedReferenceIds.map((id, index) => {
+                    const reference = referenceCandidates.find((candidate) => candidate.id === id);
+                    const label = `图${index + 2} ${reference?.label || '参考图'}`;
+                    return <figure key={id}>
+                      {reference?.imageUrl
+                        ? <HoverZoomImage src={reference.imageUrl} alt={label} className={s.contextImage} />
+                        : <span className={s.contextImageEmpty}>暂无预览</span>}
+                      <figcaption title={label}>{label}</figcaption>
+                    </figure>;
+                  })}
                 </div>
+                {currentShot.latestJobId ? <>
+                  <button type="button" className="cap" disabled={redoing || generating} onClick={() => setReferencePickerOpen(true)}>
+                    <Icon name="image" size={14} />{`选择本张参考图（${selectedReferenceIds.length}）`}
+                  </button>
+                  <p className={s.note}>仅用于本张重做；图1是底图，参考图按选择顺序作为图2起发送。</p>
+                </> : null}
                 {selectableProviders.length > 0 ? (
                   <label className={s.field}>
                     <span>供应商</span>
@@ -748,6 +790,30 @@ export default function ShotSetStep({
           ) : null}
         </>}
       />
+
+      {referencePickerOpen && currentShot ? (
+        <Dialog open title="选择本张参考图" description="可多选，再点一次取消；关闭后保留选择，重新生成时生效。" onClose={() => setReferencePickerOpen(false)}
+          footer={<>
+            <button type="button" className="cap" onClick={() => setRedoReferenceIds([])}>清空参考图</button>
+            <button type="button" className="cap" onClick={() => setRedoReferenceIds(null)}>恢复原任务参考图</button>
+            <button type="button" className="cap primary" onClick={() => setReferencePickerOpen(false)}>完成选择</button>
+          </>}>
+          <div className={s.picks}>
+            {referenceCandidates.map((candidate) => {
+              const index = selectedReferenceIds.indexOf(candidate.id);
+              return <div key={candidate.id} className={s.pickWrap}>
+                <button type="button" className={s.pick} aria-label={candidate.label} aria-pressed={index >= 0}
+                  onClick={() => setRedoReferenceIds(togglePickedId(selectedReferenceIds, candidate.id, referenceCandidates.length))}>
+                  {candidate.imageUrl ? <img src={candidate.imageUrl} alt={candidate.label} /> : <span className={s.pickEmpty}>暂无预览</span>}
+                  {index >= 0 ? <span className={s.pickNumber}>{`图${index + 2}`}</span> : null}
+                </button>
+                <p className={s.note}>{candidate.label}</p>
+              </div>;
+            })}
+          </div>
+          {referenceCandidates.length === 0 ? <p className={s.note}>当前项目暂无参考图，请先在场景图步骤生成并设为场景参考图。</p> : null}
+        </Dialog>
+      ) : null}
 
       {createOpen ? (
         <CreateShotSetDialog

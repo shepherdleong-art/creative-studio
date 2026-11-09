@@ -351,6 +351,32 @@
   .topStepsShell .stepNav { order: 1; width: 100%; }
 }
 
+/* 单条定稿：步骤横置，给预览和参数留下空间；不继承批量的 860px 高度。 */
+:global(html[data-deployment-mode='server']) .shell.teamSingleShell[data-active-step] {
+  height: calc(100dvh - 224px);
+  min-height: 520px;
+  max-height: none;
+  border-radius: var(--radius-card);
+  box-shadow: none;
+  background: var(--color-content);
+}
+.teamSingleShell .topbar { height: auto; min-height: 48px; flex-wrap: wrap; gap: 6px; padding: 6px 12px; }
+.teamSingleShell .topbarRight { margin-left: auto; min-width: 0; flex-wrap: wrap; }
+.teamSingleShell .body { grid-template-columns: 224px minmax(0, 1fr); }
+.teamSingleShell .bodyPreview,
+.teamSingleShell .bodyPreview.colOffA {
+  grid-template-columns: var(--repw, 244px) 6px minmax(0, 1fr) 6px var(--rgtw, 320px);
+}
+.teamSingleShell .bodyPreview .sideCol { display: none; }
+.teamSingleShell .bodyPreview .mainCol { padding-left: 0; }
+.teamSingleShell .stepNav .snav { padding-inline: 8px; }
+.teamSingleShell .stepNav .snavIco { width: 24px; height: 24px; border: 0; background: var(--color-seg); }
+.teamSingleShell .stepNav .snavOn .snavIco { background: var(--color-accent); color: var(--color-accent-foreground); }
+.teamSingleShell .stepNav .snavOn { background: transparent; }
+.mainCol > .infoBanner { flex: none; margin-bottom: 8px; }
+.infoBanner { display: flex; align-items: center; gap: 7px; padding: 10px 12px; border-radius: 8px; color: var(--color-run); background: var(--color-run-tint); font-size: var(--text-label); }
+.infoBanner[data-tone='success'] { color: var(--color-ok); background: var(--color-ok-tint); }
+
 /* ===== 夜间模式：只补丁「局部变量」与阴影 =====
  * 颜色本身一律来自 app/globals.css 的令牌（html[data-theme='dark'] 换取值），
  * 这里不再写第二套写死颜色。下面几条只是把阴影调深，以及给原生控件

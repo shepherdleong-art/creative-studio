@@ -16,9 +16,9 @@ export default function FurniturePromptControls({ prompt, onChange }: {
 
   return (
     <div className="mb-3 space-y-2">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className="grid grid-cols-2 items-end gap-3">
         {fields.map(({ key, label, options }) => (
-          <div key={key}>
+          <div key={key} className="min-w-0">
             <label htmlFor={`${id}-${key}`} className="label">{label}</label>
             <select
               id={`${id}-${key}`}

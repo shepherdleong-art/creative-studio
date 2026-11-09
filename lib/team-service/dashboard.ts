@@ -4,6 +4,7 @@ import { listTeamTasks } from './tasks.ts';
 import { readTeamMemberSummary } from './usage.ts';
 import { readProjectProgress } from '../project-progress-query.ts';
 import { deriveProjectProgress } from '../project-progress.ts';
+import { toStorageImageUrl } from '../storage-url.ts';
 import {
   describeRunningTask,
   isTaskInFlight,
@@ -172,7 +173,7 @@ export function readEmployeeDashboard(
   const displayName = options.displayName?.trim()
     || String(db.prepare('SELECT displayName FROM team_users WHERE id = ?').pluck().get(viewer.userId) ?? '');
 
-  const errors = listTeamErrors(db, viewer, { actorUserId: viewer.userId }).items.slice(0, MAX_ERRORS).map((item) => ({
+  const errors = listTeamErrors(db, viewer, { actorUserId: viewer.userId, actionableOnly: true }).items.slice(0, MAX_ERRORS).map((item) => ({
     errorId: item.errorId,
     stage: item.stage,
     safeMessage: item.safeMessage,
@@ -237,9 +238,7 @@ export function readEmployeeDashboard(
         storeCode: row.storeCode ?? '',
         productionType: row.productionType ?? '',
         productCode: row.productCode ?? '',
-        thumbnailImageUrl: row.thumbnailPath
-          ? `/api/images/${row.thumbnailPath.split(/[/\\]/).join('/')}`
-          : null,
+        thumbnailImageUrl: toStorageImageUrl(row.thumbnailPath) || null,
         progress: projectProgress,
         totalJobs: Number(row.totalJobs ?? 0),
         completedJobs: Number(row.completedJobs ?? 0),

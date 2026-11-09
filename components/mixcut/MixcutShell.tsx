@@ -75,6 +75,8 @@ function readNarrow(): boolean {
 
 /** 服务端渲染时不知道窗口宽度：一律按宽窗口渲染，水合后再按实际宽度收（不会闪空）。 */
 const readNarrowOnServer = () => false;
+const subscribeDeployment = () => () => {};
+const readTeamDeployment = () => document.documentElement.dataset.deploymentMode === 'server';
 
 /**
  * 混剪工作台共用骨架:顶栏 + 左步骤条 + 左辅栏 + 主区。
@@ -215,7 +217,9 @@ export default function MixcutShell({
     'data-rgt-off': rgtOff ? '1' : '0',
   };
 
-  const topSteps = stepsInTopbar || (fitViewportOnStep !== undefined && activeStep === fitViewportOnStep);
+  const teamSingle = useSyncExternalStore(subscribeDeployment, readTeamDeployment, readNarrowOnServer)
+    && dataAttributes?.['data-mixcut-shot-set-id'] !== undefined;
+  const topSteps = teamSingle || stepsInTopbar || (fitViewportOnStep !== undefined && activeStep === fitViewportOnStep);
   const stepNavigation = (
     <nav className={styles.stepNav} aria-label={stepsAriaLabel}>
       <div className={styles.navRow}>
@@ -245,14 +249,14 @@ export default function MixcutShell({
   return (
     <div
       ref={shellRef}
-      className={`${styles.shell} ${topSteps ? styles.topStepsShell : ''} ${pageScroll ? styles.pageScrollShell : ''}`}
+      className={`${styles.shell} ${topSteps ? styles.topStepsShell : ''} ${teamSingle ? styles.teamSingleShell : ''} ${pageScroll ? styles.pageScrollShell : ''}`}
       data-active-step={activeStep}
       data-testid="mixcut-shell"
       style={fitViewport && viewportFitH != null ? { height: viewportFitH, maxHeight: viewportFitH } : undefined}
       {...dataAttributes}
     >
       <header className={styles.topbar}>
-        {topbarLeft}
+        {!teamSingle && topbarLeft}
         {topSteps && stepNavigation}
         {topSteps && (
           <button
@@ -263,7 +267,7 @@ export default function MixcutShell({
               setColOffA(!effectiveColOffA);
               setAutoExpandOverride(effectiveColOffA);
             }}
-          >批次概览</button>
+          >{teamSingle ? '素材与会话' : '批次概览'}</button>
         )}
         {topbarRight && <div className={styles.topbarRight}>{topbarRight}</div>}
       </header>

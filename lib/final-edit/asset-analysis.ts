@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import { FinalEditError } from './errors.ts';
+import { isExecutionControlError } from '../media-core/execution/waiting.ts';
 
 export const FINAL_EDIT_ANALYZER_VERSION = '2';
 
@@ -18,7 +19,7 @@ export interface VideoAnalysisResult {
 interface AssetAnalysisDependencies {
   db: Database.Database;
   probeVideo(input: { filePath: string; videoJobId: string }): Promise<{ durationUs: number; width: number; height: number; fps: number }>;
-  analyzeVideo(input: { filePath: string; videoJobId: string; shotSetId: string; providerId: string }): Promise<VideoAnalysisResult>;
+  analyzeVideo(input: { filePath: string; videoJobId: string; shotSetId: string; providerId: string; signal?: AbortSignal }): Promise<VideoAnalysisResult>;
 }
 
 interface AssetAnalysisInput {
@@ -29,6 +30,7 @@ interface AssetAnalysisInput {
   model?: string;
   /** prepare 可复用成功缓存、记录失败并降级；refresh 强制重分析，失败保留旧记录。 */
   mode: 'prepare' | 'refresh';
+  signal?: AbortSignal;
 }
 
 function isVideoAnalysisResult(value: unknown): value is VideoAnalysisResult {
@@ -53,9 +55,11 @@ function providerModel(db: Database.Database, providerId: string): string {
 export async function analyzeFinalEditAsset(deps: AssetAnalysisDependencies, input: AssetAnalysisInput) {
   const { db } = deps;
   const { videoJobId, shotSetId, providerId } = input;
+  input.signal?.throwIfAborted();
   const fingerprint = crypto.createHash('sha256').update(fs.readFileSync(input.filePath)).digest('hex');
   // 媒体不可读不是 AI 分析降级：探测失败直接抛出，不调用供应商、不覆盖旧记录。
   const media = await deps.probeVideo({ filePath: input.filePath, videoJobId });
+  input.signal?.throwIfAborted();
   const model = input.model ?? providerModel(db, providerId);
   const cached = input.mode === 'prepare'
     ? db.prepare(`SELECT fileFingerprint, providerId, model, analyzerVersion, status, generatedJson FROM final_edit_asset_analysis WHERE videoJobId=?`).get(videoJobId) as {
@@ -74,7 +78,8 @@ export async function analyzeFinalEditAsset(deps: AssetAnalysisDependencies, inp
       && isVideoAnalysisResult(cachedGenerated);
     const analysis = cacheHit
       ? cachedGenerated as VideoAnalysisResult
-      : await deps.analyzeVideo({ filePath: input.filePath, videoJobId, shotSetId, providerId });
+      : await deps.analyzeVideo({ filePath: input.filePath, videoJobId, shotSetId, providerId, signal: input.signal });
+    input.signal?.throwIfAborted();
     if (!isVideoAnalysisResult(analysis)) throw new FinalEditError('analysis_failed', '视频分析结果结构无效');
     const timestamp = new Date().toISOString();
     db.prepare(`
@@ -88,6 +93,8 @@ export async function analyzeFinalEditAsset(deps: AssetAnalysisDependencies, inp
     `).run(videoJobId, shotSetId, fingerprint, providerId, model, FINAL_EDIT_ANALYZER_VERSION, JSON.stringify(media), JSON.stringify(analysis), timestamp, timestamp);
     return { fingerprint, media, analysis, status: 'succeeded' as const, cacheHit };
   } catch (error) {
+    input.signal?.throwIfAborted();
+    if (isExecutionControlError(error) || (error instanceof Error && error.name === 'AbortError')) throw error;
     if (input.mode === 'refresh') throw error;
     db.prepare(`
       INSERT INTO final_edit_asset_analysis

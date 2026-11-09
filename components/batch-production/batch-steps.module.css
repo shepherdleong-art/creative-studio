@@ -74,11 +74,14 @@ select.shellSelect.shellSelect {
   display: flex;
   min-width: 0;
   min-height: 0;
-  flex: 1;
+  /* 长脚本/音色/样式卡按内容撑开，由 mainCol 滚动，不能压缩后叠到下一节。 */
+  flex: 1 0 auto;
   flex-direction: column;
   gap: 10px;
   padding-bottom: 4px;
 }
+
+.page > * { flex-shrink: 0; }
 
 /* ---- 步骤标题区（原型 .bt-head） ---- */
 .head {
@@ -175,8 +178,9 @@ select.shellSelect.shellSelect {
 /* ---- 素材网格（原型 .bms：170px 起，4:3 缩略图） ---- */
 .materialGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+  gap: 14px;
+  align-items: stretch;
 }
 
 .materialCard {
@@ -273,7 +277,8 @@ select.shellSelect.shellSelect {
 /* ---- 脚本行（原型 .bs：分组底 + 选中描边，勾选在左，份数在右） ---- */
 .scriptRow {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: 22px minmax(0, 1fr);
+  min-width: 0;
   align-items: start;
   gap: 10px;
   padding: 10px 12px;
@@ -283,10 +288,32 @@ select.shellSelect.shellSelect {
 }
 
 .scriptRowOn { box-shadow: inset 0 0 0 1.5px var(--color-accent); }
+.scriptRowExpanded { grid-column: 1 / -1; }
 
 .scriptList {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  align-items: start;
+  align-content: start;
+  gap: 8px;
+  max-height: min(70dvh, 640px);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: 2px;
+}
+
+.scriptToggle {
   display: flex;
-  flex-direction: column;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+}
+
+.voiceGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
   gap: 8px;
 }
 

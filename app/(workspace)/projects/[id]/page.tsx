@@ -485,6 +485,8 @@ export default function ProjectDetailPage() {
             projectId={project.id}
             providerOptions={providers}
             shotSourceImages={shotSourceImages}
+            images={project.images}
+            sceneReferences={sceneRefs}
             jobs={shotJobs}
             onUploaded={loadProject}
             onApplyScene={(shotSetId) => void openApplySceneModal(shotSetId)}

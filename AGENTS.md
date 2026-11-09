@@ -13,7 +13,7 @@
 **Creative Studio（产品素材工作台）** 是一个本地优先的 AI 素材生产工作台：把一张产品素材图推进到「场景图 → 分镜图 → 口播脚本 → 视频任务 → 成片剪辑 → ZIP 导出包」的完整流水线。API Key、项目数据、生成结果全部保存在本机，不依赖外部后台。
 
 - 技术栈：Next.js 16（App Router）+ React 19 + TypeScript（strict）+ Tailwind CSS 4 + SQLite（`better-sqlite3`）+ `sharp`（图片处理）+ `archiver`（ZIP 导出）+ `ffmpeg-static`/`ffprobe-static`（成片渲染）。
-- 运行形态：既能 `npm run dev` 作为普通 Web 应用跑，也能以 Electron 桌面壳运行（macOS 源码桌面版、Windows 免安装包）。Windows 安装程序（Inno Setup）与 macOS DMG 已于 2026-10-25 移除。
+- 运行形态：既能 `npm run dev` 作为普通 Web 应用跑，也能以 Electron 桌面壳运行（macOS 源码桌面版、Windows 免安装包）。个人版 Inno 安装程序与 macOS DMG 已移除；团队轻客户端 Beta 提供独立 EXE 安装向导，见打包参考。
 - UI 语言为中文。核心领域术语：项目（project）、场景图（scene image）、分镜（shot/storyboard）、脚本（script）、视频任务（video job）、成片剪辑（final edit）。领域词汇表见 `CONTEXT.md`。
 - 许可证：GPL-3.0-only。
 
@@ -215,6 +215,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 完整流程、脚本参数与 Electron 状态文件契约见 `docs/reference/打包与桌面运行.md`。必须记住的几条：
 
+- 发布产物按 `outputs/` 既有分类归档：客户端安装包/免安装 ZIP 及校验文件统一放 `outputs/02-客户端/分发压缩包/`；客户端目录、启动器补丁、员工说明与证书放该分类下对应子目录，不另散放在 `outputs/` 根目录。
 - `next.config.ts` 用 `output: 'standalone'`；`ffmpeg-static`/`ffprobe-static` 与 sharp 的 `node_modules/@img` 由 `scripts/sync-standalone-assets.mjs` **强制拷入**（Next 文件追踪只收 `.node`，会漏掉同目录 libvips DLL 导致 `ERR_DLOPEN_FAILED`）。
 - `scripts/*.ps1` 必须存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 中文会解析失败）；`storage/run/stack.json` 则是**无 BOM** JSON。
 - macOS 源码桌面版的启动、停止与数据位置见 `MACOS.md`。

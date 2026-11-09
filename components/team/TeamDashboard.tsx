@@ -7,6 +7,7 @@ import { EmptyState, GroupHeading, GroupList } from '@/components/ui/Appearance'
 import { teamError } from './client';
 import PageToolbar from './PageToolbar';
 import TeamConsoleOverview from './TeamConsoleOverview';
+import ResolveErrorButton from './ResolveErrorButton';
 import type { EmployeeDashboard } from '@/lib/team-service/dashboard';
 import type { WorkspaceRole } from '@/lib/workspace-navigation';
 
@@ -155,7 +156,13 @@ function EmployeeWorkbench({
                 <p className="mt-1 text-ink-secondary">{item.safeMessage}</p>
                 <p className="mt-1 text-label leading-5 text-ink-tertiary">能怎么办：{item.actionHint}</p>
               </div>
-              <Link className="cap self-center" href={item.taskHref ?? '/team/errors'}>去看看</Link>
+              <div className="flex flex-wrap items-center gap-2 self-center">
+                <ResolveErrorButton errorId={item.errorId} onResolved={() => {
+                  setDashboard((current) => current ? { ...current, errors: current.errors.filter((entry) => entry.errorId !== item.errorId) } : current);
+                  void refresh();
+                }} />
+                <Link className="cap" href={item.taskHref ?? `/team/errors?errorId=${encodeURIComponent(item.errorId)}`}>去看看</Link>
+              </div>
             </div>)}
         </GroupList>
 

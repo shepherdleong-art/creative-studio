@@ -1,5 +1,6 @@
 import { registerManagedFile, requireAccessContext, runWithTaskAccessContext } from '../media-core/access-context.ts';
 import { analyzeFinalEditAsset, type VideoAnalysisResult } from './asset-analysis.ts';
+import { mapAnalysisMaterials } from '../media-core/analysis-concurrency.ts';
 export { FINAL_EDIT_ANALYZER_VERSION } from './asset-analysis.ts';
 import { packagingCode } from '../media-core/production-codes.ts';
 import { filmBinding, filmView } from './reassembled/store.ts';
@@ -159,7 +160,7 @@ export interface FinalEditWorkspaceDependencies {
   storageRoot: string;
   runJobsInline?: boolean;
   probeVideo(input: { filePath: string; videoJobId: string }): Promise<{ durationUs: number; width: number; height: number; fps: number }>;
-  analyzeVideo(input: { filePath: string; videoJobId: string; shotSetId: string; providerId: string }): Promise<VideoAnalysisResult>;
+  analyzeVideo(input: { filePath: string; videoJobId: string; shotSetId: string; providerId: string; signal?: AbortSignal }): Promise<VideoAnalysisResult>;
   scoreSemanticMatrix?: SemanticScoreAdapter;
   semanticRetrySleep?(delayMs: number): Promise<void>;
   log?(input: { jobId: string; projectId: string; level: 'warn' | 'error'; message: string; attempt: number }): void;
@@ -1208,20 +1209,22 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       updateJob('analyzing', 0);
       const rows = selectedAssets(db, storageRoot, input.projectId, script.shotSetId, input.selectedMaterialKeys);
       pushDetail(`文案拆分完成：共 ${script.segments.length} 句`, `正在分析素材 1/${rows.length}…`);
-      const prepared: PreparedAsset[] = [];
-      for (const row of rows) {
-        assertNotAborted(signal);
+      let completed = 0;
+      const prepared = await mapAnalysisMaterials(rows, async (row, index, analysisSignal): Promise<PreparedAsset> => {
+        assertNotAborted(analysisSignal);
         const assetName = row.displayName || row.filename || row.videoJobId;
-        pushDetail(null, `正在分析素材 ${prepared.length + 1}/${rows.length}：${assetName}`);
+        pushDetail(null, `正在分析素材 ${index + 1}/${rows.length}：${assetName}（已完成 ${completed}）`);
         const result = await analyzeFinalEditAsset(deps, {
           filePath: row.localVideoPath, videoJobId: row.videoJobId, shotSetId: row.shotSetId,
-          providerId: input.analysisProviderId || '', mode: 'prepare',
+          providerId: input.analysisProviderId || '', mode: 'prepare', signal: analysisSignal,
         });
+        assertNotAborted(analysisSignal);
         const { fingerprint, media, analysis } = result;
         const analysisSucceeded = result.status === 'succeeded';
         const analysisNote = analysisSucceeded ? (result.cacheHit ? '缓存命中' : '分析成功') : '分析失败，已降级';
         if (analysisSucceeded) {
           for (const frameUs of (analysis.coverFrameTimesUs || []).slice(0, 3)) {
+            assertNotAborted(analysisSignal);
             const lastSafeFrameUs = Math.max(0, media.durationUs - Math.max(50_000, Math.ceil(1_000_000 / Math.max(1, media.fps))));
             const safeFrameUs = Math.max(0, Math.min(lastSafeFrameUs, frameUs));
             const frameInput = { sourcePath: row.localVideoPath, cacheNamespace: path.join('covers', groupId), cacheKey: `video:${row.videoJobId}:${safeFrameUs}:${fingerprint}`, frameUs: safeFrameUs };
@@ -1233,22 +1236,31 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         }
         const analysisState = db.prepare(`SELECT manualOverrideJson, autoUseDisabled FROM final_edit_asset_analysis WHERE videoJobId=?`).get(row.videoJobId) as { manualOverrideJson: string; autoUseDisabled: number } | undefined;
         const manual = parseJson<Partial<VideoAnalysisResult>>(analysisState?.manualOverrideJson || '{}', {});
-        const usage = db.prepare(`SELECT COUNT(*) AS count FROM final_edit_usage WHERE projectId=? AND shotSetId=? AND assetKind='video' AND assetKey=?`).get(input.projectId, script.shotSetId, fingerprint) as { count: number };
-        prepared.push({
+        assertNotAborted(analysisSignal);
+        const asset: PreparedAsset = {
           ...row,
           ...media,
           fingerprint,
           analysis: { ...analysis, ...manual },
           autoUseDisabled: Boolean(analysisState?.autoUseDisabled),
-          existingUsageCount: Number(usage?.count || 0),
+          existingUsageCount: 0,
           analysisSucceeded,
-        });
-        pushDetail(`素材分析 ${prepared.length}/${rows.length}：${assetName}（${analysisNote}）`);
-        updateJob('analyzing', prepared.length / Math.max(1, rows.length) * 0.3);
-      }
+        };
+        completed += 1;
+        pushDetail(`素材分析 ${completed}/${rows.length}：${assetName}（${analysisNote}）`);
+        updateJob('analyzing', completed / Math.max(1, rows.length) * 0.3);
+        return asset;
+      }, signal);
       if (prepared.length === 0) throw new FinalEditError('no_succeeded_videos', '没有可读取的视频素材');
 
+      // 分析只在抽帧时占用媒体资源；后续 TTS/预览继续沿用重任务串行保护。
+      await runFinalEditHeavyJob(async () => {
       assertNotAborted(signal);
+      // 其他组可在本组分析期间完成；进入串行匹配阶段时才读取最新使用次数。
+      for (const asset of prepared) {
+        const usage = db.prepare(`SELECT COUNT(*) AS count FROM final_edit_usage WHERE projectId=? AND shotSetId=? AND assetKind='video' AND assetKey=?`).get(input.projectId, script.shotSetId, asset.fingerprint) as { count: number };
+        asset.existingUsageCount = Number(usage?.count || 0);
+      }
       updateJob('synthesizing', 0.3);
       const narrationHash = String((db.prepare(`SELECT narrationHash FROM final_edit_groups WHERE id = ?`).get(groupId) as { narrationHash: string }).narrationHash);
       const normalizedSegments = script.segments.map((segment, index) => ({ segmentId: segment.id || `segment-${index + 1}`, narration: segment.narration }));
@@ -1587,6 +1599,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       });
       pushDetail(null, '');
       transaction();
+      }, signal);
     } catch (error) {
       if (signal?.aborted || isAbortError(error)) {
         db.transaction(() => {
@@ -1870,7 +1883,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       return { signal: controller.signal, release: () => undefined };
     })();
     try {
-      await runFinalEditHeavyJob(() => prepare(jobId, row.groupId, input!, script!, registration.signal));
+      await prepare(jobId, row.groupId, input!, script!, registration.signal);
     } finally {
       registration.release();
     }

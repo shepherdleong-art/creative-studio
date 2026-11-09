@@ -4,6 +4,7 @@ import { getDb } from '@/lib/db';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
 import { deleteShotSet } from '@/lib/shot-set-service';
+import { resolveShotSetStatus } from '@/lib/shot-set-status';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
 
@@ -19,7 +20,7 @@ async function __teamRouteGET(
     const { id } = await params;
     const db = getDb();
 
-    const set = db.prepare(`SELECT * FROM shot_sets WHERE id = ?`).get(id);
+    const set = db.prepare(`SELECT * FROM shot_sets WHERE id = ?`).get(id) as { status: string; kind?: string } | undefined;
     if (!set) return NextResponse.json({ error: '分镜组不存在' }, { status: 404 });
 
     const shots = db.prepare(`
@@ -41,7 +42,7 @@ async function __teamRouteGET(
       LEFT JOIN jobs j ON s.latestJobId = j.id
       WHERE s.shotSetId = ?
       ORDER BY s.indexNum
-    `).all(id);
+    `).all(id) as Array<Record<string, unknown> & { latestJobId?: string | null; latestGeneratedImageId?: string | null; jobStatus?: string | null }>;
 
     const storageRoot = path.resolve(dataRoot(), 'storage');
 
@@ -108,7 +109,7 @@ async function __teamRouteGET(
       };
     });
 
-    return NextResponse.json({ ...(set as object), shots: shotsWithUrls, sceneRefName, sceneRefImageUrl });
+    return NextResponse.json({ ...set, status: resolveShotSetStatus(set, shots), shots: shotsWithUrls, sceneRefName, sceneRefImageUrl });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

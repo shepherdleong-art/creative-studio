@@ -212,6 +212,23 @@ export const FIXTURE_HOOKS = {
     return ctx;
   },
 
+  /** 展开多脚本后的纵向布局；只导入文案，不启动生产或试听。 */
+  async batchScripts(ctx) {
+    const projectId = ctx.project.id;
+    ctx.scriptLayoutBatch = await ctx.api.json(ctx.employeeSession, '/api/batch-production/batches', 'POST', {
+      projectId, name: '脚本布局验收批次',
+    }, 201);
+    await ctx.api.json(ctx.employeeSession, '/api/batch-production/scripts', 'POST', {
+      projectId,
+      scripts: Array.from({ length: 6 }, (_, index) => ({
+        title: `布局验收脚本 ${index + 1}`,
+        bodyText: '客厅里的沙发承载一家人的日常。靠坐、休息、聊天，每一个角度都应清楚展示。'.repeat(3),
+        targetDurationSec: 15,
+      })),
+    }, 201);
+    return ctx;
+  },
+
   /**
    * 07 号票：第 1/2 步要有素材与分镜组才画得出对照视图。
    * 只走正式接口 —— 项目图片用分片上传，分镜组用 `/api/projects/[id]/shot-sets`，

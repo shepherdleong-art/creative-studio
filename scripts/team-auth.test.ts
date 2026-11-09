@@ -64,7 +64,7 @@ try {
   assertIdentityOperationAllowed(adminLogin.principal, 'logout');
   const admin = await service.changeOwnPassword(
     adminLogin.principal,
-    initialized.credential,
+    '',
     'admin-new-password-001',
   );
   assert.equal(admin.mustChangePassword, false);
@@ -111,6 +111,7 @@ try {
   assert.equal(nearExpiry?.absoluteExpiresAt, '2026-12-02T08:00:00.000Z', '会话不滑动续期');
   clock = new Date('2026-12-02T08:00:00.000Z');
   assert.equal(service.resolveSession(employeeLogin.token), null, '到期边界立即失效');
+  await expectCode(service.changeOwnPassword(employeeLogin.principal, '', 'expired-session-password'), 'session_invalid');
   clock = new Date('2026-11-02T08:00:00.000Z');
 
   await expectCode(service.createUser(employeeLogin.principal, {
@@ -119,7 +120,7 @@ try {
 
   const employee = await service.changeOwnPassword(
     employeeLogin.principal,
-    employeeCredential.credential,
+    '',
     'employee-new-password-123',
   );
   assert.equal(service.resolveSession(employeeLogin.token), null, '改密后原会话必须重新认证');
@@ -129,6 +130,9 @@ try {
   }), 'admin_required');
   await expectCode(login('00123', employeeCredential.credential), 'invalid_credentials');
   await expectCode(service.changeOwnPassword(relogin.principal, 'wrong-current-password', 'another-new-password-123'), 'invalid_credentials');
+
+  await expectCode(service.changeOwnPassword({ ...relogin.principal, mustChangePassword: true }, '', 'another-new-password-123'), 'invalid_credentials');
+  await expectCode(service.changeOwnPassword(employeeLogin.principal, '', 'another-new-password-123'), 'session_invalid');
 
   assert.ok(relogin.principal.sessionId);
   await service.setUserRole(activeAdmin, employee.userId, 'admin');
@@ -141,7 +145,7 @@ try {
   await expectCode(login('00123', 'employee-new-password-123'), 'invalid_credentials');
   const resetLogin = await login('00123', reset.credential);
   assert.equal(resetLogin.principal.mustChangePassword, true);
-  const afterReset = await service.changeOwnPassword(resetLogin.principal, reset.credential, 'employee-after-reset-123');
+  const afterReset = await service.changeOwnPassword(resetLogin.principal, '', 'employee-after-reset-123');
   await expectCode(login('00123', reset.credential), 'invalid_credentials');
 
   const secondLogin = await login('00124', secondEmployeeCredential.credential);

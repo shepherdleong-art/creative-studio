@@ -49,7 +49,7 @@ const server = spawn(process.execPath, [entry], {
 });
 
 /** 96×128 纯色 PNG（上传夹具用；不联网、不依赖 sharp）。 */
-function solidPng(rgb) {
+function solidPng(rgb, width = 96, height = 128) {
   const table = Array.from({ length: 256 }, (_, index) => {
     let value = index;
     for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
@@ -69,12 +69,12 @@ function solidPng(rgb) {
     return Buffer.concat([length, body, crc]);
   };
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(96, 0);
-  ihdr.writeUInt32BE(128, 4);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
   ihdr[8] = 8;
   ihdr[9] = 2;
-  const row = Buffer.alloc(1 + 96 * 3);
-  for (let x = 0; x < 96; x += 1) {
+  const row = Buffer.alloc(1 + width * 3);
+  for (let x = 0; x < width; x += 1) {
     row[1 + x * 3] = rgb[0];
     row[2 + x * 3] = rgb[1];
     row[3 + x * 3] = rgb[2];
@@ -82,12 +82,13 @@ function solidPng(rgb) {
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk('IHDR', ihdr),
-    chunk('IDAT', deflateSync(Buffer.concat(Array.from({ length: 128 }, () => row)))),
+    chunk('IDAT', deflateSync(Buffer.concat(Array.from({ length: height }, () => row)))),
     chunk('IEND', Buffer.alloc(0)),
   ]);
 }
 
 const PNG = solidPng([210, 210, 214]);
+const LANDSCAPE_PNG = solidPng([80, 150, 130], 192, 96);
 const PROJECT_ID = 'workbench-project';
 const NAMES = { seed: 'seed.png', a: 'shot-1.png', b: 'shot-2.png', c: 'shot-3.png' };
 
@@ -99,7 +100,13 @@ const createdShotSets = [];
 const selectionPatches = [];
 const deletedShotSets = [];
 const regenerations = [];
+const appliedScenes = [];
+const sceneReferences = [
+  { id: 'scene-ref-1', name: '暖色客厅', imageAssetId: 'scene-out-1', status: 'active' },
+  { id: 'scene-ref-2', name: '明亮客厅', imageAssetId: 'scene-out-2', status: 'active' },
+];
 let queueStatus = 'idle';
+let groupGenerationState = 'normal';
 
 function imageAsset(usage, filename) {
   return {
@@ -132,12 +139,14 @@ function shotDetail() {
   const a = uploads.find((item) => item.filename === NAMES.a);
   const b = uploads.find((item) => item.filename === NAMES.b);
   return {
+    status: groupGenerationState === 'complete' ? 'completed' : groupGenerationState === 'running' ? 'generating' : 'draft',
     shots: [
       {
         id: 'shot-1', indexNum: 1,
         sourceImageId: a.id, sourceFilename: NAMES.a, sourceImageUrl: a.imageUrl,
         latestGeneratedImageId: 'shot-1-v2', generatedImageUrl: '/api/images/outputs/shot-1-v2.png',
         latestJobId: 'shot-job-1', jobStatus: 'succeeded', jobPrompt: '第 1 镜：产品全景', reviewMark: '',
+        referenceImageIds: '["scene-out-1"]',
         resultCandidates: [
           { shotId: 'shot-1', jobId: 'shot-job-1a', imageAssetId: 'shot-1-v1', createdAt: '2026-11-01T00:00:00Z', imageUrl: '/api/images/outputs/shot-1-v1.png', jobStatus: 'succeeded', jobPrompt: '第 1 镜：旧版' },
           { shotId: 'shot-1', jobId: 'shot-job-1', imageAssetId: 'shot-1-v2', createdAt: '2026-11-02T00:00:00Z', imageUrl: '/api/images/outputs/shot-1-v2.png', jobStatus: 'succeeded', jobPrompt: '第 1 镜：产品全景' },
@@ -146,7 +155,7 @@ function shotDetail() {
       {
         id: 'shot-2', indexNum: 2,
         sourceImageId: b.id, sourceFilename: NAMES.b, sourceImageUrl: b.imageUrl,
-        latestJobId: 'shot-job-2', jobStatus: 'failed', jobPrompt: '第 2 镜：细节', resultCandidates: [],
+        latestJobId: 'shot-job-2', jobStatus: groupGenerationState === 'normal' ? 'failed' : groupGenerationState === 'running' ? 'running' : 'succeeded', jobPrompt: '第 2 镜：细节', resultCandidates: [],
       },
     ],
     sceneRefName: '验收场景参考',
@@ -180,7 +189,7 @@ async function installRoutes(page) {
       sceneJobs = seedJobs();
       return json({ jobIds: sceneJobs.map((job) => job.id) });
     }
-    if (pathname === `/api/projects/${PROJECT_ID}/scene-references`) return json([]);
+    if (pathname === `/api/projects/${PROJECT_ID}/scene-references`) return json(sceneReferences);
     if (pathname === `/api/projects/${PROJECT_ID}/creative-package`) return png();
     if (pathname === `/api/projects/${PROJECT_ID}/shot-sets`) {
       if (method === 'POST') {
@@ -190,6 +199,10 @@ async function installRoutes(page) {
       return json([{ id: 'set-1', name: '验收分镜组', shotCount: 2, generatedCount: 1, approvedCount: 0, status: 'draft', createdAt: '2026-11-01T00:00:00Z' }]);
     }
     if (pathname === '/api/shot-sets/set-1' && method === 'GET') return json({ id: 'set-1', name: '验收分镜组', ...shotDetail() });
+    if (pathname === '/api/shot-sets/set-1/apply-scene' && method === 'POST') {
+      appliedScenes.push(body);
+      return json({ success: true, jobCount: 2 });
+    }
     if (pathname.startsWith('/api/shot-sets/') && method === 'PATCH') {
       selectionPatches.push(body);
       return json({ success: true });
@@ -205,7 +218,7 @@ async function installRoutes(page) {
     if (pathname.startsWith('/api/jobs/') && (pathname.endsWith('/retry') || pathname.endsWith('/resume-poll'))) return json({ success: true });
     if (pathname === '/api/team/models') return json([{ id: 'provider-1', name: '验收供应商', model: 'gpt-image-2', type: 'openai', enabled: 1, hasApiKey: true }]);
     if (pathname === '/api/team/auth/session') return json({ authenticated: true, role: 'employee', displayName: '验收员工' });
-    if (pathname.startsWith('/api/images/')) return png();
+    if (pathname.startsWith('/api/images/')) return route.fulfill({status:200,contentType:'image/png',body:pathname.includes('/uploads/') ? LANDSCAPE_PNG : PNG});
     return json({});
   });
 }
@@ -245,6 +258,32 @@ try {
   const page = await browser.newPage({ viewport: { width: 1536, height: 900 } });
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await installRoutes(page);
+  const checkComparison = async (original, result, label) => {
+    for (const [width, height] of [[1536,900],[1280,720],[1024,720]]) {
+      await page.setViewportSize({width,height});
+      const first=page.getByRole('button',{name:`放大预览：${original}`,exact:true});
+      const second=page.getByRole('button',{name:`放大预览：${result}`,exact:true});
+      await first.locator('img').evaluate(img=>img.decode());
+      await second.locator('img').evaluate(img=>img.decode());
+      const a=await first.boundingBox(),b=await second.boundingBox();
+      assert.ok(Math.abs(a.height-b.height)<1&&a.height>=220&&a.height<=560,'横图与竖图使用同样且有上限的预览区域');
+      assert.equal(await first.locator('img').evaluate(img=>getComputedStyle(img).objectFit),'contain','原图必须完整显示');
+      await second.click();
+      const dialog=page.getByRole('dialog',{name:result,exact:true});
+      await dialog.waitFor();
+      const box=await dialog.boundingBox();
+      assert.ok(box.x>=0&&box.y>=0&&box.x+box.width<=width+1&&box.y+box.height<=height+1,'放大预览与关闭按钮完整位于窗口内');
+      await page.keyboard.press('Escape');
+      await dialog.waitFor({state:'detached'});
+      assert.ok(await second.evaluate(el=>el===document.activeElement),'关闭预览后焦点回到图片');
+      const mark=await page.getByRole('button',{name:'可用',exact:true}).first().boundingBox();
+      assert.ok(mark.y+mark.height<=height+1,'图片下方的标记操作应在当前窗口内可见');
+      const evidence=path.resolve('outputs/04-测试与验收/2026-11-09-preview-fixes');
+      fs.mkdirSync(evidence,{recursive:true});
+      await page.screenshot({path:path.join(evidence,`${label}-${width}.png`)});
+    }
+    await page.setViewportSize({width:1536,height:900});
+  };
 
   // ═════════════ 第 1 步 ═════════════
   await page.goto(`${baseUrl}/projects/${PROJECT_ID}?tab=scene`, { waitUntil: 'domcontentloaded' });
@@ -285,6 +324,7 @@ try {
   assert.equal(await page.getByTestId('workbench-scene').getAttribute('data-view'), 'compare', '默认必须是「对照」视图');
   await page.getByAltText('原始场景图', { exact: true }).first().waitFor({ timeout: 30_000 });
   await page.getByText('候选 1', { exact: true }).first().waitFor({ timeout: 30_000 });
+  await checkComparison('原始场景图','候选结果','scene');
   // 排队中的那张先占位显示「生成中」（左栏候选列表里有状态标签）
   assert.equal(await page.getByText('排队中', { exact: true }).count() > 0, true, '生成中的候选必须先占位');
 
@@ -312,6 +352,7 @@ try {
   addUpload('shot_source', NAMES.a);
   addUpload('shot_source', NAMES.b);
   addUpload('shot_source', NAMES.c);
+  project.images.push(...sceneReferences.map((ref) => ({ id: ref.imageAssetId, role: 'output', filename: `${ref.name}.png`, imageUrl: `/api/images/outputs/${ref.imageAssetId}.png` })));
   await page.goto(`${baseUrl}/projects/${PROJECT_ID}?tab=storyboard`, { waitUntil: 'domcontentloaded' });
   await page.getByTestId('workbench-storyboard').waitFor({ timeout: 60_000 });
 
@@ -323,6 +364,7 @@ try {
   await page.getByAltText('原图', { exact: true }).first().waitFor({ timeout: 30_000 });
   await page.getByText('结果', { exact: true }).first().waitFor({ timeout: 30_000 });
   assert.match(await page.getByTestId('shot-version').innerText(), /第 \d 版（共 \d 版）/, '结果必须显示「第 N 版（共 M 版）」');
+  await checkComparison('原图','结果','storyboard');
 
   // 左右键切分镜
   await page.keyboard.press('ArrowRight');
@@ -342,6 +384,46 @@ try {
   await page.waitForFunction(() => true, null, { timeout: 1_500 });
   assert.equal(regenerations[0]?.prompt, '第 1 镜：产品全景', '重做必须带上这一张的提示词');
   assert.equal('referenceImageIds' in (regenerations[0] ?? {}), false, '重做不得把参考图清空（不传 referenceImageIds 才沿用原任务）');
+
+  // 新版右栏必须保留整组场景选择入口，且提交选择的场景记录。
+  await page.getByRole('button', { name: '选择场景参考图', exact: true }).click();
+  await page.getByRole('heading', { name: '选择新场景图并生成分镜', exact: true }).waitFor();
+  await page.getByRole('button', { name: /明亮客厅/ }).click();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/set-1/apply-scene')),
+    page.getByRole('button', { name: '创建任务并开始', exact: true }).click(),
+  ]);
+  assert.equal(appliedScenes.at(-1)?.sceneReferenceId, 'scene-ref-2');
+  await page.getByRole('heading', { name: '选择新场景图并生成分镜', exact: true }).waitFor({ state: 'detached' });
+
+  // 单张选择按任务参考图回填；换图、多选和清空必须真正进入请求。
+  await page.getByRole('button', { name: '选择本张参考图（1）', exact: true }).click();
+  const refsDialog = page.getByRole('dialog', { name: '选择本张参考图', exact: true });
+  assert.equal(await refsDialog.getByRole('button', { name: '暖色客厅', exact: true }).getAttribute('aria-pressed'), 'true');
+  assert.equal(await refsDialog.getByRole('button', { name: NAMES.a, exact: true }).count(), 0, '底图不能再被选作参考图');
+  await refsDialog.getByRole('button', { name: '暖色客厅', exact: true }).click();
+  await refsDialog.getByRole('button', { name: '明亮客厅', exact: true }).click();
+  await refsDialog.getByRole('button', { name: '暖色客厅', exact: true }).click();
+  await refsDialog.getByRole('button', { name: '完成选择', exact: true }).click();
+  await page.getByAltText('图2 明亮客厅', { exact: true }).waitFor();
+  await page.getByAltText('图3 暖色客厅', { exact: true }).waitFor();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/regenerate')),
+    page.getByRole('button', { name: '重新生成这一张', exact: true }).click(),
+  ]);
+  assert.deepEqual(regenerations.at(-1)?.referenceImageIds, ['scene-out-2', 'scene-out-1'], '参考图按选择顺序发送');
+  await page.getByRole('button', { name: '选择本张参考图（2）', exact: true }).click();
+  await refsDialog.getByRole('button', { name: '清空参考图', exact: true }).click();
+  await refsDialog.getByRole('button', { name: '完成选择', exact: true }).click();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/regenerate')),
+    page.getByRole('button', { name: '重新生成这一张', exact: true }).click(),
+  ]);
+  assert.deepEqual(regenerations.at(-1)?.referenceImageIds, [], '主动清空必须发送空数组');
+  await page.getByRole('button', { name: '分镜 2', exact: true }).first().click();
+  await page.getByRole('button', { name: '选择本张参考图（0）', exact: true }).waitFor();
+  await page.getByRole('button', { name: '分镜 1', exact: true }).first().click();
+  await page.getByRole('button', { name: '选择本张参考图（1）', exact: true }).waitFor();
 
   // 删除分镜组前必须确认
   await page.getByRole('button', { name: '删除', exact: true }).first().click();
@@ -382,6 +464,14 @@ try {
   // 点选顺序 img-4(shot-3) → img-2(shot-1) → img-3(shot-2)；把 shot-1 设为开场后
   // 变成 img-2 → img-4 → img-3（其余顺序不变）。
   assert.deepEqual(createdShotSets.at(-1)?.shotImageIds, ['img-2', 'img-4', 'img-3'], '建组必须按点选顺序提交镜头（开场图在第一张）');
+
+  // 即使项目任务列表没有变化，分镜自身轮询也必须把组状态更新为已完成。
+  groupGenerationState = 'running';
+  await page.goto(`${baseUrl}/projects/${PROJECT_ID}?tab=storyboard`, { waitUntil: 'domcontentloaded' });
+  const settings = page.getByTestId('workbench-storyboard').getByRole('complementary', { name: '设置' });
+  await settings.getByText('生成中', { exact: true }).waitFor();
+  groupGenerationState = 'complete';
+  await settings.getByText('已完成', { exact: true }).waitFor({ timeout: 10_000 });
 
   assert.deepEqual(pageErrors, [], '页面不应出现运行时异常');
   console.log('workbench scene/shot browser tests passed');

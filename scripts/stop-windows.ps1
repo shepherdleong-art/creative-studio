@@ -76,7 +76,7 @@ function Stop-PortOwners([int]$TargetPort, [string]$Label) {
   }
 }
 
-Write-Host '[1/2] 停止林视 Lin's Vision...'
+Write-Host "[1/2] 停止林视 Lin's Vision..."
 
 # ── 桌面版服务:electron-service.json 校验 + 实例核身 + 优雅停机链委托共享工具(动态端口)──
 # 退出码 0=正常停止/本就无记录;2=instance 不匹配或属主不明(只报告不动手);

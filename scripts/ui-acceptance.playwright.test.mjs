@@ -40,6 +40,7 @@
  *   TEAM_ACCEPTANCE_UI_RESULT_PATH 结果 JSON 路径（acceptance.mjs 会注入）
  *   TEAM_ACCEPTANCE_BROWSER_EVIDENCE_DIR 证据目录（acceptance.mjs 会注入）
  *   TEAM_ACCEPTANCE_TEST_TEMP_ROOT 临时数据根的父目录（默认 TEMP/TMP）
+ *   TEAM_ACCEPTANCE_UI_PRODUCTION=1 使用已构建的 standalone（不触发 dev 首次编译）
  */
 
 import assert from 'node:assert/strict';
@@ -196,9 +197,13 @@ function serverEnvironment() {
 
 function startServer() {
   const nextBinary = fileURLToPath(import.meta.resolve('next/dist/bin/next'));
-  server = spawn(process.execPath, [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
-    cwd: repoRoot,
-    env: serverEnvironment(),
+  const production = process.env.TEAM_ACCEPTANCE_UI_PRODUCTION === '1';
+  const standalone = path.join(repoRoot, '.next', 'standalone');
+  const serverArgs = production ? [path.join(standalone, 'server.js')]
+    : [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)];
+  server = spawn(process.execPath, serverArgs, {
+    cwd: production ? standalone : repoRoot,
+    env: { ...serverEnvironment(), ...(production ? { NODE_ENV: 'production', PORT: String(port), HOSTNAME: '127.0.0.1' } : {}) },
     windowsHide: true,
     detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],

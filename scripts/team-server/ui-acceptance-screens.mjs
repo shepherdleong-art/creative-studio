@@ -347,6 +347,22 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       await page.getByRole('button', { name: /^分镜 1$/ }).waitFor({ timeout: 30_000 });
     },
     actions: [
+      async (page) => {
+        const workspace = page.locator('.video-workspace-prototype');
+        const before = await workspace.boundingBox();
+        while (await page.locator('.video-motion-card').count() < 10) {
+          await page.getByRole('button', { name: '添加描述', exact: true }).click();
+        }
+        await page.locator('.video-motion-card').last().scrollIntoViewIfNeeded();
+        const after = await workspace.boundingBox();
+        if (Math.abs(before.height - after.height) > 1) throw new Error('增加描述撑高了整个视频工作区');
+        const size = page.viewportSize();
+        for (const selector of ['.video-add-action', '.video-create-action']) {
+          const box = await page.locator(selector).boundingBox();
+          if (box.y < 0 || box.y + box.height > size.height + 1) throw new Error('多描述时添加或生成按钮超出窗口');
+        }
+        if (!await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)) throw new Error('多条描述导致整页出现纵向滚动');
+      },
       // 批量检查窗口：统一供应商 / 统一秒数在顶部，且秒数只列交集。
       async (page) => {
         await page.getByRole('button', { name: /^批量检查 \d+ 个分镜$/ }).click();
@@ -399,6 +415,35 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       await page.waitForTimeout(1500);
     }],
   }),
+  base('mixcut-batch-scripts', '批量生产 · 多脚本与字幕设置', 'ui-10', {
+    href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
+    skipUnless: 'batchScripts',
+    ready: async (page) => {
+      await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 });
+      await page.getByRole('tab', { name: '批量生产', exact: true }).click();
+      // 多个夹具批次共存，不能依赖列表默认选中的最新批次。
+      const scriptBatch = page.getByRole('button', { name: /^脚本布局验收批次/, includeHidden: true });
+      await scriptBatch.waitFor({ state: 'attached' });
+      if (!await scriptBatch.isVisible()) await page.getByRole('button', { name: '批次概览', exact: true }).click();
+      await scriptBatch.click();
+      await page.getByRole('button', { name: '脚本与口播', exact: true }).click();
+      await page.getByRole('button', { name: '全选脚本', exact: true }).click();
+      await page.getByRole('button', { name: '取消全选', exact: true }).waitFor();
+      const overflow = await page.locator('section[aria-label="脚本与口播"]').evaluateAll(sections => sections.flatMap(section => {
+        const box = section.getBoundingClientRect();
+        return [...section.querySelectorAll('button,input,select')].filter(el => !el.closest('[aria-label="脚本列表"]') && el.getBoundingClientRect().bottom > box.bottom + 1).map(el => el.getAttribute('aria-label') || el.textContent);
+      }));
+      if (overflow.length) throw new Error(`脚本控件溢出并覆盖后续设置：${overflow.join('、')}`);
+      if (await page.getByTestId('batch-script-editor').count() !== 1) throw new Error('全选脚本不应展开全部编辑器');
+      const bounded = await page.getByRole('region', { name: '脚本列表', exact: true }).evaluate(el =>
+        el.clientHeight <= 640 && getComputedStyle(el).overflowY === 'auto' && el.scrollWidth <= el.clientWidth + 1);
+      if (!bounded) throw new Error('脚本列表必须保持有界滚动且不横向溢出');
+      await page.getByRole('region', { name: '字幕样式', exact: true }).scrollIntoViewIfNeeded();
+    },
+    actions: [async (page) => {
+      await page.getByRole('button', { name: '确认整体输入', exact: true }).scrollIntoViewIfNeeded();
+    }],
+  }),
   // 11 号票：批量导出的第 4 步（封面卡 + 大预览 + 一键下载全部）。
   // 夹具保证那四条成片覆盖「已导出 / 修改未导出 / 从没导出 / 渲染失败」。
   base('batch-export', '项目工作台 · 第 5 步 批量导出成片', 'ui-11', {
@@ -408,6 +453,10 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 });
       await page.getByRole('tab', { name: '批量生产', exact: true }).click();
       // 第 4 步「导出成片」：等卡片与封面真的画出来（不是 sleep）。
+      const exportBatch = page.getByRole('button', { name: /^导出验收批次/, includeHidden: true });
+      await exportBatch.waitFor({ state: 'attached' });
+      if (!await exportBatch.isVisible()) await page.getByRole('button', { name: '批次概览', exact: true }).click();
+      await exportBatch.click();
       await page.getByRole('button', { name: /导出成片/ }).click();
       await page.getByTestId('batch-export-card').first().waitFor({ timeout: 60_000 });
       await page.getByTestId('batch-download-all').waitFor({ timeout: 30_000 });
@@ -420,6 +469,10 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
     ready: async (page) => {
       await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 });
       await page.getByRole('tab', { name: '批量生产', exact: true }).click();
+      const exportBatch = page.getByRole('button', { name: /^导出验收批次/, includeHidden: true });
+      await exportBatch.waitFor({ state: 'attached' });
+      if (!await exportBatch.isVisible()) await page.getByRole('button', { name: '批次概览', exact: true }).click();
+      await exportBatch.click();
       await page.getByRole('button', { name: /导出成片/ }).click();
       await page.getByTestId('batch-export-card').first().waitFor({ timeout: 60_000 });
     },

@@ -15,9 +15,9 @@ import styles from './login.module.css';
 // 记住登录的浏览器存储键：改名不换键，老用户升级后登录偏好还在。
 const REMEMBER_KEY = 'creative-studio-remember-login';
 
-export default function TeamLoginForm({ changePassword = false }: { changePassword?: boolean }) {
+export default function TeamLoginForm() {
   const searchParams = useSearchParams();
-  const [mode, setMode] = useState<'login' | 'change'>(changePassword ? 'change' : 'login');
+  const [mode, setMode] = useState<'login' | 'change'>('login');
   const [employeeId, setEmployeeId] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -44,10 +44,10 @@ export default function TeamLoginForm({ changePassword = false }: { changePasswo
       .then((response) => response.ok ? response.json() : null)
       .then((session: { authenticated?: boolean; mustChangePassword?: boolean } | null) => {
         if (session?.authenticated && session.mustChangePassword) setMode('change');
-        else if (session?.authenticated && !changePassword) window.location.assign('/');
+        else if (session?.authenticated) window.location.assign('/');
       })
       .catch(() => undefined);
-  }, [changePassword]);
+  }, []);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -63,7 +63,7 @@ export default function TeamLoginForm({ changePassword = false }: { changePasswo
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(changing
-          ? { currentPassword, newPassword }
+          ? { newPassword }
           : { employeeId, password: currentPassword, remember }),
       });
       if (!response.ok) throw new Error(await teamError(response, changing ? '改密失败' : '登录失败'));
@@ -120,9 +120,7 @@ export default function TeamLoginForm({ changePassword = false }: { changePasswo
         <p className={styles.sub}>
           {mode === 'login'
             ? BRAND_CLAIM
-            : changePassword
-              ? '输入当前密码，设置至少 6 位的新密码。可以使用 6 位数字。'
-              : '首次或重置密码只能登录一次，设置新密码后即可进入工作台。'}
+            : '身份已验证，请设置至少 6 位的新密码。保存后使用新密码重新登录。'}
         </p>
       </header>
 
@@ -144,9 +142,9 @@ export default function TeamLoginForm({ changePassword = false }: { changePasswo
           {fieldError('employeeId')}
         </div>}
 
-        <div className={styles.field}>
+        {mode === 'login' && <div className={styles.field}>
           <label className={styles.fieldLabel} htmlFor="login-current-password">
-            {mode === 'login' ? '密码或 6 位一次性密码' : '当前密码或一次性密码'}
+            密码或 6 位一次性密码
           </label>
           <input
             id="login-current-password"
@@ -160,7 +158,7 @@ export default function TeamLoginForm({ changePassword = false }: { changePasswo
             onChange={(event) => setCurrentPassword(event.target.value)}
           />
           {fieldError('currentPassword')}
-        </div>
+        </div>}
 
         {mode === 'change' && <>
           <div className={styles.field}>
@@ -213,7 +211,7 @@ export default function TeamLoginForm({ changePassword = false }: { changePasswo
         {notice && <p role="status" className={styles.notice}>{notice}</p>}
 
         <button className={`btn-primary ${styles.submit}`} disabled={busy} type="submit">
-          {busy ? '处理中…' : mode === 'login' ? '登录' : '保存新密码并进入'}
+          {busy ? '处理中…' : mode === 'login' ? '登录' : '保存新密码'}
         </button>
       </form>
     </section>
