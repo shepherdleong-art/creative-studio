@@ -339,6 +339,44 @@ export function claimUnifiedChannelHealthForSelection(
   });
 }
 
+/**
+ * A recovery probe is only claimed after selection. If admission defers,
+ * submission is canceled, or another channel wins before the paid POST, the
+ * probe must not occupy the recovery lease for an unrelated waiting task.
+ */
+export function releaseUnifiedChannelRecoveryProbe(
+  db: Database.Database,
+  input: {
+    unifiedModel: string;
+    channelKey: string;
+    providerId: string;
+    now?: Date;
+  },
+): void {
+  const now = input.now ?? new Date();
+  immediate(db, () => {
+    const before = readUnifiedChannelHealth(db, input.unifiedModel, input.channelKey);
+    if (!before || before.state !== 'recovering') return;
+    const after: UnifiedChannelHealthRecord = {
+      ...before,
+      providerId: input.providerId,
+      state: 'avoided',
+      avoidUntil: now.toISOString(),
+      version: before.version + 1,
+      updatedAt: now.toISOString(),
+    };
+    upsertHealth(db, after);
+    insertAudit(db, {
+      healthKey: before.healthKey,
+      action: 'recovery_probe_released',
+      reasonCode: before.reasonCode,
+      before,
+      after,
+      at: after.updatedAt,
+    });
+  });
+}
+
 export function clearUnifiedChannelHealthAvoidance(
   db: Database.Database,
   input: {

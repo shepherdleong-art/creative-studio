@@ -70,6 +70,7 @@ import {
 import {
   recordUnifiedChannelFailure,
   recordUnifiedChannelSuccess,
+  releaseUnifiedChannelRecoveryProbe,
   unifiedChannelFailureReasonFromEvidence,
 } from './media-core/unified-media/health.ts';
 import { UNIFIED_IMAGE_MODEL_KEY } from './media-core/unified-media/catalog.ts';
@@ -1451,6 +1452,13 @@ async function runAuthorizedJob(
 
     if (err instanceof UnifiedImageCanceledError) {
       const at = new Date().toISOString();
+      if (unifiedExecution) {
+        releaseUnifiedChannelRecoveryProbe(db, {
+          unifiedModel: UNIFIED_IMAGE_MODEL_KEY,
+          channelKey: unifiedExecution.channel.channelKey,
+          providerId: unifiedExecution.channel.definition.providerId,
+        });
+      }
       db.prepare(`UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user',
         finishedAt = COALESCE(finishedAt, datetime('now')) WHERE id = ? AND status IN ('pending', 'retrying', 'running', 'deferred')`)
         .run(job.id);
@@ -1473,6 +1481,13 @@ async function runAuthorizedJob(
     }
 
     if (err instanceof UnifiedImageStaleSubmissionError) {
+      if (unifiedExecution) {
+        releaseUnifiedChannelRecoveryProbe(db, {
+          unifiedModel: UNIFIED_IMAGE_MODEL_KEY,
+          channelKey: unifiedExecution.channel.channelKey,
+          providerId: unifiedExecution.channel.definition.providerId,
+        });
+      }
       const current = db.prepare('SELECT status FROM jobs WHERE id = ?').pluck().get(job.id) as string | undefined;
       if (current === 'running') {
         db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'unknown',
@@ -1537,6 +1552,13 @@ async function runAuthorizedJob(
     }
 
     if (isServerMediaExecution() && isLegacyMediaExecutionDeferred(err)) {
+      if (unifiedExecution) {
+        releaseUnifiedChannelRecoveryProbe(db, {
+          unifiedModel: UNIFIED_IMAGE_MODEL_KEY,
+          channelKey: unifiedExecution.channel.channelKey,
+          providerId: unifiedExecution.channel.definition.providerId,
+        });
+      }
       db.prepare(`UPDATE jobs SET status = 'deferred', errorMessage = ? WHERE id = ? AND status = 'running'`)
         .run(errorMessage, job.id);
       if (job.errorMessage !== errorMessage) {

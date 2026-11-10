@@ -20,6 +20,7 @@ const {
   readUnifiedChannelHealth,
   recordUnifiedChannelFailure,
   recordUnifiedChannelSuccess,
+  releaseUnifiedChannelRecoveryProbe,
   unifiedChannelFailureReasonFromEvidence,
 } = await import('../lib/media-core/unified-media/health.ts');
 const { classifyImageSubmissionFailure } = await import('../lib/media-core/submission-evidence.ts');
@@ -126,6 +127,15 @@ try {
     unifiedModel: qiniu.unifiedModel, channelKey: qiniu.channelKey, providerId: qiniu.providerId,
     now: new Date(due.getTime() + 1_000),
   }), false, 'only one ordinary task may act as a recovery probe');
+  releaseUnifiedChannelRecoveryProbe(db, {
+    unifiedModel: qiniu.unifiedModel, channelKey: qiniu.channelKey, providerId: qiniu.providerId,
+    now: new Date(due.getTime() + 1_500),
+  });
+  assert.equal(readUnifiedChannelHealth(db, qiniu.unifiedModel, qiniu.channelKey)?.state, 'avoided');
+  assert.equal(claimUnifiedChannelHealthForSelection(db, {
+    unifiedModel: qiniu.unifiedModel, channelKey: qiniu.channelKey, providerId: qiniu.providerId,
+    now: new Date(due.getTime() + 1_600),
+  }), true, 'an unused recovery probe must be released for the next eligible task');
   recordUnifiedChannelSuccess(db, {
     unifiedModel: qiniu.unifiedModel, channelKey: qiniu.channelKey,
     providerId: qiniu.providerId, now: new Date(due.getTime() + 2_000),
