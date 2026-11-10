@@ -5,9 +5,13 @@ export const UNIFIED_MEDIA_RULE_VERSION = 'unified-media-2026-11-10-v1';
 export const UNIFIED_IMAGE_MODEL_KEY = 'image2' as const;
 export const UNIFIED_IMAGE_ANCHOR_ID = 'unified-image2' as const;
 export const UNIFIED_IMAGE_DISPLAY_NAME = 'Image 2' as const;
+export const UNIFIED_KLING3_MODEL_KEY = 'kling-3.0' as const;
+export const UNIFIED_KLING3_ANCHOR_ID = 'unified-kling-3' as const;
+export const UNIFIED_KLING3_DISPLAY_NAME = '可灵 3.0' as const;
 
 export type UnifiedImageTier = '1k' | '2k' | '4k';
 export type UnifiedImageChannelKey = 'qiniu' | 'tencent';
+export type UnifiedVideoChannelKey = 'qiniu' | 'tencent';
 
 export interface UnifiedImageChannelDefinition {
   channelKey: UnifiedImageChannelKey;
@@ -24,6 +28,14 @@ export interface UnifiedImageCombination {
   channelKeys: UnifiedImageChannelKey[];
 }
 
+export interface UnifiedVideoChannelDefinition {
+  channelKey: UnifiedVideoChannelKey;
+  providerTable: 'video_providers';
+  providerId: string;
+  model: string;
+  priority: number;
+}
+
 export const UNIFIED_IMAGE_CHANNELS: readonly UnifiedImageChannelDefinition[] = Object.freeze([
   Object.freeze({
     channelKey: 'qiniu',
@@ -37,6 +49,23 @@ export const UNIFIED_IMAGE_CHANNELS: readonly UnifiedImageChannelDefinition[] = 
     providerTable: 'providers',
     providerId: 'company-gateway-image2-medium',
     model: 'image2-medium',
+    priority: 1,
+  }),
+] as const);
+
+export const UNIFIED_KLING3_CHANNELS: readonly UnifiedVideoChannelDefinition[] = Object.freeze([
+  Object.freeze({
+    channelKey: 'qiniu',
+    providerTable: 'video_providers',
+    providerId: 'company-qiniuyun-kling-3-0',
+    model: 'qiniuyun/kling-3.0',
+    priority: 0,
+  }),
+  Object.freeze({
+    channelKey: 'tencent',
+    providerTable: 'video_providers',
+    providerId: 'company-kling-3-0',
+    model: 'kling-3.0',
     priority: 1,
   }),
 ] as const);
@@ -92,21 +121,26 @@ export function unifiedImageResolutionsForRatio(ratio: string): UnifiedImageTier
 }
 
 /** Only exact trusted identities can inherit a unified authorization. */
-export function trustedUnifiedModelForChannelModel(value: unknown): typeof UNIFIED_IMAGE_MODEL_KEY | null {
+export function trustedUnifiedModelForChannelModel(
+  value: unknown,
+): typeof UNIFIED_IMAGE_MODEL_KEY | typeof UNIFIED_KLING3_MODEL_KEY | null {
   if (typeof value !== 'string') return null;
   const model = value.trim();
-  return UNIFIED_IMAGE_CHANNELS.some((channel) => channel.model === model)
-    ? UNIFIED_IMAGE_MODEL_KEY
-    : null;
+  if (UNIFIED_IMAGE_CHANNELS.some((channel) => channel.model === model)) return UNIFIED_IMAGE_MODEL_KEY;
+  if (UNIFIED_KLING3_CHANNELS.some((channel) => channel.model === model)) return UNIFIED_KLING3_MODEL_KEY;
+  return null;
 }
 
 export function trustedChannelModelsForUnifiedModel(value: unknown): string[] {
-  if (value !== UNIFIED_IMAGE_MODEL_KEY) return [];
-  return UNIFIED_IMAGE_CHANNELS.map((channel) => channel.model);
+  if (value === UNIFIED_IMAGE_MODEL_KEY) return UNIFIED_IMAGE_CHANNELS.map((channel) => channel.model);
+  if (value === UNIFIED_KLING3_MODEL_KEY) return UNIFIED_KLING3_CHANNELS.map((channel) => channel.model);
+  return [];
 }
 
 export function unifiedMediaDisplayName(value: unknown): string | null {
-  return value === UNIFIED_IMAGE_MODEL_KEY ? UNIFIED_IMAGE_DISPLAY_NAME : null;
+  if (value === UNIFIED_IMAGE_MODEL_KEY) return UNIFIED_IMAGE_DISPLAY_NAME;
+  if (value === UNIFIED_KLING3_MODEL_KEY) return UNIFIED_KLING3_DISPLAY_NAME;
+  return null;
 }
 
 export function isUnifiedImageAnchorProvider(provider: {
@@ -130,6 +164,35 @@ export function unifiedImageAnchorProjection(available: boolean) {
     configured: available,
     hasApiKey: available,
     missing: available ? [] : ['Image 2 通道'],
+    unified: true,
+    ruleVersion: UNIFIED_MEDIA_RULE_VERSION,
+  };
+}
+
+export function isUnifiedKlingAnchorProvider(provider: {
+  id?: unknown;
+  type?: unknown;
+  defaultModel?: unknown;
+  model?: unknown;
+}): boolean {
+  const model = provider.defaultModel ?? provider.model;
+  return provider.id === UNIFIED_KLING3_ANCHOR_ID
+    && provider.type === 'openai-video'
+    && model === UNIFIED_KLING3_MODEL_KEY;
+}
+
+export function unifiedKlingAnchorProjection(available: boolean) {
+  return {
+    id: UNIFIED_KLING3_ANCHOR_ID,
+    name: UNIFIED_KLING3_DISPLAY_NAME,
+    defaultModel: UNIFIED_KLING3_MODEL_KEY,
+    defaultDurationSec: 5,
+    category: 'video',
+    type: 'openai-video',
+    enabled: 1,
+    configured: available,
+    hasApiKey: available,
+    missing: available ? [] : ['可灵 3.0 通道'],
     unified: true,
     ruleVersion: UNIFIED_MEDIA_RULE_VERSION,
   };

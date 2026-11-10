@@ -11,7 +11,10 @@ import {
 import { getShanghaiUsagePeriods } from '../usage-query.ts';
 import { addUsageDays, usageDateLabel } from '../usage-date-range.ts';
 import type { TeamViewer } from './diagnostics.ts';
-import { unifiedMediaDisplayName } from '../media-core/unified-media/catalog.ts';
+import {
+  UNIFIED_KLING3_MODEL_KEY,
+  unifiedMediaDisplayName,
+} from '../media-core/unified-media/catalog.ts';
 import { queryUnifiedTaskUsage, type TeamUnifiedTaskView } from './unified-usage.ts';
 
 export class TeamUsageError extends Error {
@@ -240,17 +243,19 @@ export function queryTeamUsage(
     CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.model') END,
     CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.modelAlias') END
   )`;
-  const hasUnifiedModel = tableHasColumn(db, 'jobs', 'unifiedModel');
-  const unifiedModelExpression = hasUnifiedModel
-    ? `COALESCE(j.unifiedModel, CASE WHEN json_valid(a.providerSnapshotJson)
-        THEN json_extract(a.providerSnapshotJson, '$.unifiedModel') END)`
-    : `CASE WHEN json_valid(a.providerSnapshotJson)
-        THEN json_extract(a.providerSnapshotJson, '$.unifiedModel') END`;
+  const hasImageUnifiedModel = tableHasColumn(db, 'jobs', 'unifiedModel');
+  const hasVideoUnifiedModel = tableHasColumn(db, 'video_jobs', 'unifiedModel');
+  const snapshotUnified = `CASE WHEN json_valid(a.providerSnapshotJson)
+    THEN json_extract(a.providerSnapshotJson, '$.unifiedModel') END`;
+  const unifiedModelExpression = `COALESCE(
+    ${hasImageUnifiedModel ? 'j.unifiedModel' : 'NULL'},
+    ${hasVideoUnifiedModel ? 'v.unifiedModel' : 'NULL'},
+    ${snapshotUnified}
+  )`;
   if (filters.model) {
-    const displayModel = filters.model === 'image2'
-      || filters.model === unifiedMediaDisplayName('image2')
-      ? 'image2'
-      : filters.model;
+    const unifiedFilter = ['image2', UNIFIED_KLING3_MODEL_KEY]
+      .find((key) => filters.model === key || filters.model === unifiedMediaDisplayName(key));
+    const displayModel = unifiedFilter ?? filters.model;
     clauses.push(`(${modelExpression} = ? OR ${unifiedModelExpression} = ?)`);
     values.push(filters.model, displayModel);
   }
@@ -259,7 +264,7 @@ export function queryTeamUsage(
       a.businessAttemptNo, a.submitRound, a.transportSeq, a.actorId AS actorUserId,
       u.employeeId, u.displayName AS actorDisplayName, o.scopeType, o.scopeId,
       o.module, o.step, ${modelExpression} AS model,
-      ${hasUnifiedModel ? 'j.unifiedModel' : 'NULL'} AS unifiedModel,
+      ${unifiedModelExpression} AS unifiedModel,
       CASE WHEN json_valid(o.quoteJson) THEN json_extract(o.quoteJson, '$.kind') ELSE 'unpriced' END AS quoteKind,
       a.submissionState, a.terminalState AS outcome, a.remoteId, a.reservedMinor, a.actualMinor,
       a.costState, a.policyVersion, a.accountingPeriod, o.configVersion, o.clientVersion,
@@ -270,7 +275,8 @@ export function queryTeamUsage(
     FROM execution_attempts a
     JOIN execution_operations o ON o.id = a.operationId
     JOIN team_users u ON u.id = a.actorId
-    ${hasUnifiedModel ? "LEFT JOIN jobs j ON o.module = 'image' AND j.id = o.taskId" : ''}
+    ${hasImageUnifiedModel ? "LEFT JOIN jobs j ON o.module = 'image' AND j.id = o.taskId" : ''}
+    ${hasVideoUnifiedModel ? "LEFT JOIN video_jobs v ON o.module = 'video' AND v.id = o.taskId" : ''}
     ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
     ORDER BY a.createdAt DESC, a.id DESC
   `).all(...values) as AttemptRow[];

@@ -10,6 +10,11 @@ import {
   unifiedImageCompatibleChannels,
 } from './media-core/unified-media/catalog.ts';
 import { unifiedImageProviderAvailability } from './media-core/unified-media/execution.ts';
+import {
+  freezeUnifiedKlingVideoRequest,
+  unifiedKlingCompatibleChannels,
+} from './media-core/unified-media/video-requests.ts';
+import { unifiedKlingProviderAvailability } from './media-core/unified-media/video-execution.ts';
 
 interface MediaQueueWorkers {
   db: Database.Database;
@@ -28,12 +33,12 @@ function poolDemands(input: MediaQueueWorkers): QueuePoolDemand[] {
     ? "status IN ('pending', 'retrying', 'running', 'deferred') OR ((status = 'needs_check' OR providerStatus = 'download_failed') AND (providerTaskId IS NOT NULL OR (providerStatus = 'download_failed' AND remoteImageUrl IS NOT NULL)))"
     : "status IN ('pending', 'running', 'deferred') OR ((status = 'needs_check' OR providerStatus = 'download_failed') AND providerTaskId IS NOT NULL)";
   const rows = input.db.prepare(`
-    SELECT providerId, ${input.module === 'image' ? 'unifiedModel, unifiedRequestJson' : 'NULL AS unifiedModel, NULL AS unifiedRequestJson'},
+    SELECT providerId, unifiedModel, unifiedRequestJson,
       COUNT(*) AS taskCount FROM ${table}
     WHERE projectId = ? AND (? IS NULL OR id = ?)
       AND (${runnable})
       AND NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = ${table}.id AND r.kind = ?)
-    GROUP BY providerId ${input.module === 'image' ? ', unifiedModel, unifiedRequestJson' : ''}
+    GROUP BY providerId, unifiedModel, unifiedRequestJson
   `).all(input.projectId, input.jobId ?? null, input.jobId ?? null, reworkKind) as Array<{
     providerId: string; unifiedModel: string | null; unifiedRequestJson: string | null; taskCount: number;
   }>;
@@ -43,7 +48,27 @@ function poolDemands(input: MediaQueueWorkers): QueuePoolDemand[] {
     let capacity = 1;
     try {
       let providerId = row.providerId;
-      if (row.unifiedModel && row.unifiedRequestJson) {
+      if (input.module === 'video' && row.unifiedModel && row.unifiedRequestJson) {
+        const source = JSON.parse(row.unifiedRequestJson) as Record<string, unknown>;
+        const frozen = freezeUnifiedKlingVideoRequest({
+          sourceImageId: String(source.sourceImageId ?? ''),
+          tailImageId: typeof source.tailImageId === 'string' ? source.tailImageId : null,
+          referenceAssetIds: Array.isArray(source.referenceAssetIds)
+            ? source.referenceAssetIds.map((item) => String(item ?? '')) : [],
+          prompt: String(source.prompt ?? ''),
+          durationSec: Number(source.durationSec),
+          generationMode: String(source.generationMode ?? ''),
+          multiShot: source.multiShot,
+          aspectRatio: typeof source.aspectRatio === 'string' ? source.aspectRatio : null,
+          resolution: typeof source.resolution === 'string' ? source.resolution : null,
+        });
+        const availability = new Map(unifiedKlingProviderAvailability(input.db)
+          .filter((channel) => channel.identityValid && channel.configured)
+          .map((channel) => [channel.channelKey, channel]));
+        const selected = unifiedKlingCompatibleChannels(frozen)
+          .find((channel) => availability.has(channel.channelKey));
+        if (selected) providerId = selected.providerId;
+      } else if (input.module === 'image' && row.unifiedModel && row.unifiedRequestJson) {
         const frozen = JSON.parse(row.unifiedRequestJson) as { tier?: unknown; ratio?: unknown };
         const tier = normalizeUnifiedImageTier(frozen.tier);
         const ratio = typeof frozen.ratio === 'string' ? frozen.ratio : '';

@@ -34,7 +34,9 @@ async function __teamRoutePOST(
         db.prepare(`UPDATE video_jobs SET status = 'pending', errorMessage = NULL,
           providerTaskId = NULL, providerStatus = NULL, providerRawResponse = NULL,
           lastPolledAt = NULL, pollCount = 0, startedAt = NULL, finishedAt = NULL,
-          attempt = 0, usageSnapshotJson = NULL, executionRevision = COALESCE(executionRevision, 0) + 1
+          attempt = 0, usageSnapshotJson = NULL, executionRevision = COALESCE(executionRevision, 0) + 1,
+          unifiedTaskId = CASE WHEN unifiedModel IS NULL THEN unifiedTaskId ELSE NULL END,
+          cancelRequestedAt = CASE WHEN unifiedModel IS NULL THEN cancelRequestedAt ELSE NULL END
         WHERE id = ?`).run(id);
       } else {
         db.prepare(`UPDATE video_jobs SET status = 'pending', errorMessage = NULL WHERE id = ?`).run(id);

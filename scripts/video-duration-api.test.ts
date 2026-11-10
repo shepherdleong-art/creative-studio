@@ -47,6 +47,20 @@ const dependencies: Record<string, unknown> = {
   '@/lib/video-output-filenames': filenames,
   '@/lib/video-job-create': videoJobCreate,
   '@/lib/provider-list-visibility': providerVisibility,
+  '@/lib/team-service/route-wrapper': {
+    withTeamRoute: (_route: string, _method: string, handler: unknown) => handler,
+  },
+  '@/lib/team-service/config': {
+    readRuntimeConfig: () => ({ mode: 'local' }),
+  },
+  '@/lib/team-service/production-defaults': {
+    productionParamsFor: (_config: unknown, input?: { videoConcurrency?: number }) => ({
+      videoConcurrency: Number(input?.videoConcurrency) || 10,
+    }),
+  },
+  '@/lib/team-service/pools': {
+    providerPoolStatus: () => ({}),
+  },
 };
 function loadRoute(file: string, method = 'POST') {
   const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
