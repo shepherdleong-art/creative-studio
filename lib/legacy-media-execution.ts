@@ -13,6 +13,7 @@ import {
 import { readExecutionPool, readExecutionPoolBinding, mediaUpstreamBindingKey } from './media-core/execution/pools.ts';
 import {
   classifyImageSubmissionFailure,
+  classifySubmissionOutcome,
   classifyVideoSubmissionFailure,
   type SubmissionEvidence,
 } from './media-core/submission-evidence.ts';
@@ -142,10 +143,42 @@ export class LegacyMediaSubmissionUnknownError extends Error {
   }
 }
 
+export interface LegacyMediaExplicitFailureDetails {
+  evidence: SubmissionEvidence;
+  attemptId: string;
+  operationId: string;
+  channelKey?: string | null;
+}
+
 export class LegacyMediaNotCreatedError extends Error {
-  constructor(message: string) {
-    super(message);
+  readonly evidence: SubmissionEvidence;
+  readonly attemptId: string;
+  readonly operationId: string;
+  readonly channelKey: string | null;
+
+  constructor(details: LegacyMediaExplicitFailureDetails) {
+    super(details.evidence.employee.detail);
     this.name = 'LegacyMediaNotCreatedError';
+    this.evidence = details.evidence;
+    this.attemptId = details.attemptId;
+    this.operationId = details.operationId;
+    this.channelKey = details.channelKey ?? null;
+  }
+}
+
+export class LegacyMediaRemoteFailedError extends Error {
+  readonly evidence: SubmissionEvidence;
+  readonly attemptId: string;
+  readonly operationId: string;
+  readonly channelKey: string | null;
+
+  constructor(details: LegacyMediaExplicitFailureDetails) {
+    super(details.evidence.employee.detail);
+    this.name = 'LegacyMediaRemoteFailedError';
+    this.evidence = details.evidence;
+    this.attemptId = details.attemptId;
+    this.operationId = details.operationId;
+    this.channelKey = details.channelKey ?? null;
   }
 }
 
@@ -158,6 +191,10 @@ export class LegacyMediaProviderRecoveryBlockedError extends Error {
 
 export function isLegacyMediaSubmissionUnknown(error: unknown): error is LegacyMediaSubmissionUnknownError {
   return error instanceof LegacyMediaSubmissionUnknownError;
+}
+
+export function isLegacyMediaRemoteFailed(error: unknown): error is LegacyMediaRemoteFailedError {
+  return error instanceof LegacyMediaRemoteFailedError;
 }
 
 export function isLegacyMediaProviderRecoveryBlocked(error: unknown): error is LegacyMediaProviderRecoveryBlockedError {
@@ -267,6 +304,7 @@ export interface LegacyMediaSubmitInput<T> {
   channelKey?: string | null;
   signal?: AbortSignal;
   onAdmitted?: () => void;
+  beforeSend?: () => void | Promise<void>;
   send: () => Promise<{ value: T; receipt: ExecutionReceipt }>;
 }
 
@@ -326,6 +364,24 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
     throw error;
   }
 
+  if (input.beforeSend) {
+    try {
+      await input.beforeSend();
+    } catch (error) {
+      await facade.settle({
+        attemptId: intent.attemptId,
+        outcome: 'not_created',
+        actualCost: null,
+        remoteTerminal: true,
+        errorCode: 'not_sent',
+      });
+      getDb().prepare(`UPDATE execution_operations
+        SET status = 'failed', waitReason = NULL, waitDetail = NULL, updatedAt = ?
+        WHERE id = ?`).run(new Date().toISOString(), intent.operationId);
+      throw error;
+    }
+  }
+
   let value: T | undefined;
   let submissionError: unknown;
   try {
@@ -361,7 +417,12 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
         businessAttemptNo: attempt.businessAttemptNo,
         error: submissionError,
       });
-      throw new LegacyMediaNotCreatedError(evidence.employee.detail);
+      throw new LegacyMediaNotCreatedError({
+        evidence,
+        attemptId: attempt.id,
+        operationId: attempt.operationId,
+        channelKey: input.channelKey,
+      });
     }
     if (attempt.terminalState) {
       const outcome = attempt.terminalState;
@@ -373,12 +434,31 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
       await facade.settle({ attemptId: attempt.id, outcome, actualCost, remoteTerminal: true });
       if (outcome === 'failed') {
         await facade.captureError({ attemptId: attempt.id, outcome: 'failed', stage: 'remote_submit', errorCode: attempt.errorCode ?? 'provider_failed' });
+        const evidence = classifySubmissionOutcome({
+          entry: input.module,
+          taskId: input.taskId,
+          businessAttemptNo: attempt.businessAttemptNo,
+          adapterId: input.providerSnapshot.type,
+          stage: 'submit',
+          source: 'provider',
+          outcome: 'terminal_failed',
+          remoteId: attempt.remoteId,
+          errorCode: attempt.errorCode ?? 'provider_failed',
+        });
+        if (input.mediaTaskId) {
+          throw new LegacyMediaRemoteFailedError({
+            evidence,
+            attemptId: attempt.id,
+            operationId: attempt.operationId,
+            channelKey: input.channelKey,
+          });
+        }
         throw new Error('供应商同步返回失败。');
       }
     }
     return { value, attemptId: attempt.id, remoteId: attempt.remoteId ?? undefined, resumed: false };
   } catch (error) {
-    if (error instanceof LegacyMediaNotCreatedError) throw error;
+    if (error instanceof LegacyMediaNotCreatedError || error instanceof LegacyMediaRemoteFailedError) throw error;
     if (error instanceof ExecutionError && !['transport_unknown'].includes(error.code)) throw error;
     const evidence = classifyLegacySubmissionError({
       module: input.module,
