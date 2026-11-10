@@ -7,6 +7,9 @@ import {
   UNIFIED_IMAGE_ANCHOR_ID,
   UNIFIED_IMAGE_DISPLAY_NAME,
   UNIFIED_IMAGE_MODEL_KEY,
+  UNIFIED_KLING3_ANCHOR_ID,
+  UNIFIED_KLING3_DISPLAY_NAME,
+  UNIFIED_KLING3_MODEL_KEY,
 } from './media-core/unified-media/catalog.ts';
 
 // 公司供应商统一经本机 LiteLLM 代理（127.0.0.1:4000）转发；代理不校验调用方
@@ -161,6 +164,22 @@ export function seedVideoProviders() {
   }
 
   ensureCompanyVideoProviders(db);
+  ensureUnifiedKlingAnchor(db);
+}
+
+function ensureUnifiedKlingAnchor(db: ReturnType<typeof getDb>) {
+  db.prepare(`
+    INSERT INTO video_providers
+      (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled,
+       defaultDurationSec, baseUrl, apiKey, accessKey, secretKey)
+    SELECT ?, ?, 'openai-video', '', '', '', ?, 1, 5, '', '', '', ''
+    WHERE NOT EXISTS (SELECT 1 FROM video_providers WHERE id = ?)
+  `).run(
+    UNIFIED_KLING3_ANCHOR_ID,
+    UNIFIED_KLING3_DISPLAY_NAME,
+    UNIFIED_KLING3_MODEL_KEY,
+    UNIFIED_KLING3_ANCHOR_ID,
+  );
 }
 
 /**

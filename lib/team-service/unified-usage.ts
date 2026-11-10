@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import {
+  UNIFIED_KLING3_MODEL_KEY,
   unifiedMediaDisplayName,
 } from '../media-core/unified-media/catalog.ts';
 import type { TeamViewer } from './diagnostics.ts';
@@ -206,9 +207,10 @@ function scopedActor(viewer: TeamViewer, requested?: string): string | undefined
 }
 
 function taskModelFilterValues(value: string): { unified: string | null; raw: string } {
-  const display = unifiedMediaDisplayName('image2');
+  const unified = ['image2', UNIFIED_KLING3_MODEL_KEY]
+    .find((key) => value === key || value === unifiedMediaDisplayName(key)) ?? null;
   return {
-    unified: value === 'image2' || (display !== null && value === display) ? 'image2' : null,
+    unified,
     raw: value,
   };
 }

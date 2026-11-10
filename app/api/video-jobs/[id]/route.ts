@@ -4,6 +4,7 @@ import { requiresReassembledUpstreamRework, REASSEMBLED_REWORK_REQUIRED } from '
 import { resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
 import { toStorageVideoUrl } from '@/lib/storage-url';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { requestUnifiedKlingCancellation } from '@/lib/media-core/unified-media/video-execution';
 
 
 async function __teamRouteGET(
@@ -63,6 +64,11 @@ async function __teamRoutePATCH(
       return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
     }
 
+    const unified = db.prepare('SELECT unifiedModel FROM video_jobs WHERE id = ?').pluck().get(id) as
+      | string
+      | null
+      | undefined;
+    if (unified) requestUnifiedKlingCancellation(db, id);
     const result = db.prepare(`
       UPDATE video_jobs
       SET status = 'canceled',

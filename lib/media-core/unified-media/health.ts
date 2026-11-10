@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { SubmissionEvidence } from '../submission-evidence.ts';
-import { UNIFIED_IMAGE_CHANNELS, UNIFIED_IMAGE_MODEL_KEY } from './catalog.ts';
+import {
+  UNIFIED_IMAGE_CHANNELS,
+  UNIFIED_IMAGE_MODEL_KEY,
+  UNIFIED_KLING3_CHANNELS,
+  UNIFIED_KLING3_MODEL_KEY,
+} from './catalog.ts';
 
 /**
  * 通道健康状态只影响未来任务选路，不改写真实供应商 enabled，也不碰已受理/未知尝试。
@@ -69,6 +74,22 @@ const HEALTH_CHANNELS: readonly UnifiedChannelHealthDefinition[] = Object.freeze
     channelLabel: '腾讯',
     providerTable: 'providers' as const,
     providerId: UNIFIED_IMAGE_CHANNELS.find((channel) => channel.channelKey === 'tencent')!.providerId,
+  }),
+  Object.freeze({
+    unifiedModel: UNIFIED_KLING3_MODEL_KEY,
+    unifiedModelLabel: '可灵 3.0',
+    channelKey: 'qiniu',
+    channelLabel: '七牛',
+    providerTable: 'video_providers' as const,
+    providerId: UNIFIED_KLING3_CHANNELS.find((channel) => channel.channelKey === 'qiniu')!.providerId,
+  }),
+  Object.freeze({
+    unifiedModel: UNIFIED_KLING3_MODEL_KEY,
+    unifiedModelLabel: '可灵 3.0',
+    channelKey: 'tencent',
+    channelLabel: '腾讯',
+    providerTable: 'video_providers' as const,
+    providerId: UNIFIED_KLING3_CHANNELS.find((channel) => channel.channelKey === 'tencent')!.providerId,
   }),
 ] as const);
 

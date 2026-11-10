@@ -389,7 +389,7 @@ try {
   const healthBody = JSON.parse(healthText) as {
     items: Array<{ healthKey: string; version: number; state: string }>;
   };
-  assert.equal(healthBody.items.length, 2);
+  assert.equal(healthBody.items.length, 4);
   assert.equal((await channelHealthRoute.POST(write(
     'https://studio.example.test/api/team/channel-health', userA.cookie,
     { action: 'clear', healthKey: healthBody.items[0].healthKey, expectedVersion: healthBody.items[0].version },

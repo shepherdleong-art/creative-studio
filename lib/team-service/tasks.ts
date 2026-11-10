@@ -95,6 +95,16 @@ export function listTeamTasks(
   const canceled = `(o.waitReason = 'stage_canceled' OR (o.status IN ('pending', 'deferred', 'failed') AND COALESCE(j.status, v.status) = 'canceled'))`;
   if (filters.status === 'canceled') clauses.push(canceled);
   else if (filters.status) { clauses.push(`o.status = ? AND NOT COALESCE(${canceled}, 0)`); values.push(filters.status); }
+  const hasImageUnified = tableHasColumn(db, 'jobs', 'unifiedModel');
+  const hasVideoUnified = tableHasColumn(db, 'video_jobs', 'unifiedModel');
+  const unifiedModelExpression = hasImageUnified || hasVideoUnified
+    ? `COALESCE(${hasImageUnified ? 'j.unifiedModel' : 'NULL'}, ${hasVideoUnified ? 'v.unifiedModel' : 'NULL'})`
+    : 'NULL';
+  const hasImageUnifiedTask = tableHasColumn(db, 'jobs', 'unifiedTaskId');
+  const hasVideoUnifiedTask = tableHasColumn(db, 'video_jobs', 'unifiedTaskId');
+  const unifiedTaskExpression = hasImageUnifiedTask || hasVideoUnifiedTask
+    ? `COALESCE(${hasImageUnifiedTask ? 'j.unifiedTaskId' : 'NULL'}, ${hasVideoUnifiedTask ? 'v.unifiedTaskId' : 'NULL'})`
+    : 'NULL';
   const items = db.prepare(`
     SELECT o.id AS operationId, o.module, o.taskId, o.step, o.inputRevision,
       o.businessAttemptId, o.businessAttemptNo, o.actorId AS actorUserId,
@@ -103,8 +113,8 @@ export function listTeamTasks(
       o.currentAttemptId, o.createdAt, o.updatedAt,
       p.name AS scopeName, j.status AS imageStatus, v.status AS videoStatus,
       a.filename AS inputFilename, a.usage AS imageUsage, COALESCE(j.model, v.model) AS model,
-      ${tableHasColumn(db, 'jobs', 'unifiedModel') ? 'j.unifiedModel' : 'NULL'} AS unifiedModel,
-      ${tableHasColumn(db, 'jobs', 'unifiedTaskId') ? 'j.unifiedTaskId' : 'NULL'} AS unifiedTaskId,
+      ${unifiedModelExpression} AS unifiedModel,
+      ${unifiedTaskExpression} AS unifiedTaskId,
       j.usageSnapshotJson AS imageUsageSnapshot, v.usageSnapshotJson AS videoUsageSnapshot,
       o.inputSnapshotJson, o.providerSnapshotJson,
       policy.personalConcurrency,
@@ -197,7 +207,7 @@ export function listTeamTasks(
       const visibleModelCalls = unifiedDisplay && viewer.role !== 'admin'
         ? modelCalls.map((call) => ({
           ...call,
-          providerName: 'Image 2',
+          providerName: unifiedDisplay,
           model: unifiedDisplay,
         }))
         : modelCalls;
@@ -231,7 +241,7 @@ export function listTeamTasks(
         scopeName: scopeName || (item.scopeType === 'project' ? '项目已删除或不可用' : item.scopeType === 'canvas' ? '画布已删除或不可用' : '未关联项目或画布'),
         scope: { resourceType: String(item.scopeType), resourceId: String(item.scopeId) },
         ...(unifiedDisplay
-          ? { providerName: 'Image 2', model: unifiedDisplay, modelStatus: 'recorded' }
+          ? { providerName: unifiedDisplay, model: unifiedDisplay, modelStatus: 'recorded' }
           : display),
         unifiedModel,
         unifiedTaskId,

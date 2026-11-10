@@ -10,7 +10,8 @@ db.exec(`CREATE TABLE video_jobs (
   providerTaskId TEXT, providerRawResponse TEXT, remoteVideoUrl TEXT, localVideoPath TEXT,
   lastPolledAt TEXT, pollCount INTEGER, startedAt TEXT, finishedAt TEXT,
   attempt INTEGER, errorMessage TEXT, usageSnapshotJson TEXT, executionRevision INTEGER DEFAULT 0,
-  model TEXT, multiShot INTEGER, prompt TEXT, sourceImageId TEXT, tailImageId TEXT, durationSec INTEGER
+  model TEXT, multiShot INTEGER, prompt TEXT, sourceImageId TEXT, tailImageId TEXT, durationSec INTEGER,
+  unifiedModel TEXT, unifiedRuleVersion TEXT, unifiedTaskId TEXT, unifiedRequestJson TEXT, cancelRequestedAt TEXT
 ); CREATE TABLE projects (id TEXT PRIMARY KEY, videoConcurrency INTEGER);`);
 db.prepare('INSERT INTO projects VALUES (?, ?)').run('project', 3);
 const logs = [];
@@ -23,6 +24,14 @@ const deps = {
     getVideoQueueStatus: () => 'idle',
     runVideoQueue: async () => { queueStarts += 1; },
     DEFAULT_VIDEO_CONCURRENCY: 10, DEFAULT_VIDEO_TIMEOUT_MS: 60_000,
+  },
+  '@/lib/team-service/config': {
+    readRuntimeConfig: () => ({ mode: 'local' }),
+  },
+  '@/lib/team-service/production-defaults': {
+    productionParamsFor: (_config, input) => ({
+      videoConcurrency: Number(input?.videoConcurrency) || 10,
+    }),
   },
   // local 部署下 wrapper 原样调用 handler；本测试不进入 server 身份路径。
   '@/lib/team-service/route-wrapper': { withTeamRoute: (_route, _method, handler) => handler },
@@ -43,6 +52,8 @@ function fixture(id, overrides = {}) {
     attempt: 4, errorMessage: "shot_type value 'intelligent' is invalid", usageSnapshotJson: '{}', executionRevision: 0,
     model: 'qiniuyun/kling-3.0', multiShot: 1, prompt: 'frozen prompt',
     sourceImageId: 'first-frame', tailImageId: 'last-frame', durationSec: 5,
+    unifiedModel: 'kling-3.0', unifiedRuleVersion: 'unified-media-2026-11-10-v1',
+    unifiedTaskId: 'old-unified-parent', unifiedRequestJson: '{"frozen":true}', cancelRequestedAt: 'old-cancel',
     ...overrides,
   };
   db.prepare(`INSERT INTO video_jobs (${Object.keys(row)}) VALUES (${Object.keys(row).map(() => '?')})`).run(...Object.values(row));
@@ -66,6 +77,10 @@ try {
   assert.equal(after.attempt, 0);
   assert.equal(after.usageSnapshotJson, null, 'a new paid task must re-freeze its own usage snapshot before submit');
   assert.equal(after.executionRevision, 1, 'confirmed manual resubmit must create a new execution operation revision');
+  assert.equal(after.unifiedTaskId, null, 'a new unified generation gets a new logical task');
+  assert.equal(after.cancelRequestedAt, null);
+  assert.equal(after.unifiedModel, before.unifiedModel);
+  assert.equal(after.unifiedRequestJson, before.unifiedRequestJson);
   for (const key of ['model', 'multiShot', 'prompt', 'sourceImageId', 'tailImageId', 'durationSec']) {
     assert.equal(after[key], before[key], `retry must preserve frozen ${key}`);
   }

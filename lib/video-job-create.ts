@@ -12,6 +12,19 @@ import { validateVideoReferenceRequest, videoReferenceCapability, type VideoRefe
 import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
 import { requireAccessContext } from './media-core/access-context.ts';
+import {
+  UNIFIED_KLING3_CHANNELS,
+  UNIFIED_KLING3_MODEL_KEY,
+  UNIFIED_MEDIA_RULE_VERSION,
+  isUnifiedKlingAnchorProvider,
+} from './media-core/unified-media/catalog.ts';
+import {
+  freezeUnifiedKlingVideoRequest,
+  unifiedKlingCompatibleChannels,
+  UnifiedKlingRequestError,
+  type FrozenUnifiedKlingVideoRequest,
+} from './media-core/unified-media/video-requests.ts';
+import { unifiedKlingProviderAvailability } from './media-core/unified-media/video-execution.ts';
 
 export type VideoJobGenerationMode = 'image-to-video' | 'reference-to-video';
 
@@ -106,17 +119,38 @@ export async function createVideoJobsForShot(input: {
     .get(shotId, shotSetId) as { id: string; latestGeneratedImageId: string | null; sourceImageId: string } | undefined;
   if (!shot) return { ok: false, status: 404, error: 'Shot not found in this shot set' };
 
-  const providerCache = new Map<string, VideoProviderRow & { model: string }>();
+  const providerCache = new Map<string, VideoProviderRow & { model: string; unified: boolean }>();
   for (const providerId of [...new Set(items.map((item) => item.providerId))]) {
     const provider = db.prepare(`SELECT * FROM video_providers WHERE id = ? AND enabled = 1`).get(providerId) as VideoProviderRow | undefined;
     if (!provider) {
       return { ok: false, status: 400, error: input.batch ? `视频供应商 ${providerId} 未找到或已禁用` : 'Video provider not found or disabled' };
     }
+    if ((process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE?.trim() || 'local') === 'server'
+      && UNIFIED_KLING3_CHANNELS.some((channel) => channel.providerId === provider.id)) {
+      return {
+        ok: false,
+        status: 400,
+        error: '团队版新视频任务请选择统一模型“可灵 3.0”，不能直接指定真实通道。',
+      };
+    }
+    if (isUnifiedKlingAnchorProvider(provider)) {
+      const available = unifiedKlingProviderAvailability(db)
+        .some((channel) => channel.identityValid && channel.configured);
+      if (!available) {
+        return {
+          ok: false,
+          status: 400,
+          error: '可灵 3.0 当前没有已启用且凭据可用的七牛或腾讯通道。',
+        };
+      }
+      providerCache.set(providerId, { ...provider, model: UNIFIED_KLING3_MODEL_KEY, unified: true });
+      continue;
+    }
     const config = getVideoProviderConfigState(provider);
     if (!config.configured) {
       return { ok: false, status: 400, error: `视频供应商 ${provider.name} 未配置完整：${config.missing.join(', ')}` };
     }
-    providerCache.set(providerId, { ...provider, model: provider.defaultModel.trim() });
+    providerCache.set(providerId, { ...provider, model: provider.defaultModel.trim(), unified: false });
   }
   for (const [index, item] of items.entries()) {
     const provider = providerCache.get(item.providerId)!;
@@ -169,9 +203,62 @@ export async function createVideoJobsForShot(input: {
 
   const prepared = items.map((item, index) => {
     const provider = providerCache.get(item.providerId)!;
+    if (provider.unified) {
+      if (item.generationMode !== 'image-to-video') {
+        return { error: itemError(index, '可灵 3.0 统一入口只开放图生视频（首帧＋可选尾帧）') };
+      }
+      let frozen: FrozenUnifiedKlingVideoRequest;
+      try {
+        const normalizedMultiShot = item.multiShot === 1 ? true
+          : item.multiShot === 0 ? false
+            : item.multiShot === null || item.multiShot === undefined ? null
+              : item.multiShot;
+        frozen = freezeUnifiedKlingVideoRequest({
+          sourceImageId,
+          tailImageId: item.tailImageId,
+          referenceAssetIds: item.referenceAssetIds,
+          prompt: item.prompt,
+          durationSec: item.durationSec,
+          generationMode: item.generationMode,
+          multiShot: normalizedMultiShot,
+          aspectRatio: item.aspectRatio,
+          resolution: item.resolution,
+        });
+        const availableChannels = new Set(unifiedKlingProviderAvailability(db)
+          .filter((channel) => channel.identityValid && channel.configured)
+          .map((channel) => channel.channelKey));
+        if (!unifiedKlingCompatibleChannels(frozen)
+          .some((channel) => availableChannels.has(channel.channelKey))) {
+          return {
+            error: itemError(index, '当前已配置的可灵 3.0 通道不支持这组清晰度、比例和首尾帧要求'),
+          };
+        }
+      } catch (error) {
+        return {
+          error: itemError(index, error instanceof UnifiedKlingRequestError
+            ? error.message
+            : error instanceof Error ? error.message : String(error)),
+        };
+      }
+      const tail = validateVideoTailFrameAsset({
+        db,
+        tailImageId: frozen.tailImageId,
+        projectId: shotSet.projectId,
+        providerType: provider.type,
+        model: frozen.unifiedModel,
+      });
+      if (!tail.ok) return { error: itemError(index, tail.error) };
+      return {
+        item,
+        provider,
+        aspectRatio: frozen.aspectRatio,
+        resolution: frozen.resolution,
+        frozen,
+      };
+    }
     if (item.generationMode === 'image-to-video') {
       if (item.referenceAssetIds.length > 0) return { error: itemError(index, '首尾帧模式不得携带全能参考素材') };
-      return { item, provider, aspectRatio: null, resolution: null };
+      return { item, provider, aspectRatio: null, resolution: null, frozen: null };
     }
     if (item.tailImageId) return { error: itemError(index, '全能参考模式不能携带尾帧图') };
     const capability = videoReferenceCapability(provider.type, provider.model);
@@ -193,7 +280,7 @@ export async function createVideoJobsForShot(input: {
     if (item.resolution && !capability.resolutions.includes(item.resolution)) {
       return { error: itemError(index, `输出清晰度 ${item.resolution} 不受支持`) };
     }
-    return { item, provider, aspectRatio, resolution };
+    return { item, provider, aspectRatio, resolution, frozen: null };
   });
   const preparationError = prepared.find((entry) => 'error' in entry);
   if (preparationError && 'error' in preparationError) return { ok: false, status: 400, error: preparationError.error! };
@@ -245,13 +332,14 @@ export async function createVideoJobsForShot(input: {
     const insertJob = db.prepare(`
       INSERT INTO video_jobs
         (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt,
-         durationSec, generationMode, aspectRatio, resolution, multiShot, createdAt, displayName, openingCode)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         durationSec, generationMode, aspectRatio, resolution, multiShot, createdAt, displayName, openingCode,
+         maxAttempts, unifiedModel, unifiedRuleVersion, unifiedRequestJson)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertReference = db.prepare(`INSERT INTO video_job_references (jobId, orderIndex, assetId) VALUES (?, ?, ?)`);
     for (const [index, entry] of prepared.entries()) {
       if ('error' in entry) continue;
-      const { item, provider, aspectRatio, resolution } = entry;
+      const { item, provider, aspectRatio, resolution, frozen } = entry;
       const videoJobId = uuidv4();
       const displayName = planVideoJobDisplayName(db, {
         shotId,
@@ -265,6 +353,10 @@ export async function createVideoJobsForShot(input: {
         item.generationMode, aspectRatio, resolution,
         normalizeVideoMultiShotForStorage(provider.type, provider.model, item.multiShot),
         createdAt, displayName, resolveTemplateOpeningCode(db, item.templateId),
+        provider.unified ? 1 : 2,
+        provider.unified ? UNIFIED_KLING3_MODEL_KEY : null,
+        provider.unified ? UNIFIED_MEDIA_RULE_VERSION : null,
+        provider.unified && frozen ? JSON.stringify(frozen) : null,
       );
       for (const [orderIndex, asset] of referencesByItem[index].entries()) {
         insertReference.run(videoJobId, orderIndex, asset.id);
@@ -276,7 +368,14 @@ export async function createVideoJobsForShot(input: {
       access.registerTaskPrincipal({
         module: 'video', taskId: videoJobId,
         scope: { resourceType: 'project', resourceId: shotSet.projectId },
-        creationSnapshot: { shotSetId, shotId, sourceImageId, model: provider.model },
+        creationSnapshot: {
+          shotSetId, shotId, sourceImageId, model: provider.model,
+          ...(provider.unified ? {
+            unifiedModel: UNIFIED_KLING3_MODEL_KEY,
+            unifiedRuleVersion: UNIFIED_MEDIA_RULE_VERSION,
+            unifiedRequest: frozen,
+          } : {}),
+        },
       });
       videoJobIds.push(videoJobId);
     }

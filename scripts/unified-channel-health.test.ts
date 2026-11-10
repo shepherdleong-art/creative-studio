@@ -50,8 +50,10 @@ db.prepare(`INSERT INTO providers (id, name, baseUrl, apiKey, model, type, enabl
 
 const admin = { userId: 'admin', role: 'admin' as const };
 const employee = { userId: 'employee', role: 'employee' as const };
-const qiniu = listUnifiedChannelHealthDefinitions().find((channel) => channel.channelKey === 'qiniu')!;
-const tencent = listUnifiedChannelHealthDefinitions().find((channel) => channel.channelKey === 'tencent')!;
+const qiniu = listUnifiedChannelHealthDefinitions()
+  .find((channel) => channel.unifiedModel === 'image2' && channel.channelKey === 'qiniu')!;
+const tencent = listUnifiedChannelHealthDefinitions()
+  .find((channel) => channel.unifiedModel === 'image2' && channel.channelKey === 'tencent')!;
 
 function failureEvidence(status: number) {
   return classifyImageSubmissionFailure({
@@ -63,10 +65,13 @@ function failureEvidence(status: number) {
 try {
   const initial = readTeamChannelHealth(db, admin);
   assert.equal(initial.failureThreshold, UNIFIED_CHANNEL_FAILURE_THRESHOLD);
-  assert.equal(initial.items.length, 2);
-  assert.equal(initial.items.find((item) => item.channelKey === 'qiniu')?.manualEnabled, true);
-  assert.equal(initial.items.find((item) => item.channelKey === 'qiniu')?.state, 'healthy');
-  assert.equal(initial.items.find((item) => item.channelKey === 'qiniu')?.version, 0);
+  assert.equal(initial.items.length, 4);
+  assert.equal(initial.items.find((item) =>
+    item.unifiedModel === 'image2' && item.channelKey === 'qiniu')?.manualEnabled, true);
+  assert.equal(initial.items.find((item) =>
+    item.unifiedModel === 'image2' && item.channelKey === 'qiniu')?.state, 'healthy');
+  assert.equal(initial.items.find((item) =>
+    item.unifiedModel === 'image2' && item.channelKey === 'qiniu')?.version, 0);
 
   assert.throws(() => readTeamChannelHealth(db, employee), /管理员/);
   assert.throws(() => clearTeamChannelHealth(db, employee, {
@@ -107,7 +112,8 @@ try {
       assert.ok(Date.parse(record.avoidUntil!) >= now.getTime() + UNIFIED_CHANNEL_BASE_COOLDOWN_MS);
     }
   }
-  const avoided = readTeamChannelHealth(db, admin).items.find((item) => item.channelKey === 'qiniu')!;
+  const avoided = readTeamChannelHealth(db, admin).items.find((item) =>
+    item.unifiedModel === 'image2' && item.channelKey === 'qiniu')!;
   assert.equal(avoided.state, 'avoided');
   assert.equal(avoided.reasonLabel, '上游连续返回服务错误');
   assert.equal(avoided.canClear, true);
@@ -178,7 +184,8 @@ try {
     'system recovery must never re-enable the provider manually disabled by an administrator',
   );
   assert.equal(
-    readTeamChannelHealth(db, admin).items.find((item) => item.channelKey === 'qiniu')?.manualEnabled,
+    readTeamChannelHealth(db, admin).items.find((item) =>
+      item.unifiedModel === 'image2' && item.channelKey === 'qiniu')?.manualEnabled,
     false,
   );
 
