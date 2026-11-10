@@ -67,6 +67,8 @@ export default function TeamPoolsPanel() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [thresholdDraft, setThresholdDraft] = useState('30');
+  const [settingsBusy, setSettingsBusy] = useState(false);
   /** 待确认的变化预览：保存前先让管理员看到「容量从几改到几、版本从几变到几」。 */
   const [pending, setPending] = useState<{
     row: PoolViewRow;
@@ -79,6 +81,7 @@ export default function TeamPoolsPanel() {
 
   const applyState = useCallback((body: PoolAdminState) => {
     setState(body);
+    setThresholdDraft(String(body.unifiedImageCongestion.imageCongestionThresholdSec));
     const view = buildPoolAdminView(body);
     // 每次从服务器拿到新状态就重算草稿：保存/刷新后输入框回到服务器值，
     // 不会留下一个「看起来改过、其实没存」的数字。行的 key 稳定，重算不丢焦点。
@@ -235,6 +238,49 @@ export default function TeamPoolsPanel() {
     }
   }
 
+  async function saveCongestionThreshold() {
+    if (!state) return;
+    const trimmed = thresholdDraft.trim();
+    const threshold = Number(trimmed);
+    setError('');
+    setNotice('');
+    if (!Number.isSafeInteger(threshold) || threshold < 0 || threshold > 3_600) {
+      setError('Image 2 拥堵分流阈值必须是 0–3600 的整数秒。');
+      return;
+    }
+    setSettingsBusy(true);
+    try {
+      const response = await teamWrite('/api/team/pools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          unifiedImageCongestion: {
+            imageCongestionThresholdSec: threshold,
+            expectedVersion: state.unifiedImageCongestion.version,
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(await teamError(response, '拥堵阈值保存失败'));
+      const body = await response.json() as {
+        unifiedImageCongestion: PoolAdminState['unifiedImageCongestion'];
+      };
+      setState((current) => current ? {
+        ...current,
+        unifiedImageCongestion: body.unifiedImageCongestion,
+      } : current);
+      setThresholdDraft(String(body.unifiedImageCongestion.imageCongestionThresholdSec));
+      setNotice(
+        `Image 2 拥堵分流阈值已保存为 ${body.unifiedImageCongestion.imageCongestionThresholdSec} 秒`
+        + `（版本 ${state.unifiedImageCongestion.version} → ${body.unifiedImageCongestion.version}）。`,
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '拥堵阈值保存失败');
+      await refresh().catch(() => undefined);
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
   const summaryLine = view
     ? `${view.summary.ready} 个账号可以用，${view.summary.unconfigured} 个没设名额，`
       + `${view.summary.credentialMissing} 个缺密钥${view.summary.disabled > 0 ? `，${view.summary.disabled} 个已停用` : ''}`
@@ -257,6 +303,44 @@ export default function TeamPoolsPanel() {
         同一个上游账号下的模型共用名额，所以只按账号设一次；调低名额不会打断正在跑的任务，新任务按新名额排队。
         凭据只以指纹参与映射，不会出现在本页或接口响应里。
       </p>
+
+      {state ? (
+        <section className={styles.blockers} aria-label="Image 2 拥堵分流设置">
+          <div className={styles.settingRow}>
+            <div className={styles.identity}>
+              <b>Image 2 拥堵分流阈值</b>
+              <span>
+                七牛仅因名额满而排队时，先保留七牛优先；达到此阈值仍满，才允许腾讯接单。
+                只影响 Image 2，不改变个人上限、预算、暂停或其他模型。
+              </span>
+            </div>
+            <div className={styles.stepper}>
+              <input
+                className={styles.capacityInput}
+                type="number"
+                inputMode="numeric"
+                min="0"
+                max="3600"
+                step="1"
+                aria-label="Image 2 拥堵分流阈值（秒）"
+                value={thresholdDraft}
+                disabled={settingsBusy}
+                onChange={(event) => setThresholdDraft(event.target.value)}
+              />
+              <span className={styles.settingUnit}>秒</span>
+            </div>
+            <button
+              type="button"
+              className="cap cap-primary"
+              disabled={settingsBusy
+                || thresholdDraft === String(state.unifiedImageCongestion.imageCongestionThresholdSec)}
+              onClick={() => { void saveCongestionThreshold(); }}
+            >
+              {settingsBusy ? '保存中…' : '保存阈值'}
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {view && view.warnings.length > 0 ? (
         <section className={styles.warning} role="status" aria-label="同一凭据被分到多个名额池">

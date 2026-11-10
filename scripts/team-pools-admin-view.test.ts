@@ -22,6 +22,7 @@ const { checkExecutionReadiness } = await import('../lib/media-core/execution/re
 const { listExecutionPools } = await import('../lib/media-core/execution/pools.ts');
 const {
   applyPoolChanges, previewPoolChanges, readPoolAdminState, TeamPoolError,
+  updateUnifiedImageCongestion,
 } = await import('../lib/team-service/pools.ts');
 const { buildPoolAdminView, buildPoolChange } = await import('../lib/team-service/pool-admin-view.ts');
 
@@ -257,6 +258,40 @@ db.exec(`
 try {
   const readiness = await checkExecutionReadiness({ db, ...schemaUpgradeRuntimePaths(root) });
   assert.equal(readiness.available, true, readiness.message);
+
+  const initialSettings = readPoolAdminState(db, admin).unifiedImageCongestion;
+  assert.equal(initialSettings.imageCongestionThresholdSec, 30, 'Image 2 default congestion threshold is 30 seconds');
+  assert.equal(initialSettings.version, 1);
+  assert.throws(
+    () => updateUnifiedImageCongestion(db, { userId: 'employee-1', role: 'employee' }, {
+      imageCongestionThresholdSec: 10,
+      expectedVersion: initialSettings.version,
+    }),
+    (error: unknown) => error instanceof TeamPoolError && error.status === 403,
+  );
+  for (const invalid of [-1, 1.5, 3_601, '30']) {
+    assert.throws(
+      () => updateUnifiedImageCongestion(db, admin, {
+        imageCongestionThresholdSec: invalid,
+        expectedVersion: initialSettings.version,
+      }),
+      (error: unknown) => error instanceof TeamPoolError && error.status === 400,
+    );
+  }
+  const updatedSettings = updateUnifiedImageCongestion(db, admin, {
+    imageCongestionThresholdSec: 12,
+    expectedVersion: initialSettings.version,
+  });
+  assert.equal(updatedSettings.imageCongestionThresholdSec, 12);
+  assert.equal(updatedSettings.version, initialSettings.version + 1);
+  assert.equal(readPoolAdminState(db, admin).unifiedImageCongestion.imageCongestionThresholdSec, 12);
+  assert.throws(
+    () => updateUnifiedImageCongestion(db, admin, {
+      imageCongestionThresholdSec: 20,
+      expectedVersion: initialSettings.version,
+    }),
+    (error: unknown) => error instanceof TeamPoolError && error.code === 'settings_version_conflict',
+  );
 
   // 两个 Key 属于同一个真实上游（同 baseUrl、不同 Key），管理员显式绑到同一个池。
   db.prepare(`INSERT INTO providers (id, name, baseUrl, apiKey, model, type, enabled)
