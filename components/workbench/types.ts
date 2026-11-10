@@ -38,6 +38,8 @@ export interface WorkbenchJob {
   providerId?: string;
   model?: string;
   unifiedModel?: string;
+  cancelRequestedAt?: string | null;
+  providerStatus?: string | null;
   size?: string;
   quality?: string;
 }

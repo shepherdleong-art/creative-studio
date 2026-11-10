@@ -52,6 +52,8 @@ interface UnifiedVideoJobRow {
   providerTaskId: string | null;
   providerStatus: string | null;
   remoteVideoUrl: string | null;
+  localVideoPath: string | null;
+  filename: string | null;
   errorMessage: string | null;
   unifiedModel: string | null;
   unifiedRuleVersion: string | null;
@@ -1225,7 +1227,11 @@ export function synchronizeUnifiedKlingExecution(db: Database.Database, jobId: s
     : undefined;
   const remoteId = job.providerTaskId?.trim() || channel.remoteId?.trim() || attempt?.remoteId?.trim() || null;
   const downloadRecovery = job.providerStatus === 'download_failed' && Boolean(job.remoteVideoUrl);
-  const channelState = downloadRecovery ? 'accepted'
+  const lateSucceeded = job.status === 'canceled'
+    && job.providerStatus === 'succeeded'
+    && Boolean(job.localVideoPath || job.filename);
+  const channelState = lateSucceeded ? 'succeeded'
+    : downloadRecovery ? 'accepted'
     : job.status === 'succeeded' ? 'succeeded'
       : job.status === 'failed' ? 'failed'
         : job.status === 'canceled' ? 'canceled'
@@ -1233,7 +1239,8 @@ export function synchronizeUnifiedKlingExecution(db: Database.Database, jobId: s
             : job.status === 'needs_check'
               ? (job.providerStatus === 'unknown' ? 'unknown' : 'accepted')
               : 'selected';
-  const taskStatus = job.status === 'deferred' ? 'waiting'
+  const taskStatus = lateSucceeded ? 'canceled'
+    : job.status === 'deferred' ? 'waiting'
     : channelState === 'succeeded' ? 'succeeded'
       : channelState === 'failed' ? 'failed'
         : channelState === 'canceled' ? 'canceled'
@@ -1251,7 +1258,16 @@ export function synchronizeUnifiedKlingExecution(db: Database.Database, jobId: s
     attemptTerminalState: attempt?.terminalState ?? null,
     errorMessage: job.errorMessage,
   };
-  const result = job.status === 'succeeded'
+  const result = lateSucceeded
+    ? {
+      jobId: job.id,
+      channelKey: channel.channelKey,
+      remoteId,
+      localVideoPath: job.localVideoPath,
+      filename: job.filename,
+      lateResult: true,
+    }
+    : job.status === 'succeeded'
     ? { jobId: job.id, channelKey: channel.channelKey, remoteId }
     : job.status === 'failed' || job.status === 'canceled'
       ? { jobId: job.id, channelKey: channel.channelKey, remoteId, errorMessage: job.errorMessage }

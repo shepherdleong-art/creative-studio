@@ -124,22 +124,23 @@ export function readFilmRework(db: Db, groupId: string, clipId: string) {
   const originalImage = originalVideo && db.prepare('SELECT sourceImageId FROM video_jobs WHERE id=?').get(originalVideo.videoJobId) as { sourceImageId: string } | undefined;
   const imageRows = db.prepare('SELECT id,filename,path FROM image_assets WHERE projectId=?').all(binding.projectId) as Array<{ id: string; filename: string; path: string }>;
   const history = db.prepare(`SELECT id,actor,kind,jobId,baseRevision,requestJson,createdAt FROM final_edit_film_reworks WHERE bindingId=? AND clipId=? ORDER BY rowid`).all(binding.id, clipId) as Array<{ id: string; actor: string; kind: string; jobId: string | null; baseRevision: number; requestJson: string; createdAt: string }>;
-  const imageJobs = db.prepare(`SELECT j.id,j.status,j.outputImageId,j.errorMessage,j.prompt,j.providerId,j.model,
-      j.inputImageId,j.referenceImageIds,j.unifiedModel,j.unifiedRuleVersion
+    const imageJobs = db.prepare(`SELECT j.id,j.status,j.providerStatus,j.outputImageId,j.errorMessage,j.prompt,j.providerId,j.model,
+      j.inputImageId,j.referenceImageIds,j.unifiedModel,j.unifiedRuleVersion,j.cancelRequestedAt
     FROM jobs j JOIN final_edit_film_reworks r ON r.jobId=j.id
     WHERE r.bindingId=? AND r.clipId=? AND r.kind='generate_image'
     ORDER BY r.rowid DESC`).all(binding.id, clipId) as Array<{
-      id: string; status: string; outputImageId: string | null; errorMessage: string | null;
+      id: string; status: string; providerStatus: string | null; outputImageId: string | null; errorMessage: string | null;
       prompt: string; providerId: string; model: string; inputImageId: string;
       referenceImageIds: string; unifiedModel: string | null; unifiedRuleVersion: string | null;
+      cancelRequestedAt: string | null;
     }>;
-  const videoJobs = (db.prepare(`SELECT id,status,sourceImageId,prompt,providerId,model,durationSec,
-      errorMessage,localVideoPath,unifiedModel,unifiedRuleVersion
+    const videoJobs = (db.prepare(`SELECT id,status,providerStatus,sourceImageId,prompt,providerId,model,durationSec,
+      errorMessage,localVideoPath,unifiedModel,unifiedRuleVersion,cancelRequestedAt
     FROM video_jobs WHERE projectId=? AND shotSetId=? AND shotId=?
     ORDER BY createdAt DESC,rowid DESC`).all(binding.projectId, binding.shotSetId, shot.id) as Array<{
-      id: string; status: string; sourceImageId: string; prompt: string; providerId: string;
+      id: string; status: string; providerStatus: string | null; sourceImageId: string; prompt: string; providerId: string;
       model: string; durationSec: number; errorMessage: string | null; localVideoPath: string | null;
-      unifiedModel: string | null; unifiedRuleVersion: string | null;
+      unifiedModel: string | null; unifiedRuleVersion: string | null; cancelRequestedAt: string | null;
     }>).map(({ localVideoPath, ...job }) => ({ ...job, previewUrl: localVideoPath ? toStorageImageUrl(localVideoPath)?.replace('/api/images/', '/api/videos/') + '?preview=1' : null }));
   return { groupId, projectId: binding.projectId, shotSetId: binding.shotSetId, clipId, shotId: shot.id, revision,
     sourceImageId: shot.sourceImageId, importedImageId: originalImage?.sourceImageId || shot.sourceImageId, currentImageId: shot.latestGeneratedImageId || shot.sourceImageId,
@@ -183,7 +184,10 @@ export async function applyFilmRework(
       if (!external) fail('外部素材不存在、未就绪或不属于当前分镜组');
       job = { id: `external-asset-${external.id}`, localVideoPath: resolveImportedExternalAssetVideoPath(storageRoot, initial.binding, external.relativePath) };
     } else {
-      job = db.prepare(`SELECT * FROM video_jobs WHERE id=? AND projectId=? AND shotSetId=? AND shotId=? AND status='succeeded'`).get(command.videoJobId || '', initial.binding.projectId, initial.binding.shotSetId, initial.shot.id) as { id: string; localVideoPath: string; sourceImageId: string } | undefined;
+      job = db.prepare(`SELECT * FROM video_jobs WHERE id=? AND projectId=? AND shotSetId=? AND shotId=?
+        AND (status='succeeded' OR (status='canceled' AND providerStatus='succeeded'))`)
+        .get(command.videoJobId || '', initial.binding.projectId, initial.binding.shotSetId, initial.shot.id) as
+        { id: string; localVideoPath: string; sourceImageId: string } | undefined;
     }
     if (!job?.localVideoPath) fail('只能登记该镜头已成功的视频任务');
     if (!external) image(db, initial.binding, job.sourceImageId);
@@ -291,7 +295,11 @@ export async function applyFilmRework(
         }
       } else if (command.type === 'select_image') {
         const imageId = image(db, binding, command.imageId);
-        const candidate = db.prepare(`SELECT j.id FROM jobs j JOIN final_edit_film_reworks r ON r.jobId=j.id WHERE r.bindingId=? AND r.clipId=? AND r.kind='generate_image' AND j.status='succeeded' AND j.outputImageId=?`).get(binding.id, clipId, imageId) as { id: string } | undefined;
+        const candidate = db.prepare(`SELECT j.id FROM jobs j
+          JOIN final_edit_film_reworks r ON r.jobId=j.id
+          WHERE r.bindingId=? AND r.clipId=? AND r.kind='generate_image'
+            AND (j.status='succeeded' OR (j.status='canceled' AND j.providerStatus='succeeded'))
+            AND j.outputImageId=?`).get(binding.id, clipId, imageId) as { id: string } | undefined;
         const originalImages = db.prepare(`SELECT sourceImageId FROM video_jobs WHERE shotId=? AND shotSetId=?`).all(shot.id, binding.shotSetId) as Array<{ sourceImageId: string }>;
         if (!candidate && !originalImages.some(row => row.sourceImageId === imageId)) fail('图片不是该镜头的候选');
         // Never bind latestJobId: a late queue completion must not undo this explicit selection.
@@ -375,7 +383,9 @@ export async function applyFilmRework(
         if (candidates.some(c => c.videoJobId === prepared.videoJobId)) fail('视频已被登记', 'revision_conflict', 409);
         if (external) {
           if (JSON.stringify(externalSource()) !== JSON.stringify(external)) fail('外部素材归属或状态已变化', 'revision_conflict', 409);
-        } else if (!db.prepare(`SELECT 1 FROM video_jobs WHERE id=? AND shotId=? AND shotSetId=? AND projectId=? AND status='succeeded'`).get(prepared.videoJobId, shot.id, binding.shotSetId, binding.projectId)) fail('视频归属或状态已变化', 'revision_conflict', 409);
+        } else if (!db.prepare(`SELECT 1 FROM video_jobs WHERE id=? AND shotId=? AND shotSetId=? AND projectId=?
+          AND (status='succeeded' OR (status='canceled' AND providerStatus='succeeded'))`)
+          .get(prepared.videoJobId, shot.id, binding.shotSetId, binding.projectId)) fail('视频归属或状态已变化', 'revision_conflict', 409);
         const analysis = db.prepare('SELECT fileFingerprint FROM final_edit_asset_analysis WHERE videoJobId=?').get(prepared.videoJobId) as { fileFingerprint: string } | undefined;
         if (analysis && analysis.fileFingerprint !== prepared.fingerprint) fail('素材分析指纹与当前文件不一致', 'revision_conflict', 409);
         db.prepare('UPDATE final_edit_film_bindings SET candidatesJson=?,inputHashesJson=? WHERE id=?').run(JSON.stringify([...candidates, prepared]), JSON.stringify({ ...JSON.parse(binding.inputHashesJson), [prepared.file]: prepared.fingerprint }), binding.id);

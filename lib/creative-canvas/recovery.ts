@@ -303,6 +303,7 @@ export function requestCanvasTaskCancel(
   params: { taskId: string; now?: () => Date },
 ): CanvasTaskRecord {
   const task = requireCanvasTask(db, params.taskId);
+  if (task.phase === 'cancelled') return task;
   const at = (params.now ?? (() => new Date()))().toISOString();
   if (isCanvasUnifiedMediaTask(task)) {
     requestCanvasUnifiedMediaCancellation(db, task, new Date(at));
@@ -326,7 +327,11 @@ export function requestCanvasTaskCancel(
   if (['succeeded', 'failed', 'blocked', 'cancelled'].includes(task.phase)) {
     throw new CanvasError('conflict', '该任务已经结束。');
   }
-  updateCanvasTaskUnGuarded(db, task.id, { cancelRequestedAt: at, updatedAt: at });
+  updateCanvasTaskUnGuarded(db, task.id, {
+    cancelRequestedAt: at,
+    errorMessage: '已停止后续生成；已提交任务仍在收尾，晚到结果会保留在任务记录。',
+    updatedAt: at,
+  });
   return requireCanvasTask(db, task.id);
 }
 

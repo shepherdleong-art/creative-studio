@@ -219,6 +219,32 @@ export function recordCanvasUnifiedSucceeded(
   else recordCanvasUnifiedKlingSucceeded(db, execution, result);
 }
 
+/**
+ * A canceled task can finish after its remote work was accepted. Keep the
+ * real success/cost evidence on the channel and task, but never publish it as
+ * the live node result or let it promote downstream tasks.
+ */
+export function recordCanvasUnifiedLateResult(
+  db: Database.Database,
+  execution: CanvasUnifiedMediaExecution,
+  result: { outputAssetId: string; remoteId?: string | null },
+): void {
+  recordCanvasUnifiedSucceeded(db, execution, result);
+  const at = new Date().toISOString();
+  db.prepare(`UPDATE execution_media_tasks
+    SET status = 'canceled', resultJson = ?, updatedAt = ? WHERE id = ?`).run(
+    JSON.stringify({
+      taskId: execution.effectiveTask.id,
+      outputAssetId: result.outputAssetId,
+      remoteId: result.remoteId ?? null,
+      channelKey: execution.channel.channelKey,
+      lateResult: true,
+    }),
+    at,
+    execution.parent.id,
+  );
+}
+
 export function recordCanvasUnifiedFinalFailure(
   db: Database.Database,
   execution: CanvasUnifiedMediaExecution,

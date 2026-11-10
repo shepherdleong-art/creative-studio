@@ -1291,12 +1291,16 @@ async function runAuthorizedJob(
 
     logInfo(`API call succeeded (latency: ${result.latencyMs}ms)`);
 
-    // ── Post-request check: is the job still running? ──
-    // The user may have canceled while the request was in-flight.
-    // Only save output if the job is still in 'running' state.
-    const currentJob = db.prepare(`SELECT status FROM jobs WHERE id = ?`).get(job.id) as { status: string } | undefined;
+    // ── Post-request check: is the job still allowed to settle this result? ──
+    // A unified task canceled after an accepted POST keeps running until the
+    // late result is downloaded. The result belongs to the task record but
+    // must not advance the active shot or create downstream candidates.
+    const currentJob = db.prepare(`SELECT status, cancelRequestedAt FROM jobs WHERE id = ?`)
+      .get(job.id) as { status: string; cancelRequestedAt: string | null } | undefined;
+    const canceledLateResult = Boolean(job.unifiedModel && currentJob?.cancelRequestedAt);
 
-    if (!currentJob || currentJob.status !== 'running') {
+    if (!currentJob || (currentJob.status !== 'running'
+      && !(canceledLateResult && currentJob.status === 'canceled'))) {
       logWarn(`Job state changed to "${currentJob?.status}" during API call, discarding result`);
       return;
     }
@@ -1374,9 +1378,13 @@ async function runAuthorizedJob(
         : calculateEstimatedCost(provider.defaultCostPerImage, attempt - 1);
 
     // ── Atomic completion: only mark succeeded if still running ──
+    const lateCanceled = Boolean(
+      job.unifiedModel
+      && db.prepare('SELECT cancelRequestedAt FROM jobs WHERE id = ?').pluck().get(job.id),
+    );
     const completeResult = db.prepare(
       `UPDATE jobs SET
-        status = 'succeeded',
+        status = ?,
         providerStatus = 'succeeded',
         finishedAt = ?,
         latencyMs = ?,
@@ -1384,12 +1392,17 @@ async function runAuthorizedJob(
         outputImageId = ?,
         usageSnapshotJson = COALESCE(?, usageSnapshotJson),
         remoteImageUrl = COALESCE(?, remoteImageUrl),
+        errorMessage = ?,
         providerRawResponse = COALESCE(?, providerRawResponse)
-       WHERE id = ? AND status = 'running'`
+       WHERE id = ? AND status IN ('running', 'canceled')`
     ).run(
+      lateCanceled ? 'canceled' : 'succeeded',
       finishedAt, result.latencyMs, estimatedCost, outputImageId,
       unifiedExecution ? usageSnapshot : null,
       result.remoteImageUrl || null,
+      lateCanceled
+        ? '已停止后续生成；晚到的结果已保存到任务记录，可查看或手动使用。'
+        : job.errorMessage ?? null,
       result.rawResponse ? safeJsonForDB(result.rawResponse) : null,
       job.id,
     );
@@ -1407,6 +1420,10 @@ async function runAuthorizedJob(
       }
       logInfo(`任务完成 (成本: ¥${estimatedCost.toFixed(4)})`);
       await recoverLegacyMediaDownload({ module: 'image', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision) });
+      if (lateCanceled) {
+        logWarn('任务已停止后续生成；晚到结果已保存，未自动更新分镜或候选。');
+        return;
+      }
       // Sync shot candidates even if a newer redo job already replaced latestJobId.
       const linkedShots = db.prepare(`
         SELECT s.id
@@ -1548,8 +1565,8 @@ async function runAuthorizedJob(
     }
 
     if (isServerMediaExecution() && abort.aborted) {
-      const current = db.prepare('SELECT providerTaskId, executionRevision FROM jobs WHERE id = ?').get(job.id) as
-        { providerTaskId: string | null; executionRevision: number } | undefined;
+      const current = db.prepare('SELECT providerTaskId, executionRevision, cancelRequestedAt FROM jobs WHERE id = ?')
+        .get(job.id) as { providerTaskId: string | null; executionRevision: number; cancelRequestedAt: string | null } | undefined;
       const recovered = recoverLegacyMediaSubmission({
         module: 'image', taskId: job.id,
         inputRevision: legacyMediaExecutionRevision(current?.executionRevision),
@@ -1558,11 +1575,14 @@ async function runAuthorizedJob(
       if (recovered.status === 'needs_check') {
         db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = ?,
           providerTaskId = COALESCE(?, providerTaskId), remoteImageUrl = COALESCE(?, remoteImageUrl),
-          errorMessage = '已受理任务保留，等待续查或补下载'
+          errorMessage = ?
           WHERE id = ? AND status = 'running'`).run(
           recovered.resultRef ? 'download_failed' : 'unknown',
           recovered.remoteId ?? null,
           recovered.resultRef ?? null,
+          current?.cancelRequestedAt
+            ? '已停止后续生成；已提交任务仍在收尾，晚到结果会保留在任务记录。'
+            : '已受理任务保留，等待续查或补下载',
           job.id,
         );
       } else {

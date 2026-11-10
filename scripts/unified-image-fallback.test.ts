@@ -758,6 +758,56 @@ try {
     assert.equal(ledger.channels.find((channel) => channel.channelKey === 'qiniu')?.state, 'not_created');
   }
 
+  {
+    const prompt = 'case-cancel-after-accepted-late-result';
+    const testCase = createCase(db, 'cancel-after-accepted-late-result', {
+      qiniu: { post: () => successResponse('qiniu', prompt) },
+    });
+    attachShot(db, testCase.projectId, testCase.jobId);
+    fixtures.get(prompt)!.qiniu!.onPost = () => {
+      requestUnifiedImageCancellation(db, testCase.jobId);
+    };
+    await runJob(testCase.projectId, testCase.jobId);
+
+    const job = db.prepare(`SELECT status, providerStatus, outputImageId, cancelRequestedAt
+      FROM jobs WHERE id = ?`).get(testCase.jobId) as {
+        status: string; providerStatus: string | null; outputImageId: string | null;
+        cancelRequestedAt: string | null;
+      };
+    assert.equal(job.status, 'canceled');
+    assert.equal(job.providerStatus, 'succeeded');
+    assert.ok(job.cancelRequestedAt);
+    assert.ok(job.outputImageId, 'late result is retained on the canceled task');
+    assert.equal(
+      db.prepare('SELECT latestGeneratedImageId FROM shots WHERE id = ?')
+        .pluck().get(`shot-${testCase.jobId}`),
+      null,
+      'canceled late result must not advance the active shot',
+    );
+    assert.equal(
+      db.prepare('SELECT COUNT(*) FROM shot_result_candidates WHERE jobId = ?')
+        .pluck().get(testCase.jobId),
+      0,
+      'canceled late result is saved on the task, not auto-promoted into downstream candidates',
+    );
+    const parent = db.prepare(`SELECT id, status, resultJson FROM execution_media_tasks
+      WHERE module = 'image' AND taskId = ?`).get(testCase.jobId) as {
+        id: string; status: string; resultJson: string;
+      };
+    assert.equal(parent.status, 'canceled');
+    const result = JSON.parse(parent.resultJson) as Record<string, unknown>;
+    assert.equal(result.lateResult, true);
+    assert.equal(result.outputImageId, job.outputImageId);
+    assert.equal(
+      db.prepare(`SELECT state FROM execution_media_channels
+        WHERE mediaTaskId = ? AND channelKey = 'qiniu'`).pluck().get(parent.id),
+      'succeeded',
+      'the real channel attempt still records its successful terminal evidence',
+    );
+    assert.equal(postCount(prompt, 'qiniu'), 1, 'late result is downloaded without another model call');
+    assert.equal(postCount(prompt, 'tencent'), 0);
+  }
+
   console.log('unified image fallback tests passed (paid calls: 0)');
 } finally {
   globalThis.fetch = originalFetch;
