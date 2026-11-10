@@ -142,6 +142,7 @@ export interface CanvasUnifiedImageContract {
 }
 
 export interface CanvasUnifiedExecution {
+  mediaKind: 'image';
   parent: MediaTaskRow;
   channel: MediaChannelRow;
   definition: UnifiedImageChannelDefinition;
@@ -471,6 +472,7 @@ function effectiveExecution(
     executionRevision: channel.executionRevision,
   });
   return {
+    mediaKind: 'image',
     parent,
     channel,
     definition,

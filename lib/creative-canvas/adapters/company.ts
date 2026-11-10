@@ -18,6 +18,7 @@ import { isLoopbackLiteLlmUrl } from '../../provider-execution-gate.ts';
 import { downloadGatewayMedia, normalizeGatewayResultUrl, sanitizeGatewayMediaDiagnostic } from '../../gateway-media-url.ts';
 import { isAmbiguousSubmissionHttpStatus } from '../../media-core/submission-evidence.ts';
 import { resolveGptImage2Size } from '../../gpt-image-2-size-presets.ts';
+import { shouldInjectCompanyKlingMultiShot } from '../../video-multi-shot.ts';
 import { findCanvasCapability, validateCapabilityInputs, type CanvasModelCapability } from '../capabilities.ts';
 import {
   COMPANY_CANVAS_SEEDANCE_2_5_CAPABILITY,
@@ -413,6 +414,13 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
           if (multiShot) body.shot_type = 'intelligence';
         } else if (capability.modelAlias === 'kling-3.0' || capability.modelAlias === 'kling-2.5') {
           body.response_format = 'mp4';
+          if (context.parameters.multiShot === true && shouldInjectCompanyKlingMultiShot(
+            capability.modelAlias,
+            context.parameters.multiShot,
+          )) {
+            body.multi_shot = true;
+            body.shot_type = 'intelligence';
+          }
         }
         if (context.parameters.withAudio !== undefined) {
           body.generate_audio = context.parameters.withAudio === true;
@@ -423,13 +431,27 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
             // 腾讯可灵尾帧分支：网关忽略 size，比例与时长走 OutputConfig
             const outputConfig: Record<string, unknown> = { Duration: durationSec, Resolution: '1080P' };
             const snappedAspect = sourceDims && companyCaps
-              ? snapCompanyVideoSize(sourceDims.width, sourceDims.height, companyCaps)
+              ? snapCompanyVideoSize(
+                  sourceDims.width,
+                  sourceDims.height,
+                  companyCaps,
+                  typeof context.parameters.resolution === 'string'
+                    ? context.parameters.resolution
+                    : null,
+                )
               : null;
             if (snappedAspect) outputConfig.Resolution = '1080P';
             if (context.parameters.aspectRatio) outputConfig.AspectRatio = String(context.parameters.aspectRatio);
             body.OutputConfig = outputConfig;
           } else if (sourceDims) {
-            const snappedSize = snapCompanyVideoSize(sourceDims.width, sourceDims.height, companyCaps);
+            const snappedSize = snapCompanyVideoSize(
+              sourceDims.width,
+              sourceDims.height,
+              companyCaps,
+              typeof context.parameters.resolution === 'string'
+                ? context.parameters.resolution
+                : null,
+            );
             if (snappedSize) body.size = snappedSize;
           }
         }

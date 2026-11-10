@@ -343,11 +343,20 @@ export function snapCompanyVideoAspectRatio(width: number, height: number, caps:
 
 /**
  * 按源图宽高吸附公司视频模型的 size 组合；无法确定比例时返回 null（调用方省略 size）。
- * 档位固定按 VIDEO_TIER_PREFERENCE 取第一个允许的，不随源图分辨率上浮。
+ * 档位优先使用调用方冻结的档位；缺省才按 VIDEO_TIER_PREFERENCE 取第一个允许的，
+ * 不随源图分辨率上浮。
  */
-export function snapCompanyVideoSize(width: number, height: number, caps: CompanyModelCaps): string | null {
+export function snapCompanyVideoSize(
+  width: number,
+  height: number,
+  caps: CompanyModelCaps,
+  preferredTier?: string | null,
+): string | null {
   if (!(width > 0) || !(height > 0)) return null;
   const ratio = nearestRatio(width, height, caps.ratios);
-  const tier = VIDEO_TIER_PREFERENCE.find((t) => caps.tiers.includes(t)) ?? caps.tiers[0];
+  const requested = preferredTier?.trim().toUpperCase();
+  const tier = requested && caps.tiers.includes(requested)
+    ? requested
+    : VIDEO_TIER_PREFERENCE.find((t) => caps.tiers.includes(t)) ?? caps.tiers[0];
   return caps.videoSizes?.[ratio] ?? VIDEO_SIZE_TABLE[tier]?.[ratio] ?? null;
 }

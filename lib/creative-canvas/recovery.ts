@@ -22,11 +22,11 @@ import {
   type CanvasTaskRecord,
 } from './tasks.ts';
 import {
-  isCanvasUnifiedImageTask,
+  isCanvasUnifiedMediaTask,
   recordCanvasUnifiedConfirmedNotCreated,
   recordCanvasUnifiedRemoteId,
-  requestCanvasUnifiedImageCancellation,
-} from './unified-image.ts';
+  requestCanvasUnifiedMediaCancellation,
+} from './unified-media.ts';
 
 export interface CanvasRecoveryReport {
   /** 有远端身份、可以继续查询或补下载的任务。 */
@@ -116,7 +116,7 @@ export function recoverCanvasTasks(
       continue;
     }
     if (execution?.remoteId) {
-      if (isCanvasUnifiedImageTask(task)) {
+      if (isCanvasUnifiedMediaTask(task)) {
         recordCanvasUnifiedRemoteId(db, task, execution.remoteId);
       }
       updateCanvasTaskUnGuarded(db, task.id, {
@@ -202,7 +202,7 @@ export function reconcileCanvasTaskNotCreated(
     throw new CanvasError('conflict', '只有待核查的任务需要核查结论。');
   }
   const at = (params.now ?? (() => new Date()))().toISOString();
-  if (isCanvasUnifiedImageTask(task)) recordCanvasUnifiedConfirmedNotCreated(db, task);
+  if (isCanvasUnifiedMediaTask(task)) recordCanvasUnifiedConfirmedNotCreated(db, task);
   updateCanvasTaskUnGuarded(db, task.id, {
     phase: 'failed',
     slotHeld: false,
@@ -227,7 +227,7 @@ export function reconcileCanvasTaskWithRemoteId(
   const providerTaskId = params.providerTaskId.trim();
   if (!providerTaskId) throw new CanvasError('invalid_input', '远端任务 ID 不能为空。');
   const at = (params.now ?? (() => new Date()))().toISOString();
-  if (isCanvasUnifiedImageTask(task)) recordCanvasUnifiedRemoteId(db, task, providerTaskId);
+  if (isCanvasUnifiedMediaTask(task)) recordCanvasUnifiedRemoteId(db, task, providerTaskId);
   updateCanvasTaskUnGuarded(db, task.id, {
     phase: 'polling',
     slotHeld: true,
@@ -304,8 +304,8 @@ export function requestCanvasTaskCancel(
 ): CanvasTaskRecord {
   const task = requireCanvasTask(db, params.taskId);
   const at = (params.now ?? (() => new Date()))().toISOString();
-  if (isCanvasUnifiedImageTask(task)) {
-    requestCanvasUnifiedImageCancellation(db, task, new Date(at));
+  if (isCanvasUnifiedMediaTask(task)) {
+    requestCanvasUnifiedMediaCancellation(db, task, new Date(at));
   }
   const notSubmitted = !task.providerTaskId
     && ['waiting_input', 'queued', 'preparing', 'resume_pending'].includes(task.phase);

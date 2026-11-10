@@ -112,13 +112,14 @@ export function listTeamTasks(
   else if (filters.status) { clauses.push(`o.status = ? AND NOT COALESCE(${canceled}, 0)`); values.push(filters.status); }
   const hasImageUnified = tableHasColumn(db, 'jobs', 'unifiedModel');
   const hasVideoUnified = tableHasColumn(db, 'video_jobs', 'unifiedModel');
-  const unifiedModelExpression = hasImageUnified || hasVideoUnified
-    ? `COALESCE(${hasImageUnified ? 'j.unifiedModel' : 'NULL'}, ${hasVideoUnified ? 'v.unifiedModel' : 'NULL'})`
+  const hasMediaTasks = tableHasColumn(db, 'execution_media_tasks', 'unifiedModel');
+  const unifiedModelExpression = hasImageUnified || hasVideoUnified || hasMediaTasks
+    ? `COALESCE(${hasImageUnified ? 'j.unifiedModel' : 'NULL'}, ${hasVideoUnified ? 'v.unifiedModel' : 'NULL'}, ${hasMediaTasks ? 'media.unifiedModel' : 'NULL'})`
     : 'NULL';
   const hasImageUnifiedTask = tableHasColumn(db, 'jobs', 'unifiedTaskId');
   const hasVideoUnifiedTask = tableHasColumn(db, 'video_jobs', 'unifiedTaskId');
-  const unifiedTaskExpression = hasImageUnifiedTask || hasVideoUnifiedTask
-    ? `COALESCE(${hasImageUnifiedTask ? 'j.unifiedTaskId' : 'NULL'}, ${hasVideoUnifiedTask ? 'v.unifiedTaskId' : 'NULL'})`
+  const unifiedTaskExpression = hasImageUnifiedTask || hasVideoUnifiedTask || hasMediaTasks
+    ? `COALESCE(${hasImageUnifiedTask ? 'j.unifiedTaskId' : 'NULL'}, ${hasVideoUnifiedTask ? 'v.unifiedTaskId' : 'NULL'}, ${hasMediaTasks ? 'media.id' : 'NULL'})`
     : 'NULL';
   const items = db.prepare(`
     SELECT o.id AS operationId, o.module, o.taskId, o.step, o.inputRevision,
@@ -147,6 +148,7 @@ export function listTeamTasks(
     LEFT JOIN projects p ON o.scopeType = 'project' AND p.id = o.scopeId
     LEFT JOIN jobs j ON o.module = 'image' AND j.id = o.taskId
     LEFT JOIN video_jobs v ON o.module = 'video' AND v.id = o.taskId
+    ${hasMediaTasks ? "LEFT JOIN execution_media_tasks media ON media.module = o.module AND media.taskId = o.taskId" : ''}
     LEFT JOIN image_assets a ON a.id = COALESCE(j.inputImageId, v.sourceImageId)
     LEFT JOIN execution_actor_policies policy ON policy.actorId = o.actorId
     ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
