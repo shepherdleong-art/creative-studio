@@ -134,6 +134,13 @@ export async function createVideoJobsForShot(input: {
       };
     }
     if (isUnifiedKlingAnchorProvider(provider)) {
+      if ((process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE?.trim() || 'local') !== 'server') {
+        return {
+          ok: false,
+          status: 400,
+          error: '统一可灵 3.0 仅在团队版可用。',
+        };
+      }
       const available = unifiedKlingProviderAvailability(db)
         .some((channel) => channel.identityValid && channel.configured);
       if (!available) {
@@ -347,11 +354,19 @@ export async function createVideoJobsForShot(input: {
         templateId: item.templateId,
         versionNumber: versionBase + index + 1,
       });
+      // Unified Kling preserves an omitted storyboard flag as NULL. The company
+      // adapter defaults that exact model on, while the frozen request must stay
+      // byte-for-byte compatible with the business row on recovery.
+      const storedMultiShot = provider.unified
+        ? frozen?.multiShot === null || frozen?.multiShot === undefined
+          ? null
+          : frozen.multiShot ? 1 : 0
+        : normalizeVideoMultiShotForStorage(provider.type, provider.model, item.multiShot);
       insertJob.run(
         videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, item.tailImageId,
         item.providerId, provider.model, item.templateId, item.prompt, item.durationSec,
         item.generationMode, aspectRatio, resolution,
-        normalizeVideoMultiShotForStorage(provider.type, provider.model, item.multiShot),
+        storedMultiShot,
         createdAt, displayName, resolveTemplateOpeningCode(db, item.templateId),
         provider.unified ? 1 : 2,
         provider.unified ? UNIFIED_KLING3_MODEL_KEY : null,

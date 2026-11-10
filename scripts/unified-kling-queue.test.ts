@@ -463,6 +463,44 @@ try {
   assert.equal(unifiedChannel('job-capacity', 'qiniu')?.state, 'overflowed');
   assert.equal(unifiedChannel('job-capacity', 'tencent')?.state, 'succeeded');
 
+  updateActorPolicy(db, {
+    actorId: 'member',
+    monthlyLimitMinor: 1,
+    personalConcurrency: 10,
+    paused: false,
+    expectedVersion: 1,
+  });
+  const budgetCapacity = insertMemberAndProject(db, 'project-budget-capacity');
+  insertUnifiedJob(db, {
+    id: 'job-budget-capacity',
+    projectId: budgetCapacity.projectId,
+    imageId: budgetCapacity.imageId,
+    shotSetId: budgetCapacity.shotSetId,
+    shotId: budgetCapacity.shotId,
+    prompt: 'qiniu-full-but-budget-blocked',
+  });
+  const budgetCapacityRun = videoQueue.runVideoQueue({
+    projectId: budgetCapacity.projectId, concurrency: 2, timeoutMs: 30_000,
+  });
+  const budgetDeadline = Date.now() + 5_000;
+  while (Date.now() < budgetDeadline && videoStatus('job-budget-capacity') !== 'deferred') {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(videoStatus('job-budget-capacity'), 'deferred');
+  assert.equal(submittedFor('qiniu-full-but-budget-blocked').length, 0,
+    'budget-blocked requests must not be treated as qiniu capacity spillover');
+  assert.equal(unifiedChannel('job-budget-capacity', 'qiniu')?.state, 'selected');
+  assert.equal(unifiedChannel('job-budget-capacity', 'tencent')?.state, 'candidate');
+  videoQueue.cancelVideoQueue(budgetCapacity.projectId);
+  await budgetCapacityRun;
+  updateActorPolicy(db, {
+    actorId: 'member',
+    monthlyLimitMinor: null,
+    personalConcurrency: 10,
+    paused: false,
+    expectedVersion: 2,
+  });
+
   const reverse = insertMemberAndProject(db, 'project-reverse');
   insertUnifiedJob(db, {
     id: 'job-reverse',
