@@ -388,6 +388,16 @@ export const EXECUTION_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = [
         ON execution_media_reconcile_actions(actorUserId, createdAt DESC);
     `,
   },
+  {
+    version: 11,
+    sql: `
+      ALTER TABLE execution_operations ADD COLUMN admissionPriority INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE execution_operations ADD COLUMN admissionCandidateCount INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE execution_operations ADD COLUMN admissionTraceJson TEXT;
+      CREATE INDEX idx_execution_operations_admission_priority
+        ON execution_operations(status, admissionPriority, readySeq);
+    `,
+  },
 ];
 
 export type ExecutionSchemaReadiness = VersionedSchemaReadiness;
@@ -484,6 +494,13 @@ function validateExecutionSchema(db: Database.Database): void {
     if (!db.prepare(`SELECT 1 FROM sqlite_master
       WHERE type = 'table' AND name = 'execution_media_reconcile_actions'`).get()) {
       throw new Error('execution 缺少统一媒体核对审计结构');
+    }
+  }
+  if (schemaVersion >= 11) {
+    const operationColumns = (db.prepare('PRAGMA table_info(execution_operations)').all() as Array<{ name: string }>)
+      .map(column => column.name);
+    for (const column of ['admissionPriority', 'admissionCandidateCount', 'admissionTraceJson']) {
+      if (!operationColumns.includes(column)) throw new Error(`execution operation 缺少调度字段 ${column}`);
     }
   }
 }

@@ -43,6 +43,9 @@ export interface OperationRecord {
   currentAttemptId: string | null;
   mediaTaskId?: string | null;
   channelKey?: string | null;
+  admissionPriority?: number;
+  admissionCandidateCount?: number;
+  admissionTrace?: unknown;
   result: unknown;
   createdAt: string;
   updatedAt: string;
