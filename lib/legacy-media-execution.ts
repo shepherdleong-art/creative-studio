@@ -135,11 +135,13 @@ function hash(value: unknown): string {
 
 export class LegacyMediaSubmissionUnknownError extends Error {
   readonly attemptId?: string;
+  readonly evidence?: SubmissionEvidence;
 
-  constructor(message: string, attemptId?: string) {
+  constructor(message: string, attemptId?: string, evidence?: SubmissionEvidence) {
     super(message);
     this.name = 'LegacyMediaSubmissionUnknownError';
     this.attemptId = attemptId;
+    this.evidence = evidence;
   }
 }
 
@@ -470,6 +472,7 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
     throw new LegacyMediaSubmissionUnknownError(
       evidence.employee.detail,
       intent.attemptId,
+      evidence,
     );
   }
 }
