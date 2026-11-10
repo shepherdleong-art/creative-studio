@@ -219,10 +219,14 @@ export function listTeamTasks(
           model: unifiedDisplay,
         }))
         : modelCalls;
-      const admissionPriority = viewer.role === 'admin' && Number.isFinite(Number(item.admissionPriority))
+      const admissionPriority = viewer.role === 'admin'
+        && item.admissionPriority !== null && item.admissionPriority !== undefined
+        && Number.isFinite(Number(item.admissionPriority))
         ? Number(item.admissionPriority)
         : null;
-      const admissionCandidateCount = viewer.role === 'admin' && Number.isFinite(Number(item.admissionCandidateCount))
+      const admissionCandidateCount = viewer.role === 'admin'
+        && item.admissionCandidateCount !== null && item.admissionCandidateCount !== undefined
+        && Number.isFinite(Number(item.admissionCandidateCount))
         ? Number(item.admissionCandidateCount)
         : null;
       const admissionTrace = viewer.role === 'admin' ? jsonObject(item.admissionTraceJson) : null;
