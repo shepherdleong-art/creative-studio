@@ -745,6 +745,12 @@ export function prepareCanvasUnifiedImageExecution(
   const channel = currentChannel(db, parent);
   const canceled = Boolean(task.cancelRequestedAt || parent.cancelRequestedAt);
 
+  if (options.resuming && !channel) {
+    throw new CanvasUnifiedTerminalError(
+      'resume_channel_missing',
+      '画布任务已有远端身份，但父任务缺少原通道身份；已停止自动处理，不会重新提交。',
+    );
+  }
   if (channel && options.resuming) {
     if (canceled && !currentAccepted(task, channel)) {
       cancelParent(db, parent, channel);
