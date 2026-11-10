@@ -9,13 +9,23 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-kling-create-'));
 const previousEnv = { ...process.env };
 Object.assign(process.env, {
   CREATIVE_STUDIO_DATA_ROOT: root,
-  CREATIVE_STUDIO_DEPLOYMENT_MODE: 'local',
+  CREATIVE_STUDIO_DEPLOYMENT_MODE: 'server',
+  CREATIVE_STUDIO_DEPLOYMENT_ID: 'unified-kling-create-test',
+  CREATIVE_STUDIO_INSTANCE_ID: 'unified-kling-create-test-instance',
+  CREATIVE_STUDIO_PORT: '43126',
+  CREATIVE_STUDIO_TRUSTED_ORIGIN: 'https://studio.example.test',
 });
+fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+fs.writeFileSync(path.join(root, 'data', 'deployment.json'), JSON.stringify({
+  version: 1,
+  mode: 'server',
+  deploymentId: 'unified-kling-create-test',
+}));
 
 const { getDb, closeDb } = await import('../lib/db.ts');
 const { seedProviders, seedVideoProviders } = await import('../lib/seed.ts');
 const { createVideoJobsForShot } = await import('../lib/video-job-create.ts');
-const { runWithAccessContext, createLocalAccessContext } = await import('../lib/media-core/access-context.ts');
+const { runWithAccessContext } = await import('../lib/media-core/access-context.ts');
 const {
   UNIFIED_KLING3_ANCHOR_ID,
   UNIFIED_KLING3_CHANNELS,
@@ -25,6 +35,15 @@ const {
 const db = getDb();
 seedProviders();
 seedVideoProviders();
+const teamContext = {
+  kind: 'team' as const,
+  actor: { userId: 'member', role: 'employee' as const },
+  assertAccess() {},
+  resolveOwner() { return 'member'; },
+  registerRootScope() {},
+  registerInheritedScope() {},
+  registerTaskPrincipal() {},
+};
 db.prepare(`INSERT INTO providers (id, name, type, baseUrl, apiKey, model, enabled)
   VALUES ('image-provider', '图片', 'openai-compatible', 'https://image.test', 'image-key', 'image2-medium', 1)`)
   .run();
@@ -57,7 +76,7 @@ for (const channel of UNIFIED_KLING3_CHANNELS) {
 }
 
 async function create(items: Parameters<typeof createVideoJobsForShot>[0]['items']) {
-  return runWithAccessContext(createLocalAccessContext(), () => createVideoJobsForShot({
+  return runWithAccessContext(teamContext, () => createVideoJobsForShot({
     shotSetId: 'set-create',
     shotId: 'shot-create',
     items,
@@ -115,6 +134,28 @@ try {
   assert.equal(secondRequest.tailImageId, null);
   assert.equal(secondRequest.multiShot, false);
 
+  const omittedItem = {
+    prompt: '省略智能分镜',
+    templateId: null,
+    providerId: UNIFIED_KLING3_ANCHOR_ID,
+    durationSec: 5,
+    tailImageId: null,
+    generationMode: 'image-to-video',
+    referenceAssetIds: [],
+    aspectRatio: '3:4',
+    resolution: '1K',
+  } as unknown as Parameters<typeof createVideoJobsForShot>[0]['items'][number];
+  const omittedMultiShot = await create([omittedItem]);
+  if (!omittedMultiShot.ok) throw new Error(omittedMultiShot.error);
+  const omittedJob = db.prepare('SELECT * FROM video_jobs WHERE id = ?')
+    .get(omittedMultiShot.videoJobIds[0]) as Record<string, unknown>;
+  assert.equal(omittedJob.multiShot, null, 'omitted storyboard flag stays nullable');
+  assert.equal(
+    (JSON.parse(String(omittedJob.unifiedRequestJson)) as Record<string, unknown>).multiShot,
+    null,
+    'frozen request must match the nullable business field on recovery',
+  );
+
   const countBeforeInvalid = db.prepare('SELECT COUNT(*) FROM video_jobs').pluck().get() as number;
   const unsupported = await create([{
     prompt: '非法时长',
@@ -151,16 +192,6 @@ try {
     '非法组合和未开放模式必须在创建前拒绝',
   );
 
-  process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE = 'server';
-  const teamContext = {
-    kind: 'team' as const,
-    actor: { userId: 'member', role: 'employee' as const },
-    assertAccess() {},
-    resolveOwner() { return 'member'; },
-    registerRootScope() {},
-    registerInheritedScope() {},
-    registerTaskPrincipal() {},
-  };
   const directChannel = await runWithAccessContext(teamContext, () => createVideoJobsForShot({
     shotSetId: 'set-create',
     shotId: 'shot-create',
@@ -182,7 +213,6 @@ try {
   assert.equal(directChannel.ok, false);
   if (!directChannel.ok) assert.match(directChannel.error, /统一模型|真实通道/);
   assert.equal(db.prepare('SELECT COUNT(*) FROM video_jobs').pluck().get(), countBeforeInvalid);
-  process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE = 'local';
 
   db.prepare(`UPDATE video_providers SET enabled = 0 WHERE id IN (?, ?)`)
     .run(UNIFIED_KLING3_CHANNELS[0].providerId, UNIFIED_KLING3_CHANNELS[1].providerId);
@@ -201,6 +231,22 @@ try {
   assert.equal(unavailable.ok, false);
   if (!unavailable.ok) assert.match(unavailable.error, /通道/);
   assert.equal(db.prepare('SELECT COUNT(*) FROM video_jobs').pluck().get(), countBeforeInvalid);
+
+  process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE = 'local';
+  const localUnified = await create([{
+    prompt: '本地版不得启用统一可灵',
+    templateId: null,
+    providerId: UNIFIED_KLING3_ANCHOR_ID,
+    durationSec: 5,
+    tailImageId: null,
+    multiShot: true,
+    generationMode: 'image-to-video',
+    referenceAssetIds: [],
+    aspectRatio: '3:4',
+    resolution: '1K',
+  }]);
+  assert.equal(localUnified.ok, false);
+  if (!localUnified.ok) assert.match(localUnified.error, /团队版/);
 
   console.log('unified Kling creation tests passed');
 } finally {

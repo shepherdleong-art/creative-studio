@@ -3,7 +3,7 @@ import {
   unifiedImageCatalogCombinations,
   unifiedImageResolutionsForRatio,
 } from '../media-core/unified-media/catalog.ts';
-import { COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY } from './adapters/company-capabilities.ts';
+import { UNIFIED_CANVAS_IMAGE2_CAPABILITY_KEY } from './unified-image-key.ts';
 
 export function canvasParameterOptions(
   capabilityKey: string | null | undefined,
@@ -11,7 +11,7 @@ export function canvasParameterOptions(
   declaredOptions: readonly string[] | undefined,
   parameters: Record<string, string | number | boolean>,
 ): readonly string[] {
-  if (capabilityKey !== COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key) {
+  if (capabilityKey !== UNIFIED_CANVAS_IMAGE2_CAPABILITY_KEY) {
     return declaredOptions ?? [];
   }
   if (parameterKey === 'aspectRatio') {
@@ -34,7 +34,7 @@ export function updateCanvasParameter(
   value: string,
 ): Record<string, string | number | boolean> {
   const next = { ...parameters, [key]: value };
-  if (capabilityKey !== COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key) return next;
+  if (capabilityKey !== UNIFIED_CANVAS_IMAGE2_CAPABILITY_KEY) return next;
   if (key === 'aspectRatio') {
     const valid = unifiedImageResolutionsForRatio(value).map((tier) => tier.toUpperCase());
     if (!valid.includes(String(next.resolution ?? ''))) {

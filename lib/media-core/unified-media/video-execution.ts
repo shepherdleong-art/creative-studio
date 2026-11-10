@@ -25,8 +25,10 @@ import { unifiedTaskSourceForJob } from './task-source.ts';
 import {
   claimUnifiedChannelHealthForSelection,
   recordUnifiedChannelFailure,
+  releaseUnifiedChannelRecoveryProbe,
   unifiedChannelFailureReasonFromEvidence,
 } from './health.ts';
+import { unifiedCapacityOnlyOperation } from './execution.ts';
 
 interface UnifiedVideoJobRow {
   id: string;
@@ -981,6 +983,13 @@ export function handleUnifiedKlingExplicitFailure(
         reasonCode: failureReason,
         now: new Date(at),
       });
+    } else {
+      releaseUnifiedChannelRecoveryProbe(db, {
+        unifiedModel: task.unifiedModel,
+        channelKey: channel.channelKey,
+        providerId: channel.providerId,
+        now: new Date(at),
+      });
     }
     const frozen = readFrozenRequest(job);
     const selection = findNextChannel(db, job, task, frozen, channel.channelKey);
@@ -1045,6 +1054,30 @@ export function handleUnifiedKlingCapacityDeferral(
     if (!channel) return { outcome: 'ignored', reason: 'channel_not_found' };
     if (job.cancelRequestedAt || task.cancelRequestedAt) return { outcome: 'canceled', reason: 'canceled' };
     if (!reasons.includes('pool_capacity')) return { outcome: 'not_capacity', reason: reasons[0] ?? 'deferred' };
+      const operation = db.prepare(`
+        SELECT id FROM execution_operations WHERE mediaTaskId = ? AND channelKey = ?
+      `).get(task.id, channel.channelKey) as { id: string } | undefined;
+      if (!operation) return { outcome: 'not_capacity', reason: 'operation_missing' };
+      const capacityOnly = unifiedCapacityOnlyOperation(db, operation.id, now);
+      if (!capacityOnly.ok) {
+        const detail = {
+          ...(capacityOnly.detail ?? {}),
+          reason: capacityOnly.reason,
+          capacityBlockedReason: 'pool_capacity',
+          channelKey: channel.channelKey,
+        };
+        const at = now.toISOString();
+        db.prepare(`UPDATE execution_operations
+          SET waitReason = ?, waitDetail = ?, updatedAt = ? WHERE id = ?`)
+          .run(capacityOnly.reason, JSON.stringify(detail), at, operation.id);
+        db.prepare(`UPDATE execution_media_tasks
+          SET status = 'waiting', waitReason = ?, waitDetailJson = ?, updatedAt = ?
+          WHERE id = ?`).run(capacityOnly.reason, JSON.stringify(detail), at, task.id);
+        db.prepare(`UPDATE execution_media_channels
+          SET state = 'selected', evidenceJson = ?, updatedAt = ? WHERE id = ?`)
+          .run(JSON.stringify(detail), at, channel.id);
+        return { outcome: 'not_capacity', reason: capacityOnly.reason };
+      }
 
     const persistWaiting = (): UnifiedKlingCapacityDecision => {
       const nextEligibleAt = new Date(now.getTime() + 1_000).toISOString();

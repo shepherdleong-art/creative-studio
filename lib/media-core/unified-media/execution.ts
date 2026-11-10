@@ -955,7 +955,7 @@ interface CapacityOperationRow {
   requiredPoolsJson: string;
 }
 
-function capacityOnlyOperation(
+export function unifiedCapacityOnlyOperation(
   db: Database.Database,
   operationId: string,
   now: Date,
@@ -1136,7 +1136,7 @@ export function handleUnifiedImageCapacityDeferral(
     if (job.cancelRequestedAt || task.cancelRequestedAt) {
       return { outcome: 'canceled', reason: 'canceled' };
     }
-    const capacity = capacityOnlyOperation(db, operation.id, now);
+    const capacity = unifiedCapacityOnlyOperation(db, operation.id, now);
     if (!capacity.ok) {
       if ([
         'monthly_budget', 'cost_unknown', 'pricing_required',
