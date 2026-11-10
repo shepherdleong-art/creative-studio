@@ -17,6 +17,7 @@ export interface WorkbenchProvider {
   id: string;
   name: string;
   model: string;
+  type?: string;
   enabled: number | boolean;
   hasApiKey: boolean;
 }
@@ -36,6 +37,7 @@ export interface WorkbenchJob {
   referenceImageIds?: string;
   providerId?: string;
   model?: string;
+  unifiedModel?: string;
   size?: string;
   quality?: string;
 }

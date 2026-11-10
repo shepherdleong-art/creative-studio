@@ -3,6 +3,7 @@ import { TeamUsageError } from './usage.ts';
 import type { TeamViewer } from './diagnostics.ts';
 import { TASK_MODULE_LABELS, taskStepLabel, taskWaitLabel } from '../team-task-labels.ts';
 import { readActorPolicy } from '../media-core/execution/pools.ts';
+import { unifiedMediaDisplayName } from '../media-core/unified-media/catalog.ts';
 import { projectModelCall, summarizeModelCalls, type TeamModelCall } from './task-model.ts';
 
 type TaskRow = Record<string, unknown>;
@@ -54,6 +55,7 @@ export interface TeamTaskView {
   providerName: string;
   model: string | null;
   modelStatus: string;
+  unifiedModel: string | null;
   modelCalls: TeamModelCall[];
 }
 
@@ -64,6 +66,11 @@ type AttemptRow = {
 
 function tableExists(db: Database.Database, table: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
+}
+
+function tableHasColumn(db: Database.Database, table: string, column: string): boolean {
+  return tableExists(db, table)
+    && (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((item) => item.name === column);
 }
 
 export function listTeamTasks(
@@ -89,6 +96,7 @@ export function listTeamTasks(
       o.currentAttemptId, o.createdAt, o.updatedAt,
       p.name AS scopeName, j.status AS imageStatus, v.status AS videoStatus,
       a.filename AS inputFilename, a.usage AS imageUsage, COALESCE(j.model, v.model) AS model,
+      ${tableHasColumn(db, 'jobs', 'unifiedModel') ? 'j.unifiedModel' : 'NULL'} AS unifiedModel,
       j.usageSnapshotJson AS imageUsageSnapshot, v.usageSnapshotJson AS videoUsageSnapshot,
       o.inputSnapshotJson, o.providerSnapshotJson,
       policy.personalConcurrency,
@@ -165,6 +173,10 @@ export function listTeamTasks(
         }
       }
       const display = summarizeModelCalls(modelCalls, String(item.module), snapshotConfigured(item.providerSnapshotJson));
+      const unifiedModel = typeof item.unifiedModel === 'string' && item.unifiedModel.trim()
+        ? item.unifiedModel.trim()
+        : null;
+      const unifiedDisplay = unifiedMediaDisplayName(unifiedModel);
       return {
         operationId: String(item.operationId), module: String(item.module), taskId: String(item.taskId), step: String(item.step),
         inputRevision: String(item.inputRevision), businessAttemptId: String(item.businessAttemptId),
@@ -194,7 +206,11 @@ export function listTeamTasks(
         stepName: taskStepLabel(String(item.step), String(item.module)),
         scopeName: scopeName || (item.scopeType === 'project' ? '项目已删除或不可用' : item.scopeType === 'canvas' ? '画布已删除或不可用' : '未关联项目或画布'),
         scope: { resourceType: String(item.scopeType), resourceId: String(item.scopeId) },
-        ...display, modelCalls,
+        ...(unifiedDisplay
+          ? { providerName: 'Image 2', model: unifiedDisplay, modelStatus: 'recorded' }
+          : display),
+        unifiedModel,
+        modelCalls,
       };
     }),
     localAgentIncluded: false,

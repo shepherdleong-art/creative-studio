@@ -263,6 +263,8 @@ export interface LegacyMediaSubmitInput<T> {
   apiKey: string;
   credentialIdentity?: string;
   quote: CostQuote;
+  mediaTaskId?: string | null;
+  channelKey?: string | null;
   signal?: AbortSignal;
   onAdmitted?: () => void;
   send: () => Promise<{ value: T; receipt: ExecutionReceipt }>;
@@ -301,6 +303,8 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
     credentialVersionRef: upstreamFingerprint(input.baseUrl, credentialIdentity),
     requiredPools: [poolKey],
     quote: input.quote,
+    mediaTaskId: input.mediaTaskId,
+    channelKey: input.channelKey,
   });
   if (enqueued.replayed && ['unknown', 'maybe_sent', 'reconciling', 'succeeded', 'failed'].includes(enqueued.operation.status)) {
     throw new LegacyMediaSubmissionUnknownError('该提交结果尚未明确，禁止重复付费。', enqueued.operation.currentAttemptId ?? undefined);

@@ -5,6 +5,7 @@ import { Segmented, Tag } from '@/components/ui/Appearance';
 import { Icon } from '@/components/ui/Icon';
 import { MAX_SHOTS_PER_SET } from '@/lib/shot-set-domain';
 import { getGptImage2AspectRatio } from '@/lib/gpt-image-2-size-presets';
+import { unifiedMediaDisplayName } from '@/lib/media-core/unified-media/catalog';
 import FurniturePromptControls from '@/components/FurniturePromptControls';
 import ImagePreview from '@/components/media/ImagePreview';
 import { getResultJobKind, type SceneReferenceSummary } from '@/lib/result-gallery-jobs';
@@ -116,6 +117,9 @@ export default function SceneStep({
   const effectiveProviderId = selectableProviders.some((provider) => provider.id === providerId)
     ? providerId
     : selectableProviders[0]?.id ?? '';
+  const unifiedSelection = selectableProviders.some(
+    (provider) => provider.id === effectiveProviderId && provider.type === 'unified-image',
+  );
 
   // 候选 = 已出结果、已失败、以及**还在生成**的任务（生成中的先占位，好了自动换成图片）。
   // 排队/生成中的任务可以选中、看占位，但不能标可用（见 hasShotResult）。
@@ -164,7 +168,10 @@ export default function SceneStep({
   const selectedState = resolveShotResultState(selectedJob?.status, Boolean(selectedResultUrl));
   const selectedReference = selectedJob?.outputImageId ? sceneReferences.get(selectedJob.outputImageId) : undefined;
   const marked = hasShotResult(selectedState);
-  const canRegenerate = canRegenerateShot(selectedState);
+  const selectedJobUnified = Boolean(
+    selectedJob?.unifiedModel && unifiedMediaDisplayName(selectedJob.unifiedModel),
+  );
+  const canRegenerate = canRegenerateShot(selectedState) && !selectedJobUnified;
   // 原任务的供应商是冻结的：右栏换了供应商后，重试也要按新供应商新建一版。
   const jobProviderId = selectedJob?.providerId || '';
   const providerSelectionChanged = Boolean(jobProviderId)
@@ -426,7 +433,12 @@ export default function SceneStep({
                                 <button
                                   type="button"
                                   className="cap"
-                                  title={providerSelectionChanged ? '按右栏选中的供应商重新生成一版（旧版保留）' : '用原供应商重新执行这个任务'}
+                                  disabled={selectedJobUnified}
+                                  title={selectedJobUnified
+                                    ? '统一 Image 2 的手动重试入口留待后续任务接入'
+                                    : providerSelectionChanged
+                                      ? '按右栏选中的供应商重新生成一版（旧版保留）'
+                                      : '用原供应商重新执行这个任务'}
                                   onClick={retrySelectedJob}
                                 >重试</button></>
                             : <><span className={s.spin} /><span>生成中</span></>}
@@ -549,15 +561,17 @@ export default function SceneStep({
 
             {selectableProviders.length > 0 ? (
               <label className={s.field}>
-                <span>供应商</span>
+                <span>{unifiedSelection ? '模型' : '供应商'}</span>
                 <select
                   className={s.select}
-                  aria-label="供应商"
+                  aria-label={unifiedSelection ? '模型' : '供应商'}
                   value={effectiveProviderId}
                   onChange={(event) => setProviderId(event.target.value)}
                 >
                   {selectableProviders.map((provider) => (
-                    <option key={provider.id} value={provider.id}>{provider.name}（{provider.model}）</option>
+                    <option key={provider.id} value={provider.id}>
+                      {provider.type === 'unified-image' ? provider.name : `${provider.name}（${provider.model}）`}
+                    </option>
                   ))}
                 </select>
               </label>
@@ -568,6 +582,9 @@ export default function SceneStep({
             )}
             {providerSelectionChanged ? (
               <p className={s.note}>已换供应商：对失败候选点「重试」会按新供应商重新生成一版，旧版保留。</p>
+            ) : null}
+            {unifiedSelection ? (
+              <p className={s.note}>只选统一模型 Image 2；清晰度和比例由项目创建时锁定，系统按完整可执行组合选择七牛或腾讯通道。</p>
             ) : null}
 
             <div className={s.field}>

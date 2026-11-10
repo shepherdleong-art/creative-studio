@@ -1,6 +1,10 @@
 import type Database from 'better-sqlite3';
 import { ExecutionError } from './context.ts';
 import { readTeamConcurrencyPolicy } from './team-policy.ts';
+import {
+  trustedChannelModelsForUnifiedModel,
+  trustedUnifiedModelForChannelModel,
+} from '../unified-media/catalog.ts';
 
 export type ActorConcurrencyMode = 'legacy' | 'inherit' | 'fixed';
 export type ActorConcurrencySource = 'legacy_fixed' | 'team_default' | 'personal_fixed';
@@ -152,7 +156,7 @@ export function updateActorPolicy(db: Database.Database, input: {
 export function executionModelIdentity(snapshot: unknown): string | null {
   if (!snapshot || typeof snapshot !== 'object') return null;
   const value = snapshot as Record<string, unknown>;
-  for (const key of ['configuredModel', 'model', 'requestModel', 'modelAlias']) {
+  for (const key of ['unifiedModel', 'configuredModel', 'model', 'requestModel', 'modelAlias']) {
     if (typeof value[key] === 'string' && value[key].trim()) return value[key].trim();
   }
   return null;
@@ -161,7 +165,20 @@ export function executionModelIdentity(snapshot: unknown): string | null {
 export function actorModelAllowed(policy: ActorPolicy, snapshot: unknown): boolean {
   if (policy.allowedModels === null) return true;
   const model = executionModelIdentity(snapshot);
-  return model !== null && policy.allowedModels.includes(model);
+  if (model === null) return false;
+  const object = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
+    ? snapshot as Record<string, unknown>
+    : {};
+  const explicitUnified = typeof object.unifiedModel === 'string' && object.unifiedModel.trim()
+    ? object.unifiedModel.trim()
+    : null;
+  const unified = explicitUnified ?? trustedUnifiedModelForChannelModel(model);
+  const candidates = new Set<string>([model]);
+  if (unified) {
+    candidates.add(unified);
+    for (const trustedModel of trustedChannelModelsForUnifiedModel(unified)) candidates.add(trustedModel);
+  }
+  return [...candidates].some((candidate) => policy.allowedModels!.includes(candidate));
 }
 
 export function upsertExecutionPool(db: Database.Database, input: {

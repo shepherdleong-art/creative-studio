@@ -214,4 +214,10 @@ export const CORE_DB_MIGRATIONS = [
     providerId TEXT PRIMARY KEY,
     deletedAt TEXT NOT NULL
   )`,
+  `ALTER TABLE jobs ADD COLUMN unifiedModel TEXT`,
+  `ALTER TABLE jobs ADD COLUMN unifiedRuleVersion TEXT`,
+  `ALTER TABLE jobs ADD COLUMN unifiedTaskId TEXT`,
+  `ALTER TABLE jobs ADD COLUMN unifiedRequestJson TEXT`,
+  `ALTER TABLE jobs ADD COLUMN cancelRequestedAt TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_jobs_unified_task ON jobs(unifiedTaskId) WHERE unifiedTaskId IS NOT NULL`,
 ];

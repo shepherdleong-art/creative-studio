@@ -41,6 +41,8 @@ export interface OperationRecord {
   waitDetail: string | null;
   currentPermitId: string | null;
   currentAttemptId: string | null;
+  mediaTaskId?: string | null;
+  channelKey?: string | null;
   result: unknown;
   createdAt: string;
   updatedAt: string;
@@ -96,6 +98,8 @@ export interface EnqueueInput {
   credentialVersionRef?: string;
   requiredPools: readonly string[];
   quote: CostQuote;
+  mediaTaskId?: string | null;
+  channelKey?: string | null;
   persistCheckpoint?: (db: Database.Database) => void;
 }
 

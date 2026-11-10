@@ -9,6 +9,7 @@ interface OperationRow {
   credentialVersionRef: string | null; requiredPoolsJson: string; quoteJson: string;
   status: string; readySeq: number; waitReason: string | null; waitDetail: string | null;
   currentPermitId: string | null; currentAttemptId: string | null; resultJson: string | null;
+  mediaTaskId: string | null; channelKey: string | null;
   createdAt: string; updatedAt: string;
 }
 

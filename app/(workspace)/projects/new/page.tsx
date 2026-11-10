@@ -11,6 +11,12 @@ import { GPT_IMAGE_2_SIZE_MAP, resolveGptImage2Size } from '@/lib/gpt-image-2-si
 import { companyImageCapsForModel } from '@/lib/company-gateway-size';
 import { getSupportedImageAspectRatios, getSupportedImageResolutions } from '@/lib/image-generation-settings';
 import {
+  UNIFIED_IMAGE_MODEL_KEY,
+  unifiedImageAspectRatios,
+  unifiedImageResolutionsForRatio,
+} from '@/lib/media-core/unified-media/catalog';
+import { resolveUnifiedImageOutput } from '@/lib/media-core/unified-media/requests';
+import {
   STORE_CODES,
   PRODUCTION_TYPES,
   buildProjectBaseName,
@@ -84,23 +90,33 @@ export default function NewProjectPage() {
   const [resolution, setResolution] = useState('1k');
   const [quality, setQuality] = useState('medium');
 
+  const unifiedSelected = provider?.type === 'unified-image' && provider.model === UNIFIED_IMAGE_MODEL_KEY;
   const modelCapabilities = useMemo(() => getImageModelCapabilities(model), [model]);
-  const supportsQuality = modelCapabilities.supportsQuality;
+  const supportsQuality = !unifiedSelected && modelCapabilities.supportsQuality;
   const companyCaps = useMemo(() => companyImageCapsForModel(model), [model]);
-  const nativePixelUi = !!companyCaps?.nativeDelivery;
-  const aspectRatioOptions = useMemo(() => getSupportedImageAspectRatios(model), [model]);
+  const nativePixelUi = unifiedSelected || !!companyCaps?.nativeDelivery;
+  const aspectRatioOptions = useMemo(
+    () => unifiedSelected ? unifiedImageAspectRatios() : getSupportedImageAspectRatios(model),
+    [model, unifiedSelected],
+  );
   const selectedAspectRatio = aspectRatioOptions.includes(aspectRatio)
     ? aspectRatio
     : (aspectRatioOptions.includes('1:1') ? '1:1' : aspectRatioOptions[0] || '1:1');
   const availableResolutions = useMemo(
-    () => getSupportedImageResolutions(model, selectedAspectRatio),
-    [model, selectedAspectRatio],
+    () => unifiedSelected
+      ? unifiedImageResolutionsForRatio(selectedAspectRatio)
+      : getSupportedImageResolutions(model, selectedAspectRatio),
+    [model, selectedAspectRatio, unifiedSelected],
   );
   const selectedResolution = availableResolutions.includes(resolution) ? resolution : availableResolutions[0] || '1k';
   const size = useMemo(() => {
-    try { return resolveGptImage2Size(selectedAspectRatio, selectedResolution); }
+    try {
+      return unifiedSelected
+        ? resolveUnifiedImageOutput(selectedResolution, selectedAspectRatio).size
+        : resolveGptImage2Size(selectedAspectRatio, selectedResolution);
+    }
     catch { return ''; }
-  }, [selectedAspectRatio, selectedResolution]);
+  }, [selectedAspectRatio, selectedResolution, unifiedSelected]);
 
   const [creating, setCreating] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -235,14 +251,20 @@ export default function NewProjectPage() {
         <h2 className="mb-2 px-1 text-label font-semibold text-ink-secondary">图片参数</h2>
         <GroupList>
           <GroupRow label="模型">
-            <input
-              aria-label="模型"
-              type="text"
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              readOnly={providerLocksModel}
-              className="input-field w-52"
-            />
+            {unifiedSelected ? (
+              <select aria-label="模型" value={UNIFIED_IMAGE_MODEL_KEY} disabled className="input-field w-52">
+                <option value={UNIFIED_IMAGE_MODEL_KEY}>Image 2</option>
+              </select>
+            ) : (
+              <input
+                aria-label="模型"
+                type="text"
+                value={model}
+                onChange={(event) => setModel(event.target.value)}
+                readOnly={providerLocksModel}
+                className="input-field w-52"
+              />
+            )}
           </GroupRow>
           <GroupRow label="画面比例">
             <select
@@ -251,7 +273,9 @@ export default function NewProjectPage() {
               onChange={(event) => {
                 const next = event.target.value;
                 setAspectRatio(next);
-                const available = getSupportedImageResolutions(model, next);
+                const available = unifiedSelected
+                  ? unifiedImageResolutionsForRatio(next)
+                  : getSupportedImageResolutions(model, next);
                 if (!available.includes(resolution)) setResolution(available[0] || '1k');
               }}
               className="input-field w-52"
@@ -289,6 +313,7 @@ export default function NewProjectPage() {
         onSelect={(next) => {
           setProvider(next);
           setModel(next.model);
+          if (next.type === 'unified-image') setResolution('2k');
         }}
       />
 

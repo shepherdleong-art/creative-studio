@@ -6,7 +6,8 @@ const RETIRED_IMAGE_IDS = new Set([
 ]);
 
 export function isVisibleImageProvider(provider: { id: string; name: string; type: string; baseUrl: string }): boolean {
-  return !RETIRED_IMAGE_IDS.has(provider.id)
+  return provider.type !== 'unified-image'
+    && !RETIRED_IMAGE_IDS.has(provider.id)
     && !(provider.name === 'GeekAI' && provider.type === 'geekai-json' && provider.baseUrl.replace(/\/$/, '') === 'https://geekai.co/api');
 }
 
