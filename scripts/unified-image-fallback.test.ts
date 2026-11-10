@@ -23,7 +23,13 @@ const { getDb, closeDb } = await import('../lib/db.ts');
 const { startTeamServiceRuntime, drainTeamRuntime, releaseTeamRuntimeOwner } = await import('../lib/team-service/runtime/index.ts');
 const queue = await import('../lib/queue.ts');
 const { seedProviders } = await import('../lib/seed.ts');
-const { configureLegacyMediaProviderPool } = await import('../lib/legacy-media-execution.ts');
+const {
+  configureLegacyMediaProviderPool,
+  LegacyMediaNotCreatedError,
+  legacyMediaExecutionRevision,
+  submitLegacyMediaOperation,
+} = await import('../lib/legacy-media-execution.ts');
+const { providerHttpError } = await import('../lib/media-core/submission-evidence.ts');
 const { readActorPolicy, updateActorPolicy } = await import('../lib/media-core/execution/pools.ts');
 const { runWithTaskAccessContext } = await import('../lib/media-core/access-context.ts');
 const { freezeUnifiedImageRequest } = await import('../lib/media-core/unified-media/requests.ts');
@@ -34,6 +40,7 @@ const {
   listUnifiedImageChannelAttempts,
   prepareUnifiedImageExecution,
   requestUnifiedImageCancellation,
+  UnifiedImageRecoveryPendingError,
 } = await import('../lib/media-core/unified-media/execution.ts');
 const { listTeamTasks } = await import('../lib/team-service/tasks.ts');
 const { queryTeamUsage } = await import('../lib/team-service/usage.ts');
@@ -347,6 +354,80 @@ try {
       1,
       're-running a completed task must not duplicate the shot candidate',
     );
+  }
+
+  {
+    const prompt = 'case-restart-after-not-created';
+    const testCase = createCase(db, 'restart-after-not-created', {
+      tencent: { post: () => successResponse('tencent', prompt) },
+    });
+    const provider = db.prepare('SELECT * FROM providers WHERE id = ?')
+      .get(UNIFIED_IMAGE_CHANNELS[0].providerId) as {
+        id: string; type: string; baseUrl: string; apiKey: string;
+      };
+    db.prepare("UPDATE jobs SET status = 'running' WHERE id = ?").run(testCase.jobId);
+    const prepared = runWithTaskAccessContext(db, 'image', testCase.jobId, () =>
+      prepareUnifiedImageExecution(db, testCase.jobId));
+    assert.equal(prepared.channel.channelKey, 'qiniu');
+
+    let firstFailure: unknown;
+    try {
+      await runWithTaskAccessContext(db, 'image', testCase.jobId, () =>
+        submitLegacyMediaOperation<never>({
+          module: 'image',
+          taskId: testCase.jobId,
+          projectId: testCase.projectId,
+          inputRevision: legacyMediaExecutionRevision(prepared.channel.executionRevision),
+          inputSnapshot: { prompt },
+          requestSnapshot: { model: UNIFIED_IMAGE_CHANNELS[0].model, prompt },
+          providerSnapshot: {
+            providerId: provider.id,
+            type: provider.type,
+            model: UNIFIED_IMAGE_CHANNELS[0].model,
+            baseUrl: provider.baseUrl,
+          },
+          baseUrl: provider.baseUrl,
+          apiKey: provider.apiKey,
+          quote: { kind: 'priced', reserve: { currency: 'CNY', minor: 25 }, pricingSnapshot: null },
+          mediaTaskId: prepared.taskId,
+          channelKey: prepared.channel.channelKey,
+          send: async () => {
+            throw providerHttpError(400, 'fixture rejected before restart');
+          },
+        }));
+    } catch (error) {
+      firstFailure = error;
+    }
+    assert.ok(firstFailure instanceof LegacyMediaNotCreatedError);
+    const interruptedOperation = db.prepare(`
+      SELECT status, currentAttemptId FROM execution_operations
+      WHERE mediaTaskId = ? AND channelKey = 'qiniu'
+    `).get(prepared.taskId) as { status: string; currentAttemptId: string | null };
+    assert.equal(interruptedOperation.status, 'pending');
+
+    assert.throws(
+      () => runWithTaskAccessContext(db, 'image', testCase.jobId, () =>
+        prepareUnifiedImageExecution(db, testCase.jobId)),
+      (error: unknown) => error instanceof UnifiedImageRecoveryPendingError,
+      'restart recovery must advance the persisted explicit failure instead of resubmitting qiniu',
+    );
+    const recoveredTask = db.prepare(`
+      SELECT currentChannelKey, status FROM execution_media_tasks WHERE id = ?
+    `).get(prepared.taskId) as { currentChannelKey: string; status: string };
+    assert.deepEqual(recoveredTask, { currentChannelKey: 'tencent', status: 'routing' });
+    assert.equal(
+      db.prepare('SELECT executionRevision FROM jobs WHERE id = ?').pluck().get(testCase.jobId),
+      2,
+    );
+
+    await runJob(testCase.projectId, testCase.jobId);
+    assert.equal(db.prepare('SELECT status FROM jobs WHERE id = ?').pluck().get(testCase.jobId), 'succeeded');
+    assert.equal(postCount(prompt, 'qiniu'), 0, 'the interrupted qiniu attempt must not be submitted again');
+    assert.equal(postCount(prompt, 'tencent'), 1);
+    const ledger = listUnifiedImageChannelAttempts(db, testCase.jobId);
+    assert.equal(ledger.channels.find((channel) => channel.channelKey === 'qiniu')?.state, 'not_created');
+    assert.equal(ledger.channels.find((channel) => channel.channelKey === 'tencent')?.state, 'succeeded');
+    assert.equal(ledger.submissionCount, 2);
   }
 
   {

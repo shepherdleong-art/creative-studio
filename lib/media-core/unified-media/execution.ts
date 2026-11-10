@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import { isPlaceholderValue } from '../../video-auth.ts';
 import { requireAccessContext } from '../access-context.ts';
 import { ensureMediaProviderPool } from '../execution/media-provider-pool.ts';
-import type { SubmissionEvidence } from '../submission-evidence.ts';
+import { classifySubmissionOutcome, type SubmissionEvidence } from '../submission-evidence.ts';
 import {
   UNIFIED_IMAGE_ANCHOR_ID,
   UNIFIED_IMAGE_CHANNELS,
@@ -149,6 +149,13 @@ export class UnifiedImageChannelUnavailableError extends Error {
   constructor() {
     super('Image 2 当前通道已停用或凭据不可用，本次未发送请求。');
     this.name = 'UnifiedImageChannelUnavailableError';
+  }
+}
+
+export class UnifiedImageRecoveryPendingError extends Error {
+  constructor() {
+    super('已从持久失败记录恢复 Image 2 备用通道，等待下一次领取。');
+    this.name = 'UnifiedImageRecoveryPendingError';
   }
 }
 
@@ -614,6 +621,67 @@ function safeJsonObject(value: string | null): Record<string, unknown> | null {
   }
 }
 
+interface PersistedExplicitFailureRow {
+  attemptId: string;
+  operationId: string;
+  businessAttemptNo: number;
+  remoteId: string | null;
+  terminalState: 'not_created' | 'failed';
+  errorCode: string | null;
+  providerSnapshotJson: string;
+  operationProviderSnapshotJson: string;
+}
+
+/**
+ * Rebuild the same submission evidence from a persisted, settled terminal
+ * attempt. This closes the crash window between attempt settlement and the
+ * queue's explicit-failure handler: an `not_created` operation is reset to
+ * `pending` by the execution facade, so without this check a restart could
+ * submit the same channel again.
+ */
+function persistedExplicitFailureInput(
+  db: Database.Database,
+  job: UnifiedJobRow,
+  task: MediaTaskRow,
+  channel: MediaChannelRow,
+): UnifiedImageExplicitFailureInput | null {
+  const row = db.prepare(`
+    SELECT a.id AS attemptId, a.operationId, a.businessAttemptNo, a.remoteId, a.terminalState,
+      a.errorCode, a.providerSnapshotJson, o.providerSnapshotJson AS operationProviderSnapshotJson
+    FROM execution_operations o
+    JOIN execution_attempts a ON a.operationId = o.id
+    WHERE o.mediaTaskId = ? AND o.channelKey = ?
+      AND a.intentJournalSeq IS NOT NULL
+      AND a.submissionState = 'terminal'
+      AND a.terminalState IN ('not_created', 'failed')
+      AND a.costState IN ('released', 'settled', 'unknown')
+    ORDER BY a.createdAt DESC, a.transportSeq DESC, a.id DESC
+    LIMIT 1
+  `).get(task.id, channel.channelKey) as PersistedExplicitFailureRow | undefined;
+  if (!row) return null;
+  const providerSnapshot = safeJsonObject(row.providerSnapshotJson)
+    ?? safeJsonObject(row.operationProviderSnapshotJson);
+  const adapterId = typeof providerSnapshot?.type === 'string' && providerSnapshot.type.trim()
+    ? providerSnapshot.type.trim()
+    : 'unified-image';
+  return {
+    evidence: classifySubmissionOutcome({
+      entry: 'image',
+      taskId: job.id,
+      businessAttemptNo: row.businessAttemptNo,
+      adapterId,
+      stage: 'submit',
+      source: 'persisted',
+      outcome: row.terminalState === 'not_created' ? 'confirmed_not_created' : 'terminal_failed',
+      remoteId: row.remoteId,
+      errorCode: row.errorCode,
+    }),
+    attemptId: row.attemptId,
+    operationId: row.operationId,
+    channelKey: channel.channelKey,
+  };
+}
+
 /**
  * Read-only task-attempt projection for admin verification and usage reports.
  * The execution operations/attempts remain the single ledger; this function
@@ -761,7 +829,8 @@ export function handleUnifiedImageExplicitFailure(
   input: UnifiedImageExplicitFailureInput,
 ): UnifiedImageFailureDecision {
   const evidence = input.evidence;
-  if (evidence.identity.taskId !== jobId
+  if (evidence.identity.entry !== 'image'
+    || evidence.identity.taskId !== jobId
     || !['submit', 'poll'].includes(evidence.identity.stage)
     || !['confirmed_not_created', 'terminal_failed'].includes(evidence.state)) {
     throw new UnifiedImageExecutionError(
@@ -881,11 +950,13 @@ export function handleUnifiedImageExplicitFailure(
     }
 
     if (job.cancelRequestedAt || task.cancelRequestedAt) {
+      const estimatedCost = unifiedImageAttemptCostMinor(db, job.id) / 100;
       db.prepare(`UPDATE jobs
         SET status = 'canceled', errorMessage = 'Canceled by user',
           cancelRequestedAt = COALESCE(cancelRequestedAt, ?), finishedAt = COALESCE(finishedAt, ?),
-          providerTaskId = NULL, providerStatus = NULL, remoteImageUrl = NULL
-        WHERE id = ? AND status IN ('running', 'failed', 'needs_check')`).run(at, at, job.id);
+          providerTaskId = NULL, providerStatus = NULL, remoteImageUrl = NULL, estimatedCost = ?
+        WHERE id = ? AND status IN ('pending', 'retrying', 'running', 'failed', 'needs_check', 'deferred')`)
+        .run(at, at, estimatedCost, job.id);
       db.prepare(`UPDATE execution_media_tasks
         SET status = 'canceled', currentChannelKey = NULL,
           cancelRequestedAt = COALESCE(cancelRequestedAt, ?), resultJson = ?, updatedAt = ?
@@ -902,11 +973,13 @@ export function handleUnifiedImageExplicitFailure(
     const frozen = readFrozenRequest(job);
     const selection = findNextChannel(db, task, frozen, channel.channelKey);
     if ('reason' in selection) {
+      const estimatedCost = unifiedImageAttemptCostMinor(db, job.id) / 100;
       const message = selection.reason === 'channel_limit'
         ? 'Image 2 的两条可用通道均已明确失败，任务已停止，不会发起第三次生成。'
         : selection.message;
-      db.prepare(`UPDATE jobs SET status = 'failed', finishedAt = ?, errorMessage = ?
-        WHERE id = ? AND status IN ('running', 'failed', 'needs_check')`).run(at, message, job.id);
+      db.prepare(`UPDATE jobs SET status = 'failed', finishedAt = ?, errorMessage = ?, estimatedCost = ?
+        WHERE id = ? AND status IN ('pending', 'retrying', 'running', 'failed', 'needs_check', 'deferred')`)
+        .run(at, message, estimatedCost, job.id);
       db.prepare(`UPDATE execution_media_tasks
         SET status = 'failed', currentChannelKey = ?, resultJson = ?, updatedAt = ?
         WHERE id = ?`).run(channel.channelKey, JSON.stringify({
@@ -923,13 +996,15 @@ export function handleUnifiedImageExplicitFailure(
     }
 
     const revision = Math.max(1, job.executionRevision + 1);
+    const estimatedCost = unifiedImageAttemptCostMinor(db, job.id) / 100;
     const changed = db.prepare(`UPDATE jobs SET
         status = 'pending', executionRevision = ?, errorMessage = NULL, finishedAt = NULL,
         providerTaskId = NULL, providerStatus = NULL, providerRawResponse = NULL,
         remoteImageUrl = NULL, submittedAt = NULL, lastPolledAt = NULL, pollCount = 0,
-        startedAt = NULL, latencyMs = NULL, usageSnapshotJson = NULL, estimatedCost = NULL
-      WHERE id = ? AND cancelRequestedAt IS NULL AND status IN ('running', 'failed', 'needs_check')`)
-      .run(revision, job.id);
+        startedAt = NULL, latencyMs = NULL, usageSnapshotJson = NULL, estimatedCost = ?
+      WHERE id = ? AND cancelRequestedAt IS NULL
+        AND status IN ('pending', 'retrying', 'running', 'failed', 'needs_check', 'deferred')`)
+      .run(revision, estimatedCost, job.id);
     if (changed.changes !== 1) {
       return {
         outcome: 'ignored', previousChannelKey: channel.channelKey,
@@ -1066,6 +1141,25 @@ export function prepareUnifiedImageExecution(
       cancelUnsubmittedTask(db, job, task, current);
     }
     if (['selected', 'waiting_capacity'].includes(current.channel.state)
+      && !hasAcceptedEvidence(db, job, current.channel)) {
+      const persistedFailure = persistedExplicitFailureInput(db, job, task, current.channel);
+      if (persistedFailure) {
+        const decision = handleUnifiedImageExplicitFailure(db, jobId, persistedFailure);
+        if (decision.outcome === 'next_channel') throw new UnifiedImageRecoveryPendingError();
+        if (decision.outcome === 'canceled') throw new UnifiedImageCanceledError();
+        if (decision.outcome === 'exhausted') {
+          throw new UnifiedImageExecutionError(
+            'channel_exhausted',
+            'Image 2 已记录明确失败，且没有剩余可提交通道。',
+          );
+        }
+        throw new UnifiedImageExecutionError(
+          'channel_exhausted',
+          'Image 2 已记录明确失败，当前通道不会再次提交。',
+        );
+      }
+    }
+    if (['selected', 'waiting_capacity'].includes(current.channel.state)
       && !hasAcceptedEvidence(db, job, current.channel)
       && !providerUsable(current.provider)) {
       throw new UnifiedImageChannelUnavailableError();
@@ -1075,7 +1169,7 @@ export function prepareUnifiedImageExecution(
         'channel_exhausted',
         current.channel.state === 'canceled'
           ? '任务已取消，未选择新通道。'
-          : 'Image 2 当前通道已终止；任务 03 接入备用通道前不会自动重试。',
+          : 'Image 2 当前通道已终止；未自动选择新通道，请核查任务记录。',
       );
     }
     return {

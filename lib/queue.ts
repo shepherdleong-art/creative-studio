@@ -56,6 +56,7 @@ import {
   UnifiedImageCanceledError,
   UnifiedImageChannelUnavailableError,
   UnifiedImageExecutionError,
+  UnifiedImageRecoveryPendingError,
   UnifiedImageStaleSubmissionError,
   unifiedImageAttemptCostMinor,
   type PreparedUnifiedImageExecution,
@@ -354,6 +355,16 @@ async function runAuthorizedJob(
       job.executionRevision = unifiedExecution.channel.executionRevision;
       job.unifiedTaskId = unifiedExecution.taskId;
     } catch (error) {
+      if (error instanceof UnifiedImageRecoveryPendingError) {
+        writeLog({
+          jobId: job.id,
+          projectId: job.projectId,
+          level: 'warn',
+          message: error.message,
+          attempt: job.attempt,
+        });
+        return;
+      }
       if (error instanceof UnifiedImageCanceledError) {
         db.prepare(`UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user',
           finishedAt = COALESCE(finishedAt, datetime('now'))

@@ -56,6 +56,7 @@
 - 只在 01 的结构化提交证据上换道：`confirmed_not_created` 与 `terminal_failed` 才进入备用路由；`unknown`、轮询查询失败、下载失败都不调用备用 handler。`LegacyMediaNotCreatedError` 与新增的 `LegacyMediaRemoteFailedError` 携带 `SubmissionEvidence`、attempt/operation/channel 身份；非统一任务仍走旧显示与重试语义。
 - `handleUnifiedImageExplicitFailure` 在单个 SQLite 事务内封存旧 channel/operation，保留其 operationId、remoteId、attempt、价格快照和费用状态，再按真实 `intentJournalSeq` 计算已提交通道，只选未提交、兼容、启用且凭据完整的另一条通道。切换时 `jobs.executionRevision + 1`、job 回 `pending` 并只清理上一通道的 `providerTaskId/providerStatus/providerRawResponse/remoteImageUrl/submittedAt/poll*/finishedAt/startedAt/latency/usageSnapshot/estimatedCost`；旧 attempt 和 reservation 不动。
 - 首轮七牛、腾讯任一先执行都可反向兜底；初始因停用/缺行被记为 `skipped` 的通道会在失败后重新核验，管理员重新启用后可被选中。每通道机会按真实尝试中的提交意图计，不依赖可被 UI 投影覆盖的 channel state；总提交最多两次，第三次由 handler 和 operation/channel 唯一约束共同阻断。
+- 首条通道完成明确失败结算后、handler 选路前若进程重启，`prepareUnifiedImageExecution` 会从持久 attempt 重建同一 `SubmissionEvidence` 并推进备用通道，再抛 `UnifiedImageRecoveryPendingError` 让 worker 释放本轮、重新领取 pending job；不会把 `not_created` 重置出的 pending operation 当成未提交任务再次发送同一通道。
 - 第二通道的 execution operation 是新 revision、新 permit、新价格快照，重新走 actor/paused/model/budget/pool/capacity；容量不足时 job 保持 `deferred`、parent `waiting`、channel `waiting_capacity`，没有 attempt 也不消耗机会。`execution_operations.waitReason/waitDetail` 与 ledger 的 `operationWaitReason/operationWaitDetail` 保留可扩展等待原因；员工 `pool_capacity` 文案为“等待可用资源（供应商名额已满，释放后自动继续）”。
 - 取消意图沿用 `jobs.cancelRequestedAt` + parent `cancelRequestedAt`。选路事务、`submitLegacyMediaOperation` 的 markSubmitting 之后/真实 POST 之前均有守卫；备用排队中取消会在领取时收尾为零 POST，首个失败回调中取消则只封存已失败通道，不再选下一条。已受理后的晚到结果与下游阻断仍归任务 12。
 - 统一任务每次真实通道使用独立、不落 `jobs.usageSnapshotJson` 的渠道价格快照；最终成功才把成功渠道快照用于 job 展示。`jobs.estimatedCost` 取全部 attempt 的实际/预留估算之和（释放的未创建记 0），不再用 `attempt` 次数乘成功通道单价；成功只登记一份 `image_assets` 与一条 `shot_result_candidates`。
@@ -63,7 +64,7 @@
 
 **共享接口指针**
 
-- 选路/恢复：`prepareUnifiedImageExecution`（`lib/media-core/unified-media/execution.ts`）仍是唯一入口；内部 `findNextChannel` 负责兼容/启用/未提交判断。04 在这里增加 30 秒容量溢出与持久 `nextEligibleAt`，11 在这里叠加通道健康过滤；不要在其他入口复制选路。
+- 选路/恢复：`prepareUnifiedImageExecution`（`lib/media-core/unified-media/execution.ts`）仍是唯一入口；内部 `findNextChannel` 负责兼容/启用/未提交判断。若它从已结算终态 attempt 补推进备用通道，会抛 `UnifiedImageRecoveryPendingError`，调用方必须保留已写入的 pending job 并释放本轮 worker。04 在这里增加 30 秒容量溢出与持久 `nextEligibleAt`，11 在这里叠加通道健康过滤；不要在其他入口复制选路。
 - 明确失败决策：`handleUnifiedImageExplicitFailure(db, jobId, { evidence, attemptId?, operationId?, channelKey? })`。输入必须是 01 的 `SubmissionEvidence`，且对应 attempt 已完成同终态结算；13 的 operator 证据应先走 `facade.reconcile`，再调用本函数。返回 `next_channel | exhausted | canceled | ignored` 及 `previousChannelKey/nextChannelKey/nextExecutionRevision/submissionCount/usedChannelCount`。
 - 提交前最后守卫：`assertUnifiedImageSubmissionStillCurrent`；核对 current channel、executionRevision、cancel intent、provider enabled/凭据。04/其他入口在付费 POST 前复用它，不能只看内存 job。
 - 只读尝试账本：`listUnifiedImageChannelAttempts(db, jobId)` 返回 parent 状态、取消意图、每通道 state/operation/remote/evidence 与每个 execution attempt 的 provider/pricing/terminal/cost；14 直接以此投影员工任务合计与管理员通道明细。`unifiedImageAttemptCostMinor` 提供同一口径的估算合计。
@@ -71,13 +72,13 @@
 
 **验证证据（全部使用隔离数据根与模拟 HTTP，真实付费调用 0 次）**
 
-- `node scripts/unified-image-fallback.test.ts`：通过。覆盖七牛明确未创建→腾讯成功、腾讯先执行→七牛成功、七牛异步终态失败→腾讯成功、备用池 0→waiting→释放后仅一次提交、未知 5xx、轮询查询失败、下载失败原地址补抓、两通道均失败且无第三次、备用预算/权限失败、`cost_unknown` 保留 held 预留、取消竞态零备用 POST、备用等待中取消零 POST、重复 run 不重置；同时断言两次 attempt 的 provider/permits/operation/price/cost、`maxAttempts=1`、单产物与单 shot candidate。
+- `node scripts/unified-image-fallback.test.ts`：通过。覆盖七牛明确未创建→腾讯成功、腾讯先执行→七牛成功、七牛异步终态失败→腾讯成功、明确未创建结算后模拟重启仍只进备用通道、备用池 0→waiting→释放后仅一次提交、未知 5xx、轮询查询失败、下载失败原地址补抓、两通道均失败且无第三次、备用预算/权限失败、`cost_unknown` 保留 held 预留、取消竞态零备用 POST、备用等待中取消零 POST、重复 run 不重置；同时断言两次 attempt 的 provider/permits/operation/price/cost、`maxAttempts=1`、单产物与单 shot candidate。
 - `node scripts/unified-image-queue.test.ts`：02 合同回归通过，并扩展断言 `listUnifiedImageChannelAttempts` 的单次尝试投影。
 - `node scripts/unified-media-contract.test.ts`、`execution-attempts.test.ts`、`execution-reconciliation.test.ts`、`execution-admission.test.ts`、`legacy-media-execution.test.ts`、`image-queue-terminal-failure.test.ts`、`gateway-task-image.test.ts`、`media-queue-workers.test.ts`、`team-task-display.test.ts`、`team-usage-admin.test.ts`、`team-usage-routes.test.ts`、`db-migrations.test.ts`、`team-service-schema.test.ts`、`workbench-progress.test.ts`：通过。
 - `npx tsc --noEmit --pretty false`：通过。改动文件 ESLint：0 error。`npm run check:main-path`：通过（需在沙箱外启动本机 ffmpeg；主流程真实付费调用 0 次）。
 
 **剩余限制与后续**
 
-- 未连接真实七牛/腾讯上游；失败计费、审核拒绝文案与真实通道健康仍需内网/账单证据。备用通道若在首次失败后的极小窗口内进程崩溃，job 会保持明确失败，不会在恢复时自动重开备用；需要 13 以管理员证据续接，避免旧任务被新规则自动改道。
+- 未连接真实七牛/腾讯上游；失败计费、审核拒绝文案与真实通道健康仍需内网/账单证据。恢复契约只重建已结算终态；若崩溃发生在回执已落库但尚未结算的费用预留阶段，仍按 unknown/管理员核对处理，不会猜测另一通道。
 - 员工任务级费用聚合仍是 14 的交付；当前 execution attempt ledger 已完整，但任务中心暂按 operation 展示两条真实尝试。取消后的晚到成品、界面收尾与下游阻断仍归 12。04 的 30 秒拥堵分流、11 的健康避让均未提前实现。
 
