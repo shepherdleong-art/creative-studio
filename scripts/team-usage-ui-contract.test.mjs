@@ -31,12 +31,21 @@ assert.match(members, /monthlyLimitMinor/);
 assert.match(members, /paused/);
 assert.match(members, /\/api\/team\/members/);
 for (const label of ['额度', '预留', '并发', '本地 Agent', '暂停']) assert.ok(usage.includes(label), `员工只读用量必须覆盖 ${label}`);
+for (const label of ['制作任务合计', '通道调用明细', '未映射历史记录', '展开真实通道尝试', '待核账', '估算', '混合', '制作任务', '通道调用']) {
+  assert.ok(usage.includes(label), `统一模型费用报表必须显示 ${label}`);
+}
+assert.match(usage, /unifiedTaskId|mediaTaskId/, '制作任务必须按逻辑任务而不是通道调用计数');
+assert.match(usage, /legacyAttempts/, '无法映射的历史记录必须单列');
+assert.match(usage, /channels/, '管理员可展开真实通道尝试');
 assert.match(usage, /WAITING_REASON_LABELS/, '用量页使用共享中文等待标签');
 for (const label of ['余额不足', '并发等待', '任务已取消']) assert.ok(waitingLabels.includes(label), `共享等待标签必须覆盖 ${label}`);
 assert.match(usage, /\/api\/team\/usage/);
 assert.doesNotMatch(usage, /teamWrite\(|method:\s*['"]PATCH/, '员工用量 UI 不得提供策略写入');
 assert.match(tasks, /\/api\/team\/tasks/);
 assert.match(tasks, /waitReason|等待原因/);
+assert.match(tasks, /groupTeamTaskRows/, '任务列表必须把同一制作任务的多条执行记录合并展示');
+assert.match(tasks, /unifiedTaskId/, '任务列表必须使用统一任务身份分组');
+assert.match(tasks, /同一制作任务/, '任务列表需明确同属一条作品');
 assert.match(errors, /\/api\/team\/errors/);
 assert.match(errors, /diagnostics/);
 assert.match(errors, /下载诊断包/);
