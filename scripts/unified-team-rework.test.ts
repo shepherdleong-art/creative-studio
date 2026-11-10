@@ -254,6 +254,49 @@ try {
   assert.equal(db.prepare('SELECT latestGeneratedImageId FROM shots WHERE id=?')
     .pluck().get(imageFixture.shotId), currentBefore);
 
+  // A canceled late image remains explicitly adoptable, never automatically used.
+  const lateOutputId = 'rework-late-output-image';
+  const lateJobId = 'rework-late-image-job';
+  db.prepare(`INSERT INTO image_assets
+    (id, projectId, role, filename, path, mimeType, width, height, usage)
+    VALUES (?, ?, 'output', 'late.png', ?, 'image/png', 16, 16, 'film_rework')`)
+    .run(lateOutputId, imageProject, path.join(root, 'late.png'));
+  db.prepare(`INSERT INTO jobs (
+    id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality,
+    status, providerStatus, attempt, maxAttempts, outputImageId, unifiedModel,
+    unifiedRuleVersion, createdAt
+  ) VALUES (?, ?, ?, '[]', ?, ?, 'late rework', '1024x1024', 'auto',
+    'canceled', 'succeeded', 1, 1, ?, ?, 'unified-media-2026-11-10-v1', ?)`)
+    .run(
+      lateJobId, imageProject, imageFixture.inputId, UNIFIED_IMAGE_ANCHOR_ID,
+      UNIFIED_IMAGE_MODEL_KEY, lateOutputId, UNIFIED_IMAGE_MODEL_KEY, now,
+    );
+  const revisionBeforeLate = db.prepare('SELECT revision FROM final_edit_film_shots WHERE bindingId=? AND clipId=?')
+    .pluck().get(imageFilm.bindingId, 'clip-image') as number;
+  db.prepare(`INSERT INTO final_edit_film_reworks
+    (id,bindingId,clipId,baseRevision,actor,kind,jobId,requestJson,resultJson,createdAt)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+    'late-image-request', imageFilm.bindingId, 'clip-image', revisionBeforeLate,
+    'human', 'generate_image', lateJobId, '{}', '{}', now,
+  );
+  const adopted = await runWithAccessContext(access, () => applyFilmRework(
+    db, path.join(root, 'storage'), imageFilm.groupId, 'clip-image',
+    {
+      requestId: 'select-late-image-0001',
+      expectedRevision: revisionBeforeLate,
+      type: 'select_image',
+      imageId: lateOutputId,
+    },
+    'human',
+    { mode: 'server' },
+  ));
+  assert.equal(adopted.revision, revisionBeforeLate + 1);
+  assert.equal(
+    db.prepare('SELECT latestGeneratedImageId FROM shots WHERE id=?').pluck().get(imageFixture.shotId),
+    lateOutputId,
+    'a canceled late image is adopted only by an explicit select_image command',
+  );
+
   const videoProject = 'project-video-rework';
   const videoFixture = insertProject(videoProject);
   const videoFilm = insertFilm(videoProject, videoFixture.shotSetId, videoFixture.shotId, 'clip-video');

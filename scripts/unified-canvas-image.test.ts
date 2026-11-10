@@ -38,6 +38,7 @@ const { planCanvasRun } = await import('../lib/creative-canvas/planner.ts');
 const {
   claimCanvasTasks,
   getCanvasTask,
+  resolveCanvasTaskInputs,
   updateCanvasTaskUnGuarded,
 } = await import('../lib/creative-canvas/tasks.ts');
 const { runCanvasTask } = await import('../lib/creative-canvas/runner.ts');
@@ -247,7 +248,7 @@ type CanvasScenario = Awaited<ReturnType<typeof createTask>>;
 
 function parentFor(taskId: string) {
   return db.prepare(`SELECT id, status, currentChannelKey, waitReason, waitDetailJson,
-      nextEligibleAt, sourceType, sourceId, actorId, unifiedModel, ruleVersion
+      nextEligibleAt, sourceType, sourceId, actorId, unifiedModel, ruleVersion, resultJson
     FROM execution_media_tasks WHERE taskKey = ?`).get(`canvas:${taskId}`) as Record<string, unknown> | undefined;
 }
 
@@ -675,6 +676,66 @@ try {
     } finally {
       db.prepare('UPDATE execution_pools SET capacity = 10 WHERE poolKey = ?').run(qiniuPool);
     }
+  }
+
+  // 8b. A canceled accepted task retains its late asset but never publishes it
+  // or promotes a downstream task.
+  {
+    const scenario = await createTask({ name: 'cancel-late-result' });
+    const adapter = fakeAdapter({
+      download: async () => {
+        runWithAccessContext(access, () => requestCanvasTaskCancel(db, { taskId: scenario.task.id }));
+        return { bytes: imageBytes, mimeType: 'image/png' };
+      },
+    });
+    const outcome = await execute(scenario, adapter);
+    assert.equal(outcome.phase, 'cancelled');
+    assert.ok(outcome.outputAssetId, 'late canvas result is retained on the canceled task');
+    const task = scenario.readTask();
+    assert.equal(task.phase, 'cancelled');
+    assert.equal(task.outputAssetId, outcome.outputAssetId);
+    const nodeState = db.prepare(`SELECT currentAssetId, resultTaskId
+      FROM creative_canvas_node_states WHERE canvasId = ? AND nodeId = ?`)
+      .get(scenario.canvasId, scenario.nodeId) as {
+        currentAssetId: string | null; resultTaskId: string | null;
+      };
+    assert.equal(nodeState.currentAssetId, null, 'canceled late result must not replace the node result');
+    assert.equal(nodeState.resultTaskId, null);
+    const parent = parentFor(task.id)!;
+    assert.equal(parent.status, 'canceled');
+    const parentResult = JSON.parse(String(parent.resultJson ?? '{}')) as Record<string, unknown>;
+    assert.equal(parentResult.lateResult, true);
+    assert.equal(parentResult.outputAssetId, outcome.outputAssetId);
+    assert.equal(
+      db.prepare(`SELECT state FROM execution_media_channels
+        WHERE mediaTaskId = ? AND channelKey = 'qiniu'`).pluck().get(parent.id),
+      'succeeded',
+    );
+
+    const downstreamId = crypto.randomUUID();
+    const at = new Date().toISOString();
+    db.prepare(`INSERT INTO creative_canvas_tasks (
+      id, runId, canvasId, nodeId, nodeEpoch, mediaKind, phase,
+      providerSnapshot, parameterSnapshot, submissionState, slotHeld, fence, createdAt, updatedAt
+    ) VALUES (?, NULL, ?, ?, 0, 'image', 'waiting_input', '{}', '{}', 'not_sent', 0, 0, ?, ?)`)
+      .run(downstreamId, scenario.canvasId, `downstream-${downstreamId}`, at, at);
+    runWithAccessContext(access, () => access.registerInheritedScope({
+      resourceType: 'canvas_task',
+      resourceId: downstreamId,
+      parent: { resourceType: 'canvas', resourceId: scenario.canvasId },
+    }));
+    db.prepare(`INSERT INTO creative_canvas_task_inputs (
+      id, taskId, refId, orderIndex, role, note, sourceNodeId, assetId,
+      upstreamTaskId, textContent, resolvedAssetId, createdAt
+    ) VALUES (?, ?, 'upstream', 0, 'reference', '', NULL, NULL, ?, NULL, NULL, ?)`)
+      .run(crypto.randomUUID(), downstreamId, scenario.task.id, at);
+    const resolved = runWithAccessContext(access, () => resolveCanvasTaskInputs(db));
+    assert.equal(resolved.promoted.includes(downstreamId), false);
+    assert.equal(resolved.blocked.includes(downstreamId), true);
+    assert.equal(
+      db.prepare('SELECT phase FROM creative_canvas_tasks WHERE id = ?').pluck().get(downstreamId),
+      'blocked',
+    );
   }
 
   // 9. old exact Image 2 snapshots remain on the old path and acquire no parent.

@@ -4,8 +4,7 @@ import { requiresReassembledUpstreamRework, REASSEMBLED_REWORK_REQUIRED } from '
 import { resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
 import { toStorageVideoUrl } from '@/lib/storage-url';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
-import { requestUnifiedKlingCancellation } from '@/lib/media-core/unified-media/video-execution';
-
+import { applyUnifiedKlingJobCancel } from '@/lib/media-core/unified-media/cancel-intent';
 
 async function __teamRouteGET(
   _request: NextRequest,
@@ -68,22 +67,20 @@ async function __teamRoutePATCH(
       | string
       | null
       | undefined;
-    if (unified) requestUnifiedKlingCancellation(db, id);
-    const result = db.prepare(`
-      UPDATE video_jobs
-      SET status = 'canceled',
-          errorMessage = 'Canceled by user',
-          finishedAt = datetime('now')
-      WHERE id = ?
-        AND status IN ('pending', 'running', 'needs_check')
-    `).run(id);
-
-    if (result.changes !== 1) {
-      const job = db.prepare(`SELECT id FROM video_jobs WHERE id = ?`).get(id);
-      if (!job) return NextResponse.json({ error: 'Video job not found' }, { status: 404 });
+    if (unified === undefined) return NextResponse.json({ error: 'Video job not found' }, { status: 404 });
+    if (!unified) {
+      const result = db.prepare(`
+        UPDATE video_jobs
+        SET status = 'canceled',
+            errorMessage = 'Canceled by user',
+            finishedAt = datetime('now')
+        WHERE id = ?
+          AND status IN ('pending', 'running', 'needs_check')
+      `).run(id);
+      return NextResponse.json({ success: true, changed: result.changes === 1 });
     }
-
-    return NextResponse.json({ success: true });
+    const result = applyUnifiedKlingJobCancel(db, id);
+    return NextResponse.json({ success: true, ...result });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

@@ -663,6 +663,43 @@ try {
     }
   }
 
+  // 8b. Accepted cancel retains the late video but never publishes it.
+  {
+    const scenario = await createVideoTask({ name: 'cancel-late-result' });
+    const adapter = fakeAdapter({
+      download: async () => {
+        runWithAccessContext(access, () => requestCanvasTaskCancel(db, { taskId: scenario.task.id }));
+        return { bytes: videoBytes, mimeType: 'video/mp4' };
+      },
+    });
+    const outcome = await execute(scenario, adapter);
+    assert.equal(outcome.phase, 'cancelled');
+    assert.ok(outcome.outputAssetId);
+    const task = scenario.readTask();
+    assert.equal(task.phase, 'cancelled');
+    assert.equal(task.outputAssetId, outcome.outputAssetId);
+    const nodeState = db.prepare(`SELECT currentAssetId, resultTaskId
+      FROM creative_canvas_node_states WHERE canvasId = ? AND nodeId = ?`)
+      .get(scenario.canvasId, scenario.nodeId) as {
+        currentAssetId: string | null; resultTaskId: string | null;
+      };
+    assert.equal(nodeState.currentAssetId, null);
+    assert.equal(nodeState.resultTaskId, null);
+    const parent = db.prepare(`SELECT id, status, resultJson FROM execution_media_tasks
+      WHERE taskKey = ?`).get(`canvas:${task.id}`) as {
+        id: string; status: string; resultJson: string;
+      };
+    assert.equal(parent.status, 'canceled');
+    const result = JSON.parse(parent.resultJson) as Record<string, unknown>;
+    assert.equal(result.lateResult, true);
+    assert.equal(result.outputAssetId, outcome.outputAssetId);
+    assert.equal(
+      db.prepare(`SELECT state FROM execution_media_channels
+        WHERE mediaTaskId = ? AND channelKey = 'qiniu'`).pluck().get(parent.id),
+      'succeeded',
+    );
+  }
+
   // 9. Old exact Kling snapshots stay on the legacy path.
   {
     const scenario = await createVideoTask({

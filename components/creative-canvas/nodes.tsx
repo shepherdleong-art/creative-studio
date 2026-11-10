@@ -371,7 +371,7 @@ function NodeStatus({ nodeId }: { nodeId: string }) {
               disabled={busy}
               onClick={() => { void act('cancel'); }}
             >
-              停止
+              停止后续生成
             </button>
           ) : null}
         </div>

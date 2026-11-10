@@ -72,6 +72,9 @@ function providerAvailable(
   providerTable: string,
   providerId: string,
 ): boolean {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(providerTable)) {
+    return false;
+  }
   if (providerTable === 'providers') {
     // Execution readiness tests can build the shared execution ledger without
     // the legacy provider table. Keep that isolated schema non-throwing: a

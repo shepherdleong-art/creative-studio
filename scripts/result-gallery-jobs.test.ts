@@ -32,6 +32,9 @@ assert.equal(getResultJobKind(jobs[3]), 'checking');
 assert.equal(getResultJobKind(jobs[4]), 'succeeded');
 assert.equal(getResultJobKind(jobs[5]), 'failed');
 assert.equal(getResultJobKind(jobs[6]), 'failed');
+assert.equal(getResultJobKind({
+  id: 'canceled-late', status: 'canceled', outputImageId: 'asset-late',
+}), 'succeeded', 'a canceled task that already retained its late image remains viewable');
 
 assert.deepEqual(
   getSelectableResultJobs(jobs).map((job) => job.id),
