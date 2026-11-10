@@ -104,6 +104,7 @@ const ADMIN_GROUPS: WorkspaceNavGroup[] = [
       { href: '/team/tasks', label: '全员任务', icon: 'logs', badge: 'tasks' },
       { href: '/team/downloads', label: '下载与交付', icon: 'download' },
       { href: '/team/errors', label: '出错的任务', icon: 'alert', badge: 'errors' },
+      { href: '/team/admin/reconcile', label: '待核对', icon: 'alert' },
     ],
   },
   {
