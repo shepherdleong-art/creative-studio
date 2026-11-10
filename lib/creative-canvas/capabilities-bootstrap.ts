@@ -12,7 +12,9 @@ import type Database from 'better-sqlite3';
 import {
   COMPANY_CANVAS_CAPABILITIES,
   COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY,
+  COMPANY_CANVAS_UNIFIED_KLING3_CAPABILITY,
   UNIFIED_CANVAS_IMAGE2_CAPABILITY_KEY,
+  UNIFIED_CANVAS_KLING3_CAPABILITY_KEY,
 } from './adapters/company-capabilities.ts';
 import { registerExternalCanvasCapabilities } from './adapters/external-capabilities.ts';
 import { registerFixtureCanvasCapabilities } from './adapters/fixture-capabilities.ts';
@@ -21,6 +23,7 @@ import { configuredCanvasImages } from './adapters/configured-images.ts';
 import { configuredCanvasVideos } from './adapters/configured-videos.ts';
 import { canvasExecutorMode } from './config.ts';
 import { unifiedImageProviderAvailability } from '../media-core/unified-media/execution.ts';
+import { unifiedKlingProviderAvailability } from '../media-core/unified-media/video-execution.ts';
 
 export function ensureCanvasCapabilitiesRegistered(db?: Database.Database): CanvasModelCapability[] {
   const executor = canvasExecutorMode();
@@ -45,11 +48,22 @@ export function ensureCanvasCapabilitiesRegistered(db?: Database.Database): Canv
           registerCanvasCapability(COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY);
           available.add(UNIFIED_CANVAS_IMAGE2_CAPABILITY_KEY);
         }
+        const unifiedKlingAvailable = unifiedKlingProviderAvailability(db)
+          .some((channel) => channel.identityValid && channel.configured);
+        if (unifiedKlingAvailable) {
+          registerCanvasCapability(COMPANY_CANVAS_UNIFIED_KLING3_CAPABILITY);
+          available.add(UNIFIED_CANVAS_KLING3_CAPABILITY_KEY);
+        }
         // 员工只看到统一 Image 2；精确通道仍留在注册表供旧任务恢复，
         // 但不进入当前可选列表。
         for (const capability of configured) {
           if (capability.mediaKind === 'image'
             && ['image2-medium', 'qiniuyun/gpt-image-2-medium'].includes(capability.modelAlias)) {
+            available.delete(capability.key);
+          }
+          if (capability.mediaKind === 'video'
+            && ['kling-3.0', 'qiniuyun/kling-3.0']
+              .includes(capability.modelAlias)) {
             available.delete(capability.key);
           }
         }

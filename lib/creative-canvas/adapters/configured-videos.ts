@@ -4,6 +4,7 @@ import { COMPANY_CANVAS_CAPABILITIES, COMPANY_CANVAS_KLING_3_0_CAPABILITY, COMPA
 import { companyVideoCapsForModel } from '../../company-gateway-size.ts';
 import { SEEDANCE_20, SEEDANCE_25, SEEDANCE_FAST } from '../../video-providers/seedance-contract.ts';
 import { directSeedanceCapability } from './seedance-capabilities.ts';
+import { UNIFIED_KLING3_ANCHOR_ID } from '../../media-core/unified-media/catalog.ts';
 
 const kling25: CanvasModelCapability = {
   ...COMPANY_CANVAS_KLING_3_0_CAPABILITY,
@@ -25,6 +26,7 @@ export function configuredCanvasVideos(db: Database.Database): CanvasModelCapabi
     WHERE type = 'openai-video' AND enabled = 1 AND length(trim(baseUrl)) > 0 AND length(trim(apiKey)) > 0
     ORDER BY name, id`).all() as Array<{ id: string; name: string; defaultModel: string }>;
   const capabilities: CanvasModelCapability[] = rows.flatMap((row) => {
+    if (row.id === UNIFIED_KLING3_ANCHOR_ID) return [];
     const spec = SPECS.find((entry) => entry.modelAlias === row.defaultModel);
     if (!spec) return [];
     const key = row.id === spec.providerIdentity ? spec.key : `${spec.key}:provider:${encodeURIComponent(row.id)}`;

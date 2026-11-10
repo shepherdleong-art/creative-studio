@@ -901,6 +901,8 @@ async function runAuthorizedVideoJob(
           tailImagePath: tailPath,
           tailMimeType,
           durationSec: job.durationSec,
+          ...(job.aspectRatio ? { aspectRatio: job.aspectRatio } : {}),
+          ...(job.resolution ? { resolution: job.resolution } : {}),
         };
         const multiShot = videoMultiShotFromStorage(job.multiShot);
         if (multiShot !== undefined) submitRequest.multiShot = multiShot;
