@@ -67,6 +67,7 @@ const {
 const { isCanvasUnifiedMediaTask } = await import('../lib/creative-canvas/unified-media.ts');
 const { isCanvasUnifiedKlingTask } = await import('../lib/creative-canvas/unified-kling.ts');
 const { freezeUnifiedKlingVideoRequest } = await import('../lib/media-core/unified-media/video-requests.ts');
+const { listTeamTasks } = await import('../lib/team-service/tasks.ts');
 const { configureLegacyMediaProviderPool } = await import('../lib/legacy-media-execution.ts');
 const { seedProviders } = await import('../lib/seed.ts');
 const { createCompanyCanvasAdapter } = await import('../lib/creative-canvas/adapters/company.ts');
@@ -400,6 +401,18 @@ try {
       .get(scenario.task.id) as number), 0);
     assert.equal((db.prepare('SELECT COUNT(*) FROM creative_canvas_assets WHERE sourceTaskId = ?')
       .pluck().get(scenario.task.id) as number), 1);
+    const employeeTask = listTeamTasks(db, {
+      userId: 'canvas-user', role: 'employee',
+    }).items.find((item) => item.taskId === scenario.task.id);
+    assert.equal(employeeTask?.unifiedModel, UNIFIED_KLING3_MODEL_KEY);
+    assert.equal(employeeTask?.unifiedTaskId, parent.id);
+    assert.equal(employeeTask?.model, '可灵 3.0');
+    assert.ok((employeeTask?.unifiedTaskCostMinor ?? 0) > 0);
+    assert.equal(
+      JSON.stringify(employeeTask?.modelCalls).includes(qiniu.providerId),
+      false,
+      'employee projection must not expose the actual channel identity',
+    );
   }
 
   // 2. Explicit qiniu rejection switches to tencent on the same canvas task.
