@@ -164,6 +164,7 @@ const usageRecordsRoute = await import('../app/api/usage/records/route.ts');
 const logsRoute = await import('../app/api/projects/[id]/logs/route.ts');
 const fontFavoritesRoute = await import('../app/api/font-favorites/route.ts');
 const teamModelsRoute = await import('../app/api/team/models/route.ts');
+const teamReconcileRoute = await import('../app/api/team/reconcile/route.ts');
 const canvasCopiesRoute = await import('../app/api/canvas/[id]/copies/route.ts');
 const scriptGenerationRoute = await import('../app/api/projects/[id]/script-generation/route.ts');
 const scriptCurrentRoute = await import('../app/api/projects/[id]/script-studio/scripts/[scriptId]/current/route.ts');
@@ -349,6 +350,28 @@ try {
       || model.id === 'company-gateway-qiniuyun-gpt-image-2-medium'),
     false,
     'the two real Image 2 channels stay hidden from the employee model menu',
+  );
+
+  assert.equal((await teamReconcileRoute.GET(get('https://studio.example.test/api/team/reconcile'))).status, 401);
+  assert.equal(
+    (await teamReconcileRoute.GET(get('https://studio.example.test/api/team/reconcile', userA.cookie))).status,
+    403,
+    'employees cannot inspect another member reconciliation details',
+  );
+  const reconcileAdmin = await teamReconcileRoute.GET(
+    get('https://studio.example.test/api/team/reconcile?status=all', admin.cookie),
+  );
+  assert.equal(reconcileAdmin.status, 200, await reconcileAdmin.clone().text());
+  const reconcileText = await reconcileAdmin.text();
+  assert.equal(reconcileText.includes('"baseUrl"'), false);
+  assert.equal(reconcileText.includes('"apiKey"'), false);
+  assert.equal(
+    (await teamReconcileRoute.POST(write(
+      'https://studio.example.test/api/team/reconcile',
+      userA.cookie,
+      { mediaTaskId: 'unknown', channelKey: 'qiniu', attemptId: 'unknown', action: 'still_unknown', evidence: 'test' },
+    ))).status,
+    403,
   );
 
   const failures: string[] = [];
