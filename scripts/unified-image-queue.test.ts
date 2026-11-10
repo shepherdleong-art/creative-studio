@@ -204,6 +204,19 @@ try {
     1,
   );
   assert.deepEqual(
+    db.prepare(`SELECT operationKey, inputRevision FROM execution_operations
+      WHERE taskId = 'job-qiniu' AND mediaTaskId IS NOT NULL AND channelKey = 'qiniu'`).get(),
+    { operationKey: 'image/job-qiniu/submit/r1', inputRevision: 'r1' },
+    'the selected channel revision must be used by the execution operation so crash recovery finds the same attempt',
+  );
+  assert.equal(
+    db.prepare(`SELECT executionRevision FROM jobs WHERE id = 'job-qiniu'`).pluck().get(),
+    db.prepare(`SELECT executionRevision FROM execution_media_channels c
+      JOIN execution_media_tasks t ON t.id = c.mediaTaskId
+      WHERE t.taskId = 'job-qiniu' AND c.channelKey = 'qiniu'`).pluck().get(),
+    'business row and selected channel must persist the same revision',
+  );
+  assert.deepEqual(
     db.prepare(`SELECT a.providerSnapshotJson, a.reservedMinor FROM execution_attempts a
       JOIN execution_operations o ON o.id = a.operationId WHERE o.taskId = 'job-qiniu'`).get(),
     {
@@ -267,6 +280,12 @@ try {
     { providerId: UNIFIED_IMAGE_CHANNELS[0].providerId, model: 'qiniuyun/gpt-image-2-medium', unifiedModel: null },
     'legacy jobs keep their original provider/model and do not acquire unified identity',
   );
+  const legacyTaskView = listTeamTasks(db, viewer).items.find((item) => item.taskId === 'job-legacy');
+  assert.equal(legacyTaskView?.unifiedModel, null, 'legacy task projections must not infer a unified model');
+  assert.equal(legacyTaskView?.model, 'qiniuyun/gpt-image-2-medium');
+  const legacyUsage = queryTeamUsage(db, viewer, { module: 'image' }).items.find((item) => item.taskId === 'job-legacy');
+  assert.equal(legacyUsage?.unifiedModel, null, 'legacy usage projections must not infer a unified model');
+  assert.equal(legacyUsage?.model, 'qiniuyun/gpt-image-2-medium');
 
   const postsBeforeInvalid = qiniuPosts + tencentPosts;
   const jobsBeforeInvalid = db.prepare('SELECT COUNT(*) FROM jobs').pluck().get() as number;

@@ -344,6 +344,7 @@ async function runAuthorizedJob(
       unifiedExecution = prepareUnifiedImageExecution(db, job.id);
       job.providerId = unifiedExecution.channel.provider.id;
       job.model = unifiedExecution.channel.definition.model;
+      job.executionRevision = unifiedExecution.channel.executionRevision;
     } catch (error) {
       if (error instanceof UnifiedImageCanceledError) {
         db.prepare(`UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user',
