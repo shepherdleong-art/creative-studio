@@ -14,6 +14,8 @@ import {
   UNIFIED_KLING3_MODEL_KEY,
   unifiedMediaDisplayName,
 } from '../media-core/unified-media/catalog.ts';
+import type { CanvasTaskRecord } from '../creative-canvas/tasks.ts';
+import { handleCanvasUnifiedExplicitFailure } from '../creative-canvas/unified-media.ts';
 import { sanitizeGatewayMediaDiagnostic } from '../gateway-media-url.ts';
 import type { TeamViewer } from './diagnostics.ts';
 
@@ -541,7 +543,9 @@ export function listUnifiedReconcileTasks(
     if (row.cancelRequestedAt) reasons.push('已请求取消');
     if (business.status === 'needs_check') reasons.push('业务任务待核对');
     if (business.providerStatus === 'unknown') reasons.push('供应商结果未知');
-    if (business.status === 'download_failed') reasons.push('结果待补下载');
+    if (business.status === 'download_failed' || business.providerStatus === 'download_failed') {
+      reasons.push('结果待补下载');
+    }
     const costStatus = aggregateCostStatus(
       channelViews.flatMap((channel) => channel.attempts.map((attempt) => attempt.costStatus)),
       channelViews.some((channel) => channel.attempts.length > 0),
@@ -1001,6 +1005,16 @@ export async function applyUnifiedReconcileAction(
       throw new UnifiedReconcileError(400, 'reconcile_attempt_mismatch', '指定尝试不属于当前通道。');
     }
     const attemptRecord = readAttempt(db, input.attemptId);
+    if (input.action === 'confirm_succeeded'
+      && task.module === 'canvas'
+      && !remoteId
+      && !attemptRecord.remoteId) {
+      throw new UnifiedReconcileError(
+        400,
+        'canvas_remote_id_required',
+        '画布确认成功必须提供远端任务 ID；只有结果地址时请先补挂远端任务 ID 再续查。',
+      );
+    }
     if (remoteId) {
       const duplicate = db.prepare(`SELECT a.id, o.mediaTaskId FROM execution_attempts a
         JOIN execution_operations o ON o.id = a.operationId
@@ -1195,6 +1209,45 @@ export async function applyUnifiedReconcileAction(
         });
         if (decision.outcome === 'ignored') {
           throw new UnifiedReconcileError(409, 'reconcile_state_conflict', '任务状态已变化，未能继续备用通道。');
+        }
+      } else if (claimed.task.module === 'canvas') {
+        const canvasRow = db.prepare('SELECT * FROM creative_canvas_tasks WHERE id = ?')
+          .get(claimed.task.taskId) as Record<string, unknown> | undefined;
+        if (!canvasRow) {
+          throw new UnifiedReconcileError(409, 'reconcile_state_missing', '画布任务不存在。');
+        }
+        const canvasTask = canvasRow as unknown as CanvasTaskRecord;
+        const decision = handleCanvasUnifiedExplicitFailure(db, canvasTask, {
+          evidence: evidenceForFailure(
+            claimed.task,
+            finalAttempt,
+            input.action === 'confirm_not_created' ? 'confirmed_not_created' : 'terminal_failed',
+            finalAttempt.remoteId,
+          ),
+          attemptId: finalAttempt.id,
+          operationId: operation.id,
+          channelKey: claimed.channel.channelKey,
+        });
+        if (decision.outcome === 'next_channel') {
+          db.transaction(() => {
+            db.prepare(`UPDATE creative_canvas_tasks
+              SET phase = 'queued', submissionState = 'not_sent', providerTaskId = NULL,
+                errorCode = NULL, errorMessage = ?, leaseOwner = NULL, leaseUntil = NULL,
+                slotHeld = 0, updatedAt = ?
+              WHERE id = ?`).run(
+              `已切换备用通道 ${decision.nextChannelKey}，等待画布调度器继续。`,
+              new Date().toISOString(),
+              claimed.task.taskId,
+            );
+          }).immediate();
+        } else if (decision.outcome === 'canceled') {
+          updateBusinessAfterCanceledClose(
+            db, claimed.task, terminal, '任务已取消，核对结果仅用于收尾。',
+          );
+        } else if (decision.outcome === 'exhausted') {
+          updateBusinessAfterClose(db, claimed.task, terminal, '管理员已确认远端终态，备用通道已耗尽。');
+        } else {
+          throw new UnifiedReconcileError(409, 'reconcile_state_conflict', '画布任务状态已变化，未能继续备用通道。');
         }
       } else {
         db.transaction(() => {

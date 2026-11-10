@@ -66,17 +66,19 @@ export function summarizeUnifiedAttemptCosts(attempts: readonly UnifiedCostAttem
   }
 
   const activeKinds = [hasSettled, hasEstimated, hasUncertain, hasUnpriced].filter(Boolean).length;
-  const costStatus: UnifiedTaskCostStatus = activeKinds === 0
-    ? 'released'
-    : hasSettled && activeKinds === 1
-      ? 'settled'
-      : hasEstimated && activeKinds === 1
-        ? 'estimated'
-        : hasUncertain && activeKinds === 1
-          ? 'uncertain'
-          : hasUnpriced && activeKinds === 1
-            ? 'unpriced'
-            : 'mixed';
+  const costStatus: UnifiedTaskCostStatus = attempts.length === 0
+    ? 'unpriced'
+    : activeKinds === 0
+      ? 'released'
+      : hasSettled && activeKinds === 1
+        ? 'settled'
+        : hasEstimated && activeKinds === 1
+          ? 'estimated'
+          : hasUncertain && activeKinds === 1
+            ? 'uncertain'
+            : hasUnpriced && activeKinds === 1
+              ? 'unpriced'
+              : 'mixed';
 
   return {
     chargedMinor: settledMinor + estimatedMinor + uncertainMinor,

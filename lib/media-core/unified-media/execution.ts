@@ -31,6 +31,7 @@ import {
 import {
   claimUnifiedChannelHealthForSelection,
   recordUnifiedChannelFailure,
+  releaseUnifiedChannelRecoveryProbe,
   unifiedChannelFailureReasonFromEvidence,
 } from './health.ts';
 
@@ -69,6 +70,7 @@ interface UnifiedJobRow {
   unifiedModel: string | null;
   unifiedRuleVersion: string | null;
   unifiedTaskId: string | null;
+  unifiedGenerationId: string | null;
   unifiedRequestJson: string | null;
   cancelRequestedAt: string | null;
 }
@@ -394,7 +396,6 @@ function ensureLogicalTask(
 ): MediaTaskRow {
   const access = requireAccessContext();
   if (access.kind !== 'team') throw new Error('统一图片任务缺少团队发起人。');
-  const taskKey = `image:${job.id}`;
   const inputHash = hash(frozen);
   const at = new Date().toISOString();
   const fallbackSourceType = job.creationSource
@@ -407,22 +408,35 @@ function ensureLogicalTask(
     fallbackMeta: { parentJobId: job.parentJobId },
   });
   db.transaction(() => {
-    db.prepare(`
-      INSERT OR IGNORE INTO execution_media_tasks (
-        id, taskKey, actorId, scopeType, scopeId, module, taskId, unifiedModel, ruleVersion,
-        inputHash, inputSnapshotJson, outputContractJson, sourceType, sourceId, sourceMetaJson,
-        status, cancelRequestedAt, currentChannelKey, nextEligibleAt, waitReason, waitDetailJson,
-        resultJson, createdAt, updatedAt
-      ) VALUES (?, ?, ?, 'project', ?, 'image', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'routing', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
-    `).run(
-      randomUUID(), taskKey, access.actor.userId, job.projectId, job.id,
-      UNIFIED_IMAGE_MODEL_KEY, UNIFIED_MEDIA_RULE_VERSION, inputHash,
-      JSON.stringify(frozen), JSON.stringify({
-        tier: frozen.tier, ratio: frozen.ratio, size: frozen.size, quality: frozen.quality,
-      }), source.sourceType, source.sourceId, JSON.stringify(source.sourceMeta),
-      at, at,
-    );
-    const task = db.prepare('SELECT * FROM execution_media_tasks WHERE taskKey = ?').get(taskKey) as MediaTaskRow | undefined;
+    let task = job.unifiedTaskId
+      ? db.prepare('SELECT * FROM execution_media_tasks WHERE id = ?').get(job.unifiedTaskId) as MediaTaskRow | undefined
+      : undefined;
+    if (!task) {
+      if (!job.unifiedGenerationId) {
+        const candidate = randomUUID();
+        db.prepare(`UPDATE jobs SET unifiedGenerationId = COALESCE(unifiedGenerationId, ?)
+          WHERE id = ?`).run(candidate, job.id);
+        job.unifiedGenerationId = db.prepare('SELECT unifiedGenerationId FROM jobs WHERE id = ?')
+          .pluck().get(job.id) as string;
+      }
+      const taskKey = `image:${job.id}:${job.unifiedGenerationId}`;
+      db.prepare(`
+        INSERT OR IGNORE INTO execution_media_tasks (
+          id, taskKey, actorId, scopeType, scopeId, module, taskId, unifiedModel, ruleVersion,
+          inputHash, inputSnapshotJson, outputContractJson, sourceType, sourceId, sourceMetaJson,
+          status, cancelRequestedAt, currentChannelKey, nextEligibleAt, waitReason, waitDetailJson,
+          resultJson, createdAt, updatedAt
+        ) VALUES (?, ?, ?, 'project', ?, 'image', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'routing', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
+      `).run(
+        randomUUID(), taskKey, access.actor.userId, job.projectId, job.id,
+        UNIFIED_IMAGE_MODEL_KEY, UNIFIED_MEDIA_RULE_VERSION, inputHash,
+        JSON.stringify(frozen), JSON.stringify({
+          tier: frozen.tier, ratio: frozen.ratio, size: frozen.size, quality: frozen.quality,
+        }), source.sourceType, source.sourceId, JSON.stringify(source.sourceMeta),
+        at, at,
+      );
+      task = db.prepare('SELECT * FROM execution_media_tasks WHERE taskKey = ?').get(taskKey) as MediaTaskRow | undefined;
+    }
     if (!task) throw new Error('统一图片逻辑任务创建失败。');
     if (job.unifiedTaskId && job.unifiedTaskId !== task.id) {
       throw new UnifiedImageExecutionError('invalid_frozen_contract', '统一图片任务关联的逻辑任务身份已漂移。');
@@ -445,7 +459,9 @@ function ensureLogicalTask(
       );
     }
   }).immediate();
-  return db.prepare('SELECT * FROM execution_media_tasks WHERE taskKey = ?').get(taskKey) as MediaTaskRow;
+  const bound = db.prepare('SELECT unifiedTaskId FROM jobs WHERE id = ?').pluck().get(job.id) as string | null;
+  if (!bound) throw new Error('统一图片逻辑任务关联失败。');
+  return db.prepare('SELECT * FROM execution_media_tasks WHERE id = ?').get(bound) as MediaTaskRow;
 }
 
 function inspectExactProvider(
@@ -1505,6 +1521,12 @@ export function handleUnifiedImageExplicitFailure(
         providerId: channel.providerId,
         reasonCode: failureReason,
         now: new Date(at),
+      });
+    } else {
+      releaseUnifiedChannelRecoveryProbe(db, {
+        unifiedModel: task.unifiedModel,
+        channelKey: channel.channelKey,
+        providerId: channel.providerId,
       });
     }
     const frozen = readFrozenRequest(job);

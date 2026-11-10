@@ -7,6 +7,7 @@ import { initFinalEditSchema } from './final-edit/schema.ts';
 import { initUsageSchema, markUsageSchemaUnavailable } from './usage-schema.ts';
 import { seedBundledMotionPresets } from './bundled-motion-presets.ts';
 import { assertDeploymentDataRootAccess, readRuntimeConfig } from './team-service/config.ts';
+import { migrateLegacyUnifiedImageProjects } from './media-core/unified-media/project-migration.ts';
 
 const DB_PATH = path.join(dataRoot(), 'data', 'workbench.db');
 
@@ -387,6 +388,7 @@ function initTables(db: Database.Database) {
   for (const sql of CORE_DB_MIGRATIONS) {
     try { db.exec(sql); } catch { /* Column already exists */ }
   }
+  migrateLegacyUnifiedImageProjects(db, { mode: readRuntimeConfig().mode });
 
   const videoJobMigrations = [
     `ALTER TABLE video_jobs ADD COLUMN lastPolledAt TEXT`,

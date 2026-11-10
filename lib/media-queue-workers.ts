@@ -31,7 +31,7 @@ function poolDemands(input: MediaQueueWorkers): QueuePoolDemand[] {
   const reworkKind = input.module === 'image' ? 'generate_image' : 'generate_video';
   const runnable = input.module === 'image'
     ? "status IN ('pending', 'retrying', 'running', 'deferred') OR ((status = 'needs_check' OR providerStatus = 'download_failed') AND (providerTaskId IS NOT NULL OR (providerStatus = 'download_failed' AND remoteImageUrl IS NOT NULL)))"
-    : "status IN ('pending', 'running', 'deferred') OR ((status = 'needs_check' OR providerStatus = 'download_failed') AND providerTaskId IS NOT NULL)";
+    : "status IN ('pending', 'running', 'deferred') OR ((status = 'needs_check' OR providerStatus = 'download_failed') AND (providerTaskId IS NOT NULL OR (providerStatus = 'download_failed' AND remoteVideoUrl IS NOT NULL)))";
   const rows = input.db.prepare(`
     SELECT providerId, unifiedModel, unifiedRequestJson,
       COUNT(*) AS taskCount FROM ${table}

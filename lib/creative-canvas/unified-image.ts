@@ -653,11 +653,10 @@ export function handleCanvasUnifiedExplicitFailure(
       now: new Date(at),
     });
   } else {
-    recordUnifiedChannelSuccess(db, {
+    releaseUnifiedChannelRecoveryProbe(db, {
       unifiedModel: parent.unifiedModel,
       channelKey: channel.channelKey,
       providerId: channel.providerId,
-      now: new Date(at),
     });
   }
 

@@ -477,10 +477,14 @@ async function runVideoJob(
 export async function resumeVideoJobPolling(jobId: string, timeoutMs = DEFAULT_VIDEO_TIMEOUT_MS): Promise<void> {
   const db = getDb();
   const job = db.prepare('SELECT * FROM video_jobs WHERE id = ?').get(jobId) as VideoJobRecord | undefined;
-  if (!job?.providerTaskId) throw new Error('No provider task ID to resume polling');
+  const downloadOnly = job?.providerStatus === 'download_failed' && Boolean(job.remoteVideoUrl);
+  if (!job?.providerTaskId && !downloadOnly) throw new Error('No provider task ID or accepted result URL to resume');
   const claimed = db.prepare(`
     UPDATE video_jobs SET status = 'running', errorMessage = NULL, finishedAt = NULL
-    WHERE id = ? AND (status IN ('needs_check', 'pending') OR providerStatus = 'download_failed')
+    WHERE id = ? AND (
+      status IN ('needs_check', 'pending')
+      OR (providerStatus = 'download_failed' AND remoteVideoUrl IS NOT NULL)
+    )
   `).run(jobId);
   if (claimed.changes !== 1) throw new Error('Only accepted jobs waiting for polling or download can be resumed');
   await runVideoJob({ ...job, status: 'running' }, { timeoutMs, abort: new AbortController().signal });
@@ -841,6 +845,12 @@ async function runAuthorizedVideoJob(
     }
 
     let taskId: string;
+    if (!existingTaskId && job.providerStatus === 'download_failed' && job.remoteVideoUrl) {
+      // Admin reconciliation can return a result URL without a reusable remote
+      // task id. This is a download-only close, never a new generation.
+      await downloadVideoResult(job.remoteVideoUrl);
+      return;
+    }
     if (existingTaskId) {
       taskId = existingTaskId;
       if (job.remoteVideoUrl && job.providerStatus === 'download_failed') {
@@ -1373,7 +1383,11 @@ export function claimNeedsCheckVideoJob(projectId: string, jobId?: string): Clai
     SELECT * FROM video_jobs
     WHERE projectId = ?
       AND (status = 'needs_check' ${isServerMediaExecution() ? "OR providerStatus = 'download_failed'" : ''})
-      AND providerTaskId IS NOT NULL AND (? IS NULL OR id = ?)
+      AND (
+        providerTaskId IS NOT NULL
+        OR (providerStatus = 'download_failed' AND remoteVideoUrl IS NOT NULL)
+      )
+      AND (? IS NULL OR id = ?)
       ${isServerMediaExecution() ? "AND (video_jobs.unifiedModel IS NOT NULL OR NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = video_jobs.id AND r.kind = 'generate_video'))" : ''}
     ORDER BY createdAt, rowid LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as VideoJobRecord | undefined;
@@ -1383,7 +1397,10 @@ export function claimNeedsCheckVideoJob(projectId: string, jobId?: string): Clai
   const nextAttempt = isServerMediaExecution() ? job.attempt : job.attempt + 1;
   const result = db.prepare(`
     UPDATE video_jobs SET status = 'running', attempt = ?, startedAt = datetime('now'), errorMessage = NULL
-    WHERE id = ? AND (status = 'needs_check' ${isServerMediaExecution() ? "OR providerStatus = 'download_failed'" : ''})
+    WHERE id = ? AND (
+      status = 'needs_check'
+      ${isServerMediaExecution() ? "OR (providerStatus = 'download_failed' AND remoteVideoUrl IS NOT NULL)" : ''}
+    )
   `).run(nextAttempt, job.id);
 
   if (result.changes !== 1) return null;

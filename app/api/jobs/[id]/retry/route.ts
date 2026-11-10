@@ -67,7 +67,10 @@ async function __teamRoutePOST(
       UPDATE jobs SET status = 'pending', attempt = 0, errorMessage = NULL,
         providerTaskId = NULL, providerStatus = NULL, providerRawResponse = NULL, submittedAt = NULL,
         remoteImageUrl = NULL, startedAt = NULL, finishedAt = NULL, latencyMs = NULL, estimatedCost = NULL,
-        executionRevision = COALESCE(executionRevision, 0) + 1
+        executionRevision = COALESCE(executionRevision, 0) + 1,
+        unifiedTaskId = CASE WHEN unifiedModel IS NULL THEN unifiedTaskId ELSE NULL END,
+        unifiedGenerationId = CASE WHEN unifiedModel IS NULL THEN unifiedGenerationId ELSE NULL END,
+        cancelRequestedAt = CASE WHEN unifiedModel IS NULL THEN cancelRequestedAt ELSE NULL END
       WHERE id = ?
     `).run(id);
 

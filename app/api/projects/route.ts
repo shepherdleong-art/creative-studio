@@ -25,6 +25,7 @@ import { productionParamsFor } from '@/lib/team-service/production-defaults';
 import {
   UNIFIED_IMAGE_MODEL_KEY,
   UNIFIED_MEDIA_RULE_VERSION,
+  isUnifiedImageChannelProvider,
   isUnifiedImageAnchorProvider,
 } from '@/lib/media-core/unified-media/catalog';
 import {
@@ -160,6 +161,11 @@ async function __teamRoutePOST(request: NextRequest) {
     if (!provider) return NextResponse.json({ error: 'Provider not found' }, { status: 400 });
     if (!provider.enabled) return NextResponse.json({ error: 'Provider is disabled' }, { status: 400 });
     const unifiedProvider = isUnifiedImageAnchorProvider(provider);
+    if (readRuntimeConfig().mode === 'server' && isUnifiedImageChannelProvider(provider)) {
+      return NextResponse.json({
+        error: '团队版新建项目请选择统一模型“Image 2”，不能直接指定真实通道。',
+      }, { status: 400 });
+    }
     if (!unifiedProvider && !isRealApiKey(provider.apiKey)) {
       return NextResponse.json({ error: 'Provider API key is not configured' }, { status: 400 });
     }

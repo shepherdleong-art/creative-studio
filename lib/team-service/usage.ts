@@ -43,6 +43,7 @@ export type TeamCostStatus = 'estimated' | 'settled' | 'released' | 'unpriced' |
 export interface TeamUsageAttempt {
   attemptId: string;
   operationId: string;
+  mediaTaskId: string | null;
   taskId: string;
   businessAttemptId: string;
   businessAttemptNo: number;
@@ -111,17 +112,22 @@ export interface TeamUsageMember extends TeamMemberSummary {
 
 export interface TeamUnifiedUsageReport {
   tasks: TeamUnifiedTaskView[];
+  /** Current non-unified models (Seedream/Nano/LLM/TTS/etc.). */
   legacyAttempts: TeamUsageAttempt[];
+  /** Records that claim a unified parent/identity but cannot be joined to it. */
+  unmappedAttempts: TeamUsageAttempt[];
   counts: {
     generationTasks: number;
     channelCalls: number;
     legacyAttempts: number;
+    unmappedAttempts: number;
   };
 }
 
 interface AttemptRow {
   attemptId: string;
   operationId: string;
+  mediaTaskId: string | null;
   taskId: string;
   businessAttemptId: string;
   businessAttemptNo: number;
@@ -187,6 +193,7 @@ function mapAttempt(row: AttemptRow): TeamUsageAttempt {
   return {
     attemptId: row.attemptId,
     operationId: row.operationId,
+    mediaTaskId: row.mediaTaskId,
     taskId: row.taskId,
     businessAttemptId: row.businessAttemptId,
     businessAttemptNo: row.businessAttemptNo,
@@ -260,7 +267,7 @@ export function queryTeamUsage(
     values.push(filters.model, displayModel);
   }
   const rows = db.prepare(`
-    SELECT a.id AS attemptId, o.id AS operationId, o.taskId, o.businessAttemptId,
+    SELECT a.id AS attemptId, o.id AS operationId, o.mediaTaskId, o.taskId, o.businessAttemptId,
       a.businessAttemptNo, a.submitRound, a.transportSeq, a.actorId AS actorUserId,
       u.employeeId, u.displayName AS actorDisplayName, o.scopeType, o.scopeId,
       o.module, o.step, ${modelExpression} AS model,
@@ -366,8 +373,12 @@ export function queryTeamUsageAnalytics(
     taskCountByModel.set(item.reportingModel, set);
   }
   for (const [model, tasks] of taskCountByModel) {
-    const current = modelMap.get(model);
-    if (current) current.taskCount = tasks.size;
+    const current = modelMap.get(model) ?? {
+      model, modules: [], taskCount: 0, callCount: 0, chargedMinor: 0,
+      settledMinor: 0, estimatedMinor: 0, unpricedCount: 0, uncertainCount: 0, percentage: 0,
+    };
+    current.taskCount = tasks.size;
+    modelMap.set(model, current);
   }
   const chargedTotal = items.reduce((sum, item) => sum + attemptChargedMinor(item), 0);
   const models = [...modelMap.values()].map((model) => ({
@@ -429,14 +440,23 @@ export function queryTeamUnifiedUsage(
 ): TeamUnifiedUsageReport {
   const tasks = queryUnifiedTaskUsage(db, viewer, filters).tasks;
   const items = queryTeamUsage(db, viewer, filters).items;
-  const legacyAttempts = items.filter((item) => item.unifiedModel === null);
+  const mappedTaskIds = new Set(tasks.map((task) => task.mediaTaskId));
+  const legacyAttempts = items.filter((item) =>
+    item.unifiedModel === null && item.mediaTaskId === null,
+  );
+  const unmappedAttempts = items.filter((item) =>
+    (item.unifiedModel !== null && item.mediaTaskId === null)
+    || (item.mediaTaskId !== null && !mappedTaskIds.has(item.mediaTaskId)),
+  );
   return {
     tasks,
     legacyAttempts,
+    unmappedAttempts,
     counts: {
       generationTasks: tasks.length,
       channelCalls: tasks.reduce((sum, task) => sum + task.channelCallCount, 0),
       legacyAttempts: legacyAttempts.length,
+      unmappedAttempts: unmappedAttempts.length,
     },
   };
 }

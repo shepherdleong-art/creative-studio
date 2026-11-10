@@ -9,6 +9,7 @@ export const TASK_STEP_LABELS: Record<string, string> = {
   export: '导出', prepare: '准备素材', analyze: '素材分析',
 };
 export const TASK_STATUS_LABELS: Record<string, string> = {
+  routing: '正在选择通道', waiting: '等待运行资源',
   pending: '排队中', deferred: '等待运行条件', admitted: '准备发送', maybe_sent: '提交中（待确认）',
   accepted: '供应商已受理', reconciling: '核查结果中', succeeded: '成功', failed: '失败',
   unknown: '结果确认中', canceled: '已取消',

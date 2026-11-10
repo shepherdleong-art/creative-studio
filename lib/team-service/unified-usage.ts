@@ -255,12 +255,27 @@ function taskRows(
   if (filters.from) { attemptExists.push('a.createdAt >= ?'); attemptValues.push(filters.from); }
   if (filters.to) { attemptExists.push('a.createdAt < ?'); attemptValues.push(filters.to); }
   if (filters.outcome) { attemptExists.push('a.terminalState = ?'); attemptValues.push(filters.outcome); }
-  clauses.push(`EXISTS (
-    SELECT 1 FROM execution_operations o
-    JOIN execution_attempts a ON a.operationId = o.id
-    WHERE ${attemptExists.join(' AND ')}
-  )`);
-  values.push(...attemptValues);
+  if (filters.outcome) {
+    clauses.push(`EXISTS (
+      SELECT 1 FROM execution_operations o
+      JOIN execution_attempts a ON a.operationId = o.id
+      WHERE ${attemptExists.join(' AND ')}
+    )`);
+    values.push(...attemptValues);
+  } else if (filters.from || filters.to) {
+    clauses.push(`(
+      (${filters.from ? 't.createdAt >= ?' : '1 = 1'})
+      ${filters.to ? 'AND t.createdAt < ?' : ''}
+      OR EXISTS (
+        SELECT 1 FROM execution_operations o
+        JOIN execution_attempts a ON a.operationId = o.id
+        WHERE ${attemptExists.join(' AND ')}
+      )
+    )`);
+    if (filters.from) values.push(filters.from);
+    if (filters.to) values.push(filters.to);
+    values.push(...attemptValues);
+  }
   if (filters.model) {
     const modelFilter = taskModelFilterValues(filters.model);
     if (modelFilter.unified) {

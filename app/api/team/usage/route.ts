@@ -24,9 +24,15 @@ async function __teamRouteGET(request: Request): Promise<Response> {
     const memberId = filters.actorUserId ?? viewer.userId;
     return Response.json({
       ...result,
+      // Unified channel attempts are an execution detail. Employees receive
+      // task-level totals; only the non-unified legacy list remains visible.
+      items: viewer.role === 'admin'
+        ? result.items
+        : result.items.filter((item) => item.unifiedModel === null && item.mediaTaskId === null),
       ...analytics,
       tasks: unified.tasks,
       legacyAttempts: unified.legacyAttempts,
+      unmappedAttempts: viewer.role === 'admin' ? unified.unmappedAttempts : [],
       counts: unified.counts,
       range: { from: filters.from, to: filters.to },
       scope: teamScope ? 'team' : 'self',
