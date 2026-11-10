@@ -74,6 +74,9 @@ export function unifiedKlingChannelSupports(
   if (!caps) return false;
   if (request.aspectRatio && !caps.ratios.includes(request.aspectRatio)) return false;
   if (request.resolution && !caps.tiers.includes(request.resolution)) return false;
+  // 腾讯可灵尾帧的原生 OutputConfig 只做过 1080P 级样例；4K 尾帧没有可信
+  // 上游证据，不能按“支持 4K”推断后静默落回 1080P。
+  if (request.tailImageId && request.resolution === '4K') return false;
   // Both exact company Kling aliases have a verified tail-frame protocol and
   // intelligent-storyboard flag. A tail image changes only the channel field,
   // never the business contract.

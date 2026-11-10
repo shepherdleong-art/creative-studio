@@ -17,12 +17,15 @@ import type Database from 'better-sqlite3';
 import { findCanvasCapability, validateCapabilityInputs, type CanvasModelCapability } from './capabilities.ts';
 import {
   COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY,
+  COMPANY_CANVAS_UNIFIED_KLING3_CAPABILITY,
 } from './adapters/company-capabilities.ts';
 import {
   UNIFIED_IMAGE_MODEL_KEY,
+  UNIFIED_KLING3_MODEL_KEY,
   UNIFIED_MEDIA_RULE_VERSION,
 } from '../media-core/unified-media/catalog.ts';
 import { resolveUnifiedImageOutput } from '../media-core/unified-media/requests.ts';
+import { freezeUnifiedKlingVideoRequest } from '../media-core/unified-media/video-requests.ts';
 import {
   CanvasError,
 } from './errors.ts';
@@ -506,9 +509,11 @@ function buildTaskPlan(
   }
 
   const unifiedImage2 = capability.key === COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key;
+  const unifiedKling3 = capability.key === COMPANY_CANVAS_UNIFIED_KLING3_CAPABILITY.key;
   if (capability.providerIdentity === 'jimeng-2-0'
     || capability.key.endsWith(':ark-v1')
-    || unifiedImage2) {
+    || unifiedImage2
+    || unifiedKling3) {
     for (const parameter of capability.parameters) {
       if ((!parameter.modes || parameter.modes.includes(node.data.generationMode)) && effectiveParameters[parameter.key] === undefined && parameter.default !== undefined) effectiveParameters[parameter.key] = parameter.default;
     }
@@ -544,6 +549,36 @@ function buildTaskPlan(
       });
     }
   }
+  if (unifiedKling3) {
+    const imageInputs = inputs.filter((input) => input.kind !== 'text'
+      && inputKindOfInput(context, input) === 'image');
+    const sourceInput = imageInputs.find((input) => input.role === 'first-frame') ?? imageInputs[0];
+    const tailInput = imageInputs.find((input) => input.role === 'last-frame') ?? null;
+    try {
+      freezeUnifiedKlingVideoRequest({
+        sourceImageId: sourceInput?.assetId ?? (sourceInput ? `planned:${sourceInput.refId}` : ''),
+        tailImageId: tailInput?.assetId ?? (tailInput ? `planned:${tailInput.refId}` : null),
+        referenceAssetIds: [],
+        prompt: [
+          node.data.prompt,
+          ...inputs.filter((input) => input.kind === 'text').map((input) => input.textContent ?? ''),
+        ].filter((part) => part.trim().length > 0).join('\n\n'),
+        durationSec: Number(effectiveParameters.durationSec ?? 5),
+        generationMode: node.data.generationMode,
+        multiShot: effectiveParameters.multiShot,
+        aspectRatio: typeof effectiveParameters.aspectRatio === 'string'
+          ? effectiveParameters.aspectRatio : null,
+        resolution: typeof effectiveParameters.resolution === 'string'
+          ? effectiveParameters.resolution : null,
+      });
+    } catch (error) {
+      context.problems.push({
+        code: 'capability_input_invalid',
+        nodeId: node.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   if (capability.providerIdentity === 'jimeng-2-0' || capability.key.endsWith(':ark-v1')) {
     if (node.data.generationMode === 'image-to-video') effectiveParameters.aspectRatio = 'adaptive';
@@ -569,6 +604,9 @@ function buildTaskPlan(
     providerName: capability.displayName,
     ...(unifiedImage2 ? {
       unifiedModel: UNIFIED_IMAGE_MODEL_KEY,
+      unifiedRuleVersion: UNIFIED_MEDIA_RULE_VERSION,
+    } : unifiedKling3 ? {
+      unifiedModel: UNIFIED_KLING3_MODEL_KEY,
       unifiedRuleVersion: UNIFIED_MEDIA_RULE_VERSION,
     } : {}),
     generationMode: node.data.generationMode,

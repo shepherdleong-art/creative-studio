@@ -50,6 +50,7 @@ import {
   type SubmissionEvidence,
   type SubmissionStage,
 } from '../media-core/submission-evidence.ts';
+import { unifiedMediaDisplayName } from '../media-core/unified-media/catalog.ts';
 import {
   activateCanvasUnifiedChannel,
   assertCanvasUnifiedSubmissionStillCurrent,
@@ -61,8 +62,8 @@ import {
   currentCanvasUnifiedOperation,
   handleCanvasUnifiedCapacityDeferred,
   handleCanvasUnifiedExplicitFailure,
-  isCanvasUnifiedImageTask,
-  prepareCanvasUnifiedImageExecution,
+  isCanvasUnifiedMediaTask,
+  prepareCanvasUnifiedMediaExecution,
   recordCanvasUnifiedAccepted,
   recordCanvasUnifiedCanceled,
   recordCanvasUnifiedDownloadFailure,
@@ -71,8 +72,8 @@ import {
   recordCanvasUnifiedUnknown,
   recordCanvasUnifiedSucceeded,
   releaseCanvasUnifiedPreparation,
-  type CanvasUnifiedExecution,
-} from './unified-image.ts';
+  type CanvasUnifiedMediaExecution,
+} from './unified-media.ts';
 
 export interface CanvasTaskExecution {
   facade: ExecutionFacade;
@@ -468,11 +469,20 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
   context.inputs = context.inputs.map((input) => (
     input.assetId ? { ...input, absolutePath: assetAbsolutePath(db, input.assetId, storageRoot) } : input
   ));
-  let unifiedExecution: CanvasUnifiedExecution | null = null;
+  let unifiedExecution: CanvasUnifiedMediaExecution | null = null;
   let unifiedOperationId: string | null = null;
   let executionContext: CanvasTaskContext = context;
   let effectiveTask: CanvasTaskRecord = task;
-  const unifiedTask = isCanvasUnifiedImageTask(task);
+  const unifiedTask = isCanvasUnifiedMediaTask(task);
+  const unifiedTaskName = (() => {
+    try {
+      return unifiedMediaDisplayName(
+        (JSON.parse(task.providerSnapshot) as { unifiedModel?: unknown }).unifiedModel,
+      ) ?? '统一模型';
+    } catch {
+      return '统一模型';
+    }
+  })();
   const resuming = task.providerTaskId !== null;
 
   const finish = (phase: CanvasTaskPhase, extra: Partial<CanvasRunTaskOutcome> = {}): CanvasRunTaskOutcome => {
@@ -545,7 +555,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
 
   if (unifiedTask) {
     try {
-      unifiedExecution = prepareCanvasUnifiedImageExecution(db, task, context, {
+      unifiedExecution = prepareCanvasUnifiedMediaExecution(db, task, context, {
         resuming,
         now: now(),
       });
@@ -554,7 +564,9 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     } catch (error) {
       if (error instanceof CanvasUnifiedWaitingError) {
         const message = error.waitReason === 'pool_capacity'
-          ? '等待可用资源（供应商名额已满，达到拥堵阈值后自动继续）。'
+          ? (unifiedExecution?.mediaKind === 'video'
+            ? '等待可用资源（供应商名额已满，释放后自动继续）。'
+            : '等待可用资源（供应商名额已满，达到拥堵阈值后自动继续）。')
           : executionWaitMessage(error.waitReason);
         return deferExecution(error.waitReason, message);
       }
@@ -672,12 +684,16 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         if (capacity.outcome === 'waiting') {
           return deferExecution(
             'pool_capacity',
-            '等待可用资源（供应商名额已满，达到拥堵阈值后自动继续）。',
+            unifiedExecution.mediaKind === 'video'
+              ? '等待可用资源（供应商名额已满，释放后自动继续）。'
+              : '等待可用资源（供应商名额已满，达到拥堵阈值后自动继续）。',
           );
         }
         if (capacity.outcome === 'overflowed') {
           return requeueUnified(
-            '七牛名额持续拥堵，已允许使用腾讯备用通道。',
+            unifiedExecution.mediaKind === 'video'
+              ? '七牛名额已满，已立即使用腾讯备用通道。'
+              : '七牛名额持续拥堵，已允许使用腾讯备用通道。',
           );
         }
         if (capacity.outcome === 'canceled') return cancelBeforeSubmit();
@@ -861,7 +877,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         }
         if (decision.outcome === 'next_channel') {
           return requeueUnified(
-            `Image 2 ${decision.previousChannelKey} 通道明确未创建，已切换到 ${decision.nextChannelKey}。`,
+            `${unifiedTaskName} ${decision.previousChannelKey} 通道明确未创建，已切换到 ${decision.nextChannelKey}。`,
           );
         }
         if (decision.outcome === 'canceled') return cancelBeforeSubmit();
@@ -1072,7 +1088,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         }
         if (decision.outcome === 'next_channel') {
           return requeueUnified(
-            `Image 2 ${decision.previousChannelKey} 通道明确失败，已切换到 ${decision.nextChannelKey}。`,
+            `${unifiedTaskName} ${decision.previousChannelKey} 通道明确失败，已切换到 ${decision.nextChannelKey}。`,
           );
         }
         if (decision.outcome === 'canceled') {

@@ -19,6 +19,9 @@ import { companyNativeVideoModel } from '../../company-gateway-video-models.ts';
 import {
   UNIFIED_IMAGE_ANCHOR_ID,
   UNIFIED_IMAGE_MODEL_KEY,
+  UNIFIED_KLING3_ANCHOR_ID,
+  UNIFIED_KLING3_DISPLAY_NAME,
+  UNIFIED_KLING3_MODEL_KEY,
   UNIFIED_MEDIA_RULE_VERSION,
   unifiedImageAspectRatios,
 } from '../../media-core/unified-media/catalog.ts';
@@ -88,6 +91,44 @@ export const COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY: CanvasModelCapability = {
   evidenceNote:
     `统一 Image 2 只按完整参数组合选择精确七牛/腾讯通道；规则版本 ${UNIFIED_MEDIA_RULE_VERSION}。`
     + '尺寸与原生裁切沿用公司网关既有证据；真实双通道切换和失败计费仍需上游样本验证。',
+};
+
+export const UNIFIED_CANVAS_KLING3_CAPABILITY_KEY = 'unified-kling-3';
+
+/**
+ * 员工侧唯一的可灵 3.0 选项。只开放代码里已能执行的图生视频合同；
+ * 两个精确通道继续留在注册表供旧画布恢复。
+ */
+export const COMPANY_CANVAS_UNIFIED_KLING3_CAPABILITY: CanvasModelCapability = {
+  key: UNIFIED_CANVAS_KLING3_CAPABILITY_KEY,
+  displayName: UNIFIED_KLING3_DISPLAY_NAME,
+  providerKind: 'company',
+  providerIdentity: UNIFIED_KLING3_ANCHOR_ID,
+  modelAlias: UNIFIED_KLING3_MODEL_KEY,
+  mediaKind: 'video',
+  modes: ['image-to-video'],
+  inputs: [
+    { kind: 'image', roles: ['first-frame'], min: 1, max: 1, modes: ['image-to-video'] },
+    { kind: 'image', roles: ['last-frame'], min: 0, max: 1, modes: ['image-to-video'] },
+    { kind: 'text', roles: ['reference'], min: 0, max: 1 },
+  ],
+  parameters: [
+    { key: 'durationSec', label: '时长（秒）', type: 'integer', min: 3, max: 15, default: 5 },
+    {
+      key: 'aspectRatio', label: '比例', type: 'enum',
+      options: ['3:4', '4:3', '16:9', '9:16'], default: '3:4',
+    },
+    {
+      key: 'resolution', label: '清晰度', type: 'enum',
+      options: ['1K', '4K'], default: '1K',
+    },
+    { key: 'multiShot', label: '智能分镜', type: 'boolean', default: false },
+  ],
+  cancellation: false,
+  evidence: 'mapped',
+  evidenceNote:
+    `统一可灵 3.0 只按完整图生视频合同选择精确七牛/腾讯通道；规则版本 ${UNIFIED_MEDIA_RULE_VERSION}。`
+    + '首尾帧、时长与智能分镜沿用已验证公司协议，真实双通道切换和失败计费仍需上游样本验证。',
 };
 
 /**
@@ -257,6 +298,7 @@ export const COMPANY_CANVAS_NATIVE_VIDEO_CAPABILITIES: ReadonlyArray<CanvasModel
 
 export const COMPANY_CANVAS_CAPABILITIES: ReadonlyArray<CanvasModelCapability> = [
   COMPANY_CANVAS_IMAGE2_CAPABILITY,
+  COMPANY_CANVAS_UNIFIED_KLING3_CAPABILITY,
   COMPANY_CANVAS_QINIUYUN_KLING_CAPABILITY,
   COMPANY_CANVAS_SEEDANCE_2_5_CAPABILITY,
   COMPANY_CANVAS_SEEDANCE_2_0_FAST_CAPABILITY,
