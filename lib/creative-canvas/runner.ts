@@ -50,6 +50,29 @@ import {
   type SubmissionEvidence,
   type SubmissionStage,
 } from '../media-core/submission-evidence.ts';
+import {
+  activateCanvasUnifiedChannel,
+  assertCanvasUnifiedSubmissionStillCurrent,
+  CanvasUnifiedCanceledError,
+  CanvasUnifiedRequeueError,
+  CanvasUnifiedStaleError,
+  CanvasUnifiedTerminalError,
+  CanvasUnifiedWaitingError,
+  currentCanvasUnifiedOperation,
+  handleCanvasUnifiedCapacityDeferred,
+  handleCanvasUnifiedExplicitFailure,
+  isCanvasUnifiedImageTask,
+  prepareCanvasUnifiedImageExecution,
+  recordCanvasUnifiedAccepted,
+  recordCanvasUnifiedCanceled,
+  recordCanvasUnifiedDownloadFailure,
+  recordCanvasUnifiedFinalFailure,
+  recordCanvasUnifiedOperation,
+  recordCanvasUnifiedUnknown,
+  recordCanvasUnifiedSucceeded,
+  releaseCanvasUnifiedPreparation,
+  type CanvasUnifiedExecution,
+} from './unified-image.ts';
 
 export interface CanvasTaskExecution {
   facade: ExecutionFacade;
@@ -187,6 +210,8 @@ function currentCanvasExecution(db: Database.Database, taskId: string): {
   operation: OperationRecord;
   attempt: AttemptRecord | null;
 } | null {
+  const unified = currentCanvasUnifiedOperation(db, taskId);
+  if (unified) return unified;
   const row = db.prepare(`
     SELECT id FROM execution_operations WHERE module = 'canvas' AND taskId = ?
     ORDER BY createdAt DESC LIMIT 1
@@ -199,11 +224,22 @@ function currentCanvasExecution(db: Database.Database, taskId: string): {
   };
 }
 
-function canvasOperationInput(task: CanvasTaskRecord, context: CanvasTaskContext) {
+function canvasOperationInput(
+  task: CanvasTaskRecord,
+  context: CanvasTaskContext,
+  unifiedRoute?: {
+    mediaTaskId: string;
+    channelKey: string;
+    executionRevision: number;
+  },
+) {
   const generationStage = typeof context.parameters.generationStage === 'string'
     ? context.parameters.generationStage
     : 'direct';
-  const inputRevision = `epoch-${task.nodeEpoch}-variant-${task.variantIndex}-stage-${generationStage}`;
+  const baseRevision = `epoch-${task.nodeEpoch}-variant-${task.variantIndex}-stage-${generationStage}`;
+  const inputRevision = unifiedRoute
+    ? `${baseRevision}-channel-${unifiedRoute.channelKey}-r${unifiedRoute.executionRevision}`
+    : baseRevision;
   const inputSnapshot = {
     nodeId: task.nodeId,
     nodeEpoch: task.nodeEpoch,
@@ -219,6 +255,13 @@ function canvasOperationInput(task: CanvasTaskRecord, context: CanvasTaskContext
       upstreamTaskId: input.upstreamTaskId,
       textContent: input.textContent,
     })),
+    ...(unifiedRoute ? {
+      route: {
+        mediaTaskId: unifiedRoute.mediaTaskId,
+        channelKey: unifiedRoute.channelKey,
+        executionRevision: unifiedRoute.executionRevision,
+      },
+    } : {}),
   };
   return {
     inputRevision,
@@ -425,6 +468,12 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
   context.inputs = context.inputs.map((input) => (
     input.assetId ? { ...input, absolutePath: assetAbsolutePath(db, input.assetId, storageRoot) } : input
   ));
+  let unifiedExecution: CanvasUnifiedExecution | null = null;
+  let unifiedOperationId: string | null = null;
+  let executionContext: CanvasTaskContext = context;
+  let effectiveTask: CanvasTaskRecord = task;
+  const unifiedTask = isCanvasUnifiedImageTask(task);
+  const resuming = task.providerTaskId !== null;
 
   const finish = (phase: CanvasTaskPhase, extra: Partial<CanvasRunTaskOutcome> = {}): CanvasRunTaskOutcome => {
     const latest = getCanvasTask(db, taskId);
@@ -438,8 +487,6 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     };
   };
 
-  // 恢复路径：只要已经有远端身份，就绝不重新 prepare／POST，只续查原任务。
-  const resuming = task.providerTaskId !== null;
   let executionAttempt = options.execution
     ? currentCanvasExecution(db, taskId)?.attempt ?? null
     : null;
@@ -454,12 +501,24 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     });
   };
 
-  const deferExecution = (reason: string): CanvasRunTaskOutcome => {
+  const deferExecution = (reason: string, message?: string): CanvasRunTaskOutcome => {
     updateCanvasTaskGuarded(db, {
       taskId,
       patch: {
         phase: 'queued', submissionState: 'not_sent', errorCode: reason,
-        errorMessage: executionWaitMessage(reason), leaseOwner: null, leaseUntil: null,
+        errorMessage: message ?? executionWaitMessage(reason), leaseOwner: null, leaseUntil: null,
+      },
+      guard,
+      now,
+    });
+    return finish('queued');
+  };
+  const requeueUnified = (message: string, reason = 'fallback_pending'): CanvasRunTaskOutcome => {
+    updateCanvasTaskGuarded(db, {
+      taskId,
+      patch: {
+        phase: 'queued', submissionState: 'not_sent', providerTaskId: null,
+        errorCode: reason, errorMessage: message, leaseOwner: null, leaseUntil: null,
       },
       guard,
       now,
@@ -467,6 +526,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     return finish('queued');
   };
   const cancelBeforeSubmit = (): CanvasRunTaskOutcome => {
+    recordCanvasUnifiedCanceled(db, unifiedExecution);
     updateCanvasTaskGuarded(db, {
       taskId,
       patch: {
@@ -483,11 +543,51 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     return finish('cancelled');
   };
 
+  if (unifiedTask) {
+    try {
+      unifiedExecution = prepareCanvasUnifiedImageExecution(db, task, context, {
+        resuming,
+        now: now(),
+      });
+      executionContext = unifiedExecution.effectiveContext;
+      effectiveTask = unifiedExecution.effectiveTask;
+    } catch (error) {
+      if (error instanceof CanvasUnifiedWaitingError) {
+        const message = error.waitReason === 'pool_capacity'
+          ? '等待可用资源（供应商名额已满，达到拥堵阈值后自动继续）。'
+          : executionWaitMessage(error.waitReason);
+        return deferExecution(error.waitReason, message);
+      }
+      if (error instanceof CanvasUnifiedRequeueError) {
+        return deferExecution(error.reason, error.message);
+      }
+      if (error instanceof CanvasUnifiedCanceledError) {
+        return cancelBeforeSubmit();
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      const code = error instanceof CanvasUnifiedTerminalError ? error.code : 'unified_route_failed';
+      updateCanvasTaskGuarded(db, {
+        taskId,
+        patch: {
+          phase: 'failed', submissionState: 'terminal',
+          errorCode: code, errorMessage: message, leaseOwner: null, leaseUntil: null,
+        },
+        guard,
+        now,
+      });
+      return finish('failed');
+    }
+  }
+
   // 1. 素材交付：失败说明还没提交，按普通失败结束
   try {
-    if (!resuming) await adapter.prepare(context, signal);
+    if (!resuming) await adapter.prepare(executionContext, signal);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (unifiedExecution) recordCanvasUnifiedFinalFailure(db, unifiedExecution, {
+      code: error instanceof CanvasAdapterError ? error.code : 'prepare_failed',
+      message,
+    });
     captureFailure('storage', error instanceof CanvasAdapterError ? error.code : 'prepare_failed');
     updateCanvasTaskGuarded(db, {
       taskId,
@@ -517,34 +617,84 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     });
   } else if (options.execution) {
     const execution = options.execution;
-    const operationInput = canvasOperationInput(task, context);
+    const operationInput = canvasOperationInput(effectiveTask, executionContext,
+      unifiedExecution ? {
+        mediaTaskId: unifiedExecution.parent.id,
+        channelKey: unifiedExecution.channel.channelKey,
+        executionRevision: unifiedExecution.channel.executionRevision,
+      } : undefined);
     let admission;
+    let enqueuedOperationId: string | null = null;
     try {
       const enqueued = execution.facade.enqueue({
-        operationKey: `canvas/${task.id}/submit/${operationInput.inputRevision}`,
+        operationKey: `canvas/${effectiveTask.id}/submit/${operationInput.inputRevision}`,
         actor: { userId: requireAccessContext().actor.userId },
-        scope: { resourceType: 'canvas', resourceId: task.canvasId },
-        module: 'canvas', taskId: task.id, step: 'submit', inputRevision: operationInput.inputRevision,
-        businessAttempt: { id: task.id, number: 1 },
+        scope: { resourceType: 'canvas', resourceId: effectiveTask.canvasId },
+        module: 'canvas', taskId: effectiveTask.id, step: 'submit', inputRevision: operationInput.inputRevision,
+        businessAttempt: {
+          id: effectiveTask.id,
+          number: unifiedExecution?.channel.executionRevision ?? 1,
+        },
         inputSnapshot: operationInput.inputSnapshot,
         inputHash: operationInput.inputHash,
         continuationKey: 'canvas.submit',
-        providerSnapshot: JSON.parse(task.providerSnapshot) as unknown,
-        configVersion: createHash('sha256').update(task.providerSnapshot).digest('hex'),
-        credentialVersionRef: context.providerIdentity,
-        requiredPools: [configuredProviderPool(db, context.mediaKind, context.providerIdentity) ?? `${context.providerIdentity}:remote`],
-        quote: canvasTaskCostQuote(db, task),
+        providerSnapshot: JSON.parse(effectiveTask.providerSnapshot) as unknown,
+        configVersion: createHash('sha256').update(effectiveTask.providerSnapshot).digest('hex'),
+        credentialVersionRef: executionContext.providerIdentity,
+        requiredPools: [
+          configuredProviderPool(db, executionContext.mediaKind, executionContext.providerIdentity)
+            ?? `${executionContext.providerIdentity}:remote`,
+        ],
+        quote: canvasTaskCostQuote(db, effectiveTask),
+        mediaTaskId: unifiedExecution?.parent.id ?? null,
+        channelKey: unifiedExecution?.channel.channelKey ?? null,
       });
+      enqueuedOperationId = enqueued.operation.id;
+      if (unifiedExecution) {
+        unifiedOperationId = enqueued.operation.id;
+        recordCanvasUnifiedOperation(db, unifiedExecution, enqueued.operation.id);
+      }
       admission = execution.facade.admit({ ...execution.instance, operationId: enqueued.operation.id });
     } catch (error) {
+      if (unifiedExecution) releaseCanvasUnifiedPreparation(db, unifiedExecution);
       const reason = error && typeof error === 'object' && 'code' in error
         ? String(error.code)
         : 'execution_not_ready';
       return deferExecution(reason);
     }
     if (admission.kind !== 'admitted') {
-      return deferExecution(admission.kind === 'deferred' ? admission.reasons[0] ?? 'execution_deferred' : 'execution_deferred');
+      if (unifiedExecution && admission.kind === 'deferred') {
+        const capacity = handleCanvasUnifiedCapacityDeferred(db, unifiedExecution, {
+          reasons: admission.reasons,
+          operationId: enqueuedOperationId,
+          now: now(),
+        });
+        if (capacity.outcome === 'waiting') {
+          return deferExecution(
+            'pool_capacity',
+            '等待可用资源（供应商名额已满，达到拥堵阈值后自动继续）。',
+          );
+        }
+        if (capacity.outcome === 'overflowed') {
+          return requeueUnified(
+            '七牛名额持续拥堵，已允许使用腾讯备用通道。',
+          );
+        }
+        if (capacity.outcome === 'canceled') return cancelBeforeSubmit();
+        if (capacity.outcome === 'not_capacity') {
+          releaseCanvasUnifiedPreparation(db, unifiedExecution);
+        }
+      } else if (unifiedExecution) {
+        releaseCanvasUnifiedPreparation(db, unifiedExecution);
+      }
+      if (unifiedExecution && admission.kind === 'idle') {
+        releaseCanvasUnifiedPreparation(db, unifiedExecution);
+      }
+      return deferExecution(
+        admission.kind === 'deferred' ? admission.reasons[0] ?? 'execution_deferred' : 'execution_deferred',
+      );
     }
+    if (unifiedExecution) activateCanvasUnifiedChannel(db, unifiedExecution);
     const submittedIntent = updateCanvasTaskGuarded(db, {
       taskId,
       patch: { phase: 'submitting', submissionState: 'not_sent' },
@@ -569,10 +719,30 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       await execution.facade.settle({
         attemptId: admission.grant.attempt.id, outcome: 'not_created', actualCost: null, remoteTerminal: true,
       }).catch(() => undefined);
+      if (unifiedExecution) releaseCanvasUnifiedPreparation(db, unifiedExecution);
       const reason = error && typeof error === 'object' && 'code' in error
         ? String(error.code)
         : 'execution_not_ready';
       return deferExecution(reason);
+    }
+    if (unifiedExecution) {
+      try {
+        assertCanvasUnifiedSubmissionStillCurrent(db, unifiedExecution);
+      } catch (error) {
+        await execution.facade.settle({
+          attemptId: admission.grant.attempt.id,
+          outcome: 'not_created',
+          actualCost: null,
+          remoteTerminal: true,
+          errorCode: error instanceof CanvasUnifiedCanceledError ? 'cancelled' : 'route_changed',
+        }).catch(() => undefined);
+        if (error instanceof CanvasUnifiedCanceledError) return cancelBeforeSubmit();
+        releaseCanvasUnifiedPreparation(db, unifiedExecution);
+        return deferExecution(
+          error instanceof CanvasUnifiedStaleError ? 'route_changed' : 'execution_not_ready',
+          error instanceof Error ? error.message : undefined,
+        );
+      }
     }
     if (!updateCanvasTaskGuarded(db, {
       taskId,
@@ -591,8 +761,19 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
           submitFailure = { code: 'cancelled', message: '用户已停止该任务，未发起新的付费提交。' };
           return { terminalState: 'not_created', errorCode: 'cancelled' };
         }
+        if (unifiedExecution) {
+          try {
+            assertCanvasUnifiedSubmissionStillCurrent(db, unifiedExecution);
+          } catch (error) {
+            submitFailure = {
+              code: error instanceof CanvasUnifiedCanceledError ? 'cancelled' : 'route_changed',
+              message: error instanceof Error ? error.message : String(error),
+            };
+            return { terminalState: 'not_created', errorCode: submitFailure.code };
+          }
+        }
         try {
-          const submitted = await adapter.submit(context, signal);
+          const submitted = await adapter.submit(executionContext, signal);
           if (!submitted.providerTaskId && !submitted.terminalState) {
             throw new CanvasAdapterError('submit', '供应商没有返回任务身份，提交结果不明。', {
               uncertain: true,
@@ -625,6 +806,9 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         guard,
         now,
       });
+      if (unifiedExecution) {
+        recordCanvasUnifiedUnknown(db, unifiedExecution, evidence, executionAttempt?.remoteId ?? null);
+      }
       return finish('uncertain');
     }
     if (executionAttempt.terminalState === 'not_created') {
@@ -634,6 +818,54 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         errorCode: failure?.code,
       });
       if (failure?.code === 'cancelled') return cancelBeforeSubmit();
+      if (failure?.code === 'route_changed') {
+        if (unifiedExecution) releaseCanvasUnifiedPreparation(db, unifiedExecution);
+        return deferExecution('route_changed', failure.message);
+      }
+      if (unifiedExecution) {
+        let decision;
+        try {
+          const evidence = classifySubmissionOutcome({
+            entry: 'canvas',
+            taskId: task.id,
+            businessAttemptNo: executionAttempt.businessAttemptNo,
+            adapterId: adapter.kind,
+            stage: 'submit',
+            source: 'adapter',
+            outcome: 'confirmed_not_created',
+            remoteId: executionAttempt.remoteId,
+            errorCode: failure?.code ?? 'submit_rejected',
+          });
+          decision = handleCanvasUnifiedExplicitFailure(db, task, {
+            evidence,
+            attemptId: executionAttempt.id,
+            operationId: enqueuedOperationId ?? undefined,
+            channelKey: unifiedExecution.channel.channelKey,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          recordCanvasUnifiedFinalFailure(db, unifiedExecution, {
+            code: 'fallback_decision_failed', message,
+          });
+          updateCanvasTaskGuarded(db, {
+            taskId,
+            patch: {
+              phase: 'failed', submissionState: 'terminal',
+              errorCode: 'fallback_decision_failed', errorMessage: message,
+              leaseOwner: null, leaseUntil: null,
+            },
+            guard,
+            now,
+          });
+          return finish('failed');
+        }
+        if (decision.outcome === 'next_channel') {
+          return requeueUnified(
+            `Image 2 ${decision.previousChannelKey} 通道明确未创建，已切换到 ${decision.nextChannelKey}。`,
+          );
+        }
+        if (decision.outcome === 'canceled') return cancelBeforeSubmit();
+      }
       captureFailure('remote_submit', failure?.code ?? 'submit_failed');
       updateCanvasTaskGuarded(db, {
         taskId,
@@ -651,7 +883,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     if (executionAttempt.terminalState === 'succeeded') {
       executionAttempt = await execution.facade.settle({
         attemptId: executionAttempt.id,
-        outcome: 'succeeded', actualCost: canvasTaskActualCost(db, task), remoteTerminal: true,
+        outcome: 'succeeded', actualCost: canvasTaskActualCost(db, effectiveTask), remoteTerminal: true,
       });
     }
     if (!submittedProviderTaskId) throw new Error('执行回执缺少远端任务身份。');
@@ -662,7 +894,12 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       guard,
       now,
     });
-    recordCanvasTaskUsage(db, { taskId, executionAttemptId: executionAttempt?.id });
+    if (unifiedExecution) recordCanvasUnifiedAccepted(db, unifiedExecution, providerTaskId);
+    recordCanvasTaskUsage(db, {
+      taskId,
+      executionAttemptId: executionAttempt?.id,
+      ...(unifiedExecution ? { providerSnapshot: unifiedExecution.providerSnapshotJson } : {}),
+    });
   } else {
     const submittedIntent = updateCanvasTaskGuarded(db, {
       taskId,
@@ -679,7 +916,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
 
     // 本地模式保留原有单次 POST 与恢复合同。
     try {
-      const submitted = await adapter.submit(context, signal);
+      const submitted = await adapter.submit(executionContext, signal);
       providerTaskId = submitted.providerTaskId;
       updateCanvasTaskGuarded(db, {
         taskId,
@@ -687,7 +924,11 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         guard,
         now,
       });
-      recordCanvasTaskUsage(db, { taskId, executionAttemptId: executionAttempt?.id });
+      recordCanvasTaskUsage(db, {
+        taskId,
+        executionAttemptId: executionAttempt?.id,
+        ...(unifiedExecution ? { providerSnapshot: unifiedExecution.providerSnapshotJson } : {}),
+      });
     } catch (error) {
       const evidence = canvasFailureEvidence(task, adapter, 'submit', error);
       const phase: CanvasTaskPhase = evidence.state === 'confirmed_not_created' ? 'failed' : 'uncertain';
@@ -727,7 +968,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       serverCancelAttempted = true;
       let remoteCancelled = false;
       try {
-        remoteCancelled = (await adapter.cancel({ ...context, providerTaskId }, signal)).remoteCancelled;
+        remoteCancelled = (await adapter.cancel({ ...executionContext, providerTaskId }, signal)).remoteCancelled;
       } catch {
         remoteCancelled = false;
       }
@@ -748,6 +989,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
           guard,
           now,
         });
+        if (unifiedExecution) recordCanvasUnifiedCanceled(db, unifiedExecution);
         return finish('cancelled');
       }
       // server 上游未确认取消时继续收取已受理结果，permit 只能由终态结算释放。
@@ -756,7 +998,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     attempts += 1;
     let outcome;
     try {
-      outcome = await adapter.poll({ ...context, providerTaskId }, signal);
+      outcome = await adapter.poll({ ...executionContext, providerTaskId }, signal);
     } catch (error) {
       // 查询失败不改写远端身份，继续按下一次轮询重试
       const evidence = canvasFailureEvidence(task, adapter, 'poll', error, providerTaskId);
@@ -785,7 +1027,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       if (options.execution && executionAttempt) {
         executionAttempt = await options.execution.facade.reconcile({
           attemptId: executionAttempt.id,
-          evidence: { kind: 'terminal', outcome: 'succeeded', actualCost: canvasTaskActualCost(db, task) },
+          evidence: { kind: 'terminal', outcome: 'succeeded', actualCost: canvasTaskActualCost(db, effectiveTask) },
           source: 'provider',
         });
       }
@@ -801,6 +1043,41 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
           evidence: { kind: 'terminal', outcome: 'failed', actualCost: null, errorCode: outcome.code },
           source: 'provider',
         });
+      }
+      if (unifiedExecution) {
+        let decision;
+        try {
+          decision = handleCanvasUnifiedExplicitFailure(db, task, {
+            evidence,
+            attemptId: executionAttempt?.id,
+            operationId: unifiedOperationId ?? undefined,
+            channelKey: unifiedExecution.channel.channelKey,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          recordCanvasUnifiedFinalFailure(db, unifiedExecution, {
+            code: 'fallback_decision_failed', message,
+          });
+          updateCanvasTaskGuarded(db, {
+            taskId,
+            patch: {
+              phase: 'failed', submissionState: 'terminal',
+              errorCode: 'fallback_decision_failed', errorMessage: message,
+              leaseOwner: null, leaseUntil: null,
+            },
+            guard,
+            now,
+          });
+          return finish('failed');
+        }
+        if (decision.outcome === 'next_channel') {
+          return requeueUnified(
+            `Image 2 ${decision.previousChannelKey} 通道明确失败，已切换到 ${decision.nextChannelKey}。`,
+          );
+        }
+        if (decision.outcome === 'canceled') {
+          return cancelBeforeSubmit();
+        }
       }
       updateCanvasTaskGuarded(db, {
         taskId,
@@ -823,7 +1100,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     let remoteCancelled = false;
     if (adapter.cancel) {
       try {
-        const cancelled = await adapter.cancel({ ...context, providerTaskId }, signal);
+        const cancelled = await adapter.cancel({ ...executionContext, providerTaskId }, signal);
         remoteCancelled = cancelled.remoteCancelled;
       } catch {
         remoteCancelled = false;
@@ -857,6 +1134,12 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     const republished = commitRecordedOutput(db, { task, outputAssetId: recordedOutput, guard, now });
     if (!republished.owned) return finish(getCanvasTask(db, taskId)?.phase ?? 'polling');
     if (republished.valid) {
+      if (unifiedExecution) {
+        recordCanvasUnifiedSucceeded(db, unifiedExecution, {
+          outputAssetId: recordedOutput,
+          remoteId: providerTaskId,
+        });
+      }
       return {
         taskId,
         phase: 'succeeded',
@@ -877,7 +1160,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
   // 5. 下载 → 校验 → 登记不可变产物
   let downloaded;
   try {
-    downloaded = await adapter.download({ ...context, providerTaskId }, signal);
+    downloaded = await adapter.download({ ...executionContext, providerTaskId }, signal);
   } catch (error) {
     const evidence = canvasFailureEvidence(task, adapter, 'download', error, providerTaskId);
     captureFailure('download', evidence.error?.code ?? 'download_failed');
@@ -893,6 +1176,9 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       guard,
       now,
     });
+    if (unifiedExecution) {
+      recordCanvasUnifiedDownloadFailure(db, unifiedExecution, evidence);
+    }
     return finish('download_failed');
   }
 
@@ -943,10 +1229,13 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         });
       },
     });
-    recordCanvasTaskUsage(db, { taskId, executionAttemptId: executionAttempt?.id });
+    recordCanvasTaskUsage(db, {
+      taskId,
+      executionAttemptId: executionAttempt?.id,
+      ...(unifiedExecution ? { providerSnapshot: unifiedExecution.providerSnapshotJson } : {}),
+    });
     if (options.execution && executionAttempt?.actualMinor === null) {
-      const latest = getCanvasTask(db, taskId);
-      const actualCost = latest ? canvasTaskActualCost(db, latest) : null;
+      const actualCost = canvasTaskActualCost(db, effectiveTask);
       if (actualCost) {
         executionAttempt = await options.execution.facade.settle({
           attemptId: executionAttempt.id,
@@ -986,6 +1275,9 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       guard,
       now,
     });
+    if (unifiedExecution) {
+      recordCanvasUnifiedDownloadFailure(db, unifiedExecution, evidence);
+    }
     return finish('download_failed');
   }
   // registerCanvasResultAsset atomically checked the guard, inserted the asset,
@@ -994,6 +1286,12 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
   if (!asset) {
     const latest = getCanvasTask(db, taskId);
     return finish(latest?.phase ?? 'polling');
+  }
+  if (unifiedExecution) {
+    recordCanvasUnifiedSucceeded(db, unifiedExecution, {
+      outputAssetId: asset.id,
+      remoteId: providerTaskId,
+    });
   }
   if (options.execution) {
     await options.execution.facade.captureRecovery({ taskId, module: 'canvas', stage: 'download' });

@@ -17,6 +17,10 @@ import {
 } from '@/lib/creative-canvas/mention-completion';
 import { nodeKindSpec } from '@/lib/creative-canvas/node-kinds';
 import { canvasModelOptions } from '@/lib/creative-canvas/model-options';
+import {
+  canvasParameterOptions,
+  updateCanvasParameter,
+} from '@/lib/creative-canvas/unified-image-options';
 import type { CanvasGenerationMode, CanvasNodeKind, CanvasReferenceSlot } from '@/lib/creative-canvas/types';
 import { canvasApi, canvasAssetUrl } from './api';
 import type { CanvasFlowNode, CanvasEditorController } from './editor-store';
@@ -909,20 +913,39 @@ export const GenerationNode = memo(function GenerationNode({
               .filter((parameter) => !['generationStage', 'draftAssetId', 'directResolution'].includes(parameter.key))
               .filter((parameter) => data.parameters?.generationStage !== 'final-from-draft' || ['resolution', 'outputFormat', 'watermark', 'returnLastFrame'].includes(parameter.key))
               .filter((parameter) => !parameter.modes || parameter.modes.includes(currentMode))
-              .map((parameter) => (
-              <div key={parameter.key} className="flex items-center gap-2">
+              .map((parameter) => {
+                const options = canvasParameterOptions(
+                  capability?.key,
+                  parameter.key,
+                  parameter.options,
+                  data.parameters ?? {},
+                );
+                const rawValue = String(
+                  parameter.key === 'resolution' && data.parameters?.generationStage === 'draft'
+                    ? '480p'
+                    : data.parameters?.[parameter.key] ?? parameter.default ?? '',
+                );
+                const selectedValue = options.includes(rawValue) ? rawValue : options[0] ?? rawValue;
+                return <div key={parameter.key} className="flex items-center gap-2">
                 <span className="text-[11px] text-ink-secondary">{parameter.label}</span>
                 {parameter.type === 'enum' ? (
                   <select
                     className="nodrag sc-canvas-select flex-1"
                     disabled={parameter.key === 'resolution' && ['draft', 'final-from-draft'].includes(String(data.parameters?.generationStage))}
-                    value={String(parameter.key === 'resolution' && data.parameters?.generationStage === 'draft' ? '480p' : data.parameters?.[parameter.key] ?? parameter.default ?? '')}
+                    value={selectedValue}
                     aria-label={parameter.label}
                     onChange={(event) => controller.updateNodeData(id, {
-                      parameters: { ...(data.parameters ?? {}), [parameter.key]: event.target.value },
+                      parameters: parameter.key === 'aspectRatio' || parameter.key === 'resolution'
+                        ? updateCanvasParameter(
+                          capability?.key,
+                          data.parameters ?? {},
+                          parameter.key,
+                          event.target.value,
+                        )
+                        : { ...(data.parameters ?? {}), [parameter.key]: event.target.value },
                     })}
                   >
-                    {(parameter.options ?? []).map((option) => (
+                    {options.map((option) => (
                       <option key={option} value={option}>{option === 'gateway-default' ? '网关默认（待验证）' : option === 'adaptive' ? '自动' : option === '4k' ? '4K' : option}</option>
                     ))}
                   </select>
@@ -978,8 +1001,8 @@ export const GenerationNode = memo(function GenerationNode({
                     }}
                   />
                 )}
-              </div>
-            ))}
+              </div>;
+              })}
           </div>
         ) : null}
 
