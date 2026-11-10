@@ -284,13 +284,14 @@ async function runBrowser(name, launcher, credentials) {
       const congestionInput = page.getByLabel('Image 2 拥堵分流阈值（秒）', { exact: true });
       await congestionInput.waitFor({ timeout: 30_000 });
       assert.equal(await congestionInput.inputValue(), String(beforeState.unifiedImageCongestion.imageCongestionThresholdSec));
-      await congestionInput.fill('7');
+      const nextCongestion = beforeState.unifiedImageCongestion.imageCongestionThresholdSec === 7 ? 8 : 7;
+      await congestionInput.fill(String(nextCongestion));
       await page.getByRole('button', { name: '保存阈值', exact: true }).click();
-      await page.getByText(/Image 2 拥堵分流阈值已保存为 7 秒/).waitFor({ timeout: 60_000 });
+      await page.getByText(new RegExp(`Image 2 拥堵分流阈值已保存为 ${nextCongestion} 秒`)).waitFor({ timeout: 60_000 });
       const settingsState = (await jsonRequest(credentials.adminApi, '/api/team/pools', {}, 200)).body;
       assert.equal(
         settingsState.unifiedImageCongestion.imageCongestionThresholdSec,
-        7,
+        nextCongestion,
         '管理员修改的 Image 2 拥堵阈值必须持久化',
       );
       run.assertions.push('管理员在「模型与名额」保存 Image 2 拥堵阈值，服务端持久生效');
