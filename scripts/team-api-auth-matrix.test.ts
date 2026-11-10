@@ -49,6 +49,7 @@ Object.assign(process.env, {
 const { ensureServerDeploymentMarker } = await import('../lib/team-service/config.ts');
 const { getDb, closeDb } = await import('../lib/db.ts');
 const { checkTeamServiceReadiness } = await import('../lib/team-service/readiness.ts');
+const { checkExecutionReadiness } = await import('../lib/media-core/execution/readiness.ts');
 const { schemaUpgradeRuntimePaths } = await import('../lib/schema-upgrade/runtime.ts');
 const { initializeFirstAdministrator } = await import('../lib/team-service/auth/local-admin.ts');
 const { createTeamAuthService, BoundedKdfScheduler } = await import('../lib/team-service/auth/service.ts');
@@ -62,6 +63,7 @@ ensureServerDeploymentMarker({
 });
 const db = getDb();
 assert.equal((await checkTeamServiceReadiness({ db, ...schemaUpgradeRuntimePaths(fixtureRoot) })).available, true);
+assert.equal((await checkExecutionReadiness({ db, ...schemaUpgradeRuntimePaths(fixtureRoot) })).available, true);
 const kdf = new BoundedKdfScheduler({ maxConcurrent: 1, maxQueue: 8 });
 const passwordParams = { N: 1024, r: 8, p: 1 };
 const initialized = await initializeFirstAdministrator({
@@ -165,6 +167,7 @@ const logsRoute = await import('../app/api/projects/[id]/logs/route.ts');
 const fontFavoritesRoute = await import('../app/api/font-favorites/route.ts');
 const teamModelsRoute = await import('../app/api/team/models/route.ts');
 const teamReconcileRoute = await import('../app/api/team/reconcile/route.ts');
+const channelHealthRoute = await import('../app/api/team/channel-health/route.ts');
 const canvasCopiesRoute = await import('../app/api/canvas/[id]/copies/route.ts');
 const scriptGenerationRoute = await import('../app/api/projects/[id]/script-generation/route.ts');
 const scriptCurrentRoute = await import('../app/api/projects/[id]/script-studio/scripts/[scriptId]/current/route.ts');
@@ -373,6 +376,29 @@ try {
     ))).status,
     403,
   );
+  assert.equal((await channelHealthRoute.GET(get(
+    'https://studio.example.test/api/team/channel-health', userA.cookie,
+  ))).status, 403, 'channel health is administrator-only');
+  const health = await channelHealthRoute.GET(get(
+    'https://studio.example.test/api/team/channel-health', admin.cookie,
+  ));
+  const healthText = await health.text();
+  assert.equal(health.status, 200, healthText);
+  assert.equal(healthText.includes('apiKey'), false);
+  assert.equal(healthText.includes('baseUrl'), false);
+  const healthBody = JSON.parse(healthText) as {
+    items: Array<{ healthKey: string; version: number; state: string }>;
+  };
+  assert.equal(healthBody.items.length, 2);
+  assert.equal((await channelHealthRoute.POST(write(
+    'https://studio.example.test/api/team/channel-health', userA.cookie,
+    { action: 'clear', healthKey: healthBody.items[0].healthKey, expectedVersion: healthBody.items[0].version },
+  ))).status, 403);
+  const cleared = await channelHealthRoute.POST(write(
+    'https://studio.example.test/api/team/channel-health', admin.cookie,
+    { action: 'clear', healthKey: healthBody.items[0].healthKey, expectedVersion: healthBody.items[0].version },
+  ));
+  assert.equal(cleared.status, 200, await cleared.text());
 
   const failures: string[] = [];
   const resolveRoute = await import('../app/api/team/errors/[id]/resolve/route.ts');
