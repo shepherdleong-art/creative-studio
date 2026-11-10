@@ -44,6 +44,7 @@ import {
   submitLegacyMediaOperation,
 } from './legacy-media-execution.ts';
 import type { ExecutionReceipt } from './media-core/execution/context.ts';
+import { submissionEmployeeCopy } from './media-core/submission-evidence.ts';
 
 export interface QueueOptions {
   /** Limit a local rework run to its immutable job. */
@@ -672,7 +673,11 @@ async function runAuthorizedJob(
               db.prepare(
                 `UPDATE jobs SET status = 'failed', errorMessage = ?, providerStatus = 'download_failed', remoteImageUrl = ?
                  WHERE id = ? AND status = 'running'`
-              ).run(`远端图片已生成但本地下载失败。远端URL: ${pollResult.imageUrl}`, pollResult.imageUrl, job.id);
+              ).run(
+                submissionEmployeeCopy('terminal_succeeded', 'download_failed').detail,
+                pollResult.imageUrl,
+                job.id,
+              );
               return; // Don't retry — the money was already spent
             }
           }
@@ -810,7 +815,13 @@ async function runAuthorizedJob(
           db.prepare(
             `UPDATE jobs SET status = ?, errorMessage = ?, providerStatus = ?, remoteImageUrl = ?, finishedAt = datetime('now')
              WHERE id = ? AND status = 'running'`
-          ).run(failure.status, failure.errorMessage, failure.providerStatus, submitResult.immediateImageUrl, job.id);
+          ).run(
+            failure.status,
+            submissionEmployeeCopy('terminal_succeeded', 'download_failed').detail,
+            failure.providerStatus,
+            submitResult.immediateImageUrl,
+            job.id,
+          );
           return;
         }
         result = {
@@ -884,7 +895,13 @@ async function runAuthorizedJob(
               db.prepare(
                 `UPDATE jobs SET status = ?, errorMessage = ?, providerStatus = ?, remoteImageUrl = ?, finishedAt = datetime('now')
                  WHERE id = ? AND status = 'running'`
-              ).run(failure.status, failure.errorMessage, failure.providerStatus, pollResult.imageUrl, job.id);
+              ).run(
+                failure.status,
+                submissionEmployeeCopy('terminal_succeeded', 'download_failed').detail,
+                failure.providerStatus,
+                pollResult.imageUrl,
+                job.id,
+              );
               return; // Don't retry — the money was already spent
             }
           }
@@ -1031,8 +1048,8 @@ async function runAuthorizedJob(
         const response = await fetch(result.remoteImageUrl, { signal: reqAbort.signal });
         if (!response.ok) throw new Error(`图片下载失败（HTTP ${response.status}）`);
         result.imageBuffer = Buffer.from(await response.arrayBuffer());
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+      } catch {
+        const message = submissionEmployeeCopy('terminal_succeeded', 'download_failed').detail;
         await captureLegacyMediaFailure({ module: 'image', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision), stage: 'download', errorCode: 'result_download_failed' });
         db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'download_failed',
           remoteImageUrl = ?, errorMessage = ?, finishedAt = datetime('now') WHERE id = ? AND status = 'running'`)
@@ -1250,7 +1267,10 @@ async function runAuthorizedJob(
       const submitted = db.prepare('SELECT providerTaskId FROM jobs WHERE id = ?').get(job.id) as { providerTaskId: string | null } | undefined;
       if (submitted?.providerTaskId?.trim()) {
         db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'needs_check', errorMessage = ?, finishedAt = datetime('now')
-          WHERE id = ? AND status = 'running'`).run(`${sanitizeErrorMessage(errorMessage)}。已有远端任务，请续查，不会重新提交。`, job.id);
+          WHERE id = ? AND status = 'running'`).run(
+          submissionEmployeeCopy('unknown', 'remote_query_failed').detail,
+          job.id,
+        );
         logError('图片轮询异常，保留远端任务并进入续查，不重新提交');
         return;
       }

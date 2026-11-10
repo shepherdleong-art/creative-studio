@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import sharp from 'sharp';
 import type { EditImageRequest, EditImageResult } from './openai-compatible.ts';
 import { SEEDREAM_5_PRO, seedreamImageEndpoint, seedreamImageSize } from '../seedream-image.ts';
+import { providerHttpError } from '../media-core/submission-evidence.ts';
 
 export interface ArkImageInput { absolutePath: string; mimeType: string }
 
@@ -47,7 +48,7 @@ export async function editImageArk(
     method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(body), signal: requestSignal,
   });
-  if (!response.ok) throw new Error(`方舟图片生成失败（HTTP ${response.status}）`);
+  if (!response.ok) throw providerHttpError(response.status, `方舟图片生成失败（HTTP ${response.status}）`);
   const data = await response.json() as { data?: Array<{ url?: string; b64_json?: string }> };
   const result = data.data?.[0];
   let imageBuffer: Buffer;

@@ -12,6 +12,7 @@
 
 import type Database from 'better-sqlite3';
 import type { ExecutionFacade } from '../media-core/execution/context.ts';
+import { submissionEmployeeCopy } from '../media-core/submission-evidence.ts';
 import { CanvasError } from './errors.ts';
 import {
   getCanvasTask,
@@ -117,7 +118,7 @@ export function recoverCanvasTasks(
       slotHeld: false,
       submissionState: 'maybe_sent',
       errorCode: task.errorCode ?? 'submission_unknown',
-      errorMessage: task.errorMessage ?? '进程在提交过程中中断，远端是否已创建任务不明，请核查后再继续。',
+        errorMessage: submissionEmployeeCopy('unknown', 'submit_uncertain').detail,
       leaseOwner: null,
       leaseUntil: null,
       updatedAt: at,
@@ -168,7 +169,7 @@ export function reconcileCanvasTaskNotCreated(
     slotHeld: false,
     submissionState: 'terminal',
     errorCode: 'confirmed_not_created',
-    errorMessage: '已核查：远端没有创建任务。',
+    errorMessage: submissionEmployeeCopy('confirmed_not_created', 'submit_rejected').detail,
     updatedAt: at,
   });
   releaseNodeActiveTask(db, task);

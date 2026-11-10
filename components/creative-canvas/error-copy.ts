@@ -16,7 +16,7 @@ const CODE_COPY: Record<string, string> = {
   canvas_unavailable: '画布暂时不可用，请稍后重试。',
   runtime_unavailable: '当前执行器不可用：可以继续编辑画布，但无法启动生成任务。',
   capability_unavailable: '所选模型能力不可用，请检查配置或更换模型。',
-  submission_uncertain: '任务提交状态不确定，请在任务面板核查后再操作。',
+  submission_uncertain: '结果确认中。后台会保留原任务并继续核对，不会自动重复提交。',
   // 图定义校验（lib/creative-canvas/graph.ts）
   invalid_graph: '画布数据不合法。',
   invalid_node: '节点数据不合法。',

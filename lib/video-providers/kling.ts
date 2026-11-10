@@ -1,6 +1,7 @@
 import fs from 'fs';
 import crypto from 'crypto';
 import { videoDurationError } from '../video-duration.ts';
+import { providerHttpError } from '../media-core/submission-evidence.ts';
 import type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';
 
 /**
@@ -113,7 +114,7 @@ export const klingAdapter: VideoProviderAdapter = {
 
       if (!res.ok) {
         const errorText = await res.text();
-        throw new Error(`Kling submit error ${res.status}: ${errorText.slice(0, 500)}`);
+        throw providerHttpError(res.status, `Kling submit error ${res.status}: ${errorText.slice(0, 500)}`);
       }
 
       const data = (await res.json()) as KlingTaskResponse;

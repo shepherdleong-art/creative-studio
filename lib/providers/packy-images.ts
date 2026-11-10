@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { imageModelSupportsQuality } from '../image-model-capabilities.ts';
+import { providerHttpError } from '../media-core/submission-evidence.ts';
 
 export interface PackyEditImageRequest {
   model: string;
@@ -128,7 +129,7 @@ export async function editImagePacky(
   }
 
   if (!res.ok) {
-    throw new Error(`Packy API error ${res.status}: ${extractPackyError(data) || text.slice(0, 500)}`);
+    throw providerHttpError(res.status, `Packy API error ${res.status}: ${extractPackyError(data) || text.slice(0, 500)}`);
   }
 
   const first = data.data?.[0];

@@ -44,6 +44,12 @@ import {
 } from './tasks.ts';
 import { canvasTaskActualCost, canvasTaskCostQuote, recordCanvasTaskUsage } from './usage.ts';
 import { isTerminalTaskPhase, type CanvasGenerationMode, type CanvasTaskPhase } from './types.ts';
+import {
+  classifyCanvasSubmissionFailure,
+  classifySubmissionOutcome,
+  type SubmissionEvidence,
+  type SubmissionStage,
+} from '../media-core/submission-evidence.ts';
 
 export interface CanvasTaskExecution {
   facade: ExecutionFacade;
@@ -236,6 +242,44 @@ function executionWaitMessage(reason: string): string {
     cost_unknown: '上一笔费用仍待核查，暂不能开始新的付费生成。',
   };
   return messages[reason] ?? '等待统一执行准入，尚未提交。';
+}
+
+function canvasFailureEvidence(
+  task: CanvasTaskRecord,
+  adapter: CanvasTaskAdapter,
+  stage: SubmissionStage,
+  error: unknown,
+  remoteId?: string | null,
+): SubmissionEvidence {
+  return classifyCanvasSubmissionFailure({
+    taskId: task.id,
+    businessAttemptNo: 1,
+    adapterId: adapter.kind,
+    stage,
+    source: stage === 'download' ? 'persisted' : 'adapter',
+    error,
+    remoteId,
+  });
+}
+
+function canvasTerminalEvidence(
+  task: CanvasTaskRecord,
+  adapter: CanvasTaskAdapter,
+  outcome: 'terminal_failed' | 'terminal_succeeded',
+  remoteId: string | null,
+  errorCode?: string | null,
+): SubmissionEvidence {
+  return classifySubmissionOutcome({
+    entry: 'canvas',
+    taskId: task.id,
+    businessAttemptNo: 1,
+    adapterId: adapter.kind,
+    stage: 'poll',
+    source: 'provider',
+    outcome,
+    remoteId,
+    errorCode,
+  });
 }
 
 function assetAbsolutePath(db: Database.Database, assetId: string, storageRoot: string): string {
@@ -549,26 +593,33 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         }
         try {
           const submitted = await adapter.submit(context, signal);
+          if (!submitted.providerTaskId && !submitted.terminalState) {
+            throw new CanvasAdapterError('submit', '供应商没有返回任务身份，提交结果不明。', {
+              uncertain: true,
+              code: 'submit_receipt_missing',
+            });
+          }
           submittedProviderTaskId = submitted.providerTaskId;
           return {
             remoteId: submitted.providerTaskId,
             ...(submitted.terminalState ? { terminalState: submitted.terminalState } : {}),
           };
         } catch (error) {
-          const uncertain = (error instanceof CanvasAdapterError && error.uncertain) || error instanceof TypeError;
-          if (uncertain) throw error;
-          const code = error instanceof CanvasAdapterError ? error.code : 'submit_failed';
-          submitFailure = { code, message: error instanceof Error ? error.message : String(error) };
-          return { terminalState: 'not_created', errorCode: code.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 200) };
+          const evidence = canvasFailureEvidence(task, adapter, 'submit', error);
+          if (evidence.state !== 'confirmed_not_created') throw error;
+          const code = evidence.error?.code ?? 'submit_rejected';
+          submitFailure = { code, message: evidence.employee.detail };
+          return { terminalState: 'not_created', errorCode: code };
         }
       });
     } catch (error) {
+      const evidence = canvasFailureEvidence(task, adapter, 'submit', error);
       updateCanvasTaskGuarded(db, {
         taskId,
         patch: {
           phase: 'uncertain', submissionState: 'maybe_sent',
-          errorCode: error instanceof CanvasAdapterError ? error.code : 'submit_uncertain',
-          errorMessage: error instanceof Error ? error.message : String(error),
+          errorCode: evidence.error?.code ?? 'submit_uncertain',
+          errorMessage: evidence.employee.detail,
           leaseOwner: null, leaseUntil: null,
         },
         guard,
@@ -638,16 +689,15 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       });
       recordCanvasTaskUsage(db, { taskId, executionAttemptId: executionAttempt?.id });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const uncertain = (error instanceof CanvasAdapterError && error.uncertain) || error instanceof TypeError;
-      const phase: CanvasTaskPhase = uncertain ? 'uncertain' : 'failed';
+      const evidence = canvasFailureEvidence(task, adapter, 'submit', error);
+      const phase: CanvasTaskPhase = evidence.state === 'confirmed_not_created' ? 'failed' : 'uncertain';
       updateCanvasTaskGuarded(db, {
         taskId,
         patch: {
           phase,
-          submissionState: uncertain ? 'maybe_sent' : 'terminal',
-          errorCode: error instanceof CanvasAdapterError ? error.code : (uncertain ? 'submit_uncertain' : 'submit_failed'),
-          errorMessage: message,
+          submissionState: phase === 'uncertain' ? 'maybe_sent' : 'terminal',
+          errorCode: evidence.error?.code ?? (phase === 'uncertain' ? 'submit_uncertain' : 'submit_rejected'),
+          errorMessage: evidence.employee.detail,
           leaseOwner: null,
           leaseUntil: null,
         },
@@ -709,7 +759,8 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       outcome = await adapter.poll({ ...context, providerTaskId }, signal);
     } catch (error) {
       // 查询失败不改写远端身份，继续按下一次轮询重试
-      const pollErrorCode = error instanceof CanvasAdapterError ? error.code : 'poll_failed';
+      const evidence = canvasFailureEvidence(task, adapter, 'poll', error, providerTaskId);
+      const pollErrorCode = evidence.error?.code ?? 'poll_failed';
       captureFailure('remote_poll', pollErrorCode);
       updateCanvasTaskGuarded(db, {
         taskId,
@@ -717,7 +768,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
           lastPolledAt: now().toISOString(),
           pollCount: previousPollCount + attempts,
           errorCode: pollErrorCode,
-          errorMessage: error instanceof Error ? error.message : String(error),
+          errorMessage: evidence.employee.detail,
         },
         guard,
         now,
@@ -743,6 +794,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     }
     if (outcome.status === 'failed') {
       captureFailure('remote_poll', outcome.code ?? 'provider_failed');
+      const evidence = canvasTerminalEvidence(task, adapter, 'terminal_failed', providerTaskId, outcome.code);
       if (options.execution && executionAttempt) {
         executionAttempt = await options.execution.facade.reconcile({
           attemptId: executionAttempt.id,
@@ -755,8 +807,8 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         patch: {
           phase: 'failed',
           submissionState: 'terminal',
-          errorCode: outcome.code ?? 'provider_failed',
-          errorMessage: outcome.message,
+          errorCode: evidence.error?.code ?? 'provider_failed',
+          errorMessage: evidence.employee.detail,
           leaseOwner: null,
           leaseUntil: null,
         },
@@ -827,14 +879,14 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
   try {
     downloaded = await adapter.download({ ...context, providerTaskId }, signal);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    captureFailure('download', error instanceof CanvasAdapterError ? error.code : 'download_failed');
+    const evidence = canvasFailureEvidence(task, adapter, 'download', error, providerTaskId);
+    captureFailure('download', evidence.error?.code ?? 'download_failed');
     updateCanvasTaskGuarded(db, {
       taskId,
       patch: {
         phase: 'download_failed',
-        errorCode: error instanceof CanvasAdapterError ? error.code : 'download_failed',
-        errorMessage: message,
+        errorCode: evidence.error?.code ?? 'download_failed',
+        errorMessage: evidence.employee.detail,
         leaseOwner: null,
         leaseUntil: null,
       },
@@ -903,7 +955,6 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       }
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     if (getCanvasTask(db, taskId)?.cancelRequestedAt) {
       if (executionAttempt && options.execution) {
         await options.execution.facade.reconcile({
@@ -921,13 +972,14 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       });
       return finish('cancelled');
     }
+    const evidence = canvasFailureEvidence(task, adapter, 'download', error, providerTaskId);
     captureFailure('storage', 'output_validation_failed');
     updateCanvasTaskGuarded(db, {
       taskId,
       patch: {
         phase: 'download_failed',
-        errorCode: 'output_validation_failed',
-        errorMessage: message,
+        errorCode: evidence.error?.code ?? 'output_validation_failed',
+        errorMessage: evidence.employee.detail,
         leaseOwner: null,
         leaseUntil: null,
       },

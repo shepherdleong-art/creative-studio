@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { providerHttpError } from '../media-core/submission-evidence.ts';
 
 export interface EditImageRequest {
   model: string;
@@ -180,7 +181,7 @@ export async function submitGeekAITask(
 
     if (!res.ok) {
       const errorText = await res.text();
-      throw new Error(`GeekAI submit error ${res.status}: ${errorText.slice(0, 500)}`);
+      throw providerHttpError(res.status, `GeekAI submit error ${res.status}: ${errorText.slice(0, 500)}`);
     }
 
     const data = (await res.json()) as GeekAIResponse;

@@ -107,7 +107,7 @@ const SHOT_STATE_LABELS: Record<ShotResultState, string> = {
   empty: '未生成',
   queued: '排队中',
   generating: '生成中',
-  checking: '等待补抓结果',
+  checking: '结果确认中',
   failed: '失败',
   succeeded: '未标记',
 };

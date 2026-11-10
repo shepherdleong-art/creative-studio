@@ -477,10 +477,10 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                             <div className="h-7 w-7 animate-spin rounded-full border-2 border-accent border-t-transparent" />
                           )}
                           <div className="text-xs font-medium text-ink-secondary">
-                            {kind === 'queued' ? '排队中' : kind === 'checking' ? '待确认' : '生成中'}
+                            {kind === 'queued' ? '排队中' : kind === 'checking' ? '结果确认中' : '生成中'}
                           </div>
                           <div className="text-[10px] text-ink-tertiary">
-                            {kind === 'queued' ? '排队中，前面的任务完成后自动开始' : kind === 'checking' ? '等待补抓结果' : '图片完成后会自动出现'}
+                            {kind === 'queued' ? '排队中，前面的任务完成后自动开始' : kind === 'checking' ? '正在核对供应商结果，不会自动重复提交' : '图片完成后会自动出现'}
                           </div>
                         </div>
                       )}

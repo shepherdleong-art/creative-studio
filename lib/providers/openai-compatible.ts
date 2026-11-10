@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { providerHttpError } from '../media-core/submission-evidence.ts';
 
 export interface Provider {
   id: string;
@@ -116,7 +117,7 @@ export async function editImage(
 
   if (!response.ok) {
     const errorBody = await response.text();
-    throw new Error(`API error ${response.status}: ${errorBody}`);
+    throw providerHttpError(response.status, `API error ${response.status}: ${errorBody}`);
   }
 
   const data = (await response.json()) as {

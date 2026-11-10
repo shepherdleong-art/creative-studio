@@ -208,7 +208,7 @@ const STATUS_TEXT: Record<string, string> = {
   failed: '失败',
   blocked: '上游未完成',
   cancelled: '已停止',
-  uncertain: '待核查',
+  uncertain: '结果确认中',
   resume_pending: '待继续',
 };
 
