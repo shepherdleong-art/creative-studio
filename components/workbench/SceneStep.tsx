@@ -267,6 +267,21 @@ export default function SceneStep({
     }
   };
 
+  const cancelSelectedJob = async () => {
+    if (!selectedJob || !selectedJob.unifiedModel) return;
+    const response = await fetch(`/api/jobs/${encodeURIComponent(selectedJob.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'cancel' }),
+    });
+    const payload = await response.json().catch(() => ({})) as { error?: string };
+    if (!response.ok) {
+      window.alert(payload.error || '停止任务失败');
+      return;
+    }
+    await loadProject();
+  };
+
   /**
    * 失败候选的「重试」：统一 Image 2 与换供应商都新建一版，避免在原任务上
    * 重置通道次数；已有远端身份的确认中任务仍然只续查。
@@ -553,6 +568,13 @@ export default function SceneStep({
               <button type="button" className="cap" disabled={!canRegenerate} onClick={openRegen}>
                 <Icon name="retry" size={14} />重新生成
               </button>
+              {selectedJob?.unifiedModel
+                && ['pending', 'running', 'retrying', 'deferred', 'needs_check'].includes(selectedJob.status)
+                && !selectedJob.cancelRequestedAt ? (
+                  <button type="button" className="cap" onClick={() => void cancelSelectedJob()}>
+                    停止这条任务
+                  </button>
+                ) : null}
               <button
                 type="button"
                 className="cap"

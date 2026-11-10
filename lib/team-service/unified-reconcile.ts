@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { sha256Canonical } from '../canonical-json.ts';
 import type Database from 'better-sqlite3';
 import type { AttemptRecord, ExecutionFacade } from '../media-core/execution/context.ts';
 import { readAttempt, readOperation } from '../media-core/execution/records.ts';
@@ -271,19 +272,6 @@ interface ClaimedAction {
   attempt: AttemptRecord;
   version: number;
   before: Record<string, unknown>;
-}
-
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  return `{${Object.entries(value as Record<string, unknown>)
-    .filter(([, item]) => item !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`;
-}
-
-function hash(value: unknown): string {
-  return createHash('sha256').update(canonical(value)).digest('hex');
 }
 
 function parseObject(value: unknown): Record<string, unknown> {
@@ -703,7 +691,7 @@ function safeResultRef(value: unknown): string | null {
 }
 
 function actionInputHash(input: UnifiedReconcileActionInput): string {
-  return hash({
+  return sha256Canonical({
     mediaTaskId: input.mediaTaskId,
     channelKey: input.channelKey,
     attemptId: input.attemptId,
@@ -757,14 +745,15 @@ function updateBusinessAfterAccepted(
   if (task.module === 'image') {
     const estimatedCost = unifiedImageAttemptCostMinor(db, task.taskId) / 100;
     if (canceled) {
+      const canContinueSettlement = Boolean(remoteId || resultRef);
       db.prepare(`UPDATE jobs SET status = ?, providerTaskId = COALESCE(?, providerTaskId),
         providerStatus = ?, remoteImageUrl = COALESCE(?, remoteImageUrl), estimatedCost = ?,
         errorMessage = '管理员已核对远端结果；任务已取消，仅保留收尾记录。',
         finishedAt = CASE WHEN ? IS NULL THEN NULL ELSE COALESCE(finishedAt, ?) END
         WHERE id = ?`).run(
-        resultRef ? 'needs_check' : 'canceled',
+        canContinueSettlement ? 'needs_check' : 'canceled',
         remoteId, resultRef ? 'download_failed' : 'accepted', resultRef, estimatedCost,
-        resultRef, at, task.taskId,
+        canContinueSettlement ? null : at, at, task.taskId,
       );
     } else {
       db.prepare(`UPDATE jobs SET status = 'needs_check', providerTaskId = COALESCE(?, providerTaskId),
@@ -779,15 +768,16 @@ function updateBusinessAfterAccepted(
   }
   if (task.module === 'video') {
     if (canceled) {
+      const canContinueSettlement = Boolean(remoteId || resultRef);
       db.prepare(`UPDATE video_jobs SET status = ?, providerTaskId = COALESCE(?, providerTaskId),
         providerStatus = ?, remoteVideoUrl = COALESCE(?, remoteVideoUrl),
         errorMessage = '管理员已核对远端结果；任务已取消，仅保留收尾记录。',
         finishedAt = CASE WHEN ? IS NULL THEN COALESCE(finishedAt, datetime('now')) ELSE NULL END
         WHERE id = ?`)
         .run(
-          resultRef ? 'needs_check' : 'canceled',
+          canContinueSettlement ? 'needs_check' : 'canceled',
           remoteId, resultRef ? 'download_failed' : 'accepted', resultRef,
-          resultRef, task.taskId,
+          canContinueSettlement ? null : new Date().toISOString(), task.taskId,
         );
     } else {
       db.prepare(`UPDATE video_jobs SET status = 'needs_check', providerTaskId = COALESCE(?, providerTaskId),
@@ -800,9 +790,17 @@ function updateBusinessAfterAccepted(
   }
   if (task.module === 'canvas') {
     if (canceled) {
-      db.prepare(`UPDATE creative_canvas_tasks SET phase = 'cancelled', providerTaskId = COALESCE(?, providerTaskId),
-        submissionState = 'accepted', errorMessage = '管理员已核对远端结果；任务已取消，仅保留收尾记录。'
-        WHERE id = ?`).run(remoteId, task.taskId);
+      if (remoteId) {
+        db.prepare(`UPDATE creative_canvas_tasks SET phase = 'polling', providerTaskId = COALESCE(?, providerTaskId),
+          submissionState = 'accepted', errorCode = NULL,
+          errorMessage = '管理员已补齐远端任务；任务保持已停止，后台只收尾原结果，不推进下游。',
+          leaseOwner = NULL, leaseUntil = NULL WHERE id = ?`).run(remoteId, task.taskId);
+      } else {
+        db.prepare(`UPDATE creative_canvas_tasks SET phase = 'cancelled', submissionState = 'terminal',
+          errorCode = 'remote_id_required',
+          errorMessage = '任务已取消；画布补下载需要远端任务 ID，请补齐后再继续收尾。' WHERE id = ?`)
+          .run(task.taskId);
+      }
     } else {
       db.prepare(`UPDATE creative_canvas_tasks SET phase = 'polling', submissionState = 'accepted',
         providerTaskId = COALESCE(?, providerTaskId), errorCode = NULL,

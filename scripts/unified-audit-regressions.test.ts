@@ -13,7 +13,11 @@ const {
   UNIFIED_KLING3_ANCHOR_ID,
   UNIFIED_KLING3_CHANNELS,
 } = await import('../lib/media-core/unified-media/catalog.ts');
-const { migrateLegacyUnifiedImageProjects } = await import('../lib/media-core/unified-media/project-migration.ts');
+const {
+  migrateLegacyUnifiedImageProjects,
+  requiresLegacyImage2Upgrade,
+  LEGACY_IMAGE2_UPGRADE_MESSAGE,
+} = await import('../lib/media-core/unified-media/project-migration.ts');
 const { projectTeamImageModels } = await import('../lib/media-core/unified-media/model-list.ts');
 const { projectTeamVideoModels } = await import('../lib/media-core/unified-media/video-model-list.ts');
 
@@ -73,6 +77,17 @@ assert.deepEqual(
   { providerId: qiniu.providerId, model: 'seedream-other' },
 );
 assert.equal(migrateLegacyUnifiedImageProjects(db), 0, 'migration is idempotent');
+assert.equal(requiresLegacyImage2Upgrade({
+  projectProviderId: qiniu.providerId,
+  projectModel: qiniu.model,
+  requestedProviderModel: qiniu.model,
+}), true, 'unmapped legacy Image2 projects must surface an actionable upgrade path');
+assert.match(LEGACY_IMAGE2_UPGRADE_MESSAGE, /新建项目|管理员/);
+assert.equal(requiresLegacyImage2Upgrade({
+  projectProviderId: UNIFIED_IMAGE_ANCHOR_ID,
+  projectModel: UNIFIED_IMAGE_MODEL_KEY,
+  requestedProviderModel: UNIFIED_IMAGE_MODEL_KEY,
+}), false);
 
 const imageRows = [
   {

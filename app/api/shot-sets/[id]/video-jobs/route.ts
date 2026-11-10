@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
-import { toStorageImageUrl, toStorageVideoUrl } from '@/lib/storage-url';
 import { createVideoJobsForShot, parseVideoJobCreationItem } from '@/lib/video-job-create';
 import { resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { readRuntimeConfig } from '@/lib/team-service/config';
 import { productionParamsFor } from '@/lib/team-service/production-defaults';
+import { videoJobForClient } from '@/lib/client-media-dto';
 
 
 async function __teamRoutePOST(
@@ -74,11 +74,9 @@ async function __teamRouteGET(
     // 播放与下载按登记路径生成 URL，filename 仅表示文件名。
     // 旧任务 displayName 为 NULL，由共享 helper 确定性派生，不回写数据库。
     const displayNames = resolveVideoJobDisplayNames(db, jobs.map((job) => String(job.id)));
-    const jobsWithPosters = jobs.map(({ posterImagePath, ...job }) => ({
-      ...job,
+    const jobsWithPosters = jobs.map((job) => ({
+      ...videoJobForClient(job),
       displayName: displayNames.get(String(job.id)) ?? null,
-      posterImageUrl: toStorageImageUrl(posterImagePath),
-      videoUrl: toStorageVideoUrl(typeof job.localVideoPath === 'string' ? job.localVideoPath : null),
     }));
 
     return NextResponse.json({ jobs: jobsWithPosters });

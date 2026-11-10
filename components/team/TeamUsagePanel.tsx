@@ -272,7 +272,11 @@ export default function TeamUsagePanel() {
   if (selectedMember) exportParams.set('actorUserId', selectedMember);
   const showingTeam = Boolean(selectedMember) || data?.scope === 'team';
   const legacyAttemptIds = new Set((data?.legacyAttempts ?? []).map((item) => item.attemptId));
-  const unifiedChannelItems = (data?.items ?? []).filter((item) => !legacyAttemptIds.has(item.attemptId));
+  const unmappedAttemptIds = new Set((data?.unmappedAttempts ?? []).map((item) => item.attemptId));
+  const unifiedChannelItems = data?.canViewTeam
+    ? (data.items ?? []).filter((item) =>
+      !legacyAttemptIds.has(item.attemptId) && !unmappedAttemptIds.has(item.attemptId))
+    : [];
 
   return <div className="min-w-0 space-y-4" aria-label="费用与用量">
     {teamRole ? <PageToolbar
@@ -328,7 +332,9 @@ export default function TeamUsagePanel() {
       <TaskUsageTable tasks={data.tasks} canViewTeam={data.canViewTeam} />
       <ModelAnalysis models={data.models} trend={data.trend} totals={data.totals} />
       {data.canViewTeam && data.scope === 'team' && !selectedMember && <MemberTable members={data.members} onOpen={id => { setSelectedMember(id); setData(null); }} />}
-      <UsageDetails items={unifiedChannelItems} canViewTeam={data.canViewTeam} title="通道调用明细" note="每次真实通道提交一条 · 自动兜底会有多条；不等于制作任务数" />
+      {data.canViewTeam && unifiedChannelItems.length > 0
+        ? <UsageDetails items={unifiedChannelItems} canViewTeam title="通道调用明细" note="每次真实通道提交一条 · 自动兜底会有多条；不等于制作任务数" />
+        : null}
       {data.legacyAttempts.length > 0 ? <UsageDetails items={data.legacyAttempts} canViewTeam={data.canViewTeam} title="非统一模型调用" note="仍在使用的其他模型调用保留真实模型身份，不与统一模型任务混算" /> : null}
       {data.canViewTeam && data.unmappedAttempts.length > 0 ? <UsageDetails items={data.unmappedAttempts} canViewTeam={data.canViewTeam} title="待映射执行记录" note="带有统一任务关联但父任务不可用；保留原始身份并单列，不猜测归属" /> : null}
       <p className="flex flex-wrap items-center gap-2 text-[12px] leading-5 text-ink-tertiary"><Tag tone="idle">口径</Tag>{data.costNotice} 制作任务 {data.counts.generationTasks} 个，通道调用 {data.counts.channelCalls} 次，非统一模型 {data.counts.legacyAttempts} 条，待映射 {data.counts.unmappedAttempts} 条。本地 Agent 不计入；未定价与不确定费用不显示为 0，也不代表供应商最终账单。</p>

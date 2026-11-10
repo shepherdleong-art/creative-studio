@@ -26,7 +26,6 @@ async function __teamRouteGET(
     const shots = db.prepare(`
       SELECT s.*,
         sia.filename as sourceFilename,
-        sia.path as sourcePath,
         gia.filename as generatedFilename,
         j.status as jobStatus,
         j.errorMessage as jobErrorMessage,
@@ -72,7 +71,6 @@ async function __teamRouteGET(
         c.imageAssetId,
         c.createdAt,
         ia.filename,
-        ia.path as imagePath,
         j.status as jobStatus,
         j.prompt as jobPrompt,
         j.referenceImageIds,
@@ -95,13 +93,16 @@ async function __teamRouteGET(
       const list = candidatesByShotId.get(shotId) || [];
       list.push({
         ...row,
-        imageUrl: toImageUrl(storageRoot, row.imagePath as string | null | undefined),
+        imageUrl: toImageUrl(storageRoot, (db.prepare('SELECT path FROM image_assets WHERE id = ?')
+          .get(row.imageAssetId) as { path?: string } | undefined)?.path),
       });
       candidatesByShotId.set(shotId, list);
     }
 
     const shotsWithUrls = (shots as Array<Record<string, unknown>>).map((s) => {
-      const sourceUrl = toImageUrl(storageRoot, s.sourcePath as string | null | undefined);
+      const sourcePath = (db.prepare('SELECT path FROM image_assets WHERE id = ?')
+        .get(s.sourceImageId) as { path?: string } | undefined)?.path;
+      const sourceUrl = toImageUrl(storageRoot, sourcePath);
       const genAsset = db.prepare(`SELECT path FROM image_assets WHERE id = ?`).get(s.latestGeneratedImageId) as { path?: string } | undefined;
       const generatedUrl = toImageUrl(storageRoot, genAsset?.path);
       return {

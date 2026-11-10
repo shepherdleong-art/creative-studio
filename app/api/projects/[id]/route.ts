@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import fs from 'fs';
-import { resolveStorageRelativePath, toStorageImageUrl } from '@/lib/storage-url';
+import { imageJobForClient, projectImageForClient } from '@/lib/client-media-dto';
 import { parseProjectInfoUpdate, ProjectInfoValidationError } from '@/lib/project-info';
 import {
   parseProductionIdentityUpdate,
@@ -48,15 +48,7 @@ async function __teamRouteGET(
     )`;
     const images = (db.prepare(
       `SELECT * FROM image_assets WHERE projectId = ? ${imageLifecycle} ORDER BY role, createdAt`
-    ).all(id) as Array<Record<string, unknown>>).map((img) => {
-      const filePath = img.path as string;
-      const relativePath = resolveStorageRelativePath(filePath)?.split(/[/\\]/).join('/') ?? '';
-      return {
-        ...img,
-        relativePath,
-        imageUrl: toStorageImageUrl(filePath),
-      };
-    });
+    ).all(id) as Array<Record<string, unknown>>).map(projectImageForClient);
 
     // Get jobs with input filenames。排序交给共享纯函数（lib/project-job-order.ts）：
     // 最新创建批次在前、批内按提交顺序、历史行按旧时间列回退；creationSequence
@@ -67,19 +59,23 @@ async function __teamRouteGET(
       LEFT JOIN image_assets ia ON j.inputImageId = ia.id
       LEFT JOIN image_assets oa ON j.outputImageId = oa.id
       WHERE j.projectId = ?
-    `).all(id) as Array<ProjectJobOrderRow & Record<string, unknown>>);
+    `).all(id) as Array<ProjectJobOrderRow & Record<string, unknown>>).map(imageJobForClient);
 
     // Get provider info
-    const provider = db.prepare(`SELECT * FROM providers WHERE id = ?`).get(project.providerId as string) as Record<string, unknown> | undefined;
+    const provider = db.prepare(`SELECT id, name, model, type, enabled, defaultCostPerImage, apiKey
+      FROM providers WHERE id = ?`).get(project.providerId as string) as Record<string, unknown> | undefined;
 
     return NextResponse.json({
       ...project,
       images,
       jobs,
       provider: provider ? {
-        ...provider,
-        apiKeyEnv: undefined,
-        apiKey: undefined,
+        id: provider.id,
+        name: provider.name,
+        model: provider.model,
+        type: provider.type,
+        enabled: provider.enabled,
+        defaultCostPerImage: provider.defaultCostPerImage,
         hasApiKey: !!(provider.apiKey as string),
       } : null,
     });

@@ -64,7 +64,6 @@ import {
   handleUnifiedImageExplicitFailure,
   pauseUnifiedImageQueueWaits,
   prepareUnifiedImageExecution,
-  requestUnifiedImageCancellation,
   resumeUnifiedImageQueueWaits,
   synchronizeUnifiedImageExecution,
   UnifiedImageCanceledError,
@@ -83,6 +82,7 @@ import {
   unifiedChannelFailureReasonFromEvidence,
 } from './media-core/unified-media/health.ts';
 import { UNIFIED_IMAGE_MODEL_KEY } from './media-core/unified-media/catalog.ts';
+import { applyUnifiedImageJobCancel } from './media-core/unified-media/cancel-intent.ts';
 
 export interface QueueOptions {
   /** Limit a local rework run to its immutable job. */
@@ -156,6 +156,7 @@ function noteUnifiedChannelFailure(
 interface RunningQueueEntry {
   abort: AbortController;
   status: QueueStatus;
+  stopAfterCurrent?: boolean;
   done: Promise<void>;
   finish: () => void;
 }
@@ -196,33 +197,42 @@ export function resumeQueue(projectId: string, options: QueueOptions) {
 
 export function cancelQueue(projectId: string) {
   const entry = runningQueues.get(projectId);
-  if (entry) {
-    const db = getDb();
-    const unifiedJobs = db.prepare(`SELECT id FROM jobs
-      WHERE projectId = ? AND unifiedModel IS NOT NULL
-        AND status IN ('pending', 'retrying', 'running', 'deferred', 'needs_check')`)
-      .all(projectId) as Array<{ id: string }>;
-    for (const job of unifiedJobs) requestUnifiedImageCancellation(db, job.id);
-    entry.abort.abort();
-    if (!isServerMediaExecution()) runningQueues.delete(projectId);
-
-    db.prepare(
-      isServerMediaExecution()
-        ? `UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user'
-           WHERE projectId = ? AND status IN ('pending', 'retrying', 'deferred')`
-        : `UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user'
-           WHERE projectId = ? AND status IN ('pending', 'retrying', 'running')`
-    ).run(projectId);
-    if (isServerMediaExecution()) {
-      db.prepare(`UPDATE execution_operations SET status = 'failed', waitReason = 'stage_canceled',
-        waitDetail = NULL, updatedAt = ? WHERE module = 'image' AND status IN ('pending', 'deferred')
-        AND taskId IN (SELECT id FROM jobs WHERE projectId = ? AND status = 'canceled')`)
-        .run(new Date().toISOString(), projectId);
-    }
-    db.prepare(
-      `UPDATE projects SET status = 'canceled' WHERE id = ?`
-    ).run(projectId);
+  const db = getDb();
+  const activeJobs = db.prepare(`SELECT id, unifiedModel, status, providerTaskId FROM jobs
+    WHERE projectId = ? AND status IN ('pending', 'retrying', 'running', 'deferred', 'needs_check')`)
+    .all(projectId) as Array<{
+      id: string; unifiedModel: string | null; status: string; providerTaskId: string | null;
+    }>;
+  const hasLegacyActive = activeJobs.some((job) => !job.unifiedModel);
+  for (const job of activeJobs.filter((candidate) => candidate.unifiedModel)) {
+    applyUnifiedImageJobCancel(db, job.id);
   }
+  if (entry) {
+    if (hasLegacyActive) entry.abort.abort();
+    else entry.stopAfterCurrent = true;
+    if (!isServerMediaExecution()) runningQueues.delete(projectId);
+  }
+  db.prepare(
+    isServerMediaExecution()
+      ? `UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user'
+         WHERE projectId = ? AND status IN ('pending', 'retrying', 'deferred')`
+      : `UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user'
+         WHERE projectId = ? AND status IN ('pending', 'retrying', 'running')`
+  ).run(projectId);
+  if (isServerMediaExecution()) {
+    db.prepare(`UPDATE execution_operations SET status = 'failed', waitReason = 'stage_canceled',
+      waitDetail = NULL, updatedAt = ? WHERE module = 'image' AND status IN ('pending', 'deferred')
+      AND taskId IN (SELECT id FROM jobs WHERE projectId = ? AND status = 'canceled')`)
+      .run(new Date().toISOString(), projectId);
+    if (!hasLegacyActive) {
+      for (const job of activeJobs.filter((candidate) =>
+        candidate.unifiedModel && candidate.providerTaskId
+        && ['needs_check', 'deferred'].includes(candidate.status))) {
+        void resumeImageJobPolling(job.id).catch(() => undefined);
+      }
+    }
+  }
+  db.prepare(`UPDATE projects SET status = 'canceled' WHERE id = ?`).run(projectId);
 }
 
 /**
@@ -301,6 +311,7 @@ export async function runQueue(options: QueueOptions): Promise<void> {
     async function worker() {
       while (!abort.signal.aborted) {
         const entry = runningQueues.get(projectId);
+        if (entry?.stopAfterCurrent && !entry.abort.signal.aborted) break;
         if (entry?.status === 'paused') {
           await sleep(500);
           continue;
@@ -387,7 +398,12 @@ export async function resumeImageJobPolling(jobId: string, timeoutMs = 300_000):
   }
   const claimed = db.prepare(`
     UPDATE jobs SET status = 'running', errorMessage = NULL, finishedAt = NULL
-    WHERE id = ? AND (status IN ('needs_check', 'pending') OR providerStatus = 'download_failed')
+    WHERE id = ? AND (
+      status IN ('needs_check', 'pending')
+      OR providerStatus = 'download_failed'
+      OR (status = 'canceled' AND cancelRequestedAt IS NOT NULL
+        AND COALESCE(providerStatus, '') NOT IN ('succeeded', 'failed', 'not_created'))
+    )
   `).run(jobId);
   if (claimed.changes !== 1) throw new Error('Only accepted jobs waiting for polling or download can be resumed');
   await runJob(
@@ -1753,7 +1769,10 @@ function claimNeedsCheckImageJob(projectId: string, jobId?: string): JobRecord |
   const job = db.prepare(`
     SELECT * FROM jobs
     WHERE projectId = ?
-      AND (status = 'needs_check' ${isServerMediaExecution() ? "OR providerStatus = 'download_failed'" : ''})
+      AND (
+        status = 'needs_check'
+        ${isServerMediaExecution() ? "OR providerStatus = 'download_failed' OR (status = 'canceled' AND cancelRequestedAt IS NOT NULL AND COALESCE(providerStatus, '') NOT IN ('succeeded', 'failed', 'not_created'))" : ''}
+      )
       AND (providerTaskId IS NOT NULL OR (providerStatus = 'download_failed' AND remoteImageUrl IS NOT NULL))
       AND (? IS NULL OR id = ?)
       ${isServerMediaExecution() ? "AND (jobs.unifiedModel IS NOT NULL OR NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = jobs.id AND r.kind = 'generate_image'))" : ''}
@@ -1761,7 +1780,10 @@ function claimNeedsCheckImageJob(projectId: string, jobId?: string): JobRecord |
   `).get(projectId, jobId || null, jobId || null) as JobRecord | undefined;
   if (!job) return null;
   const claimed = db.prepare(`UPDATE jobs SET status = 'running', errorMessage = NULL
-    WHERE id = ? AND (status = 'needs_check' ${isServerMediaExecution() ? "OR providerStatus = 'download_failed'" : ''})`)
+    WHERE id = ? AND (
+      status = 'needs_check'
+      ${isServerMediaExecution() ? "OR providerStatus = 'download_failed' OR (status = 'canceled' AND cancelRequestedAt IS NOT NULL AND COALESCE(providerStatus, '') NOT IN ('succeeded', 'failed', 'not_created'))" : ''}
+    )`)
     .run(job.id);
   return claimed.changes === 1 ? { ...job, status: 'running' } : null;
 }

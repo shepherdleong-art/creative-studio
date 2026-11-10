@@ -158,6 +158,12 @@ async function __teamRoutePOST(
           referenceGuidanceMode: unifiedImageProjectReferenceGuidance(originalJob.referenceGuidanceMode),
         });
       } catch (error) {
+        if (!originalJob.unifiedModel && readRuntimeConfig().mode === 'server') {
+          return NextResponse.json({
+            error: 'legacy_image2_job_requires_upgrade',
+            message: '旧任务的锁定尺寸无法自动映射为可执行的 Image 2 组合。请新建项目重新选择清晰度和比例，或由管理员完成迁移；旧任务与历史结果不会被改写。',
+          }, { status: 409 });
+        }
         return NextResponse.json({
           error: error instanceof UnifiedImageRequestError
             ? error.message

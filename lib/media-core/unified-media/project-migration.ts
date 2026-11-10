@@ -4,6 +4,7 @@ import {
   UNIFIED_IMAGE_CHANNELS,
   UNIFIED_IMAGE_DISPLAY_NAME,
   UNIFIED_IMAGE_MODEL_KEY,
+  trustedUnifiedModelForChannelModel,
   unifiedImageCompatibleChannels,
 } from './catalog.ts';
 import {
@@ -65,4 +66,17 @@ export function migrateLegacyUnifiedImageProjects(
     }
     return migrated;
   }).immediate();
+}
+
+export const LEGACY_IMAGE2_UPGRADE_MESSAGE =
+  '旧 Image 2 项目的清晰度/比例或供应商身份无法自动映射到统一模型。请新建项目重新选择参数，或先由管理员完成旧项目迁移；旧任务和结果不会被修改。';
+
+export function requiresLegacyImage2Upgrade(input: {
+  projectProviderId: string;
+  projectModel: string;
+  requestedProviderModel: string;
+}): boolean {
+  return input.projectProviderId !== UNIFIED_IMAGE_ANCHOR_ID
+    && (trustedUnifiedModelForChannelModel(input.projectModel) === UNIFIED_IMAGE_MODEL_KEY
+      || trustedUnifiedModelForChannelModel(input.requestedProviderModel) === UNIFIED_IMAGE_MODEL_KEY);
 }

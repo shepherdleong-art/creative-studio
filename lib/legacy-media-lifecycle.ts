@@ -27,7 +27,14 @@ export function createLegacyMediaLifecycle(): ExecutionModuleLifecycle {
         WHERE EXISTS (
           SELECT 1 FROM jobs j
           WHERE j.projectId = p.id
-            AND (j.status IN ('pending', 'retrying', 'running', 'deferred', 'needs_check') OR j.providerStatus = 'download_failed')
+            AND (
+              j.status IN ('pending', 'retrying', 'running', 'deferred', 'needs_check')
+              OR j.providerStatus = 'download_failed'
+              OR (
+                j.status = 'canceled' AND j.cancelRequestedAt IS NOT NULL
+                AND (j.providerTaskId IS NOT NULL OR (j.providerStatus = 'download_failed' AND j.remoteImageUrl IS NOT NULL))
+              )
+            )
             AND NOT EXISTS (
               SELECT 1 FROM final_edit_film_reworks r
               WHERE r.jobId = j.id AND r.kind = 'generate_image'
@@ -59,7 +66,14 @@ export function createLegacyMediaLifecycle(): ExecutionModuleLifecycle {
         WHERE EXISTS (
           SELECT 1 FROM video_jobs j
           WHERE j.projectId = p.id
-            AND (j.status IN ('pending', 'running', 'deferred', 'needs_check') OR j.providerStatus = 'download_failed')
+            AND (
+              j.status IN ('pending', 'running', 'deferred', 'needs_check')
+              OR j.providerStatus = 'download_failed'
+              OR (
+                j.status = 'canceled' AND j.cancelRequestedAt IS NOT NULL
+                AND (j.providerTaskId IS NOT NULL OR (j.providerStatus = 'download_failed' AND j.remoteVideoUrl IS NOT NULL))
+              )
+            )
             AND NOT EXISTS (
               SELECT 1 FROM final_edit_film_reworks r
               WHERE r.jobId = j.id AND r.kind = 'generate_video'
