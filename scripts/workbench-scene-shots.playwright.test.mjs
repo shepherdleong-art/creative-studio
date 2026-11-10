@@ -630,7 +630,7 @@ try {
   assert.equal(await emptyShot.locator('[class*="spin"]').count(), 0, '未提交的分镜不能显示转圈动画');
   assert.equal(appliedScenes.length, submitsBeforeEmpty, '进入分镜页或切换视图不能提交生成');
 
-  for (const [state, label] of [['pending', '排队中'], ['needs_check', '等待补抓结果'], ['blocked', '失败']]) {
+  for (const [state, label] of [['pending', '排队中'], ['needs_check', '结果确认中'], ['blocked', '失败']]) {
     groupGenerationState = state;
     await page.goto(`${baseUrl}/projects/${PROJECT_ID}?tab=storyboard`, { waitUntil: 'domcontentloaded' });
     if (state === 'blocked') await page.getByRole('alert').getByText('供应商安全审核未通过，请调整素材后重新生成。', { exact: true }).waitFor();
