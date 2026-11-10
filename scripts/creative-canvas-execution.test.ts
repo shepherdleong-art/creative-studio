@@ -384,7 +384,11 @@ try {
     async prepare(): Promise<void> {},
     async submit(): Promise<never> {
       uncertainSubmits += 1;
-      throw new CanvasAdapterError('submit', '模拟响应丢失', { uncertain: true, code: 'submit_unknown' });
+      throw new CanvasAdapterError(
+        'submit',
+        '模拟 429 响应丢失 https://signed.example.test/result?token=canvas-secret',
+        { uncertain: true, code: 'submit_unknown', httpStatus: 429 },
+      );
     },
     async poll(): Promise<{ status: 'succeeded' }> { return { status: 'succeeded' }; },
     async download(): Promise<{ bytes: Buffer; mimeType: string }> { return { bytes, mimeType: 'image/png' }; },
@@ -398,6 +402,10 @@ try {
   await uncertainScheduler.drain();
   assert.equal(uncertain.readTask()?.phase, 'uncertain');
   assert.equal(uncertain.readTask()?.slotHeld, false);
+  assert.equal(uncertain.readTask()?.errorCode, 'provider_http_429');
+  assert.equal((uncertain.readTask()?.errorMessage ?? '').includes('canvas-secret'), false);
+  assert.equal((uncertain.readTask()?.errorMessage ?? '').includes('signed.example.test'), false);
+  assert.match(uncertain.readTask()?.errorMessage ?? '', /结果确认中|不会自动重复提交|不会重新生成/);
   assert.equal(Number((db.prepare(`SELECT COUNT(*) AS count FROM execution_reservations
     WHERE kind = 'concurrency' AND state = 'held'`).get() as { count: number }).count), 2);
   await uncertainScheduler.tick();

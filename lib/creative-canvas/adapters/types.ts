@@ -18,13 +18,20 @@ export class CanvasAdapterError extends Error {
   /** true 表示提交结果不明（可能已经送达上游），调用方必须按待核查处理，不能自动重发。 */
   readonly uncertain: boolean;
   readonly code: string;
+  /** 有结构化 HTTP 证据时保留状态码，避免调用方根据错误正文猜分类。 */
+  readonly httpStatus: number | null;
 
-  constructor(stage: CanvasAdapterStage, message: string, options: { uncertain?: boolean; code?: string } = {}) {
+  constructor(
+    stage: CanvasAdapterStage,
+    message: string,
+    options: { uncertain?: boolean; code?: string; httpStatus?: number | null } = {},
+  ) {
     super(message);
     this.name = 'CanvasAdapterError';
     this.stage = stage;
     this.uncertain = options.uncertain ?? false;
     this.code = options.code ?? `${stage}_failed`;
+    this.httpStatus = options.httpStatus ?? null;
   }
 }
 

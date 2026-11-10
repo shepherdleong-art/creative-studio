@@ -50,7 +50,7 @@ const STATUS_LABELS: Record<string, string> = {
   failed: '失败',
   running: '运行中',
   pending: '等待',
-  needs_check: '待补抓',
+  needs_check: '结果确认中',
   canceled: '已取消',
 };
 
@@ -152,7 +152,9 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
                 </div>
               ) : (
                 <div style={{ color: 'rgba(255,255,255,.4)', fontSize: '0.72rem', textAlign: 'center', background: '#1d1d1f', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {STATUS_LABELS[job.status] || job.status}
+                  {job.status === 'needs_check' && job.providerStatus === 'download_failed'
+                    ? '下载失败'
+                    : STATUS_LABELS[job.status] || job.status}
                 </div>
               )}
             </div>
@@ -165,7 +167,9 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
               )}
               <div className="result-meta-row">
                 <span className={`status-badge result-status status-${isSucceeded ? 'succeeded' : isFailed ? 'failed' : isRunning ? 'running' : 'pending'}`}>
-                  {STATUS_LABELS[job.status] || job.status}
+                  {job.status === 'needs_check' && job.providerStatus === 'download_failed'
+                    ? '下载失败'
+                    : STATUS_LABELS[job.status] || job.status}
                 </span>
                 {job.tailImageId && (
                   <span className="shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 text-[9px] font-medium text-ink-secondary">

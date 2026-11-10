@@ -11,7 +11,7 @@ export const TASK_STEP_LABELS: Record<string, string> = {
 export const TASK_STATUS_LABELS: Record<string, string> = {
   pending: '排队中', deferred: '等待运行条件', admitted: '准备发送', maybe_sent: '提交中（待确认）',
   accepted: '供应商已受理', reconciling: '核查结果中', succeeded: '成功', failed: '失败',
-  unknown: '提交结果待核查', canceled: '已取消',
+  unknown: '结果确认中', canceled: '已取消',
 };
 const SCRIPT_STEP_PURPOSE_LABELS: Record<string, string> = {
   generate: '生成', repair: '正文修正', review: '内容检查', fallback: '兜底生成',

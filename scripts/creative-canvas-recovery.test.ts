@@ -229,6 +229,7 @@ function claimOne(workerId: string) {
   const failed = getCanvasTask(db, taskId);
   assert.equal(failed?.phase, 'download_failed');
   assert.ok(failed?.providerTaskId);
+  assert.match(failed?.errorMessage ?? '', /不会重新调用模型/);
   assert.equal(canvasTaskSlotUsage(db).held, 0, '下载失败不占全局名额');
 
   // 恢复不会自动补下载（等用户触发）

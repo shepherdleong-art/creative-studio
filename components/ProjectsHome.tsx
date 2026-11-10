@@ -34,7 +34,7 @@ const STATUS_LABELS: Record<string, string> = {
   partial_failed: '部分失败',
   failed: '全部失败',
   canceled: '已取消',
-  needs_check: '待补抓',
+  needs_check: '结果确认中',
 };
 
 const STATUS_CLASS: Record<string, string> = {

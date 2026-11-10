@@ -16,6 +16,7 @@ import { snapCompanyImageSize, companyImageCapsForModel, companyVideoCapsForMode
 import { companyNativeVideoModel } from '../../company-gateway-video-models.ts';
 import { isLoopbackLiteLlmUrl } from '../../provider-execution-gate.ts';
 import { downloadGatewayMedia, normalizeGatewayResultUrl, sanitizeGatewayMediaDiagnostic } from '../../gateway-media-url.ts';
+import { isAmbiguousSubmissionHttpStatus } from '../../media-core/submission-evidence.ts';
 import { resolveGptImage2Size } from '../../gpt-image-2-size-presets.ts';
 import { findCanvasCapability, validateCapabilityInputs, type CanvasModelCapability } from '../capabilities.ts';
 import {
@@ -450,7 +451,13 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
           throw new CanvasAdapterError(
             'submit',
             `公司网关提交失败 ${response.status}：${sanitizeGatewayMediaDiagnostic(text, route.apiKey).slice(0, 500)}`,
-            { code: 'gateway_submit_rejected' },
+            {
+              uncertain: isAmbiguousSubmissionHttpStatus(response.status),
+              code: isAmbiguousSubmissionHttpStatus(response.status)
+                ? 'gateway_submit_uncertain'
+                : 'gateway_submit_rejected',
+              httpStatus: response.status,
+            },
           );
         }
         let parsed: GatewayVideoResponse;
@@ -494,7 +501,8 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         const text = await response.text();
         if (!response.ok) {
           // 4xx 视为确定性失败（任务不存在／被拒）；5xx 与网络错误交给下一轮重试
-          if (response.status >= 400 && response.status < 500) {
+          if (response.status >= 400 && response.status < 500
+            && !isAmbiguousSubmissionHttpStatus(response.status)) {
             return {
               status: 'failed',
               code: 'gateway_task_query_rejected',
@@ -503,6 +511,7 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
           }
           throw new CanvasAdapterError('poll', `查询公司任务失败（${response.status}）`, {
             code: 'gateway_poll_failed',
+            httpStatus: response.status,
           });
         }
         const parsed = JSON.parse(text) as GatewayVideoResponse;

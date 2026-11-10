@@ -11,6 +11,11 @@ import {
   type InstanceFence,
 } from './media-core/execution/context.ts';
 import { readExecutionPool, readExecutionPoolBinding, mediaUpstreamBindingKey } from './media-core/execution/pools.ts';
+import {
+  classifyImageSubmissionFailure,
+  classifyVideoSubmissionFailure,
+  type SubmissionEvidence,
+} from './media-core/submission-evidence.ts';
 
 export function isServerMediaExecution(): boolean {
   return (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE?.trim() || 'local') === 'server';
@@ -159,15 +164,24 @@ export function isLegacyMediaProviderRecoveryBlocked(error: unknown): error is L
   return error instanceof LegacyMediaProviderRecoveryBlockedError;
 }
 
-function explicitNotCreated(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /(?:API error|submit error|HTTP)[ )]*(400|401|403|404|409|413|422)\b/i.test(message);
-}
-
-function safeErrorCode(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const status = message.match(/(?:API error|submit error|HTTP[ )]+)(\d{3})\b/i)?.[1];
-  return status ? `provider_http_${status}` : 'provider_rejected';
+function classifyLegacySubmissionError(input: {
+  module: 'image' | 'video';
+  taskId: string;
+  adapterId: string;
+  businessAttemptNo: number;
+  error: unknown;
+}): SubmissionEvidence {
+  const common = {
+    taskId: input.taskId,
+    adapterId: input.adapterId,
+    businessAttemptNo: input.businessAttemptNo,
+    stage: 'submit' as const,
+    source: 'adapter' as const,
+    error: input.error,
+  };
+  return input.module === 'image'
+    ? classifyImageSubmissionFailure(common)
+    : classifyVideoSubmissionFailure(common);
 }
 
 export class LegacyMediaExecutionDeferredError extends Error {
@@ -317,16 +331,33 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
         value = produced.value;
         return produced.receipt;
       } catch (error) {
-        if (explicitNotCreated(error)) {
+        const evidence = classifyLegacySubmissionError({
+          module: input.module,
+          taskId: input.taskId,
+          adapterId: input.providerSnapshot.type,
+          businessAttemptNo: grant.attempt.businessAttemptNo,
+          error,
+        });
+        if (evidence.state === 'confirmed_not_created') {
           submissionError = error;
-          return { terminalState: 'not_created', errorCode: safeErrorCode(error) };
+          return {
+            terminalState: 'not_created',
+            errorCode: evidence.error?.code ?? 'provider_rejected',
+          };
         }
         throw error;
       }
     });
     if (attempt.terminalState === 'not_created') {
       await facade.settle({ attemptId: attempt.id, outcome: 'not_created', actualCost: null, remoteTerminal: true });
-      throw new LegacyMediaNotCreatedError(submissionError instanceof Error ? submissionError.message : '供应商明确未创建任务。');
+      const evidence = classifyLegacySubmissionError({
+        module: input.module,
+        taskId: input.taskId,
+        adapterId: input.providerSnapshot.type,
+        businessAttemptNo: attempt.businessAttemptNo,
+        error: submissionError,
+      });
+      throw new LegacyMediaNotCreatedError(evidence.employee.detail);
     }
     if (attempt.terminalState) {
       const outcome = attempt.terminalState;
@@ -345,8 +376,15 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
   } catch (error) {
     if (error instanceof LegacyMediaNotCreatedError) throw error;
     if (error instanceof ExecutionError && !['transport_unknown'].includes(error.code)) throw error;
+    const evidence = classifyLegacySubmissionError({
+      module: input.module,
+      taskId: input.taskId,
+      adapterId: input.providerSnapshot.type,
+      businessAttemptNo: Number(input.inputRevision.replace(/\D/g, '')) + 1 || 1,
+      error,
+    });
     throw new LegacyMediaSubmissionUnknownError(
-      error instanceof Error ? error.message : String(error),
+      evidence.employee.detail,
       intent.attemptId,
     );
   }

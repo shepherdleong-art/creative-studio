@@ -17,6 +17,7 @@ import {
 } from '../company-gateway-tail-frame.ts';
 import { shouldInjectCompanyKlingMultiShot } from '../video-multi-shot.ts';
 import { videoDurationError } from '../video-duration.ts';
+import { providerHttpError } from '../media-core/submission-evidence.ts';
 import { companyNativeVideoModel } from '../company-gateway-video-models.ts';
 import { validateVideoReferenceRequest, videoReferenceCapability } from '../video-reference-contract.ts';
 import { createCompanySeedanceVideoAdapter } from './company-seedance-video.ts';
@@ -308,7 +309,7 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
 
       if (!res.ok) {
         const errorText = sanitizeGatewayMediaDiagnostic(await res.text(), apiKey);
-        throw new Error(`Video gateway submit error ${res.status}: ${errorText.slice(0, 500)}`);
+        throw providerHttpError(res.status, `Video gateway submit error ${res.status}: ${errorText.slice(0, 500)}`);
       }
 
       const data = (await res.json()) as GatewayVideoResponse;
@@ -388,7 +389,7 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
       });
       if (!res.ok) {
         const errorText = sanitizeGatewayMediaDiagnostic(await res.text(), apiKey);
-        throw new Error(`Video gateway submit error ${res.status}: ${errorText.slice(0, 500)}`);
+        throw providerHttpError(res.status, `Video gateway submit error ${res.status}: ${errorText.slice(0, 500)}`);
       }
       const data = (await res.json()) as GatewayVideoResponse;
       return {

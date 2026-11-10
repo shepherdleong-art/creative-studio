@@ -47,6 +47,7 @@ import {
 import type { ExecutionReceipt } from './media-core/execution/context.ts';
 import { parseUsageSnapshot } from './usage-snapshot.ts';
 import { calculateUsageCostMicros } from './usage-pricing.ts';
+import { submissionEmployeeCopy } from './media-core/submission-evidence.ts';
 
 export interface VideoQueueOptions {
   /** Limit a local rework run to its immutable job. */
@@ -637,7 +638,13 @@ async function runAuthorizedVideoJob(
         db.prepare(
           `UPDATE video_jobs SET status = ?, errorMessage = ?, providerStatus = ?, remoteVideoUrl = ?, finishedAt = datetime('now')
            WHERE id = ? AND status = 'running'`
-        ).run(failure.status, failure.errorMessage, failure.providerStatus, videoUrl, job.id);
+        ).run(
+          failure.status,
+          submissionEmployeeCopy('terminal_succeeded', 'download_failed').detail,
+          failure.providerStatus,
+          videoUrl,
+          job.id,
+        );
         return false;
       }
 
@@ -957,7 +964,7 @@ async function runAuthorizedVideoJob(
       db.prepare(
         `UPDATE video_jobs SET status = 'needs_check', errorMessage = ?, providerStatus = 'needs_check', finishedAt = datetime('now')
          WHERE id = ? AND status = 'running'`
-      ).run(errorMessage, job.id);
+      ).run(submissionEmployeeCopy('unknown', 'remote_query_failed').detail, job.id);
       return;
     }
 
