@@ -90,6 +90,7 @@ interface VideoJob {
   /** 用户可见的友好名称（D5）；filename 只服务播放 URL/物理路径。 */
   displayName?: string | null;
   localVideoPath?: string;
+  cancelRequestedAt?: string | null;
   errorMessage?: string;
   providerName?: string;
   templateName?: string;
@@ -312,12 +313,18 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   // Load shots when set is selected (with race guard)
   const getDefaultPreviewJobId = (jobs: VideoJob[]) =>
-    jobs.find((j) => j.status === 'succeeded' && j.filename && !j.rejectedAt)?.id || null;
+    jobs.find((j) => (
+      (j.status === 'succeeded'
+        || (j.status === 'canceled' && Boolean(j.localVideoPath || j.filename)))
+      && j.filename
+      && !j.rejectedAt
+    ))?.id || null;
 
   const syncPreviewSelection = (jobs: VideoJob[]) => {
     const shotJobs = jobs.filter((job) => job.shotId === selectedShotRef.current);
     setVideoPreviewJobId((current) => {
-      if (current && shotJobs.some((j) => j.id === current && j.status === 'succeeded' && j.filename && !j.rejectedAt)) return current;
+      if (current && shotJobs.some((j) => j.id === current && j.filename && !j.rejectedAt
+        && (j.status === 'succeeded' || (j.status === 'canceled' && Boolean(j.localVideoPath))))) return current;
       if (previewSuppressedRef.current) return null;
       return getDefaultPreviewJobId(shotJobs);
     });
@@ -541,7 +548,10 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   // 必须保持一致；服务端仍会再判一次，这里只是把按钮先禁掉。
   const DISCARDABLE_JOB_STATUSES = new Set(['failed', 'canceled']);
   const canDeleteShot = (shotId: string) =>
-    Boolean(isFreeSet) && !videoJobs.some((job) => job.shotId === shotId && !DISCARDABLE_JOB_STATUSES.has(job.status));
+    Boolean(isFreeSet) && !videoJobs.some((job) => job.shotId === shotId && (
+      !DISCARDABLE_JOB_STATUSES.has(job.status)
+      || (job.status === 'canceled' && Boolean(job.localVideoPath || job.filename))
+    ));
 
   const handleDeleteFreeShot = async (shotId: string) => {
     if (!effectiveSetId || !canDeleteShot(shotId) || deletingShot || creatingRef.current) return;
@@ -1424,7 +1434,10 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     className={`shot-tab-item ${selectedShot === shot.id ? 'active' : ''}`}
                   >
                     {shot.imageUrl && <HoverZoomImage src={shot.imageUrl} alt={`分镜 ${shot.indexNum} 图片`} className="video-shot-thumb" zoomMaxWidth={520} zoomMaxHeight={520} />}
-                    <span>{isFreeSet ? `图 ${shot.indexNum}` : `分镜 ${shot.indexNum}`}<small>{videoJobs.filter((job) => job.shotId === shot.id && job.status === 'succeeded').length} 条已完成</small></span>
+                    <span>{isFreeSet ? `图 ${shot.indexNum}` : `分镜 ${shot.indexNum}`}<small>{videoJobs.filter((job) => job.shotId === shot.id && (
+                      job.status === 'succeeded'
+                      || (job.status === 'canceled' && Boolean(job.localVideoPath || job.filename))
+                    )).length} 条已完成</small></span>
                   </button>
                 ))}
                 {isFreeSet && freeHeadFrameSlotOpen && (

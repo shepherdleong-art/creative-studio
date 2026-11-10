@@ -66,6 +66,9 @@ function providerAvailable(
   providerTable: string,
   providerId: string,
 ): boolean {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(providerTable)) {
+    return false;
+  }
   if (providerTable === 'providers') {
     const row = db.prepare(`SELECT enabled, baseUrl, apiKey FROM providers WHERE id = ?`)
       .get(providerId) as { enabled: number; baseUrl: string; apiKey: string } | undefined;

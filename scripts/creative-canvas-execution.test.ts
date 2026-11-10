@@ -459,7 +459,10 @@ try {
   db.prepare("UPDATE team_users SET status = 'disabled', updatedAt = ? WHERE id = 'user-a'").run(now);
   runWithAccessContext(access, () => requestCanvasTaskCancel(db, { taskId: accepted.taskId }));
   releaseAccepted = true;
-  await waitFor(() => accepted.readTask()?.phase === 'succeeded', '已受理任务在停用/取消后仍应收取');
+  await waitFor(
+    () => accepted.readTask()?.phase === 'cancelled' && Boolean(accepted.readTask()?.outputAssetId),
+    '已受理任务在停用/取消后仍应收尾并保留晚到结果',
+  );
   await disabledScheduler.tick();
   await disabledScheduler.drain();
   assert.equal(blocked.readTask()?.phase, 'queued');

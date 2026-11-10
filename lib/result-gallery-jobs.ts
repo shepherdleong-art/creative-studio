@@ -31,7 +31,8 @@ export function getResultJobKind(job: ResultGalleryJob): ResultJobStatus {
   if (job.status === 'pending') return 'queued';
   if (job.status === 'running' || job.status === 'retrying') return 'generating';
   if (job.status === 'needs_check') return 'checking';
-  if (job.status === 'succeeded' && (job.outputFilename || job.outputImageId)) return 'succeeded';
+  if ((job.status === 'succeeded' || job.status === 'canceled')
+    && (job.outputFilename || job.outputImageId)) return 'succeeded';
   if (job.status === 'failed' || job.status === 'succeeded') return 'failed';
   return 'empty';
 }

@@ -68,6 +68,7 @@ import {
   recordCanvasUnifiedCanceled,
   recordCanvasUnifiedDownloadFailure,
   recordCanvasUnifiedFinalFailure,
+  recordCanvasUnifiedLateResult,
   recordCanvasUnifiedOperation,
   recordCanvasUnifiedUnknown,
   recordCanvasUnifiedSucceeded,
@@ -368,6 +369,7 @@ interface OwnedOutputCommitResult {
   owned: boolean;
   valid: boolean;
   published: boolean;
+  lateCanceled: boolean;
 }
 
 /**
@@ -389,41 +391,53 @@ function commitRecordedOutput(
         FROM creative_canvas_tasks
        WHERE id = ? AND canvasId = ? AND fence = ? AND leaseOwner = ?
     `).get(params.task.id, params.task.canvasId, params.guard.fence, params.guard.workerId);
-    if (!owned) return { owned: false, valid: false, published: false };
+    if (!owned) return { owned: false, valid: false, published: false, lateCanceled: false };
 
     const asset = db.prepare(`
       SELECT 1
         FROM creative_canvas_assets
        WHERE id = ? AND canvasId = ? AND sourceTaskId = ? AND ready = 1
     `).get(params.outputAssetId, params.task.canvasId, params.task.id);
-    if (!asset) return { owned: true, valid: false, published: false };
+    if (!asset) return { owned: true, valid: false, published: false, lateCanceled: false };
 
     const at = params.now().toISOString();
+    const lateCanceled = Boolean(db.prepare(
+      'SELECT cancelRequestedAt FROM creative_canvas_tasks WHERE id = ?',
+    ).pluck().get(params.task.id));
     const updated = db.prepare(`
       UPDATE creative_canvas_tasks
-         SET phase = 'succeeded', submissionState = 'terminal', outputAssetId = ?,
-             errorCode = NULL, errorMessage = NULL, leaseOwner = NULL, leaseUntil = NULL,
+         SET phase = ?, submissionState = 'terminal', outputAssetId = ?,
+             errorCode = NULL, errorMessage = ?, leaseOwner = NULL, leaseUntil = NULL,
              slotHeld = 0, updatedAt = ?
        WHERE id = ? AND canvasId = ? AND fence = ? AND leaseOwner = ?
     `).run(
+      lateCanceled ? 'cancelled' : 'succeeded',
       params.outputAssetId,
+      lateCanceled
+        ? '已停止后续生成；晚到结果已保存到任务记录，可查看或手动使用。'
+        : null,
       at,
       params.task.id,
       params.task.canvasId,
       params.guard.fence,
       params.guard.workerId,
     );
-    if (updated.changes !== 1) return { owned: false, valid: false, published: false };
-    const published = publishCanvasNodeResultInTransaction(db, {
-      canvasId: params.task.canvasId,
-      nodeId: params.task.nodeId,
-      taskId: params.task.id,
-      nodeEpoch: params.task.nodeEpoch,
-      assetId: params.outputAssetId,
-      at,
-    });
+    if (updated.changes !== 1) return { owned: false, valid: false, published: false, lateCanceled: false };
+    const published = lateCanceled ? false : publishCanvasNodeResultInTransaction(db, {
+        canvasId: params.task.canvasId,
+        nodeId: params.task.nodeId,
+        taskId: params.task.id,
+        nodeEpoch: params.task.nodeEpoch,
+        assetId: params.outputAssetId,
+        at,
+      });
+    if (lateCanceled) {
+      db.prepare(`UPDATE creative_canvas_node_states SET activeTaskId = NULL, updatedAt = ?
+        WHERE canvasId = ? AND nodeId = ? AND activeTaskId = ?`)
+        .run(at, params.task.canvasId, params.task.nodeId, params.task.id);
+    }
     recordCanvasTaskLog(db, getCanvasTask(db, params.task.id)!, params.task);
-    return { owned: true, valid: true, published };
+    return { owned: true, valid: true, published, lateCanceled };
   });
   return commit.immediate();
 }
@@ -1033,9 +1047,17 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       });
       continue;
     }
+    const cancelSettling = Boolean(getCanvasTask(db, taskId)?.cancelRequestedAt);
     updateCanvasTaskGuarded(db, {
       taskId,
-      patch: { lastPolledAt: now().toISOString(), pollCount: previousPollCount + attempts, errorCode: null, errorMessage: null },
+      patch: {
+        lastPolledAt: now().toISOString(),
+        pollCount: previousPollCount + attempts,
+        errorCode: null,
+        errorMessage: cancelSettling
+          ? '已停止后续生成；已提交任务仍在收尾，晚到结果会保留在任务记录。'
+          : null,
+      },
       guard,
       now,
     });
@@ -1151,17 +1173,20 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     if (!republished.owned) return finish(getCanvasTask(db, taskId)?.phase ?? 'polling');
     if (republished.valid) {
       if (unifiedExecution) {
-        recordCanvasUnifiedSucceeded(db, unifiedExecution, {
+        const record = republished.lateCanceled
+          ? recordCanvasUnifiedLateResult
+          : recordCanvasUnifiedSucceeded;
+        record(db, unifiedExecution, {
           outputAssetId: recordedOutput,
           remoteId: providerTaskId,
         });
       }
       return {
         taskId,
-        phase: 'succeeded',
+        phase: republished.lateCanceled ? 'cancelled' : 'succeeded',
         outputAssetId: recordedOutput,
         published: republished.published,
-        errorCode: null,
+        errorCode: republished.lateCanceled ? 'cancelled' : null,
       };
     }
   }
@@ -1218,14 +1243,22 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       guard,
       commit: (transactionDb, registeredAsset) => {
         const at = now().toISOString();
+        const lateCanceled = Boolean(transactionDb.prepare(
+          'SELECT cancelRequestedAt FROM creative_canvas_tasks WHERE id = ?',
+        ).pluck().get(taskId));
         const recorded = transactionDb.prepare(`
           UPDATE creative_canvas_tasks
-             SET phase = 'succeeded', submissionState = 'terminal', outputAssetId = ?,
-                 errorCode = NULL, errorMessage = NULL, leaseOwner = NULL, leaseUntil = NULL,
+             SET phase = ?, submissionState = 'terminal', outputAssetId = ?,
+                 errorCode = ?, errorMessage = ?, leaseOwner = NULL, leaseUntil = NULL,
                  slotHeld = 0, updatedAt = ?
            WHERE id = ? AND canvasId = ? AND fence = ? AND leaseOwner = ?
         `).run(
+          lateCanceled ? 'cancelled' : 'succeeded',
           registeredAsset.id,
+          lateCanceled ? 'cancelled' : null,
+          lateCanceled
+            ? '已停止后续生成；晚到结果已保存到任务记录，可查看或手动使用。'
+            : null,
           at,
           taskId,
           task.canvasId,
@@ -1235,14 +1268,19 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
         if (recorded.changes !== 1) throw new Error('任务已失去租约，拒绝登记生成结果。');
         recordCanvasTaskLog(transactionDb, getCanvasTask(transactionDb, taskId)!, task);
         if (downloaded.videoMetadata) recordCanvasVideoMetadata(transactionDb, taskId, downloaded.videoMetadata);
-        published = publishCanvasNodeResultInTransaction(transactionDb, {
-          canvasId: task.canvasId,
-          nodeId: task.nodeId,
-          taskId,
-          nodeEpoch: task.nodeEpoch,
-          assetId: registeredAsset.id,
-          at,
-        });
+        published = lateCanceled ? false : publishCanvasNodeResultInTransaction(transactionDb, {
+            canvasId: task.canvasId,
+            nodeId: task.nodeId,
+            taskId,
+            nodeEpoch: task.nodeEpoch,
+            assetId: registeredAsset.id,
+            at,
+          });
+        if (lateCanceled) {
+          transactionDb.prepare(`UPDATE creative_canvas_node_states SET activeTaskId = NULL, updatedAt = ?
+            WHERE canvasId = ? AND nodeId = ? AND activeTaskId = ?`)
+            .run(at, task.canvasId, task.nodeId, taskId);
+        }
       },
     });
     recordCanvasTaskUsage(db, {
@@ -1304,17 +1342,25 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     return finish(latest?.phase ?? 'polling');
   }
   if (unifiedExecution) {
-    recordCanvasUnifiedSucceeded(db, unifiedExecution, {
-      outputAssetId: asset.id,
-      remoteId: providerTaskId,
-    });
+    const latest = getCanvasTask(db, taskId);
+    if (latest?.phase === 'cancelled') {
+      recordCanvasUnifiedLateResult(db, unifiedExecution, {
+        outputAssetId: asset.id,
+        remoteId: providerTaskId,
+      });
+    } else {
+      recordCanvasUnifiedSucceeded(db, unifiedExecution, {
+        outputAssetId: asset.id,
+        remoteId: providerTaskId,
+      });
+    }
   }
   if (options.execution) {
     await options.execution.facade.captureRecovery({ taskId, module: 'canvas', stage: 'download' });
   }
   return {
     taskId,
-    phase: 'succeeded',
+    phase: getCanvasTask(db, taskId)?.phase === 'cancelled' ? 'cancelled' : 'succeeded',
     outputAssetId: asset.id,
     published,
     errorCode: null,

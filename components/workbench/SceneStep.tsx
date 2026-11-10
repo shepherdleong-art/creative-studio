@@ -183,6 +183,7 @@ export default function SceneStep({
   const succeededCount = jobs.filter((job) => getResultJobKind(job) === 'succeeded').length;
   const failedCount = jobs.filter((job) => getResultJobKind(job) === 'failed').length;
   const pendingCount = jobs.filter((job) => job.status === 'pending').length;
+  const canceledSettlingCount = jobs.filter((job) => job.cancelRequestedAt).length;
   const running = queueStatus === 'running';
   const hasCandidates = candidates.length > 0;
   const showEmpty = seedImages.length === 0;
@@ -355,7 +356,9 @@ export default function SceneStep({
                       {kind === 'succeeded' || kind === 'failed' ? (
                         job.reviewMark
                           ? <Tag tone={markTone(job.reviewMark)}>{MARK_LABELS[job.reviewMark]}</Tag>
-                          : kind === 'failed' ? <Tag tone="fail">失败</Tag> : <Tag tone="idle">未标记</Tag>
+                          : job.status === 'canceled'
+                            ? <Tag tone="warn">已停止 · 已收尾</Tag>
+                            : kind === 'failed' ? <Tag tone="fail">失败</Tag> : <Tag tone="idle">未标记</Tag>
                       ) : <Tag tone="run">{job.status === 'pending' ? '排队中' : '生成中'}</Tag>}
                       {reference ? <Tag tone="run">参考图</Tag> : null}
                     </small>
@@ -472,7 +475,9 @@ export default function SceneStep({
                   <b>{selectedJob ? `候选 ${effectiveIndex + 1}` : '候选'}</b>
                   <span>
                     {hasShotResult(selectedState)
-                      ? (selectedJob?.reviewMark ? MARK_LABELS[selectedJob.reviewMark] : '未标记')
+                      ? (selectedJob?.status === 'canceled'
+                        ? '已停止后续生成 · 晚到结果已保留'
+                        : selectedJob?.reviewMark ? MARK_LABELS[selectedJob.reviewMark] : '未标记')
                       : selectedState === 'failed' ? '失败' : hasCandidates ? '生成中' : ''}
                   </span>
                 </figcaption>
@@ -608,6 +613,9 @@ export default function SceneStep({
             {unifiedSelection ? (
               <p className={s.note}>只选统一模型 Image 2；清晰度和比例由项目创建时锁定，系统按完整可执行组合选择七牛或腾讯通道。</p>
             ) : null}
+            {canceledSettlingCount > 0 ? (
+              <p className={s.note}>已停止后续生成；已提交任务仍会检查并保存晚到结果，不会自动推进后续步骤。</p>
+            ) : null}
 
             <div className={s.field}>
               <span>数量</span>
@@ -655,7 +663,7 @@ export default function SceneStep({
             ? <button type="button" className="cap" onClick={onStart}>开始</button> : null}
           {running ? <button type="button" className="cap" onClick={onPause}>暂停</button> : null}
           {queueStatus === 'paused' ? <button type="button" className="cap cap-primary" onClick={onResume}>继续</button> : null}
-          {running || queueStatus === 'paused' ? <button type="button" className="cap" onClick={onCancel}>取消</button> : null}
+          {running || queueStatus === 'paused' ? <button type="button" className="cap" onClick={onCancel}>停止后续生成</button> : null}
         </span>
       </div>
     </div>

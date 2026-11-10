@@ -788,14 +788,25 @@ async function runAuthorizedVideoJob(
       }
 
       const finishedAt = new Date().toISOString();
+      const lateCanceled = Boolean(
+        job.unifiedModel
+        && db.prepare('SELECT cancelRequestedAt FROM video_jobs WHERE id = ?').pluck().get(job.id),
+      );
       const completeResult = db.prepare(
         `UPDATE video_jobs SET
-          status = 'succeeded', providerStatus = 'succeeded', remoteVideoUrl = ?,
+          status = ?, providerStatus = 'succeeded', remoteVideoUrl = ?,
           localVideoPath = ?, filename = ?, finishedAt = ?,
-          usageSnapshotJson = COALESCE(?, usageSnapshotJson)
-         WHERE id = ? AND status = 'running'`
-      ).run(videoUrl, videoPath, videoFilename, finishedAt,
-        unifiedExecution ? usageSnapshot : null, job.id);
+          usageSnapshotJson = COALESCE(?, usageSnapshotJson), errorMessage = ?
+         WHERE id = ? AND (status = 'running' OR (status = 'canceled' AND cancelRequestedAt IS NOT NULL))`
+      ).run(
+        lateCanceled ? 'canceled' : 'succeeded',
+        videoUrl, videoPath, videoFilename, finishedAt,
+        unifiedExecution ? usageSnapshot : null,
+        lateCanceled
+          ? '已停止后续生成；晚到的视频已保存到任务记录，可预览或手动使用。'
+          : null,
+        job.id,
+      );
       if (completeResult.changes === 1) {
         const usageResult = recordVideoJobUsage(db, {
           jobId: job.id,
@@ -1055,8 +1066,10 @@ async function runAuthorizedVideoJob(
     // canceled——按下面的失败分支处理。
     if (abort.aborted) {
       if (isServerMediaExecution()) {
-        const current = db.prepare('SELECT providerTaskId, executionRevision FROM video_jobs WHERE id = ?').get(job.id) as
-          { providerTaskId: string | null; executionRevision: number } | undefined;
+        const current = db.prepare('SELECT providerTaskId, executionRevision, cancelRequestedAt FROM video_jobs WHERE id = ?')
+          .get(job.id) as {
+            providerTaskId: string | null; executionRevision: number; cancelRequestedAt: string | null;
+          } | undefined;
         const recovered = recoverLegacyMediaSubmission({
           module: 'video', taskId: job.id,
           inputRevision: legacyMediaExecutionRevision(current?.executionRevision),
@@ -1065,11 +1078,14 @@ async function runAuthorizedVideoJob(
         if (recovered.status === 'needs_check') {
           db.prepare(`UPDATE video_jobs SET status = 'needs_check', providerStatus = ?,
             providerTaskId = COALESCE(?, providerTaskId), remoteVideoUrl = COALESCE(?, remoteVideoUrl),
-            errorMessage = '已受理任务保留，等待续查或补下载'
+            errorMessage = ?
             WHERE id = ? AND status = 'running'`).run(
             recovered.resultRef ? 'download_failed' : 'unknown',
             recovered.remoteId ?? null,
             recovered.resultRef ?? null,
+            current?.cancelRequestedAt
+              ? '已停止后续生成；已提交任务仍在收尾，晚到结果会保留在任务记录。'
+              : '已受理任务保留，等待续查或补下载',
             job.id,
           );
         } else {

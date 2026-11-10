@@ -469,6 +469,31 @@ try {
   }
 
   {
+    const task = await createUnknownTask('job-canceled-late-result', { canceled: true });
+    await applyUnifiedReconcileAction(db, runtime.facade, admin, actionFor(task, 'confirm_succeeded', {
+      remoteId: 'remote-canceled-late',
+      resultRef: 'https://results.example.test/canceled-late.png',
+      actualCostMinor: 25,
+    }));
+    const job = db.prepare(`SELECT status, providerStatus, providerTaskId, remoteImageUrl, cancelRequestedAt
+      FROM jobs WHERE id = 'job-canceled-late-result'`).get() as {
+        status: string; providerStatus: string; providerTaskId: string;
+        remoteImageUrl: string; cancelRequestedAt: string | null;
+      };
+    assert.equal(job.status, 'needs_check');
+    assert.equal(job.providerStatus, 'download_failed');
+    assert.equal(job.providerTaskId, 'remote-canceled-late');
+    assert.equal(job.remoteImageUrl, 'https://results.example.test/canceled-late.png');
+    assert.ok(job.cancelRequestedAt);
+    assert.equal(
+      db.prepare(`SELECT COUNT(*) FROM execution_media_tasks WHERE taskId = ?
+        AND status IN ('accepted', 'routing', 'waiting')`).pluck().get('job-canceled-late-result'),
+      0,
+      'a canceled task only enters result refetch, never another channel or downstream phase',
+    );
+  }
+
+  {
     const task = await createUnknownTask('job-canceled-not-created', { canceled: true });
     const result = await applyUnifiedReconcileAction(
       db, runtime.facade, admin, actionFor(task, 'confirm_not_created'),

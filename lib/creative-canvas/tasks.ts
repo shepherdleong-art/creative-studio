@@ -478,6 +478,12 @@ export function resolveCanvasTaskInputs(
           stillWaiting = true;
           continue;
         }
+        if (upstream.cancelRequestedAt || upstream.phase === 'cancelled') {
+          // A canceled task may still retain a late result for manual viewing,
+          // but it never promotes downstream work automatically.
+          upstreamFailed = upstream;
+          continue;
+        }
         if (upstream.outputAssetId) {
           db.prepare(
             `UPDATE creative_canvas_task_inputs SET resolvedAssetId = ? WHERE id = ?`,

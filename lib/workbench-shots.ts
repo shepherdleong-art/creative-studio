@@ -109,7 +109,8 @@ export function resolveShotResultState(jobStatus: string | null | undefined, has
   if (jobStatus === 'running' || jobStatus === 'retrying') return 'generating';
   if (jobStatus === 'needs_check') return 'checking';
   if (jobStatus === 'succeeded') return hasResult ? 'succeeded' : 'failed';
-  if (jobStatus === 'failed' || jobStatus === 'canceled') return 'failed';
+  if (jobStatus === 'canceled') return hasResult ? 'succeeded' : 'failed';
+  if (jobStatus === 'failed') return 'failed';
   return hasResult ? 'succeeded' : 'empty';
 }
 

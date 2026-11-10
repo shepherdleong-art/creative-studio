@@ -753,10 +753,15 @@ function updateBusinessAfterAccepted(
   if (task.module === 'image') {
     const estimatedCost = unifiedImageAttemptCostMinor(db, task.taskId) / 100;
     if (canceled) {
-      db.prepare(`UPDATE jobs SET status = 'canceled', providerTaskId = COALESCE(?, providerTaskId),
-        providerStatus = 'accepted', remoteImageUrl = COALESCE(?, remoteImageUrl), estimatedCost = ?,
-        errorMessage = '管理员已核对远端结果；任务已取消，仅保留收尾记录。', finishedAt = COALESCE(finishedAt, ?)
-        WHERE id = ?`).run(remoteId, resultRef, estimatedCost, at, task.taskId);
+      db.prepare(`UPDATE jobs SET status = ?, providerTaskId = COALESCE(?, providerTaskId),
+        providerStatus = ?, remoteImageUrl = COALESCE(?, remoteImageUrl), estimatedCost = ?,
+        errorMessage = '管理员已核对远端结果；任务已取消，仅保留收尾记录。',
+        finishedAt = CASE WHEN ? IS NULL THEN NULL ELSE COALESCE(finishedAt, ?) END
+        WHERE id = ?`).run(
+        resultRef ? 'needs_check' : 'canceled',
+        remoteId, resultRef ? 'download_failed' : 'accepted', resultRef, estimatedCost,
+        resultRef, at, task.taskId,
+      );
     } else {
       db.prepare(`UPDATE jobs SET status = 'needs_check', providerTaskId = COALESCE(?, providerTaskId),
         providerStatus = ?, remoteImageUrl = COALESCE(?, remoteImageUrl), estimatedCost = ?,
@@ -770,10 +775,16 @@ function updateBusinessAfterAccepted(
   }
   if (task.module === 'video') {
     if (canceled) {
-      db.prepare(`UPDATE video_jobs SET status = 'canceled', providerTaskId = COALESCE(?, providerTaskId),
-        providerStatus = 'accepted', remoteVideoUrl = COALESCE(?, remoteVideoUrl),
-        errorMessage = '管理员已核对远端结果；任务已取消，仅保留收尾记录。' WHERE id = ?`)
-        .run(remoteId, resultRef, task.taskId);
+      db.prepare(`UPDATE video_jobs SET status = ?, providerTaskId = COALESCE(?, providerTaskId),
+        providerStatus = ?, remoteVideoUrl = COALESCE(?, remoteVideoUrl),
+        errorMessage = '管理员已核对远端结果；任务已取消，仅保留收尾记录。',
+        finishedAt = CASE WHEN ? IS NULL THEN COALESCE(finishedAt, datetime('now')) ELSE NULL END
+        WHERE id = ?`)
+        .run(
+          resultRef ? 'needs_check' : 'canceled',
+          remoteId, resultRef ? 'download_failed' : 'accepted', resultRef,
+          resultRef, task.taskId,
+        );
     } else {
       db.prepare(`UPDATE video_jobs SET status = 'needs_check', providerTaskId = COALESCE(?, providerTaskId),
         providerStatus = ?, remoteVideoUrl = COALESCE(?, remoteVideoUrl),

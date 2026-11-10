@@ -44,6 +44,7 @@ const { listUnifiedReconcileTasks } = await import('../lib/team-service/unified-
 const { listTeamTasks } = await import('../lib/team-service/tasks.ts');
 const { queryTeamUsage } = await import('../lib/team-service/usage.ts');
 const { providerHttpError } = await import('../lib/media-core/submission-evidence.ts');
+const { requestUnifiedKlingCancellation } = await import('../lib/media-core/unified-media/video-execution.ts');
 
 const originalFetch = globalThis.fetch;
 const png = await sharp({
@@ -573,6 +574,57 @@ try {
   });
   assert.equal(videoStatus('job-canceled-before-submit'), 'canceled');
   assert.equal(submittedFor('cancel-before-submit').length, 0);
+
+  const lateCanceled = insertMemberAndProject(db, 'project-canceled-late-result');
+  insertUnifiedJob(db, {
+    id: 'job-canceled-late-result',
+    projectId: lateCanceled.projectId,
+    imageId: lateCanceled.imageId,
+    shotSetId: lateCanceled.shotSetId,
+    shotId: lateCanceled.shotId,
+    prompt: 'cancel-after-accepted',
+  });
+  const lateRun = videoQueue.runVideoQueue({
+    projectId: lateCanceled.projectId, concurrency: 2, timeoutMs: 30_000,
+  });
+  const acceptedDeadline = Date.now() + 2_000;
+  while (Date.now() < acceptedDeadline
+    && db.prepare('SELECT providerTaskId FROM video_jobs WHERE id = ?').pluck().get('job-canceled-late-result')
+      !== 'qiniu-cancel-after-accepted') {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(
+    db.prepare('SELECT providerTaskId FROM video_jobs WHERE id = ?').pluck().get('job-canceled-late-result'),
+    'qiniu-cancel-after-accepted',
+  );
+  requestUnifiedKlingCancellation(db, 'job-canceled-late-result');
+  await lateRun;
+  const lateJob = db.prepare(`SELECT status, providerStatus, cancelRequestedAt,
+      localVideoPath, filename, errorMessage
+    FROM video_jobs WHERE id = ?`).get('job-canceled-late-result') as {
+      status: string; providerStatus: string | null; cancelRequestedAt: string | null;
+      localVideoPath: string | null; filename: string | null; errorMessage: string | null;
+    };
+  assert.equal(lateJob.status, 'canceled');
+  assert.equal(lateJob.providerStatus, 'succeeded');
+  assert.ok(lateJob.cancelRequestedAt);
+  assert.ok(lateJob.localVideoPath, 'late video is retained on the canceled task');
+  assert.ok(lateJob.filename);
+  assert.match(lateJob.errorMessage ?? '', /晚到|收尾/);
+  const lateParent = db.prepare(`SELECT id, status, resultJson FROM execution_media_tasks
+    WHERE module = 'video' AND taskId = 'job-canceled-late-result'`).get() as {
+      id: string; status: string; resultJson: string;
+    };
+  assert.equal(lateParent.status, 'canceled');
+  const lateResult = JSON.parse(lateParent.resultJson) as Record<string, unknown>;
+  assert.equal(lateResult.lateResult, true);
+  assert.equal(lateResult.filename, lateJob.filename);
+  assert.equal(
+    db.prepare(`SELECT state FROM execution_media_channels
+      WHERE mediaTaskId = ? AND channelKey = 'qiniu'`).pluck().get(lateParent.id),
+    'succeeded',
+  );
+  assert.equal(submittedFor('cancel-after-accepted').length, 1, 'late result is downloaded without another submit');
 
   const reconcile = listUnifiedReconcileTasks(db, { userId: 'admin', role: 'admin' });
   assert.equal(
