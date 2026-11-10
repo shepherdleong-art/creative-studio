@@ -35,6 +35,7 @@ async function __teamRouteGET(
         j.referenceImageIds,
         j.providerId,
         j.model,
+        j.unifiedModel,
         j.size,
         j.quality
       FROM shots s
@@ -77,6 +78,7 @@ async function __teamRouteGET(
         j.referenceImageIds,
         j.providerId,
         j.model,
+        j.unifiedModel,
         j.size,
         j.quality
       FROM shot_result_candidates c

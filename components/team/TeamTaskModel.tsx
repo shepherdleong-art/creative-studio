@@ -47,7 +47,7 @@ export default function TeamTaskModel({ providerName, model, modelStatus, calls,
       </>
     ) : null}
     {!compact && calls.length > 0 && <details className="mt-2" open={!showSummary}>
-      <summary className="cursor-pointer text-ink-tertiary">实际调用记录（{calls.length} 条，不等于制作份数或扣费次数）</summary>
+      <summary className="cursor-pointer text-ink-tertiary">调用记录（{calls.length} 条，不等于制作份数或扣费次数）</summary>
       <ol className="mt-2 space-y-2">{calls.map((call, index) => <li key={call.attemptId ?? `planned-${index}`} className="break-all">
         {call.model ?? '未记录'} · {call.providerName}<br />
         <span className="text-ink-tertiary">{submissionLabel(call.submissionState)}{call.attemptId ? ` · 执行尝试 ${call.attemptId}` : ''}</span>

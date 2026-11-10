@@ -54,6 +54,8 @@ interface UnifiedJobRow {
   prompt: string;
   size: string;
   quality: string;
+  parentJobId: string | null;
+  creationSource: string | null;
   status: string;
   attempt: number;
   maxAttempts: number;
@@ -393,6 +395,8 @@ function ensureLogicalTask(
   const taskKey = `image:${job.id}`;
   const inputHash = hash(frozen);
   const at = new Date().toISOString();
+  const sourceType = job.creationSource
+    || (job.parentJobId ? 'project_regenerate' : 'project_scene');
   db.transaction(() => {
     db.prepare(`
       INSERT OR IGNORE INTO execution_media_tasks (
@@ -400,13 +404,15 @@ function ensureLogicalTask(
         inputHash, inputSnapshotJson, outputContractJson, sourceType, sourceId, sourceMetaJson,
         status, cancelRequestedAt, currentChannelKey, nextEligibleAt, waitReason, waitDetailJson,
         resultJson, createdAt, updatedAt
-      ) VALUES (?, ?, ?, 'project', ?, 'image', ?, ?, ?, ?, ?, ?, 'project_scene', ?, ?, 'routing', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
+      ) VALUES (?, ?, ?, 'project', ?, 'image', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'routing', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
     `).run(
       randomUUID(), taskKey, access.actor.userId, job.projectId, job.id,
       UNIFIED_IMAGE_MODEL_KEY, UNIFIED_MEDIA_RULE_VERSION, inputHash,
       JSON.stringify(frozen), JSON.stringify({
         tier: frozen.tier, ratio: frozen.ratio, size: frozen.size, quality: frozen.quality,
-      }), job.projectId, JSON.stringify({ entry: 'project_scene', jobId: job.id }), at, at,
+      }), sourceType, job.projectId,
+      JSON.stringify({ entry: sourceType, jobId: job.id, parentJobId: job.parentJobId }),
+      at, at,
     );
     const task = db.prepare('SELECT * FROM execution_media_tasks WHERE taskKey = ?').get(taskKey) as MediaTaskRow | undefined;
     if (!task) throw new Error('统一图片逻辑任务创建失败。');

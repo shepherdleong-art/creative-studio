@@ -2,6 +2,18 @@ import { requiresReassembledUpstreamRework, REASSEMBLED_REWORK_REQUIRED } from '
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveImageJobProvider } from '@/lib/image-provider-selection';
+import { UNIFIED_IMAGE_ANCHOR_ID, UNIFIED_IMAGE_MODEL_KEY } from '@/lib/media-core/unified-media/catalog';
+import {
+  buildUnifiedImageJobContract,
+  isUnifiedImageJobProvider,
+} from '@/lib/media-core/unified-media/project-jobs';
+import { UnifiedImageRequestError } from '@/lib/media-core/unified-media/requests';
+import {
+  UnifiedJobRequestConflictError,
+  findUnifiedJobRequestReplay,
+  normalizeUnifiedJobRequestKey,
+  unifiedJobRequestHash,
+} from '@/lib/media-core/unified-media/job-idempotency';
 import { v4 as uuidv4 } from 'uuid';
 import { requireAccessContext } from '@/lib/media-core/access-context';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
@@ -36,23 +48,101 @@ async function __teamRoutePOST(
       return NextResponse.json({ error: '自由素材工位不支持分镜生成' }, { status: 400 });
     }
 
+    const requestedProviderId = typeof body.providerId === 'string' && body.providerId.trim()
+      ? body.providerId.trim()
+      : set.providerId;
+    const requestedProvider = db.prepare(`
+      SELECT id, name, type, model, enabled, apiKey
+      FROM providers WHERE id = ?
+    `).get(requestedProviderId) as {
+      id: string; name: string; type: string; model: string; enabled: number; apiKey: string;
+    } | undefined;
+    if (!requestedProvider) return NextResponse.json({ error: '供应商不存在' }, { status: 400 });
+    if (!requestedProvider.enabled) return NextResponse.json({ error: '供应商已禁用' }, { status: 400 });
+
+    const projectUsesUnified = set.providerId === UNIFIED_IMAGE_ANCHOR_ID
+      && set.model === UNIFIED_IMAGE_MODEL_KEY;
+    const unifiedImage = isUnifiedImageJobProvider(requestedProvider);
+    if (unifiedImage !== projectUsesUnified) {
+      return NextResponse.json({
+        error: '统一 Image 2 项目不能绕过锚点切换到真实通道，真实通道项目也不能注入统一模型',
+      }, { status: 400 });
+    }
+
     let jobProvider: { providerId: string; model: string };
-    try {
-      jobProvider = resolveImageJobProvider(db, body.providerId, {
-        providerId: set.providerId,
-        model: set.model,
-      });
-    } catch (err) {
-      return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+    if (unifiedImage) {
+      jobProvider = { providerId: UNIFIED_IMAGE_ANCHOR_ID, model: UNIFIED_IMAGE_MODEL_KEY };
+    } else {
+      try {
+        jobProvider = resolveImageJobProvider(db, body.providerId, {
+          providerId: set.providerId,
+          model: set.model,
+        });
+      } catch (err) {
+        return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+      }
     }
 
     // Validate scene reference
-    const sceneRef = db.prepare(`SELECT * FROM scene_references WHERE id = ? AND projectId = ?`).get(sceneReferenceId, set.projectId) as { imageAssetId: string } | undefined;
-    if (!sceneRef) return NextResponse.json({ error: '场景参考图不存在或不属于当前项目' }, { status: 400 });
+    const sceneRef = db.prepare(`
+      SELECT sr.imageAssetId, ia.projectId AS imageProjectId
+      FROM scene_references sr
+      JOIN image_assets ia ON ia.id = sr.imageAssetId
+      WHERE sr.id = ? AND sr.projectId = ?
+    `).get(sceneReferenceId, set.projectId) as {
+      imageAssetId: string;
+      imageProjectId: string | null;
+    } | undefined;
+    if (!sceneRef || (sceneRef.imageProjectId && sceneRef.imageProjectId !== set.projectId)) {
+      return NextResponse.json({ error: '场景参考图不存在或不属于当前项目' }, { status: 400 });
+    }
+    if (access.kind === 'team') access.assertAccess('image', sceneRef.imageAssetId, 'read');
 
     // Get shots for this set
-    const shots = db.prepare(`SELECT * FROM shots WHERE shotSetId = ? ORDER BY indexNum`).all(id) as Array<{ id: string; sourceImageId: string }>;
+    const shots = db.prepare(`
+      SELECT s.*, ia.projectId AS imageProjectId
+      FROM shots s
+      LEFT JOIN image_assets ia ON ia.id = s.sourceImageId
+      WHERE s.shotSetId = ?
+      ORDER BY s.indexNum
+    `).all(id) as Array<{ id: string; sourceImageId: string; imageProjectId: string | null }>;
     if (shots.length === 0) return NextResponse.json({ error: '分镜组没有分镜图' }, { status: 400 });
+    if (shots.some((shot) => shot.imageProjectId && shot.imageProjectId !== set.projectId)) {
+      return NextResponse.json({ error: '分镜素材不属于当前项目，已拒绝生成' }, { status: 400 });
+    }
+    if (access.kind === 'team') {
+      for (const shot of shots) access.assertAccess('image', shot.sourceImageId, 'read');
+    }
+
+    const creationSource = 'project_apply_scene';
+    const requestKey = normalizeUnifiedJobRequestKey(body.requestKey);
+    const requestHash = unifiedJobRequestHash({
+      kind: 'apply-scene',
+      projectId: set.projectId,
+      shotSetId: id,
+      sceneReferenceId,
+      prompt: promptTemplate,
+      providerId: jobProvider.providerId,
+      model: jobProvider.model,
+      shotIds: shots.map((shot) => shot.id),
+      sourceImageIds: shots.map((shot) => shot.sourceImageId),
+      unifiedImage,
+    });
+    const replay = findUnifiedJobRequestReplay(db, {
+      projectId: set.projectId,
+      requestKey,
+      requestHash,
+      expectedCount: shots.length,
+      creationSource,
+    });
+    if (replay) {
+      return NextResponse.json({
+        success: true,
+        jobCount: replay.length,
+        jobIds: replay,
+        replayed: true,
+      });
+    }
 
     // ── Create one job per shot：同一请求写同一 createdAt、按分镜顺序写 creationIndex ──
     const createdJobs: string[] = [];
@@ -61,18 +151,37 @@ async function __teamRoutePOST(
       const insertJob = db.prepare(`
         INSERT INTO jobs (
           id, projectId, inputImageId, referenceImageIds, providerId, model,
-          prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode, createdAt, creationIndex
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, 'none', ?, ?)
+          prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode, createdAt, creationIndex,
+          unifiedModel, unifiedRuleVersion, unifiedRequestJson, creationSource,
+          creationRequestKey, creationRequestHash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       shots.forEach((shot, index) => {
         const jobId = uuidv4();
+        const unifiedContract = unifiedImage
+          ? buildUnifiedImageJobContract({
+            projectSize: set.size,
+            prompt: promptTemplate,
+            inputImageId: shot.sourceImageId,
+            referenceImageIds: [sceneRef.imageAssetId],
+            referenceGuidanceMode: 'none',
+          })
+          : null;
         insertJob.run(
           jobId, set.projectId, shot.sourceImageId,
           JSON.stringify([sceneRef.imageAssetId]),
-          jobProvider.providerId, jobProvider.model, promptTemplate, set.size, set.quality,
-          set.maxAttempts || 2,
-          batchCreatedAt, index
+          jobProvider.providerId, jobProvider.model, promptTemplate,
+          unifiedContract?.size ?? set.size,
+          unifiedContract?.quality ?? set.quality,
+          unifiedContract?.maxAttempts ?? (set.maxAttempts || 2),
+          batchCreatedAt, index,
+          unifiedContract?.unifiedModel ?? null,
+          unifiedContract?.unifiedRuleVersion ?? null,
+          unifiedContract?.unifiedRequestJson ?? null,
+          creationSource,
+          requestKey,
+          requestHash,
         );
         db.prepare(`UPDATE shots SET latestJobId = ? WHERE id = ?`).run(jobId, shot.id);
         access.registerInheritedScope({
@@ -82,16 +191,33 @@ async function __teamRoutePOST(
         access.registerTaskPrincipal({
           module: 'image', taskId: jobId,
           scope: { resourceType: 'project', resourceId: set.projectId },
-          creationSnapshot: { shotId: shot.id, sceneReferenceId, model: jobProvider.model, creationIndex: index },
+          creationSnapshot: {
+            shotId: shot.id,
+            sceneReferenceId,
+            model: jobProvider.model,
+            creationIndex: index,
+            ...(unifiedContract ? {
+              unifiedModel: unifiedContract.unifiedModel,
+              unifiedRuleVersion: unifiedContract.unifiedRuleVersion,
+              imageAssetId: shot.sourceImageId,
+              referenceImageIds: [sceneRef.imageAssetId],
+            } : {}),
+          },
         });
         createdJobs.push(jobId);
       });
       db.prepare(`UPDATE shot_sets SET status = 'generating', sceneReferenceId = ? WHERE id = ?`).run(sceneReferenceId, id);
     }).immediate();
 
-    return NextResponse.json({ success: true, jobCount: createdJobs.length, jobIds: createdJobs });
+    return NextResponse.json({ success: true, jobCount: createdJobs.length, jobIds: createdJobs, replayed: false });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    if (err instanceof UnifiedJobRequestConflictError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: err instanceof UnifiedImageRequestError ? 400 : 500 },
+    );
   }
 }
 export const POST = withTeamRoute('/api/shot-sets/[id]/apply-scene', 'POST', __teamRoutePOST);

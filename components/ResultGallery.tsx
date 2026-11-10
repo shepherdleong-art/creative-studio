@@ -14,6 +14,7 @@ import {
 } from '@/lib/result-gallery-jobs';
 import { getImageJobDisplayName } from '@/lib/image-job-display-name';
 import { getGptImage2AspectRatio } from '@/lib/gpt-image-2-size-presets';
+import { UNIFIED_IMAGE_DISPLAY_NAME } from '@/lib/media-core/unified-media/catalog';
 
 interface Job {
   id: string;
@@ -30,6 +31,7 @@ interface Job {
   referenceImageIds?: string;
   providerId?: string;
   model?: string;
+  unifiedModel?: string | null;
   size?: string;
   quality?: string;
 }
@@ -47,6 +49,7 @@ interface ImageProvider {
   id: string;
   name: string;
   model: string;
+  type?: string;
   enabled: number | boolean;
   hasApiKey: boolean;
 }
@@ -570,7 +573,9 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
 
                         {selectableProviders.length > 0 && (
                           <div>
-                            <label className="mb-1 block text-xs font-medium text-ink-secondary">供应商 / 模型</label>
+                            <label className="mb-1 block text-xs font-medium text-ink-secondary">
+                              {selectedProvider?.type === 'unified-image' ? '模型' : '供应商 / 模型'}
+                            </label>
                             <select
                               value={selectedProviderId}
                               onChange={(e) => setRegenProviderId(e.target.value)}
@@ -578,12 +583,14 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                             >
                               {selectableProviders.map((provider) => (
                                 <option key={provider.id} value={provider.id}>
-                                  {provider.name} ({provider.model})
+                                  {provider.type === 'unified-image' ? provider.name : `${provider.name} (${provider.model})`}
                                 </option>
                               ))}
                             </select>
                             <p className="mt-1 text-xs text-ink-tertiary">
-                              本次重新生成会使用：{selectedProvider?.model || selectedJob.model || '原任务模型'}
+                              本次重新生成会使用：{selectedProvider?.type === 'unified-image'
+                                ? UNIFIED_IMAGE_DISPLAY_NAME
+                                : selectedProvider?.model || selectedJob.model || '原任务模型'}
                             </p>
                           </div>
                         )}
