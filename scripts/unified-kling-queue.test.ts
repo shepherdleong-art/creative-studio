@@ -480,6 +480,16 @@ try {
     shotId: budgetCapacity.shotId,
     prompt: 'qiniu-full-but-budget-blocked',
   });
+  insertUnifiedJob(db, {
+    id: 'job-budget-history',
+    projectId: budgetCapacity.projectId,
+    imageId: budgetCapacity.imageId,
+    shotSetId: budgetCapacity.shotSetId,
+    shotId: budgetCapacity.shotId,
+    prompt: 'historical-success',
+  });
+  db.prepare(`UPDATE video_jobs SET status = 'succeeded', providerStatus = 'succeeded',
+    providerTaskId = 'historical-remote' WHERE id = 'job-budget-history'`).run();
   const budgetCapacityRun = videoQueue.runVideoQueue({
     projectId: budgetCapacity.projectId, concurrency: 2, timeoutMs: 30_000,
   });
@@ -493,6 +503,11 @@ try {
   assert.equal(unifiedChannel('job-budget-capacity', 'qiniu')?.state, 'selected');
   assert.equal(unifiedChannel('job-budget-capacity', 'tencent')?.state, 'candidate');
   videoQueue.cancelVideoQueue(budgetCapacity.projectId);
+  assert.equal(
+    db.prepare(`SELECT cancelRequestedAt FROM video_jobs WHERE id = 'job-budget-history'`).pluck().get(),
+    null,
+    'project-level cancellation must not pollute terminal history',
+  );
   await budgetCapacityRun;
   updateActorPolicy(db, {
     actorId: 'member',

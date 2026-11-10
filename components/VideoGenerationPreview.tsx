@@ -6,7 +6,6 @@ import { Icon } from '@/components/ui/Icon';
 interface VideoJob {
   id: string;
   filename?: string;
-  localVideoPath?: string;
   status: string;
   rejectedAt?: string | null;
 }

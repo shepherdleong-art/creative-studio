@@ -14,6 +14,10 @@ import {
   isUnifiedImageChannelProvider,
 } from '@/lib/media-core/unified-media/catalog';
 import {
+  LEGACY_IMAGE2_UPGRADE_MESSAGE,
+  requiresLegacyImage2Upgrade,
+} from '@/lib/media-core/unified-media/project-migration';
+import {
   UnifiedImageRequestError,
   inferUnifiedImageOutputFromPreset,
 } from '@/lib/media-core/unified-media/requests';
@@ -60,6 +64,17 @@ async function __teamRoutePOST(
       } | undefined;
     if (!provider) return NextResponse.json({ error: '供应商不存在' }, { status: 400 });
     if (!provider.enabled) return NextResponse.json({ error: '供应商已禁用' }, { status: 400 });
+    const legacyImage2Project = requiresLegacyImage2Upgrade({
+      projectProviderId: project.providerId,
+      projectModel: project.model,
+      requestedProviderModel: provider.model,
+    });
+    if (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE?.trim() === 'server' && legacyImage2Project) {
+      return NextResponse.json({
+        error: 'legacy_image2_project_requires_upgrade',
+        message: LEGACY_IMAGE2_UPGRADE_MESSAGE,
+      }, { status: 409 });
+    }
     if ((process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE?.trim() || 'local') === 'server'
       && isUnifiedImageChannelProvider(provider)
       && !isUnifiedImageAnchorProvider(provider)) {

@@ -22,22 +22,34 @@ export function applyUnifiedImageJobCancel(
   jobId: string,
   now = new Date(),
 ): UnifiedMediaCancelResult | null {
-  const job = db.prepare(`SELECT id, status, unifiedModel, providerTaskId, cancelRequestedAt
+  const job = db.prepare(`SELECT id, status, unifiedModel, providerTaskId, providerStatus,
+      remoteImageUrl, outputImageId, cancelRequestedAt
     FROM jobs WHERE id = ?`).get(jobId) as {
       id: string; status: string; unifiedModel: string | null; providerTaskId: string | null;
+      providerStatus: string | null; remoteImageUrl: string | null; outputImageId: string | null;
       cancelRequestedAt: string | null;
     } | undefined;
   if (!job) return null;
   if (!job.unifiedModel) throw new Error('old_media_cancel_contract');
 
-  const at = now.toISOString();
-  requestUnifiedImageCancellation(db, jobId);
   if (['succeeded', 'failed', 'canceled'].includes(job.status)) {
     return { status: job.status, acceptedSubmittedWork: false, idempotent: true };
   }
-  const acceptedSubmittedWork = Boolean(job.providerTaskId);
+  const at = now.toISOString();
+  const acceptedSubmittedWork = Boolean(job.providerTaskId
+    || job.outputImageId
+    || (job.providerStatus === 'download_failed' && job.remoteImageUrl));
   if (job.cancelRequestedAt) {
     return { status: job.status, acceptedSubmittedWork, idempotent: true };
+  }
+  requestUnifiedImageCancellation(db, jobId);
+  const imageDownloadOnly = job.providerStatus === 'download_failed' && Boolean(job.remoteImageUrl);
+  if (acceptedSubmittedWork && !job.providerTaskId && !imageDownloadOnly) {
+    db.prepare(`UPDATE jobs SET status = 'canceled', cancelRequestedAt = COALESCE(cancelRequestedAt, ?),
+      errorMessage = ?, finishedAt = COALESCE(finishedAt, ?) WHERE id = ?`).run(
+      at, CANCEL_SETTLING_MESSAGE, at, jobId,
+    );
+    return { status: 'canceled', acceptedSubmittedWork: true, idempotent: false };
   }
   if (acceptedSubmittedWork) {
     db.prepare(`UPDATE jobs SET cancelRequestedAt = COALESCE(cancelRequestedAt, ?),
@@ -60,22 +72,36 @@ export function applyUnifiedKlingJobCancel(
   jobId: string,
   now = new Date(),
 ): UnifiedMediaCancelResult | null {
-  const job = db.prepare(`SELECT id, status, unifiedModel, providerTaskId, cancelRequestedAt
+  const job = db.prepare(`SELECT id, status, unifiedModel, providerTaskId, providerStatus,
+      remoteVideoUrl, localVideoPath, filename, cancelRequestedAt
     FROM video_jobs WHERE id = ?`).get(jobId) as {
       id: string; status: string; unifiedModel: string | null; providerTaskId: string | null;
+      providerStatus: string | null; remoteVideoUrl: string | null;
+      localVideoPath: string | null; filename: string | null;
       cancelRequestedAt: string | null;
     } | undefined;
   if (!job) return null;
   if (!job.unifiedModel) throw new Error('old_media_cancel_contract');
 
-  const at = now.toISOString();
-  requestUnifiedKlingCancellation(db, jobId);
   if (['succeeded', 'failed', 'canceled'].includes(job.status)) {
     return { status: job.status, acceptedSubmittedWork: false, idempotent: true };
   }
-  const acceptedSubmittedWork = Boolean(job.providerTaskId);
+  const at = now.toISOString();
+  const acceptedSubmittedWork = Boolean(job.providerTaskId
+    || job.localVideoPath
+    || job.filename
+    || (job.providerStatus === 'download_failed' && job.remoteVideoUrl));
   if (job.cancelRequestedAt) {
     return { status: job.status, acceptedSubmittedWork, idempotent: true };
+  }
+  requestUnifiedKlingCancellation(db, jobId);
+  const videoDownloadOnly = job.providerStatus === 'download_failed' && Boolean(job.remoteVideoUrl);
+  if (acceptedSubmittedWork && !job.providerTaskId && !videoDownloadOnly) {
+    db.prepare(`UPDATE video_jobs SET status = 'canceled', cancelRequestedAt = COALESCE(cancelRequestedAt, ?),
+      errorMessage = ?, finishedAt = COALESCE(finishedAt, ?) WHERE id = ?`).run(
+      at, CANCEL_SETTLING_MESSAGE, at, jobId,
+    );
+    return { status: 'canceled', acceptedSubmittedWork: true, idempotent: false };
   }
   if (acceptedSubmittedWork) {
     db.prepare(`UPDATE video_jobs SET cancelRequestedAt = COALESCE(cancelRequestedAt, ?),

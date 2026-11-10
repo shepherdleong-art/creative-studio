@@ -89,7 +89,7 @@ interface VideoJob {
   videoUrl?: string;
   /** 用户可见的友好名称（D5）；filename 只服务播放 URL/物理路径。 */
   displayName?: string | null;
-  localVideoPath?: string;
+  hasLocalVideo?: boolean;
   cancelRequestedAt?: string | null;
   errorMessage?: string;
   providerName?: string;
@@ -315,7 +315,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const getDefaultPreviewJobId = (jobs: VideoJob[]) =>
     jobs.find((j) => (
       (j.status === 'succeeded'
-        || (j.status === 'canceled' && Boolean(j.localVideoPath || j.filename)))
+        || (j.status === 'canceled' && Boolean(j.hasLocalVideo || j.filename)))
       && j.filename
       && !j.rejectedAt
     ))?.id || null;
@@ -324,7 +324,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     const shotJobs = jobs.filter((job) => job.shotId === selectedShotRef.current);
     setVideoPreviewJobId((current) => {
       if (current && shotJobs.some((j) => j.id === current && j.filename && !j.rejectedAt
-        && (j.status === 'succeeded' || (j.status === 'canceled' && Boolean(j.localVideoPath))))) return current;
+        && (j.status === 'succeeded' || (j.status === 'canceled' && Boolean(j.hasLocalVideo))))) return current;
       if (previewSuppressedRef.current) return null;
       return getDefaultPreviewJobId(shotJobs);
     });
@@ -550,7 +550,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const canDeleteShot = (shotId: string) =>
     Boolean(isFreeSet) && !videoJobs.some((job) => job.shotId === shotId && (
       !DISCARDABLE_JOB_STATUSES.has(job.status)
-      || (job.status === 'canceled' && Boolean(job.localVideoPath || job.filename))
+      || (job.status === 'canceled' && Boolean(job.hasLocalVideo || job.filename))
     ));
 
   const handleDeleteFreeShot = async (shotId: string) => {
@@ -1436,7 +1436,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     {shot.imageUrl && <HoverZoomImage src={shot.imageUrl} alt={`分镜 ${shot.indexNum} 图片`} className="video-shot-thumb" zoomMaxWidth={520} zoomMaxHeight={520} />}
                     <span>{isFreeSet ? `图 ${shot.indexNum}` : `分镜 ${shot.indexNum}`}<small>{videoJobs.filter((job) => job.shotId === shot.id && (
                       job.status === 'succeeded'
-                      || (job.status === 'canceled' && Boolean(job.localVideoPath || job.filename))
+                      || (job.status === 'canceled' && Boolean(job.hasLocalVideo || job.filename))
                     )).length} 条已完成</small></span>
                   </button>
                 ))}

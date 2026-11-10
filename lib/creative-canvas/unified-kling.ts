@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { sha256Canonical } from '../canonical-json.ts';
 import type Database from 'better-sqlite3';
 import {
   resolveVideoProviderRuntimeConfig,
@@ -206,19 +207,6 @@ function parseObject<T>(raw: string | null, fallback: T): T {
   }
 }
 
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  return `{${Object.entries(value as Record<string, unknown>)
-    .filter(([, item]) => item !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`;
-}
-
-function hash(value: unknown): string {
-  return createHash('sha256').update(canonical(value)).digest('hex');
-}
-
 function taskKey(taskId: string): string {
   return `canvas:${taskId}`;
 }
@@ -383,7 +371,7 @@ function ensureParent(
   now: Date,
 ): { parent: MediaTaskRow; contract: CanvasUnifiedKlingContract } {
   const contract = freezeContract(db, task, context);
-  const inputHash = hash(contract);
+  const inputHash = sha256Canonical(contract);
   const access = requireAccessContext();
   if (access.kind !== 'team') {
     throw new CanvasUnifiedTerminalError('team_only', '统一可灵 3.0 仅在团队模式可用。');

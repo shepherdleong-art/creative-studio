@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { sha256Canonical } from '../../canonical-json.ts';
 import type Database from 'better-sqlite3';
 import { requireAccessContext } from '../access-context.ts';
 import { ensureMediaProviderPool } from '../execution/media-provider-pool.ts';
@@ -229,19 +230,6 @@ export type UnifiedKlingCapacityDecision =
     reason: string;
   };
 
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  return `{${Object.entries(value as Record<string, unknown>)
-    .filter(([, item]) => item !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`;
-}
-
-function hash(value: unknown): string {
-  return createHash('sha256').update(canonical(value)).digest('hex');
-}
-
 function readJob(db: Database.Database, jobId: string): UnifiedVideoJobRow {
   const job = db.prepare('SELECT * FROM video_jobs WHERE id = ?').get(jobId) as
     | UnifiedVideoJobRow
@@ -301,7 +289,7 @@ function ensureLogicalTask(
 ): MediaTaskRow {
   const access = requireAccessContext();
   if (access.kind !== 'team') throw new Error('统一可灵任务缺少团队发起人。');
-  const inputHash = hash(frozen);
+  const inputHash = sha256Canonical(frozen);
   const at = new Date().toISOString();
   const source = unifiedTaskSourceForJob(db, {
     module: 'video',

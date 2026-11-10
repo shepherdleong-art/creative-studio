@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { sha256Canonical } from '../../canonical-json.ts';
 import type Database from 'better-sqlite3';
 import { isPlaceholderValue } from '../../video-auth.ts';
 import { requireAccessContext } from '../access-context.ts';
@@ -320,19 +321,6 @@ export interface UnifiedImageExplicitFailureInput {
   channelKey?: string | null;
 }
 
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  return `{${Object.entries(value as Record<string, unknown>)
-    .filter(([, item]) => item !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`;
-}
-
-function hash(value: unknown): string {
-  return createHash('sha256').update(canonical(value)).digest('hex');
-}
-
 function readJob(db: Database.Database, jobId: string): UnifiedJobRow {
   const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId) as UnifiedJobRow | undefined;
   if (!job) throw new Error(`统一图片任务 ${jobId} 不存在。`);
@@ -396,7 +384,7 @@ function ensureLogicalTask(
 ): MediaTaskRow {
   const access = requireAccessContext();
   if (access.kind !== 'team') throw new Error('统一图片任务缺少团队发起人。');
-  const inputHash = hash(frozen);
+  const inputHash = sha256Canonical(frozen);
   const at = new Date().toISOString();
   const fallbackSourceType = job.creationSource
     || (job.parentJobId ? 'project_regenerate' : 'project_scene');

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { sha256Canonical } from './canonical-json.ts';
 import { getDb } from './db.ts';
 import { requireAccessContext } from './media-core/access-context.ts';
 import {
@@ -118,19 +119,6 @@ export function setLegacyMediaExecutionRuntime(value: LegacyExecutionInjection |
   const globals = globalThis as unknown as Record<symbol, LegacyExecutionInjection | undefined>;
   if (value) globals[INJECTION_KEY] = value;
   else delete globals[INJECTION_KEY];
-}
-
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  return `{${Object.entries(value as Record<string, unknown>)
-    .filter(([, item]) => item !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`;
-}
-
-function hash(value: unknown): string {
-  return createHash('sha256').update(canonical(value)).digest('hex');
 }
 
 export class LegacyMediaSubmissionUnknownError extends Error {
@@ -283,9 +271,9 @@ export function assertLegacyMediaProviderRecovery(input: {
   } catch {
     throw new LegacyMediaProviderRecoveryBlockedError();
   }
-  const configVersion = row.configVersion ?? hash(frozenProvider);
+  const configVersion = row.configVersion ?? sha256Canonical(frozenProvider);
   const credentialVersion = upstreamFingerprint(input.providerSnapshot.baseUrl, input.credentialIdentity);
-  if (configVersion !== hash(input.providerSnapshot) || row.credentialVersionRef !== credentialVersion) {
+  if (configVersion !== sha256Canonical(input.providerSnapshot) || row.credentialVersionRef !== credentialVersion) {
     throw new LegacyMediaProviderRecoveryBlockedError();
   }
 }
@@ -336,10 +324,10 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
     inputRevision: input.inputRevision,
     businessAttempt: { id: `${input.taskId}:${input.inputRevision}`, number: revisionNumber },
     inputSnapshot: input.inputSnapshot,
-    inputHash: hash(input.inputSnapshot),
+    inputHash: sha256Canonical(input.inputSnapshot),
     continuationKey: `legacy-${input.module}.submit`,
     providerSnapshot: input.providerSnapshot,
-    configVersion: hash(input.providerSnapshot),
+    configVersion: sha256Canonical(input.providerSnapshot),
     credentialVersionRef: upstreamFingerprint(input.baseUrl, credentialIdentity),
     requiredPools: [poolKey],
     quote: input.quote,

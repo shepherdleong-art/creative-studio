@@ -19,7 +19,7 @@ interface VideoJob {
   videoUrl?: string;
   /** 用户可见的友好名称（D5）；filename 只服务播放 URL/物理路径。 */
   displayName?: string | null;
-  localVideoPath?: string;
+  hasLocalVideo?: boolean;
   cancelRequestedAt?: string | null;
   errorMessage?: string;
   providerName?: string;
@@ -116,7 +116,7 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
         const isActive = activePreviewJobId === job.id;
         const isSucceeded = job.status === 'succeeded';
         const hasResult = isSucceeded
-          || (job.status === 'canceled' && Boolean(job.localVideoPath || job.filename));
+          || (job.status === 'canceled' && Boolean(job.hasLocalVideo || job.filename));
         const isRejected = Boolean(job.rejectedAt);
         const isFailed = job.status === 'failed' || (job.status === 'canceled' && !hasResult);
         const isRunning = job.status === 'pending' || job.status === 'running';

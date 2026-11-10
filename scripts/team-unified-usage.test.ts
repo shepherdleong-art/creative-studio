@@ -469,6 +469,17 @@ try {
   assert.equal(withOrphan.legacyAttempts.some((item) => item.taskId === 'job-orphan'), false);
   assert.equal(withOrphan.counts.unmappedAttempts, 1);
 
+  addMediaTask({
+    id: 'media-no-attempt', jobId: 'job-no-attempt', actorId: 'alice', status: 'waiting',
+  });
+  const noAttempt = queryTeamUnifiedUsage(db, aliceView, range);
+  const waitingTask = noAttempt.tasks.find((task) => task.taskId === 'job-no-attempt');
+  assert.ok(waitingTask, 'a unified task without an attempt must still appear in task totals');
+  assert.equal(waitingTask?.costStatus, 'unpriced');
+  const noAttemptAnalytics = queryTeamUsageAnalytics(db, aliceView, { ...range, model: 'Image 2' });
+  assert.ok(noAttemptAnalytics.modelOptions.includes('Image 2'));
+  assert.ok(noAttemptAnalytics.taskCount >= 4, 'no-attempt unified work counts as a task, not an attempt');
+
   console.log('team unified usage tests passed');
 } finally {
   runtime.closeNewWork();

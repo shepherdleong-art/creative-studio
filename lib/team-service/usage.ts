@@ -390,8 +390,12 @@ export function queryTeamUsageAnalytics(
   const defaults = getShanghaiUsagePeriods(now).month;
   const trend = usageTrend(filters.from ?? defaults.from, filters.to ?? defaults.to, items);
   if (viewer.role !== 'admin') {
-    const modelOptions = queryTeamUsage(db, viewer, { actorUserId: viewer.userId }).items
-      .map((item) => item.reportingModel);
+    const own = queryTeamUsage(db, viewer, { actorUserId: viewer.userId }).items;
+    const ownTasks = queryUnifiedTaskUsage(db, viewer, { actorUserId: viewer.userId }).tasks;
+    const modelOptions = [
+      ...own.map((item) => item.reportingModel),
+      ...ownTasks.map((task) => task.model),
+    ];
     return {
       models, trend, members: [], teamQuota: null,
       modelOptions: [...new Set(modelOptions)].sort(),
@@ -420,7 +424,10 @@ export function queryTeamUsageAnalytics(
     limitedRemainingMinor: limited.reduce((sum, member) => sum + (member.remainingMinor ?? 0), 0),
     unlimitedCount: memberRows.length - limited.length,
   };
-  const modelOptions = queryTeamUsage(db, viewer).items.map((item) => item.reportingModel);
+  const modelOptions = [
+    ...queryTeamUsage(db, viewer).items.map((item) => item.reportingModel),
+    ...queryUnifiedTaskUsage(db, viewer).tasks.map((task) => task.model),
+  ];
   return {
     models, trend, members, teamQuota,
     modelOptions: [...new Set(modelOptions)].sort(),

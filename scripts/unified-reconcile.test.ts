@@ -458,13 +458,13 @@ try {
     const job = db.prepare('SELECT status, providerStatus, providerTaskId FROM jobs WHERE id = ?').get('job-canceled') as {
       status: string; providerStatus: string; providerTaskId: string;
     };
-    assert.equal(job.status, 'canceled');
+    assert.equal(job.status, 'needs_check', 'canceled accepted work remains eligible for read-only polling');
     assert.equal(job.providerStatus, 'accepted');
     assert.equal(job.providerTaskId, 'remote-canceled');
     assert.equal(
       db.prepare('SELECT COUNT(*) FROM jobs WHERE id = ? AND status = ?').pluck().get('job-canceled', 'needs_check'),
-      0,
-      'a canceled task never re-enters the generation queue',
+      1,
+      'a canceled task may re-enter only the read-only settlement queue',
     );
   }
 

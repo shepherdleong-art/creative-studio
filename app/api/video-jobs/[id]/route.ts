@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { requiresReassembledUpstreamRework, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
 import { resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
-import { toStorageVideoUrl } from '@/lib/storage-url';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { applyUnifiedKlingJobCancel } from '@/lib/media-core/unified-media/cancel-intent';
+import { videoJobForClient } from '@/lib/client-media-dto';
 
 async function __teamRouteGET(
   _request: NextRequest,
@@ -24,7 +24,10 @@ async function __teamRouteGET(
     // videoUrl 由登记路径生成；displayName 是所有用户可见名称，
     // 旧任务为 NULL 时由共享 helper 确定性派生（不回写数据库）。
     const displayNames = resolveVideoJobDisplayNames(db, [String(job.id)]);
-    return NextResponse.json({ ...job, displayName: displayNames.get(String(job.id)) ?? null, videoUrl: toStorageVideoUrl(typeof job.localVideoPath === 'string' ? job.localVideoPath : null) });
+    return NextResponse.json({
+      ...videoJobForClient(job),
+      displayName: displayNames.get(String(job.id)) ?? null,
+    });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
