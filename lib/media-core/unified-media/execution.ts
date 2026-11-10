@@ -80,6 +80,8 @@ interface ProviderRow {
   defaultCostPerImage: number | null;
 }
 
+export type UnifiedImageRouteProvider = ProviderRow;
+
 interface MediaTaskRow {
   id: string;
   taskKey: string;
@@ -513,13 +515,13 @@ function setChannelSkipped(
     .run(JSON.stringify({ reason }), new Date().toISOString(), taskId, channelKey);
 }
 
-interface ChannelSelection {
+export interface UnifiedImageRouteSelection {
   definition: UnifiedImageChannelDefinition;
   provider: ProviderRow;
   executionRevision: number;
 }
 
-interface ChannelSelectionFailure {
+export interface UnifiedImageRouteSelectionFailure {
   reason: 'channel_limit' | 'no_available_channel' | 'channel_identity_mismatch' | 'pool_configuration_invalid';
   message: string;
 }
@@ -562,18 +564,18 @@ function submittedChannelCount(db: Database.Database, taskId: string): number {
 
 function findNextChannel(
   db: Database.Database,
-  job: UnifiedJobRow,
   task: MediaTaskRow,
-  frozen: FrozenUnifiedImageRequest,
+  output: Pick<FrozenUnifiedImageRequest, 'tier' | 'ratio'>,
+  executionRevision: number,
   excludeChannelKey?: string,
-): ChannelSelection | ChannelSelectionFailure {
+): UnifiedImageRouteSelection | UnifiedImageRouteSelectionFailure {
   if (submittedChannelCount(db, task.id) >= 2) {
     return {
       reason: 'channel_limit',
       message: 'Image 2 的两条通道都已真实提交过，不会再发起第三次生成。',
     };
   }
-  for (const definition of unifiedImageCompatibleChannels(frozen.tier, frozen.ratio)) {
+  for (const definition of unifiedImageCompatibleChannels(output.tier, output.ratio)) {
     if (definition.channelKey === excludeChannelKey) continue;
     if (channelHasSubmission(db, task.id, definition.channelKey)) continue;
     const channel = db.prepare(`SELECT state, executionRevision FROM execution_media_channels
@@ -626,7 +628,7 @@ function findNextChannel(
     return {
       definition,
       provider: inspected.provider,
-      executionRevision: reusable?.revision ?? Math.max(1, job.executionRevision + 1),
+      executionRevision: reusable?.revision ?? Math.max(1, executionRevision + 1),
     };
   }
   return {
@@ -635,7 +637,7 @@ function findNextChannel(
   };
 }
 
-function markSelectedChannel(
+export function markUnifiedImageChannelSelected(
   db: Database.Database,
   taskId: string,
   definition: UnifiedImageChannelDefinition,
@@ -654,6 +656,35 @@ function markSelectedChannel(
   return at;
 }
 
+/**
+ * Shared channel planner for any module that owns the logical media task.
+ * It consumes the exact provider catalog, complete output combination,
+ * provider availability, explicit pool mapping and channel health. It never
+ * creates an admission permit or sends a request.
+ */
+export function selectUnifiedImageChannelForTask(
+  db: Database.Database,
+  input: {
+    mediaTaskId: string;
+    tier: FrozenUnifiedImageRequest['tier'];
+    ratio: string;
+    executionRevision: number;
+    excludeChannelKey?: string;
+  },
+): UnifiedImageRouteSelection | UnifiedImageRouteSelectionFailure {
+  const task = db.prepare('SELECT * FROM execution_media_tasks WHERE id = ?').get(input.mediaTaskId) as
+    | MediaTaskRow
+    | undefined;
+  if (!task) throw new Error(`统一图片逻辑任务 ${input.mediaTaskId} 不存在。`);
+  return findNextChannel(
+    db,
+    task,
+    { tier: input.tier, ratio: input.ratio },
+    input.executionRevision,
+    input.excludeChannelKey,
+  );
+}
+
 function chooseInitialChannel(
   db: Database.Database,
   job: UnifiedJobRow,
@@ -663,7 +694,7 @@ function chooseInitialChannel(
   let failureMessage = '当前没有已启用且凭据可用的 Image 2 通道，任务未提交。';
   let identityError: UnifiedImageExecutionError | null = null;
   const selected = db.transaction((): PreparedUnifiedImageExecution | null => {
-    const selection = findNextChannel(db, job, task, frozen);
+    const selection = findNextChannel(db, task, frozen, job.executionRevision);
     if ('reason' in selection) {
       db.prepare(`UPDATE execution_media_tasks
         SET status = 'failed', resultJson = ?, updatedAt = ? WHERE id = ?`)
@@ -679,7 +710,7 @@ function chooseInitialChannel(
     const changed = db.prepare(`UPDATE jobs SET executionRevision = ?
       WHERE id = ? AND cancelRequestedAt IS NULL AND status = 'running'`).run(revision, job.id);
     if (changed.changes !== 1) throw new UnifiedImageCanceledError();
-    markSelectedChannel(db, task.id, definition, revision);
+    markUnifiedImageChannelSelected(db, task.id, definition, revision);
     return {
       taskId: task.id,
       channel: { channelKey: definition.channelKey, executionRevision: revision, definition, provider },
@@ -1155,7 +1186,9 @@ export function handleUnifiedImageCapacityDeferral(
     }
 
     const frozen = readFrozenRequest(job);
-    const selection = findNextChannel(db, job, task, frozen, channel.channelKey);
+    const selection = findNextChannel(
+      db, task, frozen, job.executionRevision, channel.channelKey,
+    );
     const at = now.toISOString();
     if ('reason' in selection) {
       // No alternative is available. Keep qiniu waiting and retry after the
@@ -1196,7 +1229,7 @@ export function handleUnifiedImageCapacityDeferral(
         AND status IN ('running', 'pending', 'retrying', 'deferred')`)
       .run(revision, job.id);
     if (changed.changes !== 1) return { outcome: 'ignored', reason: 'job_changed' };
-    markSelectedChannel(db, task.id, selection.definition, revision);
+    markUnifiedImageChannelSelected(db, task.id, selection.definition, revision);
     return {
       outcome: 'overflowed',
       previousChannelKey: channel.channelKey,
@@ -1461,7 +1494,9 @@ export function handleUnifiedImageExplicitFailure(
       });
     }
     const frozen = readFrozenRequest(job);
-    const selection = findNextChannel(db, job, task, frozen, channel.channelKey);
+    const selection = findNextChannel(
+      db, task, frozen, job.executionRevision, channel.channelKey,
+    );
     if ('reason' in selection) {
       const estimatedCost = unifiedImageAttemptCostMinor(db, job.id) / 100;
       const message = selection.reason === 'channel_limit'
@@ -1502,7 +1537,7 @@ export function handleUnifiedImageExplicitFailure(
         usedChannelCount: submittedChannelCount(db, task.id),
       };
     }
-    markSelectedChannel(db, task.id, selection.definition, revision);
+    markUnifiedImageChannelSelected(db, task.id, selection.definition, revision);
     return {
       outcome: 'next_channel',
       previousChannelKey: channel.channelKey,
