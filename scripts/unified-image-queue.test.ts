@@ -266,6 +266,31 @@ try {
     'tencent-only work is priced by the real tencent channel',
   );
 
+  const retryImageId = insertMemberAndProject(db, 'project-generation-turn', UNIFIED_IMAGE_ANCHOR_ID, UNIFIED_IMAGE_MODEL_KEY);
+  insertUnifiedJob(db, {
+    id: 'job-generation-turn', projectId: 'project-generation-turn',
+    inputImageId: retryImageId, tier: '2k', ratio: '1:1',
+  });
+  await queue.runQueue({ projectId: 'project-generation-turn', concurrency: 2, maxAttempts: 5, timeoutMs: 30_000 });
+  const firstParent = db.prepare(`SELECT unifiedTaskId, unifiedGenerationId FROM jobs
+    WHERE id = 'job-generation-turn'`).get() as { unifiedTaskId: string; unifiedGenerationId: string };
+  assert.ok(firstParent.unifiedTaskId);
+  assert.ok(firstParent.unifiedGenerationId);
+  db.prepare(`UPDATE jobs SET status = 'pending', attempt = 0, providerTaskId = NULL,
+    providerStatus = NULL, remoteImageUrl = NULL, outputImageId = NULL, finishedAt = NULL,
+    unifiedTaskId = NULL, unifiedGenerationId = NULL, cancelRequestedAt = NULL
+    WHERE id = 'job-generation-turn'`).run();
+  await queue.runQueue({ projectId: 'project-generation-turn', concurrency: 2, maxAttempts: 5, timeoutMs: 30_000 });
+  const secondParent = db.prepare(`SELECT unifiedTaskId, unifiedGenerationId FROM jobs
+    WHERE id = 'job-generation-turn'`).get() as { unifiedTaskId: string; unifiedGenerationId: string };
+  assert.notEqual(secondParent.unifiedTaskId, firstParent.unifiedTaskId,
+    'a new generation turn must not reuse an exhausted logical parent');
+  assert.notEqual(secondParent.unifiedGenerationId, firstParent.unifiedGenerationId);
+  assert.equal(
+    db.prepare(`SELECT COUNT(*) FROM execution_media_tasks WHERE taskId = 'job-generation-turn'`).pluck().get(),
+    2,
+  );
+
   const legacyImageId = insertMemberAndProject(db, 'project-legacy', UNIFIED_IMAGE_CHANNELS[0].providerId, 'qiniuyun/gpt-image-2-medium');
   insertLegacyJob(db, {
     id: 'job-legacy', projectId: 'project-legacy', inputImageId: legacyImageId,

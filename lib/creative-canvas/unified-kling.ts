@@ -1159,6 +1159,13 @@ export function handleCanvasUnifiedKlingExplicitFailure(
         reasonCode: failureReason,
         now: new Date(at),
       });
+    } else {
+      releaseUnifiedChannelRecoveryProbe(db, {
+        unifiedModel: parent.unifiedModel,
+        channelKey: channel.channelKey,
+        providerId: channel.providerId,
+        now: new Date(at),
+      });
     }
     const contract = parseObject<CanvasUnifiedKlingContract | null>(parent.inputSnapshotJson, null);
     if (!contract) {

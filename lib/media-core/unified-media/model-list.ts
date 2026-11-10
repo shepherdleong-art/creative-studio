@@ -1,7 +1,7 @@
 import { isPlaceholderValue } from '../../video-auth.ts';
 import { isVisibleImageProvider } from '../../provider-list-visibility.ts';
 import {
-  UNIFIED_IMAGE_CHANNELS,
+  isUnifiedImageChannelProvider,
   unifiedImageAnchorProjection,
 } from './catalog.ts';
 
@@ -21,7 +21,7 @@ function configuredSecret(value: unknown): boolean {
 }
 
 function isRealImage2Channel(row: ImageProviderListRow): boolean {
-  return UNIFIED_IMAGE_CHANNELS.some((channel) => channel.providerId === row.id);
+  return isUnifiedImageChannelProvider(row);
 }
 
 export function projectTeamImageModels(

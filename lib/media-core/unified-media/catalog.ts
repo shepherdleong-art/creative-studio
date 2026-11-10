@@ -153,6 +153,16 @@ export function isUnifiedImageAnchorProvider(provider: {
     && provider.model === UNIFIED_IMAGE_MODEL_KEY;
 }
 
+/** New team tasks must use the anchor; exact channel rows are recovery-only. */
+export function isUnifiedImageChannelProvider(provider: {
+  id?: unknown;
+  model?: unknown;
+}): boolean {
+  const id = typeof provider.id === 'string' ? provider.id.trim() : '';
+  const model = typeof provider.model === 'string' ? provider.model.trim() : '';
+  return UNIFIED_IMAGE_CHANNELS.some((channel) => channel.providerId === id || channel.model === model);
+}
+
 export function unifiedImageAnchorProjection(available: boolean) {
   return {
     id: UNIFIED_IMAGE_ANCHOR_ID,
@@ -179,6 +189,19 @@ export function isUnifiedKlingAnchorProvider(provider: {
   return provider.id === UNIFIED_KLING3_ANCHOR_ID
     && provider.type === 'openai-video'
     && model === UNIFIED_KLING3_MODEL_KEY;
+}
+
+export function isUnifiedKlingChannelProvider(provider: {
+  id?: unknown;
+  defaultModel?: unknown;
+  model?: unknown;
+}): boolean {
+  const id = typeof provider.id === 'string' ? provider.id.trim() : '';
+  if (id === UNIFIED_KLING3_ANCHOR_ID) return false;
+  const model = typeof (provider.defaultModel ?? provider.model) === 'string'
+    ? String(provider.defaultModel ?? provider.model).trim()
+    : '';
+  return UNIFIED_KLING3_CHANNELS.some((channel) => channel.providerId === id || channel.model === model);
 }
 
 export function unifiedKlingAnchorProjection(available: boolean) {

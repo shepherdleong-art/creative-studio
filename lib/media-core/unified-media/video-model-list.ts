@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { resolveVideoProviderRuntimeConfig, type VideoProviderEnvConfig } from '../../video-auth.ts';
 import { isVisibleVideoProvider } from '../../provider-list-visibility.ts';
 import {
+  isUnifiedKlingChannelProvider,
   UNIFIED_KLING3_ANCHOR_ID,
   UNIFIED_KLING3_CHANNELS,
   unifiedKlingAnchorProjection,
@@ -45,7 +46,7 @@ export function unifiedKlingProviderAvailability(db: Database.Database): Unified
   return UNIFIED_KLING3_CHANNELS.map((channel) => inspectChannel(db, channel));
 }
 
-export function projectTeamVideoModels<T extends { id: string }>(
+export function projectTeamVideoModels<T extends { id: string; defaultModel?: string; model?: string }>(
   described: T[],
   options: {
     mode: 'local' | 'server';
@@ -58,17 +59,20 @@ export function projectTeamVideoModels<T extends { id: string }>(
   if (options.mode !== 'server') {
     return described.filter((provider) => provider.id !== UNIFIED_KLING3_ANCHOR_ID);
   }
-  const hiddenChannels = new Set(UNIFIED_KLING3_CHANNELS.map((channel) => channel.providerId));
   return [
     {
       ...unifiedKlingAnchorProjection(options.unifiedAvailable),
       capabilities: options.unifiedCapabilities,
     },
     ...described.filter((provider) =>
-      provider.id !== UNIFIED_KLING3_ANCHOR_ID && !hiddenChannels.has(provider.id)),
+      provider.id !== UNIFIED_KLING3_ANCHOR_ID && !isUnifiedKlingChannelProvider(provider)),
   ];
 }
 
-export function isVisibleNonUnifiedVideoProvider(provider: { id: string }): boolean {
-  return provider.id !== UNIFIED_KLING3_ANCHOR_ID && isVisibleVideoProvider(provider);
+export function isVisibleNonUnifiedVideoProvider(provider: {
+  id: string; defaultModel?: string; model?: string;
+}): boolean {
+  return provider.id !== UNIFIED_KLING3_ANCHOR_ID
+    && !isUnifiedKlingChannelProvider(provider)
+    && isVisibleVideoProvider(provider);
 }

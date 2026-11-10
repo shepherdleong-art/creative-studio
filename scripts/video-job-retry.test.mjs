@@ -11,7 +11,8 @@ db.exec(`CREATE TABLE video_jobs (
   lastPolledAt TEXT, pollCount INTEGER, startedAt TEXT, finishedAt TEXT,
   attempt INTEGER, errorMessage TEXT, usageSnapshotJson TEXT, executionRevision INTEGER DEFAULT 0,
   model TEXT, multiShot INTEGER, prompt TEXT, sourceImageId TEXT, tailImageId TEXT, durationSec INTEGER,
-  unifiedModel TEXT, unifiedRuleVersion TEXT, unifiedTaskId TEXT, unifiedRequestJson TEXT, cancelRequestedAt TEXT
+  unifiedModel TEXT, unifiedRuleVersion TEXT, unifiedTaskId TEXT, unifiedGenerationId TEXT,
+  unifiedRequestJson TEXT, cancelRequestedAt TEXT
 ); CREATE TABLE projects (id TEXT PRIMARY KEY, videoConcurrency INTEGER);`);
 db.prepare('INSERT INTO projects VALUES (?, ?)').run('project', 3);
 const logs = [];
@@ -53,7 +54,8 @@ function fixture(id, overrides = {}) {
     model: 'qiniuyun/kling-3.0', multiShot: 1, prompt: 'frozen prompt',
     sourceImageId: 'first-frame', tailImageId: 'last-frame', durationSec: 5,
     unifiedModel: 'kling-3.0', unifiedRuleVersion: 'unified-media-2026-11-10-v1',
-    unifiedTaskId: 'old-unified-parent', unifiedRequestJson: '{"frozen":true}', cancelRequestedAt: 'old-cancel',
+    unifiedTaskId: 'old-unified-parent', unifiedGenerationId: 'old-generation',
+    unifiedRequestJson: '{"frozen":true}', cancelRequestedAt: 'old-cancel',
     ...overrides,
   };
   db.prepare(`INSERT INTO video_jobs (${Object.keys(row)}) VALUES (${Object.keys(row).map(() => '?')})`).run(...Object.values(row));
@@ -78,6 +80,7 @@ try {
   assert.equal(after.usageSnapshotJson, null, 'a new paid task must re-freeze its own usage snapshot before submit');
   assert.equal(after.executionRevision, 1, 'confirmed manual resubmit must create a new execution operation revision');
   assert.equal(after.unifiedTaskId, null, 'a new unified generation gets a new logical task');
+  assert.equal(after.unifiedGenerationId, null, 'a new unified generation gets a fresh task key turn');
   assert.equal(after.cancelRequestedAt, null);
   assert.equal(after.unifiedModel, before.unifiedModel);
   assert.equal(after.unifiedRequestJson, before.unifiedRequestJson);

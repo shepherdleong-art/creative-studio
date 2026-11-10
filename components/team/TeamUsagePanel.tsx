@@ -18,7 +18,8 @@ type TeamUsageResponse = {
   items: TeamUsageAttempt[];
   tasks: TeamUnifiedTaskView[];
   legacyAttempts: TeamUsageAttempt[];
-  counts: { generationTasks: number; channelCalls: number; legacyAttempts: number };
+  unmappedAttempts: TeamUsageAttempt[];
+  counts: { generationTasks: number; channelCalls: number; legacyAttempts: number; unmappedAttempts: number };
   totals: { settledMinor: number; estimatedMinor: number; unpricedCount: number; uncertainCount: number };
   localAgentIncluded: false;
   costNotice: string;
@@ -48,8 +49,12 @@ const WAITING_LABELS = WAITING_REASON_LABELS;
 const SOURCE_LABELS: Record<string, string> = {
   project_scene: '项目场景图',
   project_shot: '项目分镜',
+  project_video: '项目视频',
+  project_apply_scene: '分镜应用场景',
+  project_regenerate: '项目重新生成',
   canvas: '创作画布',
   rework: '局部返工',
+  team_film_rework: '团队实拍返工',
 };
 
 function money(minor: number | null): string {
@@ -195,7 +200,9 @@ function TaskUsageTable({ tasks, canViewTeam }: { tasks: TeamUnifiedTaskView[]; 
         ? <Link className="text-accent" href={task.scope.resourceType === 'project' ? `/projects/${encodeURIComponent(task.scope.resourceId)}` : `/canvas/${encodeURIComponent(task.scope.resourceId)}`}>{task.scopeName}</Link>
         : task.scopeName}</p><p className="text-[11px] text-ink-tertiary">{SOURCE_LABELS[task.sourceType] ?? task.sourceType} · 规则 {task.ruleVersion}</p></td>
       <td className="text-ink-secondary">{taskStatusLabel(task)}{task.cancelRequestedAt ? <p className="mt-1 text-[11px] text-warn">已保留取消前已提交结果和费用</p> : null}</td>
-      <td className="text-ink-secondary">{task.generationTaskCount} 个任务 · {task.channelCallCount} 次调用<p className="mt-1 text-[12px] text-ink-tertiary">已提交 {task.submissionCount} · 使用通道 {task.usedChannelCount}</p></td>
+      <td className="text-ink-secondary">{task.generationTaskCount} 个任务{canViewTeam
+        ? <><p className="mt-1 text-[12px] text-ink-tertiary">通道调用 {task.channelCallCount} 次 · 已提交 {task.submissionCount} · 使用通道 {task.usedChannelCount}</p></>
+        : null}</td>
       <td className="num whitespace-nowrap font-medium text-ink">{taskCostLabel(task)}{task.costStatus === 'mixed' ? <p className="mt-1 text-[11px] font-normal text-warn">含待核账或未定价</p> : null}</td>
       <td className="text-[12px] text-ink-tertiary">{canViewTeam
         ? task.channels && task.channels.length > 0
@@ -322,8 +329,9 @@ export default function TeamUsagePanel() {
       <ModelAnalysis models={data.models} trend={data.trend} totals={data.totals} />
       {data.canViewTeam && data.scope === 'team' && !selectedMember && <MemberTable members={data.members} onOpen={id => { setSelectedMember(id); setData(null); }} />}
       <UsageDetails items={unifiedChannelItems} canViewTeam={data.canViewTeam} title="通道调用明细" note="每次真实通道提交一条 · 自动兜底会有多条；不等于制作任务数" />
-      {data.legacyAttempts.length > 0 ? <UsageDetails items={data.legacyAttempts} canViewTeam={data.canViewTeam} title="未映射历史记录" note="无法可信映射到统一模型父任务的历史调用，保留原始身份并单列，不按名称猜测" /> : null}
-      <p className="flex flex-wrap items-center gap-2 text-[12px] leading-5 text-ink-tertiary"><Tag tone="idle">口径</Tag>{data.costNotice} 制作任务 {data.counts.generationTasks} 个，通道调用 {data.counts.channelCalls} 次，未映射历史 {data.counts.legacyAttempts} 条。本地 Agent 不计入；未定价与不确定费用不显示为 0，也不代表供应商最终账单。</p>
+      {data.legacyAttempts.length > 0 ? <UsageDetails items={data.legacyAttempts} canViewTeam={data.canViewTeam} title="非统一模型调用" note="仍在使用的其他模型调用保留真实模型身份，不与统一模型任务混算" /> : null}
+      {data.canViewTeam && data.unmappedAttempts.length > 0 ? <UsageDetails items={data.unmappedAttempts} canViewTeam={data.canViewTeam} title="待映射执行记录" note="带有统一任务关联但父任务不可用；保留原始身份并单列，不猜测归属" /> : null}
+      <p className="flex flex-wrap items-center gap-2 text-[12px] leading-5 text-ink-tertiary"><Tag tone="idle">口径</Tag>{data.costNotice} 制作任务 {data.counts.generationTasks} 个，通道调用 {data.counts.channelCalls} 次，非统一模型 {data.counts.legacyAttempts} 条，待映射 {data.counts.unmappedAttempts} 条。本地 Agent 不计入；未定价与不确定费用不显示为 0，也不代表供应商最终账单。</p>
     </>}
   </div>;
 }

@@ -13,10 +13,10 @@ import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
 import { requireAccessContext } from './media-core/access-context.ts';
 import {
-  UNIFIED_KLING3_CHANNELS,
   UNIFIED_KLING3_MODEL_KEY,
   UNIFIED_MEDIA_RULE_VERSION,
   isUnifiedKlingAnchorProvider,
+  isUnifiedKlingChannelProvider,
 } from './media-core/unified-media/catalog.ts';
 import {
   freezeUnifiedKlingVideoRequest,
@@ -126,7 +126,7 @@ export async function createVideoJobsForShot(input: {
       return { ok: false, status: 400, error: input.batch ? `视频供应商 ${providerId} 未找到或已禁用` : 'Video provider not found or disabled' };
     }
     if ((process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE?.trim() || 'local') === 'server'
-      && UNIFIED_KLING3_CHANNELS.some((channel) => channel.providerId === provider.id)) {
+      && isUnifiedKlingChannelProvider(provider)) {
       return {
         ok: false,
         status: 400,

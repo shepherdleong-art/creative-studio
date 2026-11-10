@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveRegenerateImageJobProvider } from '@/lib/image-provider-selection';
-import { UNIFIED_IMAGE_ANCHOR_ID, UNIFIED_IMAGE_MODEL_KEY } from '@/lib/media-core/unified-media/catalog';
+import {
+  UNIFIED_IMAGE_ANCHOR_ID,
+  UNIFIED_IMAGE_MODEL_KEY,
+  isUnifiedImageChannelProvider,
+} from '@/lib/media-core/unified-media/catalog';
 import {
   buildUnifiedImageJobContract,
   isUnifiedImageJobProvider,
@@ -19,6 +23,7 @@ import { requiresReassembledImageRework, REASSEMBLED_REWORK_REQUIRED } from '@/l
 import { requireAccessContext } from '@/lib/media-core/access-context';
 import { bindImageScopeToProject, assertScopeConsistency } from '@/lib/team-service/resource-scopes';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
 
 
 const ALLOWED_SOURCE_STATUSES = new Set(['succeeded', 'failed', 'canceled', 'needs_check']);
@@ -81,7 +86,8 @@ async function __teamRoutePOST(
     } | undefined;
     if (!requestedProvider) return NextResponse.json({ error: '供应商不存在' }, { status: 400 });
     if (!requestedProvider.enabled) return NextResponse.json({ error: '供应商已禁用' }, { status: 400 });
-    const unifiedImage = isUnifiedImageJobProvider(requestedProvider);
+    const unifiedImage = isUnifiedImageJobProvider(requestedProvider)
+      || (readRuntimeConfig().mode === 'server' && isUnifiedImageChannelProvider(requestedProvider));
 
     let jobProvider: { providerId: string; model: string };
     if (unifiedImage) {

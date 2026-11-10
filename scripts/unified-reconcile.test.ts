@@ -502,6 +502,123 @@ try {
   }
 
   {
+    db.exec(`CREATE TABLE IF NOT EXISTS creative_canvas_tasks (
+      id TEXT PRIMARY KEY,
+      phase TEXT NOT NULL,
+      submissionState TEXT NOT NULL,
+      providerTaskId TEXT,
+      errorCode TEXT,
+      errorMessage TEXT,
+      mediaKind TEXT,
+      providerSnapshot TEXT,
+      cancelRequestedAt TEXT,
+      slotHeld INTEGER NOT NULL DEFAULT 0,
+      leaseOwner TEXT,
+      leaseUntil TEXT,
+      updatedAt TEXT NOT NULL
+    )`);
+    const parentId = 'media-canvas-reconcile';
+    const canvasTaskId = 'canvas-reconcile';
+    const frozen = freezeUnifiedImageRequest({
+      inputImageId: 'canvas-input', referenceImageIds: [], prompt: '画布核对',
+      tier: '2k', ratio: '3:4', referenceGuidanceMode: 'none',
+    });
+    db.prepare(`INSERT INTO execution_media_tasks (
+      id, taskKey, actorId, scopeType, scopeId, module, taskId, unifiedModel, ruleVersion,
+      inputHash, inputSnapshotJson, outputContractJson, sourceType, sourceId, sourceMetaJson,
+      status, cancelRequestedAt, currentChannelKey, nextEligibleAt, waitReason, waitDetailJson,
+      resultJson, reconcileVersion, createdAt, updatedAt
+    ) VALUES (?, ?, 'member', 'canvas', 'canvas-reconcile', 'canvas', ?,
+      ?, ?, 'canvas-hash', ?, ?, 'canvas', 'canvas-reconcile', '{}',
+      'unknown', NULL, 'qiniu', NULL, NULL, NULL, NULL, 0, ?, ?)`)
+      .run(
+        parentId, `canvas:${canvasTaskId}`, canvasTaskId,
+        UNIFIED_IMAGE_MODEL_KEY, UNIFIED_MEDIA_RULE_VERSION,
+        JSON.stringify(frozen), JSON.stringify(frozen), now, now,
+      );
+    db.prepare(`INSERT INTO creative_canvas_tasks
+      (id, phase, submissionState, providerTaskId, errorCode, errorMessage, mediaKind, providerSnapshot,
+       cancelRequestedAt, slotHeld, leaseOwner, leaseUntil, updatedAt)
+      VALUES (?, 'uncertain', 'not_sent', NULL, 'submission_unknown', '等待核对',
+        'image', ?,
+        NULL, 0, NULL, NULL, ?)`).run(
+      canvasTaskId,
+      JSON.stringify({ unifiedModel: UNIFIED_IMAGE_MODEL_KEY, unifiedRuleVersion: UNIFIED_MEDIA_RULE_VERSION }),
+      now,
+    );
+    const addCanvasChannel = db.prepare(`INSERT INTO execution_media_channels (
+      id, mediaTaskId, channelKey, providerTable, providerId, providerModel, priority,
+      state, executionRevision, operationId, remoteId, evidenceJson, nextEligibleAt, createdAt, updatedAt
+    ) VALUES (?, ?, ?, 'providers', ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, ?, ?)`);
+    addCanvasChannel.run('canvas-qiniu', parentId, qiniu.channelKey, qiniu.providerId, qiniu.model, 0, 'accepted', now, now);
+    addCanvasChannel.run('canvas-tencent', parentId, tencent.channelKey, tencent.providerId, tencent.model, 1, 'candidate', now, now);
+    const enqueued = runtime.facade.enqueue({
+      operationKey: `canvas/${canvasTaskId}/submit/r1`,
+      actor: { userId: 'member' },
+      scope: { resourceType: 'canvas', resourceId: 'canvas-reconcile' },
+      module: 'canvas', taskId: canvasTaskId, step: 'submit', inputRevision: 'r1',
+      businessAttempt: { id: `${canvasTaskId}:qiniu:r1`, number: 1 },
+      inputSnapshot: frozen, inputHash: 'canvas-hash', continuationKey: 'canvas.submit',
+      providerSnapshot: {
+        providerId: qiniu.providerId, providerName: '七牛 Image 2', type: 'gateway-task-image',
+        model: qiniu.model, baseUrl: 'https://qiniu.reconcile.test', unifiedModel: UNIFIED_IMAGE_MODEL_KEY,
+      },
+      requiredPools: [qiniuPoolKey],
+      quote: { kind: 'priced', reserve: { currency: 'CNY', minor: 25 }, pricingSnapshot: {} },
+      mediaTaskId: parentId,
+      channelKey: qiniu.channelKey,
+    }).operation;
+    const admitted = runtime.facade.admit({ ...identity, operationId: enqueued.id });
+    assert.equal(admitted.kind, 'admitted');
+    if (admitted.kind !== 'admitted') throw new Error('expected canvas admission');
+    const intent = await runtime.facade.markSubmitting({
+      grant: admitted.grant, requestSnapshot: { canvas: true },
+    });
+    await runtime.facade.transmit(intent, async () => ({
+      terminalState: 'not_created', errorCode: 'operator_not_created',
+    }));
+    await runtime.facade.settle({
+      attemptId: intent.attemptId, outcome: 'not_created', actualCost: null, remoteTerminal: true,
+    });
+    db.prepare(`UPDATE execution_media_channels SET state = 'accepted' WHERE id = 'canvas-qiniu'`).run();
+    const result = await applyUnifiedReconcileAction(db, runtime.facade, admin, {
+      mediaTaskId: parentId,
+      channelKey: qiniu.channelKey,
+      attemptId: intent.attemptId,
+      action: 'confirm_not_created',
+      evidence: '供应商后台确认未创建任务',
+      expectedVersion: 0,
+      idempotencyKey: 'canvas-reconcile:not-created',
+    });
+    assert.equal(result.parentStatus, 'routing');
+    assert.equal(result.currentChannelKey, tencent.channelKey);
+    assert.deepEqual(
+      db.prepare(`SELECT phase, submissionState, providerTaskId FROM creative_canvas_tasks WHERE id = ?`)
+        .get(canvasTaskId),
+      { phase: 'queued', submissionState: 'not_sent', providerTaskId: null },
+      'admin fallback must put the canvas task back in the scheduler queue',
+    );
+    const currentVersion = db.prepare(`SELECT reconcileVersion FROM execution_media_tasks WHERE id = ?`)
+      .pluck().get(parentId) as number;
+    await assert.rejects(
+      () => applyUnifiedReconcileAction(db, runtime.facade, admin, {
+        mediaTaskId: parentId,
+        channelKey: qiniu.channelKey,
+        attemptId: intent.attemptId,
+        action: 'confirm_succeeded',
+        evidence: '只有成品 URL，没有可复用远端任务 ID',
+        expectedVersion: currentVersion,
+        idempotencyKey: 'canvas-reconcile:result-url-only',
+        resultRef: 'https://result.reconcile.test/canvas.png',
+      }),
+      (error: unknown) => error instanceof UnifiedReconcileError
+        && error.status === 400
+        && error.code === 'canvas_remote_id_required',
+      'canvas confirmation without a remote task id must be explicit, not silently ignored',
+    );
+  }
+
+  {
     db.prepare(`INSERT INTO execution_reconciliation_orphans
       (attemptId, operationId, permitId, actorId, evidenceJson, state, createdAt, updatedAt)
       VALUES ('legacy-attempt', 'legacy-operation', 'legacy-permit', 'member', ?, 'unknown', ?, ?)`)

@@ -2,7 +2,12 @@ import { requiresReassembledUpstreamRework, REASSEMBLED_REWORK_REQUIRED } from '
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveImageJobProvider } from '@/lib/image-provider-selection';
-import { UNIFIED_IMAGE_ANCHOR_ID, UNIFIED_IMAGE_MODEL_KEY } from '@/lib/media-core/unified-media/catalog';
+import {
+  UNIFIED_IMAGE_ANCHOR_ID,
+  UNIFIED_IMAGE_MODEL_KEY,
+  isUnifiedImageAnchorProvider,
+  isUnifiedImageChannelProvider,
+} from '@/lib/media-core/unified-media/catalog';
 import {
   buildUnifiedImageJobContract,
   isUnifiedImageJobProvider,
@@ -59,6 +64,13 @@ async function __teamRoutePOST(
     } | undefined;
     if (!requestedProvider) return NextResponse.json({ error: '供应商不存在' }, { status: 400 });
     if (!requestedProvider.enabled) return NextResponse.json({ error: '供应商已禁用' }, { status: 400 });
+    if ((process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE?.trim() || 'local') === 'server'
+      && isUnifiedImageChannelProvider(requestedProvider)
+      && !isUnifiedImageAnchorProvider(requestedProvider)) {
+      return NextResponse.json({
+        error: '团队版新图片任务请选择统一模型“Image 2”，不能直接指定真实通道。',
+      }, { status: 400 });
+    }
 
     const projectUsesUnified = set.providerId === UNIFIED_IMAGE_ANCHOR_ID
       && set.model === UNIFIED_IMAGE_MODEL_KEY;

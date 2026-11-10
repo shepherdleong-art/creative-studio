@@ -344,6 +344,7 @@ try {
   assert.equal(alice.counts.generationTasks, 3);
   assert.equal(alice.counts.channelCalls, 6);
   assert.equal(alice.counts.legacyAttempts, 1);
+  assert.equal(alice.counts.unmappedAttempts, 0);
 
   const admin = queryTeamUnifiedUsage(db, adminView, range);
   const adminFallback = admin.tasks.find((task) => task.taskId === 'job-fallback');
@@ -423,6 +424,50 @@ try {
   assert.equal(afterLateSettlement?.settledMinor, 30);
   assert.equal(afterLateSettlement?.chargedMinor, 188);
   assert.equal(afterLateSettlement?.costStatus, 'mixed');
+
+  addMediaTask({
+    id: 'media-before-attempt', jobId: 'job-before-attempt', actorId: 'alice', status: 'routing',
+  });
+  const withPendingTask = queryTeamUnifiedUsage(db, aliceView, range);
+  assert.equal(
+    withPendingTask.tasks.some((task) => task.mediaTaskId === 'media-before-attempt'),
+    true,
+    'a unified task waiting before its first attempt must still appear in the task report',
+  );
+  assert.equal(withPendingTask.tasks.find((task) => task.mediaTaskId === 'media-before-attempt')?.costStatus, 'unpriced');
+
+  const orphanOperation = runtime.facade.enqueue({
+    operationKey: 'image/job-orphan/submit/r1',
+    actor: { userId: 'alice' },
+    scope: { resourceType: 'project', resourceId: 'project-a' },
+    module: 'image', taskId: 'job-orphan', step: 'submit', inputRevision: 'r1',
+    businessAttempt: { id: 'job-orphan:r1', number: 1 },
+    inputSnapshot: { orphan: true }, inputHash: 'job-orphan',
+    continuationKey: 'image.submit',
+    providerSnapshot: { providerId: 'company-gateway-image2-medium', model: 'image2-medium', unifiedModel: 'image2' },
+    requiredPools: ['unified-pool'],
+    quote: { kind: 'priced', reserve: { currency: 'CNY', minor: 158 }, pricingSnapshot: { coreModelKey: 'image2-medium' } },
+    mediaTaskId: 'missing-parent',
+    channelKey: 'tencent',
+  }).operation;
+  const orphanGrant = runtime.facade.admit({ ...identity, operationId: orphanOperation.id });
+  assert.equal(orphanGrant.kind, 'admitted');
+  if (orphanGrant.kind !== 'admitted') throw new Error('expected orphan grant');
+  const orphanIntent = await runtime.facade.markSubmitting({
+    grant: orphanGrant.grant, requestSnapshot: { orphan: true },
+  });
+  await runtime.facade.transmit(orphanIntent, async () => ({
+    remoteId: 'orphan-remote', terminalState: 'succeeded',
+    actualCost: { currency: 'CNY', minor: 158 },
+  }));
+  await runtime.facade.settle({
+    attemptId: orphanIntent.attemptId, outcome: 'succeeded',
+    actualCost: { currency: 'CNY', minor: 158 }, remoteTerminal: true,
+  });
+  const withOrphan = queryTeamUnifiedUsage(db, aliceView, range);
+  assert.equal(withOrphan.unmappedAttempts.some((item) => item.taskId === 'job-orphan'), true);
+  assert.equal(withOrphan.legacyAttempts.some((item) => item.taskId === 'job-orphan'), false);
+  assert.equal(withOrphan.counts.unmappedAttempts, 1);
 
   console.log('team unified usage tests passed');
 } finally {

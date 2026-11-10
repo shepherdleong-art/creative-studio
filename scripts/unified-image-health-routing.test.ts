@@ -231,6 +231,29 @@ try {
     'health selection never enables a manually disabled provider',
   );
 
+  db.prepare('UPDATE providers SET enabled = 1 WHERE id = ?').run(UNIFIED_IMAGE_CHANNELS[0].providerId);
+  const qiniuHealthKey = `${UNIFIED_IMAGE_MODEL_KEY}:qiniu`;
+  const past = new Date(Date.now() - 60_000).toISOString();
+  db.prepare(`UPDATE execution_media_channel_health
+    SET state = 'avoided', avoidUntil = ?, consecutiveFailures = ?,
+      version = version + 1, updatedAt = ?
+    WHERE healthKey = ?`).run(past, UNIFIED_CHANNEL_FAILURE_THRESHOLD, now, qiniuHealthKey);
+  qiniuRejectNext = true;
+  qiniuAvailable = true;
+  const probeReleaseProject = 'project-health-probe-release';
+  const probeReleaseImage = seedMemberAndProject(db, probeReleaseProject);
+  insertJob(db, {
+    jobId: 'job-health-probe-release', projectId: probeReleaseProject, imageId: probeReleaseImage,
+    prompt: 'single material rejection during recovery probe',
+  });
+  await queue.runQueue({
+    projectId: probeReleaseProject, concurrency: 2, maxAttempts: 1, timeoutMs: 30_000,
+  });
+  const releasedProbe = readUnifiedChannelHealth(db, UNIFIED_IMAGE_MODEL_KEY, 'qiniu');
+  assert.equal(releasedProbe?.state, 'avoided');
+  assert.ok(Date.parse(releasedProbe?.avoidUntil ?? '') <= Date.now(),
+    'a non-service explicit failure must release the recovery probe, not block the channel for ten minutes');
+
   console.log('unified image health routing tests passed (paid calls: 0)');
 } finally {
   globalThis.fetch = originalFetch;

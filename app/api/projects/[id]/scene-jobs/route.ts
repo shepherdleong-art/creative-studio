@@ -11,6 +11,7 @@ import {
   UNIFIED_IMAGE_MODEL_KEY,
   UNIFIED_MEDIA_RULE_VERSION,
   isUnifiedImageAnchorProvider,
+  isUnifiedImageChannelProvider,
 } from '@/lib/media-core/unified-media/catalog';
 import {
   UnifiedImageRequestError,
@@ -59,6 +60,13 @@ async function __teamRoutePOST(
       } | undefined;
     if (!provider) return NextResponse.json({ error: '供应商不存在' }, { status: 400 });
     if (!provider.enabled) return NextResponse.json({ error: '供应商已禁用' }, { status: 400 });
+    if ((process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE?.trim() || 'local') === 'server'
+      && isUnifiedImageChannelProvider(provider)
+      && !isUnifiedImageAnchorProvider(provider)) {
+      return NextResponse.json({
+        error: '团队版新图片任务请选择统一模型“Image 2”，不能直接指定真实通道。',
+      }, { status: 400 });
+    }
     const unifiedProvider = isUnifiedImageAnchorProvider(provider);
     const projectUsesUnified = project.providerId === UNIFIED_IMAGE_ANCHOR_ID;
     let jobProvider: { providerId: string; model: string };

@@ -243,7 +243,9 @@ try {
   assert.equal(teamBody.models[0].model, 'image-test');
   assert.equal(teamBody.models[0].chargedMinor, 25);
   assert.deepEqual(teamBody.tasks, []);
-  assert.deepEqual(teamBody.counts, { generationTasks: 0, channelCalls: 0, legacyAttempts: 1 });
+  assert.deepEqual(teamBody.counts, {
+    generationTasks: 0, channelCalls: 0, legacyAttempts: 1, unmappedAttempts: 0,
+  });
   assert.equal(teamBody.trend.reduce((sum: number, point: { chargedMinor: number }) => sum + point.chargedMinor, 0), 25);
   assert.equal(teamBody.members.find((member: { userId: string }) => member.userId === bob.principal.userId).rangeChargedMinor, 25);
   const drilldown = await usageRoute.GET(request(`https://studio.example.test/api/team/usage?period=month&scope=team&actorUserId=${bob.principal.userId}`, adminCookie));
@@ -265,6 +267,31 @@ try {
   assert.equal((await ownUsage.json()).localAgentIncluded, false);
   const crossUsage = await usageRoute.GET(request(`https://studio.example.test/api/team/usage?actorUserId=${bob.principal.userId}`, alice.cookie));
   assert.equal(crossUsage.status, 403);
+  await runtime.lifecycle.start({ ...identity, deploymentId: 'deployment-usage-routes', signal: new AbortController().signal });
+  const unifiedOperation = runtime.facade.enqueue({
+    operationKey: 'image/unified-visible/submit/r1',
+    actor: { userId: alice.principal.userId },
+    scope: { resourceType: 'project', resourceId: 'scope-fixture' },
+    module: 'image', taskId: 'unified-visible', step: 'submit', inputRevision: 'r1',
+    businessAttempt: { id: 'unified-visible:r1', number: 1 },
+    inputSnapshot: {}, inputHash: 'unified-visible', continuationKey: 'image.submit',
+    providerSnapshot: {
+      providerId: 'company-gateway-image2-medium', model: 'image2-medium', unifiedModel: 'image2',
+    },
+    requiredPools: ['scope-test'],
+    quote: { kind: 'priced', reserve: { currency: 'CNY', minor: 25 }, pricingSnapshot: { coreModelKey: 'image2-medium' } },
+    mediaTaskId: 'unmapped-unified-parent', channelKey: 'tencent',
+  }).operation;
+  assert.equal(runtime.facade.admit({ ...identity, operationId: unifiedOperation.id }).kind, 'admitted');
+  runtime.closeNewWork();
+  const employeeFiltered = await usageRoute.GET(request('https://studio.example.test/api/team/usage?period=month', alice.cookie));
+  const employeeFilteredBody = await employeeFiltered.json();
+  assert.equal(employeeFilteredBody.items.length, 0, 'employees do not receive unified channel-attempt details');
+  assert.equal(employeeFilteredBody.unmappedAttempts.length, 0, 'employees do not receive unmapped execution details');
+  const adminFiltered = await usageRoute.GET(request(`https://studio.example.test/api/team/usage?period=month&scope=team&actorUserId=${alice.principal.userId}`, adminCookie));
+  const adminFilteredBody = await adminFiltered.json();
+  assert.equal(adminFilteredBody.items.length, 1, 'admins retain attempt-level channel details');
+  assert.equal(adminFilteredBody.unmappedAttempts.length, 1);
   const employeeCsv = await exportRoute.GET(request('https://studio.example.test/api/team/usage/export', alice.cookie));
   assert.equal(employeeCsv.status, 403);
   const adminCsv = await exportRoute.GET(request('https://studio.example.test/api/team/usage/export', adminCookie));
@@ -308,7 +335,9 @@ try {
 
   const tasks = await tasksRoute.GET(request('https://studio.example.test/api/team/tasks', alice.cookie));
   assert.equal(tasks.status, 200);
-  assert.deepEqual((await tasks.json()).items, []);
+  const taskItems = (await tasks.json()).items;
+  assert.equal(taskItems.length, 1);
+  assert.equal(taskItems[0].taskId, 'unified-visible');
 
   console.log('PASS: authenticated team usage, admin policy/CSV, task center and diagnostic routes');
 } finally {
