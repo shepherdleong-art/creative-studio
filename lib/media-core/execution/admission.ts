@@ -17,6 +17,12 @@ import {
   shanghaiAccountingPeriod,
   type ActorPolicy,
 } from './pools.ts';
+import {
+  effectiveMediaAdmissionPriority,
+  MEDIA_PRIORITY_AGING_MS,
+  readMediaAdmissionPriority,
+  type EffectiveMediaAdmissionPriority,
+} from '../unified-media/admission-priority.ts';
 
 type AdmissionOptions = ExecutionFacadeOptions & { assertOpen(): void };
 
@@ -25,6 +31,13 @@ interface PoolState {
   capacity: number;
   enabled: number;
   mappingSnapshotJson: string;
+}
+
+interface AdmissionEvaluation {
+  row: Parameters<typeof mapOperation>[0];
+  operation: OperationRecord;
+  blocked: ReturnType<typeof candidateReason>;
+  priority: EffectiveMediaAdmissionPriority;
 }
 
 function heldPoolCount(options: AdmissionOptions, poolKey: string, actorId?: string): number {
@@ -120,6 +133,48 @@ function candidateReason(
   return null;
 }
 
+function admissionTrace(priority: EffectiveMediaAdmissionPriority) {
+  return {
+    ...priority,
+    agingWindowMs: MEDIA_PRIORITY_AGING_MS,
+  };
+}
+
+function writeAdmissionPriority(
+  options: AdmissionOptions,
+  operationId: string,
+  priority: EffectiveMediaAdmissionPriority,
+): void {
+  options.db.prepare(`
+    UPDATE execution_operations
+       SET admissionPriority = ?, admissionCandidateCount = ?, admissionTraceJson = ?
+     WHERE id = ?
+  `).run(
+    priority.effectivePriority,
+    priority.candidateCount,
+    JSON.stringify(admissionTrace(priority)),
+    operationId,
+  );
+}
+
+function priorityWaitDetail(
+  priority: EffectiveMediaAdmissionPriority,
+  reason: AdmissionWaitReason,
+  detail?: Omit<AdmissionWaitDetail, 'reason'>,
+): string {
+  return JSON.stringify({
+    reason,
+    ...detail,
+    ...(priority.priority > 0 ? {
+      admissionPriority: priority.priorityClass,
+      admissionPriorityValue: priority.effectivePriority,
+      admissionCandidateCount: priority.candidateCount,
+      admissionPriorityAged: priority.aged,
+      admissionChannelKeys: priority.availableChannelKeys,
+    } : {}),
+  });
+}
+
 export function admitOperation(
   options: AdmissionOptions,
   instance: InstanceFence & { leaseMs?: number; operationId?: string },
@@ -167,35 +222,60 @@ export function admitOperation(
       if (rows.length === 0) continue;
       const policy = readActorPolicy(options.db, actorId);
       const accountingPeriod = shanghaiAccountingPeriod(now);
-      let operation = mapOperation(rows[0]);
-      let blocked = candidateReason(options, operation, policy, accountingPeriod);
-      // Pool head-of-line blocking must not strand an independent task. Every
-      // other gate keeps FIFO and remains visible on the original queue head.
-      if (!requestedRow && (blocked?.reason === 'pool_capacity' || blocked?.reason === 'fair_share')) {
-        for (const row of rows.slice(1)) {
-          const alternative = mapOperation(row);
-          const alternativeBlocked = candidateReason(options, alternative, policy, accountingPeriod);
-          if (!alternativeBlocked) {
-            operation = alternative;
-            blocked = null;
-            break;
-          }
-          // Only pool capacity/fairness may skip to another independent task;
-          // permissions, cost, pause and fixed limits preserve FIFO. Multi-pool
-          // alternatives are fully checked, so no partial reservation is possible.
-          if (alternativeBlocked.reason === 'pool_capacity' || alternativeBlocked.reason === 'fair_share') continue;
-          break;
+      const evaluations: AdmissionEvaluation[] = rows.map((row) => {
+        const operation = mapOperation(row);
+        return {
+          row,
+          operation,
+          blocked: candidateReason(options, operation, policy, accountingPeriod),
+          priority: effectiveMediaAdmissionPriority(
+            readMediaAdmissionPriority(options.db, operation, now),
+            operation.createdAt,
+            now,
+          ),
+        };
+      });
+      const head = evaluations[0];
+      let chosen: AdmissionEvaluation | undefined;
+      if (requestedRow) {
+        if (!head.blocked) chosen = head;
+      } else {
+        // Member rotation stays the outer fairness layer. Within one member,
+        // only an eligible pool head may be reordered:
+        // - a single-channel task beats an overflow task;
+        // - an older overflow task is promoted after the aging window;
+        // - permission/budget/pause/cost gates keep the historical FIFO block.
+        const mayReorder = !head.blocked
+          || head.blocked.reason === 'pool_capacity'
+          || head.blocked.reason === 'fair_share';
+        if (mayReorder) {
+          chosen = evaluations
+            .filter((evaluation) => !evaluation.blocked)
+            .sort((left, right) =>
+              left.priority.effectivePriority - right.priority.effectivePriority
+              || left.operation.readySeq - right.operation.readySeq)[0];
         }
       }
-      if (blocked) {
-        const { reason } = blocked;
+      if (!chosen) {
+        const { reason, detail } = head.blocked ?? {
+          reason: 'pool_capacity' as const,
+          detail: undefined,
+        };
         if (!reasons.includes(reason)) reasons.push(reason);
+        writeAdmissionPriority(options, head.operation.id, head.priority);
         options.db.prepare(`
           UPDATE execution_operations SET status = 'deferred', waitReason = ?, waitDetail = ?, updatedAt = ?
           WHERE id = ?
-        `).run(reason, JSON.stringify({ reason, ...blocked.detail }), now.toISOString(), operation.id);
+        `).run(
+          reason,
+          priorityWaitDetail(head.priority, reason, detail),
+          now.toISOString(),
+          head.operation.id,
+        );
         continue;
       }
+      const operation = chosen.operation;
+      writeAdmissionPriority(options, operation.id, chosen.priority);
 
       const newId = options.newId ?? randomUUID;
       const permitId = newId();

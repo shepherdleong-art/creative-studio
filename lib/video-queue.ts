@@ -70,6 +70,7 @@ import {
 } from './media-core/unified-media/video-execution.ts';
 import {
   recordUnifiedChannelFailure,
+  releaseUnifiedChannelRecoveryProbe,
   recordUnifiedChannelSuccess,
   unifiedChannelFailureReasonFromEvidence,
 } from './media-core/unified-media/health.ts';
@@ -1114,6 +1115,13 @@ async function runAuthorizedVideoJob(
     }
 
     if (err instanceof UnifiedKlingCanceledError) {
+      if (unifiedExecution) {
+        releaseUnifiedChannelRecoveryProbe(db, {
+          unifiedModel: job.unifiedModel!,
+          channelKey: unifiedExecution.channel.channelKey,
+          providerId: unifiedExecution.channel.provider.id,
+        });
+      }
       db.prepare(`UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user',
         finishedAt = COALESCE(finishedAt, datetime('now'))
         WHERE id = ? AND status IN ('pending', 'running', 'retrying', 'deferred')`).run(job.id);
@@ -1121,6 +1129,13 @@ async function runAuthorizedVideoJob(
     }
 
     if (err instanceof UnifiedKlingStaleSubmissionError) {
+      if (unifiedExecution) {
+        releaseUnifiedChannelRecoveryProbe(db, {
+          unifiedModel: job.unifiedModel!,
+          channelKey: unifiedExecution.channel.channelKey,
+          providerId: unifiedExecution.channel.provider.id,
+        });
+      }
       db.prepare(`UPDATE video_jobs SET status = 'needs_check', providerStatus = 'unknown',
         errorMessage = '统一可灵任务已切换通道或被取消，本轮未发送请求，请核查。',
         finishedAt = datetime('now') WHERE id = ? AND status = 'running'`).run(job.id);
@@ -1129,6 +1144,11 @@ async function runAuthorizedVideoJob(
 
     if (isServerMediaExecution() && isLegacyMediaExecutionDeferred(err)) {
       if (unifiedExecution) {
+        releaseUnifiedChannelRecoveryProbe(db, {
+          unifiedModel: job.unifiedModel!,
+          channelKey: unifiedExecution.channel.channelKey,
+          providerId: unifiedExecution.channel.provider.id,
+        });
         const decision = handleUnifiedKlingCapacityDeferral(db, job.id, err.reasons);
         if (decision.outcome === 'overflowed') {
           logWarn(`七牛可灵名额已满，立即转入 ${decision.nextChannelKey}。`);
@@ -1139,7 +1159,9 @@ async function runAuthorizedVideoJob(
               ? '上一笔费用仍待核查，暂不能开始新的付费生成。'
               : decision.reason === 'personal_concurrency' || decision.reason === 'fair_share'
                 ? '等待个人云端生成名额，尚未提交。'
-                : errorMessage;
+                : decision.reason === 'pricing_required'
+                  ? '缺少可信价格，等待管理员补齐后再提交。'
+                  : errorMessage;
           db.prepare(`UPDATE video_jobs SET status = 'deferred', errorMessage = ?
             WHERE id = ? AND status IN ('running', 'pending', 'retrying', 'deferred')`)
             .run(waitMessage, job.id);
@@ -1167,6 +1189,12 @@ async function runAuthorizedVideoJob(
             channelKey: unifiedExecution.channel.channelKey,
             providerId: unifiedExecution.channel.provider.id,
             reasonCode,
+          });
+        } else {
+          releaseUnifiedChannelRecoveryProbe(db, {
+            unifiedModel: job.unifiedModel!,
+            channelKey: unifiedExecution.channel.channelKey,
+            providerId: unifiedExecution.channel.provider.id,
           });
         }
       }

@@ -25,6 +25,7 @@ import {
   UNIFIED_MEDIA_RULE_VERSION,
   unifiedImageAspectRatios,
 } from '../../media-core/unified-media/catalog.ts';
+import { UNIFIED_CANVAS_IMAGE2_CAPABILITY_KEY } from '../unified-image-key.ts';
 import type { CanvasModelCapability } from '../capabilities.ts';
 
 /**
@@ -58,7 +59,7 @@ export const COMPANY_CANVAS_IMAGE2_CAPABILITY: CanvasModelCapability = {
     + '属于 candidate 组合**——R01 是其验证样本，公司网关不可达时不得按已接通对待。',
 };
 
-export const UNIFIED_CANVAS_IMAGE2_CAPABILITY_KEY = 'unified-image2';
+export { UNIFIED_CANVAS_IMAGE2_CAPABILITY_KEY } from '../unified-image-key.ts';
 
 /**
  * 员工侧唯一 Image 2 选项。真实七牛/腾讯通道仍保留各自的精确能力键，

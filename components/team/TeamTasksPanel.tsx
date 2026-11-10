@@ -40,6 +40,9 @@ type TeamTask = {
   unifiedTaskCostStatus: string | null;
   unifiedTaskAttemptCount: number;
   unifiedTaskChannelCount: number;
+  admissionPriority: number | null;
+  admissionCandidateCount: number | null;
+  admissionTrace: Record<string, unknown> | null;
   modelCalls: TeamTaskModelCall[];
   waitLabel: string;
   waitReason: string | null;
@@ -255,6 +258,8 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
         inputRevision: item.inputRevision, submissionCount: item.submissionCount,
         attemptCount: item.unifiedTaskAttemptCount || item.attemptCount,
         channelAttemptCount: item.unifiedTaskChannelCount, taskCostMinor: item.unifiedTaskCostMinor,
+        admissionPriority: item.admissionPriority, admissionCandidateCount: item.admissionCandidateCount,
+        admissionTrace: item.admissionTrace,
         unifiedTaskId: item.unifiedTaskId, businessAttemptNo: item.businessAttemptNo,
         errorId: item.errorId, errorStage: item.errorStage, errorCode: item.errorCode,
         clientVersion: item.clientVersion, serverReleaseId: item.serverReleaseId,
@@ -470,6 +475,21 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
                       {` · ${unifiedTaskCostLabel(selected)}`}
                     </span>
                     <span className={`${s.taskStep} block`}>同一制作任务的自动兜底不会增加作品份数。</span>
+                  </GroupRow>
+                ) : null}
+                {selected.admissionPriority !== null ? (
+                  <GroupRow label="调度优先级" stacked>
+                    <span className="text-[12.5px]">
+                      {selected.admissionTrace?.priorityClass === 'single_channel'
+                        ? '单通道任务优先'
+                        : selected.admissionTrace?.priorityClass === 'overflow'
+                          ? `可溢出任务（候选 ${selected.admissionCandidateCount ?? 2} 条通道）`
+                          : '普通调度'}
+                      {selected.admissionTrace?.aged === true ? ' · 已按等待时长提升' : ''}
+                    </span>
+                    <span className={`${s.taskStep} block`}>
+                      成员公平与预算/权限门禁先于该偏好；不会绕过共享池容量。
+                    </span>
                   </GroupRow>
                 ) : null}
                 {selected.errorId ? (
