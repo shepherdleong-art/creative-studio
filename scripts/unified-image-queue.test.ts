@@ -29,6 +29,7 @@ const { freezeUnifiedImageRequest, UnifiedImageRequestError } = await import('..
 const {
   UNIFIED_IMAGE_ANCHOR_ID, UNIFIED_IMAGE_CHANNELS, UNIFIED_IMAGE_MODEL_KEY, UNIFIED_MEDIA_RULE_VERSION,
 } = await import('../lib/media-core/unified-media/catalog.ts');
+const { listUnifiedImageChannelAttempts } = await import('../lib/media-core/unified-media/execution.ts');
 const { listTeamTasks } = await import('../lib/team-service/tasks.ts');
 const { queryTeamUsage } = await import('../lib/team-service/usage.ts');
 
@@ -198,6 +199,11 @@ try {
     channelKey: 'qiniu', state: 'succeeded', operationId: findChannel('job-qiniu').operationId, remoteId: 'qiniu-image-1',
   });
   assert.ok(findChannel('job-qiniu').operationId);
+  const qiniuLedger = listUnifiedImageChannelAttempts(db, 'job-qiniu');
+  assert.equal(qiniuLedger.submissionCount, 1);
+  assert.equal(qiniuLedger.usedChannelCount, 1);
+  assert.equal(qiniuLedger.channels.find((channel) => channel.channelKey === 'qiniu')?.attempts[0]?.providerSnapshot.model,
+    'qiniuyun/gpt-image-2-medium');
   assert.equal(
     db.prepare(`SELECT COUNT(*) FROM execution_operations WHERE taskId = 'job-qiniu' AND mediaTaskId IS NOT NULL AND channelKey = 'qiniu'`)
       .pluck().get(),

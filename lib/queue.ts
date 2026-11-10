@@ -22,7 +22,7 @@ import { isPlaceholderValue } from './video-auth.ts';
 import { getEffectiveProjectFinalStatus } from './project-status.ts';
 import { writeLog } from './logger.ts';
 import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from './output-filenames.ts';
-import { persistImageJobUsageSnapshot, recordImageJobUsage } from './usage-async-jobs.ts';
+import { buildImageJobUsageSnapshot, persistImageJobUsageSnapshot, recordImageJobUsage } from './usage-async-jobs.ts';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import { dataRoot } from './data-root.ts';
@@ -35,6 +35,8 @@ import {
   isLegacyMediaPoolConfigurationError,
   isLegacyMediaProviderRecoveryBlocked,
   isLegacyMediaSubmissionUnknown,
+  LegacyMediaNotCreatedError,
+  LegacyMediaRemoteFailedError,
   isServerMediaExecution,
   legacyMediaExecutionRevision,
   recoverLegacyMediaSubmission,
@@ -44,13 +46,18 @@ import {
   submitLegacyMediaOperation,
 } from './legacy-media-execution.ts';
 import type { ExecutionReceipt } from './media-core/execution/context.ts';
-import { submissionEmployeeCopy } from './media-core/submission-evidence.ts';
+import { classifySubmissionOutcome, submissionEmployeeCopy } from './media-core/submission-evidence.ts';
 import {
+  assertUnifiedImageSubmissionStillCurrent,
+  handleUnifiedImageExplicitFailure,
   prepareUnifiedImageExecution,
   requestUnifiedImageCancellation,
   synchronizeUnifiedImageExecution,
   UnifiedImageCanceledError,
+  UnifiedImageChannelUnavailableError,
   UnifiedImageExecutionError,
+  UnifiedImageStaleSubmissionError,
+  unifiedImageAttemptCostMinor,
   type PreparedUnifiedImageExecution,
 } from './media-core/unified-media/execution.ts';
 
@@ -345,6 +352,7 @@ async function runAuthorizedJob(
       job.providerId = unifiedExecution.channel.provider.id;
       job.model = unifiedExecution.channel.definition.model;
       job.executionRevision = unifiedExecution.channel.executionRevision;
+      job.unifiedTaskId = unifiedExecution.taskId;
     } catch (error) {
       if (error instanceof UnifiedImageCanceledError) {
         db.prepare(`UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user',
@@ -506,15 +514,25 @@ async function runAuthorizedJob(
         }
       }
       if (!usageSnapshot) {
-        usageSnapshot = persistImageJobUsageSnapshot(db, {
-          jobId: job.id,
-          projectId: job.projectId,
-          requestModel: job.model,
-          provider: { id: provider!.id, name: provider!.name, type: provider!.type, model: provider!.model },
-          refType: 'job',
-          refId: job.id,
-          startedAt,
-        });
+        usageSnapshot = unifiedExecution
+          ? buildImageJobUsageSnapshot(db, {
+            jobId: job.id,
+            projectId: job.projectId,
+            requestModel: job.model,
+            provider: { id: provider!.id, name: provider!.name, type: provider!.type, model: provider!.model },
+            refType: 'channel_attempt',
+            refId: `${job.id}:${unifiedExecution.channel.channelKey}:r${job.executionRevision}`,
+            startedAt,
+          })
+          : persistImageJobUsageSnapshot(db, {
+            jobId: job.id,
+            projectId: job.projectId,
+            requestModel: job.model,
+            provider: { id: provider!.id, name: provider!.name, type: provider!.type, model: provider!.model },
+            refType: 'job',
+            refId: job.id,
+            startedAt,
+          });
       }
       const parsed = parseUsageSnapshot(usageSnapshot);
       const reserveMinor = parsed.ok
@@ -547,6 +565,14 @@ async function runAuthorizedJob(
         mediaTaskId: unifiedExecution?.taskId ?? null,
         channelKey: unifiedExecution?.channel.channelKey ?? null,
         signal: reqAbort.signal,
+        beforeSend: unifiedExecution
+          ? () => assertUnifiedImageSubmissionStillCurrent(db, {
+            jobId: job.id,
+            mediaTaskId: unifiedExecution!.taskId,
+            channelKey: unifiedExecution!.channel.channelKey,
+            executionRevision: unifiedExecution!.channel.executionRevision,
+          })
+          : undefined,
         onAdmitted() {
           attempt += 1;
           job.attempt = attempt;
@@ -601,10 +627,47 @@ async function runAuthorizedJob(
         errorMessage = ?, finishedAt = datetime('now') WHERE id = ? AND status = 'running'`)
         .run(failureMessage, job.id);
       logError(failureMessage);
+      let settled = false;
       try {
         await settleImageExecution('failed', undefined, 'provider_failed');
+        settled = true;
       } catch (error) {
         logWarn(`远端任务已失败并停止，执行记录同步失败: ${sanitizeErrorMessage(sanitizeGatewayMediaDiagnostic(error instanceof Error ? error.message : String(error), apiKey))}`);
+      }
+      if (!unifiedExecution || !settled) return;
+      try {
+        const operation = db.prepare(`SELECT id, currentAttemptId FROM execution_operations
+          WHERE mediaTaskId = ? AND channelKey = ?`).get(
+          unifiedExecution.taskId, unifiedExecution.channel.channelKey,
+        ) as { id: string; currentAttemptId: string | null } | undefined;
+        const attempt = operation?.currentAttemptId
+          ? db.prepare(`SELECT id, businessAttemptNo, remoteId FROM execution_attempts WHERE id = ?`)
+            .get(operation.currentAttemptId) as {
+              id: string; businessAttemptNo: number; remoteId: string | null;
+            } | undefined
+          : undefined;
+        const evidence = classifySubmissionOutcome({
+          entry: 'image',
+          taskId: job.id,
+          businessAttemptNo: attempt?.businessAttemptNo ?? Math.max(1, job.attempt),
+          adapterId: providerType,
+          stage: 'poll',
+          source: 'provider',
+          outcome: 'terminal_failed',
+          remoteId: attempt?.remoteId ?? job.providerTaskId ?? null,
+          errorCode: 'provider_failed',
+        });
+        const decision = handleUnifiedImageExplicitFailure(db, job.id, {
+          evidence,
+          attemptId: attempt?.id,
+          operationId: operation?.id,
+          channelKey: unifiedExecution.channel.channelKey,
+        });
+        if (decision.outcome === 'next_channel') {
+          logWarn(`Image 2 ${decision.previousChannelKey} 通道明确失败，转入 ${decision.nextChannelKey}。`);
+        }
+      } catch (error) {
+        logError(`显式失败后的备用通道决策失败，任务保持失败且不会重试: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -814,7 +877,7 @@ async function runAuthorizedJob(
         return;
       }
 
-      if (!existingTaskId) {
+      if (!existingTaskId && !unifiedExecution) {
         usageSnapshot = persistImageJobUsageSnapshot(db, {
           jobId: job.id,
           projectId: job.projectId,
@@ -1205,9 +1268,11 @@ async function runAuthorizedJob(
 
     const finishedAt = new Date().toISOString();
     const frozenPrice = parseUsageSnapshot(usageSnapshot);
-    const estimatedCost = frozenPrice.ok
-      ? calculateUsageCostMicros(frozenPrice.parsed.snapshot.priceComponents, attempt) / 1_000_000
-      : calculateEstimatedCost(provider.defaultCostPerImage, attempt - 1);
+    const estimatedCost = unifiedExecution
+      ? unifiedImageAttemptCostMinor(db, job.id) / 100
+      : frozenPrice.ok
+        ? calculateUsageCostMicros(frozenPrice.parsed.snapshot.priceComponents, attempt) / 1_000_000
+        : calculateEstimatedCost(provider.defaultCostPerImage, attempt - 1);
 
     // ── Atomic completion: only mark succeeded if still running ──
     const completeResult = db.prepare(
@@ -1218,16 +1283,23 @@ async function runAuthorizedJob(
         latencyMs = ?,
         estimatedCost = ?,
         outputImageId = ?,
+        usageSnapshotJson = COALESCE(?, usageSnapshotJson),
         remoteImageUrl = COALESCE(?, remoteImageUrl),
         providerRawResponse = COALESCE(?, providerRawResponse)
        WHERE id = ? AND status = 'running'`
-    ).run(finishedAt, result.latencyMs, estimatedCost, outputImageId, result.remoteImageUrl || null, result.rawResponse ? safeJsonForDB(result.rawResponse) : null, job.id);
+    ).run(
+      finishedAt, result.latencyMs, estimatedCost, outputImageId,
+      unifiedExecution ? usageSnapshot : null,
+      result.remoteImageUrl || null,
+      result.rawResponse ? safeJsonForDB(result.rawResponse) : null,
+      job.id,
+    );
 
     if (completeResult.changes === 1) {
       const usageResult = recordImageJobUsage(db, {
         jobId: job.id,
         projectId: job.projectId,
-        attempt,
+        attempt: unifiedExecution ? 1 : attempt,
         snapshot: usageSnapshot,
         finishedAt,
       });
@@ -1270,11 +1342,69 @@ async function runAuthorizedJob(
   } catch (err: unknown) {
     let errorMessage = err instanceof Error ? err.message : String(err);
 
+    if (unifiedExecution
+      && (err instanceof LegacyMediaNotCreatedError || err instanceof LegacyMediaRemoteFailedError)) {
+      try {
+        const decision = handleUnifiedImageExplicitFailure(db, job.id, {
+          evidence: err.evidence,
+          attemptId: err.attemptId,
+          operationId: err.operationId,
+          channelKey: err.channelKey,
+        });
+        if (decision.outcome === 'next_channel') {
+          logWarn(`Image 2 ${decision.previousChannelKey} 通道明确失败，转入 ${decision.nextChannelKey}。`);
+        } else if (decision.outcome === 'exhausted') {
+          logError(`Image 2 没有剩余备用通道，任务已最终失败${decision.reason ? `（${decision.reason}）` : ''}。`);
+        }
+      } catch (error) {
+        db.prepare(`UPDATE jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
+          WHERE id = ? AND status IN ('running', 'failed', 'needs_check')`).run(
+          error instanceof Error ? error.message : String(error),
+          job.id,
+        );
+        logError(`显式失败后的备用通道决策失败，任务保持失败且不会重试。`);
+      }
+      return;
+    }
+
     if (err instanceof UnifiedImageCanceledError) {
+      const at = new Date().toISOString();
       db.prepare(`UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user',
         finishedAt = COALESCE(finishedAt, datetime('now')) WHERE id = ? AND status IN ('pending', 'retrying', 'running', 'deferred')`)
         .run(job.id);
+      if (job.unifiedTaskId) {
+        db.prepare(`UPDATE execution_media_tasks
+          SET status = 'canceled', currentChannelKey = NULL,
+            cancelRequestedAt = COALESCE(cancelRequestedAt, ?), resultJson = ?, updatedAt = ?
+          WHERE id = ?`).run(at, JSON.stringify({ errorCode: 'canceled', reason: 'cancel_before_send' }), at, job.unifiedTaskId);
+        db.prepare(`UPDATE execution_media_channels
+          SET state = 'canceled', updatedAt = ?
+          WHERE mediaTaskId = ? AND state IN ('selected', 'waiting_capacity')`)
+          .run(at, job.unifiedTaskId);
+        db.prepare(`UPDATE execution_operations
+          SET status = 'failed', waitReason = 'stage_canceled', waitDetail = NULL, updatedAt = ?
+          WHERE mediaTaskId = ? AND status IN ('pending', 'deferred', 'admitted')`)
+          .run(at, job.unifiedTaskId);
+      }
       logWarn('统一图片任务已记录取消意图，停止新提交');
+      return;
+    }
+
+    if (err instanceof UnifiedImageStaleSubmissionError) {
+      const current = db.prepare('SELECT status FROM jobs WHERE id = ?').pluck().get(job.id) as string | undefined;
+      if (current === 'running') {
+        db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = 'unknown',
+          errorMessage = '统一图片任务已切换通道或被取消，本轮未发送请求，请核查。',
+          finishedAt = datetime('now') WHERE id = ? AND status = 'running'`).run(job.id);
+      }
+      logWarn('统一图片提交前复核发现当前通道已变化，本轮未发送请求');
+      return;
+    }
+
+    if (err instanceof UnifiedImageChannelUnavailableError) {
+      db.prepare(`UPDATE jobs SET status = 'failed', errorMessage = ?, finishedAt = datetime('now')
+        WHERE id = ? AND status = 'running'`).run(errorMessage, job.id);
+      logError(errorMessage);
       return;
     }
 
