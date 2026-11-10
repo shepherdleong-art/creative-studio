@@ -61,6 +61,10 @@ const {
   UNIFIED_MEDIA_RULE_VERSION,
 } = await import('../lib/media-core/unified-media/catalog.ts');
 const { isCanvasUnifiedImageTask } = await import('../lib/creative-canvas/unified-image.ts');
+const {
+  canvasParameterOptions,
+  updateCanvasParameter,
+} = await import('../lib/creative-canvas/unified-image-options.ts');
 const { configureLegacyMediaProviderPool } = await import('../lib/legacy-media-execution.ts');
 const { seedProviders } = await import('../lib/seed.ts');
 const {
@@ -149,6 +153,22 @@ assert.equal(available.some((capability) =>
   capability.mediaKind === 'image'
   && ['image2-medium', 'qiniuyun/gpt-image-2-medium'].includes(capability.modelAlias)), false);
 assert.ok(findCanvasCapability(COMPANY_CANVAS_QINIUYUN_IMAGE_CAPABILITY.key), 'old exact capability stays recoverable');
+assert.deepEqual(
+  canvasParameterOptions(COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key, 'resolution',
+    ['1K', '2K', '4K'], { aspectRatio: '9:16' }),
+  ['2K', '4K'],
+);
+assert.equal(
+  canvasParameterOptions(COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key, 'aspectRatio',
+    ['1:1', '3:4', '9:16'], { resolution: '1K' }).includes('9:16'),
+  false,
+);
+assert.deepEqual(
+  updateCanvasParameter(COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key, {
+    aspectRatio: '1:1', resolution: '1K',
+  }, 'aspectRatio', '9:16'),
+  { aspectRatio: '9:16', resolution: '2K' },
+);
 
 const storageRoot = canvasStorageRoot(root);
 const imageBytes = await sharp({

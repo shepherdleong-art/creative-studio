@@ -59,7 +59,7 @@
 
 **主要文件**
 
-- `lib/creative-canvas/unified-image.ts`、`adapters/company-capabilities.ts`、`capabilities-bootstrap.ts`
+- `lib/creative-canvas/unified-image.ts`、`unified-image-options.ts`、`adapters/company-capabilities.ts`、`capabilities-bootstrap.ts`
 - `lib/creative-canvas/{planner,tasks,runner,recovery,usage}.ts`
 - `lib/media-core/unified-media/execution.ts`（只导出共享选路/选中标记及 provider 类型，供画布复用）
 - `scripts/unified-canvas-image.test.ts`
@@ -78,5 +78,5 @@
 - 未连接真实七牛/腾讯上游；画布统一模型的真实吞吐、失败计费与切换效果仍需内网/账单证据。
 - 08 可直接复用统一桥接：新增视频父任务/通道能力，但画布本地 slot、父任务 contract 与 attempt 边界保持不变。
 - 12 需要在统一画布任务上补：取消后的晚到成品展示、明确“已停止后续生成但已受理仍收尾”的 UI、以及 `resolveCanvasTaskInputs` 对已取消上游的自动下游阻断。
-- 当前完整组合已在计划/执行拒绝；节点参数控件仍可能短暂展示不可执行的档位组合，提交前不会放行。若后续要做参数联动过滤，应只改 UI，不放宽服务端合同。
+- 节点参数下拉已通过 `unified-image-options.ts` 联动过滤：比例改变时自动修正不再支持的清晰度，清晰度改变时只展示该档位可执行的比例；服务端计划/执行仍做同一组合复核。后续新增入口应复用该纯函数或严格等价的完整组合合同。
 
