@@ -57,7 +57,7 @@ async function __teamRouteGET(
     return fileResponse(request, served, mimeMap[ext] || 'video/mp4');
   } catch (error) {
     if (error instanceof BrowserPreviewPendingError) {
-      return NextResponse.json({ error: 'preview_pending', retryAfterMs: error.retryAfterMs }, { status: 202 });
+      return NextResponse.json({ error: 'preview_pending', retryAfterMs: error.retryAfterMs }, { status: 202, headers: { 'Cache-Control': 'no-store', 'Retry-After': '1' } });
     }
     if (error instanceof ResourceAccessError || (error as NodeJS.ErrnoException)?.code === 'ENOENT') {
       return NextResponse.json({ error: 'Video not found' }, { status: 404 });

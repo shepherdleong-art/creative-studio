@@ -122,7 +122,17 @@ try {
   assert.equal(consumer.release.packageSha256, prepared.release.packageSha256);
   assert.equal(fs.existsSync(consumer.payloadDirectory), true);
   assert.equal(consumer.payloadDirectory.startsWith(path.resolve(candidateRoot)), true);
+  const { createMaintenancePreviewReader } = await import('../lib/team-service/maintenance/preview.ts');
+  const preview = createMaintenancePreviewReader({ cacheMs: 0 });
+  const previewRequest = { kind: 'candidates' as const, candidateRoot, current, allowFixtureForTests: true };
+  try {
+    const candidates = await preview.read(previewRequest) as Array<{ candidateId: string }>;
+    assert.equal(candidates[0]?.candidateId, prepared.candidateId);
+  } finally { await preview.stop(); }
   fs.appendFileSync(path.join(consumer.payloadDirectory, 'app', 'server.js.upload'), '// tampered\n');
+  const invalidPreview = createMaintenancePreviewReader({ cacheMs: 0 });
+  try { await assert.rejects(invalidPreview.read(previewRequest), /校验/); }
+  finally { await invalidPreview.stop(); }
   await assert.rejects(() => readTeamReleaseCandidate(candidateRoot, prepared.candidateId, current, true),
     /哈希|manifest|内容/);
   await assert.rejects(() => getTeamReleaseCandidateForExecution({

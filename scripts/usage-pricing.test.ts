@@ -292,6 +292,8 @@ assert.deepEqual(snapshotValue, {
 
 // New models use the supplied bill averages; video amounts scale from five seconds.
 for (const [id, model, category, price] of [
+  ['company-minimax-h3', 'minimax-h3', 'video', 4_000_000],
+  ['company-wan-3-0', 'wan-3.0', 'video', 6_000_000],
   ['company-gateway-seedream-5-0-pro', 'doubao-seedream-5-0-pro-image', 'image', 610_000],
   ['company-gateway-nano-banana-pro', 'nano-banana-3.0', 'image', 1_270_000],
   ['company-gateway-nano-banana-2', 'nano-banana-3.1', 'image', 820_000],

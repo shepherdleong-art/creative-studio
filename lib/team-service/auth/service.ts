@@ -113,11 +113,11 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
   const failures = new Map<string, LoginFailure>();
 
   function userById(id: string): UserRow | undefined {
-    return db.prepare('SELECT * FROM team_users WHERE id = ?').get(id) as UserRow | undefined;
+    return db.prepare('SELECT * FROM team_users WHERE id = ? AND deletedAt IS NULL').get(id) as UserRow | undefined;
   }
 
   function userByEmployeeId(employeeId: string): UserRow | undefined {
-    return db.prepare('SELECT * FROM team_users WHERE employeeId = ?').get(employeeId) as UserRow | undefined;
+    return db.prepare('SELECT * FROM team_users WHERE employeeId = ? AND deletedAt IS NULL').get(employeeId) as UserRow | undefined;
   }
 
   function principalFrom(row: UserRow, session: SessionRow): AuthPrincipal {
@@ -396,7 +396,7 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
 
   function listUsers(actor: AuthPrincipal): TeamUserView[] {
     requireAdmin(actor);
-    return (db.prepare('SELECT * FROM team_users ORDER BY employeeId').all() as UserRow[]).map(userView);
+    return (db.prepare('SELECT * FROM team_users WHERE deletedAt IS NULL ORDER BY employeeId').all() as UserRow[]).map(userView);
   }
 
   async function resetUserCredential(actor: AuthPrincipal, userId: string) {
@@ -463,6 +463,21 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
     return update.immediate();
   }
 
+  function deleteUser(actor: AuthPrincipal, userId: string): void {
+    db.transaction(() => {
+      requireAdmin(actor);
+      const target = userById(userId);
+      if (!target) throw new TeamAuthError('user_not_found', '账号不存在。', 404);
+      protectLastAdmin(target);
+      if (actor.userId === userId) throw new TeamAuthError('cannot_delete_self', '不能删除自己的账号。', 409);
+      const timestamp = now().toISOString();
+      // Keep the identity referenced by projects, accepted tasks and billing history.
+      db.prepare(`UPDATE team_users SET deletedAt=?, status='disabled', sessionVersion=sessionVersion+1, updatedAt=? WHERE id=?`)
+        .run(timestamp, timestamp, userId);
+      db.prepare('UPDATE team_sessions SET revokedAt=? WHERE userId=? AND revokedAt IS NULL').run(timestamp, userId);
+    }).immediate();
+  }
+
   async function recoverAdministrator(employeeIdInput: string) {
     const employeeId = validateEmployeeId(employeeIdInput);
     const target = userByEmployeeId(employeeId);
@@ -497,6 +512,7 @@ export function createTeamAuthService(options: TeamAuthServiceOptions) {
     resetUserCredential,
     setUserRole,
     setUserStatus,
+    deleteUser,
     recoverAdministrator,
   };
 }

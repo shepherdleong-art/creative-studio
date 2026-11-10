@@ -29,6 +29,7 @@ async function __teamRouteGET(
         sia.path as sourcePath,
         gia.filename as generatedFilename,
         j.status as jobStatus,
+        j.errorMessage as jobErrorMessage,
         j.outputImageId,
         j.prompt as jobPrompt,
         j.referenceImageIds,

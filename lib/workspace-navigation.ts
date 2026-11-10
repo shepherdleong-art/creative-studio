@@ -11,6 +11,20 @@
 
 export type WorkspaceRole = 'employee' | 'admin';
 
+/** 首页新建入口；尚未接入的入口只显示开发中提示。 */
+export const WORKSPACE_CREATE_ENTRIES: ReadonlyArray<{
+  name: string;
+  text: string;
+  icon: WorkspaceNavIcon | 'film';
+  href?: string;
+  requiresCanvas?: boolean;
+}> = [
+  { name: '常规项目', text: '场景、分镜到成片', icon: 'film', href: '/projects/new' },
+  { name: '一键成片', text: '功能开发中，敬请期待', icon: 'grid' },
+  { name: '实拍混剪', text: '功能开发中，敬请期待', icon: 'film' },
+  { name: '创作画布', text: '连接灵感与生成流程', icon: 'sparkle', href: '/canvas', requiresCanvas: true },
+];
+
 /** 侧栏数量角标的取数字段：与对应页面的列表接口一一对应。 */
 export type WorkspaceBadgeKey = 'tasks' | 'errors';
 

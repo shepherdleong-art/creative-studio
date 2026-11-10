@@ -174,14 +174,14 @@ check('服务器默认值只读视图：形状不对就整体收起，不猜数�
   assert.match(missing.note, /尚未接入/);
 
   const view = consoleDefaultsView({
-    timeoutMs: 600_000, projectConcurrency: 10, videoConcurrency: 3,
+    timeoutMs: 600_000, projectConcurrency: 10, videoConcurrency: 3, concurrencyMode: 'shared-pool',
     imagePreprocess: { enabled: true, targetMaxSide: 1536, jpegQuality: 85 },
   });
   assert.equal(view.available, true);
   assert.deepEqual(view.rows.map(row => [row.label, row.value]), [
     ['任务超时', '10 分钟'],
-    ['项目并发', '10 条'],
-    ['视频并发', '3 条'],
+    ['项目并发', '按名额池调度'],
+    ['视频并发', '按名额池调度'],
     ['图片预处理', '开启 · 最长边 1536px · JPEG 85'],
   ]);
   assert.match(view.note, /只读/);

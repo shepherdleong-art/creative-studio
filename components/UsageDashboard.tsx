@@ -24,6 +24,8 @@ const MODEL_KEYS: readonly CoreUsageModelKey[] = [
 ];
 
 const MODEL_LABELS: Record<CoreUsageModelKey, string> = {
+  'company-minimax-h3': 'minimax-h3',
+  'company-wan-3-0': 'wan-3.0',
   'company-seedream-5-0-pro': 'doubao-seedream-5-0-pro-image',
   'company-nano-banana-3-0': 'nano-banana-3.0',
   'company-nano-banana-3-1': 'nano-banana-3.1',
@@ -41,6 +43,8 @@ const MODEL_LABELS: Record<CoreUsageModelKey, string> = {
 };
 
 const MODEL_COLORS: Record<CoreUsageModelKey, string> = {
+  'company-minimax-h3': 'var(--color-run)',
+  'company-wan-3-0': 'var(--color-dot-warn)',
   'company-seedream-5-0-pro': 'var(--color-accent)',
   'company-nano-banana-3-0': 'var(--color-ink-secondary)',
   'company-nano-banana-3-1': 'var(--color-ink-tertiary)',

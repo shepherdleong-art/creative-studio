@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { assertNoSymlinkPath } from './paths.ts';
 const forbiddenPath = process.env.CREATIVE_STUDIO_APPLICATION_ROOT?.trim()
   ? path.join(process.env.CREATIVE_STUDIO_APPLICATION_ROOT, 'scripts', 'packaging', 'forbidden-paths.json')
   : new URL('../../../scripts/packaging/forbidden-paths.json', import.meta.url);
@@ -125,6 +126,26 @@ function assertManifestIdentity(manifest: ServerReleaseManifest): void {
     || typeof manifest.fixture !== 'boolean' || !/^[0-9a-f]{64}$/.test(manifest.dependencyLockSha256)) {
     throw new Error('release manifest 不是可安装的正式 server 包');
   }
+}
+/** Read the identity of an already installed release, not its payload integrity.
+ * The deployment-owned pointer binds the exact manifest bytes. Installing or
+ * executing a release must continue to use the full verifiers below.
+ */
+export async function readInstalledReleaseVersionMetadata(root: string, expected: {
+  releaseId: string; packageSha256: string;
+}): Promise<{ releaseId: string; appVersion: string }> {
+  const manifestPath = path.join(root, 'release-manifest.json');
+  assertNoSymlinkPath(manifestPath);
+  const bytes = await fs.promises.readFile(manifestPath);
+  if (crypto.createHash('sha256').update(bytes).digest('hex') !== expected.packageSha256) {
+    throw new Error('当前发布清单哈希与受控发布指针不符');
+  }
+  const manifest = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, '')) as ServerReleaseManifest;
+  assertManifestIdentity(manifest);
+  if (manifest.fixture) throw new Error('当前发布清单不是正式 server 包');
+  assertServerReleaseCompatibility(manifest.compatibility);
+  if (manifest.releaseId !== expected.releaseId) throw new Error('当前发布身份与受控发布指针不符');
+  return { releaseId: manifest.releaseId, appVersion: manifest.appVersion };
 }
 export function verifyReleaseManifest(root: string, { allowFixture = false }: { allowFixture?: boolean } = {}): ServerReleaseManifest {
   const manifestPath = path.join(root, 'release-manifest.json');

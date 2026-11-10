@@ -30,6 +30,7 @@ import {
   type ScriptStudioSchedulerController,
 } from './script-studio/scheduler.ts';
 import { drainTeamRuntime, releaseTeamRuntimeOwner } from './team-service/runtime/index.ts';
+import { stopMaintenancePreviews } from './team-service/maintenance/preview.ts';
 
 export interface GracefulShutdownResult {
   stopped: boolean;
@@ -138,6 +139,7 @@ async function performGracefulShutdown(
   const deadline = Date.now() + Math.max(0, Math.floor(timeoutMs));
   const remainingBudget = (): number => Math.max(0, deadline - Date.now());
   let pendingTasks = 0;
+  await waitForStep(stopMaintenancePreviews(), Math.min(5000, remainingBudget()));
 
   // server 先关闭新业务受理，再停止各模块领取；本地模式此步骤为空操作。
   let teamDrain: Promise<void> | null = null;

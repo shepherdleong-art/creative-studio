@@ -162,6 +162,19 @@ try {
   assert.ok(deferredCleanup.manifest.pin?.id, '延期清理文件也必须在解冻前完成 pin');
   assert.equal((await verifyTeamBackup(deferredCleanup.directory)).verified, true);
 
+  const { createMaintenancePreviewReader } = await import('../lib/team-service/maintenance/preview.ts');
+  const preview = createMaintenancePreviewReader({ cacheMs: 0 });
+  try {
+    const request = { kind: 'backups' as const, backupRoot, deploymentId: 'deployment-b01',
+      currentRelease: { releaseId: 'release-1', packageSha256: 'a'.repeat(64) } };
+    const before = await preview.read(request) as { backups: Array<{ id: string; restorable: boolean }> };
+    assert.equal(before.backups.find(item => item.id === result.manifest.backupId)?.restorable, true);
+    fs.appendFileSync(path.join(result.directory, 'files', 'media', 'a.bin'), 'tampered');
+    const after = await preview.read(request) as { backups: Array<{ id: string; restorable: boolean; verification: string }> };
+    assert.equal(after.backups.find(item => item.id === result.manifest.backupId)?.verification, 'invalid');
+    assert.equal(after.backups.find(item => item.id === result.manifest.backupId)?.restorable, false);
+  } finally { await preview.stop(); }
+
   console.log('team maintenance backup barrier tests passed');
 } finally {
   db.close();

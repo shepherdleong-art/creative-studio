@@ -24,6 +24,8 @@ export type CoreUsageModelKey =
   | 'company-qiniuyun-kling-3-0'
   | 'company-seedance-fast'
   | 'company-seedance-2-5'
+  | 'company-minimax-h3'
+  | 'company-wan-3-0'
   | 'company-gpt-5-6-luna'
   | 'company-seedream-5-0-pro'
   | 'company-nano-banana-3-0'
@@ -169,6 +171,9 @@ function cloneComponents(components: readonly CoreUsagePriceComponentV1[]): read
 
 /** 已接入工作台的模型使用用户提供的账单均价估算。 */
 export const BILLING_MODEL_PRICES = [
+  // 用户于 2026-11-10 提供并确认按 5 秒折算的账单均价。
+  { key: 'company-minimax-h3', id: 'company-minimax-h3', model: 'minimax-h3', category: 'video', micros: 4_000_000 },
+  { key: 'company-wan-3-0', id: 'company-wan-3-0', model: 'wan-3.0', category: 'video', micros: 6_000_000 },
   { key: 'company-seedream-5-0-pro', id: 'company-gateway-seedream-5-0-pro', model: 'doubao-seedream-5-0-pro-image', category: 'image', micros: 610_000 },
   { key: 'company-nano-banana-3-0', id: 'company-gateway-nano-banana-pro', model: 'nano-banana-3.0', category: 'image', micros: 1_270_000 },
   { key: 'company-nano-banana-3-1', id: 'company-gateway-nano-banana-2', model: 'nano-banana-3.1', category: 'image', micros: 820_000 },

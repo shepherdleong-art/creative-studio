@@ -21,7 +21,10 @@ const transpiled = ts.transpileModule(source, {
 }).outputText
   .replace(/^import .*$/gm, '')
   .replace(/\bexport\s+/g, '');
-const browserBundle = `${transpiled}\nwindow.__csFontEffective = { assertFontsEffective, createOverlayBundlePayload };`;
+const fontLoader = ts.transpileModule(fs.readFileSync('components/system-fonts.ts', 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
+}).outputText.replace(/\bexport\s+/g, '');
+const browserBundle = `${fontLoader}\n${transpiled}\nwindow.__csFontEffective = { assertFontsEffective, createOverlayBundlePayload };`;
 
 const realFamilies = new Set(listSystemFonts().map((font) => font.family));
 // 可靠回归组合：推导名（无空格/去字重）与真实 family 差异足够大，浏览器不会模糊匹配。
@@ -37,6 +40,7 @@ const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage();
   await page.setContent('<!doctype html><html><body></body></html>');
+  await page.evaluate(() => { window.fetch = async () => new Response(JSON.stringify({ fonts: [] })); });
   await page.addScriptTag({
     content: `const OUTPUT_PRESETS={"3x4":{width:1080,height:1440,fps:24},"9x16":{width:1080,height:1920,fps:24},"16x9":{width:1920,height:1080,fps:24}};${browserBundle}`,
   });

@@ -10,9 +10,9 @@ import {
   teamReleaseCandidateRoot,
 } from '@/lib/team-service/release-candidates';
 import {
-  listTeamReleaseCandidates,
   prepareTeamReleaseCandidate,
 } from '@/lib/team-service/maintenance/release-candidates';
+import { readCandidatePreview, invalidateMaintenancePreviews } from '@/lib/team-service/maintenance/preview';
 
 async function __teamRouteGET(): Promise<Response> {
   try {
@@ -20,7 +20,7 @@ async function __teamRouteGET(): Promise<Response> {
     const current = await readCurrentTeamReleaseVersion();
     return Response.json({
       current,
-      candidates: await listTeamReleaseCandidates(teamReleaseCandidateRoot(), current, assertFixtureReleaseUploadAllowed()),
+      candidates: await readCandidatePreview({ candidateRoot: teamReleaseCandidateRoot(), current, allowFixtureForTests: assertFixtureReleaseUploadAllowed() }),
       failures: await listTeamReleaseUploadFailures(),
       executableUpgrade: true,
       note: '上传只准备候选；管理员另行确认版本和维护影响后，才由独立执行器升级。',
@@ -42,6 +42,7 @@ async function __teamRoutePOST(request: Request): Promise<Response> {
         originalName: incoming.originalName, requestedBy, current,
         allowFixtureForTests: assertFixtureReleaseUploadAllowed(),
       });
+      invalidateMaintenancePreviews();
       return Response.json({ candidate }, { status: candidate.status === 'ready' ? 201 : 422 });
     } finally {
       await incoming.cleanup();

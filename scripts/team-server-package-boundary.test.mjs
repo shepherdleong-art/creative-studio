@@ -83,6 +83,7 @@ test('server 独立白名单装配、受控 manifest 与精确敏感边界', (t)
     'app/scripts/team-server/recover-admin.mjs',
     'app/scripts/team-server/verify-provider-budgets.mjs',
     'app/scripts/team-server/maintenance.mjs',
+    'app/scripts/team-server/preview.mjs',
     'app/scripts/team-server/distribution.mjs',
     'app/scripts/team-server/generate-config.mjs',
     'app/scripts/team-server/service-control.mjs',

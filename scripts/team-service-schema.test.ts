@@ -35,7 +35,7 @@ try {
 
   const team = await checkTeamServiceReadiness(options(root, db));
   assert.equal(team.available, true);
-  assert.deepEqual(team.appliedVersions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+  assert.deepEqual(team.appliedVersions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
   const execution = await checkExecutionReadiness(options(root, db));
   assert.equal(execution.available, true);
   assert.deepEqual(execution.appliedVersions, executionVersions);
@@ -46,7 +46,7 @@ try {
   );
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'execution_instances'").get());
   assert.deepEqual(db.prepare('SELECT version FROM team_schema_migrations').all(), [
-    { version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 },
+    { version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 },
   ]);
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_files'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_file_references'").get());
@@ -140,7 +140,7 @@ try {
     VALUES ('legacy-error', 'legacy-user', 'client', 'upload', 'legacy_failed', '旧错误', 'legacy-event', '2026-11-02T08:00:00.000Z')`).run();
   const upgraded = await checkTeamServiceReadiness(options(legacyRoot, legacyDb));
   assert.equal(upgraded.available, true);
-  assert.deepEqual(upgraded.appliedVersions, [14, 15, 16]);
+  assert.deepEqual(upgraded.appliedVersions, [14, 15, 16, 17]);
   assert.deepEqual(legacyDb.prepare('SELECT resolvedAt, resolvedByUserId FROM team_error_records WHERE id = ?').get('legacy-error'), {
     resolvedAt: null, resolvedByUserId: null,
   }, '迁移不应自动隐藏旧错误');

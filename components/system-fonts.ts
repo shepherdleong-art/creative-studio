@@ -14,12 +14,17 @@ export interface FontOption {
   family: string;
   /** 展示名；中文字体为中文名，英文字体为英文名 */
   displayName: string;
+  previewUrl?: string;
 }
 
 let sessionFontList: FontOption[] | null = null;
 let sessionFontRequest: Promise<FontOption[]> | null = null;
 let localFontList: FontOption[] | null = null;
 let localFontRequest: Promise<FontOption[] | null> | null = null;
+
+function usesServerCatalog(): boolean {
+  return typeof document !== 'undefined' && document.documentElement.dataset.deploymentMode === 'server';
+}
 
 function readFontBody(body: unknown): FontOption[] {
   const values = Array.isArray(body) ? body : (body as { fonts?: unknown } | null)?.fonts;
@@ -33,7 +38,9 @@ function readFontBody(body: unknown): FontOption[] {
     const family = (item as { family?: string }).family;
     if (!family) continue;
     const displayName = (item as { displayName?: string }).displayName ?? family;
-    if (!out.has(family)) out.set(family, { family, displayName });
+    const url = (item as { previewUrl?: unknown }).previewUrl;
+    const previewUrl = typeof url === 'string' && /^\/api\/system-fonts\/[a-f0-9]{64}\/file$/.test(url) ? url : undefined;
+    if (!out.has(family)) out.set(family, { family, displayName, ...(previewUrl ? { previewUrl } : {}) });
   }
   return [...out.values()];
 }
@@ -42,14 +49,17 @@ function readFontBody(body: unknown): FontOption[] {
 export function requestSystemFonts(forceRefresh = false): Promise<FontOption[]> {
   if (!forceRefresh && sessionFontRequest) return sessionFontRequest;
   const request = fetch(forceRefresh ? '/api/system-fonts?refresh=1' : '/api/system-fonts')
-    .then((response) => response.json())
+    .then((response) => {
+      if (!response.ok) throw new Error('字体目录加载失败，请刷新重试');
+      return response.json();
+    })
     .then((body: unknown) => {
       const next = readFontBody(body);
       const current = sessionFontList;
       // 内容未变时保留原引用，避免每次重校验都触发一次无意义的重渲染。
       const resolved = current !== null
         && next.length === current.length
-        && next.every((font, index) => font.family === current[index]?.family && font.displayName === current[index]?.displayName)
+        && next.every((font, index) => font.family === current[index]?.family && font.displayName === current[index]?.displayName && font.previewUrl === current[index]?.previewUrl)
         ? current
         : next;
       sessionFontList = resolved;
@@ -66,6 +76,7 @@ export function requestSystemFonts(forceRefresh = false): Promise<FontOption[]> 
 
 /** 浏览器枚举 OS 注册字体；不支持或未授权时静默返回 null（不影响服务端列表）。 */
 export function requestLocalFonts(): Promise<FontOption[] | null> {
+  if (usesServerCatalog()) return Promise.resolve(null);
   if (localFontRequest) return localFontRequest;
   const localWindow = typeof window === 'undefined' ? null : (window as Window & { queryLocalFonts?: () => Promise<Array<{ family: string; fullName?: string }>> });
   if (!localWindow?.queryLocalFonts) return Promise.resolve(null);
@@ -93,6 +104,7 @@ export function requestLocalFonts(): Promise<FontOption[] | null> {
 
 /** 合并两个源的会话缓存（供组件初始化首帧使用）；都没有缓存时返回 null。 */
 export function getCachedFontOptions(): FontOption[] | null {
+  if (usesServerCatalog()) return sessionFontList;
   if (!sessionFontList && !localFontList) return null;
   return [...new Map([...(sessionFontList ?? []), ...(localFontList ?? [])].map((font) => [font.family, font])).values()];
 }
@@ -111,4 +123,20 @@ export function requestFontOptions(forceRefresh = false): Promise<FontOption[]> 
 export function preloadSystemFonts(): void {
   void requestSystemFonts().catch(() => undefined);
   void requestLocalFonts();
+}
+
+const loadedServerFonts = new Map<string, Promise<void>>();
+
+/** Load the selected server font into Canvas even when it is absent from the client OS. */
+export async function ensureServerFontLoaded(family: string): Promise<void> {
+  if (typeof FontFace === 'undefined') return;
+  const fonts = sessionFontList ?? await requestSystemFonts();
+  const font = fonts.find(entry => entry.family === family);
+  if (!font?.previewUrl) return;
+  const existing = loadedServerFonts.get(font.previewUrl + family);
+  if (existing) return existing;
+  const key = font.previewUrl + family;
+  const request = new FontFace(family, `url("${font.previewUrl}")`).load().then(face => { document.fonts.add(face); });
+  loadedServerFonts.set(key, request);
+  try { await request; } catch (error) { loadedServerFonts.delete(key); throw error; }
 }

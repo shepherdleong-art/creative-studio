@@ -10,9 +10,9 @@
  * 服务器默认值的落地位置是 `lib/team-service/config.ts` 的 server 分支
  * （`RuntimeConfig.productionDefaults`），本文件只提供起步默认值与裁决规则。
  *
- * 红线：本模块只决定「输入值」，不改变名额池 / 成员并发上限 / 公平共享
- * （ADR-0001）。`getEffectiveImageConcurrency` 与执行池逻辑保持原样，只是
- * 喂给它的数字从「客户端值」换成「服务器默认值」。
+ * server 图片/视频队列的 worker 数按实际名额池容量与任务需求决定，不再把
+ * 项目中保存的并发数字当上限。名额池 / 成员并发上限 / 公平共享（ADR-0001）
+ * 仍由 execution 准入执行；worker 数不授予付费提交权限。
  */
 
 export type DeploymentMode = 'local' | 'server';
@@ -20,9 +20,9 @@ export type DeploymentMode = 'local' | 'server';
 export interface ProductionDefaults {
   /** 单条图片任务的超时（毫秒）。 */
   timeoutMs: number;
-  /** 单个项目同时提交的图片任务上限。仍会再经名额池与成员并发上限收敛。 */
+  /** 本地图片队列默认并发；server 仅保留为项目兼容存值，执行按名额池调度。 */
   projectConcurrency: number;
-  /** 单个项目同时提交的视频任务上限（1–10）。 */
+  /** 本地视频队列默认并发（1–10）；server 执行按名额池调度。 */
   videoConcurrency: number;
   imagePreprocess: {
     enabled: boolean;
@@ -54,7 +54,8 @@ export interface ResolvedProductionParams {
 
 /**
  * 起步默认值 = 改动前客户端的默认值：
- * 超时 600000ms、项目并发 10、视频并发 10、预处理开启、最长边 1536、质量 85。
+ * 超时 600000ms、本地项目/视频并发 10、预处理开启、最长边 1536、质量 85。
+ * server 保留并发数字供旧项目/API 兼容，实际 worker 数使用 resolveQueueWorkerCount。
  *
  * 最长边与质量必须与 `lib/image-preprocess.ts` 的 `DEFAULT_OPTIONS` 一致；
  * 这里刻意不 import 那个模块（它会拉起 `sharp`），改由
@@ -70,6 +71,22 @@ export const BUILTIN_PRODUCTION_DEFAULTS: ProductionDefaults = {
     jpegQuality: 85,
   },
 };
+
+export interface QueuePoolDemand {
+  capacity: number;
+  taskCount: number;
+}
+
+/** Pool aliases must be merged before calling; zero/disabled pools still need one waiting worker. */
+export function resolveQueueWorkerCount(input: {
+  mode: DeploymentMode;
+  concurrency?: number;
+  poolDemands?: QueuePoolDemand[];
+}): number {
+  if (input.mode === 'local') return input.concurrency ?? BUILTIN_PRODUCTION_DEFAULTS.projectConcurrency;
+  return (input.poolDemands ?? []).reduce((count, pool) =>
+    count + Math.min(pool.taskCount, Math.max(1, pool.capacity)), 0);
+}
 
 function positiveNumber(value: unknown): number | null {
   const parsed = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
@@ -110,7 +127,7 @@ export function resolveProductionParams(input: {
     return {
       timeoutMs: defaults.timeoutMs,
       projectConcurrency: defaults.projectConcurrency,
-      videoConcurrency: clampVideoConcurrency(defaults.videoConcurrency),
+      videoConcurrency: Math.max(1, Math.floor(defaults.videoConcurrency)),
       imagePreprocess: { ...defaults.imagePreprocess },
     };
   }

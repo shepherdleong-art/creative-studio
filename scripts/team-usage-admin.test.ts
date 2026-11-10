@@ -316,6 +316,11 @@ try {
   assert.equal(readTeamMemberPolicy(db, adminView, 'carol').waitingReason, 'pool_capacity');
   assert.equal(listTeamMembers(db, adminView, { now }).items.find(member => member.userId === 'carol')?.waitingReason, 'pool_capacity');
 
+  const usageBeforeDeletion = queryTeamUsage(db, adminView, { ...range, actorUserId: 'carol' });
+  db.prepare("UPDATE team_users SET deletedAt='2026-11-10', status='disabled' WHERE id='carol'").run();
+  assert.ok(!listTeamMembers(db, adminView, { now }).items.some(member => member.userId === 'carol'));
+  assert.ok(!listTeamMembers(db, adminView, { now, search: 'carol' }).items.some(member => member.userId === 'carol'), '搜索也不得重新显示已删除成员');
+  assert.deepEqual(queryTeamUsage(db, adminView, { ...range, actorUserId: 'carol' }), usageBeforeDeletion, '成员移出列表不得删除或改写费用历史');
   console.log('PASS: team attempt usage, member consistency, CSV and versioned policy authorization');
 } finally {
   runtime.closeNewWork();

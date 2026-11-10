@@ -8,6 +8,7 @@ import type { ConsoleProductionDefaults } from '../team-console-overview.ts';
  * （`lib/team-service/config.ts` 的 `RuntimeConfig`，`mode:'server'` 分支的
  * `productionDefaults`，权威默认值在 `lib/team-service/production-defaults.ts`）。
  *
+ * 并发数字是旧项目兼容存值；concurrencyMode 告知视图显示「按名额池调度」。
  * **本文件不定义默认值、也不做任何裁决**，只把它读出来给控制台只读展示——
  * 用户已明确：控制台只读显示，不做修改界面。这里也不重新实现 06 的归一化逻辑：
  * `readRuntimeConfig()` 返回的已经是归一化后的值（`normalizeProductionDefaults` 在 06 那边）。
@@ -35,6 +36,7 @@ export function normalizeProductionDefaults(value: unknown): ConsoleProductionDe
   const normalized: ConsoleProductionDefaults = {
     timeoutMs: source.timeoutMs,
     projectConcurrency: source.projectConcurrency,
+    concurrencyMode: 'shared-pool',
   };
   if (positive(source.videoConcurrency)) normalized.videoConcurrency = source.videoConcurrency;
   if (preprocess && typeof preprocess === 'object') {

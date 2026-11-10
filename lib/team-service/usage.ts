@@ -439,7 +439,7 @@ export function listTeamMembers(
   const search = filters.search?.trim();
   const rows = db.prepare(`
     SELECT id AS userId, employeeId, displayName, role, status AS accountStatus, mustChangePassword FROM team_users
-    ${search ? 'WHERE employeeId LIKE ? OR displayName LIKE ?' : ''}
+    WHERE deletedAt IS NULL ${search ? 'AND (employeeId LIKE ? OR displayName LIKE ?)' : ''}
     ORDER BY employeeId
   `).all(...(search ? [`%${search}%`, `%${search}%`] : [])) as MemberRow[];
   const items = rows.map((row) => memberSummary(db, row, now));

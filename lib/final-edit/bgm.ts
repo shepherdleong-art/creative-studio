@@ -1,8 +1,19 @@
 import type Database from 'better-sqlite3';
 import { requireAccessContext } from '../media-core/access-context.ts';
 import type { FinalEditBgmTrackView } from './types.ts';
+import type { ScannedBgmTrack } from '../media-core/bgm-catalog.ts';
 
 export { BGM_EXTENSIONS as FINAL_EDIT_BGM_EXTENSIONS, scanBgmTracks as scanFinalEditBgm } from '../media-core/bgm-catalog.ts';
+
+/** The pool was authorized and frozen by start(), before entering project-only task scope. */
+export function readAcceptedBgmTracks(db: Database.Database, pool: ScannedBgmTrack[]): ScannedBgmTrack[] {
+  const read = db.prepare(`SELECT id, relativePath, fileFingerprint, durationUs FROM final_edit_bgm_tracks
+    WHERE id=? AND relativePath=? AND fileFingerprint=? AND status='ready'`);
+  return pool.flatMap(track => {
+    const current = read.get(track.id, track.relativePath, track.fileFingerprint) as ScannedBgmTrack | undefined;
+    return current ? [current] : [];
+  });
+}
 
 export function finalEditBgmFilename(relativePath: string): string {
   return relativePath.split(/[\\/]/).filter(Boolean).at(-1) || relativePath;

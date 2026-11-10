@@ -135,7 +135,7 @@ try {
   fs.rmSync(path.join(staging, 'app', 'lib'), { recursive: true, force: true });
   copy(path.join(repoRoot, 'lib'), path.join(staging, 'app', 'lib'));
   for (const name of [
-    'init-admin.mjs', 'recover-admin.mjs', 'verify-provider-budgets.mjs', 'maintenance.mjs',
+    'init-admin.mjs', 'recover-admin.mjs', 'verify-provider-budgets.mjs', 'maintenance.mjs', 'preview.mjs',
     'distribution.mjs', 'generate-config.mjs', 'service-control.mjs', 'configure-pools.mjs', 'publish-client-update.mjs',
   ]) {
     copy(path.join(repoRoot, 'scripts', 'team-server', name), path.join(staging, 'app', 'scripts', 'team-server', name));

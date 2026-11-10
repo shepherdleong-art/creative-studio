@@ -212,6 +212,26 @@ insertUsage.run('usage-b', 'usage-b', 'project-b', 'job-b', userB.principal.user
 insertUsage.run('usage-b-legacy', 'usage-b-legacy', 'project-b', 'job-b', '');
 
 try {
+  const fontsRoute = await import('../app/api/system-fonts/route.ts');
+  const fontFileRoute = await import('../app/api/system-fonts/[id]/file/route.ts');
+  const fontDirectory = path.join(fixtureRoot, 'storage', 'fonts');
+  fs.mkdirSync(fontDirectory, { recursive: true });
+  fs.copyFileSync(path.join(repoRoot, 'packaging/fonts/ZCOOLKuaiLe-Regular.ttf'), path.join(fontDirectory, 'shared.ttf'));
+  assert.equal((await fontsRoute.GET(get('https://studio.example.test/api/system-fonts'))).status, 401);
+  const fontCatalog = await (await fontsRoute.GET(get('https://studio.example.test/api/system-fonts?refresh=1', userA.cookie))).json() as { fonts: Array<{ previewUrl: string }> };
+  assert.ok(!JSON.stringify(fontCatalog).includes(fixtureRoot), '员工字体目录不能泄露服务器绝对路径');
+  const fontUrl = fontCatalog.fonts[0].previewUrl;
+  const fontId = fontUrl.split('/')[3];
+  assert.equal((await fontFileRoute.GET(get(`https://studio.example.test${fontUrl}`), params(fontId))).status, 401);
+  const fontResponse = await fontFileRoute.GET(get(`https://studio.example.test${fontUrl}`, userA.cookie), params(fontId));
+  assert.equal(fontResponse.status, 200);
+  assert.ok((await fontResponse.arrayBuffer()).byteLength > 100);
+  assert.equal((await fontFileRoute.GET(get('https://studio.example.test/api/system-fonts/unknown/file', userA.cookie), params('unknown'))).status, 404);
+  const usersItemRoute = await import('../app/api/team/users/[id]/route.ts');
+  const memberToDelete = await service.createUser(admin.principal, { employeeId: '00999', displayName: '待删除成员', role: 'employee' });
+  const deleteRequest = (cookie: string) => new Request(write(`https://studio.example.test/api/team/users/${memberToDelete.user.id}`, cookie, {}), { method: 'DELETE' });
+  assert.equal((await usersItemRoute.DELETE(deleteRequest(userA.cookie), params(memberToDelete.user.id))).status, 403);
+  assert.equal((await usersItemRoute.DELETE(deleteRequest(admin.cookie), params(memberToDelete.user.id))).status, 200);
   const packagingResources = await import('../app/api/packaging/templates/[...path]/route.ts');
   const packagingResource = (segments: string[], cookie?: string) => packagingResources.GET(
     get(`https://studio.example.test/api/packaging/templates/${segments.join('/')}`, cookie),

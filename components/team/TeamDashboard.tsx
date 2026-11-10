@@ -2,14 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Icon, type IconName } from '@/components/ui/Icon';
+import { Icon } from '@/components/ui/Icon';
 import { EmptyState, GroupHeading, GroupList } from '@/components/ui/Appearance';
+import { Dialog } from '@/components/ui/Dialog';
 import { teamError } from './client';
 import PageToolbar from './PageToolbar';
 import TeamConsoleOverview from './TeamConsoleOverview';
 import ResolveErrorButton from './ResolveErrorButton';
 import type { EmployeeDashboard } from '@/lib/team-service/dashboard';
-import type { WorkspaceRole } from '@/lib/workspace-navigation';
+import { WORKSPACE_CREATE_ENTRIES, type WorkspaceRole } from '@/lib/workspace-navigation';
 
 async function read<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: 'no-store', credentials: 'same-origin' });
@@ -104,6 +105,7 @@ function EmployeeWorkbench({
 }) {
   const [dashboard, setDashboard] = useState<EmployeeDashboard | null>(null);
   const [error, setError] = useState('');
+  const [upcomingFeature, setUpcomingFeature] = useState<string | null>(null);
   const refresh = useCallback(async () => {
     const results = await Promise.allSettled([
       read<EmployeeDashboard>('/api/team/dashboard').then(setDashboard),
@@ -224,18 +226,19 @@ function EmployeeWorkbench({
 
         <SectionHead title="新建" />
         <GroupList>
-          {[
-            { name: '常规项目', text: '场景、分镜到成片', icon: 'film' as IconName, href: '/projects/new' },
-            { name: '批量生产', text: '进入项目开展批量制作', icon: 'grid' as IconName, href: '/projects' },
-            { name: '详情页脚本', text: '进入项目编写产品文案', icon: 'text' as IconName, href: '/projects' },
-            ...(canvasEnabled ? [{ name: '创作画布', text: '连接灵感与生成流程', icon: 'sparkle' as IconName, href: '/canvas' }] : []),
-          ].map((entry) => <Link key={entry.name} href={entry.href} className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-subtle">
-            <Icon name={entry.icon} size={18} className="flex-none text-accent" />
-            <span className="min-w-0">
-              <strong className="block text-ink">{entry.name}</strong>
-              <small className="block text-label text-ink-secondary">{entry.text}</small>
-            </span>
-          </Link>)}
+          {WORKSPACE_CREATE_ENTRIES.filter((entry) => !entry.requiresCanvas || canvasEnabled).map((entry) => {
+            const className = 'flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-surface-subtle';
+            const content = <>
+              <Icon name={entry.icon} size={18} className="flex-none text-accent" />
+              <span className="min-w-0">
+                <strong className="block text-ink">{entry.name}</strong>
+                <small className="block text-label text-ink-secondary">{entry.text}</small>
+              </span>
+            </>;
+            return entry.href
+              ? <Link key={entry.name} href={entry.href} className={className}>{content}</Link>
+              : <button key={entry.name} type="button" className={className} onClick={() => setUpcomingFeature(entry.name)}>{content}</button>;
+          })}
         </GroupList>
 
         <SectionHead title="本月用量" action={<Link href="/usage">明细</Link>} />
@@ -260,5 +263,12 @@ function EmployeeWorkbench({
         </GroupList>
       </div>
     </div>}
+    <Dialog
+      open={upcomingFeature !== null}
+      title={upcomingFeature ?? ''}
+      description="功能开发中，敬请期待"
+      onClose={() => setUpcomingFeature(null)}
+      footer={<button type="button" className="cap cap-primary" onClick={() => setUpcomingFeature(null)}>知道了</button>}
+    />
   </div>;
 }

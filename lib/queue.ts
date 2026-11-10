@@ -8,12 +8,13 @@ import { editImageArk } from './providers/ark-images.ts';
 import { editImage as editImageOpenAI } from './providers/openai-compatible.ts';
 import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json.ts';
 import { submitGatewayTaskImage, pollGatewayTaskImage, downloadGatewayTaskImage, summarizeGatewayTaskResponse } from './providers/gateway-task-image.ts';
-import { redactMediaUrlForLog } from './gateway-media-url.ts';
+import { redactMediaUrlForLog, sanitizeGatewayMediaDiagnostic } from './gateway-media-url.ts';
 import { describeGatewayDownloadFailure } from './media-download-policy.ts';
 import { editImagePacky } from './providers/packy-images.ts';
 import { editImagePackyGemini } from './providers/packy-gemini-image.ts';
 import { getNonRetryablePackyAdvice, isNonRetryablePackyError, isTimeoutLikeError } from './packy-errors.ts';
 import { getEffectiveImageConcurrency } from './provider-concurrency.ts';
+import { runMediaQueueWorkers } from './media-queue-workers.ts';
 import { calculateEstimatedCost } from './cost.ts';
 import { normalizeGeneratedImageToSize, normalizeGeneratedImageToNativeRatio } from './image-output-normalize.ts';
 import { companyImageCapsForModel, companyImageDeliverySize } from './company-gateway-size.ts';
@@ -249,9 +250,10 @@ export async function runQueue(options: QueueOptions): Promise<void> {
       }
     }
 
-    await Promise.allSettled(
-      Array.from({ length: concurrency }, () => worker())
-    );
+    await runMediaQueueWorkers({
+      db, module: 'image', projectId, jobId: options.jobId, concurrency,
+      signal: abort.signal, worker,
+    });
 
     if (!abort.signal.aborted) {
       const finalStatus = getEffectiveProjectFinalStatus(db, projectId);
@@ -521,6 +523,21 @@ async function runAuthorizedJob(
       });
     }
 
+    async function failRemoteImageTask(message: string): Promise<void> {
+      const failureMessage = sanitizeErrorMessage(sanitizeGatewayMediaDiagnostic(message, apiKey));
+      // A remote terminal failure is final even if execution bookkeeping fails.
+      // Persist it before settlement so the catch/recovery path cannot requeue it.
+      db.prepare(`UPDATE jobs SET status = 'failed', providerStatus = 'failed',
+        errorMessage = ?, finishedAt = datetime('now') WHERE id = ? AND status = 'running'`)
+        .run(failureMessage, job.id);
+      logError(failureMessage);
+      try {
+        await settleImageExecution('failed', undefined, 'provider_failed');
+      } catch (error) {
+        logWarn(`远端任务已失败并停止，执行记录同步失败: ${sanitizeErrorMessage(sanitizeGatewayMediaDiagnostic(error instanceof Error ? error.message : String(error), apiKey))}`);
+      }
+    }
+
     if (job.providerStatus === 'download_failed' && job.remoteImageUrl) {
       try {
         let imageBuffer: Buffer;
@@ -661,8 +678,8 @@ async function runAuthorizedJob(
           }
 
           if (pollResult.status === 'failed') {
-            await settleImageExecution('failed', undefined, 'provider_failed');
-            throw new Error(`GeekAI task failed: ${pollResult.errorMessage || 'unknown'}`);
+            await failRemoteImageTask(`GeekAI task failed: ${pollResult.errorMessage || 'unknown'}`);
+            return;
           }
         }
 
@@ -873,8 +890,8 @@ async function runAuthorizedJob(
           }
 
           if (pollResult.status === 'failed') {
-            await settleImageExecution('failed', undefined, 'provider_failed');
-            throw new Error(`网关任务失败: ${pollResult.errorMessage || 'unknown'}`);
+            await failRemoteImageTask(`网关任务失败: ${pollResult.errorMessage || 'unknown'}`);
+            return;
           }
         }
 

@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { spawnSyncHidden } from '../spawn-hidden.ts';
 import { openSync } from 'fontkit';
 import { dataRoot } from '../data-root.ts';
-import os from 'node:os';
+import { sharedSystemFontRoots } from './system-font-roots.ts';
 
 export const USER_FONT_MAX_BYTES = 20 * 1024 * 1024;
 /** 上传白名单（§8.5 自定义字体入口）。 */
@@ -155,12 +155,7 @@ const SYSTEM_FONT_EXTENSIONS = new Set(['.ttf', '.otf', '.ttc', '.woff2']);
 
 /** 白名单字体根（安全边界，防目录穿越）。 */
 export function systemFontRoots(): string[] {
-  if (process.platform === 'darwin') return ['/System/Library/Fonts', '/Library/Fonts', path.join(os.homedir(), 'Library/Fonts')];
-  if (process.platform !== 'win32') return ['/usr/share/fonts', '/usr/local/share/fonts', path.join(os.homedir(), '.local/share/fonts')];
-  const roots = [path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts')];
-  const local = process.env.LOCALAPPDATA;
-  if (local) roots.push(path.join(local, 'Microsoft', 'Windows', 'Fonts'));
-  return roots;
+  return sharedSystemFontRoots();
 }
 
 export function isAllowedSystemFontPath(absPath: string): boolean {

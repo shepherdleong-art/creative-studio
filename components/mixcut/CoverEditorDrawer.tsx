@@ -1,4 +1,5 @@
 'use client';
+import { ensureServerFontLoaded } from '@/components/system-fonts';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -167,6 +168,8 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
     if (!loadedFrame || loadedFrame.url !== frameUrl) return;
     let cancelled = false;
     void Promise.all([
+      ensureServerFontLoaded(draft.primary.style.fontFamily),
+      ensureServerFontLoaded(draft.secondary.style.fontFamily),
       document.fonts.load(textStyleFont(draft.primary.style), draft.primary.text),
       document.fonts.load(textStyleFont(draft.secondary.style), draft.secondary.text),
     ]).catch(() => undefined).then(() => {
@@ -186,6 +189,8 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
     let frame = 0;
     let cancelled = false;
     void Promise.all([
+      ensureServerFontLoaded(draft.primary.style.fontFamily),
+      ensureServerFontLoaded(draft.secondary.style.fontFamily),
       document.fonts.load(textStyleFont(draft.primary.style), draft.primary.text),
       document.fonts.load(textStyleFont(draft.secondary.style), draft.secondary.text),
     ]).catch(() => undefined).then(() => {

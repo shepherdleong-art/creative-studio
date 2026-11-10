@@ -5,6 +5,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { FinalEditVariantView } from '../lib/final-edit/types.ts';
 import { releaseReservedExportTarget, type ReservedProjectExportTarget } from '../lib/final-edit/export-naming.ts';
+import { createLocalAccessContext, runWithAccessContext, setTaskAccessContextFactory } from '../lib/media-core/access-context.ts';
 
 const {
   createFinalEditWorkspace,
@@ -1078,6 +1079,42 @@ assert.throws(() => workspace.apply({
   },
 }), (error: unknown) => error instanceof FinalEditError && error.code === 'source_fingerprint_changed', '来源文件变化后 apply 必须复用抽帧级别的完整指纹校验');
 assert.deepEqual(workspace.load(group.id), beforeChangedCoverSource, '来源文件失效时不得写入任何 group 或 variant 状态');
+
+// Public music is readable by the submitting member, but is outside the accepted
+// task's project root. Exercise start -> durable snapshot -> prepare, not only SQL.
+db.exec(`CREATE TABLE team_resource_scopes (resourceType TEXT, resourceId TEXT, ownerUserId TEXT, visibility TEXT, deletedAt TEXT)`);
+db.prepare(`INSERT INTO final_edit_bgm_tracks (id, relativePath, fileFingerprint, durationUs, format, status, scannedAt) VALUES ('public-bgm', 'bgm/public.mp3', 'public-music-fingerprint', 10000000, 'mp3', 'ready', datetime('now'))`).run();
+db.prepare(`INSERT INTO team_resource_scopes VALUES ('bgm', 'public-bgm', 'admin', 'public', NULL)`).run();
+const submittingAccess = {
+  ...createLocalAccessContext(), kind: 'team' as const, actor: { userId: 'member', role: 'employee' as const },
+  registerFile: () => 'fixture-file',
+  assertAccess(type: string, id: string) { if (type === 'bgm' && id !== 'public-bgm') throw new Error('private music'); },
+};
+const previousDeploymentMode = process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE;
+process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE = 'server';
+synthesizedDurationUs = 18_500_000;
+analysisFailures.clear();
+failSemanticScore = false;
+setTaskAccessContextFactory(() => ({
+  ...submittingAccess,
+  assertAccess(type: string) { if (type === 'bgm') throw new Error('outside accepted project'); },
+}));
+try {
+  const publicMusicJob = await runWithAccessContext(submittingAccess, () => workspace.start({
+    projectId: 'p1', scriptDraftId: 'script-1', count: 1, outputPreset: '3x4',
+    providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1,
+  }));
+  assert.equal(publicMusicJob.status, 'succeeded', JSON.stringify(db.prepare('SELECT status, phase, errorMessage FROM final_edit_jobs WHERE id=?').get(publicMusicJob.id)));
+  const musicVariant = db.prepare('SELECT bgmJson FROM final_edit_variants WHERE groupId=?').get(publicMusicJob.groupId) as { bgmJson: string };
+  assert.equal(JSON.parse(musicVariant.bgmJson).trackId, 'public-bgm', '后台准备任务必须自动采用提交时有权读取的公共音乐');
+} finally {
+  setTaskAccessContextFactory(null);
+  if (previousDeploymentMode === undefined) delete process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE;
+  else process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE = previousDeploymentMode;
+  db.prepare(`DELETE FROM final_edit_bgm_tracks WHERE id='public-bgm'`).run();
+  db.exec('DROP TABLE team_resource_scopes');
+}
+
 
 // The public shutdown broadcast must reach prepare work, not only render
 // drain. Hold the TTS seam until the controller is registered, broadcast the

@@ -16,7 +16,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { defaultTextStyle, normalizeTextStyle, splitCoverTitle, timelineGaps } from './domain.ts';
 import { changeVideoPlaybackRate, editAudioClip } from './clip-edit.ts';
 import { calculateOverlapScore } from './overlap.ts';
-import { listReadyFinalEditBgmTracks, scanFinalEditBgm } from './bgm.ts';
+import { listReadyFinalEditBgmTracks, readAcceptedBgmTracks, scanFinalEditBgm } from './bgm.ts';
+import type { ScannedBgmTrack } from '../media-core/bgm-catalog.ts';
 import { parseCoverKey, resolveCoverCandidateFile } from './cover-candidates.ts';
 import { materializeVideoFrame } from './video-frame.ts';
 import { runFinalEditHeavyJob } from './heavy-job-lock.ts';
@@ -224,6 +225,14 @@ export interface StartFinalEditInput extends PreflightInput {
   speed: number;
   analysisProviderId?: string;
   draftGroupId?: string;
+}
+
+interface PrepareJobSnapshot {
+  version?: number;
+  input?: StartFinalEditInput;
+  scriptSnapshot?: ScriptSnapshot;
+  /** Server-owned acceptance snapshot, never read from HTTP input. */
+  bgmPool?: ScannedBgmTrack[];
 }
 
 export interface EnsureMixcutDraftInput {
@@ -1187,7 +1196,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     }
   };
 
-  const prepare = async (jobId: string, groupId: string, input: StartFinalEditInput, script: ScriptSnapshot, signal?: AbortSignal): Promise<void> => {
+  const prepare = async (jobId: string, groupId: string, input: StartFinalEditInput, script: ScriptSnapshot, signal?: AbortSignal, bgmPool?: ScannedBgmTrack[]): Promise<void> => {
     const phaseRank = (phase: string) => ['analyzing', 'synthesizing', 'duration_check', 'matching', 'previewing'].indexOf(phase);
     const updateJob = (phase: string, progress: number) => {
       const current = db.prepare(`SELECT phase, progress FROM final_edit_jobs WHERE id=? AND status='running'`).get(jobId) as { phase: string; progress: number } | undefined;
@@ -1313,7 +1322,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       });
       const durationGateForRun = evaluatedDurationGate;
       updateJob('matching', 0.6);
-      const bgmTracks = await scanFinalEditBgm(db, storageRoot);
+      const bgmTracks = bgmPool ? readAcceptedBgmTracks(db, bgmPool) : await scanFinalEditBgm(db, storageRoot);
       const settings = db.prepare(`SELECT autoUseLimit FROM final_edit_project_settings WHERE projectId=?`).get(input.projectId) as { autoUseLimit: number } | undefined;
       const autoUseLimit = Math.max(1, Math.min(10, Number(settings?.autoUseLimit || 2)));
       const matchingAssets = prepared.filter((asset) => asset.analysisSucceeded !== false && !asset.autoUseDisabled);
@@ -1668,7 +1677,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const analysisCount = selectedMaterialKeys.length;
     const analysisCost = executionInput.analysisProviderId && deps.estimateAnalysisCost ? deps.estimateAnalysisCost({ providerId: executionInput.analysisProviderId, requestCount: analysisCount }) : 0;
     const estimatedCost = Number((ttsCost + analysisCost).toFixed(6));
-    const jobSnapshot = { version: 1 as const, input: normalizedInput, scriptSnapshot: script };
+    const jobSnapshot = {
+      version: 1 as const, input: normalizedInput, scriptSnapshot: script,
+      ...(access.kind === 'team' ? { bgmPool: await scanFinalEditBgm(db, storageRoot) } : {}),
+    };
     const createdAt = now();
     db.transaction(() => {
     db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, editedNarrationText, scriptSyncState, sourceScriptUpdatedAt, selectedMaterialKeysJson, durationGateJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'validating', 0, ?, ?)`).run(groupId, executionInput.projectId, normalizedInput.scriptDraftId, script.shotSetId, JSON.stringify(script), narrationHash, executionInput.analysisProviderId || '', JSON.stringify({ providerId: executionInput.providerId, voice: executionInput.voice, speed: executionInput.speed, gainDb: NARRATION_GAIN_DB_DEFAULT }), JSON.stringify({ enabled: false, primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), script.editedNarrationText, script.scriptSyncState, script.sourceScriptUpdatedAt, JSON.stringify(selectedMaterialKeys), JSON.stringify(createUncheckedDurationGateState({ narrationHash, targetTotalSec: script.targetDurationSec })), createdAt, createdAt);
@@ -1707,7 +1719,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const gate = parseDurationGateState(row.durationGateJson);
     const narrationHash = String(row.narrationHash || '');
     if (!gate || gate.status !== 'needs_input' || gate.narrationHash !== narrationHash) throw new FinalEditError('duration_state_stale', '真实时长状态与当前口播不一致', 409);
-    const storedSnapshot = parseJson<{ version?: number; input?: StartFinalEditInput; scriptSnapshot?: ScriptSnapshot } | null>(latestJob.inputSnapshotJson, null);
+    const storedSnapshot = parseJson<PrepareJobSnapshot | null>(latestJob.inputSnapshotJson, null);
     if (!storedSnapshot?.input || !storedSnapshot.scriptSnapshot) throw new FinalEditError('prepare_snapshot_invalid', '准备任务快照损坏', 409);
 
     let script = parseJson<ScriptSnapshot>(String(row.scriptSnapshotJson), storedSnapshot.scriptSnapshot);
@@ -1814,6 +1826,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const estimatedCost = Number((ttsCost + analysisCost).toFixed(6));
     const jobId = uuidv4();
     const requestKey = sha256(JSON.stringify({ kind: 'prepare-duration-resolution', groupId: input.groupId, jobId }));
+    const bgmPool = storedSnapshot.bgmPool ?? (requireAccessContext().kind === 'team' ? await scanFinalEditBgm(db, storageRoot) : undefined);
     db.transaction(() => {
       const current = db.prepare(`SELECT revision, status, phase, narrationHash FROM final_edit_groups WHERE id=?`).get(input.groupId) as { revision: number; status: string; phase: string; narrationHash: string } | undefined;
       if (!current || current.revision !== input.expectedRevision || current.status !== 'needs_input' || current.phase !== 'duration_review' || current.narrationHash !== narrationHash) {
@@ -1834,7 +1847,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         String(row.projectId),
         input.groupId,
         requestKey,
-        JSON.stringify({ version: 1, input: nextInput, scriptSnapshot: script }),
+        JSON.stringify({ version: 1, input: nextInput, scriptSnapshot: script, bgmPool }),
         estimatedCost,
         now(),
       );
@@ -1860,7 +1873,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   const resumeAuthorizedPrepareJob = async (jobId: string) => {
     const row = db.prepare(`SELECT groupId, inputSnapshotJson FROM final_edit_jobs WHERE id=? AND kind='prepare' AND status='queued'`).get(jobId) as { groupId: string; inputSnapshotJson: string } | undefined;
     if (!row) return;
-    const snapshot = parseJson<{ version?: number; input?: StartFinalEditInput; scriptSnapshot?: ScriptSnapshot } | null>(row.inputSnapshotJson, null);
+    const snapshot = parseJson<PrepareJobSnapshot | null>(row.inputSnapshotJson, null);
     let input = snapshot?.input;
     let script = snapshot?.scriptSnapshot;
     // Compatibility for prepare jobs written before Phase 2: their group copy
@@ -1883,7 +1896,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       return { signal: controller.signal, release: () => undefined };
     })();
     try {
-      await prepare(jobId, row.groupId, input!, script!, registration.signal);
+      await prepare(jobId, row.groupId, input!, script!, registration.signal, snapshot?.bgmPool);
     } finally {
       registration.release();
     }

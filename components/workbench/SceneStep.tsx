@@ -10,6 +10,7 @@ import ImagePreview from '@/components/media/ImagePreview';
 import { getResultJobKind, type SceneReferenceSummary } from '@/lib/result-gallery-jobs';
 import {
   clampIndex,
+  canRegenerateShot,
   hasShotResult,
   isSceneViewMode,
   resolveShotResultState,
@@ -163,6 +164,12 @@ export default function SceneStep({
   const selectedState = resolveShotResultState(selectedJob?.status, Boolean(selectedResultUrl));
   const selectedReference = selectedJob?.outputImageId ? sceneReferences.get(selectedJob.outputImageId) : undefined;
   const marked = hasShotResult(selectedState);
+  const canRegenerate = canRegenerateShot(selectedState);
+  // 原任务的供应商是冻结的：右栏换了供应商后，重试也要按新供应商新建一版。
+  const jobProviderId = selectedJob?.providerId || '';
+  const providerSelectionChanged = Boolean(jobProviderId)
+    && Boolean(effectiveProviderId)
+    && effectiveProviderId !== jobProviderId;
 
   const activeCount = jobs.filter((job) => isActiveJobStatus(job.status)).length;
   const succeededCount = jobs.filter((job) => getResultJobKind(job) === 'succeeded').length;
@@ -243,6 +250,16 @@ export default function SceneStep({
     }
     await onRegenerate(selectedJob.id, regenPrompt.trim(), effectiveProviderId);
     setRegenOpen(false);
+  };
+
+  /** 失败候选的「重试」：换了供应商就按新供应商重新生成一版，否则原任务重跑。 */
+  const retrySelectedJob = () => {
+    if (!selectedJob) return;
+    if (providerSelectionChanged) {
+      void onRegenerate(selectedJob.id, selectedJob.prompt || prompt, effectiveProviderId);
+      return;
+    }
+    void onRetry(selectedJob.id);
   };
 
   return (
@@ -406,7 +423,12 @@ export default function SceneStep({
                       : <span className={`${s.placeholder} ${selectedKind === 'failed' ? s.placeholderFail : ''}`}>
                           {selectedKind === 'failed'
                             ? <><b>这张没生成出来</b><span>{selectedJob.errorMessage || '可以重新生成'}</span>
-                                <button type="button" className="cap" onClick={() => void onRetry(selectedJob.id)}>重试</button></>
+                                <button
+                                  type="button"
+                                  className="cap"
+                                  title={providerSelectionChanged ? '按右栏选中的供应商重新生成一版（旧版保留）' : '用原供应商重新执行这个任务'}
+                                  onClick={retrySelectedJob}
+                                >重试</button></>
                             : <><span className={s.spin} /><span>生成中</span></>}
                         </span>
                   ) : (
@@ -489,7 +511,7 @@ export default function SceneStep({
                 onClick={() => selectedJob && void onMark(selectedJob.id, 'discard')}
               ><Icon name="trash" size={14} />废弃</button>
               <hr />
-              <button type="button" className="cap" disabled={!marked} onClick={openRegen}>
+              <button type="button" className="cap" disabled={!canRegenerate} onClick={openRegen}>
                 <Icon name="retry" size={14} />重新生成
               </button>
               <button
@@ -530,6 +552,7 @@ export default function SceneStep({
                 <span>供应商</span>
                 <select
                   className={s.select}
+                  aria-label="供应商"
                   value={effectiveProviderId}
                   onChange={(event) => setProviderId(event.target.value)}
                 >
@@ -543,6 +566,9 @@ export default function SceneStep({
                 当前没有可用图片供应商，请先到 <a className="link-accent" href="/settings">供应商配置</a> 启用并填写 Key。
               </p>
             )}
+            {providerSelectionChanged ? (
+              <p className={s.note}>已换供应商：对失败候选点「重试」会按新供应商重新生成一版，旧版保留。</p>
+            ) : null}
 
             <div className={s.field}>
               <span>数量</span>

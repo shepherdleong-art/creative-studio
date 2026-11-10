@@ -126,6 +126,17 @@ export function canRetryShot(state: ShotResultState): boolean {
   return state === 'failed';
 }
 
+/**
+ * 「重新生成」的可用条件：已有结果或已失败的分镜都能重做（`/api/jobs/:id/regenerate`
+ * 接受 succeeded / failed / canceled / needs_check 作为源任务）。
+ *
+ * 之前界面拿「能否标可用」当重做门禁，失败的分镜因此点不了重新生成，只能点重试；
+ * 重试又不会采用右栏新选的供应商，于是失败后无法换供应商重做。这两件事分开判断。
+ */
+export function canRegenerateShot(state: ShotResultState): boolean {
+  return state === 'succeeded' || state === 'failed';
+}
+
 /** 有结果（成功）才能切版本、下载、标状态。 */
 export function hasShotResult(state: ShotResultState): boolean {
   return state === 'succeeded';

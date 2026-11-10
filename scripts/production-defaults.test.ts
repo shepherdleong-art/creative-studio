@@ -19,6 +19,7 @@ const {
   normalizeProductionDefaults,
   productionParamsFor,
   resolveProductionParams,
+  resolveQueueWorkerCount,
 } = await import('../lib/team-service/production-defaults.ts');
 
 const CLIENT_DEFAULTS = {
@@ -30,6 +31,21 @@ const CLIENT_DEFAULTS = {
 
 // ── 起步默认值 = 改动前客户端默认值 ──
 assert.deepEqual(BUILTIN_PRODUCTION_DEFAULTS, CLIENT_DEFAULTS, '内置默认值必须等于改动前客户端默认值');
+
+assert.equal(resolveQueueWorkerCount({ mode: 'server', concurrency: 10, poolDemands: [{ capacity: 100, taskCount: 101 }] }), 100,
+  'server 单项目必须能用满 100 名额，不受旧项目并发 10 限制');
+for (const capacity of [20, 50, 137]) {
+  assert.equal(resolveQueueWorkerCount({ mode: 'server', concurrency: 10, poolDemands: [{ capacity, taskCount: capacity + 1 }] }), capacity,
+    '所有共享池都读取配置容量，不能写死七牛或 100 条');
+}
+assert.equal(resolveQueueWorkerCount({ mode: 'server', poolDemands: [{ capacity: 20, taskCount: 40 }, { capacity: 50, taskCount: 51 }] }), 70,
+  '单个项目可同时使用不同池的空闲容量');
+assert.equal(resolveQueueWorkerCount({ mode: 'server', poolDemands: [{ capacity: 100, taskCount: 3 }] }), 3,
+  'worker 数不能超过实际任务需求');
+assert.equal(resolveQueueWorkerCount({ mode: 'server', poolDemands: [{ capacity: 0, taskCount: 5 }] }), 1,
+  '零容量仍需 worker 持久化等待原因，不能绕过准入');
+assert.equal(resolveQueueWorkerCount({ mode: 'local', concurrency: 3, poolDemands: [{ capacity: 100, taskCount: 101 }] }), 3,
+  '本地模式保留项目并发');
 
 // 图片预处理两个数值必须与 lib/image-preprocess.ts 的 DEFAULT_OPTIONS 一致。
 // 单独动态导入它（会拉起 sharp），所以只在这个测试里读一次。
@@ -87,11 +103,11 @@ assert.deepEqual(
   'productionParamsFor 必须读运行时配置里的服务器默认值',
 );
 
-// 视频并发在两种模式下都钳制在 1–10（执行池本来就按这个上限工作）。
+// server 不再额外钳制到 10；实际执行名额由共享池与成员策略裁决。
 assert.equal(
   resolveProductionParams({ mode: 'server', defaults: { ...tuned, videoConcurrency: 99 } }).videoConcurrency,
-  10,
-  '服务器默认视频并发必须钳制到 10',
+  99,
+  '服务器视频并发兼容值不能再额外钳制到 10',
 );
 assert.equal(
   resolveProductionParams({ mode: 'server', defaults: { ...tuned, videoConcurrency: 0 } }).videoConcurrency,

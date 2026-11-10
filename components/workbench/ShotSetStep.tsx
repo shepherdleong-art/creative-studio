@@ -12,6 +12,7 @@ import type { SceneReferenceRecord } from '@/lib/result-gallery-jobs';
 import {
   clampIndex,
   canMarkShotAvailable,
+  canRegenerateShot,
   canRetryShot,
   formatShotVersionLabel,
   getOpeningShotId,
@@ -59,6 +60,7 @@ interface Shot {
   generatedImageUrl?: string;
   latestJobId?: string;
   jobStatus?: string;
+  jobErrorMessage?: string | null;
   jobPrompt?: string;
   referenceImageIds?: string;
   providerId?: string;
@@ -100,6 +102,15 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const MARK_LABELS: Record<string, string> = { available: '可用', rework: '待返工', discard: '废弃' };
+
+const SHOT_STATE_LABELS: Record<ShotResultState, string> = {
+  empty: '未生成',
+  queued: '排队中',
+  generating: '生成中',
+  checking: '等待补抓结果',
+  failed: '失败',
+  succeeded: '未标记',
+};
 
 function markTone(state: ShotResultState): 'ok' | 'warn' | 'fail' | 'run' | 'idle' {
   if (state === 'succeeded') return 'ok';
@@ -288,7 +299,14 @@ export default function ShotSetStep({
   const shotState = resolveShotResultState(currentShot?.jobStatus, Boolean(resultUrl));
   const canMark = canMarkShotAvailable(shotState);
   const canRetry = canRetryShot(shotState);
+  const canRegenerate = canRegenerateShot(shotState);
   const generating = shotState === 'queued' || shotState === 'generating' || shotState === 'checking';
+  // 右栏「供应商」是重做用的选择。原任务的供应商冻结在 job 行里，换了供应商后
+  // 原地重试不会生效，必须走「重新生成」新建一个任务（多出一版）。
+  const jobProviderId = currentShot?.providerId || '';
+  const providerSelectionChanged = Boolean(jobProviderId)
+    && Boolean(effectiveProviderId)
+    && effectiveProviderId !== jobProviderId;
 
   // 切分镜时按「这一张的提示词/供应商」重置重做表单，同一个分镜不覆盖用户输入。
   const redoKey = currentShot ? `${currentShot.id}:${currentShot.latestJobId || ''}` : '';
@@ -361,26 +379,12 @@ export default function ShotSetStep({
     await loadSets();
   };
 
-  const retryShot = async () => {
-    if (!currentShot?.latestJobId) return;
-    const response = await fetch(
-      currentShot.jobStatus === 'needs_check'
-        ? `/api/jobs/${currentShot.latestJobId}/resume-poll`
-        : `/api/jobs/${currentShot.latestJobId}/retry`,
-      { method: 'POST' },
-    );
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      setError(body.error || '重试失败');
-      return;
-    }
-    await onShotChanged();
-    if (activeSetId) await loadShots(activeSetId);
-  };
-
-  const redoShot = async () => {
+  /** 重做的唯一提交口：新建一个任务（会多出一版，旧版保留）。 */
+  const submitRedo = async (promptOverride?: string) => {
+    if (redoing) return;
     if (!activeSetId || !currentShot?.latestJobId) return;
-    if (!redoPrompt.trim()) {
+    const prompt = (promptOverride ?? redoPrompt).trim();
+    if (!prompt) {
       setError('请填写提示词');
       return;
     }
@@ -391,7 +395,7 @@ export default function ShotSetStep({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: redoPrompt.trim(),
+          prompt,
           markOriginal: true,
           inputSource: 'original',
           referenceImageIds: redoReferenceIds === null ? undefined : selectedReferenceIds,
@@ -419,6 +423,33 @@ export default function ShotSetStep({
     } finally {
       setRedoing(false);
     }
+  };
+
+  const redoShot = async () => {
+    await submitRedo();
+  };
+
+  const retryShot = async () => {
+    if (!currentShot?.latestJobId) return;
+    // 右栏换了供应商：原任务的供应商/模型是冻结的，原地重试不会采用新选择，
+    // 直接按新供应商重新生成一版，避免「重试看上去成功、实际还是老供应商」。
+    if (providerSelectionChanged) {
+      await submitRedo(redoPrompt.trim() || currentShot.jobPrompt || '');
+      return;
+    }
+    const response = await fetch(
+      currentShot.jobStatus === 'needs_check'
+        ? `/api/jobs/${currentShot.latestJobId}/resume-poll`
+        : `/api/jobs/${currentShot.latestJobId}/retry`,
+      { method: 'POST' },
+    );
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setError(body.error || '重试失败');
+      return;
+    }
+    await onShotChanged();
+    if (activeSetId) await loadShots(activeSetId);
   };
 
   const confirmDelete = async () => {
@@ -563,7 +594,9 @@ export default function ShotSetStep({
                         {url
                           ? <img src={url} alt={`分镜 ${shot.indexNum} 结果`} loading="lazy" />
                           : <span className={`${s.placeholder} ${state === 'failed' ? s.placeholderFail : ''}`}>
-                              {state === 'failed' ? '失败' : <span className={s.spin} />}
+                              {state === 'empty'
+                                ? <><Icon name="image" size={22} /><span>未生成</span></>
+                                : state === 'failed' ? '失败' : <span className={s.spin} />}
                             </span>}
                       </span>
                     </span>
@@ -572,7 +605,7 @@ export default function ShotSetStep({
                       {isOpeningShot(shots.map((item) => item.id), shot.id) ? <em>开场</em> : null}
                       <small>
                         <i className={`status-dot-${markTone(state)}`} />
-                        {state === 'failed' ? '失败' : state === 'succeeded' ? (shot.reviewMark ? MARK_LABELS[shot.reviewMark] : '未标记') : '生成中'}
+                        {state === 'succeeded' && shot.reviewMark ? MARK_LABELS[shot.reviewMark] : SHOT_STATE_LABELS[state]}
                       </small>
                     </span>
                   </button>
@@ -606,7 +639,14 @@ export default function ShotSetStep({
                           <>
                             <b>这张没生成出来</b>
                             <span>{currentShot.jobStatus === 'failed' ? '生成失败，可以重新生成' : '结果文件缺失，可以重试'}</span>
-                            {canRetry ? <button type="button" className="cap" onClick={() => void retryShot()}>重试</button> : null}
+                            {canRetry ? (
+                              <button
+                                type="button"
+                                className="cap"
+                                title={providerSelectionChanged ? '按右栏选中的供应商重新生成一版（旧版保留）' : '用原供应商重新执行这个任务'}
+                                onClick={() => void retryShot()}
+                              >重试</button>
+                            ) : null}
                           </>
                         ) : shotState === 'empty' ? (
                           <>
@@ -615,7 +655,7 @@ export default function ShotSetStep({
                             <span>在右栏「生成分镜」里用场景参考图生成这一组。</span>
                           </>
                         ) : (
-                          <><span className={s.spin} /><span>{shotState === 'checking' ? '等待补抓结果' : '生成中'}</span></>
+                          <><span className={s.spin} /><span>{SHOT_STATE_LABELS[shotState]}</span></>
                         )}
                       </span>
                     )}
@@ -691,7 +731,7 @@ export default function ShotSetStep({
                   onClick={() => void markShot('discard')}
                 ><Icon name="trash" size={14} />废弃</button>
                 <hr />
-                <button type="button" className="cap" disabled={!canMark || redoing} onClick={() => void redoShot()}>
+                <button type="button" className="cap" disabled={!canRegenerate || redoing} onClick={() => void redoShot()}>
                   <Icon name="retry" size={14} />{redoing ? '提交中…' : '重新生成'}
                 </button>
                 {resultUrl ? <a className="cap" href={resultUrl} download><Icon name="download" size={14} />下载</a> : null}
@@ -760,12 +800,15 @@ export default function ShotSetStep({
                 {selectableProviders.length > 0 ? (
                   <label className={s.field}>
                     <span>供应商</span>
-                    <select className={s.select} value={effectiveProviderId} onChange={(event) => setRedoProviderId(event.target.value)}>
+                    <select className={s.select} aria-label="供应商" value={effectiveProviderId} onChange={(event) => setRedoProviderId(event.target.value)}>
                       {selectableProviders.map((provider) => (
                         <option key={provider.id} value={provider.id}>{provider.name}（{provider.model}）</option>
                       ))}
                     </select>
                   </label>
+                ) : null}
+                {providerSelectionChanged ? (
+                  <p className={s.note} data-testid="shot-provider-note">已换供应商：重试和重新生成都会按新供应商多出一版，旧版保留。</p>
                 ) : null}
                 <label className={s.field}>
                   <span>重做提示词</span>
@@ -778,12 +821,13 @@ export default function ShotSetStep({
                   />
                 </label>
                 <p className={s.note}>重新生成会多出一版，旧版保留，可以切回去。</p>
+                {shotState === 'failed' && currentShot.jobErrorMessage ? <p className={s.errorText} role="alert">{currentShot.jobErrorMessage}</p> : null}
                 {error ? <p className={s.errorText} role="alert">{error}</p> : null}
               </div>
               <button
                 type="button"
                 className={s.go}
-                disabled={redoing || !redoPrompt.trim() || !canMark}
+                disabled={redoing || !redoPrompt.trim() || !canRegenerate}
                 onClick={() => void redoShot()}
               >{redoing ? '提交中…' : generating ? '生成中…' : '重新生成这一张'}</button>
             </>

@@ -482,6 +482,10 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
       ALTER TABLE team_error_records ADD COLUMN resolvedByUserId TEXT REFERENCES team_users(id);
     `,
   },
+  {
+    version: 17,
+    sql: `ALTER TABLE team_users ADD COLUMN deletedAt TEXT;`,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;

@@ -8,6 +8,8 @@ import type { StyleTarget } from './FinalEditInspector';
 import { expectedVideoTimeSec, getVideoSlotPlan, paintDecodedVideoFrame, previewAudioLevelsAtTime, shouldIssueSeek } from './preview-playback';
 import { drawEditorOverlay, textStyleFont } from './text-canvas-renderer';
 import styles from './FinalEditEditor.module.css';
+import { useBrowserPreviewRecovery } from '@/components/media/use-browser-preview-recovery';
+import { ensureServerFontLoaded } from '@/components/system-fonts';
 
 const FPS = 24;
 const INTRO_SEC = 20 / FPS;
@@ -116,6 +118,9 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   );
   const slotAssets = slotClips.map((clip) => clip ? assets.find((asset) => asset.videoJobId === clip.videoJobId) || null : null) as [FinalEditAssetView | null, FinalEditAssetView | null];
   const activeSlot = slotPlan.activeSlot;
+  const recoveryA = useBrowserPreviewRecovery(videoARef, slotAssets[0]?.previewUrl, active);
+  const recoveryB = useBrowserPreviewRecovery(videoBRef, slotAssets[1]?.previewUrl, active);
+  const recovery = activeSlot === 0 ? recoveryA : activeSlot === 1 ? recoveryB : null;
   const slotAClipId = slotClips[0]?.id || '';
   const slotASourceInFrame = slotClips[0]?.sourceInFrame ?? -1;
   const slotBClipId = slotClips[1]?.id || '';
@@ -210,7 +215,10 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       ? [[styles.coverPrimary, group.coverTitle.primary.text], [styles.coverSecondary, group.coverTitle.secondary.text]] as const
       : cue ? [[styles.subtitle, cue.text]] as const : [];
     let cancelled = false;
-    void Promise.all(fonts.map(([style, text]) => document.fonts.load(textStyleFont(style), text)))
+    void Promise.all(fonts.map(async ([style, text]) => {
+      await ensureServerFontLoaded(style.fontFamily);
+      await document.fonts.load(textStyleFont(style), text);
+    }))
       .catch(() => undefined)
       .then(() => { if (!cancelled) drawEditorOverlay(canvas, group, variant.outputPreset, cue, showTitle); });
     return () => { cancelled = true; };
@@ -569,6 +577,8 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
         <button type="button" className={styles.actionButton} aria-label={fullscreen ? "退出全屏" : "全屏预览"} onClick={() => void enterFullscreen()}>{fullscreen ? "退出全屏" : "全屏"}</button>
       </div>
       {fullscreenError && <p role="alert">{fullscreenError}</p>}
+      {recovery?.state === 'pending' && <p role="status">视频预览准备中…</p>}
+      {recovery?.state === 'failed' && <p role="alert">视频预览加载失败 <button type="button" className={styles.actionButton} onClick={recovery.retry}>重试预览</button></p>}
       <audio ref={narrationRef} preload="metadata" src={`/api/final-edit-groups/${group.id}/narration`} />
       <audio ref={bgmRef} preload="metadata" loop src={variant.bgm.trackId ? `/api/final-edit-bgm/${variant.bgm.trackId}/file` : undefined} />
     </main>

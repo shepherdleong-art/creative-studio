@@ -80,7 +80,7 @@ export default function SystemFontPicker({
         return [...merged.values()];
       });
       setCatalogReady(true);
-    }).catch(() => undefined);
+    }).catch(() => setRefreshError('字体目录加载失败，请刷新字体重试'));
   }, []);
 
   const displayNameByFamily = useMemo(() => new Map(fonts.map((font) => [font.family, font.displayName])), [fonts]);

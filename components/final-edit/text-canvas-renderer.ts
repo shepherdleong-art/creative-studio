@@ -1,5 +1,6 @@
 import type { FinalEditGroupView, OutputPresetId, SubtitleCue, TextStyle } from '@/lib/final-edit/types';
 import { OUTPUT_PRESETS } from '@/lib/final-edit/types';
+import { ensureServerFontLoaded } from '@/components/system-fonts';
 
 export type TextOverflowTarget = 'coverPrimary' | 'coverSecondary' | 'subtitle';
 
@@ -238,6 +239,7 @@ export async function createOverlayBundlePayload(group: FinalEditGroupView, pres
     requiredFonts.add(style.coverSecondary.fontFamily);
   }
   // document.fonts.check() 对任何字符串都返回 true，挡不住无效字体——改用像素比对。
+  await Promise.all([...requiredFonts].map(ensureServerFontLoaded));
   await document.fonts.ready;
   assertFontsEffective(requiredFonts);
   const titleCanvas = canvasFor(preset);

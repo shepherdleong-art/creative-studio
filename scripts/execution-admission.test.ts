@@ -360,6 +360,23 @@ try {
     if (second.kind === 'admitted') assert.equal(second.grant.operation.taskId, 'borrow-second');
   }
 
+  for (const [index, [poolKey, capacity]] of ([
+    ['company:other-media', 50], ['company:qiniuyun', 100], ['llm:remote', 20], ['tts:remote', 20],
+  ] as const).entries()) {
+    const { db, execution } = await setup(`automatic-any-pool-${index}`);
+    const { updateTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+    updateTeamConcurrencyPolicy(db, { mode: 'auto', manualDefaultConcurrency: 10, expectedVersion: 0 });
+    upsertExecutionPool(db, { poolKey, kind: 'remote', capacity, enabled: true, mappingSnapshot: { providerId: 'provider-a' }, expectedVersion: 0 });
+    updateActorPolicy(db, { actorId: 'only-member', monthlyLimitMinor: null, personalConcurrency: 0, concurrencyMode: 'inherit', paused: false, expectedVersion: 0 });
+    for (let task = 0; task <= capacity; task += 1) {
+      const queued = execution.enqueue(operation('only-member', `task-${task}`, { pools: [poolKey] }));
+      const result = execution.admit({ ...identity, operationId: queued.operation.id });
+      if (task < capacity) assert.equal(result.kind, 'admitted', `${poolKey} 应允许单人使用全部 ${capacity} 个空闲名额`);
+      else assert.deepEqual(result, { kind: 'deferred', reasons: ['pool_capacity'] }, `${poolKey} 不得超售`);
+    }
+    assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE poolKey=? AND kind='concurrency' AND state='held'").pluck().get(poolKey), capacity);
+  }
+
   {
     const { db, execution } = await setup('automatic-eligible-demand');
     const { updateTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');

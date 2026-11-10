@@ -32,7 +32,7 @@ async function __teamRouteGET(
     return mediaResponse(request, media.relativePath, media.mimeType);
   } catch (error) {
     if (error instanceof BrowserPreviewPendingError) {
-      return Response.json({ error: 'preview_pending', retryAfterMs: error.retryAfterMs }, { status: 202 });
+      return Response.json({ error: 'preview_pending', retryAfterMs: error.retryAfterMs }, { status: 202, headers: { 'Cache-Control': 'no-store', 'Retry-After': '1' } });
     }
     return finalEditErrorResponse(error);
   }

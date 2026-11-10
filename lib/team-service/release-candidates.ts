@@ -8,7 +8,7 @@ import { getDb } from '../db.ts';
 import { readRuntimeConfig } from './config.ts';
 import type { TeamReleaseCurrentVersion } from './maintenance/release-candidates.ts';
 import { readTeamReleasePointer } from './maintenance/release.ts';
-import { assertNoSymlinkPath, sha256File, writeJsonAtomic } from './maintenance/paths.ts';
+import { assertNoSymlinkPath, writeJsonAtomic } from './maintenance/paths.ts';
 import packageMetadata from '../../package.json' with { type: 'json' };
 
 export function teamReleaseCandidateRoot(root = dataRoot()): string {
@@ -27,12 +27,8 @@ export async function readCurrentTeamReleaseVersion(): Promise<TeamReleaseCurren
     const pointer = await readTeamReleasePointer(serviceRoot);
     const releaseRoot = process.env.CREATIVE_STUDIO_RELEASE_ROOT?.trim();
     if (!releaseRoot) throw new Error('当前发布目录未配置，拒绝猜测版本');
-    const { verifyReleaseManifest } = await import('./maintenance/distribution.ts');
-    const manifest = verifyReleaseManifest(releaseRoot);
-    if (manifest.releaseId !== pointer.releaseId
-      || await sha256File(path.join(releaseRoot, 'release-manifest.json')) !== pointer.packageSha256) {
-      throw new Error('当前发布目录或清单哈希与受控发布指针不符');
-    }
+    const { readInstalledReleaseVersionMetadata } = await import('./maintenance/distribution.ts');
+    const manifest = await readInstalledReleaseVersionMetadata(releaseRoot, pointer);
     return { appVersion: manifest.appVersion, dataSchemaVersion: currentDataSchemaVersion(), releaseId: manifest.releaseId };
   }
   const releaseId = process.env.CREATIVE_STUDIO_SERVER_RELEASE_ID?.trim();

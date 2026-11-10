@@ -43,10 +43,15 @@ const server = spawn(process.execPath, [entry], {
     HOSTNAME: '127.0.0.1',
     NODE_ENV: 'production',
     CREATIVE_STUDIO_DATA_ROOT: root,
+    CREATIVE_STUDIO_DEPLOYMENT_MODE: 'local',
     CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER: '0',
   },
-  stdio: 'ignore',
+  stdio: ['ignore', 'pipe', 'pipe'],
 });
+let serverOutput = '';
+for (const stream of [server.stdout, server.stderr]) {
+  stream.on('data', (chunk) => { serverOutput = (serverOutput + chunk).slice(-4_000); });
+}
 
 /** 96×128 纯色 PNG（上传夹具用；不联网、不依赖 sharp）。 */
 function solidPng(rgb, width = 96, height = 128) {
@@ -100,6 +105,8 @@ const createdShotSets = [];
 const selectionPatches = [];
 const deletedShotSets = [];
 const regenerations = [];
+// 原地重试（POST /api/jobs/:id/retry）与重做（/regenerate）分开记，用来区分「原供应商重跑」与「按新供应商新建一版」。
+const retries = [];
 const appliedScenes = [];
 const sceneReferences = [
   { id: 'scene-ref-1', name: '暖色客厅', imageAssetId: 'scene-out-1', status: 'active' },
@@ -138,6 +145,19 @@ function seedJobs() {
 function shotDetail() {
   const a = uploads.find((item) => item.filename === NAMES.a);
   const b = uploads.find((item) => item.filename === NAMES.b);
+  if (['ungenerated', 'pending', 'needs_check', 'blocked'].includes(groupGenerationState)) {
+    return {
+      status: 'draft',
+      shots: [a, b].map((asset, index) => ({
+        id: `shot-${index + 1}`, indexNum: index + 1,
+        sourceImageId: asset.id, sourceFilename: asset.filename, sourceImageUrl: asset.imageUrl,
+        latestJobId: groupGenerationState === 'ungenerated' ? undefined : `shot-job-${index + 1}`,
+        jobStatus: groupGenerationState === 'ungenerated' ? undefined : groupGenerationState === 'blocked' ? 'failed' : groupGenerationState,
+        jobErrorMessage: groupGenerationState === 'blocked' ? '供应商安全审核未通过，请调整素材后重新生成。' : undefined,
+        resultCandidates: [],
+      })),
+    };
+  }
   return {
     status: groupGenerationState === 'complete' ? 'completed' : groupGenerationState === 'running' ? 'generating' : 'draft',
     shots: [
@@ -155,7 +175,9 @@ function shotDetail() {
       {
         id: 'shot-2', indexNum: 2,
         sourceImageId: b.id, sourceFilename: NAMES.b, sourceImageUrl: b.imageUrl,
-        latestJobId: 'shot-job-2', jobStatus: groupGenerationState === 'normal' ? 'failed' : groupGenerationState === 'running' ? 'running' : 'succeeded', jobPrompt: '第 2 镜：细节', resultCandidates: [],
+        latestJobId: 'shot-job-2', jobStatus: groupGenerationState === 'normal' ? 'failed' : groupGenerationState === 'running' ? 'running' : 'succeeded',
+        // 失败的分镜任务也记着自己用的是哪个供应商：右栏换供应商后点「重试」必须按新供应商重做。
+        providerId: 'provider-1', jobPrompt: '第 2 镜：细节', resultCandidates: [],
       },
     ],
     sceneRefName: '验收场景参考',
@@ -215,8 +237,17 @@ async function installRoutes(page) {
       regenerations.push(body);
       return json({ newJobId: 'shot-job-1-redo' });
     }
-    if (pathname.startsWith('/api/jobs/') && (pathname.endsWith('/retry') || pathname.endsWith('/resume-poll'))) return json({ success: true });
-    if (pathname === '/api/team/models') return json([{ id: 'provider-1', name: '验收供应商', model: 'gpt-image-2', type: 'openai', enabled: 1, hasApiKey: true }]);
+    if (pathname.startsWith('/api/jobs/') && pathname.endsWith('/retry')) {
+      retries.push({ pathname, body });
+      return json({ success: true });
+    }
+    if (pathname.startsWith('/api/jobs/') && pathname.endsWith('/resume-poll')) return json({ success: true });
+    if (pathname === '/api/team/models') {
+      return json([
+        { id: 'provider-1', name: '验收供应商', model: 'gpt-image-2', type: 'openai', enabled: 1, hasApiKey: true },
+        { id: 'provider-2', name: '备用供应商', model: 'gpt-image-2', type: 'openai', enabled: 1, hasApiKey: true },
+      ]);
+    }
     if (pathname === '/api/team/auth/session') return json({ authenticated: true, role: 'employee', displayName: '验收员工' });
     if (pathname.startsWith('/api/images/')) return route.fulfill({status:200,contentType:'image/png',body:pathname.includes('/uploads/') ? LANDSCAPE_PNG : PNG});
     return json({});
@@ -230,17 +261,29 @@ async function uploadViaChooser(page, label, files) {
   await (await chooser).setFiles(files.map((name) => ({ name, mimeType: 'image/png', buffer: PNG })));
 }
 
+/** 轮询按钮的禁用状态；超时仍返回最后一次读到的值，让断言报出中文原因而不是英文超时。 */
+async function waitForDisabledState(locator, expectedDisabled, timeout = 5_000) {
+  const deadline = Date.now() + timeout;
+  let disabled = await locator.isDisabled();
+  while (disabled !== expectedDisabled && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    disabled = await locator.isDisabled();
+  }
+  return disabled;
+}
+
 let browser;
 const pageErrors = [];
 try {
   let ready = false;
-  for (let attempt = 0; attempt < 240; attempt += 1) {
+  const readyDeadline = Date.now() + 40_000;
+  while (Date.now() < readyDeadline) {
     if (server.exitCode !== null) throw new Error('夹具服务提前退出');
-    try { ready = (await fetch(baseUrl)).ok; } catch { /* 启动中 */ }
+    try { ready = (await fetch(baseUrl, { signal: AbortSignal.timeout(1_000) })).ok; } catch { /* 启动中 */ }
     if (ready) break;
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
-  assert.ok(ready, '夹具服务必须可访问');
+  assert.ok(ready, `夹具服务必须可访问：${serverOutput}`);
 
   project = {
     id: PROJECT_ID,
@@ -385,6 +428,108 @@ try {
   assert.equal(regenerations[0]?.prompt, '第 1 镜：产品全景', '重做必须带上这一张的提示词');
   assert.equal('referenceImageIds' in (regenerations[0] ?? {}), false, '重做不得把参考图清空（不传 referenceImageIds 才沿用原任务）');
 
+  // ── 失败分镜：两个「重新生成」入口必须可用；换供应商后「重试」必须按新供应商重做 ──
+  // 契约：
+  //   1) 失败分镜（jobStatus='failed'）也要能点「重新生成」——之前拿 canMark（只允许 succeeded）当门禁；
+  //   2) 右栏供应商改成与失败任务不同的 provider-2 后，点失败占位里的「重试」必须走
+  //      POST /api/jobs/:id/regenerate（body.providerId=provider-2），成功后 PATCH 分镜关联新任务；
+  //   3) 供应商换回任务原 provider-1 后，「重试」仍走 POST /api/jobs/:id/retry（原任务重跑语义）。
+  // 三条契约的违规先收集再一次性抛出，避免第一条失败掩盖后面的 bug。
+  const contractViolations = [];
+  const expectContract = (label, check) => {
+    try { check(); } catch (error) { contractViolations.push(`${label}：${error.message}`); }
+  };
+
+  await page.getByRole('button', { name: '分镜 2', exact: true }).first().click();
+  await page.getByText('这张没生成出来', { exact: false }).first().waitFor({ timeout: 10_000 });
+  const storyboard = page.getByTestId('workbench-storyboard');
+  const shotSettings = storyboard.getByRole('complementary', { name: '设置' });
+  // 右栏是 <label><span>供应商</span><select>…</select></label>：Playwright 的 label 文本会把
+  // option 文案也算进去，getByLabel('供应商', { exact: true }) 匹配不到，这里按标签文本过滤。
+  const providerSelect = shotSettings.locator('label').filter({ hasText: '供应商' }).locator('select').first();
+  await providerSelect.waitFor({ timeout: 10_000 });
+  const providerValues = await providerSelect.locator('option').evaluateAll((options) => options.map((option) => option.value));
+  expectContract('右栏供应商下拉必须包含新供应商 provider-2', () => {
+    assert.deepEqual(providerValues, ['provider-1', 'provider-2'], `右栏「供应商」下拉应列出 provider-1 与新加的 provider-2，实际：${JSON.stringify(providerValues)}`);
+  });
+  // 右栏「重新生成这一张」还要等重做提示词按这一张的 jobPrompt 回填（空提示词本来就会被禁用）。
+  await shotSettings.locator('textarea').first().waitFor({ timeout: 10_000 });
+  await page.waitForFunction(
+    () => Boolean(document.querySelector('[data-testid="workbench-storyboard"] aside[aria-label="设置"] textarea')?.value.trim()),
+    null,
+    { timeout: 10_000 },
+  );
+
+  const bottomRegenerate = storyboard.getByRole('button', { name: '重新生成', exact: true });
+  const bottomRegenerateDisabled = await waitForDisabledState(bottomRegenerate, false);
+  expectContract('失败分镜下底部动作条「重新生成」必须可用', () => {
+    assert.equal(bottomRegenerateDisabled, false, '失败分镜（jobStatus=failed）也要能重新生成，不能因为「不能标可用」被禁用');
+  });
+  const sideRegenerate = page.getByRole('button', { name: '重新生成这一张', exact: true });
+  const sideRegenerateDisabled = await waitForDisabledState(sideRegenerate, false);
+  expectContract('失败分镜下右栏「重新生成这一张」必须可用', () => {
+    assert.equal(sideRegenerateDisabled, false, '失败分镜（jobStatus=failed）右栏也要能重新生成，不能因为「不能标可用」被禁用');
+  });
+
+  // 换成与失败任务原供应商（provider-1）不同的 provider-2，点失败占位里的「重试」→ 必须新建任务。
+  await providerSelect.selectOption('provider-2');
+  const retriesBeforeForeignProvider = retries.length;
+  const regenerationsBeforeForeignProvider = regenerations.length;
+  const retryButton = page.getByRole('button', { name: '重试', exact: true }).first();
+  await retryButton.waitFor({ timeout: 10_000 });
+  const foreignRegenerateResponse = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.url().endsWith('/api/jobs/shot-job-2/regenerate'),
+    { timeout: 12_000 },
+  ).catch(() => null);
+  const foreignSelectionPatchResponse = page.waitForResponse((response) => {
+    if (response.request().method() !== 'PATCH' || !response.url().endsWith('/api/shot-sets/set-1')) return false;
+    try {
+      const patch = response.request().postDataJSON();
+      return patch?.shotId === 'shot-2' && patch?.latestJobId === 'shot-job-1-redo';
+    } catch { return false; }
+  }, { timeout: 12_000 }).catch(() => null);
+  await retryButton.click();
+  const foreignRegenerate = await foreignRegenerateResponse;
+  if (foreignRegenerate) await foreignSelectionPatchResponse;
+  await page.waitForFunction(() => true, null, { timeout: 300 });
+
+  expectContract('换供应商后点「重试」必须走 POST /regenerate 且带上新供应商', () => {
+    assert.equal(regenerations.length, regenerationsBeforeForeignProvider + 1, '右栏供应商换成 provider-2 后点「重试」，必须新发一次 POST /api/jobs/:id/regenerate（不能只发无 body 的 /retry，原任务供应商是冻结的）');
+    assert.equal(regenerations.at(-1)?.providerId, 'provider-2', 'regenerate 请求体必须带上右栏新选的 providerId=provider-2（当前只发 /retry，换供应商不生效）');
+    assert.equal(regenerations.at(-1)?.prompt, '第 2 镜：细节', '按新供应商重做必须带重做提示词或原 jobPrompt');
+  });
+  expectContract('换供应商后点「重试」不得再发原地 /retry', () => {
+    assert.equal(retries.length, retriesBeforeForeignProvider, '已换成与失败任务不同的供应商时点「重试」不该再发 POST /api/jobs/:id/retry');
+  });
+  expectContract('换供应商重做成功后必须把新任务写回这个分镜', () => {
+    assert.deepEqual(selectionPatches.at(-1), { shotId: 'shot-2', latestJobId: 'shot-job-1-redo' }, '重新生成成功后必须 PATCH /api/shot-sets/set-1 把 latestJobId 指向新任务');
+  });
+
+  // 换回任务原供应商 provider-1：点「重试」仍应原地重跑这个任务（/retry，不新开一版）。
+  await providerSelect.selectOption('provider-1');
+  const retriesBeforeSameProvider = retries.length;
+  const regenerationsBeforeSameProvider = regenerations.length;
+  const sameProviderRetryResponse = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.url().endsWith('/api/jobs/shot-job-2/retry'),
+    { timeout: 12_000 },
+  ).catch(() => null);
+  await retryButton.click();
+  const sameProviderRetry = await sameProviderRetryResponse;
+  await page.waitForFunction(() => true, null, { timeout: 300 });
+
+  expectContract('供应商没换时点「重试」必须仍走 POST /retry', () => {
+    assert.ok(sameProviderRetry, '右栏供应商与失败任务原来的 provider-1 相同时，点「重试」必须仍发 POST /api/jobs/shot-job-2/retry');
+    assert.equal(retries.length, retriesBeforeSameProvider + 1, '换回原供应商后点「重试」必须新发一次 POST /api/jobs/:id/retry');
+    assert.ok(retries.at(-1)?.pathname?.endsWith('/api/jobs/shot-job-2/retry'), `「重试」必须打到这个分镜自己的任务，实际：${JSON.stringify(retries.at(-1))}`);
+    assert.equal(regenerations.length, regenerationsBeforeSameProvider, '没有换供应商时点「重试」不该新发 /regenerate');
+  });
+
+  // 回到成功分镜 1：后面的切版本 / 参考图断言都基于 shot-1。
+  await page.getByRole('button', { name: '分镜 1', exact: true }).first().click();
+  await page.getByRole('button', { name: '上一版' }).waitFor({ timeout: 10_000 });
+
+  assert.deepEqual(contractViolations, [], `失败分镜重新生成相关的行为契约未满足：\n${contractViolations.join('\n')}`);
+
   // 新版右栏必须保留整组场景选择入口，且提交选择的场景记录。
   await page.getByRole('button', { name: '选择场景参考图', exact: true }).click();
   await page.getByRole('heading', { name: '选择新场景图并生成分镜', exact: true }).waitFor();
@@ -472,6 +617,28 @@ try {
   await settings.getByText('生成中', { exact: true }).waitFor();
   groupGenerationState = 'complete';
   await settings.getByText('已完成', { exact: true }).waitFor({ timeout: 10_000 });
+
+  // 建组后没有点击生成：对照和网格都必须显示未生成，不能出现运行占位。
+  groupGenerationState = 'ungenerated';
+  const submitsBeforeEmpty = appliedScenes.length;
+  await page.goto(`${baseUrl}/projects/${PROJECT_ID}?tab=storyboard`, { waitUntil: 'domcontentloaded' });
+  await page.getByText('还没有生成', { exact: true }).waitFor();
+  await page.getByRole('group', { name: '分镜视图' }).getByRole('button', { name: '全部', exact: true }).click();
+  const emptyShot = page.getByTestId('workbench-storyboard').getByRole('button', { name: '分镜 1', exact: true });
+  assert.match(await emptyShot.innerText(), /未生成/, '未提交的分镜网格不能显示生成中');
+  assert.doesNotMatch(await emptyShot.innerText(), /生成中/);
+  assert.equal(await emptyShot.locator('[class*="spin"]').count(), 0, '未提交的分镜不能显示转圈动画');
+  assert.equal(appliedScenes.length, submitsBeforeEmpty, '进入分镜页或切换视图不能提交生成');
+
+  for (const [state, label] of [['pending', '排队中'], ['needs_check', '等待补抓结果'], ['blocked', '失败']]) {
+    groupGenerationState = state;
+    await page.goto(`${baseUrl}/projects/${PROJECT_ID}?tab=storyboard`, { waitUntil: 'domcontentloaded' });
+    if (state === 'blocked') await page.getByRole('alert').getByText('供应商安全审核未通过，请调整素材后重新生成。', { exact: true }).waitFor();
+    else await page.getByText(label, { exact: true }).first().waitFor();
+    await page.getByRole('group', { name: '分镜视图' }).getByRole('button', { name: '全部', exact: true }).click();
+    assert.match(await emptyShot.innerText(), new RegExp(label), '网格必须区分排队、补抓和失败');
+    if (state === 'blocked') assert.equal(await emptyShot.locator('[class*="spin"]').count(), 0, '安全失败后不能继续转圈');
+  }
 
   assert.deepEqual(pageErrors, [], '页面不应出现运行时异常');
   console.log('workbench scene/shot browser tests passed');

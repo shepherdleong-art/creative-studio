@@ -197,11 +197,24 @@ try {
   const secondAdminLogin = await login('00002', secondAdminCredential.credential);
   const secondAdmin = await service.changeOwnPassword(secondAdminLogin.principal, secondAdminCredential.credential, 'second-admin-password');
   const activeSecondAdmin = (await login('00002', 'second-admin-password')).principal;
+  const removable = await service.createUser(activeAdmin, { employeeId: '00991', displayName: '待删除成员', role: 'employee' });
+  const removableSession = await login('00991', removable.credential);
+  await service.changeOwnPassword(removableSession.principal, '', 'removed-member-password');
+  const removableActive = await login('00991', 'removed-member-password');
+  assert.throws(() => service.deleteUser(removableActive.principal, employeeCredential.user.id), /管理员/);
+  assert.throws(() => service.deleteUser(activeAdmin, activeAdmin.userId), /自己/);
+  service.deleteUser(activeAdmin, removable.user.id);
+  assert.ok(!service.listUsers(activeAdmin).some(user => user.id === removable.user.id), '删除后成员列表不再显示该账号');
+  assert.equal(service.resolveSession(removableActive.token), null, '删除立即撤销已登录设备');
+  await expectCode(login('00991', 'removed-member-password'), 'invalid_credentials');
+  assert.ok(db.prepare('SELECT id FROM team_users WHERE id=? AND deletedAt IS NOT NULL').get(removable.user.id), '历史资源与费用仍可通过原 userId 追溯');
+  assert.throws(() => service.setUserStatus(activeAdmin, removable.user.id, 'active'), /不存在/, '删除账号不能通过启用接口恢复登录');
   await service.setUserRole(activeSecondAdmin, activeAdmin.userId, 'employee');
   const freshSecondAdmin = activeSecondAdmin;
   for (const operation of [
     () => service.setUserRole(freshSecondAdmin, secondAdmin.userId, 'employee'),
     () => service.setUserStatus(freshSecondAdmin, secondAdmin.userId, 'disabled'),
+    () => service.deleteUser(freshSecondAdmin, secondAdmin.userId),
   ]) {
     assert.throws(operation, (error: unknown) => Boolean(error && typeof error === 'object'
       && 'code' in error && error.code === 'last_admin_required'));

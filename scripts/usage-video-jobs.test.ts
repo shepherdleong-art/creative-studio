@@ -101,9 +101,11 @@ function freeze(
   });
 }
 
-// Both canonical company video identities are eligible, with their fixed 5s prices.
+// Canonical company video identities are eligible, with their fixed 5s prices.
 for (const [jobId, provider, expectedCoreModel, expectedCostMicros] of [
   ['video-kling', klingProvider, 'company-kling-3-0', 2_990_000],
+  ['video-h3', { id: 'company-minimax-h3', type: 'openai-video', model: 'minimax-h3' }, 'company-minimax-h3', 4_000_000],
+  ['video-wan', { id: 'company-wan-3-0', type: 'openai-video', model: 'wan-3.0' }, 'company-wan-3-0', 6_000_000],
   ['video-seedance', seedanceProvider, 'company-seedance-fast', 11_730_000],
 ] as const) {
   const db = createDb();
@@ -252,8 +254,9 @@ for (const [jobId, provider, requestModel] of [
   assert.match(queueSource, /if \(existingTaskId\)/, 'existing remote task must skip submit/snapshot');
   assert.ok(recordIndex > successIndex, 'queue must record only after atomic success');
   assert.match(queueSource, /WHERE id = \? AND status = 'running'/, 'queue success must be atomic');
-  assert.match(resumeSource, /WHERE id = \? AND status = 'running'/, 'resume success must be atomic');
-  assert.match(resumeSource, /recordVideoJobUsage\(/, 'resume must record from existing snapshot');
+  assert.match(resumeSource, /await resumeVideoJobPolling\(id\)/, 'resume route must delegate to the shared queue');
+  const resumeWorkerSource = queueSource.slice(queueSource.indexOf('export async function resumeVideoJobPolling('), queueSource.indexOf('async function runAuthorizedVideoJob('));
+  assert.match(resumeWorkerSource, /await runVideoJob\(/, 'resume must use the queue success/usage transaction checked above');
 }
 
 console.log('usage-video-jobs tests passed');

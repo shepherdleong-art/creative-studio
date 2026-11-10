@@ -30,3 +30,14 @@ async function __teamRoutePATCH(
   }
 }
 export const PATCH = withTeamRoute('/api/team/users/[id]', 'PATCH', __teamRoutePATCH);
+
+async function __teamRouteDELETE(request: Request, context: { params: Promise<{ id: string }> }): Promise<Response> {
+  try {
+    assertTrustedWriteRequest(request);
+    const actor = requirePrincipal(request, { admin: true });
+    const { id } = await context.params;
+    getTeamAuthService().deleteUser(actor, id);
+    return authJson({ deleted: true });
+  } catch (error) { return authError(error); }
+}
+export const DELETE = withTeamRoute('/api/team/users/[id]', 'DELETE', __teamRouteDELETE);

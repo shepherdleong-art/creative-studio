@@ -1,4 +1,5 @@
 import { getDb } from './db.ts';
+import { runMediaQueueWorkers } from './media-queue-workers.ts';
 import { runWithAcceptedTaskAccess } from './team-service/accepted-access.ts';
 import { isReassembledReworkJob, protectReassembledQueue, REASSEMBLED_SUBMIT_UNCERTAIN } from './reassembled-shot-guard.ts';
 import { getVideoAdapter } from './video-providers/index.ts';
@@ -315,9 +316,10 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
       }
     }
 
-    await Promise.allSettled(
-      Array.from({ length: concurrency }, () => worker())
-    );
+    await runMediaQueueWorkers({
+      db, module: 'video', projectId, jobId: options.jobId, concurrency,
+      signal: abort.signal, worker,
+    });
   } finally {
     finish();
     if (runningQueues.get(projectId)?.abort === abort) runningQueues.delete(projectId);
@@ -463,6 +465,7 @@ async function runAuthorizedVideoJob(
 
   logInfo(`Video job started (attempt ${attempt}/${effectiveMaxAttempts})`);
 
+  let cleanupRequestAbort: (() => void) | undefined;
   try {
     // Load provider
     const provider = db
@@ -518,6 +521,7 @@ async function runAuthorizedVideoJob(
     const reqAbort = new AbortController();
     const onAbort = () => reqAbort.abort();
     abort.addEventListener('abort', onAbort, { once: true });
+    cleanupRequestAbort = () => abort.removeEventListener('abort', onAbort);
 
     // Step 1: Submit — 只在还没有远端 task_id 时执行。已持有 task_id 的
     // 任务(needs_check 自动续跑、崩溃后恢复为 pending 的旧任务)直接进入
@@ -971,6 +975,8 @@ async function runAuthorizedVideoJob(
          WHERE id = ? AND status = 'running'`
       ).run(errorMessage, job.id);
     }
+  } finally {
+    cleanupRequestAbort?.();
   }
 }
 

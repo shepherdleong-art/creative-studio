@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { ensureMediaProviderPool } from './media-provider-pool.ts';
+import { resolveKlingCredentialPair } from '../../video-auth.ts';
 
 /** Share upstream capacity with the regular image/video queues, including aliases. */
 export function configuredProviderPool(db: Database.Database, kind: 'image' | 'video', providerId: string): string | null {
@@ -9,7 +10,11 @@ export function configuredProviderPool(db: Database.Database, kind: 'image' | 'v
     baseUrl: string; apiKey: string; type: string; accessKey?: string; secretKey?: string;
   } | undefined;
   if (!row) return null;
-  const credential = kind === 'video' && row.type === 'kling'
-    ? `${(row.accessKey ?? '').trim()}\0${(row.secretKey ?? '').trim()}` : row.apiKey ?? '';
+  let credential = row.apiKey ?? '';
+  if (kind === 'video' && row.type === 'kling') {
+    const pair = resolveKlingCredentialPair({}, '', row);
+    if (!pair) return null;
+    credential = `${pair.accessKey}\0${pair.secretKey}`;
+  }
   return ensureMediaProviderPool(db, row.baseUrl ?? '', credential);
 }

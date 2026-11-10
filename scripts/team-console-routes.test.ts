@@ -162,6 +162,7 @@ try {
     console.log('PASS: 服务器默认值未接入（06 未合并时的预期）');
   } else {
     const defaults = emptyBody.productionDefaults as Record<string, unknown>;
+    assert.equal(defaults.concurrencyMode, 'shared-pool', '控制台不得把旧兼容存值显示成单项目并发上限');
     assert.equal(typeof defaults.timeoutMs, 'number');
     assert.equal(typeof defaults.projectConcurrency, 'number');
     assert.ok((defaults.timeoutMs as number) > 0 && (defaults.projectConcurrency as number) > 0);

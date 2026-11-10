@@ -312,7 +312,16 @@ export default function TeamUsersPanel({ role: viewerRole }: { role: WorkspaceRo
                     <div className="mt-1 text-[12px] text-ink-tertiary">{user.mustChangePassword ? '待首次改密' : '已改密'}</div>
                   </td>
                   <td><select aria-label={`${user.displayName}角色`} className="input-field" value={user.role} disabled={busy} onChange={(event) => void run(() => teamWrite(`/api/team/users/${user.userId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: event.target.value }) }))}><option value="employee">员工</option><option value="admin">管理员</option></select></td>
-                  <td><div className="flex flex-wrap justify-end gap-2"><ToolbarButton disabled={busy} onClick={() => openPolicy(user)}>模型与额度</ToolbarButton><ToolbarButton disabled={busy} onClick={() => { if (window.confirm(`确定重置 ${user.displayName} 的凭据并撤销其会话吗？`)) void run(() => teamWrite(`/api/team/users/${user.userId}/reset-credential`, { method: 'POST' })); }}>重置一次性密码</ToolbarButton><ToolbarButton disabled={busy} onClick={() => void run(() => teamWrite(`/api/team/users/${user.userId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: user.accountStatus === 'active' ? 'disabled' : 'active' }) }))}>{user.accountStatus === 'active' ? '停用' : '启用'}</ToolbarButton></div></td>
+                  <td><div className="flex flex-wrap justify-end gap-2">
+                    <ToolbarButton disabled={busy} onClick={() => openPolicy(user)}>模型与额度</ToolbarButton>
+                    <ToolbarButton disabled={busy} onClick={() => { if (window.confirm(`确定重置 ${user.displayName} 的凭据并撤销其会话吗？`)) void run(() => teamWrite(`/api/team/users/${user.userId}/reset-credential`, { method: 'POST' })); }}>重置一次性密码</ToolbarButton>
+                    <ToolbarButton disabled={busy} onClick={() => void run(() => teamWrite(`/api/team/users/${user.userId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: user.accountStatus === 'active' ? 'disabled' : 'active' }) }))}>{user.accountStatus === 'active' ? '停用' : '启用'}</ToolbarButton>
+                    <ToolbarButton disabled={busy} onClick={() => {
+                      if (window.confirm(`确定删除成员 ${user.displayName}（${user.employeeId}）吗？删除后将撤销登录并从成员列表移除，历史项目、任务和费用记录保留。`)) {
+                        void run(() => teamWrite(`/api/team/users/${user.userId}`, { method: 'DELETE' }));
+                      }
+                    }}>删除</ToolbarButton>
+                  </div></td>
                 </tr>)}
               </tbody>
             </table>

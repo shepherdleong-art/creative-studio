@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   SCENE_VIEW_MODES,
   canMarkShotAvailable,
+  canRegenerateShot,
   canRetryShot,
   formatShotVersionLabel,
   getOpeningShotId,
@@ -108,5 +109,13 @@ assert.equal(canRetryShot('succeeded'), false);
 assert.equal(canRetryShot('generating'), false);
 assert.equal(hasShotResult('succeeded'), true);
 assert.equal(hasShotResult('failed'), false);
+
+// ── 重新生成：失败的分镜也能换供应商重做（不能拿「能否标可用」当门禁）──
+assert.equal(canRegenerateShot('succeeded'), true, '有结果的分镜能重新生成');
+assert.equal(canRegenerateShot('failed'), true, '失败的分镜也能重新生成（换供应商重做）');
+assert.equal(canRegenerateShot('empty'), false, '还没有任务时没有可重做的对象');
+assert.equal(canRegenerateShot('queued'), false, '排队中不重复提交');
+assert.equal(canRegenerateShot('generating'), false, '生成中不重复提交');
+assert.equal(canRegenerateShot('checking'), false, '等待补抓结果时先补抓，不另开新任务');
 
 console.log('workbench-shots ok');

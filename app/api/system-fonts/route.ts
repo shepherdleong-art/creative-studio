@@ -9,6 +9,6 @@ async function __teamRouteGET(request: Request) {
   const forceRefresh = searchParams.get('refresh') === '1';
   const fonts = listSystemFonts({ forceRefresh });
   if (requireAccessContext().kind === 'local') return NextResponse.json({ fonts });
-  return NextResponse.json({ fonts: fonts.map(({ family, displayName, format, source }) => ({ family, displayName, format, source })) });
+  return NextResponse.json({ fonts: fonts.map(({ family, displayName, format, source, previewUrl }) => ({ family, displayName, format, source, previewUrl })) });
 }
 export const GET = withTeamRoute('/api/system-fonts', 'GET', __teamRouteGET);

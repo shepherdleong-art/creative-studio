@@ -20,7 +20,8 @@ import { TrimEditor } from './TrimEditor';
 import { VideoPlaybackRateControl } from '@/components/mixcut/VideoPlaybackRateControl';
 import { ClipFramingControl } from './ClipFramingControl';
 import { CoverEditorDrawer } from './CoverEditorDrawer';
-import { preloadSystemFonts } from '@/components/system-fonts';
+import { preloadSystemFonts, ensureServerFontLoaded } from '@/components/system-fonts';
+import { useBrowserPreviewRecovery } from '@/components/media/use-browser-preview-recovery';
 import { BgmCard, type BgmImportUiResult } from './BgmCard';
 import { PackagingCard, type PackagingPreviewData } from './PackagingCard';
 import { PackagingTextEditPopover } from '@/components/packaging/PackagingTextEditor';
@@ -91,6 +92,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const syncHistory = () => setHistoryAvailable({ undo: historyRef.current.undo.length > 0, redo: historyRef.current.redo.length > 0 });
   const groupRef = useRef(group);
   const previewRootRef = useRef<HTMLElement>(null);
+  const materialVideoRef = useRef<HTMLVideoElement>(null);
   const clearHistory = () => { historyRef.current = { undo: [], redo: [] }; syncHistory(); };
   const recordHistory = (entry: HistoryEntry) => {
     historyRef.current.undo.push(entry);
@@ -107,6 +109,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const selectedClip = variant?.timeline.clips.find((clip) => clip.id === selectedClipId) || null;
   const selectedMaterial = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === selectedMaterialKey) || null;
   const previewMaterial = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === previewMaterialKey) || null;
+  const materialRecovery = useBrowserPreviewRecovery(materialVideoRef, previewMaterial?.previewUrl, active && previewMode === 'material');
   // 用户可见名称一律走 displayName（D5）；filename 只服务播放 URL/物理路径。
   const materialName = (asset: FinalEditAssetView | null) => (asset ? asset.displayName || asset.filename : '');
   const timelineSelectedCueId = group.subtitleCues.some((cue) => cue.id === selectedCueId) ? selectedCueId : '';
@@ -1052,6 +1055,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                   <div className={styles.materialPreview} data-testid="mixcut-material-preview">
                     {previewMaterial?.previewUrl ? (
                       <video
+                        ref={materialVideoRef}
                         key={`material-preview-${previewMaterial.assetKey || previewMaterial.videoJobId}`}
                         className={styles.materialPreviewVideo}
                         src={previewMaterial.previewUrl}
@@ -1069,6 +1073,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                       <p className={styles.materialPreviewEmpty}>请从左侧素材列表点击“预览”</p>
                     )}
                     {previewMaterial && <p className={styles.materialPreviewName} title={materialName(previewMaterial)}>{materialName(previewMaterial)}</p>}
+                    {materialRecovery.state === 'pending' && <p role="status">视频预览准备中…</p>}
+                    {materialRecovery.state === 'failed' && <button type="button" className={styles.btn} onClick={materialRecovery.retry}>重试预览</button>}
                   </div>
                 ) : (
                   <FinalEditPreview
@@ -1322,6 +1328,8 @@ function CoverThumbnail({ group, variant }: { group: FinalEditGroupView; variant
       const primary = group.textStyles[variant.outputPreset].coverPrimary;
       const secondary = group.textStyles[variant.outputPreset].coverSecondary;
       void Promise.all([
+        ensureServerFontLoaded(primary.fontFamily),
+        ensureServerFontLoaded(secondary.fontFamily),
         document.fonts.load(textStyleFont(primary), group.coverTitle.primary.text),
         document.fonts.load(textStyleFont(secondary), group.coverTitle.secondary.text),
       ]).catch(() => undefined).then(() => {

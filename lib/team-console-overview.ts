@@ -362,6 +362,7 @@ export interface ConsoleProductionDefaults {
   timeoutMs: number;
   projectConcurrency: number;
   videoConcurrency?: number;
+  concurrencyMode?: 'shared-pool';
   imagePreprocess?: { enabled: boolean; targetMaxSide: number; jpegQuality: number };
 }
 
@@ -404,12 +405,18 @@ export function consoleDefaultsView(source: unknown): ConsoleDefaultsView {
     },
     {
       label: '项目并发',
-      value: `${value.projectConcurrency} 条`,
-      hint: '实际能同时跑几条仍受名额池和成员并发上限约束',
+      value: value.concurrencyMode === 'shared-pool' ? '按名额池调度' : `${value.projectConcurrency} 条`,
+      hint: value.concurrencyMode === 'shared-pool'
+        ? '单项目可使用空闲名额，仍受成员规则和共享池容量约束'
+        : '实际能同时跑几条仍受名额池和成员并发上限约束',
     },
   ];
   if (isFinitePositive(value.videoConcurrency)) {
-    rows.push({ label: '视频并发', value: `${value.videoConcurrency} 条`, hint: '由服务器统一执行' });
+    rows.push({
+      label: '视频并发',
+      value: value.concurrencyMode === 'shared-pool' ? '按名额池调度' : `${value.videoConcurrency} 条`,
+      hint: value.concurrencyMode === 'shared-pool' ? '与图片共用对应上游池，按成员规则分配' : '由服务器统一执行',
+    });
   }
   if (preprocessRaw && typeof preprocessRaw.enabled === 'boolean') {
     const size = isFinitePositive(preprocessRaw.targetMaxSide) ? `${preprocessRaw.targetMaxSide}px` : '沿用现有默认';

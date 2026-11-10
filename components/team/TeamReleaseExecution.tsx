@@ -44,7 +44,10 @@ export default function TeamReleaseExecution() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const idempotency = useRef<string | null>(null);
+  const refreshing = useRef(false);
   const refresh = useCallback(async () => {
+    if (refreshing.current) return;
+    refreshing.current = true;
     try {
       const [previewResponse, jobsResponse] = await Promise.all([
         fetch('/api/team/release-candidates', { cache: 'no-store' }),
@@ -60,6 +63,8 @@ export default function TeamReleaseExecution() {
       setError('');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '连接中断；请重连查看原作业，不要重新提交升级。');
+    } finally {
+      refreshing.current = false;
     }
   }, []);
   useEffect(() => {
