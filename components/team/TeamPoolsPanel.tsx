@@ -6,6 +6,7 @@ import PageToolbar from './PageToolbar';
 import { GroupHeading, GroupList, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
+import ChannelHealthPanel from './ChannelHealthPanel';
 import {
   buildPoolAdminView,
   buildPoolChange,
@@ -341,6 +342,8 @@ export default function TeamPoolsPanel() {
           </div>
         </section>
       ) : null}
+
+      <ChannelHealthPanel />
 
       {view && view.warnings.length > 0 ? (
         <section className={styles.warning} role="status" aria-label="同一凭据被分到多个名额池">
