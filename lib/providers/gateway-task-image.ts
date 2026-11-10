@@ -47,6 +47,8 @@ export interface GatewayTaskPollResult {
   status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'unknown';
   imageUrl?: string;
   errorMessage?: string;
+  /** Structured HTTP evidence for health decisions; never shown as a raw upstream body. */
+  httpStatus?: number;
   rawResponse: unknown;
 }
 
@@ -403,6 +405,7 @@ export async function pollGatewayTaskImage(
       return {
         status: 'unknown',
         errorMessage: `Poll error ${res.status}: ${errorText.slice(0, 500)}`,
+        httpStatus: res.status,
         rawResponse: null,
       };
     }

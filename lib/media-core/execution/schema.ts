@@ -320,6 +320,41 @@ export const EXECUTION_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = [
       VALUES (1, 30, 1, CURRENT_TIMESTAMP);
     `,
   },
+  {
+    version: 9,
+    sql: `
+      CREATE TABLE execution_media_channel_health (
+        healthKey TEXT PRIMARY KEY,
+        unifiedModel TEXT NOT NULL,
+        channelKey TEXT NOT NULL,
+        providerId TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('healthy', 'avoided', 'recovering')),
+        consecutiveFailures INTEGER NOT NULL DEFAULT 0 CHECK(consecutiveFailures >= 0),
+        reasonCode TEXT,
+        lastFailureAt TEXT,
+        lastSuccessAt TEXT,
+        avoidUntil TEXT,
+        version INTEGER NOT NULL CHECK(version > 0),
+        updatedAt TEXT NOT NULL,
+        UNIQUE(unifiedModel, channelKey)
+      );
+      CREATE INDEX idx_execution_media_channel_health_state
+        ON execution_media_channel_health(state, avoidUntil);
+
+      CREATE TABLE execution_media_channel_health_events (
+        id TEXT PRIMARY KEY,
+        healthKey TEXT NOT NULL,
+        action TEXT NOT NULL,
+        actorId TEXT,
+        reasonCode TEXT,
+        beforeJson TEXT,
+        afterJson TEXT,
+        createdAt TEXT NOT NULL
+      );
+      CREATE INDEX idx_execution_media_channel_health_events_key
+        ON execution_media_channel_health_events(healthKey, createdAt);
+    `,
+  },
 ];
 
 export type ExecutionSchemaReadiness = VersionedSchemaReadiness;
@@ -389,6 +424,22 @@ function validateExecutionSchema(db: Database.Database): void {
     if (!db.prepare(`SELECT 1 FROM sqlite_master
       WHERE type = 'index' AND name = 'idx_execution_operations_media_channel'`).get()) {
       throw new Error('execution operation 缺少统一媒体通道唯一索引');
+    }
+  }
+  if (schemaVersion >= 9) {
+    for (const table of [
+      'execution_media_channel_health',
+      'execution_media_channel_health_events',
+    ]) {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) {
+        throw new Error(`execution 缺少 ${table} 结构`);
+      }
+    }
+    const stateSql = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'execution_media_channel_health'",
+    ).pluck().get() as string;
+    if (!stateSql.includes("'avoided'") || !stateSql.includes("'recovering'")) {
+      throw new Error('execution 通道健康状态机不完整');
     }
   }
 }

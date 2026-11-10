@@ -6,6 +6,7 @@ import PageToolbar from './PageToolbar';
 import { GroupHeading, GroupList, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
+import ChannelHealthPanel from './ChannelHealthPanel';
 import {
   buildPoolAdminView,
   buildPoolChange,
@@ -257,6 +258,8 @@ export default function TeamPoolsPanel() {
         同一个上游账号下的模型共用名额，所以只按账号设一次；调低名额不会打断正在跑的任务，新任务按新名额排队。
         凭据只以指纹参与映射，不会出现在本页或接口响应里。
       </p>
+
+      <ChannelHealthPanel />
 
       {view && view.warnings.length > 0 ? (
         <section className={styles.warning} role="status" aria-label="同一凭据被分到多个名额池">

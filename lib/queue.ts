@@ -37,6 +37,7 @@ import {
   isLegacyMediaSubmissionUnknown,
   LegacyMediaNotCreatedError,
   LegacyMediaRemoteFailedError,
+  LegacyMediaSubmissionUnknownError,
   isServerMediaExecution,
   legacyMediaExecutionRevision,
   recoverLegacyMediaSubmission,
@@ -46,7 +47,12 @@ import {
   submitLegacyMediaOperation,
 } from './legacy-media-execution.ts';
 import type { ExecutionReceipt } from './media-core/execution/context.ts';
-import { classifySubmissionOutcome, submissionEmployeeCopy } from './media-core/submission-evidence.ts';
+import {
+  classifyImageSubmissionFailure,
+  classifySubmissionOutcome,
+  providerHttpError,
+  submissionEmployeeCopy,
+} from './media-core/submission-evidence.ts';
 import {
   assertUnifiedImageSubmissionStillCurrent,
   handleUnifiedImageExplicitFailure,
@@ -61,6 +67,12 @@ import {
   unifiedImageAttemptCostMinor,
   type PreparedUnifiedImageExecution,
 } from './media-core/unified-media/execution.ts';
+import {
+  recordUnifiedChannelFailure,
+  recordUnifiedChannelSuccess,
+  unifiedChannelFailureReasonFromEvidence,
+} from './media-core/unified-media/health.ts';
+import { UNIFIED_IMAGE_MODEL_KEY } from './media-core/unified-media/catalog.ts';
 
 export interface QueueOptions {
   /** Limit a local rework run to its immutable job. */
@@ -100,6 +112,36 @@ interface JobRecord {
 }
 
 type QueueStatus = 'idle' | 'running' | 'paused';
+
+function noteUnifiedChannelFailure(
+  db: ReturnType<typeof getDb>,
+  execution: PreparedUnifiedImageExecution,
+  input: {
+    job: JobRecord;
+    error: unknown;
+    evidence?: ReturnType<typeof classifyImageSubmissionFailure>;
+    stage: 'submit' | 'poll' | 'download';
+  },
+): void {
+  const evidence = input.evidence ?? classifyImageSubmissionFailure({
+    taskId: input.job.id,
+    businessAttemptNo: Math.max(1, input.job.attempt),
+    adapterId: execution.channel.definition.providerTable === 'providers'
+      ? 'gateway-task-image'
+      : 'openai-video',
+    stage: input.stage,
+    source: 'transport',
+    error: input.error,
+  });
+  const reasonCode = unifiedChannelFailureReasonFromEvidence(evidence);
+  if (!reasonCode) return;
+  recordUnifiedChannelFailure(db, {
+    unifiedModel: UNIFIED_IMAGE_MODEL_KEY,
+    channelKey: execution.channel.channelKey,
+    providerId: execution.channel.definition.providerId,
+    reasonCode,
+  });
+}
 
 interface RunningQueueEntry {
   abort: AbortController;
@@ -1014,6 +1056,13 @@ async function runAuthorizedJob(
             `UPDATE jobs SET providerStatus = ?, providerRawResponse = ?, lastPolledAt = datetime('now'), pollCount = pollCount + 1 WHERE id = ?`
           ).run(pollResult.status, safeJsonForDB(pollResult.rawResponse), job.id);
           logInfo(`轮询 task_id=${taskId} raw=${summarizeGatewayTaskResponse(pollResult.rawResponse, apiKey)} (${elapsedSec}s)`);
+          if (unifiedExecution && pollResult.status === 'unknown' && pollResult.httpStatus) {
+            noteUnifiedChannelFailure(db, unifiedExecution, {
+              job,
+              error: providerHttpError(pollResult.httpStatus),
+              stage: 'poll',
+            });
+          }
 
           if (pollResult.status === 'succeeded' && pollResult.imageUrl) {
             await settleImageExecution('succeeded', pollResult.imageUrl);
@@ -1186,6 +1235,14 @@ async function runAuthorizedJob(
     // If GeekAI branch returned early (download_failed / needs_check), skip the rest
     if (!result) return;
 
+    if (unifiedExecution) {
+      recordUnifiedChannelSuccess(db, {
+        unifiedModel: UNIFIED_IMAGE_MODEL_KEY,
+        channelKey: unifiedExecution.channel.channelKey,
+        providerId: unifiedExecution.channel.definition.providerId,
+      });
+    }
+
     if (isServerMediaExecution() && result.remoteImageUrl && result.imageBuffer.byteLength === 0) {
       try {
         const response = await fetch(result.remoteImageUrl, { signal: reqAbort.signal });
@@ -1352,6 +1409,20 @@ async function runAuthorizedJob(
     }
   } catch (err: unknown) {
     let errorMessage = err instanceof Error ? err.message : String(err);
+
+    if (unifiedExecution && !abort.aborted
+      && !(err instanceof LegacyMediaNotCreatedError)
+      && !(err instanceof LegacyMediaRemoteFailedError)) {
+      const submitted = db.prepare('SELECT providerTaskId FROM jobs WHERE id = ?').get(job.id) as
+        { providerTaskId: string | null } | undefined;
+      const evidence = err instanceof LegacyMediaSubmissionUnknownError ? err.evidence : undefined;
+      noteUnifiedChannelFailure(db, unifiedExecution, {
+        job,
+        error: err,
+        evidence,
+        stage: submitted?.providerTaskId ? 'poll' : 'submit',
+      });
+    }
 
     if (unifiedExecution
       && (err instanceof LegacyMediaNotCreatedError || err instanceof LegacyMediaRemoteFailedError)) {

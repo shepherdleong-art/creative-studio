@@ -17,6 +17,11 @@ import {
   freezeUnifiedImageRequest,
   type FrozenUnifiedImageRequest,
 } from './requests.ts';
+import {
+  claimUnifiedChannelHealthForSelection,
+  recordUnifiedChannelFailure,
+  unifiedChannelFailureReasonFromEvidence,
+} from './health.ts';
 
 /**
  * Shared unified-image routing contract:
@@ -542,6 +547,16 @@ function findNextChannel(
           : `Image 2 ${definition.channelKey} 通道资源池未通过核验。`,
       };
     }
+    if (!claimUnifiedChannelHealthForSelection(db, {
+      unifiedModel: task.unifiedModel,
+      channelKey: definition.channelKey,
+      providerId: definition.providerId,
+    })) {
+      // Health avoidance only affects new selection. The task keeps this
+      // channel as a recoverable candidate, while another compatible channel
+      // can take the work immediately.
+      continue;
+    }
     return { definition, provider: inspected.provider };
   }
   return {
@@ -970,6 +985,16 @@ export function handleUnifiedImageExplicitFailure(
       };
     }
 
+    const failureReason = unifiedChannelFailureReasonFromEvidence(evidence);
+    if (failureReason) {
+      recordUnifiedChannelFailure(db, {
+        unifiedModel: task.unifiedModel,
+        channelKey: channel.channelKey,
+        providerId: channel.providerId,
+        reasonCode: failureReason,
+        now: new Date(at),
+      });
+    }
     const frozen = readFrozenRequest(job);
     const selection = findNextChannel(db, task, frozen, channel.channelKey);
     if ('reason' in selection) {
