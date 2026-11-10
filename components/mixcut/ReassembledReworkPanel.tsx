@@ -6,7 +6,10 @@ import type { readFilmRework, ReworkCommand } from '@/lib/final-edit/reassembled
 import { videoDurationOptions } from '@/lib/video-duration';
 
 type View = ReturnType<typeof readFilmRework>;
-type Provider = { id: string; name: string; type: string; model?: string; defaultModel?: string; enabled: number; configured: boolean };
+type Provider = {
+  id: string; name: string; type: string; model?: string; defaultModel?: string;
+  enabled: number; configured: boolean; unified?: boolean;
+};
 async function read<T>(response: Response): Promise<T> {
   const body = await response.json();
   if (!response.ok) throw new Error(body.message || body.error);
@@ -42,12 +45,23 @@ export function ReassembledReworkPanel({ groupId, clipId, step }: { groupId: str
       try {
         const [next, choices] = await Promise.all([fetch(url).then(r => read<View>(r)), fetch(step === 'storyboard' ? '/api/team/models?kind=image' : '/api/team/models?kind=video').then(r => read<Provider[]>(r))]);
         if (cancelled) return;
-        setView(next); setEditingRevision(next.revision); setProviders(choices.filter(p => p.enabled && p.configured));
+        setView(next); setEditingRevision(next.revision);
+        // In team mode the API exposes the unified model anchors. New team
+        // rework tasks must stay on those anchors; local mode has no anchors
+        // and therefore keeps the original provider list.
+        const unifiedChoices = choices.filter(p => p.unified);
+        const availableChoices = (unifiedChoices.length ? unifiedChoices : choices)
+          .filter(p => p.enabled && p.configured);
+        setProviders(availableChoices);
         const kind = step === 'storyboard' ? 'generate_image' : 'generate_video';
         const last = next.history.filter(h => h.kind === kind).at(-1)?.request as ReworkCommand | undefined;
         const original = next.provenance;
         const chosen = last?.providerId || (step === 'storyboard' ? original.provenance.imageProvider : original.providerId);
-        setProviderId(choices.find(p => p.enabled && p.configured && (p.id === chosen || p.name === chosen))?.id || '');
+        setProviderId(
+          availableChoices.find(p => p.id === chosen || p.name === chosen)?.id
+          || availableChoices[0]?.id
+          || '',
+        );
         setPrompt(last?.prompt || (step === 'storyboard' ? original.provenance.imagePrompt : original.prompt));
         setInputId(last?.inputImageId || next.sourceImageId); setReferences(last?.referenceImageIds || []);
         setSize(last?.size || '1024x1024'); setQuality(last?.quality || 'standard'); setDuration(last?.durationSec || 5);

@@ -1,5 +1,10 @@
 import { parseUsageSnapshot } from './usage-snapshot.ts';
-import { isReassembledReworkJob, protectReassembledQueue, REASSEMBLED_SUBMIT_UNCERTAIN } from './reassembled-shot-guard.ts';
+import {
+  isReassembledReworkJob,
+  protectReassembledQueue,
+  registerFilmReworkImageCandidate,
+  REASSEMBLED_SUBMIT_UNCERTAIN,
+} from './reassembled-shot-guard.ts';
 import { calculateUsageCostMicros } from './usage-pricing.ts';
 import { getDb } from './db.ts';
 import { runWithAcceptedTaskAccess } from './team-service/accepted-access.ts';
@@ -1417,6 +1422,11 @@ async function runAuthorizedJob(
         INSERT OR IGNORE INTO shot_result_candidates (id, shotId, jobId, imageAssetId)
         VALUES (?, ?, ?, ?)
       `);
+      if (isReassembledReworkJob(db, job.id, 'generate_image')) {
+        // Rework candidates attach to the frozen original shot without changing
+        // the shot's current image; adoption remains an explicit workbench action.
+        registerFilmReworkImageCandidate(db, job.id, outputImageId);
+      }
       for (const shot of linkedShots) {
         insertCandidate.run(`${shot.id}:${outputImageId}`, shot.id, job.id, outputImageId);
       }
@@ -1686,7 +1696,7 @@ async function runAuthorizedJob(
 
     errorMessage = sanitizeErrorMessage(errorMessage);
 
-    if (isReassembledReworkJob(db, job.id, 'generate_image')) {
+    if (!job.unifiedModel && isReassembledReworkJob(db, job.id, 'generate_image')) {
       const remote = db.prepare('SELECT providerTaskId FROM jobs WHERE id=?').get(job.id) as { providerTaskId: string | null };
       db.prepare(`UPDATE jobs SET status=?, finishedAt=datetime('now'), errorMessage=? WHERE id=? AND status='running'`)
         .run(remote.providerTaskId?.trim() ? 'needs_check' : 'failed', `${errorMessage}。${remote.providerTaskId?.trim() ? '已有远端任务，请补抓结果，不会重新提交。' : REASSEMBLED_SUBMIT_UNCERTAIN}`, job.id);
@@ -1726,7 +1736,7 @@ function claimNeedsCheckImageJob(projectId: string, jobId?: string): JobRecord |
       AND (status = 'needs_check' ${isServerMediaExecution() ? "OR providerStatus = 'download_failed'" : ''})
       AND (providerTaskId IS NOT NULL OR (providerStatus = 'download_failed' AND remoteImageUrl IS NOT NULL))
       AND (? IS NULL OR id = ?)
-      ${isServerMediaExecution() ? "AND NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = jobs.id AND r.kind = 'generate_image')" : ''}
+      ${isServerMediaExecution() ? "AND (jobs.unifiedModel IS NOT NULL OR NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = jobs.id AND r.kind = 'generate_image'))" : ''}
     ORDER BY createdAt, rowid LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as JobRecord | undefined;
   if (!job) return null;
@@ -1771,7 +1781,7 @@ function claimNextJob(projectId: string, jobId?: string): (JobRecord & { attempt
   const job = db.prepare(`
     SELECT * FROM jobs
     WHERE projectId = ? AND status IN ('pending', 'retrying') AND (? IS NULL OR id = ?)
-      ${isServerMediaExecution() ? "AND NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = jobs.id AND r.kind = 'generate_image')" : ''}
+      ${isServerMediaExecution() ? "AND (jobs.unifiedModel IS NOT NULL OR NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = jobs.id AND r.kind = 'generate_image'))" : ''}
     ORDER BY id LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as JobRecord | undefined;
 
