@@ -367,7 +367,7 @@ try {
       };
     db.prepare("UPDATE jobs SET status = 'running' WHERE id = ?").run(testCase.jobId);
     const prepared = runWithTaskAccessContext(db, 'image', testCase.jobId, () =>
-      prepareUnifiedImageExecution(db, testCase.jobId));
+      prepareUnifiedImageExecution(db, testCase.jobId, new Date(Date.now() + 2_000)));
     assert.equal(prepared.channel.channelKey, 'qiniu');
 
     let firstFailure: unknown;
@@ -584,7 +584,7 @@ try {
       .find((item) => item.taskId === testCase.jobId && item.waitReason === 'pool_capacity');
     assert.ok(waitingTask?.waitLabel.includes('等待可用资源'));
     const prepared = runWithTaskAccessContext(db, 'image', testCase.jobId, () =>
-      prepareUnifiedImageExecution(db, testCase.jobId));
+      prepareUnifiedImageExecution(db, testCase.jobId, new Date(Date.now() + 2_000)));
     assert.equal(prepared.channel.channelKey, 'tencent', 'restart must keep the waiting backup channel');
     assert.equal(prepared.channel.executionRevision, 2);
     setPoolCapacity('tencent', 1);

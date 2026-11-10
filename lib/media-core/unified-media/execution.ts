@@ -3,6 +3,12 @@ import type Database from 'better-sqlite3';
 import { isPlaceholderValue } from '../../video-auth.ts';
 import { requireAccessContext } from '../access-context.ts';
 import { ensureMediaProviderPool } from '../execution/media-provider-pool.ts';
+import {
+  monthlyCostUsage,
+  personalConcurrencyPoolKey,
+  readActorPolicy,
+  shanghaiAccountingPeriod,
+} from '../execution/pools.ts';
 import { classifySubmissionOutcome, type SubmissionEvidence } from '../submission-evidence.ts';
 import {
   UNIFIED_IMAGE_ANCHOR_ID,
@@ -17,6 +23,10 @@ import {
   freezeUnifiedImageRequest,
   type FrozenUnifiedImageRequest,
 } from './requests.ts';
+import {
+  imageCongestionDeadline,
+  readUnifiedImageCongestionSettings,
+} from './settings.ts';
 import {
   claimUnifiedChannelHealthForSelection,
   recordUnifiedChannelFailure,
@@ -86,6 +96,9 @@ interface MediaTaskRow {
   status: string;
   cancelRequestedAt: string | null;
   currentChannelKey: string | null;
+  nextEligibleAt: string | null;
+  waitReason: string | null;
+  waitDetailJson: string | null;
 }
 
 interface MediaChannelRow {
@@ -164,6 +177,24 @@ export class UnifiedImageRecoveryPendingError extends Error {
   }
 }
 
+export class UnifiedImageWaitingError extends Error {
+  readonly nextEligibleAt: string;
+  readonly waitReason: string;
+  readonly waitDetail: Record<string, unknown> | null;
+
+  constructor(input: {
+    nextEligibleAt: string;
+    waitReason?: string;
+    waitDetail?: Record<string, unknown> | null;
+  }) {
+    super('Image 2 正在等待云端名额，达到管理员设置的拥堵阈值后会重新准入。');
+    this.name = 'UnifiedImageWaitingError';
+    this.nextEligibleAt = input.nextEligibleAt;
+    this.waitReason = input.waitReason ?? 'pool_capacity';
+    this.waitDetail = input.waitDetail ?? null;
+  }
+}
+
 export interface PreparedUnifiedImageExecution {
   taskId: string;
   channel: {
@@ -173,6 +204,27 @@ export interface PreparedUnifiedImageExecution {
     provider: ProviderRow;
   };
 }
+
+export type UnifiedImageCapacityDecision =
+  | {
+    outcome: 'waiting';
+    channelKey: string;
+    nextEligibleAt: string;
+    thresholdSec: number;
+    waitDetail: Record<string, unknown>;
+  }
+  | {
+    outcome: 'overflowed';
+    previousChannelKey: string;
+    nextChannelKey: string;
+    nextExecutionRevision: number;
+    thresholdSec: number;
+    nextEligibleAt: null;
+  }
+  | {
+    outcome: 'not_capacity' | 'ignored' | 'canceled';
+    reason: string;
+  };
 
 export interface UnifiedImageAttemptView {
   attemptId: string;
@@ -464,6 +516,7 @@ function setChannelSkipped(
 interface ChannelSelection {
   definition: UnifiedImageChannelDefinition;
   provider: ProviderRow;
+  executionRevision: number;
 }
 
 interface ChannelSelectionFailure {
@@ -483,9 +536,20 @@ function channelHasSubmission(db: Database.Database, taskId: string, channelKey:
   return Boolean(operation && ['maybe_sent', 'accepted', 'reconciling', 'unknown', 'succeeded'].includes(operation.status));
 }
 
-function channelHasOperation(db: Database.Database, taskId: string, channelKey: string): boolean {
-  return Boolean(db.prepare(`SELECT 1 FROM execution_operations
-    WHERE mediaTaskId = ? AND channelKey = ?`).get(taskId, channelKey));
+function reusableChannelOperation(
+  db: Database.Database,
+  taskId: string,
+  channelKey: string,
+): { id: string; status: string; revision: number } | null {
+  const row = db.prepare(`
+    SELECT o.id, o.status, c.executionRevision AS revision
+    FROM execution_operations o
+    JOIN execution_media_channels c
+      ON c.mediaTaskId = o.mediaTaskId AND c.channelKey = o.channelKey
+    WHERE o.mediaTaskId = ? AND o.channelKey = ?
+  `).get(taskId, channelKey) as { id: string; status: string; revision: number } | undefined;
+  if (!row || !['pending', 'deferred'].includes(row.status)) return null;
+  return row;
 }
 
 function submittedChannelCount(db: Database.Database, taskId: string): number {
@@ -498,6 +562,7 @@ function submittedChannelCount(db: Database.Database, taskId: string): number {
 
 function findNextChannel(
   db: Database.Database,
+  job: UnifiedJobRow,
   task: MediaTaskRow,
   frozen: FrozenUnifiedImageRequest,
   excludeChannelKey?: string,
@@ -511,11 +576,12 @@ function findNextChannel(
   for (const definition of unifiedImageCompatibleChannels(frozen.tier, frozen.ratio)) {
     if (definition.channelKey === excludeChannelKey) continue;
     if (channelHasSubmission(db, task.id, definition.channelKey)) continue;
-    if (channelHasOperation(db, task.id, definition.channelKey)) continue;
-    const channel = db.prepare(`SELECT state FROM execution_media_channels
+    const channel = db.prepare(`SELECT state, executionRevision FROM execution_media_channels
       WHERE mediaTaskId = ? AND channelKey = ?`).get(task.id, definition.channelKey) as
-      { state: string } | undefined;
-    if (!channel || !['candidate', 'skipped'].includes(channel.state)) continue;
+      { state: string; executionRevision: number } | undefined;
+    if (!channel || !['candidate', 'skipped', 'overflowed'].includes(channel.state)) continue;
+    const reusable = reusableChannelOperation(db, task.id, definition.channelKey);
+    if (!reusable && channel.state === 'overflowed') continue;
 
     const inspected = inspectExactProvider(db, definition);
     if (inspected.problem === 'missing') {
@@ -557,7 +623,11 @@ function findNextChannel(
       // can take the work immediately.
       continue;
     }
-    return { definition, provider: inspected.provider };
+    return {
+      definition,
+      provider: inspected.provider,
+      executionRevision: reusable?.revision ?? Math.max(1, job.executionRevision + 1),
+    };
   }
   return {
     reason: 'no_available_channel',
@@ -593,7 +663,7 @@ function chooseInitialChannel(
   let failureMessage = '当前没有已启用且凭据可用的 Image 2 通道，任务未提交。';
   let identityError: UnifiedImageExecutionError | null = null;
   const selected = db.transaction((): PreparedUnifiedImageExecution | null => {
-    const selection = findNextChannel(db, task, frozen);
+    const selection = findNextChannel(db, job, task, frozen);
     if ('reason' in selection) {
       db.prepare(`UPDATE execution_media_tasks
         SET status = 'failed', resultJson = ?, updatedAt = ? WHERE id = ?`)
@@ -605,8 +675,7 @@ function chooseInitialChannel(
       failureMessage = selection.message;
       return null;
     }
-    const { definition, provider } = selection;
-    const revision = Math.max(1, job.executionRevision + 1);
+    const { definition, provider, executionRevision: revision } = selection;
     const changed = db.prepare(`UPDATE jobs SET executionRevision = ?
       WHERE id = ? AND cancelRequestedAt IS NULL AND status = 'running'`).run(revision, job.id);
     if (changed.changes !== 1) throw new UnifiedImageCanceledError();
@@ -833,6 +902,402 @@ export function unifiedImageAttemptCostMinor(db: Database.Database, jobId: strin
   }, 0);
 }
 
+interface CapacityOperationRow {
+  id: string;
+  actorId: string;
+  waitReason: string | null;
+  waitDetail: string | null;
+  quoteJson: string;
+  requiredPoolsJson: string;
+}
+
+function capacityOnlyOperation(
+  db: Database.Database,
+  operationId: string,
+  now: Date,
+): { ok: boolean; reason: string; detail: Record<string, unknown> | null } {
+  const operation = db.prepare(`
+    SELECT id, actorId, waitReason, waitDetail, quoteJson, requiredPoolsJson
+    FROM execution_operations WHERE id = ?
+  `).get(operationId) as CapacityOperationRow | undefined;
+  if (!operation) return { ok: false, reason: 'operation_missing', detail: null };
+  const detail = safeJsonObject(operation.waitDetail);
+  if (operation.waitReason !== 'pool_capacity' || detail?.reason !== 'pool_capacity') {
+    return { ok: false, reason: operation.waitReason ?? 'not_capacity', detail };
+  }
+  const policy = readActorPolicy(db, operation.actorId);
+  const personalHeld = db.prepare(`
+    SELECT COUNT(*) FROM execution_reservations
+    WHERE kind = 'concurrency' AND poolKey = ? AND state = 'held'
+  `).pluck().get(personalConcurrencyPoolKey(operation.actorId)) as number;
+  if (policy.effectiveConcurrency !== null && personalHeld >= policy.effectiveConcurrency) {
+    return { ok: false, reason: 'personal_concurrency', detail };
+  }
+  if (policy.effectiveConcurrency === null && typeof detail?.poolKey === 'string') {
+    const capacity = Number(detail.capacity);
+    if (Number.isSafeInteger(capacity) && capacity >= 0) {
+      const activeActors = new Set<string>(
+        (db.prepare(`
+          SELECT DISTINCT o.actorId
+          FROM execution_operations o
+          WHERE o.status IN ('pending', 'deferred')
+            AND EXISTS (
+              SELECT 1 FROM json_each(o.requiredPoolsJson) WHERE json_each.value = ?
+            )
+        `).all(detail.poolKey) as Array<{ actorId: string }>).map((row) => row.actorId),
+      );
+      for (const row of db.prepare(`
+        SELECT DISTINCT r.actorId
+        FROM execution_reservations r
+        WHERE r.kind = 'concurrency' AND r.poolKey = ? AND r.state = 'held'
+      `).all(detail.poolKey) as Array<{ actorId: string }>) {
+        activeActors.add(row.actorId);
+      }
+      const fairLimit = Math.max(1, Math.ceil(capacity / Math.max(1, activeActors.size)));
+      if (personalHeld >= fairLimit) return { ok: false, reason: 'fair_share', detail };
+    }
+  }
+  if (policy.monthlyLimitMinor !== null) {
+    const quote = safeJsonObject(operation.quoteJson);
+    if (quote?.kind === 'unpriced') return { ok: false, reason: 'pricing_required', detail };
+    const pinned = db.prepare(`
+      SELECT 1 FROM execution_reservations
+      WHERE kind = 'cost' AND actorId = ? AND state IN ('held', 'settled') AND costState = 'unknown'
+      LIMIT 1
+    `).get(operation.actorId);
+    if (pinned) return { ok: false, reason: 'cost_unknown', detail };
+    const reserve = quote?.kind === 'priced'
+      && quote.reserve
+      && typeof quote.reserve === 'object'
+      && typeof (quote.reserve as { minor?: unknown }).minor === 'number'
+      ? Number((quote.reserve as { minor: number }).minor)
+      : 0;
+    if (monthlyCostUsage(db, operation.actorId, shanghaiAccountingPeriod(now)) + reserve
+      > policy.monthlyLimitMinor) {
+      return { ok: false, reason: 'monthly_budget', detail };
+    }
+  }
+  return { ok: true, reason: 'pool_capacity', detail };
+}
+
+interface CapacityTaskContext {
+  job: UnifiedJobRow;
+  task: MediaTaskRow;
+  channel: MediaChannelRow;
+  operation: ChannelOperationRow & { actorId: string };
+}
+
+function readCapacityTaskContext(db: Database.Database, jobId: string): CapacityTaskContext | null {
+  const job = readJob(db, jobId);
+  if (!job.unifiedTaskId) return null;
+  const task = db.prepare('SELECT * FROM execution_media_tasks WHERE id = ?').get(job.unifiedTaskId) as
+    MediaTaskRow | undefined;
+  if (!task?.currentChannelKey) return null;
+  const channel = db.prepare(`SELECT * FROM execution_media_channels
+    WHERE mediaTaskId = ? AND channelKey = ?`).get(task.id, task.currentChannelKey) as
+    MediaChannelRow | undefined;
+  if (!channel) return null;
+  const operation = db.prepare(`SELECT * FROM execution_operations
+    WHERE mediaTaskId = ? AND channelKey = ?`).get(task.id, channel.channelKey) as
+    (ChannelOperationRow & { actorId: string }) | undefined;
+  if (!operation) return null;
+  return { job, task, channel, operation };
+}
+
+function waitingDetail(input: {
+  taskId: string;
+  channelKey: string;
+  operationDetail: Record<string, unknown> | null;
+  thresholdSec: number;
+  waitingSinceAt: string;
+  nextEligibleAt: string;
+}): Record<string, unknown> {
+  return {
+    ...(input.operationDetail ?? {}),
+    reason: 'pool_capacity',
+    mediaTaskId: input.taskId,
+    channelKey: input.channelKey,
+    thresholdSec: input.thresholdSec,
+    waitingSinceAt: input.waitingSinceAt,
+    nextEligibleAt: input.nextEligibleAt,
+  };
+}
+
+function waitingMessage(detail: Record<string, unknown>, channelKey: string): string {
+  const thresholdSec = typeof detail.thresholdSec === 'number' ? detail.thresholdSec : 0;
+  const channelLabel = channelKey === 'qiniu' ? '七牛' : '腾讯';
+  return thresholdSec > 0
+    ? `${channelLabel}云端名额已满，等待可用资源（已等待满 ${thresholdSec} 秒后重新检查通道），尚未提交。`
+    : `${channelLabel}云端名额已满，等待可用资源，尚未提交。`;
+}
+
+function persistCapacityWait(
+  db: Database.Database,
+  context: CapacityTaskContext,
+  input: {
+    now: Date;
+    thresholdSec: number;
+    nextEligibleAt: string;
+    detail: Record<string, unknown>;
+  },
+): UnifiedImageCapacityDecision {
+  const at = input.now.toISOString();
+  const evidence = {
+    reason: 'pool_capacity',
+    waitingSinceAt: input.detail.waitingSinceAt,
+    nextEligibleAt: input.nextEligibleAt,
+    thresholdSec: input.thresholdSec,
+    operationWaitDetail: input.detail,
+  };
+  db.transaction(() => {
+    db.prepare(`UPDATE execution_media_channels
+      SET state = 'waiting_capacity', nextEligibleAt = ?, evidenceJson = ?, updatedAt = ?
+      WHERE id = ?`).run(input.nextEligibleAt, JSON.stringify(evidence), at, context.channel.id);
+    db.prepare(`UPDATE execution_media_tasks
+      SET status = 'waiting', currentChannelKey = ?, nextEligibleAt = ?,
+        waitReason = 'pool_capacity', waitDetailJson = ?, updatedAt = ?
+      WHERE id = ?`).run(
+      context.channel.channelKey, input.nextEligibleAt,
+      JSON.stringify(input.detail), at, context.task.id,
+    );
+    db.prepare(`UPDATE jobs
+      SET status = 'deferred', errorMessage = ?, startedAt = NULL, finishedAt = NULL
+      WHERE id = ? AND status IN ('running', 'pending', 'retrying', 'deferred')`)
+      .run(waitingMessage(input.detail, context.channel.channelKey), context.job.id);
+  }).immediate();
+  return {
+    outcome: 'waiting',
+    channelKey: context.channel.channelKey,
+    nextEligibleAt: input.nextEligibleAt,
+    thresholdSec: input.thresholdSec,
+    waitDetail: input.detail,
+  };
+}
+
+/**
+ * Consume the precise execution-deferred reason. A threshold is started only
+ * when the target pool is full and every later budget gate would otherwise
+ * pass. At the deadline qiniu is retried first; only a second capacity result
+ * may overflow to tencent.
+ */
+export function handleUnifiedImageCapacityDeferral(
+  db: Database.Database,
+  jobId: string,
+  now = new Date(),
+): UnifiedImageCapacityDecision {
+  return db.transaction((): UnifiedImageCapacityDecision => {
+    const context = readCapacityTaskContext(db, jobId);
+    if (!context) return { outcome: 'ignored', reason: 'task_not_ready' };
+    const { job, task, channel, operation } = context;
+    if (job.cancelRequestedAt || task.cancelRequestedAt) {
+      return { outcome: 'canceled', reason: 'canceled' };
+    }
+    const capacity = capacityOnlyOperation(db, operation.id, now);
+    if (!capacity.ok) {
+      if ([
+        'monthly_budget', 'cost_unknown', 'pricing_required',
+        'personal_concurrency', 'fair_share',
+      ].includes(capacity.reason)) {
+        const at = now.toISOString();
+        db.prepare(`UPDATE execution_operations
+          SET waitReason = ?, waitDetail = ?, updatedAt = ?
+          WHERE id = ? AND status IN ('pending', 'deferred')`)
+          .run(capacity.reason, JSON.stringify({ reason: capacity.reason }), at, operation.id);
+      }
+      return { outcome: 'not_capacity', reason: capacity.reason };
+    }
+    if (channel.channelKey !== 'qiniu') {
+      // Tencent has no 30-second overflow policy, but it still must not spin.
+      const nextEligibleAt = new Date(now.getTime() + 1_000).toISOString();
+      const detail = waitingDetail({
+        taskId: task.id,
+        channelKey: channel.channelKey,
+        operationDetail: capacity.detail,
+        thresholdSec: 0,
+        waitingSinceAt: now.toISOString(),
+        nextEligibleAt,
+      });
+      return persistCapacityWait(db, context, {
+        now, thresholdSec: 0, nextEligibleAt, detail,
+      });
+    }
+
+    const settings = readUnifiedImageCongestionSettings(db);
+    const thresholdSec = settings.imageCongestionThresholdSec;
+    if (channel.state !== 'waiting_capacity') {
+      if (thresholdSec > 0) {
+        const deadline = imageCongestionDeadline(now, thresholdSec);
+        const nextEligibleAt = deadline.toISOString();
+        const detail = waitingDetail({
+          taskId: task.id,
+          channelKey: channel.channelKey,
+          operationDetail: capacity.detail,
+          thresholdSec,
+          waitingSinceAt: now.toISOString(),
+          nextEligibleAt,
+        });
+        return persistCapacityWait(db, context, {
+          now, thresholdSec, nextEligibleAt, detail,
+        });
+      }
+    } else {
+      const deadline = channel.nextEligibleAt ? new Date(channel.nextEligibleAt) : null;
+      if (deadline && Number.isFinite(deadline.getTime()) && now < deadline) {
+        const previous = safeJsonObject(channel.evidenceJson) ?? capacity.detail ?? {};
+        return {
+          outcome: 'waiting',
+          channelKey: channel.channelKey,
+          nextEligibleAt: deadline.toISOString(),
+          thresholdSec: typeof previous.thresholdSec === 'number' ? previous.thresholdSec : thresholdSec,
+          waitDetail: safeJsonObject(task.waitDetailJson) ?? previous,
+        };
+      }
+    }
+
+    const frozen = readFrozenRequest(job);
+    const selection = findNextChannel(db, job, task, frozen, channel.channelKey);
+    const at = now.toISOString();
+    if ('reason' in selection) {
+      // No alternative is available. Keep qiniu waiting and retry after the
+      // configured interval instead of spinning or pretending it failed.
+      const retryAt = imageCongestionDeadline(now, Math.max(1, thresholdSec)).toISOString();
+      const detail = waitingDetail({
+        taskId: task.id,
+        channelKey: channel.channelKey,
+        operationDetail: capacity.detail,
+        thresholdSec,
+        waitingSinceAt:
+          (safeJsonObject(channel.evidenceJson)?.waitingSinceAt as string | undefined) ?? at,
+        nextEligibleAt: retryAt,
+      });
+      return persistCapacityWait(db, context, {
+        now, thresholdSec, nextEligibleAt: retryAt, detail,
+      });
+    }
+
+    const evidence = {
+      reason: 'pool_capacity',
+      overflowedAt: at,
+      thresholdSec,
+      operationWaitDetail: capacity.detail,
+      previousChannelKey: channel.channelKey,
+      nextChannelKey: selection.definition.channelKey,
+    };
+    db.prepare(`UPDATE execution_media_channels
+      SET state = 'overflowed', nextEligibleAt = NULL, evidenceJson = ?, updatedAt = ?
+      WHERE id = ?`).run(JSON.stringify(evidence), at, channel.id);
+    const revision = selection.executionRevision;
+    const changed = db.prepare(`UPDATE jobs SET
+        status = 'pending', executionRevision = ?, errorMessage = NULL, finishedAt = NULL,
+        providerTaskId = NULL, providerStatus = NULL, providerRawResponse = NULL,
+        remoteImageUrl = NULL, submittedAt = NULL, lastPolledAt = NULL, pollCount = 0,
+        startedAt = NULL, latencyMs = NULL
+      WHERE id = ? AND cancelRequestedAt IS NULL
+        AND status IN ('running', 'pending', 'retrying', 'deferred')`)
+      .run(revision, job.id);
+    if (changed.changes !== 1) return { outcome: 'ignored', reason: 'job_changed' };
+    markSelectedChannel(db, task.id, selection.definition, revision);
+    return {
+      outcome: 'overflowed',
+      previousChannelKey: channel.channelKey,
+      nextChannelKey: selection.definition.channelKey,
+      nextExecutionRevision: revision,
+      thresholdSec,
+      nextEligibleAt: null,
+    };
+  }).immediate();
+}
+
+function pauseDetail(
+  detail: Record<string, unknown> | null,
+  now: Date,
+  deadline: string | null,
+): Record<string, unknown> {
+  const remainingMs = deadline && Number.isFinite(Date.parse(deadline))
+    ? Math.max(0, Date.parse(deadline) - now.getTime())
+    : 0;
+  return {
+    ...(detail ?? {}),
+    pausedAt: now.toISOString(),
+    pausedRemainingMs: remainingMs,
+  };
+}
+
+/** Persist the remaining capacity interval before a project queue pauses. */
+export function pauseUnifiedImageQueueWaits(
+  db: Database.Database,
+  scopeId: string,
+  now = new Date(),
+): void {
+  const tasks = db.prepare(`SELECT * FROM execution_media_tasks
+    WHERE module = 'image' AND scopeId = ? AND status = 'waiting'
+      AND currentChannelKey IS NOT NULL`).all(scopeId) as MediaTaskRow[];
+  if (tasks.length === 0) return;
+  db.transaction(() => {
+    for (const task of tasks) {
+      const channel = db.prepare(`SELECT * FROM execution_media_channels
+        WHERE mediaTaskId = ? AND channelKey = ?`).get(task.id, task.currentChannelKey) as
+        MediaChannelRow | undefined;
+      if (!channel?.nextEligibleAt) continue;
+      const detail = pauseDetail(safeJsonObject(task.waitDetailJson), now, channel.nextEligibleAt);
+      db.prepare(`UPDATE execution_media_tasks SET waitDetailJson = ?, updatedAt = ? WHERE id = ?`)
+        .run(JSON.stringify(detail), now.toISOString(), task.id);
+      const evidence = {
+        ...(safeJsonObject(channel.evidenceJson) ?? {}),
+        pausedAt: detail.pausedAt,
+        pausedRemainingMs: detail.pausedRemainingMs,
+      };
+      db.prepare(`UPDATE execution_media_channels SET evidenceJson = ?, updatedAt = ? WHERE id = ?`)
+        .run(JSON.stringify(evidence), now.toISOString(), channel.id);
+    }
+  }).immediate();
+}
+
+/** Resume capacity waits without counting the paused interval. */
+export function resumeUnifiedImageQueueWaits(
+  db: Database.Database,
+  scopeId: string,
+  now = new Date(),
+): void {
+  const tasks = db.prepare(`SELECT * FROM execution_media_tasks
+    WHERE module = 'image' AND scopeId = ? AND status = 'waiting'
+      AND currentChannelKey IS NOT NULL`).all(scopeId) as MediaTaskRow[];
+  if (tasks.length === 0) return;
+  db.transaction(() => {
+    for (const task of tasks) {
+      const detail = safeJsonObject(task.waitDetailJson);
+      if (!detail || typeof detail.pausedRemainingMs !== 'number') continue;
+      const remainingMs = Math.max(0, detail.pausedRemainingMs);
+      const nextEligibleAt = new Date(now.getTime() + remainingMs).toISOString();
+      const rest = { ...detail };
+      delete rest.pausedAt;
+      delete rest.pausedRemainingMs;
+      const resumed = {
+        ...rest,
+        nextEligibleAt,
+        resumedAt: now.toISOString(),
+      };
+      const channel = db.prepare(`SELECT * FROM execution_media_channels
+        WHERE mediaTaskId = ? AND channelKey = ?`).get(task.id, task.currentChannelKey) as
+        MediaChannelRow | undefined;
+      if (!channel) continue;
+      const evidence = {
+        ...(safeJsonObject(channel.evidenceJson) ?? {}),
+        pausedAt: undefined,
+        pausedRemainingMs: undefined,
+        resumedAt: now.toISOString(),
+        nextEligibleAt,
+      };
+      db.prepare(`UPDATE execution_media_channels
+        SET nextEligibleAt = ?, evidenceJson = ?, updatedAt = ? WHERE id = ?`)
+        .run(nextEligibleAt, JSON.stringify(evidence), now.toISOString(), channel.id);
+      db.prepare(`UPDATE execution_media_tasks
+        SET nextEligibleAt = ?, waitDetailJson = ?, updatedAt = ? WHERE id = ?`)
+        .run(nextEligibleAt, JSON.stringify(resumed), now.toISOString(), task.id);
+    }
+  }).immediate();
+}
+
 /**
  * Advance a logical Image 2 task only after explicit not-created / terminal
  * failure evidence. Unknown, query failures and download failures never call
@@ -996,7 +1461,7 @@ export function handleUnifiedImageExplicitFailure(
       });
     }
     const frozen = readFrozenRequest(job);
-    const selection = findNextChannel(db, task, frozen, channel.channelKey);
+    const selection = findNextChannel(db, job, task, frozen, channel.channelKey);
     if ('reason' in selection) {
       const estimatedCost = unifiedImageAttemptCostMinor(db, job.id) / 100;
       const message = selection.reason === 'channel_limit'
@@ -1020,7 +1485,7 @@ export function handleUnifiedImageExplicitFailure(
       };
     }
 
-    const revision = Math.max(1, job.executionRevision + 1);
+    const revision = selection.executionRevision;
     const estimatedCost = unifiedImageAttemptCostMinor(db, job.id) / 100;
     const changed = db.prepare(`UPDATE jobs SET
         status = 'pending', executionRevision = ?, errorMessage = NULL, finishedAt = NULL,
@@ -1152,6 +1617,7 @@ function cancelUnsubmittedTask(
 export function prepareUnifiedImageExecution(
   db: Database.Database,
   jobId: string,
+  now = new Date(),
 ): PreparedUnifiedImageExecution {
   const job = readJob(db, jobId);
   if (job.unifiedModel !== UNIFIED_IMAGE_MODEL_KEY) {
@@ -1188,6 +1654,40 @@ export function prepareUnifiedImageExecution(
       && !hasAcceptedEvidence(db, job, current.channel)
       && !providerUsable(current.provider)) {
       throw new UnifiedImageChannelUnavailableError();
+    }
+    if (current.channel.state === 'waiting_capacity') {
+      const storedDetail = safeJsonObject(current.channel.evidenceJson)
+        ?? safeJsonObject(task.waitDetailJson)
+        ?? {};
+      let nextEligibleAt = current.channel.nextEligibleAt;
+      if (typeof storedDetail.pausedRemainingMs === 'number') {
+        nextEligibleAt = new Date(
+          now.getTime() + Math.max(0, storedDetail.pausedRemainingMs),
+        ).toISOString();
+        const resumed = {
+          ...storedDetail,
+          pausedAt: undefined,
+          pausedRemainingMs: undefined,
+          nextEligibleAt,
+          resumedAt: now.toISOString(),
+        };
+        db.transaction(() => {
+          db.prepare(`UPDATE execution_media_channels
+            SET nextEligibleAt = ?, evidenceJson = ?, updatedAt = ? WHERE id = ?`)
+            .run(nextEligibleAt, JSON.stringify(resumed), now.toISOString(), current.channel.id);
+          db.prepare(`UPDATE execution_media_tasks
+            SET nextEligibleAt = ?, waitDetailJson = ?, updatedAt = ? WHERE id = ?`)
+            .run(nextEligibleAt, JSON.stringify(resumed), now.toISOString(), task.id);
+        }).immediate();
+      }
+      if (nextEligibleAt && Number.isFinite(Date.parse(nextEligibleAt))
+        && now.getTime() < Date.parse(nextEligibleAt)) {
+        throw new UnifiedImageWaitingError({
+          nextEligibleAt,
+          waitReason: task.waitReason ?? 'pool_capacity',
+          waitDetail: safeJsonObject(task.waitDetailJson),
+        });
+      }
     }
     if (['failed', 'not_created', 'canceled'].includes(current.channel.state)) {
       throw new UnifiedImageExecutionError(
@@ -1230,6 +1730,14 @@ export function synchronizeUnifiedImageExecution(db: Database.Database, jobId: s
   const channel = db.prepare(`SELECT * FROM execution_media_channels
     WHERE mediaTaskId = ? AND channelKey = ?`).get(task.id, task.currentChannelKey) as MediaChannelRow | undefined;
   if (!channel) return;
+  if (job.status === 'deferred'
+    && channel.state === 'waiting_capacity'
+    && task.waitReason === 'pool_capacity'
+    && task.nextEligibleAt) {
+    // The congestion handler already persisted the precise deadline, evidence,
+    // and operation detail. A generic queue projection must not erase them.
+    return;
+  }
   if (['failed', 'not_created'].includes(channel.state)
     && ['failed', 'canceled'].includes(job.status)) {
     // The explicit-failure handler already stored the precise terminal reason

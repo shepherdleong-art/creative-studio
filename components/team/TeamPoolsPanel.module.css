@@ -45,6 +45,21 @@
 }
 .blockers b { display: block; margin-bottom: 4px; font-size: var(--text-body); font-weight: 600; color: var(--color-ink); }
 .blockers ul { display: grid; gap: 3px; padding-left: 14px; list-style: disc; }
+.settingRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+}
+.settingRow .identity span {
+  display: block;
+  margin-top: 3px;
+  color: var(--color-ink-tertiary);
+}
+.settingUnit {
+  align-self: center;
+  color: var(--color-ink-secondary);
+}
 
 /* ---------- 账号行 ---------- */
 
@@ -319,4 +334,5 @@
   .head { grid-template-columns: minmax(0, 1fr) 108px 40px 24px; gap: 6px; padding: 10px 8px; }
   .statusCell { display: none; }
   .poolKeyInput { width: 100%; }
+  .settingRow { grid-template-columns: minmax(0, 1fr); }
 }

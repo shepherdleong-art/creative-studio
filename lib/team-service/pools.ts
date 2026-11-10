@@ -11,6 +11,12 @@ import {
   type ExecutionPoolSummary,
 } from '../media-core/execution/pools.ts';
 import {
+  readUnifiedImageCongestionSettings,
+  updateUnifiedImageCongestionSettings,
+  type UnifiedImageCongestionSettings,
+} from '../media-core/unified-media/settings.ts';
+import { ExecutionError } from '../media-core/execution/context.ts';
+import {
   legacyMediaProviderCredentialFingerprint,
   legacyMediaProviderPoolKey,
 } from '../media-core/execution/media-provider-pool.ts';
@@ -60,6 +66,7 @@ export interface PoolAdminState {
   requirements: PoolRequirement[];
   ready: boolean;
   blockers: string[];
+  unifiedImageCongestion: UnifiedImageCongestionSettings;
   occupancy: Array<{
     poolKey: string;
     capacity: number;
@@ -489,8 +496,34 @@ export function readPoolAdminState(db: Database.Database, viewer: TeamViewer): P
     requirements,
     ready: blockers.length === 0,
     blockers,
+    unifiedImageCongestion: readUnifiedImageCongestionSettings(db),
     occupancy: readPoolOccupancy(db),
   };
+}
+
+export function updateUnifiedImageCongestion(
+  db: Database.Database,
+  viewer: TeamViewer,
+  input: {
+    imageCongestionThresholdSec: unknown;
+    expectedVersion: unknown;
+  },
+): UnifiedImageCongestionSettings {
+  assertAdmin(viewer);
+  try {
+    return updateUnifiedImageCongestionSettings(db, input);
+  } catch (error) {
+    if (error instanceof ExecutionError) {
+      if (error.code === 'settings_version_conflict') {
+        throw new TeamPoolError(409, error.code, error.message);
+      }
+      if (error.code === 'invalid_congestion_threshold'
+        || error.code === 'invalid_settings_version') {
+        throw new TeamPoolError(400, error.code, error.message);
+      }
+    }
+    throw error;
+  }
 }
 
 function derivedChange(db: Database.Database, change: Extract<PoolChange, { action: 'bind-media-upstream' }>): {

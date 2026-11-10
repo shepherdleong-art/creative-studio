@@ -55,15 +55,19 @@ import {
 } from './media-core/submission-evidence.ts';
 import {
   assertUnifiedImageSubmissionStillCurrent,
+  handleUnifiedImageCapacityDeferral,
   handleUnifiedImageExplicitFailure,
+  pauseUnifiedImageQueueWaits,
   prepareUnifiedImageExecution,
   requestUnifiedImageCancellation,
+  resumeUnifiedImageQueueWaits,
   synchronizeUnifiedImageExecution,
   UnifiedImageCanceledError,
   UnifiedImageChannelUnavailableError,
   UnifiedImageExecutionError,
   UnifiedImageRecoveryPendingError,
   UnifiedImageStaleSubmissionError,
+  UnifiedImageWaitingError,
   unifiedImageAttemptCostMinor,
   type PreparedUnifiedImageExecution,
 } from './media-core/unified-media/execution.ts';
@@ -161,14 +165,17 @@ export function pauseQueue(projectId: string) {
   const entry = runningQueues.get(projectId);
   if (entry) {
     entry.status = 'paused';
+    if (isServerMediaExecution()) pauseUnifiedImageQueueWaits(getDb(), projectId);
   }
 }
 
 export function resumeQueue(projectId: string, options: QueueOptions) {
   const entry = runningQueues.get(projectId);
   if (entry) {
+    if (isServerMediaExecution()) resumeUnifiedImageQueueWaits(getDb(), projectId);
     entry.status = 'running';
   } else {
+    if (isServerMediaExecution()) resumeUnifiedImageQueueWaits(getDb(), projectId);
     runQueue(options).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[Queue] Fatal queue error for project ${projectId}: ${msg}`);
@@ -232,6 +239,10 @@ export async function runQueue(options: QueueOptions): Promise<void> {
   runningQueues.set(projectId, { abort, status: 'running', done, finish });
 
   const db = getDb();
+  // A previous process may have exited while the project queue was paused.
+  // Resume from the persisted remaining interval instead of charging restart
+  // time to the capacity-wait threshold.
+  if (isServerMediaExecution()) resumeUnifiedImageQueueWaits(db, projectId);
   const providerRow = db.prepare(`
     SELECT p.id, p.name, p.type, p.baseUrl
     FROM projects pr
@@ -406,6 +417,20 @@ async function runAuthorizedJob(
           message: error.message,
           attempt: job.attempt,
         });
+        return;
+      }
+      if (error instanceof UnifiedImageWaitingError) {
+        const channelKey = typeof error.waitDetail?.channelKey === 'string'
+          ? error.waitDetail.channelKey
+          : '';
+        const channelLabel = channelKey === 'tencent' ? '腾讯' : '七牛';
+        db.prepare(`UPDATE jobs SET status = 'deferred', errorMessage = ?,
+          startedAt = NULL, finishedAt = NULL
+          WHERE id = ? AND status IN ('running', 'pending', 'retrying', 'deferred')`)
+          .run(
+            `${channelLabel}云端名额已满，等待可用资源，尚未提交。`,
+            job.id,
+          );
         return;
       }
       if (error instanceof UnifiedImageCanceledError) {
@@ -1558,6 +1583,41 @@ async function runAuthorizedJob(
           channelKey: unifiedExecution.channel.channelKey,
           providerId: unifiedExecution.channel.definition.providerId,
         });
+        const decision = handleUnifiedImageCapacityDeferral(db, job.id, new Date());
+        if (decision.outcome === 'waiting') {
+          logWarn(
+            decision.channelKey === 'qiniu'
+              ? `Image 2 七牛名额已满，等待可用资源至 ${decision.nextEligibleAt}。`
+              : 'Image 2 腾讯名额已满，等待可用资源，尚未提交。',
+          );
+          return;
+        }
+        if (decision.outcome === 'overflowed') {
+          logWarn(
+            `Image 2 七牛名额持续已满，已满足 ${decision.thresholdSec} 秒阈值，转入腾讯通道。`,
+          );
+          return;
+        }
+        if (decision.outcome === 'canceled') {
+          db.prepare(`UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user',
+            finishedAt = COALESCE(finishedAt, datetime('now'))
+            WHERE id = ? AND status IN ('running', 'pending', 'retrying', 'deferred')`)
+            .run(job.id);
+          return;
+        }
+        if (decision.outcome === 'not_capacity') {
+          const copy: Record<string, string> = {
+            monthly_budget: '本月费用额度不足，尚未提交；额度调整后会自动继续。',
+            cost_unknown: '上一笔费用仍待核查，暂不能开始新的付费生成。',
+            pricing_required: '缺少可信价格，等待管理员补齐后再提交。',
+            personal_concurrency: '个人运行名额已满，尚未提交；名额释放后会自动继续。',
+            fair_share: '正在与其他成员公平共享名额，尚未提交；释放后按顺序继续。',
+          };
+          db.prepare(`UPDATE jobs SET status = 'deferred', errorMessage = ?
+            WHERE id = ? AND status IN ('running', 'pending', 'retrying', 'deferred')`)
+            .run(copy[decision.reason] ?? '等待统一执行准入，尚未提交。', job.id);
+          return;
+        }
       }
       db.prepare(`UPDATE jobs SET status = 'deferred', errorMessage = ? WHERE id = ? AND status = 'running'`)
         .run(errorMessage, job.id);
@@ -1683,8 +1743,16 @@ function claimDeferredImageJob(projectId: string, jobId?: string): JobRecord | n
     LEFT JOIN execution_operations AS deferred_operation
       ON deferred_operation.module = 'image' AND deferred_operation.taskId = jobs.id
       AND deferred_operation.operationKey = 'image/' || jobs.id || '/submit/r' || COALESCE(jobs.executionRevision, 0)
+    LEFT JOIN execution_media_tasks AS unified_wait
+      ON unified_wait.module = 'image' AND unified_wait.taskId = jobs.id
     WHERE jobs.projectId = ? AND jobs.status = 'deferred' AND (? IS NULL OR jobs.id = ?)
       AND (deferred_operation.updatedAt IS NULL OR julianday(deferred_operation.updatedAt) <= julianday('now', '-1 second'))
+      AND (
+        jobs.unifiedModel IS NULL
+        OR unified_wait.id IS NULL
+        OR unified_wait.nextEligibleAt IS NULL
+        OR julianday(unified_wait.nextEligibleAt) <= julianday('now')
+      )
     ORDER BY COALESCE(deferred_operation.updatedAt, jobs.createdAt), jobs.createdAt, jobs.rowid LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as JobRecord | undefined;
   if (!job) return null;

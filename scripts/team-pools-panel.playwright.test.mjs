@@ -280,6 +280,21 @@ async function runBrowser(name, launcher, credentials) {
       assert.ok(rowCount < beforeState.requirements.length, '不再按模型拆行：行数必须少于模型数');
       run.assertions.push(`账号行数 ${rowCount} = 名额池行数 ${expectedRows}；其中已配置池 ${beforeState.pools.length} 个，模型 ${beforeState.requirements.length} 条`);
 
+      // Image 2 拥堵阈值与名额池同一管理员页；保存后服务端持久，员工不能覆盖。
+      const congestionInput = page.getByLabel('Image 2 拥堵分流阈值（秒）', { exact: true });
+      await congestionInput.waitFor({ timeout: 30_000 });
+      assert.equal(await congestionInput.inputValue(), String(beforeState.unifiedImageCongestion.imageCongestionThresholdSec));
+      await congestionInput.fill('7');
+      await page.getByRole('button', { name: '保存阈值', exact: true }).click();
+      await page.getByText(/Image 2 拥堵分流阈值已保存为 7 秒/).waitFor({ timeout: 60_000 });
+      const settingsState = (await jsonRequest(credentials.adminApi, '/api/team/pools', {}, 200)).body;
+      assert.equal(
+        settingsState.unifiedImageCongestion.imageCongestionThresholdSec,
+        7,
+        '管理员修改的 Image 2 拥堵阈值必须持久化',
+      );
+      run.assertions.push('管理员在「模型与名额」保存 Image 2 拥堵阈值，服务端持久生效');
+
       // 已配置的那一行（页面按 `data-pool-key` 认池，不按账号名拼法）。
       const companyRow = page.locator('[data-testid="pool-row"][data-pool-key="media:company"]').first();
       await companyRow.waitFor({ timeout: 30_000 });
