@@ -1,6 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveRegenerateImageJobProvider } from '@/lib/image-provider-selection';
+import { UNIFIED_IMAGE_ANCHOR_ID, UNIFIED_IMAGE_MODEL_KEY } from '@/lib/media-core/unified-media/catalog';
+import {
+  buildUnifiedImageJobContract,
+  isUnifiedImageJobProvider,
+  unifiedImageProjectReferenceGuidance,
+} from '@/lib/media-core/unified-media/project-jobs';
+import { UnifiedImageRequestError } from '@/lib/media-core/unified-media/requests';
+import {
+  UnifiedJobRequestConflictError,
+  findUnifiedJobRequestReplay,
+  normalizeUnifiedJobRequestKey,
+  unifiedJobRequestHash,
+} from '@/lib/media-core/unified-media/job-idempotency';
 import { v4 as uuidv4 } from 'uuid';
 import { requiresReassembledImageRework, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
 import { requireAccessContext } from '@/lib/media-core/access-context';
@@ -44,6 +57,7 @@ async function __teamRoutePOST(
       prompt: string;
       providerId: string; model: string; size: string; quality: string;
       maxAttempts: number; referenceGuidanceMode: string;
+      unifiedModel: string | null;
     } | undefined;
     if (!originalJob) {
       return NextResponse.json({ error: 'Job not found' }, { status: 404 });
@@ -56,14 +70,31 @@ async function __teamRoutePOST(
       );
     }
 
+    const requestedProviderId = typeof body.providerId === 'string' && body.providerId.trim()
+      ? body.providerId.trim()
+      : originalJob.providerId;
+    const requestedProvider = db.prepare(`
+      SELECT id, name, type, model, enabled, apiKey
+      FROM providers WHERE id = ?
+    `).get(requestedProviderId) as {
+      id: string; name: string; type: string; model: string; enabled: number; apiKey: string;
+    } | undefined;
+    if (!requestedProvider) return NextResponse.json({ error: '供应商不存在' }, { status: 400 });
+    if (!requestedProvider.enabled) return NextResponse.json({ error: '供应商已禁用' }, { status: 400 });
+    const unifiedImage = isUnifiedImageJobProvider(requestedProvider);
+
     let jobProvider: { providerId: string; model: string };
-    try {
-      jobProvider = resolveRegenerateImageJobProvider(db, body.providerId, {
-        providerId: originalJob.providerId,
-        model: originalJob.model,
-      });
-    } catch (err) {
-      return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+    if (unifiedImage) {
+      jobProvider = { providerId: UNIFIED_IMAGE_ANCHOR_ID, model: UNIFIED_IMAGE_MODEL_KEY };
+    } else {
+      try {
+        jobProvider = resolveRegenerateImageJobProvider(db, body.providerId, {
+          providerId: originalJob.providerId,
+          model: originalJob.model,
+        });
+      } catch (err) {
+        return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+      }
     }
 
     // ── Determine new input image ID ──
@@ -110,6 +141,57 @@ async function __teamRoutePOST(
       }
     }
 
+    let unifiedContract: ReturnType<typeof buildUnifiedImageJobContract> | null = null;
+    if (unifiedImage) {
+      try {
+        unifiedContract = buildUnifiedImageJobContract({
+          projectSize: originalJob.size,
+          prompt,
+          inputImageId: newInputImageId,
+          referenceImageIds: uniqueReferenceIds,
+          referenceGuidanceMode: unifiedImageProjectReferenceGuidance(originalJob.referenceGuidanceMode),
+        });
+      } catch (error) {
+        return NextResponse.json({
+          error: error instanceof UnifiedImageRequestError
+            ? error.message
+            : '统一 Image 2 重新生成合同无效。',
+        }, { status: 400 });
+      }
+    }
+
+    const creationSource = 'project_regenerate';
+    const requestKey = normalizeUnifiedJobRequestKey(body.requestKey);
+    const requestHash = unifiedJobRequestHash({
+      kind: 'regenerate',
+      parentJobId: id,
+      projectId: originalJob.projectId,
+      inputImageId: newInputImageId,
+      referenceImageIds: uniqueReferenceIds,
+      prompt,
+      providerId: jobProvider.providerId,
+      model: jobProvider.model,
+      unifiedRequestJson: unifiedContract?.unifiedRequestJson ?? null,
+    });
+    const replay = findUnifiedJobRequestReplay(db, {
+      projectId: originalJob.projectId,
+      requestKey,
+      requestHash,
+      expectedCount: 1,
+      creationSource,
+    });
+    if (replay) {
+      const existingRevision = db.prepare('SELECT revision FROM jobs WHERE id = ?').pluck().get(replay[0]) as number | undefined;
+      return NextResponse.json({
+        success: true,
+        projectId: originalJob.projectId,
+        newJobId: replay[0],
+        revision: existingRevision ?? 0,
+        inputImageId: newInputImageId,
+        replayed: true,
+      });
+    }
+
     // ── Atomic transaction: calculate revision, insert new job, mark original ──
     const newJobId = uuidv4();
     const createRegeneration = db.transaction(() => {
@@ -131,28 +213,64 @@ async function __teamRoutePOST(
         `SELECT COALESCE(MAX(revision), 0) + 1 as rev FROM jobs WHERE projectId = ? AND inputImageId = ?`
       ).get(originalJob.projectId, originalJob.inputImageId) as { rev: number };
 
-      db.prepare(`
-        INSERT INTO jobs (
-          id, projectId, inputImageId, referenceImageIds, providerId, model,
-          prompt, size, quality, status, attempt, maxAttempts,
-          parentJobId, revision, referenceGuidanceMode, createdAt, creationIndex
-        )
-        SELECT ?, projectId, ?, ?, ?, ?,
-               ?, size, quality, 'pending', 0, maxAttempts,
-               id, ?, referenceGuidanceMode, ?, 0
-        FROM jobs
-        WHERE id = ?
-      `).run(
-        newJobId,
-        newInputImageId,
-        JSON.stringify(uniqueReferenceIds),
-        jobProvider.providerId,
-        jobProvider.model,
-        prompt,
-        latest.rev,
-        new Date().toISOString(),
-        id
-      );
+      if (unifiedContract) {
+        db.prepare(`
+          INSERT INTO jobs (
+            id, projectId, inputImageId, referenceImageIds, providerId, model,
+            prompt, size, quality, status, attempt, maxAttempts,
+            parentJobId, revision, referenceGuidanceMode, createdAt, creationIndex,
+            unifiedModel, unifiedRuleVersion, unifiedRequestJson, creationSource,
+            creationRequestKey, creationRequestHash
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, 1, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+        `).run(
+          newJobId,
+          projectId,
+          newInputImageId,
+          JSON.stringify(uniqueReferenceIds),
+          unifiedContract.providerId,
+          unifiedContract.model,
+          prompt,
+          unifiedContract.size,
+          unifiedContract.quality,
+          id,
+          latest.rev,
+          unifiedImageProjectReferenceGuidance(originalJob.referenceGuidanceMode),
+          new Date().toISOString(),
+          unifiedContract.unifiedModel,
+          unifiedContract.unifiedRuleVersion,
+          unifiedContract.unifiedRequestJson,
+          creationSource,
+          requestKey,
+          requestHash,
+        );
+      } else {
+        db.prepare(`
+          INSERT INTO jobs (
+            id, projectId, inputImageId, referenceImageIds, providerId, model,
+            prompt, size, quality, status, attempt, maxAttempts,
+            parentJobId, revision, referenceGuidanceMode, createdAt, creationIndex, creationSource,
+            creationRequestKey, creationRequestHash
+          )
+          SELECT ?, projectId, ?, ?, ?, ?,
+                 ?, size, quality, 'pending', 0, maxAttempts,
+                 id, ?, referenceGuidanceMode, ?, 0, ?, ?, ?
+          FROM jobs
+          WHERE id = ?
+        `).run(
+          newJobId,
+          newInputImageId,
+          JSON.stringify(uniqueReferenceIds),
+          jobProvider.providerId,
+          jobProvider.model,
+          prompt,
+          latest.rev,
+          new Date().toISOString(),
+          creationSource,
+          requestKey,
+          requestHash,
+          id
+        );
+      }
 
       access.registerInheritedScope({
         resourceType: 'job', resourceId: newJobId,
@@ -161,7 +279,17 @@ async function __teamRoutePOST(
       access.registerTaskPrincipal({
         module: 'image', taskId: newJobId,
         scope: { resourceType: 'project', resourceId: originalJob.projectId },
-        creationSnapshot: { parentJobId: id, inputImageId: newInputImageId, referenceImageIds: uniqueReferenceIds },
+        creationSnapshot: {
+          parentJobId: id,
+          inputImageId: newInputImageId,
+          referenceImageIds: uniqueReferenceIds,
+          ...(unifiedContract ? {
+            unifiedModel: unifiedContract.unifiedModel,
+            unifiedRuleVersion: unifiedContract.unifiedRuleVersion,
+            providerId: unifiedContract.providerId,
+            model: unifiedContract.model,
+          } : {}),
+        },
       });
 
       if (markOriginal) {
@@ -179,8 +307,12 @@ async function __teamRoutePOST(
       newJobId,
       revision: newRevision,
       inputImageId: newInputImageId,
+      replayed: false,
     });
   } catch (err) {
+    if (err instanceof UnifiedJobRequestConflictError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }

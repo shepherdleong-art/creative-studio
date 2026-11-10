@@ -14,9 +14,15 @@ import {
 } from '@/lib/media-core/unified-media/catalog';
 import {
   UnifiedImageRequestError,
-  freezeUnifiedImageRequest,
   inferUnifiedImageOutputFromPreset,
 } from '@/lib/media-core/unified-media/requests';
+import { buildUnifiedImageJobContract } from '@/lib/media-core/unified-media/project-jobs';
+import {
+  UnifiedJobRequestConflictError,
+  findUnifiedJobRequestReplay,
+  normalizeUnifiedJobRequestKey,
+  unifiedJobRequestHash,
+} from '@/lib/media-core/unified-media/job-idempotency';
 
 
 async function __teamRoutePOST(
@@ -76,19 +82,18 @@ async function __teamRoutePOST(
         return NextResponse.json({ error: '场景任务不能改写项目锁定的清晰度' }, { status: 400 });
       }
       try {
-        const frozen = freezeUnifiedImageRequest({
+        const contract = buildUnifiedImageJobContract({
+          projectSize: project.size,
+          prompt: scenePrompt,
           inputImageId: sceneSeedImageId,
           referenceImageIds: [],
-          prompt: scenePrompt,
-          tier: output.tier,
-          ratio: output.ratio,
           referenceGuidanceMode: 'none',
         });
-        jobSize = frozen.size;
-        jobQuality = frozen.quality;
-        maxAttempts = 1;
-        unifiedRequestJson = JSON.stringify(frozen);
-        jobProvider = { providerId: provider.id, model: UNIFIED_IMAGE_MODEL_KEY };
+        jobSize = contract.size;
+        jobQuality = contract.quality;
+        maxAttempts = contract.maxAttempts;
+        unifiedRequestJson = contract.unifiedRequestJson;
+        jobProvider = { providerId: contract.providerId, model: contract.model };
       } catch (error) {
         return NextResponse.json({
           error: error instanceof UnifiedImageRequestError ? error.message : String(error),
@@ -111,6 +116,36 @@ async function __teamRoutePOST(
     if (img.projectId && img.projectId !== id) return NextResponse.json({ error: '图片不属于当前项目' }, { status: 400 });
     if (access.kind === 'team') access.assertAccess('image', sceneSeedImageId, 'write');
 
+    const creationSource = 'project_scene';
+    const requestKey = normalizeUnifiedJobRequestKey(body.requestKey);
+    const requestHash = unifiedJobRequestHash({
+      kind: 'scene-batch',
+      projectId: id,
+      inputImageId: sceneSeedImageId,
+      prompt: scenePrompt,
+      generationCount,
+      providerId: jobProvider.providerId,
+      model: jobProvider.model,
+      size: jobSize,
+      quality: jobQuality,
+      unifiedModel: unifiedRequestJson ? UNIFIED_IMAGE_MODEL_KEY : null,
+    });
+    const replay = findUnifiedJobRequestReplay(db, {
+      projectId: id,
+      requestKey,
+      requestHash,
+      expectedCount: generationCount,
+      creationSource,
+    });
+    if (replay) {
+      return NextResponse.json({
+        success: true,
+        jobCount: replay.length,
+        jobIds: replay,
+        replayed: true,
+      });
+    }
+
     const jobIds: string[] = [];
     db.transaction(() => {
       // Bind image to project
@@ -127,8 +162,8 @@ async function __teamRoutePOST(
       // Create scene generation jobs：同一请求写同一 createdAt、按提交顺序写 creationIndex。
       const batchCreatedAt = new Date().toISOString();
       const insertJob = db.prepare(`
-        INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode, createdAt, creationIndex, unifiedModel, unifiedRuleVersion, unifiedRequestJson)
-        VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none', ?, ?, ?, ?, ?)
+        INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode, createdAt, creationIndex, unifiedModel, unifiedRuleVersion, unifiedRequestJson, creationSource, creationRequestKey, creationRequestHash)
+        VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (let g = 0; g < generationCount; g++) {
         const jobId = uuidv4();
@@ -138,6 +173,9 @@ async function __teamRoutePOST(
           unifiedRequestJson ? UNIFIED_IMAGE_MODEL_KEY : null,
           unifiedRequestJson ? UNIFIED_MEDIA_RULE_VERSION : null,
           unifiedRequestJson,
+          creationSource,
+          requestKey,
+          requestHash,
         );
         access.registerInheritedScope({
           resourceType: 'job', resourceId: jobId,
@@ -158,9 +196,12 @@ async function __teamRoutePOST(
       }
     }).immediate();
 
-    return NextResponse.json({ success: true, jobCount: jobIds.length, jobIds });
+    return NextResponse.json({ success: true, jobCount: jobIds.length, jobIds, replayed: false });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: err instanceof UnifiedJobRequestConflictError || err instanceof UnifiedImageRequestError ? 409 : 500 },
+    );
   }
 }
 export const POST = withTeamRoute('/api/projects/[id]/scene-jobs', 'POST', __teamRoutePOST);

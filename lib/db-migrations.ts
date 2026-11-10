@@ -220,4 +220,10 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE jobs ADD COLUMN unifiedRequestJson TEXT`,
   `ALTER TABLE jobs ADD COLUMN cancelRequestedAt TEXT`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_unified_task ON jobs(unifiedTaskId) WHERE unifiedTaskId IS NOT NULL`,
+  `ALTER TABLE jobs ADD COLUMN creationSource TEXT`,
+  `ALTER TABLE jobs ADD COLUMN creationRequestKey TEXT`,
+  `ALTER TABLE jobs ADD COLUMN creationRequestHash TEXT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_creation_request
+    ON jobs(projectId, creationRequestKey, creationIndex)
+    WHERE creationRequestKey IS NOT NULL`,
 ];
