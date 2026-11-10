@@ -33,13 +33,14 @@ const admin = buildWorkspaceNavigation({ role: 'admin', canvasEnabled: true });
 assert.deepEqual(admin.map((group) => group.title), ['总览', '生产', '资源', '团队', '系统']);
 assert.deepEqual(admin.map((group) => group.items.map((item) => item.label)), [
   ['运行总览'],
-  ['项目空间', '创作画布', '全员任务', '下载与交付', '出错的任务'],
+  ['项目空间', '创作画布', '全员任务', '下载与交付', '出错的任务', '待核对'],
   ['模型与名额', '供应商配置', '公共资源'],
   ['成员与账号', '团队用量'],
   ['版本与备份'],
 ]);
 assert.deepEqual(admin.flatMap((group) => group.items.map((item) => item.href)), [
   '/', '/projects', '/canvas', '/team/tasks', '/team/downloads', '/team/errors',
+  '/team/admin/reconcile',
   '/team/admin/pools', '/settings', '/team/admin/resources',
   '/team/admin/users', '/usage',
   '/team/admin/operations',
@@ -83,6 +84,7 @@ const titleCases: Array<[string, 'employee' | 'admin', string | null]> = [
   ['/team/downloads', 'employee', '下载与交付'],
   ['/team/errors', 'employee', '出错的任务'],
   ['/team/errors', 'admin', '出错的任务'],
+  ['/team/admin/reconcile', 'admin', '待核对'],
   ['/usage', 'employee', '我的用量'],
   ['/usage', 'admin', '团队用量'],
   ['/team/admin/pools', 'admin', '模型与名额'],

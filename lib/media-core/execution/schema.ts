@@ -355,6 +355,39 @@ export const EXECUTION_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = [
         ON execution_media_channel_health_events(healthKey, createdAt);
     `,
   },
+  {
+    version: 10,
+    sql: `
+      ALTER TABLE execution_media_tasks ADD COLUMN reconcileVersion INTEGER NOT NULL DEFAULT 0;
+
+      CREATE TABLE execution_media_reconcile_actions (
+        id TEXT PRIMARY KEY,
+        mediaTaskId TEXT NOT NULL,
+        channelKey TEXT,
+        attemptId TEXT,
+        actorUserId TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN (
+          'attach_remote_id', 'confirm_not_created', 'confirm_succeeded',
+          'confirm_failed', 'still_unknown'
+        )),
+        idempotencyKey TEXT NOT NULL,
+        requestHash TEXT NOT NULL,
+        evidenceSummary TEXT NOT NULL,
+        beforeJson TEXT NOT NULL,
+        afterJson TEXT,
+        resultJson TEXT,
+        status TEXT NOT NULL CHECK(status IN ('in_progress', 'completed', 'failed')),
+        errorCode TEXT,
+        createdAt TEXT NOT NULL,
+        completedAt TEXT,
+        UNIQUE(mediaTaskId, idempotencyKey)
+      );
+      CREATE INDEX idx_execution_media_reconcile_actions_task
+        ON execution_media_reconcile_actions(mediaTaskId, createdAt DESC);
+      CREATE INDEX idx_execution_media_reconcile_actions_actor
+        ON execution_media_reconcile_actions(actorUserId, createdAt DESC);
+    `,
+  },
 ];
 
 export type ExecutionSchemaReadiness = VersionedSchemaReadiness;
@@ -440,6 +473,17 @@ function validateExecutionSchema(db: Database.Database): void {
     ).pluck().get() as string;
     if (!stateSql.includes("'avoided'") || !stateSql.includes("'recovering'")) {
       throw new Error('execution 通道健康状态机不完整');
+    }
+  }
+  if (schemaVersion >= 10) {
+    const taskColumns = (db.prepare('PRAGMA table_info(execution_media_tasks)').all() as Array<{ name: string }>)
+      .map(column => column.name);
+    if (!taskColumns.includes('reconcileVersion')) {
+      throw new Error('execution 统一媒体任务缺少核对版本字段');
+    }
+    if (!db.prepare(`SELECT 1 FROM sqlite_master
+      WHERE type = 'table' AND name = 'execution_media_reconcile_actions'`).get()) {
+      throw new Error('execution 缺少统一媒体核对审计结构');
     }
   }
 }
