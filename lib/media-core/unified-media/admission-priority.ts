@@ -46,6 +46,12 @@ interface ChannelRow {
   providerId: string;
 }
 
+function tableExists(db: Database.Database, table: string): boolean {
+  return Boolean(db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(table));
+}
+
 function hasSubmittedIntent(
   db: Database.Database,
   mediaTaskId: string,
@@ -70,6 +76,10 @@ function providerAvailable(
     return false;
   }
   if (providerTable === 'providers') {
+    // Execution readiness tests can build the shared execution ledger without
+    // the legacy provider table. Keep that isolated schema non-throwing: a
+    // missing provider table cannot prove a future channel is available.
+    if (!tableExists(db, 'providers')) return false;
     const row = db.prepare(`SELECT enabled, baseUrl, apiKey FROM providers WHERE id = ?`)
       .get(providerId) as { enabled: number; baseUrl: string; apiKey: string } | undefined;
     return Boolean(row
@@ -78,6 +88,7 @@ function providerAvailable(
       && row.apiKey.trim());
   }
   if (providerTable === 'video_providers') {
+    if (!tableExists(db, 'video_providers')) return false;
     const row = db.prepare(`
       SELECT enabled, baseUrl, apiKey, accessKey, secretKey, baseUrlEnv
         FROM video_providers WHERE id = ?
