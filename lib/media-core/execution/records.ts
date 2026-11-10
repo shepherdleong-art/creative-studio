@@ -10,6 +10,7 @@ interface OperationRow {
   status: string; readySeq: number; waitReason: string | null; waitDetail: string | null;
   currentPermitId: string | null; currentAttemptId: string | null; resultJson: string | null;
   mediaTaskId: string | null; channelKey: string | null;
+  admissionPriority: number; admissionCandidateCount: number; admissionTraceJson: string | null;
   createdAt: string; updatedAt: string;
 }
 
@@ -26,12 +27,21 @@ interface AttemptRow {
 }
 
 export function mapOperation(row: OperationRow): OperationRecord {
+  let admissionTrace: unknown = null;
+  if (row.admissionTraceJson !== null) {
+    try {
+      admissionTrace = JSON.parse(row.admissionTraceJson) as unknown;
+    } catch {
+      admissionTrace = null;
+    }
+  }
   return {
     ...row,
     inputSnapshot: JSON.parse(row.inputSnapshotJson) as unknown,
     providerSnapshot: JSON.parse(row.providerSnapshotJson) as unknown,
     requiredPools: JSON.parse(row.requiredPoolsJson) as string[],
     quote: JSON.parse(row.quoteJson) as OperationRecord['quote'],
+    admissionTrace,
     result: row.resultJson === null ? null : JSON.parse(row.resultJson) as unknown,
   };
 }

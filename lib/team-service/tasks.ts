@@ -63,6 +63,9 @@ export interface TeamTaskView {
   unifiedTaskCostStatus: UnifiedTaskCostStatus | null;
   unifiedTaskAttemptCount: number;
   unifiedTaskChannelCount: number;
+  admissionPriority: number | null;
+  admissionCandidateCount: number | null;
+  admissionTrace: Record<string, unknown> | null;
   modelCalls: TeamModelCall[];
 }
 
@@ -78,6 +81,18 @@ function tableExists(db: Database.Database, table: string): boolean {
 function tableHasColumn(db: Database.Database, table: string, column: string): boolean {
   return tableExists(db, table)
     && (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((item) => item.name === column);
+}
+
+function jsonObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export function listTeamTasks(
@@ -115,6 +130,9 @@ export function listTeamTasks(
       a.filename AS inputFilename, a.usage AS imageUsage, COALESCE(j.model, v.model) AS model,
       ${unifiedModelExpression} AS unifiedModel,
       ${unifiedTaskExpression} AS unifiedTaskId,
+      ${tableHasColumn(db, 'execution_operations', 'admissionPriority') ? 'o.admissionPriority' : 'NULL'} AS admissionPriority,
+      ${tableHasColumn(db, 'execution_operations', 'admissionCandidateCount') ? 'o.admissionCandidateCount' : 'NULL'} AS admissionCandidateCount,
+      ${tableHasColumn(db, 'execution_operations', 'admissionTraceJson') ? 'o.admissionTraceJson' : 'NULL'} AS admissionTraceJson,
       j.usageSnapshotJson AS imageUsageSnapshot, v.usageSnapshotJson AS videoUsageSnapshot,
       o.inputSnapshotJson, o.providerSnapshotJson,
       policy.personalConcurrency,
@@ -211,6 +229,17 @@ export function listTeamTasks(
           model: unifiedDisplay,
         }))
         : modelCalls;
+      const admissionPriority = viewer.role === 'admin'
+        && item.admissionPriority !== null && item.admissionPriority !== undefined
+        && Number.isFinite(Number(item.admissionPriority))
+        ? Number(item.admissionPriority)
+        : null;
+      const admissionCandidateCount = viewer.role === 'admin'
+        && item.admissionCandidateCount !== null && item.admissionCandidateCount !== undefined
+        && Number.isFinite(Number(item.admissionCandidateCount))
+        ? Number(item.admissionCandidateCount)
+        : null;
+      const admissionTrace = viewer.role === 'admin' ? jsonObject(item.admissionTraceJson) : null;
       return {
         operationId: String(item.operationId), module: String(item.module), taskId: String(item.taskId), step: String(item.step),
         inputRevision: String(item.inputRevision), businessAttemptId: String(item.businessAttemptId),
@@ -249,6 +278,9 @@ export function listTeamTasks(
         unifiedTaskCostStatus: unifiedAggregate?.costStatus ?? null,
         unifiedTaskAttemptCount: unifiedAggregate?.channelCallCount ?? 0,
         unifiedTaskChannelCount: unifiedAggregate?.usedChannelCount ?? 0,
+        admissionPriority,
+        admissionCandidateCount,
+        admissionTrace,
         modelCalls: visibleModelCalls,
       };
     }),
