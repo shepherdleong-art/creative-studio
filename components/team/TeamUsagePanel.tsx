@@ -5,6 +5,10 @@ import Link from 'next/link';
 import { addUsageDays, usagePresetRange, type UsageDatePreset } from '@/lib/usage-date-range';
 import { CONCURRENCY_SOURCE_LABELS, TASK_MODULE_LABELS, TASK_STATUS_LABELS, WAITING_REASON_LABELS } from '@/lib/team-task-labels';
 import type { TeamMemberSummary, TeamModelUsage, TeamUsageAttempt, TeamUsageMember, TeamUsageTrendPoint } from '@/lib/team-service/usage';
+import type {
+  TeamUnifiedChannelView,
+  TeamUnifiedTaskView,
+} from '@/lib/team-service/unified-usage';
 import PageToolbar from './PageToolbar';
 import { useTeamRole } from './useTeamRole';
 import { EmptyState, GroupList, GroupRow, Segmented, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
@@ -12,6 +16,9 @@ import { EmptyState, GroupList, GroupRow, Segmented, StatusDot, Tag, ToolbarButt
 type Period = UsageDatePreset | 'custom';
 type TeamUsageResponse = {
   items: TeamUsageAttempt[];
+  tasks: TeamUnifiedTaskView[];
+  legacyAttempts: TeamUsageAttempt[];
+  counts: { generationTasks: number; channelCalls: number; legacyAttempts: number };
   totals: { settledMinor: number; estimatedMinor: number; unpricedCount: number; uncertainCount: number };
   localAgentIncluded: false;
   costNotice: string;
@@ -24,6 +31,8 @@ type TeamUsageResponse = {
     accountingPeriod: string; chargedMinor: number; settledMinor: number; heldMinor: number;
     limitedCount: number; limitedTotalMinor: number; limitedRemainingMinor: number; unlimitedCount: number;
   };
+  taskCount: number;
+  attemptCount: number;
   scope: 'self' | 'team'; canViewTeam: boolean;
 };
 
@@ -36,6 +45,12 @@ const PERIODS: Array<{ key: Period; label: string }> = [
 ];
 const MODEL_COLORS = ['var(--color-accent)', 'var(--color-check)', 'var(--color-ok)', 'var(--color-warn)', 'var(--color-fail)', 'var(--color-ink-secondary)'];
 const WAITING_LABELS = WAITING_REASON_LABELS;
+const SOURCE_LABELS: Record<string, string> = {
+  project_scene: '项目场景图',
+  project_shot: '项目分镜',
+  canvas: '创作画布',
+  rework: '局部返工',
+};
 
 function money(minor: number | null): string {
   return minor === null ? '不限额' : `¥${(minor / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -44,9 +59,23 @@ function money(minor: number | null): string {
 function amount(item: TeamUsageAttempt): string {
   if (item.costStatus === 'released') return '已释放';
   if (item.costStatus === 'unpriced') return '未定价';
-  if (item.costStatus === 'uncertain') return '不确定';
-  if (item.costStatus === 'estimated') return `${money(item.reservedMinor)}（预估）`;
-  return money(item.actualMinor);
+  if (item.costStatus === 'uncertain') return `${money(item.reservedMinor)}（待核账）`;
+  if (item.costStatus === 'estimated') return `${money(item.reservedMinor)}（估算）`;
+  return `${money(item.actualMinor)}（实际已记录）`;
+}
+
+function taskCostLabel(task: TeamUnifiedTaskView): string {
+  if (task.costStatus === 'released') return '已释放';
+  if (task.costStatus === 'unpriced') return '未定价';
+  if (task.costStatus === 'uncertain') return `待核账${task.chargedMinor ? ` · ${money(task.chargedMinor)}` : ''}`;
+  if (task.costStatus === 'estimated') return `${money(task.estimatedMinor)}（估算）`;
+  if (task.costStatus === 'mixed') return `${money(task.chargedMinor)}（混合）`;
+  return `${money(task.settledMinor)}（已记录）`;
+}
+
+function taskStatusLabel(task: TeamUnifiedTaskView): string {
+  if (task.cancelRequestedAt) return task.status === 'succeeded' ? '已完成 · 停止后续' : '已停止后续生成';
+  return TASK_STATUS_LABELS[task.status] ?? task.status;
 }
 
 /** 区块标题（原型 `.h4` + 说明）：右侧留一块给范围摘要。 */
@@ -130,11 +159,50 @@ function TrendChart({ trend, models }: { trend: TeamUsageTrendPoint[]; models: T
 function ModelAnalysis({ models, trend, totals }: { models: TeamModelUsage[]; trend: TeamUsageTrendPoint[]; totals: TeamUsageResponse['totals'] }) {
   const total = models.reduce((sum, model) => sum + model.chargedMinor, 0);
   return <section className="card p-5" aria-label="模型消耗排行与趋势">
-    <SectionTitle title="模型消耗排行与趋势" note="按当前日期和筛选范围汇总 · 已计含已结算、预留与不确定费用" aside={`${models.reduce((sum, model) => sum + model.callCount, 0)} 次调用 · ${money(total)}`} />
+    <SectionTitle title="模型消耗排行与趋势" note="按统一模型汇总制作任务；通道调用次数与制作任务数分开统计。已计含已记录、估算与待核账费用" aside={`${models.reduce((sum, model) => sum + model.taskCount, 0)} 个制作任务 · ${models.reduce((sum, model) => sum + model.callCount, 0)} 次通道调用 · ${money(total)}`} />
     <div className="mt-4 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,1fr)] xl:items-start">
       <div className="min-w-0"><h3 className="mb-3 text-[13px] font-medium text-ink">每日模型费用</h3><TrendChart trend={trend} models={models} /></div>
-      <div className="min-w-0"><h3 className="mb-3 text-[13px] font-medium text-ink">模型费用统计</h3><div className="overflow-x-auto"><table className="data-table min-w-[480px]"><thead><tr><th>模型 / 模块</th><th>调用</th><th className="num">已计费用</th><th className="num">占比</th></tr></thead><tbody>{models.map(model => <tr key={model.model} className="align-top"><td className="max-w-56"><p className="break-all font-medium text-ink">{model.model}</p><p className="mt-1 text-[12px] text-ink-tertiary">{model.modules.map(module => TASK_MODULE_LABELS[module] ?? module).join('、')}</p></td><td className="whitespace-nowrap text-ink-secondary">{model.callCount} 次</td><td className="num whitespace-nowrap font-medium text-ink">{money(model.chargedMinor)}</td><td className="num"><span className="text-[12px] text-ink-secondary">{model.percentage.toFixed(1)}%</span><span className="ml-auto mt-2 block h-1.5 w-20 overflow-hidden rounded-full" style={{ background: 'var(--color-track)' }}><span className="block h-full rounded-full" style={{ width: `${Math.min(100, model.percentage)}%`, background: 'var(--color-accent)' }} /></span></td></tr>)}</tbody></table>{models.length === 0 && <EmptyState icon="table" title="当前范围暂无模型调用" description="换个日期范围或清空模型筛选再试。" />}</div><p className="mt-3 text-[12px] leading-5 text-ink-tertiary">未定价 {totals.unpricedCount} 次 · 不确定 {totals.uncertainCount} 次，不显示为零元。</p></div>
+      <div className="min-w-0"><h3 className="mb-3 text-[13px] font-medium text-ink">模型费用统计</h3><div className="overflow-x-auto"><table className="data-table min-w-[560px]"><thead><tr><th>模型 / 模块</th><th>制作任务</th><th>通道调用</th><th className="num">已计费用</th><th className="num">占比</th></tr></thead><tbody>{models.map(model => <tr key={model.model} className="align-top"><td className="max-w-56"><p className="break-all font-medium text-ink">{model.model}</p><p className="mt-1 text-[12px] text-ink-tertiary">{model.modules.map(module => TASK_MODULE_LABELS[module] ?? module).join('、')}</p></td><td className="whitespace-nowrap text-ink-secondary">{model.taskCount} 个</td><td className="whitespace-nowrap text-ink-secondary">{model.callCount} 次</td><td className="num whitespace-nowrap font-medium text-ink">{money(model.chargedMinor)}</td><td className="num"><span className="text-[12px] text-ink-secondary">{model.percentage.toFixed(1)}%</span><span className="ml-auto mt-2 block h-1.5 w-20 overflow-hidden rounded-full" style={{ background: 'var(--color-track)' }}><span className="block h-full rounded-full" style={{ width: `${Math.min(100, model.percentage)}%`, background: 'var(--color-accent)' }} /></span></td></tr>)}</tbody></table>{models.length === 0 && <EmptyState icon="table" title="当前范围暂无模型调用" description="换个日期范围或清空模型筛选再试。" />}</div><p className="mt-3 text-[12px] leading-5 text-ink-tertiary">未定价 {totals.unpricedCount} 次 · 不确定 {totals.uncertainCount} 次，不显示为零元。制作任务数不是通道调用次数。</p></div>
     </div>
+  </section>;
+}
+
+function ChannelAttemptDetails({ channels }: { channels: TeamUnifiedChannelView[] }) {
+  return <div className="mt-3 space-y-2 border-t border-hairline pt-3">
+    {channels.map((channel) => <details key={channel.channelKey} className="rounded-[9px] bg-group px-3 py-2">
+      <summary className="cursor-pointer text-[12px] font-medium text-ink-secondary">
+        {channel.channelKey} · {channel.providerModel} · {channel.state}
+        {channel.operationWaitReason ? ` · ${channel.operationWaitReason}` : ''}
+      </summary>
+      <div className="mt-2 space-y-2 text-[12px] text-ink-tertiary">
+        {channel.attempts.length === 0 ? <p>尚未产生真实发起记录。</p> : channel.attempts.map((attempt) => <div key={attempt.attemptId} className="rounded-[7px] bg-surface px-2.5 py-2">
+          <p className="break-all text-ink-secondary">{attempt.providerModel} · {attempt.submissionState} {attempt.terminalState ? `→ ${attempt.terminalState}` : ''}</p>
+          <p>远端：{attempt.remoteId ?? '尚无回执'} · 费用：{attempt.costStatus === 'settled' ? `${money(attempt.actualMinor ?? 0)}（已记录）` : attempt.costStatus === 'estimated' ? `${money(attempt.reservedMinor)}（估算）` : attempt.costStatus === 'uncertain' ? `${money(attempt.reservedMinor)}（待核账）` : attempt.costStatus === 'unpriced' ? '未定价' : '已释放'}</p>
+          <p>执行尝试：{attempt.attemptId}{attempt.pricing?.pricingVersion ? ` · 计价版本 ${attempt.pricing.pricingVersion}` : ''}{attempt.pricing?.coreModelKey ? ` · 计价模型 ${attempt.pricing.coreModelKey}` : ''}</p>
+          {attempt.errorCode ? <p>安全错误码：{attempt.errorCode}</p> : null}
+        </div>)}
+      </div>
+    </details>)}
+  </div>;
+}
+
+function TaskUsageTable({ tasks, canViewTeam }: { tasks: TeamUnifiedTaskView[]; canViewTeam: boolean }) {
+  return <section className="card p-5" aria-label="制作任务合计">
+    <SectionTitle title="制作任务合计" note="自动兜底仍是一条制作任务；制作任务数与通道调用次数分开统计" aside={`${tasks.length} 个制作任务`} />
+    <div className="mt-4 overflow-x-auto">{tasks.length === 0 ? <EmptyState icon="table" title="当前范围没有统一模型制作任务" description="旧调用会在下方“未映射历史记录”明确单列。" /> : <table className="data-table min-w-[880px]"><thead><tr><th>时间{canViewTeam ? ' / 成员' : ''}</th><th>统一模型 / 来源</th><th>状态</th><th>任务 / 通道</th><th className="num">任务合计</th><th>详情</th></tr></thead><tbody>{tasks.map((task) => <tr key={task.mediaTaskId} className="align-top">
+      <td className="text-ink-secondary"><div className="tnum">{new Date(task.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</div>{canViewTeam ? <div className="mt-1 text-[12px]">{task.actorDisplayName} · {task.employeeId}</div> : null}</td>
+      <td className="break-all text-ink-secondary"><p className="font-medium text-ink">{task.model}</p><p className="mt-1 text-[12px] text-ink-tertiary">{TASK_MODULE_LABELS[task.module] ?? task.module} · {['project', 'canvas'].includes(task.scope.resourceType)
+        ? <Link className="text-accent" href={task.scope.resourceType === 'project' ? `/projects/${encodeURIComponent(task.scope.resourceId)}` : `/canvas/${encodeURIComponent(task.scope.resourceId)}`}>{task.scopeName}</Link>
+        : task.scopeName}</p><p className="text-[11px] text-ink-tertiary">{SOURCE_LABELS[task.sourceType] ?? task.sourceType} · 规则 {task.ruleVersion}</p></td>
+      <td className="text-ink-secondary">{taskStatusLabel(task)}{task.cancelRequestedAt ? <p className="mt-1 text-[11px] text-warn">已保留取消前已提交结果和费用</p> : null}</td>
+      <td className="text-ink-secondary">{task.generationTaskCount} 个任务 · {task.channelCallCount} 次调用<p className="mt-1 text-[12px] text-ink-tertiary">已提交 {task.submissionCount} · 使用通道 {task.usedChannelCount}</p></td>
+      <td className="num whitespace-nowrap font-medium text-ink">{taskCostLabel(task)}{task.costStatus === 'mixed' ? <p className="mt-1 text-[11px] font-normal text-warn">含待核账或未定价</p> : null}</td>
+      <td className="text-[12px] text-ink-tertiary">{canViewTeam
+        ? task.channels && task.channels.length > 0
+          ? <details><summary className="cursor-pointer text-accent">展开真实通道尝试</summary><ChannelAttemptDetails channels={task.channels} /></details>
+          : <span>暂无通道记录</span>
+        : <span>员工视图只显示统一模型与任务合计</span>}</td>
+    </tr>)}</tbody></table>}</div>
   </section>;
 }
 
@@ -142,13 +210,13 @@ function MemberTable({ members, onOpen }: { members: TeamUsageMember[]; onOpen: 
   return <section className="card p-5" aria-label="成员用量"><SectionTitle title="成员用量" note="调用与筛选费用属于当前范围；额度与本月已计属于北京时间自然月" aside={`${members.length} 位成员`} /><div className="mt-4 overflow-x-auto"><table className="data-table min-w-[960px]"><thead><tr><th>成员</th><th>调用</th><th>筛选期已计</th><th>本月已计</th><th>月度额度</th><th>剩余可用</th><th /></tr></thead><tbody>{members.map(member => <tr key={member.userId}><td><p className="font-medium text-ink">{member.displayName}</p><p className="mt-1 text-[12px] text-ink-tertiary">{member.employeeId} · {member.role === 'admin' ? '管理员' : '员工'}</p></td><td className="text-ink-secondary">{member.callCount} 次</td><td className="font-medium text-ink">{money(member.rangeChargedMinor)}</td><td className="text-ink-secondary">{money(member.monthChargedMinor)}</td><td className="text-ink-secondary">{money(member.monthlyLimitMinor)}</td><td className="text-ink-secondary">{money(member.remainingMinor)}</td><td className="text-right"><button className="cap" onClick={() => onOpen(member.userId)} aria-label={`查看${member.displayName}的用量`}>查看用量</button></td></tr>)}</tbody></table></div></section>;
 }
 
-function UsageDetails({ items, canViewTeam }: { items: TeamUsageAttempt[]; canViewTeam: boolean }) {
-  return <section className="card p-5" aria-label="调用明细"><SectionTitle title="调用明细" note="按时间倒序 · 展开查看任务、请求与错误关联" aside={`${items.length} 条记录`} /><div className="mt-4 overflow-x-auto">{items.length === 0 ? <EmptyState icon="logs" title="当前范围没有服务器调用记录" description="换个日期范围后重试，本地 Agent 调用不计入这里。" /> : <table className="data-table min-w-[800px] table-fixed"><thead><tr><th className="w-[19%]">时间{canViewTeam ? ' / 成员' : ''}</th><th className="w-[24%]">模型 / 模块</th><th className="w-[16%]">结果</th><th className="num w-[17%]">费用</th><th className="w-[24%]">调用详情</th></tr></thead><tbody>{items.map(item => <tr key={item.attemptId} className="align-top"><td className="text-ink-secondary"><div className="tnum">{new Date(item.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</div>{canViewTeam && <div className="mt-1 text-[12px]">{item.actorDisplayName} · {item.employeeId}</div>}</td><td className="break-all text-ink-secondary">{item.model}<div className="mt-1 text-[12px] text-ink-tertiary">{TASK_MODULE_LABELS[item.module] ?? item.module}</div></td><td className="text-ink-secondary">{TASK_STATUS_LABELS[item.outcome ?? item.submissionState] ?? item.outcome ?? item.submissionState}</td><td className="num font-medium text-ink">{amount(item)}</td><td className="text-[12px] text-ink-tertiary"><details><summary className="cursor-pointer text-accent">查看任务与请求</summary><div className="mt-2 space-y-2 break-all"><div>任务：{item.taskId}</div><div>上游请求：{item.remoteId ?? '尚无回执'}</div><div>业务 {item.businessAttemptNo} · 提交 {item.submitRound} · 传输 {item.transportSeq}</div>{item.errorId && <Link className="text-accent" href={`/team/errors?errorId=${item.errorId}`}>查看错误</Link>}</div></details></td></tr>)}</tbody></table>}</div></section>;
+function UsageDetails({ items, canViewTeam, title = '通道调用明细', note = '按时间倒序 · 展开查看任务、请求与错误关联' }: { items: TeamUsageAttempt[]; canViewTeam: boolean; title?: string; note?: string }) {
+  return <section className="card p-5" aria-label={title}><SectionTitle title={title} note={note} aside={`${items.length} 条记录`} /><div className="mt-4 overflow-x-auto">{items.length === 0 ? <EmptyState icon="logs" title="当前范围没有服务器调用记录" description="换个日期范围后重试，本地 Agent 调用不计入这里。" /> : <table className="data-table min-w-[800px] table-fixed"><thead><tr><th className="w-[19%]">时间{canViewTeam ? ' / 成员' : ''}</th><th className="w-[24%]">模型 / 模块</th><th className="w-[16%]">结果</th><th className="num w-[17%]">费用</th><th className="w-[24%]">调用详情</th></tr></thead><tbody>{items.map(item => <tr key={item.attemptId} className="align-top"><td className="text-ink-secondary"><div className="tnum">{new Date(item.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</div>{canViewTeam && <div className="mt-1 text-[12px]">{item.actorDisplayName} · {item.employeeId}</div>}</td><td className="break-all text-ink-secondary">{item.model}<div className="mt-1 text-[12px] text-ink-tertiary">{TASK_MODULE_LABELS[item.module] ?? item.module}</div></td><td className="text-ink-secondary">{TASK_STATUS_LABELS[item.outcome ?? item.submissionState] ?? item.outcome ?? item.submissionState}</td><td className="num font-medium text-ink">{amount(item)}</td><td className="text-[12px] text-ink-tertiary"><details><summary className="cursor-pointer text-accent">查看任务与请求</summary><div className="mt-2 space-y-2 break-all"><div>任务：{item.taskId}</div><div>上游请求：{item.remoteId ?? '尚无回执'}</div><div>业务 {item.businessAttemptNo} · 提交 {item.submitRound} · 传输 {item.transportSeq}</div>{item.errorId && <Link className="text-accent" href={`/team/errors?errorId=${item.errorId}`}>查看错误</Link>}</div></details></td></tr>)}</tbody></table>}</div></section>;
 }
 
 /**
- * 费用与用量（团队版）。14 号票只换外观：工具栏、分段按钮、分组列表、标签、
- * 空状态与表格换成 02 号票的共用部件；接口、字段与信息结构不变。
+ * 费用与用量（团队版）。员工按逻辑制作任务看统一模型和任务合计；
+ * 管理员可在同一任务下展开真实通道尝试。原始执行账本仍是唯一金额来源。
  */
 export default function TeamUsagePanel() {
   const server = useSyncExternalStore(subscribe, isServer, serverSnapshot);
@@ -196,6 +264,8 @@ export default function TeamUsagePanel() {
   if (outcome) exportParams.set('outcome', outcome);
   if (selectedMember) exportParams.set('actorUserId', selectedMember);
   const showingTeam = Boolean(selectedMember) || data?.scope === 'team';
+  const legacyAttemptIds = new Set((data?.legacyAttempts ?? []).map((item) => item.attemptId));
+  const unifiedChannelItems = (data?.items ?? []).filter((item) => !legacyAttemptIds.has(item.attemptId));
 
   return <div className="min-w-0 space-y-4" aria-label="费用与用量">
     {teamRole ? <PageToolbar
@@ -247,6 +317,13 @@ export default function TeamUsagePanel() {
     </GroupList>
 
     {error && <div role="alert" className="card border-fail/25 bg-fail-tint p-4 text-[13px] text-fail"><p>{error}</p><button className="cap mt-3" onClick={() => setNonce(value => value + 1)}>重新加载</button></div>}
-    {loading && !data ? <div className="card py-16 text-center text-[13px] text-ink-tertiary" role="status">读取团队用量…</div> : data && <><ModelAnalysis models={data.models} trend={data.trend} totals={data.totals} />{data.canViewTeam && data.scope === 'team' && !selectedMember && <MemberTable members={data.members} onOpen={id => { setSelectedMember(id); setData(null); }} />}<UsageDetails items={data.items} canViewTeam={data.canViewTeam} /><p className="flex flex-wrap items-center gap-2 text-[12px] leading-5 text-ink-tertiary"><Tag tone="idle">口径</Tag>{data.costNotice} 本地 Agent 不计入；未定价与不确定费用不显示为 0，也不代表供应商最终账单。</p></>}
+    {loading && !data ? <div className="card py-16 text-center text-[13px] text-ink-tertiary" role="status">读取团队用量…</div> : data && <>
+      <TaskUsageTable tasks={data.tasks} canViewTeam={data.canViewTeam} />
+      <ModelAnalysis models={data.models} trend={data.trend} totals={data.totals} />
+      {data.canViewTeam && data.scope === 'team' && !selectedMember && <MemberTable members={data.members} onOpen={id => { setSelectedMember(id); setData(null); }} />}
+      <UsageDetails items={unifiedChannelItems} canViewTeam={data.canViewTeam} title="通道调用明细" note="每次真实通道提交一条 · 自动兜底会有多条；不等于制作任务数" />
+      {data.legacyAttempts.length > 0 ? <UsageDetails items={data.legacyAttempts} canViewTeam={data.canViewTeam} title="未映射历史记录" note="无法可信映射到统一模型父任务的历史调用，保留原始身份并单列，不按名称猜测" /> : null}
+      <p className="flex flex-wrap items-center gap-2 text-[12px] leading-5 text-ink-tertiary"><Tag tone="idle">口径</Tag>{data.costNotice} 制作任务 {data.counts.generationTasks} 个，通道调用 {data.counts.channelCalls} 次，未映射历史 {data.counts.legacyAttempts} 条。本地 Agent 不计入；未定价与不确定费用不显示为 0，也不代表供应商最终账单。</p>
+    </>}
   </div>;
 }

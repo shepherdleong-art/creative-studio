@@ -242,6 +242,8 @@ try {
   assert.equal(teamBody.teamQuota.accountingPeriod, '2026-11');
   assert.equal(teamBody.models[0].model, 'image-test');
   assert.equal(teamBody.models[0].chargedMinor, 25);
+  assert.deepEqual(teamBody.tasks, []);
+  assert.deepEqual(teamBody.counts, { generationTasks: 0, channelCalls: 0, legacyAttempts: 1 });
   assert.equal(teamBody.trend.reduce((sum: number, point: { chargedMinor: number }) => sum + point.chargedMinor, 0), 25);
   assert.equal(teamBody.members.find((member: { userId: string }) => member.userId === bob.principal.userId).rangeChargedMinor, 25);
   const drilldown = await usageRoute.GET(request(`https://studio.example.test/api/team/usage?period=month&scope=team&actorUserId=${bob.principal.userId}`, adminCookie));

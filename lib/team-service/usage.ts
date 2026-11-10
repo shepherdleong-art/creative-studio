@@ -11,6 +11,11 @@ import {
 import { getShanghaiUsagePeriods } from '../usage-query.ts';
 import { addUsageDays, usageDateLabel } from '../usage-date-range.ts';
 import type { TeamViewer } from './diagnostics.ts';
+import {
+  UNIFIED_KLING3_MODEL_KEY,
+  unifiedMediaDisplayName,
+} from '../media-core/unified-media/catalog.ts';
+import { queryUnifiedTaskUsage, type TeamUnifiedTaskView } from './unified-usage.ts';
 
 export class TeamUsageError extends Error {
   readonly status: number;
@@ -50,6 +55,7 @@ export interface TeamUsageAttempt {
   module: string;
   step: string;
   model: string;
+  reportingModel: string;
   unifiedModel: string | null;
   submissionState: string;
   outcome: string | null;
@@ -70,6 +76,7 @@ export interface TeamUsageAttempt {
 export interface TeamModelUsage {
   model: string;
   modules: string[];
+  taskCount: number;
   callCount: number;
   chargedMinor: number;
   settledMinor: number;
@@ -97,8 +104,19 @@ export interface TeamQuotaSummary {
 }
 
 export interface TeamUsageMember extends TeamMemberSummary {
+  taskCount: number;
   callCount: number;
   rangeChargedMinor: number;
+}
+
+export interface TeamUnifiedUsageReport {
+  tasks: TeamUnifiedTaskView[];
+  legacyAttempts: TeamUsageAttempt[];
+  counts: {
+    generationTasks: number;
+    channelCalls: number;
+    legacyAttempts: number;
+  };
 }
 
 interface AttemptRow {
@@ -165,6 +183,7 @@ function mapAttempt(row: AttemptRow): TeamUsageAttempt {
           : row.costState === 'unknown'
             ? 'uncertain'
             : 'estimated';
+  const model = row.model || '未定价模型';
   return {
     attemptId: row.attemptId,
     operationId: row.operationId,
@@ -179,7 +198,8 @@ function mapAttempt(row: AttemptRow): TeamUsageAttempt {
     scope: { resourceType: row.scopeType, resourceId: row.scopeId },
     module: row.module,
     step: row.step,
-    model: row.model || '未定价模型',
+    model,
+    reportingModel: unifiedMediaDisplayName(row.unifiedModel) ?? model,
     submissionState: row.submissionState,
     outcome: row.outcome,
     remoteId: row.remoteId,
@@ -225,10 +245,20 @@ export function queryTeamUsage(
   )`;
   const hasImageUnifiedModel = tableHasColumn(db, 'jobs', 'unifiedModel');
   const hasVideoUnifiedModel = tableHasColumn(db, 'video_jobs', 'unifiedModel');
-  const unifiedModelExpression = hasImageUnifiedModel || hasVideoUnifiedModel
-    ? `COALESCE(${hasImageUnifiedModel ? 'j.unifiedModel' : 'NULL'}, ${hasVideoUnifiedModel ? 'v.unifiedModel' : 'NULL'})`
-    : 'NULL';
-  if (filters.model) { clauses.push(`${modelExpression} = ?`); values.push(filters.model); }
+  const snapshotUnified = `CASE WHEN json_valid(a.providerSnapshotJson)
+    THEN json_extract(a.providerSnapshotJson, '$.unifiedModel') END`;
+  const unifiedModelExpression = `COALESCE(
+    ${hasImageUnifiedModel ? 'j.unifiedModel' : 'NULL'},
+    ${hasVideoUnifiedModel ? 'v.unifiedModel' : 'NULL'},
+    ${snapshotUnified}
+  )`;
+  if (filters.model) {
+    const unifiedFilter = ['image2', UNIFIED_KLING3_MODEL_KEY]
+      .find((key) => filters.model === key || filters.model === unifiedMediaDisplayName(key));
+    const displayModel = unifiedFilter ?? filters.model;
+    clauses.push(`(${modelExpression} = ? OR ${unifiedModelExpression} = ?)`);
+    values.push(filters.model, displayModel);
+  }
   const rows = db.prepare(`
     SELECT a.id AS attemptId, o.id AS operationId, o.taskId, o.businessAttemptId,
       a.businessAttemptNo, a.submitRound, a.transportSeq, a.actorId AS actorUserId,
@@ -250,7 +280,12 @@ export function queryTeamUsage(
     ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
     ORDER BY a.createdAt DESC, a.id DESC
   `).all(...values) as AttemptRow[];
-  const items = rows.map(mapAttempt);
+  const items = rows.map((row) => {
+    const item = mapAttempt(row);
+    return viewer.role === 'admin' || item.unifiedModel === null
+      ? item
+      : { ...item, model: item.reportingModel };
+  });
   return {
     items,
     totals: {
@@ -283,7 +318,7 @@ function usageTrend(from: string, to: string, items: TeamUsageAttempt[]): TeamUs
     if (!point) continue;
     const chargedMinor = attemptChargedMinor(item);
     point.chargedMinor += chargedMinor;
-    point.byModel[item.model] = (point.byModel[item.model] ?? 0) + chargedMinor;
+    point.byModel[item.reportingModel] = (point.byModel[item.reportingModel] ?? 0) + chargedMinor;
   }
   return points;
 }
@@ -299,12 +334,15 @@ export function queryTeamUsageAnalytics(
   members: TeamUsageMember[];
   teamQuota: TeamQuotaSummary | null;
   modelOptions: string[];
+  taskCount: number;
+  attemptCount: number;
 } {
   const items = queryTeamUsage(db, viewer, filters).items;
+  const unifiedTasks = queryUnifiedTaskUsage(db, viewer, filters).tasks;
   const modelMap = new Map<string, TeamModelUsage>();
   for (const item of items) {
-    const current = modelMap.get(item.model) ?? {
-      model: item.model, modules: [], callCount: 0, chargedMinor: 0,
+    const current = modelMap.get(item.reportingModel) ?? {
+      model: item.reportingModel, modules: [], taskCount: 0, callCount: 0, chargedMinor: 0,
       settledMinor: 0, estimatedMinor: 0, unpricedCount: 0, uncertainCount: 0, percentage: 0,
     };
     current.callCount += 1;
@@ -314,7 +352,22 @@ export function queryTeamUsageAnalytics(
     if (item.costStatus === 'estimated') current.estimatedMinor += item.reservedMinor;
     if (item.costStatus === 'unpriced') current.unpricedCount += 1;
     if (item.costStatus === 'uncertain') current.uncertainCount += 1;
-    modelMap.set(item.model, current);
+    modelMap.set(item.reportingModel, current);
+  }
+  const taskCountByModel = new Map<string, Set<string>>();
+  for (const task of unifiedTasks) {
+    const set = taskCountByModel.get(task.model) ?? new Set<string>();
+    set.add(task.mediaTaskId);
+    taskCountByModel.set(task.model, set);
+  }
+  for (const item of items.filter((item) => item.unifiedModel === null)) {
+    const set = taskCountByModel.get(item.reportingModel) ?? new Set<string>();
+    set.add(item.taskId);
+    taskCountByModel.set(item.reportingModel, set);
+  }
+  for (const [model, tasks] of taskCountByModel) {
+    const current = modelMap.get(model);
+    if (current) current.taskCount = tasks.size;
   }
   const chargedTotal = items.reduce((sum, item) => sum + attemptChargedMinor(item), 0);
   const models = [...modelMap.values()].map((model) => ({
@@ -326,13 +379,21 @@ export function queryTeamUsageAnalytics(
   const defaults = getShanghaiUsagePeriods(now).month;
   const trend = usageTrend(filters.from ?? defaults.from, filters.to ?? defaults.to, items);
   if (viewer.role !== 'admin') {
-    const modelOptions = queryTeamUsage(db, viewer, { actorUserId: viewer.userId }).items.map((item) => item.model);
-    return { models, trend, members: [], teamQuota: null, modelOptions: [...new Set(modelOptions)].sort() };
+    const modelOptions = queryTeamUsage(db, viewer, { actorUserId: viewer.userId }).items
+      .map((item) => item.reportingModel);
+    return {
+      models, trend, members: [], teamQuota: null,
+      modelOptions: [...new Set(modelOptions)].sort(),
+      taskCount: unifiedTasks.length + new Set(items.filter((item) => item.unifiedModel === null).map((item) => item.taskId)).size,
+      attemptCount: items.length,
+    };
   }
 
   const memberRows = listTeamMembers(db, viewer, { now }).items;
   const members = memberRows.map((member) => ({
     ...member,
+    taskCount: new Set(items.filter((item) => item.actorUserId === member.userId)
+      .map((item) => `${item.actorUserId}:${item.taskId}`)).size,
     callCount: items.filter((item) => item.actorUserId === member.userId).length,
     rangeChargedMinor: items.filter((item) => item.actorUserId === member.userId)
       .reduce((sum, item) => sum + attemptChargedMinor(item), 0),
@@ -348,8 +409,36 @@ export function queryTeamUsageAnalytics(
     limitedRemainingMinor: limited.reduce((sum, member) => sum + (member.remainingMinor ?? 0), 0),
     unlimitedCount: memberRows.length - limited.length,
   };
-  const modelOptions = queryTeamUsage(db, viewer).items.map((item) => item.model);
-  return { models, trend, members, teamQuota, modelOptions: [...new Set(modelOptions)].sort() };
+  const modelOptions = queryTeamUsage(db, viewer).items.map((item) => item.reportingModel);
+  return {
+    models, trend, members, teamQuota,
+    modelOptions: [...new Set(modelOptions)].sort(),
+    taskCount: unifiedTasks.length + new Set(items.filter((item) => item.unifiedModel === null).map((item) => item.taskId)).size,
+    attemptCount: items.length,
+  };
+}
+
+/**
+ * Task-level report. The employee projection deliberately omits channels;
+ * the admin projection expands each real channel attempt.
+ */
+export function queryTeamUnifiedUsage(
+  db: Database.Database,
+  viewer: TeamViewer,
+  filters: TeamUsageFilters = {},
+): TeamUnifiedUsageReport {
+  const tasks = queryUnifiedTaskUsage(db, viewer, filters).tasks;
+  const items = queryTeamUsage(db, viewer, filters).items;
+  const legacyAttempts = items.filter((item) => item.unifiedModel === null);
+  return {
+    tasks,
+    legacyAttempts,
+    counts: {
+      generationTasks: tasks.length,
+      channelCalls: tasks.reduce((sum, task) => sum + task.channelCallCount, 0),
+      legacyAttempts: legacyAttempts.length,
+    },
+  };
 }
 
 interface MemberRow {
@@ -545,6 +634,7 @@ export function teamUsageCsv(items: TeamUsageAttempt[]): string {
     'submissionState', 'outcome', 'remoteId', 'accountingPeriod', 'policyVersion',
     'configVersion', 'clientVersion', 'serverReleaseId', 'errorId', 'costStatus',
     'reservedMinor', 'actualMinor', 'usageMirrorStatus', 'createdAt',
+    'unifiedModel', 'reportingModel',
   ] as const;
   const lines = [columns.join(',')];
   for (const item of items) {

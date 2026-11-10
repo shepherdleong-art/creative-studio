@@ -21,6 +21,12 @@ import {
   updateCanvasTaskUnGuarded,
   type CanvasTaskRecord,
 } from './tasks.ts';
+import {
+  isCanvasUnifiedImageTask,
+  recordCanvasUnifiedConfirmedNotCreated,
+  recordCanvasUnifiedRemoteId,
+  requestCanvasUnifiedImageCancellation,
+} from './unified-image.ts';
 
 export interface CanvasRecoveryReport {
   /** 有远端身份、可以继续查询或补下载的任务。 */
@@ -51,6 +57,12 @@ export function recoverCanvasTasks(
     SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_attempts'
   `).get());
   for (const task of inFlight) {
+    const unifiedParent = hasExecutionTables
+      ? db.prepare(`SELECT status, currentChannelKey, cancelRequestedAt
+          FROM execution_media_tasks WHERE taskKey = ?`).get(`canvas:${task.id}`) as {
+          status: string; currentChannelKey: string | null; cancelRequestedAt: string | null;
+        } | undefined
+      : undefined;
     const execution = !task.providerTaskId && task.phase === 'submitting' && hasExecutionTables
       ? db.prepare(`
         SELECT a.remoteId, a.submissionState, a.terminalState
@@ -60,6 +72,29 @@ export function recoverCanvasTasks(
         ORDER BY o.createdAt DESC, a.submitRound DESC, a.transportSeq DESC LIMIT 1
       `).get(task.id) as { remoteId: string | null; submissionState: string; terminalState: string | null } | undefined
       : undefined;
+    if (unifiedParent && (execution?.terminalState === 'not_created'
+      || execution?.terminalState === 'failed')) {
+      if (task.cancelRequestedAt || unifiedParent.cancelRequestedAt) {
+        updateCanvasTaskUnGuarded(db, task.id, {
+          phase: 'cancelled', slotHeld: false, submissionState: 'terminal',
+          errorCode: 'cancelled', errorMessage: '用户已停止该任务；已提交部分只做结果核对。',
+          leaseOwner: null, leaseUntil: null, updatedAt: at,
+        });
+        releaseNodeActiveTask(db, task);
+        report.cleaned.push(task.id);
+      } else {
+        // 03 的 parent/channel 记录已经封存明确失败；重新领取时由统一路由
+        // 复用剩余通道机会，恢复流程本身不选路、不发送。
+        updateCanvasTaskUnGuarded(db, task.id, {
+          phase: 'queued', slotHeld: false, submissionState: 'not_sent',
+          errorCode: 'fallback_pending',
+          errorMessage: '已记录的明确失败将在统一路由中处理，不会重复提交原通道。',
+          leaseOwner: null, leaseUntil: null, updatedAt: at,
+        });
+        report.pending.push(task.id);
+      }
+      continue;
+    }
     if (execution?.terminalState === 'not_created') {
       updateCanvasTaskUnGuarded(db, task.id, {
         phase: 'failed', slotHeld: false, submissionState: 'terminal',
@@ -81,6 +116,9 @@ export function recoverCanvasTasks(
       continue;
     }
     if (execution?.remoteId) {
+      if (isCanvasUnifiedImageTask(task)) {
+        recordCanvasUnifiedRemoteId(db, task, execution.remoteId);
+      }
       updateCanvasTaskUnGuarded(db, task.id, {
         phase: 'polling', slotHeld: true, submissionState: 'accepted',
         providerTaskId: execution.remoteId, errorCode: null, errorMessage: null,
@@ -164,6 +202,7 @@ export function reconcileCanvasTaskNotCreated(
     throw new CanvasError('conflict', '只有待核查的任务需要核查结论。');
   }
   const at = (params.now ?? (() => new Date()))().toISOString();
+  if (isCanvasUnifiedImageTask(task)) recordCanvasUnifiedConfirmedNotCreated(db, task);
   updateCanvasTaskUnGuarded(db, task.id, {
     phase: 'failed',
     slotHeld: false,
@@ -188,6 +227,7 @@ export function reconcileCanvasTaskWithRemoteId(
   const providerTaskId = params.providerTaskId.trim();
   if (!providerTaskId) throw new CanvasError('invalid_input', '远端任务 ID 不能为空。');
   const at = (params.now ?? (() => new Date()))().toISOString();
+  if (isCanvasUnifiedImageTask(task)) recordCanvasUnifiedRemoteId(db, task, providerTaskId);
   updateCanvasTaskUnGuarded(db, task.id, {
     phase: 'polling',
     slotHeld: true,
@@ -264,6 +304,9 @@ export function requestCanvasTaskCancel(
 ): CanvasTaskRecord {
   const task = requireCanvasTask(db, params.taskId);
   const at = (params.now ?? (() => new Date()))().toISOString();
+  if (isCanvasUnifiedImageTask(task)) {
+    requestCanvasUnifiedImageCancellation(db, task, new Date(at));
+  }
   const notSubmitted = !task.providerTaskId
     && ['waiting_input', 'queued', 'preparing', 'resume_pending'].includes(task.phase);
   if (notSubmitted) {

@@ -8,6 +8,7 @@ import HoverZoomImage from '@/components/HoverZoomImage';
 import ImagePreview from '@/components/media/ImagePreview';
 import { MAX_SHOTS_PER_SET } from '@/lib/shot-set-domain';
 import { parseRedoReferenceIds } from '@/lib/shot-redo-state';
+import { UNIFIED_IMAGE_ANCHOR_ID, UNIFIED_IMAGE_MODEL_KEY } from '@/lib/media-core/unified-media/catalog';
 import type { SceneReferenceRecord } from '@/lib/result-gallery-jobs';
 import {
   clampIndex,
@@ -45,6 +46,7 @@ interface ShotCandidate {
   referenceImageIds?: string;
   providerId?: string;
   model?: string;
+  unifiedModel?: string | null;
   size?: string;
   quality?: string;
 }
@@ -65,6 +67,7 @@ interface Shot {
   referenceImageIds?: string;
   providerId?: string;
   model?: string;
+  unifiedModel?: string | null;
   size?: string;
   quality?: string;
   reviewMark?: string;
@@ -179,6 +182,9 @@ export default function ShotSetStep({
   const effectiveProviderId = selectableProviders.some((provider) => provider.id === redoProviderId)
     ? redoProviderId
     : selectableProviders[0]?.id ?? '';
+  const selectedProvider = selectableProviders.find((provider) => provider.id === effectiveProviderId);
+  const unifiedSelection = selectedProvider?.type === 'unified-image'
+    && selectedProvider.model === UNIFIED_IMAGE_MODEL_KEY;
 
   const loadSets = useCallback(async () => {
     try {
@@ -304,6 +310,8 @@ export default function ShotSetStep({
   // 右栏「供应商」是重做用的选择。原任务的供应商冻结在 job 行里，换了供应商后
   // 原地重试不会生效，必须走「重新生成」新建一个任务（多出一版）。
   const jobProviderId = currentShot?.providerId || '';
+  const currentJobUnified = currentShot?.unifiedModel === UNIFIED_IMAGE_MODEL_KEY
+    || jobProviderId === UNIFIED_IMAGE_ANCHOR_ID;
   const providerSelectionChanged = Boolean(jobProviderId)
     && Boolean(effectiveProviderId)
     && effectiveProviderId !== jobProviderId;
@@ -400,6 +408,7 @@ export default function ShotSetStep({
           inputSource: 'original',
           referenceImageIds: redoReferenceIds === null ? undefined : selectedReferenceIds,
           providerId: effectiveProviderId || undefined,
+          requestKey: crypto.randomUUID(),
         }),
       });
       const body = (await response.json().catch(() => ({}))) as { newJobId?: string; error?: string };
@@ -433,16 +442,22 @@ export default function ShotSetStep({
     if (!currentShot?.latestJobId) return;
     // 右栏换了供应商：原任务的供应商/模型是冻结的，原地重试不会采用新选择，
     // 直接按新供应商重新生成一版，避免「重试看上去成功、实际还是老供应商」。
-    if (providerSelectionChanged) {
+    if (currentShot.jobStatus === 'needs_check') {
+      const response = await fetch(`/api/jobs/${currentShot.latestJobId}/resume-poll`, { method: 'POST' });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        setError(body.error || '续查失败');
+        return;
+      }
+      await onShotChanged();
+      if (activeSetId) await loadShots(activeSetId);
+      return;
+    }
+    if (currentJobUnified || providerSelectionChanged) {
       await submitRedo(redoPrompt.trim() || currentShot.jobPrompt || '');
       return;
     }
-    const response = await fetch(
-      currentShot.jobStatus === 'needs_check'
-        ? `/api/jobs/${currentShot.latestJobId}/resume-poll`
-        : `/api/jobs/${currentShot.latestJobId}/retry`,
-      { method: 'POST' },
-    );
+    const response = await fetch(`/api/jobs/${currentShot.latestJobId}/retry`, { method: 'POST' });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
       setError(body.error || '重试失败');
@@ -643,7 +658,11 @@ export default function ShotSetStep({
                               <button
                                 type="button"
                                 className="cap"
-                                title={providerSelectionChanged ? '按右栏选中的供应商重新生成一版（旧版保留）' : '用原供应商重新执行这个任务'}
+                                title={currentJobUnified
+                                  ? '按统一 Image 2 新建一版重新生成（旧版保留）'
+                                  : providerSelectionChanged
+                                    ? '按右栏选中的供应商重新生成一版（旧版保留）'
+                                    : '用原供应商重新执行这个任务'}
                                 onClick={() => void retryShot()}
                               >重试</button>
                             ) : null}
@@ -799,13 +818,18 @@ export default function ShotSetStep({
                 </> : null}
                 {selectableProviders.length > 0 ? (
                   <label className={s.field}>
-                    <span>供应商</span>
-                    <select className={s.select} aria-label="供应商" value={effectiveProviderId} onChange={(event) => setRedoProviderId(event.target.value)}>
+                    <span>{unifiedSelection ? '模型' : '供应商'}</span>
+                    <select className={s.select} aria-label={unifiedSelection ? '模型' : '供应商'} value={effectiveProviderId} onChange={(event) => setRedoProviderId(event.target.value)}>
                       {selectableProviders.map((provider) => (
-                        <option key={provider.id} value={provider.id}>{provider.name}（{provider.model}）</option>
+                        <option key={provider.id} value={provider.id}>
+                          {provider.type === 'unified-image' ? provider.name : `${provider.name}（${provider.model}）`}
+                        </option>
                       ))}
                     </select>
                   </label>
+                ) : null}
+                {unifiedSelection ? (
+                  <p className={s.note}>统一 Image 2 的失败重试和重新生成都会新建一版；确认中任务只续查，不重复提交。</p>
                 ) : null}
                 {providerSelectionChanged ? (
                   <p className={s.note} data-testid="shot-provider-note">已换供应商：重试和重新生成都会按新供应商多出一版，旧版保留。</p>

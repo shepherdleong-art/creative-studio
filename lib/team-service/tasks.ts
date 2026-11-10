@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3';
 import { TeamUsageError } from './usage.ts';
+import { queryUnifiedTaskUsage } from './unified-usage.ts';
+import type { UnifiedTaskCostStatus } from './unified-usage-contract.ts';
 import type { TeamViewer } from './diagnostics.ts';
 import { TASK_MODULE_LABELS, taskStepLabel, taskWaitLabel } from '../team-task-labels.ts';
 import { readActorPolicy } from '../media-core/execution/pools.ts';
@@ -56,6 +58,11 @@ export interface TeamTaskView {
   model: string | null;
   modelStatus: string;
   unifiedModel: string | null;
+  unifiedTaskId: string | null;
+  unifiedTaskCostMinor: number;
+  unifiedTaskCostStatus: UnifiedTaskCostStatus | null;
+  unifiedTaskAttemptCount: number;
+  unifiedTaskChannelCount: number;
   modelCalls: TeamModelCall[];
 }
 
@@ -93,6 +100,11 @@ export function listTeamTasks(
   const unifiedModelExpression = hasImageUnified || hasVideoUnified
     ? `COALESCE(${hasImageUnified ? 'j.unifiedModel' : 'NULL'}, ${hasVideoUnified ? 'v.unifiedModel' : 'NULL'})`
     : 'NULL';
+  const hasImageUnifiedTask = tableHasColumn(db, 'jobs', 'unifiedTaskId');
+  const hasVideoUnifiedTask = tableHasColumn(db, 'video_jobs', 'unifiedTaskId');
+  const unifiedTaskExpression = hasImageUnifiedTask || hasVideoUnifiedTask
+    ? `COALESCE(${hasImageUnifiedTask ? 'j.unifiedTaskId' : 'NULL'}, ${hasVideoUnifiedTask ? 'v.unifiedTaskId' : 'NULL'})`
+    : 'NULL';
   const items = db.prepare(`
     SELECT o.id AS operationId, o.module, o.taskId, o.step, o.inputRevision,
       o.businessAttemptId, o.businessAttemptNo, o.actorId AS actorUserId,
@@ -102,6 +114,7 @@ export function listTeamTasks(
       p.name AS scopeName, j.status AS imageStatus, v.status AS videoStatus,
       a.filename AS inputFilename, a.usage AS imageUsage, COALESCE(j.model, v.model) AS model,
       ${unifiedModelExpression} AS unifiedModel,
+      ${unifiedTaskExpression} AS unifiedTaskId,
       j.usageSnapshotJson AS imageUsageSnapshot, v.usageSnapshotJson AS videoUsageSnapshot,
       o.inputSnapshotJson, o.providerSnapshotJson,
       policy.personalConcurrency,
@@ -134,6 +147,9 @@ export function listTeamTasks(
     group.push(attempt);
     attemptsByOperation.set(attempt.operationId, group);
   }
+  const unifiedTasksByJobId = new Map(
+    queryUnifiedTaskUsage(db, viewer, filters).tasks.map((task) => [task.taskId, task]),
+  );
   const canvasNames = new Map<string, string>();
   const canvases = items.filter(item => item.scopeType === 'canvas');
   if (canvases.length && tableExists(db, 'creative_canvases')) {
@@ -182,6 +198,19 @@ export function listTeamTasks(
         ? item.unifiedModel.trim()
         : null;
       const unifiedDisplay = unifiedMediaDisplayName(unifiedModel);
+      const unifiedTaskId = typeof item.unifiedTaskId === 'string' && item.unifiedTaskId.trim()
+        ? item.unifiedTaskId.trim()
+        : null;
+      const unifiedAggregate = unifiedTaskId
+        ? unifiedTasksByJobId.get(String(item.taskId))
+        : undefined;
+      const visibleModelCalls = unifiedDisplay && viewer.role !== 'admin'
+        ? modelCalls.map((call) => ({
+          ...call,
+          providerName: unifiedDisplay,
+          model: unifiedDisplay,
+        }))
+        : modelCalls;
       return {
         operationId: String(item.operationId), module: String(item.module), taskId: String(item.taskId), step: String(item.step),
         inputRevision: String(item.inputRevision), businessAttemptId: String(item.businessAttemptId),
@@ -215,7 +244,12 @@ export function listTeamTasks(
           ? { providerName: unifiedDisplay, model: unifiedDisplay, modelStatus: 'recorded' }
           : display),
         unifiedModel,
-        modelCalls,
+        unifiedTaskId,
+        unifiedTaskCostMinor: unifiedAggregate?.chargedMinor ?? 0,
+        unifiedTaskCostStatus: unifiedAggregate?.costStatus ?? null,
+        unifiedTaskAttemptCount: unifiedAggregate?.channelCallCount ?? 0,
+        unifiedTaskChannelCount: unifiedAggregate?.usedChannelCount ?? 0,
+        modelCalls: visibleModelCalls,
       };
     }),
     localAgentIncluded: false,

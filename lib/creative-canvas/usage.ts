@@ -122,6 +122,8 @@ export interface RecordCanvasTaskUsageOptions {
   taskId: string;
   now?: () => Date;
   executionAttemptId?: string | null;
+  /** 统一任务按实际通道 attempt 计价；旧任务缺省读取自己的快照。 */
+  providerSnapshot?: string;
 }
 
 /**
@@ -143,7 +145,10 @@ function recordCanvasTaskUsageUnsafe(
   db: Database.Database,
   options: RecordCanvasTaskUsageOptions,
 ): CanvasUsageResult {
-  const task: CanvasTaskRecord = requireCanvasTask(db, options.taskId);
+  const persistedTask: CanvasTaskRecord = requireCanvasTask(db, options.taskId);
+  const task: CanvasTaskRecord = options.providerSnapshot
+    ? { ...persistedTask, providerSnapshot: options.providerSnapshot }
+    : persistedTask;
   if (task.submissionState !== 'accepted' && task.submissionState !== 'terminal') {
     return { ok: true, inserted: false, priced: false, reason: 'not_submitted' };
   }
