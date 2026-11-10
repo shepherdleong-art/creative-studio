@@ -17,7 +17,11 @@ import { resolveVideoPollingTimeoutMs } from './video-polling-policy.ts';
 import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
 import { videoMultiShotFromStorage } from './video-multi-shot.ts';
 import type { SubmitReferenceVideoRequest, SubmitVideoRequest, SubmitVideoResult } from './video-providers/types.ts';
-import { persistVideoJobUsageSnapshot, recordVideoJobUsage } from './usage-async-jobs.ts';
+import {
+  buildVideoJobUsageSnapshot,
+  persistVideoJobUsageSnapshot,
+  recordVideoJobUsage,
+} from './usage-async-jobs.ts';
 import { validateVideoReferenceRequest, videoReferenceCapability, type VideoReferenceKind } from './video-reference-contract.ts';
 import { assertCompanyTailFrameTransport } from './company-gateway-tail-frame.ts';
 import {
@@ -36,6 +40,8 @@ import {
   isLegacyMediaPoolConfigurationError,
   isLegacyMediaProviderRecoveryBlocked,
   isLegacyMediaSubmissionUnknown,
+  LegacyMediaNotCreatedError,
+  LegacyMediaRemoteFailedError,
   isServerMediaExecution,
   legacyMediaExecutionRevision,
   recoverLegacyMediaSubmission,
@@ -48,6 +54,25 @@ import type { ExecutionReceipt } from './media-core/execution/context.ts';
 import { parseUsageSnapshot } from './usage-snapshot.ts';
 import { calculateUsageCostMicros } from './usage-pricing.ts';
 import { submissionEmployeeCopy } from './media-core/submission-evidence.ts';
+import { classifySubmissionOutcome } from './media-core/submission-evidence.ts';
+import {
+  assertUnifiedKlingSubmissionStillCurrent,
+  handleUnifiedKlingCapacityDeferral,
+  handleUnifiedKlingExplicitFailure,
+  prepareUnifiedKlingExecution,
+  requestUnifiedKlingCancellation,
+  synchronizeUnifiedKlingExecution,
+  UnifiedKlingCanceledError,
+  UnifiedKlingRecoveryPendingError,
+  UnifiedKlingStaleSubmissionError,
+  UnifiedKlingWaitingError,
+  type PreparedUnifiedKlingExecution,
+} from './media-core/unified-media/video-execution.ts';
+import {
+  recordUnifiedChannelFailure,
+  recordUnifiedChannelSuccess,
+  unifiedChannelFailureReasonFromEvidence,
+} from './media-core/unified-media/health.ts';
 
 export interface VideoQueueOptions {
   /** Limit a local rework run to its immutable job. */
@@ -161,6 +186,11 @@ interface VideoJobRecord {
   providerTaskId?: string | null;
   providerStatus?: string | null;
   remoteVideoUrl?: string | null;
+  unifiedModel?: string | null;
+  unifiedRuleVersion?: string | null;
+  unifiedTaskId?: string | null;
+  unifiedRequestJson?: string | null;
+  cancelRequestedAt?: string | null;
 }
 
 type QueueStatus = 'idle' | 'running' | 'paused';
@@ -199,9 +229,12 @@ export function resumeVideoQueue(projectId: string, options: VideoQueueOptions) 
 export function cancelVideoQueue(projectId: string) {
   const entry = runningQueues.get(projectId);
   if (entry) {
+    const db = getDb();
+    const unifiedJobs = db.prepare(`SELECT id FROM video_jobs
+      WHERE projectId = ? AND unifiedModel IS NOT NULL`).all(projectId) as Array<{ id: string }>;
+    for (const job of unifiedJobs) requestUnifiedKlingCancellation(db, job.id);
     entry.abort.abort();
     if (!isServerMediaExecution()) runningQueues.delete(projectId);
-    const db = getDb();
     if (isServerMediaExecution()) {
       // server 取消只阻止尚未受理的新阶段；running 行由各自的 abort 收尾，
       // 有远端回执的转 needs_check，不能抹掉已付费任务身份。
@@ -427,7 +460,17 @@ async function runVideoJob(
   job: VideoJobRecord,
   options: { timeoutMs: number; abort: AbortSignal }
 ): Promise<void> {
-  return runWithAcceptedTaskAccess(getDb(), 'video', job.id, () => runAuthorizedVideoJob(job, options));
+  try {
+    await runWithAcceptedTaskAccess(getDb(), 'video', job.id, () => runAuthorizedVideoJob(job, options));
+  } finally {
+    if (job.unifiedModel) {
+      try {
+        synchronizeUnifiedKlingExecution(getDb(), job.id);
+      } catch (error) {
+        console.error(`[VideoQueue] 统一可灵任务状态同步失败: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
 }
 
 export async function resumeVideoJobPolling(jobId: string, timeoutMs = DEFAULT_VIDEO_TIMEOUT_MS): Promise<void> {
@@ -451,12 +494,44 @@ async function runAuthorizedVideoJob(
 
   if (abort.aborted) return;
 
+  let unifiedExecution: PreparedUnifiedKlingExecution | null = null;
+  if (job.unifiedModel) {
+    try {
+      unifiedExecution = prepareUnifiedKlingExecution(db, job.id);
+      job.providerId = unifiedExecution.channel.provider.id;
+      job.model = unifiedExecution.channel.definition.model;
+      job.executionRevision = unifiedExecution.channel.executionRevision;
+      job.unifiedTaskId = unifiedExecution.taskId;
+    } catch (error) {
+      if (error instanceof UnifiedKlingWaitingError) {
+        db.prepare(`UPDATE video_jobs SET status = 'deferred', errorMessage = ?
+          WHERE id = ? AND status IN ('pending', 'running', 'retrying', 'deferred')`)
+          .run('等待可用资源（通道名额已满，释放后自动继续）', job.id);
+        return;
+      }
+      if (error instanceof UnifiedKlingRecoveryPendingError) return;
+      if (error instanceof UnifiedKlingCanceledError) {
+        db.prepare(`UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user',
+          finishedAt = COALESCE(finishedAt, datetime('now'))
+          WHERE id = ? AND status IN ('pending', 'running', 'deferred')`).run(job.id);
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      db.prepare(`UPDATE video_jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
+        WHERE id = ? AND status IN ('pending', 'running', 'deferred')`).run(message, job.id);
+      writeLog({ jobId: job.id, projectId: job.projectId, level: 'error', message, attempt: job.attempt });
+      return;
+    }
+  }
+
   let attempt = job.attempt;
   // 存量库旧行 maxAttempts 默认是 1(建表默认值也长期是 1),实际等于“无自动
   // 重试”;这里把 <= 1 的值统一视为未配置,兜底到运行时上限 2,让旧库也能
   // 自动重试一次。显式配置 > 1 的值(如 3)保持原样。
   const rework = isReassembledReworkJob(db, job.id, 'generate_video');
-  const effectiveMaxAttempts = rework ? 1 : job.maxAttempts > 1 ? job.maxAttempts : DEFAULT_VIDEO_MAX_ATTEMPTS;
+  const effectiveMaxAttempts = rework || job.unifiedModel
+    ? 1
+    : job.maxAttempts > 1 ? job.maxAttempts : DEFAULT_VIDEO_MAX_ATTEMPTS;
   const logInfo = (msg: string) =>
     writeLog({ jobId: job.id, projectId: job.projectId, level: 'info', message: msg, attempt });
   const logError = (msg: string) =>
@@ -493,7 +568,12 @@ async function runAuthorizedVideoJob(
       ? `${runtime.accessKey}\0${runtime.secretKey}`
       : runtime.apiKey;
     const providerSnapshot = {
-      providerId: provider.id, providerName: provider.name, type: provider.type, model: job.model, baseUrl: runtime.baseUrl,
+      providerId: provider.id,
+      providerName: provider.name,
+      type: provider.type,
+      model: job.model,
+      baseUrl: runtime.baseUrl,
+      ...(unifiedExecution ? { unifiedModel: job.unifiedModel } : {}),
     };
     assertLegacyMediaProviderRecovery({
       module: 'video', taskId: job.id,
@@ -536,17 +616,41 @@ async function runAuthorizedVideoJob(
       send: () => Promise<SubmitVideoResult>,
     ): Promise<SubmitVideoResult> {
       if (!isServerMediaExecution()) return send();
-      usageSnapshot = persistVideoJobUsageSnapshot(db, {
-        jobId: job.id,
-        projectId: job.projectId,
-        requestModel: job.model,
-        provider: {
-          id: provider!.id, name: provider!.name, type: provider!.type,
-          model: provider!.defaultModel, baseUrl: runtime.baseUrl,
-        },
-        refType: 'video-job',
-        refId: job.id,
-      });
+      usageSnapshot = unifiedExecution
+        ? buildVideoJobUsageSnapshot(db, {
+          jobId: job.id,
+          projectId: job.projectId,
+          requestModel: job.model,
+          provider: {
+            id: provider!.id, name: provider!.name, type: provider!.type,
+            model: provider!.defaultModel, baseUrl: runtime.baseUrl,
+          },
+          refType: 'channel_attempt',
+          refId: `${job.id}:${unifiedExecution.channel.channelKey}:r${job.executionRevision}`,
+        })
+        : persistVideoJobUsageSnapshot(db, {
+          jobId: job.id,
+          projectId: job.projectId,
+          requestModel: job.model,
+          provider: {
+            id: provider!.id, name: provider!.name, type: provider!.type,
+            model: provider!.defaultModel, baseUrl: runtime.baseUrl,
+          },
+          refType: 'video-job',
+          refId: job.id,
+        });
+      if (unifiedExecution) {
+        const canceled = db.prepare('SELECT cancelRequestedAt FROM video_jobs WHERE id = ?')
+          .pluck().get(job.id) as string | null;
+        if (canceled) {
+          await cancelLegacyMediaNewStage({
+            module: 'video',
+            taskId: job.id,
+            inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+          });
+          throw new UnifiedKlingCanceledError();
+        }
+      }
       const parsed = parseUsageSnapshot(usageSnapshot);
       const reserveMinor = parsed.ok
         ? Math.ceil(calculateUsageCostMicros(parsed.parsed.snapshot.priceComponents, job.durationSec) / 10_000)
@@ -575,10 +679,20 @@ async function runAuthorizedVideoJob(
         baseUrl: runtime.baseUrl,
         apiKey,
         credentialIdentity,
+        mediaTaskId: unifiedExecution?.taskId ?? null,
+        channelKey: unifiedExecution?.channel.channelKey ?? null,
         quote: reserveMinor === null
           ? { kind: 'unpriced' }
           : { kind: 'priced', reserve: { currency: 'CNY', minor: reserveMinor }, pricingSnapshot: usageSnapshot },
         signal: reqAbort.signal,
+        beforeSend: unifiedExecution
+          ? () => assertUnifiedKlingSubmissionStillCurrent(db, {
+            jobId: job.id,
+            mediaTaskId: unifiedExecution!.taskId,
+            channelKey: unifiedExecution!.channel.channelKey,
+            executionRevision: unifiedExecution!.channel.executionRevision,
+          })
+          : undefined,
         onAdmitted() {
           attempt += 1;
           job.attempt = attempt;
@@ -595,6 +709,11 @@ async function runAuthorizedVideoJob(
       });
       if (submitted.resumed || submitted.value === undefined) {
         throw new Error(`已受理视频任务 ${submitted.remoteId ?? ''} 需要续查，不能重新提交。`);
+      }
+      if (unifiedExecution && usageSnapshot) {
+        db.prepare(`UPDATE video_jobs SET usageSnapshotJson = ?
+          WHERE id = ? AND (usageSnapshotJson IS NULL OR TRIM(usageSnapshotJson) = '')`)
+          .run(usageSnapshot, job.id);
       }
       return submitted.value;
     }
@@ -671,9 +790,11 @@ async function runAuthorizedVideoJob(
       const completeResult = db.prepare(
         `UPDATE video_jobs SET
           status = 'succeeded', providerStatus = 'succeeded', remoteVideoUrl = ?,
-          localVideoPath = ?, filename = ?, finishedAt = ?
+          localVideoPath = ?, filename = ?, finishedAt = ?,
+          usageSnapshotJson = COALESCE(?, usageSnapshotJson)
          WHERE id = ? AND status = 'running'`
-      ).run(videoUrl, videoPath, videoFilename, finishedAt, job.id);
+      ).run(videoUrl, videoPath, videoFilename, finishedAt,
+        unifiedExecution ? usageSnapshot : null, job.id);
       if (completeResult.changes === 1) {
         const usageResult = recordVideoJobUsage(db, {
           jobId: job.id,
@@ -684,6 +805,13 @@ async function runAuthorizedVideoJob(
         });
         if (!usageResult.ok) {
           logWarn(`实时 usage 记账失败，将由 reconciler 补记 (${usageResult.reason ?? 'unknown'})`);
+        }
+        if (unifiedExecution) {
+          recordUnifiedChannelSuccess(db, {
+            unifiedModel: job.unifiedModel!,
+            channelKey: unifiedExecution.channel.channelKey,
+            providerId: unifiedExecution.channel.provider.id,
+          });
         }
       }
       logInfo(`Video job completed, saved as ${videoFilename}`);
@@ -724,6 +852,7 @@ async function runAuthorizedVideoJob(
       const mimeType = videoFrameMimeFromPath(imagePath, sourceImage.mimeType);
 
       const persistUsage = () => {
+        if (unifiedExecution) return;
         usageSnapshot = persistVideoJobUsageSnapshot(db, {
           jobId: job.id,
           projectId: job.projectId,
@@ -857,6 +986,50 @@ async function runAuthorizedVideoJob(
         await settleVideoExecution('failed', undefined, 'provider_failed');
         const failureMessage = pollResult.errorMessage || 'unknown';
         logError(`Video generation failed: ${failureMessage}`);
+        if (unifiedExecution) {
+          const operation = db.prepare(`SELECT id, currentAttemptId
+            FROM execution_operations WHERE mediaTaskId = ? AND channelKey = ?`)
+            .get(unifiedExecution.taskId, unifiedExecution.channel.channelKey) as
+            | { id: string; currentAttemptId: string | null }
+            | undefined;
+          const failedAttempt = operation?.currentAttemptId
+            ? db.prepare('SELECT id, businessAttemptNo, remoteId FROM execution_attempts WHERE id = ?')
+              .get(operation.currentAttemptId) as {
+                id: string;
+                businessAttemptNo: number;
+                remoteId: string | null;
+              } | undefined
+            : undefined;
+          const evidence = classifySubmissionOutcome({
+            entry: 'video',
+            taskId: job.id,
+            businessAttemptNo: failedAttempt?.businessAttemptNo ?? Math.max(1, attempt),
+            adapterId: provider.type,
+            stage: 'poll',
+            source: 'provider',
+            outcome: 'terminal_failed',
+            remoteId: failedAttempt?.remoteId ?? job.providerTaskId ?? taskId,
+            errorCode: pollResult.errorMessage || 'provider_failed',
+          });
+          try {
+            const decision = handleUnifiedKlingExplicitFailure(db, job.id, {
+              evidence,
+              attemptId: failedAttempt?.id,
+              operationId: operation?.id,
+              channelKey: unifiedExecution.channel.channelKey,
+            });
+            if (decision.outcome === 'next_channel') {
+              logWarn(`可灵 3.0 ${decision.previousChannelKey} 通道明确失败，转入 ${decision.nextChannelKey}。`);
+            }
+          } catch (handlerError) {
+            db.prepare(`UPDATE video_jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
+              WHERE id = ? AND status IN ('running', 'failed', 'needs_check')`).run(
+              handlerError instanceof Error ? handlerError.message : String(handlerError),
+              job.id,
+            );
+          }
+          return;
+        }
         db.prepare(
           `UPDATE video_jobs SET status = 'failed', errorMessage = ?, providerStatus = 'failed', finishedAt = datetime('now')
            WHERE id = ? AND status = 'running'`
@@ -914,7 +1087,63 @@ async function runAuthorizedVideoJob(
     const errorMessage = (err instanceof Error ? err.message : String(err)).slice(0, 2000);
     logError(`Video job failed: ${errorMessage}`);
 
+    if (unifiedExecution
+      && (err instanceof LegacyMediaNotCreatedError || err instanceof LegacyMediaRemoteFailedError)) {
+      try {
+        const decision = handleUnifiedKlingExplicitFailure(db, job.id, {
+          evidence: err.evidence,
+          attemptId: err.attemptId,
+          operationId: err.operationId,
+          channelKey: err.channelKey,
+        });
+        if (decision.outcome === 'next_channel') {
+          logWarn(`可灵 3.0 ${decision.previousChannelKey} 通道明确失败，转入 ${decision.nextChannelKey}。`);
+        } else if (decision.outcome === 'exhausted') {
+          logError('可灵 3.0 没有剩余备用通道，任务已最终失败。');
+        }
+      } catch (handlerError) {
+        db.prepare(`UPDATE video_jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
+          WHERE id = ? AND status IN ('running', 'failed', 'needs_check')`).run(
+          handlerError instanceof Error ? handlerError.message : String(handlerError),
+          job.id,
+        );
+      }
+      return;
+    }
+
+    if (err instanceof UnifiedKlingCanceledError) {
+      db.prepare(`UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user',
+        finishedAt = COALESCE(finishedAt, datetime('now'))
+        WHERE id = ? AND status IN ('pending', 'running', 'retrying', 'deferred')`).run(job.id);
+      return;
+    }
+
+    if (err instanceof UnifiedKlingStaleSubmissionError) {
+      db.prepare(`UPDATE video_jobs SET status = 'needs_check', providerStatus = 'unknown',
+        errorMessage = '统一可灵任务已切换通道或被取消，本轮未发送请求，请核查。',
+        finishedAt = datetime('now') WHERE id = ? AND status = 'running'`).run(job.id);
+      return;
+    }
+
     if (isServerMediaExecution() && isLegacyMediaExecutionDeferred(err)) {
+      if (unifiedExecution) {
+        const decision = handleUnifiedKlingCapacityDeferral(db, job.id, err.reasons);
+        if (decision.outcome === 'overflowed') {
+          logWarn(`七牛可灵名额已满，立即转入 ${decision.nextChannelKey}。`);
+        } else if (decision.outcome === 'not_capacity' || decision.outcome === 'ignored') {
+          const waitMessage = decision.reason === 'monthly_budget'
+            ? '本月费用额度不足，尚未提交。'
+            : decision.reason === 'cost_unknown'
+              ? '上一笔费用仍待核查，暂不能开始新的付费生成。'
+              : decision.reason === 'personal_concurrency' || decision.reason === 'fair_share'
+                ? '等待个人云端生成名额，尚未提交。'
+                : errorMessage;
+          db.prepare(`UPDATE video_jobs SET status = 'deferred', errorMessage = ?
+            WHERE id = ? AND status IN ('running', 'pending', 'retrying', 'deferred')`)
+            .run(waitMessage, job.id);
+        }
+        return;
+      }
       db.prepare(`UPDATE video_jobs SET status = 'deferred', errorMessage = ? WHERE id = ? AND status = 'running'`)
         .run(errorMessage, job.id);
       return;
@@ -928,6 +1157,17 @@ async function runAuthorizedVideoJob(
     }
 
     if (isServerMediaExecution() && (isLegacyMediaSubmissionUnknown(err) || isLegacyMediaProviderRecoveryBlocked(err))) {
+      if (unifiedExecution && isLegacyMediaSubmissionUnknown(err) && err.evidence) {
+        const reasonCode = unifiedChannelFailureReasonFromEvidence(err.evidence);
+        if (reasonCode) {
+          recordUnifiedChannelFailure(db, {
+            unifiedModel: job.unifiedModel!,
+            channelKey: unifiedExecution.channel.channelKey,
+            providerId: unifiedExecution.channel.provider.id,
+            reasonCode,
+          });
+        }
+      }
       db.prepare(`UPDATE video_jobs SET status = 'needs_check', providerStatus = 'unknown', errorMessage = ?, finishedAt = datetime('now')
         WHERE id = ? AND status = 'running'`).run(`${errorMessage}。提交结果未知，已禁止自动重发。`, job.id);
       return;
@@ -936,7 +1176,7 @@ async function runAuthorizedVideoJob(
     // 网关限流/过载(提交阶段 429/5xx):不消耗 maxAttempts,按供应商记冷却
     // 退避(30s/60s/120s 逐级),冷却内 claim 视同 gated;同一任务重排超过
     // RATE_LIMIT_MAX_REQUEUES 次才标失败。
-    if (!rework && isRateLimitedSubmitError(errorMessage)) {
+    if (!rework && !job.unifiedModel && isRateLimitedSubmitError(errorMessage)) {
       noteRateLimitCooldown(job.providerId);
       const requeues = (jobRateLimitRequeues.get(job.id) ?? 0) + 1;
       jobRateLimitRequeues.set(job.id, requeues);
@@ -968,7 +1208,7 @@ async function runAuthorizedVideoJob(
       return;
     }
 
-    if (attempt >= effectiveMaxAttempts) {
+    if (job.unifiedModel || attempt >= effectiveMaxAttempts) {
       failLegacyMediaOperation({
         module: 'video', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision),
       });
@@ -993,13 +1233,27 @@ interface ClaimedVideoJob extends VideoJobRecord {
 
 function claimDeferredVideoJob(projectId: string, jobId?: string): ClaimedVideoJob | null {
   const db = getDb();
+  const hasUnifiedTaskTable = Boolean(db.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_media_tasks'
+  `).get());
   const job = db.prepare(`
     SELECT video_jobs.* FROM video_jobs
     LEFT JOIN execution_operations AS deferred_operation
       ON deferred_operation.module = 'video' AND deferred_operation.taskId = video_jobs.id
       AND deferred_operation.operationKey = 'video/' || video_jobs.id || '/submit/r' || COALESCE(video_jobs.executionRevision, 0)
+    ${hasUnifiedTaskTable
+      ? `LEFT JOIN execution_media_tasks AS unified_task
+          ON unified_task.module = 'video' AND unified_task.taskId = video_jobs.id`
+      : ''}
     WHERE video_jobs.projectId = ? AND video_jobs.status = 'deferred' AND (? IS NULL OR video_jobs.id = ?)
       AND (deferred_operation.updatedAt IS NULL OR julianday(deferred_operation.updatedAt) <= julianday('now', '-1 second'))
+      ${hasUnifiedTaskTable
+        ? `AND (
+            unified_task.nextEligibleAt IS NULL
+            OR unified_task.status <> 'waiting'
+            OR julianday(unified_task.nextEligibleAt) <= julianday('now')
+          )`
+        : ''}
     ORDER BY COALESCE(deferred_operation.updatedAt, video_jobs.createdAt), video_jobs.createdAt, video_jobs.rowid LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as VideoJobRecord | undefined;
   if (!job) return null;

@@ -7,7 +7,13 @@ import {
   handleUnifiedImageExplicitFailure,
   unifiedImageAttemptCostMinor,
 } from '../media-core/unified-media/execution.ts';
-import { unifiedMediaDisplayName } from '../media-core/unified-media/catalog.ts';
+import {
+  handleUnifiedKlingExplicitFailure,
+} from '../media-core/unified-media/video-execution.ts';
+import {
+  UNIFIED_KLING3_MODEL_KEY,
+  unifiedMediaDisplayName,
+} from '../media-core/unified-media/catalog.ts';
 import { sanitizeGatewayMediaDiagnostic } from '../gateway-media-url.ts';
 import type { TeamViewer } from './diagnostics.ts';
 
@@ -341,9 +347,9 @@ function readBusinessTask(db: Database.Database, task: MediaTaskRow): BusinessTa
   }
   if (task.module === 'video' && hasTable(db, 'video_jobs')) {
     const row = db.prepare(`SELECT status, providerStatus, providerTaskId, remoteVideoUrl,
-      errorMessage FROM video_jobs WHERE id = ?`).get(task.taskId) as {
+      errorMessage, cancelRequestedAt FROM video_jobs WHERE id = ?`).get(task.taskId) as {
         status: string; providerStatus: string | null; providerTaskId: string | null;
-        remoteVideoUrl: string | null; errorMessage: string | null;
+        remoteVideoUrl: string | null; errorMessage: string | null; cancelRequestedAt: string | null;
       } | undefined;
     return {
       status: row?.status ?? null,
@@ -351,7 +357,7 @@ function readBusinessTask(db: Database.Database, task: MediaTaskRow): BusinessTa
       remoteId: row?.providerTaskId ?? null,
       remoteMediaUrl: row?.remoteVideoUrl ?? null,
       errorMessage: row?.errorMessage ?? null,
-      cancelRequestedAt: null,
+      cancelRequestedAt: row?.cancelRequestedAt ?? null,
     };
   }
   if (task.module === 'canvas' && hasTable(db, 'creative_canvas_tasks')) {
@@ -1150,6 +1156,22 @@ export async function applyUnifiedReconcileAction(
         }).immediate();
       } else if (claimed.task.module === 'image' && claimed.task.unifiedModel === 'image2') {
         const decision = handleUnifiedImageExplicitFailure(db, claimed.task.taskId, {
+          evidence: evidenceForFailure(
+            claimed.task,
+            finalAttempt,
+            input.action === 'confirm_not_created' ? 'confirmed_not_created' : 'terminal_failed',
+            finalAttempt.remoteId,
+          ),
+          attemptId: finalAttempt.id,
+          operationId: operation.id,
+          channelKey: claimed.channel.channelKey,
+        });
+        if (decision.outcome === 'ignored') {
+          throw new UnifiedReconcileError(409, 'reconcile_state_conflict', '任务状态已变化，未能继续备用通道。');
+        }
+      } else if (claimed.task.module === 'video'
+        && claimed.task.unifiedModel === UNIFIED_KLING3_MODEL_KEY) {
+        const decision = handleUnifiedKlingExplicitFailure(db, claimed.task.taskId, {
           evidence: evidenceForFailure(
             claimed.task,
             finalAttempt,

@@ -12,5 +12,7 @@ export function isVisibleImageProvider(provider: { id: string; name: string; typ
 }
 
 export function isVisibleVideoProvider(provider: { id: string }): boolean {
-  return provider.id !== 'jimeng-2-0' && provider.id !== 'kling-2-5';
+  return provider.id !== 'jimeng-2-0'
+    && provider.id !== 'kling-2-5'
+    && provider.id !== 'unified-kling-3';
 }

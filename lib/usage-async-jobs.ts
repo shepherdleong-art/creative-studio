@@ -213,14 +213,10 @@ function hasExistingVideoProviderTask(db: Database.Database, jobId: string): boo
  * adapter.submit. Existing snapshots win; an already submitted remote task
  * never receives a newly synthesized snapshot.
  */
-export function persistVideoJobUsageSnapshot(
+export function buildVideoJobUsageSnapshot(
   db: Database.Database,
   input: PersistVideoJobUsageSnapshotInput,
 ): string | null {
-  const existing = readVideoJobUsageSnapshot(db, input.jobId);
-  if (existing) return existing;
-  if (hasExistingVideoProviderTask(db, input.jobId)) return null;
-
   const provider: CoreUsageProviderSnapshot = {
     providerTable: 'video_providers',
     providerId: input.provider.id,
@@ -244,7 +240,19 @@ export function persistVideoJobUsageSnapshot(
     refType: input.refType ?? 'video-job',
     refId: input.refId ?? input.jobId,
   });
-  const snapshotJson = JSON.stringify(snapshot);
+  return JSON.stringify(snapshot);
+}
+
+export function persistVideoJobUsageSnapshot(
+  db: Database.Database,
+  input: PersistVideoJobUsageSnapshotInput,
+): string | null {
+  const existing = readVideoJobUsageSnapshot(db, input.jobId);
+  if (existing) return existing;
+  if (hasExistingVideoProviderTask(db, input.jobId)) return null;
+
+  const snapshotJson = buildVideoJobUsageSnapshot(db, input);
+  if (!snapshotJson) return null;
 
   try {
     const result = db.prepare(`
