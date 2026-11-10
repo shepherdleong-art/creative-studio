@@ -57,6 +57,7 @@ function toWorkbenchProvider(provider: { id: string; name: string; model: string
     id: provider.id,
     name: provider.name,
     model: provider.model,
+    type: provider.type,
     enabled: provider.enabled ?? 1,
     hasApiKey: provider.hasApiKey ?? true,
   };

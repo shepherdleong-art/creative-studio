@@ -6,6 +6,17 @@ import { syncShotPromptFromScene } from '@/lib/furniture-prompt';
 import { requireAccessContext } from '@/lib/media-core/access-context';
 import { bindImageScopeToProject, assertScopeConsistency } from '@/lib/team-service/resource-scopes';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import {
+  UNIFIED_IMAGE_ANCHOR_ID,
+  UNIFIED_IMAGE_MODEL_KEY,
+  UNIFIED_MEDIA_RULE_VERSION,
+  isUnifiedImageAnchorProvider,
+} from '@/lib/media-core/unified-media/catalog';
+import {
+  UnifiedImageRequestError,
+  freezeUnifiedImageRequest,
+  inferUnifiedImageOutputFromPreset,
+} from '@/lib/media-core/unified-media/requests';
 
 
 async function __teamRoutePOST(
@@ -33,15 +44,65 @@ async function __teamRoutePOST(
     if (!project) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
     if (project.workflowType !== 'complex_product') return NextResponse.json({ error: '只有复杂产品项目支持场景生成' }, { status: 400 });
 
-    const maxAttempts = Number(body.maxAttempts) || project.maxAttempts || 2;
+    const requestedProviderId = typeof body.providerId === 'string' && body.providerId.trim()
+      ? body.providerId.trim()
+      : project.providerId;
+    const provider = db.prepare('SELECT id, enabled, apiKey, type, model FROM providers WHERE id = ?')
+      .get(requestedProviderId) as {
+        id: string; enabled: number; apiKey: string; type: string; model: string;
+      } | undefined;
+    if (!provider) return NextResponse.json({ error: '供应商不存在' }, { status: 400 });
+    if (!provider.enabled) return NextResponse.json({ error: '供应商已禁用' }, { status: 400 });
+    const unifiedProvider = isUnifiedImageAnchorProvider(provider);
+    const projectUsesUnified = project.providerId === UNIFIED_IMAGE_ANCHOR_ID;
     let jobProvider: { providerId: string; model: string };
-    try {
-      jobProvider = resolveImageJobProvider(db, body.providerId, {
-        providerId: project.providerId,
-        model: project.model,
-      });
-    } catch (err) {
-      return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+    let jobSize = project.size;
+    let jobQuality = project.quality;
+    let maxAttempts = Number(body.maxAttempts) || project.maxAttempts || 2;
+    let unifiedRequestJson: string | null = null;
+    if (unifiedProvider || projectUsesUnified) {
+      if (!unifiedProvider || !projectUsesUnified || project.providerId !== requestedProviderId) {
+        return NextResponse.json({ error: '统一 Image 2 项目不能绕过锚点切换到真实通道' }, { status: 400 });
+      }
+      if (typeof body.model === 'string' && body.model.trim() && body.model.trim() !== UNIFIED_IMAGE_MODEL_KEY) {
+        return NextResponse.json({ error: '统一 Image 2 任务不能改写模型' }, { status: 400 });
+      }
+      const output = inferUnifiedImageOutputFromPreset(project.size);
+      if (!output) return NextResponse.json({ error: '项目的 Image 2 清晰度和比例合同无效' }, { status: 400 });
+      if (typeof body.aspectRatio === 'string' && body.aspectRatio !== output.ratio) {
+        return NextResponse.json({ error: '场景任务不能改写项目锁定的画面比例' }, { status: 400 });
+      }
+      if (typeof body.resolution === 'string' && body.resolution.toLowerCase() !== output.tier) {
+        return NextResponse.json({ error: '场景任务不能改写项目锁定的清晰度' }, { status: 400 });
+      }
+      try {
+        const frozen = freezeUnifiedImageRequest({
+          inputImageId: sceneSeedImageId,
+          referenceImageIds: [],
+          prompt: scenePrompt,
+          tier: output.tier,
+          ratio: output.ratio,
+          referenceGuidanceMode: 'none',
+        });
+        jobSize = frozen.size;
+        jobQuality = frozen.quality;
+        maxAttempts = 1;
+        unifiedRequestJson = JSON.stringify(frozen);
+        jobProvider = { providerId: provider.id, model: UNIFIED_IMAGE_MODEL_KEY };
+      } catch (error) {
+        return NextResponse.json({
+          error: error instanceof UnifiedImageRequestError ? error.message : String(error),
+        }, { status: 400 });
+      }
+    } else {
+      try {
+        jobProvider = resolveImageJobProvider(db, body.providerId, {
+          providerId: project.providerId,
+          model: project.model,
+        });
+      } catch (err) {
+        return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+      }
     }
 
     // Validate image exists and belongs to this project or is unbound
@@ -66,12 +127,18 @@ async function __teamRoutePOST(
       // Create scene generation jobs：同一请求写同一 createdAt、按提交顺序写 creationIndex。
       const batchCreatedAt = new Date().toISOString();
       const insertJob = db.prepare(`
-        INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode, createdAt, creationIndex)
-        VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none', ?, ?)
+        INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode, createdAt, creationIndex, unifiedModel, unifiedRuleVersion, unifiedRequestJson)
+        VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none', ?, ?, ?, ?, ?)
       `);
       for (let g = 0; g < generationCount; g++) {
         const jobId = uuidv4();
-        insertJob.run(jobId, id, sceneSeedImageId, jobProvider.providerId, jobProvider.model, scenePrompt, project.size, project.quality, maxAttempts, batchCreatedAt, g);
+        insertJob.run(
+          jobId, id, sceneSeedImageId, jobProvider.providerId, jobProvider.model, scenePrompt,
+          jobSize, jobQuality, maxAttempts, batchCreatedAt, g,
+          unifiedRequestJson ? UNIFIED_IMAGE_MODEL_KEY : null,
+          unifiedRequestJson ? UNIFIED_MEDIA_RULE_VERSION : null,
+          unifiedRequestJson,
+        );
         access.registerInheritedScope({
           resourceType: 'job', resourceId: jobId,
           parent: { resourceType: 'project', resourceId: id },
@@ -79,7 +146,13 @@ async function __teamRoutePOST(
         access.registerTaskPrincipal({
           module: 'image', taskId: jobId,
           scope: { resourceType: 'project', resourceId: id },
-          creationSnapshot: { inputImageId: sceneSeedImageId, model: jobProvider.model, creationIndex: g },
+          creationSnapshot: {
+            inputImageId: sceneSeedImageId, model: jobProvider.model, creationIndex: g,
+            ...(unifiedRequestJson ? {
+              unifiedModel: UNIFIED_IMAGE_MODEL_KEY,
+              unifiedRuleVersion: UNIFIED_MEDIA_RULE_VERSION,
+            } : {}),
+          },
         });
         jobIds.push(jobId);
       }

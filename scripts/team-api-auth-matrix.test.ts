@@ -340,6 +340,16 @@ try {
   assert.equal(modelText.includes('"apiKey"'), false);
   assert.equal(modelText.includes('"keyEnv"'), false);
   assert.equal(modelText.includes('test-key'), false);
+  const imageModels = JSON.parse(modelText) as Array<{ id: string; type: string; model: string }>;
+  assert.equal(imageModels[0]?.id, 'unified-image2', 'team image API leads with the unified Image 2 anchor');
+  assert.ok(imageModels.some((model) => model.id === 'company-gateway-seedream-5-0-pro'), 'other image models keep their original visibility');
+  assert.ok(imageModels.some((model) => model.id === 'company-gateway-nano-banana-pro'));
+  assert.equal(
+    imageModels.some((model) => model.id === 'company-gateway-image2-medium'
+      || model.id === 'company-gateway-qiniuyun-gpt-image-2-medium'),
+    false,
+    'the two real Image 2 channels stay hidden from the employee model menu',
+  );
 
   const failures: string[] = [];
   const resolveRoute = await import('../app/api/team/errors/[id]/resolve/route.ts');

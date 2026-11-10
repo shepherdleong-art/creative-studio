@@ -47,6 +47,12 @@ function validateInput(input: EnqueueInput): void {
     throw new ExecutionError('invalid_input', 'requiredPools 不得重复。');
   }
   if (input.quote.kind === 'priced') assertMoney(input.quote.reserve);
+  if ((input.mediaTaskId?.trim() || null) !== null && !input.channelKey?.trim()) {
+    throw new ExecutionError('invalid_input', '统一媒体操作必须同时提供 mediaTaskId 与 channelKey。');
+  }
+  if (input.channelKey?.trim() && !input.mediaTaskId?.trim()) {
+    throw new ExecutionError('invalid_input', '统一媒体操作必须同时提供 mediaTaskId 与 channelKey。');
+  }
 }
 
 export function enqueueOperation(
@@ -71,7 +77,9 @@ export function enqueueOperation(
         || operation.businessAttemptId !== input.businessAttempt.id
         || operation.businessAttemptNo !== input.businessAttempt.number
         || operation.scopeType !== input.scope.resourceType
-        || operation.scopeId !== input.scope.resourceId) {
+        || operation.scopeId !== input.scope.resourceId
+        || (operation.mediaTaskId ?? null) !== (input.mediaTaskId?.trim() || null)
+        || (operation.channelKey ?? null) !== (input.channelKey?.trim() || null)) {
         throw new ExecutionError('idempotency_conflict', '同一执行键的操作身份或输入已经变化。');
       }
       return {
@@ -98,8 +106,9 @@ export function enqueueOperation(
         id, operationKey, actorId, scopeType, scopeId, module, taskId, step, inputRevision,
         businessAttemptId, businessAttemptNo, inputHash, inputSnapshotJson, continuationKey,
         providerSnapshotJson, configVersion, clientVersion, serverReleaseId,
-        credentialVersionRef, requiredPoolsJson, quoteJson, status, readySeq, createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+        credentialVersionRef, requiredPoolsJson, quoteJson, mediaTaskId, channelKey,
+        status, readySeq, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
     `).run(
       id, input.operationKey, input.actor.userId, input.scope.resourceType, input.scope.resourceId,
       input.module, input.taskId, input.step, input.inputRevision,
@@ -107,6 +116,7 @@ export function enqueueOperation(
       input.continuationKey, json(input.providerSnapshot), input.configVersion ?? null,
       input.clientVersion ?? null, options.serverReleaseId ?? null,
       input.credentialVersionRef ?? null, json([...input.requiredPools]), json(input.quote),
+      input.mediaTaskId?.trim() || null, input.channelKey?.trim() || null,
       state.nextReadySeq, at, at,
     );
     options.db.prepare('UPDATE execution_admission_state SET nextReadySeq = ? WHERE id = 1')

@@ -22,7 +22,11 @@ try {
 
   const arkId = 'ark-seedream-5-0-pro';
   assert.equal(db.prepare('SELECT id FROM providers WHERE id = ?').get(arkId), undefined);
-  assert.equal((db.prepare("SELECT COUNT(*) n FROM providers WHERE id NOT LIKE 'company-%'").get() as {n:number}).n, 0);
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM providers WHERE id NOT LIKE 'company-%'").get() as {n:number}).n, 1);
+  const unifiedAnchor = db.prepare(`SELECT id, name, type, model, enabled, apiKey FROM providers WHERE id = 'unified-image2'`).get() as Record<string, unknown>;
+  assert.deepEqual(unifiedAnchor, {
+    id: 'unified-image2', name: 'Image 2', type: 'unified-image', model: 'image2', enabled: 1, apiKey: '',
+  }, '团队统一模型锚点必须幂等补种，且不保存任何真实通道凭据');
   const historicalVideoPresets = db.prepare("SELECT id FROM video_providers WHERE id IN ('jimeng-2-0', 'kling-2-5')").all() as {id:string}[];
   assert.equal(historicalVideoPresets.filter(isVisibleVideoProvider).length, 0, '历史迁移保留的记录不再作为选项展示');
   db.prepare("INSERT INTO providers (id, name, type, baseUrl, model) VALUES (?, 'Custom existing', 'ark-images', 'https://example.invalid', 'custom')").run(arkId);

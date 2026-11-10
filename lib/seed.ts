@@ -3,6 +3,11 @@ import { resolveCoreUsagePlan } from './usage-pricing.ts';
 import { getDb } from './db.ts';
 import { isPlaceholderValue } from './video-auth.ts';
 import { defaultScriptProviderConfigs } from './script-providers/config.ts';
+import {
+  UNIFIED_IMAGE_ANCHOR_ID,
+  UNIFIED_IMAGE_DISPLAY_NAME,
+  UNIFIED_IMAGE_MODEL_KEY,
+} from './media-core/unified-media/catalog.ts';
 
 // 公司供应商统一经本机 LiteLLM 代理（127.0.0.1:4000）转发；代理不校验调用方
 // Bearer（上游真实 Key 由包内 config.yaml 持有），所以种子里的 apiKey 只需非空
@@ -15,6 +20,21 @@ export function seedProviders() {
   const db = getDb();
   cleanPlaceholderKeys(db);
   ensureCompanyImageProviders(db);
+  ensureUnifiedImageAnchor(db);
+}
+
+function ensureUnifiedImageAnchor(db: ReturnType<typeof getDb>) {
+  db.prepare(`
+    INSERT INTO providers
+      (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
+    SELECT ?, ?, '', '', '', ?, 'unified-image', 1, NULL
+    WHERE NOT EXISTS (SELECT 1 FROM providers WHERE id = ?)
+  `).run(
+    UNIFIED_IMAGE_ANCHOR_ID,
+    UNIFIED_IMAGE_DISPLAY_NAME,
+    UNIFIED_IMAGE_MODEL_KEY,
+    UNIFIED_IMAGE_ANCHOR_ID,
+  );
 }
 
 /**

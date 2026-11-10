@@ -2,12 +2,16 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { seedProviders } from '@/lib/seed';
 import { isPlaceholderValue } from '@/lib/video-auth';
-import { isVisibleImageProvider } from '@/lib/provider-list-visibility';
 import { isVisibleVideoProvider } from '@/lib/provider-list-visibility';
 import { listScriptProviderMeta } from '@/lib/script-providers/store';
 import { describeVideoProvider } from '@/lib/video-model-capabilities';
 import { getFinalEditTtsAdapter } from '@/lib/final-edit/adapters/tts-registry';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import {
+  unifiedImageProviderAvailability,
+} from '@/lib/media-core/unified-media/execution';
+import { projectTeamImageModels } from '@/lib/media-core/unified-media/model-list';
 
 function configuredSecret(value: unknown): boolean {
   return Boolean(String(value ?? '').trim()) && !isPlaceholderValue(String(value ?? ''));
@@ -18,11 +22,15 @@ async function __teamRouteGET(request: Request) {
   const db = getDb();
   if (kind === 'image') {
     seedProviders();
-    const rows = db.prepare(`SELECT id, name, model, type, enabled, apiKey FROM providers ORDER BY name`).all() as Array<Record<string, unknown> & { id: string; name: string; type: string; baseUrl: string }>;
-    return NextResponse.json(rows.filter(isVisibleImageProvider).filter((row) => Number(row.enabled) === 1).map((row) => ({
-      id: String(row.id), name: String(row.name), model: String(row.model), type: String(row.type),
-      category: 'image', enabled: 1, configured: configuredSecret(row.apiKey), hasApiKey: configuredSecret(row.apiKey), missing: configuredSecret(row.apiKey) ? [] : ['API Key'],
-    })));
+    const rows = db.prepare(`SELECT id, name, model, type, enabled, apiKey, baseUrl FROM providers ORDER BY name`).all() as Array<{
+      id: string; name: string; model: string; type: string; enabled: number; apiKey: string; baseUrl: string;
+    }>;
+    if (readRuntimeConfig().mode === 'server') {
+      const available = unifiedImageProviderAvailability(db)
+        .some((channel) => channel.identityValid && channel.configured);
+      return NextResponse.json(projectTeamImageModels(rows, { mode: 'server', unifiedAvailable: available }));
+    }
+    return NextResponse.json(projectTeamImageModels(rows, { mode: 'local', unifiedAvailable: false }));
   }
   if (kind === 'script') {
     return NextResponse.json(listScriptProviderMeta().filter((provider) => provider.enabled && provider.configured).map((provider) => ({

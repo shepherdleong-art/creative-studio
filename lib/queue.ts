@@ -45,6 +45,14 @@ import {
 } from './legacy-media-execution.ts';
 import type { ExecutionReceipt } from './media-core/execution/context.ts';
 import { submissionEmployeeCopy } from './media-core/submission-evidence.ts';
+import {
+  prepareUnifiedImageExecution,
+  requestUnifiedImageCancellation,
+  synchronizeUnifiedImageExecution,
+  UnifiedImageCanceledError,
+  UnifiedImageExecutionError,
+  type PreparedUnifiedImageExecution,
+} from './media-core/unified-media/execution.ts';
 
 export interface QueueOptions {
   /** Limit a local rework run to its immutable job. */
@@ -76,6 +84,11 @@ interface JobRecord {
   providerTaskId?: string | null;
   providerStatus?: string | null;
   remoteImageUrl?: string | null;
+  unifiedModel?: string | null;
+  unifiedRuleVersion?: string | null;
+  unifiedTaskId?: string | null;
+  unifiedRequestJson?: string | null;
+  cancelRequestedAt?: string | null;
 }
 
 type QueueStatus = 'idle' | 'running' | 'paused';
@@ -121,10 +134,15 @@ export function resumeQueue(projectId: string, options: QueueOptions) {
 export function cancelQueue(projectId: string) {
   const entry = runningQueues.get(projectId);
   if (entry) {
+    const db = getDb();
+    const unifiedJobs = db.prepare(`SELECT id FROM jobs
+      WHERE projectId = ? AND unifiedModel IS NOT NULL
+        AND status IN ('pending', 'retrying', 'running', 'deferred', 'needs_check')`)
+      .all(projectId) as Array<{ id: string }>;
+    for (const job of unifiedJobs) requestUnifiedImageCancellation(db, job.id);
     entry.abort.abort();
     if (!isServerMediaExecution()) runningQueues.delete(projectId);
 
-    const db = getDb();
     db.prepare(
       isServerMediaExecution()
         ? `UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user'
@@ -281,7 +299,17 @@ async function runJob(
   job: JobRecord,
   options: { timeoutMs: number; maxAttempts: number; abort: AbortSignal }
 ): Promise<void> {
-  return runWithAcceptedTaskAccess(getDb(), 'image', job.id, () => runAuthorizedJob(job, options));
+  try {
+    await runWithAcceptedTaskAccess(getDb(), 'image', job.id, () => runAuthorizedJob(job, options));
+  } finally {
+    if (job.unifiedModel) {
+      try {
+        synchronizeUnifiedImageExecution(getDb(), job.id);
+      } catch (error) {
+        console.error(`[Queue] 统一图片任务状态同步失败: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
 }
 
 export async function resumeImageJobPolling(jobId: string, timeoutMs = 300_000): Promise<void> {
@@ -309,6 +337,33 @@ async function runAuthorizedJob(
   const { timeoutMs, maxAttempts, abort } = options;
 
   if (abort.aborted) return;
+
+  let unifiedExecution: PreparedUnifiedImageExecution | null = null;
+  if (job.unifiedModel) {
+    try {
+      unifiedExecution = prepareUnifiedImageExecution(db, job.id);
+      job.providerId = unifiedExecution.channel.provider.id;
+      job.model = unifiedExecution.channel.definition.model;
+    } catch (error) {
+      if (error instanceof UnifiedImageCanceledError) {
+        db.prepare(`UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user',
+          finishedAt = COALESCE(finishedAt, datetime('now'))
+          WHERE id = ? AND status IN ('pending', 'retrying', 'running', 'deferred')`).run(job.id);
+        return;
+      }
+      if (error instanceof UnifiedImageExecutionError) {
+        db.prepare(`UPDATE jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
+          WHERE id = ? AND status IN ('pending', 'retrying', 'running', 'deferred')`).run(error.message, job.id);
+        writeLog({ jobId: job.id, projectId: job.projectId, level: 'error', message: error.message, attempt: job.attempt });
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      db.prepare(`UPDATE jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
+        WHERE id = ? AND status IN ('pending', 'retrying', 'running', 'deferred')`).run(message, job.id);
+      writeLog({ jobId: job.id, projectId: job.projectId, level: 'error', message, attempt: job.attempt });
+      return;
+    }
+  }
 
   // Job was already claimed atomically by the worker pool.
   // attempt and startedAt were set during claimNextJob().
@@ -416,6 +471,7 @@ async function runAuthorizedJob(
 
     const providerSnapshot = {
       providerId: provider.id, providerName: provider.name, type: providerType, model: job.model, baseUrl: provider.baseUrl,
+      ...(unifiedExecution ? { unifiedModel: job.unifiedModel } : {}),
     };
     assertLegacyMediaProviderRecovery({
       module: 'image', taskId: job.id,
@@ -438,6 +494,16 @@ async function runAuthorizedJob(
       receipt: (value: T) => ExecutionReceipt,
     ): Promise<T> {
       if (!isServerMediaExecution()) return send();
+      if (unifiedExecution) {
+        const canceled = db.prepare('SELECT cancelRequestedAt FROM jobs WHERE id = ?').pluck().get(job.id) as string | null;
+        if (canceled) {
+          await cancelLegacyMediaNewStage({
+            module: 'image', taskId: job.id,
+            inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+          });
+          throw new UnifiedImageCanceledError();
+        }
+      }
       if (!usageSnapshot) {
         usageSnapshot = persistImageJobUsageSnapshot(db, {
           jobId: job.id,
@@ -477,6 +543,8 @@ async function runAuthorizedJob(
         quote: reserveMinor === null
           ? { kind: 'unpriced' }
           : { kind: 'priced', reserve: { currency: 'CNY', minor: reserveMinor }, pricingSnapshot: usageSnapshot },
+        mediaTaskId: unifiedExecution?.taskId ?? null,
+        channelKey: unifiedExecution?.channel.channelKey ?? null,
         signal: reqAbort.signal,
         onAdmitted() {
           attempt += 1;
@@ -800,7 +868,7 @@ async function runAuthorizedJob(
           { onProgress: logInfo, timeoutMs, signal: reqAbort.signal },
         ),
         (value) => value.immediateImageUrl
-          ? { terminalState: 'succeeded', resultRef: value.immediateImageUrl }
+          ? { terminalState: 'succeeded', resultRef: value.immediateImageUrl, remoteId: value.taskId }
           : { remoteId: value.taskId },
       );
       if (submitResult?.imageTransports?.length) {
@@ -1201,6 +1269,21 @@ async function runAuthorizedJob(
   } catch (err: unknown) {
     let errorMessage = err instanceof Error ? err.message : String(err);
 
+    if (err instanceof UnifiedImageCanceledError) {
+      db.prepare(`UPDATE jobs SET status = 'canceled', errorMessage = 'Canceled by user',
+        finishedAt = COALESCE(finishedAt, datetime('now')) WHERE id = ? AND status IN ('pending', 'retrying', 'running', 'deferred')`)
+        .run(job.id);
+      logWarn('统一图片任务已记录取消意图，停止新提交');
+      return;
+    }
+
+    if (err instanceof UnifiedImageExecutionError) {
+      db.prepare(`UPDATE jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
+        WHERE id = ? AND status IN ('pending', 'retrying', 'running', 'deferred')`).run(errorMessage, job.id);
+      logError(errorMessage);
+      return;
+    }
+
     if (isServerMediaExecution() && abort.aborted) {
       const current = db.prepare('SELECT providerTaskId, executionRevision FROM jobs WHERE id = ?').get(job.id) as
         { providerTaskId: string | null; executionRevision: number } | undefined;
@@ -1317,9 +1400,9 @@ async function runAuthorizedJob(
 
     logError(`Job failed: ${errorMessage}`);
 
-    const effectiveMaxAttempts = job.maxAttempts || maxAttempts || 2;
+    const effectiveMaxAttempts = job.unifiedModel ? 1 : (job.maxAttempts || maxAttempts || 2);
 
-    if (attempt >= effectiveMaxAttempts) {
+    if (job.unifiedModel || attempt >= effectiveMaxAttempts) {
       failLegacyMediaOperation({
         module: 'image', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision),
       });

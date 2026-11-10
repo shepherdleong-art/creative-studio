@@ -133,6 +133,28 @@ export function companyImageCapsForModel(model: string): CompanyModelCaps | null
   return null;
 }
 
+/**
+ * 判断精确模型是否能在“请求档位 + 请求比例”这个完整格子上交付。
+ * 排除格只有在同档位存在可无放大裁切的 donor 时才算可执行；不能退到别的档位冒充。
+ */
+export function companyImageCellExecutable(model: string, tier: string, ratio: string): boolean {
+  const caps = companyImageCapsForModel(model);
+  if (!caps) return false;
+  const normalizedTier = tier.trim().toUpperCase();
+  if (!caps.tiers.includes(normalizedTier) || !caps.ratios.includes(ratio)) return false;
+  const table = caps.imageSizeTable ?? IMAGE_SIZE_TABLE;
+  const targetSize = table[normalizedTier]?.[ratio];
+  if (!targetSize) return false;
+  if (!caps.exclude?.includes(`${normalizedTier}:${ratio}`)) return true;
+
+  const target = parseSize(targetSize);
+  if (!target) return false;
+  return caps.ratios
+    .filter((donorRatio) => donorRatio !== ratio && !caps.exclude!.includes(`${normalizedTier}:${donorRatio}`))
+    .map((donorRatio) => parseSize(table[normalizedTier]?.[donorRatio]))
+    .some((donor) => Boolean(donor && donor.width >= target.width && donor.height >= target.height));
+}
+
 /** 返回视频模型在公司网关的能力约束；非公司视频模型返回 null */
 export function companyVideoCapsForModel(model: string): CompanyModelCaps | null {
   // 腾讯原生 OutputConfig.Resolution 显式锁 1080P，size 保留公司网关 1K 名义值。

@@ -50,6 +50,7 @@ export interface TeamUsageAttempt {
   module: string;
   step: string;
   model: string;
+  unifiedModel: string | null;
   submissionState: string;
   outcome: string | null;
   remoteId: string | null;
@@ -130,7 +131,18 @@ interface AttemptRow {
   serverReleaseId: string | null;
   errorId: string | null;
   usageMirrorCount: number;
+  unifiedModel: string | null;
   createdAt: string;
+}
+
+function tableHasColumn(db: Database.Database, table: string, column: string): boolean {
+  try {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) return false;
+    return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+      .some((item) => item.name === column);
+  } catch {
+    return false;
+  }
 }
 
 function scopedActor(viewer: TeamViewer, requested?: string): string | undefined {
@@ -181,6 +193,7 @@ function mapAttempt(row: AttemptRow): TeamUsageAttempt {
     serverReleaseId: row.serverReleaseId,
     errorId: row.errorId,
     usageMirrorStatus: row.usageMirrorCount > 0 ? 'recorded' : 'missing',
+    unifiedModel: row.unifiedModel,
     createdAt: row.createdAt,
   };
 }
@@ -210,12 +223,14 @@ export function queryTeamUsage(
     CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.model') END,
     CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.modelAlias') END
   )`;
+  const hasUnifiedModel = tableHasColumn(db, 'jobs', 'unifiedModel');
   if (filters.model) { clauses.push(`${modelExpression} = ?`); values.push(filters.model); }
   const rows = db.prepare(`
     SELECT a.id AS attemptId, o.id AS operationId, o.taskId, o.businessAttemptId,
       a.businessAttemptNo, a.submitRound, a.transportSeq, a.actorId AS actorUserId,
       u.employeeId, u.displayName AS actorDisplayName, o.scopeType, o.scopeId,
       o.module, o.step, ${modelExpression} AS model,
+      ${hasUnifiedModel ? 'j.unifiedModel' : 'NULL'} AS unifiedModel,
       CASE WHEN json_valid(o.quoteJson) THEN json_extract(o.quoteJson, '$.kind') ELSE 'unpriced' END AS quoteKind,
       a.submissionState, a.terminalState AS outcome, a.remoteId, a.reservedMinor, a.actualMinor,
       a.costState, a.policyVersion, a.accountingPeriod, o.configVersion, o.clientVersion,
@@ -226,6 +241,7 @@ export function queryTeamUsage(
     FROM execution_attempts a
     JOIN execution_operations o ON o.id = a.operationId
     JOIN team_users u ON u.id = a.actorId
+    ${hasUnifiedModel ? "LEFT JOIN jobs j ON o.module = 'image' AND j.id = o.taskId" : ''}
     ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
     ORDER BY a.createdAt DESC, a.id DESC
   `).all(...values) as AttemptRow[];
