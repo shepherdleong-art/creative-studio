@@ -1243,7 +1243,7 @@ async function runAuthorizedVideoJob(
       db.prepare(
         `UPDATE video_jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
          WHERE id = ? AND status = 'running'`
-      ).run(rework ? `${errorMessage}。${REASSEMBLED_SUBMIT_UNCERTAIN}` : errorMessage, job.id);
+      ).run(rework && !job.unifiedModel ? `${errorMessage}。${REASSEMBLED_SUBMIT_UNCERTAIN}` : errorMessage, job.id);
     } else {
       db.prepare(
         `UPDATE video_jobs SET status = 'pending', errorMessage = ?
@@ -1309,7 +1309,7 @@ export function claimNextVideoJob(projectId: string, jobId?: string): ClaimVideo
   const job = db.prepare(`
     SELECT * FROM video_jobs
     WHERE projectId = ? AND status = 'pending' AND (? IS NULL OR id = ?)
-      ${isServerMediaExecution() ? "AND NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = video_jobs.id AND r.kind = 'generate_video')" : ''}
+      ${isServerMediaExecution() ? "AND (video_jobs.unifiedModel IS NOT NULL OR NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = video_jobs.id AND r.kind = 'generate_video'))" : ''}
     ORDER BY createdAt, rowid LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as VideoJobRecord | undefined;
 
@@ -1356,7 +1356,7 @@ export function claimNeedsCheckVideoJob(projectId: string, jobId?: string): Clai
     WHERE projectId = ?
       AND (status = 'needs_check' ${isServerMediaExecution() ? "OR providerStatus = 'download_failed'" : ''})
       AND providerTaskId IS NOT NULL AND (? IS NULL OR id = ?)
-      ${isServerMediaExecution() ? "AND NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = video_jobs.id AND r.kind = 'generate_video')" : ''}
+      ${isServerMediaExecution() ? "AND (video_jobs.unifiedModel IS NOT NULL OR NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = video_jobs.id AND r.kind = 'generate_video'))" : ''}
     ORDER BY createdAt, rowid LIMIT 1
   `).get(projectId, jobId || null, jobId || null) as VideoJobRecord | undefined;
 

@@ -23,6 +23,7 @@ import {
   freezeUnifiedImageRequest,
   type FrozenUnifiedImageRequest,
 } from './requests.ts';
+import { unifiedTaskSourceForJob } from './task-source.ts';
 import {
   imageCongestionDeadline,
   readUnifiedImageCongestionSettings,
@@ -395,8 +396,15 @@ function ensureLogicalTask(
   const taskKey = `image:${job.id}`;
   const inputHash = hash(frozen);
   const at = new Date().toISOString();
-  const sourceType = job.creationSource
+  const fallbackSourceType = job.creationSource
     || (job.parentJobId ? 'project_regenerate' : 'project_scene');
+  const source = unifiedTaskSourceForJob(db, {
+    module: 'image',
+    jobId: job.id,
+    fallbackType: fallbackSourceType,
+    fallbackId: job.projectId,
+    fallbackMeta: { parentJobId: job.parentJobId },
+  });
   db.transaction(() => {
     db.prepare(`
       INSERT OR IGNORE INTO execution_media_tasks (
@@ -410,8 +418,7 @@ function ensureLogicalTask(
       UNIFIED_IMAGE_MODEL_KEY, UNIFIED_MEDIA_RULE_VERSION, inputHash,
       JSON.stringify(frozen), JSON.stringify({
         tier: frozen.tier, ratio: frozen.ratio, size: frozen.size, quality: frozen.quality,
-      }), sourceType, job.projectId,
-      JSON.stringify({ entry: sourceType, jobId: job.id, parentJobId: job.parentJobId }),
+      }), source.sourceType, source.sourceId, JSON.stringify(source.sourceMeta),
       at, at,
     );
     const task = db.prepare('SELECT * FROM execution_media_tasks WHERE taskKey = ?').get(taskKey) as MediaTaskRow | undefined;

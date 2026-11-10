@@ -21,6 +21,7 @@ import {
   UnifiedKlingRequestError,
   type FrozenUnifiedKlingVideoRequest,
 } from './video-requests.ts';
+import { unifiedTaskSourceForJob } from './task-source.ts';
 import {
   claimUnifiedChannelHealthForSelection,
   recordUnifiedChannelFailure,
@@ -300,6 +301,17 @@ function ensureLogicalTask(
   const taskKey = `video:${job.id}`;
   const inputHash = hash(frozen);
   const at = new Date().toISOString();
+  const source = unifiedTaskSourceForJob(db, {
+    module: 'video',
+    jobId: job.id,
+    fallbackType: 'project_video',
+    fallbackId: job.shotId ?? job.projectId,
+    fallbackMeta: {
+      projectId: job.projectId,
+      shotSetId: job.shotSetId,
+      shotId: job.shotId,
+    },
+  });
   db.transaction(() => {
     db.prepare(`
       INSERT OR IGNORE INTO execution_media_tasks (
@@ -307,7 +319,7 @@ function ensureLogicalTask(
         inputHash, inputSnapshotJson, outputContractJson, sourceType, sourceId, sourceMetaJson,
         status, cancelRequestedAt, currentChannelKey, nextEligibleAt, waitReason, waitDetailJson,
         resultJson, createdAt, updatedAt
-      ) VALUES (?, ?, ?, 'project', ?, 'video', ?, ?, ?, ?, ?, ?, 'project_video', ?, ?, 'routing',
+      ) VALUES (?, ?, ?, 'project', ?, 'video', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'routing',
         NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
     `).run(
       randomUUID(), taskKey, access.actor.userId, job.projectId, job.id,
@@ -321,14 +333,7 @@ function ensureLogicalTask(
         resolution: frozen.resolution,
         tailImageId: frozen.tailImageId,
       }),
-      job.shotId,
-      JSON.stringify({
-        entry: 'project_video',
-        jobId: job.id,
-        projectId: job.projectId,
-        shotSetId: job.shotSetId,
-        shotId: job.shotId,
-      }),
+      source.sourceType, source.sourceId, JSON.stringify(source.sourceMeta),
       at, at,
     );
     const task = db.prepare('SELECT * FROM execution_media_tasks WHERE taskKey = ?')

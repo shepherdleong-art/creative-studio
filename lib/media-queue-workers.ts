@@ -37,7 +37,10 @@ function poolDemands(input: MediaQueueWorkers): QueuePoolDemand[] {
       COUNT(*) AS taskCount FROM ${table}
     WHERE projectId = ? AND (? IS NULL OR id = ?)
       AND (${runnable})
-      AND NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = ${table}.id AND r.kind = ?)
+      AND (
+        ${table}.unifiedModel IS NOT NULL
+        OR NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = ${table}.id AND r.kind = ?)
+      )
     GROUP BY providerId, unifiedModel, unifiedRequestJson
   `).all(input.projectId, input.jobId ?? null, input.jobId ?? null, reworkKind) as Array<{
     providerId: string; unifiedModel: string | null; unifiedRequestJson: string | null; taskCount: number;

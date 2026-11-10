@@ -6,6 +6,35 @@ export function isReassembledReworkJob(db: Database.Database, jobId: string, kin
     && db.prepare('SELECT 1 FROM final_edit_film_reworks WHERE jobId=? AND kind=?').get(jobId, kind));
 }
 
+/**
+ * Queue completion records a rework image as a candidate for its original shot.
+ * It deliberately does not update shots.latestGeneratedImageId: adoption stays
+ * a separate human decision and other workers' current selection is untouched.
+ */
+export function registerFilmReworkImageCandidate(
+  db: Database.Database,
+  jobId: string,
+  imageAssetId: string,
+): string | null {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='final_edit_film_reworks'").get()) {
+    return null;
+  }
+  const row = db.prepare(`
+    SELECT fs.shotId
+    FROM final_edit_film_reworks r
+    JOIN final_edit_film_shots fs
+      ON fs.bindingId = r.bindingId AND fs.clipId = r.clipId
+    WHERE r.jobId = ? AND r.kind = 'generate_image'
+    LIMIT 1
+  `).get(jobId) as { shotId: string } | undefined;
+  if (!row) return null;
+  db.prepare(`
+    INSERT OR IGNORE INTO shot_result_candidates (id, shotId, jobId, imageAssetId)
+    VALUES (?, ?, ?, ?)
+  `).run(`${row.shotId}:${imageAssetId}`, row.shotId, jobId, imageAssetId);
+  return row.shotId;
+}
+
 export const REASSEMBLED_SUBMIT_UNCERTAIN = '局部返工已尝试提交，结果尚不能确认，已停止自动重发以避免重复扣费。请核对供应商记录；需要重新生成时使用新的返工请求。';
 
 /** Run before recovery/claim, without touching other projects or another scoped job. */
@@ -15,6 +44,7 @@ export function protectReassembledQueue(db: Database.Database, projectId: string
   const states = recoverRunning ? "'pending','retrying','running'" : "'pending','retrying'";
   db.prepare(`UPDATE ${table} SET status='failed', finishedAt=datetime('now'), errorMessage=?
     WHERE projectId=? AND (? IS NULL OR id=?) AND status IN (${states})
+    AND COALESCE(unifiedModel,'')=''
     AND (attempt > 0 OR status='running') AND COALESCE(TRIM(providerTaskId),'')=''
     AND EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId=${table}.id AND r.kind=?)`)
     .run(REASSEMBLED_SUBMIT_UNCERTAIN, projectId, jobId ?? null, jobId ?? null, kind);
@@ -23,6 +53,7 @@ export function protectReassembledQueue(db: Database.Database, projectId: string
   if (kind === 'generate_image') db.prepare(`UPDATE jobs SET status='needs_check', finishedAt=datetime('now'),
     errorMessage='已有远端图片任务，请补抓结果；不会重新提交。'
     WHERE projectId=? AND (? IS NULL OR id=?) AND status IN (${states})
+    AND COALESCE(unifiedModel,'')=''
     AND COALESCE(TRIM(providerTaskId),'')<>''
     AND EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId=jobs.id AND r.kind=?)`)
     .run(projectId, jobId ?? null, jobId ?? null, kind);
