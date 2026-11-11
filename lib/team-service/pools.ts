@@ -22,6 +22,10 @@ import {
 } from '../media-core/execution/media-provider-pool.ts';
 import type { TeamViewer } from './diagnostics.ts';
 import { ensureCanvasCapabilitiesRegistered } from '../creative-canvas/capabilities-bootstrap.ts';
+import {
+  UNIFIED_IMAGE_ANCHOR_ID,
+  UNIFIED_KLING3_ANCHOR_ID,
+} from '../media-core/unified-media/catalog.ts';
 
 /**
  * 管理员资源池配置服务（R01）。
@@ -367,6 +371,8 @@ export function listPoolRequirements(db: Database.Database): PoolRequirement[] {
     const rows = db.prepare('SELECT id, name, baseUrl, apiKey, enabled FROM providers ORDER BY name, id')
       .all() as Array<{ id: string; name: string; baseUrl: string; apiKey: string; enabled: number }>;
     for (const row of rows) {
+      // Unified models route to real channels; they own no credentials or pool.
+      if (row.id === UNIFIED_IMAGE_ANCHOR_ID) continue;
       requirements.push(requirementFromProvider(db, 'image', {
         label: row.name || row.id, enabled: Boolean(row.enabled), baseUrl: row.baseUrl ?? '',
         credentialIdentity: (row.apiKey ?? '').trim(),
@@ -381,6 +387,7 @@ export function listPoolRequirements(db: Database.Database): PoolRequirement[] {
       accessKey: string; secretKey: string; enabled: number;
     }>;
     for (const row of rows) {
+      if (row.id === UNIFIED_KLING3_ANCHOR_ID) continue;
       requirements.push(requirementFromProvider(db, 'video', {
         label: row.name || row.id, enabled: Boolean(row.enabled), baseUrl: row.baseUrl ?? '',
         credentialIdentity: row.type === 'kling'
@@ -411,6 +418,8 @@ export function listPoolRequirements(db: Database.Database): PoolRequirement[] {
       ...historical.map((row) => row.providerIdentity).filter((id): id is string => typeof id === 'string' && id.length > 0),
     ]);
     for (const providerIdentity of identities) {
+      if (providerIdentity === UNIFIED_IMAGE_ANCHOR_ID
+        || providerIdentity === UNIFIED_KLING3_ANCHOR_ID) continue;
       const media = requirements.find((item) => ['image', 'video'].includes(item.entityType) && item.entityId === providerIdentity);
       if (media) {
         requirements.push({ ...media, key: `canvas:${providerIdentity}`, entityType: 'canvas', label: `创作画布 · ${media.label}` });
