@@ -14,6 +14,7 @@ import {
 } from '@/lib/result-gallery-jobs';
 import { getImageJobDisplayName } from '@/lib/image-job-display-name';
 import { getGptImage2AspectRatio } from '@/lib/gpt-image-2-size-presets';
+import { UNIFIED_IMAGE_DISPLAY_NAME } from '@/lib/media-core/unified-media/catalog';
 
 interface Job {
   id: string;
@@ -30,6 +31,7 @@ interface Job {
   referenceImageIds?: string;
   providerId?: string;
   model?: string;
+  unifiedModel?: string | null;
   size?: string;
   quality?: string;
 }
@@ -47,6 +49,7 @@ interface ImageProvider {
   id: string;
   name: string;
   model: string;
+  type?: string;
   enabled: number | boolean;
   hasApiKey: boolean;
 }
@@ -477,10 +480,10 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                             <div className="h-7 w-7 animate-spin rounded-full border-2 border-accent border-t-transparent" />
                           )}
                           <div className="text-xs font-medium text-ink-secondary">
-                            {kind === 'queued' ? '排队中' : kind === 'checking' ? '待确认' : '生成中'}
+                            {kind === 'queued' ? '排队中' : kind === 'checking' ? '结果确认中' : '生成中'}
                           </div>
                           <div className="text-[10px] text-ink-tertiary">
-                            {kind === 'queued' ? '排队中，前面的任务完成后自动开始' : kind === 'checking' ? '等待补抓结果' : '图片完成后会自动出现'}
+                            {kind === 'queued' ? '排队中，前面的任务完成后自动开始' : kind === 'checking' ? '正在核对供应商结果，不会自动重复提交' : '图片完成后会自动出现'}
                           </div>
                         </div>
                       )}
@@ -570,7 +573,9 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
 
                         {selectableProviders.length > 0 && (
                           <div>
-                            <label className="mb-1 block text-xs font-medium text-ink-secondary">供应商 / 模型</label>
+                            <label className="mb-1 block text-xs font-medium text-ink-secondary">
+                              {selectedProvider?.type === 'unified-image' ? '模型' : '供应商 / 模型'}
+                            </label>
                             <select
                               value={selectedProviderId}
                               onChange={(e) => setRegenProviderId(e.target.value)}
@@ -578,12 +583,14 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                             >
                               {selectableProviders.map((provider) => (
                                 <option key={provider.id} value={provider.id}>
-                                  {provider.name} ({provider.model})
+                                  {provider.type === 'unified-image' ? provider.name : `${provider.name} (${provider.model})`}
                                 </option>
                               ))}
                             </select>
                             <p className="mt-1 text-xs text-ink-tertiary">
-                              本次重新生成会使用：{selectedProvider?.model || selectedJob.model || '原任务模型'}
+                              本次重新生成会使用：{selectedProvider?.type === 'unified-image'
+                                ? UNIFIED_IMAGE_DISPLAY_NAME
+                                : selectedProvider?.model || selectedJob.model || '原任务模型'}
                             </p>
                           </div>
                         )}

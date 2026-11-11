@@ -22,7 +22,11 @@ try {
 
   const arkId = 'ark-seedream-5-0-pro';
   assert.equal(db.prepare('SELECT id FROM providers WHERE id = ?').get(arkId), undefined);
-  assert.equal((db.prepare("SELECT COUNT(*) n FROM providers WHERE id NOT LIKE 'company-%'").get() as {n:number}).n, 0);
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM providers WHERE id NOT LIKE 'company-%'").get() as {n:number}).n, 1);
+  const unifiedAnchor = db.prepare(`SELECT id, name, type, model, enabled, apiKey FROM providers WHERE id = 'unified-image2'`).get() as Record<string, unknown>;
+  assert.deepEqual(unifiedAnchor, {
+    id: 'unified-image2', name: 'Image 2', type: 'unified-image', model: 'image2', enabled: 1, apiKey: '',
+  }, '团队统一模型锚点必须幂等补种，且不保存任何真实通道凭据');
   const historicalVideoPresets = db.prepare("SELECT id FROM video_providers WHERE id IN ('jimeng-2-0', 'kling-2-5')").all() as {id:string}[];
   assert.equal(historicalVideoPresets.filter(isVisibleVideoProvider).length, 0, '历史迁移保留的记录不再作为选项展示');
   db.prepare("INSERT INTO providers (id, name, type, baseUrl, model) VALUES (?, 'Custom existing', 'ark-images', 'https://example.invalid', 'custom')").run(arkId);
@@ -90,6 +94,23 @@ try {
     assert.equal(row.enabled, 1);
     assert.deepEqual(getVideoProviderConfigState(row as never), { configured: true, missing: [] });
   }
+  const unifiedKlingAnchor = db.prepare(`
+    SELECT id, name, type, defaultModel, enabled, baseUrl, apiKey
+    FROM video_providers WHERE id = 'unified-kling-3'
+  `).get() as Record<string, unknown>;
+  assert.deepEqual(unifiedKlingAnchor, {
+    id: 'unified-kling-3',
+    name: '可灵 3.0',
+    type: 'openai-video',
+    defaultModel: 'kling-3.0',
+    enabled: 1,
+    baseUrl: '',
+    apiKey: '',
+  }, '统一可灵锚点必须幂等补种，且不保存真实通道凭据');
+  assert.equal(
+    db.prepare(`SELECT COUNT(*) FROM video_providers WHERE id = 'unified-kling-3'`).pluck().get(),
+    1,
+  );
 
   for (const id of ['company-minimax-h3', 'company-wan-3-0']) {
     db.prepare('UPDATE video_providers SET enabled = 0, name = ?, apiKey = ?, baseUrl = ?, defaultModel = ? WHERE id = ?')
@@ -181,7 +202,11 @@ try {
   assert.equal(manualImage.apiKey, 'manual-key');
   assert.equal(manualImage.model, 'image2-medium');
   const klingAfterManual = db.prepare(`SELECT COUNT(*) AS c FROM video_providers WHERE type = 'openai-video' AND defaultModel = 'kling-3.0'`).get() as { c: number };
-  assert.equal(klingAfterManual.c, 2, '已有同模型视频供应商时仍必须补种 canonical ID');
+  assert.equal(
+    klingAfterManual.c,
+    3,
+    '手工同模型 + canonical + 统一锚点共存；补种既保留手工行，也不覆盖统一入口',
+  );
   const manualKling = db.prepare(`SELECT * FROM video_providers WHERE id = 'manual-company-kling'`).get() as Record<string, unknown>;
   assert.equal(manualKling.baseUrl, 'https://public-video.example');
   assert.equal(manualKling.apiKey, 'manual-key');

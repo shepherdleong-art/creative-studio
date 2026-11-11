@@ -22,7 +22,7 @@ const db = new Database(path.join(root, 'data', 'workbench.db'));
 db.pragma('foreign_keys = ON');
 const readiness = await checkExecutionReadiness({ db, ...schemaUpgradeRuntimePaths(root) });
 assert.equal(readiness.available, true);
-assert.deepEqual(readiness.appliedVersions, [1, 2, 3, 4, 5, 6, 7]);
+assert.deepEqual(readiness.appliedVersions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 
 registerExecutionInstance(db, { instanceId: 'instance-a', fence: 1, deploymentId: 'deployment-a' });
 const journal = {
@@ -75,7 +75,7 @@ try {
     legacyDb.prepare("INSERT INTO execution_actor_policies VALUES ('existing', 2000, 'CNY', 3, 1, 'Asia/Shanghai', 7, ?)").run(new Date().toISOString());
     const upgraded = await checkExecutionReadiness({ db: legacyDb, ...paths });
     assert.equal(upgraded.available, true);
-    assert.deepEqual(upgraded.appliedVersions, [5, 6, 7]);
+    assert.deepEqual(upgraded.appliedVersions, [5, 6, 7, 8, 9, 10, 11]);
     const preUpgradeDb = new Database(path.join(fixtureRoot, 'pre-upgrade.sqlite'));
     try {
       const prePaths = schemaUpgradeRuntimePaths(path.join(fixtureRoot, 'pre-upgrade'));

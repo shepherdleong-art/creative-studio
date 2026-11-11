@@ -364,6 +364,10 @@ export function createCanvasRun(
           providerIdentity: taskPlan.providerIdentity,
           providerName: taskPlan.providerName,
           modelAlias: taskPlan.modelAlias,
+          ...(taskPlan.unifiedModel ? {
+            unifiedModel: taskPlan.unifiedModel,
+            unifiedRuleVersion: taskPlan.unifiedRuleVersion,
+          } : {}),
         }),
         JSON.stringify({
           generationMode: taskPlan.generationMode,
@@ -383,7 +387,14 @@ export function createCanvasRun(
       access.registerTaskPrincipal({
         module: 'canvas', taskId,
         scope: { resourceType: 'canvas', resourceId: plan.canvasId },
-        creationSnapshot: { runId, nodeId: taskPlan.nodeId, nodeEpoch: taskPlan.nodeEpoch, capabilityKey: taskPlan.capabilityKey },
+        creationSnapshot: {
+          runId, nodeId: taskPlan.nodeId, nodeEpoch: taskPlan.nodeEpoch,
+          capabilityKey: taskPlan.capabilityKey,
+          ...(taskPlan.unifiedModel ? {
+            unifiedModel: taskPlan.unifiedModel,
+            unifiedRuleVersion: taskPlan.unifiedRuleVersion,
+          } : {}),
+        },
       });
       const createdTask = requireCanvasTask(db, taskId);
       recordCanvasTaskLog(db, createdTask);
@@ -465,6 +476,12 @@ export function resolveCanvasTaskInputs(
         if (!upstream) {
           upstreamFailed = upstreamFailed ?? null;
           stillWaiting = true;
+          continue;
+        }
+        if (upstream.cancelRequestedAt || upstream.phase === 'cancelled') {
+          // A canceled task may still retain a late result for manual viewing,
+          // but it never promotes downstream work automatically.
+          upstreamFailed = upstream;
           continue;
         }
         if (upstream.outputAssetId) {
@@ -550,14 +567,26 @@ export function claimCanvasTasks(options: ClaimCanvasTasksOptions): ClaimedCanva
     let budget = limit;
 
     const atIso = now().toISOString();
+    const hasMediaTasks = Boolean(db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_media_tasks'",
+    ).get());
+    const waitFilter = hasMediaTasks
+      ? `AND NOT EXISTS (
+           SELECT 1 FROM execution_media_tasks media
+            WHERE media.module = 'canvas' AND media.taskId = creative_canvas_tasks.id
+              AND media.status = 'waiting'
+              AND media.nextEligibleAt IS NOT NULL AND media.nextEligibleAt > ?
+         )`
+      : '';
     const candidates = db.prepare(`
       SELECT * FROM creative_canvas_tasks
-       WHERE (phase = 'queued' AND slotHeld = 0)
+       WHERE ((phase = 'queued' AND slotHeld = 0)
           OR (providerTaskId IS NOT NULL
               AND phase IN ('polling', 'downloading')
-              AND (leaseUntil IS NULL OR leaseUntil < ?))
+              AND (leaseUntil IS NULL OR leaseUntil < ?)))
+         ${waitFilter}
        ORDER BY createdAt, rowid
-    `).all(atIso) as Array<Record<string, unknown>>;
+    `).all(...(hasMediaTasks ? [atIso, atIso] : [atIso])) as Array<Record<string, unknown>>;
 
     const quotaUsage = new Map<string, number>();
     for (const row of db.prepare(

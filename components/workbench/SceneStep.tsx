@@ -5,6 +5,7 @@ import { Segmented, Tag } from '@/components/ui/Appearance';
 import { Icon } from '@/components/ui/Icon';
 import { MAX_SHOTS_PER_SET } from '@/lib/shot-set-domain';
 import { getGptImage2AspectRatio } from '@/lib/gpt-image-2-size-presets';
+import { unifiedMediaDisplayName } from '@/lib/media-core/unified-media/catalog';
 import FurniturePromptControls from '@/components/FurniturePromptControls';
 import ImagePreview from '@/components/media/ImagePreview';
 import { getResultJobKind, type SceneReferenceSummary } from '@/lib/result-gallery-jobs';
@@ -92,7 +93,7 @@ export default function SceneStep({
   onCancel: () => void;
   onMark: (jobId: string, mark: string) => void | Promise<void>;
   onRetry: (jobId: string) => void | Promise<void>;
-  onRegenerate: (jobId: string, prompt: string, providerId: string) => void | Promise<void>;
+  onRegenerate: (jobId: string, prompt: string, providerId: string, requestKey: string) => void | Promise<void>;
   onSetSceneRef: (jobId: string, imageAssetId: string) => void;
   onDeleteAsset: (assetId: string) => void | Promise<void>;
   loadProject: () => void | Promise<void>;
@@ -106,6 +107,7 @@ export default function SceneStep({
   const [promptError, setPromptError] = useState('');
   const [regenOpen, setRegenOpen] = useState(false);
   const [regenPrompt, setRegenPrompt] = useState('');
+  const [regenSubmitting, setRegenSubmitting] = useState(false);
   const promptSaveRef = useRef(Promise.resolve());
 
   const imageById = useMemo(() => new Map(images.map((image) => [image.id, image])), [images]);
@@ -116,6 +118,9 @@ export default function SceneStep({
   const effectiveProviderId = selectableProviders.some((provider) => provider.id === providerId)
     ? providerId
     : selectableProviders[0]?.id ?? '';
+  const unifiedSelection = selectableProviders.some(
+    (provider) => provider.id === effectiveProviderId && provider.type === 'unified-image',
+  );
 
   // 候选 = 已出结果、已失败、以及**还在生成**的任务（生成中的先占位，好了自动换成图片）。
   // 排队/生成中的任务可以选中、看占位，但不能标可用（见 hasShotResult）。
@@ -164,6 +169,9 @@ export default function SceneStep({
   const selectedState = resolveShotResultState(selectedJob?.status, Boolean(selectedResultUrl));
   const selectedReference = selectedJob?.outputImageId ? sceneReferences.get(selectedJob.outputImageId) : undefined;
   const marked = hasShotResult(selectedState);
+  const selectedJobUnified = Boolean(
+    selectedJob?.unifiedModel && unifiedMediaDisplayName(selectedJob.unifiedModel),
+  );
   const canRegenerate = canRegenerateShot(selectedState);
   // 原任务的供应商是冻结的：右栏换了供应商后，重试也要按新供应商新建一版。
   const jobProviderId = selectedJob?.providerId || '';
@@ -175,6 +183,7 @@ export default function SceneStep({
   const succeededCount = jobs.filter((job) => getResultJobKind(job) === 'succeeded').length;
   const failedCount = jobs.filter((job) => getResultJobKind(job) === 'failed').length;
   const pendingCount = jobs.filter((job) => job.status === 'pending').length;
+  const canceledSettlingCount = jobs.filter((job) => job.cancelRequestedAt).length;
   const running = queueStatus === 'running';
   const hasCandidates = candidates.length > 0;
   const showEmpty = seedImages.length === 0;
@@ -220,6 +229,7 @@ export default function SceneStep({
           scenePrompt: prompt.trim(),
           generationCount: count,
           providerId: effectiveProviderId,
+          requestKey: crypto.randomUUID(),
         }),
       });
       const data = (await response.json().catch(() => ({}))) as { error?: string };
@@ -243,23 +253,56 @@ export default function SceneStep({
   };
 
   const submitRegen = async () => {
-    if (!selectedJob) return;
+    if (!selectedJob || regenSubmitting) return;
     if (!regenPrompt.trim()) {
       window.alert('请输入提示词');
       return;
     }
-    await onRegenerate(selectedJob.id, regenPrompt.trim(), effectiveProviderId);
-    setRegenOpen(false);
+    setRegenSubmitting(true);
+    try {
+      await onRegenerate(selectedJob.id, regenPrompt.trim(), effectiveProviderId, crypto.randomUUID());
+      setRegenOpen(false);
+    } finally {
+      setRegenSubmitting(false);
+    }
   };
 
-  /** 失败候选的「重试」：换了供应商就按新供应商重新生成一版，否则原任务重跑。 */
-  const retrySelectedJob = () => {
-    if (!selectedJob) return;
-    if (providerSelectionChanged) {
-      void onRegenerate(selectedJob.id, selectedJob.prompt || prompt, effectiveProviderId);
+  const cancelSelectedJob = async () => {
+    if (!selectedJob || !selectedJob.unifiedModel) return;
+    const response = await fetch(`/api/jobs/${encodeURIComponent(selectedJob.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'cancel' }),
+    });
+    const payload = await response.json().catch(() => ({})) as { error?: string };
+    if (!response.ok) {
+      window.alert(payload.error || '停止任务失败');
       return;
     }
-    void onRetry(selectedJob.id);
+    await loadProject();
+  };
+
+  /**
+   * 失败候选的「重试」：统一 Image 2 与换供应商都新建一版，避免在原任务上
+   * 重置通道次数；已有远端身份的确认中任务仍然只续查。
+   */
+  const retrySelectedJob = async () => {
+    if (!selectedJob || regenSubmitting) return;
+    if (selectedState !== 'checking' && (selectedJobUnified || providerSelectionChanged)) {
+      setRegenSubmitting(true);
+      try {
+        await onRegenerate(
+          selectedJob.id,
+          selectedJob.prompt || prompt,
+          effectiveProviderId,
+          crypto.randomUUID(),
+        );
+      } finally {
+        setRegenSubmitting(false);
+      }
+      return;
+    }
+    await onRetry(selectedJob.id);
   };
 
   return (
@@ -328,7 +371,9 @@ export default function SceneStep({
                       {kind === 'succeeded' || kind === 'failed' ? (
                         job.reviewMark
                           ? <Tag tone={markTone(job.reviewMark)}>{MARK_LABELS[job.reviewMark]}</Tag>
-                          : kind === 'failed' ? <Tag tone="fail">失败</Tag> : <Tag tone="idle">未标记</Tag>
+                          : job.status === 'canceled'
+                            ? <Tag tone="warn">已停止 · 已收尾</Tag>
+                            : kind === 'failed' ? <Tag tone="fail">失败</Tag> : <Tag tone="idle">未标记</Tag>
                       ) : <Tag tone="run">{job.status === 'pending' ? '排队中' : '生成中'}</Tag>}
                       {reference ? <Tag tone="run">参考图</Tag> : null}
                     </small>
@@ -426,8 +471,13 @@ export default function SceneStep({
                                 <button
                                   type="button"
                                   className="cap"
-                                  title={providerSelectionChanged ? '按右栏选中的供应商重新生成一版（旧版保留）' : '用原供应商重新执行这个任务'}
-                                  onClick={retrySelectedJob}
+                                  title={selectedJobUnified
+                                    ? '按统一 Image 2 新建一版重新生成（旧版保留）'
+                                    : providerSelectionChanged
+                                      ? '按右栏选中的供应商重新生成一版（旧版保留）'
+                                      : '用原供应商重新执行这个任务'}
+                                  disabled={regenSubmitting}
+                                  onClick={() => void retrySelectedJob()}
                                 >重试</button></>
                             : <><span className={s.spin} /><span>生成中</span></>}
                         </span>
@@ -440,7 +490,9 @@ export default function SceneStep({
                   <b>{selectedJob ? `候选 ${effectiveIndex + 1}` : '候选'}</b>
                   <span>
                     {hasShotResult(selectedState)
-                      ? (selectedJob?.reviewMark ? MARK_LABELS[selectedJob.reviewMark] : '未标记')
+                      ? (selectedJob?.status === 'canceled'
+                        ? '已停止后续生成 · 晚到结果已保留'
+                        : selectedJob?.reviewMark ? MARK_LABELS[selectedJob.reviewMark] : '未标记')
                       : selectedState === 'failed' ? '失败' : hasCandidates ? '生成中' : ''}
                   </span>
                 </figcaption>
@@ -482,7 +534,9 @@ export default function SceneStep({
               <div className={s.dialogRow}>
                 <span className={s.dialogFootNote}>重新生成会保留这次的结果，旧候选不会丢。</span>
                 <button type="button" className="cap" onClick={() => setRegenOpen(false)}>取消</button>
-                <button type="button" className="cap cap-primary" onClick={() => void submitRegen()}>重新生成</button>
+                <button type="button" className="cap cap-primary" disabled={regenSubmitting} onClick={() => void submitRegen()}>
+                  {regenSubmitting ? '提交中…' : '重新生成'}
+                </button>
               </div>
             </div>
           ) : null}
@@ -514,6 +568,13 @@ export default function SceneStep({
               <button type="button" className="cap" disabled={!canRegenerate} onClick={openRegen}>
                 <Icon name="retry" size={14} />重新生成
               </button>
+              {selectedJob?.unifiedModel
+                && ['pending', 'running', 'retrying', 'deferred', 'needs_check'].includes(selectedJob.status)
+                && !selectedJob.cancelRequestedAt ? (
+                  <button type="button" className="cap" onClick={() => void cancelSelectedJob()}>
+                    停止这条任务
+                  </button>
+                ) : null}
               <button
                 type="button"
                 className="cap"
@@ -549,15 +610,17 @@ export default function SceneStep({
 
             {selectableProviders.length > 0 ? (
               <label className={s.field}>
-                <span>供应商</span>
+                <span>{unifiedSelection ? '模型' : '供应商'}</span>
                 <select
                   className={s.select}
-                  aria-label="供应商"
+                  aria-label={unifiedSelection ? '模型' : '供应商'}
                   value={effectiveProviderId}
                   onChange={(event) => setProviderId(event.target.value)}
                 >
                   {selectableProviders.map((provider) => (
-                    <option key={provider.id} value={provider.id}>{provider.name}（{provider.model}）</option>
+                    <option key={provider.id} value={provider.id}>
+                      {provider.type === 'unified-image' ? provider.name : `${provider.name}（${provider.model}）`}
+                    </option>
                   ))}
                 </select>
               </label>
@@ -568,6 +631,12 @@ export default function SceneStep({
             )}
             {providerSelectionChanged ? (
               <p className={s.note}>已换供应商：对失败候选点「重试」会按新供应商重新生成一版，旧版保留。</p>
+            ) : null}
+            {unifiedSelection ? (
+              <p className={s.note}>只选统一模型 Image 2；清晰度和比例由项目创建时锁定，系统按完整可执行组合选择七牛或腾讯通道。</p>
+            ) : null}
+            {canceledSettlingCount > 0 ? (
+              <p className={s.note}>已停止后续生成；已提交任务仍会检查并保存晚到结果，不会自动推进后续步骤。</p>
             ) : null}
 
             <div className={s.field}>
@@ -616,7 +685,7 @@ export default function SceneStep({
             ? <button type="button" className="cap" onClick={onStart}>开始</button> : null}
           {running ? <button type="button" className="cap" onClick={onPause}>暂停</button> : null}
           {queueStatus === 'paused' ? <button type="button" className="cap cap-primary" onClick={onResume}>继续</button> : null}
-          {running || queueStatus === 'paused' ? <button type="button" className="cap" onClick={onCancel}>取消</button> : null}
+          {running || queueStatus === 'paused' ? <button type="button" className="cap" onClick={onCancel}>停止后续生成</button> : null}
         </span>
       </div>
     </div>

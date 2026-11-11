@@ -97,6 +97,8 @@ assert.equal(resolveShotResultState('succeeded', true), 'succeeded');
 assert.equal(resolveShotResultState('succeeded', false), 'failed', '状态成功但输出文件缺失按失败处理');
 assert.equal(resolveShotResultState('failed', false), 'failed');
 assert.equal(resolveShotResultState('canceled', false), 'failed');
+assert.equal(resolveShotResultState('canceled', true), 'succeeded',
+  'a canceled task with a retained late result is viewable but still not auto-promoted');
 assert.equal(resolveShotResultState(undefined, false), 'empty');
 assert.equal(resolveShotResultState(null, true), 'succeeded');
 

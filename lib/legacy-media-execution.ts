@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { sha256Canonical } from './canonical-json.ts';
 import { getDb } from './db.ts';
 import { requireAccessContext } from './media-core/access-context.ts';
 import {
@@ -11,6 +12,12 @@ import {
   type InstanceFence,
 } from './media-core/execution/context.ts';
 import { readExecutionPool, readExecutionPoolBinding, mediaUpstreamBindingKey } from './media-core/execution/pools.ts';
+import {
+  classifyImageSubmissionFailure,
+  classifySubmissionOutcome,
+  classifyVideoSubmissionFailure,
+  type SubmissionEvidence,
+} from './media-core/submission-evidence.ts';
 
 export function isServerMediaExecution(): boolean {
   return (process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE?.trim() || 'local') === 'server';
@@ -114,33 +121,54 @@ export function setLegacyMediaExecutionRuntime(value: LegacyExecutionInjection |
   else delete globals[INJECTION_KEY];
 }
 
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  return `{${Object.entries(value as Record<string, unknown>)
-    .filter(([, item]) => item !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`;
-}
-
-function hash(value: unknown): string {
-  return createHash('sha256').update(canonical(value)).digest('hex');
-}
-
 export class LegacyMediaSubmissionUnknownError extends Error {
   readonly attemptId?: string;
+  readonly evidence?: SubmissionEvidence;
 
-  constructor(message: string, attemptId?: string) {
+  constructor(message: string, attemptId?: string, evidence?: SubmissionEvidence) {
     super(message);
     this.name = 'LegacyMediaSubmissionUnknownError';
     this.attemptId = attemptId;
+    this.evidence = evidence;
   }
 }
 
+export interface LegacyMediaExplicitFailureDetails {
+  evidence: SubmissionEvidence;
+  attemptId: string;
+  operationId: string;
+  channelKey?: string | null;
+}
+
 export class LegacyMediaNotCreatedError extends Error {
-  constructor(message: string) {
-    super(message);
+  readonly evidence: SubmissionEvidence;
+  readonly attemptId: string;
+  readonly operationId: string;
+  readonly channelKey: string | null;
+
+  constructor(details: LegacyMediaExplicitFailureDetails) {
+    super(details.evidence.employee.detail);
     this.name = 'LegacyMediaNotCreatedError';
+    this.evidence = details.evidence;
+    this.attemptId = details.attemptId;
+    this.operationId = details.operationId;
+    this.channelKey = details.channelKey ?? null;
+  }
+}
+
+export class LegacyMediaRemoteFailedError extends Error {
+  readonly evidence: SubmissionEvidence;
+  readonly attemptId: string;
+  readonly operationId: string;
+  readonly channelKey: string | null;
+
+  constructor(details: LegacyMediaExplicitFailureDetails) {
+    super(details.evidence.employee.detail);
+    this.name = 'LegacyMediaRemoteFailedError';
+    this.evidence = details.evidence;
+    this.attemptId = details.attemptId;
+    this.operationId = details.operationId;
+    this.channelKey = details.channelKey ?? null;
   }
 }
 
@@ -155,19 +183,32 @@ export function isLegacyMediaSubmissionUnknown(error: unknown): error is LegacyM
   return error instanceof LegacyMediaSubmissionUnknownError;
 }
 
+export function isLegacyMediaRemoteFailed(error: unknown): error is LegacyMediaRemoteFailedError {
+  return error instanceof LegacyMediaRemoteFailedError;
+}
+
 export function isLegacyMediaProviderRecoveryBlocked(error: unknown): error is LegacyMediaProviderRecoveryBlockedError {
   return error instanceof LegacyMediaProviderRecoveryBlockedError;
 }
 
-function explicitNotCreated(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /(?:API error|submit error|HTTP)[ )]*(400|401|403|404|409|413|422)\b/i.test(message);
-}
-
-function safeErrorCode(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const status = message.match(/(?:API error|submit error|HTTP[ )]+)(\d{3})\b/i)?.[1];
-  return status ? `provider_http_${status}` : 'provider_rejected';
+function classifyLegacySubmissionError(input: {
+  module: 'image' | 'video';
+  taskId: string;
+  adapterId: string;
+  businessAttemptNo: number;
+  error: unknown;
+}): SubmissionEvidence {
+  const common = {
+    taskId: input.taskId,
+    adapterId: input.adapterId,
+    businessAttemptNo: input.businessAttemptNo,
+    stage: 'submit' as const,
+    source: 'adapter' as const,
+    error: input.error,
+  };
+  return input.module === 'image'
+    ? classifyImageSubmissionFailure(common)
+    : classifyVideoSubmissionFailure(common);
 }
 
 export class LegacyMediaExecutionDeferredError extends Error {
@@ -230,9 +271,9 @@ export function assertLegacyMediaProviderRecovery(input: {
   } catch {
     throw new LegacyMediaProviderRecoveryBlockedError();
   }
-  const configVersion = row.configVersion ?? hash(frozenProvider);
+  const configVersion = row.configVersion ?? sha256Canonical(frozenProvider);
   const credentialVersion = upstreamFingerprint(input.providerSnapshot.baseUrl, input.credentialIdentity);
-  if (configVersion !== hash(input.providerSnapshot) || row.credentialVersionRef !== credentialVersion) {
+  if (configVersion !== sha256Canonical(input.providerSnapshot) || row.credentialVersionRef !== credentialVersion) {
     throw new LegacyMediaProviderRecoveryBlockedError();
   }
 }
@@ -249,8 +290,11 @@ export interface LegacyMediaSubmitInput<T> {
   apiKey: string;
   credentialIdentity?: string;
   quote: CostQuote;
+  mediaTaskId?: string | null;
+  channelKey?: string | null;
   signal?: AbortSignal;
   onAdmitted?: () => void;
+  beforeSend?: () => void | Promise<void>;
   send: () => Promise<{ value: T; receipt: ExecutionReceipt }>;
 }
 
@@ -280,13 +324,15 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
     inputRevision: input.inputRevision,
     businessAttempt: { id: `${input.taskId}:${input.inputRevision}`, number: revisionNumber },
     inputSnapshot: input.inputSnapshot,
-    inputHash: hash(input.inputSnapshot),
+    inputHash: sha256Canonical(input.inputSnapshot),
     continuationKey: `legacy-${input.module}.submit`,
     providerSnapshot: input.providerSnapshot,
-    configVersion: hash(input.providerSnapshot),
+    configVersion: sha256Canonical(input.providerSnapshot),
     credentialVersionRef: upstreamFingerprint(input.baseUrl, credentialIdentity),
     requiredPools: [poolKey],
     quote: input.quote,
+    mediaTaskId: input.mediaTaskId,
+    channelKey: input.channelKey,
   });
   if (enqueued.replayed && ['unknown', 'maybe_sent', 'reconciling', 'succeeded', 'failed'].includes(enqueued.operation.status)) {
     throw new LegacyMediaSubmissionUnknownError('该提交结果尚未明确，禁止重复付费。', enqueued.operation.currentAttemptId ?? undefined);
@@ -308,6 +354,24 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
     throw error;
   }
 
+  if (input.beforeSend) {
+    try {
+      await input.beforeSend();
+    } catch (error) {
+      await facade.settle({
+        attemptId: intent.attemptId,
+        outcome: 'not_created',
+        actualCost: null,
+        remoteTerminal: true,
+        errorCode: 'not_sent',
+      });
+      getDb().prepare(`UPDATE execution_operations
+        SET status = 'failed', waitReason = NULL, waitDetail = NULL, updatedAt = ?
+        WHERE id = ?`).run(new Date().toISOString(), intent.operationId);
+      throw error;
+    }
+  }
+
   let value: T | undefined;
   let submissionError: unknown;
   try {
@@ -317,16 +381,38 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
         value = produced.value;
         return produced.receipt;
       } catch (error) {
-        if (explicitNotCreated(error)) {
+        const evidence = classifyLegacySubmissionError({
+          module: input.module,
+          taskId: input.taskId,
+          adapterId: input.providerSnapshot.type,
+          businessAttemptNo: grant.attempt.businessAttemptNo,
+          error,
+        });
+        if (evidence.state === 'confirmed_not_created') {
           submissionError = error;
-          return { terminalState: 'not_created', errorCode: safeErrorCode(error) };
+          return {
+            terminalState: 'not_created',
+            errorCode: evidence.error?.code ?? 'provider_rejected',
+          };
         }
         throw error;
       }
     });
     if (attempt.terminalState === 'not_created') {
       await facade.settle({ attemptId: attempt.id, outcome: 'not_created', actualCost: null, remoteTerminal: true });
-      throw new LegacyMediaNotCreatedError(submissionError instanceof Error ? submissionError.message : '供应商明确未创建任务。');
+      const evidence = classifyLegacySubmissionError({
+        module: input.module,
+        taskId: input.taskId,
+        adapterId: input.providerSnapshot.type,
+        businessAttemptNo: attempt.businessAttemptNo,
+        error: submissionError,
+      });
+      throw new LegacyMediaNotCreatedError({
+        evidence,
+        attemptId: attempt.id,
+        operationId: attempt.operationId,
+        channelKey: input.channelKey,
+      });
     }
     if (attempt.terminalState) {
       const outcome = attempt.terminalState;
@@ -338,16 +424,43 @@ export async function submitLegacyMediaOperation<T>(input: LegacyMediaSubmitInpu
       await facade.settle({ attemptId: attempt.id, outcome, actualCost, remoteTerminal: true });
       if (outcome === 'failed') {
         await facade.captureError({ attemptId: attempt.id, outcome: 'failed', stage: 'remote_submit', errorCode: attempt.errorCode ?? 'provider_failed' });
+        const evidence = classifySubmissionOutcome({
+          entry: input.module,
+          taskId: input.taskId,
+          businessAttemptNo: attempt.businessAttemptNo,
+          adapterId: input.providerSnapshot.type,
+          stage: 'submit',
+          source: 'provider',
+          outcome: 'terminal_failed',
+          remoteId: attempt.remoteId,
+          errorCode: attempt.errorCode ?? 'provider_failed',
+        });
+        if (input.mediaTaskId) {
+          throw new LegacyMediaRemoteFailedError({
+            evidence,
+            attemptId: attempt.id,
+            operationId: attempt.operationId,
+            channelKey: input.channelKey,
+          });
+        }
         throw new Error('供应商同步返回失败。');
       }
     }
     return { value, attemptId: attempt.id, remoteId: attempt.remoteId ?? undefined, resumed: false };
   } catch (error) {
-    if (error instanceof LegacyMediaNotCreatedError) throw error;
+    if (error instanceof LegacyMediaNotCreatedError || error instanceof LegacyMediaRemoteFailedError) throw error;
     if (error instanceof ExecutionError && !['transport_unknown'].includes(error.code)) throw error;
+    const evidence = classifyLegacySubmissionError({
+      module: input.module,
+      taskId: input.taskId,
+      adapterId: input.providerSnapshot.type,
+      businessAttemptNo: Number(input.inputRevision.replace(/\D/g, '')) + 1 || 1,
+      error,
+    });
     throw new LegacyMediaSubmissionUnknownError(
-      error instanceof Error ? error.message : String(error),
+      evidence.employee.detail,
       intent.attemptId,
+      evidence,
     );
   }
 }

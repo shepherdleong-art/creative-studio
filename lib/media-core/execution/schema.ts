@@ -251,6 +251,153 @@ export const EXECUTION_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = [
         WHERE concurrencyMode IS NULL;
     `,
   },
+  {
+    version: 8,
+    sql: `
+      ALTER TABLE execution_operations ADD COLUMN mediaTaskId TEXT;
+      ALTER TABLE execution_operations ADD COLUMN channelKey TEXT;
+      CREATE UNIQUE INDEX idx_execution_operations_media_channel
+        ON execution_operations(mediaTaskId, channelKey)
+        WHERE mediaTaskId IS NOT NULL;
+
+      CREATE TABLE execution_media_tasks (
+        id TEXT PRIMARY KEY,
+        taskKey TEXT NOT NULL UNIQUE,
+        actorId TEXT NOT NULL,
+        scopeType TEXT NOT NULL,
+        scopeId TEXT NOT NULL,
+        module TEXT NOT NULL,
+        taskId TEXT NOT NULL,
+        unifiedModel TEXT NOT NULL,
+        ruleVersion TEXT NOT NULL,
+        inputHash TEXT NOT NULL,
+        inputSnapshotJson TEXT NOT NULL,
+        outputContractJson TEXT NOT NULL,
+        sourceType TEXT NOT NULL,
+        sourceId TEXT,
+        sourceMetaJson TEXT NOT NULL,
+        status TEXT NOT NULL,
+        cancelRequestedAt TEXT,
+        currentChannelKey TEXT,
+        nextEligibleAt TEXT,
+        waitReason TEXT,
+        waitDetailJson TEXT,
+        resultJson TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+      CREATE INDEX idx_execution_media_tasks_actor ON execution_media_tasks(actorId, createdAt);
+      CREATE INDEX idx_execution_media_tasks_scope ON execution_media_tasks(scopeType, scopeId, createdAt);
+
+      CREATE TABLE execution_media_channels (
+        id TEXT PRIMARY KEY,
+        mediaTaskId TEXT NOT NULL,
+        channelKey TEXT NOT NULL,
+        providerTable TEXT NOT NULL,
+        providerId TEXT NOT NULL,
+        providerModel TEXT NOT NULL,
+        priority INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        executionRevision INTEGER NOT NULL,
+        operationId TEXT,
+        remoteId TEXT,
+        evidenceJson TEXT,
+        nextEligibleAt TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        UNIQUE(mediaTaskId, channelKey),
+        FOREIGN KEY (mediaTaskId) REFERENCES execution_media_tasks(id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_execution_media_channels_state ON execution_media_channels(mediaTaskId, state, priority);
+
+      CREATE TABLE execution_media_settings (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        imageCongestionThresholdSec INTEGER NOT NULL DEFAULT 30,
+        version INTEGER NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+      INSERT INTO execution_media_settings (id, imageCongestionThresholdSec, version, updatedAt)
+      VALUES (1, 30, 1, CURRENT_TIMESTAMP);
+    `,
+  },
+  {
+    version: 9,
+    sql: `
+      CREATE TABLE execution_media_channel_health (
+        healthKey TEXT PRIMARY KEY,
+        unifiedModel TEXT NOT NULL,
+        channelKey TEXT NOT NULL,
+        providerId TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('healthy', 'avoided', 'recovering')),
+        consecutiveFailures INTEGER NOT NULL DEFAULT 0 CHECK(consecutiveFailures >= 0),
+        reasonCode TEXT,
+        lastFailureAt TEXT,
+        lastSuccessAt TEXT,
+        avoidUntil TEXT,
+        version INTEGER NOT NULL CHECK(version > 0),
+        updatedAt TEXT NOT NULL,
+        UNIQUE(unifiedModel, channelKey)
+      );
+      CREATE INDEX idx_execution_media_channel_health_state
+        ON execution_media_channel_health(state, avoidUntil);
+
+      CREATE TABLE execution_media_channel_health_events (
+        id TEXT PRIMARY KEY,
+        healthKey TEXT NOT NULL,
+        action TEXT NOT NULL,
+        actorId TEXT,
+        reasonCode TEXT,
+        beforeJson TEXT,
+        afterJson TEXT,
+        createdAt TEXT NOT NULL
+      );
+      CREATE INDEX idx_execution_media_channel_health_events_key
+        ON execution_media_channel_health_events(healthKey, createdAt);
+    `,
+  },
+  {
+    version: 10,
+    sql: `
+      ALTER TABLE execution_media_tasks ADD COLUMN reconcileVersion INTEGER NOT NULL DEFAULT 0;
+
+      CREATE TABLE execution_media_reconcile_actions (
+        id TEXT PRIMARY KEY,
+        mediaTaskId TEXT NOT NULL,
+        channelKey TEXT,
+        attemptId TEXT,
+        actorUserId TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN (
+          'attach_remote_id', 'confirm_not_created', 'confirm_succeeded',
+          'confirm_failed', 'still_unknown'
+        )),
+        idempotencyKey TEXT NOT NULL,
+        requestHash TEXT NOT NULL,
+        evidenceSummary TEXT NOT NULL,
+        beforeJson TEXT NOT NULL,
+        afterJson TEXT,
+        resultJson TEXT,
+        status TEXT NOT NULL CHECK(status IN ('in_progress', 'completed', 'failed')),
+        errorCode TEXT,
+        createdAt TEXT NOT NULL,
+        completedAt TEXT,
+        UNIQUE(mediaTaskId, idempotencyKey)
+      );
+      CREATE INDEX idx_execution_media_reconcile_actions_task
+        ON execution_media_reconcile_actions(mediaTaskId, createdAt DESC);
+      CREATE INDEX idx_execution_media_reconcile_actions_actor
+        ON execution_media_reconcile_actions(actorUserId, createdAt DESC);
+    `,
+  },
+  {
+    version: 11,
+    sql: `
+      ALTER TABLE execution_operations ADD COLUMN admissionPriority INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE execution_operations ADD COLUMN admissionCandidateCount INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE execution_operations ADD COLUMN admissionTraceJson TEXT;
+      CREATE INDEX idx_execution_operations_admission_priority
+        ON execution_operations(status, admissionPriority, readySeq);
+    `,
+  },
 ];
 
 export type ExecutionSchemaReadiness = VersionedSchemaReadiness;
@@ -305,6 +452,56 @@ function validateExecutionSchema(db: Database.Database): void {
     if (!modeSql.includes("'auto'")) throw new Error('execution 缺少团队自动并发模式');
     const unMigrated = db.prepare('SELECT COUNT(*) FROM execution_actor_policies WHERE concurrencyMode IS NULL').pluck().get() as number;
     if (unMigrated > 0) throw new Error('execution 旧个人固定并发尚未一次性迁移');
+  }
+  if (schemaVersion >= 8) {
+    for (const table of ['execution_media_tasks', 'execution_media_channels', 'execution_media_settings']) {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) {
+        throw new Error(`execution 缺少 ${table} 结构`);
+      }
+    }
+    const operationColumns = (db.prepare('PRAGMA table_info(execution_operations)').all() as Array<{ name: string }>)
+      .map(column => column.name);
+    if (!operationColumns.includes('mediaTaskId') || !operationColumns.includes('channelKey')) {
+      throw new Error('execution operation 缺少统一媒体任务关联字段');
+    }
+    if (!db.prepare(`SELECT 1 FROM sqlite_master
+      WHERE type = 'index' AND name = 'idx_execution_operations_media_channel'`).get()) {
+      throw new Error('execution operation 缺少统一媒体通道唯一索引');
+    }
+  }
+  if (schemaVersion >= 9) {
+    for (const table of [
+      'execution_media_channel_health',
+      'execution_media_channel_health_events',
+    ]) {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) {
+        throw new Error(`execution 缺少 ${table} 结构`);
+      }
+    }
+    const stateSql = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'execution_media_channel_health'",
+    ).pluck().get() as string;
+    if (!stateSql.includes("'avoided'") || !stateSql.includes("'recovering'")) {
+      throw new Error('execution 通道健康状态机不完整');
+    }
+  }
+  if (schemaVersion >= 10) {
+    const taskColumns = (db.prepare('PRAGMA table_info(execution_media_tasks)').all() as Array<{ name: string }>)
+      .map(column => column.name);
+    if (!taskColumns.includes('reconcileVersion')) {
+      throw new Error('execution 统一媒体任务缺少核对版本字段');
+    }
+    if (!db.prepare(`SELECT 1 FROM sqlite_master
+      WHERE type = 'table' AND name = 'execution_media_reconcile_actions'`).get()) {
+      throw new Error('execution 缺少统一媒体核对审计结构');
+    }
+  }
+  if (schemaVersion >= 11) {
+    const operationColumns = (db.prepare('PRAGMA table_info(execution_operations)').all() as Array<{ name: string }>)
+      .map(column => column.name);
+    for (const column of ['admissionPriority', 'admissionCandidateCount', 'admissionTraceJson']) {
+      if (!operationColumns.includes(column)) throw new Error(`execution operation 缺少调度字段 ${column}`);
+    }
   }
 }
 

@@ -19,6 +19,7 @@ import ShotSetStep from '@/components/workbench/ShotSetStep';
 import { StepEmptyBanner } from '@/components/workbench/StepEmpty';
 import { parseWorkbenchTab, WorkbenchStepNav, type WorkbenchTabId } from '@/components/workbench/WorkbenchStepNav';
 import type { WorkbenchImage, WorkbenchJob, WorkbenchProvider } from '@/components/workbench/types';
+import { UNIFIED_IMAGE_ANCHOR_ID, UNIFIED_IMAGE_DISPLAY_NAME } from '@/lib/media-core/unified-media/catalog';
 import {
   buildSceneReferenceByImageId,
   getActiveSceneReferences,
@@ -57,6 +58,7 @@ function toWorkbenchProvider(provider: { id: string; name: string; model: string
     id: provider.id,
     name: provider.name,
     model: provider.model,
+    type: provider.type,
     enabled: provider.enabled ?? 1,
     hasApiKey: provider.hasApiKey ?? true,
   };
@@ -93,6 +95,8 @@ export default function ProjectDetailPage() {
   const [applySceneRefId, setApplySceneRefId] = useState('');
   const [applyScenePrompt, setApplyScenePrompt] = useState('图1是待编辑分镜图，是本次修改的主要对象。图2是场景参考图。参考图2，修改图1，保持图中床和模特的一致性不变，更换卧室的其他家具和软装布置，构图和机位景别严格参考图1。');
   const [applySceneProviderId, setApplySceneProviderId] = useState('');
+  const [applySceneRequestKey, setApplySceneRequestKey] = useState('');
+  const [applySceneSubmitting, setApplySceneSubmitting] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [projectInfoOpen, setProjectInfoOpen] = useState(false);
   const [selectedSceneSeedIds, setSelectedSceneSeedIds] = useState<string[]>([]);
@@ -259,7 +263,7 @@ export default function ProjectDetailPage() {
     await loadProject();
   };
 
-  const handleRegenerate = async (jobId: string, prompt: string, providerId: string) => {
+  const handleRegenerate = async (jobId: string, prompt: string, providerId: string, requestKey: string) => {
     // 不传 referenceImageIds：沿用这个任务原来的参考图（传空数组会把参考图清掉）。
     const res = await fetch(`/api/jobs/${jobId}/regenerate`, {
       method: 'POST',
@@ -269,6 +273,7 @@ export default function ProjectDetailPage() {
         inputSource: 'original',
         providerId: providerId || undefined,
         markOriginal: true,
+        requestKey,
       }),
     });
     const data = await res.json();
@@ -334,25 +339,40 @@ export default function ProjectDetailPage() {
     setApplySceneRefId('');
     setApplyScenePrompt(project?.shotPrompt || '');
     setApplySceneProviderId(project?.providerId || '');
+    setApplySceneRequestKey(crypto.randomUUID());
   };
 
   const handleApplySceneSubmit = async () => {
+    if (applySceneSubmitting) return;
     if (!applySceneModal || !applySceneRefId || !applyScenePrompt.trim()) {
       alert('请选择场景参考图并填写提示词');
       return;
     }
-    const res = await fetch(`/api/shot-sets/${applySceneModal}/apply-scene`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sceneReferenceId: applySceneRefId, prompt: applyScenePrompt.trim(), providerId: applySceneProviderId || undefined }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      alert(`已创建 ${data.jobCount} 个任务`);
-      setApplySceneModal(null);
-      await ensureQueueRunning();
-    } else {
-      alert('应用失败: ' + (data.error || '未知错误'));
+    setApplySceneSubmitting(true);
+    try {
+      const res = await fetch(`/api/shot-sets/${applySceneModal}/apply-scene`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sceneReferenceId: applySceneRefId,
+          prompt: applyScenePrompt.trim(),
+          providerId: applySceneProviderId || undefined,
+          requestKey: applySceneRequestKey || crypto.randomUUID(),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert(`已创建 ${data.jobCount} 个任务`);
+        setApplySceneModal(null);
+        setApplySceneRequestKey('');
+        await ensureQueueRunning();
+      } else {
+        alert('应用失败: ' + (data.error || '未知错误'));
+      }
+    } catch (error) {
+      alert('应用失败: ' + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setApplySceneSubmitting(false);
     }
   };
 
@@ -598,10 +618,25 @@ export default function ProjectDetailPage() {
                 <textarea value={applyScenePrompt} onChange={(event) => setApplyScenePrompt(event.target.value)} rows={4} className="input-field generation-control generation-textarea apply-scene-textarea" />
                 <p className="generation-helper">每张分镜图会作为图1（底图），场景参考图作为图2（参考图）</p>
               </div>
+              <div>
+                <span className="label generation-label">生成模型</span>
+                <p className="text-sm text-ink">
+                  {project.providerId === UNIFIED_IMAGE_ANCHOR_ID
+                    ? UNIFIED_IMAGE_DISPLAY_NAME
+                    : `${project.provider?.name || project.providerId}（${project.model}）`}
+                </p>
+                <p className="generation-helper">
+                  {project.providerId === UNIFIED_IMAGE_ANCHOR_ID
+                    ? '系统按项目锁定的清晰度与比例自动选择兼容通道；每条分镜任务独立计算提交次数。'
+                    : '沿用项目当前供应商与模型。'}
+                </p>
+              </div>
             </div>
             <div className="apply-scene-dialog-actions">
               <button onClick={() => setApplySceneModal(null)} className="btn-secondary btn-sm">取消</button>
-              <button onClick={() => void handleApplySceneSubmit()} disabled={!applySceneRefId || !applyScenePrompt.trim()} className="btn-primary btn-sm">创建任务并开始</button>
+              <button onClick={() => void handleApplySceneSubmit()} disabled={applySceneSubmitting || !applySceneRefId || !applyScenePrompt.trim()} className="btn-primary btn-sm">
+                {applySceneSubmitting ? '提交中…' : '创建任务并开始'}
+              </button>
             </div>
           </div>
         </div>

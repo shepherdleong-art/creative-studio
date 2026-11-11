@@ -23,6 +23,10 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { resolveGptImage2Size } from '../../gpt-image-2-size-presets.ts';
 import { downloadGatewayMedia, normalizeGatewayResultUrl, sanitizeGatewayMediaDiagnostic } from '../../gateway-media-url.ts';
+import {
+  isAmbiguousSubmissionHttpStatus,
+  ProviderRequestError,
+} from '../../media-core/submission-evidence.ts';
 import { getVideoAdapter } from '../../video-providers/index.ts';
 import { createCompanySeedanceVideoAdapter } from './company-seedance-video.ts';
 import { companyCanvasImageOutput } from './company-image-output.ts';
@@ -243,11 +247,15 @@ async function decodeImageResponse(response: Response, apiKey: string, chatImage
     });
   }
   if (!response.ok) {
-    const uncertain = response.status >= 500;
+    const uncertain = isAmbiguousSubmissionHttpStatus(response.status);
     throw new CanvasAdapterError(
       'submit',
       `外部图片网关提交失败 ${response.status}：${sanitizeGatewayMediaDiagnostic(text, apiKey).slice(0, 300)}`,
-      { uncertain, code: uncertain ? 'external_submit_uncertain' : 'external_submit_rejected' },
+      {
+        uncertain,
+        code: uncertain ? 'external_submit_uncertain' : 'external_submit_rejected',
+        httpStatus: response.status,
+      },
     );
   }
   let payload: Parameters<typeof extractPackyGeminiImageSource>[0] & { data?: Array<{ b64_json?: string; url?: string }> };
@@ -274,8 +282,11 @@ async function decodeImageResponse(response: Response, apiKey: string, chatImage
 }
 
 function isHttpClientRejection(error: unknown): boolean {
-  return /^(?:Jimeng(?: text-to-video| reference-to-video| final-from-draft)?|Kling|Video gateway) submit error 4\d\d:/i
-    .test(error instanceof Error ? error.message : String(error));
+  return error instanceof ProviderRequestError
+    && error.httpStatus !== null
+    && error.httpStatus >= 400
+    && error.httpStatus < 500
+    && !isAmbiguousSubmissionHttpStatus(error.httpStatus);
 }
 
 function submitError(stage: 'submit', message: string, error: unknown, signal?: AbortSignal): CanvasAdapterError {
@@ -289,6 +300,7 @@ function submitError(stage: 'submit', message: string, error: unknown, signal?: 
   return new CanvasAdapterError(stage, message, {
     uncertain: !isHttpClientRejection(error),
     code: isHttpClientRejection(error) ? 'external_submit_rejected' : 'external_submit_uncertain',
+    httpStatus: error instanceof ProviderRequestError ? error.httpStatus : null,
   });
 }
 

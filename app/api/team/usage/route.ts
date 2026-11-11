@@ -1,7 +1,13 @@
 import { getDb } from '@/lib/db';
 import { requireAccessContext } from '@/lib/media-core/access-context';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
-import { queryTeamUsage, queryTeamUsageAnalytics, readTeamMemberPolicy, readTeamMemberSummary } from '@/lib/team-service/usage';
+import {
+  queryTeamUsage,
+  queryTeamUsageAnalytics,
+  queryTeamUnifiedUsage,
+  readTeamMemberPolicy,
+  readTeamMemberSummary,
+} from '@/lib/team-service/usage';
 import { readTeamUsageFilters } from '@/lib/team-service/usage-request';
 import { teamServiceError } from '@/lib/team-service/http-error';
 
@@ -14,10 +20,20 @@ async function __teamRouteGET(request: Request): Promise<Response> {
     if (!teamScope && !filters.actorUserId) filters.actorUserId = viewer.userId;
     const result = queryTeamUsage(getDb(), viewer, filters);
     const analytics = queryTeamUsageAnalytics(getDb(), viewer, filters);
+    const unified = queryTeamUnifiedUsage(getDb(), viewer, filters);
     const memberId = filters.actorUserId ?? viewer.userId;
     return Response.json({
       ...result,
+      // Unified channel attempts are an execution detail. Employees receive
+      // task-level totals; only the non-unified legacy list remains visible.
+      items: viewer.role === 'admin'
+        ? result.items
+        : result.items.filter((item) => item.unifiedModel === null && item.mediaTaskId === null),
       ...analytics,
+      tasks: unified.tasks,
+      legacyAttempts: unified.legacyAttempts,
+      unmappedAttempts: viewer.role === 'admin' ? unified.unmappedAttempts : [],
+      counts: unified.counts,
       range: { from: filters.from, to: filters.to },
       scope: teamScope ? 'team' : 'self',
       canViewTeam: viewer.role === 'admin',

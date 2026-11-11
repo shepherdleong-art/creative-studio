@@ -49,6 +49,7 @@ Object.assign(process.env, {
 const { ensureServerDeploymentMarker } = await import('../lib/team-service/config.ts');
 const { getDb, closeDb } = await import('../lib/db.ts');
 const { checkTeamServiceReadiness } = await import('../lib/team-service/readiness.ts');
+const { checkExecutionReadiness } = await import('../lib/media-core/execution/readiness.ts');
 const { schemaUpgradeRuntimePaths } = await import('../lib/schema-upgrade/runtime.ts');
 const { initializeFirstAdministrator } = await import('../lib/team-service/auth/local-admin.ts');
 const { createTeamAuthService, BoundedKdfScheduler } = await import('../lib/team-service/auth/service.ts');
@@ -62,6 +63,7 @@ ensureServerDeploymentMarker({
 });
 const db = getDb();
 assert.equal((await checkTeamServiceReadiness({ db, ...schemaUpgradeRuntimePaths(fixtureRoot) })).available, true);
+assert.equal((await checkExecutionReadiness({ db, ...schemaUpgradeRuntimePaths(fixtureRoot) })).available, true);
 const kdf = new BoundedKdfScheduler({ maxConcurrent: 1, maxQueue: 8 });
 const passwordParams = { N: 1024, r: 8, p: 1 };
 const initialized = await initializeFirstAdministrator({
@@ -164,6 +166,9 @@ const usageRecordsRoute = await import('../app/api/usage/records/route.ts');
 const logsRoute = await import('../app/api/projects/[id]/logs/route.ts');
 const fontFavoritesRoute = await import('../app/api/font-favorites/route.ts');
 const teamModelsRoute = await import('../app/api/team/models/route.ts');
+const teamReconcileRoute = await import('../app/api/team/reconcile/route.ts');
+const channelHealthRoute = await import('../app/api/team/channel-health/route.ts');
+const filmReworkRoute = await import('../app/api/final-edit-groups/[id]/rework/[clipId]/route.ts');
 const canvasCopiesRoute = await import('../app/api/canvas/[id]/copies/route.ts');
 const scriptGenerationRoute = await import('../app/api/projects/[id]/script-generation/route.ts');
 const scriptCurrentRoute = await import('../app/api/projects/[id]/script-studio/scripts/[scriptId]/current/route.ts');
@@ -340,6 +345,127 @@ try {
   assert.equal(modelText.includes('"apiKey"'), false);
   assert.equal(modelText.includes('"keyEnv"'), false);
   assert.equal(modelText.includes('test-key'), false);
+  const imageModels = JSON.parse(modelText) as Array<{ id: string; type: string; model: string }>;
+  assert.equal(imageModels[0]?.id, 'unified-image2', 'team image API leads with the unified Image 2 anchor');
+  assert.ok(imageModels.some((model) => model.id === 'company-gateway-seedream-5-0-pro'), 'other image models keep their original visibility');
+  assert.ok(imageModels.some((model) => model.id === 'company-gateway-nano-banana-pro'));
+  assert.equal(
+    imageModels.some((model) => model.id === 'company-gateway-image2-medium'
+      || model.id === 'company-gateway-qiniuyun-gpt-image-2-medium'),
+    false,
+    'the two real Image 2 channels stay hidden from the employee model menu',
+  );
+
+  assert.equal((await teamReconcileRoute.GET(get('https://studio.example.test/api/team/reconcile'))).status, 401);
+  assert.equal(
+    (await teamReconcileRoute.GET(get('https://studio.example.test/api/team/reconcile', userA.cookie))).status,
+    403,
+    'employees cannot inspect another member reconciliation details',
+  );
+  const reconcileAdmin = await teamReconcileRoute.GET(
+    get('https://studio.example.test/api/team/reconcile?status=all', admin.cookie),
+  );
+  assert.equal(reconcileAdmin.status, 200, await reconcileAdmin.clone().text());
+  const reconcileText = await reconcileAdmin.text();
+  assert.equal(reconcileText.includes('"baseUrl"'), false);
+  assert.equal(reconcileText.includes('"apiKey"'), false);
+  assert.equal(
+    (await teamReconcileRoute.POST(write(
+      'https://studio.example.test/api/team/reconcile',
+      userA.cookie,
+      { mediaTaskId: 'unknown', channelKey: 'qiniu', attemptId: 'unknown', action: 'still_unknown', evidence: 'test' },
+    ))).status,
+    403,
+  );
+  assert.equal((await channelHealthRoute.GET(get(
+    'https://studio.example.test/api/team/channel-health', userA.cookie,
+  ))).status, 403, 'channel health is administrator-only');
+  const health = await channelHealthRoute.GET(get(
+    'https://studio.example.test/api/team/channel-health', admin.cookie,
+  ));
+  const healthText = await health.text();
+  assert.equal(health.status, 200, healthText);
+  assert.equal(healthText.includes('apiKey'), false);
+  assert.equal(healthText.includes('baseUrl'), false);
+  const healthBody = JSON.parse(healthText) as {
+    items: Array<{ healthKey: string; version: number; state: string }>;
+  };
+  assert.equal(healthBody.items.length, 4);
+  assert.equal((await channelHealthRoute.POST(write(
+    'https://studio.example.test/api/team/channel-health', userA.cookie,
+    { action: 'clear', healthKey: healthBody.items[0].healthKey, expectedVersion: healthBody.items[0].version },
+  ))).status, 403);
+  const cleared = await channelHealthRoute.POST(write(
+    'https://studio.example.test/api/team/channel-health', admin.cookie,
+    { action: 'clear', healthKey: healthBody.items[0].healthKey, expectedVersion: healthBody.items[0].version },
+  ));
+  assert.equal(cleared.status, 200, await cleared.text());
+
+  db.prepare(`INSERT INTO shot_sets (id, projectId, name) VALUES ('rework-set-a', 'project-a', '返工镜头')`).run();
+  registerInheritedScope(db, {
+    resourceType: 'shot_set', resourceId: 'rework-set-a',
+    parent: { resourceType: 'project', resourceId: 'project-a' },
+  });
+  db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourceImageId)
+    VALUES ('rework-shot-a', 'rework-set-a', 1, 'image-a')`).run();
+  registerInheritedScope(db, {
+    resourceType: 'shot', resourceId: 'rework-shot-a',
+    parent: { resourceType: 'shot_set', resourceId: 'rework-set-a' },
+  });
+  db.prepare(`INSERT INTO final_edit_groups
+    (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash,
+     narrationConfigJson, coverTitleJson, textStylesJson, createdAt, updatedAt)
+    VALUES ('rework-group-a', 'project-a', 'script', 'rework-set-a', '{}', 'hash', '{}', '{}', '{}', '2026-11-11', '2026-11-11')`).run();
+  db.prepare(`INSERT INTO final_edit_variants
+    (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, createdAt, updatedAt)
+    VALUES ('rework-variant-a', 'rework-group-a', 0, 'portrait', '{"clips":[]}', '{}', '{}', '2026-11-11', '2026-11-11')`).run();
+  db.prepare(`INSERT INTO final_edit_film_bindings
+    (id, importKey, importHash, projectId, shotSetId, groupId, variantId,
+     specJson, candidatesJson, manifestJson, inputHashesJson, managedRootRelative,
+     deliveryDir, baseName, reviewToken, createdAt)
+    VALUES ('rework-binding-a', 'rework-import-a', 'hash', 'project-a', 'rework-set-a',
+      'rework-group-a', 'rework-variant-a', '{}', ?, ?, '{}', 'managed', 'delivery', 'rework-a', 'token', '2026-11-11')`)
+    .run(
+      JSON.stringify([{ clipId: 'clip-a', shotId: 'rework-shot-a', videoJobId: 'rework-original-video', file: 'original.mp4' }]),
+      JSON.stringify({ shots: [{
+        id: 'clip-a', selectedCandidateId: 'original',
+        candidates: [{ id: 'original', file: 'original.mp4' }],
+      }] }),
+    );
+  registerInheritedScope(db, {
+    resourceType: 'final_group', resourceId: 'rework-group-a',
+    parent: { resourceType: 'shot_set', resourceId: 'rework-set-a' },
+  });
+  db.prepare(`INSERT INTO video_providers
+    (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, baseUrl, apiKey)
+    VALUES ('rework-video-provider', '测试视频', 'openai-video', '', '', '', 'mock-video', 1,
+      'https://video.example.test', 'fixture-only')`).run();
+  db.prepare(`INSERT INTO video_jobs
+    (id, projectId, shotSetId, shotId, sourceImageId, providerId, model, prompt, durationSec, status)
+    VALUES ('rework-original-video', 'project-a', 'rework-set-a', 'rework-shot-a',
+      'image-a', 'rework-video-provider', 'mock-video', '', 5, 'succeeded')`).run();
+  const reworkParams = { params: Promise.resolve({ id: 'rework-group-a', clipId: 'clip-a' }) };
+  assert.equal((await filmReworkRoute.GET(get(
+    'https://studio.example.test/api/final-edit-groups/rework-group-a/rework/clip-a', userA.cookie,
+  ), reworkParams)).status, 200, 'team server rework must not be blocked by the desktop-only gate');
+  assert.equal((await filmReworkRoute.GET(get(
+    'https://studio.example.test/api/final-edit-groups/rework-group-a/rework/clip-a', userB.cookie,
+  ), reworkParams)).status, 403, 'another member cannot read rework details');
+  const selectOwn = await filmReworkRoute.POST(write(
+    'https://studio.example.test/api/final-edit-groups/rework-group-a/rework/clip-a',
+    userA.cookie,
+    {
+      requestId: 'rework-select-a', expectedRevision: 0, type: 'select_image', imageId: 'image-a',
+    },
+  ), reworkParams);
+  assert.equal(selectOwn.status, 200, await selectOwn.clone().text());
+  assert.equal((await filmReworkRoute.POST(write(
+    'https://studio.example.test/api/final-edit-groups/rework-group-a/rework/clip-a',
+    userB.cookie,
+    {
+      requestId: 'rework-select-b', expectedRevision: 1, type: 'select_image', imageId: 'image-a',
+    },
+  ), reworkParams)).status, 403, 'cross-member rework writes remain forbidden');
 
   const failures: string[] = [];
   const resolveRoute = await import('../app/api/team/errors/[id]/resolve/route.ts');

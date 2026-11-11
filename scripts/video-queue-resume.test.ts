@@ -339,6 +339,20 @@ assert.equal(queueModule.providerConcurrencyLimit('jimeng'), null, '未列出的
   assert.equal(videoJobAttempt('retry-job'), 2, 'maxAttempts=1 的旧行也必须重试一次(运行时兜底到 2)');
 }
 
+// --- 管理员核对可只补齐结果 URL：没有远端 task_id 也必须能被补下载领取 ---
+{
+  insertProject('project-result-url-only');
+  insertImageAsset('img-project-result-url-only', 'project-result-url-only');
+  insertProvider('result-url-only-provider', 'openai-video');
+  insertVideoJob('result-url-only-job', 'project-result-url-only', {
+    status: 'needs_check', providerId: 'result-url-only-provider',
+  });
+  db.prepare(`UPDATE video_jobs SET providerTaskId = NULL, providerStatus = 'download_failed',
+    remoteVideoUrl = 'https://download.example.test/result.mp4' WHERE id = 'result-url-only-job'`).run();
+  const claimed = queueModule.claimNeedsCheckVideoJob('project-result-url-only');
+  assert.equal(claimed?.id, 'result-url-only-job', 'result URL only tasks must enter download-only recovery');
+}
+
 // --- 提交限流退避:429/5xx 不消耗 maxAttempts,冷却退避,重排有界 ---
 {
   assert.equal(queueModule.isRateLimitedSubmitError('Video gateway submit error 429: rate limited'), true);
@@ -368,11 +382,11 @@ assert.equal(queueModule.providerConcurrencyLimit('jimeng'), null, '未列出的
   } finally {
     queueModule.RATE_LIMIT_COOLDOWN_MS.splice(0, queueModule.RATE_LIMIT_COOLDOWN_MS.length, ...savedCooldowns);
   }
-  assert.equal(rlSubmitCalls, queueModule.RATE_LIMIT_MAX_REQUEUES + 1, '限流重排必须有界(初始提交 + 5 次重排)');
-  assert.equal(videoJobStatus('ratelimit-job'), 'failed', '持续限流最终标失败');
+  assert.equal(rlSubmitCalls, 1, '一次队列运行只提交一次，429 不进入无界紧循环');
+  assert.equal(videoJobStatus('ratelimit-job'), 'pending', '429 退回 pending，等待冷却后重新领取');
   const rlRow = db.prepare(`SELECT errorMessage, attempt FROM video_jobs WHERE id = 'ratelimit-job'`).get() as { errorMessage: string; attempt: number };
-  assert.ok(rlRow.errorMessage.includes('网关持续限流'), '失败信息须说明是持续限流');
-  assert.ok(rlRow.attempt > 2, '限流重试不消耗 maxAttempts(默认 2 次外仍重排)');
+  assert.ok(rlRow.errorMessage.includes('网关限流'), '等待信息须说明限流退避');
+  assert.equal(rlRow.attempt, 1, '限流重排不消耗 maxAttempts');
 }
 
 console.log('video queue resume tests passed');

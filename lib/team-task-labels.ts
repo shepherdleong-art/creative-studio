@@ -9,9 +9,10 @@ export const TASK_STEP_LABELS: Record<string, string> = {
   export: '导出', prepare: '准备素材', analyze: '素材分析',
 };
 export const TASK_STATUS_LABELS: Record<string, string> = {
+  routing: '正在选择通道', waiting: '等待运行资源',
   pending: '排队中', deferred: '等待运行条件', admitted: '准备发送', maybe_sent: '提交中（待确认）',
   accepted: '供应商已受理', reconciling: '核查结果中', succeeded: '成功', failed: '失败',
-  unknown: '提交结果待核查', canceled: '已取消',
+  unknown: '结果确认中', canceled: '已取消',
 };
 const SCRIPT_STEP_PURPOSE_LABELS: Record<string, string> = {
   generate: '生成', repair: '正文修正', review: '内容检查', fallback: '兜底生成',
@@ -60,7 +61,7 @@ export const WAITING_REASON_LABELS: Record<string, string> = {
   actor_disabled: '账号停用',
   pricing_required: '定价缺失',
   cost_unknown: '费用待核查',
-  pool_capacity: '共享并发等待',
+  pool_capacity: '等待可用资源（共享并发等待）',
   fair_share: '等待公平共享名额，释放后按顺序继续',
   pool_missing: '资源池未配置',
   pool_disabled: '资源池已停用',
@@ -79,7 +80,7 @@ export function taskWaitLabel(reason: string | null, concurrency?: number | null
     maintenance: '系统维护或团队生产已暂停', actor_disabled: '账号已停用，请联系管理员',
     scope_forbidden: '项目访问权限不足，请联系管理员', actor_paused: '该成员已暂停生成',
     pool_missing: '供应商资源池尚未配置，请联系管理员', pool_disabled: '供应商资源池已停用',
-    pool_capacity: '供应商名额已满，释放后自动继续', fair_share: '其他成员正在公平使用共享名额，释放后按顺序继续', pricing_required: '模型价格尚未配置',
+    pool_capacity: '等待可用资源（供应商名额已满，释放后自动继续）', fair_share: '其他成员正在公平使用共享名额，释放后按顺序继续', pricing_required: '模型价格尚未配置',
     currency_mismatch: '计费币种不一致，请联系管理员', monthly_budget: '月度额度不足，请联系管理员',
     cost_unknown: '存在待核实费用，请管理员核查', stage_canceled: '已取消，尚未发送的请求已停止',
     business_failed: '生成失败，请查看项目运行日志',

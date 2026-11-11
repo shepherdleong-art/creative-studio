@@ -8,6 +8,7 @@ import {
   sanitizeGatewayMediaDiagnostic,
   type GatewayMediaDownloadResult,
 } from '../gateway-media-url.ts';
+import { providerHttpError } from '../media-core/submission-evidence.ts';
 
 /**
  * 网关异步任务图片适配器（type = 'gateway-task-image'）。
@@ -46,6 +47,8 @@ export interface GatewayTaskPollResult {
   status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'unknown';
   imageUrl?: string;
   errorMessage?: string;
+  /** Structured HTTP evidence for health decisions; never shown as a raw upstream body. */
+  httpStatus?: number;
   rawResponse: unknown;
 }
 
@@ -284,7 +287,10 @@ export async function submitGatewayTaskImage(
         signal: requestTimeout.signal,
       });
       if (!response.ok) {
-        throw new Error(`Seedream 图片生成失败 ${response.status}: ${sanitizeGatewayMediaDiagnostic(await response.text(), apiKey).slice(0, 500)}`);
+        throw providerHttpError(
+          response.status,
+          `Seedream 图片生成失败 ${response.status}: ${sanitizeGatewayMediaDiagnostic(await response.text(), apiKey).slice(0, 500)}`,
+        );
       }
       const data = await response.json() as { data?: Array<{ url?: string; error?: { message?: string } }>; error?: { message?: string }; usage?: unknown };
       const immediateImageUrl = normalizeGatewayResultUrl(data.data?.[0]?.url, cleanBase);
@@ -338,7 +344,7 @@ export async function submitGatewayTaskImage(
 
     if (!res.ok) {
       const errorText = sanitizeGatewayMediaDiagnostic(await res.text(), apiKey);
-      throw new Error(`Gateway task submit error ${res.status}: ${errorText.slice(0, 500)}`);
+      throw providerHttpError(res.status, `Gateway task submit error ${res.status}: ${errorText.slice(0, 500)}`);
     }
 
     const data = (await res.json()) as GatewayTaskResponse;
@@ -399,6 +405,7 @@ export async function pollGatewayTaskImage(
       return {
         status: 'unknown',
         errorMessage: `Poll error ${res.status}: ${errorText.slice(0, 500)}`,
+        httpStatus: res.status,
         rawResponse: null,
       };
     }

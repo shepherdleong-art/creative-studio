@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { requiresReassembledUpstreamRework, REASSEMBLED_REWORK_REQUIRED } from '@/lib/reassembled-shot-guard';
 import { resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
-import { toStorageVideoUrl } from '@/lib/storage-url';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
-
+import { applyUnifiedKlingJobCancel } from '@/lib/media-core/unified-media/cancel-intent';
+import { videoJobForClient } from '@/lib/client-media-dto';
 
 async function __teamRouteGET(
   _request: NextRequest,
@@ -24,7 +24,10 @@ async function __teamRouteGET(
     // videoUrl 由登记路径生成；displayName 是所有用户可见名称，
     // 旧任务为 NULL 时由共享 helper 确定性派生（不回写数据库）。
     const displayNames = resolveVideoJobDisplayNames(db, [String(job.id)]);
-    return NextResponse.json({ ...job, displayName: displayNames.get(String(job.id)) ?? null, videoUrl: toStorageVideoUrl(typeof job.localVideoPath === 'string' ? job.localVideoPath : null) });
+    return NextResponse.json({
+      ...videoJobForClient(job),
+      displayName: displayNames.get(String(job.id)) ?? null,
+    });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
@@ -63,21 +66,24 @@ async function __teamRoutePATCH(
       return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
     }
 
-    const result = db.prepare(`
-      UPDATE video_jobs
-      SET status = 'canceled',
-          errorMessage = 'Canceled by user',
-          finishedAt = datetime('now')
-      WHERE id = ?
-        AND status IN ('pending', 'running', 'needs_check')
-    `).run(id);
-
-    if (result.changes !== 1) {
-      const job = db.prepare(`SELECT id FROM video_jobs WHERE id = ?`).get(id);
-      if (!job) return NextResponse.json({ error: 'Video job not found' }, { status: 404 });
+    const unified = db.prepare('SELECT unifiedModel FROM video_jobs WHERE id = ?').pluck().get(id) as
+      | string
+      | null
+      | undefined;
+    if (unified === undefined) return NextResponse.json({ error: 'Video job not found' }, { status: 404 });
+    if (!unified) {
+      const result = db.prepare(`
+        UPDATE video_jobs
+        SET status = 'canceled',
+            errorMessage = 'Canceled by user',
+            finishedAt = datetime('now')
+        WHERE id = ?
+          AND status IN ('pending', 'running', 'needs_check')
+      `).run(id);
+      return NextResponse.json({ success: true, changed: result.changes === 1 });
     }
-
-    return NextResponse.json({ success: true });
+    const result = applyUnifiedKlingJobCancel(db, id);
+    return NextResponse.json({ success: true, ...result });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

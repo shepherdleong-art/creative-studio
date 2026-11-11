@@ -1,6 +1,7 @@
 import { assertArkRequestSize, seedanceFinalBody, seedanceContract, seedanceOutputFields } from './seedance-contract.ts';
 import fs from 'fs';
 import { videoDurationError } from '../video-duration.ts';
+import { providerHttpError } from '../media-core/submission-evidence.ts';
 import type {
   ReferenceVideoInput,
   VideoProviderAdapter,
@@ -159,7 +160,7 @@ async function postGenerationTask(params: {
 
     if (!res.ok) {
       const errorText = await res.text();
-      throw new Error(`${params.errorLabel} submit error ${res.status}: ${errorText.slice(0, 500)}`);
+      throw providerHttpError(res.status, `${params.errorLabel} submit error ${res.status}: ${errorText.slice(0, 500)}`);
     }
 
     const data = (await res.json()) as ArkTaskResponse;

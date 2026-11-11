@@ -19,7 +19,8 @@ interface VideoJob {
   videoUrl?: string;
   /** 用户可见的友好名称（D5）；filename 只服务播放 URL/物理路径。 */
   displayName?: string | null;
-  localVideoPath?: string;
+  hasLocalVideo?: boolean;
+  cancelRequestedAt?: string | null;
   errorMessage?: string;
   providerName?: string;
   templateName?: string;
@@ -50,7 +51,7 @@ const STATUS_LABELS: Record<string, string> = {
   failed: '失败',
   running: '运行中',
   pending: '等待',
-  needs_check: '待补抓',
+  needs_check: '结果确认中',
   canceled: '已取消',
 };
 
@@ -114,10 +115,13 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
       {visibleJobs.map((job) => {
         const isActive = activePreviewJobId === job.id;
         const isSucceeded = job.status === 'succeeded';
+        const hasResult = isSucceeded
+          || (job.status === 'canceled' && Boolean(job.hasLocalVideo || job.filename));
         const isRejected = Boolean(job.rejectedAt);
-        const isFailed = job.status === 'failed' || job.status === 'canceled';
+        const isFailed = job.status === 'failed' || (job.status === 'canceled' && !hasResult);
         const isRunning = job.status === 'pending' || job.status === 'running';
         const isNeedsCheck = job.status === 'needs_check';
+        const lateResult = job.status === 'canceled' && hasResult;
 
         return (
           <div
@@ -129,8 +133,8 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
             onClick={() => onSelect?.(job)}
             aria-current={isActive ? 'true' : undefined}
           >
-            <div className="result-thumb" onClick={() => isSucceeded && job.filename && onPreview(job.id)}>
-              {isSucceeded ? (
+            <div className="result-thumb" onClick={() => hasResult && job.filename && onPreview(job.id)}>
+              {hasResult ? (
                 <>
                   {job.posterImageUrl ? (
                     <Image src={job.posterImageUrl} alt="视频缩略图" fill sizes="300px" className="object-cover" unoptimized />
@@ -152,7 +156,11 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
                 </div>
               ) : (
                 <div style={{ color: 'rgba(255,255,255,.4)', fontSize: '0.72rem', textAlign: 'center', background: '#1d1d1f', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {STATUS_LABELS[job.status] || job.status}
+                  {lateResult
+                    ? '已停止 · 结果已保留'
+                    : job.status === 'needs_check' && job.providerStatus === 'download_failed'
+                    ? '下载失败'
+                    : STATUS_LABELS[job.status] || job.status}
                 </div>
               )}
             </div>
@@ -165,7 +173,11 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
               )}
               <div className="result-meta-row">
                 <span className={`status-badge result-status status-${isSucceeded ? 'succeeded' : isFailed ? 'failed' : isRunning ? 'running' : 'pending'}`}>
-                  {STATUS_LABELS[job.status] || job.status}
+                  {lateResult
+                    ? '已停止 · 结果已保留'
+                    : job.status === 'needs_check' && job.providerStatus === 'download_failed'
+                    ? '下载失败'
+                    : STATUS_LABELS[job.status] || job.status}
                 </span>
                 {job.tailImageId && (
                   <span className="shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 text-[9px] font-medium text-ink-secondary">
@@ -183,7 +195,7 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
               </div>
 
               <div className="result-actions">
-                {isSucceeded && job.filename && (
+                {hasResult && job.filename && (
                   <>
                     <a
                       href={job.videoUrl}
@@ -229,13 +241,13 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
                     补抓结果
                   </button>
                 )}
-                {(isRunning || isNeedsCheck) && (
+                {(isRunning || isNeedsCheck) && !job.cancelRequestedAt && (
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); onCancel(job.id); }}
                     className="result-action text-fail"
                   >
-                    取消
+                    停止后续生成
                   </button>
                 )}
                 {isFailed && (
@@ -285,6 +297,11 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
                   </button>
                 </form>
               )}
+              {job.cancelRequestedAt ? (
+                <div className="mt-1 break-words text-ink-tertiary" style={{ fontSize: '0.6rem' }}>
+                  已停止后续生成；已提交任务仍在收尾，晚到结果会保留在任务记录。
+                </div>
+              ) : null}
 
               {job.errorMessage && (
                 <div className="mt-1 break-words text-fail" style={{ fontSize: '0.6rem' }}>

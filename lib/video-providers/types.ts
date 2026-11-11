@@ -24,6 +24,8 @@ export interface SubmitVideoRequest extends SeedanceOutputOptions {
   tailMimeType?: 'image/png' | 'image/jpeg' | 'image/webp';
   tailImageUrl?: string;
   durationSec: number;
+  /** Explicit output aspect ratio for adapters that can preserve it independently of the source frame. */
+  aspectRatio?: string;
   /** Company Tencent/Qiniu Kling 3.0 intelligent storyboard; omitted for other jobs. */
   multiShot?: boolean;
 }

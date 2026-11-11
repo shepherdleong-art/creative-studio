@@ -17,6 +17,7 @@ import {
 } from '../company-gateway-tail-frame.ts';
 import { shouldInjectCompanyKlingMultiShot } from '../video-multi-shot.ts';
 import { videoDurationError } from '../video-duration.ts';
+import { providerHttpError } from '../media-core/submission-evidence.ts';
 import { companyNativeVideoModel } from '../company-gateway-video-models.ts';
 import { validateVideoReferenceRequest, videoReferenceCapability } from '../video-reference-contract.ts';
 import { createCompanySeedanceVideoAdapter } from './company-seedance-video.ts';
@@ -257,9 +258,12 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
       const sourceDims = await probeImageDimensions(request.sourceImagePath);
       if (isQiniuKling && !sourceDims) throw new Error('无法读取七牛可灵首帧尺寸，不能确定 1080P 输出比例，任务未提交');
       if (tailProtocol === 'company-gateway-kling') {
-        const aspectRatio = sourceDims
-          ? snapCompanyVideoAspectRatio(sourceDims.width, sourceDims.height, companyCaps)
+        const requestedAspect = request.aspectRatio && companyCaps.ratios.includes(request.aspectRatio)
+          ? request.aspectRatio
           : null;
+        const aspectRatio = requestedAspect ?? (sourceDims
+          ? snapCompanyVideoAspectRatio(sourceDims.width, sourceDims.height, companyCaps)
+          : null);
         // Resolution 1080P 已经真实任务验证（2026-08-17）：不加时上游按默认档
         // 出 828x1108，加了出 1244x1660；末帧收束不受影响。
         // Duration 必须走 OutputConfig：网关 LastFrameUrl 分支不透传 seconds
@@ -274,7 +278,12 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
         body.OutputConfig = outputConfig;
       } else {
         const snappedSize = sourceDims
-          ? snapCompanyVideoSize(sourceDims.width, sourceDims.height, companyCaps)
+          ? snapCompanyVideoSize(
+              sourceDims.width,
+              sourceDims.height,
+              companyCaps,
+              request.resolution ?? null,
+            )
           : null;
         if (snappedSize) body.size = snappedSize;
         if (isCompanyKling25) {
@@ -308,7 +317,7 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
 
       if (!res.ok) {
         const errorText = sanitizeGatewayMediaDiagnostic(await res.text(), apiKey);
-        throw new Error(`Video gateway submit error ${res.status}: ${errorText.slice(0, 500)}`);
+        throw providerHttpError(res.status, `Video gateway submit error ${res.status}: ${errorText.slice(0, 500)}`);
       }
 
       const data = (await res.json()) as GatewayVideoResponse;
@@ -388,7 +397,7 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
       });
       if (!res.ok) {
         const errorText = sanitizeGatewayMediaDiagnostic(await res.text(), apiKey);
-        throw new Error(`Video gateway submit error ${res.status}: ${errorText.slice(0, 500)}`);
+        throw providerHttpError(res.status, `Video gateway submit error ${res.status}: ${errorText.slice(0, 500)}`);
       }
       const data = (await res.json()) as GatewayVideoResponse;
       return {

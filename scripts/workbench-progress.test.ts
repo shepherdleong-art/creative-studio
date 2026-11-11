@@ -100,7 +100,7 @@ assert.equal(packaging.percent, 80, '包装是同一渲染管线的可测阶段'
 
 const waiting = describeRunningTask({
   operationId: 'op-4', module: 'video', status: 'deferred', taskName: '视频生成',
-  stepName: '生成请求', waitLabel: '供应商名额已满，释放后自动继续',
+  stepName: '生成请求', waitLabel: '等待可用资源（供应商名额已满，释放后自动继续）',
 });
 assert.equal(waiting.percent, null);
 assert.match(waiting.detail, /排队中|名额/, '等待中的任务要写清楚在等什么');

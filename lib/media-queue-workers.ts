@@ -5,6 +5,16 @@ import { ExecutionError } from './media-core/execution/context.ts';
 import { configuredProviderPool } from './media-core/execution/configured-provider-pool.ts';
 import { readExecutionPool } from './media-core/execution/pools.ts';
 import { resolveQueueWorkerCount, type QueuePoolDemand } from './team-service/production-defaults.ts';
+import {
+  normalizeUnifiedImageTier,
+  unifiedImageCompatibleChannels,
+} from './media-core/unified-media/catalog.ts';
+import { unifiedImageProviderAvailability } from './media-core/unified-media/execution.ts';
+import {
+  freezeUnifiedKlingVideoRequest,
+  unifiedKlingCompatibleChannels,
+} from './media-core/unified-media/video-requests.ts';
+import { unifiedKlingProviderAvailability } from './media-core/unified-media/video-execution.ts';
 
 interface MediaQueueWorkers {
   db: Database.Database;
@@ -21,22 +31,58 @@ function poolDemands(input: MediaQueueWorkers): QueuePoolDemand[] {
   const reworkKind = input.module === 'image' ? 'generate_image' : 'generate_video';
   const runnable = input.module === 'image'
     ? "status IN ('pending', 'retrying', 'running', 'deferred') OR ((status = 'needs_check' OR providerStatus = 'download_failed') AND (providerTaskId IS NOT NULL OR (providerStatus = 'download_failed' AND remoteImageUrl IS NOT NULL)))"
-    : "status IN ('pending', 'running', 'deferred') OR ((status = 'needs_check' OR providerStatus = 'download_failed') AND providerTaskId IS NOT NULL)";
+    : "status IN ('pending', 'running', 'deferred') OR ((status = 'needs_check' OR providerStatus = 'download_failed') AND (providerTaskId IS NOT NULL OR (providerStatus = 'download_failed' AND remoteVideoUrl IS NOT NULL)))";
   const rows = input.db.prepare(`
-    SELECT providerId, COUNT(*) AS taskCount FROM ${table}
+    SELECT providerId, unifiedModel, unifiedRequestJson,
+      COUNT(*) AS taskCount FROM ${table}
     WHERE projectId = ? AND (? IS NULL OR id = ?)
       AND (${runnable})
-      AND NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = ${table}.id AND r.kind = ?)
-    GROUP BY providerId
+      AND (
+        ${table}.unifiedModel IS NOT NULL
+        OR NOT EXISTS (SELECT 1 FROM final_edit_film_reworks r WHERE r.jobId = ${table}.id AND r.kind = ?)
+      )
+    GROUP BY providerId, unifiedModel, unifiedRequestJson
   `).all(input.projectId, input.jobId ?? null, input.jobId ?? null, reworkKind) as Array<{
-    providerId: string; taskCount: number;
+    providerId: string; unifiedModel: string | null; unifiedRequestJson: string | null; taskCount: number;
   }>;
   const pools = new Map<string, QueuePoolDemand>();
   for (const row of rows) {
     let poolKey = `unconfigured:${row.providerId}`;
     let capacity = 1;
     try {
-      const configured = configuredProviderPool(input.db, input.module, row.providerId);
+      let providerId = row.providerId;
+      if (input.module === 'video' && row.unifiedModel && row.unifiedRequestJson) {
+        const source = JSON.parse(row.unifiedRequestJson) as Record<string, unknown>;
+        const frozen = freezeUnifiedKlingVideoRequest({
+          sourceImageId: String(source.sourceImageId ?? ''),
+          tailImageId: typeof source.tailImageId === 'string' ? source.tailImageId : null,
+          referenceAssetIds: Array.isArray(source.referenceAssetIds)
+            ? source.referenceAssetIds.map((item) => String(item ?? '')) : [],
+          prompt: String(source.prompt ?? ''),
+          durationSec: Number(source.durationSec),
+          generationMode: String(source.generationMode ?? ''),
+          multiShot: source.multiShot,
+          aspectRatio: typeof source.aspectRatio === 'string' ? source.aspectRatio : null,
+          resolution: typeof source.resolution === 'string' ? source.resolution : null,
+        });
+        const availability = new Map(unifiedKlingProviderAvailability(input.db)
+          .filter((channel) => channel.identityValid && channel.configured)
+          .map((channel) => [channel.channelKey, channel]));
+        const selected = unifiedKlingCompatibleChannels(frozen)
+          .find((channel) => availability.has(channel.channelKey));
+        if (selected) providerId = selected.providerId;
+      } else if (input.module === 'image' && row.unifiedModel && row.unifiedRequestJson) {
+        const frozen = JSON.parse(row.unifiedRequestJson) as { tier?: unknown; ratio?: unknown };
+        const tier = normalizeUnifiedImageTier(frozen.tier);
+        const ratio = typeof frozen.ratio === 'string' ? frozen.ratio : '';
+        const availability = new Map(unifiedImageProviderAvailability(input.db)
+          .filter((channel) => channel.identityValid && channel.configured)
+          .map((channel) => [channel.channelKey, channel]));
+        const selected = tier ? unifiedImageCompatibleChannels(tier, ratio)
+          .find((channel) => availability.has(channel.channelKey)) : undefined;
+        if (selected) providerId = selected.providerId;
+      }
+      const configured = configuredProviderPool(input.db, input.module, providerId);
       if (configured) {
         poolKey = configured;
         const pool = readExecutionPool(input.db, poolKey);

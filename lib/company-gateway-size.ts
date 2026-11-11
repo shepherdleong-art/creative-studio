@@ -133,6 +133,28 @@ export function companyImageCapsForModel(model: string): CompanyModelCaps | null
   return null;
 }
 
+/**
+ * 判断精确模型是否能在“请求档位 + 请求比例”这个完整格子上交付。
+ * 排除格只有在同档位存在可无放大裁切的 donor 时才算可执行；不能退到别的档位冒充。
+ */
+export function companyImageCellExecutable(model: string, tier: string, ratio: string): boolean {
+  const caps = companyImageCapsForModel(model);
+  if (!caps) return false;
+  const normalizedTier = tier.trim().toUpperCase();
+  if (!caps.tiers.includes(normalizedTier) || !caps.ratios.includes(ratio)) return false;
+  const table = caps.imageSizeTable ?? IMAGE_SIZE_TABLE;
+  const targetSize = table[normalizedTier]?.[ratio];
+  if (!targetSize) return false;
+  if (!caps.exclude?.includes(`${normalizedTier}:${ratio}`)) return true;
+
+  const target = parseSize(targetSize);
+  if (!target) return false;
+  return caps.ratios
+    .filter((donorRatio) => donorRatio !== ratio && !caps.exclude!.includes(`${normalizedTier}:${donorRatio}`))
+    .map((donorRatio) => parseSize(table[normalizedTier]?.[donorRatio]))
+    .some((donor) => Boolean(donor && donor.width >= target.width && donor.height >= target.height));
+}
+
 /** 返回视频模型在公司网关的能力约束；非公司视频模型返回 null */
 export function companyVideoCapsForModel(model: string): CompanyModelCaps | null {
   // 腾讯原生 OutputConfig.Resolution 显式锁 1080P，size 保留公司网关 1K 名义值。
@@ -321,11 +343,20 @@ export function snapCompanyVideoAspectRatio(width: number, height: number, caps:
 
 /**
  * 按源图宽高吸附公司视频模型的 size 组合；无法确定比例时返回 null（调用方省略 size）。
- * 档位固定按 VIDEO_TIER_PREFERENCE 取第一个允许的，不随源图分辨率上浮。
+ * 档位优先使用调用方冻结的档位；缺省才按 VIDEO_TIER_PREFERENCE 取第一个允许的，
+ * 不随源图分辨率上浮。
  */
-export function snapCompanyVideoSize(width: number, height: number, caps: CompanyModelCaps): string | null {
+export function snapCompanyVideoSize(
+  width: number,
+  height: number,
+  caps: CompanyModelCaps,
+  preferredTier?: string | null,
+): string | null {
   if (!(width > 0) || !(height > 0)) return null;
   const ratio = nearestRatio(width, height, caps.ratios);
-  const tier = VIDEO_TIER_PREFERENCE.find((t) => caps.tiers.includes(t)) ?? caps.tiers[0];
+  const requested = preferredTier?.trim().toUpperCase();
+  const tier = requested && caps.tiers.includes(requested)
+    ? requested
+    : VIDEO_TIER_PREFERENCE.find((t) => caps.tiers.includes(t)) ?? caps.tiers[0];
   return caps.videoSizes?.[ratio] ?? VIDEO_SIZE_TABLE[tier]?.[ratio] ?? null;
 }

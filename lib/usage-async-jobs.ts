@@ -89,18 +89,14 @@ function hasExistingImageProviderTask(db: Database.Database, jobId: string): boo
 }
 
 /**
- * Freeze the eligible image provider's price before its first real request.
- * Existing non-empty snapshots always win, including when the usage schema is
- * currently unavailable, so retries and recovery retain their original price.
+ * Build an immutable per-attempt image price snapshot without writing the
+ * legacy single-snapshot columns on `jobs`. Unified media channels use this so
+ * a fallback attempt cannot inherit the previous channel's price.
  */
-export function persistImageJobUsageSnapshot(
+export function buildImageJobUsageSnapshot(
   db: Database.Database,
   input: PersistImageJobUsageSnapshotInput,
 ): string | null {
-  const existing = readImageJobUsageSnapshot(db, input.jobId);
-  if (existing) return existing;
-  if (hasExistingImageProviderTask(db, input.jobId)) return null;
-
   const provider: CoreUsageProviderSnapshot = {
     providerTable: 'providers',
     providerId: input.provider.id,
@@ -116,14 +112,30 @@ export function persistImageJobUsageSnapshot(
     console.error('[usage-ledger] schema unavailable; usage accounting skipped for this image job');
     return null;
   }
-
   const snapshot = createCoreUsageSnapshot(provider, plan, {
     startedAt: input.startedAt,
     projectId: input.projectId ?? undefined,
     refType: input.refType ?? 'job',
     refId: input.refId ?? input.jobId,
   });
-  const snapshotJson = JSON.stringify(snapshot);
+  return JSON.stringify(snapshot);
+}
+
+/**
+ * Freeze the eligible image provider's price before its first real request.
+ * Existing non-empty snapshots always win, including when the usage schema is
+ * currently unavailable, so retries and recovery retain their original price.
+ */
+export function persistImageJobUsageSnapshot(
+  db: Database.Database,
+  input: PersistImageJobUsageSnapshotInput,
+): string | null {
+  const existing = readImageJobUsageSnapshot(db, input.jobId);
+  if (existing) return existing;
+  if (hasExistingImageProviderTask(db, input.jobId)) return null;
+
+  const snapshotJson = buildImageJobUsageSnapshot(db, input);
+  if (!snapshotJson) return null;
 
   try {
     const result = db.prepare(`
@@ -201,14 +213,10 @@ function hasExistingVideoProviderTask(db: Database.Database, jobId: string): boo
  * adapter.submit. Existing snapshots win; an already submitted remote task
  * never receives a newly synthesized snapshot.
  */
-export function persistVideoJobUsageSnapshot(
+export function buildVideoJobUsageSnapshot(
   db: Database.Database,
   input: PersistVideoJobUsageSnapshotInput,
 ): string | null {
-  const existing = readVideoJobUsageSnapshot(db, input.jobId);
-  if (existing) return existing;
-  if (hasExistingVideoProviderTask(db, input.jobId)) return null;
-
   const provider: CoreUsageProviderSnapshot = {
     providerTable: 'video_providers',
     providerId: input.provider.id,
@@ -232,7 +240,19 @@ export function persistVideoJobUsageSnapshot(
     refType: input.refType ?? 'video-job',
     refId: input.refId ?? input.jobId,
   });
-  const snapshotJson = JSON.stringify(snapshot);
+  return JSON.stringify(snapshot);
+}
+
+export function persistVideoJobUsageSnapshot(
+  db: Database.Database,
+  input: PersistVideoJobUsageSnapshotInput,
+): string | null {
+  const existing = readVideoJobUsageSnapshot(db, input.jobId);
+  if (existing) return existing;
+  if (hasExistingVideoProviderTask(db, input.jobId)) return null;
+
+  const snapshotJson = buildVideoJobUsageSnapshot(db, input);
+  if (!snapshotJson) return null;
 
   try {
     const result = db.prepare(`

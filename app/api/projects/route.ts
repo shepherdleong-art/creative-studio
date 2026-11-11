@@ -22,6 +22,17 @@ import { bindImageScopeToProject } from '@/lib/team-service/resource-scopes';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { readRuntimeConfig } from '@/lib/team-service/config';
 import { productionParamsFor } from '@/lib/team-service/production-defaults';
+import {
+  UNIFIED_IMAGE_MODEL_KEY,
+  UNIFIED_MEDIA_RULE_VERSION,
+  isUnifiedImageChannelProvider,
+  isUnifiedImageAnchorProvider,
+} from '@/lib/media-core/unified-media/catalog';
+import {
+  UnifiedImageRequestError,
+  freezeUnifiedImageRequest,
+  resolveUnifiedImageOutput,
+} from '@/lib/media-core/unified-media/requests';
 
 
 function isRealApiKey(value: string | null | undefined): boolean {
@@ -144,41 +155,71 @@ async function __teamRoutePOST(request: NextRequest) {
     const baseName = resolveUniqueProjectBaseName(db, buildProjectBaseName({ ...identity, namingDate }));
 
     // Validate provider
-    const provider = db.prepare(`SELECT id, enabled, apiKey, apiKeyEnv, type FROM providers WHERE id = ?`).get(body.providerId) as {
-      id: string; enabled: number; apiKey: string; apiKeyEnv: string; type: string;
+    const provider = db.prepare(`SELECT id, enabled, apiKey, apiKeyEnv, type, model FROM providers WHERE id = ?`).get(body.providerId) as {
+      id: string; enabled: number; apiKey: string; apiKeyEnv: string; type: string; model: string;
     } | undefined;
     if (!provider) return NextResponse.json({ error: 'Provider not found' }, { status: 400 });
     if (!provider.enabled) return NextResponse.json({ error: 'Provider is disabled' }, { status: 400 });
-    if (!isRealApiKey(provider.apiKey)) return NextResponse.json({ error: 'Provider API key is not configured' }, { status: 400 });
+    const unifiedProvider = isUnifiedImageAnchorProvider(provider);
+    if (readRuntimeConfig().mode === 'server' && isUnifiedImageChannelProvider(provider)) {
+      return NextResponse.json({
+        error: '团队版新建项目请选择统一模型“Image 2”，不能直接指定真实通道。',
+      }, { status: 400 });
+    }
+    if (!unifiedProvider && !isRealApiKey(provider.apiKey)) {
+      return NextResponse.json({ error: 'Provider API key is not configured' }, { status: 400 });
+    }
 
-    const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : 'gpt-image-2';
+    const requestedModel = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : '';
+    const model = unifiedProvider
+      ? UNIFIED_IMAGE_MODEL_KEY
+      : (requestedModel || 'gpt-image-2');
 
     // Resolve size. The selected ratio is part of the generation contract; reject
     // unsupported company-gateway ratios instead of silently snapping to another ratio.
-    if (typeof body.aspectRatio === 'string') {
-      const aspectRatioError = validateImageAspectRatio(model, body.aspectRatio);
-      if (aspectRatioError) return NextResponse.json({ error: aspectRatioError }, { status: 400 });
-    }
     let resolvedSize: string;
-    if (body.aspectRatio) {
-      const resolutionError = validateImageResolution(model, body.aspectRatio, body.resolution || '1k');
-      if (resolutionError) return NextResponse.json({ error: resolutionError }, { status: 400 });
-      try { resolvedSize = resolveGptImage2Size(body.aspectRatio, body.resolution || '1k'); }
-      catch (err) { return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 }); }
-    } else if (body.size && isValidGptImage2Size(body.size)) {
-      resolvedSize = body.size;
+    if (unifiedProvider) {
+      if (readRuntimeConfig().mode !== 'server') {
+        return NextResponse.json({ error: '统一 Image 2 仅在团队模式可用' }, { status: 400 });
+      }
+      if (requestedModel && requestedModel !== UNIFIED_IMAGE_MODEL_KEY) {
+        return NextResponse.json({ error: '统一 Image 2 项目不能改写模型' }, { status: 400 });
+      }
+      if (typeof body.aspectRatio !== 'string' || typeof body.resolution !== 'string') {
+        return NextResponse.json({ error: '统一 Image 2 必须同时提供画面比例和清晰度' }, { status: 400 });
+      }
+      try {
+        resolvedSize = resolveUnifiedImageOutput(body.resolution, body.aspectRatio).size;
+      } catch (error) {
+        return NextResponse.json({
+          error: error instanceof UnifiedImageRequestError ? error.message : String(error),
+        }, { status: 400 });
+      }
     } else {
-      return NextResponse.json({ error: `Invalid size: "${body.size || '(missing)'}"` }, { status: 400 });
+      if (typeof body.aspectRatio === 'string') {
+        const aspectRatioError = validateImageAspectRatio(model, body.aspectRatio);
+        if (aspectRatioError) return NextResponse.json({ error: aspectRatioError }, { status: 400 });
+      }
+      if (body.aspectRatio) {
+        const resolutionError = validateImageResolution(model, body.aspectRatio, body.resolution || '1k');
+        if (resolutionError) return NextResponse.json({ error: resolutionError }, { status: 400 });
+        try { resolvedSize = resolveGptImage2Size(body.aspectRatio, body.resolution || '1k'); }
+        catch (err) { return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 }); }
+      } else if (body.size && isValidGptImage2Size(body.size)) {
+        resolvedSize = body.size;
+      } else {
+        return NextResponse.json({ error: `Invalid size: "${body.size || '(missing)'}"` }, { status: 400 });
+      }
     }
 
     const projectId = uuidv4();
     const access = requireAccessContext();
     const ownerUserId = access.resolveOwner(body.ownerUserId);
-    const quality = body.quality || 'medium';
+    const quality = unifiedProvider ? 'auto' : (body.quality || 'medium');
     // ── 生产参数：server 模式一律取服务器默认值（请求里的同名字段作废）；本地版沿用请求值 ──
     const production = productionParamsFor(readRuntimeConfig(), body);
     const timeoutMs = production.timeoutMs;
-    const maxAttempts = body.maxAttempts || 2;
+    const maxAttempts = unifiedProvider ? 1 : (body.maxAttempts || 2);
     const concurrency = production.projectConcurrency;
 
     // ── Complex product workflow ──
@@ -195,6 +236,24 @@ async function __teamRoutePOST(request: NextRequest) {
     const shotPrompt: string = (body.shotPrompt || '').trim();
     const genCount = Math.max(1, Math.min(9, Number(body.generationCount) || 4));
     const hasFullCreation = sceneSeedImageId && scenePrompt && shotImageIds.length > 0;
+    let unifiedRequestJson: string | null = null;
+    if (unifiedProvider && hasFullCreation) {
+      try {
+        const output = resolveUnifiedImageOutput(body.resolution, body.aspectRatio);
+        unifiedRequestJson = JSON.stringify(freezeUnifiedImageRequest({
+          inputImageId: sceneSeedImageId,
+          referenceImageIds: [],
+          prompt: scenePrompt,
+          tier: output.tier,
+          ratio: output.ratio,
+          referenceGuidanceMode: 'none',
+        }));
+      } catch (error) {
+        return NextResponse.json({
+          error: error instanceof UnifiedImageRequestError ? error.message : String(error),
+        }, { status: 400 });
+      }
+    }
 
     const defaultScenePrompt = '保持图中床的一致性不变，更换其他家具和软装布置，风格参考原图，让卧室温馨舒适，全景图';
     const defaultShotPrompt = `图1是待编辑分镜图，是本次修改的主要对象。
@@ -221,12 +280,18 @@ async function __teamRoutePOST(request: NextRequest) {
         // Create scene generation jobs：同一请求写同一 createdAt、按提交顺序写 creationIndex。
         const batchCreatedAt = new Date().toISOString();
         const insertJob = db.prepare(`
-          INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode, createdAt, creationIndex)
-          VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none', ?, ?)
+          INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode, createdAt, creationIndex, unifiedModel, unifiedRuleVersion, unifiedRequestJson, creationSource)
+          VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none', ?, ?, ?, ?, ?, 'project_scene')
         `);
         for (let g = 0; g < genCount; g++) {
           const jobId = uuidv4();
-          insertJob.run(jobId, projectId, sceneSeedImageId, body.providerId, model, scenePrompt, resolvedSize, quality, maxAttempts, batchCreatedAt, g);
+          insertJob.run(
+            jobId, projectId, sceneSeedImageId, body.providerId, model, scenePrompt,
+            resolvedSize, quality, maxAttempts, batchCreatedAt, g,
+            unifiedProvider ? UNIFIED_IMAGE_MODEL_KEY : null,
+            unifiedProvider ? UNIFIED_MEDIA_RULE_VERSION : null,
+            unifiedRequestJson,
+          );
           access.registerInheritedScope({
             resourceType: 'job', resourceId: jobId,
             parent: { resourceType: 'project', resourceId: projectId },
@@ -234,7 +299,13 @@ async function __teamRoutePOST(request: NextRequest) {
           access.registerTaskPrincipal({
             module: 'image', taskId: jobId,
             scope: { resourceType: 'project', resourceId: projectId },
-            creationSnapshot: { inputImageId: sceneSeedImageId, model, creationIndex: g },
+            creationSnapshot: {
+              inputImageId: sceneSeedImageId, model, creationIndex: g,
+              ...(unifiedProvider ? {
+                unifiedModel: UNIFIED_IMAGE_MODEL_KEY,
+                unifiedRuleVersion: UNIFIED_MEDIA_RULE_VERSION,
+              } : {}),
+            },
           });
         }
 

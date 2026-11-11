@@ -6,10 +6,13 @@ const RETIRED_IMAGE_IDS = new Set([
 ]);
 
 export function isVisibleImageProvider(provider: { id: string; name: string; type: string; baseUrl: string }): boolean {
-  return !RETIRED_IMAGE_IDS.has(provider.id)
+  return provider.type !== 'unified-image'
+    && !RETIRED_IMAGE_IDS.has(provider.id)
     && !(provider.name === 'GeekAI' && provider.type === 'geekai-json' && provider.baseUrl.replace(/\/$/, '') === 'https://geekai.co/api');
 }
 
 export function isVisibleVideoProvider(provider: { id: string }): boolean {
-  return provider.id !== 'jimeng-2-0' && provider.id !== 'kling-2-5';
+  return provider.id !== 'jimeng-2-0'
+    && provider.id !== 'kling-2-5'
+    && provider.id !== 'unified-kling-3';
 }

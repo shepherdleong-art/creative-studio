@@ -1,8 +1,11 @@
 import type Database from 'better-sqlite3';
 import { TeamUsageError } from './usage.ts';
+import { queryUnifiedTaskUsage } from './unified-usage.ts';
+import type { UnifiedTaskCostStatus } from './unified-usage-contract.ts';
 import type { TeamViewer } from './diagnostics.ts';
 import { TASK_MODULE_LABELS, taskStepLabel, taskWaitLabel } from '../team-task-labels.ts';
 import { readActorPolicy } from '../media-core/execution/pools.ts';
+import { unifiedMediaDisplayName } from '../media-core/unified-media/catalog.ts';
 import { projectModelCall, summarizeModelCalls, type TeamModelCall } from './task-model.ts';
 
 type TaskRow = Record<string, unknown>;
@@ -54,6 +57,15 @@ export interface TeamTaskView {
   providerName: string;
   model: string | null;
   modelStatus: string;
+  unifiedModel: string | null;
+  unifiedTaskId: string | null;
+  unifiedTaskCostMinor: number;
+  unifiedTaskCostStatus: UnifiedTaskCostStatus | null;
+  unifiedTaskAttemptCount: number;
+  unifiedTaskChannelCount: number;
+  admissionPriority: number | null;
+  admissionCandidateCount: number | null;
+  admissionTrace: Record<string, unknown> | null;
   modelCalls: TeamModelCall[];
 }
 
@@ -64,6 +76,23 @@ type AttemptRow = {
 
 function tableExists(db: Database.Database, table: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
+}
+
+function tableHasColumn(db: Database.Database, table: string, column: string): boolean {
+  return tableExists(db, table)
+    && (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((item) => item.name === column);
+}
+
+function jsonObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export function listTeamTasks(
@@ -81,6 +110,17 @@ export function listTeamTasks(
   const canceled = `(o.waitReason = 'stage_canceled' OR (o.status IN ('pending', 'deferred', 'failed') AND COALESCE(j.status, v.status) = 'canceled'))`;
   if (filters.status === 'canceled') clauses.push(canceled);
   else if (filters.status) { clauses.push(`o.status = ? AND NOT COALESCE(${canceled}, 0)`); values.push(filters.status); }
+  const hasImageUnified = tableHasColumn(db, 'jobs', 'unifiedModel');
+  const hasVideoUnified = tableHasColumn(db, 'video_jobs', 'unifiedModel');
+  const hasMediaTasks = tableHasColumn(db, 'execution_media_tasks', 'unifiedModel');
+  const unifiedModelExpression = hasImageUnified || hasVideoUnified || hasMediaTasks
+    ? `COALESCE(${hasImageUnified ? 'j.unifiedModel' : 'NULL'}, ${hasVideoUnified ? 'v.unifiedModel' : 'NULL'}, ${hasMediaTasks ? 'media.unifiedModel' : 'NULL'})`
+    : 'NULL';
+  const hasImageUnifiedTask = tableHasColumn(db, 'jobs', 'unifiedTaskId');
+  const hasVideoUnifiedTask = tableHasColumn(db, 'video_jobs', 'unifiedTaskId');
+  const unifiedTaskExpression = hasImageUnifiedTask || hasVideoUnifiedTask || hasMediaTasks
+    ? `COALESCE(${hasImageUnifiedTask ? 'j.unifiedTaskId' : 'NULL'}, ${hasVideoUnifiedTask ? 'v.unifiedTaskId' : 'NULL'}, ${hasMediaTasks ? 'media.id' : 'NULL'})`
+    : 'NULL';
   const items = db.prepare(`
     SELECT o.id AS operationId, o.module, o.taskId, o.step, o.inputRevision,
       o.businessAttemptId, o.businessAttemptNo, o.actorId AS actorUserId,
@@ -89,6 +129,11 @@ export function listTeamTasks(
       o.currentAttemptId, o.createdAt, o.updatedAt,
       p.name AS scopeName, j.status AS imageStatus, v.status AS videoStatus,
       a.filename AS inputFilename, a.usage AS imageUsage, COALESCE(j.model, v.model) AS model,
+      ${unifiedModelExpression} AS unifiedModel,
+      ${unifiedTaskExpression} AS unifiedTaskId,
+      ${tableHasColumn(db, 'execution_operations', 'admissionPriority') ? 'o.admissionPriority' : 'NULL'} AS admissionPriority,
+      ${tableHasColumn(db, 'execution_operations', 'admissionCandidateCount') ? 'o.admissionCandidateCount' : 'NULL'} AS admissionCandidateCount,
+      ${tableHasColumn(db, 'execution_operations', 'admissionTraceJson') ? 'o.admissionTraceJson' : 'NULL'} AS admissionTraceJson,
       j.usageSnapshotJson AS imageUsageSnapshot, v.usageSnapshotJson AS videoUsageSnapshot,
       o.inputSnapshotJson, o.providerSnapshotJson,
       policy.personalConcurrency,
@@ -103,6 +148,7 @@ export function listTeamTasks(
     LEFT JOIN projects p ON o.scopeType = 'project' AND p.id = o.scopeId
     LEFT JOIN jobs j ON o.module = 'image' AND j.id = o.taskId
     LEFT JOIN video_jobs v ON o.module = 'video' AND v.id = o.taskId
+    ${hasMediaTasks ? "LEFT JOIN execution_media_tasks media ON media.module = o.module AND media.taskId = o.taskId" : ''}
     LEFT JOIN image_assets a ON a.id = COALESCE(j.inputImageId, v.sourceImageId)
     LEFT JOIN execution_actor_policies policy ON policy.actorId = o.actorId
     ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
@@ -121,6 +167,9 @@ export function listTeamTasks(
     group.push(attempt);
     attemptsByOperation.set(attempt.operationId, group);
   }
+  const unifiedTasksByJobId = new Map(
+    queryUnifiedTaskUsage(db, viewer, filters).tasks.map((task) => [task.taskId, task]),
+  );
   const canvasNames = new Map<string, string>();
   const canvases = items.filter(item => item.scopeType === 'canvas');
   if (canvases.length && tableExists(db, 'creative_canvases')) {
@@ -165,6 +214,34 @@ export function listTeamTasks(
         }
       }
       const display = summarizeModelCalls(modelCalls, String(item.module), snapshotConfigured(item.providerSnapshotJson));
+      const unifiedModel = typeof item.unifiedModel === 'string' && item.unifiedModel.trim()
+        ? item.unifiedModel.trim()
+        : null;
+      const unifiedDisplay = unifiedMediaDisplayName(unifiedModel);
+      const unifiedTaskId = typeof item.unifiedTaskId === 'string' && item.unifiedTaskId.trim()
+        ? item.unifiedTaskId.trim()
+        : null;
+      const unifiedAggregate = unifiedTaskId
+        ? unifiedTasksByJobId.get(String(item.taskId))
+        : undefined;
+      const visibleModelCalls = unifiedDisplay && viewer.role !== 'admin'
+        ? modelCalls.map((call) => ({
+          ...call,
+          providerName: unifiedDisplay,
+          model: unifiedDisplay,
+        }))
+        : modelCalls;
+      const admissionPriority = viewer.role === 'admin'
+        && item.admissionPriority !== null && item.admissionPriority !== undefined
+        && Number.isFinite(Number(item.admissionPriority))
+        ? Number(item.admissionPriority)
+        : null;
+      const admissionCandidateCount = viewer.role === 'admin'
+        && item.admissionCandidateCount !== null && item.admissionCandidateCount !== undefined
+        && Number.isFinite(Number(item.admissionCandidateCount))
+        ? Number(item.admissionCandidateCount)
+        : null;
+      const admissionTrace = viewer.role === 'admin' ? jsonObject(item.admissionTraceJson) : null;
       return {
         operationId: String(item.operationId), module: String(item.module), taskId: String(item.taskId), step: String(item.step),
         inputRevision: String(item.inputRevision), businessAttemptId: String(item.businessAttemptId),
@@ -194,7 +271,19 @@ export function listTeamTasks(
         stepName: taskStepLabel(String(item.step), String(item.module)),
         scopeName: scopeName || (item.scopeType === 'project' ? '项目已删除或不可用' : item.scopeType === 'canvas' ? '画布已删除或不可用' : '未关联项目或画布'),
         scope: { resourceType: String(item.scopeType), resourceId: String(item.scopeId) },
-        ...display, modelCalls,
+        ...(unifiedDisplay
+          ? { providerName: unifiedDisplay, model: unifiedDisplay, modelStatus: 'recorded' }
+          : display),
+        unifiedModel,
+        unifiedTaskId,
+        unifiedTaskCostMinor: unifiedAggregate?.chargedMinor ?? 0,
+        unifiedTaskCostStatus: unifiedAggregate?.costStatus ?? null,
+        unifiedTaskAttemptCount: unifiedAggregate?.channelCallCount ?? 0,
+        unifiedTaskChannelCount: unifiedAggregate?.usedChannelCount ?? 0,
+        admissionPriority,
+        admissionCandidateCount,
+        admissionTrace,
+        modelCalls: visibleModelCalls,
       };
     }),
     localAgentIncluded: false,

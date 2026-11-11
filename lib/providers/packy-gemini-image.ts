@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { providerHttpError } from '../media-core/submission-evidence.ts';
 
 export interface PackyGeminiImageRequest {
   model: string;
@@ -184,7 +185,7 @@ export async function editImagePackyGemini(
   }
 
   if (!res.ok) {
-    throw new Error(`Packy API error ${res.status}: ${extractPackyError(data) || text.slice(0, 500)}`);
+    throw providerHttpError(res.status, `Packy API error ${res.status}: ${extractPackyError(data) || text.slice(0, 500)}`);
   }
 
   const imageSource = extractPackyGeminiImageSource(data);

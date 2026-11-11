@@ -156,7 +156,7 @@ const EXPECTED = {
   ],
   admin: [
     ['总览', ['运行总览']],
-    ['生产', ['项目空间', '创作画布', '全员任务', '下载与交付', '出错的任务']],
+    ['生产', ['项目空间', '创作画布', '全员任务', '下载与交付', '出错的任务', '待核对']],
     ['资源', ['模型与名额', '供应商配置', '公共资源']],
     ['团队', ['成员与账号', '团队用量']],
     ['系统', ['版本与备份']],
@@ -629,7 +629,7 @@ async function runBrowser(name, launcher, credentials) {
     const adminTitles = [];
     for (const [pathname, expected] of [
       ['/', '运行总览'], ['/projects', '项目空间'], ['/team/tasks', '全员任务'],
-      ['/team/errors', '出错的任务'], ['/usage', '团队用量'], ['/team/admin/pools', '模型与名额'],
+      ['/team/errors', '出错的任务'], ['/team/admin/reconcile', '待核对'], ['/usage', '团队用量'], ['/team/admin/pools', '模型与名额'],
       ['/settings', '供应商配置'], ['/team/admin/resources', '公共资源'],
       ['/team/admin/users', '成员与账号'], ['/team/admin/operations', '版本与备份'],
     ]) {

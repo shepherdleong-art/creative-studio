@@ -10,5 +10,6 @@ assert.equal(isVisibleImageProvider(image), true);
 assert.equal(isVisibleImageProvider({ ...image, id: 'company-gpt-image-2' }), true);
 assert.equal(isVisibleVideoProvider({ id: 'jimeng-2-0' }), false);
 assert.equal(isVisibleVideoProvider({ id: 'kling-2-5' }), false);
+assert.equal(isVisibleVideoProvider({ id: 'unified-kling-3' }), false);
 for (const id of ['company-seedance-2-0', 'company-kling-2-5', 'custom']) assert.equal(isVisibleVideoProvider({ id }), true);
 console.log('provider list visibility tests passed');

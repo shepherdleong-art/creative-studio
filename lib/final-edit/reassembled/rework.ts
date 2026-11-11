@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { FinalEditError } from '../errors.ts';
 import { filmBinding } from './store.ts';
@@ -15,9 +15,37 @@ import { toStorageImageUrl } from '../../storage-url.ts';
 import { projectFilmTimeline } from './timeline.ts';
 import type { VideoTimeline } from '../types.ts';
 import { resolveImportedExternalAssetVideoPath } from '../material-import.ts';
+import { requireAccessContext } from '../../media-core/access-context.ts';
+import {
+  UNIFIED_IMAGE_MODEL_KEY,
+  UNIFIED_KLING3_MODEL_KEY,
+  UNIFIED_MEDIA_RULE_VERSION,
+  isUnifiedImageAnchorProvider,
+  isUnifiedKlingAnchorProvider,
+} from '../../media-core/unified-media/catalog.ts';
+import {
+  UnifiedImageRequestError,
+  freezeUnifiedImageRequest,
+  inferUnifiedImageOutputFromPreset,
+} from '../../media-core/unified-media/requests.ts';
+import {
+  UnifiedKlingRequestError,
+  freezeUnifiedKlingVideoRequest,
+  unifiedKlingCompatibleChannels,
+} from '../../media-core/unified-media/video-requests.ts';
+import {
+  unifiedImageProviderAvailability,
+} from '../../media-core/unified-media/execution.ts';
+import {
+  unifiedKlingProviderAvailability,
+} from '../../media-core/unified-media/video-execution.ts';
 
 type Db = Database.Database;
 export type ReworkActor = 'human' | 'agent';
+export interface FilmReworkRuntime {
+  /** Team mode uses the authenticated server access context; local keeps the desktop gate/old rules. */
+  mode: 'local' | 'server';
+}
 export interface ReworkCommand {
   requestId: string; expectedRevision: number;
   type: 'generate_image' | 'select_image' | 'generate_video' | 'register_video' | 'register_external';
@@ -28,6 +56,28 @@ export interface ReworkCommand {
 }
 type Shot = { id: string; sourceImageId: string; latestGeneratedImageId: string | null };
 function fail(message: string, code = 'film_rework_invalid', status = 400): never { throw new FinalEditError(code, message, status); }
+function requestHash(command: ReworkCommand): string {
+  return createHash('sha256').update(JSON.stringify(command)).digest('hex');
+}
+function registerNewTask(
+  access: ReturnType<typeof requireAccessContext>,
+  module: 'image' | 'video',
+  taskId: string,
+  projectId: string,
+  creationSnapshot: unknown,
+): void {
+  access.registerInheritedScope({
+    resourceType: module === 'image' ? 'job' : 'video_job',
+    resourceId: taskId,
+    parent: { resourceType: 'project', resourceId: projectId },
+  });
+  access.registerTaskPrincipal({
+    module,
+    taskId,
+    scope: { resourceType: 'project', resourceId: projectId },
+    creationSnapshot,
+  });
+}
 function context(db: Db, groupId: string, clipId: string) {
   const binding = filmBinding(db, groupId);
   if (!binding) return fail('实拍成片不存在', 'film_not_found', 404);
@@ -74,9 +124,24 @@ export function readFilmRework(db: Db, groupId: string, clipId: string) {
   const originalImage = originalVideo && db.prepare('SELECT sourceImageId FROM video_jobs WHERE id=?').get(originalVideo.videoJobId) as { sourceImageId: string } | undefined;
   const imageRows = db.prepare('SELECT id,filename,path FROM image_assets WHERE projectId=?').all(binding.projectId) as Array<{ id: string; filename: string; path: string }>;
   const history = db.prepare(`SELECT id,actor,kind,jobId,baseRevision,requestJson,createdAt FROM final_edit_film_reworks WHERE bindingId=? AND clipId=? ORDER BY rowid`).all(binding.id, clipId) as Array<{ id: string; actor: string; kind: string; jobId: string | null; baseRevision: number; requestJson: string; createdAt: string }>;
-  const imageJobs = db.prepare(`SELECT j.id,j.status,j.outputImageId,j.errorMessage,j.prompt,j.providerId,j.model,j.inputImageId,j.referenceImageIds
-    FROM jobs j JOIN final_edit_film_reworks r ON r.jobId=j.id WHERE r.bindingId=? AND r.clipId=? AND r.kind='generate_image' ORDER BY r.rowid DESC`).all(binding.id, clipId) as Array<{ id: string; status: string; outputImageId: string | null; errorMessage: string | null; prompt: string; providerId: string; model: string; inputImageId: string; referenceImageIds: string }>;
-  const videoJobs = (db.prepare(`SELECT id,status,sourceImageId,prompt,providerId,model,durationSec,errorMessage,localVideoPath FROM video_jobs WHERE projectId=? AND shotSetId=? AND shotId=? ORDER BY createdAt DESC,rowid DESC`).all(binding.projectId, binding.shotSetId, shot.id) as Array<{ id: string; status: string; sourceImageId: string; prompt: string; providerId: string; model: string; durationSec: number; errorMessage: string | null; localVideoPath: string | null }>).map(({ localVideoPath, ...job }) => ({ ...job, previewUrl: localVideoPath ? toStorageImageUrl(localVideoPath)?.replace('/api/images/', '/api/videos/') + '?preview=1' : null }));
+    const imageJobs = db.prepare(`SELECT j.id,j.status,j.providerStatus,j.outputImageId,j.errorMessage,j.prompt,j.providerId,j.model,
+      j.inputImageId,j.referenceImageIds,j.unifiedModel,j.unifiedRuleVersion,j.cancelRequestedAt
+    FROM jobs j JOIN final_edit_film_reworks r ON r.jobId=j.id
+    WHERE r.bindingId=? AND r.clipId=? AND r.kind='generate_image'
+    ORDER BY r.rowid DESC`).all(binding.id, clipId) as Array<{
+      id: string; status: string; providerStatus: string | null; outputImageId: string | null; errorMessage: string | null;
+      prompt: string; providerId: string; model: string; inputImageId: string;
+      referenceImageIds: string; unifiedModel: string | null; unifiedRuleVersion: string | null;
+      cancelRequestedAt: string | null;
+    }>;
+    const videoJobs = (db.prepare(`SELECT id,status,providerStatus,sourceImageId,prompt,providerId,model,durationSec,
+      errorMessage,localVideoPath,unifiedModel,unifiedRuleVersion,cancelRequestedAt
+    FROM video_jobs WHERE projectId=? AND shotSetId=? AND shotId=?
+    ORDER BY createdAt DESC,rowid DESC`).all(binding.projectId, binding.shotSetId, shot.id) as Array<{
+      id: string; status: string; providerStatus: string | null; sourceImageId: string; prompt: string; providerId: string;
+      model: string; durationSec: number; errorMessage: string | null; localVideoPath: string | null;
+      unifiedModel: string | null; unifiedRuleVersion: string | null; cancelRequestedAt: string | null;
+    }>).map(({ localVideoPath, ...job }) => ({ ...job, previewUrl: localVideoPath ? toStorageImageUrl(localVideoPath)?.replace('/api/images/', '/api/videos/') + '?preview=1' : null }));
   return { groupId, projectId: binding.projectId, shotSetId: binding.shotSetId, clipId, shotId: shot.id, revision,
     sourceImageId: shot.sourceImageId, importedImageId: originalImage?.sourceImageId || shot.sourceImageId, currentImageId: shot.latestGeneratedImageId || shot.sourceImageId,
     provenance: source, images: imageRows.map(row => ({ id: row.id, name: row.filename, url: toStorageImageUrl(row.path) })),
@@ -84,11 +149,23 @@ export function readFilmRework(db: Db, groupId: string, clipId: string) {
     registeredVideoIds: candidates.filter(c => c.clipId === clipId).map(c => c.videoJobId) };
 }
 
-export async function applyFilmRework(db: Db, storageRoot: string, groupId: string, clipId: string, command: ReworkCommand, actor: ReworkActor) {
+export async function applyFilmRework(
+  db: Db,
+  storageRoot: string,
+  groupId: string,
+  clipId: string,
+  command: ReworkCommand,
+  actor: ReworkActor,
+  runtime: FilmReworkRuntime = { mode: 'local' },
+) {
   if (!command || typeof command.requestId !== 'string' || !/^[a-zA-Z0-9_-]{8,100}$/.test(command.requestId)) fail('缺少有效请求标识');
   if (!['generate_image', 'select_image', 'generate_video', 'register_video', 'register_external'].includes(command.type)) fail('未知返工操作');
   if (actor === 'agent' && command.type === 'select_image') fail('Agent 续跑只能增加候选，请在工作台明确采用图片', 'film_manual_selection_required', 409);
   const initial = context(db, groupId, clipId);
+  const access = requireAccessContext();
+  if (runtime.mode === 'server' && access.kind !== 'team') {
+    fail('团队返工缺少已验证的成员身份', 'film_actor_required', 403);
+  }
   const replay = previous(db, initial.binding.id, clipId, command, actor);
   if (replay) return replay;
   expected(initial.revision, command.expectedRevision);
@@ -107,7 +184,10 @@ export async function applyFilmRework(db: Db, storageRoot: string, groupId: stri
       if (!external) fail('外部素材不存在、未就绪或不属于当前分镜组');
       job = { id: `external-asset-${external.id}`, localVideoPath: resolveImportedExternalAssetVideoPath(storageRoot, initial.binding, external.relativePath) };
     } else {
-      job = db.prepare(`SELECT * FROM video_jobs WHERE id=? AND projectId=? AND shotSetId=? AND shotId=? AND status='succeeded'`).get(command.videoJobId || '', initial.binding.projectId, initial.binding.shotSetId, initial.shot.id) as { id: string; localVideoPath: string; sourceImageId: string } | undefined;
+      job = db.prepare(`SELECT * FROM video_jobs WHERE id=? AND projectId=? AND shotSetId=? AND shotId=?
+        AND (status='succeeded' OR (status='canceled' AND providerStatus='succeeded'))`)
+        .get(command.videoJobId || '', initial.binding.projectId, initial.binding.shotSetId, initial.shot.id) as
+        { id: string; localVideoPath: string; sourceImageId: string } | undefined;
     }
     if (!job?.localVideoPath) fail('只能登记该镜头已成功的视频任务');
     if (!external) image(db, initial.binding, job.sourceImageId);
@@ -147,17 +227,79 @@ export async function applyFilmRework(db: Db, storageRoot: string, groupId: stri
       let jobId: string | undefined;
       if (command.type === 'generate_image') {
         const providerId = text(command.providerId, '图片供应商');
-        const provider = resolveImageJobProvider(db, providerId, { providerId, model: '' });
-        if (command.model !== provider.model) fail('供应商模型已变化，请刷新后核对', 'revision_conflict', 409);
+        const providerRow = db.prepare(`SELECT id,name,type,model,enabled,baseUrl,apiKey
+          FROM providers WHERE id=?`).get(providerId) as {
+            id: string; name: string; type: string; model: string;
+            enabled: number; baseUrl: string; apiKey: string;
+          } | undefined;
+        if (!providerRow) fail('供应商不存在');
+        if (!providerRow.enabled) fail('供应商已禁用');
         const input = image(db, binding, command.inputImageId);
         if (!Array.isArray(command.referenceImageIds) || command.referenceImageIds.length > 20) fail('请明确选择参考图列表');
         const refs = [...new Set(command.referenceImageIds)].filter(id => id !== input).map(id => image(db, binding, id));
         jobId = randomUUID();
-        db.prepare(`INSERT INTO jobs(id,projectId,inputImageId,referenceImageIds,providerId,model,prompt,size,quality,maxAttempts,createdAt) VALUES (?,?,?,?,?,?,?,?,?,1,?)`)
-          .run(jobId, binding.projectId, input, JSON.stringify(refs), provider.providerId, provider.model, text(command.prompt, '分镜提示词'), text(command.size, '图片尺寸'), text(command.quality, '图片质量'), new Date().toISOString());
+        if (runtime.mode === 'server' && !isUnifiedImageAnchorProvider(providerRow)) {
+          fail('团队版新返工请选择统一模型“Image 2”，不能直接指定其他图片通道。', 'team_unified_model_required', 409);
+        }
+        if (isUnifiedImageAnchorProvider(providerRow)) {
+          if (runtime.mode !== 'server') fail('统一 Image 2 仅在团队版可用', 'team_unified_model_required', 409);
+          if (command.model && command.model !== UNIFIED_IMAGE_MODEL_KEY) {
+            fail('统一模型身份已变化，请刷新后核对', 'revision_conflict', 409);
+          }
+          const available = unifiedImageProviderAvailability(db)
+            .some((channel) => channel.identityValid && channel.configured);
+          if (!available) fail('当前没有已启用且凭据可用的 Image 2 通道。');
+          const output = inferUnifiedImageOutputFromPreset(command.size);
+          if (!output) fail('请选择 Image 2 支持的清晰度与比例对应尺寸。');
+          let frozen;
+          try {
+            frozen = freezeUnifiedImageRequest({
+              inputImageId: input,
+              referenceImageIds: refs,
+              prompt: text(command.prompt, '分镜提示词'),
+              tier: output.tier,
+              ratio: output.ratio,
+              referenceGuidanceMode: 'preserve_subject',
+            });
+          } catch (error) {
+            fail(error instanceof UnifiedImageRequestError ? error.message : String(error));
+          }
+          db.prepare(`INSERT INTO jobs(
+              id,projectId,inputImageId,referenceImageIds,providerId,model,prompt,size,quality,
+              status,attempt,maxAttempts,createdAt,referenceGuidanceMode,
+              unifiedModel,unifiedRuleVersion,unifiedRequestJson,creationSource,creationRequestKey,creationRequestHash
+            ) VALUES (?,?,?,?,?,?,?,?,?,'pending',0,1,?,'preserve_subject',?,?,?,?,?,?)`)
+            .run(
+              jobId, binding.projectId, input, JSON.stringify(refs),
+              providerRow.id, UNIFIED_IMAGE_MODEL_KEY, frozen.prompt, frozen.size, 'auto',
+              new Date().toISOString(), UNIFIED_IMAGE_MODEL_KEY, UNIFIED_MEDIA_RULE_VERSION,
+              JSON.stringify(frozen), 'team_film_rework', command.requestId, requestHash(command),
+            );
+          registerNewTask(access, 'image', jobId, binding.projectId, {
+            entry: 'team_film_rework', requestId: command.requestId,
+            bindingId: binding.id, clipId, shotId: shot.id,
+            unifiedModel: UNIFIED_IMAGE_MODEL_KEY,
+            unifiedRuleVersion: UNIFIED_MEDIA_RULE_VERSION,
+            unifiedRequest: frozen,
+          });
+        } else {
+          const provider = resolveImageJobProvider(db, providerId, { providerId, model: '' });
+          if (command.model !== provider.model) fail('供应商模型已变化，请刷新后核对', 'revision_conflict', 409);
+          db.prepare(`INSERT INTO jobs(id,projectId,inputImageId,referenceImageIds,providerId,model,prompt,size,quality,maxAttempts,createdAt) VALUES (?,?,?,?,?,?,?,?,?,1,?)`)
+            .run(jobId, binding.projectId, input, JSON.stringify(refs), provider.providerId, provider.model, text(command.prompt, '分镜提示词'), text(command.size, '图片尺寸'), text(command.quality, '图片质量'), new Date().toISOString());
+          registerNewTask(access, 'image', jobId, binding.projectId, {
+            entry: 'film_rework', requestId: command.requestId,
+            bindingId: binding.id, clipId, shotId: shot.id,
+            inputImageId: input, referenceImageIds: refs,
+          });
+        }
       } else if (command.type === 'select_image') {
         const imageId = image(db, binding, command.imageId);
-        const candidate = db.prepare(`SELECT j.id FROM jobs j JOIN final_edit_film_reworks r ON r.jobId=j.id WHERE r.bindingId=? AND r.clipId=? AND r.kind='generate_image' AND j.status='succeeded' AND j.outputImageId=?`).get(binding.id, clipId, imageId) as { id: string } | undefined;
+        const candidate = db.prepare(`SELECT j.id FROM jobs j
+          JOIN final_edit_film_reworks r ON r.jobId=j.id
+          WHERE r.bindingId=? AND r.clipId=? AND r.kind='generate_image'
+            AND (j.status='succeeded' OR (j.status='canceled' AND j.providerStatus='succeeded'))
+            AND j.outputImageId=?`).get(binding.id, clipId, imageId) as { id: string } | undefined;
         const originalImages = db.prepare(`SELECT sourceImageId FROM video_jobs WHERE shotId=? AND shotSetId=?`).all(shot.id, binding.shotSetId) as Array<{ sourceImageId: string }>;
         if (!candidate && !originalImages.some(row => row.sourceImageId === imageId)) fail('图片不是该镜头的候选');
         // Never bind latestJobId: a late queue completion must not undo this explicit selection.
@@ -166,21 +308,84 @@ export async function applyFilmRework(db: Db, storageRoot: string, groupId: stri
       } else if (command.type === 'generate_video') {
         const sourceImageId = image(db, binding, command.imageId);
         if (sourceImageId !== (shot.latestGeneratedImageId || shot.sourceImageId)) fail('当前分镜图已变化', 'revision_conflict', 409);
-        const provider = db.prepare('SELECT * FROM video_providers WHERE id=? AND enabled=1').get(text(command.providerId, '视频供应商')) as Parameters<typeof getVideoProviderConfigState>[0] & { id: string; type: string; defaultModel: string } | undefined;
-        if (!provider || !getVideoProviderConfigState(provider).configured) fail('视频供应商未配置或已禁用');
-        const model = provider.defaultModel.trim();
-        if (command.model !== model) fail('供应商模型已变化，请刷新后核对', 'revision_conflict', 409);
-        const duration = parseVideoDuration(command.durationSec);
-        const error = videoDurationError(provider.type, model, duration);
-        if (error) fail(error);
+        const providerId = text(command.providerId, '视频供应商');
+        const providerRow = db.prepare('SELECT * FROM video_providers WHERE id=? AND enabled=1').get(providerId) as
+          (Parameters<typeof getVideoProviderConfigState>[0] & {
+            id: string; type: string; defaultModel: string;
+          }) | undefined;
+        if (!providerRow) fail('视频供应商未找到或已禁用');
         jobId = randomUUID();
-        db.prepare(`INSERT INTO video_jobs(id,projectId,shotSetId,shotId,sourceImageId,providerId,model,prompt,durationSec,multiShot,displayName,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-          .run(jobId, binding.projectId, binding.shotSetId, shot.id, sourceImageId, provider.id, model, text(command.prompt, '视频提示词'), duration, normalizeVideoMultiShotForStorage(provider.type, model, false), `${clipId} 局部返工`, new Date().toISOString());
+        if (runtime.mode === 'server' && !isUnifiedKlingAnchorProvider(providerRow)) {
+          fail('团队版新返工请选择统一模型“可灵 3.0”，不能直接指定其他视频通道。', 'team_unified_model_required', 409);
+        }
+        if (isUnifiedKlingAnchorProvider(providerRow)) {
+          if (runtime.mode !== 'server') fail('统一可灵 3.0 仅在团队版可用', 'team_unified_model_required', 409);
+          if (command.model && command.model !== UNIFIED_KLING3_MODEL_KEY) {
+            fail('统一模型身份已变化，请刷新后核对', 'revision_conflict', 409);
+          }
+          const duration = parseVideoDuration(command.durationSec);
+          let frozen;
+          try {
+            frozen = freezeUnifiedKlingVideoRequest({
+              sourceImageId,
+              tailImageId: null,
+              referenceAssetIds: [],
+              prompt: text(command.prompt, '视频提示词'),
+              durationSec: duration,
+              generationMode: 'image-to-video',
+              multiShot: false,
+              aspectRatio: null,
+              resolution: null,
+            });
+          } catch (error) {
+            fail(error instanceof UnifiedKlingRequestError ? error.message : String(error));
+          }
+          const available = new Set(unifiedKlingProviderAvailability(db)
+            .filter((channel) => channel.identityValid && channel.configured)
+            .map((channel) => channel.channelKey));
+          if (!unifiedKlingCompatibleChannels(frozen).some((channel) => available.has(channel.channelKey))) {
+            fail('当前没有已配置的可灵 3.0 通道支持这组要求。');
+          }
+          db.prepare(`INSERT INTO video_jobs(
+              id,projectId,shotSetId,shotId,sourceImageId,providerId,model,prompt,durationSec,
+              generationMode,aspectRatio,resolution,multiShot,status,attempt,maxAttempts,displayName,createdAt,
+              unifiedModel,unifiedRuleVersion,unifiedRequestJson
+            ) VALUES (?,?,?,?,?,?,?,?,?,'image-to-video',NULL,NULL,0,'pending',0,1,?,?,?,?,?)`)
+            .run(
+              jobId, binding.projectId, binding.shotSetId, shot.id, sourceImageId,
+              providerRow.id, UNIFIED_KLING3_MODEL_KEY, frozen.prompt, frozen.durationSec,
+              `${clipId} 局部返工`, new Date().toISOString(),
+              UNIFIED_KLING3_MODEL_KEY, UNIFIED_MEDIA_RULE_VERSION, JSON.stringify(frozen),
+            );
+          registerNewTask(access, 'video', jobId, binding.projectId, {
+            entry: 'team_film_rework', requestId: command.requestId,
+            bindingId: binding.id, clipId, shotId: shot.id,
+            unifiedModel: UNIFIED_KLING3_MODEL_KEY,
+            unifiedRuleVersion: UNIFIED_MEDIA_RULE_VERSION,
+            unifiedRequest: frozen,
+          });
+        } else {
+          if (!getVideoProviderConfigState(providerRow).configured) fail('视频供应商未配置或已禁用');
+          const model = providerRow.defaultModel.trim();
+          if (command.model !== model) fail('供应商模型已变化，请刷新后核对', 'revision_conflict', 409);
+          const duration = parseVideoDuration(command.durationSec);
+          const error = videoDurationError(providerRow.type, model, duration);
+          if (error) fail(error);
+          db.prepare(`INSERT INTO video_jobs(id,projectId,shotSetId,shotId,sourceImageId,providerId,model,prompt,durationSec,multiShot,displayName,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(jobId, binding.projectId, binding.shotSetId, shot.id, sourceImageId, providerRow.id, model, text(command.prompt, '视频提示词'), duration, normalizeVideoMultiShotForStorage(providerRow.type, model, false), `${clipId} 局部返工`, new Date().toISOString());
+          registerNewTask(access, 'video', jobId, binding.projectId, {
+            entry: 'film_rework', requestId: command.requestId,
+            bindingId: binding.id, clipId, shotId: shot.id,
+            sourceImageId, durationSec: duration,
+          });
+        }
       } else if (prepared) {
         if (candidates.some(c => c.videoJobId === prepared.videoJobId)) fail('视频已被登记', 'revision_conflict', 409);
         if (external) {
           if (JSON.stringify(externalSource()) !== JSON.stringify(external)) fail('外部素材归属或状态已变化', 'revision_conflict', 409);
-        } else if (!db.prepare(`SELECT 1 FROM video_jobs WHERE id=? AND shotId=? AND shotSetId=? AND projectId=? AND status='succeeded'`).get(prepared.videoJobId, shot.id, binding.shotSetId, binding.projectId)) fail('视频归属或状态已变化', 'revision_conflict', 409);
+        } else if (!db.prepare(`SELECT 1 FROM video_jobs WHERE id=? AND shotId=? AND shotSetId=? AND projectId=?
+          AND (status='succeeded' OR (status='canceled' AND providerStatus='succeeded'))`)
+          .get(prepared.videoJobId, shot.id, binding.shotSetId, binding.projectId)) fail('视频归属或状态已变化', 'revision_conflict', 409);
         const analysis = db.prepare('SELECT fileFingerprint FROM final_edit_asset_analysis WHERE videoJobId=?').get(prepared.videoJobId) as { fileFingerprint: string } | undefined;
         if (analysis && analysis.fileFingerprint !== prepared.fingerprint) fail('素材分析指纹与当前文件不一致', 'revision_conflict', 409);
         db.prepare('UPDATE final_edit_film_bindings SET candidatesJson=?,inputHashesJson=? WHERE id=?').run(JSON.stringify([...candidates, prepared]), JSON.stringify({ ...JSON.parse(binding.inputHashesJson), [prepared.file]: prepared.fingerprint }), binding.id);

@@ -2,12 +2,23 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { seedProviders } from '@/lib/seed';
 import { isPlaceholderValue } from '@/lib/video-auth';
-import { isVisibleImageProvider } from '@/lib/provider-list-visibility';
 import { isVisibleVideoProvider } from '@/lib/provider-list-visibility';
 import { listScriptProviderMeta } from '@/lib/script-providers/store';
-import { describeVideoProvider } from '@/lib/video-model-capabilities';
+import { describeVideoProvider, getVideoModelCapabilities } from '@/lib/video-model-capabilities';
 import { getFinalEditTtsAdapter } from '@/lib/final-edit/adapters/tts-registry';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { readRuntimeConfig } from '@/lib/team-service/config';
+import {
+  unifiedImageProviderAvailability,
+} from '@/lib/media-core/unified-media/execution';
+import { projectTeamImageModels } from '@/lib/media-core/unified-media/model-list';
+import {
+  projectTeamVideoModels,
+  unifiedKlingProviderAvailability,
+} from '@/lib/media-core/unified-media/video-model-list';
+import {
+  UNIFIED_KLING3_MODEL_KEY,
+} from '@/lib/media-core/unified-media/catalog';
 
 function configuredSecret(value: unknown): boolean {
   return Boolean(String(value ?? '').trim()) && !isPlaceholderValue(String(value ?? ''));
@@ -18,11 +29,15 @@ async function __teamRouteGET(request: Request) {
   const db = getDb();
   if (kind === 'image') {
     seedProviders();
-    const rows = db.prepare(`SELECT id, name, model, type, enabled, apiKey FROM providers ORDER BY name`).all() as Array<Record<string, unknown> & { id: string; name: string; type: string; baseUrl: string }>;
-    return NextResponse.json(rows.filter(isVisibleImageProvider).filter((row) => Number(row.enabled) === 1).map((row) => ({
-      id: String(row.id), name: String(row.name), model: String(row.model), type: String(row.type),
-      category: 'image', enabled: 1, configured: configuredSecret(row.apiKey), hasApiKey: configuredSecret(row.apiKey), missing: configuredSecret(row.apiKey) ? [] : ['API Key'],
-    })));
+    const rows = db.prepare(`SELECT id, name, model, type, enabled, apiKey, baseUrl FROM providers ORDER BY name`).all() as Array<{
+      id: string; name: string; model: string; type: string; enabled: number; apiKey: string; baseUrl: string;
+    }>;
+    if (readRuntimeConfig().mode === 'server') {
+      const available = unifiedImageProviderAvailability(db)
+        .some((channel) => channel.identityValid && channel.configured);
+      return NextResponse.json(projectTeamImageModels(rows, { mode: 'server', unifiedAvailable: available }));
+    }
+    return NextResponse.json(projectTeamImageModels(rows, { mode: 'local', unifiedAvailable: false }));
   }
   if (kind === 'script') {
     return NextResponse.json(listScriptProviderMeta().filter((provider) => provider.enabled && provider.configured).map((provider) => ({
@@ -34,16 +49,23 @@ async function __teamRouteGET(request: Request) {
   }
   if (kind === 'video') {
     const rows = db.prepare(`SELECT * FROM video_providers WHERE enabled = 1 ORDER BY name`).all() as Array<import('@/lib/video-auth').VideoProviderEnvConfig & { id: string }>;
-    return NextResponse.json(rows.filter(isVisibleVideoProvider).map((row) => {
+    const described = rows.filter(isVisibleVideoProvider).map((row) => {
       const provider = describeVideoProvider(row);
       return {
-        id: provider.id, name: provider.name, category: 'video', type: provider.type,
+        id: row.id, name: provider.name, category: 'video', type: provider.type,
         defaultModel: provider.defaultModel, defaultDurationSec: provider.defaultDurationSec,
         enabled: provider.enabled, configured: provider.configured, hasApiKey: provider.hasApiKey,
         capabilities: provider.capabilities, tailFrameCapability: provider.tailFrameCapability,
         ...(provider.multiShotCapability ? { multiShotCapability: provider.multiShotCapability } : {}),
         missing: provider.missing,
       };
+    });
+    const unifiedAvailable = unifiedKlingProviderAvailability(db)
+      .some((channel) => channel.identityValid && channel.configured);
+    return NextResponse.json(projectTeamVideoModels(described, {
+      mode: readRuntimeConfig().mode,
+      unifiedAvailable,
+      unifiedCapabilities: getVideoModelCapabilities('openai-video', UNIFIED_KLING3_MODEL_KEY) as unknown as Record<string, unknown>,
     }));
   }
   if (kind === 'tts') {

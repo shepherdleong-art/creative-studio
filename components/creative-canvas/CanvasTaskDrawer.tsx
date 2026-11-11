@@ -23,7 +23,7 @@ const PHASE_LABELS: Record<CanvasTaskPhase, string> = {
   failed: '失败',
   blocked: '上游未完成',
   cancelled: '已停止',
-  uncertain: '待核查',
+  uncertain: '结果确认中',
   resume_pending: '待继续',
 };
 
@@ -157,7 +157,11 @@ export function CanvasTaskDrawer({
                           {task.canvasName || task.canvasId.slice(0, 8)}
                         </a>
                       )}
-                      <span className="text-[11px] text-ink-secondary">{PHASE_LABELS[task.phase] ?? task.phase}</span>
+                      <span className="text-[11px] text-ink-secondary">
+                        {task.phase === 'cancelled' && task.outputAssetId
+                          ? '已停止 · 结果已收尾'
+                          : PHASE_LABELS[task.phase] ?? task.phase}
+                      </span>
                     </div>
                     <div className="text-[11px] text-ink-tertiary">
                       {task.mediaKind === 'image' ? '图片' : '视频'} · {task.nodeId}
@@ -171,8 +175,18 @@ export function CanvasTaskDrawer({
                       </div>
                     ) : null}
                     {task.errorMessage ? (
-                      <div className="text-[11px] text-[var(--color-fail)]" data-testid={`task-error-${task.id}`}>
+                      <div
+                        className={`text-[11px] ${task.phase === 'cancelled' && task.outputAssetId
+                          ? 'text-ink-tertiary'
+                          : 'text-[var(--color-fail)]'}`}
+                        data-testid={`task-error-${task.id}`}
+                      >
                         {task.errorMessage}
+                      </div>
+                    ) : null}
+                    {task.phase === 'cancelled' && task.outputAssetId ? (
+                      <div className="text-[11px] text-ink-tertiary" data-testid={`task-late-result-${task.id}`}>
+                        已停止后续生成 · 晚到结果已保留，可点击缩略图查看。
                       </div>
                     ) : null}
                   </button>

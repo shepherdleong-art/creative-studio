@@ -34,6 +34,15 @@ type TeamTask = {
   model: string | null;
   providerName: string;
   modelStatus: string;
+  unifiedModel: string | null;
+  unifiedTaskId: string | null;
+  unifiedTaskCostMinor: number;
+  unifiedTaskCostStatus: string | null;
+  unifiedTaskAttemptCount: number;
+  unifiedTaskChannelCount: number;
+  admissionPriority: number | null;
+  admissionCandidateCount: number | null;
+  admissionTrace: Record<string, unknown> | null;
   modelCalls: TeamTaskModelCall[];
   waitLabel: string;
   waitReason: string | null;
@@ -62,6 +71,40 @@ type TeamTask = {
   updatedAt: string;
 };
 type Member = { id: string; employeeId: string; displayName: string };
+
+export type TeamTaskDisplayGroup = {
+  key: string;
+  items: TeamTask[];
+  representative: TeamTask;
+};
+
+/**
+ * The task API is operation-level so errors/retries stay precise. The list
+ * presents a unified work task once; its real channel operations remain
+ * available through the detail counts and, for admins, usage drill-down.
+ */
+export function groupTeamTaskRows(items: TeamTask[]): TeamTaskDisplayGroup[] {
+  const groups = new Map<string, TeamTask[]>();
+  for (const item of items) {
+    const key = item.unifiedTaskId ? `unified:${item.unifiedTaskId}` : `operation:${item.operationId}`;
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+  return [...groups.entries()].map(([key, groupedItems]) => ({
+    key,
+    items: groupedItems,
+    representative: groupedItems[0],
+  }));
+}
+
+function unifiedTaskCostLabel(item: TeamTask): string {
+  if (item.unifiedTaskCostStatus === 'released') return '已释放';
+  if (item.unifiedTaskCostStatus === 'unpriced') return '未定价';
+  if (item.unifiedTaskCostStatus === 'uncertain') return `待核账${item.unifiedTaskCostMinor ? ` · ¥${(item.unifiedTaskCostMinor / 100).toFixed(2)}` : ''}`;
+  if (item.unifiedTaskCostStatus === 'estimated') return `估算 ¥${(item.unifiedTaskCostMinor / 100).toFixed(2)}`;
+  if (item.unifiedTaskCostStatus === 'mixed') return `混合 ¥${(item.unifiedTaskCostMinor / 100).toFixed(2)}`;
+  if (item.unifiedTaskCostStatus === 'settled') return `已记录 ¥${(item.unifiedTaskCostMinor / 100).toFixed(2)}`;
+  return item.unifiedTaskCostMinor ? `¥${(item.unifiedTaskCostMinor / 100).toFixed(2)}` : '费用待确认';
+}
 
 const STAGE_LABELS: Record<string, string> = {
   upload: '上传', remote_submit: '生成提交', remote_poll: '远端结果查询', download: '结果下载',
@@ -158,11 +201,15 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
   }, [admin]);
 
   const visible = useMemo(() => items.filter((item) => matchesTaskQuery(item, search)), [items, search]);
+  const displayGroups = useMemo(() => groupTeamTaskRows(visible), [visible]);
   const groups = useMemo(() => {
-    const byActor = new Map<string, TeamTask[]>();
-    for (const item of visible) byActor.set(item.actorUserId, [...(byActor.get(item.actorUserId) ?? []), item]);
+    const byActor = new Map<string, TeamTaskDisplayGroup[]>();
+    for (const group of displayGroups) {
+      const actorId = group.representative.actorUserId;
+      byActor.set(actorId, [...(byActor.get(actorId) ?? []), group]);
+    }
     return [...byActor.entries()];
-  }, [visible]);
+  }, [displayGroups]);
 
   const openTask = useCallback((operationId: string | null) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -209,7 +256,11 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
         waitReason: item.waitReason, actor: item.employeeId, providerName: item.providerName,
         model: item.model, modelCalls: item.modelCalls, input: item.inputFilename,
         inputRevision: item.inputRevision, submissionCount: item.submissionCount,
-        attemptCount: item.attemptCount, businessAttemptNo: item.businessAttemptNo,
+        attemptCount: item.unifiedTaskAttemptCount || item.attemptCount,
+        channelAttemptCount: item.unifiedTaskChannelCount, taskCostMinor: item.unifiedTaskCostMinor,
+        admissionPriority: item.admissionPriority, admissionCandidateCount: item.admissionCandidateCount,
+        admissionTrace: item.admissionTrace,
+        unifiedTaskId: item.unifiedTaskId, businessAttemptNo: item.businessAttemptNo,
         errorId: item.errorId, errorStage: item.errorStage, errorCode: item.errorCode,
         clientVersion: item.clientVersion, serverReleaseId: item.serverReleaseId,
         configVersion: item.configVersion, updatedAt: item.updatedAt,
@@ -226,7 +277,7 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
   const hasFilters = Boolean(search.trim() || status || actorUserId);
   const retryable = selected ? selected.status === 'failed' && ['image', 'video'].includes(String(selected.module)) : false;
 
-  function taskTable(rows: TeamTask[]) {
+  function taskTable(rows: TeamTaskDisplayGroup[]) {
     return (
       <div className="overflow-x-auto">
         <table className={s.table}>
@@ -234,32 +285,38 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
             <tr>{['任务', '项目', '发起人', '模型', '状态', '时间'].map((label) => <th key={label}>{label}</th>)}</tr>
           </thead>
           <tbody>
-            {rows.map((item) => (
+            {rows.map((group) => {
+              const item = group.representative;
+              const isSelected = group.items.some((candidate) => candidate.operationId === selectedTaskId);
+              return (
               <tr
-                key={item.operationId}
+                key={group.key}
                 tabIndex={0}
                 data-testid="task-row"
                 data-operation-id={item.operationId}
-                aria-current={item.operationId === selectedTaskId ? 'true' : undefined}
-                onClick={() => openTask(item.operationId === selectedTaskId ? null : item.operationId)}
+                data-unified-task-id={item.unifiedTaskId ?? undefined}
+                aria-current={isSelected ? 'true' : undefined}
+                onClick={() => openTask(isSelected ? null : item.operationId)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
-                    openTask(item.operationId === selectedTaskId ? null : item.operationId);
+                    openTask(isSelected ? null : item.operationId);
                   }
                 }}
               >
-                <td><span className={s.taskName}>{item.taskName}</span><span className={s.taskStep}>{item.stepName}</span></td>
+                <td><span className={s.taskName}>{item.taskName}</span><span className={s.taskStep}>{item.stepName}{group.items.length > 1 ? ` · 同一制作任务 ${group.items.length} 条执行记录` : ''}</span></td>
                 <td className={`${s.secondary} truncate`}>{item.scopeName}</td>
                 <td className={s.secondary}>{item.actorDisplayName}<span className={`${s.taskStep} block`}>工号 {item.employeeId}</span></td>
                 <td className={`${s.secondary} ${s.mono} truncate`}>{item.model ?? '未记录'}</td>
                 <td>
                   <Tag tone={statusOf(item)}>{TASK_STATUS_LABELS[item.status] ?? item.status}</Tag>
                   {item.waitLabel ? <span className={`${s.taskStep} block`}>{item.waitLabel}</span> : null}
+                  {item.unifiedTaskId ? <span className={`${s.taskStep} block`}>任务合计 {unifiedTaskCostLabel(item)} · 通道 {item.unifiedTaskChannelCount}</span> : null}
                 </td>
                 <td className={`${s.secondary} ${s.nowrap} ${s.mono}`}>{formatTime(item.updatedAt)}</td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -313,7 +370,7 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
           {hasFilters ? <button type="button" className="btn-secondary btn-sm" onClick={clearFilters}>清除筛选</button> : null}
         </div>
         <p className={s.panelNote} role="status">
-          当前结果 {visible.length} 条{items.length > visible.length ? `（从 ${items.length} 条里筛出）` : ''}；服务端最多返回最近 500 条，不是全历史总数。发送尝试包含结果未确认的请求，不等于扣费次数。
+          当前结果 {displayGroups.length} 个制作任务（{visible.length} 条执行记录）{items.length > visible.length ? `，从 ${items.length} 条里筛出` : ''}；服务端最多返回最近 500 条执行记录，不是全历史总数。发送尝试包含结果未确认的请求，不等于扣费次数。
         </p>
       </section>
 
@@ -322,7 +379,7 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
       <div className={s.columns} style={{ gridTemplateColumns: selected ? 'minmax(0, 1fr) minmax(320px, 400px)' : 'minmax(0, 1fr)' }}>
         <div className="grid gap-3" style={{ minWidth: 0 }}>
           {!loading || items.length > 0 ? (
-            visible.length === 0 && !loading ? (
+            displayGroups.length === 0 && !loading ? (
               <section className={s.panel} aria-label="任务列表">
                 <div className="p-6">
                   <EmptyState
@@ -346,7 +403,7 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
               </section>
             ) : grouped ? (
               groups.map(([memberId, groupItems]) => {
-                const member = groupItems[0];
+                const member = groupItems[0].representative;
                 const isCollapsed = collapsed.has(memberId);
                 return (
                   <section key={memberId} aria-label={`${member.actorDisplayName}（${member.employeeId}）的任务`} className={s.panel}>
@@ -371,7 +428,7 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
                 );
               })
             ) : (
-              <section className={s.panel} aria-label="任务列表">{taskTable(visible)}</section>
+              <section className={s.panel} aria-label="任务列表">{taskTable(displayGroups)}</section>
             )
           ) : null}
         </div>
@@ -411,6 +468,30 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
                 <GroupRow label="发起人">{selected.actorDisplayName}（工号 {selected.employeeId}）</GroupRow>
                 <GroupRow label="供应商" stacked><span className="text-[12.5px] break-all">{selected.providerName}</span></GroupRow>
                 <GroupRow label="实际模型" stacked><span className="text-[12.5px] break-all">{selected.model ?? '未记录'}</span></GroupRow>
+                {selected.unifiedTaskId ? (
+                  <GroupRow label="制作任务合计" stacked>
+                    <span className="text-[12.5px]">
+                      1 个制作任务 · {selected.unifiedTaskAttemptCount} 次通道调用 · {selected.unifiedTaskChannelCount} 条通道
+                      {` · ${unifiedTaskCostLabel(selected)}`}
+                    </span>
+                    <span className={`${s.taskStep} block`}>同一制作任务的自动兜底不会增加作品份数。</span>
+                  </GroupRow>
+                ) : null}
+                {selected.admissionPriority !== null ? (
+                  <GroupRow label="调度优先级" stacked>
+                    <span className="text-[12.5px]">
+                      {selected.admissionTrace?.priorityClass === 'single_channel'
+                        ? '单通道任务优先'
+                        : selected.admissionTrace?.priorityClass === 'overflow'
+                          ? `可溢出任务（候选 ${selected.admissionCandidateCount ?? 2} 条通道）`
+                          : '普通调度'}
+                      {selected.admissionTrace?.aged === true ? ' · 已按等待时长提升' : ''}
+                    </span>
+                    <span className={`${s.taskStep} block`}>
+                      成员公平与预算/权限门禁先于该偏好；不会绕过共享池容量。
+                    </span>
+                  </GroupRow>
+                ) : null}
                 {selected.errorId ? (
                   <GroupRow label="错误编号" stacked>
                     <Link className="text-[12.5px] text-accent break-all" href={`/team/errors?errorId=${encodeURIComponent(selected.errorId)}`}>{selected.errorId} →</Link>
@@ -420,7 +501,7 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
                 {selected.errorMessage ? <GroupRow label="错误说明" stacked><span className="text-[12.5px] leading-5 break-words">{selected.errorMessage}</span></GroupRow> : null}
                 <GroupRow label="发送记录">
                   {selected.submissionCount === 0 ? '尚未发送' : `发送尝试 ${selected.submissionCount} 次`}
-                  <span className={`${s.taskStep} block`}>第 {selected.businessAttemptNo} 轮任务 · 执行尝试 {selected.attemptCount} 条</span>
+                  <span className={`${s.taskStep} block`}>第 {selected.businessAttemptNo} 轮任务 · 执行尝试 {selected.unifiedTaskAttemptCount || selected.attemptCount} 条</span>
                 </GroupRow>
                 <GroupRow label="更新时间">{formatTime(selected.updatedAt)}</GroupRow>
               </GroupList>

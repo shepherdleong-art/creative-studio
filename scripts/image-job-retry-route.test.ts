@@ -228,6 +228,28 @@ try {
     console.log('场景 5 通过：远端可能仍在执行 → needs_check，providerTaskId 保留');
   }
 
+  // ── 场景 6：统一任务的人工重试必须开启新的 generation turn ──
+  seedJob({
+    id: 'job-unified-retry',
+    status: 'failed',
+    providerTaskId: null,
+    providerStatus: 'failed',
+    errorMessage: '两条统一通道都明确失败',
+  });
+  db.prepare(`UPDATE jobs SET unifiedModel = 'image2', unifiedRuleVersion = 'unified-media-2026-11-10-v1',
+    unifiedTaskId = 'old-parent', unifiedGenerationId = 'old-generation',
+    cancelRequestedAt = '2026-11-10T10:00:00.000Z' WHERE id = 'job-unified-retry'`).run();
+  {
+    const { response } = await retryJob('job-unified-retry');
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      db.prepare(`SELECT unifiedTaskId, unifiedGenerationId, cancelRequestedAt
+        FROM jobs WHERE id = 'job-unified-retry'`).get(),
+      { unifiedTaskId: null, unifiedGenerationId: null, cancelRequestedAt: null },
+      'manual retry must not reuse the exhausted parent or cancellation intent',
+    );
+  }
+
   console.log('image retry route ok');
 } finally {
   closeDb();

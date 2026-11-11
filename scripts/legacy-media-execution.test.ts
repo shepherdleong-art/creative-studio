@@ -19,12 +19,20 @@ Object.assign(process.env, {
   CREATIVE_STUDIO_TRUSTED_ORIGIN: 'https://studio.example.test',
 });
 
-const [{ getDb, closeDb }, { startTeamServiceRuntime, drainTeamRuntime, releaseTeamRuntimeOwner, getTeamExecutionFacade }, queue, videoQueue, videoProviders] = await Promise.all([
+const [
+  { getDb, closeDb },
+  { startTeamServiceRuntime, drainTeamRuntime, releaseTeamRuntimeOwner, getTeamExecutionFacade },
+  queue,
+  videoQueue,
+  videoProviders,
+  { providerHttpError },
+] = await Promise.all([
   import('../lib/db.ts'),
   import('../lib/team-service/runtime/index.ts'),
   import('../lib/queue.ts'),
   import('../lib/video-queue.ts'),
   import('../lib/video-providers/index.ts'),
+  import('../lib/media-core/submission-evidence.ts'),
 ]);
 const { configureLegacyMediaProviderPool, legacyMediaProviderPoolKey } = await import('../lib/legacy-media-execution.ts');
 const { createLegacyMediaLifecycle } = await import('../lib/legacy-media-lifecycle.ts');
@@ -154,6 +162,18 @@ const fake = http.createServer((req, res) => {
     req.resume();
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: { message: 'bad request' } }));
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/rate-limited-image/v1/images/edits') {
+    req.resume();
+    res.writeHead(429, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: `rate limited ${'shared-secret'}` } }));
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/rejected-image/v1/images/edits') {
+    req.resume();
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: `invalid prompt ${'shared-secret'}` } }));
     return;
   }
   req.resume();
@@ -360,6 +380,118 @@ try {
   });
   assert.equal(packyTerminalAdmission.kind, 'idle');
   console.log('legacy media terminal-operation test passed');
+
+  provider('rate-limited-image', 'openai-compatible', `${baseUrl}/rate-limited-image`);
+  configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/rate-limited-image`, apiKey: 'shared-secret' });
+  member('member-rate-limited-image');
+  project('project-rate-limited-image', 'member-rate-limited-image', 'rate-limited-image');
+  imageJob(
+    'job-rate-limited-image',
+    'project-rate-limited-image',
+    'member-rate-limited-image',
+    'rate-limited-image',
+  );
+  await queue.runQueue({
+    projectId: 'project-rate-limited-image', jobId: 'job-rate-limited-image',
+    concurrency: 1, maxAttempts: 2, timeoutMs: 60_000,
+  });
+  const rateLimitedImage = db.prepare(`SELECT status, providerStatus, attempt, errorMessage
+    FROM jobs WHERE id = 'job-rate-limited-image'`).get() as {
+    status: string; providerStatus: string | null; attempt: number; errorMessage: string | null;
+  };
+  assert.equal(rateLimitedImage.status, 'needs_check');
+  assert.equal(rateLimitedImage.providerStatus, 'unknown');
+  assert.equal(rateLimitedImage.attempt, 1, '限流且无未创建证据时不得自动重提');
+  assert.match(rateLimitedImage.errorMessage ?? '', /结果确认中|不会自动重复提交|不会重新生成/);
+  assert.equal((rateLimitedImage.errorMessage ?? '').includes('shared-secret'), false, '员工文案不得泄露密钥');
+  assert.equal(
+    imageRequests.filter((url) => url === '/rate-limited-image/v1/images/edits').length,
+    1,
+    '429 只能发送一次，未知结果由后台继续核对',
+  );
+  const rateLimitedOperation = db.prepare(`SELECT id, status FROM execution_operations
+    WHERE module = 'image' AND taskId = 'job-rate-limited-image'`).get() as { id: string; status: string };
+  assert.equal(rateLimitedOperation.status, 'unknown');
+  assert.equal(Number((db.prepare(`SELECT COUNT(*) AS count FROM execution_reservations
+    WHERE operationId = ? AND kind = 'concurrency' AND state = 'held'`).get(rateLimitedOperation.id) as { count: number }).count) > 0,
+  true, '未知提交必须保留原执行占用');
+  await queue.runQueue({
+    projectId: 'project-rate-limited-image', jobId: 'job-rate-limited-image',
+    concurrency: 1, maxAttempts: 2, timeoutMs: 60_000,
+  });
+  assert.equal((db.prepare("SELECT attempt FROM jobs WHERE id = 'job-rate-limited-image'").pluck().get() as number), 1,
+    '再次启动队列不得重置或增加未知提交的付费次数');
+  assert.equal(
+    imageRequests.filter((url) => url === '/rate-limited-image/v1/images/edits').length,
+    1,
+    '未知提交禁止自动重发',
+  );
+
+  provider('rejected-image', 'openai-compatible', `${baseUrl}/rejected-image`);
+  configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/rejected-image`, apiKey: 'shared-secret' });
+  member('member-rejected-image');
+  project('project-rejected-image', 'member-rejected-image', 'rejected-image');
+  imageJob('job-rejected-image', 'project-rejected-image', 'member-rejected-image', 'rejected-image');
+  db.prepare("UPDATE jobs SET maxAttempts = 1 WHERE id = 'job-rejected-image'").run();
+  await queue.runQueue({
+    projectId: 'project-rejected-image', jobId: 'job-rejected-image',
+    concurrency: 1, maxAttempts: 1, timeoutMs: 60_000,
+  });
+  const rejectedImage = db.prepare(`SELECT status, providerStatus, attempt, errorMessage
+    FROM jobs WHERE id = 'job-rejected-image'`).get() as {
+    status: string; providerStatus: string | null; attempt: number; errorMessage: string | null;
+  };
+  assert.equal(rejectedImage.status, 'failed');
+  assert.equal(rejectedImage.attempt, 1);
+  assert.equal((rejectedImage.errorMessage ?? '').includes('shared-secret'), false);
+  assert.equal(
+    imageRequests.filter((url) => url === '/rejected-image/v1/images/edits').length,
+    1,
+    '明确 4xx 未创建不得自动重提超过任务原有次数',
+  );
+  console.log('legacy media submission-evidence image test passed');
+
+  provider('rate-limited-video', 'openai-compatible', `${baseUrl}/rate-limited-video`);
+  videoProvider('rate-limited-video', 'openai-video', `${baseUrl}/rate-limited-video`);
+  configureLegacyMediaProviderPool({ baseUrl: `${baseUrl}/rate-limited-video`, apiKey: 'shared-secret' });
+  member('member-rate-limited-video');
+  project('project-rate-limited-video', 'member-rate-limited-video', 'rate-limited-video');
+  videoJob(
+    'job-rate-limited-video',
+    'project-rate-limited-video',
+    'member-rate-limited-video',
+    'rate-limited-video',
+  );
+  let rateLimitedVideoSubmits = 0;
+  videoProviders.registerTestVideoAdapter('openai-video', {
+    submit: async () => {
+      rateLimitedVideoSubmits += 1;
+      throw providerHttpError(503, `video gateway unavailable ${'shared-secret'}`);
+    },
+    poll: async () => ({ status: 'failed', errorMessage: 'must not poll', rawResponse: null }),
+    minimumPollingTimeoutMs: () => 0,
+  });
+  await videoQueue.runVideoQueue({
+    projectId: 'project-rate-limited-video', jobId: 'job-rate-limited-video',
+    concurrency: 1, timeoutMs: 60_000,
+  });
+  const unknownVideo = db.prepare(`SELECT status, providerStatus, attempt, errorMessage
+    FROM video_jobs WHERE id = 'job-rate-limited-video'`).get() as {
+    status: string; providerStatus: string | null; attempt: number; errorMessage: string | null;
+  };
+  assert.equal(unknownVideo.status, 'needs_check');
+  assert.equal(unknownVideo.providerStatus, 'unknown');
+  assert.equal(unknownVideo.attempt, 1);
+  assert.match(unknownVideo.errorMessage ?? '', /结果确认中|不会自动重复提交|不会重新生成/);
+  assert.equal((unknownVideo.errorMessage ?? '').includes('shared-secret'), false);
+  assert.equal(rateLimitedVideoSubmits, 1);
+  await videoQueue.runVideoQueue({
+    projectId: 'project-rate-limited-video', jobId: 'job-rate-limited-video',
+    concurrency: 1, timeoutMs: 60_000,
+  });
+  assert.equal(rateLimitedVideoSubmits, 1, '5xx 且无回执的视频提交不得自动重发');
+  assert.equal((db.prepare("SELECT attempt FROM video_jobs WHERE id = 'job-rate-limited-video'").pluck().get() as number), 1);
+  console.log('legacy media submission-evidence video test passed');
 
   provider('legacy-unknown-image', 'openai-compatible', `${baseUrl}/legacy-unknown`);
   member('member-legacy-unknown');
