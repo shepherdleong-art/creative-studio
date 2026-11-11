@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { register } from 'node:module';
@@ -24,12 +25,12 @@ const { getDb, closeDb } = await import('../lib/db.ts');
 const { checkTeamServiceReadiness } = await import('../lib/team-service/readiness.ts');
 const { schemaUpgradeRuntimePaths } = await import('../lib/schema-upgrade/runtime.ts');
 const { registerRootScope, registerInheritedScope, createTeamAccessContext } = await import('../lib/team-service/resource-scopes.ts');
-const { runWithAccessContext } = await import('../lib/media-core/access-context.ts');
+const { runWithAccessContext, createLocalAccessContext } = await import('../lib/media-core/access-context.ts');
 const { registerTeamDevice, listTeamDownloads } = await import('../lib/team-service/transfers/devices.ts');
 const { softDeleteResource } = await import('../lib/team-service/lifecycle/index.ts');
-const { reserveProjectExportTarget, publishReservedExportTarget } = await import('../lib/final-edit/export-naming.ts');
-const { registerPublishedArtifacts, ensurePackagedArtifactRegistered } = await import('../lib/final-edit/project-artifacts.ts');
-const { registerPackagedArtifact } = await import('../lib/final-edit/packaging.ts');
+const { reserveProjectExportTarget, publishReservedExportTarget, publishReservedSingleFile } = await import('../lib/final-edit/export-naming.ts');
+const { registerPublishedArtifacts, ensurePackagedArtifactRegistered, registerSingleArtifact } = await import('../lib/final-edit/project-artifacts.ts');
+const { registerPackagedArtifact, publishPackagedCover, publishPackagedResult, deletePackagedPublish } = await import('../lib/final-edit/packaging.ts');
 const { mediaResponse } = await import('../lib/final-edit/media-response.ts');
 const { initFinalEditSchema } = await import('../lib/final-edit/schema.ts');
 const { ensureCreativeCanvasSchemaReady } = await import('../lib/creative-canvas/schema.ts');
@@ -125,6 +126,110 @@ try {
       new Request('https://studio.example.test/preview'), relativePath, 'video/mp4',
     )), /不存在或不可用/, '其他员工不能读取包装成片');
   }
+
+  // 包装封面发布独立版本，失败回滚与重试均不得改写已登记的原封面。
+  const linkedTarget = reserveProjectExportTarget(storageRoot, { ...identity, taskName: '包装联动封面' });
+  const renderJobId = 'render-cover-version';
+  const packagingJobId = 'packaging-cover-version';
+  const renderDirectory = path.join(storageRoot, 'final-edits', 'jobs', renderJobId);
+  const packagingRelativeDir = path.join('final-edits', 'jobs', packagingJobId);
+  const packagingDirectory = path.join(storageRoot, packagingRelativeDir);
+  fs.mkdirSync(renderDirectory, { recursive: true });
+  fs.mkdirSync(packagingDirectory, { recursive: true });
+  const rawCover = path.join(renderDirectory, 'cover.jpg');
+  await sharp({ create: { width: 32, height: 48, channels: 3, background: '#204060' } }).jpeg().toFile(rawCover);
+  const originalBytes = fs.readFileSync(rawCover);
+  const sha256 = (bytes: Buffer) => crypto.createHash('sha256').update(bytes).digest('hex');
+  const originalHash = sha256(originalBytes);
+  await publishReservedSingleFile({ storageRoot, sourceRelativePath: path.relative(storageRoot, rawCover),
+    targetRelativePath: linkedTarget.coverRelativePath, reservationRelativePath: linkedTarget.reservationRelativePath,
+    invalidCode: 'render_artifact_invalid' });
+  const rawOutput = { videoRelativePath: path.relative(storageRoot, internalVideo), coverRelativePath: path.relative(storageRoot, rawCover),
+    publishedCoverRelativePath: linkedTarget.coverRelativePath, coverFilename: linkedTarget.coverFilename };
+  db.prepare(`INSERT INTO final_edit_jobs
+    (id, projectId, kind, status, phase, requestKey, inputSnapshotJson, outputJson, createdAt)
+    VALUES (?, 'project-a', 'render', 'succeeded', 'succeeded', ?, '{}', ?, '2026-11-11')`)
+    .run(renderJobId, renderJobId, JSON.stringify(rawOutput));
+  runWithAccessContext(access, () => registerSingleArtifact(db, {
+    id: `final-edit:${renderJobId}:cover`, projectId: 'project-a', kind: 'final_cover', displayName: linkedTarget.coverFilename,
+    relativePath: linkedTarget.coverRelativePath, mimeType: 'image/jpeg', sourceJobId: renderJobId, createdAt: '2026-11-11',
+  }));
+  const readRenderOutput = () => JSON.parse(db.prepare('SELECT outputJson FROM final_edit_jobs WHERE id=?')
+    .pluck().get(renderJobId) as string) as typeof rawOutput;
+  const oldFile = db.prepare('SELECT id, sha256, version FROM team_files WHERE relativePath=?')
+    .get(linkedTarget.coverRelativePath.replaceAll('\\', '/')) as { id: string; sha256: string; version: number };
+  assert.equal(oldFile.sha256, originalHash);
+  const packagingVideo = path.join(packagingDirectory, 'final-packaged.mp4');
+  fs.writeFileSync(packagingVideo, 'packaged-cover-video');
+  const publishCoverAttempt = async (color: string) => {
+    const temporary = path.join(packagingDirectory, 'cover-packaged.tmp.jpg');
+    await sharp({ create: { width: 32, height: 48, channels: 3, background: color } }).jpeg().toFile(temporary);
+    const cover = runWithAccessContext(access, () => publishPackagedCover({ storageRoot, temporaryCoverPath: temporary,
+      jobRelativeDir: packagingRelativeDir, coverFilename: linkedTarget.coverFilename, currentCoverRelativePath: linkedTarget.coverRelativePath }));
+    assert.ok(cover, '团队发布返回独立封面版本');
+    const video = await publishPackagedResult({ storageRoot, internalVideoRelativePath: path.relative(storageRoot, packagingVideo),
+      exportTarget: linkedTarget, renderVideoRelativePath: rawOutput.videoRelativePath });
+    return { ...video, ...cover };
+  };
+  const registerCoverAttempt = (published: Awaited<ReturnType<typeof publishCoverAttempt>>) => registerPackagedArtifact(db, {
+    projectId: 'project-a', sourceJobId: packagingJobId, sourceRenderJobId: renderJobId,
+    target: published, kind: 'final_video', createdAt: '2026-11-11',
+  });
+  const interrupted = await publishCoverAttempt('#ff6633');
+  assert.notEqual(interrupted.coverRelativePath, linkedTarget.coverRelativePath);
+  assert.throws(() => runWithAccessContext(access, () => db.transaction(() => {
+    registerCoverAttempt(interrupted);
+    throw new Error('simulate publication transaction failure');
+  })()), /simulate publication transaction failure/);
+  await deletePackagedPublish(storageRoot, interrupted);
+  assert.equal(fs.existsSync(path.join(storageRoot, interrupted.coverRelativePath)), false);
+  assert.equal(fs.existsSync(path.join(storageRoot, linkedTarget.reservationRelativePath)), true, '失败后恢复视频预留供重试');
+  assert.equal(readRenderOutput().publishedCoverRelativePath, linkedTarget.coverRelativePath, '事务失败保留原封面指针');
+  assert.equal(sha256(fs.readFileSync(path.join(storageRoot, linkedTarget.coverRelativePath))), originalHash);
+
+  const packaged = await publishCoverAttempt('#44cc88');
+  runWithAccessContext(access, () => db.transaction(() => registerCoverAttempt(packaged))());
+  const publishedOutput = readRenderOutput();
+  assert.equal(publishedOutput.publishedCoverRelativePath, packaged.coverRelativePath);
+  assert.equal(publishedOutput.coverRelativePath, rawOutput.coverRelativePath, '原始渲染内部封面仍保留');
+  assert.equal(sha256(fs.readFileSync(rawCover)), originalHash);
+  assert.equal(sha256(fs.readFileSync(path.join(storageRoot, linkedTarget.coverRelativePath))), originalHash,
+    '包装成功后旧 team_files 封面版本的实际字节保持哈希一致');
+  const newFile = db.prepare('SELECT id, sha256, version FROM team_files WHERE relativePath=?')
+    .get(packaged.coverRelativePath.replaceAll('\\', '/')) as { id: string; sha256: string; version: number };
+  assert.equal(newFile.version, oldFile.version + 1);
+  assert.notEqual(newFile.sha256, oldFile.sha256);
+  const coverResponse = runWithAccessContext(access, () => mediaResponse(
+    new Request('https://studio.example.test/api/final-edit-jobs/render-cover-version/cover?download=1'),
+    publishedOutput.publishedCoverRelativePath, 'image/jpeg', publishedOutput.coverFilename,
+  ));
+  assert.equal(coverResponse.status, 200, '正常封面读取入口可以授权访问新版本');
+  assert.equal(sha256(Buffer.from(await coverResponse.arrayBuffer())), newFile.sha256);
+  assert.ok(coverResponse.headers.get('Content-Disposition')?.includes('attachment'));
+  const coverDelivery = listTeamDownloads(db, actor, { deviceId: device.id }).items.find(item => item.manifest.fileId === newFile.id);
+  assert.ok(coverDelivery, '包装封面新版本进入设备交付清单');
+  assert.equal(coverDelivery.manifest.displayName, linkedTarget.coverFilename, '客户端交付保留与成片配对的原封面文件名');
+  runWithAccessContext(access, () => db.transaction(() => registerCoverAttempt(packaged))());
+  assert.equal(db.prepare('SELECT COUNT(*) FROM team_files WHERE relativePath=?').pluck()
+    .get(packaged.coverRelativePath.replaceAll('\\', '/')), 1, '重复登记不会新增文件版本');
+  const localDirectory = path.join(storageRoot, 'projects', 'local-export', '成片');
+  fs.mkdirSync(localDirectory, { recursive: true });
+  const localVideo = path.join(localDirectory, '本地成片.mp4');
+  const localCover = path.join(localDirectory, '本地成片-封面.jpg');
+  fs.writeFileSync(localVideo, 'local-packaged-video');
+  fs.writeFileSync(localCover, originalBytes);
+  const localTemporary = path.join(packagingDirectory, 'local-cover.tmp.jpg');
+  await sharp({ create: { width: 32, height: 48, channels: 3, background: '#9966cc' } }).jpeg().toFile(localTemporary);
+  const localPackagedBytes = fs.readFileSync(localTemporary);
+  const localPublication = runWithAccessContext(createLocalAccessContext(), () => publishPackagedCover({
+    storageRoot, temporaryCoverPath: localTemporary, jobRelativeDir: packagingRelativeDir,
+    coverFilename: path.basename(localCover), currentCoverRelativePath: path.relative(storageRoot, localCover),
+  }));
+  assert.equal(localPublication, undefined, '本地保持现有原目录封面，不新增团队版本指针');
+  assert.deepEqual(fs.readFileSync(localCover), localPackagedBytes, '本地同名封面更新为包装版');
+  assert.equal(path.dirname(localCover), path.dirname(localVideo), '在文件夹中查看仍可成对取出视频与包装封面');
+  assert.equal(fs.readFileSync(localVideo, 'utf8'), 'local-packaged-video');
+  console.log('PASS: packaged covers preserve immutable originals, roll back safely, and publish readable versions');
 
   // 线上旧包装任务已经有正式产物行，但缺 scope + file；打开预览即可补登，无需重新渲染。
   const legacyPath = 'projects/project-a/legacy-packaged.mp4';

@@ -6,6 +6,7 @@ export { resolvePackagingDir, resolvePackagingNode, resolvePackagingTemplateDir,
 // 失败语义：仅当前包装任务失败，已发布的原片不受影响；中止（停机）时杀整棵进程树。
 
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { probeDurationSec, runFfmpeg } from '../ffmpeg.ts';
@@ -24,6 +25,7 @@ import type { FinalEditRenderSnapshot } from './renderer.ts';
 import { composeCoverJpg } from './cover-compose.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from './storage-path.ts';
 import { registerSingleArtifact } from './project-artifacts.ts';
+import { requireAccessContext } from '../media-core/access-context.ts';
 
 // 单实现已迁至 packaging-vars.ts（导出占位校验共用）；此处 re-export 保持既有调用方不破
 export { loadProjectPackagingData };
@@ -67,6 +69,9 @@ export interface PackagedPublishTarget {
   videoRelativePath: string;
   videoFilename: string;
   displayDirectory: string;
+  coverRelativePath?: string;
+  coverFilename?: string;
+  reservationRelativePath?: string;
 }
 
 export interface PackagingJobResult {
@@ -168,6 +173,7 @@ export async function publishPackagedResult(input: {
       videoRelativePath: target.videoRelativePath,
       videoFilename: target.videoFilename,
       displayDirectory: target.displayDirectory,
+      reservationRelativePath: input.exportTarget?.reservationRelativePath,
     };
   }
   return publishPackagedVideo(input);
@@ -208,9 +214,48 @@ export function publishPackagedVideo(input: {
   throw new FinalEditError('export_name_exhausted', '同名包装成片数量过多，无法发布');
 }
 
-/** 中止发生在发布之后时，撤掉已发布的包装版（原片不受影响）。 */
+/** 团队发布独立封面版本；本地更新原目录封面，保持成片与封面成对取件。 */
+export function publishPackagedCover(input: {
+  storageRoot: string;
+  temporaryCoverPath: string;
+  jobRelativeDir: string;
+  coverFilename: string;
+  currentCoverRelativePath: string;
+}): { coverRelativePath: string; coverFilename: string } | undefined {
+  const source = assertNoStorageSymlink(input.storageRoot, path.relative(input.storageRoot, input.temporaryCoverPath));
+  const sourceStat = fs.statSync(source);
+  if (!sourceStat.isFile() || sourceStat.size <= 0) {
+    throw new FinalEditError('packaging_cover_failed', '包装封面缺失或为空');
+  }
+  if (!input.coverFilename || path.basename(input.coverFilename) !== input.coverFilename) {
+    throw new FinalEditError('packaging_cover_failed', '包装封面文件名无效');
+  }
+  if (requireAccessContext().kind === 'local') {
+    fs.renameSync(source, assertNoStorageSymlink(input.storageRoot, input.currentCoverRelativePath));
+    return undefined;
+  }
+  const versionRelativeDir = path.join(input.jobRelativeDir, `cover-packaged-${crypto.randomUUID()}`);
+  fs.mkdirSync(assertNoStorageSymlink(input.storageRoot, versionRelativeDir), { recursive: true });
+  const coverRelativePath = path.join(versionRelativeDir, input.coverFilename);
+  const destination = assertNoStorageSymlink(input.storageRoot, coverRelativePath);
+  fs.linkSync(source, destination);
+  fs.unlinkSync(source);
+  return { coverRelativePath, coverFilename: input.coverFilename };
+}
+
+/** 发布未入账时，只撤掉本次包装文件并恢复视频预留，原封面版本仍可读取。 */
 export async function deletePackagedPublish(storageRoot: string, target: PackagedPublishTarget): Promise<void> {
-  try { await fs.promises.unlink(assertNoStorageSymlink(storageRoot, target.videoRelativePath)); } catch { /* 已不存在 */ }
+  const paths = [target.videoRelativePath, target.coverRelativePath].filter((value): value is string => Boolean(value));
+  await Promise.all(paths.map(async relativePath => {
+    try { await fs.promises.unlink(assertNoStorageSymlink(storageRoot, relativePath)); } catch { /* 已不存在 */ }
+  }));
+  if (target.reservationRelativePath) {
+    try {
+      await fs.promises.writeFile(assertNoStorageSymlink(storageRoot, target.reservationRelativePath), '', { flag: 'wx' });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+  }
 }
 
 export function registerPackagedArtifact(db: Database.Database, input: {
@@ -220,6 +265,7 @@ export function registerPackagedArtifact(db: Database.Database, input: {
   createdAt: string;
   /** 联动模式 = 'final_video'（目录唯一成片）；独立模式 = 'packaged_video'。 */
   kind?: 'final_video' | 'packaged_video';
+  sourceRenderJobId?: string;
 }): void {
   const kind = input.kind || 'packaged_video';
   registerSingleArtifact(db, {
@@ -232,13 +278,35 @@ export function registerPackagedArtifact(db: Database.Database, input: {
     sourceJobId: input.sourceJobId,
     createdAt: input.createdAt,
   });
+  if (input.target.coverRelativePath && input.target.coverFilename && input.sourceRenderJobId) {
+    const row = db.prepare(`SELECT outputJson FROM final_edit_jobs
+      WHERE id=? AND projectId=? AND kind='render' AND status='succeeded'`)
+      .get(input.sourceRenderJobId, input.projectId) as { outputJson: string | null } | undefined;
+    if (!row?.outputJson) throw new FinalEditError('render_required', '原片任务不可用，无法发布包装封面', 409);
+    const renderOutput = JSON.parse(row.outputJson) as Record<string, unknown>;
+    registerSingleArtifact(db, {
+      id: `final-edit:${input.sourceRenderJobId}:cover`,
+      projectId: input.projectId,
+      kind: 'final_cover',
+      displayName: input.target.coverFilename,
+      relativePath: input.target.coverRelativePath,
+      mimeType: 'image/jpeg',
+      sourceJobId: input.sourceRenderJobId,
+      createdAt: input.createdAt,
+    });
+    db.prepare('UPDATE final_edit_jobs SET outputJson=? WHERE id=?').run(JSON.stringify({
+      ...renderOutput,
+      publishedCoverRelativePath: input.target.coverRelativePath,
+      coverFilename: input.target.coverFilename,
+    }), input.sourceRenderJobId);
+  }
 }
 
 /**
  * §C 包装封面帧合成（联动模式）：overlay.webm 抽封面落定帧（透明 PNG），与原始底图经
  * composeCoverJpg（与 renderer 单实现）合成包装封面 JPG 临时文件。
  * 在视频发布前调用——ffmpeg/sharp 失败 = 包装任务失败且发布未开始、预留完整，重试走既有已验证路径。
- * 返回临时 JPG 路径，由调用方在视频发布成功后原子覆盖已发布素封面。
+ * 返回临时 JPG 路径，调用方发布独立文件版本，事务完成后切换当前封面指针。
  */
 async function composePackagedCoverTemp(input: {
   storageRoot: string;
@@ -357,13 +425,13 @@ export async function executePackagingJob(input: {
   const renderSeconds = (Date.now() - startedAt) / 1000;
   input.onProgress?.(0.95);
 
-  // §C 包装封面（仅联动模式）：发布前合成临时 JPG——失败=任务失败且预留完整（重试幂等），
-  // 发布成功后原子覆盖渲染任务先发的素封面（artifact 路径不变，DB 零更新）
+  // 联动包装封面先完成合成，团队发布独立版本；受管原封面不会被修改。
+  // 当前封面指针与包装任务成功状态由 worker 在同一事务中更新。
   const packagedCoverTmp = input.snapshot.exportTarget
     ? await composePackagedCoverTemp({ storageRoot: input.storageRoot, jobDir, renderSnapshot, coverSec, signal: input.signal })
     : null;
 
-  const published = await publishPackagedResult({
+  let published = await publishPackagedResult({
     storageRoot: input.storageRoot,
     internalVideoRelativePath: path.join(jobRelativeDir, 'final-packaged.mp4'),
     exportTarget: input.snapshot.exportTarget,
@@ -374,13 +442,18 @@ export async function executePackagingJob(input: {
       productionCodes: { ...renderSnapshot.exportIdentity.productionCodes, packagingCode: packagingCode({ enabled: true, template: templateName }) },
     } : undefined,
   });
-  if (packagedCoverTmp && input.snapshot.exportTarget) {
-    try {
-      fs.renameSync(packagedCoverTmp, assertNoStorageSymlink(input.storageRoot, input.snapshot.exportTarget.coverRelativePath));
-    } catch (error) {
-      // rename 同卷原子操作几乎不可失败；兜底降级为素封面（修复前现状），不拖垮已发布的包装视频
-      writeLog({ jobId: input.jobId, projectId: input.projectId, level: 'warn', message: `包装封面覆盖失败（视频已发布，封面保留无包装版）：${error instanceof Error ? error.message : String(error)}` });
+  try {
+    if (packagedCoverTmp && input.snapshot.exportTarget) {
+      const packagedCover = publishPackagedCover({
+        storageRoot: input.storageRoot, temporaryCoverPath: packagedCoverTmp, jobRelativeDir,
+        coverFilename: input.snapshot.exportTarget.coverFilename,
+        currentCoverRelativePath: input.snapshot.exportTarget.coverRelativePath,
+      });
+      published = { ...published, ...packagedCover };
     }
+  } catch (error) {
+    await deletePackagedPublish(input.storageRoot, published);
+    throw error;
   }
   writeLog({ jobId: input.jobId, projectId: input.projectId, level: 'info', message: `包装任务完成：${published.videoFilename}（${renderSeconds.toFixed(1)}s）` });
   input.onProgress?.(1);

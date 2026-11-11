@@ -4,6 +4,7 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db.ts';
 import { dataRoot } from '../data-root.ts';
+import { writeLog } from '../logger.ts';
 import { renderFinalEditSnapshot, type FinalEditRenderSnapshot } from './renderer.ts';
 import { runFinalEditHeavyJob } from './heavy-job-lock.ts';
 import { formatShanghaiTaskDate } from './export-identity.ts';
@@ -276,13 +277,6 @@ async function drainPackagingJob(
   }));
   if (controller.signal.aborted) {
     await deletePackagedPublish(storageRoot, result.published);
-    if (snapshot.exportTarget) {
-      // 联动模式：重建视频预留锁供重试（封面前半由渲染任务发布，保留不动）
-      try {
-        const { writeFileSync } = await import('node:fs');
-        writeFileSync(path.join(storageRoot, snapshot.exportTarget.reservationRelativePath), '', { flag: 'wx' });
-      } catch { /* 锁已存在或目录异常，重试时按既有语义处理 */ }
-    }
     throw makeAbortError();
   }
   const output = {
@@ -290,6 +284,11 @@ async function drainPackagingJob(
     publishedVideoRelativePath: result.published.videoRelativePath,
     videoFilename: result.published.videoFilename,
     displayDirectory: result.published.displayDirectory,
+    ...(result.published.coverRelativePath ? {
+      coverRelativePath: result.published.coverRelativePath,
+      publishedCoverRelativePath: result.published.coverRelativePath,
+      coverFilename: result.published.coverFilename,
+    } : {}),
     vars: result.internal.vars,
     renderSeconds: result.internal.renderSeconds,
     sourceRenderJobId: snapshot.renderJobId,
@@ -297,12 +296,18 @@ async function drainPackagingJob(
   const finishedAt = new Date().toISOString();
   try {
     db.transaction(() => {
-      registerPackagedArtifact(db, { projectId: job.projectId, sourceJobId: job.id, target: result.published, createdAt: finishedAt, kind: snapshot.exportTarget ? 'final_video' : 'packaged_video' });
+      registerPackagedArtifact(db, { projectId: job.projectId, sourceJobId: job.id, target: result.published, createdAt: finishedAt, kind: snapshot.exportTarget ? 'final_video' : 'packaged_video', sourceRenderJobId: snapshot.renderJobId });
       db.prepare(`UPDATE final_edit_jobs SET status='succeeded', phase='succeeded', progress=1, outputJson=?, errorCode=NULL, errorMessage=NULL, finishedAt=? WHERE id=?`).run(JSON.stringify(output), finishedAt, job.id);
     })();
-    refreshMixcutReview(db, job.groupId ?? null);
   } catch (error) {
     await deletePackagedPublish(storageRoot, result.published);
     throw error;
+  }
+  // 发布事务已提交，后续审片页失败只记录告警，不能撤掉已登记文件或把成功任务改成失败。
+  try {
+    refreshMixcutReview(db, job.groupId ?? null);
+  } catch (error) {
+    writeLog({ jobId: job.id, projectId: job.projectId, level: 'warn',
+      message: `包装已发布，审片页同步失败：${error instanceof Error ? error.message : String(error)}` });
   }
 }
