@@ -108,6 +108,25 @@
 .taskStep { display: block; font-size: 11.5px; color: var(--color-ink-tertiary); margin-top: 2px; }
 .mono { font-family: var(--font-mono); font-size: 11.5px; }
 
+/* ---------- 全员任务分页与长文本（06 号票） ----------
+ * 主表只放短字段：项目名/模型在单元格内省略号收尾，完整值走 tooltip 与右侧详情；
+ * 分页控件上下各一条，行高与面板内边距对齐。 */
+.tableWrap { min-width: 0; }
+.truncate { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.paginationRow { min-width: 0; padding: 8px 16px; }
+.paginationRowTop { padding-top: 12px; }
+.groupMeta { font-size: 11.5px; font-weight: 400; color: var(--color-ink-tertiary); }
+.detailNote {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-subtle);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-ink-secondary);
+  overflow-wrap: anywhere;
+}
+
 /* ---------- 右栏小块 ---------- */
 .rail { display: grid; gap: 12px; min-width: 0; }
 .rows { display: grid; }

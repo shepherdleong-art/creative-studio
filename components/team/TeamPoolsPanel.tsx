@@ -246,7 +246,7 @@ export default function TeamPoolsPanel() {
     setError('');
     setNotice('');
     if (!Number.isSafeInteger(threshold) || threshold < 0 || threshold > 3_600) {
-      setError('Image 2 拥堵分流阈值必须是 0–3600 的整数秒。');
+      setError('Image 2 排队等待时间必须是 0–3600 的整数秒。');
       return;
     }
     setSettingsBusy(true);
@@ -261,7 +261,7 @@ export default function TeamPoolsPanel() {
           },
         }),
       });
-      if (!response.ok) throw new Error(await teamError(response, '拥堵阈值保存失败'));
+      if (!response.ok) throw new Error(await teamError(response, '排队等待时间保存失败'));
       const body = await response.json() as {
         unifiedImageCongestion: PoolAdminState['unifiedImageCongestion'];
       };
@@ -271,11 +271,11 @@ export default function TeamPoolsPanel() {
       } : current);
       setThresholdDraft(String(body.unifiedImageCongestion.imageCongestionThresholdSec));
       setNotice(
-        `Image 2 拥堵分流阈值已保存为 ${body.unifiedImageCongestion.imageCongestionThresholdSec} 秒`
+        `Image 2 排队等待时间已保存为 ${body.unifiedImageCongestion.imageCongestionThresholdSec} 秒`
         + `（版本 ${state.unifiedImageCongestion.version} → ${body.unifiedImageCongestion.version}）。`,
       );
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '拥堵阈值保存失败');
+      setError(cause instanceof Error ? cause.message : '排队等待时间保存失败');
       await refresh().catch(() => undefined);
     } finally {
       setSettingsBusy(false);
@@ -306,13 +306,13 @@ export default function TeamPoolsPanel() {
       </p>
 
       {state ? (
-        <section className={styles.blockers} aria-label="Image 2 拥堵分流设置">
+        <section className={styles.blockers} aria-label="模型通道分流">
           <div className={styles.settingRow}>
             <div className={styles.identity}>
-              <b>Image 2 拥堵分流阈值</b>
+              <b>Image 2 排队等待时间</b>
               <span>
-                七牛仅因名额满而排队时，先保留七牛优先；达到此阈值仍满，才允许腾讯接单。
-                只影响 Image 2，不改变个人上限、预算、暂停或其他模型。
+                七牛名额满时先等待；达到设定时间仍满，且腾讯通道可用时，才转交腾讯。
+                仅适用于 Image 2 的提交前排队，不是生成超时。
               </span>
             </div>
             <div className={styles.stepper}>
@@ -323,7 +323,7 @@ export default function TeamPoolsPanel() {
                 min="0"
                 max="3600"
                 step="1"
-                aria-label="Image 2 拥堵分流阈值（秒）"
+                aria-label="Image 2 排队等待时间（秒）"
                 value={thresholdDraft}
                 disabled={settingsBusy}
                 onChange={(event) => setThresholdDraft(event.target.value)}
@@ -337,7 +337,7 @@ export default function TeamPoolsPanel() {
                 || thresholdDraft === String(state.unifiedImageCongestion.imageCongestionThresholdSec)}
               onClick={() => { void saveCongestionThreshold(); }}
             >
-              {settingsBusy ? '保存中…' : '保存阈值'}
+              {settingsBusy ? '保存中…' : '保存等待时间'}
             </button>
           </div>
         </section>

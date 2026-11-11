@@ -100,10 +100,11 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
     };
   };
 
-  // 数量角标：直接数页面同一个接口的 items，口径与对应页一致（见 workspace-navigation）。
+  // 数量角标：同一个接口、同一份可见范围；任务角标读响应里的 totalRecords
+  // （全可见范围的执行记录数），不数当前页的 items.length。见 workspace-navigation。
   // 只取一次，路由变化时重取——页面自己刷新时角标不必实时跟随，但切页一定会更新。
   const refreshCounts = useCallback(() => Promise.all([
-    fetch('/api/team/tasks', { credentials: 'same-origin', cache: 'no-store' })
+    fetch('/api/team/tasks?pageSize=25', { credentials: 'same-origin', cache: 'no-store' })
       .then((response) => (response.ok ? response.json() : null)).catch(() => null),
     fetch('/api/team/errors', { credentials: 'same-origin', cache: 'no-store' })
       .then((response) => (response.ok ? response.json() : null)).catch(() => null),

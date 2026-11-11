@@ -23,6 +23,7 @@ import { buildPackagingVars, loadProjectPackagingData, type PackagingLayouts, ty
 import type { FinalEditRenderSnapshot } from './renderer.ts';
 import { composeCoverJpg } from './cover-compose.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from './storage-path.ts';
+import { registerSingleArtifact } from './project-artifacts.ts';
 
 // 单实现已迁至 packaging-vars.ts（导出占位校验共用）；此处 re-export 保持既有调用方不破
 export { loadProjectPackagingData };
@@ -221,17 +222,16 @@ export function registerPackagedArtifact(db: Database.Database, input: {
   kind?: 'final_video' | 'packaged_video';
 }): void {
   const kind = input.kind || 'packaged_video';
-  db.prepare(`DELETE FROM project_artifacts WHERE projectId=? AND relativePath=? AND COALESCE(sourceJobId, '')<>?`).run(input.projectId, input.target.videoRelativePath, input.sourceJobId);
-  db.prepare(`
-    INSERT INTO project_artifacts
-      (id, projectId, kind, displayName, relativePath, mimeType, sourceJobId, createdAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(sourceJobId, kind) DO UPDATE SET
-      projectId=excluded.projectId,
-      displayName=excluded.displayName,
-      relativePath=excluded.relativePath,
-      mimeType=excluded.mimeType
-  `).run(`final-edit:${input.sourceJobId}:${kind === 'final_video' ? 'video' : 'packaged-video'}`, input.projectId, kind, input.target.videoFilename, input.target.videoRelativePath, 'video/mp4', input.sourceJobId, input.createdAt);
+  registerSingleArtifact(db, {
+    id: `final-edit:${input.sourceJobId}:${kind === 'final_video' ? 'video' : 'packaged-video'}`,
+    projectId: input.projectId,
+    kind,
+    displayName: input.target.videoFilename,
+    relativePath: input.target.videoRelativePath,
+    mimeType: 'video/mp4',
+    sourceJobId: input.sourceJobId,
+    createdAt: input.createdAt,
+  });
 }
 
 /**

@@ -35,7 +35,7 @@ export interface ConsoleTaskLike {
 
 /**
  * 状态 → 数量卡口径。**这是唯一映射表**：
- * 十种 `TASK_STATUS_LABELS` 状态一个不少、互不重叠（单测逐条钉住）。
+ * `TASK_STATUS_LABELS` 的每种状态一个不少、互不重叠（单测逐条钉住）。
  *
  * - `running`：已经占住名额、供应商正在处理（准备发送/提交中/已受理/核查结果中）。
  * - `queued`：还没占名额（排队中 / 等待运行条件）。
@@ -46,6 +46,8 @@ export interface ConsoleTaskLike {
 export type ConsoleTaskBucket = 'running' | 'queued' | 'succeeded' | 'failed' | 'canceled';
 
 export const CONSOLE_STATUS_BUCKETS: Readonly<Record<string, ConsoleTaskBucket>> = Object.freeze({
+  routing: 'queued',
+  waiting: 'queued',
   pending: 'queued',
   deferred: 'queued',
   admitted: 'running',
@@ -198,11 +200,11 @@ export function consoleMemberActivity(
   now: Date = new Date(),
 ): ConsoleMemberRow[] {
   const today = shanghaiDateKey(now);
-  const byActor = new Map<string, ConsoleMemberRow>();
+  const byActor = new Map<string, Omit<ConsoleMemberRow, 'summary'>>();
   for (const task of tasks) {
     const row = byActor.get(task.actorUserId) ?? {
       actorUserId: task.actorUserId, displayName: task.actorDisplayName, employeeId: task.employeeId,
-      running: 0, queued: 0, completedToday: 0, failed: 0, summary: '',
+      running: 0, queued: 0, completedToday: 0, failed: 0,
     };
     switch (consoleTaskBucket(task.status)) {
       case 'running': row.running += 1; break;
@@ -213,13 +215,25 @@ export function consoleMemberActivity(
     }
     byActor.set(task.actorUserId, row);
   }
-  const rows = [...byActor.values()].map(row => ({ ...row, summary: memberSummary(row) }));
-  rows.sort((left, right) =>
-    (right.running - left.running)
-    || (right.queued - left.queued)
-    || (right.failed - left.failed)
-    || left.employeeId.localeCompare(right.employeeId));
-  return rows;
+  return consoleMemberRows([...byActor.values()]);
+}
+
+/**
+ * 把「按成员已有的分桶计数」排成总览行并补一句话说明。
+ *
+ * 纯函数，服务端独立聚合（`readTeamTaskActivity`）拿到分桶计数后直接复用它，
+ * 与逐条任务计算的 `consoleMemberActivity` 共用同一套排序和摘要文案。
+ */
+export function consoleMemberRows(
+  rows: readonly Omit<ConsoleMemberRow, 'summary'>[],
+): ConsoleMemberRow[] {
+  return rows
+    .map(row => ({ ...row, summary: memberSummary(row) }))
+    .sort((left, right) =>
+      (right.running - left.running)
+      || (right.queued - left.queued)
+      || (right.failed - left.failed)
+      || left.employeeId.localeCompare(right.employeeId));
 }
 
 function memberSummary(row: Omit<ConsoleMemberRow, 'summary'>): string {

@@ -219,11 +219,24 @@ export class RemoteClientController {
   }
 }
 
+/** 只开放受信任主页面的全屏；摄像头、剪贴板及子 frame 权限仍默认拒绝。 */
+export function configureRemotePermissions(clientSession: Pick<Electron.Session, 'setPermissionRequestHandler' | 'setPermissionCheckHandler'>, origin: string): void {
+  const allowed = (permission: string, url: string | undefined, isMainFrame: boolean, contents: Electron.WebContents | null) => {
+    if (permission !== 'fullscreen' || !isMainFrame || !url || !contents || contents.isDestroyed()) return false;
+    try { return new URL(url).origin === origin && new URL(contents.getURL()).origin === origin; }
+    catch { return false; }
+  };
+  clientSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    callback(allowed(permission, details.requestingUrl, details.isMainFrame, contents));
+  });
+  clientSession.setPermissionCheckHandler((contents, permission, requestingOrigin, details) =>
+    allowed(permission, details.requestingUrl || requestingOrigin, details.isMainFrame, contents));
+}
+
 export async function createRemoteClientHost(options: RemoteHostOptions): Promise<RemoteDesktopWindowHost> {
   const clientSession = options.session ?? electronSession.fromPartition('persist:creative-studio-team-client');
   const origin = new URL(options.origin).origin;
-  clientSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-  clientSession.setPermissionCheckHandler(() => false);
+  configureRemotePermissions(clientSession, origin);
   clientSession.webRequest.onBeforeSendHeaders({ urls: [`${origin}/*`] }, (details, callback) => {
     const requestHeaders = {
       ...details.requestHeaders,

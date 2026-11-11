@@ -107,7 +107,7 @@ try {
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-export-outside-'));
   const unsafeProjectDir = path.join(storageRoot, 'projects', 'project-symlink');
   fs.mkdirSync(unsafeProjectDir, { recursive: true });
-  fs.symlinkSync(outside, path.join(unsafeProjectDir, '成片'));
+  fs.symlinkSync(outside, path.join(unsafeProjectDir, '成片'), process.platform === 'win32' ? 'junction' : 'dir');
   assert.throws(() => reserveProjectExportTarget(storageRoot, { ...identity, projectId: 'project-symlink', exportDirName: 'project-symlink' }), /符号链接|unsafe/i);
   fs.rmSync(outside, { recursive: true, force: true });
 } finally {

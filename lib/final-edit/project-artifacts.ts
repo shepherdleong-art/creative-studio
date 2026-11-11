@@ -75,6 +75,42 @@ export function registerSingleArtifact(db: Database.Database, input: {
   }
 }
 
+/** 兼容旧包装任务漏登的产物；只补当前项目中已存在、且从未登记过的确切产物。 */
+export function ensurePackagedArtifactRegistered(db: Database.Database, input: {
+  projectId: string;
+  sourceJobId: string;
+  relativePath: string;
+}): void {
+  const access = requireAccessContext();
+  if (access.kind !== 'team') return;
+  access.assertAccess('project', input.projectId, 'read');
+  const storageRoot = path.join(dataRoot(), 'storage');
+  const absolutePath = path.resolve(storageRoot, input.relativePath);
+  const artifact = (db.prepare(`SELECT id, relativePath FROM project_artifacts
+    WHERE projectId=? AND sourceJobId=? AND kind IN ('final_video', 'packaged_video') AND mimeType='video/mp4'`)
+    .all(input.projectId, input.sourceJobId) as Array<{ id: string; relativePath: string }>)
+    .find(row => path.resolve(storageRoot, row.relativePath) === absolutePath);
+  if (!artifact) return;
+  const relativePath = path.relative(storageRoot, absolutePath).split(path.sep).join('/');
+  // 已有 scope 或文件记录意味着它已走过登记/生命周期管理，不能在读取时复活撤回或清理的文件。
+  if (db.prepare("SELECT 1 FROM team_resource_scopes WHERE resourceType='project_artifact' AND resourceId=?").get(artifact.id)
+    || db.prepare('SELECT 1 FROM team_files WHERE relativePath=?').get(relativePath)) return;
+  access.assertAccess('project', input.projectId, 'write');
+  db.transaction(() => {
+    access.registerInheritedScope({
+      resourceType: 'project_artifact', resourceId: artifact.id,
+      parent: { resourceType: 'project', resourceId: input.projectId },
+    });
+    registerManagedFile({
+      absolutePath, mimeType: 'video/mp4', seriesId: `project-artifact:${artifact.id}`,
+      references: [
+        { resourceType: 'project_artifact', resourceId: artifact.id, role: 'output' },
+        { resourceType: 'project_artifact', resourceId: artifact.id, role: 'delivery' },
+      ],
+    });
+  })();
+}
+
 export function registerPublishedArtifacts(db: Database.Database, input: {
   projectId: string;
   sourceJobId: string;

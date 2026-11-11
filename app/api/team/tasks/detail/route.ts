@@ -1,15 +1,17 @@
 import { getDb } from '@/lib/db';
 import { requireAccessContext } from '@/lib/media-core/access-context';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
-import { findConsoleTask } from '@/lib/team-service/console-overview';
+import { findTeamTask } from '@/lib/team-service/tasks';
 import { teamServiceError } from '@/lib/team-service/http-error';
 import { taskIdFromQuery } from '@/lib/team-console-overview';
 
 /**
- * 任务详情（12 号票）：`/team/tasks?taskId=<operationId>` 背后的数据。
+ * 任务详情（03 号票：按 operationId 直查）。
  *
- * 可见范围与列表**同一函数**（`listTeamTasks` → `findConsoleTask`）：员工传别人的任务号
- * 只会得到 404，不用另写一套权限判断。
+ * `findTeamTask` 与列表**同一份授权与投影**，但不受 `page/q/status` 限制：
+ * `/team/tasks?taskId=<operationId>` 深链可以打开任意页、500 条之外、当前筛选之外的
+ * 合法任务；员工查别人的任务仍然只得到 404（`findTeamTask` 返回 null），不泄露存在性；
+ * 编号格式非法仍是 400。
  */
 async function __teamRouteGET(request: Request): Promise<Response> {
   try {
@@ -20,7 +22,7 @@ async function __teamRouteGET(request: Request): Promise<Response> {
         status: 400, headers: { 'Cache-Control': 'no-store' },
       });
     }
-    const task = findConsoleTask(getDb(), { userId: access.actor.userId, role: access.actor.role }, operationId);
+    const task = findTeamTask(getDb(), { userId: access.actor.userId, role: access.actor.role }, operationId);
     if (!task) {
       return Response.json({ error: 'task_not_found', message: '没有找到这条任务，可能已被清理或不属于你。' }, {
         status: 404, headers: { 'Cache-Control': 'no-store' },

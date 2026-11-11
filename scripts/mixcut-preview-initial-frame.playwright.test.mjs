@@ -60,6 +60,7 @@ load(${domId}).createRoot(document.getElementById('root')).render(React.createEl
 `;
 let server, browser;
 let videoRequests = 0;
+let stallVideo = false;
 try {
   const result = spawnSync(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'color=c=red:s=320x240:r=24:d=5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', path.join(temp, 'video.mp4')], { windowsHide: true, encoding: 'utf8', timeout: 30_000 });
   assert.equal(result.status, 0, result.stderr);
@@ -67,6 +68,7 @@ try {
   server = http.createServer((req, res) => {
     if (req.url === '/fixture.js') { res.setHeader('Content-Type', 'text/javascript; charset=utf-8'); res.end(script); }
     else if (req.url.startsWith('/video.mp4')) {
+      if (stallVideo) return; // 真正挂起媒体请求，不产生 error/loadeddata。
       // A busy server returns this while the browser preview is being prepared.
       if (++videoRequests <= 2) {
         res.writeHead(202, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -90,6 +92,7 @@ try {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
+  await page.clock.install();
   await page.addInitScript(() => {
     window.mediaEvents = [];
     for (const type of ['error', 'loadedmetadata', 'loadeddata', 'seeking', 'seeked', 'emptied']) document.addEventListener(type, event => {
@@ -111,8 +114,44 @@ try {
   });
   const sourceTime = await page.locator('video').first().evaluate(video => video.currentTime);
   assert.ok(Math.abs(sourceTime - 28 / 24) < 1 / 24, `恢复后必须停在用户选中的时间点，实际 ${sourceTime}`);
+  // 同一视频已成功加载过，再触发恢复；load() 不能把选中的时间点丢回 0。
+  const previousRequests = videoRequests;
+  await page.locator('video').first().evaluate(video => video.dispatchEvent(new Event('error')));
+  await page.waitForFunction(() => document.querySelector('video')?.readyState >= 2);
+  await page.waitForFunction(() => window.mediaEvents.filter(e => e.type === 'emptied').length >= 2, undefined, { timeout: 5000 });
+  await page.waitForFunction(() => {
+    const video = document.querySelector('video');
+    return video.readyState >= 2 && !video.seeking && Math.abs(video.currentTime - 28 / 24) < 1 / 24;
+  }, undefined, { timeout: 5000 });
+  assert.ok(videoRequests > previousRequests);
+
+  await page.getByRole('button', { name: '全屏预览', exact: true }).click();
+  await page.waitForFunction(() => document.fullscreenElement?.getAttribute('aria-label') === '成片预览');
+  await page.getByRole('button', { name: '退出全屏', exact: true }).click();
+  await page.waitForFunction(() => !document.fullscreenElement);
+  // 旧轻客户端拒绝原生全屏时，仍须展开到窗口大小，可通过 Esc 恢复。
+  await page.evaluate(() => { Element.prototype.requestFullscreen = () => Promise.reject(new Error('permission denied')); });
+  await page.getByRole('button', { name: '全屏预览', exact: true }).click();
+  await page.getByRole('button', { name: '退出全屏', exact: true }).waitFor({ timeout: 3000 });
+  const fullscreenBox = await page.getByRole('main', { name: '成片预览' }).boundingBox();
+  assert.ok(fullscreenBox.width >= 1200 && fullscreenBox.height >= 700, '拒绝原生全屏也应铺满窗口');
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '全屏预览', exact: true }).waitFor();
+  stallVideo = true;
+  const stalledRequest = page.waitForRequest(request => request.url().includes('/video.mp4'));
+  await page.locator('video').first().evaluate(video => { video.src = '/video.mp4?stalled=1'; video.load(); });
+  await stalledRequest;
+  await page.getByText('视频预览准备中…', { exact: true }).waitFor();
+  await page.clock.runFor(121_000);
+  await page.getByRole('button', { name: '重试预览', exact: true }).waitFor({ timeout: 3000 });
+  stallVideo = false;
+  await page.getByRole('button', { name: '重试预览', exact: true }).click();
+  await page.waitForFunction(() => {
+    const video = document.querySelector('video');
+    return video.readyState >= 2 && !video.seeking && Math.abs(video.currentTime - 28 / 24) < 1 / 24;
+  }, undefined, { timeout: 5000 });
   assert.deepEqual(errors, []);
-  console.log('PASS: cold preview selection paints a decoded frame without refresh');
+  console.log('PASS: decoded initial/recovered frame, fullscreen fallback and bounded stalled-media retry');
 } finally {
   await browser?.close();
   server?.closeAllConnections();

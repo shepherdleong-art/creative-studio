@@ -44,6 +44,7 @@ const {
 } = await import('../lib/media-core/unified-media/execution.ts');
 const { listTeamTasks } = await import('../lib/team-service/tasks.ts');
 const { queryTeamUsage } = await import('../lib/team-service/usage.ts');
+const { listTeamErrors, getTeamErrorDiagnostic } = await import('../lib/team-service/diagnostics.ts');
 
 const originalFetch = globalThis.fetch;
 const png = await sharp({ create: { width: 16, height: 16, channels: 3, background: '#eeeeee' } }).png().toBuffer();
@@ -54,6 +55,7 @@ const tencentKey = 'fixture-tencent-key';
 
 interface RuleFixture {
   post: () => Response;
+  poll?: () => Response;
   onPost?: () => void;
 }
 
@@ -125,6 +127,10 @@ globalThis.fetch = (async (input, init) => {
       status: 'failed',
       error: { message: 'provider terminal rejection' },
     });
+  }
+  if (channel && method === 'GET' && taskMatch) {
+    const poll = fixtures.get(taskMatch[2])?.[channel]?.poll;
+    if (poll) return poll();
   }
 
   const downloadMatch = /\/result\/(.+)\.png$/.exec(new URL(url).pathname);
@@ -502,12 +508,13 @@ try {
 
   {
     const prompt = 'case-qiniu-remote-failed';
+    let queryCalls = 0;
     const testCase = createCase(db, 'qiniu-remote-failed', {
       qiniu: {
-        post: () => {
-          const id = `qiniu-${prompt}`;
-          asyncFailedIds.add(id);
-          return Response.json({ id, status: 'processing' });
+        post: () => Response.json({ id: `qiniu-${prompt}`, status: 'processing' }),
+        poll: () => {
+          if (queryCalls++ === 0) throw new TypeError('fetch failed');
+          return Response.json({ id: `qiniu-${prompt}`, status: 'failed', error: { message: 'provider terminal rejection' } });
         },
       },
       tencent: { post: () => successResponse('tencent', prompt) },
@@ -525,11 +532,47 @@ try {
     assert.equal(qiniu.attempts[0]?.terminalState, 'failed');
     assert.equal(qiniu.attempts[0]?.costState, 'unknown');
     assert.equal(tencent.state, 'succeeded');
+    const viewer = { userId: 'member', role: 'employee' as const };
+    const historicalErrors = listTeamErrors(db, viewer).items.filter((item) => item.taskId === testCase.jobId);
+    assert.deepEqual(historicalErrors.map((item) => item.code).sort(), ['provider_failed', 'provider_poll_failed']);
+    assert.ok(historicalErrors.every((item) => item.outcome === 'recovered'),
+      '同一制作任务备用通道成功后，原通道的查询和生成故障都应显示已恢复');
+    assert.equal(listTeamErrors(db, viewer, { actionableOnly: true }).items.some((item) => item.taskId === testCase.jobId), false);
+    assert.equal(getTeamErrorDiagnostic(db, viewer, historicalErrors[0].errorId).outcome, 'recovered');
     assert.equal(
       db.prepare('SELECT estimatedCost FROM jobs WHERE id = ?').pluck().get(testCase.jobId),
       1.83,
       'the task estimate must add both real channel attempts, not multiply the winning price',
     );
+  }
+
+  {
+    const prompt = 'case-failed-generation-history';
+    const testCase = createCase(db, 'failed-generation-history', {
+      qiniu: {
+        post: () => {
+          const id = `qiniu-${prompt}`;
+          asyncFailedIds.add(id);
+          return Response.json({ id, status: 'processing' });
+        },
+      },
+      tencent: { post: () => textResponse(422, 'backup rejected') },
+    });
+    await runJob(testCase.projectId, testCase.jobId);
+    assert.equal(db.prepare('SELECT status FROM jobs WHERE id = ?').pluck().get(testCase.jobId), 'failed');
+    const oldParent = db.prepare('SELECT unifiedTaskId FROM jobs WHERE id = ?').pluck().get(testCase.jobId);
+    const viewer = { userId: 'member', role: 'employee' as const };
+    const failedError = listTeamErrors(db, viewer).items.find((item) => item.taskId === testCase.jobId && item.code === 'provider_failed');
+    assert.ok(failedError);
+    fixtures.set(prompt, { qiniu: { post: () => successResponse('qiniu', prompt) } });
+    db.prepare(`UPDATE jobs SET status='pending', attempt=0, providerTaskId=NULL, providerStatus=NULL,
+      remoteImageUrl=NULL, outputImageId=NULL, finishedAt=NULL, unifiedTaskId=NULL,
+      unifiedGenerationId=NULL, cancelRequestedAt=NULL WHERE id=?`).run(testCase.jobId);
+    await runJob(testCase.projectId, testCase.jobId);
+    assert.equal(db.prepare('SELECT status FROM jobs WHERE id = ?').pluck().get(testCase.jobId), 'succeeded');
+    assert.notEqual(db.prepare('SELECT unifiedTaskId FROM jobs WHERE id = ?').pluck().get(testCase.jobId), oldParent);
+    assert.equal(getTeamErrorDiagnostic(db, viewer, failedError.errorId).outcome, 'final',
+      '人工重开的生成轮次成功，不能冒充旧轮次通过备用通道自动恢复');
   }
 
   let qiniuProviderEnabled = true;
@@ -617,8 +660,15 @@ try {
 
   {
     const prompt = 'case-poll-query-failed';
+    let remoteRecovered = false;
     const testCase = createCase(db, 'poll-query-failed', {
-      qiniu: { post: () => Response.json({ id: `qiniu-${prompt}`, status: 'processing' }) },
+      qiniu: {
+        post: () => Response.json({ id: `qiniu-${prompt}`, status: 'processing' }),
+        poll: () => {
+          if (!remoteRecovered) throw new TypeError('fetch failed');
+          return successResponse('qiniu', prompt);
+        },
+      },
       tencent: { post: () => successResponse('tencent', prompt) },
     });
     const running = runJob(testCase.projectId, testCase.jobId);
@@ -640,6 +690,28 @@ try {
     assert.equal(ledger.submissionCount, 1);
     assert.equal(ledger.channels.find((channel) => channel.channelKey === 'qiniu')?.state, 'accepted');
     assert.equal(ledger.channels.find((channel) => channel.channelKey === 'tencent')?.state, 'candidate');
+
+    const viewer = { userId: 'member', role: 'employee' as const };
+    const queryError = listTeamErrors(db, viewer, { actionableOnly: true }).items.find(
+      (item) => item.taskId === testCase.jobId && item.code === 'provider_poll_failed',
+    );
+    assert.ok(queryError, 'the real polling exception must be recorded against its original attempt');
+    remoteRecovered = true;
+    await runJob(testCase.projectId, testCase.jobId);
+    assert.equal(db.prepare('SELECT status FROM jobs WHERE id = ?').pluck().get(testCase.jobId), 'succeeded');
+    assert.equal(db.prepare('SELECT errorMessage FROM jobs WHERE id = ?').pluck().get(testCase.jobId), null,
+      'successful recovery must clear the old polling failure from the image job');
+    assert.equal(postCount(prompt, 'qiniu'), 1);
+    assert.equal(postCount(prompt, 'tencent'), 0, 'recovery must query the existing accepted task');
+    assert.equal(listUnifiedImageChannelAttempts(db, testCase.jobId).submissionCount, 1);
+    assert.equal(listTeamErrors(db, viewer, { errorId: queryError.errorId }).items[0]?.outcome, 'recovered',
+      'a successful original attempt must recover its historical polling diagnostic');
+    assert.equal(listTeamErrors(db, viewer, { actionableOnly: true, errorId: queryError.errorId }).items.length, 0,
+      'the recovered query error must leave the actionable error list');
+    assert.equal(getTeamErrorDiagnostic(db, viewer, queryError.errorId).outcome, 'recovered',
+      'the retained diagnostic package must agree with the error list');
+    assert.equal(db.prepare('SELECT outcome FROM team_error_records WHERE id = ?').pluck().get(queryError.errorId), 'final',
+      'recovery must also work for historical final rows without rewriting their captured evidence');
   }
 
   {

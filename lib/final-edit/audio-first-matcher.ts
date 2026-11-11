@@ -16,6 +16,7 @@ export interface AudioFirstScene {
 
 export interface AudioFirstAsset {
   assetKey: string;
+  role?: 'opening' | 'body';
   shotId?: string;
   durationUs: number;
   scenes: AudioFirstScene[];
@@ -80,7 +81,7 @@ export interface MatchSelectionReason {
   assetKey: string;
   startUs: number;
   score: number;
-  reason: 'manual_lock' | 'semantic_primary' | 'semantic_backoff' | 'keyword_fallback' | 'material_length_fallback' | 'scene_reuse_fallback';
+  reason: 'manual_lock' | 'opening_priority' | 'semantic_primary' | 'semantic_backoff' | 'keyword_fallback' | 'material_length_fallback' | 'scene_reuse_fallback';
 }
 
 export interface MatchDiagnostics {
@@ -447,6 +448,47 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
     automaticSentences.push(entry);
   }
 
+  // 开场是用户在分镜组明确指定的身份，不参与与正文的语义竞价。
+  // 先保留首镜，再让全局求解器分配正文；短开场只占合法长度，不拉伸或越界。
+  const first = orderedSentences[0];
+  if (first && !lockedSegments.has(first.sentence.id) && input.maxReuse > 0) {
+    const durationUs = first.sentence.endUs - first.sentence.startUs;
+    const openings = candidates.filter(candidate => candidate.asset.role === 'opening'
+      && !reservedSceneIndexes.has(candidate.flatIndex)
+      && (usageByAsset.get(candidate.asset.assetKey) ?? 0) < input.maxReuse
+      && isLengthFeasible(candidate, Math.min(durationUs, candidate.scene.endUs - candidate.scene.startUs))
+      && candidate.scene.endUs - candidate.scene.startUs >= MIN_SEGMENT_DURATION_US);
+    openings.sort((a, b) => Number(isLengthFeasible(b, durationUs)) - Number(isLengthFeasible(a, durationUs))
+      || candidateBaseScore(input, first.sentence, first.originalIndex, b) - candidateBaseScore(input, first.sentence, first.originalIndex, a)
+      || a.flatIndex - b.flatIndex);
+    const opening = openings[0];
+    if (opening) {
+      let length = Math.min(durationUs, opening.scene.endUs - opening.scene.startUs);
+      if (length < durationUs && durationUs - length < MIN_SEGMENT_DURATION_US) length = durationUs - MIN_SEGMENT_DURATION_US;
+      if (length >= MIN_SEGMENT_DURATION_US) {
+        const segment = {
+          sentenceId: first.sentence.id, assetKey: opening.asset.assetKey,
+          startUs: first.sentence.startUs, endUs: first.sentence.startUs + length,
+          sourceStartUs: opening.scene.startUs, sourceEndUs: opening.scene.startUs + length,
+        };
+        const index = automaticSentences.findIndex(entry => entry.sentence.id === first.sentence.id);
+        if (length === durationUs) {
+          lockedSegments.set(first.sentence.id, segment);
+          automaticSentences.splice(index, 1);
+        } else {
+          segments.push(segment);
+          automaticSentences[index] = { ...first, sentence: { ...first.sentence, startUs: segment.endUs } };
+          // 后续拼接和诊断也使用剩余口播长度。
+          orderedSentences[0] = automaticSentences[index];
+        }
+        lockedSentences.add(first.sentence.id);
+        candidateBySentence.set(first.sentence.id, opening);
+        reservedSceneIndexes.add(opening.flatIndex);
+        usageByAsset.set(opening.asset.assetKey, (usageByAsset.get(opening.asset.assetKey) ?? 0) + 1);
+        selectionReasons.push({ sentenceId: first.sentence.id, assetKey: opening.asset.assetKey, startUs: segment.startUs, score: 1, reason: 'opening_priority' });
+      }
+    }
+  }
   const assignments = solveGlobalAssignments(input, automaticSentences, candidates, reservedSceneIndexes, usageByAsset);
   for (const { candidate } of assignments.values()) {
     usageByAsset.set(candidate.asset.assetKey, (usageByAsset.get(candidate.asset.assetKey) ?? 0) + 1);

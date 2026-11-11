@@ -35,13 +35,16 @@ export interface RunningTaskView {
 /**
  * 仍在生产中的状态。前七个来自 `execution_operations`（图片/视频/脚本任务的
  * 受理状态机），`running` 来自成片任务自己的状态列（`final_edit_jobs`）。
+ *
+ * 导出给服务端的有界记录查询（员工首页「正在生产」）复用：SQL 的 `IN (…)` 与
+ * `isTaskInFlight` 必须是同一份清单，不要在别处再抄一遍。
  */
-const IN_FLIGHT_STATUSES = [
+export const IN_FLIGHT_STATUSES = [
   'pending', 'deferred', 'admitted', 'maybe_sent', 'submitted', 'accepted', 'reconciling', 'unknown', 'running',
-];
+] as const;
 
 export function isTaskInFlight(status: string): boolean {
-  return IN_FLIGHT_STATUSES.includes(status);
+  return (IN_FLIGHT_STATUSES as readonly string[]).includes(status);
 }
 
 /** 渲染进度的 0–1 转成整数百分比；越界或非数字按「不可测」处理。 */

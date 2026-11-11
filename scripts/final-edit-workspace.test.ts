@@ -254,6 +254,7 @@ assert.deepEqual(
 );
 assert.ok(group.coverCandidates.some((candidate) => candidate.coverKey.startsWith('video:')));
 assert.ok(group.variants.every((variant) => variant.timeline.clips.every((clip) => clip.videoJobId !== 'foreign')));
+assert.ok(group.variants.every((variant) => variant.timeline.clips[0]?.videoJobId === 'v1'), '当前分镜组第 1 张图的视频必须传入匹配器并用于开场');
 assert.equal(warmedPreviewPaths.length, 2, 'previewing 必须调用真实预览预热 seam');
 assert.ok(group.variants.every((variant) => variant.previewUrl?.includes('/api/videos/final-edits/previews/prepare/')));
 const repeatJob = await workspace.start({

@@ -286,8 +286,7 @@
 .previewModeLabel { min-width: 0; overflow: hidden; color: var(--faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .previewModePanel { min-width: 0; }
 .previewWrap { display: flex; flex: 0 0 auto; justify-content: center; margin-bottom: 12px; }
-.previewFrame { position: relative; width: min(100%, 560px); height: clamp(300px, 42vh, 480px); border-radius: 14px; box-shadow: var(--sh-md); overflow: hidden; background: var(--color-preview); container-type: inline-size; }
-.previewFrame[data-preview-preset='16x9'] { width: min(100%, 760px); }
+.previewFrame { position: relative; width: 100%; height: clamp(340px, 58dvh, 760px); border-radius: 14px; box-shadow: var(--sh-md); overflow: hidden; background: var(--color-preview); container-type: inline-size; }
 .previewFrame > * { height: 100%; }
 .previewFrame main { height: 100%; }
 .materialPreview { display: flex; box-sizing: border-box; width: 100%; height: 100%; min-height: 0; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px; background: #111; color: #fff; }
@@ -453,15 +452,17 @@
 .checkMiss .checkCk { background: var(--seg); color: transparent; }
 .dlRow { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
 .exportBlocker { display: flex; align-items: flex-start; gap: 7px; margin-top: 8px; color: var(--color-fail); font-size: 12px; line-height: 1.5; }
-/* 导出结果：成片卡片可点开大预览（09 号票）。深色画布两态通用，不放浅色值。 */
-.exportResult { display: grid; grid-template-columns: minmax(0, 1fr) minmax(170px, 280px); gap: 14px; padding: 14px; border-radius: 14px; background: var(--color-media-background); }
-.exportResult video, .exportResult img { display: block; width: 100%; max-height: 460px; border-radius: 10px; background: var(--color-media-background); object-fit: contain; }
-/* 成片卡片：整块可点（点开预览对话框），图片区域保持原有「画面铺满卡片」的观感。 */
-.exportResultFigure { position: relative; display: block; width: 100%; padding: 0; border: 0; border-radius: 10px; background: var(--color-media-background); cursor: pointer; overflow: hidden; }
-.exportResultFigure video { pointer-events: none; }
+/* 导出结果按原型显示一张成片卡片，点击后才加载视频。 */
+.exportResult { display: flex; width: min(100%, 310px); flex-direction: column; align-self: flex-start; align-items: flex-start; gap: 10px; margin-top: 14px; }
+.exportResultFigure { position: relative; display: block; width: min(100%, 260px); aspect-ratio: 3 / 4; padding: 0; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); background: var(--color-preview); cursor: pointer; overflow: hidden; }
+.exportResultFigure[data-output-preset='9x16'] { aspect-ratio: 9 / 16; }
+.exportResultFigure[data-output-preset='16x9'] { width: min(100%, 360px); aspect-ratio: 16 / 9; }
+.exportResultFigure img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.exportResultPlaceholder { display: flex; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--color-ink-secondary); font-size: var(--text-label); }
 .exportResultPlay { position: absolute; top: 50%; left: 50%; display: grid; width: 54px; height: 54px; place-items: center; border-radius: 50%; background: var(--color-media-control); color: var(--color-media-foreground); box-shadow: 0 0 0 1px var(--color-media-control-border); transform: translate(-50%, -50%); transition: background .15s ease; }
 .exportResultFigure:hover .exportResultPlay { background: var(--color-media-scrim); }
 .exportResultCaption { position: absolute; right: 10px; bottom: 10px; padding: 3px 9px; border-radius: var(--radius-pill); background: var(--color-media-scrim); color: var(--color-media-foreground); font-size: 11px; }
+.exportResultHint { margin: 0; color: var(--color-ink-secondary); font-size: var(--text-label); line-height: 1.5; }
 
 /* ===== 封面精调抽屉（沿用既有功能，仅换 token） ===== */
 .coverSummary { display: flex; height: 100%; min-height: 0; flex-direction: column; gap: 13px; overflow-y: auto; }

@@ -273,6 +273,9 @@
   background: var(--color-group);
   overflow: hidden;
 }
+/* 第 2 步多一条独立的版本行：只在这一步把对照区上限再让 40px，
+ * 保证 1536×900 / 1280×720 / 1024×720 下底部操作栏仍完整在窗口内（第 1 步不受影响）。 */
+.storyboardPage .frameBox { height: clamp(220px, calc(100dvh - 480px), 560px); }
 .frameBox img {
   display: block;
   width: 100%;
@@ -333,6 +336,7 @@
   font-size: var(--text-label);
   color: var(--color-ink-secondary);
 }
+.thumbVersionSep { font-size: 10px; color: var(--color-ink-tertiary); }
 .thumbBadge {
   position: absolute;
   left: 4px;
@@ -596,7 +600,45 @@
   font-size: var(--text-label);
   font-weight: 600;
 }
-.versionBar { display: inline-flex; align-items: center; gap: 2px; color: var(--color-ink); }
+/* 版本标记：多版强调色淡底、单版中性；颜色不承担失败语义（红/黄仍归状态点）。
+ * 版本条单独占一行（对照区下方、缩略图条上方），避免挤在窄的图片说明里换行顶掉底部操作栏。 */
+.versionRow {
+  display: flex;
+  flex-wrap: wrap;
+  flex: none;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 4px 14px 8px;
+  color: var(--color-ink);
+}
+.versionSummary {
+  font-size: var(--text-label);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.versionHint { font-size: var(--text-label); color: var(--color-ink-tertiary); white-space: nowrap; }
+.versionLatest { font-size: var(--text-label); font-weight: 600; color: var(--color-run); white-space: nowrap; }
+.versionError {
+  flex-basis: 100%;
+  text-align: right;
+  font-size: var(--text-label);
+  color: var(--color-fail);
+  overflow-wrap: anywhere;
+}
+.versionTag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.versionTagMulti { background: var(--color-run-tint); color: var(--color-run); }
+.versionTagSingle { background: var(--color-seg); color: var(--color-ink-secondary); }
 .versionBtn {
   display: grid;
   place-items: center;

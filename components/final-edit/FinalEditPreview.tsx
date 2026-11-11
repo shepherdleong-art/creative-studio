@@ -59,10 +59,11 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   onTextPositionChange: (target: StyleTarget, x: number, y: number, commit: boolean) => void;
 }) {
   const previewRootRef = useRef<HTMLElement>(null);
+  const fullscreenDialogRef = useRef<HTMLDialogElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [fullscreenError, setFullscreenError] = useState('');
   useEffect(() => {
-    const update = () => setFullscreen(document.fullscreenElement === previewRootRef.current);
+    const update = () => setFullscreen(document.fullscreenElement === previewRootRef.current || Boolean(fullscreenDialogRef.current?.open));
     document.addEventListener('fullscreenchange', update);
     return () => document.removeEventListener('fullscreenchange', update);
   }, []);
@@ -297,11 +298,11 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
         lastStartedClipRef.current = clip.id;
         void video.play().catch(() => undefined);
       };
+      // 代理准备完成或网络恢复会对同一元素 load()；每次 metadata 都要恢复最新播放头。
+      const onMetadata = () => { lastStartedClipRef.current = ''; synchronize(); };
+      video.addEventListener('loadedmetadata', onMetadata);
+      cleanups.push(() => video.removeEventListener('loadedmetadata', onMetadata));
       if (video.readyState >= HTMLMediaElement.HAVE_METADATA) synchronize();
-      else {
-        video.addEventListener('loadedmetadata', synchronize, { once: true });
-        cleanups.push(() => video.removeEventListener('loadedmetadata', synchronize));
-      }
     });
     if (activeSlot == null || !activeClip || !activeAsset || showSelectedMaterial) {
       lastStartedClipRef.current = '';
@@ -386,7 +387,9 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   useEffect(() => {
     if (active) return;
     pauseAllMedia();
-    const timer = window.setTimeout(() => setPlaying(false), 0);
+    fullscreenDialogRef.current?.close();
+    if (document.fullscreenElement === previewRootRef.current) void document.exitFullscreen().catch(() => undefined);
+    const timer = window.setTimeout(() => { setPlaying(false); setFullscreen(false); }, 0);
     return () => window.clearTimeout(timer);
   }, [active, pauseAllMedia]);
 
@@ -517,10 +520,16 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
     const root = previewRootRef.current;
     if (!root) return;
     setFullscreenError('');
+    const dialog = fullscreenDialogRef.current;
+    if (dialog?.open) { dialog.close(); setFullscreen(false); return; }
     try {
       if (document.fullscreenElement === root) await document.exitFullscreen();
       else await root.requestFullscreen();
-    } catch { setFullscreenError('无法进入全屏，请重试'); }
+    } catch {
+      // 旧轻客户端拒绝 Fullscreen 权限时，用顶层 dialog 展开；保留播放器与音频图。
+      try { dialog?.showModal(); setFullscreen(Boolean(dialog?.open)); }
+      catch { setFullscreenError('无法展开预览，请重试'); }
+    }
   };
 
   const previewClass = variant.outputPreset === '16x9' ? styles.preview169 : variant.outputPreset === '9x16' ? styles.preview916 : styles.preview34;
@@ -547,6 +556,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   };
 
   return (
+    <dialog ref={fullscreenDialogRef} className={styles.previewDialog} aria-label="全屏成片预览" onCancel={() => setFullscreen(false)}>
     <main ref={previewRootRef} className={styles.previewColumn} aria-label="成片预览">
       <div className={styles.previewToolbar}><span>{variant.outputPreset.replace('x', ':')} · {FPS} fps</span><span>{showSelectedMaterial ? '素材预览' : activeClip ? `片段 ${activeClipIndex + 1}` : playheadSec < INTRO_SEC ? '封面' : '画面缺口'}</span></div>
       <div className={styles.previewStageWrap}>
@@ -582,5 +592,6 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       <audio ref={narrationRef} preload="metadata" src={`/api/final-edit-groups/${group.id}/narration`} />
       <audio ref={bgmRef} preload="metadata" loop src={variant.bgm.trackId ? `/api/final-edit-bgm/${variant.bgm.trackId}/file` : undefined} />
     </main>
+    </dialog>
   );
 }

@@ -289,6 +289,22 @@ try {
   assert.equal(assertScopeConsistency(db, 'canvas_asset', canvasAsset.id).rootId, 'canvas-a');
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM creative_canvas_assets WHERE id = ?").pluck().get(canvasAsset.id)), 1);
 
+  const audioPath = path.join(root, 'canvas-source.wav');
+  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=8', '-y', audioPath]);
+  for (const [name, mimeType, bytes, mediaKind] of [
+    ['视频.mp4', 'video/mp4', video, 'video'],
+    ['音频.wav', 'audio/wav', fs.readFileSync(audioPath), 'audio'],
+  ] as const) {
+    const result = await publish({ targetKind: 'canvas_asset', targetScope: { resourceType: 'canvas', resourceId: 'canvas-a' },
+      usage: 'canvas_asset', relativeName: name, mimeType, bytes, idempotencyKey: `canvas-${mediaKind}-v1` });
+    const asset = db.prepare('SELECT mediaKind, durationSec, ready FROM creative_canvas_assets WHERE id=? AND canvasId=?')
+      .get(result.resultResourceId, 'canvas-a') as { mediaKind: string; durationSec: number; ready: number };
+    assert.equal(asset.mediaKind, mediaKind);
+    assert.ok(asset.durationSec > 0);
+    assert.equal(asset.ready, 1);
+    assertManagedPublication(result.file.fileId, 'canvas_asset', result.resultResourceId!);
+  }
+
   const detail = await publish({
     targetKind: 'detail_page_source', targetScope: { resourceType: 'project', resourceId: 'project-a' },
     usage: 'detail_page', relativeName: '详情页/page-1.png', mimeType: 'image/png', bytes: png, idempotencyKey: 'detail-source-v1',

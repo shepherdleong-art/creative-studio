@@ -1,18 +1,18 @@
 import type Database from 'better-sqlite3';
 import { listTeamErrors, type TeamViewer } from './diagnostics.ts';
-import { listTeamTasks } from './tasks.ts';
+import { countTeamTasks } from './tasks.ts';
 import type { WorkspaceBadgeKey } from '../workspace-navigation.ts';
 
 /**
- * 侧栏数量角标（05 号票）。
+ * 侧栏数量角标（05 号票；03 号票改为全范围计数）。
  *
- * 口径的唯一来源是页面自己用的列表函数：`listTeamTasks`（我的任务 / 全员任务页）和
+ * 口径的唯一来源仍是页面自己用的查询：`countTeamTasks`（我的任务 / 全员任务页）和
  * `listTeamErrors`（出错的任务页）。这里刻意**不写 SQL、不改可见范围**——那会让角标和
- * 页面条目数漂移，或在员工端出现越权取数。两个列表各自的 500 条上限也一并继承，
- * 因此角标最多显示 500，与页面「服务端最多返回最近 500 条」的说明一致。
+ * 页面条目数漂移，或在员工端出现越权取数。
  *
- * 不新增接口：`/api/team/tasks`、`/api/team/errors` 已经返回 `{ items }`，前端直接数长度。
- * 这个函数是给服务端渲染/测试复用的同一口径实现。
+ * 任务列表改为服务端分页后，角标**不能再数一页的 `items.length`**：改成
+ * `countTeamTasks().records` —— 全可见范围的执行记录数（505 条就是 505，不是 25 或 500）。
+ * 用 COUNT/DISTINCT 聚合，不加载页面明细。
  */
 export interface WorkspaceBadgeCounts {
   tasks: number | null;
@@ -20,9 +20,9 @@ export interface WorkspaceBadgeCounts {
 }
 
 /** 员工传别人的 actorUserId 会被列表层拒绝（403），角标按「不显示」处理。 */
-function countSafely(read: () => { items: unknown[] }): number | null {
+function countSafely(read: () => number): number | null {
   try {
-    return read().items.length;
+    return read();
   } catch {
     return null;
   }
@@ -36,8 +36,8 @@ export function readWorkspaceBadgeCounts(
   if (!viewer) return { tasks: null, errors: null };
   const actorUserId = filters.actorUserId?.trim() || undefined;
   return {
-    tasks: countSafely(() => listTeamTasks(db, viewer, { actorUserId })),
-    errors: countSafely(() => listTeamErrors(db, viewer, { actorUserId })),
+    tasks: countSafely(() => countTeamTasks(db, viewer, { actorUserId }).records),
+    errors: countSafely(() => listTeamErrors(db, viewer, { actorUserId, actionableOnly: true }).items.length),
   };
 }
 
@@ -51,6 +51,6 @@ export function readWorkspaceBadgeCount(
   if (!viewer) return null;
   const actorUserId = filters.actorUserId?.trim() || undefined;
   return badge === 'tasks'
-    ? countSafely(() => listTeamTasks(db, viewer, { actorUserId }))
-    : countSafely(() => listTeamErrors(db, viewer, { actorUserId }));
+    ? countSafely(() => countTeamTasks(db, viewer, { actorUserId }).records)
+    : countSafely(() => listTeamErrors(db, viewer, { actorUserId, actionableOnly: true }).items.length);
 }

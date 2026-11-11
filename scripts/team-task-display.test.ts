@@ -4,6 +4,93 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { ExecutionJournal, ExecutionRuntime, OperationRecord } from '../lib/media-core/execution/context.ts';
+import {
+  TASK_SEARCH_DEBOUNCE_MS,
+  groupPageByActor,
+  groupTeamTaskRows,
+  memberOptionsFromUsers,
+  readTaskListResponse,
+  taskListRequestPath,
+  taskPageAfterChange,
+  taskTotalSummary,
+} from '../components/team/task-panel-state.ts';
+
+// ── 06 号票：全员任务页的纯展示/状态逻辑（不依赖 React 与数据库） ──────────────
+// 这些规则决定「服务端分页怎么请求、总数怎么写、分组是否只作用于当前页、筛选变化回第 1 页」，
+// 页面组件带 React/Next 无法被 Node 直接 import，所以逻辑放在 components/team/task-panel-state.ts。
+assert.equal(TASK_SEARCH_DEBOUNCE_MS, 300, '搜索输入防抖必须是约 300ms');
+assert.equal(taskTotalSummary(503, 505), '共 503 个制作任务，505 条执行记录', '总数文案读分页元数据，不是当前页数组长度');
+assert.equal(taskTotalSummary(0, 0), '共 0 个制作任务，0 条执行记录');
+assert.equal(
+  taskListRequestPath({ q: ' 张三 ', status: 'failed', actorUserId: 'alice', page: 2, pageSize: 50 }),
+  '/api/team/tasks?q=%E5%BC%A0%E4%B8%89&status=failed&actorUserId=alice&page=2&pageSize=50',
+  '关键词/状态/成员走服务端参数，分页参数永远携带',
+);
+assert.equal(
+  taskListRequestPath({ q: '', status: '', actorUserId: '', page: 1, pageSize: 25 }),
+  '/api/team/tasks?page=1&pageSize=25',
+  '空筛选不发送空参数',
+);
+assert.equal(taskPageAfterChange(4, { kind: 'page', page: 9 }), 9, '翻页只改页码');
+assert.equal(taskPageAfterChange(4, { kind: 'filter' }), 1, '搜索/成员/状态变化回第 1 页');
+assert.equal(taskPageAfterChange(4, { kind: 'pageSize' }), 1, '每页条数变化回第 1 页');
+assert.equal(taskPageAfterChange(4, { kind: 'refresh' }), 4, '手动刷新保留当前页');
+
+const pageRows = [
+  { operationId: 'op-unified-1', unifiedTaskId: 'media-task-1', actorUserId: 'user-zhang', employeeId: '0001', actorDisplayName: '张三' },
+  { operationId: 'op-unified-2', unifiedTaskId: 'media-task-1', actorUserId: 'user-zhang', employeeId: '0001', actorDisplayName: '张三' },
+  { operationId: 'op-unified-3', unifiedTaskId: 'media-task-1', actorUserId: 'user-zhang', employeeId: '0001', actorDisplayName: '张三' },
+  { operationId: 'op-single', unifiedTaskId: null, actorUserId: 'admin-user', employeeId: '0000', actorDisplayName: '管理员' },
+];
+const pageGroups = groupTeamTaskRows(pageRows);
+assert.equal(pageGroups.length, 2, '同一制作任务的 3 条执行记录只展示为一个制作任务');
+assert.equal(pageGroups[0]?.key, 'unified:media-task-1');
+assert.equal(pageGroups[0]?.items.length, 3);
+assert.equal(pageGroups[0]?.representative.operationId, 'op-unified-1');
+assert.equal(pageGroups[1]?.key, 'operation:op-single');
+const pageByActor = groupPageByActor(pageGroups);
+assert.deepEqual(
+  pageByActor.map((group) => [group.actorUserId, group.groups.length]),
+  [['user-zhang', 1], ['admin-user', 1]],
+  '按发起人分组只重排当前页的制作任务',
+);
+assert.equal(pageByActor.reduce((sum, group) => sum + group.groups.length, 0), pageGroups.length, '分组/平铺看到同一批制作任务');
+assert.equal(pageByActor[0]?.displayName, '张三');
+
+const memberOptions = memberOptionsFromUsers([
+  { id: 'user-li', employeeId: '0002', displayName: '李四', status: 'active' },
+  { id: 'user-zhang', employeeId: '0001', displayName: '张三', status: 'disabled' },
+  { id: 'user-zhang', employeeId: '0001', displayName: '张三', status: 'disabled' },
+  { id: '', employeeId: '', displayName: '' },
+]);
+assert.deepEqual(
+  memberOptions.map((option) => [option.employeeId, option.displayName]),
+  [['0001', '张三'], ['0002', '李四']],
+  '成员选项来自完整用户数据，含停用成员，不靠当前页去重',
+);
+
+const clampedPage = readTaskListResponse<typeof pageRows[number]>(
+  {
+    items: pageRows,
+    pagination: { page: 21, pageSize: 25, total: 503, totalPages: 21 },
+    totalRecords: 505,
+  },
+);
+assert.equal(clampedPage.pagination.page, 21, '越界页按服务端实际 page 收敛，不在前端自己夹取');
+assert.equal(clampedPage.pagination.total, 503);
+assert.equal(clampedPage.totalRecords, 505);
+assert.equal(clampedPage.items.length, pageRows.length);
+assert.throws(
+  () => readTaskListResponse({ items: [] }),
+  /分页/,
+  '响应缺少分页元数据必须报错，不能伪装成 0 条',
+);
+assert.throws(
+  () => readTaskListResponse({ items: [], pagination: { page: 0, pageSize: 25, total: 0, totalPages: 1 }, totalRecords: 0 }),
+  /分页/,
+  '非法页码不能被当成有效响应',
+);
+console.log('PASS: task page request path, total copy, current-page grouping and page-reset rules');
 
 // 公共任务查询接缝：真实 SQLite 与 execution facade，不访问任何供应商。
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-team-task-display-'));
@@ -14,7 +101,7 @@ const { checkExecutionReadiness } = await import('../lib/media-core/execution/re
 const { createExecutionFacade } = await import('../lib/media-core/execution/operations.ts');
 const { registerExecutionInstance } = await import('../lib/media-core/execution/schema.ts');
 const { updateActorPolicy, upsertExecutionPool } = await import('../lib/media-core/execution/pools.ts');
-const { listTeamTasks } = await import('../lib/team-service/tasks.ts');
+const { listTeamTasks, findTeamTask, listRecentTeamTasks, listTeamTaskRecords, readTeamTaskActivity } = await import('../lib/team-service/tasks.ts');
 
 fs.mkdirSync(path.join(root, 'data'), { recursive: true });
 const db = new Database(path.join(root, 'data', 'workbench.db'));
@@ -59,15 +146,18 @@ await runtime.lifecycle.start({ ...identity, deploymentId: 'task-display-test', 
 function enqueue(input: {
   taskId: string; module?: string; step?: string; providerSnapshot: unknown; inputSnapshot?: unknown;
   status?: 'pending'; actorUserId?: string; scopeId?: string; scopeType?: 'project' | 'canvas';
+  inputRevision?: string; mediaTaskId?: string; channelKey?: string;
 }): OperationRecord {
   const moduleName = input.module ?? 'llm';
   const step = input.step ?? 'script-studio-generate:plan:1:generate:1';
+  const inputRevision = input.inputRevision ?? 'r1';
   return runtime.facade.enqueue({
-    operationKey: `${moduleName}/${input.taskId}/${step}/r1`, actor: { userId: input.actorUserId ?? 'alice' },
+    operationKey: `${moduleName}/${input.taskId}/${step}/${inputRevision}`, actor: { userId: input.actorUserId ?? 'alice' },
     scope: { resourceType: input.scopeType ?? 'project', resourceId: input.scopeId ?? 'project-a' }, module: moduleName, taskId: input.taskId, step,
-    inputRevision: 'r1', businessAttempt: { id: `${input.taskId}-business`, number: 1 },
+    inputRevision, businessAttempt: { id: `${input.taskId}-business`, number: 1 },
     inputSnapshot: input.inputSnapshot ?? {}, inputHash: `hash-${input.taskId}-${step}`, continuationKey: 'test',
     providerSnapshot: input.providerSnapshot, configVersion: 'frozen-config', clientVersion: '0.7.1', requiredPools: ['llm:remote'],
+    mediaTaskId: input.mediaTaskId, channelKey: input.channelKey,
     quote: { kind: 'unpriced' },
   }).operation;
 }
@@ -237,15 +327,23 @@ try {
     const at = new Date(Date.UTC(2026, 10, 6, 5, 0, index)).toISOString();
     insertNewer.run(id, `llm/${id}/script-studio-generate:plan:1:generate:1/r1`, id, id, `hash-${id}`, 2000 + index, at, at, recent.id);
   }
-  const unfiltered = listTeamTasks(db, { userId: 'admin', role: 'admin' }).items;
+  // 服务端分页（03 号票）：一页只返回该页制作任务组的执行记录，总数由 pagination 给出；
+  // 旧任务不在第一页，但仍能按执行记录号直接打开（findTeamTask 不受分页/筛选限制）。
+  const unfiltered = listTeamTasks(db, { userId: 'admin', role: 'admin' }, {}, { page: 1, pageSize: 50 });
+  const totalOperations = Number(db.prepare('SELECT COUNT(*) FROM execution_operations').pluck().get());
   const filtered = listTeamTasks(db, { userId: 'admin', role: 'admin' }, { actorUserId: 'bob' }).items;
-  assert.equal(unfiltered.length, 500);
-  assert.equal(unfiltered.some(item => item.taskId === 'older-bob-task'), false);
+  assert.equal(unfiltered.items.length, 50, '管理员第一页只返回一页执行记录，不再是 500 条');
+  assert.equal(unfiltered.pagination.total, totalOperations, '总数覆盖完整可见历史');
+  assert.equal(unfiltered.pagination.totalPages, Math.ceil(totalOperations / 50));
+  assert.equal(unfiltered.items.some(item => item.taskId === 'older-bob-task'), false, '2020 年的旧任务不在第一页');
+  const oldTask = findTeamTask(db, { userId: 'admin', role: 'admin' }, retriedOperation.id);
+  assert.equal(oldTask?.taskId, 'older-bob-task', '500 条之外的旧任务仍能按执行记录号读取');
+  assert.deepEqual(oldTask?.modelCalls.map(call => call.model), ['model-before-retry', 'model-after-retry']);
   assert.equal(filtered.length, 1);
   assert.equal(filtered[0]?.taskId, 'older-bob-task');
   assert.equal(filtered[0]?.model, '2 个模型（见调用记录）');
   assert.deepEqual(filtered[0]?.modelCalls.map(call => call.model), ['model-before-retry', 'model-after-retry']);
-  console.log('PASS: member filtering happens before the recent-500 limit and preserves frozen model facts');
+  console.log('PASS: member filtering happens before pagination, and old records stay readable by operation id');
 
   db.prepare("INSERT INTO image_assets VALUES ('input-retry', '重试原图.png', 'shot_source')").run();
   db.prepare("INSERT INTO jobs VALUES ('image-retry', 'succeeded', 'input-retry', 'image-retry-model', ?)").run(imageUsage);
@@ -260,7 +358,7 @@ try {
   const replacementIntent = await runtime.facade.markSubmitting({ grant: retryGrant.grant, requestSnapshot: {}, retryKind: 'protocol_fallback', quote: { kind: 'unpriced' } });
   await runtime.facade.transmit(replacementIntent, async () => ({ terminalState: 'succeeded', actualCost: { currency: 'CNY', minor: 0 } }));
   await runtime.facade.settle({ attemptId: replacementIntent.attemptId, outcome: 'succeeded', actualCost: { currency: 'CNY', minor: 0 }, remoteTerminal: true });
-  const legacyCalls = listTeamTasks(db, { userId: 'admin', role: 'admin' }, { actorUserId: 'alice' }).items.find(item => item.taskId === 'image-retry')?.modelCalls;
+  const legacyCalls = findTeamTask(db, { userId: 'admin', role: 'admin' }, legacyRetry.id)?.modelCalls;
   assert.equal(legacyCalls?.length, 2);
   assert.equal(legacyCalls[0]?.providerName, '执行时图片供应商');
   assert.equal(legacyCalls[0]?.model, 'image-retry-model');
@@ -268,12 +366,69 @@ try {
   assert.equal(legacyCalls[1]?.model, 'replacement-image-model');
   console.log('PASS: fallback legacy names never replace a changed attempt snapshot or model');
 
-  enqueue({ taskId: 'model-undetermined', providerSnapshot: { name: '已选供应商', model: '   ' } });
-  const undetermined = listTeamTasks(db, { userId: 'admin', role: 'admin' }, { actorUserId: 'alice' }).items.find(item => item.taskId === 'model-undetermined');
+  const undeterminedOperation = enqueue({ taskId: 'model-undetermined', providerSnapshot: { name: '已选供应商', model: '   ' } });
+  const undetermined = findTeamTask(db, { userId: 'admin', role: 'admin' }, undeterminedOperation.id);
   assert.equal(undetermined?.model, null);
   assert.equal(undetermined?.modelStatus, 'undetermined');
   assert.equal(undetermined?.submissionCount, 0);
   console.log('PASS: a selected provider with no model remains explicitly undetermined');
+
+  // 自动切换通道不是把旧 operation 重新排队：七牛失败仍是历史失败，腾讯有自己的执行记录。
+  db.prepare("INSERT INTO image_assets VALUES ('fallback-input', '通道切换原图.png', 'shot_source')").run();
+  for (const moduleName of ['image', 'video'] as const) {
+    const taskId = `${moduleName}-channel-fallback`;
+    const mediaTaskId = `${taskId}-media`;
+    const businessTable = moduleName === 'image' ? 'jobs' : 'video_jobs';
+    db.prepare(`INSERT INTO ${businessTable} VALUES (?, 'running', 'fallback-input', 'fixture-model', NULL)`).run(taskId);
+    db.prepare(`INSERT INTO execution_media_tasks (
+      id, taskKey, actorId, scopeType, scopeId, module, taskId, unifiedModel, ruleVersion,
+      inputHash, inputSnapshotJson, outputContractJson, sourceType, sourceId, sourceMetaJson,
+      status, currentChannelKey, createdAt, updatedAt
+    ) VALUES (?, ?, 'alice', 'project', 'project-a', ?, ?, ?, 'rules-v1', ?, '{}', '{}',
+      'project_scene', 'project-a', '{}', 'running', 'tencent', ?, ?)`)
+      .run(mediaTaskId, mediaTaskId, moduleName, taskId, moduleName === 'image' ? 'image2' : 'kling3', taskId, timestamp, timestamp);
+    const before = readTeamTaskActivity(db, { userId: 'admin', role: 'admin' }).counts;
+    const failedChannel = enqueue({
+      taskId, module: moduleName, step: 'submit', mediaTaskId, channelKey: 'qiniu',
+      providerSnapshot: { name: '七牛通道', model: 'fixture-qiniu-model' },
+    });
+    db.prepare("UPDATE execution_operations SET status = 'failed' WHERE id = ?").run(failedChannel.id);
+    assert.equal(findTeamTask(db, { userId: 'admin', role: 'admin' }, failedChannel.id)?.status, 'failed',
+      '切换空隙中，统一任务的旧失败通道也不能冒充重新排队');
+    const fallbackChannel = enqueue({
+      taskId, module: moduleName, step: 'submit', inputRevision: 'r2', mediaTaskId, channelKey: 'tencent',
+      providerSnapshot: { name: '腾讯通道', model: 'fixture-tencent-model' },
+    });
+    const queued = listTeamTaskRecords(db, { userId: 'admin', role: 'admin' }, { statuses: ['pending', 'deferred'], limit: 100 });
+    assert.deepEqual(queued.items.filter(item => item.taskId === taskId).map(item => item.operationId), [fallbackChannel.id],
+      '真实备用通道待提交时，只计一条排队记录');
+    db.prepare("UPDATE execution_operations SET status = 'accepted' WHERE id = ?").run(fallbackChannel.id);
+    const recent = listRecentTeamTasks(db, { userId: 'admin', role: 'admin' }, 50).items;
+    assert.equal(recent.find(item => item.operationId === failedChannel.id)?.status, 'failed');
+    assert.equal(recent.find(item => item.operationId === fallbackChannel.id)?.status, 'accepted');
+    assert.equal(listTeamTasks(db, { userId: 'admin', role: 'admin' }, { q: taskId, status: 'pending' }).pagination.total, 0,
+      '状态筛选不能把已失败通道计作排队');
+    const after = readTeamTaskActivity(db, { userId: 'admin', role: 'admin' }).counts;
+    assert.equal(after.queued, before.queued, '总览不增加虚假的排队名额');
+    assert.equal(after.running, before.running + 1);
+    assert.equal(after.failed, before.failed + 1);
+    const employeeHistory = findTeamTask(db, { userId: 'alice', role: 'employee' }, failedChannel.id);
+    assert.equal(employeeHistory?.status, 'failed');
+    assert.equal(employeeHistory?.waitLabel, '');
+  }
+  console.log('PASS: channel fallback retains failed history and counts only the current channel as queued/running');
+
+  db.prepare("INSERT INTO jobs VALUES ('manual-requeue', 'pending', 'fallback-input', 'fixture-model', NULL)").run();
+  const original = enqueue({ taskId: 'manual-requeue', module: 'image', step: 'submit', providerSnapshot: { model: 'fixture-model' } });
+  db.prepare("UPDATE execution_operations SET status = 'failed' WHERE id = ?").run(original.id);
+  assert.equal(findTeamTask(db, { userId: 'admin', role: 'admin' }, original.id)?.status, 'pending',
+    '普通任务人工重试、尚无新执行记录时，仍明确显示已回队');
+  const manualRetry = enqueue({ taskId: 'manual-requeue', module: 'image', step: 'submit', inputRevision: 'r2', providerSnapshot: { model: 'fixture-model' } });
+  db.prepare("UPDATE jobs SET status = 'running' WHERE id = 'manual-requeue'").run();
+  db.prepare("UPDATE execution_operations SET status = 'accepted' WHERE id = ?").run(manualRetry.id);
+  assert.equal(findTeamTask(db, { userId: 'admin', role: 'admin' }, original.id)?.status, 'failed',
+    '普通重试已有新的执行记录后，旧失败记录不能继续冒充排队');
+  console.log('PASS: genuine manual requeue stays visible until the replacement execution exists');
 } finally {
   runtime.closeNewWork();
   db.close();

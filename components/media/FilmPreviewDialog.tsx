@@ -111,6 +111,7 @@ export function FilmPreviewDialog({
   const [playing, setPlaying] = useState(false);
   const [currentSec, setCurrentSec] = useState(0);
   const [durationSec, setDurationSec] = useState(0);
+  const [playbackFailed, setPlaybackFailed] = useState(false);
 
   const changeIndex = useCallback((next: number) => {
     if (!safeItems.length) return;
@@ -119,6 +120,7 @@ export function FilmPreviewDialog({
     videoRef.current?.pause();
     setCurrentSec(0);
     setPlaying(false);
+    setPlaybackFailed(false);
     setDurationSec(safeItems[wrapped]?.durationSec ?? 0);
     if (index === undefined) setInnerIndex(wrapped);
     onIndexChange?.(wrapped);
@@ -165,6 +167,7 @@ export function FilmPreviewDialog({
   const close = useCallback(() => {
     videoRef.current?.pause();
     setPlaying(false);
+    setPlaybackFailed(false);
     onClose();
   }, [onClose]);
 
@@ -172,9 +175,14 @@ export function FilmPreviewDialog({
     const video = videoRef.current;
     if (!video) return;
     if (video.paused) {
+      if (video.error) video.load();
       // 播放必须走用户手势（浏览器自动播放策略），这里由点击或空格触发。
       const started = video.play();
-      if (started && typeof started.catch === 'function') started.catch(() => setPlaying(false));
+      if (started && typeof started.catch === 'function') started.catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        setPlaying(false);
+        setPlaybackFailed(true);
+      });
     } else {
       video.pause();
     }
@@ -294,15 +302,25 @@ export function FilmPreviewDialog({
                   preload="metadata"
                   playsInline
                   aria-label={`成片预览：${item.title || item.filename || '成片'}`}
+                  onClick={togglePlayback}
+                  onLoadStart={() => setPlaybackFailed(false)}
                   onLoadedMetadata={(event) => {
                     const duration = event.currentTarget.duration;
                     setDurationSec(Number.isFinite(duration) && duration > 0 ? duration : (item.durationSec ?? 0));
+                    setCurrentSec(event.currentTarget.currentTime);
                   }}
+                  onError={() => { setPlaying(false); setPlaybackFailed(true); }}
                   onTimeUpdate={(event) => setCurrentSec(event.currentTarget.currentTime)}
-                  onPlay={() => setPlaying(true)}
+                  onPlay={() => { setPlaying(true); setPlaybackFailed(false); }}
                   onPause={() => setPlaying(false)}
                   onEnded={() => { setPlaying(false); setCurrentSec(0); }}
                 />
+                {playbackFailed ? (
+                  <div className={styles.playbackError} role="alert">
+                    <span>成片暂时无法播放，请重试或下载成片查看。</span>
+                    <button type="button" className={styles.footerButton} onClick={togglePlayback}>重试预览</button>
+                  </div>
+                ) : null}
               </div>
             </div>
 

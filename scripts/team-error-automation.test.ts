@@ -66,7 +66,7 @@ const { createCanvas, saveCanvasGraph } = await import('../lib/creative-canvas/r
 const { startCanvasRun } = await import('../lib/creative-canvas/runs.ts');
 const { createCanvasScheduler } = await import('../lib/creative-canvas/scheduler.ts');
 const { createCanvasFixtureAdapter } = await import('../lib/creative-canvas/adapters/fixture.ts');
-const { listTeamErrors, getTeamErrorDiagnostic } = await import('../lib/team-service/diagnostics.ts');
+const { listTeamErrors, getTeamErrorDiagnostic, resolveTeamError } = await import('../lib/team-service/diagnostics.ts');
 const { retryCanvasTaskDownload, requestCanvasTaskCancel: requestCanvasCancelForTest } = await import('../lib/creative-canvas/recovery.ts');
 const { wakeFinalEditWorker, waitForFinalEditJobsIdle } = await import('../lib/final-edit/worker.ts');
 const { setExecutionModuleRuntime, clearExecutionModuleRuntime } = await import('../lib/media-core/execution/module-runtime.ts');
@@ -246,6 +246,18 @@ try {
   }
   assert.equal(listTeamErrors(db, { userId: alice.principal.userId, role: 'employee' }, { errorId: workerError.errorId }).items[0]?.outcome, 'recovered', '恢复后必须保留原事件并明确标为已恢复');
   assert.equal(adapter.submitCountForNode('generate'), 1, '补下载不得再次付费生成');
+
+  const activeErrors = await (await errorsRoute.GET(request('/api/team/errors', alice.cookie))).json();
+  assert.equal(activeErrors.items.some((item: { errorId: string }) => item.errorId === workerError.errorId), false,
+    '错误页和侧栏共用的默认接口不得返回已恢复记录');
+  const recoveredLookup = await (await errorsRoute.GET(request(`/api/team/errors?errorId=${workerError.errorId}`, alice.cookie))).json();
+  assert.equal(recoveredLookup.items[0]?.outcome, 'recovered', '按编号仍可查询已恢复的诊断');
+  resolveTeamError(db, { userId: alice.principal.userId, role: 'employee' }, failedBody.errorId!);
+  const afterResolve = await (await errorsRoute.GET(request('/api/team/errors', alice.cookie))).json();
+  assert.equal(afterResolve.items.some((item: { errorId: string }) => item.errorId === failedBody.errorId), false,
+    '默认接口不得把人工已处理的记录继续计入角标');
+  const resolvedLookup = await (await errorsRoute.GET(request(`/api/team/errors?errorId=${failedBody.errorId}`, alice.cookie))).json();
+  assert.ok(resolvedLookup.items[0]?.resolvedAt, '按编号仍可查询人工已处理的诊断');
 
   const failedTaskId = runWithAccessContext(access, () => startCanvasRun({
     db, request: { canvasId, mode: 'single', targetNodeId: 'generate', requestKey: 'submit-failure' },

@@ -11,18 +11,24 @@ import { parseRedoReferenceIds } from '@/lib/shot-redo-state';
 import { UNIFIED_IMAGE_ANCHOR_ID, UNIFIED_IMAGE_MODEL_KEY } from '@/lib/media-core/unified-media/catalog';
 import type { SceneReferenceRecord } from '@/lib/result-gallery-jobs';
 import {
-  clampIndex,
   canMarkShotAvailable,
   canRegenerateShot,
   canRetryShot,
-  formatShotVersionLabel,
+  canStepShotVersion,
+  clampIndex,
+  formatLatestShotVersionHint,
+  formatShotVersionAriaLabel,
+  formatShotVersionSummary,
+  formatShotVersionTag,
   getOpeningShotId,
   hasShotResult,
   isOpeningShot,
   movePickedToFront,
   removePickedId,
   resolveShotResultState,
+  resolveShotVersion,
   stepIndex,
+  stepShotVersion,
   togglePickedId,
   toggleSelectAll,
   type ShotResultState,
@@ -163,6 +169,8 @@ export default function ShotSetStep({
   const [shotIndex, setShotIndex] = useState(0);
   const [view, setView] = useState<SceneViewMode>('compare');
   const [versionBusy, setVersionBusy] = useState(false);
+  // 错误按分镜记：切到别的分镜时旧错误自动失效，不用 effect 回写 state。
+  const [versionError, setVersionError] = useState<{ shotId: string; message: string } | null>(null);
   const [redoPrompt, setRedoPrompt] = useState('');
   const [redoProviderId, setRedoProviderId] = useState('');
   // null 表示未改动，提交时沿用原任务；[] 表示用户明确取消所有参考图。
@@ -277,31 +285,13 @@ export default function ShotSetStep({
     return [...candidates.values()];
   })();
 
-  const versionCandidates = useMemo(() => {
-    if (!currentShot) return [] as ShotCandidate[];
-    const withImage = (currentShot.resultCandidates || []).filter((candidate) => candidate.imageUrl || candidate.filename);
-    if (withImage.length > 0) return withImage;
-    if (currentShot.latestGeneratedImageId || currentShot.generatedImageUrl) {
-      return [{
-        shotId: currentShot.id,
-        jobId: currentShot.latestJobId || '',
-        imageAssetId: currentShot.latestGeneratedImageId || '',
-        createdAt: '',
-        filename: currentShot.generatedFilename,
-        imageUrl: currentShot.generatedImageUrl,
-        jobStatus: currentShot.jobStatus,
-        jobPrompt: currentShot.jobPrompt,
-      }];
-    }
-    return [];
-  }, [currentShot]);
-  const versionIndex = useMemo(() => {
-    if (!currentShot || versionCandidates.length === 0) return -1;
-    const found = versionCandidates.findIndex((candidate) => candidate.imageAssetId === currentShot.latestGeneratedImageId);
-    return found >= 0 ? found : versionCandidates.length - 1;
-  }, [currentShot, versionCandidates]);
-  const currentVersion = versionIndex >= 0 ? versionCandidates[versionIndex] : undefined;
-  const resultUrl = currentVersion?.imageUrl || currentShot?.generatedImageUrl || '';
+  // 版本 = 可展示候选 + 服务端选用 asset ID 的纯计算，缩略图 / 网格 / 大图共用同一份。
+  // 没有结果时 current=0（不显示 V0）；旧数据没有 candidates 时回退成 V1。
+  const version = useMemo(() => resolveShotVersion(currentShot), [currentShot]);
+  const resultUrl = version.imageUrl || currentShot?.generatedImageUrl || '';
+  const visibleVersionError = versionError && currentShot && versionError.shotId === currentShot.id
+    ? versionError.message
+    : '';
   const shotState = resolveShotResultState(currentShot?.jobStatus, Boolean(resultUrl));
   const canMark = canMarkShotAvailable(shotState);
   const canRetry = canRetryShot(shotState);
@@ -344,36 +334,40 @@ export default function ShotSetStep({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [shots.length]);
 
-  /** 切历史版本：服务端记住选中，切回来时旧版还在。 */
-  const selectVersion = async (candidate: ShotCandidate) => {
+  /** 切历史版本：服务端记住选中，刷新后仍以服务端选用为准；失败不假装切换。 */
+  const selectVersion = async (imageAssetId: string) => {
     if (!activeSetId || !currentShot || versionBusy) return;
-    if (candidate.imageAssetId === currentShot.latestGeneratedImageId) return;
+    if (imageAssetId === currentShot.latestGeneratedImageId) return;
     setVersionBusy(true);
-    setError('');
+    setVersionError(null);
     try {
       const response = await fetch(`/api/shot-sets/${activeSetId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shotId: currentShot.id, selectedImageAssetId: candidate.imageAssetId }),
+        body: JSON.stringify({ shotId: currentShot.id, selectedImageAssetId: imageAssetId }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        setError(body.error || '切换版本失败');
+        setVersionError({ shotId: currentShot.id, message: body.error || '切换版本失败，仍显示服务端原先选用的版本' });
         return;
       }
+      // 只有服务端确认成功后才重新读取，不用本地临时选中冒充切换成功。
       await loadShots(activeSetId);
       await loadSets();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '切换版本失败');
+      setVersionError({
+        shotId: currentShot.id,
+        message: cause instanceof Error ? cause.message : '切换版本失败，仍显示服务端原先选用的版本',
+      });
     } finally {
       setVersionBusy(false);
     }
   };
 
   const stepVersion = (delta: number) => {
-    if (versionCandidates.length < 2 || versionIndex < 0) return;
-    const next = versionCandidates[stepIndex(versionIndex, delta, versionCandidates.length)];
-    if (next) void selectVersion(next);
+    const target = stepShotVersion(version, delta);
+    if (!target?.imageAssetId) return;
+    void selectVersion(target.imageAssetId);
   };
 
   const markShot = async (mark: string) => {
@@ -491,7 +485,7 @@ export default function ShotSetStep({
   const groupCounts = (set: ShotSet) => `${set.shotCount} 张 · ${set.generatedCount} 已生成 · ${set.approvedCount} 可用`;
 
   return (
-    <div className={s.page} data-testid="workbench-storyboard" data-view={view} data-empty={activeSet ? 'false' : 'true'}>
+    <div className={`${s.page} ${s.storyboardPage}`} data-testid="workbench-storyboard" data-view={view} data-empty={activeSet ? 'false' : 'true'}>
       <StepFrame
         left={<>
           <PaneHead action={
@@ -588,9 +582,8 @@ export default function ShotSetStep({
           ) : view === 'grid' ? (
             <div className={s.pairs}>
               {shots.map((shot, index) => {
-                const candidates = shot.resultCandidates || [];
-                const selected = candidates.find((candidate) => candidate.imageAssetId === shot.latestGeneratedImageId) || candidates[candidates.length - 1];
-                const url = selected?.imageUrl || shot.generatedImageUrl || '';
+                const shotVersion = resolveShotVersion(shot);
+                const url = shotVersion.imageUrl || shot.generatedImageUrl || '';
                 const state = resolveShotResultState(shot.jobStatus, Boolean(url));
                 return (
                   <button
@@ -598,7 +591,7 @@ export default function ShotSetStep({
                     type="button"
                     className={s.pair}
                     aria-current={index === currentIndex}
-                    aria-label={`分镜 ${shot.indexNum}`}
+                    aria-label={formatShotVersionAriaLabel(shot.indexNum, shotVersion)}
                     onClick={() => { setShotIndex(index); setView('compare'); }}
                   >
                     <span className={s.pairImgs}>
@@ -617,6 +610,13 @@ export default function ShotSetStep({
                     </span>
                     <span className={s.pairMeta}>
                       <b>分镜 {shot.indexNum}</b>
+                      {shotVersion.current > 0 ? (
+                        <span
+                          className={`${s.versionTag} ${shotVersion.hasMultiple ? s.versionTagMulti : s.versionTagSingle}`}
+                          data-testid="shot-grid-version"
+                          data-total={shotVersion.total}
+                        >{formatShotVersionTag(shotVersion)}</span>
+                      ) : null}
                       {isOpeningShot(shots.map((item) => item.id), shot.id) ? <em>开场</em> : null}
                       <small>
                         <i className={`status-dot-${markTone(state)}`} />
@@ -681,28 +681,54 @@ export default function ShotSetStep({
                   </div>
                   <figcaption className={s.caption}>
                     <b>结果</b>
-                    <span className={s.versionBar} data-testid="shot-version">
-                      {versionCandidates.length > 1 ? (
-                        <>
-                          <button type="button" className={s.versionBtn} aria-label="上一版" disabled={versionBusy} onClick={() => stepVersion(-1)}>
-                            <Icon name="chevron-left" size={12} />
-                          </button>
-                          <span>{formatShotVersionLabel(versionIndex, versionCandidates.length)}</span>
-                          <button type="button" className={s.versionBtn} aria-label="下一版" disabled={versionBusy} onClick={() => stepVersion(1)}>
-                            <Icon name="chevron-right" size={12} />
-                          </button>
-                        </>
-                      ) : versionCandidates.length === 1 ? '第 1 版（共 1 版）' : '还没有结果'}
-                    </span>
                   </figcaption>
                 </figure>
               </div>
 
+              {/* 版本条独占一行：窄主栏里也不挤掉底部操作栏；大图区域的版本信息与切版按钮都在这。 */}
+              <div className={s.versionRow} data-testid="shot-version">
+                {version.total > 0 ? (
+                  <>
+                    {canStepShotVersion(version) ? (
+                      <button
+                        type="button"
+                        className={s.versionBtn}
+                        aria-label="使用上一版"
+                        title="使用上一版"
+                        disabled={versionBusy}
+                        onClick={() => stepVersion(-1)}
+                      ><Icon name="chevron-left" size={12} /></button>
+                    ) : null}
+                    <span className={s.versionSummary} data-testid="shot-version-summary">
+                      {formatShotVersionSummary(version)}
+                    </span>
+                    {canStepShotVersion(version) ? (
+                      <>
+                        <button
+                          type="button"
+                          className={s.versionBtn}
+                          aria-label="使用下一版"
+                          title="使用下一版"
+                          disabled={versionBusy}
+                          onClick={() => stepVersion(1)}
+                        ><Icon name="chevron-right" size={12} /></button>
+                        <span className={s.versionHint}>切换即用于后续制作</span>
+                      </>
+                    ) : null}
+                    {formatLatestShotVersionHint(version) ? (
+                      <span className={s.versionLatest} data-testid="shot-version-latest">
+                        {formatLatestShotVersionHint(version)}
+                      </span>
+                    ) : null}
+                  </>
+                ) : <span className={s.versionSummary}>还没有结果</span>}
+                {visibleVersionError ? <span className={s.versionError} role="alert">{visibleVersionError}</span> : null}
+              </div>
+
               <div className={s.strip} aria-label="分镜缩略图">
                 {shots.map((shot, index) => {
-                  const candidates = shot.resultCandidates || [];
-                  const selected = candidates.find((candidate) => candidate.imageAssetId === shot.latestGeneratedImageId) || candidates[candidates.length - 1];
-                  const url = selected?.imageUrl || shot.generatedImageUrl || '';
+                  const shotVersion = resolveShotVersion(shot);
+                  const url = shotVersion.imageUrl || shot.generatedImageUrl || '';
                   const state = resolveShotResultState(shot.jobStatus, Boolean(url));
                   return (
                     <button
@@ -710,7 +736,7 @@ export default function ShotSetStep({
                       type="button"
                       className={s.thumb}
                       aria-current={index === currentIndex}
-                      aria-label={`分镜 ${shot.indexNum}`}
+                      aria-label={formatShotVersionAriaLabel(shot.indexNum, shotVersion)}
                       onClick={() => setShotIndex(index)}
                     >
                       {url
@@ -718,6 +744,16 @@ export default function ShotSetStep({
                         : <span className={s.thumbBox} />}
                       <figcaption>
                         <b>{shot.indexNum}</b>
+                        {shotVersion.current > 0 ? (
+                          <>
+                            <span className={s.thumbVersionSep} aria-hidden="true">·</span>
+                            <span
+                              className={`${s.versionTag} ${shotVersion.hasMultiple ? s.versionTagMulti : s.versionTagSingle}`}
+                              data-testid="shot-thumb-version"
+                              data-total={shotVersion.total}
+                            >{formatShotVersionTag(shotVersion)}</span>
+                          </>
+                        ) : null}
                         <i className={`status-dot-${markTone(state)}`} />
                       </figcaption>
                       {shot.indexNum === 1 ? <span className={s.thumbBadge}>开场</span> : null}
@@ -980,7 +1016,7 @@ function CreateShotSetDialog({
     <Dialog
       open
       title="新建分镜组"
-      description={`按点选顺序排镜头；第 1 张是开场图（最多 ${MAX_SHOTS_PER_SET} 张）。`}
+      description={`按点选顺序排镜头；第 1 张是开场图，对应视频优先用于单条混剪和批量生产的开头（最多 ${MAX_SHOTS_PER_SET} 张）。`}
       width="wide"
       onClose={() => { if (!saving) onClose(); }}
       footer={<>

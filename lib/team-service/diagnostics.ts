@@ -61,6 +61,7 @@ export interface TeamErrorView {
 
 interface ErrorRow {
   providerSnapshotJson?: string | null;
+  remotePollRecovered?: number;
   id: string;
   actorUserId: string;
   employeeId?: string;
@@ -222,6 +223,7 @@ function safeProviderSnapshotModel(serialized: string | null | undefined): strin
 }
 
 function mapError(row: ErrorRow): TeamErrorView {
+  const remotePollRecovered = row.remotePollRecovered === 1;
   return {
     errorId: row.id,
     actorUserId: row.actorUserId,
@@ -240,10 +242,12 @@ function mapError(row: ErrorRow): TeamErrorView {
     code: row.code,
     statusCode: row.statusCode,
     safeMessage: STAGE_MESSAGES[row.stage] ?? '发生故障，请凭错误编号联系管理员。',
-    actionHint: teamErrorActionHint(row.stage),
+    actionHint: remotePollRecovered
+      ? '该任务已有成功结果，历史诊断已保留，无需重复生成。'
+      : teamErrorActionHint(row.stage),
     origin: ['server', 'server_api', 'worker', 'client'].includes(row.origin)
       ? row.origin as TeamErrorOrigin : teamErrorOrigin(row.stage),
-    outcome: row.outcome === 'recovered' ? 'recovered' : 'final',
+    outcome: remotePollRecovered || row.outcome === 'recovered' ? 'recovered' : 'final',
     resolvedAt: row.resolvedAt ?? null,
     resolvedByUserId: row.resolvedByUserId ?? null,
     eventKey: row.eventKey ?? null,
@@ -257,8 +261,30 @@ function mapError(row: ErrorRow): TeamErrorView {
   };
 }
 
+/** 原 attempt 或同一统一制作任务的备用通道成功，表示远端错误已恢复；不跨人工重开的生成轮次。 */
+function recoveredRemotePollSql(db: Database.Database): string {
+  if (!tableExists(db, 'execution_attempts')) return '0';
+  const successfulAttempt = `(e.code = 'provider_poll_failed' AND EXISTS (
+    SELECT 1 FROM execution_attempts recovered_attempt
+    WHERE recovered_attempt.id = e.attemptId AND recovered_attempt.operationId = e.operationId
+      AND recovered_attempt.terminalState = 'succeeded'
+  ))`;
+  const successfulUnifiedTask = tableExists(db, 'execution_media_tasks') && tableExists(db, 'execution_operations')
+    ? `(e.code IN ('provider_poll_failed', 'provider_failed') AND EXISTS (
+      SELECT 1 FROM execution_attempts original_attempt
+      JOIN execution_operations original_operation ON original_operation.id = original_attempt.operationId
+      JOIN execution_media_tasks recovered_task ON recovered_task.id = original_operation.mediaTaskId
+      WHERE original_attempt.id = e.attemptId AND original_operation.id = e.operationId
+        AND recovered_task.taskId = e.taskId AND recovered_task.module = e.module
+        AND recovered_task.actorId = e.actorUserId AND recovered_task.status = 'succeeded'
+    ))`
+    : '0';
+  return `(e.stage = 'remote_poll' AND (${successfulAttempt} OR ${successfulUnifiedTask}))`;
+}
+
 function getError(db: Database.Database, errorId: string): TeamErrorView | null {
-  const row = db.prepare('SELECT * FROM team_error_records WHERE id = ?').get(errorId) as ErrorRow | undefined;
+  const row = db.prepare(`SELECT e.*, ${recoveredRemotePollSql(db)} AS remotePollRecovered
+    FROM team_error_records e WHERE e.id = ?`).get(errorId) as ErrorRow | undefined;
   return row ? mapError(row) : null;
 }
 
@@ -534,7 +560,8 @@ export function listTeamErrors(
   }
   const clauses: string[] = [];
   const values: string[] = [];
-  if (filters.actionableOnly) clauses.push("e.outcome = 'final' AND e.resolvedAt IS NULL");
+  const recoveredRemotePoll = recoveredRemotePollSql(db);
+  if (filters.actionableOnly) clauses.push(`e.outcome = 'final' AND e.resolvedAt IS NULL AND NOT ${recoveredRemotePoll}`);
   const actorUserId = viewer.role === 'admin' ? filters.actorUserId : viewer.userId;
   if (actorUserId) {
     clauses.push('e.actorUserId = ?');
@@ -545,7 +572,7 @@ export function listTeamErrors(
     values.push(filters.errorId);
   }
   const rows = db.prepare(`
-    SELECT e.*, u.employeeId, u.displayName,
+    SELECT e.*, u.employeeId, u.displayName, ${recoveredRemotePoll} AS remotePollRecovered,
       ${tableExists(db, 'execution_attempts')
         ? '(SELECT providerSnapshotJson FROM execution_attempts a WHERE a.id = e.attemptId)'
         : 'NULL'} AS providerSnapshotJson
@@ -574,7 +601,8 @@ export function getTeamErrorDiagnostic(
   viewer: TeamViewer,
   errorId: string,
 ) {
-  const row = db.prepare(`SELECT e.*, a.providerSnapshotJson FROM team_error_records e
+  const row = db.prepare(`SELECT e.*, a.providerSnapshotJson,
+    ${recoveredRemotePollSql(db)} AS remotePollRecovered FROM team_error_records e
     LEFT JOIN execution_attempts a ON a.id = e.attemptId WHERE e.id = ?`).get(errorId) as ErrorRow | undefined;
   if (!row || (viewer.role !== 'admin' && row.actorUserId !== viewer.userId)) {
     throw new TeamDiagnosticsError(404, 'error_not_found', '错误记录不存在。');

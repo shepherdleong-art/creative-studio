@@ -588,26 +588,22 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
         </section>
 
         {job?.status === 'succeeded' && job.output && !packagingRunning && !packagingFailed && (
-          <section className={styles.exportResult} aria-label="导出结果">
-            {/* 导出成功后点成片打开大预览（09 号票共用件）。这里不再内嵌播放器：
-                video 只做封面帧（无 controls、静音、preload=metadata），点击整块打开预览对话框，
-                对话框里播放真实导出的成片且有声音。 */}
+          <section className={`${styles.card} ${styles.exportResult}`} aria-label="导出结果">
+            <div className={styles.cardTitle}>成片</div>
             <button
               type="button"
               className={styles.exportResultFigure}
+              data-output-preset={variant?.outputPreset ?? '3x4'}
               onClick={() => setPreviewOpen(true)}
               aria-label="打开成片预览"
             >
-              <video
-                muted
-                playsInline
-                preload="metadata"
-                src={packagingSucceeded && packagingJob?.output ? packagingJob.output.videoUrl : job.output.videoUrl}
-              />
+              {job.output.coverUrl
+                ? <img src={job.output.coverUrl} alt="成片封面" />
+                : <span className={styles.exportResultPlaceholder}><Icon name="video" size={36} />成片已导出</span>}
               <span className={styles.exportResultPlay}><Icon name="play" size={22} /></span>
-              <span className={styles.exportResultCaption}>点成片打开大预览</span>
+              <span className={styles.exportResultCaption}>{currentRevisionExported ? '这次的成片' : '上次导出的成片'}</span>
             </button>
-            {job.output.coverUrl && <img src={job.output.coverUrl} alt="导出封面" />}
+            <p className={styles.exportResultHint}>{(group.totalDurationUs / 1_000_000).toFixed(1)} 秒 · {variant?.outputPreset.replace('x', ':') ?? '3:4'} · 点击成片预览</p>
           </section>
         )}
       </div>

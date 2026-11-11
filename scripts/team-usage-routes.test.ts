@@ -226,41 +226,49 @@ try {
 
   const adminOwn = await usageRoute.GET(request('https://studio.example.test/api/team/usage', adminCookie));
   const adminOwnBody = await adminOwn.json();
+  assert.equal(adminOwnBody.section, 'summary', '省略 section 时默认返回摘要');
   assert.equal(adminOwnBody.scope, 'self');
-  assert.equal(adminOwnBody.items.length, 0);
   assert.equal(adminOwnBody.totals.estimatedMinor, 0);
   assert.equal(adminOwnBody.canViewTeam, true);
   assert.equal(adminOwnBody.member.userId, admin.userId);
+  assert.equal('items' in adminOwnBody, false, '摘要不再携带全量尝试数组');
+  assert.equal('tasks' in adminOwnBody, false, '摘要不再携带全量制作任务数组');
   const adminTeam = await usageRoute.GET(request('https://studio.example.test/api/team/usage?scope=team', adminCookie));
   const teamBody = await adminTeam.json();
   assert.equal(teamBody.scope, 'team');
-  assert.equal(teamBody.items.length, 1);
-  assert.equal(teamBody.items[0].actorUserId, bob.principal.userId);
   assert.equal(teamBody.totals.estimatedMinor, 25);
   assert.equal(teamBody.teamQuota.chargedMinor, 25);
   assert.equal(teamBody.teamQuota.heldMinor, 25);
   assert.equal(teamBody.teamQuota.accountingPeriod, '2026-11');
   assert.equal(teamBody.models[0].model, 'image-test');
   assert.equal(teamBody.models[0].chargedMinor, 25);
-  assert.deepEqual(teamBody.tasks, []);
   assert.deepEqual(teamBody.counts, {
     generationTasks: 0, channelCalls: 0, legacyAttempts: 1, unmappedAttempts: 0,
   });
+  const teamTasks = await usageRoute.GET(request('https://studio.example.test/api/team/usage?scope=team&section=tasks', adminCookie));
+  const teamTasksBody = await teamTasks.json();
+  assert.deepEqual(teamTasksBody.items, [], '统一制作任务列表为空');
+  assert.deepEqual(teamTasksBody.pagination, { page: 1, pageSize: 25, total: 0, totalPages: 1 });
+  const teamChannels = await usageRoute.GET(request('https://studio.example.test/api/team/usage?scope=team&section=channels', adminCookie));
+  assert.equal((await teamChannels.json()).pagination.total, 0, '没有统一父任务的调用不进入通道调用列表');
   assert.equal(teamBody.trend.reduce((sum: number, point: { chargedMinor: number }) => sum + point.chargedMinor, 0), 25);
   assert.equal(teamBody.members.find((member: { userId: string }) => member.userId === bob.principal.userId).rangeChargedMinor, 25);
-  const drilldown = await usageRoute.GET(request(`https://studio.example.test/api/team/usage?period=month&scope=team&actorUserId=${bob.principal.userId}`, adminCookie));
+  const drilldown = await usageRoute.GET(request(`https://studio.example.test/api/team/usage?period=month&scope=team&actorUserId=${bob.principal.userId}&section=legacy`, adminCookie));
   const drilldownBody = await drilldown.json();
   assert.equal(drilldownBody.items.length, 1);
-  assert.equal(drilldownBody.member.userId, bob.principal.userId);
-  assert.equal(drilldownBody.models[0].callCount, 1);
+  assert.equal(drilldownBody.pagination.total, 1);
+  const drilldownSummary = await usageRoute.GET(request(`https://studio.example.test/api/team/usage?period=month&scope=team&actorUserId=${bob.principal.userId}`, adminCookie));
+  const drilldownSummaryBody = await drilldownSummary.json();
+  assert.equal(drilldownSummaryBody.member.userId, bob.principal.userId);
+  assert.equal(drilldownSummaryBody.models[0].callCount, 1);
   const teamToday = await usageRoute.GET(request('https://studio.example.test/api/team/usage?period=today&scope=team', adminCookie));
   assert.equal((await teamToday.json()).teamQuota.chargedMinor, 25, '团队额度不随分析日期筛选变化');
   const employeeTeam = await usageRoute.GET(request('https://studio.example.test/api/team/usage?scope=team', alice.cookie));
   const employeeTeamBody = await employeeTeam.json();
-  assert.equal(employeeTeamBody.scope, 'self');
-  assert.equal(employeeTeamBody.items.length, 0);
+  assert.equal(employeeTeamBody.scope, 'self', '员工传 scope=team 仍按本人');
   assert.equal(employeeTeamBody.teamQuota, null);
   assert.deepEqual(employeeTeamBody.members, []);
+  assert.equal('items' in employeeTeamBody, false);
 
   const ownUsage = await usageRoute.GET(request('https://studio.example.test/api/team/usage', alice.cookie));
   assert.equal(ownUsage.status, 200, await ownUsage.clone().text());
@@ -286,12 +294,18 @@ try {
   runtime.closeNewWork();
   const employeeFiltered = await usageRoute.GET(request('https://studio.example.test/api/team/usage?period=month', alice.cookie));
   const employeeFilteredBody = await employeeFiltered.json();
-  assert.equal(employeeFilteredBody.items.length, 0, 'employees do not receive unified channel-attempt details');
-  assert.equal(employeeFilteredBody.unmappedAttempts.length, 0, 'employees do not receive unmapped execution details');
-  const adminFiltered = await usageRoute.GET(request(`https://studio.example.test/api/team/usage?period=month&scope=team&actorUserId=${alice.principal.userId}`, adminCookie));
-  const adminFilteredBody = await adminFiltered.json();
-  assert.equal(adminFilteredBody.items.length, 1, 'admins retain attempt-level channel details');
-  assert.equal(adminFilteredBody.unmappedAttempts.length, 1);
+  assert.equal('items' in employeeFilteredBody, false, '员工摘要不返回统一通道尝试明细');
+  assert.equal(employeeFilteredBody.counts.unmappedAttempts, 1, '摘要只保留本人未映射计数，不返回执行明细');
+  for (const section of ['channels', 'unmapped']) {
+    const forbidden = await usageRoute.GET(request(`https://studio.example.test/api/team/usage?period=month&section=${section}`, alice.cookie));
+    assert.equal(forbidden.status, 403, `员工请求 section=${section} 必须 403`);
+  }
+  const adminChannels = await usageRoute.GET(request(`https://studio.example.test/api/team/usage?period=month&scope=team&actorUserId=${alice.principal.userId}&section=channels`, adminCookie));
+  assert.equal((await adminChannels.json()).items.length, 0, '父任务身份缺失的记录不算已关联通道调用');
+  const adminUnmapped = await usageRoute.GET(request(`https://studio.example.test/api/team/usage?period=month&scope=team&actorUserId=${alice.principal.userId}&section=unmapped`, adminCookie));
+  const adminUnmappedBody = await adminUnmapped.json();
+  assert.equal(adminUnmappedBody.items.length, 1, 'admins retain attempt-level unmapped details');
+  assert.equal(adminUnmappedBody.items[0].mediaTaskId, 'unmapped-unified-parent');
   const employeeCsv = await exportRoute.GET(request('https://studio.example.test/api/team/usage/export', alice.cookie));
   assert.equal(employeeCsv.status, 403);
   const adminCsv = await exportRoute.GET(request('https://studio.example.test/api/team/usage/export', adminCookie));

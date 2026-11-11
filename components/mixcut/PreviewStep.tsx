@@ -858,6 +858,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     : null;
   const selectedMatchReasonLabel = selectedMatchReason ? ({
     manual_lock: '手动锁定',
+    opening_priority: '分镜开场',
     semantic_primary: '语义首选',
     semantic_backoff: '语义降级',
     keyword_fallback: '关键词兜底',

@@ -58,9 +58,18 @@ function environment() {
 }
 
 function startServer() {
-  const nextBinary = fileURLToPath(import.meta.resolve('next/dist/bin/next'));
-  server = spawn(process.execPath, [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
-    cwd: repoRoot, env: environment(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+  // 06 号票：与 scripts/team-task-pagination.playwright.test.mjs 一样支持用已构建的
+  // standalone 验收（TEAM_CONSOLE_TEST_PRODUCTION=1），避开这台机器上 next dev 首次
+  // 编译 /team/login 超过 2 分钟导致的无关超时。默认仍是 dev。
+  const production = process.env.TEAM_CONSOLE_TEST_PRODUCTION === '1';
+  const standalone = path.join(repoRoot, '.next', 'standalone');
+  const serverArgs = production
+    ? [path.join(standalone, 'server.js')]
+    : [fileURLToPath(import.meta.resolve('next/dist/bin/next')), 'dev', '--hostname', '127.0.0.1', '--port', String(port)];
+  server = spawn(process.execPath, serverArgs, {
+    cwd: production ? standalone : repoRoot,
+    env: production ? { ...environment(), NODE_ENV: 'production', PORT: String(port), HOSTNAME: '127.0.0.1' } : environment(),
+    windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
   });
   const log = fs.createWriteStream(path.join(evidenceDirectory, 'server.log'), { flags: 'a' });

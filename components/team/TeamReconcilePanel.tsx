@@ -3,12 +3,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import PageToolbar from './PageToolbar';
 import { teamError, teamWrite } from './client';
-import { GroupHeading, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
+import { EmptyState, GroupHeading, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
+import { describeReconcileTask, formatReconcileMoney } from './reconcile-display';
 import type {
   UnifiedReconcileAction,
   UnifiedReconcileList,
   UnifiedReconcileTaskView,
 } from '@/lib/team-service/unified-reconcile';
+
+/**
+ * 待核对（02 号票改版）——先告诉管理员「发生了什么、是否要人工处理」，
+ * 技术字段和人工动作逐层展开。
+ *
+ * 阅读顺序：
+ *   1. 默认卡片只有模型、项目/发起人、当前状态、通俗原因、费用状态和「核对详情」入口；
+ *   2. 「核对详情」展开后才是通道、远端 ID、规则版本、尝试表和技术错误；
+ *   3. 「人工核对」表单在详情里独立折叠，证据必填、版本校验和幂等键照旧；
+ *   4. 默认仍只看待核对；「全部记录」包含已完成的统一模型任务，历史记录不要求逐条核对。
+ *
+ * 这里只改展示：不在这里触发重发、不按超时推定未创建、不释放名额占用，也不改变核对写入接口。
+ */
 
 const ACTION_LABELS: Record<UnifiedReconcileAction, string> = {
   attach_remote_id: '补远端 ID',
@@ -18,8 +32,9 @@ const ACTION_LABELS: Record<UnifiedReconcileAction, string> = {
   still_unknown: '仍无法确认',
 };
 
+/** 技术字段里的原始状态码：只给「核对详情」用，不拿来当卡片主文案。 */
 const STATUS_LABELS: Record<string, string> = {
-  unknown: '结果确认中',
+  unknown: '结果待确认',
   accepted: '已受理',
   waiting: '等待资源',
   routing: '选择通道',
@@ -44,6 +59,8 @@ const STATUS_LABELS: Record<string, string> = {
   waiting_capacity: '等待容量',
   in_progress: '处理中',
   completed: '已完成',
+  held: '占用中',
+  reserved: '预留',
 };
 
 function label(value: string | null | undefined): string {
@@ -53,7 +70,7 @@ function label(value: string | null | undefined): string {
 
 function money(minor: number | null | undefined): string {
   if (minor === null || minor === undefined) return '待核账';
-  return `¥${(minor / 100).toFixed(2)}`;
+  return formatReconcileMoney(minor);
 }
 
 function time(value: string | null | undefined): string {
@@ -114,6 +131,9 @@ export default function TeamReconcilePanel() {
   const [data, setData] = useState<UnifiedReconcileList | null>(null);
   const [filter, setFilter] = useState<'attention' | 'all'>('attention');
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  /** 核对详情与人工核对各自独立折叠；默认都收起。 */
+  const [expandedDetails, setExpandedDetails] = useState<Record<string, boolean>>({});
+  const [expandedForm, setExpandedForm] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -152,7 +172,9 @@ export default function TeamReconcilePanel() {
 
   const summary = data?.summary;
   const subtitle = summary
-    ? `${summary.attention} 条需要核对，${summary.unknown} 条结果确认中，${summary.canceled} 条带取消意图。`
+    ? filter === 'attention'
+      ? `${summary.attention} 条需要核对，${summary.unknown} 条结果还没确认，${summary.canceled} 条带取消意图。`
+      : `共 ${summary.total} 条记录，其中 ${summary.attention} 条需要人工处理。`
     : '检查提交结果未知、远端身份缺失或费用待核账的任务。';
 
   function patchDraft(taskId: string, patch: Partial<Draft>) {
@@ -170,6 +192,14 @@ export default function TeamReconcilePanel() {
       attemptId,
       remoteId: attempt?.remoteId ?? attempt?.receiptRemoteId ?? '',
     });
+  }
+
+  function toggleDetails(taskId: string) {
+    setExpandedDetails((current) => ({ ...current, [taskId]: !current[taskId] }));
+  }
+
+  function toggleForm(taskId: string) {
+    setExpandedForm((current) => ({ ...current, [taskId]: !current[taskId] }));
   }
 
   async function submit(task: UnifiedReconcileTaskView) {
@@ -235,16 +265,20 @@ export default function TeamReconcilePanel() {
 
       <section className="card p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
+          <div className="min-w-0">
             <h2 className="text-[15px] font-semibold text-ink">待核对任务</h2>
             <p className="mt-1 text-[12px] leading-5 text-ink-secondary">
-              只依据已保存的远端身份、账单或任务证据修正。不能用超时推定未创建，也不会在这里发起新的付费生成。
+              只依据已保存的远端身份、账单或任务证据修正；不能用超时推定未创建，也不会在这里发起新的付费生成。
+            </p>
+            <p className="mt-1 text-[12px] leading-5 text-ink-tertiary">
+              全部记录包含已完成的统一模型任务；只有待核对记录需要人工处理。
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               className={`cap ${filter === 'attention' ? 'cap-primary' : ''}`}
+              aria-pressed={filter === 'attention'}
               onClick={() => setFilter('attention')}
             >
               只看待核对
@@ -252,12 +286,20 @@ export default function TeamReconcilePanel() {
             <button
               type="button"
               className={`cap ${filter === 'all' ? 'cap-primary' : ''}`}
+              aria-pressed={filter === 'all'}
               onClick={() => setFilter('all')}
             >
-              全部统一任务
+              全部记录
             </button>
           </div>
         </div>
+        {filter === 'all' ? (
+          <p className="mt-3 rounded-[9px] bg-group px-3 py-2 text-[12px] text-ink-secondary" data-testid="reconcile-history-note">
+            {summary?.attention === 0
+              ? '以下是历史记录，无需逐条核对。'
+              : '以下是全部记录（包含已完成的统一模型任务）；带原因的记录才需要人工处理。'}
+          </p>
+        ) : null}
         {error ? <p role="alert" className="mt-3 text-[13px] text-fail">{error}</p> : null}
         {notice ? <p role="status" className="mt-3 text-[13px] text-ok">{notice}</p> : null}
       </section>
@@ -267,209 +309,296 @@ export default function TeamReconcilePanel() {
       ) : null}
 
       {!loading && items.length === 0 ? (
-        <section className="card p-8 text-center">
-          <p className="text-[14px] font-medium text-ink">目前没有需要核对的统一任务</p>
-          <p className="mt-1 text-[12px] text-ink-secondary">未知结果会继续保存在任务记录和名额占用中，不会被超时自动释放。</p>
-        </section>
+        filter === 'attention' ? (
+          <section className="card p-5" data-testid="reconcile-empty-attention">
+            <EmptyState
+              icon="check"
+              title="没有待核对项"
+              description="目前无需人工处理。结果未知的任务仍会保留在任务记录和名额占用中，不会被超时自动释放。"
+            />
+          </section>
+        ) : (
+          <section className="card p-5" data-testid="reconcile-empty-all">
+            <EmptyState
+              icon="logs"
+              title="没有历史记录"
+              description="还没有统一模型任务的记录；产生统一模型任务后，已完成的记录会出现在这里。"
+            />
+          </section>
+        )
       ) : null}
 
       {items.map((task) => {
         const draft = drafts[task.mediaTaskId] ?? draftFor(task);
         const selectedChannel = task.channels.find((channel) => channel.channelKey === draft.channelKey);
         const targetBusy = busy === task.mediaTaskId;
-        const settledCost = task.cost.costStatus === 'settled'
-          ? money(task.cost.actualMinor)
-          : task.cost.costStatus === 'released' ? '¥0.00' : '待核账';
+        const display = describeReconcileTask(task);
+        const detailsOpen = expandedDetails[task.mediaTaskId] ?? false;
+        const formOpen = expandedForm[task.mediaTaskId] ?? false;
         return (
-          <section key={task.mediaTaskId} className="card p-5" data-testid="reconcile-task">
+          <section
+            key={task.mediaTaskId}
+            className="card p-5"
+            data-testid="reconcile-task"
+            data-attention={task.attention ? 'true' : 'false'}
+            data-status={task.status}
+          >
             <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
+              <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 className="text-[15px] font-semibold text-ink">{task.unifiedModelLabel}</h2>
-                  <Tag tone={toneFor(task.status)}><StatusDot tone={toneFor(task.status)} />{label(task.status)}</Tag>
-                  {task.cancelRequestedAt ? <Tag tone="warn">取消意图 · {time(task.cancelRequestedAt)}</Tag> : null}
+                  <Tag tone={toneFor(task.status)}>
+                    <StatusDot tone={toneFor(task.status)} />
+                    {display.statusLabel}
+                  </Tag>
                 </div>
-                <p className="mt-1 text-[13px] text-ink-secondary">
+                <p className="mt-1 break-words text-[13px] text-ink-secondary">
                   {task.actorDisplayName}（{task.employeeId}） · {sourceLabel(task.sourceType)}：{task.scopeName}
                 </p>
-                <p className="mt-1 break-all font-mono text-[11px] text-ink-tertiary">
-                  任务 {task.taskId} · 统一任务 {task.mediaTaskId} · 规则 {task.ruleVersion} · 版本 {task.reconcileVersion}
-                </p>
               </div>
-              <div className="grid min-w-52 grid-cols-2 gap-x-5 gap-y-2 text-[12px]">
-                <span className="text-ink-tertiary">最近检查</span><span className="text-ink-secondary">{time(task.lastCheckedAt)}</span>
-                <span className="text-ink-tertiary">费用状态</span><span className="text-ink-secondary">{label(task.cost.costStatus)}</span>
-                <span className="text-ink-tertiary">已占名额</span><span className="text-ink-secondary tnum">{task.occupancy.heldConcurrency}</span>
-                <span className="text-ink-tertiary">待核占用</span><span className="text-ink-secondary tnum">{money(task.occupancy.heldCostMinor)}</span>
-                <span className="text-ink-tertiary">已估 / 已结</span><span className="text-ink-secondary tnum">{money(task.cost.reservedMinor)} / {settledCost}</span>
-                {task.lastAction ? (
-                  <>
-                    <span className="text-ink-tertiary">上次核对</span>
-                    <span className="text-ink-secondary">
-                      {ACTION_LABELS[task.lastAction.action]} · {task.lastAction.actorUserId} · {time(task.lastAction.createdAt)}
-                    </span>
-                  </>
-                ) : null}
-              </div>
-            </div>
-
-            {task.attentionReasons.length > 0 ? (
-              <p className="mt-3 rounded-[9px] bg-warn-tint px-3 py-2 text-[12px] text-warn">
-                待核对原因：{task.attentionReasons.join('、')}
-              </p>
-            ) : null}
-            {task.businessError ? (
-              <p className="mt-2 text-[12px] leading-5 text-ink-secondary">业务状态：{task.businessError}</p>
-            ) : null}
-
-            <div className="mt-4 space-y-3">
-              {task.channels.map((channel) => (
-                <div key={channel.channelKey} className="rounded-[10px] border border-hairline p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[13px] font-medium text-ink">{channel.channelKey === 'qiniu' ? '七牛通道' : channel.channelKey === 'tencent' ? '腾讯通道' : channel.channelKey}</span>
-                      <Tag tone={toneFor(channel.state)}><StatusDot tone={toneFor(channel.state)} />{label(channel.state)}</Tag>
-                      {channel.operationStatus ? <span className="text-[11px] text-ink-tertiary">操作 {label(channel.operationStatus)}</span> : null}
-                      {channel.waitReason ? <span className="text-[11px] text-warn">等待：{label(channel.waitReason)}</span> : null}
-                    </div>
-                    <span className="break-all font-mono text-[10px] text-ink-tertiary">{channel.providerModel}</span>
-                  </div>
-                  <div className="mt-2 grid gap-2 text-[11px] text-ink-secondary md:grid-cols-4">
-                    <span>远端：{channel.remoteId ?? '未记录'}</span>
-                    <span>尝试：{channel.attempts.length}</span>
-                    <span>占用：{channel.heldConcurrency} 名额 / {money(channel.heldCostMinor)}</span>
-                    <span>检查：{time(channel.lastCheckedAt)}</span>
-                  </div>
-                  {channel.attempts.length > 0 ? (
-                    <div className="mt-2 overflow-x-auto">
-                      <table className="data-table min-w-[820px]">
-                        <thead><tr><th>尝试</th><th>提交 / 终态</th><th>远端 ID</th><th>费用</th><th>错误</th><th>核对</th></tr></thead>
-                        <tbody>
-                          {channel.attempts.map((attempt) => (
-                            <tr key={attempt.attemptId}>
-                              <td className="font-mono text-[11px]">{attempt.attemptId.slice(0, 8)} · #{attempt.transportSeq}</td>
-                              <td>{label(attempt.submissionState)} / {label(attempt.terminalState)}</td>
-                              <td className="max-w-44 break-all font-mono text-[11px]">{attempt.remoteId ?? attempt.receiptRemoteId ?? '—'}</td>
-                              <td className="tnum">{money(attempt.actualMinor ?? attempt.reservedMinor)}<span className="ml-1 text-ink-tertiary">{label(attempt.costStatus)}</span></td>
-                              <td className="max-w-44 break-all text-[11px]">{attempt.errorCode ?? '—'}</td>
-                              <td>
-                                <button
-                                  type="button"
-                                  className="cap"
-                                  onClick={() => selectAttempt(task, channel.channelKey, attempt.attemptId)}
-                                  aria-pressed={draft.channelKey === channel.channelKey && draft.attemptId === attempt.attemptId}
-                                >
-                                  选择
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : <p className="mt-2 text-[12px] text-ink-tertiary">这条通道还没有真实提交尝试。</p>}
+              <div className="flex flex-wrap items-start gap-4">
+                <div className="min-w-36 text-[12px]" data-testid="reconcile-cost">
+                  <p className="text-ink-tertiary">费用状态</p>
+                  <p className="mt-0.5 text-ink">{display.costLabel}</p>
+                  {display.succeeded && display.costNeedsCheck ? (
+                    <p className="mt-1 text-ink-tertiary">生成成功与费用核实分开判断。</p>
+                  ) : null}
                 </div>
-              ))}
-            </div>
-
-            <div className="mt-4 rounded-[10px] bg-group p-4">
-              <GroupHeading>核对动作</GroupHeading>
-              <div className="mt-2 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <label className="text-[12px] text-ink-secondary">
-                  目标尝试
-                  <select
-                    className="input-field mt-1 w-full"
-                    value={`${draft.channelKey}\u0000${draft.attemptId}`}
-                    onChange={(event) => {
-                      const [channelKey, attemptId] = event.target.value.split('\u0000');
-                      selectAttempt(task, channelKey, attemptId);
-                    }}
-                  >
-                    {task.channels.flatMap((channel) => channel.attempts.map((attempt) => (
-                      <option key={attempt.attemptId} value={`${channel.channelKey}\u0000${attempt.attemptId}`}>
-                        {channel.channelKey} · {attempt.attemptId.slice(0, 8)} · {label(attempt.terminalState ?? attempt.submissionState)}
-                      </option>
-                    )))}
-                  </select>
-                </label>
-                <label className="text-[12px] text-ink-secondary">
-                  动作
-                  <select
-                    className="input-field mt-1 w-full"
-                    value={draft.action}
-                    onChange={(event) => patchDraft(task.mediaTaskId, {
-                      action: event.target.value as UnifiedReconcileAction,
-                    })}
-                  >
-                    {Object.entries(ACTION_LABELS).map(([value, text]) => (
-                      <option key={value} value={value}>{text}</option>
-                    ))}
-                  </select>
-                </label>
-                {needsRemoteId(draft.action) ? (
-                  <label className="text-[12px] text-ink-secondary">
-                    远端任务 ID
-                    <input
-                      className="input-field mt-1 w-full"
-                      value={draft.remoteId}
-                      onChange={(event) => patchDraft(task.mediaTaskId, { remoteId: event.target.value })}
-                      placeholder="只填有账单或后台证据的 ID"
-                    />
-                  </label>
-                ) : null}
-                {needsCost(draft.action) ? (
-                  <label className="text-[12px] text-ink-secondary">
-                    已核账费用（元，可留空）
-                    <input
-                      className="input-field mt-1 w-full"
-                      inputMode="decimal"
-                      value={draft.actualCost}
-                      onChange={(event) => patchDraft(task.mediaTaskId, { actualCost: event.target.value })}
-                      placeholder="留空表示仍未核清"
-                    />
-                  </label>
-                ) : null}
-                {acceptsResultRef(draft.action) ? (
-                  <label className="text-[12px] text-ink-secondary">
-                    原结果地址（可选）
-                    <input
-                      className="input-field mt-1 w-full"
-                      value={draft.resultRef}
-                      onChange={(event) => patchDraft(task.mediaTaskId, { resultRef: event.target.value })}
-                      placeholder="已有成品地址时填；只在原通道补下载"
-                    />
-                  </label>
-                ) : null}
-              </div>
-              <label className="mt-3 block text-[12px] text-ink-secondary">
-                核对依据（必填，会写审计）
-                <textarea
-                  className="input-field mt-1 min-h-20 w-full resize-y"
-                  value={draft.evidence}
-                  onChange={(event) => patchDraft(task.mediaTaskId, { evidence: event.target.value })}
-                  placeholder="例如：供应商后台任务号、账单记录编号、人工核对时间；不要把密钥或完整签名 URL 写进来。"
-                />
-              </label>
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                <p className="max-w-2xl text-[11px] leading-5 text-ink-tertiary">
-                  补 ID 只续查原通道；确认未创建/失败才可能使用剩余备用通道；取消任务只收尾，不重启备用或下游。
-                </p>
                 <button
                   type="button"
-                  className="cap cap-primary"
-                  disabled={
-                    targetBusy
-                    || !selectedChannel
-                    || !draft.attemptId
-                    || draft.evidence.trim().length < 4
-                    || (needsRemoteId(draft.action) && !draft.remoteId.trim())
-                  }
-                  onClick={() => void submit(task)}
+                  className="cap"
+                  aria-expanded={detailsOpen}
+                  data-testid="reconcile-details-toggle"
+                  onClick={() => toggleDetails(task.mediaTaskId)}
                 >
-                  {targetBusy ? '处理中…' : '保存核对结果'}
+                  {detailsOpen ? '收起核对详情' : '核对详情'}
                 </button>
               </div>
             </div>
+
+            <p
+              className={`mt-3 rounded-[9px] px-3 py-2 text-[12px] leading-5 ${
+                display.reasons.length > 0 ? 'bg-warn-tint text-warn' : 'bg-group text-ink-secondary'
+              }`}
+              data-testid="reconcile-reason"
+            >
+              {display.reasons.length > 0 ? `待核对原因：${display.reasonText}` : display.reasonText}
+            </p>
+
+            {detailsOpen ? (
+              <section className="mt-4 rounded-[10px] bg-group p-4" data-testid="reconcile-details" aria-label="核对详情">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <GroupHeading>核对详情</GroupHeading>
+                  <button
+                    type="button"
+                    className="cap"
+                    aria-expanded={formOpen}
+                    data-testid="reconcile-form-toggle"
+                    onClick={() => toggleForm(task.mediaTaskId)}
+                  >
+                    {formOpen ? '收起人工核对' : '人工核对'}
+                  </button>
+                </div>
+
+                <div className="mt-2 grid gap-x-6 gap-y-2 text-[12px] sm:grid-cols-2 xl:grid-cols-4">
+                  <span className="text-ink-tertiary">最近检查</span>
+                  <span className="text-ink-secondary">{time(task.lastCheckedAt)}</span>
+                  <span className="text-ink-tertiary">已占名额</span>
+                  <span className="text-ink-secondary tnum">{task.occupancy.heldConcurrency}</span>
+                  <span className="text-ink-tertiary">待核占用</span>
+                  <span className="text-ink-secondary tnum">{money(task.occupancy.heldCostMinor)}</span>
+                  <span className="text-ink-tertiary">已估 / 已结</span>
+                  <span className="text-ink-secondary tnum">{money(task.cost.reservedMinor)} / {money(task.cost.actualMinor)}</span>
+                  {task.businessError ? (
+                    <>
+                      <span className="text-ink-tertiary">业务错误</span>
+                      <span className="break-all text-ink-secondary">{task.businessError}</span>
+                    </>
+                  ) : null}
+                  {task.lastAction ? (
+                    <>
+                      <span className="text-ink-tertiary">上次核对</span>
+                      <span className="text-ink-secondary">
+                        {ACTION_LABELS[task.lastAction.action]} · {task.lastAction.actorUserId} · {time(task.lastAction.createdAt)}
+                      </span>
+                    </>
+                  ) : null}
+                </div>
+
+                <p className="mt-2 break-all font-mono text-[11px] leading-5 text-ink-tertiary">
+                  任务 {task.taskId} · 统一任务 {task.mediaTaskId} · 规则 {task.ruleVersion} · 版本 {task.reconcileVersion}
+                </p>
+
+                <div className="mt-3 space-y-3">
+                  {task.channels.map((channel) => {
+                    const described = display.channels.find((item) => item.channelKey === channel.channelKey);
+                    return (
+                      <div key={channel.channelKey} className="rounded-[10px] border border-hairline p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-[13px] font-medium text-ink">
+                              {described?.label ?? channel.channelKey}
+                            </span>
+                            <Tag tone={described?.standbyUnsubmitted ? 'idle' : toneFor(channel.state)}>
+                              <StatusDot tone={described?.standbyUnsubmitted ? 'idle' : toneFor(channel.state)} />
+                              {described?.stateLabel ?? label(channel.state)}
+                            </Tag>
+                            {channel.operationStatus ? (
+                              <span className="text-[11px] text-ink-tertiary">操作 {label(channel.operationStatus)}</span>
+                            ) : null}
+                            {!described?.standbyUnsubmitted && channel.waitReason ? (
+                              <span className="text-[11px] text-warn">等待：{label(channel.waitReason)}</span>
+                            ) : null}
+                          </div>
+                          <span className="break-all font-mono text-[10px] text-ink-tertiary">{channel.providerModel}</span>
+                        </div>
+                        {described?.note ? (
+                          <p className="mt-1 text-[12px] leading-5 text-ink-secondary">{described.note}</p>
+                        ) : null}
+                        <div className="mt-2 grid gap-2 text-[11px] text-ink-secondary md:grid-cols-4">
+                          <span className="break-all">远端：{channel.remoteId ?? '未记录'}</span>
+                          <span>尝试：{channel.attempts.length}</span>
+                          <span>占用：{channel.heldConcurrency} 名额 / {money(channel.heldCostMinor)}</span>
+                          <span>检查：{time(channel.lastCheckedAt)}</span>
+                        </div>
+                        {channel.attempts.length > 0 ? (
+                          <div className="mt-2 overflow-x-auto">
+                            <table className="data-table min-w-[820px]">
+                              <thead><tr><th>尝试</th><th>提交 / 终态</th><th>远端 ID</th><th>费用</th><th>错误</th><th>核对</th></tr></thead>
+                              <tbody>
+                                {channel.attempts.map((attempt) => (
+                                  <tr key={attempt.attemptId}>
+                                    <td className="font-mono text-[11px]">{attempt.attemptId.slice(0, 8)} · #{attempt.transportSeq}</td>
+                                    <td>{label(attempt.submissionState)} / {label(attempt.terminalState)}</td>
+                                    <td className="max-w-44 break-all font-mono text-[11px]">{attempt.remoteId ?? attempt.receiptRemoteId ?? '—'}</td>
+                                    <td className="tnum">{money(attempt.actualMinor ?? attempt.reservedMinor)}<span className="ml-1 text-ink-tertiary">{label(attempt.costStatus)}</span></td>
+                                    <td className="max-w-44 break-all text-[11px]">{attempt.errorCode ?? '—'}</td>
+                                    <td>
+                                      <button
+                                        type="button"
+                                        className="cap"
+                                        onClick={() => selectAttempt(task, channel.channelKey, attempt.attemptId)}
+                                        aria-pressed={draft.channelKey === channel.channelKey && draft.attemptId === attempt.attemptId}
+                                      >
+                                        选择
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : <p className="mt-2 text-[12px] text-ink-tertiary">这条通道还没有真实提交尝试。</p>}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {formOpen ? (
+                  <section className="mt-3 rounded-[10px] border border-hairline bg-card p-4" data-testid="reconcile-form" aria-label="人工核对">
+                    <GroupHeading>人工核对</GroupHeading>
+                    <p className="mt-1 text-[12px] leading-5 text-ink-secondary">
+                      证据必填并写入审计；提交会带当前版本号与幂等键，重复点击不会重复生效。
+                    </p>
+                    <div className="mt-2 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      <label className="text-[12px] text-ink-secondary">
+                        目标尝试
+                        <select
+                          className="input-field mt-1 w-full"
+                          value={`${draft.channelKey}\u0000${draft.attemptId}`}
+                          onChange={(event) => {
+                            const [channelKey, attemptId] = event.target.value.split('\u0000');
+                            selectAttempt(task, channelKey, attemptId);
+                          }}
+                        >
+                          {task.channels.flatMap((channel) => channel.attempts.map((attempt) => (
+                            <option key={attempt.attemptId} value={`${channel.channelKey}\u0000${attempt.attemptId}`}>
+                              {channel.channelKey} · {attempt.attemptId.slice(0, 8)} · {label(attempt.terminalState ?? attempt.submissionState)}
+                            </option>
+                          )))}
+                        </select>
+                      </label>
+                      <label className="text-[12px] text-ink-secondary">
+                        动作
+                        <select
+                          className="input-field mt-1 w-full"
+                          value={draft.action}
+                          onChange={(event) => patchDraft(task.mediaTaskId, {
+                            action: event.target.value as UnifiedReconcileAction,
+                          })}
+                        >
+                          {Object.entries(ACTION_LABELS).map(([value, text]) => (
+                            <option key={value} value={value}>{text}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {needsRemoteId(draft.action) ? (
+                        <label className="text-[12px] text-ink-secondary">
+                          远端任务 ID
+                          <input
+                            className="input-field mt-1 w-full"
+                            value={draft.remoteId}
+                            onChange={(event) => patchDraft(task.mediaTaskId, { remoteId: event.target.value })}
+                            placeholder="只填有账单或后台证据的 ID"
+                          />
+                        </label>
+                      ) : null}
+                      {needsCost(draft.action) ? (
+                        <label className="text-[12px] text-ink-secondary">
+                          已核账费用（元，可留空）
+                          <input
+                            className="input-field mt-1 w-full"
+                            inputMode="decimal"
+                            value={draft.actualCost}
+                            onChange={(event) => patchDraft(task.mediaTaskId, { actualCost: event.target.value })}
+                            placeholder="留空表示仍未核清"
+                          />
+                        </label>
+                      ) : null}
+                      {acceptsResultRef(draft.action) ? (
+                        <label className="text-[12px] text-ink-secondary">
+                          原结果地址（可选）
+                          <input
+                            className="input-field mt-1 w-full"
+                            value={draft.resultRef}
+                            onChange={(event) => patchDraft(task.mediaTaskId, { resultRef: event.target.value })}
+                            placeholder="已有成品地址时填；只在原通道补下载"
+                          />
+                        </label>
+                      ) : null}
+                    </div>
+                    <label className="mt-3 block text-[12px] text-ink-secondary">
+                      核对依据（必填，会写审计）
+                      <textarea
+                        className="input-field mt-1 min-h-20 w-full resize-y"
+                        value={draft.evidence}
+                        onChange={(event) => patchDraft(task.mediaTaskId, { evidence: event.target.value })}
+                        placeholder="例如：供应商后台任务号、账单记录编号、人工核对时间；不要把密钥或完整签名 URL 写进来。"
+                      />
+                    </label>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                      <p className="max-w-2xl text-[11px] leading-5 text-ink-tertiary">
+                        补 ID 只续查原通道；确认未创建/失败才可能使用剩余备用通道；取消任务只收尾，不重启备用或下游。
+                      </p>
+                      <button
+                        type="button"
+                        className="cap cap-primary"
+                        disabled={
+                          targetBusy
+                          || !selectedChannel
+                          || !draft.attemptId
+                          || draft.evidence.trim().length < 4
+                          || (needsRemoteId(draft.action) && !draft.remoteId.trim())
+                        }
+                        onClick={() => void submit(task)}
+                      >
+                        {targetBusy ? '处理中…' : '保存核对结果'}
+                      </button>
+                    </div>
+                  </section>
+                ) : null}
+              </section>
+            ) : null}
           </section>
         );
       })}

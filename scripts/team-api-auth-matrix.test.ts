@@ -173,6 +173,7 @@ const canvasCopiesRoute = await import('../app/api/canvas/[id]/copies/route.ts')
 const scriptGenerationRoute = await import('../app/api/projects/[id]/script-generation/route.ts');
 const scriptCurrentRoute = await import('../app/api/projects/[id]/script-studio/scripts/[scriptId]/current/route.ts');
 const viralEntriesRoute = await import('../app/api/script-studio/viral-templates/entries/route.ts');
+const finalVideoRoute = await import('../app/api/final-edit-jobs/[id]/video/route.ts');
 const { stopCanvasScheduler } = await import('../lib/creative-canvas/bootstrap.ts');
 
 const get = (url: string, cookie?: string) => new Request(url, { headers: cookie ? { Cookie: cookie } : {} });
@@ -217,6 +218,42 @@ insertUsage.run('usage-b', 'usage-b', 'project-b', 'job-b', userB.principal.user
 insertUsage.run('usage-b-legacy', 'usage-b-legacy', 'project-b', 'job-b', '');
 
 try {
+  // 旧包装成片首次预览：经真实会话、任务授权、补登及 Range 文件响应完整走一遍。
+  const { initFinalEditSchema } = await import('../lib/final-edit/schema.ts');
+  initFinalEditSchema(db);
+  const packagedPath = 'projects/project-a/packaged.mp4';
+  fs.mkdirSync(path.join(fixtureRoot, 'storage', 'projects', 'project-a'), { recursive: true });
+  fs.writeFileSync(path.join(fixtureRoot, 'storage', packagedPath), 'packaged-video-bytes');
+  db.prepare(`INSERT INTO final_edit_jobs
+    (id, projectId, kind, status, phase, requestKey, inputSnapshotJson, outputJson, createdAt)
+    VALUES ('packaged-job', 'project-a', 'packaging', 'succeeded', 'succeeded', 'packaged-job', '{}', ?, '2026-11-11')`)
+    .run(JSON.stringify({ publishedVideoRelativePath: packagedPath, videoFilename: 'packaged.mp4' }));
+  registerInheritedScope(db, {
+    resourceType: 'final_job', resourceId: 'packaged-job', parent: { resourceType: 'project', resourceId: 'project-a' },
+  });
+  db.prepare(`INSERT INTO project_artifacts
+    (id, projectId, kind, displayName, relativePath, mimeType, sourceJobId, createdAt)
+    VALUES ('packaged-artifact', 'project-a', 'final_video', 'packaged.mp4', ?, 'video/mp4', 'packaged-job', '2026-11-11')`)
+    .run(packagedPath);
+  const packagedUrl = 'https://studio.example.test/api/final-edit-jobs/packaged-job/video';
+  const readyFilesBefore = db.prepare('SELECT COUNT(*) AS n FROM team_files').get() as { n: number };
+  assert.equal((await finalVideoRoute.GET(get(packagedUrl), params('packaged-job'))).status, 401);
+  assert.equal((await finalVideoRoute.GET(get(packagedUrl, userB.cookie), params('packaged-job'))).status, 403);
+  const filesAfterDenied = db.prepare('SELECT COUNT(*) AS n FROM team_files').get() as { n: number };
+  assert.equal(filesAfterDenied.n, readyFilesBefore.n, '未授权的读取不能触发补登');
+  const packagedResponse = await finalVideoRoute.GET(new Request(packagedUrl, {
+    headers: { Cookie: userA.cookie, Range: 'bytes=0-7' },
+  }), params('packaged-job'));
+  assert.equal(packagedResponse.status, 206, await packagedResponse.clone().text());
+  assert.equal(packagedResponse.headers.get('Content-Type'), 'video/mp4');
+  assert.equal(packagedResponse.headers.get('Content-Range'), 'bytes 0-7/20');
+  assert.equal(await packagedResponse.text(), 'packaged');
+  const download = await finalVideoRoute.GET(get(`${packagedUrl}?download=1`, userA.cookie), params('packaged-job'));
+  assert.equal(download.status, 200);
+  assert.match(download.headers.get('Content-Disposition') ?? '', /attachment.*packaged\.mp4/);
+  assert.equal(await download.text(), 'packaged-video-bytes');
+  assert.equal((await finalVideoRoute.GET(get(packagedUrl, userB.cookie), params('packaged-job'))).status, 403);
+
   const fontsRoute = await import('../app/api/system-fonts/route.ts');
   const fontFileRoute = await import('../app/api/system-fonts/[id]/file/route.ts');
   const fontDirectory = path.join(fixtureRoot, 'storage', 'fonts');

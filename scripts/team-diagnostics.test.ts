@@ -175,8 +175,10 @@ try {
   db.prepare('UPDATE execution_operations SET clientVersion = ?, serverReleaseId = ?, configVersion = ? WHERE id = ?')
     .run(maliciousMetadata.clientVersion, maliciousMetadata.serverReleaseId, maliciousMetadata.configVersion, enqueued.operation.id);
   const associatedMalicious = recordTeamError(db, {
-    actorUserId: 'alice', module: 'images', attemptId: intent.attemptId, stage: 'remote_poll', code: 'poll_failed',
+    actorUserId: 'alice', module: 'images', attemptId: intent.attemptId, stage: 'remote_poll', code: 'provider_poll_failed',
   });
+  assert.equal(associatedMalicious.outcome, 'final', '原 attempt 已失败时不能把查询诊断当作恢复');
+  assert.equal(listTeamErrors(db, aliceView, { actionableOnly: true, errorId: associatedMalicious.errorId }).items.length, 1);
   assert.equal(associatedMalicious.clientVersion, null, '执行关联中的异常客户端版本也必须在出口清洗');
   assert.equal(associatedMalicious.serverReleaseId, null);
   assert.equal(associatedMalicious.configVersion, null);

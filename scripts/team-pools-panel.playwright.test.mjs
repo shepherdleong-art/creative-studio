@@ -280,21 +280,75 @@ async function runBrowser(name, launcher, credentials) {
       assert.ok(rowCount < beforeState.requirements.length, '不再按模型拆行：行数必须少于模型数');
       run.assertions.push(`账号行数 ${rowCount} = 名额池行数 ${expectedRows}；其中已配置池 ${beforeState.pools.length} 个，模型 ${beforeState.requirements.length} 条`);
 
-      // Image 2 拥堵阈值与名额池同一管理员页；保存后服务端持久，员工不能覆盖。
-      const congestionInput = page.getByLabel('Image 2 拥堵分流阈值（秒）', { exact: true });
+      // Image 2 排队等待时间与名额池同一管理员页；保存后服务端持久，员工不能覆盖。
+      // 02 号票改名：区块叫「模型通道分流」，字段叫「Image 2 排队等待时间」（单位秒），
+      // 说明必须写清「七牛名额满时先等待；腾讯可用才转交；只影响 Image 2 提交前排队，不是生成超时」。
+      const laneSection = page.getByRole('region', { name: '模型通道分流' });
+      await laneSection.waitFor({ timeout: 30_000 });
+      assert.match(await laneSection.innerText(), /Image 2 排队等待时间/);
+      assert.match(await laneSection.innerText(), /七牛名额满时先等待；达到设定时间仍满，且腾讯通道可用时，才转交腾讯。/);
+      assert.match(await laneSection.innerText(), /仅适用于 Image 2 的提交前排队，不是生成超时。/);
+      const congestionInput = laneSection.getByLabel('Image 2 排队等待时间（秒）', { exact: true });
       await congestionInput.waitFor({ timeout: 30_000 });
       assert.equal(await congestionInput.inputValue(), String(beforeState.unifiedImageCongestion.imageCongestionThresholdSec));
-      const nextCongestion = beforeState.unifiedImageCongestion.imageCongestionThresholdSec === 7 ? 8 : 7;
+      const saveCongestion = laneSection.getByRole('button', { name: '保存等待时间', exact: true });
+
+      // 负数、小数、超范围都是客户端校验拦下：提示改名，且不会发保存请求。
+      for (const invalid of ['-1', '1.5', '3601']) {
+        await congestionInput.fill(invalid);
+        await saveCongestion.click();
+        await page.getByText('Image 2 排队等待时间必须是 0–3600 的整数秒。', { exact: true }).waitFor({ timeout: 30_000 });
+        const unchanged = (await jsonRequest(credentials.adminApi, '/api/team/pools', {}, 200)).body;
+        assert.equal(
+          unchanged.unifiedImageCongestion.imageCongestionThresholdSec,
+          beforeState.unifiedImageCongestion.imageCongestionThresholdSec,
+          `非法值 ${invalid} 不得被保存`,
+        );
+      }
+      run.assertions.push('Image 2 排队等待时间：负数 / 小数 / 超范围由客户端拦下且不发保存请求');
+
+      // 0 与 3600 是合法边界：0 = 不额外等待；3600 = 最多等一小时。保存后服务端必须是原字段。
+      for (const boundary of [0, 3600]) {
+        await congestionInput.fill(String(boundary));
+        await saveCongestion.click();
+        await page.getByText(new RegExp(`Image 2 排队等待时间已保存为 ${boundary} 秒`)).waitFor({ timeout: 60_000 });
+        const savedBoundary = (await jsonRequest(credentials.adminApi, '/api/team/pools', {}, 200)).body;
+        assert.equal(
+          savedBoundary.unifiedImageCongestion.imageCongestionThresholdSec,
+          boundary,
+          `边界值 ${boundary} 必须被接受并保存`,
+        );
+      }
+      run.assertions.push('Image 2 排队等待时间：0 与 3600 两个边界值合法且服务端生效');
+
+      const nextCongestion = beforeState.unifiedImageCongestion.imageCongestionThresholdSec === 10 ? 30 : 10;
       await congestionInput.fill(String(nextCongestion));
-      await page.getByRole('button', { name: '保存阈值', exact: true }).click();
-      await page.getByText(new RegExp(`Image 2 拥堵分流阈值已保存为 ${nextCongestion} 秒`)).waitFor({ timeout: 60_000 });
+      const congestionPost = page.waitForResponse((response) => {
+        if (new URL(response.url()).pathname !== '/api/team/pools') return false;
+        if (response.request().method() !== 'POST') return false;
+        return (response.request().postData() ?? '').includes('unifiedImageCongestion');
+      });
+      await saveCongestion.click();
+      // 保存 payload 的字段名不变：继续写 imageCongestionThresholdSec + expectedVersion。
+      const congestionPayload = (await congestionPost).request().postData() ?? '';
+      assert.match(congestionPayload, /"imageCongestionThresholdSec":\d+/);
+      assert.match(congestionPayload, /"expectedVersion":\d+/);
+      await page.getByText(new RegExp(`Image 2 排队等待时间已保存为 ${nextCongestion} 秒`)).waitFor({ timeout: 60_000 });
       const settingsState = (await jsonRequest(credentials.adminApi, '/api/team/pools', {}, 200)).body;
       assert.equal(
         settingsState.unifiedImageCongestion.imageCongestionThresholdSec,
         nextCongestion,
-        '管理员修改的 Image 2 拥堵阈值必须持久化',
+        '管理员修改的 Image 2 排队等待时间必须持久化',
       );
-      run.assertions.push('管理员在「模型与名额」保存 Image 2 拥堵阈值，服务端持久生效');
+      // 已保存的值要保留：刷新后输入框仍是服务器上的值，不会回到默认 30。
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 240_000 });
+      await laneSection.waitFor({ timeout: 60_000 });
+      assert.equal(
+        await laneSection.getByLabel('Image 2 排队等待时间（秒）', { exact: true }).inputValue(),
+        String(nextCongestion),
+        '刷新后已保存的等待时间必须保留',
+      );
+      run.assertions.push(`管理员保存 Image 2 排队等待时间=${nextCongestion} 秒（payload 字段不变），刷新后保留`);
 
       // 已配置的那一行（页面按 `data-pool-key` 认池，不按账号名拼法）。
       const companyRow = page.locator('[data-testid="pool-row"][data-pool-key="media:company"]').first();

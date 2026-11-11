@@ -114,6 +114,15 @@ const sceneReferences = [
 ];
 let queueStatus = 'idle';
 let groupGenerationState = 'normal';
+// 票 01：第 1 镜保留 3 个有效候选，服务端选用的 asset 会随 PATCH 变化（刷新后必须保持）。
+let shot1SelectedImageId = 'shot-1-v3';
+// 设成字符串时，下一次切换版本的 PATCH 返回 500，用来验「失败不假切换」。
+let selectionPatchFailure = null;
+const SHOT1_CANDIDATES = [
+  { shotId: 'shot-1', jobId: 'shot-job-1a', imageAssetId: 'shot-1-v1', createdAt: '2026-11-01T00:00:00Z', imageUrl: '/api/images/outputs/shot-1-v1.png', jobStatus: 'succeeded', jobPrompt: '第 1 镜：旧版' },
+  { shotId: 'shot-1', jobId: 'shot-job-1b', imageAssetId: 'shot-1-v2', createdAt: '2026-11-02T00:00:00Z', imageUrl: '/api/images/outputs/shot-1-v2.png', jobStatus: 'succeeded', jobPrompt: '第 1 镜：过渡版' },
+  { shotId: 'shot-1', jobId: 'shot-job-1', imageAssetId: 'shot-1-v3', createdAt: '2026-11-03T00:00:00Z', imageUrl: '/api/images/outputs/shot-1-v3.png', jobStatus: 'succeeded', jobPrompt: '第 1 镜：产品全景' },
+];
 
 function imageAsset(usage, filename) {
   return {
@@ -145,6 +154,7 @@ function seedJobs() {
 function shotDetail() {
   const a = uploads.find((item) => item.filename === NAMES.a);
   const b = uploads.find((item) => item.filename === NAMES.b);
+  const c = uploads.find((item) => item.filename === NAMES.c);
   if (['ungenerated', 'pending', 'needs_check', 'blocked'].includes(groupGenerationState)) {
     return {
       status: 'draft',
@@ -164,13 +174,11 @@ function shotDetail() {
       {
         id: 'shot-1', indexNum: 1,
         sourceImageId: a.id, sourceFilename: NAMES.a, sourceImageUrl: a.imageUrl,
-        latestGeneratedImageId: 'shot-1-v2', generatedImageUrl: '/api/images/outputs/shot-1-v2.png',
+        latestGeneratedImageId: shot1SelectedImageId,
+        generatedImageUrl: `/api/images/outputs/${shot1SelectedImageId}.png`,
         latestJobId: 'shot-job-1', jobStatus: 'succeeded', jobPrompt: '第 1 镜：产品全景', reviewMark: '',
         referenceImageIds: '["scene-out-1"]',
-        resultCandidates: [
-          { shotId: 'shot-1', jobId: 'shot-job-1a', imageAssetId: 'shot-1-v1', createdAt: '2026-11-01T00:00:00Z', imageUrl: '/api/images/outputs/shot-1-v1.png', jobStatus: 'succeeded', jobPrompt: '第 1 镜：旧版' },
-          { shotId: 'shot-1', jobId: 'shot-job-1', imageAssetId: 'shot-1-v2', createdAt: '2026-11-02T00:00:00Z', imageUrl: '/api/images/outputs/shot-1-v2.png', jobStatus: 'succeeded', jobPrompt: '第 1 镜：产品全景' },
-        ],
+        resultCandidates: SHOT1_CANDIDATES,
       },
       {
         id: 'shot-2', indexNum: 2,
@@ -178,6 +186,16 @@ function shotDetail() {
         latestJobId: 'shot-job-2', jobStatus: groupGenerationState === 'normal' ? 'failed' : groupGenerationState === 'running' ? 'running' : 'succeeded',
         // 失败的分镜任务也记着自己用的是哪个供应商：右栏换供应商后点「重试」必须按新供应商重做。
         providerId: 'provider-1', jobPrompt: '第 2 镜：细节', resultCandidates: [],
+      },
+      {
+        // 票 01：只有一个候选的分镜显示中性 V1，且不出现可用的切版按钮。
+        id: 'shot-3', indexNum: 3,
+        sourceImageId: c.id, sourceFilename: NAMES.c, sourceImageUrl: c.imageUrl,
+        latestGeneratedImageId: 'shot-3-v1', generatedImageUrl: '/api/images/outputs/shot-3-v1.png',
+        latestJobId: 'shot-job-3', jobStatus: 'succeeded', jobPrompt: '第 3 镜：细节', reviewMark: 'available',
+        resultCandidates: [
+          { shotId: 'shot-3', jobId: 'shot-job-3', imageAssetId: 'shot-3-v1', createdAt: '2026-11-01T00:00:00Z', imageUrl: '/api/images/outputs/shot-3-v1.png', jobStatus: 'succeeded', jobPrompt: '第 3 镜：细节' },
+        ],
       },
     ],
     sceneRefName: '验收场景参考',
@@ -227,6 +245,15 @@ async function installRoutes(page) {
     }
     if (pathname.startsWith('/api/shot-sets/') && method === 'PATCH') {
       selectionPatches.push(body);
+      if (body?.selectedImageAssetId) {
+        if (selectionPatchFailure) {
+          const failure = selectionPatchFailure;
+          selectionPatchFailure = null;
+          return json({ error: failure }, 500);
+        }
+        // 服务端记住选用：刷新后 GET 必须返回这个 asset，而不是前端临时状态。
+        if (body.shotId === 'shot-1') shot1SelectedImageId = body.selectedImageAssetId;
+      }
       return json({ success: true });
     }
     if (pathname.startsWith('/api/shot-sets/') && method === 'DELETE') {
@@ -320,7 +347,8 @@ try {
       await dialog.waitFor({state:'detached'});
       assert.ok(await second.evaluate(el=>el===document.activeElement),'关闭预览后焦点回到图片');
       const mark=await page.getByRole('button',{name:'可用',exact:true}).first().boundingBox();
-      assert.ok(mark.y+mark.height<=height+1,'图片下方的标记操作应在当前窗口内可见');
+      const actionsBox=await page.locator('[data-testid="workbench-storyboard"] [class*="actions"]').first().boundingBox().catch(()=>null);
+      assert.ok(mark.y+mark.height<=height+1,`图片下方的标记操作应在当前窗口内可见（${label} ${width}x${height}，mark.y=${mark.y} mark.height=${mark.height}，actions=${JSON.stringify(actionsBox)}）`);
       const evidence=path.resolve('outputs/04-测试与验收/2026-11-09-preview-fixes');
       fs.mkdirSync(evidence,{recursive:true});
       await page.screenshot({path:path.join(evidence,`${label}-${width}.png`)});
@@ -406,21 +434,134 @@ try {
   // 默认原图与结果并排
   await page.getByAltText('原图', { exact: true }).first().waitFor({ timeout: 30_000 });
   await page.getByText('结果', { exact: true }).first().waitFor({ timeout: 30_000 });
-  assert.match(await page.getByTestId('shot-version').innerText(), /第 \d 版（共 \d 版）/, '结果必须显示「第 N 版（共 M 版）」');
+  // ── 票 01：版本标记（3 个有效候选，服务端当前选用 V3）──
+  const versionBar = page.getByTestId('shot-version');
+  await versionBar.waitFor({ timeout: 30_000 });
+  assert.match(await versionBar.innerText(), /当前使用 V3 · 共 3 版/, '大图必须显示「当前使用 V3 · 共 3 版」');
+  assert.equal(await page.getByTestId('shot-version-latest').count(), 0, '已是最新版时不再另示「最新」');
+  // 屏幕阅读器名称包含分镜编号、当前版本、总版本；缩略图与网格共用同一份版本计算。
+  assert.equal(
+    await page.getByRole('button', { name: '分镜 1，当前使用第 3 版，共 3 版', exact: true }).count(),
+    1,
+    '缩略图的屏幕阅读器名称必须包含分镜编号、当前版本、总版本',
+  );
+  assert.equal(await page.getByTestId('shot-thumb-version').first().innerText(), 'V3', '缩略图必须显示 V3');
+  assert.equal(await page.getByTestId('shot-thumb-version').first().getAttribute('data-total'), '3');
   await checkComparison('原图','结果','storyboard');
+
+  // 多版标签用强调色淡底，单版标签用中性样式；未生成的分镜不显示 V0。
+  const evidenceDir = path.resolve('outputs/2026-11-11-工作台版本标记与团队列表易用性/evidence/01/browser');
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  const captureVersionEvidence = async (label) => {
+    for (const [width, height] of [[1536, 864], [1280, 720], [1024, 720]]) {
+      await page.setViewportSize({ width, height });
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await page.screenshot({ path: path.join(evidenceDir, `${label}-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1536, height: 900 });
+  };
+  await captureVersionEvidence('compare-current-v3');
+
+  // 「全部」网格：与缩略图、大图同一份版本号。
+  await page.getByRole('group', { name: '分镜视图' }).getByRole('button', { name: '全部', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="workbench-storyboard"]')?.getAttribute('data-view') === 'grid', null, { timeout: 10_000 });
+  const gridVersions = page.getByTestId('shot-grid-version');
+  assert.equal(await gridVersions.count(), 2, '只有多版与单版分镜显示 V 标签；未生成的分镜不显示 V0');
+  assert.equal(await gridVersions.first().innerText(), 'V3', '网格里第 1 镜与缩略图、大图一致显示 V3');
+  assert.equal(await gridVersions.first().getAttribute('data-total'), '3');
+  assert.equal(await gridVersions.nth(1).innerText(), 'V1', '只有一个候选的分镜显示 V1');
+  assert.equal(await gridVersions.nth(1).getAttribute('data-total'), '1');
+  assert.equal(await page.getByText('开场', { exact: true }).count(), 1, '网格里开场标记仍保留');
+  assert.ok(await page.getByRole('button', { name: /^分镜 3，/ }).locator('small').innerText().then((value) => value.includes('可用')), '网格里审片标记仍能读出');
+  assert.equal(
+    await page.getByRole('button', { name: '分镜 1，当前使用第 3 版，共 3 版', exact: true }).count(),
+    1,
+    '网格按钮的屏幕阅读器名称与缩略图使用同一规则',
+  );
+  const multiTagBg = await gridVersions.first().evaluate((element) => getComputedStyle(element).backgroundColor);
+  const singleTagBg = await gridVersions.nth(1).evaluate((element) => getComputedStyle(element).backgroundColor);
+  assert.notEqual(multiTagBg, singleTagBg, '多版标签用强调色淡底，单版标签用中性样式，不能只靠版本数字区分');
+  await captureVersionEvidence('grid-mixed-versions');
+  await page.getByRole('group', { name: '分镜视图' }).getByRole('button', { name: '对照原图', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="workbench-storyboard"]')?.getAttribute('data-view') === 'compare', null, { timeout: 10_000 });
+
+  // 单版：大图不出现可用的切版按钮，版本标签中性。
+  await page.getByRole('button', { name: '分镜 3，当前使用第 1 版，共 1 版', exact: true }).click();
+  await page.getByTestId('shot-version-summary').filter({ hasText: '当前使用 V1 · 共 1 版' }).waitFor({ timeout: 10_000 });
+  assert.equal(await page.getByRole('button', { name: '使用上一版' }).count(), 0, '只有一版时不出现可用的切版按钮');
+  assert.equal(await page.getByRole('button', { name: '使用下一版' }).count(), 0);
+  assert.equal(await page.getByTestId('shot-version-latest').count(), 0, '只有一版不提示最新');
+  const singleThumbTag = page.locator('[data-testid="shot-thumb-version"][data-total="1"]').first();
+  assert.equal(await singleThumbTag.innerText(), 'V1');
+  assert.equal(await singleThumbTag.evaluate((element) => getComputedStyle(element).backgroundColor), singleTagBg, '同一套单版中性样式');
+  // 原有语义不能丢：绿点、开场标记、选中边框、审片标记都与版本标签同时可区分。
+  assert.ok(await page.locator('.status-dot-ok').count() >= 1, '成功分镜仍显示绿点');
+  assert.equal(await page.getByText('开场', { exact: true }).count(), 1, '开场标记仍保留');
+  assert.equal(
+    await page.locator('[aria-label="分镜缩略图"] [aria-current="true"]').count(),
+    1,
+    '缩略图仍只有一个选中边框',
+  );
+  assert.equal(await page.getByRole('button', { name: '可用', exact: true }).first().getAttribute('aria-pressed'), 'true', '审片标记「可用」仍能读出');
+  await page.getByRole('button', { name: '分镜 1，当前使用第 3 版，共 3 版', exact: true }).click();
 
   // 左右键切分镜
   await page.keyboard.press('ArrowRight');
   await page.getByText('这张没生成出来', { exact: false }).first().waitFor({ timeout: 10_000 });
   assert.equal(await page.getByRole('button', { name: '可用', exact: true }).first().isDisabled(), true, '失败分镜不能标可用');
+  assert.equal(await page.getByRole('button', { name: '分镜 2，暂无结果', exact: true }).count(), 1, '没有结果的分镜不出现 V0，无障碍名称说明暂无结果');
+  assert.equal(await page.getByTestId('shot-version').innerText().then((value) => value.includes('还没有结果')), true);
+  assert.ok(await page.locator('.status-dot-fail').count() >= 1, '失败分镜仍显示失败点');
   await page.getByRole('button', { name: '重试', exact: true }).first().waitFor({ timeout: 10_000 });
-  await page.getByRole('button', { name: '分镜 1', exact: true }).first().click();
+  await page.getByRole('button', { name: '分镜 1，当前使用第 3 版，共 3 版', exact: true }).first().click();
 
-  // 切历史版本：旧版保留（服务端记住选中）
-  await page.getByRole('button', { name: '上一版' }).click();
-  await page.waitForFunction(() => true, null, { timeout: 1_000 });
-  assert.equal(selectionPatches.some((patch) => patch.shotId === 'shot-1' && patch.selectedImageAssetId === 'shot-1-v1'), true, '切版本必须把选中的旧版写回分镜');
+  // ── 切历史版本：请求带正确 selectedImageAssetId，刷新后仍以服务端选用为准 ──
+  const versionSummary = page.getByTestId('shot-version-summary');
+  await page.getByRole('button', { name: '使用上一版' }).click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="shot-version-summary"]')?.textContent?.includes('当前使用 V2'), null, { timeout: 10_000 });
+  assert.equal(selectionPatches.at(-1)?.shotId, 'shot-1');
+  assert.equal(selectionPatches.at(-1)?.selectedImageAssetId, 'shot-1-v2', '切版本必须把上一版的 asset ID 写回分镜');
+  await page.getByTestId('shot-version-latest').waitFor({ timeout: 10_000 });
+  assert.match(await page.getByTestId('shot-version-latest').innerText(), /最新 V3/, '选用旧版时另示「最新 V3」');
+  assert.equal(await page.getByTestId('shot-thumb-version').first().innerText(), 'V2', '缩略图版本号跟着实际选用走');
+
+  // 键盘可切版：聚焦「使用上一版」按 Enter（不是只给鼠标用）。
+  const regenerationsBeforeVersionSwitch = regenerations.length;
+  const appliedScenesBeforeVersionSwitch = appliedScenes.length;
+  await page.getByRole('button', { name: '使用上一版' }).focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('[data-testid="shot-version-summary"]')?.textContent?.includes('当前使用 V1'), null, { timeout: 10_000 });
+  assert.equal(selectionPatches.at(-1)?.selectedImageAssetId, 'shot-1-v1');
+  assert.match(await page.getByTestId('shot-version-latest').innerText(), /最新 V3/);
+  assert.match(await page.getByTestId('shot-version').innerText(), /当前使用 V1 · 共 3 版/);
+  assert.equal(regenerations.length, regenerationsBeforeVersionSwitch, '切版本不能额外生成');
+  assert.equal(appliedScenes.length, appliedScenesBeforeVersionSwitch, '切版本不能重新提交生成任务');
   assert.equal(deletedShotSets.length, 0, '切版本不能删任何东西');
+  await captureVersionEvidence('compare-older-v1');
+
+  // 服务端拒绝切换：保留原选用版本与图片、给出可理解错误，不假装切换。
+  selectionPatchFailure = '切换版本失败：服务端暂时不可用';
+  const patchesBeforeFailure = selectionPatches.length;
+  await page.getByRole('button', { name: '使用下一版' }).click();
+  const versionAlert = page.getByRole('alert').filter({ hasText: '切换版本失败：服务端暂时不可用' });
+  await versionAlert.waitFor({ timeout: 10_000 });
+  assert.equal(selectionPatches.length, patchesBeforeFailure + 1, '失败时也只发这一次 PATCH，不重试风暴');
+  assert.equal((await versionSummary.innerText()).trim(), '当前使用 V1 · 共 3 版', 'PATCH 失败后必须保留服务端原来的选用版本');
+  assert.match(await page.getByTestId('shot-version-latest').innerText(), /最新 V3/, '失败后不能把旧版假装成最新版');
+
+  // 刷新后仍以服务端选用为准（V1）。
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByTestId('workbench-storyboard').waitFor({ timeout: 60_000 });
+  await page.getByTestId('shot-version-summary').filter({ hasText: '当前使用 V1 · 共 3 版' }).waitFor({ timeout: 30_000 });
+  assert.match(await page.getByTestId('shot-version-latest').innerText(), /最新 V3/, '刷新后仍是旧版，并继续提示最新版号');
+  assert.equal(shot1SelectedImageId, 'shot-1-v1', '刷新后的选用来自服务端持久化，不是前端临时状态');
+
+  // 服务端恢复后能重新成功切换，错误提示消失。
+  await page.getByRole('button', { name: '使用下一版' }).click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="shot-version-summary"]')?.textContent?.includes('当前使用 V2'), null, { timeout: 10_000 });
+  await versionAlert.waitFor({ state: 'detached', timeout: 5_000 }).catch(() => undefined);
+  assert.equal(await page.getByRole('alert').filter({ hasText: '切换版本失败' }).count(), 0, '切换成功后错误提示必须消失');
+  assert.equal(shot1SelectedImageId, 'shot-1-v2');
 
   // 改提示词重做：带这一张的提示词
   await page.getByRole('button', { name: /重新生成/ }).first().click();
@@ -440,7 +581,7 @@ try {
     try { check(); } catch (error) { contractViolations.push(`${label}：${error.message}`); }
   };
 
-  await page.getByRole('button', { name: '分镜 2', exact: true }).first().click();
+  await page.getByRole('button', { name: /^分镜 2，/ }).first().click();
   await page.getByText('这张没生成出来', { exact: false }).first().waitFor({ timeout: 10_000 });
   const storyboard = page.getByTestId('workbench-storyboard');
   const shotSettings = storyboard.getByRole('complementary', { name: '设置' });
@@ -525,8 +666,8 @@ try {
   });
 
   // 回到成功分镜 1：后面的切版本 / 参考图断言都基于 shot-1。
-  await page.getByRole('button', { name: '分镜 1', exact: true }).first().click();
-  await page.getByRole('button', { name: '上一版' }).waitFor({ timeout: 10_000 });
+  await page.getByRole('button', { name: /^分镜 1，/ }).first().click();
+  await page.getByRole('button', { name: '使用上一版' }).waitFor({ timeout: 10_000 });
 
   assert.deepEqual(contractViolations, [], `失败分镜重新生成相关的行为契约未满足：\n${contractViolations.join('\n')}`);
 
@@ -565,9 +706,9 @@ try {
     page.getByRole('button', { name: '重新生成这一张', exact: true }).click(),
   ]);
   assert.deepEqual(regenerations.at(-1)?.referenceImageIds, [], '主动清空必须发送空数组');
-  await page.getByRole('button', { name: '分镜 2', exact: true }).first().click();
+  await page.getByRole('button', { name: /^分镜 2，/ }).first().click();
   await page.getByRole('button', { name: '选择本张参考图（0）', exact: true }).waitFor();
-  await page.getByRole('button', { name: '分镜 1', exact: true }).first().click();
+  await page.getByRole('button', { name: /^分镜 1，/ }).first().click();
   await page.getByRole('button', { name: '选择本张参考图（1）', exact: true }).waitFor();
 
   // 删除分镜组前必须确认
@@ -624,7 +765,7 @@ try {
   await page.goto(`${baseUrl}/projects/${PROJECT_ID}?tab=storyboard`, { waitUntil: 'domcontentloaded' });
   await page.getByText('还没有生成', { exact: true }).waitFor();
   await page.getByRole('group', { name: '分镜视图' }).getByRole('button', { name: '全部', exact: true }).click();
-  const emptyShot = page.getByTestId('workbench-storyboard').getByRole('button', { name: '分镜 1', exact: true });
+  const emptyShot = page.getByTestId('workbench-storyboard').getByRole('button', { name: /^分镜 1，/ });
   assert.match(await emptyShot.innerText(), /未生成/, '未提交的分镜网格不能显示生成中');
   assert.doesNotMatch(await emptyShot.innerText(), /生成中/);
   assert.equal(await emptyShot.locator('[class*="spin"]').count(), 0, '未提交的分镜不能显示转圈动画');

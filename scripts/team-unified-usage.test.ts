@@ -16,11 +16,22 @@ const { initUsageSchema } = await import('../lib/usage-schema.ts');
 const { createExecutionFacade } = await import('../lib/media-core/execution/operations.ts');
 const { registerExecutionInstance } = await import('../lib/media-core/execution/schema.ts');
 const { updateActorPolicy, upsertExecutionPool } = await import('../lib/media-core/execution/pools.ts');
-const { queryTeamUsage, queryTeamUsageAnalytics, queryTeamUnifiedUsage } = await import('../lib/team-service/usage.ts');
+const {
+  listTeamUsageAttempts, queryTeamUsage, queryTeamUsageAnalytics, queryTeamUsageCounts,
+} = await import('../lib/team-service/usage.ts');
+const { listTeamUnifiedUsageTasks } = await import('../lib/team-service/unified-usage.ts');
 const { listTeamTasks } = await import('../lib/team-service/tasks.ts');
 
 fs.mkdirSync(path.join(root, 'data'), { recursive: true });
 const db = new Database(path.join(root, 'data', 'workbench.db'));
+// 04 号票后的真实合同入口：摘要用 counts，明细按 section 分页（这组数据 < 50 条，一页取全）。
+const listTaskItems = (viewer: { userId: string; role: 'admin' | 'employee' }, filters = {}) =>
+  listTeamUnifiedUsageTasks(db, viewer, filters, { page: 1, pageSize: 50 }).items;
+const listAttemptItems = (
+  viewer: { userId: string; role: 'admin' | 'employee' },
+  section: 'channels' | 'legacy' | 'unmapped',
+  filters = {},
+) => listTeamUsageAttempts(db, viewer, section, filters, { page: 1, pageSize: 50 }).items;
 db.pragma('foreign_keys = ON');
 assert.equal((await checkTeamServiceReadiness({ db, ...schemaUpgradeRuntimePaths(root) })).available, true);
 assert.equal((await checkExecutionReadiness({ db, ...schemaUpgradeRuntimePaths(root) })).available, true);
@@ -310,9 +321,9 @@ try {
   const aliceView = { userId: 'alice', role: 'employee' as const };
   const bobView = { userId: 'bob', role: 'employee' as const };
 
-  const alice = queryTeamUnifiedUsage(db, aliceView, range);
-  assert.equal(alice.tasks.length, 3, 'two channel attempts remain one work task');
-  const fallback = alice.tasks.find((task) => task.taskId === 'job-fallback');
+  const aliceTasks = listTaskItems(aliceView, range);
+  assert.equal(aliceTasks.length, 3, 'two channel attempts remain one work task');
+  const fallback = aliceTasks.find((task) => task.taskId === 'job-fallback');
   assert.ok(fallback);
   assert.equal(fallback.model, 'Image 2');
   assert.equal(fallback.unifiedModel, 'image2');
@@ -327,44 +338,46 @@ try {
   assert.equal(fallback.scopeName, '统一模型测试项目');
   assert.equal('channels' in fallback, false, '员工任务投影不得包含真实通道明细');
 
-  const mixed = alice.tasks.find((task) => task.taskId === 'job-mixed');
+  const mixed = aliceTasks.find((task) => task.taskId === 'job-mixed');
   assert.equal(mixed?.chargedMinor, 183);
   assert.equal(mixed?.settledMinor, 158);
   assert.equal(mixed?.uncertainMinor, 25);
   assert.equal(mixed?.uncertainCount, 1);
   assert.equal(mixed?.costStatus, 'mixed');
 
-  const failed = alice.tasks.find((task) => task.taskId === 'job-failed');
+  const failed = aliceTasks.find((task) => task.taskId === 'job-failed');
   assert.equal(failed?.chargedMinor, 183);
   assert.equal(failed?.costStatus, 'uncertain');
   assert.equal(failed?.settledMinor, 0);
 
-  assert.equal(alice.legacyAttempts.length, 1);
-  assert.equal(alice.legacyAttempts[0]?.taskId, 'job-legacy');
-  assert.equal(alice.counts.generationTasks, 3);
-  assert.equal(alice.counts.channelCalls, 6);
-  assert.equal(alice.counts.legacyAttempts, 1);
-  assert.equal(alice.counts.unmappedAttempts, 0);
+  const aliceLegacy = listAttemptItems(aliceView, 'legacy', range);
+  assert.equal(aliceLegacy.length, 1);
+  assert.equal(aliceLegacy[0]?.taskId, 'job-legacy');
+  const aliceCounts = queryTeamUsageCounts(db, aliceView, range);
+  assert.equal(aliceCounts.generationTasks, 3);
+  assert.equal(aliceCounts.channelCalls, 6);
+  assert.equal(aliceCounts.legacyAttempts, 1);
+  assert.equal(aliceCounts.unmappedAttempts, 0);
 
-  const admin = queryTeamUnifiedUsage(db, adminView, range);
-  const adminFallback = admin.tasks.find((task) => task.taskId === 'job-fallback');
+  const adminTasks = listTaskItems(adminView, range);
+  const adminFallback = adminTasks.find((task) => task.taskId === 'job-fallback');
   assert.deepEqual(adminFallback?.channels?.map((channel) => channel.channelKey), ['qiniu', 'tencent']);
   assert.equal(adminFallback?.channels?.[0]?.attempts[0]?.providerModel, 'qiniuyun/gpt-image-2-medium');
   assert.equal(adminFallback?.channels?.[0]?.attempts[0]?.costStatus, 'released');
   assert.equal(adminFallback?.channels?.[1]?.attempts[0]?.actualMinor, 158);
-  assert.equal(JSON.stringify(admin).includes('apiKey'), false);
-  assert.equal(JSON.stringify(admin).includes('baseUrl'), false);
+  assert.equal(JSON.stringify(adminTasks).includes('apiKey'), false);
+  assert.equal(JSON.stringify(adminTasks).includes('baseUrl'), false);
 
-  assert.equal(queryTeamUnifiedUsage(db, bobView, range).tasks.length, 0);
+  assert.equal(listTaskItems(bobView, range).length, 0);
   assert.throws(
-    () => queryTeamUnifiedUsage(db, bobView, { ...range, actorUserId: 'alice' }),
+    () => listTaskItems(bobView, { ...range, actorUserId: 'alice' }),
     (error: unknown) => (error as { status?: number }).status === 403,
   );
-  assert.equal(queryTeamUnifiedUsage(db, aliceView, { ...range, model: 'Image 2' }).tasks.length, 3);
-  assert.equal(queryTeamUnifiedUsage(db, aliceView, { ...range, model: 'image2' }).tasks.length, 3);
-  assert.equal(queryTeamUnifiedUsage(db, aliceView, {
+  assert.equal(listTaskItems(aliceView, { ...range, model: 'Image 2' }).length, 3);
+  assert.equal(listTaskItems(aliceView, { ...range, model: 'image2' }).length, 3);
+  assert.equal(listTaskItems(aliceView, {
     from: '2026-11-03T16:00:00.000Z', to: '2026-11-04T16:00:00.000Z',
-  }).tasks.length, 0);
+  }).length, 0);
 
   const usage = queryTeamUsage(db, aliceView, range);
   assert.equal(usage.items.find((item) => item.taskId === 'job-fallback')?.model, 'Image 2',
@@ -410,7 +423,7 @@ try {
     && adminMappedCalls.some((call) => call.model === 'image2-medium'),
     '管理员任务详情保留真实通道尝试');
 
-  const lateAttempt = admin.tasks.find((task) => task.taskId === 'job-failed')
+  const lateAttempt = listTaskItems(adminView, range).find((task) => task.taskId === 'job-failed')
     ?.channels?.[0]?.attempts[0];
   assert.ok(lateAttempt);
   db.prepare(`UPDATE execution_attempts
@@ -419,8 +432,8 @@ try {
   db.prepare(`UPDATE execution_reservations
     SET state = 'settled', actualMinor = 30, costState = 'settled', settledAt = ?
     WHERE attemptId = ? AND kind = 'cost'`).run(now, lateAttempt.attemptId);
-  const afterLateSettlement = queryTeamUnifiedUsage(db, adminView, range)
-    .tasks.find((task) => task.taskId === 'job-failed');
+  const afterLateSettlement = listTaskItems(adminView, range)
+    .find((task) => task.taskId === 'job-failed');
   assert.equal(afterLateSettlement?.settledMinor, 30);
   assert.equal(afterLateSettlement?.chargedMinor, 188);
   assert.equal(afterLateSettlement?.costStatus, 'mixed');
@@ -428,13 +441,13 @@ try {
   addMediaTask({
     id: 'media-before-attempt', jobId: 'job-before-attempt', actorId: 'alice', status: 'routing',
   });
-  const withPendingTask = queryTeamUnifiedUsage(db, aliceView, range);
+  const withPendingTask = listTaskItems(aliceView, range);
   assert.equal(
-    withPendingTask.tasks.some((task) => task.mediaTaskId === 'media-before-attempt'),
+    withPendingTask.some((task) => task.mediaTaskId === 'media-before-attempt'),
     true,
     'a unified task waiting before its first attempt must still appear in the task report',
   );
-  assert.equal(withPendingTask.tasks.find((task) => task.mediaTaskId === 'media-before-attempt')?.costStatus, 'unpriced');
+  assert.equal(withPendingTask.find((task) => task.mediaTaskId === 'media-before-attempt')?.costStatus, 'unpriced');
 
   const orphanOperation = runtime.facade.enqueue({
     operationKey: 'image/job-orphan/submit/r1',
@@ -464,16 +477,23 @@ try {
     attemptId: orphanIntent.attemptId, outcome: 'succeeded',
     actualCost: { currency: 'CNY', minor: 158 }, remoteTerminal: true,
   });
-  const withOrphan = queryTeamUnifiedUsage(db, aliceView, range);
-  assert.equal(withOrphan.unmappedAttempts.some((item) => item.taskId === 'job-orphan'), true);
-  assert.equal(withOrphan.legacyAttempts.some((item) => item.taskId === 'job-orphan'), false);
-  assert.equal(withOrphan.counts.unmappedAttempts, 1);
+  // 员工不能直接读取待映射明细（403），但摘要 counts 仍统计本人未映射尝试；管理员可读明细。
+  assert.throws(
+    () => listAttemptItems(aliceView, 'unmapped', range),
+    (error: unknown) => (error as { status?: number }).status === 403,
+    '员工直接请求未映射明细必须 403',
+  );
+  assert.equal(queryTeamUsageCounts(db, aliceView, range).unmappedAttempts, 1);
+  const adminOrphanItems = listAttemptItems(adminView, 'unmapped', range);
+  assert.equal(adminOrphanItems.some((item) => item.taskId === 'job-orphan'
+    && item.mediaTaskId === 'missing-parent'), true);
+  assert.equal(listAttemptItems(adminView, 'legacy', range).some((item) => item.taskId === 'job-orphan'), false);
 
   addMediaTask({
     id: 'media-no-attempt', jobId: 'job-no-attempt', actorId: 'alice', status: 'waiting',
   });
-  const noAttempt = queryTeamUnifiedUsage(db, aliceView, range);
-  const waitingTask = noAttempt.tasks.find((task) => task.taskId === 'job-no-attempt');
+  const noAttempt = listTaskItems(aliceView, range);
+  const waitingTask = noAttempt.find((task) => task.taskId === 'job-no-attempt');
   assert.ok(waitingTask, 'a unified task without an attempt must still appear in task totals');
   assert.equal(waitingTask?.costStatus, 'unpriced');
   const noAttemptAnalytics = queryTeamUsageAnalytics(db, aliceView, { ...range, model: 'Image 2' });

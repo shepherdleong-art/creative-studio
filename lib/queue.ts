@@ -1418,7 +1418,7 @@ async function runAuthorizedJob(
       result.remoteImageUrl || null,
       lateCanceled
         ? '已停止后续生成；晚到的结果已保存到任务记录，可查看或手动使用。'
-        : job.errorMessage ?? null,
+        : null,
       result.rawResponse ? safeJsonForDB(result.rawResponse) : null,
       job.id,
     );

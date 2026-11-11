@@ -121,15 +121,24 @@ export const SCREENS = [
     // 14 号票起标题由每页工具栏渲染（= 导航名「创作画布」），不再是页内 h1。
     ready: async (page) => { await page.getByTestId('page-toolbar-title').first().waitFor({ timeout: 60_000 }); },
   }),
-  base('tasks-employee', '我的任务', 'ui-12', {
+  // 06 号票：员工任务页接服务端分页后，数据由 taskHistory 钩子造（含员工自己的统一任务）。
+  base('tasks-employee', '我的任务（分页与详情）', '06', {
     href: () => '/team/tasks',
+    skipUnless: 'taskHistory',
     // 12 号票改版：员工页标题改由外壳工具栏按路径解析成「我的任务」，页面里不再有自己的 <h1>。
     ready: async (page) => {
       await page.getByTestId('page-toolbar-title').first().waitFor({ timeout: 60_000 });
       await page.getByRole('region', { name: '筛选' }).waitFor({ timeout: 60_000 });
       await page.getByLabel('查找任务', { exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByTestId('task-row').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('pagination').first().waitFor({ timeout: 60_000 });
       await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
     },
+    actions: [async (page) => {
+      // 员工打开自己的任务详情（含超长项目名换行）。
+      await page.getByTestId('task-row').first().click();
+      await page.getByTestId('task-detail-content').waitFor({ timeout: 30_000 });
+    }],
   }),
   base('downloads', '下载与交付', 'ui-14', {
     href: () => '/team/downloads',
@@ -139,9 +148,22 @@ export const SCREENS = [
     href: () => '/team/errors',
     ready: async (page) => { await page.getByRole('heading', { name: '出错的任务', exact: true }).waitFor({ timeout: 60_000 }); },
   }),
+  // 05 号票：用量页改成「额度卡 → 账期与筛选 → 图表 → 成员统计 → 明细页签」，
+  // 明细默认「制作任务」页签。ready 必须等明细真的画出来（数据由 usageLedger 造多页记录）。
   base('usage-employee', '我的用量', 'ui-14', {
     href: () => '/usage',
-    ready: async (page) => { await page.getByRole('heading', { name: '我的用量', exact: true }).waitFor({ timeout: 60_000 }); },
+    skipUnless: 'usageLedger',
+    ready: async (page) => {
+      await page.getByRole('heading', { name: '我的用量', exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByRole('tab', { name: '制作任务', exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByTestId('usage-task-row').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('pagination').first().waitFor({ timeout: 60_000 });
+    },
+    actions: [async (page) => {
+      // 员工也能打开制作任务详情（员工视图不含通道明细）。
+      await page.getByTestId('usage-task-row').first().getByTestId('usage-detail-open').click();
+      await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
+    }],
   }),
   base('recycle-bin', '回收站', 'ui-14', {
     href: () => '/team/recycle-bin',
@@ -254,6 +276,46 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       await page.getByText('结果', { exact: true }).first().waitFor({ timeout: 30_000 });
       // 删除分镜组必须走确认：按钮在，点开后要有 dialog（由 actions 量）
       await page.getByRole('button', { name: '删除', exact: true }).first().waitFor({ timeout: 30_000 });
+    },
+  }),
+  // 票 01：多个版本 + 切旧版是这一屏新增的两档状态，各自单独量尺寸并截图。
+  // 数据由 `workbenchAssets`（分镜组）+ `storyboardVersions`（3 个历史结果候选）提供。
+  base('project-storyboard-grid', '项目工作台 · 第 2 步 全部网格（多版本）', '01', {
+    href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
+    skipUnless: ['workbenchAssets', 'storyboardVersions'],
+    ready: async (page) => {
+      await page.getByTestId('workbench-storyboard').waitFor({ timeout: 60_000 });
+      // 缩略图上的版本标签画出来了才切网格，避免量到还没加载完的对照视图。
+      await page.getByTestId('shot-thumb-version').first().waitFor({ timeout: 60_000 });
+      await page.getByRole('group', { name: '分镜视图' }).getByRole('button', { name: '全部', exact: true }).click();
+      await page.locator('[data-testid="workbench-storyboard"][data-view="grid"]').waitFor({ timeout: 30_000 });
+    },
+  }),
+  base('project-storyboard-older-version', '项目工作台 · 第 2 步 选用旧版', '01', {
+    href: ({ project }) => `/projects/${project.id}?tab=storyboard`,
+    skipUnless: ['workbenchAssets', 'storyboardVersions'],
+    ready: async (page) => {
+      await page.getByTestId('workbench-storyboard').waitFor({ timeout: 60_000 });
+      const summary = page.getByTestId('shot-version-summary');
+      await summary.waitFor({ timeout: 60_000 });
+      // 同一进程里多内核 × 多窗口 × 双主题会顺序复用数据，选用状态可能停在上一次跑完的版本；
+      // 这里通过正式 PATCH 点到旧版 V1（首尾回绕，最多点 3 次），不依赖初始状态。
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const before = (await summary.innerText()).trim();
+        if (before.includes('当前使用 V1 · 共 3 版')) break;
+        await page.getByRole('button', { name: '使用上一版', exact: true }).click();
+        await page.waitForFunction(
+          (previous) => {
+            const node = document.querySelector('[data-testid="shot-version-summary"]');
+            const current = (node?.textContent ?? '').trim();
+            return current.length > 0 && current !== previous;
+          },
+          before,
+          { timeout: 30_000 },
+        );
+      }
+      await summary.filter({ hasText: '当前使用 V1 · 共 3 版' }).waitFor({ timeout: 30_000 });
+      await page.getByTestId('shot-version-latest').waitFor({ timeout: 30_000 });
     },
   }),
   base('project-storyboard-new-set', '项目工作台 · 第 2 步 新建分镜组窗口', 'ui-07', {
@@ -514,30 +576,48 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       await page.getByRole('dialog').first().waitFor({ state: 'detached', timeout: 30_000 });
     }],
   }),
-  base('admin-tasks', '全员任务', 'ui-12', {
+  // 06 号票：全员任务改成服务端分页（默认 25 个制作任务）+ 当前页按发起人分组。
+  // 数据由 taskHistory 钩子造 503 个制作任务 / 505 条执行记录；两个附加状态各量一次：
+  // 末页（页码折叠 + 3 项）与平铺（同一批任务换展示，不改变页码）。
+  base('admin-tasks', '全员任务（分页、分组与末页）', '06', {
     audience: 'admin',
     href: () => '/team/tasks',
+    skipUnless: 'taskHistory',
     ready: async (page) => {
       await page.getByRole('region', { name: '筛选' }).waitFor({ timeout: 60_000 });
       await page.getByLabel('查找任务', { exact: true }).waitFor({ timeout: 60_000 });
-      await page.getByRole('region', { name: '任务列表' }).waitFor({ timeout: 60_000 });
+      await page.getByTestId('task-row').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('pagination').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('actor-group-count').first().waitFor({ timeout: 60_000 });
       await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
     },
+    actions: [
+      async (page) => {
+        // 末页：直接跳页，验页码折叠后的控件与末页 3 项。
+        const totalPages = Number(await page.getByTestId('pagination').first().getAttribute('data-total-pages'));
+        if (!(totalPages > 7)) throw new Error(`任务分页夹具应多于一页，实际 ${totalPages}`);
+        await page.getByTestId('pagination-jump').first().fill(String(totalPages));
+        await page.getByTestId('pagination-jump-submit').first().click();
+        await page.getByTestId('pagination-status').first()
+          .filter({ hasText: `第 ${totalPages} / ${totalPages} 页` }).waitFor({ timeout: 30_000 });
+      },
+      async (page) => {
+        await page.getByRole('button', { name: '平铺', exact: true }).click();
+        await page.getByTestId('task-flat-list').waitFor({ timeout: 30_000 });
+      },
+    ],
   }),
-  base('admin-tasks-detail', '全员任务 · 任务详情', 'ui-12', {
+  // 06 号票：旧链接/当前页外任务详情——`?taskId=<operationId>` 深链独立加载，
+  // 列表仍是第一页；详情里同时有超长项目名与技术字段折叠。
+  base('admin-tasks-detail', '全员任务 · 任务详情（当前页外旧链接）', '06', {
     audience: 'admin',
-    href: () => '/team/tasks',
-    // 详情需要一条真实任务；验收夹具只造了项目和供应商，所以这一屏只在有行时量。
+    href: ({ taskHistory }) => `/team/tasks?taskId=${encodeURIComponent(taskHistory.deepOperationId)}`,
+    skipUnless: 'taskHistory',
     ready: async (page) => {
-      await page.getByRole('region', { name: '筛选' }).waitFor({ timeout: 60_000 });
-      await page.getByText('读取团队任务…', { exact: true }).waitFor({ state: 'detached', timeout: 60_000 }).catch(() => undefined);
+      await page.getByTestId('task-detail-content').waitFor({ timeout: 60_000 });
+      await page.getByTestId('task-detail-off-page').waitFor({ timeout: 30_000 });
+      await page.getByTestId('pagination').first().waitFor({ timeout: 30_000 });
     },
-    actions: [async (page) => {
-      const row = page.getByTestId('task-row').first();
-      if (await row.count() === 0) return;
-      await row.click();
-      await page.getByTestId('task-detail').waitFor({ timeout: 30_000 });
-    }],
   }),
   base('admin-pools', '模型与名额（一个名额池一行）', 'ui-13', {
     audience: 'admin',
@@ -557,6 +637,49 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       await internal.click();
       await page.getByText(/映射协议：|版本：/).first().waitFor({ timeout: 30_000 });
     }],
+  }),
+  // 02 号票：待核对页改版后默认只显示模型 / 项目/发起人 / 当前状态 / 通俗原因 / 费用状态，
+  // 技术字段收进「核对详情」，人工表单再独立折叠。基础态与两个折叠层各量一次；
+  // 夹具 `reconcileQueue` 覆盖提交未知、远端身份缺失、下载未完成、费用未知、取消意图、成功已核账。
+  base('admin-reconcile', '待核对（管理员）', 'ui-02', {
+    audience: 'admin',
+    href: () => '/team/admin/reconcile',
+    skipUnless: 'reconcileQueue',
+    ready: async (page) => {
+      await page.getByRole('heading', { name: '待核对任务', exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByTestId('reconcile-task').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('reconcile-reason').first().waitFor({ timeout: 60_000 });
+      // 等列表读取结束：出现「只看待核对」的计数说明即说明接口已经返回。
+      await page.getByText(/条需要核对/).first().waitFor({ timeout: 60_000 });
+    },
+    actions: [
+      async (page) => {
+        // 第一层：核对详情（通道、远端 ID、规则版本、尝试表、技术错误）。
+        await page.getByTestId('reconcile-details-toggle').first().click();
+        await page.getByTestId('reconcile-details').first().waitFor({ timeout: 30_000 });
+      },
+      async (page) => {
+        // 第二层：人工核对表单（证据必填、动作下拉、目标尝试）。
+        await page.getByTestId('reconcile-form-toggle').first().click();
+        const form = page.getByTestId('reconcile-form').first();
+        await form.waitFor({ timeout: 30_000 });
+        // 表单在通道证据下面；滚到可看见再截图，证据图才拍得到它（尺寸判定不受影响）。
+        await form.scrollIntoViewIfNeeded();
+      },
+      async (page) => {
+        // 第三层：「全部记录」= 历史记录视图。必须看到说明（包含已完成任务）和一条已完成记录，
+        // 且已完成记录不再带「待核对原因」的告警条（它只是历史，不要求逐条核对）。
+        await page.getByRole('button', { name: '全部记录', exact: true }).click();
+        const note = page.getByTestId('reconcile-history-note');
+        await note.waitFor({ timeout: 30_000 });
+        if (!(await note.innerText()).includes('包含已完成的统一模型任务')) {
+          throw new Error('「全部记录」必须说明它包含已完成的统一模型任务');
+        }
+        const settled = page.locator('[data-testid="reconcile-task"][data-attention="false"]').first();
+        await settled.waitFor({ timeout: 30_000 });
+        await settled.scrollIntoViewIfNeeded();
+      },
+    ],
   }),
   base('admin-users', '成员与账号', 'ui-14', {
     audience: 'admin',
@@ -613,10 +736,37 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       await page.getByRole('button', { name: '添加供应商', exact: true }).first().waitFor({ timeout: 60_000 });
     },
   }),
+  // 05 号票：团队用量（管理员）。明细页签 + 上下分页控件 + 长列表；详情弹窗单独量一次。
   base('admin-usage', '团队用量', 'ui-14', {
     audience: 'admin',
     href: () => '/usage',
-    ready: async (page) => { await page.getByRole('heading', { name: '团队用量', exact: true }).waitFor({ timeout: 60_000 }); },
+    skipUnless: 'usageLedger',
+    ready: async (page) => {
+      await page.getByRole('heading', { name: '团队用量', exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByRole('tab', { name: '制作任务', exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByTestId('usage-task-row').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('pagination').first().waitFor({ timeout: 60_000 });
+    },
+    actions: [async (page) => {
+      // 制作任务详情：wide 对话框、通道摘要、备用未提交、长 ID 换行。
+      await page.getByTestId('usage-task-row').first().getByTestId('usage-detail-open').click();
+      await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
+    }],
+  }),
+  // 05 号票：明细切到「通道调用」后的长列表 + 调用记录详情弹窗。
+  base('admin-usage-channels', '团队用量 · 通道调用明细与详情', '05', {
+    audience: 'admin',
+    href: () => '/usage',
+    skipUnless: 'usageLedger',
+    ready: async (page) => {
+      await page.getByRole('tab', { name: '通道调用', exact: true }).click();
+      await page.getByTestId('usage-attempt-row').first().waitFor({ timeout: 60_000 });
+      await page.getByTestId('pagination').first().waitFor({ timeout: 60_000 });
+    },
+    actions: [async (page) => {
+      await page.getByTestId('usage-attempt-row').first().getByTestId('usage-detail-open').click();
+      await page.getByRole('dialog').first().waitFor({ timeout: 30_000 });
+    }],
   }),
 ];
 

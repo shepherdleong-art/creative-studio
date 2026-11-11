@@ -14,7 +14,7 @@ const { checkTeamServiceReadiness } = await import('../lib/team-service/readines
 const { checkExecutionReadiness } = await import('../lib/media-core/execution/readiness.ts');
 const { registerRootScope } = await import('../lib/team-service/resource-scopes.ts');
 const { listTeamTasks } = await import('../lib/team-service/tasks.ts');
-const { listTeamErrors, recordTeamError } = await import('../lib/team-service/diagnostics.ts');
+const { listTeamErrors, recordTeamError, resolveTeamError } = await import('../lib/team-service/diagnostics.ts');
 const { readWorkspaceBadgeCounts } = await import('../lib/team-service/workspace-counts.ts');
 
 const db = getDb();
@@ -85,6 +85,18 @@ assert.equal(adminBadges.errors, listTeamErrors(db, adminViewer).items.length, '
 assert.equal(readWorkspaceBadgeCounts(db, adminViewer, { actorUserId: 'alice' }).tasks, 3);
 assert.equal(readWorkspaceBadgeCounts(db, adminViewer, { actorUserId: 'alice' }).errors, 2);
 
+const resolvedHistory = recordTeamError(db, {
+  actorUserId: 'alice', module: 'client', stage: 'client_ui', code: 'old_ui_error',
+});
+resolveTeamError(db, employeeViewer, resolvedHistory.errorId);
+recordTeamError(db, {
+  actorUserId: 'alice', module: 'image', stage: 'download', code: 'old_download_error', outcome: 'recovered',
+});
+assert.equal(listTeamErrors(db, adminViewer).items.length, 5, '历史诊断仍完整保留');
+assert.equal(readWorkspaceBadgeCounts(db, adminViewer).errors, 3, '角标不统计已处理和已恢复的历史记录');
+assert.equal(readWorkspaceBadgeCounts(db, employeeViewer).errors, 2, '员工角标同样排除本人的历史记录');
+assert.equal(readWorkspaceBadgeCounts(db, adminViewer, { actorUserId: 'alice' }).errors, 2);
+
 // ---- 越权口径不得放宽：员工传别人的 actorUserId 仍然只能看到自己的 ----
 const forbidden = readWorkspaceBadgeCounts(db, employeeViewer, { actorUserId: 'bob' });
 assert.equal(forbidden.tasks, null, '员工不能通过角标探测他人任务数');
@@ -97,5 +109,13 @@ assert.deepEqual(readWorkspaceBadgeCounts(db, { userId: 'carol', role: 'employee
 
 // ---- 未登录/无身份：不返回值，前端不显示角标 ----
 assert.deepEqual(readWorkspaceBadgeCounts(db, null), { tasks: null, errors: null });
+
+// ---- 服务端分页之后：角标仍是全可见范围，不数一页的 items（03 号票） ----
+for (let index = 0; index < 30; index += 1) insertOperation({ actorId: 'bob', taskId: `task-bob-page-${index}` });
+const pagedBadges = readWorkspaceBadgeCounts(db, adminViewer);
+assert.equal(pagedBadges.tasks, 35, '任务角标 = 全可见执行记录数，不是一页条数');
+assert.equal(listTeamTasks(db, adminViewer).items.length, 25, '列表默认第一页只返回 25 个制作任务');
+assert.equal(listTeamTasks(db, adminViewer, {}, { page: 1, pageSize: 50 }).pagination.total, 35,
+  '分页总数覆盖完整可见历史');
 
 console.log('workspace badge counts contract passed');

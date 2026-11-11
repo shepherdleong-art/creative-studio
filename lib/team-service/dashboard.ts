@@ -1,13 +1,13 @@
 import type Database from 'better-sqlite3';
 import { listTeamErrors, type TeamViewer } from './diagnostics.ts';
-import { listTeamTasks } from './tasks.ts';
+import { listTeamTaskRecords } from './tasks.ts';
 import { readTeamMemberSummary } from './usage.ts';
 import { readProjectProgress } from '../project-progress-query.ts';
 import { deriveProjectProgress } from '../project-progress.ts';
 import { toStorageImageUrl } from '../storage-url.ts';
 import {
   describeRunningTask,
-  isTaskInFlight,
+  IN_FLIGHT_STATUSES,
   renderPercent,
   type RunningTaskView,
 } from '../task-progress.ts';
@@ -21,7 +21,7 @@ import {
  *
  * - 出错的任务：复用 `listTeamErrors`（与「出错的任务」页同一口径、同一可见范围）；
  * - 接着做：项目列表 + `readProjectProgress`（纯函数判断第几步）；
- * - 正在生产：`listTeamTasks` 里的在飞任务 + **只有渲染**的真实百分比；
+ * - 正在生产：**有界**的 `listTeamTaskRecords`（按有效状态过滤、只取前几条）+ 真实百分比；
  * - 本月用量：`readTeamMemberSummary`（本人额度，只读）。
  *
  * 红线：**非渲染阶段不返回百分比**。原型里每项都画了百分比，那只是示意；
@@ -185,8 +185,14 @@ export function readEmployeeDashboard(
 
   // 管理员分支（运行总览）归 12 号票，用自己的接口；这里即使被管理员调用，
   // 也只按「本人」取数，避免为首页把全团队的 500 条任务拉出来。
-  const tasks = listTeamTasks(db, viewer, { actorUserId: viewer.userId }).items;
-  const inFlight = tasks.filter((task) => isTaskInFlight(String(task.status)));
+  // 列表改成服务端分页后，这里改用**有界**在飞记录查询：总数来自 COUNT，
+  // 条目只取前 MAX_RUNNING 条，不再加载整份列表再 slice。
+  const inFlightRecords = listTeamTaskRecords(db, viewer, {
+    actorUserId: viewer.userId,
+    statuses: IN_FLIGHT_STATUSES,
+    limit: MAX_RUNNING,
+  });
+  const inFlight = inFlightRecords.items;
   const projectIds = [...new Set(inFlight.map((task) => task.scope?.resourceId).filter((id): id is string => Boolean(id)))];
 
   const runningItems: RunningTaskView[] = projectIds.length === 0 ? [] : [];
@@ -226,7 +232,7 @@ export function readEmployeeDashboard(
   return {
     greetingName: displayName,
     errors,
-    running: { items: running, total: inFlight.length + renderItems.length },
+    running: { items: running, total: inFlightRecords.total + renderItems.length },
     projects: projectRows.map((row) => {
       const projectProgress = progress.get(row.id) ?? deriveProjectProgress({
         sceneCandidateCount: 0, shotResultCount: 0, approvedShotSetCount: 0,

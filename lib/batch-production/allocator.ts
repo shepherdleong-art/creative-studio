@@ -14,7 +14,7 @@ import { BATCH_NARRATION_SCHEMA_VERSION } from './narration.ts';
  * 不同历史快照上渐进迁移。
  */
 
-export const BATCH_ALLOCATION_RULE_VERSION = 'batch-allocation-v4';
+export const BATCH_ALLOCATION_RULE_VERSION = 'batch-allocation-v5';
 export const BATCH_ALLOCATION_SCHEMA_VERSION = 'batch-arrangement-v1';
 
 /**
@@ -945,6 +945,7 @@ function stitchSegment(
     // 每轮重建:上一 chunk 已登记占用,同源组集合随之收紧。
     const { usedGroupKeys, usedAssetIds } = usedShotGroupsInPlan(usedIntervals, plan.planId, stitchAssetById);
     const candidates: StitchCandidate[] = [];
+    let fallbackCandidates: StitchCandidate[] = [];
     // 先避开全批区间，再允许跨片复用；仅未知原图的外部素材可重叠兜底。
     for (const scope of ['batch', 'plan', 'none'] as const) {
       const scopedCandidates: StitchCandidate[] = [];
@@ -979,10 +980,17 @@ function stitchSegment(
         }
       }
       if (scopedCandidates.length) {
+        if (segmentIndex === 0 && part === 0) {
+          const openings = scopedCandidates.filter(entry => entry.asset.role === 'opening');
+          if (openings.length) { candidates.push(...openings); break; }
+          if (!fallbackCandidates.length) fallbackCandidates = scopedCandidates;
+          continue; // 开场允许跨成片复用，继续找下一复用层级。
+        }
         candidates.push(...scopedCandidates);
         break;
       }
     }
+    if (!candidates.length) candidates.push(...fallbackCandidates);
     if (!candidates.length) break;
     candidates.sort((a, b) => b.score - a.score || b.lengthUs - a.lengthUs || a.tie - b.tie || a.asset.assetId.localeCompare(b.asset.assetId) || a.startUs - b.startUs);
     const chunk = candidates[0]!;
@@ -1170,8 +1178,10 @@ function assignOne(
   // 有单元匹配失败的母句回退整句拼接:先清掉该句已产出的单元镜头,
   // 再按既有 stitchSegment 整句兜底(与 T8 前行为一致,不修改拼接逻辑)。
   const stitchFallbackSegmentIndexes = new Set<number>();
+  const stitchedOpeningSegments = new Set<number>();
   for (const unit of units) {
     const segmentIndex = unit.segmentIndex;
+    if (stitchedOpeningSegments.has(segmentIndex)) continue;
     const segment = unit.segment;
     const durationUs = Math.max(1, unit.endUs - unit.startUs);
     const lock = lockForSegment(plan, segment, normalized.locks);
@@ -1257,7 +1267,17 @@ function assignOne(
     candidates.sort((a, b) => b.score - a.score || a.overlap - b.overlap || a.tie - b.tie || a.asset.assetId.localeCompare(b.asset.assetId) || a.startUs - b.startUs);
     const preferred = candidates.filter((entry) => !intervalOverlaps({ assetId: entry.asset.assetId, startUs: entry.startUs, endUs: entry.endUs }, usedIntervals)
         .some((used) => used.planId === plan.planId && !used.historical));
-    const ranked = preferred.length ? preferred : candidates;
+    // 专用开场先选角色，再在角色内按语义/复用分散；正文高分或零重叠不能抢首镜。
+    const openingCandidates = segmentIndex === 0 && unit.startUs === segment.startUs
+      ? candidates.filter(entry => entry.asset.role === 'opening') : [];
+    if (segmentIndex === 0 && unit.startUs === segment.startUs && !openingCandidates.length
+      && allocatableAssets.some(asset => asset.role === 'opening' && !conflictsWithUsedSource(asset, usedGroupKeys, usedAssetIds)
+        && asset.scenes.some(scene => freeSubIntervals(scene, reservedIntervals.filter(entry => entry.assetId === asset.assetId)).some(([start, end]) => end - start >= 500_000)))) {
+      stitchSegment(normalized, plan, segment, segmentIndex, allocatableAssets, usedIntervals, usedOpeningAssets, clips, warnings, blockers, reservedIntervals);
+      stitchedOpeningSegments.add(segmentIndex);
+      continue;
+    }
+    const ranked = openingCandidates.length ? openingCandidates : preferred.length ? preferred : candidates;
     const candidate = ranked.find((entry) => entry.overlap === 0) ?? ranked[0];
     if (!candidate) {
       // 单区间装不下单元:素材池全空/无场景才保留 blocker,否则整句回退拼接兜底。

@@ -10,7 +10,11 @@ import {
   canMarkShotAvailable,
   canRegenerateShot,
   canRetryShot,
-  formatShotVersionLabel,
+  canStepShotVersion,
+  formatLatestShotVersionHint,
+  formatShotVersionAriaLabel,
+  formatShotVersionSummary,
+  formatShotVersionTag,
   getOpeningShotId,
   hasShotResult,
   isAllPicked,
@@ -18,7 +22,9 @@ import {
   movePickedToFront,
   removePickedId,
   resolveShotResultState,
+  resolveShotVersion,
   stepIndex,
+  stepShotVersion,
   togglePickedId,
   toggleSelectAll,
   isSceneViewMode,
@@ -73,11 +79,109 @@ assert.deepEqual(movePickedToFront(ordered, 'r9'), ordered, '未选中的图不�
 assert.deepEqual(movePickedToFront(['r5'], 'r5'), ['r5']);
 assert.deepEqual(removePickedId(ordered, 'r2'), ['r1', 'r3', 'r4'], '删图后从已选里移除，顺序不变');
 
-// ── 版本显示与切换 ──
-assert.equal(formatShotVersionLabel(1, 2), '第 2 版（共 2 版）');
-assert.equal(formatShotVersionLabel(0, 1), '第 1 版（共 1 版）');
-assert.equal(formatShotVersionLabel(0, 0), '第 1 版', '还没有版本时不写「共 0 版」');
-assert.equal(formatShotVersionLabel(9, 3), '第 3 版（共 3 版）', '越界下标收口到最后一版');
+// ── 版本计算：缩略图、网格、大图共用同一份结果 ──
+// 无结果：不显示 V0，也不编造版本
+const noVersion = resolveShotVersion(undefined);
+assert.equal(noVersion.total, 0);
+assert.equal(noVersion.current, 0, '没有结果时不能显示 V0');
+assert.equal(formatShotVersionTag(noVersion), '');
+assert.equal(formatShotVersionSummary(noVersion), '');
+assert.equal(formatShotVersionAriaLabel(2, noVersion), '分镜 2，暂无结果');
+assert.equal(canStepShotVersion(noVersion), false);
+assert.deepEqual(resolveShotVersion(null), noVersion, '空数据安全，返回同样的空版本');
+
+// 兼容旧数据：没有 candidates 数组但有旧结果 → 按现有回退显示 V1
+const legacy = resolveShotVersion({
+  latestGeneratedImageId: 'old-asset',
+  generatedImageUrl: '/api/images/outputs/old.png',
+  generatedFilename: 'old.png',
+});
+assert.equal(legacy.total, 1);
+assert.equal(legacy.current, 1, '旧数据只有一条回退结果，是 V1');
+assert.equal(legacy.isLegacyFallback, true);
+assert.equal(legacy.imageUrl, '/api/images/outputs/old.png');
+assert.equal(formatShotVersionTag(legacy), 'V1');
+assert.equal(formatShotVersionSummary(legacy), '当前使用 V1 · 共 1 版');
+assert.equal(formatLatestShotVersionHint(legacy), '', '只有一版不提示「最新」');
+assert.equal(canStepShotVersion(legacy), false, '只有一版时不能切版');
+
+// 三个有效候选，选中间那条：V2 / 共 3 版，旧版另示「最新 V3」
+const three = resolveShotVersion({
+  latestGeneratedImageId: 'v2',
+  generatedImageUrl: '/api/images/outputs/v3.png',
+  resultCandidates: [
+    { imageAssetId: 'v1', imageUrl: '/api/images/outputs/v1.png' },
+    { imageAssetId: 'v2', imageUrl: '/api/images/outputs/v2.png' },
+    { imageAssetId: 'v3', imageUrl: '/api/images/outputs/v3.png' },
+  ],
+});
+assert.equal(three.total, 3);
+assert.equal(three.current, 2, '当前选用旧版时必须标出实际选中的那一版');
+assert.equal(three.latest, 3);
+assert.equal(three.imageUrl, '/api/images/outputs/v2.png', '标签与实际展示的图片必须是同一版');
+assert.equal(formatShotVersionTag(three), 'V2');
+assert.equal(formatShotVersionSummary(three), '当前使用 V2 · 共 3 版');
+assert.equal(formatLatestShotVersionHint(three), '最新 V3', '选用旧版时另示最新版号');
+assert.equal(formatShotVersionAriaLabel(6, three), '分镜 6，当前使用第 2 版，共 3 版');
+assert.equal(canStepShotVersion(three), true);
+assert.deepEqual(three.candidates.map((candidate) => candidate.imageAssetId), ['v1', 'v2', 'v3'], '候选顺序沿用服务端顺序，不重排');
+
+// 选最新一条：不再另示「最新」（避免同号重复）
+const newest = resolveShotVersion({
+  latestGeneratedImageId: 'v3',
+  resultCandidates: three.candidates,
+});
+assert.equal(newest.current, 3);
+assert.equal(formatLatestShotVersionHint(newest), '');
+
+// 选用 ID 不在候选数组（旧数据）：回退到最后一条可展示候选，不越界
+const staleSelection = resolveShotVersion({
+  latestGeneratedImageId: 'deleted-asset',
+  resultCandidates: [
+    { imageAssetId: 'v1', imageUrl: '/api/images/outputs/v1.png' },
+    { imageAssetId: 'v2', imageUrl: '/api/images/outputs/v2.png' },
+  ],
+});
+assert.equal(staleSelection.current, 2, '选用 ID 不在候选里时回退到最后一条');
+assert.equal(staleSelection.imageUrl, '/api/images/outputs/v2.png');
+assert.equal(staleSelection.latest, 2);
+
+// 没有选用记录时也回退到最后一条（与既有展示规则一致）
+const noSelection = resolveShotVersion({ resultCandidates: three.candidates });
+assert.equal(noSelection.current, 3);
+
+// 候选缺少可展示图片：过滤后为空时退回旧的单图结果，不能拿 3 条无效候选编出 V3
+const missingImages = resolveShotVersion({
+  latestGeneratedImageId: 'deleted-asset',
+  generatedImageUrl: '/api/images/outputs/legacy.png',
+  resultCandidates: [
+    { imageAssetId: 'gone-1' },
+    { imageAssetId: 'gone-2' },
+    { imageAssetId: 'gone-3' },
+  ],
+});
+assert.equal(missingImages.total, 1, '有效候选为 0 时按一条旧结果回退');
+assert.equal(missingImages.current, 1, '不能显示虚构的 V3');
+assert.equal(missingImages.isLegacyFallback, true);
+assert.equal(missingImages.imageUrl, '/api/images/outputs/legacy.png');
+assert.equal(formatShotVersionTag(missingImages), 'V1');
+
+// 只有 filename 没有 URL 的候选仍算可展示（沿用现有缺图过滤口径）
+const filenameOnly = resolveShotVersion({
+  latestGeneratedImageId: 'v1',
+  resultCandidates: [{ imageAssetId: 'v1', filename: 'v1.png' }],
+});
+assert.equal(filenameOnly.total, 1);
+assert.equal(filenameOnly.imageUrl, '', '没有 URL 时由调用方继续回退到 generatedImageUrl');
+
+// 上一版 / 下一版：首尾回绕；单版没有可到的版本
+assert.equal(stepShotVersion(three, -1)?.imageAssetId, 'v1');
+assert.equal(stepShotVersion(three, 1)?.imageAssetId, 'v3');
+assert.equal(stepShotVersion({ ...three, index: 0, current: 1 }, -1)?.imageAssetId, 'v3', '第一版再往前回到最后一版');
+assert.equal(stepShotVersion({ ...three, index: 2, current: 3 }, 1)?.imageAssetId, 'v1', '最后一版再往后回到第一版');
+assert.equal(stepShotVersion(legacy, 1), null, '只有一版时没有可切换的目标');
+assert.equal(stepShotVersion(noVersion, -1), null);
+
 assert.equal(clampIndex(-5, 3), 0);
 assert.equal(clampIndex(1.7, 3), 1);
 

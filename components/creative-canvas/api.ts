@@ -203,7 +203,37 @@ export const canvasApi = {
     method: 'PATCH',
     body: JSON.stringify({ name }),
   }),
-  uploadAsset: (canvasId: string, file: File) => {
+  uploadAsset: async (canvasId: string, file: File) => {
+    if (typeof document !== 'undefined' && document.documentElement.dataset.deploymentMode === 'server') {
+      const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+      const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+      const sourceFingerprint = `${file.size}:${file.lastModified}:${sha256}`;
+      const upload = await request<{ uploadId: string; partSize: number; missingParts: number[] }>('/api/team/uploads', {
+        method: 'POST',
+        body: JSON.stringify({
+          targetKind: 'canvas_asset', targetScope: { resourceType: 'canvas', resourceId: canvasId },
+          usage: 'canvas_asset', relativeName: file.name, mimeType: file.type || 'application/octet-stream',
+          expectedSize: file.size, expectedSha256: sha256, sourceFingerprint, idempotencyKey: crypto.randomUUID(),
+        }),
+      });
+      for (const part of upload.missingParts) {
+        const start = (part - 1) * upload.partSize;
+        await request(`/api/team/uploads/${upload.uploadId}/parts/${part}`, {
+          method: 'PUT', headers: { 'content-type': 'application/octet-stream' },
+          body: file.slice(start, Math.min(start + upload.partSize, file.size)),
+        });
+      }
+      const completed = await request<{ state: string; resultResourceType: string; resultResourceId: string }>(`/api/team/uploads/${upload.uploadId}/complete`, {
+        method: 'POST', body: JSON.stringify({ expectedSha256: sha256, sourceFingerprint }),
+      });
+      if (completed.state !== 'ready' || completed.resultResourceType !== 'canvas_asset' || !completed.resultResourceId) {
+        throw new CanvasApiError(409, 'upload_not_ready', '素材尚未完成归库，请重试。');
+      }
+      const { assets } = await request<{ assets: CanvasAssetDto[] }>(`/api/canvas/${canvasId}/assets`);
+      const asset = assets.find(item => item.id === completed.resultResourceId && item.canvasId === canvasId);
+      if (!asset) throw new CanvasApiError(409, 'asset_not_ready', '素材已上传，但读取归库结果失败，请刷新画布。');
+      return { asset };
+    }
     const form = new FormData();
     form.append('file', file);
     return request<{ asset: CanvasAssetDto }>(`/api/canvas/${canvasId}/assets`, {

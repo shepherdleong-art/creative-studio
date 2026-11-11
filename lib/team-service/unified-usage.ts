@@ -4,6 +4,12 @@ import {
   unifiedMediaDisplayName,
 } from '../media-core/unified-media/catalog.ts';
 import type { TeamViewer } from './diagnostics.ts';
+import {
+  parseTeamPage,
+  resolveTeamPage,
+  type TeamPageParamInput,
+  type TeamPagination,
+} from './pagination.ts';
 import type { TeamUsageFilters } from './usage.ts';
 import {
   attemptCostStatus,
@@ -240,11 +246,19 @@ function scopeNames(
   return names;
 }
 
-function taskRows(
-  db: Database.Database,
+const TASK_SELECT_COLUMNS = `t.id, t.actorId, t.scopeType, t.scopeId, t.module, t.taskId,
+  t.unifiedModel, t.ruleVersion, t.status, t.cancelRequestedAt,
+  t.sourceType, t.sourceId, t.createdAt, t.updatedAt,
+  u.employeeId, u.displayName AS actorDisplayName`;
+
+/**
+ * 制作任务级筛选：权限、日期归属（任务创建在范围内，或范围内有真实尝试）、
+ * 模型、结果、模块。列表分页、计数与按模型统计共用同一份条件，避免口径漂移。
+ */
+function taskFilter(
   viewer: TeamViewer,
   filters: TeamUsageFilters,
-): TaskRow[] {
+): { clauses: string[]; values: unknown[] } {
   const actorUserId = scopedActor(viewer, filters.actorUserId);
   const clauses: string[] = [];
   const values: unknown[] = [];
@@ -303,17 +317,56 @@ function taskRows(
       values.push(modelFilter.raw, modelFilter.raw, modelFilter.raw, modelFilter.raw);
     }
   }
+  return { clauses, values };
+}
+
+function taskWhere(clauses: readonly string[]): string {
+  return clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+}
+
+function taskRows(
+  db: Database.Database,
+  viewer: TeamViewer,
+  filters: TeamUsageFilters,
+): TaskRow[] {
+  const { clauses, values } = taskFilter(viewer, filters);
   return db.prepare(`
-    SELECT t.id, t.actorId, t.scopeType, t.scopeId, t.module, t.taskId,
-      t.unifiedModel, t.ruleVersion, t.status, t.cancelRequestedAt,
-      t.sourceType, t.sourceId, t.createdAt, t.updatedAt,
-      u.employeeId, u.displayName AS actorDisplayName
+    SELECT ${TASK_SELECT_COLUMNS}
     FROM execution_media_tasks t
     JOIN team_users u ON u.id = t.actorId
-    ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+    ${taskWhere(clauses)}
     ORDER BY t.createdAt DESC, t.id DESC
-    LIMIT 500
   `).all(...values) as TaskRow[];
+}
+
+/** 全范围制作任务计数（授权与筛选在计数之前）。 */
+export function countTeamUnifiedUsageTasks(
+  db: Database.Database,
+  viewer: TeamViewer,
+  filters: TeamUsageFilters = {},
+): number {
+  const { clauses, values } = taskFilter(viewer, filters);
+  return Number(db.prepare(`
+    SELECT COUNT(*) FROM execution_media_tasks t
+    JOIN team_users u ON u.id = t.actorId
+    ${taskWhere(clauses)}
+  `).pluck().get(...values) ?? 0);
+}
+
+/** 按统一模型统计制作任务数（摘要模型排行用；任务数不是通道调用数）。 */
+export function countUnifiedUsageTasksByModel(
+  db: Database.Database,
+  viewer: TeamViewer,
+  filters: TeamUsageFilters = {},
+): Array<{ unifiedModel: string; taskCount: number }> {
+  const { clauses, values } = taskFilter(viewer, filters);
+  return db.prepare(`
+    SELECT t.unifiedModel AS unifiedModel, COUNT(*) AS taskCount
+    FROM execution_media_tasks t
+    JOIN team_users u ON u.id = t.actorId
+    ${taskWhere(clauses)}
+    GROUP BY t.unifiedModel
+  `).all(...values) as Array<{ unifiedModel: string; taskCount: number }>;
 }
 
 function channelRows(db: Database.Database, taskIds: readonly string[]): ChannelRow[] {
@@ -389,12 +442,34 @@ function mapAttempt(row: AttemptRow): TeamUnifiedAttemptView {
   };
 }
 
-export function queryUnifiedTaskUsage(
+function taskRowsByMediaTaskIds(
   db: Database.Database,
   viewer: TeamViewer,
-  filters: TeamUsageFilters = {},
-): { tasks: TeamUnifiedTaskView[] } {
-  const rows = taskRows(db, viewer, filters);
+  mediaTaskIds: readonly string[],
+): TaskRow[] {
+  if (mediaTaskIds.length === 0) return [];
+  // 员工只能读到本人的统一任务；越权 ID 直接不返回（调用方本身已按授权范围取过 ID）。
+  const actorClause = viewer.role === 'admin' ? '' : 'AND t.actorId = ?';
+  const values: unknown[] = [...mediaTaskIds];
+  if (viewer.role !== 'admin') values.push(viewer.userId);
+  return db.prepare(`
+    SELECT t.id, t.actorId, t.scopeType, t.scopeId, t.module, t.taskId,
+      t.unifiedModel, t.ruleVersion, t.status, t.cancelRequestedAt,
+      t.sourceType, t.sourceId, t.createdAt, t.updatedAt,
+      u.employeeId, u.displayName AS actorDisplayName
+    FROM execution_media_tasks t
+    JOIN team_users u ON u.id = t.actorId
+    WHERE t.id IN (${mediaTaskIds.map(() => '?').join(',')}) ${actorClause}
+    ORDER BY t.createdAt DESC, t.id DESC
+  `).all(...values) as TaskRow[];
+}
+
+function buildTaskViews(
+  db: Database.Database,
+  viewer: TeamViewer,
+  rows: readonly TaskRow[],
+  filters: TeamUsageFilters,
+): TeamUnifiedTaskView[] {
   const names = scopeNames(db, rows);
   const taskIds = rows.map((row) => row.id);
   const channels = channelRows(db, taskIds);
@@ -448,7 +523,7 @@ export function queryUnifiedTaskUsage(
     channelsByTask.set(channel.mediaTaskId, group);
   }
 
-  const tasks = rows.map((row): TeamUnifiedTaskView => {
+  return rows.map((row): TeamUnifiedTaskView => {
     const taskChannels = channelsByTask.get(row.id) ?? [];
     const taskAttempts = taskChannels.flatMap((channel) => channel.attempts);
     const rawTaskAttempts = taskChannels.flatMap((channel) =>
@@ -490,5 +565,72 @@ export function queryUnifiedTaskUsage(
       ? { ...base, channels: taskChannels }
       : base;
   });
-  return { tasks };
+}
+
+/**
+ * 全范围统一制作任务投影（**无 500 条截断**）。
+ *
+ * 供诊断/回归测试与「不关心分页」的调用方使用；接口列表必须走
+ * `listTeamUnifiedUsageTasks`，先计数再按 LIMIT/OFFSET 只加载选中页的任务，
+ * 不把完整历史加载到 Node 再 slice。
+ */
+export function queryUnifiedTaskUsage(
+  db: Database.Database,
+  viewer: TeamViewer,
+  filters: TeamUsageFilters = {},
+): { tasks: TeamUnifiedTaskView[] } {
+  const rows = taskRows(db, viewer, filters);
+  return { tasks: buildTaskViews(db, viewer, rows, filters) };
+}
+
+/**
+ * 分页读取统一制作任务（04 号票 `section=tasks`）。
+ *
+ * 分页单位是「统一制作任务」（自动兜底仍是一条任务），排序
+ * `createdAt DESC, mediaTaskId DESC`；先按完整筛选范围计数，再只投影当前页任务，
+ * 页内通道尝试仍按同一日期/结果筛选展开。员工投影不含 `channels`。
+ */
+export function listTeamUnifiedUsageTasks(
+  db: Database.Database,
+  viewer: TeamViewer,
+  filters: TeamUsageFilters = {},
+  page: TeamPageParamInput = {},
+): { items: TeamUnifiedTaskView[]; pagination: TeamPagination } {
+  const request = parseTeamPage(page);
+  // 计数与选页在同一读事务里（一致读视图）；页内通道/尝试只加载选中页的任务。
+  const run = db.transaction((): { items: TeamUnifiedTaskView[]; pagination: TeamPagination } => {
+    const total = countTeamUnifiedUsageTasks(db, viewer, filters);
+    const { pagination, offset } = resolveTeamPage(request, total);
+    if (total === 0) return { items: [], pagination };
+    const { clauses, values } = taskFilter(viewer, filters);
+    const rows = db.prepare(`
+      SELECT ${TASK_SELECT_COLUMNS}
+      FROM execution_media_tasks t
+      JOIN team_users u ON u.id = t.actorId
+      ${taskWhere(clauses)}
+      ORDER BY t.createdAt DESC, t.id DESC
+      LIMIT ? OFFSET ?
+    `).all(...values, pagination.pageSize, offset) as TaskRow[];
+    return { items: buildTaskViews(db, viewer, rows, filters), pagination };
+  });
+  return run.deferred();
+}
+
+/**
+ * 按 mediaTaskId 定向加载统一任务费用/通道计数（03 号票：任务页当前页）。
+ *
+ * 任务页只补当前页实际出现的统一制作任务，因此这里**按 ID 直查**，不再取
+ * 「最近 500 个统一任务」做 Map，也不靠可能重名的业务 taskId 关联；返回 Map 的键是
+ * `mediaTaskId`。员工脱敏（不含 `channels`）与本人范围与 `queryUnifiedTaskUsage` 一致。
+ * 04 号票在用量侧做全范围统计时可以直接复用/扩展这个入口。
+ */
+export function queryUnifiedTaskUsageByMediaTaskIds(
+  db: Database.Database,
+  viewer: TeamViewer,
+  mediaTaskIds: readonly string[],
+): Map<string, TeamUnifiedTaskView> {
+  const unique = [...new Set(mediaTaskIds.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim()))];
+  const rows = taskRowsByMediaTaskIds(db, viewer, unique);
+  const views = buildTaskViews(db, viewer, rows, {});
+  return new Map(views.map((view) => [view.mediaTaskId, view]));
 }

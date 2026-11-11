@@ -185,7 +185,7 @@ try {
         JSON.stringify({ kind: 'module4', videoJobId: jobId, shotSetId: setId, relativePath: `videos/${jobId}.mp4` }), '2026-09-29');
   }
   const sourceReallocation = persistOutputReallocation(db, 'project-1', histVersionId, histPlans[0], '同源排片');
-  assert.equal(sourceReallocation.ruleVersion, 'batch-allocation-v4');
+  assert.equal(sourceReallocation.ruleVersion, 'batch-allocation-v5');
   assert.equal(sourceReallocation.result.outputs.find(o => o.planId === histPlans[0])?.status, 'available');
   assert.equal(new Set(currentArrangementOf(histPlans[0]).clips.map(c => c.assetId)).size, 1,
     '跨组同原图的视频不能被自动放入同一成片');

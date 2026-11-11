@@ -198,7 +198,8 @@ load(${domId}).createRoot(document.getElementById('root')).render(React.createEl
 window.installDesktopBridge = installDesktopBridge;
 `;
 
-const globalCss = (await postcss([tailwind()]).process(
+// 隔离页面只用组件里的 utility，避免扫描原型、历史文档和本地产物。
+const globalCss = (await postcss([tailwind({ base: path.join(root, 'components') })]).process(
   fs.readFileSync(path.join(root, 'app/globals.css'), 'utf8'),
   { from: path.join(root, 'app/globals.css') },
 )).css;

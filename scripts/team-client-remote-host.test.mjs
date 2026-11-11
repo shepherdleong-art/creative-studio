@@ -80,12 +80,29 @@ const modules = {
 };
 process.env.CREATIVE_STUDIO_CLIENT_MODE = 'remote';
 process.env.CREATIVE_STUDIO_SERVER_ORIGIN = 'https://studio.example.test/path-that-must-be-rejected';
-const { readRemoteClientConfig } = load('desktop/client/remote-host.ts', {
+const { readRemoteClientConfig, configureRemotePermissions } = load('desktop/client/remote-host.ts', {
   electron: { app },
   './remote-transfer': { RemoteTransferController: class {} },
   './client-diagnostic-reporter': { ClientDiagnosticReporter: class { setIdentity() {} report() {} } },
   './ui-diagnostics': { installClientUiDiagnostics: () => () => {} }, './client-diagnostics': {},
 }, { process: { ...process, env: { ...process.env, CREATIVE_STUDIO_CLIENT_MODE: 'local' } } });
+let requestPermission, checkPermission;
+configureRemotePermissions({
+  setPermissionRequestHandler: handler => { requestPermission = handler; },
+  setPermissionCheckHandler: handler => { checkPermission = handler; },
+}, 'https://studio.example.test');
+const contents = { isDestroyed: () => false, getURL: () => 'https://studio.example.test/projects/one' };
+for (const [permission, requestingUrl, isMainFrame, expected] of [
+  ['fullscreen', 'https://studio.example.test/projects/one', true, true],
+  ['fullscreen', 'https://other.example.test/', true, false],
+  ['fullscreen', 'https://studio.example.test/', false, false],
+  ['media', 'https://studio.example.test/', true, false],
+  ['clipboard-read', 'https://studio.example.test/', true, false],
+]) {
+  const details = { requestingUrl, isMainFrame };
+  requestPermission(contents, permission, result => assert.equal(result, expected), details);
+  assert.equal(checkPermission(contents, permission, new URL(requestingUrl).origin, details), expected);
+}
 assert.throws(() => readRemoteClientConfig(process.env), /origin|来源|地址/i);
 const localTeamConfig = {
   CREATIVE_STUDIO_CLIENT_MODE: 'local-team',

@@ -2,6 +2,7 @@
  * 09 号票验收：单条精准混剪的外观与几何。
  *
  * 运行：node scripts/mixcut-09-layout-preview.playwright.test.mjs
+ * 导出页定向回归：node scripts/mixcut-export-card.playwright.test.mjs
  *
  * 覆盖（对应任务单验收条件）：
  *   1. 团队版宽度规则：`html[data-deployment-mode='server']` 下混剪外壳占满父容器（内容区），
@@ -310,7 +311,7 @@ async function preparePage(engine, viewport) {
         body: film.bytes,
       });
     }
-    if (/^\/api\/final-edit-jobs\/render-job-e2e\/cover$/.test(pathname)) return route.fulfill({ status: 200, contentType: 'image/jpeg', body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) });
+    if (/^\/api\/final-edit-jobs\/render-job-e2e\/cover$/.test(pathname)) return route.fulfill({ status: 200, contentType: 'image/gif', body: Buffer.from(transparentPixel.split(',')[1], 'base64') });
     if (pathname === '/api/final-edit-bgm') return route.fulfill({ status: 204, body: '' });
     if (pathname.startsWith('/api/final-edit-bgm/')) return route.fulfill({ status: 204, body: '' });
     return json({ error: `Unhandled E2E API: ${request.method()} ${pathname}` }, 404);
@@ -395,7 +396,16 @@ try {
         return frame ? Math.round(frame.getBoundingClientRect().height) : 0;
       });
       const beforeTrim = await previewHeight();
-      assert.ok(beforeTrim >= 200, `1280×720：剪辑区预览不得低于 200px，实际 ${beforeTrim}px`);
+      assert.ok(beforeTrim >= 300, `1280×720：放大后的剪辑区预览不得低于 300px，实际 ${beforeTrim}px`);
+      const previewWidth = await page.locator('[data-preview-preset]').last().evaluate(element => ({
+        width: element.getBoundingClientRect().width, available: element.parentElement.getBoundingClientRect().width,
+      }));
+      assert.ok(Math.abs(previewWidth.width - previewWidth.available) <= 2, '预览应利用中栏全宽');
+      console.log(`1280×720 preview: height=${beforeTrim}px, width=${Math.round(previewWidth.width)}px`);
+      if (process.env.MIXCUT_PREVIEW_EVIDENCE_DIR) {
+        fs.mkdirSync(process.env.MIXCUT_PREVIEW_EVIDENCE_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(process.env.MIXCUT_PREVIEW_EVIDENCE_DIR, 'preview-1280x720.png') });
+      }
 
       await page.locator('[data-clip-id="clip-a"]').dblclick();
       await page.getByText(/截取片段 #1/).waitFor({ timeout: 30_000 });
@@ -447,6 +457,12 @@ try {
       await resultCard.waitFor({ timeout: 30_000 });
       assert.equal(await page.locator('section[aria-label="导出结果"] video[controls]').count(), 0,
         `${engineName}: 导出结果卡片里不得再嵌 controls 播放器（改由预览对话框播放）`);
+      assert.equal(await page.locator('section[aria-label="导出结果"] video').count(), 0,
+        `${engineName}: 成片卡片应使用封面，点击前不加载视频`);
+      const cardBox = await resultCard.boundingBox();
+      assert.ok(cardBox && cardBox.width <= 280 && Math.abs(cardBox.width / cardBox.height - 0.75) < 0.02,
+        `${engineName}: 成片应为竖版封面卡片，不得撑成整栏黑屏（实际 ${JSON.stringify(cardBox)}）`);
+      assert.equal(await resultCard.getByRole('img', { name: '成片封面' }).count(), 1);
 
       await resultCard.click();
       const dialog = page.getByTestId('film-preview-dialog');
@@ -527,6 +543,10 @@ try {
           const video = document.querySelector('[data-testid="film-preview-stage"] video');
           return video && !video.paused;
         }, null, { timeout: 15_000 });
+        await page.waitForFunction((afterDrag) => {
+          const video = document.querySelector('[data-testid="film-preview-stage"] video');
+          return video && video.currentTime > afterDrag + 0.15;
+        }, afterDrag, { timeout: 15_000 });
         await page.getByRole('button', { name: '暂停预览' }).waitFor({ timeout: 10_000 });
         await page.keyboard.press(' ');
         await page.waitForFunction(() => {
@@ -605,4 +625,5 @@ try {
 } finally {
   await browser?.close();
   await stopNextDevServer(server.child);
+  fs.rmSync(path.dirname(film.file), { recursive: true, force: true });
 }

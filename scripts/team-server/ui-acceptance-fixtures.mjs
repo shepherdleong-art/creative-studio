@@ -256,6 +256,46 @@ export const FIXTURE_HOOKS = {
   },
 
   /**
+   * 票 01：第 2 步要「多个历史版本 + 切旧版」才量得出全部网格和旧版标记。
+   *
+   * `workbenchAssets` 只造了空分镜组；正式接口没有「不生成就产出一条结果」的入口，
+   * 所以结果候选按隔离数据根里的 SQLite 造（界面仍走正式 `/api/shot-sets/[id]` 读）。
+   * 三个候选直接复用 workbenchAssets 已上传的三张正式图片（都经过受控上传并登记），
+   * 不另写文件、不碰 team_files 授权、不触发任何供应商调用。
+   * 依赖 `workbenchAssets`；屏幕的 `skipUnless` 要按顺序同时声明两个钩子。
+   */
+  async storyboardVersions(ctx) {
+    assert.ok(ctx.shotSet?.id, 'storyboardVersions 依赖 workbenchAssets 先造出分镜组');
+    assert.ok(ctx.sceneSeed?.id && ctx.shotSourceA?.id && ctx.shotSourceB?.id, 'storyboardVersions 需要 workbenchAssets 上传的三张图');
+    const projectId = ctx.project.id;
+    const detail = await ctx.api.json(ctx.employeeSession, `/api/shot-sets/${ctx.shotSet.id}`);
+    const shot = detail.shots?.[0];
+    assert.ok(shot?.id, '分镜组必须至少有一个分镜');
+    const db = await ctx.openIsolatedDatabase();
+    try {
+      const now = '2026-11-11T08:00:00Z';
+      const assets = [ctx.sceneSeed, ctx.shotSourceA, ctx.shotSourceB];
+      assets.forEach((asset, index) => {
+        const suffix = `v${index + 1}`;
+        const jobId = `ui-storyboard-job-${suffix}`;
+        db.prepare(`INSERT INTO jobs (id, projectId, inputImageId, providerId, model, prompt, size, status, outputImageId, createdAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'succeeded', ?, ?)`).run(
+          jobId, projectId, shot.sourceImageId, ctx.provider.id, 'gpt-image-2', '验收分镜版本', '1024x1024', asset.id, now,
+        );
+        db.prepare(`INSERT INTO shot_result_candidates (id, shotId, jobId, imageAssetId, createdAt) VALUES (?, ?, ?, ?, ?)`)
+          .run(`ui-storyboard-candidate-${suffix}`, shot.id, jobId, asset.id, `2026-11-11T08:00:0${index}Z`);
+      });
+      // 默认选用最新一版（V3）；「切旧版」由屏幕动作点「使用上一版」触发，走正式 PATCH。
+      db.prepare(`UPDATE shots SET latestGeneratedImageId = ?, latestJobId = ? WHERE id = ?`)
+        .run(ctx.shotSourceB.id, 'ui-storyboard-job-v3', shot.id);
+    } finally {
+      db.close();
+    }
+    ctx.storyboardVersionShotId = shot.id;
+    return ctx;
+  },
+
+  /**
    * 11 号票：导出页要有四种状态的成片才量得出来
    * （已导出 / 修改未导出 / 从没导出 / 渲染失败）。
    *
@@ -386,6 +426,445 @@ export const FIXTURE_HOOKS = {
     assert.ok(project?.id, '空项目必须创建成功');
     ctx.emptyProject = project;
     return ctx;
+  },
+
+  /**
+   * 02 号票：待核对页要有真实证据形态的 fixture 才量得出「默认卡片 / 核对详情 / 人工核对」。
+   *
+   * 这里只在**隔离数据根**里造统一任务与执行证据（正式接口没有「直接造一条待核对任务」的入口），
+   * 造出来的六个任务正好覆盖验收要求的六种形态：
+   *   1. 结果已就绪、下载未完成（业务 providerStatus=download_failed），并带一个未提交的腾讯候选通道；
+   *   2. 远端身份缺失（已受理但没有远端 ID）；
+   *   3. 提交结果未知（maybe_sent、没有终态）；
+   *   4. 生成成功但费用未知（业务 needs_check + costState=unknown）；
+   *   5. 已请求取消、但已提交的部分还在等结果；
+   *   6. 成功且已核账（只会出现在「全部记录」里，用来说明历史记录无需逐条核对）。
+   *
+   * 红线：不调用供应商、不写真实数据根、不绕过业务校验去改状态；只写隔离 SQLite 的领域表，
+   * 供应商是 base 钩子建的 fixture 占位供应商。
+   */
+  async reconcileQueue(ctx) {
+    const db = await ctx.openIsolatedDatabase();
+    try {
+      const projectId = ctx.project.id;
+      const employee = db.prepare('SELECT id FROM team_users WHERE employeeId = ?')
+        .get(ctx.employee.employeeId);
+      assert.ok(employee?.id, '待核对夹具需要 base 钩子建好的员工账号');
+      const instanceId = db.prepare('SELECT instanceId FROM execution_instances ORDER BY startedAt DESC LIMIT 1')
+        .pluck().get() ?? 'ui-reconcile-instance';
+      const at = (minute) => new Date(Date.UTC(2026, 10, 11, 7, minute, 0)).toISOString();
+      const createdAt = at(0);
+      const placeholders = (count) => Array.from({ length: count }, () => '?').join(', ');
+
+      const imageId = 'ui-reconcile-input';
+      db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, mimeType)
+        VALUES (?, ?, 'input', ?, ?, 'image/png')`)
+        .run(imageId, projectId, 'ui-reconcile-input.png', 'ui-reconcile/input.png');
+      const insertJob = db.prepare(`INSERT INTO jobs (
+        id, projectId, inputImageId, providerId, model, prompt, status, providerStatus, createdAt
+      ) VALUES (${placeholders(9)})`);
+      const insertTask = db.prepare(`INSERT INTO execution_media_tasks (
+        id, taskKey, actorId, scopeType, scopeId, module, taskId, unifiedModel, ruleVersion,
+        inputHash, inputSnapshotJson, outputContractJson, sourceType, sourceId, sourceMetaJson,
+        status, cancelRequestedAt, currentChannelKey, nextEligibleAt, waitReason, waitDetailJson,
+        resultJson, createdAt, updatedAt, reconcileVersion
+      ) VALUES (${placeholders(25)})`);
+      const insertChannel = db.prepare(`INSERT INTO execution_media_channels (
+        id, mediaTaskId, channelKey, providerTable, providerId, providerModel, priority, state,
+        executionRevision, operationId, remoteId, evidenceJson, nextEligibleAt, createdAt, updatedAt
+      ) VALUES (${placeholders(15)})`);
+      const insertOperation = db.prepare(`INSERT INTO execution_operations (
+        id, operationKey, actorId, scopeType, scopeId, module, taskId, step, inputRevision,
+        businessAttemptId, businessAttemptNo, inputHash, inputSnapshotJson, continuationKey,
+        providerSnapshotJson, configVersion, credentialVersionRef, requiredPoolsJson, quoteJson,
+        status, readySeq, waitReason, waitDetail, currentPermitId, currentAttemptId, resultJson,
+        createdAt, updatedAt, mediaTaskId, channelKey, admissionPriority, admissionCandidateCount,
+        admissionTraceJson
+      ) VALUES (${placeholders(33)})`);
+      const insertAttempt = db.prepare(`INSERT INTO execution_attempts (
+        id, operationId, permitId, actorId, businessAttemptNo, submitRound, transportSeq,
+        requestHash, providerSnapshotJson, pricingSnapshotJson, submissionState, terminalState,
+        instanceId, fence, leaseOwner, leaseUntil, remoteId, receiptJson, intentJournalSeq,
+        receiptJournalSeq, errorCode, policyVersion, accountingPeriod, currency, reservedMinor,
+        actualMinor, costState, createdAt, updatedAt
+      ) VALUES (${placeholders(29)})`);
+
+      const attempt = (id, overrides = {}) => ({
+        id, submission: 'maybe_sent', terminal: null, remoteId: null, receiptRemoteId: null,
+        errorCode: null, reserved: 40, actual: null, costState: 'reserved', ...overrides,
+      });
+      /** updatedAt 越晚越靠前：第一条「下载未完成」同时带成功通道与未提交的备用通道。 */
+      const tasks = [
+        {
+          id: 'ui-reconcile-download', jobId: 'ui-reconcile-job-download',
+          jobStatus: 'succeeded', jobProviderStatus: 'download_failed',
+          status: 'succeeded', updatedAt: at(50),
+          channels: [
+            {
+              channelKey: 'qiniu', priority: 0, state: 'succeeded', operationStatus: 'succeeded',
+              remoteId: 'qiniu-download-1',
+              attempts: [attempt('ui-reconcile-attempt-download', {
+                submission: 'terminal', terminal: 'succeeded', remoteId: 'qiniu-download-1',
+                receiptRemoteId: 'qiniu-download-1', reserved: 120, actual: 120, costState: 'settled',
+              })],
+            },
+            { channelKey: 'tencent', priority: 1, state: 'candidate', operationStatus: null, remoteId: null, attempts: [] },
+          ],
+        },
+        {
+          id: 'ui-reconcile-remote-missing', jobId: 'ui-reconcile-job-remote-missing',
+          jobStatus: 'accepted', jobProviderStatus: 'unknown',
+          status: 'unknown', updatedAt: at(40),
+          channels: [{
+            channelKey: 'qiniu', priority: 0, state: 'accepted', operationStatus: 'accepted',
+            remoteId: null,
+            attempts: [attempt('ui-reconcile-attempt-remote-missing', {
+              submission: 'accepted', reserved: 60, costState: 'reserved',
+            })],
+          }],
+        },
+        {
+          id: 'ui-reconcile-submit-unknown', jobId: 'ui-reconcile-job-submit-unknown',
+          jobStatus: 'unknown', jobProviderStatus: 'unknown',
+          status: 'unknown', updatedAt: at(30),
+          channels: [{
+            channelKey: 'qiniu', priority: 0, state: 'unknown', operationStatus: 'unknown',
+            remoteId: null,
+            attempts: [attempt('ui-reconcile-attempt-submit-unknown', {
+              submission: 'maybe_sent', reserved: 50, costState: 'unknown',
+            })],
+          }],
+        },
+        {
+          id: 'ui-reconcile-cost-unknown', jobId: 'ui-reconcile-job-cost-unknown',
+          jobStatus: 'needs_check', jobProviderStatus: 'succeeded',
+          status: 'succeeded', updatedAt: at(20),
+          channels: [{
+            channelKey: 'qiniu', priority: 0, state: 'succeeded', operationStatus: 'succeeded',
+            remoteId: 'qiniu-cost-1',
+            attempts: [attempt('ui-reconcile-attempt-cost-unknown', {
+              submission: 'terminal', terminal: 'succeeded', remoteId: 'qiniu-cost-1',
+              reserved: 200, costState: 'unknown',
+            })],
+          }],
+        },
+        {
+          id: 'ui-reconcile-canceled', jobId: 'ui-reconcile-job-canceled',
+          jobStatus: 'unknown', jobProviderStatus: 'unknown',
+          status: 'unknown', cancelRequestedAt: at(15), updatedAt: at(10),
+          channels: [{
+            channelKey: 'qiniu', priority: 0, state: 'unknown', operationStatus: 'unknown',
+            remoteId: null,
+            attempts: [attempt('ui-reconcile-attempt-canceled', {
+              submission: 'maybe_sent', reserved: 40, costState: 'reserved',
+            })],
+          }],
+        },
+        {
+          id: 'ui-reconcile-settled', jobId: 'ui-reconcile-job-settled',
+          jobStatus: 'succeeded', jobProviderStatus: 'succeeded',
+          status: 'succeeded', updatedAt: at(1),
+          channels: [{
+            channelKey: 'qiniu', priority: 0, state: 'succeeded', operationStatus: 'succeeded',
+            remoteId: 'qiniu-settled-1',
+            attempts: [attempt('ui-reconcile-attempt-settled', {
+              submission: 'terminal', terminal: 'succeeded', remoteId: 'qiniu-settled-1',
+              receiptRemoteId: 'qiniu-settled-1', reserved: 88, actual: 88, costState: 'settled',
+            })],
+          }],
+        },
+      ];
+
+      let readySeq = 810001;
+      for (const task of tasks) {
+        insertJob.run(
+          task.jobId, projectId, imageId, ctx.provider.id, 'gpt-image-2', '界面验收待核对夹具',
+          task.jobStatus, task.jobProviderStatus, task.updatedAt,
+        );
+        insertTask.run(
+          task.id, `fixture:${task.id}`, employee.id, 'project', projectId, 'image', task.jobId,
+          'image2', 'unified-media-2026-11-10-v1', 'fixture-input-hash', '{}', '{}',
+          'project', projectId, '{}', task.status, task.cancelRequestedAt ?? null,
+          task.channels[0]?.channelKey ?? null, null, null, null, null, createdAt, task.updatedAt, 3,
+        );
+        for (const channel of task.channels) {
+          const operationId = channel.attempts.length > 0
+            ? `${task.id}-${channel.channelKey}-operation`
+            : null;
+          insertChannel.run(
+            `${task.id}-${channel.channelKey}`, task.id, channel.channelKey, 'providers',
+            ctx.provider.id, 'gpt-image-2', channel.priority, channel.state, 1, operationId,
+            channel.remoteId ?? null, null, null, task.updatedAt, task.updatedAt,
+          );
+          if (!operationId) continue;
+          insertOperation.run(
+            operationId, `${task.id}:${channel.channelKey}:submit`, employee.id, 'project', projectId,
+            'image', task.jobId, 'submit', 'fixture-revision', `${task.id}-business-attempt`, 1,
+            'fixture-input-hash', '{}', `${task.id}-continuation`,
+            JSON.stringify({
+              providerId: ctx.provider.id, model: 'gpt-image-2',
+              configVersion: 'fixture-config', credentialVersionRef: 'fixture-credential',
+            }),
+            'fixture-config', 'fixture-credential', '[]', '{"minor":0}',
+            channel.operationStatus, readySeq++, null, null,
+            `${task.id}-${channel.channelKey}-permit`, channel.attempts[0].id, null,
+            task.updatedAt, task.updatedAt, task.id, channel.channelKey, 0, 1, null,
+          );
+          channel.attempts.forEach((item, index) => {
+            insertAttempt.run(
+              item.id, operationId, `${task.id}-${channel.channelKey}-permit`, employee.id,
+              1, 1, index + 1, 'fixture-request-hash', '{}', '{}',
+              item.submission, item.terminal ?? null, instanceId, 0, 'fixture',
+              '2099-01-01T00:00:00.000Z', item.remoteId ?? null,
+              item.receiptRemoteId ? JSON.stringify({ remoteId: item.receiptRemoteId }) : null,
+              null, null, item.errorCode ?? null, 1, '2026-11', 'CNY',
+              item.reserved, item.actual ?? null, item.costState, task.updatedAt, task.updatedAt,
+            );
+          });
+        }
+      }
+      const inserted = db.prepare('SELECT COUNT(*) FROM execution_media_tasks').pluck().get();
+      assert.equal(inserted, tasks.length, '待核对夹具必须把六个形态都造出来');
+      ctx.reconcileTasks = tasks.map((task) => task.id);
+      return ctx;
+    } finally {
+      db.close();
+    }
+  },
+
+  /**
+   * 05 号票：团队用量要有「多页明细 + 长 ID + 备用通道」才量得出二级页签、分页控件与详情弹窗。
+   *
+   * 只在**隔离数据根**里造统一任务 / 通道调用 / 非统一模型 / 待映射四类记录：
+   *   - 管理员 60 个制作任务（3 页）+ 60 条通道调用，第一条带备用候选通道与超长远端 ID；
+   *   - 员工 60 个制作任务（3 页）+ 非统一模型记录；
+   *   - 管理员另有待映射记录，供「其他记录 → 待映射记录」页签使用。
+   * 金额全部已结算且可手算；项目沿用 base 钩子建好的那个（不新增会溢出其他屏的长项目名）。
+   * 红线：不调用供应商、不碰真实数据根、只写隔离 SQLite 的领域表。
+   */
+  async usageLedger(ctx) {
+    const db = await ctx.openIsolatedDatabase();
+    const PERIOD = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 7);
+    const MONTH_START = Date.parse(`${PERIOD}-01T00:00:00+08:00`);
+    const BASE = Math.max(Date.now() - 60_000, MONTH_START + 6 * 60 * 60 * 1000);
+    const at = (position) => new Date(BASE - position * 60_000).toISOString();
+    const LONG_REMOTE_ID = `remote-ui-usage-${'0123456789abcdef'.repeat(6)}`;
+    const LONG_ERROR_CODE = `error_fixture_${'长错误码用于验证对话框内换行-'.repeat(3)}`;
+    try {
+      const projectId = ctx.project.id;
+      const employee = db.prepare('SELECT id FROM team_users WHERE employeeId = ?').get(ctx.employee.employeeId);
+      const admin = db.prepare('SELECT id FROM team_users WHERE employeeId = ?').get(ctx.admin.employeeId);
+      assert.ok(employee?.id && admin?.id, '用量夹具需要 base 钩子建好的管理员与员工账号');
+
+      const insertTask = db.prepare(`INSERT INTO execution_media_tasks (
+        id, taskKey, actorId, scopeType, scopeId, module, taskId, unifiedModel, ruleVersion,
+        inputHash, inputSnapshotJson, outputContractJson, sourceType, sourceId, sourceMetaJson,
+        status, currentChannelKey, createdAt, updatedAt
+      ) VALUES (?, ?, ?, 'project', ?, 'image', ?, 'image2', 'rules-2026-11-11',
+        ?, '{}', '{}', 'project_scene', ?, '{}', 'succeeded', ?, ?, ?)`);
+      const insertChannel = db.prepare(`INSERT INTO execution_media_channels (
+        id, mediaTaskId, channelKey, providerTable, providerId, providerModel, priority,
+        state, executionRevision, operationId, remoteId, createdAt, updatedAt
+      ) VALUES (?, ?, ?, 'providers', ?, ?, ?, ?, 1, ?, ?, ?, ?)`);
+      const insertOperation = db.prepare(`INSERT INTO execution_operations (
+        id, operationKey, actorId, scopeType, scopeId, module, taskId, step, inputRevision,
+        businessAttemptId, businessAttemptNo, inputHash, inputSnapshotJson, continuationKey,
+        providerSnapshotJson, requiredPoolsJson, quoteJson, status, waitReason, readySeq,
+        createdAt, updatedAt, mediaTaskId, channelKey
+      ) VALUES (?, ?, ?, 'project', ?, 'image', ?, 'submit', 'r1', ?, 1, ?, '{}', 'image.submit',
+        ?, '[]', ?, 'succeeded', NULL, ?, ?, ?, ?, ?)`);
+      const insertAttempt = db.prepare(`INSERT INTO execution_attempts (
+        id, operationId, permitId, actorId, businessAttemptNo, submitRound, transportSeq,
+        providerSnapshotJson, pricingSnapshotJson, submissionState, terminalState,
+        instanceId, fence, leaseOwner, leaseUntil, remoteId, receiptJson,
+        intentJournalSeq, receiptJournalSeq, errorCode, policyVersion, accountingPeriod,
+        currency, reservedMinor, actualMinor, costState, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, 1, 1, 1, ?, NULL, 'terminal', 'succeeded', 'ui-usage-accept', 1,
+        'fixture', '2099-01-01T00:00:00.000Z', ?, NULL, 1, NULL, ?, 1, ?, 'CNY', ?, ?, 'settled', ?, ?)`);
+
+      let readySeq = 950001;
+      let attemptSeq = 0;
+      db.transaction(() => {
+        for (const [actorId, spec, prefix] of [
+          [admin.id, { tasks: 60, legacy: 40, unmapped: 45 }, 'uad'],
+          [employee.id, { tasks: 60, legacy: 55, unmapped: 20 }, 'uem'],
+        ]) {
+          for (let position = 1; position <= spec.tasks; position += 1) {
+            const createdAt = at(position);
+            const mediaTaskId = `ui-usage-task-${prefix}-${String(position).padStart(3, '0')}`;
+            const operationId = `ui-usage-op-${prefix}-${String(position).padStart(3, '0')}`;
+            const showcase = prefix === 'uad' && position === 1;
+            insertTask.run(
+              mediaTaskId, `media:${mediaTaskId}`, actorId, projectId, operationId,
+              `hash-${mediaTaskId}`, projectId, 'tencent', createdAt, createdAt,
+            );
+            insertChannel.run(
+              `${mediaTaskId}:tencent`, mediaTaskId, 'tencent', 'company-gateway-image2-medium',
+              'image2-medium', 0, 'succeeded', operationId,
+              showcase ? LONG_REMOTE_ID : `remote-${mediaTaskId}`, createdAt, createdAt,
+            );
+            insertOperation.run(
+              operationId, `key-${operationId}`, actorId, projectId, operationId,
+              `business-${operationId}`, `hash-${operationId}`,
+              JSON.stringify({
+                providerId: 'company-gateway-image2-medium', name: '腾讯通道',
+                model: 'image2-medium', requestModel: 'image2-medium', unifiedModel: 'image2',
+              }),
+              '{"kind":"priced"}', readySeq + position + 1, createdAt, createdAt, mediaTaskId, 'tencent',
+            );
+            attemptSeq += 1;
+            insertAttempt.run(
+              `ui-usage-attempt-${prefix}-${String(position).padStart(3, '0')}`, operationId,
+              `permit-${prefix}-${position}`, actorId,
+              JSON.stringify({ model: 'image2-medium', unifiedModel: 'image2' }),
+              showcase ? LONG_REMOTE_ID : `remote-${mediaTaskId}`,
+              showcase ? LONG_ERROR_CODE : null, PERIOD, 25, 25, createdAt, createdAt,
+            );
+          }
+          readySeq += 1000;
+          for (let position = 1; position <= spec.legacy; position += 1) {
+            const createdAt = at(position);
+            const operationId = `ui-usage-legacy-op-${prefix}-${String(position).padStart(3, '0')}`;
+            insertOperation.run(
+              operationId, `key-${operationId}`, actorId, projectId, `ui-usage-legacy-${prefix}-${position}`,
+              `business-${operationId}`, `hash-${operationId}`,
+              JSON.stringify({ model: 'kimi-k2', name: '旧文本模型' }),
+              '{"kind":"priced"}', readySeq + position + 1, createdAt, createdAt, null, null,
+            );
+            attemptSeq += 1;
+            insertAttempt.run(
+              `ui-usage-legacy-attempt-${prefix}-${String(position).padStart(3, '0')}`, operationId,
+              `permit-legacy-${prefix}-${position}`, actorId, JSON.stringify({ model: 'kimi-k2' }),
+              `remote-legacy-${prefix}-${position}`, null, PERIOD, 10, 10, createdAt, createdAt,
+            );
+          }
+          readySeq += 1000;
+          for (let position = 1; position <= spec.unmapped; position += 1) {
+            const createdAt = at(position);
+            const operationId = `ui-usage-orphan-op-${prefix}-${String(position).padStart(3, '0')}`;
+            insertOperation.run(
+              operationId, `key-${operationId}`, actorId, projectId, `ui-usage-orphan-${prefix}-${position}`,
+              `business-${operationId}`, `hash-${operationId}`,
+              JSON.stringify({ model: 'image2-medium', unifiedModel: 'image2' }),
+              '{"kind":"priced"}', readySeq + position + 1, createdAt, createdAt,
+              `ui-usage-missing-${prefix}-${position}`, 'qiniu',
+            );
+            attemptSeq += 1;
+            insertAttempt.run(
+              `ui-usage-orphan-attempt-${prefix}-${String(position).padStart(3, '0')}`, operationId,
+              `permit-orphan-${prefix}-${position}`, actorId,
+              JSON.stringify({ model: 'image2-medium', unifiedModel: 'image2' }),
+              `remote-orphan-${prefix}-${position}`, null, PERIOD, 30, 30, createdAt, createdAt,
+            );
+          }
+          readySeq += 1000;
+        }
+        // 备用候选通道：详情里必须单列「备用通道，未提交」，且不增加通道调用数。
+        insertChannel.run(
+          'ui-usage-task-uad-001:qiniu', 'ui-usage-task-uad-001', 'qiniu',
+          'fixture-qiniu', 'image2-medium', 1, 'candidate', null, null, at(1), at(1),
+        );
+        assert.ok(attemptSeq > 0, '用量夹具至少要造出一条尝试');
+      })();
+      const taskCount = db.prepare('SELECT COUNT(*) FROM execution_media_tasks').pluck().get();
+      const attemptCount = db.prepare('SELECT COUNT(*) FROM execution_attempts').pluck().get();
+      assert.equal(taskCount, 120, '用量夹具必须为管理员与员工各造 60 个制作任务（各 3 页）');
+      assert.equal(attemptCount, 120 + 40 + 45 + 55 + 20, '用量夹具的尝试条数不符合造数期望');
+      ctx.usageLedger = { tasks: taskCount, attempts: attemptCount };
+      return ctx;
+    } finally {
+      db.close();
+    }
+  },
+
+  /**
+   * 06 号票：全员任务页的「服务端分页 + 完整总数 + 分组/平铺 + 旧链接/末页 + 长项目名」数据。
+   *
+   * 造 503 个制作任务 / 505 条执行记录：其中一个统一任务有 3 条执行记录（员工发起、
+   * 挂在一个超长项目名下）、两个失败任务（其一可走原重试入口）、一条只存在于第 505 条
+   * 记录的关键词。只写隔离数据根；可重试任务带一条已失败的 jobs 行，不会触发任何供应商调用。
+   */
+  async taskHistory(ctx) {
+    const db = await ctx.openIsolatedDatabase();
+    try {
+      const employee = db.prepare('SELECT id FROM team_users WHERE employeeId = ?').get(ctx.employee.employeeId);
+      const admin = db.prepare('SELECT id FROM team_users WHERE employeeId = ?').get(ctx.admin.employeeId);
+      assert.ok(employee?.id && admin?.id, '任务分页夹具需要 base 钩子建好的管理员与员工账号');
+      // 超长项目名：主表列宽（省略号 + tooltip）与详情换行的验收素材。走正式接口建项目，
+      // 再用隔离数据根改长名字（不让长名污染 base 项目与其他屏）。
+      const longProject = await ctx.api.createProject(ctx.employeeSession, {
+        providerId: ctx.provider.id, productCode: 'UI-TASK-LONG-NAME',
+      });
+      const LONG_PROJECT_NAME = `超长项目名用于验证任务页主表列宽与详情换行-夏季新品详情页重制计划-第二批次-${'继续追加产品卖点与场景描述-'.repeat(3)}`;
+      db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(LONG_PROJECT_NAME, longProject.id);
+
+      const insertOperation = db.prepare(`INSERT INTO execution_operations (
+        id, operationKey, actorId, scopeType, scopeId, module, taskId, step, inputRevision,
+        businessAttemptId, businessAttemptNo, inputHash, inputSnapshotJson, continuationKey,
+        providerSnapshotJson, requiredPoolsJson, quoteJson, status, waitReason, readySeq,
+        createdAt, updatedAt, mediaTaskId, channelKey
+      ) VALUES (?, ?, ?, 'project', ?, 'image', ?, 'submit', ?, ?, 1, 'hash', '{}', 'image.submit', ?, '[]', '{}', ?, NULL, ?, ?, ?, ?, NULL)`);
+      const providerSnapshot = JSON.stringify({ name: '任务页验收供应商', model: 'fixture-image-model' });
+      const now = Date.now();
+      let readySeq = 810_000;
+      db.transaction(() => {
+        for (let index = 1; index <= 3; index += 1) {
+          const operationId = `ui-task-unified-op-${index}`;
+          const at = new Date(now - 10_000 - index).toISOString();
+          insertOperation.run(
+            operationId, `key-${operationId}`, employee.id, longProject.id, 'ui-task-unified-showcase', `r${index}`,
+            `ui-task-unified-biz-${index}`, providerSnapshot, 'succeeded', readySeq + index, at, at, 'ui-task-media-unified',
+          );
+        }
+        readySeq += 100;
+        for (let index = 1; index <= 502; index += 1) {
+          const operationId = `ui-task-single-op-${String(index).padStart(3, '0')}`;
+          const taskId = index === 502
+            ? 'ui-task-deep-history-keyword'
+            : `ui-task-single-${String(index).padStart(3, '0')}`;
+          const actorId = index === 502 ? employee.id : admin.id;
+          const status = index === 3 || index === 4 ? 'failed' : 'succeeded';
+          const at = new Date(now - 60_000 - index * 1000).toISOString();
+          insertOperation.run(
+            operationId, `key-${operationId}`, actorId, ctx.project.id, taskId, 'r1',
+            `ui-task-biz-${index}`, providerSnapshot, status, readySeq + index, at, at, null,
+          );
+          if (status === 'failed') {
+            db.prepare('UPDATE execution_operations SET status = ? WHERE id = ?').run(status, operationId);
+          }
+        }
+        // 可重试的图片任务：原重试入口要求 jobs 行存在且已失败；不会真的提交供应商。
+        db.prepare("INSERT OR IGNORE INTO image_assets (id, projectId, role, filename, path) VALUES ('ui-task-fixture-input', ?, 'input', '任务页验收输入.png', 'storage/ui-task-fixture-input.png')")
+          .run(longProject.id);
+        db.prepare(`INSERT INTO jobs (id, projectId, inputImageId, providerId, model, prompt, status)
+          VALUES (?, ?, 'ui-task-fixture-input', ?, 'fixture-image-model', 'fixture', 'failed')`)
+          .run('ui-task-single-003', longProject.id, ctx.provider.id);
+        // 原重试入口是受控资源路由：按正式登记格式给 job 补归属（父级=项目），只写隔离数据根。
+        const scopeAt = new Date(now - 61_000).toISOString();
+        db.prepare(`INSERT INTO team_resource_scopes (
+          resourceType, resourceId, ownerUserId, visibility, parentType, parentId, rootType, rootId, createdAt, updatedAt
+        ) VALUES ('job', 'ui-task-single-003', ?, 'private', 'project', ?, 'project', ?, ?, ?)`)
+          .run(employee.id, longProject.id, longProject.id, scopeAt, scopeAt);
+      })();
+      const groups = db.prepare(`SELECT COUNT(DISTINCT groupId) FROM (
+        SELECT CASE WHEN NULLIF(mediaTaskId, '') IS NOT NULL THEN 'unified:' || mediaTaskId ELSE 'operation:' || id END AS groupId
+        FROM execution_operations WHERE id LIKE 'ui-task-%'
+      )`).pluck().get();
+      const records = db.prepare("SELECT COUNT(*) FROM execution_operations WHERE id LIKE 'ui-task-%'").pluck().get();
+      assert.equal(groups, 503, '任务分页夹具必须造出 503 个制作任务');
+      assert.equal(records, 505, '任务分页夹具必须造出 505 条执行记录');
+      ctx.taskHistory = {
+        groups,
+        records,
+        longProjectName: LONG_PROJECT_NAME,
+        deepOperationId: 'ui-task-single-op-502',
+        retryOperationId: 'ui-task-single-op-003',
+        lastPageOperationId: 'ui-task-single-op-501',
+      };
+      return ctx;
+    } finally {
+      db.close();
+    }
   },
 };
 

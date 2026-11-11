@@ -15,7 +15,22 @@ import {
   UNIFIED_KLING3_MODEL_KEY,
   unifiedMediaDisplayName,
 } from '../media-core/unified-media/catalog.ts';
-import { queryUnifiedTaskUsage, type TeamUnifiedTaskView } from './unified-usage.ts';
+import { parseTeamPage, resolveTeamPage, type TeamPageParamInput, type TeamPagination } from './pagination.ts';
+import {
+  countTeamUnifiedUsageTasks,
+  countUnifiedUsageTasksByModel,
+  listTeamUnifiedUsageTasks,
+  type TeamUnifiedTaskView,
+} from './unified-usage.ts';
+import {
+  isAdminOnlyUsageSection,
+  type TeamUsageAttemptSection,
+} from './usage-sections.ts';
+import {
+  attemptSqlSources,
+  reportingModelName,
+  type UsageAttemptSqlSources,
+} from './usage-sql.ts';
 
 export class TeamUsageError extends Error {
   readonly status: number;
@@ -110,19 +125,45 @@ export interface TeamUsageMember extends TeamMemberSummary {
   rangeChargedMinor: number;
 }
 
-export interface TeamUnifiedUsageReport {
-  tasks: TeamUnifiedTaskView[];
-  /** Current non-unified models (Seedream/Nano/LLM/TTS/etc.). */
-  legacyAttempts: TeamUsageAttempt[];
-  /** Records that claim a unified parent/identity but cannot be joined to it. */
-  unmappedAttempts: TeamUsageAttempt[];
-  counts: {
-    generationTasks: number;
-    channelCalls: number;
-    legacyAttempts: number;
-    unmappedAttempts: number;
-  };
+/** 完整筛选范围的金额分类合计（人民币分）。 */
+export interface TeamUsageTotals {
+  settledMinor: number;
+  estimatedMinor: number;
+  unpricedCount: number;
+  uncertainCount: number;
 }
+
+/**
+ * 完整筛选范围的三类真实尝试计数。`channels` / `legacy` / `unmapped` 互斥，
+ * 并集等于该筛选下全部真实尝试；`generationTasks` 是制作任务数（分页单位）。
+ */
+export interface TeamUsageCounts {
+  generationTasks: number;
+  channelCalls: number;
+  legacyAttempts: number;
+  unmappedAttempts: number;
+}
+
+/**
+ * `section=summary` 的完整摘要：额度、金额、计数、模型排行、趋势、成员统计与
+ * 模型选项。**不携带**任何全量任务/尝试数组；`totals`/`counts`/排行/趋势/成员/
+ * 模型选项都对完整筛选范围求值，不随页码或 section 变化。
+ */
+export interface TeamUsageSummary {
+  totals: TeamUsageTotals;
+  counts: TeamUsageCounts;
+  models: TeamModelUsage[];
+  trend: TeamUsageTrendPoint[];
+  members: TeamUsageMember[];
+  teamQuota: TeamQuotaSummary | null;
+  modelOptions: string[];
+  taskCount: number;
+  attemptCount: number;
+  localAgentIncluded: false;
+  costNotice: string;
+}
+
+export const TEAM_USAGE_COST_NOTICE = '金额为工作台预估与结算口径，不等于供应商最终账单；本地 Agent 不计入。';
 
 interface AttemptRow {
   attemptId: string;
@@ -157,16 +198,6 @@ interface AttemptRow {
   usageMirrorCount: number;
   unifiedModel: string | null;
   createdAt: string;
-}
-
-function tableHasColumn(db: Database.Database, table: string, column: string): boolean {
-  try {
-    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) return false;
-    return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
-      .some((item) => item.name === column);
-  } catch {
-    return false;
-  }
 }
 
 function scopedActor(viewer: TeamViewer, requested?: string): string | undefined {
@@ -206,7 +237,7 @@ function mapAttempt(row: AttemptRow): TeamUsageAttempt {
     module: row.module,
     step: row.step,
     model,
-    reportingModel: unifiedMediaDisplayName(row.unifiedModel) ?? model,
+    reportingModel: reportingModelName(row.unifiedModel, model),
     submissionState: row.submissionState,
     outcome: row.outcome,
     remoteId: row.remoteId,
@@ -225,74 +256,84 @@ function mapAttempt(row: AttemptRow): TeamUsageAttempt {
   };
 }
 
+/** 员工投影把统一模型的真实通道模型收敛为统一模型名；管理员保留真实身份。 */
+function projectAttempt(viewer: TeamViewer, item: TeamUsageAttempt): TeamUsageAttempt {
+  return viewer.role === 'admin' || item.unifiedModel === null
+    ? item
+    : { ...item, model: item.reportingModel };
+}
+
+const ATTEMPT_SELECT = (sources: UsageAttemptSqlSources) => `a.id AS attemptId, o.id AS operationId,
+  o.mediaTaskId, o.taskId, o.businessAttemptId,
+  a.businessAttemptNo, a.submitRound, a.transportSeq, a.actorId AS actorUserId,
+  u.employeeId, u.displayName AS actorDisplayName, o.scopeType, o.scopeId,
+  o.module, o.step, ${sources.model} AS model,
+  ${sources.unifiedModel} AS unifiedModel,
+  ${sources.quoteKind} AS quoteKind,
+  a.submissionState, a.terminalState AS outcome, a.remoteId, a.reservedMinor, a.actualMinor,
+  a.costState, a.policyVersion, a.accountingPeriod, o.configVersion, o.clientVersion,
+  o.serverReleaseId,
+  (SELECT e.id FROM team_error_records e WHERE e.attemptId = a.id ORDER BY e.createdAt DESC LIMIT 1) AS errorId,
+  (SELECT COUNT(*) FROM usage_ledger l WHERE l.executionAttemptId = a.id) AS usageMirrorCount,
+  a.createdAt`;
+
+interface AttemptQuery {
+  sources: UsageAttemptSqlSources;
+  clauses: string[];
+  values: Array<string | number>;
+}
+
+function attemptWhere(clauses: readonly string[]): string {
+  return clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+}
+
+/** 权限 + 业务筛选的唯一拼装处：授权总是在计数/选页之前生效。 */
+function attemptQuery(
+  db: Database.Database,
+  viewer: TeamViewer,
+  filters: TeamUsageFilters,
+): AttemptQuery {
+  const actorUserId = scopedActor(viewer, filters.actorUserId);
+  const sources = attemptSqlSources(db, { parentScopedToAttemptActor: viewer.role !== 'admin' });
+  const clauses: string[] = [];
+  const values: Array<string | number> = [];
+  if (actorUserId) { clauses.push('a.actorId = ?'); values.push(actorUserId); }
+  if (filters.from) { clauses.push('a.createdAt >= ?'); values.push(filters.from); }
+  if (filters.to) { clauses.push('a.createdAt < ?'); values.push(filters.to); }
+  if (filters.module) { clauses.push('o.module = ?'); values.push(filters.module); }
+  if (filters.outcome) { clauses.push('a.terminalState = ?'); values.push(filters.outcome); }
+  if (filters.model) {
+    const unifiedFilter = ['image2', UNIFIED_KLING3_MODEL_KEY]
+      .find((key) => filters.model === key || filters.model === unifiedMediaDisplayName(key));
+    const displayModel = unifiedFilter ?? filters.model;
+    clauses.push(`(${sources.model} = ? OR ${sources.unifiedModel} = ?)`);
+    values.push(filters.model, displayModel);
+  }
+  return { sources, clauses, values };
+}
+
+/**
+ * 全范围真实尝试投影（不分页）。接口列表必须走 `listTeamUsageAttempts`；
+ * 本函数供 CSV 导出与回归测试使用，不做隐式截断。
+ */
 export function queryTeamUsage(
   db: Database.Database,
   viewer: TeamViewer,
   filters: TeamUsageFilters = {},
 ): {
   items: TeamUsageAttempt[];
-  totals: { settledMinor: number; estimatedMinor: number; unpricedCount: number; uncertainCount: number };
+  totals: TeamUsageTotals;
   localAgentIncluded: false;
   costNotice: string;
 } {
-  const actorUserId = scopedActor(viewer, filters.actorUserId);
-  const clauses: string[] = [];
-  const values: string[] = [];
-  if (actorUserId) { clauses.push('a.actorId = ?'); values.push(actorUserId); }
-  if (filters.from) { clauses.push('a.createdAt >= ?'); values.push(filters.from); }
-  if (filters.to) { clauses.push('a.createdAt < ?'); values.push(filters.to); }
-  if (filters.module) { clauses.push('o.module = ?'); values.push(filters.module); }
-  if (filters.outcome) { clauses.push('a.terminalState = ?'); values.push(filters.outcome); }
-  const modelExpression = `COALESCE(
-    CASE WHEN json_valid(a.pricingSnapshotJson) THEN json_extract(a.pricingSnapshotJson, '$.coreModelKey') END,
-    CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.coreModelKey') END,
-    CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.requestModel') END,
-    CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.model') END,
-    CASE WHEN json_valid(a.providerSnapshotJson) THEN json_extract(a.providerSnapshotJson, '$.modelAlias') END
-  )`;
-  const hasImageUnifiedModel = tableHasColumn(db, 'jobs', 'unifiedModel');
-  const hasVideoUnifiedModel = tableHasColumn(db, 'video_jobs', 'unifiedModel');
-  const snapshotUnified = `CASE WHEN json_valid(a.providerSnapshotJson)
-    THEN json_extract(a.providerSnapshotJson, '$.unifiedModel') END`;
-  const unifiedModelExpression = `COALESCE(
-    ${hasImageUnifiedModel ? 'j.unifiedModel' : 'NULL'},
-    ${hasVideoUnifiedModel ? 'v.unifiedModel' : 'NULL'},
-    ${snapshotUnified}
-  )`;
-  if (filters.model) {
-    const unifiedFilter = ['image2', UNIFIED_KLING3_MODEL_KEY]
-      .find((key) => filters.model === key || filters.model === unifiedMediaDisplayName(key));
-    const displayModel = unifiedFilter ?? filters.model;
-    clauses.push(`(${modelExpression} = ? OR ${unifiedModelExpression} = ?)`);
-    values.push(filters.model, displayModel);
-  }
+  const { sources, clauses, values } = attemptQuery(db, viewer, filters);
   const rows = db.prepare(`
-    SELECT a.id AS attemptId, o.id AS operationId, o.mediaTaskId, o.taskId, o.businessAttemptId,
-      a.businessAttemptNo, a.submitRound, a.transportSeq, a.actorId AS actorUserId,
-      u.employeeId, u.displayName AS actorDisplayName, o.scopeType, o.scopeId,
-      o.module, o.step, ${modelExpression} AS model,
-      ${unifiedModelExpression} AS unifiedModel,
-      CASE WHEN json_valid(o.quoteJson) THEN json_extract(o.quoteJson, '$.kind') ELSE 'unpriced' END AS quoteKind,
-      a.submissionState, a.terminalState AS outcome, a.remoteId, a.reservedMinor, a.actualMinor,
-      a.costState, a.policyVersion, a.accountingPeriod, o.configVersion, o.clientVersion,
-      o.serverReleaseId,
-      (SELECT e.id FROM team_error_records e WHERE e.attemptId = a.id ORDER BY e.createdAt DESC LIMIT 1) AS errorId,
-      (SELECT COUNT(*) FROM usage_ledger l WHERE l.executionAttemptId = a.id) AS usageMirrorCount,
-      a.createdAt
-    FROM execution_attempts a
-    JOIN execution_operations o ON o.id = a.operationId
-    JOIN team_users u ON u.id = a.actorId
-    ${hasImageUnifiedModel ? "LEFT JOIN jobs j ON o.module = 'image' AND j.id = o.taskId" : ''}
-    ${hasVideoUnifiedModel ? "LEFT JOIN video_jobs v ON o.module = 'video' AND v.id = o.taskId" : ''}
-    ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+    SELECT ${ATTEMPT_SELECT(sources)}
+    ${sources.from}
+    ${attemptWhere(clauses)}
     ORDER BY a.createdAt DESC, a.id DESC
   `).all(...values) as AttemptRow[];
-  const items = rows.map((row) => {
-    const item = mapAttempt(row);
-    return viewer.role === 'admin' || item.unifiedModel === null
-      ? item
-      : { ...item, model: item.reportingModel };
-  });
+  const items = rows.map((row) => projectAttempt(viewer, mapAttempt(row)));
   return {
     items,
     totals: {
@@ -302,17 +343,93 @@ export function queryTeamUsage(
       uncertainCount: items.filter((item) => item.costStatus === 'uncertain').length,
     },
     localAgentIncluded: false,
-    costNotice: '金额为工作台预估与结算口径，不等于供应商最终账单；本地 Agent 不计入。',
+    costNotice: TEAM_USAGE_COST_NOTICE,
   };
 }
 
-function attemptChargedMinor(item: TeamUsageAttempt): number {
-  if (item.costStatus === 'settled') return item.actualMinor ?? 0;
-  if (item.costStatus === 'estimated' || item.costStatus === 'uncertain') return item.reservedMinor;
-  return 0;
+/** 完整筛选范围的金额分类合计（SQL 聚合，不加载尝试对象）。 */
+export function queryTeamUsageTotals(
+  db: Database.Database,
+  viewer: TeamViewer,
+  filters: TeamUsageFilters = {},
+): TeamUsageTotals {
+  const { sources, clauses, values } = attemptQuery(db, viewer, filters);
+  const row = db.prepare(`
+    SELECT
+      COALESCE(SUM(${sources.settledMinor}), 0) AS settledMinor,
+      COALESCE(SUM(${sources.estimatedMinor}), 0) AS estimatedMinor,
+      COALESCE(SUM(${sources.unpricedCount}), 0) AS unpricedCount,
+      COALESCE(SUM(${sources.uncertainCount}), 0) AS uncertainCount
+    ${sources.from}
+    ${attemptWhere(clauses)}
+  `).get(...values) as TeamUsageTotals | undefined;
+  return {
+    settledMinor: Number(row?.settledMinor ?? 0),
+    estimatedMinor: Number(row?.estimatedMinor ?? 0),
+    unpricedCount: Number(row?.unpricedCount ?? 0),
+    uncertainCount: Number(row?.uncertainCount ?? 0),
+  };
 }
 
-function usageTrend(from: string, to: string, items: TeamUsageAttempt[]): TeamUsageTrendPoint[] {
+/**
+ * 完整筛选范围的互斥分类计数（SQL 聚合）。
+ * `channelCalls` / `legacyAttempts` / `unmappedAttempts` 与三个明细 section 的
+ * `pagination.total` 同口径；`generationTasks` 与 `section=tasks` 的总数同口径。
+ */
+export function queryTeamUsageCounts(
+  db: Database.Database,
+  viewer: TeamViewer,
+  filters: TeamUsageFilters = {},
+): TeamUsageCounts {
+  const generationTasks = countTeamUnifiedUsageTasks(db, viewer, filters);
+  const { sources, clauses, values } = attemptQuery(db, viewer, filters);
+  const row = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN ${sources.channels} THEN 1 ELSE 0 END), 0) AS channelCalls,
+      COALESCE(SUM(CASE WHEN ${sources.legacy} THEN 1 ELSE 0 END), 0) AS legacyAttempts,
+      COALESCE(SUM(CASE WHEN ${sources.unmapped} THEN 1 ELSE 0 END), 0) AS unmappedAttempts
+    ${sources.from}
+    ${attemptWhere(clauses)}
+  `).get(...values) as { channelCalls: number; legacyAttempts: number; unmappedAttempts: number } | undefined;
+  return {
+    generationTasks,
+    channelCalls: Number(row?.channelCalls ?? 0),
+    legacyAttempts: Number(row?.legacyAttempts ?? 0),
+    unmappedAttempts: Number(row?.unmappedAttempts ?? 0),
+  };
+}
+
+interface ModelGroupRow {
+  unifiedModel: string | null;
+  model: string | null;
+  module: string;
+  callCount: number;
+  chargedMinor: number;
+  settledMinor: number;
+  estimatedMinor: number;
+  unpricedCount: number;
+  uncertainCount: number;
+}
+
+interface RangeMemberRow {
+  userId: string;
+  taskCount: number;
+  callCount: number;
+  rangeChargedMinor: number;
+}
+
+interface TrendGroupRow {
+  day: string;
+  unifiedModel: string | null;
+  model: string | null;
+  chargedMinor: number;
+}
+
+function usageTrend(
+  from: string,
+  to: string,
+  rows: readonly TrendGroupRow[],
+): TeamUsageTrendPoint[] {
   const firstDay = usageDateLabel(new Date(from));
   const endDay = usageDateLabel(new Date(to));
   const points: TeamUsageTrendPoint[] = [];
@@ -320,16 +437,90 @@ function usageTrend(from: string, to: string, items: TeamUsageAttempt[]): TeamUs
     points.push({ date, chargedMinor: 0, byModel: {} });
   }
   const byDate = new Map(points.map((point) => [point.date, point]));
-  for (const item of items) {
-    const point = byDate.get(usageDateLabel(new Date(item.createdAt)));
+  for (const row of rows) {
+    const point = byDate.get(row.day);
     if (!point) continue;
-    const chargedMinor = attemptChargedMinor(item);
-    point.chargedMinor += chargedMinor;
-    point.byModel[item.reportingModel] = (point.byModel[item.reportingModel] ?? 0) + chargedMinor;
+    const model = reportingModelName(row.unifiedModel, row.model ?? '未定价模型');
+    point.chargedMinor += Number(row.chargedMinor);
+    point.byModel[model] = (point.byModel[model] ?? 0) + Number(row.chargedMinor);
   }
   return points;
 }
 
+function buildModelUsage(
+  rows: readonly ModelGroupRow[],
+  unifiedTaskCounts: ReadonlyMap<string, number>,
+  legacyTaskCounts: ReadonlyMap<string, number>,
+): TeamModelUsage[] {
+  const modelMap = new Map<string, TeamModelUsage>();
+  for (const row of rows) {
+    const model = reportingModelName(row.unifiedModel, row.model ?? '未定价模型');
+    const current = modelMap.get(model) ?? {
+      model, modules: [], taskCount: 0, callCount: 0, chargedMinor: 0,
+      settledMinor: 0, estimatedMinor: 0, unpricedCount: 0, uncertainCount: 0, percentage: 0,
+    };
+    current.callCount += Number(row.callCount);
+    current.chargedMinor += Number(row.chargedMinor);
+    current.settledMinor += Number(row.settledMinor);
+    current.estimatedMinor += Number(row.estimatedMinor);
+    current.unpricedCount += Number(row.unpricedCount);
+    current.uncertainCount += Number(row.uncertainCount);
+    if (!current.modules.includes(row.module)) current.modules.push(row.module);
+    modelMap.set(model, current);
+  }
+  for (const [model, taskCount] of unifiedTaskCounts) {
+    const current = modelMap.get(model) ?? {
+      model, modules: [], taskCount: 0, callCount: 0, chargedMinor: 0,
+      settledMinor: 0, estimatedMinor: 0, unpricedCount: 0, uncertainCount: 0, percentage: 0,
+    };
+    current.taskCount += taskCount;
+    modelMap.set(model, current);
+  }
+  for (const [model, taskCount] of legacyTaskCounts) {
+    const current = modelMap.get(model) ?? {
+      model, modules: [], taskCount: 0, callCount: 0, chargedMinor: 0,
+      settledMinor: 0, estimatedMinor: 0, unpricedCount: 0, uncertainCount: 0, percentage: 0,
+    };
+    current.taskCount += taskCount;
+    modelMap.set(model, current);
+  }
+  const chargedTotal = [...modelMap.values()].reduce((sum, model) => sum + model.chargedMinor, 0);
+  return [...modelMap.values()].map((model) => ({
+    ...model,
+    modules: model.modules.sort((left, right) => left.localeCompare(right)),
+    percentage: chargedTotal > 0 ? model.chargedMinor / chargedTotal * 100 : 0,
+  })).sort((left, right) => right.chargedMinor - left.chargedMinor
+    || right.callCount - left.callCount
+    || left.model.localeCompare(right.model));
+}
+
+/**
+ * 授权范围内**完整候选**模型选项（不受日期/结果/模型筛选与分页影响）。
+ * 管理员看全团队，员工只看本人；选中一个模型后仍能换选其它模型。
+ */
+function queryModelOptions(db: Database.Database, viewer: TeamViewer): string[] {
+  const actorUserId = scopedActor(viewer);
+  const sources = attemptSqlSources(db, { parentScopedToAttemptActor: viewer.role !== 'admin' });
+  const attemptRows = db.prepare(`
+    SELECT DISTINCT ${sources.unifiedModel} AS unifiedModel, ${sources.model} AS model
+    ${sources.from}
+    ${actorUserId ? 'WHERE a.actorId = ?' : ''}
+  `).all(...(actorUserId ? [actorUserId] : [])) as Array<{ unifiedModel: string | null; model: string | null }>;
+  const taskRows = db.prepare(`
+    SELECT DISTINCT t.unifiedModel AS unifiedModel
+    FROM execution_media_tasks t
+    ${actorUserId ? 'WHERE t.actorId = ?' : ''}
+  `).all(...(actorUserId ? [actorUserId] : [])) as Array<{ unifiedModel: string }>;
+  const names = new Set<string>();
+  for (const row of attemptRows) names.add(reportingModelName(row.unifiedModel, row.model ?? '未定价模型'));
+  for (const row of taskRows) names.add(reportingModelName(row.unifiedModel, row.unifiedModel));
+  return [...names].sort();
+}
+
+/**
+ * 完整筛选范围的模型排行、趋势、成员统计、额度卡与模型选项。
+ * 全部通过 SQL 聚合/定向查询求值，不依赖当前页或 section。
+ */
 export function queryTeamUsageAnalytics(
   db: Database.Database,
   viewer: TeamViewer,
@@ -344,75 +535,79 @@ export function queryTeamUsageAnalytics(
   taskCount: number;
   attemptCount: number;
 } {
-  const items = queryTeamUsage(db, viewer, filters).items;
-  const unifiedTasks = queryUnifiedTaskUsage(db, viewer, filters).tasks;
-  const modelMap = new Map<string, TeamModelUsage>();
-  for (const item of items) {
-    const current = modelMap.get(item.reportingModel) ?? {
-      model: item.reportingModel, modules: [], taskCount: 0, callCount: 0, chargedMinor: 0,
-      settledMinor: 0, estimatedMinor: 0, unpricedCount: 0, uncertainCount: 0, percentage: 0,
-    };
-    current.callCount += 1;
-    current.chargedMinor += attemptChargedMinor(item);
-    if (!current.modules.includes(item.module)) current.modules.push(item.module);
-    if (item.costStatus === 'settled') current.settledMinor += item.actualMinor ?? 0;
-    if (item.costStatus === 'estimated') current.estimatedMinor += item.reservedMinor;
-    if (item.costStatus === 'unpriced') current.unpricedCount += 1;
-    if (item.costStatus === 'uncertain') current.uncertainCount += 1;
-    modelMap.set(item.reportingModel, current);
+  const { sources, clauses, values } = attemptQuery(db, viewer, filters);
+  const from = attemptWhere(clauses);
+  const modelRows = db.prepare(`
+    SELECT ${sources.unifiedModel} AS unifiedModel, ${sources.model} AS model, o.module AS module,
+      COUNT(*) AS callCount,
+      COALESCE(SUM(${sources.chargedMinor}), 0) AS chargedMinor,
+      COALESCE(SUM(${sources.settledMinor}), 0) AS settledMinor,
+      COALESCE(SUM(${sources.estimatedMinor}), 0) AS estimatedMinor,
+      COALESCE(SUM(${sources.unpricedCount}), 0) AS unpricedCount,
+      COALESCE(SUM(${sources.uncertainCount}), 0) AS uncertainCount
+    ${sources.from}
+    ${from}
+    GROUP BY ${sources.unifiedModel}, ${sources.model}, o.module
+  `).all(...values) as ModelGroupRow[];
+  const trendRows = db.prepare(`
+    SELECT date(a.createdAt, '+8 hours') AS day,
+      ${sources.unifiedModel} AS unifiedModel, ${sources.model} AS model,
+      COALESCE(SUM(${sources.chargedMinor}), 0) AS chargedMinor
+    ${sources.from}
+    ${from}
+    GROUP BY date(a.createdAt, '+8 hours'), ${sources.unifiedModel}, ${sources.model}
+  `).all(...values) as TrendGroupRow[];
+  const attemptCount = Number(db.prepare(`
+    SELECT COUNT(*) FROM (
+      SELECT 1 ${sources.from} ${from}
+    )
+  `).pluck().get(...values) ?? 0);
+  const legacyTaskRows = db.prepare(`
+    SELECT ${sources.model} AS model, COUNT(DISTINCT o.taskId) AS taskCount
+    ${sources.from}
+    ${from ? `${from} AND` : 'WHERE'} (${sources.legacy})
+    GROUP BY ${sources.model}
+  `).all(...values) as Array<{ model: string | null; taskCount: number }>;
+  const unifiedTaskCounts = new Map<string, number>();
+  for (const row of countUnifiedUsageTasksByModel(db, viewer, filters)) {
+    const model = reportingModelName(row.unifiedModel, row.unifiedModel);
+    unifiedTaskCounts.set(model, (unifiedTaskCounts.get(model) ?? 0) + Number(row.taskCount));
   }
-  const taskCountByModel = new Map<string, Set<string>>();
-  for (const task of unifiedTasks) {
-    const set = taskCountByModel.get(task.model) ?? new Set<string>();
-    set.add(task.mediaTaskId);
-    taskCountByModel.set(task.model, set);
+  const legacyTaskCounts = new Map<string, number>();
+  for (const row of legacyTaskRows) {
+    const model = reportingModelName(null, row.model ?? '未定价模型');
+    legacyTaskCounts.set(model, (legacyTaskCounts.get(model) ?? 0) + Number(row.taskCount));
   }
-  for (const item of items.filter((item) => item.unifiedModel === null)) {
-    const set = taskCountByModel.get(item.reportingModel) ?? new Set<string>();
-    set.add(item.taskId);
-    taskCountByModel.set(item.reportingModel, set);
-  }
-  for (const [model, tasks] of taskCountByModel) {
-    const current = modelMap.get(model) ?? {
-      model, modules: [], taskCount: 0, callCount: 0, chargedMinor: 0,
-      settledMinor: 0, estimatedMinor: 0, unpricedCount: 0, uncertainCount: 0, percentage: 0,
-    };
-    current.taskCount = tasks.size;
-    modelMap.set(model, current);
-  }
-  const chargedTotal = items.reduce((sum, item) => sum + attemptChargedMinor(item), 0);
-  const models = [...modelMap.values()].map((model) => ({
-    ...model,
-    modules: model.modules.sort((left, right) => left.localeCompare(right)),
-    percentage: chargedTotal > 0 ? model.chargedMinor / chargedTotal * 100 : 0,
-  })).sort((left, right) => right.chargedMinor - left.chargedMinor || right.callCount - left.callCount || left.model.localeCompare(right.model));
-
+  const models = buildModelUsage(modelRows, unifiedTaskCounts, legacyTaskCounts);
+  const generationTasks = countTeamUnifiedUsageTasks(db, viewer, filters);
+  const taskCount = generationTasks
+    + [...legacyTaskCounts.values()].reduce((sum, count) => sum + count, 0);
   const defaults = getShanghaiUsagePeriods(now).month;
-  const trend = usageTrend(filters.from ?? defaults.from, filters.to ?? defaults.to, items);
+  const trend = usageTrend(filters.from ?? defaults.from, filters.to ?? defaults.to, trendRows);
+  const modelOptions = queryModelOptions(db, viewer);
   if (viewer.role !== 'admin') {
-    const own = queryTeamUsage(db, viewer, { actorUserId: viewer.userId }).items;
-    const ownTasks = queryUnifiedTaskUsage(db, viewer, { actorUserId: viewer.userId }).tasks;
-    const modelOptions = [
-      ...own.map((item) => item.reportingModel),
-      ...ownTasks.map((task) => task.model),
-    ];
-    return {
-      models, trend, members: [], teamQuota: null,
-      modelOptions: [...new Set(modelOptions)].sort(),
-      taskCount: unifiedTasks.length + new Set(items.filter((item) => item.unifiedModel === null).map((item) => item.taskId)).size,
-      attemptCount: items.length,
-    };
+    return { models, trend, members: [], teamQuota: null, modelOptions, taskCount, attemptCount };
   }
 
   const memberRows = listTeamMembers(db, viewer, { now }).items;
-  const members = memberRows.map((member) => ({
-    ...member,
-    taskCount: new Set(items.filter((item) => item.actorUserId === member.userId)
-      .map((item) => `${item.actorUserId}:${item.taskId}`)).size,
-    callCount: items.filter((item) => item.actorUserId === member.userId).length,
-    rangeChargedMinor: items.filter((item) => item.actorUserId === member.userId)
-      .reduce((sum, item) => sum + attemptChargedMinor(item), 0),
-  })).sort((left, right) => right.rangeChargedMinor - left.rangeChargedMinor || left.employeeId.localeCompare(right.employeeId));
+  const rangeRows = db.prepare(`
+    SELECT a.actorId AS userId, COUNT(DISTINCT o.taskId) AS taskCount, COUNT(*) AS callCount,
+      COALESCE(SUM(${sources.chargedMinor}), 0) AS rangeChargedMinor
+    ${sources.from}
+    ${from}
+    GROUP BY a.actorId
+  `).all(...values) as RangeMemberRow[];
+  const byActor = new Map(rangeRows.map((row) => [row.userId, row]));
+  const members = memberRows.map((member) => {
+    const row = byActor.get(member.userId);
+    return {
+      ...member,
+      taskCount: Number(row?.taskCount ?? 0),
+      callCount: Number(row?.callCount ?? 0),
+      rangeChargedMinor: Number(row?.rangeChargedMinor ?? 0),
+    };
+  }).sort((left, right) => right.rangeChargedMinor - left.rangeChargedMinor
+    || left.employeeId.localeCompare(right.employeeId));
   const limited = memberRows.filter((member) => member.monthlyLimitMinor !== null);
   const teamQuota: TeamQuotaSummary = {
     accountingPeriod: shanghaiAccountingPeriod(now),
@@ -424,48 +619,89 @@ export function queryTeamUsageAnalytics(
     limitedRemainingMinor: limited.reduce((sum, member) => sum + (member.remainingMinor ?? 0), 0),
     unlimitedCount: memberRows.length - limited.length,
   };
-  const modelOptions = [
-    ...queryTeamUsage(db, viewer).items.map((item) => item.reportingModel),
-    ...queryUnifiedTaskUsage(db, viewer).tasks.map((task) => task.model),
-  ];
-  return {
-    models, trend, members, teamQuota,
-    modelOptions: [...new Set(modelOptions)].sort(),
-    taskCount: unifiedTasks.length + new Set(items.filter((item) => item.unifiedModel === null).map((item) => item.taskId)).size,
-    attemptCount: items.length,
-  };
+  return { models, trend, members, teamQuota, modelOptions, taskCount, attemptCount };
 }
 
 /**
- * Task-level report. The employee projection deliberately omits channels;
- * the admin projection expands each real channel attempt.
+ * `section=summary`：把完整范围的金额合计、分类计数与分析摘要合在一起。
+ * 不加载全量任务/尝试数组，翻页与切 section 不会改变这里的任何金额或排名。
  */
-export function queryTeamUnifiedUsage(
+export function queryTeamUsageSummary(
   db: Database.Database,
   viewer: TeamViewer,
   filters: TeamUsageFilters = {},
-): TeamUnifiedUsageReport {
-  const tasks = queryUnifiedTaskUsage(db, viewer, filters).tasks;
-  const items = queryTeamUsage(db, viewer, filters).items;
-  const mappedTaskIds = new Set(tasks.map((task) => task.mediaTaskId));
-  const legacyAttempts = items.filter((item) =>
-    item.unifiedModel === null && item.mediaTaskId === null,
-  );
-  const unmappedAttempts = items.filter((item) =>
-    (item.unifiedModel !== null && item.mediaTaskId === null)
-    || (item.mediaTaskId !== null && !mappedTaskIds.has(item.mediaTaskId)),
-  );
-  return {
-    tasks,
-    legacyAttempts,
-    unmappedAttempts,
-    counts: {
-      generationTasks: tasks.length,
-      channelCalls: tasks.reduce((sum, task) => sum + task.channelCallCount, 0),
-      legacyAttempts: legacyAttempts.length,
-      unmappedAttempts: unmappedAttempts.length,
-    },
-  };
+  now = new Date(),
+): TeamUsageSummary {
+  // 摘要包含多个聚合查询：放进同一个延迟读事务，保证响应内金额/计数/排行的读视图一致。
+  const run = db.transaction((): TeamUsageSummary => ({
+    totals: queryTeamUsageTotals(db, viewer, filters),
+    counts: queryTeamUsageCounts(db, viewer, filters),
+    ...queryTeamUsageAnalytics(db, viewer, filters, now),
+    localAgentIncluded: false,
+    costNotice: TEAM_USAGE_COST_NOTICE,
+  }));
+  return run.deferred();
+}
+
+/**
+ * 读取 `channels` / `legacy` / `unmapped` 明细分区（每 attempt 一条）。
+ *
+ * 分类用数据库真实父任务身份判断（不依赖本页 ID 集合或父任务账期）；员工请求
+ * `channels`/`unmapped` 直接 403，不能只在 UI 隐藏。分页单位是真实尝试。
+ */
+export function listTeamUsageAttempts(
+  db: Database.Database,
+  viewer: TeamViewer,
+  section: TeamUsageAttemptSection,
+  filters: TeamUsageFilters = {},
+  page: TeamPageParamInput = {},
+): { items: TeamUsageAttempt[]; pagination: TeamPagination } {
+  if (isAdminOnlyUsageSection(section) && viewer.role !== 'admin') {
+    throw new TeamUsageError(403, 'usage_section_forbidden', '只有管理员可以查看该用量明细分类。');
+  }
+  const { sources, clauses, values } = attemptQuery(db, viewer, filters);
+  const classification = section === 'channels'
+    ? sources.channels
+    : section === 'legacy'
+      ? sources.legacy
+      : sources.unmapped;
+  const allClauses = [...clauses, classification];
+  const request = parseTeamPage(page);
+  // 计数与选页在同一读事务里（一致读视图），避免并发写入让 total 与当前页错位。
+  const run = db.transaction(() => {
+    const total = Number(db.prepare(`
+      SELECT COUNT(*) FROM (
+        SELECT 1 ${sources.from} ${attemptWhere(allClauses)}
+      )
+    `).pluck().get(...values) ?? 0);
+    const { pagination, offset } = resolveTeamPage(request, total);
+    if (total === 0) return { items: [], pagination };
+    const rows = db.prepare(`
+      SELECT ${ATTEMPT_SELECT(sources)}
+      ${sources.from}
+      ${attemptWhere(allClauses)}
+      ORDER BY a.createdAt DESC, a.id DESC
+      LIMIT ? OFFSET ?
+    `).all(...values, pagination.pageSize, offset) as AttemptRow[];
+    return {
+      items: rows.map((row) => projectAttempt(viewer, mapAttempt(row))),
+      pagination,
+    };
+  });
+  return run.deferred();
+}
+
+/**
+ * `section=tasks`：统一制作任务分页（单位 = 每个统一制作任务，自动兜底仍是一条）。
+ * 委托 `unified-usage.ts` 的页选择，页内通道尝试按同一日期/结果筛选展开。
+ */
+export function listTeamUsageTasks(
+  db: Database.Database,
+  viewer: TeamViewer,
+  filters: TeamUsageFilters = {},
+  page: TeamPageParamInput = {},
+): { items: TeamUnifiedTaskView[]; pagination: TeamPagination } {
+  return listTeamUnifiedUsageTasks(db, viewer, filters, page);
 }
 
 interface MemberRow {

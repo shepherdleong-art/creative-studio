@@ -352,6 +352,7 @@ export const MIXCUT_PREPARE_PHASE_RANGES = {
 
 interface AssetRow {
   assetKey?: string;
+  role?: 'opening' | 'body';
   source?: 'module4' | 'external';
   videoJobId: string;
   shotSetId: string;
@@ -540,6 +541,7 @@ function resolveEditingScript(db: Database.Database, input: Pick<EnsureMixcutDra
 }
 
 function assetsForScript(db: Database.Database, storageRoot: string, projectId: string, shotSetId: string): AssetRow[] {
+  const openingShot = db.prepare(`SELECT id FROM shots WHERE shotSetId = ? AND indexNum = 1`).get(shotSetId) as { id: string } | undefined;
   const rows = db.prepare(`
     SELECT id AS videoJobId, shotSetId, shotId, filename, displayName, localVideoPath, durationSec
     FROM video_jobs
@@ -560,6 +562,7 @@ function assetsForScript(db: Database.Database, storageRoot: string, projectId: 
     displayName: row.displayName || displayNames.get(row.videoJobId) || null,
     assetKey: `module4:${row.videoJobId}`,
     source: 'module4' as const,
+    role: row.shotId === openingShot?.id ? 'opening' as const : 'body' as const,
   }));
 }
 
@@ -1329,6 +1332,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const semanticScenes = flattenPreparedSemanticScenes(matchingAssets);
       const matcherAssets = matchingAssets.map((asset) => ({
         assetKey: asset.assetKey!,
+        role: asset.role,
         ...(asset.shotId ? { shotId: asset.shotId } : {}),
         durationUs: asset.durationUs,
         source: asset.source || 'module4' as const,
