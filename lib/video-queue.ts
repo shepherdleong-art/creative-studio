@@ -74,6 +74,7 @@ import {
   unifiedChannelFailureReasonFromEvidence,
 } from './media-core/unified-media/health.ts';
 import { applyUnifiedKlingJobCancel } from './media-core/unified-media/cancel-intent.ts';
+import { applyLegacyVideoQueueCancelIntents } from './legacy-media-cancel.ts';
 
 export interface VideoQueueOptions {
   /** Limit a local rework run to its immutable job. */
@@ -199,7 +200,6 @@ type QueueStatus = 'idle' | 'running' | 'paused';
 interface RunningVideoQueueEntry {
   abort: AbortController;
   status: QueueStatus;
-  stopAfterCurrent?: boolean;
   done: Promise<void>;
   finish: () => void;
 }
@@ -236,32 +236,31 @@ export function cancelVideoQueue(projectId: string) {
     .all(projectId) as Array<{
       id: string; unifiedModel: string | null; status: string; providerTaskId: string | null;
     }>;
-  const hasLegacyActive = activeJobs.some((job) => !job.unifiedModel);
   for (const job of activeJobs.filter((candidate) => candidate.unifiedModel)) {
     applyUnifiedKlingJobCancel(db, job.id);
   }
-  if (entry) {
-    if (hasLegacyActive) entry.abort.abort();
-    else entry.stopAfterCurrent = true;
-    if (!isServerMediaExecution()) runningQueues.delete(projectId);
-  }
   if (isServerMediaExecution()) {
-    db.prepare(
-      `UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
-       WHERE projectId = ? AND status IN ('pending', 'deferred')`
-    ).run(projectId);
+    applyLegacyVideoQueueCancelIntents(db, projectId);
+    if (entry) entry.status = 'running';
+    db.prepare(`UPDATE video_jobs SET status = 'needs_check'
+      WHERE projectId = ? AND cancelRequestedAt IS NOT NULL
+        AND status IN ('pending', 'deferred')
+        AND (providerTaskId IS NOT NULL OR (providerStatus = 'download_failed' AND remoteVideoUrl IS NOT NULL))`)
+      .run(projectId);
     db.prepare(`UPDATE execution_operations SET status = 'failed', waitReason = 'stage_canceled',
       waitDetail = NULL, updatedAt = ? WHERE module = 'video' AND status IN ('pending', 'deferred')
       AND taskId IN (SELECT id FROM video_jobs WHERE projectId = ? AND status = 'canceled')`)
       .run(new Date().toISOString(), projectId);
-    if (!hasLegacyActive) {
-      for (const job of activeJobs.filter((candidate) =>
-        candidate.unifiedModel && candidate.providerTaskId
-        && ['needs_check', 'deferred'].includes(candidate.status))) {
-        void resumeVideoJobPolling(job.id).catch(() => undefined);
-      }
+    if (!entry && activeJobs.length > 0) {
+      void runVideoQueue({ projectId, concurrency: DEFAULT_VIDEO_CONCURRENCY, timeoutMs: DEFAULT_VIDEO_TIMEOUT_MS })
+        .catch((error) => writeLog({
+          jobId: '', projectId, level: 'error',
+          message: `视频取消收尾失败: ${error instanceof Error ? error.message : String(error)}`,
+        }));
     }
   } else {
+    if (entry) entry.abort.abort();
+    runningQueues.delete(projectId);
     db.prepare(
       `UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
        WHERE projectId = ? AND status IN ('pending', 'running')`
@@ -324,7 +323,6 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
     async function worker() {
       while (!abort.signal.aborted) {
         const entry = runningQueues.get(projectId);
-        if (entry?.stopAfterCurrent && !entry.abort.signal.aborted) break;
         if (entry?.status === 'paused') {
           await sleep(500);
           continue;
@@ -498,8 +496,7 @@ export async function resumeVideoJobPolling(jobId: string, timeoutMs = DEFAULT_V
     WHERE id = ? AND (
       status IN ('needs_check', 'pending')
       OR (providerStatus = 'download_failed' AND remoteVideoUrl IS NOT NULL)
-      OR (status = 'canceled' AND cancelRequestedAt IS NOT NULL
-        AND COALESCE(providerStatus, '') NOT IN ('succeeded', 'failed', 'not_created'))
+      OR (status = 'canceled' AND COALESCE(providerStatus, '') NOT IN ('succeeded', 'failed', 'not_created'))
     )
   `).run(jobId);
   if (claimed.changes !== 1) throw new Error('Only accepted jobs waiting for polling or download can be resumed');
@@ -661,17 +658,12 @@ async function runAuthorizedVideoJob(
           refType: 'video-job',
           refId: job.id,
         });
-      if (unifiedExecution) {
-        const canceled = db.prepare('SELECT cancelRequestedAt FROM video_jobs WHERE id = ?')
-          .pluck().get(job.id) as string | null;
-        if (canceled) {
-          await cancelLegacyMediaNewStage({
-            module: 'video',
-            taskId: job.id,
-            inputRevision: legacyMediaExecutionRevision(job.executionRevision),
-          });
-          throw new UnifiedKlingCanceledError();
-        }
+      if (db.prepare('SELECT cancelRequestedAt FROM video_jobs WHERE id = ?').pluck().get(job.id)) {
+        await cancelLegacyMediaNewStage({
+          module: 'video', taskId: job.id,
+          inputRevision: legacyMediaExecutionRevision(job.executionRevision),
+        });
+        throw new UnifiedKlingCanceledError();
       }
       const parsed = parseUsageSnapshot(usageSnapshot);
       const reserveMinor = parsed.ok
@@ -714,7 +706,11 @@ async function runAuthorizedVideoJob(
             channelKey: unifiedExecution!.channel.channelKey,
             executionRevision: unifiedExecution!.channel.executionRevision,
           })
-          : undefined,
+          : () => {
+            if (db.prepare('SELECT cancelRequestedAt FROM video_jobs WHERE id = ?').pluck().get(job.id)) {
+              throw new UnifiedKlingCanceledError();
+            }
+          },
         onAdmitted() {
           attempt += 1;
           job.attempt = attempt;
@@ -809,6 +805,9 @@ async function runAuthorizedVideoJob(
       }
 
       const finishedAt = new Date().toISOString();
+      // 晚到结果的状态口径沿用各自既有契约：统一模型保留 canceled（结果存任务记录），
+      // 老通道沿用 succeeded（结果可用即算成功）。两者都会让执行记录收敛到终态，
+      // 不再停在 accepted；差别只在业务行如何描述这次取消。
       const lateCanceled = Boolean(
         job.unifiedModel
         && db.prepare('SELECT cancelRequestedAt FROM video_jobs WHERE id = ?').pluck().get(job.id),
@@ -1071,8 +1070,14 @@ async function runAuthorizedVideoJob(
           }
           return;
         }
+        // 已记录取消意图的任务：远端失败只做收尾，不把「已取消」改写成「失败」，
+        // 否则用户点过的取消会在结果里消失，执行记录与业务行再次对不上。
         db.prepare(
-          `UPDATE video_jobs SET status = 'failed', errorMessage = ?, providerStatus = 'failed', finishedAt = datetime('now')
+          `UPDATE video_jobs SET
+             status = CASE WHEN cancelRequestedAt IS NULL THEN 'failed' ELSE 'canceled' END,
+             errorMessage = CASE WHEN cancelRequestedAt IS NULL THEN ?
+               ELSE '已停止后续生成；供应商最终返回失败，本次生成未产出成片。' END,
+             providerStatus = 'failed', finishedAt = datetime('now')
            WHERE id = ? AND status = 'running'`
         ).run(`Video generation failed: ${failureMessage}`, job.id);
         return;
@@ -1120,12 +1125,14 @@ async function runAuthorizedVideoJob(
             module: 'video', taskId: job.id,
             inputRevision: legacyMediaExecutionRevision(current?.executionRevision),
           });
-          db.prepare(`UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
-            WHERE id = ? AND status = 'running'`).run(job.id);
+          db.prepare(`UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user',
+            cancelRequestedAt = COALESCE(cancelRequestedAt, ?), finishedAt = COALESCE(finishedAt, datetime('now'))
+            WHERE id = ? AND status = 'running'`).run(new Date().toISOString(), job.id);
         }
       } else {
-        db.prepare(`UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
-          WHERE id = ? AND status = 'running'`).run(job.id);
+        db.prepare(`UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user',
+          cancelRequestedAt = COALESCE(cancelRequestedAt, ?), finishedAt = COALESCE(finishedAt, datetime('now'))
+          WHERE id = ? AND status = 'running'`).run(new Date().toISOString(), job.id);
       }
       return;
     }
@@ -1165,9 +1172,13 @@ async function runAuthorizedVideoJob(
           providerId: unifiedExecution.channel.provider.id,
         });
       }
+      // 同时写取消意图：只把 status 改成 canceled 而留空意图，会让执行记录停在
+      // accepted、续跑与补抓条件都不再命中，任务中心永远显示「供应商已受理」。
       db.prepare(`UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user',
+        cancelRequestedAt = COALESCE(cancelRequestedAt, ?),
         finishedAt = COALESCE(finishedAt, datetime('now'))
-        WHERE id = ? AND status IN ('pending', 'running', 'retrying', 'deferred')`).run(job.id);
+        WHERE id = ? AND status IN ('pending', 'running', 'retrying', 'deferred')`)
+        .run(new Date().toISOString(), job.id);
       return;
     }
 
@@ -1285,10 +1296,18 @@ async function runAuthorizedVideoJob(
       failLegacyMediaOperation({
         module: 'video', taskId: job.id, inputRevision: legacyMediaExecutionRevision(job.executionRevision),
       });
+      // 已记录取消意图的任务按取消收尾，不把用户点过的「停止」改写成「失败」。
       db.prepare(
-        `UPDATE video_jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
+        `UPDATE video_jobs SET
+           status = CASE WHEN cancelRequestedAt IS NULL THEN 'failed' ELSE 'canceled' END,
+           errorMessage = CASE WHEN cancelRequestedAt IS NULL THEN ? ELSE ? END,
+           finishedAt = datetime('now')
          WHERE id = ? AND status = 'running'`
-      ).run(rework && !job.unifiedModel ? `${errorMessage}。${REASSEMBLED_SUBMIT_UNCERTAIN}` : errorMessage, job.id);
+      ).run(
+        rework && !job.unifiedModel ? `${errorMessage}。${REASSEMBLED_SUBMIT_UNCERTAIN}` : errorMessage,
+        '已停止后续生成；未发起新的付费提交。',
+        job.id,
+      );
     } else {
       db.prepare(
         `UPDATE video_jobs SET status = 'pending', errorMessage = ?
@@ -1401,7 +1420,7 @@ export function claimNeedsCheckVideoJob(projectId: string, jobId?: string): Clai
     WHERE projectId = ?
       AND (
         status = 'needs_check'
-        ${isServerMediaExecution() ? "OR providerStatus = 'download_failed' OR (status = 'canceled' AND cancelRequestedAt IS NOT NULL AND COALESCE(providerStatus, '') NOT IN ('succeeded', 'failed', 'not_created'))" : ''}
+        ${isServerMediaExecution() ? "OR providerStatus = 'download_failed' OR (status = 'canceled' AND COALESCE(providerStatus, '') NOT IN ('succeeded', 'failed', 'not_created'))" : ''}
       )
       AND (
         providerTaskId IS NOT NULL
@@ -1419,7 +1438,7 @@ export function claimNeedsCheckVideoJob(projectId: string, jobId?: string): Clai
     UPDATE video_jobs SET status = 'running', attempt = ?, startedAt = datetime('now'), errorMessage = NULL
     WHERE id = ? AND (
       status = 'needs_check'
-      ${isServerMediaExecution() ? "OR (providerStatus = 'download_failed' AND remoteVideoUrl IS NOT NULL) OR (status = 'canceled' AND cancelRequestedAt IS NOT NULL AND COALESCE(providerStatus, '') NOT IN ('succeeded', 'failed', 'not_created'))" : ''}
+      ${isServerMediaExecution() ? "OR (providerStatus = 'download_failed' AND remoteVideoUrl IS NOT NULL) OR (status = 'canceled' AND COALESCE(providerStatus, '') NOT IN ('succeeded', 'failed', 'not_created'))" : ''}
     )
   `).run(nextAttempt, job.id);
 

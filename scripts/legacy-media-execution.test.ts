@@ -138,7 +138,7 @@ const fake = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/download-only.mp4') {
     videoDownloads += 1;
     if (videoDownloads === 1) {
-      videoQueue.cancelVideoQueue('project-restart');
+      void videoQueue.drainVideoQueues();
       res.writeHead(500).end();
     } else res.writeHead(200, { 'Content-Type': 'video/mp4' }).end(Buffer.from('fake-video-bytes'));
     return;
@@ -531,11 +531,12 @@ try {
   });
   const acceptedRun = videoQueue.runVideoQueue({ projectId: 'project-restart', concurrency: 1, timeoutMs: 60_000 });
   await firstPoll;
-  videoQueue.cancelVideoQueue('project-restart');
+  const acceptedDrain = videoQueue.drainVideoQueues();
   releaseFirstPoll();
   await acceptedRun;
+  await acceptedDrain;
   assert.equal((db.prepare("SELECT status FROM video_jobs WHERE id = 'job-restart'").pluck().get() as string), 'needs_check',
-    'server 取消不得把已受理远端任务标成 canceled');
+    'server 停机不得把已受理远端任务标成 canceled');
 
   db.prepare("UPDATE team_users SET status = 'disabled' WHERE id = 'member-restart'").run();
   await videoQueue.runVideoQueue({ projectId: 'project-restart', concurrency: 1, timeoutMs: 60_000 });
@@ -601,7 +602,7 @@ try {
     await sleep(10);
   }
   assert.equal((db.prepare("SELECT providerTaskId FROM video_jobs WHERE id = 'job-frozen'").pluck().get() as string), 'remote-frozen');
-  videoQueue.cancelVideoQueue('project-frozen');
+  await videoQueue.drainVideoQueues();
   await frozenRun;
   const frozenPollsBeforeConfigChange = frozenPolls.length;
   const frozenExecution = db.prepare(`SELECT providerSnapshotJson, configVersion, credentialVersionRef

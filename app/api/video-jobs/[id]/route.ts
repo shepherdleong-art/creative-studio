@@ -4,6 +4,11 @@ import { requiresReassembledUpstreamRework, REASSEMBLED_REWORK_REQUIRED } from '
 import { resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { applyUnifiedKlingJobCancel } from '@/lib/media-core/unified-media/cancel-intent';
+import { applyLegacyVideoJobCancel } from '@/lib/legacy-media-cancel';
+import {
+  cancelLegacyMediaNewStage,
+  legacyMediaExecutionRevision,
+} from '@/lib/legacy-media-execution';
 import { videoJobForClient } from '@/lib/client-media-dto';
 
 async function __teamRouteGET(
@@ -72,15 +77,21 @@ async function __teamRoutePATCH(
       | undefined;
     if (unified === undefined) return NextResponse.json({ error: 'Video job not found' }, { status: 404 });
     if (!unified) {
-      const result = db.prepare(`
-        UPDATE video_jobs
-        SET status = 'canceled',
-            errorMessage = 'Canceled by user',
-            finishedAt = datetime('now')
-        WHERE id = ?
-          AND status IN ('pending', 'running', 'needs_check')
-      `).run(id);
-      return NextResponse.json({ success: true, changed: result.changes === 1 });
+      // 老通道与统一模型同一套取消契约：已受理只写取消意图、保持原状态，
+      // 由队列继续沿原通道只读查询与补下载；未受理才立即 canceled。
+      // 旧实现直接写 canceled 而不写意图，执行记录会永远停在 accepted。
+      const result = applyLegacyVideoJobCancel(db, id);
+      if (!result) return NextResponse.json({ error: 'Video job not found' }, { status: 404 });
+      if (!result.acceptedSubmittedWork) {
+        await cancelLegacyMediaNewStage({
+          module: 'video',
+          taskId: id,
+          inputRevision: legacyMediaExecutionRevision(
+            db.prepare('SELECT executionRevision FROM video_jobs WHERE id = ?').pluck().get(id),
+          ),
+        });
+      }
+      return NextResponse.json({ success: true, changed: !result.idempotent, ...result });
     }
     const result = applyUnifiedKlingJobCancel(db, id);
     return NextResponse.json({ success: true, ...result });

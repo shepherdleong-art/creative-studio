@@ -1,5 +1,6 @@
 import { getDb } from './db.ts';
 import { writeLog } from './logger.ts';
+import { repairLegacyCanceledMediaJobs } from './legacy-media-cancel.ts';
 import type { ExecutionModuleLifecycle } from './media-core/execution/contracts.ts';
 import { drainImageQueues, runQueue } from './queue.ts';
 import { readRuntimeConfig } from './team-service/config.ts';
@@ -21,6 +22,26 @@ export function createLegacyMediaLifecycle(): ExecutionModuleLifecycle {
       const db = getDb();
       const runtimeConfig = readRuntimeConfig();
       const serverMode = runtimeConfig.mode === 'server';
+      if (serverMode) {
+        // 旧版本取消路径只把业务行改成 canceled、没写取消意图，导致执行记录永远停在
+        // accepted、队列既不续跑也不补抓。启动时先补写意图，下面的项目恢复查询才能
+        // 把这些历史孤儿重新捞回来收口。只补「仍有远端身份、且远端未到终态」的行。
+        try {
+          const repaired = repairLegacyCanceledMediaJobs(db);
+          if (repaired.video > 0 || repaired.image > 0) {
+            writeLog({
+              jobId: '', projectId: '', level: 'warn',
+              message: `已修复历史取消孤儿：视频 ${repaired.video} 条、图片 ${repaired.image} 条，将按原通道续查收尾`,
+            });
+          }
+        } catch (error) {
+          // 修复是补救动作，失败不得阻塞启动；原队列恢复逻辑继续按现有条件运行。
+          writeLog({
+            jobId: '', projectId: '', level: 'error',
+            message: `历史取消孤儿修复失败: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
       const imageProjects = db.prepare(`
         SELECT p.id, p.concurrency, p.maxAttempts, p.timeoutMs
         FROM projects p
@@ -31,8 +52,9 @@ export function createLegacyMediaLifecycle(): ExecutionModuleLifecycle {
               j.status IN ('pending', 'retrying', 'running', 'deferred', 'needs_check')
               OR j.providerStatus = 'download_failed'
               OR (
-                j.status = 'canceled' AND j.cancelRequestedAt IS NOT NULL
+                j.status = 'canceled'
                 AND (j.providerTaskId IS NOT NULL OR (j.providerStatus = 'download_failed' AND j.remoteImageUrl IS NOT NULL))
+                AND COALESCE(j.providerStatus, '') NOT IN ('succeeded', 'failed', 'not_created')
               )
             )
             AND NOT EXISTS (
@@ -70,8 +92,9 @@ export function createLegacyMediaLifecycle(): ExecutionModuleLifecycle {
               j.status IN ('pending', 'running', 'deferred', 'needs_check')
               OR j.providerStatus = 'download_failed'
               OR (
-                j.status = 'canceled' AND j.cancelRequestedAt IS NOT NULL
+                j.status = 'canceled'
                 AND (j.providerTaskId IS NOT NULL OR (j.providerStatus = 'download_failed' AND j.remoteVideoUrl IS NOT NULL))
+                AND COALESCE(j.providerStatus, '') NOT IN ('succeeded', 'failed', 'not_created')
               )
             )
             AND NOT EXISTS (

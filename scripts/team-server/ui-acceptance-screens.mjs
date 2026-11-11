@@ -56,8 +56,6 @@ import { CHECK_KEYS } from './ui-acceptance-checks.mjs';
 
 export const ALL_CHECKS = [...CHECK_KEYS];
 
-const heading = (page, name) => page.getByRole('heading', { name, exact: true }).first().waitFor({ timeout: 60_000 });
-const text = (page, value, exact = true) => page.getByText(value, { exact }).first().waitFor({ timeout: 60_000 });
 
 /** 新项目每一步的空状态落点：工具栏 + 五步切换 + data-testid="step-empty"。
  * 第 1/2 步的空状态在中间栏，第 3/4/5 步是内容组件上面的提示条，两者同一个 testid。 */

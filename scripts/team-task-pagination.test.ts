@@ -404,6 +404,11 @@ try {
   }
   assert.equal(searchTotals('  SEARCH-ONLY-MODEL-77  ').pagination.total, 1, '大小写不敏感且首尾去空格');
   assert.equal(searchTotals('shared-business-id').pagination.total, 1, '搜索整组业务任务号只命中一个制作任务');
+  const unifiedDisplayHit = searchTotals('  IMAGE 2  ');
+  assert.equal(unifiedDisplayHit.pagination.total, 1, '统一模型按界面显示名搜索，不要求知道通道模型编号');
+  assert.equal(unifiedDisplayHit.totalRecords, 3);
+  assert.deepEqual(unifiedDisplayHit.items.map(item => item.operationId).sort(), ['op-unified-1', 'op-unified-2', 'op-unified-3']);
+  assert.ok(unifiedDisplayHit.items.every(item => item.model === 'Image 2'), '搜索名称与任务列表模型名称一致');
 
   // `%`/`_`/引号按普通文字：不转义就会命中一大片或报错。
   assert.equal(searchTotals('50%').pagination.total, 1, '`%` 是普通文字，不是通配符');
@@ -425,7 +430,7 @@ try {
   assert.equal(pending.pagination.total, 1);
   assert.deepEqual(pending.items.map(item => item.operationId), ['op-plain-030'], 'failed 但业务任务已回队 → 读成排队中');
   const failed = listTeamTasks(db, adminView, { status: 'failed' });
-  assert.equal(failed.pagination.total, 1, '统一任务只因旧通道失败入选（组整体返回）');
+  assert.equal(failed.pagination.total, 1, '统一任务按最新代表记录的失败状态入选，组整体返回');
   assert.equal(failed.totalRecords, 3, '切筛选不会丢掉组内关联记录');
   assert.deepEqual(failed.items.map(item => item.operationId).sort(), ['op-unified-1', 'op-unified-2', 'op-unified-3']);
   assert.equal(failed.items.find(item => item.operationId === 'op-unified-2')?.status, 'succeeded',
@@ -434,8 +439,33 @@ try {
   assert.equal(canceled.pagination.total, 1);
   assert.deepEqual(canceled.items.map(item => item.operationId), ['op-plain-031'], '取消在可见状态里是一个独立状态');
   const succeeded = listTeamTasks(db, adminView, { status: 'succeeded' });
-  assert.equal(succeeded.pagination.total, 501);
-  assert.equal(succeeded.totalRecords, 503, '成功筛选覆盖 500 个单记录任务 + 统一任务整组');
+  assert.equal(succeeded.pagination.total, 500);
+  assert.equal(succeeded.totalRecords, 500, '最新代表记录失败时，旧通道成功不能让整组进入成功筛选');
+
+  // 旧通道失败、新通道成功时，只按代表记录筛选；关键词仍可命中旧通道并返回整组。
+  try {
+    db.prepare("UPDATE execution_operations SET updatedAt = ? WHERE id = 'op-unified-2'")
+      .run(iso(TODAY_BASE - minutes(24)));
+    assert.equal(listTeamTasks(db, adminView, { status: 'failed' }).pagination.total, 0,
+      '新通道成功后不再把旧通道失败当成任务组当前失败');
+    const fallbackSucceeded = listTeamTasks(db, adminView, { status: 'succeeded', q: 'legacy-channel-model' });
+    assert.equal(fallbackSucceeded.pagination.total, 1, '状态匹配代表记录、关键词匹配组内任一记录');
+    assert.equal(fallbackSucceeded.totalRecords, 3);
+    assert.equal(fallbackSucceeded.items[0]?.operationId, 'op-unified-2');
+    assert.equal(fallbackSucceeded.items[0]?.status, 'succeeded');
+    assert.deepEqual(fallbackSucceeded.items.map(item => item.operationId).sort(), ['op-unified-1', 'op-unified-2', 'op-unified-3']);
+
+    db.prepare("UPDATE execution_operations SET updatedAt = ? WHERE id = 'op-unified-2'").run(UNIFIED_LATEST);
+    const tied = listTeamTasks(db, adminView, { status: 'succeeded', q: 'legacy-channel-model' });
+    assert.equal(tied.pagination.total, 1);
+    assert.equal(tied.items[0]?.operationId, 'op-unified-2', '同 updatedAt 时按 operationId DESC 选代表，与列表顺序一致');
+    assert.equal(tied.items[0]?.status, 'succeeded');
+    assert.equal(listTeamTasks(db, adminView, { status: 'failed', q: 'legacy-channel-model' }).pagination.total, 0,
+      '同时间的旧失败通道不能绕过代表记录状态筛选');
+  } finally {
+    db.prepare("UPDATE execution_operations SET updatedAt = ? WHERE id = 'op-unified-2'")
+      .run(iso(TODAY_BASE - minutes(26)));
+  }
   console.log('PASS: status filtering uses effective status and keeps each matched group complete');
 
   // ── 7. 权限：管理员全员/单成员、员工本人、越权 ──────────────────────────────

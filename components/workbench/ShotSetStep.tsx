@@ -21,7 +21,6 @@ import {
   formatShotVersionSummary,
   formatShotVersionTag,
   getOpeningShotId,
-  hasShotResult,
   isOpeningShot,
   movePickedToFront,
   removePickedId,

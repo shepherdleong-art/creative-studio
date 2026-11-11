@@ -240,6 +240,12 @@ function computeTaskSource(db: Database.Database): TaskQuerySource {
   const unifiedModelExpression = `COALESCE(${hasImageUnified ? 'j.unifiedModel' : 'NULL'}, ${hasVideoUnified ? 'v.unifiedModel' : 'NULL'}, ${mediaTaskUnifiedModel}, ${legacyMediaTask('unifiedModel')})`;
   const unifiedTaskExpression = `COALESCE(${explicitMediaTask}, ${hasImageUnifiedTask ? 'j.unifiedTaskId' : 'NULL'}, ${hasVideoUnifiedTask ? 'v.unifiedTaskId' : 'NULL'}, ${legacyMediaTask('id')})`;
   const businessStatus = 'COALESCE(j.status, v.status)';
+  // 取消意图是业务行上的持久事实：老通道已受理任务在取消后保持 running/needs_check
+  // 继续收尾，执行记录本身不会变成 failed/canceled。只看 o.status 会让任务中心一直
+  // 显示「供应商已受理」，与项目页的「已取消」长期矛盾。
+  const imageCancelRequested = tableHasColumn(db, 'jobs', 'cancelRequestedAt') ? 'j.cancelRequestedAt' : 'NULL';
+  const videoCancelRequested = tableHasColumn(db, 'video_jobs', 'cancelRequestedAt') ? 'v.cancelRequestedAt' : 'NULL';
+  const businessCancelRequested = `COALESCE(${imageCancelRequested}, ${videoCancelRequested})`;
   // 统一通道的失败是历史事实；业务任务切换到备用通道不代表旧通道重新排队。
   // 普通人工重试只在新执行记录尚未创建时，临时把最后一条失败显示为已回队。
   const requeued = `o.status = 'failed' AND ${businessStatus} IN ('pending', 'retrying', 'running')
@@ -265,7 +271,8 @@ function computeTaskSource(db: Database.Database): TaskQuerySource {
     unifiedModel: unifiedModelExpression,
     effectiveStatus: `(CASE
       WHEN o.waitReason = 'stage_canceled'
-        OR (o.status IN ('pending', 'deferred', 'failed') AND ${businessStatus} = 'canceled') THEN 'canceled'
+        OR (o.status IN ('pending', 'deferred', 'failed') AND ${businessStatus} = 'canceled')
+        OR (${businessStatus} = 'canceled' AND ${businessCancelRequested} IS NOT NULL) THEN 'canceled'
       WHEN ${requeued} THEN 'pending'
       ELSE o.status END)`,
     hasCanvasTable,
@@ -312,6 +319,7 @@ interface ResolvedTaskScope {
   authValues: unknown[];
   matchWhere: string;
   matchValues: unknown[];
+  status?: string;
 }
 
 /**
@@ -350,7 +358,7 @@ function buildSearchConditions(db: Database.Database, source: TaskQuerySource, n
   // 中文任务名与步骤名：复用 team-task-labels 的同一份函数。
   addText('team_task_name(o.module, a.usage)');
   addText('team_task_step_name(o.module, o.step)');
-  addText(`team_unified_media_name(${source.unifiedTaskId})`);
+  addText(`team_unified_media_name(${source.unifiedModel})`);
   if (needle) ensureTaskSearchFunctions(db);
   parts.push(`EXISTS (
     SELECT 1 FROM execution_attempts sa
@@ -397,10 +405,7 @@ function resolveTaskScope(
   const source = taskQueryShape(db).source;
   const matchClauses = [...authClauses];
   const matchValues = [...authValues];
-  if (filters.status) {
-    matchClauses.push(`${source.effectiveStatus} = ?`);
-    matchValues.push(filters.status);
-  }
+
   const needle = (filters.q ?? '').trim().toLowerCase();
   if (needle) {
     const search = buildSearchConditions(db, source, needle);
@@ -417,6 +422,7 @@ function resolveTaskScope(
     authValues,
     matchWhere: matchClauses.join(' AND '),
     matchValues,
+    status: filters.status,
   };
 }
 
@@ -441,18 +447,25 @@ function andWhere(...clauses: Array<string | undefined>): string {
  * 先按授权 + 筛选 + 搜索挑出**制作任务组 ID**，再取这些组的分页位置。
  *
  * `scoped` 只含授权后的可见记录（决定组的最新时间与组内记录条数），`matched` 是
- * 授权 + 状态 + 关键词命中的记录（决定哪些组进入结果）。组内有任一记录命中就整组入选，
- * 因此搜索不会把同一制作任务的其它通道裁掉。
+ * 授权 + 关键词命中的记录（决定哪些组进入结果）。关键词命中组内任一记录即保留整组。
+ * 状态使用该组按 updatedAt DESC、operationId DESC 排序的代表记录，与列表显示一致。
  */
 function taskGroupStatsSql(scope: ResolvedTaskScope): { sql: string; values: unknown[] } {
   const scopedWhere = scope.authWhere ? `WHERE ${scope.authWhere}` : '';
   const matchedWhere = scope.matchWhere ? `WHERE ${scope.matchWhere}` : '';
   const values = [...scope.authValues, ...scope.matchValues];
+  const representativeStatus = scope.status
+    ? `, FIRST_VALUE(${scope.effectiveStatus}) OVER (
+        PARTITION BY ${scope.groupId} ORDER BY o.updatedAt DESC, o.id DESC
+      ) AS representativeStatus`
+    : '';
+  const statusWhere = scope.status ? 'WHERE s.representativeStatus = ?' : '';
+  if (scope.status) values.push(scope.status);
   return {
     values,
     sql: `
       WITH scoped AS (
-        SELECT ${scope.groupId} AS groupId, o.updatedAt AS updatedAt
+        SELECT ${scope.groupId} AS groupId, o.updatedAt AS updatedAt${representativeStatus}
         FROM ${scope.joins} ${scopedWhere}
       ),
       matched AS (
@@ -462,6 +475,7 @@ function taskGroupStatsSql(scope: ResolvedTaskScope): { sql: string; values: unk
       group_stats AS (
         SELECT s.groupId AS groupId, MAX(s.updatedAt) AS groupUpdatedAt, COUNT(*) AS recordCount
         FROM scoped s JOIN matched m ON m.groupId = s.groupId
+        ${statusWhere}
         GROUP BY s.groupId
       )`,
   };
