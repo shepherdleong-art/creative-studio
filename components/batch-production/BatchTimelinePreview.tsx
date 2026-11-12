@@ -21,6 +21,7 @@ import { textStyleToSvgElements } from '@/lib/media-core/cover-title-svg';
 import type { CoverFraming, TextStyle } from '@/lib/media-core/cover-types';
 import type { FrozenBatchCoverTitleConfig } from '@/lib/batch-production/cover-title';
 import BatchCoverDraftPreview, { type BatchCoverPreviewAsset } from './BatchCoverDraftPreview';
+import { useBrowserPreviewRecovery } from '@/components/media/use-browser-preview-recovery';
 import { createLutRenderer, loadCubeLutFromEndpoint, type LutRenderer, type ParsedCubeLut } from './lut-3d';
 import { ProxyPlaybackToggle } from './ProxyPlaybackToggle';
 import { useProxyPlaybackPreference } from './proxy-playback-preference';
@@ -221,6 +222,9 @@ export default function BatchTimelinePreview({
   };
   const videoASrc = clipSource(slotClips[0]);
   const videoBSrc = clipSource(slotClips[1]);
+  const recoveryA = useBrowserPreviewRecovery(videoARef, videoASrc, active);
+  const recoveryB = useBrowserPreviewRecovery(videoBRef, videoBSrc, active);
+  const recovery = activeSlot === 0 ? recoveryA : activeSlot === 1 ? recoveryB : null;
   // C3:每个 slot 的离屏 WebGL 渲染器与画布(仅在对应 clip 有 LUT 且解析成功时创建)
   const slotRendererARef = useRef<LutRenderer | null>(null);
   const slotRendererBRef = useRef<LutRenderer | null>(null);
@@ -334,11 +338,11 @@ export default function BatchTimelinePreview({
         lastStartedClipRef.current = clip.clipId;
         void video.play().catch(() => undefined);
       };
+      // 预览准备完成后会对同一元素 load()；每次重载都恢复最新播放头。
+      const onMetadata = () => { lastStartedClipRef.current = ''; synchronize(); };
+      video.addEventListener('loadedmetadata', onMetadata);
+      cleanups.push(() => video.removeEventListener('loadedmetadata', onMetadata));
       if (video.readyState >= HTMLMediaElement.HAVE_METADATA) synchronize();
-      else {
-        video.addEventListener('loadedmetadata', synchronize, { once: true });
-        cleanups.push(() => video.removeEventListener('loadedmetadata', synchronize));
-      }
     });
     if (activeSlot == null || !activeClip) {
       lastStartedClipRef.current = '';
@@ -438,6 +442,7 @@ export default function BatchTimelinePreview({
     let frame = 0;
     let videoFrameHandle = 0;
     let videoFrameActive = false;
+    let readyFrame = 0;
     let slowFrames = 0;
     let lastPaintAt = 0;
     const paint = () => {
@@ -467,25 +472,33 @@ export default function BatchTimelinePreview({
     };
     const loop = () => { paint(); frame = requestAnimationFrame(loop); };
     const video = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
-    if (video && typeof video.requestVideoFrameCallback === 'function') {
+    const scheduleVideoFrame = () => {
+      if (!video || typeof video.requestVideoFrameCallback !== 'function') return;
       videoFrameActive = true;
-      const scheduleVideoFrame = () => {
-        videoFrameHandle = video.requestVideoFrameCallback(() => {
-          paint();
-          // 播放中持续排下一帧;暂停/seek 态画完即止,新帧提交时自然再触发。
-          if (playing) scheduleVideoFrame();
-        });
-      };
+      if (videoFrameHandle) video.cancelVideoFrameCallback(videoFrameHandle);
+      videoFrameHandle = video.requestVideoFrameCallback(() => {
+        videoFrameHandle = 0;
+        paint();
+        if (playing) scheduleVideoFrame();
+      });
+    };
+    const onFrameReady = () => {
+      paint();
+      // seeked 可能先于合成器提交目标帧；暂停态也要补画，并重新等待解码帧。
+      cancelAnimationFrame(readyFrame);
+      readyFrame = requestAnimationFrame(paint);
       scheduleVideoFrame();
-    }
-    video?.addEventListener('loadeddata', paint);
-    video?.addEventListener('seeked', paint);
-    if (playing) loop(); else paint();
+    };
+    scheduleVideoFrame();
+    video?.addEventListener('loadeddata', onFrameReady);
+    video?.addEventListener('seeked', onFrameReady);
+    if (playing) loop(); else onFrameReady();
     return () => {
       cancelAnimationFrame(frame);
       if (videoFrameActive) video?.cancelVideoFrameCallback(videoFrameHandle);
-      video?.removeEventListener('loadeddata', paint);
-      video?.removeEventListener('seeked', paint);
+      cancelAnimationFrame(readyFrame);
+      video?.removeEventListener('loadeddata', onFrameReady);
+      video?.removeEventListener('seeked', onFrameReady);
     };
   }, [activeClip, activeSlot, bodyFrame, outputPreset, playing]);
 
@@ -888,6 +901,14 @@ export default function BatchTimelinePreview({
             dangerouslySetInnerHTML={{ __html: subtitleSvg }}
           />
           {overlay}
+          {!showCover && activeClip && recovery && recovery.state !== 'ready' && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-media-scrim p-2 text-xs text-media-foreground" role={recovery.state === 'failed' ? 'alert' : 'status'}>
+              {recovery.state === 'failed' ? <>
+                视频预览加载失败
+                <button type="button" className="btn-secondary px-2 py-1 text-xs" onClick={recovery.retry}>重试预览</button>
+              </> : '正在准备视频预览…'}
+            </div>
+          )}
           {showSafeArea && <div className="pointer-events-none absolute inset-[4%] rounded-md border border-dashed border-surface/55" aria-label="4% 预览安全区" />}
           {sortedClips.length === 0 && (
             <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">没有可预览的片段</div>

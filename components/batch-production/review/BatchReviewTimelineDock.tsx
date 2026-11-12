@@ -1254,7 +1254,7 @@ export default function BatchReviewTimelineDock({
                           : 'bg-warn/20 text-warn'
                       }`}
                     >
-                      {film.approved ? '已通过' : film.approvable ? '待审核' : '处理中'}
+                      {film.coverStatus === 'failed' ? '封面失败' : film.approved ? '已通过' : film.approvable ? '待审核' : '处理中'}
                     </span>
                   </div>
 

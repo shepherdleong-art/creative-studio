@@ -149,7 +149,7 @@ export default function BatchReviewPreviewDock({
                   : 'bg-warn/20 text-warn'
               }`}
             >
-              {previewFilm.approved ? '已确认' : previewFilm.approvable ? '待检查' : '处理中'}
+              {previewFilm.coverStatus === 'failed' ? '封面失败' : previewFilm.approved ? '已确认' : previewFilm.approvable ? '待检查' : '处理中'}
             </span>
           )}
         </div>

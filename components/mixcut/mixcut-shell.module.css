@@ -360,6 +360,11 @@
   box-shadow: none;
   background: var(--color-content);
 }
+/* 进入单条预览后由整页定位到工作区，顶部信息随页面滚走，编辑器使用整屏高度。 */
+:global(html[data-deployment-mode='server']) .shell.teamSingleShell[data-active-step='2'] {
+  height: calc(100dvh - 24px);
+  scroll-margin-top: 12px;
+}
 .teamSingleShell .topbar { height: auto; min-height: 48px; flex-wrap: wrap; gap: 6px; padding: 6px 12px; }
 .teamSingleShell .topbarRight { margin-left: auto; min-width: 0; flex-wrap: wrap; }
 .teamSingleShell .body { grid-template-columns: 224px minmax(0, 1fr); }

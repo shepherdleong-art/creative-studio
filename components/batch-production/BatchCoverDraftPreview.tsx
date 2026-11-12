@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useBrowserPreviewRecovery } from '@/components/media/use-browser-preview-recovery';
 import type { FrozenBatchCoverTitleConfig } from '@/lib/batch-production/cover-title';
 import { coverFramingGeometry } from '@/lib/media-core/cover-framing';
+import { FINAL_EDIT_FPS } from '@/lib/media-core/render-contract';
 import { textStyleToSvgElements } from '@/lib/media-core/cover-title-svg';
 import type { CoverFraming } from '@/lib/media-core/cover-types';
 import { OUTPUT_PRESETS, type OutputPresetId } from '@/lib/final-edit/types';
@@ -46,6 +48,7 @@ export default function BatchCoverDraftPreview({
   onFramingChange,
 }: BatchCoverDraftPreviewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const recovery = useBrowserPreviewRecovery(videoRef, asset?.previewUrl);
   const drag = useRef<{ x: number; y: number; overflowX: number; overflowY: number; framing: CoverFraming } | null>(null);
   const [sourceDimensions, setSourceDimensions] = useState<SourceDimensions | null>(null);
   const outputSize = OUTPUT_PRESETS[outputPreset];
@@ -81,7 +84,9 @@ export default function BatchCoverDraftPreview({
     const video = videoRef.current;
     if (!video) return;
     const seek = () => {
-      if (Number.isFinite(timeUs) && timeUs >= 0) video.currentTime = timeUs / 1_000_000;
+      if (!Number.isFinite(timeUs) || timeUs < 0 || video.readyState < 1 || video.seeking) return;
+      const target = Math.min(timeUs / 1_000_000, Number.isFinite(video.duration) ? Math.max(0, video.duration - 1 / FINAL_EDIT_FPS) : Infinity);
+      if (Math.abs(video.currentTime - target) > 1 / FINAL_EDIT_FPS) video.currentTime = target;
     };
     const readDimensions = () => {
       if (video.videoWidth > 0 && video.videoHeight > 0) {
@@ -92,7 +97,13 @@ export default function BatchCoverDraftPreview({
     seek();
     readDimensions();
     video.addEventListener('loadedmetadata', readDimensions);
-    return () => video.removeEventListener('loadedmetadata', readDimensions);
+    video.addEventListener('loadeddata', seek);
+    video.addEventListener('seeked', seek);
+    return () => {
+      video.removeEventListener('loadedmetadata', readDimensions);
+      video.removeEventListener('loadeddata', seek);
+      video.removeEventListener('seeked', seek);
+    };
   }, [asset?.previewUrl, sourceKey, timeUs]);
 
   if (!asset) {
@@ -133,7 +144,8 @@ export default function BatchCoverDraftPreview({
       {asset.previewUrl ? (
         <video
           ref={videoRef}
-          key={asset.assetId}
+          key={sourceKey}
+          src={asset.previewUrl}
           className={`absolute ${frameStyle ? '' : 'inset-0 h-full w-full'} object-cover`}
           style={frameStyle}
           onLoadedMetadata={(event) => {
@@ -147,9 +159,7 @@ export default function BatchCoverDraftPreview({
           preload="metadata"
           poster={asset.thumbnailUrl}
           aria-label={`${asset.displayName} 封面底图预览`}
-        >
-          <source src={asset.previewUrl} type="video/mp4" />
-        </video>
+        />
       ) : asset.thumbnailUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
@@ -166,6 +176,11 @@ export default function BatchCoverDraftPreview({
         />
       ) : (
         <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">暂无底图预览</div>
+      )}
+      {asset.previewUrl && recovery.state !== 'ready' && (
+        <div className="absolute inset-0 flex items-center justify-center gap-2 bg-surface/80 p-2 text-xs text-ink" role={recovery.state === 'failed' ? 'alert' : 'status'}>
+          {recovery.state === 'failed' ? <>封面预览加载失败 <button type="button" className="btn-secondary px-2 py-1 text-xs" onClick={recovery.retry}>重试预览</button></> : '正在准备封面预览…'}
+        </div>
       )}
       {previewSvg && (
         <svg

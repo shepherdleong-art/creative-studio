@@ -289,6 +289,12 @@
 .previewFrame { position: relative; width: 100%; height: clamp(340px, 58dvh, 760px); border-radius: 14px; box-shadow: var(--sh-md); overflow: hidden; background: var(--color-preview); container-type: inline-size; }
 .previewFrame > * { height: 100%; }
 .previewFrame main { height: 100%; }
+/* 团队版先为时间轴和工具条留足位置，预览使用中栏剩余高度。
+ * 328px 包含至少 200px 的画面、预览标题、播放条、内边距与底部间距；极矮窗口仍可上下滚动。 */
+:global(html[data-deployment-mode='server']) .bigPaper { flex: 1 0 0; min-height: min-content; }
+:global(html[data-deployment-mode='server']) .previewModePanel { display: flex; flex: 1 0 328px; min-height: 328px; }
+:global(html[data-deployment-mode='server']) .previewWrap { flex: 1; min-width: 0; min-height: 0; }
+:global(html[data-deployment-mode='server']) .previewFrame { height: auto; flex: 1; min-height: 0; }
 .materialPreview { display: flex; box-sizing: border-box; width: 100%; height: 100%; min-height: 0; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px; background: #111; color: #fff; }
 .materialPreviewVideo, .materialPreviewImage { display: block; width: 100%; min-height: 0; flex: 1; object-fit: contain; }
 .materialPreviewVideo { background: #000; }

@@ -114,7 +114,6 @@
 .tableWrap { min-width: 0; }
 .truncate { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .paginationRow { min-width: 0; padding: 8px 16px; }
-.paginationRowTop { padding-top: 12px; }
 .groupMeta { font-size: 11.5px; font-weight: 400; color: var(--color-ink-tertiary); }
 .detailNote {
   margin: 0;

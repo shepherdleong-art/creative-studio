@@ -1,5 +1,6 @@
 import { initialBatchPackagingConfig } from './packaging.ts';
 import { randomUUID } from 'node:crypto';
+import { requireAccessContext } from '../media-core/access-context.ts';
 import type Database from 'better-sqlite3';
 import {
   allocateBatch,
@@ -502,6 +503,7 @@ function persistResult(
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(runId, batchVersionId, result.ruleVersion, result.seed, result.inputFingerprint, statusForResult(result), JSON.stringify(result), createdAt);
 
+  const access = requireAccessContext();
   const outputVersionIds: Record<string, string> = {};
   const planOutputs = writeOutputVersions
     ? result.outputs.filter((output) => output.status === 'available' && (!onlyPlanId || output.planId === onlyPlanId))
@@ -513,6 +515,7 @@ function persistResult(
       WHERE p.id = ? AND p.batchVersionId = ?
     `).get(output.planId, batchVersionId) as { id: string; batchVersionId: string; previousArrangementJson: string | null } | undefined;
     if (!plan) throw new BatchDomainError('invalid_input', '分配结果引用了不属于该批次版本的成片计划');
+    if (access.kind === 'team') access.assertAccess('batch_plan', plan.id, 'write');
     const existing = db.prepare(`
       SELECT MAX(versionNumber) AS maxVersion FROM batch_output_versions WHERE planId = ?
     `).get(output.planId) as { maxVersion: number | null };
@@ -523,6 +526,10 @@ function persistResult(
         (id, planId, versionNumber, arrangementJson, createdAt, allocationRunId)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(id, output.planId, versionNumber, JSON.stringify(output.arrangement), createdAt, runId);
+    access.registerInheritedScope({
+      resourceType: 'batch_output_version', resourceId: id,
+      parent: { resourceType: 'batch_plan', resourceId: output.planId },
+    });
     // 这里只更新“当前候选”指针;不接触 currentArtifactId,旧正式产物保持可见。
     db.prepare(`UPDATE batch_output_plans SET currentVersionId = ? WHERE id = ? AND batchVersionId = ?`).run(id, output.planId, batchVersionId);
     const scope = db.prepare(`SELECT b.id AS batchId, b.projectId FROM batch_production_versions v

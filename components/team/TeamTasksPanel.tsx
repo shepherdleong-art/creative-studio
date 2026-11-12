@@ -430,10 +430,10 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
     );
   }
 
-  function paginationRow(position: 'top' | 'bottom') {
+  function paginationRow() {
     if (!readyList || listError) return null;
     return (
-      <div className={`${s.paginationRow} ${position === 'top' ? s.paginationRowTop : ''}`} data-testid={`task-pagination-${position}`}>
+      <div className={s.paginationRow} data-testid="task-pagination-bottom">
         <Pagination
           label="制作任务"
           unit="个制作任务"
@@ -654,7 +654,6 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
 
       <div className={s.columns} style={{ gridTemplateColumns: selectedTaskId ? 'minmax(0, 1fr) minmax(320px, 400px)' : 'minmax(0, 1fr)' }}>
         <div className="grid gap-3" style={{ minWidth: 0 }}>
-          {paginationRow('top')}
           {listError ? (
             <section className={s.panel} aria-label="任务列表" data-testid="task-list-error">
               <div className="p-6" role="alert">
@@ -721,7 +720,7 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
           ) : (
             <section className={s.panel} aria-label="任务列表" data-testid="task-flat-list">{taskTable(displayGroups)}</section>
           )}
-          {paginationRow('bottom')}
+          {paginationRow()}
         </div>
 
         {selectedTaskId ? (

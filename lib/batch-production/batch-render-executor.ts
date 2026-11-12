@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { BatchTaskExecutor } from './executors.ts';
-import { registerManagedFile } from '../media-core/access-context.ts';
+import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { withMediaResource } from '../media-core/media-resource-gate.ts';
 import {
   discardBatchCoverRenderResult,
@@ -51,6 +51,16 @@ export function createBatchRenderExecutor(options: BatchRenderExecutorOptions = 
         WHERE o.id = ? AND v.batchId = ?
       `).get(claim.task.targetId, task.batchId) as { batchVersionId: string; planId: string; outputVersionId: string } | undefined;
       if (!lineage) throw new Error('正式渲染目标不属于任务批次谱系');
+
+      // 旧自动分配版本可能缺少归属登记；重试时只沿真实计划谱系补齐。
+      const access = requireAccessContext();
+      if (access.kind === 'team') {
+        access.assertAccess('batch_plan', lineage.planId, 'write');
+        access.registerInheritedScope({
+          resourceType: 'batch_output_version', resourceId: lineage.outputVersionId,
+          parent: { resourceType: 'batch_plan', resourceId: lineage.planId },
+        });
+      }
 
       if (claim.task.targetKind === 'output_version_cover') {
         const coverInput: BatchCoverRenderInput = {

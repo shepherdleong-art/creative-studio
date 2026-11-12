@@ -105,12 +105,15 @@ function App() {
   const [tab, setTab] = React.useState('packaging');
   const [filter, setFilter] = React.useState('all');
   const [selectedPlanIds, setSelectedPlanIds] = React.useState([]);
+  const [coverStatus, setCoverStatus] = React.useState('succeeded');
+  window.setCoverStatus = setCoverStatus;
   window.setTab = setTab;
   window.getView = () => view;
 
   const film = {
-    planId: 'one', seq: 1, scriptTitle: '交互回归', status: 'reviewable', approved: false,
-    approvable: true, visible: true, durationSec: 9, warnings: [], blockers: [], arrangement: view,
+    planId: 'one', seq: 1, scriptTitle: '交互回归', status: coverStatus === 'failed' ? 'retryable_failed' : 'needs_attention', approved: false,
+    coverStatus, coverTask: { id: 'cover-task', status: coverStatus, errorMessage: '资源不存在或不可用。' },
+    approvable: coverStatus === 'succeeded', visible: true, durationSec: 9, warnings: [], blockers: [], arrangement: view,
   };
   const save = async (planId, edit) => {
     window.edits.push({ planId, ...edit });
@@ -167,7 +170,10 @@ function App() {
 load(${domId}).createRoot(document.getElementById('root')).render(React.createElement(App));
 `;
 
-const globalCss = (await postcss([tailwind()]).process(fs.readFileSync(path.join(root, 'app/globals.css'), 'utf8'), { from: path.join(root, 'app/globals.css') })).css;
+const fixtureCss = fs.readFileSync(path.join(root, 'app/globals.css'), 'utf8')
+  .replace('@import "tailwindcss";', '@import "tailwindcss" source(none);')
+  + '\n@source "../components/batch-production";\n@source "../components/ui";\n@source "../components/audio";\n@source "../components/timeline";';
+const globalCss = (await postcss([tailwind()]).process(fixtureCss, { from: path.join(root, 'app/globals.css') })).css;
 
 // 1×1 的占位图与 1 秒静音 mp4：只为让 <img>/<video> 有 src，不参与断言。
 const PIXEL = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
@@ -373,7 +379,17 @@ try {
   await page.getByRole('button', { name: '全部 1', exact: true }).click();
   await page.locator('.clipBlock').first().waitFor();
 
+  await page.evaluate(() => window.setCoverStatus('failed'));
+  await page.getByRole('button', { name: '重试封面', exact: true }).waitFor();
+  assert.equal(await page.getByText('封面失败', { exact: true }).count(), 2, '时间轴与预览区应明确显示失败，不能一直标处理中');
+  assert.equal(await page.getByRole('button', { name: '通过已选 (0)', exact: true }).isDisabled(), true, '失败封面仍应阻止通过');
+  await page.evaluate(() => window.setCoverStatus('succeeded'));
   await page.getByRole('checkbox', { name: '选择成片 1' }).check();
+  await page.waitForFunction(() => {
+    const button = [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === '通过已选 (1)');
+    return button && !button.disabled;
+  });
+  assert.equal(await page.getByText('封面失败', { exact: true }).count(), 0, '重试成功后不刷新页面即可恢复审核');
   await page.getByRole('button', { name: '通过已选 (1)', exact: true }).click();
   await page.waitForFunction(() => window.reviews.some(r => r.decision === 'approved'));
   const approveReview = await page.evaluate(() => window.reviews.at(-1));

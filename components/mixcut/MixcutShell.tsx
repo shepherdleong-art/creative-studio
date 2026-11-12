@@ -219,6 +219,12 @@ export default function MixcutShell({
 
   const teamSingle = useSyncExternalStore(subscribeDeployment, readTeamDeployment, readNarrowOnServer)
     && dataAttributes?.['data-mixcut-shot-set-id'] !== undefined;
+  useEffect(() => {
+    if (!teamSingle || !previewActive) return;
+    // 预览独占一屏：把项目与模式栏滚出视野，给完整画面和时间轴让出高度。
+    const raf = window.requestAnimationFrame(() => shellRef.current?.scrollIntoView({ block: 'start' }));
+    return () => window.cancelAnimationFrame(raf);
+  }, [teamSingle, previewActive]);
   const topSteps = teamSingle || stepsInTopbar || (fitViewportOnStep !== undefined && activeStep === fitViewportOnStep);
   const stepNavigation = (
     <nav className={styles.stepNav} aria-label={stepsAriaLabel}>
