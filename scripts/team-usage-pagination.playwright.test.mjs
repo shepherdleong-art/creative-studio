@@ -119,7 +119,8 @@ function startServer() {
   // dev 模式下 Turbopack 在机器繁忙时会因 PostCSS 工作进程超时 panic 崩溃（实测）。
   // TEAM_USAGE_PRODUCTION=1 改用已构建的 standalone（先 npm run build），验证更快更稳。
   const production = process.env.TEAM_USAGE_PRODUCTION === '1';
-  const standalone = path.join(repoRoot, '.next', 'standalone');
+  const standalone = process.env.TEAM_USAGE_STANDALONE
+    ? path.resolve(process.env.TEAM_USAGE_STANDALONE) : path.join(repoRoot, '.next', 'standalone');
   const nextBinary = fileURLToPath(import.meta.resolve('next/dist/bin/next'));
   const serverArgs = production
     ? [path.join(standalone, 'server.js')]

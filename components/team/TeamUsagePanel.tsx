@@ -633,18 +633,6 @@ export default function TeamUsagePanel() {
           <button type="button" className="cap mt-3" onClick={() => setListNonce(value => value + 1)}>重试读取明细</button>
         </div>
         : <>
-          {readyList ? <div className="mt-3 border-t border-hairline pt-2">
-            <Pagination
-              label={detailInfo.title}
-              unit={unit}
-              page={listPage}
-              pageSize={pageSize}
-              total={listTotal}
-              totalPages={listTotalPages}
-              loading={listLoading}
-              onChange={changePage}
-            />
-          </div> : null}
           <div className="mt-2" data-testid="usage-detail-list" data-section={section} aria-busy={listLoading || undefined}>
             {!readyList
               ? <div className="py-12 text-center text-[13px] text-ink-tertiary" role="status">读取用量明细…</div>

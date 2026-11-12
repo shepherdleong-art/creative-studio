@@ -99,7 +99,7 @@ for (let index = 0; index < positions.length; index += 1) {
   assert.ok(positions[index] >= 0, `布局顺序检查找不到 ${order[index]}`);
   if (index > 0) assert.ok(positions[index] > positions[index - 1], `${order[index]} 必须排在 ${order[index - 1]} 之后（图表固定在所有明细之前）`);
 }
-assert.equal((usage.match(/<Pagination\b/g) ?? []).length, 2, '分页控件必须同时放在明细列表上方和下方');
+assert.equal((usage.match(/<Pagination\b/g) ?? []).length, 1, '按用户要求，用量明细只保留底部分页');
 assert.match(usage, /uses self\.pagination|pagination\.total/, '统计总数读服务端分页元数据，不用当前页数组长度');
 assert.match(usage, /summary\.counts\.generationTasks/, '制作任务总数读摘要 counts');
 assert.match(usage, /summary\.counts\.channelCalls/, '通道调用总数读摘要 counts');
