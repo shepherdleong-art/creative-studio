@@ -473,7 +473,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
           const submitted = await adapter.submitFinal({
             model: source.model, draftTaskId: source.providerTaskId,
             outputFormat: context.parameters.outputFormat === 'mov' ? 'mov' : 'mp4',
-            watermark: context.parameters.watermark === true, returnLastFrame: context.parameters.returnLastFrame === true,
+            watermark: context.parameters.watermark === true,
           }, route.apiKey, route.baseUrl, signal);
           if (!submitted.providerTaskId) throw new CanvasAdapterError('submit', '供应商未返回任务 ID', { uncertain: true });
           return { providerTaskId: submitted.providerTaskId };

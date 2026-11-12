@@ -1159,7 +1159,7 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
   assert.equal(branch.plan.tasks.length, 0, '分支运行不能自动消耗正式转化');
   const converted = await runOnce('final');
   assert.equal(converted.phase, 'succeeded', converted.errorMessage ?? '');
-  assert.deepEqual(converted.body, { model: 'doubao-seedance-2-5-260628', content: [{ type: 'draft_task', draft_task: { id: source.providerTaskId } }], resolution: '1080p', output_format: 'mov', watermark: true, return_last_frame: false });
+  assert.deepEqual(converted.body, { model: 'doubao-seedance-2-5-260628', content: [{ type: 'draft_task', draft_task: { id: source.providerTaskId } }], resolution: '1080p', output_format: 'mov', watermark: true });
   rejectFinal = true;
   const rejected = await runOnce('final');
   assert.equal(rejected.posts, 1);
@@ -1304,7 +1304,7 @@ for (const alias of ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260
   save([videoNode('company-final', capability.key, { generationStage: 'final-from-draft', draftAssetId: source.assetId, outputFormat: 'mov', watermark: true }, 'text-to-video')], []);
   const final = await runOnce('company-final');
   assert.equal(final.phase, 'succeeded', final.errorMessage ?? '');
-  assert.deepEqual(final.body, { model: capability.modelAlias, content: [{ type: 'draft_task', draft_task: { id: source.providerTaskId } }], resolution: '1080p', output_format: 'mov', watermark: true, return_last_frame: false, prompt: '' });
+  assert.deepEqual(final.body, { model: capability.modelAlias, content: [{ type: 'draft_task', draft_task: { id: source.providerTaskId } }], resolution: '1080p', output_format: 'mov', watermark: true, prompt: '' });
 }
 
 // New company native video models: configured list -> planner -> executor -> publication.

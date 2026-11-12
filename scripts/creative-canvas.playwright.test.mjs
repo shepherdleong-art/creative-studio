@@ -9,6 +9,7 @@
  *   node scripts/creative-canvas.playwright.test.mjs --suite all
  *
  * 前置：先执行 `npm run build`（harness 直接启动 .next/standalone/server.js）。
+ * 独立构建可用 CREATIVE_STUDIO_CANVAS_TEST_STANDALONE 指定含 server.js 的产物目录。
  *
  * 长时间观察（performance 套件）在 macOS 上必须用 caffeinate 运行，否则后台进程会被
  * App Nap 冻结（心跳出现规律的 15 秒空洞），测到的是「进程被挂起」而不是产品表现：
@@ -54,7 +55,9 @@ if (unimplemented.length > 0) {
 }
 
 const repoRoot = process.cwd();
-const standaloneServer = path.join(repoRoot, '.next', 'standalone', 'server.js');
+const standaloneServer = process.env.CREATIVE_STUDIO_CANVAS_TEST_STANDALONE
+  ? path.resolve(process.env.CREATIVE_STUDIO_CANVAS_TEST_STANDALONE, 'server.js')
+  : path.join(repoRoot, '.next', 'standalone', 'server.js');
 if (!fs.existsSync(standaloneServer)) {
   console.error('缺少 .next/standalone/server.js：请先运行 npm run build。');
   process.exit(2);
@@ -820,12 +823,16 @@ async function seedanceSuite(page) {
   await page.waitForFunction((count) => document.querySelectorAll('[data-node-kind="video-generation"]').length === count + 1, beforeFormal.length);
   const formalId = (await nodeIds(page, 'video-generation')).find((nodeId) => !beforeFormal.includes(nodeId));
   const formal = page.locator(`.react-flow__node[data-id="${formalId}"]`);
-  await formal.getByText('已绑定样片，无需连线。', { exact: false }).waitFor();
+  await formal.getByText('已绑定固定样片。', { exact: false }).waitFor();
   assert.equal(await formal.locator('[data-testid="model-select"]').inputValue(), sourceCapability.key, '保留样片原渠道');
   await waitSaved(page);
   const formalCanvasId = new URL(page.url()).pathname.split('/').pop();
   const formalGraph = (await (await page.request.get(`${baseUrl}/api/canvas/${formalCanvasId}`)).json()).canvas.graph;
   assert.equal(formalGraph.edges.filter((edge) => edge.target === formalId).length, 0, '样片已绑定，不需额外连线');
+  await page.locator(`.react-flow__edge[data-id="draft-binding:${formalId}"]`).waitFor();
+  assert.equal(await formal.getByLabel('返回尾帧', { exact: true }).count(), 0, '转正式不显示不支持的返回尾帧选项');
+  await page.reload();
+  await page.locator(`.react-flow__edge[data-id="draft-binding:${formalId}"]`).waitFor();
   assert.equal(runPosts.length, 0, '选定样片只创建节点，不自动发起付费生成');
   await page.unroute('**/api/canvas/assets/*/draft');
   return { sixModes: true, companySixModes: true, configuredImages: 5, refreshOnFocus: true, newAudioEnabled: true, draftResolutionLocked: true, directPreferenceRestored: true, modelSwitchExplained: true, movPlaybackProgress: true, originalMovDownloadPreserved: true, generationRequests: 0, screenshot };

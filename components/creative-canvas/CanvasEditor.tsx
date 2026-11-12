@@ -17,6 +17,7 @@ import {
   BackgroundVariant,
   Controls,
   MiniMap,
+  MarkerType,
   Panel,
   ReactFlow,
   ReactFlowProvider,
@@ -28,6 +29,7 @@ import {
   type NodeMouseHandler,
   type XYPosition,
 } from '@xyflow/react';
+import { canvasDraftBindingEdges } from '@/lib/creative-canvas/draft-binding-edges';
 import { parseCanvasGraph } from '@/lib/creative-canvas/graph';
 import { CANVAS_NODE_KIND_SPECS, canConnectKindTo } from '@/lib/creative-canvas/node-kinds';
 import type { CanvasGraph, CanvasNodeKind, CanvasViewport } from '@/lib/creative-canvas/types';
@@ -210,6 +212,18 @@ function EditorInner({ canvasId }: { canvasId: string }) {
       return { schemaVersion: 1, nodes: [], edges: [] };
     }
   }, [controller.nodes, controller.edges]);
+
+  const displayEdges = useMemo<Edge[]>(() => [
+    ...controller.edges,
+    ...canvasDraftBindingEdges(graph).map((edge) => ({
+      ...edge, type: 'smoothstep', className: 'sc-canvas-draft-binding', label: '固定样片',
+      selectable: false, deletable: false, focusable: false, reconnectable: false,
+      markerEnd: { type: MarkerType.ArrowClosed },
+      style: { stroke: 'var(--color-ink-tertiary)', strokeDasharray: '6 4' },
+      labelStyle: { fill: 'var(--color-ink-secondary)', fontSize: 11 },
+      labelBgStyle: { fill: 'var(--color-surface)' },
+    })),
+  ], [controller.edges, graph]);
 
   const resolveSourceAssetId = useCallback((sourceNodeId: string): string | null => {
     const node = controller.nodes.find((candidate) => candidate.id === sourceNodeId);
@@ -524,6 +538,7 @@ function EditorInner({ canvasId }: { canvasId: string }) {
   /** 右键连线：删除连线（对应参考槽位随对账一并移除）。 */
   const onEdgeContextMenu = useCallback((event: React.MouseEvent, edge: Edge) => {
     event.preventDefault();
+    if (edge.deletable === false) return;
     const bounds = wrapperRef.current?.getBoundingClientRect();
     setDropMenu(null);
     setContextMenu({
@@ -677,7 +692,7 @@ function EditorInner({ canvasId }: { canvasId: string }) {
           >
             <ReactFlow
               nodes={controller.nodes}
-              edges={controller.edges}
+              edges={displayEdges}
               nodeTypes={NODE_TYPES}
               edgeTypes={CANVAS_EDGE_TYPES}
               onNodesChange={controller.onNodesChange}

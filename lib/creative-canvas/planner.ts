@@ -456,7 +456,7 @@ function buildTaskPlan(
       if (!capability.parameters.some((parameter) => parameter.key === 'generationStage')) throw new Error('该渠道不支持样片转正式');
       const source = requireCanvasDraftSource(context.db, context.canvas.id, String(node.data.parameters.draftAssetId ?? ''));
       assertDraftSourceMatches(source, capability.modelAlias, capability.providerIdentity);
-      const allowed = new Set(['generationStage', 'draftAssetId', 'resolution', 'outputFormat', 'watermark', 'returnLastFrame']);
+      const allowed = new Set(['generationStage', 'draftAssetId', 'resolution', 'outputFormat', 'watermark']);
       const known = new Set(capability.parameters.map((parameter) => parameter.key));
       for (const key of Object.keys(node.data.parameters)) if (!known.has(key)) throw new Error(`不接受参数 ${key}`);
       const parameters = Object.fromEntries(Object.entries(node.data.parameters).filter(([key]) => allowed.has(key)));

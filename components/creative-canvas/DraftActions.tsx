@@ -29,13 +29,13 @@ export function DraftActions({ assetId, controller, position, bound = false }: {
   return <div className="mt-2 text-[11px] text-ink-secondary" data-testid="draft-source">
     {tailAction}
     <div>{bound ? '固定样片' : '样片'} · {source.taskId.slice(0, 8)} · {expired ? '已过期，可下载原片' : `有效至 ${new Date(source.expiresAt).toLocaleString('zh-CN')}`}</div>
-    {bound ? <div>已绑定样片，无需连线。点击“生成”即可生成正式版。时长 {source.parameters.durationSec === -1 ? '自动' : `${source.parameters.durationSec ?? 5} 秒`} · 比例 {String(source.parameters.aspectRatio ?? '跟随素材')} · 声音 {(source.parameters.withAudio ?? true) ? '开启' : '关闭'}。</div> : null}
+    {bound ? <div>已绑定固定样片。点击“生成”即可生成正式版。时长 {source.parameters.durationSec === -1 ? '自动' : `${source.parameters.durationSec ?? 5} 秒`} · 比例 {String(source.parameters.aspectRatio ?? '跟随素材')} · 声音 {(source.parameters.withAudio ?? true) ? '开启' : '关闭'}。</div> : null}
     {!bound && !expired ? <button type="button" className="nodrag sc-canvas-button mt-1" onClick={async () => {
       const id = await controller.addNode('video-generation', position);
       if (id) controller.updateNodeData(id, {
         title: '生成正式版', modelKey: source.capabilityKey || 'external-jimeng-seedance-2-5',
         generationMode: source.generationMode as CanvasGenerationMode, prompt: '', references: [],
-        parameters: { generationStage: 'final-from-draft', draftAssetId: source.assetId, resolution: '1080p', outputFormat: 'mp4', watermark: false, returnLastFrame: false },
+        parameters: { generationStage: 'final-from-draft', draftAssetId: source.assetId, resolution: '1080p', outputFormat: 'mp4', watermark: false },
       });
     }}>生成正式版</button> : null}
     {expired ? <button type="button" className="nodrag sc-canvas-button mt-1" onClick={async () => {

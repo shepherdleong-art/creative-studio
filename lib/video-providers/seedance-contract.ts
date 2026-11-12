@@ -59,6 +59,6 @@ export function seedanceFinalBody(request: {
     resolution: '1080p',
     ...(request.outputFormat !== undefined ? { output_format: request.outputFormat } : {}),
     ...(request.watermark !== undefined ? { watermark: request.watermark } : {}),
-    ...(request.returnLastFrame !== undefined ? { return_last_frame: request.returnLastFrame } : {}),
+    // Draft promotion rejects return_last_frame even when explicitly false.
   };
 }

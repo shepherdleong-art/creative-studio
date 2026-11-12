@@ -911,7 +911,7 @@ export const GenerationNode = memo(function GenerationNode({
           <div className="mt-2 space-y-1">
             {capability.parameters
               .filter((parameter) => !['generationStage', 'draftAssetId', 'directResolution'].includes(parameter.key))
-              .filter((parameter) => data.parameters?.generationStage !== 'final-from-draft' || ['resolution', 'outputFormat', 'watermark', 'returnLastFrame'].includes(parameter.key))
+              .filter((parameter) => data.parameters?.generationStage !== 'final-from-draft' || ['resolution', 'outputFormat', 'watermark'].includes(parameter.key))
               .filter((parameter) => !parameter.modes || parameter.modes.includes(currentMode))
               .map((parameter) => {
                 const options = canvasParameterOptions(
