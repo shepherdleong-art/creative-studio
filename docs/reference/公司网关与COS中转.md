@@ -21,7 +21,26 @@ Seedream 5.0 Pro 同步生图的应用超时单独沿用项目 `timeoutMs`，默
 
 2026-09-29 新增：Kling 2.5 单首帧与首尾帧均显式 `OutputConfig.Resolution=1080P`；首尾帧按腾讯文档开放精确别名，首帧 `images[0]`、尾帧 `LastFrameUrl`，两帧必须经 COS（公司链路末帧收束未新增实测）；Nano Banana 3.0/3.1 走腾讯原生 `OutputConfig` 的 1K/2K/4K；Seedream 5.0 Pro 走同步 `/v1/images/generations`，`size` 必须传 `1K`/`2K` 档位并在提示词指定画幅（具体像素在公司链路实测落默认 2K）。三款图片均采用原生像素交付。官方文档、支持范围与实测记录见 [公司模型接入与验证](../2026-09-29-公司模型接入与验证.md)。下文旧 seedream 规则不适用于精确别名 `doubao-seedream-5-0-pro-image`。
 
-- `company-gateway-size.ts` — 公司模型网关（gateway.example.com，经本地 LiteLLM 代理转发，代理配置在 `config.yaml`）的 size 白名单与吸附逻辑；`gateway-task-image` / `openai-video` 适配器仅对公司模型把请求 size 吸附到文档允许的像素组合并（仅可灵）补 `response_format`（qiniuyun/* 实测收 `png` 并回无损 PNG——2K 3:4 约 2.8MB，而 jpeg 仅 ~300KB 压缩发糊，2026-08-21 真实任务验证；image2/seedream 维持历史 `jpeg`）；网关完成态常不带产物 URL，两个适配器都会回退用**提交时返回的原始任务 id** 拼 `/v1/videos/<id>/content` 下载（轮询响应里的 id 可能丢 model_id，拼地址不要用它）。视频侧：可灵走 §6.2 像素表（档位偏好 1K）；**Seedance 2.5 固定按火山官网 1080p 像素表送 size**（2026-09-08 真实任务核验 9:16 `1080x1920`，成片 HEVC 10bit；`response_format` 对 seedance 不发送——从未核验过）；**Seedance 2.0 fast 官方最高 720p**（同日实测传 1080p 创建前 400「resolution ... not valid for doubao-seedance-2-0-fast in r2v」），当前按方舟专用 720p 表显式送 size（3:4 为 `834x1112`），不降为 480p；**Seedance 2.0 标准版 `doubao-seedance-2-0-260128` 固定 1080p**，复用 2.5 的像素表（3:4 为 `1248x1664`）。2.0 标准版与 Fast 按精确模型区分；2026-09-21 各一条真实单图任务已确认标准版返回 `1248x1664`、Fast 返回 `834x1112`（均 24fps、H.264），见 [实测记录](../2026-09-21-Seedance2标准版与Fast分辨率实测.md)；其余比例及首尾帧仅本地请求回归覆盖。`qiniuyun/gpt-image-2-medium`（2026-08-21 逐格真实任务探测）放行 2K×{1:1,3:4,4:3,16:9,9:16} + 4K×{1:1,4:3,16:9,9:16}，并经 `CompanyModelCaps.exclude` 单格排除 4K 3:4：1K 档被网关映射成 1080 类视频制式尺寸、4K 3:4 映射成 2160x2878，均不满足上游「宽高 16 整除」被拒；3K 档与 3:2/2:3/21:9 提交即拒。命中排除格时优先「裁切映射」——同档位找能居中裁切覆盖目标框的跨比例好格（4K 3:4 → 4K 9:16 的 2160x3840，交付端 normalize 裁回 3:4 名义格 2160x2880，真 4K 级画质），没有可裁格才同比例就近换档。开启 `nativeDelivery` 的公司模型（目前 qiniuyun/* 与 image2-*，均逐格实测过）按网关原生像素交付：`queue.ts` 的规整目标用 `companyImageDeliverySize`（名义格子比例）只裁齐比例、绝不缩放——同比例白赚网关额外像素（image2 2K 3:4 实返 1920x2560），比例略偏的裁齐（1K 3:4 → 1024x1366）；新建项目页清晰度选项对这类模型只展示 1K/2K/4K 档位与比例，不展示具体像素。
+- `company-gateway-size.ts` — 公司模型网关（gateway.example.com，经本地 LiteLLM 代理转发，代理配置在 `config.yaml`）的 size 白名单与吸附逻辑；`gateway-task-image` / `openai-video` 适配器仅对公司模型把请求 size 吸附到文档允许的像素组合并（仅可灵）补 `response_format`（qiniuyun/* 实测收 `png` 并回无损 PNG——2K 3:4 约 2.8MB，而 jpeg 仅 ~300KB 压缩发糊，2026-08-21 真实任务验证；image2/seedream 维持历史 `jpeg`）；网关完成态常不带产物 URL，两个适配器都会回退用**提交时返回的原始任务 id** 拼 `/v1/videos/<id>/content` 下载（轮询响应里的 id 可能丢 model_id，拼地址不要用它）。视频侧：可灵走 §6.2 像素表（档位偏好 1K）；**Seedance 2.5 固定按火山官网 1080p 像素表送 size**（2026-09-08 真实任务核验 9:16 `1080x1920`，成片 HEVC 10bit；`response_format` 对 seedance 不发送——从未核验过）；**Seedance 2.0 fast 官方最高 720p**（同日实测传 1080p 创建前 400「resolution ... not valid for doubao-seedance-2-0-fast in r2v」），当前按方舟专用 720p 表显式送 size（3:4 为 `834x1112`），不降为 480p；**Seedance 2.0 标准版 `doubao-seedance-2-0-260128` 固定 1080p**，复用 2.5 的像素表（3:4 为 `1248x1664`）。2.0 标准版与 Fast 按精确模型区分；2026-09-21 各一条真实单图任务已确认标准版返回 `1248x1664`、Fast 返回 `834x1112`（均 24fps、H.264），见 [实测记录](../2026-09-21-Seedance2标准版与Fast分辨率实测.md)；其余比例及首尾帧仅本地请求回归覆盖。`image2-medium` 与 `qiniuyun/gpt-image-2-medium` 的当前可执行组合按下方 2026-11-12 复验记录；七牛 4K 3:4 已直出，历史 9:16 产物仍兼容裁回 3:4。开启 `nativeDelivery` 的公司模型（目前 qiniuyun/* 与 image2-*，均逐格实测过）按网关原生像素交付：`queue.ts` 的规整目标用 `companyImageDeliverySize`（名义格子比例）只裁齐比例、绝不缩放——同比例白赚网关额外像素（image2 2K 3:4 实返 1920x2560），比例略偏的裁齐（1K 3:4 → 1024x1366）；新建项目页清晰度选项对这类模型只展示 1K/2K/4K 档位与比例，不展示具体像素。
+
+### 2026-11-12 Image 2 尺寸复验
+
+两条精确 Medium 通道新增实测 63 格并复用此前 1 格，共 64 个旧排除组合：27 格获得原图（含尺寸回落），5 格远端失败，32 格在请求构造阶段明确拒绝。新增 63 格统一使用文生图；此前腾讯 4K 9:16 使用图生图。此证据不扩展到 low/high 等其他别名，也不代表多参考语义已验收。
+
+腾讯 `image2-medium` 新增尺寸如下；数值是实际生成 POST 的 `size`，原图可能按通道原生像素取整，交付只裁齐比例、不放大：
+
+| 比例 | 1K 提交 | 2K 提交 | 4K 提交 |
+| --- | --- | --- | --- |
+| 9:16 | 1024x1820 | 1440x2560 | 2160x3840 |
+| 5:4 | 1120x896 | 2240x1792 | 3200x2560 |
+| 4:5 | 896x1120 | 1792x2240 | 2560x3200 |
+| 2:1 | 2048x1024 | 2688x1344 | 禁止：实返 2560x1280 |
+| 1:2 | 1024x2048 | 1344x2688 | 禁止：实返 1280x2560 |
+| 9:21 | 624x1456 | 1296x3024 | 禁止：实返 1088x2560 |
+
+- 腾讯的三个 4K 长条组合在模型专用 `imageSizeTable` 中缺省，不能用 `exclude` 的 donor 语义借其他画幅绕过；普通项目、画布精确模型与统一模型均按完整组合校验。3K 继续不开放，实测多个名义尺寸回落或归并。
+- 七牛仍只允许 2K/4K × {1:1,3:4,4:3,16:9,9:16}；4K 3:4 现在直接提交并返回 2160x2880，移除旧 donor 映射。1K 仍被映射为含 1080 的非法尺寸；3K、3:2、2:3、21:9 以及新增五种比例仍受网关限制。
+- 本机可复核证据：`outputs/05-日志与排查/2026-11-12-canvas-image/image2-whitelist-live-results.json`，附每格回执和原图 SHA-256。服务器原始记录在数据根的 `storage/diagnostics/image2-{whitelist-exclusions,missing-ratios}-20261112-r1/`；复验只有每格一次提交，未按失败免费计费。
 
 ## `cos-media.ts` — 腾讯云 COS 参考图中转
 

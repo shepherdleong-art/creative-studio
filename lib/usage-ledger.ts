@@ -1,3 +1,4 @@
+import { videoJobUsageMeasurement } from './usage-video-measurement.ts';
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
@@ -162,6 +163,8 @@ const COMPONENT_QUANTITY_NAMES: Readonly<Record<string, readonly string[]>> = {
   image: ['image', 'images'],
   request: ['request', 'requests'],
   second: ['second', 'seconds', 'durationSec', 'durationSeconds'],
+  input_second: ['input_second', 'inputVideoDurationSec'],
+  output_second: ['output_second', 'outputVideoDurationSec'],
   input_token: ['input_token', 'inputTokens', 'uncachedInputTokens'],
   output_token: ['output_token', 'outputTokens', 'completionTokens'],
   cached_input_token: ['cached_input_token', 'cachedInputTokens', 'cachedReadTokens', 'cachedTokens'],
@@ -300,7 +303,7 @@ function usageLedgerFields(
   });
   const quantity = componentDetails.reduce((sum, component) => sum + component.quantity, 0);
   const costMicros = componentDetails.reduce((sum, component) => sum + component.componentCostMicros, 0);
-  const isGpt = components.length > 1;
+  const hasMultipleComponents = components.length > 1;
   const detailJson = JSON.stringify({
     ...measurement.detail,
     priceComponents: componentDetails,
@@ -317,8 +320,8 @@ function usageLedgerFields(
     callCount: measurement.callCount,
     quantity,
     unit: components[0].unit,
-    priceScale: isGpt ? 1 : components[0].priceScale,
-    unitPriceMicros: isGpt ? 0 : components[0].unitPriceMicros,
+    priceScale: hasMultipleComponents ? 1 : components[0].priceScale,
+    unitPriceMicros: hasMultipleComponents ? 0 : components[0].unitPriceMicros,
     costMicros,
     detailJson,
     projectId: input.projectId ?? usageSnapshot.projectId ?? null,
@@ -677,11 +680,12 @@ function replayVideoJob(db: Database.Database, row: ReconcileVideoJobRow):
     console.warn(`[usage-ledger] video job ${row.id} usage snapshot ignored: ${parsed.error}`);
     return { inserted: false, invalidSnapshot: true, failed: false };
   }
-  const durationSec = typeof row.durationSec === 'number' && Number.isFinite(row.durationSec) ? row.durationSec : 0;
+  const measurement = videoJobUsageMeasurement(parsed.parsed.snapshot, row.durationSec);
+  if (!measurement) return { inserted: false, invalidSnapshot: true, failed: false };
   const result = recordUsage(db, {
     eventKey,
     snapshot: parsed.parsed.snapshot,
-    usage: { quantity: durationSec, callCount: 1, detail: { source: 'reconcile', taskType: 'video-job' } },
+    usage: { quantity: measurement.quantity, callCount: 1, detail: { source: 'reconcile', taskType: 'video-job', ...measurement.detail } },
     projectId: row.projectId,
     refType: 'video-job',
     refId: row.id,

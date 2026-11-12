@@ -3,7 +3,7 @@
  *
  * 键是「供应商类型 + 路由身份 + 精确别名」；每一项都写明模式、输入组合、输出参数、
  * 取消能力与证据层级。**证据层级不能靠测试提升**：
- * - verified：真实公司链路样例支持（本轮没有新增真实样本，故暂不出现）；
+ * - verified：完整画布真实公司链路样例支持；尺寸探测只证明对应参数组合；
  * - mapped：请求映射已完成并有本地请求捕获测试，画布真实验收待 P7；
  * - candidate：只有平台文档，公司转发未核对，界面不开放。
  *
@@ -12,7 +12,7 @@
  * 画布侧只做输入语义与请求映射，不重写已验证字段。
  */
 
-import { companyVideoCapsForModel } from '../../company-gateway-size.ts';
+import { companyImageCapsForModel, companyVideoCapsForModel } from '../../company-gateway-size.ts';
 import { companyGatewayTailFrameCapability } from '../../company-gateway-tail-frame.ts';
 import { videoDurationOptions } from '../../video-duration.ts';
 import { companyNativeVideoModel } from '../../company-gateway-video-models.ts';
@@ -31,8 +31,8 @@ import type { CanvasModelCapability } from '../capabilities.ts';
 /**
  * 图片模型（默认开放）：公司网关 image2-medium。
  *
- * 选择它的原因是**路由存在**且已有真实成功案例（公司网关核对记录里 image2 Medium 成功 29 条），
- * 而 qiniuyun 图片模型在当前 config.yaml 里没有路由 —— 注册一个提交必然失败的模型会误导用户。
+ * 供应商是否可选由运行时配置决定；预置键保留给旧图和恢复。
+ * 2026-11-12 参数实测只扩展精确 Medium 别名，不扩展其他 Image 2 质量档。
  */
 export const COMPANY_CANVAS_IMAGE2_CAPABILITY: CanvasModelCapability = {
   key: 'company-image2-medium',
@@ -47,16 +47,14 @@ export const COMPANY_CANVAS_IMAGE2_CAPABILITY: CanvasModelCapability = {
     { kind: 'text', roles: ['reference'], min: 0, max: 1 },
   ],
   parameters: [
-    { key: 'aspectRatio', label: '比例', type: 'enum', options: ['1:1', '3:4', '4:3', '16:9', '9:16'], default: '1:1' },
+    { key: 'aspectRatio', label: '比例', type: 'enum', options: companyImageCapsForModel('image2-medium')!.ratios, default: '1:1' },
     { key: 'resolution', label: '清晰度', type: 'enum', options: ['1K', '2K', '4K'], default: '2K' },
   ],
   cancellation: false,
   evidence: 'mapped',
   evidenceNote:
-    '尺寸白名单与原生像素交付来自公司网关既有真实案例（image2 Medium 成功 29 条）；'
-    + '多图参考的顺序与用途由本地请求捕获验证（R02 待真实样本）。'
-    + '**无图（文生图）模式只有平台文档支持（可省略 FileInfos、必须给 Prompt），公司路由未验证，'
-    + '属于 candidate 组合**——R01 是其验证样本，公司网关不可达时不得按已接通对待。',
+    '尺寸组合按 2026-11-12 真实公司通道样例复验；9:16 三档、5:4/4:5 三档及长条比例 1K/2K 已出图。'
+    + '三个长条比例的 4K 实返 2K，提交前拒绝；多图语义与完整画布链路仍按 mapped 验收。',
 };
 
 export { UNIFIED_CANVAS_IMAGE2_CAPABILITY_KEY } from '../unified-image-key.ts';
@@ -133,9 +131,8 @@ export const COMPANY_CANVAS_UNIFIED_KLING3_CAPABILITY: CanvasModelCapability = {
 };
 
 /**
- * 七牛图片模型：**当前未注册**——画布 config.yaml 里没有 `qiniuyun/gpt-image-2-medium` 路由
- * （原工作台配置同样没有）。保留定义作为 P7 候选：等公司侧补上路由再注册，
- * 不因为「代码写好了」就在界面上开放一个提交必然失败的模型。
+ * 七牛图片模型的预置身份；按运行时已启用、有地址和 Key 的供应商行注册。
+ * 文生图尺寸样例与完整画布验收分开记录，不能据参数测试提升全部模式的证据层级。
  */
 export const COMPANY_CANVAS_QINIUYUN_IMAGE_CAPABILITY: CanvasModelCapability = {
   key: 'company-qiniuyun-image-2',
@@ -157,8 +154,8 @@ export const COMPANY_CANVAS_QINIUYUN_IMAGE_CAPABILITY: CanvasModelCapability = {
   cancellation: false,
   evidence: 'candidate',
   evidenceNote:
-    '尺寸白名单与原生像素交付按 2026-08-21 逐格真实任务探测；但当前 config.yaml 无该路由，'
-    + '未注册到画布能力表，列为 P7 候选。',
+    '2026-11-12 复验七牛 4K 3:4 已直出 2160x2880；1K、3K 与额外比例仍失败或被拒绝。'
+    + '按实际供应商配置注册；完整画布模式验收仍单列。',
 };
 
 /** 七牛可灵 3.0：首帧 images[0] + 尾帧 end_image_url；Pro 默认、音频开启、1K 名义尺寸。 */

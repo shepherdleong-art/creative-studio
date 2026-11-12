@@ -511,10 +511,11 @@ function installIpcHandlers(window: BrowserWindow, host: DesktopWindowHost): voi
 }
 
 // 任务栏 / 窗口图标取构建产物里的 256 像素 PNG（新标志）。源码运行与
-// standalone 两种布局都试一遍，都找不到时交给 Electron 的默认图标。
+// standalone 与轻客户端布局都试一遍，都找不到时交给 Electron 的默认图标。
 function resolveWindowIconPath(): string | undefined {
   const projectRoot = resolve(__dirname, '..');
   const candidates = [
+    join(__dirname, 'app-icon-256.png'),
     join(projectRoot, 'public', 'icons', 'app-icon-256.png'),
     join(projectRoot, '.next', 'standalone', 'public', 'icons', 'app-icon-256.png'),
     process.resourcesPath ? join(process.resourcesPath, 'app', 'public', 'icons', 'app-icon-256.png') : '',

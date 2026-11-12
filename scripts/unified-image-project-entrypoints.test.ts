@@ -47,15 +47,21 @@ assert.deepEqual(JSON.parse(frozen.unifiedRequestJson).referenceImageIds, ['scen
 
 assert.throws(
   () => buildUnifiedImageJobContract({
-    projectSize: '720x1280',
+    projectSize: '3840x1920',
     prompt: 'invalid',
     inputImageId: 'image-base',
     referenceImageIds: [],
   }),
   (error: unknown) => error instanceof UnifiedImageRequestError
     && error.code === 'unsupported_image_combination',
-  '1K 9:16 is not executable by either unified Image 2 channel',
+  '4K 2:1 must not silently fall back to 2K',
 );
+assert.equal(buildUnifiedImageJobContract({
+  projectSize: '720x1280', prompt: 'portrait', inputImageId: 'image-base', referenceImageIds: [],
+}).frozen.ratio, '9:16');
+assert.equal(buildUnifiedImageJobContract({
+  projectSize: '3200x2560', prompt: 'landscape', inputImageId: 'image-base', referenceImageIds: [],
+}).frozen.ratio, '5:4');
 assert.throws(
   () => buildUnifiedImageJobContract({
     projectSize: 'not-a-size',

@@ -3,7 +3,7 @@ import { syncShotPromptFromScene } from '@/lib/furniture-prompt';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveGptImage2Size, isValidGptImage2Size } from '@/lib/gpt-image-2-size-presets';
-import { validateImageAspectRatio, validateImageResolution } from '@/lib/image-generation-settings';
+import { validateImageAspectRatio, validateImageResolution, validateImagePresetSize } from '@/lib/image-generation-settings';
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { toStorageImageUrl } from '@/lib/storage-url';
 import { normalizeShotImageIds } from '@/lib/shot-set-domain';
@@ -211,6 +211,9 @@ async function __teamRoutePOST(request: NextRequest) {
         return NextResponse.json({ error: `Invalid size: "${body.size || '(missing)'}"` }, { status: 400 });
       }
     }
+
+    const sizeError = unifiedProvider ? null : validateImagePresetSize(model, resolvedSize);
+    if (sizeError) return NextResponse.json({ error: sizeError }, { status: 400 });
 
     const projectId = uuidv4();
     const access = requireAccessContext();

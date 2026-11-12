@@ -110,6 +110,24 @@ try {
   assert.deepEqual(decodeImage(images[0]), Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'images[0] 必须是底图');
   assert.deepEqual(decodeImage(images[1]), Buffer.from([0x89, 0x50, 0x4e, 0x48]), 'images[1] 必须是参考图');
 
+  // 请求捕获覆盖实测新增格子与七牛直出，避免名单开放后仍发旧尺寸。
+  for (const [model, size, submitted] of [
+    ['image2-medium', '1440x2560', '1440x2560'],
+    ['image2-medium', '3200x2560', '3200x2560'],
+    ['qiniuyun/gpt-image-2-medium', '2448x3264', '2160x2880'],
+  ]) {
+    await submitGatewayTaskImage({ model, size, prompt: 'size contract', inputImagePath: inputPath,
+      inputMimeType: 'image/png', referenceImagePaths: [], referenceMimeTypes: [], quality: 'auto',
+    }, 'gateway-key', 'https://llm-gateway.example.com');
+    assert.equal(capturedBody?.size, submitted);
+  }
+  const callsBeforeInvalid = capturedMethods.length;
+  await assert.rejects(() => submitGatewayTaskImage({
+    model: 'image2-medium', size: '3840x1920', prompt: 'invalid 4K', inputImagePath: inputPath,
+    inputMimeType: 'image/png', referenceImagePaths: [], referenceMimeTypes: [], quality: 'auto',
+  }, 'gateway-key', 'https://llm-gateway.example.com'), /不支持.*4K/);
+  assert.equal(capturedMethods.length, callsBeforeInvalid, '非法组合在素材交付及生成请求之前拒绝');
+
   const pollResult = await pollGatewayTaskImage(
     'task-1',
     'gateway-key',

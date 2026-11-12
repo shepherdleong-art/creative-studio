@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import module from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import { mock } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { CanvasGraphNode } from '../lib/creative-canvas/types.ts';
@@ -69,6 +70,12 @@ async function waitUntil(check: () => boolean, message: string): Promise<void> {
   while (!check() && Date.now() < deadline) await delay(25);
   assert.ok(check(), message);
 }
+
+// Keep real startup timing; accelerate only the provider polling wait.
+const nativeSetTimeout = globalThis.setTimeout;
+const pollingTimer = mock.method(globalThis, 'setTimeout', (
+  callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]
+) => nativeSetTimeout(callback, ms === 30_000 ? 1 : ms, ...args));
 
 let releaseFirst = false;
 try {
@@ -163,6 +170,7 @@ try {
 } finally {
   releaseFirst = true;
   await bootstrap.stopCanvasScheduler();
+  pollingTimer.mock.restore();
   closeDb();
   fs.rmSync(root, { recursive: true, force: true });
 }

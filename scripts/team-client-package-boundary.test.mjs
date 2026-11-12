@@ -11,6 +11,7 @@ const electronDist = path.join(root, 'electron');
 fs.mkdirSync(electronDist, { recursive: true });
 fs.writeFileSync(path.join(electronDist, 'electron.exe'), 'fixture electron');
 fs.writeFileSync(path.join(electronDist, 'resources.pak'), 'fixture resources');
+fs.writeFileSync(path.join(electronDist, 'debug.log'), 'old local runtime log');
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
 const publicPem = publicKey.export({ type: 'spki', format: 'pem' });
 const privatePem = privateKey.export({ type: 'pkcs8', format: 'pem' });
@@ -51,9 +52,18 @@ try {
     'versions/test-release/electron/electron.exe',
     'versions/test-release/package.json',
     'versions/test-release/dist-desktop/main.js',
+    'versions/test-release/dist-desktop/app-icon-256.png',
     'versions/test-release/release.json',
     'updates/test-release.zip', 'updates/test-release.manifest.json',
   ]) assert.equal(fs.existsSync(path.join(output, required)), true, required);
+  assert.deepEqual(
+    fs.readFileSync(path.join(output, 'versions/test-release/dist-desktop/app-icon-256.png')),
+    fs.readFileSync(new URL('../public/icons/app-icon-256.png', import.meta.url)),
+    '轻客户端必须携带与林视源图一致的窗口图标',
+  );
+  for (const runtime of ['runtime', 'versions/test-release/electron']) {
+    assert.equal(fs.existsSync(path.join(output, runtime, 'debug.log')), false, '本机运行日志不得进入客户端');
+  }
   const helperLoad = spawnSync(process.execPath, [
     '-e', 'require(process.argv[1]);', path.join(output, 'helper', 'update-helper.js'),
   ], { encoding: 'utf8' });

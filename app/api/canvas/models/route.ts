@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { canvasImageCombinations } from '@/lib/creative-canvas/capabilities';
 import { ensureCanvasCapabilitiesRegistered } from '@/lib/creative-canvas/capabilities-bootstrap';
 import { getDb } from '@/lib/db';
 import { readCanvasRuntimeConfig } from '@/lib/creative-canvas/config';
@@ -23,6 +24,7 @@ async function __teamRouteGET() {
         legacyModes: capability.legacyModes,
         inputs: capability.inputs,
         parameters: capability.parameters,
+        imageCombinations: canvasImageCombinations(capability),
         cancellation: capability.cancellation,
         evidence: capability.evidence,
         evidenceNote: capability.evidenceNote,

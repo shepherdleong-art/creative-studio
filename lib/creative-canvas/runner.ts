@@ -1,3 +1,4 @@
+import { providerErrorMessage } from '../provider-error-message.ts';
 import { createHash } from 'node:crypto';
 import { requireAccessContext, runWithTaskAccessContext } from '../media-core/access-context.ts';
 import type {
@@ -113,8 +114,17 @@ function jsonObject<T>(raw: string, fallback: T): T {
   }
 }
 
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => { setTimeout(resolve, ms); });
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener('abort', finish, { once: true });
+    if (signal?.aborted) finish();
+  });
 }
 
 function resolveInputKind(
@@ -289,6 +299,14 @@ function executionWaitMessage(reason: string): string {
   return messages[reason] ?? '等待统一执行准入，尚未提交。';
 }
 
+function canvasFailureMessage(evidence: SubmissionEvidence, reason: unknown): string {
+  const detail = providerErrorMessage(reason);
+  if (!detail) return evidence.employee.detail;
+  if (evidence.state === 'confirmed_not_created') return `创建任务失败：${detail}`;
+  if (evidence.state === 'terminal_failed') return `供应商生成失败：${detail}`;
+  return `${evidence.employee.detail} 具体原因：${detail}`;
+}
+
 function canvasFailureEvidence(
   task: CanvasTaskRecord,
   adapter: CanvasTaskAdapter,
@@ -296,7 +314,7 @@ function canvasFailureEvidence(
   error: unknown,
   remoteId?: string | null,
 ): SubmissionEvidence {
-  return classifyCanvasSubmissionFailure({
+  const evidence = classifyCanvasSubmissionFailure({
     taskId: task.id,
     businessAttemptNo: 1,
     adapterId: adapter.kind,
@@ -305,6 +323,10 @@ function canvasFailureEvidence(
     error,
     remoteId,
   });
+  if (error instanceof CanvasAdapterError) {
+    evidence.employee = { ...evidence.employee, detail: canvasFailureMessage(evidence, error) };
+  }
+  return evidence;
 }
 
 function canvasTerminalEvidence(
@@ -455,9 +477,9 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
     fence,
     signal,
     now = () => new Date(),
-    pollIntervalMs = 1_000,
+    pollIntervalMs = 30_000,
     maxPollAttempts = 600,
-    sleep = defaultSleep,
+    sleep = (ms) => defaultSleep(ms, signal),
   } = options;
   const storageRoot = options.storageRoot ?? canvasStorageRoot(dataRoot());
   const guard = { fence, workerId };
@@ -820,6 +842,10 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
           if (evidence.state !== 'confirmed_not_created') throw error;
           const code = evidence.error?.code ?? 'submit_rejected';
           submitFailure = { code, message: evidence.employee.detail };
+          // 先保存原因：06 收到 not_created 回执后即使进程中断，恢复也不丢失诊断。
+          updateCanvasTaskGuarded(db, {
+            taskId, patch: { errorCode: code, errorMessage: submitFailure.message }, guard, now,
+          });
           return { terminalState: 'not_created', errorCode: code };
         }
       });
@@ -1025,6 +1051,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       // server 上游未确认取消时继续收取已受理结果，permit 只能由终态结算释放。
     }
     await sleep(pollIntervalMs);
+    if (signal?.aborted) break;
     attempts += 1;
     let outcome;
     try {
@@ -1123,7 +1150,7 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
           phase: 'failed',
           submissionState: 'terminal',
           errorCode: evidence.error?.code ?? 'provider_failed',
-          errorMessage: evidence.employee.detail,
+          errorMessage: canvasFailureMessage(evidence, outcome.message),
           leaseOwner: null,
           leaseUntil: null,
         },

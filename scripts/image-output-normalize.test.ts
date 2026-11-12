@@ -56,7 +56,7 @@ const croppedMeta = await sharp(cropped.imageBuffer).metadata();
 assert.equal(croppedMeta.width, 1024);
 assert.equal(croppedMeta.height, 1366);
 
-// donor 裁回名义格（qiniuyun 4K 3:4 用 2160x3840 生成）→ 2160x2880，不缩放
+// 兼容历史七牛 4K 3:4 的 9:16 donor 产物：裁回 2160x2880，不缩放
 const donor = await normalizeGeneratedImageToNativeRatio(await makeJpeg(2160, 3840), '2160x2880');
 assert.equal(donor.changed, true);
 assert.equal(donor.width, 2160);

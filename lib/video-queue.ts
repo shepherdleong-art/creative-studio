@@ -1,3 +1,4 @@
+import { videoJobUsageMeasurement } from './usage-video-measurement.ts';
 import { getDb } from './db.ts';
 import { runMediaQueueWorkers } from './media-queue-workers.ts';
 import { runWithAcceptedTaskAccess } from './team-service/accepted-access.ts';
@@ -666,8 +667,9 @@ async function runAuthorizedVideoJob(
         throw new UnifiedKlingCanceledError();
       }
       const parsed = parseUsageSnapshot(usageSnapshot);
-      const reserveMinor = parsed.ok
-        ? Math.ceil(calculateUsageCostMicros(parsed.parsed.snapshot.priceComponents, job.durationSec) / 10_000)
+      const measurement = parsed.ok ? videoJobUsageMeasurement(parsed.parsed.snapshot, job.durationSec) : null;
+      const reserveMinor = parsed.ok && measurement
+        ? Math.ceil(calculateUsageCostMicros(parsed.parsed.snapshot.priceComponents, measurement.quantity) / 10_000)
         : null;
       const submitted = await submitLegacyMediaOperation<SubmitVideoResult>({
         module: 'video',
@@ -742,10 +744,11 @@ async function runAuthorizedVideoJob(
       errorCode?: string,
     ): Promise<void> {
       const parsed = parseUsageSnapshot(usageSnapshot);
-      const actualCost = outcome === 'succeeded' && parsed.ok
+      const measurement = parsed.ok ? videoJobUsageMeasurement(parsed.parsed.snapshot, job.durationSec) : null;
+      const actualCost = outcome === 'succeeded' && parsed.ok && measurement
         ? {
             currency: 'CNY' as const,
-            minor: Math.ceil(calculateUsageCostMicros(parsed.parsed.snapshot.priceComponents, job.durationSec) / 10_000),
+            minor: Math.ceil(calculateUsageCostMicros(parsed.parsed.snapshot.priceComponents, measurement.quantity) / 10_000),
           }
         : null;
       await settleLegacyMediaRemote({

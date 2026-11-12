@@ -10,12 +10,16 @@
  */
 
 import type Database from 'better-sqlite3';
+import { minimaxH3CanvasUsageBasis } from './minimax-h3-usage.ts';
+import type { MiniMaxH3VideoUsage } from '../minimax-h3-pricing.ts';
+import { seedanceStageUsageBasis } from './seedance-stage-usage.ts';
 import {
   calculateUsageCostMicros,
   createCoreUsageSnapshot,
   resolveCoreUsagePlan,
   type CoreUsagePlan,
   type CoreUsageProviderSnapshot,
+  type CoreUsageQuantities,
 } from '../usage-pricing.ts';
 import type { CostQuote, Money } from '../media-core/execution/context.ts';
 import { recordUsage, type UsageOperationResult } from '../usage-ledger.ts';
@@ -39,9 +43,12 @@ function parseJsonObject(raw: string): Record<string, unknown> {
   }
 }
 
-function canvasPricingBasis(db: Database.Database, task: CanvasTaskRecord): {
+function canvasPricingBasis(db: Database.Database, task: CanvasTaskRecord, purpose: 'quote' | 'actual' = 'quote'): {
+  identity: CoreUsageProviderSnapshot;
   plan: CoreUsagePlan;
-  quantity: number | null;
+  quantity: CoreUsageQuantities | null;
+  videoUsage?: MiniMaxH3VideoUsage;
+  detail?: Record<string, unknown>;
 } | null {
   const providerSnapshot = parseJsonObject(task.providerSnapshot);
   const modelAlias = String(providerSnapshot.modelAlias ?? '');
@@ -55,7 +62,7 @@ function canvasPricingBasis(db: Database.Database, task: CanvasTaskRecord): {
   ).get(providerIdentity, modelAlias) as
     | { id: string; name: string; type: string; baseUrl: string }
     | undefined;
-  const plan = resolveCoreUsagePlan({
+  const identity: CoreUsageProviderSnapshot = {
     providerTable: table,
     providerId: row?.id ?? providerIdentity,
     providerName: row?.name ?? providerIdentity,
@@ -64,7 +71,8 @@ function canvasPricingBasis(db: Database.Database, task: CanvasTaskRecord): {
     configuredModel: modelAlias,
     requestModel: modelAlias,
     baseUrl: row?.baseUrl ?? '',
-  });
+  };
+  const plan = resolveCoreUsagePlan(identity);
   if (!plan) return null;
   const snapshotFields = parseJsonObject(task.parameterSnapshot);
   const nodeParameters = parseJsonObject(
@@ -72,7 +80,14 @@ function canvasPricingBasis(db: Database.Database, task: CanvasTaskRecord): {
       ? snapshotFields.parameters
       : JSON.stringify(snapshotFields.parameters ?? {}),
   );
-  if (nodeParameters.generationStage === 'draft' || nodeParameters.generationStage === 'final-from-draft') return null;
+  if (identity.requestModel === 'minimax-h3') {
+    const basis = minimaxH3CanvasUsageBasis(db, task, identity, nodeParameters, snapshotFields.generationMode, purpose);
+    return basis ? { identity, ...basis } : null;
+  }
+  if (nodeParameters.generationStage === 'draft' || nodeParameters.generationStage === 'final-from-draft') {
+    const basis = seedanceStageUsageBasis(db, task, identity, purpose);
+    return basis ? { identity, ...basis } : null;
+  }
   let durationSec = Number(nodeParameters.durationSec ?? 0);
   if (task.mediaKind === 'video' && durationSec <= 0) {
     const output = task.outputAssetId ? db.prepare('SELECT durationSec FROM creative_canvas_assets WHERE id = ?')
@@ -80,6 +95,7 @@ function canvasPricingBasis(db: Database.Database, task: CanvasTaskRecord): {
     durationSec = Number(output?.durationSec ?? 0);
   }
   return {
+    identity,
     plan,
     quantity: task.mediaKind === 'video' ? (durationSec > 0 ? durationSec : null) : 1,
   };
@@ -92,8 +108,13 @@ function minorFromMicros(micros: number): Money {
 /** 06 提交前费用预留与现有画布账本共用同一计价表，未知时长/价格不按零放行。 */
 export function canvasTaskCostQuote(db: Database.Database, task: CanvasTaskRecord): CostQuote {
   const basis = canvasPricingBasis(db, task);
-  if (!basis || basis.quantity === null) {
-    return { kind: 'unpriced', pricingSnapshot: { source: 'canvas-usage' } };
+  if (!basis) return { kind: 'unpriced', pricingSnapshot: { source: 'canvas-usage' } };
+  if (basis.quantity === null) {
+    // Automatic duration has a known unit price before its quantity is measurable.
+    return { kind: 'unpriced', pricingSnapshot: {
+      pricingVersion: basis.plan.pricingVersion, coreModelKey: basis.plan.coreModelKey,
+      priceComponents: basis.plan.priceComponents, ...basis.detail,
+    } };
   }
   return {
     kind: 'priced',
@@ -102,13 +123,15 @@ export function canvasTaskCostQuote(db: Database.Database, task: CanvasTaskRecor
       pricingVersion: basis.plan.pricingVersion,
       coreModelKey: basis.plan.coreModelKey,
       quantity: basis.quantity,
+      ...(basis.videoUsage ? { videoUsage: basis.videoUsage } : {}),
+      ...(basis.detail ? { ...basis.detail, priceComponents: basis.plan.priceComponents } : {}),
     },
   };
 }
 
 /** 固定时长可直接结算；自动时长等产物探测后由同一入口晚到结算。 */
 export function canvasTaskActualCost(db: Database.Database, task: CanvasTaskRecord): Money | null {
-  const basis = canvasPricingBasis(db, task);
+  const basis = canvasPricingBasis(db, task, 'actual');
   if (!basis || basis.quantity === null) return null;
   return minorFromMicros(calculateUsageCostMicros(basis.plan, basis.quantity));
 }
@@ -153,57 +176,15 @@ function recordCanvasTaskUsageUnsafe(
     return { ok: true, inserted: false, priced: false, reason: 'not_submitted' };
   }
 
-  const providerSnapshot = parseJsonObject(task.providerSnapshot);
-  const modelAlias = String(providerSnapshot.modelAlias ?? '');
-  const providerIdentity = String(providerSnapshot.providerIdentity ?? '');
-  if (!modelAlias || !providerIdentity) {
-    return { ok: true, inserted: false, priced: false, reason: 'provider_snapshot_missing' };
+  const basis = canvasPricingBasis(db, task, 'actual');
+  if (!basis) return { ok: true, inserted: false, priced: false, reason: 'pricing_unavailable' };
+  if (basis.quantity === null) {
+    return { ok: true, inserted: false, priced: true, reason: basis.detail ? 'usage_pending' : 'duration_pending' };
   }
-
-  // Direct Ark has no company billing basis; never resolve it by the same model alias.
-  if (!providerIdentity.startsWith('company-')) return { ok: true, inserted: false, priced: false, reason: 'pricing_unavailable' };
-
-  const table: CoreUsageProviderSnapshot['providerTable'] = task.mediaKind === 'video' ? 'video_providers' : 'providers';
-  const row = db.prepare(
-    table === 'video_providers'
-      ? `SELECT id, name, type, baseUrl FROM video_providers WHERE id = ? OR defaultModel = ? LIMIT 1`
-      : `SELECT id, name, type, baseUrl FROM providers WHERE id = ? OR model = ? LIMIT 1`,
-  ).get(providerIdentity, modelAlias) as
-    | { id: string; name: string; type: string; baseUrl: string }
-    | undefined;
-
-  const identity = {
-    providerTable: table,
-    providerId: row?.id ?? providerIdentity,
-    providerName: row?.name ?? providerIdentity,
-    providerType: row?.type ?? (task.mediaKind === 'video' ? 'openai-video' : 'gateway-task-image'),
-    executionScope: 'company' as const,
-    configuredModel: modelAlias,
-    requestModel: modelAlias,
-    baseUrl: row?.baseUrl ?? '',
-  };
-  const plan = resolveCoreUsagePlan(identity);
-  if (!plan) {
-    return { ok: true, inserted: false, priced: false, reason: 'pricing_unavailable' };
-  }
-
-  // parameterSnapshot 的形状是 { generationMode, prompt, parameters: {…节点参数} }
-  const snapshotFields = parseJsonObject(task.parameterSnapshot);
-  const nodeParameters = parseJsonObject(
-    typeof snapshotFields.parameters === 'string'
-      ? snapshotFields.parameters
-      : JSON.stringify(snapshotFields.parameters ?? {}),
-  );
-  if (nodeParameters.generationStage === 'draft' || nodeParameters.generationStage === 'final-from-draft') return { ok: true, inserted: false, priced: false, reason: 'stage_pricing_unavailable' };
-  let durationSec = Number(nodeParameters.durationSec ?? 0);
-  if (task.mediaKind === 'video' && durationSec <= 0) {
-    const output = task.outputAssetId ? db.prepare('SELECT durationSec FROM creative_canvas_assets WHERE id = ?').get(task.outputAssetId) as { durationSec: number | null } | undefined : undefined;
-    durationSec = Number(output?.durationSec ?? 0);
-    if (!(durationSec > 0)) return { ok: true, inserted: false, priced: true, reason: 'duration_pending' };
-  }
-  const quantity = task.mediaKind === 'video' ? durationSec : 1;
+  const { identity, plan, quantity } = basis;
 
   const snapshot = createCoreUsageSnapshot(identity, plan, {
+    ...(basis.videoUsage ? { videoUsage: basis.videoUsage } : {}),
     startedAt: task.createdAt,
     refType: 'canvas-task',
     refId: task.id,
@@ -219,7 +200,7 @@ function recordCanvasTaskUsageUnsafe(
       usage: {
         quantity,
         callCount: 1,
-        detail: { source: 'live', taskType: 'canvas-task', canvasId: task.canvasId, nodeId: task.nodeId },
+        detail: { source: 'live', taskType: 'canvas-task', canvasId: task.canvasId, nodeId: task.nodeId, ...basis.detail },
       },
       projectId: null,
       refType: 'canvas-task',

@@ -97,6 +97,7 @@ async function __teamRoutePOST(
         jobProvider = resolveRegenerateImageJobProvider(db, body.providerId, {
           providerId: originalJob.providerId,
           model: originalJob.model,
+          size: originalJob.size,
         });
       } catch (err) {
         return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });

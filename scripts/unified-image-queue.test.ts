@@ -324,7 +324,7 @@ try {
   try {
     freezeUnifiedImageRequest({
       inputImageId: 'image-invalid', referenceImageIds: [], prompt: 'prompt',
-      tier: '1k', ratio: '9:16', referenceGuidanceMode: 'none',
+      tier: '4k', ratio: '2:1', referenceGuidanceMode: 'none',
     });
   } catch (error) {
     invalidRejected = error instanceof UnifiedImageRequestError && error.code === 'unsupported_image_combination';

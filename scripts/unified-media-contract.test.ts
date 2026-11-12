@@ -48,21 +48,21 @@ const tencent = UNIFIED_IMAGE_CHANNELS[1];
 assert.equal(unifiedImageSupports(qiniu, '2k', '9:16'), true);
 assert.equal(unifiedImageSupports(qiniu, '2k', '3:4'), true);
 assert.equal(unifiedImageSupports(qiniu, '1k', '1:1'), false);
-assert.equal(unifiedImageSupports(qiniu, '4k', '3:4'), true, '4K 3:4 must use the verified 9:16 donor crop');
+assert.equal(unifiedImageSupports(qiniu, '4k', '3:4'), true, '4K 3:4 is now verified as a direct qiniu cell');
 assert.equal(unifiedImageSupports(tencent, '1k', '1:1'), true);
-assert.equal(unifiedImageSupports(tencent, '1k', '9:16'), false);
+assert.equal(unifiedImageSupports(tencent, '1k', '9:16'), true);
 
 const combinations = unifiedImageCatalogCombinations();
-assert.equal(combinations.length, 23, 'the UI catalog is the union of executable channel cells, not tier × ratio cross-products');
-assert.equal(combinations.some((item) => item.tier === '1k' && item.ratio === '9:16'), false);
+assert.equal(combinations.length, 36, 'the UI catalog is the union of executable channel cells, not tier × ratio cross-products');
+assert.equal(combinations.some((item) => item.tier === '1k' && item.ratio === '9:16'), true);
 assert.deepEqual(
   unifiedImageResolutionsForRatio('9:16'),
-  ['2k', '4k'],
+  ['1k', '2k', '4k'],
   '9:16 is available only where at least one exact channel supports the complete cell',
 );
 assert.deepEqual(
   unifiedImageCompatibleChannels('1k', '9:16').map((channel) => channel.channelKey),
-  [],
+  ['tencent'],
 );
 assert.deepEqual(
   unifiedImageCompatibleChannels('1k', '3:4').map((channel) => channel.channelKey),
@@ -82,13 +82,24 @@ assert.throws(
     inputImageId: 'image-1',
     referenceImageIds: [],
     prompt: '保持产品不变，更换场景',
-    tier: '1k',
-    ratio: '9:16',
+    tier: '4k',
+    ratio: '2:1',
     referenceGuidanceMode: 'none',
   }),
   (error: unknown) => error instanceof UnifiedImageRequestError
     && error.code === 'unsupported_image_combination',
 );
+
+for (const ratio of ['5:4', '4:5']) {
+  assert.deepEqual(unifiedImageResolutionsForRatio(ratio), ['1k', '2k', '4k']);
+  assert.deepEqual(unifiedImageCompatibleChannels('4k', ratio).map((channel) => channel.channelKey), ['tencent']);
+}
+for (const ratio of ['2:1', '1:2', '9:21']) {
+  assert.deepEqual(unifiedImageResolutionsForRatio(ratio), ['1k', '2k']);
+  assert.deepEqual(unifiedImageCompatibleChannels('2k', ratio).map((channel) => channel.channelKey), ['tencent']);
+  assert.deepEqual(unifiedImageCompatibleChannels('4k', ratio), []);
+}
+assert.deepEqual(unifiedImageCompatibleChannels('4k', '9:16').map((channel) => channel.channelKey), ['qiniu', 'tencent']);
 
 const frozen = freezeUnifiedImageRequest({
   inputImageId: 'image-1',

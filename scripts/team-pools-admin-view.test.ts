@@ -375,6 +375,38 @@ try {
     (error: unknown) => error instanceof TeamPoolError && error.status === 403,
   );
 
+
+  // 已有旧版媒体池通过页面调名额、停用、恢复，必须保留可执行的原映射。
+  db.prepare("INSERT INTO providers (id, name, baseUrl, apiKey, model, type, enabled) VALUES ('legacy-image', '旧版图片账号', 'https://gateway.example.test/v1', 'legacy-test-key', 'image2-medium', 'gateway-task-image', 1)").run();
+  const legacyRequirement = readPoolAdminState(db, admin).requirements.find((item) => item.entityId === 'legacy-image')!;
+  const missingLegacyRow = buildPoolAdminView(readPoolAdminState(db, admin)).rows.find((item) => item.poolKey === legacyRequirement.poolKey)!;
+  assert.equal(buildPoolChange(missingLegacyRow, { capacity: 1 }).apply.action, 'bind-media-upstream', '未配置的池仍创建正式共享绑定');
+  applyPoolChanges(db, admin, [{
+    action: 'upsert', poolKey: legacyRequirement.poolKey, kind: 'remote', capacity: 1, enabled: true,
+    mappingSnapshot: legacyRequirement.mappingSnapshot, expectedVersion: 0,
+  }]);
+  const legacyRow = buildPoolAdminView(readPoolAdminState(db, admin)).rows.find((item) => item.poolKey === legacyRequirement.poolKey)!;
+  const legacyChange = buildPoolChange(legacyRow, { capacity: 6 });
+  assert.equal(legacyChange.apply.action, 'upsert');
+  assert.equal(previewPoolChanges(db, admin, [legacyChange.preview])[0].action, 'update');
+  assert.equal(listExecutionPools(db).find((item) => item.poolKey === legacyRow.poolKey)!.capacity, 1, '预览不修改容量');
+  applyPoolChanges(db, admin, [legacyChange.apply]);
+  const legacySaved = readPoolAdminState(db, admin).pools.find((item) => item.poolKey === legacyRow.poolKey)!;
+  assert.equal(legacySaved.capacity, 6);
+  assert.deepEqual(legacySaved.mappingSnapshot, legacyRequirement.mappingSnapshot);
+  assert.equal(readPoolAdminState(db, admin).requirements.find((item) => item.entityId === 'legacy-image')!.status, 'ready');
+  assert.throws(() => applyPoolChanges(db, admin, [legacyChange.apply]),
+    (error: unknown) => error instanceof TeamPoolError && error.code === 'pool_version_conflict');
+  for (const enabled of [false, true]) {
+    const current = buildPoolAdminView(readPoolAdminState(db, admin)).rows.find((item) => item.poolKey === legacyRow.poolKey)!;
+    applyPoolChanges(db, admin, [buildPoolChange(current, { capacity: 6, enabled }).apply]);
+    assert.equal(readPoolAdminState(db, admin).requirements.find((item) => item.entityId === 'legacy-image')!.status, enabled ? 'ready' : 'disabled');
+  }
+  const legacyCurrent = buildPoolAdminView(readPoolAdminState(db, admin)).rows.find((item) => item.poolKey === legacyRow.poolKey)!;
+  const legacyMerge = buildPoolChange(legacyCurrent, { capacity: 7, targetPoolKey: 'media:company', targetVersion: 3 });
+  assert.equal(legacyMerge.apply.action, 'bind-media-upstream', '显式合并继续使用共享绑定校验');
+  assert.equal(previewPoolChanges(db, admin, [legacyMerge.preview])[0].currentVersion, 3);
+
   console.log('team pools admin view tests passed');
 } finally {
   try { db.close(); } catch { /* 已关闭 */ }

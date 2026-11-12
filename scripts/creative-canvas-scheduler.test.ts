@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { mock } from 'node:test';
 import Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { ensureCreativeCanvasSchemaReady } from '../lib/creative-canvas/schema.ts';
@@ -139,6 +140,79 @@ function save(
     graph: { schemaVersion: 1, nodes, edges },
   });
 }
+
+// Default polling waits 30 seconds before the first and each subsequent query.
+{
+  const env = await freshDatabase('poll-interval');
+  const { db, storageRoot } = env;
+  const canvasId = createCanvas(db, { name: 'poll-interval' }).id;
+  save(env, canvasId, [imageNode('poll-node', IMAGE_CAP.key, 'poll interval')], [], 0);
+  const taskId = startCanvasRun({
+    db, request: { canvasId, mode: 'single', targetNodeId: 'poll-node', requestKey: 'poll-interval' },
+  }).tasks[0].id;
+  const adapter = createCanvasFixtureAdapter({ defaultScript: { pollsBeforeSuccess: 3 } });
+  const scheduler = createCanvasScheduler({ db, workerId: 'poll-worker', adapter, storageRoot });
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    await scheduler.tick();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(getCanvasTask(db, taskId)?.providerTaskId, 'Persist the remote receipt before waiting');
+    assert.equal(adapter.pollCalls.length, 0);
+    for (let count = 0; count < 3; count += 1) {
+      mock.timers.tick(29_999);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(adapter.pollCalls.length, count, 'Do not query before 30 seconds');
+      mock.timers.tick(1);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(adapter.pollCalls.length, count + 1, 'Query once every 30 seconds');
+    }
+    await scheduler.drain();
+    assert.equal(getCanvasTask(db, taskId)?.phase, 'succeeded');
+    assert.equal(getCanvasTask(db, taskId)?.pollCount, 3);
+    assert.equal(adapter.submitCountForNode('poll-node'), 1);
+  } finally {
+    const stopping = scheduler.stop();
+    mock.timers.tick(30_000);
+    await stopping;
+    mock.timers.reset();
+    env.dispose();
+  }
+}
+
+// Stopping during the wait must not query or discard the accepted remote task.
+{
+  const env = await freshDatabase('poll-stop');
+  const { db, storageRoot } = env;
+  const canvasId = createCanvas(db, { name: 'poll-stop' }).id;
+  save(env, canvasId, [imageNode('stop-node', IMAGE_CAP.key, 'stop during wait')], [], 0);
+  const taskId = startCanvasRun({
+    db, request: { canvasId, mode: 'single', targetNodeId: 'stop-node', requestKey: 'poll-stop' },
+  }).tasks[0].id;
+  const adapter = createCanvasFixtureAdapter();
+  const scheduler = createCanvasScheduler({ db, workerId: 'stop-worker', adapter, storageRoot });
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    await scheduler.tick();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const remoteId = getCanvasTask(db, taskId)?.providerTaskId;
+    assert.ok(remoteId);
+    let stopped = false;
+    const stopping = scheduler.stop().then(() => { stopped = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(stopped, true, 'Stop without waiting out the polling interval');
+    await stopping;
+    assert.equal(adapter.pollCalls.length, 0, 'Do not query after aborting the wait');
+    assert.equal(getCanvasTask(db, taskId)?.providerTaskId, remoteId);
+    assert.equal(getCanvasTask(db, taskId)?.phase, 'polling');
+  } finally {
+    const stopping = scheduler.stop();
+    mock.timers.tick(30_000);
+    await stopping;
+    mock.timers.reset();
+    env.dispose();
+  }
+}
+
 
 // --- 全局名额：11 个就绪任务，两个调度实例 --------------------------------
 

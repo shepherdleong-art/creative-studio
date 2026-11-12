@@ -425,7 +425,10 @@ export function buildPoolChange(
   if (targetPoolKey !== row.poolKey && !row.binding) {
     throw new Error('只有媒体上游账号才能合并到别的名额池');
   }
-  if (row.saveAction === 'bind-media-upstream' && row.binding) {
+  // 已有旧版池调整容量/开关时保留映射；显式合并仍走共享绑定校验。
+  const editingLegacyPool = targetPoolKey === row.poolKey && row.version > 0
+    && mappingProtocol(row.mappingSnapshot) === 'legacy-media-upstream/1';
+  if (row.saveAction === 'bind-media-upstream' && row.binding && !editingLegacyPool) {
     const change: PoolChange = {
       action: 'bind-media-upstream',
       entityType: row.binding.entityType,

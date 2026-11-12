@@ -6,6 +6,17 @@
  * of the entries below, and every amount is kept in integer micros.
  */
 
+import {
+  SEEDANCE_25_STAGE_PRICING_VERSION,
+  SEEDANCE_25_STAGE_TOKEN_PRICES,
+  type Seedance25StagePricing,
+} from './seedance-2-5-pricing.ts';
+
+import {
+  MINIMAX_H3_PRICING_VERSION, MINIMAX_H3_SECOND_PRICES, minimaxH3Resolution,
+  type MiniMaxH3Pricing, type MiniMaxH3VideoUsage,
+} from './minimax-h3-pricing.ts';
+
 export const CORE_USAGE_PRICING_VERSION = 'core-usage-pricing-2026-09-30';
 export const PRICING_VERSION = CORE_USAGE_PRICING_VERSION;
 
@@ -38,6 +49,8 @@ export type CoreUsagePriceComponentKey =
   | 'image'
   | 'request'
   | 'second'
+  | 'input_second'
+  | 'output_second'
   | 'input_token'
   | 'output_token'
   | 'cached_input_token'
@@ -88,12 +101,15 @@ export interface CoreUsageSnapshotV1 {
   pricingVersion: string;
   priceComponents: CoreUsagePriceComponentV1[];
   startedAt: string;
+  /** Frozen H3 input/output measurement, independent of later job/provider edits. */
+  videoUsage?: MiniMaxH3VideoUsage;
   projectId?: string;
   refType: string;
   refId: string;
 }
 
 export interface CoreUsageSnapshotOptions {
+  videoUsage?: MiniMaxH3VideoUsage;
   startedAt?: string;
   projectId?: string;
   refType: string;
@@ -169,7 +185,7 @@ function cloneComponents(components: readonly CoreUsagePriceComponentV1[]): read
   return Object.freeze(components.map((component) => Object.freeze({ ...component })));
 }
 
-/** 已接入工作台的模型使用用户提供的账单均价估算。 */
+/** 普通模型与历史快照的账单均价；H3 新任务带输出档位时使用腾讯分项价。 */
 export const BILLING_MODEL_PRICES = [
   // 用户于 2026-11-10 提供并确认按 5 秒折算的账单均价。
   { key: 'company-minimax-h3', id: 'company-minimax-h3', model: 'minimax-h3', category: 'video', micros: 4_000_000 },
@@ -331,6 +347,7 @@ function matchesScriptIdentity(
  */
 export function resolveCoreUsagePlan(
   providerSnapshot: CoreUsageProviderSnapshot | null | undefined,
+  pricing?: Seedance25StagePricing | MiniMaxH3Pricing,
 ): CoreUsagePlan | null {
   if (!providerSnapshot || typeof providerSnapshot !== 'object') return null;
   const provider = providerSnapshot as Partial<CoreUsageProviderSnapshot>;
@@ -343,6 +360,18 @@ export function resolveCoreUsagePlan(
         ? matchesVideoIdentity(provider, { ...identity, canonicalProviderId: entry.id, providerType: 'openai-video' })
         : matchesScriptIdentity(provider, { ...identity, canonicalProviderId: entry.id, providerType: 'openai-compatible', executionScope: 'company', apiStyle: 'openai-compatible' });
     if (matches) {
+      if (entry.model === 'minimax-h3' && pricing && 'resolution' in pricing) {
+        const resolution = minimaxH3Resolution(pricing.resolution);
+        if (!resolution) return null;
+        const prices = MINIMAX_H3_SECOND_PRICES[resolution];
+        return Object.freeze({
+          ...createPlan(entry.key, 'video', entry.model, [
+            { key: 'input_second', unit: 'second', unitPriceMicros: prices.input, priceScale: 1 },
+            { key: 'output_second', unit: 'second', unitPriceMicros: prices.output, priceScale: 1 },
+          ], { unitPriceMicros: 0, priceScale: 1 }),
+          pricingVersion: MINIMAX_H3_PRICING_VERSION,
+        });
+      }
       const unit = entry.category === 'image' ? 'image' : entry.category === 'video' ? 'second' : 'request';
       return createPlan(entry.key, entry.category, entry.model, [{ key: unit, unit, unitPriceMicros: entry.micros, priceScale: unit === 'second' ? 5 : 1 }]);
     }
@@ -416,6 +445,17 @@ export function resolveCoreUsagePlan(
     configuredModel: 'doubao-seedance-2-5-260628',
     requestModel: 'doubao-seedance-2-5-260628',
   })) {
+    if (pricing && 'generationStage' in pricing) {
+      const seedance25Stage = pricing;
+      const prices = SEEDANCE_25_STAGE_TOKEN_PRICES[seedance25Stage.generationStage];
+      return Object.freeze({
+        ...createPlan('company-seedance-2-5', 'video', 'doubao-seedance-2-5-260628', [{
+          key: 'output_token', unit: 'token', priceScale: 1_000_000,
+          unitPriceMicros: seedance25Stage.hasInputVideo ? prices.withVideo : prices.withoutVideo,
+        }]),
+        pricingVersion: SEEDANCE_25_STAGE_PRICING_VERSION,
+      });
+    }
     return createPlan(
       'company-seedance-2-5',
       'video',
@@ -470,6 +510,8 @@ function quantityForComponent(
     image: ['image', 'images'],
     request: ['request', 'requests'],
     second: ['second', 'seconds', 'durationSec', 'durationSeconds'],
+    input_second: ['input_second', 'inputVideoDurationSec'],
+    output_second: ['output_second', 'outputVideoDurationSec'],
     input_token: ['input_token', 'inputTokens', 'uncachedInputTokens'],
     output_token: ['output_token', 'outputTokens', 'completionTokens'],
     cached_input_token: ['cached_input_token', 'cachedInputTokens', 'cachedReadTokens', 'cachedTokens'],
@@ -547,6 +589,7 @@ export function createCoreUsageSnapshot(
 ): CoreUsageSnapshotV1 {
   return {
     schemaVersion: 1,
+    ...(options.videoUsage ? { videoUsage: { ...options.videoUsage } } : {}),
     provider: snapshotProvider(provider),
     coreModelKey: plan.coreModelKey,
     pricingVersion: plan.pricingVersion,

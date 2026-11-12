@@ -98,7 +98,8 @@ export function recoverCanvasTasks(
     if (execution?.terminalState === 'not_created') {
       updateCanvasTaskUnGuarded(db, task.id, {
         phase: 'failed', slotHeld: false, submissionState: 'terminal',
-        errorCode: 'confirmed_not_created', errorMessage: '执行核查确认远端未创建任务。',
+        errorCode: task.errorCode ?? 'confirmed_not_created',
+        errorMessage: task.errorMessage ?? '执行核查确认远端未创建任务。',
         leaseOwner: null, leaseUntil: null, updatedAt: at,
       });
       releaseNodeActiveTask(db, task);

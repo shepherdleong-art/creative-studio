@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { validateImagePresetSize } from './image-generation-settings.ts';
 
 interface ImageProviderRow {
   id: string;
@@ -11,6 +12,7 @@ interface ImageProviderRow {
 interface ImageProviderDefaults {
   providerId: string;
   model: string;
+  size?: string;
 }
 
 export interface ResolvedImageJobProvider {
@@ -51,10 +53,10 @@ export function resolveImageJobProvider(
   if (!provider.enabled) throw new Error('供应商已禁用');
   if (!hasUsableKey(provider)) throw new Error('供应商 API Key 未配置');
 
-  return {
-    providerId: provider.id,
-    model: provider.model || defaults.model,
-  };
+  const model = provider.model || defaults.model;
+  const sizeError = defaults.size ? validateImagePresetSize(model, defaults.size) : null;
+  if (sizeError) throw new Error(sizeError);
+  return { providerId: provider.id, model };
 }
 
 export function resolveRegenerateImageJobProvider(
@@ -65,5 +67,6 @@ export function resolveRegenerateImageJobProvider(
   return resolveImageJobProvider(db, requestedProviderId, {
     providerId: originalJob.providerId,
     model: originalJob.model,
+    size: originalJob.size,
   });
 }

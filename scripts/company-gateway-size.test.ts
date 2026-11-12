@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   companyImageCapsForModel,
+  companyImageCellExecutable,
   companyImageDeliverySize,
   companyVideoCapsForModel,
   snapCompanyImageSize,
@@ -56,14 +57,45 @@ assert.equal(snapCompanyImageSize('2304x1728', image2Caps), '1920x1440');
 assert.equal(snapCompanyImageSize('1728x2304', image2Caps), '1440x1920');
 // 1K 1:1 恰好在白名单 → 原样
 assert.equal(snapCompanyImageSize('1024x1024', image2Caps), '1024x1024');
-// image2 不支持 9:16：应用预设 2K 9:16（1440x2560）→ 就近比例 2:3 的 2K
-assert.equal(snapCompanyImageSize('1440x2560', image2Caps), '1440x2160');
+// 2026-11-12 真实通道验证：腾讯 Medium 的 9:16 保持比例。
+assert.equal(snapCompanyImageSize('1440x2560', image2Caps), '1440x2560');
 // 应用预设 4K 16:9（3840x2160，在白名单）→ 原样
 assert.equal(snapCompanyImageSize('3840x2160', image2Caps), '3840x2160');
 // auto → 默认 1:1 2K
 assert.equal(snapCompanyImageSize('auto', image2Caps), '1440x1440');
 // 非预设尺寸按像素就近选档：≈1K 量级 → 1K
 assert.equal(snapCompanyImageSize('1000x1000', image2Caps), '1024x1024');
+assert.equal(snapCompanyImageSize('100x50', image2Caps), '2048x1024', '非预设尺寸只在存在的格子中就近选档');
+
+// 与真实请求相同的尺寸映射：新比例不能被吸附成其他画幅。
+for (const [ratio, resolution, preset, submitted] of [
+  ['9:16', '1K', '720x1280', '1024x1820'],
+  ['9:16', '4K', '2160x3840', '2160x3840'],
+  ['5:4', '1K', '1120x896', '1120x896'],
+  ['5:4', '2K', '2240x1792', '2240x1792'],
+  ['5:4', '4K', '3200x2560', '3200x2560'],
+  ['4:5', '1K', '896x1120', '896x1120'],
+  ['4:5', '2K', '1792x2240', '1792x2240'],
+  ['4:5', '4K', '2560x3200', '2560x3200'],
+  ['2:1', '1K', '2048x1024', '2048x1024'],
+  ['2:1', '2K', '2688x1344', '2688x1344'],
+  ['1:2', '1K', '1024x2048', '1024x2048'],
+  ['1:2', '2K', '1344x2688', '1344x2688'],
+  ['9:21', '1K', '624x1456', '624x1456'],
+  ['9:21', '2K', '1296x3024', '1296x3024'],
+]) {
+  assert.equal(companyImageCellExecutable('image2-medium', resolution, ratio), true);
+  assert.equal(snapCompanyImageSize(preset, image2Caps), submitted);
+  assert.equal(companyImageDeliverySize(preset, image2Caps), submitted);
+}
+// 明确降档的组合不借其他画幅或更低档位绕行。
+for (const [ratio, preset] of [['2:1', '3840x1920'], ['1:2', '1920x3840'], ['9:21', '1584x3696']]) {
+  assert.equal(companyImageCellExecutable('image2-medium', '4K', ratio), false);
+  assert.throws(() => snapCompanyImageSize(preset, image2Caps), /不支持.*4K/);
+  assert.throws(() => companyImageDeliverySize(preset, image2Caps), /不支持.*4K/);
+}
+assert.equal(companyImageCellExecutable('image2-medium', '3K', '3:4'), false);
+assert.equal(companyImageCellExecutable('image2-high', '2K', '5:4'), false, 'Medium 的证据不扩展到其他别名');
 
 // seedream-lite 最低 2K：应用 1K 预设被钳制到 2K
 const seedreamLiteCaps = companyImageCapsForModel('doubao-seedream-5-0-image')!;
@@ -92,8 +124,7 @@ for (const model of ['nano-banana-3.0', 'nano-banana-3.1']) {
 assert.equal(companyImageCapsForModel('nano-banana-3.0-other'), null);
 assert.deepEqual(companyVideoCapsForModel('kling-2.5')?.tiers, ['1K']);
 
-// qiniuyun/gpt-image-2-medium：逐格实测放行 2K×{1:1,3:4,4:3,16:9,9:16} + 4K×{1:1,4:3,16:9,9:16}
-// （1K 档被网关映射成 1080 类坏尺寸、3K 与 3:2/2:3/21:9 被拒、4K 3:4 映射坏被单格排除）
+// 七牛 2026-11-12 复验：2K/4K 五种比例均可直出；1K、3K 与额外比例仍拒绝。
 const qiniuyunCaps = companyImageCapsForModel('qiniuyun/gpt-image-2-medium')!;
 assert.ok(qiniuyunCaps);
 // 应用 1K 预设 → 钳制到 2K，避开网关 1K 下游映射 bug
@@ -104,10 +135,9 @@ assert.equal(snapCompanyImageSize('1920x1440', qiniuyunCaps), '1920x1440');
 assert.equal(snapCompanyImageSize('2160x3840', qiniuyunCaps), '2160x3840');
 // 应用 4K 1:1 预设 → 4K 1:1
 assert.equal(snapCompanyImageSize('2880x2880', qiniuyunCaps), '2160x2160');
-// 应用 4K 3:4 预设 → 坏格排除，优先裁切映射到同档位 4K 9:16（2160x3840 可完整
-// 居中裁出 2160x2880，真 4K 级画质；交付端 normalize 按 companyImageDeliverySize
-// 名义格裁回 3:4）
-assert.equal(snapCompanyImageSize('2448x3264', qiniuyunCaps), '2160x3840');
+// 2026-11-12 实测七牛 4K 3:4 直出已修复，不再借 9:16 裁切。
+assert.equal(snapCompanyImageSize('2448x3264', qiniuyunCaps), '2160x2880');
+assert.equal(snapCompanyImageSize('2448x3264', companyImageCapsForModel('qiniuyun/gpt-image-2-high')!), '2160x3840', '未实测的七牛别名保留旧 donor 合同');
 // 应用 2K 3:2 预设 → 比例吸附到最近的 4:3
 assert.equal(snapCompanyImageSize('2496x1664', qiniuyunCaps), '1920x1440');
 // 应用 4K 21:9 预设 → 比例吸附到 16:9、保持 4K
@@ -124,7 +154,7 @@ assert.ok(!companyImageCapsForModel('doubao-seedream-5-0-image')!.nativeDelivery
 // 同比例：交付尺寸 = 生成原尺寸，交付端规整为 no-op
 assert.equal(companyImageDeliverySize('1728x2304', qiniuyunCaps), '1440x1920');
 assert.equal(companyImageDeliverySize('2048x2048', qiniuyunCaps), '1440x1440');
-// 排除格：交付尺寸 = 名义格子（生成 donor 2160x3840 居中裁回 2160x2880，零放大）
+// 七牛 4K 3:4 的提交与交付都使用同一原生尺寸。
 assert.equal(companyImageDeliverySize('2448x3264', qiniuyunCaps), '2160x2880');
 // 档位钳制：应用 1K 预设交付 2K 格（避开网关 1K 下游映射 bug）
 assert.equal(companyImageDeliverySize('1024x1024', qiniuyunCaps), '1440x1440');

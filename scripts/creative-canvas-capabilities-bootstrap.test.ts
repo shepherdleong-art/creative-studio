@@ -3,7 +3,8 @@ import Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { companyCanvasImageOutput } from '../lib/creative-canvas/adapters/company-image-output.ts';
 import { ensureCanvasCapabilitiesRegistered } from '../lib/creative-canvas/capabilities-bootstrap.ts';
-import { clearCanvasCapabilities, validateCapabilityInputs } from '../lib/creative-canvas/capabilities.ts';
+import { canvasImageCombinations, clearCanvasCapabilities, validateCapabilityInputs } from '../lib/creative-canvas/capabilities.ts';
+import { canvasParameterOptions, updateCanvasParameter } from '../lib/creative-canvas/unified-image-options.ts';
 import { resolveCompanyCanvasRoute } from '../lib/creative-canvas/adapters/company-providers.ts';
 
 process.env.CREATIVE_STUDIO_CANVAS_EXECUTOR = 'company';
@@ -28,6 +29,22 @@ for (const [id, name, model] of configured) {
   assert.equal(capability?.displayName, name);
   assert.equal(capability?.modelAlias, model);
 }
+
+const tencentImage = images.find((entry) => entry.modelAlias === 'image2-medium')!;
+const declaredRatios = tencentImage.parameters.find((parameter) => parameter.key === 'aspectRatio')!.options!;
+const declaredResolutions = tencentImage.parameters.find((parameter) => parameter.key === 'resolution')!.options!;
+// 浏览器只拿公开的完整组合与参数，不能依赖服务器注册表或私有路由字段。
+const clientTencentImage = { parameters: tencentImage.parameters, imageCombinations: canvasImageCombinations(tencentImage) };
+assert.equal(clientTencentImage.imageCombinations?.length, 36);
+clearCanvasCapabilities();
+assert.ok(declaredRatios.includes('5:4'));
+assert.ok(canvasParameterOptions(tencentImage.key, 'aspectRatio', declaredRatios, { resolution: '4K' }, clientTencentImage).includes('5:4'));
+assert.ok(!canvasParameterOptions(tencentImage.key, 'aspectRatio', declaredRatios, { resolution: '4K' }, clientTencentImage).includes('2:1'));
+assert.deepEqual(canvasParameterOptions(tencentImage.key, 'resolution', declaredResolutions, { aspectRatio: '2:1' }, clientTencentImage), ['1K', '2K']);
+assert.deepEqual(updateCanvasParameter(tencentImage.key, { aspectRatio: '1:1', resolution: '4K' }, 'aspectRatio', '2:1', clientTencentImage), { aspectRatio: '2:1', resolution: '1K' });
+assert.equal(validateCapabilityInputs({ capability: tencentImage, mode: 'text-to-image', refs: [], parameters: { resolution: '4K', aspectRatio: '2:1' } })[0]?.code, 'parameter_value_invalid');
+assert.deepEqual(validateCapabilityInputs({ capability: tencentImage, mode: 'text-to-image', refs: [], parameters: { resolution: '4K', aspectRatio: '5:4' } }), []);
+
 // 模拟用户本地视频配置：旧 ID 已改用不同渠道/模型，必须认实际字段。
 const videos = [
   ['company-minimax-h3', 'minimax-h3'],
@@ -96,5 +113,14 @@ clearCanvasCapabilities();
 const donor = await sharp({ create: { width: 216, height: 384, channels: 3, background: '#fff' } }).png().toBuffer();
 const delivered = await companyCanvasImageOutput(donor, 'qiniuyun/gpt-image-2-medium', { aspectRatio: '3:4', resolution: '4K' });
 const metadata = await sharp(delivered.bytes).metadata();
-assert.deepEqual([metadata.width, metadata.height], [216, 288], '七牛排除格须裁回目标画幅，不缩放原生像素');
+assert.deepEqual([metadata.width, metadata.height], [216, 288], '历史 9:16 产物仍兼容裁回 3:4，不缩放原生像素');
+
+const rounded54 = await sharp({ create: { width: 3216, height: 2560, channels: 3, background: '#fff' } }).jpeg().toBuffer();
+const delivered54 = await companyCanvasImageOutput(rounded54, 'image2-medium', { aspectRatio: '5:4', resolution: '4K' });
+const metadata54 = await sharp(delivered54.bytes).metadata();
+assert.deepEqual([metadata54.width, metadata54.height], [3200, 2560], '只裁去原生取整的多余列，不改变清晰度');
+const native21 = await sharp({ create: { width: 2560, height: 1280, channels: 3, background: '#fff' } }).jpeg().toBuffer();
+const delivered21 = await companyCanvasImageOutput(native21, 'image2-medium', { aspectRatio: '2:1', resolution: '2K' });
+assert.deepEqual(delivered21.bytes, native21, '原生 2K 交付不放大成请求预设像素');
+
 console.log('creative-canvas-capabilities-bootstrap tests passed');

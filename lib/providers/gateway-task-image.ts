@@ -225,6 +225,9 @@ export async function submitGatewayTaskImage(
   options: { onProgress?: (message: string) => void; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<GatewayTaskSubmitResult> {
   const cleanBase = baseUrl.replace(/\/$/, '');
+  // 在素材交付和生成 POST 前拒绝会降档的格子。
+  const companyCaps = companyImageCapsForModel(request.model);
+  const companySize = companyCaps ? snapCompanyImageSize(request.size, companyCaps) : request.size;
   const isSeedreamPro = request.model === 'doubao-seedream-5-0-pro-image';
   const isNanoBanana = request.model === 'nano-banana-3.0' || request.model === 'nano-banana-3.1';
   if ((isSeedreamPro || isNanoBanana) && request.referenceImagePaths.length + 1 > 14) {
@@ -317,9 +320,8 @@ export async function submitGatewayTaskImage(
   // 下游分派：qiniuyun/* 实测（2026-08-21 真实任务）接受 response_format=png 并
   // 返回无损 PNG（2K 3:4 约 2.8MB；jpeg 仅 ~300KB，压缩痕迹明显、产品图发糊），
   // image2/seedream 维持历史验证过的 jpeg；其余网关保持原样透传。
-  const companyCaps = companyImageCapsForModel(request.model);
   if (companyCaps) {
-    body.size = snapCompanyImageSize(request.size, companyCaps);
+    body.size = companySize;
     body.response_format = PNG_RESPONSE_FORMAT_MODEL.test(request.model) ? 'png' : 'jpeg';
     if (isNanoBanana) body.OutputConfig = companyImageOutputConfig(request.size, companyCaps);
   } else if (request.size) {

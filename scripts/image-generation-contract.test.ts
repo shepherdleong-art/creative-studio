@@ -20,11 +20,21 @@ assert.equal(getGptImage2AspectRatio('1024x1366'), '3:4', '公司网关取整尺
 assert.equal(getGptImage2AspectRatio('auto'), 'auto');
 assert.equal(getGptImage2AspectRatio('custom'), null);
 
-// image2-medium 的网关白名单不含 9:16；UI 不应让用户选到，接口也不能静默吸附成别的比例。
+// Medium 只开放实测完整组合，UI 与提交校验共享同一能力表。
 assert.ok(getSupportedImageAspectRatios('image2-medium').includes('3:4'));
-assert.equal(getSupportedImageAspectRatios('image2-medium').includes('9:16'), false);
+assert.equal(getSupportedImageAspectRatios('image2-medium').includes('9:16'), true);
 assert.equal(validateImageAspectRatio('image2-medium', '3:4'), null);
-assert.match(validateImageAspectRatio('image2-medium', '9:16') || '', /不支持/);
+assert.equal(validateImageAspectRatio('image2-medium', '9:16'), null);
+for (const ratio of ['5:4', '4:5']) {
+  assert.equal(validateImageAspectRatio('image2-medium', ratio), null);
+  assert.deepEqual(getSupportedImageResolutions('image2-medium', ratio), ['1k', '2k', '4k']);
+}
+for (const ratio of ['2:1', '1:2', '9:21']) {
+  assert.equal(validateImageAspectRatio('image2-medium', ratio), null);
+  assert.deepEqual(getSupportedImageResolutions('image2-medium', ratio), ['1k', '2k']);
+  assert.match(validateImageResolution('image2-medium', ratio, '4k') || '', /不支持/);
+  assert.deepEqual(getSupportedImageResolutions('qiniuyun/gpt-image-2-medium', ratio), []);
+}
 assert.equal(validateImageAspectRatio('custom-image-model', '9:16'), null);
 assert.deepEqual(getSupportedImageResolutions('doubao-seedream-5-0-pro-image', '3:4'), ['1k', '2k']);
 assert.match(validateImageResolution('doubao-seedream-5-0-pro-image', '3:4', '4k') || '', /不支持/);

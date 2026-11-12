@@ -157,18 +157,32 @@ assert.ok(findCanvasCapability(COMPANY_CANVAS_QINIUYUN_IMAGE_CAPABILITY.key), 'o
 assert.deepEqual(
   canvasParameterOptions(COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key, 'resolution',
     ['1K', '2K', '4K'], { aspectRatio: '9:16' }),
-  ['2K', '4K'],
+  ['1K', '2K', '4K'],
 );
 assert.equal(
   canvasParameterOptions(COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key, 'aspectRatio',
     ['1:1', '3:4', '9:16'], { resolution: '1K' }).includes('9:16'),
-  false,
+  true,
 );
 assert.deepEqual(
   updateCanvasParameter(COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key, {
     aspectRatio: '1:1', resolution: '1K',
   }, 'aspectRatio', '9:16'),
-  { aspectRatio: '9:16', resolution: '2K' },
+  { aspectRatio: '9:16', resolution: '1K' },
+);
+
+assert.deepEqual(
+  canvasParameterOptions(COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key, 'resolution',
+    ['1K', '2K', '4K'], { aspectRatio: '2:1' }),
+  ['1K', '2K'],
+);
+assert.equal(
+  canvasParameterOptions(COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key, 'aspectRatio',
+    ['1:1', '5:4', '2:1'], { resolution: '4K' }).includes('2:1'), false,
+);
+assert.equal(
+  canvasParameterOptions(COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key, 'aspectRatio',
+    ['1:1', '5:4', '2:1'], { resolution: '4K' }).includes('5:4'), true,
 );
 
 const storageRoot = canvasStorageRoot(root);
@@ -393,6 +407,18 @@ try {
       .pluck().get(scenario.task.id) as number), 1);
   }
 
+  // 七牛 9:16 已受理后终态失败，仍在同一画布任务上转入腾讯原比例。
+  {
+    const scenario = await createTask({ name: 'portrait-poll-fallback', parameters: { aspectRatio: '9:16', resolution: '4K' } });
+    const adapter = fakeAdapter({ poll: async (context) => context.modelAlias === qiniuModel.model
+      ? { status: 'failed', code: 'gateway_task_failed', message: 'fixture upstream failure' }
+      : { status: 'succeeded' } });
+    assert.equal((await execute(scenario, adapter)).phase, 'queued');
+    assert.equal((await execute(scenario, adapter)).phase, 'succeeded');
+    assert.deepEqual(adapter.submissions.map((submission) => submission.modelAlias), [qiniuModel.model, tencentModel.model]);
+    assert.equal(parentFor(scenario.task.id)?.currentChannelKey, 'tencent');
+  }
+
   // 3. invalid complete combination is rejected in planning, before any task.
   {
     const canvas = runWithAccessContext(access, () => createCanvas(db, { name: 'invalid-combination' }));
@@ -410,7 +436,7 @@ try {
             modelKey: COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key,
             generationMode: 'text-to-image',
             prompt: 'test',
-            parameters: { aspectRatio: '9:16', resolution: '1K' },
+            parameters: { aspectRatio: '2:1', resolution: '4K' },
             references: [],
             referenceLabelCounter: 0,
           },
@@ -425,7 +451,7 @@ try {
       requestKey: 'invalid-plan',
     }));
     assert.equal(plan.ok, false);
-    if (!plan.ok) assert.match(plan.problems[0]?.message ?? '', /1K.*9:16|9:16.*1K/);
+    if (!plan.ok) assert.match(plan.problems[0]?.message ?? '', /4K.*2:1|2:1.*4K/);
   }
 
   // 4. unknown submission never consumes the fallback channel.
@@ -455,8 +481,8 @@ try {
       prompt: string;
       parameters: Record<string, string | number | boolean>;
     };
-    snapshot.parameters.aspectRatio = '9:16';
-    snapshot.parameters.resolution = '1K';
+    snapshot.parameters.aspectRatio = '2:1';
+    snapshot.parameters.resolution = '4K';
     db.prepare('UPDATE creative_canvas_tasks SET parameterSnapshot = ? WHERE id = ?')
       .run(JSON.stringify(snapshot), scenario.task.id);
     const adapter = fakeAdapter();

@@ -1,3 +1,4 @@
+import { parseMiniMaxH3VideoUsage } from './minimax-h3-pricing.ts';
 import {
   BILLING_MODEL_PRICES,
   resolveCoreUsagePlan,
@@ -39,6 +40,8 @@ const COMPONENT_UNITS_BY_KEY: Readonly<Record<string, string>> = {
   request: 'request',
   image: 'image',
   second: 'second',
+  input_second: 'second',
+  output_second: 'second',
   input_token: 'token',
   output_token: 'token',
   cached_input_token: 'token',
@@ -106,7 +109,17 @@ export function parseUsageSnapshot(value: unknown): { ok: true; parsed: ParsedSn
   const category = CORE_CATEGORIES[coreModelKey];
   const expectedKeys = coreModelKey === 'company-gpt-5-6-luna' && components.length === 1
     ? ['request'] : COMPONENT_KEYS_BY_CORE_MODEL[coreModelKey];
-  if (!category || !expectedKeys || components.length !== expectedKeys.length) {
+  const stageComponentKeys = coreModelKey === 'company-seedance-2-5' && components.length === 1
+    && isRecord(components[0]) && components[0].key === 'output_token'
+    ? ['output_token'] : expectedKeys;
+  const isH3 = coreModelKey === BILLING_MODEL_PRICES.find((entry) => entry.model === 'minimax-h3')!.key;
+  const componentKeys = isH3 && components.length === 2
+    ? ['input_second', 'output_second'] : stageComponentKeys;
+  const videoUsage = raw.videoUsage === undefined ? undefined : parseMiniMaxH3VideoUsage(raw.videoUsage);
+  if (raw.videoUsage !== undefined && (!isH3 || !videoUsage || components.length !== 2)) {
+    return { ok: false, error: 'usage snapshot video measurement is invalid' };
+  }
+  if (!category || !componentKeys || components.length !== componentKeys.length) {
     return { ok: false, error: 'usage snapshot core model is unsupported' };
   }
   // Re-check the frozen provider identity as a scope gate. The current plan is
@@ -125,7 +138,7 @@ export function parseUsageSnapshot(value: unknown): { ok: true; parsed: ParsedSn
     const unitPriceMicros = component.unitPriceMicros;
     const priceScale = component.priceScale;
     if (
-      !key || key !== expectedKeys[index] || !unit || COMPONENT_UNITS_BY_KEY[key] !== unit
+      !key || key !== componentKeys[index] || !unit || COMPONENT_UNITS_BY_KEY[key] !== unit
       || typeof unitPriceMicros !== 'number' || !Number.isInteger(unitPriceMicros) || unitPriceMicros < 0
       || typeof priceScale !== 'number' || !Number.isInteger(priceScale) || priceScale <= 0
     ) {
@@ -144,6 +157,7 @@ export function parseUsageSnapshot(value: unknown): { ok: true; parsed: ParsedSn
       category,
       snapshot: {
         schemaVersion: 1,
+        ...(videoUsage ? { videoUsage } : {}),
         provider,
         coreModelKey,
         pricingVersion,

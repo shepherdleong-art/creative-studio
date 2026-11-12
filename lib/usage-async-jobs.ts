@@ -1,3 +1,5 @@
+import { readMiniMaxH3JobUsage, videoJobUsageMeasurement } from './usage-video-measurement.ts';
+import { parseUsageSnapshot } from './usage-snapshot.ts';
 import type Database from 'better-sqlite3';
 
 import {
@@ -226,7 +228,9 @@ export function buildVideoJobUsageSnapshot(
     requestModel: input.requestModel,
     baseUrl: input.provider.baseUrl ?? '',
   };
-  const plan = resolveCoreUsagePlan(provider);
+  const videoUsage = input.requestModel === 'minimax-h3' ? readMiniMaxH3JobUsage(db, input.jobId) : undefined;
+  if (videoUsage === null) return null;
+  const plan = resolveCoreUsagePlan(provider, videoUsage ? { resolution: videoUsage.resolution } : undefined);
   if (!plan) return null;
   if (!isUsageSchemaReady(db)) {
     // 核心模型调用仍照常执行，但本次不进入消耗统计；必须留下脱敏告警。
@@ -235,6 +239,7 @@ export function buildVideoJobUsageSnapshot(
   }
 
   const snapshot = createCoreUsageSnapshot(provider, plan, {
+    ...(videoUsage ? { videoUsage } : {}),
     startedAt: input.startedAt,
     projectId: input.projectId ?? undefined,
     refType: input.refType ?? 'video-job',
@@ -271,10 +276,6 @@ export function persistVideoJobUsageSnapshot(
   return readVideoJobUsageSnapshot(db, input.jobId);
 }
 
-function nonNegativeDuration(value: number | null | undefined): number {
-  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
-}
-
 /** Record one immutable video success from its already-frozen snapshot. */
 export function recordVideoJobUsage(
   db: Database.Database,
@@ -282,15 +283,19 @@ export function recordVideoJobUsage(
 ): UsageOperationResult {
   const snapshot = nonEmptySnapshot(input.snapshot) ?? readVideoJobUsageSnapshot(db, input.jobId);
   if (!snapshot) return { ok: true, inserted: false };
+  const parsed = parseUsageSnapshot(snapshot);
+  if (!parsed.ok) return { ok: false, reason: 'invalid_snapshot', error: parsed.error };
+  const measurement = videoJobUsageMeasurement(parsed.parsed.snapshot, input.durationSec);
+  if (!measurement) return { ok: false, reason: 'invalid_usage' };
 
   try {
     return recordUsage(db, {
       eventKey: `video-job:${input.jobId}:succeeded`,
       snapshot,
       usage: {
-        quantity: nonNegativeDuration(input.durationSec),
+        quantity: measurement.quantity,
         callCount: 1,
-        detail: { source: 'live', taskType: 'video-job' },
+        detail: { source: 'live', taskType: 'video-job', ...measurement.detail },
       },
       projectId: input.projectId,
       refType: 'video-job',

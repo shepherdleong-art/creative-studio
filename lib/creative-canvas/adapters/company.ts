@@ -1,3 +1,4 @@
+import { providerErrorMessage } from '../../provider-error-message.ts';
 import { videoDurationError } from '../../video-duration.ts';
 /**
  * 公司执行器的画布适配器（技术约定 C6）。
@@ -12,10 +13,10 @@ import { videoDurationError } from '../../video-duration.ts';
 
 import sharp from 'sharp';
 import type Database from 'better-sqlite3';
-import { snapCompanyImageSize, companyImageCapsForModel, companyVideoCapsForModel, snapCompanyVideoSize, snapCompanyVideoAspectRatio } from '../../company-gateway-size.ts';
+import { snapCompanyImageSize, companyImageCapsForModel, companyImageCellExecutable, companyVideoCapsForModel, snapCompanyVideoSize, snapCompanyVideoAspectRatio } from '../../company-gateway-size.ts';
 import { companyNativeVideoModel } from '../../company-gateway-video-models.ts';
 import { isLoopbackLiteLlmUrl } from '../../provider-execution-gate.ts';
-import { downloadGatewayMedia, normalizeGatewayResultUrl, sanitizeGatewayMediaDiagnostic } from '../../gateway-media-url.ts';
+import { downloadGatewayMedia, normalizeGatewayResultUrl } from '../../gateway-media-url.ts';
 import { isAmbiguousSubmissionHttpStatus } from '../../media-core/submission-evidence.ts';
 import { resolveGptImage2Size } from '../../gpt-image-2-size-presets.ts';
 import { shouldInjectCompanyKlingMultiShot } from '../../video-multi-shot.ts';
@@ -91,11 +92,6 @@ function normalizeStatus(raw: string | undefined): CanvasPollOutcome['status'] {
     default:
       return 'pending';
   }
-}
-
-function errorTextOf(data: GatewayVideoResponse): string {
-  if (typeof data.error === 'string') return data.error;
-  return data.error?.message ?? `任务状态 ${data.status ?? 'unknown'}`;
 }
 
 async function probeImageDimensions(filePath: string): Promise<{ width: number; height: number } | null> {
@@ -235,6 +231,15 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
       const capability = findGatewayCapability(context.capabilityKey);
       const route = routeFor(context);
       await nativeVideoOutputConfig(capability, context, route);
+      if (capability.mediaKind === 'image' && companyImageCapsForModel(capability.modelAlias)) {
+        const resolution = String(context.parameters.resolution ?? '2K');
+        const ratio = String(context.parameters.aspectRatio ?? '1:1');
+        if (!companyImageCellExecutable(capability.modelAlias, resolution, ratio)) {
+          throw new CanvasAdapterError('prepare', `该图片通道不支持 ${resolution} + ${ratio}，任务未提交。`, {
+            code: 'unsupported_image_combination',
+          });
+        }
+      }
 
       const mediaInputs = context.inputs.filter((input) => input.kind !== 'text');
       // COS 强交付是公司渠道的红线；外部网关按自己的可达地址交付
@@ -472,7 +477,7 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         if (!response.ok) {
           throw new CanvasAdapterError(
             'submit',
-            `公司网关提交失败 ${response.status}：${sanitizeGatewayMediaDiagnostic(text, route.apiKey).slice(0, 500)}`,
+            `公司网关提交失败 ${response.status}：${providerErrorMessage(text, route.apiKey) ?? '供应商未提供具体原因'}`,
             {
               uncertain: isAmbiguousSubmissionHttpStatus(response.status),
               code: isAmbiguousSubmissionHttpStatus(response.status)
@@ -539,7 +544,7 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         const parsed = JSON.parse(text) as GatewayVideoResponse;
         const status = normalizeStatus(parsed.status);
         if (status === 'failed') {
-          return { status, code: 'gateway_task_failed', message: errorTextOf(parsed) };
+          return { status, code: 'gateway_task_failed', message: providerErrorMessage(parsed, route.apiKey) ?? '视频生成失败' };
         }
         return { status };
       } catch (error) {

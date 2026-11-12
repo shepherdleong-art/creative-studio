@@ -8,6 +8,7 @@
  * 原生平台文档出现过的新字段先是 candidate。
  */
 
+import { companyImageCapsForModel, companyImageCellExecutable } from '../company-gateway-size.ts';
 import type {
   CanvasCapabilityEvidence,
   CanvasGenerationMode,
@@ -73,6 +74,23 @@ export interface CanvasModelCapability {
   modeLabels?: Partial<Record<CanvasGenerationMode, string>>;
   /** 按模型覆盖界面模式提示（缺省用全局提示）。 */
   modeHints?: Partial<Record<CanvasGenerationMode, string>>;
+}
+
+export interface CanvasImageCombination {
+  resolution: string;
+  aspectRatio: string;
+}
+
+/** 发送可公开的完整参数组合，浏览器无需获取供应商路由身份。 */
+export function canvasImageCombinations(capability: CanvasModelCapability): CanvasImageCombination[] | undefined {
+  if (capability.providerKind !== 'company' || capability.mediaKind !== 'image') return undefined;
+  const caps = companyImageCapsForModel(capability.modelAlias);
+  if (!caps) return undefined;
+  const resolutions = capability.parameters.find((parameter) => parameter.key === 'resolution')?.options ?? caps.tiers;
+  const ratios = capability.parameters.find((parameter) => parameter.key === 'aspectRatio')?.options ?? caps.ratios;
+  return resolutions.flatMap((resolution) => ratios
+    .filter((ratio) => companyImageCellExecutable(capability.modelAlias, resolution, ratio))
+    .map((aspectRatio) => ({ resolution, aspectRatio })));
 }
 
 export interface CanvasCapabilityInputRef {
@@ -292,6 +310,22 @@ export function validateCapabilityInputs(params: {
           parameterKey: key,
         });
       }
+    }
+  }
+
+  // 公司图片按完整格子校验，不能把比例与档位的并集误当作任意组合。
+  if (capability.providerKind === 'company' && capability.mediaKind === 'image'
+    && companyImageCapsForModel(capability.modelAlias)
+    && !problems.some((problem) => problem.parameterKey === 'resolution' || problem.parameterKey === 'aspectRatio')) {
+    const resolution = String(params.parameters?.resolution
+      ?? capability.parameters.find((parameter) => parameter.key === 'resolution')?.default ?? '2K');
+    const ratio = String(params.parameters?.aspectRatio
+      ?? capability.parameters.find((parameter) => parameter.key === 'aspectRatio')?.default ?? '1:1');
+    if (!companyImageCellExecutable(capability.modelAlias, resolution, ratio)) {
+      problems.push({
+        code: 'parameter_value_invalid', parameterKey: 'resolution',
+        message: `${capability.displayName} 不支持 ${resolution} + ${ratio}，请调整清晰度或比例。`,
+      });
     }
   }
 

@@ -97,6 +97,62 @@ await assert.rejects(
   '外层 500 即使正文含 submit error 400 仍必须 uncertain',
 );
 
+// 复现公司 Seedance 的多层 JSON 错误包装，原因必须经过真实视频适配器保留到画布异常。
+const seedanceModel = 'doubao-seedance-2-5-260628';
+db.prepare(`UPDATE video_providers SET type='openai-video', defaultModel=? WHERE id=?`)
+  .run(seedanceModel, 'external-video-recovery');
+registerCanvasCapability({
+  key: 'seedance-error-video', displayName: 'Seedance 错误回归', providerKind: 'external',
+  providerIdentity: 'external-video-recovery', modelAlias: seedanceModel, mediaKind: 'video',
+  modes: ['reference-to-video'], inputs: [], parameters: [], cancellation: false,
+  evidence: 'candidate', evidenceNote: '模拟上游拒绝，不发真实请求。',
+});
+const privacyError = {
+  error: {
+    code: 'InputImageSensitiveContentDetected.PrivacyInformation',
+    message: "The request failed because the input image 'content[1]' may contain real person.",
+    param: 'content[1]',
+  },
+};
+const seedanceErrorResponse = {
+  error: { message: 'litellm.BadRequestError: OpenAIException - ' + JSON.stringify({
+    code: 'fail_to_fetch_task', message: JSON.stringify(privacyError), data: null,
+  }) },
+};
+let rejectedPosts = 0;
+await assert.rejects(
+  createExternalCanvasAdapter({
+    db, storageRoot, companySeedance: true,
+    fetchImpl: async (_url, init) => {
+      assert.equal(init?.method, 'POST');
+      rejectedPosts += 1;
+      return Response.json(seedanceErrorResponse, { status: 400 });
+    },
+  }).submit({ ...videoContext, modelAlias: seedanceModel, capabilityKey: 'seedance-error-video', generationMode: 'reference-to-video' }),
+  (error: unknown) => {
+    assert.equal((error as { httpStatus?: number }).httpStatus, 400);
+    assert.equal((error as { uncertain?: boolean }).uncertain, false);
+    assert.match((error as Error).message, /may contain real person|可能包含真人/);
+    assert.match((error as Error).message, /InputImageSensitiveContentDetected\.PrivacyInformation/);
+    return true;
+  },
+);
+assert.equal(rejectedPosts, 1);
+const terminalRejection = await createExternalCanvasAdapter({
+  db, storageRoot, companySeedance: true,
+  fetchImpl: async (_url, init) => {
+    assert.notEqual(init?.method, 'POST');
+    return Response.json({ id: 'existing-remote-task', status: 'failed', error: privacyError.error });
+  },
+}).poll({ ...videoContext, providerTaskId: 'existing-remote-task', modelAlias: seedanceModel,
+  capabilityKey: 'seedance-error-video', generationMode: 'reference-to-video' });
+assert.equal(terminalRejection.status, 'failed');
+if (terminalRejection.status === 'failed') {
+  assert.match(terminalRejection.message, /may contain real person/);
+  assert.match(terminalRejection.message, /InputImageSensitiveContentDetected\.PrivacyInformation/);
+}
+
+
 // Recreate the adapter to exercise recovery after adapter teardown/reinitialization.
 const secondFetch: typeof fetch = async (url, init) => {
   assert.equal(init?.method, undefined);
@@ -217,6 +273,23 @@ try {
   assert.equal(asset.mimeType, 'image/png');
   assert.equal((await sharp(path.join(storageRoot, asset.relativePath)).metadata()).format, 'png');
   assert.equal(e2ePosts, 1);
+  // 本地模式同样从真实 HTTP 错误经过适配器、runner 到任务状态保留原因。
+  const rejectedRun = startCanvasRun({ db: e2eDb, request: {
+    canvasId: canvas.id, mode: 'single', targetNodeId: 'image-node', requestKey: 'e2e-rejected',
+  } });
+  const [claimedRejection] = claimCanvasTasks({ db: e2eDb, workerId: 'e2e-worker', limit: 1 });
+  assert.equal(claimedRejection.task.id, rejectedRun.tasks[0].id);
+  await runCanvasTask({ db: e2eDb, taskId: claimedRejection.task.id, workerId: 'e2e-worker',
+    fence: claimedRejection.fence, storageRoot,
+    adapter: createExternalCanvasAdapter({ db: e2eDb, storageRoot,
+      fetchImpl: async () => Response.json({ error: { code: 'InvalidParameter', message: 'resolution 1080p is not supported',
+        request: { api_key: 'secret-key' } } }, { status: 400 }),
+    }),
+  });
+  const rejectedTask = getCanvasTask(e2eDb, claimedRejection.task.id)!;
+  assert.equal(rejectedTask.phase, 'failed');
+  assert.match(rejectedTask.errorMessage ?? '', /resolution 1080p is not supported/);
+  assert.equal(rejectedTask.errorMessage?.includes('secret-key'), false);
 } finally {
   e2eDb.close();
   fs.rmSync(root, { recursive: true, force: true });

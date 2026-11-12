@@ -1,9 +1,13 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 /* React Flow 官方样式必须跟在 Tailwind 之后（见执行任务书 P3），避免被 preflight 覆盖。 */
 @import "@xyflow/react/dist/style.css";
 /* 打包字体（思源黑体子集 + Inter 子集）。@font-face 由 scripts/ui/build-font-slices.py 生成，
    字体文件在 public/fonts/，构建期只读本地文件，不联网下载。 */
 @import "./fonts.css";
+/* 只扫描实际界面源码，避免本地素材和打包目录拖慢开发预览。 */
+@source "./";
+@source "../components";
+@source "../lib";
 
 /* ===== 设计令牌（取值以《林视界面重设计-功能方案》「外观规范」为准） =====
  * 命名按用途，浅色为默认值；深色只在 html[data-theme='dark'] 里覆盖取值。

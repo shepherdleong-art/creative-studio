@@ -7,6 +7,9 @@ import {
   persistVideoJobUsageSnapshot,
   recordVideoJobUsage,
 } from '../lib/usage-async-jobs.ts';
+import { BILLING_MODEL_PRICES, calculateUsageCostMicros, createCoreUsageSnapshot, resolveCoreUsagePlan } from '../lib/usage-pricing.ts';
+import { videoJobUsageMeasurement } from '../lib/usage-video-measurement.ts';
+import { reconcileUsageLedger } from '../lib/usage-ledger.ts';
 import { parseUsageSnapshot } from '../lib/usage-snapshot.ts';
 import { initUsageSchema } from '../lib/usage-schema.ts';
 
@@ -19,6 +22,8 @@ function createDb(): Database.Database {
       providerId TEXT NOT NULL,
       model TEXT NOT NULL,
       durationSec INTEGER NOT NULL DEFAULT 5,
+      resolution TEXT,
+      generationMode TEXT NOT NULL DEFAULT 'image-to-video',
       attempt INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'pending',
       providerTaskId TEXT,
@@ -257,6 +262,68 @@ for (const [jobId, provider, requestModel] of [
   assert.match(resumeSource, /await resumeVideoJobPolling\(id\)/, 'resume route must delegate to the shared queue');
   const resumeWorkerSource = queueSource.slice(queueSource.indexOf('export async function resumeVideoJobPolling('), queueSource.indexOf('async function runAuthorizedVideoJob('));
   assert.match(resumeWorkerSource, /await runVideoJob\(/, 'resume must use the queue success/usage transaction checked above');
+}
+
+// H3 freezes independent Tencent input/output seconds for quoting, settlement and replay.
+for (const [resolution, rate] of [['768P', 500_000], ['2K', 800_000]] as const) {
+  const db = createDb();
+  const provider = { id: BILLING_MODEL_PRICES.find((entry) => entry.model === 'minimax-h3')!.id, type: 'openai-video', model: 'minimax-h3' };
+  db.exec(`CREATE TABLE video_reference_assets (id TEXT PRIMARY KEY, projectId TEXT, kind TEXT, durationSec REAL);
+    CREATE TABLE video_job_references (jobId TEXT, orderIndex INTEGER, assetId TEXT);`);
+  insertJob(db, { id: 'h3-ref', provider });
+  db.prepare("UPDATE video_jobs SET resolution = ?, generationMode = 'reference-to-video' WHERE id = 'h3-ref'").run(resolution);
+  for (const [index, kind, duration] of [[0, 'video', 2.125], [1, 'video', 3.25], [2, 'audio', 15], [3, 'image', null]] as const) {
+    db.prepare('INSERT INTO video_reference_assets VALUES (?, ?, ?, ?)').run(String(index), 'project-1', kind, duration);
+    db.prepare('INSERT INTO video_job_references VALUES (?, ?, ?)').run('h3-ref', index, String(index));
+  }
+  const frozen = freeze(db, 'h3-ref', provider)!;
+  const parsed = parseUsageSnapshot(frozen);
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) throw new Error('invalid H3 snapshot');
+  assert.deepEqual(parsed.parsed.snapshot.videoUsage, { resolution, inputVideoDurationSec: 5.375, outputVideoDurationSec: 5 });
+  const measurement = videoJobUsageMeasurement(parsed.parsed.snapshot, 99)!;
+  const expected = Math.round(10.375 * rate);
+  assert.equal(calculateUsageCostMicros(parsed.parsed.snapshot.priceComponents, measurement.quantity), expected, 'same measure used by execution reservation and settlement');
+  db.prepare("UPDATE video_reference_assets SET durationSec = 14 WHERE kind = 'video'").run();
+  db.prepare("UPDATE video_jobs SET resolution = '2K', durationSec = 15 WHERE id = 'h3-ref'").run();
+  assert.equal(freeze(db, 'h3-ref', provider), frozen, 'job/provider/reference edits never reprice a submitted snapshot');
+  const record = () => recordVideoJobUsage(db, { jobId: 'h3-ref', snapshot: frozen, durationSec: 99, finishedAt: '2026-11-12T00:00:00Z' });
+  assert.equal(record().inserted, true);
+  assert.equal(record().inserted, false);
+  let row = db.prepare('SELECT costMicros, callCount, quantity, detailJson FROM usage_ledger').get() as { costMicros: number; callCount: number; quantity: number; detailJson: string };
+  assert.equal(row.costMicros, expected); assert.equal(row.quantity, 10.375); assert.equal(row.callCount, 1);
+  const components = JSON.parse(row.detailJson).priceComponents;
+  assert.deepEqual(components.map((component: { key: string; quantity: number }) => [component.key, component.quantity]), [['input_second', 5.375], ['output_second', 5]]);
+  db.prepare('DELETE FROM usage_ledger').run();
+  // Replay with deliberately unequal frozen rates catches accidental input/output mixing.
+  parsed.parsed.snapshot.priceComponents[0].unitPriceMicros = 600_000;
+  parsed.parsed.snapshot.priceComponents[1].unitPriceMicros = 900_000;
+  db.prepare("UPDATE video_jobs SET status = 'succeeded', usageSnapshotJson = ?, finishedAt = '2026-11-12T00:00:00Z' WHERE id = 'h3-ref'")
+    .run(JSON.stringify(parsed.parsed.snapshot));
+  assert.equal(reconcileUsageLedger(db).recorded, 1);
+  row = db.prepare('SELECT costMicros, callCount, quantity, detailJson FROM usage_ledger').get() as typeof row;
+  assert.equal(row.costMicros, 7_725_000, 'reconciliation retains both frozen rates and original seconds');
+  assert.equal(reconcileUsageLedger(db).recorded, 0);
+
+  insertJob(db, { id: 'h3-unknown', provider });
+  db.prepare("UPDATE video_jobs SET generationMode = 'reference-to-video', resolution = ? WHERE id = 'h3-unknown'").run(resolution);
+  db.prepare('INSERT INTO video_reference_assets VALUES (?, ?, ?, ?)').run('unknown', 'project-1', 'video', null);
+  db.prepare('INSERT INTO video_job_references VALUES (?, ?, ?)').run('h3-unknown', 0, 'unknown');
+  assert.equal(freeze(db, 'h3-unknown', provider), null, 'missing reference seconds cannot silently become zero cost');
+  db.prepare("UPDATE video_reference_assets SET durationSec = 5, projectId = 'other-project' WHERE id = 'unknown'").run();
+  assert.equal(freeze(db, 'h3-unknown', provider), null, 'foreign reference assets are not priced as valid inputs');
+  db.prepare("UPDATE video_reference_assets SET projectId = 'project-1', kind = 'audio' WHERE id = 'unknown'").run();
+  const audioOnly = parseUsageSnapshot(freeze(db, 'h3-unknown', provider));
+  assert.equal(audioOnly.ok, true);
+  if (audioOnly.ok) assert.equal(audioOnly.parsed.snapshot.videoUsage!.inputVideoDurationSec, 0);
+
+  const identity = parsed.parsed.snapshot.provider;
+  const historical = createCoreUsageSnapshot(identity, resolveCoreUsagePlan(identity)!, { refType: 'video-job', refId: 'h3-old' });
+  insertJob(db, { id: 'h3-old', provider, snapshot: JSON.stringify(historical) });
+  assert.equal(freeze(db, 'h3-old', provider), JSON.stringify(historical));
+  assert.equal(recordVideoJobUsage(db, { jobId: 'h3-old', durationSec: 5, finishedAt: '2026-11-11' }).inserted, true);
+  assert.equal((db.prepare("SELECT costMicros FROM usage_ledger WHERE refId = 'h3-old'").get() as { costMicros: number }).costMicros, 4_000_000);
+  db.close();
 }
 
 console.log('usage-video-jobs tests passed');

@@ -1,3 +1,4 @@
+import { providerErrorMessage } from '../../provider-error-message.ts';
 import { assertDraftSourceMatches, canvasVideoMetadataForAsset, generationStage, requireCanvasDraftSource, sanitizeVideoMetadata } from '../video-metadata.ts';
 import { precheckSeedanceMedia } from './seedance-media.ts';
 import { SEEDANCE_25, SeedanceRequestError } from '../../video-providers/seedance-contract.ts';
@@ -250,7 +251,7 @@ async function decodeImageResponse(response: Response, apiKey: string, chatImage
     const uncertain = isAmbiguousSubmissionHttpStatus(response.status);
     throw new CanvasAdapterError(
       'submit',
-      `外部图片网关提交失败 ${response.status}：${sanitizeGatewayMediaDiagnostic(text, apiKey).slice(0, 300)}`,
+      `外部图片网关提交失败 ${response.status}：${providerErrorMessage(text, apiKey) ?? '供应商未提供具体原因'}`,
       {
         uncertain,
         code: uncertain ? 'external_submit_uncertain' : 'external_submit_rejected',
@@ -289,7 +290,7 @@ function isHttpClientRejection(error: unknown): boolean {
     && !isAmbiguousSubmissionHttpStatus(error.httpStatus);
 }
 
-function submitError(stage: 'submit', message: string, error: unknown, signal?: AbortSignal): CanvasAdapterError {
+function submitError(stage: 'submit', message: string, error: unknown, signal?: AbortSignal, apiKey = ''): CanvasAdapterError {
   if (error instanceof SeedanceRequestError) return new CanvasAdapterError('prepare', error.message, { code: 'seedance_request_invalid' });
   if (signal?.aborted && !isHttpClientRejection(error)) {
     return new CanvasAdapterError(stage, '提交被中止，生成请求结果不明。', {
@@ -297,7 +298,8 @@ function submitError(stage: 'submit', message: string, error: unknown, signal?: 
       code: 'submit_uncertain',
     });
   }
-  return new CanvasAdapterError(stage, message, {
+  return new CanvasAdapterError(stage, error instanceof ProviderRequestError
+    ? providerErrorMessage(error, apiKey) ?? message : message, {
     uncertain: !isHttpClientRejection(error),
     code: isHttpClientRejection(error) ? 'external_submit_rejected' : 'external_submit_uncertain',
     httpStatus: error instanceof ProviderRequestError ? error.httpStatus : null,
@@ -475,7 +477,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
           }, route.apiKey, route.baseUrl, signal);
           if (!submitted.providerTaskId) throw new CanvasAdapterError('submit', '供应商未返回任务 ID', { uncertain: true });
           return { providerTaskId: submitted.providerTaskId };
-        } catch (error) { throw submitError('submit', '样片转正式提交失败，结果不明。', error, signal); }
+        } catch (error) { throw submitError('submit', '样片转正式提交失败，结果不明。', error, signal, route.apiKey); }
       }
 
 
@@ -561,7 +563,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
             });
           }
         } catch (error) {
-          throw submitError('submit', '外部图片网关提交请求失败，结果不明。', error, signal);
+          throw submitError('submit', '外部图片网关提交请求失败，结果不明。', error, signal, route.apiKey);
         }
         const result = await decodeImageResponse(response, route.apiKey, route.type === 'packy-gemini-image');
         try {
@@ -608,7 +610,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
             ...(context.parameters.aspectRatio ? { aspectRatio: String(context.parameters.aspectRatio) } : {}),
           }, route.apiKey, route.baseUrl, signal);
         } catch (error) {
-          throw submitError('submit', '外部视频提交请求失败，结果不明。', error, signal);
+          throw submitError('submit', '外部视频提交请求失败，结果不明。', error, signal, route.apiKey);
         }
         if (!submitted.providerTaskId) {
           throw new CanvasAdapterError('submit', '视频供应商没有返回任务 ID，提交结果不明。', {
@@ -657,7 +659,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
             omniReferenceTaskType,
           }, route.apiKey, route.baseUrl, signal);
         } catch (error) {
-          throw submitError('submit', '外部视频提交请求失败，结果不明。', error, signal);
+          throw submitError('submit', '外部视频提交请求失败，结果不明。', error, signal, route.apiKey);
         }
         if (!submitted.providerTaskId) {
           throw new CanvasAdapterError('submit', '视频供应商没有返回任务 ID，提交结果不明。', {
@@ -708,7 +710,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
       try {
         submitted = await adapter.submit(request, route.apiKey, route.baseUrl, signal);
       } catch (error) {
-        throw submitError('submit', '外部视频提交请求失败，结果不明。', error, signal);
+        throw submitError('submit', '外部视频提交请求失败，结果不明。', error, signal, route.apiKey);
       }
       if (!submitted.providerTaskId) {
         throw new CanvasAdapterError('submit', '视频供应商没有返回任务 ID，提交结果不明。', {
@@ -733,7 +735,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
       }
       const result = await adapter.poll(context.providerTaskId, route.apiKey, route.baseUrl, signal);
       if (result.status === 'failed') {
-        return { status: 'failed', code: 'external_video_failed', message: result.errorMessage ?? '视频生成失败' };
+        return { status: 'failed', code: 'external_video_failed', message: providerErrorMessage(result.rawResponse, route.apiKey) ?? providerErrorMessage(result.errorMessage, route.apiKey) ?? '视频生成失败' };
       }
       if (result.status === 'succeeded') return { status: 'succeeded' };
       return { status: result.status === 'processing' ? 'running' : 'pending' };

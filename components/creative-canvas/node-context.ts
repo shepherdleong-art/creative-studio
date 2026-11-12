@@ -2,6 +2,7 @@
 
 import { createContext } from 'react';
 import type { CanvasGenerationMode, CanvasGraph, CanvasMediaKind, CanvasReferenceRole } from '@/lib/creative-canvas/types';
+import type { CanvasImageCombination } from '@/lib/creative-canvas/capabilities';
 import type { CanvasEditorController } from './editor-store';
 
 export interface CanvasCapabilityParameterDto {
@@ -26,6 +27,7 @@ export interface CanvasModelCapabilityDto {
   legacyModes?: CanvasGenerationMode[];
   inputs: Array<{ kind: CanvasMediaKind | 'text'; roles: CanvasReferenceRole[]; min: number; max: number }>;
   parameters: CanvasCapabilityParameterDto[];
+  imageCombinations?: CanvasImageCombination[];
   cancellation: boolean;
   evidence: 'verified' | 'mapped' | 'candidate';
   evidenceNote: string;

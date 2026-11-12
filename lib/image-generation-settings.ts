@@ -1,16 +1,29 @@
-import { companyImageCapsForModel } from './company-gateway-size.ts';
+import { companyImageCapsForModel, companyImageCellExecutable } from './company-gateway-size.ts';
 import { GPT_IMAGE_2_ASPECT_RATIOS, GPT_IMAGE_2_SIZE_MAP } from './gpt-image-2-size-presets.ts';
 
 /** 清晰度同样受模型能力限制，不能在 UI 提供随后被静默降档的 4K。 */
 export function getSupportedImageResolutions(model: string, aspectRatio: string): string[] {
   const caps = companyImageCapsForModel(model);
-  return Object.keys(GPT_IMAGE_2_SIZE_MAP[aspectRatio] || {}).filter(r => !caps || caps.tiers.includes(r.toUpperCase()));
+  return Object.keys(GPT_IMAGE_2_SIZE_MAP[aspectRatio] || {}).filter(r => !caps || companyImageCellExecutable(model, r, aspectRatio));
 }
 
 export function validateImageResolution(model: string, aspectRatio: string, resolution: string): string | null {
   if (aspectRatio === 'auto') return null;
   return getSupportedImageResolutions(model, aspectRatio).includes(resolution)
     ? null : `模型 ${model} 不支持 ${aspectRatio} 的 ${resolution.toUpperCase()} 清晰度`;
+}
+
+/** 复用项目或旧 API 保存的预设尺寸校验完整组合；auto 与历史自定义尺寸不反推档位。 */
+export function validateImagePresetSize(model: string, size: string): string | null {
+  if (!companyImageCapsForModel(model)) return null;
+  for (const [ratio, resolutions] of Object.entries(GPT_IMAGE_2_SIZE_MAP)) {
+    for (const [resolution, preset] of Object.entries(resolutions)) {
+      if (preset === size) {
+        return validateImageAspectRatio(model, ratio) || validateImageResolution(model, ratio, resolution);
+      }
+    }
+  }
+  return null;
 }
 
 /**

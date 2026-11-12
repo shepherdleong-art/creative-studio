@@ -68,7 +68,7 @@ export function createCanvasScheduler(options: CanvasSchedulerOptions): CanvasSc
     adapter,
     globalLimit = CANVAS_DEFAULT_GLOBAL_TASK_LIMIT,
     intervalMs = 1_000,
-    pollIntervalMs = 1_000,
+    pollIntervalMs,
     leaseMs = CANVAS_DEFAULT_TASK_LEASE_MS,
     now = () => new Date(),
     quotaLimits,

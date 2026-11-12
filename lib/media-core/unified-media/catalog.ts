@@ -1,5 +1,5 @@
 import { companyImageCellExecutable } from '../../company-gateway-size.ts';
-import { resolveGptImage2Size } from '../../gpt-image-2-size-presets.ts';
+import { GPT_IMAGE_2_ASPECT_RATIOS, resolveGptImage2Size } from '../../gpt-image-2-size-presets.ts';
 
 export const UNIFIED_MEDIA_RULE_VERSION = 'unified-media-2026-11-10-v1';
 export const UNIFIED_IMAGE_MODEL_KEY = 'image2' as const;
@@ -71,7 +71,7 @@ export const UNIFIED_KLING3_CHANNELS: readonly UnifiedVideoChannelDefinition[] =
 ] as const);
 
 const CANDIDATE_TIERS: readonly UnifiedImageTier[] = ['1k', '2k', '4k'];
-const CANDIDATE_RATIOS = ['1:1', '3:4', '4:3', '16:9', '9:16', '3:2', '2:3', '21:9'] as const;
+const CANDIDATE_RATIOS = GPT_IMAGE_2_ASPECT_RATIOS.filter((ratio) => ratio !== 'auto');
 
 export function normalizeUnifiedImageTier(value: unknown): UnifiedImageTier | null {
   if (typeof value !== 'string') return null;

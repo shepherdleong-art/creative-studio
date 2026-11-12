@@ -1,3 +1,4 @@
+import { providerErrorMessage } from '../provider-error-message.ts';
 import { assertArkRequestSize, seedanceFinalBody, seedanceContract, seedanceOutputFields } from './seedance-contract.ts';
 import fs from 'fs';
 import { videoDurationError } from '../video-duration.ts';
@@ -160,7 +161,7 @@ async function postGenerationTask(params: {
 
     if (!res.ok) {
       const errorText = await res.text();
-      throw providerHttpError(res.status, `${params.errorLabel} submit error ${res.status}: ${errorText.slice(0, 500)}`);
+      throw providerHttpError(res.status, `${params.errorLabel} submit error ${res.status}: ${providerErrorMessage(errorText, params.apiKey) ?? '供应商未提供具体原因'}`);
     }
 
     const data = (await res.json()) as ArkTaskResponse;

@@ -919,6 +919,7 @@ export const GenerationNode = memo(function GenerationNode({
                   parameter.key,
                   parameter.options,
                   data.parameters ?? {},
+                  capability,
                 );
                 const rawValue = String(
                   parameter.key === 'resolution' && data.parameters?.generationStage === 'draft'
@@ -941,6 +942,7 @@ export const GenerationNode = memo(function GenerationNode({
                           data.parameters ?? {},
                           parameter.key,
                           event.target.value,
+                          capability,
                         )
                         : { ...(data.parameters ?? {}), [parameter.key]: event.target.value },
                     })}

@@ -36,6 +36,7 @@ const { recoverCanvasTasks, reconcileCanvasTaskExecution, reconcileCanvasTaskNot
 const { CanvasAdapterError } = await import('../lib/creative-canvas/adapters/types.ts');
 const { createCanvasExport, requireCanvasExport } = await import('../lib/creative-canvas/export.ts');
 const { readCanvasAsset } = await import('../lib/creative-canvas/assets.ts');
+const { CanvasRuntimeStore } = await import('../components/creative-canvas/runtime-store.ts');
 
 const databaseFile = path.join(root, 'workbench.db');
 const db = new Database(databaseFile);
@@ -228,6 +229,64 @@ try {
   assert.match(operation.inputRevision, /stage-direct/);
   assert.equal(Number((db.prepare(`SELECT COUNT(*) AS count FROM execution_reservations
     WHERE kind = 'concurrency' AND state = 'held'`).get() as { count: number }).count), 0);
+
+  // 上游明确拒绝时，节点任务和运行日志必须保留具体原因，而不是只显示“未创建”。
+  const rejected = createSingleImageTask('上游原因画布', 'rejected-node', 'rejected-run');
+  let rejectedSubmits = 0;
+  const rejectionReason = "InputImageSensitiveContentDetected.PrivacyInformation: The input image 'content[1]' may contain real person.";
+  const rejectedAdapter = {
+    ...adapter,
+    kind: 'rejected-fixture',
+    async submit(): Promise<never> {
+      rejectedSubmits += 1;
+      throw new CanvasAdapterError('submit', rejectionReason, { httpStatus: 400, uncertain: false });
+    },
+  };
+  const rejectedScheduler = createCanvasScheduler({
+    db, workerId: 'rejected-worker', adapter: rejectedAdapter, storageRoot: path.join(root, 'storage'),
+    execution: { facade: runtime.facade, instance: identity }, pollIntervalMs: 1,
+  });
+  extraSchedulers.push(rejectedScheduler);
+  await rejectedScheduler.tick();
+  await rejectedScheduler.drain();
+  assert.equal(rejected.readTask()?.phase, 'failed');
+  assert.equal(rejected.readTask()?.errorCode, 'provider_http_400');
+  assert.match(rejected.readTask()?.errorMessage ?? '', /may contain real person|可能包含真人/,
+    '画布节点必须显示上游拒绝的具体原因');
+  assert.match(rejected.readTask()?.errorMessage ?? '', /InputImageSensitiveContentDetected\.PrivacyInformation/);
+  assert.ok(db.prepare("SELECT 1 FROM creative_canvas_logs WHERE jobId=? AND message LIKE '%PrivacyInformation%'")
+    .get(rejected.taskId), '运行日志必须保留同一原因');
+  await rejectedScheduler.tick();
+  await rejectedScheduler.drain();
+  assert.equal(rejectedSubmits, 1, '显示原因不得引入自动重新提交');
+  const nodeRuntime = new CanvasRuntimeStore();
+  nodeRuntime.update(runWithAccessContext(access, () => listCanvasNodeStates(db, rejected.canvasId)), [rejected.readTask()!]);
+  assert.equal(nodeRuntime.get(rejected.nodeId)?.activeTaskError, rejected.readTask()?.errorMessage,
+    '节点订阅投影必须将具体原因原样送到状态显示');
+  db.prepare("UPDATE creative_canvas_tasks SET phase='submitting',submissionState='maybe_sent',slotHeld=1 WHERE id=?")
+    .run(rejected.taskId);
+  runWithAccessContext(createLocalAccessContext(), () => recoverCanvasTasks(db));
+  assert.equal(rejected.readTask()?.phase, 'failed');
+  assert.match(rejected.readTask()?.errorMessage ?? '', /PrivacyInformation/,
+    '按 not_created 回执恢复后必须保留已落库的上游原因');
+  assert.equal(rejected.readTask()?.errorCode, 'provider_http_400');
+
+  const remoteRejected = createSingleImageTask('远端失败原因画布', 'remote-rejected-node', 'remote-rejected-run');
+  const remoteRejectedScheduler = createCanvasScheduler({
+    db, workerId: 'remote-rejected-worker', storageRoot: path.join(root, 'storage'),
+    adapter: { ...adapter, async poll() {
+      return { status: 'failed' as const, code: 'content_rejected', message: rejectionReason };
+    } },
+    execution: { facade: runtime.facade, instance: identity }, pollIntervalMs: 1,
+  });
+  extraSchedulers.push(remoteRejectedScheduler);
+  await remoteRejectedScheduler.tick();
+  await remoteRejectedScheduler.drain();
+  assert.equal(remoteRejected.readTask()?.phase, 'failed');
+  assert.equal(remoteRejected.readTask()?.providerTaskId, 'canvas-remote-1');
+  assert.match(remoteRejected.readTask()?.errorMessage ?? '', /may contain real person|可能包含真人/,
+    '已受理任务的远端终态失败也必须显示具体原因');
+
 
   // 崩溃发生在 06 已收到远端回执、画布尚未保存 remoteId 的窗口：恢复只接续，不重提。
   const restarted = createSingleImageTask('重启画布', 'restart-node', 'restart-run');

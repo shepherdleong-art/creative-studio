@@ -2,11 +2,11 @@
  * 公司模型网关（地址由本地代理配置提供，经 LiteLLM 转发）的
  * size 白名单与吸附逻辑。
  *
- * 网关只接受《小林生影_AIGC模型调用文档》第 6 节列出的「宽x高」组合；
+ * 按公司网关已验证的完整「档位 + 比例」组合提交「宽x高」；
  * 应用内的 GPT-Image-2 像素预设（如 2K 4:3 = 2304x1728）不在白名单里，
- * 直接透传会被 400 拒绝。这里按「比例就近、档位就近」把请求尺寸吸附到
- * 目标模型允许的组合上。图片下载后 image-output-normalize 仍会按 job.size
- * 居中裁切，所以最终交付尺寸不受吸附影响。
+ * 直接透传可能被拒。这里按「比例就近、档位就近」把请求尺寸吸附到
+ * 目标模型允许的组合上；专用表缺失格在提交前拒绝。图片下载后 image-output-normalize 按
+ * 名义比例裁齐，公司原生像素交付绝不放大。
  */
 
 import { GPT_IMAGE_2_SIZE_MAP } from './gpt-image-2-size-presets.ts';
@@ -25,7 +25,7 @@ export interface CompanyModelCaps {
    *（1K 3:4 实返 1024x1376 → 1024x1366）。缺省 false：仍规整到 job.size。
    */
   nativeDelivery?: boolean;
-  /** 同步方舟图片接口使用官方像素表，不经过异步网关的名义尺寸映射。 */
+  /** 模型专用提交尺寸；缺失的档位/比例组合不可执行，不得静默换档或换比例。 */
   imageSizeTable?: Record<string, Record<string, string>>;
 }
 
@@ -54,25 +54,46 @@ const VIDEO_TIER_PREFERENCE = ['1K', '720P', '4K'];
 
 const IMAGE2_CAPS: CompanyModelCaps = {
   tiers: ['1K', '2K', '4K'],
-  ratios: ['1:1', '3:4', '4:3', '16:9', '3:2', '2:3', '21:9'], // 文档 §2.1：image2 不支持 9:16
+  ratios: ['1:1', '3:4', '4:3', '16:9', '3:2', '2:3', '21:9'], // 其他旧 image2 别名保留原合同；Medium 的实测表见下方
   // 实测（2026-08-21 真实任务）：返回尺寸偏离名义格但更大（2K 3:4 → 1920x2560，
   // 1K 3:4 → 1024x1376），原生像素交付白赚像素，比例偏差由交付端裁齐
   nativeDelivery: true,
 };
-// qiniuyun/gpt-image-2-medium（2026-08-21 真实任务逐格探测）：网关 canonical 表只收
-// 1:1/3:4/4:3/16:9/9:16 五种比例（3:2、2:3、21:9 与 3K 档提交时即拒）；网关下游
-// 映射有两处 bug——1K 档全部映射成 1080 类视频制式尺寸、4K 3:4 映射成 2160x2878，
-// 均不满足上游「宽高 16 整除」被 BadRequestError 拒绝。其余格子逐格验证真实出图：
-// 2K×5 种比例 + 4K×{1:1,4:3,16:9,9:16}（1440x1440/1920x1440/1440x1920/2560x1440/
-// 1440x2560/2160x2160/2880x2160/3840x2160/2160x3840）。故放行 2K+4K 并单格排除
-// 4K 3:4；排除格走裁切映射——用同档位 4K 9:16（2160x3840）生成后由
-// image-output-normalize 居中裁回 3:4，真 4K 级画质（2026-08-21 与用户确认）。
-// 逐格实测返回尺寸与 canonical 表一致，开启原生像素交付（nativeDelivery）。
+// 2026-11-12 腾讯 image2-medium 真机验证；其他 image2 别名继续沿用原合同。
+// 保留既有八种比例的提交尺寸，新比例使用实测请求值。三个 4K 长条比例实返 2K，
+// 故只列在 1K/2K；不用 exclude 的 donor 替代语义绕过真实降档限制。
+const IMAGE2_MEDIUM_CAPS: CompanyModelCaps = {
+  ...IMAGE2_CAPS,
+  ratios: [...IMAGE2_CAPS.ratios, '9:16', '5:4', '4:5', '2:1', '1:2', '9:21'],
+  imageSizeTable: {
+    '1K': {
+      ...IMAGE_SIZE_TABLE['1K'],
+      '5:4': '1120x896', '4:5': '896x1120', '2:1': '2048x1024',
+      '1:2': '1024x2048', '9:21': '624x1456',
+    },
+    '2K': {
+      ...IMAGE_SIZE_TABLE['2K'],
+      '5:4': '2240x1792', '4:5': '1792x2240', '2:1': '2688x1344',
+      '1:2': '1344x2688', '9:21': '1296x3024',
+    },
+    '4K': {
+      ...IMAGE_SIZE_TABLE['4K'],
+      '5:4': '3200x2560', '4:5': '2560x3200',
+    },
+  },
+};
+// 七牛旧别名保留 4K 3:4 的 donor 合同；精确 Medium 的复验结果见下方。
 const QINIUYUN_GPT_IMAGE_2_CAPS: CompanyModelCaps = {
   tiers: ['2K', '4K'],
   ratios: ['1:1', '3:4', '4:3', '16:9', '9:16'],
   exclude: ['4K:3:4'],
   nativeDelivery: true,
+};
+// 七牛 2026-11-12 复验：2K/4K 五种比例，4K 3:4 已直出 2160x2880。
+// 1K 仍被映射成不满足 16 整除的尺寸；3K 与额外比例仍被网关拒绝。
+const QINIUYUN_GPT_IMAGE_2_MEDIUM_CAPS: CompanyModelCaps = {
+  ...QINIUYUN_GPT_IMAGE_2_CAPS,
+  exclude: undefined,
 };
 const SEEDREAM_LITE_CAPS: CompanyModelCaps = {
   tiers: ['2K', '3K', '4K'],
@@ -126,7 +147,9 @@ export function companyImageCapsForModel(model: string): CompanyModelCaps | null
   if (model === 'doubao-seedream-5-0-pro-image' || model === 'doubao-seedream-5-0-pro-260628') return SEEDREAM_5_PRO_CAPS;
   if (model === 'nano-banana-3.0' || model === 'nano-banana-3.1') return NANO_BANANA_CAPS;
   const m = model.toLowerCase();
+  if (m === 'qiniuyun/gpt-image-2-medium') return QINIUYUN_GPT_IMAGE_2_MEDIUM_CAPS;
   if (m.startsWith('qiniuyun/gpt-image-2')) return QINIUYUN_GPT_IMAGE_2_CAPS;
+  if (m === 'image2-medium') return IMAGE2_MEDIUM_CAPS;
   if (m.startsWith('image2-')) return IMAGE2_CAPS;
   if (m.includes('seedream') && m.includes('pro')) return SEEDREAM_PRO_CAPS;
   if (m.includes('seedream')) return SEEDREAM_LITE_CAPS;
@@ -265,7 +288,9 @@ function snapCompanyImageCell(size: string | null | undefined, caps: CompanyMode
     tier = caps.tiers[0];
     let bestDist = Number.POSITIVE_INFINITY;
     for (const candidate of caps.tiers) {
-      const dist = Math.abs(sizePixels(table[candidate][ratio]) - target);
+      const candidateSize = table[candidate]?.[ratio];
+      if (!candidateSize) continue;
+      const dist = Math.abs(sizePixels(candidateSize) - target);
       if (dist < bestDist) {
         tier = candidate;
         bestDist = dist;
@@ -276,13 +301,16 @@ function snapCompanyImageCell(size: string | null | undefined, caps: CompanyMode
   } else {
     tier = caps.tiers.includes('2K') ? '2K' : clampTier('2K', caps.tiers, IMAGE_TIER_ORDER);
   }
+  if (!table[tier]?.[ratio]) {
+    throw new Error(`该图片通道不支持 ${tier} + ${ratio}，任务未提交。`);
+  }
   return { tier, ratio };
 }
 
 /**
  * 公司模型的交付尺寸（名义格子像素，2026-08-21 起公司模型按网关原生像素交付，
  * 不再放大回应用预设）：普通格子 = 生成尺寸本身；排除格 = 名义格子尺寸——
- * 生成走裁切映射的 donor 格（如 4K 9:16 的 2160x3840），交付端 normalize 按
+ * 历史任务可能由其他画幅的 donor 生成，交付端 normalize 按
  * 本尺寸居中裁回（如 4K 3:4 的 2160x2880），全程零放大。
  */
 export function companyImageDeliverySize(size: string | null | undefined, caps: CompanyModelCaps): string {

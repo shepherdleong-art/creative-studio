@@ -49,7 +49,7 @@ function copy(source, destination) {
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   // Node 22's native recursive-copy fast path can skip Unicode Windows paths.
   // A filter selects the JS traversal, retaining collision checks for every file.
-  fs.cpSync(source, destination, { recursive: true, force: false, errorOnExist: true, filter: () => true });
+  fs.cpSync(source, destination, { recursive: true, force: false, errorOnExist: true, filter: (entry) => path.extname(entry).toLowerCase() !== '.log' });
 }
 function write(relative, content) {
   const target = path.join(staging, relative);
@@ -73,6 +73,7 @@ function zipDirectory(source, destination) {
 try {
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
   copy(path.join(repoRoot, 'dist-desktop'), path.join(versionRoot, 'dist-desktop'));
+  copy(path.join(repoRoot, 'public', 'icons', 'app-icon-256.png'), path.join(versionRoot, 'dist-desktop', 'app-icon-256.png'));
   copy(electronDist, path.join(versionRoot, 'electron'));
   copy(electronDist, path.join(staging, 'runtime'));
   copy(path.join(repoRoot, 'scripts', 'team-client', 'launcher.mjs'), path.join(staging, 'launcher.mjs'));
