@@ -64,11 +64,12 @@ const modules = {
     confirmRemoteClientHealth: async () => {},
     createRemoteClientHost: async (options) => {
       calls.remoteHosts += 1;
+      calls.installUpdate = options.installUpdate;
       assert.equal(options.origin, 'https://studio.example.test');
       return remoteHost;
     },
   },
-  './client/update-helper': { spawnIndependentUpdateHelper: async () => ({ jobId: 'test-job' }) },
+  './client/update-helper': { spawnIndependentUpdateHelper: async options => { calls.helperStarts = (calls.helperStarts ?? 0) + 1; calls.helperOptions = options; return { jobId: 'test-job' }; } },
   './client/client-diagnostic-reporter': { ClientDiagnosticReporter: class {} },
   './client/ui-diagnostics': { installClientUiDiagnostics: () => () => {} },
   './window': { createWindow: (host) => { assert.equal(host, remoteHost); return fakeWindow; } },
@@ -83,6 +84,7 @@ process.env.CREATIVE_STUDIO_SERVER_ORIGIN = 'https://studio.example.test/path-th
 const { readRemoteClientConfig, configureRemotePermissions } = load('desktop/client/remote-host.ts', {
   electron: { app },
   './remote-transfer': { RemoteTransferController: class {} },
+  './update-check': { checkClientUpdate: async () => ({ upToDate: true }) },
   './client-diagnostic-reporter': { ClientDiagnosticReporter: class { setIdentity() {} report() {} } },
   './ui-diagnostics': { installClientUiDiagnostics: () => () => {} }, './client-diagnostics': {},
 }, { process: { ...process, env: { ...process.env, CREATIVE_STUDIO_CLIENT_MODE: 'local' } } });
@@ -97,11 +99,26 @@ for (const [permission, requestingUrl, isMainFrame, expected] of [
   ['fullscreen', 'https://other.example.test/', true, false],
   ['fullscreen', 'https://studio.example.test/', false, false],
   ['media', 'https://studio.example.test/', true, false],
+  ['clipboard-sanitized-write', 'https://studio.example.test/team/members', true, true],
+  ['clipboard-sanitized-write', 'https://other.example.test/', true, false],
+  ['clipboard-sanitized-write', 'https://studio.example.test/', false, false],
+  ['clipboard-sanitized-write', 'https://studio.example.test:444/', true, false],
+  ['clipboard-sanitized-write', 'https://studio.example.test.evil.test/', true, false],
   ['clipboard-read', 'https://studio.example.test/', true, false],
+  ['deprecated-sync-clipboard-read', 'https://studio.example.test/', true, false],
 ]) {
   const details = { requestingUrl, isMainFrame };
   requestPermission(contents, permission, result => assert.equal(result, expected), details);
   assert.equal(checkPermission(contents, permission, new URL(requestingUrl).origin, details), expected);
+}
+for (const untrustedContents of [
+  null,
+  { ...contents, isDestroyed: () => true },
+  { ...contents, getURL: () => 'https://other.example.test/' },
+]) {
+  const details = { requestingUrl: 'https://studio.example.test/', isMainFrame: true };
+  requestPermission(untrustedContents, 'clipboard-sanitized-write', result => assert.equal(result, false), details);
+  assert.equal(checkPermission(untrustedContents, 'clipboard-sanitized-write', 'https://studio.example.test', details), false);
 }
 assert.throws(() => readRemoteClientConfig(process.env), /origin|来源|地址/i);
 const localTeamConfig = {
@@ -130,6 +147,15 @@ assert.equal(calls.remoteHosts, 1, calls.errors.join('\n'));
 assert.equal(calls.starts, 0, 'remote Host 不得 spawn 生产后台');
 assert.deepEqual(calls.userDataPaths, [path.join(process.env.CREATIVE_STUDIO_CLIENT_STATE_ROOT, 'electron')], '稳定 userData 必须在单实例锁与持久 Session 前设置');
 assert.equal(calls.shutdownRequests, 0, 'remote 启动不得发公共 shutdown');
+const transfersForUpdate = { currentUser: async () => null, clientIdentity: 'test-device', reportUpdateResult() {} };
+await calls.installUpdate('https://studio.example.test/client-updates/current.manifest.json', transfersForUpdate);
+await calls.installUpdate('https://studio.example.test/client-updates/current.manifest.json', transfersForUpdate);
+assert.equal(calls.helperStarts, 1, '同一客户端正在更新时不得启动第二个独立助手');
+calls.helperOptions.onResult({ status: 'rejected' });
+await calls.installUpdate('https://studio.example.test/client-updates/current.manifest.json', transfersForUpdate);
+assert.equal(calls.helperStarts, 2, '异步更新失败后必须能够再次启动助手');
+calls.helperOptions.onResult({ status: 'committed' });
+
 app.emit('before-quit', { preventDefault() {} });
 await tick();
 await tick();

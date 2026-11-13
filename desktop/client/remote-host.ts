@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { ClientStatus, RemoteUploadTarget } from '../bridge-types';
 import type { RemoteDesktopWindowHost } from '../window';
 import { RemoteTransferController, type TeamFileDownloadManifest } from './remote-transfer';
+import { checkClientUpdate } from './update-check';
 import { ClientDiagnosticReporter } from './client-diagnostic-reporter';
 import { sanitizeClientDiagnostic, type ClientDiagnosticInput as DiagnosticInput } from './client-diagnostics';
 import type { ClientDiagnosticInput } from '../bridge-types';
@@ -39,13 +40,15 @@ interface RemoteHostOptions {
   origin: string;
   stateRoot: string;
   preloadPath: string;
+  installRoot?: string;
+  connectionMode?: 'direct' | 'system';
   session?: Session;
   isQuitRequested: () => boolean;
   setIpcHandlerRemover: (remover: (() => void) | null) => void;
   clearIpcHandlers: () => void;
   onWindowClosed: () => void;
   shutdown: () => Promise<void>;
-  installUpdate?: (manifestUrl: string, transfers: RemoteTransferController) => Promise<{ started: boolean; message?: string }>;
+  installUpdate?: (manifestUrl: string, transfers: RemoteTransferController) => Promise<{ started: boolean; message?: string; upToDate?: boolean }>;
 }
 
 interface Capabilities {
@@ -76,6 +79,7 @@ export class RemoteClientController {
   private transfers: RemoteTransferController | null = null;
   private identityTimer: ReturnType<typeof setInterval> | null = null;
   private readonly diagnostics: ClientDiagnosticReporter;
+  private updateStarting = false;
   private readonly installUpdateHandler?: RemoteHostOptions['installUpdate'];
 
   constructor(private readonly options: RemoteHostOptions, private readonly session: Session) {
@@ -175,6 +179,7 @@ export class RemoteClientController {
       maintenance: this.capabilities!.maintenance,
       reason: this.capabilities!.reason,
       updateAvailable: Boolean(this.capabilities!.update?.manifestUrl),
+      updaterVersion: 2,
       transfers: this.transfers?.listTransfers() ?? [],
     };
   }
@@ -204,12 +209,24 @@ export class RemoteClientController {
     return { transferIds: await this.requireTransfers().createDownloads(manifests) };
   }
 
-  async installClientUpdate(): Promise<{ started: boolean; message?: string }> {
-    await this.handshake();
-    const manifestUrl = this.capabilities?.update?.manifestUrl;
-    if (!manifestUrl) return { started: false, message: '服务尚未提供受控更新入口，请联系管理员修复。' };
-    if (!this.installUpdateHandler) return { started: false, message: '此安装尚未配置独立更新助手，请使用受控修复包。' };
-    return this.installUpdateHandler(manifestUrl, this.requireTransfers());
+  async installClientUpdate(): Promise<{ started: boolean; message?: string; upToDate?: boolean }> {
+    if (this.updateStarting) return { started: true };
+    this.updateStarting = true;
+    try {
+      await this.handshake();
+      const manifestUrl = this.capabilities!.update?.manifestUrl;
+      if (!manifestUrl) return { started: false, message: '服务尚未提供受控更新入口，请联系管理员修复。' };
+      if (!this.installUpdateHandler) return { started: false, message: '此安装尚未配置独立更新助手，请使用受控修复包。' };
+      if (this.options.installRoot) {
+        const checked = await checkClientUpdate({ installRoot: this.options.installRoot,
+          origin: this.options.origin, manifestUrl, fetch: (url, init) => this.session.fetch(url, init) });
+        if (checked.upToDate) return { started: false, upToDate: true, message: '当前已是最新版本。' };
+      }
+      const result = await this.installUpdateHandler(manifestUrl, this.requireTransfers());
+      return result;
+    } finally {
+      this.updateStarting = false;
+    }
   }
 
   async stop(): Promise<void> {
@@ -219,10 +236,11 @@ export class RemoteClientController {
   }
 }
 
-/** 只开放受信任主页面的全屏；摄像头、剪贴板及子 frame 权限仍默认拒绝。 */
+/** 只开放受信任主页面的全屏和文字复制；剪贴板读取、摄像头及子 frame 仍拒绝。 */
 export function configureRemotePermissions(clientSession: Pick<Electron.Session, 'setPermissionRequestHandler' | 'setPermissionCheckHandler'>, origin: string): void {
   const allowed = (permission: string, url: string | undefined, isMainFrame: boolean, contents: Electron.WebContents | null) => {
-    if (permission !== 'fullscreen' || !isMainFrame || !url || !contents || contents.isDestroyed()) return false;
+    if (!['fullscreen', 'clipboard-sanitized-write'].includes(permission)
+      || !isMainFrame || !url || !contents || contents.isDestroyed()) return false;
     try { return new URL(url).origin === origin && new URL(contents.getURL()).origin === origin; }
     catch { return false; }
   };
@@ -236,6 +254,7 @@ export function configureRemotePermissions(clientSession: Pick<Electron.Session,
 export async function createRemoteClientHost(options: RemoteHostOptions): Promise<RemoteDesktopWindowHost> {
   const clientSession = options.session ?? electronSession.fromPartition('persist:creative-studio-team-client');
   const origin = new URL(options.origin).origin;
+  if (options.connectionMode === 'direct') await clientSession.setProxy({ mode: 'direct' });
   configureRemotePermissions(clientSession, origin);
   clientSession.webRequest.onBeforeSendHeaders({ urls: [`${origin}/*`] }, (details, callback) => {
     const requestHeaders = {

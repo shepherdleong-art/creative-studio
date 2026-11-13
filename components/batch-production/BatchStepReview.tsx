@@ -56,7 +56,7 @@ export interface BatchStepReviewProps {
  */
 export default function BatchStepReview(props: BatchStepReviewProps) {
   return (
-    <div className="flex w-full min-h-0 flex-none" data-testid="batch-unified-review-screen">
+    <div className="flex w-full min-h-0 flex-1" data-testid="batch-unified-review-screen">
       <BatchUnifiedReviewWorkspace
         key={props.selectedBatchId}
         projectId={props.projectId}

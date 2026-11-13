@@ -6,7 +6,7 @@
   height: 100%;
   min-width: 0;
   min-height: 0;
-  gap: 8px;
+  gap: 4px;
 }
 
 .compactViewport {
@@ -29,12 +29,12 @@
 
 .compactControls {
   display: grid;
-  grid-template-columns: 32px auto minmax(40px, 1fr);
+  grid-template-columns: 32px auto minmax(40px, 1fr) minmax(80px, auto);
   flex: none;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 6px;
+  padding: 2px;
   border-radius: 8px;
   background: var(--color-surface);
 }
@@ -43,7 +43,6 @@
 .compactControls > button { padding: 0; }
 .compactControls > input[type='range'] { min-width: 0; width: 100%; }
 .compactOptions {
-  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   gap: 6px;

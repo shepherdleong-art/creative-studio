@@ -415,3 +415,72 @@
 :global(html[data-theme='dark']) .loadingState > span { border-color: color-mix(in srgb, var(--color-ink) 18%, transparent); border-top-color: var(--blue); }
 :global(html[data-theme='dark']) .switchDialogBackdrop { background: rgb(0 0 0 / 50%); }
 :global(html[data-theme='dark']) .switchDialog { box-shadow: 0 28px 80px rgb(0 0 0 / 60%); }
+
+/* 批量审片独占现有主区；退出步骤即恢复页面，不改变单条工作台的几何。 */
+:global(html[data-deployment-mode]) :global(body):has(.reviewFocusShell) {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+:global(html[data-deployment-mode]) :global(body):has(.reviewFocusShell) > :global(header),
+:global(body):has(.reviewFocusShell) :global([data-project-chrome]),
+.workspace:has(.reviewFocusShell) > :global([data-mixcut-mode-bar]) {
+  display: none;
+}
+:global(html[data-deployment-mode]) :global(body):has(.reviewFocusShell) > :global(main) {
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  margin: 0;
+  padding: 6px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+:global(html[data-deployment-mode]) :global(body):has(> :global(aside[data-testid='workspace-sidebar'])):has(.reviewFocusShell) > :global(main) {
+  width: calc(100% - var(--workspace-sidebar-width));
+  margin-left: var(--workspace-sidebar-width);
+}
+.workspace:has(.reviewFocusShell) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.workspace:has(.reviewFocusShell) > * { margin-block: 0; }
+.shell.reviewFocusShell[data-batch][data-active-step] {
+  width: 100%;
+  margin: 0;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  flex: 1;
+  overflow: hidden;
+  border-radius: var(--radius-control);
+  box-shadow: none;
+}
+.reviewFocusShell .topbar {
+  height: 44px;
+  min-height: 44px;
+  padding: 4px 8px;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+.reviewFocusShell .topbar > div:first-child { flex: 1; min-width: 0; }
+.reviewFocusShell .topbar strong { font-size: var(--text-label); }
+.reviewFocusShell .stepNav { flex: none; }
+.reviewFocusShell .stepNav .snav { padding: 4px 6px; gap: 4px; }
+.reviewFocusShell .stepNav .snavIco { width: 22px; height: 22px; }
+.reviewFocusShell .stepNav .snavLb { font-size: var(--text-label); }
+.reviewFocusShell .overviewToggle { padding: 4px 6px; }
+.reviewFocusShell .body { position: relative; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
+.reviewFocusShell .sideCol {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 280px;
+  z-index: 30;
+  background: var(--color-card);
+  box-shadow: var(--sh-lg);
+}

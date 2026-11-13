@@ -52,7 +52,7 @@ export const dynamic = 'force-dynamic';
  *   "emptyMessage": "还没有导出过的成片",       // 仅在 items 为空时出现
  *   "deliveryManifests": [{                      // 仅 delivery=1 时出现
  *     "fileId": "…", "seriesId": "…", "version": 1, "size": 4096,
- *     "sha256": "…", "etag": "\"…\"", "displayName": "ACC-1-20261101/01-v1/ACC-1-01.mp4"
+ *     "sha256": "…", "etag": "\"…\"", "displayName": "ACC-1-01.mp4", "relativeDirectory": "ACC-1-20261101/01-v1"
  *   }]
  * }
  * ```
@@ -92,9 +92,12 @@ async function __teamRouteGET(request: Request, context: { params: Promise<{ id:
       const deliveryManifests = files.map((file) => {
         if (!file.fileId) throw new Error('交付文件登记失败');
         const delivered = teamFileDeliveryManifest(getDb(), actor, file.fileId);
-        // `displayName` 用清单里的相对名：客户端按它分目录落盘
-        // （existing `createDownloads` 只接受单层文件名，路径分段在 `filename` 里）。
-        return { ...delivered, displayName: file.filename };
+        // 客户端分别校验单层文件名和相对子目录，不能把整个相对名当文件名。
+        return {
+          ...delivered,
+          displayName: file.item.filename,
+          relativeDirectory: file.item.relativeName.slice(0, -(file.item.filename.length + 1)),
+        };
       });
       return NextResponse.json({ ...manifest, deliveryManifests }, { headers: BATCH_NO_STORE_HEADERS });
     }

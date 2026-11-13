@@ -371,3 +371,9 @@
   .module { padding: 12px; }
   .notice { flex-wrap: wrap; }
 }
+
+.wsMenuItem:disabled { opacity: .55; cursor: default; }
+
+.wsMenuHint a { color: var(--color-accent); text-decoration: underline; }
+
+.sidebar[data-narrow='rail'] .wsMenu .wsClientUpdateMessage { display: block; }

@@ -258,7 +258,7 @@ async function __teamRoutePOST(request: NextRequest) {
       }
     }
 
-    const defaultScenePrompt = '保持图中床的一致性不变，更换其他家具和软装布置，风格参考原图，让卧室温馨舒适，全景图';
+    const defaultScenePrompt = '保持图中床的一致性不变，更换其他家具和软装布置，风格跟原图差别较大，让卧室温馨舒适，全景图';
     const defaultShotPrompt = `图1是待编辑分镜图，是本次修改的主要对象。
 图2是场景参考图。
 参考图2，修改图1，保持图中床和模特的一致性不变，更换卧室的其他家具和软装布置，构图和机位景别严格参考图1。`;

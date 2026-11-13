@@ -235,6 +235,12 @@ const seeded = seedProject('project-a', userA.principal.userId, 'ACC');
 
 const downloadsRoute = await import('../app/api/batch-production/batches/[id]/downloads/route.ts');
 const zipRoute = await import('../app/api/batch-production/batches/[id]/downloads/zip/route.ts');
+const filesRoute = await import('../app/api/team/files/[id]/route.ts');
+const devicesRoute = await import('../app/api/team/devices/route.ts');
+const receiptsRoute = await import('../app/api/team/downloads/receipts/route.ts');
+// 与客户端测试一致，先 npm run build:desktop；让服务端真实响应直接进入客户端。
+const { RemoteTransferController } = module.createRequire(import.meta.url)('../dist-desktop/client/remote-transfer.js');
+
 
 const downloadsUrl = (batchId: string, projectId: string, query = '') =>
   `https://studio.example.test/api/batch-production/batches/${batchId}/downloads?projectId=${projectId}${query}`;
@@ -312,16 +318,62 @@ try {
     await downloadsRoute.GET(
       request(downloadsUrl(seeded.batchId, seeded.projectId, '&delivery=1'), userA), params(seeded.batchId),
     ),
-  ) as ManifestBody & { deliveryManifests: Array<{ fileId: string; version: number; size: number; sha256: string; etag: string; displayName: string }> };
+  ) as ManifestBody & { deliveryManifests: Array<{ fileId: string; version: number; size: number; sha256: string; etag: string; displayName: string; relativeDirectory: string }> };
   assert.equal(deliveryBody.deliveryManifests.length, deliveryBody.items.length,
     'delivery=1 的每个清单项都必须有一条受管文件 manifest');
+  // 真正消费路由响应：手写的正确清单无法捕获服务器/客户端的字段错配。
+  const clientStateRoot = path.join(root, 'client-state');
+  let downloadedFiles = 0;
+  const controller = new RemoteTransferController({
+    origin: 'https://studio.example.test', deploymentId: 'deployment-batch-downloads-route',
+    stateRoot: clientStateRoot, platform: 'windows', reveal() {},
+    session: {
+      cookies: { async get() { return []; } },
+      async clearCache() {}, async clearStorageData() {},
+      async fetch(url: string, options: RequestInit = {}) {
+        const pathname = new URL(url).pathname;
+        if (pathname === '/api/team/auth/session') {
+          return Response.json({ authenticated: true, user: { id: userA.principal.userId } });
+        }
+        if (pathname === '/api/team/auth/csrf') return Response.json({ csrfToken: 'csrf-test' });
+        const incoming = request(url, userA, options);
+        if (pathname === '/api/team/devices') return devicesRoute.POST(incoming);
+        if (pathname === '/api/team/downloads/receipts') return receiptsRoute.POST(incoming);
+        if (pathname.startsWith('/api/team/files/')) {
+          downloadedFiles += 1;
+          return filesRoute.GET(incoming, params(decodeURIComponent(pathname.split('/').at(-1)!)));
+        }
+        throw new Error(`unexpected client request: ${pathname}`);
+      },
+    },
+  });
+  await controller.synchronizeIdentity();
+  await controller.createDownloads(deliveryBody.deliveryManifests);
+  await controller.waitForIdle();
+  const transfers = controller.listTransfers() as Array<{ state: string; failureCode?: string }>;
+  assert.equal(transfers.length, deliveryBody.items.length);
+  assert.ok(transfers.every((transfer) => transfer.state === 'ready'), JSON.stringify(transfers));
+  const accountDirectories = fs.readdirSync(path.join(clientStateRoot, 'accounts'));
+  assert.equal(accountDirectories.length, 1);
+  for (const item of deliveryBody.items) {
+    const target = path.join(clientStateRoot, 'accounts', accountDirectories[0], 'downloads', item.relativeName);
+    const bytes = fs.readFileSync(target);
+    assert.equal(bytes.length, item.byteSize, '成片与封面必须实际落到项目/版本目录');
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), item.sha256);
+  }
+  assert.equal(downloadedFiles, deliveryBody.items.length);
+  await controller.createDownloads(deliveryBody.deliveryManifests);
+  await controller.waitForIdle();
+  assert.equal(downloadedFiles, deliveryBody.items.length, '重复点击不得重下已完成文件');
+
   for (const delivered of deliveryBody.deliveryManifests) {
     assert.match(delivered.fileId, /^[a-f0-9-]{36}$/, '受管文件必须是真实登记过的 team_files');
     assert.ok(Number.isSafeInteger(delivered.size) && delivered.size > 0);
     assert.match(delivered.sha256, /^[a-f0-9]{64}$/);
     assert.match(delivered.etag, /^"|^$/, 'ETag 由服务端生成');
-    const item = deliveryBody.items.find((candidate) => candidate.relativeName === delivered.displayName);
-    assert.ok(item, `交付 manifest 的 displayName 必须是清单里的相对名：${delivered.displayName}`);
+    const item = deliveryBody.items.find((candidate) => candidate.relativeName === `${delivered.relativeDirectory}/${delivered.displayName}`);
+    assert.ok(item, `交付目录和文件名必须还原清单里的相对名：${delivered.displayName}`);
+    assert.equal(delivered.displayName, item.filename, 'displayName 必须是单层文件名');
     assert.equal(delivered.size, item.byteSize, '交付大小必须与清单一致');
     assert.equal(delivered.sha256, item.sha256, '交付指纹必须与清单一致');
   }

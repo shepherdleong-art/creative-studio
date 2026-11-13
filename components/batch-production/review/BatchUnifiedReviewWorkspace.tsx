@@ -69,9 +69,8 @@ export interface BatchUnifiedReviewWorkspaceProps {
 
 const DEFAULT_LEFT = 250;
 const DEFAULT_RIGHT = 300;
-const DEFAULT_UPPER_PCT = 44; // 为两条带波形的音轨留出完整默认高度
+const DEFAULT_UPPER_PCT = 100; // 默认把一条完整成片行之外的高度全部让给预览
 const MIN_UPPER = 200;
-const MIN_TIMELINE = 240;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
 export default function BatchUnifiedReviewWorkspace({
@@ -98,6 +97,7 @@ export default function BatchUnifiedReviewWorkspace({
 
   const workbenchRef = useRef<HTMLDivElement>(null);
   const [workbenchSize, setWorkbenchSize] = useState({ width: 1000, height: 694 });
+  const [minimumTimelineHeight, setMinimumTimelineHeight] = useState(320);
   useEffect(() => {
     const element = workbenchRef.current;
     if (!element) return;
@@ -105,17 +105,37 @@ export default function BatchUnifiedReviewWorkspace({
       setWorkbenchSize({ width: entry.borderBoxSize[0].inlineSize, height: entry.borderBoxSize[0].blockSize });
     });
     observer.observe(element);
-    return () => observer.disconnect();
+    // 下限包含真实工具栏、标尺和一条完整成片行；窄窗口换行也计入，不能只留 240px。
+    const timeline = element.querySelector<HTMLElement>('[aria-label="统一时间轴"]');
+    const scroll = timeline?.querySelector<HTMLElement>(`.${styles.timelineScroll}`);
+    const measureTimeline = () => {
+      if (!timeline || !scroll) return;
+      const row = scroll.querySelector<HTMLElement>(`.${styles.filmRow}`);
+      const ruler = scroll.querySelector<HTMLElement>(`.${styles.rulerRow}`);
+      if (!row || !ruler) return;
+      const chrome = [...timeline.children].filter(child => child !== scroll)
+        .reduce((height, child) => height + child.getBoundingClientRect().height, 0);
+      // 横向滚动条与边框也占用可见高度，避免最后一条音轨差几像素。
+      const scrollbar = Math.max(0, scroll.offsetHeight - scroll.clientHeight);
+      setMinimumTimelineHeight(Math.ceil(chrome + row.getBoundingClientRect().height
+        + ruler.getBoundingClientRect().height + scrollbar + 3));
+    };
+    const timelineObserver = new ResizeObserver(measureTimeline);
+    if (timeline) for (const child of timeline.children) timelineObserver.observe(child);
+    measureTimeline();
+    return () => { observer.disconnect(); timelineObserver.disconnect(); };
   }, []);
   // Grid padding (16px) and gaps (8px each) are excluded from the usable tracks.
   const columnsWidth = workbenchSize.width - 32;
-  const rowsHeight = Math.max(MIN_UPPER + MIN_TIMELINE, workbenchSize.height - 24);
+  const rowsHeight = Math.max(0, workbenchSize.height - 24);
+  const minTimelineHeight = Math.min(minimumTimelineHeight, Math.max(0, rowsHeight - 160));
+  const minUpperHeight = Math.min(MIN_UPPER, Math.max(0, rowsHeight - minTimelineHeight));
   // 宽窗口的新增空间也分给素材与属性；手动拖动后保留用户设定。
   const defaultLeft = clamp(columnsWidth * 0.26, DEFAULT_LEFT, 480);
   const defaultRight = clamp(columnsWidth * 0.2, DEFAULT_RIGHT, 380);
   const actualRight = clamp(rightWidth ?? defaultRight, 280, columnsWidth - 220 - 280);
   const actualLeft = clamp(leftWidth ?? defaultLeft, 220, columnsWidth - actualRight - 280);
-  const upperHeight = clamp(rowsHeight * upperHeightPct / 100, MIN_UPPER, rowsHeight - MIN_TIMELINE);
+  const upperHeight = clamp(rowsHeight * upperHeightPct / 100, minUpperHeight, rowsHeight - minTimelineHeight);
 
   // Playhead and playback
   const [playheadSec, setPlayheadSec] = useState(0);
@@ -408,7 +428,7 @@ export default function BatchUnifiedReviewWorkspace({
         setRightWidth(clamp(initRight + delta, 280, columnsWidth - actualLeft - 280));
       } else if (type === 'top') {
         const deltaY = moveEvent.clientY - startY;
-        setUpperHeightPct(clamp(initUpper + deltaY, MIN_UPPER, rowsHeight - MIN_TIMELINE) / rowsHeight * 100);
+        setUpperHeightPct(clamp(initUpper + deltaY, minUpperHeight, rowsHeight - minTimelineHeight) / rowsHeight * 100);
       }
     };
 
@@ -610,7 +630,7 @@ export default function BatchUnifiedReviewWorkspace({
         className={styles.reviewWorkbench}
         style={{
           gridTemplateColumns: `${actualLeft}px minmax(280px, 1fr) ${actualRight}px`,
-          gridTemplateRows: `${upperHeight}px minmax(${MIN_TIMELINE}px, 1fr)`,
+          gridTemplateRows: `${upperHeight}px minmax(${minTimelineHeight}px, 1fr)`,
         }}
       >
         {/* Zone 1: Material Pool Dock (Upper Left) */}
@@ -778,8 +798,8 @@ export default function BatchUnifiedReviewWorkspace({
           role="separator"
           aria-orientation="horizontal"
           aria-label="调整上下区域比例"
-          aria-valuemin={Math.round(MIN_UPPER / rowsHeight * 100)}
-          aria-valuemax={Math.round((rowsHeight - MIN_TIMELINE) / rowsHeight * 100)}
+          aria-valuemin={Math.round(minUpperHeight / rowsHeight * 100)}
+          aria-valuemax={Math.round((rowsHeight - minTimelineHeight) / rowsHeight * 100)}
           aria-valuenow={Math.round(upperHeight / rowsHeight * 100)}
           className={`${styles.splitter} ${styles.splitterRow} ${resizing === 'top' ? styles.splitterDragging : ''}`}
           style={{
@@ -789,8 +809,8 @@ export default function BatchUnifiedReviewWorkspace({
           onPointerDown={(e) => handleSplitterPointerDown('top', e)}
           onDoubleClick={() => setUpperHeightPct(DEFAULT_UPPER_PCT)}
           onKeyDown={(e) => {
-            if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); setUpperHeightPct(clamp(upperHeight - 16, MIN_UPPER, rowsHeight - MIN_TIMELINE) / rowsHeight * 100); }
-            else if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); setUpperHeightPct(clamp(upperHeight + 16, MIN_UPPER, rowsHeight - MIN_TIMELINE) / rowsHeight * 100); }
+            if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); setUpperHeightPct(clamp(upperHeight - 16, minUpperHeight, rowsHeight - minTimelineHeight) / rowsHeight * 100); }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); setUpperHeightPct(clamp(upperHeight + 16, minUpperHeight, rowsHeight - minTimelineHeight) / rowsHeight * 100); }
             else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); setUpperHeightPct(DEFAULT_UPPER_PCT); }
           }}
         />

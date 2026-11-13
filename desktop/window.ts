@@ -217,7 +217,7 @@ export interface RemoteClientIpc {
   cancelTransfer(transferId: string): Promise<void>;
   revealDownload(downloadId: string): Promise<{ revealed: boolean }>;
   getClientStatus(): Promise<ClientStatus>;
-  installClientUpdate(): Promise<{ started: boolean; message?: string }>;
+  installClientUpdate(): Promise<{ started: boolean; message?: string; upToDate?: boolean }>;
   reportUiError(input: ClientDiagnosticInput): void;
   pauseForUpdate(): Promise<void>;
   resumeAfterUpdate(): Promise<void>;

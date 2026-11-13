@@ -48,6 +48,7 @@ export interface ClientStatus {
   maintenance: boolean;
   reason?: string;
   updateAvailable: boolean;
+  updaterVersion?: number;
   transfers: ClientTransferStatus[];
 }
 
@@ -68,7 +69,7 @@ export interface DesktopBridge {
   cancelTransfer(transferId: string): Promise<void>;
   revealDownload(downloadId: string): Promise<{ revealed: boolean }>;
   getClientStatus(): Promise<ClientStatus>;
-  installClientUpdate(): Promise<{ started: boolean; message?: string }>;
+  installClientUpdate(): Promise<{ started: boolean; message?: string; upToDate?: boolean }>;
   reportClientError(input: ClientDiagnosticInput): Promise<void>;
   onQuitRequested(callback: () => void): () => void;
 }

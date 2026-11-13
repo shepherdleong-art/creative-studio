@@ -63,6 +63,8 @@ try {
     maxFileSize: 1024 * 1024 * 1024 * 1024,
   });
   assert.equal(capabilities.compatible, true);
+  assert.deepEqual(capabilities.update, { manifestUrl: 'https://studio.example.test/client-updates/stable.json' },
+    '兼容客户端也必须获得主动更新入口');
   assert.equal(capabilities.maintenance, false);
 
   const old = await GET(new Request('https://studio.example.test/api/team/client-capabilities', {
@@ -91,6 +93,12 @@ try {
     headers: { 'x-creative-studio-client-version': '0.7.1', 'x-creative-studio-client-api': '0' },
   }));
   assert.equal((await apiMismatch.json() as { compatible?: boolean }).compatible, false);
+
+  process.env.CREATIVE_STUDIO_CLIENT_UPDATE_MANIFEST_URL = 'https://other.example.test/client-updates/stable.json';
+  const foreign = await GET(new Request('https://studio.example.test/api/team/client-capabilities', {
+    headers: { 'x-creative-studio-client-version': '0.7.1', 'x-creative-studio-client-api': '1' },
+  }));
+  assert.equal((await foreign.json() as { update?: unknown }).update, undefined, '跨源更新入口仍须拒绝');
 
   console.log('team client capabilities tests passed');
 } finally {

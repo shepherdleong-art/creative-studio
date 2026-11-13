@@ -347,3 +347,11 @@ select.shellSelect.shellSelect {
 .empty strong { color: var(--color-ink); font-size: 13px; }
 .empty span { max-width: 360px; line-height: 1.6; }
 .empty small { max-width: 360px; line-height: 1.6; }
+
+/* 必须在本 module 约束真实 mainCol；mixcut-shell 的同名类不是这个元素。 */
+.mainCol.reviewMain { flex: 1; padding: 0; overflow: hidden; }
+.notices { display: contents; }
+.reviewNotices { position: relative; flex: none; z-index: 35; border-bottom: 1px solid var(--color-hairline); }
+.reviewNoticeSummary { padding: 4px 12px; cursor: pointer; color: var(--color-warn); font-size: var(--text-label); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reviewNoticeContent { position: absolute; inset: 100% 0 auto; max-height: min(60dvh, 480px); overflow-y: auto; padding: 8px; background: var(--color-card); border: 1px solid var(--color-hairline); border-radius: var(--radius-control); box-shadow: 0 8px 24px var(--color-hairline); }
+.reviewNotices:not([open]) > .reviewNoticeContent { display: none; }

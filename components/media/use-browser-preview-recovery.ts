@@ -15,6 +15,7 @@ export function useBrowserPreviewRecovery(ref: RefObject<HTMLVideoElement | null
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     let probing = false;
     let failed = false;
+    let hasDecodedFrame = video.readyState >= 2 && !video.error;
     const controller = new AbortController();
     const setState = (state: 'ready' | 'pending' | 'failed') => {
       if (!disposed) setStatus({ src, state });
@@ -26,11 +27,11 @@ export function useBrowserPreviewRecovery(ref: RefObject<HTMLVideoElement | null
       controller.abort();
       setState('failed');
     };
-    const schedule = (delay: number) => {
+    const schedule = (delay: number, showPending = true) => {
       if (disposed || failed) return;
       // 包括成功探测后的第二次 video 请求：若它无响应，也不能无限“加载中”。
       deadlineTimer ??= setTimeout(fail, 120_000);
-      setState('pending');
+      if (showPending) setState('pending');
       clearTimeout(timer);
       timer = setTimeout(() => { void probe(); }, delay);
     };
@@ -55,17 +56,22 @@ export function useBrowserPreviewRecovery(ref: RefObject<HTMLVideoElement | null
         if (!disposed) schedule(1000);
       } finally { probing = false; }
     };
-    const onError = () => schedule(1000);
-    const onWaiting = () => schedule(10_000);
+    const onError = () => { hasDecodedFrame = false; schedule(1000); };
+    const onLoadStart = () => { hasDecodedFrame = false; schedule(10_000); };
+    // 本源已解码后，普通 seek/缓冲不代表资源需要重新准备。保留已上屏画面，
+    // 仍启用恢复看门狗：真正卡住时探测/重载，并保留截止失败与重试反馈。
+    const onWaiting = () => schedule(10_000, !hasDecodedFrame);
     const onLoaded = () => {
       if (failed || video.readyState < 2 || video.seeking) return;
+      hasDecodedFrame = true;
       clearTimeout(timer);
       clearTimeout(deadlineTimer);
       deadlineTimer = undefined;
       setState('ready');
     };
     video.addEventListener('error', onError);
-    const waitingEvents = ['loadstart', 'waiting', 'stalled', 'seeking'];
+    video.addEventListener('loadstart', onLoadStart);
+    const waitingEvents = ['waiting', 'stalled', 'seeking'];
     const loadedEvents = ['loadeddata', 'canplay', 'seeked', 'playing'];
     waitingEvents.forEach(event => video.addEventListener(event, onWaiting));
     loadedEvents.forEach(event => video.addEventListener(event, onLoaded));
@@ -78,6 +84,7 @@ export function useBrowserPreviewRecovery(ref: RefObject<HTMLVideoElement | null
       clearTimeout(deadlineTimer);
       controller.abort();
       video.removeEventListener('error', onError);
+      video.removeEventListener('loadstart', onLoadStart);
       waitingEvents.forEach(event => video.removeEventListener(event, onWaiting));
       loadedEvents.forEach(event => video.removeEventListener(event, onLoaded));
     };

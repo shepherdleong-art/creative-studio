@@ -57,7 +57,7 @@ export interface DesktopIpcHandlers {
   cancelTransfer(transferId: string): Promise<void>;
   revealDownload(downloadId: string): Promise<{ revealed: boolean }>;
   getClientStatus(): ReturnType<DesktopBridge['getClientStatus']>;
-  installClientUpdate(): Promise<{ started: boolean; message?: string }>;
+  installClientUpdate(): Promise<{ started: boolean; message?: string; upToDate?: boolean }>;
   reportClientError(input: ClientDiagnosticInput): void;
 }
 

@@ -49,6 +49,8 @@ export interface MixcutShellProps {
   fitViewportOnStep?: number;
   /** 此步骤随页面滚动；内部工作区自行使用视口高度，顶部信息不挤占编辑空间。 */
   pageScrollOnStep?: number;
+  /** 专注编辑：占满页面主区，只让业务面板内部滚动。 */
+  focusMode?: boolean;
 }
 
 /**
@@ -101,6 +103,7 @@ export default function MixcutShell({
   collapseSidebarOnStep,
   fitViewportOnStep,
   pageScrollOnStep,
+  focusMode = false,
 }: MixcutShellProps) {
   const [navOff, setNavOff] = useState(false);
   const [colOffA, setColOffA] = useState(false);
@@ -155,10 +158,14 @@ export default function MixcutShell({
 
   // 顶部导航模式的四个步骤使用同一工作区高度与滚动锚点。
   const pageScroll = activeStep === pageScrollOnStep;
-  const fitViewport = !pageScroll && (stepsInTopbar || (fitViewportOnStep !== undefined && activeStep === fitViewportOnStep));
+  const fitViewport = !focusMode && !pageScroll && (stepsInTopbar || (fitViewportOnStep !== undefined && activeStep === fitViewportOnStep));
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [viewportFitH, setViewportFitH] = useState<number | null>(null);
+  const previousViewportMode = useRef({ activeStep, focusMode });
   useEffect(() => {
+    const leavingFocus = previousViewportMode.current.activeStep === activeStep
+      && previousViewportMode.current.focusMode && !focusMode;
+    previousViewportMode.current = { activeStep, focusMode };
     if (!fitViewport) return;
     // 审片是独立工作区。进入时滚到工作区，再按实际落点实测高度——顶部全局头/
     // 滚动余量是多少就扣多少，底部固定留 12px 呼吸位，不在窗口底部留死白边。
@@ -170,7 +177,8 @@ export default function MixcutShell({
       setViewportFitH(Math.max(860, Math.round(window.innerHeight - top - 12)));
     };
     const raf = window.requestAnimationFrame(() => {
-      shellRef.current?.scrollIntoView({ block: 'start' });
+      if (leavingFocus) window.scrollTo({ top: 0 });
+      else shellRef.current?.scrollIntoView({ block: 'start' });
       measure();
     });
     window.addEventListener('resize', measure);
@@ -178,7 +186,7 @@ export default function MixcutShell({
       window.cancelAnimationFrame(raf);
       window.removeEventListener('resize', measure);
     };
-  }, [activeStep, fitViewport]);
+  }, [activeStep, fitViewport, focusMode]);
   useEffect(() => {
     if (fitViewport) return;
     // 离开同屏步骤后恢复 CSS 高度;渲染期置空会触发级联渲染告警,故放在独立 effect。
@@ -255,7 +263,7 @@ export default function MixcutShell({
   return (
     <div
       ref={shellRef}
-      className={`${styles.shell} ${topSteps ? styles.topStepsShell : ''} ${teamSingle ? styles.teamSingleShell : ''} ${pageScroll ? styles.pageScrollShell : ''}`}
+      className={`${styles.shell} ${topSteps ? styles.topStepsShell : ''} ${teamSingle ? styles.teamSingleShell : ''} ${pageScroll ? styles.pageScrollShell : ''} ${focusMode ? styles.reviewFocusShell : ''}`}
       data-active-step={activeStep}
       data-testid="mixcut-shell"
       style={fitViewport && viewportFitH != null ? { height: viewportFitH, maxHeight: viewportFitH } : undefined}

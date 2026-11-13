@@ -95,11 +95,17 @@ export function createNativeUpdateProcessControl(job: UpdateHelperJob, timeouts:
         CREATIVE_STUDIO_CLIENT_STATE_ROOT: stateRoot,
         CREATIVE_STUDIO_CLIENT_RELEASE_ID: releaseId,
       });
-      const child = spawn(executable, [directory], {
+      let direct = false;
+      const configPath = path.join(job.installRoot, 'client-config.json');
+      if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { connectionMode?: string };
+        direct = config.connectionMode === 'direct';
+      }
+      const child = spawn(executable, [...(direct ? ['--no-proxy-server'] : []), directory], {
         env: environment,
         detached: false,
         stdio: 'ignore',
-        windowsHide: true,
+        windowsHide: false,
       });
       let exited = false;
       child.once('error', () => { exited = true; });
@@ -193,7 +199,11 @@ export async function spawnIndependentUpdateHelper(options: SpawnHelperOptions):
   if (manifest.protocol !== 'https:' || server.protocol !== 'https:' || manifest.origin !== server.origin) {
     throw new Error('只接受来自当前服务的受控 HTTPS 更新 URL');
   }
-  const helper = path.join(installRoot, 'helper', 'update-helper.js');
+  // 优先使用当前签名版本里的助手，让助手修复也能随版本 ZIP 交付。
+  const versionHelper = path.join(__dirname, 'update-helper.js');
+  const relative = path.relative(path.join(installRoot, 'versions'), versionHelper);
+  const helper = relative && !relative.startsWith('..') && !path.isAbsolute(relative)
+    ? versionHelper : path.join(installRoot, 'helper', 'update-helper.js');
   if (!fs.existsSync(helper)) throw new Error('独立更新助手缺失，请使用受控修复包');
   const jobId = randomUUID();
   const job: UpdateHelperJob = {
@@ -206,7 +216,7 @@ export async function spawnIndependentUpdateHelper(options: SpawnHelperOptions):
   const jobFile = path.join(paths.directory, `${jobId}.json`);
   atomicJson(jobFile, job);
   const child = spawn(process.execPath, [helper, jobFile], {
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', NODE_USE_SYSTEM_CA: '1' },
     detached: true, stdio: 'ignore', windowsHide: true,
   });
   child.unref();

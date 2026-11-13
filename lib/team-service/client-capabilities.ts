@@ -66,9 +66,8 @@ export function clientCompatibility(
   if (version === null && apiVersion === null) return { compatible: true };
   const compatible = version !== null && apiVersion === String(TEAM_CLIENT_API_VERSION)
     && satisfiesClientRange(version, supportedClientRange(env));
-  if (compatible) return { compatible: true };
   const update = controlledUpdate(env);
-  return { compatible: false, reason: 'client_update_required', ...(update ? { update } : {}) };
+  return { compatible, ...(!compatible ? { reason: 'client_update_required' as const } : {}), ...(update ? { update } : {}) };
 }
 
 export function assertCompatibleClientWrite(request: Request): void {

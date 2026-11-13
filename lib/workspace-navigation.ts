@@ -130,7 +130,10 @@ const ADMIN_GROUPS: WorkspaceNavGroup[] = [
   },
 ];
 
-/** 头像菜单里的两个跳转项；外观与退出登录是交互项，不在这里。 */
+/** 客户端账号菜单的更新操作。 */
+export const WORKSPACE_CLIENT_UPDATE_ACTION = { label: '一键更新', icon: 'download' } as const;
+
+/** 头像菜单里的两个跳转项；外观、更新与退出登录是交互项，不在这里。 */
 export const WORKSPACE_MENU_LINKS: WorkspaceMenuLink[] = [
   { href: '/team/account', label: '修改密码', icon: 'key' },
   { href: '/team/recycle-bin', label: '回收站', icon: 'trash' },

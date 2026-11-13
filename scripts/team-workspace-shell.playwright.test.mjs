@@ -399,6 +399,59 @@ async function runLocalModePhase() {
   }
 }
 
+async function verifyDesktopUpdateMenu(browser, sourceContext, name, role) {
+  const context = await browser.newContext({ locale: 'zh-CN', storageState: await sourceContext.storageState(), viewport: { width: 1200, height: 720 } });
+  await context.addInitScript(() => {
+    window.__updateScenario = 'latest'; window.__updateCalls = 0;
+    window.desktopBridge = {
+      getClientStatus: async () => ({ compatible: true, version: '0.7.1', updateAvailable: true, updaterVersion: localStorage.getItem("fixture-legacy-updater") ? undefined : 2, transfers: [] }),
+      setThemePreference: async () => {},
+      installClientUpdate: async () => {
+        window.__updateCalls += 1;
+        if (window.__updateScenario === 'failure') throw new Error('isolated update failure');
+        return window.__updateScenario === 'started' ? { started: true } : { started: false, upToDate: true, message: '当前已是最新版本。' };
+      },
+    };
+  });
+  const page = await context.newPage();
+  let reports = 0;
+  await page.route('**/api/team/errors/report', async route => { reports += 1; await route.fulfill({ json: { errorId: 'isolated-update-error' } }); });
+  await page.goto(baseUrl + '/', { waitUntil: 'domcontentloaded' });
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+    await page.getByTestId('workspace-user-button').click();
+    const button = page.getByTestId('workspace-client-update');
+    await button.waitFor();
+    assert.equal(await button.innerText(), '一键更新');
+    const box = await button.boundingBox();
+    assert.ok(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= 1200 && box.y + box.height <= 720);
+    await button.click();
+    await page.getByTestId('workspace-client-update-message').filter({ hasText: '当前已是最新版本' }).waitFor();
+    assert.equal(reports, 0, '当前版本无需更新，不得上报为失败');
+    await page.screenshot({ path: path.join(evidenceDirectory, `${name}-${role}-update-${theme}.png`) });
+    await page.keyboard.press('Escape');
+  }
+  await page.getByTestId('workspace-user-button').click();
+  await page.evaluate(() => { window.__updateScenario = 'failure'; });
+  const failedReport = page.waitForResponse(response => response.url().endsWith('/api/team/errors/report'));
+  await page.getByTestId('workspace-client-update').click();
+  await failedReport;
+  await page.getByTestId('workspace-client-update-message').filter({ hasText: '更新助手启动失败' }).waitFor();
+  assert.equal(reports, 1);
+  await page.evaluate(() => { window.__updateScenario = 'started'; window.__updateCalls = 0; });
+  await page.getByTestId('workspace-client-update').click();
+  await page.getByTestId('workspace-client-update-message').filter({ hasText: '客户端会自动重启' }).waitFor();
+  assert.equal(await page.getByTestId('workspace-client-update').isEnabled(), true, '异步更新失败后仍可再次启动检查');
+  assert.equal(await page.evaluate(() => window.__updateCalls), 1);
+  await page.evaluate(() => localStorage.setItem('fixture-legacy-updater', '1'));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByTestId('workspace-user-button').click();
+  await page.getByText('首次启用需升级客户端一次', { exact: false }).waitFor();
+  assert.equal(await page.getByTestId('workspace-client-update').isDisabled(), true);
+  assert.equal(await page.getByRole('link', { name: '下载升级包' }).getAttribute('href'), '/client-updates/client-latest-installer.zip');
+  await context.close();
+}
+
 async function runBrowser(name, launcher, credentials) {
   const browser = await launcher.launch({ headless: true });
   const run = { browser: name, version: await browser.version(), assertions: [] };
@@ -543,6 +596,7 @@ async function runBrowser(name, launcher, credentials) {
     }
     await menu.getByTestId('workspace-menu-hint').waitFor();
     assert.match(await menu.getByTestId('workspace-menu-hint').textContent(), /关闭窗口不会中断服务器任务/);
+    assert.equal(await page.getByTestId('workspace-client-update').count(), 0, '网页端不显示客户端更新按钮');
     // 三档切换：立即生效 + 落到同一个存储键。
     // 复用 02 号票的 Segmented 共用件（semantics="toggle" → aria-pressed）。
     for (const [label, expected] of [['深色', 'dark'], ['浅色', 'light'], ['跟随系统', null]]) {
@@ -562,6 +616,8 @@ async function runBrowser(name, launcher, credentials) {
       result.evidence.push(`${name}-menu-${expected ?? 'system'}.png`);
     }
     run.assertions.push('头像菜单：修改密码/回收站/外观三档/退出登录与底部提示行齐全；三档立即生效并持久化到 creative-studio-theme');
+
+    await verifyDesktopUpdateMenu(browser, employeeContext, name, 'employee');
 
     // 每页工具栏标题（1536×864 无横向滚动，混剪页除外）
     const pageTitles = [];
@@ -613,6 +669,7 @@ async function runBrowser(name, launcher, credentials) {
     adminPage.on('pageerror', recordPageError(`${name}/admin`));
     await loginViaUi(adminPage, credentials.admin.id, credentials.admin.password);
     await adminPage.getByTestId('workspace-sidebar').waitFor({ timeout: 60_000 });
+    await verifyDesktopUpdateMenu(browser, adminContext, name, 'admin');
     const adminSidebar = await readSidebar(adminPage);
     assert.deepEqual(adminSidebar.groups.map((group) => group.title), EXPECTED.admin.map(([title]) => title), `${name} 管理员分组顺序`);
     assert.deepEqual(adminSidebar.groups.map((group) => group.items.map((item) => item.label)), EXPECTED.admin.map(([, items]) => items), `${name} 管理员分组项`);

@@ -16,6 +16,7 @@ import {
   workspaceBadgeCounts,
   workspaceProductName,
   WORKSPACE_MENU_LINKS,
+  WORKSPACE_CLIENT_UPDATE_ACTION,
 } from '@/lib/workspace-navigation';
 import { THEME_MENU_ORDER, THEME_OPTIONS, useThemePreference } from '@/components/ThemeToggle';
 import { teamError, teamWrite } from '@/components/team/client';
@@ -179,8 +180,9 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
     setClientMessage('');
     try {
       const result = await window.desktopBridge?.installClientUpdate?.();
-      if (!result?.started) await reportUpdateFailure('update_start_unavailable', result?.message ?? '未找到受控更新入口，请联系管理员修复。');
-      else setClientMessage('更新助手已启动；验证完成前会暂停本机传输。');
+      if (result?.upToDate) setClientMessage(result.message ?? '当前已是最新版本。');
+      else if (!result?.started) await reportUpdateFailure('update_start_unavailable', result?.message ?? '未找到受控更新入口，请联系管理员修复。');
+      else { setClientMessage('更新已开始，完成后客户端会自动重启；本机上传和下载会暂时暂停。'); }
     } catch {
       await reportUpdateFailure('update_start_failed', '更新助手启动失败，请联系管理员修复。');
     } finally {
@@ -273,6 +275,20 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
                   <span>{link.label}</span>
                 </Link>
               ))}
+              {isDesktop && (
+                <>
+                  <button type="button" role="menuitem" className={s.wsMenuItem}
+                    data-testid="workspace-client-update" onClick={() => void handleClientUpdate()} disabled={clientUpdating || !clientStatus || (clientStatus.updaterVersion ?? 0) < 2}>
+                    <Icon name={WORKSPACE_CLIENT_UPDATE_ACTION.icon} size={15} />
+                    <span>{clientUpdating ? '正在检查更新…' : WORKSPACE_CLIENT_UPDATE_ACTION.label}</span>
+                  </button>
+                  {clientStatus && (clientStatus.updaterVersion ?? 0) < 2 && <p className={`${s.wsMenuHint} ${s.wsClientUpdateMessage}`}>
+                    首次启用需升级客户端一次，之后可直接一键更新。
+                    <a href="/client-updates/client-latest-installer.zip" download>下载升级包</a>
+                  </p>}
+                  {clientMessage && <p className={`${s.wsMenuHint} ${s.wsClientUpdateMessage}`} role="status" data-testid="workspace-client-update-message">{clientMessage}</p>}
+                </>
+              )}
               <hr className={s.wsMenuHr} />
               <button
                 type="button"

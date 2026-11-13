@@ -1,6 +1,7 @@
 import { app, dialog, type BrowserWindow } from 'electron';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 
 import {
   createStartupWindow,
@@ -55,9 +56,21 @@ async function boot(): Promise<void> {
   if (clientConfig.mode === 'remote') {
     const remoteStateRoot = defaultClientStateRoot();
     const installRoot = process.env.CREATIVE_STUDIO_CLIENT_INSTALL_ROOT;
+    let clientUpdateRunning = false;
+    let connectionMode: 'direct' | 'system' = 'system';
+    const configPath = installRoot && join(installRoot, 'client-config.json');
+    if (configPath && existsSync(configPath)) {
+      const config = JSON.parse(readFileSync(configPath, 'utf8')) as { serverOrigin?: string; connectionMode?: string };
+      if (config.serverOrigin !== clientConfig.origin || (config.connectionMode && !['direct', 'system'].includes(config.connectionMode))) {
+        throw new Error('客户端连接配置无效');
+      }
+      if (config.connectionMode === 'direct') connectionMode = 'direct';
+    }
     windowHost = await createRemoteClientHost({
       origin: clientConfig.origin,
       stateRoot: remoteStateRoot,
+      installRoot,
+      connectionMode,
       preloadPath: join(__dirname, 'preload.js'),
       isQuitRequested: () => explicitQuitRequested,
       setIpcHandlerRemover: (remover) => { removeIpcHandlers = remover; },
@@ -68,9 +81,12 @@ async function boot(): Promise<void> {
       onWindowClosed: () => { mainWindow = null; },
       shutdown: () => shutdown(),
       installUpdate: async (manifestUrl, transfers) => {
+        if (clientUpdateRunning) return { started: true };
         if (!installRoot) return { started: false, message: '未找到稳定安装根，请使用受控修复包。' };
-        const actorUserId = await transfers.currentUser();
+        clientUpdateRunning = true;
+        let actorUserId: string | null = null;
         try {
+          actorUserId = await transfers.currentUser();
           await spawnIndependentUpdateHelper({
           installRoot,
           manifestUrl,
@@ -90,6 +106,7 @@ async function boot(): Promise<void> {
             await shutdown();
           },
           onResult: (result) => {
+            clientUpdateRunning = false;
             if (result.status !== 'committed' && actorUserId) transfers?.reportUpdateResult(result, actorUserId);
             if ((result.status === 'rejected' || result.status === 'recovery_required') && !shutdownPromise) {
               void dialog.showMessageBox({
@@ -100,6 +117,7 @@ async function boot(): Promise<void> {
           },
         });
         } catch {
+          clientUpdateRunning = false;
           if (actorUserId) transfers?.reportUpdateResult({
             status: 'rejected', phase: 'helper_start', clientEventId: randomUUID(),
           }, actorUserId);
@@ -110,6 +128,7 @@ async function boot(): Promise<void> {
     });
     mainWindow = createWindow(windowHost);
     await confirmRemoteClientHealth(remoteStateRoot, windowHost.remote);
+    focusMainWindow();
     return;
   }
   // Keep packaged data in the documented stable user directory instead of

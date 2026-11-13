@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFurniturePrompt, updateFurniturePrompt, syncShotPromptFromScene } from '../lib/furniture-prompt.ts';
 
-const scene = '保持图中书柜的一致性不变，更换其他家具和软装布置，风格参考原图，让书房温馨舒适，全景图';
+const scene = '保持图中书柜的一致性不变，更换其他家具和软装布置，风格跟原图差别较大，让书房温馨舒适，全景图';
 assert.deepEqual(readFurniturePrompt(scene), { furniture: '书柜', room: '书房' });
 assert.equal(updateFurniturePrompt(scene, 'furniture', '沙发'), scene.replace('图中书柜', '图中沙发'));
 assert.equal(updateFurniturePrompt(scene, 'room', '客厅'), scene.replace('让书房', '让客厅'));

@@ -259,6 +259,13 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const publishPlansRef = useRef<(planIds: string[]) => Promise<void>>(async () => undefined);
   const [phaseEBusy, setPhaseEBusy] = useState<'export' | 'control' | string | null>(null);
   const [activeStep, setActiveStep] = useState<0 | 1 | 2 | 3>(0);
+  const [reviewFocusDismissed, setReviewFocusDismissed] = useState(false);
+  const [focusStep, setFocusStep] = useState(activeStep);
+  if (focusStep !== activeStep) {
+    setFocusStep(activeStep);
+    setReviewFocusDismissed(false);
+  }
+  const reviewFocused = activeStep === 2 && !reviewFocusDismissed;
   const [folderRelativePath, setFolderRelativePath] = useState<string | null>(null);
   const [revealBusy, setRevealBusy] = useState(false);
   // 「打开文件夹」的结果反馈渲染在第 4 步按钮旁,不再挤到面板顶部的公共错误条。
@@ -1976,21 +1983,29 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       )}
       stepsAriaLabel="批量生产步骤"
       collapseSidebarOnStep={2}
-      pageScrollOnStep={2}
+      focusMode={reviewFocused}
       stepsInTopbar
       dataAttributes={{ 'data-batch': '1' }}
       topbarLeft={(
-        <div className="flex min-w-0 flex-1 items-center gap-3 px-1">
-          <strong className="truncate text-ink">{currentBatch?.name ?? '未选择批次'}</strong>
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-1">
+          {activeStep === 2 && (
+            <button type="button" className="btn-secondary h-7 shrink-0 px-2 text-xs" onClick={() => setReviewFocusDismissed(!reviewFocusDismissed)}>
+              <Icon name="chevron-left" size={14} />{reviewFocused ? '返回' : '专注编辑'}
+            </button>
+          )}
+          <strong className="truncate text-ink" title={`${preparation?.project.name ?? ''} · ${currentBatch?.name ?? '未选择批次'}`}>
+            {activeStep === 2 && preparation?.project.name ? `${preparation.project.name} · ` : ''}{currentBatch?.name ?? '未选择批次'}
+          </strong>
           {selectedBatchId && (
             <Tag tone={batchStatus === 'running' ? 'run' : batchStatus === 'failed' ? 'fail' : batchStatus === 'completed' ? 'ok' : 'idle'}>
               {BATCH_STATUS_LABELS[batchStatus]}
             </Tag>
           )}
-          {frozen && <Tag tone="run">已锁定</Tag>}
+          {frozen && activeStep !== 2 && <Tag tone="run">已锁定</Tag>}
+          {activeStep === 2 && workspace && <span className="shrink-0 text-xs text-ink-secondary tnum">已确认 {workspace.counts.approved}/{workspace.cards.length}</span>}
         </div>
       )}
-      topbarRight={(
+      topbarRight={activeStep === 2 ? undefined : (
         <>
           <span className="text-xs text-ink-secondary">画幅</span>
           <Segmented
@@ -2039,8 +2054,20 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       )}
       previewActive={false}
       main={() => {
+        const reviewProgressVisible = !!progressView && activeStep === 2
+          && !(progressView.finished && !progressView.stages.some(stage => stage.status === 'failed'));
+        const noticesVisible = !!feedback || selectionDropped.length > 0 || !!exportResult || reviewProgressVisible;
+        const NoticeRoot = activeStep === 2 ? 'details' : 'div';
+        const noticeSummary = feedback?.kind === 'error' ? feedback.message
+          : selectionDropped.length > 0 ? `${selectionDropped.length} 条成片已取消选择`
+          : progressView?.stages.some(stage => stage.status === 'failed') ? '生产有失败任务，请展开处理'
+          : feedback?.message ?? (reviewProgressVisible ? '生产仍在进行，展开查看进度与控制' : '查看导出结果');
         const commonMain = (content: React.ReactNode) => (
-          <main className={stepStyles.mainCol}>
+          <main className={`${stepStyles.mainCol} ${activeStep === 2 ? stepStyles.reviewMain : ''}`}>
+            <NoticeRoot className={activeStep === 2 ? stepStyles.reviewNotices : stepStyles.notices}
+              style={activeStep === 2 && !noticesVisible ? { display: 'none' } : undefined}>
+              {activeStep === 2 && <summary className={stepStyles.reviewNoticeSummary}><span role={feedback?.kind === 'error' ? 'alert' : 'status'}>{noticeSummary}</span></summary>}
+              <div className={activeStep === 2 ? stepStyles.reviewNoticeContent : stepStyles.notices}>
             {feedback && (
               <div
                 role={feedback.kind === 'error' ? 'alert' : 'status'}
@@ -2120,6 +2147,8 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 />
               </div>
             )}
+              </div>
+            </NoticeRoot>
             {activeStep === 3 && (() => {
               const elapsedSec = batchExportElapsedSec(batchTasks, nowMs);
               const cards = workspace?.cards ?? [];

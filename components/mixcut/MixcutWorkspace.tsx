@@ -5,6 +5,7 @@ import BatchPreparationPanel from '@/components/batch-production/BatchPreparatio
 import { Segmented } from '@/components/ui/Appearance';
 import type { ProjectInfoValue } from '@/components/ProjectInfoDialog';
 import MixcutPanel from './MixcutPanel';
+import styles from './mixcut-shell.module.css';
 
 interface MixcutWorkspaceProps {
   projectId: string;
@@ -16,12 +17,12 @@ interface MixcutWorkspaceProps {
 export default function MixcutWorkspace(props: MixcutWorkspaceProps) {
   const [mode, setMode] = useState<'single' | 'batch'>('single');
   return (
-    <div className="space-y-4">
+    <div className={`${styles.workspace} space-y-4`}>
       {/* 第 5 步顶部分段按钮（09 号票）：用 02 的共用件 Segmented（原型 .seg）。
           批量那边的内容由 10 号票改，这里只负责入口与外观。
           外框仍保留原来的 `card ... p-3` 块：第 3 步的外壳高度与「滚到页底时预览正文
           贴住全局顶栏」的几何依赖这层留白，去掉或改成 flex 会改变外壳落点。 */}
-      <div className="card flex flex-wrap items-center justify-between gap-3 p-3">
+      <div data-mixcut-mode-bar className="card flex flex-wrap items-center justify-between gap-3 p-3">
         {/* 共用件 Segmented 自身 32px 高；外面这层 py-1.5 把总高补回原来那组
             `py-2` 按钮的 44px，避免顶栏高度变化挪动第 3 步外壳落点（页面滚到底时
             「预览正文贴住全局顶栏」的几何断言有 1px 容差，靠这个保持等价）。 */}

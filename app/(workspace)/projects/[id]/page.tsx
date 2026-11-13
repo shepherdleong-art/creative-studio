@@ -428,6 +428,7 @@ export default function ProjectDetailPage() {
 
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3">
+      <div data-project-chrome>
       <PageToolbar
         role={role}
         title={project.name}
@@ -440,8 +441,9 @@ export default function ProjectDetailPage() {
           </a>
         </>}
       />
+      </div>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div data-project-chrome className="flex flex-wrap items-center gap-3">
         <WorkbenchStepNav active={activeTab} onChange={goTab} />
         {running ? (
           <div className="ml-auto flex flex-wrap items-center gap-2 text-xs text-ink-secondary">
