@@ -7,8 +7,8 @@
  * - 在途期间只保留**一个**共享尾随刷新：同批次的重复请求复用同一个 Promise，
  *   所有调用方的 await 都等到这次尾随刷新结束；
  * - 非当前活动批次的请求直接 resolve（不排队、不覆盖当前批次的尾随刷新）；
- * - 每个请求记录发起时的 batchId 与 generation，响应回来用 `isCurrent()`
- *   再核对当前活动批次，切批次后旧响应一律忽略。
+ * - 每个请求记录发起时的 batchId、generation 与批次代次 epoch；响应回来用
+ *   `isCurrent()` 再核对，切走再切回同一 batchId 的旧响应也会被拒绝。
  *
  * 纯逻辑、无 React 依赖，可直接在 Node 测试里验证。
  */
@@ -18,7 +18,9 @@ export interface WorkspaceRefreshRequest {
   readonly batchId: string;
   /** 每次真正执行的刷新递增；用于丢弃被后续请求取代的响应。 */
   readonly generation: number;
-  /** 响应回来时是否仍可落状态（活动批次未切换、且没有更新的执行）。 */
+  /** 发起时的批次代次；每次活动批次变化递增，A→B→A 也能识别旧响应。 */
+  readonly epoch: number;
+  /** 响应回来时是否仍可落状态（批次代次与活动批次都未变化）。 */
   isCurrent(): boolean;
 }
 
@@ -33,13 +35,19 @@ export interface WorkspaceRefreshCoordinator {
  * @param getActiveBatchId 同步读取当前活动批次（生产代码用 render 中更新的 ref，
  *   避免 setActiveBatch 的 effect 在切批次后、提交前仍返回旧批次）。
  *   省略时回退到 `setActiveBatch` 维护的内部值，供测试与旧调用方使用。
+ * @param getBatchEpoch 同步读取批次代次；每次活动批次变化递增。生产代码用
+ *   render 中维护的 ref，保证 A→B→A 时切换前发起的旧响应不会被重新接受。
+ *   省略时由 `setActiveBatch` 维护。
  */
 export function createRefreshCoordinator(
   worker: (request: WorkspaceRefreshRequest) => Promise<void>,
   getActiveBatchId?: () => string,
+  getBatchEpoch?: () => number,
 ): WorkspaceRefreshCoordinator {
   let internalActiveBatchId = '';
+  let internalEpoch = 0;
   const activeBatchId = (): string => getActiveBatchId?.() ?? internalActiveBatchId;
+  const batchEpoch = (): number => getBatchEpoch?.() ?? internalEpoch;
   let generation = 0;
   let inFlight = false;
   /** 在途期间唯一的尾随刷新目标批次（最新活动批次胜出）。 */
@@ -50,10 +58,14 @@ export function createRefreshCoordinator(
 
   async function run(requestBatchId: string): Promise<void> {
     const requestGeneration = ++generation;
+    const requestEpoch = batchEpoch();
     const request: WorkspaceRefreshRequest = {
       batchId: requestBatchId,
       generation: requestGeneration,
-      isCurrent: () => generation === requestGeneration && activeBatchId() === requestBatchId,
+      epoch: requestEpoch,
+      isCurrent: () => generation === requestGeneration
+        && batchEpoch() === requestEpoch
+        && activeBatchId() === requestBatchId,
     };
     try {
       await worker(request);
@@ -93,7 +105,10 @@ export function createRefreshCoordinator(
 
   return {
     setActiveBatch(batchId: string): void {
-      internalActiveBatchId = batchId;
+      if (batchId !== internalActiveBatchId) {
+        internalActiveBatchId = batchId;
+        internalEpoch += 1;
+      }
     },
     refresh(batchId: string): Promise<void> {
       // 非当前活动批次不参与排队：它既不需要刷新，也不得覆盖当前批次的尾随请求。

@@ -130,7 +130,6 @@ const DEFAULT_DEFER_BACKOFF_MS = 100;
 const MEDIA_BACKOFF_MIN_MS = 1_000;
 const ADMISSION_BACKOFF_MIN_MS = 500;
 const LEASE_LOST_BACKOFF_MIN_MS = 100;
-const MAX_TRACKED_DEFERRALS = 64;
 const MIN_IDLE_POLL_MS = 5;
 const DEFAULT_IDLE_POLL_MS = 2_000;
 
@@ -197,20 +196,9 @@ function createDeferredBackoff(baseMs: number): DeferredBackoff {
     for (const [taskId, at] of retryAt) {
       if (at <= current) retryAt.delete(taskId);
     }
-    // 超过上限时淘汰最远到期的条目,保留最早到期的——被淘汰的任务本轮
-    // 立即重新可领取,不会让本应退避的任务立刻重试。
-    while (retryAt.size > MAX_TRACKED_DEFERRALS) {
-      let farthestId: string | null = null;
-      let farthestAt = Number.NEGATIVE_INFINITY;
-      for (const [taskId, at] of retryAt) {
-        if (at > farthestAt) {
-          farthestAt = at;
-          farthestId = taskId;
-        }
-      }
-      if (farthestId === null) break;
-      retryAt.delete(farthestId);
-    }
+    // 不设固定条数上限:截断名单会让仍在退避的任务重新可领取并立即
+    // 再次延期,过载时形成 claim/defer 空转。过期条目在每次访问时清掉,
+    // 内存只随当前仍在退避的任务数增长。
   };
   return {
     defer(taskId, cause) {

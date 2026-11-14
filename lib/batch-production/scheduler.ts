@@ -58,11 +58,15 @@ export function claimNextTask(
   if (schedulerDraining) return null;
   const { workerId, leaseDurationMs = 5 * 60_000 } = options;
   const startedAt = nowIso(options.now);
-  // 退避名单只来自本进程的短时延期记录,上限远低于 SQLite 变量上限。
-  const excludedTaskIds = (options.excludeTaskIds ?? []).slice(0, 64);
+  // 退避名单只来自本进程的短时延期记录。用 JSON 数组绑定,避免 SQLite
+  // 变量数上限;名单必须覆盖全部仍在退避的任务,不能在过载时截断——截断
+  // 会让刚延期的任务立即重新可领取,形成 claim/defer 空转。
+  const excludedTaskIds = options.excludeTaskIds ?? [];
   const exclusionSql = excludedTaskIds.length > 0
-    ? `AND t.id NOT IN (${excludedTaskIds.map(() => '?').join(', ')})`
+    ? 'AND t.id NOT IN (SELECT value FROM json_each(?))'
     : '';
+  const bindings: unknown[] = [options.lane ?? null, options.lane ?? null, options.lane ?? null];
+  if (excludedTaskIds.length > 0) bindings.push(JSON.stringify(excludedTaskIds));
   return db.transaction(() => {
     // 素材级 proxy_generate 任务没有所属批次(batchId 为 NULL),不受批次
     // 控制态约束,只要期望运行即可领取;其余任务仍必须挂到运行中的批次。
@@ -98,12 +102,7 @@ export function claimNextTask(
         )
       ORDER BY t.createdAt, t.id
       LIMIT 1
-    `).get(
-      options.lane ?? null,
-      options.lane ?? null,
-      options.lane ?? null,
-      ...excludedTaskIds,
-    ) as {
+    `).get(...bindings) as {
       id: string;
       batchId: string;
       projectId: string;

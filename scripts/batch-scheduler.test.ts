@@ -672,6 +672,41 @@ try {
     now: () => new Date('2026-08-02T18:14:00.000Z'),
   });
 
+  // --- 场景 11b:超过 64 个任务同时退避时,排除名单不得被截断 ---
+  const insertManyTasks = db.prepare(`
+    INSERT INTO batch_tasks (
+      id, projectId, batchId, workType, targetKind, targetId, status, expectedState,
+      progressJson, attemptCount, createdAt, updatedAt
+    ) VALUES (?, 'project-1', ?, 'narration', 'script_snapshot', 'many-snapshot', 'queued', 'running', '{}', 0, ?, ?)
+  `);
+  const manyTaskIds: string[] = [];
+  for (let index = 0; index < 65; index += 1) {
+    const id = `b8-many-${String(index).padStart(3, '0')}`;
+    const at = new Date(Date.parse('2026-08-02T18:20:00.000Z') + index * 1_000).toISOString();
+    insertManyTasks.run(id, batch8, at, at);
+    manyTaskIds.push(id);
+  }
+  assert.equal(
+    claimNextTask(db, {
+      workerId: 'w-exclude-many',
+      now: () => new Date('2026-08-02T18:30:00.000Z'),
+      excludeTaskIds: manyTaskIds,
+    }),
+    null,
+    '全部 65 个任务都在退避名单时不得领取任何任务',
+  );
+  const lastUnexcluded = claimNextTask(db, {
+    workerId: 'w-exclude-many',
+    now: () => new Date('2026-08-02T18:30:00.000Z'),
+    excludeTaskIds: manyTaskIds.slice(0, 64),
+  });
+  assert.equal(lastUnexcluded?.task.id, manyTaskIds[64], '第 65 个未排除任务必须仍可领取');
+  completeTaskAttempt(db, lastUnexcluded!.attempt.id, {
+    workerId: 'w-exclude-many',
+    status: 'succeeded',
+    now: () => new Date('2026-08-02T18:31:00.000Z'),
+  });
+
   db.close();
   console.log('batch scheduler tests passed');
 } finally {

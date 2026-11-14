@@ -113,6 +113,32 @@ const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(applied, ['b2'], '只有当前批次的响应可以落状态');
 }
 
+// A→B→A:切换前发起的 A 响应即使回到 A 也必须失效;切回后的新 A 刷新才可落状态。
+{
+  let activeBatch = 'b1';
+  let epoch = 0;
+  const first = deferred();
+  const applied: string[] = [];
+  const coordinator = createRefreshCoordinator(async (request) => {
+    if (request.batchId === 'b1' && request.epoch === 0) {
+      await first.promise;
+      if (request.isCurrent()) applied.push('old-b1');
+      return;
+    }
+    if (request.isCurrent()) applied.push(request.batchId);
+  }, () => activeBatch, () => epoch);
+  const oldRun = coordinator.refresh('b1');
+  activeBatch = 'b2';
+  epoch += 1;
+  const bRun = coordinator.refresh('b2');
+  activeBatch = 'b1';
+  epoch += 1;
+  const newRun = coordinator.refresh('b1');
+  first.resolve();
+  await Promise.all([oldRun, bRun, newRun]);
+  assert.deepEqual(applied, ['b1'], 'A→B→A 后切换前发起的旧 A 响应不得被接受');
+}
+
 // 非当前活动批次的 refresh 直接 resolve:不排队、不启动 worker,
 // 也不得覆盖当前批次的尾随刷新目标。
 {
@@ -156,8 +182,8 @@ const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
   const panelSource = fs.readFileSync('components/batch-production/BatchPreparationPanel.tsx', 'utf8');
   const timeouts = panelSource.match(/signal: AbortSignal\.timeout\(15_000\)/g) ?? [];
   assert.equal(timeouts.length, 2, 'tasks 与 workspace 两个 fetch 都必须带 15 秒超时');
-  assert.match(panelSource, /createRefreshCoordinator\(\s*\(request\) => loadTasksWorkerRef\.current\(request\),\s*\(\) => selectedBatchIdRef\.current,/, 'tasks 协调器必须同步读取当前批次 ref');
-  assert.match(panelSource, /createRefreshCoordinator\(\s*\(request\) => loadWorkspaceWorkerRef\.current\(request\),\s*\(\) => selectedBatchIdRef\.current,/, 'workspace 协调器必须同步读取当前批次 ref');
+  assert.match(panelSource, /createRefreshCoordinator\(\s*\(request\) => loadTasksWorkerRef\.current\(request\),\s*\(\) => selectedBatchIdRef\.current,\s*\(\) => selectedBatchEpochRef\.current,/, 'tasks 协调器必须同步读取当前批次 ref 与代次');
+  assert.match(panelSource, /createRefreshCoordinator\(\s*\(request\) => loadWorkspaceWorkerRef\.current\(request\),\s*\(\) => selectedBatchIdRef\.current,\s*\(\) => selectedBatchEpochRef\.current,/, 'workspace 协调器必须同步读取当前批次 ref 与代次');
   assert.doesNotMatch(panelSource, /Refresher\.setActiveBatch\(selectedBatchId\)/, '不得保留滞后的 setActiveBatch effect');
 }
 

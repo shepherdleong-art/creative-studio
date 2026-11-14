@@ -175,6 +175,13 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [selectedBatchId, setSelectedBatchId] = useState('');
   /** 协调器在响应回来时需要同步读到最新活动批次；render 中更新，避免 effect 滞后。 */
   const selectedBatchIdRef = useRef('');
+  const selectedBatchEpochRef = useRef(0);
+  const previousSelectedBatchIdRef = useRef(selectedBatchId);
+  if (previousSelectedBatchIdRef.current !== selectedBatchId) {
+    previousSelectedBatchIdRef.current = selectedBatchId;
+    // 每次切批次递增；A→B→A 时切换前发起的旧响应也必须失效。
+    selectedBatchEpochRef.current += 1;
+  }
   selectedBatchIdRef.current = selectedBatchId;
   const [newBatchName, setNewBatchName] = useState('');
   const [selectedScripts, setSelectedScripts] = useState<Record<string, number>>({});
@@ -503,6 +510,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     () => createRefreshCoordinator(
       (request) => loadTasksWorkerRef.current(request),
       () => selectedBatchIdRef.current,
+      () => selectedBatchEpochRef.current,
     ),
     [],
   );
@@ -564,6 +572,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     () => createRefreshCoordinator(
       (request) => loadWorkspaceWorkerRef.current(request),
       () => selectedBatchIdRef.current,
+      () => selectedBatchEpochRef.current,
     ),
     [],
   );
