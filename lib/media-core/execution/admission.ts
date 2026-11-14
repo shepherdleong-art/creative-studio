@@ -46,6 +46,13 @@ interface AdmissionEvaluation {
 
 type WaitDecision = { reason: AdmissionWaitReason; detail?: Omit<AdmissionWaitDetail, 'reason'> };
 
+/** 单次准入内一次查询得到的 held 并发预约聚合。 */
+interface HeldReservations {
+  byPool: Map<string, number>;
+  byPoolActor: Map<string, number>;
+  operationIds: Set<string>;
+}
+
 /**
  * 单次准入内的有界缓存。只在当前事务/调用内有效，函数返回后即可回收；
  * 不得把这里的任何数据挂到数据库实例或模块级容器上长期保留。
@@ -58,9 +65,7 @@ interface AdmissionRun {
   waitingByActor?: Map<string, OperationDecision[]>;
   policies: Map<string, ActorPolicy>;
   pools: Map<string, PoolState | null>;
-  heldByPool?: Map<string, number>;
-  heldByPoolActor?: Map<string, number>;
-  heldOperationIds?: Set<string>;
+  held?: HeldReservations;
   monthlyUsage: Map<string, number>;
   costUnknown: Map<string, boolean>;
   autoLimits: Map<string, number>;
@@ -97,23 +102,33 @@ function readPoolState(run: AdmissionRun, poolKey: string): PoolState | undefine
   return pool;
 }
 
-function heldCounts(run: AdmissionRun): { byPool: Map<string, number>; byPoolActor: Map<string, number> } {
-  if (!run.heldByPool || !run.heldByPoolActor) {
+/**
+ * held 并发预约:按池计数、按池+成员计数与 held operationId 集合共用一次查询。
+ * 原实现分别用 GROUP BY 与 DISTINCT 扫两遍同一谓词,这里一次取出后在内存聚合。
+ */
+function heldReservations(run: AdmissionRun): HeldReservations {
+  if (!run.held) {
     const byPool = new Map<string, number>();
     const byPoolActor = new Map<string, number>();
+    const operationIds = new Set<string>();
     const rows = run.options.db.prepare(`
-      SELECT poolKey, actorId, COUNT(*) AS count FROM execution_reservations
+      SELECT operationId, poolKey, actorId FROM execution_reservations
       WHERE kind = 'concurrency' AND state = 'held'
-      GROUP BY poolKey, actorId
-    `).all() as Array<{ poolKey: string; actorId: string; count: number }>;
+    `).all() as Array<{ operationId: string; poolKey: string; actorId: string }>;
     for (const row of rows) {
-      byPool.set(row.poolKey, (byPool.get(row.poolKey) ?? 0) + row.count);
-      byPoolActor.set(`${row.actorId}\u0000${row.poolKey}`, row.count);
+      byPool.set(row.poolKey, (byPool.get(row.poolKey) ?? 0) + 1);
+      const actorKey = `${row.actorId}\u0000${row.poolKey}`;
+      byPoolActor.set(actorKey, (byPoolActor.get(actorKey) ?? 0) + 1);
+      operationIds.add(row.operationId);
     }
-    run.heldByPool = byPool;
-    run.heldByPoolActor = byPoolActor;
+    run.held = { byPool, byPoolActor, operationIds };
   }
-  return { byPool: run.heldByPool, byPoolActor: run.heldByPoolActor };
+  return run.held;
+}
+
+function heldCounts(run: AdmissionRun): { byPool: Map<string, number>; byPoolActor: Map<string, number> } {
+  const held = heldReservations(run);
+  return { byPool: held.byPool, byPoolActor: held.byPoolActor };
 }
 
 function heldPoolCount(run: AdmissionRun, poolKey: string, actorId?: string): number {
@@ -124,13 +139,7 @@ function heldPoolCount(run: AdmissionRun, poolKey: string, actorId?: string): nu
 }
 
 function heldOperationIds(run: AdmissionRun): Set<string> {
-  if (!run.heldOperationIds) {
-    run.heldOperationIds = new Set((run.options.db.prepare(`
-      SELECT DISTINCT operationId FROM execution_reservations
-      WHERE kind = 'concurrency' AND state = 'held'
-    `).all() as Array<{ operationId: string }>).map(({ operationId }) => operationId));
-  }
-  return run.heldOperationIds;
+  return heldReservations(run).operationIds;
 }
 
 /** 仍然活跃的需求；终态历史不进入每次准入的搬运与解析。 */
@@ -144,16 +153,22 @@ function demandRows(run: AdmissionRun): OperationDecision[] {
   return run.demand;
 }
 
+/**
+ * 待准入需求按成员分组。直接派生自已查的活跃需求投影(demandRows),
+ * 不再为 pending/deferred 单独扫一遍 execution_operations;组内顺序按
+ * readySeq 升序,保持原 `ORDER BY actorId, readySeq` 的成员内 FIFO 语义。
+ */
 function waitingRowsByActor(run: AdmissionRun): Map<string, OperationDecision[]> {
   if (!run.waitingByActor) {
     const grouped = new Map<string, OperationDecision[]>();
-    const rows = run.options.db.prepare(`
-      SELECT ${OPERATION_DECISION_COLUMNS} FROM execution_operations
-      WHERE status IN ('pending', 'deferred')
-      ORDER BY actorId, readySeq
-    `).all() as OperationDecisionRow[];
-    for (const row of rows) {
-      const operation = mapOperationDecision(row);
+    const rows = demandRows(run)
+      .filter((operation) => operation.status === 'pending' || operation.status === 'deferred')
+      .sort((left, right) => (
+        left.actorId === right.actorId
+          ? left.readySeq - right.readySeq
+          : left.actorId < right.actorId ? -1 : 1
+      ));
+    for (const operation of rows) {
       const list = grouped.get(operation.actorId) ?? [];
       list.push(operation);
       grouped.set(operation.actorId, list);

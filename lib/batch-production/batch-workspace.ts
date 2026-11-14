@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { batchSourceReview, type BatchSourceConflictGroup } from './source-conflicts.ts';
+import { batchSourceReview, prepareSourceConflictPreload, type BatchSourceConflictGroup } from './source-conflicts.ts';
 import { batchArtifactPathsArePaired } from './artifact-pair.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
 import { getCurrentExportDirName } from '../project-export-identity.ts';
@@ -337,11 +337,31 @@ function clipAssetIdsOf(value: unknown): string[] {
   }))];
 }
 
-/** 契约解析可能引用的全部素材:片段 + 显式封面素材。 */
+/** 契约解析可能引用的全部素材:片段 + 显式封面素材。
+ *  非字符串 id 按 `String(...)` 归一,与 resolveCoverContract 的 firstClip 兜底一致,
+ *  避免真实素材因类型差异被误判为不存在。 */
 function referencedAssetIdsOf(value: unknown): string[] {
   const ids = new Set(clipAssetIdsOf(value));
-  const coverAssetId = asRecord(asRecord(value)?.cover)?.assetId;
-  if (typeof coverAssetId === 'string' && coverAssetId) ids.add(coverAssetId);
+  const record = asRecord(value);
+  const clips = record?.clips;
+  if (Array.isArray(clips)) {
+    for (const clip of clips) {
+      const raw = asRecord(clip)?.assetId;
+      if (typeof raw === 'string') {
+        if (raw) ids.add(raw);
+      } else if (raw !== null && raw !== undefined) {
+        const converted = String(raw);
+        if (converted) ids.add(converted);
+      }
+    }
+  }
+  const coverAssetId = asRecord(record?.cover)?.assetId;
+  if (typeof coverAssetId === 'string') {
+    if (coverAssetId) ids.add(coverAssetId);
+  } else if (coverAssetId !== null && coverAssetId !== undefined) {
+    const converted = String(coverAssetId);
+    if (converted) ids.add(converted);
+  }
   return [...ids];
 }
 
@@ -554,6 +574,8 @@ export function getBatchWorkspace(
   const plans = db.prepare(`
     SELECT p.id, p.seq, p.scriptSnapshotId, p.currentVersionId, p.currentArtifactId,
            s.title AS scriptTitle,
+           s.coverTitleJson AS coverTitleJson,
+           s.sourceScriptId AS sourceScriptId,
            ov.versionNumber, ov.arrangementJson,
            bv.defaultsJson AS defaultsJson
     FROM batch_output_plans p
@@ -569,6 +591,8 @@ export function getBatchWorkspace(
     currentVersionId: string | null;
     currentArtifactId: string | null;
     scriptTitle: string;
+    coverTitleJson: string;
+    sourceScriptId: string;
     versionNumber: number | null;
     arrangementJson: string | null;
     defaultsJson: string;
@@ -589,6 +613,11 @@ export function getBatchWorkspace(
 
   // 解析后的 arrangement 只解析一次:同源分组、素材指纹、契约预加载共用。
   const parsedPlans = plans.map((plan) => ({ plan, arrangement: parseJson(plan.arrangementJson) }));
+  // 当前输出版本集合:任务/成功尝试的批次查询都按它收窄,搬运量随可见卡数
+  // 而不是渲染历史增长;历史版本的行与本卡消费逻辑无关。
+  const currentVersionIds = [...new Set(parsedPlans.flatMap(({ plan }) => (
+    plan.currentVersionId ? [plan.currentVersionId] : []
+  )))];
 
   // 素材指纹:池内素材已随 pool facts 取回,只补一次非池素材。
   const referencedAssetIds = [...new Set(parsedPlans.flatMap(({ arrangement }) => referencedAssetIdsOf(arrangement)))];
@@ -603,8 +632,9 @@ export function getBatchWorkspace(
   }
 
   // 缺池色的引用素材:最近一条分析的色彩快照也按批次预加载。旧库没有
-  // analysis.colorJson 列时预加载会失败,记录为不可用,让契约按原语义
-  // fail closed,而不是为每张卡重复发起必败查询。
+  // analysis.colorJson 列时只有这种明确错误才标记为不可用,让契约按原语义
+  // fail closed;其余异常(锁竞争、变量数等)保持 undefined,回到逐卡查询,
+  // 恢复「单卡失败」语义,不把异常静默成整批状态错误。
   const missingColorAssetIds = referencedAssetIds.filter((assetId) => (
     !poolFacts.colors.get(`${batch.currentVersionId}\u0000${assetId}`)
   ));
@@ -618,42 +648,47 @@ export function getBatchWorkspace(
         WHERE assetId IN (${placeholders})
         ORDER BY assetId, createdAt DESC
       `).all(...missingColorAssetIds) as Array<{ assetId: string; colorJson: string }>;
-      analysisColors = new Map();
+      // 先为所有素材写入 null(没有分析行的语义),再用最新一条覆盖;
+      // 这样契约按 key 命中即可区分「预加载确认无行」与「未覆盖」。
+      analysisColors = new Map(missingColorAssetIds.map((assetId) => [assetId, null] as const));
+      const seen = new Set<string>();
       for (const row of rows) {
-        if (!analysisColors.has(row.assetId)) analysisColors.set(row.assetId, row.colorJson);
+        if (seen.has(row.assetId)) continue;
+        seen.add(row.assetId);
+        analysisColors.set(row.assetId, row.colorJson ?? null);
       }
-    } catch {
+    } catch (error) {
       analysisColors = undefined;
-      analysisColorsUnavailable = true;
+      analysisColorsUnavailable = /no such column:\s*colorJson/i.test(
+        error instanceof Error ? error.message : String(error),
+      );
     }
   } else {
     analysisColors = new Map();
   }
 
-  // 契约预加载:当前输出版本 + 冻结封面标题配置(批次内一次取回)。
+  // 契约预加载:当前输出版本(带已解析 arrangement)+ 冻结封面标题配置。
+  // 冻结封面标题所需列已并入主 plans 查询,不再单独发第二条三表 JOIN。
   const outputVersions = new Map<string, CoverContractOutputVersion>();
-  for (const { plan } of parsedPlans) {
+  const frozenTitleRows = new Map<string, FrozenCoverTitleRow>();
+  for (const { plan, arrangement } of parsedPlans) {
+    frozenTitleRows.set(plan.id, {
+      coverTitleJson: plan.coverTitleJson,
+      sourceScriptId: plan.sourceScriptId,
+      defaultsJson: plan.defaultsJson,
+    });
     if (!plan.currentVersionId || plan.arrangementJson === null) continue;
+    const arrangementRecord = asRecord(arrangement);
     outputVersions.set(plan.currentVersionId, {
       outputVersionId: plan.currentVersionId,
       planId: plan.id,
       arrangementJson: plan.arrangementJson,
+      ...(arrangementRecord ? { arrangement: arrangementRecord } : {}),
       batchVersionId: batch.currentVersionId,
       planSeq: plan.seq,
       defaultsJson: plan.defaultsJson,
     });
   }
-  const frozenTitleRows: ReadonlyMap<string, FrozenCoverTitleRow> = new Map(
-    (db.prepare(`
-      SELECT p.id AS planId, s.coverTitleJson AS coverTitleJson,
-             s.sourceScriptId AS sourceScriptId, v.defaultsJson AS defaultsJson
-      FROM batch_output_plans p
-      JOIN batch_script_snapshots s ON s.id = p.scriptSnapshotId
-      JOIN batch_production_versions v ON v.id = p.batchVersionId
-      WHERE p.batchVersionId = ?
-    `).all(batch.currentVersionId) as Array<FrozenCoverTitleRow & { planId: string }>)
-      .map(({ planId, ...row }) => [planId, row] as const),
-  );
 
   // 正式产物:按计划分组,保持 createdAt DESC, id DESC 的既有选取顺序。
   const artifactsByPlan = new Map<string, BatchWorkspaceArtifactView[]>();
@@ -680,7 +715,8 @@ export function getBatchWorkspace(
   }
 
   // 任务:封面、整片、成功尝试、口播各一次批次级查询,行序沿用原文 ORDER BY。
-  const coverTaskRows = db.prepare(`
+  // 封面/整片任务只取当前输出版本,分组后也只消费当前版本,避免搬运历史任务。
+  const coverTaskRows = currentVersionIds.length === 0 ? [] : db.prepare(`
     SELECT t.id, t.targetId, t.requestKey, t.status, t.expectedState, t.attemptCount, t.progressJson,
            a.errorCode, a.errorMessage,
            (SELECT sa.id FROM batch_task_attempts sa
@@ -691,11 +727,12 @@ export function getBatchWorkspace(
       AND a.attemptNumber = t.attemptCount
     WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
       AND t.targetKind = 'output_version_cover'
+      AND t.targetId IN (${currentVersionIds.map(() => '?').join(', ')})
     ORDER BY t.createdAt DESC, t.id DESC
-  `).all(projectId, batchId) as CoverTaskRow[];
+  `).all(projectId, batchId, ...currentVersionIds) as CoverTaskRow[];
   const coverTasksByTarget = groupByTarget(coverTaskRows);
 
-  const fullRenderTaskRows = db.prepare(`
+  const fullRenderTaskRows = currentVersionIds.length === 0 ? [] : db.prepare(`
     SELECT t.id, t.targetId, t.requestKey, t.status, t.expectedState, t.attemptCount, t.progressJson,
            a.errorCode, a.errorMessage
     FROM batch_tasks t
@@ -703,11 +740,14 @@ export function getBatchWorkspace(
       AND a.attemptNumber = t.attemptCount
     WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
       AND t.targetKind = 'output_version'
+      AND t.targetId IN (${currentVersionIds.map(() => '?').join(', ')})
     ORDER BY t.createdAt DESC, t.id DESC
-  `).all(projectId, batchId) as RenderTaskRow[];
+  `).all(projectId, batchId, ...currentVersionIds) as RenderTaskRow[];
   const fullRenderTasksByTarget = groupByTarget(fullRenderTaskRows);
 
-  const succeededAttemptRows = db.prepare(`
+  // 成功整片尝试同样只取当前输出版本:历史版本的全部 resultJson 与本卡无关,
+  // 不必搬进内存。行序保持 `finishedAt DESC, id DESC`,首条命中即发布尝试。
+  const succeededAttemptRows = currentVersionIds.length === 0 ? [] : db.prepare(`
     SELECT t.id AS taskId, t.targetId AS targetId, t.requestKey AS requestKey,
            a.id AS attemptId, a.attemptNumber AS attemptNumber,
            a.resultJson AS resultJson, a.finishedAt AS finishedAt
@@ -715,14 +755,17 @@ export function getBatchWorkspace(
     JOIN batch_task_attempts a ON a.taskId = t.id
     WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
       AND t.targetKind = 'output_version' AND a.status = 'succeeded'
+      AND t.targetId IN (${currentVersionIds.map(() => '?').join(', ')})
     ORDER BY a.finishedAt DESC, a.id DESC
-  `).all(projectId, batchId) as SucceededAttemptRow[];
+  `).all(projectId, batchId, ...currentVersionIds) as SucceededAttemptRow[];
   const succeededAttemptsByTask = new Map<string, SucceededAttemptRow[]>();
   for (const row of succeededAttemptRows) {
     const list = succeededAttemptsByTask.get(row.taskId) ?? [];
     list.push(row);
     succeededAttemptsByTask.set(row.taskId, list);
   }
+  // 正式产物新鲜度按 target 分组(保持行序),每卡只查自己的数组。
+  const succeededAttemptsByTarget = groupByTarget(succeededAttemptRows);
 
   const narrationTaskRows = db.prepare(`
     SELECT t.id, t.targetId, t.status, t.expectedState, a.errorMessage
@@ -734,36 +777,45 @@ export function getBatchWorkspace(
   `).all(projectId, batchId) as NarrationTaskRow[];
   const narrationTasksByTarget = firstByTarget(narrationTaskRows);
 
-  // 同源提醒:按批次把权威原图键算一次,再按卡片过滤。
-  const sourceGroupKeys = resolveModule4AssetGroupKeys(
+  // 同源提醒:按批次把权威原图键算一次,并记录映射插入序号;每卡只遍历
+  // 自己的 clip assetId,避免逐卡全量扫描批次映射。
+  const sourceConflictPreload = prepareSourceConflictPreload(resolveModule4AssetGroupKeys(
     db,
     [...new Set(parsedPlans.flatMap(({ arrangement }) => clipAssetIdsOf(arrangement)))],
-  );
+  ));
+
+  // 预加载覆盖所有被引用素材的池色键(池内行或显式 null),让契约只在
+  // 真正未被预加载覆盖时才回落逐条查询,避免 100 卡重复查询。
+  const poolColors = new Map(poolFacts.colors);
+  for (const assetId of referencedAssetIds) {
+    const key = `${batch.currentVersionId}\u0000${assetId}`;
+    if (!poolColors.has(key)) poolColors.set(key, null);
+  }
 
   const coverPreload: CoverContractPreload = {
     outputVersions,
     assetFingerprints,
-    poolColors: poolFacts.colors,
+    poolColors,
     analysisColors,
     analysisColorsUnavailable,
     frozenTitleRows,
     coverContractHashes: new Map(),
   };
   const fullRenderContractHashes = new Map<string, string | null>();
-  const arrangementJsonByVersion = new Map<string, string>();
-  for (const { plan } of parsedPlans) {
+  const arrangementsByVersion = new Map<string, unknown>();
+  for (const { plan, arrangement } of parsedPlans) {
     if (plan.currentVersionId && plan.arrangementJson !== null) {
-      arrangementJsonByVersion.set(plan.currentVersionId, plan.arrangementJson);
+      arrangementsByVersion.set(plan.currentVersionId, arrangement);
     }
   }
   const formalPreload: FormalArtifactPreload = {
-    succeededRenderAttempts: succeededAttemptRows,
+    succeededRenderAttemptsByTarget: succeededAttemptsByTarget,
     fullRenderContractHashes,
-    arrangementJson: arrangementJsonByVersion,
+    arrangements: arrangementsByVersion,
   };
 
   const cards = parsedPlans.map(({ plan, arrangement }): BatchOutputCardView => {
-    const { sourceWarnings, sourceConflictAssetIds, sourceConflictGroups } = batchSourceReview(db, arrangement, sourceGroupKeys);
+    const { sourceWarnings, sourceConflictAssetIds, sourceConflictGroups } = batchSourceReview(db, arrangement, sourceConflictPreload);
     const latestAllocationOutput = allocationOutput(allocationReport, plan.id);
     const latestArrangement = latestAllocationOutput && typeof latestAllocationOutput === 'object' && !Array.isArray(latestAllocationOutput)
       ? (latestAllocationOutput as Record<string, unknown>).arrangement

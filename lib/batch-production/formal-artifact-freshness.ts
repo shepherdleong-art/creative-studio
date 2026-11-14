@@ -8,18 +8,18 @@ import { parseRenderTaskRequestKey } from './render-task-key.ts';
  */
 export interface FormalArtifactPreload {
   /**
-   * 批次内所有成功的整片渲染尝试,必须按 `finishedAt DESC, id DESC` 预排序。
-   * 命中视频+封面双指纹的第一条即 SQL 版本选中的发布尝试。
+   * outputVersionId → 该目标全部成功的整片渲染尝试,按 `finishedAt DESC, id DESC` 预排序。
+   * 命中视频+封面双指纹的第一条即 SQL 版本选中的发布尝试;
+   * 映射缺 key 表示该目标没有成功尝试(批次预加载已按当前版本目标取全)。
    */
-  succeededRenderAttempts?: ReadonlyArray<{
-    targetId: string;
+  succeededRenderAttemptsByTarget?: ReadonlyMap<string, ReadonlyArray<{
     requestKey: string | null;
     resultJson: string | null;
-  }>;
+  }>>;
   /** outputVersionId → 当前完整渲染契约哈希;值 null 表示契约不可解析。 */
   fullRenderContractHashes?: ReadonlyMap<string, string | null>;
-  /** outputVersionId → 当前 arrangementJson(老任务兼容比对用)。 */
-  arrangementJson?: ReadonlyMap<string, string>;
+  /** outputVersionId → 当前 arrangementJson 的解析结果(老任务兼容比对用)。 */
+  arrangements?: ReadonlyMap<string, unknown>;
 }
 
 /**
@@ -54,10 +54,9 @@ export function isFormalArtifactOutdated(
     requestKey: string | null;
     resultJson: string | null;
   } | undefined;
-  if (preload?.succeededRenderAttempts) {
-    // 预排序数组保持 SQL 的 `finishedAt DESC, id DESC` 优先级。
-    publishingAttempt = preload.succeededRenderAttempts.find((entry) => {
-      if (entry.targetId !== outputVersionId) return false;
+  if (preload?.succeededRenderAttemptsByTarget) {
+    // 只查本卡 target 的数组;数组保持 SQL 的 `finishedAt DESC, id DESC` 优先级。
+    publishingAttempt = (preload.succeededRenderAttemptsByTarget.get(outputVersionId) ?? []).find((entry) => {
       const result = parseJsonRecord(entry.resultJson);
       return result.videoChecksum === artifacts.video.checksum
         && result.coverChecksum === artifacts.cover!.checksum;
@@ -119,8 +118,8 @@ export function isFormalArtifactOutdated(
     ? resultCoverUsRaw
     : null;
   if (resultRevision === null || resultCoverUs === null) return true;
-  const current = preload?.arrangementJson?.has(outputVersionId)
-    ? parseCurrentArrangementFacts(preload.arrangementJson.get(outputVersionId) ?? null)
+  const current = preload?.arrangements?.has(outputVersionId)
+    ? currentArrangementFacts(preload.arrangements.get(outputVersionId))
     : readCurrentArrangementFacts(db, outputVersionId);
   if (!current) return true;
   if (current.editRevision < 0 || current.coverTimeUs < -1) return true;
@@ -152,22 +151,28 @@ function readCurrentArrangementFacts(
 function parseCurrentArrangementFacts(arrangementJson: string | null): { editRevision: number; coverTimeUs: number } | null {
   if (!arrangementJson) return null;
   try {
-    const arrangement = JSON.parse(arrangementJson) as {
-      editRevision?: unknown;
-      cover?: { timeUs?: unknown };
-    };
-    const rawRevision = arrangement.editRevision;
-    const editRevision = rawRevision === undefined
-      ? 0
-      : typeof rawRevision === 'number' && Number.isSafeInteger(rawRevision) && rawRevision >= 0
-        ? rawRevision
-        : -1;
-    const rawCover = arrangement.cover?.timeUs;
-    const coverTimeUs = typeof rawCover === 'number' && Number.isSafeInteger(rawCover) && rawCover >= 0
-      ? rawCover
-      : -1;
-    return { editRevision, coverTimeUs };
+    return currentArrangementFacts(JSON.parse(arrangementJson));
   } catch {
     return null;
   }
+}
+
+/** 已解析 arrangement 的修订号/封面时间点;非对象或损坏一律返回 null(保守判过期)。 */
+function currentArrangementFacts(value: unknown): { editRevision: number; coverTimeUs: number } | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const arrangement = value as {
+    editRevision?: unknown;
+    cover?: { timeUs?: unknown };
+  };
+  const rawRevision = arrangement.editRevision;
+  const editRevision = rawRevision === undefined
+    ? 0
+    : typeof rawRevision === 'number' && Number.isSafeInteger(rawRevision) && rawRevision >= 0
+      ? rawRevision
+      : -1;
+  const rawCover = arrangement.cover?.timeUs;
+  const coverTimeUs = typeof rawCover === 'number' && Number.isSafeInteger(rawCover) && rawCover >= 0
+    ? rawCover
+    : -1;
+  return { editRevision, coverTimeUs };
 }

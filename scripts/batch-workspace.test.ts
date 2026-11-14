@@ -429,7 +429,9 @@ try {
       cardHundred.maxSql <= cardOne.maxSql + 20,
       `SQL 条数不能随卡片数线性增长:1 卡 ${cardOne.maxSql},100 卡 ${cardHundred.maxSql}`,
     );
-    assert.ok(cardHundred.medianMs < 300, `100 卡工作区中位耗时回归:${cardHundred.medianMs}ms`);
+    // 耗时只作看门狗:共享机器/CI 抖动不应让聚合语义回归检测误报;
+    // SQL 条数与非线性增长断言仍保持严格。
+    assert.ok(cardHundred.medianMs < 2000, `100 卡工作区中位耗时回归:${cardHundred.medianMs}ms`);
 
     // 封面素材不在冻结池内:契约解析会回落素材分析,该查询必须也按批次预加载,
     // 否则每张卡多一条 SQL,100 卡会超出预算。

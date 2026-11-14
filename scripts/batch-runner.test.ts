@@ -460,8 +460,10 @@ try {
     workerId: 'worker-lease',
     executors: [leaseLossExecutor],
     concurrency: 1,
-    heartbeatMs: 80,
-    leaseDurationMs: 20,
+    // 心跳必须晚于租约到期,才能在执行期间检测到丢失;租约留足从领取到
+    // 执行器启动的时间,避免共享/高负载机器上「启动前已过期」的假挂起。
+    heartbeatMs: 1_500,
+    leaseDurationMs: 1_000,
     progressThrottleMs: 0,
   });
   assert.deepEqual(
@@ -1216,7 +1218,9 @@ try {
     '延期任务退避期间,同 lane 的合格任务必须先执行,而不是被同一任务反复抢占',
   );
   const deferredGapMs = deferredAttemptsAt[1]! - deferredAttemptsAt[0]!;
-  assert.ok(deferredGapMs >= 200, `准入延期必须按原因退避(实际 ${deferredGapMs}ms)`);
+  // 准入类延期下限 500ms(显式 deferBackoffMs=40 也不能压到更短);
+  // 断言保留余量,避免共享机器抖动误报,同时防止退回高频 claim+defer。
+  assert.ok(deferredGapMs >= 400, `准入延期必须按原因退避(实际 ${deferredGapMs}ms)`);
   assert.equal(
     (db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(deferTaskB) as { status: string }).status,
     'succeeded',

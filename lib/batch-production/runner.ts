@@ -77,9 +77,9 @@ export interface SchedulerRunOptions {
   signal?: AbortSignal;
   /** 进程内调度器关闭;任务应可在下次启动恢复。 */
   shutdownSignal?: AbortSignal;
-  /** 连续调度时,单个空闲执行位两次领取检查之间的最长等待(默认不超过调度间隔,至多 500ms)。 */
+  /** 连续调度时,单个空闲执行位两次领取检查之间的最长等待(默认等于调度间隔 intervalMs,默认 2000ms)。 */
   idlePollMs?: number;
-  /** 等待统一准入/媒体名额后再次尝试的基础退避;默认 100ms,准入类最少 250ms。 */
+  /** 等待统一准入/媒体名额后再次尝试的基础退避;默认 100ms,媒体类最少 1000ms,准入类最少 500ms。 */
   deferBackoffMs?: number;
 }
 
@@ -127,11 +127,12 @@ type InterruptionReason = 'batch_control' | 'lease_lost' | 'superseded';
 type SlotLane = 'analysis' | 'general' | undefined;
 
 const DEFAULT_DEFER_BACKOFF_MS = 100;
-const ADMISSION_BACKOFF_MIN_MS = 250;
+const MEDIA_BACKOFF_MIN_MS = 1_000;
+const ADMISSION_BACKOFF_MIN_MS = 500;
 const LEASE_LOST_BACKOFF_MIN_MS = 100;
 const MAX_TRACKED_DEFERRALS = 64;
 const MIN_IDLE_POLL_MS = 5;
-const DEFAULT_MAX_IDLE_POLL_MS = 500;
+const DEFAULT_IDLE_POLL_MS = 2_000;
 
 /**
  * 进程内唤醒信号:入队或资源状态变化时可打断空闲等待。
@@ -189,17 +190,26 @@ function createDeferredBackoff(baseMs: number): DeferredBackoff {
   const backoffFor = (cause: DeferCause): number => {
     if (cause === 'admission') return Math.max(baseMs, ADMISSION_BACKOFF_MIN_MS);
     if (cause === 'lease') return Math.max(baseMs, LEASE_LOST_BACKOFF_MIN_MS);
-    return baseMs;
+    return Math.max(baseMs, MEDIA_BACKOFF_MIN_MS);
   };
   const prune = (): void => {
     const current = Date.now();
     for (const [taskId, at] of retryAt) {
       if (at <= current) retryAt.delete(taskId);
     }
+    // 超过上限时淘汰最远到期的条目,保留最早到期的——被淘汰的任务本轮
+    // 立即重新可领取,不会让本应退避的任务立刻重试。
     while (retryAt.size > MAX_TRACKED_DEFERRALS) {
-      const soonest = [...retryAt.entries()].sort((a, b) => a[1] - b[1])[0];
-      if (!soonest) break;
-      retryAt.delete(soonest[0]);
+      let farthestId: string | null = null;
+      let farthestAt = Number.NEGATIVE_INFINITY;
+      for (const [taskId, at] of retryAt) {
+        if (at > farthestAt) {
+          farthestAt = at;
+          farthestId = taskId;
+        }
+      }
+      if (farthestId === null) break;
+      retryAt.delete(farthestId);
     }
   };
   return {
@@ -283,12 +293,11 @@ async function runSlot(
     }
     if (!claim) {
       if (!slot.continuous || !slot.wake) return handled;
-      // 有延期任务时直接等到最早退避到期(入队仍会唤醒);否则按空闲轮询上界检查。
-      // 两者都只做有界定时检查,不做忙循环。
+      // 有延期任务时等到最早退避到期,但空闲检查仍受 idlePollMs 上界约束;
+      // 下一次领取会继续用 excludeTaskIds 跳过未到期的任务,不做忙循环。
+      const idleWaitMs = slot.idlePollMs ?? DEFAULT_IDLE_POLL_MS;
       const backoffDelay = slot.backoff?.delayUntilNextAttemptMs() ?? null;
-      const waitMs = backoffDelay !== null
-        ? backoffDelay
-        : slot.idlePollMs ?? DEFAULT_MAX_IDLE_POLL_MS;
+      const waitMs = backoffDelay !== null ? Math.min(idleWaitMs, backoffDelay) : idleWaitMs;
       await slot.wake.waitSince(wakeToken, Math.max(MIN_IDLE_POLL_MS, waitMs), waitSignal);
       continue;
     }
@@ -314,7 +323,7 @@ async function runSlot(
       console.error('批量调度执行失败:', error instanceof Error ? error.message : String(error));
       outcome = { kind: 'completed' };
       // 非预期异常也必须退一步再领取,避免持续抛错时空转。
-      await slot.wake?.waitSince(slot.wake.token, slot.idlePollMs ?? DEFAULT_MAX_IDLE_POLL_MS, waitSignal);
+      await slot.wake?.waitSince(slot.wake.token, slot.idlePollMs ?? DEFAULT_IDLE_POLL_MS, waitSignal);
     }
     if (outcome.kind === 'deferred' || outcome.kind === 'lease_lost') {
       // 失去租约或链内等待时不立即重领同一任务:连续模式按原因退避,
@@ -679,8 +688,10 @@ export function startBatchScheduler(
   setBatchSchedulerDraining(false);
   recoverInterruptedWork(db, { now: options.now });
   const maxIdlePollMs = Math.max(MIN_IDLE_POLL_MS, intervalMs);
+  // 默认按调度间隔做有界轮询(默认 2000ms):空闲位由入队唤醒即时补位,
+  // 无唤醒时不再以 500ms 高频空转;显式传 idlePollMs 的调用方保持原语义。
   const idlePollMs = Math.max(MIN_IDLE_POLL_MS, Math.min(
-    options.idlePollMs ?? Math.min(maxIdlePollMs, DEFAULT_MAX_IDLE_POLL_MS),
+    options.idlePollMs ?? maxIdlePollMs,
     maxIdlePollMs,
   ));
   const backoff = createDeferredBackoff(options.deferBackoffMs ?? DEFAULT_DEFER_BACKOFF_MS);

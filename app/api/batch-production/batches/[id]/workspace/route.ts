@@ -26,7 +26,8 @@ async function __teamRouteGET(request: NextRequest, context: { params: Promise<{
   }
   try {
     await assertBatchApiReady();
-    ensureBatchSchedulerStarted();
+    // 只读 GET:只保证调度器已启动,不唤醒空闲执行位。
+    ensureBatchSchedulerStarted(undefined, { wake: false });
     return NextResponse.json(getBatchWorkspace(getDb(), projectId, id), {
       headers: BATCH_NO_STORE_HEADERS,
     });

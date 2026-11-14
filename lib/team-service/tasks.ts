@@ -835,22 +835,25 @@ export function listTeamTaskRecords(
   options: TeamTaskRecordQuery = {},
 ): { items: TeamTaskView[]; total: number } {
   const bounded = Math.max(1, Math.min(Math.trunc(options.limit ?? 12) || 12, 100));
-  const scope = resolveTaskScope(db, viewer, { actorUserId: options.actorUserId });
-  const statuses = (options.statuses ?? []).filter((status) => typeof status === 'string' && status.trim())
-    .map((status) => status.trim());
-  const statusWhere = statuses.length > 0
-    ? `${scope.effectiveStatus} IN (${statuses.map(() => '?').join(',')})`
-    : undefined;
-  const where = andWhere(scope.authWhere, statusWhere);
-  const values = [...scope.authValues, ...statuses];
-  const total = Number(scope.db.prepare(`SELECT COUNT(*) FROM ${scope.source.groupJoins}${where ? ` WHERE ${where}` : ''}`)
-    .pluck().get(...values) ?? 0);
-  // 先按轻量列选有界 ID，再读取完整投影：状态筛选仍覆盖全量历史，但不为每条历史
-  // 搬运输入快照。
-  const selected = scope.db.prepare(`SELECT o.id FROM ${scope.source.groupJoins}${where ? ` WHERE ${where}` : ''}
-    ORDER BY o.updatedAt DESC, o.id DESC LIMIT ?`).all(...values, bounded) as Array<{ id: string }>;
-  const rows = selectTaskRowsByIds(scope, selected.map((row) => String(row.id)));
-  return { items: projectTaskRows(db, viewer, rows), total };
+  const run = db.transaction(() => {
+    const scope = resolveTaskScope(db, viewer, { actorUserId: options.actorUserId });
+    const statuses = (options.statuses ?? []).filter((status) => typeof status === 'string' && status.trim())
+      .map((status) => status.trim());
+    const statusWhere = statuses.length > 0
+      ? `${scope.effectiveStatus} IN (${statuses.map(() => '?').join(',')})`
+      : undefined;
+    const where = andWhere(scope.authWhere, statusWhere);
+    const values = [...scope.authValues, ...statuses];
+    // 同一条轻量查询里用窗口函数取总数:COUNT(*) OVER () 在 LIMIT 之前
+    // 对完整筛选结果计数,不必再为同样的 WHERE 扫第二遍。无行时 total=0。
+    const selected = scope.db.prepare(`SELECT o.id, COUNT(*) OVER () AS total
+      FROM ${scope.source.groupJoins}${where ? ` WHERE ${where}` : ''}
+      ORDER BY o.updatedAt DESC, o.id DESC LIMIT ?`).all(...values, bounded) as Array<{ id: string; total: number }>;
+    const total = selected.length > 0 ? Number(selected[0]!.total ?? 0) : 0;
+    const rows = selectTaskRowsByIds(scope, selected.map((row) => String(row.id)));
+    return { items: projectTaskRows(db, viewer, rows), total };
+  });
+  return run.deferred();
 }
 
 export interface TeamTaskActivityCounts {
