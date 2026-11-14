@@ -177,6 +177,11 @@ function ensureTaskSearchFunctions(db: Database.Database): void {
 
 interface TaskQuerySource {
   joins: string;
+  /**
+   * 只含「分组身份 + 有效状态」所需列的最小 join：执行记录、成员、图片/视频业务行。
+   * 分组统计、活动聚合、计数和先选 ID 都走它；项目/画布/素材/策略只服务完整投影与搜索。
+   */
+  groupJoins: string;
   /** `unified:<mediaTaskId>` 或 `operation:<operationId>`：分页单位。 */
   groupId: string;
   unifiedTaskId: string;
@@ -269,15 +274,22 @@ function computeTaskSource(db: Database.Database): TaskQuerySource {
     )`;
   const joins = `execution_operations o
     JOIN team_users u ON u.id = o.actorId
+    LEFT JOIN jobs j ON o.module = 'image' AND j.id = o.taskId
+    LEFT JOIN video_jobs v ON o.module = 'video' AND v.id = o.taskId
     ${hasResourceScopes ? 'LEFT JOIN team_resource_scopes task_scope ON task_scope.resourceType = o.scopeType AND task_scope.resourceId = o.scopeId' : ''}
     LEFT JOIN projects p ON (${rootScopeType}) = 'project' AND p.id = (${rootScopeId})
     ${hasCanvasTable ? `LEFT JOIN creative_canvases cv ON (${rootScopeType}) = 'canvas' AND cv.id = (${rootScopeId})` : ''}
-    LEFT JOIN jobs j ON o.module = 'image' AND j.id = o.taskId
-    LEFT JOIN video_jobs v ON o.module = 'video' AND v.id = o.taskId
     LEFT JOIN image_assets a ON a.id = COALESCE(j.inputImageId, v.sourceImageId)
     LEFT JOIN execution_actor_policies policy ON policy.actorId = o.actorId`;
+  // 聚合/选组只需要分组身份与有效状态：项目、画布、输入素材、并发策略都不参与。
+  // 保留 team_users 内连接以维持「成员已失效的任务不可见」这一既有可见范围语义。
+  const groupJoins = `execution_operations o
+    JOIN team_users u ON u.id = o.actorId
+    LEFT JOIN jobs j ON o.module = 'image' AND j.id = o.taskId
+    LEFT JOIN video_jobs v ON o.module = 'video' AND v.id = o.taskId`;
   return {
     joins,
+    groupJoins,
     groupId: `(CASE WHEN ${unifiedTaskExpression} IS NOT NULL THEN 'unified:' || ${unifiedTaskExpression} ELSE 'operation:' || o.id END)`,
     unifiedTaskId: unifiedTaskExpression,
     unifiedModel: unifiedModelExpression,
@@ -458,48 +470,61 @@ function andWhere(...clauses: Array<string | undefined>): string {
 }
 
 /**
- * 先按授权 + 筛选 + 搜索挑出**制作任务组 ID**，再取这些组的分页位置。
+ * 分组统计 SQL（组最新时间、组内记录数、可选代表状态）。
  *
- * `scoped` 只含授权后的可见记录（决定组的最新时间与组内记录条数），`matched` 是
- * 授权 + 关键词命中的记录（决定哪些组进入结果）。关键词命中组内任一记录即保留整组。
- * 状态使用该组按 updatedAt DESC、operationId DESC 排序的代表记录，与列表显示一致。
+ * - 无搜索：只用轻量 `groupJoins` 扫一遍；无状态筛选时不再构造与 `scoped` 等价的
+ *   `matched` 全扫描，状态筛选也只在同一遍扫描里用窗口求代表状态。
+ * - 有搜索：`scoped` 仍是轻量扫描，只有 `matched` 用完整 join 计算命中组；
+ *   这样搜索仍覆盖全量历史，但不会为同一批大快照连接两遍项目/画布/素材/策略。
  */
-function taskGroupStatsSql(scope: ResolvedTaskScope): { sql: string; values: unknown[] } {
+function taskGroupStatsSql(scope: ResolvedTaskScope): { cte: string; where: string; values: unknown[] } {
   const scopedWhere = scope.authWhere ? `WHERE ${scope.authWhere}` : '';
-  const matchedWhere = scope.matchWhere ? `WHERE ${scope.matchWhere}` : '';
-  const values = [...scope.authValues, ...scope.matchValues];
+  const hasSearch = scope.matchWhere !== scope.authWhere;
   const representativeStatus = scope.status
     ? `, FIRST_VALUE(${scope.effectiveStatus}) OVER (
         PARTITION BY ${scope.groupId} ORDER BY o.updatedAt DESC, o.id DESC
       ) AS representativeStatus`
     : '';
-  const statusWhere = scope.status ? 'WHERE s.representativeStatus = ?' : '';
-  if (scope.status) values.push(scope.status);
-  return {
-    values,
-    sql: `
-      WITH scoped AS (
-        SELECT ${scope.groupId} AS groupId, o.updatedAt AS updatedAt${representativeStatus}
-        FROM ${scope.joins} ${scopedWhere}
-      ),
+  const scoped = `SELECT ${scope.groupId} AS groupId, o.updatedAt AS updatedAt${representativeStatus}
+    FROM ${scope.source.groupJoins} ${scopedWhere}`;
+  const values: unknown[] = [...scope.authValues];
+  let cte: string;
+  if (hasSearch) {
+    values.push(...scope.matchValues);
+    cte = `
+      WITH scoped AS (${scoped}),
       matched AS (
         SELECT DISTINCT ${scope.groupId} AS groupId
-        FROM ${scope.joins} ${matchedWhere}
+        FROM ${scope.source.joins} WHERE ${scope.matchWhere}
       ),
       group_stats AS (
-        SELECT s.groupId AS groupId, MAX(s.updatedAt) AS groupUpdatedAt, COUNT(*) AS recordCount
+        SELECT s.groupId AS groupId, MAX(s.updatedAt) AS groupUpdatedAt, COUNT(*) AS recordCount${
+          scope.status ? ', MAX(s.representativeStatus) AS representativeStatus' : ''
+        }
         FROM scoped s JOIN matched m ON m.groupId = s.groupId
-        ${statusWhere}
         GROUP BY s.groupId
-      )`,
-  };
+      )`;
+  } else {
+    cte = `
+      WITH scoped AS (${scoped}),
+      group_stats AS (
+        SELECT groupId AS groupId, MAX(updatedAt) AS groupUpdatedAt, COUNT(*) AS recordCount${
+          scope.status ? ', MAX(representativeStatus) AS representativeStatus' : ''
+        }
+        FROM scoped
+        GROUP BY groupId
+      )`;
+  }
+  const where = scope.status ? ' WHERE representativeStatus = ?' : '';
+  if (scope.status) values.push(scope.status);
+  return { cte, where, values };
 }
 
 /** 无状态/关键词筛选时，计数不需要读取每条大快照后的更新时间或排序分组。 */
 function countScopedTaskGroups(scope: ResolvedTaskScope): { groups: number; records: number } {
   const row = scope.db.prepare(`
     WITH scoped AS (
-      SELECT ${scope.groupId} AS groupId FROM ${scope.joins}${scope.authWhere ? ` WHERE ${scope.authWhere}` : ''}
+      SELECT ${scope.groupId} AS groupId FROM ${scope.source.groupJoins}${scope.authWhere ? ` WHERE ${scope.authWhere}` : ''}
     )
     SELECT COUNT(*) AS records, COUNT(DISTINCT groupId) AS tasks FROM scoped
   `).get(...scope.authValues) as { records: number; tasks: number };
@@ -509,8 +534,9 @@ function countScopedTaskGroups(scope: ResolvedTaskScope): { groups: number; reco
 function taskGroupTotals(scope: ResolvedTaskScope): { groups: number; records: number } {
   if (!scope.status && scope.matchWhere === scope.authWhere) return countScopedTaskGroups(scope);
   const stats = taskGroupStatsSql(scope);
-  const row = scope.db.prepare(`${stats.sql}
-    SELECT COUNT(*) AS totalGroups, COALESCE(SUM(recordCount), 0) AS totalRecords FROM group_stats`)
+  const row = scope.db.prepare(`${stats.cte}
+    SELECT COUNT(*) AS totalGroups, COALESCE(SUM(recordCount), 0) AS totalRecords
+    FROM group_stats${stats.where}`)
     .get(...stats.values) as { totalGroups: number; totalRecords: number };
   return { groups: Number(row.totalGroups ?? 0), records: Number(row.totalRecords ?? 0) };
 }
@@ -520,8 +546,8 @@ function taskPageGroupIds(
   page: { limit: number; offset: number },
 ): string[] {
   const stats = taskGroupStatsSql(scope);
-  const rows = scope.db.prepare(`${stats.sql}
-    SELECT groupId FROM group_stats
+  const rows = scope.db.prepare(`${stats.cte}
+    SELECT groupId FROM group_stats${stats.where}
     ORDER BY groupUpdatedAt DESC, groupId DESC
     LIMIT ? OFFSET ?`).all(...stats.values, page.limit, page.offset) as Array<{ groupId: string }>;
   return rows.map((row) => String(row.groupId));
@@ -537,23 +563,35 @@ function compareRecordDescending(left: TaskRow, right: TaskRow): number {
   return leftId < rightId ? 1 : -1;
 }
 
+/** 按已排好的 operationId 顺序读取完整投影；不在完整投影上再排序或扫历史。 */
+function selectTaskRowsByIds(scope: ResolvedTaskScope, operationIds: readonly string[]): TaskRow[] {
+  if (operationIds.length === 0) return [];
+  const rows = selectTaskRows(scope,
+    andWhere(scope.authWhere, `o.id IN (${operationIds.map(() => '?').join(',')})`),
+    [...scope.authValues, ...operationIds],
+  );
+  const order = new Map(operationIds.map((id, index) => [id, index]));
+  return rows.sort((left, right) => (
+    (order.get(String(left.operationId)) ?? 0) - (order.get(String(right.operationId)) ?? 0)
+  ));
+}
+
 function selectPageRecords(scope: ResolvedTaskScope, groupIds: readonly string[]): TaskRow[] {
   if (groupIds.length === 0) return [];
-  const fields = taskQueryShape(scope.db).fields;
-  const sql = `
-    WITH scoped AS (
-      SELECT ${fields}, ${scope.source.groupId} AS groupId
-      FROM ${scope.joins}${scope.authWhere ? ` WHERE ${scope.authWhere}` : ''}
-    )
-    SELECT * FROM scoped
-    WHERE groupId IN (${groupIds.map(() => '?').join(',')})`;
-  const rows = scope.db.prepare(sql).all(...scope.authValues, ...groupIds) as TaskRow[];
+  // 先用轻量列选出本页各组的执行记录 ID，再按 ID 读取完整投影（快照、错误、统一费用）。
+  // 分组身份与有效状态需要的列由覆盖索引提供，不必为整个历史连接项目/画布/素材/策略。
+  const selected = scope.db.prepare(`
+    SELECT ${scope.groupId} AS groupId, o.id AS operationId, o.updatedAt AS updatedAt
+    FROM ${scope.source.groupJoins}
+    WHERE ${andWhere(scope.authWhere, `${scope.groupId} IN (${groupIds.map(() => '?').join(',')})`)}
+  `).all(...scope.authValues, ...groupIds) as TaskRow[];
   const groupOrder = new Map(groupIds.map((groupId, index) => [groupId, index]));
-  return rows.sort((left, right) => {
+  selected.sort((left, right) => {
     const groupDelta = (groupOrder.get(String(left.groupId)) ?? 0) - (groupOrder.get(String(right.groupId)) ?? 0);
     if (groupDelta !== 0) return groupDelta;
     return compareRecordDescending(left, right);
   });
+  return selectTaskRowsByIds(scope, selected.map((row) => String(row.operationId)));
 }
 
 function attemptRowsFor(db: Database.Database, operationIds: readonly string[]): Array<AttemptRow & { pricingSnapshotJson: string | null }> {
@@ -805,12 +843,13 @@ export function listTeamTaskRecords(
     : undefined;
   const where = andWhere(scope.authWhere, statusWhere);
   const values = [...scope.authValues, ...statuses];
-  const total = Number(scope.db.prepare(`SELECT COUNT(*) FROM ${scope.joins}${where ? ` WHERE ${where}` : ''}`)
+  const total = Number(scope.db.prepare(`SELECT COUNT(*) FROM ${scope.source.groupJoins}${where ? ` WHERE ${where}` : ''}`)
     .pluck().get(...values) ?? 0);
-  const rows = selectTaskRows(scope, where, values, {
-    order: 'o.updatedAt DESC, o.id DESC',
-    limit: bounded,
-  });
+  // 先按轻量列选有界 ID，再读取完整投影：状态筛选仍覆盖全量历史，但不为每条历史
+  // 搬运输入快照。
+  const selected = scope.db.prepare(`SELECT o.id FROM ${scope.source.groupJoins}${where ? ` WHERE ${where}` : ''}
+    ORDER BY o.updatedAt DESC, o.id DESC LIMIT ?`).all(...values, bounded) as Array<{ id: string }>;
+  const rows = selectTaskRowsByIds(scope, selected.map((row) => String(row.id)));
   return { items: projectTaskRows(db, viewer, rows), total };
 }
 
@@ -850,7 +889,7 @@ export function readTeamTaskActivity(
     WITH scoped AS (
       SELECT o.actorId AS actorUserId, u.employeeId AS employeeId, u.displayName AS displayName,
         ${bucketCase} AS bucket, o.updatedAt AS updatedAt
-      FROM ${scope.joins}${scope.authWhere ? ` WHERE ${scope.authWhere}` : ''}
+      FROM ${scope.source.groupJoins}${scope.authWhere ? ` WHERE ${scope.authWhere}` : ''}
     )
     SELECT actorUserId, employeeId, displayName, bucket, COUNT(*) AS records,
       SUM(CASE WHEN date(updatedAt, '+8 hours') = ? THEN 1 ELSE 0 END) AS completedToday
@@ -898,7 +937,7 @@ export function listTeamTaskActors(
   const scope = resolveTaskScope(db, viewer, {});
   return scope.db.prepare(`
     SELECT u.id AS id, u.employeeId AS employeeId, u.displayName AS displayName
-    FROM ${scope.joins}${scope.authWhere ? ` WHERE ${scope.authWhere}` : ''}
+    FROM ${scope.source.groupJoins}${scope.authWhere ? ` WHERE ${scope.authWhere}` : ''}
     GROUP BY u.id, u.employeeId, u.displayName
     ORDER BY u.employeeId
   `).all(...scope.authValues) as Array<{ id: string; employeeId: string; displayName: string }>;
