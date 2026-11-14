@@ -486,6 +486,12 @@ export const TEAM_SERVICE_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = 
     version: 17,
     sql: `ALTER TABLE team_users ADD COLUMN deletedAt TEXT;`,
   },
+  {
+    // 衍生文件登记的身份快速路径：记录上次完整内容核验时的文件身份。
+    // 只有身份一致才复用已有 sha256；通用文件仍每次完整核验。
+    version: 18,
+    sql: `ALTER TABLE team_files ADD COLUMN verifiedIdentityJson TEXT;`,
+  },
 ];
 
 export type TeamServiceSchemaReadiness = VersionedSchemaReadiness;
@@ -504,6 +510,12 @@ function validateTeamServiceSchema(db: Database.Database): void {
   const tokenHash = db.prepare(`
     SELECT type, "notnull" FROM pragma_table_info('team_sessions') WHERE name = 'tokenHash'
   `).get() as { type: string; notnull: number } | undefined;
+  const verifiedIdentity = db.prepare(`
+    SELECT type FROM pragma_table_info('team_files') WHERE name = 'verifiedIdentityJson'
+  `).get() as { type: string } | undefined;
+  if (verifiedIdentity?.type.toUpperCase() !== 'TEXT') {
+    throw new Error('team-service 衍生文件身份结构检查未通过');
+  }
   if (employeeId?.type.toUpperCase() !== 'TEXT' || employeeId.notnull !== 1
     || tokenHash?.type.toUpperCase() !== 'TEXT' || tokenHash.notnull !== 1) {
     throw new Error('team-service 身份结构检查未通过');

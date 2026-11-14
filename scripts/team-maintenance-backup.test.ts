@@ -27,6 +27,7 @@ db.exec(`
     ownerUserId TEXT NOT NULL, relativePath TEXT NOT NULL UNIQUE, mimeType TEXT NOT NULL,
     byteSize INTEGER NOT NULL, sha256 TEXT NOT NULL, state TEXT NOT NULL,
     derivedFromFileId TEXT, readySeq INTEGER UNIQUE, createdAt TEXT NOT NULL, readyAt TEXT,
+    verifiedIdentityJson TEXT,
     FOREIGN KEY(ownerUserId) REFERENCES team_users(id), UNIQUE(seriesId, version)
   );
   CREATE TABLE team_file_references (
