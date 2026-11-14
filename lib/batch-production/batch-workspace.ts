@@ -3,8 +3,10 @@ import { batchSourceReview, type BatchSourceConflictGroup } from './source-confl
 import { batchArtifactPathsArePaired } from './artifact-pair.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
 import { getCurrentExportDirName } from '../project-export-identity.ts';
-import { isFormalArtifactOutdated } from './formal-artifact-freshness.ts';
-import { resolveCoverContractHash, resolveFullRenderContractHash } from './cover-contract.ts';
+import { isFormalArtifactOutdated, type FormalArtifactPreload } from './formal-artifact-freshness.ts';
+import { resolveCoverContractHash, resolveFullRenderContractHash, type CoverContractOutputVersion, type CoverContractPreload } from './cover-contract.ts';
+import { resolveModule4AssetGroupKeys } from './media-catalog.ts';
+import type { FrozenCoverTitleRow } from './cover-title.ts';
 import { BatchDomainError } from './errors.ts';
 import type { BatchProductionStatus } from './versions.ts';
 import type { BatchTaskExpectedState, BatchTaskStatus } from './tasks.ts';
@@ -190,9 +192,20 @@ function poolAssetDurationUs(row: {
   return durationFromSeconds(row.mediaDurationSec);
 }
 
-function loadPoolAssetDurations(db: Database.Database, batchVersionId: string): Map<string, number> {
+interface PoolFacts {
+  durations: Map<string, number>;
+  /** `${batchVersionId}\u0000${assetId}` → 池内冻结色彩快照(含 null)。 */
+  colors: Map<string, string | null>;
+  /** assetId → 内容指纹(池内素材一次取回,非池素材再补一次)。 */
+  fingerprints: Map<string, string>;
+}
+
+/** 一次取回冻结素材池的时长、色彩快照与内容指纹,供整批工作区复用。 */
+function loadPoolFacts(db: Database.Database, batchVersionId: string): PoolFacts {
   const rows = db.prepare(`
     SELECT pool.assetId,
+      pool.colorJson AS poolColorJson,
+      assets.contentFingerprint AS contentFingerprint,
       CASE WHEN json_valid(analysis.analysisJson) THEN json_extract(analysis.analysisJson, '$.durationUs') END AS analysisDurationUs,
       CASE WHEN json_valid(assets.mediaJson) THEN json_extract(assets.mediaJson, '$.durationUs') END AS mediaDurationUs,
       CASE WHEN json_valid(assets.mediaJson) THEN json_extract(assets.mediaJson, '$.durationSec') END AS mediaDurationSec
@@ -202,16 +215,22 @@ function loadPoolAssetDurations(db: Database.Database, batchVersionId: string): 
     WHERE pool.batchVersionId = ?
   `).all(batchVersionId) as Array<{
     assetId: string;
+    poolColorJson: string | null;
+    contentFingerprint: string;
     analysisDurationUs: number | null;
     mediaDurationUs: number | null;
     mediaDurationSec: number | null;
   }>;
   const durations = new Map<string, number>();
+  const colors = new Map<string, string | null>();
+  const fingerprints = new Map<string, string>();
   for (const row of rows) {
     const durationUs = poolAssetDurationUs(row);
     if (durationUs !== null) durations.set(row.assetId, durationUs);
+    colors.set(`${batchVersionId}\u0000${row.assetId}`, row.poolColorJson);
+    fingerprints.set(row.assetId, row.contentFingerprint);
   }
-  return durations;
+  return { durations, colors, fingerprints };
 }
 
 /** 审核态:当前版本 arrangement.review.decision === 'approved' */
@@ -308,35 +327,59 @@ function allocationOutput(value: unknown, planId: string): unknown | null {
   )) ?? null;
 }
 
-/** 完整渲染任务的状态视图(用于导出页进度与失败提示)。 */
-function readFullRenderTaskView(
-  db: Database.Database,
-  projectId: string,
-  batchId: string,
-  outputVersionId: string,
-  requestKey: string | null,
-): BatchWorkspaceTaskView | null {
-  if (!requestKey) return null;
-  const row = db.prepare(`
-    SELECT t.id, t.status, t.expectedState, t.attemptCount, t.progressJson,
-           a.errorCode, a.errorMessage
-    FROM batch_tasks t
-    LEFT JOIN batch_task_attempts a ON a.taskId = t.id
-      AND a.attemptNumber = t.attemptCount
-    WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
-      AND t.targetKind = 'output_version' AND t.targetId = ?
-      AND t.requestKey = ?
-    ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
-  `).get(projectId, batchId, outputVersionId, requestKey) as {
-    id: string;
-    status: BatchTaskStatus;
-    expectedState: BatchTaskExpectedState;
-    attemptCount: number;
-    progressJson: string | null;
-    errorCode: string | null;
-    errorMessage: string | null;
-  } | undefined;
-  if (!row) return null;
+/** 画面片段引用的素材(同源检查只画面、不计封面)。 */
+function clipAssetIdsOf(value: unknown): string[] {
+  const clips = asRecord(value)?.clips;
+  if (!Array.isArray(clips)) return [];
+  return [...new Set(clips.flatMap((clip) => {
+    const assetId = asRecord(clip)?.assetId;
+    return typeof assetId === 'string' && assetId ? [assetId] : [];
+  }))];
+}
+
+/** 契约解析可能引用的全部素材:片段 + 显式封面素材。 */
+function referencedAssetIdsOf(value: unknown): string[] {
+  const ids = new Set(clipAssetIdsOf(value));
+  const coverAssetId = asRecord(asRecord(value)?.cover)?.assetId;
+  if (typeof coverAssetId === 'string' && coverAssetId) ids.add(coverAssetId);
+  return [...ids];
+}
+
+interface RenderTaskRow {
+  id: string;
+  targetId: string;
+  requestKey: string | null;
+  status: BatchTaskStatus;
+  expectedState: BatchTaskExpectedState;
+  attemptCount: number;
+  progressJson: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
+interface CoverTaskRow extends RenderTaskRow {
+  succeededAttemptId: string | null;
+}
+
+interface SucceededAttemptRow {
+  taskId: string;
+  targetId: string;
+  requestKey: string | null;
+  attemptId: string;
+  attemptNumber: number;
+  resultJson: string | null;
+  finishedAt: string | null;
+}
+
+interface NarrationTaskRow {
+  id: string;
+  targetId: string;
+  status: BatchTaskStatus;
+  expectedState: BatchTaskExpectedState;
+  errorMessage: string | null;
+}
+
+function taskView(row: RenderTaskRow): BatchWorkspaceTaskView {
   return {
     id: row.id,
     status: row.status,
@@ -348,6 +391,16 @@ function readFullRenderTaskView(
   };
 }
 
+/** 完整渲染任务只认当前 requestKey;行已按 createdAt DESC, id DESC 预排序。 */
+function selectFullRenderTask(
+  rows: RenderTaskRow[] | undefined,
+  requestKey: string | null,
+): BatchWorkspaceTaskView | null {
+  if (!requestKey) return null;
+  const row = rows?.find((entry) => entry.requestKey === requestKey);
+  return row ? taskView(row) : null;
+}
+
 /**
  * 封面任务状态与最近成功尝试 ID(编辑器优先模型下封面的唯一事实来源)。
  * 必须按**当前**封面契约哈希选任务:封面 A→B→A 时复用旧 A 任务,
@@ -355,10 +408,8 @@ function readFullRenderTaskView(
  * 契约无法解析时只允许读取没有现代契约 key 的老任务；现代任务无法证明
  * 与当前安排一致时必须视为缺失，不能猜最近一条。
  */
-function readCoverTaskFacts(
-  db: Database.Database,
-  projectId: string,
-  batchId: string,
+function selectCoverTaskFacts(
+  rows: CoverTaskRow[] | undefined,
   outputVersionId: string | null,
   coverContractHash: string | null,
 ): { task: BatchWorkspaceTaskView | null; attemptId: string | null } {
@@ -367,71 +418,53 @@ function readCoverTaskFacts(
   const coverRequestKey = coverContractHash
     ? buildCoverRenderTaskRequestKey(outputVersionId, coverContractHash)
     : null;
-  const rows = db.prepare(`
-    SELECT t.id, t.requestKey, t.status, t.expectedState, t.attemptCount, t.progressJson,
-           a.errorCode, a.errorMessage,
-           (SELECT sa.id FROM batch_task_attempts sa
-             WHERE sa.taskId = t.id AND sa.status = 'succeeded'
-             ORDER BY sa.attemptNumber DESC LIMIT 1) AS succeededAttemptId
-    FROM batch_tasks t
-    LEFT JOIN batch_task_attempts a ON a.taskId = t.id
-      AND a.attemptNumber = t.attemptCount
-    WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
-      AND t.targetKind = 'output_version_cover' AND t.targetId = ?
-    ORDER BY t.createdAt DESC, t.id DESC
-  `).all(projectId, batchId, outputVersionId) as Array<{
-    id: string;
-    requestKey: string | null;
-    status: BatchTaskStatus;
-    expectedState: BatchTaskExpectedState;
-    attemptCount: number;
-    progressJson: string | null;
-    errorCode: string | null;
-    errorMessage: string | null;
-    succeededAttemptId: string | null;
-  }>;
   const row = coverRequestKey
-    ? rows.find(({ requestKey }) => requestKey === coverRequestKey)
-    : rows.find(({ requestKey }) => parseRenderTaskRequestKey(requestKey) === null);
+    ? rows?.find(({ requestKey }) => requestKey === coverRequestKey)
+    : rows?.find(({ requestKey }) => parseRenderTaskRequestKey(requestKey) === null);
   if (!row) return { task: null, attemptId: null };
-  return {
-    task: {
-      id: row.id,
-      status: row.status,
-      expectedState: row.expectedState,
-      attemptCount: row.attemptCount,
-      progress: parseJson(row.progressJson),
-      errorCode: row.errorCode,
-      errorMessage: row.errorMessage,
-    },
-    attemptId: row.succeededAttemptId,
-  };
+  return { task: taskView(row), attemptId: row.succeededAttemptId };
 }
 
-/** 老批次的最近一次成功完整渲染尝试(封面回落与 fresh 判断的兼容事实)。 */
-function readLatestFullRenderAttempt(
-  db: Database.Database,
-  projectId: string,
-  batchId: string,
-  outputVersionId: string,
+/**
+ * 老批次的最近一次成功完整渲染尝试(封面回落与 fresh 判断的兼容事实)。
+ * 对齐原 SQL 的 JOIN 语义:没有 succeeded attempt 的任务会被 JOIN 排除,
+ * 所以「最新任务失败、更早任务成功」必须回落到更早的成功尝试。
+ * 行已按 createdAt DESC, id DESC 预排序,取第一条拥有成功尝试的任务。
+ */
+function selectLatestFullRenderAttempt(
+  taskRows: RenderTaskRow[] | undefined,
+  attemptsByTask: ReadonlyMap<string, SucceededAttemptRow[]>,
 ): { attemptId: string; requestKey: string | null; resultJson: string | null } | null {
-  const row = db.prepare(`
-    SELECT t.requestKey AS requestKey, a.id AS attemptId, a.resultJson AS resultJson
-    FROM batch_tasks t
-    JOIN batch_task_attempts a ON a.id = (
-      SELECT id FROM batch_task_attempts
-      WHERE taskId = t.id AND status = 'succeeded'
-      ORDER BY attemptNumber DESC LIMIT 1
-    )
-    WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
-      AND t.targetKind = 'output_version' AND t.targetId = ?
-    ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
-  `).get(projectId, batchId, outputVersionId) as {
-    attemptId: string;
-    requestKey: string | null;
-    resultJson: string | null;
-  } | undefined;
-  return row ?? null;
+  if (!taskRows) return null;
+  for (const task of taskRows) {
+    const attempts = attemptsByTask.get(task.id);
+    if (!attempts || attempts.length === 0) continue;
+    let latest = attempts[0];
+    for (const attempt of attempts) {
+      if (attempt.attemptNumber > latest.attemptNumber) latest = attempt;
+    }
+    return { attemptId: latest.attemptId, requestKey: task.requestKey, resultJson: latest.resultJson };
+  }
+  return null;
+}
+
+function firstByTarget<T extends { targetId: string }>(rows: T[]): Map<string, T> {
+  const grouped = new Map<string, T>();
+  for (const row of rows) {
+    if (!grouped.has(row.targetId)) grouped.set(row.targetId, row);
+  }
+  return grouped;
+}
+
+/** 按 targetId 分组并保留 SQL 行序(调用方按「第一条最新」取值)。 */
+function groupByTarget<T extends { targetId: string }>(rows: T[]): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    const list = grouped.get(row.targetId) ?? [];
+    list.push(row);
+    grouped.set(row.targetId, list);
+  }
+  return grouped;
 }
 
 function deriveCardStatus(input: {
@@ -521,10 +554,12 @@ export function getBatchWorkspace(
   const plans = db.prepare(`
     SELECT p.id, p.seq, p.scriptSnapshotId, p.currentVersionId, p.currentArtifactId,
            s.title AS scriptTitle,
-           ov.versionNumber, ov.arrangementJson
+           ov.versionNumber, ov.arrangementJson,
+           bv.defaultsJson AS defaultsJson
     FROM batch_output_plans p
     JOIN batch_script_snapshots s ON s.id = p.scriptSnapshotId
     LEFT JOIN batch_output_versions ov ON ov.id = p.currentVersionId
+    JOIN batch_production_versions bv ON bv.id = p.batchVersionId
     WHERE p.batchVersionId = ?
     ORDER BY p.seq, p.id
   `).all(batch.currentVersionId) as Array<{
@@ -536,6 +571,7 @@ export function getBatchWorkspace(
     scriptTitle: string;
     versionNumber: number | null;
     arrangementJson: string | null;
+    defaultsJson: string;
   }>;
 
   const allocationReportRow = db.prepare(`
@@ -549,11 +585,185 @@ export function getBatchWorkspace(
     SELECT assetId, reason FROM batch_asset_exclusions
     WHERE batchVersionId = ? ORDER BY assetId
   `).all(batch.currentVersionId) as Array<{ assetId: string; reason: string }>;
-  const poolAssetDurations = loadPoolAssetDurations(db, batch.currentVersionId);
+  const poolFacts = loadPoolFacts(db, batch.currentVersionId);
 
-  const cards = plans.map((plan): BatchOutputCardView => {
-    const arrangement = parseJson(plan.arrangementJson);
-    const { sourceWarnings, sourceConflictAssetIds, sourceConflictGroups } = batchSourceReview(db, arrangement);
+  // 解析后的 arrangement 只解析一次:同源分组、素材指纹、契约预加载共用。
+  const parsedPlans = plans.map((plan) => ({ plan, arrangement: parseJson(plan.arrangementJson) }));
+
+  // 素材指纹:池内素材已随 pool facts 取回,只补一次非池素材。
+  const referencedAssetIds = [...new Set(parsedPlans.flatMap(({ arrangement }) => referencedAssetIdsOf(arrangement)))];
+  const assetFingerprints = new Map(poolFacts.fingerprints);
+  const missingFingerprintIds = referencedAssetIds.filter((assetId) => !assetFingerprints.has(assetId));
+  if (missingFingerprintIds.length > 0) {
+    const placeholders = missingFingerprintIds.map(() => '?').join(', ');
+    const rows = db.prepare(`
+      SELECT id, contentFingerprint FROM batch_assets WHERE id IN (${placeholders})
+    `).all(...missingFingerprintIds) as Array<{ id: string; contentFingerprint: string }>;
+    for (const row of rows) assetFingerprints.set(row.id, row.contentFingerprint);
+  }
+
+  // 缺池色的引用素材:最近一条分析的色彩快照也按批次预加载。旧库没有
+  // analysis.colorJson 列时预加载会失败,记录为不可用,让契约按原语义
+  // fail closed,而不是为每张卡重复发起必败查询。
+  const missingColorAssetIds = referencedAssetIds.filter((assetId) => (
+    !poolFacts.colors.get(`${batch.currentVersionId}\u0000${assetId}`)
+  ));
+  let analysisColors: Map<string, string | null> | undefined;
+  let analysisColorsUnavailable = false;
+  if (missingColorAssetIds.length > 0) {
+    try {
+      const placeholders = missingColorAssetIds.map(() => '?').join(', ');
+      const rows = db.prepare(`
+        SELECT assetId, colorJson FROM batch_asset_analysis
+        WHERE assetId IN (${placeholders})
+        ORDER BY assetId, createdAt DESC
+      `).all(...missingColorAssetIds) as Array<{ assetId: string; colorJson: string }>;
+      analysisColors = new Map();
+      for (const row of rows) {
+        if (!analysisColors.has(row.assetId)) analysisColors.set(row.assetId, row.colorJson);
+      }
+    } catch {
+      analysisColors = undefined;
+      analysisColorsUnavailable = true;
+    }
+  } else {
+    analysisColors = new Map();
+  }
+
+  // 契约预加载:当前输出版本 + 冻结封面标题配置(批次内一次取回)。
+  const outputVersions = new Map<string, CoverContractOutputVersion>();
+  for (const { plan } of parsedPlans) {
+    if (!plan.currentVersionId || plan.arrangementJson === null) continue;
+    outputVersions.set(plan.currentVersionId, {
+      outputVersionId: plan.currentVersionId,
+      planId: plan.id,
+      arrangementJson: plan.arrangementJson,
+      batchVersionId: batch.currentVersionId,
+      planSeq: plan.seq,
+      defaultsJson: plan.defaultsJson,
+    });
+  }
+  const frozenTitleRows: ReadonlyMap<string, FrozenCoverTitleRow> = new Map(
+    (db.prepare(`
+      SELECT p.id AS planId, s.coverTitleJson AS coverTitleJson,
+             s.sourceScriptId AS sourceScriptId, v.defaultsJson AS defaultsJson
+      FROM batch_output_plans p
+      JOIN batch_script_snapshots s ON s.id = p.scriptSnapshotId
+      JOIN batch_production_versions v ON v.id = p.batchVersionId
+      WHERE p.batchVersionId = ?
+    `).all(batch.currentVersionId) as Array<FrozenCoverTitleRow & { planId: string }>)
+      .map(({ planId, ...row }) => [planId, row] as const),
+  );
+
+  // 正式产物:按计划分组,保持 createdAt DESC, id DESC 的既有选取顺序。
+  const artifactsByPlan = new Map<string, BatchWorkspaceArtifactView[]>();
+  {
+    const rows = db.prepare(`
+      SELECT a.id, a.outputPlanId, a.outputVersionId, a.kind, a.relativePath, a.checksum, a.createdAt
+      FROM batch_artifacts a
+      JOIN batch_output_plans p ON p.id = a.outputPlanId
+      WHERE p.batchVersionId = ?
+      ORDER BY a.createdAt DESC, a.id DESC
+    `).all(batch.currentVersionId) as Array<BatchWorkspaceArtifactView & { outputPlanId: string }>;
+    for (const row of rows) {
+      const list = artifactsByPlan.get(row.outputPlanId) ?? [];
+      list.push({
+        id: row.id,
+        outputVersionId: row.outputVersionId,
+        kind: row.kind,
+        relativePath: row.relativePath,
+        checksum: row.checksum,
+        createdAt: row.createdAt,
+      });
+      artifactsByPlan.set(row.outputPlanId, list);
+    }
+  }
+
+  // 任务:封面、整片、成功尝试、口播各一次批次级查询,行序沿用原文 ORDER BY。
+  const coverTaskRows = db.prepare(`
+    SELECT t.id, t.targetId, t.requestKey, t.status, t.expectedState, t.attemptCount, t.progressJson,
+           a.errorCode, a.errorMessage,
+           (SELECT sa.id FROM batch_task_attempts sa
+             WHERE sa.taskId = t.id AND sa.status = 'succeeded'
+             ORDER BY sa.attemptNumber DESC LIMIT 1) AS succeededAttemptId
+    FROM batch_tasks t
+    LEFT JOIN batch_task_attempts a ON a.taskId = t.id
+      AND a.attemptNumber = t.attemptCount
+    WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
+      AND t.targetKind = 'output_version_cover'
+    ORDER BY t.createdAt DESC, t.id DESC
+  `).all(projectId, batchId) as CoverTaskRow[];
+  const coverTasksByTarget = groupByTarget(coverTaskRows);
+
+  const fullRenderTaskRows = db.prepare(`
+    SELECT t.id, t.targetId, t.requestKey, t.status, t.expectedState, t.attemptCount, t.progressJson,
+           a.errorCode, a.errorMessage
+    FROM batch_tasks t
+    LEFT JOIN batch_task_attempts a ON a.taskId = t.id
+      AND a.attemptNumber = t.attemptCount
+    WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
+      AND t.targetKind = 'output_version'
+    ORDER BY t.createdAt DESC, t.id DESC
+  `).all(projectId, batchId) as RenderTaskRow[];
+  const fullRenderTasksByTarget = groupByTarget(fullRenderTaskRows);
+
+  const succeededAttemptRows = db.prepare(`
+    SELECT t.id AS taskId, t.targetId AS targetId, t.requestKey AS requestKey,
+           a.id AS attemptId, a.attemptNumber AS attemptNumber,
+           a.resultJson AS resultJson, a.finishedAt AS finishedAt
+    FROM batch_tasks t
+    JOIN batch_task_attempts a ON a.taskId = t.id
+    WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
+      AND t.targetKind = 'output_version' AND a.status = 'succeeded'
+    ORDER BY a.finishedAt DESC, a.id DESC
+  `).all(projectId, batchId) as SucceededAttemptRow[];
+  const succeededAttemptsByTask = new Map<string, SucceededAttemptRow[]>();
+  for (const row of succeededAttemptRows) {
+    const list = succeededAttemptsByTask.get(row.taskId) ?? [];
+    list.push(row);
+    succeededAttemptsByTask.set(row.taskId, list);
+  }
+
+  const narrationTaskRows = db.prepare(`
+    SELECT t.id, t.targetId, t.status, t.expectedState, a.errorMessage
+    FROM batch_tasks t
+    LEFT JOIN batch_task_attempts a ON a.taskId = t.id AND a.attemptNumber = t.attemptCount
+    WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'narration'
+      AND t.targetKind = 'script_snapshot'
+    ORDER BY t.createdAt DESC, t.id DESC
+  `).all(projectId, batchId) as NarrationTaskRow[];
+  const narrationTasksByTarget = firstByTarget(narrationTaskRows);
+
+  // 同源提醒:按批次把权威原图键算一次,再按卡片过滤。
+  const sourceGroupKeys = resolveModule4AssetGroupKeys(
+    db,
+    [...new Set(parsedPlans.flatMap(({ arrangement }) => clipAssetIdsOf(arrangement)))],
+  );
+
+  const coverPreload: CoverContractPreload = {
+    outputVersions,
+    assetFingerprints,
+    poolColors: poolFacts.colors,
+    analysisColors,
+    analysisColorsUnavailable,
+    frozenTitleRows,
+    coverContractHashes: new Map(),
+  };
+  const fullRenderContractHashes = new Map<string, string | null>();
+  const arrangementJsonByVersion = new Map<string, string>();
+  for (const { plan } of parsedPlans) {
+    if (plan.currentVersionId && plan.arrangementJson !== null) {
+      arrangementJsonByVersion.set(plan.currentVersionId, plan.arrangementJson);
+    }
+  }
+  const formalPreload: FormalArtifactPreload = {
+    succeededRenderAttempts: succeededAttemptRows,
+    fullRenderContractHashes,
+    arrangementJson: arrangementJsonByVersion,
+  };
+
+  const cards = parsedPlans.map(({ plan, arrangement }): BatchOutputCardView => {
+    const { sourceWarnings, sourceConflictAssetIds, sourceConflictGroups } = batchSourceReview(db, arrangement, sourceGroupKeys);
     const latestAllocationOutput = allocationOutput(allocationReport, plan.id);
     const latestArrangement = latestAllocationOutput && typeof latestAllocationOutput === 'object' && !Array.isArray(latestAllocationOutput)
       ? (latestAllocationOutput as Record<string, unknown>).arrangement
@@ -570,10 +780,7 @@ export function getBatchWorkspace(
       ...diagnosticMessages(latestArrangement, 'blockers'),
     ])];
 
-    const artifactRows = db.prepare(`
-      SELECT id, outputVersionId, kind, relativePath, checksum, createdAt
-      FROM batch_artifacts WHERE outputPlanId = ? ORDER BY createdAt DESC, id DESC
-    `).all(plan.id) as BatchWorkspaceArtifactView[];
+    const artifactRows = artifactsByPlan.get(plan.id) ?? [];
     const currentVideo = plan.currentArtifactId
       ? artifactRows.find(({ id, kind }) => id === plan.currentArtifactId && kind === 'video') ?? null
       : null;
@@ -585,34 +792,36 @@ export function getBatchWorkspace(
         )) ?? null
       : null;
 
-    let fullRenderRequestKey: string | null = null;
-    if (plan.currentVersionId) {
-      try {
-        fullRenderRequestKey = buildFullRenderTaskRequestKey(
-          plan.currentVersionId,
-          resolveFullRenderContractHash(db, plan.currentVersionId),
-        );
-      } catch {
-        fullRenderRequestKey = null;
-      }
-    }
-    const fullRenderTask = plan.currentVersionId
-      ? readFullRenderTaskView(db, projectId, batchId, plan.currentVersionId, fullRenderRequestKey)
-      : null;
-    const latestFullAttempt = plan.currentVersionId
-      ? readLatestFullRenderAttempt(db, projectId, batchId, plan.currentVersionId)
-      : null;
-    // 当前封面契约哈希:封面任务与封面事实都必须按它选(封面 A→B→A)。
-    // 契约无法解析时 fail closed；只有不带现代契约 key 的老任务允许兼容回退。
+    // 封面契约哈希先行计算并缓存;完整渲染契约复用它,不再重复解析。
     let coverContractHash: string | null = null;
+    let fullRenderContractHash: string | null = null;
     if (plan.currentVersionId) {
       try {
-        coverContractHash = resolveCoverContractHash(db, plan.currentVersionId);
+        coverContractHash = resolveCoverContractHash(db, plan.currentVersionId, undefined, coverPreload);
       } catch {
         coverContractHash = null;
       }
+      try {
+        fullRenderContractHash = resolveFullRenderContractHash(db, plan.currentVersionId, coverPreload);
+      } catch {
+        fullRenderContractHash = null;
+      }
+      fullRenderContractHashes.set(plan.currentVersionId, fullRenderContractHash);
     }
-    const coverFacts = readCoverTaskFacts(db, projectId, batchId, plan.currentVersionId, coverContractHash);
+    const fullRenderRequestKey = plan.currentVersionId && fullRenderContractHash
+      ? buildFullRenderTaskRequestKey(plan.currentVersionId, fullRenderContractHash)
+      : null;
+    const fullRenderTask = plan.currentVersionId
+      ? selectFullRenderTask(fullRenderTasksByTarget.get(plan.currentVersionId), fullRenderRequestKey)
+      : null;
+    const latestFullAttempt = plan.currentVersionId
+      ? selectLatestFullRenderAttempt(fullRenderTasksByTarget.get(plan.currentVersionId), succeededAttemptsByTask)
+      : null;
+    const coverFacts = selectCoverTaskFacts(
+      plan.currentVersionId ? coverTasksByTarget.get(plan.currentVersionId) : undefined,
+      plan.currentVersionId,
+      coverContractHash,
+    );
     // 老批次没有独立封面任务:最近一次成功完整渲染的封面继续可检查、可预览。
     let coverStatus: BatchCoverTaskStatus;
     let coverAttemptId: string | null;
@@ -634,19 +843,9 @@ export function getBatchWorkspace(
       coverAttemptId = null;
     }
 
-    const narrationTaskRow = plan.scriptSnapshotId ? db.prepare(`
-      SELECT t.id, t.status, t.expectedState, a.errorMessage
-      FROM batch_tasks t
-      LEFT JOIN batch_task_attempts a ON a.taskId = t.id AND a.attemptNumber = t.attemptCount
-      WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'narration'
-        AND t.targetKind = 'script_snapshot' AND t.targetId = ?
-      ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
-    `).get(projectId, batchId, plan.scriptSnapshotId) as {
-      id: string;
-      status: BatchTaskStatus;
-      expectedState: BatchTaskExpectedState;
-      errorMessage: string | null;
-    } | undefined : undefined;
+    const narrationTaskRow = plan.scriptSnapshotId
+      ? narrationTasksByTarget.get(plan.scriptSnapshotId)
+      : undefined;
     const narrationTask = narrationTaskRow ? {
       id: narrationTaskRow.id,
       status: narrationTaskRow.status,
@@ -683,6 +882,7 @@ export function getBatchWorkspace(
         batchId,
         plan.currentVersionId,
         { video: currentVideo, cover: currentCover },
+        formalPreload,
       ),
     );
     // 正式导出状态由服务端统一判断:前端只消费 exportStatus,不得再从
@@ -710,7 +910,7 @@ export function getBatchWorkspace(
       hasFormalArtifact: Boolean(currentVideo),
       batchControl: batch.controlState,
     });
-    const coverRange = arrangementCoverRange(arrangement, poolAssetDurations);
+    const coverRange = arrangementCoverRange(arrangement, poolFacts.durations);
     return {
       planId: plan.id,
       seq: plan.seq,

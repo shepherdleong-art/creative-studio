@@ -17,8 +17,21 @@ export interface BatchSourceConflictGroup {
 
 /** 保留权威原图身份，使不同成片内的同源组也能使用一致的视觉编号。 */
 function sourceConflictGroups(db: Database.Database, arrangement: unknown): BatchSourceConflictGroup[] {
+  return sourceConflictGroupsFromKeys(resolveModule4AssetGroupKeys(db, clipAssetIds(arrangement)), arrangement);
+}
+
+/**
+ * 用已预加载的 assetId → 权威组键映射按卡过滤。遍历顺序仍沿用映射本身
+ * (来源行 createdAt/id 顺序),保证组内 assetIds 与逐卡查询一致。
+ */
+function sourceConflictGroupsFromKeys(
+  keys: ReadonlyMap<string, string>,
+  arrangement: unknown,
+): BatchSourceConflictGroup[] {
+  const cardAssetIds = new Set(clipAssetIds(arrangement));
   const groups = new Map<string, string[]>();
-  for (const [assetId, key] of resolveModule4AssetGroupKeys(db, clipAssetIds(arrangement))) {
+  for (const [assetId, key] of keys) {
+    if (!cardAssetIds.has(assetId)) continue;
     const assets = groups.get(key) ?? [];
     assets.push(assetId);
     groups.set(key, assets);
@@ -31,8 +44,15 @@ export function batchSourceConflicts(db: Database.Database, arrangement: unknown
   return sourceConflictGroups(db, arrangement).map(group => group.assetIds);
 }
 
-export function batchSourceReview(db: Database.Database, arrangement: unknown) {
-  const groups = sourceConflictGroups(db, arrangement);
+export function batchSourceReview(
+  db: Database.Database,
+  arrangement: unknown,
+  /** 可选:批次级预计算的权威组键(见 resolveModule4AssetGroupKeys),不传则逐条查询。 */
+  precomputedGroupKeys?: ReadonlyMap<string, string>,
+) {
+  const groups = precomputedGroupKeys
+    ? sourceConflictGroupsFromKeys(precomputedGroupKeys, arrangement)
+    : sourceConflictGroups(db, arrangement);
   const sourceConflictAssetIds = [...new Set(groups.flatMap(group => group.assetIds))];
   const result: string[] = [];
   if (sourceConflictAssetIds.length) {
