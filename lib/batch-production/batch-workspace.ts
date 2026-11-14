@@ -425,19 +425,27 @@ function selectCoverTaskFacts(
   return { task: taskView(row), attemptId: row.succeededAttemptId };
 }
 
-/** 老批次的最近一次成功完整渲染尝试(封面回落与 fresh 判断的兼容事实)。 */
+/**
+ * 老批次的最近一次成功完整渲染尝试(封面回落与 fresh 判断的兼容事实)。
+ * 对齐原 SQL 的 JOIN 语义:没有 succeeded attempt 的任务会被 JOIN 排除,
+ * 所以「最新任务失败、更早任务成功」必须回落到更早的成功尝试。
+ * 行已按 createdAt DESC, id DESC 预排序,取第一条拥有成功尝试的任务。
+ */
 function selectLatestFullRenderAttempt(
-  latestTask: RenderTaskRow | undefined,
+  taskRows: RenderTaskRow[] | undefined,
   attemptsByTask: ReadonlyMap<string, SucceededAttemptRow[]>,
 ): { attemptId: string; requestKey: string | null; resultJson: string | null } | null {
-  if (!latestTask) return null;
-  const attempts = attemptsByTask.get(latestTask.id);
-  if (!attempts || attempts.length === 0) return null;
-  let latest = attempts[0];
-  for (const attempt of attempts) {
-    if (attempt.attemptNumber > latest.attemptNumber) latest = attempt;
+  if (!taskRows) return null;
+  for (const task of taskRows) {
+    const attempts = attemptsByTask.get(task.id);
+    if (!attempts || attempts.length === 0) continue;
+    let latest = attempts[0];
+    for (const attempt of attempts) {
+      if (attempt.attemptNumber > latest.attemptNumber) latest = attempt;
+    }
+    return { attemptId: latest.attemptId, requestKey: task.requestKey, resultJson: latest.resultJson };
   }
-  return { attemptId: latest.attemptId, requestKey: latestTask.requestKey, resultJson: latest.resultJson };
+  return null;
 }
 
 function firstByTarget<T extends { targetId: string }>(rows: T[]): Map<string, T> {
@@ -594,6 +602,34 @@ export function getBatchWorkspace(
     for (const row of rows) assetFingerprints.set(row.id, row.contentFingerprint);
   }
 
+  // 缺池色的引用素材:最近一条分析的色彩快照也按批次预加载。旧库没有
+  // analysis.colorJson 列时预加载会失败,记录为不可用,让契约按原语义
+  // fail closed,而不是为每张卡重复发起必败查询。
+  const missingColorAssetIds = referencedAssetIds.filter((assetId) => (
+    !poolFacts.colors.get(`${batch.currentVersionId}\u0000${assetId}`)
+  ));
+  let analysisColors: Map<string, string | null> | undefined;
+  let analysisColorsUnavailable = false;
+  if (missingColorAssetIds.length > 0) {
+    try {
+      const placeholders = missingColorAssetIds.map(() => '?').join(', ');
+      const rows = db.prepare(`
+        SELECT assetId, colorJson FROM batch_asset_analysis
+        WHERE assetId IN (${placeholders})
+        ORDER BY assetId, createdAt DESC
+      `).all(...missingColorAssetIds) as Array<{ assetId: string; colorJson: string }>;
+      analysisColors = new Map();
+      for (const row of rows) {
+        if (!analysisColors.has(row.assetId)) analysisColors.set(row.assetId, row.colorJson);
+      }
+    } catch {
+      analysisColors = undefined;
+      analysisColorsUnavailable = true;
+    }
+  } else {
+    analysisColors = new Map();
+  }
+
   // 契约预加载:当前输出版本 + 冻结封面标题配置(批次内一次取回)。
   const outputVersions = new Map<string, CoverContractOutputVersion>();
   for (const { plan } of parsedPlans) {
@@ -708,6 +744,8 @@ export function getBatchWorkspace(
     outputVersions,
     assetFingerprints,
     poolColors: poolFacts.colors,
+    analysisColors,
+    analysisColorsUnavailable,
     frozenTitleRows,
     coverContractHashes: new Map(),
   };
@@ -777,7 +815,7 @@ export function getBatchWorkspace(
       ? selectFullRenderTask(fullRenderTasksByTarget.get(plan.currentVersionId), fullRenderRequestKey)
       : null;
     const latestFullAttempt = plan.currentVersionId
-      ? selectLatestFullRenderAttempt(fullRenderTasksByTarget.get(plan.currentVersionId)?.[0], succeededAttemptsByTask)
+      ? selectLatestFullRenderAttempt(fullRenderTasksByTarget.get(plan.currentVersionId), succeededAttemptsByTask)
       : null;
     const coverFacts = selectCoverTaskFacts(
       plan.currentVersionId ? coverTasksByTarget.get(plan.currentVersionId) : undefined,

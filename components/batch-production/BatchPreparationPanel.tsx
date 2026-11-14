@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { createRefreshCoordinator, type WorkspaceRefreshRequest } from './workspace-refresh';
 import { Tag, Segmented } from '@/components/ui/Appearance';
@@ -154,6 +154,21 @@ function visionProviderStorageKey(projectId: string): string {
   return `batch-vision-provider:${projectId}`;
 }
 
+// 页面可见性走外部存储订阅:挂载时就读真实值并随即订阅,后台标签页首次进入
+// 也不会遗漏;避免在 effect 里同步 setState 触发级联渲染。
+function subscribePageVisibility(onStoreChange: () => void): () => void {
+  document.addEventListener('visibilitychange', onStoreChange);
+  return () => document.removeEventListener('visibilitychange', onStoreChange);
+}
+
+function pageVisibilitySnapshot(): boolean {
+  return !document.hidden;
+}
+
+function serverPageVisibilitySnapshot(): boolean {
+  return true;
+}
+
 export default function BatchPreparationPanel({ projectId }: BatchPreparationPanelProps) {
   const [preparation, setPreparation] = useState<BatchPreparationResult | null>(null);
   const [batches, setBatches] = useState<BatchSidebarItem[]>([]);
@@ -251,7 +266,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [outputPreset, setOutputPreset] = useState<OutputPreset>('3:4');
   const [workspace, setWorkspace] = useState<BatchWorkspaceView | null>(null);
   // 页面可见性:隐藏时暂停 3 秒轮询,恢复可见时立即刷新一次,避免后台标签页空转。
-  const [pageVisible, setPageVisible] = useState(() => (typeof document === 'undefined' ? true : !document.hidden));
+  const pageVisible = useSyncExternalStore(
+    subscribePageVisibility,
+    pageVisibilitySnapshot,
+    serverPageVisibilitySnapshot,
+  );
   const [cardFilter, setCardFilter] = useState<CardFilter>('all');
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
   // loadWorkspace 需要读当前选择做"失效移除"计算,又不希望它进 useCallback 依赖。
@@ -701,11 +720,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }, [selectedBatchId, loadWorkspace, shouldPollBatch, pageVisible]);
 
   // 恢复可见立即刷新一次;隐藏期间不叠加轮询,避免后台空转。
+  // 可见性状态本身由 useSyncExternalStore 维护,这里只做外部副作用。
   useEffect(() => {
     const handleVisibilityChange = () => {
-      const visible = !document.hidden;
-      setPageVisible(visible);
-      if (visible && selectedBatchId) {
+      if (!document.hidden && selectedBatchId) {
         void loadTasks(selectedBatchId);
         void loadWorkspace(selectedBatchId);
       }

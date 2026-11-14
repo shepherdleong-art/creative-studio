@@ -294,6 +294,46 @@ try {
   assert.deepEqual(getBatchWorkspace(db, 'p1', 'b1').cards.find(card => card.planId === 'plan1')!.sourceConflictAssetIds, []);
   assert.equal(getBatchWorkspace(db, 'p1', 'b1').cards.find(card => card.planId === 'plan1')!.sourceWarnings?.length, 0,
     '冲突解除后，实时检查不保留过期警告');
+
+  // 老批次整片任务回退:较新的 failed 任务没有成功尝试时，JOIN 语义应跳过它，
+  // 继续找更早的、确实有成功尝试的任务；不能因为最新任务失败就丢失封面与
+  // productionReady 的兼容事实。
+  {
+    const legacyNow = '2026-08-06T10:00:00.000Z';
+    db.prepare(`INSERT INTO batch_productions (id, projectId, name, status, currentVersionId, progressJson, controlState, createdAt, updatedAt) VALUES ('b-legacy','p1','老批次回退','running','bv-legacy','{}','running',?,?)`).run(legacyNow, legacyNow);
+    db.prepare(`INSERT INTO batch_production_versions (id,batchId,versionNumber,copyCount,defaultsJson,inputState,frozenAt,createdAt) VALUES ('bv-legacy','b-legacy',1,1,'{}','frozen',?,?)`).run(legacyNow, legacyNow);
+    db.prepare(`INSERT INTO batch_script_snapshots (id,batchVersionId,sourceScriptId,title,bodyText,sourceVersion,copyCount,createdAt) VALUES ('ss-legacy','bv-legacy','s1','脚本标题','正文','v1',1,?)`).run(legacyNow);
+    db.prepare(`INSERT INTO batch_output_plans (id,batchVersionId,scriptSnapshotId,seq,planJson,currentVersionId,currentArtifactId,createdAt) VALUES ('lplan1','bv-legacy','ss-legacy',1,'{}','lov1',NULL,?)`).run(legacyNow);
+    db.prepare(`INSERT INTO batch_output_versions (id,planId,versionNumber,arrangementJson,createdAt) VALUES ('lov1','lplan1',1,?,?)`).run(JSON.stringify({
+      productionReady: false,
+      clips: [{
+        clipId: 'legacy-clip', assetId: 'timeline-asset', sourceStartUs: 0,
+        sourceEndUs: 2_000_000, timelineStartUs: 0, timelineEndUs: 2_000_000,
+      }],
+      cover: { assetId: 'timeline-asset', timeUs: 0 },
+      warnings: [], blockers: [],
+    }), legacyNow);
+    // 更早的一条成功任务(封面/生产就绪事实) + 更新的一条 failed 任务(无成功尝试)。
+    insertTask.run('legacy-full-old','p1','b-legacy','render','output_version','lov1','succeeded','running',1,'2026-08-06T10:00:00.000Z','2026-08-06T10:00:00.000Z');
+    db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,resultJson,startedAt,finishedAt,createdAt) VALUES ('legacy-old-attempt','legacy-full-old',1,'succeeded','{}',?,?,?,?)`).run(
+      JSON.stringify({
+        outputVersionId: 'lov1', productionReady: true,
+        coverRelativePath: 'batch-renders/lov1/cover.jpg',
+        videoChecksum: 'sha256:legacy-video', coverChecksum: 'sha256:legacy-cover',
+        editRevision: 0, coverTimeUs: 0, subtitleCues: [],
+      }),
+      '2026-08-06T10:00:00.000Z', '2026-08-06T10:00:01.000Z', '2026-08-06T10:00:00.000Z',
+    );
+    insertTask.run('legacy-full-new','p1','b-legacy','render','output_version','lov1','failed','running',1,'2026-08-06T11:00:00.000Z','2026-08-06T11:00:01.000Z');
+    db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,errorCode,errorMessage,startedAt,finishedAt,createdAt) VALUES ('legacy-new-attempt','legacy-full-new',1,'failed','{}','render_failed','新一轮失败','2026-08-06T11:00:00.000Z','2026-08-06T11:00:01.000Z','2026-08-06T11:00:00.000Z')`).run();
+
+    const legacyCard = getBatchWorkspace(db, 'p1', 'b-legacy').cards.find(card => card.planId === 'lplan1')!;
+    assert.equal(legacyCard.coverStatus, 'succeeded', '最新任务失败不得遮蔽更早的成功整片尝试');
+    assert.equal(legacyCard.coverAttemptId, 'legacy-old-attempt', '封面回落必须使用更早的成功尝试');
+    assert.equal(legacyCard.productionReady, true, 'productionReady 兼容事实必须来自更早的成功尝试');
+    assert.equal(legacyCard.approvable, true);
+  }
+
   // ---- 工作区规模 / SQL 预算回归 ----
   // 按批次集中取数后,1/25/100 卡的 SQL 条数必须基本恒定,不能为每张卡
   // 追加一套查询;带历史正式产物的大批次还要保持契约/新鲜度语义。
@@ -351,12 +391,12 @@ try {
       })();
     };
 
-    const measureWorkspace = () => {
+    const measureWorkspace = (targetBatchId: string) => {
       queryCount = 0;
       countQueries = true;
       const startedAt = performance.now();
       try {
-        const measured = getBatchWorkspace(db, 'p1', 'b-scale');
+        const measured = getBatchWorkspace(db, 'p1', targetBatchId);
         return { view: measured, ms: performance.now() - startedAt, sql: queryCount };
       } finally {
         countQueries = false;
@@ -368,7 +408,7 @@ try {
       addScaleCards(cards);
       const samples: Array<{ ms: number; sql: number }> = [];
       for (let sample = 0; sample < 7; sample += 1) {
-        const measured = measureWorkspace();
+        const measured = measureWorkspace('b-scale');
         assert.equal(measured.view.cards.length, cards);
         assert.ok(measured.view.cards.every(card => card.formalOutdated === false), '成对正式产物与当前契约一致时不得标记过期');
         samples.push({ ms: measured.ms, sql: measured.sql });
@@ -390,6 +430,55 @@ try {
       `SQL 条数不能随卡片数线性增长:1 卡 ${cardOne.maxSql},100 卡 ${cardHundred.maxSql}`,
     );
     assert.ok(cardHundred.medianMs < 300, `100 卡工作区中位耗时回归:${cardHundred.medianMs}ms`);
+
+    // 封面素材不在冻结池内:契约解析会回落素材分析,该查询必须也按批次预加载,
+    // 否则每张卡多一条 SQL,100 卡会超出预算。
+    {
+      const outsideNow = '2026-08-05T12:00:00.000Z';
+      db.prepare(`INSERT INTO batch_productions (id, projectId, name, status, currentVersionId, progressJson, controlState, createdAt, updatedAt) VALUES ('b-scale-outside','p1','池外封面批次','running','bv-scale-outside','{}','running',?,?)`).run(outsideNow, outsideNow);
+      db.prepare(`INSERT INTO batch_production_versions (id,batchId,versionNumber,copyCount,defaultsJson,inputState,frozenAt,createdAt) VALUES ('bv-scale-outside','b-scale-outside',1,100,'{}','frozen',?,?)`).run(outsideNow, outsideNow);
+      db.prepare(`INSERT INTO batch_script_snapshots (id,batchVersionId,sourceScriptId,title,bodyText,sourceVersion,copyCount,createdAt) VALUES ('ss-scale-outside','bv-scale-outside','s1','脚本标题','正文','v1',100,?)`).run(outsideNow);
+      const outsideArrangement = JSON.stringify({
+        productionReady: false,
+        clips: [{
+          clipId: 'outside-clip', assetId: 'timeline-asset', sourceStartUs: 0,
+          sourceEndUs: 2_000_000, timelineStartUs: 0, timelineEndUs: 2_000_000,
+        }],
+        cover: { assetId: 'outside-pool-asset', timeUs: 0 },
+        warnings: [], blockers: [],
+      });
+      const insertOutsidePlan = db.prepare(`INSERT INTO batch_output_plans (id,batchVersionId,scriptSnapshotId,seq,planJson,currentVersionId,currentArtifactId,createdAt) VALUES (?,'bv-scale-outside','ss-scale-outside',?,'{}',?,NULL,?)`);
+      const insertOutsideVersion = db.prepare(`INSERT INTO batch_output_versions (id,planId,versionNumber,arrangementJson,createdAt) VALUES (?,?,1,?,?)`);
+      let outsideInserted = 0;
+      const addOutsideCards = (target: number) => {
+        db.transaction(() => {
+          while (outsideInserted < target) {
+            outsideInserted += 1;
+            insertOutsidePlan.run(`op-${outsideInserted}`, outsideInserted, `ov-out-${outsideInserted}`, outsideNow);
+            insertOutsideVersion.run(`ov-out-${outsideInserted}`, `op-${outsideInserted}`, outsideArrangement, outsideNow);
+          }
+        })();
+      };
+      const outsideSql: number[] = [];
+      for (const cards of [1, 100]) {
+        addOutsideCards(cards);
+        let maxSql = 0;
+        for (let sample = 0; sample < 5; sample += 1) {
+          const measured = measureWorkspace('b-scale-outside');
+          assert.equal(measured.view.cards.length, cards);
+          assert.ok(measured.view.cards.every(card => card.coverRange === null), '池外封面素材必须显式返回不可用范围');
+          maxSql = Math.max(maxSql, measured.sql);
+        }
+        outsideSql.push(maxSql);
+      }
+      assert.ok(outsideSql[1] <= 100, `池外封面 100 卡关联读取必须 ≤100 条 SQL,实际 ${outsideSql[1]}`);
+      assert.ok(
+        outsideSql[1] <= outsideSql[0] + 20,
+        `池外封面 SQL 条数不能随卡片数线性增长:1 卡 ${outsideSql[0]},100 卡 ${outsideSql[1]}`,
+      );
+      console.log('workspace outside-pool samples', JSON.stringify({ one: outsideSql[0], hundred: outsideSql[1] }));
+    }
+
     console.log('workspace scale samples', JSON.stringify(scaleResults));
   }
 

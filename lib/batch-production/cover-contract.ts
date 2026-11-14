@@ -35,6 +35,10 @@ export interface CoverContractPreload {
   assetFingerprints?: ReadonlyMap<string, string>;
   /** `${batchVersionId}\u0000${assetId}` → 冻结色彩快照 JSON(池内行,含 null) */
   poolColors?: ReadonlyMap<string, string | null>;
+  /** assetId → 最近一条素材分析的 colorJson;缺行回落默认关闭快照。 */
+  analysisColors?: ReadonlyMap<string, string | null>;
+  /** true 表示批次预加载失败(如旧库没有 analysis colorJson 列),缺池色必须按原 fail-closed 处理。 */
+  analysisColorsUnavailable?: boolean;
   /** planId → 冻结封面标题原始行 */
   frozenTitleRows?: ReadonlyMap<string, FrozenCoverTitleRow | null>;
   /** 同次请求内复用封面契约哈希缓存;仅未显式传 frozenArrangementJson 时使用。 */
@@ -208,10 +212,19 @@ export function resolveCoverContract(
     colorJsonStr = poolItem?.colorJson;
   }
   if (!colorJsonStr) {
-    // 池内没有色彩快照时回落到最近一条素材分析;该查询本身失败时保持
-    // 原来的 fail-closed 语义(契约不可解析),不在这里吞错。
-    const analysis = db.prepare(`SELECT colorJson FROM batch_asset_analysis WHERE assetId = ? ORDER BY createdAt DESC LIMIT 1`).get(assetId) as { colorJson: string } | undefined;
-    colorJsonStr = analysis?.colorJson ?? '{"lutId":null}';
+    if (preload?.analysisColors) {
+      // 批次级预加载覆盖所有缺池色的引用素材;缺行与原逐卡查询一致回落默认。
+      colorJsonStr = preload.analysisColors.get(assetId) ?? '{"lutId":null}';
+    } else if (preload?.analysisColorsUnavailable) {
+      // 预加载不可用(例如旧库没有 analysis colorJson 列):保持原逐卡查询失败
+      // 时的 fail-closed 语义,但不再为每张卡发起一次必败的 SQL。
+      throw new Error(`素材 ${assetId} 缺少可用色彩快照`);
+    } else {
+      // 池内没有色彩快照时回落到最近一条素材分析;该查询本身失败时保持
+      // 原来的 fail-closed 语义(契约不可解析),不在这里吞错。
+      const analysis = db.prepare(`SELECT colorJson FROM batch_asset_analysis WHERE assetId = ? ORDER BY createdAt DESC LIMIT 1`).get(assetId) as { colorJson: string } | undefined;
+      colorJsonStr = analysis?.colorJson ?? '{"lutId":null}';
+    }
   }
 
   const colorSnapshot = upgradeColorSnapshot(JSON.parse(colorJsonStr));
