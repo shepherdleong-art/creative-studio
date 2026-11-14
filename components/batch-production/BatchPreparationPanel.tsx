@@ -173,6 +173,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [preparation, setPreparation] = useState<BatchPreparationResult | null>(null);
   const [batches, setBatches] = useState<BatchSidebarItem[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState('');
+  /** 协调器在响应回来时需要同步读到最新活动批次；render 中更新，避免 effect 滞后。 */
+  const selectedBatchIdRef = useRef('');
+  selectedBatchIdRef.current = selectedBatchId;
   const [newBatchName, setNewBatchName] = useState('');
   const [selectedScripts, setSelectedScripts] = useState<Record<string, number>>({});
   const [selectedAssets, setSelectedAssets] = useState<Record<string, AssetSelectionState>>({});
@@ -472,7 +475,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     try {
       const view = await readJson<BatchTasksView>(await fetch(
         `/api/batch-production/batches/${encodeURIComponent(batchId)}/tasks?projectId=${encodeURIComponent(projectId)}`,
-        { cache: 'no-store' },
+        { cache: 'no-store', signal: AbortSignal.timeout(15_000) },
       ));
       // 切批次后到达的旧响应不得覆盖新批次的任务视图。
       if (!request.isCurrent()) return;
@@ -495,8 +498,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const loadTasksWorkerRef = useRef(loadTasksWorker);
   useEffect(() => { loadTasksWorkerRef.current = loadTasksWorker; }, [loadTasksWorker]);
   // 同类请求最多一个在途;轮询与编辑后的立即刷新共用同一个协调器。
+  // 活动批次通过 ref 同步读取,切批次后、effect 提交前到达的旧响应也能被拒绝。
   const tasksRefresher = useMemo(
-    () => createRefreshCoordinator((request) => loadTasksWorkerRef.current(request)),
+    () => createRefreshCoordinator(
+      (request) => loadTasksWorkerRef.current(request),
+      () => selectedBatchIdRef.current,
+    ),
     [],
   );
   const loadTasks = useCallback(
@@ -513,7 +520,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     try {
       const view = await readJson<BatchWorkspaceView>(await fetch(
         `/api/batch-production/batches/${encodeURIComponent(batchId)}/workspace?projectId=${encodeURIComponent(projectId)}`,
-        { cache: 'no-store' },
+        { cache: 'no-store', signal: AbortSignal.timeout(15_000) },
       ));
       // 切批次后到达的旧响应不得覆盖当前批次的选择/卡片状态。
       if (!request.isCurrent()) return;
@@ -554,19 +561,16 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const loadWorkspaceWorkerRef = useRef(loadWorkspaceWorker);
   useEffect(() => { loadWorkspaceWorkerRef.current = loadWorkspaceWorker; }, [loadWorkspaceWorker]);
   const workspaceRefresher = useMemo(
-    () => createRefreshCoordinator((request) => loadWorkspaceWorkerRef.current(request)),
+    () => createRefreshCoordinator(
+      (request) => loadWorkspaceWorkerRef.current(request),
+      () => selectedBatchIdRef.current,
+    ),
     [],
   );
   const loadWorkspace = useCallback(
     (batchId: string) => workspaceRefresher.refresh(batchId),
     [workspaceRefresher],
   );
-
-  // 协调器用「当前活动批次」核对迟到响应;切换批次时立即更新。
-  useEffect(() => {
-    tasksRefresher.setActiveBatch(selectedBatchId);
-    workspaceRefresher.setActiveBatch(selectedBatchId);
-  }, [selectedBatchId, tasksRefresher, workspaceRefresher]);
 
   // 同页会话内:渲染中的导出条目全部成功后自动再调一次导出接口完成发布。
   // 关闭/刷新页面后服务端任务继续,但需要用户回到导出页再点一次「导出」。
