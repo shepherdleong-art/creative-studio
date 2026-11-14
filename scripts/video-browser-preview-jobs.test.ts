@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import childProcess from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { syncBuiltinESMExports } from 'node:module';
 import { mock } from 'node:test';
 import type { ExecutionFacade } from '../lib/media-core/execution/context.ts';
@@ -87,6 +88,90 @@ try {
   }
   assert.equal(await ensureBrowserPreview(source), preview);
   assert.equal(await ensureBrowserPreview(compatibleSource), browserPreviewPath(compatibleSource));
+
+  // --- 失败/中断不得留下 ready 半成品，临时文件必须清理 ---
+  const failingSource = path.join(dataRoot, 'transcode-fails.mp4');
+  await runFfmpeg([
+    '-y', '-f', 'lavfi', '-i', 'testsrc=duration=1:size=320x240:rate=24',
+    '-c:v', 'libx265', '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1', failingSource,
+  ], { timeoutMs: 60_000 });
+  const failingPreview = browserPreviewPath(failingSource);
+  const realSpawn = childProcess.spawn;
+  let transcodeSpawns = 0;
+  const temporaryOutputs: string[] = [];
+  const spawnMock = mock.method(childProcess, 'spawn', function (
+    command: string,
+    args?: readonly string[],
+    options?: unknown,
+  ) {
+    const argv = Array.isArray(args) ? [...args] : [];
+    if (argv.includes('libx264')) {
+      transcodeSpawns += 1;
+      if (argv.includes(failingSource)) {
+        // 模拟 ffmpeg 写了一半临时文件后失败退出；原子发布前的半成品必须被清理。
+        const outputPath = argv[argv.length - 1];
+        fs.writeFileSync(outputPath, Buffer.from('partial-transcode'));
+        temporaryOutputs.push(outputPath);
+        const fake = new EventEmitter() as EventEmitter & {
+          stdout: EventEmitter;
+          stderr: EventEmitter;
+          kill: () => void;
+        };
+        fake.stdout = new EventEmitter();
+        fake.stderr = new EventEmitter();
+        fake.kill = () => {};
+        setImmediate(() => fake.emit('close', 1));
+        return fake;
+      }
+    }
+    return (realSpawn as (...rest: unknown[]) => unknown).apply(childProcess, [command, args, options]);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal(await ensureBrowserPreview(failingSource), failingSource, '转码失败回退原件');
+    assert.equal(transcodeSpawns, 1);
+    assert.equal(fs.existsSync(failingPreview), false, '失败不得留下可被 existsSync 复用的 ready 半成品');
+    for (const tempPath of temporaryOutputs) {
+      assert.equal(fs.existsSync(tempPath), false, `失败必须清理临时文件：${path.basename(tempPath)}`);
+    }
+    assert.equal(
+      getDb().prepare('SELECT status FROM media_derivative_jobs WHERE sourcePath = ?').pluck().get(failingSource),
+      'failed',
+    );
+    await assert.rejects(
+      ensureBrowserPreview(failingSource),
+      (error: unknown) => (error as { code?: string }).code === 'browser_preview_pending',
+      '失败重试窗口内不得再次转码',
+    );
+    assert.equal(transcodeSpawns, 1);
+
+    // --- 并发首次访问只转码一次 ---
+    const dedupeSource = path.join(dataRoot, 'dedupe-hevc.mp4');
+    await runFfmpeg([
+      '-y', '-f', 'lavfi', '-i', 'testsrc=duration=1:size=320x240:rate=24',
+      '-c:v', 'libx265', '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1', dedupeSource,
+    ], { timeoutMs: 60_000 });
+    const dedupePreview = browserPreviewPath(dedupeSource);
+    const beforeDedupe = transcodeSpawns;
+    const [firstConcurrent, secondConcurrent] = await Promise.all([
+      ensureBrowserPreview(dedupeSource),
+      ensureBrowserPreview(dedupeSource),
+    ]);
+    assert.equal(firstConcurrent, dedupePreview);
+    assert.equal(secondConcurrent, dedupePreview);
+    assert.equal(transcodeSpawns - beforeDedupe, 1, '并发首次访问只允许转码一次');
+    assert.ok(fs.statSync(dedupePreview).size > 0, '原子发布后衍生物必须完整可读');
+    assert.equal(await ensureBrowserPreview(dedupeSource), dedupePreview);
+    assert.equal(transcodeSpawns - beforeDedupe, 1, '已就绪衍生物不得重复转码');
+    assert.deepEqual(
+      fs.readdirSync(dataRoot).filter(name => name.includes('.tmp')),
+      [],
+      '成功发布后不得残留临时文件',
+    );
+  } finally {
+    spawnMock.mock.restore();
+    syncBuiltinESMExports();
+  }
 
   const authorizationFailure = new Error('preview-authorization-denied');
   await assert.rejects(

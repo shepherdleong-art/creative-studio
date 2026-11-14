@@ -26,7 +26,8 @@ db.exec(`
   CREATE TABLE team_files (
     id TEXT PRIMARY KEY, seriesId TEXT, version INTEGER, ownerUserId TEXT, relativePath TEXT UNIQUE,
     mimeType TEXT, byteSize INTEGER, sha256 TEXT, state TEXT, derivedFromFileId TEXT,
-    readySeq INTEGER UNIQUE, createdAt TEXT, readyAt TEXT, FOREIGN KEY(ownerUserId) REFERENCES team_users(id)
+    readySeq INTEGER UNIQUE, createdAt TEXT, readyAt TEXT, verifiedIdentityJson TEXT,
+    FOREIGN KEY(ownerUserId) REFERENCES team_users(id)
   );
   CREATE TABLE team_file_references (
     fileId TEXT, resourceType TEXT, resourceId TEXT, role TEXT, pinKind TEXT, createdAt TEXT, releasedAt TEXT,

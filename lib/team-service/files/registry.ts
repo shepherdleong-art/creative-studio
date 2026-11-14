@@ -27,6 +27,8 @@ export interface TeamFileRecord {
   sha256: string;
   state: TeamFileState;
   derivedFromFileId: string | null;
+  /** 上次完整内容核验时的文件身份；仅衍生文件记录，用于跳过重复全量哈希。 */
+  verifiedIdentityJson: string | null;
   readySeq: number | null;
   createdAt: string;
   readyAt: string | null;
@@ -61,6 +63,61 @@ function sha256FileSync(filePath: string): string {
   return hash.digest('hex');
 }
 
+interface TeamFileStatIdentity {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}
+
+/**
+ * 衍生文件身份：dev/ino/size/mtime/ctime。
+ * 只在身份完全一致时才信任上次的完整内容核验；路径相同不足以证明内容未变。
+ */
+function teamFileIdentityJson(stat: fs.Stats): string {
+  return JSON.stringify({
+    dev: stat.dev,
+    ino: stat.ino,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+  } satisfies TeamFileStatIdentity);
+}
+
+function parseTeamFileIdentity(value: string | null): TeamFileStatIdentity | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    if (
+      typeof record.dev !== 'number' || typeof record.ino !== 'number'
+      || typeof record.size !== 'number' || typeof record.mtimeMs !== 'number'
+      || typeof record.ctimeMs !== 'number'
+    ) return null;
+    return {
+      dev: record.dev,
+      ino: record.ino,
+      size: record.size,
+      mtimeMs: record.mtimeMs,
+      ctimeMs: record.ctimeMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function statMatchesTeamFileIdentity(stat: fs.Stats, identityJson: string | null): boolean {
+  const expected = parseTeamFileIdentity(identityJson);
+  if (!expected) return false;
+  return stat.dev === expected.dev
+    && stat.ino === expected.ino
+    && stat.size === expected.size
+    && stat.mtimeMs === expected.mtimeMs
+    && stat.ctimeMs === expected.ctimeMs;
+}
+
 function readFile(db: Database.Database, fileId: string): TeamFileRecord | undefined {
   return db.prepare('SELECT * FROM team_files WHERE id = ?').get(fileId) as TeamFileRecord | undefined;
 }
@@ -84,7 +141,6 @@ export function registerReadyTeamFile(
   const stat = fs.statSync(absolutePath);
   if (!stat.isFile()) throw new Error('只能登记普通文件');
   const relativePath = path.relative(path.resolve(input.storageRoot), absolutePath).split(path.sep).join('/');
-  const sha256 = sha256FileSync(absolutePath);
   const source = input.derivedFromFileId ? readFile(db, input.derivedFromFileId) : undefined;
   if (input.derivedFromFileId && (!source || source.state !== 'ready')) {
     throw new Error('衍生物源文件尚未就绪');
@@ -98,8 +154,22 @@ export function registerReadyTeamFile(
   const existing = db.prepare("SELECT * FROM team_files WHERE relativePath = ? AND state = 'ready'")
     .get(relativePath) as TeamFileRecord | undefined;
   if (existing) {
+    // 授权与谱系校验必须在任何缓存复用之前完成：命中登记也要逐次授权。
     input.validateExisting?.(existing);
-    if (existing.derivedFromFileId !== (input.derivedFromFileId ?? null) || existing.sha256 !== sha256) {
+    if (existing.derivedFromFileId !== (input.derivedFromFileId ?? null)) {
+      throw new Error('文件身份与既有不可变登记不一致');
+    }
+    // 快速路径只适用于衍生文件：身份（dev/ino/size/mtime/ctime）完全一致时，
+    // 才信任上次完整核验的 sha256。通用文件仍每次读满全文件。
+    // 本函数整体同步执行，Node 单线程下不会与其他登记交错，无需额外并发去重。
+    const identity = teamFileIdentityJson(stat);
+    const reuseVerifiedFingerprint = Boolean(
+      input.derivedFromFileId
+      && statMatchesTeamFileIdentity(stat, existing.verifiedIdentityJson)
+      && existing.byteSize === stat.size,
+    );
+    const sha256 = reuseVerifiedFingerprint ? existing.sha256 : sha256FileSync(absolutePath);
+    if (existing.sha256 !== sha256) {
       throw new Error('文件身份与既有不可变登记不一致');
     }
     const attach = db.prepare(`
@@ -109,17 +179,26 @@ export function registerReadyTeamFile(
     const at = (input.now?.() ?? new Date()).toISOString();
     db.transaction(() => {
       assertTeamPublicationAllowed(db);
+      if (input.derivedFromFileId && !reuseVerifiedFingerprint) {
+        // 首次登记遗留的旧行缺少身份，或文件身份变化但内容哈希相同：刷新身份记录。
+        db.prepare('UPDATE team_files SET verifiedIdentityJson = ? WHERE id = ?').run(identity, existing.id);
+      }
       for (const reference of references) {
         attach.run(existing.id, reference.resourceType, reference.resourceId,
           reference.role ?? (input.derivedFromFileId ? 'derivative' : 'input'), reference.pinKind ?? 'entity', at);
       }
     }).immediate();
-    return existing;
+    return input.derivedFromFileId && !reuseVerifiedFingerprint
+      ? { ...existing, verifiedIdentityJson: identity }
+      : existing;
   }
 
+  const sha256 = sha256FileSync(absolutePath);
   const id = randomUUID();
   const seriesId = input.seriesId ?? source?.seriesId ?? id;
   const at = (input.now?.() ?? new Date()).toISOString();
+  // 身份记录只对衍生文件有意义；通用文件不参与快速路径。
+  const verifiedIdentityJson = input.derivedFromFileId ? teamFileIdentityJson(stat) : null;
   const publish = db.transaction(() => {
     assertTeamPublicationAllowed(db);
     const version = ((db.prepare('SELECT MAX(version) AS version FROM team_files WHERE seriesId = ?')
@@ -129,11 +208,11 @@ export function registerReadyTeamFile(
     db.prepare(`
       INSERT INTO team_files (
         id, seriesId, version, ownerUserId, relativePath, mimeType, byteSize, sha256,
-        state, derivedFromFileId, readySeq, createdAt, readyAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?)
+        state, derivedFromFileId, readySeq, createdAt, readyAt, verifiedIdentityJson
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?)
     `).run(
       id, seriesId, version, input.ownerUserId, relativePath, input.mimeType, stat.size, sha256,
-      input.derivedFromFileId ?? null, readySeq, at, at,
+      input.derivedFromFileId ?? null, readySeq, at, at, verifiedIdentityJson,
     );
     const insertReference = db.prepare(`
       INSERT INTO team_file_references (fileId, resourceType, resourceId, role, pinKind, createdAt)

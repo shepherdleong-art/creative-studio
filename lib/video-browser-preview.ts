@@ -196,16 +196,25 @@ async function doEnsureBrowserPreview(
 
       const claim = await claimJob(videoPath, previewPath, jobKey);
       if (!claim) throw new BrowserPreviewPendingError(jobKey);
+      // 先写同目录临时文件，成功后原子 rename 到正式路径：任何失败/取消/崩溃
+      // 都只会留下临时文件，不会被 fs.existsSync(previewPath) 当作 ready 复用。
+      const temporaryPath = `${previewPath}.${claim.owner}.tmp.mp4`;
       try {
         await runFfmpeg([
           '-y', '-i', videoPath,
           '-map', '0:v:0', '-map', '0:a?',
           '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
-          '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', previewPath,
+          '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', temporaryPath,
         ], { timeoutMs: PREVIEW_TRANSCODE_TIMEOUT_MS });
+        fs.renameSync(temporaryPath, previewPath);
         await finishJob(jobKey, claim.owner, { status: 'ready' });
         return previewPath;
       } catch (error) {
+        try {
+          fs.rmSync(temporaryPath, { force: true });
+        } catch {
+          // 清理失败只留下不可复用的临时文件，不影响失败结果。
+        }
         await finishJob(jobKey, claim.owner, {
           status: 'failed',
           error: error instanceof Error ? error.message : String(error),
