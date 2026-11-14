@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { CostQuote, EnqueueInput } from '../lib/media-core/execution/context.ts';
+import { meterDatabase, seedCompletedHistory } from './execution-admission-metrics.ts';
 
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-execution-admission-'));
 const previousRoot = process.env.CREATIVE_STUDIO_DATA_ROOT;
@@ -51,6 +52,29 @@ async function setup(name: string) {
   await runtime.lifecycle.start({ ...identity, deploymentId: 'deployment-admission', signal: new AbortController().signal });
   cleanups.push(() => { runtime.closeNewWork(); });
   return { db, execution: runtime.facade };
+}
+
+async function meteredSetup(name: string) {
+  const root = path.join(fixtureRoot, name);
+  fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+  const raw = new Database(path.join(root, 'data', 'workbench.db'));
+  databases.add(raw);
+  raw.pragma('foreign_keys = ON');
+  const readiness = await checkExecutionReadiness({ db: raw, ...schemaUpgradeRuntimePaths(root) });
+  assert.equal(readiness.available, true);
+  registerExecutionInstance(raw, { ...identity, deploymentId: 'deployment-admission' });
+  const metered = meterDatabase(raw);
+  const runtime = createExecutionFacade({
+    db: metered.db,
+    deploymentId: 'deployment-admission',
+    journal,
+    actorAllowed: () => true,
+    scopeAllowed: () => true,
+    maintenance: () => false,
+  });
+  await runtime.lifecycle.start({ ...identity, deploymentId: 'deployment-admission', signal: new AbortController().signal });
+  cleanups.push(() => { runtime.closeNewWork(); });
+  return { raw, stats: metered.stats, reset: metered.reset, execution: runtime.facade };
 }
 
 function operation(actorId: string, key: string, options: {
@@ -392,6 +416,111 @@ try {
       const admitted = execution.admit({ ...identity, operationId: queued.operation.id });
       assert.equal(admitted.kind, 'admitted', '无费用资格或没有实际任务的成员不得稀释唯一生产成员的借用容量');
     }
+  }
+
+  {
+    const decisions: string[] = [];
+    const deferredDetails: string[] = [];
+    for (const historyRows of [0, 500, 2000]) {
+      const { raw, stats, reset, execution } = await meteredSetup(`history-scaling-${historyRows}`);
+      upsertExecutionPool(raw, {
+        poolKey: 'shared', kind: 'remote', capacity: 10, enabled: true,
+        mappingSnapshot: { providerId: 'provider-a' }, expectedVersion: 0,
+      });
+      updateActorPolicy(raw, {
+        actorId: 'scale-user', monthlyLimitMinor: null, personalConcurrency: 1, paused: false, expectedVersion: 0,
+      });
+      seedCompletedHistory(raw, historyRows);
+
+      const heapBefore = process.memoryUsage().heapUsed;
+      reset();
+      const idle = execution.admit(identity);
+      assert.deepEqual(idle, { kind: 'idle' });
+      assert.equal(stats.snapshotBytes, 0, `${historyRows} 条完成历史不得在空闲准入中被读取`);
+      assert.equal(stats.snapshotRows, 0, `${historyRows} 条完成历史不得被解析`);
+
+      const first = execution.enqueue(operation('scale-user', `scale-${historyRows}-first`, {
+        snapshot: { grantedInput: `grant-${historyRows}` },
+      }));
+      reset();
+      const granted = execution.admit({ ...identity, operationId: first.operation.id });
+      assert.equal(granted.kind, 'admitted');
+      if (granted.kind === 'admitted') {
+        assert.deepEqual(granted.grant.inputSnapshot, { grantedInput: `grant-${historyRows}` }, '获准后仍返回完整输入快照');
+      }
+      assert.equal(stats.snapshotRows, 1, '只允许搬运被授予操作自己的完整输入');
+      assert.ok(stats.snapshotBytes < 4096, `获准只读取选中操作的小输入快照，实际 ${stats.snapshotBytes} 字节`);
+
+      const second = execution.enqueue(operation('scale-user', `scale-${historyRows}-second`));
+      reset();
+      const deferred = execution.admit(identity);
+      assert.deepEqual(deferred, { kind: 'deferred', reasons: ['personal_concurrency'] });
+      assert.equal(stats.snapshotBytes, 0, `${historyRows} 条完成历史不得在延期准入中被读取`);
+      assert.equal(stats.snapshotRows, 0, `${historyRows} 条完成历史不得在延期准入中被解析`);
+      const heapGrowth = process.memoryUsage().heapUsed - heapBefore;
+      assert.ok(heapGrowth < 48 * 1024 * 1024, `准入不得长期保留完成历史快照（${historyRows} 条，堆增长 ${heapGrowth} 字节）`);
+
+      assert.equal(execution.admit({ ...identity, operationId: first.operation.id }).kind, 'idle', '已授予操作不得重复提交');
+      assert.equal(raw.prepare('SELECT COUNT(*) FROM execution_attempts WHERE operationId = ?').pluck().get(first.operation.id), 1);
+      assert.equal(raw.prepare("SELECT COUNT(*) FROM execution_operations WHERE status IN ('pending', 'deferred')").pluck().get(), 1,
+        '第二个操作应保持待准入');
+      decisions.push(JSON.stringify({ idle: idle.kind, granted: granted.kind, deferred }));
+      deferredDetails.push(raw.prepare('SELECT waitDetail FROM execution_operations WHERE id = ?')
+        .pluck().get(second.operation.id) as string);
+    }
+    assert.equal(new Set(decisions).size, 1, '0/500/2000 条完成历史必须给出完全一致的准入决策');
+    assert.equal(new Set(deferredDetails).size, 1, '等待详情不得因历史规模变化');
+  }
+
+  {
+    const mixedDetails: string[] = [];
+    const { updateTeamConcurrencyPolicy } = await import('../lib/media-core/execution/team-policy.ts');
+    for (const historyRows of [0, 2000]) {
+      const { raw, stats, reset, execution } = await meteredSetup(`history-mixed-${historyRows}`);
+      updateTeamConcurrencyPolicy(raw, { mode: 'auto', manualDefaultConcurrency: 1, expectedVersion: 0 });
+      upsertExecutionPool(raw, {
+        poolKey: 'shared', kind: 'remote', capacity: 10, enabled: true,
+        mappingSnapshot: { providerId: 'provider-a' }, expectedVersion: 0,
+      });
+      for (const actorId of ['held-a', 'held-b', 'held-c', 'held-d', 'released-e', 'deferred-f']) {
+        raw.prepare(`INSERT INTO execution_actor_policies (
+          actorId, monthlyLimitMinor, currency, personalConcurrency, paused, timezone, version, concurrencyMode, updatedAt
+        ) VALUES (?, ?, 'CNY', 0, 0, 'Asia/Shanghai', 1, 'inherit', ?)`)
+          .run(actorId, actorId === 'deferred-f' ? 1 : null, new Date().toISOString());
+      }
+      for (let index = 0; index < 3; index += 1) {
+        const queued = execution.enqueue(operation('held-a', `held-a-${index}`));
+        assert.equal(execution.admit({ ...identity, operationId: queued.operation.id }).kind, 'admitted');
+      }
+      execution.enqueue(operation('held-b', 'held-b-1'));
+      const accepted = execution.enqueue(operation('held-c', 'held-c-1'));
+      assert.equal(execution.admit({ ...identity, operationId: accepted.operation.id }).kind, 'admitted');
+      raw.prepare("UPDATE execution_operations SET status = 'accepted' WHERE id = ?").run(accepted.operation.id);
+      const unknownHeld = execution.enqueue(operation('held-d', 'held-d-1'));
+      assert.equal(execution.admit({ ...identity, operationId: unknownHeld.operation.id }).kind, 'admitted');
+      raw.prepare("UPDATE execution_operations SET status = 'unknown' WHERE id = ?").run(unknownHeld.operation.id);
+      const released = execution.enqueue(operation('released-e', 'released-e-1'));
+      assert.equal(execution.admit({ ...identity, operationId: released.operation.id }).kind, 'admitted');
+      raw.prepare("UPDATE execution_operations SET status = 'unknown' WHERE id = ?").run(released.operation.id);
+      raw.prepare("UPDATE execution_reservations SET state = 'released' WHERE operationId = ? AND kind = 'concurrency'")
+        .run(released.operation.id);
+      const deferredF = execution.enqueue(operation('deferred-f', 'deferred-f-1', { minor: 5 }));
+      assert.deepEqual(execution.admit({ ...identity, operationId: deferredF.operation.id }),
+        { kind: 'deferred', reasons: ['monthly_budget'] }, '无资格成员保持延期而不稀释自动公平');
+      seedCompletedHistory(raw, historyRows);
+      const overflow = execution.enqueue(operation('held-a', 'held-a-3'));
+      reset();
+      const result = execution.admit({ ...identity, operationId: overflow.operation.id });
+      assert.deepEqual(result, { kind: 'deferred', reasons: ['fair_share'] }, '自动公平上限必须按真实占用裁决');
+      const detail = raw.prepare("SELECT waitDetail FROM execution_operations WHERE taskId = 'held-a-3'")
+        .pluck().get() as string;
+      assert.equal(JSON.parse(detail).effectiveConcurrency, 3,
+        '真实已占额 unknown 计入轮转，已释放 unknown 与无资格延期不计入');
+      assert.equal(stats.snapshotBytes, 0, `${historyRows} 条完成历史不得参与混合需求的准入搬运`);
+      assert.equal(stats.snapshotRows, 0);
+      mixedDetails.push(detail);
+    }
+    assert.equal(new Set(mixedDetails).size, 1, '混合需求下 0/2000 条历史必须给出相同等待详情');
   }
 
   console.log('execution admission tests passed');

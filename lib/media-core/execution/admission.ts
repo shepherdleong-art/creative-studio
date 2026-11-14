@@ -1,14 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import type Database from 'better-sqlite3';
 import {
   ExecutionError,
   type AdmissionWaitReason,
   type AdmitResult,
   type ExecutionFacadeOptions,
   type InstanceFence,
-  type OperationRecord,
 } from './context.ts';
-import { mapOperation, readAttempt } from './records.ts';
+import {
+  mapOperationDecision,
+  readAttempt,
+  readOperation,
+  OPERATION_DECISION_COLUMNS,
+  type OperationDecision,
+  type OperationDecisionRow,
+} from './records.ts';
 import {
   monthlyCostUsage,
   actorModelAllowed,
@@ -34,42 +39,175 @@ interface PoolState {
 }
 
 interface AdmissionEvaluation {
-  row: Parameters<typeof mapOperation>[0];
-  operation: OperationRecord;
-  blocked: ReturnType<typeof candidateReason>;
+  operation: OperationDecision;
+  blocked: WaitDecision | null;
   priority: EffectiveMediaAdmissionPriority;
 }
 
-function heldPoolCount(options: AdmissionOptions, poolKey: string, actorId?: string): number {
-  return options.db.prepare(`
-    SELECT COUNT(*) AS count FROM execution_reservations
-    WHERE kind = 'concurrency' AND poolKey = ? AND state = 'held'
-      ${actorId === undefined ? '' : 'AND actorId = ?'}
-  `).pluck().get(...(actorId === undefined ? [poolKey] : [poolKey, actorId])) as number;
+type WaitDecision = { reason: AdmissionWaitReason; detail?: Omit<AdmissionWaitDetail, 'reason'> };
+
+/**
+ * 单次准入内的有界缓存。只在当前事务/调用内有效，函数返回后即可回收；
+ * 不得把这里的任何数据挂到数据库实例或模块级容器上长期保留。
+ */
+interface AdmissionRun {
+  options: AdmissionOptions;
+  now: Date;
+  accountingPeriod: string;
+  demand?: OperationDecision[];
+  waitingByActor?: Map<string, OperationDecision[]>;
+  policies: Map<string, ActorPolicy>;
+  pools: Map<string, PoolState | null>;
+  heldByPool?: Map<string, number>;
+  heldByPoolActor?: Map<string, number>;
+  heldOperationIds?: Set<string>;
+  monthlyUsage: Map<string, number>;
+  costUnknown: Map<string, boolean>;
+  autoLimits: Map<string, number>;
+  eligibility: Map<string, WaitDecision | null>;
 }
 
-const demandSnapshots = new WeakMap<Database.Database, OperationRecord[]>();
+function createRun(options: AdmissionOptions, now: Date): AdmissionRun {
+  return {
+    options,
+    now,
+    accountingPeriod: shanghaiAccountingPeriod(now),
+    policies: new Map(),
+    pools: new Map(),
+    monthlyUsage: new Map(),
+    costUnknown: new Map(),
+    autoLimits: new Map(),
+    eligibility: new Map(),
+  };
+}
 
-function automaticConcurrencyLimit(options: AdmissionOptions, operation: OperationRecord, poolKey: string, period: string): number {
-  const capacity = options.db.prepare('SELECT capacity FROM execution_pools WHERE poolKey = ?')
-    .pluck().get(poolKey) as number;
-  const rows = demandSnapshots.get(options.db) ?? options.db.prepare('SELECT * FROM execution_operations').all()
-    .map(row => mapOperation(row as Parameters<typeof mapOperation>[0]));
+function readPolicy(run: AdmissionRun, actorId: string): ActorPolicy {
+  const cached = run.policies.get(actorId);
+  if (cached) return cached;
+  const policy = readActorPolicy(run.options.db, actorId);
+  run.policies.set(actorId, policy);
+  return policy;
+}
+
+function readPoolState(run: AdmissionRun, poolKey: string): PoolState | undefined {
+  if (run.pools.has(poolKey)) return run.pools.get(poolKey) ?? undefined;
+  const pool = run.options.db.prepare('SELECT * FROM execution_pools WHERE poolKey = ?').get(poolKey) as
+    | PoolState | undefined;
+  run.pools.set(poolKey, pool ?? null);
+  return pool;
+}
+
+function heldCounts(run: AdmissionRun): { byPool: Map<string, number>; byPoolActor: Map<string, number> } {
+  if (!run.heldByPool || !run.heldByPoolActor) {
+    const byPool = new Map<string, number>();
+    const byPoolActor = new Map<string, number>();
+    const rows = run.options.db.prepare(`
+      SELECT poolKey, actorId, COUNT(*) AS count FROM execution_reservations
+      WHERE kind = 'concurrency' AND state = 'held'
+      GROUP BY poolKey, actorId
+    `).all() as Array<{ poolKey: string; actorId: string; count: number }>;
+    for (const row of rows) {
+      byPool.set(row.poolKey, (byPool.get(row.poolKey) ?? 0) + row.count);
+      byPoolActor.set(`${row.actorId}\u0000${row.poolKey}`, row.count);
+    }
+    run.heldByPool = byPool;
+    run.heldByPoolActor = byPoolActor;
+  }
+  return { byPool: run.heldByPool, byPoolActor: run.heldByPoolActor };
+}
+
+function heldPoolCount(run: AdmissionRun, poolKey: string, actorId?: string): number {
+  const counts = heldCounts(run);
+  return actorId === undefined
+    ? counts.byPool.get(poolKey) ?? 0
+    : counts.byPoolActor.get(`${actorId}\u0000${poolKey}`) ?? 0;
+}
+
+function heldOperationIds(run: AdmissionRun): Set<string> {
+  if (!run.heldOperationIds) {
+    run.heldOperationIds = new Set((run.options.db.prepare(`
+      SELECT DISTINCT operationId FROM execution_reservations
+      WHERE kind = 'concurrency' AND state = 'held'
+    `).all() as Array<{ operationId: string }>).map(({ operationId }) => operationId));
+  }
+  return run.heldOperationIds;
+}
+
+/** 仍然活跃的需求；终态历史不进入每次准入的搬运与解析。 */
+function demandRows(run: AdmissionRun): OperationDecision[] {
+  if (!run.demand) {
+    run.demand = (run.options.db.prepare(`
+      SELECT ${OPERATION_DECISION_COLUMNS} FROM execution_operations
+      WHERE status IN ('pending', 'deferred', 'admitted', 'maybe_sent', 'accepted', 'reconciling', 'unknown')
+    `).all() as OperationDecisionRow[]).map(mapOperationDecision);
+  }
+  return run.demand;
+}
+
+function waitingRowsByActor(run: AdmissionRun): Map<string, OperationDecision[]> {
+  if (!run.waitingByActor) {
+    const grouped = new Map<string, OperationDecision[]>();
+    const rows = run.options.db.prepare(`
+      SELECT ${OPERATION_DECISION_COLUMNS} FROM execution_operations
+      WHERE status IN ('pending', 'deferred')
+      ORDER BY actorId, readySeq
+    `).all() as OperationDecisionRow[];
+    for (const row of rows) {
+      const operation = mapOperationDecision(row);
+      const list = grouped.get(operation.actorId) ?? [];
+      list.push(operation);
+      grouped.set(operation.actorId, list);
+    }
+    run.waitingByActor = grouped;
+  }
+  return run.waitingByActor;
+}
+
+function monthlyUsage(run: AdmissionRun, actorId: string): number {
+  const cached = run.monthlyUsage.get(actorId);
+  if (cached !== undefined) return cached;
+  const usage = monthlyCostUsage(run.options.db, actorId, run.accountingPeriod);
+  run.monthlyUsage.set(actorId, usage);
+  return usage;
+}
+
+function hasUnknownCost(run: AdmissionRun, actorId: string): boolean {
+  const cached = run.costUnknown.get(actorId);
+  if (cached !== undefined) return cached;
+  const unknown = Boolean(run.options.db.prepare(`
+    SELECT 1 FROM execution_reservations
+    WHERE kind = 'cost' AND actorId = ? AND state IN ('held', 'settled') AND costState = 'unknown' LIMIT 1
+  `).get(actorId));
+  run.costUnknown.set(actorId, unknown);
+  return unknown;
+}
+
+function automaticConcurrencyLimit(run: AdmissionRun, poolKey: string): number {
+  const cached = run.autoLimits.get(poolKey);
+  if (cached !== undefined) return cached;
+  const capacity = readPoolState(run, poolKey)?.capacity ?? Number.NaN;
   const activeActors = new Set<string>();
-  for (const candidate of rows) {
+  for (const candidate of demandRows(run)) {
     if (!candidate.requiredPools.includes(poolKey)) continue;
     if (candidate.status === 'pending' || candidate.status === 'deferred') {
-      const reason = candidateReason(options, candidate, readActorPolicy(options.db, candidate.actorId), period, true);
-      if (reason) continue;
+      if (eligibilityReason(run, candidate)) continue;
     } else if (['admitted', 'maybe_sent', 'accepted', 'reconciling', 'unknown'].includes(candidate.status)) {
-      const held = options.db.prepare("SELECT 1 FROM execution_reservations WHERE operationId=? AND kind='concurrency' AND state='held' LIMIT 1").get(candidate.id);
-      if (!held) continue;
+      if (!heldOperationIds(run).has(candidate.id)) continue;
       // Existing accepted/unknown occupancy is real demand even if a later
       // pause or permission change prevents that actor from starting new work.
     } else continue;
     activeActors.add(candidate.actorId);
   }
-  return Math.max(1, Math.ceil(capacity / Math.max(1, activeActors.size)));
+  const limit = Math.max(1, Math.ceil(capacity / Math.max(1, activeActors.size)));
+  run.autoLimits.set(poolKey, limit);
+  return limit;
+}
+
+function eligibilityReason(run: AdmissionRun, operation: OperationDecision): WaitDecision | null {
+  if (!run.eligibility.has(operation.id)) {
+    run.eligibility.set(operation.id, candidateReason(run, operation, readPolicy(run, operation.actorId), true));
+  }
+  return run.eligibility.get(operation.id) ?? null;
 }
 
 export interface AdmissionWaitDetail {
@@ -82,12 +220,12 @@ export interface AdmissionWaitDetail {
 }
 
 function candidateReason(
-  options: AdmissionOptions,
-  operation: OperationRecord,
+  run: AdmissionRun,
+  operation: OperationDecision,
   policy: ActorPolicy,
-  accountingPeriod: string,
   eligibilityOnly = false,
-): { reason: AdmissionWaitReason; detail?: Omit<AdmissionWaitDetail, 'reason'> } | null {
+): WaitDecision | null {
+  const options = run.options;
   if (options.maintenance()) return { reason: 'maintenance' };
   if (!options.actorAllowed(operation.actorId)) return { reason: 'actor_disabled' };
   if (!options.scopeAllowed(operation.actorId, {
@@ -95,21 +233,21 @@ function candidateReason(
   })) return { reason: 'scope_forbidden' };
   if (policy.paused) return { reason: 'actor_paused' };
   if (!actorModelAllowed(policy, operation.providerSnapshot)) return { reason: 'model_forbidden' };
-  const currentConcurrency = heldPoolCount(options, personalConcurrencyPoolKey(operation.actorId));
+  const currentConcurrency = heldPoolCount(run, personalConcurrencyPoolKey(operation.actorId));
   if (!eligibilityOnly) for (const poolKey of operation.requiredPools) {
-    const pool = options.db.prepare('SELECT * FROM execution_pools WHERE poolKey = ?').get(poolKey) as PoolState | undefined;
+    const pool = readPoolState(run, poolKey);
     if (!pool || !pool.mappingSnapshotJson || pool.mappingSnapshotJson === '{}') return { reason: 'pool_missing', detail: { poolKey } };
     if (!pool.enabled) return { reason: 'pool_disabled', detail: { poolKey } };
-    const currentConcurrency = heldPoolCount(options, poolKey);
-    if (currentConcurrency < pool.capacity && policy.effectiveConcurrency === null) {
-      const actorHeld = heldPoolCount(options, poolKey, operation.actorId);
-      const limit = automaticConcurrencyLimit(options, operation, poolKey, accountingPeriod);
+    const poolConcurrency = heldPoolCount(run, poolKey);
+    if (poolConcurrency < pool.capacity && policy.effectiveConcurrency === null) {
+      const actorHeld = heldPoolCount(run, poolKey, operation.actorId);
+      const limit = automaticConcurrencyLimit(run, poolKey);
       if (actorHeld >= limit) return {
         reason: 'fair_share',
         detail: { concurrencySource: policy.concurrencySource, currentConcurrency: actorHeld, effectiveConcurrency: limit, poolKey, capacity: pool.capacity },
       };
     }
-    if (currentConcurrency >= pool.capacity) return { reason: 'pool_capacity', detail: { poolKey, currentConcurrency, capacity: pool.capacity } };
+    if (poolConcurrency >= pool.capacity) return { reason: 'pool_capacity', detail: { poolKey, currentConcurrency: poolConcurrency, capacity: pool.capacity } };
   }
   const effectiveConcurrency = eligibilityOnly ? Number.MAX_SAFE_INTEGER : policy.effectiveConcurrency ?? Number.MAX_SAFE_INTEGER;
   if (currentConcurrency >= effectiveConcurrency) {
@@ -120,13 +258,9 @@ function candidateReason(
   }
   if (operation.quote.kind === 'unpriced' && policy.monthlyLimitMinor !== null) return { reason: 'pricing_required' };
   if (policy.monthlyLimitMinor !== null) {
-    const unknown = options.db.prepare(`
-      SELECT 1 FROM execution_reservations
-      WHERE kind = 'cost' AND actorId = ? AND state IN ('held', 'settled') AND costState = 'unknown' LIMIT 1
-    `).get(operation.actorId);
-    if (unknown) return { reason: 'cost_unknown' };
+    if (hasUnknownCost(run, operation.actorId)) return { reason: 'cost_unknown' };
     const reserve = operation.quote.kind === 'priced' ? operation.quote.reserve.minor : 0;
-    if (monthlyCostUsage(options.db, operation.actorId, accountingPeriod) + reserve > policy.monthlyLimitMinor) {
+    if (monthlyUsage(run, operation.actorId) + reserve > policy.monthlyLimitMinor) {
       return { reason: 'monthly_budget' };
     }
   }
@@ -175,6 +309,17 @@ function priorityWaitDetail(
   });
 }
 
+function readRequestedOperation(
+  options: AdmissionOptions,
+  operationId: string,
+): OperationDecision | undefined {
+  const row = options.db.prepare(`
+    SELECT ${OPERATION_DECISION_COLUMNS} FROM execution_operations
+    WHERE id = ? AND status IN ('pending', 'deferred')
+  `).get(operationId) as OperationDecisionRow | undefined;
+  return row ? mapOperationDecision(row) : undefined;
+}
+
 export function admitOperation(
   options: AdmissionOptions,
   instance: InstanceFence & { leaseMs?: number; operationId?: string },
@@ -186,7 +331,8 @@ export function admitOperation(
   const verification = options.journal.verify();
   if (!verification.valid) throw new ExecutionError('execution_journal_unavailable', '执行 journal 不可信，拒绝准入。');
   const now = options.now?.() ?? new Date();
-  const run = options.db.transaction((): AdmitResult => {
+  const run = createRun(options, now);
+  const transaction = options.db.transaction((): AdmitResult => {
     const owner = options.db.prepare(`
       SELECT 1 FROM execution_instances
       WHERE instanceId = ? AND fence = ? AND deploymentId = ? AND stoppedAt IS NULL
@@ -195,14 +341,10 @@ export function admitOperation(
     const state = options.db.prepare('SELECT cursorActorId FROM execution_admission_state WHERE id = 1').get() as
       | { cursorActorId: string | null } | undefined;
     if (!state) throw new ExecutionError('execution_not_ready', '执行轮转状态未就绪。');
-    demandSnapshots.set(options.db, options.db.prepare('SELECT * FROM execution_operations').all()
-      .map(row => mapOperation(row as Parameters<typeof mapOperation>[0])));
-    const requestedRow = instance.operationId ? options.db.prepare(`
-      SELECT * FROM execution_operations WHERE id = ? AND status IN ('pending', 'deferred')
-    `).get(instance.operationId) as Parameters<typeof mapOperation>[0] | undefined : undefined;
-    if (instance.operationId && !requestedRow) return { kind: 'idle' };
-    const actors = requestedRow
-      ? [mapOperation(requestedRow).actorId]
+    const requested = instance.operationId ? readRequestedOperation(options, instance.operationId) : undefined;
+    if (instance.operationId && !requested) return { kind: 'idle' };
+    const actors = requested
+      ? [requested.actorId]
       : (options.db.prepare(`
         SELECT actorId FROM execution_operations
         WHERE status IN ('pending', 'deferred')
@@ -214,30 +356,21 @@ export function admitOperation(
       : actors;
     const reasons: AdmissionWaitReason[] = [];
     for (const actorId of ordered) {
-      const rows = requestedRow ? [requestedRow] : options.db.prepare(`
-        SELECT * FROM execution_operations
-        WHERE actorId = ? AND status IN ('pending', 'deferred')
-        ORDER BY readySeq
-      `).all(actorId) as Array<Parameters<typeof mapOperation>[0]>;
+      const rows = requested ? [requested] : waitingRowsByActor(run).get(actorId) ?? [];
       if (rows.length === 0) continue;
-      const policy = readActorPolicy(options.db, actorId);
-      const accountingPeriod = shanghaiAccountingPeriod(now);
-      const evaluations: AdmissionEvaluation[] = rows.map((row) => {
-        const operation = mapOperation(row);
-        return {
-          row,
-          operation,
-          blocked: candidateReason(options, operation, policy, accountingPeriod),
-          priority: effectiveMediaAdmissionPriority(
-            readMediaAdmissionPriority(options.db, operation, now),
-            operation.createdAt,
-            now,
-          ),
-        };
-      });
+      const policy = readPolicy(run, actorId);
+      const evaluations: AdmissionEvaluation[] = rows.map((operation) => ({
+        operation,
+        blocked: candidateReason(run, operation, policy),
+        priority: effectiveMediaAdmissionPriority(
+          readMediaAdmissionPriority(options.db, operation, now),
+          operation.createdAt,
+          now,
+        ),
+      }));
       const head = evaluations[0];
       let chosen: AdmissionEvaluation | undefined;
-      if (requestedRow) {
+      if (requested) {
         if (!head.blocked) chosen = head;
       } else {
         // Member rotation stays the outer fairness layer. Within one member,
@@ -274,7 +407,8 @@ export function admitOperation(
         );
         continue;
       }
-      const operation = chosen.operation;
+      // 决策阶段只搬运轻量字段；完整输入只在真正授予时按 ID 读取一次。
+      const operation = readOperation(options.db, chosen.operation.id);
       writeAdmissionPriority(options, operation.id, chosen.priority);
 
       const newId = options.newId ?? randomUUID;
@@ -303,7 +437,7 @@ export function admitOperation(
         attemptId, operation.id, permitId, actorId, operation.businessAttemptNo, previous.round + 1, previous.transportSeq + 1,
         JSON.stringify(operation.providerSnapshot), pricingSnapshot === null ? null : JSON.stringify(pricingSnapshot),
         instance.instanceId, instance.fence, instance.instanceId, leaseUntil,
-        policy.version, accountingPeriod, reservedMinor,
+        policy.version, run.accountingPeriod, reservedMinor,
         operation.quote.kind === 'priced' ? 'reserved' : 'unknown', at, at,
       );
       const addConcurrency = options.db.prepare(`
@@ -320,7 +454,7 @@ export function admitOperation(
         ) VALUES (?, ?, ?, ?, ?, 'cost', ?, 'held', ?, 'CNY', ?, ?, ?, ?)
       `).run(
         newId(), operation.id, permitId, attemptId, actorId, `actor:${actorId}:cost`,
-        accountingPeriod, reservedMinor, operation.quote.kind === 'priced' ? 'reserved' : 'unknown',
+        run.accountingPeriod, reservedMinor, operation.quote.kind === 'priced' ? 'reserved' : 'unknown',
         policy.version, at,
       );
       options.db.prepare(`
@@ -344,5 +478,5 @@ export function admitOperation(
     }
     return reasons.length > 0 ? { kind: 'deferred', reasons } : { kind: 'idle' };
   });
-  return run.immediate();
+  return transaction.immediate();
 }
