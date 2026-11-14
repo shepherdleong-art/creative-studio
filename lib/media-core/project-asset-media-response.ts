@@ -101,14 +101,23 @@ export function projectAssetMediaResponse(
   const range = request.headers.get('range');
   const ifRange = etag ? request.headers.get('if-range') : null;
   const rangeEffective = range !== null && (ifRange === null || ifRange.trim() === etag);
+  // HEAD 复用 GET 的实现（Next 未导出 HEAD 时会自动转发），但响应体不会被消费也不会被
+  // cancel：若照常创建源流，流上的 close/error 永不触发，代理读租约与 fd 都会泄漏。
+  // HEAD 只需要按同一套 ETag/Range 规则算出状态与头，随即同步关闭 fd。
+  const isHead = request.method === 'HEAD';
   if (!rangeEffective) {
+    const headers = { ...baseHeaders, 'Content-Length': String(size) };
+    if (isHead) {
+      fs.closeSync(fd);
+      return new Response(null, { status: 200, headers });
+    }
     const stream = fs.createReadStream(absolutePath, { fd, autoClose: true });
-    return new Response(attachOnClose(stream), { headers: { ...baseHeaders, 'Content-Length': String(size) } });
+    return new Response(attachOnClose(stream), { headers });
   }
 
   const rangeError = (): Response => {
     fs.closeSync(fd);
-    return new Response('Range Not Satisfiable', {
+    return new Response(isHead ? null : 'Range Not Satisfiable', {
       status: 416,
       headers: { ...baseHeaders, 'Content-Range': `bytes */${size}` },
     });
@@ -128,13 +137,15 @@ export function projectAssetMediaResponse(
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)
     || start < 0 || end < start || start >= size || end >= size) return rangeError();
   const length = end - start + 1;
+  const headers = {
+    ...baseHeaders,
+    'Content-Length': String(length),
+    'Content-Range': `bytes ${start}-${end}/${size}`,
+  };
+  if (isHead) {
+    fs.closeSync(fd);
+    return new Response(null, { status: 206, headers });
+  }
   const stream = fs.createReadStream(absolutePath, { fd, autoClose: true, start, end });
-  return new Response(attachOnClose(stream), {
-    status: 206,
-    headers: {
-      ...baseHeaders,
-      'Content-Length': String(length),
-      'Content-Range': `bytes ${start}-${end}/${size}`,
-    },
-  });
+  return new Response(attachOnClose(stream), { status: 206, headers });
 }

@@ -240,8 +240,9 @@ async function __teamRouteGET(request: NextRequest, context: { params: Promise<{
         },
       );
       // 只有真正带流生命周期的响应才把租约交给 onClose;304/416 等早退分支
-      // 不触发 onClose,保持 streaming=false 让 finally 同步释放。
-      streaming = response.status === 200 || response.status === 206;
+      // 不触发 onClose,保持 streaming=false 让 finally 同步释放。HEAD 复用 GET
+      // 但响应体为 null(不创建源流、不触发 onClose),同样必须由 finally 释放。
+      streaming = (response.status === 200 || response.status === 206) && response.body !== null;
       return response;
     } finally {
       if (!streaming) releaseOnce();

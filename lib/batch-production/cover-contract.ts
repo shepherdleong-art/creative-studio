@@ -19,6 +19,8 @@ export interface CoverContractOutputVersion {
   outputVersionId: string;
   planId: string;
   arrangementJson: string;
+  /** 同次请求内已解析的 arrangement;存在时不再重复 JSON.parse。 */
+  arrangement?: Record<string, unknown>;
   batchVersionId: string;
   planSeq: number;
   defaultsJson: string;
@@ -27,19 +29,20 @@ export interface CoverContractOutputVersion {
 /**
  * 同次请求内的只读预加载上下文。工作区按批次集中取数后传入,
  * 契约计算逻辑与逐条查询时完全一致;不传时行为不变。
+ * 各映射按 key 命中才生效(包括值为 null 的命中),缺 key 一律回落原逐条查询。
  */
 export interface CoverContractPreload {
   /** outputVersionId → 版本 + 计划 + 批次版本行 */
   outputVersions?: ReadonlyMap<string, CoverContractOutputVersion>;
-  /** assetId → contentFingerprint(必须覆盖所有会被引用的素材) */
+  /** assetId → contentFingerprint(建议覆盖所有会被引用的素材;缺 key 回落原查询)。 */
   assetFingerprints?: ReadonlyMap<string, string>;
-  /** `${batchVersionId}\u0000${assetId}` → 冻结色彩快照 JSON(池内行,含 null) */
+  /** `${batchVersionId}\u0000${assetId}` → 冻结色彩快照 JSON(池内行,含 null;缺 key 回落原查询)。 */
   poolColors?: ReadonlyMap<string, string | null>;
-  /** assetId → 最近一条素材分析的 colorJson;缺行回落默认关闭快照。 */
+  /** assetId → 最近一条素材分析的 colorJson;命中 null 表示没有分析行。 */
   analysisColors?: ReadonlyMap<string, string | null>;
-  /** true 表示批次预加载失败(如旧库没有 analysis colorJson 列),缺池色必须按原 fail-closed 处理。 */
+  /** true 表示批次预加载遇到旧库缺少 analysis colorJson 列,缺池色必须按原 fail-closed 处理。 */
   analysisColorsUnavailable?: boolean;
-  /** planId → 冻结封面标题原始行 */
+  /** planId → 冻结封面标题原始行(可含 null 表示无冻结配置;缺 key 回落原查询)。 */
   frozenTitleRows?: ReadonlyMap<string, FrozenCoverTitleRow | null>;
   /** 同次请求内复用封面契约哈希缓存;仅未显式传 frozenArrangementJson 时使用。 */
   coverContractHashes?: Map<string, string>;
@@ -137,33 +140,42 @@ export function resolveCoverContract(
   /** 可选:工作区按批次预加载的行;缺项时回落到原查询,行为不变。 */
   preload?: CoverContractPreload,
 ): CoverContractInput {
-  const row = preload?.outputVersions?.get(outputVersionId) ?? db.prepare(`
-    SELECT
-      o.id AS outputVersionId,
-      o.planId AS planId,
-      o.arrangementJson AS arrangementJson,
-      p.batchVersionId AS batchVersionId,
-      p.seq AS planSeq,
-      v.defaultsJson AS defaultsJson
-    FROM batch_output_versions o
-    JOIN batch_output_plans p ON p.id = o.planId
-    JOIN batch_production_versions v ON v.id = p.batchVersionId
-    WHERE o.id = ?
-  `).get(outputVersionId) as {
-    outputVersionId: string;
-    planId: string;
-    arrangementJson: string;
-    batchVersionId: string;
-    planSeq: number;
-    defaultsJson: string;
-  } | undefined;
+  let row = preload?.outputVersions?.get(outputVersionId);
+  if (!row) {
+    row = db.prepare(`
+      SELECT
+        o.id AS outputVersionId,
+        o.planId AS planId,
+        o.arrangementJson AS arrangementJson,
+        p.batchVersionId AS batchVersionId,
+        p.seq AS planSeq,
+        v.defaultsJson AS defaultsJson
+      FROM batch_output_versions o
+      JOIN batch_output_plans p ON p.id = o.planId
+      JOIN batch_production_versions v ON v.id = p.batchVersionId
+      WHERE o.id = ?
+    `).get(outputVersionId) as CoverContractOutputVersion | undefined;
+  }
   if (!row) throw new Error(`outputVersion ${outputVersionId} 不存在`);
 
   let arrangement: Record<string, unknown>;
-  try {
-    arrangement = JSON.parse(frozenArrangementJson ?? row.arrangementJson) as Record<string, unknown>;
-  } catch {
-    throw new Error('arrangementJson 无法解析');
+  if (frozenArrangementJson !== undefined) {
+    try {
+      arrangement = JSON.parse(frozenArrangementJson) as Record<string, unknown>;
+    } catch {
+      throw new Error('arrangementJson 无法解析');
+    }
+  } else if (row.arrangement !== undefined) {
+    if (row.arrangement === null || typeof row.arrangement !== 'object' || Array.isArray(row.arrangement)) {
+      throw new Error('arrangementJson 无法解析');
+    }
+    arrangement = row.arrangement;
+  } else {
+    try {
+      arrangement = JSON.parse(row.arrangementJson) as Record<string, unknown>;
+    } catch {
+      throw new Error('arrangementJson 无法解析');
+    }
   }
   const clips = Array.isArray(arrangement.clips) ? arrangement.clips as Array<Record<string, unknown>> : [];
   if (clips.length === 0) throw new Error('arrangement clips 不能为空');
@@ -194,27 +206,32 @@ export function resolveCoverContract(
   const timeUs = requestedTime == null ? defaultTimeUs : Number(requestedTime);
 
   let assetFingerprint: string;
-  if (preload?.assetFingerprints) {
-    const preloaded = preload.assetFingerprints.get(assetId);
-    if (preloaded === undefined) throw new Error(`素材 ${assetId} 不存在`);
-    assetFingerprint = preloaded;
+  if (preload?.assetFingerprints?.has(assetId)) {
+    assetFingerprint = preload.assetFingerprints.get(assetId) as string;
   } else {
     const asset = db.prepare(`SELECT contentFingerprint FROM batch_assets WHERE id = ?`).get(assetId) as { contentFingerprint: string } | undefined;
     if (!asset) throw new Error(`素材 ${assetId} 不存在`);
     assetFingerprint = asset.contentFingerprint;
   }
 
+  const poolColorKey = `${row.batchVersionId}\u0000${assetId}`;
   let colorJsonStr: string | null | undefined;
-  if (preload?.poolColors) {
-    colorJsonStr = preload.poolColors.get(`${row.batchVersionId}\u0000${assetId}`);
+  if (preload?.poolColors?.has(poolColorKey)) {
+    colorJsonStr = preload.poolColors.get(poolColorKey) ?? null;
   } else {
     const poolItem = db.prepare(`SELECT colorJson FROM batch_asset_pool_items WHERE batchVersionId = ? AND assetId = ?`).get(row.batchVersionId, assetId) as { colorJson: string } | undefined;
     colorJsonStr = poolItem?.colorJson;
   }
   if (!colorJsonStr) {
     if (preload?.analysisColors) {
-      // 批次级预加载覆盖所有缺池色的引用素材;缺行与原逐卡查询一致回落默认。
-      colorJsonStr = preload.analysisColors.get(assetId) ?? '{"lutId":null}';
+      if (preload.analysisColors.has(assetId)) {
+        // 预加载覆盖到的素材:命中 null 表示没有分析行,与原逐卡查询一致回落默认。
+        colorJsonStr = preload.analysisColors.get(assetId) ?? '{"lutId":null}';
+      } else {
+        // 预加载未覆盖该素材:回落逐卡查询,保持单卡失败语义。
+        const analysis = db.prepare(`SELECT colorJson FROM batch_asset_analysis WHERE assetId = ? ORDER BY createdAt DESC LIMIT 1`).get(assetId) as { colorJson: string } | undefined;
+        colorJsonStr = analysis?.colorJson ?? '{"lutId":null}';
+      }
     } else if (preload?.analysisColorsUnavailable) {
       // 预加载不可用(例如旧库没有 analysis colorJson 列):保持原逐卡查询失败
       // 时的 fail-closed 语义,但不再为每张卡发起一次必败的 SQL。
@@ -230,7 +247,8 @@ export function resolveCoverContract(
   const colorSnapshot = upgradeColorSnapshot(JSON.parse(colorJsonStr));
   const lutFingerprint = colorSnapshot.lutFingerprint ?? null;
 
-  const frozenTitleConfig = preload?.frozenTitleRows
+  // 只有预加载确实覆盖该 plan 时才用映射(包括 null);缺 key 回落原查询。
+  const frozenTitleConfig = preload?.frozenTitleRows?.has(row.planId)
     ? parseFrozenCoverTitleRow(preload.frozenTitleRows.get(row.planId))
     : loadFrozenCoverTitleConfig(db, row.planId);
   const override = resolveBatchCoverTitleOverride(frozenTitleConfig, cover, outputSize.width);
@@ -281,31 +299,44 @@ export function resolveFullRenderContract(
   outputVersionId: string,
   preload?: CoverContractPreload,
 ): FullRenderContractInput {
-  const row = preload?.outputVersions?.get(outputVersionId) ?? db.prepare(`
-    SELECT
-      o.id AS outputVersionId,
-      o.arrangementJson AS arrangementJson
-    FROM batch_output_versions o
-    WHERE o.id = ?
-  `).get(outputVersionId) as {
-    outputVersionId: string;
-    arrangementJson: string;
-  } | undefined;
+  let row: { outputVersionId: string; arrangementJson: string; arrangement?: Record<string, unknown> } | undefined =
+    preload?.outputVersions?.get(outputVersionId);
+  if (!row) {
+    row = db.prepare(`
+      SELECT
+        o.id AS outputVersionId,
+        o.arrangementJson AS arrangementJson
+      FROM batch_output_versions o
+      WHERE o.id = ?
+    `).get(outputVersionId) as {
+      outputVersionId: string;
+      arrangementJson: string;
+    } | undefined;
+  }
   if (!row) throw new Error(`outputVersion ${outputVersionId} 不存在`);
 
-  const arrangement = JSON.parse(row.arrangementJson) as Record<string, unknown>;
+  let arrangement: Record<string, unknown>;
+  if (row.arrangement !== undefined) {
+    if (row.arrangement === null || typeof row.arrangement !== 'object' || Array.isArray(row.arrangement)) {
+      throw new Error('arrangementJson 无法解析');
+    }
+    arrangement = row.arrangement;
+  } else {
+    try {
+      arrangement = JSON.parse(row.arrangementJson) as Record<string, unknown>;
+    } catch {
+      throw new Error('arrangementJson 无法解析');
+    }
+  }
   const editRevision = Number.isSafeInteger(Number(arrangement.editRevision)) && Number(arrangement.editRevision) > 0
     ? Number(arrangement.editRevision)
     : 0;
   const preset = (typeof arrangement.preset === 'string' ? arrangement.preset : '3:4') as BatchOutputPreset;
   const outputSize = BATCH_OUTPUT_PRESETS[preset] ?? BATCH_OUTPUT_PRESETS['3:4'];
 
-  let coverContractHash: string | undefined = preload?.coverContractHashes?.get(outputVersionId);
-  if (coverContractHash === undefined) {
-    const coverContract = resolveCoverContract(db, outputVersionId, undefined, preload);
-    coverContractHash = computeCoverContractHash(coverContract);
-    preload?.coverContractHashes?.set(outputVersionId, coverContractHash);
-  }
+  // 统一走 resolveCoverContractHash:同请求内命中封面契约缓存时不再重复解析,
+  // 未命中时才解析一次并写回缓存。
+  const coverContractHash = resolveCoverContractHash(db, outputVersionId, undefined, preload);
 
   const rawClips = Array.isArray(arrangement.clips) ? arrangement.clips as Array<Record<string, unknown>> : [];
   const clips = rawClips.map((c) => ({

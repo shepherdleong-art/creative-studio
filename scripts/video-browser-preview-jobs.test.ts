@@ -173,6 +173,24 @@ try {
     syncBuiltinESMExports();
   }
 
+  // --- 过期临时文件清理：只清 24 小时前的同源临时文件，未过期/当前任务的不受影响 ---
+  const staleTempsSource = path.join(dataRoot, 'stale-temps-hevc.mp4');
+  await runFfmpeg([
+    '-y', '-f', 'lavfi', '-i', 'testsrc=duration=1:size=320x240:rate=24',
+    '-c:v', 'libx265', '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1', staleTempsSource,
+  ], { timeoutMs: 60_000 });
+  const staleTempsPreview = browserPreviewPath(staleTempsSource);
+  const staleTemp = `${staleTempsPreview}.stale-owner.tmp.mp4`;
+  const freshTemp = `${staleTempsPreview}.fresh-owner.tmp.mp4`;
+  fs.writeFileSync(staleTemp, Buffer.from('stale'));
+  fs.writeFileSync(freshTemp, Buffer.from('fresh'));
+  const oldTimestamp = new Date(Date.now() - 25 * 60 * 60 * 1000);
+  fs.utimesSync(staleTemp, oldTimestamp, oldTimestamp);
+  assert.equal(await ensureBrowserPreview(staleTempsSource), staleTempsPreview);
+  assert.equal(fs.existsSync(staleTemp), false, '超过 24 小时的过期临时文件必须被清理');
+  assert.equal(fs.existsSync(freshTemp), true, '未过期的临时文件（含当前任务）不得被清理');
+  fs.rmSync(freshTemp, { force: true });
+
   const authorizationFailure = new Error('preview-authorization-denied');
   await assert.rejects(
     runWithAccessContext({

@@ -13,6 +13,7 @@ import { MediaResourceDeferredError, withMediaResource } from './media-core/medi
 const PREVIEW_TRANSCODE_TIMEOUT_MS = 120_000;
 const PREVIEW_LEASE_MS = PREVIEW_TRANSCODE_TIMEOUT_MS + 10_000;
 const PREVIEW_FAILURE_RETRY_MS = 5_000;
+const PREVIEW_TEMP_STALE_MS = 24 * 60 * 60 * 1000;
 
 export function browserPreviewPath(videoPath: string): string {
   const ext = path.extname(videoPath);
@@ -37,6 +38,35 @@ function isBrowserPlayable(codec: string, pixelFormat: string): boolean {
 
 function previewJobKey(videoPath: string): string {
   return createHash('sha256').update(path.resolve(videoPath)).digest('hex');
+}
+
+/**
+ * best-effort 清理同目录下遗留的转码临时文件：只删除 mtime 超过 24 小时的
+ * `${previewPath}.*.tmp.mp4`，不碰当前任务的临时文件；任何错误都忽略。
+ */
+function cleanupStalePreviewTemps(previewPath: string, keepPath: string): void {
+  const directory = path.dirname(previewPath);
+  const prefix = `${path.basename(previewPath)}.`;
+  const suffix = '.tmp.mp4';
+  const keepName = path.basename(keepPath);
+  let names: string[];
+  try {
+    names = fs.readdirSync(directory);
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const name of names) {
+    if (name === keepName || !name.startsWith(prefix) || !name.endsWith(suffix)) continue;
+    const candidate = path.join(directory, name);
+    try {
+      const stat = fs.statSync(candidate);
+      if (!stat.isFile() || now - stat.mtimeMs <= PREVIEW_TEMP_STALE_MS) continue;
+      fs.rmSync(candidate, { force: true });
+    } catch {
+      // 清理失败不影响转码；残留文件不可复用，下次转码前再试。
+    }
+  }
 }
 
 interface PreviewJobRow {
@@ -199,6 +229,8 @@ async function doEnsureBrowserPreview(
       // 先写同目录临时文件，成功后原子 rename 到正式路径：任何失败/取消/崩溃
       // 都只会留下临时文件，不会被 fs.existsSync(previewPath) 当作 ready 复用。
       const temporaryPath = `${previewPath}.${claim.owner}.tmp.mp4`;
+      // 转码前清理同目录超过 24 小时的遗留临时文件（当前任务的文件不在其中）。
+      cleanupStalePreviewTemps(previewPath, temporaryPath);
       try {
         await runFfmpeg([
           '-y', '-i', videoPath,

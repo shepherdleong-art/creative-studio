@@ -32,9 +32,15 @@ const {
   teamFileResponse,
 } = await import('../lib/team-service/files/index.ts');
 const { fileResponse } = await import('../lib/media-core/file-response.ts');
+const { FILE_IDENTITY_WITNESS_BYTES, parseFileIdentity } = await import('../lib/media-core/file-identity.ts');
 const { publishTeamResource } = await import('../lib/team-service/files/publication.ts');
 const { runWithAccessContext } = await import('../lib/media-core/access-context.ts');
 const { buildGenericZipStream } = await import('../lib/zip-download.ts');
+
+// 旧版身份 JSON（media-catalog 只写 dev/ino/size/mtime）没有见证字段，新解析器必须视为不可信，
+// 迫使调用方完整核验一次；带见证的新格式才可参与快路径。
+assert.equal(parseFileIdentity(JSON.stringify({ dev: 1, ino: 2, size: 3, mtimeMs: 4 })), null);
+assert.equal(parseFileIdentity(JSON.stringify({ dev: 1, ino: 2, size: 3, mtimeMs: 4, ctimeMs: 5 })), null);
 
 ensureServerDeploymentMarker({
   mode: 'server', dataRoot: root, hostname: '127.0.0.1', port: 3300,
@@ -221,11 +227,16 @@ try {
   });
   const firstReuse = withReadByteCounter(registerReuse);
   assert.equal(firstReuse.bytes, reuseBytes.byteLength, '首次衍生登记必须完整算满文件哈希');
+  const reuseWitnessBytes = Math.min(reuseBytes.byteLength, FILE_IDENTITY_WITNESS_BYTES) * 2;
   const repeatReuse = withReadByteCounter(registerReuse);
   assert.equal(repeatReuse.value.id, firstReuse.value.id, '重复登记必须复用同一不可变登记');
-  assert.equal(repeatReuse.bytes, 0, '已登记稳定衍生物的重复登记不得再读全文件');
+  assert.ok(
+    repeatReuse.bytes > 0 && repeatReuse.bytes <= reuseWitnessBytes,
+    `已登记稳定衍生物的重复登记只应读首尾见证（≤ ${reuseWitnessBytes} 字节），实际 ${repeatReuse.bytes}`,
+  );
   for (let index = 0; index < 4; index += 1) {
-    assert.equal(withReadByteCounter(registerReuse).bytes, 0, '后续 Range/登记不得重复全量哈希');
+    const subsequent = withReadByteCounter(registerReuse).bytes;
+    assert.ok(subsequent > 0 && subsequent <= reuseWitnessBytes, '后续 Range/登记只读首尾见证，不得重复全量哈希');
   }
 
   // 身份变化（重写同内容）必须重新完整核验，核验一致后刷新身份再恢复快路径。
@@ -234,7 +245,8 @@ try {
   const refreshedReuse = withReadByteCounter(registerReuse);
   assert.equal(refreshedReuse.value.id, firstReuse.value.id);
   assert.ok(refreshedReuse.bytes > 0, '身份变化时必须重新完整核验，不能只看路径');
-  assert.equal(withReadByteCounter(registerReuse).bytes, 0, '刷新身份记录后应恢复快路径');
+  const refreshedRepeatBytes = withReadByteCounter(registerReuse).bytes;
+  assert.ok(refreshedRepeatBytes > 0 && refreshedRepeatBytes <= reuseWitnessBytes, '刷新身份记录后应恢复见证快路径');
 
   // 身份变化且内容不同：必须明确拒绝，且拒绝前已完成完整核验。
   await new Promise((resolve) => { setTimeout(resolve, 10); });
@@ -243,6 +255,47 @@ try {
     assert.throws(registerReuse, /文件身份与既有不可变登记不一致/, '替换文件不得误命中既有登记');
   });
   assert.ok(replacedReuse.bytes > 0, '替换文件必须完整核验后才拒绝');
+
+  // Windows 的 ctime 是创建时间：同尺寸原位改写并保留 mtime 时，dev/ino/size/mtime/ctime
+  // 可能完全一致。首尾内容见证必须打破这种误命中，重新完整核验并拒绝不同内容。
+  // 这里直接把库内身份同步成改写后的 stat（模拟 Windows 身份全等），确保走见证分支。
+  const witnessBytes = Buffer.alloc(4 * 1024 * 1024, 3);
+  const witnessPath = path.join(storageRoot, 'inputs', 'a.derived-witness.bin');
+  fs.writeFileSync(witnessPath, witnessBytes);
+  const registerWitness = () => registerReadyTeamFile(db, {
+    storageRoot,
+    absolutePath: witnessPath,
+    mimeType: 'application/octet-stream',
+    ownerUserId: userA.userId,
+    derivedFromFileId: fileA.id,
+  });
+  const witnessFile = registerWitness();
+  const identityBeforeRewrite = JSON.parse(
+    db.prepare('SELECT verifiedIdentityJson FROM team_files WHERE id = ?').pluck().get(witnessFile.id) as string,
+  ) as Record<string, unknown>;
+  assert.ok(identityBeforeRewrite.witness, '首次登记必须写入首尾见证');
+  const statBeforeRewrite = fs.statSync(witnessPath);
+  const tampered = Buffer.from(witnessBytes);
+  tampered.write('tampered-content', 0, 'ascii');
+  fs.writeFileSync(witnessPath, tampered);
+  // 强制保留 mtime（同尺寸原位改写）。
+  fs.utimesSync(witnessPath, statBeforeRewrite.atimeMs / 1000, statBeforeRewrite.mtimeMs / 1000);
+  const statAfterRewrite = fs.statSync(witnessPath);
+  db.prepare('UPDATE team_files SET verifiedIdentityJson = ? WHERE id = ?').run(JSON.stringify({
+    ...identityBeforeRewrite,
+    dev: statAfterRewrite.dev,
+    ino: statAfterRewrite.ino,
+    size: statAfterRewrite.size,
+    mtimeMs: statAfterRewrite.mtimeMs,
+    ctimeMs: statAfterRewrite.ctimeMs,
+  }), witnessFile.id);
+  const witnessMismatch = withReadByteCounter(() => {
+    assert.throws(registerWitness, /文件身份与既有不可变登记不一致/, '同尺寸改写并保留 mtime 不得误用旧哈希');
+  });
+  assert.ok(
+    witnessMismatch.bytes > FILE_IDENTITY_WITNESS_BYTES * 2,
+    `见证不一致必须触发完整 SHA-256 核验，实际只读 ${witnessMismatch.bytes} 字节`,
+  );
 
   // 来源谱系变化（同一路径换 derivedFromFileId）不得复用旧登记。
   assert.throws(() => registerReadyTeamFile(db, {
