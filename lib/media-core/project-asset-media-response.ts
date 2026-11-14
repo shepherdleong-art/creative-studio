@@ -70,31 +70,24 @@ export function projectAssetMediaResponse(
     'Content-Type': contentType,
     ...extraHeaders,
   };
-  const attachOnClose = (stream: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> => {
-    if (!options.onClose) return stream;
-    let closed = false;
-    const closeOnce = () => {
-      if (closed) return;
-      closed = true;
-      options.onClose?.();
-    };
-    return new ReadableStream<Uint8Array>({
-      start(controller) {
-        const pipe = stream.pipeTo(new WritableStream<Uint8Array>({
-          write(chunk) { controller.enqueue(chunk); },
-          close() { closeOnce(); controller.close(); },
-          abort(reason) { closeOnce(); controller.error(reason); },
-        }));
-        pipe.catch(() => {
-          closeOnce();
-          controller.error(new Error('媒体流中断'));
-        });
-      },
-      cancel(reason) {
-        closeOnce();
-        return stream.cancel(reason);
-      },
-    });
+  /**
+   * onClose 释放语义直接挂在源文件流上,而不是再包一层 pipeTo:Readable.toWeb
+   * 本身是消费者驱动的 pull(客户端不读就不读文件),取消/断流会 destroy 源流,
+   * autoClose 关闭 fd 并触发 'close'。'close' 已覆盖正常结束、错误和取消;
+   * 'error' 兜底,closeOnce 保证租约只释放一次。
+   */
+  const attachOnClose = (stream: Readable): ReadableStream<Uint8Array> => {
+    if (options.onClose) {
+      let closed = false;
+      const closeOnce = () => {
+        if (closed) return;
+        closed = true;
+        options.onClose?.();
+      };
+      stream.once('close', closeOnce);
+      stream.once('error', closeOnce);
+    }
+    return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
   };
 
   if (etag) {
@@ -109,7 +102,7 @@ export function projectAssetMediaResponse(
   const ifRange = etag ? request.headers.get('if-range') : null;
   const rangeEffective = range !== null && (ifRange === null || ifRange.trim() === etag);
   if (!rangeEffective) {
-    const stream = Readable.toWeb(fs.createReadStream(absolutePath, { fd, autoClose: true })) as ReadableStream<Uint8Array>;
+    const stream = fs.createReadStream(absolutePath, { fd, autoClose: true });
     return new Response(attachOnClose(stream), { headers: { ...baseHeaders, 'Content-Length': String(size) } });
   }
 
@@ -135,7 +128,7 @@ export function projectAssetMediaResponse(
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)
     || start < 0 || end < start || start >= size || end >= size) return rangeError();
   const length = end - start + 1;
-  const stream = Readable.toWeb(fs.createReadStream(absolutePath, { fd, autoClose: true, start, end })) as ReadableStream<Uint8Array>;
+  const stream = fs.createReadStream(absolutePath, { fd, autoClose: true, start, end });
   return new Response(attachOnClose(stream), {
     status: 206,
     headers: {
