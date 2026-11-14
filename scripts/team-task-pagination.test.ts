@@ -1,13 +1,14 @@
 // 03 号票：全员任务服务端分页的公共合同（真实 SQLite + 真实路由）。
 //
-// 固定数据（功能方案第 8 节）：503 个制作任务 / 505 条执行记录，其中一个统一任务有
-// 3 条执行记录。验证：
-// - pageSize=25 → 21 页、末页 3 个制作任务；pageSize=50 → 11 页、末页 3 个；
+// 规模固定为 2003 个制作任务 / 2005 条执行记录（每条 64 KiB 输入快照），其中一个统一
+// 任务有 3 条执行记录。验证：
+// - pageSize=25 → 81 页、末页 3 个制作任务；pageSize=50 → 41 页、末页 3 个；
 // - 含 3 条执行记录的统一任务放在页边界，整组只在一页出现一次；遍历恰好覆盖授权集合；
-// - 总数恒为 503/505，不随页变；搜索覆盖完整历史（关键词/工号/中文步骤/模型/执行 ID）；
+// - 总数恒为 2003/2005，不随页变；搜索覆盖完整历史（关键词/工号/中文步骤/模型/执行 ID）；
 // - `%`/`_`/引号是普通文字；同 updatedAt 排序稳定；空结果/非法参数/越界页；
 // - 管理员全员/单成员、员工本人、员工指定他人 403、员工详情 404；
-// - 500 条之外的旧 operationId 详情可读；本页统一任务费用按 mediaTaskId 定向且完整。
+// - 2000 条之外的旧 operationId 详情可读；本页统一任务费用按 mediaTaskId 定向且完整；
+// - 最近 12 条、任务首屏、状态筛选与活动统计只读取必要行，索引对管理员和员工都生效。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import module from 'node:module';
@@ -115,6 +116,14 @@ const db = getDb();
 assert.equal((await checkTeamServiceReadiness({ db, ...schemaUpgradeRuntimePaths(root) })).available, true);
 assert.equal((await checkExecutionReadiness({ db, ...schemaUpgradeRuntimePaths(root) })).available, true);
 
+// 性能合同：最近任务必须在两种可见范围下都走追加迁移建的索引，且不再排序临时表。
+// 这里断言索引存在（查询计划断言在账号创建后执行），不靠 SQL 文本证明业务正确性。
+const operationIndexes = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'execution_operations'")
+  .pluck().all() as string[]);
+for (const indexName of ['idx_execution_operations_updated', 'idx_execution_operations_activity']) {
+  assert.ok(operationIndexes.includes(indexName), `执行记录缺少性能索引 ${indexName}`);
+}
+
 const kdf = new BoundedKdfScheduler({ maxConcurrent: 1, maxQueue: 8 });
 const passwordParams = { N: 1024, r: 8, p: 1 };
 const initialized = await initializeFirstAdministrator({ db, employeeId: '0000', displayName: '管理员', kdf, passwordParams });
@@ -140,6 +149,21 @@ const bob = await account('0002', '李四');
 const carol = await account('0999', '王五');
 const adminCookie = sessionCookie(adminSession.token).split(';', 1)[0];
 
+const recentPlanSql = 'SELECT o.id FROM execution_operations o JOIN team_users u ON u.id = o.actorId';
+const adminRecentPlan = db.prepare(`EXPLAIN QUERY PLAN ${recentPlanSql} ORDER BY o.updatedAt DESC, o.id DESC LIMIT 12`)
+  .all().map((row) => String((row as { detail: string }).detail));
+assert.ok(adminRecentPlan.some((detail) => detail.includes('idx_execution_operations_updated')),
+  `管理员最近任务应使用时间索引，实际计划：${adminRecentPlan.join(' | ')}`);
+assert.ok(!adminRecentPlan.some((detail) => detail.includes('TEMP B-TREE')),
+  `管理员最近任务不应再排序临时表，实际计划：${adminRecentPlan.join(' | ')}`);
+const employeeRecentPlan = db.prepare(`EXPLAIN QUERY PLAN ${recentPlanSql} WHERE o.actorId = ? ORDER BY o.updatedAt DESC, o.id DESC LIMIT 12`)
+  .all(alice.principal.userId).map((row) => String((row as { detail: string }).detail));
+assert.ok(employeeRecentPlan.some((detail) => detail.includes('idx_execution_operations_activity')),
+  `员工最近任务应使用成员前缀索引，实际计划：${employeeRecentPlan.join(' | ')}`);
+assert.ok(!employeeRecentPlan.some((detail) => detail.includes('TEMP B-TREE')),
+  `员工最近任务不应再排序临时表，实际计划：${employeeRecentPlan.join(' | ')}`);
+console.log('PASS: recent-task indexes cover admin and employee scopes without temp sort');
+
 const tasksRoute = await import('../app/api/team/tasks/route.ts');
 const detailRoute = await import('../app/api/team/tasks/detail/route.ts');
 const adminView = { userId: admin.userId, role: 'admin' as const };
@@ -147,6 +171,33 @@ const aliceView = { userId: alice.principal.userId, role: 'employee' as const };
 const bobView = { userId: bob.principal.userId, role: 'employee' as const };
 const carolView = { userId: carol.principal.userId, role: 'employee' as const };
 const now = new Date('2026-11-11T04:00:00.000Z'); // 上海 2026-11-11 12:00
+
+// 性能回归：任务首屏与活动统计都不得对 execution_operations 做无索引全表扫描。
+// 先捕获公共函数实际执行的 SQL，再用 EXPLAIN QUERY PLAN 断言读取路径（不靠 SQL 文本判正确性）。
+function capturePrepared(run: () => void): string[] {
+  const captured: string[] = [];
+  const original = db.prepare.bind(db);
+  db.prepare = ((sql: string) => { captured.push(sql); return original(sql); }) as typeof db.prepare;
+  try { run(); } finally { db.prepare = original; }
+  return [...new Set(captured)];
+}
+function explainPlan(sql: string): string[] {
+  const binds = Array.from({ length: (sql.match(/\?/g) ?? []).length }, () => 'probe');
+  return db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...binds)
+    .map((row) => String((row as { detail: string }).detail));
+}
+const isFullOperationScan = (detail: string) => /^SCAN o$/.test(detail);
+const pagePlans = capturePrepared(() => listTeamTasks(db, adminView, {}, { page: 1, pageSize: 25 }))
+  .map((sql) => explainPlan(sql));
+assert.ok(pagePlans.every((plan) => !plan.some(isFullOperationScan)),
+  '任务首屏不得再全表扫描 execution_operations');
+assert.ok(pagePlans.some((plan) => plan.some((detail) => detail.includes('COVERING INDEX idx_execution_operations_activity'))),
+  '任务首屏的分组/计数应走覆盖索引');
+const activityPlans = capturePrepared(() => readTeamTaskActivity(db, adminView, now))
+  .map((sql) => explainPlan(sql));
+assert.ok(activityPlans.some((plan) => plan.some((detail) => detail.includes('COVERING INDEX idx_execution_operations_activity'))),
+  '活动统计应走覆盖索引，不搬运历史输入快照');
+console.log('PASS: first page and activity plans avoid full execution_operations scans');
 
 function request(url: string, cookie: string): Request {
   const headers = new Headers();
@@ -177,15 +228,17 @@ db.prepare("INSERT INTO projects (id, name, providerId, model, prompt, status) V
 db.prepare("INSERT INTO image_assets (id, projectId, role, filename, path, usage) VALUES ('asset-tail', 'project-tail', 'input', '末页专用素材.png', 'inputs/tail.png', 'scene_seed')").run();
 db.prepare("INSERT INTO image_assets (id, projectId, role, filename, path, usage) VALUES ('asset-unified', 'project-main', 'output', '统一任务原图.png', 'outputs/unified.png', 'shot_source')").run();
 db.prepare("INSERT INTO jobs (id, projectId, inputImageId, providerId, model, prompt, status, unifiedModel, unifiedTaskId) VALUES ('shared-business-id', 'project-main', 'asset-unified', 'provider-fixture', 'image2-medium', '', 'succeeded', 'image2', 'media-boundary')").run();
-db.prepare("INSERT INTO jobs (id, projectId, inputImageId, providerId, model, prompt, status) VALUES ('tail_task_503', 'project-tail', 'asset-tail', 'provider-fixture', 'gpt-image-2', '', 'succeeded')").run();
+db.prepare("INSERT INTO jobs (id, projectId, inputImageId, providerId, model, prompt, status) VALUES ('tail_task_last', 'project-tail', 'asset-tail', 'provider-fixture', 'gpt-image-2', '', 'succeeded')").run();
 db.prepare("INSERT INTO jobs (id, projectId, inputImageId, providerId, model, prompt, status) VALUES ('task-plain-030', 'project-main', 'asset-unified', 'provider-fixture', 'gpt-image-2', '', 'pending')").run();
 
 let readySeq = 0;
+// 每条执行记录带 64 KiB 输入快照：优化前全表扫描会搬运这部分历史；优化后只应读取本页记录。
+const BIG_INPUT_SNAPSHOT = JSON.stringify({ payload: 'A'.repeat(64 * 1024) });
 function insertOperation(input: {
   id: string; actorUserId: string; status: string; taskId: string; updatedAt: string;
   module?: string; step?: string; waitReason?: string | null; scopeId?: string;
   mediaTaskId?: string | null; channelKey?: string | null;
-  providerSnapshot?: unknown; quoteJson?: string;
+  providerSnapshot?: unknown; quoteJson?: string; inputSnapshot?: string;
 }): void {
   readySeq += 1;
   db.prepare(`INSERT INTO execution_operations (
@@ -193,12 +246,12 @@ function insertOperation(input: {
     businessAttemptId, businessAttemptNo, inputHash, inputSnapshotJson, continuationKey,
     providerSnapshotJson, requiredPoolsJson, quoteJson, status, waitReason, readySeq,
     createdAt, updatedAt, mediaTaskId, channelKey
-  ) VALUES (?, ?, ?, 'project', ?, ?, ?, ?, 'r1', ?, 1, ?, '{}',
+  ) VALUES (?, ?, ?, 'project', ?, ?, ?, ?, 'r1', ?, 1, ?, ?,
     'image.submit', ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       input.id, `key-${input.id}`, input.actorUserId, input.scopeId ?? 'project-main',
       input.module ?? 'image', input.taskId, input.step ?? 'submit',
-      `business-${input.id}`, `hash-${input.id}`,
+      `business-${input.id}`, `hash-${input.id}`, input.inputSnapshot ?? BIG_INPUT_SNAPSHOT,
       JSON.stringify(input.providerSnapshot ?? { name: '分页验收供应商', model: 'gpt-image-2' }),
       input.quoteJson ?? '{"kind":"priced"}',
       input.status, input.waitReason ?? null, readySeq,
@@ -272,15 +325,21 @@ for (const [channelKey, channelModel, attemptCost] of [
   });
 }
 
-// ── 502 个普通制作任务（各 1 条执行记录） ──
-const tailOperationId = 'op-tail-503';
-const decoyTaskId = 'tailXtaskX503';
+// ── 2002 个普通制作任务（各 1 条执行记录），最后一个承担「全量历史之外」的角色 ──
+const LAST_POSITION = 2003;
+const TOTAL_TASKS = 2003; // 2002 个普通制作任务 + 1 个统一制作任务
+const TOTAL_RECORDS = 2005; // 2002 条普通执行记录 + 统一任务的 3 条
+const LAST_PAGE_25 = Math.ceil(TOTAL_TASKS / 25); // 81
+const LAST_PAGE_50 = Math.ceil(TOTAL_TASKS / 50); // 41
+const tailOperationId = 'op-tail-last';
+const decoyTaskId = 'tailXtaskXlast';
 const SAME_UPDATED_AT = iso(TODAY_BASE - minutes(40));
-for (let position = 1; position <= 503; position += 1) {
+for (let position = 1; position <= LAST_POSITION; position += 1) {
   if (position === 25) continue; // 统一任务占位
-  const operationId = position === 503 ? tailOperationId : `op-plain-${String(position).padStart(3, '0')}`;
-  const taskId = position === 503 ? 'tail_task_503' : position === 300 ? decoyTaskId : `task-plain-${String(position).padStart(3, '0')}`;
-  const actor = position === 503 ? carol.principal.userId
+  const isTail = position === LAST_POSITION;
+  const operationId = isTail ? tailOperationId : `op-plain-${String(position).padStart(3, '0')}`;
+  const taskId = isTail ? 'tail_task_last' : position === 300 ? decoyTaskId : `task-plain-${String(position).padStart(3, '0')}`;
+  const actor = isTail ? carol.principal.userId
     : position === 501 || position === 502 ? bob.principal.userId
       : alice.principal.userId;
   const isRequeued = position === 30;
@@ -290,11 +349,11 @@ for (let position = 1; position <= 503; position += 1) {
     actorUserId: actor,
     status: isRequeued ? 'failed' : isCanceled ? 'pending' : 'succeeded',
     taskId,
-    step: position === 503 ? 'analyze' : 'submit',
-    scopeId: position === 503 ? 'project-tail' : 'project-main',
+    step: isTail ? 'analyze' : 'submit',
+    scopeId: isTail ? 'project-tail' : 'project-main',
     waitReason: isCanceled ? 'stage_canceled' : null,
     updatedAt: position >= 40 && position <= 49 ? SAME_UPDATED_AT : positionTime(position),
-    providerSnapshot: position === 503
+    providerSnapshot: isTail
       ? { name: '末页专属供应商', model: 'search-only-model-77' }
       : { name: '分页验收供应商', model: 'gpt-image-2' },
   });
@@ -323,10 +382,10 @@ for (let index = 0; index < 501; index += 1) {
 }
 
 try {
-  // ── 3. 分页选组：503 个制作任务 / 505 条执行记录 ─────────────────────────────
+  // ── 3. 分页选组：2003 个制作任务 / 2005 条执行记录 ───────────────────────────
   const firstPage = listTeamTasks(db, adminView);
-  assert.deepEqual(firstPage.pagination, { page: 1, pageSize: 25, total: 503, totalPages: 21 });
-  assert.equal(firstPage.totalRecords, 505, 'totalRecords 是匹配组内执行记录总数');
+  assert.deepEqual(firstPage.pagination, { page: 1, pageSize: 25, total: TOTAL_TASKS, totalPages: LAST_PAGE_25 });
+  assert.equal(firstPage.totalRecords, TOTAL_RECORDS, 'totalRecords 是匹配组内执行记录总数');
   assert.equal(firstPage.items.length, 27, '第 1 页有 24 个单记录组 + 统一任务的 3 条执行记录');
   assert.equal(firstPage.localAgentIncluded, false, '保留 localAgentIncluded 字段');
   assert.equal(firstPage.items.filter(item => item.unifiedTaskId === 'media-boundary').length, 3,
@@ -337,33 +396,33 @@ try {
     for (let page = 1; ; page += 1) {
       const result = listTeamTasks(db, adminView, {}, { page, pageSize });
       pages.push(result);
-      assert.equal(result.pagination.total, 503, '总数不随页变化');
-      assert.equal(result.pagination.totalPages, pageSize === 25 ? 21 : 11);
-      assert.equal(result.totalRecords, 505, 'totalRecords 不随页变化');
+      assert.equal(result.pagination.total, TOTAL_TASKS, '总数不随页变化');
+      assert.equal(result.pagination.totalPages, pageSize === 25 ? LAST_PAGE_25 : LAST_PAGE_50);
+      assert.equal(result.totalRecords, TOTAL_RECORDS, 'totalRecords 不随页变化');
       if (page >= result.pagination.totalPages) break;
     }
     return pages;
   };
 
   const pages25 = byPageSize(25);
-  assert.equal(pages25.length, 21);
-  assert.equal(pages25[20].items.length, 3, 'pageSize=25 末页 3 个制作任务');
-  assert.deepEqual(pages25[20].items.map(item => item.operationId).sort(), ['op-plain-501', 'op-plain-502', tailOperationId]);
+  assert.equal(pages25.length, LAST_PAGE_25);
+  assert.equal(pages25[LAST_PAGE_25 - 1].items.length, 3, 'pageSize=25 末页 3 个制作任务');
+  assert.deepEqual(pages25[LAST_PAGE_25 - 1].items.map(item => item.operationId).sort(), ['op-plain-2001', 'op-plain-2002', tailOperationId]);
   const ids25 = pages25.flatMap(page => page.items.map(item => item.operationId));
-  assert.equal(ids25.length, 505, '遍历 21 页恰好覆盖 505 条执行记录，无重复');
-  assert.equal(new Set(ids25).size, 505, '执行记录 ID 集合恰好等于完整授权集合');
+  assert.equal(ids25.length, TOTAL_RECORDS, `遍历 ${LAST_PAGE_25} 页恰好覆盖 ${TOTAL_RECORDS} 条执行记录，无重复`);
+  assert.equal(new Set(ids25).size, TOTAL_RECORDS, '执行记录 ID 集合恰好等于完整授权集合');
   const unifiedPages = pages25.filter(page => page.items.some(item => item.unifiedTaskId === 'media-boundary'));
   assert.equal(unifiedPages.length, 1, '统一任务整组只在一页出现一次');
   assert.equal(unifiedPages[0].pagination.page, 1, '统一任务按组落在页边界（第 25 个制作任务）');
   assert.equal(unifiedPages[0].items.filter(item => item.unifiedTaskId === 'media-boundary').length, 3);
 
   const pages50 = byPageSize(50);
-  assert.equal(pages50.length, 11);
-  assert.equal(pages50[10].items.length, 3, 'pageSize=50 末页 3 个制作任务');
+  assert.equal(pages50.length, LAST_PAGE_50);
+  assert.equal(pages50[LAST_PAGE_50 - 1].items.length, 3, 'pageSize=50 末页 3 个制作任务');
   const ids50 = pages50.flatMap(page => page.items.map(item => item.operationId));
-  assert.equal(new Set(ids50).size, 505, '25/50 两档遍历结果相同');
+  assert.equal(new Set(ids50).size, TOTAL_RECORDS, '25/50 两档遍历结果相同');
   assert.equal(pages50[0].items.length, 52, '一页 50 个制作任务可返回多于 50 条执行记录');
-  console.log('PASS: 503 groups / 505 records paginate into 21 and 11 pages, unified group never splits');
+  console.log(`PASS: ${TOTAL_TASKS} groups / ${TOTAL_RECORDS} records paginate into ${LAST_PAGE_25} and ${LAST_PAGE_50} pages, unified group never splits`);
 
   // ── 4. 同 updatedAt 稳定排序 + 越界页 ────────────────────────────────────────
   const page2 = pages25[1];
@@ -375,9 +434,9 @@ try {
     '同一时间按稳定组 ID 倒序，不随查询抖动',
   );
   const outOfRange = listTeamTasks(db, adminView, {}, { page: 999, pageSize: 25 });
-  assert.equal(outOfRange.pagination.page, 21, '越界页归到有效末页并返回实际 page');
+  assert.equal(outOfRange.pagination.page, LAST_PAGE_25, '越界页归到有效末页并返回实际 page');
   assert.equal(outOfRange.items.length, 3);
-  assert.equal(listTeamTasks(db, adminView, {}, { page: 999, pageSize: 50 }).pagination.page, 11);
+  assert.equal(listTeamTasks(db, adminView, {}, { page: 999, pageSize: 50 }).pagination.page, LAST_PAGE_50);
   const emptyResult = listTeamTasks(db, adminView, { q: 'ZZZ-没有这个任务' });
   assert.deepEqual(emptyResult.pagination, { page: 1, pageSize: 25, total: 0, totalPages: 1 });
   assert.equal(emptyResult.totalRecords, 0);
@@ -398,7 +457,7 @@ try {
     [tailOperationId, tailOperationId],
   ] as const) {
     const result = searchTotals(query);
-    assert.equal(result.pagination.total, 1, `关键词「${query}」只能命中第 503 个任务`);
+    assert.equal(result.pagination.total, 1, `关键词「${query}」只能命中最后一个任务`);
     assert.equal(result.totalRecords, 1);
     assert.deepEqual(result.items.map(item => item.operationId), [expectedOperation], `关键词「${query}」命中正确任务`);
   }
@@ -413,10 +472,10 @@ try {
   // `%`/`_`/引号按普通文字：不转义就会命中一大片或报错。
   assert.equal(searchTotals('50%').pagination.total, 1, '`%` 是普通文字，不是通配符');
   assert.equal(searchTotals("'A店'").pagination.total, 1, '引号按普通文字处理，不破坏 SQL');
-  const taskIdSearch = searchTotals('tail_task_503');
+  const taskIdSearch = searchTotals('tail_task_last');
   assert.equal(taskIdSearch.pagination.total, 1, '`_` 是普通文字，不是单字符通配符');
   assert.deepEqual(taskIdSearch.items.map(item => item.operationId), [tailOperationId]);
-  assert.equal(searchTotals('tailXtaskX503').pagination.total, 1, '名字相近的任务仍各自可搜');
+  assert.equal(searchTotals('tailXtaskXlast').pagination.total, 1, '名字相近的任务仍各自可搜');
 
   // 组内旧通道命中 → 返回整组（不裁掉其它通道）。
   const legacyChannelHit = searchTotals('legacy-channel-model');
@@ -439,8 +498,8 @@ try {
   assert.equal(canceled.pagination.total, 1);
   assert.deepEqual(canceled.items.map(item => item.operationId), ['op-plain-031'], '取消在可见状态里是一个独立状态');
   const succeeded = listTeamTasks(db, adminView, { status: 'succeeded' });
-  assert.equal(succeeded.pagination.total, 500);
-  assert.equal(succeeded.totalRecords, 500, '最新代表记录失败时，旧通道成功不能让整组进入成功筛选');
+  assert.equal(succeeded.pagination.total, 2000);
+  assert.equal(succeeded.totalRecords, 2000, '最新代表记录失败时，旧通道成功不能让整组进入成功筛选');
 
   // 旧通道失败、新通道成功时，只按代表记录筛选；关键词仍可命中旧通道并返回整组。
   try {
@@ -469,12 +528,12 @@ try {
   console.log('PASS: status filtering uses effective status and keeps each matched group complete');
 
   // ── 7. 权限：管理员全员/单成员、员工本人、越权 ──────────────────────────────
-  assert.deepEqual(countTeamTasks(db, adminView), { tasks: 503, records: 505 });
-  assert.deepEqual(countTeamTasks(db, aliceView), { tasks: 500, records: 502 });
+  assert.deepEqual(countTeamTasks(db, adminView), { tasks: TOTAL_TASKS, records: TOTAL_RECORDS });
+  assert.deepEqual(countTeamTasks(db, aliceView), { tasks: 2000, records: 2002 });
   assert.deepEqual(countTeamTasks(db, bobView), { tasks: 2, records: 2 });
   assert.deepEqual(countTeamTasks(db, carolView), { tasks: 1, records: 1 });
   assert.equal(listTeamTasks(db, adminView, { actorUserId: bob.principal.userId }).pagination.total, 2);
-  assert.equal(listTeamTasks(db, aliceView).pagination.total, 500, '员工只看到本人的制作任务');
+  assert.equal(listTeamTasks(db, aliceView).pagination.total, 2000, '员工只看到本人的制作任务');
   assert.equal(listTeamTasks(db, bobView, { q: '0999' }).pagination.total, 0, '搜索不泄漏其他成员的任务');
   assert.equal(listTeamTasks(db, adminView, { q: '0999' }).pagination.total, 1);
   assert.throws(
@@ -482,15 +541,15 @@ try {
     (error: unknown) => (error as { status?: number }).status === 403,
     '员工不能按别人筛选',
   );
-  assert.deepEqual(readWorkspaceBadgeCounts(db, adminView), { tasks: 505, errors: 0 },
-    '侧栏任务角标是全可见范围的执行记录数（505，不是 25/500）');
-  assert.equal(readWorkspaceBadgeCounts(db, aliceView).tasks, 502);
+  assert.deepEqual(readWorkspaceBadgeCounts(db, adminView), { tasks: TOTAL_RECORDS, errors: 0 },
+    `侧栏任务角标是全可见范围的执行记录数（${TOTAL_RECORDS}，不是 25/2000）`);
+  assert.equal(readWorkspaceBadgeCounts(db, aliceView).tasks, 2002);
   assert.equal(readWorkspaceBadgeCounts(db, bobView).tasks, 2);
   console.log('PASS: admin/member/employee scopes stay correct and badges read full-range counts');
 
   // ── 8. 总览/首页的独立聚合不依赖当前页 ──────────────────────────────────────
   const activity = readTeamTaskActivity(db, adminView, now);
-  assert.deepEqual(activity.counts, { total: 505, running: 0, queued: 1, completedToday: 99, failed: 1, canceled: 1 });
+  assert.deepEqual(activity.counts, { total: TOTAL_RECORDS, running: 0, queued: 1, completedToday: 99, failed: 1, canceled: 1 });
   const allRecords: Awaited<ReturnType<typeof listTeamTasks>>['items'] = [];
   for (const page of pages25) allRecords.push(...page.items);
   allRecords.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
@@ -521,6 +580,12 @@ try {
     snapshotReads = 0;
     assert.equal(listRecentTeamTasks(db, bobView, 12).items.length, 2);
     assert.equal(snapshotReads, 2, '员工授权范围先于选取最近记录');
+    snapshotReads = 0;
+    const firstPageRead = listTeamTasks(db, adminView, {}, { page: 1, pageSize: 25 });
+    assert.equal(snapshotReads, firstPageRead.items.length, '任务首屏只读取本页记录快照，不搬运历史快照');
+    snapshotReads = 0;
+    const filteredPageRead = listTeamTasks(db, adminView, { status: 'succeeded' }, { page: 1, pageSize: 25 });
+    assert.equal(snapshotReads, filteredPageRead.items.length, '状态筛选同样只读取本页记录快照');
   } finally { db.prepare = originalPrepare; }
   assert.deepEqual(recent.map(item => item.operationId), recentConsoleTasks(allRecords, now).map(row => row.operationId),
     '最近任务是有界查询，且与纯函数同口径同顺序');
@@ -554,9 +619,9 @@ try {
   assert.equal(queryUnifiedTaskUsageByMediaTaskIds(db, adminView, ['media-missing']).size, 0);
   console.log('PASS: page-level unified costs use mediaTaskId and survive the other 500-limit');
 
-  // ── 10. 详情：500 条之外可读、404/400 语义 ──────────────────────────────────
+  // ── 10. 详情：2000 条之外可读、404/400 语义 ──────────────────────────────────
   const oldDetail = findTeamTask(db, adminView, tailOperationId);
-  assert.equal(oldDetail?.operationId, tailOperationId, '500 条之外（第 505 条）的旧执行记录可读');
+  assert.equal(oldDetail?.operationId, tailOperationId, `2000 条之外（第 ${TOTAL_RECORDS} 条）的旧执行记录可读`);
   assert.equal(findTeamTask(db, aliceView, tailOperationId), null, '员工读不到别人的任务（路由按 404）');
   assert.equal(findTeamTask(db, carolView, tailOperationId)?.actorUserId, carol.principal.userId);
   assert.equal(findTeamTask(db, adminView, 'op-does-not-exist'), null);
@@ -573,12 +638,12 @@ try {
     pagination: { page: number; pageSize: number; total: number; totalPages: number };
   };
   assert.equal(adminBody.localAgentIncluded, false);
-  assert.deepEqual(adminBody.pagination, { page: 1, pageSize: 25, total: 503, totalPages: 21 });
-  assert.equal(adminBody.totalRecords, 505);
+  assert.deepEqual(adminBody.pagination, { page: 1, pageSize: 25, total: TOTAL_TASKS, totalPages: LAST_PAGE_25 });
+  assert.equal(adminBody.totalRecords, TOTAL_RECORDS);
   assert.equal(adminBody.items.length, 27);
   const countsRoute = await import('../app/api/team/workspace-counts/route.ts');
   const countsUrl = 'https://studio.example.test/api/team/workspace-counts';
-  for (const [cookie, expected] of [[adminCookie, 505], [alice.cookie, 502], [bob.cookie, 2]] as const) {
+  for (const [cookie, expected] of [[adminCookie, TOTAL_RECORDS], [alice.cookie, 2002], [bob.cookie, 2]] as const) {
     const response = await countsRoute.GET(request(countsUrl, cookie));
     assert.equal(response.status, 200, await response.clone().text());
     assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
@@ -588,16 +653,16 @@ try {
     assert.ok(JSON.stringify(counts).length < 80, '侧栏不能为计数下载任务快照或列表明细');
   }
   const forgedCounts = await countsRoute.GET(request(`${countsUrl}?actorUserId=${bob.principal.userId}`, alice.cookie));
-  assert.deepEqual(await forgedCounts.json(), { tasks: 502, errors: 0 }, '客户端参数不能改变角标授权范围');
+  assert.deepEqual(await forgedCounts.json(), { tasks: 2002, errors: 0 }, '客户端参数不能改变角标授权范围');
   assert.equal((await countsRoute.GET(request(countsUrl, ''))).status, 401);
 
 
-  const fifty = await (await tasksRoute.GET(request(tasksUrl('pageSize=50&page=11'), adminCookie))).json() as typeof adminBody;
-  assert.deepEqual(fifty.pagination, { page: 11, pageSize: 50, total: 503, totalPages: 11 });
+  const fifty = await (await tasksRoute.GET(request(tasksUrl(`pageSize=50&page=${LAST_PAGE_50}`), adminCookie))).json() as typeof adminBody;
+  assert.deepEqual(fifty.pagination, { page: LAST_PAGE_50, pageSize: 50, total: TOTAL_TASKS, totalPages: LAST_PAGE_50 });
   assert.equal(fifty.items.length, 3, '末页 3 个制作任务');
 
   const clamped = await (await tasksRoute.GET(request(tasksUrl('page=999'), adminCookie))).json() as typeof adminBody;
-  assert.equal(clamped.pagination.page, 21, '前端按响应收敛到实际页');
+  assert.equal(clamped.pagination.page, LAST_PAGE_25, '前端按响应收敛到实际页');
   assert.equal(clamped.items.length, 3);
 
   const tailSearch = await (await tasksRoute.GET(request(tasksUrl(`q=${encodeURIComponent('末页专用')}`), adminCookie))).json() as typeof adminBody;
@@ -611,8 +676,8 @@ try {
   assert.equal(statusFailed.items.length, 3, '路由也返回整组记录');
 
   const employeeList = await (await tasksRoute.GET(request(tasksUrl(''), alice.cookie))).json() as typeof adminBody;
-  assert.equal(employeeList.pagination.total, 500);
-  assert.equal(employeeList.totalRecords, 502);
+  assert.equal(employeeList.pagination.total, 2000);
+  assert.equal(employeeList.totalRecords, 2002);
   const bobList = await (await tasksRoute.GET(request(tasksUrl(''), bob.cookie))).json() as typeof adminBody;
   assert.equal(bobList.pagination.total, 2);
   const forbidden = await tasksRoute.GET(request(tasksUrl(`actorUserId=${encodeURIComponent(alice.principal.userId)}`), bob.cookie));
