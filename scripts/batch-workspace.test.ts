@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import Database from 'better-sqlite3';
 import { getBatchWorkspace } from '../lib/batch-production/batch-workspace.ts';
 import { resolveCoverContractHash, resolveFullRenderContractHash } from '../lib/batch-production/cover-contract.ts';
@@ -10,7 +11,11 @@ import { createBatchTask } from '../lib/batch-production/tasks.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-batch-workspace-'));
 try {
-  const db = new Database(path.join(root, 'workspace.db'));
+  let queryCount = 0;
+  let countQueries = false;
+  const db = new Database(path.join(root, 'workspace.db'), {
+    verbose() { if (countQueries) queryCount += 1; },
+  });
   db.pragma('foreign_keys = ON');
   db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL DEFAULT '', exportDirName TEXT NOT NULL DEFAULT ''); INSERT INTO projects (id, name) VALUES ('p1', '项目一'), ('p2', '项目二');`);
   const ready = await ensureBatchSchemaReady({ db, backupRoot: path.join(root, 'backups') });
@@ -289,8 +294,108 @@ try {
   assert.deepEqual(getBatchWorkspace(db, 'p1', 'b1').cards.find(card => card.planId === 'plan1')!.sourceConflictAssetIds, []);
   assert.equal(getBatchWorkspace(db, 'p1', 'b1').cards.find(card => card.planId === 'plan1')!.sourceWarnings?.length, 0,
     '冲突解除后，实时检查不保留过期警告');
+  // ---- 工作区规模 / SQL 预算回归 ----
+  // 按批次集中取数后,1/25/100 卡的 SQL 条数必须基本恒定,不能为每张卡
+  // 追加一套查询;带历史正式产物的大批次还要保持契约/新鲜度语义。
+  {
+    const scaleNow = '2026-08-05T10:00:00.000Z';
+    db.prepare(`INSERT INTO batch_productions (id, projectId, name, status, currentVersionId, progressJson, controlState, createdAt, updatedAt) VALUES ('b-scale','p1','规模批次','running','bv-scale','{}','running',?,?)`).run(scaleNow, scaleNow);
+    db.prepare(`INSERT INTO batch_production_versions (id,batchId,versionNumber,copyCount,defaultsJson,inputState,frozenAt,createdAt) VALUES ('bv-scale','b-scale',1,100,'{}','frozen',?,?)`).run(scaleNow, scaleNow);
+    db.prepare(`INSERT INTO batch_script_snapshots (id,batchVersionId,sourceScriptId,title,bodyText,sourceVersion,copyCount,createdAt) VALUES ('ss-scale','bv-scale','s1','脚本标题','正文','v1',100,?)`).run(scaleNow);
+    db.prepare(`INSERT INTO batch_asset_pool_items (id,batchVersionId,assetId,analysisId,selectionState,createdAt) VALUES ('pool-scale','bv-scale','timeline-asset','analysis-timeline','selected',?)`).run(scaleNow);
+
+    const scaleArrangement = JSON.stringify({
+      productionReady: true,
+      editRevision: 0,
+      clips: [{
+        clipId: 'clip-scale', assetId: 'timeline-asset', sourceStartUs: 500_000,
+        sourceEndUs: 2_500_000, timelineStartUs: 0, timelineEndUs: 2_000_000,
+      }],
+      cover: { assetId: 'timeline-asset', timeUs: 0 },
+      warnings: [], blockers: [],
+    });
+    const insertScalePlan = db.prepare(`INSERT INTO batch_output_plans (id,batchVersionId,scriptSnapshotId,seq,planJson,currentVersionId,currentArtifactId,createdAt) VALUES (?, 'bv-scale','ss-scale',?, '{}', ?, ?, ?)`);
+    const insertScaleVersion = db.prepare(`INSERT INTO batch_output_versions (id,planId,versionNumber,arrangementJson,createdAt) VALUES (?,?,1,?,?)`);
+    const insertScaleArtifact = db.prepare(`INSERT INTO batch_artifacts (id,projectId,batchId,batchVersionId,outputPlanId,outputVersionId,kind,relativePath,checksum,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+    const insertScaleTask = db.prepare(`INSERT INTO batch_tasks (id,projectId,batchId,workType,targetKind,targetId,status,expectedState,requestKey,progressJson,attemptCount,createdAt,updatedAt) VALUES (?, 'p1','b-scale','render','output_version',?,'succeeded','running',NULL,'{}',1,?,?)`);
+    const insertScaleAttempt = db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,resultJson,startedAt,finishedAt,createdAt) VALUES (?,?,1,'succeeded','{}',?,?,?,?)`);
+
+    let inserted = 0;
+    const addScaleCards = (target: number) => {
+      db.transaction(() => {
+        while (inserted < target) {
+          inserted += 1;
+          const index = inserted;
+          const planId = `sp-${index}`;
+          const versionId = `sv-${index}`;
+          const videoId = `sv-video-${index}`;
+          insertScalePlan.run(planId, index, versionId, videoId, scaleNow);
+          insertScaleVersion.run(versionId, planId, scaleArrangement, scaleNow);
+          insertScaleArtifact.run(videoId, 'p1', 'b-scale', 'bv-scale', planId, versionId, 'video', `storage/batch/scale-${index}.mp4`, `sha256:sv-video-${index}`, scaleNow);
+          insertScaleArtifact.run(`sv-cover-${index}`, 'p1', 'b-scale', 'bv-scale', planId, versionId, 'cover', `storage/batch/scale-${index}-封面.jpg`, `sha256:sv-cover-${index}`, scaleNow);
+          insertScaleTask.run(`sv-task-${index}`, versionId, scaleNow, scaleNow);
+          insertScaleAttempt.run(`sv-attempt-${index}`, `sv-task-${index}`, JSON.stringify({
+            outputVersionId: versionId,
+            audioMode: 'narration',
+            productionReady: true,
+            durationUs: 2_000_000,
+            videoRelativePath: `batch-renders/${versionId}/video.mp4`,
+            coverRelativePath: `batch-renders/${versionId}/cover.jpg`,
+            videoChecksum: `sha256:sv-video-${index}`,
+            coverChecksum: `sha256:sv-cover-${index}`,
+            editRevision: 0,
+            coverTimeUs: 0,
+            subtitleCues: [],
+          }), scaleNow, scaleNow, scaleNow);
+        }
+      })();
+    };
+
+    const measureWorkspace = () => {
+      queryCount = 0;
+      countQueries = true;
+      const startedAt = performance.now();
+      try {
+        const measured = getBatchWorkspace(db, 'p1', 'b-scale');
+        return { view: measured, ms: performance.now() - startedAt, sql: queryCount };
+      } finally {
+        countQueries = false;
+      }
+    };
+
+    const scaleResults: Array<{ cards: number; medianMs: number; p95Ms: number; maxSql: number }> = [];
+    for (const cards of [1, 25, 100]) {
+      addScaleCards(cards);
+      const samples: Array<{ ms: number; sql: number }> = [];
+      for (let sample = 0; sample < 7; sample += 1) {
+        const measured = measureWorkspace();
+        assert.equal(measured.view.cards.length, cards);
+        assert.ok(measured.view.cards.every(card => card.formalOutdated === false), '成对正式产物与当前契约一致时不得标记过期');
+        samples.push({ ms: measured.ms, sql: measured.sql });
+      }
+      const sortedMs = samples.map(({ ms }) => ms).sort((a, b) => a - b);
+      const p95Index = Math.min(sortedMs.length - 1, Math.ceil(sortedMs.length * 0.95) - 1);
+      scaleResults.push({
+        cards,
+        medianMs: Number(sortedMs[Math.floor(sortedMs.length / 2)].toFixed(3)),
+        p95Ms: Number(sortedMs[p95Index].toFixed(3)),
+        maxSql: Math.max(...samples.map(({ sql }) => sql)),
+      });
+    }
+    const cardOne = scaleResults[0];
+    const cardHundred = scaleResults[2];
+    assert.ok(cardHundred.maxSql <= 100, `100 卡工作区关联读取必须 ≤100 条 SQL,实际 ${cardHundred.maxSql}`);
+    assert.ok(
+      cardHundred.maxSql <= cardOne.maxSql + 20,
+      `SQL 条数不能随卡片数线性增长:1 卡 ${cardOne.maxSql},100 卡 ${cardHundred.maxSql}`,
+    );
+    assert.ok(cardHundred.medianMs < 300, `100 卡工作区中位耗时回归:${cardHundred.medianMs}ms`);
+    console.log('workspace scale samples', JSON.stringify(scaleResults));
+  }
+
   db.close();
   console.log('batch workspace aggregation tests passed');
 } finally {
-  fs.rmSync(root, { recursive: true, force: true });
+  // 断言失败时数据库可能仍被占用;清理失败不能掩盖真正的失败原因。
+  try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
 }

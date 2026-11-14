@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { createRefreshCoordinator, type WorkspaceRefreshRequest } from './workspace-refresh';
 import { Tag, Segmented } from '@/components/ui/Appearance';
 import { requestPackagingExport } from '@/components/packaging/request-packaging-export';
 import MixcutShell, { type MixcutStepDef } from '@/components/mixcut/MixcutShell';
@@ -249,6 +250,8 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   useEffect(() => { proxyPlaybackRef.current = proxyPlayback; }, [proxyPlayback]);
   const [outputPreset, setOutputPreset] = useState<OutputPreset>('3:4');
   const [workspace, setWorkspace] = useState<BatchWorkspaceView | null>(null);
+  // 页面可见性:隐藏时暂停 3 秒轮询,恢复可见时立即刷新一次,避免后台标签页空转。
+  const [pageVisible, setPageVisible] = useState(() => (typeof document === 'undefined' ? true : !document.hidden));
   const [cardFilter, setCardFilter] = useState<CardFilter>('all');
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
   // loadWorkspace 需要读当前选择做"失效移除"计算,又不希望它进 useCallback 依赖。
@@ -437,11 +440,14 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
 
   // 代理任务、素材分析任务与批次生产任务来自同一个 /tasks 端点,合并为一次拉取,
   // 派生三种视图,避免同一接口重复轮询。
-  const loadTasks = useCallback(async (batchId: string) => {
+  const loadTasksWorker = useCallback(async (request: WorkspaceRefreshRequest) => {
+    const { batchId } = request;
     if (!batchId) {
-      setProxyTasks([]);
-      setAssetPrepareTasks([]);
-      setBatchTasks([]);
+      if (request.isCurrent()) {
+        setProxyTasks([]);
+        setAssetPrepareTasks([]);
+        setBatchTasks([]);
+      }
       return;
     }
     try {
@@ -449,6 +455,8 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         `/api/batch-production/batches/${encodeURIComponent(batchId)}/tasks?projectId=${encodeURIComponent(projectId)}`,
         { cache: 'no-store' },
       ));
+      // 切批次后到达的旧响应不得覆盖新批次的任务视图。
+      if (!request.isCurrent()) return;
       setProxyTasks(view.tasks.filter((task) => task.workType === 'proxy_generate'));
       setAssetPrepareTasks(view.tasks
         .filter((task) => task.workType === 'asset_prepare')
@@ -465,10 +473,22 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       // 任务状态轮询失败不阻塞其他操作，下一轮轮询会自动重试。
     }
   }, [projectId]);
+  const loadTasksWorkerRef = useRef(loadTasksWorker);
+  useEffect(() => { loadTasksWorkerRef.current = loadTasksWorker; }, [loadTasksWorker]);
+  // 同类请求最多一个在途;轮询与编辑后的立即刷新共用同一个协调器。
+  const tasksRefresher = useMemo(
+    () => createRefreshCoordinator((request) => loadTasksWorkerRef.current(request)),
+    [],
+  );
+  const loadTasks = useCallback(
+    (batchId: string) => tasksRefresher.refresh(batchId),
+    [tasksRefresher],
+  );
 
-  const loadWorkspace = useCallback(async (batchId: string) => {
+  const loadWorkspaceWorker = useCallback(async (request: WorkspaceRefreshRequest) => {
+    const { batchId } = request;
     if (!batchId) {
-      setWorkspace(null);
+      if (request.isCurrent()) setWorkspace(null);
       return;
     }
     try {
@@ -476,6 +496,8 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         `/api/batch-production/batches/${encodeURIComponent(batchId)}/workspace?projectId=${encodeURIComponent(projectId)}`,
         { cache: 'no-store' },
       ));
+      // 切批次后到达的旧响应不得覆盖当前批次的选择/卡片状态。
+      if (!request.isCurrent()) return;
       setWorkspace(view);
       setBatchStatus(view.batch.status);
       if (view.cards.length > 0) {
@@ -507,9 +529,25 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         });
       }
     } catch {
-      setWorkspace(null);
+      if (request.isCurrent()) setWorkspace(null);
     }
   }, [projectId]);
+  const loadWorkspaceWorkerRef = useRef(loadWorkspaceWorker);
+  useEffect(() => { loadWorkspaceWorkerRef.current = loadWorkspaceWorker; }, [loadWorkspaceWorker]);
+  const workspaceRefresher = useMemo(
+    () => createRefreshCoordinator((request) => loadWorkspaceWorkerRef.current(request)),
+    [],
+  );
+  const loadWorkspace = useCallback(
+    (batchId: string) => workspaceRefresher.refresh(batchId),
+    [workspaceRefresher],
+  );
+
+  // 协调器用「当前活动批次」核对迟到响应;切换批次时立即更新。
+  useEffect(() => {
+    tasksRefresher.setActiveBatch(selectedBatchId);
+    workspaceRefresher.setActiveBatch(selectedBatchId);
+  }, [selectedBatchId, tasksRefresher, workspaceRefresher]);
 
   // 同页会话内:渲染中的导出条目全部成功后自动再调一次导出接口完成发布。
   // 关闭/刷新页面后服务端任务继续,但需要用户回到导出页再点一次「导出」。
@@ -642,11 +680,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }, [batchTasks, selectedBatchId]);
 
   // 有活跃任务、或批次仍自称 running 时才周期轮询,全部结束后立即停止。
+  // 页面隐藏时暂停;恢复可见由下面的 visibilitychange 监听立即补一次。
   useEffect(() => {
-    if (!selectedBatchId || !shouldPollBatch) return;
+    if (!selectedBatchId || !shouldPollBatch || !pageVisible) return;
     const interval = window.setInterval(() => void loadTasks(selectedBatchId), 3_000);
     return () => window.clearInterval(interval);
-  }, [selectedBatchId, loadTasks, shouldPollBatch]);
+  }, [selectedBatchId, loadTasks, shouldPollBatch, pageVisible]);
 
   // workspace 轮询:与任务轮询同条件、同结构,依赖里只出现布尔量。
   useEffect(() => {
@@ -656,10 +695,24 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }, [selectedBatchId, loadWorkspace]);
 
   useEffect(() => {
-    if (!selectedBatchId || !shouldPollBatch) return;
+    if (!selectedBatchId || !shouldPollBatch || !pageVisible) return;
     const interval = window.setInterval(() => void loadWorkspace(selectedBatchId), 3_000);
     return () => window.clearInterval(interval);
-  }, [selectedBatchId, loadWorkspace, shouldPollBatch]);
+  }, [selectedBatchId, loadWorkspace, shouldPollBatch, pageVisible]);
+
+  // 恢复可见立即刷新一次;隐藏期间不叠加轮询,避免后台空转。
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      const visible = !document.hidden;
+      setPageVisible(visible);
+      if (visible && selectedBatchId) {
+        void loadTasks(selectedBatchId);
+        void loadWorkspace(selectedBatchId);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [selectedBatchId, loadTasks, loadWorkspace]);
 
   useEffect(() => {
     if (!selectedBatchId) return;

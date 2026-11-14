@@ -151,14 +151,14 @@ function parseJsonObject(value: string): Record<string, unknown> | null {
  * batch_production_versions.defaultsJson 的封面设置。mode 'none'、样式缺失或
  * 主标题为空时返回 null(不合成),任何 JSON 损坏也安全回落 null。
  */
-export function loadFrozenCoverTitleConfig(db: Database.Database, planId: string): FrozenBatchCoverTitleConfig | null {
-  const row = db.prepare(`
-    SELECT s.coverTitleJson AS coverTitleJson, s.sourceScriptId AS sourceScriptId, v.defaultsJson AS defaultsJson
-    FROM batch_output_plans p
-    JOIN batch_script_snapshots s ON s.id = p.scriptSnapshotId
-    JOIN batch_production_versions v ON v.id = p.batchVersionId
-    WHERE p.id = ?
-  `).get(planId) as { coverTitleJson: string; sourceScriptId: string; defaultsJson: string } | undefined;
+export interface FrozenCoverTitleRow {
+  coverTitleJson: string;
+  sourceScriptId: string;
+  defaultsJson: string;
+}
+
+/** 从已预加载的行解析冻结封面配置;供工作区按批次集中取数后复用同一份逻辑。 */
+export function parseFrozenCoverTitleRow(row: FrozenCoverTitleRow | null | undefined): FrozenBatchCoverTitleConfig | null {
   if (!row) return null;
   const settings = resolveBatchCoverTitleSettings(parseJsonObject(row.defaultsJson));
   const styles = settings.stylesByScript[row.sourceScriptId] ?? settings.styles;
@@ -168,6 +168,17 @@ export function loadFrozenCoverTitleConfig(db: Database.Database, planId: string
   if (!primary) return null;
   const secondary = typeof coverTitle?.secondary === 'string' ? coverTitle.secondary : '';
   return { primary, secondary, styles, framing: settings.framing };
+}
+
+export function loadFrozenCoverTitleConfig(db: Database.Database, planId: string): FrozenBatchCoverTitleConfig | null {
+  const row = db.prepare(`
+    SELECT s.coverTitleJson AS coverTitleJson, s.sourceScriptId AS sourceScriptId, v.defaultsJson AS defaultsJson
+    FROM batch_output_plans p
+    JOIN batch_script_snapshots s ON s.id = p.scriptSnapshotId
+    JOIN batch_production_versions v ON v.id = p.batchVersionId
+    WHERE p.id = ?
+  `).get(planId) as FrozenCoverTitleRow | undefined;
+  return parseFrozenCoverTitleRow(row);
 }
 
 function cleanTitlePart(value: unknown, fallback: string): string {
