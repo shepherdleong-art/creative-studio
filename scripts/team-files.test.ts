@@ -74,6 +74,26 @@ fs.writeFileSync(path.join(storageRoot, 'inputs', 'b.txt'), bytes);
 const referenceA = { resourceType: 'test_resource', resourceId: 'resource-a' };
 const referenceB = { resourceType: 'test_resource', resourceId: 'resource-b' };
 
+/**
+ * 统计一次同步操作真正从磁盘读到的字节数。
+ * 登记快路径的验收点就是"已核验的稳定衍生物不再读满整个文件"，
+ * 用 readSync 返回字节数作为可观测量，避免依赖内部实现细节。
+ */
+function withReadByteCounter<T>(operation: () => T): { value: T; bytes: number } {
+  const originalReadSync = fs.readSync;
+  let bytes = 0;
+  fs.readSync = ((...args: unknown[]) => {
+    const read = (originalReadSync as (...rest: unknown[]) => number)(...args);
+    if (read > 0) bytes += read;
+    return read;
+  }) as typeof fs.readSync;
+  try {
+    return { value: operation(), bytes };
+  } finally {
+    fs.readSync = originalReadSync;
+  }
+}
+
 try {
   const fileA = registerReadyTeamFile(db, {
     storageRoot,
@@ -183,6 +203,83 @@ try {
   assert.equal(derived.derivedFromFileId, fileA.id);
   assert.throws(() => resolveTeamFile(db, userB, { storageRoot, fileId: derived.id }), /不存在或不可用/);
 
+  // --- 已登记稳定衍生物的身份快速路径 ---
+  // 首次仍必须完整核验；之后同路径、同来源、同身份的重复登记（每次 Range
+  // 请求都会走一次）只做授权/谱系/身份校验，不再读满整个文件。
+  const reuseBytes = Buffer.alloc(4 * 1024 * 1024, 9);
+  const reuseDerivedPath = path.join(storageRoot, 'inputs', 'a.derived-reuse.bin');
+  fs.writeFileSync(reuseDerivedPath, reuseBytes);
+  const registerReuse = () => registerReadyTeamFile(db, {
+    storageRoot,
+    absolutePath: reuseDerivedPath,
+    mimeType: 'application/octet-stream',
+    ownerUserId: userA.userId,
+    derivedFromFileId: fileA.id,
+    validateReference: (reference) => {
+      requireResourceAccess(db, userA, reference.resourceType, reference.resourceId, 'read');
+    },
+  });
+  const firstReuse = withReadByteCounter(registerReuse);
+  assert.equal(firstReuse.bytes, reuseBytes.byteLength, '首次衍生登记必须完整算满文件哈希');
+  const repeatReuse = withReadByteCounter(registerReuse);
+  assert.equal(repeatReuse.value.id, firstReuse.value.id, '重复登记必须复用同一不可变登记');
+  assert.equal(repeatReuse.bytes, 0, '已登记稳定衍生物的重复登记不得再读全文件');
+  for (let index = 0; index < 4; index += 1) {
+    assert.equal(withReadByteCounter(registerReuse).bytes, 0, '后续 Range/登记不得重复全量哈希');
+  }
+
+  // 身份变化（重写同内容）必须重新完整核验，核验一致后刷新身份再恢复快路径。
+  await new Promise((resolve) => { setTimeout(resolve, 10); });
+  fs.writeFileSync(reuseDerivedPath, reuseBytes);
+  const refreshedReuse = withReadByteCounter(registerReuse);
+  assert.equal(refreshedReuse.value.id, firstReuse.value.id);
+  assert.ok(refreshedReuse.bytes > 0, '身份变化时必须重新完整核验，不能只看路径');
+  assert.equal(withReadByteCounter(registerReuse).bytes, 0, '刷新身份记录后应恢复快路径');
+
+  // 身份变化且内容不同：必须明确拒绝，且拒绝前已完成完整核验。
+  await new Promise((resolve) => { setTimeout(resolve, 10); });
+  fs.writeFileSync(reuseDerivedPath, Buffer.alloc(reuseBytes.byteLength, 8));
+  const replacedReuse = withReadByteCounter(() => {
+    assert.throws(registerReuse, /文件身份与既有不可变登记不一致/, '替换文件不得误命中既有登记');
+  });
+  assert.ok(replacedReuse.bytes > 0, '替换文件必须完整核验后才拒绝');
+
+  // 来源谱系变化（同一路径换 derivedFromFileId）不得复用旧登记。
+  assert.throws(() => registerReadyTeamFile(db, {
+    storageRoot,
+    absolutePath: path.join(storageRoot, 'inputs', 'a.derived.txt'),
+    mimeType: 'application/octet-stream',
+    ownerUserId: userA.userId,
+    derivedFromFileId: fileB.id,
+  }), /文件身份与既有不可变登记不一致/, '来源谱系变化必须拒绝');
+
+  // 跨成员：即使登记已存在，每次请求仍执行当前用户授权，无权即拒绝。
+  assert.throws(() => registerReadyTeamFile(db, {
+    storageRoot,
+    absolutePath: path.join(storageRoot, 'inputs', 'a.derived.txt'),
+    mimeType: 'application/octet-stream',
+    ownerUserId: userB.userId,
+    derivedFromFileId: fileA.id,
+    validateExisting: () => {
+      requireResourceAccess(db, userB, 'test_resource', 'resource-a', 'read');
+    },
+  }), /无权/, '缓存命中不得绕过跨成员授权');
+
+  // 通用（非衍生）文件登记保持原有完整核验，不被本次优化全局放宽。
+  const genericBytes = Buffer.alloc(2 * 1024 * 1024, 5);
+  const genericPath = path.join(storageRoot, 'inputs', 'generic.bin');
+  fs.writeFileSync(genericPath, genericBytes);
+  const registerGeneric = () => registerReadyTeamFile(db, {
+    storageRoot,
+    absolutePath: genericPath,
+    mimeType: 'application/octet-stream',
+    ownerUserId: userA.userId,
+    references: [referenceA],
+  });
+  assert.equal(withReadByteCounter(registerGeneric).bytes, genericBytes.byteLength, '通用文件首次登记完整核验');
+  assert.equal(withReadByteCounter(registerGeneric).bytes, genericBytes.byteLength, '通用文件重复登记仍完整核验');
+
+
   const contextA = createTeamAccessContext({ db, principal: userA });
   assert.throws(() => runWithAccessContext(contextA, () => buildGenericZipStream([
     { filePath: path.join(storageRoot, 'inputs', 'b.txt'), filename: 'stolen.txt' },
@@ -197,8 +294,16 @@ try {
   assert.throws(() => requireResourceAccess(db, userA, referenceB.resourceType, referenceB.resourceId, 'write'), /无权/);
   assert.throws(() => publishTeamResource(db, userA, referenceA), /管理员/);
 
+  // 来源引用撤销后，衍生物不得再复用旧登记。
+  db.prepare('UPDATE team_file_references SET releasedAt = ? WHERE fileId = ?')
+    .run(new Date().toISOString(), fileA.id);
+  assert.throws(registerReuse, /文件必须绑定已授权实体/, '来源引用撤销后不得复用衍生登记');
+
   db.prepare('DELETE FROM team_file_references WHERE fileId = ?').run(derived.id);
   db.prepare('DELETE FROM team_files WHERE id = ?').run(derived.id);
+  // 本轮新增的衍生登记仍以 fileA 为来源，先清理再删除来源行。
+  db.prepare('DELETE FROM team_file_references WHERE fileId IN (SELECT id FROM team_files WHERE derivedFromFileId = ?)').run(fileA.id);
+  db.prepare('DELETE FROM team_files WHERE derivedFromFileId = ?').run(fileA.id);
   db.prepare('DELETE FROM team_file_references WHERE fileId = ?').run(fileA.id);
   db.prepare('DELETE FROM team_files WHERE id = ?').run(fileA.id);
   assert.equal(resolveTeamFile(db, userA, { storageRoot, fileId: fileB.id }).id, fileB.id);
