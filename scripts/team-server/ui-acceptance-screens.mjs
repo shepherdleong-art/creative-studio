@@ -647,6 +647,8 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
       await page.getByRole('heading', { name: '待核对任务', exact: true }).waitFor({ timeout: 60_000 });
       await page.getByTestId('reconcile-task').first().waitFor({ timeout: 60_000 });
       await page.getByTestId('reconcile-reason').first().waitFor({ timeout: 60_000 });
+      await page.getByText('历史调用待核对', { exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByText('名额已释放', { exact: true }).waitFor({ timeout: 60_000 });
       // 等列表读取结束：出现「只看待核对」的计数说明即说明接口已经返回。
       await page.getByText(/条需要核对/).first().waitFor({ timeout: 60_000 });
     },

@@ -110,20 +110,14 @@ assert.equal(isWorkspaceNavActive('/projects/new', '/projects'), true);
 assert.equal(isWorkspaceNavActive('/team/tasks', '/team/tasks'), true);
 assert.equal(isWorkspaceNavActive('/team/errors/abc/task', '/team/errors'), true);
 
-// ---- 数量角标口径：任务读全范围 totalRecords（不是当前页 items.length） ----
-assert.deepEqual(
-  workspaceBadgeCounts({
-    tasks: { items: [{ operationId: 'a' }, { operationId: 'b' }], totalRecords: 505 },
-    errors: { items: [{ errorId: 'e1' }] },
-  }),
-  { tasks: 505, errors: 1 },
-  '任务角标必须读全范围执行记录总数，不能数一页的 items',
-);
-// 接口不可用时宁可不显示，也不显示 0 或猜测值
+// ---- 数量角标读取轻量计数响应，不下载列表明细 ----
+assert.deepEqual(workspaceBadgeCounts({ tasks: 1889, errors: 15 }), { tasks: 1889, errors: 15 });
+assert.deepEqual(workspaceBadgeCounts({ tasks: 0, errors: 0 }), { tasks: 0, errors: 0 });
 assert.deepEqual(workspaceBadgeCounts({}), { tasks: null, errors: null });
-assert.deepEqual(workspaceBadgeCounts({ tasks: { items: 'bad' }, errors: null }), { tasks: null, errors: null });
+assert.deepEqual(workspaceBadgeCounts({ tasks: -1, errors: NaN }), { tasks: null, errors: null });
+assert.deepEqual(workspaceBadgeCounts({ tasks: 1.5, errors: '15' }), { tasks: null, errors: null });
 assert.deepEqual(workspaceBadgeCounts({ tasks: { items: [{}, {}] } }), { tasks: null, errors: null },
-  '没有 totalRecords 时不拿当前页条数冒充总数');
+  '不把列表明细或当前页条数当成计数响应');
 // 角标文案：0 不显示，其余用十进制数字
 assert.equal(formatBadgeCount(0), null);
 assert.equal(formatBadgeCount(null), null);

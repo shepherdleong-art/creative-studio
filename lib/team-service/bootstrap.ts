@@ -1,4 +1,5 @@
 import './accepted-access.ts';
+import { TEAM_UNKNOWN_CONCURRENCY_POLICY } from './production-defaults.ts';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { SchemaUpgradeDiskSpaceProbe } from '../schema-upgrade/backup.ts';
@@ -63,6 +64,7 @@ export function createTeamExecutionRuntime(options: {
     db,
     deploymentId: config.deploymentId,
     serverReleaseId,
+    unknownConcurrency: TEAM_UNKNOWN_CONCURRENCY_POLICY,
     recordError: (error) => { recordTeamExecutionError(db, { ...error, serverReleaseId }); },
     recordRecovery: (record) => { markTeamTaskErrorRecovered(db, record); },
     journal: createExecutionJournal({

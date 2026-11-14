@@ -38,6 +38,22 @@ process.env.CREATIVE_STUDIO_DATA_ROOT = dataRoot;
 process.env.HOSTNAME = '127.0.0.1';
 process.env.PORT = String(port);
 
+// LiteLLM can expire an idle socket while synchronous snapshot/journal work
+// prevents Node from observing its close event. Disable pooling for loopback
+// HTTP calls before any provider or health fetch; never retry a paid POST.
+const originalFetch = globalThis.fetch;
+globalThis.fetch = function fetchWithFreshLoopbackConnection(input, init) {
+  let url;
+  try { url = new URL(input instanceof Request ? input.url : String(input)); }
+  catch { return originalFetch(input, init); }
+  if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) {
+    return originalFetch(input, init);
+  }
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+  headers.set('Connection', 'close');
+  return originalFetch(input, { ...init, headers });
+};
+
 const runtimeStateKey = Symbol.for('creative-studio.team-runtime-state');
 const originalListen = http.Server.prototype.listen;
 http.Server.prototype.listen = function patchedListen(...args) {

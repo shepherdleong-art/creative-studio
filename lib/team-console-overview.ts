@@ -8,7 +8,7 @@
  * 计划与验收依据：`docs/superpowers/plans/2026-11-07-林视界面重设计/12-运行总览和全员任务.md`。
  */
 
-import { TASK_STATUS_LABELS } from './team-task-labels.ts';
+import { taskStatusLabel, taskOccupancyLabel } from './team-task-labels.ts';
 
 /** 任务列表里本文件用到的字段；与 `lib/team-service/tasks.ts` 的投影保持同形。 */
 export interface ConsoleTaskLike {
@@ -20,6 +20,7 @@ export interface ConsoleTaskLike {
   scopeName: string;
   scope: { resourceType: string; resourceId: string };
   status: string;
+  concurrencyReleased?: boolean;
   actorUserId: string;
   employeeId: string;
   actorDisplayName: string;
@@ -139,6 +140,7 @@ export interface ConsoleTaskRow {
   modelLabel: string;
   status: string;
   statusLabel: string;
+  occupancyLabel: string;
   tone: ConsoleTagTone;
   timeLabel: string;
   href: string;
@@ -175,8 +177,9 @@ export function recentConsoleTasks(
     employeeId: task.employeeId,
     modelLabel: consoleModelLabel(task),
     status: task.status,
-    statusLabel: TASK_STATUS_LABELS[task.status] ?? task.status,
-    tone: consoleTaskTone(task.status),
+    statusLabel: taskStatusLabel(task),
+    occupancyLabel: taskOccupancyLabel(task),
+    tone: taskOccupancyLabel(task) ? 'idle' : consoleTaskTone(task.status),
     timeLabel: shanghaiTimeLabel(task.updatedAt),
     href: taskDetailHref(task.operationId),
   }));

@@ -398,6 +398,34 @@ export const EXECUTION_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = [
         ON execution_operations(status, admissionPriority, readySeq);
     `,
   },
+
+  {
+    version: 12,
+    sql: `
+      CREATE TABLE execution_unknown_occupancy_releases (
+        permitId TEXT PRIMARY KEY,
+        operationId TEXT NOT NULL,
+        attemptId TEXT NOT NULL,
+        actorId TEXT NOT NULL,
+        policyVersion TEXT NOT NULL,
+        idleMs INTEGER NOT NULL CHECK(idleMs >= 60000),
+        lastEvidenceAt TEXT NOT NULL,
+        leaseUntil TEXT NOT NULL,
+        releasedAt TEXT NOT NULL,
+        instanceId TEXT NOT NULL,
+        fence INTEGER NOT NULL,
+        previousInstanceId TEXT NOT NULL,
+        previousFence INTEGER NOT NULL,
+        journalSeq INTEGER NOT NULL,
+        journalHash TEXT NOT NULL,
+        reservationsJson TEXT NOT NULL,
+        FOREIGN KEY(operationId) REFERENCES execution_operations(id),
+        FOREIGN KEY(attemptId) REFERENCES execution_attempts(id)
+      );
+      CREATE INDEX idx_execution_unknown_occupancy_actor
+        ON execution_unknown_occupancy_releases(actorId,releasedAt);
+    `,
+  },
 ];
 
 export type ExecutionSchemaReadiness = VersionedSchemaReadiness;
@@ -503,6 +531,14 @@ function validateExecutionSchema(db: Database.Database): void {
       if (!operationColumns.includes(column)) throw new Error(`execution operation 缺少调度字段 ${column}`);
     }
   }
+
+  if (schemaVersion >= 12) {
+    const columns = new Set((db.prepare('PRAGMA table_info(execution_unknown_occupancy_releases)').all() as Array<{name:string}>).map(c=>c.name));
+    for (const name of ['permitId','operationId','attemptId','actorId','policyVersion','idleMs','lastEvidenceAt','releasedAt','instanceId','fence','journalHash','reservationsJson']) {
+      if (!columns.has(name)) throw new Error(`execution 缺少未知并发释放审计字段 ${name}`);
+    }
+  }
+
 }
 
 export function ensureExecutionSchemaReady(options: {

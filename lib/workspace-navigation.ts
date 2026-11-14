@@ -209,39 +209,13 @@ export function isWorkspaceNavActive(pathname: string, href: string): boolean {
   return matches(pathname, href);
 }
 
-/**
- * 页面列表接口的响应形状（只取角标需要的字段）。
- *
- * 任务接口在服务端分页后（03 号票）返回 `totalRecords`（全可见范围的执行记录数），
- * `items` 只是当前页；角标必须读总数，不能数当前页。
- */
-export interface WorkspaceListPayload { items?: unknown; totalRecords?: unknown }
-
-/**
- * 从 `/api/team/tasks`、`/api/team/errors` 的响应里取角标数。
- * 口径刻意与页面一致：同一个接口、同一份可见范围——不在这里另算。
- *
- * - 任务角标：读 `totalRecords`（全范围执行记录数），不读 `items.length`（那一页）；
- * - 错误角标：错误接口仍返回完整列表，按 `items.length`。
- *
- * 接口不可用或形状不对时返回 null（前端不显示角标，不显示 0）。
- */
-export function workspaceBadgeCounts(payloads: { tasks?: WorkspaceListPayload | null; errors?: WorkspaceListPayload | null }): {
+/** 轻量计数接口的响应；不接收列表明细，也不把读取失败解释成零条。 */
+export function workspaceBadgeCounts(payloads: { tasks?: unknown; errors?: unknown } | null | undefined): {
   tasks: number | null; errors: number | null;
 } {
-  const countRecords = (payload: WorkspaceListPayload | null | undefined): number | null => {
-    if (!payload || typeof payload !== 'object') return null;
-    const totalRecords = (payload as { totalRecords?: unknown }).totalRecords;
-    return typeof totalRecords === 'number' && Number.isFinite(totalRecords) && totalRecords >= 0
-      ? Math.trunc(totalRecords)
-      : null;
-  };
-  const countItems = (payload: WorkspaceListPayload | null | undefined): number | null => {
-    if (!payload || typeof payload !== 'object') return null;
-    const items = (payload as { items?: unknown }).items;
-    return Array.isArray(items) ? items.length : null;
-  };
-  return { tasks: countRecords(payloads.tasks), errors: countItems(payloads.errors) };
+  const count = (value: unknown): number | null => typeof value === 'number'
+    && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  return { tasks: count(payloads?.tasks), errors: count(payloads?.errors) };
 }
 
 /** 角标文案：0 与未知都不显示。 */

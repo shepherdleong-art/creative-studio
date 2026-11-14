@@ -506,7 +506,22 @@ try {
     consoleMemberActivity(allRecords, now),
     '成员统计与逐条计算的纯函数一致',
   );
-  const recent = listRecentTeamTasks(db, adminView, 12).items;
+  // 真实 SQLite 执行时计数快照求值，防止 LIMIT 前为全部历史任务读取大快照。
+  let snapshotReads = 0;
+  db.function('test_recent_snapshot', value => { snapshotReads++; return value; });
+  const originalPrepare = db.prepare.bind(db);
+  db.prepare = ((sql: string) => originalPrepare(sql.replace(
+    'o.inputSnapshotJson, o.providerSnapshotJson',
+    'test_recent_snapshot(o.inputSnapshotJson) AS inputSnapshotJson, o.providerSnapshotJson',
+  ))) as typeof db.prepare;
+  let recent: ReturnType<typeof listRecentTeamTasks>['items'];
+  try {
+    recent = listRecentTeamTasks(db, adminView, 12).items;
+    assert.equal(snapshotReads, 12, '最近 12 条只能读取 12 份快照，不能先加载历史明细再排序');
+    snapshotReads = 0;
+    assert.equal(listRecentTeamTasks(db, bobView, 12).items.length, 2);
+    assert.equal(snapshotReads, 2, '员工授权范围先于选取最近记录');
+  } finally { db.prepare = originalPrepare; }
   assert.deepEqual(recent.map(item => item.operationId), recentConsoleTasks(allRecords, now).map(row => row.operationId),
     '最近任务是有界查询，且与纯函数同口径同顺序');
   const inFlight = listTeamTaskRecords(db, adminView, {
@@ -561,7 +576,21 @@ try {
   assert.deepEqual(adminBody.pagination, { page: 1, pageSize: 25, total: 503, totalPages: 21 });
   assert.equal(adminBody.totalRecords, 505);
   assert.equal(adminBody.items.length, 27);
-  assert.equal(workspaceBadgeCounts({ tasks: adminBody }).tasks, 505, '侧栏从同一响应读全范围总数');
+  const countsRoute = await import('../app/api/team/workspace-counts/route.ts');
+  const countsUrl = 'https://studio.example.test/api/team/workspace-counts';
+  for (const [cookie, expected] of [[adminCookie, 505], [alice.cookie, 502], [bob.cookie, 2]] as const) {
+    const response = await countsRoute.GET(request(countsUrl, cookie));
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+    const counts = await response.json();
+    assert.deepEqual(counts, { tasks: expected, errors: 0 }, '角标接口只返回当前身份可见计数');
+    assert.equal(workspaceBadgeCounts(counts).tasks, expected);
+    assert.ok(JSON.stringify(counts).length < 80, '侧栏不能为计数下载任务快照或列表明细');
+  }
+  const forgedCounts = await countsRoute.GET(request(`${countsUrl}?actorUserId=${bob.principal.userId}`, alice.cookie));
+  assert.deepEqual(await forgedCounts.json(), { tasks: 502, errors: 0 }, '客户端参数不能改变角标授权范围');
+  assert.equal((await countsRoute.GET(request(countsUrl, ''))).status, 401);
+
 
   const fifty = await (await tasksRoute.GET(request(tasksUrl('pageSize=50&page=11'), adminCookie))).json() as typeof adminBody;
   assert.deepEqual(fifty.pagination, { page: 11, pageSize: 50, total: 503, totalPages: 11 });

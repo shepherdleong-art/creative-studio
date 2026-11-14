@@ -324,8 +324,12 @@ export async function recoverExecution(options: ExecutionFacadeOptions): Promise
     }
     if (attempt.submissionState === 'maybe_sent') {
       result.unknownAttemptIds.push(id);
-      options.db.prepare("UPDATE execution_operations SET status = 'unknown', updatedAt = ? WHERE id = ?")
-        .run(new Date().toISOString(), operation.id);
+      // Restarting adds no provider evidence. Also repair timestamps previously refreshed on boot.
+      // An older attempt must never replace the current operation's state or activity time.
+      const evidenceAt = receipt?.at ?? attempt.updatedAt;
+      options.db.prepare(`UPDATE execution_operations SET status = 'unknown', updatedAt = ?
+        WHERE id = ? AND currentAttemptId = ? AND (status <> 'unknown' OR updatedAt <> ?)`)
+        .run(evidenceAt, operation.id, id, evidenceAt);
     }
   }
   for (const [attemptId, evidence] of byAttempt) {

@@ -1,3 +1,4 @@
+import { ExecutionTransportFailure } from '../media-core/execution/transport-failure.ts';
 import type {
   CostQuote,
   ExecutionFacade,
@@ -28,6 +29,7 @@ export async function runLlmTransport<T>(
   transport: LlmExecutionTransport,
   input: {
     requestSnapshot: unknown;
+    signal?: AbortSignal;
     retryKind?: 'initial' | 'protocol_fallback';
     send: () => Promise<LlmTransportOutcome<T>>;
   },
@@ -41,9 +43,18 @@ export async function runLlmTransport<T>(
   transport.submittingStarted = true;
   let outcome: LlmTransportOutcome<T> | undefined;
   await transport.facade.transmit(intent, async (): Promise<ExecutionReceipt> => {
-    outcome = await input.send();
+    try {
+      outcome = await input.send();
+    } catch (error) {
+      if (input.signal?.aborted) {
+        throw new ExecutionTransportFailure(input.signal.reason?.name === 'TimeoutError'
+          ? 'transport_timeout' : 'transport_canceled', { cause: error });
+      }
+      throw error;
+    }
     if (outcome.terminalState === 'succeeded' && typeof outcome.result === 'string') {
-      transport.persistCheckpoint?.(intent.attemptId, outcome.result);
+      try { transport.persistCheckpoint?.(intent.attemptId, outcome.result); }
+      catch (error) { throw new ExecutionTransportFailure('llm_checkpoint_write_failed', { cause: error }); }
     }
     return {
       terminalState: outcome.terminalState,

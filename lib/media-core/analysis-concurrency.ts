@@ -20,13 +20,14 @@ export async function mapAnalysisMaterials<T, R>(
   const results: R[] = new Array(items.length);
   try {
     await Promise.all(Array.from({ length: Math.min(MATERIAL_ANALYSIS_CONCURRENCY, items.length) }, async () => {
-      while (!controller.signal.aborted && cursor < items.length) {
+      while (!failed && !controller.signal.aborted && cursor < items.length) {
         const index = cursor++;
         try {
           results[index] = await analyze(items[index], index, controller.signal);
         } catch (error) {
           if (!failed) { failed = true; failure = error; }
-          controller.abort();
+          // 单项失败只停止领取新素材。已提交的模型调用继续收结果，避免把成功调用
+          // 一并取消成 maybe_sent/unknown；用户取消或停机仍由外部 signal 中断。
         }
       }
     }));

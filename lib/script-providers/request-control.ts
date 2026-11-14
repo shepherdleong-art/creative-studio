@@ -20,7 +20,7 @@ export function createScriptProviderRequestControl(
   let timedOut = false;
   const timeout = setTimeout(() => {
     timedOut = true;
-    controller.abort();
+    controller.abort(new DOMException('Model response timeout', 'TimeoutError'));
   }, timeoutMs);
   const signal = options.externalSignal
     ? AbortSignal.any([controller.signal, options.externalSignal])

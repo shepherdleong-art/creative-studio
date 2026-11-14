@@ -15,10 +15,10 @@ assert.deepEqual(output, Array.from({ length: 11 }, (_, i) => i * 2), 'completio
 
 const started: number[] = [];
 let drained = 0;
-await assert.rejects(mapAnalysisMaterials([0, 1, 2, 3, 4, 5], async (item) => {
+await assert.rejects(mapAnalysisMaterials([0, 1, 2, 3, 4, 5], async (item, _, signal) => {
   started.push(item);
   if (item === 1) throw new Error('unreadable asset');
-  await setTimeout(20);
+  await setTimeout(20, undefined, { signal });
   drained++;
   return item;
 }), /unreadable asset/);

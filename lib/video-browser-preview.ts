@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { probeVideoMedia, runFfmpeg } from './ffmpeg.ts';
+import { probeVideoMedia, runFfmpeg, type VideoMediaProbe } from './ffmpeg.ts';
 import { authorizeManagedFileRead } from './media-core/access-context.ts';
 import { getExecutionModuleRuntime } from './media-core/execution/module-runtime.ts';
 import { MediaResourceDeferredError, withMediaResource } from './media-core/media-resource-gate.ts';
@@ -115,11 +115,53 @@ async function finishJob(
 }
 
 const inflight = new Map<string, Promise<string>>();
+// Format inspection is light I/O, independent of production/transcoding capacity.
+// Bound cold probes separately; repeated Range requests reuse metadata until the file changes.
+const PROBE_CONCURRENCY = 2;
+const PROBE_CACHE_LIMIT = 256;
+let activeProbes = 0;
+const probeWaiters: Array<() => void> = [];
+const probeCache = new Map<string, { identity: string; probe: VideoMediaProbe }>();
 
-export function ensureBrowserPreview(
+function sourceIdentity(videoPath: string): string {
+  const stat = fs.statSync(videoPath);
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+}
+
+async function probePreviewSource(videoPath: string): Promise<VideoMediaProbe> {
+  const identity = sourceIdentity(videoPath);
+  const cached = probeCache.get(videoPath);
+  if (cached?.identity === identity) {
+    probeCache.delete(videoPath);
+    probeCache.set(videoPath, cached);
+    return cached.probe;
+  }
+  probeCache.delete(videoPath);
+  await new Promise<void>((resolve) => {
+    const acquire = () => { activeProbes += 1; resolve(); };
+    if (activeProbes < PROBE_CONCURRENCY) acquire();
+    else probeWaiters.push(acquire);
+  });
+  try {
+    const probe = await probeVideoMedia(videoPath);
+    if (!probe.errorMessage && probe.width > 0 && probe.height > 0 && sourceIdentity(videoPath) === identity) {
+      probeCache.set(videoPath, { identity, probe });
+      if (probeCache.size > PROBE_CACHE_LIMIT) probeCache.delete(probeCache.keys().next().value!);
+    }
+    return probe;
+  } finally {
+    activeProbes -= 1;
+    probeWaiters.shift()?.();
+  }
+}
+
+export async function ensureBrowserPreview(
   videoPath: string,
   options: { waitForCompletion?: boolean } = {},
 ): Promise<string> {
+  videoPath = path.resolve(videoPath);
+  // Every caller must be authorized, including cache hits and shared in-flight work.
+  authorizeManagedFileRead(videoPath);
   const existing = inflight.get(videoPath);
   if (existing) return existing;
   const task = doEnsureBrowserPreview(videoPath, options).finally(() => {
@@ -135,21 +177,21 @@ async function doEnsureBrowserPreview(
 ): Promise<string> {
   const jobKey = previewJobKey(videoPath);
   const previewPath = browserPreviewPath(videoPath);
-  authorizeManagedFileRead(videoPath);
   try {
     if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) return previewPath;
     if (jobPending(await readJob(jobKey), Date.now())) throw new BrowserPreviewPendingError(jobKey);
+    const probe = await probePreviewSource(videoPath);
+    const codec = (probe.videoCodec || '').toLowerCase();
+    const pixelFormat = (probe.pixelFormat || '').toLowerCase();
+    const safeAudio = !probe.hasAudio || ['aac', 'mp3'].includes(probe.audioCodec ?? '');
+    if (isBrowserPlayable(codec, pixelFormat) && safeAudio && path.extname(videoPath).toLowerCase() !== '.mov') return videoPath;
+    if (!probe.width || !probe.height) return videoPath;
+    // Only actual transcoding competes with rendering for the heavy media slot.
     return await withMediaResource({
       taskId: `browser-preview:${jobKey}`,
       step: 'preview-transcode',
       wait: options.waitForCompletion === true || !getExecutionModuleRuntime(),
     }, async () => {
-      const probe = await probeVideoMedia(videoPath);
-      const codec = (probe.videoCodec || '').toLowerCase();
-      const pixelFormat = (probe.pixelFormat || '').toLowerCase();
-      const safeAudio = !probe.hasAudio || ['aac', 'mp3'].includes(probe.audioCodec ?? '');
-      if (isBrowserPlayable(codec, pixelFormat) && safeAudio && path.extname(videoPath).toLowerCase() !== '.mov') return videoPath;
-      if (!probe.width || !probe.height) return videoPath;
       if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) return previewPath;
 
       const claim = await claimJob(videoPath, previewPath, jobKey);

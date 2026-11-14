@@ -650,6 +650,22 @@ try {
       .run(JSON.stringify({ module: 'image', errorCode: 'legacy_unknown' }), now, now);
     const legacy = listUnifiedReconcileTasks(db, admin);
     assert.ok(legacy.legacyItems.some((item) => item.attemptId === 'legacy-attempt'));
+    assert.equal(legacy.legacyItems.find(item => item.attemptId === 'legacy-attempt')?.concurrencyReleased, false,
+      'missing reservation evidence must not be labeled released');
+    const historical = await createUnknownTask('historical-legacy-display');
+    db.prepare('UPDATE execution_operations SET mediaTaskId=NULL, updatedAt=? WHERE id=?')
+      .run('2099-01-01T00:00:00.000Z', historical.operationId);
+    const originalAt = db.prepare('SELECT updatedAt FROM execution_attempts WHERE id=?').pluck().get(historical.attemptId);
+    const findLegacy = () => listUnifiedReconcileTasks(db, admin).legacyItems.find(item => item.operationId === historical.operationId)!;
+    assert.equal(findLegacy().concurrencyReleased, false);
+    db.prepare("UPDATE execution_reservations SET state='released' WHERE attemptId=? AND kind='concurrency'")
+      .run(historical.attemptId);
+    // Concurrency rows may be bound only to the permit, not the attempt.
+    db.prepare(`UPDATE execution_reservations SET state='released' WHERE kind='concurrency'
+      AND permitId=(SELECT permitId FROM execution_attempts WHERE id=?)`).run(historical.attemptId);
+    assert.equal(findLegacy().concurrencyReleased, true);
+    assert.equal(findLegacy().createdAt, originalAt, 'legacy evidence shows the original attempt time, not a boot-refreshed operation time');
+
   }
 
   console.log('unified reconcile tests passed (paid calls: 0)');

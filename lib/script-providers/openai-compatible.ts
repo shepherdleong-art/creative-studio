@@ -1,3 +1,4 @@
+import { ExecutionTransportFailure } from '../media-core/execution/transport-failure.ts';
 /**
  * Generic OpenAI-compatible chat completions adapter.
  *
@@ -156,7 +157,7 @@ export async function chatCompletion(
       });
       if (!response.ok) return { response, errText: await response.text(), rawText: '' };
       if (streaming) {
-        if (!response.body) throw new Error(`${config.name} 返回了空响应流`);
+        if (!response.body) throw new ExecutionTransportFailure('llm_response_empty');
         const streamed = await readStreamingChatResponse(response.body, requestControl.signal, {
           onTextDelta: options.onTextDelta,
           onReasoningDelta: options.onReasoningDelta,
@@ -167,7 +168,7 @@ export async function chatCompletion(
           rawOutput: streamed.text,
           hasImages: Boolean(options.images?.length),
         });
-        if (!streamed.text.trim()) throw new Error(`${config.name} 返回了空响应`);
+        if (!streamed.text.trim()) throw new ExecutionTransportFailure('llm_response_empty');
         return { response, errText: '', rawText: streamed.text };
       }
       const rawResponse = await response.text();
@@ -186,7 +187,7 @@ export async function chatCompletion(
           rawOutput: rawResponse,
           hasImages: Boolean(options.images?.length),
         });
-        throw new Error(`${config.name} 返回了无效响应 JSON`);
+        throw new ExecutionTransportFailure('llm_response_invalid_json');
       }
       const rawText = typeof data.choices?.[0]?.message?.content === 'string'
         ? data.choices[0].message.content
@@ -197,7 +198,7 @@ export async function chatCompletion(
         rawOutput: rawText,
         hasImages: Boolean(options.images?.length),
       });
-      if (!rawText.trim()) throw new Error(`${config.name} 返回了空响应`);
+      if (!rawText.trim()) throw new ExecutionTransportFailure('llm_response_empty');
       return { response, errText: '', rawText };
     };
     const temperatureRejected = (requestBody: Record<string, unknown>, status: number, errText: string) => status === 400
@@ -208,6 +209,7 @@ export async function chatCompletion(
       if (!options.executionTransport) return perform(requestBody);
       return runLlmTransport(options.executionTransport, {
         requestSnapshot: requestBody,
+        signal: requestControl.signal,
         retryKind,
         send: async () => {
           const performed = await perform(requestBody);

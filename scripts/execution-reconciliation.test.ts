@@ -106,6 +106,14 @@ try {
     }), /socket disappeared/);
     const recovered = await recoverExecution(fixture.options as never);
     assert.ok(recovered.unknownAttemptIds.includes(grant.attempt.id));
+    const evidenceAt = fixture.journal.scan().filter(record => record.attemptId === intent.attemptId).at(-1)!.at;
+    fixture.db.prepare('UPDATE execution_operations SET updatedAt = ? WHERE id = ?')
+      .run('2099-01-01T00:00:00.000Z', grant.operation.id);
+    await recoverExecution(fixture.options as never);
+    assert.equal(fixture.db.prepare('SELECT updatedAt FROM execution_operations WHERE id = ?').pluck().get(grant.operation.id),
+      evidenceAt, 'restarting must restore the evidence time, not promote historical unknown calls to recent tasks');
+    await recoverExecution(fixture.options as never);
+    assert.equal(fixture.db.prepare('SELECT updatedAt FROM execution_operations WHERE id = ?').pluck().get(grant.operation.id), evidenceAt);
     assert.equal(fixture.db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE state = 'held'").pluck().get(), 3);
     const unknown = await fixture.execution.reconcile({
       attemptId: grant.attempt.id, evidence: { kind: 'still_unknown' }, source: 'provider',

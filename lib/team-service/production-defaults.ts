@@ -199,3 +199,6 @@ export function normalizeProductionDefaults(
   }
   return merged;
 }
+
+/** Unknown outcomes keep billing evidence but stop consuming scheduling slots after this idle window. */
+export const TEAM_UNKNOWN_CONCURRENCY_POLICY = Object.freeze({ idleMs: 3 * 60_000, sweepIntervalMs: 60_000 });
