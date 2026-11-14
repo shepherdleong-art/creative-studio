@@ -77,6 +77,10 @@ export interface SchedulerRunOptions {
   signal?: AbortSignal;
   /** 进程内调度器关闭;任务应可在下次启动恢复。 */
   shutdownSignal?: AbortSignal;
+  /** 连续调度时,单个空闲执行位两次领取检查之间的最长等待(默认等于调度间隔 intervalMs,默认 2000ms)。 */
+  idlePollMs?: number;
+  /** 等待统一准入/媒体名额后再次尝试的基础退避;默认 100ms,媒体类最少 1000ms,准入类最少 500ms。 */
+  deferBackoffMs?: number;
 }
 
 function nowIso(now?: () => Date): string {
@@ -114,44 +118,183 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-type ExecuteOneOutcome = 'completed' | 'lease_lost' | 'deferred';
+type DeferCause = 'media' | 'admission' | 'lease';
+type ExecuteOneOutcome =
+  | { kind: 'completed' }
+  | { kind: 'deferred'; cause: Exclude<DeferCause, 'lease'> }
+  | { kind: 'lease_lost' };
 type InterruptionReason = 'batch_control' | 'lease_lost' | 'superseded';
+type SlotLane = 'analysis' | 'general' | undefined;
+
+const DEFAULT_DEFER_BACKOFF_MS = 100;
+const MEDIA_BACKOFF_MIN_MS = 1_000;
+const ADMISSION_BACKOFF_MIN_MS = 500;
+const LEASE_LOST_BACKOFF_MIN_MS = 100;
+const MIN_IDLE_POLL_MS = 5;
+const DEFAULT_IDLE_POLL_MS = 2_000;
 
 /**
- * 领取并执行一轮可执行任务(受控 worker pool)。
- * 通用任务不超过 concurrency，独立分析不超过 analysisConcurrency；每个槽独立领取，
- * 领取由数据库原子性保证不重复,所有槽执行完才返回。
- * 执行期间独立心跳续租(不依赖执行器是否报告进度),并监视批次控制状态:
- * 批次暂停/停止时中止运行任务并按期望落账。
+ * 进程内唤醒信号:入队或资源状态变化时可打断空闲等待。
+ * token 用于消除「检查完队列、还没开始等待就来了唤醒」的丢唤醒窗口。
  */
-export async function runPendingOnce(options: SchedulerRunOptions): Promise<number> {
+interface SchedulerWake {
+  readonly token: number;
+  wake(): void;
+  waitSince(token: number, ms: number, signal?: AbortSignal): Promise<void>;
+}
+
+function createSchedulerWake(): SchedulerWake {
+  let generation = 0;
+  const waiters = new Set<() => void>();
+  return {
+    get token() {
+      return generation;
+    },
+    wake() {
+      generation += 1;
+      for (const finish of [...waiters]) finish();
+      waiters.clear();
+    },
+    waitSince(token, ms, signal) {
+      if (signal?.aborted || generation !== token || ms <= 0) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        const finish = (): void => {
+          clearTimeout(timer);
+          waiters.delete(finish);
+          signal?.removeEventListener('abort', finish);
+          resolve();
+        };
+        const timer = setTimeout(finish, ms);
+        waiters.add(finish);
+        signal?.addEventListener('abort', finish, { once: true });
+      });
+    },
+  };
+}
+
+/**
+ * 延期任务的短时退避表。任务仍在数据库里排队,这里只在进程内记录
+ * 「到某个时刻前先别再领它」,让同 lane 的其他合格任务先推进;
+ * 到期后条目自动失效,不需要后台清理。
+ */
+interface DeferredBackoff {
+  defer(taskId: string, cause: DeferCause): void;
+  clear(taskId: string): void;
+  excludedIds(): string[];
+  delayUntilNextAttemptMs(): number | null;
+}
+
+function createDeferredBackoff(baseMs: number): DeferredBackoff {
+  const retryAt = new Map<string, number>();
+  const backoffFor = (cause: DeferCause): number => {
+    if (cause === 'admission') return Math.max(baseMs, ADMISSION_BACKOFF_MIN_MS);
+    if (cause === 'lease') return Math.max(baseMs, LEASE_LOST_BACKOFF_MIN_MS);
+    return Math.max(baseMs, MEDIA_BACKOFF_MIN_MS);
+  };
+  const prune = (): void => {
+    const current = Date.now();
+    for (const [taskId, at] of retryAt) {
+      if (at <= current) retryAt.delete(taskId);
+    }
+    // 不设固定条数上限:截断名单会让仍在退避的任务重新可领取并立即
+    // 再次延期,过载时形成 claim/defer 空转。过期条目在每次访问时清掉,
+    // 内存只随当前仍在退避的任务数增长。
+  };
+  return {
+    defer(taskId, cause) {
+      retryAt.set(taskId, Date.now() + Math.max(1, backoffFor(cause)));
+      prune();
+    },
+    clear(taskId) {
+      retryAt.delete(taskId);
+    },
+    excludedIds() {
+      prune();
+      return [...retryAt.keys()];
+    },
+    delayUntilNextAttemptMs() {
+      prune();
+      if (retryAt.size === 0) return null;
+      const current = Date.now();
+      let soonest = Infinity;
+      for (const at of retryAt.values()) soonest = Math.min(soonest, at - current);
+      return Math.max(0, soonest);
+    },
+  };
+}
+
+function assertSchedulerConcurrency(concurrency: number, analysisConcurrency: number): void {
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32
+    || !Number.isSafeInteger(analysisConcurrency) || analysisConcurrency < 0 || analysisConcurrency > 8) {
+    throw new Error('批量任务并发配置无效');
+  }
+}
+
+interface SlotOptions {
+  /** 连续模式:队列为空时等待唤醒/有界轮询;关闭时单轮排空后返回。 */
+  continuous: boolean;
+  wake?: SchedulerWake;
+  idlePollMs?: number;
+  backoff?: DeferredBackoff;
+}
+
+/**
+ * 单个执行位:领取 → 执行 → 再领取。
+ * 单轮模式下没有可领取任务或遇到延期/租约丢失就返回,保持
+ * runPendingOnce 的既有语义;连续模式下永不因其他 lane 的长任务停摆,
+ * 空闲时等待入队唤醒或有界轮询,延期任务按原因退避后重试。
+ */
+async function runSlot(
+  options: SchedulerRunOptions,
+  lane: SlotLane,
+  slot: SlotOptions,
+): Promise<number> {
   const {
     db,
     workerId,
     executors,
-    concurrency = 2,
-    analysisConcurrency = 0,
     leaseDurationMs = 5 * 60_000,
     heartbeatMs = Math.max(200, Math.min(1_000, Math.floor(leaseDurationMs / 3))),
     progressThrottleMs = 1_000,
   } = options;
   const now = options.now;
-  if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32
-    || !Number.isSafeInteger(analysisConcurrency) || analysisConcurrency < 0 || analysisConcurrency > 8) {
-    throw new Error('批量任务并发配置无效');
-  }
+  const waitSignals = [options.signal, options.shutdownSignal]
+    .filter((signal): signal is AbortSignal => Boolean(signal));
+  const waitSignal = waitSignals.length > 1 ? AbortSignal.any(waitSignals) : waitSignals[0];
   let handled = 0;
 
-  // 一个并发槽:循环领取执行,直到没有可领取任务
-  const slot = async (lane?: 'analysis' | 'general'): Promise<void> => {
-    while (!options.signal?.aborted && !options.shutdownSignal?.aborted) {
-      const claim = claimNextTask(db, { workerId, now, leaseDurationMs, lane });
-      if (!claim) {
-        return;
-      }
-      handled += 1;
-      const controller = new AbortController();
-      const outcome = await runWithTaskAccessContext(db, 'batch', claim.task.id, () => executeOne(claim, controller, {
+  while (!options.signal?.aborted && !options.shutdownSignal?.aborted) {
+    const wakeToken = slot.wake?.token ?? -1;
+    let claim: ReturnType<typeof claimNextTask>;
+    try {
+      claim = claimNextTask(db, {
+        workerId,
+        now,
+        leaseDurationMs,
+        lane,
+        excludeTaskIds: slot.backoff?.excludedIds(),
+      });
+    } catch (error) {
+      if (!slot.continuous) throw error;
+      console.error('批量调度领取失败:', error instanceof Error ? error.message : String(error));
+      claim = null;
+    }
+    if (!claim) {
+      if (!slot.continuous || !slot.wake) return handled;
+      // 有延期任务时等到最早退避到期,但空闲检查仍受 idlePollMs 上界约束;
+      // 下一次领取会继续用 excludeTaskIds 跳过未到期的任务,不做忙循环。
+      const idleWaitMs = slot.idlePollMs ?? DEFAULT_IDLE_POLL_MS;
+      const backoffDelay = slot.backoff?.delayUntilNextAttemptMs() ?? null;
+      const waitMs = backoffDelay !== null ? Math.min(idleWaitMs, backoffDelay) : idleWaitMs;
+      await slot.wake.waitSince(wakeToken, Math.max(MIN_IDLE_POLL_MS, waitMs), waitSignal);
+      continue;
+    }
+    slot.backoff?.clear(claim.task.id);
+    handled += 1;
+    const controller = new AbortController();
+    let outcome: ExecuteOneOutcome;
+    try {
+      outcome = await runWithTaskAccessContext(db, 'batch', claim.task.id, () => executeOne(claim!, controller, {
         db,
         workerId,
         executors,
@@ -163,19 +306,46 @@ export async function runPendingOnce(options: SchedulerRunOptions): Promise<numb
         signal: options.signal,
         shutdownSignal: options.shutdownSignal,
       }));
-      if (outcome === 'lease_lost' || outcome === 'deferred') {
-        // 失去租约或链内等待时，本轮不要立即重新领取同一任务；
-        // 其他编排槽/后续 tick 可让就绪工作先获得名额。
-        return;
-      }
+    } catch (error) {
+      if (!slot.continuous) throw error;
+      console.error('批量调度执行失败:', error instanceof Error ? error.message : String(error));
+      outcome = { kind: 'completed' };
+      // 非预期异常也必须退一步再领取,避免持续抛错时空转。
+      await slot.wake?.waitSince(slot.wake.token, slot.idlePollMs ?? DEFAULT_IDLE_POLL_MS, waitSignal);
     }
-  };
-
-  await Promise.all([
-    ...Array.from({ length: concurrency }, () => slot(analysisConcurrency ? 'general' : undefined)),
-    ...Array.from({ length: analysisConcurrency }, () => slot('analysis')),
-  ]);
+    if (outcome.kind === 'deferred' || outcome.kind === 'lease_lost') {
+      // 失去租约或链内等待时不立即重领同一任务:连续模式按原因退避,
+      // 让其他合格工作先获得名额;单轮模式保持既有语义直接结束本槽。
+      slot.backoff?.defer(claim.task.id, outcome.kind === 'deferred' ? outcome.cause : 'lease');
+      if (!slot.continuous) return handled;
+    }
+  }
   return handled;
+}
+
+/**
+ * 领取并执行一轮可执行任务(受控 worker pool)。
+ * 通用任务不超过 concurrency，独立分析不超过 analysisConcurrency；每个槽独立领取，
+ * 领取由数据库原子性保证不重复,所有槽执行完才返回。
+ * 执行期间独立心跳续租(不依赖执行器是否报告进度),并监视批次控制状态:
+ * 批次暂停/停止时中止运行任务并按期望落账。
+ */
+export async function runPendingOnce(options: SchedulerRunOptions): Promise<number> {
+  const { concurrency = 2, analysisConcurrency = 0 } = options;
+  assertSchedulerConcurrency(concurrency, analysisConcurrency);
+  const handled = await Promise.all([
+    ...Array.from({ length: concurrency }, () => runSlot(
+      options,
+      analysisConcurrency ? 'general' : undefined,
+      { continuous: false },
+    )),
+    ...Array.from({ length: analysisConcurrency }, () => runSlot(
+      options,
+      'analysis',
+      { continuous: false },
+    )),
+  ]);
+  return handled.reduce((total, count) => total + count, 0);
 }
 
 interface ExecuteOneOptions {
@@ -289,7 +459,7 @@ async function executeOne(
         progressJson: lastProgress,
         now,
       });
-      return 'deferred';
+      return { kind: 'deferred', cause: /media/i.test(execution.deferred.waitReason ?? '') ? 'media' : 'admission' };
     }
     let resultJson = execution.resultJson;
     discardUnacceptedResult = execution.discard;
@@ -391,7 +561,7 @@ async function executeOne(
       log({ projectId: claim.task.projectId, jobId: claim.task.id, level: 'info',
         attempt: claim.attempt.attemptNumber, message: `[批量生产] ${analysisLabel}完成：${lastProgress.skipped ? lastProgress.description : '结果已保存'}` });
     }
-    return 'completed';
+    return { kind: 'completed' };
   } catch (error) {
     if (discardUnacceptedResult) {
       await Promise.resolve(discardUnacceptedResult()).catch(() => undefined);
@@ -419,7 +589,7 @@ async function executeOne(
         progressJson: lastProgress,
         now,
       });
-      return 'deferred';
+      return { kind: 'deferred', cause: executionError?.code === 'media_resource_deferred' ? 'media' : 'admission' };
     }
     if (abortedByUserStop) {
       // 外部停止信号:任务进入停止终态,尝试记录为 interrupted
@@ -433,7 +603,7 @@ async function executeOne(
       // 租约丢失不是用户暂停。只做过期恢复,保留 expectedState=running;
       // 如果尝试已被其他恢复流程处理,这里不会覆盖其结果。
       expireStaleLeases(db, { now });
-      return 'lease_lost';
+      return { kind: 'lease_lost' };
     } else if (controller.signal.aborted) {
       // 批次暂停/停止(内部控制检查):按批次期望落成可继续或终态
       settleInterruptedTask(db, claim.attempt.id, now, 'batch_control');
@@ -462,7 +632,7 @@ async function executeOne(
         attempt: claim.attempt.attemptNumber,
       });
     }
-    return 'completed';
+    return { kind: 'completed' };
   } finally {
     clearInterval(heartbeat);
     activeBatchTaskControllers.delete(controller);
@@ -479,6 +649,7 @@ interface SchedulerState {
   stopped: boolean;
   loopPromise: Promise<void> | null;
   stopController: AbortController;
+  wake: SchedulerWake;
 }
 
 let schedulerInstance: SchedulerState | null = null;
@@ -486,8 +657,11 @@ let schedulerController: SchedulerController | null = null;
 
 /**
  * 启动进程内单例调度循环:启动时先做一次恢复(旧实例 running 尝试失效),
- * 然后按间隔持续领取执行。同一进程重复初始化幂等(返回同一个 controller 实例);
- * stop() 停止继续领取并清理定时器与调度状态。
+ * 然后为每个执行位启动独立持续循环。空闲位不会等待其他 lane 的长任务
+ * 整轮结束:入队/释放可经 wakeBatchScheduler() 唤醒,否则按有界空闲轮询检查;
+ * 延期任务按原因短时退避,让同 lane 的合格工作先推进。
+ * 同一进程重复初始化幂等(返回同一个 controller 实例);
+ * stop() 停止继续领取并等待在途任务落账。
  */
 export function startBatchScheduler(
   options: SchedulerRunOptions & { intervalMs?: number },
@@ -495,27 +669,54 @@ export function startBatchScheduler(
   if (schedulerInstance && schedulerController) {
     return schedulerController;
   }
-  setBatchSchedulerDraining(false);
   const { db, intervalMs = 2_000 } = options;
+  const concurrency = options.concurrency ?? 2;
+  const analysisConcurrency = options.analysisConcurrency ?? 0;
+  assertSchedulerConcurrency(concurrency, analysisConcurrency);
+  setBatchSchedulerDraining(false);
   recoverInterruptedWork(db, { now: options.now });
+  const maxIdlePollMs = Math.max(MIN_IDLE_POLL_MS, intervalMs);
+  // 默认按调度间隔做有界轮询(默认 2000ms):空闲位由入队唤醒即时补位,
+  // 无唤醒时不再以 500ms 高频空转;显式传 idlePollMs 的调用方保持原语义。
+  const idlePollMs = Math.max(MIN_IDLE_POLL_MS, Math.min(
+    options.idlePollMs ?? maxIdlePollMs,
+    maxIdlePollMs,
+  ));
+  const backoff = createDeferredBackoff(options.deferBackoffMs ?? DEFAULT_DEFER_BACKOFF_MS);
   const state: SchedulerState = {
     stopped: false,
     loopPromise: null,
     stopController: new AbortController(),
+    wake: createSchedulerWake(),
   };
 
   const loop = async (): Promise<void> => {
-    while (!state.stopped) {
-      // 每轮先处理过期租约,再执行受控的一轮
-      try {
-        expireStaleLeases(db, { now: options.now });
-        await runPendingOnce({ ...options, shutdownSignal: state.stopController.signal });
-      } catch (error) {
-        // 单轮调度失败不影响循环;错误已由任务落账或在下轮重试
-        console.error('批量调度单轮失败:', error instanceof Error ? error.message : String(error));
+    const slotOptions: SchedulerRunOptions = { ...options, shutdownSignal: state.stopController.signal };
+    const slotRuns = [
+      ...Array.from({ length: concurrency }, () => runSlot(
+        slotOptions,
+        analysisConcurrency ? 'general' : undefined,
+        { continuous: true, wake: state.wake, idlePollMs, backoff },
+      )),
+      ...Array.from({ length: analysisConcurrency }, () => runSlot(
+        slotOptions,
+        'analysis',
+        { continuous: true, wake: state.wake, idlePollMs, backoff },
+      )),
+    ];
+    // 租约过期检查独立于各执行位,不再和某一轮任务执行绑在一起。
+    const maintenance = (async (): Promise<void> => {
+      while (!state.stopController.signal.aborted) {
+        try {
+          const expired = expireStaleLeases(db, { now: options.now });
+          if (expired > 0) state.wake.wake();
+        } catch (error) {
+          console.error('批量调度租约检查失败:', error instanceof Error ? error.message : String(error));
+        }
+        await sleep(intervalMs, state.stopController.signal);
       }
-      await sleep(intervalMs, state.stopController.signal);
-    }
+    })();
+    await Promise.all([...slotRuns, maintenance]);
   };
 
   state.loopPromise = loop();
@@ -526,6 +727,7 @@ export function startBatchScheduler(
       if (!state.stopped) {
         state.stopped = true;
         state.stopController.abort();
+        state.wake.wake();
       }
       // 不提前释放单例:必须等当前一轮中止并落账,避免重启后双调度器共存。
       await state.loopPromise;
@@ -545,6 +747,16 @@ export function startBatchScheduler(
 /** 返回当前进程的批量调度器；未启动时为 null。 */
 export function getBatchSchedulerController(): SchedulerController | null {
   return schedulerController;
+}
+
+/**
+ * 唤醒空闲执行位(入队、资源释放或控制态变化后调用)。
+ * 未启动或正在停止时返回 false;唤醒本身幂等,可由任意 API 请求重复调用。
+ */
+export function wakeBatchScheduler(): boolean {
+  if (!schedulerInstance || schedulerInstance.stopped) return false;
+  schedulerInstance.wake.wake();
+  return true;
 }
 
 /** 测试用:重置进程内单例状态。 */

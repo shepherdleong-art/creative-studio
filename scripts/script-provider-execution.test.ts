@@ -223,6 +223,47 @@ try {
   assert.equal(unknownPosts, 1, '只有明确 HTTP 温度拒绝才允许内部回退');
   assert.equal(db.prepare("SELECT status FROM execution_operations WHERE taskId = 'network-unknown'").pluck().get(), 'unknown');
 
+  // 模拟单条混剪再次创作：同一素材的稳定调用身份继续碰到旧 unknown，不能再次 POST。
+  const unknownOperationId = db.prepare("SELECT id FROM execution_operations WHERE taskId = 'network-unknown'").pluck().get();
+  for (let repeat = 0; repeat < 2; repeat += 1) {
+    await assert.rejects(
+      call('user-b', 'network-unknown', { temperature: 0.2 }),
+      (error: unknown) => error instanceof Error && error.message === 'LLM 调用结果尚未核清，未自动重提',
+    );
+  }
+  assert.equal(unknownPosts, 1, '重新进入同一任务不能重提结果未知的调用');
+  assert.equal(db.prepare("SELECT id FROM execution_operations WHERE taskId = 'network-unknown'").pluck().get(), unknownOperationId);
+  assert.equal(db.prepare('SELECT COUNT(*) FROM execution_attempts WHERE operationId = ?').pluck().get(unknownOperationId), 1);
+
+  // 经授权的补跑使用独立修订；旧 unknown 与费用预留不被新结果覆盖。
+  const oldAttempt = db.prepare('SELECT * FROM execution_attempts WHERE operationId=?').get(unknownOperationId);
+  const oldReservations = db.prepare('SELECT * FROM execution_reservations WHERE operationId=? ORDER BY id').all(unknownOperationId);
+  let recoveryPosts = 0;
+  globalThis.fetch = async () => {
+    recoveryPosts += 1;
+    return Response.json({ choices: [{ message: { content: '{"recovered":true}' } }] });
+  };
+  const recoveryInput = {
+    temperature: 0.2,
+    executionContext: {
+      taskId: 'network-unknown', step: 'complete:1',
+      scope: { resourceType: 'project', resourceId: 'user-b-project' },
+      inputRevision: 'operator-recovery-1',
+      businessAttempt: { id: 'operator-recovery-1', number: 2 },
+    },
+  };
+  await assert.rejects(call('user-b', 'network-unknown', recoveryInput), LlmExecutionDeferredError);
+  assert.equal(recoveryPosts, 0, '独立修订不能绕过仍占用的成员名额');
+  updateActorPolicy(db, {
+    actorId: 'user-b', monthlyLimitMinor: null, personalConcurrency: 2, paused: false, expectedVersion: 1,
+  });
+  assert.deepEqual(await call('user-b', 'network-unknown', recoveryInput), { recovered: true });
+  assert.deepEqual(await call('user-b', 'network-unknown', recoveryInput), { recovered: true });
+  assert.equal(recoveryPosts, 1, '补跑脚本重入必须复用成功检查点');
+  assert.equal(db.prepare('SELECT status FROM execution_operations WHERE id=?').pluck().get(unknownOperationId), 'unknown');
+  assert.deepEqual(db.prepare('SELECT * FROM execution_attempts WHERE operationId=?').get(unknownOperationId), oldAttempt);
+  assert.deepEqual(db.prepare('SELECT * FROM execution_reservations WHERE operationId=? ORDER BY id').all(unknownOperationId), oldReservations);
+
   console.log('script provider execution tests passed');
 } finally {
   clearExecutionModuleRuntime();

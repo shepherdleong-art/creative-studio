@@ -398,6 +398,50 @@ export const EXECUTION_MIGRATIONS: ReadonlyArray<VersionedSchemaMigration> = [
         ON execution_operations(status, admissionPriority, readySeq);
     `,
   },
+
+  {
+    version: 12,
+    sql: `
+      CREATE TABLE execution_unknown_occupancy_releases (
+        permitId TEXT PRIMARY KEY,
+        operationId TEXT NOT NULL,
+        attemptId TEXT NOT NULL,
+        actorId TEXT NOT NULL,
+        policyVersion TEXT NOT NULL,
+        idleMs INTEGER NOT NULL CHECK(idleMs >= 60000),
+        lastEvidenceAt TEXT NOT NULL,
+        leaseUntil TEXT NOT NULL,
+        releasedAt TEXT NOT NULL,
+        instanceId TEXT NOT NULL,
+        fence INTEGER NOT NULL,
+        previousInstanceId TEXT NOT NULL,
+        previousFence INTEGER NOT NULL,
+        journalSeq INTEGER NOT NULL,
+        journalHash TEXT NOT NULL,
+        reservationsJson TEXT NOT NULL,
+        FOREIGN KEY(operationId) REFERENCES execution_operations(id),
+        FOREIGN KEY(attemptId) REFERENCES execution_attempts(id)
+      );
+      CREATE INDEX idx_execution_unknown_occupancy_actor
+        ON execution_unknown_occupancy_releases(actorId,releasedAt);
+    `,
+  },
+  {
+    // 任务中心/运行总览的列表与聚合都按 updatedAt 倒序取有界或全量历史：
+    // - `updated` 服务管理员「最近任务」的全局倒序；
+    // - `activity` 以 actorId 为前缀服务员工范围，并覆盖分组/有效状态统计需要的操作列，
+    //   让全历史聚合扫描小索引而不是搬运 execution_operations 里的大输入快照。
+    version: 13,
+    sql: `
+      CREATE INDEX idx_execution_operations_updated
+        ON execution_operations(updatedAt DESC, id DESC);
+      CREATE INDEX idx_execution_operations_activity
+        ON execution_operations(
+          actorId, updatedAt DESC, id DESC, status, waitReason, module, taskId,
+          step, scopeType, scopeId, readySeq, mediaTaskId
+        );
+    `,
+  },
 ];
 
 export type ExecutionSchemaReadiness = VersionedSchemaReadiness;
@@ -503,6 +547,22 @@ function validateExecutionSchema(db: Database.Database): void {
       if (!operationColumns.includes(column)) throw new Error(`execution operation 缺少调度字段 ${column}`);
     }
   }
+
+  if (schemaVersion >= 12) {
+    const columns = new Set((db.prepare('PRAGMA table_info(execution_unknown_occupancy_releases)').all() as Array<{name:string}>).map(c=>c.name));
+    for (const name of ['permitId','operationId','attemptId','actorId','policyVersion','idleMs','lastEvidenceAt','releasedAt','instanceId','fence','journalHash','reservationsJson']) {
+      if (!columns.has(name)) throw new Error(`execution 缺少未知并发释放审计字段 ${name}`);
+    }
+  }
+
+  if (schemaVersion >= 13) {
+    for (const indexName of ['idx_execution_operations_updated', 'idx_execution_operations_activity']) {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(indexName)) {
+        throw new Error(`execution 缺少任务查询索引 ${indexName}`);
+      }
+    }
+  }
+
 }
 
 export function ensureExecutionSchemaReady(options: {

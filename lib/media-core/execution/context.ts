@@ -265,6 +265,8 @@ export interface ExecutionFacade {
 }
 
 export interface ExecutionFacadeOptions {
+  /** Team-only scheduling cleanup; outcome and cost remain unresolved. */
+  unknownConcurrency?: { idleMs: number; sweepIntervalMs: number };
   db: Database.Database;
   deploymentId: string;
   journal: ExecutionJournal;

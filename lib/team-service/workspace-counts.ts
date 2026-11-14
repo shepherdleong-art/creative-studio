@@ -4,7 +4,7 @@ import { countTeamTasks } from './tasks.ts';
 import type { WorkspaceBadgeKey } from '../workspace-navigation.ts';
 
 /**
- * 侧栏数量角标（05 号票；03 号票改为全范围计数）。
+ * 侧栏数量角标；由 /api/team/workspace-counts 提供，沿用页面的全范围计数。
  *
  * 口径的唯一来源仍是页面自己用的查询：`countTeamTasks`（我的任务 / 全员任务页）和
  * `listTeamErrors`（出错的任务页）。这里刻意**不写 SQL、不改可见范围**——那会让角标和

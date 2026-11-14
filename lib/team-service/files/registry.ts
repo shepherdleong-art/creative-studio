@@ -1,8 +1,13 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { assertNoStorageSymlink } from '../../media-core/storage-path.ts';
+import {
+  fileIdentityJson,
+  fileIdentityMatches,
+  inspectFileContent,
+} from '../../media-core/file-identity.ts';
 import { assertTeamPublicationAllowed } from '../lifecycle/barrier.ts';
 
 export type TeamFileState = 'staged' | 'ready' | 'purge_pending';
@@ -27,6 +32,8 @@ export interface TeamFileRecord {
   sha256: string;
   state: TeamFileState;
   derivedFromFileId: string | null;
+  /** 上次完整内容核验时的文件身份；仅衍生文件记录，用于跳过重复全量哈希。 */
+  verifiedIdentityJson: string | null;
   readySeq: number | null;
   createdAt: string;
   readyAt: string | null;
@@ -43,22 +50,6 @@ export interface RegisterReadyTeamFileInput {
   now?: () => Date;
   validateReference?: (reference: TeamFileReference) => void;
   validateExisting?: (file: TeamFileRecord) => void;
-}
-
-function sha256FileSync(filePath: string): string {
-  const hash = createHash('sha256');
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    const buffer = Buffer.allocUnsafe(1024 * 1024);
-    for (;;) {
-      const bytes = fs.readSync(fd, buffer, 0, buffer.byteLength, null);
-      if (bytes <= 0) break;
-      hash.update(buffer.subarray(0, bytes));
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-  return hash.digest('hex');
 }
 
 function readFile(db: Database.Database, fileId: string): TeamFileRecord | undefined {
@@ -84,7 +75,6 @@ export function registerReadyTeamFile(
   const stat = fs.statSync(absolutePath);
   if (!stat.isFile()) throw new Error('只能登记普通文件');
   const relativePath = path.relative(path.resolve(input.storageRoot), absolutePath).split(path.sep).join('/');
-  const sha256 = sha256FileSync(absolutePath);
   const source = input.derivedFromFileId ? readFile(db, input.derivedFromFileId) : undefined;
   if (input.derivedFromFileId && (!source || source.state !== 'ready')) {
     throw new Error('衍生物源文件尚未就绪');
@@ -98,8 +88,33 @@ export function registerReadyTeamFile(
   const existing = db.prepare("SELECT * FROM team_files WHERE relativePath = ? AND state = 'ready'")
     .get(relativePath) as TeamFileRecord | undefined;
   if (existing) {
+    // 授权与谱系校验必须在任何缓存复用之前完成：命中登记也要逐次授权。
     input.validateExisting?.(existing);
-    if (existing.derivedFromFileId !== (input.derivedFromFileId ?? null) || existing.sha256 !== sha256) {
+    if (existing.derivedFromFileId !== (input.derivedFromFileId ?? null)) {
+      throw new Error('文件身份与既有不可变登记不一致');
+    }
+    // 快速路径只适用于衍生文件：身份（dev/ino/size/mtime/ctime）与首尾内容见证
+    // 全部一致时，才信任上次完整核验的 sha256。通用文件仍每次读满全文件。
+    // 本函数整体同步执行，Node 单线程下不会与其他登记交错，无需额外并发去重。
+    let sha256: string;
+    let refreshedIdentity: string | null = null;
+    if (input.derivedFromFileId) {
+      const currentWitness = inspectFileContent(absolutePath, stat.size, false).witness;
+      const identityMatches = existing.byteSize === stat.size
+        && fileIdentityMatches(stat, currentWitness, existing.verifiedIdentityJson);
+      if (identityMatches) {
+        sha256 = existing.sha256;
+      } else {
+        // stat 一致但见证变化（Windows 同尺寸原位改写），或旧记录没有见证：
+        // 必须完整核验；哈希相同则回填新身份（含见证），不同则拒绝。
+        const inspection = inspectFileContent(absolutePath, stat.size, true);
+        sha256 = inspection.sha256!;
+        refreshedIdentity = fileIdentityJson(stat, inspection.witness);
+      }
+    } else {
+      sha256 = inspectFileContent(absolutePath, stat.size, true).sha256!;
+    }
+    if (existing.sha256 !== sha256) {
       throw new Error('文件身份与既有不可变登记不一致');
     }
     const attach = db.prepare(`
@@ -109,17 +124,29 @@ export function registerReadyTeamFile(
     const at = (input.now?.() ?? new Date()).toISOString();
     db.transaction(() => {
       assertTeamPublicationAllowed(db);
+      if (refreshedIdentity !== null) {
+        // 首次登记遗留的旧行缺少见证，或文件身份/见证变化但内容哈希相同：刷新身份记录。
+        db.prepare('UPDATE team_files SET verifiedIdentityJson = ? WHERE id = ?').run(refreshedIdentity, existing.id);
+      }
       for (const reference of references) {
         attach.run(existing.id, reference.resourceType, reference.resourceId,
           reference.role ?? (input.derivedFromFileId ? 'derivative' : 'input'), reference.pinKind ?? 'entity', at);
       }
     }).immediate();
-    return existing;
+    return refreshedIdentity !== null
+      ? { ...existing, verifiedIdentityJson: refreshedIdentity }
+      : existing;
   }
 
+  const inspection = inspectFileContent(absolutePath, stat.size, true);
+  const sha256 = inspection.sha256!;
   const id = randomUUID();
   const seriesId = input.seriesId ?? source?.seriesId ?? id;
   const at = (input.now?.() ?? new Date()).toISOString();
+  // 身份记录只对衍生文件有意义；通用文件不参与快速路径。
+  const verifiedIdentityJson = input.derivedFromFileId
+    ? fileIdentityJson(stat, inspection.witness)
+    : null;
   const publish = db.transaction(() => {
     assertTeamPublicationAllowed(db);
     const version = ((db.prepare('SELECT MAX(version) AS version FROM team_files WHERE seriesId = ?')
@@ -129,11 +156,11 @@ export function registerReadyTeamFile(
     db.prepare(`
       INSERT INTO team_files (
         id, seriesId, version, ownerUserId, relativePath, mimeType, byteSize, sha256,
-        state, derivedFromFileId, readySeq, createdAt, readyAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?)
+        state, derivedFromFileId, readySeq, createdAt, readyAt, verifiedIdentityJson
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?)
     `).run(
       id, seriesId, version, input.ownerUserId, relativePath, input.mimeType, stat.size, sha256,
-      input.derivedFromFileId ?? null, readySeq, at, at,
+      input.derivedFromFileId ?? null, readySeq, at, at, verifiedIdentityJson,
     );
     const insertReference = db.prepare(`
       INSERT INTO team_file_references (fileId, resourceType, resourceId, role, pinKind, createdAt)

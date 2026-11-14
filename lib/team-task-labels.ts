@@ -14,6 +14,16 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
   accepted: '供应商已受理', reconciling: '核查结果中', succeeded: '成功', failed: '失败',
   unknown: '结果确认中', canceled: '已取消',
 };
+/** Concurrency release is independent of the original call's result and cost. */
+export function taskStatusLabel(task: { status: string; concurrencyReleased?: boolean }): string {
+  return task.status === 'unknown' && task.concurrencyReleased
+    ? '历史调用待核对' : TASK_STATUS_LABELS[task.status] ?? task.status;
+}
+
+export function taskOccupancyLabel(task: { status: string; concurrencyReleased?: boolean }): string {
+  return task.status === 'unknown' && task.concurrencyReleased ? '名额已释放' : '';
+}
+
 const SCRIPT_STEP_PURPOSE_LABELS: Record<string, string> = {
   generate: '生成', repair: '正文修正', review: '内容检查', fallback: '兜底生成',
   title_repair: '标题修复', distill: '卖点提炼', filter: '模板筛选', style: '风格分析',
@@ -33,6 +43,7 @@ export function taskStepLabel(step: string, module?: string): string {
     const generic: Record<string, string> = {
       'script-studio-generate': '文案生成', 'script-studio-reprobe': '视觉信息复核',
       'script-studio-organize': '卖点整理', 'script-studio-vision': '详情页素材分析',
+      analyze: '素材分析',
     };
     const [area, subtype] = step.split(':');
     return generic[area] ?? (area === 'script' && subtype === 'vision' ? '详情页素材分析' : undefined)

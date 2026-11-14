@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import PageToolbar from './PageToolbar';
+import { taskStatusLabel, taskOccupancyLabel } from '@/lib/team-task-labels';
 import { teamError, teamWrite } from './client';
 import { EmptyState, GroupHeading, StatusDot, Tag, ToolbarButton } from '@/components/ui/Appearance';
 import { describeReconcileTask, formatReconcileMoney } from './reconcile-display';
@@ -314,7 +315,7 @@ export default function TeamReconcilePanel() {
             <EmptyState
               icon="check"
               title="没有待核对项"
-              description="目前无需人工处理。结果未知的任务仍会保留在任务记录和名额占用中，不会被超时自动释放。"
+              description="当前没有可在此处理的统一任务。历史调用保留原结果与费用记录；符合过期规则的并发名额会自动释放，实际释放情况见下方记录。"
             />
           </section>
         ) : (
@@ -606,7 +607,7 @@ export default function TeamReconcilePanel() {
       {data?.legacyItems.length ? (
         <section className="card p-5">
           <h2 className="text-[15px] font-semibold text-ink">旧执行证据（无法关联统一任务）</h2>
-          <p className="mt-1 text-[12px] text-ink-secondary">这些记录保留原执行身份，不按名称或文件名猜测归属，也不在这里重置通道次数。</p>
+          <p className="mt-1 text-[12px] text-ink-secondary">历史调用保留原执行身份、结果与费用记录，无需在此逐条操作。“名额已释放”表示不再占用生成并发，不代表已确认成功、失败或免费。</p>
           <div className="mt-3 overflow-x-auto">
             <table className="data-table min-w-[760px]">
               <thead><tr><th>来源</th><th>成员</th><th>执行身份</th><th>状态</th><th>远端 ID</th><th>时间</th></tr></thead>
@@ -616,7 +617,10 @@ export default function TeamReconcilePanel() {
                     <td>{item.kind === 'orphan' ? 'journal 孤儿' : '旧操作'}</td>
                     <td className="font-mono text-[11px]">{item.actorUserId}</td>
                     <td className="break-all font-mono text-[11px]">{item.operationId ?? item.attemptId ?? '—'}</td>
-                    <td>{label(item.status)}</td>
+                    <td>
+                      <span>{item.status === 'unknown' && item.concurrencyReleased ? taskStatusLabel(item) : label(item.status)}</span>
+                      {taskOccupancyLabel(item) ? <span className="block text-[12px] text-ink-secondary">{taskOccupancyLabel(item)}</span> : null}
+                    </td>
                     <td className="break-all font-mono text-[11px]">{item.remoteId ?? '—'}</td>
                     <td>{time(item.createdAt)}</td>
                   </tr>

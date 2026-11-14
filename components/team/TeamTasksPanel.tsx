@@ -8,7 +8,7 @@ import { EmptyState, GroupList, GroupRow, Tag, ToolbarButton, type TagTone } fro
 import { Pagination, type PaginationChange } from '@/components/ui/Pagination';
 import { DEFAULT_TEAM_PAGE_SIZE, type TeamPagination, type TeamPageSize } from '@/lib/team-service/pagination';
 import { teamWrite } from './client';
-import { TASK_STATUS_LABELS, taskWaitLabel } from '@/lib/team-task-labels';
+import { TASK_STATUS_LABELS, taskWaitLabel, taskStatusLabel, taskOccupancyLabel } from '@/lib/team-task-labels';
 import TeamTaskModel, { type TeamTaskModelCall } from './TeamTaskModel';
 import { consoleTaskTone, taskIdFromQuery } from '@/lib/team-console-overview';
 import {
@@ -74,6 +74,7 @@ type TeamTask = {
   actorDisplayName: string;
   scope: { resourceType: string; resourceId: string };
   status: string;
+  concurrencyReleased?: boolean;
   configVersion: string | null;
   clientVersion: string | null;
   serverReleaseId: string | null;
@@ -416,7 +417,8 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
                   <td className={s.secondary}>{item.actorDisplayName}<span className={`${s.taskStep} block`}>工号 {item.employeeId}</span></td>
                   <td className={`${s.secondary} ${s.mono} ${s.truncate}`} title={item.model ?? '未记录'}>{item.model ?? '未记录'}</td>
                   <td>
-                    <Tag tone={statusOf(item)}>{TASK_STATUS_LABELS[item.status] ?? item.status}</Tag>
+                    <Tag tone={taskOccupancyLabel(item) ? 'idle' : statusOf(item)}>{taskStatusLabel(item)}</Tag>
+                    {taskOccupancyLabel(item) ? <span className={`${s.taskStep} block`}>{taskOccupancyLabel(item)}</span> : null}
                     {item.waitLabel ? <span className={`${s.taskStep} block`}>{item.waitLabel}</span> : null}
                     {item.unifiedTaskId ? <span className={`${s.taskStep} block`}>任务合计 {unifiedTaskCostLabel(item)} · 通道 {item.unifiedTaskChannelCount}</span> : null}
                   </td>
@@ -466,13 +468,16 @@ export default function TeamTasksPanel({ role }: { role: WorkspaceRole }) {
           ) : null}
           {detail.status === 'unknown' || detail.status === 'maybe_sent' ? (
             <p className="rounded-lg bg-warn-tint px-3 py-2 text-[12.5px] leading-5 text-warn">
-              结果还没确认。先核对结果，再决定要不要重试，避免重复扣费。
+              {taskOccupancyLabel(detail)
+                ? '历史调用待核对，名额已释放，不再占用生成并发。原调用结果与费用记录保留，不会自动重复提交。'
+                : '结果还没确认。先核对结果，再决定要不要重试，避免重复扣费。'}
             </p>
           ) : null}
           <GroupList>
             <GroupRow label="状态">
               <span className="flex items-center gap-2 text-[12.5px]">
-                <Tag tone={statusOf(detail)}>{TASK_STATUS_LABELS[detail.status] ?? detail.status}</Tag>
+                <Tag tone={taskOccupancyLabel(detail) ? 'idle' : statusOf(detail)}>{taskStatusLabel(detail)}</Tag>
+                {taskOccupancyLabel(detail) ? <span className="text-ink-secondary">{taskOccupancyLabel(detail)}</span> : null}
                 {detail.waitLabel ? <span className="text-ink-secondary">{detail.waitLabel}</span> : null}
               </span>
             </GroupRow>

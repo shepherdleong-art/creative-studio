@@ -101,20 +101,19 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
     };
   };
 
-  // 数量角标：同一个接口、同一份可见范围；任务角标读响应里的 totalRecords
-  // （全可见范围的执行记录数），不数当前页的 items.length。见 workspace-navigation。
-  // 只取一次，路由变化时重取——页面自己刷新时角标不必实时跟随，但切页一定会更新。
-  const refreshCounts = useCallback(() => Promise.all([
-    fetch('/api/team/tasks?pageSize=25', { credentials: 'same-origin', cache: 'no-store' })
-      .then((response) => (response.ok ? response.json() : null)).catch(() => null),
-    fetch('/api/team/errors', { credentials: 'same-origin', cache: 'no-store' })
-      .then((response) => (response.ok ? response.json() : null)).catch(() => null),
-  ]).then(([tasks, errors]) => {
-    setCounts(workspaceBadgeCounts({ tasks, errors }));
-    setCountsReady(true);
-  }), []);
-
-  useEffect(() => { void refreshCounts(); }, [refreshCounts, pathname]);
+  // 切页只读取全可见范围的两个计数，避免为角标重复加载任务/错误明细。
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    void fetch('/api/team/workspace-counts', {
+      credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+    })
+      .then((response) => response.ok ? response.json() : null)
+      .then((body) => { if (active) setCounts(workspaceBadgeCounts(body)); })
+      .catch(() => { if (active) setCounts(EMPTY_COUNTS); })
+      .finally(() => { if (active) setCountsReady(true); });
+    return () => { active = false; controller.abort(); };
+  }, [pathname]);
 
   // 客户端版本过旧提示：沿用现有 bridge 探针（与旧顶栏同一入口）。
   useEffect(() => {

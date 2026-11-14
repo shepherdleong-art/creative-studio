@@ -70,31 +70,24 @@ export function projectAssetMediaResponse(
     'Content-Type': contentType,
     ...extraHeaders,
   };
-  const attachOnClose = (stream: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> => {
-    if (!options.onClose) return stream;
-    let closed = false;
-    const closeOnce = () => {
-      if (closed) return;
-      closed = true;
-      options.onClose?.();
-    };
-    return new ReadableStream<Uint8Array>({
-      start(controller) {
-        const pipe = stream.pipeTo(new WritableStream<Uint8Array>({
-          write(chunk) { controller.enqueue(chunk); },
-          close() { closeOnce(); controller.close(); },
-          abort(reason) { closeOnce(); controller.error(reason); },
-        }));
-        pipe.catch(() => {
-          closeOnce();
-          controller.error(new Error('媒体流中断'));
-        });
-      },
-      cancel(reason) {
-        closeOnce();
-        return stream.cancel(reason);
-      },
-    });
+  /**
+   * onClose 释放语义直接挂在源文件流上,而不是再包一层 pipeTo:Readable.toWeb
+   * 本身是消费者驱动的 pull(客户端不读就不读文件),取消/断流会 destroy 源流,
+   * autoClose 关闭 fd 并触发 'close'。'close' 已覆盖正常结束、错误和取消;
+   * 'error' 兜底,closeOnce 保证租约只释放一次。
+   */
+  const attachOnClose = (stream: Readable): ReadableStream<Uint8Array> => {
+    if (options.onClose) {
+      let closed = false;
+      const closeOnce = () => {
+        if (closed) return;
+        closed = true;
+        options.onClose?.();
+      };
+      stream.once('close', closeOnce);
+      stream.once('error', closeOnce);
+    }
+    return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
   };
 
   if (etag) {
@@ -108,14 +101,23 @@ export function projectAssetMediaResponse(
   const range = request.headers.get('range');
   const ifRange = etag ? request.headers.get('if-range') : null;
   const rangeEffective = range !== null && (ifRange === null || ifRange.trim() === etag);
+  // HEAD 复用 GET 的实现（Next 未导出 HEAD 时会自动转发），但响应体不会被消费也不会被
+  // cancel：若照常创建源流，流上的 close/error 永不触发，代理读租约与 fd 都会泄漏。
+  // HEAD 只需要按同一套 ETag/Range 规则算出状态与头，随即同步关闭 fd。
+  const isHead = request.method === 'HEAD';
   if (!rangeEffective) {
-    const stream = Readable.toWeb(fs.createReadStream(absolutePath, { fd, autoClose: true })) as ReadableStream<Uint8Array>;
-    return new Response(attachOnClose(stream), { headers: { ...baseHeaders, 'Content-Length': String(size) } });
+    const headers = { ...baseHeaders, 'Content-Length': String(size) };
+    if (isHead) {
+      fs.closeSync(fd);
+      return new Response(null, { status: 200, headers });
+    }
+    const stream = fs.createReadStream(absolutePath, { fd, autoClose: true });
+    return new Response(attachOnClose(stream), { headers });
   }
 
   const rangeError = (): Response => {
     fs.closeSync(fd);
-    return new Response('Range Not Satisfiable', {
+    return new Response(isHead ? null : 'Range Not Satisfiable', {
       status: 416,
       headers: { ...baseHeaders, 'Content-Range': `bytes */${size}` },
     });
@@ -135,13 +137,15 @@ export function projectAssetMediaResponse(
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)
     || start < 0 || end < start || start >= size || end >= size) return rangeError();
   const length = end - start + 1;
-  const stream = Readable.toWeb(fs.createReadStream(absolutePath, { fd, autoClose: true, start, end })) as ReadableStream<Uint8Array>;
-  return new Response(attachOnClose(stream), {
-    status: 206,
-    headers: {
-      ...baseHeaders,
-      'Content-Length': String(length),
-      'Content-Range': `bytes ${start}-${end}/${size}`,
-    },
-  });
+  const headers = {
+    ...baseHeaders,
+    'Content-Length': String(length),
+    'Content-Range': `bytes ${start}-${end}/${size}`,
+  };
+  if (isHead) {
+    fs.closeSync(fd);
+    return new Response(null, { status: 206, headers });
+  }
+  const stream = fs.createReadStream(absolutePath, { fd, autoClose: true, start, end });
+  return new Response(attachOnClose(stream), { status: 206, headers });
 }

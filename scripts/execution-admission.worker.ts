@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import Database from 'better-sqlite3';
+import { meterDatabase } from './execution-admission-metrics.ts';
 
 const [dbPath, actorId, instanceId, fenceText, readyPath, goPath] = process.argv.slice(2);
 if (!dbPath || !actorId || !instanceId || !fenceText || !readyPath || !goPath) {
@@ -13,8 +14,9 @@ const { createExecutionFacade } = await import('../lib/media-core/execution/oper
 const { registerExecutionInstance } = await import('../lib/media-core/execution/schema.ts');
 const { createExecutionJournal } = await import('../lib/media-core/execution/journal.ts');
 registerExecutionInstance(db, { instanceId, fence, deploymentId: 'deployment-contention' });
+const metered = meterDatabase(db);
 const runtime = createExecutionFacade({
-  db,
+  db: metered.db,
   deploymentId: 'deployment-contention',
   journal: createExecutionJournal({ deploymentId: 'deployment-contention' }),
   actorAllowed: (id) => id === actorId,
@@ -29,8 +31,15 @@ while (!fs.existsSync(goPath)) {
   if (Date.now() > deadline) throw new Error('timed out waiting for admission barrier');
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
+metered.reset();
 const result = runtime.facade.admit(identity);
 const grantedTaskId = result.kind === 'admitted' ? result.grant.operation.taskId : null;
 runtime.closeNewWork();
 db.close();
-process.stdout.write(JSON.stringify({ kind: result.kind, reasons: result.kind === 'deferred' ? result.reasons : [], grantedTaskId }));
+process.stdout.write(JSON.stringify({
+  kind: result.kind,
+  reasons: result.kind === 'deferred' ? result.reasons : [],
+  grantedTaskId,
+  snapshotBytes: metered.stats.snapshotBytes,
+  snapshotRows: metered.stats.snapshotRows,
+}));

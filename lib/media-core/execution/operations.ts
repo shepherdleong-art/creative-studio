@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createUnknownOccupancyMaintenance } from './unknown-occupancy.ts';
 import {
   assertExecutionContext,
   assertMoney,
@@ -131,6 +132,7 @@ export function createExecutionFacade(options: ExecutionFacadeOptions): Executio
   assertExecutionContext(options);
   let open = false;
   let recovered = false;
+  const occupancyMaintenance = createUnknownOccupancyMaintenance(options);
   const assertOpen = (): void => {
     if (!open) throw new ExecutionError('execution_not_ready', 'server 执行 readiness 尚未开放新付费工作。');
   };
@@ -139,7 +141,10 @@ export function createExecutionFacade(options: ExecutionFacadeOptions): Executio
       ...input,
       clientVersion: input.clientVersion ?? currentExecutionClientVersion(),
     }),
-    admit: (instance) => admitOperation({ ...options, assertOpen }, instance),
+    admit: (instance) => {
+      assertOpen(); occupancyMaintenance.sweep();
+      return admitOperation({ ...options, assertOpen }, instance);
+    },
     markSubmitting: (input) => markSubmitting({ ...options, assertOpen }, input),
     attachReceipt: (input) => attachReceipt(options, input),
     reconcile: (input) => reconcileAttempt(options, input),
@@ -158,7 +163,7 @@ export function createExecutionFacade(options: ExecutionFacadeOptions): Executio
   };
   return {
     facade,
-    closeNewWork() { open = false; },
+    closeNewWork() { open = false; occupancyMaintenance.stop(); },
     lifecycle: {
       name: 'execution',
       ensureSchemaReady() {},
@@ -168,16 +173,17 @@ export function createExecutionFacade(options: ExecutionFacadeOptions): Executio
         if (!result.available) throw new ExecutionError('execution_journal_unavailable', '执行恢复核查失败，保持新付费关闭。');
         recovered = true;
       },
-      async start() {
+      async start(context) {
         if (!recovered) {
           const result = await recoverExecution(options);
           if (!result.available) throw new ExecutionError('execution_journal_unavailable', '执行恢复核查失败，保持新付费关闭。');
           recovered = true;
         }
+        occupancyMaintenance.start(context);
         open = true;
       },
       drain() {
-        open = false;
+        open = false; occupancyMaintenance.stop();
         const pending = options.db.prepare(`
           SELECT COUNT(*) AS count FROM execution_attempts
           WHERE submissionState IN ('maybe_sent', 'accepted')

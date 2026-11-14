@@ -625,6 +625,17 @@ export const FIXTURE_HOOKS = {
       }
       const inserted = db.prepare('SELECT COUNT(*) FROM execution_media_tasks').pluck().get();
       assert.equal(inserted, tasks.length, '待核对夹具必须把六个形态都造出来');
+      // A released historical call stays unknown; release does not settle its result or cost.
+      db.prepare(`INSERT INTO execution_reconciliation_orphans
+        (attemptId, operationId, permitId, actorId, evidenceJson, state, createdAt, updatedAt)
+        VALUES ('ui-historical-attempt', 'ui-historical-operation', 'ui-historical-permit', ?, '{}', 'unknown', ?, ?)`)
+        .run(employee.id, at(0), at(0));
+      for (const poolKey of ['llm:remote', 'actor:' + employee.id]) {
+        db.prepare(`INSERT INTO execution_reservations
+          (id, permitId, actorId, kind, poolKey, state, createdAt, releasedAt, releaseReason)
+          VALUES (?, 'ui-historical-permit', ?, 'concurrency', ?, 'released', ?, ?, 'fixture-history')`)
+          .run('ui-historical-' + poolKey, employee.id, poolKey, at(0), at(1));
+      }
       ctx.reconcileTasks = tasks.map((task) => task.id);
       return ctx;
     } finally {

@@ -299,6 +299,7 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/team/concurrency-policy': 'GET PATCH',
   '/api/team/console/overview': 'GET',
   '/api/team/tasks': 'GET',
+  '/api/team/workspace-counts': 'GET',
   '/api/team/tasks/detail': 'GET',
   '/api/team/tasks/retry': 'POST',
   '/api/team/usage': 'GET',
@@ -348,7 +349,7 @@ const AUTHENTICATED = new Set([
   '/api/team/errors/[id]/resolve POST',
   '/api/team/members/[id]/policy GET', '/api/team/tasks GET', '/api/team/usage GET',
   '/api/team/tasks/detail GET', '/api/team/tasks/retry POST',
-  '/api/team/dashboard GET',
+  '/api/team/dashboard GET', '/api/team/workspace-counts GET',
   '/api/upload POST', '/api/batch-production/assets/import POST', '/api/canvas/[id]/assets POST',
 ]);
 const ADMIN_PREFIXES = ['/api/providers', '/api/team/users'];

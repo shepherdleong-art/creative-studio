@@ -20,6 +20,8 @@ export interface ClaimTaskOptions {
   leaseDurationMs?: number;
   /** 独立素材分析执行位与通用执行位互斥领取。 */
   lane?: 'analysis' | 'general';
+  /** 已确认延期、仍在退避期内的任务先跳过,避免同一任务被立即重复领取。 */
+  excludeTaskIds?: readonly string[];
 }
 
 export interface CompleteTaskAttemptInput {
@@ -56,6 +58,15 @@ export function claimNextTask(
   if (schedulerDraining) return null;
   const { workerId, leaseDurationMs = 5 * 60_000 } = options;
   const startedAt = nowIso(options.now);
+  // 退避名单只来自本进程的短时延期记录。用 JSON 数组绑定,避免 SQLite
+  // 变量数上限;名单必须覆盖全部仍在退避的任务,不能在过载时截断——截断
+  // 会让刚延期的任务立即重新可领取,形成 claim/defer 空转。
+  const excludedTaskIds = options.excludeTaskIds ?? [];
+  const exclusionSql = excludedTaskIds.length > 0
+    ? 'AND t.id NOT IN (SELECT value FROM json_each(?))'
+    : '';
+  const bindings: unknown[] = [options.lane ?? null, options.lane ?? null, options.lane ?? null];
+  if (excludedTaskIds.length > 0) bindings.push(JSON.stringify(excludedTaskIds));
   return db.transaction(() => {
     // 素材级 proxy_generate 任务没有所属批次(batchId 为 NULL),不受批次
     // 控制态约束,只要期望运行即可领取;其余任务仍必须挂到运行中的批次。
@@ -70,6 +81,7 @@ export function claimNextTask(
           (p.controlState = 'running' AND p.deletedAt IS NULL)
           OR t.batchId IS NULL
         )
+        ${exclusionSql}
         -- 渲染闸门:render 必须等口播。plan 的脚本快照还有未成功的 narration
         -- 任务(queued/running/failed)时,render 不可领取;cancelled 不挡
         -- (旧版本被取代时取消的口播任务不该继续挡新版本的渲染);
@@ -90,7 +102,7 @@ export function claimNextTask(
         )
       ORDER BY t.createdAt, t.id
       LIMIT 1
-    `).get(options.lane ?? null, options.lane ?? null, options.lane ?? null) as {
+    `).get(...bindings) as {
       id: string;
       batchId: string;
       projectId: string;

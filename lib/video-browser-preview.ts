@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { probeVideoMedia, runFfmpeg } from './ffmpeg.ts';
+import { probeVideoMedia, runFfmpeg, type VideoMediaProbe } from './ffmpeg.ts';
 import { authorizeManagedFileRead } from './media-core/access-context.ts';
 import { getExecutionModuleRuntime } from './media-core/execution/module-runtime.ts';
 import { MediaResourceDeferredError, withMediaResource } from './media-core/media-resource-gate.ts';
@@ -13,6 +13,7 @@ import { MediaResourceDeferredError, withMediaResource } from './media-core/medi
 const PREVIEW_TRANSCODE_TIMEOUT_MS = 120_000;
 const PREVIEW_LEASE_MS = PREVIEW_TRANSCODE_TIMEOUT_MS + 10_000;
 const PREVIEW_FAILURE_RETRY_MS = 5_000;
+const PREVIEW_TEMP_STALE_MS = 24 * 60 * 60 * 1000;
 
 export function browserPreviewPath(videoPath: string): string {
   const ext = path.extname(videoPath);
@@ -37,6 +38,35 @@ function isBrowserPlayable(codec: string, pixelFormat: string): boolean {
 
 function previewJobKey(videoPath: string): string {
   return createHash('sha256').update(path.resolve(videoPath)).digest('hex');
+}
+
+/**
+ * best-effort 清理同目录下遗留的转码临时文件：只删除 mtime 超过 24 小时的
+ * `${previewPath}.*.tmp.mp4`，不碰当前任务的临时文件；任何错误都忽略。
+ */
+function cleanupStalePreviewTemps(previewPath: string, keepPath: string): void {
+  const directory = path.dirname(previewPath);
+  const prefix = `${path.basename(previewPath)}.`;
+  const suffix = '.tmp.mp4';
+  const keepName = path.basename(keepPath);
+  let names: string[];
+  try {
+    names = fs.readdirSync(directory);
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const name of names) {
+    if (name === keepName || !name.startsWith(prefix) || !name.endsWith(suffix)) continue;
+    const candidate = path.join(directory, name);
+    try {
+      const stat = fs.statSync(candidate);
+      if (!stat.isFile() || now - stat.mtimeMs <= PREVIEW_TEMP_STALE_MS) continue;
+      fs.rmSync(candidate, { force: true });
+    } catch {
+      // 清理失败不影响转码；残留文件不可复用，下次转码前再试。
+    }
+  }
 }
 
 interface PreviewJobRow {
@@ -115,11 +145,53 @@ async function finishJob(
 }
 
 const inflight = new Map<string, Promise<string>>();
+// Format inspection is light I/O, independent of production/transcoding capacity.
+// Bound cold probes separately; repeated Range requests reuse metadata until the file changes.
+const PROBE_CONCURRENCY = 2;
+const PROBE_CACHE_LIMIT = 256;
+let activeProbes = 0;
+const probeWaiters: Array<() => void> = [];
+const probeCache = new Map<string, { identity: string; probe: VideoMediaProbe }>();
 
-export function ensureBrowserPreview(
+function sourceIdentity(videoPath: string): string {
+  const stat = fs.statSync(videoPath);
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+}
+
+async function probePreviewSource(videoPath: string): Promise<VideoMediaProbe> {
+  const identity = sourceIdentity(videoPath);
+  const cached = probeCache.get(videoPath);
+  if (cached?.identity === identity) {
+    probeCache.delete(videoPath);
+    probeCache.set(videoPath, cached);
+    return cached.probe;
+  }
+  probeCache.delete(videoPath);
+  await new Promise<void>((resolve) => {
+    const acquire = () => { activeProbes += 1; resolve(); };
+    if (activeProbes < PROBE_CONCURRENCY) acquire();
+    else probeWaiters.push(acquire);
+  });
+  try {
+    const probe = await probeVideoMedia(videoPath);
+    if (!probe.errorMessage && probe.width > 0 && probe.height > 0 && sourceIdentity(videoPath) === identity) {
+      probeCache.set(videoPath, { identity, probe });
+      if (probeCache.size > PROBE_CACHE_LIMIT) probeCache.delete(probeCache.keys().next().value!);
+    }
+    return probe;
+  } finally {
+    activeProbes -= 1;
+    probeWaiters.shift()?.();
+  }
+}
+
+export async function ensureBrowserPreview(
   videoPath: string,
   options: { waitForCompletion?: boolean } = {},
 ): Promise<string> {
+  videoPath = path.resolve(videoPath);
+  // Every caller must be authorized, including cache hits and shared in-flight work.
+  authorizeManagedFileRead(videoPath);
   const existing = inflight.get(videoPath);
   if (existing) return existing;
   const task = doEnsureBrowserPreview(videoPath, options).finally(() => {
@@ -135,35 +207,46 @@ async function doEnsureBrowserPreview(
 ): Promise<string> {
   const jobKey = previewJobKey(videoPath);
   const previewPath = browserPreviewPath(videoPath);
-  authorizeManagedFileRead(videoPath);
   try {
     if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) return previewPath;
     if (jobPending(await readJob(jobKey), Date.now())) throw new BrowserPreviewPendingError(jobKey);
+    const probe = await probePreviewSource(videoPath);
+    const codec = (probe.videoCodec || '').toLowerCase();
+    const pixelFormat = (probe.pixelFormat || '').toLowerCase();
+    const safeAudio = !probe.hasAudio || ['aac', 'mp3'].includes(probe.audioCodec ?? '');
+    if (isBrowserPlayable(codec, pixelFormat) && safeAudio && path.extname(videoPath).toLowerCase() !== '.mov') return videoPath;
+    if (!probe.width || !probe.height) return videoPath;
+    // Only actual transcoding competes with rendering for the heavy media slot.
     return await withMediaResource({
       taskId: `browser-preview:${jobKey}`,
       step: 'preview-transcode',
       wait: options.waitForCompletion === true || !getExecutionModuleRuntime(),
     }, async () => {
-      const probe = await probeVideoMedia(videoPath);
-      const codec = (probe.videoCodec || '').toLowerCase();
-      const pixelFormat = (probe.pixelFormat || '').toLowerCase();
-      const safeAudio = !probe.hasAudio || ['aac', 'mp3'].includes(probe.audioCodec ?? '');
-      if (isBrowserPlayable(codec, pixelFormat) && safeAudio && path.extname(videoPath).toLowerCase() !== '.mov') return videoPath;
-      if (!probe.width || !probe.height) return videoPath;
       if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) return previewPath;
 
       const claim = await claimJob(videoPath, previewPath, jobKey);
       if (!claim) throw new BrowserPreviewPendingError(jobKey);
+      // 先写同目录临时文件，成功后原子 rename 到正式路径：任何失败/取消/崩溃
+      // 都只会留下临时文件，不会被 fs.existsSync(previewPath) 当作 ready 复用。
+      const temporaryPath = `${previewPath}.${claim.owner}.tmp.mp4`;
+      // 转码前清理同目录超过 24 小时的遗留临时文件（当前任务的文件不在其中）。
+      cleanupStalePreviewTemps(previewPath, temporaryPath);
       try {
         await runFfmpeg([
           '-y', '-i', videoPath,
           '-map', '0:v:0', '-map', '0:a?',
           '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
-          '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', previewPath,
+          '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', temporaryPath,
         ], { timeoutMs: PREVIEW_TRANSCODE_TIMEOUT_MS });
+        fs.renameSync(temporaryPath, previewPath);
         await finishJob(jobKey, claim.owner, { status: 'ready' });
         return previewPath;
       } catch (error) {
+        try {
+          fs.rmSync(temporaryPath, { force: true });
+        } catch {
+          // 清理失败只留下不可复用的临时文件，不影响失败结果。
+        }
         await finishJob(jobKey, claim.owner, {
           status: 'failed',
           error: error instanceof Error ? error.message : String(error),

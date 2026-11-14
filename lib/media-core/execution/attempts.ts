@@ -15,6 +15,7 @@ import {
 } from './context.ts';
 import { readActorPolicy, monthlyCostUsage, shanghaiAccountingPeriod, actorModelAllowed } from './pools.ts';
 import { readAttempt, readOperation } from './records.ts';
+import { transportFailureCode } from './transport-failure.ts';
 
 type AttemptOptions = ExecutionFacadeOptions & { assertOpen(): void };
 
@@ -426,10 +427,15 @@ export async function transmitAttempt(
     const now = options.now?.() ?? new Date();
     await Promise.resolve(options.journal.appendReceipt({
       ...journalIdentity(operation, before), at: now.toISOString(), terminalState: 'unknown',
-      errorCode: 'transport_unknown',
+      errorCode: transportFailureCode(error),
     }));
-    options.db.prepare("UPDATE execution_operations SET status = 'unknown', updatedAt = ? WHERE id = ?")
-      .run(now.toISOString(), operation.id);
+    options.db.transaction(() => {
+      // 仍保留 maybe_sent、费用预留和名额；分类仅用于排查，不构成可安全重提的证据。
+      options.db.prepare('UPDATE execution_attempts SET errorCode = ?, updatedAt = ? WHERE id = ?')
+        .run(transportFailureCode(error), now.toISOString(), before.id);
+      options.db.prepare("UPDATE execution_operations SET status = 'unknown', updatedAt = ? WHERE id = ?")
+        .run(now.toISOString(), operation.id);
+    }).immediate();
     throw error;
   }
   return attachReceipt(options, { intent, receipt });

@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { createRequire } from 'node:module';
+import { createRequire, register } from 'node:module';
+import { Readable } from 'node:stream';
 import { spawnSync } from 'node:child_process';
 import ts from 'typescript';
 import { chromium } from 'playwright';
@@ -13,6 +14,15 @@ import ffmpeg from 'ffmpeg-static';
 
 const root = process.cwd();
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mixcut-initial-frame-'));
+process.env.CREATIVE_STUDIO_DATA_ROOT = temp;
+process.env.CREATIVE_STUDIO_MEDIA_CONCURRENCY = '1';
+delete process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE;
+register('./typescript-extension-loader.mjs', import.meta.url);
+const { ensureBrowserPreview, BrowserPreviewPendingError } = await import('../lib/video-browser-preview.ts');
+const { fileResponse } = await import('../lib/media-core/file-response.ts');
+const { withMediaResource } = await import('../lib/media-core/media-resource-gate.ts');
+const { setExecutionModuleRuntime, clearExecutionModuleRuntime } = await import('../lib/media-core/execution/module-runtime.ts');
+const { closeDb } = await import('../lib/db.ts');
 const modules = new Map();
 const styles = [];
 function bundle(filename) {
@@ -51,7 +61,7 @@ const cache = {};
 function load(id) { if(cache[id]) return cache[id].exports; const m=cache[id]={exports:{}}; const [fn,deps]=modules[id]; fn(r=>load(deps[r]),m,m.exports); return m.exports; }
 const React=load(${reactId}), Preview=load(${previewId}).FinalEditPreview;
 const group = {id:'group',script:{narrationConfig:{playbackRate:1,gainDb:0}},narrationDurationUs:4000000,subtitleCues:[],coverTitle:{enabled:false},textStyles:{'3x4':{}}};
-const asset = {videoJobId:'a',previewUrl:'/video.mp4?preview=1'};
+const asset = {videoJobId:'a',previewUrl:location.search.includes('busy-server')?'/ready.mp4?preview=1':'/video.mp4?preview=1'};
 const variant = {id:'variant',outputPreset:'3x4',timeline:{bodyFrames:96,clips:[{id:'clip',videoJobId:'a',sourceInFrame:12,sourceOutFrame:108,timelineInFrame:0,timelineOutFrame:96,framing:{scale:1,offsetX:0,offsetY:0}}]},bgm:{trackId:null,gainDb:-16,fadeInSec:0,fadeOutSec:.8},cover:{sourceUrl:null}};
 function App(){const [time,setTime]=React.useState(0); return React.createElement(React.Fragment,null,
  React.createElement('button',{onClick:()=>setTime(1.54)},'选择视频片段'),
@@ -61,12 +71,27 @@ load(${domId}).createRoot(document.getElementById('root')).render(React.createEl
 let server, browser;
 let videoRequests = 0;
 let stallVideo = false;
+const readyResponses = [];
 try {
   const result = spawnSync(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'color=c=red:s=320x240:r=24:d=5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', path.join(temp, 'video.mp4')], { windowsHide: true, encoding: 'utf8', timeout: 30_000 });
   assert.equal(result.status, 0, result.stderr);
   const video = fs.readFileSync(path.join(temp, 'video.mp4'));
-  server = http.createServer((req, res) => {
-    if (req.url === '/fixture.js') { res.setHeader('Content-Type', 'text/javascript; charset=utf-8'); res.end(script); }
+  server = http.createServer(async (req, res) => {
+    if (req.url.startsWith('/ready.mp4')) {
+      // Exercise the real preview/Range path while a production render holds the media slot.
+      try {
+        const served = await ensureBrowserPreview(path.join(temp, 'video.mp4'));
+        const response = fileResponse(new Request(`http://localhost${req.url}`, { headers: req.headers }), served, 'video/mp4', { cacheControl: 'private, no-store' });
+        readyResponses.push(response.status);
+        res.writeHead(response.status, Object.fromEntries(response.headers));
+        Readable.fromWeb(response.body).pipe(res);
+      } catch (error) {
+        const status = error instanceof BrowserPreviewPendingError ? 202 : 500;
+        readyResponses.push(status);
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: status === 202 ? 'preview_pending' : 'preview_failed', retryAfterMs: 100 }));
+      }
+    } else if (req.url === '/fixture.js') { res.setHeader('Content-Type', 'text/javascript; charset=utf-8'); res.end(script); }
     else if (req.url.startsWith('/video.mp4')) {
       if (stallVideo) return; // 真正挂起媒体请求，不产生 error/loadeddata。
       // A busy server returns this while the browser preview is being prepared.
@@ -84,7 +109,7 @@ try {
         });
         res.end(body);
       }
-    } else if (req.url === '/') {
+    } else if (new URL(req.url, 'http://localhost').pathname === '/') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.end(`<html><head><style>body{margin:0}.previewColumn{width:500px}${styles.join('\n')}</style></head><body><div id="root"></div><script src="/fixture.js"></script></body></html>`);
     } else { res.statusCode = 404; res.end(); }
@@ -151,10 +176,41 @@ try {
     return video.readyState >= 2 && !video.seeking && Math.abs(video.currentTime - 28 / 24) < 1 / 24;
   }, undefined, { timeout: 5000 });
   assert.deepEqual(errors, []);
-  console.log('PASS: decoded initial/recovered frame, fullscreen fallback and bounded stalled-media retry');
+  await page.close();
+
+  // A previously playable H.264 source must stay viewable during unrelated rendering.
+  assert.equal(await ensureBrowserPreview(path.join(temp, 'video.mp4')), path.join(temp, 'video.mp4'));
+  setExecutionModuleRuntime({ instanceId: 'preview-test', fence: 1, facade: {} });
+  let release;
+  const occupied = withMediaResource({ taskId: 'unrelated-render', wait: true }, () => new Promise(resolve => { release = resolve; }));
+  await new Promise(resolve => setImmediate(resolve));
+  const busyPage = await browser.newPage();
+  const started = performance.now();
+  try {
+    await busyPage.goto(`http://127.0.0.1:${server.address().port}/?busy-server=1`, { waitUntil: 'domcontentloaded' });
+    await busyPage.getByRole('button', { name: '选择视频片段', exact: true }).click();
+    await busyPage.waitForFunction(() => {
+      const canvas = document.querySelector('canvas:not([aria-label]):not(.previewCanvas)');
+      const pixel = canvas?.getContext('2d')?.getImageData(canvas.width / 2, canvas.height / 2, 1, 1).data;
+      return pixel && pixel[0] > 150 && pixel[1] < 80 && pixel[3] === 255;
+    }, undefined, { timeout: 2500 }).catch(error => {
+      console.error(JSON.stringify({ scenario: 'playable-preview-during-render', responses: readyResponses, firstFrameMs: Math.round(performance.now() - started), result: 'no decoded frame' }));
+      throw error;
+    });
+    assert.ok(readyResponses.every(status => status === 206 || status === 200));
+    console.log(`PASS: decoded frame during occupied media slot in ${Math.round(performance.now() - started)}ms`);
+  } finally {
+    release();
+    await occupied;
+    clearExecutionModuleRuntime();
+    await busyPage.close();
+  }
+  console.log('PASS: decoded initial/recovered frame, fullscreen fallback, bounded retry and busy-server preview');
 } finally {
+  clearExecutionModuleRuntime();
   await browser?.close();
   server?.closeAllConnections();
   if (server) await new Promise(resolve => server.close(resolve));
+  closeDb();
   fs.rmSync(temp, { recursive: true, force: true });
 }

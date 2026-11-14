@@ -16,7 +16,7 @@ type Counts = { running: number; queued: number; completedToday: number; failed:
 type RecentRow = {
   operationId: string; taskLabel: string; stepName: string; projectName: string;
   actorName: string; employeeId: string; modelLabel: string;
-  status: string; statusLabel: string; tone: TagTone; timeLabel: string; href: string;
+  status: string; statusLabel: string; occupancyLabel?: string; tone: TagTone; timeLabel: string; href: string;
 };
 type MemberRow = { actorUserId: string; displayName: string; employeeId: string; summary: string; running: number };
 type PoolRow = { poolKey: string; capacity: number; used: number; percent: number; hint: string; activeMembers: Array<{ actorId: string }> };
@@ -169,7 +169,9 @@ export default function TeamConsoleOverview({ role, displayName }: { role: Works
                         <span className={`${s.taskStep} block`}>工号 {row.employeeId}</span>
                       </td>
                       <td className={`${s.secondary} ${s.mono} truncate`}>{row.modelLabel}</td>
-                      <td className={s.nowrap}><Tag tone={row.tone}>{row.statusLabel}</Tag></td>
+                      <td><Tag tone={row.tone}>{row.statusLabel}</Tag>
+                        {row.occupancyLabel ? <span className={`${s.taskStep} block`}>{row.occupancyLabel}</span> : null}
+                      </td>
                       <td className={`${s.secondary} ${s.nowrap} ${s.mono}`}>{row.timeLabel}</td>
                     </tr>
                   ))}

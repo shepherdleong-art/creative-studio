@@ -145,7 +145,7 @@ await runtime.lifecycle.start({ ...identity, deploymentId: 'task-display-test', 
 
 function enqueue(input: {
   taskId: string; module?: string; step?: string; providerSnapshot: unknown; inputSnapshot?: unknown;
-  status?: 'pending'; actorUserId?: string; scopeId?: string; scopeType?: 'project' | 'canvas';
+  status?: 'pending'; actorUserId?: string; scopeId?: string; scopeType?: 'project' | 'canvas' | 'shot_set' | 'canvas_task';
   inputRevision?: string; mediaTaskId?: string; channelKey?: string;
 }): OperationRecord {
   const moduleName = input.module ?? 'llm';
@@ -429,6 +429,77 @@ try {
   assert.equal(findTeamTask(db, { userId: 'admin', role: 'admin' }, original.id)?.status, 'failed',
     '普通重试已有新的执行记录后，旧失败记录不能继续冒充排队');
   console.log('PASS: genuine manual requeue stays visible until the replacement execution exists');
+
+  // Historical labels require evidence that every reservation for the current permit is released.
+  {
+    const history = enqueue({ taskId: 'released-history', providerSnapshot: { model: 'history-model' } });
+    const admission = runtime.facade.admit({ ...identity, operationId: history.id });
+    assert.equal(admission.kind, 'admitted');
+    if (admission.kind !== 'admitted') throw new Error('history grant required');
+    const intent = await runtime.facade.markSubmitting({ grant: admission.grant, requestSnapshot: {} });
+    await assert.rejects(() => runtime.facade.transmit(intent, async () => { throw new Error('lost response'); }));
+    const { taskStatusLabel, taskOccupancyLabel } = await import('../lib/team-task-labels.ts');
+    const { recentConsoleTasks } = await import('../lib/team-console-overview.ts');
+    const read = () => findTeamTask(db, { userId: 'admin', role: 'admin' }, history.id)!;
+    assert.equal(taskStatusLabel(read()), '结果确认中');
+    assert.equal(read().concurrencyReleased, false);
+    db.prepare("UPDATE execution_reservations SET state='released' WHERE permitId=? AND kind='concurrency' AND poolKey='llm:remote'")
+      .run(admission.grant.permitId);
+    assert.equal(read().concurrencyReleased, false, 'one released shared slot does not prove the personal slot is released');
+    db.prepare("UPDATE execution_reservations SET state='released' WHERE permitId=? AND kind='concurrency'")
+      .run(admission.grant.permitId);
+    const before = db.prepare('SELECT * FROM execution_operations WHERE id=?').get(history.id);
+    const attemptsBefore = db.prepare('SELECT * FROM execution_attempts WHERE operationId=?').all(history.id);
+    const costsBefore = db.prepare("SELECT * FROM execution_reservations WHERE permitId=? AND kind='cost'").all(admission.grant.permitId);
+    const task = read();
+    assert.equal(task.status, 'unknown');
+    assert.equal(task.concurrencyReleased, true);
+    assert.equal(taskStatusLabel(task), '历史调用待核对');
+    assert.equal(taskOccupancyLabel(task), '名额已释放');
+    assert.equal(recentConsoleTasks([task])[0].statusLabel, '历史调用待核对');
+    assert.equal(recentConsoleTasks([task])[0].occupancyLabel, '名额已释放');
+    assert.equal(findTeamTask(db, { userId: 'alice', role: 'employee' }, history.id)?.concurrencyReleased, true);
+    assert.equal(findTeamTask(db, { userId: 'bob', role: 'employee' }, history.id), null);
+    assert.ok(listTeamTasks(db, { userId: 'admin', role: 'admin' }, { status: 'unknown' }).items.some(item => item.operationId === history.id));
+    assert.deepEqual(db.prepare('SELECT * FROM execution_operations WHERE id=?').get(history.id), before);
+    assert.deepEqual(db.prepare('SELECT * FROM execution_attempts WHERE operationId=?').all(history.id), attemptsBefore);
+    assert.deepEqual(db.prepare("SELECT * FROM execution_reservations WHERE permitId=? AND kind='cost'").all(admission.grant.permitId), costsBefore);
+    assert.equal(taskStatusLabel({ status: 'succeeded', concurrencyReleased: true }), '成功');
+    assert.equal(taskOccupancyLabel({ status: 'succeeded', concurrencyReleased: true }), '');
+    console.log('PASS: released historical calls show truthful labels across task and overview views without changing result, cost or access');
+  }
+
+  // LLM video analysis belongs to a shot set; the task list must resolve its registered project.
+  for (const [rootType, rootId] of [['project', 'project-a'], ['canvas', 'canvas-a']] as const) {
+    db.prepare(`INSERT OR IGNORE INTO team_resource_scopes
+      (resourceType, resourceId, ownerUserId, visibility, parentType, parentId, rootType, rootId, createdAt, updatedAt)
+      VALUES (?, ?, 'alice', 'private', NULL, NULL, ?, ?, ?, ?)`)
+      .run(rootType, rootId, rootType, rootId, timestamp, timestamp);
+  }
+  for (const [resourceType, resourceId, rootType, rootId] of [
+    ['shot_set', 'set-analysis', 'project', 'project-a'],
+    ['canvas_task', 'canvas-analysis', 'canvas', 'canvas-a'],
+  ] as const) {
+    db.prepare(`INSERT INTO team_resource_scopes
+      (resourceType, resourceId, ownerUserId, visibility, parentType, parentId, rootType, rootId, createdAt, updatedAt)
+      VALUES (?, ?, 'alice', 'private', ?, ?, ?, ?, ?, ?)`)
+      .run(resourceType, resourceId, rootType, rootId, rootType, rootId, timestamp, timestamp);
+  }
+  const analysisOperation = enqueue({ taskId: 'video-analysis:fixture', step: 'analyze:1', scopeType: 'shot_set', scopeId: 'set-analysis', providerSnapshot: { model: 'vision-model' } });
+  db.prepare("UPDATE execution_operations SET status='unknown' WHERE id=?").run(analysisOperation.id);
+  const analysisTask = findTeamTask(db, { userId: 'admin', role: 'admin' }, analysisOperation.id);
+  assert.equal(analysisTask?.scopeName, '洁面乳详情页', 'shot-set analysis must show its project instead of unassociated');
+  assert.equal(analysisTask?.stepName, '素材分析');
+  assert.equal(analysisTask?.status, 'unknown', 'display repair must not pretend the provider succeeded');
+  assert.deepEqual(analysisTask?.scope, { resourceType: 'shot_set', resourceId: 'set-analysis' }, 'retain the original authorization scope');
+  assert.ok(listTeamTasks(db, { userId: 'alice', role: 'employee' }, { q: '洁面乳详情页' }, { pageSize: 50 }).items.some(item => item.operationId === analysisOperation.id));
+  assert.ok(listTeamTasks(db, { userId: 'admin', role: 'admin' }, { q: '素材分析' }).items.some(item => item.operationId === analysisOperation.id));
+  assert.equal(findTeamTask(db, { userId: 'bob', role: 'employee' }, analysisOperation.id), null);
+  const canvasChild = enqueue({ taskId: 'canvas-child-analysis', step: 'analyze:1', scopeType: 'canvas_task', scopeId: 'canvas-analysis', providerSnapshot: {} });
+  assert.equal(findTeamTask(db, { userId: 'admin', role: 'admin' }, canvasChild.id)?.scopeName, '夏季新品画布');
+  db.prepare("DELETE FROM projects WHERE id='project-a'").run();
+  assert.equal(findTeamTask(db, { userId: 'admin', role: 'admin' }, analysisOperation.id)?.scopeName, '项目已删除或不可用');
+  console.log('PASS: inherited project/canvas scope names, analysis labels, search and caller isolation');
 } finally {
   runtime.closeNewWork();
   db.close();

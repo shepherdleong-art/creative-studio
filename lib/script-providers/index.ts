@@ -34,7 +34,8 @@ import { createHash } from 'node:crypto';
 import { requireAccessContext } from '../media-core/access-context.ts';
 import { getExecutionModuleRuntime } from '../media-core/execution/module-runtime.ts';
 import { executeExecutionContinuation, registerExecutionContinuation } from '../media-core/execution/module-adapters.ts';
-import type { ExecutionGrant } from '../media-core/execution/context.ts';
+import { transportFailureHint } from '../media-core/execution/transport-failure.ts';
+import type { ExecutionGrant, OperationRecord } from '../media-core/execution/context.ts';
 import type { LlmExecutionTransport } from './transport-execution.ts';
 import { readLlmExecutionCheckpoint, writeLlmExecutionCheckpoint } from './execution-checkpoints.ts';
 import { getDb } from '../db.ts';
@@ -160,10 +161,19 @@ export interface CompleteJsonInput {
 export class LlmExecutionUnknownError extends Error {
   readonly code = 'llm_execution_unknown';
 
-  constructor() {
-    super('LLM 调用结果尚未核清，未自动重提');
+  constructor(failureCode?: string | null) {
+    const hint = transportFailureHint(failureCode);
+    super(`LLM 调用结果尚未核清，未自动重提${hint ? `（${hint}）` : ''}`);
     this.name = 'LlmExecutionUnknownError';
   }
+}
+
+function unknownLlmOperation(operation: OperationRecord): LlmExecutionUnknownError {
+  const failureCode = operation.currentAttemptId
+    ? getDb().prepare('SELECT errorCode FROM execution_attempts WHERE id = ?')
+      .pluck().get(operation.currentAttemptId) as string | null
+    : null;
+  return new LlmExecutionUnknownError(failureCode);
 }
 
 export class LlmExecutionDeferredError extends Error {
@@ -390,7 +400,7 @@ export async function completeJson<T>(input: CompleteJsonInput): Promise<T> {
     }
     if (operation.status === 'failed') throw new Error('LLM 调用失败，请查看执行台账');
     if (operation.status === 'unknown' || operation.status === 'reconciling') {
-      throw new LlmExecutionUnknownError();
+      throw unknownLlmOperation(operation);
     }
     const admitted = moduleRuntime.facade.admit({
       instanceId: moduleRuntime.instanceId,
@@ -410,7 +420,7 @@ export async function completeJson<T>(input: CompleteJsonInput): Promise<T> {
       if (own) {
         operation = enqueue().operation;
         if (operation.status === 'unknown' || operation.status === 'reconciling') {
-          throw new LlmExecutionUnknownError();
+          throw unknownLlmOperation(operation);
         }
         throw error;
       }

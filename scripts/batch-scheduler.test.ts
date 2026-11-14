@@ -609,8 +609,110 @@ try {
     'failed 封面任务可显式重试',
   );
 
+  // --- 场景 11:退避中的任务可从领取候选中排除,其余任务顺序不变 ---
+  db.prepare(`
+    UPDATE batch_tasks SET status = 'cancelled', expectedState = 'stopped'
+    WHERE status IN ('queued', 'running')
+  `).run();
+  const batch8 = createBatchProduction(db, 'project-1', '批次八', () => new Date('2026-08-02T18:00:00.000Z'));
+  const snapshot8 = createBatchSnapshot(db, 'project-1', batch8, {
+    scriptSelections: [{ scriptId: scriptA, copyCount: 1 }],
+    assetSelections,
+    now: () => new Date('2026-08-02T18:05:00.000Z'),
+  });
+  for (const [versionId, versionNumber, createdAt] of [
+    ['ov-b8-a', 1, '2026-08-02T18:06:00.000Z'],
+    ['ov-b8-b', 2, '2026-08-02T18:06:30.000Z'],
+  ] as const) {
+    db.prepare(`
+      INSERT INTO batch_output_versions (id, planId, versionNumber, arrangementJson, createdAt)
+      VALUES (?, ?, ?, '{}', ?)
+    `).run(versionId, snapshot8.planIds[0]!, versionNumber, createdAt);
+  }
+  const excludeTaskA = createBatchTask(db, 'project-1', {
+    batchId: batch8,
+    workType: 'render',
+    targetKind: 'output_version',
+    targetId: 'ov-b8-a',
+    now: () => new Date('2026-08-02T18:07:00.000Z'),
+  });
+  const excludeTaskB = createBatchTask(db, 'project-1', {
+    batchId: batch8,
+    workType: 'render',
+    targetKind: 'output_version',
+    targetId: 'ov-b8-b',
+    now: () => new Date('2026-08-02T18:08:00.000Z'),
+  });
+  startBatchProduction(db, 'project-1', batch8, () => new Date('2026-08-02T18:09:00.000Z'));
+  const excludedClaim = claimNextTask(db, {
+    workerId: 'w-exclude',
+    now: () => new Date('2026-08-02T18:10:00.000Z'),
+    excludeTaskIds: [excludeTaskA],
+  });
+  assert.equal(excludedClaim?.task.id, excludeTaskB, '排除退避任务后必须领取下一条合格任务');
+  completeTaskAttempt(db, excludedClaim!.attempt.id, {
+    workerId: 'w-exclude',
+    status: 'succeeded',
+    now: () => new Date('2026-08-02T18:11:00.000Z'),
+  });
+  const onlyExcludedLeft = claimNextTask(db, {
+    workerId: 'w-exclude',
+    now: () => new Date('2026-08-02T18:12:00.000Z'),
+    excludeTaskIds: [excludeTaskA],
+  });
+  assert.equal(onlyExcludedLeft, null, '唯一剩余任务仍在退避时不得被领取');
+  const unexcludedClaim = claimNextTask(db, {
+    workerId: 'w-exclude',
+    now: () => new Date('2026-08-02T18:13:00.000Z'),
+  });
+  assert.equal(unexcludedClaim?.task.id, excludeTaskA, '不在退避名单时任务必须重新可领取');
+  completeTaskAttempt(db, unexcludedClaim!.attempt.id, {
+    workerId: 'w-exclude',
+    status: 'succeeded',
+    now: () => new Date('2026-08-02T18:14:00.000Z'),
+  });
+
+  // --- 场景 11b:超过 64 个任务同时退避时,排除名单不得被截断 ---
+  const insertManyTasks = db.prepare(`
+    INSERT INTO batch_tasks (
+      id, projectId, batchId, workType, targetKind, targetId, status, expectedState,
+      progressJson, attemptCount, createdAt, updatedAt
+    ) VALUES (?, 'project-1', ?, 'narration', 'script_snapshot', 'many-snapshot', 'queued', 'running', '{}', 0, ?, ?)
+  `);
+  const manyTaskIds: string[] = [];
+  for (let index = 0; index < 65; index += 1) {
+    const id = `b8-many-${String(index).padStart(3, '0')}`;
+    const at = new Date(Date.parse('2026-08-02T18:20:00.000Z') + index * 1_000).toISOString();
+    insertManyTasks.run(id, batch8, at, at);
+    manyTaskIds.push(id);
+  }
+  assert.equal(
+    claimNextTask(db, {
+      workerId: 'w-exclude-many',
+      now: () => new Date('2026-08-02T18:30:00.000Z'),
+      excludeTaskIds: manyTaskIds,
+    }),
+    null,
+    '全部 65 个任务都在退避名单时不得领取任何任务',
+  );
+  const lastUnexcluded = claimNextTask(db, {
+    workerId: 'w-exclude-many',
+    now: () => new Date('2026-08-02T18:30:00.000Z'),
+    excludeTaskIds: manyTaskIds.slice(0, 64),
+  });
+  assert.equal(lastUnexcluded?.task.id, manyTaskIds[64], '第 65 个未排除任务必须仍可领取');
+  completeTaskAttempt(db, lastUnexcluded!.attempt.id, {
+    workerId: 'w-exclude-many',
+    status: 'succeeded',
+    now: () => new Date('2026-08-02T18:31:00.000Z'),
+  });
+
   db.close();
   console.log('batch scheduler tests passed');
 } finally {
-  fs.rmSync(root, { recursive: true, force: true });
+  try {
+    fs.rmSync(root, { recursive: true, force: true });
+  } catch {
+    // 断言失败时 db 句柄可能尚未关闭(Windows EBUSY);保留原始断言错误。
+  }
 }

@@ -1,3 +1,4 @@
+import { releasedConcurrencySql } from './task-history.ts';
 import { randomUUID } from 'node:crypto';
 import { sha256Canonical } from '../canonical-json.ts';
 import type Database from 'better-sqlite3';
@@ -147,6 +148,7 @@ export interface UnifiedReconcileTaskView {
 
 export interface LegacyUnifiedReconcileItem {
   kind: 'orphan' | 'operation';
+  concurrencyReleased: boolean;
   attemptId: string | null;
   operationId: string | null;
   actorUserId: string;
@@ -590,15 +592,17 @@ export function listUnifiedReconcileTasks(
   const legacyItems: LegacyUnifiedReconcileItem[] = [];
   if (hasTable(db, 'execution_reconciliation_orphans')) {
     const orphans = db.prepare(`SELECT attemptId, operationId, actorId, state, evidenceJson,
+      ${releasedConcurrencySql('execution_reconciliation_orphans.permitId')} AS concurrencyReleased,
       createdAt, updatedAt FROM execution_reconciliation_orphans
       ORDER BY updatedAt DESC LIMIT 100`).all() as Array<{
-        attemptId: string; operationId: string; actorId: string; state: string;
+        attemptId: string; operationId: string; actorId: string; state: string; concurrencyReleased: number;
         evidenceJson: string; createdAt: string; updatedAt: string;
       }>;
     for (const orphan of orphans) {
       const evidence = parseObject(orphan.evidenceJson);
       legacyItems.push({
         kind: 'orphan',
+        concurrencyReleased: Boolean(orphan.concurrencyReleased),
         attemptId: orphan.attemptId,
         operationId: orphan.operationId,
         actorUserId: orphan.actorId,
@@ -614,19 +618,22 @@ export function listUnifiedReconcileTasks(
   if (hasTable(db, 'execution_operations')) {
     const legacyUnknown = db.prepare(`
       SELECT o.id, o.actorId, o.module, o.taskId, o.status, o.updatedAt,
-        a.id AS attemptId, a.remoteId, a.errorCode
+        a.id AS attemptId, a.remoteId, a.errorCode,
+        COALESCE(a.updatedAt, o.updatedAt) AS evidenceAt,
+        ${releasedConcurrencySql('a.permitId')} AS concurrencyReleased
       FROM execution_operations o
       LEFT JOIN execution_attempts a ON a.operationId = o.id
       WHERE o.mediaTaskId IS NULL
         AND (o.status = 'unknown' OR a.submissionState = 'maybe_sent')
-      ORDER BY o.updatedAt DESC LIMIT 100
+      ORDER BY evidenceAt DESC, o.id DESC LIMIT 100
     `).all() as Array<{
       id: string; actorId: string; module: string; taskId: string; status: string;
-      updatedAt: string; attemptId: string | null; remoteId: string | null; errorCode: string | null;
+      updatedAt: string; evidenceAt: string; concurrencyReleased: number; attemptId: string | null; remoteId: string | null; errorCode: string | null;
     }>;
     for (const legacy of legacyUnknown) {
       legacyItems.push({
         kind: 'operation',
+        concurrencyReleased: Boolean(legacy.concurrencyReleased),
         attemptId: legacy.attemptId,
         operationId: legacy.id,
         actorUserId: legacy.actorId,
@@ -635,7 +642,7 @@ export function listUnifiedReconcileTasks(
         status: legacy.status,
         remoteId: legacy.remoteId,
         errorCode: legacy.errorCode,
-        createdAt: legacy.updatedAt,
+        createdAt: legacy.evidenceAt,
       });
     }
   }
