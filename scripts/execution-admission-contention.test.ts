@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import { seedCompletedHistory } from './execution-admission-metrics.ts';
 
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-execution-contention-'));
 const previousRoot = process.env.CREATIVE_STUDIO_DATA_ROOT;
@@ -17,7 +18,9 @@ const { updateActorPolicy, upsertExecutionPool } = await import('../lib/media-co
 const workerPath = fileURLToPath(new URL('./execution-admission.worker.ts', import.meta.url));
 const databases = new Set<Database.Database>();
 
-async function scenario(name: string, options: { monthlyLimit: number; quote: number; poolCapacity: number; expectedReason: string }) {
+async function scenario(name: string, options: {
+  monthlyLimit: number; quote: number; poolCapacity: number; expectedReason: string; historyRows?: number;
+}) {
   const root = path.join(fixtureRoot, name);
   fs.mkdirSync(path.join(root, 'data'), { recursive: true });
   const db = new Database(path.join(root, 'data', 'workbench.db'));
@@ -37,6 +40,7 @@ async function scenario(name: string, options: { monthlyLimit: number; quote: nu
   updateActorPolicy(db, {
     actorId: 'user-b', monthlyLimitMinor: null, personalConcurrency: 2, paused: false, expectedVersion: 0,
   });
+  seedCompletedHistory(db, options.historyRows ?? 0);
   const runtime = createExecutionFacade({
     db, deploymentId: 'deployment-contention', journal: createExecutionJournal({ deploymentId: 'deployment-contention' }),
     actorAllowed: () => true, scopeAllowed: () => true, maintenance: () => false,
@@ -91,11 +95,16 @@ async function scenario(name: string, options: { monthlyLimit: number; quote: nu
   fs.writeFileSync(path.join(root, 'go'), 'go', 'utf8');
   await Promise.all(workers.map(({ exited }) => exited));
   const results = workers.map(({ getStdout }) => JSON.parse(getStdout()) as {
-    kind: string; reasons: string[]; grantedTaskId: string | null;
+    kind: string; reasons: string[]; grantedTaskId: string | null; snapshotBytes: number; snapshotRows: number;
   });
   assert.equal(results.filter(({ kind }) => kind === 'admitted').length, 1);
   const deferred = results.find(({ kind }) => kind === 'deferred');
   assert.ok(deferred?.reasons.includes(options.expectedReason), JSON.stringify(results));
+  assert.equal(deferred?.snapshotBytes, 0,
+    `${options.historyRows ?? 0} 条完成历史不得参与落败竞逐者的准入读取`);
+  assert.equal(deferred?.snapshotRows, 0);
+  assert.ok(results.reduce((total, result) => total + result.snapshotBytes, 0) < 4096,
+    `竞逐准入只允许读取被授予操作自己的输入快照：${JSON.stringify(results)}`);
   assert.equal(db.prepare('SELECT COUNT(*) FROM execution_attempts').pluck().get(), 1);
   assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE kind = 'cost' AND state = 'held'").pluck().get(), 1);
   assert.equal(db.prepare("SELECT COUNT(*) FROM execution_reservations WHERE kind = 'concurrency' AND poolKey = 'shared' AND state = 'held'").pluck().get(), 1);
@@ -103,9 +112,15 @@ async function scenario(name: string, options: { monthlyLimit: number; quote: nu
 }
 
 try {
-  const budget = await scenario('budget', { monthlyLimit: 100, quote: 80, poolCapacity: 2, expectedReason: 'monthly_budget' });
+  const budget = await scenario('budget', {
+    monthlyLimit: 100, quote: 80, poolCapacity: 2, expectedReason: 'monthly_budget', historyRows: 2000,
+  });
   assert.equal(budget.find(({ kind }) => kind === 'admitted')?.grantedTaskId, 'budget-1', '同用户 FIFO 队首先获得唯一可支付名额');
-  await scenario('pool', { monthlyLimit: 100, quote: 0, poolCapacity: 1, expectedReason: 'pool_capacity' });
+  for (const historyRows of [0, 500, 2000]) {
+    await scenario(`pool-${historyRows}`, {
+      monthlyLimit: 100, quote: 0, poolCapacity: 1, expectedReason: 'pool_capacity', historyRows,
+    });
+  }
   console.log('execution admission contention tests passed');
 } finally {
   for (const db of databases) db.close();

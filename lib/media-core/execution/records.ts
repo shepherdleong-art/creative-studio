@@ -46,6 +46,39 @@ export function mapOperation(row: OperationRow): OperationRecord {
   };
 }
 
+/**
+ * 准入决策只需要策略字段，不搬运完整输入/结果快照。
+ * 完整输入只在真正授予后按 ID 读取整行时解析。
+ */
+export interface OperationDecisionRow {
+  id: string; actorId: string; scopeType: string; scopeId: string;
+  providerSnapshotJson: string; requiredPoolsJson: string; quoteJson: string;
+  status: string; readySeq: number; createdAt: string;
+  mediaTaskId: string | null; channelKey: string | null;
+}
+
+export interface OperationDecision {
+  id: string; actorId: string; scopeType: string; scopeId: string;
+  providerSnapshot: unknown; requiredPools: string[]; quote: OperationRecord['quote'];
+  status: string; readySeq: number; createdAt: string;
+  mediaTaskId: string | null; channelKey: string | null;
+}
+
+export const OPERATION_DECISION_COLUMNS = [
+  'id', 'actorId', 'scopeType', 'scopeId', 'providerSnapshotJson', 'requiredPoolsJson', 'quoteJson',
+  'status', 'readySeq', 'createdAt', 'mediaTaskId', 'channelKey',
+].join(', ');
+
+export function mapOperationDecision(row: OperationDecisionRow): OperationDecision {
+  const { providerSnapshotJson, requiredPoolsJson, quoteJson, ...decision } = row;
+  return {
+    ...decision,
+    providerSnapshot: JSON.parse(providerSnapshotJson) as unknown,
+    requiredPools: JSON.parse(requiredPoolsJson) as string[],
+    quote: JSON.parse(quoteJson) as OperationRecord['quote'],
+  };
+}
+
 export function readOperation(db: Database.Database, id: string): OperationRecord {
   const row = db.prepare('SELECT * FROM execution_operations WHERE id = ?').get(id) as OperationRow | undefined;
   if (!row) throw new Error('执行操作不存在。');

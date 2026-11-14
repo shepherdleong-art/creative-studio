@@ -1,5 +1,4 @@
 import type Database from 'better-sqlite3';
-import type { OperationRecord } from '../execution/context.ts';
 import { readUnifiedChannelHealth } from './health.ts';
 
 /**
@@ -122,13 +121,19 @@ function channelIsFutureCandidate(
   return !health || health.state === 'healthy';
 }
 
+/** 决策只需要通道身份；准入可传入不含完整输入的轻量投影。 */
+export interface MediaAdmissionPrioritySource {
+  mediaTaskId?: string | null;
+  channelKey?: string | null;
+}
+
 /**
  * Read-only decision used by admission. It only looks at frozen task/channel
  * rows and current provider/health state; it never reserves capacity.
  */
 export function readMediaAdmissionPriority(
   db: Database.Database,
-  operation: OperationRecord,
+  operation: MediaAdmissionPrioritySource,
   now: Date = new Date(),
 ): MediaAdmissionPriority {
   const currentChannelKey = operation.channelKey?.trim() || null;
