@@ -28,8 +28,10 @@ const {
 const {
   registerReadyTeamFile,
   resolveTeamFile,
+  teamFileEtag,
   teamFileResponse,
 } = await import('../lib/team-service/files/index.ts');
+const { fileResponse } = await import('../lib/media-core/file-response.ts');
 const { publishTeamResource } = await import('../lib/team-service/files/publication.ts');
 const { runWithAccessContext } = await import('../lib/media-core/access-context.ts');
 const { buildGenericZipStream } = await import('../lib/zip-download.ts');
@@ -112,6 +114,61 @@ try {
     headers: { 'If-None-Match': etag },
   }), db, userA, { storageRoot, fileId: fileA.id });
   assert.equal(notModified.status, 304);
+
+  // 团队授权 + onClose:零消费只预读固定上界,取消关闭源流并恰好释放一次。
+  // teamFileResponse 不暴露 onClose,用同一 fileResponse 契约与 teamFileEtag 验证共享路径。
+  const bigBytesPath = path.join(storageRoot, 'inputs', 'big.bin');
+  const bigChunk = Buffer.alloc(1024 * 1024, 7);
+  const bigFd = fs.openSync(bigBytesPath, 'w');
+  for (let index = 0; index < 64; index += 1) fs.writeSync(bigFd, bigChunk);
+  fs.closeSync(bigFd);
+  const bigFile = registerReadyTeamFile(db, {
+    storageRoot,
+    absolutePath: bigBytesPath,
+    mimeType: 'video/mp4',
+    ownerUserId: userA.userId,
+    references: [referenceA],
+    validateReference: (reference) => { requireResourceAccess(db, userA, reference.resourceType, reference.resourceId, 'write'); },
+  });
+  const capturedStreams: fs.ReadStream[] = [];
+  const originalCreateReadStream = fs.createReadStream;
+  fs.createReadStream = function patchedCreateReadStream(...args: unknown[]) {
+    const stream = (originalCreateReadStream as (...rest: unknown[]) => fs.ReadStream).apply(fs, args);
+    capturedStreams.push(stream);
+    return stream;
+  } as typeof fs.createReadStream;
+  let streamedResponse: Response;
+  let onCloseCount = 0;
+  try {
+    streamedResponse = fileResponse(
+      new Request('https://studio.example.test/api/team/files/big', { headers: { Range: 'bytes=0-67108863' } }),
+      bigBytesPath,
+      'video/mp4',
+      {
+        cacheControl: 'private, no-store',
+        etag: teamFileEtag(bigFile),
+        grant: { fileId: bigFile.id, seriesId: bigFile.seriesId, version: bigFile.version, sha256: bigFile.sha256 },
+        onClose: () => { onCloseCount += 1; },
+      },
+    );
+  } finally {
+    fs.createReadStream = originalCreateReadStream;
+  }
+  assert.equal(streamedResponse.status, 206);
+  assert.equal(streamedResponse.headers.get('Cache-Control'), 'private, no-store');
+  assert.equal(streamedResponse.headers.get('Content-Range'), `bytes 0-67108863/${64 * 1024 * 1024}`);
+  const bigSource = capturedStreams[0];
+  assert.ok(bigSource, '团队授权响应必须创建源文件流');
+  await new Promise((resolve) => { setTimeout(resolve, 250); });
+  const bytesReadBeforeCancel = bigSource.bytesRead;
+  assert.ok(bytesReadBeforeCancel <= 512 * 1024, `零消费预读 ${bytesReadBeforeCancel} 字节超出固定上界`);
+  assert.equal(onCloseCount, 0, '未消费时不得提前释放租约');
+  await streamedResponse.body!.cancel('client aborted');
+  await new Promise((resolve) => { setTimeout(resolve, 50); });
+  assert.equal(onCloseCount, 1, '取消后 onClose 必须恰好一次');
+  assert.equal(bigSource.destroyed, true, '取消必须销毁源文件流');
+  assert.equal(bigSource.closed, true, '取消必须关闭源文件流');
+  assert.equal(bigSource.bytesRead, bytesReadBeforeCancel, '取消后不得继续读取源文件');
 
   fs.writeFileSync(path.join(storageRoot, 'inputs', 'a.derived.txt'), Buffer.from('derivative'));
   const derived = registerReadyTeamFile(db, {
