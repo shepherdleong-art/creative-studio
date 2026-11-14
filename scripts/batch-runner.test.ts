@@ -15,6 +15,7 @@ import {
   resetSchedulerSingletonForTests,
   runPendingOnce,
   startBatchScheduler,
+  wakeBatchScheduler,
 } from '../lib/batch-production/runner.ts';
 import type { BatchTaskExecutor } from '../lib/batch-production/executors.ts';
 
@@ -157,6 +158,56 @@ function setupBatch(db: Database.Database, name: string, n: number): string {
   }
   startBatchProduction(db, 'project-1', batchId, () => new Date('2026-08-02T09:20:00.000Z'));
   return batchId;
+}
+
+/** 只建立开跑批次与脚本快照,不预建 render 任务(按需入队场景使用)。 */
+function setupBatchShell(db: Database.Database, name: string): {
+  batchId: string;
+  snapshotId: string;
+  assetId: string;
+} {
+  const script = createProjectScript(db, 'project-1', {
+    sourceKind: 'script_draft',
+    sourceId: `draft-shell-${name}`,
+    title: '口播A',
+    bodyText: '正文A',
+    sourceVersion: '2',
+    now: () => new Date('2026-08-02T09:00:00.000Z'),
+  });
+  const assetId = createAsset(db, {
+    projectId: 'project-1',
+    sourceKind: 'module4',
+    locationJson: { kind: 'module4', videoJobId: 'v1', shotSetId: 'ss-1', relativePath: 'videos/a.mp4' },
+    contentFingerprint: `sha256:shell-${name}`,
+    mediaKind: 'video',
+    now: () => new Date('2026-08-02T09:03:00.000Z'),
+  });
+  const analysisId = createAnalysisVersion(db, {
+    assetId,
+    analyzerVersion: 'v0',
+    providerId: 'p',
+    model: 'm',
+    now: () => new Date('2026-08-02T09:04:00.000Z'),
+  });
+  const batchId = createBatchProduction(db, 'project-1', name, () => new Date('2026-08-02T09:05:00.000Z'));
+  const { planIds } = createBatchSnapshot(db, 'project-1', batchId, {
+    scriptSelections: [{ scriptId: script, copyCount: 1 }],
+    assetSelections: [{ assetId, analysisId }],
+    now: () => new Date('2026-08-02T09:10:00.000Z'),
+  });
+  startBatchProduction(db, 'project-1', batchId, () => new Date('2026-08-02T09:20:00.000Z'));
+  const plan = db.prepare(`
+    SELECT scriptSnapshotId FROM batch_output_plans WHERE id = ?
+  `).get(planIds[0]!) as { scriptSnapshotId: string };
+  return { batchId, snapshotId: plan.scriptSnapshotId, assetId };
+}
+
+/** 隔离场景:把此前场景遗留的排队/运行任务收成终态。 */
+function cancelOutstandingTasks(db: Database.Database): void {
+  db.prepare(`
+    UPDATE batch_tasks SET status = 'cancelled', expectedState = 'stopped'
+    WHERE status IN ('queued', 'running')
+  `).run();
 }
 
 try {
@@ -825,9 +876,520 @@ try {
   assert.notEqual(afterShutdownRestart, shutdownController, '关闭完成后允许建立新的单例调度器');
   await afterShutdownRestart.stop();
 
+  // --- 场景 9:受控长分析挂起期间,空闲通用执行位必须补位新入队任务 ---
+  // 旧实现:runPendingOnce 用 Promise.all 等整轮结束,分析占住一轮时空闲的
+  // 通用位不会再次领取,新入队的通用任务要等分析释放后才开始。
+  db.prepare(`
+    UPDATE batch_tasks SET status = 'cancelled', expectedState = 'stopped'
+    WHERE status IN ('queued', 'running')
+  `).run();
+  await resetSchedulerSingletonForTests();
+  const refill = setupBatchShell(db, 'batch-refill-lanes');
+  const refillAnalysisTask = createBatchTask(db, 'project-1', {
+    batchId: refill.batchId,
+    workType: 'asset_prepare',
+    targetKind: 'asset',
+    targetId: refill.assetId,
+    requestKey: `asset_prepare:${refill.batchId}:${refill.assetId}`,
+    now: () => new Date('2026-08-02T16:20:00.000Z'),
+  });
+  let refillAnalysisStarted = false;
+  let refillAnalysisReleased = false;
+  let releaseRefillAnalysis!: () => void;
+  let refillGeneralStartedAt: number | null = null;
+  let refillGeneralFinished = false;
+  const refillExecutors: BatchTaskExecutor[] = [
+    {
+      workTypes: ['asset_prepare'],
+      execute({ signal }) {
+        refillAnalysisStarted = true;
+        return new Promise((resolve, reject) => {
+          const onAbort = (): void => reject(new Error('分析已中止'));
+          signal.addEventListener('abort', onAbort, { once: true });
+          releaseRefillAnalysis = () => {
+            signal.removeEventListener('abort', onAbort);
+            refillAnalysisReleased = true;
+            resolve({ resultJson: {} });
+          };
+        });
+      },
+    },
+    {
+      workTypes: ['semantic_score'],
+      async execute() {
+        refillGeneralStartedAt = Date.now();
+        return { resultJson: {} };
+      },
+    },
+  ];
+  const refillController = startBatchScheduler({
+    db,
+    workerId: 'scheduler-refill-lanes',
+    executors: refillExecutors,
+    concurrency: 2,
+    analysisConcurrency: 1,
+    intervalMs: 20,
+    idlePollMs: 20,
+    progressThrottleMs: 0,
+  });
+  await waitFor(() => refillAnalysisStarted, 3000);
+  const refillEnqueuedAt = Date.now();
+  const refillGeneralTask = createBatchTask(db, 'project-1', {
+    batchId: refill.batchId,
+    workType: 'semantic_score',
+    targetKind: 'script_snapshot',
+    targetId: refill.snapshotId,
+    requestKey: `semantic_score:${refill.batchId}:${refill.snapshotId}`,
+    now: () => new Date('2026-08-02T16:21:00.000Z'),
+  });
+  // 只依靠有界空闲轮询(不显式唤醒)也必须补位;超时只作看门狗。
+  await waitFor(() => refillGeneralStartedAt !== null, 3000);
+  const refillBeginLatencyMs = refillGeneralStartedAt! - refillEnqueuedAt;
+  assert.equal(
+    refillAnalysisReleased,
+    false,
+    '分析仍在挂起时,新入队的通用任务就必须在空闲通用位上开始',
+  );
+  assert.equal(
+    (db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(refillAnalysisTask) as { status: string }).status,
+    'running',
+    '补位发生时分析任务必须仍在运行',
+  );
+  refillGeneralFinished = true;
+  releaseRefillAnalysis();
+  await waitFor(() => (
+    db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(refillGeneralTask) as { status: string }
+  ).status === 'succeeded', 3000);
+  await waitFor(() => (
+    db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(refillAnalysisTask) as { status: string }
+  ).status === 'succeeded', 3000);
+  await refillController.stop();
+  assert.equal(refillAnalysisReleased, true);
+  assert.ok(refillBeginLatencyMs < 1000, `补位延迟应远小于分析整轮耗时(实际 ${refillBeginLatencyMs}ms)`);
+  void refillGeneralFinished;
+
+  // --- 场景 9b:显式唤醒接缝——空闲位在长时间轮询间隔内也能被入队唤醒 ---
+  await resetSchedulerSingletonForTests();
+  const wakeBatch = setupBatchShell(db, 'batch-wake-lanes');
+  const wakeAnalysisTask = createBatchTask(db, 'project-1', {
+    batchId: wakeBatch.batchId,
+    workType: 'asset_prepare',
+    targetKind: 'asset',
+    targetId: wakeBatch.assetId,
+    requestKey: `asset_prepare:${wakeBatch.batchId}:${wakeBatch.assetId}`,
+    now: () => new Date('2026-08-02T16:30:00.000Z'),
+  });
+  let wakeAnalysisStarted = false;
+  let wakeAnalysisRelease!: () => void;
+  let wakeGeneralStartedAt: number | null = null;
+  const wakeController = startBatchScheduler({
+    db,
+    workerId: 'scheduler-wake-lanes',
+    executors: [
+      {
+        workTypes: ['asset_prepare'],
+        execute({ signal }) {
+          wakeAnalysisStarted = true;
+          return new Promise((resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('分析已中止')), { once: true });
+            wakeAnalysisRelease = () => resolve({ resultJson: {} });
+          });
+        },
+      },
+      {
+        workTypes: ['semantic_score'],
+        async execute() {
+          wakeGeneralStartedAt = Date.now();
+          return { resultJson: {} };
+        },
+      },
+    ],
+    concurrency: 2,
+    analysisConcurrency: 1,
+    intervalMs: 5_000,
+    idlePollMs: 5_000,
+    progressThrottleMs: 0,
+  });
+  await waitFor(() => wakeAnalysisStarted, 3000);
+  const wakeEnqueuedAt = Date.now();
+  createBatchTask(db, 'project-1', {
+    batchId: wakeBatch.batchId,
+    workType: 'semantic_score',
+    targetKind: 'script_snapshot',
+    targetId: wakeBatch.snapshotId,
+    requestKey: `semantic_score:${wakeBatch.batchId}:${wakeBatch.snapshotId}`,
+    now: () => new Date('2026-08-02T16:31:00.000Z'),
+  });
+  assert.equal(wakeBatchScheduler(), true, '已启动的调度器必须能被入队侧唤醒');
+  await waitFor(() => wakeGeneralStartedAt !== null, 3000);
+  assert.ok(
+    wakeGeneralStartedAt! - wakeEnqueuedAt < 1000,
+    '唤醒必须立即生效,而不是等 5 秒空闲轮询',
+  );
+  wakeAnalysisRelease();
+  await wakeController.stop();
+  void wakeAnalysisTask;
+
+  // --- 场景 10:反向与同 lane——通用长任务挂起时,空闲分析位照常补位 ---
+  await resetSchedulerSingletonForTests();
+  cancelOutstandingTasks(db);
+  const laneBatch = setupBatchShell(db, 'batch-lanes-reverse');
+  const laneExtraAsset = createAsset(db, {
+    projectId: 'project-1',
+    sourceKind: 'module4',
+    locationJson: { kind: 'module4', videoJobId: 'v2', shotSetId: 'ss-1', relativePath: 'videos/b.mp4' },
+    contentFingerprint: 'sha256:lanes-extra',
+    mediaKind: 'video',
+    now: () => new Date('2026-08-02T17:00:00.000Z'),
+  });
+  const laneGeneralHang = createBatchTask(db, 'project-1', {
+    batchId: laneBatch.batchId,
+    workType: 'semantic_score',
+    targetKind: 'script_snapshot',
+    targetId: laneBatch.snapshotId,
+    requestKey: `semantic_score:${laneBatch.batchId}:hang`,
+    now: () => new Date('2026-08-02T17:01:00.000Z'),
+  });
+  const laneAnalysisTasks = [
+    createBatchTask(db, 'project-1', {
+      batchId: laneBatch.batchId,
+      workType: 'asset_prepare',
+      targetKind: 'asset',
+      targetId: laneBatch.assetId,
+      requestKey: `asset_prepare:${laneBatch.batchId}:a`,
+      now: () => new Date('2026-08-02T17:02:00.000Z'),
+    }),
+    createBatchTask(db, 'project-1', {
+      batchId: laneBatch.batchId,
+      workType: 'asset_prepare',
+      targetKind: 'asset',
+      targetId: laneExtraAsset,
+      requestKey: `asset_prepare:${laneBatch.batchId}:b`,
+      now: () => new Date('2026-08-02T17:03:00.000Z'),
+    }),
+  ];
+  let laneGeneralRunning = false;
+  const laneGeneralActive = { current: 0, peak: 0 };
+  const laneAnalysisActive = { current: 0, peak: 0 };
+  const laneAnalysisStarted: string[] = [];
+  const laneReleases: Array<() => void> = [];
+  const laneExecutors: BatchTaskExecutor[] = [
+    {
+      workTypes: ['semantic_score'],
+      execute({ signal }) {
+        laneGeneralRunning = true;
+        laneGeneralActive.current += 1;
+        laneGeneralActive.peak = Math.max(laneGeneralActive.peak, laneGeneralActive.current);
+        return new Promise((resolve, reject) => {
+          let settled = false;
+          const finish = (): void => {
+            if (settled) return;
+            settled = true;
+            laneGeneralActive.current -= 1;
+            resolve({ resultJson: {} });
+          };
+          signal.addEventListener('abort', () => {
+            if (settled) return;
+            settled = true;
+            laneGeneralActive.current -= 1;
+            reject(new Error('通用任务已中止'));
+          }, { once: true });
+          laneReleases.push(finish);
+        });
+      },
+    },
+    {
+      workTypes: ['asset_prepare'],
+      execute({ signal, claim }) {
+        laneAnalysisStarted.push(claim.task.id);
+        laneAnalysisActive.current += 1;
+        laneAnalysisActive.peak = Math.max(laneAnalysisActive.peak, laneAnalysisActive.current);
+        return new Promise((resolve, reject) => {
+          let settled = false;
+          const finish = (): void => {
+            if (settled) return;
+            settled = true;
+            laneAnalysisActive.current -= 1;
+            resolve({ resultJson: {} });
+          };
+          signal.addEventListener('abort', () => {
+            if (settled) return;
+            settled = true;
+            laneAnalysisActive.current -= 1;
+            reject(new Error('分析任务已中止'));
+          }, { once: true });
+          laneReleases.push(finish);
+        });
+      },
+    },
+  ];
+  const laneController = startBatchScheduler({
+    db,
+    workerId: 'scheduler-lanes-reverse',
+    executors: laneExecutors,
+    concurrency: 2,
+    analysisConcurrency: 2,
+    intervalMs: 20,
+    idlePollMs: 20,
+    progressThrottleMs: 0,
+  });
+  await waitFor(() => laneGeneralRunning, 3000);
+  await waitFor(() => laneAnalysisStarted.length === 2, 3000);
+  assert.deepEqual(
+    [...laneAnalysisStarted].sort(),
+    [...laneAnalysisTasks].sort(),
+    '通用长任务挂起时,新入队的两个分析任务都必须用空闲分析位开始',
+  );
+  assert.equal(laneGeneralActive.current, 1, '通用位不得领取分析任务');
+  assert.ok(laneAnalysisActive.peak <= 2, '分析并发不得超过 analysisConcurrency');
+  // 另一个空闲通用位同样能补位新入队的通用任务。
+  const laneSecondGeneral = createBatchTask(db, 'project-1', {
+    batchId: laneBatch.batchId,
+    workType: 'semantic_score',
+    targetKind: 'script_snapshot',
+    targetId: laneBatch.snapshotId,
+    requestKey: `semantic_score:${laneBatch.batchId}:second`,
+    now: () => new Date('2026-08-02T17:04:00.000Z'),
+  });
+  await waitFor(() => laneGeneralActive.current === 2, 3000);
+  assert.ok(laneGeneralActive.peak <= 2, '连续调度不得突破通用并发上限');
+  for (const finish of laneReleases.splice(0)) finish();
+  await waitFor(() => (
+    db.prepare(`
+      SELECT COUNT(*) AS n FROM batch_tasks
+      WHERE id IN (?, ?, ?) AND status = 'succeeded'
+    `).get(laneGeneralHang, laneSecondGeneral, laneAnalysisTasks[0]!) as { n: number }
+  ).n === 3, 3000);
+  await laneController.stop();
+
+  // --- 场景 11:延期任务按原因退避,让同 lane 的合格任务先推进 ---
+  await resetSchedulerSingletonForTests();
+  cancelOutstandingTasks(db);
+  const deferBatch = setupBatchShell(db, 'batch-defer-backoff');
+  const deferTaskA = createBatchTask(db, 'project-1', {
+    batchId: deferBatch.batchId,
+    workType: 'semantic_score',
+    targetKind: 'script_snapshot',
+    targetId: deferBatch.snapshotId,
+    requestKey: `semantic_score:${deferBatch.batchId}:defer-a`,
+    now: () => new Date('2026-08-02T17:10:00.000Z'),
+  });
+  const deferTaskB = createBatchTask(db, 'project-1', {
+    batchId: deferBatch.batchId,
+    workType: 'semantic_score',
+    targetKind: 'script_snapshot',
+    targetId: deferBatch.snapshotId,
+    requestKey: `semantic_score:${deferBatch.batchId}:defer-b`,
+    now: () => new Date('2026-08-02T17:11:00.000Z'),
+  });
+  const deferOrder: string[] = [];
+  const deferredAttemptsAt: number[] = [];
+  const deferController = startBatchScheduler({
+    db,
+    workerId: 'scheduler-defer-backoff',
+    executors: [{
+      workTypes: ['semantic_score'],
+      async execute({ claim }) {
+        if (claim.task.id === deferTaskA) {
+          deferOrder.push('A');
+          deferredAttemptsAt.push(Date.now());
+          throw Object.assign(new Error('等待统一执行名额'), {
+            code: 'llm_execution_deferred',
+            operationId: 'operation-defer',
+            waitReason: 'pool_capacity',
+          });
+        }
+        deferOrder.push('B');
+        return { resultJson: {} };
+      },
+    }],
+    concurrency: 1,
+    intervalMs: 20,
+    idlePollMs: 20,
+    deferBackoffMs: 40,
+    progressThrottleMs: 0,
+  });
+  await waitFor(() => deferredAttemptsAt.length >= 2, 4000);
+  assert.deepEqual(
+    deferOrder,
+    ['A', 'B', 'A'],
+    '延期任务退避期间,同 lane 的合格任务必须先执行,而不是被同一任务反复抢占',
+  );
+  const deferredGapMs = deferredAttemptsAt[1]! - deferredAttemptsAt[0]!;
+  assert.ok(deferredGapMs >= 200, `准入延期必须按原因退避(实际 ${deferredGapMs}ms)`);
+  assert.equal(
+    (db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(deferTaskB) as { status: string }).status,
+    'succeeded',
+  );
+  await deferController.stop();
+
+  // --- 场景 12:连续调度下的暂停/继续,暂停期间不得空转领取 ---
+  await resetSchedulerSingletonForTests();
+  cancelOutstandingTasks(db);
+  const pauseShell = setupBatchShell(db, 'batch-continuous-pause');
+  const continuousPauseTask = createBatchTask(db, 'project-1', {
+    batchId: pauseShell.batchId,
+    workType: 'semantic_score',
+    targetKind: 'script_snapshot',
+    targetId: pauseShell.snapshotId,
+    requestKey: `semantic_score:${pauseShell.batchId}:pause`,
+    now: () => new Date('2026-08-02T17:20:00.000Z'),
+  });
+  let pauseExecutions = 0;
+  let pauseAborts = 0;
+  const pauseController = startBatchScheduler({
+    db,
+    workerId: 'scheduler-continuous-pause',
+    executors: [{
+      workTypes: ['semantic_score'],
+      execute({ signal }) {
+        pauseExecutions += 1;
+        if (pauseExecutions >= 2) return Promise.resolve({ resultJson: {} });
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            pauseAborts += 1;
+            reject(new Error('任务已中止'));
+          }, { once: true });
+        });
+      },
+    }],
+    concurrency: 1,
+    intervalMs: 20,
+    idlePollMs: 20,
+    heartbeatMs: 10,
+    leaseDurationMs: 1_000,
+    progressThrottleMs: 0,
+  });
+  await waitFor(() => pauseExecutions === 1, 3000);
+  pauseBatch(db, 'project-1', pauseShell.batchId, () => new Date('2026-08-02T17:21:00.000Z'));
+  await waitFor(() => pauseAborts > 0, 3000);
+  await waitFor(() => {
+    const row = db.prepare(`SELECT status, expectedState FROM batch_tasks WHERE id = ?`)
+      .get(continuousPauseTask) as { status: string; expectedState: string };
+    return row.status === 'queued' && row.expectedState === 'paused';
+  }, 3000);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(pauseExecutions, 1, '暂停期间空转调度不得继续领取');
+  resumeBatch(db, 'project-1', pauseShell.batchId, () => new Date('2026-08-02T17:22:00.000Z'));
+  await waitFor(() => pauseExecutions >= 2, 3000);
+  await waitFor(() => (
+    db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(continuousPauseTask) as { status: string }
+  ).status === 'succeeded', 3000);
+  await pauseController.stop();
+
+  // --- 场景 13:连续调度持续补位,但任一时刻都不超过通用并发上限 ---
+  await resetSchedulerSingletonForTests();
+  cancelOutstandingTasks(db);
+  const capShell = setupBatchShell(db, 'batch-continuous-cap');
+  const capTasks = Array.from({ length: 4 }, (_, index) => createBatchTask(db, 'project-1', {
+    batchId: capShell.batchId,
+    workType: 'semantic_score',
+    targetKind: 'script_snapshot',
+    targetId: capShell.snapshotId,
+    requestKey: `semantic_score:${capShell.batchId}:cap-${index}`,
+    now: () => new Date(`2026-08-02T17:30:0${index}.000Z`),
+  }));
+  const capActive = { current: 0, peak: 0, started: 0 };
+  const capReleases: Array<() => void> = [];
+  const capController = startBatchScheduler({
+    db,
+    workerId: 'scheduler-continuous-cap',
+    executors: [{
+      workTypes: ['semantic_score'],
+      execute({ signal }) {
+        capActive.current += 1;
+        capActive.started += 1;
+        capActive.peak = Math.max(capActive.peak, capActive.current);
+        return new Promise((resolve, reject) => {
+          let settled = false;
+          const finish = (): void => {
+            if (settled) return;
+            settled = true;
+            capActive.current -= 1;
+            resolve({ resultJson: {} });
+          };
+          signal.addEventListener('abort', () => {
+            if (settled) return;
+            settled = true;
+            capActive.current -= 1;
+            reject(new Error('任务已中止'));
+          }, { once: true });
+          capReleases.push(finish);
+        });
+      },
+    }],
+    concurrency: 2,
+    intervalMs: 20,
+    idlePollMs: 20,
+    progressThrottleMs: 0,
+  });
+  await waitFor(() => capActive.started === 2, 3000);
+  for (const finish of capReleases.splice(0, 2)) finish();
+  await waitFor(() => capActive.started === 4, 3000);
+  assert.equal(capActive.peak, 2, '连续补位不得突破 concurrency=2');
+  for (const finish of capReleases.splice(0)) finish();
+  await waitFor(() => (
+    db.prepare(`SELECT COUNT(*) AS n FROM batch_tasks WHERE id IN (?, ?, ?, ?) AND status = 'succeeded'`)
+      .get(...capTasks) as { n: number }
+  ).n === 4, 3000);
+  await capController.stop();
+
+  // --- 场景 14:连续调度丢失租约后按退避重试,不得空转或伪造成功 ---
+  await resetSchedulerSingletonForTests();
+  cancelOutstandingTasks(db);
+  const leaseShell = setupBatchShell(db, 'batch-continuous-lease');
+  const continuousLeaseTask = createBatchTask(db, 'project-1', {
+    batchId: leaseShell.batchId,
+    workType: 'semantic_score',
+    targetKind: 'script_snapshot',
+    targetId: leaseShell.snapshotId,
+    requestKey: `semantic_score:${leaseShell.batchId}:lease`,
+    now: () => new Date('2026-08-02T17:40:00.000Z'),
+  });
+  const leaseExecutionTimes: number[] = [];
+  const leaseController = startBatchScheduler({
+    db,
+    workerId: 'scheduler-continuous-lease',
+    executors: [{
+      workTypes: ['semantic_score'],
+      execute({ signal }) {
+        leaseExecutionTimes.push(Date.now());
+        // 第一次执行故意拖到租约失效之后才结束;第二次直接成功。
+        if (leaseExecutionTimes.length >= 2) return Promise.resolve({ resultJson: {} });
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('租约已失效')), { once: true });
+        });
+      },
+    }],
+    concurrency: 1,
+    intervalMs: 20,
+    idlePollMs: 20,
+    // 心跳晚于租约到期:第一次执行保持挂起,由调度器检测到租约丢失;
+    // 租约本身留足成功落账时间,避免把提交开销误判成丢失。
+    heartbeatMs: 1_500,
+    leaseDurationMs: 1_000,
+    progressThrottleMs: 0,
+  });
+  await waitFor(() => leaseExecutionTimes.length >= 2, 6000);
+  assert.ok(
+    leaseExecutionTimes[1]! - leaseExecutionTimes[0]! >= 80,
+    '租约丢失后的重试必须退避,不能空转重领',
+  );
+  await waitFor(() => (
+    db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(continuousLeaseTask) as { status: string }
+  ).status === 'succeeded', 3000);
+  const leaseAttempts = listTaskAttempts(db, continuousLeaseTask);
+  assert.equal(leaseAttempts.length, 2, '租约恢复必须形成新的任务尝试');
+  assert.equal(leaseAttempts[0]?.status, 'interrupted', '丢失租约的旧尝试必须保留为 interrupted');
+  await leaseController.stop();
+
   db.close();
   console.log('batch runner tests passed');
 } finally {
   await resetSchedulerSingletonForTests();
-  fs.rmSync(root, { recursive: true, force: true });
+  try {
+    fs.rmSync(root, { recursive: true, force: true });
+  } catch {
+    // 断言失败时 db 句柄可能尚未关闭(Windows EBUSY);保留原始断言错误。
+  }
 }
