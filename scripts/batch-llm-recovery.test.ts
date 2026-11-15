@@ -150,9 +150,93 @@ try {
   assert.deepEqual(shutdown.businessAttempt, waiting.businessAttempt);
   await run(shutdown);
   assert.equal(posts, 4, 'Graceful shutdown must preserve business intent');
+  completeTaskAttempt(db, shutdown.attempt.id, { workerId: 'shutdown', status: 'succeeded' });
+
+  // Old workers keyed LLM operations to their own attempt. The first worker
+  // may have died before creating an operation; the second one's intent wins.
+  const legacyRequest = (claim: NonNullable<ReturnType<typeof claimNextTask>>, step = 'analyze:1') => runWithAccessContext(access, () => completeJson({
+    providerId: 'qwen', systemPrompt: 'synthetic', userPrompt: prompt,
+    executionContext: {
+      taskId: claim.task.id, step, scope: { resourceType: 'project', resourceId: 'recovery-project' },
+      inputRevision: claim.attempt.id,
+      businessAttempt: { id: claim.attempt.id, number: claim.attempt.attemptNumber },
+    },
+  }));
+  for (const outcome of ['unknown', 'succeeded', 'deferred'] as const) {
+    const id = enqueue('legacy-upgrade-' + outcome);
+    const beforeRemote = claimNextTask(db, { workerId: 'legacy-before-remote' })!;
+    assert.equal(beforeRemote.task.id, id);
+    recoverInterruptedWork(db);
+    const sent = claimNextTask(db, { workerId: 'legacy-sent' })!;
+    const previousPosts: number = posts;
+    globalThis.fetch = async () => {
+      posts++;
+      if (outcome === 'unknown') throw new TypeError('legacy remote outcome is uncertain');
+      return Response.json({ choices: [{ message: { content: '{"ok":true}' } }] });
+    };
+    if (outcome === 'deferred') policy(true);
+    if (outcome === 'succeeded') await legacyRequest(sent);
+    else await assert.rejects(legacyRequest(sent), outcome === 'unknown' ? /尚未核清/ : { code: 'llm_execution_deferred' });
+    const persisted = db.prepare('SELECT * FROM execution_operations WHERE taskId=?').all(id);
+    const oldAttempts = db.prepare('SELECT * FROM execution_attempts ORDER BY id').all();
+    const oldReservations = db.prepare('SELECT * FROM execution_reservations ORDER BY id').all();
+    recoverInterruptedWork(db);
+    const upgraded = claimNextTask(db, { workerId: 'upgraded' })!;
+    assert.equal(upgraded.businessAttempt?.id, beforeRemote.attempt.id, 'Worker chain anchor alone cannot identify the legacy intent');
+    if (outcome === 'deferred') policy(false);
+    if (outcome === 'unknown') await assert.rejects(run(upgraded), /尚未核清/);
+    else await run(upgraded);
+    assert.equal(posts, previousPosts + 1, 'Upgrade must reuse the legacy receipt, uncertainty or pending operation');
+    if (outcome !== 'deferred') {
+      assert.deepEqual(db.prepare('SELECT * FROM execution_operations WHERE taskId=?').all(id), persisted);
+      assert.deepEqual(db.prepare('SELECT * FROM execution_attempts ORDER BY id').all(), oldAttempts);
+      assert.deepEqual(db.prepare('SELECT * FROM execution_reservations ORDER BY id').all(), oldReservations);
+    } else assert.equal(db.prepare('SELECT COUNT(*) FROM execution_operations WHERE taskId=?').pluck().get(id), 1);
+    completeTaskAttempt(db, upgraded.attempt.id, { workerId: 'upgraded', status: outcome === 'unknown' ? 'failed' : 'succeeded' });
+  }
+
+  // Different legacy workers could already have split steps across identities.
+  // Such history must fail locally before any new remote operation is enqueued.
+  const ambiguousId = enqueue('legacy-multiple-intents');
+  globalThis.fetch = async () => { posts++; return Response.json({ choices: [{ message: { content: '{"ok":true}' } }] }); };
+  const legacyFirst = claimNextTask(db, { workerId: 'legacy-first' })!;
+  await legacyRequest(legacyFirst);
+  recoverInterruptedWork(db);
+  const legacySecond = claimNextTask(db, { workerId: 'legacy-second' })!;
+  globalThis.fetch = async () => { posts++; throw new TypeError('second legacy step is uncertain'); };
+  await assert.rejects(legacyRequest(legacySecond, 'analyze:2'), /尚未核清/);
+  recoverInterruptedWork(db);
+  const ambiguous = claimNextTask(db, { workerId: 'ambiguous' })!;
+  const beforeAmbiguous: number = posts;
+  const ambiguousLedger = db.prepare('SELECT * FROM execution_operations WHERE taskId=? ORDER BY id').all(ambiguousId);
+  await assert.rejects(run(ambiguous), /多个历史执行意图/);
+  assert.equal(posts, beforeAmbiguous, 'Ambiguous upgrade history must not create another paid intent');
+  assert.deepEqual(db.prepare('SELECT * FROM execution_operations WHERE taskId=? ORDER BY id').all(ambiguousId), ambiguousLedger);
+  completeTaskAttempt(db, ambiguous.attempt.id, { workerId: 'ambiguous', status: 'failed', errorCode: 'conflict' });
+  retryTask(db, 'recovery-project', ambiguousId);
+  const retriedLegacy = claimNextTask(db, { workerId: 'legacy-explicit-retry' })!;
+  globalThis.fetch = async () => { posts++; return Response.json({ choices: [{ message: { content: '{"ok":true}' } }] }); };
+  await run(retriedLegacy);
+  assert.equal(posts, beforeAmbiguous + 1, 'Explicit retry can establish a new intent after a terminal boundary');
+  completeTaskAttempt(db, retriedLegacy.attempt.id, { workerId: 'legacy-explicit-retry', status: 'succeeded' });
+  for (const field of ['inputRevision', 'businessAttemptNo', 'operationKey'] as const) {
+    const id = enqueue('legacy-invalid-' + field);
+    const legacy = claimNextTask(db, { workerId: 'legacy-invalid' })!;
+    await legacyRequest(legacy);
+    // Isolated corrupted-ledger fixture: no production record is repaired or erased.
+    db.prepare('UPDATE execution_operations SET ' + field + ' = ? WHERE taskId = ?').run(field === 'businessAttemptNo' ? 99 : 'invalid-identity', id);
+    const rows = db.prepare('SELECT * FROM execution_operations WHERE taskId=?').all(id);
+    recoverInterruptedWork(db);
+    const invalid = claimNextTask(db, { workerId: 'invalid-recovered' })!;
+    const beforeInvalid: number = posts;
+    await assert.rejects(run(invalid), /历史执行意图身份不一致/);
+    assert.equal(posts, beforeInvalid);
+    assert.deepEqual(db.prepare('SELECT * FROM execution_operations WHERE taskId=?').all(id), rows);
+    completeTaskAttempt(db, invalid.attempt.id, { workerId: 'invalid-recovered', status: 'failed', errorCode: 'conflict' });
+  }
   assert.equal(journal.verify({ repairTail: false }).valid, true);
   execution.closeNewWork();
-  console.log('PASS: repeated crash/unknown, changed input, explicit retry, success replay, deferred/not_sent, pause/resume and graceful shutdown');
+  console.log('PASS: repeated crash/unknown, changed input, explicit retry, success replay, deferred/not_sent, pause/resume, graceful shutdown and legacy upgrade recovery');
 
   console.log('batch LLM recovery: one provider submission, fresh worker lease, original uncertainty and costs preserved');
 } finally {

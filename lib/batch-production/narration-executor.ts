@@ -21,6 +21,7 @@ import {
   createLocalNarrationSnapshot,
 } from './narration.ts';
 import type { BatchTaskExecutor } from './executors.ts';
+import { resolveBatchLlmAttempt } from './execution-intent.ts';
 
 export const BATCH_NARRATION_ADAPTER_VERSION = 'batch-narration-v1';
 
@@ -340,6 +341,8 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
         const saved = JSON.parse(previousNarration?.narrationJson ?? '{}').packagingPoints;
         if (Array.isArray(saved) && saved.every(point => typeof point === 'string')) cachedPoints = saved;
       } catch { /* Old narration snapshots are re-extracted once. */ }
+      const businessAttempt = !cachedPoints && !options.extractPackagingPoints
+        ? resolveBatchLlmAttempt(db, claim) : undefined;
       const points = await buildPointCandidates({
         narrationText: snapshot.bodyText,
         sellingPoints: loadProjectPackagingData(db, claim.task.projectId).sellingPoints ?? [],
@@ -348,8 +351,8 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
           : extractSellingPointsWithLLM(text, undefined, signal, {
             taskId: claim.task.id,
             scope: { resourceType: 'project', resourceId: claim.task.projectId },
-            inputRevision: claim.businessAttempt?.id ?? claim.attempt.id,
-            businessAttempt: claim.businessAttempt ?? { id: claim.attempt.id, number: claim.attempt.attemptNumber },
+            inputRevision: businessAttempt?.id,
+            businessAttempt,
           }),
       });
       if (signal.aborted) throw new Error('任务已中止');
