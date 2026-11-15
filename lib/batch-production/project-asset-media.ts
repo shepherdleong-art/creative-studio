@@ -35,6 +35,7 @@ export interface ProjectAssetFileIdentity {
   ino: number;
   size: number;
   mtimeMs: number;
+  ctimeMs?: number;
 }
 
 export interface MaterializedAssetThumbnail {
@@ -44,6 +45,14 @@ export interface MaterializedAssetThumbnail {
 }
 
 const thumbnailJobs = new Map<string, Promise<MaterializedAssetThumbnail>>();
+// A probe describes bytes, not their location. Only populate this bounded cache
+// after both full hashes and the final file identity checks have succeeded.
+function verifiedProbes(): Map<string, VideoMediaProbe> {
+  const key = Symbol.for('creative-studio.verified-project-media-probes');
+  const globals = globalThis as Record<PropertyKey, unknown>;
+  return (globals[key] ??= new Map<string, VideoMediaProbe>()) as Map<string, VideoMediaProbe>;
+}
+
 
 function storageRoot(): string {
   return path.join(dataRoot(), 'storage');
@@ -62,7 +71,7 @@ function assertRegularFile(filePath: string): fs.Stats {
 }
 
 export function projectAssetFileIdentity(stat: fs.Stats): ProjectAssetFileIdentity {
-  return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
+  return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
 }
 
 export function matchesProjectAssetFileIdentity(
@@ -73,7 +82,8 @@ export function matchesProjectAssetFileIdentity(
   return actual.dev === expected.dev
     && actual.ino === expected.ino
     && actual.size === expected.size
-    && actual.mtimeMs === expected.mtimeMs;
+    && actual.mtimeMs === expected.mtimeMs
+    && (expected.ctimeMs === undefined || actual.ctimeMs === expected.ctimeMs);
 }
 
 export function assertProjectAssetFileIdentity(
@@ -157,9 +167,12 @@ export async function resolveVerifiedProjectAssetMedia(
       continue;
     }
 
+    const probeKey = JSON.stringify([fingerprint, process.env.CREATIVE_STUDIO_FFPROBE, process.env.CREATIVE_STUDIO_FFMPEG]);
+    const probes = verifiedProbes();
     let media: VideoMediaProbe;
     try {
-      media = await probeVideoMedia(filePath);
+      const cached = probes.get(probeKey);
+      media = cached ? { ...cached } : await probeVideoMedia(filePath);
       if (asset.mediaKind === 'video') assertVideoContainer(filePath, media);
     } catch {
       sawChanged = true;
@@ -193,6 +206,10 @@ export async function resolveVerifiedProjectAssetMedia(
     if (finalAssetState?.status !== 'online') {
       throw new BatchDomainError('conflict', '素材在核验期间变为离线或归档');
     }
+
+    probes.delete(probeKey);
+    probes.set(probeKey, { ...media });
+    if (probes.size > 256) probes.delete(probes.keys().next().value!);
 
     // 返回的内容指纹与文件身份是后续最终打开/发布必须再次匹配的边界。
     return {

@@ -348,8 +348,8 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
           : extractSellingPointsWithLLM(text, undefined, signal, {
             taskId: claim.task.id,
             scope: { resourceType: 'project', resourceId: claim.task.projectId },
-            inputRevision: claim.attempt.id,
-            businessAttempt: { id: claim.attempt.id, number: claim.attempt.attemptNumber },
+            inputRevision: claim.businessAttempt?.id ?? claim.attempt.id,
+            businessAttempt: claim.businessAttempt ?? { id: claim.attempt.id, number: claim.attempt.attemptNumber },
           }),
       });
       if (signal.aborted) throw new Error('任务已中止');

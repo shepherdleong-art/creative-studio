@@ -14,6 +14,7 @@ import BatchReviewTimelineDock from './BatchReviewTimelineDock';
 import type { InspectorTab, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
 import styles from './batch-unified-review.module.css';
 import { subtitleSplitEdit } from './subtitle-edit';
+import { createArrangementLoader } from './arrangement-loader';
 
 const FPS = FINAL_EDIT_FPS;
 
@@ -167,66 +168,50 @@ export default function BatchUnifiedReviewWorkspace({
   const [undoStack, setUndoStack] = useState<EditHistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<EditHistoryEntry[]>([]);
 
-  // Fetch arrangements for all films
-  const loadAllArrangements = useCallback(async () => {
-    const plans = workspace.cards.map((c) => c.planId);
-    if (plans.length === 0) return;
+  const arrangementLoaderRef = useRef<ReturnType<typeof createArrangementLoader<BatchOutputClipEditView>> | null>(null);
 
-    try {
-      const results = await Promise.all(
-        plans.map(async (planId) => {
-          const res = await fetch(
-            `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(
-              planId
-            )}/arrangement?projectId=${encodeURIComponent(projectId)}`,
-            { cache: 'no-store' }
-          );
-          if (!res.ok) return null;
-          const data = (await res.json()) as BatchOutputClipEditView;
-          return { planId, data };
-        })
-      );
-
-      setArrangements((curr) => {
-        const next = { ...curr };
-        for (const item of results) {
-          if (item) next[item.planId] = item.data;
-        }
-        return next;
-      });
-    } catch {
-      // Ignore background fetch error
-    }
-  }, [batchId, projectId, workspace.cards]);
-
+  // 详情中的素材使用次数跨成片共享；实际内容变化时整体失效，进度轮询不失效。
+  const arrangementRevision = JSON.stringify([
+    workspace.batch.currentVersionId, workspace.batch.controlState, workspace.exclusions,
+    workspace.cards.map(card => [card.planId, card.versionId, card.arrangementRevision,
+      card.narrationTask?.id, card.narrationTask?.status, card.sourceWarnings, card.sourceConflictAssetIds, card.sourceConflictGroups]),
+  ]);
+  const arrangementTargetsRef = useRef({ revision: '', plans: [] as string[], priority: [] as string[] });
   useEffect(() => {
-    const timer = setTimeout(() => {
-      void loadAllArrangements();
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [loadAllArrangements]);
-
-  // Load single film arrangement; returns the refreshed view (null on failure)
-  const refreshFilmArrangement = useCallback(
-    async (planId: string): Promise<BatchOutputClipEditView | null> => {
-      try {
-        const res = await fetch(
-          `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(
-            planId
-          )}/arrangement?projectId=${encodeURIComponent(projectId)}`,
-          { cache: 'no-store' }
+    const loader = createArrangementLoader<BatchOutputClipEditView>({
+      load: async (planId, signal) => {
+        const response = await fetch(
+          `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/arrangement?projectId=${encodeURIComponent(projectId)}`,
+          { cache: 'no-store', signal },
         );
-        if (!res.ok) return null;
-        const data = (await res.json()) as BatchOutputClipEditView;
-        setArrangements((curr) => ({ ...curr, [planId]: data }));
-        onOutputChanged?.();
-        return data;
-      } catch {
-        return null;
-      }
-    },
-    [batchId, onOutputChanged, projectId]
-  );
+        if (!response.ok) throw new Error('读取成片安排失败');
+        return response.json() as Promise<BatchOutputClipEditView>;
+      },
+      apply: (planId, data) => setArrangements(current => ({ ...current, [planId]: data })),
+    });
+    arrangementLoaderRef.current = loader;
+    return () => { loader.dispose(); arrangementLoaderRef.current = null; };
+  }, [batchId, projectId]);
+  useEffect(() => {
+    const targets = {
+      revision: arrangementRevision,
+      plans: workspace.cards.filter(card => card.versionId).map(card => card.planId),
+      priority: [workspace.cards.find(card => eyeMap[card.planId] !== false)?.planId, selectedPlanId].filter((id): id is string => Boolean(id)),
+    };
+    arrangementTargetsRef.current = targets;
+    arrangementLoaderRef.current?.update(targets.revision, targets.plans, targets.priority);
+  }, [arrangementRevision, eyeMap, selectedPlanId, workspace.cards]);
+
+  const loadAllArrangements = useCallback(async () => {
+    const { revision, plans, priority } = arrangementTargetsRef.current;
+    arrangementLoaderRef.current?.update(revision, plans, priority, true);
+  }, []);
+
+  const refreshFilmArrangement = useCallback(async (planId: string) => {
+    const data = await arrangementLoaderRef.current?.refresh(planId) ?? null;
+    if (data) onOutputChanged?.();
+    return data;
+  }, [onOutputChanged]);
 
   // Submit an edit to a film's arrangement via REST API;成功后记录撤销历史
   const handleMediaEdit = useCallback(

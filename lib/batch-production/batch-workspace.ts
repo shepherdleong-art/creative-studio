@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { batchSourceReview, prepareSourceConflictPreload, type BatchSourceConflictGroup } from './source-conflicts.ts';
 import { batchArtifactPathsArePaired } from './artifact-pair.ts';
@@ -86,6 +87,8 @@ export interface BatchOutputCardView {
   scriptTitle: string;
   versionId: string | null;
   versionNumber: number | null;
+  /** 包含纯结构编辑的内容身份，供详情缓存失效；不随任务进度变化。 */
+  arrangementRevision?: string;
   status: BatchOutputCardStatus;
   nextAction: string;
   /** 有当前候选版本且批次未停止 → 可以进入编辑器。 */
@@ -970,6 +973,7 @@ export function getBatchWorkspace(
       scriptTitle: plan.scriptTitle,
       versionId: plan.currentVersionId,
       versionNumber: plan.versionNumber,
+      arrangementRevision: createHash('sha256').update(plan.arrangementJson ?? '').digest('hex'),
       status: state.status,
       nextAction: state.nextAction,
       reviewable,

@@ -140,6 +140,17 @@ try {
   assert.equal(view.cards.length, 4);
   // 状态口径互不混淆:封面/审核/导出/正式成片各自独立表达。
   const card1 = view.cards.find(({ planId }) => planId === 'plan1')!;
+  assert.match(card1.arrangementRevision!, /^[a-f0-9]{64}$/);
+  db.prepare("UPDATE batch_tasks SET progressJson=? WHERE id='cover1-task'").run(JSON.stringify({ phase: 'fixture-progress' }));
+  assert.equal(getBatchWorkspace(db, 'p1', 'b1').cards[0].arrangementRevision, card1.arrangementRevision, 'Task progress must not invalidate arrangements');
+  const originalStructure = db.prepare("SELECT arrangementJson FROM batch_output_versions WHERE id='ov1'").pluck().get() as string;
+  const structure = JSON.parse(originalStructure);
+  structure.clips = [{ ...structure.clips[0], clipId: 'split-left' }, { ...structure.clips[0], clipId: 'split-right' }];
+  db.prepare("UPDATE batch_output_versions SET arrangementJson=? WHERE id='ov1'").run(JSON.stringify(structure));
+  assert.notEqual(getBatchWorkspace(db, 'p1', 'b1').cards[0].arrangementRevision, card1.arrangementRevision, 'Pure structural edits must invalidate detail data even without an editRevision increment');
+  db.prepare("UPDATE batch_output_versions SET arrangementJson=? WHERE id='ov1'").run(originalStructure);
+  assert.equal(getBatchWorkspace(db, 'p1', 'b1').cards[0].arrangementRevision, card1.arrangementRevision);
+
   assert.equal(card1.status, 'completed');
   assert.equal(card1.reviewable, true);
   assert.equal(card1.approvable, true, '口播+封面就绪才允许通过');

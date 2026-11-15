@@ -146,6 +146,19 @@ export function claimNextTask(
         UPDATE batch_tasks SET attemptCount = ? WHERE id = ?
       `).run(attemptNumber, candidate.id);
     }
+    // interrupted 只表示 worker 中断，不能把已发远端调用变成新的付费意图。
+    // 失败/成功/取消后的显式重试才开始新的业务尝试；从已有历史派生身份，
+    // 同时兼容升级前遗留任务，不复活旧 worker 的租约或删除任何执行凭据。
+    const business = db.prepare(`
+      SELECT id, attemptNumber FROM batch_task_attempts
+      WHERE taskId = ? AND attemptNumber <= ?
+        AND attemptNumber > COALESCE((
+          SELECT MAX(attemptNumber) FROM batch_task_attempts
+          WHERE taskId = ? AND attemptNumber < ?
+            AND status IN ('failed', 'succeeded', 'cancelled')
+        ), 0)
+      ORDER BY attemptNumber LIMIT 1
+    `).get(candidate.id, attemptNumber, candidate.id, attemptNumber) as { id: string; attemptNumber: number };
     return {
       task: {
         id: candidate.id,
@@ -156,6 +169,7 @@ export function claimNextTask(
         targetId: candidate.targetId,
       },
       attempt: { id: attemptId, attemptNumber },
+      businessAttempt: { id: business.id, number: business.attemptNumber },
     };
   })();
 }
