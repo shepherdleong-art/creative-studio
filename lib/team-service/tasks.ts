@@ -566,10 +566,16 @@ function compareRecordDescending(left: TaskRow, right: TaskRow): number {
 /** 按已排好的 operationId 顺序读取完整投影；不在完整投影上再排序或扫历史。 */
 function selectTaskRowsByIds(scope: ResolvedTaskScope, operationIds: readonly string[]): TaskRow[] {
   if (operationIds.length === 0) return [];
-  const rows = selectTaskRows(scope,
-    andWhere(scope.authWhere, `o.id IN (${operationIds.map(() => '?').join(',')})`),
-    [...scope.authValues, ...operationIds],
-  );
+  // IN + actorId can choose the actor index and visit every historical row,
+  // including large snapshots. Drive the full projection from the bounded ID
+  // set so each row is a primary-key lookup; retain the same authorization.
+  const fields = taskQueryShape(scope.db).fields;
+  const rows = scope.db.prepare(`
+    WITH selected_operation_ids(id) AS (VALUES ${operationIds.map(() => '(?)').join(',')})
+    SELECT ${fields}
+    FROM selected_operation_ids selected CROSS JOIN ${scope.joins}
+    WHERE ${andWhere('o.id = selected.id', scope.authWhere)}
+  `).all(...operationIds, ...scope.authValues) as TaskRow[];
   const order = new Map(operationIds.map((id, index) => [id, index]));
   return rows.sort((left, right) => (
     (order.get(String(left.operationId)) ?? 0) - (order.get(String(right.operationId)) ?? 0)
@@ -816,11 +822,7 @@ export function listRecentTeamTasks(
       ORDER BY o.updatedAt DESC, o.id DESC LIMIT ?
     `).all(...scope.authValues, bounded) as Array<{ id: string }>;
     if (selected.length === 0) return { items: [] };
-    const rows = selectTaskRows(scope,
-      andWhere(scope.authWhere, `o.id IN (${selected.map(() => '?').join(',')})`),
-      [...scope.authValues, ...selected.map(row => row.id)],
-      { order: 'o.updatedAt DESC, o.id DESC' },
-    );
+    const rows = selectTaskRowsByIds(scope, selected.map(row => row.id));
     return { items: projectTaskRows(db, viewer, rows) };
   }).deferred();
 }

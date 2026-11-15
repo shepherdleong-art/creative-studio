@@ -25,6 +25,9 @@ export function getDb(): Database.Database {
     db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
+    // Bound the shared connection's page cache in KiB. The SQLite default
+    // (~2 MiB) churns on concurrent task pages with 64 KiB historical snapshots.
+    db.pragma('cache_size = -32768');
     initTables(db);
     try {
       const usageReadiness = initUsageSchema(db);

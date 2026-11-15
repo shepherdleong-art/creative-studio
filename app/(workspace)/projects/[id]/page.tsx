@@ -1,21 +1,18 @@
 'use client';
-
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
+import MixcutWorkspace from '@/components/mixcut/MixcutWorkspace';
 import { Icon } from '@/components/ui/Icon';
 import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
-import ScriptStudioPanel from '@/components/script-studio/ScriptStudioPanel';
-import VideoGenerationPanel from '@/components/VideoGenerationPanel';
-import MixcutWorkspace from '@/components/mixcut/MixcutWorkspace';
-import { ReassembledReworkPanel } from '@/components/mixcut/ReassembledReworkPanel';
+
 import LogDrawer from '@/components/LogDrawer';
 import { ProjectInfoDialog, type ProjectInfoValue } from '@/components/ProjectInfoDialog';
 import { ToolbarButton } from '@/components/ui/Appearance';
 import PageToolbar from '@/components/team/PageToolbar';
 import type { WorkspaceRole } from '@/lib/workspace-navigation';
-import SceneStep from '@/components/workbench/SceneStep';
-import ShotSetStep from '@/components/workbench/ShotSetStep';
+
 import { StepEmptyBanner } from '@/components/workbench/StepEmpty';
 import { parseWorkbenchTab, WorkbenchStepNav, type WorkbenchTabId } from '@/components/workbench/WorkbenchStepNav';
 import type { WorkbenchImage, WorkbenchJob, WorkbenchProvider } from '@/components/workbench/types';
@@ -25,6 +22,14 @@ import {
   getActiveSceneReferences,
   SceneReferenceRecord,
 } from '@/lib/result-gallery-jobs';
+
+// Keep the frequently opened mixcut workspace in the initial route payload;
+// other step editors load when selected.
+const ScriptStudioPanel = dynamic(() => import('@/components/script-studio/ScriptStudioPanel'));
+const VideoGenerationPanel = dynamic(() => import('@/components/VideoGenerationPanel'));
+const SceneStep = dynamic(() => import('@/components/workbench/SceneStep'));
+const ShotSetStep = dynamic(() => import('@/components/workbench/ShotSetStep'));
+const ReassembledReworkPanel = dynamic(() => import('@/components/mixcut/ReassembledReworkPanel').then(module => module.ReassembledReworkPanel));
 
 interface Project {
   id: string;

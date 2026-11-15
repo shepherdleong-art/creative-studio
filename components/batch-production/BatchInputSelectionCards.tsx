@@ -1,5 +1,7 @@
 'use client';
 
+import MediaThumbnail from '@/components/media/MediaThumbnail';
+
 import { memo, useState } from 'react';
 import styles from './batch-asset-card.module.css';
 import type { PrepareAssetView, PrepareScriptView, PrepareSourceView } from '@/lib/batch-production/prepare';
@@ -307,8 +309,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
     <article className={styles.card} data-selected={selected} data-testid="batch-material-card">
       <button type="button" className={styles.preview} aria-label={`预览素材 ${displayName}`} disabled={!previewAvailable} onClick={onPreview}>
         {asset.thumbnailUrl && !thumbnailFailed ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={asset.thumbnailUrl} alt={`${displayName} 缩略图`} loading="lazy" onError={() => setThumbnailFailedUrl(asset.thumbnailUrl ?? null)} />
+          <MediaThumbnail src={asset.thumbnailUrl} alt={`${displayName} 缩略图`} onError={() => setThumbnailFailedUrl(asset.thumbnailUrl ?? null)} />
         ) : <span>缩略图暂不可用</span>}
         {previewAvailable && <span className={styles.play}>▶ 预览</span>}
         {typeof asset.media.durationSec === 'number' && <span className={styles.duration}>{asset.media.durationSec.toFixed(1)} 秒</span>}

@@ -17,6 +17,7 @@ import { softDeleteResource } from './lifecycle/index.ts';
 import { assertCompatibleClientWrite } from './client-capabilities.ts';
 import { runWithExecutionRequestVersions } from '../media-core/execution/context.ts';
 import { recordTeamError } from './diagnostics.ts';
+import { waitForTeamReadTurn } from './read-turn.ts';
 
 const DIAGNOSTIC_TIMEOUT_MS = 250;
 
@@ -343,6 +344,10 @@ export function withTeamRoute<T>(route: string, method: string, handler: T): T &
       });
     }
     const request = args[0] as Request | undefined;
+    if (method === 'GET' && policy.category !== 'public'
+      && !await waitForTeamReadTurn(request?.signal)) {
+      return new Response(null, { status: 499, headers: { 'Cache-Control': 'no-store' } });
+    }
     let context = null as ReturnType<typeof createTeamAccessContext> | null;
     let diagnosticScope: { resourceType: string; resourceId: string } | null = null;
     let diagnosticTaskId: string | null = null;

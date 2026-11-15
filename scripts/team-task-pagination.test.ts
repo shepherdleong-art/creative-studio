@@ -382,6 +382,24 @@ for (let index = 0; index < 501; index += 1) {
 }
 
 try {
+  // 员工权限过滤不能使已选定本页 ID 的完整投影回退为扫描该员工全部历史。
+  // 旧实现 o.id IN (...) + o.actorId = ? 会被 SQLite 选成 actorId 索引扫描。
+  for (const viewer of [adminView, aliceView]) {
+    for (const read of [
+      () => listTeamTasks(db, viewer, {}, { page: 1, pageSize: 25 }),
+      () => listRecentTeamTasks(db, viewer, 12),
+    ]) {
+      const projections = capturePrepared(read).filter(sql => sql.includes('o.inputSnapshotJson'));
+      assert.ok(projections.length > 0);
+      for (const sql of projections) {
+        const plan = explainPlan(sql);
+        assert.ok(plan.some(detail => /^SEARCH o USING .*\(id=\?\)$/.test(detail)),
+          '本页完整快照必须按已选 ID 点查，不能扫描成员历史：' + plan.join(' | '));
+      }
+    }
+  }
+  console.log('PASS: admin and employee page/recent projections use operation ID lookups');
+
   // ── 3. 分页选组：2003 个制作任务 / 2005 条执行记录 ───────────────────────────
   const firstPage = listTeamTasks(db, adminView);
   assert.deepEqual(firstPage.pagination, { page: 1, pageSize: 25, total: TOTAL_TASKS, totalPages: LAST_PAGE_25 });
