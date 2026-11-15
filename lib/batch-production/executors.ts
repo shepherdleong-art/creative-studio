@@ -32,6 +32,7 @@ import {
   type BatchSemanticProviderMetaLike,
 } from './semantic-match.ts';
 import type { BatchTaskWorkType, ClaimedBatchTask } from './tasks.ts';
+import { resolveBatchLlmAttempt } from './execution-intent.ts';
 import { withMediaResource } from '../media-core/media-resource-gate.ts';
 
 /**
@@ -111,6 +112,8 @@ export interface AnalyzeAssetExecutorOptions {
     executionScope?: { resourceType: string; resourceId: string };
     inputRevision?: string;
     businessAttempt?: { id: string; number: number };
+    verifiedContentFingerprint?: string;
+    assertCurrentInput?: () => void;
   }) => Promise<BatchContentAnalysisResult>;
   assertProviderReady?: (
     provider: ProviderExecutionIdentity,
@@ -144,6 +147,8 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
       executionScope: input.executionScope,
       inputRevision: input.inputRevision,
       businessAttempt: input.businessAttempt,
+      verifiedContentFingerprint: input.verifiedContentFingerprint,
+      assertCurrentInput: input.assertCurrentInput,
     });
   });
   const assertProviderReady = options.assertProviderReady ?? assertProviderExecutionAvailable;
@@ -234,6 +239,7 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
         mediaTransportAvailable: Boolean(mediaTransport) || isCosMediaConfigured(),
       });
       context.reportProgress({ phase: 'content_analyzing', description: '抽帧并进行画面内容分析', percent: null });
+      const businessAttempt = resolveBatchLlmAttempt(db, claim);
       const analyze = (mediaLease?: PreparedMediaLease) => analyzeContent({
         filePath: verified.filePath,
         assetId: claim.task.targetId,
@@ -244,8 +250,10 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
         mediaLease,
         executionTaskId: claim.task.id,
         executionScope: { resourceType: 'project', resourceId: projectId },
-        inputRevision: claim.attempt.id,
-        businessAttempt: { id: claim.attempt.id, number: claim.attempt.attemptNumber },
+        verifiedContentFingerprint: verified.asset.contentFingerprint,
+        assertCurrentInput: () => assertProjectAssetFileIdentity(verified.filePath, verified.fileIdentity),
+        inputRevision: businessAttempt.id,
+        businessAttempt,
       });
       // 素材分析任务永远批次绑定(只有素材级 proxy_generate 允许没有批次),
       // 这里不会走到 null,但类型上必须有防御,不用空串伪装。
@@ -417,6 +425,7 @@ export function createSemanticScoreExecutor(options: SemanticScoreExecutorOption
         description: `语义矩阵打分（${sentences.length} 句 × ${scenes.length} 场景）`,
         percent: null,
       });
+      const businessAttempt = resolveBatchLlmAttempt(db, claim);
       const outcome = await scoreBatch({
         sentences,
         scenes,
@@ -425,8 +434,8 @@ export function createSemanticScoreExecutor(options: SemanticScoreExecutorOption
         execution: {
           taskId: claim.task.id,
           scope: { resourceType: 'project', resourceId: projectId },
-          inputRevision: claim.attempt.id,
-          businessAttempt: { id: claim.attempt.id, number: claim.attempt.attemptNumber },
+          inputRevision: businessAttempt.id,
+          businessAttempt,
         },
         signal,
         onProgress: (completed, total) => context.reportProgress({

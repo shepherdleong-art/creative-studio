@@ -313,19 +313,19 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       const readiness = await readJson<ReadinessResponse>(await fetch('/api/batch-production/readiness', { cache: 'no-store' }));
       if (!readiness.available) throw new Error(readiness.message || '批量生产暂不可用');
       const [result, batchResult, providerResult, ttsResult] = await Promise.all([
-        readJson<BatchPreparationResult>(await fetch(
+        fetch(
           `/api/batch-production/prepare?projectId=${encodeURIComponent(projectId)}`,
           { cache: 'no-store' },
-        )),
+        ).then(readJson<BatchPreparationResult>),
         // 归档显示由侧栏本地筛选，刷新时也必须保留可恢复的记录。
-        readJson<BatchListResponse>(await fetch(
+        fetch(
           `/api/batch-production/batches?projectId=${encodeURIComponent(projectId)}&includeArchived=1`,
           { cache: 'no-store' },
-        )),
-        readJson<VisionProviderView[]>(await fetch('/api/team/models?kind=script', { cache: 'no-store' }))
-          .catch(() => []),
-        readJson<TtsProviderView[]>(await fetch('/api/team/models?kind=tts', { cache: 'no-store' }))
-          .catch(() => []),
+        ).then(readJson<BatchListResponse>),
+        fetch('/api/team/models?kind=script', { cache: 'no-store' })
+          .then(readJson<VisionProviderView[]>).catch(() => []),
+        fetch('/api/team/models?kind=tts', { cache: 'no-store' })
+          .then(readJson<TtsProviderView[]>).catch(() => []),
       ]);
       setPreparation(result);
       setBatches(batchResult.batches);

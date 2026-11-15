@@ -1,5 +1,7 @@
 'use client';
 
+import MediaThumbnail from '@/components/media/MediaThumbnail';
+
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { DesktopBridge } from '@/desktop/bridge-types';
 import type { FilenameAnalysisProgress } from '@/lib/batch-production/filename-analysis';
@@ -469,11 +471,9 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                     >
                       {asset?.thumbnailUrl ? (
                         <>
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
+                          <MediaThumbnail
                             src={asset.thumbnailUrl}
                             alt={`${displayName} 缩略图`}
-                            loading="lazy"
                             className="transition group-hover:scale-[1.02]"
                           />
                           <span className={styles.thumbHover}>

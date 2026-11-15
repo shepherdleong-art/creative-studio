@@ -8,6 +8,9 @@ import { getBatchWorkspace } from '../lib/batch-production/batch-workspace.ts';
 import { resolveCoverContractHash, resolveFullRenderContractHash } from '../lib/batch-production/cover-contract.ts';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
 import { createBatchTask } from '../lib/batch-production/tasks.ts';
+import { listBatchBgmTracks } from '../lib/batch-production/bgm.ts';
+import { createArrangementLoader } from '../components/batch-production/review/arrangement-loader.ts';
+import { createLocalAccessContext, runWithAccessContext } from '../lib/media-core/access-context.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-batch-workspace-'));
 try {
@@ -140,6 +143,54 @@ try {
   assert.equal(view.cards.length, 4);
   // 状态口径互不混淆:封面/审核/导出/正式成片各自独立表达。
   const card1 = view.cards.find(({ planId }) => planId === 'plan1')!;
+  assert.match(card1.arrangementRevision!, /^[a-f0-9]{64}$/);
+  db.prepare("UPDATE batch_tasks SET progressJson=? WHERE id='cover1-task'").run(JSON.stringify({ phase: 'fixture-progress' }));
+  assert.equal(getBatchWorkspace(db, 'p1', 'b1').cards[0].arrangementRevision, card1.arrangementRevision, 'Task progress must not invalidate arrangements');
+  const originalStructure = db.prepare("SELECT arrangementJson FROM batch_output_versions WHERE id='ov1'").pluck().get() as string;
+  const structure = JSON.parse(originalStructure);
+  structure.clips = [{ ...structure.clips[0], clipId: 'split-left' }, { ...structure.clips[0], clipId: 'split-right' }];
+  db.prepare("UPDATE batch_output_versions SET arrangementJson=? WHERE id='ov1'").run(JSON.stringify(structure));
+  assert.notEqual(getBatchWorkspace(db, 'p1', 'b1').cards[0].arrangementRevision, card1.arrangementRevision, 'Pure structural edits must invalidate detail data even without an editRevision increment');
+  db.prepare("UPDATE batch_output_versions SET arrangementJson=? WHERE id='ov1'").run(originalStructure);
+  assert.equal(getBatchWorkspace(db, 'p1', 'b1').cards[0].arrangementRevision, card1.arrangementRevision);
+
+  // Another window can publish/withdraw BGM without editing any arrangement.
+  // Exercise actual workspace polling and the detail loader, including reuse.
+  db.exec(`CREATE TABLE final_edit_bgm_tracks (id TEXT PRIMARY KEY, relativePath TEXT, fileFingerprint TEXT, durationUs INTEGER, status TEXT);
+    INSERT INTO final_edit_bgm_tracks VALUES ('music-old','bgm/old.mp3','sha256:old',10000000,'ready');`);
+  let musicRequests = 0;
+  let visibleMusic: string[] = [];
+  const musicLoader = createArrangementLoader<string[]>({
+    load: async () => { musicRequests++; return listBatchBgmTracks(db).map(track => track.id); },
+    apply: (_id, tracks) => { visibleMusic = tracks; },
+  });
+  const pollMusic = async () => {
+    musicLoader.update(getBatchWorkspace(db, 'p1', 'b1').cards[0].arrangementRevision!, ['plan1']);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  };
+  await pollMusic();
+  assert.deepEqual(visibleMusic, ['music-old']);
+  db.exec("INSERT INTO final_edit_bgm_tracks VALUES ('music-new','bgm/new.mp3','sha256:new',20000000,'ready')");
+  for (let poll = 0; poll < 3; poll++) await pollMusic();
+  assert.deepEqual(visibleMusic, ['music-new', 'music-old'], 'A separately published track must appear after workspace polling');
+  assert.equal(musicRequests, 2, 'Unchanged polls must keep reusing detail data');
+  db.exec("UPDATE final_edit_bgm_tracks SET status='missing' WHERE id='music-new'");
+  await pollMusic();
+  assert.deepEqual(visibleMusic, ['music-old'], 'Withdrawn tracks must leave the selectable library');
+  assert.equal(musicRequests, 3);
+  const restrictedAccess = {
+    ...createLocalAccessContext(), kind: 'team' as const,
+    assertAccess: (_type: string, id: string) => { if (id === 'music-new') throw new Error('not visible'); },
+  };
+  const restrictedRevision = () => runWithAccessContext(restrictedAccess, () => getBatchWorkspace(db, 'p1', 'b1').cards[0].arrangementRevision);
+  const withoutHiddenTrack = restrictedRevision();
+  db.exec("UPDATE final_edit_bgm_tracks SET status='ready' WHERE id='music-new'");
+  assert.equal(restrictedRevision(), withoutHiddenTrack, 'Another member\'s invisible tracks must not change the visible library revision');
+  assert.notEqual(getBatchWorkspace(db, 'p1', 'b1').cards[0].arrangementRevision, withoutHiddenTrack);
+  musicLoader.dispose();
+  db.exec('DELETE FROM final_edit_bgm_tracks');
+  console.log('PASS: published/withdrawn visible BGM refreshes cached details; unchanged and unauthorized tracks do not');
+
   assert.equal(card1.status, 'completed');
   assert.equal(card1.reviewable, true);
   assert.equal(card1.approvable, true, '口播+封面就绪才允许通过');

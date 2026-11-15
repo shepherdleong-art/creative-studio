@@ -36,6 +36,8 @@ export interface ClaimedBatchTask {
     id: string;
     attemptNumber: number;
   };
+  /** 自动恢复沿用业务意图，worker attempt 仍使用新的租约身份。 */
+  businessAttempt?: { id: string; number: number };
 }
 
 export interface BatchTaskRow {

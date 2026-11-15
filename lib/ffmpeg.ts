@@ -17,13 +17,35 @@ function bundledFfprobePath(): string | undefined {
   }
 }
 
+// Version validation launches a synchronous child on Windows. Reuse the result
+// while the executable identity is unchanged; actual media calls still execute
+// normally with their existing timeout, cancellation and fallback contracts.
+const binaryChecks = new Map<string, { identity: string; runnable: boolean; expiresAt: number }>();
 function canRunBinary(binPath: string): boolean {
-  try {
-    const r = spawnSync(binPath, ['-version'], { timeout: 5000, windowsHide: true });
-    return r.status === 0;
-  } catch {
-    return false;
+  let file = false;
+  let identity = JSON.stringify([process.cwd(), process.env.PATH, process.env.PATHEXT]);
+  if (binPath.includes('/') || binPath.includes('\\')) {
+    try {
+      const stat = fs.statSync(binPath);
+      file = stat.isFile();
+      identity = JSON.stringify([stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs, stat.mode]);
+    } catch { identity = 'missing'; }
   }
+  const now = Date.now();
+  const cached = binaryChecks.get(binPath);
+  if (cached?.identity === identity && now < cached.expiresAt) return cached.runnable;
+  let runnable = false;
+  try {
+    runnable = spawnSync(binPath, ['-version'], { timeout: 5000, windowsHide: true }).status === 0;
+  } catch { /* Preserve the existing candidate fallback. */ }
+  // Absolute executable files are rechecked on replacement. PATH commands also
+  // expire because an executable can change without changing the PATH string.
+  if (!binaryChecks.has(binPath) && binaryChecks.size >= 16) {
+    const oldest = binaryChecks.keys().next().value;
+    if (oldest !== undefined) binaryChecks.delete(oldest);
+  }
+  binaryChecks.set(binPath, { identity, runnable, expiresAt: runnable && file ? Infinity : now + (runnable ? 10_000 : 1000) });
+  return runnable;
 }
 
 export function resolveFfmpegPath(): string {

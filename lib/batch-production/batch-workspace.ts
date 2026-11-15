@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { batchSourceReview, prepareSourceConflictPreload, type BatchSourceConflictGroup } from './source-conflicts.ts';
 import { batchArtifactPathsArePaired } from './artifact-pair.ts';
+import { listBatchBgmTracks } from './bgm.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
 import { getCurrentExportDirName } from '../project-export-identity.ts';
 import { isFormalArtifactOutdated, type FormalArtifactPreload } from './formal-artifact-freshness.ts';
@@ -86,6 +88,8 @@ export interface BatchOutputCardView {
   scriptTitle: string;
   versionId: string | null;
   versionNumber: number | null;
+  /** 包含纯结构编辑和可见曲库的详情身份；不随任务进度变化。 */
+  arrangementRevision?: string;
   status: BatchOutputCardStatus;
   nextAction: string;
   /** 有当前候选版本且批次未停止 → 可以进入编辑器。 */
@@ -814,6 +818,12 @@ export function getBatchWorkspace(
     arrangements: arrangementsByVersion,
   };
 
+  // The detail view includes the live, authorized music library. Publishing or
+  // withdrawing a track in another window must invalidate it without an edit.
+  // Read it once per workspace, not once per film, using the same access filter.
+  const musicLibraryRevision = createHash('sha256').update(JSON.stringify(
+    listBatchBgmTracks(db).map(({ id, filename, durationUs }) => [id, filename, durationUs]),
+  )).digest('hex');
   const cards = parsedPlans.map(({ plan, arrangement }): BatchOutputCardView => {
     const { sourceWarnings, sourceConflictAssetIds, sourceConflictGroups } = batchSourceReview(db, arrangement, sourceConflictPreload);
     const latestAllocationOutput = allocationOutput(allocationReport, plan.id);
@@ -970,6 +980,7 @@ export function getBatchWorkspace(
       scriptTitle: plan.scriptTitle,
       versionId: plan.currentVersionId,
       versionNumber: plan.versionNumber,
+      arrangementRevision: createHash('sha256').update(plan.arrangementJson ?? '').update('\0').update(musicLibraryRevision).digest('hex'),
       status: state.status,
       nextAction: state.nextAction,
       reviewable,

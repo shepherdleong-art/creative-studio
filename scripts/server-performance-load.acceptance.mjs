@@ -19,15 +19,16 @@ import { createUiAcceptanceApi } from './team-server/ui-acceptance-fixtures.mjs'
 const repo = process.cwd();
 const arg = (name, fallback) => process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : fallback;
 if (process.argv.includes('--help')) {
-  console.log('node scripts/server-performance-load.acceptance.mjs --package <team-server-release> --evidence <fresh-directory> [--users 8] [--history 4000] [--assets-per-user 24] [--http-clients 24] [--duration 180]');
+  console.log('node scripts/server-performance-load.acceptance.mjs --package <team-server-release> --evidence <fresh-directory> [--users 8] [--history 4000] [--assets-per-user 24] [--http-clients 24] [--duration 180] [--cold-samples 20] [--cold-concurrency 2]');
   console.log('Shared loopback production package, synthetic SQLite/media, real authenticated UI/executors, mock vision provider. Includes idle/load measurements, pause/resume, stop/late-result, crash/restart, and cleanup.');
   process.exit(0);
 }
 const release = path.resolve(arg('--package', 'outputs/01-服务器/发布包/team-server-performance-20261115-r1'));
 const payload = path.join(release, 'app');
 const evidence = path.resolve(arg('--evidence', 'outputs/05-日志与排查/2026-11-15-server-performance-load-acceptance/run-01'));
-const config = { users: Number(arg('--users', 8)), history: Number(arg('--history', 4000)), assetsPerUser: Number(arg('--assets-per-user', 24)), httpClients: Number(arg('--http-clients', 24)), durationSec: Number(arg('--duration', 180)), cardsPerBatch: 100, snapshotBytes: 65536, mockDelayMs: 4000, remoteCapacity: 4, actorCapacity: 2, mediaCapacity: 2 };
+const config = { users: Number(arg('--users', 8)), history: Number(arg('--history', 4000)), assetsPerUser: Number(arg('--assets-per-user', 24)), httpClients: Number(arg('--http-clients', 24)), durationSec: Number(arg('--duration', 180)), cardsPerBatch: 100, snapshotBytes: 65536, mockDelayMs: 4000, remoteCapacity: 4, actorCapacity: 2, mediaCapacity: 2, coldSamples: Number(arg('--cold-samples', 20)), coldConcurrency: Number(arg('--cold-concurrency', 2)) };
 for (const [key, value] of Object.entries(config)) assert.ok(Number.isSafeInteger(value) && value > 0, key);
+assert.ok(config.coldSamples <= 40 && config.coldConcurrency <= 4);
 assert.ok(config.users >= 2 && config.users <= 12 && config.httpClients <= 64 && config.durationSec <= 900 && config.history <= 12000 && config.assetsPerUser <= 64);
 assert.ok(fs.existsSync(path.join(payload, 'server.js')) && fs.existsSync(path.join(release, 'release-manifest.json')));
 assert.ok(!fs.existsSync(path.join(evidence, 'result.json')), 'Use a fresh result directory');
@@ -42,7 +43,7 @@ process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE = 'local';
 register(pathToFileURL(path.join(repo, 'scripts/typescript-extension-loader.mjs')).href, import.meta.url);
 const fromRepo = file => import(pathToFileURL(path.join(repo, file)).href);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const result = { startedAt: new Date().toISOString(), status: 'running', config, host: { platform: os.platform(), arch: os.arch(), node: process.version, logicalCpus: os.cpus().length, totalMemoryBytes: os.totalmem() }, sourceCommit: manifest.sourceCommit, releaseId: manifest.releaseId, manifestSha256: sha(fs.readFileSync(path.join(release, 'release-manifest.json'))), harnessSha256: sha(fs.readFileSync(new URL(import.meta.url))), assertions: [], findings: [], phases: [], browserActions: [], errors: [], pageErrors: [], networkBlocks: [], controls: {}, cleanup: {}, realPaidProviderCalls: 0 };
+const result = { startedAt: new Date().toISOString(), status: 'running', config, host: { platform: os.platform(), arch: os.arch(), node: process.version, logicalCpus: os.cpus().length, totalMemoryBytes: os.totalmem() }, sourceCommit: manifest.sourceCommit, releaseId: manifest.releaseId, manifestSha256: sha(fs.readFileSync(path.join(release, 'release-manifest.json'))), harnessSha256: sha(fs.readFileSync(new URL(import.meta.url))), assertions: [], findings: [], phases: [], browserActions: [], coldEntries: [], arrangementRequests: {}, errors: [], pageErrors: [], networkBlocks: [], controls: {}, cleanup: {}, realPaidProviderCalls: 0 };
 const pass = text => { result.assertions.push(text); console.log('PASS: ' + text); };
 const timings = [], samples = [], mockRecords = [], held = new Map(), workers = [], contexts = [], logs = [];
 let server, sampler, browser, db, api, admin, phase = 'setup', currentHttp = 0, maxHttp = 0, maxMock = 0, mockActive = 0, round = 0;
@@ -235,16 +236,20 @@ try {
   pass('同一隔离数据集预热后完成各接口 20 次空闲基线采样');
   browser = await chromium.launch({ headless: true, args: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding'] });
   result.browser = await browser.version();
-  const polling = {}, tracked = new Map();
+  const polling = {}, tracked = new Map(), detailTracked = new Map();
   function observe(page, name) {
     page.on('pageerror', error => result.pageErrors.push({ page: name, error: error.message }));
     page.on('request', request => {
+      if (/\/outputs\/[^/]+\/arrangement$/.test(new URL(request.url()).pathname)) {
+        const detail = result.arrangementRequests[name] ??= { active: 0, max: 0, count: 0 };
+        detail.active++; detail.max = Math.max(detail.max, detail.active); detail.count++; detailTracked.set(request, name);
+      }
       const key = /\/api\/batch-production\/batches\/[^/]+\/(tasks|workspace)$/.exec(new URL(request.url()).pathname)?.[1];
       if (phase !== 'load' || !key) return;
       const label = name + ':' + key, state = polling[label] ??= { active: 0, max: 0, count: 0 };
       state.active++; state.max = Math.max(state.max, state.active); state.count++; tracked.set(request, label);
     });
-    const finish = request => { const label = tracked.get(request); if (label) { polling[label].active--; tracked.delete(request); } };
+    const finish = request => { const name = detailTracked.get(request); if (name) { result.arrangementRequests[name].active--; detailTracked.delete(request); } const label = tracked.get(request); if (label) { polling[label].active--; tracked.delete(request); } };
     page.on('requestfinished', finish); page.on('requestfailed', finish);
   }
   const expectedColors = [[253, 0, 0], [0, 254, 0], [0, 0, 254], [253, 253, 0], [254, 0, 253], [0, 254, 254], [255, 255, 255], [254, 164, 0]];
@@ -300,6 +305,50 @@ try {
   result.generalLaneMediaResourceAtGate = runtimeAtGate?.mediaResource ?? null;
   assert.equal(firstProviderReply(), false);
   result.generalLaneClaimedWhileAnalysisHeld = true;
+  // Each cold sample runs in a fresh browser context during the actual load
+  // window, alongside the original eight workspaces and 24 HTTP clients.
+  async function verifyColdEntries() {
+    let nextSample = 0, coldFailed = false;
+    const outcomes = await Promise.allSettled(Array.from({ length: Math.min(config.coldConcurrency, config.coldSamples) }, async () => {
+    while (!coldFailed) {
+      const i = nextSample++;
+      if (i >= config.coldSamples) return;
+      const worker = workers[i % workers.length];
+      const context = await browser.newContext({ locale: 'zh-CN', viewport: { width: 1536, height: 864 }, storageState: await contexts[worker.i].storageState(), recordHar: { path: path.join(evidence, 'cold-' + i + '.har'), content: 'omit' } });
+      await context.route('**/*', route => { const url = new URL(route.request().url()); if (!['http:', 'https:'].includes(url.protocol) || url.origin === baseUrl) return route.continue(); result.networkBlocks.push({ page: 'cold-' + i, origin: url.origin }); return route.abort('blockedbyclient'); });
+      const page = await context.newPage(); page.setDefaultTimeout(15000); observe(page, 'cold-' + i);
+      const row = { sample: i, employee: worker.i, at: Date.now(), activeProviderRequests: mockActive, queuedAnalysisTasks: db.prepare("SELECT COUNT(*) FROM batch_tasks WHERE workType='asset_prepare' AND status IN ('queued','running')").pluck().get(), caching: 'fresh-context-routing-disables-http-cache' };
+      result.coldEntries.push(row);
+      try {
+        const begin = performance.now();
+        await page.goto(baseUrl + '/projects/' + worker.project.id + '?tab=final-edit', { waitUntil: 'domcontentloaded' });
+        row.previewDocumentMs = performance.now() - begin;
+        await page.getByRole('tab', { name: '批量生产', exact: true }).click();
+        await page.getByRole('button', { name: '检查成片', exact: true }).click();
+        await page.getByText('成片列表 (100)', { exact: true }).waitFor();
+        await seek({ ...worker, page }, 0);
+        row.previewFirstFrameMs = performance.now() - begin;
+        const taskStart = performance.now();
+        await page.goto(baseUrl + '/team/tasks', { waitUntil: 'domcontentloaded' });
+        row.tasksDocumentMs = performance.now() - taskStart;
+        await expect(page.getByTestId('task-row')).toHaveCount(25, { timeout: 15000 });
+        row.taskListMs = performance.now() - taskStart;
+        await page.getByTestId('task-row').first().click(); await page.getByTestId('task-detail').waitFor();
+        row.taskDetailMs = performance.now() - taskStart;
+        row.finishedAt = Date.now();
+        assert.ok(row.finishedAt <= deadline, 'Cold-entry samples must finish within the actual load window');
+        row.status = 'passed';
+      } catch (error) {
+        coldFailed = true; row.status = 'failed'; row.error = String(error);
+        row.url = page.url(); row.body = await page.locator('body').innerText().catch(() => 'unavailable');
+        await page.screenshot({ path: path.join(evidence, 'cold-failure-' + i + '.png') }).catch(() => {});
+        throw error;
+      } finally { await context.close(); }
+    }
+    }));
+    const failed = outcomes.find(outcome => outcome.status === 'rejected');
+    if (failed) throw failed.reason;
+  }
   holdInitial = false;
   pass('真实分析请求等待模拟供应商时，通用 lane 已领取新代理；媒体等待与最终完成分别记录');
   await api.json(pauseWorker.session, batchPath(pauseWorker, 'control'), 'POST', { action: 'resume' });
@@ -315,13 +364,15 @@ try {
       samples.push({ at: Date.now(), phase, counts, remote });
     } catch (error) { result.errors.push({ phase, sampler: error.message }); }
   }, 1000);
-  const jobs = [];
+  const jobs = [verifyColdEntries()];
   for (let i = 0; i < config.httpClients; i++) jobs.push((async () => { let index = i; while (!abortWork && Date.now() < deadline) { await readKind(workers[i % workers.length], index++); await sleep(250); } })());
   for (const worker of workers) jobs.push((async () => { let index = 1; while (!abortWork && Date.now() < deadline) { await seek(worker, index++); if (worker.tasksPage && index % 3 === 0) { const start = performance.now(); await worker.tasksPage.goto(baseUrl + '/team/tasks', { waitUntil: 'domcontentloaded' }); await expect(worker.tasksPage.getByTestId('task-row')).toHaveCount(25, { timeout: 15000 }); result.browserActions.push({ at: Date.now(), phase, employee: worker.i, gesture: 'task-list-open', durationMs: performance.now() - start }); await worker.tasksPage.getByTestId('task-row').first().click(); await worker.tasksPage.getByTestId('task-detail').waitFor(); } await sleep(800); } })());
   const outcomes = await Promise.allSettled(jobs);
   clearInterval(sampleTimer);
   for (const outcome of outcomes) if (outcome.status === 'rejected') result.errors.push({ phase, error: outcome.reason.stack || String(outcome.reason) });
   if (result.errors.length) result.findings.push({ code: 'load_client_errors', errors: result.errors });
+  result.coldEntryMetrics = { previewFirstFrameMs: stats(result.coldEntries.map(row => row.previewFirstFrameMs)), taskListMs: stats(result.coldEntries.map(row => row.taskListMs)), taskDetailMs: stats(result.coldEntries.map(row => row.taskDetailMs)) };
+  if (result.coldEntries.length === config.coldSamples && result.coldEntries.every(row => row.status === 'passed')) pass('实际负载窗内，' + config.coldSamples + ' 个全新上下文冷进入预览、任务列表和详情通过');
   result.phases.push({ name: phase, start: loadStart, end: Date.now() });
   result.polling = polling; result.maxConcurrentHttpClients = maxHttp;
   if (!Object.values(polling).every(state => state.max <= 1)) result.findings.push({ code: 'overlapping_polling', polling });
@@ -377,6 +428,17 @@ try {
   assert.ok(recoveryOperation.some(operation => operation.status === 'unknown'), 'Sent interrupted execution must retain uncertainty');
   assert.notEqual(restartedTask.status, 'succeeded');
   result.controls.restart = { oldPid, newPid: server.pid, durationMs: performance.now() - restartStart, queuedAtCrash: beforeCrash.filter(task => task.status === 'queued').length, unsentTasksCompleted: recoveryQueued.items.length, uncertainTask: restartedTask, uncertainOperations: recoveryOperation, providerRequestsBeforeAndAfter: restartProviderRequests, duplicateSubmissions: restartProviderRequests - 1 };
+  // A second forced restart must still retain the original remote intent.
+  server.kill('SIGKILL'); await new Promise(resolve => server.once('exit', resolve)); await stopServer();
+  await startServer(); await sleep(5000);
+  result.controls.restart.secondRestartPid = server.pid;
+  result.controls.restart.providerRequestsAfterSecondRestart = mockRecords.filter(record => record.path.startsWith('/held-restart/')).length;
+  assert.equal(result.controls.restart.providerRequestsAfterSecondRestart, 1, 'Two restarts must not create another provider request');
+  const afterSecond = db.prepare('SELECT id,inputRevision,businessAttemptId,businessAttemptNo,operationKey,status FROM execution_operations WHERE taskId=?').all(restartQueued.items[0].taskId);
+  assert.equal(afterSecond.length, 1);
+  assert.equal(afterSecond[0].id, recoveryOperation[0].id);
+  assert.equal(afterSecond[0].status, 'unknown');
+  result.controls.restart.afterSecondRestart = afterSecond;
   await seek(workers[0], 5);
   const afterRestartList = await api.json(workers[0].session, '/api/team/tasks'); assert.ok(afterRestartList.items.every(item => item.actorUserId === workers[0].owner));
   if (restartProviderRequests !== 1) {
@@ -385,6 +447,11 @@ try {
   } else pass('重启后已发请求保留 unknown，未重复提交');
   pass('重启后未发送任务恢复完成，原浏览器重新取帧和列表成功');
   for (const worker of [stopWorker, restartWorker, ...workers]) await api.json(worker.session, batchPath(worker, 'control'), 'POST', { action: 'stop' });
+  // Fetch abortion completes before Playwright receives requestfailed. A keyed
+  // workspace remount may therefore show three current reads plus three retiring
+  // reads in the transport event log; the loader regression checks three current.
+  result.arrangementConcurrency = { currentLoaderLimit: 3, transportLimitIncludingRetiring: 6 };
+  assert.ok(Object.values(result.arrangementRequests).every(row => row.max <= 6), 'Arrangement transport must remain bounded across aborted workspace replacements');
   result.integrity = db.pragma('integrity_check', { simple: true }); assert.equal(result.integrity, 'ok');
   assert.equal(db.prepare("SELECT COUNT(*) FROM execution_operations WHERE id LIKE 'load-history-%' AND status='succeeded' AND length(inputSnapshotJson)=?").pluck().get(Buffer.byteLength(snapshot)), config.history);
   result.historicalRecordsPreserved = config.history;

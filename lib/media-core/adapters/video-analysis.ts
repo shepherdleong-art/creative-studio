@@ -4,6 +4,7 @@ import { runFfmpeg, probeDurationSec } from '../../ffmpeg.ts';
 import { detectVideoScenes } from '../scene-detect.ts';
 import { buildVideoAnalysisPrompt, buildVideoFrameSamples, type VideoFrameSample } from './video-analysis-prompt.ts';
 import { withMediaResource } from '../media-resource-gate.ts';
+import { isExecutionDeferredError } from '../execution/waiting.ts';
 import { waitForAnalysisAdmission } from '../analysis-concurrency.ts';
 
 interface RawAnalysis {
@@ -19,7 +20,7 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean) : [];
 }
 
-export async function analyzeVideoWithVision(input: {
+interface VideoAnalysisInput {
   filePath: string;
   videoJobId: string;
   providerId: string;
@@ -31,8 +32,13 @@ export async function analyzeVideoWithVision(input: {
   executionTaskId?: string;
   inputRevision?: string;
   businessAttempt?: { id: string; number: number };
-}) {
-  const prepared = await withMediaResource({
+  /** Only callers that have fully verified immutable input may reuse preparation. */
+  verifiedContentFingerprint?: string;
+  assertCurrentInput?: () => void;
+}
+
+function prepareVideoFrames(input: VideoAnalysisInput) {
+  return withMediaResource({
     taskId: input.executionTaskId ?? `video-analysis:${input.videoJobId}`,
     step: 'analysis-frames',
     wait: true,
@@ -74,6 +80,44 @@ export async function analyzeVideoWithVision(input: {
       images: extracted.map(({ image }) => image),
     };
   });
+}
+
+type PreparedFrames = Awaited<ReturnType<typeof prepareVideoFrames>>;
+interface PreparationCache { bytes: number; entries: Map<string, { value: PreparedFrames; bytes: number }> }
+function preparationCache(): PreparationCache {
+  const key = Symbol.for('creative-studio.verified-analysis-preparation');
+  const globals = globalThis as Record<PropertyKey, unknown>;
+  return (globals[key] ??= { bytes: 0, entries: new Map() }) as PreparationCache;
+}
+function forgetPreparation(key: string | null, value?: PreparedFrames): void {
+  if (!key) return;
+  const cache = preparationCache(), entry = cache.entries.get(key);
+  if (!entry || (value && entry.value !== value)) return;
+  cache.bytes -= entry.bytes; cache.entries.delete(key);
+}
+function rememberPreparation(key: string, value: PreparedFrames): void {
+  const cache = preparationCache();
+  const bytes = value.images.reduce((sum, image) => sum + image.imageBase64.length * 2, 0);
+  forgetPreparation(key);
+  if (bytes > 64 * 1024 * 1024) return;
+  while (cache.entries.size >= 16 || cache.bytes + bytes > 64 * 1024 * 1024) forgetPreparation(cache.entries.keys().next().value!);
+  cache.entries.set(key, { value, bytes }); cache.bytes += bytes;
+}
+
+export async function analyzeVideoWithVision(input: VideoAnalysisInput) {
+  input.signal?.throwIfAborted();
+  const cacheKey = input.verifiedContentFingerprint && input.executionTaskId && input.inputRevision && input.assertCurrentInput
+    ? JSON.stringify([input.executionTaskId, input.inputRevision, input.verifiedContentFingerprint]) : null;
+  let prepared = cacheKey ? preparationCache().entries.get(cacheKey)?.value : undefined;
+  if (!prepared) {
+    prepared = await prepareVideoFrames(input);
+    input.signal?.throwIfAborted();
+    input.assertCurrentInput?.();
+    if (cacheKey) rememberPreparation(cacheKey, prepared);
+  } else {
+    input.assertCurrentInput?.();
+    rememberPreparation(cacheKey!, prepared);
+  }
   const { durationSec, durationUs, detectedScenes, frames, images } = prepared;
   const { completeJson } = await import('../../script-providers/index.ts');
   const request = () => completeJson<RawAnalysis>({
@@ -96,7 +140,13 @@ export async function analyzeVideoWithVision(input: {
       businessAttempt: input.businessAttempt,
     },
   });
-  const result = await (input.waitForExecution ? waitForAnalysisAdmission(request, input.signal) : request());
+  let result: RawAnalysis;
+  try { result = await (input.waitForExecution ? waitForAnalysisAdmission(request, input.signal) : request()); }
+  catch (error) {
+    if (!isExecutionDeferredError(error)) forgetPreparation(cacheKey, prepared);
+    throw error;
+  }
+  forgetPreparation(cacheKey, prepared);
   const rawScenes = Array.isArray(result.scenes) ? result.scenes : [];
   const scenes = detectedScenes.map((range, index) => {
     const raw = rawScenes[index] && typeof rawScenes[index] === 'object' ? rawScenes[index] as Record<string, unknown> : {};
