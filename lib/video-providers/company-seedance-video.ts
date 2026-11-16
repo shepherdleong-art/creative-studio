@@ -7,12 +7,16 @@ export function createCompanySeedanceVideoAdapter(fetchImpl: typeof fetch = fetc
   const gatewayFetch: typeof fetch = async (input, init) => {
     let request = init;
     if (init?.method === 'POST' && typeof init.body === 'string') {
-      const body = JSON.parse(init.body) as Record<string, unknown>;
+      let body = JSON.parse(init.body) as Record<string, unknown>;
       const content = body.content as Array<{ type: string; text?: string }>;
       // 普通生成保留 LiteLLM /v1/videos 的 prompt/seconds 外层字段，原生 content 完整透传。
       // LiteLLM 要求 prompt 参数；Final 仅用空字符串占传输层位置，不能继承创作提示词。
       body.prompt = '';
-      if (!content.some((item) => item.type === 'draft_task')) {
+      if (content.some((item) => item.type === 'draft_task')) {
+        // Promotion has a stricter company contract than ordinary creation or direct Ark.
+        // Even false/MP4 optional defaults are rejected. Build only the required fields.
+        body = { model: body.model, content, resolution: '1080p', prompt: '' };
+      } else {
         body.prompt = content.find((item) => item.type === 'text')?.text ?? '';
         body.seconds = String(body.duration);
       }

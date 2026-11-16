@@ -137,8 +137,13 @@ export function useCanvasSavePipeline(options: {
     return () => {
       window.removeEventListener('beforeunload', onBeforeUnload);
       window.removeEventListener('pagehide', onPageHide);
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+      // SPA navigation does not fire pagehide. Finish any queued/in-flight save
+      // through the same serialized pipeline before discarding this editor.
+      void saveWithCoalescing();
     };
-  }, [canvasId, nodesRef, edgesRef]);
+  }, [canvasId, nodesRef, edgesRef, saveWithCoalescing]);
 
   return {
     saveState,

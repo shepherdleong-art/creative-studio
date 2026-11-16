@@ -24,7 +24,7 @@ import {
   type NodeChange,
   type XYPosition,
 } from '@xyflow/react';
-import { checkCanvasConnection, reconcileCanvasGraph } from '@/lib/creative-canvas/graph';
+import { CANVAS_DRAFT_FINAL_HANDLE, checkCanvasConnection, reconcileCanvasGraph } from '@/lib/creative-canvas/graph';
 import { nodeKindSpec } from '@/lib/creative-canvas/node-kinds';
 import type {
   CanvasGenerationMode,
@@ -122,6 +122,7 @@ export interface CanvasEditorController {
   undo: () => void;
   redo: () => void;
   runNode: (nodeId: string, options?: { variantCount?: number }) => Promise<void>;
+  runDraftFinal: (nodeId: string, assetId: string, requestKey: string) => Promise<boolean>;
   previewBranch: (startNodeId: string, reuseStart: boolean) => Promise<void>;
   confirmBranch: () => Promise<void>;
   cancelBranchPreview: () => void;
@@ -158,7 +159,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
   const nodesRef = useRef<CanvasFlowNode[]>([]);
   const edgesRef = useRef<Edge[]>([]);
   const dragSnapshotRef = useRef<CanvasHistorySnapshot | null>(null);
-  /** 已自动物化过的产物 assetId；null = 尚未完成首次投影建档。 */
+  /** 本次会话见过的结果；首次加载结合服务端展示回执补回离开期间完成的产物。 */
   const flownAssetIdsRef = useRef<Set<string> | null>(null);
 
   const setGraphState = useCallback((nextNodes: CanvasFlowNode[], nextEdges: Edge[]) => {
@@ -246,7 +247,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
       const id = `n-${crypto.randomUUID()}`;
       const sourceTitle = String(source.data.title ?? '').trim();
       const desired = {
-        x: source.position.x + (source.measured?.width ?? 300) + 80,
+        x: source.position.x + (source.measured?.width ?? source.width ?? (Number(source.style?.width) || 300)) + 80,
         y: source.position.y,
       };
       nextNodes.push({
@@ -255,14 +256,15 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
         style: { width: nodeKindSpec('material').defaultWidth },
         position: findOpenPosition(desired, nextNodes, 'material'),
         data: {
-          title: candidate.isTailFrame ? (sourceTitle ? `${sourceTitle} · 尾帧` : '返回尾帧') : sourceTitle ? `${sourceTitle} · 结果` : '生成结果',
+          title: candidate.isTailFrame ? (sourceTitle ? `${sourceTitle} · 尾帧` : '返回尾帧') : source.type === 'material' ? `${sourceTitle || '视频'} · 正式版` : sourceTitle ? `${sourceTitle} · 结果` : '生成结果',
           assetId: candidate.assetId,
-          mediaKind: candidate.isTailFrame ? 'image' : source.type === 'video-generation' ? 'video' : 'image',
+          mediaKind: candidate.isTailFrame ? 'image' : source.type === 'video-generation' || source.data.mediaKind === 'video' ? 'video' : 'image',
         },
       });
       nextEdges.push({
         id: `e-${crypto.randomUUID()}`,
         source: source.id,
+        ...(source.type === 'material' ? { sourceHandle: CANVAS_DRAFT_FINAL_HANDLE } : {}),
         target: id,
         type: 'canvas',
         markerEnd: CANVAS_EDGE_MARKER_END,
@@ -275,14 +277,17 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     runtime.update(canvas.nodeStates, canvas.tasks ?? [], canvas.nodeCandidates ?? []);
     const candidates = (canvas.nodeCandidates ?? []).flatMap((candidate) => [
       candidate,
-      ...(candidate.tailAssetId ? [{ ...candidate, assetId: candidate.tailAssetId, isTailFrame: true }] : []),
+      ...(candidate.tailAssetId ? [{ ...candidate, assetId: candidate.tailAssetId, materialized: candidate.tailMaterialized, isTailFrame: true }] : []),
     ]);
     if (flownAssetIdsRef.current === null) {
-      // 首次投影只建档：打开画布前的旧结果不补飞，否则每次进画布都刷屏
-      flownAssetIdsRef.current = new Set(candidates.map((candidate) => candidate.assetId));
-      return;
+      // Saved presentations include intentionally deleted results; unseen completions
+      // must be materialized on first load as well as during polling.
+      flownAssetIdsRef.current = new Set(candidates.filter((candidate) => candidate.materialized).map((candidate) => candidate.assetId));
     }
     const known = flownAssetIdsRef.current;
+    for (const node of nodesRef.current) {
+      if (node.type === 'material' && node.data.assetId) known.add(node.data.assetId);
+    }
     const fresh = candidates.filter((candidate) => !known.has(candidate.assetId));
     if (fresh.length === 0) return;
     for (const candidate of fresh) known.add(candidate.assetId);
@@ -295,8 +300,9 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
       resetBaseline(canvas.graphRevision);
       setName(canvas.name);
       applyServerGraph(canvas.graph);
-      updateRuntimeFromCanvas(canvas);
+      flownAssetIdsRef.current = null;
       setSaveState('saved');
+      updateRuntimeFromCanvas(canvas);
       setLoadState('ready');
     } catch (error) {
       setLoadState('error');
@@ -318,9 +324,11 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
   // 任务轮询：只刷新运行投影；有未保存草稿时不覆盖编辑内容。
   useEffect(() => {
     if (loadState !== 'ready') return undefined;
+    let mounted = true;
     const timer = setInterval(async () => {
       try {
         const { canvas } = await canvasApi.get(canvasId);
+        if (!mounted) return;
         updateRuntimeFromCanvas(canvas);
         // 轮询只更新运行投影。若服务端图已在另一页面更新，保留本地图与其基准
         // revision，让下一次本地保存明确收到 409，而不是用旧图夺取新 revision。
@@ -328,7 +336,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
         // 轮询失败不打断编辑；下一轮继续。
       }
     }, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
+    return () => { mounted = false; clearInterval(timer); };
   }, [canvasId, loadState, runtime]);
 
   const onNodesChange = useCallback((changes: NodeChange<CanvasFlowNode>[]) => {
@@ -574,6 +582,25 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     }
   }, [canvasId, revisionRef, saveWithCoalescing, toasts, updateRuntimeFromCanvas]);
 
+  const runDraftFinal = useCallback(async (nodeId: string, assetId: string, requestKey: string): Promise<boolean> => {
+    if (!await saveWithCoalescing()) return false;
+    try {
+      await canvasApi.run(canvasId, {
+        mode: 'single', targetNodeId: nodeId, draftAssetId: assetId,
+        requestKey, expectedGraphRevision: revisionRef.current,
+      });
+    } catch (error) {
+      toasts.push('error', `转正式失败：${canvasErrorText(error)}`);
+      return false;
+    }
+    toasts.push('success', '正式版任务已提交，完成后会出现在样片右侧。');
+    try {
+      const { canvas } = await canvasApi.get(canvasId);
+      updateRuntimeFromCanvas(canvas);
+    } catch { /* The accepted task is durable; polling/reopening will recover it. */ }
+    return true;
+  }, [canvasId, revisionRef, saveWithCoalescing, toasts, updateRuntimeFromCanvas]);
+
   const previewBranch = useCallback(async (startNodeId: string, reuseStart: boolean) => {
     const saved = await saveWithCoalescing();
     if (!saved) return;
@@ -667,6 +694,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     undo: history.undo,
     redo: history.redo,
     runNode,
+    runDraftFinal,
     previewBranch,
     confirmBranch,
     cancelBranchPreview,

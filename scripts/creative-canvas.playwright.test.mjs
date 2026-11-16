@@ -819,23 +819,19 @@ async function seedanceSuite(page) {
   await page.screenshot({ path: screenshot });
   await page.unroute('**/api/canvas/models');
   const beforeFormal = await nodeIds(page, 'video-generation');
+  // UI-only promotion: the real planner/adapter contract has separate regression tests.
+  await page.route('**/api/canvas/*/runs', route => route.fulfill({ json: {} }));
   await material.getByRole('button', { name: '生成正式版', exact: true }).evaluate((element) => element.click());
-  await page.waitForFunction((count) => document.querySelectorAll('[data-node-kind="video-generation"]').length === count + 1, beforeFormal.length);
-  const formalId = (await nodeIds(page, 'video-generation')).find((nodeId) => !beforeFormal.includes(nodeId));
-  const formal = page.locator(`.react-flow__node[data-id="${formalId}"]`);
-  await formal.getByText('已绑定固定样片。', { exact: false }).waitFor();
-  assert.equal(await formal.locator('[data-testid="model-select"]').inputValue(), sourceCapability.key, '保留样片原渠道');
+  await page.waitForFunction(() => document.querySelector('[data-testid="status-message"]')?.textContent?.includes('正式版任务已提交'));
+  assert.deepEqual(await nodeIds(page, 'video-generation'), beforeFormal, '转正式不新增生成节点');
+  assert.equal(runPosts.length, 1, '一次点击直接提交一个正式版任务');
   await waitSaved(page);
-  const formalCanvasId = new URL(page.url()).pathname.split('/').pop();
-  const formalGraph = (await (await page.request.get(`${baseUrl}/api/canvas/${formalCanvasId}`)).json()).canvas.graph;
-  assert.equal(formalGraph.edges.filter((edge) => edge.target === formalId).length, 0, '样片已绑定，不需额外连线');
-  await page.locator(`.react-flow__edge[data-id="draft-binding:${formalId}"]`).waitFor();
-  assert.equal(await formal.getByLabel('返回尾帧', { exact: true }).count(), 0, '转正式不显示不支持的返回尾帧选项');
   await page.reload();
-  await page.locator(`.react-flow__edge[data-id="draft-binding:${formalId}"]`).waitFor();
-  assert.equal(runPosts.length, 0, '选定样片只创建节点，不自动发起付费生成');
+  await page.locator('[data-testid="draft-source"]').waitFor();
+  assert.equal(runPosts.length, 1, '刷新不重复提交');
+  await page.unroute('**/api/canvas/*/runs');
   await page.unroute('**/api/canvas/assets/*/draft');
-  return { sixModes: true, companySixModes: true, configuredImages: 5, refreshOnFocus: true, newAudioEnabled: true, draftResolutionLocked: true, directPreferenceRestored: true, modelSwitchExplained: true, movPlaybackProgress: true, originalMovDownloadPreserved: true, generationRequests: 0, screenshot };
+  return { sixModes: true, companySixModes: true, configuredImages: 5, refreshOnFocus: true, newAudioEnabled: true, draftResolutionLocked: true, directPreferenceRestored: true, modelSwitchExplained: true, movPlaybackProgress: true, originalMovDownloadPreserved: true, generationRequests: 1, screenshot };
 }
 
 async function editorSuite(page) {

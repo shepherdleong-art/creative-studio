@@ -389,7 +389,7 @@ function assertConnectionsCompatible(graph: CanvasGraph): void {
     const target = byId.get(edge.target);
     if (!source || !target) continue;
     // 溯源连线（生成 → 素材）例外：只记录结果出处，不参与端口类型匹配
-    if (isGenerationNode(source) && target.kind === 'material') continue;
+    if (isProvenanceEdge(graph, edge)) continue;
     if (!isGenerationNode(target)) {
       fail('target_not_generation', `连线 ${edge.id} 的目标不是生成节点。`);
     }
@@ -440,11 +440,18 @@ export type CanvasConnectionCheck =
   | { ok: true }
   | { ok: false; code: CanvasConnectionRejectionCode; message: string };
 
-/** 溯源连线：生成节点 → 素材节点。只记录结果出处（结果物化），不产生参考槽位、不参与计划。 */
-export function isProvenanceEdge(graph: CanvasGraph, edge: Pick<CanvasGraphEdge, 'source' | 'target'>): boolean {
+/** Only this internal handle permits sample → final material lineage. */
+export const CANVAS_DRAFT_FINAL_HANDLE = 'draft-final';
+
+/** Result lineage never creates a reference slot or execution dependency. */
+export function isProvenanceEdge(graph: CanvasGraph, edge: Pick<CanvasGraphEdge, 'source' | 'target' | 'sourceHandle'>): boolean {
   const source = findGraphNode(graph, edge.source);
   const target = findGraphNode(graph, edge.target);
-  return Boolean(source && target && isGenerationNode(source) && target.kind === 'material');
+  return Boolean(source && target?.kind === 'material' && (
+    isGenerationNode(source)
+    || (edge.sourceHandle === CANVAS_DRAFT_FINAL_HANDLE && source.kind === 'material'
+      && source.data.mediaKind === 'video')
+  ));
 }
 
 export function checkCanvasConnection(graph: CanvasGraph, edge: CanvasGraphEdge): CanvasConnectionCheck {
@@ -456,7 +463,7 @@ export function checkCanvasConnection(graph: CanvasGraph, edge: CanvasGraphEdge)
   if (edge.source === edge.target) {
     return { ok: false, code: 'self_loop', message: '节点不能连接到自己。' };
   }
-  const provenance = isGenerationNode(source) && target.kind === 'material';
+  const provenance = isProvenanceEdge(graph, edge);
   if (!isGenerationNode(target) && !provenance) {
     return { ok: false, code: 'target_not_generation', message: '只有生成节点接受输入。' };
   }
