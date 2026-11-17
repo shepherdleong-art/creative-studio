@@ -246,8 +246,8 @@ export default function BatchReviewPreviewDock({
           <div className={styles.previewScreen}>
             <BatchTimelinePreview
               key={`${previewFilm.planId}:${packagingEditable}:${coverPreviewRequest}`}
-              overlay={arrangement.packaging?.enabled ? <BatchPackagingOverlay key={`${previewFilm.planId}:${arrangement.editRevision}`} view={arrangement} editable={packagingEditable} onSave={onSourceApply}
-                src={`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(previewFilm.planId)}/packaging-preview?projectId=${encodeURIComponent(projectId)}&format=html&edit=1&revision=${arrangement.editRevision}`}
+              overlay={arrangement.packaging?.enabled ? <BatchPackagingOverlay key={`${previewFilm.planId}:${arrangement.outputVersionId}`} view={arrangement} editable={packagingEditable} onSave={onSourceApply}
+                src={`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(previewFilm.planId)}/packaging-preview?projectId=${encodeURIComponent(projectId)}&format=html&edit=1`}
                 timeSec={playheadSec + INTRO_SEC} /> : null}
               clips={clips}
               narrationDurationUs={arrangement.narration?.durationUs}
