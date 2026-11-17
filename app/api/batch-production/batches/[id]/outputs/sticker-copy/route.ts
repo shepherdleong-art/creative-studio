@@ -14,6 +14,7 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -47,7 +48,7 @@ function parseRestoreTarget(value: unknown): BatchStickerRestoreTarget {
 }
 
 /** 批次级贴纸复制与整体撤销/重做恢复；任一目标失败时整个事务回滚。 */
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
@@ -80,3 +81,4 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return batchRouteErrorResponse(error, 'batch_sticker_copy_failed', '贴纸复制或恢复失败');
   }
 }
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/outputs/sticker-copy', 'POST', __teamRoutePOST);

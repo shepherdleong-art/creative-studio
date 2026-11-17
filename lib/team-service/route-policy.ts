@@ -73,6 +73,7 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/batch-production/batches/[id]/exports/reveal': 'POST',
   '/api/batch-production/batches/[id]/exports': 'POST',
   '/api/batch-production/batches/[id]/outputs/review': 'POST',
+  '/api/batch-production/batches/[id]/outputs/sticker-copy': 'POST',
   '/api/batch-production/batches/[id]/outputs/[planId]/arrangement': 'GET',
   '/api/batch-production/batches/[id]/outputs/[planId]/clips': 'POST',
   '/api/batch-production/batches/[id]/outputs/[planId]/cover': 'POST',

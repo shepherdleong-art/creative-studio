@@ -1,19 +1,40 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import type { BatchOutputClipEditView } from '@/lib/batch-production/output-arrangement';
 import type { FinalEditPackagingConfig } from '@/lib/media-core/packaging-vars';
 import { FontPicker } from '@/components/mixcut/FontPicker';
 import { TEMPLATES, TemplateThumb } from '@/components/packaging/PackagingTemplates';
+import type { StickerAssetChoice } from '@/components/mixcut/StickerPanel';
+import BatchStickerPanel, { type BatchStickerPanelView } from './BatchStickerPanel';
 import styles from '@/components/mixcut/mixcut-content.module.css';
 
 const fallback: FinalEditPackagingConfig = { enabled: false, template: 'overlay-poster', varsOverrides: {} };
+type PackagingTab = 'settings' | 'stickers';
 
-export default function BatchPackagingEditor({ view, onSave, onJumpToCover, draft = false }: {
-  view: Pick<BatchOutputClipEditView, 'packaging' | 'editable'>;
+export default function BatchPackagingEditor({
+  view,
+  onSave,
+  onJumpToCover,
+  draft = false,
+  stickerSelection = null,
+  playheadSec = 0,
+  onAddSticker,
+  onStickerDragStart,
+  onStickerDragEnd,
+  onPlaySticker,
+  onCopyStickers,
+}: {
+  view: BatchStickerPanelView;
   onSave: (config: FinalEditPackagingConfig, reextract?: boolean) => Promise<boolean>;
   onJumpToCover?: () => void;
   draft?: boolean;
+  stickerSelection?: { stickerId?: string } | null;
+  playheadSec?: number;
+  onAddSticker?: (choice: StickerAssetChoice) => void;
+  onStickerDragStart?: (choice: StickerAssetChoice) => void;
+  onStickerDragEnd?: () => void;
+  onPlaySticker?: (stickerId: string) => void;
+  onCopyStickers?: () => void;
 }) {
   const config = view.packaging ?? fallback;
   const [busy, setBusy] = useState(false);
@@ -21,6 +42,12 @@ export default function BatchPackagingEditor({ view, onSave, onJumpToCover, draf
   const [message, setMessage] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
   const disabled = busy || !view.editable;
+  const [activeTab, setActiveTab] = useState<PackagingTab>('settings');
+  const [previousStickerSelection, setPreviousStickerSelection] = useState<typeof stickerSelection>(null);
+  if (stickerSelection?.stickerId && stickerSelection !== previousStickerSelection) {
+    setPreviousStickerSelection(stickerSelection);
+    setActiveTab('stickers');
+  }
   const save = async (next: FinalEditPackagingConfig, reextract = false) => {
     if (saving.current || !view.editable) return;
     saving.current = true; setBusy(true); setMessage('');
@@ -35,6 +62,47 @@ export default function BatchPackagingEditor({ view, onSave, onJumpToCover, draf
         <span className={styles.pkSwitchLabel}>{config.enabled ? '已开启' : '已关闭'}</span><span className={styles.pkSwitchKnob} />
       </button>
     </div>
+    {!draft && <>
+      <div
+        className={`${styles.previewModeTabs} ${styles.packagingTabs}`}
+        role="tablist"
+        aria-label="包装编辑页面"
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+          event.preventDefault();
+          const next = activeTab === 'settings' ? 'stickers' : 'settings';
+          setActiveTab(next);
+          event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next === 'settings' ? 0 : 1]?.focus();
+        }}
+      >
+        {(['settings', 'stickers'] as const).map((tab) => <button
+          key={tab}
+          type="button"
+          role="tab"
+          id={`batch-packaging-${tab}-tab`}
+          aria-controls={`batch-packaging-${tab}-panel`}
+          aria-selected={activeTab === tab}
+          tabIndex={activeTab === tab ? 0 : -1}
+          className={`${styles.previewModeTab} ${activeTab === tab ? styles.previewModeTabActive : ''}`}
+          onClick={() => setActiveTab(tab)}
+        >{tab === 'settings' ? '包装设置' : '贴纸'}</button>)}
+      </div>
+      <div id="batch-packaging-stickers-panel" role="tabpanel" aria-labelledby="batch-packaging-stickers-tab" hidden={activeTab !== 'stickers'}>
+        {activeTab === 'stickers' && <BatchStickerPanel
+          active
+          view={{ ...view, packaging: config }}
+          playheadSec={playheadSec}
+          selectedStickerId={stickerSelection?.stickerId ?? ''}
+          onSave={(next) => onSave(next)}
+          onAdd={(choice) => onAddSticker?.(choice)}
+          onDragStart={(choice) => onStickerDragStart?.(choice)}
+          onDragEnd={() => onStickerDragEnd?.()}
+          onPlaySticker={(stickerId) => onPlaySticker?.(stickerId)}
+          onCopyToOtherFilms={onCopyStickers}
+        />}
+      </div>
+    </>}
+    {(draft || activeTab === 'settings') && <div id={draft ? undefined : 'batch-packaging-settings-panel'} role={draft ? undefined : 'tabpanel'} aria-labelledby={draft ? undefined : 'batch-packaging-settings-tab'}>
     {!config.enabled && <p className="text-ink-tertiary">开启后可选择模板、字体，包装层直接叠加在预览窗口并同步播放。</p>}
     {config.enabled && <>
       <div className={`${styles.tplGrid} ${styles.tplGridCompact}`} role="radiogroup" aria-label="包装模板">
@@ -69,6 +137,7 @@ export default function BatchPackagingEditor({ view, onSave, onJumpToCover, draf
       </div>
       <p className="text-ink-tertiary">{draft ? '点击「应用封面」一起保存。模板与字体也作用于正片；正片卖点时序保持不变。' : '修改自动保存；预览为近似效果，最终以导出渲染为准。'}</p>
     </>}
+    </div>}
     {message && <p role="alert" className="text-fail">{message}</p>}
   </section>;
 }
