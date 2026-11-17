@@ -105,6 +105,12 @@ try {
     if (Math.max(data[index], data[index + 1], data[index + 2]) > 80) bright += 1;
   }
   assert.ok(bright > 100, `上 40% 正文区域未检测到包装像素：${bright}`);
+  const beforeRejectedRender = fs.readFileSync(videoPath);
+  await assert.rejects(() => renderVideoPackaging({ videoPath, coverPath, totalSec: bodySec + coverSec,
+    config: { ...resolvedConfig, layoutResolution: { ...resolution, elements: { ...resolution.elements,
+      missing: { id: 'missing', kind: 'pointCue', centerXPct: 50, centerYPct: 20, positionPinned: false } } } },
+  }), /布局|Waiting failed|timeout/i, '缺少重放元素时不能开始正式渲染');
+  assert.deepEqual(fs.readFileSync(videoPath), beforeRejectedRender, '布局未 ready 不能替换实际成片');
   console.log('v2 真实导出测试通过：冻结模板/贴纸/引擎、MP4 与封面、上 40% 正文像素均通过。');
 } finally {
   if (fs.existsSync(`${templateIndex}.v2-test-backup`)) fs.renameSync(`${templateIndex}.v2-test-backup`, templateIndex);

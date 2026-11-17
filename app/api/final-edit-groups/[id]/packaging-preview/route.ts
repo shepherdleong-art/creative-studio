@@ -30,6 +30,7 @@ import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { resolvePackagingStickerAssets } from '@/lib/media-core/packaging-sticker-assets';
 import { packagingPreviewResources } from '@/lib/media-core/packaging-preview-resources';
 import type { PackagingTemplateId } from '@/lib/media-core/packaging-vars';
+import { OUTPUT_PRESETS } from '@/lib/final-edit/types';
 
 
 async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -45,10 +46,12 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
     const syncMode = query.get('sync') === '1';
     const editMode = query.get('edit') === '1';
     const db = getDb();
-    const group = getFinalEditWorkspace().load(groupId);
+    let group = getFinalEditWorkspace().load(groupId);
     const variant = group.variants.find((item) => item.id === variantId) || group.variants[0] || null;
     if (!variant) throw new FinalEditError('variant_not_found', '成片草稿不存在', 404);
-    const templateDir = resolvePackagingTemplateDir(resolvePackagingDir(), template);
+    const templateDir = group.packaging.layoutRuntimeBundleVersion === 2 && group.packaging.layoutResolution?.status === 'resolved'
+      ? packagingPreviewResources({ ...group.packaging, template: template as PackagingTemplateId }, `/api/final-edit-groups/${encodeURIComponent(groupId)}/packaging-layout-resources`).templateDir
+      : resolvePackagingTemplateDir(resolvePackagingDir(), template);
 
     const storageRoot = path.join(dataRoot(), 'storage');
     const project = loadProjectPackagingData(db, group.projectId);
@@ -91,7 +94,8 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
       pointCuesMode = ensured.mode;
       // 用提取后的最新键做过期比对：刚重提取完的组不会误报 stale（§7 手动编辑保护组保留旧键 → stale）
       pointCuesKey = ensured.pointCuesKey;
-    } catch { /* 提取失败沿用已存/空 */ }
+      if (group.packaging.layoutRuntimeBundleVersion === 2) group = getFinalEditWorkspace().load(groupId);
+    } catch (error) { if (group.packaging.layoutRuntimeBundleVersion === 2) throw error; /* 旧配置提取失败沿用已存/空 */ }
     // §7：比对已存 pointCuesKey 与当前口播内容哈希（v2: 前缀口径，与 ensurePackagingPointCues 一致）
     const pointCuesStale = pointCuesKey !== computePointCuesKey(loadGroupNarrationText(db, groupId));
     const pointCuesEdited = group.packaging.pointCuesEdited === true;
@@ -101,7 +105,9 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
     const timeline = { coverSec, totalSec, pointCues, pointCuesMode };
 
     if (format === 'json') return NextResponse.json({ vars, defaults, frameUrl, template, timeline, layouts, stickers: group.packaging.stickers ?? [], stickerDefaults: group.packaging.stickerDefaults ?? { animation: 'follow-template' }, layoutResolution: group.packaging.layoutResolution, pointCuesStale, pointCuesEdited }, { headers: { 'Cache-Control': 'no-store' } });
-    if (group.packaging.layoutRuntimeBundleVersion === 2 && group.packaging.layoutResolution?.status !== 'resolved') {
+    if (group.packaging.layoutRuntimeBundleVersion === 2 && (group.packaging.layoutResolution?.status !== 'resolved'
+      || group.packaging.layoutResolution.outputWidth !== OUTPUT_PRESETS[variant.outputPreset].width
+      || group.packaging.layoutResolution.outputHeight !== OUTPUT_PRESETS[variant.outputPreset].height)) {
       return new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><body style="margin:0;display:grid;place-items:center;background:transparent;color:#6e6e73;font:13px -apple-system,BlinkMacSystemFont,sans-serif">正在更新自动布局…</body></html>', { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
     }
 

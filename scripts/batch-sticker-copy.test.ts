@@ -410,6 +410,19 @@ try {
   }));
   assert.deepEqual(parsed('ov-v2-target-two').packaging.stickers, v2Copied.targets[1].after.stickers, '预检期间来源变化时目标不得写入');
 
+  const expectedFrozenSource = sourceExpectation('v2-source');
+  const frozenTarget = target('v2-target-two');
+  const frozenTargetRaw = raw(frozenTarget.expectedOutputVersionId);
+  await assert.rejects(() => copyBatchOutputStickers(db, 'p1', 'b1', {
+    sourcePlanId: 'v2-source', ...expectedFrozenSource, targets: [frozenTarget],
+  }, {
+    resolveLayout: async input => {
+      db.prepare("INSERT INTO batch_output_versions (id,planId,versionNumber,arrangementJson,createdAt) SELECT 'ov-v2-source-new',planId,2,arrangementJson,createdAt FROM batch_output_versions WHERE id=?").run(expectedFrozenSource.expectedSourceOutputVersionId);
+      db.prepare("UPDATE batch_output_plans SET currentVersionId='ov-v2-source-new' WHERE id='v2-source'").run();
+      return resolveLayout(input);
+    },
+  }), error => error instanceof BatchDomainError && error.code === 'conflict');
+  assert.equal(raw(frozenTarget.expectedOutputVersionId), frozenTargetRaw, 'Source version change must cause zero target writes');
   console.log('批次贴纸复制测试通过：双目标、字段隔离、替换、来源不变、审核清除、整体回滚、整体撤销/重做及 v2 预检。');
 } finally {
   db.close();

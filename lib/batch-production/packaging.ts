@@ -79,8 +79,8 @@ export async function prepareBatchPackagingConfig(db: Database.Database, project
       pointCuesLayoutVersion,
       stickers: incomingConfig.stickers,
     }),
-    layoutResolution: incomingConfig.layoutResolution
-      ?? (current.layoutResolution ? { ...current.layoutResolution, status: 'stale' as const } : undefined),
+    // 普通保存不能回填客户端携带的旧解析结果；只有布局命令可写 resolved。
+    layoutResolution: current.layoutResolution ? { ...current.layoutResolution, status: 'stale' as const } : undefined,
   };
   for (const slot of [config.titleFont, config.subtitleFont, config.pointFont]) {
     if (slot && (!safeFontFilename(slot.file) || !fs.existsSync(path.join(userFontDir(), slot.file)))) throw new BatchDomainError('invalid_input', '所选包装字体不存在，请重新选择');

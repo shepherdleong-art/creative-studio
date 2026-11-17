@@ -10,7 +10,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -295,6 +295,30 @@ if (userFontFace) html = html.replace("</head>", `${userFontFace}</head>`);
 if (paletteScript) html = html.replace("</head>", `${paletteScript}</head>`);
 fs.writeFileSync(path.join(workDir, "index.html"), html, "utf-8");
 console.log(`[2/4] 模板规格已注入 → ${workDir}${userFontFace ? "（含用户字体）" : ""}`);
+
+// v2 在正式渲染前用同一冻结浏览器确认完整文档已重放，而不是仅确认 JSON 标记。
+if (stickerVars.layoutRuntimeBundleVersion === 2) {
+  const expected = stickerVars.layoutResolution;
+  if (!expected || expected.status !== 'resolved' || expected.outputWidth !== spec.width || expected.outputHeight !== spec.height) {
+    throw new Error('自动布局解析结果与实际视频画幅不一致');
+  }
+  const puppeteer = dependencyRequire('puppeteer-core');
+  const browser = await puppeteer.launch({ executablePath: CHROME, headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--allow-file-access-from-files', '--font-render-hinting=none'] });
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: spec.width, height: spec.height, deviceScaleFactor: 1 });
+    await page.evaluateOnNewDocument(vars => { window.compositionVariables = vars; }, stickerVars);
+    await page.goto(pathToFileURL(path.join(workDir, 'index.html')).href, { waitUntil: 'load', timeout: 30_000 });
+    await page.evaluate(async () => { await document.fonts.ready; });
+    await page.waitForFunction(({ inputHash, geometryManifestHash }) => {
+      if (!Array.from(document.images).every(image => image.complete && image.naturalWidth > 0)) return false;
+      if (!window.__packagingAutoLayoutReplay?.apply()) return false;
+      const ready = window.__packagingLayoutReady;
+      return ready?.status === 'resolved' && ready.inputHash === inputHash && ready.geometryManifestHash === geometryManifestHash;
+    }, { timeout: 15_000 }, expected);
+  } finally { await browser.close(); }
+}
 
 // 3) HyperFrames 渲染透明层
 const overlayWebm = path.join(workDir, "overlay.webm");

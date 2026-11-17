@@ -391,6 +391,8 @@ export async function copyBatchOutputStickers(
 
     return db.transaction(() => {
       const latestSource = readOutputContext(db, projectId, batchId, sourcePlanId);
+      assertExpectedVersion(latestSource, { planId: sourcePlanId,
+        expectedOutputVersionId: input.expectedSourceOutputVersionId, expectedEditRevision: input.expectedSourceEditRevision }, '来源');
       if (latestSource.rawArrangementJson !== source.rawArrangementJson) {
         throw new BatchDomainError('conflict', '来源成片已被修改，请刷新后重试');
       }

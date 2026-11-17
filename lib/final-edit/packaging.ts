@@ -364,8 +364,7 @@ export async function executePackagingJob(input: {
 }): Promise<PackagingJobResult> {
   const { snapshot: renderSnapshot, output: renderOutput, groupId } = loadSucceededRenderJob(input.db, input.snapshot.renderJobId);
   const packagingDir = resolvePackagingDir();
-  const templateDir = resolvePackagingTemplateDir(packagingDir, input.snapshot.template);
-  const templateName = path.basename(templateDir);
+  const templateName = input.snapshot.template || 'overlay-basic';
   const layoutBundle = assertPackagingLayoutExportReady({
     enabled: true,
     template: templateName as FinalEditPackagingConfig['template'],
@@ -373,7 +372,7 @@ export async function executePackagingJob(input: {
     layoutResolution: input.snapshot.layoutResolution,
   }, OUTPUT_PRESETS[renderSnapshot.variant.outputPreset].width, OUTPUT_PRESETS[renderSnapshot.variant.outputPreset].height);
   const resourceDir = layoutBundle?.bundleDir ?? packagingDir;
-  const renderTemplateDir = layoutBundle ? path.join(resourceDir, 'templates', templateName) : templateDir;
+  const renderTemplateDir = layoutBundle ? path.join(resourceDir, 'templates', templateName) : resolvePackagingTemplateDir(packagingDir, templateName);
   const sourceVideoAbs = assertNoStorageSymlink(input.storageRoot, renderOutput.videoRelativePath);
   if (!fs.existsSync(sourceVideoAbs)) throw new FinalEditError('render_artifact_invalid', '渲染内部产物已丢失，请重新导出后再包装', 409);
 

@@ -5,7 +5,7 @@ import { dataRoot } from '../data-root.ts';
 import { PackagingError, resolvePackagingDir, resolvePackagingTemplateDir } from './packaging-runtime.ts';
 import { resolvePackagingStickerAssets } from './packaging-sticker-assets.ts';
 import { safeFontFilename, userFontDir } from './packaging-font.ts';
-import type { FinalEditPackagingConfig } from './packaging-vars.ts';
+import { assertSupportedPackagingConfigLayoutVersions, type FinalEditPackagingConfig } from './packaging-vars.ts';
 import type { PackagingLayoutResolution } from './packaging-auto-layout.ts';
 
 type FileMap = Map<string, string>;
@@ -260,11 +260,13 @@ export function assertPackagingLayoutExportReady(
     enabled: boolean;
     template: string;
     layoutRuntimeBundleVersion?: number;
+    pointCuesLayoutVersion?: number;
     layoutResolution?: PackagingLayoutResolution;
   },
   outputWidth: number,
   outputHeight: number,
 ): { bundleDir: string; manifest: PackagingLayoutBundleManifest } | null {
+  assertSupportedPackagingConfigLayoutVersions(config);
   if (!config.enabled || config.layoutRuntimeBundleVersion !== 2) return null;
   const resolution = config.layoutResolution;
   if (!resolution || resolution.status !== 'resolved') {

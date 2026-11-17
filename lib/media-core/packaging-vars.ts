@@ -214,7 +214,7 @@ function parseLayoutVersion(value: unknown): number | undefined {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : Number.NaN;
 }
 
-export function assertSupportedPackagingConfigLayoutVersions(config: FinalEditPackagingConfig): void {
+export function assertSupportedPackagingConfigLayoutVersions(config: Pick<FinalEditPackagingConfig, 'pointCuesLayoutVersion' | 'layoutRuntimeBundleVersion'>): void {
   const versions = [config.pointCuesLayoutVersion, config.layoutRuntimeBundleVersion];
   if (versions.some((value) => value !== undefined && value !== 1 && value !== 2)) {
     throw new Error('包装包含不支持的自动布局版本，请使用生成该成片的版本打开');

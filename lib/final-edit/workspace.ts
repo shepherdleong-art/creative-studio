@@ -53,6 +53,7 @@ import {
 import { assertNarrationPlaybackRate, assertTtsSpeed } from './tts-speed.ts';
 import { buildPackagingVars, DEFAULT_PACKAGING_TEMPLATE, loadProjectPackagingData, mergePackagingLayouts, PACKAGING_TEMPLATE_IDS, parsePackagingConfig, sanitizePackagingVarsOverrides, sanitizePointCues, type PackagingLayouts, type PackagingLayoutsPatch, type PackagingPointLayout, type PackagingTemplateId } from './packaging-vars.ts';
 import { assertPackagingLayoutExportReady } from '../media-core/packaging-layout-manifest.ts';
+import { packagingAutoLayoutInputHash, resolvePackagingAutoLayout } from '../media-core/packaging-auto-layout-service.ts';
 import { assertPackagingStickerFrames, PackagingStickerError, validatePackagingStickerDefaults, validatePackagingStickers, type PackagingStickerDefaults, type PackagingStickerInstance } from '../media-core/packaging-stickers.ts';
 import { buildPointCues, computePointCuesKey, ensurePackagingPointCues, extractSellingPointsWithLLM, loadProjectSellingPoints, mergePointCuesIntoPackagingJson, type PointCue } from './packaging-cues.ts';
 import { resolveLayoutRuntimeBundleVersion, type PackagingLayoutResolution } from '../media-core/packaging-auto-layout.ts';
@@ -2483,6 +2484,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       };
     }
     const layoutResolutionOnly = command.type === 'set_packaging_config' && command.config.layoutResolutionOnly === true;
+    if (layoutResolutionOnly && (!packagingConfig.layoutResolution || !isDeepStrictEqual(
+      { ...parsePackagingConfig(previousPackagingConfig), layoutResolution: undefined },
+      { ...parsePackagingConfig(packagingConfig), layoutResolution: undefined },
+    ))) throw new FinalEditError('layout_command_invalid', '派生布局更新不得修改包装内容', 400);
     const revision = Number(row.revision) + (layoutResolutionOnly ? 0 : 1);
     db.transaction(() => {
       if (!layoutResolutionOnly) db.prepare(`INSERT INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('group', ?, ?, ?, '{"type":"before_edit"}', ?) ON CONFLICT(scopeKind, scopeId, revision) DO UPDATE SET stateJson=json_set(final_edit_revisions.stateJson, '$.cues', COALESCE(json_extract(final_edit_revisions.stateJson, '$.cues'), json_extract(excluded.stateJson, '$.cues')), '$.packaging', COALESCE(json_extract(final_edit_revisions.stateJson, '$.packaging'), json_extract(excluded.stateJson, '$.packaging')))`).run(command.groupId, Number(row.revision), JSON.stringify({ cues: parseJson(String(row.subtitleStateJson), []), packaging: previousPackagingConfig }), now());
@@ -2589,8 +2594,6 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       exportDirName: frozen ? frozen.exportDirName : resolveProjectExportDirName(db, group.projectId),
       ...(frozen ? { baseName: frozen.baseName } : {}),
     };
-    const blockedRelativePaths = new Set((db.prepare(`SELECT relativePath FROM project_artifacts WHERE projectId=?`).all(group.projectId) as Array<{ relativePath: string }>).map((row) => row.relativePath));
-    const exportTarget = reserveProjectExportTarget(storageRoot, exportIdentity, { blockedRelativePaths });
     const id = uuidv4();
     // 占位标题导出拦截（2026-10-12 用户定稿）：主/副标题抓取失败（空文案）时模板端显示占位文字「标题需修改」，
     // 占位不写入数据层——导出前在此拦截弹窗，用户选「继续导出（该元素不显示）」后带 allowPackagingPlaceholder 放行。
@@ -2599,7 +2602,6 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const placeholderVars = buildPackagingVars({ coverTitle: { primary: group.coverTitle.primary.text, secondary: group.coverTitle.secondary.text }, subtitleCues: group.subtitleCues, exportIdentity, project: loadProjectPackagingData(db, group.projectId), overrides: group.packaging.varsOverrides });
       const emptyElements = ([placeholderVars.title ? null : '主标题', placeholderVars.subtitle ? null : '副标题'].filter(Boolean) as string[]);
       if (emptyElements.length > 0) {
-        releaseReservedExportTarget(storageRoot, exportTarget);
         throw new FinalEditError('packaging_placeholder', `包装${emptyElements.join('、')}抓取失败，仍是占位文字「标题需修改」`, 409, { emptyElements });
       }
     }
@@ -2610,12 +2612,34 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       try {
         const ensured = await ensurePackagingPointCues(db, group.id);
         packagingTimeline = { pointCues: ensured.pointCues, pointCuesMode: ensured.mode };
-      } catch { packagingTimeline = { pointCues: group.packaging.pointCues ?? [], pointCuesMode: group.packaging.pointCuesMode ?? 'none' }; }
+      } catch (error) {
+        if (group.packaging.layoutRuntimeBundleVersion === 2) throw error;
+        packagingTimeline = { pointCues: group.packaging.pointCues ?? [], pointCuesMode: group.packaging.pointCuesMode ?? 'none' };
+      }
     }
-    if (group.packaging.enabled && group.packaging.layoutRuntimeBundleVersion === 2 && group.packaging.layoutResolution?.status !== 'resolved') {
-      throw new FinalEditError('packaging_layout_stale', '自动布局已失效，请重新完成布局后再导出', 409);
+    if (group.packaging.enabled && group.packaging.layoutRuntimeBundleVersion === 2) {
+      const latest = load(group.id);
+      if (latest.revision !== group.revision) throw new FinalEditError('revision_conflict', '导出准备期间版本已变化，请重试', 409);
+      const layoutInput = {
+        config: latest.packaging,
+        vars: buildPackagingVars({ coverTitle: { primary: group.coverTitle.primary.text, secondary: group.coverTitle.secondary.text },
+          subtitleCues: group.subtitleCues, project: loadProjectPackagingData(db, group.projectId), overrides: latest.packaging.varsOverrides }),
+        totalSec: (20 + variant.timeline.bodyFrames) / 24, coverSec: 20 / 24,
+        outputWidth: OUTPUT_PRESETS[variant.outputPreset].width, outputHeight: OUTPUT_PRESETS[variant.outputPreset].height,
+      };
+      let resolution = latest.packaging.layoutResolution;
+      if (resolution?.status !== 'resolved' || resolution.inputHash !== packagingAutoLayoutInputHash(layoutInput)) {
+        const result = await resolvePackagingAutoLayout(layoutInput);
+        if (result.status !== 'resolved') throw new FinalEditError('packaging_layout_stale', '当前成片自动布局未完成，请调整后再导出', 409);
+        resolution = result;
+      }
+      // 每个任务冻结自身画幅的结果；另一画幅的预览缓存不会覆盖排队快照。
+      group.packaging = { ...latest.packaging, layoutResolution: resolution };
+      packagingTimeline = { pointCues: latest.packaging.pointCues ?? [], pointCuesMode: latest.packaging.pointCuesMode ?? 'none' };
     }
     assertPackagingLayoutExportReady(group.packaging, OUTPUT_PRESETS[variant.outputPreset].width, OUTPUT_PRESETS[variant.outputPreset].height);
+    const blockedRelativePaths = new Set((db.prepare(`SELECT relativePath FROM project_artifacts WHERE projectId=?`).all(group.projectId) as Array<{ relativePath: string }>).map((row) => row.relativePath));
+    const exportTarget = reserveProjectExportTarget(storageRoot, exportIdentity, { blockedRelativePaths });
     const packaging = group.packaging.enabled
       ? {
         enabled: true as const,

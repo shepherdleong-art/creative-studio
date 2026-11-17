@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import type { FinalEditPackagingConfig } from './packaging-vars.ts';
+import { assertSupportedPackagingConfigLayoutVersions, type FinalEditPackagingConfig } from './packaging-vars.ts';
 import { PackagingError, resolvePackagingDir, resolvePackagingTemplateDir } from './packaging-runtime.ts';
 import { readPackagingLayoutBundle } from './packaging-layout-manifest.ts';
 import { userFontDir } from './packaging-font.ts';
 
 /** 正式 v2 预览仅使用当前成片授权的冻结包；草稿与旧配置沿用原资源。 */
 export function packagingPreviewResources(config: FinalEditPackagingConfig, resourceUrl?: string) {
+  assertSupportedPackagingConfigLayoutVersions(config);
   if (config.layoutRuntimeBundleVersion === 2) {
     const resolution = config.layoutResolution;
     if (!resolution || resolution.status !== 'resolved' || !resourceUrl) {

@@ -32,6 +32,9 @@ try {
     outputHeight: bundle.manifest.outputHeight, elements: {}, validation: { frameCount: 24, digest: 'test' } });
   for (const bundle of [first, tall]) assert.ok(assertPackagingLayoutExportReady({ ...config, layoutResolution: resolution(bundle) }, bundle.manifest.outputWidth, bundle.manifest.outputHeight));
   const saved = { ...config, layoutResolution: resolution(first) };
+  assert.throws(() => assertPackagingLayoutExportReady({ ...saved, layoutRuntimeBundleVersion: 3 }, 1080, 1440), /不支持/);
+  assert.throws(() => packagingPreviewHtml({ config: { ...saved, layoutRuntimeBundleVersion: 3 },
+    vars: { title: '', subtitle: '', point1: '', point2: '', point3: '', accent1: '', accent2: '', accent3: '' }, totalSec: 3, coverSec: 20 / 24 }), /不支持/);
   const hash = saved.layoutResolution.geometryManifestHash;
   const frozenChrome = packagingLayoutEngineExecutable(first.manifest);
   const chromeBytes = fs.readFileSync(frozenChrome);

@@ -362,8 +362,9 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
 
   const layoutRevalidateRef = useRef<{ key: string; generation: number }>({ key: '', generation: 0 });
   useEffect(() => {
-    if (!group.packaging.enabled || group.packaging.layoutRuntimeBundleVersion !== 2 || group.packaging.layoutResolution?.status === 'resolved') return;
-    const key = `${group.id}:${group.revision}`;
+    const selected = group.variants.find(item => item.id === previewVariantId);
+    if (!selected || !group.packaging.enabled || group.packaging.layoutRuntimeBundleVersion !== 2) return;
+    const key = `${group.id}:${group.revision}:${previewVariantId}:${selected.revision}:${selected.outputPreset}`;
     if (layoutRevalidateRef.current.key === key) return;
     const generation = layoutRevalidateRef.current.generation + 1;
     layoutRevalidateRef.current = { key, generation };

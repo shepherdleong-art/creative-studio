@@ -35,6 +35,14 @@ function hashJson(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('hex');
 }
 
+export function packagingAutoLayoutInputHash(input: {
+  config: FinalEditPackagingConfig; vars: PackagingVars; totalSec: number; coverSec: number;
+  outputWidth: number; outputHeight: number; palette?: PackagingPalette | null;
+}): string {
+  return hashJson({ config: { ...input.config, layoutResolution: undefined }, vars: input.vars, totalSec: input.totalSec,
+    coverSec: input.coverSec, outputWidth: input.outputWidth, outputHeight: input.outputHeight, palette: input.palette ?? null });
+}
+
 function killTree(child: { pid?: number; killed: boolean }): void {
   if (!child.pid || child.killed) return;
   try {
@@ -91,8 +99,7 @@ export async function resolvePackagingAutoLayout(input: {
     pointCuesLayoutVersion: input.config.pointCuesLayoutVersion,
     layoutRuntimeBundleVersion: input.config.layoutRuntimeBundleVersion,
   };
-  const inputHash = hashJson({ config: input.config, vars: input.vars, totalSec: input.totalSec, coverSec: input.coverSec,
-    outputWidth: input.outputWidth, outputHeight: input.outputHeight, palette: input.palette ?? null });
+  const inputHash = packagingAutoLayoutInputHash(input);
   const chrome = packagingLayoutEngineExecutable(manifest);
   const geometryManifestHash = manifest.geometryManifestHash;
 

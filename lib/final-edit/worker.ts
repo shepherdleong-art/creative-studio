@@ -152,7 +152,9 @@ async function drain() {
             layoutResolution: snapshot.packaging.layoutResolution,
           }, OUTPUT_PRESETS[snapshot.variant.outputPreset].width, OUTPUT_PRESETS[snapshot.variant.outputPreset].height);
           // 包装联动：封面先发布，视频留给包装任务以正常成片名发布（目录唯一成片）
-          await publishReservedSingleFile({ storageRoot, sourceRelativePath: internal.coverRelativePath, targetRelativePath: exportTarget.coverRelativePath, reservationRelativePath: exportTarget.reservationRelativePath, invalidCode: 'render_artifact_invalid' });
+          if (snapshot.packaging.layoutRuntimeBundleVersion !== 2) {
+            await publishReservedSingleFile({ storageRoot, sourceRelativePath: internal.coverRelativePath, targetRelativePath: exportTarget.coverRelativePath, reservationRelativePath: exportTarget.reservationRelativePath, invalidCode: 'render_artifact_invalid' });
+          }
           if (controller.signal.aborted) {
             await restorePublishedExportReservation(storageRoot, exportTarget);
             throw makeAbortError();
@@ -181,7 +183,7 @@ async function drain() {
           };
           const result = {
             ...internal,
-            publishedCoverRelativePath: exportTarget.coverRelativePath,
+            ...(snapshot.packaging.layoutRuntimeBundleVersion === 2 ? {} : { publishedCoverRelativePath: exportTarget.coverRelativePath }),
             coverFilename: exportTarget.coverFilename,
             displayDirectory: exportTarget.displayDirectory,
             packagingDeferred: true,
