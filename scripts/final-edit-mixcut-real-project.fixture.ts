@@ -183,7 +183,7 @@ const prepareJob = await workspace.start({
   scriptDraftId: ids.scriptA,
   shotSetId: ids.shotSetA,
   selectedMaterialKeys: ids.videosA.map((videoId) => `module4:${videoId}`),
-  count: 1,
+  count: process.env.STICKER_FIXTURE_VARIANTS === '2' ? 2 : 1,
   outputPreset: '3x4',
   providerId: 'vapi-qwen3-tts',
   voice: 'Cherry',
@@ -215,7 +215,7 @@ if (process.env.STICKER_FIXTURE_EXPORT_FONT) {
 }
 const group = workspace.load(prepareJob.groupId);
 assert.equal(group.status, 'ready');
-assert.equal(group.variants.length, 1);
+assert.equal(group.variants.length, process.env.STICKER_FIXTURE_VARIANTS === '2' ? 2 : 1);
 assert.equal(group.variants[0].issues.some((issue) => issue.severity === 'blocking'), false);
 assert.equal(group.variants[0].timeline.clips.length, primaryMaterialCount);
 assert.ok((group.variants[0].matchDiagnostics?.usedMaterials.length || 0) >= 5, '最终验收至少使用 5/7 个素材');

@@ -40,6 +40,8 @@ import { resolveCoverContractHash, resolveFullRenderContractHash } from '../lib/
 import { resolveBatchOutputNarrationAudio } from '../lib/batch-production/output-media.ts';
 import { BatchDomainError } from '../lib/batch-production/errors.ts';
 import { batchSourceWarnings } from '../lib/batch-production/source-conflicts.ts';
+import type { FinalEditPackagingConfig } from '../lib/media-core/packaging-vars.ts';
+import type { PackagingStickerInstance } from '../lib/media-core/packaging-stickers.ts';
 
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-clip-edit-'));
 
@@ -1401,6 +1403,41 @@ try {
   applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'restore_arrangement', snapshot: { clips: enabledSnapshot.clips, packaging: enabledSnapshot.packaging }, expectedEditRevision: disabled.editRevision });
   assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).packaging?.enabled, true, '撤销恢复包装配置');
   console.log('✓ 22. 包装保存/审核失效/内容身份/跨成片隔离/过期修订和版本/幂等/撤销');
+  const restoredSticker: PackagingStickerInstance = {
+    id: 'restore-sticker', assetId: 'recommend', styleMode: 'follow-template', fixedStyle: null,
+    startFrame: 20, endFrame: 68, centerXPct: 50, centerYPct: 50, visualWidthPct: 30,
+    rotationDeg: 0, trackIndex: 0, animation: 'soft', origin: { kind: 'manual' },
+  };
+  const stickerSnapshot = { clips: enabledSnapshot.clips, packaging: { ...packagingConfig, stickers: [restoredSticker] } };
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'restore_arrangement', snapshot: stickerSnapshot });
+  assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).packaging?.stickers, [restoredSticker]);
+  const validStickerArrangement = JSON.stringify(currentArrangement(plans[0]));
+  const invalidStickerConfigs = [
+    { stickers: [restoredSticker, restoredSticker] },
+    { stickers: Array.from({ length: 129 }, (_, index) => ({ ...restoredSticker, id: `overflow-${index}` })) },
+    { stickers: [{ ...restoredSticker, startFrame: 0 }] },
+    { stickers: [{ ...restoredSticker, endFrame: 1_000_000 }] },
+    { stickerDefaults: { animation: 'invalid-animation' } },
+  ];
+  const invalidRawConfigs = [
+    ...invalidStickerConfigs.map((invalid) => ({ ...stickerSnapshot.packaging, ...invalid })),
+    JSON.stringify({ ...stickerSnapshot.packaging, stickers: [restoredSticker, restoredSticker] }),
+  ];
+  for (const invalid of invalidRawConfigs) {
+    const config = invalid as unknown as FinalEditPackagingConfig;
+    const current = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+    for (const edit of [
+      { type: 'restore_arrangement' as const, snapshot: { ...stickerSnapshot, packaging: config }, expectedEditRevision: current.editRevision },
+      { type: 'set_packaging' as const, config, expectedEditRevision: current.editRevision, expectedOutputVersionId: outputVersionId },
+      { type: 'set_cover' as const, assetId: assetC, timeUs: 1_000_000, packaging: config, expectedEditRevision: current.editRevision, expectedOutputVersionId: outputVersionId },
+    ]) {
+      assert.throws(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], edit),
+        (error: unknown) => error instanceof BatchDomainError && error.code === 'invalid_input',
+        `${edit.type} 必须拒绝原始非法贴纸配置`);
+      assert.equal(JSON.stringify(currentArrangement(plans[0])), validStickerArrangement, '非法贴纸恢复/保存必须零写入');
+    }
+  }
+  console.log('✓ 贴纸历史恢复/包装/封面：合法快照保留，重复/超量/片头/越界/非法动效均零写入拒绝');
   resetPlan0Arrangement();
   const beforeCombinedCover = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
   const otherBeforeCombinedCover = JSON.stringify(currentArrangement(plans[1]));

@@ -656,12 +656,22 @@ try {
     || sticker.animation !== automaticTwo[index].animation
   )), '不同目标的未编辑自动贴纸必须按规则生成尽量不同的素材、位置或动效变体');
 
+  // A local edit and its undo advance revisions but must not invalidate the earlier whole-copy history.
+  panel = await openFilmStickers(targetExisting);
+  await savePackaging(targetExisting, () => panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).click());
+  const localUndo = page.waitForResponse(response => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === clipsPath(targetExisting)
+    && (response.request().postData() || '').includes('"type":"restore_arrangement"'));
+  await page.getByTitle('撤销 (⌘Z)').click();
+  assert.equal((await localUndo).status(), 200);
+  await eventually(async () => (await fetchArrangement(targetExisting)).packaging.stickers.length === 7, '局部撤销必须恢复复制结果');
+  const beforeWholeUndo = rawPlans(fixture);
   await eventually(async () => await page.getByTitle('撤销 (⌘Z)').isEnabled(), '复制完成后整体撤销必须可用');
   const undoneResult = await stickerCopyRequest('restore', () => page.keyboard.press('Control+z'));
   assert.ok(undoneResult.request.targets.every((target) => target.snapshot && !target.snapshot.after), '整体撤销必须恢复 before 快照');
   const afterUndo = rawPlans(fixture);
   for (const spec of [targetExisting, targetEmpty]) {
-    assertOnlyStickerFieldsChanged(afterCopy[spec.key].arrangement, afterUndo[spec.key].arrangement);
+    assertOnlyStickerFieldsChanged(beforeWholeUndo[spec.key].arrangement, afterUndo[spec.key].arrangement);
     assert.deepEqual(afterUndo[spec.key].arrangement.packaging.stickers, beforeCopy[spec.key].arrangement.packaging.stickers, `${spec.key} 一次整体撤销必须恢复复制前 stickers`);
     assert.deepEqual(afterUndo[spec.key].arrangement.packaging.stickerDefaults, beforeCopy[spec.key].arrangement.packaging.stickerDefaults, `${spec.key} 一次整体撤销必须恢复复制前 stickerDefaults`);
   }

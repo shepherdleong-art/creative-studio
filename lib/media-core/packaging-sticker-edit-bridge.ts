@@ -17,6 +17,7 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
   var rafScheduled = false;
   var swallowClick = false;
   var swallowContextMenu = false;
+  var commitVersion = 0;
 
   function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
   function normDeg(v) { return ((v + 180) % 360 + 360) % 360 - 180; }
@@ -253,7 +254,7 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
       var id = selected && selected.getAttribute('data-sticker-id');
       if (!id) return;
       try {
-        if (window.parent && typeof window.parent.__packagingStickerEditDelete === 'function') window.parent.__packagingStickerEditDelete(id);
+        if (window.parent && typeof window.parent.__packagingStickerEditDelete === 'function') window.parent.__packagingStickerEditDelete(id, window, document);
       } catch (error) {}
     });
     selectionEl.appendChild(scaleHandle);
@@ -319,17 +320,21 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     hideGuides();
     if (!current.moved) return;
     swallowClick = true;
+    var version = ++commitVersion;
+    var rollback = function () {
+      if (version === commitVersion && current.el.isConnected) applyGeometry(current.el, current.initial);
+    };
     try {
       var parent = window.parent;
       if (parent && typeof parent.__packagingStickerEditCommit === 'function') {
-        parent.__packagingStickerEditCommit(current.el.getAttribute('data-sticker-id'), {
+        Promise.resolve(parent.__packagingStickerEditCommit(current.el.getAttribute('data-sticker-id'), {
           centerXPct: round3(current.target.centerXPct),
           centerYPct: round3(current.target.centerYPct),
           visualWidthPct: round3(current.target.visualWidthPct),
           rotationDeg: round3(current.target.rotationDeg),
-        });
-      }
-    } catch (error) {}
+        }, window, document)).then(function (accepted) { if (accepted === false) rollback(); }, rollback);
+      } else rollback();
+    } catch (error) { rollback(); }
   }
   function cancelSession() {
     if (!session) return;
@@ -373,7 +378,7 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
       var deleteId = selected && selected.getAttribute('data-sticker-id');
       if (deleteId) {
         try {
-          if (window.parent && typeof window.parent.__packagingStickerEditDelete === 'function') window.parent.__packagingStickerEditDelete(deleteId);
+          if (window.parent && typeof window.parent.__packagingStickerEditDelete === 'function') window.parent.__packagingStickerEditDelete(deleteId, window, document);
         } catch (error) {}
       }
       return;
@@ -394,7 +399,7 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
       deselect();
       try {
         if (cueId && window.parent && typeof window.parent.__packagingEditCueSelect === 'function') window.parent.__packagingEditCueSelect(cueId);
-        else if (window.parent && typeof window.parent.__packagingStickerEditExit === 'function') window.parent.__packagingStickerEditExit();
+        else if (window.parent && typeof window.parent.__packagingStickerEditExit === 'function') window.parent.__packagingStickerEditExit(window, document);
       } catch (error) {}
       return;
     }
@@ -402,7 +407,7 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     event.stopPropagation();
     if (el !== selected) {
       deselect();
-      try { if (window.parent && typeof window.parent.__packagingStickerEditSelect === 'function') window.parent.__packagingStickerEditSelect(el.getAttribute('data-sticker-id')); } catch (error) {}
+      try { if (window.parent && typeof window.parent.__packagingStickerEditSelect === 'function') window.parent.__packagingStickerEditSelect(el.getAttribute('data-sticker-id'), window, document); } catch (error) {}
       return;
     }
     startSession('move', el, event);

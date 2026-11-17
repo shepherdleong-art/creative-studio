@@ -15,6 +15,7 @@ const loaderPath = pathToFileURL(path.resolve('scripts/typescript-extension-load
 const chrome = path.resolve('packaging/runtime/chrome-headless-shell', process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell');
 const testDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-sticker-editor-'));
 const testEnv = { ...process.env, CREATIVE_STUDIO_DATA_ROOT: testDataRoot, NEXT_TELEMETRY_DISABLED: '1',
+  STICKER_FIXTURE_VARIANTS: '2',
   ...(process.env.STICKER_TEST_STANDALONE ? { STICKER_FIXTURE_EXPORT_FONT: 'Arial' } : {}),
 };
 let browser;
@@ -178,6 +179,25 @@ try {
   const expectedMoveY = (moveEnd.y - moveFrameBox.y) / moveFrameBox.height * 100;
   assert.ok(Math.abs(moved.centerXPct - expectedMoveX) < 2, `移动 X 未按预览提交：${moved.centerXPct} vs ${expectedMoveX}`);
   assert.ok(Math.abs(moved.centerYPct - expectedMoveY) < 2, `移动 Y 未按预览提交：${moved.centerYPct} vs ${expectedMoveY}`);
+
+  await overlay.locator('[data-sticker-edit-ui]').waitFor();
+  const savedSticker = overlay.locator(`[data-sticker-id="${second.id}"]`);
+  const savedGeometry = await savedSticker.evaluate(element => [element.style.left, element.style.top, element.style.width]);
+  const failedSaveUrl = `${server.baseUrl}/api/final-edit-groups/${fixture.groupId}`;
+  const rejectStickerSave = async route => {
+    if (route.request().method() === 'PATCH') await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ message: '测试保存失败' }) });
+    else await route.continue();
+  };
+  await page.route(failedSaveUrl, rejectStickerSave);
+  const failedResponse = page.waitForResponse(response => response.url() === failedSaveUrl && response.request().method() === 'PATCH');
+  const failedBox = await savedSticker.boundingBox();
+  await page.mouse.move(failedBox.x + failedBox.width / 2, failedBox.y + failedBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(failedBox.x + failedBox.width / 2 + 30, failedBox.y + failedBox.height / 2 + 25, { steps: 6 });
+  await page.mouse.up();
+  assert.equal((await failedResponse).status(), 500);
+  await page.unroute(failedSaveUrl, rejectStickerSave);
+  await eventually(async () => JSON.stringify(await savedSticker.evaluate(element => [element.style.left, element.style.top, element.style.width])) === JSON.stringify(savedGeometry), '单条贴纸保存失败必须恢复已保存几何');
 
   await overlay.locator('[data-sticker-handle="scale"]').waitFor();
   const scaleBox = await overlay.locator('[data-sticker-handle="scale"]').boundingBox();
@@ -501,6 +521,29 @@ try {
   await page.getByRole('button', { name: '暂停', exact: true }).click();
 
   const autoBodyFrames = individualAfterAllResult.view.variants.find((item) => item.id === fixture.variantId).timeline.bodyFrames;
+  // Hold the old variant's new iframe until after switching to another variant sharing its stickers.
+  let releaseOldPreview;
+  const heldPreview = new Promise(resolve => { releaseOldPreview = resolve; });
+  const holdOldPreview = async route => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('format') === 'html' && url.searchParams.get('variantId') === fixture.variantId) await heldPreview;
+    await route.continue().catch(() => {});
+  };
+  await page.route('**/packaging-preview?**', holdOldPreview);
+  await readPatch(async () => {
+    await selectedAnimationTrigger.click();
+    await animationDialog.getByRole('button', { name: '选择动效 柔和', exact: true }).click();
+  });
+  const otherVariant = individualAfterAllResult.view.variants.find(item => item.id !== fixture.variantId);
+  assert.ok(otherVariant, '切换回归需要同组第二条成片草稿');
+  await page.getByLabel('选择成片草稿').selectOption(otherVariant.id);
+  await eventually(async () => page.frames().some(frame => frame.url().includes(`variantId=${otherVariant.id}`) && frame.url().includes('format=html')), '新草稿包装预览必须就绪');
+  releaseOldPreview();
+  await page.unroute('**/packaging-preview?**', holdOldPreview);
+  await page.waitForTimeout(300);
+  assert.equal(await page.getByRole('button', { name: '暂停', exact: true }).count(), 0, '旧动效请求不得启动新草稿');
+  await page.getByLabel('选择成片草稿').selectOption(fixture.variantId);
+  await overlay.locator('.packaging-sticker').first().waitFor();
   assert.ok(autoBodyFrames >= 144, '自动布置验收 fixture 正文必须至少 6 秒');
   const autoLayoutResult = await readPatch(() => panel.getByRole('button', { name: '一键基础布置', exact: true }).click());
   assert.equal(autoLayoutResult.view.packaging.stickers.length, 8, '首次自动布置必须新增 6 张并保留 2 张手动贴纸');

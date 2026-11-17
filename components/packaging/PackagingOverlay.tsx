@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PackagingPointLayout } from '@/lib/media-core/packaging-vars';
-import type { PackagingStickerEditPatch, PackagingStickerInstance } from '@/lib/media-core/packaging-stickers';
+import type { PackagingStickerInstance } from '@/lib/media-core/packaging-stickers';
+import { installStickerBridgeCallbacks, type StickerBridgeHandlers } from './sticker-bridge-callbacks';
 
 type PreviewWindow = Window & {
   __timelines?: { overlay?: { pause: () => void; seek: (time: number) => void } };
@@ -13,12 +14,7 @@ type PreviewWindow = Window & {
 };
 export type PackagingTextEditTarget = { pointId: string; rect: { left: number; top: number; width: number; height: number }; frame: { left: number; top: number } };
 
-type StickerHandlers = {
-  onStickerSelect?: (stickerId: string) => void;
-  onStickerCommit?: (stickerId: string, patch: PackagingStickerEditPatch) => void;
-  onStickerDelete?: (stickerId: string) => void;
-  onStickerExit?: () => void;
-};
+type StickerHandlers = StickerBridgeHandlers;
 
 export default function PackagingOverlay({
   src,
@@ -108,26 +104,7 @@ export default function PackagingOverlay({
   const stickerCallbacksEnabled = Boolean(onStickerSelect || onStickerCommit || onStickerDelete || onStickerExit);
   useEffect(() => {
     if (!stickerCallbacksEnabled) return;
-    const target = window as Window & {
-      __packagingStickerEditSelect?: (stickerId: string) => void;
-      __packagingStickerEditCommit?: (stickerId: string, patch: PackagingStickerEditPatch) => void;
-      __packagingStickerEditDelete?: (stickerId: string) => void;
-      __packagingStickerEditExit?: () => void;
-    };
-    const select = (stickerId: string) => stickerHandlersRef.current.onStickerSelect?.(stickerId);
-    const commit = (stickerId: string, patch: PackagingStickerEditPatch) => stickerHandlersRef.current.onStickerCommit?.(stickerId, patch);
-    const remove = (stickerId: string) => stickerHandlersRef.current.onStickerDelete?.(stickerId);
-    const exit = () => stickerHandlersRef.current.onStickerExit?.();
-    target.__packagingStickerEditSelect = select;
-    target.__packagingStickerEditCommit = commit;
-    target.__packagingStickerEditDelete = remove;
-    target.__packagingStickerEditExit = exit;
-    return () => {
-      if (target.__packagingStickerEditSelect === select) delete target.__packagingStickerEditSelect;
-      if (target.__packagingStickerEditCommit === commit) delete target.__packagingStickerEditCommit;
-      if (target.__packagingStickerEditDelete === remove) delete target.__packagingStickerEditDelete;
-      if (target.__packagingStickerEditExit === exit) delete target.__packagingStickerEditExit;
-    };
+    return installStickerBridgeCallbacks(window, () => frame.current, () => stickerHandlersRef.current);
   }, [stickerCallbacksEnabled]);
 
   // 未选中贴纸时桥处于 only=null 的关闭态；在 iframe 捕获阶段只接管贴纸命中，

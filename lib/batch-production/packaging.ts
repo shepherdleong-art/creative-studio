@@ -40,6 +40,20 @@ export function batchPackagingDefaults(db: Database.Database, projectId: string,
   return buildPackagingVars({ project: { ...project, sellingPoints: project.sellingPoints?.length ? project.sellingPoints : dedupeCandidates(batchNarrationPackaging(db, view).points) }, coverTitle, subtitleCues: [] });
 }
 
+/** Validate raw writes before the legacy reader can discard malformed sticker fields. */
+export function validateBatchPackagingStickers(value: unknown, bodyFrames: number): void {
+  if (value === undefined) return;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new BatchDomainError('invalid_input', '包装配置必须是对象');
+  const incoming = value as Partial<FinalEditPackagingConfig>;
+  try {
+    if (incoming.stickers !== undefined) validatePackagingStickers(incoming.stickers, bodyFrames);
+    if (incoming.stickerDefaults !== undefined) validatePackagingStickerDefaults(incoming.stickerDefaults);
+  } catch (error) {
+    if (error instanceof PackagingStickerError) throw new BatchDomainError('invalid_input', error.message);
+    throw error;
+  }
+}
+
 /** Explicit saves freeze defaults and timings. Preview/render never mutate a saved arrangement. */
 export async function prepareBatchPackagingConfig(db: Database.Database, projectId: string, view: BatchOutputClipEditView, value: unknown, reextract = false): Promise<FinalEditPackagingConfig> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new BatchDomainError('invalid_input', '包装配置无效');
@@ -49,22 +63,7 @@ export async function prepareBatchPackagingConfig(db: Database.Database, project
   if (incoming.pointCues && new Set(incoming.pointCues.map(cue => cue.id)).size !== incoming.pointCues.length) throw new BatchDomainError('invalid_input', '卖点标识重复');
   const bodyFrames = Math.floor(Math.max(view.visualDurationUs, view.narration.durationUs ?? 0) / 1e6 * FINAL_EDIT_FPS + 1e-6);
   // 原始请求先严格校验：parsePackagingConfig 会兼容清洗，不能靠清洗结果冒充保存成功。
-  if (incoming.stickers !== undefined) {
-    try {
-      validatePackagingStickers(incoming.stickers, bodyFrames);
-    } catch (error) {
-      if (error instanceof PackagingStickerError) throw new BatchDomainError('invalid_input', error.message);
-      throw error;
-    }
-  }
-  if (incoming.stickerDefaults !== undefined) {
-    try {
-      validatePackagingStickerDefaults(incoming.stickerDefaults);
-    } catch (error) {
-      if (error instanceof PackagingStickerError) throw new BatchDomainError('invalid_input', error.message);
-      throw error;
-    }
-  }
+  validateBatchPackagingStickers(value, bodyFrames);
   const config = parsePackagingConfig(value);
   for (const slot of [config.titleFont, config.subtitleFont, config.pointFont]) {
     if (slot && (!safeFontFilename(slot.file) || !fs.existsSync(path.join(userFontDir(), slot.file)))) throw new BatchDomainError('invalid_input', '所选包装字体不存在，请重新选择');

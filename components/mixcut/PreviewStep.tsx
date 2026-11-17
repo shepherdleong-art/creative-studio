@@ -42,6 +42,7 @@ import {
 } from '@/lib/media-core/packaging-sticker-timeline';
 import { planPackagingStickerAutoLayout, replaceAutomaticPackagingStickers } from '@/lib/media-core/packaging-sticker-planner';
 import { PackagingTextEditPopover } from '@/components/packaging/PackagingTextEditor';
+import { installStickerBridgeCallbacks } from '@/components/packaging/sticker-bridge-callbacks';
 import { PackagingOverlaySync } from './packaging-overlay-sync';
 import type { BgmImportResponse } from '@/lib/final-edit/types';
 import styles from './mixcut-content.module.css';
@@ -741,6 +742,13 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const timelineFrame = variant ? Math.min(20 + variant.timeline.bodyFrames, Math.max(20, Math.floor(effectivePlayheadSec * FPS + 1e-6))) : 20;
   const stickerEditActive = Boolean(packagingEnabled && previewMode === 'output' && selectedSticker
     && timelineFrame >= selectedSticker.startFrame && timelineFrame < selectedSticker.endFrame);
+  const stickerPlaybackContext = `${group.id}:${previewVariantId}:${active}:${previewMode}:${packagingEnabled}`;
+  const stickerPlaybackContextRef = useRef(stickerPlaybackContext);
+  useEffect(() => {
+    stickerPlaybackContextRef.current = stickerPlaybackContext;
+    stickerPlaybackRequestRef.current += 1;
+    return () => { stickerPlaybackRequestRef.current += 1; };
+  }, [stickerPlaybackContext]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -827,6 +835,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   };
 
   const playStickerOnce = (stickerId: string) => {
+    // 保存完成回调也可能属于上一个草稿，不能重新激活已经失效的播放请求。
+    if (!mountedRef.current || stickerPlaybackContextRef.current !== stickerPlaybackContext || !active || !packagingEnabled || previewMode !== 'output') return;
     const sticker = groupRef.current.packaging.stickers?.find((item) => item.id === stickerId);
     if (!sticker) return;
     handleSelectSticker(stickerId);
@@ -1026,22 +1036,12 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const stickerBridgeHandlersRef = useRef({ handleSelectSticker, applyStickerPatch, handleDeleteSticker });
   useEffect(() => { stickerBridgeHandlersRef.current = { handleSelectSticker, applyStickerPatch, handleDeleteSticker }; });
   useEffect(() => {
-    const target = window as Window & {
-      __packagingStickerEditSelect?: (stickerId: string) => void;
-      __packagingStickerEditExit?: () => void;
-      __packagingStickerEditCommit?: (stickerId: string, patch: PackagingStickerEditPatch) => void;
-      __packagingStickerEditDelete?: (stickerId: string) => void;
-    };
-    target.__packagingStickerEditSelect = (stickerId) => stickerBridgeHandlersRef.current.handleSelectSticker(stickerId);
-    target.__packagingStickerEditExit = () => stickerBridgeHandlersRef.current.handleSelectSticker('');
-    target.__packagingStickerEditCommit = (stickerId, patch) => { void stickerBridgeHandlersRef.current.applyStickerPatch(stickerId, patch); };
-    target.__packagingStickerEditDelete = (stickerId) => stickerBridgeHandlersRef.current.handleDeleteSticker(stickerId);
-    return () => {
-      delete target.__packagingStickerEditSelect;
-      delete target.__packagingStickerEditExit;
-      delete target.__packagingStickerEditCommit;
-      delete target.__packagingStickerEditDelete;
-    };
+    return installStickerBridgeCallbacks(window, () => packagingIframeRef.current, () => ({
+      onStickerSelect: stickerBridgeHandlersRef.current.handleSelectSticker,
+      onStickerExit: () => stickerBridgeHandlersRef.current.handleSelectSticker(''),
+      onStickerCommit: stickerBridgeHandlersRef.current.applyStickerPatch,
+      onStickerDelete: stickerBridgeHandlersRef.current.handleDeleteSticker,
+    }));
   }, []);
 
   // 预览 JSON：进入/换模板/换草稿/重新提取后拉取（供包装卡表单默认值、「跳到封面」coverSec 与叠加层加载闸门）

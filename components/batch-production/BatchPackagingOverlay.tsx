@@ -145,7 +145,7 @@ export default function BatchPackagingOverlay({
   const commitSticker = (stickerId: string, patch: PackagingStickerEditPatch) => {
     const next = structuredClone(config);
     next.stickers = (next.stickers ?? []).map((sticker) => sticker.id === stickerId ? applyPackagingStickerEdit(sticker, patch) : sticker);
-    void save(next);
+    return save(next);
   };
   return <>
     <PackagingOverlay
