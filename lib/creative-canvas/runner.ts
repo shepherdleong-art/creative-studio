@@ -1315,8 +1315,10 @@ async function runAuthorizedCanvasTask(options: RunCanvasTaskOptions): Promise<C
       executionAttemptId: executionAttempt?.id,
       ...(unifiedExecution ? { providerSnapshot: unifiedExecution.providerSnapshotJson } : {}),
     });
-    if (options.execution && executionAttempt?.actualMinor === null) {
-      const actualCost = canvasTaskActualCost(db, effectiveTask);
+    if (options.execution && asset && executionAttempt?.actualMinor === null) {
+      // The submission snapshot predates output registration. Include the
+      // measured asset when settling automatic-duration requests.
+      const actualCost = canvasTaskActualCost(db, { ...effectiveTask, outputAssetId: asset.id });
       if (actualCost) {
         executionAttempt = await options.execution.facade.settle({
           attemptId: executionAttempt.id,

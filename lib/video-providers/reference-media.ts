@@ -96,6 +96,8 @@ export interface VideoReferenceDeliveryRequest extends VideoReferenceMediaInput 
   byteSize: number;
   requireCos: boolean;
   isFrameImage: boolean;
+  /** 上传副本已经压缩并校验；保留其格式与字节。 */
+  imageCompression?: false;
   imageFallback?: 'public-url' | 'data-url';
 }
 
@@ -121,7 +123,8 @@ export async function deliverVideoReferenceMedia(
       const signed = await tryUploadToCosAndSign(
         request.absolutePath,
         request.mimeType,
-        request.kind === 'image' && request.isFrameImage ? getCosVideoCompressOptions() : undefined,
+        request.imageCompression === false ? { compress: false }
+          : request.kind === 'image' && request.isFrameImage ? getCosVideoCompressOptions() : undefined,
       );
       if (signed) return signed;
     } catch (error) {

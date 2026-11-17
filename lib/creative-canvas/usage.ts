@@ -88,7 +88,8 @@ function canvasPricingBasis(db: Database.Database, task: CanvasTaskRecord, purpo
     const basis = seedanceStageUsageBasis(db, task, identity, purpose);
     return basis ? { identity, ...basis } : null;
   }
-  let durationSec = Number(nodeParameters.durationSec ?? 0);
+  // Company video adapters submit five seconds when the node keeps its defaults.
+  let durationSec = Number(nodeParameters.durationSec ?? 5);
   if (task.mediaKind === 'video' && durationSec <= 0) {
     const output = task.outputAssetId ? db.prepare('SELECT durationSec FROM creative_canvas_assets WHERE id = ?')
       .get(task.outputAssetId) as { durationSec: number | null } | undefined : undefined;
