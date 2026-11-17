@@ -936,7 +936,7 @@ export default function BatchUnifiedReviewWorkspace({
             batchId={batchId}
             films={films}
             selectedPlanId={selectedPlanId}
-            onSelectFilm={(id) => setSelectedPlanId(id)}
+            onSelectFilm={handleSelectFilm}
             selection={selection}
             onSelectTarget={handleSelectTarget}
             focusedAssetId={focusedAssetId}
