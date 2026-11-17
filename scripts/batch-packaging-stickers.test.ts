@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { packagingPreviewHtml } from '../lib/media-core/packaging-preview.ts';
 import { STICKER_STYLE_BY_TEMPLATE, type PackagingStickerInstance } from '../lib/media-core/packaging-stickers.ts';
 import { PACKAGING_TEMPLATE_IDS, type FinalEditPackagingConfig, type PackagingVars } from '../lib/media-core/packaging-vars.ts';
+import { validatePackagingStickers, validatePackagingStickerDefaults, MAX_STICKER_INSTANCES, PackagingStickerError } from '../lib/media-core/packaging-stickers.ts';
 
 const vars: PackagingVars = {
   title: '标题', subtitle: '副标题', point1: '', point2: '', point3: '', accent1: '', accent2: '', accent3: '',
@@ -56,3 +57,28 @@ const empty = packagingPreviewHtml({
 assert.ok(!empty.includes('"stickerAssets"'), '无贴纸旧配置不得生成素材映射');
 
 console.log('批量包装贴纸预览测试通过：四模板实例、默认值、原图、编辑桥与旧配置兼容。');
+
+// 写入边界：原始请求必须被严格校验，不能靠 parsePackagingConfig 清洗后冒充成功。
+const valid = sticker('overlay-poster');
+assert.doesNotThrow(() => validatePackagingStickers(Array.from({ length: MAX_STICKER_INSTANCES }, (_, index) => ({ ...valid, id: `s_${index}` })), 240));
+assert.throws(
+  () => validatePackagingStickers(Array.from({ length: MAX_STICKER_INSTANCES + 1 }, (_, index) => ({ ...valid, id: `s_${index}` })), 240),
+  (error: unknown) => error instanceof PackagingStickerError,
+  '第 129 个实例必须被拒绝',
+);
+assert.throws(
+  () => validatePackagingStickers([valid, { ...valid }], 240),
+  (error: unknown) => error instanceof PackagingStickerError,
+  '重复实例 ID 必须被拒绝',
+);
+assert.throws(
+  () => validatePackagingStickers([{ ...valid, endFrame: valid.startFrame + 18 }], 240),
+  (error: unknown) => error instanceof PackagingStickerError,
+  '18 帧必须被拒绝',
+);
+assert.throws(
+  () => validatePackagingStickerDefaults({ animation: 'wobble' }),
+  (error: unknown) => error instanceof PackagingStickerError,
+  '非法默认动效必须被拒绝',
+);
+console.log('批量贴纸写入边界通过：128 张上限、重复 ID、18 帧与非法默认动效均拒绝。');
