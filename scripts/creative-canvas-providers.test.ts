@@ -1304,7 +1304,8 @@ for (const alias of ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260
   save([videoNode('company-final', capability.key, { generationStage: 'final-from-draft', draftAssetId: source.assetId, outputFormat: 'mov', watermark: true }, 'text-to-video')], []);
   const final = await runOnce('company-final');
   assert.equal(final.phase, 'succeeded', final.errorMessage ?? '');
-  assert.deepEqual(final.body, { model: capability.modelAlias, content: [{ type: 'draft_task', draft_task: { id: source.providerTaskId } }], resolution: '1080p', output_format: 'mov', watermark: true, prompt: '' });
+  assert.deepEqual(final.body, { model: capability.modelAlias, content: [{ type: 'draft_task', draft_task: { id: source.providerTaskId } }], resolution: '1080p', prompt: '' },
+    '公司转正式仅发送最小合同，旧节点的格式和水印选项不得透传');
 }
 
 // New company native video models: configured list -> planner -> executor -> publication.

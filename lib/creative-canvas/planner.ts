@@ -131,6 +131,8 @@ export interface CanvasPlanRequest {
   mode: CanvasPlanMode;
   /** single：要运行的目标节点。 */
   targetNodeId?: string;
+  /** single：在固定样片素材上直接转正式，不新增生成节点。 */
+  draftAssetId?: string;
   /** branch：分支起点。 */
   startNodeId?: string;
   /** branch：起点已有结果时是否复用（默认复用）。 */
@@ -177,6 +179,7 @@ export function canvasPlanRequestHash(request: CanvasPlanRequest): string {
     startNodeId: request.mode === 'branch' ? request.startNodeId ?? null : null,
     reuseStart: request.mode === 'branch' ? request.reuseStart !== false : null,
     variantCount: request.mode === 'single' ? normalizeVariantCount(request.variantCount) : null,
+    ...(request.draftAssetId !== undefined ? { draftAssetId: request.draftAssetId } : {}),
   })).digest('hex');
 }
 
@@ -456,7 +459,8 @@ function buildTaskPlan(
       if (!capability.parameters.some((parameter) => parameter.key === 'generationStage')) throw new Error('该渠道不支持样片转正式');
       const source = requireCanvasDraftSource(context.db, context.canvas.id, String(node.data.parameters.draftAssetId ?? ''));
       assertDraftSourceMatches(source, capability.modelAlias, capability.providerIdentity);
-      const allowed = new Set(['generationStage', 'draftAssetId', 'resolution', 'outputFormat', 'watermark']);
+      const allowed = new Set(['generationStage', 'draftAssetId', 'resolution',
+        ...(capability.providerKind === 'company' ? [] : ['outputFormat', 'watermark'])]);
       const known = new Set(capability.parameters.map((parameter) => parameter.key));
       for (const key of Object.keys(node.data.parameters)) if (!known.has(key)) throw new Error(`不接受参数 ${key}`);
       const parameters = Object.fromEntries(Object.entries(node.data.parameters).filter(([key]) => allowed.has(key)));
@@ -642,13 +646,35 @@ export function planCanvasRun(db: Database.Database, request: CanvasPlanRequest)
   if (request.expectedGraphRevision !== undefined && canvas.graphRevision !== request.expectedGraphRevision) {
     return { ok: false, problems: [{ code: 'revision_conflict', message: '画布已在别处修改，请刷新后重试。' }] };
   }
+  if (request.draftAssetId !== undefined && request.mode !== 'single') {
+    return { ok: false, problems: [{ code: 'capability_input_invalid', message: '样片转正式只支持在结果节点上单次提交。' }] };
+  }
   const graph = canvas.graph;
   const runtime = runtimeFor(db, canvas);
   const problems: CanvasPlanProblem[] = [];
 
   if (request.mode === 'single') {
     const nodeId = request.targetNodeId ?? '';
-    const node = findGraphNode(graph, nodeId);
+    let node = findGraphNode(graph, nodeId);
+    if (request.draftAssetId !== undefined) {
+      if (node?.kind !== 'material' || node.data.mediaKind !== 'video' || node.data.assetId !== request.draftAssetId) {
+        return { ok: false, problems: [{ code: 'capability_input_invalid', nodeId, message: '请选择当前结果节点上的固定样片。' }] };
+      }
+      try {
+        const source = requireCanvasDraftSource(db, canvas.id, request.draftAssetId);
+        node = {
+          id: node.id, kind: 'video-generation', position: node.position,
+          data: {
+            title: node.data.title, modelKey: source.capabilityKey ?? null,
+            generationMode: source.generationMode as CanvasGenerationNode['data']['generationMode'],
+            prompt: '', references: [], referenceLabelCounter: 0,
+            parameters: { generationStage: 'final-from-draft', draftAssetId: source.assetId, resolution: '1080p' },
+          },
+        };
+      } catch (error) {
+        return { ok: false, problems: [{ code: 'capability_input_invalid', nodeId, message: (error as Error).message }] };
+      }
+    }
     if (!node) {
       return { ok: false, problems: [{ code: 'node_missing', message: '目标节点不存在。', nodeId }] };
     }
@@ -671,7 +697,7 @@ export function planCanvasRun(db: Database.Database, request: CanvasPlanRequest)
     if (problems.length > 0 || !task) return { ok: false, problems };
     // 变体复制：N 份内容一致的计划任务（指纹对 [t,t] 与 [t] 天然区分），
     // createCanvasRun 按 variantIndex 逐行落库，行间输入独立。
-    const variantCount = normalizeVariantCount(request.variantCount);
+    const variantCount = request.draftAssetId !== undefined ? 1 : normalizeVariantCount(request.variantCount);
     const tasks = Array.from({ length: variantCount }, () => task);
     const base = {
       canvasId: canvas.id,

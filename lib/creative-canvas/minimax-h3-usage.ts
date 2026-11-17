@@ -7,7 +7,7 @@ import {
 import { parseUsageSnapshot } from '../usage-snapshot.ts';
 import { videoJobUsageMeasurement } from '../usage-video-measurement.ts';
 import {
-  minimaxH3Resolution, minimaxH3Quantities, minimaxH3UsageDetail,
+  MINIMAX_H3_PRICING_VERSION, minimaxH3Resolution, minimaxH3Quantities, minimaxH3UsageDetail,
   parseMiniMaxH3VideoUsage, referenceVideoDurationSec, type MiniMaxH3VideoUsage,
 } from '../minimax-h3-pricing.ts';
 import type { CanvasTaskRecord } from './tasks.ts';
@@ -20,7 +20,7 @@ export interface MiniMaxH3UsageBasis {
 }
 
 /** An admitted operation's prices and measurement win across restarts/upgrades. */
-function frozenBasis(db: Database.Database, task: CanvasTaskRecord, identity: CoreUsageProviderSnapshot): MiniMaxH3UsageBasis | null | undefined {
+function frozenBasis(db: Database.Database, task: CanvasTaskRecord, identity: CoreUsageProviderSnapshot, parameters: Record<string, unknown>): MiniMaxH3UsageBasis | null | undefined {
   const quote = readCanvasTaskPricingSnapshot(db, task.id);
   if (quote === undefined || quote === null) return quote;
   const legacy = resolveCoreUsagePlan(identity);
@@ -29,9 +29,18 @@ function frozenBasis(db: Database.Database, task: CanvasTaskRecord, identity: Co
     && typeof quote.quantity === 'number' && Number.isFinite(quote.quantity) && quote.quantity > 0) {
     return { plan: legacy, quantity: quote.quantity, detail: { estimated: true, measurementSource: 'frozen_quote' } };
   }
+  // Older default-parameter requests froze prices and reference seconds but
+  // omitted the output quantity. Recover only from that frozen evidence and
+  // the immutable request's adapter default; never reread editable references.
+  const defaultOutputUsage = quote.pricingVersion === MINIMAX_H3_PRICING_VERSION
+    && quote.quantity === undefined && quote.videoUsage === undefined
+    ? parseMiniMaxH3VideoUsage({ resolution: quote.resolution,
+      inputVideoDurationSec: quote.inputVideoDurationSec,
+      outputVideoDurationSec: Number(parameters.durationSec ?? 5) })
+    : null;
   const parsed = parseUsageSnapshot({
     ...createCoreUsageSnapshot(identity, legacy, { refType: 'canvas-task', refId: task.id }),
-    pricingVersion: quote.pricingVersion, priceComponents: quote.priceComponents, videoUsage: quote.videoUsage,
+    pricingVersion: quote.pricingVersion, priceComponents: quote.priceComponents, videoUsage: quote.videoUsage ?? defaultOutputUsage,
   });
   if (!parsed.ok) return null;
   const snapshot = parsed.parsed.snapshot;
@@ -49,7 +58,7 @@ export function minimaxH3CanvasUsageBasis(
   parameters: Record<string, unknown>, generationMode: unknown, purpose: 'quote' | 'actual',
 ): MiniMaxH3UsageBasis | null {
   if (purpose === 'actual') {
-    const frozen = frozenBasis(db, task, identity);
+    const frozen = frozenBasis(db, task, identity, parameters);
     if (frozen !== undefined) return frozen;
   }
   const resolution = minimaxH3Resolution(parameters.resolution);
@@ -67,7 +76,7 @@ export function minimaxH3CanvasUsageBasis(
       .all(task.canvasId, task.canvasId, task.id) as { kind: string | null; durationSec: number | null }[]
     : [];
   const inputVideoDurationSec = referenceVideoDurationSec(references);
-  const videoUsage = parseMiniMaxH3VideoUsage({ resolution, inputVideoDurationSec, outputVideoDurationSec: parameters.durationSec });
+  const videoUsage = parseMiniMaxH3VideoUsage({ resolution, inputVideoDurationSec, outputVideoDurationSec: Number(parameters.durationSec ?? 5) });
   if (!videoUsage) return { plan, quantity: null, detail: { resolution, inputVideoDurationSec } };
   return { plan, quantity: minimaxH3Quantities(videoUsage), videoUsage, detail: minimaxH3UsageDetail(videoUsage) };
 }

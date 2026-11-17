@@ -321,6 +321,14 @@ export function saveCanvasGraph(params: SaveCanvasGraphParams): CanvasSaveResult
       ).run(nextRevision, graphJson, at, canvasId);
     }
     syncNodeStates(db, canvasId, parsed, at);
+    // A saved material node acknowledges presentation permanently. Deleting it later
+    // must not resurrect that output; unsaved/offline completions remain recoverable.
+    db.prepare(`INSERT OR IGNORE INTO creative_canvas_result_presentations(assetId, canvasId)
+      SELECT a.id, a.canvasId FROM creative_canvas_assets a
+      WHERE a.canvasId = ? AND a.id IN (
+        SELECT json_extract(value, '$.data.assetId') FROM json_each(?, '$.nodes')
+        WHERE json_extract(value, '$.kind') = 'material'
+      )`).run(canvasId, graphJson);
     return {
       graphRevision: nextRevision,
       graph: parsed,
@@ -427,9 +435,11 @@ export function publishCanvasNodeResult(params: PublishNodeResultParams): Publis
 
 /**
  * 节点候选投影（v2）：按节点列出成功任务及其输出资产，供前端候选列表。
- * 每节点取最近 12 条（时间倒序），走 idx_cct_node_results 索引。
+ * 每节点保留最近 12 条历史及全部未展示结果（时间倒序），走 idx_cct_node_results 索引。
  */
 export interface CanvasNodeCandidate {
+  materialized: boolean;
+  tailMaterialized: boolean;
   tailAssetId: string | null;
   nodeId: string;
   taskId: string;
@@ -443,9 +453,13 @@ export function listCanvasNodeCandidates(db: Database.Database, canvasId: string
   if (access.kind === 'team') access.assertAccess('canvas', canvasId, 'read');
   const rows = db.prepare(
     `SELECT t.nodeId, t.id AS taskId, t.outputAssetId, t.variantIndex, t.createdAt,
-            json_extract(m.metadataJson, '$.tailAssetId') AS tailAssetId
+            json_extract(m.metadataJson, '$.tailAssetId') AS tailAssetId,
+            p.assetId IS NOT NULL AS materialized, tp.assetId IS NOT NULL AS tailMaterialized
        FROM creative_canvas_tasks t
        LEFT JOIN creative_canvas_video_metadata m ON m.taskId = t.id
+       LEFT JOIN creative_canvas_result_presentations p ON p.assetId = t.outputAssetId AND p.canvasId = t.canvasId
+       LEFT JOIN creative_canvas_result_presentations tp
+         ON tp.assetId = json_extract(m.metadataJson, '$.tailAssetId') AND tp.canvasId = t.canvasId
       WHERE t.canvasId = ? AND t.phase = 'succeeded' AND t.outputAssetId IS NOT NULL
       ORDER BY t.nodeId, t.createdAt DESC`,
   ).all(canvasId) as Array<Record<string, unknown>>;
@@ -453,8 +467,12 @@ export function listCanvasNodeCandidates(db: Database.Database, canvasId: string
   for (const row of rows) {
     const nodeId = String(row.nodeId);
     const bucket = perNode.get(nodeId) ?? [];
-    if (bucket.length >= 12) continue;
+    // Keep all unseen outputs, even after more than 12 tasks finish while away.
+    const unseen = !row.materialized || (row.tailAssetId && !row.tailMaterialized);
+    if (bucket.length >= 12 && !unseen) continue;
     bucket.push({
+      materialized: Boolean(row.materialized),
+      tailMaterialized: Boolean(row.tailMaterialized),
       tailAssetId: row.tailAssetId ? String(row.tailAssetId) : null,
       nodeId,
       taskId: String(row.taskId),

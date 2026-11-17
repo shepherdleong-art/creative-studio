@@ -197,7 +197,12 @@ async function requestData(request: Request, route: string, context?: RouteHandl
     const direct = ID_RESOURCES[key];
     if (direct) addReference(references, route, key, direct, value);
   }
-  for (const [key, value] of query.entries()) scanReferences(route, { [key]: value }, references);
+  for (const [key, value] of query.entries()) {
+    // 混剪上下文的 shotSetId 是可失效的选择状态，不是额外的授权根。
+    // 项目仍由 primaryReference 校验；buildMixcutContext 只在本项目内选择分镜组并负责回退。
+    if (route === '/api/projects/[id]/final-edit/context' && key === 'shotSetId') continue;
+    scanReferences(route, { [key]: value }, references);
+  }
   scanReferences(route, body, references);
   return { params, query, body, references };
 }

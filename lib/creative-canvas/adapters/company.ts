@@ -30,7 +30,7 @@ import {
 } from './company-capabilities.ts';
 import { resolveCompanyCanvasRoute, type CanvasProviderRoute } from './company-providers.ts';
 import { companyCanvasImageOutput } from './company-image-output.ts';
-import { precheckCanvasDeliveryMedia, type CanvasMediaDeliverer } from './media-delivery.ts';
+import { prepareCanvasDeliveryMedia, type CanvasMediaDeliverer } from './media-delivery.ts';
 import {
   CanvasAdapterError,
   type CanvasDownloadOutcome,
@@ -263,36 +263,36 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
             { code: 'input_file_missing' },
           );
         }
-        const problems = precheckCanvasDeliveryMedia({
-          kind: input.kind as 'image' | 'video' | 'audio',
-          mimeType: input.mimeType,
-          byteSize: input.byteSize,
-          durationSec: input.durationSec,
-          absolutePath: input.absolutePath,
-        }, {
-          ...(rule.mimeTypes ? { mimeTypes: rule.mimeTypes } : {}),
-          ...(rule.maxBytes !== undefined ? { maxBytes: rule.maxBytes } : {}),
-          ...(rule.maxDurationSec !== undefined ? { maxDurationSec: rule.maxDurationSec } : {}),
-        });
-        if (problems.length > 0) {
-          throw new CanvasAdapterError(
-            'prepare',
-            `输入 @${input.refId} 未通过交付校验：${problems.join('；')}，任务未提交。`,
-            { code: 'media_precheck_failed' },
-          );
-        }
         // 尾帧必须走 COS（公司尾帧红线）；七牛渠道的所有素材都走 COS。
         const requireCos = requiresCos || (hasTailRole && isFrameRole(input.role));
-        input.deliveryRef = await deliverer.deliver({
-          kind: input.kind as 'image' | 'video' | 'audio',
-          absolutePath: input.absolutePath,
-          mimeType: input.mimeType,
-          byteSize: input.byteSize,
-          durationSec: input.durationSec,
-          role: input.role,
-          requireCos,
-          isFrameImage: input.kind === 'image' && isFrameRole(input.role),
-        }, signal);
+        try {
+          const prepared = await prepareCanvasDeliveryMedia({
+            kind: input.kind as 'image' | 'video' | 'audio',
+            absolutePath: input.absolutePath,
+            mimeType: input.mimeType,
+            byteSize: input.byteSize,
+            durationSec: input.durationSec,
+            role: input.role,
+            requireCos,
+            isFrameImage: input.kind === 'image' && isFrameRole(input.role),
+          }, {
+            ...(rule.mimeTypes ? { mimeTypes: rule.mimeTypes } : {}),
+            ...(rule.maxBytes !== undefined ? { maxBytes: rule.maxBytes } : {}),
+            ...(rule.maxDurationSec !== undefined ? { maxDurationSec: rule.maxDurationSec } : {}),
+          }, signal);
+          try {
+            input.deliveryRef = await deliverer.deliver(prepared.request, signal);
+          } finally {
+            await prepared.dispose();
+          }
+        } catch (error) {
+          if (error instanceof CanvasAdapterError && error.stage === 'prepare') {
+            throw new CanvasAdapterError('prepare', '输入 @' + input.refId + ' ' + error.message, {
+              code: error.code,
+            });
+          }
+          throw error;
+        }
       }
 
       // 尾帧声明必须落在已核验的精确别名内，否则不许提交（公司渠道专属约束）

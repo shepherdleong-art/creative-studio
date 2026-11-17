@@ -226,6 +226,18 @@ export const CREATIVE_CANVAS_MIGRATIONS: ReadonlyArray<CanvasMigration> = [
     CREATE INDEX idx_ccl_canvas ON creative_canvas_logs(canvasId, createdAt);
     CREATE INDEX idx_ccl_task ON creative_canvas_logs(jobId, createdAt);`,
   },
+  {
+    version: 5,
+    sql: `CREATE TABLE creative_canvas_result_presentations (
+      assetId TEXT PRIMARY KEY REFERENCES creative_canvas_assets(id) ON DELETE CASCADE,
+      canvasId TEXT NOT NULL REFERENCES creative_canvases(id) ON DELETE CASCADE
+    );
+    CREATE INDEX idx_ccrp_canvas ON creative_canvas_result_presentations(canvasId);
+    INSERT OR IGNORE INTO creative_canvas_result_presentations(assetId, canvasId)
+      SELECT a.id, c.id FROM creative_canvases c, json_each(c.graphJson, '$.nodes') n
+      JOIN creative_canvas_assets a ON a.id = json_extract(n.value, '$.data.assetId') AND a.canvasId = c.id
+      WHERE json_extract(n.value, '$.kind') = 'material';`,
+  },
 ];
 
 export type CanvasSchemaFailureCode =
@@ -264,6 +276,7 @@ export interface EnsureCanvasSchemaOptions {
 const MIGRATION_TABLE = 'creative_canvas_schema_migrations';
 
 const CANVAS_TABLES = [
+  'creative_canvas_result_presentations',
   'creative_canvas_logs',
   'creative_canvases',
   'creative_canvas_assets',

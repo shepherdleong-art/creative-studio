@@ -122,6 +122,41 @@ try {
   assert.deepEqual(canvasTaskActualCost(db, frozenTask), { currency: 'CNY', minor: 500 }, 'settlement uses original admitted seconds');
   assert.equal(recordCanvasTaskUsage(db, { taskId: frozenTask.id }).inserted, true);
   assert.equal(ledger(frozenTask.id)!.costMicros, 5_000_000);
+  // Untouched native H3 nodes submit the adapter's 5-second / 2K defaults.
+  const defaults = task('default-parameters', '2K');
+  db.prepare('UPDATE creative_canvas_tasks SET parameterSnapshot = ? WHERE id = ?')
+    .run(JSON.stringify({ generationMode: 'reference-to-video', parameters: {} }), defaults.id);
+  reference(defaults.id, 'video5');
+  const defaultTask = getCanvasTask(db, defaults.id)!;
+  const defaultQuote = canvasTaskCostQuote(db, defaultTask);
+  assert.equal(defaultQuote.kind, 'priced', 'default output duration must match the submitted five seconds');
+  if (defaultQuote.kind !== 'priced') throw new Error('missing default quote');
+  assert.equal(defaultQuote.reserve.minor, 1360, '12 input + 5 output seconds at 2K');
+
+  // Historical unpriced attempts froze the input seconds and unit prices but
+  // omitted output seconds when the UI left all parameters untouched.
+  const defaultPricing = defaultQuote.pricingSnapshot as Record<string, unknown>;
+  const incomplete = {
+    pricingVersion: defaultPricing.pricingVersion,
+    coreModelKey: h3Id,
+    priceComponents: defaultPricing.priceComponents,
+    resolution: '2K', inputVideoDurationSec: 6,
+  };
+  db.prepare('INSERT INTO execution_operations VALUES (?, ?, ?)').run('default-op', 'canvas', defaults.id);
+  db.prepare('INSERT INTO execution_attempts VALUES (?, ?, ?, ?)')
+    .run('default-attempt', 'default-op', JSON.stringify(incomplete), '2026-11-16');
+  accept(defaults.id);
+  assert.deepEqual(canvasTaskActualCost(db, defaultTask), { currency: 'CNY', minor: 880 },
+    'historical input seconds and unit prices win over edited live metadata');
+  assert.equal(recordCanvasTaskUsage(db, { taskId: defaults.id }).inserted, true);
+  assert.equal(ledger(defaults.id)!.costMicros, 8_800_000);
+  for (const bad of [{ ...incomplete, inputVideoDurationSec: null }, { ...incomplete, priceComponents: null },
+    { ...incomplete, pricingVersion: 'unknown-price-version' }, { ...incomplete, videoUsage: null }]) {
+    db.prepare('UPDATE execution_attempts SET pricingSnapshotJson = ? WHERE id = ?')
+      .run(JSON.stringify(bad), 'default-attempt');
+    assert.equal(canvasTaskActualCost(db, defaultTask), null, 'incomplete/corrupt evidence must stay unpriced');
+  }
+
   const oldTask = task('historical', '768P'); reference(oldTask.id, 'video5'); accept(oldTask.id);
   db.prepare('INSERT INTO execution_operations VALUES (?, ?, ?)').run('old-op', 'canvas', oldTask.id);
   db.prepare('INSERT INTO execution_attempts VALUES (?, ?, ?, ?)').run('old-attempt', 'old-op', JSON.stringify({ pricingVersion: CORE_USAGE_PRICING_VERSION, coreModelKey: h3Id, quantity: 5 }), '2026-11-11');

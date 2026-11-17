@@ -7,7 +7,7 @@
 
 import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Handle, NodeResizeControl, Position, ResizeControlVariant, type NodeProps } from '@xyflow/react';
-import { resolveCanvasMentions } from '@/lib/creative-canvas/graph';
+import { CANVAS_DRAFT_FINAL_HANDLE, resolveCanvasMentions } from '@/lib/creative-canvas/graph';
 import {
   filterMentionCandidates,
   findActiveMentionQuery,
@@ -459,7 +459,8 @@ export const MaterialNode = memo(function MaterialNode({ id, data, selected, pos
             </a>
           ) : null}
         </div>
-        {mediaKind === 'video' && assetId ? <DraftActions assetId={assetId} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
+        {mediaKind === 'video' && assetId ? <DraftActions nodeId={id} assetId={assetId} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
+        {mediaKind === 'video' ? <NodeStatus nodeId={id} /> : null}
         <input
           ref={inputRef}
           type="file"
@@ -473,6 +474,7 @@ export const MaterialNode = memo(function MaterialNode({ id, data, selected, pos
         />
       </div>
       <Handle type="source" position={Position.Right} />
+      <Handle type="source" id={CANVAS_DRAFT_FINAL_HANDLE} position={Position.Right} isConnectable={false} style={{ opacity: 0, pointerEvents: 'none' }} />
       {/* 溯源连线的入口：生成节点物化结果时自动连到这里；素材节点本身不产生参考槽位 */}
       <Handle type="target" position={Position.Left} />
       {zoomed && assetId ? (
@@ -863,9 +865,7 @@ export const GenerationNode = memo(function GenerationNode({
             <option value="direct">直接生成正式视频</option><option value="draft">先生成样片 · 480p</option>
             {data.parameters?.generationStage === 'final-from-draft' ? <option value="final-from-draft">基于选中样片转正式 · 1080p</option> : null}
           </select>
-          {data.parameters?.generationStage === 'final-from-draft' ? <DraftActions bound assetId={String(data.parameters.draftAssetId ?? '')} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
         </> : null}
-        {runtime?.currentAssetId ? <DraftActions assetId={runtime.currentAssetId} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
         <label className="mt-2 block text-[11px] text-ink-secondary">模式</label>
         <select
           className="nodrag sc-canvas-select w-full"
@@ -911,7 +911,7 @@ export const GenerationNode = memo(function GenerationNode({
           <div className="mt-2 space-y-1">
             {capability.parameters
               .filter((parameter) => !['generationStage', 'draftAssetId', 'directResolution'].includes(parameter.key))
-              .filter((parameter) => data.parameters?.generationStage !== 'final-from-draft' || ['resolution', 'outputFormat', 'watermark'].includes(parameter.key))
+              .filter((parameter) => data.parameters?.generationStage !== 'final-from-draft' || ['resolution', ...(capability.providerKind === 'company' ? [] : ['outputFormat', 'watermark'])].includes(parameter.key))
               .filter((parameter) => !parameter.modes || parameter.modes.includes(currentMode))
               .map((parameter) => {
                 const options = canvasParameterOptions(

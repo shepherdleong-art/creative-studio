@@ -40,6 +40,7 @@ async function __teamRoutePOST(
         canvasId: id,
         mode: body.mode === 'branch' ? 'branch' as CanvasPlanMode : 'single' as CanvasPlanMode,
         ...(body.targetNodeId === undefined ? {} : { targetNodeId: String(body.targetNodeId) }),
+        ...(body.draftAssetId === undefined ? {} : { draftAssetId: String(body.draftAssetId) }),
         ...(body.startNodeId === undefined ? {} : { startNodeId: String(body.startNodeId) }),
         ...(body.reuseStart === undefined ? {} : { reuseStart: Boolean(body.reuseStart) }),
         // 变体数量：仅 single 接受 1/2/4；branch 强制 1
