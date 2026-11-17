@@ -16,7 +16,11 @@
   /* ---- v4 极简高级：视频全幅 + 顶部米白色块（直角）+ 三层文字 + 右下直角便签 ----
      色块/便签=ink-l；文字=ink-d（吸深色，同 A/D 抬一档） */
 
-  .stage { position: absolute; inset: 0; z-index: 1; }
+  .stage { position: absolute; inset: 0; z-index: 3; }
+  /* 贴纸在封面/包装文字与正片卖点之下；封面舞台在正文开始前已完全退场。 */
+  #sticker-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+  #dyn { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+  #dyn [data-point-id] { pointer-events: auto; }
 
   /* 顶部米白色块（全宽直角，承载主副标题与信息）；恒定 90% 不透明（用户 2026-09-17，与卖点便签一致透出底层画面） */
   .panel {
@@ -103,6 +107,7 @@
       </div>
       <div class="cover-tags" id="coverTags"></div>
     </div>
+    <div id="sticker-layer"></div>
     <div id="dyn"></div>
   </div>
 
@@ -392,5 +397,6 @@
   if (!window.__hyperframes) tl.play(0);
 })();
 </script>
+<script src="stickers/runtime.js"></script>
 </body>
 </html>

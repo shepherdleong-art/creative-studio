@@ -13,6 +13,7 @@ import BatchTextStyleEditor from '../BatchTextStyleEditor';
 import BatchCoverDraftPreview from '../BatchCoverDraftPreview';
 import BatchCoverEditorDrawer, { type BatchCoverEditorDraft } from '../BatchCoverEditorDrawer';
 import type { InspectorTab, SelectionTarget, UnifiedFilmState } from './types';
+import type { StickerAssetChoice } from '@/components/mixcut/StickerPanel';
 import styles from './batch-unified-review.module.css';
 
 export interface BatchReviewInspectorDockProps {
@@ -30,6 +31,11 @@ export interface BatchReviewInspectorDockProps {
   coverEditorOpen: boolean;
   onOpenCoverEditor: () => void;
   onCloseCoverEditor: () => void;
+  onAddSticker: (planId: string, choice: StickerAssetChoice) => void;
+  onStickerDragStart: (planId: string, choice: StickerAssetChoice) => void;
+  onStickerDragEnd: () => void;
+  onPlaySticker: (planId: string, stickerId: string) => void;
+  onCopyStickers: (planId: string) => void;
 }
 
 export default function BatchReviewInspectorDock({
@@ -47,6 +53,11 @@ export default function BatchReviewInspectorDock({
   coverEditorOpen,
   onOpenCoverEditor,
   onCloseCoverEditor,
+  onAddSticker,
+  onStickerDragStart,
+  onStickerDragEnd,
+  onPlaySticker,
+  onCopyStickers,
 }: BatchReviewInspectorDockProps) {
   const arrangement = film?.arrangement;
   const planId = film?.planId;
@@ -204,6 +215,12 @@ export default function BatchReviewInspectorDock({
 
       <div className={styles.inspectorScroll}>
         {inspectorTab === 'packaging' && <BatchPackagingEditor key={`${film.planId}:${arrangement.outputVersionId}`} view={arrangement} onJumpToCover={() => onJumpToCover(film.planId)}
+          stickerSelection={selection?.planId === film.planId && selection.kind === 'sticker' ? selection : null}
+          onAddSticker={(choice) => onAddSticker(film.planId, choice)}
+          onStickerDragStart={(choice) => onStickerDragStart(film.planId, choice)}
+          onStickerDragEnd={onStickerDragEnd}
+          onPlaySticker={(stickerId) => onPlaySticker(film.planId, stickerId)}
+          onCopyStickers={() => onCopyStickers(film.planId)}
           onSave={(config, reextract) => onMediaEdit(film.planId, { type: 'set_packaging', config, reextract, expectedEditRevision: arrangement.editRevision, expectedOutputVersionId: arrangement.outputVersionId })} />}
         {/* TAB 1: 字幕 */}
         {inspectorTab === 'subtitle' && (

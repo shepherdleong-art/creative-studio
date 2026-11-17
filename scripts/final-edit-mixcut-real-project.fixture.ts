@@ -108,6 +108,34 @@ db.prepare(`UPDATE final_edit_tts_providers SET apiKey='fixture-key', enabled=1 
 db.prepare(`INSERT INTO script_providers (id, name, type, apiStyle, baseUrl, apiKey, model, defaultBaseUrl, defaultModel, maxTokens, enabled, isBuiltin, supportsVision, visionCostPerRequest) VALUES ('mixcut-real-vision', '真实 E2E 视觉分析', 'openai-compatible', 'openai-compatible', 'https://example.invalid/v1', 'fixture-key', 'fixture-vision', 'https://example.invalid/v1', 'fixture-vision', 1024, 1, 0, 1, 0)`).run();
 
 const narrationDurationUs = Math.round(await probeDurationSec(narrationSource) * 1_000_000);
+// UI acceptance reuses this real-media fixture in an isolated team data root.
+// Use the actual employee access implementation; never bypass server authorization.
+if (process.env.STICKER_FIXTURE_TEAM_EMPLOYEE) {
+  await import('../lib/team-service/accepted-access.ts');
+  const { createTeamAccessContext } = await import('../lib/team-service/resource-scopes.ts');
+  const { setResourceAccessContext } = await import('../lib/media-core/access-context.ts');
+  const owner = db.prepare('SELECT id FROM team_users WHERE employeeId=?').pluck().get(process.env.STICKER_FIXTURE_TEAM_EMPLOYEE) as string;
+  assert.ok(owner);
+  const access = createTeamAccessContext({ db, principal: { userId: owner, role: 'employee' } });
+  access.registerRootScope({ resourceType: 'project', resourceId: ids.projectId, ownerUserId: owner });
+  const scope = (resourceType: string, resourceId: string, parentType: string, parentId: string) =>
+    access.registerInheritedScope({ resourceType, resourceId, parent: { resourceType: parentType, resourceId: parentId } });
+  for (const id of [ids.shotSetA, ids.shotSetB]) scope('shot_set', id, 'project', ids.projectId);
+  scope('image', 'mixcut-real-source-image', 'project', ids.projectId);
+  for (const id of [...ids.shotsA, ids.shotB]) scope('shot', id, 'shot_set', id === ids.shotB ? ids.shotSetB : ids.shotSetA);
+  for (const id of [...ids.videosA, ids.videoB]) scope('video_job', id, 'project', ids.projectId);
+  for (const id of [ids.scriptA, ids.scriptB]) scope('script_draft', id, 'project', ids.projectId);
+  assert.ok(access.registerFile, '团队验收必须使用真实受管文件登记');
+  access.registerFile({ absolutePath: sourceImage, mimeType: 'image/png', references: [
+    { resourceType: 'image', resourceId: 'mixcut-real-source-image', role: 'input' },
+  ] });
+  for (const [index, absolutePath] of [...videoAPaths, videoBPath].entries()) {
+    access.registerFile({ absolutePath, mimeType: 'video/mp4', references: [
+      { resourceType: 'video_job', resourceId: [...ids.videosA, ids.videoB][index], role: 'input' },
+    ] });
+  }
+  setResourceAccessContext(access);
+}
 const workspace = createFinalEditWorkspace({
   db,
   storageRoot,
@@ -155,7 +183,7 @@ const prepareJob = await workspace.start({
   scriptDraftId: ids.scriptA,
   shotSetId: ids.shotSetA,
   selectedMaterialKeys: ids.videosA.map((videoId) => `module4:${videoId}`),
-  count: 1,
+  count: process.env.STICKER_FIXTURE_VARIANTS === '2' ? 2 : 1,
   outputPreset: '3x4',
   providerId: 'vapi-qwen3-tts',
   voice: 'Cherry',
@@ -173,9 +201,21 @@ workspace.apply({
   target: 'subtitle',
   style: { ...preparedGroup.textStyles['3x4'].subtitle, fontSizePx: 32 },
 });
+// Production sticker acceptance renders text in bundled Chromium; use an explicit
+// fixture font instead of depending on the host's Microsoft YaHei installation.
+if (process.env.STICKER_FIXTURE_EXPORT_FONT) {
+  for (const target of ['subtitle', 'coverPrimary', 'coverSecondary'] as const) {
+    const current = workspace.load(prepareJob.groupId);
+    workspace.apply({
+      scope: 'group', groupId: current.id, expectedRevision: current.revision,
+      type: 'set_text_style', preset: '3x4', target,
+      style: { ...current.textStyles['3x4'][target], fontFamily: process.env.STICKER_FIXTURE_EXPORT_FONT },
+    });
+  }
+}
 const group = workspace.load(prepareJob.groupId);
 assert.equal(group.status, 'ready');
-assert.equal(group.variants.length, 1);
+assert.equal(group.variants.length, process.env.STICKER_FIXTURE_VARIANTS === '2' ? 2 : 1);
 assert.equal(group.variants[0].issues.some((issue) => issue.severity === 'blocking'), false);
 assert.equal(group.variants[0].timeline.clips.length, primaryMaterialCount);
 assert.ok((group.variants[0].matchDiagnostics?.usedMaterials.length || 0) >= 5, '最终验收至少使用 5/7 个素材');

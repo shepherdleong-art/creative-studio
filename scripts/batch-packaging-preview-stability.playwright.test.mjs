@@ -65,9 +65,10 @@ const React=load(${reactId}),Dock=load(${dockId}).default;
 const assets=[{assetId:'asset',displayName:'测试视频',durationSec:6,previewUrl:'/source.mp4'}];
 const initialView=__INITIAL_VIEW__;
 function App(){
-  const [view,setView]=React.useState(initialView),[time,setTime]=React.useState(2);
+  const [view,setView]=React.useState(initialView),[time,setTime]=React.useState(2),[stickerId,setStickerId]=React.useState('');
   window.view=view;
   window.seek=setTime;
+  window.selectSticker=setStickerId;
   window.refreshView=async(patch)=>{
     const response=await fetch('/fixture-update',{method:'POST',body:JSON.stringify(patch)});
     setView(await response.json());
@@ -80,7 +81,8 @@ function App(){
   return React.createElement('div',{style:{width:800,height:640}},React.createElement(Dock,{
     projectId:'test',batchId:'test',outputPreset:'3x4',packagingEditable:true,
     previewFilm:{planId:'one',seq:1,scriptTitle:'卖点位置测试',durationSec:6,approvable:true,arrangement:view},
-    previewAsset:null,onClearPreviewAsset:()=>{},playheadSec:time,onSeek:setTime,poolAssets:assets,onSourceApply:save
+    previewAsset:null,onClearPreviewAsset:()=>{},playheadSec:time,onSeek:setTime,poolAssets:assets,onSourceApply:save,
+    selectedStickerId:stickerId,onSelectSticker:(_plan,id)=>setStickerId(id),onStickerExit:()=>setStickerId('')
   }));
 }
 load(${domId}).createRoot(document.getElementById('root')).render(React.createElement(App));
@@ -123,6 +125,7 @@ try {
       let file = path.resolve(root, 'packaging/templates', relative);
       if (!file.startsWith(path.join(root, 'packaging/templates') + path.sep)) { res.writeHead(404).end(); return; }
       if (!fs.existsSync(file) && relative.includes('/fonts/')) file = path.join(root, 'packaging/fonts', relative.split('/fonts/')[1]);
+      if (!fs.existsSync(file) && relative.includes('/stickers/')) file = path.join(root, 'packaging/stickers', relative.split('/stickers/')[1]);
       if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) { res.writeHead(404).end(); return; }
       res.setHeader('Content-Type', ({ '.js': 'text/javascript', '.png': 'image/png', '.ttf': 'font/ttf', '.otf': 'font/otf' })[path.extname(file)] || 'application/octet-stream');
       res.end(fs.readFileSync(file)); return;
@@ -307,6 +310,26 @@ try {
     await refresh({ packaging: coverConfig });
     await assertPosition(title, titleBefore, '封面标题恢复默认排版');
     assert.equal(requests.length, coverRequests, '封面版式保存和复位不重载');
+    // A rejected sticker gesture must restore geometry without reloading the document.
+    await refresh({ packaging: { ...savedView.packaging, stickers: [{
+      id: 'rollback-sticker', assetId: 'recommend', styleMode: 'follow-template', fixedStyle: null,
+      startFrame: 20, endFrame: 140, centerXPct: 20, centerYPct: 35, visualWidthPct: 20,
+      rotationDeg: 0, trackIndex: 0, animation: 'none', origin: { kind: 'manual' },
+    }] } });
+    await page.evaluate(() => { window.seek(2); window.selectSticker('rollback-sticker'); });
+    await ready();
+    await overlay.locator('[data-sticker-edit-ui]').waitFor();
+    const sticker = overlay.locator('[data-sticker-id="rollback-sticker"]');
+    const geometry = () => sticker.evaluate(element => ({ left: element.style.left, top: element.style.top, width: element.style.width,
+      rotation: element.querySelector('.packaging-sticker-rotation').style.transform }));
+    const originalGeometry = await geometry();
+    const stickerRequestCount = requests.length;
+    failNextSave = true;
+    await drag(sticker, 22, 18);
+    await page.getByRole('alert').getByText('包装修改未保存，请重试').waitFor();
+    await ready(); await settle();
+    assert.deepEqual(await geometry(), originalGeometry, '贴纸保存失败必须原地恢复中心/宽度/旋转');
+    assert.equal(requests.length, stickerRequestCount, '贴纸保存失败回滚不重载预览');
     console.log(`PASS: ${template} drag/scale/rotate, polling, undo/redo/reset, failed save, text refresh, reload persistence, cover layouts; ${samples.frames} sampled frames, zero disappearing points/blank video frames`);
   }
   assert.deepEqual(errors, []);

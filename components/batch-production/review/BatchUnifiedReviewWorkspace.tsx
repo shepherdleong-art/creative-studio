@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
-import { FINAL_EDIT_FPS } from '@/lib/media-core/render-contract';
+import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '@/lib/media-core/render-contract';
 import { audioClips } from '@/lib/media-core/audio-edit';
 import type { OutputPresetId } from '@/lib/media-core/cover-types';
 import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
@@ -15,15 +15,21 @@ import type { InspectorTab, SelectionTarget, TimelineTool, UnifiedFilmState } fr
 import styles from './batch-unified-review.module.css';
 import { subtitleSplitEdit } from './subtitle-edit';
 import { createArrangementLoader } from './arrangement-loader';
+import type { StickerAssetChoice } from '@/components/mixcut/StickerPanel';
+import type { BatchStickerPlaybackRequest } from '../BatchPackagingOverlay';
+import BatchStickerCopyDialog, { type BatchStickerCopyDialogTarget } from './BatchStickerCopyDialog';
+import type { BatchStickerMutationResult } from '@/lib/batch-production/sticker-copy';
+import { advanceStickerCopyHistory, type LocalRevisionChange, type ReviewHistoryEntry, type StickerCopyHistoryEntry } from './sticker-copy-history';
+import {
+  MAX_STICKER_INSTANCES,
+  createManualPackagingSticker,
+  planStickerFramesAtPlayhead,
+  type PackagingStickerInstance,
+} from '@/lib/media-core/packaging-stickers';
+import { insertPackagingStickerAtTop, normalizePackagingStickerTracks } from '@/lib/media-core/packaging-sticker-timeline';
 
 const FPS = FINAL_EDIT_FPS;
-
-/** 撤销/重做历史项:记录受影响成片与编辑前后的整包快照(回放走后端 restore_arrangement)。 */
-interface EditHistoryEntry {
-  planId: string;
-  before: Record<string, unknown>;
-  after: Record<string, unknown>;
-}
+const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS;
 
 /** 从编辑器数据视图派生后端 restore_arrangement 快照(只含可编辑字段)。 */
 function buildRestoreSnapshot(view: BatchOutputClipEditView): Record<string, unknown> {
@@ -165,8 +171,18 @@ export default function BatchUnifiedReviewWorkspace({
 
   // Undo / Redo history:撤销/重做把快照整包回放到后端(restore_arrangement),
   // 由后端走正式修订/冲突门禁——前端本地状态不再作为"已保存"的事实来源。
-  const [undoStack, setUndoStack] = useState<EditHistoryEntry[]>([]);
-  const [redoStack, setRedoStack] = useState<EditHistoryEntry[]>([]);
+  const [undoStack, setUndoStack] = useState<ReviewHistoryEntry[]>([]);
+  const [redoStack, setRedoStack] = useState<ReviewHistoryEntry[]>([]);
+  const historyPendingRef = useRef(false);
+  const [historyPending, setHistoryPending] = useState(false);
+  const [stickerCopySourceId, setStickerCopySourceId] = useState<string | null>(null);
+  const [draggedSticker, setDraggedSticker] = useState<{ planId: string; choice: StickerAssetChoice } | null>(null);
+  const [stickerPlaybackRequest, setStickerPlaybackRequest] = useState<BatchStickerPlaybackRequest | null>(null);
+  const stickerPlaybackRequestRef = useRef(0);
+  const stickerClickOffsetsRef = useRef<Record<string, number>>({});
+  const stickerAddBusyRef = useRef(new Set<string>());
+  const selectedPlanIdRef = useRef<string | null>(null);
+  useEffect(() => { selectedPlanIdRef.current = selectedPlanId; }, [selectedPlanId]);
 
   const arrangementLoaderRef = useRef<ReturnType<typeof createArrangementLoader<BatchOutputClipEditView>> | null>(null);
 
@@ -213,9 +229,17 @@ export default function BatchUnifiedReviewWorkspace({
     return data;
   }, [onOutputChanged]);
 
+  const advanceLocalHistory = useCallback((changes: readonly LocalRevisionChange[]) => {
+    setUndoStack((stack) => advanceStickerCopyHistory(stack, changes));
+    setRedoStack((stack) => advanceStickerCopyHistory(stack, changes));
+  }, []);
+
   // Submit an edit to a film's arrangement via REST API;成功后记录撤销历史
   const handleMediaEdit = useCallback(
     async (planId: string, edit: Record<string, unknown>): Promise<boolean> => {
+      if (historyPendingRef.current) return false;
+      historyPendingRef.current = true;
+      setHistoryPending(true);
       const beforeView = arrangements[planId] ?? null;
       try {
         const response = await fetch(
@@ -230,11 +254,14 @@ export default function BatchUnifiedReviewWorkspace({
         if (!response.ok) {
           throw new Error(data.message || '编辑失败');
         }
+        if (beforeView) advanceLocalHistory([{ planId, outputVersionId: data.outputVersionId,
+          beforeEditRevision: beforeView.editRevision, afterEditRevision: data.editRevision }]);
         const afterView = await refreshFilmArrangement(planId);
         if (beforeView && afterView) {
           setUndoStack((stack) => [
             ...stack.slice(-20),
             {
+              kind: 'edit',
               planId,
               before: buildRestoreSnapshot(beforeView),
               after: buildRestoreSnapshot(afterView),
@@ -246,9 +273,12 @@ export default function BatchUnifiedReviewWorkspace({
       } catch (err) {
         alert(err instanceof Error ? err.message : '操作失败');
         return false;
+      } finally {
+        historyPendingRef.current = false;
+        setHistoryPending(false);
       }
     },
-    [arrangements, batchId, projectId, refreshFilmArrangement]
+    [arrangements, batchId, projectId, refreshFilmArrangement, advanceLocalHistory]
   );
 
   // Replay a restore snapshot to the backend (undo/redo shared path)
@@ -274,6 +304,8 @@ export default function BatchUnifiedReviewWorkspace({
           if (data.code === 'conflict') return 'conflict';
           throw new Error(data.message || '撤销/重做失败');
         }
+        if (current) advanceLocalHistory([{ planId, outputVersionId: data.outputVersionId,
+          beforeEditRevision: current.editRevision, afterEditRevision: data.editRevision }]);
         await refreshFilmArrangement(planId);
         return 'ok';
       } catch (err) {
@@ -281,8 +313,85 @@ export default function BatchUnifiedReviewWorkspace({
         return 'error';
       }
     },
-    [arrangements, batchId, projectId, refreshFilmArrangement]
+    [arrangements, batchId, projectId, refreshFilmArrangement, advanceLocalHistory]
   );
+
+  const handleCopyStickers = useCallback(async (source: BatchStickerCopyDialogTarget, targets: BatchStickerCopyDialogTarget[]) => {
+    if (historyPendingRef.current) throw new Error('正在保存编辑，请稍后重试复制。');
+    historyPendingRef.current = true;
+    setHistoryPending(true);
+    try {
+      const response = await fetch(`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/sticker-copy?projectId=${encodeURIComponent(projectId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'copy', sourcePlanId: source.planId,
+          expectedSourceOutputVersionId: source.expectedOutputVersionId, expectedSourceEditRevision: source.expectedEditRevision, targets }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        await Promise.allSettled([source, ...targets].map(item => refreshFilmArrangement(item.planId)));
+        throw new Error(data.message || '跨片贴纸复制失败');
+      }
+      const result = data as BatchStickerMutationResult;
+      advanceLocalHistory(result.targets);
+      const entry: StickerCopyHistoryEntry = {
+        kind: 'sticker-copy',
+        targets: result.targets.map((target) => ({
+          planId: target.planId,
+          outputVersionId: target.outputVersionId,
+          currentEditRevision: target.afterEditRevision,
+          before: target.before,
+          after: target.after,
+        })),
+      };
+      setUndoStack((stack) => [...stack.slice(-20), entry]);
+      setRedoStack([]);
+      await Promise.all(result.targets.map((target) => refreshFilmArrangement(target.planId)));
+    } finally {
+      historyPendingRef.current = false;
+      setHistoryPending(false);
+    }
+  }, [batchId, projectId, refreshFilmArrangement, advanceLocalHistory]);
+
+  const postRestoreStickerCopy = useCallback(async (entry: StickerCopyHistoryEntry, side: 'before' | 'after'): Promise<
+    { status: 'ok'; entry: StickerCopyHistoryEntry } | { status: 'conflict' | 'error' }
+  > => {
+    try {
+      const response = await fetch(`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/sticker-copy?projectId=${encodeURIComponent(projectId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'restore',
+          targets: entry.targets.map((target) => ({
+            planId: target.planId,
+            expectedOutputVersionId: target.outputVersionId,
+            expectedEditRevision: target.currentEditRevision,
+            snapshot: target[side],
+          })),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (data.code === 'conflict' || data.error === 'conflict') return { status: 'conflict' };
+        throw new Error(data.message || '跨片贴纸撤销/重做失败');
+      }
+      const result = data as BatchStickerMutationResult;
+      advanceLocalHistory(result.targets);
+      const nextEntry: StickerCopyHistoryEntry = {
+        ...entry,
+        targets: entry.targets.map((target) => {
+          const mutated = result.targets.find((item) => item.planId === target.planId);
+          if (!mutated) throw new Error('跨片贴纸恢复结果缺少目标成片');
+          return { ...target, currentEditRevision: mutated.afterEditRevision };
+        }),
+      };
+      await Promise.all(result.targets.map((target) => refreshFilmArrangement(target.planId)));
+      return { status: 'ok', entry: nextEntry };
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '跨片贴纸撤销/重做失败');
+      return { status: 'error' };
+    }
+  }, [batchId, projectId, refreshFilmArrangement, advanceLocalHistory]);
 
   // Pool assets: aggregate from all loaded arrangements
   const poolAssets = useMemo(() => {
@@ -357,6 +466,116 @@ export default function BatchUnifiedReviewWorkspace({
   const activeFilm = useMemo(() => {
     return films.find((f) => f.planId === selectedPlanId) ?? films[0] ?? null;
   }, [films, selectedPlanId]);
+  const stickerCopySource = stickerCopySourceId ? films.find((film) => film.planId === stickerCopySourceId) ?? null : null;
+
+  const handleSelectFilm = useCallback((planId: string) => {
+    if (planId !== selectedPlanIdRef.current) setDraggedSticker(null);
+    setSelection(null);
+    setStickerPlaybackRequest(null);
+    setSelectedPlanId(planId);
+  }, []);
+
+  const handleSelectSticker = useCallback((planId: string, stickerId: string, knownSticker?: PackagingStickerInstance) => {
+    if (!stickerId) {
+      setSelection((current) => current?.planId === planId && current.kind === 'sticker' ? null : current);
+      setStickerPlaybackRequest((current) => current?.planId === planId ? null : current);
+      return;
+    }
+    const sticker = knownSticker ?? arrangements[planId]?.packaging?.stickers?.find((item) => item.id === stickerId);
+    if (!sticker) return;
+    handleSelectFilm(planId);
+    setPreviewAsset(null);
+    setSourceSession(null);
+    setSelection({ planId, kind: 'sticker', stickerId });
+    setInspectorTab('packaging');
+    const startSec = sticker.startFrame / FPS - INTRO_SEC;
+    const endSec = sticker.endFrame / FPS - INTRO_SEC;
+    if (selection?.planId !== planId || selection.kind !== 'sticker' || selection.stickerId !== stickerId || playheadSec < startSec || playheadSec >= endSec) {
+      setPlayheadSec((startSec + endSec) / 2);
+    }
+  }, [arrangements, handleSelectFilm, playheadSec, selection]);
+
+  const handleSelectTarget = useCallback((target: SelectionTarget | null) => {
+    if (target?.kind === 'sticker' && target.stickerId) {
+      handleSelectSticker(target.planId, target.stickerId);
+      return;
+    }
+    if (target) handleSelectFilm(target.planId);
+    setSelection(target);
+    setStickerPlaybackRequest(null);
+  }, [handleSelectFilm, handleSelectSticker]);
+
+  const saveStickerInstances = useCallback(async (planId: string, nextStickers: PackagingStickerInstance[]) => {
+    const view = arrangements[planId];
+    if (!view?.packaging?.enabled || !view.editable) return false;
+    return handleMediaEdit(planId, {
+      type: 'set_packaging',
+      config: { ...view.packaging, stickers: normalizePackagingStickerTracks(nextStickers) },
+      expectedEditRevision: view.editRevision,
+      expectedOutputVersionId: view.outputVersionId,
+    });
+  }, [arrangements, handleMediaEdit]);
+
+  const handleDeleteSticker = useCallback(async (planId: string, stickerId: string) => {
+    const stickers = arrangements[planId]?.packaging?.stickers ?? [];
+    if (!stickers.some((sticker) => sticker.id === stickerId)) return false;
+    const accepted = await saveStickerInstances(planId, stickers.filter((sticker) => sticker.id !== stickerId));
+    if (accepted) {
+      setSelection((current) => current?.planId === planId && current.kind === 'sticker' && current.stickerId === stickerId ? null : current);
+      setStickerPlaybackRequest((current) => current?.planId === planId && current.stickerId === stickerId ? null : current);
+    }
+    return accepted;
+  }, [arrangements, saveStickerInstances]);
+
+  const handleAddSticker = useCallback(async (planId: string, choice: StickerAssetChoice, dropCenter?: { x: number; y: number }) => {
+    const view = arrangements[planId];
+    const config = view?.packaging;
+    if (!view || !config?.enabled || !view.editable || stickerAddBusyRef.current.has(planId)) return;
+    const stickers = config.stickers ?? [];
+    if (stickers.length >= MAX_STICKER_INSTANCES) return;
+    const bodyFrames = Math.floor(Math.max(view.visualDurationUs, view.narration.durationUs ?? 0) / 1e6 * FPS + 1e-6);
+    const placement = planStickerFramesAtPlayhead(playheadSec + INTRO_SEC, bodyFrames);
+    if (!placement) return;
+    const scopeKey = `${planId}:${view.outputVersionId ?? ''}`;
+    const sequence = stickerClickOffsetsRef.current[scopeKey] ?? 0;
+    if (!dropCenter) stickerClickOffsetsRef.current[scopeKey] = sequence + 1;
+    const offsets = [[0, 0], [-3, 2], [3, -2], [-2, -3], [2, 3]] as const;
+    const offset = offsets[sequence % offsets.length];
+    const center = dropCenter ?? { x: 50 + offset[0], y: 50 + offset[1] };
+    const stickerId = `s_${crypto.randomUUID()}`;
+    const sticker = createManualPackagingSticker({
+      id: stickerId,
+      assetId: choice.asset.id,
+      styleMode: choice.styleMode,
+      fixedStyle: choice.fixedStyle,
+      startFrame: placement.startFrame,
+      endFrame: placement.endFrame,
+      centerXPct: center.x,
+      centerYPct: center.y,
+      animation: config.stickerDefaults?.animation ?? 'follow-template',
+    });
+    stickerAddBusyRef.current.add(planId);
+    try {
+      if (await saveStickerInstances(planId, insertPackagingStickerAtTop(stickers, sticker))
+        && selectedPlanIdRef.current === planId) {
+        handleSelectSticker(planId, stickerId, sticker);
+      }
+    } finally {
+      stickerAddBusyRef.current.delete(planId);
+    }
+  }, [arrangements, handleSelectSticker, playheadSec, saveStickerInstances]);
+
+  const handlePlaySticker = useCallback((planId: string, stickerId: string) => {
+    if (selectedPlanIdRef.current !== planId || !arrangements[planId]?.packaging?.stickers?.some((sticker) => sticker.id === stickerId)) return;
+    handleSelectSticker(planId, stickerId);
+    setStickerPlaybackRequest({ requestId: ++stickerPlaybackRequestRef.current, planId, stickerId });
+  }, [arrangements, handleSelectSticker]);
+
+  const handleDropSticker = useCallback((choice: StickerAssetChoice, center: { x: number; y: number }) => {
+    const planId = draggedSticker?.planId;
+    setDraggedSticker(null);
+    if (planId) void handleAddSticker(planId, choice, center);
+  }, [draggedSticker, handleAddSticker]);
 
   // Toggle eye visibility for a film
   const handleToggleEye = useCallback((planId: string) => {
@@ -434,37 +653,77 @@ export default function BatchUnifiedReviewWorkspace({
   // Undo / Redo:把编辑前(后)快照回放到后端,由后端完成正式修订与审核清理;
   // 冲突(期间发生了更新的正式编辑)时不覆盖新修订,历史整体作废。
   const handleUndo = useCallback(async () => {
+    if (historyPendingRef.current) return;
     const entry = undoStack[undoStack.length - 1];
     if (!entry) return;
-    const outcome = await postRestoreSnapshot(entry.planId, entry.before);
-    if (outcome === 'ok') {
-      setUndoStack((s) => s.slice(0, -1));
-      setRedoStack((s) => [...s, entry]);
-    } else if (outcome === 'conflict') {
-      setUndoStack([]);
-      setRedoStack([]);
-      alert('这条成片已有更新的正式编辑，撤销被拒绝。已按最新状态刷新，历史已重置。');
+    historyPendingRef.current = true;
+    setHistoryPending(true);
+    try {
+      if (entry.kind === 'sticker-copy') {
+        const outcome = await postRestoreStickerCopy(entry, 'before');
+        if (outcome.status === 'ok') {
+          setUndoStack((stack) => stack.slice(0, -1));
+          setRedoStack((stack) => [...stack, outcome.entry]);
+        } else if (outcome.status === 'conflict') {
+          setUndoStack([]);
+          setRedoStack([]);
+          alert('这次跨片复制涉及更新的正式编辑，整体撤销已被拒绝，历史已重置。');
+        }
+        return;
+      }
+      const outcome = await postRestoreSnapshot(entry.planId, entry.before);
+      if (outcome === 'ok') {
+        setUndoStack((s) => s.slice(0, -1));
+        setRedoStack((s) => [...s, entry]);
+      } else if (outcome === 'conflict') {
+        setUndoStack([]);
+        setRedoStack([]);
+        alert('这条成片已有更新的正式编辑，撤销被拒绝。已按最新状态刷新，历史已重置。');
+      }
+    } finally {
+      historyPendingRef.current = false;
+      setHistoryPending(false);
     }
-  }, [undoStack, postRestoreSnapshot]);
+  }, [undoStack, postRestoreSnapshot, postRestoreStickerCopy]);
 
   const handleRedo = useCallback(async () => {
+    if (historyPendingRef.current) return;
     const entry = redoStack[redoStack.length - 1];
     if (!entry) return;
-    const outcome = await postRestoreSnapshot(entry.planId, entry.after);
-    if (outcome === 'ok') {
-      setRedoStack((s) => s.slice(0, -1));
-      setUndoStack((s) => [...s, entry]);
-    } else if (outcome === 'conflict') {
-      setUndoStack([]);
-      setRedoStack([]);
-      alert('这条成片已有更新的正式编辑，重做被拒绝。已按最新状态刷新，历史已重置。');
+    historyPendingRef.current = true;
+    setHistoryPending(true);
+    try {
+      if (entry.kind === 'sticker-copy') {
+        const outcome = await postRestoreStickerCopy(entry, 'after');
+        if (outcome.status === 'ok') {
+          setRedoStack((stack) => stack.slice(0, -1));
+          setUndoStack((stack) => [...stack, outcome.entry]);
+        } else if (outcome.status === 'conflict') {
+          setUndoStack([]);
+          setRedoStack([]);
+          alert('这次跨片复制涉及更新的正式编辑，整体重做已被拒绝，历史已重置。');
+        }
+        return;
+      }
+      const outcome = await postRestoreSnapshot(entry.planId, entry.after);
+      if (outcome === 'ok') {
+        setRedoStack((s) => s.slice(0, -1));
+        setUndoStack((s) => [...s, entry]);
+      } else if (outcome === 'conflict') {
+        setUndoStack([]);
+        setRedoStack([]);
+        alert('这条成片已有更新的正式编辑，重做被拒绝。已按最新状态刷新，历史已重置。');
+      }
+    } finally {
+      historyPendingRef.current = false;
+      setHistoryPending(false);
     }
-  }, [redoStack, postRestoreSnapshot]);
+  }, [redoStack, postRestoreSnapshot, postRestoreStickerCopy]);
 
   // Global Keyboard Shortcuts (PRD T-06)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (coverEditorOpen || sourceSession || e.defaultPrevented || e.isComposing) return;
+      if (coverEditorOpen || sourceSession || stickerCopySourceId || e.defaultPrevented || e.isComposing) return;
       // Ignore if focus is in input / textarea
       const target = e.target as HTMLElement | null;
       if (
@@ -530,16 +789,19 @@ export default function BatchUnifiedReviewWorkspace({
       } else if (e.key === 'n' || e.key === 'N') {
         setSnapEnabled((s) => !s);
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedPlanId) {
-          if (selection?.kind === 'clip' && selection.clipId) {
+        if (selectedPlanId && selection?.planId === selectedPlanId) {
+          if (selection.kind === 'sticker' && selection.stickerId) {
+            e.preventDefault();
+            void handleDeleteSticker(selectedPlanId, selection.stickerId);
+          } else if (selection.kind === 'clip' && selection.clipId) {
             e.preventDefault();
             void handleMediaEdit(selectedPlanId, { type: 'delete', clipId: selection.clipId });
             setSelection(null);
-          } else if (selection?.kind === 'subtitle' && selection.cueId) {
+          } else if (selection.kind === 'subtitle' && selection.cueId) {
             e.preventDefault();
             void handleMediaEdit(selectedPlanId, { type: 'delete_subtitle_cue', cueId: selection.cueId });
             setSelection(null);
-          } else if (selection?.kind === 'audio' && selection.track && selection.clipId) {
+          } else if (selection.kind === 'audio' && selection.track && selection.clipId) {
             e.preventDefault();
             void handleMediaEdit(selectedPlanId, {
               type: 'delete_audio_clip',
@@ -572,7 +834,7 @@ export default function BatchUnifiedReviewWorkspace({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [coverEditorOpen, sourceSession, selection, selectedPlanId, films, playheadSec, handleMediaEdit, handleUndo, handleRedo]);
+  }, [coverEditorOpen, sourceSession, stickerCopySourceId, selection, selectedPlanId, films, playheadSec, handleMediaEdit, handleDeleteSticker, handleUndo, handleRedo]);
 
   const approvedCount = films.filter((f) => f.approved).length;
 
@@ -651,12 +913,25 @@ export default function BatchUnifiedReviewWorkspace({
             onToggleReview={handleToggleReview}
             reviewBusy={reviewPending || phaseEBusy !== null}
             reviewError={reviewError}
+            selectedStickerId={selection?.kind === 'sticker' && selection.planId === previewFilm?.planId ? selection.stickerId ?? '' : ''}
+            snapEnabled={snapEnabled}
+            onSelectSticker={handleSelectSticker}
+            onDeleteSticker={(planId, stickerId) => { void handleDeleteSticker(planId, stickerId); }}
+            onStickerExit={(planId) => handleSelectSticker(planId, '')}
+            stickerPlaybackRequest={stickerPlaybackRequest}
+            draggedStickerChoice={draggedSticker && draggedSticker.planId === previewFilm?.planId ? draggedSticker.choice : null}
+            onDropSticker={handleDropSticker}
           />
         </div>
 
         {/* Zone 3: Inspector Dock (Right, spanning rows 1 & 2) */}
         <div style={{ gridColumn: 3, gridRow: '1 / 3' }} className="min-h-0 min-w-0">
           <BatchReviewInspectorDock
+            onAddSticker={handleAddSticker}
+            onStickerDragStart={(planId, choice) => setDraggedSticker({ planId, choice })}
+            onStickerDragEnd={() => setDraggedSticker(null)}
+            onPlaySticker={handlePlaySticker}
+            onCopyStickers={setStickerCopySourceId}
             onJumpToCover={planId => { setSelectedPlanId(planId); setPreviewAsset(null); setSourceSession(null); setPlayheadSec(-10 / 24); setCoverPreviewRequest(value => value + 1); }}
             projectId={projectId}
             batchId={batchId}
@@ -686,9 +961,9 @@ export default function BatchUnifiedReviewWorkspace({
             batchId={batchId}
             films={films}
             selectedPlanId={selectedPlanId}
-            onSelectFilm={(id) => setSelectedPlanId(id)}
+            onSelectFilm={handleSelectFilm}
             selection={selection}
-            onSelectTarget={setSelection}
+            onSelectTarget={handleSelectTarget}
             focusedAssetId={focusedAssetId}
             onSelectFocusedAsset={setFocusedAssetId}
             playheadSec={playheadSec}
@@ -699,8 +974,8 @@ export default function BatchUnifiedReviewWorkspace({
             onToggleSnap={() => setSnapEnabled((s) => !s)}
             onUndo={handleUndo}
             onRedo={handleRedo}
-            canUndo={undoStack.length > 0}
-            canRedo={redoStack.length > 0}
+            canUndo={!historyPending && undoStack.length > 0}
+            canRedo={!historyPending && redoStack.length > 0}
             poolAssets={poolAssets}
             onToggleEye={handleToggleEye}
             onTogglePlanSelect={(planId, checked) => onTogglePlan(planId, checked)}
@@ -716,6 +991,8 @@ export default function BatchUnifiedReviewWorkspace({
             onRetryNarration={onRetryNarration}
             onRetryRender={onRetryRender}
             onMediaEdit={handleMediaEdit}
+            onStickersChange={saveStickerInstances}
+            onDeleteSticker={handleDeleteSticker}
             onRefreshFilm={async (planId) => {
               await refreshFilmArrangement(planId);
             }}
@@ -736,6 +1013,15 @@ export default function BatchUnifiedReviewWorkspace({
             }}
           />
         </div>
+
+        {stickerCopySource && <BatchStickerCopyDialog
+          key={stickerCopySource.planId}
+          source={stickerCopySource}
+          films={films}
+          initialSelectedPlanIds={selectedPlanIds}
+          onClose={() => setStickerCopySourceId(null)}
+          onConfirm={handleCopyStickers}
+        />}
 
         {/* Left Splitter */}
         <div

@@ -542,6 +542,88 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
     }],
   }),
 
+  base('single-sticker-panel', '单条精准混剪 · 贴纸与多轨道', 'ui-09', {
+    href: ({ singleSticker }) => `/projects/${singleSticker.projectId}?tab=final-edit`,
+    skipUnless: 'singleStickerStates',
+    ready: async page => {
+      await page.getByRole('heading', { name: '确认本次混剪要用的素材' }).waitFor();
+      await page.getByLabel('选择分镜组').selectOption('mixcut-real-shot-set-a');
+      await page.locator('[data-mixcut-shot-set-id="mixcut-real-shot-set-a"]').waitFor();
+      await page.getByRole('button', { name: /预览调整/ }).click();
+      await page.locator('[data-track="video"]').waitFor();
+      await page.getByRole('tab', { name: '贴纸', exact: true }).click();
+      await page.getByText('2 张已放置', { exact: true }).waitFor();
+      await page.locator('[data-sticker-clip-id]').first().waitFor();
+    },
+  }),
+  base('single-sticker-animation', '单条精准混剪 · 贴纸动效浮窗', 'ui-09', {
+    href: ({ singleSticker }) => `/projects/${singleSticker.projectId}?tab=final-edit`,
+    skipUnless: 'singleStickerStates',
+    ready: async page => { await SCREENS.find(screen => screen.id === 'single-sticker-panel').ready(page); },
+    actions: [async page => {
+      await page.getByRole('button', { name: /^预览动效 / }).first().click();
+      await page.getByRole('dialog', { name: '选择贴纸动效' }).waitFor();
+      await page.locator('[data-animation-card]').first().waitFor();
+    }],
+  }),
+
+  // 贴纸接入票：批量统一审片的贴纸页签（素材库 + 动效浮窗）。
+  // 夹具 `batchStickerStates` 提供「已开启包装、已有手动与自动贴纸」的成片。
+  base('batch-sticker-panel', '项目工作台 · 批量统一审片 · 贴纸页签', 'ui-10', {
+    href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
+    skipUnless: 'batchStickerStates',
+    ready: async (page) => {
+      await page.getByText('当前素材组').first().waitFor({ timeout: 60_000 });
+      await page.getByRole('tab', { name: '批量生产', exact: true }).click();
+      const batch = page.getByRole('button', { name: /^贴纸验收批次/, includeHidden: true });
+      await batch.waitFor({ state: 'attached' });
+      if (!await batch.isVisible()) await page.getByRole('button', { name: '批次概览', exact: true }).click();
+      await batch.click();
+      const reviewStep = page.getByRole('button', { name: /检查成片/ });
+      await reviewStep.waitFor({ timeout: 60_000 });
+      await reviewStep.click();
+      await page.getByRole('heading', { name: '批量剪辑 · 统一审片' }).waitFor({ timeout: 60_000 });
+      // 时间轴默认不选中任何成片；检查器的「包装」页签只在选中后出现。
+      await page.getByText('01 · 贴纸来源片', { exact: true }).click();
+      await page.getByRole('heading', { name: '成片 01 · 贴纸来源片' }).waitFor({ timeout: 30_000 });
+      await page.getByRole('button', { name: '包装', exact: true }).click();
+      const stickerTab = page.getByRole('tab', { name: '贴纸', exact: true });
+      await stickerTab.waitFor({ timeout: 30_000 });
+      if (await stickerTab.getAttribute('aria-selected') !== 'true') await stickerTab.click();
+      await page.locator('#batch-packaging-stickers-panel').getByRole('button', { name: /^添加贴纸 / }).first().waitFor({ timeout: 30_000 });
+      await page.locator('[data-sticker-clip-id]').first().waitFor({ timeout: 30_000 });
+    },
+  }),
+  // 贴纸接入票：动效浮窗六卡。这一屏单独量，因为浮窗是绝对定位弹层。
+  base('batch-sticker-animation', '项目工作台 · 批量统一审片 · 贴纸动效浮窗', 'ui-10', {
+    href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
+    skipUnless: 'batchStickerStates',
+    ready: async (page) => {
+      await SCREENS.find(screen => screen.id === 'batch-sticker-panel').ready(page);
+      await page.locator('#batch-packaging-stickers-panel').getByRole('button', { name: /^预览动效 / }).first().waitFor({ timeout: 30_000 });
+    },
+    actions: [async (page) => {
+      await page.locator('#batch-packaging-stickers-panel').getByRole('button', { name: /^预览动效 / }).first().click();
+      await page.getByRole('dialog', { name: '选择贴纸动效' }).waitFor({ timeout: 30_000 });
+      await page.locator('[data-animation-card]').first().waitFor({ timeout: 30_000 });
+    }],
+  }),
+
+  base('batch-sticker-copy', '项目工作台 · 批量统一审片 · 复制贴纸弹窗', 'ui-10', {
+    href: ({ project }) => `/projects/${project.id}?tab=final-edit`,
+    skipUnless: 'batchStickerStates',
+    ready: async page => {
+      await SCREENS.find(screen => screen.id === 'batch-sticker-panel').ready(page);
+    },
+    actions: [async page => {
+      await page.getByRole('button', { name: '复制到其他成片', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: '复制贴纸到其他成片' });
+      await dialog.waitFor({ timeout: 30_000 });
+      await dialog.getByRole('button', { name: '全选有效', exact: true }).click();
+      await dialog.getByText('已选 2 / 2 条可复制成片', { exact: true }).waitFor();
+    }],
+  }),
+
   // ---------- 管理员侧 ----------
   // 12 号票：运行总览 + 全员任务。ready 等的是「这一屏真的画出来」的落点：
   // 数量卡的固定标题 + 最近任务表/空状态；全员任务等筛选栏与结果说明。
@@ -704,7 +786,12 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
   base('admin-operations', '版本与备份', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/operations',
-    ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => {
+      // The shell toolbar and page toolbar can briefly share the same h1.
+      // Wait for unique page content, not an ambiguous navigation title.
+      await page.getByRole('heading', { name: '当前模块开关', exact: true }).waitFor({ timeout: 60_000 });
+      await page.getByRole('button', { name: '扫描无用文件', exact: true }).waitFor({ timeout: 60_000 });
+    },
   }),
   // 集成分支曾整体删掉这一屏（隔离数据根扫不到可清理项，弹窗打不开）。
   // 04 号票保留它并把「打不开」降级为 gaps：基础态照样量四项，
@@ -712,7 +799,7 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
   base('admin-operations-cleanup-dialog', '版本与备份 · 清理确认弹窗', 'ui-14', {
     audience: 'admin',
     href: () => '/team/admin/operations',
-    ready: async (page) => { await page.getByRole('heading', { name: '版本与备份', exact: true }).waitFor({ timeout: 60_000 }); },
+    ready: async (page) => { await SCREENS.find(screen => screen.id === 'admin-operations').ready(page); },
     actions: [async (page) => {
       await page.getByRole('button', { name: '扫描无用文件', exact: true }).click();
       const confirm = page.getByRole('button', { name: '确认清理预览中的项目', exact: true });

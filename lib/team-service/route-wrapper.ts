@@ -153,18 +153,29 @@ function addReference(
   }
 }
 
-function scanReferences(route: string, value: unknown, references: Array<{ resourceType: string; resourceId: string }>): void {
+// Only these payload locations contain built-in catalog keys. Other assetId
+// fields (including media in restored arrangements) remain private resources.
+const STICKER_INSTANCE_PATHS: Record<string, readonly string[]> = {
+  '/api/final-edit-groups/[id]': ['config.stickers[]'],
+  '/api/batch-production/batches/[id]/outputs/[planId]/clips': [
+    'config.stickers[]', 'packaging.stickers[]', 'snapshot.packaging.stickers[]',
+  ],
+  '/api/batch-production/batches/[id]/outputs/sticker-copy': ['targets[].snapshot.stickers[]'],
+};
+
+function scanReferences(route: string, value: unknown, references: Array<{ resourceType: string; resourceId: string }>, fieldPath = ''): void {
   if (!value || typeof value !== 'object') return;
   if (Array.isArray(value)) {
-    for (const item of value) scanReferences(route, item, references);
+    for (const item of value) scanReferences(route, item, references, `${fieldPath}[]`);
     return;
   }
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'assetId' && typeof item === 'string' && STICKER_INSTANCE_PATHS[route]?.includes(fieldPath)) continue;
     const direct = ID_RESOURCES[key];
     const plural = ARRAY_ID_RESOURCES[key];
     if (direct) addReference(references, route, key, direct, item);
     else if (plural) addReference(references, route, key, plural, item);
-    else if (item && typeof item === 'object') scanReferences(route, item, references);
+    else if (item && typeof item === 'object') scanReferences(route, item, references, fieldPath ? `${fieldPath}.${key}` : key);
   }
 }
 

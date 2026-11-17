@@ -1,4 +1,5 @@
 import { parsePackagingConfig, type FinalEditPackagingConfig } from '../media-core/packaging-vars.ts';
+import { validateBatchPackagingStickers } from './packaging.ts';
 import { sourceClipRange } from '../media-core/source-clip-range.ts';
 import { planClipPosition } from '../media-core/clip-position.ts';
 import { resolveVideoTrimRange } from '../media-core/video-trim-range.ts';
@@ -993,6 +994,7 @@ export function applyBatchOutputClipEdit(
 
     if (edit.type === 'set_packaging') {
       if (edit.expectedEditRevision !== editRevision || edit.expectedOutputVersionId !== outputVersionId) throw new BatchDomainError('conflict', '成片已被修改，请刷新后再保存包装');
+      validateBatchPackagingStickers(edit.config, Math.floor(Math.max(visualDurationUs(clips), finiteNumber(asRecord(arrangement.narration)?.durationUs) ?? 0) / 1e6 * FPS + 1e-6));
       const next = parsePackagingConfig(edit.config);
       if (JSON.stringify(next) === JSON.stringify(parsePackagingConfig(arrangement.packaging))) return unchanged;
       arrangement.packaging = next;
@@ -1276,6 +1278,7 @@ export function applyBatchOutputClipEdit(
         && currentEffectiveTitle?.secondary === nextEffectiveTitle?.secondary
         && JSON.stringify(currentEffectiveTitle?.styles ?? null) === JSON.stringify(nextEffectiveTitle?.styles ?? null)
         && JSON.stringify(currentEffectiveTitle?.framing ?? null) === JSON.stringify(nextEffectiveTitle?.framing ?? null);
+      validateBatchPackagingStickers(edit.packaging, Math.floor(Math.max(visualDurationUs(clips), finiteNumber(asRecord(arrangement.narration)?.durationUs) ?? 0) / 1e6 * FPS + 1e-6));
       const nextPackaging = edit.packaging === undefined ? undefined : parsePackagingConfig(edit.packaging);
       const samePackaging = nextPackaging === undefined || JSON.stringify(nextPackaging) === JSON.stringify(parsePackagingConfig(arrangement.packaging));
       if (currentAssetId === edit.assetId.trim() && currentTimeUs === timeUs
@@ -1632,7 +1635,8 @@ export function applyBatchOutputClipEdit(
         parseJson(lineage.defaultsJson),
         currentMusic as { trackId?: unknown; gainDb?: unknown; fadeInSec?: unknown; fadeOutSec?: unknown },
       );
-      const nextPackaging = parsePackagingConfig(edit.snapshot.packaging);
+      validateBatchPackagingStickers(snapshot.packaging, Math.floor(Math.max(visualDurationUs(restoredClips), finiteNumber(nextNarration.durationUs) ?? 0) / 1e6 * FPS + 1e-6));
+      const nextPackaging = parsePackagingConfig(snapshot.packaging);
       const otherEqual =
         JSON.stringify(parsePackagingConfig(arrangement.packaging)) === JSON.stringify(nextPackaging) &&
         audioEditsKey(arrangement.audio) === audioEditsKey(nextAudio)

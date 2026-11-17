@@ -517,6 +517,45 @@ try {
   assert.equal(listTeamErrors(db, userA.principal, { errorId: errorToResolve.errorId }).items.length, 1);
   assert.equal(listTeamErrors(db, userA.principal, { errorId: errorToResolve.errorId, actionableOnly: true }).items.length, 0);
   const { withTeamRoute } = await import('../lib/team-service/route-wrapper.ts');
+  // Built-in sticker assetId values are catalog keys, not private media IDs.
+  // Exercise the real authorization wrapper before a handler can mutate data.
+  const sticker = { assetId: 'recommend', origin: { kind: 'manual' } };
+  const stickerWrites = [
+    { route: '/api/final-edit-groups/[id]', method: 'PATCH', id: 'rework-group-a',
+      body: { type: 'set_packaging_config', config: { stickers: [sticker] } } },
+    { route: '/api/batch-production/batches/[id]/outputs/[planId]/clips', method: 'POST', id: 'batch-a',
+      body: { type: 'set_packaging', config: { stickers: [sticker] } } },
+    { route: '/api/batch-production/batches/[id]/outputs/[planId]/clips', method: 'POST', id: 'batch-a',
+      body: { type: 'set_cover', packaging: { stickers: [sticker] } } },
+    { route: '/api/batch-production/batches/[id]/outputs/[planId]/clips', method: 'POST', id: 'batch-a',
+      body: { type: 'restore_arrangement', snapshot: { packaging: { stickers: [sticker] } } } },
+    { route: '/api/batch-production/batches/[id]/outputs/sticker-copy', method: 'POST', id: 'batch-a',
+      body: { type: 'restore', targets: [{ snapshot: { stickers: [sticker] } }] } },
+  ];
+  for (const entry of stickerWrites) {
+    let writes = 0;
+    const handler = withTeamRoute(entry.route, entry.method, async () => { writes += 1; return Response.json({ accepted: true }); });
+    const url = `https://studio.example.test${entry.route.replace('[id]', entry.id)}?projectId=project-a`;
+    const request = (cookie: string, body: unknown) => new Request(write(url, cookie, body), { method: entry.method });
+    const accepted = await handler(request(userA.cookie, entry.body), params(entry.id));
+    assert.equal(accepted.status, 200, `${entry.body.type}: ${await accepted.clone().text()}`);
+    assert.equal(writes, 1);
+    assert.equal((await handler(request(userB.cookie, entry.body), params(entry.id))).status, 403);
+    assert.equal((await handler(new Request(url, { method: entry.method, headers: { Cookie: userA.cookie } }), params(entry.id))).status, 403);
+    assert.equal((await handler(request(userA.cookie, { ...entry.body, imageId: 'image-b' }), params(entry.id))).status, 403);
+    assert.equal(writes, 1, 'unauthorized sticker requests must never reach the write handler');
+  }
+  const stickerScan = withTeamRoute('/api/final-edit-groups/[id]', 'PATCH', async () => Response.json({ accepted: true }));
+  const stickerScanUrl = 'https://studio.example.test/api/final-edit-groups/rework-group-a';
+  for (const config of [
+    { assetId: 'recommend' },
+    { stickers: [{ ...sticker, imageId: 'image-b' }] },
+    { arbitrary: { stickers: [sticker] } },
+  ]) {
+    assert.notEqual((await stickerScan(new Request(write(stickerScanUrl, userA.cookie, {
+      type: 'set_packaging_config', config,
+    }), { method: 'PATCH' }), params('rework-group-a'))).status, 200, 'only the exact built-in sticker assetId field is exempt');
+  }
   for (const suffix of ['a', 'b']) {
     db.prepare(`INSERT INTO batch_assets (id, projectId, sourceKind, locationJson, contentFingerprint,
       mediaKind, mediaJson, status, createdAt, updatedAt)

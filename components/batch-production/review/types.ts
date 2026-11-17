@@ -36,10 +36,11 @@ export interface UnifiedFilmState {
 
 export interface SelectionTarget {
   planId: string;
-  kind: 'clip' | 'subtitle' | 'audio' | 'cover';
+  kind: 'clip' | 'subtitle' | 'audio' | 'cover' | 'sticker';
   clipId?: string;
   track?: 'narration' | 'bgm';
   cueId?: string;
+  stickerId?: string;
 }
 
 export interface MaterialDragItem {

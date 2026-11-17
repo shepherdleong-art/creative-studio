@@ -4,6 +4,8 @@ import { dataRoot } from '../data-root.ts';
 import { spawnHidden, spawnSyncHidden } from '../spawn-hidden.ts';
 import { resolveFfmpegPath, resolveFfprobePath } from '../ffmpeg.ts';
 import type { PackagingVars, PackagingLayouts } from './packaging-vars.ts';
+import type { PackagingStickerDefaults, PackagingStickerInstance } from './packaging-stickers.ts';
+import type { PackagingStickerAssetMap } from './packaging-sticker-assets.ts';
 import type { PointCue, PointCueDraft } from './packaging-cues.ts';
 export class PackagingError extends Error {
   code: string;
@@ -65,6 +67,11 @@ export function buildTimelineVars(input: {
   pointCuesMode: 'timed' | 'even' | 'none';
   /** §7：手动布局透传（模板端读 window.__vars.layouts）。 */
   layouts?: PackagingLayouts;
+  stickers?: PackagingStickerInstance[];
+  stickerDefaults?: PackagingStickerDefaults;
+  stickerAssets?: PackagingStickerAssetMap;
+  /** follow-template 动效在浏览器与导出运行时按同一模板解析。 */
+  template?: string;
   fonts?: { titleFile?: string; subtitleFile?: string; pointFile?: string };
 }): Record<string, unknown> {
   return {
@@ -75,6 +82,10 @@ export function buildTimelineVars(input: {
     pointCues: input.pointCues,
     pointCuesMode: input.pointCuesMode,
     ...(input.layouts && Object.keys(input.layouts).length > 0 ? { layouts: input.layouts } : {}),
+    ...(input.stickers && input.stickers.length > 0 ? { stickers: input.stickers } : {}),
+    ...(input.stickerDefaults ? { stickerDefaults: input.stickerDefaults } : {}),
+    ...(input.template ? { stickerTemplate: input.template } : {}),
+    ...(input.stickers && input.stickers.length > 0 && input.stickerAssets && Object.keys(input.stickerAssets).length > 0 ? { stickerAssets: input.stickerAssets } : {}),
     // 字体文件名为纯文件名（package-video 在 fonts/user/ 下解析并注入 @font-face）
     ...(input.fonts?.titleFile ? { titleFontFile: input.fonts.titleFile } : {}),
     ...(input.fonts?.subtitleFile ? { subtitleFontFile: input.fonts.subtitleFile } : {}),
