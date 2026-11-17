@@ -667,7 +667,39 @@ try {
   await eventually(async () => (await fetchArrangement(targetExisting)).packaging.stickers.length === 7, '局部撤销必须恢复复制结果');
   const beforeWholeUndo = rawPlans(fixture);
   await eventually(async () => await page.getByTitle('撤销 (⌘Z)').isEnabled(), '复制完成后整体撤销必须可用');
-  const undoneResult = await stickerCopyRequest('restore', () => page.keyboard.press('Control+z'));
+  // Keep the authoritative refresh pending after the write has completed: history must remain locked.
+  let releaseRefresh;
+  let reportRefresh;
+  const heldRefresh = new Promise(resolve => { releaseRefresh = resolve; });
+  const refreshRequested = new Promise(resolve => { reportRefresh = resolve; });
+  const refreshMatcher = url => [arrangementPath(targetExisting), arrangementPath(targetEmpty)].includes(url.pathname);
+  const holdRefresh = async route => { reportRefresh(); await heldRefresh; await route.continue().catch(() => {}); };
+  await page.route(refreshMatcher, holdRefresh);
+  let undoneResult;
+  try {
+    undoneResult = await stickerCopyRequest('restore', () => page.keyboard.press('Control+z'));
+    await refreshRequested;
+    assert.equal(await page.getByTitle('撤销 (⌘Z)').isEnabled(), false, '恢复结果刷新完成前必须禁用撤销');
+    assert.equal(await page.getByTitle('重做 (⌘⇧Z)').isEnabled(), false, '恢复结果刷新完成前必须禁用重做');
+    const duplicateWrites = [];
+    const watchWrite = request => { if (request.method() === 'POST') duplicateWrites.push(request.url()); };
+    page.on('request', watchWrite);
+    await page.keyboard.press('Control+Shift+z');
+    await page.keyboard.press('Control+z');
+    await panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).click();
+    await panel.getByRole('button', { name: '复制到其他成片', exact: true }).click();
+    const pendingCopyDialog = page.getByRole('dialog', { name: '复制贴纸到其他成片' });
+    await pendingCopyDialog.getByRole('button', { name: '全选有效', exact: true }).click();
+    await pendingCopyDialog.getByRole('button', { name: /^复制并生成变体/ }).click();
+    await pendingCopyDialog.getByText('正在保存编辑，请稍后重试复制。', { exact: true }).waitFor();
+    await pendingCopyDialog.getByRole('button', { name: '关闭复制弹窗', exact: true }).click();
+    await page.waitForTimeout(150);
+    page.off('request', watchWrite);
+    assert.deepEqual(duplicateWrites, [], '恢复结果刷新期间快捷键、局部编辑与跨片复制均不得写入或改变历史');
+  } finally {
+    releaseRefresh();
+    await page.unroute(refreshMatcher, holdRefresh);
+  }
   assert.ok(undoneResult.request.targets.every((target) => target.snapshot && !target.snapshot.after), '整体撤销必须恢复 before 快照');
   const afterUndo = rawPlans(fixture);
   for (const spec of [targetExisting, targetEmpty]) {

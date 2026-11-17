@@ -478,6 +478,7 @@ try {
   await timelineBlock.click({ position: { x: 20, y: 10 } });
   await panel.getByText(/动效 · 当前贴纸（/).waitFor();
   assert.equal(await panel.getByRole('button', { name: '取消选中', exact: true }).count(), 0, '不得提供额外的取消选中按钮');
+  await overlay.locator('[data-sticker-handle="scale"]').waitFor({ state: 'visible' });
   await overlay.locator('#root').click({ position: { x: 6, y: 6 }, force: true });
   await panel.getByText('动效 · 新贴纸默认', { exact: true }).waitFor();
   await timelineBlock.click({ position: { x: 20, y: 10 } });

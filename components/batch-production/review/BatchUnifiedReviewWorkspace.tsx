@@ -173,6 +173,8 @@ export default function BatchUnifiedReviewWorkspace({
   // 由后端走正式修订/冲突门禁——前端本地状态不再作为"已保存"的事实来源。
   const [undoStack, setUndoStack] = useState<ReviewHistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<ReviewHistoryEntry[]>([]);
+  const historyPendingRef = useRef(false);
+  const [historyPending, setHistoryPending] = useState(false);
   const [stickerCopySourceId, setStickerCopySourceId] = useState<string | null>(null);
   const [draggedSticker, setDraggedSticker] = useState<{ planId: string; choice: StickerAssetChoice } | null>(null);
   const [stickerPlaybackRequest, setStickerPlaybackRequest] = useState<BatchStickerPlaybackRequest | null>(null);
@@ -235,6 +237,9 @@ export default function BatchUnifiedReviewWorkspace({
   // Submit an edit to a film's arrangement via REST API;成功后记录撤销历史
   const handleMediaEdit = useCallback(
     async (planId: string, edit: Record<string, unknown>): Promise<boolean> => {
+      if (historyPendingRef.current) return false;
+      historyPendingRef.current = true;
+      setHistoryPending(true);
       const beforeView = arrangements[planId] ?? null;
       try {
         const response = await fetch(
@@ -268,6 +273,9 @@ export default function BatchUnifiedReviewWorkspace({
       } catch (err) {
         alert(err instanceof Error ? err.message : '操作失败');
         return false;
+      } finally {
+        historyPendingRef.current = false;
+        setHistoryPending(false);
       }
     },
     [arrangements, batchId, projectId, refreshFilmArrangement, advanceLocalHistory]
@@ -309,32 +317,40 @@ export default function BatchUnifiedReviewWorkspace({
   );
 
   const handleCopyStickers = useCallback(async (source: BatchStickerCopyDialogTarget, targets: BatchStickerCopyDialogTarget[]) => {
-    const response = await fetch(`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/sticker-copy?projectId=${encodeURIComponent(projectId)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'copy', sourcePlanId: source.planId,
-        expectedSourceOutputVersionId: source.expectedOutputVersionId, expectedSourceEditRevision: source.expectedEditRevision, targets }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      await Promise.allSettled([source, ...targets].map(item => refreshFilmArrangement(item.planId)));
-      throw new Error(data.message || '跨片贴纸复制失败');
+    if (historyPendingRef.current) throw new Error('正在保存编辑，请稍后重试复制。');
+    historyPendingRef.current = true;
+    setHistoryPending(true);
+    try {
+      const response = await fetch(`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/sticker-copy?projectId=${encodeURIComponent(projectId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'copy', sourcePlanId: source.planId,
+          expectedSourceOutputVersionId: source.expectedOutputVersionId, expectedSourceEditRevision: source.expectedEditRevision, targets }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        await Promise.allSettled([source, ...targets].map(item => refreshFilmArrangement(item.planId)));
+        throw new Error(data.message || '跨片贴纸复制失败');
+      }
+      const result = data as BatchStickerMutationResult;
+      advanceLocalHistory(result.targets);
+      const entry: StickerCopyHistoryEntry = {
+        kind: 'sticker-copy',
+        targets: result.targets.map((target) => ({
+          planId: target.planId,
+          outputVersionId: target.outputVersionId,
+          currentEditRevision: target.afterEditRevision,
+          before: target.before,
+          after: target.after,
+        })),
+      };
+      setUndoStack((stack) => [...stack.slice(-20), entry]);
+      setRedoStack([]);
+      await Promise.all(result.targets.map((target) => refreshFilmArrangement(target.planId)));
+    } finally {
+      historyPendingRef.current = false;
+      setHistoryPending(false);
     }
-    const result = data as BatchStickerMutationResult;
-    advanceLocalHistory(result.targets);
-    const entry: StickerCopyHistoryEntry = {
-      kind: 'sticker-copy',
-      targets: result.targets.map((target) => ({
-        planId: target.planId,
-        outputVersionId: target.outputVersionId,
-        currentEditRevision: target.afterEditRevision,
-        before: target.before,
-        after: target.after,
-      })),
-    };
-    setUndoStack((stack) => [...stack.slice(-20), entry]);
-    setRedoStack([]);
-    await Promise.all(result.targets.map((target) => refreshFilmArrangement(target.planId)));
   }, [batchId, projectId, refreshFilmArrangement, advanceLocalHistory]);
 
   const postRestoreStickerCopy = useCallback(async (entry: StickerCopyHistoryEntry, side: 'before' | 'after'): Promise<
@@ -637,54 +653,70 @@ export default function BatchUnifiedReviewWorkspace({
   // Undo / Redo:把编辑前(后)快照回放到后端,由后端完成正式修订与审核清理;
   // 冲突(期间发生了更新的正式编辑)时不覆盖新修订,历史整体作废。
   const handleUndo = useCallback(async () => {
+    if (historyPendingRef.current) return;
     const entry = undoStack[undoStack.length - 1];
     if (!entry) return;
-    if (entry.kind === 'sticker-copy') {
-      const outcome = await postRestoreStickerCopy(entry, 'before');
-      if (outcome.status === 'ok') {
-        setUndoStack((stack) => stack.slice(0, -1));
-        setRedoStack((stack) => [...stack, outcome.entry]);
-      } else if (outcome.status === 'conflict') {
+    historyPendingRef.current = true;
+    setHistoryPending(true);
+    try {
+      if (entry.kind === 'sticker-copy') {
+        const outcome = await postRestoreStickerCopy(entry, 'before');
+        if (outcome.status === 'ok') {
+          setUndoStack((stack) => stack.slice(0, -1));
+          setRedoStack((stack) => [...stack, outcome.entry]);
+        } else if (outcome.status === 'conflict') {
+          setUndoStack([]);
+          setRedoStack([]);
+          alert('这次跨片复制涉及更新的正式编辑，整体撤销已被拒绝，历史已重置。');
+        }
+        return;
+      }
+      const outcome = await postRestoreSnapshot(entry.planId, entry.before);
+      if (outcome === 'ok') {
+        setUndoStack((s) => s.slice(0, -1));
+        setRedoStack((s) => [...s, entry]);
+      } else if (outcome === 'conflict') {
         setUndoStack([]);
         setRedoStack([]);
-        alert('这次跨片复制涉及更新的正式编辑，整体撤销已被拒绝，历史已重置。');
+        alert('这条成片已有更新的正式编辑，撤销被拒绝。已按最新状态刷新，历史已重置。');
       }
-      return;
-    }
-    const outcome = await postRestoreSnapshot(entry.planId, entry.before);
-    if (outcome === 'ok') {
-      setUndoStack((s) => s.slice(0, -1));
-      setRedoStack((s) => [...s, entry]);
-    } else if (outcome === 'conflict') {
-      setUndoStack([]);
-      setRedoStack([]);
-      alert('这条成片已有更新的正式编辑，撤销被拒绝。已按最新状态刷新，历史已重置。');
+    } finally {
+      historyPendingRef.current = false;
+      setHistoryPending(false);
     }
   }, [undoStack, postRestoreSnapshot, postRestoreStickerCopy]);
 
   const handleRedo = useCallback(async () => {
+    if (historyPendingRef.current) return;
     const entry = redoStack[redoStack.length - 1];
     if (!entry) return;
-    if (entry.kind === 'sticker-copy') {
-      const outcome = await postRestoreStickerCopy(entry, 'after');
-      if (outcome.status === 'ok') {
-        setRedoStack((stack) => stack.slice(0, -1));
-        setUndoStack((stack) => [...stack, outcome.entry]);
-      } else if (outcome.status === 'conflict') {
+    historyPendingRef.current = true;
+    setHistoryPending(true);
+    try {
+      if (entry.kind === 'sticker-copy') {
+        const outcome = await postRestoreStickerCopy(entry, 'after');
+        if (outcome.status === 'ok') {
+          setRedoStack((stack) => stack.slice(0, -1));
+          setUndoStack((stack) => [...stack, outcome.entry]);
+        } else if (outcome.status === 'conflict') {
+          setUndoStack([]);
+          setRedoStack([]);
+          alert('这次跨片复制涉及更新的正式编辑，整体重做已被拒绝，历史已重置。');
+        }
+        return;
+      }
+      const outcome = await postRestoreSnapshot(entry.planId, entry.after);
+      if (outcome === 'ok') {
+        setRedoStack((s) => s.slice(0, -1));
+        setUndoStack((s) => [...s, entry]);
+      } else if (outcome === 'conflict') {
         setUndoStack([]);
         setRedoStack([]);
-        alert('这次跨片复制涉及更新的正式编辑，整体重做已被拒绝，历史已重置。');
+        alert('这条成片已有更新的正式编辑，重做被拒绝。已按最新状态刷新，历史已重置。');
       }
-      return;
-    }
-    const outcome = await postRestoreSnapshot(entry.planId, entry.after);
-    if (outcome === 'ok') {
-      setRedoStack((s) => s.slice(0, -1));
-      setUndoStack((s) => [...s, entry]);
-    } else if (outcome === 'conflict') {
-      setUndoStack([]);
-      setRedoStack([]);
-      alert('这条成片已有更新的正式编辑，重做被拒绝。已按最新状态刷新，历史已重置。');
+    } finally {
+      historyPendingRef.current = false;
+      setHistoryPending(false);
     }
   }, [redoStack, postRestoreSnapshot, postRestoreStickerCopy]);
 
@@ -942,8 +974,8 @@ export default function BatchUnifiedReviewWorkspace({
             onToggleSnap={() => setSnapEnabled((s) => !s)}
             onUndo={handleUndo}
             onRedo={handleRedo}
-            canUndo={undoStack.length > 0}
-            canRedo={redoStack.length > 0}
+            canUndo={!historyPending && undoStack.length > 0}
+            canRedo={!historyPending && redoStack.length > 0}
             poolAssets={poolAssets}
             onToggleEye={handleToggleEye}
             onTogglePlanSelect={(planId, checked) => onTogglePlan(planId, checked)}
