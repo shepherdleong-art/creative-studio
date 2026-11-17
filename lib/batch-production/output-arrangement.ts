@@ -1,6 +1,7 @@
 import { parsePackagingConfig, type FinalEditPackagingConfig } from '../media-core/packaging-vars.ts';
 import { validateBatchPackagingStickers } from './packaging.ts';
 import { sourceClipRange } from '../media-core/source-clip-range.ts';
+import { resolveBatchOutputSize } from './output-presets.ts';
 import { planClipPosition } from '../media-core/clip-position.ts';
 import { resolveVideoTrimRange } from '../media-core/video-trim-range.ts';
 import { editAudioClip, parseAudioEdits, trimAudioClip, moveAudioClip, type AudioEdits, type AudioTrackKind } from '../media-core/audio-edit.ts';
@@ -95,6 +96,7 @@ export interface BatchOutputMusicTrackView {
 
 export interface BatchOutputClipEditView {
   packaging?: FinalEditPackagingConfig;
+  outputSize: { width: number; height: number };
   planId: string;
   batchVersionId: string;
   outputVersionId: string | null;
@@ -130,7 +132,7 @@ export interface BatchOutputClipEditView {
 
 export type BatchOutputClipEdit =
   | { type: 'set_source_range'; clipId: string; sourceStartUs: number; sourceEndUs: number; expectedEditRevision: number; expectedOutputVersionId: string }
-  | { type: 'set_packaging'; config: FinalEditPackagingConfig; expectedEditRevision: number; expectedOutputVersionId: string }
+  | { type: 'set_packaging'; config: FinalEditPackagingConfig; expectedEditRevision: number; expectedOutputVersionId: string; layoutResolutionOnly?: boolean }
   | { type: 'move_clip'; clipId: string; startUs: number }
   | { type: 'trim'; clipId: string; sourceStartUs: number; sourceEndUs: number; expectedEditRevision?: number; expectedOutputVersionId?: string }
   | { type: 'replace'; clipId: string; assetId: string }
@@ -342,8 +344,7 @@ function hasManualSubtitleOverride(arrangement: Record<string, unknown> | null):
 }
 
 function outputWidthForPreset(value: unknown): number {
-  const preset = typeof value === 'string' ? value : '';
-  return preset === '16:9' || preset === '16x9' ? 1920 : 1080;
+  return resolveBatchOutputSize(value).width;
 }
 
 function subtitleCueViewFromRecord(record: Record<string, unknown>, index: number): BatchOutputSubtitleCueView | null {
@@ -724,7 +725,8 @@ export function getBatchOutputArrangementView(
       }]
       : []),
   ];
-  const outputWidth = outputWidthForPreset(arrangement?.preset);
+  const outputSize = resolveBatchOutputSize(arrangement?.preset);
+  const outputWidth = outputSize.width;
   const frozenSubtitleStyle = loadFrozenSubtitleStyle(db, planId, outputWidth) ?? defaultTextStyle('subtitle', outputWidth);
   const coverValue = asRecord(arrangement?.cover);
   const frozenCoverTitle = loadFrozenCoverTitleConfig(db, planId);
@@ -743,6 +745,7 @@ export function getBatchOutputArrangementView(
     audio: parseAudioEdits(arrangement?.audio),
     narration,
     subtitleCues,
+    outputSize,
     packaging: parsePackagingConfig(arrangement?.packaging),
     subtitleOverride: hasManualSubtitleOverride(arrangement),
     subtitleStyle: resolveBatchSubtitleStyleOverride(frozenSubtitleStyle, arrangement?.subtitle),
@@ -995,10 +998,19 @@ export function applyBatchOutputClipEdit(
     if (edit.type === 'set_packaging') {
       if (edit.expectedEditRevision !== editRevision || edit.expectedOutputVersionId !== outputVersionId) throw new BatchDomainError('conflict', '成片已被修改，请刷新后再保存包装');
       validateBatchPackagingStickers(edit.config, Math.floor(Math.max(visualDurationUs(clips), finiteNumber(asRecord(arrangement.narration)?.durationUs) ?? 0) / 1e6 * FPS + 1e-6));
-      const next = parsePackagingConfig(edit.config);
-      if (JSON.stringify(next) === JSON.stringify(parsePackagingConfig(arrangement.packaging))) return unchanged;
-      arrangement.packaging = next;
-      visualChanged = true;
+      if (edit.layoutResolutionOnly) {
+        if (!edit.config.layoutResolution) throw new BatchDomainError('invalid_input', '派生布局更新缺少解析结果');
+        const current = parsePackagingConfig(arrangement.packaging);
+        if (JSON.stringify(current.layoutResolution) === JSON.stringify(edit.config.layoutResolution)) return unchanged;
+        // 后台重解析是派生缓存：不递增编辑修订、不清审核、不进入撤销历史。
+        arrangement.packaging = { ...current, layoutResolution: edit.config.layoutResolution };
+        splitChanged = true;
+      } else {
+        const next = parsePackagingConfig(edit.config);
+        if (JSON.stringify(next) === JSON.stringify(parsePackagingConfig(arrangement.packaging))) return unchanged;
+        arrangement.packaging = next;
+        visualChanged = true;
+      }
     } else if (edit.type === 'set_source_range') {
       if (edit.expectedEditRevision !== editRevision || edit.expectedOutputVersionId !== outputVersionId) throw new BatchDomainError('conflict', '成片已被修改，请重新打开素材后设置出入点');
       const index = clipIndex(edit.clipId);

@@ -521,6 +521,10 @@ try {
   // Exercise the real authorization wrapper before a handler can mutate data.
   const sticker = { assetId: 'recommend', origin: { kind: 'manual' } };
   const stickerWrites = [
+    { route: '/api/final-edit-groups/[id]/packaging-layout', method: 'POST', id: 'rework-group-a',
+      body: { type: 'auto-stickers', expectedPackaging: { stickers: [sticker] }, candidatePayload: { stickers: [sticker] } } },
+    { route: '/api/batch-production/batches/[id]/outputs/[planId]/clips', method: 'POST', id: 'batch-a',
+      body: { type: 'auto_layout_stickers', candidatePayload: { stickers: [sticker] } } },
     { route: '/api/final-edit-groups/[id]', method: 'PATCH', id: 'rework-group-a',
       body: { type: 'set_packaging_config', config: { stickers: [sticker] } } },
     { route: '/api/batch-production/batches/[id]/outputs/[planId]/clips', method: 'POST', id: 'batch-a',

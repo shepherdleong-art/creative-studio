@@ -1,5 +1,6 @@
 'use client';
 import BatchPackagingEditor from '../BatchPackagingEditor';
+import type { BatchAutoLayoutCandidatePayload, BatchAutoLayoutCommandResult } from '../BatchStickerPanel';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
@@ -23,9 +24,11 @@ export interface BatchReviewInspectorDockProps {
   film: UnifiedFilmState | null;
   selection: SelectionTarget | null;
   inspectorTab: InspectorTab;
+  commandPending?: boolean;
   onTabChange: (tab: InspectorTab) => void;
   poolAssets: BatchOutputPoolAssetView[];
   onMediaEdit: (planId: string, edit: Record<string, unknown>) => Promise<boolean>;
+  onLayoutCommand: (planId: string, type: 'auto_layout_stickers' | 'revalidate_packaging_layout' | 'reextract_points_layout', candidatePayload?: BatchAutoLayoutCandidatePayload) => Promise<BatchAutoLayoutCommandResult>;
   onJumpToCover: (planId: string) => void;
   onRefreshFilm: (planId: string) => Promise<void>;
   coverEditorOpen: boolean;
@@ -45,9 +48,11 @@ export default function BatchReviewInspectorDock({
   film,
   selection,
   inspectorTab,
+  commandPending = false,
   onTabChange,
   poolAssets,
   onMediaEdit,
+  onLayoutCommand,
   onRefreshFilm,
   onJumpToCover,
   coverEditorOpen,
@@ -214,14 +219,21 @@ export default function BatchReviewInspectorDock({
       </div>
 
       <div className={styles.inspectorScroll}>
-        {inspectorTab === 'packaging' && <BatchPackagingEditor key={`${film.planId}:${arrangement.outputVersionId}`} view={arrangement} onJumpToCover={() => onJumpToCover(film.planId)}
+        {inspectorTab === 'packaging' && <BatchPackagingEditor key={`${film.planId}:${arrangement.outputVersionId}`} view={arrangement} commandPending={commandPending} onJumpToCover={() => onJumpToCover(film.planId)}
           stickerSelection={selection?.planId === film.planId && selection.kind === 'sticker' ? selection : null}
           onAddSticker={(choice) => onAddSticker(film.planId, choice)}
           onStickerDragStart={(choice) => onStickerDragStart(film.planId, choice)}
           onStickerDragEnd={onStickerDragEnd}
           onPlaySticker={(stickerId) => onPlaySticker(film.planId, stickerId)}
           onCopyStickers={() => onCopyStickers(film.planId)}
-          onSave={(config, reextract) => onMediaEdit(film.planId, { type: 'set_packaging', config, reextract, expectedEditRevision: arrangement.editRevision, expectedOutputVersionId: arrangement.outputVersionId })} />}
+          onSave={(config, reextract) => reextract
+            ? onLayoutCommand(film.planId, 'reextract_points_layout').then((result) => {
+              if (result.status === 'resolved') return true;
+              throw new Error(result.message || '卖点重提未完成，请调整后重试');
+            })
+            : onMediaEdit(film.planId, { type: 'set_packaging', config, expectedEditRevision: arrangement.editRevision, expectedOutputVersionId: arrangement.outputVersionId })}
+          onLayoutCommand={(type, candidatePayload) => onLayoutCommand(film.planId, type, candidatePayload)}
+        />}
         {/* TAB 1: 字幕 */}
         {inspectorTab === 'subtitle' && (
           <div className="space-y-4">

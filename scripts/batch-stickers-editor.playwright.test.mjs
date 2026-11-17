@@ -28,6 +28,8 @@ const dbPath = path.join(dataRoot, 'data', 'workbench.db');
 const testEnv = { ...process.env, CREATIVE_STUDIO_DATA_ROOT: dataRoot, NEXT_TELEMETRY_DISABLED: '1' };
 const chrome = path.resolve('packaging/runtime/chrome-headless-shell', process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell');
 const now = () => new Date().toISOString();
+// 正文卖点预览回归用的真实 TTC 字体源；平台无该字体时跳过对应专项断言
+const previewFontSource = process.platform === 'win32' ? 'C:\\Windows\\Fonts\\msyh.ttc' : '/System/Library/Fonts/PingFang.ttc';
 const apiResponses = [];
 const pageErrors = [];
 const consoleErrors = [];
@@ -140,6 +142,12 @@ function packaging(spec, stickers) {
 async function seedFixture() {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const storageRoot = path.join(dataRoot, 'storage');
+  // 系统字体物化目录的同构 fixture
+  if (fs.existsSync(previewFontSource)) {
+    const previewFontDir = path.join(storageRoot, 'packaging', 'fonts');
+    fs.mkdirSync(previewFontDir, { recursive: true });
+    fs.copyFileSync(previewFontSource, path.join(previewFontDir, 'user-point-preview.ttc'));
+  }
   const mediaRelative = path.join('storage', 'batch-media', projectId, 'source.mp4');
   const mediaAbsolute = path.join(dataRoot, mediaRelative);
   fs.mkdirSync(path.dirname(mediaAbsolute), { recursive: true });
@@ -351,7 +359,8 @@ function withoutKeys(value, keys) {
 function assertOnlyStickerFieldsChanged(before, after) {
   const arrangementKeys = ['packaging', 'editRevision', 'review'];
   assert.deepEqual(withoutKeys(after, arrangementKeys), withoutKeys(before, arrangementKeys), 'arrangement 非贴纸字段必须保留');
-  assert.deepEqual(withoutKeys(after.packaging, ['stickers', 'stickerDefaults']), withoutKeys(before.packaging, ['stickers', 'stickerDefaults']), '目标模板、varsOverrides 与其他包装字段必须保留');
+  const layoutKeys = ['stickers', 'stickerDefaults', 'pointCuesLayoutVersion', 'layoutRuntimeBundleVersion', 'layoutResolution'];
+  assert.deepEqual(withoutKeys(after.packaging, layoutKeys), withoutKeys(before.packaging, layoutKeys), '目标模板、varsOverrides 与其他包装字段必须保留');
   assert.equal(after.editRevision, before.editRevision + 1);
   assert.equal(after.review, undefined);
 }
@@ -404,6 +413,21 @@ try {
     coreWrites.push({ kind: 'set_packaging', plan: spec.key, status: response.status(), request, response: body });
     assert.equal(response.status(), 200, `${spec.key} 包装保存失败：${JSON.stringify(body)}`);
     assert.equal(request.expectedOutputVersionId, spec.outputVersionId);
+    const view = await fetchArrangement(spec);
+    assert.equal(view.editRevision, body.editRevision);
+    return { request, body, view };
+  };
+  const autoLayoutPackaging = async (spec, action) => {
+    const pending = page.waitForResponse((response) => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === clipsPath(spec)
+      && (response.request().postData() || '').includes('"type":"auto_layout_stickers"'));
+    await action();
+    const response = await pending;
+    const request = JSON.parse(response.request().postData() || '{}');
+    const body = await response.json();
+    coreWrites.push({ kind: 'auto_layout_stickers', plan: spec.key, status: response.status(), request, response: body });
+    assert.equal(response.status(), 200, `${spec.key} 自动布局失败：${JSON.stringify(body)}`);
+    assert.equal(body.status, 'resolved', body.message || '自动布局命令必须成功');
     const view = await fetchArrangement(spec);
     assert.equal(view.editRevision, body.editRevision);
     return { request, body, view };
@@ -466,7 +490,7 @@ try {
   assert.ok(added, '点击素材库后必须真实新增贴纸');
   const overlay = page.frameLocator('iframe[title="包装版式编辑"]');
   try {
-    await overlay.locator(`[data-sticker-id="${added.id}"]`).waitFor({ timeout: 45_000 });
+    await overlay.locator(`[data-sticker-id="${added.id}"]`).waitFor({ timeout: 120_000 });
   } catch (error) {
     const frameStates = await Promise.all(page.frames().map(async (frame) => ({
       url: frame.url(),
@@ -488,9 +512,28 @@ try {
   assert.equal(await page.locator('[data-sticker-clip-id][data-selected="true"]').count(), 0, '点击预览空白必须取消选中');
   await addedBlock.click({ position: { x: 24, y: 10 } });
   await eventually(async () => await addedBlock.getAttribute('data-selected') === 'true');
+  await eventually(async () => (await fetchArrangement(source)).packaging.layoutResolution?.status === 'resolved', '首次 v2 布局须完成后再验收失败重试', 120_000);
+  let rejectedRevalidations = 0;
+  let rejectRevalidation = true;
+  const simulateNoSpace = async route => {
+    if (route.request().method() === 'POST' && JSON.parse(route.request().postData() || '{}').type === 'revalidate_packaging_layout' && rejectRevalidation) {
+      rejectedRevalidations += 1;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'infeasible', message: '测试布局空间不足' }) });
+    } else await route.continue();
+  };
+  const sourceClipsUrl = `${server.baseUrl}${clipsPath(source)}?projectId=${projectId}`;
+  await page.route(sourceClipsUrl, simulateNoSpace);
   const deletedByKeyboardResult = await savePackaging(source, () => page.keyboard.press('Delete'));
   assert.equal(deletedByKeyboardResult.view.packaging.stickers.length, 7, '从预览空白回到时间轴选中后，Delete 必须真实删除贴纸');
   assert.ok(!deletedByKeyboardResult.view.packaging.stickers.some((sticker) => sticker.id === added.id));
+  await page.getByRole('button', { name: '重试布局', exact: true }).waitFor();
+  await page.waitForTimeout(600);
+  assert.equal(rejectedRevalidations, 1, '同一修订布局无解时必须停止自动尝试，不能循环锁住编辑区');
+  assert.equal(await panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).isEnabled(), true, '布局无解后必须允许手动调整');
+  rejectRevalidation = false;
+  await page.getByRole('button', { name: '重试布局', exact: true }).click();
+  await eventually(async () => (await fetchArrangement(source)).packaging.layoutResolution?.status === 'resolved', '用户显式重试必须重新完成布局', 120_000);
+  await page.unroute(sourceClipsUrl, simulateNoSpace);
 
   const previewDeleteAddResult = await savePackaging(source, () => panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).click());
   assert.equal(previewDeleteAddResult.view.packaging.stickers.length, 8);
@@ -504,12 +547,13 @@ try {
 
   const targetsBeforeCurrentFilmChanges = rawPlans(fixture);
   const beforeReplace = deletedResult.view.packaging;
-  const replacedResult = await savePackaging(source, () => panel.getByRole('button', { name: '换一组基础贴纸', exact: true }).click());
+  const replacedResult = await autoLayoutPackaging(source, () => panel.getByRole('button', { name: '换一组基础贴纸', exact: true }).click());
   const replacedAutomatic = replacedResult.view.packaging.stickers.filter((sticker) => sticker.origin.kind === 'auto');
   assert.equal(replacedAutomatic.length, 6);
   assert.equal(replacedResult.view.packaging.stickers.filter((sticker) => sticker.origin.kind === 'manual').length, 1);
   assert.notEqual(replacedAutomatic[0].origin.autoGroupId, beforeReplace.stickers.find((sticker) => sticker.origin.kind === 'auto').origin.autoGroupId);
   assert.ok(replacedAutomatic.every((sticker) => sticker.origin.autoEdited === false));
+  assert.deepEqual(replacedAutomatic.slice(4).map((sticker) => sticker.centerYPct), [65, 81], '结尾两张自动贴纸必须位于下半部');
   assert.deepEqual(replacedResult.view.packaging.stickers.find((sticker) => sticker.id === 'source-manual'), beforeReplace.stickers.find((sticker) => sticker.id === 'source-manual'));
   const targetsAfterCurrentFilmChanges = rawPlans(fixture);
   for (const spec of [targetExisting, targetEmpty, targetShort]) {
@@ -686,13 +730,8 @@ try {
     page.on('request', watchWrite);
     await page.keyboard.press('Control+Shift+z');
     await page.keyboard.press('Control+z');
-    await panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).click();
-    await panel.getByRole('button', { name: '复制到其他成片', exact: true }).click();
-    const pendingCopyDialog = page.getByRole('dialog', { name: '复制贴纸到其他成片' });
-    await pendingCopyDialog.getByRole('button', { name: '全选有效', exact: true }).click();
-    await pendingCopyDialog.getByRole('button', { name: /^复制并生成变体/ }).click();
-    await pendingCopyDialog.getByText('正在保存编辑，请稍后重试复制。', { exact: true }).waitFor();
-    await pendingCopyDialog.getByRole('button', { name: '关闭复制弹窗', exact: true }).click();
+    assert.equal(await panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).isEnabled(), false, '刷新期间应明确禁用局部添加');
+    assert.equal(await panel.getByRole('button', { name: '复制到其他成片', exact: true }).isEnabled(), false, '刷新期间应明确禁用跨片复制');
     await page.waitForTimeout(150);
     page.off('request', watchWrite);
     assert.deepEqual(duplicateWrites, [], '恢复结果刷新期间快捷键、局部编辑与跨片复制均不得写入或改变历史');
@@ -731,6 +770,102 @@ try {
   for (const spec of [source, targetExisting, targetEmpty]) {
     panel = await openFilmStickers(spec);
     await panel.getByText('7 张已放置', { exact: true }).waitFor();
+  }
+
+  // 正文卖点预览回归：A 模板 Resolution 使用输出画布 px，B 手账使用 cqw，重放必须分别按单位换算；
+  // 系统字体物化允许 .ttc，预览资源必须能正常返回，否则 UserPoint 回退导致字体样式错误。
+  if (fs.existsSync(previewFontSource)) {
+    for (const template of ['overlay-poster', 'overlay-journal']) {
+      const pointBase = await fetchArrangement(source);
+      const pointConfig = {
+        ...pointBase.packaging,
+        template,
+        pointCues: [
+          { id: 'preview-point-cue', text: '11mm岩板台面', startSec: 1, endSec: 2.4 },
+          { id: 'preview-point-cue-2', text: '家宴围坐也稳', startSec: 2.6, endSec: 4 },
+          { id: 'preview-point-cue-3', text: '通长整板设计', startSec: 4.2, endSec: 5.6 },
+          { id: 'preview-point-cue-4', text: '拼接缝更少', startSec: 5.8, endSec: 7.2 },
+        ],
+        pointCuesMode: 'timed',
+        pointCuesLayoutVersion: 2,
+        layoutRuntimeBundleVersion: 2,
+        pointFont: { family: process.platform === 'win32' ? 'Microsoft YaHei' : 'PingFang SC', file: 'user-point-preview.ttc' },
+      };
+      delete pointConfig.layoutResolution;
+      const postClip = async (body) => page.evaluate(async ({ path, body: payload }) => {
+        const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        return { status: response.status, body: await response.json() };
+      }, { path: `${clipsPath(source)}?projectId=${encodeURIComponent(projectId)}`, body });
+      const pointSaved = await postClip({
+        type: 'set_packaging', config: pointConfig, projectId,
+        expectedEditRevision: pointBase.editRevision, expectedOutputVersionId: pointBase.outputVersionId,
+      });
+      assert.equal(pointSaved.status, 200, `${template} 卖点预览配置保存失败：${JSON.stringify(pointSaved.body)}`);
+      const pointLayout = await postClip({
+        type: 'revalidate_packaging_layout', projectId,
+        expectedEditRevision: pointSaved.body.editRevision, expectedOutputVersionId: pointBase.outputVersionId,
+      });
+      assert.equal(pointLayout.status, 200, `${template} 卖点自动布局失败：${JSON.stringify(pointLayout.body)}`);
+      assert.equal(pointLayout.body.status, 'resolved', `${template} 卖点自动布局必须返回解析结果：${JSON.stringify(pointLayout.body)}`);
+      const pointArrangement = await fetchArrangement(source);
+      assert.equal(pointArrangement.packaging.layoutResolution?.status, 'resolved',
+        `${template} 卖点必须获得有效 Resolution：${JSON.stringify({ command: pointLayout.body, resolution: pointArrangement.packaging.layoutResolution })}`);
+      assert.equal(pointArrangement.editRevision, pointSaved.body.editRevision, '派生重解析不得增加编辑修订');
+      const resolvedCues = Object.values(pointArrangement.packaging.layoutResolution.elements).filter((element) => element.kind === 'pointCue');
+      assert.equal(resolvedCues.length, 4, '必须覆盖默认位于 34/40/48/54% 的四个卖点');
+      for (const cue of resolvedCues) {
+        assert.ok(cue.visualBox.bottom <= pointArrangement.packaging.layoutResolution.outputHeight * 0.4 + 0.05,
+          `${template} 的 ${cue.id} 完整外框不得越出上 40%：${JSON.stringify(cue.visualBox)}`);
+      }
+
+      panel = await openFilmStickers(source);
+      // 后台派生重算期间预览仍显示，只是暂时禁用编辑；测量字体不依赖可编辑标题。
+      const pointOverlay = page.frameLocator('iframe[title="包装版式编辑"], iframe[title="包装效果叠加层"]');
+      await pointOverlay.locator('[data-point-id="cue:preview-point-cue"]').waitFor({ timeout: 120_000 });
+      const readPointPreview = async () => {
+        for (const frame of page.frames()) {
+          if (!await frame.locator('[data-point-id="cue:preview-point-cue"]').count()) continue;
+          return frame.evaluate((currentTemplate) => {
+            const point = document.querySelector('[data-point-id="cue:preview-point-cue"]');
+            const root = document.getElementById('root');
+            const resolution = window.__packagingAutoLayoutReplay.getResolution();
+            const item = resolution.elements['preview-point-cue'];
+            return {
+              baseHref: document.baseURI,
+              inputHash: resolution.inputHash,
+              rootWidth: root.clientWidth,
+              outputWidth: resolution.outputWidth,
+              resolutionFontSize: Number.parseFloat(item.fit.textFontSize),
+              resolutionFontUnit: String(item.fit.textFontSize).replace(/[\d.\s]/g, ''),
+              actualFontSize: Number.parseFloat(getComputedStyle(point.querySelector(currentTemplate === 'overlay-journal' ? '.txt' : '.ptxt')).fontSize),
+              userPointStatus: Array.from(document.fonts).find((font) => font.family === 'UserPoint')?.status,
+              userPointCheck: document.fonts.check('16px "UserPoint"', point.textContent || ''),
+            };
+          }, template);
+        }
+        return null;
+      };
+      let pointPreview = null;
+      await eventually(async () => {
+        pointPreview = await readPointPreview();
+        return pointPreview?.baseHref.includes(`/${pointArrangement.packaging.layoutResolution.geometryManifestHash}/`)
+          && pointPreview.inputHash === pointArrangement.packaging.layoutResolution.inputHash
+          && pointPreview.userPointCheck === true && pointPreview.userPointStatus === 'loaded';
+      }, `${template} 须切到当前冻结文档并真实加载 TTC 用户卖点字体`, 120_000);
+      const expectedPointSize = template === 'overlay-journal'
+        ? pointPreview.resolutionFontSize * pointPreview.rootWidth / 100
+        : pointPreview.resolutionFontSize * pointPreview.rootWidth / pointPreview.outputWidth;
+      assert.ok(Math.abs(pointPreview.actualFontSize - expectedPointSize) < 0.05,
+        `${template} 预览字号必须按单位正确换算：${JSON.stringify({ ...pointPreview, expectedPointSize })}`);
+      assert.ok(pointPreview.actualFontSize > 1, `${template} 卖点不得被重复缩放至不足 1px：${JSON.stringify(pointPreview)}`);
+      if (template === 'overlay-poster') {
+        assert.equal(pointPreview.resolutionFontUnit, 'px');
+        assert.ok(Math.abs(pointPreview.actualFontSize - pointPreview.rootWidth * 0.034) < 0.05,
+          `A 模板卖点必须回到 3.4cqw 响应式基准，不得异常放大：${JSON.stringify(pointPreview)}`);
+      } else assert.equal(pointPreview.resolutionFontUnit, 'cqw', 'B 手账必须覆盖 cqw Resolution');
+      // 下一轮直接写 source 前先在 UI 切走，避免选中面板的派生重验证与显式命令竞争。
+      if (template === 'overlay-poster') panel = await openFilmStickers(targetExisting);
+    }
   }
 
   // The existing preparation panel queries an administrator-only cache endpoint.

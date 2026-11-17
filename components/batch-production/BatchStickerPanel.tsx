@@ -15,8 +15,14 @@ import {
   type StickerAnimation,
 } from '@/lib/media-core/packaging-stickers';
 import { normalizePackagingStickerTracks } from '@/lib/media-core/packaging-sticker-timeline';
-import { planPackagingStickerAutoLayout, replaceAutomaticPackagingStickers } from '@/lib/media-core/packaging-sticker-planner';
-import { StickerPanel, type StickerAssetChoice, type StickerCatalogAsset } from '@/components/mixcut/StickerPanel';
+import { StickerPanel, type StickerAssetChoice } from '@/components/mixcut/StickerPanel';
+
+export type BatchAutoLayoutCandidatePayload = { autoGroupId: string; stickers: PackagingStickerInstance[] };
+export type BatchAutoLayoutCommandResult = {
+  status: 'resolved' | 'infeasible' | 'budget_exceeded';
+  message?: string;
+  candidatePayload?: BatchAutoLayoutCandidatePayload | null;
+};
 
 const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS;
 
@@ -34,6 +40,7 @@ export default function BatchStickerPanel({
   onDragEnd,
   onPlaySticker,
   onCopyToOtherFilms,
+  onAutoLayout,
 }: {
   active: boolean;
   view: BatchStickerPanelView;
@@ -45,6 +52,7 @@ export default function BatchStickerPanel({
   onDragEnd: () => void;
   onPlaySticker: (stickerId: string) => void;
   onCopyToOtherFilms?: () => void;
+  onAutoLayout?: (candidatePayload?: BatchAutoLayoutCandidatePayload) => Promise<BatchAutoLayoutCommandResult>;
 }) {
   const config = view.packaging!;
   const stickers = config.stickers ?? [];
@@ -52,6 +60,7 @@ export default function BatchStickerPanel({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const saving = useRef(false);
+  const draftCandidateRef = useRef<BatchAutoLayoutCandidatePayload | null>(null);
   const bodyFrames = Math.floor(Math.max(view.visualDurationUs ?? 0, view.narration?.durationUs ?? 0) / 1e6 * FINAL_EDIT_FPS + 1e-6);
   const placement = planStickerFramesAtPlayhead(playheadSec + INTRO_SEC, bodyFrames);
   const addBlockedReason = !config.enabled
@@ -65,7 +74,7 @@ export default function BatchStickerPanel({
     ? '正文不足 6 秒，无法一键布置；请手动添加贴纸。'
     : stickers.filter((sticker) => sticker.origin.kind !== 'auto').length + 6 > MAX_STICKER_INSTANCES
       ? `手动贴纸过多，自动布置后不能超过 ${MAX_STICKER_INSTANCES} 张。`
-      : '';
+      : !onAutoLayout ? '当前页面不支持一键布置。' : '';
   const copyBlockedReason = !config.enabled
     ? '开启视频包装后才能复制贴纸。'
     : stickers.length === 0 ? '先在当前成片添加贴纸，再复制到其他成片。' : '';
@@ -94,13 +103,26 @@ export default function BatchStickerPanel({
     return save(next);
   };
 
+  const resolveCenter = (stickerId: string): { x: number; y: number } | undefined => {
+    const element = config.layoutResolution?.elements[stickerId];
+    return element ? { x: element.centerXPct, y: element.centerYPct } : undefined;
+  };
+
   const applyStickerPatch = (stickerId: string, patch: PackagingStickerEditPatch) => {
     const normalized = { ...patch };
     if (normalized.centerXPct !== undefined) normalized.centerXPct = Math.min(100, Math.max(0, normalized.centerXPct));
     if (normalized.centerYPct !== undefined) normalized.centerYPct = Math.min(100, Math.max(0, normalized.centerYPct));
     if (normalized.visualWidthPct !== undefined) normalized.visualWidthPct = Math.min(1000, Math.max(1, normalized.visualWidthPct));
     if (normalized.rotationDeg !== undefined) normalized.rotationDeg = Math.min(180, Math.max(-180, normalized.rotationDeg));
-    return applyStickerInstances((current) => current.map((sticker) => sticker.id === stickerId ? applyPackagingStickerEdit(sticker, normalized) : sticker));
+    const target = stickers.find((sticker) => sticker.id === stickerId);
+    const resolvedCenter = normalized.centerXPct !== undefined && normalized.centerYPct !== undefined
+      ? { x: normalized.centerXPct, y: normalized.centerYPct }
+      : resolveCenter(stickerId);
+    if (target?.origin.kind === 'auto' && target.origin.layoutVersion === 2 && !target.origin.positionPinned && !resolvedCenter) {
+      setMessage('贴纸实际位置尚未就绪，请等待预览布局完成后重试');
+      return Promise.resolve(false);
+    }
+    return applyStickerInstances((current) => current.map((sticker) => sticker.id === stickerId ? applyPackagingStickerEdit(sticker, normalized, resolvedCenter) : sticker));
   };
 
   const handleDefaultAnimationChange = (animation: StickerAnimation) => {
@@ -112,15 +134,21 @@ export default function BatchStickerPanel({
     if (busy || !config.enabled || stickers.length === 0) return;
     if (stickers.some((sticker) => sticker.animation !== animation)
       && !window.confirm('部分贴纸使用了单独动效，应用后将重置这些覆盖。是否继续？')) return;
-    void applyStickerInstances((current) => current.map((sticker) => applyPackagingStickerEdit(sticker, { animation }))).then((accepted) => {
+    const unresolved = stickers.some((sticker) => sticker.origin.kind === 'auto' && sticker.origin.layoutVersion === 2
+      && !sticker.origin.positionPinned && !resolveCenter(sticker.id));
+    if (unresolved) {
+      setMessage('部分贴纸实际位置尚未就绪，请等待预览布局完成后重试');
+      return;
+    }
+    void applyStickerInstances((current) => current.map((sticker) => applyPackagingStickerEdit(sticker, { animation }, resolveCenter(sticker.id)))).then((accepted) => {
       if (!accepted) return;
       const targetId = selectedStickerId || stickers[0]?.id;
       if (targetId) onPlaySticker(targetId);
     });
   };
 
-  const handleAutoLayout = (assets: StickerCatalogAsset[]) => {
-    if (busy || !config.enabled) return;
+  const handleAutoLayout = () => {
+    if (busy || !config.enabled || !onAutoLayout) return;
     if (autoLayoutBlockedReason) {
       setMessage(autoLayoutBlockedReason);
       return;
@@ -128,27 +156,24 @@ export default function BatchStickerPanel({
     const automatic = stickers.filter((sticker) => sticker.origin.kind === 'auto');
     if (automatic.some((sticker) => sticker.origin.kind === 'auto' && sticker.origin.autoEdited)
       && !window.confirm('当前自动组合中有已编辑贴纸，换一组将重置这些调整。是否继续？')) return;
-    let generated: PackagingStickerInstance[] | null = null;
-    try {
-      generated = planPackagingStickerAutoLayout({
-        bodyFrames,
-        template: config.template,
-        assets,
-        animation: (config.stickerDefaults ?? DEFAULT_PACKAGING_STICKER_DEFAULTS).animation,
-        autoGroupId: `auto_${crypto.randomUUID()}`,
-        random: Math.random,
-        createId: () => `s_${crypto.randomUUID()}`,
-      });
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-      return;
-    }
-    if (!generated) {
-      setMessage('正文不足 6 秒，无法一键布置；请手动添加贴纸。');
-      return;
-    }
-    void applyStickerInstances((current) => replaceAutomaticPackagingStickers(current, generated)).then((accepted) => {
-      if (accepted) setMessage(automatic.length > 0 ? '已换一组基础贴纸，手动贴纸已保留' : '已生成 6 张基础贴纸');
+    if (saving.current) return;
+    saving.current = true;
+    setBusy(true);
+    setMessage('正在计算自动布局…');
+    void onAutoLayout(draftCandidateRef.current ?? undefined).then((result) => {
+      if (result.status === 'resolved') {
+        draftCandidateRef.current = null;
+        setMessage(automatic.length > 0 ? '已换一组基础贴纸，手动贴纸已保留' : '已生成 6 张基础贴纸');
+        return;
+      }
+      // 失败零写入：保留同一候选，用户移开障碍后重试不会重新随机。
+      if (result.candidatePayload) draftCandidateRef.current = result.candidatePayload;
+      setMessage(result.message || '自动布局未完成，请调整后重试');
+    }).catch((error) => {
+      setMessage(error instanceof Error ? error.message : '自动布局失败');
+    }).finally(() => {
+      saving.current = false;
+      setBusy(false);
     });
   };
 

@@ -18,6 +18,8 @@ import { FinalEditError } from './errors.ts';
 import { executeFilmJob } from './reassembled/jobs.ts';
 import { refreshMixcutReview } from './reassembled/review.ts';
 import { getExecutionModuleRuntime } from '../media-core/execution/module-runtime.ts';
+import { assertPackagingLayoutExportReady } from '../media-core/packaging-layout-manifest.ts';
+import { OUTPUT_PRESETS } from '../media-core/cover-types.ts';
 
 const sha256 = (input: string) => crypto.createHash('sha256').update(input).digest('hex');
 
@@ -142,8 +144,18 @@ async function drain() {
         if (!exportTarget) throw new FinalEditError('export_reservation_lost', '渲染快照缺少导出目标');
         db.prepare(`UPDATE final_edit_jobs SET phase='publishing', progress=0.9 WHERE id=?`).run(job.id);
         if (snapshot.packaging?.enabled) {
-          // 包装联动：封面先发布，视频留给包装任务以正常成片名发布（目录唯一成片）
-          await publishReservedSingleFile({ storageRoot, sourceRelativePath: internal.coverRelativePath, targetRelativePath: exportTarget.coverRelativePath, reservationRelativePath: exportTarget.reservationRelativePath, invalidCode: 'render_artifact_invalid' });
+          // v2 必须先验证冻结布局与引擎，再发布封面，避免留下半套正式产物。
+          await assertPackagingLayoutExportReady({
+            enabled: true,
+            template: snapshot.packaging.template ?? 'overlay-poster',
+            layoutRuntimeBundleVersion: snapshot.packaging.layoutRuntimeBundleVersion,
+            layoutResolution: snapshot.packaging.layoutResolution,
+          }, OUTPUT_PRESETS[snapshot.variant.outputPreset].width, OUTPUT_PRESETS[snapshot.variant.outputPreset].height);
+          // v2 视频和封面都由包装任务首次发布；旧版继续先发布原片封面。
+          const deferCoverPublication = snapshot.packaging.layoutRuntimeBundleVersion === 2;
+          if (!deferCoverPublication) {
+            await publishReservedSingleFile({ storageRoot, sourceRelativePath: internal.coverRelativePath, targetRelativePath: exportTarget.coverRelativePath, reservationRelativePath: exportTarget.reservationRelativePath, invalidCode: 'render_artifact_invalid' });
+          }
           if (controller.signal.aborted) {
             await restorePublishedExportReservation(storageRoot, exportTarget);
             throw makeAbortError();
@@ -160,6 +172,9 @@ async function drain() {
             // §7：手动布局与编辑保护标志随快照冻结（包装任务据此写 vars.json 的 layouts）
             ...(snapshot.packaging.layouts && Object.keys(snapshot.packaging.layouts).length > 0 ? { layouts: snapshot.packaging.layouts } : {}),
             ...(snapshot.packaging.pointCuesEdited ? { pointCuesEdited: true } : {}),
+            ...(snapshot.packaging.pointCuesLayoutVersion !== undefined ? { pointCuesLayoutVersion: snapshot.packaging.pointCuesLayoutVersion } : {}),
+            ...(snapshot.packaging.layoutRuntimeBundleVersion !== undefined ? { layoutRuntimeBundleVersion: snapshot.packaging.layoutRuntimeBundleVersion } : {}),
+            ...(snapshot.packaging.layoutResolution ? { layoutResolution: snapshot.packaging.layoutResolution } : {}),
             ...(snapshot.packaging.stickers && snapshot.packaging.stickers.length > 0 ? { stickers: snapshot.packaging.stickers } : {}),
             ...(snapshot.packaging.stickerDefaults ? { stickerDefaults: snapshot.packaging.stickerDefaults } : {}),
             // §10 ②：三槽字体随快照冻结（包装任务按此注入 @font-face）
@@ -169,7 +184,7 @@ async function drain() {
           };
           const result = {
             ...internal,
-            publishedCoverRelativePath: exportTarget.coverRelativePath,
+            ...(!deferCoverPublication ? { publishedCoverRelativePath: exportTarget.coverRelativePath } : {}),
             coverFilename: exportTarget.coverFilename,
             displayDirectory: exportTarget.displayDirectory,
             packagingDeferred: true,
@@ -180,7 +195,9 @@ async function drain() {
             await runWithTaskAccessContext(db, 'final_edit', job.id, () => {
               const access = requireAccessContext();
               const publish = db.transaction(() => {
-                registerSingleArtifact(db, { id: `final-edit:${job.id}:cover`, projectId: job.projectId, kind: 'final_cover', displayName: exportTarget.coverFilename, relativePath: exportTarget.coverRelativePath, mimeType: 'image/jpeg', sourceJobId: job.id, createdAt: finishedAt });
+                if (!deferCoverPublication) {
+                  registerSingleArtifact(db, { id: `final-edit:${job.id}:cover`, projectId: job.projectId, kind: 'final_cover', displayName: exportTarget.coverFilename, relativePath: exportTarget.coverRelativePath, mimeType: 'image/jpeg', sourceJobId: job.id, createdAt: finishedAt });
+                }
                 db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, variantId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, ?, 'packaging', 'queued', 'queued', 0, ?, ?, 0, 'CNY', ?)`).run(packagingJobId, job.projectId, job.groupId, snapshot.variant.id, sha256(JSON.stringify({ packagingJobId, packagingSnapshot })), JSON.stringify(packagingSnapshot), finishedAt);
                 access.registerInheritedScope({
                   resourceType: 'final_job', resourceId: packagingJobId,

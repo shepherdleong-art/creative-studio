@@ -15,6 +15,7 @@ import {
   planStickerFramesAtPlayhead,
   createManualPackagingSticker,
   applyPackagingStickerEdit,
+  assertSupportedPackagingStickerLayoutVersions,
   type PackagingStickerInstance,
 } from '../lib/media-core/packaging-stickers.ts';
 import { parsePackagingConfig, PACKAGING_TEMPLATE_IDS } from '../lib/media-core/packaging-vars.ts';
@@ -80,6 +81,22 @@ assert.deepEqual(validatePackagingStickers([manual], 240), [manual]);
 const autoEdited = applyPackagingStickerEdit({ ...manual, origin: { kind: 'auto', autoGroupId: 'auto_1', autoEdited: false } }, { centerXPct: 42 });
 assert.equal(autoEdited.centerXPct, 42);
 assert.deepEqual(autoEdited.origin, { kind: 'auto', autoGroupId: 'auto_1', autoEdited: true });
+const v2Auto = sticker({
+  centerXPct: 22,
+  centerYPct: 24,
+  origin: { kind: 'auto', autoGroupId: 'auto_v2', autoEdited: false, layoutVersion: 2 },
+});
+assert.throws(() => applyPackagingStickerEdit(v2Auto, { animation: 'rise' }), /实际位置尚未就绪/);
+const pinnedV2 = applyPackagingStickerEdit(v2Auto, { animation: 'rise' }, { x: 26, y: 29 });
+assert.equal(pinnedV2.animation, 'rise');
+assert.equal(pinnedV2.centerXPct, 26);
+assert.equal(pinnedV2.centerYPct, 29);
+assert.deepEqual(pinnedV2.origin, { kind: 'auto', autoGroupId: 'auto_v2', autoEdited: true, layoutVersion: 2, positionPinned: true });
+assertSupportedPackagingStickerLayoutVersions([pinnedV2]);
+assert.throws(
+  () => validatePackagingStickers([sticker({ origin: { kind: 'auto', autoGroupId: 'future', autoEdited: false, layoutVersion: 3 } })], 240),
+  /不支持的自动布局版本/,
+);
 const forcedSpecial = applyPackagingStickerEdit({ ...manual, assetId: 'special', styleMode: 'fixed', fixedStyle: 'show' }, { styleMode: 'follow-template', fixedStyle: null });
 assert.equal(forcedSpecial.styleMode, 'fixed');
 assert.equal(forcedSpecial.fixedStyle, 'show');

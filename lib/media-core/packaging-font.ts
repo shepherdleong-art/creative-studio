@@ -109,7 +109,7 @@ export function buildConfigFontFacesCss(config: {
   pointFont?: { family: string; file: string };
   titleFont?: { family: string; file: string };
   subtitleFont?: { family: string; file: string };
-}): string {
+}, fontRoot: string = userFontDir()): string {
   const blocks: string[] = [];
   const slots: Array<[FontSlot, string | undefined]> = [
     ['title', config.titleFont?.file],
@@ -118,7 +118,7 @@ export function buildConfigFontFacesCss(config: {
   ];
   for (const [slot, file] of slots) {
     const safe = safeFontFilename(file);
-    if (safe && fs.existsSync(path.join(userFontDir(), safe))) blocks.push(buildUserFontFaceCss(slot, safe));
+    if (safe && fs.existsSync(path.join(fontRoot, safe))) blocks.push(buildUserFontFaceCss(slot, safe));
   }
   return blocks.join('');
 }

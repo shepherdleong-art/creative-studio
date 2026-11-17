@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { sanitizePackagingStickerDefaults, sanitizePackagingStickers, type PackagingStickerDefaults, type PackagingStickerInstance } from './packaging-stickers.ts';
+import { sanitizePackagingLayoutResolution, type PackagingLayoutResolution } from './packaging-auto-layout.ts';
 
 export interface PackagingVars {
   title: string;
@@ -59,6 +60,12 @@ export interface FinalEditPackagingConfig {
   pointCuesMode?: 'timed' | 'even' | 'none';
   /** §7：pointCues 被手动编辑过——此后口播哈希变化不再自动重提取，需显式「重新提取」复位。 */
   pointCuesEdited?: boolean;
+  /** 正文卖点自动布局版本；缺失为 v1，只有初始布局或显式重提才升级为 v2。 */
+  pointCuesLayoutVersion?: number;
+  /** 整片共享布局资源版本；任一元素进入 v2 后不自动降级。 */
+  layoutRuntimeBundleVersion?: number;
+  /** 规范布局服务生成的不可变解析结果；stale/unresolved 不得进入完成态预览或正式导出。 */
+  layoutResolution?: PackagingLayoutResolution;
   /** §7：按模板分别记忆的手动布局（默认 {}）。 */
   layouts?: PackagingLayouts;
   /** 独立贴纸实例与新增默认动效；不随 pointCues 重提取或文字版式重置。 */
@@ -201,6 +208,19 @@ export function mergePackagingLayouts(current: PackagingLayouts, incoming: unkno
   return merged;
 }
 
+function parseLayoutVersion(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : Number.NaN;
+}
+
+export function assertSupportedPackagingConfigLayoutVersions(config: Pick<FinalEditPackagingConfig, 'pointCuesLayoutVersion' | 'layoutRuntimeBundleVersion'>): void {
+  const versions = [config.pointCuesLayoutVersion, config.layoutRuntimeBundleVersion];
+  if (versions.some((value) => value !== undefined && value !== 1 && value !== 2)) {
+    throw new Error('包装包含不支持的自动布局版本，请使用生成该成片的版本打开');
+  }
+}
+
 /** 解析 final_edit_groups.packagingJson（历史空值/脏值回退默认配置）。
  * 兼容两种输入：SQLite 原始字符串 与 已解析对象（PATCH 命令体）。 */
 export function parsePackagingConfig(json: unknown): FinalEditPackagingConfig {
@@ -208,7 +228,7 @@ export function parsePackagingConfig(json: unknown): FinalEditPackagingConfig {
   if (typeof source === 'string') {
     try { source = JSON.parse(source); } catch { source = {}; }
   }
-  const raw = (source && typeof source === 'object' && !Array.isArray(source) ? source : {}) as { enabled?: unknown; template?: unknown; varsOverrides?: unknown; pointCues?: unknown; pointCuesKey?: unknown; pointCuesMode?: unknown; pointCuesEdited?: unknown; layouts?: unknown; stickers?: unknown; stickerDefaults?: unknown; pointFont?: unknown; titleFont?: unknown; subtitleFont?: unknown };
+  const raw = (source && typeof source === 'object' && !Array.isArray(source) ? source : {}) as { enabled?: unknown; template?: unknown; varsOverrides?: unknown; pointCues?: unknown; pointCuesKey?: unknown; pointCuesMode?: unknown; pointCuesEdited?: unknown; pointCuesLayoutVersion?: unknown; layoutRuntimeBundleVersion?: unknown; layoutResolution?: unknown; layouts?: unknown; stickers?: unknown; stickerDefaults?: unknown; pointFont?: unknown; titleFont?: unknown; subtitleFont?: unknown };
   const template = typeof raw.template === 'string' && (PACKAGING_TEMPLATE_IDS as readonly string[]).includes(raw.template)
     ? raw.template as PackagingTemplateId
     : DEFAULT_PACKAGING_TEMPLATE;
@@ -229,6 +249,9 @@ export function parsePackagingConfig(json: unknown): FinalEditPackagingConfig {
   const pointFont = parseFontSlot(raw.pointFont);
   const titleFont = parseFontSlot(raw.titleFont);
   const subtitleFont = parseFontSlot(raw.subtitleFont);
+  const pointCuesLayoutVersion = parseLayoutVersion(raw.pointCuesLayoutVersion);
+  const layoutRuntimeBundleVersion = parseLayoutVersion(raw.layoutRuntimeBundleVersion);
+  const layoutResolution = sanitizePackagingLayoutResolution(raw.layoutResolution);
   return {
     enabled: raw.enabled === true,
     template,
@@ -238,6 +261,9 @@ export function parsePackagingConfig(json: unknown): FinalEditPackagingConfig {
     pointCuesMode,
     // §7：缺省 false / {}（缺字段即默认，保持存量 JSON 干净）
     ...(raw.pointCuesEdited === true ? { pointCuesEdited: true } : {}),
+    ...(pointCuesLayoutVersion !== undefined ? { pointCuesLayoutVersion } : {}),
+    ...(layoutRuntimeBundleVersion !== undefined ? { layoutRuntimeBundleVersion } : {}),
+    ...(layoutResolution ? { layoutResolution } : {}),
     ...(Object.keys(layouts).length > 0 ? { layouts } : {}),
     ...(stickers ? { stickers } : {}),
     ...(stickerDefaults ? { stickerDefaults } : {}),

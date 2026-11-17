@@ -14,9 +14,9 @@ export async function verifyStickerProductionMedia(filename, packaging, expected
   const ffmpeg = require('ffmpeg-static');
   const ffprobe = require('ffprobe-static').path;
   for (const executable of [ffmpeg, ffprobe]) assert.ok(executable.startsWith(production + path.sep));
-  const run = (executable, args) => {
-    const result = spawnSync(executable, args, { windowsHide: true, encoding: 'utf8', timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
-    assert.equal(result.status, 0, result.stderr);
+  const run = (executable, args, encoding = 'utf8') => {
+    const result = spawnSync(executable, args, { windowsHide: true, encoding, timeout: 120_000, maxBuffer: 32 * 1024 * 1024 });
+    assert.equal(result.status, 0, result.stderr?.toString());
     return result.stdout;
   };
   const file = path.join(process.env.STICKER_TEST_EVIDENCE_DIR, filename);
@@ -59,7 +59,9 @@ export async function verifyStickerProductionMedia(filename, packaging, expected
   for (const [label, frame] of Object.entries(frames)) {
     if (frame >= expectedFrames) continue;
     const output = file.replace(/\.mp4$/, `-${label}.png`);
-    run(ffmpeg, ['-v', 'error', '-y', '-i', file, '-vf', `select=eq(n\\,${frame})`, '-frames:v', '1', output]);
+    // 通过管道取回 PNG，再由 Node 保存证据，避免 Windows 原生 image2 对证据路径的写入失败。
+    fs.writeFileSync(output, run(ffmpeg, ['-v', 'error', '-i', file, '-vf', `select=eq(n\\,${frame})`,
+      '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', 'pipe:1'], null));
     const decoded = await sharp(output).removeAlpha().raw().toBuffer();
     let matched = 0;
     for (const sample of samples) {

@@ -5,6 +5,7 @@ import {
   STICKER_INTRO_FRAMES,
   STICKER_MIN_DURATION_FRAMES,
   STICKER_STYLE_BY_TEMPLATE,
+  STICKER_ANIMATION_BY_TEMPLATE,
   PackagingStickerError,
   type PackagingStickerInstance,
   type StickerAnimation,
@@ -15,6 +16,9 @@ export type PackagingStickerPlanningAsset = {
   style: StickerStyle;
   category: 'opening' | 'explain' | 'ending' | 'gesture' | 'annotation' | 'special';
   id: string;
+  width?: number;
+  height?: number;
+  alpha_gt8_bbox?: [number, number, number, number];
 };
 
 export type PackagingStickerAutoSlot = {
@@ -30,44 +34,74 @@ export const PACKAGING_STICKER_AUTO_SLOTS: Record<PackagingTemplateId, readonly 
   'overlay-poster': [
     { name: 'opening-left', centerXPct: 22, centerYPct: 22, visualWidthPct: 28, rotationDeg: -4 },
     { name: 'opening-right', centerXPct: 78, centerYPct: 25, visualWidthPct: 26, rotationDeg: 3 },
-    { name: 'explain-left', centerXPct: 22, centerYPct: 51, visualWidthPct: 25, rotationDeg: -2 },
-    { name: 'gesture-right', centerXPct: 80, centerYPct: 58, visualWidthPct: 22, rotationDeg: 4 },
-    { name: 'ending-left', centerXPct: 25, centerYPct: 31, visualWidthPct: 26, rotationDeg: -3 },
-    { name: 'ending-right', centerXPct: 75, centerYPct: 56, visualWidthPct: 26, rotationDeg: 3 },
+    { name: 'explain-left', centerXPct: 22, centerYPct: 24, visualWidthPct: 25, rotationDeg: -2 },
+    { name: 'gesture-right', centerXPct: 80, centerYPct: 28, visualWidthPct: 22, rotationDeg: 4 },
+    { name: 'ending-left', centerXPct: 17, centerYPct: 65, visualWidthPct: 26, rotationDeg: -3 },
+    { name: 'ending-right', centerXPct: 17, centerYPct: 81, visualWidthPct: 26, rotationDeg: 3 },
   ],
   'overlay-journal': [
     { name: 'opening-left', centerXPct: 21, centerYPct: 22, visualWidthPct: 25, rotationDeg: -5 },
     { name: 'opening-right', centerXPct: 79, centerYPct: 29, visualWidthPct: 24, rotationDeg: 4 },
-    { name: 'explain-left', centerXPct: 23, centerYPct: 51, visualWidthPct: 24, rotationDeg: -3 },
-    { name: 'gesture-right', centerXPct: 79, centerYPct: 59, visualWidthPct: 21, rotationDeg: 5 },
-    { name: 'ending-left', centerXPct: 23, centerYPct: 32, visualWidthPct: 24, rotationDeg: -4 },
-    { name: 'ending-right', centerXPct: 77, centerYPct: 55, visualWidthPct: 24, rotationDeg: 3 },
+    { name: 'explain-left', centerXPct: 23, centerYPct: 24, visualWidthPct: 24, rotationDeg: -3 },
+    { name: 'gesture-right', centerXPct: 79, centerYPct: 28, visualWidthPct: 21, rotationDeg: 5 },
+    { name: 'ending-left', centerXPct: 17, centerYPct: 65, visualWidthPct: 24, rotationDeg: -4 },
+    { name: 'ending-right', centerXPct: 17, centerYPct: 81, visualWidthPct: 24, rotationDeg: 3 },
   ],
   'overlay-minimal': [
     { name: 'opening-left', centerXPct: 23, centerYPct: 22, visualWidthPct: 25, rotationDeg: 0 },
     { name: 'opening-right', centerXPct: 77, centerYPct: 27, visualWidthPct: 24, rotationDeg: 0 },
-    { name: 'explain-left', centerXPct: 23, centerYPct: 49, visualWidthPct: 23, rotationDeg: 0 },
-    { name: 'gesture-right', centerXPct: 79, centerYPct: 57, visualWidthPct: 21, rotationDeg: 0 },
-    { name: 'ending-left', centerXPct: 24, centerYPct: 31, visualWidthPct: 24, rotationDeg: 0 },
-    { name: 'ending-right', centerXPct: 76, centerYPct: 54, visualWidthPct: 24, rotationDeg: 0 },
+    { name: 'explain-left', centerXPct: 23, centerYPct: 24, visualWidthPct: 23, rotationDeg: 0 },
+    { name: 'gesture-right', centerXPct: 79, centerYPct: 28, visualWidthPct: 21, rotationDeg: 0 },
+    { name: 'ending-left', centerXPct: 17, centerYPct: 65, visualWidthPct: 24, rotationDeg: 0 },
+    { name: 'ending-right', centerXPct: 17, centerYPct: 81, visualWidthPct: 24, rotationDeg: 0 },
   ],
   'overlay-variety': [
     { name: 'opening-left', centerXPct: 22, centerYPct: 23, visualWidthPct: 28, rotationDeg: -5 },
     { name: 'opening-right', centerXPct: 78, centerYPct: 27, visualWidthPct: 27, rotationDeg: 4 },
-    { name: 'explain-left', centerXPct: 22, centerYPct: 52, visualWidthPct: 26, rotationDeg: -3 },
-    { name: 'gesture-right', centerXPct: 80, centerYPct: 59, visualWidthPct: 23, rotationDeg: 5 },
-    { name: 'ending-left', centerXPct: 25, centerYPct: 32, visualWidthPct: 27, rotationDeg: -4 },
-    { name: 'ending-right', centerXPct: 75, centerYPct: 56, visualWidthPct: 27, rotationDeg: 4 },
+    { name: 'explain-left', centerXPct: 22, centerYPct: 24, visualWidthPct: 26, rotationDeg: -3 },
+    { name: 'gesture-right', centerXPct: 80, centerYPct: 28, visualWidthPct: 23, rotationDeg: 5 },
+    { name: 'ending-left', centerXPct: 17, centerYPct: 65, visualWidthPct: 27, rotationDeg: -4 },
+    { name: 'ending-right', centerXPct: 17, centerYPct: 81, visualWidthPct: 27, rotationDeg: 4 },
   ],
 };
 
-function drawIds(assets: PackagingStickerPlanningAsset[], style: StickerStyle, category: PackagingStickerPlanningAsset['category'], count: number, random: () => number): string[] {
-  const pool = [...new Set(assets.filter((asset) => asset.style === style && asset.category === category).map((asset) => asset.id))];
-  if (pool.length < count) throw new PackagingStickerError('sticker_auto_pool_invalid', `当前模板的 ${category} 贴纸不足 ${count} 张，无法自动布置`);
+function assetFitsSlot(
+  asset: PackagingStickerPlanningAsset,
+  slot: PackagingStickerAutoSlot,
+  output: { width: number; height: number } | undefined,
+  animation: StickerAnimation,
+): boolean {
+  if (!output) return true;
+  const bbox = asset.alpha_gt8_bbox;
+  if (!bbox || !(asset.width! > 0) || !(asset.height! > 0)) return true;
+  const bboxWidth = bbox[2] - bbox[0];
+  const bboxHeight = bbox[3] - bbox[1];
+  if (!(bboxWidth > 0 && bboxHeight > 0)) return false;
+  const width = slot.visualWidthPct / 100 * output.width;
+  const height = width * bboxHeight / bboxWidth;
+  const radians = slot.rotationDeg * Math.PI / 180;
+  const rotatedHeight = Math.abs(width * Math.sin(radians)) + Math.abs(height * Math.cos(radians));
+  const scale = Math.min(output.width / 1080, output.height / 1440);
+  const resolvedHeight = animation === 'bounce' ? rotatedHeight * 1.12 : rotatedHeight;
+  const animationMargin = animation === 'rise' ? 56 * scale : animation === 'soft' ? 18 * scale : 0;
+  return resolvedHeight + animationMargin * 2 <= output.height * 0.4;
+}
+
+function drawIds(
+  assets: PackagingStickerPlanningAsset[],
+  style: StickerStyle,
+  category: PackagingStickerPlanningAsset['category'],
+  count: number,
+  random: () => number,
+  fitsSlot: (asset: PackagingStickerPlanningAsset) => boolean = () => true,
+): string[] {
+  const pool = assets.filter((asset) => asset.style === style && asset.category === category && fitsSlot(asset));
+  const uniqueIds = [...new Set(pool.map((asset) => asset.id))];
+  if (uniqueIds.length < count) throw new PackagingStickerError('sticker_auto_pool_invalid', `当前画幅下可用的 ${category} 贴纸不足 ${count} 张，无法自动布置`);
   const result: string[] = [];
   for (let index = 0; index < count; index += 1) {
-    const randomIndex = Math.min(pool.length - 1, Math.max(0, Math.floor(random() * pool.length)));
-    result.push(pool.splice(randomIndex, 1)[0]);
+    const randomIndex = Math.min(uniqueIds.length - 1, Math.max(0, Math.floor(random() * uniqueIds.length)));
+    result.push(uniqueIds.splice(randomIndex, 1)[0]);
   }
   return result;
 }
@@ -80,16 +114,24 @@ export function planPackagingStickerAutoLayout(input: {
   autoGroupId: string;
   random: () => number;
   createId: (slotIndex: number) => string;
+  outputWidth?: number;
+  outputHeight?: number;
 }): PackagingStickerInstance[] | null {
   if (!Number.isSafeInteger(input.bodyFrames) || input.bodyFrames < STICKER_AUTO_MIN_BODY_FRAMES) return null;
   const style = STICKER_STYLE_BY_TEMPLATE[input.template];
+  const slots = PACKAGING_STICKER_AUTO_SLOTS[input.template];
+  const output = Number.isSafeInteger(input.outputWidth) && Number.isSafeInteger(input.outputHeight)
+    && (input.outputWidth ?? 0) > 0 && (input.outputHeight ?? 0) > 0
+    ? { width: input.outputWidth!, height: input.outputHeight! }
+    : undefined;
+  const animation = input.animation === 'follow-template' ? STICKER_ANIMATION_BY_TEMPLATE[input.template] : input.animation;
+  const fits = (slotIndexes: number[]) => (asset: PackagingStickerPlanningAsset) => slotIndexes.every((slotIndex) => assetFitsSlot(asset, slots[slotIndex], output, animation));
   const assetIds = [
-    ...drawIds(input.assets, style, 'opening', 2, input.random),
-    ...drawIds(input.assets, style, 'explain', 1, input.random),
-    ...drawIds(input.assets, style, 'gesture', 1, input.random),
+    ...drawIds(input.assets, style, 'opening', 2, input.random, fits([0, 1])),
+    ...drawIds(input.assets, style, 'explain', 1, input.random, fits([2])),
+    ...drawIds(input.assets, style, 'gesture', 1, input.random, fits([3])),
     ...drawIds(input.assets, style, 'ending', 2, input.random),
   ];
-  const slots = PACKAGING_STICKER_AUTO_SLOTS[input.template];
   return slots.map((slot, slotIndex) => {
     const stageIndex = Math.floor(slotIndex / 2);
     const stageStart = STICKER_INTRO_FRAMES + Math.round(stageIndex * input.bodyFrames / 3);
@@ -113,7 +155,7 @@ export function planPackagingStickerAutoLayout(input: {
       rotationDeg: slot.rotationDeg,
       trackIndex: 0,
       animation: input.animation,
-      origin: { kind: 'auto', autoGroupId: input.autoGroupId, autoEdited: false },
+      origin: { kind: 'auto', autoGroupId: input.autoGroupId, autoEdited: false, layoutVersion: 2 },
     };
   });
 }

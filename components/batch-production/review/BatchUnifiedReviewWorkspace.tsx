@@ -20,6 +20,7 @@ import type { BatchStickerPlaybackRequest } from '../BatchPackagingOverlay';
 import BatchStickerCopyDialog, { type BatchStickerCopyDialogTarget } from './BatchStickerCopyDialog';
 import type { BatchStickerMutationResult } from '@/lib/batch-production/sticker-copy';
 import { advanceStickerCopyHistory, type LocalRevisionChange, type ReviewHistoryEntry, type StickerCopyHistoryEntry } from './sticker-copy-history';
+import type { BatchAutoLayoutCandidatePayload, BatchAutoLayoutCommandResult } from '../BatchStickerPanel';
 import {
   MAX_STICKER_INSTANCES,
   createManualPackagingSticker,
@@ -281,6 +282,54 @@ export default function BatchUnifiedReviewWorkspace({
     [arrangements, batchId, projectId, refreshFilmArrangement, advanceLocalHistory]
   );
 
+  // 自动布局命令：服务端生成候选并经 CLS 预检后才落库；失败返回同一候选供不重抽重试。
+  const handlePackagingLayoutCommand = useCallback(async (
+    planId: string,
+    type: 'auto_layout_stickers' | 'revalidate_packaging_layout' | 'reextract_points_layout',
+    candidatePayload?: BatchAutoLayoutCandidatePayload,
+  ): Promise<BatchAutoLayoutCommandResult> => {
+    if (historyPendingRef.current) throw new Error('正在保存编辑，请稍后重试布局。');
+    const beforeView = arrangements[planId] ?? null;
+    if (!beforeView?.outputVersionId) throw new Error('成片尚未就绪，请刷新后重试');
+    historyPendingRef.current = true;
+    setHistoryPending(true);
+    try {
+    const response = await fetch(
+      `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId,
+          type,
+          candidatePayload,
+          expectedEditRevision: beforeView.editRevision,
+          expectedOutputVersionId: beforeView.outputVersionId,
+        }),
+      }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || '自动布局失败');
+    if (data.status !== 'resolved') return data as BatchAutoLayoutCommandResult;
+    advanceLocalHistory([{ planId, outputVersionId: data.outputVersionId,
+      beforeEditRevision: beforeView.editRevision, afterEditRevision: data.editRevision }]);
+    const afterView = await refreshFilmArrangement(planId);
+    if (type !== 'revalidate_packaging_layout' && afterView) {
+      setUndoStack((stack) => [...stack.slice(-20), {
+        kind: 'edit',
+        planId,
+        before: buildRestoreSnapshot(beforeView),
+        after: buildRestoreSnapshot(afterView),
+      }]);
+      setRedoStack([]);
+    }
+    return data as BatchAutoLayoutCommandResult;
+    } finally {
+      historyPendingRef.current = false;
+      setHistoryPending(false);
+    }
+  }, [arrangements, batchId, projectId, refreshFilmArrangement, advanceLocalHistory]);
+
   // Replay a restore snapshot to the backend (undo/redo shared path)
   const postRestoreSnapshot = useCallback(
     async (planId: string, snapshot: Record<string, unknown>): Promise<'ok' | 'conflict' | 'error'> => {
@@ -316,7 +365,7 @@ export default function BatchUnifiedReviewWorkspace({
     [arrangements, batchId, projectId, refreshFilmArrangement, advanceLocalHistory]
   );
 
-  const handleCopyStickers = useCallback(async (source: BatchStickerCopyDialogTarget, targets: BatchStickerCopyDialogTarget[]) => {
+  const handleCopyStickers = useCallback(async (source: BatchStickerCopyDialogTarget, targets: BatchStickerCopyDialogTarget[], requestId: string) => {
     if (historyPendingRef.current) throw new Error('正在保存编辑，请稍后重试复制。');
     historyPendingRef.current = true;
     setHistoryPending(true);
@@ -324,7 +373,7 @@ export default function BatchUnifiedReviewWorkspace({
       const response = await fetch(`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/sticker-copy?projectId=${encodeURIComponent(projectId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'copy', sourcePlanId: source.planId,
+        body: JSON.stringify({ type: 'copy', requestId, sourcePlanId: source.planId,
           expectedSourceOutputVersionId: source.expectedOutputVersionId, expectedSourceEditRevision: source.expectedEditRevision, targets }),
       });
       const data = await response.json().catch(() => ({}));
@@ -904,7 +953,7 @@ export default function BatchUnifiedReviewWorkspace({
             previewAsset={sourceSession?.asset ?? previewAsset}
             sourceSession={sourceSession}
             onSourceApply={handleMediaEdit}
-            packagingEditable={inspectorTab === 'packaging'}
+            packagingEditable={inspectorTab === 'packaging' && !historyPending}
             coverPreviewRequest={coverPreviewRequest}
             onClearPreviewAsset={() => { setPreviewAsset(null); setSourceSession(null); }}
             playheadSec={playheadSec}
@@ -927,6 +976,7 @@ export default function BatchUnifiedReviewWorkspace({
         {/* Zone 3: Inspector Dock (Right, spanning rows 1 & 2) */}
         <div style={{ gridColumn: 3, gridRow: '1 / 3' }} className="min-h-0 min-w-0">
           <BatchReviewInspectorDock
+            commandPending={historyPending}
             onAddSticker={handleAddSticker}
             onStickerDragStart={(planId, choice) => setDraggedSticker({ planId, choice })}
             onStickerDragEnd={() => setDraggedSticker(null)}
@@ -948,6 +998,7 @@ export default function BatchUnifiedReviewWorkspace({
             onTabChange={setInspectorTab}
             poolAssets={poolAssets}
             onMediaEdit={handleMediaEdit}
+            onLayoutCommand={handlePackagingLayoutCommand}
             onRefreshFilm={async (planId) => {
               await refreshFilmArrangement(planId);
             }}
