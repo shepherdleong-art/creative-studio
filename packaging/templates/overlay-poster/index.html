@@ -460,6 +460,7 @@
     document.querySelectorAll('[data-point-id]').forEach(resetGeometry);
     fitAll();
     applyAllLayouts();
+    if (window.__packagingAutoLayoutReplay) window.__packagingAutoLayoutReplay.apply();
   }
   // 首帧即收敛：先 applyAll 落布局（接种 ul 旗标/liveLayouts/捕获 base），再 refit（reset→fit→重放）——
   // 顺序勿反：若先 refit，首趟 fit 读不到 ul（未接种），标题布局存在时仍会按未接管跑自动适配，首帧闪中间态

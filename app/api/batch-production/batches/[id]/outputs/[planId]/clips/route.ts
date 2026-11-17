@@ -1,5 +1,14 @@
-import { prepareBatchPackagingConfig } from '@/lib/batch-production/packaging';
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { getBatchOutputArrangementView } from '@/lib/batch-production/output-arrangement';
+import { batchPackagingDefaults, prepareBatchPackagingConfig } from '@/lib/batch-production/packaging';
+import { BatchDomainError } from '@/lib/batch-production/errors';
+import { planPackagingStickerAutoLayout, replaceAutomaticPackagingStickers, type PackagingStickerPlanningAsset } from '@/lib/media-core/packaging-sticker-planner';
+import { validatePackagingStickers, type PackagingStickerInstance } from '@/lib/media-core/packaging-stickers';
+import { resolvePackagingAutoLayout } from '@/lib/media-core/packaging-auto-layout-service';
+import { resolvePackagingDir } from '@/lib/media-core/packaging-runtime';
+import { FINAL_EDIT_INTRO_DURATION_US } from '@/lib/media-core/render-contract';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
@@ -77,14 +86,94 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       /** restore_arrangement:撤销/重做回放的整包快照与期望修订号。 */
       snapshot?: unknown;
       expectedEditRevision?: unknown;
+      candidatePayload?: { autoGroupId: string; stickers: PackagingStickerInstance[] };
     };
     const clipId = typeof body.clipId === 'string' ? body.clipId.trim() : '';
 
     let edit: BatchOutputClipEdit;
+    let layoutCandidatePayload: { autoGroupId: string; stickers: PackagingStickerInstance[] } | undefined;
 
     if (body.type === 'set_packaging') {
       const view = getBatchOutputArrangementView(getDb(), projectId, id, planId);
       edit = { type: 'set_packaging', config: await prepareBatchPackagingConfig(getDb(), projectId, view, body.config, body.reextract === true), expectedEditRevision: body.expectedEditRevision as number, expectedOutputVersionId: body.expectedOutputVersionId as string };
+    } else if (body.type === 'auto_layout_stickers' || body.type === 'revalidate_packaging_layout' || body.type === 'reextract_points_layout') {
+      const db = getDb();
+      const view = getBatchOutputArrangementView(db, projectId, id, planId);
+      if (!view.editable || !view.outputVersionId) throw new BatchDomainError('conflict', '当前成片不可编辑');
+      const current = view.packaging;
+      if (!current?.enabled) throw new BatchDomainError('conflict', '开启视频包装后才能更新自动布局');
+      const bodyFrames = Math.floor(Math.max(view.visualDurationUs, view.narration.durationUs ?? 0) / 1e6 * 24 + 1e-6);
+      let stickers = current.stickers ?? [];
+      if (body.type === 'auto_layout_stickers') {
+        layoutCandidatePayload = body.candidatePayload;
+        let generated: PackagingStickerInstance[];
+        if (layoutCandidatePayload) {
+          generated = validatePackagingStickers(layoutCandidatePayload.stickers, bodyFrames);
+          if (!generated.every((sticker) => sticker.origin.kind === 'auto' && sticker.origin.layoutVersion === 2)) {
+            throw new BatchDomainError('invalid_input', '自动布局候选版本无效');
+          }
+        } else {
+          const { assets } = JSON.parse(fs.readFileSync(path.join(resolvePackagingDir(), 'stickers', 'catalog.json'), 'utf8')) as { assets: PackagingStickerPlanningAsset[] };
+          const autoGroupId = `auto_${randomUUID()}`;
+          const planned = planPackagingStickerAutoLayout({
+            bodyFrames,
+            template: current.template,
+            assets,
+            animation: current.stickerDefaults?.animation ?? 'follow-template',
+            autoGroupId,
+            random: Math.random,
+            createId: () => `s_${randomUUID()}`,
+            outputWidth: view.outputSize.width,
+            outputHeight: view.outputSize.height,
+          });
+          layoutCandidatePayload = { autoGroupId, stickers: planned ?? [] };
+          if (!planned) throw new BatchDomainError('conflict', '当前正文或画幅无法生成基础贴纸');
+          generated = planned;
+        }
+        stickers = replaceAutomaticPackagingStickers(stickers, generated);
+      } else if (body.type === 'revalidate_packaging_layout' && current.layoutRuntimeBundleVersion !== 2) {
+        edit = { type: 'set_packaging', config: current, expectedEditRevision: body.expectedEditRevision as number, expectedOutputVersionId: body.expectedOutputVersionId as string };
+        const unchanged = applyBatchOutputClipEdit(db, projectId, id, planId, edit);
+        return NextResponse.json({ ...unchanged, coverTaskId: null }, { headers: BATCH_NO_STORE_HEADERS });
+      }
+      const candidateBase = body.type === 'reextract_points_layout'
+        ? await prepareBatchPackagingConfig(db, projectId, view, current, true)
+        : current;
+      const candidateConfig = { ...candidateBase };
+      delete candidateConfig.layoutResolution;
+      const resolvedInput = {
+        ...candidateConfig,
+        stickers,
+        layoutRuntimeBundleVersion: 2 as const,
+      };
+      const coverSec = FINAL_EDIT_INTRO_DURATION_US / 1e6;
+      const resolution = await resolvePackagingAutoLayout({
+        config: resolvedInput,
+        vars: { ...batchPackagingDefaults(db, projectId, view), ...resolvedInput.varsOverrides },
+        totalSec: Math.max(view.visualDurationUs, view.narration.durationUs ?? 0) / 1e6 + coverSec,
+        coverSec,
+        outputWidth: view.outputSize.width,
+        outputHeight: view.outputSize.height,
+        signal: request.signal,
+      });
+      if (resolution.status !== 'resolved') {
+        return NextResponse.json({
+          status: resolution.status,
+          message: resolution.status === 'budget_exceeded' ? '自动布局计算未完成，请重试' : '上 40% 空间不足，请移开手动元素后重试',
+          conflicts: 'conflicts' in resolution ? resolution.conflicts ?? [] : [],
+          candidatePayload: body.type === 'auto_layout_stickers' ? layoutCandidatePayload ?? null : null,
+        }, { headers: BATCH_NO_STORE_HEADERS });
+      }
+      const prepared = body.type === 'reextract_points_layout'
+        ? { ...resolvedInput, layoutResolution: resolution }
+        : await prepareBatchPackagingConfig(db, projectId, view, { ...resolvedInput, layoutResolution: resolution });
+      edit = {
+        type: 'set_packaging',
+        config: prepared,
+        ...(body.type === 'revalidate_packaging_layout' ? { layoutResolutionOnly: true } : {}),
+        expectedEditRevision: body.expectedEditRevision as number,
+        expectedOutputVersionId: body.expectedOutputVersionId as string,
+      };
     } else if (body.type === 'set_source_range') {
       edit = { type: 'set_source_range', clipId, sourceStartUs: body.sourceStartUs as number, sourceEndUs: body.sourceEndUs as number,
         expectedEditRevision: body.expectedEditRevision as number, expectedOutputVersionId: body.expectedOutputVersionId as string };
@@ -410,7 +499,13 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       ? scheduleRenderAfterCoverChange(db, projectId, id, planId)
       : null;
     if (coverTaskId) ensureBatchSchedulerStarted();
-    return NextResponse.json({ ...result, coverTaskId }, { headers: BATCH_NO_STORE_HEADERS });
+    return NextResponse.json({
+      ...result,
+      coverTaskId,
+      ...(body.type === 'auto_layout_stickers' || body.type === 'revalidate_packaging_layout' || body.type === 'reextract_points_layout'
+        ? { status: 'resolved', candidatePayload: body.type === 'auto_layout_stickers' ? layoutCandidatePayload ?? null : null }
+        : {}),
+    }, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'batch_clip_edit_failed', '编辑成片片段失败');
   }

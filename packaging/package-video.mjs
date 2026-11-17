@@ -16,6 +16,22 @@ import { createHash, randomUUID } from "node:crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(__dirname, "..");
+const RESOURCE_ROOT = process.env.CREATIVE_STUDIO_PACKAGING_RESOURCE_ROOT
+  ? path.resolve(process.env.CREATIVE_STUDIO_PACKAGING_RESOURCE_ROOT)
+  : __dirname;
+// v2 冻结资源：独立进程再次逐文件核验，防止任务排队期间模板、字体、贴纸或引擎被替换。
+if (RESOURCE_ROOT !== __dirname) {
+  const manifest = JSON.parse(fs.readFileSync(path.join(RESOURCE_ROOT, "manifest.json"), "utf-8"));
+  for (const [relative, expected] of Object.entries(manifest.files || {})) {
+    if (!relative || relative.includes("..") || path.isAbsolute(relative)) throw new Error(`冻结布局资源路径无效：${relative}`);
+    const absolute = path.join(RESOURCE_ROOT, relative);
+    if (!fs.existsSync(absolute)) throw new Error(`冻结布局资源缺失：${relative}`);
+    const actual = createHash("sha256").update(fs.readFileSync(absolute)).digest("hex");
+    if (actual !== expected) throw new Error(`冻结布局资源哈希不匹配：${relative}`);
+  }
+  const hyperframesPackage = JSON.parse(fs.readFileSync(path.join(__dirname, "node_modules/hyperframes/package.json"), "utf-8"));
+  if (hyperframesPackage.version !== manifest.hyperframesVersion) throw new Error("HyperFrames 引擎版本与冻结布局不一致，请重新完成自动布局");
+}
 
 const require = createRequire(import.meta.url);
 require('./win-hide-spawn.cjs');
@@ -94,7 +110,7 @@ fs.mkdirSync(workDir, { recursive: true });
 try {
 copyDir(tplAbs, workDir);
 // 共享字体目录（模板 @font-face 引用 fonts/...，单源分发，避免每个模板重复携带）
-const sharedFonts = path.join(__dirname, "fonts");
+const sharedFonts = path.join(RESOURCE_ROOT, "fonts");
 if (fs.existsSync(sharedFonts)) copyDir(sharedFonts, path.join(workDir, "fonts"));
 // §10 ②：三槽字体注入（内容寻址）——vars 提供 titleFontFile/subtitleFontFile/pointFontFile（纯文件名）
 // 时按别名 UserTitle/UserSubtitle/UserPoint 注入 @font-face；文件不存在静默跳过（模板回退原生字体）。
@@ -219,7 +235,7 @@ let html = fs.readFileSync(path.join(workDir, "index.html"), "utf-8");
 const stickerVars = varsAbs && fs.existsSync(varsAbs) ? JSON.parse(fs.readFileSync(varsAbs, "utf-8")) : {};
 const stickerInstances = Array.isArray(stickerVars.stickers) ? stickerVars.stickers : [];
 const usesStickerRuntime = /src=["']stickers\/runtime\.js["']/.test(html);
-const sharedStickerRoot = path.resolve(__dirname, "stickers");
+const sharedStickerRoot = path.resolve(RESOURCE_ROOT, "stickers");
 const resolveStickerPath = (root, relativeFile) => {
   if (typeof relativeFile !== "string" || !relativeFile || relativeFile.includes("\0")) return null;
   const resolved = path.resolve(root, relativeFile);
@@ -230,6 +246,15 @@ if (usesStickerRuntime) {
   if (!fs.existsSync(runtimeSource)) throw new Error("共享贴纸运行时缺失：stickers/runtime.js");
   fs.mkdirSync(path.join(workDir, "stickers"), { recursive: true });
   fs.copyFileSync(runtimeSource, path.join(workDir, "stickers", "runtime.js"));
+}
+if (stickerVars.layoutResolution) {
+  if (stickerVars.layoutResolution.status !== 'resolved') throw new Error('自动布局结果已失效，请重新完成布局后再导出');
+  if (RESOURCE_ROOT === __dirname) throw new Error('v2 自动布局任务缺少冻结资源目录，请重新完成自动布局后再导出');
+  const replaySource = path.join(RESOURCE_ROOT, 'auto-layout', 'replay.js');
+  if (!fs.existsSync(replaySource)) throw new Error('规范布局重放器缺失：auto-layout/replay.js');
+  fs.mkdirSync(path.join(workDir, 'auto-layout'), { recursive: true });
+  fs.copyFileSync(replaySource, path.join(workDir, 'auto-layout', 'replay.js'));
+  html = html.replace('</body>', '<script src="auto-layout/replay.js"></script></body>');
 }
 if (stickerInstances.length > 0) {
   if (!usesStickerRuntime) throw new Error("当前包装模板不支持贴纸");

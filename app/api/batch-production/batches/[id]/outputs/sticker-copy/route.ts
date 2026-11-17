@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { BatchDomainError } from '@/lib/batch-production/errors';
+import { getBatchOutputArrangementView } from '@/lib/batch-production/output-arrangement';
+import { batchPackagingDefaults } from '@/lib/batch-production/packaging';
+import { resolvePackagingAutoLayout } from '@/lib/media-core/packaging-auto-layout-service';
+import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_DURATION_US } from '@/lib/media-core/render-contract';
 import {
   copyBatchOutputStickers,
   restoreBatchOutputStickers,
@@ -63,9 +67,23 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const db = getDb();
     if (body.type === 'copy') {
       if (typeof body.sourcePlanId !== 'string' || !body.sourcePlanId.trim()) invalidInput('复制需要来源 sourcePlanId');
-      const result = copyBatchOutputStickers(db, projectId, id, {
+      const result = await copyBatchOutputStickers(db, projectId, id, {
         sourcePlanId: body.sourcePlanId.trim(),
         targets: body.targets.map(parseTarget),
+      }, {
+        resolveLayout: async ({ planId, config, bodyFrames }) => {
+          const view = getBatchOutputArrangementView(db, projectId, id, planId);
+          const coverSec = FINAL_EDIT_INTRO_DURATION_US / 1e6;
+          return resolvePackagingAutoLayout({
+            config,
+            vars: { ...batchPackagingDefaults(db, projectId, view), ...config.varsOverrides },
+            totalSec: bodyFrames / FINAL_EDIT_FPS + coverSec,
+            coverSec,
+            outputWidth: view.outputSize.width,
+            outputHeight: view.outputSize.height,
+            signal: request.signal,
+          });
+        },
       });
       return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });
     }

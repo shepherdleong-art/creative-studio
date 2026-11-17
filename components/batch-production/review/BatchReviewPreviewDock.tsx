@@ -2,7 +2,7 @@
 
 import BatchSourceMonitor, { type SourceMonitorSession } from './BatchSourceMonitor';
 import BatchPackagingOverlay, { type BatchStickerPlaybackRequest } from '../BatchPackagingOverlay';
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { OutputPresetId } from '@/lib/final-edit/types';
 import type { BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '@/lib/media-core/render-contract';
@@ -100,18 +100,49 @@ export default function BatchReviewPreviewDock({
   }, [poolAssets, projectId]);
 
   const arrangement = previewFilm?.arrangement;
-  const clips: BatchTimelinePreviewClip[] = arrangement?.clips
-    ? arrangement.clips.map((clip) => ({
-        clipId: clip.clipId,
-        assetId: clip.assetId,
-        sourceStartUs: clip.sourceStartUs,
-        sourceEndUs: clip.sourceEndUs,
-        timelineStartUs: clip.timelineStartUs,
-        timelineEndUs: clip.timelineEndUs,
-        playbackRate: clip.playbackRate ?? 1,
-        framing: clip.framing,
-      }))
-    : [];
+
+  // 包装预览重载键与单条混剪保持一致：只有结构变化才重载 iframe。
+  // 几何编辑（layouts、贴纸位置/缩放/旋转、Resolution stale→resolved）不改变结构签名，
+  // 否则每次拖动都会把 iframe 重新加载到等待页/封面帧。
+  const packagingStructureKey = useMemo(() => {
+    const packaging = arrangement?.packaging;
+    return JSON.stringify({
+      template: packaging?.template,
+      fonts: [packaging?.titleFont?.file ?? '', packaging?.subtitleFont?.file ?? '', packaging?.pointFont?.file ?? ''],
+      varsOverrides: packaging?.varsOverrides ?? {},
+      pointCues: packaging?.pointCues ?? [],
+      pointCuesMode: packaging?.pointCuesMode,
+      stickers: (packaging?.stickers ?? []).map((sticker) => [
+        sticker.id, sticker.assetId, sticker.styleMode, sticker.fixedStyle,
+        sticker.startFrame, sticker.endFrame, sticker.trackIndex, sticker.animation,
+      ]),
+    });
+  }, [arrangement?.packaging]);
+  const [overlayHistory, setOverlayHistory] = useState({ structure: '', hash: '' });
+  const overlayStructureChanged = overlayHistory.structure !== packagingStructureKey;
+  let overlayLayoutHash = overlayHistory.hash;
+  if (overlayStructureChanged) {
+    overlayLayoutHash = '';
+    setOverlayHistory({ structure: packagingStructureKey, hash: '' });
+  } else if (!overlayLayoutHash && arrangement?.packaging?.layoutResolution?.status === 'resolved') {
+    overlayLayoutHash = arrangement.packaging.layoutResolution.inputHash;
+    setOverlayHistory({ structure: packagingStructureKey, hash: overlayLayoutHash });
+  }
+  const packagingOverlayKey = `${previewFilm?.planId ?? ''}|${packagingStructureKey}|${overlayLayoutHash}`;
+
+  const clips = useMemo<BatchTimelinePreviewClip[]>(() => {
+    if (!arrangement?.clips) return [];
+    return arrangement.clips.map((clip) => ({
+      clipId: clip.clipId,
+      assetId: clip.assetId,
+      sourceStartUs: clip.sourceStartUs,
+      sourceEndUs: clip.sourceEndUs,
+      timelineStartUs: clip.timelineStartUs,
+      timelineEndUs: clip.timelineEndUs,
+      playbackRate: clip.playbackRate ?? 1,
+      framing: clip.framing,
+    }));
+  }, [arrangement]);
 
   const coverUrl = (() => {
     if (!previewFilm?.coverAttemptId) return null;
@@ -287,10 +318,10 @@ export default function BatchReviewPreviewDock({
         ) : arrangement ? (
           <div ref={previewScreenRef} className={styles.previewScreen} onPointerDownCapture={probeStickerHit}>
             <BatchTimelinePreview
-              key={`${previewFilm.planId}:${packagingEditable}:${coverPreviewRequest}`}
+              key={`${previewFilm.planId}:${coverPreviewRequest}`}
               overlay={arrangement.packaging?.enabled || draggedStickerChoice ? <>
                 {arrangement.packaging?.enabled && <BatchPackagingOverlay
-                  key={`${previewFilm.planId}:${arrangement.editRevision}`}
+                  key={packagingOverlayKey}
                   view={arrangement}
                   editable={packagingEditable}
                   onSave={onSourceApply}
@@ -301,7 +332,7 @@ export default function BatchReviewPreviewDock({
                   onStickerExit={() => onStickerExit?.(previewFilm.planId)}
                   playbackRequest={stickerPlaybackRequest}
                   onSeek={onSeek}
-                  src={`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(previewFilm.planId)}/packaging-preview?projectId=${encodeURIComponent(projectId)}&format=html&edit=1&revision=${arrangement.editRevision}`}
+                  src={`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(previewFilm.planId)}/packaging-preview?projectId=${encodeURIComponent(projectId)}&format=html&edit=1`}
                   timeSec={playheadSec + INTRO_SEC}
                 />}
                 {draggedStickerChoice && <div

@@ -63,6 +63,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       ...(varsOverrides ? { varsOverrides } : {}),
       ...(renderSnapshot.packaging?.stickers?.length ? { stickers: renderSnapshot.packaging.stickers } : {}),
       ...(renderSnapshot.packaging?.stickerDefaults ? { stickerDefaults: renderSnapshot.packaging.stickerDefaults } : {}),
+      ...(renderSnapshot.packaging?.pointCuesLayoutVersion !== undefined ? { pointCuesLayoutVersion: renderSnapshot.packaging.pointCuesLayoutVersion } : {}),
+      ...(renderSnapshot.packaging?.layoutRuntimeBundleVersion !== undefined ? { layoutRuntimeBundleVersion: renderSnapshot.packaging.layoutRuntimeBundleVersion } : {}),
+      ...(renderSnapshot.packaging?.layoutResolution ? { layoutResolution: renderSnapshot.packaging.layoutResolution } : {}),
     };
     const id = uuidv4();
     const requestKey = crypto.createHash('sha256').update(JSON.stringify({ id, snapshot })).digest('hex');

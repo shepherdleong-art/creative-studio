@@ -18,6 +18,7 @@ import type { StickerAssetChoice } from '@/components/mixcut/StickerPanel';
 import type { BatchStickerPlaybackRequest } from '../BatchPackagingOverlay';
 import BatchStickerCopyDialog, { type BatchStickerCopyDialogTarget } from './BatchStickerCopyDialog';
 import type { BatchPackagingStickerSnapshot, BatchStickerMutationResult } from '@/lib/batch-production/sticker-copy';
+import type { BatchAutoLayoutCandidatePayload, BatchAutoLayoutCommandResult } from '../BatchStickerPanel';
 import {
   MAX_STICKER_INSTANCES,
   createManualPackagingSticker,
@@ -282,6 +283,44 @@ export default function BatchUnifiedReviewWorkspace({
     },
     [arrangements, batchId, projectId, refreshFilmArrangement]
   );
+
+  // 自动布局命令：服务端生成候选并经 CLS 预检后才落库；失败返回同一候选供不重抽重试。
+  const handlePackagingLayoutCommand = useCallback(async (
+    planId: string,
+    type: 'auto_layout_stickers' | 'revalidate_packaging_layout' | 'reextract_points_layout',
+    candidatePayload?: BatchAutoLayoutCandidatePayload,
+  ): Promise<BatchAutoLayoutCommandResult> => {
+    const beforeView = arrangements[planId] ?? null;
+    if (!beforeView?.outputVersionId) throw new Error('成片尚未就绪，请刷新后重试');
+    const response = await fetch(
+      `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId,
+          type,
+          candidatePayload,
+          expectedEditRevision: beforeView.editRevision,
+          expectedOutputVersionId: beforeView.outputVersionId,
+        }),
+      }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || '自动布局失败');
+    if (data.status !== 'resolved') return data as BatchAutoLayoutCommandResult;
+    const afterView = await refreshFilmArrangement(planId);
+    if (type !== 'revalidate_packaging_layout' && afterView) {
+      setUndoStack((stack) => [...stack.slice(-20), {
+        kind: 'arrangement',
+        planId,
+        before: buildRestoreSnapshot(beforeView),
+        after: buildRestoreSnapshot(afterView),
+      }]);
+      setRedoStack([]);
+    }
+    return data as BatchAutoLayoutCommandResult;
+  }, [arrangements, batchId, projectId, refreshFilmArrangement]);
 
   const handleCopyStickers = useCallback(async (sourcePlanId: string, targets: BatchStickerCopyDialogTarget[]) => {
     const response = await fetch(`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/sticker-copy?projectId=${encodeURIComponent(projectId)}`, {
@@ -919,6 +958,7 @@ export default function BatchUnifiedReviewWorkspace({
             onTabChange={setInspectorTab}
             poolAssets={poolAssets}
             onMediaEdit={handleMediaEdit}
+            onLayoutCommand={handlePackagingLayoutCommand}
             onRefreshFilm={async (planId) => {
               await refreshFilmArrangement(planId);
             }}

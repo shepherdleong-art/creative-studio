@@ -32,6 +32,10 @@ assert.equal(new Set(planned.slice(4).map((sticker) => sticker.assetId)).size, 2
 assert.ok(planned.every((sticker) => !['arrow_left', 'arrow_right', 'oval', 'round'].includes(sticker.assetId)), '箭头圈注不得进入自动池');
 assert.ok(planned.every((sticker) => sticker.animation === 'rise' && sticker.styleMode === 'follow-template' && sticker.fixedStyle === null));
 assert.ok(planned.every((sticker) => sticker.origin.kind === 'auto' && sticker.origin.autoGroupId === 'auto_test' && !sticker.origin.autoEdited));
+assert.ok(planned.every((sticker) => sticker.origin.kind === 'auto' && sticker.origin.layoutVersion === 2 && !sticker.origin.positionPinned));
+assert.ok(planned.slice(0, 4).every((sticker) => sticker.centerYPct <= 30), '开头与中段基准槽位必须位于上 30%，为完整外框修正预留空间');
+assert.deepEqual(planned.slice(4).map((sticker) => sticker.centerYPct), [65, 81], '结尾两张统一位于左下并保持上下错落');
+assert.deepEqual(planned.slice(4).map((sticker) => sticker.centerXPct), [17, 17], '结尾两张默认都落在左下红框所在一侧');
 for (let index = 0; index < planned.length; index += 1) {
   const sticker = planned[index];
   const stageIndex = Math.floor(index / 2);
@@ -58,6 +62,12 @@ for (const template of PACKAGING_TEMPLATE_IDS) {
   assert.ok(templatePlan);
   const slots = PACKAGING_STICKER_AUTO_SLOTS[template];
   assert.equal(slots.length, 6);
+  assert.ok(templatePlan.slice(4).every((sticker) => sticker.centerYPct > 50), `${template} 结尾槽位必须位于下半部`);
+  assert.equal(slots[4].centerXPct, 17, `${template} 结尾左槽位横向必须落在左下红框区域`);
+  assert.equal(slots[4].centerYPct, 65, `${template} 结尾左槽位纵向必须落在左下红框区域`);
+  assert.equal(slots[5].centerXPct, 17, `${template} 结尾右槽位横向同样位于左下`);
+  assert.equal(slots[5].centerYPct, 81, `${template} 结尾右槽位纵向位于左下并与上一张错开`);
+  assert.ok(slots[5].centerYPct - slots[4].centerYPct >= 16, `${template} 结尾两张上下间距必须足够，避免默认重叠`);
   templatePlan.forEach((sticker, index) => {
     assert.equal(sticker.centerXPct, slots[index].centerXPct);
     assert.equal(sticker.centerYPct, slots[index].centerYPct);
@@ -66,6 +76,22 @@ for (const template of PACKAGING_TEMPLATE_IDS) {
     assert.ok(sticker.centerXPct > 0 && sticker.centerXPct < 100 && sticker.centerYPct > 0 && sticker.centerYPct < 100);
   });
 }
+
+const landscape = planPackagingStickerAutoLayout({
+  bodyFrames: 240,
+  template: 'overlay-minimal',
+  assets,
+  animation: 'soft',
+  autoGroupId: 'auto_landscape',
+  random: () => 0,
+  createId: (index) => `landscape_${index}`,
+  outputWidth: 1920,
+  outputHeight: 1080,
+});
+assert.ok(landscape);
+assert.notEqual(landscape[3].assetId, 'like', '横版过高的手势不得进入上方自动池');
+assert.equal(landscape[4].centerYPct, 65);
+assert.equal(landscape[5].centerYPct, 81);
 
 const manual: PackagingStickerInstance = { ...planned[0], id: 'manual_keep', origin: { kind: 'manual' } };
 const copiedAsManual: PackagingStickerInstance = { ...planned[1], id: 'copy_keep', origin: { kind: 'manual' } };

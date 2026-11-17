@@ -26,6 +26,8 @@ const dbPath = path.join(dataRoot, 'data', 'workbench.db');
 const testEnv = { ...process.env, CREATIVE_STUDIO_DATA_ROOT: dataRoot, NEXT_TELEMETRY_DISABLED: '1' };
 const chrome = path.resolve('packaging/runtime/chrome-headless-shell', process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell');
 const now = () => new Date().toISOString();
+// 正文卖点预览回归用的真实 TTC 字体源；平台无该字体时跳过对应专项断言
+const previewFontSource = process.platform === 'win32' ? 'C:\\Windows\\Fonts\\msyh.ttc' : '/System/Library/Fonts/PingFang.ttc';
 const apiResponses = [];
 const pageErrors = [];
 const consoleErrors = [];
@@ -134,6 +136,12 @@ function packaging(spec, stickers) {
 async function seedFixture() {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const storageRoot = path.join(dataRoot, 'storage');
+  // 系统字体物化目录的同构 fixture
+  if (fs.existsSync(previewFontSource)) {
+    const previewFontDir = path.join(storageRoot, 'packaging', 'fonts');
+    fs.mkdirSync(previewFontDir, { recursive: true });
+    fs.copyFileSync(previewFontSource, path.join(previewFontDir, 'user-point-preview.ttc'));
+  }
   const mediaRelative = path.join('storage', 'batch-media', projectId, 'source.mp4');
   const mediaAbsolute = path.join(dataRoot, mediaRelative);
   fs.mkdirSync(path.dirname(mediaAbsolute), { recursive: true });
@@ -309,7 +317,8 @@ function withoutKeys(value, keys) {
 function assertOnlyStickerFieldsChanged(before, after) {
   const arrangementKeys = ['packaging', 'editRevision', 'review'];
   assert.deepEqual(withoutKeys(after, arrangementKeys), withoutKeys(before, arrangementKeys), 'arrangement 非贴纸字段必须保留');
-  assert.deepEqual(withoutKeys(after.packaging, ['stickers', 'stickerDefaults']), withoutKeys(before.packaging, ['stickers', 'stickerDefaults']), '目标模板、varsOverrides 与其他包装字段必须保留');
+  const layoutKeys = ['stickers', 'stickerDefaults', 'pointCuesLayoutVersion', 'layoutRuntimeBundleVersion', 'layoutResolution'];
+  assert.deepEqual(withoutKeys(after.packaging, layoutKeys), withoutKeys(before.packaging, layoutKeys), '目标模板、varsOverrides 与其他包装字段必须保留');
   assert.equal(after.editRevision, before.editRevision + 1);
   assert.equal(after.review, undefined);
 }
@@ -365,6 +374,21 @@ try {
     coreWrites.push({ kind: 'set_packaging', plan: spec.key, status: response.status(), request, response: body });
     assert.equal(response.status(), 200, `${spec.key} 包装保存失败：${JSON.stringify(body)}`);
     assert.equal(request.expectedOutputVersionId, spec.outputVersionId);
+    const view = await fetchArrangement(spec);
+    assert.equal(view.editRevision, body.editRevision);
+    return { request, body, view };
+  };
+  const autoLayoutPackaging = async (spec, action) => {
+    const pending = page.waitForResponse((response) => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === clipsPath(spec)
+      && (response.request().postData() || '').includes('"type":"auto_layout_stickers"'));
+    await action();
+    const response = await pending;
+    const request = JSON.parse(response.request().postData() || '{}');
+    const body = await response.json();
+    coreWrites.push({ kind: 'auto_layout_stickers', plan: spec.key, status: response.status(), request, response: body });
+    assert.equal(response.status(), 200, `${spec.key} 自动布局失败：${JSON.stringify(body)}`);
+    assert.equal(body.status, 'resolved', body.message || '自动布局命令必须成功');
     const view = await fetchArrangement(spec);
     assert.equal(view.editRevision, body.editRevision);
     return { request, body, view };
@@ -465,12 +489,13 @@ try {
 
   const targetsBeforeCurrentFilmChanges = rawPlans(fixture);
   const beforeReplace = deletedResult.view.packaging;
-  const replacedResult = await savePackaging(source, () => panel.getByRole('button', { name: '换一组基础贴纸', exact: true }).click());
+  const replacedResult = await autoLayoutPackaging(source, () => panel.getByRole('button', { name: '换一组基础贴纸', exact: true }).click());
   const replacedAutomatic = replacedResult.view.packaging.stickers.filter((sticker) => sticker.origin.kind === 'auto');
   assert.equal(replacedAutomatic.length, 6);
   assert.equal(replacedResult.view.packaging.stickers.filter((sticker) => sticker.origin.kind === 'manual').length, 1);
   assert.notEqual(replacedAutomatic[0].origin.autoGroupId, beforeReplace.stickers.find((sticker) => sticker.origin.kind === 'auto').origin.autoGroupId);
   assert.ok(replacedAutomatic.every((sticker) => sticker.origin.autoEdited === false));
+  assert.deepEqual(replacedAutomatic.slice(4).map((sticker) => sticker.centerYPct), [65, 81], '结尾两张自动贴纸必须位于下半部');
   assert.deepEqual(replacedResult.view.packaging.stickers.find((sticker) => sticker.id === 'source-manual'), beforeReplace.stickers.find((sticker) => sticker.id === 'source-manual'));
   const targetsAfterCurrentFilmChanges = rawPlans(fixture);
   for (const spec of [targetExisting, targetEmpty, targetShort]) {
@@ -600,6 +625,97 @@ try {
   for (const spec of [source, targetExisting, targetEmpty]) {
     panel = await openFilmStickers(spec);
     await panel.getByText('7 张已放置', { exact: true }).waitFor();
+  }
+
+  // 正文卖点预览回归：A 模板 Resolution 使用输出画布 px，B 手账使用 cqw，重放必须分别按单位换算；
+  // 系统字体物化允许 .ttc，预览资源必须能正常返回，否则 UserPoint 回退导致字体样式错误。
+  if (fs.existsSync(previewFontSource)) {
+    for (const template of ['overlay-poster', 'overlay-journal']) {
+      const pointBase = await fetchArrangement(source);
+      const pointConfig = {
+        ...pointBase.packaging,
+        template,
+        pointCues: [
+          { id: 'preview-point-cue', text: '11mm岩板台面', startSec: 1, endSec: 2.4 },
+          { id: 'preview-point-cue-2', text: '家宴围坐也稳', startSec: 2.6, endSec: 4 },
+          { id: 'preview-point-cue-3', text: '通长整板设计', startSec: 4.2, endSec: 5.6 },
+          { id: 'preview-point-cue-4', text: '拼接缝更少', startSec: 5.8, endSec: 7.2 },
+        ],
+        pointCuesMode: 'timed',
+        pointCuesLayoutVersion: 2,
+        layoutRuntimeBundleVersion: 2,
+        pointFont: { family: process.platform === 'win32' ? 'Microsoft YaHei' : 'PingFang SC', file: 'user-point-preview.ttc' },
+      };
+      delete pointConfig.layoutResolution;
+      const postClip = async (body) => page.evaluate(async ({ path, body: payload }) => {
+        const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        return { status: response.status, body: await response.json() };
+      }, { path: `${clipsPath(source)}?projectId=${encodeURIComponent(projectId)}`, body });
+      const pointSaved = await postClip({
+        type: 'set_packaging', config: pointConfig, projectId,
+        expectedEditRevision: pointBase.editRevision, expectedOutputVersionId: pointBase.outputVersionId,
+      });
+      assert.equal(pointSaved.status, 200, `${template} 卖点预览配置保存失败：${JSON.stringify(pointSaved.body)}`);
+      const pointLayout = await postClip({
+        type: 'revalidate_packaging_layout', projectId,
+        expectedEditRevision: pointSaved.body.editRevision, expectedOutputVersionId: pointBase.outputVersionId,
+      });
+      assert.equal(pointLayout.status, 200, `${template} 卖点自动布局失败：${JSON.stringify(pointLayout.body)}`);
+      assert.equal(pointLayout.body.status, 'resolved', `${template} 卖点自动布局必须返回解析结果：${JSON.stringify(pointLayout.body)}`);
+      const pointArrangement = await fetchArrangement(source);
+      assert.equal(pointArrangement.packaging.layoutResolution?.status, 'resolved',
+        `${template} 卖点必须获得有效 Resolution：${JSON.stringify({ command: pointLayout.body, resolution: pointArrangement.packaging.layoutResolution })}`);
+      assert.equal(pointArrangement.editRevision, pointSaved.body.editRevision, '派生重解析不得增加编辑修订');
+      const resolvedCues = Object.values(pointArrangement.packaging.layoutResolution.elements).filter((element) => element.kind === 'pointCue');
+      assert.equal(resolvedCues.length, 4, '必须覆盖默认位于 34/40/48/54% 的四个卖点');
+      for (const cue of resolvedCues) {
+        assert.ok(cue.visualBox.bottom <= pointArrangement.packaging.layoutResolution.outputHeight * 0.4 + 0.05,
+          `${template} 的 ${cue.id} 完整外框不得越出上 40%：${JSON.stringify(cue.visualBox)}`);
+      }
+
+      panel = await openFilmStickers(source);
+      const pointOverlay = page.frameLocator('iframe[title="包装版式编辑"]');
+      await pointOverlay.locator('[data-point-id="cue:preview-point-cue"]').waitFor({ timeout: 45_000 });
+      const readPointPreview = async () => {
+        for (const frame of page.frames()) {
+          if (!await frame.locator('[data-point-id="cue:preview-point-cue"]').count()) continue;
+          return frame.evaluate((currentTemplate) => {
+            const point = document.querySelector('[data-point-id="cue:preview-point-cue"]');
+            const root = document.getElementById('root');
+            const resolution = window.__packagingAutoLayoutReplay.getResolution();
+            const item = resolution.elements['preview-point-cue'];
+            return {
+              rootWidth: root.clientWidth,
+              outputWidth: resolution.outputWidth,
+              resolutionFontSize: Number.parseFloat(item.fit.textFontSize),
+              resolutionFontUnit: String(item.fit.textFontSize).replace(/[\d.\s]/g, ''),
+              actualFontSize: Number.parseFloat(getComputedStyle(point.querySelector(currentTemplate === 'overlay-journal' ? '.txt' : '.ptxt')).fontSize),
+              userPointStatus: Array.from(document.fonts).find((font) => font.family === 'UserPoint')?.status,
+              userPointCheck: document.fonts.check('16px "UserPoint"', point.textContent || ''),
+            };
+          }, template);
+        }
+        return null;
+      };
+      let pointPreview = null;
+      await eventually(async () => {
+        pointPreview = await readPointPreview();
+        return pointPreview?.userPointCheck === true && pointPreview.userPointStatus === 'loaded';
+      }, `${template} 的 TTC 用户卖点字体必须在预览中真实加载`, 45_000);
+      const expectedPointSize = template === 'overlay-journal'
+        ? pointPreview.resolutionFontSize * pointPreview.rootWidth / 100
+        : pointPreview.resolutionFontSize * pointPreview.rootWidth / pointPreview.outputWidth;
+      assert.ok(Math.abs(pointPreview.actualFontSize - expectedPointSize) < 0.05,
+        `${template} 预览字号必须按单位正确换算：${JSON.stringify({ ...pointPreview, expectedPointSize })}`);
+      assert.ok(pointPreview.actualFontSize > 1, `${template} 卖点不得被重复缩放至不足 1px：${JSON.stringify(pointPreview)}`);
+      if (template === 'overlay-poster') {
+        assert.equal(pointPreview.resolutionFontUnit, 'px');
+        assert.ok(Math.abs(pointPreview.actualFontSize - pointPreview.rootWidth * 0.034) < 0.05,
+          `A 模板卖点必须回到 3.4cqw 响应式基准，不得异常放大：${JSON.stringify(pointPreview)}`);
+      } else assert.equal(pointPreview.resolutionFontUnit, 'cqw', 'B 手账必须覆盖 cqw Resolution');
+      // 下一轮直接写 source 前先在 UI 切走，避免选中面板的派生重验证与显式命令竞争。
+      if (template === 'overlay-poster') panel = await openFilmStickers(targetExisting);
+    }
   }
 
   const coreApiFailures = apiResponses.filter((response) => response.status >= 400 && (

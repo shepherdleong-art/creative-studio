@@ -23,7 +23,7 @@ import { CoverEditorDrawer } from './CoverEditorDrawer';
 import { preloadSystemFonts } from '@/components/system-fonts';
 import { BgmCard, type BgmImportUiResult } from './BgmCard';
 import { PackagingCard, type PackagingCardTab, type PackagingPreviewData } from './PackagingCard';
-import { StickerPanel, type StickerAssetChoice, type StickerCatalogAsset } from './StickerPanel';
+import { StickerPanel, type StickerAssetChoice } from './StickerPanel';
 import {
   DEFAULT_PACKAGING_STICKER_DEFAULTS,
   MAX_STICKER_INSTANCES,
@@ -39,7 +39,6 @@ import {
   insertPackagingStickerAtTop,
   normalizePackagingStickerTracks,
 } from '@/lib/media-core/packaging-sticker-timeline';
-import { planPackagingStickerAutoLayout, replaceAutomaticPackagingStickers } from '@/lib/media-core/packaging-sticker-planner';
 import { PackagingTextEditPopover } from '@/components/packaging/PackagingTextEditor';
 import { PackagingOverlaySync } from './packaging-overlay-sync';
 import type { BgmImportResponse } from '@/lib/final-edit/types';
@@ -127,9 +126,17 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const previewTabRefs = useRef<Record<PreviewMode, HTMLButtonElement | null>>({ output: null, material: null });
   const pendingRef = useRef(0);
   const mountedRef = useRef(true);
+  const layoutCommandAbortRef = useRef<AbortController | null>(null);
+  const layoutCommandGenerationRef = useRef(0);
+  const [layoutCommandPending, setLayoutCommandPending] = useState(false);
+  const autoLayoutDraftRef = useRef<{
+    key: string;
+    candidatePayload: { autoGroupId: string; stickers: PackagingStickerInstance[] };
+  } | null>(null);
   const applyGroupRef = useRef<(request: GroupCommandRequest) => Promise<boolean>>(async () => false);
   const automaticSubtitleNormalizationRef = useRef(new Set<string>());
   const variant = group.variants.find((item) => item.id === selectedVariantId) || group.variants[0] || null;
+  const previewVariantId = variant?.id ?? '';
   const selectedClip = variant?.timeline.clips.find((clip) => clip.id === selectedClipId) || null;
   const selectedMaterial = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === selectedMaterialKey) || null;
   const previewMaterial = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === previewMaterialKey) || null;
@@ -179,6 +186,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     groupRef.current = next;
     if (mountedRef.current) onGroupChange(next);
   };
+  const publishGroupRef = useRef(publishGroup);
+  useEffect(() => { publishGroupRef.current = publishGroup; });
 
   const reloadGroup = async (groupId: string) => {
     const current = await responseBody<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${groupId}`));
@@ -317,6 +326,42 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   useEffect(() => {
     applyGroupRef.current = applyGroup;
   });
+
+  const layoutRevalidateRef = useRef<{ key: string; generation: number }>({ key: '', generation: 0 });
+  useEffect(() => {
+    if (!group.packaging.enabled || group.packaging.layoutRuntimeBundleVersion !== 2 || group.packaging.layoutResolution?.status === 'resolved') return;
+    const key = `${group.id}:${group.revision}`;
+    if (layoutRevalidateRef.current.key === key) return;
+    const generation = layoutRevalidateRef.current.generation + 1;
+    layoutRevalidateRef.current = { key, generation };
+    const expectedRevision = group.revision;
+    const expectedPackaging = group.packaging;
+    const controller = new AbortController();
+    setMessage('正在更新自动布局…');
+    void (async () => {
+      try {
+        const result = await responseBody<{ status: string; view?: FinalEditGroupView; message?: string }>(await fetch(`/api/final-edit-groups/${group.id}/packaging-layout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({ operation: 'revalidate', expectedRevision, expectedPackaging, variantId: previewVariantId }),
+        }));
+        if (layoutRevalidateRef.current.generation !== generation) return;
+        if (result.status === 'resolved' && result.view && groupRef.current.revision === expectedRevision) {
+          publishGroupRef.current(result.view);
+          setMessage('自动布局已更新');
+        } else if (result.status !== 'resolved') {
+          layoutRevalidateRef.current.key = '';
+          setMessage(result.message || '自动布局未完成，请调整后重试');
+        }
+      } catch (error) {
+        if (layoutRevalidateRef.current.generation !== generation || controller.signal.aborted) return;
+        layoutRevalidateRef.current.key = '';
+        setMessage(`自动布局更新失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    })();
+    return () => controller.abort();
+  }, [group.id, group.revision, group.packaging, previewVariantId]);
 
   useEffect(() => {
     if (!hasLegacyAutomaticSubtitleCuesToNormalize(group.subtitleCues)) return;
@@ -686,7 +731,6 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const packagingConfig = group.packaging;
   const packagingEnabled = packagingConfig.enabled;
   const packagingTemplate = packagingConfig.template;
-  const previewVariantId = variant?.id ?? '';
   const packagingStickers = packagingConfig.stickers ?? [];
   const stickerDefaultAnimation = (packagingConfig.stickerDefaults ?? DEFAULT_PACKAGING_STICKER_DEFAULTS).animation;
   const selectedSticker = packagingStickers.find((sticker) => sticker.id === timelineSelectedStickerId) ?? null;
@@ -716,6 +760,16 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     return () => window.clearTimeout(timer);
   }, [group.id, previewVariantId]);
 
+  const resolveStickerCenter = (stickerId: string): { x: number; y: number } | null => {
+    const previewWindow = packagingIframeRef.current?.contentWindow as (Window & {
+      __packagingAutoLayoutReplay?: { getCenter: (id: string) => { x: number; y: number } | null };
+    }) | null;
+    const replayCenter = previewWindow?.__packagingAutoLayoutReplay?.getCenter(stickerId);
+    if (replayCenter) return replayCenter;
+    const persisted = groupRef.current.packaging.layoutResolution?.elements[stickerId];
+    return persisted ? { x: persisted.centerXPct, y: persisted.centerYPct } : null;
+  };
+
   const applyStickerInstances = (update: (stickers: PackagingStickerInstance[]) => PackagingStickerInstance[]): Promise<boolean> => (
     applyGroupRef.current((current): GroupCommandInput => ({
       type: 'set_packaging_config',
@@ -735,7 +789,15 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     if (normalized.centerYPct !== undefined) normalized.centerYPct = Math.min(100, Math.max(0, normalized.centerYPct));
     if (normalized.visualWidthPct !== undefined) normalized.visualWidthPct = Math.min(1000, Math.max(1, normalized.visualWidthPct));
     if (normalized.rotationDeg !== undefined) normalized.rotationDeg = Math.min(180, Math.max(-180, normalized.rotationDeg));
-    return applyStickerInstances((stickers) => stickers.map((sticker) => sticker.id === stickerId ? applyPackagingStickerEdit(sticker, normalized) : sticker));
+    const target = groupRef.current.packaging.stickers?.find((sticker) => sticker.id === stickerId);
+    const resolvedCenter = normalized.centerXPct !== undefined && normalized.centerYPct !== undefined
+      ? { x: normalized.centerXPct, y: normalized.centerYPct }
+      : resolveStickerCenter(stickerId) ?? undefined;
+    if (target?.origin.kind === 'auto' && target.origin.layoutVersion === 2 && !target.origin.positionPinned && !resolvedCenter) {
+      setMessage('贴纸实际位置尚未就绪，请等待预览布局完成后重试');
+      return Promise.resolve(false);
+    }
+    return applyStickerInstances((stickers) => stickers.map((sticker) => sticker.id === stickerId ? applyPackagingStickerEdit(sticker, normalized, resolvedCenter) : sticker));
   };
 
   const handleAddSticker = (choice: StickerAssetChoice, dropCenter?: { x: number; y: number }) => {
@@ -851,14 +913,43 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     if (stickers.length === 0) return;
     if (stickers.some((sticker) => sticker.animation !== animation)
       && !window.confirm('部分贴纸使用了单独动效，应用后将重置这些覆盖。是否继续？')) return;
-    void applyStickerInstances((currentStickers) => currentStickers.map((sticker) => applyPackagingStickerEdit(sticker, { animation }))).then((accepted) => {
+    const unresolved = stickers.some((sticker) => sticker.origin.kind === 'auto' && sticker.origin.layoutVersion === 2
+      && !sticker.origin.positionPinned && !resolveStickerCenter(sticker.id));
+    if (unresolved) {
+      setMessage('部分贴纸实际位置尚未就绪，请等待预览布局完成后重试');
+      return;
+    }
+    void applyStickerInstances((currentStickers) => currentStickers.map((sticker) => applyPackagingStickerEdit(sticker, { animation }, resolveStickerCenter(sticker.id) ?? undefined))).then((accepted) => {
       if (!accepted) return;
       const targetId = selectedStickerIdRef.current || stickers[0]?.id;
       if (targetId) playStickerOnce(targetId);
     });
   };
 
-  const handleAutoLayout = (assets: StickerCatalogAsset[]) => {
+  const startLayoutCommand = () => {
+    layoutCommandAbortRef.current?.abort();
+    const controller = new AbortController();
+    const generation = layoutCommandGenerationRef.current + 1;
+    layoutCommandGenerationRef.current = generation;
+    layoutCommandAbortRef.current = controller;
+    setLayoutCommandPending(true);
+    return { controller, generation };
+  };
+  const finishLayoutCommand = (generation: number) => {
+    if (layoutCommandGenerationRef.current !== generation) return;
+    layoutCommandAbortRef.current = null;
+    setLayoutCommandPending(false);
+  };
+  const cancelLayoutCommand = () => {
+    layoutCommandGenerationRef.current += 1;
+    layoutCommandAbortRef.current?.abort();
+    layoutCommandAbortRef.current = null;
+    setLayoutCommandPending(false);
+    setMessage('已取消自动布局');
+  };
+  useEffect(() => () => layoutCommandAbortRef.current?.abort(), []);
+
+  const handleAutoLayout = () => {
     if (busy || !packagingEnabled) return;
     if (autoLayoutBlockedReason) {
       setMessage(autoLayoutBlockedReason);
@@ -868,29 +959,90 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     const automatic = (current.packaging.stickers ?? []).filter((sticker) => sticker.origin.kind === 'auto');
     if (automatic.some((sticker) => sticker.origin.kind === 'auto' && sticker.origin.autoEdited)
       && !window.confirm('当前自动组合中有已编辑贴纸，换一组将重置这些调整。是否继续？')) return;
-    const autoGroupId = `auto_${crypto.randomUUID()}`;
-    let generated: PackagingStickerInstance[] | null = null;
-    try {
-      generated = planPackagingStickerAutoLayout({
-        bodyFrames: variant.timeline.bodyFrames,
-        template: packagingTemplate,
-        assets,
-        animation: (current.packaging.stickerDefaults ?? DEFAULT_PACKAGING_STICKER_DEFAULTS).animation,
-        autoGroupId,
-        random: Math.random,
-        createId: () => `s_${crypto.randomUUID()}`,
-      });
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-      return;
-    }
-    if (!generated) {
-      setMessage('正文不足 6 秒，无法一键布置；请手动添加贴纸。');
-      return;
-    }
-    void applyStickerInstances((currentStickers) => replaceAutomaticPackagingStickers(currentStickers, generated)).then((accepted) => {
-      if (!accepted) return;
-      setMessage(automatic.length > 0 ? '已换一组基础贴纸，手动贴纸已保留' : '已生成 6 张基础贴纸');
+    const bodyFrames = current.variants.find((item) => item.id === previewVariantId)?.timeline.bodyFrames ?? 0;
+    const draftKey = `${current.id}:${previewVariantId}:${current.packaging.template}:${bodyFrames}`;
+    const draft = autoLayoutDraftRef.current?.key === draftKey ? autoLayoutDraftRef.current : null;
+    if (!draft) autoLayoutDraftRef.current = null;
+    const { controller, generation } = startLayoutCommand();
+    void enqueue(async () => {
+      if (layoutCommandGenerationRef.current !== generation) return;
+      const currentGroup = groupRef.current;
+      try {
+        const result = await responseBody<{
+          status: 'resolved' | 'infeasible' | 'budget_exceeded';
+          view?: FinalEditGroupView;
+          message?: string;
+          candidatePayload?: { autoGroupId: string; stickers: PackagingStickerInstance[] } | null;
+        }>(await fetch(`/api/final-edit-groups/${currentGroup.id}/packaging-layout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            operation: 'auto-stickers',
+            expectedRevision: currentGroup.revision,
+            expectedPackaging: currentGroup.packaging,
+            variantId: previewVariantId,
+            candidatePayload: draft?.candidatePayload,
+          }),
+        }));
+        if (result.status !== 'resolved' || !result.view) {
+          if (result.candidatePayload) autoLayoutDraftRef.current = { key: draftKey, candidatePayload: result.candidatePayload };
+          if (mountedRef.current) setMessage(result.message || '自动布局未完成，请重试');
+          return;
+        }
+        autoLayoutDraftRef.current = null;
+        if (layoutCommandGenerationRef.current !== generation) return;
+        publishGroup(result.view);
+        recordHistory({ scope: 'group', target: 'packaging', id: currentGroup.id, before: currentGroup.revision, after: result.view.revision });
+        if (mountedRef.current) setMessage(automatic.length > 0 ? '已换一组基础贴纸，手动贴纸已保留' : '已生成 6 张基础贴纸');
+      } catch (error) {
+        if (layoutCommandGenerationRef.current !== generation || controller.signal.aborted) return;
+        await reloadGroup(currentGroup.id).catch(() => undefined);
+        if (mountedRef.current) setMessage(`自动布局失败：${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        finishLayoutCommand(generation);
+      }
+    });
+  };
+
+  const handleReextractPoints = (): Promise<boolean> => {
+    const { controller, generation } = startLayoutCommand();
+    return enqueue(async () => {
+      if (layoutCommandGenerationRef.current !== generation) return false;
+      const currentGroup = groupRef.current;
+      try {
+        const result = await responseBody<{
+          status: 'resolved' | 'infeasible' | 'budget_exceeded';
+          view?: FinalEditGroupView;
+          message?: string;
+        }>(await fetch(`/api/final-edit-groups/${currentGroup.id}/packaging-layout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            operation: 'reextract-points',
+            expectedRevision: currentGroup.revision,
+            expectedPackaging: currentGroup.packaging,
+            variantId: previewVariantId,
+          }),
+        }));
+        if (result.status !== 'resolved' || !result.view) {
+          if (mountedRef.current) setMessage(result.message || '卖点布局未完成，请调整后重试');
+          return false;
+        }
+        if (layoutCommandGenerationRef.current !== generation) return false;
+        publishGroup(result.view);
+        recordHistory({ scope: 'group', target: 'packaging', id: currentGroup.id, before: currentGroup.revision, after: result.view.revision });
+        if (mountedRef.current) setMessage('已重新提取卖点并更新自动布局');
+        return true;
+      } catch (error) {
+        if (layoutCommandGenerationRef.current !== generation || controller.signal.aborted) return false;
+        await reloadGroup(currentGroup.id).catch(() => undefined);
+        if (mountedRef.current) setMessage(`卖点重提失败：${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      } finally {
+        finishLayoutCommand(generation);
+      }
     });
   };
 
@@ -1059,7 +1211,28 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
 
   // iframe 重载键：模板/三槽字体/文案覆盖层/草稿/卖点与贴纸数组任一变化即重载（不含 layouts——拖拽保存不重载，§6）。
   // pointCues 入键：卖点增删改后 iframe 重载，同步控制器 load 后自动 seek 回当前播放头（§3 恢复逻辑）。
-  const packagingOverlayKey = `${packagingTemplate}|${JSON.stringify(packagingConfig.varsOverrides)}|${packagingConfig.titleFont?.file ?? ''}|${packagingConfig.subtitleFont?.file ?? ''}|${packagingConfig.pointFont?.file ?? ''}|${previewVariantId}|${packagingOverlayRestoreId}|${JSON.stringify(packagingConfig.pointCues ?? [])}|${JSON.stringify(packagingConfig.stickers ?? [])}`;
+  // 贴纸只保留结构签名（增删/换素材/时间/轨道/动效）：位置、缩放、旋转与 origin 固定标记由编辑桥就地维护。
+  // Resolution 是否允许进入重载键由"结构是否变化"决定：
+  // - 几何拖动只改 layouts 与贴纸几何，结构签名不变，stale→resolved 的派生 hash 变化被忽略 → 永不重载，不闪封面；
+  // - 增删贴纸/换组/重提取等结构变化会重置 hash，先按端点的等待页加载，resolved 后再重载到完整包装。
+  const packagingStickerStructureKey = JSON.stringify((packagingConfig.stickers ?? []).map((sticker) => [
+    sticker.id, sticker.assetId, sticker.styleMode, sticker.fixedStyle,
+    sticker.startFrame, sticker.endFrame, sticker.trackIndex, sticker.animation,
+  ]));
+  const overlayStructureKey = `${packagingTemplate}|${JSON.stringify(packagingConfig.varsOverrides)}|${packagingConfig.titleFont?.file ?? ''}|${packagingConfig.subtitleFont?.file ?? ''}|${packagingConfig.pointFont?.file ?? ''}|${previewVariantId}|${packagingOverlayRestoreId}|${JSON.stringify(packagingConfig.pointCues ?? [])}|${packagingStickerStructureKey}`;
+  const [overlayHistory, setOverlayHistory] = useState({ structure: '', hash: '' });
+  const overlayStructureChanged = overlayHistory.structure !== overlayStructureKey;
+  // 结构变化当帧先清空 hash（触发一次重载）；resolved 后再写入新 hash。
+  // 几何拖动时结构不变且已有 hash，stale→resolved 的新 hash 不会进入 key，因此不会重载闪封面。
+  let overlayLayoutHash = overlayHistory.hash;
+  if (overlayStructureChanged) {
+    overlayLayoutHash = '';
+    setOverlayHistory({ structure: overlayStructureKey, hash: '' });
+  } else if (!overlayLayoutHash && packagingConfig.layoutResolution?.status === 'resolved') {
+    overlayLayoutHash = packagingConfig.layoutResolution.inputHash;
+    setOverlayHistory({ structure: overlayStructureKey, hash: overlayLayoutHash });
+  }
+  const packagingOverlayKey = `${overlayStructureKey}|${overlayLayoutHash}`;
   const packagingOverlaySrc = packagingEnabled && previewVariantId && packagingPreview
     ? `/api/final-edit-groups/${encodeURIComponent(group.id)}/packaging-preview?variantId=${encodeURIComponent(previewVariantId)}&template=${encodeURIComponent(packagingTemplate)}&format=html&sync=1&edit=1`
     : '';
@@ -1252,7 +1425,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             <span className={`${styles.chip} ${styles.chipBlue}`}>匹配：{selectedMatchReasonLabel} · {selectedMatchReason.score.toFixed(2)}</span>
           )}
           <span className={styles.spacer} />
-          <span className={styles.flowHint} aria-live="polite">{busy ? '正在保存…' : message}</span>
+          <span className={styles.flowHint} aria-live="polite">{layoutCommandPending ? '正在计算自动布局…' : busy ? '正在保存…' : message}</span>
+          {layoutCommandPending && <button type="button" className={`${styles.btn} ${styles.small}`} onClick={cancelLayoutCommand}>取消自动布局</button>}
           {group.variants.length > 1 && (
             <select aria-label="选择成片草稿" value={variant.id} onChange={(event) => { setSelectedVariantId(event.target.value); clearHistory(); setSelectedCueId(''); setSelectedClipId(''); setSelectedMaterialKey(''); setPreviewMaterialKey(''); setPreviewMode('output'); setTrimClip(null); setPlayheadSec(0); }}>
               {group.variants.map((item) => <option key={item.id} value={item.id}>成片 {item.indexNum} · {item.outputPreset.replace('x', ':')}</option>)}
@@ -1492,6 +1666,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             onSelectSticker={handleSelectSticker}
             onStickersChange={handleTimelineStickersChange}
             onDeleteSticker={handleDeleteSticker}
+            resolveStickerCenter={resolveStickerCenter}
           />
         </div>
       </main>
@@ -1545,6 +1720,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           onSeek={seek}
           onPreviewVarsMerge={mergePackagingPreviewVars}
           onPreviewRefresh={refreshPackagingPreview}
+          onReextractPoints={handleReextractPoints}
         />
 
         <section className={styles.rcard}>

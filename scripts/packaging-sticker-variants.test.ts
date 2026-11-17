@@ -76,6 +76,7 @@ assert.deepEqual(full.map((sticker) => sticker.animation), ['soft', 'bounce', 'r
 assert.ok(full.every((sticker) => PACKAGING_STICKER_VARIANT_ANIMATIONS.includes(sticker.animation as typeof PACKAGING_STICKER_VARIANT_ANIMATIONS[number])));
 assert.ok(full.every((sticker) => sticker.styleMode === 'follow-template' && sticker.fixedStyle === null));
 assert.ok(full.every((sticker) => sticker.origin.kind === 'auto' && sticker.origin.autoGroupId === 'group_0_source_group' && !sticker.origin.autoEdited));
+assert.ok(full.every((sticker) => sticker.origin.kind === 'auto' && sticker.origin.layoutVersion === 2 && !sticker.origin.positionPinned), '未编辑自动贴纸跨片后必须使用未固定的 v2 布局');
 assert.equal(validatePackagingStickers(full, 360).length, 6);
 for (let index = 0; index < full.length; index += 1) {
   const sticker = full[index];
@@ -292,7 +293,7 @@ const grouped = planPackagingStickerVariants({
 });
 grouped.forEach((plan, targetIndex) => {
   const origins = plan.stickers.map((sticker) => sticker.origin);
-  assert.deepEqual(origins[0], { kind: 'auto', autoGroupId: `group_${targetIndex}_group_a`, autoEdited: false });
+  assert.deepEqual(origins[0], { kind: 'auto', autoGroupId: `group_${targetIndex}_group_a`, autoEdited: false, layoutVersion: 2 });
   assert.deepEqual(origins[1], origins[0]);
   assert.deepEqual(origins[2], { kind: 'auto', autoGroupId: `group_${targetIndex}_group_b`, autoEdited: true });
 });

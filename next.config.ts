@@ -50,6 +50,8 @@ const nextConfig: NextConfig = {
       './node_modules/next/dist/compiled/next-server/*.runtime.prod.js',
       './node_modules/next/dist/compiled/react/**/*',
       './packaging/stickers/**/*',
+      './packaging/auto-layout/**/*',
+      './packaging/layout-service.mjs',
     ],
   },
   outputFileTracingExcludes: {

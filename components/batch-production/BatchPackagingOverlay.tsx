@@ -120,7 +120,12 @@ export default function BatchPackagingOverlay({
   };
   const commitSticker = (stickerId: string, patch: PackagingStickerEditPatch) => {
     const next = structuredClone(config);
-    next.stickers = (next.stickers ?? []).map((sticker) => sticker.id === stickerId ? applyPackagingStickerEdit(sticker, patch) : sticker);
+    // v2 自动贴纸首次空间编辑必须携带解析中心：编辑桥已按当前 DOM 位置提交，
+    // 直接回传即可固定到用户目标位置，而不是回落到基准槽位或报"实际位置尚未就绪"。
+    const resolvedCenter = patch.centerXPct !== undefined && patch.centerYPct !== undefined
+      ? { x: patch.centerXPct, y: patch.centerYPct }
+      : undefined;
+    next.stickers = (next.stickers ?? []).map((sticker) => sticker.id === stickerId ? applyPackagingStickerEdit(sticker, patch, resolvedCenter) : sticker);
     void save(next);
   };
   return <>

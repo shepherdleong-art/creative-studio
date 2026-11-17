@@ -96,6 +96,8 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     if (!model || !runtime) return;
     var sticker = Object.assign({}, model.sticker, target);
     var geometry = runtime.computeStickerGeometry(sticker, model.asset);
+    // 标记本次文档内几何已被编辑桥接管：replay 不得用旧 Resolution 覆盖，直至保存后重载。
+    el.dataset.stickerEdited = '1';
     el.style.left = sticker.centerXPct + '%';
     el.style.top = sticker.centerYPct + '%';
     el.style.width = geometry.imageWidthPct + '%';
@@ -265,9 +267,13 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
   function startSession(kind, el, event) {
     var model = modelFor(el);
     var rect = rootRect();
+    // 起点取当前 DOM 实际位置：自动贴纸经 CLS/Resolution 修正后，vars 里仍是基准槽位，
+    // 若直接读 vars 会在拖动第一帧把贴纸跳回基准位置。
+    var domX = Number.parseFloat(el.style.left);
+    var domY = Number.parseFloat(el.style.top);
     var initial = {
-      centerXPct: model.sticker.centerXPct,
-      centerYPct: model.sticker.centerYPct,
+      centerXPct: Number.isFinite(domX) ? domX : model.sticker.centerXPct,
+      centerYPct: Number.isFinite(domY) ? domY : model.sticker.centerYPct,
       visualWidthPct: model.sticker.visualWidthPct,
       rotationDeg: model.sticker.rotationDeg,
     };
@@ -315,19 +321,23 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     if (!session) return;
     var current = session;
     session = null;
-    flushPending();
+    // 预览与持久化共用同一份取整结果：拖动保存不再重载 iframe，
+    // 若 DOM 保留未取整的浮点值，预览角度/位置会与服务端返回值不一致。
+    var roundedTarget = {
+      centerXPct: round3(current.target.centerXPct),
+      centerYPct: round3(current.target.centerYPct),
+      visualWidthPct: round3(current.target.visualWidthPct),
+      rotationDeg: round3(current.target.rotationDeg),
+    };
+    pending = null;
+    applyGeometry(current.el, roundedTarget);
     hideGuides();
     if (!current.moved) return;
     swallowClick = true;
     try {
       var parent = window.parent;
       if (parent && typeof parent.__packagingStickerEditCommit === 'function') {
-        parent.__packagingStickerEditCommit(current.el.getAttribute('data-sticker-id'), {
-          centerXPct: round3(current.target.centerXPct),
-          centerYPct: round3(current.target.centerYPct),
-          visualWidthPct: round3(current.target.visualWidthPct),
-          rotationDeg: round3(current.target.rotationDeg),
-        });
+        parent.__packagingStickerEditCommit(current.el.getAttribute('data-sticker-id'), roundedTarget);
       }
     } catch (error) {}
   }
@@ -337,6 +347,8 @@ export const PACKAGING_STICKER_EDIT_BRIDGE_JS = String.raw`
     session = null;
     pending = null;
     if (current.el.isConnected) applyGeometry(current.el, current.initial);
+    // 取消未产生编辑：解除接管标记，恢复由 Resolution 重放。
+    delete current.el.dataset.stickerEdited;
     hideGuides();
   }
   function onPointerUp(event) {

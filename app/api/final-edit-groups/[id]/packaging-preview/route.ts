@@ -96,12 +96,19 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const totalSec = Math.max(group.totalDurationUs / 1e6, coverSec + 0.2);
     const timeline = { coverSec, totalSec, pointCues, pointCuesMode };
 
-    if (format === 'json') return NextResponse.json({ vars, defaults, frameUrl, template, timeline, layouts, stickers: group.packaging.stickers ?? [], stickerDefaults: group.packaging.stickerDefaults ?? { animation: 'follow-template' }, pointCuesStale, pointCuesEdited }, { headers: { 'Cache-Control': 'no-store' } });
+    if (format === 'json') return NextResponse.json({ vars, defaults, frameUrl, template, timeline, layouts, stickers: group.packaging.stickers ?? [], stickerDefaults: group.packaging.stickerDefaults ?? { animation: 'follow-template' }, layoutResolution: group.packaging.layoutResolution, pointCuesStale, pointCuesEdited }, { headers: { 'Cache-Control': 'no-store' } });
+    if (group.packaging.layoutRuntimeBundleVersion === 2 && group.packaging.layoutResolution?.status !== 'resolved') {
+      return new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><body style="margin:0;display:grid;place-items:center;background:transparent;color:#6e6e73;font:13px -apple-system,BlinkMacSystemFont,sans-serif">正在更新自动布局…</body></html>', { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+    }
 
     let html = fs.readFileSync(path.join(templateDir, 'index.html'), 'utf-8');
     // §7：layouts 随 vars 注入，模板端经 window.__vars.layouts 读取（与导出渲染同契约）
     const stickerAssets = resolvePackagingStickerAssets({ packagingDir: resolvePackagingDir(), template, stickers: group.packaging.stickers });
-    const timelineVars = buildTimelineVars({ vars, totalSec, coverSec, pointCues, pointCuesMode, layouts, stickers: group.packaging.stickers, stickerDefaults: group.packaging.stickerDefaults, stickerAssets, template });
+    const timelineVars = buildTimelineVars({ vars, totalSec, coverSec, pointCues, pointCuesMode, layouts,
+      pointCuesLayoutVersion: group.packaging.pointCuesLayoutVersion,
+      layoutRuntimeBundleVersion: group.packaging.layoutRuntimeBundleVersion,
+      layoutResolution: group.packaging.layoutResolution,
+      stickers: group.packaging.stickers, stickerDefaults: group.packaging.stickerDefaults, stickerAssets, template });
     const varsJson = JSON.stringify(timelineVars).replace(/</g, '\\u003c');
     const baseHref = `/api/packaging/templates/${encodeURIComponent(template)}/`;
     // §10 ②：预览与成片一致——按当前配置三槽注入 @font-face（UserTitle/UserSubtitle/UserPoint；
@@ -130,10 +137,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         : '<script>setTimeout(function(){var t=window.__timelines&&window.__timelines.overlay;if(t)t.play(0)},80);</script>';
     // §6：edit=1 注入文字与贴纸两套独立编辑桥（同源 iframe 内运行，均幂等）
     const editBridge = editMode ? `<script>${PACKAGING_EDIT_BRIDGE_JS}</script><script>${PACKAGING_STICKER_EDIT_BRIDGE_JS}</script>` : '';
+    const replay = group.packaging.layoutResolution?.status === 'resolved'
+      ? `<script src="/api/packaging/templates/${encodeURIComponent(template)}/auto-layout/replay.js"></script>`
+      : '';
     html = html
       .replace('<head>', `<head><base href="${baseHref}">`)
       .replace('</head>', `${headEnd}</head>`)
-      .replace('</body>', `${autoPlay}${editBridge}</body>`);
+      .replace('</body>', `${autoPlay}${editBridge}${replay}</body>`);
     return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
   } catch (error) { return finalEditErrorResponse(error); }
 }

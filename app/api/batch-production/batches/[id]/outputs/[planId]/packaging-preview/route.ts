@@ -49,6 +49,9 @@ async function preview(request: NextRequest, context: { params: Promise<{ id: st
         palette = await extractPackagingPalette(thumbnail.absolutePath, resolveTemplateHueMode(resolvePackagingTemplateDir(resolvePackagingDir(), config.template)));
       } catch { /* 素材缩略图暂不可用时，模板保留默认配色。正式导出按实际封面取色。 */ }
     }
+    if (!draft && config.layoutRuntimeBundleVersion === 2 && config.layoutResolution?.status !== 'resolved') {
+      return new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><body style="margin:0;display:grid;place-items:center;background:transparent;color:#6e6e73;font:13px -apple-system,BlinkMacSystemFont,sans-serif">正在更新自动布局…</body></html>', { status: 200, headers: { ...BATCH_NO_STORE_HEADERS, 'Content-Type': 'text/html; charset=utf-8' } });
+    }
     const html = packagingPreviewHtml({ config, vars, coverSec, totalSec, palette, edit: draft || request.nextUrl.searchParams.get('edit') === '1' });
     if (draft) return NextResponse.json({ html, vars }, { headers: BATCH_NO_STORE_HEADERS });
     return new Response(html, { headers: { ...BATCH_NO_STORE_HEADERS, 'Content-Type': 'text/html; charset=utf-8' } });
