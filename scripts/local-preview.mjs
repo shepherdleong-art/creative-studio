@@ -6,6 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseEnv } from 'node:util';
+import { ensureDevApiRoutes } from './runtime/dev-route-readiness.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const previewRoot = path.join(root, 'outputs', 'local-preview');
@@ -120,6 +121,7 @@ function runAdminCommand(env, action) {
 async function start() {
   if (await isListening()) {
     await operation('status');
+    await ensureDevApiRoutes(root);
     console.log('本地预览已运行：' + origin);
     openBrowser();
     return;
@@ -196,6 +198,8 @@ async function start() {
       await delay(1000);
     }
     if (!ready) throw new Error('预览服务在四分钟内未就绪，请检查上方错误。');
+    const routes = await ensureDevApiRoutes(root);
+    console.log(`接口路由已就绪：${routes.count} 个${routes.recovered ? '（已自动补全首次扫描）' : ''}`);
     const login = await fetch(origin + '/team/login', { signal: AbortSignal.timeout(120_000) });
     if (!login.ok) throw new Error('登录页加载失败（HTTP ' + login.status + '）。');
     await login.text();
