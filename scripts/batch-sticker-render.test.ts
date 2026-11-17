@@ -374,7 +374,7 @@ try {
   const rendered: Array<{ output: PreparedOutput; result: BatchRenderResult; probes: FrameProbe[] }> = [];
   for (const output of prepared) {
     console.log(`开始真实导出：${output.template}，正文 ${output.bodySec}s，${output.stickers.length} 张贴纸`);
-    const before = savedPackaging(db, output.outputVersionId).stickers;
+    const before: FinalEditPackagingConfig['stickers'] = savedPackaging(db, output.outputVersionId).stickers;
     const result = await renderBatchOutputVersion(output.renderInput);
     assert.deepEqual(savedPackaging(db, output.outputVersionId).stickers, before, '正式导出不得改写已保存贴纸');
     const probes = await verifyRenderedOutput(output, result, path.join(root, 'frames', output.template));

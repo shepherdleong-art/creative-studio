@@ -1209,7 +1209,7 @@ export default function BatchReviewTimelineDock({
                 className={`${styles.filmRow} ${isEditing ? styles.filmRowEditing : ''} ${
                   !isVisible ? styles.filmRowHidden : ''
                 }`}
-                style={{ height: 216 + stickerRowGrowth, minHeight: 216 + stickerRowGrowth }}
+                style={{ '--sticker-row-growth': `${stickerRowGrowth}px` } as CSSProperties}
                 onClick={() => {
                   if (selectedPlanId !== film.planId) {
                     onSelectFilm(film.planId);

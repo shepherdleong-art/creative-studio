@@ -584,8 +584,9 @@
 .filmRow {
   display: grid;
   grid-template-columns: 220px 64px minmax(0, 1fr);
-  min-height: 216px;
-  height: 216px;
+  /* 新增贴纸轨道按 --sticker-row-growth 追加，不改写专注剪辑的紧凑行高。 */
+  min-height: calc(216px + var(--sticker-row-growth, 0px));
+  height: calc(216px + var(--sticker-row-growth, 0px));
   border-bottom: 1px solid var(--color-hairline);
   position: relative;
   background: var(--color-surface);
@@ -1069,7 +1070,10 @@
 .reviewWorkbench .editToolbar > div { flex-shrink: 0; }
 .reviewWorkbench .focusbar { padding: 3px 8px; min-height: 26px; gap: 12px; flex-wrap: nowrap; white-space: nowrap; overflow-x: auto; }
 .reviewWorkbench .focusbar > * { flex-shrink: 0; }
-.reviewWorkbench .filmRow { height: 164px; min-height: 164px; }
+.reviewWorkbench .filmRow {
+  height: calc(164px + var(--sticker-row-growth, 0px));
+  min-height: calc(164px + var(--sticker-row-growth, 0px));
+}
 .reviewWorkbench .filmTrackArea > * { flex-shrink: 0; }
 /* 完整保留字幕、卖点、视频、两条音轨；默认把轨道空白让给预览。 */
 .reviewWorkbench .filmTrackArea { padding-block: 6px; gap: 3px; }
