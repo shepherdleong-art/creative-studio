@@ -1,7 +1,6 @@
 // 规范布局服务：真实模板 + bundled Chromium + 共享几何求解器。
 // 用法：node packaging/layout-service.mjs <request.json> <output.json>
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -33,7 +32,9 @@ function safeRelative(file) {
   return typeof file === 'string' && file.length > 0 && !file.includes('\0') && !path.isAbsolute(file) && !file.split(/[\\/]/).includes('..');
 }
 
-const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-layout-'));
+// 父进程拥有整个请求目录；强杀跳过 finally 时，仍能清理模板、字体和浏览器资料。
+const requestDir = path.dirname(path.resolve(requestPath));
+const workDir = fs.mkdtempSync(path.join(requestDir, 'work-'));
 let browser;
 try {
   const templateDir = path.resolve(request.templateDir || '');
@@ -78,6 +79,7 @@ try {
 
   browser = await puppeteer.default.launch({
     executablePath: CHROME,
+    userDataDir: path.join(requestDir, 'browser-profile'),
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--allow-file-access-from-files', '--font-render-hinting=none'],
   });

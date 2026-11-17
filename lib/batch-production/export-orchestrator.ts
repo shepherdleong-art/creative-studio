@@ -8,6 +8,8 @@ import { publishSelectedBatchOutputs } from './phase-e.ts';
 import { createBatchTask, type BatchTaskStatus } from './tasks.ts';
 import { buildPackagingVars, parsePackagingConfig } from '../media-core/packaging-vars.ts';
 import { assertPackagingLayoutExportReady } from '../media-core/packaging-layout-manifest.ts';
+import { packagingAutoLayoutInputHash, resolvePackagingAutoLayout } from '../media-core/packaging-auto-layout-service.ts';
+import { FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
 import { resolveBatchOutputSize } from './output-presets.ts';
 import {
   buildFullRenderTaskRequestKey,
@@ -94,6 +96,7 @@ interface PlanLineageRow {
   arrangementJson: string | null;
   inputState: 'draft' | 'frozen';
   batchCurrentVersionId: string | null;
+  controlState: 'running' | 'paused' | 'stopped';
 }
 
 function readPlanLineage(
@@ -105,7 +108,7 @@ function readPlanLineage(
   const row = db.prepare(`
     SELECT p.batchVersionId, p.currentVersionId,
            o.versionNumber, o.arrangementJson,
-           v.inputState, b.currentVersionId AS batchCurrentVersionId
+           v.inputState, b.currentVersionId AS batchCurrentVersionId, b.controlState
     FROM batch_output_plans p
     JOIN batch_production_versions v ON v.id = p.batchVersionId
     JOIN batch_productions b ON b.id = v.batchId
@@ -114,6 +117,46 @@ function readPlanLineage(
   `).get(planId, batchId, projectId) as PlanLineageRow | undefined;
   if (!row) throw new BatchDomainError('not_found', '成片计划不存在');
   return row;
+}
+
+/** 导出自己补齐派生布局，不能依赖用户曾打开包装检查器。这里只计算，不写库。 */
+async function prepareExportLayout(
+  arrangement: Record<string, unknown>,
+  resolveLayout: typeof resolvePackagingAutoLayout,
+): Promise<Record<string, unknown>> {
+  const config = parsePackagingConfig(arrangement.packaging);
+  const outputSize = resolveBatchOutputSize(arrangement.preset);
+  let prepared = arrangement;
+  if (config.enabled && config.layoutRuntimeBundleVersion === 2) {
+    const narration = asRecord(arrangement.narration);
+    // 与整片 renderer 一致：正式口播决定正文时长，不取画面与口播的最大值。
+    const durationUs = narration?.productionReady === true ? narration.durationUs
+      : Math.max(0, ...(Array.isArray(arrangement.clips)
+        ? arrangement.clips.map(clip => Number(asRecord(clip)?.timelineEndUs) || 0) : []));
+    if (typeof durationUs !== 'number' || !Number.isSafeInteger(durationUs) || durationUs <= 0) {
+      throw new BatchDomainError('invalid_input', '自动布局的成片时长无效');
+    }
+    const input = {
+      config, vars: buildPackagingVars({ subtitleCues: [], overrides: config.varsOverrides }),
+      totalSec: durationUs / 1e6 + FINAL_EDIT_INTRO_DURATION_US / 1e6,
+      coverSec: FINAL_EDIT_INTRO_DURATION_US / 1e6,
+      outputWidth: outputSize.width, outputHeight: outputSize.height,
+    };
+    const inputHash = packagingAutoLayoutInputHash(input);
+    if (config.layoutResolution?.status !== 'resolved' || config.layoutResolution.inputHash !== inputHash) {
+      const resolution = await resolveLayout(input);
+      if (resolution.status !== 'resolved') {
+        throw new BatchDomainError('conflict', ('message' in resolution && resolution.message)
+          || (resolution.status === 'infeasible' ? '自动布局无可行方案，请调整包装后重试' : '自动布局计算超出预算，请调整包装后重试'));
+      }
+      if (resolution.inputHash !== inputHash) throw new BatchDomainError('conflict', '自动布局结果与当前输入不一致，请重试导出');
+      config.layoutResolution = resolution;
+      prepared = { ...arrangement, packaging: { ...asRecord(arrangement.packaging), layoutResolution: resolution } };
+    }
+  }
+  // 现存有效结果也必须核验冻结资源，不能把损坏资源悄悄换成新的运行时。
+  await assertPackagingLayoutExportReady(config, outputSize.width, outputSize.height);
+  return prepared;
 }
 
 interface FullRenderTaskView {
@@ -265,6 +308,8 @@ export async function orchestrateBatchExport(
     wakeScheduler?: () => void | Promise<void>;
     /** 测试 seam：两次并发请求可在文件复制后、最终注册事务前建立屏障。 */
     beforeRegister?: () => Promise<void> | void;
+    /** 测试可替换昂贵的 Chromium 求解，资源门禁与数据库 CAS 仍使用真实实现。 */
+    resolveLayout?: typeof resolvePackagingAutoLayout;
   } = {},
 ): Promise<BatchExportOrchestrateResult> {
   const uniquePlanIds = [...new Set(planIds.filter((value) => typeof value === 'string' && value.trim()))];
@@ -305,6 +350,7 @@ export async function orchestrateBatchExport(
       storageRoot: options.storageRoot,
       now: options.now,
       beforeRegister: options.beforeRegister,
+      resolveLayout: options.resolveLayout ?? resolvePackagingAutoLayout,
     }));
   }
   // 新建或复用排队/运行任务都幂等唤醒一次：上次唤醒可能失败，重试不能只
@@ -337,20 +383,22 @@ async function orchestrateOne(
     storageRoot?: string;
     now?: () => Date;
     beforeRegister?: () => Promise<void> | void;
+    resolveLayout: typeof resolvePackagingAutoLayout;
   },
 ): Promise<BatchExportOrchestrateItem> {
   const lineage = readPlanLineage(db, projectId, batchId, planId);
+  if (lineage.controlState === 'stopped') return { planId, status: 'skipped', reason: '批次已停止,不能正式导出' };
   if (lineage.inputState !== 'frozen') {
     return { planId, status: 'skipped', reason: '批次输入尚未冻结,不能正式导出' };
   }
-  if (lineage.batchCurrentVersionId !== lineage.batchVersionId) {
+  if (lineage.batchCurrentVersionId !== lineage.batchVersionId || lineage.batchCurrentVersionId !== context.batchCurrentVersionId) {
     return { planId, status: 'skipped', reason: '成片计划不属于批次当前版本' };
   }
   if (!lineage.currentVersionId) {
     return { planId, status: 'skipped', reason: '该成片还没有候选版本,不能导出' };
   }
   const outputVersionId = lineage.currentVersionId;
-  const arrangement = asRecord(parseJson(lineage.arrangementJson));
+  const arrangement = asRecord(parseJson(lineage.arrangementJson)) ?? {};
   const review = asRecord(arrangement?.review);
   if (review?.decision !== 'approved') {
     return { planId, status: 'skipped', reason: '该成片尚未审核通过,请先在检查页标记「通过」后再导出' };
@@ -358,11 +406,10 @@ async function orchestrateOne(
   if (!arrangementProductionReady(arrangement)) {
     return { planId, status: 'skipped', reason: '口播尚未就绪,请先在检查页确认配音完成后再导出' };
   }
-  // 排昂贵渲染前先核验 v2 自动布局与冻结资源，避免产生半套正式产物。
+  // 求解与素材预检都在事务外，成功后再按原快照 CAS 保存缓存并排队。
+  let preparedArrangement = arrangement;
   try {
-    const packaging = parsePackagingConfig(arrangement?.packaging);
-    const outputSize = resolveBatchOutputSize(arrangement?.preset);
-    await assertPackagingLayoutExportReady(packaging, outputSize.width, outputSize.height);
+    preparedArrangement = await prepareExportLayout(arrangement, context.resolveLayout);
   } catch (error) {
     return { planId, status: 'skipped', reason: error instanceof Error ? error.message : '自动布局资源校验失败' };
   }
@@ -385,88 +432,104 @@ async function orchestrateOne(
     };
   }
 
-  const requestKey = fullRenderRequestKeyForCurrentContract(db, outputVersionId);
-  // 幂等:当前正式成片仍对应当前渲染契约时,重复 POST 不复制新文件。
-  const currentArtifact = currentFormalArtifactPair(db, planId);
-  if (currentArtifact && !isFormalArtifactOutdated(
-    db, projectId, batchId, outputVersionId, currentArtifact,
-  )) {
-    return {
-      planId,
-      status: 'already_published',
-      videoArtifactId: currentArtifact.video.id,
-    };
-  }
+  const reserved = db.transaction((): BatchExportOrchestrateItem | null => {
+    let latest: PlanLineageRow;
+    try { latest = readPlanLineage(db, projectId, batchId, planId); }
+    catch { return { planId, status: 'skipped', reason: '成片或批次已变化，请刷新后重试导出' }; }
+    if (latest.currentVersionId !== outputVersionId || latest.arrangementJson !== lineage.arrangementJson
+      || latest.batchCurrentVersionId !== lineage.batchCurrentVersionId || latest.inputState !== 'frozen'
+      || latest.controlState === 'stopped') {
+      return { planId, status: 'skipped', reason: '成片内容、审核或批次状态已变化，请刷新后重试导出' };
+    }
+    if (preparedArrangement !== arrangement) {
+      db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?')
+        .run(JSON.stringify(preparedArrangement), outputVersionId);
+    }
+    const requestKey = fullRenderRequestKeyForCurrentContract(db, outputVersionId);
+    // 幂等:当前正式成片仍对应当前渲染契约时,重复 POST 不复制新文件。
+    const currentArtifact = currentFormalArtifactPair(db, planId);
+    if (currentArtifact && !isFormalArtifactOutdated(
+      db, projectId, batchId, outputVersionId, currentArtifact,
+    )) {
+      return {
+        planId,
+        status: 'already_published',
+        videoArtifactId: currentArtifact.video.id,
+      };
+    }
 
-  cancelOutdatedFullRenderTasks(
-    db,
-    projectId,
-    batchId,
-    outputVersionId,
-    requestKey,
-    context.now,
-  );
-  const task = readFullRenderTaskForRequestKey(
-    db,
-    projectId,
-    batchId,
-    outputVersionId,
-    requestKey,
-  ) ?? readLatestLegacySucceededFullRenderTask(db, projectId, batchId, outputVersionId);
-  if (!task) {
-    return {
-      planId,
-      status: 'render_queued',
-      taskId: createFullRenderTask(db, projectId, batchId, outputVersionId),
-    };
-  }
-  const taskMatchesContract = task.requestKey === requestKey;
-  if (task.status === 'queued' || task.status === 'running') {
-    if (taskMatchesContract) {
+    cancelOutdatedFullRenderTasks(
+      db,
+      projectId,
+      batchId,
+      outputVersionId,
+      requestKey,
+      context.now,
+    );
+    const task = readFullRenderTaskForRequestKey(
+      db,
+      projectId,
+      batchId,
+      outputVersionId,
+      requestKey,
+    ) ?? readLatestLegacySucceededFullRenderTask(db, projectId, batchId, outputVersionId);
+    if (!task) {
       return {
         planId,
-        status: 'rendering',
-        taskId: task.id,
-        progress: parseJson(task.latestAttemptProgressJson) ?? parseJson(task.progressJson),
+        status: 'render_queued',
+        taskId: createFullRenderTask(db, projectId, batchId, outputVersionId),
       };
     }
-    // 防御性分支：旧契约活动任务已在上方批量停止；若仍观察到则按当前契约新建。
-    return {
-      planId,
-      status: 'render_queued',
-      taskId: createFullRenderTask(db, projectId, batchId, outputVersionId),
-    };
-  }
-  if (task.status === 'failed') {
-    if (taskMatchesContract) {
+    const taskMatchesContract = task.requestKey === requestKey;
+    if (task.status === 'queued' || task.status === 'running') {
+      if (taskMatchesContract) {
+        return {
+          planId,
+          status: 'rendering',
+          taskId: task.id,
+          progress: parseJson(task.latestAttemptProgressJson) ?? parseJson(task.progressJson),
+        };
+      }
+      // 防御性分支：旧契约活动任务已在上方批量停止；若仍观察到则按当前契约新建。
       return {
         planId,
-        status: 'render_failed',
-        taskId: task.id,
-        reason: task.attemptErrorMessage || '整片渲染失败,请重试或回检查页修改',
+        status: 'render_queued',
+        taskId: createFullRenderTask(db, projectId, batchId, outputVersionId),
       };
     }
-    return {
-      planId,
-      status: 'render_queued',
-      taskId: createFullRenderTask(db, projectId, batchId, outputVersionId),
-    };
-  }
-  if (task.status === 'cancelled') {
-    return {
-      planId,
-      status: 'render_queued',
-      taskId: createFullRenderTask(db, projectId, batchId, outputVersionId),
-    };
-  }
-  // succeeded:新契约任务直接发布(老任务由发布函数内按修订号/契约 CAS 复核)。
-  if (parseRenderTaskRequestKey(task.requestKey) && task.requestKey !== requestKey) {
-    return {
-      planId,
-      status: 'render_queued',
-      taskId: createFullRenderTask(db, projectId, batchId, outputVersionId),
-    };
-  }
+    if (task.status === 'failed') {
+      if (taskMatchesContract) {
+        return {
+          planId,
+          status: 'render_failed',
+          taskId: task.id,
+          reason: task.attemptErrorMessage || '整片渲染失败,请重试或回检查页修改',
+        };
+      }
+      return {
+        planId,
+        status: 'render_queued',
+        taskId: createFullRenderTask(db, projectId, batchId, outputVersionId),
+      };
+    }
+    if (task.status === 'cancelled') {
+      return {
+        planId,
+        status: 'render_queued',
+        taskId: createFullRenderTask(db, projectId, batchId, outputVersionId),
+      };
+    }
+    // succeeded:新契约任务直接发布(老任务由发布函数内按修订号/契约 CAS 复核)。
+    if (parseRenderTaskRequestKey(task.requestKey) && task.requestKey !== requestKey) {
+      return {
+        planId,
+        status: 'render_queued',
+        taskId: createFullRenderTask(db, projectId, batchId, outputVersionId),
+      };
+    }
+    return null;
+  })();
+  if (reserved) return reserved;
   const publish = await publishSelectedBatchOutputs(
     db,
     projectId,

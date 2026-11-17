@@ -124,57 +124,69 @@ export async function resolvePackagingAutoLayout(input: {
     geometryManifestHash,
     maxNodes: input.maxNodes,
   };
-  fs.writeFileSync(requestPath, JSON.stringify(request), { encoding: 'utf8', flag: 'wx' });
-
-  return new Promise((resolve, reject) => {
-    if (input.signal?.aborted) {
-      fs.rmSync(requestDir, { recursive: true, force: true });
-      reject(makeAbortError());
-      return;
-    }
-    const child = spawnHidden(resolvePackagingNode(), [path.join(bundleDir, 'layout-service.mjs'), requestPath, outputPath], {
-      cwd: packagingDir,
-      env: { ...process.env, HYPERFRAMES_BROWSER_PATH: chrome, CREATIVE_STUDIO_PACKAGING_DEPENDENCIES_ROOT: packagingLayoutDependenciesRoot(manifest) },
-      windowsHide: true,
-      detached: process.platform !== 'win32',
-    });
-    let stderrTail = '';
-    let settled = false;
-    const cleanup = () => {
-      clearTimeout(timer);
-      input.signal?.removeEventListener('abort', onAbort);
-      fs.rmSync(requestDir, { recursive: true, force: true });
-    };
-    const finish = (error?: Error, result?: PackagingAutoLayoutResult) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (error) reject(error);
-      else if (result) resolve(result);
-      else reject(new PackagingError('layout_resolution_missing', '自动布局未返回有效结果', 409));
-    };
-    const stop = (error: Error) => { killTree(child); finish(error); };
-    const timer = setTimeout(() => stop(new PackagingError('layout_timeout', '自动布局计算超时，请重试', 409)), 120_000);
-    const onAbort = () => stop(makeAbortError());
-    input.signal?.addEventListener('abort', onAbort, { once: true });
-    child.stderr.on('data', (chunk: Buffer) => { stderrTail = (stderrTail + chunk.toString('utf8')).slice(-4000); });
-    child.on('error', (error) => finish(new PackagingError('layout_spawn_failed', `自动布局进程启动失败：${error.message}`, 409)));
-    child.on('close', (code) => {
-      try {
-        if (!fs.existsSync(outputPath)) throw new PackagingError('layout_failed', `自动布局失败：${stderrTail || '无错误输出'}`, 409);
-        const result = JSON.parse(fs.readFileSync(outputPath, 'utf8')) as PackagingAutoLayoutResult & { inputHash?: string; geometryManifestHash?: string };
-        const resultMessage = 'message' in result ? result.message : undefined;
-        if (code !== 0 && code !== 3) throw new PackagingError('layout_failed', `自动布局失败：${stderrTail.slice(-800) || resultMessage || '未知错误'}`, 409);
-        if (result.status === 'resolved') {
-          if (result.inputHash !== inputHash || result.geometryManifestHash !== geometryManifestHash) {
-            throw new PackagingError('layout_hash_mismatch', '自动布局结果与当前输入或资源不一致', 409);
-          }
-          finish(undefined, result);
-        } else if (result.status === 'infeasible' || result.status === 'budget_exceeded') finish(undefined, result);
-        else throw new PackagingError('layout_failed', `自动布局失败：${resultMessage || '未知错误'}`, 409);
-      } catch (error) {
-        finish(error instanceof Error ? error : new Error(String(error)));
+  try {
+    fs.writeFileSync(requestPath, JSON.stringify(request), { encoding: 'utf8', flag: 'wx' });
+    return await new Promise<PackagingAutoLayoutResult>((resolve, reject) => {
+      if (input.signal?.aborted) {
+        reject(makeAbortError());
+        return;
       }
+      const child = spawnHidden(resolvePackagingNode(), [path.join(bundleDir, 'layout-service.mjs'), requestPath, outputPath], {
+        cwd: packagingDir,
+        env: { ...process.env, HYPERFRAMES_BROWSER_PATH: chrome, CREATIVE_STUDIO_PACKAGING_DEPENDENCIES_ROOT: packagingLayoutDependenciesRoot(manifest) },
+        windowsHide: true,
+        detached: process.platform !== 'win32',
+      });
+      let stderrTail = '';
+      let settled = false;
+      let stopError: Error | undefined;
+      const cleanup = () => {
+        clearTimeout(timer);
+        input.signal?.removeEventListener('abort', onAbort);
+      };
+      const finish = (error?: Error, result?: PackagingAutoLayoutResult) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error) reject(error);
+        else if (result) resolve(result);
+        else reject(new PackagingError('layout_resolution_missing', '自动布局未返回有效结果', 409));
+      };
+      const stop = (error: Error) => {
+        if (settled || stopError) return;
+        stopError = error;
+        clearTimeout(timer);
+        killTree(child);
+        // close 确认子进程与管道均已退出后再删除请求目录，避免与子进程拷贝竞争。
+      };
+      const timer = setTimeout(() => stop(new PackagingError('layout_timeout', '自动布局计算超时，请重试', 409)), 120_000);
+      const onAbort = () => stop(makeAbortError());
+      input.signal?.addEventListener('abort', onAbort, { once: true });
+      child.stderr.on('data', (chunk: Buffer) => { stderrTail = (stderrTail + chunk.toString('utf8')).slice(-4000); });
+      child.stdout.resume();
+      child.on('error', (error) => {
+        stopError ??= new PackagingError('layout_spawn_failed', `自动布局进程启动失败：${error.message}`, 409);
+      });
+      child.on('close', (code) => {
+        if (stopError) { finish(stopError); return; }
+        try {
+          if (!fs.existsSync(outputPath)) throw new PackagingError('layout_failed', `自动布局失败：${stderrTail || '无错误输出'}`, 409);
+          const result = JSON.parse(fs.readFileSync(outputPath, 'utf8')) as PackagingAutoLayoutResult & { inputHash?: string; geometryManifestHash?: string };
+          const resultMessage = 'message' in result ? result.message : undefined;
+          if (code !== 0 && code !== 3) throw new PackagingError('layout_failed', `自动布局失败：${stderrTail.slice(-800) || resultMessage || '未知错误'}`, 409);
+          if (result.status === 'resolved') {
+            if (result.inputHash !== inputHash || result.geometryManifestHash !== geometryManifestHash) {
+              throw new PackagingError('layout_hash_mismatch', '自动布局结果与当前输入或资源不一致', 409);
+            }
+            finish(undefined, result);
+          } else if (result.status === 'infeasible' || result.status === 'budget_exceeded') finish(undefined, result);
+          else throw new PackagingError('layout_failed', `自动布局失败：${resultMessage || '未知错误'}`, 409);
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
     });
-  });
+  } finally {
+    await fs.promises.rm(requestDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 }
