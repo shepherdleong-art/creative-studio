@@ -7,6 +7,8 @@ import { checkFormalExportPreflight } from './export-preflight.ts';
 import { publishSelectedBatchOutputs } from './phase-e.ts';
 import { createBatchTask, type BatchTaskStatus } from './tasks.ts';
 import { buildPackagingVars, parsePackagingConfig } from '../media-core/packaging-vars.ts';
+import { assertPackagingLayoutExportReady } from '../media-core/packaging-layout-manifest.ts';
+import { resolveBatchOutputSize } from './output-presets.ts';
 import {
   buildFullRenderTaskRequestKey,
   parseRenderTaskRequestKey,
@@ -355,6 +357,14 @@ async function orchestrateOne(
   }
   if (!arrangementProductionReady(arrangement)) {
     return { planId, status: 'skipped', reason: '口播尚未就绪,请先在检查页确认配音完成后再导出' };
+  }
+  // 排昂贵渲染前先核验 v2 自动布局与冻结资源，避免产生半套正式产物。
+  try {
+    const packaging = parsePackagingConfig(arrangement?.packaging);
+    const outputSize = resolveBatchOutputSize(arrangement?.preset);
+    assertPackagingLayoutExportReady(packaging, outputSize.width, outputSize.height);
+  } catch (error) {
+    return { planId, status: 'skipped', reason: error instanceof Error ? error.message : '自动布局资源校验失败' };
   }
   // 排昂贵渲染前先跑正式导出预检(素材冻结完整性/色彩/LUT 等)。
   const usedAssetIds = [...new Set([

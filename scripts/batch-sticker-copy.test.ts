@@ -4,14 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
 import { BatchDomainError } from '../lib/batch-production/errors.ts';
-import {
-  copyBatchOutputStickers,
-  restoreBatchOutputStickers,
-  type BatchStickerCopyTarget,
-  type BatchStickerTargetMutationResult,
-} from '../lib/batch-production/sticker-copy.ts';
+import type { BatchStickerCopyTarget, BatchStickerTargetMutationResult } from '../lib/batch-production/sticker-copy.ts';
 import type {
   PackagingStickerDefaults,
   PackagingStickerInstance,
@@ -23,6 +17,9 @@ interface TestPackaging {
   varsOverrides: Record<string, string>;
   stickers?: PackagingStickerInstance[];
   stickerDefaults?: PackagingStickerDefaults;
+  pointCuesLayoutVersion?: number;
+  layoutRuntimeBundleVersion?: number;
+  layoutResolution?: Record<string, unknown>;
 }
 
 interface TestArrangement {
@@ -36,6 +33,9 @@ interface TestArrangement {
 }
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-batch-sticker-copy-'));
+process.env.CREATIVE_STUDIO_DATA_ROOT = root;
+const { ensureBatchSchemaReady } = await import('../lib/batch-production/schema.ts');
+const { copyBatchOutputStickers, restoreBatchOutputStickers } = await import('../lib/batch-production/sticker-copy.ts');
 const previousPackagingDir = process.env.CREATIVE_STUDIO_PACKAGING_DIR;
 const db = new Database(path.join(root, 'workbench.db'));
 
@@ -112,8 +112,8 @@ function allRaw(): Record<string, string> {
   return Object.fromEntries(rows.map((row) => [row.id, row.arrangementJson]));
 }
 
-function expectDomain(code: BatchDomainError['code'], operation: () => unknown): void {
-  assert.throws(operation, (error: unknown) => error instanceof BatchDomainError && error.code === code);
+async function expectDomain(code: BatchDomainError['code'], operation: () => unknown | Promise<unknown>): Promise<void> {
+  await assert.rejects(async () => { await operation(); }, (error: unknown) => error instanceof BatchDomainError && error.code === code);
 }
 
 function assertOnlyStickerFieldsChanged(before: TestArrangement, after: TestArrangement): void {
@@ -206,7 +206,7 @@ try {
 
   const sourceRawBefore = raw('ov-source');
   let randomCalls = 0;
-  const copied = copyBatchOutputStickers(db, 'p1', 'b1', {
+  const copied = await copyBatchOutputStickers(db, 'p1', 'b1', {
     sourcePlanId: 'source', ...sourceExpectation(),
     targets: [target('target-one'), target('target-two')],
   }, {
@@ -247,38 +247,38 @@ try {
   changedSource.packaging.stickers![0].centerXPct += 1;
   db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?').run(JSON.stringify(changedSource), 'ov-source');
   const afterSourceChange = allRaw();
-  expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+  await expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
     sourcePlanId: 'source', ...beforeSourceChange, targets: [target('target-one'), target('target-two')],
   }));
   assert.deepEqual(allRaw(), afterSourceChange, '来源修订变化时所有目标与审核态必须零写入');
-  expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+  await expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
     sourcePlanId: 'source', ...sourceExpectation(), expectedSourceOutputVersionId: 'old-source-version',
     targets: [target('target-one'), target('target-two')],
   }));
   assert.deepEqual(allRaw(), afterSourceChange, '来源版本变化时所有目标必须零写入');
   db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?').run(sourceRawBefore, 'ov-source');
-  expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', { sourcePlanId: 'source', ...sourceExpectation(), targets: [] }));
-  expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+  await expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', { sourcePlanId: 'source', ...sourceExpectation(), targets: [] }));
+  await expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', {
     sourcePlanId: 'source', ...sourceExpectation(), targets: [target('target-one'), target('target-one')],
   }));
-  expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+  await expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', {
     sourcePlanId: 'source', ...sourceExpectation(), targets: [target('source')],
   }));
-  expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+  await expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
     sourcePlanId: 'source', ...sourceExpectation(), targets: [target('other-version')],
   }));
-  expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+  await expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', {
     sourcePlanId: 'empty-source', ...sourceExpectation('empty-source'), targets: [target('target-one')],
   }));
   assert.deepEqual(allRaw(), afterCopyRaw, '空目标、重复、自复制、跨版本与空来源均须零写入');
 
-  expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+  await expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
     sourcePlanId: 'source', ...sourceExpectation(),
     targets: [target('target-one'), { ...target('target-two'), expectedEditRevision: 999 }],
   }));
   assert.deepEqual(allRaw(), afterCopyRaw, '任一目标修订冲突时所有目标保持原字节与审核态');
 
-  expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+  await expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', {
     sourcePlanId: 'source', ...sourceExpectation(), targets: [target('target-one'), target('short')],
   }));
   assert.deepEqual(allRaw(), afterCopyRaw, '任一目标时长不足时不得写入先前有效目标');
@@ -308,7 +308,7 @@ try {
   assert.deepEqual(redone.targets.map((result) => result.afterEditRevision), [7, 10]);
 
   const beforeRestoreConflict = allRaw();
-  expectDomain('conflict', () => restoreBatchOutputStickers(db, 'p1', 'b1', {
+  await expectDomain('conflict', () => restoreBatchOutputStickers(db, 'p1', 'b1', {
     targets: redone.targets.map((result, index) => ({
       planId: result.planId,
       expectedOutputVersionId: result.outputVersionId,
@@ -318,7 +318,99 @@ try {
   }));
   assert.deepEqual(allRaw(), beforeRestoreConflict, '恢复时任一片修订冲突必须全部零写入');
 
-  console.log('批次贴纸复制测试通过：双目标、字段隔离、替换、来源不变、审核清除、整体回滚及整体撤销/重做。');
+  // v2：事务外 CLS 预检、Resolution 随快照持久化、撤销重做复用同一解析结果。
+  const v2TargetOne = arrangement({ revision: 2, title: 'v2-target-one' });
+  const v2TargetTwo = arrangement({ revision: 5, title: 'v2-target-two' });
+  for (const value of [v2TargetOne, v2TargetTwo]) {
+    value.packaging.pointCuesLayoutVersion = 2;
+    value.packaging.layoutRuntimeBundleVersion = 2;
+  }
+  addPlan('v2-source', arrangement({ revision: 1, title: 'v2-source', stickers: [sticker({ id: 'v2-source-sticker' })] }), 'bv1', 6);
+  addPlan('v2-target-one', v2TargetOne, 'bv1', 7);
+  addPlan('v2-target-two', v2TargetTwo, 'bv1', 8);
+  const v2SourceRaw = raw('ov-v2-source');
+  const resolveLayout = async ({ planId, config }: { planId: string; config: { stickers?: PackagingStickerInstance[] } }) => ({
+    schemaVersion: 1 as const,
+    status: 'resolved' as const,
+    inputHash: 'a'.repeat(64),
+    runtimeBundleVersion: 2,
+    geometryManifestHash: 'b'.repeat(64),
+    outputWidth: 1080,
+    outputHeight: 1440,
+    elements: Object.fromEntries((config.stickers ?? []).map((item) => [item.id, {
+      id: item.id, kind: 'sticker' as const, centerXPct: item.centerXPct, centerYPct: item.centerYPct, positionPinned: false,
+    }])),
+    validation: { frameCount: 1, digest: planId },
+  });
+  const v2Copied = await copyBatchOutputStickers(db, 'p1', 'b1', {
+    sourcePlanId: 'v2-source', ...sourceExpectation('v2-source'),
+    targets: [target('v2-target-one'), target('v2-target-two')],
+  }, {
+    createId: (request) => request.kind === 'sticker' ? `v2_${request.targetIndex}_${request.sourceStickerId}` : `v2_group_${request.targetIndex}`,
+    resolveLayout,
+  });
+  assert.equal(raw('ov-v2-source'), v2SourceRaw, 'v2 预检与提交仍不得改写来源');
+  assert.equal((parsed('ov-v2-target-one').packaging.layoutResolution!.validation as { digest: string }).digest, 'v2-target-one');
+  assert.equal((parsed('ov-v2-target-two').packaging.layoutResolution!.validation as { digest: string }).digest, 'v2-target-two');
+  assert.deepEqual(v2Copied.targets[0].after.layoutResolution, parsed('ov-v2-target-one').packaging.layoutResolution);
+  const v2Undone = restoreBatchOutputStickers(db, 'p1', 'b1', { targets: restoreTargets(v2Copied.targets, 'before') });
+  assert.equal(parsed('ov-v2-target-one').packaging.layoutResolution, undefined);
+  assert.equal(parsed('ov-v2-target-one').packaging.layoutRuntimeBundleVersion, 2, '撤销只恢复快照字段，不回填不存在的 Resolution');
+  const v2Redone = restoreBatchOutputStickers(db, 'p1', 'b1', {
+    targets: v2Copied.targets.map((result, index) => ({
+      planId: result.planId,
+      expectedOutputVersionId: result.outputVersionId,
+      expectedEditRevision: v2Undone.targets[index].afterEditRevision,
+      snapshot: result.after,
+    })),
+  });
+  assert.deepEqual(parsed('ov-v2-target-one').packaging.layoutResolution, v2Copied.targets[0].after.layoutResolution, '重做必须恢复同一 Resolution，不重新随机或重算');
+  assert.equal(v2Redone.targets.length, 2);
+
+  const retryInput = { requestId: 'stable-candidate-retry', sourcePlanId: 'v2-source', ...sourceExpectation('v2-source'), targets: [target('v2-target-one'), target('v2-target-two')] };
+  const candidates: unknown[] = [];
+  const failedBefore = allRaw();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', retryInput, {
+      random: () => attempt * 0.7,
+      createId: request => `attempt-${attempt}-${request.targetIndex}-${request.kind}-${request.kind === 'sticker' ? request.sourceStickerId : request.sourceAutoGroupId}`,
+      resolveLayout: async ({ config }) => { candidates.push(config.stickers); return { status: 'budget_exceeded' as const }; },
+    }));
+  }
+  assert.deepEqual(candidates[0], candidates[1], '失败重试不能重新随机或重新生成 ID');
+  assert.deepEqual(allRaw(), failedBefore, '重试预检失败仍整批零写入');
+  const beforeV2Failure = allRaw();
+  await expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+    sourcePlanId: 'v2-source', ...sourceExpectation('v2-source'), targets: [target('v2-target-one'), target('v2-target-two')],
+  }, { resolveLayout: async () => ({ status: 'infeasible' as const }) }));
+  assert.deepEqual(allRaw(), beforeV2Failure, '任一目标 CLS 无解时整批零写入');
+
+  await expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+    sourcePlanId: 'v2-source', ...sourceExpectation('v2-source'), targets: [target('v2-target-one')],
+  }, {
+    resolveLayout: async (input) => {
+      const current = parsed('ov-v2-target-one');
+      current.editRevision += 1;
+      db.prepare(`UPDATE batch_output_versions SET arrangementJson=? WHERE id='ov-v2-target-one'`).run(JSON.stringify(current));
+      return resolveLayout(input);
+    },
+  }));
+  assert.equal(parsed('ov-v2-target-one').packaging.layoutRuntimeBundleVersion, 2);
+  assert.deepEqual(parsed('ov-v2-target-one').packaging.stickers, v2Copied.targets[0].after.stickers, '预检期间目标被并发修改时必须放弃整批提交');
+
+  await expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+    sourcePlanId: 'v2-source', ...sourceExpectation('v2-source'), targets: [target('v2-target-two')],
+  }, {
+    resolveLayout: async (input) => {
+      const current = parsed('ov-v2-source');
+      current.editRevision += 1;
+      db.prepare(`UPDATE batch_output_versions SET arrangementJson=? WHERE id='ov-v2-source'`).run(JSON.stringify(current));
+      return resolveLayout(input);
+    },
+  }));
+  assert.deepEqual(parsed('ov-v2-target-two').packaging.stickers, v2Copied.targets[1].after.stickers, '预检期间来源变化时目标不得写入');
+
+  console.log('批次贴纸复制测试通过：双目标、字段隔离、替换、来源不变、审核清除、整体回滚、整体撤销/重做及 v2 预检。');
 } finally {
   db.close();
   if (previousPackagingDir === undefined) delete process.env.CREATIVE_STUDIO_PACKAGING_DIR;

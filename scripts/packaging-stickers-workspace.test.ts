@@ -107,6 +107,52 @@ try {
     }),
     (error: unknown) => error instanceof FinalEditError && error.code === 'sticker_out_of_range',
   );
+  const resolution = {
+    schemaVersion: 1 as const, status: 'resolved' as const,
+    inputHash: 'a'.repeat(64), runtimeBundleVersion: 2, geometryManifestHash: 'b'.repeat(64),
+    outputWidth: 1080, outputHeight: 1440, elements: {}, validation: { frameCount: 0, digest: 'empty' },
+  };
+  const versioned = workspace.apply({
+    scope: 'group', groupId: restored.id, expectedRevision: restored.revision,
+    type: 'set_packaging_config', variantId: variant.id,
+    config: {
+      enabled: false, template: 'overlay-poster', varsOverrides: {},
+      pointCuesLayoutVersion: 2, layoutRuntimeBundleVersion: 2, layoutResolution: resolution,
+    },
+  }).view as typeof restored;
+  assert.equal(versioned.packaging.pointCuesLayoutVersion, 2);
+  assert.equal(versioned.packaging.layoutRuntimeBundleVersion, 2);
+  assert.equal(versioned.packaging.layoutResolution?.status, 'resolved');
+  const stale = workspace.apply({
+    scope: 'group', groupId: versioned.id, expectedRevision: versioned.revision,
+    type: 'set_packaging_config', variantId: variant.id,
+    config: { enabled: false, template: 'overlay-poster', varsOverrides: {} },
+  }).view as typeof versioned;
+  assert.equal(stale.packaging.pointCuesLayoutVersion, 2, '普通保存不得丢掉卖点布局版本');
+  assert.equal(stale.packaging.layoutRuntimeBundleVersion, 2, '普通保存不得丢掉整片运行时版本');
+  assert.equal(stale.packaging.layoutResolution?.status, 'stale', '几何变化后旧 Resolution 必须失效');
+  const backgroundResolution = { ...resolution, inputHash: 'c'.repeat(64) };
+  db.prepare('UPDATE final_edit_groups SET packagingJson=? WHERE id=?').run(
+    JSON.stringify({ ...stale.packaging, layoutResolution: backgroundResolution }), stale.id,
+  );
+  const afterBackground = workspace.apply({
+    scope: 'group', groupId: stale.id, expectedRevision: stale.revision,
+    type: 'set_packaging_config', variantId: variant.id,
+    config: {
+      enabled: false, layoutResolutionOnly: true, layoutResolution: resolution,
+      expectedPackagingJson: JSON.stringify(stale.packaging),
+    },
+  }).view as typeof stale;
+  assert.equal(afterBackground.revision, stale.revision, '派生布局写入不得增加用户修订');
+  assert.equal(afterBackground.packaging.layoutResolution?.status, 'resolved', '同内容派生变化不得造成布局 CAS 冲突');
+  assert.throws(
+    () => workspace.apply({
+      scope: 'group', groupId: stale.id, expectedRevision: stale.revision,
+      type: 'set_packaging_config', variantId: variant.id,
+      config: { enabled: false, expectedPackagingJson: '{"enabled":true}' },
+    }),
+    (error: unknown) => error instanceof FinalEditError && error.code === 'revision_conflict',
+  );
   console.log('贴纸 workspace 测试通过：持久化、清空、独立历史恢复和正文边界。');
 } finally {
   db.close();

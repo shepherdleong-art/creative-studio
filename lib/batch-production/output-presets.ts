@@ -8,3 +8,15 @@ export const BATCH_OUTPUT_PRESETS = {
 } as const;
 
 export type BatchOutputPreset = keyof typeof BATCH_OUTPUT_PRESETS;
+
+export function resolveBatchOutputSize(value: unknown): { width: number; height: number } {
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const candidate = typeof value === 'string' ? value : record?.id ?? record?.aspectRatio;
+  if (typeof candidate === 'string' && candidate in BATCH_OUTPUT_PRESETS) {
+    return { ...BATCH_OUTPUT_PRESETS[candidate as BatchOutputPreset] };
+  }
+  const width = Number(record?.width);
+  const height = Number(record?.height);
+  const matching = Object.entries(BATCH_OUTPUT_PRESETS).find(([, size]) => size.width === width && size.height === height);
+  return { ...(matching?.[1] ?? BATCH_OUTPUT_PRESETS['3:4']) };
+}

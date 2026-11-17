@@ -24,7 +24,7 @@ export function syncPackagingAssets(root, standaloneDir) {
   const target = path.join(standaloneDir, 'packaging');
   if (!path.resolve(target).startsWith(path.resolve(standaloneDir) + path.sep)) throw new Error('Unsafe packaging target');
   fs.rmSync(target, { recursive: true, force: true });
-  const allowed = ['package.json', 'package-lock.json', 'film-runtime.json', 'package-video.mjs', 'win-hide-spawn.cjs', 'templates', 'stickers', 'fonts', 'node_modules', 'runtime'];
+  const allowed = ['package.json', 'package-lock.json', 'film-runtime.json', 'package-video.mjs', 'layout-service.mjs', 'win-hide-spawn.cjs', 'templates', 'stickers', 'auto-layout', 'fonts', 'node_modules', 'runtime'];
   for (const entry of allowed) {
     const from = path.join(source, entry);
     if (!fs.existsSync(from)) throw new Error(`包装运行资源缺失：${entry}，请先运行 npm run setup:packaging`);

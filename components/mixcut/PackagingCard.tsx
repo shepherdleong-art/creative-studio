@@ -87,7 +87,7 @@ function TemplateHoverPreview({ tpl, top, left }: { tpl: { id: string; name: str
   );
 }
 
-export function PackagingCard({ group, variantId, preview, previewError, busy, activeTab, stickerPanel, onTabChange, onApplyGroup, onSeek, onPreviewVarsMerge, onPreviewRefresh }: {
+export function PackagingCard({ group, variantId, preview, previewError, busy, activeTab, stickerPanel, onTabChange, onApplyGroup, onSeek, onPreviewVarsMerge, onPreviewRefresh, onReextractPoints }: {
   group: FinalEditGroupView;
   variantId: string;
   preview: PackagingPreviewData | null;
@@ -100,6 +100,7 @@ export function PackagingCard({ group, variantId, preview, previewError, busy, a
   onSeek: (sec: number) => void;
   onPreviewVarsMerge: (saved: Partial<PackagingVars>) => void;
   onPreviewRefresh: () => void;
+  onReextractPoints?: () => Promise<boolean>;
 }) {
   const config = group.packaging;
   const [fontBusy, setFontBusy] = useState(false);
@@ -227,7 +228,9 @@ export function PackagingCard({ group, variantId, preview, previewError, busy, a
     if (disabled) return;
     if (!window.confirm('按当前口播重新提取卖点？\n将清空手动修改的卖点与正片卖点布局（封面布局保留），并恢复口播变化自动重提取。')) return;
     void (async () => {
-      const saved = await saveConfigPatch({ forceReextract: true });
+      const saved = onReextractPoints
+        ? await onReextractPoints()
+        : await saveConfigPatch({ forceReextract: true });
       if (saved) onPreviewRefreshRef.current();
     })();
   };

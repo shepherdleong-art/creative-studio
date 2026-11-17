@@ -20,11 +20,13 @@ import type { ExportIdentity } from './types.ts';
 import { ensurePackagingPointCues, type PointCue } from './packaging-cues.ts';
 import { extractAccentColors } from './packaging-color.ts';
 import { safeFontFilename } from './packaging-font.ts';
-import { buildPackagingVars, loadProjectPackagingData, type PackagingLayouts, type PackagingVars } from './packaging-vars.ts';
+import { buildPackagingVars, loadProjectPackagingData, type FinalEditPackagingConfig, type PackagingLayouts, type PackagingVars } from './packaging-vars.ts';
 import type { PackagingStickerDefaults, PackagingStickerInstance } from '../media-core/packaging-stickers.ts';
 import { resolvePackagingStickerAssets } from '../media-core/packaging-sticker-assets.ts';
 import type { FinalEditRenderSnapshot } from './renderer.ts';
 import { composeCoverJpg } from './cover-compose.ts';
+import { assertPackagingLayoutExportReady, packagingLayoutEngineExecutable } from '../media-core/packaging-layout-manifest.ts';
+import type { PackagingLayoutResolution } from '../media-core/packaging-auto-layout.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from './storage-path.ts';
 import { registerSingleArtifact } from './project-artifacts.ts';
 import { requireAccessContext } from '../media-core/access-context.ts';
@@ -55,6 +57,10 @@ export interface FinalEditPackagingSnapshot {
   layouts?: PackagingLayouts;
   /** §7：pointCues 手动编辑保护标志（随快照冻结，审计用）。 */
   pointCuesEdited?: boolean;
+  /** 自动布局版本与不可变解析结果，随渲染快照冻结。 */
+  pointCuesLayoutVersion?: number;
+  layoutRuntimeBundleVersion?: number;
+  layoutResolution?: PackagingLayoutResolution;
   /** 独立贴纸与新增默认动效，随渲染快照冻结。 */
   stickers?: PackagingStickerInstance[];
   stickerDefaults?: PackagingStickerDefaults;
@@ -360,6 +366,14 @@ export async function executePackagingJob(input: {
   const packagingDir = resolvePackagingDir();
   const templateDir = resolvePackagingTemplateDir(packagingDir, input.snapshot.template);
   const templateName = path.basename(templateDir);
+  const layoutBundle = assertPackagingLayoutExportReady({
+    enabled: true,
+    template: templateName as FinalEditPackagingConfig['template'],
+    layoutRuntimeBundleVersion: input.snapshot.layoutRuntimeBundleVersion,
+    layoutResolution: input.snapshot.layoutResolution,
+  }, OUTPUT_PRESETS[renderSnapshot.variant.outputPreset].width, OUTPUT_PRESETS[renderSnapshot.variant.outputPreset].height);
+  const resourceDir = layoutBundle?.bundleDir ?? packagingDir;
+  const renderTemplateDir = layoutBundle ? path.join(resourceDir, 'templates', templateName) : templateDir;
   const sourceVideoAbs = assertNoStorageSymlink(input.storageRoot, renderOutput.videoRelativePath);
   if (!fs.existsSync(sourceVideoAbs)) throw new FinalEditError('render_artifact_invalid', '渲染内部产物已丢失，请重新导出后再包装', 409);
 
@@ -382,7 +396,7 @@ export async function executePackagingJob(input: {
     pointCues = ensured.pointCues;
     pointCuesMode = ensured.mode;
   }
-  const stickerAssets = resolvePackagingStickerAssets({ packagingDir, template: templateName, stickers: input.snapshot.stickers });
+  const stickerAssets = resolvePackagingStickerAssets({ packagingDir: resourceDir, template: templateName, stickers: input.snapshot.stickers });
   const timelineVars = buildTimelineVars({
     vars,
     totalSec,
@@ -391,6 +405,9 @@ export async function executePackagingJob(input: {
     pointCuesMode,
     // §7：快照冻结的手动布局（模板端 applyLayouts 按 data-point-id 覆盖默认版式）
     layouts: input.snapshot.layouts,
+    pointCuesLayoutVersion: input.snapshot.pointCuesLayoutVersion,
+    layoutRuntimeBundleVersion: input.snapshot.layoutRuntimeBundleVersion,
+    layoutResolution: input.snapshot.layoutResolution,
     stickers: input.snapshot.stickers,
     stickerDefaults: input.snapshot.stickerDefaults,
     stickerAssets,
@@ -417,9 +434,11 @@ export async function executePackagingJob(input: {
   await runPackagingPipeline({
     nodeExe: resolvePackagingNode(),
     packagingDir,
-    args: [path.join(packagingDir, 'package-video.mjs'), sourceVideoAbs, varsPath, temporaryOutput, templateDir],
+    args: [path.join(resourceDir, 'package-video.mjs'), sourceVideoAbs, varsPath, temporaryOutput, renderTemplateDir],
     signal: input.signal,
     onStage: (stage) => input.onProgress?.(stage),
+    layoutBundleDir: layoutBundle?.bundleDir,
+    layoutEngineExecutable: layoutBundle ? packagingLayoutEngineExecutable(layoutBundle.manifest) : undefined,
   });
   if (input.signal?.aborted) throw makeAbortError();
   const stat = fs.statSync(temporaryOutput, { throwIfNoEntry: false });

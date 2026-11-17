@@ -1,9 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { dataRoot } from '../data-root.ts';
 import type Database from 'better-sqlite3';
 import { FINAL_EDIT_FPS } from '../media-core/render-contract.ts';
-import { parsePackagingConfig } from '../media-core/packaging-vars.ts';
+import { parsePackagingConfig, type FinalEditPackagingConfig } from '../media-core/packaging-vars.ts';
+import { resolveLayoutRuntimeBundleVersion, sanitizePackagingLayoutResolution, type PackagingLayoutResolution } from '../media-core/packaging-auto-layout.ts';
+import type { PackagingAutoLayoutResult } from '../media-core/packaging-auto-layout-service.ts';
 import { resolvePackagingDir } from '../media-core/packaging-runtime.ts';
 import type { PackagingStickerPlanningAsset } from '../media-core/packaging-sticker-planner.ts';
 import {
@@ -23,6 +26,9 @@ import { BatchDomainError } from './errors.ts';
 export interface BatchPackagingStickerSnapshot {
   stickers?: PackagingStickerInstance[];
   stickerDefaults?: PackagingStickerDefaults;
+  pointCuesLayoutVersion?: number;
+  layoutRuntimeBundleVersion?: number;
+  layoutResolution?: PackagingLayoutResolution;
 }
 
 export interface BatchStickerCopyTarget {
@@ -32,6 +38,8 @@ export interface BatchStickerCopyTarget {
 }
 
 export interface BatchStickerCopyInput {
+  /** 同一弹窗中的失败重试复用候选；更换来源/目标修订必须开启新命令。 */
+  requestId?: string;
   sourcePlanId: string;
   expectedSourceOutputVersionId: string;
   expectedSourceEditRevision: number;
@@ -63,6 +71,8 @@ export interface BatchStickerMutationResult {
 export interface BatchStickerCopyDependencies {
   random?: () => number;
   createId?: (request: PackagingStickerVariantIdRequest) => string;
+  /** v2 目标的规范布局预检；在数据库事务外逐目标调用，失败则整批零写入。 */
+  resolveLayout?: (input: { planId: string; config: FinalEditPackagingConfig; bodyFrames: number }) => Promise<PackagingAutoLayoutResult>;
 }
 
 interface LineageRow {
@@ -81,6 +91,7 @@ interface OutputContext {
   editRevision: number;
   bodyFrames: number;
   arrangement: Record<string, unknown>;
+  rawArrangementJson: string;
   packaging: Record<string, unknown>;
   config: ReturnType<typeof parsePackagingConfig>;
 }
@@ -152,6 +163,7 @@ function readOutputContext(db: Database.Database, projectId: string, batchId: st
     editRevision: readEditRevision(arrangement),
     bodyFrames: readBodyFrames(arrangement),
     arrangement,
+    rawArrangementJson: lineage.arrangementJson!,
     packaging,
     config: parsePackagingConfig(packaging),
   };
@@ -167,20 +179,41 @@ function assertExpectedVersion(context: OutputContext, target: BatchStickerCopyT
   }
 }
 
+const SNAPSHOT_KEYS = new Set(['stickers', 'stickerDefaults', 'pointCuesLayoutVersion', 'layoutRuntimeBundleVersion', 'layoutResolution']);
+
 function readStoredSnapshot(packaging: Record<string, unknown>, bodyFrames: number): BatchPackagingStickerSnapshot {
   const snapshot: BatchPackagingStickerSnapshot = {};
   if (hasOwn(packaging, 'stickers')) snapshot.stickers = validatePackagingStickers(packaging.stickers, bodyFrames);
   if (hasOwn(packaging, 'stickerDefaults')) snapshot.stickerDefaults = validatePackagingStickerDefaults(packaging.stickerDefaults);
+  if (typeof packaging.pointCuesLayoutVersion === 'number') snapshot.pointCuesLayoutVersion = packaging.pointCuesLayoutVersion;
+  if (typeof packaging.layoutRuntimeBundleVersion === 'number') snapshot.layoutRuntimeBundleVersion = packaging.layoutRuntimeBundleVersion;
+  if (hasOwn(packaging, 'layoutResolution')) {
+    const resolution = sanitizePackagingLayoutResolution(packaging.layoutResolution);
+    if (resolution) snapshot.layoutResolution = resolution;
+  }
   return snapshot;
 }
 
 function readRestoreSnapshot(value: unknown, bodyFrames: number): BatchPackagingStickerSnapshot {
-  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'stickers' && key !== 'stickerDefaults')) {
-    throw new BatchDomainError('invalid_input', '贴纸恢复快照只允许 stickers 与 stickerDefaults 字段');
+  if (!isRecord(value) || Object.keys(value).some((key) => !SNAPSHOT_KEYS.has(key))) {
+    throw new BatchDomainError('invalid_input', '贴纸恢复快照包含不支持的字段');
   }
   const snapshot: BatchPackagingStickerSnapshot = {};
   if (hasOwn(value, 'stickers')) snapshot.stickers = validatePackagingStickers(value.stickers, bodyFrames);
   if (hasOwn(value, 'stickerDefaults')) snapshot.stickerDefaults = validatePackagingStickerDefaults(value.stickerDefaults);
+  if (value.pointCuesLayoutVersion !== undefined) {
+    if (typeof value.pointCuesLayoutVersion !== 'number' || ![1, 2].includes(value.pointCuesLayoutVersion)) throw new BatchDomainError('invalid_input', '快照卖点布局版本无效');
+    snapshot.pointCuesLayoutVersion = value.pointCuesLayoutVersion;
+  }
+  if (value.layoutRuntimeBundleVersion !== undefined) {
+    if (typeof value.layoutRuntimeBundleVersion !== 'number' || ![1, 2].includes(value.layoutRuntimeBundleVersion)) throw new BatchDomainError('invalid_input', '快照运行时版本无效');
+    snapshot.layoutRuntimeBundleVersion = value.layoutRuntimeBundleVersion;
+  }
+  if (hasOwn(value, 'layoutResolution')) {
+    const resolution = sanitizePackagingLayoutResolution(value.layoutResolution);
+    if (!resolution) throw new BatchDomainError('invalid_input', '快照布局解析结果无效');
+    snapshot.layoutResolution = resolution;
+  }
   return snapshot;
 }
 
@@ -205,10 +238,12 @@ function cloneSnapshot(snapshot: BatchPackagingStickerSnapshot): BatchPackagingS
 }
 
 function applySnapshot(packaging: Record<string, unknown>, snapshot: BatchPackagingStickerSnapshot): void {
-  delete packaging.stickers;
-  delete packaging.stickerDefaults;
+  for (const key of SNAPSHOT_KEYS) delete packaging[key];
   if (snapshot.stickers !== undefined) packaging.stickers = structuredClone(snapshot.stickers);
   if (snapshot.stickerDefaults !== undefined) packaging.stickerDefaults = structuredClone(snapshot.stickerDefaults);
+  if (snapshot.pointCuesLayoutVersion !== undefined) packaging.pointCuesLayoutVersion = snapshot.pointCuesLayoutVersion;
+  if (snapshot.layoutRuntimeBundleVersion !== undefined) packaging.layoutRuntimeBundleVersion = snapshot.layoutRuntimeBundleVersion;
+  if (snapshot.layoutResolution !== undefined) packaging.layoutResolution = structuredClone(snapshot.layoutResolution);
 }
 
 function writeTarget(
@@ -251,66 +286,125 @@ function mapStickerError(error: unknown): never {
   throw error;
 }
 
-/** 在一个事务中把来源贴纸方案复制到多个当前目标；来源及目标的其他编辑字段均不改写。 */
-export function copyBatchOutputStickers(
+/** 事务外一次生成随机候选并逐目标 CLS 预检；事务内双侧重验后整体提交，任一片失败全部零写入。 */
+export async function copyBatchOutputStickers(
   db: Database.Database,
   projectId: string,
   batchId: string,
   input: BatchStickerCopyInput,
   dependencies: BatchStickerCopyDependencies = {},
-): BatchStickerMutationResult {
+): Promise<BatchStickerMutationResult> {
   try {
-    // 目录读取必须在 SQLite 事务外完成；事务中只有同步领域规划与数据库读写。
     const assets = readPlanningAssets();
-    return db.transaction(() => {
-      if (!nonEmptyString(input.sourcePlanId)) throw new BatchDomainError('invalid_input', '缺少来源成片 planId');
-      if (!nonEmptyString(input.expectedSourceOutputVersionId)
-        || !Number.isSafeInteger(input.expectedSourceEditRevision) || input.expectedSourceEditRevision < 0) {
-        throw new BatchDomainError('invalid_input', '来源成片需要有效的版本与修订');
-      }
-      const sourcePlanId = input.sourcePlanId.trim();
-      assertTargetList(sourcePlanId, input.targets);
-      const source = readOutputContext(db, projectId, batchId, sourcePlanId);
-      assertExpectedVersion(source, {
-        planId: sourcePlanId, expectedOutputVersionId: input.expectedSourceOutputVersionId,
-        expectedEditRevision: input.expectedSourceEditRevision,
-      }, '来源');
-      assertPackagingEnabled(source, '来源');
-      const sourceSnapshot = readStoredSnapshot(source.packaging, source.bodyFrames);
-      const sourceStickers = sourceSnapshot.stickers ?? [];
-      if (sourceStickers.length === 0) throw new BatchDomainError('invalid_input', '来源成片没有贴纸，无法复制');
+    if (!nonEmptyString(input.sourcePlanId)) throw new BatchDomainError('invalid_input', '缺少来源成片 planId');
+    if (!nonEmptyString(input.expectedSourceOutputVersionId)
+      || !Number.isSafeInteger(input.expectedSourceEditRevision) || input.expectedSourceEditRevision < 0) {
+      throw new BatchDomainError('invalid_input', '来源成片需要有效的版本与修订');
+    }
+    const sourcePlanId = input.sourcePlanId.trim();
+    assertTargetList(sourcePlanId, input.targets);
+    const source = readOutputContext(db, projectId, batchId, sourcePlanId);
+    assertExpectedVersion(source, {
+      planId: sourcePlanId, expectedOutputVersionId: input.expectedSourceOutputVersionId,
+      expectedEditRevision: input.expectedSourceEditRevision,
+    }, '来源');
+    assertPackagingEnabled(source, '来源');
+    const sourceSnapshot = readStoredSnapshot(source.packaging, source.bodyFrames);
+    const sourceStickers = sourceSnapshot.stickers ?? [];
+    if (sourceStickers.length === 0) throw new BatchDomainError('invalid_input', '来源成片没有贴纸，无法复制');
 
-      const contexts = input.targets.map((target) => {
-        const context = readOutputContext(db, projectId, batchId, target.planId.trim());
-        if (context.batchVersionId !== source.batchVersionId) throw new BatchDomainError('conflict', '来源与目标必须属于同一批次版本');
-        assertExpectedVersion(context, target);
-        assertPackagingEnabled(context, '目标');
-        assertPackagingStickerVariantTarget({
-          sourceBodyFrames: source.bodyFrames,
-          targetBodyFrames: context.bodyFrames,
-          sourceStickers,
-        });
-        return { context, before: readStoredSnapshot(context.packaging, context.bodyFrames) };
-      });
-
-      const plans = planPackagingStickerVariants({
+    const contexts = input.targets.map((target) => {
+      const context = readOutputContext(db, projectId, batchId, target.planId.trim());
+      if (context.batchVersionId !== source.batchVersionId) throw new BatchDomainError('conflict', '来源与目标必须属于同一批次版本');
+      assertExpectedVersion(context, target);
+      assertPackagingEnabled(context, '目标');
+      assertPackagingStickerVariantTarget({
         sourceBodyFrames: source.bodyFrames,
+        targetBodyFrames: context.bodyFrames,
         sourceStickers,
-        targets: contexts.map(({ context }) => ({
-          targetId: context.planId,
-          bodyFrames: context.bodyFrames,
-          template: context.config.template,
-        })),
-        assets,
-        random: dependencies.random ?? Math.random,
-        createId: dependencies.createId ?? ((request) => `${request.kind === 'sticker' ? 'sticker' : 'group'}_${randomUUID()}`),
       });
+      return { context, before: readStoredSnapshot(context.packaging, context.bodyFrames) };
+    });
+
+    const generatePlans = () => planPackagingStickerVariants({
+      sourceBodyFrames: source.bodyFrames,
+      sourceStickers,
+      targets: contexts.map(({ context }) => ({
+        targetId: context.planId,
+        bodyFrames: context.bodyFrames,
+        template: context.config.template,
+      })),
+      assets,
+      random: dependencies.random ?? Math.random,
+      createId: dependencies.createId ?? ((request) => `${request.kind === 'sticker' ? 'sticker' : 'group'}_${randomUUID()}`),
+    });
+    let plans: ReturnType<typeof generatePlans>;
+    if (input.requestId !== undefined) {
+      if (!/^[a-zA-Z0-9_-]{16,80}$/.test(input.requestId)) throw new BatchDomainError('invalid_input', '复制命令标识无效');
+      const key = createHash('sha256').update(JSON.stringify([projectId, batchId, input.requestId])).digest('hex');
+      const dir = path.join(dataRoot(), 'storage', 'packaging', 'sticker-copy-candidates');
+      const file = path.join(dir, `${key}.json`);
+      const identity = JSON.stringify([input.sourcePlanId, input.expectedSourceOutputVersionId, input.expectedSourceEditRevision,
+        input.targets, sourceStickers, contexts.map(({ context }) => [context.bodyFrames, context.config.template])]);
+      fs.mkdirSync(dir, { recursive: true });
+      if (!fs.existsSync(file)) {
+        const candidate = JSON.stringify({ identity, plans: generatePlans() });
+        // 同命令并发重试只接受先写入的一份，绝不重新抽取覆盖。
+        try { fs.writeFileSync(file, candidate, { flag: 'wx' }); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+      }
+      const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { identity: string; plans: ReturnType<typeof generatePlans> };
+      if (saved.identity !== identity) throw new BatchDomainError('conflict', '复制候选对应的成片已变化，请关闭弹窗后重新选择');
+      plans = saved.plans;
+    } else plans = generatePlans();
+
+    const afterSnapshots: BatchPackagingStickerSnapshot[] = [];
+    for (const [index, { context }] of contexts.entries()) {
+      const stickers = validatePackagingStickers(plans[index].stickers, context.bodyFrames);
+      const layoutRuntimeBundleVersion = resolveLayoutRuntimeBundleVersion({
+        previous: context.config.layoutRuntimeBundleVersion,
+        pointCuesLayoutVersion: context.config.pointCuesLayoutVersion,
+        stickers,
+      });
+      const after: BatchPackagingStickerSnapshot = {
+        stickers,
+        ...(sourceSnapshot.stickerDefaults === undefined ? {} : { stickerDefaults: structuredClone(sourceSnapshot.stickerDefaults) }),
+        ...(context.config.pointCuesLayoutVersion !== undefined ? { pointCuesLayoutVersion: context.config.pointCuesLayoutVersion } : {}),
+        ...(layoutRuntimeBundleVersion !== undefined ? { layoutRuntimeBundleVersion } : {}),
+      };
+      if (layoutRuntimeBundleVersion === 2) {
+        if (!dependencies.resolveLayout) throw new BatchDomainError('conflict', '自动布局服务不可用，无法复制到新布局版本成片');
+        const baseConfig = { ...context.config };
+        delete baseConfig.layoutResolution;
+        const resolution = await dependencies.resolveLayout({
+          planId: context.planId,
+          config: { ...baseConfig, stickers, layoutRuntimeBundleVersion: 2 },
+          bodyFrames: context.bodyFrames,
+        });
+        if (resolution.status !== 'resolved') {
+          throw new BatchDomainError('conflict', `目标成片 ${context.planId}：${resolution.status === 'budget_exceeded' ? '自动布局计算未完成，请重试' : '上 40% 空间不足，请移开手动元素后重试'}`);
+        }
+        after.layoutResolution = resolution;
+      }
+      afterSnapshots.push(after);
+    }
+
+    return db.transaction(() => {
+      const latestSource = readOutputContext(db, projectId, batchId, sourcePlanId);
+      if (latestSource.rawArrangementJson !== source.rawArrangementJson) {
+        throw new BatchDomainError('conflict', '来源成片已被修改，请刷新后重试');
+      }
       const results = contexts.map(({ context, before }, index) => {
-        const after: BatchPackagingStickerSnapshot = {
-          stickers: validatePackagingStickers(plans[index].stickers, context.bodyFrames),
-          ...(sourceSnapshot.stickerDefaults === undefined ? {} : { stickerDefaults: structuredClone(sourceSnapshot.stickerDefaults) }),
-        };
-        return writeTarget(db, context, before, after);
+        const latest = readOutputContext(db, projectId, batchId, context.planId);
+        assertExpectedVersion(latest, {
+          planId: context.planId,
+          expectedOutputVersionId: context.outputVersionId,
+          expectedEditRevision: context.editRevision,
+        });
+        if (latest.rawArrangementJson !== context.rawArrangementJson) {
+          throw new BatchDomainError('conflict', `目标成片 ${context.planId} 已被修改，请刷新后重试`);
+        }
+        return writeTarget(db, context, before, afterSnapshots[index]);
       });
       return { targets: results };
     })();

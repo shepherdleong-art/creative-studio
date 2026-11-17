@@ -3,6 +3,7 @@ import { splitCoverTitle } from '../media-core/cover-domain.ts';
 import type Database from 'better-sqlite3';
 import { buildPointCues, buildLocalPointCues, generatePointCueId, parseStoredWordTimings, extractHeuristicPoints, dedupeCandidates } from '../media-core/packaging-cues.ts';
 import { buildPackagingVars, loadProjectPackagingData, parsePackagingConfig, type FinalEditPackagingConfig } from '../media-core/packaging-vars.ts';
+import { resolveLayoutRuntimeBundleVersion, resolvePointCuesLayoutVersion } from '../media-core/packaging-auto-layout.ts';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
 import { PackagingStickerError, validatePackagingStickerDefaults, validatePackagingStickers } from '../media-core/packaging-stickers.ts';
 import type { BatchOutputClipEditView } from './output-arrangement.ts';
@@ -64,7 +65,23 @@ export async function prepareBatchPackagingConfig(db: Database.Database, project
   const bodyFrames = Math.floor(Math.max(view.visualDurationUs, view.narration.durationUs ?? 0) / 1e6 * FINAL_EDIT_FPS + 1e-6);
   // 原始请求先严格校验：parsePackagingConfig 会兼容清洗，不能靠清洗结果冒充保存成功。
   validateBatchPackagingStickers(value, bodyFrames);
-  const config = parsePackagingConfig(value);
+  const current = view.packaging ?? parsePackagingConfig(null);
+  const incomingConfig = parsePackagingConfig(value);
+  const pointCuesLayoutVersion = resolvePointCuesLayoutVersion(
+    current.pointCuesLayoutVersion,
+    reextract ? 'explicit-reextract' : 'automatic-rebuild',
+  );
+  const config: FinalEditPackagingConfig = {
+    ...incomingConfig,
+    ...(pointCuesLayoutVersion !== undefined ? { pointCuesLayoutVersion } : {}),
+    layoutRuntimeBundleVersion: resolveLayoutRuntimeBundleVersion({
+      previous: current.layoutRuntimeBundleVersion,
+      pointCuesLayoutVersion,
+      stickers: incomingConfig.stickers,
+    }),
+    layoutResolution: incomingConfig.layoutResolution
+      ?? (current.layoutResolution ? { ...current.layoutResolution, status: 'stale' as const } : undefined),
+  };
   for (const slot of [config.titleFont, config.subtitleFont, config.pointFont]) {
     if (slot && (!safeFontFilename(slot.file) || !fs.existsSync(path.join(userFontDir(), slot.file)))) throw new BatchDomainError('invalid_input', '所选包装字体不存在，请重新选择');
   }
@@ -98,7 +115,14 @@ export function initialBatchPackagingConfig(db: Database.Database, projectId: st
     words: narration.words, subtitleCues: view.subtitleCues, sellingPoints: projectPoints.length ? projectPoints : narration.points,
     totalSec: (Math.max(view.visualDurationUs, view.narration.durationUs ?? 0) + FINAL_EDIT_INTRO_DURATION_US) / 1e6,
     coverSec: FINAL_EDIT_INTRO_DURATION_US / 1e6, narrationPlaybackRate: 1 });
+  const pointCuesLayoutVersion = resolvePointCuesLayoutVersion(
+    config.pointCuesLayoutVersion,
+    previous ? 'derived-version' : 'initial',
+  );
   return { ...config, varsOverrides: { ...batchPackagingDefaults(db, projectId, view), ...config.varsOverrides },
     pointCues: explicitlyEmpty ? [] : built.pointCues.map(cue => ({ ...cue, id: generatePointCueId() })), pointCuesMode: explicitlyEmpty ? 'none' : built.mode,
+    pointCuesLayoutVersion,
+    layoutRuntimeBundleVersion: resolveLayoutRuntimeBundleVersion({ previous: config.layoutRuntimeBundleVersion, pointCuesLayoutVersion, stickers: config.stickers }),
+    layoutResolution: config.layoutResolution ? { ...config.layoutResolution, status: 'stale' as const } : undefined,
     pointCuesEdited: explicitlyEmpty === true, layouts: Object.fromEntries(Object.entries(config.layouts ?? {}).map(([key, layout]) => [key, { cover: layout.cover }])) };
 }

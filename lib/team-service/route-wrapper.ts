@@ -157,8 +157,9 @@ function addReference(
 // fields (including media in restored arrangements) remain private resources.
 const STICKER_INSTANCE_PATHS: Record<string, readonly string[]> = {
   '/api/final-edit-groups/[id]': ['config.stickers[]'],
+  '/api/final-edit-groups/[id]/packaging-layout': ['expectedPackaging.stickers[]', 'candidatePayload.stickers[]'],
   '/api/batch-production/batches/[id]/outputs/[planId]/clips': [
-    'config.stickers[]', 'packaging.stickers[]', 'snapshot.packaging.stickers[]',
+    'config.stickers[]', 'packaging.stickers[]', 'snapshot.packaging.stickers[]', 'candidatePayload.stickers[]',
   ],
   '/api/batch-production/batches/[id]/outputs/sticker-copy': ['targets[].snapshot.stickers[]'],
 };

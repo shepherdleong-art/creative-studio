@@ -215,9 +215,11 @@ export function planPackagingStickerVariants(input: {
       autoGroupIds.set(sourceAutoGroupId, created);
       return created;
     };
-    const copyOrigin = (sticker: PackagingStickerInstance): PackagingStickerInstance['origin'] => sticker.origin.kind === 'manual'
-      ? { kind: 'manual' }
-      : { kind: 'auto', autoGroupId: autoGroupId(sticker.origin.autoGroupId), autoEdited: sticker.origin.autoEdited };
+    const copyOrigin = (sticker: PackagingStickerInstance, newAutomatic: boolean): PackagingStickerInstance['origin'] => {
+      if (sticker.origin.kind === 'manual') return { kind: 'manual' };
+      if (newAutomatic) return { kind: 'auto', autoGroupId: autoGroupId(sticker.origin.autoGroupId), autoEdited: false, layoutVersion: 2 };
+      return { ...sticker.origin, autoGroupId: autoGroupId(sticker.origin.autoGroupId) };
+    };
 
     const stickers = input.sourceStickers.map((sticker, sourceIndex) => {
       const id = input.createId({ kind: 'sticker', targetId: target.targetId, targetIndex, sourceStickerId: sticker.id });
@@ -226,7 +228,7 @@ export function planPackagingStickerVariants(input: {
           ...sticker,
           id,
           ...mapFrames(sticker, input.sourceBodyFrames, target.bodyFrames),
-          origin: copyOrigin(sticker),
+          origin: copyOrigin(sticker, false),
         };
       }
       const descriptor = automatic.get(sourceIndex)!;
@@ -253,7 +255,7 @@ export function planPackagingStickerVariants(input: {
         centerXPct: slot.centerXPct,
         centerYPct: slot.centerYPct,
         animation: PACKAGING_STICKER_VARIANT_ANIMATIONS[randomIndex(PACKAGING_STICKER_VARIANT_ANIMATIONS.length, input.random)],
-        origin: copyOrigin(sticker),
+        origin: copyOrigin(sticker, true),
       };
     });
     return { targetId: target.targetId, stickers };

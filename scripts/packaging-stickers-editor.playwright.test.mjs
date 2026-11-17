@@ -110,6 +110,18 @@ try {
     const body = await response.json();
     return { request, view: body.view };
   };
+  const readLayoutCommand = async (action) => {
+    const pending = page.waitForResponse((response) => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === `/api/final-edit-groups/${fixture.groupId}/packaging-layout`
+      && (response.request().postData() || '').includes('"operation":"auto-stickers"'));
+    await action();
+    const response = await pending;
+    assert.equal(response.status(), 200);
+    const request = JSON.parse(response.request().postData() || '{}');
+    const body = await response.json();
+    assert.equal(body.status, 'resolved', body.message || '自动布局命令必须成功');
+    return { request, view: body.view, result: body };
+  };
   const overlay = page.frameLocator('iframe[data-packaging-overlay]');
   const panel = page.locator('#packaging-stickers-panel');
   const assetButtons = panel.getByRole('button', { name: /^添加贴纸 / });
@@ -168,12 +180,17 @@ try {
     y: moveFrameBox.y + second.centerYPct / 100 * moveFrameBox.height,
   };
   const moveEnd = { x: moveStart.x + 60, y: moveStart.y + 40 };
+  // 文档身份探针：几何拖动保存若重载 iframe，会在 seek 回当前播放头之前闪出封面帧。
+  const previewFrame = page.frames().find((item) => item.url().includes('packaging-preview') && item.url().includes('format=html'));
+  assert.ok(previewFrame, '拖动前必须存在包装预览 frame');
+  await previewFrame.evaluate(() => { window.__overlayDocumentMarker = 'before-move'; });
   const movedResult = await readPatch(async () => {
     await page.mouse.move(moveStart.x, moveStart.y);
     await page.mouse.down();
     await page.mouse.move(moveEnd.x, moveEnd.y, { steps: 8 });
     await page.mouse.up();
   });
+  assert.equal(await previewFrame.evaluate(() => window.__overlayDocumentMarker ?? null), 'before-move', '拖动保存不得重载包装 iframe（重载会先闪出封面帧）');
   const moved = movedResult.view.packaging.stickers.find((item) => item.id === second.id);
   const expectedMoveX = (moveEnd.x - moveFrameBox.x) / moveFrameBox.width * 100;
   const expectedMoveY = (moveEnd.y - moveFrameBox.y) / moveFrameBox.height * 100;
@@ -546,10 +563,11 @@ try {
   await page.getByLabel('选择成片草稿').selectOption(fixture.variantId);
   await overlay.locator('.packaging-sticker').first().waitFor();
   assert.ok(autoBodyFrames >= 144, '自动布置验收 fixture 正文必须至少 6 秒');
-  const autoLayoutResult = await readPatch(() => panel.getByRole('button', { name: '一键基础布置', exact: true }).click());
+  const autoLayoutResult = await readLayoutCommand(() => panel.getByRole('button', { name: '一键基础布置', exact: true }).click());
   assert.equal(autoLayoutResult.view.packaging.stickers.length, 8, '首次自动布置必须新增 6 张并保留 2 张手动贴纸');
   const automatic = autoLayoutResult.view.packaging.stickers.filter((item) => item.origin.kind === 'auto');
   assert.equal(automatic.length, 6);
+  assert.deepEqual(automatic.slice(4).map((item) => item.centerYPct), [65, 81], '单条结尾两张自动贴纸必须位于下半部');
   const autoGroupId = automatic[0].origin.autoGroupId;
   assert.ok(automatic.every((item) => item.origin.autoGroupId === autoGroupId && item.origin.autoEdited === false));
   assert.ok(automatic.every((item) => item.animation === 'rise'), '自动实例必须继承生成时的统一动效');
@@ -584,7 +602,7 @@ try {
     assert.match(dialog.message(), /重置这些调整/);
     await dialog.accept();
   });
-  const replacedAutoResult = await readPatch(() => panel.getByRole('button', { name: '换一组基础贴纸', exact: true }).click());
+  const replacedAutoResult = await readLayoutCommand(() => panel.getByRole('button', { name: '换一组基础贴纸', exact: true }).click());
   assert.equal(replacedAutoResult.view.packaging.stickers.length, 8, '换一组不得叠加为 12 张');
   const replacedAutomatic = replacedAutoResult.view.packaging.stickers.filter((item) => item.origin.kind === 'auto');
   assert.equal(replacedAutomatic.length, 6);

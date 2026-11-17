@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildTimelineVars, resolvePackagingDir, resolvePackagingTemplateDir } from './packaging-runtime.ts';
+import { buildTimelineVars } from './packaging-runtime.ts';
+import { packagingPreviewResources } from './packaging-preview-resources.ts';
 import { buildConfigFontFacesCss } from './packaging-font.ts';
 import type { FinalEditPackagingConfig, PackagingVars } from './packaging-vars.ts';
 import { PACKAGING_EDIT_BRIDGE_JS } from './packaging-edit-bridge.ts';
@@ -11,13 +12,15 @@ import { PACKAGING_STICKER_EDIT_BRIDGE_JS } from './packaging-sticker-edit-bridg
 /** Shared transparent preview. The parent owns time; editor messages are checked against the iframe source. */
 export function packagingPreviewHtml(input: {
   config: FinalEditPackagingConfig; vars: PackagingVars; totalSec: number; coverSec: number;
-  palette?: PackagingPalette | null; edit?: boolean;
+  palette?: PackagingPalette | null; edit?: boolean; resourceUrl?: string;
 }): string {
-  const packagingDir = resolvePackagingDir();
-  const dir = resolvePackagingTemplateDir(packagingDir, input.config.template);
+  const { packagingDir, templateDir: dir, fontRoot, baseHref } = packagingPreviewResources(input.config, input.resourceUrl);
   const stickerAssets = resolvePackagingStickerAssets({ packagingDir, template: input.config.template, stickers: input.config.stickers });
   const vars = buildTimelineVars({ vars: input.vars, totalSec: input.totalSec, coverSec: input.coverSec,
     pointCues: input.config.pointCues ?? [], pointCuesMode: input.config.pointCuesMode ?? 'none', layouts: input.config.layouts,
+    pointCuesLayoutVersion: input.config.pointCuesLayoutVersion,
+    layoutRuntimeBundleVersion: input.config.layoutRuntimeBundleVersion,
+    layoutResolution: input.config.layoutResolution,
     stickers: input.config.stickers, stickerDefaults: input.config.stickerDefaults, stickerAssets, template: input.config.template });
   const json = (value: unknown) => JSON.stringify(value).replace(/</g, '\\u003c');
   let bridge = PACKAGING_EDIT_BRIDGE_JS
@@ -28,7 +31,9 @@ export function packagingPreviewHtml(input: {
     .replace("p && typeof p.__packagingEditText === 'function'", 'p');
   if (!input.edit) bridge = '';
   const stickerBridge = input.edit ? PACKAGING_STICKER_EDIT_BRIDGE_JS : '';
-  // Keep the document and embedding iframe on the same scheme to preserve alpha compositing.
-  const head = `<base href="/api/packaging/templates/${input.config.template}/"><style>:root{color-scheme:light}html,body{background:transparent!important;background-image:none!important}</style>${buildConfigFontFacesCss(input.config)}<script>window.__hyperframes={getVariables:()=>(${json(vars)})};${input.palette ? `window.__palette=${json(input.palette)};` : ''}</script>`;
-  return fs.readFileSync(path.join(dir, 'index.html'), 'utf8').replace('<head>', `<head>${head}`).replace('</body>', `<script>${bridge}</script><script>${stickerBridge}</script></body>`);
+  const head = `<base href="${baseHref}"><style>:root{color-scheme:light}html,body{background:transparent!important;background-image:none!important}</style>${buildConfigFontFacesCss(input.config, fontRoot)}<script>window.__hyperframes={getVariables:()=>(${json(vars)})};${input.palette ? `window.__palette=${json(input.palette)};` : ''}</script>`;
+  const replay = input.config.layoutResolution?.status === 'resolved'
+    ? '<script src="auto-layout/replay.js"></script>'
+    : '';
+  return fs.readFileSync(path.join(dir, 'index.html'), 'utf8').replace('<head>', `<head>${head}`).replace('</body>', `<script>${bridge}</script><script>${stickerBridge}</script>${replay}</body>`);
 }

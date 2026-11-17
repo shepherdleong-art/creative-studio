@@ -1,11 +1,11 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FinalEditPackagingConfig } from '@/lib/media-core/packaging-vars';
 import { FontPicker } from '@/components/mixcut/FontPicker';
 import { TEMPLATES, TemplateThumb } from '@/components/packaging/PackagingTemplates';
 import type { StickerAssetChoice } from '@/components/mixcut/StickerPanel';
-import BatchStickerPanel, { type BatchStickerPanelView } from './BatchStickerPanel';
+import BatchStickerPanel, { type BatchAutoLayoutCandidatePayload, type BatchAutoLayoutCommandResult, type BatchStickerPanelView } from './BatchStickerPanel';
 import styles from '@/components/mixcut/mixcut-content.module.css';
 
 const fallback: FinalEditPackagingConfig = { enabled: false, template: 'overlay-poster', varsOverrides: {} };
@@ -23,6 +23,7 @@ export default function BatchPackagingEditor({
   onStickerDragEnd,
   onPlaySticker,
   onCopyStickers,
+  onLayoutCommand,
 }: {
   view: BatchStickerPanelView;
   onSave: (config: FinalEditPackagingConfig, reextract?: boolean) => Promise<boolean>;
@@ -35,6 +36,7 @@ export default function BatchPackagingEditor({
   onStickerDragEnd?: () => void;
   onPlaySticker?: (stickerId: string) => void;
   onCopyStickers?: () => void;
+  onLayoutCommand?: (type: 'auto_layout_stickers' | 'revalidate_packaging_layout' | 'reextract_points_layout', candidatePayload?: BatchAutoLayoutCandidatePayload) => Promise<BatchAutoLayoutCommandResult>;
 }) {
   const config = view.packaging ?? fallback;
   const [busy, setBusy] = useState(false);
@@ -44,6 +46,30 @@ export default function BatchPackagingEditor({
   const disabled = busy || !view.editable;
   const [activeTab, setActiveTab] = useState<PackagingTab>('settings');
   const [previousStickerSelection, setPreviousStickerSelection] = useState<typeof stickerSelection>(null);
+  const revalidateKeyRef = useRef('');
+  const layoutCommandRef = useRef(onLayoutCommand);
+  useEffect(() => { layoutCommandRef.current = onLayoutCommand; });
+  const planId = 'planId' in view && typeof view.planId === 'string' ? view.planId : '';
+  const editRevision = 'editRevision' in view && typeof view.editRevision === 'number' ? view.editRevision : 0;
+  const hasLayoutCommand = Boolean(onLayoutCommand);
+  useEffect(() => {
+    if (draft || !planId || !hasLayoutCommand || !config.enabled || config.layoutRuntimeBundleVersion !== 2
+      || config.layoutResolution?.status === 'resolved') return;
+    const key = `${planId}:${editRevision}`;
+    if (revalidateKeyRef.current === key) return;
+    revalidateKeyRef.current = key;
+    setMessage('正在更新自动布局…');
+    void layoutCommandRef.current?.('revalidate_packaging_layout').then((result) => {
+      if (result.status === 'resolved') setMessage('自动布局已更新');
+      else {
+        revalidateKeyRef.current = '';
+        setMessage(result.message || '自动布局未完成，请调整后重试');
+      }
+    }).catch((error) => {
+      revalidateKeyRef.current = '';
+      setMessage(error instanceof Error ? error.message : '自动布局更新失败');
+    });
+  }, [config, draft, editRevision, hasLayoutCommand, planId]);
   if (stickerSelection?.stickerId && stickerSelection !== previousStickerSelection) {
     setPreviousStickerSelection(stickerSelection);
     setActiveTab('stickers');
@@ -99,6 +125,7 @@ export default function BatchPackagingEditor({
           onDragEnd={() => onStickerDragEnd?.()}
           onPlaySticker={(stickerId) => onPlaySticker?.(stickerId)}
           onCopyToOtherFilms={onCopyStickers}
+          onAutoLayout={onLayoutCommand ? (candidatePayload) => onLayoutCommand('auto_layout_stickers', candidatePayload) : undefined}
         />}
       </div>
     </>}

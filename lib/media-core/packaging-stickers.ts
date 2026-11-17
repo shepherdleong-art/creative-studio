@@ -61,7 +61,7 @@ export type PackagingStickerInstance = {
   animation: StickerAnimation;
   origin:
     | { kind: 'manual' }
-    | { kind: 'auto'; autoGroupId: string; autoEdited: boolean };
+    | { kind: 'auto'; autoGroupId: string; autoEdited: boolean; layoutVersion?: number; positionPinned?: boolean };
 };
 
 export type PackagingStickerDefaults = {
@@ -105,7 +105,18 @@ function parseStyle(value: unknown): StickerStyle | undefined {
 function parseOrigin(value: unknown): PackagingStickerInstance['origin'] {
   if (!isRecord(value) || value.kind !== 'auto') return { kind: 'manual' };
   if (typeof value.autoGroupId !== 'string' || !SAFE_ID.test(value.autoGroupId)) return { kind: 'manual' };
-  return { kind: 'auto', autoGroupId: value.autoGroupId, autoEdited: value.autoEdited === true };
+  let layoutVersion: number | undefined;
+  if (value.layoutVersion !== undefined) {
+    const parsed = finiteNumber(value.layoutVersion);
+    layoutVersion = parsed !== undefined && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : Number.NaN;
+  }
+  return {
+    kind: 'auto',
+    autoGroupId: value.autoGroupId,
+    autoEdited: value.autoEdited === true,
+    ...(layoutVersion !== undefined ? { layoutVersion } : {}),
+    ...(value.positionPinned === true ? { positionPinned: true } : {}),
+  };
 }
 
 function parseSticker(value: unknown): PackagingStickerInstance | undefined {
@@ -189,11 +200,21 @@ export function assertPackagingStickerFrames(stickers: PackagingStickerInstance[
   }
 }
 
+export function assertSupportedPackagingStickerLayoutVersions(stickers: PackagingStickerInstance[]): void {
+  for (const sticker of stickers) {
+    if (sticker.origin.kind !== 'auto' || sticker.origin.layoutVersion === undefined) continue;
+    if (sticker.origin.layoutVersion !== 2) {
+      throw new PackagingStickerError('sticker_layout_version_unsupported', '贴纸包含不支持的自动布局版本，请使用生成该成片的版本打开');
+    }
+  }
+}
+
 /** 写入命令边界：任何非法实例都拒绝，不能静默丢字段后继续导出。 */
 export function validatePackagingStickers(input: unknown, bodyFrames: number): PackagingStickerInstance[] {
   if (!Array.isArray(input)) throw new PackagingStickerError('stickers_invalid', '贴纸数据必须是数组');
   const stickers = sanitizePackagingStickers(input);
   if (stickers.length !== input.length) throw new PackagingStickerError('stickers_invalid', '贴纸数据包含非法项、重复 ID 或超过数量上限');
+  assertSupportedPackagingStickerLayoutVersions(stickers);
   assertPackagingStickerFrames(stickers, bodyFrames);
   return stickers;
 }
@@ -232,12 +253,28 @@ export type PackagingStickerEditPatch = Partial<Pick<PackagingStickerInstance,
   | 'visualWidthPct' | 'rotationDeg' | 'trackIndex' | 'animation'
 >>;
 
-export function applyPackagingStickerEdit(sticker: PackagingStickerInstance, patch: PackagingStickerEditPatch): PackagingStickerInstance {
-  const next: PackagingStickerInstance = {
-    ...sticker,
-    ...patch,
-    origin: sticker.origin.kind === 'auto' ? { ...sticker.origin, autoEdited: true } : sticker.origin,
-  };
+export function applyPackagingStickerEdit(
+  sticker: PackagingStickerInstance,
+  patch: PackagingStickerEditPatch,
+  resolvedCenter?: { x: number; y: number },
+): PackagingStickerInstance {
+  let effectivePatch = patch;
+  let origin = sticker.origin;
+  if (origin.kind === 'auto') {
+    if (origin.layoutVersion === 2 && !origin.positionPinned) {
+      if (!resolvedCenter || !Number.isFinite(resolvedCenter.x) || !Number.isFinite(resolvedCenter.y)
+        || resolvedCenter.x < 0 || resolvedCenter.x > 100 || resolvedCenter.y < 0 || resolvedCenter.y > 100) {
+        throw new PackagingStickerError('sticker_resolved_center_required', '贴纸实际位置尚未就绪，请等待预览布局完成后重试');
+      }
+      effectivePatch = { ...patch, centerXPct: resolvedCenter.x, centerYPct: resolvedCenter.y };
+    }
+    origin = {
+      ...origin,
+      autoEdited: true,
+      ...(origin.layoutVersion === 2 ? { positionPinned: true } : {}),
+    };
+  }
+  const next: PackagingStickerInstance = { ...sticker, ...effectivePatch, origin };
   if (next.assetId === 'special') {
     next.styleMode = 'fixed';
     next.fixedStyle = next.fixedStyle ?? sticker.fixedStyle;
