@@ -1,8 +1,8 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BatchOutputClipEditView } from '@/lib/batch-production/output-arrangement';
-import type { FinalEditPackagingConfig, PackagingVars } from '@/lib/media-core/packaging-vars';
+import type { FinalEditPackagingConfig, PackagingLayouts, PackagingPointLayout, PackagingVars } from '@/lib/media-core/packaging-vars';
 import PackagingOverlay, { type PackagingTextEditTarget } from '@/components/packaging/PackagingOverlay';
 import { PackagingTextEditPopover } from '@/components/packaging/PackagingTextEditor';
 
@@ -14,7 +14,37 @@ export default function BatchPackagingOverlay({ view, src, timeSec, editable, on
   const [busy, setBusy] = useState(false);
   const saving = useRef(false);
   const [error, setError] = useState('');
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const attachFrame = useCallback((frame: HTMLIFrameElement | null) => { frameRef.current = frame; }, []);
   const config = view.packaging;
+  // 版式由模板的实时编辑桥更新；保存修订不能销毁 iframe，否则每次松手都会闪屏。
+  // 文案、字体、模板、时序及封面取色/默认文案来源变化仍须重新生成包装文档。
+  const previewKey = JSON.stringify([
+    src, view.outputVersionId, { ...config, layouts: undefined },
+    view.coverAssetId ?? view.clips[0]?.assetId, view.coverTitleOverride ? view.coverTitle : null,
+    view.subtitleCues, Math.max(view.visualDurationUs, view.narration.durationUs ?? 0),
+  ]);
+  const layoutsKey = JSON.stringify(config?.layouts?.[config.template] ?? {});
+  const syncLayouts = useCallback(() => {
+    const win = frameRef.current?.contentWindow as (Window & {
+      __pointLayout?: { apply: (element: HTMLElement, layout: PackagingPointLayout | null) => void };
+    }) | null;
+    if (!win?.__pointLayout) return;
+    const layouts = JSON.parse(layoutsKey) as PackagingLayouts[string];
+    win.document.querySelectorAll<HTMLElement>('[data-point-id]').forEach((element) => {
+      const id = element.dataset.pointId ?? '';
+      const layout = id.startsWith('cover:') ? layouts?.cover?.[id.slice(6)] : layouts?.cues?.[id.slice(4)];
+      // 默认元素保持模板自动适配；被手改的元素则允许撤销、复位或保存失败回滚。
+      if (layout || element.dataset.ul === '1') win.__pointLayout!.apply(element, layout ?? null);
+    });
+  }, [layoutsKey]);
+  useEffect(() => {
+    if (busy) return;
+    const frame = frameRef.current;
+    syncLayouts();
+    frame?.addEventListener('load', syncLayouts);
+    return () => frame?.removeEventListener('load', syncLayouts);
+  }, [busy, previewKey, syncLayouts]);
   if (!config) return null;
   const save = async (next: FinalEditPackagingConfig) => {
     if (saving.current || !onSave || !view.editable) return;
@@ -25,7 +55,7 @@ export default function BatchPackagingOverlay({ view, src, timeSec, editable, on
     finally { saving.current = false; setBusy(false); }
   };
   return <>
-    <PackagingOverlay src={src} timeSec={timeSec} editable={editable && view.editable && !busy} onText={setTextEdit} onLayout={(id, value) => {
+    <PackagingOverlay key={previewKey} onFrame={attachFrame} src={src} timeSec={timeSec} editable={editable && view.editable && !busy} onText={setTextEdit} onLayout={(id, value) => {
       const next = structuredClone(config);
       next.layouts ??= {};
       const template = next.layouts[next.template] ??= {};
