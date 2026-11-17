@@ -93,7 +93,7 @@ export function parseCanvasViewport(value: unknown): CanvasViewport {
 
 function readGraph(raw: string): CanvasGraph {
   try {
-    return parseCanvasGraph(JSON.parse(raw));
+    return reconcileCanvasGraph(parseCanvasGraph(JSON.parse(raw)));
   } catch {
     // 已保存的图损坏时不让整张画布打不开；编辑定义降级为空图，运行投影仍可读。
     return emptyCanvasGraph();

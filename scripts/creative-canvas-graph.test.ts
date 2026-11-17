@@ -263,16 +263,16 @@ function generationNode(graphValue: CanvasGraph, id: string): CanvasGenerationNo
   const refs = generationNode(current, 'g1').data.references;
   assert.deepEqual(refs.map((slot) => slot.label), [1, 2]);
 
-  // 断开第一条：槽位随对账移除，保留槽位的编号与顺序不变
+  // 断开第一条：槽位移除，剩余参考从 1 连续编号
   current = removeEdge(current, 'e1');
   const afterDetach = generationNode(current, 'g1').data.references;
-  assert.deepEqual(afterDetach.map((slot) => slot.label), [2]);
+  assert.deepEqual(afterDetach.map((slot) => slot.label), [1]);
   assert.deepEqual(detachedReferenceSlots(current, generationNode(current, 'g1')), []);
 
-  // 重新连上：分配新编号，不复用已移除的旧编号（避免 @参考N 悄悄改指向）
+  // 重新连上：接在当前参考之后
   current = appendEdge(current, edge('e3', 'm1', 'g1'));
   const afterReconnect = generationNode(current, 'g1').data.references;
-  assert.deepEqual(afterReconnect.map((slot) => slot.label), [2, 3]);
+  assert.deepEqual(afterReconnect.map((slot) => slot.label), [1, 2]);
   assert.equal(afterReconnect.length, 2);
 
   // 重复连接被拒绝，不会凭空多出一个参考槽位
@@ -282,14 +282,14 @@ function generationNode(graphValue: CanvasGraph, id: string): CanvasGenerationNo
   );
   assert.equal(generationNode(current, 'g1').data.references.length, 2);
 
-  // 新增第四份参考：编号继续往后，不回收已移除的编号
+  // 新增参考：当前列表持续使用连续编号
   current = appendNode(current, material('m3'));
   current = appendEdge(current, edge('e5', 'm3', 'g1'));
   assert.deepEqual(
     generationNode(current, 'g1').data.references.map((slot) => slot.label),
-    [2, 3, 4],
+    [1, 2, 3],
   );
-  assert.equal(generationNode(current, 'g1').data.referenceLabelCounter, 4);
+  assert.equal(generationNode(current, 'g1').data.referenceLabelCounter, 3);
 }
 
 {
@@ -346,12 +346,12 @@ function generationNode(graphValue: CanvasGraph, id: string): CanvasGenerationNo
   assert.deepEqual(unknown.unknownLabels, [9]);
   assert.deepEqual(unknown.mentioned, []);
 
-  // 断开后槽位移除，提示词里的旧编号按「不存在」报告
+  // 没有经过改写的外部文本按当前编号解析；真实节点文本的改写另有回归。
   const prunedGraph = removeEdge(current, 'e1');
   const prunedNode = generationNode(prunedGraph, 'g1');
   const afterPrune = resolveCanvasMentions(prunedGraph, prunedNode, '用 @参考1 和 @参考2');
-  assert.deepEqual(afterPrune.mentioned.map((slot) => slot.label), [2]);
-  assert.deepEqual(afterPrune.unknownLabels, [1]);
+  assert.deepEqual(afterPrune.mentioned.map((slot) => slot.label), [1]);
+  assert.deepEqual(afterPrune.unknownLabels, [2]);
 
   // 排序改变提交顺序但不改变编号指向
   const reordered = generationNode(current, 'g1');
@@ -373,7 +373,7 @@ function generationNode(graphValue: CanvasGraph, id: string): CanvasGenerationNo
   assert.equal(removed.nodes.length, 2);
   assert.equal(removed.edges.length, 1);
   // 指向被删节点的槽位随对账移除
-  assert.deepEqual(generationNode(removed, 'g1').data.references.map((slot) => slot.label), [2]);
+  assert.deepEqual(generationNode(removed, 'g1').data.references.map((slot) => slot.label), [1]);
 }
 
 // --- 节点尺寸（自定义宽高） -----------------------------------------------------

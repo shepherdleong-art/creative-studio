@@ -17,7 +17,7 @@ import type {
   CanvasNodeKind,
   CanvasNodeSize,
 } from '@/lib/creative-canvas/types';
-import type { CanvasFlowNode, CanvasFlowNodeData } from '../editor-store';
+import type { CanvasFlowNode } from '../editor-store';
 
 /** 全部连线统一的方向箭头（颜色由 React Flow 默认 marker 提供）。 */
 export const CANVAS_EDGE_MARKER_END = { type: MarkerType.ArrowClosed } as const;
@@ -73,7 +73,8 @@ export function toFlowNode(node: CanvasGraphNode): CanvasFlowNode {
       type: 'prompt',
       position: { ...node.position },
       style,
-      data: { title: node.data.title, text: node.data.text },
+      data: { title: node.data.title, text: node.data.text,
+        ...(node.data.references ? { references: node.data.references.map((slot) => ({ ...slot })) } : {}) },
     };
   }
   return {
@@ -114,7 +115,8 @@ export function toGraphNode(node: CanvasFlowNode): CanvasGraphNode {
       kind: 'prompt',
       position: { x: node.position.x, y: node.position.y },
       ...nodeSizePatch('prompt', node),
-      data: { title: String(node.data.title ?? ''), text: String(node.data.text ?? '') },
+      data: { title: String(node.data.title ?? ''), text: String(node.data.text ?? ''),
+        ...(node.data.references ? { references: node.data.references.map((slot) => ({ ...slot })) } : {}) },
     };
   }
   const kind = node.type === 'video-generation' ? 'video-generation' : 'image-generation';
