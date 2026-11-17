@@ -7,7 +7,7 @@ import { getDb } from '@/lib/db';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { FinalEditError } from '@/lib/final-edit/errors';
-import { OUTPUT_PRESETS } from '@/lib/final-edit/types';
+import { FINAL_EDIT_INTRO_DURATION_US, OUTPUT_PRESETS } from '@/lib/final-edit/types';
 import { buildPackagingVars, loadProjectPackagingData, parsePackagingConfig } from '@/lib/final-edit/packaging-vars';
 import { planPackagingStickerAutoLayout, replaceAutomaticPackagingStickers, type PackagingStickerPlanningAsset } from '@/lib/media-core/packaging-sticker-planner';
 import { validatePackagingStickers, type PackagingStickerInstance } from '@/lib/media-core/packaging-stickers';
@@ -121,15 +121,15 @@ async function layoutCommand(request: Request, { params }: { params: Promise<{ i
         project: loadProjectPackagingData(db, group.projectId),
         overrides: group.packaging.varsOverrides,
       }),
-      totalSec: 20 / 24 + variant.timeline.bodyFrames / 24,
-      coverSec: 20 / 24,
+      totalSec: group.totalDurationUs / 1e6,
+      coverSec: FINAL_EDIT_INTRO_DURATION_US / 1e6,
       outputWidth: output.width,
       outputHeight: output.height,
       signal: request.signal,
     };
     const previous = group.packaging.layoutResolution;
     if (operation === 'revalidate' && previous?.status === 'resolved' && previous.inputHash === packagingAutoLayoutInputHash(layoutInput)) {
-      assertPackagingLayoutExportReady(group.packaging, output.width, output.height);
+      await assertPackagingLayoutExportReady(group.packaging, output.width, output.height);
       return NextResponse.json({ status: 'resolved', view: group, candidatePayload: null });
     }
     const resolution = await resolvePackagingAutoLayout(layoutInput);

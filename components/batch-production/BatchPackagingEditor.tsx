@@ -16,6 +16,7 @@ export default function BatchPackagingEditor({
   onSave,
   onJumpToCover,
   draft = false,
+  commandPending = false,
   stickerSelection = null,
   playheadSec = 0,
   onAddSticker,
@@ -29,6 +30,7 @@ export default function BatchPackagingEditor({
   onSave: (config: FinalEditPackagingConfig, reextract?: boolean) => Promise<boolean>;
   onJumpToCover?: () => void;
   draft?: boolean;
+  commandPending?: boolean;
   stickerSelection?: { stickerId?: string } | null;
   playheadSec?: number;
   onAddSticker?: (choice: StickerAssetChoice) => void;
@@ -43,33 +45,36 @@ export default function BatchPackagingEditor({
   const saving = useRef(false);
   const [message, setMessage] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
-  const disabled = busy || !view.editable;
+  const disabled = busy || commandPending || !view.editable;
   const [activeTab, setActiveTab] = useState<PackagingTab>('settings');
   const [previousStickerSelection, setPreviousStickerSelection] = useState<typeof stickerSelection>(null);
   const revalidateKeyRef = useRef('');
+  const [layoutRetry, setLayoutRetry] = useState(0);
+  const [layoutRetryNeeded, setLayoutRetryNeeded] = useState(false);
   const layoutCommandRef = useRef(onLayoutCommand);
   useEffect(() => { layoutCommandRef.current = onLayoutCommand; });
   const planId = 'planId' in view && typeof view.planId === 'string' ? view.planId : '';
   const editRevision = 'editRevision' in view && typeof view.editRevision === 'number' ? view.editRevision : 0;
   const hasLayoutCommand = Boolean(onLayoutCommand);
   useEffect(() => {
-    if (draft || !planId || !hasLayoutCommand || !config.enabled || config.layoutRuntimeBundleVersion !== 2
+    if (commandPending || draft || !planId || !hasLayoutCommand || !config.enabled || config.layoutRuntimeBundleVersion !== 2
       || config.layoutResolution?.status === 'resolved') return;
-    const key = `${planId}:${editRevision}`;
+    const key = JSON.stringify([planId, editRevision, layoutRetry, { ...config, layoutResolution: undefined }]);
     if (revalidateKeyRef.current === key) return;
     revalidateKeyRef.current = key;
+    setLayoutRetryNeeded(false);
     setMessage('正在更新自动布局…');
     void layoutCommandRef.current?.('revalidate_packaging_layout').then((result) => {
       if (result.status === 'resolved') setMessage('自动布局已更新');
       else {
-        revalidateKeyRef.current = '';
+        setLayoutRetryNeeded(true);
         setMessage(result.message || '自动布局未完成，请调整后重试');
       }
     }).catch((error) => {
-      revalidateKeyRef.current = '';
+      setLayoutRetryNeeded(true);
       setMessage(error instanceof Error ? error.message : '自动布局更新失败');
     });
-  }, [config, draft, editRevision, hasLayoutCommand, planId]);
+  }, [config, commandPending, draft, editRevision, hasLayoutCommand, layoutRetry, planId]);
   if (stickerSelection?.stickerId && stickerSelection !== previousStickerSelection) {
     setPreviousStickerSelection(stickerSelection);
     setActiveTab('stickers');
@@ -116,7 +121,7 @@ export default function BatchPackagingEditor({
       <div id="batch-packaging-stickers-panel" role="tabpanel" aria-labelledby="batch-packaging-stickers-tab" hidden={activeTab !== 'stickers'}>
         {activeTab === 'stickers' && <BatchStickerPanel
           active
-          view={{ ...view, packaging: config }}
+          view={{ ...view, editable: !disabled, packaging: config }}
           playheadSec={playheadSec}
           selectedStickerId={stickerSelection?.stickerId ?? ''}
           onSave={(next) => onSave(next)}
@@ -166,5 +171,7 @@ export default function BatchPackagingEditor({
     </>}
     </div>}
     {message && <p role="alert" className="text-fail">{message}</p>}
+    {layoutRetryNeeded && <button type="button" className="btn-secondary px-2 py-1" disabled={disabled}
+      onClick={() => setLayoutRetry(value => value + 1)}>重试布局</button>}
   </section>;
 }

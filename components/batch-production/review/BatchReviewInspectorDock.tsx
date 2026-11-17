@@ -24,6 +24,7 @@ export interface BatchReviewInspectorDockProps {
   film: UnifiedFilmState | null;
   selection: SelectionTarget | null;
   inspectorTab: InspectorTab;
+  commandPending?: boolean;
   onTabChange: (tab: InspectorTab) => void;
   poolAssets: BatchOutputPoolAssetView[];
   onMediaEdit: (planId: string, edit: Record<string, unknown>) => Promise<boolean>;
@@ -47,6 +48,7 @@ export default function BatchReviewInspectorDock({
   film,
   selection,
   inspectorTab,
+  commandPending = false,
   onTabChange,
   poolAssets,
   onMediaEdit,
@@ -217,7 +219,7 @@ export default function BatchReviewInspectorDock({
       </div>
 
       <div className={styles.inspectorScroll}>
-        {inspectorTab === 'packaging' && <BatchPackagingEditor key={`${film.planId}:${arrangement.outputVersionId}`} view={arrangement} onJumpToCover={() => onJumpToCover(film.planId)}
+        {inspectorTab === 'packaging' && <BatchPackagingEditor key={`${film.planId}:${arrangement.outputVersionId}`} view={arrangement} commandPending={commandPending} onJumpToCover={() => onJumpToCover(film.planId)}
           stickerSelection={selection?.planId === film.planId && selection.kind === 'sticker' ? selection : null}
           onAddSticker={(choice) => onAddSticker(film.planId, choice)}
           onStickerDragStart={(choice) => onStickerDragStart(film.planId, choice)}

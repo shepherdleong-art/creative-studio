@@ -953,7 +953,7 @@ export default function BatchUnifiedReviewWorkspace({
             previewAsset={sourceSession?.asset ?? previewAsset}
             sourceSession={sourceSession}
             onSourceApply={handleMediaEdit}
-            packagingEditable={inspectorTab === 'packaging'}
+            packagingEditable={inspectorTab === 'packaging' && !historyPending}
             coverPreviewRequest={coverPreviewRequest}
             onClearPreviewAsset={() => { setPreviewAsset(null); setSourceSession(null); }}
             playheadSec={playheadSec}
@@ -976,6 +976,7 @@ export default function BatchUnifiedReviewWorkspace({
         {/* Zone 3: Inspector Dock (Right, spanning rows 1 & 2) */}
         <div style={{ gridColumn: 3, gridRow: '1 / 3' }} className="min-h-0 min-w-0">
           <BatchReviewInspectorDock
+            commandPending={historyPending}
             onAddSticker={handleAddSticker}
             onStickerDragStart={(planId, choice) => setDraggedSticker({ planId, choice })}
             onStickerDragEnd={() => setDraggedSticker(null)}

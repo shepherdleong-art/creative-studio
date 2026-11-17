@@ -31,8 +31,10 @@ interface EngineManifest {
   files: Record<string, string>;
 }
 
-function hashFile(file: string): string {
-  return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+async function hashFile(file: string): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
 }
 
 function addFile(files: FileMap, relative: string, absolute: string): void {
@@ -40,51 +42,54 @@ function addFile(files: FileMap, relative: string, absolute: string): void {
   files.set(relative.replaceAll(path.sep, '/'), absolute);
 }
 
-function addDirectory(files: FileMap, relativeRoot: string, absoluteRoot: string): void {
+async function addDirectory(files: FileMap, relativeRoot: string, absoluteRoot: string): Promise<void> {
   if (!fs.existsSync(absoluteRoot)) return;
-  const visit = (dir: string) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+  const visit = async (dir: string): Promise<void> => {
+    for (const entry of (await fs.promises.readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
       const absolute = path.join(dir, entry.name);
       const relative = `${relativeRoot}/${path.relative(absoluteRoot, absolute)}`;
-      if (entry.isDirectory()) visit(absolute);
+      if (entry.isDirectory()) await visit(absolute);
       else if (entry.isFile()) addFile(files, relative, absolute);
     }
   };
-  visit(absoluteRoot);
+  await visit(absoluteRoot);
 }
 
-function manifestFiles(files: FileMap): Record<string, string> {
-  return Object.fromEntries([...files.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([relative, absolute]) => [relative, hashFile(absolute)]));
+async function manifestFiles(files: FileMap): Promise<Record<string, string>> {
+  const result: Record<string, string> = {};
+  for (const [relative, absolute] of [...files.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    result[relative] = await hashFile(absolute);
+  }
+  return result;
 }
 
-function copySnapshot(source: string, destination: string): void {
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
+async function copySnapshot(source: string, destination: string): Promise<void> {
+  await fs.promises.mkdir(path.dirname(destination), { recursive: true });
   // 硬链接共享 inode，原地更新部署资源会悄悄改掉历史任务的冻结文件。
-  fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+  await fs.promises.copyFile(source, destination, fs.constants.COPYFILE_EXCL);
 }
 
-function publishDirectory(tempDir: string, finalDir: string): void {
+async function publishDirectory(tempDir: string, finalDir: string): Promise<void> {
   const manifestPath = path.join(finalDir, 'manifest.json');
   if (fs.existsSync(manifestPath)) {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
     return;
   }
-  const wait = new Int32Array(new SharedArrayBuffer(4));
   let lastError: unknown;
   // Windows 在并发发布或安全扫描新文件时可能短暂拒绝目录 rename；只接受完整 manifest，否则有限重试后闭门。
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
-      fs.renameSync(tempDir, finalDir);
+      await fs.promises.rename(tempDir, finalDir);
       return;
     } catch (error) {
       lastError = error;
       if (fs.existsSync(manifestPath)) {
-        fs.rmSync(tempDir, { recursive: true, force: true });
+        await fs.promises.rm(tempDir, { recursive: true, force: true });
         return;
       }
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EPERM' && code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error;
-      Atomics.wait(wait, 0, 0, 50);
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
   }
   throw lastError;
@@ -94,25 +99,28 @@ function chromeDir(packagingDir: string): string {
   return path.join(packagingDir, 'runtime', 'chrome-headless-shell');
 }
 
-let engineCache: { key: string; engineHash: string; hyperframesVersion: string } | null = null;
-function currentEngine(packagingDir: string): { engineHash: string; hyperframesVersion: string } {
+type EngineSnapshot = { key: string; engineHash: string; hyperframesVersion: string; sources: FileMap; files: Record<string, string> };
+let engineCache: EngineSnapshot | null = null;
+function engineIdentity(files: Record<string, string>, platform: string, arch: string): string {
+  return createHash('sha256').update(JSON.stringify({ files,
+    hyperframesPackage: files['node_modules/hyperframes/package.json'], platform, arch })).digest('hex');
+}
+async function currentEngine(packagingDir: string): Promise<EngineSnapshot> {
   const files: FileMap = new Map();
-  addDirectory(files, 'chrome-headless-shell', chromeDir(packagingDir));
-  addDirectory(files, 'node_modules', path.join(packagingDir, 'node_modules'));
-  const key = JSON.stringify([...files].map(([relative, file]) => {
-    const stat = fs.statSync(file);
-    return [relative, file, stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino];
-  }));
+  await addDirectory(files, 'chrome-headless-shell', chromeDir(packagingDir));
+  await addDirectory(files, 'node_modules', path.join(packagingDir, 'node_modules'));
+  const identities = [];
+  for (const [relative, file] of files) {
+    const stat = await fs.promises.stat(file);
+    identities.push([relative, file, stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino]);
+  }
+  const key = JSON.stringify(identities);
   if (engineCache?.key === key) return engineCache;
   const hyperframesPackage = path.join(packagingDir, 'node_modules', 'hyperframes', 'package.json');
   const hyperframesVersion = String(JSON.parse(fs.readFileSync(hyperframesPackage, 'utf8')).version ?? '');
-  const engineHash = createHash('sha256').update(JSON.stringify({
-    files: manifestFiles(files),
-    hyperframesPackage: hashFile(hyperframesPackage),
-    platform: process.platform,
-    arch: process.arch,
-  })).digest('hex');
-  engineCache = { key, engineHash, hyperframesVersion };
+  const digests = await manifestFiles(files);
+  const engineHash = engineIdentity(digests, process.platform, process.arch);
+  engineCache = { key, engineHash, hyperframesVersion, sources: files, files: digests };
   return engineCache;
 }
 
@@ -124,46 +132,53 @@ function bundleRoot(): string {
   return path.join(dataRoot(), 'storage', 'packaging', 'layout-bundles');
 }
 
-function materializeEngine(packagingDir: string): { engineHash: string; hyperframesVersion: string } {
-  const current = currentEngine(packagingDir);
+const enginesInFlight = new Map<string, Promise<{ engineHash: string; hyperframesVersion: string }>>();
+async function materializeEngine(packagingDir: string): Promise<{ engineHash: string; hyperframesVersion: string }> {
+  const pending = enginesInFlight.get(packagingDir);
+  if (pending) return pending;
+  const next = createEngineSnapshot(packagingDir);
+  enginesInFlight.set(packagingDir, next);
+  try { return await next; }
+  finally { if (enginesInFlight.get(packagingDir) === next) enginesInFlight.delete(packagingDir); }
+}
+
+async function createEngineSnapshot(packagingDir: string): Promise<{ engineHash: string; hyperframesVersion: string }> {
+  const current = await currentEngine(packagingDir);
   const finalDir = path.join(engineRoot(), current.engineHash);
   if (fs.existsSync(path.join(finalDir, 'manifest.json'))) return current;
-  const files: FileMap = new Map();
-  addDirectory(files, 'chrome-headless-shell', chromeDir(packagingDir));
-  addDirectory(files, 'node_modules', path.join(packagingDir, 'node_modules'));
   const manifest: EngineManifest = {
     schemaVersion: 1,
     engineHash: current.engineHash,
     hyperframesVersion: current.hyperframesVersion,
     platform: process.platform,
     arch: process.arch,
-    files: manifestFiles(files),
+    files: current.files,
   };
   const tempDir = path.join(engineRoot(), `.tmp-${randomUUID()}`);
-  fs.mkdirSync(tempDir, { recursive: true });
+  await fs.promises.mkdir(tempDir, { recursive: true });
   try {
-    for (const [relative, absolute] of files) copySnapshot(absolute, path.join(tempDir, relative));
-    assertHashes(tempDir, manifest.files, '冻结中的自动布局引擎');
-    fs.writeFileSync(path.join(tempDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
-    publishDirectory(tempDir, finalDir);
+    for (const [relative, absolute] of current.sources) await copySnapshot(absolute, path.join(tempDir, relative));
+    await assertHashes(tempDir, manifest.files, '冻结中的自动布局引擎');
+    await fs.promises.writeFile(path.join(tempDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+    await publishDirectory(tempDir, finalDir);
   } finally {
-    if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
   }
   return current;
 }
 
 /** 将 v2 布局所需的模板、字体、贴纸与运行时冻结到内容寻址目录；引擎跨布局共享。 */
-export function materializePackagingLayoutBundle(input: {
+export async function materializePackagingLayoutBundle(input: {
   config: FinalEditPackagingConfig;
   outputWidth: number;
   outputHeight: number;
-}): { bundleDir: string; manifest: PackagingLayoutBundleManifest } {
+}): Promise<{ bundleDir: string; manifest: PackagingLayoutBundleManifest }> {
   const packagingDir = resolvePackagingDir();
-  const engine = materializeEngine(packagingDir);
+  const engine = await materializeEngine(packagingDir);
   const templateDir = resolvePackagingTemplateDir(packagingDir, input.config.template);
   const files: FileMap = new Map();
-  addDirectory(files, `templates/${input.config.template}`, templateDir);
-  addDirectory(files, 'fonts', path.join(packagingDir, 'fonts'));
+  await addDirectory(files, `templates/${input.config.template}`, templateDir);
+  await addDirectory(files, 'fonts', path.join(packagingDir, 'fonts'));
   addFile(files, 'stickers/runtime.js', path.join(packagingDir, 'stickers', 'runtime.js'));
   addFile(files, 'stickers/catalog.json', path.join(packagingDir, 'stickers', 'catalog.json'));
   addFile(files, 'auto-layout/runtime.js', path.join(packagingDir, 'auto-layout', 'runtime.js'));
@@ -188,33 +203,33 @@ export function materializePackagingLayoutBundle(input: {
     outputHeight: input.outputHeight,
     engineHash: engine.engineHash,
     hyperframesVersion: JSON.parse(fs.readFileSync(hyperframesPackage, 'utf8')).version,
-    files: manifestFiles(files),
+    files: await manifestFiles(files),
   };
   const geometryManifestHash = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
   const manifest: PackagingLayoutBundleManifest = { ...identity, schemaVersion: 1, geometryManifestHash };
   const bundleDir = path.join(bundleRoot(), geometryManifestHash);
   if (fs.existsSync(path.join(bundleDir, 'manifest.json'))) {
-    assertHashes(bundleDir, manifest.files, '自动布局冻结资源');
+    await assertHashes(bundleDir, manifest.files, '自动布局冻结资源');
     return { bundleDir, manifest };
   }
   const tempDir = path.join(bundleRoot(), `.tmp-${randomUUID()}`);
-  fs.mkdirSync(tempDir, { recursive: true });
+  await fs.promises.mkdir(tempDir, { recursive: true });
   try {
-    for (const [relative, absolute] of files) copySnapshot(absolute, path.join(tempDir, relative));
-    assertHashes(tempDir, manifest.files, '冻结中的自动布局资源');
-    fs.writeFileSync(path.join(tempDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
-    publishDirectory(tempDir, bundleDir);
+    for (const [relative, absolute] of files) await copySnapshot(absolute, path.join(tempDir, relative));
+    await assertHashes(tempDir, manifest.files, '冻结中的自动布局资源');
+    await fs.promises.writeFile(path.join(tempDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+    await publishDirectory(tempDir, bundleDir);
   } finally {
-    if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
   }
   return { bundleDir, manifest };
 }
 
-function assertHashes(root: string, expected: Record<string, string>, label: string): void {
+async function assertHashes(root: string, expected: Record<string, string>, label: string): Promise<void> {
   for (const [relative, sha256] of Object.entries(expected)) {
     if (!relative || relative.includes('..') || path.isAbsolute(relative)) throw new PackagingError('layout_manifest_invalid', `${label}包含非法路径`, 409);
     const absolute = path.join(root, relative);
-    if (!fs.existsSync(absolute) || hashFile(absolute) !== sha256) {
+    if (!fs.existsSync(absolute) || await hashFile(absolute) !== sha256) {
       throw new PackagingError('layout_resource_mismatch', `${label}已变化或缺失：${relative}，请重新完成自动布局`, 409);
     }
   }
@@ -239,23 +254,24 @@ export function readPackagingLayoutBundle(resolution: PackagingLayoutResolution)
   return { bundleDir, manifest };
 }
 
-export function resolveVerifiedPackagingLayoutBundle(resolution: PackagingLayoutResolution): { bundleDir: string; manifest: PackagingLayoutBundleManifest } {
+export async function resolveVerifiedPackagingLayoutBundle(resolution: PackagingLayoutResolution): Promise<{ bundleDir: string; manifest: PackagingLayoutBundleManifest }> {
   const { bundleDir, manifest } = readPackagingLayoutBundle(resolution);
-  assertHashes(bundleDir, manifest.files, '自动布局冻结资源');
+  await assertHashes(bundleDir, manifest.files, '自动布局冻结资源');
   const engineDir = path.join(engineRoot(), manifest.engineHash);
   const engineManifestPath = path.join(engineDir, 'manifest.json');
   if (!fs.existsSync(engineManifestPath)) throw new PackagingError('layout_engine_missing', '自动布局引擎已缺失，请重新完成自动布局', 409);
   const engine = JSON.parse(fs.readFileSync(engineManifestPath, 'utf8')) as EngineManifest;
-  if (engine.engineHash !== manifest.engineHash || engine.platform !== process.platform || engine.arch !== process.arch
+  if (engine.engineHash !== manifest.engineHash || engineIdentity(engine.files, engine.platform, engine.arch) !== manifest.engineHash
+    || engine.platform !== process.platform || engine.arch !== process.arch
     || engine.hyperframesVersion !== manifest.hyperframesVersion) {
     throw new PackagingError('layout_engine_mismatch', '自动布局引擎与当前任务不匹配', 409);
   }
-  assertHashes(engineDir, engine.files, '自动布局引擎');
+  await assertHashes(engineDir, engine.files, '自动布局引擎');
   return { bundleDir, manifest };
 }
 
 /** 单条、批量与发布前共用的 v2 导出门禁；v1 配置保持原路径。 */
-export function assertPackagingLayoutExportReady(
+export async function assertPackagingLayoutExportReady(
   config: {
     enabled: boolean;
     template: string;
@@ -265,7 +281,7 @@ export function assertPackagingLayoutExportReady(
   },
   outputWidth: number,
   outputHeight: number,
-): { bundleDir: string; manifest: PackagingLayoutBundleManifest } | null {
+): Promise<{ bundleDir: string; manifest: PackagingLayoutBundleManifest } | null> {
   if (!config.enabled) return null;
   assertSupportedPackagingConfigLayoutVersions(config);
   if (config.layoutRuntimeBundleVersion !== 2) return null;
@@ -276,7 +292,7 @@ export function assertPackagingLayoutExportReady(
   if (resolution.runtimeBundleVersion !== 2 || resolution.outputWidth !== outputWidth || resolution.outputHeight !== outputHeight) {
     throw new PackagingError('layout_output_mismatch', '自动布局结果与当前输出画幅不一致，请重新完成自动布局', 409);
   }
-  const verified = resolveVerifiedPackagingLayoutBundle(resolution);
+  const verified = await resolveVerifiedPackagingLayoutBundle(resolution);
   if (verified.manifest.template !== config.template) {
     throw new PackagingError('layout_template_mismatch', '自动布局结果与当前模板不一致，请重新完成自动布局', 409);
   }

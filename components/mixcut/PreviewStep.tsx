@@ -364,12 +364,12 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const selectedLayoutVariant = group.variants.find(item => item.id === previewVariantId);
   const layoutValidationKey = JSON.stringify([group.id, group.revision, previewVariantId, selectedLayoutVariant?.revision,
     selectedLayoutVariant?.outputPreset, group.packaging.enabled, group.packaging.layoutRuntimeBundleVersion,
-    group.packaging.layoutResolution?.status]);
+    group.packaging.layoutResolution?.status, { ...group.packaging, layoutResolution: undefined }]);
   useEffect(() => {
     const currentGroup = groupRef.current;
     const selected = currentGroup.variants.find(item => item.id === previewVariantId);
     if (!selected || !currentGroup.packaging.enabled || currentGroup.packaging.layoutRuntimeBundleVersion !== 2) return;
-    const key = `${currentGroup.id}:${currentGroup.revision}:${previewVariantId}:${selected.revision}:${selected.outputPreset}`;
+    const key = layoutValidationKey;
     if (layoutRevalidateRef.current.key === key) return;
     const generation = layoutRevalidateRef.current.generation + 1;
     layoutRevalidateRef.current = { key, generation };
@@ -385,7 +385,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           signal: controller.signal,
           body: JSON.stringify({ operation: 'revalidate', expectedRevision, expectedPackaging, variantId: previewVariantId }),
         }));
-        if (layoutRevalidateRef.current.generation !== generation) return;
+        if (controller.signal.aborted || layoutRevalidateRef.current.generation !== generation) return;
         if (result.status === 'resolved' && result.view && groupRef.current.revision === expectedRevision) {
           publishGroupRef.current(result.view);
           setMessage('自动布局已更新');
@@ -399,7 +399,10 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
         setMessage(`自动布局更新失败：${error instanceof Error ? error.message : String(error)}`);
       }
     })();
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      if (layoutRevalidateRef.current.generation === generation) layoutRevalidateRef.current.key = '';
+    };
   }, [layoutValidationKey, previewVariantId]);
 
   useEffect(() => {

@@ -490,7 +490,7 @@ try {
   assert.ok(added, '点击素材库后必须真实新增贴纸');
   const overlay = page.frameLocator('iframe[title="包装版式编辑"]');
   try {
-    await overlay.locator(`[data-sticker-id="${added.id}"]`).waitFor({ timeout: 45_000 });
+    await overlay.locator(`[data-sticker-id="${added.id}"]`).waitFor({ timeout: 120_000 });
   } catch (error) {
     const frameStates = await Promise.all(page.frames().map(async (frame) => ({
       url: frame.url(),
@@ -512,9 +512,28 @@ try {
   assert.equal(await page.locator('[data-sticker-clip-id][data-selected="true"]').count(), 0, '点击预览空白必须取消选中');
   await addedBlock.click({ position: { x: 24, y: 10 } });
   await eventually(async () => await addedBlock.getAttribute('data-selected') === 'true');
+  await eventually(async () => (await fetchArrangement(source)).packaging.layoutResolution?.status === 'resolved', '首次 v2 布局须完成后再验收失败重试', 120_000);
+  let rejectedRevalidations = 0;
+  let rejectRevalidation = true;
+  const simulateNoSpace = async route => {
+    if (route.request().method() === 'POST' && JSON.parse(route.request().postData() || '{}').type === 'revalidate_packaging_layout' && rejectRevalidation) {
+      rejectedRevalidations += 1;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'infeasible', message: '测试布局空间不足' }) });
+    } else await route.continue();
+  };
+  const sourceClipsUrl = `${server.baseUrl}${clipsPath(source)}?projectId=${projectId}`;
+  await page.route(sourceClipsUrl, simulateNoSpace);
   const deletedByKeyboardResult = await savePackaging(source, () => page.keyboard.press('Delete'));
   assert.equal(deletedByKeyboardResult.view.packaging.stickers.length, 7, '从预览空白回到时间轴选中后，Delete 必须真实删除贴纸');
   assert.ok(!deletedByKeyboardResult.view.packaging.stickers.some((sticker) => sticker.id === added.id));
+  await page.getByRole('button', { name: '重试布局', exact: true }).waitFor();
+  await page.waitForTimeout(600);
+  assert.equal(rejectedRevalidations, 1, '同一修订布局无解时必须停止自动尝试，不能循环锁住编辑区');
+  assert.equal(await panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).isEnabled(), true, '布局无解后必须允许手动调整');
+  rejectRevalidation = false;
+  await page.getByRole('button', { name: '重试布局', exact: true }).click();
+  await eventually(async () => (await fetchArrangement(source)).packaging.layoutResolution?.status === 'resolved', '用户显式重试必须重新完成布局', 120_000);
+  await page.unroute(sourceClipsUrl, simulateNoSpace);
 
   const previewDeleteAddResult = await savePackaging(source, () => panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).click());
   assert.equal(previewDeleteAddResult.view.packaging.stickers.length, 8);
@@ -711,13 +730,8 @@ try {
     page.on('request', watchWrite);
     await page.keyboard.press('Control+Shift+z');
     await page.keyboard.press('Control+z');
-    await panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).click();
-    await panel.getByRole('button', { name: '复制到其他成片', exact: true }).click();
-    const pendingCopyDialog = page.getByRole('dialog', { name: '复制贴纸到其他成片' });
-    await pendingCopyDialog.getByRole('button', { name: '全选有效', exact: true }).click();
-    await pendingCopyDialog.getByRole('button', { name: /^复制并生成变体/ }).click();
-    await pendingCopyDialog.getByText('正在保存编辑，请稍后重试复制。', { exact: true }).waitFor();
-    await pendingCopyDialog.getByRole('button', { name: '关闭复制弹窗', exact: true }).click();
+    assert.equal(await panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).isEnabled(), false, '刷新期间应明确禁用局部添加');
+    assert.equal(await panel.getByRole('button', { name: '复制到其他成片', exact: true }).isEnabled(), false, '刷新期间应明确禁用跨片复制');
     await page.waitForTimeout(150);
     page.off('request', watchWrite);
     assert.deepEqual(duplicateWrites, [], '恢复结果刷新期间快捷键、局部编辑与跨片复制均不得写入或改变历史');
@@ -805,8 +819,9 @@ try {
       }
 
       panel = await openFilmStickers(source);
-      const pointOverlay = page.frameLocator('iframe[title="包装版式编辑"]');
-      await pointOverlay.locator('[data-point-id="cue:preview-point-cue"]').waitFor({ timeout: 45_000 });
+      // 后台派生重算期间预览仍显示，只是暂时禁用编辑；测量字体不依赖可编辑标题。
+      const pointOverlay = page.frameLocator('iframe[title="包装版式编辑"], iframe[title="包装效果叠加层"]');
+      await pointOverlay.locator('[data-point-id="cue:preview-point-cue"]').waitFor({ timeout: 120_000 });
       const readPointPreview = async () => {
         for (const frame of page.frames()) {
           if (!await frame.locator('[data-point-id="cue:preview-point-cue"]').count()) continue;

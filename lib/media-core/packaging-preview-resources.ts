@@ -5,6 +5,26 @@ import { assertSupportedPackagingConfigLayoutVersions, type FinalEditPackagingCo
 import { PackagingError, resolvePackagingDir, resolvePackagingTemplateDir } from './packaging-runtime.ts';
 import { readPackagingLayoutBundle } from './packaging-layout-manifest.ts';
 import { userFontDir } from './packaging-font.ts';
+import { dataRoot } from '../data-root.ts';
+
+function previewGrantPath(scope: string, hash: string): string {
+  return path.join(dataRoot(), 'storage', 'packaging', 'preview-grants', createHash('sha256').update(scope).digest('hex'), `${hash}.json`);
+}
+
+/** 仅在 HTML 成功构造后登记；配置切换不能撤掉该文档仍在加载的 gsap/字体。 */
+export function registerPackagingPreviewBundle(config: FinalEditPackagingConfig, scope?: string): void {
+  if (config.layoutRuntimeBundleVersion !== 2) return;
+  const resolution = config.layoutResolution;
+  if (!scope || resolution?.status !== 'resolved') throw new PackagingError('packaging_layout_stale', '自动布局尚未完成', 409);
+  const file = previewGrantPath(scope, resolution.geometryManifestHash);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  if (!fs.existsSync(file)) {
+    try {
+      fs.writeFileSync(file, JSON.stringify({ scope, config: { enabled: true, template: config.template,
+        layoutRuntimeBundleVersion: 2, layoutResolution: { ...resolution, elements: {} } } }), { flag: 'wx' });
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  }
+}
 
 /** 正式 v2 预览仅使用当前成片授权的冻结包；草稿与旧配置沿用原资源。 */
 export function packagingPreviewResources(config: FinalEditPackagingConfig, resourceUrl?: string) {
@@ -44,8 +64,15 @@ const MIME: Record<string, string> = { '.js': 'text/javascript; charset=utf-8', 
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.svg': 'image/svg+xml',
   '.ttf': 'font/ttf', '.ttc': 'font/ttf', '.otf': 'font/otf', '.woff': 'font/woff', '.woff2': 'font/woff2' };
 
-/** 调用方先经过成片归属授权；路径第一段必须匹配该成片当前持有的资源标识。 */
-export function packagingPreviewAssetResponse(config: FinalEditPackagingConfig, segments: string[]): Response {
+/** 调用方先经过成片归属授权；仅接受当前布局或此前已向同一成片交付文档的冻结资源。 */
+export function packagingPreviewAssetResponse(config: FinalEditPackagingConfig, segments: string[], scope?: string): Response {
+  if (scope && /^[a-f0-9]{64}$/.test(segments?.[0] ?? '')) {
+    const file = previewGrantPath(scope, segments[0]);
+    if (fs.existsSync(file)) {
+      const grant = JSON.parse(fs.readFileSync(file, 'utf8')) as { scope: string; config: FinalEditPackagingConfig };
+      if (grant.scope === scope && grant.config.layoutResolution?.geometryManifestHash === segments[0]) config = grant.config;
+    }
+  }
   const resolution = config.layoutResolution;
   if (!resolution || segments?.[0] !== resolution.geometryManifestHash
     || segments.length < 2 || segments.some(segment => !segment || segment === '.' || segment === '..' || /[\\/:\0]/.test(segment))) {

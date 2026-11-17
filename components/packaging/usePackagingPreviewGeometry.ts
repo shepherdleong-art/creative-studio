@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type RefObject } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { FinalEditPackagingConfig, PackagingPointLayout } from '@/lib/media-core/packaging-vars';
 import type { PackagingStickerInstance } from '@/lib/media-core/packaging-stickers';
 import type { PackagingStickerAssetMap } from '@/lib/media-core/packaging-sticker-assets';
@@ -65,6 +65,7 @@ export function usePackagingPreviewGeometry(frameRef: RefObject<HTMLIFrameElemen
   const ready = config?.layoutRuntimeBundleVersion !== 2 || config.layoutResolution?.status === 'resolved';
   const nextKey = `${structureKey}|${config?.layoutResolution?.geometryManifestHash ?? ''}`;
   const [documentKey, setDocumentKey] = useState(() => ready ? nextKey : 'layout-waiting');
+  const placeholderRetryRef = useRef('');
   if (ready && nextKey !== documentKey) setDocumentKey(nextKey);
   const geometryJson = JSON.stringify(config);
   useEffect(() => {
@@ -72,7 +73,20 @@ export function usePackagingPreviewGeometry(frameRef: RefObject<HTMLIFrameElemen
     const frame = frameRef.current;
     if (!frame) return;
     const saved = JSON.parse(geometryJson) as FinalEditPackagingConfig;
-    const apply = () => syncPackagingPreviewGeometry(frame, saved);
+    if (saved.layoutResolution?.status !== 'resolved') placeholderRetryRef.current = '';
+    const apply = () => {
+      // 请求跨过 stale 窗口时可能拿到占位页；只补载占位文档，绝不刷新已可编辑的文档。
+      if (saved.layoutResolution?.status === 'resolved' && frame.contentDocument?.querySelector('[data-packaging-layout-pending]')) {
+        const retryKey = `${documentKey}:${saved.layoutResolution.inputHash}`;
+        if (placeholderRetryRef.current !== retryKey) {
+          placeholderRetryRef.current = retryKey;
+          frame.contentWindow?.location.reload();
+        }
+        return;
+      }
+      if ((frame.contentWindow as PreviewWindow | null)?.__pointLayout) placeholderRetryRef.current = '';
+      syncPackagingPreviewGeometry(frame, saved);
+    };
     apply();
     frame.addEventListener('load', apply);
     return () => frame.removeEventListener('load', apply);

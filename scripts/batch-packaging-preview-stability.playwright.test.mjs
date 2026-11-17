@@ -55,6 +55,8 @@ const initialView = {
 };
 let savedView = structuredClone(initialView);
 let failNextSave = false;
+let placeholderResponses = 0;
+let placeholderTest = false;
 const requests = [];
 const edits = [];
 const script = `
@@ -118,7 +120,13 @@ try {
       // A short local response delay makes an unwanted document reload observable.
       await new Promise(resolve => setTimeout(resolve, 80));
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(packagingPreviewHtml({ config: savedView.packaging, vars: { title: '标题', subtitle: '副标题', point1: '', point2: '', point3: '', ...savedView.packaging.varsOverrides }, totalSec: 6 + 20 / 24, coverSec: 20 / 24, edit: true })); return;
+      if (placeholderResponses > 0) {
+        placeholderResponses -= 1;
+        res.end('<!doctype html><body data-packaging-layout-pending>正在更新自动布局…</body>'); return;
+      }
+      // 此段只隔离测试占位导航状态机；实际 v2 冻结与重放由生产 E2E 验证。
+      const config = placeholderTest ? { ...savedView.packaging, layoutRuntimeBundleVersion: undefined, layoutResolution: undefined } : savedView.packaging;
+      res.end(packagingPreviewHtml({ config, vars: { title: '标题', subtitle: '副标题', point1: '', point2: '', point3: '', ...savedView.packaging.varsOverrides }, totalSec: 6 + 20 / 24, coverSec: 20 / 24, edit: true })); return;
     }
     if (url.pathname.startsWith('/api/packaging/templates/')) {
       const relative = decodeURIComponent(url.pathname).replace('/api/packaging/templates/', '');
@@ -332,6 +340,32 @@ try {
     assert.equal(requests.length, stickerRequestCount, '贴纸保存失败回滚不重载预览');
     console.log(`PASS: ${template} drag/scale/rotate, polling, undo/redo/reset, failed save, text refresh, reload persistence, cover layouts; ${samples.frames} sampled frames, zero disappearing points/blank video frames`);
   }
+  placeholderTest = true;
+  const resolved = { schemaVersion: 1, status: 'resolved', inputHash: 'a'.repeat(64), runtimeBundleVersion: 2,
+    geometryManifestHash: 'b'.repeat(64), outputWidth: 1080, outputHeight: 1440, elements: {}, validation: { frameCount: 1, digest: 'fixture' } };
+  savedView = { ...structuredClone(initialView), packaging: { ...initialView.packaging, layoutRuntimeBundleVersion: 2, layoutResolution: resolved } };
+  placeholderResponses = 2;
+  const placeholderStart = requests.length;
+  await page.goto(origin);
+  await page.waitForFunction(() => document.querySelector('iframe')?.contentDocument?.querySelector('[data-packaging-layout-pending]'));
+  await page.waitForTimeout(800);
+  assert.equal(requests.length - placeholderStart, 2, 'ready 后迟到的占位响应只补载一次，持续占位不能无限刷新');
+  await page.evaluate(async () => window.refreshView({ packaging: { ...window.view.packaging, layoutResolution: { ...window.view.packaging.layoutResolution, status: 'stale' } } }));
+  await page.waitForTimeout(80);
+  await page.evaluate(async () => window.refreshView({ packaging: { ...window.view.packaging, layoutResolution: { ...window.view.packaging.layoutResolution, status: 'resolved' } } }));
+  await ready();
+  await point.waitFor();
+  const recoveredRequests = requests.length;
+  await page.evaluate(() => {
+    window.originalFrame = document.querySelector('iframe'); window.originalDocument = window.originalFrame.contentDocument; window.originalVideo = document.querySelector('video');
+  });
+  await page.evaluate(async () => window.refreshView({ packaging: { ...window.view.packaging, layoutResolution: { ...window.view.packaging.layoutResolution, status: 'stale' } } }));
+  await page.waitForTimeout(80);
+  await page.evaluate(async () => window.refreshView({ packaging: { ...window.view.packaging, layoutResolution: { ...window.view.packaging.layoutResolution, status: 'resolved' } } }));
+  await page.waitForTimeout(250);
+  assert.equal(requests.length, recoveredRequests, '真实文档的 stale→resolved 不得补载');
+  assert.deepEqual(await frameState(), { sameFrame: true, sameDocument: true, sameVideo: true });
+  console.log('PASS: late placeholder recovery, bounded retry and ready document identity');
   assert.deepEqual(errors, []);
 } finally {
   await browser?.close();

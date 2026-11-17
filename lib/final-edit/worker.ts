@@ -145,7 +145,7 @@ async function drain() {
         db.prepare(`UPDATE final_edit_jobs SET phase='publishing', progress=0.9 WHERE id=?`).run(job.id);
         if (snapshot.packaging?.enabled) {
           // v2 必须先验证冻结布局与引擎，再发布封面，避免留下半套正式产物。
-          assertPackagingLayoutExportReady({
+          await assertPackagingLayoutExportReady({
             enabled: true,
             template: snapshot.packaging.template ?? 'overlay-poster',
             layoutRuntimeBundleVersion: snapshot.packaging.layoutRuntimeBundleVersion,

@@ -28,7 +28,7 @@ import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { FINAL_EDIT_INTRO_DURATION_US } from '@/lib/media-core/render-contract';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { resolvePackagingStickerAssets } from '@/lib/media-core/packaging-sticker-assets';
-import { packagingPreviewResources } from '@/lib/media-core/packaging-preview-resources';
+import { packagingPreviewResources, registerPackagingPreviewBundle } from '@/lib/media-core/packaging-preview-resources';
 import type { PackagingTemplateId } from '@/lib/media-core/packaging-vars';
 import { OUTPUT_PRESETS } from '@/lib/final-edit/types';
 
@@ -108,7 +108,7 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
     if (group.packaging.layoutRuntimeBundleVersion === 2 && (group.packaging.layoutResolution?.status !== 'resolved'
       || group.packaging.layoutResolution.outputWidth !== OUTPUT_PRESETS[variant.outputPreset].width
       || group.packaging.layoutResolution.outputHeight !== OUTPUT_PRESETS[variant.outputPreset].height)) {
-      return new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><body style="margin:0;display:grid;place-items:center;background:transparent;color:#6e6e73;font:13px -apple-system,BlinkMacSystemFont,sans-serif">正在更新自动布局…</body></html>', { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+      return new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><body data-packaging-layout-pending style="margin:0;display:grid;place-items:center;background:transparent;color:#6e6e73;font:13px -apple-system,BlinkMacSystemFont,sans-serif">正在更新自动布局…</body></html>', { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
     }
 
     const resources = packagingPreviewResources({ ...group.packaging, template: template as PackagingTemplateId },
@@ -156,6 +156,7 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
       .replace('<head>', `<head><base href="${baseHref}">`)
       .replace('</head>', `${headEnd}</head>`)
       .replace('</body>', `${autoPlay}${editBridge}${replay}</body>`);
+    registerPackagingPreviewBundle(group.packaging, `/api/final-edit-groups/${encodeURIComponent(groupId)}/packaging-layout-resources`);
     return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
   } catch (error) { return finalEditErrorResponse(error); }
 }

@@ -362,7 +362,7 @@ async function orchestrateOne(
   try {
     const packaging = parsePackagingConfig(arrangement?.packaging);
     const outputSize = resolveBatchOutputSize(arrangement?.preset);
-    assertPackagingLayoutExportReady(packaging, outputSize.width, outputSize.height);
+    await assertPackagingLayoutExportReady(packaging, outputSize.width, outputSize.height);
   } catch (error) {
     return { planId, status: 'skipped', reason: error instanceof Error ? error.message : '自动布局资源校验失败' };
   }

@@ -19,7 +19,7 @@ export async function renderVideoPackaging(input: {
   if (!input.config.enabled) return;
   input.signal?.throwIfAborted();
   const dir = resolvePackagingDir();
-  const layoutBundle = assertPackagingLayoutExportReady(input.config,
+  const layoutBundle = await assertPackagingLayoutExportReady(input.config,
     input.config.layoutResolution?.outputWidth ?? 0,
     input.config.layoutResolution?.outputHeight ?? 0);
   const resourceDir = layoutBundle?.bundleDir ?? dir;

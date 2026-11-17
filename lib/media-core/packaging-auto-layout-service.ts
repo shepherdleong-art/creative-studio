@@ -81,7 +81,7 @@ export async function resolvePackagingAutoLayout(input: {
   }
   const packagingDir = resolvePackagingDir();
   if (input.signal?.aborted) throw makeAbortError();
-  const { bundleDir, manifest } = materializePackagingLayoutBundle(input);
+  const { bundleDir, manifest } = await materializePackagingLayoutBundle(input);
   const templateDir = path.join(bundleDir, 'templates', input.config.template);
   const stickerAssets = resolvePackagingStickerAssets({ packagingDir: bundleDir, template: input.config.template, stickers: input.config.stickers });
   const timelineVars = {

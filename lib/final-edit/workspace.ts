@@ -2624,7 +2624,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         config: latest.packaging,
         vars: buildPackagingVars({ coverTitle: { primary: group.coverTitle.primary.text, secondary: group.coverTitle.secondary.text },
           subtitleCues: group.subtitleCues, project: loadProjectPackagingData(db, group.projectId), overrides: latest.packaging.varsOverrides }),
-        totalSec: (20 + variant.timeline.bodyFrames) / 24, coverSec: 20 / 24,
+        totalSec: group.totalDurationUs / 1e6, coverSec: FINAL_EDIT_INTRO_DURATION_US / 1e6,
         outputWidth: OUTPUT_PRESETS[variant.outputPreset].width, outputHeight: OUTPUT_PRESETS[variant.outputPreset].height,
       };
       let resolution = latest.packaging.layoutResolution;
@@ -2637,7 +2637,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       group.packaging = { ...latest.packaging, layoutResolution: resolution };
       packagingTimeline = { pointCues: latest.packaging.pointCues ?? [], pointCuesMode: latest.packaging.pointCuesMode ?? 'none' };
     }
-    assertPackagingLayoutExportReady(group.packaging, OUTPUT_PRESETS[variant.outputPreset].width, OUTPUT_PRESETS[variant.outputPreset].height);
+    await assertPackagingLayoutExportReady(group.packaging, OUTPUT_PRESETS[variant.outputPreset].width, OUTPUT_PRESETS[variant.outputPreset].height);
     const blockedRelativePaths = new Set((db.prepare(`SELECT relativePath FROM project_artifacts WHERE projectId=?`).all(group.projectId) as Array<{ relativePath: string }>).map((row) => row.relativePath));
     const exportTarget = reserveProjectExportTarget(storageRoot, exportIdentity, { blockedRelativePaths });
     const packaging = group.packaging.enabled

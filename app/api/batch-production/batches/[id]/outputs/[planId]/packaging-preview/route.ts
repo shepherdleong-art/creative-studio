@@ -52,7 +52,7 @@ async function preview(request: NextRequest, context: { params: Promise<{ id: st
       } catch { /* 素材缩略图暂不可用时，模板保留默认配色。正式导出按实际封面取色。 */ }
     }
     if (!draft && config.layoutRuntimeBundleVersion === 2 && config.layoutResolution?.status !== 'resolved') {
-      return new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><body style="margin:0;display:grid;place-items:center;background:transparent;color:#6e6e73;font:13px -apple-system,BlinkMacSystemFont,sans-serif">正在更新自动布局…</body></html>', { status: 200, headers: { ...BATCH_NO_STORE_HEADERS, 'Content-Type': 'text/html; charset=utf-8' } });
+      return new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><body data-packaging-layout-pending style="margin:0;display:grid;place-items:center;background:transparent;color:#6e6e73;font:13px -apple-system,BlinkMacSystemFont,sans-serif">正在更新自动布局…</body></html>', { status: 200, headers: { ...BATCH_NO_STORE_HEADERS, 'Content-Type': 'text/html; charset=utf-8' } });
     }
     const previewConfig = draft ? { ...config, layoutRuntimeBundleVersion: undefined, layoutResolution: undefined } : config;
     const html = packagingPreviewHtml({ config: previewConfig, vars, coverSec, totalSec, palette,

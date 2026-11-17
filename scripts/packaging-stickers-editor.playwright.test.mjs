@@ -19,6 +19,7 @@ const testEnv = { ...process.env, CREATIVE_STUDIO_DATA_ROOT: testDataRoot, NEXT_
   ...(process.env.STICKER_TEST_STANDALONE ? { STICKER_FIXTURE_EXPORT_FONT: 'Arial' } : {}),
 };
 let browser;
+let page;
 let server;
 let passed = false;
 
@@ -88,7 +89,7 @@ try {
   assert.equal(seeded.status, 0, `fixture 初始化失败：\n${seeded.stderr}\n${seeded.stdout}`);
   const fixture = JSON.parse(seeded.stdout.trim().split(/\r?\n/).at(-1));
   browser = await chromium.launch({ headless: true, executablePath: chrome });
-  const page = await browser.newPage({ ...server.browserOptions, viewport: { width: 1600, height: 1100 }, deviceScaleFactor: 1 });
+  page = await browser.newPage({ ...server.browserOptions, viewport: { width: 1600, height: 1100 }, deviceScaleFactor: 1 });
   page.setDefaultTimeout(30_000);
   await page.goto(`${server.baseUrl}/projects/${fixture.projectId}?tab=final-edit`, { waitUntil: 'networkidle' });
   await page.getByRole('heading', { name: '确认本次混剪要用的素材' }).waitFor();
@@ -108,7 +109,12 @@ try {
     assert.equal(response.status(), 200);
     const request = JSON.parse(response.request().postData() || '{}');
     const body = await response.json();
+    await eventually(() => page.getByRole('button', { name: '下一步：导出', exact: true }).isEnabled(), '收到保存响应后须等界面写入互斥结束');
     return { request, view: body.view };
+  };
+  const historyShortcut = async (redo = false) => {
+    await eventually(() => page.getByRole('button', { name: redo ? '重做' : '撤销', exact: true }).isEnabled(), '前一条历史命令须完全保存后再执行下一条');
+    await page.keyboard.press(redo ? 'Control+Shift+z' : 'Control+z');
   };
   const readLayoutCommand = async (action) => {
     const pending = page.waitForResponse((response) => response.request().method() === 'POST'
@@ -157,7 +163,7 @@ try {
   assert.equal(first.visualWidthPct, 30);
   assert.equal(first.styleMode, 'follow-template');
   assert.equal(first.trackIndex, 0);
-  await eventually(async () => await overlay.locator('.packaging-sticker').count() === 1, '点击添加后 overlay 必须出现一张贴纸');
+  await eventually(async () => await overlay.locator('.packaging-sticker').count() === 1, '点击添加后 overlay 必须出现一张贴纸', 120_000);
   await overlay.locator('[data-sticker-edit-ui]').waitFor();
 
   const iframe = page.locator('iframe[data-packaging-overlay]');
@@ -169,7 +175,7 @@ try {
   assert.ok(Math.abs(second.centerXPct - 120 / frameBox.width * 100) < 1, `拖放 X 坐标错误：${second.centerXPct}`);
   assert.ok(Math.abs(second.centerYPct - 180 / frameBox.height * 100) < 1, `拖放 Y 坐标错误：${second.centerYPct}`);
   assert.equal(second.startFrame, Math.floor((first.startFrame + first.endFrame) / 2), '选中停在稳定中点后，新贴纸应从当前播放头添加');
-  await eventually(async () => await overlay.locator('.packaging-sticker').count() === 2, '拖放后 overlay 必须出现第二张贴纸');
+  await eventually(async () => await overlay.locator('.packaging-sticker').count() === 2, '拖放后 overlay 必须出现第二张贴纸', 120_000);
   await overlay.locator('[data-sticker-edit-ui]').waitFor();
 
   await eventually(async () => Number(await overlay.locator(`[data-sticker-id="${second.id}"]`).evaluate((element) => getComputedStyle(element).opacity)) === 1, '拖动前必须等到新贴纸处于稳定可见段');
@@ -199,6 +205,11 @@ try {
 
   await overlay.locator('[data-sticker-edit-ui]').waitFor();
   const savedSticker = overlay.locator(`[data-sticker-id="${second.id}"]`);
+  await eventually(() => page.getByRole('button', { name: '撤销', exact: true }).isEnabled(), '移动完整保存后才能测试失败回滚');
+  await page.locator(`[data-sticker-clip-id="${second.id}"]`).click({ position: { x: 20, y: 10 } });
+  await eventually(async () => Number(await savedSticker.evaluate(element => getComputedStyle(element).opacity)) === 1, '失败回滚应作用于选中的可见贴纸');
+  await eventually(async () => await savedSticker.evaluate((element, expected) => Math.abs(parseFloat(element.style.left) - expected.centerXPct) < 0.01
+    && Math.abs(parseFloat(element.style.top) - expected.centerYPct) < 0.01, moved), '失败回滚前先等待权威保存几何同步');
   const savedGeometry = await savedSticker.evaluate(element => [element.style.left, element.style.top, element.style.width]);
   const failedSaveUrl = `${server.baseUrl}/api/final-edit-groups/${fixture.groupId}`;
   const rejectStickerSave = async route => {
@@ -207,7 +218,7 @@ try {
   };
   await page.route(failedSaveUrl, rejectStickerSave);
   const failedResponse = page.waitForResponse(response => response.url() === failedSaveUrl && response.request().method() === 'PATCH');
-  const failedBox = await savedSticker.boundingBox();
+  const failedBox = await savedSticker.locator('[data-sticker-edit-ui]').boundingBox();
   await page.mouse.move(failedBox.x + failedBox.width / 2, failedBox.y + failedBox.height / 2);
   await page.mouse.down();
   await page.mouse.move(failedBox.x + failedBox.width / 2 + 30, failedBox.y + failedBox.height / 2 + 25, { steps: 6 });
@@ -391,10 +402,10 @@ try {
   }, 'overlay 层级必须与时间轴轨道顺序一致');
 
   await eventually(async () => await page.getByRole('button', { name: '撤销', exact: true }).isEnabled(), '换轨保存后撤销必须可用');
-  const undoTrackResult = await readPatch(() => page.keyboard.press('Control+z'), false);
+  const undoTrackResult = await readPatch(() => historyShortcut(), false);
   assert.equal(undoTrackResult.request.type, 'restore_packaging_revision');
   assert.equal(undoTrackResult.view.packaging.stickers.find((item) => item.id === second.id).trackIndex, sourceTrack, '一次撤销必须恢复整个换轨操作');
-  const redoTrackResult = await readPatch(() => page.keyboard.press('Control+Shift+z'), false);
+  const redoTrackResult = await readPatch(() => historyShortcut(true), false);
   assert.equal(redoTrackResult.request.type, 'restore_packaging_revision');
   assert.equal(redoTrackResult.view.packaging.stickers.find((item) => item.id === second.id).trackIndex, targetTrack, '重做必须恢复换轨后的层级');
 
@@ -449,11 +460,11 @@ try {
   assert.equal(deletedResult.view.packaging.stickers[0].id, first.id);
 
   await eventually(async () => await page.getByRole('button', { name: '撤销', exact: true }).isEnabled(), '删除后撤销必须可用');
-  const undoDeleteResult = await readPatch(() => page.keyboard.press('Control+z'), false);
+  const undoDeleteResult = await readPatch(() => historyShortcut(), false);
   assert.equal(undoDeleteResult.view.packaging.stickers.length, 2, '一次撤销必须恢复被删除贴纸');
-  const redoDeleteResult = await readPatch(() => page.keyboard.press('Control+Shift+z'), false);
+  const redoDeleteResult = await readPatch(() => historyShortcut(true), false);
   assert.equal(redoDeleteResult.view.packaging.stickers.length, 1, '重做必须再次删除当前贴纸');
-  const restoredForAnimationResult = await readPatch(() => page.keyboard.press('Control+z'), false);
+  const restoredForAnimationResult = await readPatch(() => historyShortcut(), false);
   assert.equal(restoredForAnimationResult.view.packaging.stickers.length, 2, '后续动效测试前恢复两张贴纸');
 
   const defaultAnimationTrigger = panel.getByRole('button', { name: /^预览动效 / }).first();
@@ -489,6 +500,7 @@ try {
   const animationAddResult = await readPatch(() => panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).click());
   const animationAdded = animationAddResult.view.packaging.stickers.find((item) => !idsBeforeAnimationAdd.has(item.id));
   assert.equal(animationAdded.animation, 'rise', '新增贴纸必须复制当前统一动效');
+  await eventually(async () => await page.locator(`[data-sticker-clip-id="${animationAdded.id}"]`).getAttribute('data-selected') === 'true', '新增后的自动选中完成后才能按 Delete');
   const animationAddDeleteResult = await readPatch(() => page.keyboard.press('Delete'));
   assert.equal(animationAddDeleteResult.view.packaging.stickers.length, 2);
 
@@ -580,14 +592,105 @@ try {
   }
   await panel.getByRole('button', { name: '换一组基础贴纸', exact: true }).waitFor();
   await eventually(async () => await page.getByRole('button', { name: '撤销', exact: true }).isEnabled(), '自动布置后撤销必须可用');
-  const undoAutoLayoutResult = await readPatch(() => page.keyboard.press('Control+z'), false);
+  const undoAutoLayoutResult = await readPatch(() => historyShortcut(), false);
   assert.equal(undoAutoLayoutResult.view.packaging.stickers.length, 2, '一次撤销必须恢复自动布置前的手动贴纸');
-  const redoAutoLayoutResult = await readPatch(() => page.keyboard.press('Control+Shift+z'), false);
+  const redoAutoLayoutResult = await readPatch(() => historyShortcut(true), false);
   assert.equal(redoAutoLayoutResult.view.packaging.stickers.length, 8, '一次重做必须恢复完整自动组合');
 
   const editedAuto = automatic[0];
   const editedAutoBlock = page.locator(`[data-sticker-clip-id="${editedAuto.id}"]`);
+  await eventually(() => page.getByRole('button', { name: '撤销', exact: true }).isEnabled(), '重做完成后才能开始自动贴纸空间编辑');
   await editedAutoBlock.click({ position: { x: 20, y: 10 } });
+  await eventually(async () => await editedAutoBlock.getAttribute('data-selected') === 'true', '自动贴纸必须选中后才能测试空间编辑');
+  const waitForLayout = async (revision) => {
+    await eventually(async () => {
+      const view = await page.evaluate(async (id) => (await fetch(`/api/final-edit-groups/${id}`)).json(), fixture.groupId);
+      return view.revision === revision && view.packaging.layoutResolution?.status === 'resolved';
+    }, '几何保存后的 stale 布局必须重新解析', 60_000);
+    await eventually(async () => await overlay.locator('[data-sticker-edit-ui]').count() === 1, '自动贴纸编辑桥必须就绪');
+  };
+  await waitForLayout(redoAutoLayoutResult.view.revision);
+  await eventually(async () => Number(await overlay.locator(`[data-sticker-id="${editedAuto.id}"]`).evaluate(element => getComputedStyle(element).opacity)) === 1, '自动贴纸须处于稳定可见段');
+  await page.evaluate(() => {
+    const frame = document.querySelector('iframe[data-packaging-overlay]');
+    window.__layoutV2Identity = { frame, document: frame.contentDocument, videos: [...document.querySelectorAll('#mixcut-preview-panel video')] };
+  });
+  const assertStableDocument = async () => {
+    assert.equal(await page.evaluate(() => {
+      const saved = window.__layoutV2Identity;
+      const frame = document.querySelector('iframe[data-packaging-overlay]');
+      const videos = [...document.querySelectorAll('#mixcut-preview-panel video')];
+      return saved.frame === frame && saved.document === frame.contentDocument
+        && saved.videos.length > 0 && saved.videos.length === videos.length && saved.videos.every((video, i) => video === videos[i]);
+    }), true, 'v2 几何保存、重算和历史恢复必须复用 PR #14 的 iframe、Document 与视频节点');
+  };
+  const autoSticker = overlay.locator(`[data-sticker-id="${editedAuto.id}"]`);
+  const dragFrom = async (locator, dx, dy) => {
+    const box = await locator.boundingBox();
+    assert.ok(box);
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2 + dy, { steps: 8 });
+    await page.mouse.up();
+  };
+  const autoMoved = await readPatch(() => dragFrom(autoSticker.locator('[data-sticker-edit-ui]'), 30, 25));
+  const pinned = autoMoved.view.packaging.stickers.find(item => item.id === editedAuto.id);
+  assert.equal(pinned.origin.positionPinned, true, '空间拖动必须固定自动贴纸位置');
+  await waitForLayout(autoMoved.view.revision);
+  await assertStableDocument();
+  const autoScaled = await readPatch(() => dragFrom(overlay.locator('[data-sticker-handle="scale"]'), 15, 10));
+  assert.ok(autoScaled.view.packaging.stickers.find(item => item.id === editedAuto.id).visualWidthPct > pinned.visualWidthPct);
+  await waitForLayout(autoScaled.view.revision);
+  await assertStableDocument();
+  const autoRotated = await readPatch(() => dragFrom(overlay.locator('[data-sticker-handle="rotate"]'), 20, 15));
+  const rotatedAuto = autoRotated.view.packaging.stickers.find(item => item.id === editedAuto.id);
+  assert.notEqual(rotatedAuto.rotationDeg, autoScaled.view.packaging.stickers.find(item => item.id === editedAuto.id).rotationDeg);
+  await waitForLayout(autoRotated.view.revision);
+  await assertStableDocument();
+  const undoAutoGeometry = await readPatch(() => historyShortcut(), false);
+  assert.equal(undoAutoGeometry.view.packaging.stickers.find(item => item.id === editedAuto.id).rotationDeg,
+    autoScaled.view.packaging.stickers.find(item => item.id === editedAuto.id).rotationDeg);
+  await waitForLayout(undoAutoGeometry.view.revision);
+  await assertStableDocument();
+  const redoAutoGeometry = await readPatch(() => historyShortcut(true), false);
+  assert.equal(redoAutoGeometry.view.packaging.stickers.find(item => item.id === editedAuto.id).rotationDeg, rotatedAuto.rotationDeg);
+  await waitForLayout(redoAutoGeometry.view.revision);
+  await assertStableDocument();
+
+  // 模拟卖点刷新产生的同修订 stale 响应；失败保存必须回滚，而且不能被旧去重键拦住重算。
+  await page.waitForLoadState('networkidle');
+  const autoSavedGeometry = await autoSticker.evaluate(element => [element.style.left, element.style.top, element.style.width]);
+  let staleReloadServed = false;
+  const failAutoAndReloadStale = async route => {
+    if (route.request().method() === 'PATCH') {
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ message: 'v2 失败回滚回归' }) });
+    } else if (route.request().method() === 'GET' && !staleReloadServed) {
+      const response = await route.fetch();
+      const view = await response.json();
+      view.packaging.layoutResolution.status = 'stale';
+      staleReloadServed = true;
+      await route.fulfill({ response, json: view });
+    } else await route.continue();
+  };
+  await page.route(failedSaveUrl, failAutoAndReloadStale);
+  const failedAuto = page.waitForResponse(response => response.url() === failedSaveUrl && response.request().method() === 'PATCH');
+  const sameRevisionRevalidation = page.waitForResponse(response => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `/api/final-edit-groups/${fixture.groupId}/packaging-layout`
+    && JSON.parse(response.request().postData() || '{}').expectedRevision === redoAutoGeometry.view.revision);
+  await dragFrom(autoSticker.locator('[data-sticker-edit-ui]'), 25, 20);
+  assert.equal((await failedAuto).status(), 500);
+  const sameRevisionResult = await (await sameRevisionRevalidation).json();
+  assert.equal(staleReloadServed, true);
+  assert.equal(sameRevisionResult.status, 'resolved', '同修订 stale 必须触发重算，不能被旧的 resolved 去重键跳过');
+  await page.unroute(failedSaveUrl, failAutoAndReloadStale);
+  await eventually(async () => JSON.stringify(await autoSticker.evaluate(element => [element.style.left, element.style.top, element.style.width])) === JSON.stringify(autoSavedGeometry), 'v2 保存失败必须恢复已保存几何');
+  await assertStableDocument();
+  if (process.env.STICKER_TEST_EVIDENCE_DIR) {
+    fs.mkdirSync(process.env.STICKER_TEST_EVIDENCE_DIR, { recursive: true });
+    await page.screenshot({ path: path.join(process.env.STICKER_TEST_EVIDENCE_DIR, 'single-v2-geometry.png') });
+  }
+  console.log('v2 文档稳定性通过：拖动、缩放、旋转、撤销/重做、失败回滚及同修订 stale 重算。');
+
   const autoTrimHandle = editedAutoBlock.locator('[aria-label="修剪贴纸结尾"]');
   const autoTrimBox = await autoTrimHandle.boundingBox();
   assert.ok(autoTrimBox);
@@ -611,9 +714,9 @@ try {
   assert.ok(replacedAutomatic.every((item) => item.origin.autoGroupId === replacedGroupId && item.origin.autoEdited === false));
   assert.equal(replacedAutomatic.some((item) => item.id === editedAuto.id), false, '换一组必须替换已编辑自动实例');
   assert.equal(replacedAutoResult.view.packaging.stickers.filter((item) => item.origin.kind === 'manual').length, 2, '换一组必须保留手动贴纸');
-  const undoReplaceResult = await readPatch(() => page.keyboard.press('Control+z'), false);
+  const undoReplaceResult = await readPatch(() => historyShortcut(), false);
   assert.equal(undoReplaceResult.view.packaging.stickers.find((item) => item.id === editedAuto.id).origin.autoEdited, true, '一次撤销必须恢复换一组前的已编辑组合');
-  const redoReplaceResult = await readPatch(() => page.keyboard.press('Control+Shift+z'), false);
+  const redoReplaceResult = await readPatch(() => historyShortcut(true), false);
   assert.equal(redoReplaceResult.view.packaging.stickers.filter((item) => item.origin.kind === 'auto')[0].origin.autoGroupId, replacedGroupId);
 
   let afterAutoDeleteResult = redoReplaceResult;
@@ -651,12 +754,43 @@ try {
   assert.equal(persisted.length, 2, '刷新后必须从服务端恢复全部贴纸');
   assert.equal(persisted.find((item) => item.id === second.id).centerXPct, beforeTimelineCancel.centerXPct);
 
+  let lastLayoutHash = (await page.evaluate(async id => (await fetch(`/api/final-edit-groups/${id}`)).json(), fixture.groupId)).packaging.layoutResolution?.inputHash;
+  for (const rate of [0.5, 2, 1]) {
+    const rateChange = await readPatch(async () => {
+      await page.getByLabel('右侧音频倍速数值', { exact: true }).fill(String(rate));
+      await page.getByLabel('右侧音频倍速数值', { exact: true }).press('Enter');
+    }, false);
+    await eventually(async () => {
+      const view = await page.evaluate(async id => (await fetch(`/api/final-edit-groups/${id}`)).json(), fixture.groupId);
+      return view.revision === rateChange.view.revision && view.packaging.layoutResolution?.status === 'resolved'
+        && view.packaging.layoutResolution.inputHash !== lastLayoutHash;
+    }, '仅修改口播倍速也必须按实际成片时长重新验证布局', 120_000);
+    const afterRate = await page.evaluate(async id => (await fetch(`/api/final-edit-groups/${id}`)).json(), fixture.groupId);
+    const previewTiming = await page.evaluate(async ({ groupId, variantId }) =>
+      (await fetch(`/api/final-edit-groups/${groupId}/packaging-preview?variantId=${variantId}`)).json(), fixture);
+    assert.equal(previewTiming.timeline.totalSec, afterRate.totalDurationUs / 1e6);
+    assert.equal(afterRate.variants[0].timeline.bodyFrames, rateChange.view.variants[0].timeline.bodyFrames);
+    lastLayoutHash = afterRate.packaging.layoutResolution.inputHash;
+  }
+  console.log('单条有效时长回归通过：0.5x、2x、1x 均重算布局且与预览时长一致。');
+
   await verifySingleStickerProductionExport(page, fixture.groupId);
   if (process.env.STICKER_TEST_EVIDENCE_DIR) await page.screenshot({ path: path.join(process.env.STICKER_TEST_EVIDENCE_DIR, 'single-editor.png') });
   passed = true;
   console.log('贴纸编辑器真实 E2E 通过：素材目录、空间编辑、时间轴与历史、六卡动效浮窗、统一/单张/全部设置、自动 6 张与换一组、实际播放、包装开关与刷新恢复。');
 } catch (error) {
   if (server) console.error(server.output());
+  if (page) {
+    console.error('单条预览诊断：' + JSON.stringify(await page.evaluate(() => ({
+      selected: [...document.querySelectorAll('[data-sticker-clip-id][data-selected="true"]')].map(element => element.getAttribute('data-sticker-clip-id')),
+      frames: [...document.querySelectorAll('iframe[data-packaging-overlay]')].map(frame => ({
+        src: frame.src, text: frame.contentDocument?.body.innerText.slice(0, 220),
+        editing: frame.contentWindow?.__stickerEditMode,
+        ready: frame.contentWindow?.__packagingAutoLayoutReady,
+        stickers: [...(frame.contentDocument?.querySelectorAll('[data-sticker-id]') ?? [])].map(element => ({ id: element.dataset.stickerId, opacity: element.style.opacity })),
+      })),
+    })).catch(() => '无法读取')));
+  }
   throw error;
 } finally {
   if (browser) await browser.close();

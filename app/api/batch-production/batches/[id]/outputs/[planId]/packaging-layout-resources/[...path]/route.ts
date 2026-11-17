@@ -16,7 +16,8 @@ async function resource(_request: NextRequest, { params }: { params: Promise<{ i
     const projectId = (db.prepare('SELECT projectId FROM batch_productions WHERE id=? AND deletedAt IS NULL').get(id) as { projectId: string } | undefined)?.projectId;
     if (!projectId) throw new BatchDomainError('invalid_input', '缺少项目 ID');
     const view = getBatchOutputArrangementView(db, projectId, id, planId);
-    return packagingPreviewAssetResponse(parsePackagingConfig(view.packaging), path);
+    return packagingPreviewAssetResponse(parsePackagingConfig(view.packaging), path,
+      `/api/batch-production/batches/${encodeURIComponent(id)}/outputs/${encodeURIComponent(planId)}/packaging-layout-resources`);
   } catch (error) { return batchRouteErrorResponse(error, 'packaging_resource_failed', '读取布局资源失败'); }
 }
 export const GET = withTeamRoute('/api/batch-production/batches/[id]/outputs/[planId]/packaging-layout-resources/[...path]', 'GET', resource);

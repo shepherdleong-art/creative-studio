@@ -70,7 +70,7 @@ for (const template of PACKAGING_TEMPLATE_IDS.filter((id) => !process.env.LAYOUT
     if (result.status !== 'resolved') console.error(`${template} ${outputWidth}x${outputHeight} 布局失败详情`, JSON.stringify(result));
     assert.equal(result.status, 'resolved', `${template} ${outputWidth}x${outputHeight}: ${result.status}`);
     if (result.status !== 'resolved') throw new Error('布局未解析');
-    assert.ok(assertPackagingLayoutExportReady({ ...config, layoutResolution: result }, outputWidth, outputHeight), '每种画幅都必须通过导出门禁');
+    assert.ok(await assertPackagingLayoutExportReady({ ...config, layoutResolution: result }, outputWidth, outputHeight), '每种画幅都必须通过导出门禁');
     assert.equal(result.outputWidth, outputWidth);
     assert.equal(result.outputHeight, outputHeight);
     assert.match(result.inputHash, /^[a-f0-9]{64}$/);
@@ -99,18 +99,18 @@ for (const template of PACKAGING_TEMPLATE_IDS.filter((id) => !process.env.LAYOUT
       });
       assert.equal(replayed.status, 'resolved');
       if (replayed.status !== 'resolved') throw new Error('布局重放失败');
-      const verified = assertPackagingLayoutExportReady({ ...config, layoutResolution: result }, outputWidth, outputHeight);
+      const verified = await assertPackagingLayoutExportReady({ ...config, layoutResolution: result }, outputWidth, outputHeight);
       assert.ok(verified && fs.existsSync(path.join(verified.bundleDir, 'manifest.json')), 'v2 必须物化冻结布局资源');
       const frozenReplay = path.join(verified!.bundleDir, 'auto-layout', 'replay.js');
       const frozenBytes = fs.readFileSync(frozenReplay);
       try {
         fs.writeFileSync(frozenReplay, '// tampered\n');
-        assert.throws(() => assertPackagingLayoutExportReady({ ...config, layoutResolution: result }, outputWidth, outputHeight), /已变化|缺失|不一致/);
+        await assert.rejects(() => assertPackagingLayoutExportReady({ ...config, layoutResolution: result }, outputWidth, outputHeight), /已变化|缺失|不一致/);
       } finally {
         fs.writeFileSync(frozenReplay, frozenBytes);
       }
-      assert.doesNotThrow(() => assertPackagingLayoutExportReady({ ...config, layoutResolution: result }, outputWidth, outputHeight));
-      assert.throws(() => assertPackagingLayoutExportReady({ ...config, layoutResolution: { ...result, status: 'stale' as const } }, outputWidth, outputHeight), /尚未完成/);
+      await assert.doesNotReject(() => assertPackagingLayoutExportReady({ ...config, layoutResolution: result }, outputWidth, outputHeight));
+      await assert.rejects(() => assertPackagingLayoutExportReady({ ...config, layoutResolution: { ...result, status: 'stale' as const } }, outputWidth, outputHeight), /尚未完成/);
       for (const [id, element] of Object.entries(result.elements)) {
         assert.ok(Math.abs(replayed.elements[id].centerXPct - element.centerXPct) < 0.001, `${id} 重放后 X 不得漂移`);
         assert.ok(Math.abs(replayed.elements[id].centerYPct - element.centerYPct) < 0.001, `${id} 重放后 Y 不得漂移`);

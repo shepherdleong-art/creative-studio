@@ -365,7 +365,7 @@ export async function executePackagingJob(input: {
   const { snapshot: renderSnapshot, output: renderOutput, groupId } = loadSucceededRenderJob(input.db, input.snapshot.renderJobId);
   const packagingDir = resolvePackagingDir();
   const templateName = input.snapshot.template || 'overlay-basic';
-  const layoutBundle = assertPackagingLayoutExportReady({
+  const layoutBundle = await assertPackagingLayoutExportReady({
     enabled: true,
     template: templateName as FinalEditPackagingConfig['template'],
     layoutRuntimeBundleVersion: input.snapshot.layoutRuntimeBundleVersion,

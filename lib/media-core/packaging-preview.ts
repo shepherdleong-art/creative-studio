@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildTimelineVars } from './packaging-runtime.ts';
-import { packagingPreviewResources } from './packaging-preview-resources.ts';
+import { packagingPreviewResources, registerPackagingPreviewBundle } from './packaging-preview-resources.ts';
 import { buildConfigFontFacesCss } from './packaging-font.ts';
 import type { FinalEditPackagingConfig, PackagingVars } from './packaging-vars.ts';
 import { PACKAGING_EDIT_BRIDGE_JS } from './packaging-edit-bridge.ts';
@@ -35,5 +35,7 @@ export function packagingPreviewHtml(input: {
   const replay = input.config.layoutResolution?.status === 'resolved'
     ? '<script src="auto-layout/replay.js"></script>'
     : '';
-  return fs.readFileSync(path.join(dir, 'index.html'), 'utf8').replace('<head>', `<head>${head}`).replace('</body>', `<script>${bridge}</script><script>${stickerBridge}</script>${replay}</body>`);
+  const html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8').replace('<head>', `<head>${head}`).replace('</body>', `<script>${bridge}</script><script>${stickerBridge}</script>${replay}</body>`);
+  registerPackagingPreviewBundle(input.config, input.resourceUrl);
+  return html;
 }
