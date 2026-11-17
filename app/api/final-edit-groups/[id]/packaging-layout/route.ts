@@ -11,7 +11,8 @@ import { OUTPUT_PRESETS } from '@/lib/final-edit/types';
 import { buildPackagingVars, loadProjectPackagingData, parsePackagingConfig } from '@/lib/final-edit/packaging-vars';
 import { planPackagingStickerAutoLayout, replaceAutomaticPackagingStickers, type PackagingStickerPlanningAsset } from '@/lib/media-core/packaging-sticker-planner';
 import { validatePackagingStickers, type PackagingStickerInstance } from '@/lib/media-core/packaging-stickers';
-import { resolvePackagingAutoLayout } from '@/lib/media-core/packaging-auto-layout-service';
+import { packagingAutoLayoutInputHash, resolvePackagingAutoLayout } from '@/lib/media-core/packaging-auto-layout-service';
+import { assertPackagingLayoutExportReady } from '@/lib/media-core/packaging-layout-manifest';
 import { resolvePackagingDir } from '@/lib/media-core/packaging-runtime';
 import { ensurePackagingPointCues } from '@/lib/final-edit/packaging-cues';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
@@ -112,7 +113,7 @@ async function layoutCommand(request: Request, { params }: { params: Promise<{ i
     delete candidateConfig.layoutResolution;
     const config = { ...candidateConfig, stickers, layoutRuntimeBundleVersion: 2 as const };
     const output = OUTPUT_PRESETS[variant.outputPreset];
-    const resolution = await resolvePackagingAutoLayout({
+    const layoutInput = {
       config,
       vars: buildPackagingVars({
         coverTitle: { primary: group.coverTitle.primary.text, secondary: group.coverTitle.secondary.text },
@@ -125,7 +126,13 @@ async function layoutCommand(request: Request, { params }: { params: Promise<{ i
       outputWidth: output.width,
       outputHeight: output.height,
       signal: request.signal,
-    });
+    };
+    const previous = group.packaging.layoutResolution;
+    if (operation === 'revalidate' && previous?.status === 'resolved' && previous.inputHash === packagingAutoLayoutInputHash(layoutInput)) {
+      assertPackagingLayoutExportReady(group.packaging, output.width, output.height);
+      return NextResponse.json({ status: 'resolved', view: group, candidatePayload: null });
+    }
+    const resolution = await resolvePackagingAutoLayout(layoutInput);
     if (resolution.status !== 'resolved') {
       return NextResponse.json({
         status: resolution.status,

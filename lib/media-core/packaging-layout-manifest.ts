@@ -266,8 +266,9 @@ export function assertPackagingLayoutExportReady(
   outputWidth: number,
   outputHeight: number,
 ): { bundleDir: string; manifest: PackagingLayoutBundleManifest } | null {
+  if (!config.enabled) return null;
   assertSupportedPackagingConfigLayoutVersions(config);
-  if (!config.enabled || config.layoutRuntimeBundleVersion !== 2) return null;
+  if (config.layoutRuntimeBundleVersion !== 2) return null;
   const resolution = config.layoutResolution;
   if (!resolution || resolution.status !== 'resolved') {
     throw new PackagingError('packaging_layout_stale', '自动布局尚未完成，请先更新布局后再导出', 409);

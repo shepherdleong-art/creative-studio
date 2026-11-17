@@ -30,7 +30,9 @@ export function syncPackagingPreviewGeometry(frame: HTMLIFrameElement, config: F
   win.compositionVariables = vars;
   vars.layouts = config.layouts;
   vars.stickers = config.stickers;
-  vars.layoutResolution = config.layoutResolution;
+  // 重算期间维持上次已验证的自动几何；手动位置由下面的实时布局桥覆盖。
+  vars.layoutResolution = config.layoutResolution?.status === 'stale'
+    ? { ...config.layoutResolution, status: 'resolved' } : config.layoutResolution;
   const layouts = config.layouts?.[config.template];
   win.document.querySelectorAll<HTMLElement>('[data-point-id]').forEach(element => {
     const id = element.dataset.pointId ?? '';
@@ -51,7 +53,7 @@ export function syncPackagingPreviewGeometry(frame: HTMLIFrameElement, config: F
     element.style.width = `${geometry.imageWidthPct}%`;
     const rotation = element.querySelector<HTMLElement>('.packaging-sticker-rotation');
     if (rotation) rotation.style.transform = `rotate(${sticker.rotationDeg}deg)`;
-    delete element.dataset.stickerEdited;
+    element.dataset.stickerEdited = sticker.origin.kind === 'manual' || sticker.origin.positionPinned ? '1' : '';
   });
   win.__packagingAutoLayoutReplay?.apply();
   win.__packagingStickerEditBridge?.sync?.();

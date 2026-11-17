@@ -39,7 +39,9 @@ export function packagingAutoLayoutInputHash(input: {
   config: FinalEditPackagingConfig; vars: PackagingVars; totalSec: number; coverSec: number;
   outputWidth: number; outputHeight: number; palette?: PackagingPalette | null;
 }): string {
-  return hashJson({ config: { ...input.config, layoutResolution: undefined }, vars: input.vars, totalSec: input.totalSec,
+  return hashJson({ config: { ...input.config, layoutResolution: undefined,
+    stickers: input.config.stickers ?? [], layouts: input.config.layouts ?? {}, pointCues: input.config.pointCues ?? [],
+    pointCuesEdited: input.config.pointCuesEdited === true }, vars: input.vars, totalSec: input.totalSec,
     coverSec: input.coverSec, outputWidth: input.outputWidth, outputHeight: input.outputHeight, palette: input.palette ?? null });
 }
 

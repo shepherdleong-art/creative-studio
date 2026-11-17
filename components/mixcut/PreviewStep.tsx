@@ -361,20 +361,25 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   });
 
   const layoutRevalidateRef = useRef<{ key: string; generation: number }>({ key: '', generation: 0 });
+  const selectedLayoutVariant = group.variants.find(item => item.id === previewVariantId);
+  const layoutValidationKey = JSON.stringify([group.id, group.revision, previewVariantId, selectedLayoutVariant?.revision,
+    selectedLayoutVariant?.outputPreset, group.packaging.enabled, group.packaging.layoutRuntimeBundleVersion,
+    group.packaging.layoutResolution?.status]);
   useEffect(() => {
-    const selected = group.variants.find(item => item.id === previewVariantId);
-    if (!selected || !group.packaging.enabled || group.packaging.layoutRuntimeBundleVersion !== 2) return;
-    const key = `${group.id}:${group.revision}:${previewVariantId}:${selected.revision}:${selected.outputPreset}`;
+    const currentGroup = groupRef.current;
+    const selected = currentGroup.variants.find(item => item.id === previewVariantId);
+    if (!selected || !currentGroup.packaging.enabled || currentGroup.packaging.layoutRuntimeBundleVersion !== 2) return;
+    const key = `${currentGroup.id}:${currentGroup.revision}:${previewVariantId}:${selected.revision}:${selected.outputPreset}`;
     if (layoutRevalidateRef.current.key === key) return;
     const generation = layoutRevalidateRef.current.generation + 1;
     layoutRevalidateRef.current = { key, generation };
-    const expectedRevision = group.revision;
-    const expectedPackaging = group.packaging;
+    const expectedRevision = currentGroup.revision;
+    const expectedPackaging = currentGroup.packaging;
     const controller = new AbortController();
     setMessage('正在更新自动布局…');
     void (async () => {
       try {
-        const result = await responseBody<{ status: string; view?: FinalEditGroupView; message?: string }>(await fetch(`/api/final-edit-groups/${group.id}/packaging-layout`, {
+        const result = await responseBody<{ status: string; view?: FinalEditGroupView; message?: string }>(await fetch(`/api/final-edit-groups/${currentGroup.id}/packaging-layout`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: controller.signal,
@@ -395,7 +400,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       }
     })();
     return () => controller.abort();
-  }, [group.id, group.revision, group.packaging, previewVariantId]);
+  }, [layoutValidationKey, previewVariantId]);
 
   useEffect(() => {
     if (!hasLegacyAutomaticSubtitleCuesToNormalize(group.subtitleCues)) return;

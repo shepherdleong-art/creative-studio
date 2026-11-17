@@ -317,6 +317,8 @@ if (stickerVars.layoutRuntimeBundleVersion === 2) {
       const ready = window.__packagingLayoutReady;
       return ready?.status === 'resolved' && ready.inputHash === inputHash && ready.geometryManifestHash === geometryManifestHash;
     }, { timeout: 15_000 }, expected);
+  } catch (error) {
+    throw new Error(`自动布局重放未就绪，请重新完成布局：${error.message}`);
   } finally { await browser.close(); }
 }
 

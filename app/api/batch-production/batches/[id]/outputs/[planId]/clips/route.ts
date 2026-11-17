@@ -161,9 +161,8 @@ async function __teamRoutePOST(request: NextRequest, context: { params: Promise<
           candidatePayload: body.type === 'auto_layout_stickers' ? layoutCandidatePayload ?? null : null,
         }, { headers: BATCH_NO_STORE_HEADERS });
       }
-      const prepared = body.type === 'reextract_points_layout'
-        ? { ...resolvedInput, layoutResolution: resolution }
-        : await prepareBatchPackagingConfig(db, projectId, view, { ...resolvedInput, layoutResolution: resolution });
+      // resolvedInput 已由当前持久化配置和严格校验的候选组成；求解后不再经过普通保存的失效逻辑。
+      const prepared = { ...resolvedInput, layoutResolution: resolution };
       edit = {
         type: 'set_packaging',
         config: prepared,
