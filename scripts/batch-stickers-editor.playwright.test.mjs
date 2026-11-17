@@ -10,6 +10,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { chromium } from '@playwright/test';
+import { stickerTestServerLaunch, setupStickerTeamBrowser, verifyBatchStickerProductionExport } from './packaging-sticker-production-test.mjs';
 import { createAnalysisVersion, createAsset, setAssetCurrentAnalysis } from '../lib/batch-production/assets.ts';
 import { createProjectScript, snapshotScriptIntoBatch } from '../lib/batch-production/scripts.ts';
 import { addAssetToPool, createBatchProduction, createBatchProductionVersion, updateBatchProductionStatus } from '../lib/batch-production/versions.ts';
@@ -18,6 +19,7 @@ import { resolveCoverContractHash } from '../lib/batch-production/cover-contract
 import { buildCoverRenderTaskRequestKey } from '../lib/batch-production/render-task-key.ts';
 import { runFfmpeg } from '../lib/ffmpeg.ts';
 import { planPackagingStickerAutoLayout } from '../lib/media-core/packaging-sticker-planner.ts';
+import { registerReadyTeamFile } from '../lib/team-service/files/registry.ts';
 
 const projectId = 'batch-sticker-e2e-project';
 const batchName = '批量贴纸真实浏览器验收';
@@ -47,9 +49,8 @@ async function getFreePort() {
 
 async function startServer() {
   const port = await getFreePort();
-  const child = spawn(process.execPath, [path.resolve('node_modules/next/dist/bin/next'), 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
-    cwd: process.cwd(), env: testEnv, stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const launch = stickerTestServerLaunch(testEnv, port);
+  const child = spawn(process.execPath, launch.args, launch.options);
   let output = '';
   child.stdout.on('data', (chunk) => { output = `${output}${chunk}`.slice(-40_000); });
   child.stderr.on('data', (chunk) => { output = `${output}${chunk}`.slice(-40_000); });
@@ -57,10 +58,15 @@ async function startServer() {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`Next dev 启动失败：${output}`);
+    let ready = false;
     try {
       const response = await fetch(`${baseUrl}/api/batch-production/readiness`, { redirect: 'manual' });
-      if (response.status < 500) return { child, baseUrl, output: () => output };
+      ready = response.status < 500;
     } catch { /* 等待启动 */ }
+    if (ready) {
+      try { return { child, baseUrl, output: () => output, browserOptions: await setupStickerTeamBrowser(baseUrl, launch) }; }
+      catch (error) { await stopServer(child); throw error; }
+    }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   child.kill('SIGTERM');
@@ -171,6 +177,24 @@ async function seedFixture() {
       VALUES ('batch-sticker-e2e-provider', 'Batch Sticker E2E', 'http://127.0.0.1:1', 'smoke', 'openai-compatible')`).run();
     db.prepare(`INSERT INTO projects (id, name, providerId, model, prompt, workflowType, productCode)
       VALUES (?, '批量贴纸浏览器验收', 'batch-sticker-e2e-provider', 'smoke', 'smoke', 'complex_product', 'STICKERE2E')`).run(projectId);
+    let access;
+    let owner;
+    if (testEnv.STICKER_FIXTURE_TEAM_EMPLOYEE) {
+      const { createTeamAccessContext } = await import('../lib/team-service/resource-scopes.ts');
+      const { setResourceAccessContext } = await import('../lib/media-core/access-context.ts');
+      owner = db.prepare('SELECT id FROM team_users WHERE employeeId=?').pluck().get(testEnv.STICKER_FIXTURE_TEAM_EMPLOYEE);
+      assert.ok(owner);
+      access = createTeamAccessContext({ db, principal: { userId: owner, role: 'employee' } });
+      access.registerRootScope({ resourceType: 'project', resourceId: projectId, ownerUserId: owner });
+      setResourceAccessContext(access);
+    }
+    // This test imports domain modules before choosing its scratch root. Pass the
+    // isolated storage root explicitly instead of using process-global dataRoot().
+    const registerMedia = (absolutePath, mimeType, reference) => {
+      if (!access) return;
+      registerReadyTeamFile(db, { storageRoot, absolutePath, mimeType, ownerUserId: owner, references: [reference],
+        validateReference: ref => access.assertAccess(ref.resourceType, ref.resourceId, 'write') });
+    };
     const assetId = createAsset(db, {
       projectId,
       sourceKind: 'managed',
@@ -179,6 +203,7 @@ async function seedFixture() {
       mediaKind: 'video',
       mediaJson: { displayName: '批量贴纸验收视频', durationSec: 12, durationUs: 12_000_000, width: 96, height: 96 },
     });
+    registerMedia(mediaAbsolute, 'video/mp4', { resourceType: 'batch_asset', resourceId: assetId, role: 'input' });
     db.prepare(`INSERT INTO batch_asset_sources (id, assetId, sourceKind, locationJson, health, createdAt)
       VALUES (?, ?, 'managed', ?, 'healthy', ?)`).run(randomUUID(), assetId, JSON.stringify({ kind: 'managed', relativePath: mediaRelative }), now());
     const analysisId = createAnalysisVersion(db, {
@@ -256,9 +281,24 @@ async function seedFixture() {
         ...(spec.reviewed ? { review: { decision: 'approved', decidedAt: now() } } : {}),
       };
       const outputVersionId = createOutputVersion(db, planId, { arrangementJson: arrangement });
+      registerMedia(path.join(storageRoot, narration.relativePath), 'audio/wav', {
+        resourceType: 'batch_output_version', resourceId: outputVersionId, role: 'input',
+      });
       Object.assign(spec, { planId, outputVersionId, snapshotId });
     }
     updateBatchProductionStatus(db, projectId, batchId, 'running');
+
+    // The editing fixture also serves production export acceptance. Persist the
+    // available allocation result required by the real publication gate.
+    const allocationRunId = randomUUID();
+    db.prepare(`INSERT INTO batch_allocation_runs
+      (id, batchVersionId, ruleVersion, seed, inputFingerprint, status, resultJson, createdAt)
+      VALUES (?, ?, 'sticker-e2e', 'seed', ?, 'completed', ?, ?)`).run(
+      allocationRunId, batchVersionId, videoFingerprint,
+      JSON.stringify({ status: 'completed', outputs: specs.map(spec => ({ planId: spec.planId, status: 'available', blockers: [] })) }), now(),
+    );
+    db.prepare(`UPDATE batch_production_versions SET currentAllocationRunId = ?, inputState = 'frozen', frozenAt = ? WHERE id = ?`)
+      .run(allocationRunId, now(), batchVersionId);
 
     for (const spec of specs.slice(0, 3)) {
       const coverRelativePath = `batch-stickers-e2e/${spec.key}-cover.jpg`;
@@ -274,6 +314,8 @@ async function seedFixture() {
         (id, projectId, batchId, workType, targetKind, targetId, status, requestKey, expectedState, progressJson, attemptCount, createdAt, updatedAt)
         VALUES (?, ?, ?, 'render', 'output_version_cover', ?, 'succeeded', ?, 'running', '{}', 1, ?, ?)`)
         .run(taskId, projectId, batchId, spec.outputVersionId, requestKey, timestamp, timestamp);
+      access?.registerInheritedScope({ resourceType: 'batch_task', resourceId: taskId, parent: { resourceType: 'batch', resourceId: batchId } });
+      registerMedia(coverAbsolutePath, 'image/jpeg', { resourceType: 'batch_output_version', resourceId: spec.outputVersionId, role: 'output' });
       db.prepare(`INSERT INTO batch_task_attempts
         (id, taskId, attemptNumber, status, progressJson, resultJson, startedAt, finishedAt, createdAt)
         VALUES (?, ?, 1, 'succeeded', '{}', ?, ?, ?, ?)`)
@@ -336,7 +378,7 @@ try {
   const arrangementPath = (spec) => `/api/batch-production/batches/${fixture.batchId}/outputs/${spec.planId}/arrangement`;
 
   browser = await chromium.launch({ headless: true, executablePath: chrome });
-  page = await browser.newPage({ viewport: { width: 1720, height: 1200 }, deviceScaleFactor: 1 });
+  page = await browser.newPage({ ...server.browserOptions, viewport: { width: 1720, height: 1200 }, deviceScaleFactor: 1 });
   page.setDefaultTimeout(30_000);
   page.on('response', (response) => {
     const url = new URL(response.url());
@@ -346,12 +388,9 @@ try {
   page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()); });
 
   const fetchArrangement = async (spec) => {
-    const response = await page.evaluate(async ({ path, project }) => {
-      const result = await fetch(`${path}?projectId=${encodeURIComponent(project)}`, { cache: 'no-store' });
-      return { status: result.status, body: await result.json() };
-    }, { path: arrangementPath(spec), project: projectId });
-    assert.equal(response.status, 200, `${spec.key} arrangement 读取失败`);
-    return response.body;
+    const response = await page.request.get(`${server.baseUrl}${arrangementPath(spec)}?projectId=${projectId}`, { timeout: 30_000 });
+    assert.equal(response.status(), 200, `${spec.key} arrangement 读取失败`);
+    return response.json();
   };
   const savePackaging = async (spec, action) => {
     const pending = page.waitForResponse((response) => {
@@ -501,6 +540,14 @@ try {
   await page.getByRole('checkbox', { name: '选择成片 2' }).check();
   await page.getByRole('checkbox', { name: '选择成片 3' }).check();
   panel = await openFilmStickers(source);
+  const autoToEdit = movedResult.view.packaging.stickers.find(item => item.origin.kind === 'auto');
+  await page.locator(`[data-sticker-clip-id="${autoToEdit.id}"]`).click({ position: { x: 20, y: 10 } });
+  await panel.getByText(/动效 · 当前贴纸/).waitFor();
+  const editedAutomatic = await savePackaging(source, async () => {
+    await panel.getByRole('button', { name: /^预览动效 / }).click();
+    await page.getByRole('dialog', { name: '选择贴纸动效' }).getByRole('button', { name: '选择动效 缩放', exact: true }).click();
+  });
+  assert.equal(editedAutomatic.view.packaging.stickers.find(item => item.id === autoToEdit.id).origin.autoEdited, true);
   await panel.getByRole('button', { name: '复制到其他成片', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '复制贴纸到其他成片' });
   await dialog.waitFor();
@@ -523,9 +570,42 @@ try {
   assert.equal(await targetCheckbox(targetEmpty).isChecked(), true);
   assert.equal(await targetCheckbox(targetShort).isChecked(), false);
 
+  // A second editor changes the source after the dialog has captured it.
+  console.log('Production batch editor: editing/history passed; checking source conflict');
+  const openedSource = await fetchArrangement(source);
+  const beforeConflict = rawPlans(fixture);
+  const concurrentEdit = await page.request.post(`${server.baseUrl}${clipsPath(source)}?projectId=${fixture.projectId}`, {
+    timeout: 30_000,
+    data: { type: 'set_packaging',
+      config: { ...openedSource.packaging, stickers: openedSource.packaging.stickers.map((item, index) => index === 0
+        ? { ...item, centerXPct: item.centerXPct + 1 } : item) },
+      expectedOutputVersionId: openedSource.outputVersionId, expectedEditRevision: openedSource.editRevision,
+    },
+  });
+  assert.equal(concurrentEdit.status(), 200, await concurrentEdit.text());
+  console.log('Production batch editor: source changed by second editor');
+  const [conflict] = await Promise.all([
+    page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === stickerCopyPath),
+    dialog.getByRole('button', { name: '复制并生成变体（2）', exact: true }).click(),
+  ]);
+  console.log(`Production batch source conflict: ${conflict.status()}`);
+  assert.equal(conflict.status(), 409, await conflict.text());
+  await dialog.getByText(/来源成片.*已有更新/).waitFor();
+  const afterConflict = rawPlans(fixture);
+  for (const target of [targetExisting, targetEmpty, targetShort]) assert.equal(afterConflict[target.key].raw, beforeConflict[target.key].raw);
+  await dialog.getByRole('button', { name: '关闭复制弹窗' }).click();
+  panel = await openFilmStickers(source);
+  await panel.getByRole('button', { name: '复制到其他成片', exact: true }).click();
+  await dialog.waitFor();
+  await dialog.getByRole('button', { name: '全选有效', exact: true }).click();
+
   const beforeCopy = rawPlans(fixture);
   const copiedResult = await stickerCopyRequest('copy', () => dialog.getByRole('button', { name: '复制并生成变体（2）', exact: true }).click());
+  console.log('Production batch editor: source conflict rejected; two-target copy succeeded');
   assert.equal(copiedResult.request.sourcePlanId, source.planId);
+  assert.equal(copiedResult.request.expectedSourceOutputVersionId, source.outputVersionId);
+  assert.equal(copiedResult.request.expectedSourceEditRevision, beforeCopy.source.arrangement.editRevision);
   assert.deepEqual(copiedResult.request.targets.map((target) => target.planId), [targetExisting.planId, targetEmpty.planId]);
   await dialog.waitFor({ state: 'detached' });
   const afterCopy = rawPlans(fixture);
@@ -546,7 +626,8 @@ try {
     const targetAutomatic = targetArrangement.packaging.stickers.filter((sticker) => sticker.origin.kind === 'auto');
     assert.equal(targetManuals.length, 1);
     assert.equal(targetAutomatic.length, 6);
-    assert.ok(targetAutomatic.every((sticker) => sticker.origin.autoEdited === false));
+    assert.equal(targetAutomatic.filter(sticker => sticker.origin.autoEdited).length, 1);
+    assert.equal(targetAutomatic.filter(sticker => !sticker.origin.autoEdited).length, 5);
     assert.deepEqual(targetArrangement.packaging.stickerDefaults, sourceAtCopy.packaging.stickerDefaults);
     const expected = expectedManualFrames(sourceManual, sourceFrames, bodyFrames(targetArrangement));
     assert.equal(targetManuals[0].startFrame, expected.startFrame, `${spec.key} 手动贴纸起点必须按正文时长等比映射`);
@@ -556,6 +637,14 @@ try {
       sourceManual,
       `${spec.key} 手动贴纸除 ID 与时间外必须完整继承来源`,
     );
+    const sourceEdited = sourceAtCopy.packaging.stickers.find(item => item.origin.kind === 'auto' && item.origin.autoEdited);
+    const targetEdited = targetAutomatic.find(item => item.origin.autoEdited);
+    const editedFrames = expectedManualFrames(sourceEdited, sourceFrames, bodyFrames(targetArrangement));
+    assert.equal(targetEdited.startFrame, editedFrames.startFrame);
+    assert.equal(targetEdited.endFrame, editedFrames.endFrame);
+    assert.deepEqual({ ...targetEdited, id: sourceEdited.id, startFrame: sourceEdited.startFrame, endFrame: sourceEdited.endFrame,
+      origin: { ...targetEdited.origin, autoGroupId: sourceEdited.origin.autoGroupId } }, sourceEdited,
+    `${spec.key} 已编辑自动贴纸必须与手动设计一样保持几何和动效`);
   }
   const automaticOne = afterCopy['target-existing'].arrangement.packaging.stickers.filter((sticker) => sticker.origin.kind === 'auto');
   const automaticTwo = afterCopy['target-empty'].arrangement.packaging.stickers.filter((sticker) => sticker.origin.kind === 'auto');
@@ -602,19 +691,27 @@ try {
     await panel.getByText('7 张已放置', { exact: true }).waitFor();
   }
 
-  const coreApiFailures = apiResponses.filter((response) => response.status >= 400 && (
+  // The existing preparation panel queries an administrator-only cache endpoint.
+  // Keep its exact employee denial visible, separate from sticker/API failures.
+  const expectedAdminDenials = apiResponses.filter(response => process.env.STICKER_TEST_TEAM === '1'
+    && response.method === 'GET' && response.path === `/api/batch-production/proxies/usage?projectId=${projectId}` && response.status === 403);
+  const coreApiFailures = apiResponses.filter((response) => response.status >= 400 && !expectedAdminDenials.includes(response) && (
     response.path.startsWith('/api/batch-production/') || response.path.startsWith('/api/packaging/')
   ));
-  assert.deepEqual(coreApiFailures, [], `批量/包装真实 API 不得出现失败响应：${JSON.stringify(coreApiFailures)}`);
+  assert.deepEqual(coreApiFailures, [{ method: 'POST', path: `${stickerCopyPath}?projectId=${fixture.projectId}`, status: 409 }],
+    '唯一失败响应必须是本测试主动触发的来源修订冲突');
   assert.deepEqual(pageErrors, [], `页面不得出现未捕获异常：${pageErrors.join('\n')}`);
   assert.ok(coreWrites.some((entry) => entry.kind === 'set_packaging' && entry.request.config?.stickers), '必须记录真实当前片包装保存');
   assert.equal(coreWrites.filter((entry) => entry.kind === 'sticker-copy').length, 1);
   assert.equal(coreWrites.filter((entry) => entry.kind === 'sticker-restore').length, 2);
 
+  for (const spec of [source, targetExisting, targetEmpty]) await verifyBatchStickerProductionExport(page, fixture, spec);
+  assert.deepEqual(pageErrors, [], '包括正式导出在内不得出现未捕获页面异常');
+  if (process.env.STICKER_TEST_EVIDENCE_DIR) await page.screenshot({ path: path.join(process.env.STICKER_TEST_EVIDENCE_DIR, 'batch-editor.png') });
   passed = true;
   console.log(`批量贴纸真实浏览器验收通过：${coreWrites.length} 次核心写入、${apiResponses.length} 条真实 API 响应、0 个页面异常。`);
   console.log('覆盖：当前片素材库/添加/overlay/中文时间轴/选中/空白取消/Delete与预览删除、换一组隔离、跨片选中隔离、时间轴移动、复制弹窗与双目标真实 API、字段与时间比例、自动变体、整体撤销/重做及刷新持久化。');
-  console.log(`API 失败响应：${JSON.stringify(coreApiFailures)}；console error 记录：${JSON.stringify(consoleErrors)}`);
+  console.log(`API 失败响应：${JSON.stringify(coreApiFailures)}；既有管理员端点拒绝：${expectedAdminDenials.length}；console error 记录：${JSON.stringify(consoleErrors)}`);
 } catch (error) {
   if (server) console.error(server.output());
   console.error(`真实 API 响应记录：${JSON.stringify(apiResponses)}`);

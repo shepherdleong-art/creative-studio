@@ -19,13 +19,15 @@ function bodyFrames(film: UnifiedFilmState): number {
   return Math.floor(durationUs / 1e6 * FINAL_EDIT_FPS + 1e-6);
 }
 
-export default function BatchStickerCopyDialog({ source, films, initialSelectedPlanIds, onClose, onConfirm }: {
+export default function BatchStickerCopyDialog({ source: currentSource, films, initialSelectedPlanIds, onClose, onConfirm }: {
   source: UnifiedFilmState;
   films: UnifiedFilmState[];
   initialSelectedPlanIds: string[];
   onClose: () => void;
-  onConfirm: (targets: BatchStickerCopyDialogTarget[]) => Promise<void>;
+  onConfirm: (source: BatchStickerCopyDialogTarget, targets: BatchStickerCopyDialogTarget[]) => Promise<void>;
 }) {
+  // Bind the dialog to the source the user opened, even if polling loads a newer revision.
+  const [source] = useState(currentSource);
   const sourceArrangement = source.arrangement;
   const sourceStickers = sourceArrangement?.packaging?.stickers ?? [];
   const sourceBodyFrames = bodyFrames(source);
@@ -50,13 +52,21 @@ export default function BatchStickerCopyDialog({ source, films, initialSelectedP
       editRevision: arrangement?.editRevision ?? 0,
     };
   });
-  const [selected, setSelected] = useState<Set<string>>(() => new Set(initialSelectedPlanIds.filter((planId) => (
-    rows.some((row) => row.film.planId === planId && !row.issue)
-  ))));
+  const snapshotTarget = (row: typeof rows[number]): BatchStickerCopyDialogTarget => ({
+    planId: row.film.planId,
+    expectedOutputVersionId: row.outputVersionId,
+    expectedEditRevision: row.editRevision,
+  });
+  // Capture each target when selected; polling must not silently accept newer edits.
+  const [selected, setSelected] = useState<Map<string, BatchStickerCopyDialogTarget>>(() => new Map(
+    rows.filter((row) => initialSelectedPlanIds.includes(row.film.planId) && !row.issue)
+      .map((row) => [row.film.planId, snapshotTarget(row)]),
+  ));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const validRows = rows.filter((row) => !row.issue && row.outputVersionId);
-  const selectedRows = validRows.filter((row) => selected.has(row.film.planId));
+  const selectedTargets = [...selected.values()];
+  const selectedRows = rows.filter((row) => selected.has(row.film.planId));
   const replaceCount = selectedRows.filter((row) => row.existingCount > 0).length;
   const reviewCount = selectedRows.filter((row) => row.film.approved).length;
 
@@ -70,23 +80,31 @@ export default function BatchStickerCopyDialog({ source, films, initialSelectedP
 
   const toggle = (planId: string, checked: boolean) => {
     setSelected((current) => {
-      const next = new Set(current);
-      if (checked) next.add(planId);
-      else next.delete(planId);
+      const next = new Map(current);
+      const row = validRows.find((item) => item.film.planId === planId);
+      if (!checked) next.delete(planId);
+      else if (row && !next.has(planId)) next.set(planId, snapshotTarget(row));
       return next;
     });
   };
 
   const confirm = async () => {
-    if (busy || selectedRows.length === 0) return;
+    if (busy || selectedTargets.length === 0 || !sourceArrangement?.outputVersionId) return;
+    if (selectedTargets.some((target) => {
+      const row = rows.find((item) => item.film.planId === target.planId);
+      return !row || Boolean(row.issue) || row.outputVersionId !== target.expectedOutputVersionId
+        || row.editRevision !== target.expectedEditRevision;
+    })) {
+      setError('所选目标成片已有变化，本次未复制。请关闭弹窗后重新选择。');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
-      await onConfirm(selectedRows.map((row) => ({
-        planId: row.film.planId,
-        expectedOutputVersionId: row.outputVersionId,
-        expectedEditRevision: row.editRevision,
-      })));
+      await onConfirm({
+        planId: source.planId, expectedOutputVersionId: sourceArrangement.outputVersionId,
+        expectedEditRevision: sourceArrangement.editRevision,
+      }, selectedTargets);
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '复制失败，请刷新后重试');
@@ -108,10 +126,14 @@ export default function BatchStickerCopyDialog({ source, films, initialSelectedP
         </header>
 
         <div className="flex items-center justify-between gap-3 border-b border-hairline px-5 py-2.5 text-xs">
-          <span className="text-ink-secondary">已选 {selectedRows.length} / {validRows.length} 条可复制成片</span>
+          <span className="text-ink-secondary">已选 {selectedTargets.length} / {validRows.length} 条可复制成片</span>
           <div className="flex gap-2">
-            <button type="button" className="btn-secondary h-7 px-2.5" disabled={busy || validRows.length === 0} onClick={() => setSelected(new Set(validRows.map((row) => row.film.planId)))}>全选有效</button>
-            <button type="button" className="btn-secondary h-7 px-2.5" disabled={busy || selected.size === 0} onClick={() => setSelected(new Set())}>清空</button>
+            <button type="button" className="btn-secondary h-7 px-2.5" disabled={busy || validRows.length === 0} onClick={() => setSelected((current) => {
+              const next = new Map(current);
+              for (const row of validRows) if (!next.has(row.film.planId)) next.set(row.film.planId, snapshotTarget(row));
+              return next;
+            })}>全选有效</button>
+            <button type="button" className="btn-secondary h-7 px-2.5" disabled={busy || selected.size === 0} onClick={() => setSelected(new Map())}>清空</button>
           </div>
         </div>
 
@@ -125,7 +147,7 @@ export default function BatchStickerCopyDialog({ source, films, initialSelectedP
                   type="checkbox"
                   className="mt-0.5 shrink-0"
                   checked={selected.has(row.film.planId)}
-                  disabled={busy || Boolean(row.issue)}
+                  disabled={busy || (Boolean(row.issue) && !selected.has(row.film.planId))}
                   onChange={(event) => toggle(row.film.planId, event.target.checked)}
                 />
                 <span className="min-w-0 flex-1">
@@ -149,8 +171,8 @@ export default function BatchStickerCopyDialog({ source, films, initialSelectedP
           {error && <p role="alert" className="mb-2 text-xs text-fail">{error}</p>}
           <div className="flex items-center justify-between gap-3">
             <span className="text-[11px] text-ink-tertiary">只复制贴纸方案，保留目标模板、字体、文案与其他编辑</span>
-            <button type="button" className="btn-primary h-8 shrink-0 px-3 text-xs" disabled={busy || selectedRows.length === 0} onClick={() => void confirm()}>
-              {busy ? '正在生成…' : `复制并生成变体${selectedRows.length ? `（${selectedRows.length}）` : ''}`}
+            <button type="button" className="btn-primary h-8 shrink-0 px-3 text-xs" disabled={busy || selectedTargets.length === 0} onClick={() => void confirm()}>
+              {busy ? '正在生成…' : `复制并生成变体${selectedTargets.length ? `（${selectedTargets.length}）` : ''}`}
             </button>
           </div>
         </footer>

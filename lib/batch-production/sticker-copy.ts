@@ -33,6 +33,8 @@ export interface BatchStickerCopyTarget {
 
 export interface BatchStickerCopyInput {
   sourcePlanId: string;
+  expectedSourceOutputVersionId: string;
+  expectedSourceEditRevision: number;
   targets: readonly BatchStickerCopyTarget[];
 }
 
@@ -159,9 +161,9 @@ function assertPackagingEnabled(context: OutputContext, role: '来源' | '目标
   if (!context.config.enabled) throw new BatchDomainError('conflict', `${role}成片包装未开启，不能复制或恢复贴纸`);
 }
 
-function assertExpectedVersion(context: OutputContext, target: BatchStickerCopyTarget): void {
+function assertExpectedVersion(context: OutputContext, target: BatchStickerCopyTarget, role: '来源' | '目标' = '目标'): void {
   if (context.outputVersionId !== target.expectedOutputVersionId || context.editRevision !== target.expectedEditRevision) {
-    throw new BatchDomainError('conflict', `目标成片 ${context.planId} 已有更新的正式修订，请刷新后重试`);
+    throw new BatchDomainError('conflict', `${role}成片 ${context.planId} 已有更新的正式修订，请关闭弹窗后重试`);
   }
 }
 
@@ -262,9 +264,17 @@ export function copyBatchOutputStickers(
     const assets = readPlanningAssets();
     return db.transaction(() => {
       if (!nonEmptyString(input.sourcePlanId)) throw new BatchDomainError('invalid_input', '缺少来源成片 planId');
+      if (!nonEmptyString(input.expectedSourceOutputVersionId)
+        || !Number.isSafeInteger(input.expectedSourceEditRevision) || input.expectedSourceEditRevision < 0) {
+        throw new BatchDomainError('invalid_input', '来源成片需要有效的版本与修订');
+      }
       const sourcePlanId = input.sourcePlanId.trim();
       assertTargetList(sourcePlanId, input.targets);
       const source = readOutputContext(db, projectId, batchId, sourcePlanId);
+      assertExpectedVersion(source, {
+        planId: sourcePlanId, expectedOutputVersionId: input.expectedSourceOutputVersionId,
+        expectedEditRevision: input.expectedSourceEditRevision,
+      }, '来源');
       assertPackagingEnabled(source, '来源');
       const sourceSnapshot = readStoredSnapshot(source.packaging, source.bodyFrames);
       const sourceStickers = sourceSnapshot.stickers ?? [];

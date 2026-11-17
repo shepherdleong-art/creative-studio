@@ -429,6 +429,217 @@ export const FIXTURE_HOOKS = {
   },
 
   /**
+   * 贴纸接入票：批量统一审片要有「已开启包装、已有贴纸」的成片，才量得出
+   * 贴纸页签、动效浮窗、时间轴贴纸轨道和跨片复制弹窗。
+   *
+   * 与 `batchExportStates` 一样只在**隔离数据根**写领域表（正式接口没有
+   * 「直接造一条已带贴纸的成片版本」的入口），界面仍走正式 API 读取。
+   * 三条成片：来源（3 张贴纸，含自动组）、目标一（1 张手动）、目标二（空）。
+   * 正文 8 秒 = 192 帧，满足自动布置 144 帧门禁与复制目标时长要求。
+   */
+  async singleStickerStates(ctx) {
+    const path = await import('node:path');
+    const { pathToFileURL } = await import('node:url');
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    // Keep the HTTP client's event loop alive while FFmpeg prepares the fixture.
+    const seeded = await promisify(execFile)(process.execPath, ['--no-warnings', '--experimental-loader',
+      pathToFileURL(path.resolve('scripts/typescript-extension-loader.mjs')).href,
+      path.resolve('scripts/final-edit-mixcut-real-project.fixture.ts')], {
+      env: { ...process.env, ...ctx.serverEnv, CREATIVE_STUDIO_DATA_ROOT: ctx.dataRoot,
+        STICKER_FIXTURE_TEAM_EMPLOYEE: ctx.employee.employeeId },
+      encoding: 'utf8', windowsHide: true, timeout: 120_000, maxBuffer: 10 * 1024 * 1024,
+    });
+    const fixture = JSON.parse(seeded.stdout.trim().split(/\r?\n/).at(-1));
+    const group = await ctx.api.json(ctx.employeeSession, `/api/final-edit-groups/${fixture.groupId}`, 'GET');
+    await ctx.api.json(ctx.employeeSession, `/api/final-edit-groups/${fixture.groupId}`, 'PATCH', {
+      type: 'set_packaging_config', variantId: fixture.variantId, expectedRevision: group.revision,
+      config: { ...group.packaging, enabled: true, template: 'overlay-poster',
+        stickers: [0,1].map(trackIndex => ({
+          id: `single-ui-sticker-${trackIndex}`, assetId: 'recommend', styleMode: 'follow-template', fixedStyle: null,
+          startFrame: 24, endFrame: 96, centerXPct: 35 + trackIndex * 30, centerYPct: 45, visualWidthPct: 28,
+          rotationDeg: 0, trackIndex, animation: 'follow-template', origin: { kind: 'manual' },
+        })),
+      },
+    });
+    ctx.singleSticker = fixture;
+    return ctx;
+  },
+
+  async batchStickerStates(ctx) {
+    const projectId = ctx.project.id;
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { spawnSync } = await import('node:child_process');
+    const { default: ffmpeg } = await import('ffmpeg-static');
+    const mediaRelative = 'storage/batch-media/ui-sticker-source.mp4';
+    const mediaAbsolute = path.join(ctx.dataRoot, mediaRelative);
+    fs.mkdirSync(path.dirname(mediaAbsolute), { recursive: true });
+    const encoded = spawnSync(ffmpeg, ['-f', 'lavfi', '-i', 'color=c=0x182838:s=96x128:r=24:d=8',
+      '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-y', mediaAbsolute],
+    { encoding: 'utf8', windowsHide: true, timeout: 60_000 });
+    assert.equal(encoded.status, 0, `贴纸夹具视频编码失败：${encoded.stderr}`);
+    const fingerprint = `sha256:${createHash('sha256').update(fs.readFileSync(mediaAbsolute)).digest('hex')}`;
+    const db = await ctx.openIsolatedDatabase();
+    try {
+      // 复用领域函数建批次/版本/素材/成片，避免手写 SQL 漏掉正式约束。
+      const { createBatchProduction, createBatchProductionVersion, addAssetToPool, updateBatchProductionStatus } =
+        await import('../../lib/batch-production/versions.ts');
+      const { createAsset, createAnalysisVersionAndSetCurrent } = await import('../../lib/batch-production/assets.ts');
+      const { createProjectScript, snapshotScriptIntoBatch } = await import('../../lib/batch-production/scripts.ts');
+      const { createOutputPlansForSnapshot, createOutputVersion } = await import('../../lib/batch-production/plans.ts');
+      const { resolveCoverContract, computeCoverContractHash } = await import('../../lib/batch-production/cover-contract.ts');
+      const now = new Date().toISOString();
+      const batchId = createBatchProduction(db, projectId, '贴纸验收批次');
+      ctx.stickerBatch = { id: batchId, name: '贴纸验收批次', plans: [] };
+      // 团队模式下列表按归属范围过滤：按正式登记格式补批次 → 项目的归属。
+      const employee = db.prepare('SELECT id FROM team_users WHERE employeeId = ?').get(ctx.employee.employeeId);
+      assert.ok(employee?.id, '贴纸夹具需要 base 钩子建好的员工账号');
+      db.prepare(`INSERT INTO team_resource_scopes (
+        resourceType, resourceId, ownerUserId, visibility, parentType, parentId, rootType, rootId, createdAt, updatedAt
+      ) VALUES ('batch', ?, ?, 'private', 'project', ?, 'project', ?, ?, ?)`)
+        .run(batchId, employee.id, projectId, projectId, now, now);
+      const batchVersionScope = db.prepare(`INSERT INTO team_resource_scopes (
+        resourceType, resourceId, ownerUserId, visibility, parentType, parentId, rootType, rootId, createdAt, updatedAt
+      ) VALUES ('batch_version', ?, ?, 'private', 'batch', ?, 'project', ?, ?, ?)`);
+      const batchVersionId = createBatchProductionVersion(db, batchId, {
+        copyCount: 1,
+        defaultsJson: { outputPreset: '3:4', preset: '3:4', fps: 24, targetDurationSec: 8 },
+      });
+      const assetId = createAsset(db, {
+        projectId,
+        sourceKind: 'managed',
+        locationJson: { kind: 'managed', relativePath: mediaRelative },
+        contentFingerprint: fingerprint,
+        mediaKind: 'video',
+        mediaJson: { displayName: '贴纸验收视频', durationSec: 8, durationUs: 8_000_000, width: 96, height: 128 },
+      });
+      db.prepare(`INSERT INTO batch_asset_sources (id,assetId,sourceKind,locationJson,health,createdAt)
+        VALUES (?,?,'managed',?,'healthy',?)`).run(randomUUID(), assetId, JSON.stringify({ kind: 'managed', relativePath: mediaRelative }), now);
+      db.prepare(`INSERT INTO team_resource_scopes
+        (resourceType,resourceId,ownerUserId,visibility,parentType,parentId,rootType,rootId,createdAt,updatedAt)
+        VALUES ('batch_asset',?,?,'private','project',?,'project',?,?,?)`).run(assetId, employee.id, projectId, projectId, now, now);
+      const analysisId = createAnalysisVersionAndSetCurrent(db, {
+        projectId,
+        assetId,
+        analyzerVersion: 'ui-acceptance-v1',
+        providerId: 'ui-acceptance',
+        model: 'fixture',
+        analysisJson: {
+          usable: true, durationUs: 8_000_000,
+          scenes: [{ startUs: 0, endUs: 8_000_000, qualityScore: 1, labels: ['产品'] }],
+          coverFrameTimesUs: [0],
+        },
+      });
+      addAssetToPool(db, batchVersionId, { assetId, analysisId });
+
+      const manualSticker = (id, overrides = {}) => ({
+        id, assetId: 'recommend', styleMode: 'follow-template', fixedStyle: null,
+        startFrame: 24, endFrame: 96, centerXPct: 32, centerYPct: 34, visualWidthPct: 28,
+        rotationDeg: 0, trackIndex: 0, animation: 'follow-template', origin: { kind: 'manual' },
+        ...overrides,
+      });
+      const autoSticker = (id, groupId, trackIndex) => ({
+        ...manualSticker(id, { startFrame: 120 + trackIndex * 20, endFrame: 168 + trackIndex * 20, centerXPct: 68, centerYPct: 62 }),
+        origin: { kind: 'auto', autoGroupId: groupId, autoEdited: false },
+      });
+      const packagingFor = (stickers) => ({
+        enabled: true,
+        template: 'overlay-poster', varsOverrides: {},
+        stickers, stickerDefaults: { animation: 'follow-template' },
+      });
+      const arrangementFor = (packaging) => ({
+        schemaVersion: 'batch-allocation-v1', preset: '3:4', fps: 24, targetDurationUs: 8_000_000,
+        productionReady: true, editRevision: 1,
+        review: { decision: 'approved', decidedAt: now },
+        clips: [{
+          clipId: 'ui-sticker-clip', segmentId: 'ui-sticker-seg', sourceSegmentId: 'ui-sticker-seg',
+          assetId, contentFingerprint: fingerprint,
+          sourceStartUs: 0, sourceEndUs: 8_000_000, timelineStartUs: 0, timelineEndUs: 8_000_000,
+          locked: false, playbackRate: 1,
+        }],
+        cover: { assetId, timeUs: 0 },
+        narration: { schemaVersion: 'batch-narration-v1', mode: 'local_ready', productionReady: true, durationUs: 8_000_000, gainDb: 0, segments: [] },
+        subtitle: { cues: [] }, preserveGaps: true,
+        music: { trackId: null, gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 },
+        warnings: [], blockers: [],
+        packaging,
+      });
+
+      const specs = [
+        { title: '贴纸来源片', stickers: [manualSticker('sticker_manual_1'), manualSticker('sticker_manual_2', { centerXPct: 50, centerYPct: 50, startFrame: 40, endFrame: 120 }), autoSticker('sticker_auto_1', 'auto_ui_1', 0)] },
+        { title: '贴纸目标片一', stickers: [manualSticker('sticker_target_manual')] },
+        { title: '贴纸目标片二', stickers: [] },
+      ];
+      batchVersionScope.run(batchVersionId, employee.id, batchId, projectId, now, now);
+      for (const [index, spec] of specs.entries()) {
+        const scriptId = createProjectScript(db, projectId, {
+          sourceKind: 'script_draft', sourceId: `ui-sticker-src-${index}`,
+          title: spec.title, bodyText: `${spec.title}的真实口播正文。`, sourceVersion: '1',
+          metadata: {
+            targetDurationSec: 8,
+            coverTitleJson: { primary: spec.title, secondary: '贴纸验收' },
+            contentRevision: `ui-sticker-rev-${index}`,
+          },
+        });
+        const snapshotId = snapshotScriptIntoBatch(db, batchVersionId, { scriptId, copyCount: 1 });
+        const [planId] = createOutputPlansForSnapshot(db, batchVersionId, snapshotId);
+        const outputVersionId = createOutputVersion(db, planId, {
+          arrangementJson: arrangementFor(packagingFor(spec.stickers)),
+        });
+        ctx.stickerBatch.plans.push({ planId, outputVersionId });
+        // 子资源归属：路由包装层要求 plan/output_version 沿父链回溯到 batch。
+        const scope = (resourceType, resourceId, parentType, parentId) => db.prepare(`INSERT INTO team_resource_scopes (
+          resourceType, resourceId, ownerUserId, visibility, parentType, parentId, rootType, rootId, createdAt, updatedAt
+        ) VALUES (?, ?, ?, 'private', ?, ?, 'project', ?, ?, ?)`)
+          .run(resourceType, resourceId, employee.id, parentType, parentId, projectId, now, now);
+        scope('batch_plan', planId, 'batch_version', batchVersionId);
+        scope('batch_output_version', outputVersionId, 'batch_plan', planId);
+        // 封面任务成功，审片页才把它当成可检查成片。
+        const taskId = `ui-sticker-cover-${index + 1}`;
+        db.prepare(`INSERT INTO batch_tasks
+          (id, projectId, batchId, workType, targetKind, targetId, status, requestKey, expectedState, progressJson, attemptCount, createdAt, updatedAt)
+          VALUES (?, ?, ?, 'render', 'output_version_cover', ?, 'succeeded', ?, 'running', '{}', 1, ?, ?)`)
+          .run(taskId, projectId, batchId, outputVersionId,
+            `cover:${outputVersionId}:${computeCoverContractHash(resolveCoverContract(db, outputVersionId))}`, now, now);
+      }
+      updateBatchProductionStatus(db, projectId, batchId, 'running');
+    } finally {
+      db.close();
+    }
+
+    // Check real team write routes before sizing their UI. Restore the original
+    // target snapshots so every screen still measures the same fixture state.
+    const base = `/api/batch-production/batches/${ctx.stickerBatch.id}/outputs`;
+    const query = `?projectId=${projectId}`;
+    const read = planId => ctx.api.json(ctx.employeeSession, `${base}/${planId}/arrangement${query}`, 'GET');
+    const [source, ...targets] = await Promise.all(ctx.stickerBatch.plans.map(item => read(item.planId)));
+    await ctx.api.json(ctx.employeeSession, `${base}/${source.planId}/clips${query}`, 'POST', {
+      type: 'set_packaging', config: source.packaging,
+      expectedOutputVersionId: source.outputVersionId, expectedEditRevision: source.editRevision,
+    });
+    const savedSource = await read(source.planId);
+    const copied = await ctx.api.json(ctx.employeeSession, `${base}/sticker-copy${query}`, 'POST', {
+      type: 'copy', sourcePlanId: source.planId,
+      expectedSourceOutputVersionId: savedSource.outputVersionId, expectedSourceEditRevision: savedSource.editRevision,
+      targets: targets.map(item => ({ planId: item.planId, expectedOutputVersionId: item.outputVersionId, expectedEditRevision: item.editRevision })),
+    });
+    assert.equal(copied.targets.length, 2);
+    await ctx.api.json(ctx.employeeSession, `${base}/sticker-copy${query}`, 'POST', {
+      type: 'restore', targets: copied.targets.map(item => ({
+        planId: item.planId, expectedOutputVersionId: item.outputVersionId, expectedEditRevision: item.afterEditRevision, snapshot: item.before,
+      })),
+    });
+    for (const target of targets) assert.deepEqual((await read(target.planId)).packaging.stickers, target.packaging.stickers);
+    assert.equal((await ctx.api.raw(null, '/api/packaging/stickers/catalog.json')).status, 401);
+    for (const template of ['overlay-poster', 'overlay-journal', 'overlay-minimal', 'overlay-variety']) {
+      assert.equal((await ctx.api.raw(ctx.employeeSession, `/api/packaging/templates/${template}/stickers/runtime.js`)).status, 200);
+    }
+    console.log('团队贴纸正式 API：单片保存、双目标复制/恢复、未登录拒绝和四模板运行时读取通过');
+    return ctx;
+  },
+
+  /**
    * 02 号票：待核对页要有真实证据形态的 fixture 才量得出「默认卡片 / 核对详情 / 人工核对」。
    *
    * 这里只在**隔离数据根**里造统一任务与执行证据（正式接口没有「直接造一条待核对任务」的入口），
@@ -575,7 +786,9 @@ export const FIXTURE_HOOKS = {
         },
       ];
 
-      let readySeq = 810001;
+      // 与 usageLedger 共用全局唯一队列序号：取当前最大值续号，避免两钩子同轮执行时撞号。
+      const reconcileMaxReadySeq = db.prepare('SELECT COALESCE(MAX(readySeq), 0) AS maxSeq FROM execution_operations').get().maxSeq;
+      let readySeq = Math.max(810001, Number(reconcileMaxReadySeq) + 1);
       for (const task of tasks) {
         insertJob.run(
           task.jobId, projectId, imageId, ctx.provider.id, 'gpt-image-2', '界面验收待核对夹具',
@@ -623,7 +836,8 @@ export const FIXTURE_HOOKS = {
           });
         }
       }
-      const inserted = db.prepare('SELECT COUNT(*) FROM execution_media_tasks').pluck().get();
+      // 同一轮里 usageLedger 可能先插入大量任务；只数本钩子造的 id。
+      const inserted = tasks.filter((task) => db.prepare('SELECT 1 FROM execution_media_tasks WHERE id = ?').get(task.id)).length;
       assert.equal(inserted, tasks.length, '待核对夹具必须把六个形态都造出来');
       // A released historical call stays unknown; release does not settle its result or cost.
       db.prepare(`INSERT INTO execution_reconciliation_orphans
@@ -693,7 +907,10 @@ export const FIXTURE_HOOKS = {
       ) VALUES (?, ?, ?, ?, 1, 1, 1, ?, NULL, 'terminal', 'succeeded', 'ui-usage-accept', 1,
         'fixture', '2099-01-01T00:00:00.000Z', ?, NULL, 1, NULL, ?, 1, ?, 'CNY', ?, ?, 'settled', ?, ?)`);
 
-      let readySeq = 950001;
+      // readySeq 是全局唯一队列序号：usageLedger 与 taskHistory 可能在同一轮里先后执行，
+      // 各自从不同起点递增会撞号（UNIQUE constraint failed: execution_operations.readySeq）。
+      const maxReadySeq = db.prepare('SELECT COALESCE(MAX(readySeq), 0) AS maxSeq FROM execution_operations').get().maxSeq;
+      let readySeq = Math.max(950001, Number(maxReadySeq) + 1);
       let attemptSeq = 0;
       db.transaction(() => {
         for (const [actorId, spec, prefix] of [

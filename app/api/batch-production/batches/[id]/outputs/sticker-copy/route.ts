@@ -64,8 +64,13 @@ async function __teamRoutePOST(request: NextRequest, context: { params: Promise<
     const db = getDb();
     if (body.type === 'copy') {
       if (typeof body.sourcePlanId !== 'string' || !body.sourcePlanId.trim()) invalidInput('复制需要来源 sourcePlanId');
+      if (typeof body.expectedSourceOutputVersionId !== 'string' || !body.expectedSourceOutputVersionId.trim()
+        || typeof body.expectedSourceEditRevision !== 'number' || !Number.isSafeInteger(body.expectedSourceEditRevision)
+        || body.expectedSourceEditRevision < 0) invalidInput('复制需要来源成片的预期版本与修订');
       const result = copyBatchOutputStickers(db, projectId, id, {
         sourcePlanId: body.sourcePlanId.trim(),
+        expectedSourceOutputVersionId: body.expectedSourceOutputVersionId,
+        expectedSourceEditRevision: body.expectedSourceEditRevision,
         targets: body.targets.map(parseTarget),
       });
       return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });

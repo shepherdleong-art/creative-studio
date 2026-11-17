@@ -102,6 +102,11 @@ function target(planId: string): BatchStickerCopyTarget {
   };
 }
 
+function sourceExpectation(planId = 'source') {
+  const current = target(planId);
+  return { expectedSourceOutputVersionId: current.expectedOutputVersionId, expectedSourceEditRevision: current.expectedEditRevision };
+}
+
 function allRaw(): Record<string, string> {
   const rows = db.prepare(`SELECT id, arrangementJson FROM batch_output_versions ORDER BY id`).all() as Array<{ id: string; arrangementJson: string }>;
   return Object.fromEntries(rows.map((row) => [row.id, row.arrangementJson]));
@@ -202,7 +207,7 @@ try {
   const sourceRawBefore = raw('ov-source');
   let randomCalls = 0;
   const copied = copyBatchOutputStickers(db, 'p1', 'b1', {
-    sourcePlanId: 'source',
+    sourcePlanId: 'source', ...sourceExpectation(),
     targets: [target('target-one'), target('target-two')],
   }, {
     random: () => { randomCalls += 1; return 0; },
@@ -236,29 +241,45 @@ try {
   assert.deepEqual(copied.targets[0].after.stickers, copiedOne.packaging.stickers);
 
   const afterCopyRaw = allRaw();
-  expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', { sourcePlanId: 'source', targets: [] }));
+  const beforeSourceChange = sourceExpectation();
+  const changedSource = parsed('ov-source');
+  changedSource.editRevision += 1;
+  changedSource.packaging.stickers![0].centerXPct += 1;
+  db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?').run(JSON.stringify(changedSource), 'ov-source');
+  const afterSourceChange = allRaw();
+  expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+    sourcePlanId: 'source', ...beforeSourceChange, targets: [target('target-one'), target('target-two')],
+  }));
+  assert.deepEqual(allRaw(), afterSourceChange, '来源修订变化时所有目标与审核态必须零写入');
+  expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
+    sourcePlanId: 'source', ...sourceExpectation(), expectedSourceOutputVersionId: 'old-source-version',
+    targets: [target('target-one'), target('target-two')],
+  }));
+  assert.deepEqual(allRaw(), afterSourceChange, '来源版本变化时所有目标必须零写入');
+  db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?').run(sourceRawBefore, 'ov-source');
+  expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', { sourcePlanId: 'source', ...sourceExpectation(), targets: [] }));
   expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', {
-    sourcePlanId: 'source', targets: [target('target-one'), target('target-one')],
+    sourcePlanId: 'source', ...sourceExpectation(), targets: [target('target-one'), target('target-one')],
   }));
   expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', {
-    sourcePlanId: 'source', targets: [target('source')],
+    sourcePlanId: 'source', ...sourceExpectation(), targets: [target('source')],
   }));
   expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
-    sourcePlanId: 'source', targets: [target('other-version')],
+    sourcePlanId: 'source', ...sourceExpectation(), targets: [target('other-version')],
   }));
   expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', {
-    sourcePlanId: 'empty-source', targets: [target('target-one')],
+    sourcePlanId: 'empty-source', ...sourceExpectation('empty-source'), targets: [target('target-one')],
   }));
   assert.deepEqual(allRaw(), afterCopyRaw, '空目标、重复、自复制、跨版本与空来源均须零写入');
 
   expectDomain('conflict', () => copyBatchOutputStickers(db, 'p1', 'b1', {
-    sourcePlanId: 'source',
+    sourcePlanId: 'source', ...sourceExpectation(),
     targets: [target('target-one'), { ...target('target-two'), expectedEditRevision: 999 }],
   }));
   assert.deepEqual(allRaw(), afterCopyRaw, '任一目标修订冲突时所有目标保持原字节与审核态');
 
   expectDomain('invalid_input', () => copyBatchOutputStickers(db, 'p1', 'b1', {
-    sourcePlanId: 'source', targets: [target('target-one'), target('short')],
+    sourcePlanId: 'source', ...sourceExpectation(), targets: [target('target-one'), target('short')],
   }));
   assert.deepEqual(allRaw(), afterCopyRaw, '任一目标时长不足时不得写入先前有效目标');
 

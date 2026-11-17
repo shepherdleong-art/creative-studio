@@ -424,6 +424,7 @@
 }
 :global(html[data-deployment-mode]) :global(body):has(.reviewFocusShell) > :global(header),
 :global(body):has(.reviewFocusShell) :global([data-project-chrome]),
+:global(body):has(.reviewFocusShell) :global([data-testid='step-empty']),
 .workspace:has(.reviewFocusShell) > :global([data-mixcut-mode-bar]) {
   display: none;
 }

@@ -321,14 +321,18 @@ export default function BatchUnifiedReviewWorkspace({
     [arrangements, batchId, projectId, refreshFilmArrangement]
   );
 
-  const handleCopyStickers = useCallback(async (sourcePlanId: string, targets: BatchStickerCopyDialogTarget[]) => {
+  const handleCopyStickers = useCallback(async (source: BatchStickerCopyDialogTarget, targets: BatchStickerCopyDialogTarget[]) => {
     const response = await fetch(`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/sticker-copy?projectId=${encodeURIComponent(projectId)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'copy', sourcePlanId, targets }),
+      body: JSON.stringify({ type: 'copy', sourcePlanId: source.planId,
+        expectedSourceOutputVersionId: source.expectedOutputVersionId, expectedSourceEditRevision: source.expectedEditRevision, targets }),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.message || '跨片贴纸复制失败');
+    if (!response.ok) {
+      await Promise.allSettled([source, ...targets].map(item => refreshFilmArrangement(item.planId)));
+      throw new Error(data.message || '跨片贴纸复制失败');
+    }
     const result = data as BatchStickerMutationResult;
     const entry: StickerCopyHistoryEntry = {
       kind: 'sticker-copy',
@@ -990,11 +994,12 @@ export default function BatchUnifiedReviewWorkspace({
         </div>
 
         {stickerCopySource && <BatchStickerCopyDialog
+          key={stickerCopySource.planId}
           source={stickerCopySource}
           films={films}
           initialSelectedPlanIds={selectedPlanIds}
           onClose={() => setStickerCopySourceId(null)}
-          onConfirm={(targets) => handleCopyStickers(stickerCopySource.planId, targets)}
+          onConfirm={handleCopyStickers}
         />}
 
         {/* Left Splitter */}

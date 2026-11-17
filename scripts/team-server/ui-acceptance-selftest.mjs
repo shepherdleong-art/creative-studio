@@ -81,6 +81,22 @@ const CASES = [
     html: `<div style="width: 200px; height: 40px; overflow-x: auto"><div style="width: 320px; height: 20px; background: #ccc"></div></div>`,
   },
   {
+    id: 'semantic-hidden-heading',
+    expectation: 'all-pass',
+    html: `<header style="position:absolute;width:1px;height:1px;padding:10px 16px;clip-path:inset(50%);overflow:hidden;white-space:nowrap"><h1>批量剪辑 · 统一审片</h1></header>
+      <span style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">共用播放头 · 播放最上层可见成片</span>`,
+  },
+  {
+    id: 'sr-only-class-does-not-exempt-visible-content',
+    expectation: 'hiddenOverflowContent-fails',
+    html: `<div class="sr-only" style="width:80px;overflow:hidden;white-space:nowrap">真实可见但被裁掉的工具栏内容必须失败</div>`,
+  },
+  {
+    id: 'partial-clip-does-not-exempt-overflow',
+    expectation: 'hiddenOverflowContent-fails',
+    html: `<div style="position:absolute;width:80px;overflow:hidden;clip-path:inset(10%);white-space:nowrap">只裁一部分的工具栏内容必须失败</div>`,
+  },
+  {
     id: 'media-wrong-ratio',
     expectation: 'mediaFrames-fails',
     html: `<div class="frame" data-output-preset="9x16" style="width: 300px; height: 400px"></div>`,

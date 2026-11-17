@@ -190,6 +190,11 @@ export function collectHiddenOverflowContent(options = {}) {
   for (const element of document.querySelectorAll('body *')) {
     if (element.matches(FORM_CONTROL_TAGS)) continue;
     const style = getComputedStyle(element);
+    // Screen-reader-only content is fully clipped by CSS, not an unreachable
+    // visible toolbar. Do not trust class names or aria-hidden as an exemption.
+    const fullyClipped = /^(absolute|fixed)$/.test(style.position)
+      && (style.clipPath === 'inset(50%)' || /^rect\(0px[, ]+0px[, ]+0px[, ]+0px\)$/.test(style.clip));
+    if (fullyClipped) continue;
     const overflowX = style.overflowX;
     if (!/^(auto|scroll|hidden|clip)$/.test(overflowX)) continue;
     const overflowPx = element.scrollWidth - element.clientWidth;
@@ -412,6 +417,9 @@ export function collectAllChecks(scope = 'page') {
     if (!included(element)) continue;
     if (element.matches('input, textarea, select')) continue;
     const style = getComputedStyle(element);
+    const fullyClipped = /^(absolute|fixed)$/.test(style.position)
+      && (style.clipPath === 'inset(50%)' || /^rect\(0px[, ]+0px[, ]+0px[, ]+0px\)$/.test(style.clip));
+    if (fullyClipped) continue;
     const overflowX = style.overflowX;
     if (!/^(auto|scroll|hidden|clip)$/.test(overflowX)) continue;
     const elementOverflow = element.scrollWidth - element.clientWidth;

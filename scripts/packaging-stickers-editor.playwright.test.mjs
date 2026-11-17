@@ -8,12 +8,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium } from '@playwright/test';
+import { stickerTestServerLaunch, setupStickerTeamBrowser, verifySingleStickerProductionExport } from './packaging-sticker-production-test.mjs';
 
 const fixturePath = 'scripts/final-edit-mixcut-real-project.fixture.ts';
 const loaderPath = pathToFileURL(path.resolve('scripts/typescript-extension-loader.mjs')).href;
 const chrome = path.resolve('packaging/runtime/chrome-headless-shell', process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell');
 const testDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-sticker-editor-'));
-const testEnv = { ...process.env, CREATIVE_STUDIO_DATA_ROOT: testDataRoot, NEXT_TELEMETRY_DISABLED: '1' };
+const testEnv = { ...process.env, CREATIVE_STUDIO_DATA_ROOT: testDataRoot, NEXT_TELEMETRY_DISABLED: '1',
+  ...(process.env.STICKER_TEST_STANDALONE ? { STICKER_FIXTURE_EXPORT_FONT: 'Arial' } : {}),
+};
 let browser;
 let server;
 let passed = false;
@@ -30,9 +33,8 @@ async function getFreePort() {
 
 async function startServer() {
   const port = await getFreePort();
-  const child = spawn(process.execPath, [path.resolve('node_modules/next/dist/bin/next'), 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
-    cwd: process.cwd(), env: testEnv, stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const launch = stickerTestServerLaunch(testEnv, port);
+  const child = spawn(process.execPath, launch.args, launch.options);
   let output = '';
   child.stdout.on('data', (chunk) => { output = `${output}${chunk}`.slice(-20_000); });
   child.stderr.on('data', (chunk) => { output = `${output}${chunk}`.slice(-20_000); });
@@ -40,10 +42,15 @@ async function startServer() {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`Next dev 启动失败：${output}`);
+    let ready = false;
     try {
       const response = await fetch(baseUrl, { redirect: 'manual' });
-      if (response.status < 500) return { child, baseUrl, output: () => output };
+      ready = response.status < 500;
     } catch { /* 等待启动 */ }
+    if (ready) {
+      try { return { child, baseUrl, output: () => output, browserOptions: await setupStickerTeamBrowser(baseUrl, launch) }; }
+      catch (error) { await stopServer(child); throw error; }
+    }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   child.kill('SIGTERM');
@@ -73,14 +80,14 @@ async function eventually(check, message, timeoutMs = 10_000) {
 }
 
 try {
+  server = await startServer();
   const seeded = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loaderPath, fixturePath], {
     cwd: process.cwd(), env: testEnv, encoding: 'utf8', timeout: 120_000, maxBuffer: 10 * 1024 * 1024,
   });
   assert.equal(seeded.status, 0, `fixture 初始化失败：\n${seeded.stderr}\n${seeded.stdout}`);
   const fixture = JSON.parse(seeded.stdout.trim().split(/\r?\n/).at(-1));
-  server = await startServer();
   browser = await chromium.launch({ headless: true, executablePath: chrome });
-  const page = await browser.newPage({ viewport: { width: 1600, height: 1100 }, deviceScaleFactor: 1 });
+  const page = await browser.newPage({ ...server.browserOptions, viewport: { width: 1600, height: 1100 }, deviceScaleFactor: 1 });
   page.setDefaultTimeout(30_000);
   await page.goto(`${server.baseUrl}/projects/${fixture.projectId}?tab=final-edit`, { waitUntil: 'networkidle' });
   await page.getByRole('heading', { name: '确认本次混剪要用的素材' }).waitFor();
@@ -582,6 +589,8 @@ try {
   assert.equal(persisted.length, 2, '刷新后必须从服务端恢复全部贴纸');
   assert.equal(persisted.find((item) => item.id === second.id).centerXPct, beforeTimelineCancel.centerXPct);
 
+  await verifySingleStickerProductionExport(page, fixture.groupId);
+  if (process.env.STICKER_TEST_EVIDENCE_DIR) await page.screenshot({ path: path.join(process.env.STICKER_TEST_EVIDENCE_DIR, 'single-editor.png') });
   passed = true;
   console.log('贴纸编辑器真实 E2E 通过：素材目录、空间编辑、时间轴与历史、六卡动效浮窗、统一/单张/全部设置、自动 6 张与换一组、实际播放、包装开关与刷新恢复。');
 } catch (error) {
