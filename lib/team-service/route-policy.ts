@@ -169,6 +169,7 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/jobs/[id]': 'PATCH',
   '/api/packaging/system-fonts': 'GET',
   '/api/packaging/system-fonts/select': 'POST',
+  '/api/packaging/stickers/[...path]': 'GET',
   '/api/packaging/templates/[...path]': 'GET',
   '/api/packaging/user-font': 'DELETE GET POST',
   '/api/projects': 'GET POST',
@@ -333,6 +334,7 @@ const PUBLIC = new Set([
   '/api/team/operations/status GET', '/api/team/operations/shutdown POST',
 ]);
 const AUTHENTICATED = new Set([
+  '/api/packaging/stickers/[...path] GET',
   '/api/packaging/templates/[...path] GET',
   '/api/team/auth/change-password POST', '/api/team/auth/logout POST',
   '/api/team/recycle-bin GET', '/api/team/recycle-bin/restore POST',

@@ -5,6 +5,7 @@
 
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { sanitizePackagingStickerDefaults, sanitizePackagingStickers, type PackagingStickerDefaults, type PackagingStickerInstance } from './packaging-stickers.ts';
 
 export interface PackagingVars {
   title: string;
@@ -60,6 +61,9 @@ export interface FinalEditPackagingConfig {
   pointCuesEdited?: boolean;
   /** §7：按模板分别记忆的手动布局（默认 {}）。 */
   layouts?: PackagingLayouts;
+  /** 独立贴纸实例与新增默认动效；不随 pointCues 重提取或文字版式重置。 */
+  stickers?: PackagingStickerInstance[];
+  stickerDefaults?: PackagingStickerDefaults;
   /** §9 ②：当前选择的卖点字体（UI 记录用；字体文件已物化到 packaging/fonts/user/）。 */
   pointFont?: { family: string; file: string };
   /** §10 ②：主标题/副标题独立字体（缺省=模板原生字体，不注入）。 */
@@ -204,13 +208,15 @@ export function parsePackagingConfig(json: unknown): FinalEditPackagingConfig {
   if (typeof source === 'string') {
     try { source = JSON.parse(source); } catch { source = {}; }
   }
-  const raw = (source && typeof source === 'object' && !Array.isArray(source) ? source : {}) as { enabled?: unknown; template?: unknown; varsOverrides?: unknown; pointCues?: unknown; pointCuesKey?: unknown; pointCuesMode?: unknown; pointCuesEdited?: unknown; layouts?: unknown; pointFont?: unknown; titleFont?: unknown; subtitleFont?: unknown };
+  const raw = (source && typeof source === 'object' && !Array.isArray(source) ? source : {}) as { enabled?: unknown; template?: unknown; varsOverrides?: unknown; pointCues?: unknown; pointCuesKey?: unknown; pointCuesMode?: unknown; pointCuesEdited?: unknown; layouts?: unknown; stickers?: unknown; stickerDefaults?: unknown; pointFont?: unknown; titleFont?: unknown; subtitleFont?: unknown };
   const template = typeof raw.template === 'string' && (PACKAGING_TEMPLATE_IDS as readonly string[]).includes(raw.template)
     ? raw.template as PackagingTemplateId
     : DEFAULT_PACKAGING_TEMPLATE;
   const pointCues = sanitizePointCues(raw.pointCues);
   const pointCuesMode = raw.pointCuesMode === 'even' || raw.pointCuesMode === 'none' ? raw.pointCuesMode : 'timed';
   const layouts = sanitizePackagingLayouts(raw.layouts);
+  const stickers = Array.isArray(raw.stickers) ? sanitizePackagingStickers(raw.stickers) : undefined;
+  const stickerDefaults = sanitizePackagingStickerDefaults(raw.stickerDefaults);
   const parseFontSlot = (value: unknown): { family: string; file: string } | undefined => {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       const slot = value as { family?: unknown; file?: unknown };
@@ -233,6 +239,8 @@ export function parsePackagingConfig(json: unknown): FinalEditPackagingConfig {
     // §7：缺省 false / {}（缺字段即默认，保持存量 JSON 干净）
     ...(raw.pointCuesEdited === true ? { pointCuesEdited: true } : {}),
     ...(Object.keys(layouts).length > 0 ? { layouts } : {}),
+    ...(stickers ? { stickers } : {}),
+    ...(stickerDefaults ? { stickerDefaults } : {}),
     ...(pointFont ? { pointFont } : {}),
     ...(titleFont ? { titleFont } : {}),
     ...(subtitleFont ? { subtitleFont } : {}),

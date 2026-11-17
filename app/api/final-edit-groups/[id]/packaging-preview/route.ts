@@ -1,4 +1,5 @@
 import { PACKAGING_EDIT_BRIDGE_JS } from '@/lib/media-core/packaging-edit-bridge';
+import { PACKAGING_STICKER_EDIT_BRIDGE_JS } from '@/lib/media-core/packaging-sticker-edit-bridge';
 // 包装 v2/v3 实时预览端点（配置前置：预览发生在导出渲染之前）
 // GET ?variantId=&template=&format=json|html[&t=<秒>][&sync=1][&edit=1]
 //   json → { vars, defaults, frameUrl, template, timeline:{coverSec,totalSec,pointCues,pointCuesMode},
@@ -26,6 +27,7 @@ import { extractPackagingPalette, resolveTemplateHueMode, type PackagingPalette 
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { FINAL_EDIT_INTRO_DURATION_US } from '@/lib/media-core/render-contract';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { resolvePackagingStickerAssets } from '@/lib/media-core/packaging-sticker-assets';
 
 
 async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -96,11 +98,12 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
     const totalSec = Math.max(group.totalDurationUs / 1e6, coverSec + 0.2);
     const timeline = { coverSec, totalSec, pointCues, pointCuesMode };
 
-    if (format === 'json') return NextResponse.json({ vars, defaults, frameUrl, template, timeline, layouts, pointCuesStale, pointCuesEdited }, { headers: { 'Cache-Control': 'no-store' } });
+    if (format === 'json') return NextResponse.json({ vars, defaults, frameUrl, template, timeline, layouts, stickers: group.packaging.stickers ?? [], stickerDefaults: group.packaging.stickerDefaults ?? { animation: 'follow-template' }, pointCuesStale, pointCuesEdited }, { headers: { 'Cache-Control': 'no-store' } });
 
     let html = fs.readFileSync(path.join(templateDir, 'index.html'), 'utf-8');
     // §7：layouts 随 vars 注入，模板端经 window.__vars.layouts 读取（与导出渲染同契约）
-    const timelineVars = buildTimelineVars({ vars, totalSec, coverSec, pointCues, pointCuesMode, layouts });
+    const stickerAssets = resolvePackagingStickerAssets({ packagingDir: resolvePackagingDir(), template, stickers: group.packaging.stickers });
+    const timelineVars = buildTimelineVars({ vars, totalSec, coverSec, pointCues, pointCuesMode, layouts, stickers: group.packaging.stickers, stickerDefaults: group.packaging.stickerDefaults, stickerAssets, template });
     const varsJson = JSON.stringify(timelineVars).replace(/</g, '\\u003c');
     const baseHref = `/api/packaging/templates/${encodeURIComponent(template)}/`;
     // §10 ②：预览与成片一致——按当前配置三槽注入 @font-face（UserTitle/UserSubtitle/UserPoint；
@@ -127,8 +130,8 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
       : hasSeek
         ? `<script>setTimeout(function(){var t=window.__timelines&&window.__timelines.overlay;if(t){t.pause(0);t.seek(${seekT});}},80);</script>`
         : '<script>setTimeout(function(){var t=window.__timelines&&window.__timelines.overlay;if(t)t.play(0)},80);</script>';
-    // §6：edit=1 注入预览画面内拖拽/缩放编辑桥（同源 iframe 内运行，幂等）
-    const editBridge = editMode ? `<script>${PACKAGING_EDIT_BRIDGE_JS}</script>` : '';
+    // §6：edit=1 注入文字与贴纸两套独立编辑桥（同源 iframe 内运行，均幂等）
+    const editBridge = editMode ? `<script>${PACKAGING_EDIT_BRIDGE_JS}</script><script>${PACKAGING_STICKER_EDIT_BRIDGE_JS}</script>` : '';
     html = html
       .replace('<head>', `<head><base href="${baseHref}">`)
       .replace('</head>', `${headEnd}</head>`)

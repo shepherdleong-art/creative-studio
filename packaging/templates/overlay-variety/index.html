@@ -16,7 +16,11 @@
   /* ---- v4 复古综艺：暖橙渐变底（用户素材）+ 直角视频窗 + 纯文字/矢量包装层 ----
      统一规则：所有深色=ink-d；浅色=ink-l（笔刷/主标题描边）；副标题=ink-lm（微暗，与笔刷区分）；阴影=ink-dd 硬边偏移 */
 
-  .stage { position: absolute; inset: 0; z-index: 1; }
+  .stage { position: absolute; inset: 0; z-index: 3; }
+  /* 贴纸在封面/包装文字与正片卖点之下；封面舞台在正文开始前已完全退场。 */
+  #sticker-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+  #dyn { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+  #dyn [data-point-id] { pointer-events: auto; }
 
   /* 边框层：bg.png 暗角渐晕（用户素材，自带 alpha：边缘暗化、中央透明，直接全幅叠加） */
   .layer-bg {
@@ -139,6 +143,7 @@
       <div class="hashtag" id="hashtag"></div>
       <div class="cover-tags" id="coverTags"></div>
     </div>
+    <div id="sticker-layer"></div>
     <div id="dyn"></div>
   </div>
 
@@ -482,5 +487,6 @@
   if (!window.__hyperframes) tl.play(0);
 })();
 </script>
+<script src="stickers/runtime.js"></script>
 </body>
 </html>

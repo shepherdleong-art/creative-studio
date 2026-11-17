@@ -1,0 +1,2209 @@
+{
+  "version": 1,
+  "sourceVersion": "V3.1",
+  "styles": {
+    "show": {
+      "name": "立体综艺",
+      "count": 29
+    },
+    "comic": {
+      "name": "圆润卡通",
+      "count": 28
+    },
+    "journal": {
+      "name": "手帐拼贴",
+      "count": 29
+    },
+    "editorial": {
+      "name": "暖调杂志",
+      "count": 29
+    }
+  },
+  "assets": [
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "opening",
+      "id": "recommend",
+      "label": "推荐",
+      "file": "show/recommend.png",
+      "thumbnail": "thumbs/show/recommend.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        57,
+        75,
+        1471,
+        953
+      ],
+      "file_bytes": 1862210,
+      "sha256": "c7a4287a428ec88584aed370cdfe61221e0b67b7b54a1560df4d815ecb077e6a"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "opening",
+      "id": "good_find",
+      "label": "好物来了",
+      "file": "show/good_find.png",
+      "thumbnail": "thumbs/show/good_find.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        109,
+        74,
+        1437,
+        978
+      ],
+      "file_bytes": 1742743,
+      "sha256": "e1846fe5c83542089798f11c8c16ef955fe4510b99207e9bbc37e2b3d108bd86"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "opening",
+      "id": "first_sight",
+      "label": "一眼心动",
+      "file": "show/first_sight.png",
+      "thumbnail": "thumbs/show/first_sight.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        108,
+        35,
+        1448,
+        1009
+      ],
+      "file_bytes": 1865265,
+      "sha256": "5abf2ce2ea8d929155a930b768e599a21b939ab1519e12669fe69f2c97f71c22"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "opening",
+      "id": "something_special",
+      "label": "这个有点东西",
+      "file": "show/something_special.png",
+      "thumbnail": "thumbs/show/something_special.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        47,
+        97,
+        1492,
+        948
+      ],
+      "file_bytes": 1707160,
+      "sha256": "930f4170d70a1683d739a3a67fde9f95801348c1279aba8e628f4abf8e068851"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "opening",
+      "id": "home_surprise",
+      "label": "家的小惊喜",
+      "file": "show/home_surprise.png",
+      "thumbnail": "thumbs/show/home_surprise.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        79,
+        80,
+        1459,
+        981
+      ],
+      "file_bytes": 1911879,
+      "sha256": "dcdbcc1e500f53ec52263fd550740ee9fd37854bac3016245a719ce1447fb3e3"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "opening",
+      "id": "look_here",
+      "label": "先看这里",
+      "file": "show/look_here.png",
+      "thumbnail": "thumbs/show/look_here.webp",
+      "width": 1886,
+      "height": 834,
+      "alpha_gt8_bbox": [
+        62,
+        56,
+        1832,
+        791
+      ],
+      "file_bytes": 1256143,
+      "sha256": "0cdabd8906bf9fd7dd1f432ce582e9db065ea3c7e9aee5bb046e6640b1a21b4c"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "explain",
+      "id": "details",
+      "label": "看细节",
+      "file": "show/details.png",
+      "thumbnail": "thumbs/show/details.webp",
+      "width": 1774,
+      "height": 887,
+      "alpha_gt8_bbox": [
+        25,
+        49,
+        1747,
+        867
+      ],
+      "file_bytes": 1557771,
+      "sha256": "ea64fd1feef772233c05bd8ee6f3e85cb6bf2f41cc0b16997fc3130b83ea286a"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "explain",
+      "id": "highlight",
+      "label": "划重点",
+      "file": "show/highlight.png",
+      "thumbnail": "thumbs/show/highlight.webp",
+      "width": 1774,
+      "height": 887,
+      "alpha_gt8_bbox": [
+        50,
+        91,
+        1744,
+        833
+      ],
+      "file_bytes": 1267180,
+      "sha256": "bc6a4a20b32d9823269c57a1fadcac4e5e0ea9a669fa964a252828c801ce6305"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "explain",
+      "id": "key_moment",
+      "label": "重点来了",
+      "file": "show/key_moment.png",
+      "thumbnail": "thumbs/show/key_moment.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        145,
+        35,
+        1433,
+        1007
+      ],
+      "file_bytes": 1848547,
+      "sha256": "0a3fc0afabf422264a3fec6ce9ecfa83418d6924d34280c41ab1109bd24e06be"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "explain",
+      "id": "another_angle",
+      "label": "换个角度",
+      "file": "show/another_angle.png",
+      "thumbnail": "thumbs/show/another_angle.webp",
+      "width": 1983,
+      "height": 793,
+      "alpha_gt8_bbox": [
+        156,
+        132,
+        1897,
+        663
+      ],
+      "file_bytes": 964501,
+      "sha256": "8029c22f389dabd910bd20c2c0c1d35ffcaf643049acaebdd18a255527a06a93"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "explain",
+      "id": "also_here",
+      "label": "还有这里",
+      "file": "show/also_here.png",
+      "thumbnail": "thumbs/show/also_here.webp",
+      "width": 1774,
+      "height": 887,
+      "alpha_gt8_bbox": [
+        151,
+        171,
+        1646,
+        727
+      ],
+      "file_bytes": 843706,
+      "sha256": "a57d3b3802c0be2a7a61085043fd6eb95103e7f9ece7245ac618660b3fa564f2"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "explain",
+      "id": "now_i_see",
+      "label": "原来如此",
+      "file": "show/now_i_see.png",
+      "thumbnail": "thumbs/show/now_i_see.webp",
+      "width": 2110,
+      "height": 745,
+      "alpha_gt8_bbox": [
+        156,
+        103,
+        2032,
+        654
+      ],
+      "file_bytes": 1067912,
+      "sha256": "432c2d411553f7c8622059963ddb240797e9e4288c847ea45d2a9aee37b6082f"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "ending",
+      "id": "cart",
+      "label": "加入购物车",
+      "file": "show/cart.png",
+      "thumbnail": "thumbs/show/cart.webp",
+      "width": 1983,
+      "height": 793,
+      "alpha_gt8_bbox": [
+        184,
+        15,
+        1796,
+        763
+      ],
+      "file_bytes": 1155336,
+      "sha256": "7e6f73d764723a646c0f684e734d72c475f77fc682e031e782b90a5aa43b645e"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "ending",
+      "id": "save",
+      "label": "喜欢先收藏",
+      "file": "show/save.png",
+      "thumbnail": "thumbs/show/save.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        85,
+        81,
+        1455,
+        964
+      ],
+      "file_bytes": 1886788,
+      "sha256": "6890486a72cd0da79a86a73b8dc098c6ffdc80569aba450c0cf765215426e6c9"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "ending",
+      "id": "more_details",
+      "label": "点击看详情",
+      "file": "show/more_details.png",
+      "thumbnail": "thumbs/show/more_details.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        54,
+        50,
+        1497,
+        980
+      ],
+      "file_bytes": 1899078,
+      "sha256": "9b01d3803112dff91b6f7eb7ef8b8e1966dce36680e9c0f6b932ef08b3430a01"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "ending",
+      "id": "take_home",
+      "label": "心动就带回家",
+      "file": "show/take_home.png",
+      "thumbnail": "thumbs/show/take_home.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        89,
+        69,
+        1481,
+        982
+      ],
+      "file_bytes": 1874103,
+      "sha256": "e8592d9e6158030be9cc1b0070d95e96ea84724fd3b705b28939c8b8cf5c59b8"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "ending",
+      "id": "worth_a_look",
+      "label": "这款值得看",
+      "file": "show/worth_a_look.png",
+      "thumbnail": "thumbs/show/worth_a_look.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        83,
+        89,
+        1486,
+        973
+      ],
+      "file_bytes": 1873252,
+      "sha256": "d3be51dab63dc2e7422e119c8c13bac0fd9e045dfa9b1b3b75dc552909f93ccc"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "ending",
+      "id": "home_love",
+      "label": "给家添点喜欢",
+      "file": "show/home_love.png",
+      "thumbnail": "thumbs/show/home_love.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        59,
+        41,
+        1497,
+        988
+      ],
+      "file_bytes": 2018679,
+      "sha256": "145b3b67cfde4360f056487b546943cd881dfa47efc92dddb3f81c5c4db6a750"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "gesture",
+      "id": "like",
+      "label": "点赞",
+      "file": "show/like.png",
+      "thumbnail": "thumbs/show/like.webp",
+      "width": 1316,
+      "height": 1195,
+      "alpha_gt8_bbox": [
+        132,
+        84,
+        1186,
+        1100
+      ],
+      "file_bytes": 1112427,
+      "sha256": "7e661d185954b3460d0938ec7df491c148646a6c31b1fb5a15b242ac7b749260"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "gesture",
+      "id": "ok",
+      "label": "OK手势",
+      "file": "show/ok.png",
+      "thumbnail": "thumbs/show/ok.webp",
+      "width": 1316,
+      "height": 1195,
+      "alpha_gt8_bbox": [
+        139,
+        64,
+        1256,
+        1126
+      ],
+      "file_bytes": 1069232,
+      "sha256": "ecfd287332019b4c97bb0a0ad92f12763887b1a03ebd57c091528657d4b38cb6"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "gesture",
+      "id": "finger_heart",
+      "label": "比心手势",
+      "file": "show/finger_heart.png",
+      "thumbnail": "thumbs/show/finger_heart.webp",
+      "width": 1316,
+      "height": 1195,
+      "alpha_gt8_bbox": [
+        229,
+        82,
+        1161,
+        1140
+      ],
+      "file_bytes": 857421,
+      "sha256": "a674bd25644338fdcb060451a0468b4ac52c3a857a6506e7f1978d4424f708fd"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "gesture",
+      "id": "point_left",
+      "label": "向左指",
+      "file": "show/point_left.png",
+      "thumbnail": "thumbs/show/point_left.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        102,
+        99,
+        1452,
+        874
+      ],
+      "file_bytes": 1378132,
+      "sha256": "da2901c4b5bb8ddb28cbab63267f6a3cee889666dc7253828d914c14ff9b9e4a"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "gesture",
+      "id": "point_right",
+      "label": "向右指",
+      "file": "show/point_right.png",
+      "thumbnail": "thumbs/show/point_right.webp",
+      "width": 1573,
+      "height": 1000,
+      "alpha_gt8_bbox": [
+        92,
+        122,
+        1549,
+        886
+      ],
+      "file_bytes": 992079,
+      "sha256": "8047d09ba21981478a751909cd9cb2f16a32924a9a342019e9e8cbea90b4e9ef"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "gesture",
+      "id": "present",
+      "label": "托举展示",
+      "file": "show/present.png",
+      "thumbnail": "thumbs/show/present.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        111,
+        182,
+        1494,
+        944
+      ],
+      "file_bytes": 1438206,
+      "sha256": "97d2c556243cb5ff36e6bd44a1a5b7401a546bacaed53eebe074b9b135287a64"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "annotation",
+      "id": "arrow_right",
+      "label": "右向弯箭头",
+      "file": "show/arrow_right.png",
+      "thumbnail": "thumbs/show/arrow_right.webp",
+      "width": 1530,
+      "height": 1028,
+      "alpha_gt8_bbox": [
+        156,
+        78,
+        1407,
+        998
+      ],
+      "file_bytes": 1044575,
+      "sha256": "bc1001096ab6fdf7507ab01e7956e4402b5aa39f0fc698b479eecb61346a7c28"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "annotation",
+      "id": "arrow_left",
+      "label": "左向镜像箭头",
+      "file": "show/arrow_left.png",
+      "thumbnail": "thumbs/show/arrow_left.webp",
+      "width": 1530,
+      "height": 1028,
+      "alpha_gt8_bbox": [
+        129,
+        73,
+        1383,
+        993
+      ],
+      "file_bytes": 1019454,
+      "sha256": "2861bcbeb17b0595e7743c9c4b8ef5104d01f12177f81770f329e1214a5dce8a"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "annotation",
+      "id": "oval",
+      "label": "椭圆圈",
+      "file": "show/oval.png",
+      "thumbnail": "thumbs/show/oval.webp",
+      "width": 1586,
+      "height": 992,
+      "alpha_gt8_bbox": [
+        137,
+        121,
+        1471,
+        821
+      ],
+      "file_bytes": 633188,
+      "sha256": "e64d22f5a3395b4491e8b5878791fb47df56b4f524b94c78129dbc26e35b8525"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "annotation",
+      "id": "round",
+      "label": "偏正圆圈",
+      "file": "show/round.png",
+      "thumbnail": "thumbs/show/round.webp",
+      "width": 1266,
+      "height": 1242,
+      "alpha_gt8_bbox": [
+        87,
+        42,
+        1197,
+        1142
+      ],
+      "file_bytes": 788756,
+      "sha256": "1687ccbbe53b9127d1f8de55d5ea9910711813e8259a223e641f1bfcb9f69cad"
+    },
+    {
+      "style": "show",
+      "style_name": "立体综艺",
+      "category": "special",
+      "id": "special",
+      "label": "哇！",
+      "file": "show/special.png",
+      "thumbnail": "thumbs/show/special.webp",
+      "width": 1466,
+      "height": 1073,
+      "alpha_gt8_bbox": [
+        111,
+        191,
+        1372,
+        892
+      ],
+      "file_bytes": 906447,
+      "sha256": "513b0a8c98bb664735f3fbef8b0c1ff6e5c6bdf3d6e10825e51a1d8c5a3b65a9"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "opening",
+      "id": "recommend",
+      "label": "推荐",
+      "file": "comic/recommend.png",
+      "thumbnail": "thumbs/comic/recommend.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        80,
+        126,
+        1486,
+        890
+      ],
+      "file_bytes": 1877673,
+      "sha256": "826d42a5f11ad01a3a91053f8013e2b35bd78d6eb682a325920ef52526a31f95"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "opening",
+      "id": "good_find",
+      "label": "好物来了",
+      "file": "comic/good_find.png",
+      "thumbnail": "thumbs/comic/good_find.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        110,
+        56,
+        1460,
+        980
+      ],
+      "file_bytes": 1933375,
+      "sha256": "5f0d3614fd01baa7f8934cda0bcdf34bed8516aefccea0d3ef7fa2916a585e5f"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "opening",
+      "id": "first_sight",
+      "label": "一眼心动",
+      "file": "comic/first_sight.png",
+      "thumbnail": "thumbs/comic/first_sight.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        121,
+        51,
+        1439,
+        971
+      ],
+      "file_bytes": 1883866,
+      "sha256": "0119f6582ea01612274fecd79de93d4c3b3a090d4a2ab92c967267b8b0847d6e"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "opening",
+      "id": "something_special",
+      "label": "这个有点东西",
+      "file": "comic/something_special.png",
+      "thumbnail": "thumbs/comic/something_special.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        88,
+        116,
+        1451,
+        926
+      ],
+      "file_bytes": 1924223,
+      "sha256": "62355232bf177fe721b32fff1346af188cb6b3d705562c12f5d862ebb18c9d9e"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "opening",
+      "id": "home_surprise",
+      "label": "家的小惊喜",
+      "file": "comic/home_surprise.png",
+      "thumbnail": "thumbs/comic/home_surprise.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        97,
+        71,
+        1471,
+        937
+      ],
+      "file_bytes": 1909193,
+      "sha256": "9abafeae6e4f955e3296f8a5f2d6c22a03969c71c2e149e0ffa4a62053d0903b"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "opening",
+      "id": "look_here",
+      "label": "先看这里",
+      "file": "comic/look_here.png",
+      "thumbnail": "thumbs/comic/look_here.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        43,
+        180,
+        1492,
+        828
+      ],
+      "file_bytes": 1651222,
+      "sha256": "78e33d54fad8bd4bd58fbb2b6d47f040eba2ace984ace4edb4c4e9de6f425f93"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "explain",
+      "id": "details",
+      "label": "看细节",
+      "file": "comic/details.png",
+      "thumbnail": "thumbs/comic/details.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        42,
+        228,
+        1499,
+        783
+      ],
+      "file_bytes": 1575023,
+      "sha256": "20838739662b0a1c8412b7eab8d936e35e6567bafdcc0cee30a83492cba61f2a"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "explain",
+      "id": "highlight",
+      "label": "划重点",
+      "file": "comic/highlight.png",
+      "thumbnail": "thumbs/comic/highlight.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        77,
+        179,
+        1491,
+        855
+      ],
+      "file_bytes": 1659210,
+      "sha256": "2673c6479ca4db88def483bf867290b46693b4c526f6d286ab568cfc143282e3"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "explain",
+      "id": "key_moment",
+      "label": "重点来了",
+      "file": "comic/key_moment.png",
+      "thumbnail": "thumbs/comic/key_moment.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        49,
+        30,
+        1492,
+        996
+      ],
+      "file_bytes": 1970821,
+      "sha256": "1b002b872cc9f4f1bcba6231cea45afbb35d16dbc52bfc37a1950c651dd617a1"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "explain",
+      "id": "another_angle",
+      "label": "换个角度",
+      "file": "comic/another_angle.png",
+      "thumbnail": "thumbs/comic/another_angle.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        75,
+        251,
+        1484,
+        710
+      ],
+      "file_bytes": 1425671,
+      "sha256": "9d0165d71a935af7b77204dff7dabbec9a90bcda6bcc110e269e8ff1aa020571"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "explain",
+      "id": "also_here",
+      "label": "还有这里",
+      "file": "comic/also_here.png",
+      "thumbnail": "thumbs/comic/also_here.webp",
+      "width": 1774,
+      "height": 887,
+      "alpha_gt8_bbox": [
+        106,
+        161,
+        1706,
+        698
+      ],
+      "file_bytes": 1097042,
+      "sha256": "bb3bca357a96e498ae327e5b3d0a8630009164526570a3ecda1d6fd551c5e05e"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "explain",
+      "id": "now_i_see",
+      "label": "原来如此",
+      "file": "comic/now_i_see.png",
+      "thumbnail": "thumbs/comic/now_i_see.webp",
+      "width": 1808,
+      "height": 870,
+      "alpha_gt8_bbox": [
+        119,
+        169,
+        1729,
+        704
+      ],
+      "file_bytes": 1139641,
+      "sha256": "31568856dcc522f08c7274cb81dca0f9ebe4a01b502362bb42b69032b343739f"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "ending",
+      "id": "cart",
+      "label": "加入购物车",
+      "file": "comic/cart.png",
+      "thumbnail": "thumbs/comic/cart.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        62,
+        96,
+        1491,
+        906
+      ],
+      "file_bytes": 1930732,
+      "sha256": "1a13e41e65a1b123c91e1c16c9ceda5794944115a01d9511f9597a54e97be3c0"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "ending",
+      "id": "save",
+      "label": "喜欢先收藏",
+      "file": "comic/save.png",
+      "thumbnail": "thumbs/comic/save.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        108,
+        81,
+        1450,
+        944
+      ],
+      "file_bytes": 1978698,
+      "sha256": "95abb5e011a93f61d95de9254b7696c94665b7faa72aace45e85c33d718d1701"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "ending",
+      "id": "more_details",
+      "label": "点击看详情",
+      "file": "comic/more_details.png",
+      "thumbnail": "thumbs/comic/more_details.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        17,
+        201,
+        1522,
+        783
+      ],
+      "file_bytes": 1490685,
+      "sha256": "dbcc0a00bdf286fe38c99f6c4d59bba7535cf8ab7f516dfd717ea5407de0e1fe"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "ending",
+      "id": "take_home",
+      "label": "心动就带回家",
+      "file": "comic/take_home.png",
+      "thumbnail": "thumbs/comic/take_home.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        79,
+        103,
+        1483,
+        935
+      ],
+      "file_bytes": 1933742,
+      "sha256": "fc81d90aa92a6cf76cb6590230dadd9effcf1fd16ab37c3e09716426eef8de97"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "ending",
+      "id": "worth_a_look",
+      "label": "这款值得看",
+      "file": "comic/worth_a_look.png",
+      "thumbnail": "thumbs/comic/worth_a_look.webp",
+      "width": 1774,
+      "height": 887,
+      "alpha_gt8_bbox": [
+        32,
+        168,
+        1756,
+        721
+      ],
+      "file_bytes": 1221055,
+      "sha256": "92fe676a59dabf0e9ccad2fbcfbb700959b4b1201144c1ecb9b3380e8a9eeb22"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "ending",
+      "id": "home_love",
+      "label": "给家添点喜欢",
+      "file": "comic/home_love.png",
+      "thumbnail": "thumbs/comic/home_love.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        120,
+        88,
+        1459,
+        933
+      ],
+      "file_bytes": 2066884,
+      "sha256": "769070507cd9df60697607cc0b0e7baa183ea7de7ec80d247cb1f1bbd8434881"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "gesture",
+      "id": "like",
+      "label": "点赞",
+      "file": "comic/like.png",
+      "thumbnail": "thumbs/comic/like.webp",
+      "width": 1363,
+      "height": 1154,
+      "alpha_gt8_bbox": [
+        110,
+        78,
+        1290,
+        1062
+      ],
+      "file_bytes": 1464905,
+      "sha256": "63c33673a88cb04f2346fd36c61cfb027ec7c72172a1d38c23d85818c98a8807"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "gesture",
+      "id": "ok",
+      "label": "OK手势",
+      "file": "comic/ok.png",
+      "thumbnail": "thumbs/comic/ok.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        202,
+        63,
+        1144,
+        1204
+      ],
+      "file_bytes": 1147133,
+      "sha256": "41d06c3b2710490e368cd10c17fba14be6258e12d4ae8ed432c22f886f0ccd6d"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "gesture",
+      "id": "finger_heart",
+      "label": "比心手势",
+      "file": "comic/finger_heart.png",
+      "thumbnail": "thumbs/comic/finger_heart.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        299,
+        62,
+        1053,
+        1204
+      ],
+      "file_bytes": 900900,
+      "sha256": "74bfee31ef7471bb9630cad5d84592337047a325bb625404a024a196db753e06"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "gesture",
+      "id": "point_left",
+      "label": "向左指",
+      "file": "comic/point_left.png",
+      "thumbnail": "thumbs/comic/point_left.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        57,
+        129,
+        1495,
+        892
+      ],
+      "file_bytes": 1685524,
+      "sha256": "1bf91900f3da9998687833dc76b35e058b4014d70a395efaf74f265a1c666465"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "gesture",
+      "id": "point_right",
+      "label": "向右指",
+      "file": "comic/point_right.png",
+      "thumbnail": "thumbs/comic/point_right.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        49,
+        81,
+        1527,
+        879
+      ],
+      "file_bytes": 1696567,
+      "sha256": "aa7de5a265acef43365e931ab5c12ae7ea5fce3a2c84764119ad60c9fd0d43b9"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "gesture",
+      "id": "present",
+      "label": "托举展示",
+      "file": "comic/present.png",
+      "thumbnail": "thumbs/comic/present.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        85,
+        87,
+        1470,
+        942
+      ],
+      "file_bytes": 1782298,
+      "sha256": "a5c91cd0cfae5de4f1c28d8a7826a0e3dc92f378d950620e59b1e7e456f0151d"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "annotation",
+      "id": "arrow_right",
+      "label": "右向弯箭头",
+      "file": "comic/arrow_right.png",
+      "thumbnail": "thumbs/comic/arrow_right.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        209,
+        124,
+        1341,
+        913
+      ],
+      "file_bytes": 1381449,
+      "sha256": "cb4f2286c66ce47d320d82d1da2abcff5e9bea8dc7231875940d33910d8b3551"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "annotation",
+      "id": "arrow_left",
+      "label": "左向镜像箭头",
+      "file": "comic/arrow_left.png",
+      "thumbnail": "thumbs/comic/arrow_left.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        205,
+        125,
+        1339,
+        915
+      ],
+      "file_bytes": 1379229,
+      "sha256": "c2ec92cb1d4f8ea6a99e8b3850062ea6eafdb23e398661850cfd0618bd1d3dbc"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "annotation",
+      "id": "oval",
+      "label": "椭圆圈",
+      "file": "comic/oval.png",
+      "thumbnail": "thumbs/comic/oval.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        73,
+        177,
+        1479,
+        858
+      ],
+      "file_bytes": 1479234,
+      "sha256": "048b82da4f8325fa0667ed5843692c84ca02009e18e6f1078b9751a0d8c5ee7e"
+    },
+    {
+      "style": "comic",
+      "style_name": "圆润卡通",
+      "category": "annotation",
+      "id": "round",
+      "label": "偏正圆圈",
+      "file": "comic/round.png",
+      "thumbnail": "thumbs/comic/round.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        88,
+        96,
+        1193,
+        1146
+      ],
+      "file_bytes": 776229,
+      "sha256": "1ae8b9fc2a44fb46a7b735d0cb11311af08bf6a0801823412032b2cae873d9e1"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "opening",
+      "id": "recommend",
+      "label": "推荐",
+      "file": "journal/recommend.png",
+      "thumbnail": "thumbs/journal/recommend.webp",
+      "width": 1568,
+      "height": 1003,
+      "alpha_gt8_bbox": [
+        172,
+        109,
+        1453,
+        886
+      ],
+      "file_bytes": 1341253,
+      "sha256": "0bb6d092427f086beb7c7195666ff3fed15ef332afecaaf53fef042002a955f7"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "opening",
+      "id": "good_find",
+      "label": "好物来了",
+      "file": "journal/good_find.png",
+      "thumbnail": "thumbs/journal/good_find.webp",
+      "width": 1774,
+      "height": 887,
+      "alpha_gt8_bbox": [
+        74,
+        128,
+        1703,
+        721
+      ],
+      "file_bytes": 1547326,
+      "sha256": "f69633c35aad1aa4c6f1a2be37b16bb3961f0cd08fc9bfa90c3c28a758462553"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "opening",
+      "id": "first_sight",
+      "label": "一眼心动",
+      "file": "journal/first_sight.png",
+      "thumbnail": "thumbs/journal/first_sight.webp",
+      "width": 1774,
+      "height": 887,
+      "alpha_gt8_bbox": [
+        43,
+        129,
+        1735,
+        739
+      ],
+      "file_bytes": 1369353,
+      "sha256": "e5effcd5f93773687ca904f1c1ce35fff42d395efcd4f34d031f738dbec3059f"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "opening",
+      "id": "something_special",
+      "label": "这个有点东西",
+      "file": "journal/something_special.png",
+      "thumbnail": "thumbs/journal/something_special.webp",
+      "width": 1568,
+      "height": 1003,
+      "alpha_gt8_bbox": [
+        162,
+        62,
+        1430,
+        933
+      ],
+      "file_bytes": 1595337,
+      "sha256": "8f7478189bdae043f9581b93512ee9b61f915bbbd5a53f0a919a193f87bb3c45"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "opening",
+      "id": "home_surprise",
+      "label": "家的小惊喜",
+      "file": "journal/home_surprise.png",
+      "thumbnail": "thumbs/journal/home_surprise.webp",
+      "width": 1568,
+      "height": 1003,
+      "alpha_gt8_bbox": [
+        200,
+        108,
+        1381,
+        897
+      ],
+      "file_bytes": 1425405,
+      "sha256": "537fc897bc75c01bcc89ebe0f96f1aed7387ddf521f1acf330fc122788aaf002"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "opening",
+      "id": "look_here",
+      "label": "先看这里",
+      "file": "journal/look_here.png",
+      "thumbnail": "thumbs/journal/look_here.webp",
+      "width": 1855,
+      "height": 848,
+      "alpha_gt8_bbox": [
+        61,
+        115,
+        1798,
+        727
+      ],
+      "file_bytes": 1559427,
+      "sha256": "3d19b8121707fb1140e8cdf089c8238747950e301f9dd9f0e28c8668bf2c9edb"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "explain",
+      "id": "details",
+      "label": "看细节",
+      "file": "journal/details.png",
+      "thumbnail": "thumbs/journal/details.webp",
+      "width": 1568,
+      "height": 1003,
+      "alpha_gt8_bbox": [
+        106,
+        141,
+        1494,
+        835
+      ],
+      "file_bytes": 1373767,
+      "sha256": "da32c7f83d631f48a5e045a5ac749fcf9106d4c7a33334d49b8dfb8a3dd09045"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "explain",
+      "id": "highlight",
+      "label": "划重点",
+      "file": "journal/highlight.png",
+      "thumbnail": "thumbs/journal/highlight.webp",
+      "width": 1568,
+      "height": 1003,
+      "alpha_gt8_bbox": [
+        147,
+        120,
+        1467,
+        860
+      ],
+      "file_bytes": 1425939,
+      "sha256": "c30d96859f737aa7afcb1bf5ed225220d525548cdcfa720e55d3b1b58ce41997"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "explain",
+      "id": "key_moment",
+      "label": "重点来了",
+      "file": "journal/key_moment.png",
+      "thumbnail": "thumbs/journal/key_moment.webp",
+      "width": 1568,
+      "height": 1003,
+      "alpha_gt8_bbox": [
+        179,
+        20,
+        1423,
+        938
+      ],
+      "file_bytes": 1685234,
+      "sha256": "673937a783907c26e480bcf614c0e4c265aa4670fc8fc8a779494087ddd8a01a"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "explain",
+      "id": "another_angle",
+      "label": "换个角度",
+      "file": "journal/another_angle.png",
+      "thumbnail": "thumbs/journal/another_angle.webp",
+      "width": 1568,
+      "height": 1003,
+      "alpha_gt8_bbox": [
+        18,
+        193,
+        1554,
+        811
+      ],
+      "file_bytes": 1353289,
+      "sha256": "9ea8f258f71600ddf1a43cb16e2ec485da383ed8c143e4e9c4c3b164c3406305"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "explain",
+      "id": "also_here",
+      "label": "还有这里",
+      "file": "journal/also_here.png",
+      "thumbnail": "thumbs/journal/also_here.webp",
+      "width": 1774,
+      "height": 887,
+      "alpha_gt8_bbox": [
+        114,
+        150,
+        1696,
+        742
+      ],
+      "file_bytes": 1449100,
+      "sha256": "1787bbd9083825f341b90605ad948e19be68cf03afdf593fe25a26d030df5dfa"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "explain",
+      "id": "now_i_see",
+      "label": "原来如此",
+      "file": "journal/now_i_see.png",
+      "thumbnail": "thumbs/journal/now_i_see.webp",
+      "width": 1983,
+      "height": 793,
+      "alpha_gt8_bbox": [
+        86,
+        113,
+        1924,
+        710
+      ],
+      "file_bytes": 1518570,
+      "sha256": "4e7bb212bb9f0ca6c3238847df4004c873027d6c58ab8af1dbb6b7517b29acc8"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "ending",
+      "id": "cart",
+      "label": "加入购物车",
+      "file": "journal/cart.png",
+      "thumbnail": "thumbs/journal/cart.webp",
+      "width": 1774,
+      "height": 887,
+      "alpha_gt8_bbox": [
+        104,
+        97,
+        1710,
+        782
+      ],
+      "file_bytes": 1490873,
+      "sha256": "45cf3a26aedb9ef1fe55551ec5f89fbd978a97c80efb7c0af3e44921a352eb94"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "ending",
+      "id": "save",
+      "label": "喜欢先收藏",
+      "file": "journal/save.png",
+      "thumbnail": "thumbs/journal/save.webp",
+      "width": 1568,
+      "height": 1003,
+      "alpha_gt8_bbox": [
+        215,
+        77,
+        1437,
+        929
+      ],
+      "file_bytes": 1574305,
+      "sha256": "9283ee0c7688d78d8c95aa457c42dd65e0ec935d0b4f58f2b0f4819389c395dc"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "ending",
+      "id": "more_details",
+      "label": "点击看详情",
+      "file": "journal/more_details.png",
+      "thumbnail": "thumbs/journal/more_details.webp",
+      "width": 1983,
+      "height": 793,
+      "alpha_gt8_bbox": [
+        59,
+        73,
+        1942,
+        710
+      ],
+      "file_bytes": 1715388,
+      "sha256": "d156108708b49fb1439bb7cb5811d7340f00ebc0b59c020ce32a17af2bdbcd04"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "ending",
+      "id": "take_home",
+      "label": "心动就带回家",
+      "file": "journal/take_home.png",
+      "thumbnail": "thumbs/journal/take_home.webp",
+      "width": 1568,
+      "height": 1003,
+      "alpha_gt8_bbox": [
+        143,
+        57,
+        1454,
+        907
+      ],
+      "file_bytes": 1644130,
+      "sha256": "37a9d7b7ac4353caebd41d33d78cba0701d224a6f175d636116bbe3292d9b419"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "ending",
+      "id": "worth_a_look",
+      "label": "这款值得看",
+      "file": "journal/worth_a_look.png",
+      "thumbnail": "thumbs/journal/worth_a_look.webp",
+      "width": 1774,
+      "height": 887,
+      "alpha_gt8_bbox": [
+        66,
+        146,
+        1725,
+        740
+      ],
+      "file_bytes": 1488176,
+      "sha256": "807ce402b625117b6f5f1c7f8a15e3de2e35e0a154a9c64abf8e90ebd2ef1a81"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "ending",
+      "id": "home_love",
+      "label": "给家添点喜欢",
+      "file": "journal/home_love.png",
+      "thumbnail": "thumbs/journal/home_love.webp",
+      "width": 1568,
+      "height": 1003,
+      "alpha_gt8_bbox": [
+        150,
+        48,
+        1433,
+        910
+      ],
+      "file_bytes": 1722961,
+      "sha256": "cff57491e6577ada55293a6b5166bd52f33dd8fe198ea7f760f8b0471aa66747"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "gesture",
+      "id": "like",
+      "label": "点赞",
+      "file": "journal/like.png",
+      "thumbnail": "thumbs/journal/like.webp",
+      "width": 1381,
+      "height": 1139,
+      "alpha_gt8_bbox": [
+        232,
+        98,
+        1312,
+        1044
+      ],
+      "file_bytes": 1319033,
+      "sha256": "7e8e6fe07c9e929e747f885d6388a9221e8f1519d8f8a8da345bd09da1125022"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "gesture",
+      "id": "ok",
+      "label": "OK手势",
+      "file": "journal/ok.png",
+      "thumbnail": "thumbs/journal/ok.webp",
+      "width": 1381,
+      "height": 1139,
+      "alpha_gt8_bbox": [
+        265,
+        67,
+        1277,
+        1100
+      ],
+      "file_bytes": 1210194,
+      "sha256": "0762627122e02463876b1b28a3d9871476079332f3177ae62098d546f70e0585"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "gesture",
+      "id": "finger_heart",
+      "label": "比心手势",
+      "file": "journal/finger_heart.png",
+      "thumbnail": "thumbs/journal/finger_heart.webp",
+      "width": 1381,
+      "height": 1139,
+      "alpha_gt8_bbox": [
+        290,
+        51,
+        1124,
+        1107
+      ],
+      "file_bytes": 975072,
+      "sha256": "46215b08fc399ecacb14c4c7e8e31251a1191bbf590f1ac233ab2f871c307f20"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "gesture",
+      "id": "point_left",
+      "label": "向左指",
+      "file": "journal/point_left.png",
+      "thumbnail": "thumbs/journal/point_left.webp",
+      "width": 1519,
+      "height": 1036,
+      "alpha_gt8_bbox": [
+        74,
+        139,
+        1467,
+        900
+      ],
+      "file_bytes": 1336855,
+      "sha256": "b567e254c50e193c6bae1d1a5912739462cc01c4b6573b20700a6ea53e35a68f"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "gesture",
+      "id": "point_right",
+      "label": "向右指",
+      "file": "journal/point_right.png",
+      "thumbnail": "thumbs/journal/point_right.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        59,
+        95,
+        1524,
+        885
+      ],
+      "file_bytes": 1912082,
+      "sha256": "0aba6a5133c9991448cc393e3cb4c0bf876f1e84a89adc62fa407841b0ba026c"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "gesture",
+      "id": "present",
+      "label": "托举展示",
+      "file": "journal/present.png",
+      "thumbnail": "thumbs/journal/present.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        52,
+        47,
+        1512,
+        981
+      ],
+      "file_bytes": 2142714,
+      "sha256": "9dbb96f54aad6652a80dceb76c5602b0d3becd74381a266820de25a46f54b259"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "annotation",
+      "id": "arrow_right",
+      "label": "右向弯箭头",
+      "file": "journal/arrow_right.png",
+      "thumbnail": "thumbs/journal/arrow_right.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        159,
+        117,
+        1384,
+        938
+      ],
+      "file_bytes": 1965032,
+      "sha256": "c5b41ce0d6962334c8a19682b3667f951a82182b00466917254c9ade97cd8ade"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "annotation",
+      "id": "arrow_left",
+      "label": "左向镜像箭头",
+      "file": "journal/arrow_left.png",
+      "thumbnail": "thumbs/journal/arrow_left.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        133,
+        118,
+        1386,
+        941
+      ],
+      "file_bytes": 1950836,
+      "sha256": "35e425ce2ea53a0a14124457f785046db50e24c42ef589dc22356e0d8678dfc8"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "annotation",
+      "id": "oval",
+      "label": "椭圆圈",
+      "file": "journal/oval.png",
+      "thumbnail": "thumbs/journal/oval.webp",
+      "width": 1586,
+      "height": 992,
+      "alpha_gt8_bbox": [
+        25,
+        155,
+        1563,
+        802
+      ],
+      "file_bytes": 980642,
+      "sha256": "52cbdff8b40ae2105b20011f25f4f9820380cfde81ca3821f0c76069ec4be644"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "annotation",
+      "id": "round",
+      "label": "偏正圆圈",
+      "file": "journal/round.png",
+      "thumbnail": "thumbs/journal/round.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        76,
+        90,
+        1177,
+        1150
+      ],
+      "file_bytes": 845654,
+      "sha256": "470e7eaf84c6840a8ee712cee4b5f4332c7522ad70f4900e4e49671c1389a01a"
+    },
+    {
+      "style": "journal",
+      "style_name": "手帐拼贴",
+      "category": "special",
+      "id": "special",
+      "label": "喜欢",
+      "file": "journal/special.png",
+      "thumbnail": "thumbs/journal/special.webp",
+      "width": 1536,
+      "height": 1024,
+      "alpha_gt8_bbox": [
+        304,
+        218,
+        1277,
+        788
+      ],
+      "file_bytes": 1546393,
+      "sha256": "78842c4c19b9fac516c070ae9aa532ad2dad38600524b4cc90fe970ed19ccca3"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "opening",
+      "id": "recommend",
+      "label": "推荐",
+      "file": "editorial/recommend.png",
+      "thumbnail": "thumbs/editorial/recommend.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        63,
+        305,
+        1206,
+        970
+      ],
+      "file_bytes": 932820,
+      "sha256": "1c8d3f45f28fc1f94468a33c558d1204046442664caf7aff68fb5121faecaf63"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "opening",
+      "id": "good_find",
+      "label": "好物来了",
+      "file": "editorial/good_find.png",
+      "thumbnail": "thumbs/editorial/good_find.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        35,
+        294,
+        1254,
+        973
+      ],
+      "file_bytes": 1007709,
+      "sha256": "adebdc1813eb2b06bb0ecaa8eb4f8fed5bfe9c68c736167e54ee7c7f912114bb"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "opening",
+      "id": "first_sight",
+      "label": "一眼心动",
+      "file": "editorial/first_sight.png",
+      "thumbnail": "thumbs/editorial/first_sight.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        65,
+        380,
+        1228,
+        883
+      ],
+      "file_bytes": 666952,
+      "sha256": "c0c9c3215141ae1031ef93a56b80cbcb41f01e9eb88ab7ab9e0f5f0eb1ef2d44"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "opening",
+      "id": "something_special",
+      "label": "这个有点东西",
+      "file": "editorial/something_special.png",
+      "thumbnail": "thumbs/editorial/something_special.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        75,
+        307,
+        1219,
+        1011
+      ],
+      "file_bytes": 968743,
+      "sha256": "5e35f0f254d36c683b70ae276c49452e262afb78b655078ae152e192dded832a"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "opening",
+      "id": "home_surprise",
+      "label": "家的小惊喜",
+      "file": "editorial/home_surprise.png",
+      "thumbnail": "thumbs/editorial/home_surprise.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        120,
+        322,
+        1176,
+        988
+      ],
+      "file_bytes": 1017185,
+      "sha256": "7783b939ef25c5307b43e2764e69eac1c8592e63253fcdaeefc5609ccd6d6dc9"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "opening",
+      "id": "look_here",
+      "label": "先看这里",
+      "file": "editorial/look_here.png",
+      "thumbnail": "thumbs/editorial/look_here.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        62,
+        351,
+        1228,
+        908
+      ],
+      "file_bytes": 697840,
+      "sha256": "78cac4b98dda08e4d0cfe7fd50f1a6cc52bc763fb1279d210d0998922c4283a9"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "explain",
+      "id": "details",
+      "label": "看细节",
+      "file": "editorial/details.png",
+      "thumbnail": "thumbs/editorial/details.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        88,
+        444,
+        1192,
+        862
+      ],
+      "file_bytes": 590506,
+      "sha256": "53b3bf30143c759eb2901ad4c54b32e6db6b0befa4679126e32f1489a343a0c7"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "explain",
+      "id": "highlight",
+      "label": "划重点",
+      "file": "editorial/highlight.png",
+      "thumbnail": "thumbs/editorial/highlight.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        102,
+        395,
+        1190,
+        883
+      ],
+      "file_bytes": 676910,
+      "sha256": "41f948d84b8dc1b4fad65534c76334a71011637c5d6e048d1d7d220f5623a6d4"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "explain",
+      "id": "key_moment",
+      "label": "重点来了",
+      "file": "editorial/key_moment.png",
+      "thumbnail": "thumbs/editorial/key_moment.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        83,
+        409,
+        1198,
+        887
+      ],
+      "file_bytes": 668169,
+      "sha256": "e8377b36f5c1b545f4af240a5981f3d68a0b7f78df0d9058f23ccb1100d6b30a"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "explain",
+      "id": "another_angle",
+      "label": "换个角度",
+      "file": "editorial/another_angle.png",
+      "thumbnail": "thumbs/editorial/another_angle.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        91,
+        428,
+        1211,
+        881
+      ],
+      "file_bytes": 665057,
+      "sha256": "001bec4b3870df407b9b1514bfd849e26a70040bcf4c835f41866cae33fe9507"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "explain",
+      "id": "also_here",
+      "label": "还有这里",
+      "file": "editorial/also_here.png",
+      "thumbnail": "thumbs/editorial/also_here.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        102,
+        414,
+        1204,
+        837
+      ],
+      "file_bytes": 588122,
+      "sha256": "90acecd50ee170a90c18b1dda1bff17c93c9f4702a87bc26b2d9471c2ced1d15"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "explain",
+      "id": "now_i_see",
+      "label": "原来如此",
+      "file": "editorial/now_i_see.png",
+      "thumbnail": "thumbs/editorial/now_i_see.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        56,
+        458,
+        1221,
+        894
+      ],
+      "file_bytes": 617714,
+      "sha256": "559b2ab28a86653df668484f72262aba693f69574f60f102041df754f21fda91"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "ending",
+      "id": "cart",
+      "label": "加入购物车",
+      "file": "editorial/cart.png",
+      "thumbnail": "thumbs/editorial/cart.webp",
+      "width": 1774,
+      "height": 887,
+      "alpha_gt8_bbox": [
+        73,
+        157,
+        1700,
+        731
+      ],
+      "file_bytes": 816016,
+      "sha256": "7cc1a0f495761edd3bea6136669ff0dfb19d4df782930135b2bd8914a916b8af"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "ending",
+      "id": "save",
+      "label": "喜欢先收藏",
+      "file": "editorial/save.png",
+      "thumbnail": "thumbs/editorial/save.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        133,
+        234,
+        1198,
+        1056
+      ],
+      "file_bytes": 1130528,
+      "sha256": "ccbbfb67903144c90993256cda64361864d1763efc24f01df9f3b2979de0dd97"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "ending",
+      "id": "more_details",
+      "label": "点击看详情",
+      "file": "editorial/more_details.png",
+      "thumbnail": "thumbs/editorial/more_details.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        72,
+        299,
+        1218,
+        1033
+      ],
+      "file_bytes": 1070946,
+      "sha256": "dd7a4fd29081c4ad0f27e4307a73548a65aa5ba76fa3cc4ecd23b2c3638fe666"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "ending",
+      "id": "take_home",
+      "label": "心动就带回家",
+      "file": "editorial/take_home.png",
+      "thumbnail": "thumbs/editorial/take_home.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        98,
+        260,
+        1205,
+        1035
+      ],
+      "file_bytes": 1058932,
+      "sha256": "2ee30f888528160438774937136020af2e3579c00974a3c340c2756b34ef8359"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "ending",
+      "id": "worth_a_look",
+      "label": "这款值得看",
+      "file": "editorial/worth_a_look.png",
+      "thumbnail": "thumbs/editorial/worth_a_look.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        67,
+        292,
+        1220,
+        1013
+      ],
+      "file_bytes": 1068626,
+      "sha256": "fa3b2325ccac4d942ef4809ff2a00618a8ef398e70a8e920d940ceef9bf32a1c"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "ending",
+      "id": "home_love",
+      "label": "给家添点喜欢",
+      "file": "editorial/home_love.png",
+      "thumbnail": "thumbs/editorial/home_love.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        112,
+        318,
+        1165,
+        1000
+      ],
+      "file_bytes": 971020,
+      "sha256": "a834f76ca05ba03679b936ab6f5ceb3aed3b424c60a64c050d49ef8e645a3f79"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "gesture",
+      "id": "like",
+      "label": "点赞",
+      "file": "editorial/like.png",
+      "thumbnail": "thumbs/editorial/like.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        253,
+        140,
+        1111,
+        1146
+      ],
+      "file_bytes": 822882,
+      "sha256": "035c7accc16b3ed0fcf47252ee051c46781ca1e4dfc19dc8e06724c550a448f0"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "gesture",
+      "id": "ok",
+      "label": "OK手势",
+      "file": "editorial/ok.png",
+      "thumbnail": "thumbs/editorial/ok.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        322,
+        69,
+        1059,
+        1202
+      ],
+      "file_bytes": 737807,
+      "sha256": "eb3d93f7d03d9c1eac11577b2be0a3a149fe4478a61e264a35a344160db6d2b6"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "gesture",
+      "id": "finger_heart",
+      "label": "比心手势",
+      "file": "editorial/finger_heart.png",
+      "thumbnail": "thumbs/editorial/finger_heart.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        317,
+        103,
+        987,
+        1173
+      ],
+      "file_bytes": 587349,
+      "sha256": "6dd8f9e8c300779739b6ba7a2a9e59392f34f1e42a3b9144db6a60f595cbad91"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "gesture",
+      "id": "point_left",
+      "label": "向左指",
+      "file": "editorial/point_left.png",
+      "thumbnail": "thumbs/editorial/point_left.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        76,
+        248,
+        1193,
+        1048
+      ],
+      "file_bytes": 640683,
+      "sha256": "a397ea967909aa1f31162654101e556a12af581fd91546eee3b145ce370a3b33"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "gesture",
+      "id": "point_right",
+      "label": "向右指",
+      "file": "editorial/point_right.png",
+      "thumbnail": "thumbs/editorial/point_right.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        98,
+        276,
+        1192,
+        1026
+      ],
+      "file_bytes": 605026,
+      "sha256": "05c8278f89e649c6d313745c9b36c73046c27b93cd56f4f201be7ab7176699da"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "gesture",
+      "id": "present",
+      "label": "托举展示",
+      "file": "editorial/present.png",
+      "thumbnail": "thumbs/editorial/present.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        86,
+        320,
+        1221,
+        1169
+      ],
+      "file_bytes": 578037,
+      "sha256": "5b6e601b6030add69ac305f7ef396d41709406cc138e2df9028fede556a050cf"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "annotation",
+      "id": "arrow_right",
+      "label": "右向弯箭头",
+      "file": "editorial/arrow_right.png",
+      "thumbnail": "thumbs/editorial/arrow_right.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        86,
+        217,
+        1193,
+        1093
+      ],
+      "file_bytes": 382037,
+      "sha256": "6442da02d3d682e43ac4d3ae4f3bc2ea9c831dba3074a944f8dab8809162a785"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "annotation",
+      "id": "arrow_left",
+      "label": "左向镜像箭头",
+      "file": "editorial/arrow_left.png",
+      "thumbnail": "thumbs/editorial/arrow_left.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        71,
+        217,
+        1182,
+        1093
+      ],
+      "file_bytes": 357045,
+      "sha256": "83c474cc91f1b12eb9433d4da5026a34d8ff1e54e47335cafeaf7b14960ddcee"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "annotation",
+      "id": "oval",
+      "label": "椭圆圈",
+      "file": "editorial/oval.png",
+      "thumbnail": "thumbs/editorial/oval.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        24,
+        305,
+        1238,
+        950
+      ],
+      "file_bytes": 410385,
+      "sha256": "a08de6c4900dad090fe2b4778870e513d7095e8e08280e50442de3e35eac5df6"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "annotation",
+      "id": "round",
+      "label": "偏正圆圈",
+      "file": "editorial/round.png",
+      "thumbnail": "thumbs/editorial/round.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        44,
+        86,
+        1212,
+        1164
+      ],
+      "file_bytes": 569614,
+      "sha256": "e092ca21359a507dff7241c4fa47dc3b666909eae2c985a15e482c0a77222b08"
+    },
+    {
+      "style": "editorial",
+      "style_name": "暖调杂志",
+      "category": "special",
+      "id": "special",
+      "label": "细节",
+      "file": "editorial/special.png",
+      "thumbnail": "thumbs/editorial/special.webp",
+      "width": 1254,
+      "height": 1254,
+      "alpha_gt8_bbox": [
+        69,
+        336,
+        1223,
+        940
+      ],
+      "file_bytes": 594493,
+      "sha256": "c7e031caeb916827506706094fbfb6ca040e7c6a9e91c3cb8ab83bca9dfc6a3b"
+    }
+  ]
+}

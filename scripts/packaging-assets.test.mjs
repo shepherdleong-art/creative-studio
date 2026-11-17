@@ -8,7 +8,7 @@ import { CLASSIC_BUILDERS, OVERLAY_BUILDERS, builderHashes } from '../lib/film-r
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'packaging-assets-'));
 const out = path.join(root, 'standalone');
 try {
-  for (const name of ['package.json', 'package-lock.json', 'film-runtime.json', 'package-video.mjs', 'win-hide-spawn.cjs', 'templates/overlay-poster/index.html', 'fonts/a.ttf', 'fonts/user/private.ttf', 'node_modules/hyperframes/bin/hyperframes.mjs', 'runtime/chrome-headless-shell/chrome-headless-shell.exe', 'renders/work/private.json', '.font-scan-cache.json', '.env.local']) {
+  for (const name of ['package.json', 'package-lock.json', 'film-runtime.json', 'package-video.mjs', 'win-hide-spawn.cjs', 'templates/overlay-poster/index.html', 'stickers/catalog.json', 'stickers/runtime.js', 'stickers/show/recommend.png', 'fonts/a.ttf', 'fonts/user/private.ttf', 'node_modules/hyperframes/bin/hyperframes.mjs', 'runtime/chrome-headless-shell/chrome-headless-shell.exe', 'renders/work/private.json', '.font-scan-cache.json', '.env.local']) {
     const file = path.join(root, 'packaging', name); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'fixture');
   }
   for (const name of [...CLASSIC_BUILDERS, ...OVERLAY_BUILDERS]) {
@@ -20,6 +20,9 @@ try {
   fs.writeFileSync(path.join(out, 'packaging/renders/old.json'), 'stale');
   syncPackagingAssets(root, out);
   assert.ok(fs.existsSync(path.join(out, 'packaging/templates/overlay-poster/index.html')));
+  assert.ok(fs.existsSync(path.join(out, 'packaging/stickers/catalog.json')));
+  assert.ok(fs.existsSync(path.join(out, 'packaging/stickers/runtime.js')));
+  assert.ok(fs.existsSync(path.join(out, 'packaging/stickers/show/recommend.png')));
   assert.ok(fs.existsSync(path.join(out, 'packaging/runtime/chrome-headless-shell/chrome-headless-shell.exe')));
   for (const forbidden of ['fonts/user', 'renders', '.font-scan-cache.json', '.env.local']) assert.equal(fs.existsSync(path.join(out, 'packaging', forbidden)), false);
   const options = { sourceDir: path.join(root, 'absent-source'), packagingDir: path.join(out, 'packaging') };

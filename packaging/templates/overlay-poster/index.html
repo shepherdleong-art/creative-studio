@@ -17,7 +17,11 @@
 
   /* ---- v4 花字种草：用户素材三层叠放（视频窗在 base 透明区）+ 吸色变色 + 双层描边标题 + 钩子卖点标签 ---- */
 
-  .stage { position: absolute; inset: 0; z-index: 1; }
+  .stage { position: absolute; inset: 0; z-index: 3; }
+  /* 贴纸在封面/包装文字与正片卖点之下；封面舞台在正文开始前已完全退场。 */
+  #sticker-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+  #dyn { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+  #dyn [data-point-id] { pointer-events: auto; }
 
   /* 变色素材层：实色底（mask 取原素材 alpha）+ 灰度模板 multiply（明暗质感保留、随吸色上色） */
   .tint { position: absolute; inset: 0; isolation: isolate; pointer-events: none; }
@@ -117,6 +121,7 @@
       <div class="cover-tags" id="coverTags"></div>
       <div class="layer-hand"><img src="assets/hand.png" alt=""/></div>
     </div>
+    <div id="sticker-layer"></div>
     <div id="dyn"></div>
   </div>
 
@@ -482,5 +487,6 @@
   if (!window.__hyperframes) tl.play(0);
 })();
 </script>
+<script src="stickers/runtime.js"></script>
 </body>
 </html>

@@ -3,7 +3,8 @@ import { splitCoverTitle } from '../media-core/cover-domain.ts';
 import type Database from 'better-sqlite3';
 import { buildPointCues, buildLocalPointCues, generatePointCueId, parseStoredWordTimings, extractHeuristicPoints, dedupeCandidates } from '../media-core/packaging-cues.ts';
 import { buildPackagingVars, loadProjectPackagingData, parsePackagingConfig, type FinalEditPackagingConfig } from '../media-core/packaging-vars.ts';
-import { FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
+import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
+import { PackagingStickerError, validatePackagingStickerDefaults, validatePackagingStickers } from '../media-core/packaging-stickers.ts';
 import type { BatchOutputClipEditView } from './output-arrangement.ts';
 import { BatchDomainError } from './errors.ts';
 import { safeFontFilename, userFontDir } from '../media-core/packaging-font.ts';
@@ -46,6 +47,24 @@ export async function prepareBatchPackagingConfig(db: Database.Database, project
   const limit = Math.max(view.visualDurationUs, view.narration.durationUs ?? 0) / 1e6 + FINAL_EDIT_INTRO_DURATION_US / 1e6;
   if (incoming.pointCues !== undefined && (!Array.isArray(incoming.pointCues) || incoming.pointCues.length > 24 || incoming.pointCues.some(cue => !cue || typeof cue.text !== 'string' || !cue.text.trim() || typeof cue.id !== 'string' || !cue.id || !Number.isFinite(cue.startSec) || !Number.isFinite(cue.endSec) || cue.startSec < FINAL_EDIT_INTRO_DURATION_US / 1e6 - 0.001 || cue.endSec <= cue.startSec || cue.endSec > limit + 0.001))) throw new BatchDomainError('invalid_input', '卖点时间必须位于正片范围内，结束时间须晚于开始时间');
   if (incoming.pointCues && new Set(incoming.pointCues.map(cue => cue.id)).size !== incoming.pointCues.length) throw new BatchDomainError('invalid_input', '卖点标识重复');
+  const bodyFrames = Math.floor(Math.max(view.visualDurationUs, view.narration.durationUs ?? 0) / 1e6 * FINAL_EDIT_FPS + 1e-6);
+  // 原始请求先严格校验：parsePackagingConfig 会兼容清洗，不能靠清洗结果冒充保存成功。
+  if (incoming.stickers !== undefined) {
+    try {
+      validatePackagingStickers(incoming.stickers, bodyFrames);
+    } catch (error) {
+      if (error instanceof PackagingStickerError) throw new BatchDomainError('invalid_input', error.message);
+      throw error;
+    }
+  }
+  if (incoming.stickerDefaults !== undefined) {
+    try {
+      validatePackagingStickerDefaults(incoming.stickerDefaults);
+    } catch (error) {
+      if (error instanceof PackagingStickerError) throw new BatchDomainError('invalid_input', error.message);
+      throw error;
+    }
+  }
   const config = parsePackagingConfig(value);
   for (const slot of [config.titleFont, config.subtitleFont, config.pointFont]) {
     if (slot && (!safeFontFilename(slot.file) || !fs.existsSync(path.join(userFontDir(), slot.file)))) throw new BatchDomainError('invalid_input', '所选包装字体不存在，请重新选择');
