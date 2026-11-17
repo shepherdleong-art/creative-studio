@@ -90,10 +90,8 @@ export interface CanvasNodeSize {
 }
 
 /**
- * 生成节点内的一份参考。refId 与 label 在节点内稳定：
- * 排序只改变数组顺序（提交顺序），不会把提示词里的 @参考N 悄悄指向另一份参考。
- * 连线断开时槽位随对账移除；编号游标只增不减，重连会拿到新编号，
- * 提示词里的旧 @参考N 按「不存在」显式报错，绝不回收指向别的素材。
+ * 节点内的一份参考。refId 稳定；label 为当前参考的连续编号。
+ * 排序保留编号；增删参考时同步改写提示词，被移除的提及标为失效，避免改指向。
  */
 export interface CanvasReferenceSlot {
   refId: string;
@@ -113,6 +111,8 @@ export interface CanvasMaterialNodeData {
 export interface CanvasPromptNodeData {
   title: string;
   text: string;
+  /** 从直接相连的生成节点继承的媒体参考；编号在本提示词节点内有效。 */
+  references?: CanvasReferenceSlot[];
 }
 
 export interface CanvasGenerationNodeData {
@@ -123,7 +123,7 @@ export interface CanvasGenerationNodeData {
   prompt: string;
   parameters: Record<string, CanvasParameterValue>;
   references: CanvasReferenceSlot[];
-  /** 参考编号分配游标；只增不减，保证 @参考N 不会被回收给别的素材。 */
+  /** 当前最大参考编号；对账时随连续编号重算，兼容旧图中的历史计数。 */
   referenceLabelCounter: number;
 }
 

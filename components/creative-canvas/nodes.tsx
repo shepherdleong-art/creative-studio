@@ -5,8 +5,8 @@
  * 也不会把正在输入的文本框替换掉。
  */
 
-import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Handle, NodeResizeControl, Position, ResizeControlVariant, type NodeProps } from '@xyflow/react';
+import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { Handle, NodeResizeControl, Position, ResizeControlVariant, useOnViewportChange, type NodeProps } from '@xyflow/react';
 import { CANVAS_DRAFT_FINAL_HANDLE, resolveCanvasMentions } from '@/lib/creative-canvas/graph';
 import {
   filterMentionCandidates,
@@ -490,11 +490,6 @@ export const MaterialNode = memo(function MaterialNode({ id, data, selected, pos
 });
 
 export const PromptNode = memo(function PromptNode({ id, data, selected, positionAbsoluteX, positionAbsoluteY }: NodeProps<CanvasFlowNode>) {
-  const controller = useController();
-  const { field: ime } = useNodeTextField(String(data.text ?? ''), useCallback(
-    (next) => controller.updateNodeData(id, { text: next }, { coalesce: `text:${id}` }),
-    [controller, id],
-  ));
   return (
     <div
       className={`sc-canvas-node w-full ${selected ? 'sc-canvas-node-selected' : ''}`}
@@ -508,12 +503,7 @@ export const PromptNode = memo(function PromptNode({ id, data, selected, positio
           <KindIcon iconKey="prompt" />
           <NodeTitle nodeId={id} value={String(data.title ?? '')} placeholder="提示词名称" />
         </div>
-        <textarea
-          className="nodrag nowheel sc-canvas-prompt-area sc-canvas-prompt-text sc-canvas-input w-full resize-none bg-transparent text-[12px] outline-none"
-          {...ime}
-          placeholder="可复用的文本"
-          data-testid="prompt-text"
-        />
+        <CanvasPromptInput nodeId={id} data={data} field="text" />
       </div>
       <Handle type="source" position={Position.Right} />
     </div>
@@ -547,6 +537,167 @@ interface MentionOption extends MentionCandidate {
   assetId: string | null;
   mediaKind: 'image' | 'video' | 'audio' | 'text';
   kindLabel: string;
+}
+
+/** 顶层浮窗避免提示词节点的滚动容器裁掉候选，同时跟随画布缩放与移动。 */
+function CanvasMentionMenu({ inputRef, children }: {
+  inputRef: RefObject<HTMLTextAreaElement | null>;
+  children: React.ReactNode;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const position = useCallback(() => {
+    const input = inputRef.current;
+    const menu = menuRef.current;
+    if (!input || !menu) return;
+    const rect = input.getBoundingClientRect();
+    const width = Math.min(rect.width, window.innerWidth - 16);
+    const below = window.innerHeight - rect.bottom - 8;
+    const above = rect.top - 8;
+    const openBelow = below >= Math.min(220, menu.scrollHeight + 10) || below >= above;
+    const height = Math.min(220, Math.max(40, openBelow ? below : above));
+    Object.assign(menu.style, {
+      width: `${width}px`, maxHeight: `${height}px`,
+      left: `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`,
+      top: openBelow ? `${rect.bottom + 4}px` : 'auto',
+      bottom: openBelow ? 'auto' : `${window.innerHeight - rect.top + 4}px`,
+    });
+  }, [inputRef]);
+  useOnViewportChange({ onChange: position });
+  useLayoutEffect(() => {
+    menuRef.current?.showPopover();
+    position();
+    window.addEventListener('resize', position);
+    window.addEventListener('scroll', position, true);
+    return () => {
+      window.removeEventListener('resize', position);
+      window.removeEventListener('scroll', position, true);
+    };
+  }, [position, children]);
+  return <div ref={menuRef} popover="manual" className="sc-canvas-mention-menu nodrag nowheel"
+    style={{ position: 'fixed', right: 'auto', margin: 0 }} data-testid="mention-menu">{children}</div>;
+}
+
+/** 提示词节点与生成节点共用输入、IME 与 @ 补全，避免两个入口行为分叉。 */
+function CanvasPromptInput({ nodeId, data, field }: {
+  nodeId: string;
+  data: CanvasFlowNode['data'];
+  field: 'text' | 'prompt';
+}) {
+  const context = useContext(CanvasNodeContext);
+  if (!context) throw new Error('画布节点必须在 CanvasNodeContext 内使用');
+  const { controller, graph, resolveSourceAssetId } = context;
+  const { field: ime, setValue } = useNodeTextField(String(data[field] ?? ''), useCallback(
+    (next) => controller.updateNodeData(nodeId, { [field]: next }, { coalesce: `${field}:${nodeId}` }),
+    [controller, nodeId, field],
+  ));
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const selectionAfterMention = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    const caret = selectionAfterMention.current;
+    if (!input || caret === null) return;
+    selectionAfterMention.current = null;
+    input.focus();
+    input.setSelectionRange(caret, caret);
+  });
+  const [mention, setMention] = useState<MentionQuery | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const options = useMemo<MentionOption[]>(() => (data.references ?? []).flatMap((slot) => {
+    const source = controller.nodes.find((candidate) => candidate.id === slot.sourceNodeId);
+    if (!source) return [];
+    const mediaKind = source.type === 'prompt' ? 'text'
+      : source.type === 'video-generation' || source.data.mediaKind === 'video' ? 'video'
+      : source.data.mediaKind === 'audio' ? 'audio' : 'image';
+    return [{ nodeId: source.id, title: String(source.data.title ?? '') || '未命名素材',
+      assetId: resolveSourceAssetId(source.id), mediaKind,
+      kindLabel: mediaKind === 'text' ? '文本' : mediaKind === 'video' ? '视频' : mediaKind === 'audio' ? '音频' : '图片',
+      label: slot.label }];
+  }), [controller.nodes, data.references, resolveSourceAssetId]);
+  const filtered = useMemo(() => mention ? filterMentionCandidates(options, mention.query) : [], [mention, options]);
+  const activeIndex = Math.min(mentionIndex, Math.max(filtered.length - 1, 0));
+  const syncMention = useCallback(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    setMention(findActiveMentionQuery(input.value, input.selectionStart ?? input.value.length));
+    setMentionIndex(0);
+  }, []);
+  const pickMention = useCallback((option: MentionOption) => {
+    const input = inputRef.current;
+    if (!input) return;
+    const caret = input.selectionStart ?? input.value.length;
+    const active = findActiveMentionQuery(input.value, caret);
+    setMention(null);
+    setMentionIndex(0);
+    if (!active) return;
+    const label = field === 'text' ? option.label : controller.connectReference(nodeId, option.nodeId);
+    if (label === null) return;
+    const replaced = replaceMentionWithLabel(input.value, active.start, caret, label);
+    selectionAfterMention.current = replaced.caret;
+    setValue(replaced.text);
+  }, [controller, nodeId, field, setValue]);
+  const onKeyDown = useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing || !mention) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      setMention(null);
+    } else if (filtered.length && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(event.key)) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'ArrowDown') setMentionIndex((index) => (index + 1) % filtered.length);
+      else if (event.key === 'ArrowUp') setMentionIndex((index) => (index - 1 + filtered.length) % filtered.length);
+      else pickMention(filtered[activeIndex]);
+    }
+  }, [mention, filtered, activeIndex, pickMention]);
+  const node = graph.nodes.find((candidate) => candidate.id === nodeId);
+  const unknownLabels = field === 'text' && node?.kind === 'prompt'
+    ? resolveCanvasMentions(graph, node, String(data.text ?? '')).unknownLabels : [];
+  return <>
+    <div className="sc-canvas-prompt-area relative">
+      <textarea
+        ref={inputRef}
+        disabled={field === 'prompt' && data.parameters?.generationStage === 'final-from-draft'}
+        className="nodrag nowheel sc-canvas-prompt-text sc-canvas-input w-full resize-none bg-transparent text-[12px] outline-none"
+        placeholder={field === 'text' ? '可复用的文本，输入 @ 选择素材' : '提示词，输入 @ 选择素材'}
+        {...ime}
+        onChange={(event) => {
+          ime.onChange(event);
+          if (!(event.nativeEvent as InputEvent).isComposing) syncMention();
+        }}
+        onCompositionStart={() => { ime.onCompositionStart(); setMention(null); }}
+        onCompositionEnd={(event) => { ime.onCompositionEnd(event); syncMention(); }}
+        onSelect={syncMention}
+        onKeyDown={onKeyDown}
+        onBlur={() => { ime.onBlur(); setMention(null); }}
+        data-testid={field === 'text' ? 'prompt-text' : 'generation-prompt'}
+      />
+      {mention ? <CanvasMentionMenu inputRef={inputRef}>
+        {filtered.length === 0 ? <div className="sc-canvas-mention-empty">
+          {options.length > 0 ? '没有匹配的参考素材' : field === 'text'
+            ? '先将提示词连接到生成节点，并为生成节点连接参考素材'
+            : '还没有已连线的素材，先从素材节点拉线到本节点'}
+        </div> : filtered.map((option, index) => <button
+          key={option.nodeId}
+          type="button"
+          className={`sc-canvas-mention-option ${index === activeIndex ? 'sc-canvas-mention-option-active' : ''}`}
+          data-testid={`mention-option-${option.nodeId}`}
+          onMouseDown={(event) => { event.preventDefault(); pickMention(option); }}
+          onMouseEnter={() => setMentionIndex(index)}
+        >
+          {option.assetId && option.mediaKind === 'image'
+            ? <img src={canvasAssetUrl(option.assetId)} alt="" className="sc-canvas-mention-thumb" />
+            : option.assetId && option.mediaKind === 'video'
+              ? <video src={canvasAssetUrl(option.assetId)} muted playsInline preload="metadata" className="sc-canvas-mention-thumb" />
+              : <span className="sc-canvas-mention-thumb sc-canvas-mention-thumb-text">{option.kindLabel}</span>}
+          <span className="min-w-0 flex-1 truncate">{option.title}</span>
+          <span className="sc-canvas-mention">@参考{option.label}</span>
+        </button>)}
+      </CanvasMentionMenu> : null}
+    </div>
+    {unknownLabels.length > 0 ? <div className="mt-2 text-[11px] text-[var(--color-fail)]" data-testid="mention-unknown">
+      提示词中的参考已移除或不存在：@参考{unknownLabels.join('、@参考')}
+    </div> : null}
+  </>;
 }
 
 function ReferenceRow({
@@ -654,111 +805,6 @@ export const GenerationNode = memo(function GenerationNode({
   const runLabel = activePhase
     ? (activeCount > 1 ? `追加变体（${activeCount} 个进行中）` : '追加变体')
     : (runtime?.currentAssetId ? '重新生成' : '生成');
-  const { field: promptIme, setValue: setPromptValue } = useNodeTextField(String(data.prompt ?? ''), useCallback(
-    (next) => controller.updateNodeData(id, { prompt: next }, { coalesce: `prompt:${id}` }),
-    [controller, id],
-  ));
-
-  // —— @ 素材自动补全：光标落在 `@查询` token 内时弹出候选，选中即连线并插入 @参考N ——
-  const promptRef = useRef<HTMLTextAreaElement>(null);
-  const [mention, setMention] = useState<MentionQuery | null>(null);
-  const [mentionIndex, setMentionIndex] = useState(0);
-
-  const mentionOptions = useMemo<MentionOption[]>(() => {
-    // 只列已经连线进本节点的来源（references 槽位），不弹全画布节点
-    const options: MentionOption[] = [];
-    for (const slot of references) {
-      const node = controller.nodes.find((candidate) => candidate.id === slot.sourceNodeId);
-      if (!node) continue;
-      if (node.type === 'material') {
-        const assetId = (node.data.assetId as string | null) ?? null;
-        const kind = node.data.mediaKind === 'video' ? 'video' : node.data.mediaKind === 'audio' ? 'audio' : 'image';
-        options.push({
-          nodeId: node.id,
-          title: String(node.data.title ?? '') || '未命名素材',
-          assetId,
-          mediaKind: kind,
-          kindLabel: kind === 'video' ? '视频' : kind === 'audio' ? '音频' : '图片',
-          label: slot.label,
-        });
-      } else if (node.type === 'prompt') {
-        options.push({
-          nodeId: node.id,
-          title: String(node.data.title ?? '') || '提示词',
-          assetId: null,
-          mediaKind: 'text',
-          kindLabel: '文本',
-          label: slot.label,
-        });
-      } else if (node.type === 'image-generation' || node.type === 'video-generation') {
-        options.push({
-          nodeId: node.id,
-          title: String(node.data.title ?? '') || '生成结果',
-          assetId: resolveSourceAssetId(node.id),
-          mediaKind: node.type === 'video-generation' ? 'video' : 'image',
-          kindLabel: node.type === 'video-generation' ? '视频' : '图片',
-          label: slot.label,
-        });
-      }
-    }
-    return options;
-  }, [controller.nodes, references, resolveSourceAssetId]);
-
-  const filteredMentionOptions = useMemo(
-    () => (mention ? filterMentionCandidates(mentionOptions, mention.query) : []),
-    [mention, mentionOptions],
-  );
-  const activeMentionIndex = Math.min(mentionIndex, Math.max(filteredMentionOptions.length - 1, 0));
-
-  const syncMentionFromDom = useCallback(() => {
-    const el = promptRef.current;
-    if (!el) return;
-    const caret = el.selectionStart ?? el.value.length;
-    setMention(findActiveMentionQuery(el.value, caret));
-    setMentionIndex(0);
-  }, [setMention, setMentionIndex]);
-
-  const pickMention = useCallback((option: MentionOption) => {
-    const el = promptRef.current;
-    if (!el) return;
-    const caret = el.selectionStart ?? el.value.length;
-    const active = findActiveMentionQuery(el.value, caret);
-    setMention(null);
-    setMentionIndex(0);
-    if (!active) return;
-    const label = controller.connectReference(id, option.nodeId);
-    if (label === null) return;
-    const replaced = replaceMentionWithLabel(el.value, active.start, caret, label);
-    setPromptValue(replaced.text);
-    requestAnimationFrame(() => {
-      const target = promptRef.current;
-      if (!target) return;
-      target.focus();
-      target.setSelectionRange(replaced.caret, replaced.caret);
-    });
-  }, [controller, id, setPromptValue, setMention, setMentionIndex]);
-
-  const onPromptKeyDown = useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.nativeEvent.isComposing || !mention) return;
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      setMention(null);
-      return;
-    }
-    if (filteredMentionOptions.length === 0) return;
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      setMentionIndex((index) => (index + 1) % filteredMentionOptions.length);
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      setMentionIndex((index) => (index - 1 + filteredMentionOptions.length) % filteredMentionOptions.length);
-    } else if (event.key === 'Enter' || event.key === 'Tab') {
-      event.preventDefault();
-      pickMention(filteredMentionOptions[activeMentionIndex] ?? filteredMentionOptions[0]);
-    }
-  }, [mention, filteredMentionOptions, activeMentionIndex, pickMention, setMention, setMentionIndex]);
-
   const modeOptions = capability?.modes.filter((mode) => !capability.legacyModes?.includes(mode) || mode === data.generationMode) ?? (mediaKind === 'video'
     ? ['text-to-video', 'image-to-video']
     : ['text-to-image', 'image-to-image']);
@@ -1008,67 +1054,7 @@ export const GenerationNode = memo(function GenerationNode({
           </div>
         ) : null}
 
-        <div className="sc-canvas-prompt-area relative">
-          <textarea
-            ref={promptRef}
-            disabled={data.parameters?.generationStage === 'final-from-draft'}
-            className="nodrag nowheel sc-canvas-prompt-text sc-canvas-input w-full resize-none bg-transparent text-[12px] outline-none"
-            placeholder="提示词，输入 @ 选择素材"
-            {...promptIme}
-            onChange={(event) => {
-              promptIme.onChange(event);
-              if (!(event.nativeEvent as InputEvent).isComposing) syncMentionFromDom();
-            }}
-            onCompositionEnd={(event) => {
-              promptIme.onCompositionEnd(event);
-              syncMentionFromDom();
-            }}
-            onSelect={syncMentionFromDom}
-            onKeyDown={onPromptKeyDown}
-            onBlur={() => {
-              promptIme.onBlur();
-              setMention(null);
-            }}
-            data-testid="generation-prompt"
-          />
-          {mention ? (
-            <div className="sc-canvas-mention-menu nodrag" data-testid="mention-menu">
-              {filteredMentionOptions.length === 0 ? (
-                <div className="sc-canvas-mention-empty">还没有已连线的素材，先从素材节点拉线到本节点</div>
-              ) : (
-                filteredMentionOptions.map((option, index) => (
-                  <button
-                    key={option.nodeId}
-                    type="button"
-                    className={`sc-canvas-mention-option ${index === activeMentionIndex ? 'sc-canvas-mention-option-active' : ''}`}
-                    data-testid={`mention-option-${option.nodeId}`}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      pickMention(option);
-                    }}
-                    onMouseEnter={() => setMentionIndex(index)}
-                  >
-                    {option.assetId && option.mediaKind === 'image' ? (
-                      <img src={canvasAssetUrl(option.assetId)} alt="" className="sc-canvas-mention-thumb" />
-                    ) : option.assetId && option.mediaKind === 'video' ? (
-                      <video src={canvasAssetUrl(option.assetId)} muted playsInline preload="metadata" className="sc-canvas-mention-thumb" />
-                    ) : (
-                      <span className="sc-canvas-mention-thumb sc-canvas-mention-thumb-text">
-                        {option.kindLabel}
-                      </span>
-                    )}
-                    <span className="min-w-0 flex-1 truncate">{option.title}</span>
-                    {option.label !== null ? (
-                      <span className="sc-canvas-mention">@参考{option.label}</span>
-                    ) : (
-                      <span className="sc-canvas-mention-kind">{option.kindLabel}</span>
-                    )}
-                  </button>
-                ))
-              )}
-            </div>
-          ) : null}
-        </div>
+        <CanvasPromptInput nodeId={id} data={data} field="prompt" />
 
         {references.length > 0 ? (
           <div className="mt-2 space-y-1" data-testid="reference-list">
@@ -1087,7 +1073,7 @@ export const GenerationNode = memo(function GenerationNode({
 
         {mentionIssues.unknownLabels.length > 0 ? (
           <div className="mt-2 text-[11px] text-[var(--color-fail)]" data-testid="mention-unknown">
-            提示词提到的 @参考{mentionIssues.unknownLabels.join('、@参考')} 不存在
+            提示词中的参考已移除或不存在：@参考{mentionIssues.unknownLabels.join('、@参考')}
           </div>
         ) : null}
 

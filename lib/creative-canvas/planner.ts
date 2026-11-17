@@ -34,6 +34,7 @@ import {
   findGraphNode,
   incomingEdges,
   resolveCanvasMentions,
+  remapCanvasMentions,
 } from './graph.ts';
 import { getCanvasNodeState, requireCanvas, type CanvasRecord } from './repository.ts';
 import { findActiveTaskForCanvasNode } from './tasks.ts';
@@ -42,6 +43,7 @@ import {
   type CanvasGraph,
   type CanvasGenerationNode,
   type CanvasNodeRunProjection,
+  type CanvasPromptNode,
   type CanvasReferenceSlot,
 } from './types.ts';
 
@@ -250,7 +252,7 @@ interface PlanBuildContext {
 
 function collectMentions(
   context: PlanBuildContext,
-  node: CanvasGenerationNode,
+  node: CanvasGenerationNode | CanvasPromptNode,
   text: string,
 ): Set<string> {
   const resolution = resolveCanvasMentions(context.graph, node, text);
@@ -258,13 +260,13 @@ function collectMentions(
     context.problems.push({
       code: 'mention_unresolved',
       nodeId: node.id,
-      message: `提示词提到的 @参考${resolution.unknownLabels.join('、@参考')} 不存在，请先连接对应素材。`,
+      message: `提示词中的参考已移除或不存在：@参考${resolution.unknownLabels.join('、@参考')}，请重新选择对应素材。`,
     });
   }
-  const detached = new Set(detachedReferenceSlots(context.graph, node).map((slot) => slot.refId));
+  const detached = new Set(node.kind === 'prompt' ? [] : detachedReferenceSlots(context.graph, node).map((slot) => slot.refId));
   for (const refId of resolution.mentionRefIds) {
     if (detached.has(refId)) {
-      const slot = node.data.references.find((candidate) => candidate.refId === refId);
+      const slot = node.data.references?.find((candidate) => candidate.refId === refId);
       context.problems.push({
         code: 'detached_reference_mentioned',
         nodeId: node.id,
@@ -300,6 +302,9 @@ function resolveInputSlot(
   }
 
   if (source.kind === 'prompt') {
+    collectMentions(context, source, source.data.text);
+    const textContent = remapCanvasMentions(source.data.text, source.data.references ?? [], node.data.references);
+    collectMentions(context, node, textContent);
     return {
       refId: slot.refId,
       orderIndex,
@@ -310,7 +315,7 @@ function resolveInputSlot(
       assetId: null,
       upstreamNodeId: null,
       upstreamTaskId: null,
-      textContent: source.data.text,
+      textContent,
     };
   }
 

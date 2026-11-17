@@ -411,8 +411,12 @@ const assetBytes = await sharp({ create: { width: 16, height: 16, channels: 3, b
   assert.equal('currentAssetId' in copiedNode.data, false);
 
   const readBack = await canvasItemRoute.GET(new Request('http://127.0.0.1/api/canvas/x'), params({ id: canvasId }));
-  const readCanvas = (await body(readBack)).canvas as { graph: { nodes: unknown[] } };
+  const readCanvas = (await body(readBack)).canvas as { graph: { nodes: Array<{ id: string; data: unknown }>; edges: Array<{ source: string; target: string }> } };
   assert.equal(readCanvas.graph.nodes.length, 3);
+  assert.deepEqual(readCanvas.graph.nodes.find((node) => node.id === copyNodeId)?.data, copiedNode.data,
+    '复制响应与实际保存的参考及提示词必须一致');
+  assert.ok(readCanvas.graph.edges.some((edge) => edge.source === 'm1' && edge.target === copyNodeId),
+    '副本通过真实连线继续使用复制时的外部输入');
 
   // 同一 snapshotKey 重试：幂等，不再新增节点、不再推进修订号
   const replay = await canvasCopiesRoute.POST(new Request('http://127.0.0.1/api/canvas/x/copies', {
