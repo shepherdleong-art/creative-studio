@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import { extractPackyGeminiImageSource } from '../../providers/packy-gemini-image.ts';
 import { buildArkImageBody } from '../../providers/ark-images.ts';
 import { SEEDREAM_5_PRO, seedreamImageEndpoint } from '../../seedream-image.ts';
+import { fetchSeedreamImage } from '../../seedream-image-fetch.ts';
 import sharp from 'sharp';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
@@ -237,12 +238,23 @@ function linkedTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number)
   return AbortSignal.any([signal, timeout]);
 }
 
+function requestTimedOut(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const detail = error as { name?: unknown; code?: unknown; cause?: { code?: unknown } };
+  const timeoutCodes = ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'];
+  return detail.name === 'TimeoutError'
+    || timeoutCodes.includes(String(detail.code))
+    || timeoutCodes.includes(String(detail.cause?.code));
+}
+
 async function decodeImageResponse(response: Response, apiKey: string, chatImage = false): Promise<Buffer | { url: string }> {
   let text: string;
   try {
     text = await response.text();
-  } catch {
-    throw new CanvasAdapterError('submit', '外部图片网关响应读取中断，提交结果不明。', {
+  } catch (error) {
+    throw new CanvasAdapterError('submit', requestTimedOut(error)
+      ? '等待图片生成响应超时，提交结果不明。'
+      : '外部图片网关响应读取中断，提交结果不明。', {
       uncertain: true,
       code: 'external_response_read_uncertain',
     });
@@ -299,7 +311,8 @@ function submitError(stage: 'submit', message: string, error: unknown, signal?: 
     });
   }
   return new CanvasAdapterError(stage, error instanceof ProviderRequestError
-    ? providerErrorMessage(error, apiKey) ?? message : message, {
+    ? providerErrorMessage(error, apiKey) ?? message
+    : requestTimedOut(error) ? '等待供应商生成响应超时，提交结果不明。' : message, {
     uncertain: !isHttpClientRejection(error),
     code: isHttpClientRejection(error) ? 'external_submit_rejected' : 'external_submit_uncertain',
     httpStatus: error instanceof ProviderRequestError ? error.httpStatus : null,
@@ -501,16 +514,16 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
         let response: Response;
         try {
           if (arkBody) {
-            response = await fetchImpl(seedreamImageEndpoint(route.baseUrl), {
+            response = await fetchSeedreamImage(seedreamImageEndpoint(route.baseUrl), {
               method: 'POST',
               headers: { 'content-type': 'application/json', authorization: `Bearer ${route.apiKey}` },
               body: JSON.stringify(arkBody),
               signal: linkedTimeoutSignal(signal, options.submitTimeoutMs ?? 600_000),
-            });
+            }, fetchImpl);
           } else if (capability.providerKind === 'company' && capability.modelAlias === 'doubao-seedream-5-0-pro-image') {
             const resolution = String(context.parameters.resolution ?? '2K');
             const ratio = String(context.parameters.aspectRatio ?? '1:1');
-            response = await fetchImpl(`${route.baseUrl}/v1/images/generations`, {
+            response = await fetchSeedreamImage(`${route.baseUrl}/v1/images/generations`, {
               method: 'POST',
               headers: { 'content-type': 'application/json', authorization: `Bearer ${route.apiKey}` },
               body: JSON.stringify({
@@ -520,7 +533,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
                 size: resolution, n: 1, response_format: 'url',
               }),
               signal: linkedTimeoutSignal(signal, options.submitTimeoutMs ?? 600_000),
-            });
+            }, fetchImpl);
           } else if (route.type === 'packy-gemini-image') {
             // 沿用主项目聊天式图片协议；不加入旧工作台的底图/参考用途前缀。
             response = await fetchImpl(`${route.baseUrl.replace(/\/v1$/, '')}/v1/chat/completions`, {

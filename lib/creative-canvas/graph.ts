@@ -181,6 +181,17 @@ function parseReferenceSlot(value: unknown, path: string): CanvasReferenceSlot {
   };
 }
 
+function parseReferences(value: unknown, path: string): CanvasReferenceSlot[] {
+  if (value !== undefined && !Array.isArray(value)) fail('invalid_reference', `${path} 必须是数组。`);
+  const slots = (value ?? []).map((entry: unknown, index: number) => parseReferenceSlot(entry, `${path}[${index}]`));
+  if (new Set(slots.map((slot: CanvasReferenceSlot) => slot.refId)).size !== slots.length
+    || new Set(slots.map((slot: CanvasReferenceSlot) => slot.label)).size !== slots.length
+    || new Set(slots.map((slot: CanvasReferenceSlot) => slot.sourceNodeId)).size !== slots.length) {
+    fail('invalid_reference', `${path} 的参考身份、编号或来源重复。`);
+  }
+  return slots;
+}
+
 function parseGenerationData(value: unknown, path: string): CanvasGenerationNodeData {
   if (!isPlainObject(value)) fail('invalid_node', `${path}.data 必须是对象。`);
   assertNoRuntimeFields(value, path);
@@ -280,8 +291,8 @@ function parseNode(value: unknown, index: number): CanvasGraphNode {
   }
 
   if (kind === 'prompt') {
-    assertKnownKeys(data, ['title', 'text'], `${path}.data`);
-    const { title, text } = data;
+    assertKnownKeys(data, ['title', 'text', 'references'], `${path}.data`);
+    const { title, text, references } = data;
     if (typeof title !== 'string') fail('invalid_node', `${path}.data.title 必须是字符串。`);
     if (typeof text !== 'string') fail('invalid_node', `${path}.data.text 必须是字符串。`);
     const node: CanvasPromptNode = {
@@ -289,7 +300,7 @@ function parseNode(value: unknown, index: number): CanvasGraphNode {
       kind: 'prompt',
       position: parsedPosition,
       ...(parsedSize ? { size: parsedSize } : {}),
-      data: { title, text },
+      data: { title, text, ...(references !== undefined ? { references: parseReferences(references, `${path}.data.references`) } : {}) },
     };
     return node;
   }
@@ -573,7 +584,10 @@ export function cloneNode(node: CanvasGraphNode): CanvasGraphNode {
     return { ...node, position: { ...node.position }, ...size, data: { ...node.data } };
   }
   if (node.kind === 'prompt') {
-    return { ...node, position: { ...node.position }, ...size, data: { ...node.data } };
+    return { ...node, position: { ...node.position }, ...size, data: {
+      ...node.data,
+      ...(node.data.references ? { references: node.data.references.map((slot) => ({ ...slot })) } : {}),
+    } };
   }
   return {
     ...node,
@@ -625,45 +639,83 @@ export function detachedReferenceSlots(
   return node.data.references.filter((slot) => !connected.has(slot.sourceNodeId));
 }
 
-/**
- * 参考槽位对账：为新增连线补槽位，并移除来源连线已断开的槽位。
- * 保留槽位的编号与顺序不变；编号游标只增不减，@参考N 不会被回收给别的素材，
- * 重连同一来源会分配新编号，提示词里的旧 @参考N 按「不存在」显式报错。
- */
+/** 按来源身份改写编号；被移除的提及保持可见的失效标记，不能被新素材接管。 */
+export function remapCanvasMentions(
+  text: string,
+  previous: readonly CanvasReferenceSlot[],
+  next: readonly CanvasReferenceSlot[],
+): string {
+  const byLabel = new Map(previous.map((slot) => [slot.label, slot]));
+  const bySource = new Map(next.map((slot) => [slot.sourceNodeId, slot]));
+  const nextLabels = new Set(next.map((slot) => slot.label));
+  const renumbered = previous.some((slot) => {
+    const replacement = bySource.get(slot.sourceNodeId);
+    return replacement && replacement.label !== slot.label;
+  });
+  return text.replace(/@参考(\d+)/g, (token, rawLabel: string) => {
+    const label = Number(rawLabel);
+    const source = byLabel.get(label);
+    if (!source) return renumbered && nextLabels.has(label) ? `@失效参考${label}` : token;
+    const replacement = bySource.get(source.sourceNodeId);
+    return replacement ? canvasMentionToken(replacement.label) : `@失效参考${label}`;
+  });
+}
+
+function reconcileReferences(previous: CanvasReferenceSlot[], sources: CanvasGraphNode[]): CanvasReferenceSlot[] {
+  const connected = new Set(sources.map((source) => source.id));
+  const kept = previous.filter((slot) => connected.has(slot.sourceNodeId));
+  const labels = new Map([...kept].sort((a, b) => a.label - b.label).map((slot, index) => [slot.sourceNodeId, index + 1]));
+  const next = kept.map((slot) => slot.label === labels.get(slot.sourceNodeId) ? slot : { ...slot, label: labels.get(slot.sourceNodeId)! });
+  for (const source of sources) {
+    if (labels.has(source.id)) continue;
+    labels.set(source.id, next.length + 1);
+    next.push({ refId: `ref-${source.id}`, label: next.length + 1, role: defaultRoleFor(source),
+      note: '', sourceNodeId: source.id, sourceKind: referenceSourceKindFor(source) });
+  }
+  return next.length === previous.length && next.every((slot, index) => slot === previous[index]) ? previous : next;
+}
+
+/** 先对账生成节点，再汇总提示词节点可提及的下游媒体参考。 */
 export function reconcileCanvasGraph(graph: CanvasGraph): CanvasGraph {
   let changed = false;
   const nodes = graph.nodes.map((node) => {
     if (!isGenerationNode(node)) return node;
-    const inEdges = incomingEdges(graph, node.id);
-    const connected = new Set(inEdges.map((edge) => edge.source));
-    const sources = inEdges
+    const sources = incomingEdges(graph, node.id)
       .map((edge) => findGraphNode(graph, edge.source))
       .filter((source): source is CanvasGraphNode => Boolean(source));
-    const known = new Set(node.data.references.map((slot) => slot.sourceNodeId));
-    const missing = sources.filter((source) => !known.has(source.id));
-    const kept = node.data.references.filter((slot) => connected.has(slot.sourceNodeId));
-    if (missing.length === 0 && kept.length === node.data.references.length) return node;
+    const references = reconcileReferences(node.data.references, sources);
+    if (references === node.data.references && node.data.referenceLabelCounter === references.length) return node;
     changed = true;
-    let counter = node.data.referenceLabelCounter;
-    const appended = missing.map((source) => {
-      counter += 1;
-      return {
-        refId: `ref-${source.id}`,
-        label: counter,
-        role: defaultRoleFor(source),
-        note: '',
-        sourceNodeId: source.id,
-        sourceKind: referenceSourceKindFor(source),
-      } satisfies CanvasReferenceSlot;
-    });
     const data: CanvasGenerationNodeData = {
       ...node.data,
-      references: [...kept, ...appended],
-      referenceLabelCounter: counter,
+      prompt: remapCanvasMentions(node.data.prompt, node.data.references, references),
+      references,
+      referenceLabelCounter: references.length,
     };
     return { ...node, data } as CanvasGenerationNode;
   });
-  return changed ? { ...graph, nodes } : graph;
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const originalById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const withPrompts = nodes.map((node) => {
+    if (node.kind !== 'prompt') return node;
+    const targets = graph.edges.filter((edge) => edge.source === node.id).map((edge) => byId.get(edge.target));
+    const sourceIds = new Set(targets.flatMap((target) => target && isGenerationNode(target)
+      ? target.data.references.filter((slot) => slot.sourceKind !== 'text').map((slot) => slot.sourceNodeId) : []));
+    const sources = [...sourceIds].map((id) => byId.get(id)).filter((source): source is CanvasGraphNode => Boolean(source));
+    const previous = node.data.references ?? [];
+    const references = reconcileReferences(previous, sources);
+    if (references === previous) return node;
+    // 旧提示词没有自己的参考表，手写编号沿用第一个下游的旧编号，再迁移为本地编号。
+    const firstTarget = targets.find((target) => target && isGenerationNode(target));
+    const originalTarget = firstTarget ? originalById.get(firstTarget.id) : undefined;
+    const legacyReferences = originalTarget && isGenerationNode(originalTarget) && originalTarget.data.references.length
+      ? originalTarget.data.references : firstTarget && isGenerationNode(firstTarget) ? firstTarget.data.references : [];
+    const textReferences = node.data.references === undefined
+      ? legacyReferences.filter((slot) => slot.sourceKind !== 'text') : previous;
+    changed = true;
+    return { ...node, data: { ...node.data, text: remapCanvasMentions(node.data.text, textReferences, references), references } };
+  });
+  return changed ? { ...graph, nodes: withPrompts } : graph;
 }
 
 export function collectMentionedLabels(text: string): number[] {
@@ -687,13 +739,13 @@ export interface CanvasMentionResolution {
 
 export function resolveCanvasMentions(
   graph: CanvasGraph,
-  node: CanvasGenerationNode,
+  node: CanvasGenerationNode | CanvasPromptNode,
   text: string,
 ): CanvasMentionResolution {
   const labels = collectMentionedLabels(text);
-  const byLabel = new Map(node.data.references.map((slot) => [slot.label, slot]));
+  const byLabel = new Map((node.data.references ?? []).map((slot) => [slot.label, slot]));
   const mentioned: CanvasReferenceSlot[] = [];
-  const unknownLabels: number[] = [];
+  const unknownLabels: number[] = [...text.matchAll(/@失效参考(\d+)/g)].map((match) => Number(match[1]));
   const mentionRefIds: string[] = [];
   for (const label of labels) {
     const slot = byLabel.get(label);
@@ -743,9 +795,9 @@ export function planCanvasCopy(params: {
     const copy = cloneNode(node);
     copy.id = nodeIdMap.get(nodeId) as string;
     copy.position = { x: copy.position.x + positionOffset.x, y: copy.position.y + positionOffset.y };
-    if (isGenerationNode(copy)) {
+    if (isGenerationNode(copy) || (copy.kind === 'prompt' && copy.data.references)) {
       // 内部来源指向副本，外部输入继续引用原来源；编号保持稳定，不重新分配。
-      copy.data.references = copy.data.references.map((slot) => ({
+      copy.data.references = copy.data.references!.map((slot) => ({
         ...slot,
         sourceNodeId: nodeIdMap.get(slot.sourceNodeId) ?? slot.sourceNodeId,
       }));

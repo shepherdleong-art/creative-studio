@@ -290,7 +290,7 @@ export default function BatchReviewPreviewDock({
               key={`${previewFilm.planId}:${packagingEditable}:${coverPreviewRequest}`}
               overlay={arrangement.packaging?.enabled || draggedStickerChoice ? <>
                 {arrangement.packaging?.enabled && <BatchPackagingOverlay
-                  key={`${previewFilm.planId}:${arrangement.editRevision}`}
+                  key={`${previewFilm.planId}:${arrangement.outputVersionId}`}
                   view={arrangement}
                   editable={packagingEditable}
                   onSave={onSourceApply}
@@ -301,7 +301,7 @@ export default function BatchReviewPreviewDock({
                   onStickerExit={() => onStickerExit?.(previewFilm.planId)}
                   playbackRequest={stickerPlaybackRequest}
                   onSeek={onSeek}
-                  src={`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(previewFilm.planId)}/packaging-preview?projectId=${encodeURIComponent(projectId)}&format=html&edit=1&revision=${arrangement.editRevision}`}
+                  src={`/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(previewFilm.planId)}/packaging-preview?projectId=${encodeURIComponent(projectId)}&format=html&edit=1`}
                   timeSec={playheadSec + INTRO_SEC}
                 />}
                 {draggedStickerChoice && <div

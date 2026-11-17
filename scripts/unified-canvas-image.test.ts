@@ -47,6 +47,7 @@ const {
   requestCanvasTaskCancel,
 } = await import('../lib/creative-canvas/recovery.ts');
 const { CanvasAdapterError } = await import('../lib/creative-canvas/adapters/types.ts');
+const { createExternalCanvasAdapter } = await import('../lib/creative-canvas/adapters/external.ts');
 const {
   clearCanvasCapabilities,
   findCanvasCapability,
@@ -776,6 +777,100 @@ try {
     assert.equal(done.phase, 'succeeded', done.errorCode ?? '');
     assert.equal(adapter.submissions.length, 1);
     assert.equal(parentFor(scenario.task.id), undefined);
+  }
+
+  // Switching the same node to synchronous Seedream while Image 2 is running
+  // must preserve both frozen tasks, even when Image 2 publishes first.
+  {
+    const seedreamProviderId = 'company-gateway-seedream-5-0-pro';
+    const seedreamModel = 'doubao-seedream-5-0-pro-image';
+    const seedreamBase = 'https://seedream.canvas.test';
+    const seedreamKey = 'canvas-seedream-key';
+    db.prepare(`UPDATE providers SET baseUrl = ?, apiKey = ?, enabled = 1 WHERE id = ?`)
+      .run(seedreamBase, seedreamKey, seedreamProviderId);
+    configureLegacyMediaProviderPool({ baseUrl: seedreamBase, apiKey: seedreamKey, capacity: 10 });
+    const seedream = ensureCanvasCapabilitiesRegistered(db).find((item) => item.modelAlias === seedreamModel);
+    assert.ok(seedream);
+
+    const scenario = await createTask({ name: 'concurrent-model-switch' });
+    let image2Polling!: () => void;
+    let finishImage2!: () => void;
+    let seedreamSubmitting!: () => void;
+    let finishSeedream!: () => void;
+    const image2Polled = new Promise<void>((resolve) => { image2Polling = resolve; });
+    const image2Result = new Promise<void>((resolve) => { finishImage2 = resolve; });
+    const seedreamPosted = new Promise<void>((resolve) => { seedreamSubmitting = resolve; });
+    const seedreamResult = new Promise<void>((resolve) => { finishSeedream = resolve; });
+    const image2Adapter = fakeAdapter({
+      poll: async (context) => {
+        assert.equal(context.modelAlias, qiniuModel.model);
+        image2Polling();
+        await image2Result;
+        return { status: 'succeeded' };
+      },
+    });
+    const image2Work = execute(scenario, image2Adapter);
+    let seedreamWork: ReturnType<typeof execute> | undefined;
+    let seedreamPosts = 0;
+    try {
+      await Promise.race([image2Polled, image2Work.then(() => { throw new Error('Image 2 stopped before polling.'); })]);
+      const row = db.prepare('SELECT graphJson, graphRevision FROM creative_canvases WHERE id = ?')
+        .get(scenario.canvasId) as { graphJson: string; graphRevision: number };
+      const graph = JSON.parse(row.graphJson);
+      const node = graph.nodes.find((item: { id: string }) => item.id === scenario.nodeId);
+      assert.ok(node);
+      node.data.modelKey = seedream.key;
+      runWithAccessContext(access, () => saveCanvasGraph({
+        db, canvasId: scenario.canvasId, expectedGraphRevision: row.graphRevision, graph,
+      }));
+      const seedreamTask = runWithAccessContext(access, () => startCanvasRun({
+        db, request: {
+          canvasId: scenario.canvasId, targetNodeId: scenario.nodeId, mode: 'single',
+          requestKey: 'concurrent-seedream',
+        },
+      })).tasks[0]!;
+      const seedreamAdapter = createExternalCanvasAdapter({
+        db, storageRoot,
+        fetchImpl: async (url, init) => {
+          assert.equal(String(url), `${seedreamBase}/v1/images/generations`);
+          assert.equal(init?.method, 'POST');
+          const body = JSON.parse(String(init?.body));
+          assert.equal(body.model, seedreamModel);
+          assert.equal(body.image.length, 1, 'Keep the frozen image reference.');
+          seedreamPosts += 1;
+          seedreamSubmitting();
+          await seedreamResult;
+          return Response.json({ data: [{ b64_json: imageBytes.toString('base64') }] });
+        },
+      });
+      seedreamWork = execute({ ...scenario, task: seedreamTask }, seedreamAdapter);
+      await Promise.race([seedreamPosted, seedreamWork.then(() => { throw new Error('Seedream stopped before submitting.'); })]);
+
+      finishImage2();
+      assert.equal((await image2Work).phase, 'succeeded');
+      const pending = runWithAccessContext(access, () => getCanvasTask(db, seedreamTask.id))!;
+      assert.equal(pending.phase, 'submitting', 'Publishing Image 2 must not interrupt Seedream.');
+      assert.equal(pending.errorCode, null);
+      assert.equal(JSON.parse(pending.providerSnapshot).modelAlias, seedreamModel);
+      assert.equal(JSON.parse(scenario.readTask().providerSnapshot).modelAlias, 'image2');
+
+      finishSeedream();
+      const done = await seedreamWork;
+      assert.equal(done.phase, 'succeeded', done.errorCode ?? '');
+      assert.ok(done.outputAssetId);
+      assert.notEqual(done.outputAssetId, scenario.readTask().outputAssetId);
+      assert.equal(image2Adapter.submissions.length, 1);
+      assert.equal(seedreamPosts, 1);
+      const state = db.prepare('SELECT currentAssetId FROM creative_canvas_node_states WHERE canvasId = ? AND nodeId = ?')
+        .get(scenario.canvasId, scenario.nodeId) as { currentAssetId: string | null };
+      assert.equal(state.currentAssetId, done.outputAssetId, 'The last completed task becomes the current result.');
+      assert.equal(db.prepare(`SELECT COUNT(*) FROM creative_canvas_assets
+        WHERE sourceTaskId IN (?, ?)`).pluck().get(scenario.task.id, seedreamTask.id), 2);
+    } finally {
+      finishImage2();
+      finishSeedream();
+      await Promise.allSettled([image2Work, seedreamWork]);
+    }
   }
 
   void qiniuPool;

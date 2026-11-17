@@ -182,7 +182,18 @@ export function copyCanvasNodes(
     }
 
     const targetGraph = reconcileCanvasGraph(parseCanvasGraph(JSON.parse(current.graphJson)));
-    const nextGraph = applyCopyPlan(targetGraph, plan);
+    // 快照只携带选择范围内部的边；范围外输入由稳定参考身份重建，避免对账将它们当成断线移除。
+    const copiedIds = new Set(plan.nodes.map((node) => node.id));
+    const copiedEdges = [...plan.edges];
+    for (const node of plan.nodes) {
+      if (!isGenerationNode(node)) continue;
+      for (const slot of node.data.references) {
+        if (copiedIds.has(slot.sourceNodeId)) continue;
+        copiedEdges.push({ id: randomUUID(), source: slot.sourceNodeId, target: node.id });
+      }
+    }
+    // 对重建的外部连接照常校验端口、来源和循环，不能信任客户端快照里的槽位类型。
+    const nextGraph = parseCanvasGraph(applyCopyPlan(targetGraph, { ...plan, edges: copiedEdges }));
     const at = now().toISOString();
     const nextRevision = Number(current.graphRevision) + 1;
 
@@ -203,8 +214,8 @@ export function copyCanvasNodes(
     const result: CanvasCopyResult = {
       canvasId,
       graphRevision: nextRevision,
-      nodes: plan.nodes,
-      edges: plan.edges,
+      nodes: plan.nodes.map((node) => nextGraph.nodes.find((candidate) => candidate.id === node.id)!),
+      edges: copiedEdges,
       nodeIdMap: Object.fromEntries(plan.nodeIdMap),
       idempotentReplay: false,
     };
