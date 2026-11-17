@@ -831,6 +831,8 @@ try {
             const resolution = window.__packagingAutoLayoutReplay.getResolution();
             const item = resolution.elements['preview-point-cue'];
             return {
+              baseHref: document.baseURI,
+              inputHash: resolution.inputHash,
               rootWidth: root.clientWidth,
               outputWidth: resolution.outputWidth,
               resolutionFontSize: Number.parseFloat(item.fit.textFontSize),
@@ -846,8 +848,10 @@ try {
       let pointPreview = null;
       await eventually(async () => {
         pointPreview = await readPointPreview();
-        return pointPreview?.userPointCheck === true && pointPreview.userPointStatus === 'loaded';
-      }, `${template} 的 TTC 用户卖点字体必须在预览中真实加载`, 45_000);
+        return pointPreview?.baseHref.includes(`/${pointArrangement.packaging.layoutResolution.geometryManifestHash}/`)
+          && pointPreview.inputHash === pointArrangement.packaging.layoutResolution.inputHash
+          && pointPreview.userPointCheck === true && pointPreview.userPointStatus === 'loaded';
+      }, `${template} 须切到当前冻结文档并真实加载 TTC 用户卖点字体`, 120_000);
       const expectedPointSize = template === 'overlay-journal'
         ? pointPreview.resolutionFontSize * pointPreview.rootWidth / 100
         : pointPreview.resolutionFontSize * pointPreview.rootWidth / pointPreview.outputWidth;

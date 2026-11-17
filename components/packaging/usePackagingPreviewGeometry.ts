@@ -7,8 +7,8 @@ import type { PackagingStickerAssetMap } from '@/lib/media-core/packaging-sticke
 
 export function packagingDocumentConfig(config: FinalEditPackagingConfig | undefined) {
   return { ...config, layouts: undefined, layoutResolution: undefined,
-    stickers: config?.stickers?.map(({ id, assetId, styleMode, fixedStyle, startFrame, endFrame, trackIndex, animation }) =>
-      ({ id, assetId, styleMode, fixedStyle, startFrame, endFrame, trackIndex, animation })) };
+    stickers: config?.stickers?.map(({ id, assetId, styleMode, fixedStyle, startFrame, endFrame, animation }) =>
+      ({ id, assetId, styleMode, fixedStyle, startFrame, endFrame, animation })) };
 }
 
 type PreviewVars = { stickers?: PackagingStickerInstance[]; stickerAssets?: PackagingStickerAssetMap;
@@ -51,6 +51,8 @@ export function syncPackagingPreviewGeometry(frame: HTMLIFrameElement, config: F
     element.style.left = `${center.centerXPct}%`;
     element.style.top = `${center.centerYPct}%`;
     element.style.width = `${geometry.imageWidthPct}%`;
+    // 首次保存可能归一化旧同轨项；与贴纸 runtime 相同的层级更新不需要更换文档。
+    element.style.zIndex = String(1000 - sticker.trackIndex);
     const rotation = element.querySelector<HTMLElement>('.packaging-sticker-rotation');
     if (rotation) rotation.style.transform = `rotate(${sticker.rotationDeg}deg)`;
     element.dataset.stickerEdited = sticker.origin.kind === 'manual' || sticker.origin.positionPinned ? '1' : '';

@@ -338,6 +338,13 @@ try {
     await ready(); await settle();
     assert.deepEqual(await geometry(), originalGeometry, '贴纸保存失败必须原地恢复中心/宽度/旋转');
     assert.equal(requests.length, stickerRequestCount, '贴纸保存失败回滚不重载预览');
+    // 一键布置后的首次保存会归一化同轨重叠项；层级变化必须原地同步，不能闪回封面。
+    const layerRequestCount = requests.length;
+    await refresh({ packaging: { ...savedView.packaging,
+      stickers: savedView.packaging.stickers.map(item => ({ ...item, trackIndex: 2 })) } });
+    await settle();
+    assert.equal(requests.length, layerRequestCount, '仅轨道层级变化不得重载包装文档');
+    assert.equal(await sticker.evaluate(element => element.style.zIndex), '998', '层级必须按运行时 1000-trackIndex 契约同步');
     console.log(`PASS: ${template} drag/scale/rotate, polling, undo/redo/reset, failed save, text refresh, reload persistence, cover layouts; ${samples.frames} sampled frames, zero disappearing points/blank video frames`);
   }
   placeholderTest = true;

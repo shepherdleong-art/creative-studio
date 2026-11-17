@@ -231,6 +231,60 @@ try {
   assert.equal(fs.readFileSync(localVideo, 'utf8'), 'local-packaged-video');
   console.log('PASS: packaged covers preserve immutable originals, roll back safely, and publish readable versions');
 
+  // v2 原片任务不先发布封面：首次包装必须同时登记封面，且失败时能撤销本次完整产物。
+  for (const context of [createLocalAccessContext(), access]) {
+    const deferredRenderId = `deferred-cover-${context.kind}`;
+    const deferredPackagingId = `deferred-packaging-${context.kind}`;
+    const deferredTarget = reserveProjectExportTarget(storageRoot, { ...identity, taskName: deferredRenderId });
+    const internalOutput = { videoRelativePath: path.relative(storageRoot, internalVideo), coverRelativePath: path.relative(storageRoot, rawCover) };
+    db.prepare(`INSERT INTO final_edit_jobs
+      (id, projectId, kind, status, phase, requestKey, inputSnapshotJson, outputJson, createdAt)
+      VALUES (?, 'project-a', 'render', 'succeeded', 'succeeded', ?, '{}', ?, '2026-11-17')`)
+      .run(deferredRenderId, deferredRenderId, JSON.stringify(internalOutput));
+    assert.equal(fs.existsSync(path.join(storageRoot, deferredTarget.coverRelativePath)), false);
+    const publishDeferred = async () => {
+      const temporary = path.join(packagingDirectory, `${context.kind}-initial.tmp.jpg`);
+      fs.writeFileSync(temporary, originalBytes);
+      const cover = runWithAccessContext(context, () => publishPackagedCover({
+        storageRoot, temporaryCoverPath: temporary, jobRelativeDir: packagingRelativeDir,
+        coverFilename: deferredTarget.coverFilename, currentCoverRelativePath: deferredTarget.coverRelativePath,
+        initialPublication: true,
+      }));
+      assert.ok(cover, '首次发布须返回实际封面路径供登记，不能依赖不存在的旧封面记录');
+      const video = await publishPackagedResult({ storageRoot, internalVideoRelativePath: path.relative(storageRoot, packagingVideo),
+        exportTarget: deferredTarget, renderVideoRelativePath: internalOutput.videoRelativePath });
+      return { ...video, ...cover };
+    };
+    const registerDeferred = (target: Awaited<ReturnType<typeof publishDeferred>>) => registerPackagedArtifact(db, {
+      projectId: 'project-a', sourceJobId: deferredPackagingId, sourceRenderJobId: deferredRenderId,
+      target, kind: 'final_video', createdAt: '2026-11-17',
+    });
+    const interruptedInitial = await publishDeferred();
+    assert.throws(() => runWithAccessContext(context, () => db.transaction(() => {
+      registerDeferred(interruptedInitial);
+      throw new Error('initial publication interrupted');
+    })()), /initial publication interrupted/);
+    await deletePackagedPublish(storageRoot, interruptedInitial);
+    for (const file of [interruptedInitial.videoRelativePath, interruptedInitial.coverRelativePath]) {
+      assert.equal(fs.existsSync(path.join(storageRoot, file)), false, '首次发布失败不得遗留半套正式产物');
+    }
+    assert.equal(db.prepare('SELECT COUNT(*) FROM project_artifacts WHERE sourceJobId IN (?,?)').pluck()
+      .get(deferredRenderId, deferredPackagingId), 0);
+    const initial = await publishDeferred();
+    runWithAccessContext(context, () => db.transaction(() => registerDeferred(initial))());
+    const initialOutput = JSON.parse(db.prepare('SELECT outputJson FROM final_edit_jobs WHERE id=?').pluck().get(deferredRenderId) as string);
+    assert.equal(initialOutput.publishedCoverRelativePath, initial.coverRelativePath);
+    assert.deepEqual(fs.readFileSync(path.join(storageRoot, initial.coverRelativePath)), originalBytes);
+    assert.equal(db.prepare('SELECT COUNT(*) FROM project_artifacts WHERE sourceJobId IN (?,?)').pluck()
+      .get(deferredRenderId, deferredPackagingId), 2, '原片未登记时，包装成功后也必须完整登记视频和封面');
+    const readCover = runWithAccessContext(context, () => mediaResponse(
+      new Request('https://studio.example.test/deferred-cover'), initial.coverRelativePath, 'image/jpeg',
+    ));
+    assert.equal(readCover.status, 200);
+    assert.deepEqual(Buffer.from(await readCover.arrayBuffer()), originalBytes);
+  }
+  console.log('PASS: v2 deferred cover first publication, rollback and retry in local/team modes');
+
   // 线上旧包装任务已经有正式产物行，但缺 scope + file；打开预览即可补登，无需重新渲染。
   const legacyPath = 'projects/project-a/legacy-packaged.mp4';
   fs.writeFileSync(path.join(storageRoot, legacyPath), 'legacy-packaged-video');

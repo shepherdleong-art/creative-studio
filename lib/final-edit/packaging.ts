@@ -232,6 +232,8 @@ export function publishPackagedCover(input: {
   jobRelativeDir: string;
   coverFilename: string;
   currentCoverRelativePath: string;
+  /** v2 尚未发布原片封面，本地同样需要返回路径供首次登记和失败回滚。 */
+  initialPublication?: boolean;
 }): { coverRelativePath: string; coverFilename: string } | undefined {
   const source = assertNoStorageSymlink(input.storageRoot, path.relative(input.storageRoot, input.temporaryCoverPath));
   const sourceStat = fs.statSync(source);
@@ -243,7 +245,9 @@ export function publishPackagedCover(input: {
   }
   if (requireAccessContext().kind === 'local') {
     fs.renameSync(source, assertNoStorageSymlink(input.storageRoot, input.currentCoverRelativePath));
-    return undefined;
+    return input.initialPublication
+      ? { coverRelativePath: input.currentCoverRelativePath, coverFilename: input.coverFilename }
+      : undefined;
   }
   const versionRelativeDir = path.join(input.jobRelativeDir, `cover-packaged-${crypto.randomUUID()}`);
   fs.mkdirSync(assertNoStorageSymlink(input.storageRoot, versionRelativeDir), { recursive: true });
@@ -476,6 +480,7 @@ export async function executePackagingJob(input: {
         storageRoot: input.storageRoot, temporaryCoverPath: packagedCoverTmp, jobRelativeDir,
         coverFilename: input.snapshot.exportTarget.coverFilename,
         currentCoverRelativePath: input.snapshot.exportTarget.coverRelativePath,
+        initialPublication: input.snapshot.layoutRuntimeBundleVersion === 2,
       });
       published = { ...published, ...packagedCover };
     }

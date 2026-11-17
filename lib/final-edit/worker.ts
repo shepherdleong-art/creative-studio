@@ -151,8 +151,9 @@ async function drain() {
             layoutRuntimeBundleVersion: snapshot.packaging.layoutRuntimeBundleVersion,
             layoutResolution: snapshot.packaging.layoutResolution,
           }, OUTPUT_PRESETS[snapshot.variant.outputPreset].width, OUTPUT_PRESETS[snapshot.variant.outputPreset].height);
-          // 包装联动：封面先发布，视频留给包装任务以正常成片名发布（目录唯一成片）
-          if (snapshot.packaging.layoutRuntimeBundleVersion !== 2) {
+          // v2 视频和封面都由包装任务首次发布；旧版继续先发布原片封面。
+          const deferCoverPublication = snapshot.packaging.layoutRuntimeBundleVersion === 2;
+          if (!deferCoverPublication) {
             await publishReservedSingleFile({ storageRoot, sourceRelativePath: internal.coverRelativePath, targetRelativePath: exportTarget.coverRelativePath, reservationRelativePath: exportTarget.reservationRelativePath, invalidCode: 'render_artifact_invalid' });
           }
           if (controller.signal.aborted) {
@@ -183,7 +184,7 @@ async function drain() {
           };
           const result = {
             ...internal,
-            ...(snapshot.packaging.layoutRuntimeBundleVersion === 2 ? {} : { publishedCoverRelativePath: exportTarget.coverRelativePath }),
+            ...(!deferCoverPublication ? { publishedCoverRelativePath: exportTarget.coverRelativePath } : {}),
             coverFilename: exportTarget.coverFilename,
             displayDirectory: exportTarget.displayDirectory,
             packagingDeferred: true,
@@ -194,7 +195,9 @@ async function drain() {
             await runWithTaskAccessContext(db, 'final_edit', job.id, () => {
               const access = requireAccessContext();
               const publish = db.transaction(() => {
-                registerSingleArtifact(db, { id: `final-edit:${job.id}:cover`, projectId: job.projectId, kind: 'final_cover', displayName: exportTarget.coverFilename, relativePath: exportTarget.coverRelativePath, mimeType: 'image/jpeg', sourceJobId: job.id, createdAt: finishedAt });
+                if (!deferCoverPublication) {
+                  registerSingleArtifact(db, { id: `final-edit:${job.id}:cover`, projectId: job.projectId, kind: 'final_cover', displayName: exportTarget.coverFilename, relativePath: exportTarget.coverRelativePath, mimeType: 'image/jpeg', sourceJobId: job.id, createdAt: finishedAt });
+                }
                 db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, variantId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, ?, 'packaging', 'queued', 'queued', 0, ?, ?, 0, 'CNY', ?)`).run(packagingJobId, job.projectId, job.groupId, snapshot.variant.id, sha256(JSON.stringify({ packagingJobId, packagingSnapshot })), JSON.stringify(packagingSnapshot), finishedAt);
                 access.registerInheritedScope({
                   resourceType: 'final_job', resourceId: packagingJobId,

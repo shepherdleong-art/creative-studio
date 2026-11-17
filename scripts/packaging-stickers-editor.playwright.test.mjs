@@ -603,34 +603,49 @@ try {
   await editedAutoBlock.click({ position: { x: 20, y: 10 } });
   await eventually(async () => await editedAutoBlock.getAttribute('data-selected') === 'true', '自动贴纸必须选中后才能测试空间编辑');
   const waitForLayout = async (revision) => {
+    let expectedHash;
     await eventually(async () => {
       const view = await page.evaluate(async (id) => (await fetch(`/api/final-edit-groups/${id}`)).json(), fixture.groupId);
-      return view.revision === revision && view.packaging.layoutResolution?.status === 'resolved';
+      if (view.revision !== revision || view.packaging.layoutResolution?.status !== 'resolved') return false;
+      expectedHash = view.packaging.layoutResolution.inputHash;
+      return true;
     }, '几何保存后的 stale 布局必须重新解析', 60_000);
-    await eventually(async () => await overlay.locator('[data-sticker-edit-ui]').count() === 1, '自动贴纸编辑桥必须就绪');
+    await eventually(async () => iframe.evaluate((frame, hash) => frame.contentDocument?.readyState === 'complete'
+      && frame.contentWindow.__packagingAutoLayoutReplay?.getResolution()?.inputHash === hash, expectedHash),
+    '身份检查前须等预览真正应用当前解析结果', 60_000);
   };
   await waitForLayout(redoAutoLayoutResult.view.revision);
+  await eventually(async () => await overlay.locator('[data-sticker-edit-ui]').count() === 1, '自动贴纸编辑桥必须就绪');
   await eventually(async () => Number(await overlay.locator(`[data-sticker-id="${editedAuto.id}"]`).evaluate(element => getComputedStyle(element).opacity)) === 1, '自动贴纸须处于稳定可见段');
   await page.evaluate(() => {
     const frame = document.querySelector('iframe[data-packaging-overlay]');
     window.__layoutV2Identity = { frame, document: frame.contentDocument, videos: [...document.querySelectorAll('#mixcut-preview-panel video')] };
   });
   const assertStableDocument = async () => {
-    assert.equal(await page.evaluate(() => {
+    const identity = await page.evaluate(() => {
       const saved = window.__layoutV2Identity;
       const frame = document.querySelector('iframe[data-packaging-overlay]');
       const videos = [...document.querySelectorAll('#mixcut-preview-panel video')];
-      return saved.frame === frame && saved.document === frame.contentDocument
-        && saved.videos.length > 0 && saved.videos.length === videos.length && saved.videos.every((video, i) => video === videos[i]);
-    }), true, 'v2 几何保存、重算和历史恢复必须复用 PR #14 的 iframe、Document 与视频节点');
+      return { frame: saved.frame === frame, document: saved.document === frame.contentDocument,
+        videoCount: saved.videos.length, sameVideoCount: saved.videos.length === videos.length,
+        videos: saved.videos.every((video, i) => video === videos[i]) };
+    });
+    assert.ok(identity.videoCount > 0 && identity.frame && identity.document && identity.sameVideoCount && identity.videos,
+      `v2 几何保存、重算和历史恢复必须复用 PR #14 的 iframe、Document 与视频节点：${JSON.stringify(identity)}`);
   };
   const autoSticker = overlay.locator(`[data-sticker-id="${editedAuto.id}"]`);
   const dragFrom = async (locator, dx, dy) => {
     const box = await locator.boundingBox();
-    assert.ok(box);
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    const viewport = await iframe.boundingBox();
+    assert.ok(box && viewport);
+    // 自动元素靠近上边缘时，旋转柄中心可能在 iframe 外；使用实际可点击部分，不能点进相邻文档。
+    const left = Math.max(box.x, viewport.x), right = Math.min(box.x + box.width, viewport.x + viewport.width);
+    const top = Math.max(box.y, viewport.y), bottom = Math.min(box.y + box.height, viewport.y + viewport.height);
+    assert.ok(right - left > 2 && bottom - top > 2, '空间编辑控件必须有可见可点击区域');
+    const x = (left + right) / 2, y = (top + bottom) / 2;
+    await page.mouse.move(x, y);
     await page.mouse.down();
-    await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2 + dy, { steps: 8 });
+    await page.mouse.move(x + dx, y + dy, { steps: 8 });
     await page.mouse.up();
   };
   const autoMoved = await readPatch(() => dragFrom(autoSticker.locator('[data-sticker-edit-ui]'), 30, 25));
@@ -656,6 +671,11 @@ try {
   assert.equal(redoAutoGeometry.view.packaging.stickers.find(item => item.id === editedAuto.id).rotationDeg, rotatedAuto.rotationDeg);
   await waitForLayout(redoAutoGeometry.view.revision);
   await assertStableDocument();
+
+  // 历史恢复沿用主线行为，会清空选中；先验证文档身份，再重新选中后测试下一次手势。
+  await editedAutoBlock.click({ position: { x: 20, y: 10 } });
+  await eventually(async () => await editedAutoBlock.getAttribute('data-selected') === 'true'
+    && await autoSticker.locator('[data-sticker-edit-ui]').count() === 1, '历史恢复后重新选中自动贴纸才能继续空间编辑');
 
   // 模拟卖点刷新产生的同修订 stale 响应；失败保存必须回滚，而且不能被旧去重键拦住重算。
   await page.waitForLoadState('networkidle');
