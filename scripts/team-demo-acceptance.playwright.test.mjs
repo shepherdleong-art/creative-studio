@@ -116,6 +116,20 @@ try {
     assert.equal(ownPrompt.status(), 201, '员工保存私有常用词必须成功');
     const sceneList = await (await employeePage.request.get(`${baseUrl}/api/video-prompt-templates?category=scene`)).json();
     assert.ok(sceneList.some((item) => item.name === '员工的场景词'), '员工能读回自己的常用词');
+    // 员工更新自己的条目：全文改掉，读回是新文字
+    const ownId = sceneList.find((item) => item.name === '员工的场景词').id;
+    const updatedPrompt = await employeePage.request.patch(`${baseUrl}/api/video-prompt-templates/${ownId}`, {
+      data: { name: '员工的场景词', prompt: '员工更新后的场景全文。', inRandomPool: false },
+      headers: { 'x-csrf-token': await csrf(employeePage), Origin: baseUrl },
+    });
+    assert.equal(updatedPrompt.status(), 200, '员工更新自己的常用词必须成功');
+    const afterUpdate = await (await employeePage.request.get(`${baseUrl}/api/video-prompt-templates?category=scene`)).json();
+    assert.equal(afterUpdate.find((item) => item.id === ownId)?.prompt, '员工更新后的场景全文。');
+    // 员工删除自己的条目
+    const deletedPrompt = await employeePage.request.delete(`${baseUrl}/api/video-prompt-templates/${ownId}`, {
+      headers: { 'x-csrf-token': await csrf(employeePage), Origin: baseUrl },
+    });
+    assert.equal(deletedPrompt.status(), 200, '员工删除自己的常用词必须成功');
     const employeeCanvas = await employeePage.goto(`${baseUrl}/canvas`);
     const employeeCanvasBody = await employeePage.locator('body').innerText();
     assert.ok(

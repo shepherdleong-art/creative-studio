@@ -99,11 +99,17 @@ export default function PromptLibraryPicker({
     setSaving(true);
     setSaveError('');
     try {
-      const response = await write('/api/video-prompt-templates', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: saveName, prompt: value, category, description: '', inRandomPool: false }),
-      });
+      // 选中自己的条目且名称未改时是「更新全文」；否则新建一条。
+      const current = items.find((entry) => entry.id === selectedId);
+      const updating = Boolean(current && !current.isBuiltin && current.name === saveName.trim());
+      const response = await write(
+        updating ? `/api/video-prompt-templates/${encodeURIComponent(current!.id)}` : '/api/video-prompt-templates',
+        {
+          method: updating ? 'PATCH' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: saveName, prompt: value, category, description: '', inRandomPool: false }),
+        },
+      );
       if (!response.ok) throw new Error(await teamError(response, '保存常用词失败'));
       const body = await response.json() as { template?: LibraryPrompt };
       setSaveOpen(false);
