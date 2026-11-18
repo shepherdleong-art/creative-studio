@@ -11,6 +11,8 @@ try {
   for (const name of ['package.json', 'package-lock.json', 'film-runtime.json', 'package-video.mjs', 'layout-service.mjs', 'auto-layout/runtime.js', 'auto-layout/replay.js', 'win-hide-spawn.cjs', 'templates/overlay-poster/index.html', 'stickers/catalog.json', 'stickers/runtime.js', 'stickers/show/recommend.png', 'fonts/a.ttf', 'fonts/user/private.ttf', 'node_modules/hyperframes/bin/hyperframes.mjs', 'runtime/chrome-headless-shell/chrome-headless-shell.exe', 'renders/work/private.json', '.font-scan-cache.json', '.env.local']) {
     const file = path.join(root, 'packaging', name); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'fixture');
   }
+  const chromeLogs = ['runtime/chrome-headless-shell/debug.log', 'runtime/chrome-headless-shell/chrome_debug.log'];
+  for (const name of chromeLogs) fs.writeFileSync(path.join(root, 'packaging', name), 'Chromium runtime log');
   for (const name of [...CLASSIC_BUILDERS, ...OVERLAY_BUILDERS]) {
     const file = path.resolve(root, 'lib/film-render', name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -25,7 +27,7 @@ try {
   assert.ok(fs.existsSync(path.join(out, 'packaging/stickers/runtime.js')));
   assert.ok(fs.existsSync(path.join(out, 'packaging/stickers/show/recommend.png')));
   assert.ok(fs.existsSync(path.join(out, 'packaging/runtime/chrome-headless-shell/chrome-headless-shell.exe')));
-  for (const forbidden of ['fonts/user', 'renders', '.font-scan-cache.json', '.env.local']) assert.equal(fs.existsSync(path.join(out, 'packaging', forbidden)), false);
+  for (const forbidden of ['fonts/user', 'renders', '.font-scan-cache.json', '.env.local', ...chromeLogs]) assert.equal(fs.existsSync(path.join(out, 'packaging', forbidden)), false);
   const options = { sourceDir: path.join(root, 'absent-source'), packagingDir: path.join(out, 'packaging') };
   assert.deepEqual(builderHashes(CLASSIC_BUILDERS, options), builderHashes(CLASSIC_BUILDERS));
   assert.deepEqual(builderHashes(OVERLAY_BUILDERS, options), builderHashes(OVERLAY_BUILDERS));
