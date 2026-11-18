@@ -86,9 +86,16 @@ export function ensureBuiltinPromptScopes(db: Database.Database): number {
     .get() as { id: string } | undefined;
   if (!admin) return 0;
   let registered = 0;
-  const rows = db.prepare(`SELECT id FROM video_prompt_templates WHERE isBuiltin = 1`).all() as Array<{ id: string }>;
-  for (const row of rows) {
-    if (hasScope(db, 'video_prompt_template', row.id)) continue;
+  // 一条查询取「内置但缺 scope」的行；常见路径下结果为空，不产生逐行往返。
+  const missing = db.prepare(`
+    SELECT template.id FROM video_prompt_templates template
+    WHERE template.isBuiltin = 1
+      AND NOT EXISTS (
+        SELECT 1 FROM team_resource_scopes scope
+        WHERE scope.resourceType = 'video_prompt_template' AND scope.resourceId = template.id
+      )
+  `).all() as Array<{ id: string }>;
+  for (const row of missing) {
     registerRootScope(db, {
       resourceType: 'video_prompt_template', resourceId: row.id,
       ownerUserId: admin.id, visibility: 'public',
