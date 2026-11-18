@@ -64,7 +64,7 @@ export function listPublicResourceCandidates(
   const nonVersioned = db.prepare(`
     SELECT scope.resourceType, scope.resourceId, scope.visibility,
       template.name AS templateName, template.description AS templateDescription,
-      template.prompt AS templatePrompt,
+      template.prompt AS templatePrompt, template.category AS templateCategory,
       preset.name AS presetName, preset.stylesByPresetJson AS presetStyles,
       ${lutJoin ? 'lut.displayName AS lutName, lut.relativePath AS lutPath, lut.status AS lutStatus,' : 'NULL AS lutName, NULL AS lutPath, NULL AS lutStatus,'}
       bgm.relativePath AS bgmPath, bgm.status AS bgmStatus
@@ -93,8 +93,11 @@ export function listPublicResourceCandidates(
     };
     if (resourceType === 'video_prompt_template') {
       if (typeof row.templateName !== 'string') return [];
+      // 06 号票：场景/分镜的公共预设与运镜模板同表，候选里按类别分开标注。
+      const typeLabel = row.templateCategory === 'scene' ? '场景提示词预设'
+        : row.templateCategory === 'shot' ? '分镜提示词预设' : '视频提示词模板';
       return [{
-        ...base, typeLabel: '视频提示词模板', name: row.templateName,
+        ...base, typeLabel, name: row.templateName,
         preview: String(row.templatePrompt || row.templateDescription || ''),
         sourceInfo: '视频提示词模板设置', settingsHref: '/settings?section=motion-template',
       }];
