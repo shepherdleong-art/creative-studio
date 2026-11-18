@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { CLASSIC_BUILDERS, OVERLAY_BUILDERS } from '../lib/film-render/builder-hashes.ts';
+import { isPackagingChromeLog } from '../lib/media-core/packaging-runtime-files.ts';
 
 export function syncFilmBuilderSources(root, packagingTarget) {
   const archive = path.join(packagingTarget, 'film-builders');
@@ -30,7 +31,9 @@ export function syncPackagingAssets(root, standaloneDir) {
     if (!fs.existsSync(from)) throw new Error(`包装运行资源缺失：${entry}，请先运行 npm run setup:packaging`);
     fs.cpSync(from, path.join(target, entry), { recursive: true, filter: file => {
       const rel = path.relative(source, file).replaceAll('\\', '/');
-      return rel !== 'fonts/user' && !rel.split('/').some(part => part === '.cache' || part.startsWith('.env') || part.startsWith('config.yaml'));
+      return rel !== 'fonts/user'
+        && !(rel.startsWith('runtime/') && isPackagingChromeLog(rel.slice('runtime/'.length)))
+        && !rel.split('/').some(part => part === '.cache' || part.startsWith('.env') || part.startsWith('config.yaml'));
     } });
   }
   syncFilmBuilderSources(root, target);

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { dataRoot } from '../data-root.ts';
 import { PackagingError, resolvePackagingDir, resolvePackagingTemplateDir } from './packaging-runtime.ts';
+import { isPackagingChromeLog } from './packaging-runtime-files.ts';
 import { resolvePackagingStickerAssets } from './packaging-sticker-assets.ts';
 import { safeFontFilename, userFontDir } from './packaging-font.ts';
 import { assertSupportedPackagingConfigLayoutVersions, type FinalEditPackagingConfig } from './packaging-vars.ts';
@@ -42,14 +43,14 @@ function addFile(files: FileMap, relative: string, absolute: string): void {
   files.set(relative.replaceAll(path.sep, '/'), absolute);
 }
 
-async function addDirectory(files: FileMap, relativeRoot: string, absoluteRoot: string): Promise<void> {
+async function addDirectory(files: FileMap, relativeRoot: string, absoluteRoot: string, skipFile?: (relative: string) => boolean): Promise<void> {
   if (!fs.existsSync(absoluteRoot)) return;
   const visit = async (dir: string): Promise<void> => {
     for (const entry of (await fs.promises.readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
       const absolute = path.join(dir, entry.name);
-      const relative = `${relativeRoot}/${path.relative(absoluteRoot, absolute)}`;
+      const relative = `${relativeRoot}/${path.relative(absoluteRoot, absolute).replaceAll(path.sep, '/')}`;
       if (entry.isDirectory()) await visit(absolute);
-      else if (entry.isFile()) addFile(files, relative, absolute);
+      else if (entry.isFile() && !skipFile?.(relative)) addFile(files, relative, absolute);
     }
   };
   await visit(absoluteRoot);
@@ -107,7 +108,7 @@ function engineIdentity(files: Record<string, string>, platform: string, arch: s
 }
 async function currentEngine(packagingDir: string): Promise<EngineSnapshot> {
   const files: FileMap = new Map();
-  await addDirectory(files, 'chrome-headless-shell', chromeDir(packagingDir));
+  await addDirectory(files, 'chrome-headless-shell', chromeDir(packagingDir), isPackagingChromeLog);
   await addDirectory(files, 'node_modules', path.join(packagingDir, 'node_modules'));
   const identities = [];
   for (const [relative, file] of files) {
@@ -266,7 +267,9 @@ export async function resolveVerifiedPackagingLayoutBundle(resolution: Packaging
     || engine.hyperframesVersion !== manifest.hyperframesVersion) {
     throw new PackagingError('layout_engine_mismatch', '自动布局引擎与当前任务不匹配', 409);
   }
-  await assertHashes(engineDir, engine.files, '自动布局引擎');
+  // 旧清单的身份仍用完整清单计算，保留已经保存的布局引用。日志可以在 Chromium 运行后变化或被清理。
+  const engineFiles = Object.fromEntries(Object.entries(engine.files).filter(([relative]) => !isPackagingChromeLog(relative)));
+  await assertHashes(engineDir, engineFiles, '自动布局引擎');
   return { bundleDir, manifest };
 }
 

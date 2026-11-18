@@ -60,6 +60,45 @@ try {
   const hash = saved.layoutResolution.geometryManifestHash;
   const frozenChrome = packagingLayoutEngineExecutable(first.manifest);
   const chromeBytes = fs.readFileSync(frozenChrome);
+  const browserLogs = ['debug.log', 'chrome_debug.log'];
+  // 模拟旧版已保存的布局：日志参与原清单身份，随后被 Chromium 改写或由维护操作清理。
+  const enginesDir = path.join(root, 'storage/packaging/layout-engines');
+  const engineDir = path.join(enginesDir, first.manifest.engineHash);
+  const engine = JSON.parse(fs.readFileSync(path.join(engineDir, 'manifest.json'), 'utf8'));
+  for (const name of browserLogs) {
+    engine.files[`chrome-headless-shell/${name}`] = createHash('sha256').update('original log').digest('hex');
+  }
+  engine.files = Object.fromEntries(Object.entries(engine.files).sort(([left], [right]) => left.localeCompare(right)));
+  engine.engineHash = createHash('sha256').update(JSON.stringify({
+    files: engine.files,
+    hyperframesPackage: engine.files['node_modules/hyperframes/package.json'],
+    platform: engine.platform,
+    arch: engine.arch,
+  })).digest('hex');
+  const legacyEngineDir = path.join(enginesDir, engine.engineHash);
+  fs.cpSync(engineDir, legacyEngineDir, { recursive: true });
+  write(path.join(legacyEngineDir, 'manifest.json'), JSON.stringify(engine));
+  for (const name of browserLogs) write(path.join(legacyEngineDir, 'chrome-headless-shell', name), 'original log');
+  const legacyDebugLog = path.join(legacyEngineDir, 'chrome-headless-shell/debug.log');
+  const { geometryManifestHash: originalHash, ...legacyIdentity } = first.manifest;
+  legacyIdentity.engineHash = engine.engineHash;
+  const legacyHash = createHash('sha256').update(JSON.stringify(legacyIdentity)).digest('hex');
+  const legacyBundleDir = path.join(path.dirname(first.bundleDir), legacyHash);
+  fs.cpSync(path.join(path.dirname(first.bundleDir), originalHash), legacyBundleDir, { recursive: true });
+  write(path.join(legacyBundleDir, 'manifest.json'), JSON.stringify({ ...legacyIdentity, geometryManifestHash: legacyHash }));
+  const legacy = { ...saved, layoutResolution: { ...saved.layoutResolution, geometryManifestHash: legacyHash } };
+  fs.appendFileSync(legacyDebugLog, '\nChromium wrote a new line');
+  assert.equal((await assertPackagingLayoutExportReady(legacy, 1080, 1440))?.manifest.engineHash, engine.engineHash);
+  fs.unlinkSync(legacyDebugLog);
+  fs.unlinkSync(path.join(legacyEngineDir, 'chrome-headless-shell/chrome_debug.log'));
+  assert.ok(await assertPackagingLayoutExportReady(legacy, 1080, 1440));
+  write(path.join(legacyEngineDir, 'chrome-headless-shell/resources.pak'), 'changed legacy browser resource');
+  await assert.rejects(() => assertPackagingLayoutExportReady(legacy, 1080, 1440), /chrome-headless-shell\/resources\.pak/);
+
+  for (const name of browserLogs) write(path.join(packaging, 'runtime/chrome-headless-shell', name), 'live log');
+  const withLogs = await materializePackagingLayoutBundle({ config, outputWidth: 1080, outputHeight: 1440 });
+  assert.equal(withLogs.manifest.geometryManifestHash, hash, '运行日志不能使同一资源产生新布局身份');
+
   // 原地写，而非 rename，能抓到硬链接伪冻结。
   write(path.join(packaging, chrome), 'changed chrome');
   write(path.join(packaging, 'runtime/chrome-headless-shell/resources.pak'), 'changed resource');
