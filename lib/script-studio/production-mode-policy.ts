@@ -14,7 +14,9 @@ import type { ScriptProductionMode } from './generation-contract.ts';
 
 const LEGACY_OPT_OUT = ['1', 'true', 'on', 'yes'];
 
-export function legacyScriptModesAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+export type ScriptModeEnvironment = Record<string, string | undefined>;
+
+export function legacyScriptModesAllowed(env: ScriptModeEnvironment = process.env): boolean {
   return LEGACY_OPT_OUT.includes(env.CREATIVE_STUDIO_SCRIPT_ALLOW_LEGACY_MODES?.trim().toLowerCase() ?? '');
 }
 
@@ -23,7 +25,7 @@ export const DEMO_SCRIPT_PRODUCTION_MODES: ReadonlyArray<ScriptProductionMode> =
 
 export function assertScriptProductionModeAllowed(
   mode: ScriptProductionMode,
-  env: NodeJS.ProcessEnv = process.env,
+  env: ScriptModeEnvironment = process.env,
 ): void {
   if (legacyScriptModesAllowed(env)) return;
   if (mode === 'template_rewrite') return;
