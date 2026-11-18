@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { requireAccessContext } from '@/lib/media-core/access-context';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { parsePromptCategory } from '@/lib/prompt-library';
+import { ensureBuiltinPromptScopes } from '@/lib/team-service/public-resources';
 
 
 // 内置模板排在前面（seed 维护、界面只读），自建的按创建时间跟在后面。
@@ -21,6 +22,9 @@ async function __teamRouteGET(request: Request) {
     const access = requireAccessContext();
     // 05/06 号票：同一张表按 category 区分运镜 / 场景 / 分镜三类「我的常用」。
     const category = parsePromptCategory(new URL(request.url).searchParams.get('category'));
+    // 旧库升级后新增的内置预设可能晚于首管理员初始化：读取前补登记公共 scope。
+    // 只补内置行、只在缺 scope 时写，员工读取不会因此获得写权限。
+    if (access.kind === 'team') ensureBuiltinPromptScopes(db);
     if (access.kind === 'local') return NextResponse.json(db.prepare(LIST_SQL).all(category));
     const visible = db.prepare(`
       SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, lower(openingCode) AS openingCode, createdAt

@@ -72,3 +72,28 @@ export async function publishBuiltinResources(db: Database.Database, principal: 
     }
   }
 }
+
+/**
+ * 内置公共预设的 scope 自愈（05/06 号票）。
+ *
+ * 种子模板可能晚于首管理员初始化写入（例如旧库升级后新增的场景/分镜预设），
+ * 那时 `publishBuiltinResources` 已经跑过。列表读取前补登记：只登记内置行、
+ * 且只在没有 scope 时写入，员工私有条目不受影响。
+ */
+export function ensureBuiltinPromptScopes(db: Database.Database): number {
+  if (!tableExists(db, 'video_prompt_templates')) return 0;
+  const admin = db.prepare(`SELECT id FROM team_users WHERE role = 'admin' AND status = 'active' ORDER BY createdAt LIMIT 1`)
+    .get() as { id: string } | undefined;
+  if (!admin) return 0;
+  let registered = 0;
+  const rows = db.prepare(`SELECT id FROM video_prompt_templates WHERE isBuiltin = 1`).all() as Array<{ id: string }>;
+  for (const row of rows) {
+    if (hasScope(db, 'video_prompt_template', row.id)) continue;
+    registerRootScope(db, {
+      resourceType: 'video_prompt_template', resourceId: row.id,
+      ownerUserId: admin.id, visibility: 'public',
+    });
+    registered += 1;
+  }
+  return registered;
+}

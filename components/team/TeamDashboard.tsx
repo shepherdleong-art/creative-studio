@@ -9,6 +9,7 @@ import { teamError } from './client';
 import PageToolbar from './PageToolbar';
 import TeamConsoleOverview from './TeamConsoleOverview';
 import ResolveErrorButton from './ResolveErrorButton';
+import ViewAsUserButton from './ViewAsUserButton';
 import type { EmployeeDashboard } from '@/lib/team-service/dashboard';
 import { WORKSPACE_CREATE_ENTRIES, type WorkspaceRole } from '@/lib/workspace-navigation';
 
@@ -135,7 +136,8 @@ function EmployeeWorkbench({
       title={greeting}
       subtitle={<span data-testid="workbench-production-line">{productionLine}</span>}
       actions={<>
-        {viewingAsUser && <Link className="cap" href="/team/admin/resources" data-testid="view-as-back"><Icon name="settings" size={15} />返回管理界面</Link>}
+        {/* 返回管理界面必须真的清掉视角 Cookie，不能只做页面跳转。 */}
+        {viewingAsUser && <span data-testid="view-as-back"><ViewAsUserButton active /></span>}
         <Link className="cap" href="/projects"><Icon name="search" size={15} />找项目</Link>
         <Link className="cap cap-primary" href="/projects/new"><Icon name="plus" size={15} />新建项目</Link>
       </>}
