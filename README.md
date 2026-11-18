@@ -1,322 +1,81 @@
-# Creative Studio
+# Creative Studio · 团队工作台四步制作演示版
 
-Creative Studio 是一个本地优先的 AI 素材生产工作台，把产品素材图推进到「场景图 → 分镜图 → 口播脚本 → 视频任务 → 智能混剪成片 → ZIP 导出包」的完整流水线；在“智能混剪”入口下，既可单条精调并导出，也可按批次批量产出多条成片。
+这个分支供 IT 在 Windows 本机运行团队工作台，对照源码和实际导出的 MP4 了解制作流程。PM 可以用同一件商品走完**生图 → 生视频 → 写脚本 → 混剪出片**，也可以带自己的视频和文案，直接从混剪开始。管理员登录后进入「林视控制台」，员工进入「林视创作台」。两者共用一个登录地址，任务由本机团队服务执行。
 
-它基于 Next.js 构建，适合在 Windows 和 macOS 本地运行。API Key、项目数据、生成结果默认保存在本机；需要公网交付给上游模型的参考图走腾讯云 COS 中转（可配置）。
+## 首次启动与登录
 
-## 主要能力
-
-- **复杂产品素材流**：创建产品项目，维护产品名、编号、品类、供应商、模型、画面比例、清晰度和图片预处理参数。
-- **场景图生成**：上传原始素材，按项目提示词生成候选场景图。
-- **场景参考图**：将满意的场景图设为参考图（支持命名），后续生成可引用参考图保持风格一致。缩略图显示参考图名称标记。
-- **分镜管理**：把场景图整理成分镜组，为后续视频任务和脚本生成提供稳定素材结构。
-- **分镜重做增强**：重做分镜时支持切换底图（原图/当前结果）、选择参考图组合、更换生成供应商，灵活调整再生成策略。
-- **分镜结果候选切换**：保留分镜每次生成的历史结果，支持在预览界面左右切换、缩略图选取，选中结果同步到分镜当前图并影响 redo 参数。
-- **脚本生成**：围绕卖点、人群、平台、语气和分镜组生成口播脚本，并支持图文审阅和复制。
-- **视频任务准备**：基于分镜创建视频任务，支持视频供应商配置、任务轮询、重试和结果预览。
-- **智能混剪成片**：分析视频素材（本地抽帧 + 视觉模型）、TTS 生成配音与字幕对齐、组时间线、ffmpeg 渲染最终成片。
-- **批量生产**：与单条智能混剪共用同一个“智能混剪”入口，提供“单条精调”和“批量成片”两种模式；单条模式用于逐条调整并导出，批量模式用于按批次组织素材和脚本、一次产出多条成片。
-- **公司网关接入**：可选联动本地 LiteLLM 代理（127.0.0.1:4000）接入公司模型网关，可灵、Seedance、image2、nano-banana 等模型走统一任务协议。
-- **腾讯云 COS 参考图中转**：参考图按内容哈希上传 COS 并生成 24h 预签名 URL 传给网关上游。
-- **供应商切换与故障转移**：重新生成时可选择不同供应商，支持进度中的故障切换控制。供应商预设有 GPT.ge 等内置选项。
-- **图片输出尺寸规整**：生成结果自动检测与目标尺寸是否一致，不一致时通过 sharp 居中裁切至目标尺寸并记录日志。
-- **本地导出**：支持下载项目产物、创意包、脚本和生成素材，便于交付或二次编辑。下载 zip 包含分镜的全部历史候选结果。
-
-## 技术栈
-
-- Next.js 16 App Router
-- React 19
-- TypeScript
-- Tailwind CSS 4
-- SQLite via `better-sqlite3`
-- `sharp` 图片预处理
-- `archiver` ZIP 导出
-- `ffmpeg-static` / `ffprobe-static` 成片渲染与媒体探测
-
-## 全新机器安装（AI 代理可按序执行）
-
-前提：Node.js 20 或更高版本（打包安装形态不需要，见下文安装包小节）。
-
-```bash
-git clone <repo-url>     # 或下载源码解压
-cd creative-studio
-npm ci                   # 安装依赖（含 better-sqlite3 / sharp 原生模块）
-npm run dev              # 开发模式启动
-```
-
-启动后访问：
-
-```text
-http://localhost:3000
-```
-
-安装自检（都不需要真实密钥）：
-
-```bash
-node scripts/db-migrations.test.ts   # 数据库迁移
-node scripts/cos-media.test.ts       # COS 模块单元测试（mock）
-node scripts/local-image-url.test.ts # 本地图片 URL 解析
-npm run lint
-```
-
-Windows 如需固定本机地址或换端口：
+准备一台装有 Git、Node.js 22.x 和 npm 的 Windows 电脑。本分支的自动检查使用 Node.js 22.22.3。打开 PowerShell，在准备存放演示项目的目录运行以下命令。首次安装需要联网下载依赖。
 
 ```powershell
-npm run dev -- --hostname 127.0.0.1 --port 3000
-$env:BATCH_WORKBENCH_PORT=3001; .\start-windows.cmd
+git clone --branch codex/team-demo-four-step-20261118 --single-branch https://github.com/shepherdleong-art/creative-studio.git creative-studio-demo
+cd creative-studio-demo
+npm ci --include=dev
+.\启动本地预览.cmd
 ```
 
-## 参考图公网交付：腾讯云 COS（公司网关场景必填）
+1. 保持启动窗口开启。首次启动会创建管理员，工号是 **`0001`**，一次性凭据只在该窗口显示一次。
+2. 等窗口出现「预览已就绪」，浏览器会自动打开。手动访问同一台电脑上的 [团队登录页](http://127.0.0.1:3410/team/login) 也可以。
+3. 用工号和一次性凭据登录，按提示改密。进入「运行总览」后，就可以建员工账号和查看界面。这一步无需模型密钥。
+4. 下次使用时直接双击 `启动本地预览.cmd`。结束时双击 `停止本地预览.cmd`。忘记管理员密码时，先停止预览，再在项目目录运行 `.\启动本地预览.cmd --recover-admin`，从启动窗口领取新凭据。
 
-上游模型（腾讯等）只接受可公网访问的图片 URL。配置 COS 后，任务提交时参考图会按内容 SHA-256 命名上传（重复图自动跳过），并生成 24h 预签名 URL 传给网关。
+命令行也可以用 `node scripts/local-preview.mjs --no-open` 启动，再手动打开登录页，用 `node scripts/local-preview.mjs stop` 停止。
 
-在仓库根目录新建 `.env.local`（已被 `.gitignore` 排除，绝不提交）：
+预览服务只监听本机 `127.0.0.1:3410`。账号和项目数据库位于 `outputs/local-preview/data/workbench.db`，上传素材、成片和日志位于 `outputs/local-preview/storage/`。重复启动会读取同一份演示数据。需要记录本次验收版本时，在项目目录运行 `git rev-parse HEAD`。
 
-以下为配置模板；域名、存储桶名、APPID 和地域请使用你自己的值，勿将实际部署信息或密钥写入公开文档。
+## IT 在试做前准备什么
+
+| 用途 | 准备与操作 | 就绪标志 |
+| --- | --- | --- |
+| 让 PM 以员工身份试做 | 管理员在「成员与账号」创建员工账号。想先看看制作界面，可在自己的账号菜单选「查看用户视角」，用完点「返回管理界面」。 | 员工用自己的工号登录后看到「我的项目」。管理员切换视角时仍使用自己的账号。 |
+| 让员工选用业务模板 | 向业务领取现用爆文 Excel（`.xlsx`）。在「供应商配置」的「脚本知识与模板」中找到「爆文模板库」，上传文件，核对预览里的可用条数，点「确认保存为模板库版本」。再到「公共资源 → 爆文模板」核对版本和源文件，点「发布给团队」。 | 员工能在项目的「爆文模板改写」中选到这个版本的模板。 |
+| 实际生成图片、视频和脚本 | 在「供应商配置」填写演示环境的凭据并启用所需模型，在「模型与名额」为对应上游账号设置名额。实际运行卖点提取和爆文改写时，还需按下文打开脚本调度。 | 对应账号显示「可以用」，员工能选到开放的模型。 |
+| 导出带配音、包装和贴纸的成片 | 配好素材分析与所用的配音、对齐服务。使用内置豆包配音时，在根目录 `.env.local` 填写 `DOUBAO_TTS_API_KEY`。首次使用视频包装前，在项目目录运行 `npm run setup:packaging`，联网安装锁定的 HyperFrames 和 Chrome 渲染组件。 | 安装命令提示「包装运行时已安装」。最终效果以下载的 MP4 为准。 |
+
+**运行真实脚本任务。** 在仓库根目录的 `.env.local` 加入下面一行，停止并重新启动本地预览。默认的「脚本调度 关」会让任务留在队列里。启动窗口显示「脚本调度 开（真实模型）」后，再提交需要调用模型的任务。
 
 ```dotenv
-CREATIVE_STUDIO_COS_SECRET_ID=<腾讯云 COS 子账号 SecretId>
-CREATIVE_STUDIO_COS_SECRET_KEY=<腾讯云 COS 子账号 SecretKey>
-CREATIVE_STUDIO_COS_DOMAIN=<你的 COS 域名，不带协议；自定义域名示例：assets.example.com>
-CREATIVE_STUDIO_COS_SIGN_HOST=<CDN 回源改写 Host 时填你的 COS 源站端点；格式：存储桶名-APPID.cos.REGION.myqcloud.com；否则与 DOMAIN 相同即可>
-CREATIVE_STUDIO_COS_PREFIX=ref-images/
-CREATIVE_STUDIO_COS_URL_TTL_SEC=86400
+CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER=1
 ```
 
-说明：
-
-- `SIGN_HOST` 的判据：用 CDN 自定义域名且回源 Host 被改写为源站端点时必填；直连 `*.myqcloud.com` 默认端点时不需要。
-- 不配 COS 时的回退行为：图片任务回退本机 HTTP URL 或 data URL；视频任务找不到可公网访问的首帧地址会报错并提示配置。
-- 真机验证（配好密钥后）：`COS_LIVE_TEST=1 node scripts/cos-media.test.ts`，做一次真实上传 + 下载比对。
-- 建议给 bucket 配生命周期规则（如 7 天自动删除），存储量不随时间累积。
-
-## 公司网关联动（可选，macOS / Windows 源码运行）
-
-适用：模型走你所在组织的统一网关（地址由管理员提供），经本地 LiteLLM 代理转发。
-
-LiteLLM 运行时有两种形态，不要混淆：
-
-- **Windows 免安装包（终端用户）**：包内自带 `python-runtime/`（便携 Python 3.12.10 + LiteLLM 1.89.2 及全部依赖，由 `scripts/build-python-runtime-windows.ps1` 构建）。终端用户不安装 Python、不创建 venv、不执行 pip；`start-windows.cmd` 经 `-Portable` 模式只使用包内 runtime，损坏时提示重新复制，绝不联网修复。
-- **源码开发（macOS / Windows 开发者）**：继续使用 `.venv-litellm`，按下文步骤准备。
-
-1. 安装 Python 3.10–3.13（推荐 3.12），在仓库根目录准备 `.venv-litellm`：
-
-   macOS：
-
-   ```bash
-   python3.12 -m venv .venv-litellm
-   .venv-litellm/bin/python -m pip install -r requirements-litellm.txt
-   ```
-
-   Windows PowerShell：
-
-   ```powershell
-   py -3.12 -m venv .venv-litellm
-   .\.venv-litellm\Scripts\python.exe -m pip install -r requirements-litellm.txt
-   ```
-
-2. 仓库根目录放置 `config.yaml`（LiteLLM 配置，含网关 Key——**绝不提交**，`.gitignore` 已排除）。
-3. macOS 双击 `start.command`（网页版）或 `start-desktop.command`（桌面版），Windows 双击 `start-windows.cmd`：检测到虚拟环境与配置后，会先把 LiteLLM 强制绑定到 `http://127.0.0.1:4000`，再启动工作台；对应停止脚本、启动窗口 Ctrl+C、桌面版退出、UI 关闭按钮都会把代理一并关闭。注意 macOS 安装版（DMG）的载荷不含 `config.yaml` 与 `.venv-litellm`，因此**安装版不支持公司供应商**。
-4. 在 `/settings` 添加供应商：Base URL 填 `http://127.0.0.1:4000`，执行范围选“公司”；图片选 `gateway-task-image` 类型，视频选 `openai-video` 类型。
-
-注意：两个平台的启动命令都显式传入 `--host 127.0.0.1`；请勿改成 `0.0.0.0` 或将本服务暴露到公网。`scripts/*.ps1` 必须保持 UTF-8 带 BOM，否则 PS 5.1 解析中文会失败。
-
-## Windows 快速启动
-
-推荐直接双击（桌面版，Electron 壳）：
-
-```text
-start-windows.cmd
-```
-
-启动脚本（`scripts/start-desktop-windows.ps1`）会检查 Node.js、安装依赖、（组件齐备时拉起公司网关代理）、缺少 standalone 产物时先执行生产构建，然后启动 Electron 桌面壳；壳内私有服务监听 `127.0.0.1` 随机端口，不占用 3000。启动时会自动比对构建戳（`.next/standalone/.build-stamp`）与源码改动，发现更新即自动重建（依赖清单变化会先 `npm ci`），`start-windows.cmd -Rebuild` 仍可强制重建。桌面版从应用菜单「退出」即可结束后台任务。
-
-如需网页版（dev server + 浏览器，默认 http://127.0.0.1:3000），运行：
+**接公司模型网关时**，在项目根目录运行以下命令准备代理。将 `litellm-config.example.yaml` 另存为同目录的 `config.yaml`，填写 IT 提供的网关地址和凭据，然后重启预览。演示专用代理地址为 `http://127.0.0.1:4410`。缺少代理组件时，仍可登录并查看界面。[网关配置示例](./litellm-config.example.yaml)
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-windows.ps1
+py -3.12 -m venv .venv-litellm
+.\.venv-litellm\Scripts\python.exe -m pip install -r requirements-litellm.txt
 ```
 
-网页版停止服务：
+公司模型需要通过 URL 读取参考图时，在根目录 `.env.local` 填写 `CREATIVE_STUDIO_COS_SECRET_ID`、`CREATIVE_STUDIO_COS_SECRET_KEY` 和 `CREATIVE_STUDIO_COS_DOMAIN`，由腾讯云 COS 提供签名 URL。凭据、网关配置和 `outputs/local-preview/` 均只在演示机保存。[公司网关与 COS 配置](./docs/reference/公司网关与COS中转.md)
 
-```text
-stop-windows.cmd
-```
+## PM 怎样验收这四步
 
-详细说明见 [docs/2026-08-13-新电脑部署指南.md](./docs/2026-08-13-新电脑部署指南.md)。
+准备一件商品的素材图和详情页，再准备一段自己的视频和一段易辨认的口播文字。用员工账号新建项目。
 
-## macOS 快速启动
+| 制作环节 | 在界面里操作 | 核对结果 |
+| --- | --- | --- |
+| 1. 生图 | 在「场景图」上传商品图，生成场景图，把满意的一张设为参考图。到「分镜」上传原始分镜图，建组后用参考图生成分镜，再选定候选图。 | 分镜组里保留了选定的画面，下一步可以用它生成视频。 |
+| 2. 生视频 | 用所选分镜创建视频任务，选择已开放的模型、支持的时长并填写运镜提示词。提交后就可以去写脚本。 | 完成的视频能在当前分镜组的混剪素材中选到。 |
+| 3. 写脚本 | 从详情页提取或复用项目卖点，选已发布的爆文模板改写。编辑一句容易听辨的话，保存为项目脚本。 | 混剪里能选到已保存的版本。换模板再生成也走「爆文模板改写」。 |
+| 4. 混剪出片 | 在「智能混剪」分别试「单条精准混剪」和「批量生产」。选择视频和脚本，调整包装文字、贴纸位置和出现时段，保存并导出。 | 播放下载的 MP4，核对所选镜头、改过的口播或字幕，以及贴纸出现和消失的时刻。 |
 
-推荐直接双击：
+**直接用自带视频和文案试剪。** 在没有生成记录的项目中，单条模式可先建空分镜组，再导入视频、输入或粘贴文案。批量模式可导入自定义素材和脚本，指定批次素材池和每份脚本的生成份数。两种模式都允许交叉搭配，例如给自带视频配项目脚本。做批量验收时，把同一脚本设为两份，只给第二条换一个镜头或加一张贴纸，分别播放两个导出文件，核对修改只出现在第二条。
 
-```text
-start.command
-```
+**核对演示范围和权限。** 默认关闭独立创作画布，首页收起「实拍混剪」入口。场景、分镜和运镜提示词都可手写或从公共预设改写。用员工账号把一条改写存入「我的常用」，换到该账号的另一个项目应能继续使用。换一个员工账号，公共预设可见，前一位员工的私有常用词只归本人。
 
-如果 macOS 提示没有执行权限，可以在终端运行一次：
+## 自动检查与源码入口
 
-```bash
-chmod +x start.command start-desktop.command stop.command stop-desktop.command start.sh stop.sh
-```
-
-然后再次双击 `start.command`，或在终端运行：
-
-```bash
-./start.command
-```
-
-默认访问地址：
-
-```text
-http://localhost:3000
-```
-
-停止服务：
-
-```text
-stop.command
-```
-
-也可以在启动窗口按 `Ctrl+C` 停止。
-
-### 桌面版（Electron，源码运行）
-
-要用桌面壳的原生能力（本机原片登记、原生文件选择）时，双击：
-
-```text
-start-desktop.command
-```
-
-与 `start.command` 的区别：
-
-- 启动的是 Electron 桌面壳 + 私有 Node 服务跑 **production standalone 构建**，不是 dev server；服务监听 `127.0.0.1` 的随机端口，不占用 3000。
-- 首次运行会自动执行一次 `npm run build`（需要几分钟）。之后复用已有产物，**代码更新后要显式重建**：
-
-  ```bash
-  ./start-desktop.command --rebuild
-  ```
-
-- 组件齐备时同样会先拉起 LiteLLM 代理，因此公司供应商可用。
-- 数据根仍是本项目目录，与网页版共用同一个 `data/workbench.db`；脚本检测到 3000 端口被占用时会提示先停掉网页版，请不要同时运行两者。
-
-退出方式（任选其一）：
-
-- 点击桌面窗口的关闭按钮（X），或应用菜单选择「退出」——显示与电源按钮相同的「停止服务并退出」弹窗，确认后停止工作台和受控的 LiteLLM 代理。需要继续后台任务时请最小化窗口。
-- 界面右上角的电源按钮「停止服务并退出」——服务停止后应用会自动退出。
-- 直接关闭启动它的终端窗口，或按 `Ctrl+C`。
-- 双击 `stop-desktop.command`——用于应用失去响应，或从 Finder 启动后没有终端窗口可用的情况。它同时覆盖源码态和以前装过的 DMG 版，会先校验实例身份再请求优雅关闭，之后才做有界的兜底回收。
-
-注意 `stop.command` 只负责网页版（3000 端口），停不了桌面版监听随机端口的私有服务。
-
-## 服务器账号初始化与恢复
-
-服务器模式不提供公共自助认领。部署配置就绪后，在服务器本机用 Node.js 22+ 初始化首位管理员（工号按文本保存，`00001` 等前导零不会丢失）：
+在项目根目录运行下面的检查。前三项覆盖演示开关、管理员视角和个人提示词归属。最后一项使用临时数据目录和模拟供应商，实际调用 FFmpeg，检查素材能否经过基础渲染、发布并进入 ZIP。真实模型质量和带包装的成片按上面的步骤人工播放核对。
 
 ```powershell
-node scripts/team-server/init-admin.mjs --employee-id 00001 --name 系统管理员
+node scripts/team-demo-runtime.test.ts
+node scripts/team-view-as-user.test.ts
+node scripts/prompt-library.test.ts
+npm run check:main-path
 ```
 
-命令只显示一次 24 小时有效的一次性凭据；员工在 `/team/login` 登录后必须立即改密。管理员可在 `/team/admin/users` 建号、调整角色、启停账号或重置凭据，最后一名可用管理员不能被降级或停用。
+如果 FFmpeg 报 `Permission denied`，先检查错误中的输出路径。若指向 Windows 临时目录，在当前 PowerShell 窗口把 `TEMP` 和 `TMP` 指向一个 FFmpeg 可写的现有目录，再运行 `npm run check:main-path`。
 
-需要恢复既有管理员时，先停止团队服务，再在本机执行（不会创建陌生账号，也不经过公共 API）：
+- 四步界面、对应组件与 API 的映射见[源码入口](./docs/superpowers/plans/2026-11-18-团队工作台四步制作演示版/01-规格与实施入口.md)。
+- 排查启动、登录和演示开关，见[本地预览脚本](./scripts/local-preview.mjs)和 [IT 交接说明](./docs/superpowers/plans/2026-11-18-团队工作台四步制作演示版/IT-交接说明.md)。
+- 核对交付范围、测试素材和逐项通过条件，见[功能方案与验收表](./docs/superpowers/specs/2026-11-18-团队工作台四步制作演示版-功能方案.md)、[主流程检查](./docs/reference/主流程检查.md)和[视频包装](./docs/reference/视频包装.md)。
 
-```powershell
-node scripts/team-server/recover-admin.mjs --employee-id 00001
-```
-
-恢复会重发一次性凭据并撤销该账号既有会话。服务器界面的“退出登录”和窗口关闭只退出账号，不调用本地工作台的公共 shutdown；本地模式仍保留原“停止服务”行为。
-
-## 首次使用
-
-1. 打开 `/settings`。
-2. 添加图片供应商：公司网关场景填 `http://127.0.0.1:4000` + `gateway-task-image` 类型；其他场景可用 Packy、GeekAI 或 OpenAI-compatible 图片接口。
-3. 填写 Base URL、API Key、模型名和默认单图成本。
-4. 只启用当前要测试的供应商，避免误用其他余额。
-5. 返回首页，新建复杂结构产品项目。
-
-API Key 会存储在本地 SQLite 数据库中，前端列表只显示是否已配置，不显示明文 Key。
-
-## 测试
-
-没有 `npm test` 脚本。测试是 `scripts/` 下的独立文件，用 Node 22+ 直接运行：
-
-```bash
-node scripts/db-migrations.test.ts    # 运行单个测试文件
-node scripts/<name>.test.ts           # 其余同理
-```
-
-约定：`node:assert/strict` 断言、无测试框架；数据库测试用 `:memory:` 实例；文件类测试用临时目录；改动某个模块时优先跑同名测试文件。
-
-## 常用命令
-
-```powershell
-npm run dev        # 开发服务器
-npm run lint       # ESLint
-npm run build      # 生产构建（含 standalone 资源同步）
-npm run start      # 生产服务器
-```
-
-## 目录结构
-
-```text
-app/                    Next.js 页面和 API 路由
-components/             工作台 UI 组件（components/mixcut/ 为第五步智能混剪）
-components/ui/          通用 UI 原语和图标
-installer/windows/      Windows 免安装包的启动、说明与迁移脚本
-lib/                    数据库、队列、供应商适配器、文件导出等核心逻辑
-lib/final-edit/         智能混剪后端（时间线、TTS、字幕对齐、ffmpeg 渲染）
-lib/providers/          图片生成供应商适配器
-lib/script-providers/   脚本生成供应商适配器
-lib/video-providers/    视频生成供应商适配器
-docs/                   设计、评审和实现记录
-outputs/                阶段性规格、测试清单和交付记录
-scripts/                启停辅助脚本、测试文件、安装包构建脚本
-types/                  第三方包类型补丁
-```
-
-## 本地数据和安全
-
-这些目录或文件属于本机运行数据或密钥，不应提交或打包给别人（均已被 `.gitignore` 排除）：
-
-```text
-node_modules/
-.next/
-data/
-storage/
-.env.local
-config.yaml
-.venv-litellm/
-python-runtime/
-```
-
-原因：
-
-- `node_modules` 包含 Windows/Mac/Linux 不同的原生二进制依赖。
-- `.next` 是 Next.js 构建缓存。
-- `data/` 包含本地 SQLite 数据库，保存供应商配置与 API Key。
-- `storage/` 包含上传素材、生成图片、视频和日志。
-- `.env.local` 包含 LLM API Key 与腾讯云 COS 密钥。
-- `config.yaml` 包含公司网关 API Key；`.venv-litellm/` 是源码开发用的本地 Python 环境；`python-runtime/` 是免安装包内置的便携 Python 运行时（本机构建产物，数百 MB，不进 Git）。
-
-干净迁移方式：从 GitHub 下载源码，在目标机器运行 `npm ci`、`start-windows.cmd` 或 `start.command`，重新放置 `.env.local` 与 `config.yaml`，再到 `/settings` 重新配置供应商。
-
-## 适用场景
-
-- 电商产品场景图批量生产
-- 家居、消费品、复杂结构产品的分镜素材管理
-- 短视频脚本和分镜图文对照
-- 智能混剪批量产出成片
-- 多供应商 API 测试和成本控制
-- 本地私有素材工作流
-
-## 状态
-
-当前项目仍在快速迭代中，重点方向是复杂结构产品的图片生产、分镜管理、脚本生成、视频任务与智能混剪成片链路。
-
-## 许可证
-
-Copyright (C) 2026 liangpeijian
-
-本项目以 [GNU General Public License v3.0 only](./LICENSE) 授权。你可以使用、修改和分发本项目；如果向他人分发本项目或其修改版本，需要遵守 GPL-3.0 的条款并提供相应源码。
-
-本项目调用的第三方服务、生成模型及其输出可能适用各自独立的服务条款或许可证，不因本项目采用 GPL-3.0 而自动改变。
+Copyright (C) 2026 liangpeijian · [GNU GPL-3.0-only](./LICENSE)
