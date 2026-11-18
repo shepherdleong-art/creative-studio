@@ -112,7 +112,8 @@ try {
   state = { ...state, succeededCount: 1 };
   await expect(page.getByText('已保存 1 / 3 条，其他方案仍在生成')).toBeVisible({ timeout: 8000 });
   await expect(page.getByRole('heading', { name: /已完成的脚本1/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: '再生成一组', exact: true })).toBeDisabled();
+  // 演示版（03 号票）：再生成只剩「挑选模板再生成」，不再有旧模式按钮。
+  await expect(page.getByRole('button', { name: '挑选模板再生成', exact: true })).toBeDisabled();
   const firstPolls = polls;
   state = { ...state, succeededCount: 2 };
   await expect(page.getByText('已保存 2 / 3 条，其他方案仍在生成')).toBeVisible();

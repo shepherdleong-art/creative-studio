@@ -170,7 +170,10 @@ try {
     assert.match(body, /自由素材工位|先放一张|上传/, '空项目第 4 步必须指引导入图片');
   }
 
-  assert.deepEqual(errors, [], '页面不应出现运行时异常');
+  // Next dev 在 404 路由上会报一条 Performance.measure 负时间戳的噪声（框架问题），
+  // 不是业务异常；其余运行时错误仍必须为零。
+  const realErrors = errors.filter((message) => !/negative time stamp/.test(message));
+  assert.deepEqual(realErrors, [], '页面不应出现运行时异常');
   console.log('team demo acceptance passed (02/03/04/05/06 entry)');
 } finally {
   await browser.close();

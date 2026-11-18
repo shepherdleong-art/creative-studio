@@ -50,6 +50,15 @@ export default function PromptLibraryPicker({
   const [saveError, setSaveError] = useState('');
   const [selectedId, setSelectedId] = useState('');
 
+  /**
+   * 团队版写请求要带 CSRF；个人本地版没有团队身份接口（`/api/team/auth/csrf` 404），
+   * 这时退回普通 fetch——本地版本来就是单机单用户。
+   */
+  const write = async (url: string, init: RequestInit): Promise<Response> => {
+    if (document.documentElement.dataset.deploymentMode !== 'server') return fetch(url, init);
+    return teamWrite(url, init);
+  };
+
   const load = useCallback(async () => {
     setError('');
     try {
@@ -90,7 +99,7 @@ export default function PromptLibraryPicker({
     setSaving(true);
     setSaveError('');
     try {
-      const response = await teamWrite('/api/video-prompt-templates', {
+      const response = await write('/api/video-prompt-templates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: saveName, prompt: value, category, description: '', inRandomPool: false }),
@@ -115,7 +124,7 @@ export default function PromptLibraryPicker({
     if (!target || target.isBuiltin) return;
     setError('');
     try {
-      const response = await teamWrite(`/api/video-prompt-templates/${encodeURIComponent(target.id)}`, { method: 'DELETE' });
+      const response = await write(`/api/video-prompt-templates/${encodeURIComponent(target.id)}`, { method: 'DELETE' });
       if (!response.ok) throw new Error(await teamError(response, '删除常用词失败'));
       setSelectedId('');
       await load();

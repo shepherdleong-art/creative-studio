@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic';
 import MixcutWorkspace from '@/components/mixcut/MixcutWorkspace';
 import { Icon } from '@/components/ui/Icon';
 import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
+import PromptLibraryPicker from '@/components/PromptLibraryPicker';
 
 import LogDrawer from '@/components/LogDrawer';
 import { ProjectInfoDialog, type ProjectInfoValue } from '@/components/ProjectInfoDialog';
@@ -624,6 +625,15 @@ export default function ProjectDetailPage() {
               </div>
               <div>
                 <label className="label generation-label">提示词模板</label>
+                {/* 06 号票：分镜词的「我的常用」——选预设/手写后按本次分镜组改。 */}
+                <div className="mb-2">
+                  <PromptLibraryPicker
+                    category="shot"
+                    value={applyScenePrompt}
+                    disabled={applySceneSubmitting}
+                    onChange={(next) => setApplyScenePrompt(next)}
+                  />
+                </div>
                 <textarea value={applyScenePrompt} onChange={(event) => setApplyScenePrompt(event.target.value)} rows={4} className="input-field generation-control generation-textarea apply-scene-textarea" />
                 <p className="generation-helper">每张分镜图会作为图1（底图），场景参考图作为图2（参考图）</p>
               </div>
