@@ -36,6 +36,7 @@ import {
   videoSettingsDiffer,
   type VideoJobSavedSettings,
 } from '@/components/video-job-settings';
+import PromptLibraryPicker from '@/components/PromptLibraryPicker';
 
 function releaseDraftTailFrameAssets(
   rowGroups: Iterable<VideoMotionRow[]>,
@@ -1834,6 +1835,21 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       className="input-field video-prompt-field"
                       placeholder="运镜描述（提示词）"
                       disabled={creating}
+                    />
+
+                    {/* 05 号票：手写全文、改写公共预设、存为本人「我的常用」，跨项目取用。 */}
+                    <PromptLibraryPicker
+                      category="camera_motion"
+                      value={row.prompt}
+                      disabled={creating}
+                      onChange={(prompt, templateId) => {
+                        const result = updateVideoMotionRowByKey(motionRowsRef.current, row.key, (current) => ({
+                          ...current,
+                          prompt,
+                          templateId: templateId ?? '',
+                        }));
+                        replaceActiveMotionRows(result.rows);
+                      }}
                     />
 
                     <button

@@ -6,6 +6,7 @@ import { getTask, createTask } from '@/lib/script-studio/tasks';
 import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
 import { templatePlanFingerprint } from '@/lib/script-studio/template-rewrite';
 import type { FrozenViralTemplateSpec } from '@/lib/script-studio/types';
+import { legacyScriptModesAllowed } from '@/lib/script-studio/production-mode-policy';
 import { createHash } from 'node:crypto';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
@@ -29,6 +30,14 @@ async function __teamRoutePOST(
     const parentInput = JSON.parse(parent.inputSnapshotJson || '{}') as Record<string, unknown>;
     const isPain = parentInput.productionMode === 'pain_solving_15s';
     const isTemplateRewrite = parentInput.productionMode === 'template_rewrite';
+    // 演示版（03 号票）：补跑沿用父任务冻结的写法；旧模式任务不再补跑，
+    // 避免用一个旧快照重新开「多方向/痛点」生成。
+    if (!isTemplateRewrite && !legacyScriptModesAllowed()) {
+      throw new ScriptStudioError(
+        'invalid_input',
+        '这条任务来自旧模式，演示版只支持爆文模板改写：请回到脚本页重新挑选模板生成。',
+      );
+    }
     const planStage = parent.stages.find((stage) => stage.stage === 'plan' && stage.status === 'succeeded');
     const planPayload = JSON.parse(planStage?.payloadJson || '{}') as { painPlanning?: { opportunities?: unknown[] } };
     const completed = db.prepare('SELECT validationJson FROM project_script_revisions WHERE generationTaskId = ?').all(taskId) as Array<{ validationJson: string }>;

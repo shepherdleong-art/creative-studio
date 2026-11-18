@@ -17,13 +17,37 @@ const command = process.argv[2] || 'start';
 
 const proxyPort = 4410;
 
+/**
+ * 演示开关：创作画布显式关闭，批量生产与详情页脚本保留。
+ *
+ * 画布在演示里**强制关闭**（`.env.local` 里的同名变量不生效），只有显式设
+ * `CREATIVE_STUDIO_DEMO_ALLOW_CANVAS=1` 才放行——演示范围由规格钉死，不靠各人环境。
+ * 批量与脚本模块默认开启，可在本机环境变量里关闭。
+ * 真实脚本调度默认不开：只有 PM 要实际跑爆文改写时才显式设
+ * `CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER=1`。
+ */
+function demoModuleSwitches(env) {
+  const canvasAllowed = ['1', 'true', 'on', 'yes'].includes(env.CREATIVE_STUDIO_DEMO_ALLOW_CANVAS?.trim().toLowerCase() ?? '');
+  return {
+    CREATIVE_STUDIO_CANVAS_ENABLE: canvasAllowed ? '1' : '0',
+    CREATIVE_STUDIO_MODULE_BATCH: env.CREATIVE_STUDIO_MODULE_BATCH?.trim() || '1',
+    CREATIVE_STUDIO_MODULE_SCRIPT_STUDIO: env.CREATIVE_STUDIO_MODULE_SCRIPT_STUDIO?.trim() || '1',
+    CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER:
+      env.CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER?.trim() || '0',
+  };
+}
+
 function previewEnvironment() {
   const envFile = path.join(root, '.env.local');
-  return {
+  const merged = {
     ...(fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, 'utf8')) : {}),
     ...process.env,
+  };
+  return {
+    ...merged,
     CREATIVE_STUDIO_DATA_ROOT: previewRoot,
     CREATIVE_STUDIO_LITELLM_PORT: String(proxyPort),
+    ...demoModuleSwitches(merged),
   };
 }
 
@@ -161,6 +185,10 @@ async function start() {
   startGateway();
   console.log('COS：' + (['CREATIVE_STUDIO_COS_SECRET_ID', 'CREATIVE_STUDIO_COS_SECRET_KEY', 'CREATIVE_STUDIO_COS_DOMAIN'].every(key => env[key]?.trim()) ? '已配置' : '未配置完整'));
   console.log('豆包配音：' + (env.DOUBAO_TTS_API_KEY?.trim() ? '已配置' : '未配置'));
+  console.log('演示开关：创作画布 ' + (env.CREATIVE_STUDIO_CANVAS_ENABLE === '1' ? '开' : '关')
+    + '；批量生产 ' + (env.CREATIVE_STUDIO_MODULE_BATCH === '0' ? '关' : '开')
+    + '；脚本工作室 ' + (env.CREATIVE_STUDIO_MODULE_SCRIPT_STUDIO === '0' ? '关' : '开')
+    + '；脚本调度 ' + (env.CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER === '1' ? '开（真实模型）' : '关（任务只排队）'));
   console.log('\n林视 · 本地预览\n地址：' + origin + '\n本地管理员工号：0001\n数据目录：' + previewRoot);
   console.log('修改代码后刷新页面即可。保持此窗口开启，结束时双击“停止本地预览.cmd”。');
   console.log('忘记本地密码时，停止后运行：启动本地预览.cmd --recover-admin\n');

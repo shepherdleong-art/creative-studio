@@ -95,11 +95,14 @@ for (const bad of [null, undefined, 'string', 42]) {
 const itemRoute = fs.readFileSync('app/api/video-prompt-templates/[id]/route.ts', 'utf8');
 const listRoute = fs.readFileSync('app/api/video-prompt-templates/route.ts', 'utf8');
 
+// 05/06 号票起 category 由请求决定（运镜/场景/分镜共用一张表），isBuiltin 仍必须写 0，
+// 否则会被 seed 当成内置行覆盖。
 assert.match(
   listRoute,
-  /'camera_motion',\s*0\s*,/,
+  /VALUES \(\?, \?, \?, \?, \?, 0, \?, \?, \?\)/,
   '新建的模板必须写成自定义（isBuiltin = 0），否则会被 seed 当成内置行覆盖',
 );
+assert.match(listRoute, /parsePromptCategory/, '列表与创建必须按 category 区分三类常用词');
 assert.match(listRoute, /已有同名模板/, '重名必须挡下，否则下拉里分不清');
 assert.match(itemRoute, /内置模板不可编辑/, '内置模板的内容必须只读');
 assert.match(itemRoute, /内置模板不能删除/, '内置模板不可删除——seed 会把它补回来');

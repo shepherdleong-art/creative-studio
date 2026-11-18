@@ -12,6 +12,7 @@ import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
 import { resolveRuntimeProviders } from '@/lib/script-studio/runtime';
 import { templatePlanFingerprint } from '@/lib/script-studio/template-rewrite';
 import type { FrozenViralTemplateSpec } from '@/lib/script-studio/types';
+import { legacyScriptModesAllowed } from '@/lib/script-studio/production-mode-policy';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 
 
@@ -33,6 +34,15 @@ async function __teamRoutePOST(
     // 爆文模板改写脚本：从内容快照重建该模板的冻结计划（含完整参考文案），
     // 再生成一版仍绑定原模板与原卖点库修订，不读当前模板库。
     const rewrite = priorContent.productionMode === 'template_rewrite' ? priorContent.templateRewrite : undefined;
+    // 演示版（03 号票）：结果页再生成也只允许爆文模板改写。
+    // 旧项目里的多方向/痛点脚本没有可复用的模板快照，必须回到第 2 步重新挑模板，
+    // 不能在这里静默退回旧模式。
+    if (!rewrite && !legacyScriptModesAllowed()) {
+      throw new ScriptStudioError(
+        'invalid_input',
+        '这条脚本来自旧模式，演示版只支持爆文模板改写：请点「更换爆文模板」重新挑选模板生成。',
+      );
+    }
     const rewriteTemplatePlan = rewrite
       ? {
           templates: [{
@@ -61,7 +71,8 @@ async function __teamRoutePOST(
     const body = await jsonOrNull(request) ?? {};
     const requestedProviderId = typeof body.providerId === 'string' ? body.providerId.trim() : '';
     const providers = resolveRuntimeProviders(requestedProviderId);
-    const modeSuffix = pain ? `|${script.currentRevisionId}|pain_solving_15s` : rewrite ? `|${script.currentRevisionId}|template_rewrite|${rewritePlan!.fingerprint}` : '';
+    const modeSuffix = rewrite ? `|${script.currentRevisionId}|template_rewrite|${rewritePlan!.fingerprint}`
+      : pain ? `|${script.currentRevisionId}|pain_solving_15s` : '';
     const requestKey = `regenerate:${scriptId}:${createHash('sha256').update(`${projectId}|${library.id}|${providers.text.id}|${providers.text.model}${modeSuffix}`).digest('hex')}`;
     const existing = getTaskByRequestKey(db, projectId, requestKey);
     if (existing) return NextResponse.json({ task: toTaskSnapshot(existing), created: false }, { status: 202 });

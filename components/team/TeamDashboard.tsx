@@ -76,14 +76,17 @@ export default function TeamDashboard({
   displayName,
   canvasEnabled,
   role,
+  viewingAsUser = false,
 }: {
   admin: boolean;
   displayName: string;
   canvasEnabled: boolean;
   role: WorkspaceRole;
+  /** 04 号票：管理员在用户视角里时，员工工作台顶部显示「返回管理界面」。 */
+  viewingAsUser?: boolean;
 }) {
   if (admin) return <TeamConsoleOverview role={role} displayName={displayName} />;
-  return <EmployeeWorkbench displayName={displayName} canvasEnabled={canvasEnabled} role={role} />;
+  return <EmployeeWorkbench displayName={displayName} canvasEnabled={canvasEnabled} role={role} viewingAsUser={viewingAsUser} />;
 }
 
 /**
@@ -98,10 +101,12 @@ function EmployeeWorkbench({
   displayName,
   canvasEnabled,
   role,
+  viewingAsUser,
 }: {
   displayName: string;
   canvasEnabled: boolean;
   role: WorkspaceRole;
+  viewingAsUser: boolean;
 }) {
   const [dashboard, setDashboard] = useState<EmployeeDashboard | null>(null);
   const [error, setError] = useState('');
@@ -130,10 +135,14 @@ function EmployeeWorkbench({
       title={greeting}
       subtitle={<span data-testid="workbench-production-line">{productionLine}</span>}
       actions={<>
+        {viewingAsUser && <Link className="cap" href="/team/admin/resources" data-testid="view-as-back"><Icon name="settings" size={15} />返回管理界面</Link>}
         <Link className="cap" href="/projects"><Icon name="search" size={15} />找项目</Link>
         <Link className="cap cap-primary" href="/projects/new"><Icon name="plus" size={15} />新建项目</Link>
       </>}
     />
+    {viewingAsUser && <p className="rounded-xl border border-hairline bg-surface-subtle px-3 py-2 text-xs text-ink-secondary" data-testid="view-as-banner">
+      当前是用户视角（管理员账号）：导航和制作入口与员工一致，创建的内容归本人账号。
+    </p>}
     {error && <p role="alert" className="text-warn">{error}</p>}
     {dashboard === null && !error ? <p className="text-ink-secondary">正在读取工作台…</p> : null}
     {dashboard && <div className="grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">

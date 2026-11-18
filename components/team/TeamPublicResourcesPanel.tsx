@@ -4,6 +4,7 @@ import { useState } from 'react';
 import TeamBgmLibrary from './TeamBgmLibrary';
 import TeamResourceCandidates from './TeamResourceCandidates';
 import PageToolbar from './PageToolbar';
+import ViewAsUserButton from './ViewAsUserButton';
 import { GroupHeading } from '@/components/ui/Appearance';
 import type { WorkspaceRole } from '@/lib/workspace-navigation';
 
@@ -18,6 +19,7 @@ export default function TeamPublicResourcesPanel({ role }: { role: WorkspaceRole
       <PageToolbar
         role={role}
         subtitle="从已有设置和受管资源中选择发布；员工只会在显式发布后看到团队资源。"
+        actions={<ViewAsUserButton active={false} />}
       />
       <TeamResourceCandidates refreshKey={refreshKey} />
       <details className="card p-5">

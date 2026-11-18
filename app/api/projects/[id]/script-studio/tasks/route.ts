@@ -14,10 +14,10 @@ import type { ScriptStudioPointType } from '@/lib/script-studio/types';
 import {
   createTask,
   decideTaskRequest,
-  getTask,
   listRecentTasks,
 } from '@/lib/script-studio/tasks';
 import { parseScriptProductionMode, parseScriptStudioRequestedCount, parseScriptStudioTargetDuration, parseTemplateRewriteEntryIds } from '@/lib/script-studio/generation-contract';
+import { assertScriptProductionModeAllowed } from '@/lib/script-studio/production-mode-policy';
 import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
 import { getViralTemplateEntriesByIds } from '@/lib/script-studio/viral-templates';
 import { templatePlanFingerprint } from '@/lib/script-studio/template-rewrite';
@@ -64,6 +64,9 @@ async function __teamRoutePOST(
     if (!project) throw new ScriptStudioError('not_found', '项目不存在');
     const targetDurationSec = parseScriptStudioTargetDuration(body.targetDurationSec);
     const productionMode = parseScriptProductionMode(body.productionMode, targetDurationSec);
+    // 演示版只保留爆文模板改写；旧客户端/缺省值不能新开多方向或痛点解决型任务。
+    // 「仅提取卖点库」是改写的前置步骤，不生成脚本，因此不受这条限制。
+    if (!(body.extractOnly === true)) assertScriptProductionModeAllowed(productionMode);
     const requestedCount = parseScriptStudioRequestedCount(body.requestedCount);
     const sourceSetId = typeof body.sourceSetId === 'string' ? body.sourceSetId : null;
     let libraryRevisionId = typeof body.libraryRevisionId === 'string' ? body.libraryRevisionId : null;

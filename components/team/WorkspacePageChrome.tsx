@@ -4,6 +4,7 @@ import WorkspacePageHeader from '@/components/team/WorkspacePageHeader';
 import { readRuntimeConfig } from '@/lib/team-service/config';
 import { TEAM_SESSION_COOKIE } from '@/lib/team-service/auth/request';
 import { getTeamAuthService } from '@/lib/team-service/auth/runtime';
+import { VIEW_AS_USER_COOKIE, resolveViewMode } from '@/lib/team-service/view-as-user';
 
 /**
  * 团队版每页标题（05 号票）的服务端入口。
@@ -20,9 +21,14 @@ export default async function WorkspacePageChrome() {
   if (readRuntimeConfig().mode !== 'server') return null;
   let role: 'employee' | 'admin' | null = null;
   try {
-    const token = (await cookies()).get(TEAM_SESSION_COOKIE)?.value;
+    const store = await cookies();
+    const token = store.get(TEAM_SESSION_COOKIE)?.value;
     const resolved = token ? getTeamAuthService().resolveSession(token) : null;
-    if (resolved && !resolved.mustChangePassword) role = resolved.role;
+    // 04 号票：用户视角下页面标题按员工端解析（管理员本人仍是管理员）。
+    if (resolved && !resolved.mustChangePassword) {
+      role = resolveViewMode(resolved.role, store.get(VIEW_AS_USER_COOKIE)?.value) === 'user'
+        ? 'employee' : resolved.role;
+    }
   } catch {
     // 身份结构不可用时不出标题；业务入口由运行时 readiness 继续关闭。
   }

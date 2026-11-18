@@ -7,6 +7,7 @@ import { Icon, type IconName } from '@/components/ui/Icon';
 import PageToolbar from '@/components/team/PageToolbar';
 import { EmptyState, GroupList, GroupRow, StatusDot, Tag, ToolbarButton, type TagTone } from '@/components/ui/Appearance';
 import TeamProductionControl from './TeamProductionControl';
+import ViewAsUserButton from './ViewAsUserButton';
 import { teamError } from './client';
 import { consoleDefaultsView, type ConsoleDefaultsView } from '@/lib/team-console-overview';
 import s from './console.module.css';
@@ -96,6 +97,7 @@ export default function TeamConsoleOverview({ role, displayName }: { role: Works
               {busy ? '读取中…' : '刷新'}
             </ToolbarButton>
             <Link className="cap" href="/team/tasks"><Icon name="search" size={15} />找任务</Link>
+            <ViewAsUserButton active={false} />
           </>
         }
       />

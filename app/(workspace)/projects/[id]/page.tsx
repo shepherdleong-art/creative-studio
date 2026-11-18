@@ -149,12 +149,14 @@ export default function ProjectDetailPage() {
   }, []);
 
   // 角色决定工具栏标题（团队版外壳按角色命名），本地版拿不到就按员工。
+  // 管理员查看用户视角时按员工端标题渲染（服务端权限仍是管理员本人）。
   useEffect(() => {
     let active = true;
     fetch('/api/team/auth/session', { credentials: 'same-origin', cache: 'no-store' })
       .then((response) => response.json())
-      .then((data: { role?: string }) => {
+      .then((data: { role?: string; viewMode?: string }) => {
         if (!active) return;
+        if (data.viewMode === 'user') { setRole('employee'); return; }
         if (data.role === 'admin' || data.role === 'employee') setRole(data.role);
       })
       .catch(() => { /* 本地版没有团队会话，保持员工标题 */ });

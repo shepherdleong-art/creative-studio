@@ -4,30 +4,34 @@ import { normalizeVideoPromptTemplateInput } from '@/lib/video-prompt-template';
 import { v4 as uuidv4 } from 'uuid';
 import { requireAccessContext } from '@/lib/media-core/access-context';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+import { parsePromptCategory } from '@/lib/prompt-library';
 
 
 // 内置模板排在前面（seed 维护、界面只读），自建的按创建时间跟在后面。
 const LIST_SQL = `
   SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, lower(openingCode) AS openingCode, createdAt
   FROM video_prompt_templates
+  WHERE category = ?
   ORDER BY isBuiltin DESC, createdAt
 `;
 
-async function __teamRouteGET() {
+async function __teamRouteGET(request: Request) {
   try {
     const db = getDb();
     const access = requireAccessContext();
-    if (access.kind === 'local') return NextResponse.json(db.prepare(LIST_SQL).all());
+    // 05/06 号票：同一张表按 category 区分运镜 / 场景 / 分镜三类「我的常用」。
+    const category = parsePromptCategory(new URL(request.url).searchParams.get('category'));
+    if (access.kind === 'local') return NextResponse.json(db.prepare(LIST_SQL).all(category));
     const visible = db.prepare(`
       SELECT id, name, description, prompt, category, isBuiltin, inRandomPool, lower(openingCode) AS openingCode, createdAt
       FROM video_prompt_templates
-      WHERE EXISTS (
+      WHERE category = ? AND EXISTS (
         SELECT 1 FROM team_resource_scopes scope
         WHERE scope.resourceType = 'video_prompt_template' AND scope.resourceId = video_prompt_templates.id
           AND scope.deletedAt IS NULL AND (scope.visibility = 'public' ${access.actor.role === 'admin' ? 'OR 1 = 1' : 'OR scope.ownerUserId = ?'})
       )
       ORDER BY isBuiltin DESC, createdAt
-    `).all(...(access.actor.role === 'admin' ? [] : [access.actor.userId]));
+    `).all(category, ...(access.actor.role === 'admin' ? [] : [access.actor.userId]));
     return NextResponse.json(visible);
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
@@ -46,6 +50,13 @@ async function __teamRoutePOST(request: NextRequest) {
     const access = requireAccessContext();
     const ownerKey = access.kind === 'team' ? access.actor.userId : 'local';
     const { name, description, prompt, inRandomPool, openingCode = '' } = normalized.value;
+    const category = parsePromptCategory((body as Record<string, unknown>).category);
+    // 公共预设由管理员维护：只有管理员可以显式发布成 public，员工保存的一律私有。
+    const wantsPublic = (body as Record<string, unknown>).visibility === 'public';
+    if (wantsPublic && access.kind === 'team' && access.actor.role !== 'admin') {
+      return NextResponse.json({ error: '只有管理员可以发布公共预设' }, { status: 403 });
+    }
+    const visibility: 'private' | 'public' = wantsPublic ? 'public' : 'private';
 
     // 同名只在当前所有者的私人命名空间拦截，公开模板不阻塞员工个人模板。
     const duplicate = db.prepare(
@@ -63,11 +74,11 @@ async function __teamRoutePOST(request: NextRequest) {
       db.prepare(`
         INSERT INTO video_prompt_templates
           (id, name, description, prompt, category, isBuiltin, inRandomPool, openingCode, ownerKey)
-        VALUES (?, ?, ?, ?, 'camera_motion', 0, ?, ?, ?)
-      `).run(id, name, description, prompt, inRandomPool ? 1 : 0, openingCode, ownerKey);
+        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+      `).run(id, name, description, prompt, category, inRandomPool ? 1 : 0, openingCode, ownerKey);
       access.registerRootScope({
         resourceType: 'video_prompt_template', resourceId: id,
-        ownerUserId: access.actor.userId, visibility: 'private',
+        ownerUserId: access.actor.userId, visibility,
       });
     });
     create.immediate();

@@ -21,7 +21,6 @@ export const WORKSPACE_CREATE_ENTRIES: ReadonlyArray<{
 }> = [
   { name: '常规项目', text: '场景、分镜到成片', icon: 'film', href: '/projects/new' },
   { name: '一键成片', text: '功能开发中，敬请期待', icon: 'grid' },
-  { name: '实拍混剪', text: '功能开发中，敬请期待', icon: 'film' },
   { name: '创作画布', text: '连接灵感与生成流程', icon: 'sparkle', href: '/canvas', requiresCanvas: true },
 ];
 

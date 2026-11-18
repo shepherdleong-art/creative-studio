@@ -57,9 +57,13 @@ export default function NewProjectPage() {
     let cancelled = false;
     void fetch('/api/team/auth/session', { credentials: 'same-origin', cache: 'no-store' })
       .then((response) => (response.ok ? response.json() : null))
-      .then((body: { authenticated?: boolean; user?: { displayName?: string; role?: WorkspaceRole } } | null) => {
+      .then((body: { authenticated?: boolean; viewMode?: string; user?: { displayName?: string; role?: WorkspaceRole } } | null) => {
         if (cancelled || !body?.authenticated || !body.user) return;
-        setSession({ displayName: body.user.displayName ?? '', role: body.user.role ?? 'employee' });
+        // 管理员查看用户视角时，工具栏标题按员工端渲染（权限仍是管理员）。
+        setSession({
+          displayName: body.user.displayName ?? '',
+          role: body.viewMode === 'user' ? 'employee' : body.user.role ?? 'employee',
+        });
         setDraft((current) => (current.editorName.trim() ? current : { ...current, editorName: body.user?.displayName ?? '' }));
       })
       .catch(() => { /* 读不到会话时按员工渲染，剪辑师留空由校验提示兜住 */ });

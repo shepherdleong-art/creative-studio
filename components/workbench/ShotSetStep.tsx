@@ -5,6 +5,7 @@ import { Segmented, Tag } from '@/components/ui/Appearance';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
 import HoverZoomImage from '@/components/HoverZoomImage';
+import PromptLibraryPicker from '@/components/PromptLibraryPicker';
 import ImagePreview from '@/components/media/ImagePreview';
 import { MAX_SHOTS_PER_SET } from '@/lib/shot-set-domain';
 import { parseRedoReferenceIds } from '@/lib/shot-redo-state';
@@ -879,6 +880,13 @@ export default function ShotSetStep({
                     placeholder="编辑提示词后点重新生成"
                   />
                 </label>
+                {/* 06 号票：分镜词的「我的常用」——选预设/手写后按本张改，提交沿用项目画幅。 */}
+                <PromptLibraryPicker
+                  category="shot"
+                  value={redoPrompt}
+                  disabled={redoing || generating}
+                  onChange={(next) => setRedoPrompt(next)}
+                />
                 <p className={s.note}>重新生成会多出一版，旧版保留，可以切回去。</p>
                 {shotState === 'failed' && currentShot.jobErrorMessage ? <p className={s.errorText} role="alert">{currentShot.jobErrorMessage}</p> : null}
                 {error ? <p className={s.errorText} role="alert">{error}</p> : null}

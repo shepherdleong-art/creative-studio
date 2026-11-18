@@ -22,6 +22,8 @@ export interface HeaderPrincipal {
   displayName: string;
   role: 'employee' | 'admin';
   mustChangePassword?: boolean;
+  /** 管理员查看用户视角时是 'user'；员工没有这个字段。 */
+  viewMode?: 'admin' | 'user';
 }
 
 /**

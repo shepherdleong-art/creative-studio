@@ -820,6 +820,27 @@ export default function MixcutPanel({
           ? '请先配置支持图像理解的脚本供应商'
           : undefined;
 
+  /**
+   * 07 号票：项目里还没有分镜组时，单条精准混剪仍要能进来。
+   * 这里给一个「建空分镜组再导入自带视频」的入口——素材仍归属这个分镜组，
+   * 不按文件名或时间戳推断归属。
+   */
+  const [creatingShotSet, setCreatingShotSet] = useState(false);
+  const createShotSetForImport = useCallback(async () => {
+    if (creatingShotSet) return;
+    setCreatingShotSet(true);
+    try {
+      const created = await readJson<{ id: string; name: string }>(
+        await fetch(`/api/projects/${projectId}/free-shot-set`, { method: 'POST' }),
+      );
+      await loadContext(created.id);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreatingShotSet(false);
+    }
+  }, [creatingShotSet, projectId, loadContext, setMessage]);
+
   return (
     <MixcutShell
       steps={STEPS}
@@ -897,6 +918,14 @@ export default function MixcutPanel({
             {message && <div role="status" className={messageTone === 'error' ? styles.errorBanner : styles.infoBanner} data-tone={messageTone}><Icon name={messageTone === 'success' ? 'check' : 'alert'} size={15} />{message}</div>}
             {!context && loading ? (
               <div className={styles.loadingState}><span /><strong>正在读取真实分镜组和视频…</strong></div>
+            ) : context && context.shotSets.length === 0 ? (
+              <div className={styles.emptyState} data-testid="mixcut-no-shot-set">
+                <strong>这个项目还没有分镜组</strong>
+                <span>自带视频也能直接混剪：先建一个空分镜组，再导入你的视频和文案。</span>
+                <button type="button" className={`${styles.btn} ${styles.primary}`} onClick={() => void createShotSetForImport()} disabled={creatingShotSet}>
+                  {creatingShotSet ? '正在创建…' : '建空分镜组，导入自带视频'}
+                </button>
+              </div>
             ) : (
               <>
                 <div className={activeStep === 0 ? styles.stepWrap : styles.stepHidden}>

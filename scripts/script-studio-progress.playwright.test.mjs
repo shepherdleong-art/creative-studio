@@ -164,29 +164,29 @@ try {
   await expect(page.getByText('目标 3 条，找到 1 个内容机会，已保存 1 条。')).toBeVisible();
   await expect(page.getByText(/这部分不计为生成失败/)).toBeVisible();
   await expect(page.getByRole('button', { name: '补跑缺失条目', exact: true })).toHaveCount(0);
-  await expect(page.getByLabel('再生成模式')).toHaveValue('pain_solving_15s');
-  await expect(page.getByLabel('再生成时长')).toBeDisabled();
+  // 演示版（03 号票）：再生成不再有模式下拉，「多方向生成」「痛点解决型」都不能再发起。
+  await expect(page.getByLabel('再生成模式')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '再生成一组', exact: true })).toHaveCount(0);
   await page.getByText('查看内容策划依据 · 直接解决').click();
   await expect(page.getByText('核心问题：头颈缺少承托')).toBeVisible();
   await expect(page.getByRole('button', { name: '换一个框架/钩子', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: '再生成一组', exact: true }).click();
-  await expect.poll(() => submitted?.productionMode).toBe('pain_solving_15s');
-  assert.equal(submitted.targetDurationSec, 15);
-  assert.match(submitted.requestKey, /^regenerate-group:/);
+  // 旧模式的脚本只能点「更换爆文模板」重挑模板，不会再按旧快照补跑。
+  await expect(page.getByRole('button', { name: '更换爆文模板', exact: true })).toBeVisible();
   await page.reload();
   await page.getByRole('button', { name: '返回第 1 页', exact: true }).click();
-  await page.getByLabel('生产模式', { exact: true }).selectOption('pain_solving_15s');
-  await expect(page.getByText('先筛选有依据的内容机会，再生成脚本；机会不足时少产，不凑数量。')).toBeVisible();
-  await page.screenshot({ path: path.resolve('outputs/script-pain-mode-form.png'), fullPage: true });
-  submitted = undefined;
-  await page.getByRole('button', { name: '分析并生成脚本', exact: true }).click();
-  await expect.poll(() => submitted?.productionMode).toBe('pain_solving_15s');
-  assert.equal(submitted.targetDurationSec, 15);
+  // 第 1 页：生产模式固定为爆文模板改写，选项里没有多方向/痛点解决型。
+  await expect(page.getByLabel('生产模式', { exact: true })).toBeDisabled();
+  await expect(page.getByLabel('生产模式', { exact: true })).toHaveValue('template_rewrite');
+  assert.deepEqual(
+    await page.getByLabel('生产模式', { exact: true }).locator('option').allTextContents(),
+    ['爆文模板改写'],
+  );
+  await page.screenshot({ path: path.resolve('outputs/script-template-rewrite-only.png'), fullPage: true });
   await page.reload();
   await page.getByText('查看内容策划依据 · 直接解决').click();
-  await page.screenshot({ path: path.resolve('outputs/script-pain-mode-results.png'), fullPage: true });
+  await page.screenshot({ path: path.resolve('outputs/script-legacy-mode-results.png'), fullPage: true });
   assert.deepEqual(pageErrors, [], '页面不应出现运行时异常');
-  console.log('script-studio-progress.playwright.test.mjs: ok (early results, continued polling, cancellation, actual error, pain mode submit/regeneration/shortage/details)');
+  console.log('script-studio-progress.playwright.test.mjs: ok (early results, continued polling, cancellation, actual error, legacy-mode read-only)');
 } finally {
   await browser?.close();
   const exited = new Promise((resolve) => server.once('exit', resolve));

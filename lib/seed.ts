@@ -494,5 +494,61 @@ export function seedMotionTemplates() {
 export function seedAllVideo() {
   seedVideoProviders();
   seedMotionTemplates();
+  seedPromptLibraryPresets();
   seedScriptProviders();
+}
+
+/**
+ * 场景图与分镜的公共预设（06 号票）。
+ *
+ * 这两类写法的公共原文同样落在 `video_prompt_templates`，只是 category 不同：
+ * 员工可以选、可以改写，但改写另存进本人「我的常用」，不会回写这里。
+ * 与运镜模板一样逐行幂等 upsert，只覆盖内置行（isBuiltin = 1）。
+ */
+export function seedPromptLibraryPresets() {
+  const db = getDb();
+  const presets: Array<{ id: string; category: 'scene' | 'shot'; name: string; description: string; prompt: string }> = [
+    {
+      id: 'preset-scene-bedroom',
+      category: 'scene',
+      name: '卧室换景',
+      description: '保持床的一致性，换成温馨的卧室全景。',
+      prompt: '保持图中床的一致性不变，更换其他家具和软装布置，风格跟原图差别较大，让卧室温馨舒适，全景图。保持产品结构、材质、比例和颜色稳定，不要添加文字。',
+    },
+    {
+      id: 'preset-scene-living-room',
+      category: 'scene',
+      name: '客厅换景',
+      description: '保持家具一致性，换成明亮的客厅环境。',
+      prompt: '保持图中家具的一致性不变，更换其他家具和软装布置，换成采光良好的客厅，画面干净明亮，全景图。保持产品结构、材质、比例和颜色稳定，不要添加文字。',
+    },
+    {
+      id: 'preset-shot-detail',
+      category: 'shot',
+      name: '产品细节分镜',
+      description: '以图1为底图，参考图2换景，突出材质细节。',
+      prompt: '图1是待编辑分镜图，是本次修改的主要对象。图2是场景参考图。参考图2修改图1，保持图中产品的一致性不变，更换背景环境，构图和机位景别严格参考图1，突出产品材质细节。不要添加文字。',
+    },
+    {
+      id: 'preset-shot-wide',
+      category: 'shot',
+      name: '全景分镜',
+      description: '以图1为底图，参考图2换景，交代完整空间。',
+      prompt: '图1是待编辑分镜图，是本次修改的主要对象。图2是场景参考图。参考图2修改图1，保持图中产品的一致性不变，更换背景环境，构图和机位景别严格参考图1，用全景交代完整空间关系。不要添加文字。',
+    },
+  ];
+  const upsert = db.prepare(
+    `INSERT INTO video_prompt_templates (id, name, description, prompt, category, isBuiltin, inRandomPool)
+     VALUES (@id, @name, @description, @prompt, @category, 1, 0)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name,
+       description = excluded.description,
+       prompt = excluded.prompt,
+       category = excluded.category
+     WHERE video_prompt_templates.isBuiltin = 1`,
+  );
+  const write = db.transaction(() => {
+    for (const preset of presets) upsert.run(preset);
+  });
+  write();
 }

@@ -17,6 +17,7 @@ interface TemplateRow {
   inRandomPool: number;
   openingCode: string | null;
   ownerKey: string;
+  category: string;
 }
 
 /**
@@ -33,7 +34,7 @@ async function __teamRoutePATCH(
   try {
     const { id } = await params;
     const db = getDb();
-    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode, ownerKey FROM video_prompt_templates WHERE id = ?`)
+    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode, ownerKey, category FROM video_prompt_templates WHERE id = ?`)
       .get(id) as TemplateRow | undefined;
     if (!row) return NextResponse.json({ error: '模板不存在' }, { status: 404 });
 
@@ -51,6 +52,8 @@ async function __teamRoutePATCH(
       return NextResponse.json({ error: `开头编号 ${openingCode} 已被其他模板使用` }, { status: 409 });
     }
     const inPool = body.inRandomPool === undefined ? row.inRandomPool : (body.inRandomPool ? 1 : 0);
+    // 场景/分镜的「我的常用」只有名称与全文，没有随机池和开头编号。
+    const contentOnly = row.category === 'scene' || row.category === 'shot';
     if (row.isBuiltin === 1) {
       if (touchesContent) {
         return NextResponse.json(
@@ -58,13 +61,16 @@ async function __teamRoutePATCH(
           { status: 400 },
         );
       }
+      if (contentOnly) {
+        return NextResponse.json({ error: '公共预设不可编辑，请另存为我的常用' }, { status: 400 });
+      }
       db.prepare(`UPDATE video_prompt_templates SET inRandomPool = ?, openingCode = ? WHERE id = ?`)
         .run(inPool, openingCode, id);
       return NextResponse.json({ template: db.prepare(SELECT_ONE).get(id), warnings: [] });
     }
 
     // 只翻开关、不动内容时不必跑内容校验，否则前端得把全部字段回传一遍。
-    if (!touchesContent) {
+    if (!touchesContent && !contentOnly) {
       db.prepare(`UPDATE video_prompt_templates SET inRandomPool = ?, openingCode = ? WHERE id = ?`)
         .run(inPool, openingCode, id);
       return NextResponse.json({ template: db.prepare(SELECT_ONE).get(id), warnings: [] });
@@ -112,7 +118,7 @@ async function __teamRouteDELETE(
   try {
     const { id } = await params;
     const db = getDb();
-    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode, ownerKey FROM video_prompt_templates WHERE id = ?`)
+    const row = db.prepare(`SELECT id, name, isBuiltin, inRandomPool, openingCode, ownerKey, category FROM video_prompt_templates WHERE id = ?`)
       .get(id) as TemplateRow | undefined;
     if (!row) return NextResponse.json({ error: '模板不存在' }, { status: 404 });
 

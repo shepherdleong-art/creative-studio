@@ -436,7 +436,6 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const [scripts, setScripts] = useState<ScriptView[]>([]);
   const [task, setTask] = useState<ScriptStudioTaskSnapshot | null>(null);
   const [productionMode, setProductionMode] = useState<ScriptProductionMode>('template_rewrite');
-  const [regenerateMode, setRegenerateMode] = useState<ScriptProductionMode>('standard');
   const [targetDurationSec, setTargetDurationSec] = useState(15);
   const [requestedCount, setRequestedCount] = useState(3);
   /** 爆文模板改写：勾选的模板条目 ID（选择顺序即生成顺序；数量=勾选数）。 */
@@ -446,7 +445,6 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const [templateSwitchScript, setTemplateSwitchScript] = useState<{ scriptId: string; targetDurationSec: number } | null>(null);
   /** 「再生成一组」本次专用参数:与第 1 页表单不共享隐式状态,切换结果组时按 inputSnapshot 初始化一次。 */
   const [regenerateDuration, setRegenerateDuration] = useState(15);
-  const [regenerateCount, setRegenerateCount] = useState(3);
   /** 上一动作结果不确定(5xx/断连)时保留 action,按钮呈现「重试本次提交」。 */
   const [regeneratePending, setRegeneratePending] = useState(false);
   /** 不可变的再生成 action:requestKey + 完整 POST body,重试原样复用,不从最新表单重建。 */
@@ -454,7 +452,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   /** 同步 in-flight guard:极速双击最多发一次 fetch。 */
   const inFlightRegenerationRef = useRef(false);
   const lastRegenerateSourceTaskIdRef = useRef<string | null>(null);
-  const [creativeBrief, setCreativeBrief] = useState('');
+  /** 演示版不再有「创作要求」输入；请求体仍带空串，服务端契约不变。 */
+  const [creativeBrief] = useState('');
   const [providers, setProviders] = useState<ScriptProviderView[]>([]);
   const [providerId, setProviderId] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -745,12 +744,10 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     if (task.id === lastRegenerateSourceTaskIdRef.current) return;
     lastRegenerateSourceTaskIdRef.current = task.id;
     const snapshot = task.inputSnapshot || {};
-    const count = typeof snapshot.requestedCount === 'number' ? snapshot.requestedCount : 3;
     const duration = typeof snapshot.targetDurationSec === 'number' ? snapshot.targetDurationSec : 15;
     // 延迟到宏任务执行,避免 effect 内同步 setState 触发级联渲染。
     const timer = window.setTimeout(() => {
-      setRegenerateMode(snapshot.productionMode === 'template_rewrite' ? 'template_rewrite' : snapshot.productionMode === 'pain_solving_15s' ? 'pain_solving_15s' : 'standard');
-      if (Number.isInteger(count) && count >= 1 && count <= 6) setRegenerateCount(count);
+      // 演示版只保留爆文模板改写；旧任务的 standard/pain_solving 快照不再回填模式。
       if (SCRIPT_TARGET_DURATION_OPTIONS.includes(duration as (typeof SCRIPT_TARGET_DURATION_OPTIONS)[number])) setRegenerateDuration(duration);
     }, 0);
     return () => window.clearTimeout(timer);
@@ -977,65 +974,23 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     }
   }, [projectId, providerId, startPolling]);
 
-  // 「换一个框架/钩子」：排除当前组合后创建新任务，新推荐进入任务快照（方案 §2.7）。
+  /**
+   * 演示版（03 号票）：只有爆文模板改写。
+   *
+   * 旧项目里的 standard/pain_solving 脚本也不再提供「换框架/钩子」，
+   * 统一改为挑选一个新的爆文模板生成新版本；服务端同样只接受 template_rewrite。
+   */
   const switchRecommendation = useCallback(async (script: ScriptView, content: ScriptStudioScriptContent | null) => {
     setError('');
     if (!libraryRevisionId) {
       setError('当前项目没有可复用的卖点库');
       return;
     }
-    if (content?.productionMode === 'template_rewrite' || content?.templateRewrite) {
-      setTemplateSwitchScript({
-        scriptId: script.id,
-        targetDurationSec: script.currentRevision?.targetDurationSec || content?.targetDurationSec || 15,
-      });
-      return;
-    }
-    if (!providerId) {
-      setError('请先选择一个已配置且支持图片读取的脚本模型');
-      return;
-    }
-    const recommendation = content?.recommendation;
-    const exclusions = {
-      ...(recommendation?.framework?.stableKey ? { frameworkKeys: [recommendation.framework.stableKey] } : {}),
-      ...(recommendation?.copyHook?.stableKey ? { copyHookKeys: [recommendation.copyHook.stableKey] } : {}),
-      ...(recommendation?.visualHook?.stableKey ? { visualHookKeys: [recommendation.visualHook.stableKey] } : {}),
-    };
-    // 稳定幂等键：由脚本 + 排除列表派生，断线重试同一次「换一个」只创建一个任务；
-    // 排除当前组合变化（点出新组合）后自然得到新 key，与「再生成」的 key/body 语义一致。
-    const exclusionIdentity = JSON.stringify({
-      frameworkKeys: (exclusions.frameworkKeys ?? []).sort(),
-      copyHookKeys: (exclusions.copyHookKeys ?? []).sort(),
-      visualHookKeys: (exclusions.visualHookKeys ?? []).sort(),
+    setTemplateSwitchScript({
+      scriptId: script.id,
+      targetDurationSec: script.currentRevision?.targetDurationSec || content?.targetDurationSec || 15,
     });
-    const requestKey = `switch-recommendation:${script.id}:${exclusionIdentity}`;
-    try {
-      const response = await fetch(`/api/projects/${projectId}/script-studio/tasks`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          libraryRevisionId,
-          targetScriptId: script.id,
-          targetDurationSec: script.currentRevision?.targetDurationSec || content?.targetDurationSec || 15,
-          requestedCount: 1,
-          providerId,
-          requestKey,
-          ...(Object.keys(exclusions).length > 0 ? { exclusions } : {}),
-        }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError(data.message || data.error || '换一个框架/钩子失败');
-        return;
-      }
-      const nextTask = data.task as ScriptStudioTaskSnapshot;
-      setTask(nextTask);
-      setStep(2);
-      startPolling(nextTask.id);
-    } catch (err) {
-      setError(String(err));
-    }
-  }, [projectId, libraryRevisionId, providerId, startPolling]);
+  }, [libraryRevisionId]);
 
   const retryTask = useCallback(async () => {
     if (!task) return;
@@ -1066,36 +1021,16 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       return;
     }
     if (inFlightRegenerationRef.current) return;
-    if (!pendingRegenerationRef.current && regenerateMode === 'template_rewrite') {
-      setProductionMode('template_rewrite');
-      setTargetDurationSec(regenerateDuration);
-      setStep(2);
+    // 有未确认的 action 时原样重试；否则一律回到第 2 步挑选模板再生成
+    //（演示版唯一可发起的写作模式，不再有「按模式直接再生成一组」的分支）。
+    if (pendingRegenerationRef.current) {
+      void runRegenerateAction(pendingRegenerationRef.current);
       return;
     }
-    if (!providerId) {
-      setError('请先选择一个已配置且支持图片读取的脚本模型');
-      return;
-    }
-    // 第一次点击冻结不可变 action：key + 完整 POST body；同一次传输的重试原样复用。
-    if (!pendingRegenerationRef.current) {
-      const requestKey = `regenerate-group:${crypto.randomUUID()}`;
-      pendingRegenerationRef.current = {
-        requestKey,
-        body: {
-          sourceSetId: null,
-          libraryRevisionId,
-          productionMode: regenerateMode,
-          targetDurationSec: regenerateMode === 'pain_solving_15s' ? 15 : regenerateDuration,
-          requestedCount: regenerateCount,
-          creativeBrief,
-          providerId,
-          requestKey,
-        },
-      };
-      setRegeneratePending(true);
-    }
-    void runRegenerateAction(pendingRegenerationRef.current);
-  }, [libraryRevisionId, regenerateMode, regenerateDuration, regenerateCount, creativeBrief, providerId, runRegenerateAction]);
+    setProductionMode('template_rewrite');
+    setTargetDurationSec(regenerateDuration);
+    setStep(2);
+  }, [libraryRevisionId, regenerateDuration, runRegenerateAction]);
 
   const cancelTask = useCallback(async () => {
     if (!task || !['queued', 'running'].includes(task.status)) return;
@@ -1425,17 +1360,15 @@ export default function ScriptStudioPanel({ projectId }: Props) {
               </div>
               <div>
                 <label className="label" htmlFor="script-production-mode">生产模式</label>
-                <select id="script-production-mode" value={productionMode} onChange={(event) => {
-                  const mode = event.target.value as ScriptProductionMode;
-                  setProductionMode(mode);
-                  if (mode === 'pain_solving_15s') setTargetDurationSec(15);
-                }} className="input-field">
-                  <option value="standard">多方向生成</option>
-                  <option value="pain_solving_15s">痛点解决型 · 15秒</option>
+                {/*
+                  演示版（03 号票）：AI 写脚本只保留爆文模板改写。
+                  保留 select 元素（单选、禁用）而不是换成纯文本，是为了让
+                  「生产模式」这个标签仍能通过 getByLabel 定位，也保留读屏语义。
+                */}
+                <select id="script-production-mode" value="template_rewrite" disabled className="input-field" data-testid="script-production-mode">
                   <option value="template_rewrite">爆文模板改写</option>
                 </select>
-                {productionMode === 'pain_solving_15s' && <p className="mt-1.5 text-xs text-ink-tertiary">先筛选有依据的内容机会，再生成脚本；机会不足时少产，不凑数量。</p>}
-                {productionMode === 'template_rewrite' && <p className="mt-1.5 text-xs text-ink-tertiary">先提取卖点建库，再在第 2 步挑选爆文模板，按参考文风改写成一条本家脚本。</p>}
+                <p className="mt-1.5 text-xs text-ink-tertiary">先提取卖点建库，再在第 2 步挑选爆文模板，按参考文风改写成一条本家脚本。</p>
               </div>
               <div>
                 <label className="label">目标时长</label>
@@ -1464,19 +1397,6 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                 <div className="flex h-9 items-center text-sm text-ink-secondary">{assets.length} 张</div>
               </div>
             </section>
-
-            {productionMode !== 'template_rewrite' && (
-            <div>
-              <label className="label">创作要求（可选）</label>
-              <textarea
-                value={creativeBrief}
-                onChange={(event) => setCreativeBrief(event.target.value)}
-                rows={4}
-                placeholder="例如：面向 25-35 岁女性，风格自然可信，避免夸张功效，前三秒强调真实使用场景"
-                className="input-field"
-              />
-            </div>
-            )}
 
             <div className="flex items-center justify-between gap-4 border-t border-hairline pt-4">
               <p className="text-xs text-ink-tertiary">✓ 卖点首次提取后固定保存；以后再生成脚本直接复用，不重复识图。</p>
@@ -1714,32 +1634,15 @@ export default function ScriptStudioPanel({ projectId }: Props) {
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {libraryRevisionId && <span className="text-xs text-ok">✓ 再生成只复用卖点库，不重新识图</span>}
-                <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-ink-secondary">
-                  模式
-                  <select aria-label="再生成模式" value={regenerateMode} onChange={(event) => {
-                    const mode = event.target.value as ScriptProductionMode;
-                    setRegenerateMode(mode);
-                    if (mode === 'pain_solving_15s') setRegenerateDuration(15);
-                  }} className="input-field h-8 w-[180px] px-1.5 py-0 text-xs">
-                    <option value="standard">多方向生成</option>
-                    <option value="pain_solving_15s">痛点解决型 · 15秒</option>
-                    <option value="template_rewrite">爆文模板改写</option>
-                  </select>
-                </label>
-                {/* F2：再生成一组可单独指定本次条数/秒数（不与第 1 页表单共享隐式状态）。 */}
-                {regenerateMode !== 'template_rewrite' && <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-ink-secondary">
-                  条数
-                  <select value={regenerateCount} onChange={(event) => setRegenerateCount(Number(event.target.value))} className="input-field h-8 w-[68px] px-1.5 py-0 text-xs" aria-label="再生成条数">
-                    {SCRIPT_GENERATION_UI_OPTIONS.map((count) => <option key={count} value={count}>{count}</option>)}
-                  </select>
-                </label>}
+                {/* 演示版：再生成也只有爆文模板改写，没有模式下拉与条数选择。 */}
+                <span className="shrink-0 whitespace-nowrap text-xs text-ink-secondary" data-testid="regenerate-mode">模式：爆文模板改写</span>
                 <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-ink-secondary">
                   时长
-                  <select disabled={regenerateMode === 'pain_solving_15s'} value={regenerateDuration} onChange={(event) => setRegenerateDuration(Number(event.target.value))} className="input-field h-8 w-[84px] px-1.5 py-0 text-xs" aria-label="再生成时长">
+                  <select value={regenerateDuration} onChange={(event) => setRegenerateDuration(Number(event.target.value))} className="input-field h-8 w-[84px] px-1.5 py-0 text-xs" aria-label="再生成时长">
                     {SCRIPT_TARGET_DURATION_OPTIONS.map((duration) => <option key={duration} value={duration}>{durationLabel(duration)}</option>)}
                   </select>
                 </label>
-                <button type="button" onClick={regenerateGroup} disabled={submitting || taskRunning || organizingLibrary} className="btn-secondary btn-sm">{regeneratePending ? '重试本次提交' : regenerateMode === 'template_rewrite' ? '挑选模板再生成' : '再生成一组'}</button>
+                <button type="button" onClick={regenerateGroup} disabled={submitting || taskRunning || organizingLibrary} className="btn-secondary btn-sm">{regeneratePending ? '重试本次提交' : '挑选模板再生成'}</button>
                 {(task?.status === 'partial' || task?.status === 'failed') && (
                   <button type="button" onClick={() => void retryTask()} className="btn-secondary btn-sm">补跑缺失条目</button>
                 )}
@@ -1790,7 +1693,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                       <div className="flex flex-none flex-wrap justify-end gap-1.5">
                         <button type="button" onClick={() => toggleCollapsed(script.id)} className="btn-secondary btn-sm">{collapsed ? '完整脚本' : '收起脚本'}</button>
                         <button type="button" onClick={() => void copyScript(content?.fullScript || '')} className="btn-secondary btn-sm">复制</button>
-                        {!content?.painSolving && <button type="button" onClick={() => void switchRecommendation(script, content)} disabled={taskRunning || submitting} className="btn-secondary btn-sm" title={content?.templateRewrite ? '选择新的爆文模板，为这条脚本生成新版本' : '排除当前框架/钩子组合后重新推荐'}>{content?.productionMode === 'template_rewrite' || content?.templateRewrite ? '更换爆文模板' : '换一个框架/钩子'}</button>}
+                        <button type="button" onClick={() => void switchRecommendation(script, content)} disabled={taskRunning || submitting} className="btn-secondary btn-sm" title="选择新的爆文模板，为这条脚本生成新版本">更换爆文模板</button>
                         <button type="button" onClick={() => void regenerateOne(script.id)} disabled={taskRunning} className="btn-secondary btn-sm">再生成一版</button>
                         <button type="button" onClick={() => void loadHistory(script.id)} className="btn-secondary btn-sm">版本历史</button>
                       </div>

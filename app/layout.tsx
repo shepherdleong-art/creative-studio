@@ -11,6 +11,7 @@ import { applicationTitle, BRAND_SUBTITLE } from "@/lib/brand";
 import { readRuntimeConfig } from "@/lib/team-service/config";
 import { TEAM_SESSION_COOKIE } from "@/lib/team-service/auth/request";
 import { getTeamAuthService } from "@/lib/team-service/auth/runtime";
+import { VIEW_AS_USER_COOKIE, resolveViewMode } from "@/lib/team-service/view-as-user";
 import "./globals.css";
 
 // 标题按端区分：员工端「林视创作台」、管理员端「林视控制台」、个人本地版与
@@ -56,7 +57,8 @@ async function RuntimeHeader() {
   if (config.mode === 'local') return <Header canvasEnabled={canvasFeatureEnabled()} />;
   let principal: HeaderPrincipal | null = null;
   try {
-    const token = (await cookies()).get(TEAM_SESSION_COOKIE)?.value;
+    const store = await cookies();
+    const token = store.get(TEAM_SESSION_COOKIE)?.value;
     const resolved = token ? getTeamAuthService().resolveSession(token) : null;
     if (resolved) {
       principal = {
@@ -64,6 +66,8 @@ async function RuntimeHeader() {
         displayName: resolved.displayName,
         role: resolved.role,
         mustChangePassword: resolved.mustChangePassword,
+        // 管理员查看用户视角：导航按员工端渲染，会话仍是管理员本人。
+        viewMode: resolveViewMode(resolved.role, store.get(VIEW_AS_USER_COOKIE)?.value),
       };
     }
   } catch {

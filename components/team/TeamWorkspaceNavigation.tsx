@@ -54,15 +54,20 @@ type Flyout = { label: string; top: number } | null;
  */
 export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { principal: HeaderPrincipal; canvasEnabled: boolean }) {
   const pathname = usePathname();
-  const admin = principal.role === 'admin';
-  const productName = workspaceProductName(principal.role);
-  const groups = buildWorkspaceNavigation({ role: principal.role, canvasEnabled });
+  // 04 号票：管理员查看用户视角时，导航按员工端渲染；会话与权限仍是管理员本人。
+  const viewMode = principal.role === 'admin' && principal.viewMode === 'user' ? 'user' : 'admin';
+  const viewingAsUser = viewMode === 'user';
+  const role = viewingAsUser ? 'employee' : principal.role;
+  const admin = role === 'admin';
+  const productName = workspaceProductName(role);
+  const groups = buildWorkspaceNavigation({ role, canvasEnabled });
   const [counts, setCounts] = useState<BadgeCounts>(EMPTY_COUNTS);
   const [countsReady, setCountsReady] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState('');
   const [theme, chooseTheme] = useThemePreference();
+  const [switchingView, setSwitchingView] = useState(false);
   const [clientStatus, setClientStatus] = useState<import('@/desktop/bridge-types').ClientStatus | null>(null);
   const [clientUpdating, setClientUpdating] = useState(false);
   const [clientMessage, setClientMessage] = useState('');
@@ -155,6 +160,27 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
       setLoggingOut(false);
     }
   }, [loggingOut]);
+
+  /**
+   * 04 号票：切换用户/管理视角。只改展示 Cookie，不重新登录；
+   * 切换后整页刷新，让服务端布局按新视角渲染导航与首页。
+   */
+  const handleViewModeChange = useCallback(async (active: boolean) => {
+    if (switchingView) return;
+    setSwitchingView(true);
+    try {
+      const response = await teamWrite('/api/team/auth/view-as', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active }),
+      });
+      if (!response.ok) throw new Error(await teamError(response, '切换视角失败'));
+      window.location.assign('/');
+    } catch (error) {
+      setSwitchingView(false);
+      setLogoutError(error instanceof Error ? error.message : '切换视角失败，请重试');
+    }
+  }, [switchingView]);
 
   // 更新诊断上报：与旧顶栏完全同一套（POST /api/team/errors/report）。
   const reportUpdateFailure = async (code: string, message: string) => {
@@ -254,7 +280,10 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
             <div className={s.wsMenu} role="menu" aria-label="账号菜单" data-testid="workspace-user-menu">
               <div className={s.wsMenuWho}>
                 <strong>{principal.displayName}</strong>
-                <small>{principal.employeeId ? `工号 ${principal.employeeId}，` : ''}{admin ? '管理员' : '创作成员'}</small>
+                <small>
+                  {principal.employeeId ? `工号 ${principal.employeeId}，` : ''}
+                  {viewingAsUser ? '管理员 · 正在以用户视角查看' : admin ? '管理员' : '创作成员'}
+                </small>
               </div>
               <div className={s.wsMenuTheme}>
                 <span>外观</span>
@@ -288,6 +317,24 @@ export default function TeamWorkspaceNavigation({ principal, canvasEnabled }: { 
                   {clientMessage && <p className={`${s.wsMenuHint} ${s.wsClientUpdateMessage}`} role="status" data-testid="workspace-client-update-message">{clientMessage}</p>}
                 </>
               )}
+              <hr className={s.wsMenuHr} />
+              {/* 04 号票：只有管理员看到视角切换；员工端没有这个入口。 */}
+              {principal.role === 'admin' && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={s.wsMenuItem}
+                  data-testid="workspace-view-as-toggle"
+                  disabled={switchingView}
+                  onClick={() => void handleViewModeChange(!viewingAsUser)}
+                >
+                  <Icon name={viewingAsUser ? 'settings' : 'users'} size={15} />
+                  <span>{switchingView ? '正在切换视角…' : viewingAsUser ? '返回管理界面' : '查看用户视角'}</span>
+                </button>
+              )}
+              {viewingAsUser && <p className={s.wsMenuHint} data-testid="workspace-view-as-hint">
+                当前是用户视角，使用同一管理员账号与权限；创建的內容归本人账号。
+              </p>}
               <hr className={s.wsMenuHr} />
               <button
                 type="button"

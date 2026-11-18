@@ -11,6 +11,7 @@ import {
   isWorkspaceNavActive,
   workspaceNavigationFor,
   WORKSPACE_MENU_LINKS,
+  WORKSPACE_CREATE_ENTRIES,
 } from '../lib/workspace-navigation.ts';
 
 // ---- 员工端：三组，分组名与顺序逐字对齐规格 ----
@@ -141,6 +142,17 @@ const usedIcons = new Set([
   ...WORKSPACE_MENU_LINKS.map((link) => link.icon),
 ]);
 for (const icon of usedIcons) assert.ok(knownIcons.has(icon), `组件/ui/Icon.tsx 里没有图标「${icon}」`);
+
+// ---- 首页「新建」卡片（团队 Demo 演示版 02 号票） ----
+// 实拍混剪入口已移除；常规项目直达新建页；创作画布跟随画布开关。
+const createNames = WORKSPACE_CREATE_ENTRIES.map((entry) => entry.name);
+assert.equal(createNames.includes('实拍混剪'), false, '首页不得再有实拍混剪入口');
+assert.equal(createNames[0], '常规项目', '第一个新建入口是常规项目');
+assert.equal(WORKSPACE_CREATE_ENTRIES[0]?.href, '/projects/new');
+const canvasEntry = WORKSPACE_CREATE_ENTRIES.find((entry) => entry.name === '创作画布');
+assert.ok(canvasEntry, '创作画布入口仍在清单里，由开关过滤');
+assert.equal(canvasEntry!.requiresCanvas, true);
+assert.equal(canvasEntry!.href, '/canvas');
 
 console.log('workspace navigation contract passed');
 

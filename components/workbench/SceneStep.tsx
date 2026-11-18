@@ -7,6 +7,7 @@ import { MAX_SHOTS_PER_SET } from '@/lib/shot-set-domain';
 import { getGptImage2AspectRatio } from '@/lib/gpt-image-2-size-presets';
 import { unifiedMediaDisplayName } from '@/lib/media-core/unified-media/catalog';
 import FurniturePromptControls from '@/components/FurniturePromptControls';
+import PromptLibraryPicker from '@/components/PromptLibraryPicker';
 import ImagePreview from '@/components/media/ImagePreview';
 import { getResultJobKind, type SceneReferenceSummary } from '@/lib/result-gallery-jobs';
 import {
@@ -595,6 +596,12 @@ export default function SceneStep({
           <SettingsHeading>生成参数</SettingsHeading>
           <div className={s.settingsBody}>
             <FurniturePromptControls prompt={prompt} onChange={(next) => { setPrompt(next); savePrompt(next); }} />
+            {/* 06 号票：场景词的「我的常用」——选预设或手写后按本次商品改，提交沿用项目画幅。 */}
+            <PromptLibraryPicker
+              category="scene"
+              value={prompt}
+              onChange={(next) => { setPrompt(next); savePrompt(next); }}
+            />
             <label className={s.field}>
               <span>场景提示词</span>
               <textarea

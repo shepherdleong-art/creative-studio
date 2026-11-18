@@ -31,6 +31,7 @@ import { applyKnowledgeRecommendations, planScriptDirections } from './planner.t
 import { parseKnowledgeContext, type FrozenKnowledgeContext } from './knowledge-context.ts';
 import { getScriptStudioLimits } from './limits.ts';
 import { parseScriptProductionMode, parseScriptStudioRequestedCount, parseScriptStudioTargetDuration } from './generation-contract.ts';
+import { assertScriptProductionModeAllowed } from './production-mode-policy.ts';
 import { isScriptStudioTaskCancelRequested } from './scheduler.ts';
 import { parseTileRefIndex, tileSourceImages, selectEvidenceTiles, type TileSetResult } from './tiling.ts';
 import {
@@ -572,6 +573,9 @@ async function executeAuthorizedScriptStudioTask(
   try {
     targetDurationSec = parseTargetDuration(input);
     productionMode = parseScriptProductionMode(input.productionMode, targetDurationSec);
+    // 演示版：旧任务快照里的 standard/pain_solving 不再执行。
+    // 「仅提取卖点库」是改写前置，不生成脚本，因此不受这条限制。
+    if (input.extractOnly !== true) assertScriptProductionModeAllowed(productionMode);
     requestedCount = parseRequestedCount(input);
     creativeBrief = parseCreativeBrief(input);
     if (productionMode === 'template_rewrite') {
