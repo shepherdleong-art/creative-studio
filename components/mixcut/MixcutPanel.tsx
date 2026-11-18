@@ -461,12 +461,14 @@ export default function MixcutPanel({
     const targetShotSetName = activeShotSet?.name || targetShotSetId;
     setUploadingShotSetIds((current) => current.includes(targetShotSetId) ? current : [...current, targetShotSetId]);
     let importMessage = '';
+    let importedAssetIds: string[] = [];
     try {
       const formData = new FormData();
       for (const file of files) formData.append('files', file);
       const result = await readJson<{ assets: FinalEditExternalAssetView[]; errors: Array<{ filename: string; message: string }> }>(
         await fetch(`/api/projects/${projectId}/final-edit/shot-sets/${encodeURIComponent(targetShotSetId)}/external-assets`, { method: 'POST', body: formData }),
       );
+      importedAssetIds = result.assets.filter((asset) => asset.status === 'ready').map((asset) => asset.id);
       importMessage = result.errors.length > 0
         ? `已向「${targetShotSetName}」导入 ${result.assets.length} 个视频；${result.errors.map((item) => `${item.filename}：${item.message}`).join('；')}`
         : `已向「${targetShotSetName}」导入 ${result.assets.length} 个视频`;
@@ -475,6 +477,17 @@ export default function MixcutPanel({
     } finally {
       try {
         await refreshExternalAssets(targetShotSetId);
+        // 07/08 号票：刚导入的自带视频默认参与混剪（与模块 4 素材同一规则），
+        // 否则用户会看到「已排除」而无法直接预览出片。
+        if (importedAssetIds.length > 0) {
+          setSelectionByShotSet((current) => {
+            const existing = materialSelectionForShotSet(current, targetShotSetId);
+            const added = importedAssetIds
+              .map((assetId) => `external:${assetId}`)
+              .filter((key) => !existing.includes(key));
+            return added.length > 0 ? { [targetShotSetId]: [...existing, ...added] } : current;
+          });
+        }
       } catch (error) {
         const refreshMessage = error instanceof Error ? error.message : String(error);
         importMessage = `${importMessage}；刷新导入记录失败：${refreshMessage}`;

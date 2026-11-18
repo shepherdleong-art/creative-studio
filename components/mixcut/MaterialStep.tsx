@@ -245,7 +245,8 @@ export function MaterialStep({
           <div className={styles.emptyState}>
             <Icon name="video" size={26} />
             <strong>当前组还没有可用视频</strong>
-            <span>请先返回模块 4 完成视频生成；其他分镜组的素材不会在这里兜底出现。</span>
+            {/* 07 号票：自带视频也能直接开始——空状态必须说清两条路，不能只指向模块 4。 */}
+            <span>可以在「视频」完成模块 4 生成，也可以点上方「选择视频」或拖拽自己的视频到这里；素材只归当前分镜组。</span>
           </div>
         )}
 
