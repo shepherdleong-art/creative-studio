@@ -12,6 +12,10 @@ import { parseScriptProductionMode } from '../lib/script-studio/generation-contr
 import { PAIN_REVIEW_CHECKS, painBrief, painPlan, painContentIssues, parsePainPlanning, parsePainReview } from '../lib/script-studio/pain-solving.ts';
 import type { PainSolvingOpportunity } from '../lib/script-studio/types.ts';
 
+// 演示版（03 号票）默认只允许爆文模板改写；这个文件专门保留「痛点解决型」的
+// 历史实现回归，因此显式打开排障开关，确保旧代码路径仍有测试覆盖。
+process.env.CREATIVE_STUDIO_SCRIPT_ALLOW_LEGACY_MODES = '1';
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'script-pain-'));
 const db = new Database(path.join(root, 'workbench.db'));
 try {

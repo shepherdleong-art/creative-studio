@@ -560,8 +560,8 @@ export default function ProjectDetailPage() {
           <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3">
             {!hasAnyMaterial ? (
               <StepEmptyBanner
-                title="还没有可用视频"
-                description="先在「视频」做好视频，这里才能混剪。"
+                title="还没有项目素材"
+                description="可以在「视频」生成模块 4 素材，也可以直接在下面导入自己的视频、带入自己的文案，先做单条或批量成片。"
               />
             ) : null}
             <MixcutWorkspace

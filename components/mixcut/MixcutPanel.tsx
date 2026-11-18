@@ -830,7 +830,7 @@ export default function MixcutPanel({
     if (creatingShotSet) return;
     setCreatingShotSet(true);
     try {
-      const created = await readJson<{ id: string; name: string }>(
+      const created = await readJson<{ id: string; created?: boolean }>(
         await fetch(`/api/projects/${projectId}/free-shot-set`, { method: 'POST' }),
       );
       await loadContext(created.id);
