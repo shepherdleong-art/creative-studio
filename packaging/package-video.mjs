@@ -71,7 +71,7 @@ const run = (cmd, args, opts = {}) => {
     if (r.status === 0) return r.stdout;
     const diagnostic = `${r.error?.code || ''}\n${r.stderr || r.stdout || ''}`;
     if (attempt < retries && retryOn?.test(diagnostic)) {
-      console.log('媒体探针暂时超时，重新校验一次…');
+      console.log(diagnostic.includes('ERR_UNSAFE_PORT') ? '包装预览端口不可用，重新分配端口…' : '媒体探针暂时超时，重新校验一次…');
       continue;
     }
     throw new Error(`命令失败: ${path.basename(cmd)}\n${diagnostic}`);
@@ -109,6 +109,7 @@ const copyDir = (src, dst) => {
 };
 const workDir = path.join(process.env.CREATIVE_STUDIO_PACKAGING_WORK_ROOT || path.join(process.env.CREATIVE_STUDIO_DATA_ROOT || APP_ROOT, 'storage/packaging/renders'), `_work_${randomUUID()}`);
 fs.mkdirSync(workDir, { recursive: true });
+let renderTemp;
 try {
 copyDir(tplAbs, workDir);
 // 共享字体目录（模板 @font-face 引用 fonts/...，单源分发，避免每个模板重复携带）
@@ -333,15 +334,21 @@ const t0 = Date.now();
 const WIN_HIDE_SHIM = path.join(__dirname, "win-hide-spawn.cjs");
 const renderArgs = ["render", workDir, "--format=webm", "--vp9-cpu-used=6", "-o", overlayWebm];
 if (varsAbs && fs.existsSync(varsAbs)) renderArgs.push("--variables-file", varsAbs);
+// HyperFrames creates its intermediate WebM below os.tmpdir(). Put that directory beside
+// the template copy so child FFmpeg can write it and the template scanner cannot recurse into it.
+renderTemp = fs.mkdtempSync(path.join(path.dirname(workDir), "hf-"));
 const env = {
   ...process.env,
+  TEMP: renderTemp,
+  TMP: renderTemp,
+  TMPDIR: renderTemp,
   HYPERFRAMES_BROWSER_PATH: CHROME,
   HYPERFRAMES_FFMPEG_PATH: FFMPEG,
   HYPERFRAMES_FFPROBE_PATH: FFPROBE,
   HYPERFRAMES_NO_AUTO_INSTALL: "1",
   HYPERFRAMES_NO_TELEMETRY: "1",
 };
-run(process.execPath, ["--require", WIN_HIDE_SHIM, CLI, ...renderArgs], { env, cwd: __dirname, timeout: 9 * 60_000, retries: 1, retryOn: /ffprobe deadline/ });
+run(process.execPath, ["--require", WIN_HIDE_SHIM, CLI, ...renderArgs], { env, cwd: __dirname, timeout: 9 * 60_000, retries: 1, retryOn: /ffprobe deadline|ERR_UNSAFE_PORT at http:\/\/localhost:\d+\// });
 const renderSec = ((Date.now() - t0) / 1000).toFixed(1);
 console.log(`      渲染完成 (${renderSec}s)`);
 
@@ -374,5 +381,6 @@ console.log(JSON.stringify({
   totalSeconds: Number(totalSec),
 }, null, 2));
 } finally {
+  if (renderTemp) fs.rmSync(renderTemp, { recursive: true, force: true });
   fs.rmSync(workDir, { recursive: true, force: true });
 }

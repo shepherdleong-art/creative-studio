@@ -14,6 +14,7 @@ import { assertPackagingLayoutExportReady, packagingLayoutEngineExecutable } fro
 export async function renderVideoPackaging(input: {
   videoPath: string; coverPath: string; config: FinalEditPackagingConfig; totalSec: number;
   staticCover?: boolean;
+  coverEnabled?: boolean;
   signal?: AbortSignal; onProgress?: (value: number) => void;
 }): Promise<void> {
   if (!input.config.enabled) return;
@@ -28,7 +29,7 @@ export async function renderVideoPackaging(input: {
     : resolvePackagingTemplateDir(dir, input.config.template);
   const jobDir = path.dirname(input.videoPath);
   const output = path.join(jobDir, 'packaged.mp4');
-  const coverSec = FINAL_EDIT_INTRO_DURATION_US / 1e6;
+  const coverSec = input.coverEnabled === false ? 0 : FINAL_EDIT_INTRO_DURATION_US / 1e6;
   const fonts: Record<string, string> = {};
   for (const slot of ['title', 'subtitle', 'point'] as const) {
     const font = input.config[`${slot}Font`];
@@ -46,6 +47,7 @@ export async function renderVideoPackaging(input: {
     layoutResolution: input.config.layoutResolution,
     stickers: input.config.stickers, stickerDefaults: input.config.stickerDefaults, stickerAssets, template: input.config.template });
   const varsPath = path.join(jobDir, 'packaging-vars.json');
+  if (input.coverEnabled === false) vars.hideCover = true;
   await fs.writeFile(varsPath, JSON.stringify(vars), 'utf8');
   await runPackagingPipeline({ nodeExe: resolvePackagingNode(), packagingDir: dir,
     args: [path.join(resourceDir, 'package-video.mjs'), input.videoPath, varsPath, output, template], signal: input.signal, onStage: input.onProgress,
@@ -53,6 +55,11 @@ export async function renderVideoPackaging(input: {
     layoutEngineExecutable: layoutBundle ? packagingLayoutEngineExecutable(layoutBundle.manifest) : undefined });
   input.signal?.throwIfAborted();
   const overlay = path.join(jobDir, 'overlay.webm');
+  if (input.coverEnabled === false) {
+    await fs.rename(output, input.videoPath);
+    await fs.unlink(overlay);
+    return;
+  }
   const coverOverlay = path.join(jobDir, 'packaging-cover.png');
   // 模板在封面结束前淡出；取中点可保留落定后的完整不透明包装。
   await runFfmpeg(['-y', '-c:v', 'libvpx-vp9', '-i', overlay, '-ss', Math.max(0.04, coverSec / 2).toFixed(6), '-frames:v', '1', '-pix_fmt', 'rgba', coverOverlay], { signal: input.signal, timeoutMs: 60_000 });

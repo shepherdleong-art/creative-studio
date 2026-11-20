@@ -107,6 +107,7 @@ function single(value: string | string[] | undefined): string | undefined {
 }
 
 function contextualResource(route: string, key: string, inferred: string): string {
+  if (route.startsWith('/api/one-click-film/') && key === 'analysisId') return 'one_click_film_analysis';
   // 混剪沿用 scriptDraftId 字段名，实际读写的是统一项目脚本库。
   if (route.includes('/final-edit') && key === 'scriptDraftId') return 'project_script';
   if (route.startsWith('/api/canvas')) {
@@ -142,6 +143,9 @@ function addReference(
   resourceType: string,
   value: unknown,
 ) {
+  // 这些标识属于一键成片自己的表，由处理函数在当前项目内验证。
+  if (route.startsWith('/api/one-click-film/') && ['jobId', 'shotId', 'entryId', 'versionId', 'templateId'].includes(key)) return;
+  if (route === '/api/one-click-film/[projectId]/review' && key === 'shotIds') return;
   // 脚本领域的 templateId 是内置文案模板标识，不是视频提示词模板资源。
   if (key === 'templateId' && (route.startsWith('/api/projects/[id]/script') || route.startsWith('/api/script-studio/'))) return;
   const resolved = contextualResource(route, key, resourceType);
@@ -233,7 +237,8 @@ function primaryReference(policy: TeamRoutePolicy, data: RequestData): { resourc
     bgm: 'id', lut: 'id', title_preset: 'id', video_prompt_template: 'id',
     script_template_asset: 'assetId', script_catalog: 'catalogId', viral_template_entry: 'entryId',
   };
-  const parameter = parameterByResource[resource];
+  const parameter = resource === 'project' && policy.route.startsWith('/api/one-click-film/')
+    ? 'projectId' : parameterByResource[resource];
   const id = parameter ? single(data.params[parameter]) : undefined;
   return id ? { resourceType: resource, resourceId: id } : null;
 }

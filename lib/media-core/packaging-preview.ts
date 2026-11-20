@@ -13,15 +13,19 @@ import { PACKAGING_STICKER_EDIT_BRIDGE_JS } from './packaging-sticker-edit-bridg
 export function packagingPreviewHtml(input: {
   config: FinalEditPackagingConfig; vars: PackagingVars; totalSec: number; coverSec: number;
   palette?: PackagingPalette | null; edit?: boolean; resourceUrl?: string;
+  staticCover?: boolean;
+  coverEnabled?: boolean;
 }): string {
   const { packagingDir, templateDir: dir, fontRoot, baseHref } = packagingPreviewResources(input.config, input.resourceUrl);
   const stickerAssets = resolvePackagingStickerAssets({ packagingDir, template: input.config.template, stickers: input.config.stickers });
   const vars = buildTimelineVars({ vars: input.vars, totalSec: input.totalSec, coverSec: input.coverSec,
-    pointCues: input.config.pointCues ?? [], pointCuesMode: input.config.pointCuesMode ?? 'none', layouts: input.config.layouts,
+    pointCues: input.config.pointCues ?? [], staticCover: input.staticCover,
+    pointCuesMode: input.config.pointCuesMode ?? 'none', layouts: input.config.layouts,
     pointCuesLayoutVersion: input.config.pointCuesLayoutVersion,
     layoutRuntimeBundleVersion: input.config.layoutRuntimeBundleVersion,
     layoutResolution: input.config.layoutResolution,
     stickers: input.config.stickers, stickerDefaults: input.config.stickerDefaults, stickerAssets, template: input.config.template });
+  if (input.coverEnabled === false) vars.hideCover = true;
   const json = (value: unknown) => JSON.stringify(value).replace(/</g, '\\u003c');
   let bridge = PACKAGING_EDIT_BRIDGE_JS
     // srcDoc 的 location.origin 为 "null"，但继承父页源；明确以同源父页为消息目标。

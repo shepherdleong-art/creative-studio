@@ -39,6 +39,8 @@ export interface VideoJobCreationItem {
   referenceAssetIds: string[];
   aspectRatio: string | null;
   resolution: string | null;
+  filmGenerationStage?: 'direct' | 'draft' | 'final-from-draft';
+  filmDraftSourceJobId?: string;
 }
 
 export type VideoJobCreationItemParse =
@@ -107,6 +109,11 @@ export async function createVideoJobsForShot(input: {
   shotId: string;
   items: VideoJobCreationItem[];
   batch?: boolean;
+  /** First frame frozen by a film workflow at confirmation or original submission. */
+  frozenSourceImageId?: string;
+  /** Checked under the same write lock as queue insertion. */
+  replayJobIds?: () => string[] | undefined;
+  onJobsCreated?: (ids: string[]) => void;
   db?: Database.Database;
 }): Promise<VideoJobCreationResult> {
   const db = input.db ?? getDb();
@@ -167,7 +174,10 @@ export async function createVideoJobsForShot(input: {
 
   const shotSet = db.prepare(`SELECT projectId FROM shot_sets WHERE id = ?`).get(shotSetId) as { projectId: string } | undefined;
   if (!shotSet) return { ok: false, status: 404, error: 'Shot set not found' };
-  const sourceImageId = shot.latestGeneratedImageId || shot.sourceImageId;
+  const sourceImageId = input.frozenSourceImageId ?? (shot.latestGeneratedImageId || shot.sourceImageId);
+  if (input.frozenSourceImageId && !db.prepare('SELECT 1 FROM image_assets WHERE id=? AND projectId=?').get(sourceImageId, shotSet.projectId)) {
+    return { ok: false, status: 400, error: '原片绑定的首帧不属于当前项目或已删除' };
+  }
   if (access.kind === 'team') {
     access.assertAccess('shot', shotId, 'read');
     access.assertAccess('image', sourceImageId, 'read');
@@ -265,7 +275,10 @@ export async function createVideoJobsForShot(input: {
     }
     if (item.generationMode === 'image-to-video') {
       if (item.referenceAssetIds.length > 0) return { error: itemError(index, '首尾帧模式不得携带全能参考素材') };
-      return { item, provider, aspectRatio: null, resolution: null, frozen: null };
+      return { item, provider,
+        aspectRatio: item.filmGenerationStage ? item.aspectRatio : null,
+        resolution: item.filmGenerationStage ? item.resolution : null,
+        frozen: null };
     }
     if (item.tailImageId) return { error: itemError(index, '全能参考模式不能携带尾帧图') };
     const capability = videoReferenceCapability(provider.type, provider.model);
@@ -294,6 +307,8 @@ export async function createVideoJobsForShot(input: {
 
   const videoJobIds: string[] = [];
   const createResult = db.transaction(() => {
+    const existing = input.replayJobIds?.();
+    if (existing) return { ok: true as const, videoJobIds: existing };
     const referencesByItem: ReferenceAssetRow[][] = [];
     for (const [index, entry] of prepared.entries()) {
       if ('error' in entry) return { ok: false as const, error: entry.error! };
@@ -340,8 +355,8 @@ export async function createVideoJobsForShot(input: {
       INSERT INTO video_jobs
         (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt,
          durationSec, generationMode, aspectRatio, resolution, multiShot, createdAt, displayName, openingCode,
-         maxAttempts, unifiedModel, unifiedRuleVersion, unifiedRequestJson)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         maxAttempts, unifiedModel, unifiedRuleVersion, unifiedRequestJson, filmGenerationStage, filmDraftSourceJobId)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertReference = db.prepare(`INSERT INTO video_job_references (jobId, orderIndex, assetId) VALUES (?, ?, ?)`);
     for (const [index, entry] of prepared.entries()) {
@@ -372,6 +387,8 @@ export async function createVideoJobsForShot(input: {
         provider.unified ? UNIFIED_KLING3_MODEL_KEY : null,
         provider.unified ? UNIFIED_MEDIA_RULE_VERSION : null,
         provider.unified && frozen ? JSON.stringify(frozen) : null,
+        item.filmGenerationStage ?? null,
+        item.filmDraftSourceJobId ?? null,
       );
       for (const [orderIndex, asset] of referencesByItem[index].entries()) {
         insertReference.run(videoJobId, orderIndex, asset.id);
@@ -394,12 +411,13 @@ export async function createVideoJobsForShot(input: {
       });
       videoJobIds.push(videoJobId);
     }
-    return { ok: true as const };
+    input.onJobsCreated?.(videoJobIds);
+    return { ok: true as const, videoJobIds };
   });
   try {
     const result = createResult.immediate();
     if (!result.ok) return { ok: false, status: 400, error: result.error };
-    return { ok: true, videoJobIds };
+    return { ok: true, videoJobIds: result.videoJobIds };
   } catch (error) {
     if (error instanceof VideoReferenceCreationError) return { ok: false, status: 400, error: error.message };
     throw error;

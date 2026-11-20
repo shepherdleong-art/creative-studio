@@ -29,7 +29,9 @@ export function syncPackagingAssets(root, standaloneDir) {
   for (const entry of allowed) {
     const from = path.join(source, entry);
     if (!fs.existsSync(from)) throw new Error(`包装运行资源缺失：${entry}，请先运行 npm run setup:packaging`);
-    fs.cpSync(from, path.join(target, entry), { recursive: true, filter: file => {
+    // dereference：安装包必须是真实文件。Windows 上普通用户没有创建符号链接的权限，
+    // 若把工作区里的 junction（如 packaging/runtime、packaging/node_modules）原样重建会直接 EPERM。
+    fs.cpSync(from, path.join(target, entry), { recursive: true, dereference: true, filter: file => {
       const rel = path.relative(source, file).replaceAll('\\', '/');
       return rel !== 'fonts/user'
         && !(rel.startsWith('runtime/') && isPackagingChromeLog(rel.slice('runtime/'.length)))

@@ -239,7 +239,7 @@ return {
       model: request.model,
       content,
       ...seedanceOutputFields(request.model, request),
-      ratio: 'adaptive',
+      ratio: request.aspectRatio || 'adaptive',
       duration,
     };
     if (!seedance2) body.camera_fixed = false;
