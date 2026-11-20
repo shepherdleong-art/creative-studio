@@ -319,8 +319,20 @@ try {
   const vendor = `http://127.0.0.1:${fixturePort}`;
   const env = Object.fromEntries(['Path', 'PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'LOCALAPPDATA', 'USERPROFILE', 'ProgramFiles']
     .filter((key) => process.env[key]).map((key) => [key, process.env[key]]));
+  // Exercise the render-only retry once, then let the real HyperFrames CLI produce the overlay.
+  const portFailure = path.join(root, 'renderer-port-failure.cjs');
+  const portMarker = path.join(root, 'renderer-port-failed');
+  fs.writeFileSync(portFailure, `
+    if (require('node:path').basename(process.argv[1] || '') === 'hyperframes.mjs' && process.argv[2] === 'render'
+        && !require('node:fs').existsSync(${JSON.stringify(portMarker)})) {
+      require('node:fs').writeFileSync(${JSON.stringify(portMarker)}, 'once');
+      process.stderr.write('net::ERR_UNSAFE_PORT at http://localhost:1719/index.html');
+      process.exit(1);
+    }
+  `);
   Object.assign(env, {
-    NODE_OPTIONS: `--require=${JSON.stringify(path.join(repo, 'scripts', 'team-server', 'no-external-network.cjs'))}`,
+    NODE_OPTIONS: [path.join(repo, 'scripts', 'team-server', 'no-external-network.cjs'), portFailure]
+      .map((file) => '--require=' + JSON.stringify(file)).join(' '),
     NEXT_TELEMETRY_DISABLED: '1', HOSTNAME: '127.0.0.1', PORT: String(port),
     CREATIVE_STUDIO_DATA_ROOT: root, CREATIVE_STUDIO_DEPLOYMENT_MODE: 'server',
     CREATIVE_STUDIO_PORT: String(port), CREATIVE_STUDIO_DEPLOYMENT_ID: 'one-click-film-employee',
@@ -747,6 +759,7 @@ try {
   console.log('通过：外层只显示封面，编辑器六轨顺序正确，拖动及保存草稿不渲染。');
   await confirmExport();
   await expect.poll(async () => (await getExports()).length, { timeout: 300_000 }).toBe(2);
+  assert.ok(fs.existsSync(portMarker), '首次本地渲染端口不可用后应自动恢复导出');
   const autoCaption = (await readPackaging()).find((item) => item.entryCode === 'F01');
   assert.equal(autoCaption.subtitlesPrepared, true);
   assert.equal(autoCaption.subtitleCues[0].text, '这是原片旁白。');

@@ -71,7 +71,7 @@ const run = (cmd, args, opts = {}) => {
     if (r.status === 0) return r.stdout;
     const diagnostic = `${r.error?.code || ''}\n${r.stderr || r.stdout || ''}`;
     if (attempt < retries && retryOn?.test(diagnostic)) {
-      console.log('媒体探针暂时超时，重新校验一次…');
+      console.log(diagnostic.includes('ERR_UNSAFE_PORT') ? '包装预览端口不可用，重新分配端口…' : '媒体探针暂时超时，重新校验一次…');
       continue;
     }
     throw new Error(`命令失败: ${path.basename(cmd)}\n${diagnostic}`);
@@ -348,7 +348,7 @@ const env = {
   HYPERFRAMES_NO_AUTO_INSTALL: "1",
   HYPERFRAMES_NO_TELEMETRY: "1",
 };
-run(process.execPath, ["--require", WIN_HIDE_SHIM, CLI, ...renderArgs], { env, cwd: __dirname, timeout: 9 * 60_000, retries: 1, retryOn: /ffprobe deadline/ });
+run(process.execPath, ["--require", WIN_HIDE_SHIM, CLI, ...renderArgs], { env, cwd: __dirname, timeout: 9 * 60_000, retries: 1, retryOn: /ffprobe deadline|ERR_UNSAFE_PORT at http:\/\/localhost:\d+\// });
 const renderSec = ((Date.now() - t0) / 1000).toFixed(1);
 console.log(`      渲染完成 (${renderSec}s)`);
 
