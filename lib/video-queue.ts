@@ -29,6 +29,7 @@ import {
   deliverVideoReferenceMedia,
   precheckSeedanceReferenceMedia,
   precheckVideoReferenceDeliveryMedia,
+  VideoReferenceMediaError,
 } from './video-providers/reference-media.ts';
 import { SEEDANCE_25 } from './video-providers/seedance-contract.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
@@ -167,6 +168,8 @@ export function _resetRateLimitStateForTest(): void {
 }
 
 interface VideoJobRecord {
+  filmGenerationStage?: 'direct' | 'draft' | 'final-from-draft' | null;
+  filmDraftSourceJobId?: string | null;
   id: string;
   projectId: string;
   shotSetId: string | null;
@@ -634,8 +637,12 @@ async function runAuthorizedVideoJob(
 
     async function executeVideoSubmission(
       send: () => Promise<SubmitVideoResult>,
+      prepare?: () => Promise<void>,
     ): Promise<SubmitVideoResult> {
-      if (!isServerMediaExecution()) return send();
+      if (!isServerMediaExecution()) {
+        await prepare?.();
+        return send();
+      }
       usageSnapshot = unifiedExecution
         ? buildVideoJobUsageSnapshot(db, {
           jobId: job.id,
@@ -686,6 +693,8 @@ async function runAuthorizedVideoJob(
           multiShot: job.multiShot,
           aspectRatio: job.aspectRatio,
           resolution: job.resolution,
+          filmGenerationStage: job.filmGenerationStage,
+          filmDraftSourceJobId: job.filmDraftSourceJobId,
         },
         requestSnapshot: {
           providerType: provider!.type, generationMode: job.generationMode,
@@ -701,18 +710,19 @@ async function runAuthorizedVideoJob(
           ? { kind: 'unpriced' }
           : { kind: 'priced', reserve: { currency: 'CNY', minor: reserveMinor }, pricingSnapshot: usageSnapshot },
         signal: reqAbort.signal,
-        beforeSend: unifiedExecution
-          ? () => assertUnifiedKlingSubmissionStillCurrent(db, {
-            jobId: job.id,
-            mediaTaskId: unifiedExecution!.taskId,
-            channelKey: unifiedExecution!.channel.channelKey,
-            executionRevision: unifiedExecution!.channel.executionRevision,
-          })
-          : () => {
-            if (db.prepare('SELECT cancelRequestedAt FROM video_jobs WHERE id = ?').pluck().get(job.id)) {
-              throw new UnifiedKlingCanceledError();
-            }
-          },
+        beforeSend: async () => {
+          await prepare?.();
+          if (unifiedExecution) {
+            assertUnifiedKlingSubmissionStillCurrent(db, {
+              jobId: job.id,
+              mediaTaskId: unifiedExecution.taskId,
+              channelKey: unifiedExecution.channel.channelKey,
+              executionRevision: unifiedExecution.channel.executionRevision,
+            });
+          } else if (db.prepare('SELECT cancelRequestedAt FROM video_jobs WHERE id = ?').pluck().get(job.id)) {
+            throw new UnifiedKlingCanceledError();
+          }
+        },
         onAdmitted() {
           attempt += 1;
           job.attempt = attempt;
@@ -910,14 +920,40 @@ async function runAuthorizedVideoJob(
         });
       };
       let submitResult: SubmitVideoResult;
-      if (job.generationMode === 'reference-to-video') {
-        if (!adapter.submitReference) throw new Error(`供应商 ${provider.type} 不支持全能参考`);
+      if (job.filmGenerationStage === 'final-from-draft') {
+        const source = db.prepare(`
+          SELECT providerTaskId, startedAt FROM video_jobs WHERE id = ? AND projectId = ?
+          AND providerId = ? AND model = ? AND filmGenerationStage = 'draft' AND status = 'succeeded'
+        `).get(job.filmDraftSourceJobId, job.projectId, job.providerId, job.model) as {
+          providerTaskId: string | null; startedAt: string | null;
+        } | undefined;
+        if (!source?.providerTaskId || !adapter.submitFinal) throw new Error('原样片或绑定的生成通道不可用');
+        if (!source.startedAt || Date.now() - new Date(source.startedAt).getTime() >= 7 * 86_400_000) {
+          throw new Error('原样片已过期，请重新生成');
+        }
         persistUsage();
-        submitResult = await executeVideoSubmission(async () => {
-          // 准入后才生成/刷新短期 COS URL；等待名额期间不冻结即将过期的交付地址。
-          const referenceRequest = await prepareReferenceSubmitRequest(db, job, provider.type, runtime.baseUrl, reqAbort.signal);
-          return adapter.submitReference!(referenceRequest, apiKey, runtime.baseUrl, reqAbort.signal);
-        });
+        submitResult = await executeVideoSubmission(() => adapter.submitFinal!(
+          { model: job.model, draftTaskId: source.providerTaskId! }, apiKey, runtime.baseUrl, reqAbort.signal,
+        ));
+      } else if (job.generationMode === 'reference-to-video') {
+        const submitReference = adapter.submitReference?.bind(adapter);
+        if (!submitReference) throw new Error(`供应商 ${provider.type} 不支持全能参考`);
+        persistUsage();
+        let referenceRequest: SubmitReferenceVideoRequest;
+        submitResult = await executeVideoSubmission(
+          () => submitReference({
+            ...referenceRequest,
+            ...(job.filmGenerationStage === 'draft' ? { draft: true, resolution: '480p' } : {}),
+          }, apiKey, runtime.baseUrl, reqAbort.signal),
+          async () => {
+            // 入池后、生成 POST 之前校验与交付素材。准备失败可明确结算为未提交。
+            try {
+              referenceRequest = await prepareReferenceSubmitRequest(db, job, provider.type, runtime.baseUrl, reqAbort.signal);
+            } catch (error) {
+              throw new VideoReferenceMediaError(error instanceof Error ? error.message : String(error), 'reference_preparation_failed');
+            }
+          },
+        );
       } else {
         const tailValidation = validateVideoTailFrameAsset({
           db,
@@ -943,6 +979,7 @@ async function runAuthorizedVideoJob(
           durationSec: job.durationSec,
           ...(job.aspectRatio ? { aspectRatio: job.aspectRatio } : {}),
           ...(job.resolution ? { resolution: job.resolution } : {}),
+          ...(job.filmGenerationStage === 'draft' ? { draft: true, resolution: '480p' } : {}),
         };
         const multiShot = videoMultiShotFromStorage(job.multiShot);
         if (multiShot !== undefined) submitRequest.multiShot = multiShot;
@@ -1227,6 +1264,13 @@ async function runAuthorizedVideoJob(
       }
       db.prepare(`UPDATE video_jobs SET status = 'deferred', errorMessage = ? WHERE id = ? AND status = 'running'`)
         .run(errorMessage, job.id);
+      return;
+    }
+
+    if (err instanceof VideoReferenceMediaError && err.code === 'reference_preparation_failed') {
+      db.prepare(`UPDATE video_jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
+        WHERE id = ? AND status = 'running'`).run(errorMessage, job.id);
+      logWarn(`参考素材准备未完成，任务未提交：${errorMessage}`);
       return;
     }
 

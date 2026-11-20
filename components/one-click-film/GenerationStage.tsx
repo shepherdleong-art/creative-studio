@@ -1,10 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { EmptyState, GroupHeading, GroupList, GroupRow, Tag } from '@/components/ui/Appearance';
-import { STRUCTURE_LABELS } from '@/lib/one-click-film/contract';
+import { EmptyState, Tag, ToolbarButton } from '@/components/ui/Appearance';
+import { Dialog } from '@/components/ui/Dialog';
+import { Icon } from '@/components/ui/Icon';
+import { SOUND_LABELS, STRUCTURE_LABELS } from '@/lib/one-click-film/contract';
 import type { FilmEntry, FilmState } from './types';
-import { NarrationPanel } from './NarrationPanel';
 import styles from './one-click-film.module.css';
 
 interface VideoProvider {
@@ -30,6 +31,7 @@ interface ModelOption {
 
 interface VideoJob {
   id: string;
+  videoJobId: string | null;
   entryCode: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed';
   errorMessage: string | null;
@@ -51,7 +53,10 @@ const STATUS_TONE: Record<VideoJob['status'], 'idle' | 'run' | 'ok' | 'fail'> = 
  * 第三步 · 生成视频：先核对每条确认稿与声音，再选通道提交整批直出。
  * 队列按条目显示进度；成功原片可播放，并带实际切点。
  */
-export function GenerationStage({ state, entries }: { state: FilmState; entries: FilmEntry[] }) {
+export function GenerationStage({ state, entries, onReview, onAdjustSound, onReload }: {
+  state: FilmState; entries: FilmEntry[]; onReload: () => Promise<void>;
+  onReview: (code: string, shotId?: string) => void; onAdjustSound: (code: string) => void;
+}) {
   const [providers, setProviders] = useState<VideoProvider[]>([]);
   const [jobs, setJobs] = useState<VideoJob[]>([]);
   const [providerId, setProviderId] = useState('');
@@ -62,6 +67,8 @@ export function GenerationStage({ state, entries }: { state: FilmState; entries:
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [promptReview, setPromptReview] = useState<{ code: string; original: string; suggested: string; text: string } | null>(null);
+  const closePrompt = useCallback(() => setPromptReview(null), []);
 
   const load = useCallback(async () => {
     try {
@@ -104,7 +111,6 @@ export function GenerationStage({ state, entries }: { state: FilmState; entries:
 
   const pending = entries.filter((entry) => entry.status !== 'confirmed');
   const ready = pending.length === 0 && entries.length > 0;
-  const provider = providers.find((item) => item.id === providerId);
   const option = models.find((item) => item.providerId === providerId);
   const durations = option?.durations?.length ? option.durations : Array.from({ length: 29 }, (_, index) => index + 2);
   const ratios = option?.aspectRatios?.length ? option.aspectRatios : ['3:4', '9:16', '16:9', '1:1', '4:3'];
@@ -119,6 +125,36 @@ export function GenerationStage({ state, entries }: { state: FilmState; entries:
   const durationValid = durations.includes(effectiveDurationSec);
   const ratioValid = ratios.includes(effectiveAspectRatio);
   const modeValid = modes.includes(effectiveMode);
+  const needsReview = entries.filter((entry) => entry.promptDurationSec !== effectiveDurationSec || entry.promptAspectRatio !== effectiveAspectRatio);
+
+  const openPrompt = async (entry: FilmEntry) => {
+    setError('');
+    try {
+      const response = await fetch(`/api/one-click-film/${state.project.id}/scripts`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'review-prompt', durationSec: effectiveDurationSec, aspectRatio: effectiveAspectRatio }),
+      });
+      const result = await response.json() as { reviews?: Array<{ code: string; review: { text: string } }>; message?: string };
+      if (!response.ok) throw new Error(result.message || '无法生成提示词建议');
+      const suggested = result.reviews?.find((item) => item.code === entry.code)?.review.text || entry.promptText;
+      setPromptReview({ code: entry.code, original: entry.promptText, suggested, text: suggested });
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+  };
+
+  const confirmPrompt = async () => {
+    if (!promptReview) return;
+    try {
+      const response = await fetch(`/api/one-click-film/${state.project.id}/scripts`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'apply-prompt', code: promptReview.code, promptText: promptReview.text,
+          durationSec: effectiveDurationSec, aspectRatio: effectiveAspectRatio }),
+      });
+      const result = await response.json() as { message?: string };
+      if (!response.ok) throw new Error(result.message || '无法确认提示词');
+      setPromptReview(null);
+      await onReload();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+  };
 
   const submit = async () => {
     setError('');
@@ -145,100 +181,179 @@ export function GenerationStage({ state, entries }: { state: FilmState; entries:
     }
   };
 
-  return <div className={styles.generation}>
-    <div className={styles.generationSide}>
-      <GroupHeading>生成设置</GroupHeading>
-      <GroupList>
-        <GroupRow label="视频通道">
-          <select
-            aria-label="视频通道"
-            className="input-field w-52"
-            value={providerId}
-            onChange={(event) => setProviderId(event.target.value)}
-          >
-            <option value="">请选择</option>
-            {providers.map((item) => (
-              <option key={item.id} value={item.id} disabled={!item.hasApiKey}>
-                {item.name}{item.hasApiKey ? '' : '（未配置）'}
-              </option>
-            ))}
-          </select>
-        </GroupRow>
-        <GroupRow label="正文时长">
-          <select aria-label="正文时长" className="input-field w-32" value={effectiveDurationSec} onChange={(event) => setDurationSec(Number(event.target.value))}>
-            {durations.map((value) => (
-              <option key={value} value={value}>{value} 秒</option>
-            ))}
-          </select>
-        </GroupRow>
-        <GroupRow label="画幅">
-          <select aria-label="画幅" className="input-field w-32" value={effectiveAspectRatio} onChange={(event) => setAspectRatio(event.target.value)}>
-            {ratios.map((ratio) => <option key={ratio} value={ratio}>{ratio}</option>)}
-          </select>
-        </GroupRow>
-        <GroupRow label="生成模式">
-          <select aria-label="生成模式" className="input-field w-32" value={effectiveMode} onChange={(event) => setMode(event.target.value as 'draft' | 'direct')}>
-            {modes.map((value) => <option key={value} value={value}>{value === 'draft' ? '样片生成' : '直接生成'}</option>)}
-          </select>
-        </GroupRow>
-      </GroupList>
-      {option ? <p className={styles.hint}>
-        {option.label} · {option.durationLabel} · 可选 {option.aspectRatios.join('、')}
-      </p> : null}
-      <p className={styles.hint}>
-        正文从第 0 秒开始；封面、字幕、花字和 BGM 到包装阶段才加入。
-      </p>
-      <button
-        type="button"
-        className="cap cap-primary w-full"
-        disabled={!ready || submitting || loading}
-        onClick={() => void submit()}
-        data-testid="one-click-film-generate"
-      >
-        {submitting ? '提交中…' : `生成 ${entries.length} 条正文`}
-      </button>
-      {!ready ? <p className={styles.hintWarn}>还有待确认条目：{pending.map((entry) => entry.code).join('、')}</p> : null}
+  const retry = async (id: string) => {
+    setError('');
+    setSubmitting(true);
+    try {
+      const response = await fetch(`/api/video-jobs/${id}/retry`, { method: 'POST' });
+      const result = await response.json() as { message?: string; error?: string };
+      if (!response.ok) throw new Error(result.message || result.error || '重试失败');
+      await load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setSubmitting(false); }
+  };
+
+  const sounds = [...new Set(entries.map((entry) => SOUND_LABELS[entry.soundMode]))];
+  const queueCodes = [...new Set([...entries.map((entry) => entry.code), ...jobs.map((job) => job.entryCode)])];
+  const hasReviewableVideo = jobs.some((job) => job.videoUrl);
+  const progress = hasReviewableVideo ? 2 : jobs.some((job) => job.status === 'succeeded') ? 1 : 0;
+
+  return <section className={styles.generation}>
+    <div className={styles.stageTitle}>
+      <div>
+        <h2>整条生成，自动识别镜头</h2>
+        <p className={styles.hint}>选择通道、时长、画幅和生成模式。生成后可以按镜头审片。</p>
+      </div>
+    </div>
+    <div className={styles.generationColumns}>
+      <section className={styles.generationSide} aria-label="生成设置">
+        <h3 className={styles.panelHeading}>生成设置</h3>
+        <div className={styles.generationFields}>
+          <label className={styles.field}>
+            <span>视频通道</span>
+            <select
+              className="input-field"
+              title={providers.find((item) => item.id === providerId)?.name}
+              value={providerId}
+              onChange={(event) => setProviderId(event.target.value)}
+            >
+              <option value="">请选择</option>
+              {providers.map((item) => (
+                <option key={item.id} value={item.id} disabled={!item.hasApiKey}>
+                  {item.name}{item.hasApiKey ? '' : '（未配置）'}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className={styles.field}>
+            <span>正文时长</span>
+            <select className="input-field" value={effectiveDurationSec} onChange={(event) => setDurationSec(Number(event.target.value))}>
+              {durations.map((value) => (
+                <option key={value} value={value}>{value} 秒</option>
+              ))}
+            </select>
+          </label>
+          <label className={styles.field}>
+            <span>画幅</span>
+            <select className="input-field" value={effectiveAspectRatio} onChange={(event) => setAspectRatio(event.target.value)}>
+              {ratios.map((ratio) => <option key={ratio} value={ratio}>{ratio}</option>)}
+            </select>
+          </label>
+          <label className={styles.field}>
+            <span>生成模式</span>
+            <select className="input-field" value={effectiveMode} onChange={(event) => setMode(event.target.value as 'draft' | 'direct')}>
+              {modes.map((value) => <option key={value} value={value}>{value === 'draft' ? '样片生成' : '直接生成'}</option>)}
+            </select>
+          </label>
+        </div>
+        {option ? <p className={styles.hint}>
+          {option.label} · {option.durationLabel} · 可选 {option.aspectRatios.join('、')}
+        </p> : null}
+        <p className={styles.hint}>
+          {effectiveMode === 'draft' ? '样片通过审片后可转高清。' : '直出视频通过审片后可进入包装。'}
+        </p>
+        {sounds.length ? <div className={styles.generationSound}>
+          <span className={styles.hint}>脚本阶段已确定的声音</span>
+          <strong>{sounds.join('、')}</strong>
+        </div> : null}
+        <p className={`${styles.hint} tnum`}>{entries.length} 条 · {effectiveDurationSec} 秒 · {effectiveAspectRatio}</p>
+        <button
+          type="button"
+          className="cap cap-primary w-full"
+          disabled={!ready || needsReview.length > 0 || submitting || loading}
+          onClick={() => void submit()}
+          data-testid="one-click-film-generate"
+        >
+          <Icon name="sparkle" size={15} />
+          {submitting ? '提交中…' : `生成 ${entries.length} 条正文`}
+        </button>
+        {!ready ? <p className={styles.hintWarn}>
+          {pending.length ? `待确认脚本：${pending.map((entry) => entry.code).join('、')}` : '先生成并确认脚本。'}
+        </p> : null}
+        {needsReview.length ? <p className={styles.hintWarn}>时长或画幅已变更，请复核 {needsReview.map((entry) => entry.code).join('、')}。</p> : null}
+        {error && !promptReview ? <p className={styles.hintFail} role="alert">{error}</p> : null}
+      </section>
+
+      <section className={styles.generationMain} aria-label="创作队列">
+        <ol className={styles.queueProgress}>
+          {['生成整条视频', '识别镜头切点', '进入审片'].map((label, index) => (
+            <li key={label} aria-current={progress === index ? 'step' : undefined} data-done={progress > index}>
+              <span aria-hidden="true">{progress > index ? <Icon name="check" size={13} /> : index + 1}</span>{label}
+            </li>
+          ))}
+        </ol>
+        <h3 className={styles.panelHeading}>创作队列</h3>
+        {loading ? <div className={styles.center}><div className={styles.spinner} />读取队列…</div> : queueCodes.length === 0 ? (
+          <EmptyState
+            icon="film"
+            title="还没有生成任务"
+            description="确认脚本后，成片条目会出现在这里。"
+          />
+        ) : <div className={styles.jobList}>
+          {queueCodes.map((code) => {
+            const entry = entries.find((item) => item.code === code);
+            const entryJobs = jobs.filter((job) => job.entryCode === code);
+            return <article key={code} className={styles.jobCard}>
+              <div className={styles.jobHead}>
+                <h4>{code}{entry ? ` · ${STRUCTURE_LABELS[entry.structure]}` : ''}</h4>
+                {entry ? <Tag tone={entry.status === 'confirmed' ? 'ok' : 'warn'}>{entry.status === 'confirmed' ? '确认稿' : '待确认'}</Tag> : null}
+              </div>
+              {entry ? <small className={styles.hint}>{SOUND_LABELS[entry.soundMode]}</small> : null}
+              {entryJobs.map((job) => {
+                const cuts = job.cuts;
+                const boundaries = cuts?.status === 'succeeded' ? [0, ...cuts.cuts, cuts.durationUs] : [];
+                return <div key={job.id} className={styles.queueJob}>
+                  <div className={styles.jobHead}>
+                    <span className={`${styles.hint} tnum`}>{job.model} · {job.durationSec} 秒 · {job.aspectRatio}</span>
+                    <Tag tone={STATUS_TONE[job.status]}>{STATUS_LABEL[job.status]}</Tag>
+                  </div>
+                  {boundaries.length > 1 ? <div className={styles.queueShots} aria-label={`${code} 镜头`}>
+                    {boundaries.slice(0, -1).map((start, index) => <button key={start} type="button"
+                      style={{ flexGrow: boundaries[index + 1] - start }}
+                      onClick={() => onReview(code, `s${index + 1}`)}>
+                      <strong>镜头 {index + 1}</strong>
+                      <small className="tnum">{((boundaries[index + 1] - start) / 1e6).toFixed(2)} 秒</small>
+                    </button>)}
+                  </div> : null}
+                  {cuts?.status === 'failed' ? <p className={styles.hintWarn}>切点识别失败（{cuts.errorMessage || '原因未知'}），可在审片时手动切分。</p>
+                    : job.status === 'succeeded' && cuts?.status !== 'succeeded' ? <p className={styles.hint}>正在识别实际切点…</p> : null}
+                  {job.status === 'failed' ? <p className={styles.hintFail}>{job.errorMessage || '生成失败，可以单独重试。'}</p> : null}
+                  {job.status === 'failed' && job.videoJobId ? <ToolbarButton disabled={submitting}
+                    onClick={() => void retry(job.videoJobId!)}>重试 {code}</ToolbarButton> : null}
+                  {job.videoUrl ? <>
+                    <div className={styles.inlineActions}>
+                      <ToolbarButton icon="chevron-right" onClick={() => onReview(code)}>审片 {code}</ToolbarButton>
+                    </div>
+                    <details className={styles.queuePreview}>
+                      <summary>预览原片</summary>
+                      <video className={styles.jobVideo} src={job.videoUrl} controls preload="none" />
+                    </details>
+                  </> : null}
+                </div>;
+              })}
+              {entry ? <div className={styles.inlineActions}>
+                <ToolbarButton icon="text" onClick={() => void openPrompt(entry)}>核对 {code} 提示词</ToolbarButton>
+                <ToolbarButton icon="mic" onClick={() => onAdjustSound(code)}>调整声音</ToolbarButton>
+              </div> : null}
+            </article>;
+          })}
+        </div>}
+      </section>
+    </div>
+    {promptReview ? <Dialog open title={`核对 ${promptReview.code} 提示词`} width="wide" onClose={closePrompt}
+      description={`${effectiveDurationSec} 秒 · ${effectiveAspectRatio}`}
+      footer={<div className={styles.inlineActions}>
+        <ToolbarButton onClick={() => setPromptReview({ ...promptReview, text: promptReview.original })}>保留原稿</ToolbarButton>
+        <ToolbarButton onClick={() => setPromptReview({ ...promptReview, text: promptReview.suggested })}>采用建议</ToolbarButton>
+        <ToolbarButton onClick={closePrompt}>取消</ToolbarButton>
+        <ToolbarButton variant="primary" onClick={() => void confirmPrompt()}>确认本条参数</ToolbarButton>
+      </div>}>
+      <details><summary>查看原确认稿</summary><pre className={styles.promptPreview}>{promptReview.original}</pre></details>
+      <label className={styles.field}><span>建议稿，可继续编辑</span>
+        <textarea aria-label="视频提示词复核稿" rows={10} className="input-field" value={promptReview.text}
+          onChange={(event) => setPromptReview({ ...promptReview, text: event.target.value })} />
+      </label>
       {error ? <p className={styles.hintFail} role="alert">{error}</p> : null}
-
-      <GroupHeading>逐条核对</GroupHeading>
-      <GroupList>
-        {entries.map((entry) => <GroupRow key={entry.id} label={entry.code} hint={STRUCTURE_LABELS[entry.structure]}>
-          <Tag tone={entry.status === 'confirmed' ? 'ok' : 'warn'}>
-            {entry.status === 'confirmed' ? '确认稿' : '待确认'}
-          </Tag>
-        </GroupRow>)}
-      </GroupList>
-      {entries.some((entry) => entry.soundMode === 'tts')
-        ? <NarrationPanel projectId={state.project.id} bodyDurationSec={effectiveDurationSec} />
-        : null}
-    </div>
-
-    <div className={styles.generationMain}>
-      <GroupHeading>创作队列</GroupHeading>
-      {loading ? <div className={styles.center}><div className={styles.spinner} />读取队列…</div> : jobs.length === 0 ? (
-        <EmptyState
-          icon="film"
-          title="还没有生成任务"
-          description={ready ? '选好通道后点「生成」，每条成片会提交一个整片任务。' : '先把每条脚本确认完，才能提交整批生成。'}
-        />
-      ) : <div className={styles.jobList}>
-        {jobs.map((job) => <div key={job.id} className={styles.jobCard}>
-          <div className={styles.jobHead}>
-            <b>{job.entryCode}</b>
-            <Tag tone={STATUS_TONE[job.status]}>{STATUS_LABEL[job.status]}</Tag>
-            <small>{provider?.model || job.model} · {job.durationSec}s · {job.aspectRatio}</small>
-          </div>
-          {job.videoUrl ? <video className={styles.jobVideo} src={job.videoUrl} controls preload="metadata" /> : null}
-          {job.status === 'failed' ? <p className={styles.hintFail}>{job.errorMessage || '生成失败，可以单独重试。'}</p> : null}
-          {job.cuts ? <p className={styles.jobCuts}>
-            {job.cuts.status === 'succeeded'
-              ? `切点：${job.cuts.cuts.length > 0 ? job.cuts.cuts.map((cut) => `${(cut / 1e6).toFixed(2)}s`).join('、') : '一镜到底'}`
-              : job.cuts.status === 'failed'
-                ? `切点识别失败（${job.cuts.errorMessage || '原因未知'}），保留整条原片，可手动加切点。`
-                : '正在识别实际切点…'}
-          </p> : null}
-        </div>)}
-      </div>}
-    </div>
-  </div>;
+    </Dialog> : null}
+  </section>;
 }

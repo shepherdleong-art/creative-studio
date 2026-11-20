@@ -13,15 +13,6 @@ import {
 } from '@/lib/project-production-identity';
 import type { WorkspaceRole } from '@/lib/workspace-navigation';
 
-interface Provider {
-  id: string;
-  name: string;
-  model: string;
-  type: string;
-  hasApiKey?: boolean;
-  enabled?: number | boolean;
-}
-
 interface SessionUser { displayName: string; role: WorkspaceRole }
 
 /**
@@ -38,7 +29,6 @@ export default function OneClickFilmNewPage() {
   const [editorName, setEditorName] = useState('');
   const [session, setSession] = useState<SessionUser | null>(null);
   const [editorTouched, setEditorTouched] = useState(false);
-  const [providers, setProviders] = useState<Provider[]>([]);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [submitted, setSubmitted] = useState(false);
@@ -53,10 +43,6 @@ export default function OneClickFilmNewPage() {
         setEditorName((current) => (current.trim() ? current : body.user?.displayName ?? ''));
       })
       .catch(() => {});
-    void fetch('/api/providers', { cache: 'no-store' })
-      .then((response) => (response.ok ? response.json() : []))
-      .then((list: Provider[]) => setProviders(Array.isArray(list) ? list : []))
-      .catch(() => setProviders([]));
     return () => { cancelled = true; };
   }, []);
 
@@ -90,11 +76,6 @@ export default function OneClickFilmNewPage() {
     setSubmitted(true);
     setError('');
     if (missing.length > 0) return;
-    const provider = providers.find((item) => item.enabled !== false && item.enabled !== 0 && item.hasApiKey);
-    if (!provider) {
-      setError('还没有可用的图片供应商，请先在供应商配置里填好 API Key。');
-      return;
-    }
     setCreating(true);
     try {
       const response = await fetch('/api/projects', {
@@ -103,14 +84,9 @@ export default function OneClickFilmNewPage() {
         body: JSON.stringify({
           storeCode,
           productCode: productCode.trim(),
-          productSubmodel: '',
           productionType,
           editorName: editorName.trim(),
           workflowType: 'one_click_film',
-          providerId: provider.id,
-          model: provider.model,
-          aspectRatio: '1:1',
-          resolution: '1k',
         }),
       });
       const body = await response.json() as { id?: string; message?: string; error?: string };

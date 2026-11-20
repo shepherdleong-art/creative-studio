@@ -1,8 +1,20 @@
 import type Database from 'better-sqlite3';
 import { videoDurationOptions, describeVideoDurationOptions } from '../video-duration.ts';
 import { videoReferenceCapability } from '../video-reference-contract.ts';
-import { getVideoTailFrameCapability } from '../video-model-capabilities.ts';
 import { OneClickFilmError } from './errors.ts';
+import { getVideoAdapter } from '../video-providers/index.ts';
+import { seedanceContract } from '../video-providers/seedance-contract.ts';
+import { parseUsageSnapshot } from '../usage-snapshot.ts';
+import { calculateUsageCostMicros } from '../usage-pricing.ts';
+import { videoJobUsageMeasurement } from '../usage-video-measurement.ts';
+
+export function estimateFrozenVideoCost(usageSnapshot: unknown, durationSec: number): number | null {
+  const parsed = parseUsageSnapshot(usageSnapshot);
+  if (!parsed.ok) return null;
+  const { snapshot } = parsed.parsed;
+  const quantity = videoJobUsageMeasurement(snapshot, durationSec)?.quantity;
+  return quantity === undefined ? null : calculateUsageCostMicros(snapshot.priceComponents, quantity);
+}
 
 /**
  * 第三步的模型/参数能力（06）。
@@ -49,16 +61,15 @@ function labelFor(key: OneClickFilmModelKey | 'other', fallback: string): string
 
 export function listVideoModelOptions(db: Database.Database): VideoModelOption[] {
   const rows = db.prepare(`
-    SELECT id, name, type, defaultModel, apiKey, keyEnv, enabled
+    SELECT id, name, type, defaultModel, apiKey, apiKeyEnv, enabled
     FROM video_providers WHERE enabled = 1 ORDER BY name
   `).all() as Array<{
-    id: string; name: string; type: string; defaultModel: string; apiKey: string; keyEnv: string; enabled: number;
+    id: string; name: string; type: string; defaultModel: string; apiKey: string; apiKeyEnv: string; enabled: number;
   }>;
   return rows.map((row) => {
     const durations = [...videoDurationOptions(row.type, row.defaultModel)];
     const reference = videoReferenceCapability(row.type, row.defaultModel);
     const key = keyFor(row.defaultModel);
-    const tail = getVideoTailFrameCapability(row.type, row.defaultModel);
     return {
       key,
       label: labelFor(key, row.name),
@@ -71,8 +82,8 @@ export function listVideoModelOptions(db: Database.Database): VideoModelOption[]
       aspectRatios: reference.supported ? [...reference.aspectRatios] : ['3:4', '9:16', '16:9', '1:1'],
       resolutions: reference.supported ? [...reference.resolutions] : [],
       // 样片只在 Seedance 2.5 的支持通道开放；其余只能直出。
-      modes: key === 'seedance-2.5' && tail.supported !== false ? ['draft', 'direct'] : ['direct'],
-      hasApiKey: Boolean((row.apiKey || '').trim() || (row.keyEnv || '').trim()),
+      modes: seedanceContract(row.defaultModel)?.draft && getVideoAdapter(row.type)?.submitFinal ? ['draft', 'direct'] : ['direct'],
+      hasApiKey: Boolean(row.apiKey?.trim() || (row.apiKeyEnv && process.env[row.apiKeyEnv]?.trim())),
     };
   });
 }

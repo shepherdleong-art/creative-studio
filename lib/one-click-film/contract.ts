@@ -22,6 +22,9 @@ export const STRUCTURE_LABELS: Record<StoryStructure, string> = {
 /** 自动搭配顺序：与原型一致，按场景 → 结果 → 痛点循环。 */
 const AUTO_STRUCTURE_ORDER: StoryStructure[] = ['scene', 'result', 'problem'];
 
+export const REWORK_VIDEO_PROMPT_LIMIT = 8000;
+export const SCRIPT_TITLE_LIMIT = 60;
+
 export const SOUND_MODES = ['native', 'tts', 'none'] as const;
 export type SoundMode = (typeof SOUND_MODES)[number];
 

@@ -64,7 +64,7 @@ async function __teamRoutePOST(
         points: merged,
       });
       return NextResponse.json({
-        analysis: { ...updated, points: listSellingPoints(db, analysisId) },
+        analysis: { ...updated, points: listSellingPoints(db, updated.id) },
         confirmed,
       });
     }
@@ -80,13 +80,14 @@ async function __teamRoutePOST(
       throw new OneClickFilmError('invalid_input', '存在不属于当前项目的素材图片');
     }
 
-    // 同一组图片已有成功结果：直接复用，重复提交不重复计费。
+    // 同一组图片正在处理或已成功时复用，避免断线重发另开一笔调用。
     const reusable = db.prepare(`
       SELECT id FROM one_click_film_analyses
-      WHERE runId = ? AND status = 'succeeded' AND sourceImageIdsJson = ?
+      WHERE runId = ? AND status IN ('running','succeeded') AND sourceImageIdsJson = ?
       ORDER BY versionNumber DESC LIMIT 1
     `).get(run.id, JSON.stringify(imageIds)) as { id: string } | undefined;
     if (reusable) {
+      db.prepare(`UPDATE one_click_film_runs SET currentAnalysisId=? WHERE id=?`).run(reusable.id, run.id);
       const existing = getAnalysis(db, reusable.id)!;
       return NextResponse.json({ analysis: { ...existing, points: listSellingPoints(db, existing.id) }, reused: true });
     }
@@ -117,7 +118,7 @@ async function __teamRoutePOST(
   }
 }
 
-/** 手动改卖点文字/勾选：只更新当前分析版本，不新建版本。 */
+/** 未确认的分析可以保存草稿，已确认的分析只能另存新版本。 */
 async function __teamRoutePATCH(
   request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
@@ -134,6 +135,7 @@ async function __teamRoutePATCH(
     if (!analysis || analysis.projectId !== projectId) {
       throw new OneClickFilmError('not_found', '分析版本不存在或不属于当前项目', 404);
     }
+    if (analysis.confirmedAt) throw new OneClickFilmError('invalid_input', '请通过确认创建新的卖点版本');
     const rawPoints = Array.isArray(body.points) ? body.points : [];
     const merged = listSellingPoints(db, analysisId).map((point, index) => {
       const incoming = rawPoints[index] as Record<string, unknown> | undefined;

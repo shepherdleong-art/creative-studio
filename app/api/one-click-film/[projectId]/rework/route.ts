@@ -5,21 +5,22 @@ import { requireAccessContext } from '@/lib/media-core/access-context';
 import { getRunForProject } from '@/lib/one-click-film/store';
 import {
   adoptCandidate,
-  createCandidate,
   listCandidates,
   listVersions,
+  restoreFilmVersion,
   revertAdoption,
-  setCandidateResult,
   setCandidateTrim,
   type ReworkReference,
 } from '@/lib/one-click-film/rework';
-import { planHdSources, registerHdSources } from '@/lib/one-click-film/hd';
+import { getRedrawQuote, submitRework, syncRework } from '@/lib/one-click-film/rework-generation';
+import { approveHd, currentHdPlan, submitHdConversions, syncHdConversions } from '@/lib/one-click-film/hd-production';
 import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-click-film/http';
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
+import { bodyWithCandidate, getFilmPreview } from '@/lib/one-click-film/composition';
 
 /** 局部返工、等长采用、撤销/恢复与高清来源清单。 */
 async function __teamRouteGET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
   try {
@@ -30,9 +31,13 @@ async function __teamRouteGET(
     if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
     const run = getRunForProject(db, projectId);
     if (!run) return NextResponse.json({ candidates: [], hd: null });
-    let hd = null;
-    try { hd = planHdSources(db, run); } catch { hd = null; }
-    return NextResponse.json({ candidates: listCandidates(db, run), hd });
+    await syncRework(db, run);
+    syncHdConversions(db, run);
+    return NextResponse.json({
+      candidates: listCandidates(db, run), hd: currentHdPlan(db, run),
+      versions: listVersions(db, run, request.nextUrl.searchParams.get('entryId') ?? ''),
+      redraw: getRedrawQuote(db, run, request.nextUrl.searchParams.get('reviewJobId') ?? ''),
+    });
   } catch (error) {
     return jsonError(error);
   }
@@ -55,39 +60,31 @@ async function __teamRoutePOST(
 
     if (action === 'create') {
       const references = Array.isArray(body.references) ? body.references as ReworkReference[] : [];
-      const candidate = createCandidate(db, {
+      if (body.redrawPrompt !== undefined && typeof body.redrawPrompt !== 'string') {
+        throw new OneClickFilmError('invalid_input', '整条重抽的提示词必须是文本');
+      }
+      const candidate = await submitRework(db, {
         run,
-        entryId: String(body.entryId ?? ''),
-        entryCode: String(body.entryCode ?? ''),
         reviewJobId: String(body.reviewJobId ?? ''),
         shotId: String(body.shotId ?? ''),
-        replaceStartUs: Number(body.replaceStartUs),
-        replaceEndUs: Number(body.replaceEndUs),
-        minimumGenerationUs: Number(body.minimumGenerationUs) || undefined,
-        prompt: String(body.prompt ?? ''),
+        prompt: String(body.prompt ?? '').trim().slice(0, 4000),
+        redrawPrompt: body.redrawPrompt,
         references,
-        providerId: String(body.providerId ?? ''),
-        model: String(body.model ?? ''),
+        requestKey: typeof body.requestKey === 'string' ? body.requestKey.slice(0, 100) : undefined,
       });
       return NextResponse.json({ candidate });
-    }
-    if (action === 'result') {
-      setCandidateResult(db, {
-        run,
-        candidateId: String(body.candidateId ?? ''),
-        status: body.status === 'ready' ? 'ready' : body.status === 'failed' ? 'failed' : 'running',
-        localVideoPath: typeof body.localVideoPath === 'string' ? body.localVideoPath : undefined,
-        durationUs: Number(body.durationUs) || undefined,
-        errorMessage: typeof body.errorMessage === 'string' ? body.errorMessage : undefined,
-      });
-      return NextResponse.json({ candidates: listCandidates(db, run) });
     }
     if (action === 'trim') {
       setCandidateTrim(db, { run, candidateId: String(body.candidateId ?? ''), trimStartUs: Number(body.trimStartUs) });
       return NextResponse.json({ candidates: listCandidates(db, run) });
     }
-    if (action === 'adopt') {
-      adoptCandidate(db, { run, candidateId: String(body.candidateId ?? '') });
+    if (action === 'preview' || action === 'adopt') {
+      const candidateId = String(body.candidateId ?? '');
+      const trimStartUs = typeof body.trimStartUs === 'number' ? body.trimStartUs : undefined;
+      if (action === 'preview') {
+        return NextResponse.json({ previewUrl: await getFilmPreview(db, run, bodyWithCandidate(db, run, candidateId, trimStartUs)) });
+      }
+      adoptCandidate(db, { run, candidateId, trimStartUs });
       return NextResponse.json({ candidates: listCandidates(db, run) });
     }
     if (action === 'revert') {
@@ -102,10 +99,16 @@ async function __teamRoutePOST(
     if (action === 'versions') {
       return NextResponse.json({ versions: listVersions(db, run, String(body.entryId ?? '')) });
     }
-    if (action === 'plan-hd') {
-      const plan = planHdSources(db, run);
-      if (body.register === true) registerHdSources(db, { run, sources: plan.sources });
-      return NextResponse.json({ hd: plan });
+    if (action === 'restore-version') {
+      restoreFilmVersion(db, run, String(body.reviewJobId ?? ''), String(body.versionId ?? ''));
+      return NextResponse.json({ candidates: listCandidates(db, run) });
+    }
+    if (action === 'convert-hd' || action === 'approve-hd') {
+      const entryCode = String(body.entryCode ?? '');
+      syncHdConversions(db, run);
+      if (action === 'convert-hd') await submitHdConversions(db, run, entryCode);
+      else await approveHd(db, run, entryCode);
+      return NextResponse.json({ hd: currentHdPlan(db, run) });
     }
     throw new OneClickFilmError('invalid_input', '不支持的返工操作');
   } catch (error) {

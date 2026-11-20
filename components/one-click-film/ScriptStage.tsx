@@ -1,10 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { EmptyState, GroupHeading, GroupList, GroupRow, Segmented, Tag } from '@/components/ui/Appearance';
+import { EmptyState, Tag, ToolbarButton } from '@/components/ui/Appearance';
 import {
   ONE_CLICK_FILM_MAX_ENTRIES,
   ONE_CLICK_FILM_MIN_ENTRIES,
+  SCRIPT_TITLE_LIMIT,
   SOUND_LABELS,
   SOUND_MODES,
   STRUCTURE_LABELS,
@@ -15,7 +16,10 @@ import {
   type StructurePlanMode,
 } from '@/lib/one-click-film/contract';
 import type { FilmEntry, FilmState } from './types';
+import { NarrationPanel } from './NarrationPanel';
 import styles from './one-click-film.module.css';
+
+type ScriptDraft = Pick<FilmEntry, 'title' | 'outline' | 'narration' | 'promptText'>;
 
 /**
  * 第二步 · 生成脚本：整批设置（数量、结构、声音）与逐条编辑分开。
@@ -25,10 +29,16 @@ export function ScriptStage({
   state,
   busy,
   onReload,
+  focusCode,
+  onContinue,
+  onBack,
 }: {
   state: FilmState;
   busy: boolean;
   onReload: () => Promise<void>;
+  focusCode?: string;
+  onContinue?: () => void;
+  onBack: () => void;
 }) {
   const analysis = state.analysis;
   const entries = state.entries;
@@ -36,26 +46,22 @@ export function ScriptStage({
   const [structureMode, setStructureMode] = useState<StructurePlanMode>('auto');
   const [batchStructure, setBatchStructure] = useState<StoryStructure>('scene');
   const [individualEdits, setIndividualEdits] = useState<Array<StoryStructure | 'auto'>>([]);
-  const [soundMode, setSoundMode] = useState<SoundMode>('native');
-  const [activeCode, setActiveCode] = useState(entries[0]?.code ?? '');
+  const [soundMode, setSoundMode] = useState<SoundMode>(entries[0]?.soundMode ?? 'native');
+  const [activeCode, setActiveCode] = useState(focusCode ?? entries[0]?.code ?? '');
   const [error, setError] = useState('');
   const [working, setWorking] = useState('');
-  const [edits, setEdits] = useState<{ key: string; outline: string; narration: string; promptText: string } | null>(null);
+  const [edits, setEdits] = useState<(ScriptDraft & { key: string }) | null>(null);
   const [expanded, setExpanded] = useState(false);
 
   const active = entries.find((entry) => entry.code === activeCode) ?? entries[0] ?? null;
   const individual = Array.from({ length: count }, (_, index) => individualEdits[index] ?? 'auto');
   // 草稿以「条目 + 版本」为键：切换条目或重新生成后自动回到该版本原文，无需 effect 同步。
   const draftKey = active ? `${active.id}:${active.scriptRevision}:${active.status}` : '';
-  const draft = edits?.key === draftKey
-    ? { outline: edits.outline, narration: edits.narration, promptText: edits.promptText }
-    : { outline: active?.outline ?? '', narration: active?.narration ?? '', promptText: active?.promptText ?? '' };
-  const setDraft = (
-    updater: { outline: string; narration: string; promptText: string }
-      | ((current: { outline: string; narration: string; promptText: string }) => { outline: string; narration: string; promptText: string }),
-  ) => {
-    const next = typeof updater === 'function' ? updater(draft) : updater;
-    setEdits({ key: draftKey, ...next });
+  const draft: ScriptDraft = edits?.key === draftKey
+    ? { title: edits.title, outline: edits.outline, narration: edits.narration, promptText: edits.promptText }
+    : { title: active?.title ?? '', outline: active?.outline ?? '', narration: active?.narration ?? '', promptText: active?.promptText ?? '' };
+  const setDraft = (updater: (current: ScriptDraft) => ScriptDraft) => {
+    setEdits({ key: draftKey, ...updater(draft) });
   };
 
   if (!analysis?.confirmedAt) {
@@ -106,7 +112,7 @@ export function ScriptStage({
   const entryAction = async (entry: FilmEntry, action: 'save' | 'confirm' | 'redraft', patch?: Record<string, unknown>) => {
     setWorking(`${action}:${entry.code}`);
     try {
-      await post(`/api/one-click-film/${state.project.id}/scripts/${entry.code}`, { action, ...(patch ?? {}) });
+      await post(`/api/one-click-film/${state.project.id}/scripts/${entry.code}`, { action, revision: entry.scriptRevision, ...(patch ?? {}) });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -126,59 +132,58 @@ export function ScriptStage({
   };
 
   const confirmedCount = entries.filter((entry) => entry.status === 'confirmed').length;
-  const pending = entries.filter((entry) => entry.status !== 'confirmed');
+  const ttsEntries = entries.filter((entry) => entry.soundMode === 'tts');
+  const selectedPoints = analysis.points.filter((point) => point.selected).length;
 
   return <div className={styles.scriptStage}>
-    <div className={styles.scriptSide}>
-      <GroupHeading>整批设置</GroupHeading>
-      <GroupList>
-        <GroupRow label="成片数量" hint={`${ONE_CLICK_FILM_MIN_ENTRIES}–${ONE_CLICK_FILM_MAX_ENTRIES} 条`}>
-          <select
-            aria-label="成片数量"
-            className="input-field w-24"
-            value={count}
-            onChange={(event) => setCount(Number(event.target.value))}
-          >
-            {Array.from({ length: ONE_CLICK_FILM_MAX_ENTRIES }, (_, index) => index + 1).map((value) => (
-              <option key={value} value={value}>{value} 条</option>
-            ))}
-          </select>
-        </GroupRow>
-        <GroupRow label="结构" stacked>
-          <Segmented<StructurePlanMode>
-            value={structureMode}
-            onChange={setStructureMode}
-            label="结构搭配方式"
-            size="small"
-            options={[
-              { value: 'auto', label: '自动搭配' },
-              { value: 'batch', label: '整批指定' },
-              { value: 'individual', label: '逐条指定' },
-            ]}
-          />
-          {structureMode === 'batch' ? <select
-            aria-label="整批结构"
-            className="input-field mt-2"
-            value={batchStructure}
-            onChange={(event) => setBatchStructure(event.target.value as StoryStructure)}
-          >
-            {STORY_STRUCTURES.map((structure) => (
-              <option key={structure} value={structure}>{STRUCTURE_LABELS[structure]}</option>
-            ))}
-          </select> : null}
-        </GroupRow>
-        <GroupRow label="声音" stacked>
-          <Segmented<SoundMode>
-            value={soundMode}
-            onChange={setSoundMode}
-            label="配音方式"
-            size="small"
-            options={SOUND_MODES.map((mode) => ({ value: mode, label: SOUND_LABELS[mode] }))}
-          />
-        </GroupRow>
-      </GroupList>
+    <header className={styles.stageTitle}>
+      <div>
+        <h2>生成脚本</h2>
+        <p className={styles.hint}>{analysis.confirmedProductName || analysis.productName} · 已采用 {selectedPoints} 项卖点</p>
+      </div>
+      <div className={styles.inlineActions}>
+        <ToolbarButton icon="chevron-left" onClick={onBack}>返回分析内容</ToolbarButton>
+        <ToolbarButton icon="chevron-right" variant="primary" disabled={entries.length === 0 || confirmedCount !== entries.length || Boolean(working)}
+          onClick={onContinue}>继续生成视频</ToolbarButton>
+      </div>
+    </header>
 
-      {structureMode === 'individual' ? <div className={styles.individualList}>
+    <section className={styles.scriptSettings} aria-labelledby="film-script-settings">
+      <h3 id="film-script-settings" className={styles.panelHeading}>脚本设置</h3>
+      <div className={styles.scriptFields}>
+        <label className={styles.field}>
+          <span>视频结构</span>
+          <select className="input-field" aria-label="视频结构" value={structureMode}
+            onChange={(event) => setStructureMode(event.target.value as StructurePlanMode)}>
+            <option value="auto">自动搭配</option>
+            <option value="batch">整批指定</option>
+            <option value="individual">逐条指定</option>
+          </select>
+        </label>
+        <label className={styles.field}>
+          <span>配音方式</span>
+          <select className="input-field" aria-label="配音方式" value={soundMode}
+            onChange={(event) => setSoundMode(event.target.value as SoundMode)}>
+            {SOUND_MODES.map((mode) => <option key={mode} value={mode}>{SOUND_LABELS[mode]}</option>)}
+          </select>
+        </label>
+        <label className={styles.field}>
+          <span>成片数量</span>
+          <select className="input-field" aria-label="成片数量" value={count} onChange={(event) => setCount(Number(event.target.value))}>
+            {Array.from({ length: ONE_CLICK_FILM_MAX_ENTRIES - ONE_CLICK_FILM_MIN_ENTRIES + 1 }, (_, index) => index + ONE_CLICK_FILM_MIN_ENTRIES)
+              .map((value) => <option key={value} value={value}>{value} 条</option>)}
+          </select>
+        </label>
+        {structureMode === 'batch' ? <label className={styles.field}>
+          <span>整批结构</span>
+          <select className="input-field" aria-label="整批结构" value={batchStructure}
+            onChange={(event) => setBatchStructure(event.target.value as StoryStructure)}>
+            {STORY_STRUCTURES.map((structure) => <option key={structure} value={structure}>{STRUCTURE_LABELS[structure]}</option>)}
+          </select>
+        </label> : null}
+      </div>
+
+      {structureMode === 'individual' ? <div className={styles.individualList} role="group" aria-label="逐条视频结构">
         {Array.from({ length: count }, (_, index) => (
           <label key={index} className={styles.individualRow}>
             <span>F{String(index + 1).padStart(2, '0')}</span>
@@ -200,24 +205,26 @@ export function ScriptStage({
           </label>
         ))}
       </div> : null}
-
-      <button type="button" className="cap cap-primary w-full" disabled={busy || Boolean(working)} onClick={() => void applyPlan()}>
-        {working === 'apply' ? '应用中…' : '应用设置并生成脚本'}
-      </button>
-      <button type="button" className="cap w-full" disabled={busy || Boolean(working) || entries.length === 0} onClick={() => void redraftAll()}>
-        {working === 'redraft-all' ? '重写中…' : '重新生成全部'}
-      </button>
-      <p className={styles.hint}>
-        应用数量或结构时，仍适用的条目会沿用自己的手稿、配音和确认记录。
-      </p>
-    </div>
-
-    <div className={styles.scriptMain}>
-      <div className={styles.scriptListHead}>
-        <b>脚本 · 已确认 {confirmedCount}/{entries.length}</b>
-        <small>{pending.length > 0 ? `还有 ${pending.map((entry) => entry.code).join('、')} 待确认` : '全部确认，可以继续生成视频'}</small>
+      <div className={styles.scriptSettingsFoot}>
+        {entries.length > 0 ? <p className={styles.hint}>适用的手稿、配音及确认记录会随条目保留。</p> : null}
+        <div className={styles.inlineActions}>
+          {entries.length > 0 ? <ToolbarButton icon="retry" disabled={busy || Boolean(working)} onClick={() => void redraftAll()}>
+            {working === 'redraft-all' ? '重写中…' : '重新生成全部'}
+          </ToolbarButton> : null}
+          <ToolbarButton icon="sparkle" variant="primary" disabled={busy || Boolean(working)} onClick={() => void applyPlan()}>
+            {working === 'apply' ? '生成中…' : '应用设置并生成脚本'}
+          </ToolbarButton>
+        </div>
       </div>
-      {entries.length === 0 ? <EmptyState icon="sparkle" title="还没有脚本" description="在上方设定数量与结构，然后应用设置。" /> : (
+    </section>
+    {error ? <p className={styles.hintFail} role="alert">{error}</p> : null}
+
+    {active ? <div className={styles.scriptDrafts}>
+      <nav className={styles.scriptMain} aria-label="本批脚本">
+        <div className={styles.scriptListHead}>
+          <h3 className={styles.panelHeading}>本批脚本</h3>
+          <small className="tnum">{confirmedCount} / {entries.length} 已确认</small>
+        </div>
         <div className={styles.scriptList}>
           {entries.map((entry) => <button
             key={entry.id}
@@ -233,11 +240,8 @@ export function ScriptStage({
             </Tag>
           </button>)}
         </div>
-      )}
-    </div>
-
-    <div className={styles.scriptEditor}>
-      {!active ? <EmptyState icon="logs" title="选中一条脚本" description="左侧列表里点 F01 或 F02 查看大纲、口播和分镜全文。" /> : <>
+      </nav>
+      <section className={styles.scriptEditor} aria-label={`${active.code} 脚本编辑`}>
         <div className={styles.editorHead}>
           <b>{active.code} · {STRUCTURE_LABELS[active.structure]}</b>
           <Tag tone={active.status === 'confirmed' ? 'ok' : active.status === 'draft' ? 'run' : 'warn'}>
@@ -246,27 +250,30 @@ export function ScriptStage({
           <small>{SOUND_LABELS[active.soundMode]} · 第 {active.scriptRevision + 1} 版</small>
         </div>
         <label className={styles.field}>
-          <span>大纲</span>
+          <span>成片标题</span>
+          <input className="input-field" maxLength={SCRIPT_TITLE_LIMIT} value={draft.title}
+            onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
+        </label>
+        <label className={styles.field}>
+          <span>内容大纲</span>
           <textarea className="input-field" rows={3} value={draft.outline} onChange={(event) => setDraft((current) => ({ ...current, outline: event.target.value }))} />
         </label>
         <label className={styles.field}>
-          <span>口播</span>
+          <span>口播文案</span>
           <textarea className="input-field" rows={4} value={draft.narration} onChange={(event) => setDraft((current) => ({ ...current, narration: event.target.value }))} />
         </label>
-        <div className={styles.field}>
+        <div className={styles.scriptPrompt}>
           <div className={styles.fieldHead}>
-            <span>分镜提示词全文</span>
+            <h3 className={styles.panelHeading}>分镜提示词</h3>
             <button type="button" className="cap" onClick={() => setExpanded((value) => !value)}>
               {expanded ? '收起' : '查看与编辑'}
             </button>
           </div>
-          {expanded ? <textarea className="input-field" rows={14} value={draft.promptText} onChange={(event) => setDraft((current) => ({ ...current, promptText: event.target.value }))} /> : (
-            <pre className={styles.promptPreview}>{draft.promptText}</pre>
-          )}
+          {expanded ? <textarea className="input-field" aria-label="分镜提示词全文" rows={12} value={draft.promptText}
+            onChange={(event) => setDraft((current) => ({ ...current, promptText: event.target.value }))} /> : null}
         </div>
-        {error ? <p className={styles.hintFail} role="alert">{error}</p> : null}
         <div className={styles.editorActions}>
-          <button type="button" className="cap" disabled={Boolean(working)} onClick={() => setDraft({ outline: active.outline, narration: active.narration, promptText: active.promptText })}>
+          <button type="button" className="cap" disabled={Boolean(working)} onClick={() => setEdits(null)}>
             取消编辑
           </button>
           <button type="button" className="cap" disabled={Boolean(working)} onClick={() => void entryAction(active, 'save', draft)}>
@@ -279,8 +286,12 @@ export function ScriptStage({
             {working === `confirm:${active.code}` ? '确认中…' : '确认本条'}
           </button>
         </div>
-      </>}
-    </div>
+      </section>
+    </div> : <EmptyState icon="logs" title="还没有脚本" description="应用上方设置后，可逐条编辑大纲、口播和分镜提示词。" />}
+    {ttsEntries.length ? <section className={styles.scriptSettings} aria-label="统一旁白">
+      <NarrationPanel projectId={state.project.id} bodyDurationSec={active?.promptDurationSec ?? 15}
+        entries={ttsEntries} onConfigured={onReload} />
+    </section> : null}
   </div>;
 }
 

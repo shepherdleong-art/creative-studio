@@ -17,6 +17,7 @@ const {
   updatePackagingDraft, listPackaging,
 } = await import('../lib/one-click-film/packaging.ts');
 const { exportEligibility, exportEntries, exportZipEntries, listExports } = await import('../lib/one-click-film/exports.ts');
+const { readFilmBody } = await import('../lib/one-click-film/composition.ts');
 
 // ── 时间基准：正文 0 秒 → 加封面后成片第 20 帧 ──
 assert.deepEqual(filmTimeForBodyTime(0, true), { sec: 0.833, frame: 20 });
@@ -41,7 +42,7 @@ db.exec(`
     providerId TEXT NOT NULL DEFAULT 'p', model TEXT NOT NULL DEFAULT 'm', prompt TEXT NOT NULL DEFAULT ''
   );
   CREATE TABLE video_jobs (
-    id TEXT PRIMARY KEY, projectId TEXT, status TEXT, providerTaskId TEXT, localVideoPath TEXT
+    id TEXT PRIMARY KEY, projectId TEXT, status TEXT, providerTaskId TEXT, localVideoPath TEXT, filmGenerationStage TEXT
   );
   INSERT INTO projects (id, name) VALUES ('proj-1', '云朵床项目');
 `);
@@ -64,11 +65,16 @@ db.prepare(`INSERT INTO one_click_film_video_jobs
   VALUES ('j1', ?, 'proj-1', 'e1', 'F01', 'k1', 'ss1', 'sh1', 'v1', 'succeeded', 'pv', 'seedance', 'direct', '3:4', 15, ?, ?),
          ('j2', ?, 'proj-1', 'e2', 'F02', 'k2', 'ss2', 'sh2', 'v2', 'succeeded', 'pv', 'seedance', 'direct', '3:4', 15, ?, ?)
 `).run(run.id, now, now, run.id, now, now);
-// 真实可读文件，供导出摘要计算。
+// 此处只测登记与版本，实际渲染和真实媒体在员工贯通验收验证。
 const videoDir = path.join(dataRoot, 'storage', 'videos');
 fs.mkdirSync(videoDir, { recursive: true });
 fs.writeFileSync(path.join(videoDir, 'a.mp4'), Buffer.from('fake-video-a'));
 fs.writeFileSync(path.join(videoDir, 'b.mp4'), Buffer.from('fake-video-b'));
+function settleFixtureRender() {
+  const body = readFilmBody(db, run, 'F01')!;
+  db.prepare("UPDATE one_click_film_packaging SET status='ready', relativePath='videos/a.mp4', sourceSignature=? WHERE entryId='e1'")
+    .run(body.signature);
+}
 
 // ── 包装资格：未审片不能包装 ──
 assert.deepEqual(packagingEligibility(db, run, 'F01'), { ready: false, reason: '还没有生成原片' });
@@ -88,7 +94,7 @@ assert.deepEqual(prepared.map((item) => [item.entryCode, item.ok]), [['F01', tru
 const records = listPackaging(db, run);
 assert.equal(records[0]!.title, '把松弛感带回家');
 assert.equal(records[0]!.subtitleCues.length, 2);
-assert.equal(records[0]!.ready, true);
+assert.equal(records[0]!.ready, false, '保存配置就绪不代表渲染完成');
 
 // 只移动花字起点：修订递增，正文时间不变。
 const moved = updatePackagingDraft(db, {
@@ -98,6 +104,8 @@ const moved = updatePackagingDraft(db, {
 assert.equal(moved[0]!.revision, 2);
 assert.equal(moved[0]!.pointCues[0]!.startSec, 4);
 assert.equal(filmTimeForBodyTime(moved[0]!.pointCues[0]!.startSec, true).frame, 116, '正文 4 秒对应成片第 116 帧');
+assert.equal(moved[0]!.ready, false);
+settleFixtureRender();
 
 // ── 导出资格与幂等 ──
 const eligibility = exportEligibility(db, run);
@@ -117,6 +125,7 @@ assert.equal(repeat.exported[0]!.checksum, firstChecksum);
 
 // 改标题重新包装 → 新记录，旧记录仍可取回。
 updatePackagingDraft(db, { run, entryCode: 'F01', title: '新的标题' });
+settleFixtureRender();
 const second = exportEntries(db, { run, codes: ['F01'] });
 assert.notEqual(second.exported[0]!.id, first.exported[0]!.id, '重新导出形成独立记录');
 const all = listExports(db, run);

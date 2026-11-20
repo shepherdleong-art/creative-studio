@@ -5,11 +5,11 @@ import { requireAccessContext } from '@/lib/media-core/access-context';
 import {
   confirmEntry,
   getRunForProject,
-  redraftEntry,
   updateEntryDraft,
 } from '@/lib/one-click-film/store';
 import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-click-film/http';
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
+import { generateRedraft } from '@/lib/one-click-film/script-generation';
 
 /** 单条脚本：保存草稿、确认、重新生成本条。 */
 async function __teamRoutePOST(
@@ -27,6 +27,7 @@ async function __teamRoutePOST(
     const body = await readJsonBody(request);
     const action = String(body.action ?? 'save');
     const patch = {
+      title: typeof body.title === 'string' ? body.title : undefined,
       outline: typeof body.outline === 'string' ? body.outline : undefined,
       narration: typeof body.narration === 'string' ? body.narration : undefined,
       promptText: typeof body.promptText === 'string' ? body.promptText : undefined,
@@ -35,7 +36,7 @@ async function __teamRoutePOST(
       return NextResponse.json({ entry: confirmEntry(db, { run, code, ...patch }) });
     }
     if (action === 'redraft') {
-      return NextResponse.json({ entry: redraftEntry(db, { run, code }) });
+      return NextResponse.json({ entry: await generateRedraft(db, run, code, typeof body.revision === 'number' ? body.revision : undefined) });
     }
     return NextResponse.json({ entry: updateEntryDraft(db, { run, code, ...patch }) });
   } catch (error) {

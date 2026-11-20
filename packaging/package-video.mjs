@@ -91,6 +91,7 @@ const copyDir = (src, dst) => {
 };
 const workDir = path.join(process.env.CREATIVE_STUDIO_PACKAGING_WORK_ROOT || path.join(process.env.CREATIVE_STUDIO_DATA_ROOT || APP_ROOT, 'storage/packaging/renders'), `_work_${randomUUID()}`);
 fs.mkdirSync(workDir, { recursive: true });
+let renderTemp;
 try {
 copyDir(tplAbs, workDir);
 // 共享字体目录（模板 @font-face 引用 fonts/...，单源分发，避免每个模板重复携带）
@@ -235,8 +236,14 @@ const t0 = Date.now();
 const WIN_HIDE_SHIM = path.join(__dirname, "win-hide-spawn.cjs");
 const renderArgs = ["render", workDir, "--format=webm", "--vp9-cpu-used=6", "-o", overlayWebm];
 if (varsAbs && fs.existsSync(varsAbs)) renderArgs.push("--variables-file", varsAbs);
+// HyperFrames creates its intermediate WebM below os.tmpdir(). Put that directory beside
+// the template copy so child FFmpeg can write it and the template scanner cannot recurse into it.
+renderTemp = fs.mkdtempSync(path.join(path.dirname(workDir), "hf-"));
 const env = {
   ...process.env,
+  TEMP: renderTemp,
+  TMP: renderTemp,
+  TMPDIR: renderTemp,
   HYPERFRAMES_BROWSER_PATH: CHROME,
   HYPERFRAMES_FFMPEG_PATH: FFMPEG,
   HYPERFRAMES_FFPROBE_PATH: FFPROBE,
@@ -276,5 +283,6 @@ console.log(JSON.stringify({
   totalSeconds: Number(totalSec),
 }, null, 2));
 } finally {
+  if (renderTemp) fs.rmSync(renderTemp, { recursive: true, force: true });
   fs.rmSync(workDir, { recursive: true, force: true });
 }

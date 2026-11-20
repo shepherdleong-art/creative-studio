@@ -39,6 +39,8 @@ export interface VideoJobCreationItem {
   referenceAssetIds: string[];
   aspectRatio: string | null;
   resolution: string | null;
+  filmGenerationStage?: 'direct' | 'draft' | 'final-from-draft';
+  filmDraftSourceJobId?: string;
 }
 
 export type VideoJobCreationItemParse =
@@ -265,7 +267,10 @@ export async function createVideoJobsForShot(input: {
     }
     if (item.generationMode === 'image-to-video') {
       if (item.referenceAssetIds.length > 0) return { error: itemError(index, '首尾帧模式不得携带全能参考素材') };
-      return { item, provider, aspectRatio: null, resolution: null, frozen: null };
+      return { item, provider,
+        aspectRatio: item.filmGenerationStage ? item.aspectRatio : null,
+        resolution: item.filmGenerationStage ? item.resolution : null,
+        frozen: null };
     }
     if (item.tailImageId) return { error: itemError(index, '全能参考模式不能携带尾帧图') };
     const capability = videoReferenceCapability(provider.type, provider.model);
@@ -340,8 +345,8 @@ export async function createVideoJobsForShot(input: {
       INSERT INTO video_jobs
         (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt,
          durationSec, generationMode, aspectRatio, resolution, multiShot, createdAt, displayName, openingCode,
-         maxAttempts, unifiedModel, unifiedRuleVersion, unifiedRequestJson)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         maxAttempts, unifiedModel, unifiedRuleVersion, unifiedRequestJson, filmGenerationStage, filmDraftSourceJobId)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertReference = db.prepare(`INSERT INTO video_job_references (jobId, orderIndex, assetId) VALUES (?, ?, ?)`);
     for (const [index, entry] of prepared.entries()) {
@@ -372,6 +377,8 @@ export async function createVideoJobsForShot(input: {
         provider.unified ? UNIFIED_KLING3_MODEL_KEY : null,
         provider.unified ? UNIFIED_MEDIA_RULE_VERSION : null,
         provider.unified && frozen ? JSON.stringify(frozen) : null,
+        item.filmGenerationStage ?? null,
+        item.filmDraftSourceJobId ?? null,
       );
       for (const [orderIndex, asset] of referencesByItem[index].entries()) {
         insertReference.run(videoJobId, orderIndex, asset.id);

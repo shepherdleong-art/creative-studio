@@ -130,7 +130,8 @@
   // 总时长：优先 V.totalSec（预览路由按真实成片注入）；渲染管线会把 data-duration 改写为探针实测时长作兜底
   // （勿反转优先级：模板源硬编码 6s 曾把超窗卖点钳到末帧、尾段全程残留——2026-10-08 验收实锤）
   const totalSec = Number(V.totalSec) > 0 ? Number(V.totalSec) : (parseFloat(rootEl.dataset.duration) || 5);
-  const coverSec = clamp(Number(V.coverSec) || 0.8, 0.3, 2);
+  const coverSec = V.hideCover === true ? 0 : clamp(Number(V.coverSec) || 0.8, 0.3, 2);
+  if (V.hideCover === true) document.querySelector(".stage").style.display = "none";
 
   // 吸色注入（管线封面帧取色，暖色优先深浅对）
   const P = window.__palette || {};

@@ -26,6 +26,7 @@ export interface PromptBuildInput {
   narration: string;
   durationSec: number;
   aspectRatio: string;
+  directions?: string[];
 }
 
 interface Beat {
@@ -71,7 +72,7 @@ export function narrationLines(narration: string): string[] {
 
 export function buildPromptBlocks(input: PromptBuildInput): string[] {
   const focus = input.subject.points[0] || '日常使用体验';
-  const beats = beatsFor(input, focus);
+  const beats = input.directions?.length ? input.directions.map((direction) => ({ direction, weight: 1 })) : beatsFor(input, focus);
   const lines = narrationLines(input.narration);
   const voice = input.sound === 'native'
     ? [
@@ -89,7 +90,7 @@ export function buildPromptBlocks(input: PromptBuildInput): string[] {
       `产品：${input.subject.product}。全片以参考素材为准。`,
       `场景：${input.subject.appearance || '参考素材中的真实使用场景'}。`,
       `卖点：${input.subject.points.join('、')}。`,
-      '画面：第三人称生活流，自然光，动作衔接剪切。避免 POV、内部结构、可读字幕、花字、水印及背景音乐。',
+      '画面：生活流，自然光，动作衔接剪切。不要生成可读字幕、花字、水印或背景音乐。',
     ].join('\n'),
     `【叙事】\n${input.title} · ${STRUCTURE_LABELS[input.structure]}\n${input.angle}\n${input.story}`,
     [`【分镜 · ${beats.length} 镜】`, ...timedLines(beats, input.durationSec, '镜')].join('\n'),

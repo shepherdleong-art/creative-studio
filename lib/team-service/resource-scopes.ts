@@ -65,6 +65,14 @@ const ROOT_RELATIONS: Record<string, { table: string }> = {
 };
 
 const RESOURCE_RELATIONS: Record<string, ResourceRelation> = {
+  one_click_film_run: {
+    table: 'one_click_film_runs', select: 'projectId',
+    parentType: () => 'project', parentId: (row) => String(row.projectId),
+  },
+  one_click_film_analysis: {
+    table: 'one_click_film_analyses', select: 'runId',
+    parentType: () => 'one_click_film_run', parentId: (row) => String(row.runId),
+  },
   image: {
     table: 'image_assets', select: 'projectId',
     parentType: (row) => row.projectId ? 'project' : null,

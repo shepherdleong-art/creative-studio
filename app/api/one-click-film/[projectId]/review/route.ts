@@ -9,8 +9,11 @@ import {
   markShotReview,
   mergeShots,
   splitShot,
+  undoableMergeId,
+  undoMerge,
 } from '@/lib/one-click-film/review';
-import { videoJobFileUrl } from '@/lib/one-click-film/generation';
+import { syncGenerationStatus } from '@/lib/one-click-film/generation';
+import { getFilmPreview, readFilmBody, readyHdPaths, sourceIdsForBody } from '@/lib/one-click-film/composition';
 import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-click-film/http';
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
 
@@ -27,14 +30,19 @@ async function __teamRouteGET(
     if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
     const run = getRunForProject(db, projectId);
     if (!run) return NextResponse.json({ reviews: [] });
-    const reviews = listReviews(db, run).map((review) => {
-      const row = db.prepare(`
-        SELECT vj.localVideoPath FROM one_click_film_video_jobs v
-        LEFT JOIN video_jobs vj ON vj.id = v.videoJobId WHERE v.id = ?
-      `).get(review.jobId) as { localVideoPath: string | null } | undefined;
-      return { ...review, videoUrl: videoJobFileUrl(row?.localVideoPath ?? null) };
-    });
-    return NextResponse.json({ reviews });
+    await syncGenerationStatus(db, run);
+    const reviews = await Promise.all(listReviews(db, run).map(async (review) => {
+      const body = readFilmBody(db, run, review.entryCode);
+      if (!body) return null;
+      const hdReady = body.draft && readyHdPaths(db, run, body).size === sourceIdsForBody(body).length;
+      const videoUrl = await getFilmPreview(db, run, body);
+      return {
+        ...review, entryId: body.entryId, videoUrl, draft: body.draft, hdApproved: body.hdApproved,
+        undoMergeId: undoableMergeId(db, review),
+        hdVideoUrl: hdReady ? await getFilmPreview(db, run, body, true) : null,
+      };
+    }));
+    return NextResponse.json({ reviews: reviews.filter(Boolean) });
   } catch (error) {
     return jsonError(error);
   }
@@ -68,6 +76,9 @@ async function __teamRoutePOST(
           shotIds: Array.isArray(body.shotIds) ? body.shotIds.map(String) : [],
         }),
       });
+    }
+    if (action === 'undo-merge') {
+      return NextResponse.json({ shots: undoMerge(db, { run, jobId, mergeId: String(body.mergeId ?? '') }) });
     }
     if (action === 'mark') {
       return NextResponse.json({

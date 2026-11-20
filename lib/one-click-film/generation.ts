@@ -12,7 +12,8 @@ import { productionParamsFor } from '../team-service/production-defaults.ts';
 import { OneClickFilmError } from './errors.ts';
 import { listEntries, type OneClickFilmEntry, type OneClickFilmRun } from './store.ts';
 import { upsertReviewFromDetection } from './review.ts';
-import { narrationGate } from './tts.ts';
+import { narrationGate, narrationSignature } from './tts.ts';
+import { videoReferenceCapability } from '../video-reference-contract.ts';
 
 /**
  * 确认稿直出原片（05）。
@@ -108,9 +109,10 @@ export function assertEntriesReadyForGeneration(entries: OneClickFilmEntry[]): v
 export function assertEntriesReadyWithNarration(
   db: Database.Database,
   entries: OneClickFilmEntry[],
+  durationSec?: number,
 ): void {
   assertEntriesReadyForGeneration(entries);
-  const problems = narrationGate(db, entries);
+  const problems = narrationGate(db, entries, durationSec);
   if (problems.length > 0) {
     throw new OneClickFilmError('invalid_input', problems.join('；'));
   }
@@ -135,15 +137,15 @@ function ensureShotContainer(db: Database.Database, input: {
       .run(shotSetId, input.run.projectId, `一键成片 · ${input.entry.code}`, input.entry.productNameSnapshot);
     db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourceImageId) VALUES (?, ?, 1, ?)`)
       .run(shotId, shotSetId, input.sourceImageId);
+    access.registerInheritedScope({
+      resourceType: 'shot_set', resourceId: shotSetId,
+      parent: { resourceType: 'project', resourceId: input.run.projectId },
+    });
+    access.registerInheritedScope({
+      resourceType: 'shot', resourceId: shotId,
+      parent: { resourceType: 'shot_set', resourceId: shotSetId },
+    });
   }).immediate();
-  access.registerInheritedScope({
-    resourceType: 'shot_set', resourceId: shotSetId,
-    parent: { resourceType: 'project', resourceId: input.run.projectId },
-  });
-  access.registerInheritedScope({
-    resourceType: 'shot', resourceId: shotId,
-    parent: { resourceType: 'shot_set', resourceId: shotSetId },
-  });
   return { shotSetId, shotId };
 }
 
@@ -173,7 +175,12 @@ export async function submitOneClickFilmGeneration(input: SubmitGenerationInput)
   const entries = input.codes?.length
     ? allEntries.filter((entry) => input.codes!.includes(entry.code))
     : allEntries;
-  assertEntriesReadyWithNarration(db, entries);
+  assertEntriesReadyWithNarration(db, entries, input.durationSec);
+  const analysisId = db.prepare('SELECT currentAnalysisId FROM one_click_film_runs WHERE id=?').pluck().get(input.run.id);
+  const requiresReview = entries.filter((entry) => entry.promptDurationSec !== input.durationSec || entry.promptAspectRatio !== input.aspectRatio
+    || entry.analysisId !== analysisId);
+  if (requiresReview.length) throw new OneClickFilmError('invalid_input',
+    `这些条目的参数或素材分析已变更，请重新复核确认：${requiresReview.map((entry) => entry.code).join('、')}`);
 
   const provider = db.prepare(`SELECT id, name, type, enabled, defaultModel FROM video_providers WHERE id = ?`)
     .get(input.providerId) as { id: string; name: string; type: string; enabled: number; defaultModel: string } | undefined;
@@ -188,6 +195,7 @@ export async function submitOneClickFilmGeneration(input: SubmitGenerationInput)
   for (const entry of entries) {
     const sourceImageId = db.prepare(`
       SELECT id FROM image_assets WHERE projectId = ? AND role = 'input'
+      AND usage IN ('scene_seed', 'detail_page')
       ORDER BY CASE WHEN usage = 'scene_seed' THEN 0 ELSE 1 END, createdAt ASC LIMIT 1
     `).get(input.run.projectId) as { id: string } | undefined;
     if (!sourceImageId) throw new OneClickFilmError('invalid_input', '项目还没有可用作首帧的素材图');
@@ -206,8 +214,16 @@ export async function submitOneClickFilmGeneration(input: SubmitGenerationInput)
       durationSec: input.durationSec,
       aspectRatio: input.aspectRatio,
       mode: input.mode ?? 'direct',
+      analysisId: entry.analysisId,
+      sourceImageId: sourceImageId.id,
+      narrationPath: entry.soundMode === 'tts' ? db.prepare(`
+        SELECT relativePath FROM one_click_film_narrations WHERE entryId=? AND signature=? AND confirmedAt IS NOT NULL
+      `).pluck().get(entry.id, narrationSignature({
+        text: entry.narration, providerId: entry.ttsProviderId, voice: entry.ttsVoice, speed: entry.ttsSpeed,
+      })) as string | undefined : undefined,
     };
-    const requestKey = `${entry.code}:${entry.scriptConfirmedAt ?? ''}:${entry.scriptRevision}:${input.providerId}:${input.durationSec}:${input.aspectRatio}:${input.mode ?? 'direct'}`;
+    const requestKey = JSON.stringify([entry.id, entry.scriptConfirmedAt, entry.scriptRevision, input.providerId,
+      provider.defaultModel, input.durationSec, input.aspectRatio, input.mode ?? 'direct', input.resolution ?? '', sourceImageId.id]);
     const existing = db.prepare(`SELECT id, status FROM one_click_film_video_jobs WHERE runId = ? AND requestKey = ?`)
       .get(input.run.id, requestKey) as { id: string; status: string } | undefined;
     if (existing) {
@@ -216,6 +232,8 @@ export async function submitOneClickFilmGeneration(input: SubmitGenerationInput)
     }
 
     const container = ensureShotContainer(db, { run: input.run, entry, sourceImageId: sourceImageId.id });
+    const reference = videoReferenceCapability(provider.type, provider.defaultModel);
+    const generationMode = reference.supported && provider.type !== 'jimeng' ? 'reference-to-video' : 'image-to-video';
     const created = await createVideoJobsForShot({
       shotSetId: container.shotSetId,
       shotId: container.shotId,
@@ -227,7 +245,8 @@ export async function submitOneClickFilmGeneration(input: SubmitGenerationInput)
         durationSec: input.durationSec,
         tailImageId: null,
         multiShot: null,
-        generationMode: 'image-to-video',
+        generationMode,
+        filmGenerationStage: input.mode ?? 'direct',
         referenceAssetIds: [],
         aspectRatio: input.aspectRatio,
         resolution: input.resolution ?? null,
@@ -241,24 +260,30 @@ export async function submitOneClickFilmGeneration(input: SubmitGenerationInput)
         (id, runId, projectId, entryId, entryCode, requestKey, shotSetId, shotId, videoJobId, status,
          scriptSnapshotJson, model, providerId, providerType, generationMode, aspectRatio, durationSec,
          resolution, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, 'image-to-video', ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       uuidv4(), input.run.id, input.run.projectId, entry.id, entry.code, requestKey,
       container.shotSetId, container.shotId, videoJobId,
       JSON.stringify(snapshot), provider.defaultModel, provider.id, provider.type,
-      input.aspectRatio, input.durationSec, input.resolution ?? '', now, now,
+      input.mode === 'draft' ? 'draft' : generationMode,
+      input.aspectRatio, input.durationSec, input.mode === 'draft' ? '480p' : input.resolution ?? '', now, now,
     );
     submitted.push(entry.code);
   }
 
-  if (getVideoQueueStatus(input.run.projectId) === 'idle') {
+  startOneClickFilmVideoQueue(db, input.run.projectId);
+  return { jobs: listVideoJobs(db, input.run), submitted, reused };
+}
+
+export function startOneClickFilmVideoQueue(db: Database.Database, projectId: string): void {
+  if (getVideoQueueStatus(projectId) === 'idle') {
     const projectRow = db.prepare(`SELECT videoConcurrency FROM projects WHERE id = ?`)
-      .get(input.run.projectId) as { videoConcurrency?: number } | undefined;
+      .get(projectId) as { videoConcurrency?: number } | undefined;
     const concurrency = productionParamsFor(readRuntimeConfig(), {
       videoConcurrency: projectRow?.videoConcurrency,
     }).videoConcurrency;
     runVideoQueue({
-      projectId: input.run.projectId,
+      projectId,
       concurrency,
       timeoutMs: DEFAULT_VIDEO_TIMEOUT_MS,
     }).catch((error) => {
@@ -266,7 +291,6 @@ export async function submitOneClickFilmGeneration(input: SubmitGenerationInput)
     });
   }
 
-  return { jobs: listVideoJobs(db, input.run), submitted, reused };
 }
 
 /** 把队列里的视频任务状态同步到一键成片侧，并对成功媒体做实际切点识别。 */
@@ -291,7 +315,7 @@ export async function syncGenerationStatus(db: Database.Database, run: OneClickF
     if (status !== 'succeeded' || !row.localVideoPath) continue;
     const existing = db.prepare(`SELECT status FROM one_click_film_scene_cuts WHERE videoJobId = ?`)
       .get(row.id) as { status: string } | undefined;
-    if (existing?.status === 'succeeded') continue;
+    if (existing?.status === 'succeeded' || existing?.status === 'failed') continue;
 
     db.prepare(`
       INSERT INTO one_click_film_scene_cuts (id, videoJobId, entryId, status, createdAt, updatedAt)
@@ -338,7 +362,7 @@ export async function syncGenerationStatus(db: Database.Database, run: OneClickF
         new Date().toISOString(),
         row.id,
       );
-      const failedJob = db.prepare(`SELECT entryId, entryCode, durationUs FROM one_click_film_scene_cuts c
+        const failedJob = db.prepare(`SELECT v.entryId, v.entryCode, COALESCE(NULLIF(c.durationUs, 0), v.durationSec * 1000000) as durationUs FROM one_click_film_scene_cuts c
         JOIN one_click_film_video_jobs v ON v.id = c.videoJobId WHERE c.videoJobId = ?`)
         .get(row.id) as { entryId: string; entryCode: string; durationUs: number } | undefined;
       if (failedJob) {

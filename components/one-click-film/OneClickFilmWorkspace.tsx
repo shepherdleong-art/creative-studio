@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import PageToolbar from '@/components/team/PageToolbar';
 import { EmptyState, Segmented, Tag } from '@/components/ui/Appearance';
+import { Icon } from '@/components/ui/Icon';
 import { UploadStage } from './UploadStage';
 import { AnalysisStage } from './AnalysisStage';
 import { ScriptStage } from './ScriptStage';
@@ -19,10 +20,10 @@ import {
 } from './types';
 import styles from './one-click-film.module.css';
 
-/**
- * 一键成片工作台（第一版纵向切片）：上传素材 → 分析内容 → 生成脚本。
- * 三个阶段共用同一个项目上下文，往返时保留本次编辑。
- */
+const MATERIAL_TABS = STAGE_TABS.slice(0, 3);
+const PRODUCTION_STEPS = [{ id: 'materials', label: '素材与脚本' }, ...STAGE_TABS.slice(3)] as const;
+const MATERIAL_ICONS = ['upload', 'search', 'text'] as const;
+
 export function OneClickFilmWorkspace({ projectId }: { projectId: string }) {
   const params = useSearchParams();
   const [stage, setStage] = useState<StageTabId>(() => parseStageTab(params.get('stage')));
@@ -30,6 +31,7 @@ export function OneClickFilmWorkspace({ projectId }: { projectId: string }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
+  const [focus, setFocus] = useState<{ code: string; shotId?: string }>();
 
   const reload = useCallback(async () => {
     try {
@@ -83,6 +85,8 @@ export function OneClickFilmWorkspace({ projectId }: { projectId: string }) {
   }
 
   const confirmed = state.analysis?.confirmedAt ?? null;
+  const inMaterials = MATERIAL_TABS.some((tab) => tab.id === stage);
+  const activeStep = inMaterials ? 'materials' : stage;
 
   return <div className={styles.workspace}>
     <PageToolbar
@@ -96,15 +100,26 @@ export function OneClickFilmWorkspace({ projectId }: { projectId: string }) {
       </div>}
     />
 
-    <div className={styles.tabs}>
-      <Segmented<StageTabId>
-        value={stage}
-        onChange={setStage}
-        label="一键成片子页"
-        options={STAGE_TABS.map((tab) => ({ value: tab.id, label: tab.label }))}
+    <div className={styles.steps}>
+      <span className={styles.createdStep}><span><Icon name="check" size={13} /></span>创建项目</span>
+      <Segmented<'materials' | StageTabId>
+        value={activeStep}
+        onChange={(step) => setStage(step === 'materials' ? (inMaterials ? stage : 'upload') : step)}
+        label="一键成片流程"
+        options={PRODUCTION_STEPS.map((step, index) => ({
+          value: step.id,
+          label: <><span className={styles.stepNumber} aria-hidden="true">{index + 2}</span>{step.label}</>,
+        }))}
       />
-      {error ? <p className={styles.hintFail} role="alert">{error}</p> : null}
     </div>
+    {inMaterials ? <div className={styles.materialTabs}>
+      <Segmented<StageTabId> value={stage} onChange={setStage} label="素材与脚本子页"
+        options={MATERIAL_TABS.map((tab, index) => ({
+          value: tab.id,
+          label: <><Icon name={MATERIAL_ICONS[index]} size={15} />{tab.label}</>,
+        }))} />
+    </div> : null}
+    {error ? <p className={styles.hintFail} role="alert">{error}</p> : null}
 
     {stage === 'upload' ? <UploadStage
       state={state}
@@ -126,12 +141,19 @@ export function OneClickFilmWorkspace({ projectId }: { projectId: string }) {
       state={state}
       busy={false}
       onReload={reload}
+      focusCode={focus?.code}
+      onBack={() => setStage('analysis')}
+      onContinue={() => setStage('generation')}
     /> : null}
 
-    {stage === 'generation' ? <GenerationStage state={state} entries={state.entries} /> : null}
+    {stage === 'generation' ? <GenerationStage state={state} entries={state.entries} onReload={reload}
+      onReview={(code, shotId) => { setFocus({ code, shotId }); setStage('review'); }}
+      onAdjustSound={(code) => { setFocus({ code }); setStage('scripts'); }} /> : null}
 
-    {stage === 'review' ? <ReviewStage state={state} /> : null}
+    {stage === 'review' ? <ReviewStage state={state} focus={focus}
+      onAdjustSound={(code) => { setFocus({ code }); setStage('scripts'); }} /> : null}
 
-    {stage === 'packaging' ? <PackagingStage state={state} /> : null}
+    {stage === 'packaging' ? <PackagingStage state={state}
+      onAdjustSound={(code) => { setFocus({ code }); setStage('scripts'); }} /> : null}
   </div>;
 }

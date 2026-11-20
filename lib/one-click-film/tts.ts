@@ -9,6 +9,7 @@ import { probeDurationSec } from '../ffmpeg.ts';
 import { getFinalEditTtsAdapter, listFinalEditTtsAdapters } from '../media-core/adapters/tts-registry.ts';
 import { OneClickFilmError } from './errors.ts';
 import { getEntry, type OneClickFilmEntry, type OneClickFilmRun } from './store.ts';
+import { registerManagedFile } from '../media-core/access-context.ts';
 
 /**
  * TTS 配音（07）：把每条口播交给共享 TTS 适配器，保存实测时长与确认状态。
@@ -55,11 +56,6 @@ function storageRelative(absolutePath: string): string {
   return path.relative(root, absolutePath).split(path.sep).join('/');
 }
 
-function fileUrl(relativePath: string): string | null {
-  if (!relativePath) return null;
-  return `/api/videos/${relativePath.split('/').map(encodeURIComponent).join('/')}`;
-}
-
 export function listNarrations(db: Database.Database, run: OneClickFilmRun): NarrationRecord[] {
   const rows = db.prepare(`
     SELECT * FROM one_click_film_narrations WHERE runId = ? ORDER BY entryCode ASC, createdAt DESC
@@ -91,7 +87,8 @@ export function listNarrations(db: Database.Database, run: OneClickFilmRun): Nar
       status: row.status,
       listened: Boolean(row.listenedAt),
       confirmed: Boolean(row.confirmedAt),
-      url: row.status === 'ready' ? fileUrl(row.relativePath) : null,
+      url: row.status === 'ready' && row.relativePath
+        ? `/api/one-click-film/${encodeURIComponent(run.projectId)}/narration?audio=${encodeURIComponent(row.id)}` : null,
       errorMessage: row.errorMessage,
       current,
     };
@@ -124,6 +121,23 @@ function providerConfig(db: Database.Database, providerId: string) {
   return row;
 }
 
+export function configureNarrations(db: Database.Database, input: {
+  run: OneClickFilmRun; providerId: string; voice: string; speed: number;
+}): string[] {
+  const provider = listTtsProviders(db).find((item) => item.id === input.providerId);
+  if (!provider?.voices.some((item) => item.id === input.voice) || !Number.isFinite(input.speed) || input.speed < 0.5 || input.speed > 2) {
+    throw new OneClickFilmError('invalid_input', '请选择有效的配音服务、音色及 0.5–2 倍语速');
+  }
+  const rows = db.prepare(`SELECT code FROM one_click_film_entries WHERE runId=? AND retired=0 AND soundMode='tts'
+    AND (ttsProviderId<>? OR ttsVoice<>? OR ttsSpeed<>?)`).all(input.run.id, input.providerId, input.voice, input.speed) as { code: string }[];
+  db.prepare(`
+    UPDATE one_click_film_entries SET ttsProviderId=?, ttsVoice=?, ttsSpeed=?, status='pending',
+      scriptConfirmedAt=NULL, scriptConfirmedJson='{}', updatedAt=datetime('now')
+    WHERE runId=? AND retired=0 AND soundMode='tts' AND (ttsProviderId<>? OR ttsVoice<>? OR ttsSpeed<>?)
+  `).run(input.providerId, input.voice, input.speed, input.run.id, input.providerId, input.voice, input.speed);
+  return rows.map((row) => row.code);
+}
+
 /**
  * 生成一条或整批配音。signature 已存在时复用，不重复计费；
  * 迟到的旧结果仍写回自己的签名行，不会覆盖新版本。
@@ -134,7 +148,7 @@ export async function synthesizeNarrations(input: {
   db?: Database.Database;
 }): Promise<NarrationRecord[]> {
   const db = input.db ?? getDb();
-  const all = db.prepare(`SELECT code FROM one_click_film_entries WHERE runId = ? ORDER BY ordinal`)
+  const all = db.prepare(`SELECT code FROM one_click_film_entries WHERE runId = ? AND retired=0 ORDER BY ordinal`)
     .all(input.run.id) as Array<{ code: string }>;
   const codes = input.codes?.length ? input.codes : all.map((row) => row.code);
 
@@ -152,7 +166,7 @@ export async function synthesizeNarrations(input: {
     const existing = db.prepare(`
       SELECT id, status FROM one_click_film_narrations WHERE entryId = ? AND signature = ?
     `).get(entry.id, signature) as { id: string; status: string } | undefined;
-    if (existing?.status === 'ready') continue;
+    if (existing?.status === 'ready' || existing?.status === 'running') continue;
 
     const now = new Date().toISOString();
     const id = existing?.id ?? uuidv4();
@@ -173,17 +187,17 @@ export async function synthesizeNarrations(input: {
     try {
       const provider = providerConfig(db, providerId);
       const adapter = getFinalEditTtsAdapter(providerId);
-      const outputDir = path.join(dataRoot(), 'storage', 'one-click-film', 'narration', entry.code);
+      const outputDir = path.join(dataRoot(), 'storage', 'one-click-film', 'narration', input.run.id, entry.id, signature);
       fs.mkdirSync(outputDir, { recursive: true });
       const relativeOutputPath = path.join(
         storageRelative(outputDir),
-        `${signature}.mp3`,
+        'narration.wav',
       );
       const absolutePath = path.join(dataRoot(), 'storage', relativeOutputPath);
       const result = await adapter.synthesize({
         provider: {
           baseUrl: provider.baseUrl,
-          apiKey: provider.apiKey,
+          apiKey: provider.apiKey || (provider.keyEnv ? process.env[provider.keyEnv] || '' : ''),
           model: provider.model,
           providerId: provider.id,
           providerName: provider.name,
@@ -194,15 +208,21 @@ export async function synthesizeNarrations(input: {
         segments: [{ segmentId: entry.code, narration: entry.narration }],
         outputDir,
         relativeOutputPath,
-        alignment: { id: 'none', align: async () => ({ segments: [], words: [] }) } as never,
+        alignment: { configured: false, align: async () => [] },
+        usageContext: { projectId: input.run.projectId, refType: 'one-click-film-narration', refId: id },
       });
       const durationSec = result.durationUs > 0 ? result.durationUs / 1e6 : await probeDurationSec(absolutePath);
       const durationUs = Math.max(0, Math.round(durationSec * 1_000_000));
-      db.prepare(`
-        UPDATE one_click_film_narrations
-        SET status = 'ready', relativePath = ?, durationUs = ?, errorMessage = NULL, updatedAt = ?
-        WHERE id = ?
-      `).run(relativeOutputPath, durationUs, new Date().toISOString(), id);
+      if (!durationUs) throw new Error('配音音频无法读取');
+      db.transaction(() => {
+        registerManagedFile({ absolutePath, mimeType: 'audio/wav',
+          references: [{ resourceType: 'project', resourceId: input.run.projectId, role: 'derivative' }] });
+        db.prepare(`
+          UPDATE one_click_film_narrations
+          SET status = 'ready', relativePath = ?, durationUs = ?, errorMessage = NULL, updatedAt = ?
+          WHERE id = ?
+        `).run(relativeOutputPath, durationUs, new Date().toISOString(), id);
+      }).immediate();
     } catch (error) {
       db.prepare(`
         UPDATE one_click_film_narrations SET status = 'failed', errorMessage = ?, updatedAt = ? WHERE id = ?
@@ -225,7 +245,9 @@ export function confirmNarration(db: Database.Database, input: {
     .get(input.narrationId, input.run.id) as { id: string; status: string; listenedAt: string | null } | undefined;
   if (!row) throw new OneClickFilmError('not_found', '配音不存在', 404);
   if (row.status !== 'ready') throw new OneClickFilmError('invalid_input', '配音还没生成完成');
-  if (!input.listened && !row.listenedAt) throw new OneClickFilmError('invalid_input', '请先试听这条配音再确认');
+  if (!row.listenedAt || !listNarrations(db, input.run).find((record) => record.id === row.id)?.current) {
+    throw new OneClickFilmError('invalid_input', '请先试听当前版本的配音再确认');
+  }
   const now = new Date().toISOString();
   db.prepare(`UPDATE one_click_film_narrations SET listenedAt = COALESCE(listenedAt, ?), confirmedAt = ?, updatedAt = ? WHERE id = ?`)
     .run(now, now, now, row.id);
@@ -248,7 +270,7 @@ export function markNarrationListened(db: Database.Database, input: {
 }
 
 /** 整批视频生成前的配音闸门：采用 TTS 的条目必须有当前且已确认的配音，且不超正文时长。 */
-export function narrationGate(db: Database.Database, entries: OneClickFilmEntry[]): string[] {
+export function narrationGate(db: Database.Database, entries: OneClickFilmEntry[], durationSec?: number): string[] {
   const problems: string[] = [];
   for (const entry of entries) {
     if (entry.soundMode !== 'tts') continue;
@@ -262,8 +284,9 @@ export function narrationGate(db: Database.Database, entries: OneClickFilmEntry[
       problems.push(`${entry.code} 需要重新生成并确认配音`);
       continue;
     }
-    if (row.durationUs > entry.promptDurationSec * 1_000_000) {
-      problems.push(`${entry.code} 的配音 ${(row.durationUs / 1e6).toFixed(1)} 秒超过正文 ${entry.promptDurationSec} 秒，请改文案、调语速或选更长正文`);
+    const duration = durationSec ?? entry.promptDurationSec;
+    if (row.durationUs > duration * 1_000_000) {
+      problems.push(`${entry.code} 的配音 ${(row.durationUs / 1e6).toFixed(1)} 秒超过正文 ${duration} 秒，请改文案、调语速或选更长正文`);
     }
   }
   return problems;

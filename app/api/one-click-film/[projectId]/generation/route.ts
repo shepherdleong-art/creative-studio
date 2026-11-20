@@ -11,6 +11,7 @@ import {
 } from '@/lib/one-click-film/generation';
 import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-click-film/http';
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
+import { getFilmPreview, readFilmBody } from '@/lib/one-click-film/composition';
 import {
   assertGenerationSettings,
   listVideoModelOptions,
@@ -48,13 +49,17 @@ async function __teamRouteGET(
         hasApiKey: provider.hasApiKey === 1,
       }));
 
+    const jobs = await Promise.all(listVideoJobs(db, run).map(async (job) => {
+      const body = job.status === 'succeeded' ? readFilmBody(db, run, job.entryCode) : null;
+      const videoUrl = body?.jobId === job.id && body.snapshot.narrationPath
+        ? await getFilmPreview(db, run, { ...body, edits: [], signature: `${body.jobId}:original-narration` })
+        : videoJobFileUrl(job.localVideoPath);
+      return { ...job, localVideoPath: undefined, videoUrl };
+    }));
     return NextResponse.json({
       providers,
       entries: listEntries(db, run.id),
-      jobs: listVideoJobs(db, run).map((job) => ({
-        ...job,
-        videoUrl: videoJobFileUrl(job.localVideoPath),
-      })),
+      jobs,
     });
   } catch (error) {
     return jsonError(error);
@@ -106,7 +111,7 @@ async function __teamRoutePOST(
     });
     return NextResponse.json({
       ...result,
-      jobs: result.jobs.map((job) => ({ ...job, videoUrl: videoJobFileUrl(job.localVideoPath) })),
+      jobs: result.jobs.map((job) => ({ ...job, localVideoPath: undefined, videoUrl: videoJobFileUrl(job.localVideoPath) })),
     });
   } catch (error) {
     return jsonError(error);

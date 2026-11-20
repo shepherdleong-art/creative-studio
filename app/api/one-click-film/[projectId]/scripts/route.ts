@@ -5,15 +5,16 @@ import { requireAccessContext } from '@/lib/media-core/access-context';
 import {
   applyPromptReview,
   applyScriptPlan,
+  confirmEntry,
   getAnalysis,
   getRunForProject,
   listEntries,
   listSellingPoints,
-  redraftAll,
   reviewPrompt,
 } from '@/lib/one-click-film/store';
 import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-click-film/http';
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
+import { generatePlanCopies, generateRedraft } from '@/lib/one-click-film/script-generation';
 
 /**
  * 脚本阶段：应用数量/结构/声音，整批重写，以及生成设置变化后的提示词复核。
@@ -34,7 +35,8 @@ async function __teamRoutePOST(
     const action = String(body.action ?? 'apply');
 
     if (action === 'redraft-all') {
-      return NextResponse.json({ entries: redraftAll(db, run) });
+      for (const entry of listEntries(db, run.id)) await generateRedraft(db, run, entry.code);
+      return NextResponse.json({ entries: listEntries(db, run.id) });
     }
 
     if (action === 'apply-prompt') {
@@ -43,12 +45,13 @@ async function __teamRoutePOST(
       if (!Number.isInteger(durationSec) || durationSec < 2 || durationSec > 60) {
         throw new OneClickFilmError('invalid_input', '正文时长必须是 2–60 的整数秒');
       }
-      const entry = applyPromptReview(db, {
-        run, code,
-        promptText: String(body.promptText ?? ''),
-        durationSec,
-        aspectRatio: String(body.aspectRatio ?? '3:4'),
-      });
+      const entry = db.transaction(() => {
+        applyPromptReview(db, {
+          run, code, promptText: String(body.promptText ?? ''), durationSec,
+          aspectRatio: String(body.aspectRatio ?? '3:4'),
+        });
+        return confirmEntry(db, { run, code });
+      }).immediate();
       return NextResponse.json({ entry });
     }
 
@@ -66,10 +69,12 @@ async function __teamRoutePOST(
       ? body.analysisId
       : run.currentAnalysisId;
     const analysis = analysisId ? getAnalysis(db, analysisId) : null;
-    if (!analysis) throw new OneClickFilmError('invalid_input', '请先完成并确认素材分析');
+    if (!analysis || analysis.runId !== run.id || analysis.id !== run.currentAnalysisId) {
+      throw new OneClickFilmError('invalid_input', '请先完成并确认当前项目的最新素材分析');
+    }
     if (!analysis.confirmedAt) throw new OneClickFilmError('invalid_input', '请先确认产品名称与卖点');
 
-    const result = applyScriptPlan(db, {
+    const input = {
       run,
       analysis,
       points: listSellingPoints(db, analysis.id),
@@ -81,7 +86,9 @@ async function __teamRoutePOST(
         aspectRatio: typeof body.aspectRatio === 'string' ? body.aspectRatio : undefined,
         tts: body.tts as { providerId?: string; voice?: string; speed?: number } | undefined,
       },
-    });
+    };
+    const copies = await generatePlanCopies(db, input);
+    const result = applyScriptPlan(db, { ...input, copies });
     return NextResponse.json(result);
   } catch (error) {
     return jsonError(error);

@@ -20,7 +20,8 @@ export interface HdSource {
   status: 'pending' | 'ready' | 'failed';
   rangeStartUs: number;
   rangeEndUs: number;
-  estimatedCostMicros: number;
+  estimatedCostMicros: number | null;
+  needsCheck?: boolean;
   reusable: boolean;
   errorMessage: string | null;
 }
@@ -123,7 +124,7 @@ export function planHdSources(db: Database.Database, run: OneClickFilmRun): HdPl
 
   return {
     sources,
-    totalEstimatedCostMicros: sources.reduce((sum, source) => sum + source.estimatedCostMicros, 0),
+    totalEstimatedCostMicros: sources.reduce((sum, source) => sum + (source.estimatedCostMicros ?? 0), 0),
     conversions: sources.length,
     blocked,
   };
@@ -149,7 +150,7 @@ export function registerHdSources(db: Database.Database, input: {
       insert.run(
         source.id, input.run.id, source.entryCode, source.sourceVideoJobId,
         source.providerId, source.model, source.accountRef,
-        source.rangeStartUs, source.rangeEndUs, source.estimatedCostMicros, now, now,
+        source.rangeStartUs, source.rangeEndUs, source.estimatedCostMicros ?? 0, now, now,
         input.run.id, source.entryCode,
       );
     }

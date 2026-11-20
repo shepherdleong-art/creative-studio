@@ -42,6 +42,7 @@ export interface FilmEntry {
   structureSource: 'auto' | 'batch' | 'individual';
   soundMode: SoundMode;
   status: 'pending' | 'draft' | 'confirmed';
+  title: string;
   outline: string;
   narration: string;
   promptText: string;

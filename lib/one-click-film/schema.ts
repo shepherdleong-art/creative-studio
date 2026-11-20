@@ -391,6 +391,55 @@ export const ONE_CLICK_FILM_MIGRATIONS: ReadonlyArray<OneClickFilmMigration> = [
         ON one_click_film_exports(runId, createdAt);
     `,
   },
+  {
+    version: 7,
+    sql: `
+      ALTER TABLE one_click_film_entries ADD COLUMN retired INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE one_click_film_candidates ADD COLUMN requestKey TEXT;
+      CREATE UNIQUE INDEX idx_ocf_candidate_request ON one_click_film_candidates(runId, requestKey)
+        WHERE requestKey IS NOT NULL;
+      ALTER TABLE one_click_film_reviews ADD COLUMN hdApprovedSignature TEXT;
+      UPDATE one_click_film_packaging SET status='pending', relativePath='', sourceSignature='';
+    `,
+  },
+  {
+    version: 8,
+    sql: `
+      ALTER TABLE one_click_film_reviews ADD COLUMN supersededAt TEXT;
+      DROP INDEX idx_ocf_review_entry;
+      CREATE UNIQUE INDEX idx_ocf_review_entry_current ON one_click_film_reviews(runId,entryCode)
+        WHERE supersededAt IS NULL;
+    `,
+  },
+  {
+    version: 9,
+    sql: `
+      ALTER TABLE one_click_film_candidates ADD COLUMN reviewSourceId TEXT;
+      ALTER TABLE one_click_film_candidates ADD COLUMN sceneJson TEXT;
+      ALTER TABLE one_click_film_packaging ADD COLUMN audioSignature TEXT;
+    `,
+  },
+  {
+    version: 10,
+    sql: `
+      CREATE TABLE one_click_film_merge_history (
+        id TEXT PRIMARY KEY,
+        reviewJobId TEXT NOT NULL REFERENCES one_click_film_reviews(id) ON DELETE CASCADE,
+        sourceKey TEXT NOT NULL,
+        startUs INTEGER NOT NULL,
+        endUs INTEGER NOT NULL,
+        priorShotsJson TEXT NOT NULL
+      );
+      CREATE INDEX idx_ocf_merge_history_source ON one_click_film_merge_history(reviewJobId, sourceKey);
+    `,
+  },
+  {
+    version: 11,
+    sql: `
+      ALTER TABLE one_click_film_entries ADD COLUMN title TEXT NOT NULL DEFAULT '';
+      ALTER TABLE one_click_film_script_revisions ADD COLUMN title TEXT NOT NULL DEFAULT '';
+    `,
+  },
 ];
 
 export type OneClickFilmSchemaFailureCode =
@@ -483,6 +532,7 @@ function assertTablesExist(db: Database.Database): void {
     'one_click_film_scene_cuts',
     'one_click_film_narrations',
     'one_click_film_reviews',
+    'one_click_film_merge_history',
     'one_click_film_candidates',
     'one_click_film_versions',
     'one_click_film_hd_sources',

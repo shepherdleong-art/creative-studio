@@ -34,7 +34,9 @@ async function __teamRouteGET(
 
     const images = (db.prepare(`
       SELECT id, filename, usage, role, path
-      FROM image_assets WHERE projectId = ? AND role = 'input'
+      FROM image_assets a WHERE projectId = ? AND role = 'input' AND usage IN ('scene_seed','detail_page')
+      ${access.kind === 'team' ? `AND EXISTS (SELECT 1 FROM team_resource_scopes s
+        WHERE s.resourceType='image' AND s.resourceId=a.id AND s.deletedAt IS NULL)` : ''}
       ORDER BY createdAt ASC
     `).all(projectId) as Array<{ id: string; filename: string; usage: string; role: string; path: string }>)
       .map((image) => ({

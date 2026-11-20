@@ -135,6 +135,14 @@ export async function runOneClickFilmAnalysis(input: {
       maxTokens: 4000,
       images: tiles,
       signal: input.signal,
+      usageContext: {
+        enabled: true, projectId: analysis.projectId, refType: 'one-click-film-analysis', refId: analysis.id,
+      },
+      executionContext: {
+        taskId: analysis.id, step: 'analyze',
+        scope: { resourceType: 'project', resourceId: analysis.projectId },
+        inputRevision: analysis.sourceFingerprint,
+      },
     });
 
     const parsed = parseVisionResult(raw);

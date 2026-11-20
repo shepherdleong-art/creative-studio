@@ -234,4 +234,6 @@ export const CORE_DB_MIGRATIONS = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_creation_request
     ON jobs(projectId, creationRequestKey, creationIndex)
     WHERE creationRequestKey IS NOT NULL`,
+  `ALTER TABLE video_jobs ADD COLUMN filmGenerationStage TEXT`,
+  `ALTER TABLE video_jobs ADD COLUMN filmDraftSourceJobId TEXT`,
 ];

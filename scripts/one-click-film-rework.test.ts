@@ -13,7 +13,7 @@ const { ensureOneClickFilmSchemaReady } = await import('../lib/one-click-film/sc
 const { getOrCreateRun } = await import('../lib/one-click-film/store.ts');
 const { upsertReviewFromDetection, approveReview } = await import('../lib/one-click-film/review.ts');
 const {
-  adoptCandidate, createCandidate, listCandidates, listVersions, revertAdoption,
+  adoptCandidate, createCandidate, listCandidates, listVersions, restoreFilmVersion, revertAdoption,
   setCandidateResult, setCandidateTrim,
 } = await import('../lib/one-click-film/rework.ts');
 const { planHdSources } = await import('../lib/one-click-film/hd.ts');
@@ -27,7 +27,7 @@ db.exec(`
     providerId TEXT NOT NULL DEFAULT 'p', model TEXT NOT NULL DEFAULT 'm', prompt TEXT NOT NULL DEFAULT ''
   );
   CREATE TABLE video_jobs (
-    id TEXT PRIMARY KEY, projectId TEXT, status TEXT, providerTaskId TEXT, localVideoPath TEXT
+    id TEXT PRIMARY KEY, projectId TEXT, status TEXT, providerTaskId TEXT, localVideoPath TEXT, errorMessage TEXT
   );
   INSERT INTO projects (id, name) VALUES ('proj-1', '云朵床项目');
 `);
@@ -77,6 +77,11 @@ assert.equal(candidate.references[0]!.purpose, 'appearance');
 
 // 候选还没完成时不能采用。
 assert.throws(() => adoptCandidate(db, { run, candidateId: candidate.id }), /还没生成完成/);
+db.prepare("INSERT INTO video_jobs (id, projectId, status, errorMessage) VALUES ('candidate-job','proj-1','needs_check','等待供应商核对')").run();
+db.prepare("UPDATE one_click_film_candidates SET videoJobId='candidate-job' WHERE id=?").run(candidate.id);
+assert.equal(listCandidates(db, run)[0]?.status, 'needs_check');
+assert.equal(listCandidates(db, run)[0]?.errorMessage, '等待供应商核对');
+db.prepare("UPDATE video_jobs SET status='succeeded', errorMessage=NULL WHERE id='candidate-job'").run();
 
 setCandidateResult(db, {
   run, candidateId: candidate.id, status: 'ready',
@@ -101,6 +106,7 @@ assert.equal(versions[0]!.adopted.length, 1, '采用版本记录了当时的剪�
 
 adoptCandidate(db, { run, candidateId: candidate.id });
 assert.equal(listVersions(db, run, 'e2').length, 3);
+approveReview(db, { run, jobId: 'j2' });
 
 // ── 高清来源：同一来源只列一次，未采用候选不提交 ──
 const unused = createCandidate(db, {
@@ -126,6 +132,25 @@ db.prepare(`UPDATE video_jobs SET providerTaskId = NULL WHERE id = 'v1'`).run();
 const blockedPlan = planHdSources(db, run);
 assert.equal(blockedPlan.blocked[0]!.entryCode, 'F01');
 assert.match(blockedPlan.blocked[0]!.reason, /供应商标识/);
+
+const adoptedVersion = listVersions(db, run, 'e2').at(-1)!;
+adoptCandidate(db, { run, candidateId: candidate.id, trimStartUs: 1_500_000 });
+assert.equal(listCandidates(db, run).find((item) => item.id === candidate.id)?.trimStartUs, 1_500_000);
+assert.equal(listVersions(db, run, 'e2').length, 4, '重新剪裁仍保留一个明确的历史版本');
+assert.throws(() => adoptCandidate(db, { run, candidateId: candidate.id, trimStartUs: 3_000_000 }), /截取范围/);
+assert.equal(listVersions(db, run, 'e2').length, 4);
+assert.equal(listCandidates(db, run).find((item) => item.id === candidate.id)?.trimStartUs, 1_500_000);
+restoreFilmVersion(db, run, 'j2', adoptedVersion.id);
+assert.equal(listCandidates(db, run).find((item) => item.id === candidate.id)?.trimStartUs, 1_000_000);
+
+const stale = createCandidate(db, {
+  run, entryId: 'e2', entryCode: 'F02', reviewJobId: 'j2', shotId: 's2',
+  replaceStartUs: 6_000_000, replaceEndUs: 9_041_667, prompt: '上一帧的候选',
+  references: [], providerId: 'pv', model: 'seedance',
+});
+setCandidateResult(db, { run, candidateId: stale.id, status: 'ready', localVideoPath: '/tmp/stale.mp4', durationUs: 5_000_000 });
+assert.throws(() => adoptCandidate(db, { run, candidateId: stale.id, trimStartUs: 1_000_000 }), /镜头选区已变更/);
+assert.equal(listCandidates(db, run).find((item) => item.id === stale.id)?.trimStartUs, 0, '失败不写入新入点');
 
 db.close();
 fs.rmSync(dataRoot, { recursive: true, force: true });

@@ -7,6 +7,8 @@ import { dataRoot } from '../data-root.ts';
 import { OneClickFilmError } from './errors.ts';
 import type { OneClickFilmRun } from './store.ts';
 import { listPackaging, type PackagingRecord } from './packaging.ts';
+import { filmStoragePath, readFilmBody } from './composition.ts';
+import { registerManagedFile } from '../media-core/access-context.ts';
 
 /**
  * 导出与交付总览（15）。
@@ -76,7 +78,7 @@ export interface ExportEligibility {
 
 /** 全选口径：当前版本已通过、包装修改已保存的合格条目。 */
 export function exportEligibility(db: Database.Database, run: OneClickFilmRun): ExportEligibility[] {
-  const entries = db.prepare(`SELECT code FROM one_click_film_entries WHERE runId = ? ORDER BY ordinal`)
+  const entries = db.prepare(`SELECT code FROM one_click_film_entries WHERE runId = ? AND retired=0 ORDER BY ordinal`)
     .all(run.id) as Array<{ code: string }>;
   const packaging = new Map(listPackaging(db, run).map((record) => [record.entryCode, record]));
   return entries.map(({ code }) => {
@@ -89,38 +91,6 @@ export function exportEligibility(db: Database.Database, run: OneClickFilmRun): 
 
 function sha256File(filePath: string): string {
   return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
-}
-
-/** 数据库里的媒体路径可能是绝对路径，也可能已经带 storage 前缀。 */
-function absoluteStoragePath(value: string): string {
-  const storageRoot = path.join(dataRoot(), 'storage');
-  const normalized = value.replace(/\\/g, '/');
-  const marker = '/storage/';
-  const index = normalized.lastIndexOf(marker);
-  // 数据库里常见三种形态：绝对路径、带 storage 前缀的相对路径、纯相对路径。
-  // 前两种先剥离到 storage 之后，避免把 storage 拼两次。
-  if (normalized.startsWith('storage/')) return path.join(dataRoot(), normalized);
-  if (index >= 0) return path.join(storageRoot, normalized.slice(index + marker.length));
-  if (path.isAbsolute(value)) return value;
-  return path.join(storageRoot, value);
-}
-
-function publishedPath(db: Database.Database, run: OneClickFilmRun, entryCode: string): string {
-  // 交付读取当前采用的成片文件：优先高清结果，其次原片。
-  const hd = db.prepare(`SELECT localVideoPath FROM one_click_film_hd_sources
-    WHERE runId = ? AND entryCode = ? AND status = 'ready' ORDER BY createdAt DESC LIMIT 1`)
-    .get(run.id, entryCode) as { localVideoPath: string } | undefined;
-  if (hd?.localVideoPath) return hd.localVideoPath;
-  const original = db.prepare(`
-    SELECT vj.localVideoPath FROM one_click_film_video_jobs v
-    JOIN video_jobs vj ON vj.id = v.videoJobId
-    WHERE v.runId = ? AND v.entryCode = ? AND vj.status = 'succeeded'
-    ORDER BY v.createdAt DESC LIMIT 1
-  `).get(run.id, entryCode) as { localVideoPath: string } | undefined;
-  if (!original?.localVideoPath) {
-    throw new OneClickFilmError('invalid_input', `${entryCode} 还没有可交付的成片文件`);
-  }
-  return original.localVideoPath;
 }
 
 /**
@@ -150,10 +120,13 @@ export function exportEntries(db: Database.Database, input: {
   fs.mkdirSync(exportDir, { recursive: true });
 
   for (const target of targets) {
+    if (!target.eligible) continue;
     const record = packaging.get(target.entryCode)!;
-    const source = publishedPath(db, input.run, target.entryCode);
-    const absoluteSource = absoluteStoragePath(source);
-    if (!fs.existsSync(absoluteSource)) {
+    const body = readFilmBody(db, input.run, target.entryCode);
+    const source = db.prepare('SELECT relativePath FROM one_click_film_packaging WHERE id=? AND revision=? AND status=\'ready\'')
+      .pluck().get(record.id, record.revision);
+    const absoluteSource = typeof source === 'string' && source ? filmStoragePath(source) : null;
+    if (!body || !absoluteSource || !fs.existsSync(absoluteSource)) {
       failed.push({ entryCode: target.entryCode, reason: '成片文件不存在' });
       continue;
     }
@@ -167,36 +140,45 @@ export function exportEntries(db: Database.Database, input: {
       continue;
     }
 
-    const entry = db.prepare(`SELECT id, scriptRevision, soundMode FROM one_click_film_entries
-      WHERE runId = ? AND code = ?`).get(input.run.id, target.entryCode) as {
-        id: string; scriptRevision: number; soundMode: string;
-      };
+    const id = uuidv4();
     const filename = `${target.entryCode}-${record.title || record.entryCode}-v${record.revision}.mp4`
       .replace(/[\\/:*?"<>|]/g, '_');
-    const relativePath = path.posix.join('one-click-film', 'exports', input.run.id, filename);
+    const relativePath = path.posix.join('one-click-film', 'exports', input.run.id, id, filename);
     const destination = path.join(dataRoot(), 'storage', relativePath);
-    fs.copyFileSync(absoluteSource, destination);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
 
-    const id = uuidv4();
     const versionJson = JSON.stringify({
       entryCode: target.entryCode,
-      promptRevision: entry.scriptRevision,
+      promptRevision: body.snapshot.scriptRevision ?? 0,
+      promptText: body.snapshot.promptText,
+      editSignature: body.signature,
+      narrationPath: body.snapshot.narrationPath,
       packagingRevision: record.revision,
-      soundMode: entry.soundMode,
+      soundMode: body.snapshot.soundMode ?? 'native',
       template: record.template,
     });
-    db.prepare(`
+    const createdAt = new Date().toISOString();
+    try {
+      fs.copyFileSync(absoluteSource, destination, fs.constants.COPYFILE_EXCL);
+      db.transaction(() => {
+        db.prepare(`
       INSERT INTO one_click_film_exports
         (id, runId, projectId, entryId, entryCode, requestKey, title, relativePath, filename, checksum,
          versionJson, createdAt)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id, input.run.id, input.run.projectId, entry.id, target.entryCode, requestKey,
-      record.title, relativePath, filename, checksum, versionJson, new Date().toISOString(),
-    );
+        `).run(id, input.run.id, input.run.projectId, body.entryId, target.entryCode, requestKey,
+          record.title, relativePath, filename, checksum, versionJson, createdAt);
+        registerManagedFile({ absolutePath: destination, mimeType: 'video/mp4',
+          references: [{ resourceType: 'project', resourceId: input.run.projectId, role: 'delivery', pinKind: 'export' }] });
+      }).immediate();
+    } catch (error) {
+      fs.rmSync(destination, { force: true });
+      failed.push({ entryCode: target.entryCode, reason: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
     exported.push(toRecord({
       id, entryCode: target.entryCode, title: record.title, relativePath, filename,
-      checksum, versionJson, createdAt: new Date().toISOString(),
+      checksum, versionJson, createdAt,
     }));
   }
 
@@ -214,9 +196,9 @@ export function exportZipEntries(db: Database.Database, input: {
     WHERE runId = ? AND id IN (${placeholders})`).all(input.run.id, ...input.ids) as Array<{
       filename: string; relativePath: string;
     }>;
-  if (rows.length === 0) throw new OneClickFilmError('not_found', '找不到可下载的交付记录', 404);
+  if (rows.length !== new Set(input.ids).size) throw new OneClickFilmError('not_found', '找不到可下载的交付记录', 404);
   return rows.map((row) => ({
-    filePath: path.join(dataRoot(), 'storage', row.relativePath),
+    filePath: filmStoragePath(row.relativePath),
     filename: row.filename,
   }));
 }

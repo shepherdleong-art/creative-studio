@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { GroupHeading, Tag } from '@/components/ui/Appearance';
 import styles from './one-click-film.module.css';
+import type { FilmEntry } from './types';
 
 interface Narration {
   id: string;
@@ -27,11 +28,17 @@ interface TtsProvider {
  * TTS 试听与确认：只有播放过当前版本的配音才能确认；
  * 超过正文时长时明确提示改文案、调语速或选更长正文。
  */
-export function NarrationPanel({ projectId, bodyDurationSec }: { projectId: string; bodyDurationSec: number }) {
+export function NarrationPanel({ projectId, bodyDurationSec, entries, onConfigured }: {
+  projectId: string; bodyDurationSec: number; entries: FilmEntry[]; onConfigured: () => Promise<void>;
+}) {
   const [providers, setProviders] = useState<TtsProvider[]>([]);
   const [narrations, setNarrations] = useState<Narration[]>([]);
   const [error, setError] = useState('');
   const [working, setWorking] = useState(false);
+  const [settings, setSettings] = useState(() => ({
+    providerId: entries[0]?.ttsProviderId || '', voice: entries[0]?.ttsVoice || '', speed: entries[0]?.ttsSpeed || 1,
+  }));
+  const [configured, setConfigured] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -61,9 +68,13 @@ export function NarrationPanel({ projectId, bodyDurationSec }: { projectId: stri
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      const payload = await response.json() as { message?: string; error?: string };
+      const payload = await response.json() as { message?: string; error?: string; affected?: string[] };
       if (!response.ok) throw new Error(payload.message || payload.error || '操作失败');
       await load();
+      if (payload.affected) {
+        setConfigured(payload.affected.length ? `需要重新配音并确认：${payload.affected.join('、')}` : '配音设置已应用');
+        await onConfigured();
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -73,10 +84,34 @@ export function NarrationPanel({ projectId, bodyDurationSec }: { projectId: stri
 
   return <div className={styles.narrationPanel}>
     <GroupHeading action={<small className={styles.hint}>{providers.length} 个配音服务</small>}>TTS 配音</GroupHeading>
+    <label className={styles.editRow}>配音服务
+      <select aria-label="配音服务" className="input-field" value={settings.providerId} onChange={(event) => {
+        const provider = providers.find((item) => item.id === event.target.value);
+        setSettings({ ...settings, providerId: provider?.id ?? '', voice: provider?.defaultVoice ?? '' });
+      }}>
+        <option value="">请选择</option>
+        {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+      </select>
+    </label>
+    <label className={styles.editRow}>音色
+      <select aria-label="音色" className="input-field" value={settings.voice} onChange={(event) => setSettings({ ...settings, voice: event.target.value })}>
+        {providers.find((provider) => provider.id === settings.providerId)?.voices.map((voice) =>
+          <option key={voice.id} value={voice.id}>{voice.label}</option>)}
+      </select>
+    </label>
+    <label className={styles.editRow}>语速
+      <input aria-label="配音语速" className="input-field" type="number" step="0.05" min="0.5" max="2" value={settings.speed}
+        onChange={(event) => setSettings({ ...settings, speed: Number(event.target.value) })} />
+    </label>
+    <button type="button" className="cap" disabled={working || !settings.providerId}
+      onClick={() => void post({ action: 'configure', ...settings })}>应用配音设置</button>
+    {configured ? <p className={styles.hint} role="status">{configured}</p> : null}
     <button type="button" className="cap" disabled={working} onClick={() => void post({ action: 'synthesize' })}>
       {working ? '生成中…' : '为整批生成配音'}
     </button>
     {error ? <p className={styles.hintFail} role="alert">{error}</p> : null}
+    {entries.map((entry) => <button key={entry.code} type="button" className="cap" disabled={working || !entry.ttsProviderId}
+      onClick={() => void post({ action: 'synthesize', codes: [entry.code] })}>生成 {entry.code} 配音</button>)}
     {narrations.length === 0
       ? <p className={styles.hint}>还没有配音。生成后逐条试听并确认。</p>
       : <div className={styles.narrationList}>
@@ -104,7 +139,7 @@ export function NarrationPanel({ projectId, bodyDurationSec }: { projectId: stri
             <button
               type="button"
               className="cap"
-              disabled={!narration.url || !narration.listened || narration.confirmed || working}
+              disabled={!narration.url || !narration.listened || narration.confirmed || !narration.current || working}
               onClick={() => void post({ action: 'confirm', narrationId: narration.id })}
             >
               {narration.listened ? '确认这条配音' : '先试听再确认'}

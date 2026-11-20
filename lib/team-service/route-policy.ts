@@ -55,6 +55,18 @@ export interface TeamRoutePolicy {
 
 // route+method 是唯一清单来源；分类与 resolver 由下方显式例外和保守推导生成。
 const ROUTE_METHODS: Record<string, string> = {
+  '/api/one-click-film/[projectId]': 'GET',
+  '/api/one-click-film/[projectId]/analysis': 'PATCH POST',
+  '/api/one-click-film/[projectId]/exports': 'GET POST',
+  '/api/one-click-film/[projectId]/exports/zip': 'POST',
+  '/api/one-click-film/[projectId]/generation': 'GET POST',
+  '/api/one-click-film/[projectId]/models': 'GET',
+  '/api/one-click-film/[projectId]/narration': 'GET POST',
+  '/api/one-click-film/[projectId]/packaging': 'GET POST',
+  '/api/one-click-film/[projectId]/review': 'GET POST',
+  '/api/one-click-film/[projectId]/rework': 'GET POST',
+  '/api/one-click-film/[projectId]/scripts': 'GET POST',
+  '/api/one-click-film/[projectId]/scripts/[code]': 'POST',
   '/api/batch-production/assets/filename-description': 'POST',
   '/api/batch-production/assets/import': 'POST',
   '/api/batch-production/assets/[assetId]/preview': 'GET',
@@ -404,7 +416,7 @@ function categoryFor(route: string, method: TeamHttpMethod): TeamRouteCategory {
 export function inferTeamResource(route: string, method: TeamHttpMethod): string {
   const collection = method === 'POST' ? 'create' : 'collection';
   if (route === '/api/projects') return `project_${collection}`;
-  if (route.startsWith('/api/projects/')) return 'project';
+  if (route.startsWith('/api/projects/') || route.startsWith('/api/one-click-film/')) return 'project';
   if (route === '/api/canvas') return `canvas_${collection}`;
   if (route === '/api/canvas/tasks') return 'canvas_task_collection';
   if (route.startsWith('/api/canvas/tasks/')) return 'canvas_task';

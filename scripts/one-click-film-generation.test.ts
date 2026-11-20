@@ -16,7 +16,8 @@ const {
 } = await import('../lib/one-click-film/store.ts');
 const { assertEntriesReadyForGeneration, assertEntriesReadyWithNarration } = await import('../lib/one-click-film/generation.ts');
 const { narrationGate, narrationSignature, confirmNarration } = await import('../lib/one-click-film/tts.ts');
-const { splitShot, mergeShots, approveReview, upsertReviewFromDetection, listReviews, markShotReview } = await import('../lib/one-click-film/review.ts');
+const { splitShot, mergeShots, undoMerge, undoableMergeId, approveReview,
+  upsertReviewFromDetection, listReviews, markShotReview } = await import('../lib/one-click-film/review.ts');
 const { validateGenerationSettings } = await import('../lib/one-click-film/video-models.ts');
 
 const dbPath = path.join(dataRoot, 'workbench.db');
@@ -91,7 +92,7 @@ const gateEntries = entries.map((entry) => ({
   structure: 'scene' as const,
   structureSource: 'auto' as const,
   status: 'confirmed' as const,
-  outline: '', promptText: '', promptBaseline: [], promptAspectRatio: '3:4',
+  title: '', outline: '', promptText: '', promptBaseline: [], promptAspectRatio: '3:4',
   scriptRevision: 0, scriptConfirmedAt: now, analysisId: analysis.id,
   productNameSnapshot: '云朵床', sellingPointsSnapshot: ['卧室放松体验'],
   runId: run.id, projectId: 'proj-1', ordinal: 1, createdAt: now, updatedAt: now,
@@ -104,7 +105,9 @@ assert.throws(
   'TTS 条目缺确认配音时整批提交必须被拦',
 );
 
-confirmNarration(db, { run, narrationId: 'nar-1', listened: true });
+assert.throws(() => confirmNarration(db, { run, narrationId: 'nar-1', listened: true }), /请先试听/);
+db.prepare("UPDATE one_click_film_narrations SET listenedAt=? WHERE id='nar-1'").run(now);
+confirmNarration(db, { run, narrationId: 'nar-1', listened: false });
 assert.deepEqual(narrationGate(db, gateEntries), [], '试听确认后配音闸门放行');
 
 // 口播变化后旧配音不再属于新版本。
@@ -154,6 +157,12 @@ assert.deepEqual(merged.map((shot) => [shot.startUs, shot.endUs]), [
 assert.throws(() => mergeShots(db, { run, jobId: 'job-1', shotIds: ['s1', 's3'] }), /只能合并相邻镜头/);
 
 markShotReview(db, { run, jobId: 'job-1', shotId: 's1', mark: 'ok' });
+const mergeId = undoableMergeId(db, listReviews(db, run)[0]!);
+assert.ok(mergeId);
+const restored = undoMerge(db, { run, jobId: 'job-1', mergeId });
+assert.deepEqual(restored, split.map((shot) => shot.id === 's1' ? { ...shot, reviewMark: 'ok' } : shot));
+assert.equal(undoableMergeId(db, listReviews(db, run)[0]!), null);
+assert.throws(() => undoMerge(db, { run, jobId: 'job-1', mergeId }), /无法撤回/);
 approveReview(db, { run, jobId: 'job-1' });
 assert.equal(listReviews(db, run)[0]!.approved, true);
 
