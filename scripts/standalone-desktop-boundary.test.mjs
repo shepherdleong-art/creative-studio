@@ -111,7 +111,7 @@ try {
   writeFixture(`node_modules/@ffprobe-installer/${process.platform}-${process.arch}/ffprobe.exe`, 'pinned-probe');
   writeFixture('node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64.node');
   writeFixture('node_modules/@img/sharp-win32-x64/lib/libvips-42.dll');
-  for (const file of ['package.json', 'package-lock.json', 'film-runtime.json', 'package-video.mjs', 'win-hide-spawn.cjs', 'templates/overlay-poster/index.html', 'stickers/catalog.json', 'stickers/runtime.js', 'stickers/show/recommend.png', 'fonts/default.ttf', 'node_modules/hyperframes/package.json', 'runtime/chrome-headless-shell/chrome-headless-shell.exe']) {
+  for (const file of ['package.json', 'package-lock.json', 'film-runtime.json', 'package-video.mjs', 'layout-service.mjs', 'auto-layout/runtime.js', 'win-hide-spawn.cjs', 'templates/overlay-poster/index.html', 'stickers/catalog.json', 'stickers/runtime.js', 'stickers/show/recommend.png', 'fonts/default.ttf', 'node_modules/hyperframes/package.json', 'runtime/chrome-headless-shell/chrome-headless-shell.exe']) {
     writeFixture(`packaging/${file}`);
   }
   for (const file of [...CLASSIC_BUILDERS, ...OVERLAY_BUILDERS]) {
@@ -144,6 +144,8 @@ try {
     assert.equal(readFileSync(path.join(standalone, `node_modules/@ffprobe-installer/${process.platform}-${process.arch}/ffprobe.exe`), 'utf8'), 'pinned-probe');
   }
   assert.ok(existsSync(path.join(standalone, 'packaging/templates/overlay-poster/index.html')));
+  assert.ok(existsSync(path.join(standalone, 'packaging/layout-service.mjs')));
+  assert.ok(existsSync(path.join(standalone, 'packaging/auto-layout/runtime.js')));
   assert.ok(existsSync(path.join(standalone, 'packaging/stickers/catalog.json')));
   assert.ok(existsSync(path.join(standalone, 'packaging/stickers/runtime.js')));
   assert.ok(existsSync(path.join(standalone, 'packaging/stickers/show/recommend.png')));

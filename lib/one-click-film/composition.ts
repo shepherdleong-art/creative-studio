@@ -1,3 +1,4 @@
+import { countFilmFrames } from './frames.ts';
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -88,7 +89,7 @@ export function filmAudioSignature(body: FilmBody): string {
 
 export function bodyWithCandidate(db: Database.Database, run: OneClickFilmRun, candidateId: string, trimStartUs?: number): FilmBody {
   const candidate = db.prepare(`
-    SELECT * FROM one_click_film_candidates WHERE runId=? AND id=? AND status='ready'
+    SELECT * FROM one_click_film_candidates WHERE runId=? AND id=? AND status='ready' AND framesVerified=1
   `).get(run.id, candidateId) as {
     id: string; entryCode: string; reviewJobId: string; videoJobId: string; localVideoPath: string;
     replaceStartUs: number; replaceEndUs: number; trimStartUs: number; durationUs: number; shotId: string; reviewSourceId: string | null;
@@ -183,7 +184,7 @@ export async function renderFilmBody(body: FilmBody, output: string, hd?: Map<st
     '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', output,
   ], { timeoutMs: 180_000 });
   const result = await probeVideoMedia(output);
-  if (Math.abs(bodyFrame(result.durationUs) - body.frames) > 0 || !result.hasAudio) throw new Error('合成结果时长或音轨校验失败');
+  if (await countFilmFrames(output) !== body.frames || bodyFrame(result.durationUs) !== body.frames || !result.hasAudio) throw new Error('合成结果时长或音轨校验失败');
 }
 
 const pending = new Map<string, Promise<string>>();
@@ -191,7 +192,7 @@ const pending = new Map<string, Promise<string>>();
 export async function getFilmPreview(db: Database.Database, run: OneClickFilmRun, body: FilmBody, highDefinition = false): Promise<string> {
   if (!body.edits.length && !body.snapshot.narrationPath && !highDefinition) return videoJobFileUrl(body.originalPath)!;
   const hd = highDefinition ? readyHdPaths(db, run, body) : undefined;
-  const signature = createHash('sha256').update(JSON.stringify([body.signature, hd ? [...hd] : null])).digest('hex');
+  const signature = createHash('sha256').update(JSON.stringify(['verified-frames-v1', body.signature, hd ? [...hd] : null])).digest('hex');
   const directory = filmStoragePath(path.join('one-click-film', 'previews', run.id));
   const output = path.join(directory, `${signature}.mp4`);
   let work = pending.get(output);

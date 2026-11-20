@@ -1,3 +1,4 @@
+import { filmAccountRef, verifiedFilmAccount } from './one-click-film/film-account.ts';
 import { videoJobUsageMeasurement } from './usage-video-measurement.ts';
 import { getDb } from './db.ts';
 import { runMediaQueueWorkers } from './media-queue-workers.ts';
@@ -170,6 +171,8 @@ export function _resetRateLimitStateForTest(): void {
 interface VideoJobRecord {
   filmGenerationStage?: 'direct' | 'draft' | 'final-from-draft' | null;
   filmDraftSourceJobId?: string | null;
+  filmCredentialRef?: string | null;
+  filmAccountProviderId?: string | null;
   id: string;
   projectId: string;
   shotSetId: string | null;
@@ -693,8 +696,10 @@ async function runAuthorizedVideoJob(
           multiShot: job.multiShot,
           aspectRatio: job.aspectRatio,
           resolution: job.resolution,
-          filmGenerationStage: job.filmGenerationStage,
-          filmDraftSourceJobId: job.filmDraftSourceJobId,
+          ...(job.filmGenerationStage ? {
+            filmGenerationStage: job.filmGenerationStage,
+            filmDraftSourceJobId: job.filmDraftSourceJobId,
+          } : {}),
         },
         requestSnapshot: {
           providerType: provider!.type, generationMode: job.generationMode,
@@ -920,14 +925,24 @@ async function runAuthorizedVideoJob(
         });
       };
       let submitResult: SubmitVideoResult;
+      const account = job.filmGenerationStage ? filmAccountRef(provider, job.model) : null;
+      if (job.filmCredentialRef && (job.filmCredentialRef !== account || job.filmAccountProviderId !== provider.id)) {
+        throw new Error('原片绑定的生成通道或账号已变更');
+      }
+      if (job.filmGenerationStage === 'draft' && !account) throw new Error('无法核验当前样片通道的上游账号');
       if (job.filmGenerationStage === 'final-from-draft') {
         const source = db.prepare(`
-          SELECT providerTaskId, startedAt FROM video_jobs WHERE id = ? AND projectId = ?
+          SELECT id, providerTaskId, startedAt FROM video_jobs WHERE id = ? AND projectId = ?
           AND providerId = ? AND model = ? AND filmGenerationStage = 'draft' AND status = 'succeeded'
         `).get(job.filmDraftSourceJobId, job.projectId, job.providerId, job.model) as {
+          id: string;
           providerTaskId: string | null; startedAt: string | null;
         } | undefined;
         if (!source?.providerTaskId || !adapter.submitFinal) throw new Error('原样片或绑定的生成通道不可用');
+        const bound = verifiedFilmAccount(db, source.id);
+        if (!bound || bound.ref !== account || bound.providerId !== provider.id) {
+          throw new Error('原样片账号无法核验或已变更，请重新生成样片');
+        }
         if (!source.startedAt || Date.now() - new Date(source.startedAt).getTime() >= 7 * 86_400_000) {
           throw new Error('原样片已过期，请重新生成');
         }
@@ -994,10 +1009,12 @@ async function runAuthorizedVideoJob(
       }
 
       taskId = submitResult.providerTaskId;
-      db.prepare(
-        `UPDATE video_jobs SET providerTaskId = ?, providerStatus = 'submitted', providerRawResponse = ?, startedAt = datetime('now')
-         WHERE id = ?`
-      ).run(taskId, safeJson(submitResult.rawResponse), job.id);
+      db.transaction(() => {
+        db.prepare(`UPDATE video_jobs SET providerTaskId=?, providerStatus='submitted', providerRawResponse=?,
+          startedAt=datetime('now') WHERE id=?`).run(taskId, safeJson(submitResult.rawResponse), job.id);
+        if (account) db.prepare('UPDATE video_jobs SET filmCredentialRef=?, filmAccountProviderId=? WHERE id=?')
+          .run(account, provider.id, job.id);
+      }).immediate();
       // 提交成功:解除该供应商的限流退避计数与任务的重排计数
       providerCooldownStreak.delete(job.providerId);
       jobRateLimitRequeues.delete(job.id);

@@ -236,4 +236,6 @@ export const CORE_DB_MIGRATIONS = [
     WHERE creationRequestKey IS NOT NULL`,
   `ALTER TABLE video_jobs ADD COLUMN filmGenerationStage TEXT`,
   `ALTER TABLE video_jobs ADD COLUMN filmDraftSourceJobId TEXT`,
+  `ALTER TABLE video_jobs ADD COLUMN filmCredentialRef TEXT`,
+  `ALTER TABLE video_jobs ADD COLUMN filmAccountProviderId TEXT`,
 ];

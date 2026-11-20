@@ -263,7 +263,7 @@ export function preparePackaging(db: Database.Database, input: {
       ORDER BY createdAt DESC LIMIT 1
     `).get(entry.id) as { durationUs: number } | undefined;
     const existing = previous.get(entry.code);
-    const subtitleCues = existing?.subtitleCues.length ? existing.subtitleCues : options.subtitles
+    const subtitleCues = existing && (existing.subtitlesPrepared || existing.subtitleCues.length) ? existing.subtitleCues : options.subtitles
       ? buildSubtitleCues({
           narration: entry.narration,
           soundMode: entry.soundMode,

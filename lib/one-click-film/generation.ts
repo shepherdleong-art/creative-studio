@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
 import { getDb } from '../db.ts';
-import { probeVideoMedia } from '../ffmpeg.ts';
+import { countFilmFrames } from './frames.ts';
 import { detectVideoScenes } from '../media-core/scene-detect.ts';
 import { FINAL_EDIT_FPS } from '../media-core/render-contract.ts';
 import { createVideoJobsForShot } from '../video-job-create.ts';
@@ -27,7 +27,7 @@ export interface OneClickFilmVideoJob {
   id: string;
   entryId: string;
   entryCode: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'needs_check' | 'canceled';
   videoJobId: string | null;
   errorMessage: string | null;
   model: string;
@@ -49,7 +49,7 @@ function videoPathOf(db: Database.Database, videoJobId: string | null): string |
 
 export function listVideoJobs(db: Database.Database, run: OneClickFilmRun): OneClickFilmVideoJob[] {
   const rows = db.prepare(`
-    SELECT v.*, vj.localVideoPath, vj.displayName
+    SELECT v.*, vj.status AS queueStatus, vj.localVideoPath, vj.displayName
     FROM one_click_film_video_jobs v
     LEFT JOIN video_jobs vj ON vj.id = v.videoJobId
     WHERE v.runId = ?
@@ -72,7 +72,7 @@ export function listVideoJobs(db: Database.Database, run: OneClickFilmRun): OneC
       id: row.id,
       entryId: row.entryId,
       entryCode: row.entryCode,
-      status: row.status,
+      status: row.queueStatus === 'needs_check' || row.queueStatus === 'canceled' ? row.queueStatus : row.status,
       videoJobId: row.videoJobId,
       errorMessage: row.errorMessage,
       model: row.model,
@@ -123,16 +123,19 @@ function ensureShotContainer(db: Database.Database, input: {
   entry: OneClickFilmEntry;
   sourceImageId: string;
 }): { shotSetId: string; shotId: string } {
-  const existing = db.prepare(`
-    SELECT shotSetId, shotId FROM one_click_film_video_jobs
-    WHERE runId = ? AND entryId = ? ORDER BY createdAt ASC LIMIT 1
-  `).get(input.run.id, input.entry.id) as { shotSetId: string; shotId: string } | undefined;
-  if (existing) return existing;
-
+  const scope = JSON.stringify([input.run.id, input.entry.id, input.sourceImageId]);
+  const shotSetId = uuidv5('film/set/' + scope, uuidv5.URL);
+  const shotId = uuidv5('film/shot/' + scope, uuidv5.URL);
   const access = requireAccessContext();
-  const shotSetId = uuidv4();
-  const shotId = uuidv4();
-  db.transaction(() => {
+  return db.transaction(() => {
+    const existing = db.prepare(`
+      SELECT s.shotSetId, s.id AS shotId FROM shots s JOIN shot_sets ss ON ss.id=s.shotSetId
+      WHERE ss.projectId=? AND (s.id=? OR (s.sourceImageId=?
+        AND s.id IN (SELECT shotId FROM one_click_film_video_jobs WHERE runId=? AND entryId=?)))
+      LIMIT 1
+    `).get(input.run.projectId, shotId, input.sourceImageId, input.run.id, input.entry.id) as
+      { shotSetId: string; shotId: string } | undefined;
+    if (existing) return existing;
     db.prepare(`INSERT INTO shot_sets (id, projectId, name, productCode, category, status) VALUES (?, ?, ?, ?, '', 'draft')`)
       .run(shotSetId, input.run.projectId, `一键成片 · ${input.entry.code}`, input.entry.productNameSnapshot);
     db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourceImageId) VALUES (?, ?, 1, ?)`)
@@ -145,8 +148,8 @@ function ensureShotContainer(db: Database.Database, input: {
       resourceType: 'shot', resourceId: shotId,
       parent: { resourceType: 'shot_set', resourceId: shotSetId },
     });
+    return { shotSetId, shotId };
   }).immediate();
-  return { shotSetId, shotId };
 }
 
 export interface SubmitGenerationInput {
@@ -196,8 +199,9 @@ export async function submitOneClickFilmGeneration(input: SubmitGenerationInput)
     const sourceImageId = db.prepare(`
       SELECT id FROM image_assets WHERE projectId = ? AND role = 'input'
       AND usage IN ('scene_seed', 'detail_page')
+      AND id IN (SELECT value FROM json_each((SELECT sourceImageIdsJson FROM one_click_film_analyses WHERE id=?)))
       ORDER BY CASE WHEN usage = 'scene_seed' THEN 0 ELSE 1 END, createdAt ASC LIMIT 1
-    `).get(input.run.projectId) as { id: string } | undefined;
+    `).get(input.run.projectId, entry.analysisId) as { id: string } | undefined;
     if (!sourceImageId) throw new OneClickFilmError('invalid_input', '项目还没有可用作首帧的素材图');
 
     const snapshot = {
@@ -224,9 +228,9 @@ export async function submitOneClickFilmGeneration(input: SubmitGenerationInput)
     };
     const requestKey = JSON.stringify([entry.id, entry.scriptConfirmedAt, entry.scriptRevision, input.providerId,
       provider.defaultModel, input.durationSec, input.aspectRatio, input.mode ?? 'direct', input.resolution ?? '', sourceImageId.id]);
-    const existing = db.prepare(`SELECT id, status FROM one_click_film_video_jobs WHERE runId = ? AND requestKey = ?`)
-      .get(input.run.id, requestKey) as { id: string; status: string } | undefined;
-    if (existing) {
+    const findExisting = () => db.prepare('SELECT videoJobId FROM one_click_film_video_jobs WHERE runId=? AND requestKey=?')
+      .pluck().get(input.run.id, requestKey) as string | undefined;
+    if (findExisting()) {
       reused.push(entry.code);
       continue;
     }
@@ -234,10 +238,32 @@ export async function submitOneClickFilmGeneration(input: SubmitGenerationInput)
     const container = ensureShotContainer(db, { run: input.run, entry, sourceImageId: sourceImageId.id });
     const reference = videoReferenceCapability(provider.type, provider.defaultModel);
     const generationMode = reference.supported && provider.type !== 'jimeng' ? 'reference-to-video' : 'image-to-video';
+    let wasCreated = false;
     const created = await createVideoJobsForShot({
       shotSetId: container.shotSetId,
       shotId: container.shotId,
+      frozenSourceImageId: sourceImageId.id,
       db,
+      replayJobIds() {
+        const id = findExisting();
+        return id ? [id] : undefined;
+      },
+      onJobsCreated([videoJobId]) {
+        db.prepare(`
+          INSERT INTO one_click_film_video_jobs
+            (id, runId, projectId, entryId, entryCode, requestKey, shotSetId, shotId, videoJobId, status,
+             scriptSnapshotJson, model, providerId, providerType, generationMode, aspectRatio, durationSec,
+             resolution, createdAt, updatedAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          uuidv4(), input.run.id, input.run.projectId, entry.id, entry.code, requestKey,
+          container.shotSetId, container.shotId, videoJobId,
+          JSON.stringify(snapshot), provider.defaultModel, provider.id, provider.type,
+          input.mode === 'draft' ? 'draft' : generationMode,
+          input.aspectRatio, input.durationSec, input.mode === 'draft' ? '480p' : input.resolution ?? '', now, now,
+        );
+        wasCreated = true;
+      },
       items: [{
         prompt: entry.promptText,
         templateId: null,
@@ -253,22 +279,7 @@ export async function submitOneClickFilmGeneration(input: SubmitGenerationInput)
       }],
     });
     if (!created.ok) throw new OneClickFilmError('invalid_input', `${entry.code}：${created.error}`);
-    const videoJobId = created.videoJobIds[0]!;
-
-    db.prepare(`
-      INSERT INTO one_click_film_video_jobs
-        (id, runId, projectId, entryId, entryCode, requestKey, shotSetId, shotId, videoJobId, status,
-         scriptSnapshotJson, model, providerId, providerType, generationMode, aspectRatio, durationSec,
-         resolution, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      uuidv4(), input.run.id, input.run.projectId, entry.id, entry.code, requestKey,
-      container.shotSetId, container.shotId, videoJobId,
-      JSON.stringify(snapshot), provider.defaultModel, provider.id, provider.type,
-      input.mode === 'draft' ? 'draft' : generationMode,
-      input.aspectRatio, input.durationSec, input.mode === 'draft' ? '480p' : input.resolution ?? '', now, now,
-    );
-    submitted.push(entry.code);
+    (wasCreated ? submitted : reused).push(entry.code);
   }
 
   startOneClickFilmVideoQueue(db, input.run.projectId);
@@ -324,17 +335,19 @@ export async function syncGenerationStatus(db: Database.Database, run: OneClickF
     `).run(uuidv4(), row.id, row.entryId, new Date().toISOString(), new Date().toISOString());
 
     try {
-      const probe = await probeVideoMedia(row.localVideoPath);
-      if (!probe.durationUs) throw new Error(probe.errorMessage || '读取原片时长失败');
-      const ranges = await detectVideoScenes({ filePath: row.localVideoPath, durationUs: probe.durationUs });
+      const frames = await countFilmFrames(row.localVideoPath);
+      if (!frames) throw new Error('无法读取原片视频帧');
+      const durationUs = Math.round(frames * 1e6 / FINAL_EDIT_FPS);
+      db.prepare('UPDATE one_click_film_scene_cuts SET durationUs=? WHERE videoJobId=?').run(durationUs, row.id);
+      const ranges = await detectVideoScenes({ filePath: row.localVideoPath, durationUs });
       const cuts = ranges.slice(1).map((range) => range.startUs);
       db.prepare(`
         UPDATE one_click_film_scene_cuts
         SET status = 'succeeded', durationUs = ?, fps = ?, cutsJson = ?, errorMessage = NULL, updatedAt = ?
         WHERE videoJobId = ?
       `).run(
-        probe.durationUs,
-        probe.fps || FINAL_EDIT_FPS,
+        durationUs,
+        FINAL_EDIT_FPS,
         JSON.stringify(cuts),
         new Date().toISOString(),
         row.id,
@@ -346,8 +359,8 @@ export async function syncGenerationStatus(db: Database.Database, run: OneClickF
         entryId: row.entryId,
         entryCode: db.prepare(`SELECT entryCode FROM one_click_film_video_jobs WHERE id = ?`)
           .pluck().get(row.id) as string,
-        durationUs: probe.durationUs,
-        fps: probe.fps || FINAL_EDIT_FPS,
+        durationUs,
+        fps: FINAL_EDIT_FPS,
         cutsUs: cuts,
         detection: cuts.length > 0 ? 'cuts' : 'single',
       });
@@ -389,7 +402,8 @@ export function videoJobFileUrl(localVideoPath: string | null): string | null {
   const marker = '/storage/';
   const index = normalized.lastIndexOf(marker);
   const relative = index >= 0 ? normalized.slice(index + marker.length) : normalized;
-  return `/api/videos/${relative.split('/').map(encodeURIComponent).join('/')}`;
+  const query = relative.startsWith('videos/') ? '?preview=1' : '';
+  return `/api/videos/${relative.split('/').map(encodeURIComponent).join('/')}${query}`;
 }
 
 export { videoPathOf };

@@ -33,7 +33,7 @@ interface VideoJob {
   id: string;
   videoJobId: string | null;
   entryCode: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'needs_check' | 'canceled';
   errorMessage: string | null;
   model: string;
   durationSec: number;
@@ -43,10 +43,10 @@ interface VideoJob {
 }
 
 const STATUS_LABEL: Record<VideoJob['status'], string> = {
-  queued: '排队中', running: '生成中', succeeded: '已生成', failed: '失败',
+  queued: '排队中', running: '生成中', succeeded: '已生成', failed: '失败', needs_check: '待核对', canceled: '已取消',
 };
-const STATUS_TONE: Record<VideoJob['status'], 'idle' | 'run' | 'ok' | 'fail'> = {
-  queued: 'idle', running: 'run', succeeded: 'ok', failed: 'fail',
+const STATUS_TONE: Record<VideoJob['status'], 'idle' | 'run' | 'ok' | 'fail' | 'warn'> = {
+  queued: 'idle', running: 'run', succeeded: 'ok', failed: 'fail', needs_check: 'warn', canceled: 'idle',
 };
 
 /**
@@ -102,7 +102,7 @@ export function GenerationStage({ state, entries, onReview, onAdjustSound, onRel
     return () => clearTimeout(timer);
   }, [state.project.id]);
 
-  const hasActive = jobs.some((job) => job.status === 'queued' || job.status === 'running');
+  const hasActive = jobs.some((job) => job.status === 'queued' || job.status === 'running' || job.status === 'needs_check');
   useEffect(() => {
     if (!hasActive) return;
     const timer = setInterval(() => { void load(); }, 5000);
@@ -317,6 +317,7 @@ export function GenerationStage({ state, entries, onReview, onAdjustSound, onRel
                   </div> : null}
                   {cuts?.status === 'failed' ? <p className={styles.hintWarn}>切点识别失败（{cuts.errorMessage || '原因未知'}），可在审片时手动切分。</p>
                     : job.status === 'succeeded' && cuts?.status !== 'succeeded' ? <p className={styles.hint}>正在识别实际切点…</p> : null}
+                  {job.status === 'needs_check' ? <p className={styles.hintWarn}>{job.errorMessage || '等待核对供应商结果。'}</p> : null}
                   {job.status === 'failed' ? <p className={styles.hintFail}>{job.errorMessage || '生成失败，可以单独重试。'}</p> : null}
                   {job.status === 'failed' && job.videoJobId ? <ToolbarButton disabled={submitting}
                     onClick={() => void retry(job.videoJobId!)}>重试 {code}</ToolbarButton> : null}

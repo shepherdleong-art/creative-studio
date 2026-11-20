@@ -440,6 +440,16 @@ export const ONE_CLICK_FILM_MIGRATIONS: ReadonlyArray<OneClickFilmMigration> = [
       ALTER TABLE one_click_film_script_revisions ADD COLUMN title TEXT NOT NULL DEFAULT '';
     `,
   },
+  {
+    version: 12,
+    sql: `
+      ALTER TABLE one_click_film_candidates ADD COLUMN framesVerified INTEGER NOT NULL DEFAULT 0;
+      UPDATE one_click_film_packaging SET audioSignature=NULL
+        WHERE json_valid(optionsJson) AND json_extract(optionsJson,'$.subtitles')=0 AND subtitleCuesJson='[]';
+      UPDATE one_click_film_packaging SET status='pending', sourceSignature='', relativePath='', revision=revision+1
+        WHERE status='ready';
+    `,
+  },
 ];
 
 export type OneClickFilmSchemaFailureCode =

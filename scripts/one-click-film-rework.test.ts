@@ -152,6 +152,26 @@ setCandidateResult(db, { run, candidateId: stale.id, status: 'ready', localVideo
 assert.throws(() => adoptCandidate(db, { run, candidateId: stale.id, trimStartUs: 1_000_000 }), /镜头选区已变更/);
 assert.equal(listCandidates(db, run).find((item) => item.id === stale.id)?.trimStartUs, 0, '失败不写入新入点');
 
+// A replacement original gets its own edit history even when the old original still has an adopted shot.
+upsertReviewFromDetection(db, {
+  run, jobId: 'j3', entryId: 'e2', entryCode: 'F02',
+  durationUs: 15_000_000, fps: 24, cutsUs: [6_000_000, 9_000_000], detection: 'cuts',
+});
+const replacement = createCandidate(db, {
+  run, entryId: 'e2', entryCode: 'F02', reviewJobId: 'j3', shotId: 's1',
+  replaceStartUs: 0, replaceEndUs: 6_000_000, prompt: '新原片的第一个镜头',
+  references: [], providerId: 'pv', model: 'seedance',
+});
+setCandidateResult(db, { run, candidateId: replacement.id, status: 'ready', localVideoPath: '/tmp/new.mp4', durationUs: 6_000_000 });
+adoptCandidate(db, { run, candidateId: replacement.id });
+const currentVersion = listVersions(db, run, 'e2').at(-1)!;
+assert.deepEqual(currentVersion.adopted.map((edit) => edit.id), [replacement.id]);
+const legacyState = { reviewJobId: 'j3', adopted: [...currentVersion.adopted, ...adoptedVersion.adopted] };
+db.prepare('UPDATE one_click_film_versions SET stateJson=? WHERE id=?').run(JSON.stringify(legacyState), currentVersion.id);
+revertAdoption(db, { run, entryId: 'e2', entryCode: 'F02', shotId: 's1' });
+restoreFilmVersion(db, run, 'j3', currentVersion.id);
+assert.deepEqual(listVersions(db, run, 'e2').at(-1)!.adopted.map((edit) => edit.id), [replacement.id]);
+
 db.close();
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log('one-click-film rework tests passed');

@@ -86,6 +86,7 @@ export function AnalysisStage({
     return <div className={styles.stage}>
       <div className={styles.stageBody}>
         <EmptyState icon="sparkle" title="正在识别素材…" description="读取产品名称、外观线索与卖点来源，稍等一下。" />
+        <button type="button" className="cap" disabled={busy} onClick={onReanalyze}>检查并继续分析</button>
       </div>
     </div>;
   }

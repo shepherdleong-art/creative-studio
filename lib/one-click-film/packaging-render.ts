@@ -1,3 +1,4 @@
+import { countFilmFrames } from './frames.ts';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -157,7 +158,8 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
     const totalFrames = body.frames + introFrames;
     const totalSec = totalFrames / FINAL_EDIT_FPS;
     const refreshTiming = refreshSubtitles || audioSignature !== previousAudioSignature;
-    const subtitle = record.options.subtitles && body.snapshot.soundMode !== 'none'
+    const useSubtitles = record.options.subtitles && body.snapshot.soundMode !== 'none';
+    const subtitle = useSubtitles
       ? refreshTiming ? await timedSubtitles(db, run, body, work) : record.subtitleCues : [];
     const bgm = record.options.bgm ? (await listFilmBgm(db)).find((track) => !record.options.bgmId || track.id === record.options.bgmId) : undefined;
     if (record.options.bgm && !bgm) throw new Error('曲库还没有可用的配乐，请选用已有配乐或关闭 BGM。');
@@ -195,7 +197,7 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
       }
     }
     const result = await probeVideoMedia(videoPath);
-    if (bodyFrame(result.durationUs) !== totalFrames || result.fps !== FINAL_EDIT_FPS || !result.hasAudio) {
+    if (await countFilmFrames(videoPath) !== totalFrames || bodyFrame(result.durationUs) !== totalFrames || result.fps !== FINAL_EDIT_FPS || !result.hasAudio) {
       throw new Error('包装产物帧率、长度或音轨校验失败');
     }
     await fs.rename(videoPath, finalName);
@@ -208,7 +210,8 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
       const updated = db.prepare(`
         UPDATE one_click_film_packaging SET status='ready', relativePath=?, sourceSignature=?, audioSignature=?, subtitleCuesJson=?,
           title=?, pointCuesJson=?, errorMessage=NULL, updatedAt=datetime('now') WHERE id=? AND revision=?
-      `).run(relative, body.signature, audioSignature, JSON.stringify(subtitle), record.title, JSON.stringify(record.pointCues),
+      `).run(relative, body.signature, useSubtitles ? audioSignature : previousAudioSignature,
+        JSON.stringify(useSubtitles ? subtitle : record.subtitleCues), record.title, JSON.stringify(record.pointCues),
         record.id, record.revision);
       if (!updated.changes) throw new Error('已保存了更新的包装版本。');
       registerManagedFile({ absolutePath: finalName, mimeType: 'video/mp4',

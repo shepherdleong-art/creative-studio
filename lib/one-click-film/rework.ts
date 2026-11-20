@@ -73,6 +73,7 @@ interface CandidateRow {
   adoptedAt: string | null;
   errorMessage: string | null;
   createdAt: string;
+  framesVerified: number;
   queueStatus?: string | null;
   queueError?: string | null;
 }
@@ -189,11 +190,11 @@ export function setCandidateResult(db: Database.Database, input: {
   if (!row) throw new OneClickFilmError('not_found', '候选不存在', 404);
   db.prepare(`
     UPDATE one_click_film_candidates
-    SET status = ?, localVideoPath = COALESCE(?, localVideoPath), durationUs = COALESCE(?, durationUs),
+    SET status = ?, framesVerified = ?, localVideoPath = COALESCE(?, localVideoPath), durationUs = COALESCE(?, durationUs),
         errorMessage = ?, updatedAt = ?
     WHERE id = ?
   `).run(
-    input.status, input.localVideoPath ?? null, input.durationUs ?? null,
+    input.status, input.status === 'ready' ? 1 : 0, input.localVideoPath ?? null, input.durationUs ?? null,
     input.errorMessage?.slice(0, 500) ?? null, new Date().toISOString(), input.candidateId,
   );
 }
@@ -228,8 +229,8 @@ function nextVersion(db: Database.Database, entryId: string): number {
 
 function snapshotState(db: Database.Database, run: OneClickFilmRun, entryId: string, reviewJobId?: string): Record<string, unknown> {
   const candidates = db.prepare(`SELECT id, shotId, replaceStartUs, replaceEndUs, trimStartUs, localVideoPath
-    FROM one_click_film_candidates WHERE runId = ? AND entryId = ? AND adoptedAt IS NOT NULL ORDER BY replaceStartUs`)
-    .all(run.id, entryId) as Array<Record<string, unknown>>;
+    FROM one_click_film_candidates WHERE runId = ? AND entryId = ? AND reviewJobId = ? AND adoptedAt IS NOT NULL ORDER BY replaceStartUs`)
+    .all(run.id, entryId, reviewJobId ?? null) as Array<Record<string, unknown>>;
   return { reviewJobId, adopted: candidates };
 }
 
@@ -245,7 +246,7 @@ export function adoptCandidate(db: Database.Database, input: {
     const row = db.prepare(`SELECT * FROM one_click_film_candidates WHERE id = ? AND runId = ?`)
       .get(input.candidateId, input.run.id) as CandidateRow | undefined;
     if (!row) throw new OneClickFilmError('not_found', '候选不存在', 404);
-    if (row.status !== 'ready' || !row.localVideoPath) {
+    if (row.status !== 'ready' || !row.framesVerified || !row.localVideoPath) {
       throw new OneClickFilmError('invalid_input', '候选还没生成完成，不能采用');
     }
     const trimStartUs = input.trimStartUs ?? row.trimStartUs;
@@ -359,6 +360,11 @@ export function restoreFilmVersion(db: Database.Database, run: OneClickFilmRun, 
     if (state.reviewJobId !== reviewJobId && (state.reviewJobId || !state.adopted.length)) {
       throw new OneClickFilmError('invalid_input', '该历史版本所用的原片已变更');
     }
+    // Older snapshots also collected edits from superseded originals of the same entry.
+    const superseded = db.prepare(`SELECT 1 FROM one_click_film_candidates c
+      JOIN one_click_film_reviews r ON r.id=c.reviewJobId AND r.runId=c.runId
+      WHERE c.id=? AND c.runId=? AND c.entryId=? AND r.supersededAt IS NOT NULL`);
+    state.adopted = state.adopted.filter((edit) => !superseded.get(edit.id, run.id, review.entryId));
     const read = db.prepare(`SELECT * FROM one_click_film_candidates
       WHERE id=? AND reviewJobId=? AND runId=? AND status='ready'`);
     const savedCandidates = state.adopted.map((edit) => read.get(edit.id, reviewJobId, run.id) as CandidateRow | undefined);
@@ -368,7 +374,7 @@ export function restoreFilmVersion(db: Database.Database, run: OneClickFilmRun, 
       const candidate = savedCandidates[index];
       const target = candidate?.shotId === 'whole' ? { startUs: 0, endUs: review.durationUs }
         : shots.find((shot) => shot.id === candidate?.shotId);
-      if (!candidate || !target || candidate.replaceStartUs !== target.startUs || candidate.replaceEndUs !== target.endUs
+      if (!candidate || !candidate.framesVerified || !target || candidate.replaceStartUs !== target.startUs || candidate.replaceEndUs !== target.endUs
         || (candidate.shotId !== 'whole' && candidate.reviewSourceId !== sourceId)
         || !candidateFits(candidate, edit.trimStartUs)) {
         throw new OneClickFilmError('invalid_input', '历史版本的选区或候选已不可用');

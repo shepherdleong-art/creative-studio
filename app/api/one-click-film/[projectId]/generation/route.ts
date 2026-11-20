@@ -36,18 +36,10 @@ async function __teamRouteGET(
     if (!run) return NextResponse.json({ providers: [], jobs: [], entries: [] });
 
     await syncGenerationStatus(db, run);
-    const providers = (db.prepare(`
-      SELECT id, name, type, defaultModel, enabled,
-        CASE WHEN TRIM(COALESCE(apiKey, '')) <> '' THEN 1 ELSE 0 END AS hasApiKey
-      FROM video_providers WHERE enabled = 1 ORDER BY name
-    `).all() as Array<{ id: string; name: string; type: string; defaultModel: string; enabled: number; hasApiKey: number }>)
-      .map((provider) => ({
-        id: provider.id,
-        name: provider.name,
-        type: provider.type,
-        model: provider.defaultModel,
-        hasApiKey: provider.hasApiKey === 1,
-      }));
+    const providers = listVideoModelOptions(db).map((option) => ({
+      id: option.providerId, name: option.providerName, type: option.providerType,
+      model: option.model, hasApiKey: option.hasApiKey,
+    }));
 
     const jobs = await Promise.all(listVideoJobs(db, run).map(async (job) => {
       const body = job.status === 'succeeded' ? readFilmBody(db, run, job.entryCode) : null;

@@ -1,3 +1,4 @@
+import { tryFilmRequestLock } from './request-lock.ts';
 import type Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -163,73 +164,79 @@ export async function synthesizeNarrations(input: {
     const signature = narrationSignature({
       text: entry.narration, providerId, voice: entry.ttsVoice, speed: entry.ttsSpeed,
     });
-    const existing = db.prepare(`
-      SELECT id, status FROM one_click_film_narrations WHERE entryId = ? AND signature = ?
-    `).get(entry.id, signature) as { id: string; status: string } | undefined;
-    if (existing?.status === 'ready' || existing?.status === 'running') continue;
-
-    const now = new Date().toISOString();
-    const id = existing?.id ?? uuidv4();
-    if (existing) {
-      db.prepare(`UPDATE one_click_film_narrations SET status = 'running', errorMessage = NULL, updatedAt = ? WHERE id = ?`)
-        .run(now, id);
-    } else {
-      db.prepare(`
-        INSERT INTO one_click_film_narrations
-          (id, runId, projectId, entryId, entryCode, signature, providerId, voice, speed, text, status, createdAt, updatedAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
-      `).run(
-        id, input.run.id, input.run.projectId, entry.id, entry.code, signature,
-        providerId, entry.ttsVoice, entry.ttsSpeed, entry.narration, now, now,
-      );
-    }
-
+    const lock = await tryFilmRequestLock('narration', [entry.id, signature]);
+    if (!lock) continue;
     try {
-      const provider = providerConfig(db, providerId);
-      const adapter = getFinalEditTtsAdapter(providerId);
-      const outputDir = path.join(dataRoot(), 'storage', 'one-click-film', 'narration', input.run.id, entry.id, signature);
-      fs.mkdirSync(outputDir, { recursive: true });
-      const relativeOutputPath = path.join(
-        storageRelative(outputDir),
-        'narration.wav',
-      );
-      const absolutePath = path.join(dataRoot(), 'storage', relativeOutputPath);
-      const result = await adapter.synthesize({
-        provider: {
-          baseUrl: provider.baseUrl,
-          apiKey: provider.apiKey || (provider.keyEnv ? process.env[provider.keyEnv] || '' : ''),
-          model: provider.model,
-          providerId: provider.id,
-          providerName: provider.name,
-          providerType: provider.type,
-        },
-        voice: entry.ttsVoice || adapter.defaultVoice,
-        speed: entry.ttsSpeed || 1,
-        segments: [{ segmentId: entry.code, narration: entry.narration }],
-        outputDir,
-        relativeOutputPath,
-        alignment: { configured: false, align: async () => [] },
-        usageContext: { projectId: input.run.projectId, refType: 'one-click-film-narration', refId: id },
-      });
-      const durationSec = result.durationUs > 0 ? result.durationUs / 1e6 : await probeDurationSec(absolutePath);
-      const durationUs = Math.max(0, Math.round(durationSec * 1_000_000));
-      if (!durationUs) throw new Error('配音音频无法读取');
-      db.transaction(() => {
-        registerManagedFile({ absolutePath, mimeType: 'audio/wav',
-          references: [{ resourceType: 'project', resourceId: input.run.projectId, role: 'derivative' }] });
+      const existing = db.prepare(`
+        SELECT id, status FROM one_click_film_narrations WHERE entryId = ? AND signature = ?
+      `).get(entry.id, signature) as { id: string; status: string } | undefined;
+      if (existing?.status === 'ready') continue;
+
+      const now = new Date().toISOString();
+      const id = existing?.id ?? uuidv4();
+      if (existing) {
+        db.prepare(`UPDATE one_click_film_narrations SET status = 'running', errorMessage = NULL, updatedAt = ? WHERE id = ?`)
+          .run(now, id);
+      } else {
         db.prepare(`
-          UPDATE one_click_film_narrations
-          SET status = 'ready', relativePath = ?, durationUs = ?, errorMessage = NULL, updatedAt = ?
-          WHERE id = ?
-        `).run(relativeOutputPath, durationUs, new Date().toISOString(), id);
-      }).immediate();
-    } catch (error) {
-      db.prepare(`
-        UPDATE one_click_film_narrations SET status = 'failed', errorMessage = ?, updatedAt = ? WHERE id = ?
-      `).run(
-        (error instanceof Error ? error.message : String(error)).slice(0, 500),
-        new Date().toISOString(), id,
-      );
+          INSERT INTO one_click_film_narrations
+            (id, runId, projectId, entryId, entryCode, signature, providerId, voice, speed, text, status, createdAt, updatedAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
+        `).run(
+          id, input.run.id, input.run.projectId, entry.id, entry.code, signature,
+          providerId, entry.ttsVoice, entry.ttsSpeed, entry.narration, now, now,
+        );
+      }
+
+      try {
+        const provider = providerConfig(db, providerId);
+        const adapter = getFinalEditTtsAdapter(providerId);
+        const outputDir = path.join(dataRoot(), 'storage', 'one-click-film', 'narration', input.run.id, entry.id, signature);
+        fs.mkdirSync(outputDir, { recursive: true });
+        const relativeOutputPath = path.join(
+          storageRelative(outputDir),
+          'narration.wav',
+        );
+        const absolutePath = path.join(dataRoot(), 'storage', relativeOutputPath);
+        const result = await adapter.synthesize({
+          provider: {
+            baseUrl: provider.baseUrl,
+            apiKey: provider.apiKey || (provider.keyEnv ? process.env[provider.keyEnv] || '' : ''),
+            model: provider.model,
+            providerId: provider.id,
+            providerName: provider.name,
+            providerType: provider.type,
+          },
+          voice: entry.ttsVoice || adapter.defaultVoice,
+          speed: entry.ttsSpeed || 1,
+          segments: [{ segmentId: entry.code, narration: entry.narration }],
+          outputDir,
+          relativeOutputPath,
+          alignment: { configured: false, align: async () => [] },
+          usageContext: { projectId: input.run.projectId, refType: 'one-click-film-narration', refId: id },
+        });
+        const durationSec = result.durationUs > 0 ? result.durationUs / 1e6 : await probeDurationSec(absolutePath);
+        const durationUs = Math.max(0, Math.round(durationSec * 1_000_000));
+        if (!durationUs) throw new Error('配音音频无法读取');
+        db.transaction(() => {
+          registerManagedFile({ absolutePath, mimeType: 'audio/wav',
+            references: [{ resourceType: 'project', resourceId: input.run.projectId, role: 'derivative' }] });
+          db.prepare(`
+            UPDATE one_click_film_narrations
+            SET status = 'ready', relativePath = ?, durationUs = ?, errorMessage = NULL, updatedAt = ?
+            WHERE id = ?
+          `).run(relativeOutputPath, durationUs, new Date().toISOString(), id);
+        }).immediate();
+      } catch (error) {
+        db.prepare(`
+          UPDATE one_click_film_narrations SET status = 'failed', errorMessage = ?, updatedAt = ? WHERE id = ?
+        `).run(
+          (error instanceof Error ? error.message : String(error)).slice(0, 500),
+          new Date().toISOString(), id,
+        );
+      }
+    } finally {
+      lock.release();
     }
   }
   return listNarrations(db, input.run);

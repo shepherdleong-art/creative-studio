@@ -103,6 +103,24 @@ try {
   assert.equal(atomic.ok, false);
   assert.equal(stored().length, 0, '批量任一参考非法必须整批回滚');
 
+  db.exec('CREATE TABLE film_request_fixture (key TEXT PRIMARY KEY, videoJobId TEXT)');
+  const submitSame = () => createVideoJobsForShot({
+    db, shotSetId: 'set', shotId: 'shot', items: [item({ referenceAssetIds: [] })],
+    replayJobIds() {
+      const id = db.prepare('SELECT videoJobId FROM film_request_fixture WHERE key=?').pluck().get('request');
+      return typeof id === 'string' ? [id] : undefined;
+    },
+    onJobsCreated([id]) { db.prepare('INSERT INTO film_request_fixture VALUES (?,?)').run('request', id); },
+  });
+  const [first, replay] = await Promise.all([submitSame(), submitSame()]);
+  assert.ok(first.ok && replay.ok);
+  assert.deepEqual(first.videoJobIds, replay.videoJobIds);
+  assert.equal(stored().length, 1);
+  await assert.rejects(createVideoJobsForShot({
+    db, shotSetId: 'set', shotId: 'shot', items: [item()], onJobsCreated() { throw new Error('link failed'); },
+  }), /link failed/);
+  assert.equal(stored().length, 1, '登记失败必须回滚同一事务中的共享队列任务');
+  db.exec('DELETE FROM video_jobs');
   const implicit = await create([item({ referenceAssetIds: [] })]);
   assert.equal(implicit.ok, true, '当前分镜直接提供参考图');
   const frozen = stored()[0];
@@ -115,6 +133,12 @@ try {
   assert.equal(latest.ok, true);
   assert.equal(stored()[1].sourceImageId, 'latest');
   assert.equal(stored()[0].sourceImageId, 'source', '切换分镜图不改变旧任务来源');
+  const submitFrozen = (id: string) => createVideoJobsForShot({
+    db, shotSetId: 'set', shotId: 'shot', frozenSourceImageId: id, items: [item({ referenceAssetIds: [] })],
+  });
+  assert.equal((await submitFrozen('source')).ok, true);
+  assert.equal(stored().at(-1)!.sourceImageId, 'source', '返工任务沿用原片的首帧');
+  assert.equal((await submitFrozen('foreign-image')).ok, false);
   db.prepare("UPDATE shots SET latestGeneratedImageId = 'foreign-image' WHERE id = 'shot'").run();
   assert.equal((await create([item({ referenceAssetIds: [] })])).ok, false, '不能借用另一项目图片');
   db.prepare("UPDATE shots SET latestGeneratedImageId = NULL WHERE id = 'shot'").run();

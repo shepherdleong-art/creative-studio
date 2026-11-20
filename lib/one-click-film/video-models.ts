@@ -1,3 +1,7 @@
+import { readRuntimeConfig } from '../team-service/config.ts';
+import { isVisibleVideoProvider } from '../provider-list-visibility.ts';
+import { getVideoProviderConfigState, type VideoProviderEnvConfig } from '../video-auth.ts';
+import { projectTeamVideoModels, unifiedKlingProviderAvailability } from '../media-core/unified-media/video-model-list.ts';
 import type Database from 'better-sqlite3';
 import { videoDurationOptions, describeVideoDurationOptions } from '../video-duration.ts';
 import { videoReferenceCapability } from '../video-reference-contract.ts';
@@ -60,13 +64,17 @@ function labelFor(key: OneClickFilmModelKey | 'other', fallback: string): string
 }
 
 export function listVideoModelOptions(db: Database.Database): VideoModelOption[] {
-  const rows = db.prepare(`
-    SELECT id, name, type, defaultModel, apiKey, apiKeyEnv, enabled
-    FROM video_providers WHERE enabled = 1 ORDER BY name
-  `).all() as Array<{
-    id: string; name: string; type: string; defaultModel: string; apiKey: string; apiKeyEnv: string; enabled: number;
-  }>;
-  return rows.map((row) => {
+  const rows = db.prepare('SELECT * FROM video_providers WHERE enabled=1 ORDER BY name').all() as
+    Array<VideoProviderEnvConfig & { id: string; name: string }>;
+  const mode = readRuntimeConfig().mode;
+  const models = projectTeamVideoModels(rows.filter(isVisibleVideoProvider).map((row) => {
+    const state = getVideoProviderConfigState(row);
+    return { id: row.id, name: row.name, type: row.type, defaultModel: row.defaultModel?.trim() ?? '', configured: state.configured };
+  }), {
+    mode, unifiedAvailable: mode === 'server' && unifiedKlingProviderAvailability(db).some((channel) => channel.configured),
+    unifiedCapabilities: {},
+  });
+  return models.map((row) => {
     const durations = [...videoDurationOptions(row.type, row.defaultModel)];
     const reference = videoReferenceCapability(row.type, row.defaultModel);
     const key = keyFor(row.defaultModel);
@@ -83,7 +91,7 @@ export function listVideoModelOptions(db: Database.Database): VideoModelOption[]
       resolutions: reference.supported ? [...reference.resolutions] : [],
       // 样片只在 Seedance 2.5 的支持通道开放；其余只能直出。
       modes: seedanceContract(row.defaultModel)?.draft && getVideoAdapter(row.type)?.submitFinal ? ['draft', 'direct'] : ['direct'],
-      hasApiKey: Boolean(row.apiKey?.trim() || (row.apiKeyEnv && process.env[row.apiKeyEnv]?.trim())),
+      hasApiKey: row.configured,
     };
   });
 }

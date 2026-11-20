@@ -275,6 +275,15 @@ async function assertOtherSoundModes(media) {
     ff(['-f', 'lavfi', '-i', 'sine=f=660:r=48000:d=15', path.join(root, 'storage', narrationPath)]);
     const local = { id: 'local', videoJobId: 'local', file: media.assets.get('draft-candidate.mp4'), start: 144, end: 216, trim: 24, whole: false };
     const whole = { id: 'redraw', videoJobId: 'redraw', file: media.assets.get('redraw.mp4'), start: 0, end: 360, trim: 0, whole: true };
+    const { countFilmFrames } = await import('../lib/one-click-film/frames.ts');
+    const short = path.join(root, 'two-picture-five-audio.mp4');
+    ff(['-f', 'lavfi', '-i', 'color=white:s=64x64:r=24:d=2', '-f', 'lavfi', '-i', 'anullsrc=d=5',
+      '-c:v', 'libx264', '-c:a', 'aac', short]);
+    assert.equal(await countFilmFrames(short), 48);
+    await assert.rejects(renderFilmBody({
+      originalVideoJobId: 'original', originalPath: media.assets.get('draft.mp4'), frames: 360, snapshot: {},
+      edits: [{ ...local, file: short, trim: 0 }],
+    }, path.join(root, 'short-edit.mp4')), /校验失败/);
     for (const [name, snapshot, edits, expected] of [
       ['tts-local', { soundMode: 'tts', narrationPath }, [local], [330, 660]],
       ['tts-redraw', { soundMode: 'tts', narrationPath }, [whole, local], [660, 770]],
@@ -469,6 +478,13 @@ try {
   await page.getByLabel('视频通道').selectOption('film-video');
   await page.getByLabel('生成模式').selectOption('draft');
   await assertReachable(page.getByRole('button', { name: '核对 F02 提示词' }), page.getByTestId('one-click-film-generate'));
+  await page.route('**/one-click-film/*/generation', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    const [first, replay] = await Promise.all([route.fetch(), route.fetch()]);
+    assert.equal(first.status(), 200);
+    assert.equal(replay.status(), 200);
+    await route.fulfill({ response: first });
+  });
   await page.getByTestId('one-click-film-generate').click();
   await page.getByRole('button', { name: '审片 F02' }).waitFor({ timeout: 120_000 });
   if (output) {
@@ -613,6 +629,19 @@ try {
   for (const code of ['F02', 'F01']) {
     await page.getByRole('button', { name: new RegExp(`^${code} `) }).click();
     await page.getByTestId('one-click-film-approve').click();
+    if (code === 'F02') {
+      await expect(page.getByRole('button', { name: '一键高清', exact: true })).toBeVisible();
+      const fixtureDb = new Database(path.join(root, 'data', 'workbench.db'));
+      const key = fixtureDb.prepare("SELECT apiKey FROM video_providers WHERE id='film-video'").pluck().get();
+      const change = fixtureDb.prepare("UPDATE video_providers SET apiKey=? WHERE id='film-video'");
+      try {
+        change.run('different-fixture-account');
+        const blocked = await api.json(member, `/api/one-click-film/${projectId}/rework`, 'POST',
+          { action: 'convert-hd', entryCode: code }, 400);
+        assert.match(blocked.message, /账号/);
+        assert.equal(submitted.filter((job) => job.draftId).length, 0);
+      } finally { change.run(key); fixtureDb.close(); }
+    }
     await page.getByRole('button', { name: '一键高清', exact: true }).click();
     await page.getByRole('button', { name: '确认转高清' }).click();
     await page.getByRole('button', { name: '确认高清通过' }).click({ timeout: 180_000 });
@@ -705,10 +734,9 @@ try {
   await assertReachable(page.getByRole('button', { name: '选入导出' }));
   await page.getByRole('button', { name: '选入导出' }).click();
   await openPackaging('F01');
-  await page.getByRole('tab', { name: '字幕', exact: true }).click();
-  await page.getByRole('button', { name: '识别口播字幕' }).click();
-  await expect(page.getByText('口播字幕已识别。')).toBeVisible();
   await page.getByRole('button', { name: '选入导出' }).click();
+  assert.equal((await readPackaging()).find((item) => item.entryCode === 'F01').subtitlesPrepared, false);
+  await page.getByRole('button', { name: '全选可导出成片' }).click();
   const confirmExport = async () => {
     await page.getByTestId('one-click-film-export').click();
     await page.getByRole('dialog').getByRole('button', { name: '确认渲染并导出', exact: true }).click();
@@ -719,6 +747,9 @@ try {
   console.log('通过：外层只显示封面，编辑器六轨顺序正确，拖动及保存草稿不渲染。');
   await confirmExport();
   await expect.poll(async () => (await getExports()).length, { timeout: 300_000 }).toBe(2);
+  const autoCaption = (await readPackaging()).find((item) => item.entryCode === 'F01');
+  assert.equal(autoCaption.subtitlesPrepared, true);
+  assert.equal(autoCaption.subtitleCues[0].text, '这是原片旁白。');
   const deliveries = await getExports();
   const history = page.locator('[class*="exportCard"]');
   await expect(history).toHaveCount(2);
@@ -753,11 +784,16 @@ try {
   const oldF02 = deliveries.find((delivery) => delivery.entryCode === 'F02');
   await openPackaging('F02');
   await page.getByLabel('F02 标题').fill('F02 第二版交付');
+  await page.getByRole('tab', { name: '字幕', exact: true }).click();
+  await page.getByLabel('显示口播字幕').uncheck();
   await page.getByRole('button', { name: '选入导出' }).click();
   await confirmExport();
   await expect.poll(async () => (await getExports()).length, { timeout: 180_000 }).toBe(3);
   assert.equal(digest(await responseBytes(oldF02.url)), oldF02.checksum);
   assert.notEqual((await getExports()).find((item) => item.title === 'F02 第二版交付').checksum, oldF02.checksum);
+  const withoutCaptions = (await readPackaging()).find((item) => item.entryCode === 'F02');
+  assert.equal(withoutCaptions.options.subtitles, false);
+  assert.deepEqual(withoutCaptions.subtitleCues, f02Draft.subtitleCues, '关闭字幕导出仍保留已校对的字幕');
   await expect(history).toHaveCount(3);
   for (const video of await history.filter({ hasText: 'F02' }).locator('video').all()) await assertPlayable(video);
   stage = '整条重抽的真实声音和实际切点';

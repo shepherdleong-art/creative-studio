@@ -110,6 +110,40 @@ db.prepare("UPDATE one_click_film_narrations SET listenedAt=? WHERE id='nar-1'")
 confirmNarration(db, { run, narrationId: 'nar-1', listened: false });
 assert.deepEqual(narrationGate(db, gateEntries), [], '试听确认后配音闸门放行');
 
+// An active owner retains its running narration. An interrupted row is retried using the same id.
+const { synthesizeNarrations } = await import('../lib/one-click-film/tts.ts');
+const { tryFilmRequestLock } = await import('../lib/one-click-film/request-lock.ts');
+db.exec(`CREATE TABLE final_edit_tts_providers(id TEXT, name TEXT, type TEXT, baseUrl TEXT,
+  apiKey TEXT, keyEnv TEXT, model TEXT, enabled INTEGER)`);
+db.prepare("UPDATE one_click_film_narrations SET status='running', confirmedAt=NULL WHERE id='nar-1'").run();
+const held = await tryFilmRequestLock('narration', [ttsEntry.id, signature]);
+assert.ok(held);
+try {
+  await synthesizeNarrations({ db, run, codes: ['F01'] });
+  assert.equal(db.prepare('SELECT status FROM one_click_film_narrations').pluck().get(), 'running');
+} finally { held.release(); }
+await synthesizeNarrations({ db, run, codes: ['F01'] });
+const recovered = db.prepare('SELECT id,status,errorMessage FROM one_click_film_narrations').get() as Record<string,string>;
+assert.equal(recovered.id, 'nar-1');
+assert.equal(recovered.status, 'failed');
+assert.match(recovered.errorMessage, /供应商未启用/);
+
+const { filmAccountRef } = await import('../lib/one-click-film/film-account.ts');
+const proxy = { id: 'company', baseUrl: 'http://127.0.0.1:4000', apiKey: 'local-proxy',
+  baseUrlEnv: 'COMPANY_VIDEO_BASE_URL', apiKeyEnv: '', type: 'openai-video' };
+const config = (account: string) => fs.writeFileSync(path.join(dataRoot, 'config.yaml'), JSON.stringify({
+  model_list: [{ model_name: 'film', litellm_params: { model: 'remote-film', api_base: 'https://fixture.invalid', api_key: account } }],
+}));
+config('fixture-account-one');
+const firstAccount = filmAccountRef(proxy, 'film');
+assert.ok(firstAccount);
+config('fixture-account-two');
+assert.notEqual(filmAccountRef(proxy, 'film'), firstAccount);
+assert.equal(filmAccountRef(proxy, 'absent'), null);
+const { videoJobFileUrl } = await import('../lib/one-click-film/generation.ts');
+assert.equal(videoJobFileUrl('/storage/videos/original.mp4'), '/api/videos/videos/original.mp4?preview=1');
+assert.equal(videoJobFileUrl('/storage/one-click-film/previews/body.mp4'), '/api/videos/one-click-film/previews/body.mp4');
+
 // 口播变化后旧配音不再属于新版本。
 updateEntryDraft(db, { run, code: 'F01', narration: '改过的一句口播。' });
 const refreshedEntries = listEntries(db, run.id);

@@ -1,3 +1,4 @@
+import { tryFilmRequestLock } from '@/lib/one-click-film/request-lock';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
@@ -80,38 +81,35 @@ async function __teamRoutePOST(
       throw new OneClickFilmError('invalid_input', '存在不属于当前项目的素材图片');
     }
 
-    // 同一组图片正在处理或已成功时复用，避免断线重发另开一笔调用。
-    const reusable = db.prepare(`
-      SELECT id FROM one_click_film_analyses
-      WHERE runId = ? AND status IN ('running','succeeded') AND sourceImageIdsJson = ?
-      ORDER BY versionNumber DESC LIMIT 1
-    `).get(run.id, JSON.stringify(imageIds)) as { id: string } | undefined;
-    if (reusable) {
-      db.prepare(`UPDATE one_click_film_runs SET currentAnalysisId=? WHERE id=?`).run(reusable.id, run.id);
-      const existing = getAnalysis(db, reusable.id)!;
-      return NextResponse.json({ analysis: { ...existing, points: listSellingPoints(db, existing.id) }, reused: true });
-    }
-
-    const analysis = createAnalysisVersion(db, {
-      run,
-      sourceImageIds: imageIds,
-      status: 'running',
-      providerId: typeof body.providerId === 'string' ? body.providerId : '',
-    });
+    const lock = await tryFilmRequestLock('analysis', [run.id, ...imageIds]);
     try {
-      const finished = await runOneClickFilmAnalysis({
-        analysisId: analysis.id,
-        providerId: typeof body.providerId === 'string' ? body.providerId : undefined,
-        db,
+      const previous = db.prepare(`
+        SELECT id, status FROM one_click_film_analyses
+        WHERE runId=? AND status IN ('running','succeeded') AND sourceImageIdsJson=?
+        ORDER BY versionNumber DESC LIMIT 1
+      `).get(run.id, JSON.stringify(imageIds)) as { id: string; status: string } | undefined;
+      if (!lock || previous?.status === 'succeeded') {
+        if (!previous) throw new OneClickFilmError('conflict', '分析正在启动，请稍后刷新', 409);
+        if (lock) db.prepare('UPDATE one_click_film_runs SET currentAnalysisId=? WHERE id=?').run(previous.id, run.id);
+        return NextResponse.json({ analysis: { ...getAnalysis(db, previous.id), points: listSellingPoints(db, previous.id) }, reused: true });
+      }
+      const analysis = previous ? getAnalysis(db, previous.id)! : createAnalysisVersion(db, {
+        run, sourceImageIds: imageIds, status: 'running',
+        providerId: typeof body.providerId === 'string' ? body.providerId : '',
       });
-      return NextResponse.json({ analysis: { ...finished, points: listSellingPoints(db, finished.id) } });
-    } catch (error) {
-      const failed = getAnalysis(db, analysis.id);
-      return NextResponse.json({
-        analysis: failed ? { ...failed, points: listSellingPoints(db, failed.id) } : null,
-        error: 'analysis_failed',
-        message: error instanceof Error ? error.message : String(error),
-      }, { status: 502 });
+      if (previous) db.prepare('UPDATE one_click_film_runs SET currentAnalysisId=? WHERE id=?').run(analysis.id, run.id);
+      try {
+        const finished = await runOneClickFilmAnalysis({ analysisId: analysis.id, providerId: analysis.providerId || undefined, db });
+        return NextResponse.json({ analysis: { ...finished, points: listSellingPoints(db, finished.id) } });
+      } catch (error) {
+        const failed = getAnalysis(db, analysis.id);
+        return NextResponse.json({
+          analysis: failed ? { ...failed, points: listSellingPoints(db, failed.id) } : null,
+          error: 'analysis_failed', message: error instanceof Error ? error.message : String(error),
+        }, { status: 502 });
+      }
+    } finally {
+      lock?.release();
     }
   } catch (error) {
     return jsonError(error);

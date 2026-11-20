@@ -134,18 +134,18 @@ export function PackagingStage({ state, onAdjustSound }: { state: FilmState; onA
     try {
       const result = await post('packaging', { action: 'open', entryCode, options: defaults });
       if (!result.record || !result.media) throw new Error('这条成片的包装草稿不可用');
-      setBaseline(result.record);
-      setDraft({ ...result.record, subtitleCues: splitSubtitleCues(result.record.subtitleCues) });
+      const record = { ...result.record, subtitleCues: splitSubtitleCues(result.record.subtitleCues) };
+      setBaseline(record);
+      setDraft(record);
       setMedia(result.media);
       setEditMode('packaging');
     } catch (cause) { setError(message(cause)); }
     finally { setWorking(''); }
   };
 
-  const save = async (record: PackagingRecord, confirmSubtitles = false) => {
-    const useCurrentSubtitles = confirmSubtitles && record.options.subtitles && !record.subtitlesPrepared && !!record.subtitleCues.length;
-    if (!useCurrentSubtitles && baseline && draftValues(baseline) === draftValues(record)) return record;
-    const changedSubtitles = useCurrentSubtitles || JSON.stringify(record.subtitleCues) !== JSON.stringify(baseline?.subtitleCues);
+  const save = async (record: PackagingRecord) => {
+    if (baseline && draftValues(baseline) === draftValues(record)) return record;
+    const changedSubtitles = JSON.stringify(record.subtitleCues) !== JSON.stringify(baseline?.subtitleCues);
     const result = await post('packaging', {
       action: 'edit', entryCode: record.entryCode, revision: record.revision, title: record.title,
       template: record.template, options: record.options, pointCues: record.pointCues,
@@ -167,7 +167,7 @@ export function PackagingStage({ state, onAdjustSound }: { state: FilmState; onA
     setNotice('');
     setWorking('save');
     try {
-      const record = await save(draft, action === 'select');
+      const record = await save(draft);
       if (action === 'select') {
         if (!record.canExport) throw new Error(record.reason || '请先完成审片与复核');
         setSelected((current) => ({ ...current, [record.entryCode]: record.revision }));
@@ -292,10 +292,15 @@ export function PackagingStage({ state, onAdjustSound }: { state: FilmState; onA
       {error ? <p className={styles.hintFail} role="alert">{error}</p> : null}
     </div>
     <div className={styles.packagingMain}>
-      <GroupHeading action={<button type="button" className="cap cap-primary" disabled={busy || exportCount === 0}
+      <GroupHeading action={<div className={styles.footActions}>
+        <ToolbarButton disabled={busy || !records.some((record) => record.canExport)} onClick={() =>
+          setSelected(Object.fromEntries(records.filter((record) => record.canExport).map((record) => [record.entryCode, record.revision])))}>
+          全选可导出成片
+        </ToolbarButton>
+        <button type="button" className="cap cap-primary" disabled={busy || exportCount === 0}
         data-testid="one-click-film-export" onClick={() => setConfirm(true)}>
         {working === 'export' ? '渲染导出中…' : `渲染并导出所选 ${exportCount} 条`}
-      </button>}>成片卡片</GroupHeading>
+      </button></div>}>成片卡片</GroupHeading>
       {state.entries.length === 0 ? <EmptyState icon="film" title="还没有成片" /> : <div className={styles.packagingList}>
         {state.entries.map((entry) => {
           const record = records.find((item) => item.entryCode === entry.code);

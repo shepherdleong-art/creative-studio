@@ -1,3 +1,4 @@
+import { verifiedFilmAccount } from './film-account.ts';
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { createVideoJobsForShot } from '../video-job-create.ts';
@@ -11,7 +12,7 @@ import { estimateFrozenVideoCost } from './video-models.ts';
 
 interface SourceJob {
   id: string; providerId: string; model: string; providerTaskId: string | null; durationSec: number;
-  shotId: string; shotSetId: string; aspectRatio: string | null; startedAt: string | null; enabled: number;
+  sourceImageId: string; shotId: string; shotSetId: string; aspectRatio: string | null; startedAt: string | null; enabled: number;
   defaultModel: string; filmGenerationStage: string | null;
   usageSnapshotJson: string | null;
 }
@@ -39,9 +40,9 @@ export function currentHdPlan(db: Database.Database, run: OneClickFilmRun): HdPl
       } | undefined;
       const reusable = previous?.status === 'ready';
       const blocked = !reusable && (!source?.providerTaskId || source.filmGenerationStage !== 'draft'
-        || !source.enabled || source.model !== source.defaultModel || !source.startedAt
+        || !verifiedFilmAccount(db, source.id) || !source.enabled || source.model !== source.defaultModel || !source.startedAt
         || Date.now() - new Date(source.startedAt).getTime() >= 7 * 86_400_000);
-      if (blocked) plan.blocked.push({ entryCode: entry.code, reason: `来源 ${id.slice(0, 8)} 的样片已过期或原通道不可用` });
+      if (blocked) plan.blocked.push({ entryCode: entry.code, reason: `来源 ${id.slice(0, 8)} 的样片已过期、原账号无法核验或通道不可用` });
       if (!source) continue;
       const estimatedCostMicros = reusable ? 0 : estimateFrozenVideoCost(source.usageSnapshotJson, source.durationSec);
       if (!reusable && !blocked) {
@@ -67,12 +68,26 @@ export async function submitHdConversions(db: Database.Database, run: OneClickFi
   if (blocked) throw new OneClickFilmError('invalid_input', blocked.reason);
   for (const item of plan.sources.filter((source) => source.entryCode === entryCode && !source.reusable)) {
     const source = sourceJob(db, run, item.sourceVideoJobId)!;
-    const existing = db.prepare(`
-      SELECT id, hdVideoJobId, status FROM one_click_film_hd_sources WHERE entryId=? AND sourceVideoJobId=?
-    `).get(body.entryId, source.id) as { id: string; hdVideoJobId: string | null; status: string } | undefined;
-    if (existing?.hdVideoJobId && existing.status === 'pending') continue;
+    const findActive = () => db.prepare(`SELECT hdVideoJobId FROM one_click_film_hd_sources
+      WHERE entryId=? AND sourceVideoJobId=? AND status IN ('pending','ready')`).pluck().get(body.entryId, source.id) as string | undefined;
+    if (findActive()) continue;
     const result = await createVideoJobsForShot({
-      db, shotSetId: source.shotSetId, shotId: source.shotId,
+      db, shotSetId: source.shotSetId, shotId: source.shotId, frozenSourceImageId: source.sourceImageId,
+      replayJobIds() {
+        const id = findActive();
+        return id ? [id] : undefined;
+      },
+      onJobsCreated([hdJobId]) {
+        db.prepare(`
+          INSERT INTO one_click_film_hd_sources
+            (id,runId,entryId,entryCode,sourceVideoJobId,providerId,model,accountRef,status,
+             hdVideoJobId,rangeStartUs,rangeEndUs,estimatedCostMicros,createdAt,updatedAt)
+          VALUES (?,?,?,?,?,?,?,?,'pending',?,0,?,?,datetime('now'),datetime('now'))
+          ON CONFLICT(entryId,sourceVideoJobId) DO UPDATE SET status='pending', localVideoPath='',
+            errorMessage=NULL, hdVideoJobId=excluded.hdVideoJobId, updatedAt=excluded.updatedAt
+        `).run(uuidv4(), run.id, body.entryId, entryCode, source.id, source.providerId, source.model, source.providerId,
+          hdJobId, item.rangeEndUs, item.estimatedCostMicros ?? 0);
+      },
       items: [{
         providerId: source.providerId, prompt: '采用已绑定的样片转高清',
         durationSec: source.durationSec, templateId: null, tailImageId: null, multiShot: null,
@@ -81,15 +96,6 @@ export async function submitHdConversions(db: Database.Database, run: OneClickFi
       }],
     });
     if (!result.ok) throw new OneClickFilmError('invalid_input', result.error);
-    db.prepare(`
-      INSERT INTO one_click_film_hd_sources
-        (id,runId,entryId,entryCode,sourceVideoJobId,providerId,model,accountRef,status,
-         hdVideoJobId,rangeStartUs,rangeEndUs,estimatedCostMicros,createdAt,updatedAt)
-      VALUES (?,?,?,?,?,?,?,?,'pending',?,0,?,?,datetime('now'),datetime('now'))
-      ON CONFLICT(entryId,sourceVideoJobId) DO UPDATE SET status='pending', localVideoPath='',
-        errorMessage=NULL, hdVideoJobId=excluded.hdVideoJobId, updatedAt=excluded.updatedAt
-    `).run(uuidv4(), run.id, body.entryId, entryCode, source.id, source.providerId, source.model, source.providerId,
-      result.videoJobIds[0], item.rangeEndUs, item.estimatedCostMicros ?? 0);
   }
   startOneClickFilmVideoQueue(db, run.projectId);
 }

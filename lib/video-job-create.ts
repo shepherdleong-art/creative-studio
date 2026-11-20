@@ -109,6 +109,11 @@ export async function createVideoJobsForShot(input: {
   shotId: string;
   items: VideoJobCreationItem[];
   batch?: boolean;
+  /** First frame frozen by a film workflow at confirmation or original submission. */
+  frozenSourceImageId?: string;
+  /** Checked under the same write lock as queue insertion. */
+  replayJobIds?: () => string[] | undefined;
+  onJobsCreated?: (ids: string[]) => void;
   db?: Database.Database;
 }): Promise<VideoJobCreationResult> {
   const db = input.db ?? getDb();
@@ -169,7 +174,10 @@ export async function createVideoJobsForShot(input: {
 
   const shotSet = db.prepare(`SELECT projectId FROM shot_sets WHERE id = ?`).get(shotSetId) as { projectId: string } | undefined;
   if (!shotSet) return { ok: false, status: 404, error: 'Shot set not found' };
-  const sourceImageId = shot.latestGeneratedImageId || shot.sourceImageId;
+  const sourceImageId = input.frozenSourceImageId ?? (shot.latestGeneratedImageId || shot.sourceImageId);
+  if (input.frozenSourceImageId && !db.prepare('SELECT 1 FROM image_assets WHERE id=? AND projectId=?').get(sourceImageId, shotSet.projectId)) {
+    return { ok: false, status: 400, error: '原片绑定的首帧不属于当前项目或已删除' };
+  }
   if (access.kind === 'team') {
     access.assertAccess('shot', shotId, 'read');
     access.assertAccess('image', sourceImageId, 'read');
@@ -299,6 +307,8 @@ export async function createVideoJobsForShot(input: {
 
   const videoJobIds: string[] = [];
   const createResult = db.transaction(() => {
+    const existing = input.replayJobIds?.();
+    if (existing) return { ok: true as const, videoJobIds: existing };
     const referencesByItem: ReferenceAssetRow[][] = [];
     for (const [index, entry] of prepared.entries()) {
       if ('error' in entry) return { ok: false as const, error: entry.error! };
@@ -401,12 +411,13 @@ export async function createVideoJobsForShot(input: {
       });
       videoJobIds.push(videoJobId);
     }
-    return { ok: true as const };
+    input.onJobsCreated?.(videoJobIds);
+    return { ok: true as const, videoJobIds };
   });
   try {
     const result = createResult.immediate();
     if (!result.ok) return { ok: false, status: 400, error: result.error };
-    return { ok: true, videoJobIds };
+    return { ok: true, videoJobIds: result.videoJobIds };
   } catch (error) {
     if (error instanceof VideoReferenceCreationError) return { ok: false, status: 400, error: error.message };
     throw error;
