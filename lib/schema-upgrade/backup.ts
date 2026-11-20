@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 import packageMetadata from '../../package.json' with { type: 'json' };
 
 // 实拍混剪已于 2026-10-30 迁出工作台；保留这个名字只为认得旧的升级记录和迁移备份，不要删。
-export type SchemaUpgradeScope = 'batch-production' | 'video-provider-gateway' | 'script-studio' | 'creative-canvas' | 'live-mixcut' | 'team-service' | 'execution';
+export type SchemaUpgradeScope = 'batch-production' | 'video-provider-gateway' | 'script-studio' | 'creative-canvas' | 'live-mixcut' | 'team-service' | 'execution' | 'one-click-film';
 
 /** 备份目录 slug；新增 scope 必须同时更新这里与 cleanupInterruptedSchemaUpgradeBackups 的匹配。 */
 export const SCOPE_SLUGS: Record<SchemaUpgradeScope, string> = {
@@ -19,6 +19,7 @@ export const SCOPE_SLUGS: Record<SchemaUpgradeScope, string> = {
   execution: 'execution',
   // 实拍混剪已于 2026-10-30 迁出工作台；保留这个名字只为认得旧的升级记录和迁移备份，不要删。
   'live-mixcut': 'live-mixcut',
+  'one-click-film': 'one-click-film',
 };
 
 export interface SchemaUpgradeBackupManifest {
@@ -215,7 +216,7 @@ export async function cleanupInterruptedSchemaUpgradeBackups(backupRoot: string)
   }
   const interrupted = entries.filter((entry) => (
     entry.isDirectory()
-    && /^\.pre-(?:batch|video-gateway|script-studio|canvas|live-mixcut|team|execution)-v\d+-/.test(entry.name)
+    && /^\.pre-(?:batch|video-gateway|script-studio|canvas|live-mixcut|team|execution|one-click-film)-v\d+-/.test(entry.name)
   ));
   for (const entry of interrupted) {
     await fsPromises.rm(path.join(backupRoot, entry.name), { recursive: true, force: true });
