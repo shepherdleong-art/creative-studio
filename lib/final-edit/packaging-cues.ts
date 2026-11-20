@@ -54,7 +54,7 @@ export interface EnsurePointCuesResult {
  * 否则重新提取并写入 packagingJson（不动 revision，属派生缓存）。
  * 在包装配置（启用/脚本变更）与导出渲染（冻结前）时调用。
  */
-export async function ensurePackagingPointCues(db: Database.Database, groupId: string): Promise<EnsurePointCuesResult> {
+export async function ensurePackagingPointCues(db: Database.Database, groupId: string, options: { force?: boolean; persist?: boolean } = {}): Promise<EnsurePointCuesResult> {
   const row = db.prepare(`SELECT projectId, editedNarrationText, scriptSnapshotJson, wordTimingsJson, subtitleStateJson, narrationDurationUs, packagingJson, analysisProviderId, narrationConfigJson FROM final_edit_groups WHERE id=?`).get(groupId) as {
     projectId: string; editedNarrationText: string | null; scriptSnapshotJson: string | null;
     wordTimingsJson: string | null; subtitleStateJson: string | null; narrationDurationUs: number | null;
@@ -65,11 +65,11 @@ export async function ensurePackagingPointCues(db: Database.Database, groupId: s
   // v2 版本盐：旧裸哈希视为过期，按成片时间轴口径自动重提取一次（§9）
   const key = computePointCuesKey(narrationText);
   const config = parsePackagingConfig(row.packagingJson);
-  if (config.pointCues && config.pointCuesKey === key) {
+  if (!options.force && config.pointCues && config.pointCuesKey === key) {
     return { pointCues: config.pointCues, mode: config.pointCuesMode ?? 'timed', pointCuesKey: key };
   }
   // §7 手动编辑保护：pointCuesEdited=true 后口播哈希变化不再自动重提取（需显式「重新提取」复位）
-  if (config.pointCues && config.pointCuesEdited === true) {
+  if (!options.force && config.pointCues && config.pointCuesEdited === true) {
     return { pointCues: config.pointCues, mode: config.pointCuesMode ?? 'timed', pointCuesKey: config.pointCuesKey ?? key };
   }
   const words = parseStoredWordTimings(row.wordTimingsJson).words;
@@ -96,6 +96,10 @@ export async function ensurePackagingPointCues(db: Database.Database, groupId: s
     }),
   });
   if (computePointCuesKey(loadGroupNarrationText(db, groupId)) !== key) throw new Error('卖点提取期间口播已更新，请重试');
+  if (options.persist === false) {
+    const merged = mergePointCuesIntoPackagingJson(row.packagingJson, built.pointCues, key, built.mode);
+    return { pointCues: merged.pointCues, mode: built.mode, pointCuesKey: key };
+  }
   const latest = db.prepare(`SELECT packagingJson FROM final_edit_groups WHERE id=?`).get(groupId) as { packagingJson: string | null } | undefined;
   if (latest?.packagingJson !== row.packagingJson) {
     const current = parsePackagingConfig(latest?.packagingJson);
@@ -138,7 +142,12 @@ export function mergePointCuesIntoPackagingJson(packagingJsonText: string | null
     pointCuesMode: mode,
     // §7 新增字段必须随重写保留，不能丢
     ...(config.pointCuesEdited ? { pointCuesEdited: true } : {}),
+    ...(config.pointCuesLayoutVersion !== undefined ? { pointCuesLayoutVersion: config.pointCuesLayoutVersion } : {}),
+    ...(config.layoutRuntimeBundleVersion !== undefined ? { layoutRuntimeBundleVersion: config.layoutRuntimeBundleVersion } : {}),
+    ...(config.layoutResolution ? { layoutResolution: { ...config.layoutResolution, status: 'stale' as const } } : {}),
     ...(config.layouts && Object.keys(config.layouts).length > 0 ? { layouts: config.layouts } : {}),
+    ...(config.stickers && config.stickers.length > 0 ? { stickers: config.stickers } : {}),
+    ...(config.stickerDefaults ? { stickerDefaults: config.stickerDefaults } : {}),
   };
   return { pointCues, packagingJson: JSON.stringify(next) };
 }

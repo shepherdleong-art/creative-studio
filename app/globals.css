@@ -46,6 +46,8 @@
   --color-canvas-grid-dot: #d2d2d7;
   /* status: text + tint（绿只给「成功」，警告橙、错误红） */
   --color-run: #0071e3;   --color-run-tint: rgb(0 113 227 / 13%);
+  /* 贴纸轨道语义色：青绿，只由令牌提供，浅深主题各一套。 */
+  --color-sticker-track: #0f766e; --color-sticker-track-tint: #e3f4f1; --color-sticker-track-foreground: #ffffff;
   --color-ok: #1c7a33;    --color-ok-tint: rgb(52 199 89 / 14%);
   --color-fail: #c4001a;  --color-fail-tint: rgb(255 59 48 / 10%);
   --color-warn: #9a5300;  --color-warn-tint: rgb(255 159 10 / 15%);
@@ -1127,6 +1129,7 @@ html[data-theme='dark'] {
   --color-canvas-grid-dot: #3c3c40;
   /* status: 深色下各自换亮一档，tint 改半透明深色 */
   --color-run: #409cff;   --color-run-tint: rgb(10 132 255 / 26%);
+  --color-sticker-track: #2dd4bf; --color-sticker-track-tint: rgba(45, 212, 191, .16); --color-sticker-track-foreground: #10302b;
   --color-ok: #30d158;    --color-ok-tint: rgb(48 209 88 / 16%);
   --color-fail: #ff6961;  --color-fail-tint: rgb(255 69 58 / 17%);
   --color-warn: #ffb340;  --color-warn-tint: rgb(255 159 10 / 17%);

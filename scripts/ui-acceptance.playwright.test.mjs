@@ -41,6 +41,7 @@
  *   TEAM_ACCEPTANCE_BROWSER_EVIDENCE_DIR 证据目录（acceptance.mjs 会注入）
  *   TEAM_ACCEPTANCE_TEST_TEMP_ROOT 临时数据根的父目录（默认 TEMP/TMP）
  *   TEAM_ACCEPTANCE_UI_PRODUCTION=1 使用已构建的 standalone（不触发 dev 首次编译）
+ *   TEAM_ACCEPTANCE_STANDALONE_DIR 独立生产包目录（默认 .next/standalone）
  */
 
 import assert from 'node:assert/strict';
@@ -59,6 +60,7 @@ import {
 import { createUiAcceptanceApi, runFixtureHooks } from './team-server/ui-acceptance-fixtures.mjs';
 import { selectScreens, validateScreens } from './team-server/ui-acceptance-screens.mjs';
 import { runCheckSelfTest } from './team-server/ui-acceptance-selftest.mjs';
+import { withUiAcceptancePage, applyKnownFailure } from './team-server/ui-acceptance-page.mjs';
 
 const repoRoot = process.cwd();
 void fileURLToPath;
@@ -198,7 +200,9 @@ function serverEnvironment() {
 function startServer() {
   const nextBinary = fileURLToPath(import.meta.resolve('next/dist/bin/next'));
   const production = process.env.TEAM_ACCEPTANCE_UI_PRODUCTION === '1';
-  const standalone = path.join(repoRoot, '.next', 'standalone');
+  const standalone = process.env.TEAM_ACCEPTANCE_STANDALONE_DIR
+    ? path.resolve(process.env.TEAM_ACCEPTANCE_STANDALONE_DIR)
+    : path.join(repoRoot, '.next', 'standalone');
   const serverArgs = production ? [path.join(standalone, 'server.js')]
     : [nextBinary, 'dev', '--hostname', '127.0.0.1', '--port', String(port)];
   server = spawn(process.execPath, serverArgs, {
@@ -334,6 +338,7 @@ async function measureScreen({ screen, engine, page, theme, viewport }) {
   await page.waitForLoadState('networkidle', { timeout: 90_000 }).catch(() => undefined);
   try {
     await screen.ready(page);
+    assert.equal(await page.locator('html').getAttribute('data-theme'), theme, '系统主题初始化必须跟随浏览器 colorScheme');
   } catch (error) {
     row.result = 'failed';
     const message = sanitize(error instanceof Error ? error.message : error);
@@ -391,22 +396,6 @@ async function measureScreen({ screen, engine, page, theme, viewport }) {
  * 已知失败：只对声明里的检查键生效，别的检查真失败仍然算失败。
  * 已知失败变成通过时也记一条失败，逼后续票删掉标记。
  */
-function applyKnownFailure(row, screen) {
-  if (row.result !== 'failed' || !screen.knownFailure) return row;
-  const allowed = screen.knownFailureChecks ?? screen.checks;
-  const failing = [];
-  for (const outcomes of Object.values(row.outcomes)) {
-    for (const [key, outcome] of Object.entries(outcomes)) {
-      if (!outcome.passed) failing.push(key);
-    }
-  }
-  if (failing.some((key) => !allowed.includes(key))) return row;
-  row.result = 'known-failure';
-  row.knownFailure = screen.knownFailure;
-  row.knownFailureReason = screen.knownFailureReason;
-  return row;
-}
-
 const LOGIN_VIEWPORT = { width: 1536, height: 864, label: '1536x864' };
 
 /** 用真实登录页登录一次，返回 storageState（后续按窗口尺寸重建 context 时复用）。 */
@@ -454,6 +443,10 @@ async function runMatrix() {
     return !required.some((id) => missingHooks.includes(id));
   });
   for (const engine of result.engines) {
+    // 矩阵变量按内核过滤：同一内核只跑它声明的窗口档位（默认三档）。
+    const viewportsForEngine = matrix
+      .filter((entry) => entry.engine === engine)
+      .map(({ width, height, label }) => ({ width, height, label }));
     const browser = await playwright[engine].launch({ headless: true });
     openBrowsers.push(browser);
     result.assertions.push(`${engine} ${await browser.version()} 实际启动`);
@@ -461,7 +454,7 @@ async function runMatrix() {
     // 先自测检查器：用已知好/已知坏的合成页面证明每一项检查真的会失败。
     // 没有这一步，「全部通过」也可能只是检查器瞎了。每档窗口各跑一次
     // （横向溢出的判据与视口宽度有关，不能只在小窗口验）。
-    for (const viewport of DEFAULT_VIEWPORTS) {
+    for (const viewport of viewportsForEngine) {
       const selfTestContext = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height }, deviceScaleFactor: 1 });
       try {
         const page = await selfTestContext.newPage();
@@ -484,7 +477,7 @@ async function runMatrix() {
       employee: await loginAndCaptureState(browser, engine, 'employee'),
       admin: await loginAndCaptureState(browser, engine, 'admin'),
     };
-    for (const viewport of DEFAULT_VIEWPORTS) {
+    for (const viewport of viewportsForEngine) {
       for (const theme of themes) {
         for (const audience of ['employee', 'admin']) {
           const audienceScreens = runnableScreens.filter((screen) => screen.audience === audience);
@@ -496,14 +489,7 @@ async function runMatrix() {
             deviceScaleFactor: 1,
             storageState: storageStates[audience],
           });
-          const page = await context.newPage();
-          // 页面异常带上「是哪一屏触发的」：不然每档窗口都会记一条匿名 pageerror，
-          // 看不出该找谁修。currentScreen 在下方逐屏更新。
-          const currentScreen = { id: '(页面加载中)' };
-          page.on('pageerror', (error) => result.failures.push({
-            kind: 'pageerror', screen: currentScreen.id, engine, audience,
-            viewport: viewport.label, theme, message: sanitize(error.message),
-          }));
+          await context.addInitScript(() => localStorage.setItem('creative-studio-theme', 'system'));
           for (const screen of audienceScreens) {
             // 隔离服务中途死掉时，后面的导航只会全部 ERR_CONNECTION_REFUSED。
             // 这时候停下并记 blocked，别把基础设施故障伪装成几十条界面失败。
@@ -516,8 +502,10 @@ async function runMatrix() {
               });
               return;
             }
-            currentScreen.id = screen.id;
-            const row = await measureScreen({ screen, engine, page, theme, viewport });
+            const row = await withUiAcceptancePage(context, error => result.failures.push({
+              kind: 'pageerror', screen: screen.id, engine, audience,
+              viewport: viewport.label, theme, message: sanitize(error.message),
+            }), page => measureScreen({ screen, engine, page, theme, viewport }));
             const finalRow = applyKnownFailure(row, screen);
             result.runs.push(finalRow);
             if (finalRow.result === 'known-failure') result.knownFailures.push(finalRow);
@@ -557,18 +545,7 @@ async function runMatrix() {
     `每个内核的每档窗口都先用合成页面自测检查器：${result.selfTestRuns.length} 次自测，`
       + `${result.selfTestRuns.filter((row) => row.result === 'passed').length} 次全部判定正确`,
   );
-  // 空项目第 5 步会请求 final-edit 的 external-assets，接口回 404 并冒泡成未处理异常。
-  // 那一屏已经整体是 09 的已知失败，所以这些 404 不重复计成「另一件事」，
-  // 但**完整保留**在 absorbedPageErrors 里交给 09 一起排查，不删除、不隐藏。
-  const knownScreens = new Set(result.knownFailures.map((row) => row.screen));
-  const absorbed = result.failures.filter((row) => row.kind === 'pageerror' && knownScreens.has(row.screen));
-  if (absorbed.length) {
-    result.failures = result.failures.filter((row) => !absorbed.includes(row));
-    result.absorbedPageErrors = absorbed;
-    result.assertions.push(
-      `已知失败屏上的 ${absorbed.length} 条页面异常（未处理 404）并入该屏的已知问题，明细保留在 absorbedPageErrors`,
-    );
-  }
+  // Layout exceptions never exempt runtime exceptions. Every pageerror stays fatal.
 }
 
 async function prepareFixtures() {
@@ -596,6 +573,7 @@ async function prepareFixtures() {
 
   fixtureContext = {
     api, adminSession, employeeSession, employee: { employeeId: EMPLOYEE_ID }, admin: { employeeId: ADMIN_ID },
+    serverEnv: serverEnvironment(),
     // 隔离数据根的 SQLite（只读/定向写，供需要复杂领域状态的数据钩子用；
     // 钩子守则允许「正式接口或隔离数据根 SQLite」，不许碰真实数据根）。
     dataRoot,
@@ -702,7 +680,7 @@ try {
   const cleanup = { removed: false };
   if (dataRoot) {
     try {
-      fs.rmSync(dataRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      if (!process.env.TEAM_ACCEPTANCE_KEEP_DATA_ROOT) fs.rmSync(dataRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       cleanup.removed = !fs.existsSync(dataRoot);
     } catch (error) {
       cleanup.error = sanitize(error instanceof Error ? error.message : error);

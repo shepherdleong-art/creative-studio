@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import sharp from 'sharp';
 import { probeDurationSec } from '../ffmpeg.ts';
 import { runExportVideo } from '../media-core/export-video-encoder.ts';
 import { FINAL_EDIT_INTRO_DURATION_US, OUTPUT_PRESETS, type FinalEditVariantView, type OutputPresetId, type SubtitleCue, type TextStyle } from './types.ts';
@@ -15,6 +14,8 @@ import { bgmStreamLoopCount } from '../media-core/bgm-loop.ts';
 import { audioCutFilter, videoPlaybackRate } from './clip-edit.ts';
 import type { PointCue } from './packaging-cues.ts';
 import type { PackagingLayouts } from './packaging-vars.ts';
+import type { PackagingStickerDefaults, PackagingStickerInstance } from '../media-core/packaging-stickers.ts';
+import type { PackagingLayoutResolution } from '../media-core/packaging-auto-layout.ts';
 
 export interface FinalEditRenderSnapshot {
   groupRevision: number;
@@ -38,7 +39,7 @@ export interface FinalEditRenderSnapshot {
    * v3 追加 pointCues / pointCuesMode：对时卖点在入队时冻结，渲染/包装零推理。
    * §7 追加 layouts / pointCuesEdited：手动布局与编辑保护标志随快照冻结。
    */
-  packaging?: { enabled: boolean; template?: string; varsOverrides?: Record<string, string>; pointCues?: PointCue[]; pointCuesMode?: 'timed' | 'even' | 'none'; layouts?: PackagingLayouts; pointCuesEdited?: boolean; pointFont?: { family: string; file: string }; titleFont?: { family: string; file: string }; subtitleFont?: { family: string; file: string } };
+  packaging?: { enabled: boolean; template?: string; varsOverrides?: Record<string, string>; pointCues?: PointCue[]; pointCuesMode?: 'timed' | 'even' | 'none'; layouts?: PackagingLayouts; pointCuesEdited?: boolean; pointCuesLayoutVersion?: number; layoutRuntimeBundleVersion?: number; layoutResolution?: PackagingLayoutResolution; stickers?: PackagingStickerInstance[]; stickerDefaults?: PackagingStickerDefaults; pointFont?: { family: string; file: string }; titleFont?: { family: string; file: string }; subtitleFont?: { family: string; file: string } };
 }
 
 async function fileSha256(filePath: string): Promise<string> {

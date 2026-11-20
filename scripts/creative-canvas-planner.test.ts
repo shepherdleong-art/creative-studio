@@ -999,6 +999,42 @@ function publishResultFor(canvasId: string, nodeId: string, assetId: string): vo
   assert.match(bogusPlan.problems[0].message, /bogusParam/);
 }
 
+// 一份外接提示词连接多个生成节点时，各自按素材身份转换编号并校验缺失引用。
+{
+  const shared = createCanvas(db, { name: '共享提示词引用' });
+  const a = await makeAsset(shared.id, '主体.png');
+  const b = await makeAsset(shared.id, '场景.png');
+  const saved = saveCanvasGraph({ db, canvasId: shared.id, expectedGraphRevision: 0, graph: {
+    schemaVersion: 1,
+    nodes: [material('a', 'image', a), material('b', 'image', b),
+      promptNode('p', '用 @参考1 主体，@参考2 色调'), imageNode('image', IMAGE_CAP.key), videoNode('video', VIDEO_CAP.key)],
+    edges: [
+      { id: 'a-image', source: 'a', target: 'image' }, { id: 'b-image', source: 'b', target: 'image' },
+      { id: 'p-image', source: 'p', target: 'image' }, { id: 'p-video', source: 'p', target: 'video' },
+      { id: 'b-video', source: 'b', target: 'video' }, { id: 'a-video', source: 'a', target: 'video' },
+    ],
+  } });
+  const image = planCanvasRun(db, { canvasId: shared.id, mode: 'single', targetNodeId: 'image', requestKey: 'shared-image' });
+  const video = planCanvasRun(db, { canvasId: shared.id, mode: 'single', targetNodeId: 'video', requestKey: 'shared-video' });
+  assert.ok(image.ok);
+  assert.ok(video.ok);
+  assert.equal(image.plan.tasks[0].prompt, '用 @参考1 主体，@参考2 色调');
+  assert.equal(video.plan.tasks[0].prompt, '用 @参考3 主体，@参考2 色调');
+  assert.equal(video.plan.tasks[0].inputs.find((input) => input.kind === 'text')?.textContent, '用 @参考3 主体，@参考2 色调');
+  const deleted = saveCanvasGraph({ db, canvasId: shared.id, expectedGraphRevision: saved.graphRevision,
+    graph: { ...saved.graph, edges: saved.graph.edges.filter((edge) => edge.id !== 'a-image') } });
+  const missing = planCanvasRun(db, { canvasId: shared.id, mode: 'single', targetNodeId: 'image', requestKey: 'shared-missing' });
+  assert.equal(missing.ok, false, '不能将另一生成节点中的同号图片当作缺失参考');
+  assert.ok(!missing.ok);
+  assert.ok(missing.problems.some((problem) => problem.code === 'mention_unresolved'));
+  saveCanvasGraph({ db, canvasId: shared.id, expectedGraphRevision: deleted.graphRevision, graph: {
+    ...saved.graph,
+    nodes: saved.graph.nodes.map((node) => node.kind === 'prompt' ? { ...node, data: { ...node.data, text: '未知 @参考3' } } : node),
+  } });
+  const unknown = planCanvasRun(db, { canvasId: shared.id, mode: 'single', targetNodeId: 'image', requestKey: 'shared-unknown' });
+  assert.equal(unknown.ok, false, '提示词本地的未知编号不能碰巧解析为下游的同号文本槽位');
+}
+
 db.close();
 fs.rmSync(root, { recursive: true, force: true });
 console.log('creative-canvas-planner.test.ts 通过');

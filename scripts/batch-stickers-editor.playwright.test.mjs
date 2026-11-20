@@ -1,0 +1,907 @@
+// 运行：node scripts/batch-stickers-editor.playwright.test.mjs
+// 真实 Next dev + 临时数据根 + 内置 Chrome；核心编辑、跨片复制与整体历史均不走 mock。
+import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import Database from 'better-sqlite3';
+import sharp from 'sharp';
+import { chromium } from '@playwright/test';
+import { stickerTestServerLaunch, setupStickerTeamBrowser, verifyBatchStickerProductionExport } from './packaging-sticker-production-test.mjs';
+import { createAnalysisVersion, createAsset, setAssetCurrentAnalysis } from '../lib/batch-production/assets.ts';
+import { createProjectScript, snapshotScriptIntoBatch } from '../lib/batch-production/scripts.ts';
+import { addAssetToPool, createBatchProduction, createBatchProductionVersion, updateBatchProductionStatus } from '../lib/batch-production/versions.ts';
+import { createOutputPlansForSnapshot, createOutputVersion } from '../lib/batch-production/plans.ts';
+import { resolveCoverContractHash } from '../lib/batch-production/cover-contract.ts';
+import { buildCoverRenderTaskRequestKey } from '../lib/batch-production/render-task-key.ts';
+import { runFfmpeg } from '../lib/ffmpeg.ts';
+import { planPackagingStickerAutoLayout } from '../lib/media-core/packaging-sticker-planner.ts';
+import { registerReadyTeamFile } from '../lib/team-service/files/registry.ts';
+
+const projectId = 'batch-sticker-e2e-project';
+const batchName = '批量贴纸真实浏览器验收';
+const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-batch-stickers-e2e-'));
+const dbPath = path.join(dataRoot, 'data', 'workbench.db');
+const testEnv = { ...process.env, CREATIVE_STUDIO_DATA_ROOT: dataRoot, NEXT_TELEMETRY_DISABLED: '1' };
+const chrome = path.resolve('packaging/runtime/chrome-headless-shell', process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell');
+const now = () => new Date().toISOString();
+// 正文卖点预览回归用的真实 TTC 字体源；平台无该字体时跳过对应专项断言
+const previewFontSource = process.platform === 'win32' ? 'C:\\Windows\\Fonts\\msyh.ttc' : '/System/Library/Fonts/PingFang.ttc';
+const apiResponses = [];
+const pageErrors = [];
+const consoleErrors = [];
+const coreWrites = [];
+let browser;
+let page;
+let server;
+let passed = false;
+
+async function getFreePort() {
+  const listener = net.createServer();
+  await new Promise((resolve, reject) => { listener.once('error', reject); listener.listen(0, '127.0.0.1', resolve); });
+  const address = listener.address();
+  assert.ok(address && typeof address === 'object');
+  const port = address.port;
+  await new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+  return port;
+}
+
+async function startServer() {
+  const port = await getFreePort();
+  const launch = stickerTestServerLaunch(testEnv, port);
+  const child = spawn(process.execPath, launch.args, launch.options);
+  let output = '';
+  child.stdout.on('data', (chunk) => { output = `${output}${chunk}`.slice(-40_000); });
+  child.stderr.on('data', (chunk) => { output = `${output}${chunk}`.slice(-40_000); });
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) throw new Error(`Next dev 启动失败：${output}`);
+    let ready = false;
+    try {
+      const response = await fetch(`${baseUrl}/api/batch-production/readiness`, { redirect: 'manual' });
+      ready = response.status < 500;
+    } catch { /* 等待启动 */ }
+    if (ready) {
+      try { return { child, baseUrl, output: () => output, browserOptions: await setupStickerTeamBrowser(baseUrl, launch) }; }
+      catch (error) { await stopServer(child); throw error; }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  child.kill('SIGTERM');
+  throw new Error(`Next dev 启动超时：${output}`);
+}
+
+async function stopServer(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (process.platform === 'win32' && child.pid) {
+    spawnSync('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    return;
+  }
+  child.kill('SIGTERM');
+  await Promise.race([new Promise((resolve) => child.once('exit', resolve)), new Promise((resolve) => setTimeout(resolve, 5_000))]);
+  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+}
+
+async function eventually(check, message, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try { if (await check()) return; } catch (error) { lastError = error; }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (lastError) throw lastError;
+  assert.fail(message);
+}
+
+function seededRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    return state / 4_294_967_296;
+  };
+}
+
+function manualSticker(id, overrides = {}) {
+  return {
+    id,
+    assetId: 'highlight',
+    styleMode: 'follow-template',
+    fixedStyle: null,
+    startFrame: 40,
+    endFrame: 160,
+    centerXPct: 47,
+    centerYPct: 53,
+    visualWidthPct: 37,
+    rotationDeg: 12,
+    trackIndex: 0,
+    animation: 'slide',
+    origin: { kind: 'manual' },
+    ...overrides,
+  };
+}
+
+function packaging(spec, stickers) {
+  return {
+    enabled: true,
+    template: spec.template,
+    varsOverrides: {
+      title: `${spec.key}-标题`, subtitle: `${spec.key}-副标题`, point1: `${spec.key}-卖点一`,
+      point2: `${spec.key}-卖点二`, point3: '', accent1: '', accent2: '', accent3: '',
+    },
+    pointCues: [],
+    pointCuesMode: 'none',
+    stickers,
+    stickerDefaults: { animation: spec.defaultAnimation },
+  };
+}
+
+async function seedFixture() {
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  const storageRoot = path.join(dataRoot, 'storage');
+  // 系统字体物化目录的同构 fixture
+  if (fs.existsSync(previewFontSource)) {
+    const previewFontDir = path.join(storageRoot, 'packaging', 'fonts');
+    fs.mkdirSync(previewFontDir, { recursive: true });
+    fs.copyFileSync(previewFontSource, path.join(previewFontDir, 'user-point-preview.ttc'));
+  }
+  const mediaRelative = path.join('storage', 'batch-media', projectId, 'source.mp4');
+  const mediaAbsolute = path.join(dataRoot, mediaRelative);
+  fs.mkdirSync(path.dirname(mediaAbsolute), { recursive: true });
+  await runFfmpeg([
+    '-f', 'lavfi', '-i', 'color=c=0x182838:s=96x96:r=24:d=12',
+    '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-y', mediaAbsolute,
+  ], { timeoutMs: 60_000 });
+  const videoFingerprint = `sha256:${createHash('sha256').update(fs.readFileSync(mediaAbsolute)).digest('hex')}`;
+
+  const specs = [
+    { key: 'source', title: '来源十二秒', bodySec: 12, template: 'overlay-poster', defaultAnimation: 'slide', reviewed: false },
+    { key: 'target-existing', title: '目标六秒已审', bodySec: 6, template: 'overlay-journal', defaultAnimation: 'soft', reviewed: true },
+    { key: 'target-empty', title: '目标九秒空白', bodySec: 9, template: 'overlay-minimal', defaultAnimation: 'zoom', reviewed: false },
+    { key: 'target-short', title: '目标一秒无效', bodySec: 1, template: 'overlay-variety', defaultAnimation: 'rise', reviewed: false },
+  ];
+  const narrations = new Map();
+  for (const spec of specs) {
+    const relativePath = `batch-stickers-e2e/narration-${spec.bodySec}.wav`;
+    const absolutePath = path.join(storageRoot, relativePath);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    await runFfmpeg([
+      '-f', 'lavfi', '-i', `sine=frequency=${300 + spec.bodySec * 20}:duration=${spec.bodySec}`,
+      '-t', String(spec.bodySec), '-ar', 48000, '-ac', 1, '-c:a', 'pcm_s16le', '-y', absolutePath,
+    ], { timeoutMs: 60_000 });
+    narrations.set(spec.bodySec, {
+      relativePath,
+      fingerprint: `sha256:${createHash('sha256').update(fs.readFileSync(absolutePath)).digest('hex')}`,
+    });
+  }
+
+  const db = new Database(dbPath);
+  db.pragma('foreign_keys = ON');
+  try {
+    db.prepare(`INSERT INTO providers (id, name, baseUrl, model, type)
+      VALUES ('batch-sticker-e2e-provider', 'Batch Sticker E2E', 'http://127.0.0.1:1', 'smoke', 'openai-compatible')`).run();
+    db.prepare(`INSERT INTO projects (id, name, providerId, model, prompt, workflowType, productCode)
+      VALUES (?, '批量贴纸浏览器验收', 'batch-sticker-e2e-provider', 'smoke', 'smoke', 'complex_product', 'STICKERE2E')`).run(projectId);
+    let access;
+    let owner;
+    if (testEnv.STICKER_FIXTURE_TEAM_EMPLOYEE) {
+      const { createTeamAccessContext } = await import('../lib/team-service/resource-scopes.ts');
+      const { setResourceAccessContext } = await import('../lib/media-core/access-context.ts');
+      owner = db.prepare('SELECT id FROM team_users WHERE employeeId=?').pluck().get(testEnv.STICKER_FIXTURE_TEAM_EMPLOYEE);
+      assert.ok(owner);
+      access = createTeamAccessContext({ db, principal: { userId: owner, role: 'employee' } });
+      access.registerRootScope({ resourceType: 'project', resourceId: projectId, ownerUserId: owner });
+      setResourceAccessContext(access);
+    }
+    // This test imports domain modules before choosing its scratch root. Pass the
+    // isolated storage root explicitly instead of using process-global dataRoot().
+    const registerMedia = (absolutePath, mimeType, reference) => {
+      if (!access) return;
+      registerReadyTeamFile(db, { storageRoot, absolutePath, mimeType, ownerUserId: owner, references: [reference],
+        validateReference: ref => access.assertAccess(ref.resourceType, ref.resourceId, 'write') });
+    };
+    const assetId = createAsset(db, {
+      projectId,
+      sourceKind: 'managed',
+      locationJson: { kind: 'managed', relativePath: mediaRelative },
+      contentFingerprint: videoFingerprint,
+      mediaKind: 'video',
+      mediaJson: { displayName: '批量贴纸验收视频', durationSec: 12, durationUs: 12_000_000, width: 96, height: 96 },
+    });
+    registerMedia(mediaAbsolute, 'video/mp4', { resourceType: 'batch_asset', resourceId: assetId, role: 'input' });
+    db.prepare(`INSERT INTO batch_asset_sources (id, assetId, sourceKind, locationJson, health, createdAt)
+      VALUES (?, ?, 'managed', ?, 'healthy', ?)`).run(randomUUID(), assetId, JSON.stringify({ kind: 'managed', relativePath: mediaRelative }), now());
+    const analysisId = createAnalysisVersion(db, {
+      assetId,
+      analyzerVersion: 'batch-sticker-e2e-v1',
+      providerId: 'batch-sticker-e2e-provider',
+      model: 'smoke',
+      analysisJson: {
+        usable: true, durationUs: 12_000_000,
+        scenes: [{ startUs: 0, endUs: 12_000_000, qualityScore: 1, labels: ['产品'] }],
+        coverFrameTimesUs: [0],
+      },
+    });
+    setAssetCurrentAnalysis(db, projectId, assetId, analysisId);
+
+    const batchId = createBatchProduction(db, projectId, batchName);
+    const batchVersionId = createBatchProductionVersion(db, batchId, {
+      copyCount: 1,
+      defaultsJson: { outputPreset: '3:4', preset: '3:4', fps: 24, targetDurationSec: 12 },
+    });
+    addAssetToPool(db, batchVersionId, { assetId, analysisId });
+    const catalog = JSON.parse(fs.readFileSync(path.resolve('packaging/stickers/catalog.json'), 'utf8'));
+    const sourceAutomatic = planPackagingStickerAutoLayout({
+      bodyFrames: 12 * 24,
+      template: 'overlay-poster',
+      assets: catalog.assets,
+      animation: 'slide',
+      autoGroupId: 'source-auto-initial',
+      random: seededRandom(35),
+      createId: (slotIndex) => `source-auto-${slotIndex}`,
+    });
+    assert.ok(sourceAutomatic);
+    assert.equal(sourceAutomatic.length, 6);
+    assert.ok(sourceAutomatic.every((sticker) => sticker.origin.kind === 'auto' && sticker.origin.autoEdited === false));
+
+    const created = { projectId, batchId, batchVersionId, assetId, specs };
+    for (const [index, spec] of specs.entries()) {
+      const scriptId = createProjectScript(db, projectId, {
+        sourceKind: 'script_draft', sourceId: `batch-sticker-e2e-${spec.key}`, title: spec.title,
+        bodyText: `${spec.title}的真实口播正文。`, sourceVersion: '1',
+        metadata: {
+          targetDurationSec: spec.bodySec,
+          coverTitleJson: { primary: spec.title, secondary: '贴纸验收' },
+          contentRevision: `revision-${spec.key}`,
+        },
+      });
+      const snapshotId = snapshotScriptIntoBatch(db, batchVersionId, { scriptId, copyCount: 1 });
+      const [planId] = createOutputPlansForSnapshot(db, batchVersionId, snapshotId);
+      const stickers = spec.key === 'source'
+        ? [manualSticker('source-manual'), ...sourceAutomatic]
+        : spec.key === 'target-existing'
+          ? [manualSticker('target-old-sticker', { assetId: 'recommend', startFrame: 20, endFrame: 60, animation: 'none' })]
+          : [];
+      const durationUs = spec.bodySec * 1_000_000;
+      const narration = narrations.get(spec.bodySec);
+      const arrangement = {
+        schemaVersion: 'batch-allocation-v1', preset: '3:4', fps: 24, targetDurationUs: durationUs,
+        editRevision: index + 1,
+        productionReady: true,
+        packaging: packaging(spec, stickers),
+        clips: [{
+          clipId: `${spec.key}:clip`, segmentId: `${spec.key}:segment`, sourceSegmentId: `${spec.key}:segment`,
+          assetId, contentFingerprint: videoFingerprint, sourceStartUs: 0, sourceEndUs: durationUs,
+          timelineStartUs: 0, timelineEndUs: durationUs, locked: false,
+        }],
+        cover: { assetId, timeUs: 0 },
+        narration: {
+          schemaVersion: 'batch-narration-v1', mode: 'local_ready', productionReady: true,
+          audioRelativePath: narration.relativePath, audioFingerprint: narration.fingerprint,
+          durationUs, gainDb: 0, segments: [],
+        },
+        subtitle: { cues: [] }, preserveGaps: true,
+        music: { trackId: null, gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 },
+        warnings: [], blockers: [],
+        ...(spec.reviewed ? { review: { decision: 'approved', decidedAt: now() } } : {}),
+      };
+      const outputVersionId = createOutputVersion(db, planId, { arrangementJson: arrangement });
+      registerMedia(path.join(storageRoot, narration.relativePath), 'audio/wav', {
+        resourceType: 'batch_output_version', resourceId: outputVersionId, role: 'input',
+      });
+      Object.assign(spec, { planId, outputVersionId, snapshotId });
+    }
+    updateBatchProductionStatus(db, projectId, batchId, 'running');
+
+    // The editing fixture also serves production export acceptance. Persist the
+    // available allocation result required by the real publication gate.
+    const allocationRunId = randomUUID();
+    db.prepare(`INSERT INTO batch_allocation_runs
+      (id, batchVersionId, ruleVersion, seed, inputFingerprint, status, resultJson, createdAt)
+      VALUES (?, ?, 'sticker-e2e', 'seed', ?, 'completed', ?, ?)`).run(
+      allocationRunId, batchVersionId, videoFingerprint,
+      JSON.stringify({ status: 'completed', outputs: specs.map(spec => ({ planId: spec.planId, status: 'available', blockers: [] })) }), now(),
+    );
+    db.prepare(`UPDATE batch_production_versions SET currentAllocationRunId = ?, inputState = 'frozen', frozenAt = ? WHERE id = ?`)
+      .run(allocationRunId, now(), batchVersionId);
+
+    for (const spec of specs.slice(0, 3)) {
+      const coverRelativePath = `batch-stickers-e2e/${spec.key}-cover.jpg`;
+      const coverAbsolutePath = path.join(storageRoot, coverRelativePath);
+      fs.mkdirSync(path.dirname(coverAbsolutePath), { recursive: true });
+      await sharp({ create: { width: 120, height: 160, channels: 3, background: spec.key === 'source' ? '#245577' : '#786040' } })
+        .jpeg().toFile(coverAbsolutePath);
+      const taskId = randomUUID();
+      const attemptId = randomUUID();
+      const timestamp = now();
+      const requestKey = buildCoverRenderTaskRequestKey(spec.outputVersionId, resolveCoverContractHash(db, spec.outputVersionId));
+      db.prepare(`INSERT INTO batch_tasks
+        (id, projectId, batchId, workType, targetKind, targetId, status, requestKey, expectedState, progressJson, attemptCount, createdAt, updatedAt)
+        VALUES (?, ?, ?, 'render', 'output_version_cover', ?, 'succeeded', ?, 'running', '{}', 1, ?, ?)`)
+        .run(taskId, projectId, batchId, spec.outputVersionId, requestKey, timestamp, timestamp);
+      access?.registerInheritedScope({ resourceType: 'batch_task', resourceId: taskId, parent: { resourceType: 'batch', resourceId: batchId } });
+      registerMedia(coverAbsolutePath, 'image/jpeg', { resourceType: 'batch_output_version', resourceId: spec.outputVersionId, role: 'output' });
+      db.prepare(`INSERT INTO batch_task_attempts
+        (id, taskId, attemptNumber, status, progressJson, resultJson, startedAt, finishedAt, createdAt)
+        VALUES (?, ?, 1, 'succeeded', '{}', ?, ?, ?, ?)`)
+        .run(attemptId, taskId, JSON.stringify({
+          projectId, batchId, batchVersionId, planId: spec.planId, outputVersionId: spec.outputVersionId, coverRelativePath,
+        }), timestamp, timestamp, timestamp);
+    }
+    return created;
+  } finally {
+    db.close();
+  }
+}
+
+function rawPlans(fixture) {
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const result = {};
+    for (const spec of fixture.specs) {
+      const row = db.prepare('SELECT arrangementJson FROM batch_output_versions WHERE id = ?').get(spec.outputVersionId);
+      assert.ok(row, `${spec.key} 缺少当前输出版本`);
+      result[spec.key] = { raw: row.arrangementJson, arrangement: JSON.parse(row.arrangementJson) };
+    }
+    return result;
+  } finally {
+    db.close();
+  }
+}
+
+function withoutKeys(value, keys) {
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+}
+
+function assertOnlyStickerFieldsChanged(before, after) {
+  const arrangementKeys = ['packaging', 'editRevision', 'review'];
+  assert.deepEqual(withoutKeys(after, arrangementKeys), withoutKeys(before, arrangementKeys), 'arrangement 非贴纸字段必须保留');
+  const layoutKeys = ['stickers', 'stickerDefaults', 'pointCuesLayoutVersion', 'layoutRuntimeBundleVersion', 'layoutResolution'];
+  assert.deepEqual(withoutKeys(after.packaging, layoutKeys), withoutKeys(before.packaging, layoutKeys), '目标模板、varsOverrides 与其他包装字段必须保留');
+  assert.equal(after.editRevision, before.editRevision + 1);
+  assert.equal(after.review, undefined);
+}
+
+function bodyFrames(arrangement) {
+  const visual = arrangement.clips.at(-1)?.timelineEndUs ?? 0;
+  return Math.floor(Math.max(visual, arrangement.narration?.durationUs ?? 0) / 1e6 * 24 + 1e-6);
+}
+
+function expectedManualFrames(sticker, sourceFrames, targetFrames) {
+  return {
+    startFrame: 20 + Math.round((sticker.startFrame - 20) * targetFrames / sourceFrames),
+    endFrame: 20 + Math.round((sticker.endFrame - 20) * targetFrames / sourceFrames),
+  };
+}
+
+try {
+  assert.ok(fs.existsSync(chrome), `内置 Chrome 不存在：${chrome}`);
+  server = await startServer();
+  const fixture = await seedFixture();
+  const [source, targetExisting, targetEmpty, targetShort] = fixture.specs;
+  const clipsPath = (spec) => `/api/batch-production/batches/${fixture.batchId}/outputs/${spec.planId}/clips`;
+  const stickerCopyPath = `/api/batch-production/batches/${fixture.batchId}/outputs/sticker-copy`;
+  const arrangementPath = (spec) => `/api/batch-production/batches/${fixture.batchId}/outputs/${spec.planId}/arrangement`;
+
+  browser = await chromium.launch({ headless: true, executablePath: chrome });
+  page = await browser.newPage({ ...server.browserOptions, viewport: { width: 1720, height: 1200 }, deviceScaleFactor: 1 });
+  page.setDefaultTimeout(30_000);
+  page.on('response', (response) => {
+    const url = new URL(response.url());
+    if (url.pathname.startsWith('/api/')) apiResponses.push({ method: response.request().method(), path: `${url.pathname}${url.search}`, status: response.status() });
+  });
+  page.on('pageerror', (error) => pageErrors.push(error.stack || error.message));
+  page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+
+  const fetchArrangement = async (spec) => {
+    const response = await page.request.get(`${server.baseUrl}${arrangementPath(spec)}?projectId=${projectId}`, { timeout: 30_000 });
+    assert.equal(response.status(), 200, `${spec.key} arrangement 读取失败`);
+    return response.json();
+  };
+  const savePackaging = async (spec, action) => {
+    const pending = page.waitForResponse((response) => {
+      if (response.request().method() !== 'POST' || new URL(response.url()).pathname !== clipsPath(spec)) return false;
+      return (response.request().postData() || '').includes('"type":"set_packaging"');
+    });
+    await action();
+    const response = await pending;
+    const request = JSON.parse(response.request().postData() || '{}');
+    const body = await response.json();
+    coreWrites.push({ kind: 'set_packaging', plan: spec.key, status: response.status(), request, response: body });
+    assert.equal(response.status(), 200, `${spec.key} 包装保存失败：${JSON.stringify(body)}`);
+    assert.equal(request.expectedOutputVersionId, spec.outputVersionId);
+    const view = await fetchArrangement(spec);
+    assert.equal(view.editRevision, body.editRevision);
+    return { request, body, view };
+  };
+  const autoLayoutPackaging = async (spec, action) => {
+    const pending = page.waitForResponse((response) => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === clipsPath(spec)
+      && (response.request().postData() || '').includes('"type":"auto_layout_stickers"'));
+    await action();
+    const response = await pending;
+    const request = JSON.parse(response.request().postData() || '{}');
+    const body = await response.json();
+    coreWrites.push({ kind: 'auto_layout_stickers', plan: spec.key, status: response.status(), request, response: body });
+    assert.equal(response.status(), 200, `${spec.key} 自动布局失败：${JSON.stringify(body)}`);
+    assert.equal(body.status, 'resolved', body.message || '自动布局命令必须成功');
+    const view = await fetchArrangement(spec);
+    assert.equal(view.editRevision, body.editRevision);
+    return { request, body, view };
+  };
+  const stickerCopyRequest = async (type, action) => {
+    const pending = page.waitForResponse((response) => {
+      if (response.request().method() !== 'POST' || new URL(response.url()).pathname !== stickerCopyPath) return false;
+      return (response.request().postData() || '').includes(`"type":"${type}"`);
+    });
+    await action();
+    const response = await pending;
+    const request = JSON.parse(response.request().postData() || '{}');
+    const body = await response.json();
+    coreWrites.push({ kind: `sticker-${type}`, status: response.status(), request, response: body });
+    assert.equal(response.status(), 200, `sticker-copy ${type} 失败：${JSON.stringify(body)}`);
+    assert.equal(body.targets.length, 2);
+    return { request, body };
+  };
+  const enterReview = async () => {
+    const batchTab = page.getByRole('tab', { name: '批量生产', exact: true });
+    await batchTab.waitFor();
+    await batchTab.click();
+    const reviewStep = page.getByRole('button', { name: /检查成片/ });
+    await reviewStep.waitFor();
+    await reviewStep.click();
+    await page.getByRole('heading', { name: '批量剪辑 · 统一审片' }).waitFor();
+    await page.locator(`[data-sticker-clip-id="source-manual"]`).waitFor();
+    await page.getByRole('checkbox', { name: '选择成片 2' }).waitFor();
+  };
+  const openFilmStickers = async (spec) => {
+    const seq = fixture.specs.indexOf(spec) + 1;
+    await page.getByText(`${String(seq).padStart(2, '0')} · ${spec.title}`, { exact: true }).click();
+    await page.getByRole('heading', { name: `成片 ${String(seq).padStart(2, '0')} · ${spec.title}` }).waitFor();
+    await page.getByRole('button', { name: '包装', exact: true }).click();
+    const stickerTab = page.getByRole('tab', { name: '贴纸', exact: true });
+    await stickerTab.waitFor();
+    if (await stickerTab.getAttribute('aria-selected') !== 'true') await stickerTab.click();
+    const panel = page.locator('#batch-packaging-stickers-panel');
+    await panel.getByRole('button', { name: /^添加贴纸 / }).first().waitFor();
+    return panel;
+  };
+
+  await page.goto(`${server.baseUrl}/projects/${projectId}?tab=final-edit`, { waitUntil: 'domcontentloaded' });
+  await enterReview();
+  await page.locator(`[data-sticker-clip-id="target-old-sticker"]`).waitFor();
+  let panel = await openFilmStickers(source);
+  assert.equal(await page.getByRole('tab', { name: '包装设置', exact: true }).count(), 1);
+  assert.equal(await page.getByRole('tab', { name: '贴纸', exact: true }).getAttribute('aria-selected'), 'true');
+  const assetButtons = panel.getByRole('button', { name: /^添加贴纸 / });
+  assert.equal(await assetButtons.count(), 28, '来源 comic 模板必须展示 28 张当前风格素材');
+  await panel.getByLabel('搜索贴纸名称').fill('好物来了');
+  assert.equal(await assetButtons.count(), 1, '素材库中文搜索必须生效');
+  await panel.getByLabel('搜索贴纸名称').fill('');
+  assert.equal(await assetButtons.count(), 28);
+
+  const beforeAdd = await fetchArrangement(source);
+  const addedResult = await savePackaging(source, () => panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).click());
+  assert.equal(addedResult.view.packaging.stickers.length, 8);
+  const added = addedResult.view.packaging.stickers.find((sticker) => !beforeAdd.packaging.stickers.some((item) => item.id === sticker.id));
+  assert.ok(added, '点击素材库后必须真实新增贴纸');
+  const overlay = page.frameLocator('iframe[title="包装版式编辑"]');
+  try {
+    await overlay.locator(`[data-sticker-id="${added.id}"]`).waitFor({ timeout: 120_000 });
+  } catch (error) {
+    const frameStates = await Promise.all(page.frames().map(async (frame) => ({
+      url: frame.url(),
+      stickers: await frame.locator('.packaging-sticker[data-sticker-id]').evaluateAll((elements) => elements.map((element) => ({
+        id: element.getAttribute('data-sticker-id'), opacity: getComputedStyle(element).opacity, display: getComputedStyle(element).display,
+      }))).catch(() => []),
+    })));
+    console.error(`新增贴纸 overlay 诊断：${JSON.stringify({ added, frameStates })}`);
+    throw error;
+  }
+  await overlay.locator('[data-sticker-edit-ui]').waitFor();
+  const addedBlock = page.locator(`[data-sticker-clip-id="${added.id}"]`);
+  await addedBlock.scrollIntoViewIfNeeded();
+  await eventually(async () => (await addedBlock.innerText()).includes('推荐'), '时间轴块必须显示中文贴纸名');
+  await eventually(async () => await addedBlock.getAttribute('data-selected') === 'true', '添加后时间轴选中必须同步');
+  await panel.getByText(/动效 · 当前贴纸（推荐）/).waitFor();
+  await overlay.locator('#root').click({ position: { x: 6, y: 6 }, force: true });
+  await panel.getByText('动效 · 新贴纸默认', { exact: true }).waitFor();
+  assert.equal(await page.locator('[data-sticker-clip-id][data-selected="true"]').count(), 0, '点击预览空白必须取消选中');
+  await addedBlock.click({ position: { x: 24, y: 10 } });
+  await eventually(async () => await addedBlock.getAttribute('data-selected') === 'true');
+  await eventually(async () => (await fetchArrangement(source)).packaging.layoutResolution?.status === 'resolved', '首次 v2 布局须完成后再验收失败重试', 120_000);
+  let rejectedRevalidations = 0;
+  let rejectRevalidation = true;
+  const simulateNoSpace = async route => {
+    if (route.request().method() === 'POST' && JSON.parse(route.request().postData() || '{}').type === 'revalidate_packaging_layout' && rejectRevalidation) {
+      rejectedRevalidations += 1;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'infeasible', message: '测试布局空间不足' }) });
+    } else await route.continue();
+  };
+  const sourceClipsUrl = `${server.baseUrl}${clipsPath(source)}?projectId=${projectId}`;
+  await page.route(sourceClipsUrl, simulateNoSpace);
+  const deletedByKeyboardResult = await savePackaging(source, () => page.keyboard.press('Delete'));
+  assert.equal(deletedByKeyboardResult.view.packaging.stickers.length, 7, '从预览空白回到时间轴选中后，Delete 必须真实删除贴纸');
+  assert.ok(!deletedByKeyboardResult.view.packaging.stickers.some((sticker) => sticker.id === added.id));
+  await page.getByRole('button', { name: '重试布局', exact: true }).waitFor();
+  await page.waitForTimeout(600);
+  assert.equal(rejectedRevalidations, 1, '同一修订布局无解时必须停止自动尝试，不能循环锁住编辑区');
+  assert.equal(await panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).isEnabled(), true, '布局无解后必须允许手动调整');
+  rejectRevalidation = false;
+  await page.getByRole('button', { name: '重试布局', exact: true }).click();
+  await eventually(async () => (await fetchArrangement(source)).packaging.layoutResolution?.status === 'resolved', '用户显式重试必须重新完成布局', 120_000);
+  await page.unroute(sourceClipsUrl, simulateNoSpace);
+
+  const previewDeleteAddResult = await savePackaging(source, () => panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).click());
+  assert.equal(previewDeleteAddResult.view.packaging.stickers.length, 8);
+  const previewDeleteAdded = previewDeleteAddResult.view.packaging.stickers.find((sticker) => !deletedByKeyboardResult.view.packaging.stickers.some((item) => item.id === sticker.id));
+  assert.ok(previewDeleteAdded);
+  await overlay.locator(`[data-sticker-id="${previewDeleteAdded.id}"]`).waitFor({ timeout: 45_000 });
+  await overlay.locator('[data-sticker-delete]').waitFor();
+  const deletedResult = await savePackaging(source, () => overlay.locator('[data-sticker-delete]').click({ force: true }));
+  assert.equal(deletedResult.view.packaging.stickers.length, 7, '预览调整框删除按钮必须真实删除当前贴纸');
+  assert.ok(!deletedResult.view.packaging.stickers.some((sticker) => sticker.id === previewDeleteAdded.id));
+
+  const targetsBeforeCurrentFilmChanges = rawPlans(fixture);
+  const beforeReplace = deletedResult.view.packaging;
+  const replacedResult = await autoLayoutPackaging(source, () => panel.getByRole('button', { name: '换一组基础贴纸', exact: true }).click());
+  const replacedAutomatic = replacedResult.view.packaging.stickers.filter((sticker) => sticker.origin.kind === 'auto');
+  assert.equal(replacedAutomatic.length, 6);
+  assert.equal(replacedResult.view.packaging.stickers.filter((sticker) => sticker.origin.kind === 'manual').length, 1);
+  assert.notEqual(replacedAutomatic[0].origin.autoGroupId, beforeReplace.stickers.find((sticker) => sticker.origin.kind === 'auto').origin.autoGroupId);
+  assert.ok(replacedAutomatic.every((sticker) => sticker.origin.autoEdited === false));
+  assert.deepEqual(replacedAutomatic.slice(4).map((sticker) => sticker.centerYPct), [65, 81], '结尾两张自动贴纸必须位于下半部');
+  assert.deepEqual(replacedResult.view.packaging.stickers.find((sticker) => sticker.id === 'source-manual'), beforeReplace.stickers.find((sticker) => sticker.id === 'source-manual'));
+  const targetsAfterCurrentFilmChanges = rawPlans(fixture);
+  for (const spec of [targetExisting, targetEmpty, targetShort]) {
+    assert.equal(targetsAfterCurrentFilmChanges[spec.key].raw, targetsBeforeCurrentFilmChanges[spec.key].raw, `换一组只能修改当前来源片，不得串改 ${spec.key}`);
+  }
+
+  const snapButton = page.getByTitle('磁吸对齐 (N);按住 Alt 临时关闭');
+  if (await snapButton.getAttribute('aria-pressed') === 'true') await snapButton.click();
+  const manualBeforeMove = replacedResult.view.packaging.stickers.find((sticker) => sticker.id === 'source-manual');
+  const manualBlock = page.locator('[data-sticker-clip-id="source-manual"]');
+  await manualBlock.scrollIntoViewIfNeeded();
+  const blockBox = await manualBlock.boundingBox();
+  assert.ok(blockBox);
+  const movedResult = await savePackaging(source, async () => {
+    await page.mouse.move(blockBox.x + blockBox.width * 0.25, blockBox.y + blockBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(blockBox.x + blockBox.width * 0.25 + 60, blockBox.y + blockBox.height / 2, { steps: 8 });
+    await page.mouse.up();
+  });
+  const manualAfterMove = movedResult.view.packaging.stickers.find((sticker) => sticker.id === 'source-manual');
+  assert.equal(manualAfterMove.startFrame, manualBeforeMove.startFrame + 24, '时间轴移动 60px 必须真实保存 24 整帧');
+  assert.equal(manualAfterMove.endFrame, manualBeforeMove.endFrame + 24);
+
+  panel = await openFilmStickers(targetExisting);
+  await panel.getByText('动效 · 新贴纸默认', { exact: true }).waitFor();
+  assert.equal(await page.locator('[data-sticker-clip-id][data-selected="true"]').count(), 0, '切换成片不得串带来源贴纸选中');
+  await page.getByText('已通过', { exact: true }).waitFor();
+  await page.getByRole('checkbox', { name: '选择成片 2' }).check();
+  await page.getByRole('checkbox', { name: '选择成片 3' }).check();
+  panel = await openFilmStickers(source);
+  const autoToEdit = movedResult.view.packaging.stickers.find(item => item.origin.kind === 'auto');
+  await page.locator(`[data-sticker-clip-id="${autoToEdit.id}"]`).click({ position: { x: 20, y: 10 } });
+  await panel.getByText(/动效 · 当前贴纸/).waitFor();
+  const editedAutomatic = await savePackaging(source, async () => {
+    await panel.getByRole('button', { name: /^预览动效 / }).click();
+    await page.getByRole('dialog', { name: '选择贴纸动效' }).getByRole('button', { name: '选择动效 缩放', exact: true }).click();
+  });
+  assert.equal(editedAutomatic.view.packaging.stickers.find(item => item.id === autoToEdit.id).origin.autoEdited, true);
+  await panel.getByRole('button', { name: '复制到其他成片', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '复制贴纸到其他成片' });
+  await dialog.waitFor();
+  const targetCheckbox = (spec) => dialog.locator(`[data-plan-id="${spec.planId}"] input[type="checkbox"]`);
+  assert.equal(await targetCheckbox(targetExisting).isChecked(), true, '弹窗必须默认勾选已选目标一');
+  assert.equal(await targetCheckbox(targetEmpty).isChecked(), true, '弹窗必须默认勾选已选目标二');
+  await dialog.getByText('已选 2 / 2 条可复制成片', { exact: true }).waitFor();
+  assert.equal(await targetCheckbox(targetShort).isDisabled(), true, '短成片必须是不可复制的无效目标');
+  await dialog.locator(`[data-plan-id="${targetShort.planId}"]`).getByText(/目标正文至少需要 144 帧/).waitFor();
+  await dialog.locator(`[data-plan-id="${targetExisting.planId}"]`).getByText('1 张已有', { exact: true }).waitFor();
+  await dialog.locator(`[data-plan-id="${targetExisting.planId}"]`).getByText(/已审核，复制后需重新审核/).waitFor();
+  await dialog.getByText(/将替换 1 条目标成片的全部现有贴纸/).waitFor();
+  await dialog.getByText(/1 条已审核目标在复制后需要重新审核/).waitFor();
+  await dialog.getByRole('button', { name: '清空', exact: true }).click();
+  assert.equal(await targetCheckbox(targetExisting).isChecked(), false);
+  assert.equal(await targetCheckbox(targetEmpty).isChecked(), false);
+  assert.equal(await dialog.getByRole('button', { name: '复制并生成变体', exact: true }).isDisabled(), true);
+  await dialog.getByRole('button', { name: '全选有效', exact: true }).click();
+  assert.equal(await targetCheckbox(targetExisting).isChecked(), true);
+  assert.equal(await targetCheckbox(targetEmpty).isChecked(), true);
+  assert.equal(await targetCheckbox(targetShort).isChecked(), false);
+
+  // A second editor changes the source after the dialog has captured it.
+  console.log('Production batch editor: editing/history passed; checking source conflict');
+  const openedSource = await fetchArrangement(source);
+  const beforeConflict = rawPlans(fixture);
+  const concurrentEdit = await page.request.post(`${server.baseUrl}${clipsPath(source)}?projectId=${fixture.projectId}`, {
+    timeout: 30_000,
+    data: { type: 'set_packaging',
+      config: { ...openedSource.packaging, stickers: openedSource.packaging.stickers.map((item, index) => index === 0
+        ? { ...item, centerXPct: item.centerXPct + 1 } : item) },
+      expectedOutputVersionId: openedSource.outputVersionId, expectedEditRevision: openedSource.editRevision,
+    },
+  });
+  assert.equal(concurrentEdit.status(), 200, await concurrentEdit.text());
+  console.log('Production batch editor: source changed by second editor');
+  const [conflict] = await Promise.all([
+    page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === stickerCopyPath),
+    dialog.getByRole('button', { name: '复制并生成变体（2）', exact: true }).click(),
+  ]);
+  console.log(`Production batch source conflict: ${conflict.status()}`);
+  assert.equal(conflict.status(), 409, await conflict.text());
+  await dialog.getByText(/来源成片.*已有更新/).waitFor();
+  const afterConflict = rawPlans(fixture);
+  for (const target of [targetExisting, targetEmpty, targetShort]) assert.equal(afterConflict[target.key].raw, beforeConflict[target.key].raw);
+  await dialog.getByRole('button', { name: '关闭复制弹窗' }).click();
+  panel = await openFilmStickers(source);
+  await panel.getByRole('button', { name: '复制到其他成片', exact: true }).click();
+  await dialog.waitFor();
+  await dialog.getByRole('button', { name: '全选有效', exact: true }).click();
+
+  const beforeCopy = rawPlans(fixture);
+  const copiedResult = await stickerCopyRequest('copy', () => dialog.getByRole('button', { name: '复制并生成变体（2）', exact: true }).click());
+  console.log('Production batch editor: source conflict rejected; two-target copy succeeded');
+  assert.equal(copiedResult.request.sourcePlanId, source.planId);
+  assert.equal(copiedResult.request.expectedSourceOutputVersionId, source.outputVersionId);
+  assert.equal(copiedResult.request.expectedSourceEditRevision, beforeCopy.source.arrangement.editRevision);
+  assert.deepEqual(copiedResult.request.targets.map((target) => target.planId), [targetExisting.planId, targetEmpty.planId]);
+  await dialog.waitFor({ state: 'detached' });
+  const afterCopy = rawPlans(fixture);
+  assert.equal(afterCopy.source.raw, beforeCopy.source.raw, '跨片复制不得改写来源');
+  for (const spec of [targetExisting, targetEmpty]) assertOnlyStickerFieldsChanged(beforeCopy[spec.key].arrangement, afterCopy[spec.key].arrangement);
+  assert.equal(afterCopy['target-existing'].arrangement.packaging.template, beforeCopy['target-existing'].arrangement.packaging.template);
+  assert.equal(afterCopy['target-empty'].arrangement.packaging.template, beforeCopy['target-empty'].arrangement.packaging.template);
+  assert.deepEqual(afterCopy['target-existing'].arrangement.packaging.varsOverrides, beforeCopy['target-existing'].arrangement.packaging.varsOverrides);
+  assert.deepEqual(afterCopy['target-empty'].arrangement.packaging.varsOverrides, beforeCopy['target-empty'].arrangement.packaging.varsOverrides);
+  assert.ok(!afterCopy['target-existing'].arrangement.packaging.stickers.some((sticker) => sticker.id === 'target-old-sticker'), '目标已有贴纸必须全部替换');
+
+  const sourceAtCopy = beforeCopy.source.arrangement;
+  const sourceManual = sourceAtCopy.packaging.stickers.find((sticker) => sticker.origin.kind === 'manual');
+  const sourceFrames = bodyFrames(sourceAtCopy);
+  for (const spec of [targetExisting, targetEmpty]) {
+    const targetArrangement = afterCopy[spec.key].arrangement;
+    const targetManuals = targetArrangement.packaging.stickers.filter((sticker) => sticker.origin.kind === 'manual');
+    const targetAutomatic = targetArrangement.packaging.stickers.filter((sticker) => sticker.origin.kind === 'auto');
+    assert.equal(targetManuals.length, 1);
+    assert.equal(targetAutomatic.length, 6);
+    assert.equal(targetAutomatic.filter(sticker => sticker.origin.autoEdited).length, 1);
+    assert.equal(targetAutomatic.filter(sticker => !sticker.origin.autoEdited).length, 5);
+    assert.deepEqual(targetArrangement.packaging.stickerDefaults, sourceAtCopy.packaging.stickerDefaults);
+    const expected = expectedManualFrames(sourceManual, sourceFrames, bodyFrames(targetArrangement));
+    assert.equal(targetManuals[0].startFrame, expected.startFrame, `${spec.key} 手动贴纸起点必须按正文时长等比映射`);
+    assert.equal(targetManuals[0].endFrame, expected.endFrame, `${spec.key} 手动贴纸结尾必须按正文时长等比映射`);
+    assert.deepEqual(
+      { ...targetManuals[0], id: sourceManual.id, startFrame: sourceManual.startFrame, endFrame: sourceManual.endFrame },
+      sourceManual,
+      `${spec.key} 手动贴纸除 ID 与时间外必须完整继承来源`,
+    );
+    const sourceEdited = sourceAtCopy.packaging.stickers.find(item => item.origin.kind === 'auto' && item.origin.autoEdited);
+    const targetEdited = targetAutomatic.find(item => item.origin.autoEdited);
+    const editedFrames = expectedManualFrames(sourceEdited, sourceFrames, bodyFrames(targetArrangement));
+    assert.equal(targetEdited.startFrame, editedFrames.startFrame);
+    assert.equal(targetEdited.endFrame, editedFrames.endFrame);
+    assert.deepEqual({ ...targetEdited, id: sourceEdited.id, startFrame: sourceEdited.startFrame, endFrame: sourceEdited.endFrame,
+      origin: { ...targetEdited.origin, autoGroupId: sourceEdited.origin.autoGroupId } }, sourceEdited,
+    `${spec.key} 已编辑自动贴纸必须与手动设计一样保持几何和动效`);
+  }
+  const automaticOne = afterCopy['target-existing'].arrangement.packaging.stickers.filter((sticker) => sticker.origin.kind === 'auto');
+  const automaticTwo = afterCopy['target-empty'].arrangement.packaging.stickers.filter((sticker) => sticker.origin.kind === 'auto');
+  assert.notEqual(automaticOne[0].origin.autoGroupId, automaticTwo[0].origin.autoGroupId);
+  assert.ok(automaticOne.some((sticker, index) => (
+    sticker.assetId !== automaticTwo[index].assetId
+    || sticker.centerXPct !== automaticTwo[index].centerXPct
+    || sticker.centerYPct !== automaticTwo[index].centerYPct
+    || sticker.animation !== automaticTwo[index].animation
+  )), '不同目标的未编辑自动贴纸必须按规则生成尽量不同的素材、位置或动效变体');
+
+  // A local edit and its undo advance revisions but must not invalidate the earlier whole-copy history.
+  panel = await openFilmStickers(targetExisting);
+  await savePackaging(targetExisting, () => panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).click());
+  const localUndo = page.waitForResponse(response => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === clipsPath(targetExisting)
+    && (response.request().postData() || '').includes('"type":"restore_arrangement"'));
+  await page.getByTitle('撤销 (⌘Z)').click();
+  assert.equal((await localUndo).status(), 200);
+  await eventually(async () => (await fetchArrangement(targetExisting)).packaging.stickers.length === 7, '局部撤销必须恢复复制结果');
+  const beforeWholeUndo = rawPlans(fixture);
+  await eventually(async () => await page.getByTitle('撤销 (⌘Z)').isEnabled(), '复制完成后整体撤销必须可用');
+  // Keep the authoritative refresh pending after the write has completed: history must remain locked.
+  let releaseRefresh;
+  let reportRefresh;
+  const heldRefresh = new Promise(resolve => { releaseRefresh = resolve; });
+  const refreshRequested = new Promise(resolve => { reportRefresh = resolve; });
+  const refreshMatcher = url => [arrangementPath(targetExisting), arrangementPath(targetEmpty)].includes(url.pathname);
+  const holdRefresh = async route => { reportRefresh(); await heldRefresh; await route.continue().catch(() => {}); };
+  await page.route(refreshMatcher, holdRefresh);
+  let undoneResult;
+  try {
+    undoneResult = await stickerCopyRequest('restore', () => page.keyboard.press('Control+z'));
+    await refreshRequested;
+    assert.equal(await page.getByTitle('撤销 (⌘Z)').isEnabled(), false, '恢复结果刷新完成前必须禁用撤销');
+    assert.equal(await page.getByTitle('重做 (⌘⇧Z)').isEnabled(), false, '恢复结果刷新完成前必须禁用重做');
+    const duplicateWrites = [];
+    const watchWrite = request => { if (request.method() === 'POST') duplicateWrites.push(request.url()); };
+    page.on('request', watchWrite);
+    await page.keyboard.press('Control+Shift+z');
+    await page.keyboard.press('Control+z');
+    assert.equal(await panel.getByRole('button', { name: '添加贴纸 推荐', exact: true }).isEnabled(), false, '刷新期间应明确禁用局部添加');
+    assert.equal(await panel.getByRole('button', { name: '复制到其他成片', exact: true }).isEnabled(), false, '刷新期间应明确禁用跨片复制');
+    await page.waitForTimeout(150);
+    page.off('request', watchWrite);
+    assert.deepEqual(duplicateWrites, [], '恢复结果刷新期间快捷键、局部编辑与跨片复制均不得写入或改变历史');
+  } finally {
+    releaseRefresh();
+    await page.unroute(refreshMatcher, holdRefresh);
+  }
+  assert.ok(undoneResult.request.targets.every((target) => target.snapshot && !target.snapshot.after), '整体撤销必须恢复 before 快照');
+  const afterUndo = rawPlans(fixture);
+  for (const spec of [targetExisting, targetEmpty]) {
+    assertOnlyStickerFieldsChanged(beforeWholeUndo[spec.key].arrangement, afterUndo[spec.key].arrangement);
+    assert.deepEqual(afterUndo[spec.key].arrangement.packaging.stickers, beforeCopy[spec.key].arrangement.packaging.stickers, `${spec.key} 一次整体撤销必须恢复复制前 stickers`);
+    assert.deepEqual(afterUndo[spec.key].arrangement.packaging.stickerDefaults, beforeCopy[spec.key].arrangement.packaging.stickerDefaults, `${spec.key} 一次整体撤销必须恢复复制前 stickerDefaults`);
+  }
+  assert.equal(afterUndo.source.raw, beforeCopy.source.raw, '整体撤销不得改写来源');
+
+  await eventually(async () => await page.getByTitle('重做 (⌘⇧Z)').isEnabled(), '整体撤销完成后重做必须可用');
+  const redoneResult = await stickerCopyRequest('restore', () => page.keyboard.press('Control+Shift+z'));
+  for (const target of redoneResult.request.targets) {
+    const copiedTarget = copiedResult.body.targets.find((item) => item.planId === target.planId);
+    assert.ok(copiedTarget);
+    assert.deepEqual(target.snapshot, copiedTarget.after, '整体重做必须回放已持久化 after 变体，不得重新随机');
+  }
+  const afterRedo = rawPlans(fixture);
+  for (const spec of [targetExisting, targetEmpty]) {
+    assertOnlyStickerFieldsChanged(afterUndo[spec.key].arrangement, afterRedo[spec.key].arrangement);
+    assert.deepEqual(afterRedo[spec.key].arrangement.packaging.stickers, afterCopy[spec.key].arrangement.packaging.stickers, `${spec.key} 整体重做必须恢复完全相同的贴纸变体`);
+    assert.deepEqual(afterRedo[spec.key].arrangement.packaging.stickerDefaults, afterCopy[spec.key].arrangement.packaging.stickerDefaults);
+  }
+  assert.equal(afterRedo.source.raw, beforeCopy.source.raw, '整体重做不得改写来源');
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await enterReview();
+  const afterReload = rawPlans(fixture);
+  for (const spec of fixture.specs) assert.equal(afterReload[spec.key].raw, afterRedo[spec.key].raw, `${spec.key} 刷新后数据库快照必须持久化`);
+  for (const spec of [source, targetExisting, targetEmpty]) {
+    panel = await openFilmStickers(spec);
+    await panel.getByText('7 张已放置', { exact: true }).waitFor();
+  }
+
+  // 正文卖点预览回归：A 模板 Resolution 使用输出画布 px，B 手账使用 cqw，重放必须分别按单位换算；
+  // 系统字体物化允许 .ttc，预览资源必须能正常返回，否则 UserPoint 回退导致字体样式错误。
+  if (fs.existsSync(previewFontSource)) {
+    for (const template of ['overlay-poster', 'overlay-journal']) {
+      const pointBase = await fetchArrangement(source);
+      const pointConfig = {
+        ...pointBase.packaging,
+        template,
+        pointCues: [
+          { id: 'preview-point-cue', text: '11mm岩板台面', startSec: 1, endSec: 2.4 },
+          { id: 'preview-point-cue-2', text: '家宴围坐也稳', startSec: 2.6, endSec: 4 },
+          { id: 'preview-point-cue-3', text: '通长整板设计', startSec: 4.2, endSec: 5.6 },
+          { id: 'preview-point-cue-4', text: '拼接缝更少', startSec: 5.8, endSec: 7.2 },
+        ],
+        pointCuesMode: 'timed',
+        pointCuesLayoutVersion: 2,
+        layoutRuntimeBundleVersion: 2,
+        pointFont: { family: process.platform === 'win32' ? 'Microsoft YaHei' : 'PingFang SC', file: 'user-point-preview.ttc' },
+      };
+      delete pointConfig.layoutResolution;
+      const postClip = async (body) => page.evaluate(async ({ path, body: payload }) => {
+        const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        return { status: response.status, body: await response.json() };
+      }, { path: `${clipsPath(source)}?projectId=${encodeURIComponent(projectId)}`, body });
+      const pointSaved = await postClip({
+        type: 'set_packaging', config: pointConfig, projectId,
+        expectedEditRevision: pointBase.editRevision, expectedOutputVersionId: pointBase.outputVersionId,
+      });
+      assert.equal(pointSaved.status, 200, `${template} 卖点预览配置保存失败：${JSON.stringify(pointSaved.body)}`);
+      const pointLayout = await postClip({
+        type: 'revalidate_packaging_layout', projectId,
+        expectedEditRevision: pointSaved.body.editRevision, expectedOutputVersionId: pointBase.outputVersionId,
+      });
+      assert.equal(pointLayout.status, 200, `${template} 卖点自动布局失败：${JSON.stringify(pointLayout.body)}`);
+      assert.equal(pointLayout.body.status, 'resolved', `${template} 卖点自动布局必须返回解析结果：${JSON.stringify(pointLayout.body)}`);
+      const pointArrangement = await fetchArrangement(source);
+      assert.equal(pointArrangement.packaging.layoutResolution?.status, 'resolved',
+        `${template} 卖点必须获得有效 Resolution：${JSON.stringify({ command: pointLayout.body, resolution: pointArrangement.packaging.layoutResolution })}`);
+      assert.equal(pointArrangement.editRevision, pointSaved.body.editRevision, '派生重解析不得增加编辑修订');
+      const resolvedCues = Object.values(pointArrangement.packaging.layoutResolution.elements).filter((element) => element.kind === 'pointCue');
+      assert.equal(resolvedCues.length, 4, '必须覆盖默认位于 34/40/48/54% 的四个卖点');
+      for (const cue of resolvedCues) {
+        assert.ok(cue.visualBox.bottom <= pointArrangement.packaging.layoutResolution.outputHeight * 0.4 + 0.05,
+          `${template} 的 ${cue.id} 完整外框不得越出上 40%：${JSON.stringify(cue.visualBox)}`);
+      }
+
+      panel = await openFilmStickers(source);
+      // 后台派生重算期间预览仍显示，只是暂时禁用编辑；测量字体不依赖可编辑标题。
+      const pointOverlay = page.frameLocator('iframe[title="包装版式编辑"], iframe[title="包装效果叠加层"]');
+      await pointOverlay.locator('[data-point-id="cue:preview-point-cue"]').waitFor({ timeout: 120_000 });
+      const readPointPreview = async () => {
+        for (const frame of page.frames()) {
+          if (!await frame.locator('[data-point-id="cue:preview-point-cue"]').count()) continue;
+          return frame.evaluate((currentTemplate) => {
+            const point = document.querySelector('[data-point-id="cue:preview-point-cue"]');
+            const root = document.getElementById('root');
+            const resolution = window.__packagingAutoLayoutReplay.getResolution();
+            const item = resolution.elements['preview-point-cue'];
+            return {
+              baseHref: document.baseURI,
+              inputHash: resolution.inputHash,
+              rootWidth: root.clientWidth,
+              outputWidth: resolution.outputWidth,
+              resolutionFontSize: Number.parseFloat(item.fit.textFontSize),
+              resolutionFontUnit: String(item.fit.textFontSize).replace(/[\d.\s]/g, ''),
+              actualFontSize: Number.parseFloat(getComputedStyle(point.querySelector(currentTemplate === 'overlay-journal' ? '.txt' : '.ptxt')).fontSize),
+              userPointStatus: Array.from(document.fonts).find((font) => font.family === 'UserPoint')?.status,
+              userPointCheck: document.fonts.check('16px "UserPoint"', point.textContent || ''),
+            };
+          }, template);
+        }
+        return null;
+      };
+      let pointPreview = null;
+      await eventually(async () => {
+        pointPreview = await readPointPreview();
+        return pointPreview?.baseHref.includes(`/${pointArrangement.packaging.layoutResolution.geometryManifestHash}/`)
+          && pointPreview.inputHash === pointArrangement.packaging.layoutResolution.inputHash
+          && pointPreview.userPointCheck === true && pointPreview.userPointStatus === 'loaded';
+      }, `${template} 须切到当前冻结文档并真实加载 TTC 用户卖点字体`, 120_000);
+      const expectedPointSize = template === 'overlay-journal'
+        ? pointPreview.resolutionFontSize * pointPreview.rootWidth / 100
+        : pointPreview.resolutionFontSize * pointPreview.rootWidth / pointPreview.outputWidth;
+      assert.ok(Math.abs(pointPreview.actualFontSize - expectedPointSize) < 0.05,
+        `${template} 预览字号必须按单位正确换算：${JSON.stringify({ ...pointPreview, expectedPointSize })}`);
+      assert.ok(pointPreview.actualFontSize > 1, `${template} 卖点不得被重复缩放至不足 1px：${JSON.stringify(pointPreview)}`);
+      if (template === 'overlay-poster') {
+        assert.equal(pointPreview.resolutionFontUnit, 'px');
+        assert.ok(Math.abs(pointPreview.actualFontSize - pointPreview.rootWidth * 0.034) < 0.05,
+          `A 模板卖点必须回到 3.4cqw 响应式基准，不得异常放大：${JSON.stringify(pointPreview)}`);
+      } else assert.equal(pointPreview.resolutionFontUnit, 'cqw', 'B 手账必须覆盖 cqw Resolution');
+      // 下一轮直接写 source 前先在 UI 切走，避免选中面板的派生重验证与显式命令竞争。
+      if (template === 'overlay-poster') panel = await openFilmStickers(targetExisting);
+    }
+  }
+
+  // The existing preparation panel queries an administrator-only cache endpoint.
+  // Keep its exact employee denial visible, separate from sticker/API failures.
+  const expectedAdminDenials = apiResponses.filter(response => process.env.STICKER_TEST_TEAM === '1'
+    && response.method === 'GET' && response.path === `/api/batch-production/proxies/usage?projectId=${projectId}` && response.status === 403);
+  const coreApiFailures = apiResponses.filter((response) => response.status >= 400 && !expectedAdminDenials.includes(response) && (
+    response.path.startsWith('/api/batch-production/') || response.path.startsWith('/api/packaging/')
+  ));
+  assert.deepEqual(coreApiFailures, [{ method: 'POST', path: `${stickerCopyPath}?projectId=${fixture.projectId}`, status: 409 }],
+    '唯一失败响应必须是本测试主动触发的来源修订冲突');
+  assert.deepEqual(pageErrors, [], `页面不得出现未捕获异常：${pageErrors.join('\n')}`);
+  assert.ok(coreWrites.some((entry) => entry.kind === 'set_packaging' && entry.request.config?.stickers), '必须记录真实当前片包装保存');
+  assert.equal(coreWrites.filter((entry) => entry.kind === 'sticker-copy').length, 1);
+  assert.equal(coreWrites.filter((entry) => entry.kind === 'sticker-restore').length, 2);
+
+  for (const spec of [source, targetExisting, targetEmpty]) await verifyBatchStickerProductionExport(page, fixture, spec);
+  assert.deepEqual(pageErrors, [], '包括正式导出在内不得出现未捕获页面异常');
+  if (process.env.STICKER_TEST_EVIDENCE_DIR) await page.screenshot({ path: path.join(process.env.STICKER_TEST_EVIDENCE_DIR, 'batch-editor.png') });
+  passed = true;
+  console.log(`批量贴纸真实浏览器验收通过：${coreWrites.length} 次核心写入、${apiResponses.length} 条真实 API 响应、0 个页面异常。`);
+  console.log('覆盖：当前片素材库/添加/overlay/中文时间轴/选中/空白取消/Delete与预览删除、换一组隔离、跨片选中隔离、时间轴移动、复制弹窗与双目标真实 API、字段与时间比例、自动变体、整体撤销/重做及刷新持久化。');
+  console.log(`API 失败响应：${JSON.stringify(coreApiFailures)}；既有管理员端点拒绝：${expectedAdminDenials.length}；console error 记录：${JSON.stringify(consoleErrors)}`);
+} catch (error) {
+  if (server) console.error(server.output());
+  console.error(`真实 API 响应记录：${JSON.stringify(apiResponses)}`);
+  console.error(`核心写入记录：${JSON.stringify(coreWrites)}`);
+  console.error(`页面异常：${JSON.stringify(pageErrors)}`);
+  console.error(`console error：${JSON.stringify(consoleErrors)}`);
+  if (page) console.error(`浏览器正文：${(await page.locator('body').innerText().catch(() => '无法读取')).slice(0, 6000)}`);
+  throw error;
+} finally {
+  if (browser) await browser.close();
+  if (server) await stopServer(server.child);
+  if (passed) {
+    try { fs.rmSync(dataRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+    catch { console.warn(`Windows 文件锁未释放，临时测试目录保留：${dataRoot}`); }
+  } else console.error(`临时测试数据保留供排查：${dataRoot}`);
+}

@@ -37,8 +37,8 @@ import { runFfmpeg } from '../lib/ffmpeg.ts';
 import { directSeedanceCapability } from '../lib/creative-canvas/adapters/seedance-capabilities.ts';
 import { SEEDANCE_20, SEEDANCE_25 } from '../lib/video-providers/seedance-contract.ts';
 
-const SUITES = ['assets', 'interaction', 'editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance', 'all'];
-const IMPLEMENTED_SUITES = ['assets', 'interaction', 'editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance'];
+const SUITES = ['assets', 'interaction', 'editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance', 'mentions', 'all'];
+const IMPLEMENTED_SUITES = ['assets', 'interaction', 'editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance', 'mentions'];
 
 const suiteArgIndex = process.argv.indexOf('--suite');
 const suite = suiteArgIndex >= 0 ? process.argv[suiteArgIndex + 1] : 'all';
@@ -834,6 +834,103 @@ async function seedanceSuite(page) {
   return { sixModes: true, companySixModes: true, configuredImages: 5, refreshOnFocus: true, newAudioEnabled: true, draftResolutionLocked: true, directPreferenceRestored: true, modelSwitchExplained: true, movPlaybackProgress: true, originalMovDownloadPreserved: true, generationRequests: 1, screenshot };
 }
 
+async function mentionsSuite(page) {
+  const canvasId = await createCanvas(page, '提示词引用与参考重连');
+  const result = await page.evaluate(async (id) => {
+    const { canvas } = await (await fetch(`/api/canvas/${id}`)).json();
+    const graph = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'image', kind: 'material', position: { x: 0, y: 0 }, data: { title: '产品图', assetId: null, mediaKind: 'image' } },
+        { id: 'image-b', kind: 'material', position: { x: 0, y: 150 }, data: { title: '场景图', assetId: null, mediaKind: 'image' } },
+        { id: 'image-c', kind: 'material', position: { x: 0, y: 300 }, data: { title: '新图', assetId: null, mediaKind: 'image' } },
+        { id: 'prompt', kind: 'prompt', position: { x: 0, y: 460 }, data: { title: '提示词', text: '' } },
+        { id: 'video', kind: 'video-generation', position: { x: 500, y: 0 }, data: {
+          title: '视频', modelKey: 'fixture-video', generationMode: 'image-to-video', prompt: '',
+          parameters: {}, references: [], referenceLabelCounter: 0,
+        } },
+      ],
+      edges: [{ id: 'image-video', source: 'image', target: 'video' }, { id: 'b-video', source: 'image-b', target: 'video' },
+        { id: 'prompt-video', source: 'prompt', target: 'video' }],
+    };
+    return (await fetch(`/api/canvas/${id}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedGraphRevision: canvas.graphRevision, graph }),
+    })).status;
+  }, canvasId);
+  assert.equal(result, 200);
+  await page.reload();
+  const prompt = page.locator('.react-flow__node[data-id="prompt"]');
+  const menuChecks = [];
+  const screenshotRoot = path.join(repoRoot, 'outputs', 'canvas-validation', 'reference-fix');
+  fs.mkdirSync(screenshotRoot, { recursive: true });
+  for (const theme of ['light', 'dark']) {
+    for (const width of [1536, 1280, 1024]) {
+      await page.setViewportSize({ width, height: 864 });
+      await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+      await prompt.locator('[data-testid="prompt-text"]').fill('@产品');
+      await prompt.locator('[data-testid="mention-option-image"]').waitFor({ timeout: 3000 });
+      const menu = prompt.locator('[data-testid="mention-menu"]');
+      assert.equal(await menu.evaluate((element) => element.matches(':popover-open')), true, '候选菜单不能被节点滚动容器裁掉');
+      const box = await menu.boundingBox();
+      assert.ok(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= width && box.y + box.height <= 864);
+      await page.screenshot({ path: path.join(screenshotRoot, `mentions-${theme}-${width}.png`) });
+      await prompt.locator('[data-testid="mention-option-image"]').click();
+      assert.equal(await prompt.locator('[data-testid="prompt-text"]').inputValue(), '@参考1 ');
+      menuChecks.push({ theme, width, menuVisible: true, mouseSelection: true });
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+  await prompt.locator('[data-testid="prompt-text"]').fill('@产品');
+  await prompt.locator('[data-testid="mention-option-image"]').waitFor();
+  await prompt.locator('[data-testid="prompt-text"]').press('Enter');
+  assert.equal(await prompt.locator('[data-testid="prompt-text"]').inputValue(), '@参考1 ');
+  await prompt.locator('[data-testid="prompt-text"]').fill('@场景');
+  await prompt.locator('[data-testid="mention-option-image-b"]').click();
+  assert.equal(await prompt.locator('[data-testid="prompt-text"]').inputValue(), '@参考2 ');
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await prompt.locator('[data-testid="prompt-text"]').fill('@场景');
+    await prompt.locator('[data-testid="mention-option-image-b"]').click();
+    // 选中后立即替换正文，迟到的光标回写不能把旧引用留在新文本前面。
+    await prompt.locator('[data-testid="prompt-text"]').fill('连续编辑');
+    assert.equal(await prompt.locator('[data-testid="prompt-text"]').inputValue(), '连续编辑');
+  }
+  await prompt.locator('[data-testid="prompt-text"]').fill('保留 @参考2，移除 @参考1');
+  await prompt.locator('[data-testid="prompt-text"]').blur();
+  await waitSaved(page);
+  await page.reload();
+  assert.equal(await prompt.locator('[data-testid="prompt-text"]').inputValue(), '保留 @参考2，移除 @参考1');
+  const video = page.locator('.react-flow__node[data-id="video"]');
+  await video.locator('[data-testid="generation-prompt"]').fill('@场景');
+  await video.locator('[data-testid="generation-prompt"]').press('Enter');
+  assert.equal(await video.locator('[data-testid="generation-prompt"]').inputValue(), '@参考2 ');
+  await video.locator('[data-testid="generation-prompt"]').fill('保留 @参考2，移除 @参考1');
+  await video.locator('[data-testid="generation-prompt"]').blur();
+  await video.locator('[data-testid="detach-ref-1"]').click();
+  await page.waitForFunction(() => document.querySelector('.react-flow__node[data-id="video"] [data-testid="generation-prompt"]')?.value === '保留 @参考1，移除 @失效参考1');
+  assert.equal(await prompt.locator('[data-testid="prompt-text"]').inputValue(), '保留 @参考1，移除 @失效参考1');
+  assert.deepEqual(await video.locator('[data-reference]').evaluateAll((rows) => rows.map((row) => row.dataset.reference)), ['1', '2']);
+  await prompt.locator('[data-testid="mention-unknown"]').waitFor();
+  await video.locator('[data-testid="mention-unknown"]').waitFor();
+  await connect(page, 'image-c', 'video');
+  await video.locator('[data-reference="3"]').waitFor();
+  await waitSaved(page);
+  await page.reload();
+  await video.locator('[data-reference="3"]').waitFor();
+  assert.deepEqual(await video.locator('[data-reference]').evaluateAll((rows) => rows.map((row) => row.dataset.reference)), ['1', '2', '3']);
+  // 清空后重连同一来源：新的参考从 1 开始。
+  while (await video.locator('[data-reference]').count()) {
+    await video.locator('[data-reference]').first().getByRole('button', { name: /^移除/ }).click();
+  }
+  await connect(page, 'image-c', 'video');
+  await video.locator('[data-reference="1"]').waitFor();
+  assert.equal(await video.locator('[data-reference]').count(), 1);
+  assert.equal(runPosts.length, 0, '选择引用不应触发生成');
+  return { promptMentions: true, mouseAndKeyboard: true, persisted: true, continuousLabels: true, removedMentionsInvalid: true,
+    menuChecks, screenshotRoot, generationRequests: 0 };
+}
+
 async function editorSuite(page) {
   const pngA = path.join(fixtureDir, '沙发A.png');
   const pngB = path.join(fixtureDir, '沙发B.png');
@@ -901,17 +998,18 @@ async function editorSuite(page) {
     imageNodeId,
   );
 
-  // 7. 断线 → 槽位移除 → 提及未知编号给出提示
+  // 7. 断线 → 槽位移除、连续编号 → 提及未知编号给出提示
   await page.locator(`.react-flow__node[data-id="${imageNodeId}"] [data-testid="detach-ref-1"]`).click();
-  await page.waitForSelector(`.react-flow__node[data-id="${imageNodeId}"] [data-reference="1"]`, { state: 'detached' });
-  await fillPrompt(page, imageNodeId, '把 @参考1 放到客厅');
+  await page.waitForSelector(`.react-flow__node[data-id="${imageNodeId}"] [data-reference="2"]`, { state: 'detached' });
+  await fillPrompt(page, imageNodeId, '把 @参考9 放到客厅');
   await page.waitForSelector(`.react-flow__node[data-id="${imageNodeId}"] [data-testid="mention-unknown"]`);
   await waitSaved(page);
   assert.equal(runPosts.length, 0);
 
-  // 8. 重新连接 → 分配新编号，旧编号不回收（@参考N 不会悄悄改指向）
+  // 8. 重新连接 → 在剩余参考之后连续编号
   await connect(page, materialA, imageNodeId);
-  await page.waitForSelector(`.react-flow__node[data-id="${imageNodeId}"] [data-reference="3"]`);
+  await page.waitForSelector(`.react-flow__node[data-id="${imageNodeId}"] [data-reference="2"]`);
+  await fillPrompt(page, imageNodeId, '把 @参考1 放到客厅');
 
   // 9. 连线上的 × 只解除引用：节点与结果保留
   const edgeCountBefore = await page.locator('.react-flow__edge').count();
@@ -2053,6 +2151,7 @@ try {
     if (name === 'interaction') evidence.interaction = await interactionSuite(page);
     if (name === 'seedance') evidence.seedance = await seedanceSuite(page);
     if (name === 'editor') evidence.editor = await editorSuite(page);
+    if (name === 'mentions') evidence.mentions = await mentionsSuite(page);
     if (name === 'execution') evidence.execution = await executionSuite(page);
     if (name === 'recovery') {
       // 这一套件需要「首次下载失败」的故障注入，单独用一份服务实例

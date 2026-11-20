@@ -1,0 +1,188 @@
+// 运行：node scripts/packaging-stickers-domain.test.ts
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import {
+  STICKER_COMMON_IDS,
+  STICKER_STYLE_BY_TEMPLATE,
+  sanitizePackagingStickers,
+  sanitizePackagingStickerDefaults,
+  validatePackagingStickerDefaults,
+  validatePackagingStickers,
+  resolveStickerStyle,
+  resolveStickerAssetFile,
+  resolveStickerAnimation,
+  planStickerFramesAtPlayhead,
+  createManualPackagingSticker,
+  applyPackagingStickerEdit,
+  assertSupportedPackagingStickerLayoutVersions,
+  type PackagingStickerInstance,
+} from '../lib/media-core/packaging-stickers.ts';
+import { parsePackagingConfig, PACKAGING_TEMPLATE_IDS } from '../lib/media-core/packaging-vars.ts';
+import { buildTimelineVars } from '../lib/media-core/packaging-runtime.ts';
+import { resolvePackagingStickerAssets } from '../lib/media-core/packaging-sticker-assets.ts';
+
+const require = createRequire(import.meta.url);
+const { planStickerAnimation, computeStickerGeometry } = require('../packaging/stickers/runtime.js') as {
+  planStickerAnimation: (sticker: PackagingStickerInstance, template: string) => {
+    animation: string; enterFrames: number; exitFrames: number; stableFrames: number; exitStartFrame: number;
+  };
+  computeStickerGeometry: (sticker: PackagingStickerInstance, asset: { alpha_gt8_bbox: [number, number, number, number]; width: number; height: number }) => { imageWidthPct: number };
+};
+
+function sticker(overrides: Partial<PackagingStickerInstance> = {}): PackagingStickerInstance {
+  return {
+    id: 'sticker_1',
+    assetId: 'highlight',
+    styleMode: 'follow-template',
+    fixedStyle: null,
+    startFrame: 20,
+    endFrame: 68,
+    centerXPct: 50,
+    centerYPct: 40,
+    visualWidthPct: 30,
+    rotationDeg: 0,
+    trackIndex: 0,
+    animation: 'follow-template',
+    origin: { kind: 'manual' },
+    ...overrides,
+  };
+}
+
+assert.equal(STICKER_COMMON_IDS.length, 28);
+const base = sticker();
+assert.deepEqual(sanitizePackagingStickers([base]), [base]);
+assert.deepEqual(sanitizePackagingStickers([base, base]), [base], '重复实例 ID 只保留第一项');
+assert.deepEqual(sanitizePackagingStickers([sticker({ id: 'bad', assetId: 'unknown' })]), []);
+assert.deepEqual(sanitizePackagingStickers([sticker({ id: 'bad', startFrame: 19 })]), []);
+assert.deepEqual(sanitizePackagingStickers([sticker({ id: 'bad', endFrame: 38 })]), []);
+assert.deepEqual(sanitizePackagingStickers([sticker({ id: 'bad', styleMode: 'fixed', fixedStyle: null })]), []);
+assert.deepEqual(sanitizePackagingStickers([sticker({ id: 'bad', fixedStyle: 'show' })]), []);
+assert.deepEqual(sanitizePackagingStickers([sticker({ id: 'bad', assetId: 'special' })]), []);
+assert.deepEqual(validatePackagingStickers([base], 360), [base]);
+assert.throws(() => validatePackagingStickers([sticker({ endFrame: 400 })], 360), /超出正文时间范围/);
+assert.throws(() => validatePackagingStickers([sticker({ id: 'bad', centerXPct: 101 })], 360), /非法项/);
+assert.throws(() => validatePackagingStickers('bad', 360), /必须是数组/);
+
+assert.deepEqual(planStickerFramesAtPlayhead(0, 240), { startFrame: 20, endFrame: 68 });
+assert.deepEqual(planStickerFramesAtPlayhead(1, 240), { startFrame: 24, endFrame: 72 });
+assert.deepEqual(planStickerFramesAtPlayhead(220 / 24, 240), { startFrame: 220, endFrame: 260 });
+assert.equal(planStickerFramesAtPlayhead(250 / 24, 240), null);
+assert.equal(planStickerFramesAtPlayhead(0, 18), null);
+assert.equal(planStickerFramesAtPlayhead(999, 240), null);
+const manual = createManualPackagingSticker({
+  id: 'manual_1', assetId: 'highlight', styleMode: 'follow-template', fixedStyle: null,
+  startFrame: 20, endFrame: 68, centerXPct: 50, centerYPct: 50, animation: 'soft',
+});
+assert.equal(manual.visualWidthPct, 30);
+assert.equal(manual.trackIndex, 0);
+assert.deepEqual(manual.origin, { kind: 'manual' });
+assert.deepEqual(validatePackagingStickers([manual], 240), [manual]);
+const autoEdited = applyPackagingStickerEdit({ ...manual, origin: { kind: 'auto', autoGroupId: 'auto_1', autoEdited: false } }, { centerXPct: 42 });
+assert.equal(autoEdited.centerXPct, 42);
+assert.deepEqual(autoEdited.origin, { kind: 'auto', autoGroupId: 'auto_1', autoEdited: true });
+const v2Auto = sticker({
+  centerXPct: 22,
+  centerYPct: 24,
+  origin: { kind: 'auto', autoGroupId: 'auto_v2', autoEdited: false, layoutVersion: 2 },
+});
+assert.throws(() => applyPackagingStickerEdit(v2Auto, { animation: 'rise' }), /实际位置尚未就绪/);
+const pinnedV2 = applyPackagingStickerEdit(v2Auto, { animation: 'rise' }, { x: 26, y: 29 });
+assert.equal(pinnedV2.animation, 'rise');
+assert.equal(pinnedV2.centerXPct, 26);
+assert.equal(pinnedV2.centerYPct, 29);
+assert.deepEqual(pinnedV2.origin, { kind: 'auto', autoGroupId: 'auto_v2', autoEdited: true, layoutVersion: 2, positionPinned: true });
+assertSupportedPackagingStickerLayoutVersions([pinnedV2]);
+assert.throws(
+  () => validatePackagingStickers([sticker({ origin: { kind: 'auto', autoGroupId: 'future', autoEdited: false, layoutVersion: 3 } })], 240),
+  /不支持的自动布局版本/,
+);
+const forcedSpecial = applyPackagingStickerEdit({ ...manual, assetId: 'special', styleMode: 'fixed', fixedStyle: 'show' }, { styleMode: 'follow-template', fixedStyle: null });
+assert.equal(forcedSpecial.styleMode, 'fixed');
+assert.equal(forcedSpecial.fixedStyle, 'show');
+
+const special = sticker({ id: 'special_1', assetId: 'special', styleMode: 'fixed', fixedStyle: 'show' });
+assert.deepEqual(sanitizePackagingStickers([special]), [special]);
+assert.equal(resolveStickerStyle(base, 'overlay-poster'), 'comic');
+assert.equal(resolveStickerStyle(base, 'overlay-journal'), 'journal');
+assert.equal(resolveStickerStyle(base, 'overlay-minimal'), 'editorial');
+assert.equal(resolveStickerStyle(base, 'overlay-variety'), 'show');
+assert.equal(resolveStickerStyle(special, 'overlay-poster'), 'show');
+assert.equal(resolveStickerAssetFile(base, 'overlay-variety'), 'show/highlight.png');
+assert.equal(resolveStickerAnimation('follow-template', 'overlay-poster'), 'bounce');
+assert.equal(resolveStickerAnimation('follow-template', 'overlay-journal'), 'soft');
+assert.equal(resolveStickerAnimation('zoom', 'overlay-variety'), 'zoom');
+
+assert.deepEqual(sanitizePackagingStickerDefaults({ animation: 'rise' }), { animation: 'rise' });
+assert.deepEqual(sanitizePackagingStickerDefaults({ animation: 'invalid' }), { animation: 'follow-template' });
+assert.equal(sanitizePackagingStickerDefaults(null), undefined);
+assert.deepEqual(validatePackagingStickerDefaults({ animation: 'none' }), { animation: 'none' });
+assert.throws(() => validatePackagingStickerDefaults({ animation: 'invalid' }), /默认动效无效/);
+
+const oldConfig = parsePackagingConfig({ enabled: true, template: 'overlay-poster' });
+assert.equal(oldConfig.stickers, undefined);
+assert.equal(oldConfig.stickerDefaults, undefined);
+const config = parsePackagingConfig({ enabled: true, template: 'overlay-variety', stickers: [base], stickerDefaults: { animation: 'soft' } });
+assert.deepEqual(config.stickers, [base]);
+assert.deepEqual(config.stickerDefaults, { animation: 'soft' });
+
+const stickerAssets = resolvePackagingStickerAssets({ packagingDir: path.resolve('packaging'), template: 'overlay-variety', stickers: [base] });
+assert.equal(stickerAssets[base.id].file, 'show/highlight.png');
+assert.equal(stickerAssets[base.id].alpha_gt8_bbox.length, 4);
+assert.match(stickerAssets[base.id].sha256, /^[a-f0-9]{64}$/);
+assert.throws(() => resolvePackagingStickerAssets({ packagingDir: path.resolve('packaging'), template: 'overlay-basic', stickers: [base] }), /不支持贴纸/);
+assert.throws(() => resolvePackagingStickerAssets({ packagingDir: path.resolve('packaging'), template: 'overlay-variety', stickers: [sticker({ assetId: 'missing' })] }), /缺少 show\/missing.png/);
+
+const timelineVars = buildTimelineVars({
+  vars: { title: '', subtitle: '', point1: '', point2: '', point3: '', accent1: '', accent2: '', accent3: '' },
+  totalSec: 15,
+  coverSec: 20 / 24,
+  pointCues: [],
+  pointCuesMode: 'none',
+  stickers: [base],
+  stickerDefaults: { animation: 'soft' },
+  stickerAssets,
+  template: 'overlay-variety',
+});
+assert.deepEqual(timelineVars.stickers, [base]);
+assert.deepEqual(timelineVars.stickerDefaults, { animation: 'soft' });
+assert.deepEqual(timelineVars.stickerAssets, stickerAssets);
+assert.equal(timelineVars.stickerTemplate, 'overlay-variety');
+
+for (const animation of ['soft', 'bounce', 'rise', 'slide', 'zoom', 'none'] as const) {
+  const plan = planStickerAnimation(sticker({ animation }), 'overlay-poster');
+  assert.equal(plan.animation, animation);
+  assert.equal(plan.enterFrames + plan.exitFrames + plan.stableFrames, 48);
+  assert.equal(plan.exitStartFrame, 68 - plan.exitFrames);
+  assert.ok(plan.stableFrames >= 2, `${animation} 必须保留至少 2 帧稳定显示`);
+  if (animation === 'none') assert.deepEqual([plan.enterFrames, plan.exitFrames], [0, 0]);
+  else assert.ok(plan.enterFrames >= 1 && plan.exitFrames >= 1, `${animation} 入退场至少各 1 帧`);
+}
+assert.equal(planStickerAnimation(sticker({ animation: 'follow-template' }), 'overlay-poster').animation, 'bounce');
+assert.equal(planStickerAnimation(sticker({ animation: 'follow-template' }), 'overlay-journal').animation, 'soft');
+const compressed = planStickerAnimation(sticker({ endFrame: 25, animation: 'bounce' }), 'overlay-poster');
+assert.equal(compressed.enterFrames + compressed.exitFrames, 3);
+assert.equal(compressed.stableFrames, 2);
+assert.ok(compressed.enterFrames < 9 && compressed.exitFrames < 6, '短时长必须等比压缩入出场');
+assert.ok(Math.abs(compressed.enterFrames / 9 - compressed.exitFrames / 6) < 0.1);
+const minimum = planStickerAnimation(sticker({ endFrame: 24, animation: 'soft' }), 'overlay-poster');
+assert.deepEqual([minimum.enterFrames, minimum.exitFrames, minimum.stableFrames], [1, 1, 2]);
+assert.throws(() => planStickerAnimation(sticker({ endFrame: 23, animation: 'soft' }), 'overlay-poster'), /至少为 4 帧/);
+
+for (const assetId of STICKER_COMMON_IDS) {
+  for (const template of PACKAGING_TEMPLATE_IDS) {
+    const common = sticker({ assetId, visualWidthPct: 30 });
+    const resolved = resolvePackagingStickerAssets({ packagingDir: path.resolve('packaging'), template, stickers: [common] });
+    const asset = resolved[common.id];
+    assert.equal(asset.file, `${STICKER_STYLE_BY_TEMPLATE[template]}/${assetId}.png`, `${template}/${assetId} 模板素材映射错误`);
+    const geometry = computeStickerGeometry(common, asset);
+    const effectiveWidth = geometry.imageWidthPct * (asset.alpha_gt8_bbox[2] - asset.alpha_gt8_bbox[0]) / asset.width;
+    assert.ok(Math.abs(effectiveWidth - 30) < 1e-8, `${template}/${assetId} 换模板视觉宽度必须保持`);
+  }
+}
+for (const template of PACKAGING_TEMPLATE_IDS) {
+  assert.equal(resolveStickerAssetFile(special, template), 'show/special.png', 'special 必须固定原风格，不随模板错误替换');
+  const cross = sticker({ assetId: 'like', styleMode: 'fixed', fixedStyle: 'show' });
+  assert.equal(resolveStickerAssetFile(cross, template), 'show/like.png', '跨风格固定贴纸必须保留 show 素材');
+}
+console.log('贴纸领域测试通过：清洗、28 个共同 ID 与视觉尺寸、special/跨风格固定、六种动效、短时长压缩和快照透传。');

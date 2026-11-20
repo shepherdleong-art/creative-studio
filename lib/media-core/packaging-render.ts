@@ -7,6 +7,8 @@ import { buildPackagingVars, type FinalEditPackagingConfig } from './packaging-v
 import { buildTimelineVars, resolvePackagingDir, resolvePackagingNode, resolvePackagingTemplateDir, runPackagingPipeline } from './packaging-runtime.ts';
 import { safeFontFilename, userFontDir } from './packaging-font.ts';
 import { composeCoverJpg } from './cover-compose.ts';
+import { resolvePackagingStickerAssets } from './packaging-sticker-assets.ts';
+import { assertPackagingLayoutExportReady, packagingLayoutEngineExecutable } from './packaging-layout-manifest.ts';
 
 /** Render into the caller's private job directory; publishing and lineage remain the caller's responsibility. */
 export async function renderVideoPackaging(input: {
@@ -18,7 +20,13 @@ export async function renderVideoPackaging(input: {
   if (!input.config.enabled) return;
   input.signal?.throwIfAborted();
   const dir = resolvePackagingDir();
-  const template = resolvePackagingTemplateDir(dir, input.config.template);
+  const layoutBundle = await assertPackagingLayoutExportReady(input.config,
+    input.config.layoutResolution?.outputWidth ?? 0,
+    input.config.layoutResolution?.outputHeight ?? 0);
+  const resourceDir = layoutBundle?.bundleDir ?? dir;
+  const template = layoutBundle
+    ? path.join(resourceDir, 'templates', input.config.template)
+    : resolvePackagingTemplateDir(dir, input.config.template);
   const jobDir = path.dirname(input.videoPath);
   const output = path.join(jobDir, 'packaged.mp4');
   const coverSec = input.coverEnabled === false ? 0 : FINAL_EDIT_INTRO_DURATION_US / 1e6;
@@ -28,16 +36,23 @@ export async function renderVideoPackaging(input: {
     if (!font) continue;
     const file = safeFontFilename(font.file);
     if (!file) throw new Error('包装字体文件名无效');
-    await fs.access(path.join(userFontDir(), file));
+    await fs.access(path.join(layoutBundle ? path.join(resourceDir, 'user-fonts') : userFontDir(), file));
     fonts[`${slot}File`] = file;
   }
+  const stickerAssets = resolvePackagingStickerAssets({ packagingDir: resourceDir, template: input.config.template, stickers: input.config.stickers });
   const vars = buildTimelineVars({ vars: buildPackagingVars({ subtitleCues: [], overrides: input.config.varsOverrides }),
-    totalSec: input.totalSec, coverSec, staticCover: input.staticCover, pointCues: input.config.pointCues ?? [], pointCuesMode: input.config.pointCuesMode ?? 'none', layouts: input.config.layouts, fonts });
+    totalSec: input.totalSec, coverSec, staticCover: input.staticCover, pointCues: input.config.pointCues ?? [], pointCuesMode: input.config.pointCuesMode ?? 'none', layouts: input.config.layouts, fonts,
+    pointCuesLayoutVersion: input.config.pointCuesLayoutVersion,
+    layoutRuntimeBundleVersion: input.config.layoutRuntimeBundleVersion,
+    layoutResolution: input.config.layoutResolution,
+    stickers: input.config.stickers, stickerDefaults: input.config.stickerDefaults, stickerAssets, template: input.config.template });
   const varsPath = path.join(jobDir, 'packaging-vars.json');
   if (input.coverEnabled === false) vars.hideCover = true;
   await fs.writeFile(varsPath, JSON.stringify(vars), 'utf8');
   await runPackagingPipeline({ nodeExe: resolvePackagingNode(), packagingDir: dir,
-    args: [path.join(dir, 'package-video.mjs'), input.videoPath, varsPath, output, template], signal: input.signal, onStage: input.onProgress });
+    args: [path.join(resourceDir, 'package-video.mjs'), input.videoPath, varsPath, output, template], signal: input.signal, onStage: input.onProgress,
+    layoutBundleDir: layoutBundle?.bundleDir,
+    layoutEngineExecutable: layoutBundle ? packagingLayoutEngineExecutable(layoutBundle.manifest) : undefined });
   input.signal?.throwIfAborted();
   const overlay = path.join(jobDir, 'overlay.webm');
   if (input.coverEnabled === false) {

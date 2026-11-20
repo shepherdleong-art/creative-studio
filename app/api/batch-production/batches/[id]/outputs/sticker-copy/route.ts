@@ -1,0 +1,108 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
+import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
+import { BatchDomainError } from '@/lib/batch-production/errors';
+import { getBatchOutputArrangementView } from '@/lib/batch-production/output-arrangement';
+import { batchPackagingDefaults } from '@/lib/batch-production/packaging';
+import { resolvePackagingAutoLayout } from '@/lib/media-core/packaging-auto-layout-service';
+import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_DURATION_US } from '@/lib/media-core/render-contract';
+import {
+  copyBatchOutputStickers,
+  restoreBatchOutputStickers,
+  type BatchPackagingStickerSnapshot,
+  type BatchStickerCopyTarget,
+  type BatchStickerRestoreTarget,
+} from '@/lib/batch-production/sticker-copy';
+import {
+  BATCH_NO_STORE_HEADERS,
+  batchProjectIdFromRequest,
+  batchRouteErrorResponse,
+} from '../../../response';
+import { withTeamRoute } from '@/lib/team-service/route-wrapper';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function invalidInput(message: string): never {
+  throw new BatchDomainError('invalid_input', message);
+}
+
+function parseTarget(value: unknown): BatchStickerCopyTarget {
+  if (!isRecord(value) || typeof value.planId !== 'string' || !value.planId.trim()
+    || typeof value.expectedOutputVersionId !== 'string' || !value.expectedOutputVersionId.trim()
+    || typeof value.expectedEditRevision !== 'number'
+    || !Number.isSafeInteger(value.expectedEditRevision) || value.expectedEditRevision < 0) {
+    invalidInput('目标成片需要有效的 planId、expectedOutputVersionId 与 expectedEditRevision');
+  }
+  return {
+    planId: value.planId.trim(),
+    expectedOutputVersionId: value.expectedOutputVersionId.trim(),
+    expectedEditRevision: value.expectedEditRevision,
+  };
+}
+
+function parseRestoreTarget(value: unknown): BatchStickerRestoreTarget {
+  const target = parseTarget(value);
+  if (!isRecord(value) || !isRecord(value.snapshot)) invalidInput('恢复目标缺少有效贴纸快照');
+  return { ...target, snapshot: value.snapshot as BatchPackagingStickerSnapshot };
+}
+
+/** 批次级贴纸复制与整体撤销/重做恢复；任一目标失败时整个事务回滚。 */
+async function __teamRoutePOST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const { id } = await context.params;
+  const projectId = batchProjectIdFromRequest(request);
+  if (!projectId) {
+    return NextResponse.json({
+      error: 'missing_project_id',
+      message: '缺少 projectId 参数',
+    }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+  }
+  try {
+    await assertBatchApiReady();
+    const body = await request.json().catch(() => ({})) as unknown;
+    if (!isRecord(body) || !Array.isArray(body.targets)) invalidInput('请求需要 type 与 targets 数组');
+    const db = getDb();
+    if (body.type === 'copy') {
+      if (typeof body.sourcePlanId !== 'string' || !body.sourcePlanId.trim()) invalidInput('复制需要来源 sourcePlanId');
+      if (typeof body.expectedSourceOutputVersionId !== 'string' || !body.expectedSourceOutputVersionId.trim()
+        || typeof body.expectedSourceEditRevision !== 'number' || !Number.isSafeInteger(body.expectedSourceEditRevision)
+        || body.expectedSourceEditRevision < 0) invalidInput('复制需要来源成片的预期版本与修订');
+      const result = await copyBatchOutputStickers(db, projectId, id, {
+        requestId: body.requestId as string | undefined,
+        sourcePlanId: body.sourcePlanId.trim(),
+        expectedSourceOutputVersionId: body.expectedSourceOutputVersionId,
+        expectedSourceEditRevision: body.expectedSourceEditRevision,
+        targets: body.targets.map(parseTarget),
+      }, {
+        resolveLayout: async ({ planId, config, bodyFrames }) => {
+          const view = getBatchOutputArrangementView(db, projectId, id, planId);
+          const coverSec = FINAL_EDIT_INTRO_DURATION_US / 1e6;
+          return resolvePackagingAutoLayout({
+            config,
+            vars: { ...batchPackagingDefaults(db, projectId, view), ...config.varsOverrides },
+            totalSec: bodyFrames / FINAL_EDIT_FPS + coverSec,
+            coverSec,
+            outputWidth: view.outputSize.width,
+            outputHeight: view.outputSize.height,
+            signal: request.signal,
+          });
+        },
+      });
+      return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });
+    }
+    if (body.type === 'restore') {
+      const result = restoreBatchOutputStickers(db, projectId, id, {
+        targets: body.targets.map(parseRestoreTarget),
+      });
+      return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });
+    }
+    invalidInput('贴纸操作 type 必须为 copy 或 restore');
+  } catch (error) {
+    return batchRouteErrorResponse(error, 'batch_sticker_copy_failed', '贴纸复制或恢复失败');
+  }
+}
+export const POST = withTeamRoute('/api/batch-production/batches/[id]/outputs/sticker-copy', 'POST', __teamRoutePOST);

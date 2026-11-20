@@ -85,6 +85,7 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/batch-production/batches/[id]/exports/reveal': 'POST',
   '/api/batch-production/batches/[id]/exports': 'POST',
   '/api/batch-production/batches/[id]/outputs/review': 'POST',
+  '/api/batch-production/batches/[id]/outputs/sticker-copy': 'POST',
   '/api/batch-production/batches/[id]/outputs/[planId]/arrangement': 'GET',
   '/api/batch-production/batches/[id]/outputs/[planId]/clips': 'POST',
   '/api/batch-production/batches/[id]/outputs/[planId]/cover': 'POST',
@@ -154,6 +155,9 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/final-edit-groups/[id]/narration': 'GET',
   '/api/final-edit-groups/[id]/overlay-bundles/[preset]': 'POST',
   '/api/final-edit-groups/[id]/packaging-preview': 'GET',
+  '/api/final-edit-groups/[id]/packaging-layout': 'POST',
+  '/api/final-edit-groups/[id]/packaging-layout-resources/[...path]': 'GET',
+  '/api/batch-production/batches/[id]/outputs/[planId]/packaging-layout-resources/[...path]': 'GET',
   '/api/final-edit-groups/[id]/review-cover': 'GET',
   '/api/final-edit-groups/[id]/rework/[clipId]': 'GET POST',
   '/api/final-edit-groups/[id]': 'GET PATCH',
@@ -181,6 +185,7 @@ const ROUTE_METHODS: Record<string, string> = {
   '/api/jobs/[id]': 'PATCH',
   '/api/packaging/system-fonts': 'GET',
   '/api/packaging/system-fonts/select': 'POST',
+  '/api/packaging/stickers/[...path]': 'GET',
   '/api/packaging/templates/[...path]': 'GET',
   '/api/packaging/user-font': 'DELETE GET POST',
   '/api/projects': 'GET POST',
@@ -345,6 +350,7 @@ const PUBLIC = new Set([
   '/api/team/operations/status GET', '/api/team/operations/shutdown POST',
 ]);
 const AUTHENTICATED = new Set([
+  '/api/packaging/stickers/[...path] GET',
   '/api/packaging/templates/[...path] GET',
   '/api/team/auth/change-password POST', '/api/team/auth/logout POST',
   '/api/team/recycle-bin GET', '/api/team/recycle-bin/restore POST',

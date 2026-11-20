@@ -4,6 +4,9 @@ import { dataRoot } from '../data-root.ts';
 import { spawnHidden, spawnSyncHidden } from '../spawn-hidden.ts';
 import { resolveFfmpegPath, resolveFfprobePath } from '../ffmpeg.ts';
 import type { PackagingVars, PackagingLayouts } from './packaging-vars.ts';
+import type { PackagingStickerDefaults, PackagingStickerInstance } from './packaging-stickers.ts';
+import type { PackagingStickerAssetMap } from './packaging-sticker-assets.ts';
+import type { PackagingLayoutResolution } from './packaging-auto-layout.ts';
 import type { PointCue, PointCueDraft } from './packaging-cues.ts';
 export class PackagingError extends Error {
   code: string;
@@ -65,6 +68,14 @@ export function buildTimelineVars(input: {
   pointCuesMode: 'timed' | 'even' | 'none';
   /** §7：手动布局透传（模板端读 window.__vars.layouts）。 */
   layouts?: PackagingLayouts;
+  pointCuesLayoutVersion?: number;
+  layoutRuntimeBundleVersion?: number;
+  layoutResolution?: PackagingLayoutResolution;
+  stickers?: PackagingStickerInstance[];
+  stickerDefaults?: PackagingStickerDefaults;
+  stickerAssets?: PackagingStickerAssetMap;
+  /** follow-template 动效在浏览器与导出运行时按同一模板解析。 */
+  template?: string;
   fonts?: { titleFile?: string; subtitleFile?: string; pointFile?: string };
 }): Record<string, unknown> {
   return {
@@ -75,6 +86,13 @@ export function buildTimelineVars(input: {
     pointCues: input.pointCues,
     pointCuesMode: input.pointCuesMode,
     ...(input.layouts && Object.keys(input.layouts).length > 0 ? { layouts: input.layouts } : {}),
+    ...(input.pointCuesLayoutVersion !== undefined ? { pointCuesLayoutVersion: input.pointCuesLayoutVersion } : {}),
+    ...(input.layoutRuntimeBundleVersion !== undefined ? { layoutRuntimeBundleVersion: input.layoutRuntimeBundleVersion } : {}),
+    ...(input.layoutResolution ? { layoutResolution: input.layoutResolution } : {}),
+    ...(input.stickers && input.stickers.length > 0 ? { stickers: input.stickers } : {}),
+    ...(input.stickerDefaults ? { stickerDefaults: input.stickerDefaults } : {}),
+    ...(input.template ? { stickerTemplate: input.template } : {}),
+    ...(input.stickers && input.stickers.length > 0 && input.stickerAssets && Object.keys(input.stickerAssets).length > 0 ? { stickerAssets: input.stickerAssets } : {}),
     // 字体文件名为纯文件名（package-video 在 fonts/user/ 下解析并注入 @font-face）
     ...(input.fonts?.titleFile ? { titleFontFile: input.fonts.titleFile } : {}),
     ...(input.fonts?.subtitleFile ? { subtitleFontFile: input.fonts.subtitleFile } : {}),
@@ -109,16 +127,22 @@ export function runPackagingPipeline(input: {
   args: string[];
   signal?: AbortSignal;
   onStage?: (progress: number) => void;
+  layoutBundleDir?: string;
+  layoutEngineExecutable?: string;
 }): Promise<void> {
   return new Promise((resolve, reject) => {
     if (input.signal?.aborted) { reject(makeAbortError()); return; }
     const child = spawnHidden(input.nodeExe, input.args, {
       cwd: input.packagingDir,
-      env: { ...process.env,
-        // The packaging script otherwise falls back to its own old ffprobe-static.
-        // Pass the selected tools so nested HyperFrames probes match app diagnostics.
+      env: {
+        ...process.env,
         CREATIVE_STUDIO_FFMPEG: resolveFfmpegPath(), CREATIVE_STUDIO_FFPROBE: resolveFfprobePath(),
-        CREATIVE_STUDIO_PACKAGING_WORK_ROOT: path.join(dataRoot(), 'storage', 'packaging', 'renders'), CREATIVE_STUDIO_PACKAGING_USER_FONTS: path.join(dataRoot(), 'storage', 'packaging', 'fonts') },
+        CREATIVE_STUDIO_PACKAGING_WORK_ROOT: path.join(dataRoot(), 'storage', 'packaging', 'renders'),
+        CREATIVE_STUDIO_PACKAGING_USER_FONTS: input.layoutBundleDir ? path.join(input.layoutBundleDir, 'user-fonts') : path.join(dataRoot(), 'storage', 'packaging', 'fonts'),
+        ...(input.layoutBundleDir ? { CREATIVE_STUDIO_PACKAGING_RESOURCE_ROOT: input.layoutBundleDir } : {}),
+        ...(input.layoutEngineExecutable ? { HYPERFRAMES_BROWSER_PATH: input.layoutEngineExecutable,
+          CREATIVE_STUDIO_PACKAGING_DEPENDENCIES_ROOT: path.dirname(path.dirname(input.layoutEngineExecutable)) } : {}),
+      },
       windowsHide: true,
       detached: process.platform !== 'win32',
     });

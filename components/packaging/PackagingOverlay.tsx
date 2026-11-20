@@ -2,21 +2,55 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PackagingPointLayout } from '@/lib/media-core/packaging-vars';
+import type { PackagingStickerInstance } from '@/lib/media-core/packaging-stickers';
+import { installStickerBridgeCallbacks, type StickerBridgeHandlers } from './sticker-bridge-callbacks';
 
-type PreviewWindow = Window & { __timelines?: { overlay?: { pause: () => void; seek: (time: number) => void } }; __editMode?: { active: boolean; only: null } };
+type PreviewWindow = Window & {
+  __timelines?: { overlay?: { pause: () => void; seek: (time: number) => void } };
+  __editMode?: { active: boolean; only: string | null };
+  __stickerEditMode?: { active: boolean; only: string | null; snapEnabled: boolean };
+  __packagingStickerEditBridge?: { sync?: () => void };
+  compositionVariables?: { stickers?: PackagingStickerInstance[] };
+};
 export type PackagingTextEditTarget = { pointId: string; rect: { left: number; top: number; width: number; height: number }; frame: { left: number; top: number } };
 
-export default function PackagingOverlay({ src, srcDoc, timeSec, editable = false, onLayout, onText }: {
-  src?: string; srcDoc?: string; timeSec: number; editable?: boolean;
+type StickerHandlers = StickerBridgeHandlers;
+
+export default function PackagingOverlay({
+  src,
+  srcDoc,
+  timeSec,
+  editable = false,
+  stickerEditId = '',
+  stickerSnapEnabled = true,
+  onLayout,
+  onText,
+  onFrame,
+  onStickerSelect,
+  onStickerCommit,
+  onStickerDelete,
+  onStickerExit,
+}: {
+  src?: string;
+  srcDoc?: string;
+  timeSec: number;
+  editable?: boolean;
+  stickerEditId?: string;
+  stickerSnapEnabled?: boolean;
   onLayout?: (id: string, layout: PackagingPointLayout | null) => void;
   onText?: (target: PackagingTextEditTarget) => void;
-}) {
+  onFrame?: (frame: HTMLIFrameElement | null) => void;
+} & StickerHandlers) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [error, setError] = useState('');
+  const attachFrame = useCallback((element: HTMLIFrameElement | null) => {
+    frame.current = element;
+    onFrame?.(element);
+  }, [onFrame]);
   const seek = useCallback(() => {
     const win = frame.current?.contentWindow as PreviewWindow | null;
     if (!win) return false;
-    win.__editMode = { active: editable, only: null };
+    Object.assign(win, { __editMode: { active: editable, only: null } });
     const timeline = win.__timelines?.overlay;
     if (!timeline) return false;
     timeline.pause();
@@ -46,8 +80,75 @@ export default function PackagingOverlay({ src, srcDoc, timeSec, editable = fals
     window.addEventListener('message', receive);
     return () => window.removeEventListener('message', receive);
   }, [editable, onLayout, onText]);
+
+  useEffect(() => {
+    const iframe = frame.current;
+    if (!iframe) return;
+    const apply = () => {
+      try {
+        const win = iframe.contentWindow as PreviewWindow | null;
+        if (!win) return;
+        Object.assign(win, { __stickerEditMode: { active: Boolean(stickerEditId), only: stickerEditId || null, snapEnabled: stickerSnapEnabled } });
+        win.__packagingStickerEditBridge?.sync?.();
+      } catch { /* 文档切换期间等待下一次 load 或状态同步 */ }
+    };
+    apply();
+    iframe.addEventListener('load', apply);
+    return () => iframe.removeEventListener('load', apply);
+  }, [src, srcDoc, stickerEditId, stickerSnapEnabled]);
+
+  const stickerHandlersRef = useRef<StickerHandlers>({});
+  useEffect(() => {
+    stickerHandlersRef.current = { onStickerSelect, onStickerCommit, onStickerDelete, onStickerExit };
+  });
+  const stickerCallbacksEnabled = Boolean(onStickerSelect || onStickerCommit || onStickerDelete || onStickerExit);
+  useEffect(() => {
+    if (!stickerCallbacksEnabled) return;
+    return installStickerBridgeCallbacks(window, () => frame.current, () => stickerHandlersRef.current);
+  }, [stickerCallbacksEnabled]);
+
+  // 未选中贴纸时桥处于 only=null 的关闭态；在 iframe 捕获阶段只接管贴纸命中，
+  // 其余文字编辑事件继续交给既有包装桥。选中后由贴纸桥全权处理空间编辑。
+  useEffect(() => {
+    const iframe = frame.current;
+    if (!iframe || !stickerCallbacksEnabled) return;
+    let detachDocument: (() => void) | null = null;
+    const attach = () => {
+      detachDocument?.();
+      const doc = iframe.contentDocument;
+      const win = iframe.contentWindow as PreviewWindow | null;
+      if (!doc || !win) return;
+      const probe = (event: PointerEvent) => {
+        if (event.button !== 0 || (win.__stickerEditMode?.active && win.__stickerEditMode.only)) return;
+        const stack = doc.elementsFromPoint(event.clientX, event.clientY);
+        for (const node of stack) {
+          const element = node as Element;
+          const sticker = element.closest?.('.packaging-sticker[data-sticker-id]');
+          if (!sticker) continue;
+          const style = win.getComputedStyle(sticker);
+          const opacity = Number.parseFloat(style.opacity);
+          if (style.display === 'none' || style.visibility === 'hidden' || (Number.isFinite(opacity) && opacity < 0.05)) continue;
+          const stickerId = sticker.getAttribute('data-sticker-id');
+          if (!stickerId) continue;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          stickerHandlersRef.current.onStickerSelect?.(stickerId);
+          return;
+        }
+      };
+      win.addEventListener('pointerdown', probe, true);
+      detachDocument = () => win.removeEventListener('pointerdown', probe, true);
+    };
+    attach();
+    iframe.addEventListener('load', attach);
+    return () => {
+      iframe.removeEventListener('load', attach);
+      detachDocument?.();
+    };
+  }, [src, srcDoc, stickerCallbacksEnabled]);
+
   return <>
-    <iframe ref={frame} src={src} srcDoc={srcDoc} title={editable ? '包装版式编辑' : '包装效果叠加层'} onLoad={() => { setError(''); seek(); }} className="absolute inset-0 h-full w-full border-0" style={{ colorScheme: 'light', pointerEvents: editable ? 'auto' : 'none' }} />
+    <iframe ref={attachFrame} src={src} srcDoc={srcDoc} title={editable || stickerEditId ? '包装版式编辑' : '包装效果叠加层'} onLoad={() => { setError(''); seek(); }} className="absolute inset-0 h-full w-full border-0" style={{ colorScheme: 'light', pointerEvents: editable || stickerEditId ? 'auto' : 'none' }} />
     {error && <p role="alert" className="absolute inset-x-0 bottom-0 bg-surface p-2 text-xs text-fail">{error}</p>}
   </>;
 }
