@@ -15,6 +15,7 @@ import sharp from 'sharp';
 import type Database from 'better-sqlite3';
 import { snapCompanyImageSize, companyImageCapsForModel, companyImageCellExecutable, companyVideoCapsForModel, snapCompanyVideoSize, snapCompanyVideoAspectRatio } from '../../company-gateway-size.ts';
 import { QINIU_KLING_4_MODEL, qiniuKling4FirstFrameFields, qiniuKling4ReferenceFields } from '../../company-qiniu-kling-4.ts';
+import { assertCompanyTailFrameTransport } from '../../company-gateway-tail-frame.ts';
 import { validateVideoReferenceRequest } from '../../video-reference-contract.ts';
 import { companyNativeVideoModel } from '../../company-gateway-video-models.ts';
 import { isLoopbackLiteLlmUrl } from '../../provider-execution-gate.ts';
@@ -251,7 +252,12 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
     async prepare(context, signal) {
       const capability = findGatewayCapability(context.capabilityKey);
       const route = routeFor(context);
-      if (capability.modelAlias === QINIU_KLING_4_MODEL) validateKling4CanvasInputs(capability, context);
+      if (capability.modelAlias === QINIU_KLING_4_MODEL) {
+        validateKling4CanvasInputs(capability, context);
+        if (context.inputs.some(input => input.role === 'last-frame')) {
+          await assertCompanyTailFrameTransport(route.baseUrl);
+        }
+      }
       await nativeVideoOutputConfig(capability, context, route);
       if (capability.mediaKind === 'image' && companyImageCapsForModel(capability.modelAlias)) {
         const resolution = String(context.parameters.resolution ?? '2K');
@@ -372,6 +378,7 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         if (bodyImageRefs.length > 0) body.images = bodyImageRefs;
       } else if (isQiniuKling4) {
         validateKling4CanvasInputs(capability, context);
+        if (lastFrameInput) await assertCompanyTailFrameTransport(route.baseUrl);
         const durationSec = Number(context.parameters.durationSec ?? 5);
         const resolution = typeof context.parameters.resolution === 'string' ? context.parameters.resolution : undefined;
         if (context.generationMode === 'reference-to-video') {

@@ -169,6 +169,14 @@ try {
   }));
   assert.deepEqual(workspace.load(stale.id).packaging, beforeFlagged.packaging, 'Invalid derived writes must leave user content unchanged');
   assert.equal((db.prepare("SELECT count(*) AS n FROM final_edit_revisions WHERE scopeKind='group' AND scopeId=?").get(stale.id) as { n: number }).n, historyBeforeFlagged);
+  workspace.apply({
+    scope: 'group', groupId: beforeFlagged.id, expectedRevision: beforeFlagged.revision,
+    type: 'set_packaging_config', variantId: variant.id,
+    config: { enabled: false, template: 'overlay-poster', varsOverrides: {}, pointCues: [] },
+  });
+  const clearedPoints = workspace.load(beforeFlagged.id).packaging;
+  assert.deepEqual(clearedPoints.pointCues, [], '清空卖点需要保留显式空数组');
+  assert.equal(clearedPoints.pointCuesEdited, true);
   console.log('贴纸 workspace 测试通过：持久化、清空、独立历史恢复和正文边界。');
 } finally {
   db.close();

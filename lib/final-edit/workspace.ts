@@ -1554,7 +1554,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         const packagingConfig = parsePackagingConfig(packagingRow?.packagingJson ?? '');
         if (packagingConfig.enabled) {
           const upToDate = Boolean(packagingConfig.pointCues?.length && packagingConfig.pointCuesKey === pointCuesKey);
-          const editProtected = Boolean(packagingConfig.pointCues?.length && packagingConfig.pointCuesEdited === true);
+          const editProtected = packagingConfig.pointCues !== undefined && packagingConfig.pointCuesEdited === true;
           if (!upToDate && !editProtected) {
             const rawRate = Number(parseJson<{ playbackRate?: unknown }>(String(packagingRow?.narrationConfigJson ?? ''), {}).playbackRate);
             const playbackRate = Number.isFinite(rawRate) ? Math.max(0.5, Math.min(2, rawRate)) : 1;
@@ -1600,7 +1600,9 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         const packagingConfig = parsePackagingConfig(packagingJson);
         let nextPackagingJson = packagingJson;
         if (packagingConfig.enabled) {
-          if (preparedPoints && !(packagingConfig.pointCues?.length && (packagingConfig.pointCuesEdited || packagingConfig.pointCuesKey === pointCuesKey))) {
+          const pointsAlreadySaved = packagingConfig.pointCues !== undefined
+            && (packagingConfig.pointCuesEdited || packagingConfig.pointCuesKey === pointCuesKey);
+          if (preparedPoints && !pointsAlreadySaved) {
             nextPackagingJson = mergePointCuesIntoPackagingJson(packagingJson, preparedPoints.pointCues, pointCuesKey, preparedPoints.mode).packagingJson;
           }
           if (packagingConfig.stickers === undefined && (stickerAssets || stickerCatalogUnavailable)) {
@@ -2509,7 +2511,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         template,
         varsOverrides: sanitizePackagingVarsOverrides(command.config.varsOverrides),
         // v3/§7：保留已提取的对时卖点（异步 ensure 会按口播哈希失效后重新提取；编辑保护期内不重提取）
-        ...(pointCues && pointCues.length > 0 ? { pointCues } : {}),
+        ...(pointCues ? { pointCues } : {}),
         ...(pointCuesKey ? { pointCuesKey } : {}),
         pointCuesMode: pointCuesMode ?? 'timed',
         ...(pointCuesEdited ? { pointCuesEdited: true } : {}),

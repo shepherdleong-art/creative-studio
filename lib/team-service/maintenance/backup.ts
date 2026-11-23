@@ -499,10 +499,7 @@ async function runTeamBackup(options: CreateTeamBackupOptions): Promise<TeamBack
       pin: pinId ? { id: pinId, releaseId: release.releaseId, configVersion } : null,
     };
     await writeJsonAtomic(path.join(paths.staging, 'manifest.json'), manifest);
-    const stagingVerification = await verifyTeamBackup(paths.staging, { requireSuccess: false });
-    if (!stagingVerification.verified) throw new Error(`完整备份发布前校验失败：${stagingVerification.code}`);
-    await fsPromises.rm(path.join(paths.staging, 'maintenance-staging.json'));
-    await publishBackupDirectory(paths.staging, paths.published);
+    const stagingMarker = path.join(paths.staging, 'maintenance-staging.json');
     const success: TeamBackupSuccess = {
       schemaVersion: 1,
       status: 'success',
@@ -510,14 +507,17 @@ async function runTeamBackup(options: CreateTeamBackupOptions): Promise<TeamBack
       type: options.type,
       verifiedAt: now().toISOString(),
       durationMs: Date.now() - started,
-      totalBytes: await directoryBytes(paths.published) + (options.type === 'daily' ? files.reduce((sum, file) => sum + file.byteSize, 0) : 0),
+      totalBytes: await directoryBytes(paths.staging) - (await fsPromises.stat(stagingMarker)).size
+        + (options.type === 'daily' ? files.reduce((sum, file) => sum + file.byteSize, 0) : 0),
       ...(options.type === 'daily' ? { newMediaBytes } : {}),
-      manifestSha256: sha256Text(await fsPromises.readFile(path.join(paths.published, 'manifest.json'), 'utf8')),
+      manifestSha256: sha256Text(await fsPromises.readFile(path.join(paths.staging, 'manifest.json'), 'utf8')),
     };
-    await writeJsonAtomic(path.join(paths.published, 'success.json'), success);
-    const finalVerification = await verifyTeamBackup(paths.published);
-    if (!finalVerification.verified) throw new Error(`完整备份发布后校验失败：${finalVerification.code}`);
+    await writeJsonAtomic(path.join(paths.staging, 'success.json'), success);
+    const stagingVerification = await verifyTeamBackup(paths.staging);
+    if (!stagingVerification.verified) throw new Error(`完整备份发布前校验失败：${stagingVerification.code}`);
+    await publishBackupDirectory(paths.staging, paths.published);
     pinId = null; // 从此由已发布的还原点持有，清理出错也必须保留。
+    await fsPromises.rm(path.join(paths.published, 'maintenance-staging.json')).catch(() => undefined);
     appendMaintenanceReceipt({
       backupRoot: options.backupRoot, deploymentId: options.deploymentId, kind: 'backup', operationId: backupId,
       phase: 'finished', at: now().toISOString(),

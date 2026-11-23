@@ -11,6 +11,8 @@ import sharp from 'sharp';
 import { ensureCreativeCanvasSchemaReady } from '../lib/creative-canvas/schema.ts';
 import { clearCanvasCapabilities, registerCanvasCapability } from '../lib/creative-canvas/capabilities.ts';
 import { COMPANY_CANVAS_CAPABILITIES, COMPANY_CANVAS_QINIUYUN_KLING_CAPABILITY } from '../lib/creative-canvas/adapters/company-capabilities.ts';
+import { configuredCanvasVideos } from '../lib/creative-canvas/adapters/configured-videos.ts';
+import { QINIU_KLING_4_MODEL, QINIU_KLING_4_PROVIDER_ID } from '../lib/company-qiniu-kling-4.ts';
 import { createCanvasExecutorAdapter } from '../lib/creative-canvas/adapters/index.ts';
 import { registerExternalCanvasCapabilities } from '../lib/creative-canvas/adapters/external-capabilities.ts';
 import { ensureCanvasCapabilitiesRegistered } from '../lib/creative-canvas/capabilities-bootstrap.ts';
@@ -423,6 +425,29 @@ async function runOnce(
   assert.equal(multiShotResult.phase, 'succeeded');
   assert.equal(multiShotResult.body?.multi_shot, true);
   assert.equal(multiShotResult.body?.shot_type, 'intelligence');
+}
+
+{
+  insertVideoProvider.run(QINIU_KLING_4_PROVIDER_ID, '公司七牛可灵 4.0', QINIU_KLING_4_MODEL, 'https://fixture.invalid', 'fixture-key');
+  const capability = configuredCanvasVideos(db).find((model) => model.key === QINIU_KLING_4_PROVIDER_ID);
+  assert.ok(capability);
+  registerCanvasCapability(capability);
+  save([
+    material('m-first', firstFrameAsset),
+    material('m-last', lastFrameAsset),
+    videoNode('v-kling4', capability.key, { durationSec: 3 }),
+  ], [edge('e-first', 'm-first', 'v-kling4'), edge('e-last', 'm-last', 'v-kling4')]);
+  let deliveries = 0;
+  const result = await runOnce('v-kling4', companyAdapter({
+    name: 'blocked-transport',
+    async deliver() {
+      deliveries++;
+      throw new Error('unexpected delivery');
+    },
+  }));
+  assert.match(result.errorMessage ?? '', /必须通过本机 LiteLLM 地址/);
+  assert.equal(deliveries, 0, '公司尾帧必须在交付素材前拒绝非回环网关');
+  assert.equal(result.posts, 0);
 }
 
 // --- 2. Seedance 2.5：双图参考 + 1080p size -----------------------------------
