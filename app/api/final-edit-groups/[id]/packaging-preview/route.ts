@@ -83,9 +83,9 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
       } catch { /* 预览降级：无底图/无吸色，模板回退默认配色 */ }
     }
 
-    const defaults = buildPackagingVars({ coverTitle: { primary: group.coverTitle.primary.text, secondary: group.coverTitle.secondary.text }, subtitleCues: group.subtitleCues, exportIdentity, project, accents });
-    const vars: PackagingVars = { ...defaults, ...group.packaging.varsOverrides };
-
+    if (editorOverlay && group.packaging.layoutRuntimeBundleVersion === 2 && variant.cover.sourceKey) {
+      group = getFinalEditWorkspace().load(groupId);
+    }
     // v3 时序：对时卖点幂等提取（口播哈希不变则复用已存），totalSec 用组期望时长
     let pointCues: PointCue[] = group.packaging.pointCues ?? [];
     let pointCuesMode: 'timed' | 'even' | 'none' = group.packaging.pointCuesMode ?? 'none';
@@ -100,6 +100,8 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
         if (group.packaging.layoutRuntimeBundleVersion === 2) group = getFinalEditWorkspace().load(groupId);
       } catch (error) { if (group.packaging.layoutRuntimeBundleVersion === 2) throw error; /* 旧配置提取失败沿用已存/空 */ }
     }
+    const defaults = buildPackagingVars({ coverTitle: { primary: group.coverTitle.primary.text, secondary: group.coverTitle.secondary.text }, subtitleCues: group.subtitleCues, exportIdentity, project, accents });
+    const vars: PackagingVars = { ...defaults, ...group.packaging.varsOverrides };
     const layouts = group.packaging.layouts ?? {};
     const coverSec = FINAL_EDIT_INTRO_DURATION_US / 1e6;
     const totalSec = Math.max(group.totalDurationUs / 1e6, coverSec + 0.2);
@@ -110,7 +112,10 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
       const pointCuesEdited = group.packaging.pointCuesEdited === true;
       return NextResponse.json({ vars, defaults, frameUrl, template, timeline, layouts, stickers: group.packaging.stickers ?? [], stickerDefaults: group.packaging.stickerDefaults ?? { animation: 'follow-template' }, layoutResolution: group.packaging.layoutResolution, pointCuesStale, pointCuesEdited }, { headers: { 'Cache-Control': 'no-store' } });
     }
-    if (group.packaging.layoutRuntimeBundleVersion === 2 && (group.packaging.layoutResolution?.status !== 'resolved'
+    const cuesNeedRefresh = editorOverlay && group.packaging.layoutRuntimeBundleVersion === 2
+      && (!group.packaging.pointCues || (!group.packaging.pointCuesEdited
+        && pointCuesKey !== computePointCuesKey(loadGroupNarrationText(db, groupId))));
+    if (group.packaging.layoutRuntimeBundleVersion === 2 && (cuesNeedRefresh || group.packaging.layoutResolution?.status !== 'resolved'
       || group.packaging.layoutResolution.outputWidth !== OUTPUT_PRESETS[variant.outputPreset].width
       || group.packaging.layoutResolution.outputHeight !== OUTPUT_PRESETS[variant.outputPreset].height)) {
       return new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><body data-packaging-layout-pending style="margin:0;display:grid;place-items:center;background:transparent;color:#6e6e73;font:13px -apple-system,BlinkMacSystemFont,sans-serif">正在更新自动布局…</body></html>', { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
@@ -139,10 +144,12 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
     const backgroundStyle = syncMode
       ? '<style>:root{color-scheme:light}html,body{background:transparent !important;background-image:none !important}</style>'
       : `<style>html,body{background:#0b0b0d}body{background-image:url("${frameUrl}");background-size:cover;background-position:center;background-repeat:no-repeat}</style>`;
+    const defaultsScript = editMode ? `<script>window.__packagingPreviewDefaults=${JSON.stringify(defaults).replace(/</g, '\\u003c')};</script>` : '';
     const headEnd = [
       backgroundStyle,
       fontFaces,
       paletteScript,
+      defaultsScript,
       `<script>window.__hyperframes={getVariables:function(){return ${varsJson}}};</script>`,
     ].join('');
     // t 参数 → seek 到该时间点（暂停，供拖拽预览）；无 t → 自动循环播放；

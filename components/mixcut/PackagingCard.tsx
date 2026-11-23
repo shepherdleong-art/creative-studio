@@ -17,6 +17,7 @@ import type { GroupCommandInput } from '@/components/final-edit/command-types';
 import type { PackagingLayouts, PackagingVars } from '@/lib/final-edit/packaging-vars';
 import type { PackagingStickerDefaults, PackagingStickerInstance } from '@/lib/media-core/packaging-stickers';
 import type { FinalEditGroupView } from '@/lib/final-edit/types';
+import { FINAL_EDIT_INTRO_DURATION_US } from '@/lib/media-core/render-contract';
 import { FontPicker, type SystemFontItem } from './FontPicker';
 import styles from './mixcut-content.module.css';
 
@@ -207,16 +208,15 @@ export function PackagingCard({ group, variantId, preview, previewError, busy, a
   };
 
   const resetVars = () => {
-    if (disabled || !preview) return;
+    if (disabled) return;
     void (async () => {
       const saved = await saveConfigPatch({ varsOverrides: {} });
-      if (saved) onPreviewVarsMergeRef.current(preview.defaults);
+      if (saved && preview) onPreviewVarsMergeRef.current(preview.defaults);
     })();
   };
 
   const jumpToCover = () => {
-    if (!preview) return;
-    onSeek(preview.timeline.coverSec / 2);
+    onSeek((preview?.timeline.coverSec ?? FINAL_EDIT_INTRO_DURATION_US / 1_000_000) / 2);
   };
 
   const resetLayouts = () => {
@@ -372,7 +372,7 @@ export function PackagingCard({ group, variantId, preview, previewError, busy, a
           ) : null}
 
           <div className={styles.ctlRow} style={{ marginTop: 12 }}>
-            <button type="button" className={`${styles.btn} ${styles.small}`} disabled={disabled || !preview} onClick={jumpToCover} title="跳到封面段中点并暂停，便于查看封面包装">跳到封面</button>
+            <button type="button" className={`${styles.btn} ${styles.small}`} disabled={disabled || !variantId} onClick={jumpToCover} title="跳到封面段中点并暂停，便于查看封面包装">跳到封面</button>
             <button type="button" className={`${styles.btn} ${styles.small}`} disabled={disabled} onClick={resetLayouts} title="清除当前模板下所有手动调整的卖点位置与缩放">恢复默认版式</button>
             <button type="button" className={`${styles.btn} ${styles.small}`} disabled={disabled} onClick={reextractPoints} title="按当前口播重新提取正片卖点">重新提取卖点</button>
             <button type="button" className={`${styles.btn} ${styles.small}`} disabled={disabled || !hasOverrides} onClick={resetVars} title="清除所有手动修改的文案，恢复自动推导文案">恢复默认文案</button>

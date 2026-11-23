@@ -520,12 +520,11 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     rect: { left: number; top: number; width: number; height: number };
     frame: { left: number; top: number };
     initialText: string;
+    defaultText?: string;
   } | null>(null);
   const packagingTextEditRef = useRef<typeof packagingTextEdit>(null);
-  const packagingPreviewRef = useRef(packagingPreview);
-  useEffect(() => { packagingPreviewRef.current = packagingPreview; }, [packagingPreview]);
-  const openPackagingTextEdit = (edit: Omit<NonNullable<typeof packagingTextEdit>, 'initialText'> | null) => {
-    const next = edit ? { ...edit, initialText: resolvePackagingTextEditInitial(edit.pointId) } : null;
+  const openPackagingTextEdit = (edit: Omit<NonNullable<typeof packagingTextEdit>, 'initialText' | 'defaultText'> | null) => {
+    const next = edit ? { ...edit, ...resolvePackagingTextEditValues(edit.pointId) } : null;
     packagingTextEditRef.current = next;
     setPackagingTextEdit(next);
   };
@@ -638,16 +637,15 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   // §B 画面内文字直改提交：cover:* → varsOverrides（与默认值相同删键）；cue:* → pointCues 文本替换
   // （空文本拒绝，与时间线改字同规则）。提交后叠加层经既有重载键刷新，模板 refitAll 自动重排。
   const commitPackagingTextEdit = (pointId: string, rawText: string) => {
+    const defaultText = packagingTextEditRef.current?.defaultText;
     openPackagingTextEdit(null);
     const value = rawText.trim().slice(0, 40);
     if (pointId.startsWith('cover:')) {
       const key = pointId.slice('cover:'.length);
       if (!['title', 'subtitle', 'point1', 'point2', 'point3'].includes(key)) return;
       void applyGroupRef.current((current): GroupCommandInput => {
-        const defaults = packagingPreviewRef.current?.defaults;
-        const defaultValue = defaults && typeof defaults[key as keyof PackagingVars] === 'string' ? String(defaults[key as keyof PackagingVars]) : null;
         const nextOverrides = packagingVarsOverridesRecord(current.packaging.varsOverrides);
-        if (defaultValue !== null && value === defaultValue) delete nextOverrides[key];
+        if (value === defaultText) delete nextOverrides[key];
         else nextOverrides[key] = value;
         return {
           type: 'set_packaging_config',
@@ -671,16 +669,20 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     }
   };
 
-  const resolvePackagingTextEditInitial = (pointId: string): string => {
+  const resolvePackagingTextEditValues = (pointId: string) => {
     if (pointId.startsWith('cover:')) {
       const key = pointId.slice('cover:'.length) as keyof PackagingVars;
       const frame = packagingIframeRef.current?.contentWindow as (Window & {
         __hyperframes?: { getVariables?: () => Partial<PackagingVars> };
+        __packagingPreviewDefaults?: PackagingVars;
       }) | null;
-      return frame?.__hyperframes?.getVariables?.()?.[key] ?? packagingPreview?.vars[key] ?? '';
+      return {
+        initialText: frame?.__hyperframes?.getVariables?.()?.[key] ?? packagingPreview?.vars[key] ?? '',
+        defaultText: frame?.__packagingPreviewDefaults?.[key] ?? packagingPreview?.defaults[key],
+      };
     }
     const cueId = pointId.slice('cue:'.length);
-    return group.packaging.pointCues?.find((item) => item.id === cueId)?.text ?? '';
+    return { initialText: group.packaging.pointCues?.find((item) => item.id === cueId)?.text ?? '' };
   };
 
   const previewNarrationPlaybackRate = (playbackRate: number) => {
