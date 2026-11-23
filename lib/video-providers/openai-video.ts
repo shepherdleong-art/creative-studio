@@ -112,6 +112,9 @@ async function probeImageDimensions(imagePath: string): Promise<{ width: number;
 }
 
 export const openaiVideoAdapter: VideoProviderAdapter = {
+  async submitFinal(request, apiKey, baseUrl, signal) {
+    return createCompanySeedanceVideoAdapter().submitFinal!(request, apiKey, baseUrl, signal);
+  },
   tailFrameCapability(model) {
     return companyGatewayTailFrameCapability(model);
   },

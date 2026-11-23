@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BatchOutputClipEditView } from '@/lib/batch-production/output-arrangement';
-import type { FinalEditPackagingConfig, PackagingLayouts, PackagingPointLayout, PackagingVars } from '@/lib/media-core/packaging-vars';
+import type { FinalEditPackagingConfig, PackagingVars } from '@/lib/media-core/packaging-vars';
+import { packagingDocumentConfig, usePackagingPreviewGeometry } from '@/components/packaging/usePackagingPreviewGeometry';
 import {
   applyPackagingStickerEdit,
   type PackagingStickerEditPatch,
@@ -63,31 +64,12 @@ export default function BatchPackagingOverlay({
 
   // 版式由模板的实时编辑桥更新；保存修订不能销毁 iframe，否则每次松手都会闪屏。
   // 文案、字体、模板、时序、贴纸及封面来源变化仍须重新生成包装文档。
-  const previewKey = JSON.stringify([
-    src, view.outputVersionId, { ...config, layouts: undefined },
+  const structureKey = JSON.stringify([
+    src, view.outputVersionId, packagingDocumentConfig(config),
     view.coverAssetId ?? view.clips[0]?.assetId, view.coverTitleOverride ? view.coverTitle : null,
     view.subtitleCues, Math.max(view.visualDurationUs, view.narration.durationUs ?? 0),
   ]);
-  const layoutsKey = JSON.stringify(config?.layouts?.[config.template] ?? {});
-  const syncLayouts = useCallback(() => {
-    const win = frameRef.current?.contentWindow as (Window & {
-      __pointLayout?: { apply: (element: HTMLElement, layout: PackagingPointLayout | null) => void };
-    }) | null;
-    if (!win?.__pointLayout) return;
-    const layouts = JSON.parse(layoutsKey) as PackagingLayouts[string];
-    win.document.querySelectorAll<HTMLElement>('[data-point-id]').forEach((element) => {
-      const id = element.dataset.pointId ?? '';
-      const layout = id.startsWith('cover:') ? layouts?.cover?.[id.slice(6)] : layouts?.cues?.[id.slice(4)];
-      if (layout || element.dataset.ul === '1') win.__pointLayout!.apply(element, layout ?? null);
-    });
-  }, [layoutsKey]);
-  useEffect(() => {
-    if (busy) return;
-    const frame = frameRef.current;
-    syncLayouts();
-    frame?.addEventListener('load', syncLayouts);
-    return () => frame?.removeEventListener('load', syncLayouts);
-  }, [busy, previewKey, syncLayouts]);
+  const previewKey = usePackagingPreviewGeometry(frameRef, config, structureKey, busy);
 
   useEffect(() => {
     if (!playbackRequest || !playbackSticker || !onSeek) return;
@@ -144,7 +126,12 @@ export default function BatchPackagingOverlay({
   };
   const commitSticker = (stickerId: string, patch: PackagingStickerEditPatch) => {
     const next = structuredClone(config);
-    next.stickers = (next.stickers ?? []).map((sticker) => sticker.id === stickerId ? applyPackagingStickerEdit(sticker, patch) : sticker);
+    // v2 自动贴纸首次空间编辑必须携带解析中心：编辑桥已按当前 DOM 位置提交，
+    // 直接回传即可固定到用户目标位置，而不是回落到基准槽位或报"实际位置尚未就绪"。
+    const resolvedCenter = patch.centerXPct !== undefined && patch.centerYPct !== undefined
+      ? { x: patch.centerXPct, y: patch.centerYPct }
+      : undefined;
+    next.stickers = (next.stickers ?? []).map((sticker) => sticker.id === stickerId ? applyPackagingStickerEdit(sticker, patch, resolvedCenter) : sticker);
     return save(next);
   };
   return <>

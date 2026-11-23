@@ -100,18 +100,20 @@ export default function BatchReviewPreviewDock({
   }, [poolAssets, projectId]);
 
   const arrangement = previewFilm?.arrangement;
-  const clips: BatchTimelinePreviewClip[] = arrangement?.clips
-    ? arrangement.clips.map((clip) => ({
-        clipId: clip.clipId,
-        assetId: clip.assetId,
-        sourceStartUs: clip.sourceStartUs,
-        sourceEndUs: clip.sourceEndUs,
-        timelineStartUs: clip.timelineStartUs,
-        timelineEndUs: clip.timelineEndUs,
-        playbackRate: clip.playbackRate ?? 1,
-        framing: clip.framing,
-      }))
-    : [];
+
+  const clips = useMemo<BatchTimelinePreviewClip[]>(() => {
+    if (!arrangement?.clips) return [];
+    return arrangement.clips.map((clip) => ({
+      clipId: clip.clipId,
+      assetId: clip.assetId,
+      sourceStartUs: clip.sourceStartUs,
+      sourceEndUs: clip.sourceEndUs,
+      timelineStartUs: clip.timelineStartUs,
+      timelineEndUs: clip.timelineEndUs,
+      playbackRate: clip.playbackRate ?? 1,
+      framing: clip.framing,
+    }));
+  }, [arrangement]);
 
   const coverUrl = (() => {
     if (!previewFilm?.coverAttemptId) return null;
@@ -287,7 +289,7 @@ export default function BatchReviewPreviewDock({
         ) : arrangement ? (
           <div ref={previewScreenRef} className={styles.previewScreen} onPointerDownCapture={probeStickerHit}>
             <BatchTimelinePreview
-              key={`${previewFilm.planId}:${packagingEditable}:${coverPreviewRequest}`}
+              key={`${previewFilm.planId}:${coverPreviewRequest}`}
               overlay={arrangement.packaging?.enabled || draggedStickerChoice ? <>
                 {arrangement.packaging?.enabled && <BatchPackagingOverlay
                   key={`${previewFilm.planId}:${arrangement.outputVersionId}`}

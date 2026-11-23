@@ -46,6 +46,7 @@ export function MixcutStickerTrack({
   onSelect,
   onCommit,
   onDelete,
+  resolveCenter,
 }: {
   stickers: PackagingStickerInstance[];
   template: string;
@@ -64,6 +65,7 @@ export function MixcutStickerTrack({
   onSelect: (stickerId: string) => void;
   onCommit: (stickers: PackagingStickerInstance[]) => void;
   onDelete?: (stickerId: string) => void;
+  resolveCenter?: (stickerId: string) => { x: number; y: number } | null;
 }) {
   const [draft, setDraft] = useState<StickerDraft | null>(null);
   const [labels, setLabels] = useState<Record<string, string>>({});
@@ -139,7 +141,7 @@ export function MixcutStickerTrack({
       setDraft(null);
       if (!swallowContextMenu) return;
       window.addEventListener('contextmenu', swallowContext, true);
-      window.setTimeout(() => window.removeEventListener('contextmenu', swallowContext, true), 600);
+      window.setTimeout(() => window.removeEventListener('contextmenu', swallowContext, true), 1500);
     };
     const move = (pointer: PointerEvent) => {
       if (pointer.pointerId !== pointerId) return;
@@ -169,7 +171,7 @@ export function MixcutStickerTrack({
       const trackChanged = latest.targetTrackIndex !== initialTrackIndex;
       if (!framesChanged && !trackChanged) return;
       let next = stickers.map((item) => item.id === sticker.id
-        ? applyPackagingStickerEdit(item, { startFrame: latest.startFrame, endFrame: latest.endFrame })
+        ? applyPackagingStickerEdit(item, { startFrame: latest.startFrame, endFrame: latest.endFrame }, resolveCenter?.(item.id) ?? undefined)
         : item);
       next = trackChanged
         ? movePackagingStickerToTrack(next, sticker.id, latest.targetTrackIndex)

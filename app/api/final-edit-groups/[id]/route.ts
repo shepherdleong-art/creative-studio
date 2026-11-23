@@ -13,6 +13,13 @@ async function __teamRoutePATCH(request: Request, { params }: { params: Promise<
   try {
     const { id } = await params;
     const body = await request.json() as Omit<Extract<FinalEditCommand, { scope: 'group' }>, 'scope' | 'groupId'>;
+    if (body.type === 'set_packaging_config' && 'config' in body && body.config && typeof body.config === 'object') {
+      // 解析缓存只能由专用布局命令在服务端写入，公开 PATCH 不接受派生更新开关。
+      const config = body.config as Record<string, unknown>;
+      delete config.layoutResolution;
+      delete config.layoutResolutionOnly;
+      delete config.expectedPackagingJson;
+    }
     return NextResponse.json(getFinalEditWorkspace().apply({ ...body, scope: 'group', groupId: id } as Extract<FinalEditCommand, { scope: 'group' }>));
   } catch (error) { return finalEditErrorResponse(error); }
 }

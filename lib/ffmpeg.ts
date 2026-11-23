@@ -1,3 +1,4 @@
+import { createInterface } from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -91,6 +92,7 @@ function resolveFfmpegCandidatePath(): string {
 }
 
 export interface RunFfmpegOptions {
+  onFrame?: (frame: number) => void;
   /** 每次解析到 -progress 输出时回调（已换算为秒） */
   onProgressSec?: (outTimeSec: number) => void;
   timeoutMs?: number;
@@ -178,14 +180,11 @@ export function runFfmpeg(args: string[], opts: RunFfmpegOptions = {}): Promise<
         }, opts.timeoutMs)
       : null;
 
-    child.stdout.on('data', (buf: Buffer) => {
-      if (!opts.onProgressSec) return;
-      let last = -1;
-      const re = /out_time_us=(\d+)/g;
-      const text = buf.toString();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(text)) !== null) last = Number(m[1]);
-      if (last >= 0) opts.onProgressSec(last / 1e6);
+    const progress = createInterface({ input: child.stdout });
+    progress.on('line', (line) => {
+      const [field, value] = line.split('=');
+      if (field === 'frame') opts.onFrame?.(Number(value));
+      if (field === 'out_time_us' && Number(value) >= 0) opts.onProgressSec?.(Number(value) / 1e6);
     });
     child.stderr.on('data', (buf: Buffer) => {
       stderrTail = (stderrTail + buf.toString()).slice(-4000);

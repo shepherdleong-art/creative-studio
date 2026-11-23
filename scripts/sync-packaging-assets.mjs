@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { CLASSIC_BUILDERS, OVERLAY_BUILDERS } from '../lib/film-render/builder-hashes.ts';
+import { isPackagingChromeLog } from '../lib/media-core/packaging-runtime-files.ts';
 
 export function syncFilmBuilderSources(root, packagingTarget) {
   const archive = path.join(packagingTarget, 'film-builders');
@@ -24,13 +25,17 @@ export function syncPackagingAssets(root, standaloneDir) {
   const target = path.join(standaloneDir, 'packaging');
   if (!path.resolve(target).startsWith(path.resolve(standaloneDir) + path.sep)) throw new Error('Unsafe packaging target');
   fs.rmSync(target, { recursive: true, force: true });
-  const allowed = ['package.json', 'package-lock.json', 'film-runtime.json', 'package-video.mjs', 'win-hide-spawn.cjs', 'templates', 'stickers', 'fonts', 'node_modules', 'runtime'];
+  const allowed = ['package.json', 'package-lock.json', 'film-runtime.json', 'package-video.mjs', 'layout-service.mjs', 'win-hide-spawn.cjs', 'templates', 'stickers', 'auto-layout', 'fonts', 'node_modules', 'runtime'];
   for (const entry of allowed) {
     const from = path.join(source, entry);
     if (!fs.existsSync(from)) throw new Error(`包装运行资源缺失：${entry}，请先运行 npm run setup:packaging`);
-    fs.cpSync(from, path.join(target, entry), { recursive: true, filter: file => {
+    // dereference：安装包必须是真实文件。Windows 上普通用户没有创建符号链接的权限，
+    // 若把工作区里的 junction（如 packaging/runtime、packaging/node_modules）原样重建会直接 EPERM。
+    fs.cpSync(from, path.join(target, entry), { recursive: true, dereference: true, filter: file => {
       const rel = path.relative(source, file).replaceAll('\\', '/');
-      return rel !== 'fonts/user' && !rel.split('/').some(part => part === '.cache' || part.startsWith('.env') || part.startsWith('config.yaml'));
+      return rel !== 'fonts/user'
+        && !(rel.startsWith('runtime/') && isPackagingChromeLog(rel.slice('runtime/'.length)))
+        && !rel.split('/').some(part => part === '.cache' || part.startsWith('.env') || part.startsWith('config.yaml'));
     } });
   }
   syncFilmBuilderSources(root, target);

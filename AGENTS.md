@@ -103,6 +103,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 | `docs/reference/打包与桌面运行.md` | 改打包脚本、快启脚本、Electron 桌面壳 |
 | `docs/reference/详情页智能脚本生成.md` | 改 `lib/script-studio/` 任何东西 |
 | `docs/reference/创作画布.md` | 改 `lib/creative-canvas/`、`app/api/canvas/`、`components/creative-canvas/`、`app/canvas/` 任何东西 |
+| `docs/reference/一键成片.md` | 改 `lib/one-click-film/`、`app/api/one-click-film/`、`components/one-click-film/`、`app/(workspace)/one-click-film/` 任何东西 |
 | `docs/reference/视频包装.md` | 改共享包装、四套模板、单条或批量包装入口、离线包装运行资源 |
 | `docs/reference/单条素材分析.md` | 改单条混剪的素材分析缓存、重新分析及分析记录写入 |
 | `docs/reference/固定渲染命令.md` | 改 `lib/film-render/`、`scripts/film-render.ts` 或 classic 渲染验收 |
@@ -129,6 +130,10 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 - `creative-canvas/` — 独立画布模块：纯图定义与能力表、自己的迁移流与共享升级 gate、计划器与持久化调度器（全局默认 10 名额）、执行器与恢复、素材与产物、ZIP 导出、用量包装。红线：不写旧 `jobs`／`video_jobs`／`projects`／`shot_sets`，只从 `media-core/` 方向取共享能力，绝不从 `final-edit/` 导入；开关关闭时不建表、不起 worker。
 - 页面与接口：`app/canvas/`（列表与编辑器）、`app/api/canvas/`（画布、素材、计划、运行、任务、导出、模型能力）；前端组件在 `components/creative-canvas/`，React Flow 样式在 `app/globals.css` 的 Tailwind 导入之后。
+
+**一键成片** — 细节见 `docs/reference/一键成片.md`
+
+- `one-click-film/` — 员工入口的独立模块：自带 `{version, sql}` 迁移流（scope `one-click-film`）与共享升级 gate。红线：只追加迁移；只从 `media-core/` 与视频/脚本共享能力取用，绝不从 `final-edit/` 的成片状态导入；确认稿必须把最终口播写回提示词；TTS 按「文字+服务+音色+语速」签名，只有试听过的版本才能确认。
 
 **供应商与队列** — 细节见 `docs/reference/供应商与队列.md`
 

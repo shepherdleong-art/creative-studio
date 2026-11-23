@@ -28,6 +28,9 @@ import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { FINAL_EDIT_INTRO_DURATION_US } from '@/lib/media-core/render-contract';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { resolvePackagingStickerAssets } from '@/lib/media-core/packaging-sticker-assets';
+import { packagingPreviewResources, registerPackagingPreviewBundle } from '@/lib/media-core/packaging-preview-resources';
+import type { PackagingTemplateId } from '@/lib/media-core/packaging-vars';
+import { OUTPUT_PRESETS } from '@/lib/final-edit/types';
 
 
 async function __teamRouteGET(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -43,10 +46,12 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
     const syncMode = query.get('sync') === '1';
     const editMode = query.get('edit') === '1';
     const db = getDb();
-    const group = getFinalEditWorkspace().load(groupId);
+    let group = getFinalEditWorkspace().load(groupId);
     const variant = group.variants.find((item) => item.id === variantId) || group.variants[0] || null;
     if (!variant) throw new FinalEditError('variant_not_found', '成片草稿不存在', 404);
-    const templateDir = resolvePackagingTemplateDir(resolvePackagingDir(), template);
+    const templateDir = group.packaging.layoutRuntimeBundleVersion === 2 && group.packaging.layoutResolution?.status === 'resolved'
+      ? packagingPreviewResources({ ...group.packaging, template: template as PackagingTemplateId }, `/api/final-edit-groups/${encodeURIComponent(groupId)}/packaging-layout-resources`).templateDir
+      : resolvePackagingTemplateDir(resolvePackagingDir(), template);
 
     const storageRoot = path.join(dataRoot(), 'storage');
     const project = loadProjectPackagingData(db, group.projectId);
@@ -89,7 +94,8 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
       pointCuesMode = ensured.mode;
       // 用提取后的最新键做过期比对：刚重提取完的组不会误报 stale（§7 手动编辑保护组保留旧键 → stale）
       pointCuesKey = ensured.pointCuesKey;
-    } catch { /* 提取失败沿用已存/空 */ }
+      if (group.packaging.layoutRuntimeBundleVersion === 2) group = getFinalEditWorkspace().load(groupId);
+    } catch (error) { if (group.packaging.layoutRuntimeBundleVersion === 2) throw error; /* 旧配置提取失败沿用已存/空 */ }
     // §7：比对已存 pointCuesKey 与当前口播内容哈希（v2: 前缀口径，与 ensurePackagingPointCues 一致）
     const pointCuesStale = pointCuesKey !== computePointCuesKey(loadGroupNarrationText(db, groupId));
     const pointCuesEdited = group.packaging.pointCuesEdited === true;
@@ -98,17 +104,28 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
     const totalSec = Math.max(group.totalDurationUs / 1e6, coverSec + 0.2);
     const timeline = { coverSec, totalSec, pointCues, pointCuesMode };
 
-    if (format === 'json') return NextResponse.json({ vars, defaults, frameUrl, template, timeline, layouts, stickers: group.packaging.stickers ?? [], stickerDefaults: group.packaging.stickerDefaults ?? { animation: 'follow-template' }, pointCuesStale, pointCuesEdited }, { headers: { 'Cache-Control': 'no-store' } });
+    if (format === 'json') return NextResponse.json({ vars, defaults, frameUrl, template, timeline, layouts, stickers: group.packaging.stickers ?? [], stickerDefaults: group.packaging.stickerDefaults ?? { animation: 'follow-template' }, layoutResolution: group.packaging.layoutResolution, pointCuesStale, pointCuesEdited }, { headers: { 'Cache-Control': 'no-store' } });
+    if (group.packaging.layoutRuntimeBundleVersion === 2 && (group.packaging.layoutResolution?.status !== 'resolved'
+      || group.packaging.layoutResolution.outputWidth !== OUTPUT_PRESETS[variant.outputPreset].width
+      || group.packaging.layoutResolution.outputHeight !== OUTPUT_PRESETS[variant.outputPreset].height)) {
+      return new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><body data-packaging-layout-pending style="margin:0;display:grid;place-items:center;background:transparent;color:#6e6e73;font:13px -apple-system,BlinkMacSystemFont,sans-serif">正在更新自动布局…</body></html>', { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+    }
 
-    let html = fs.readFileSync(path.join(templateDir, 'index.html'), 'utf-8');
+    const resources = packagingPreviewResources({ ...group.packaging, template: template as PackagingTemplateId },
+      `/api/final-edit-groups/${encodeURIComponent(groupId)}/packaging-layout-resources`);
+    let html = fs.readFileSync(path.join(resources.templateDir, 'index.html'), 'utf-8');
     // §7：layouts 随 vars 注入，模板端经 window.__vars.layouts 读取（与导出渲染同契约）
-    const stickerAssets = resolvePackagingStickerAssets({ packagingDir: resolvePackagingDir(), template, stickers: group.packaging.stickers });
-    const timelineVars = buildTimelineVars({ vars, totalSec, coverSec, pointCues, pointCuesMode, layouts, stickers: group.packaging.stickers, stickerDefaults: group.packaging.stickerDefaults, stickerAssets, template });
+    const stickerAssets = resolvePackagingStickerAssets({ packagingDir: resources.packagingDir, template, stickers: group.packaging.stickers });
+    const timelineVars = buildTimelineVars({ vars, totalSec, coverSec, pointCues, pointCuesMode, layouts,
+      pointCuesLayoutVersion: group.packaging.pointCuesLayoutVersion,
+      layoutRuntimeBundleVersion: group.packaging.layoutRuntimeBundleVersion,
+      layoutResolution: group.packaging.layoutResolution,
+      stickers: group.packaging.stickers, stickerDefaults: group.packaging.stickerDefaults, stickerAssets, template });
     const varsJson = JSON.stringify(timelineVars).replace(/</g, '\\u003c');
-    const baseHref = `/api/packaging/templates/${encodeURIComponent(template)}/`;
+    const baseHref = resources.baseHref;
     // §10 ②：预览与成片一致——按当前配置三槽注入 @font-face（UserTitle/UserSubtitle/UserPoint；
     // 内容寻址文件名每次选择都变，配合 iframe 重载无缓存问题）
-    const fontFaces = buildConfigFontFacesCss(group.packaging);
+    const fontFaces = buildConfigFontFacesCss(group.packaging, resources.fontRoot);
     // v4 吸色注入：与包装管线 §11 同色的 window.__palette（失败不注入，模板回退兜底色）
     const paletteScript = palette ? `<script>window.__palette=${JSON.stringify(palette)};</script>` : '';
     // 背景：独立预览（无 sync）用深色底+封面帧做底图；§3 叠加模式（sync=1）必须全透明——
@@ -132,10 +149,14 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
         : '<script>setTimeout(function(){var t=window.__timelines&&window.__timelines.overlay;if(t)t.play(0)},80);</script>';
     // §6：edit=1 注入文字与贴纸两套独立编辑桥（同源 iframe 内运行，均幂等）
     const editBridge = editMode ? `<script>${PACKAGING_EDIT_BRIDGE_JS}</script><script>${PACKAGING_STICKER_EDIT_BRIDGE_JS}</script>` : '';
+    const replay = group.packaging.layoutResolution?.status === 'resolved'
+      ? '<script src="auto-layout/replay.js"></script>'
+      : '';
     html = html
       .replace('<head>', `<head><base href="${baseHref}">`)
       .replace('</head>', `${headEnd}</head>`)
-      .replace('</body>', `${autoPlay}${editBridge}</body>`);
+      .replace('</body>', `${autoPlay}${editBridge}${replay}</body>`);
+    registerPackagingPreviewBundle(group.packaging, `/api/final-edit-groups/${encodeURIComponent(groupId)}/packaging-layout-resources`);
     return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
   } catch (error) { return finalEditErrorResponse(error); }
 }

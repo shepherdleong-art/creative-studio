@@ -14,6 +14,7 @@ export function stickerTestServerLaunch(testEnv, port) {
   };
   const standalone = fs.realpathSync(production);
   assert.ok(process.env.STICKER_TEST_EVIDENCE_DIR, 'STICKER_TEST_EVIDENCE_DIR is required for production evidence');
+  fs.mkdirSync(process.env.STICKER_TEST_EVIDENCE_DIR, { recursive: true });
   let adminCredential;
   if (process.env.STICKER_TEST_TEAM === '1') {
     Object.assign(testEnv, {

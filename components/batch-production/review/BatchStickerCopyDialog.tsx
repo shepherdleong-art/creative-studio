@@ -24,10 +24,11 @@ export default function BatchStickerCopyDialog({ source: currentSource, films, i
   films: UnifiedFilmState[];
   initialSelectedPlanIds: string[];
   onClose: () => void;
-  onConfirm: (source: BatchStickerCopyDialogTarget, targets: BatchStickerCopyDialogTarget[]) => Promise<void>;
+  onConfirm: (source: BatchStickerCopyDialogTarget, targets: BatchStickerCopyDialogTarget[], requestId: string) => Promise<void>;
 }) {
   // Bind the dialog to the source the user opened, even if polling loads a newer revision.
   const [source] = useState(currentSource);
+  const [requestId] = useState(() => crypto.randomUUID());
   const sourceArrangement = source.arrangement;
   const sourceStickers = sourceArrangement?.packaging?.stickers ?? [];
   const sourceBodyFrames = bodyFrames(source);
@@ -104,7 +105,7 @@ export default function BatchStickerCopyDialog({ source: currentSource, films, i
       await onConfirm({
         planId: source.planId, expectedOutputVersionId: sourceArrangement.outputVersionId,
         expectedEditRevision: sourceArrangement.editRevision,
-      }, selectedTargets);
+      }, selectedTargets, requestId);
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '复制失败，请刷新后重试');

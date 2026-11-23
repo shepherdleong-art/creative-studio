@@ -111,6 +111,7 @@ export function MixcutTimeline({
   onSelectSticker,
   onStickersChange,
   onDeleteSticker,
+  resolveStickerCenter,
 }: {
   variant: FinalEditVariantView;
   cues: SubtitleCue[];
@@ -151,6 +152,7 @@ export function MixcutTimeline({
   onSelectSticker: (stickerId: string) => void;
   onStickersChange: (next: PackagingStickerInstance[]) => void;
   onDeleteSticker: (stickerId: string) => void;
+  resolveStickerCenter?: (stickerId: string) => { x: number; y: number } | null;
 }) {
   const [stickerTracksExpanded, setStickerTracksExpanded] = useState(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -520,6 +522,7 @@ export function MixcutTimeline({
               disabled={disabled || tool !== 'select'}
               onSelect={(stickerId) => { setSelectedAudio(null); onSelectClip(''); onSelectCue(''); onSelectSticker(stickerId); }}
               onCommit={onStickersChange}
+              resolveCenter={resolveStickerCenter}
             />
           )}
           <div className={`${styles.tlTrack} ${styles.tlTrackVideo}`} data-track="video">

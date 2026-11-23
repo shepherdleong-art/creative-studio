@@ -21,7 +21,9 @@ import { bindImageScopeToProject } from '@/lib/team-service/resource-scopes';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { readRuntimeConfig } from '@/lib/team-service/config';
 import { productionParamsFor } from '@/lib/team-service/production-defaults';
+import { seedProviders } from '@/lib/seed';
 import {
+  UNIFIED_IMAGE_ANCHOR_ID,
   UNIFIED_IMAGE_MODEL_KEY,
   UNIFIED_MEDIA_RULE_VERSION,
   isUnifiedImageChannelProvider,
@@ -138,7 +140,20 @@ async function __teamRouteGET() {
 async function __teamRoutePOST(request: NextRequest) {
   try {
     const db = getDb();
-    const body = await request.json();
+    const submitted = await request.json();
+    const workflowType = submitted.workflowType === 'one_click_film' ? 'one_click_film' : 'complex_product';
+    const oneClickFilm = workflowType === 'one_click_film';
+    // 一键成片在建项目时只录入身份。沿用统一模型记录满足旧项目外键，后续生产另选通道。
+    if (oneClickFilm) seedProviders();
+    const body = oneClickFilm ? {
+      storeCode: submitted.storeCode,
+      productCode: submitted.productCode,
+      productionType: submitted.productionType,
+      editorName: submitted.editorName,
+      providerId: UNIFIED_IMAGE_ANCHOR_ID,
+      aspectRatio: '1:1',
+      resolution: '1k',
+    } : submitted;
 
     // ── 生产身份：新项目只填写身份字段，项目名/日期由服务端生成，客户端 name 一律忽略 ──
     let identity;
@@ -178,7 +193,7 @@ async function __teamRoutePOST(request: NextRequest) {
     // unsupported company-gateway ratios instead of silently snapping to another ratio.
     let resolvedSize: string;
     if (unifiedProvider) {
-      if (readRuntimeConfig().mode !== 'server') {
+      if (!oneClickFilm && readRuntimeConfig().mode !== 'server') {
         return NextResponse.json({ error: '统一 Image 2 仅在团队模式可用' }, { status: 400 });
       }
       if (requestedModel && requestedModel !== UNIFIED_IMAGE_MODEL_KEY) {
@@ -267,7 +282,7 @@ async function __teamRoutePOST(request: NextRequest) {
       db.prepare(`
         INSERT INTO projects (id, name, productName, productCode, productCategory, providerId, model, prompt, negativePrompt, size, quality, concurrency, videoConcurrency, maxAttempts, status, referenceGuidanceMode, timeoutMs, workflowType, scenePrompt, shotPrompt, storeCode, productSubmodel, productionType, editorName, namingDate)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(projectId, baseName, '', identity.productCode, '', body.providerId, model, '', '', resolvedSize, quality, concurrency, production.videoConcurrency, maxAttempts, 'draft', 'none', timeoutMs, 'complex_product',
+      `).run(projectId, baseName, '', identity.productCode, '', body.providerId, model, '', '', resolvedSize, quality, concurrency, production.videoConcurrency, maxAttempts, 'draft', 'none', timeoutMs, workflowType,
         scenePrompt || defaultScenePrompt, syncShotPromptFromScene(scenePrompt || defaultScenePrompt, shotPrompt || defaultShotPrompt),
         identity.storeCode, identity.productSubmodel, identity.productionType, identity.editorName, namingDate);
       access.registerRootScope({ resourceType: 'project', resourceId: projectId, ownerUserId, visibility: 'private' });
@@ -330,7 +345,7 @@ async function __teamRoutePOST(request: NextRequest) {
       }
     }).immediate();
 
-    return NextResponse.json({ id: projectId, workflowType: 'complex_product', name: baseName });
+    return NextResponse.json({ id: projectId, workflowType, name: baseName });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

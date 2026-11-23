@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { dataRoot } from '../../data-root.ts';
 import { getDb } from '../../db.ts';
+import '../../media-core/adapters/volc-asr.ts';
 import { schemaUpgradeRuntimePaths } from '../../schema-upgrade/runtime.ts';
 import { createTeamExecutionRuntime, createTeamServiceBootstrap, type TeamServiceBootstrap } from '../bootstrap.ts';
 import { ExecutionError, type ExecutionFacade, type ExecutionRuntime } from '../../media-core/execution/context.ts';

@@ -1,5 +1,6 @@
 import { BatchApiUnavailableError, BatchDomainError } from './errors.ts';
 import { ProviderExecutionGateError } from '../provider-execution-gate.ts';
+import { PackagingError } from '../media-core/packaging-runtime.ts';
 
 export interface BatchHttpErrorFallback {
   error: string;
@@ -39,12 +40,16 @@ export function batchErrorResponse(error: unknown, fallback: BatchHttpErrorFallb
       body: { error: fallback.error, code: error.code, message: error.message },
     };
   }
+  if (error instanceof PackagingError) {
+    return { status: error.status, body: { error: error.code, code: error.code, message: error.message } };
+  }
   if (error instanceof ProviderExecutionGateError) {
     return {
       status: 409,
       body: { error: fallback.error, code: error.code, message: error.message },
     };
   }
+  console.error('[batch-api] 未预期错误', error);
   return {
     status: 500,
     // 未预期错误可能携带 FFmpeg stderr、本地绝对路径或 SQLite 细节；

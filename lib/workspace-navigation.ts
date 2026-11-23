@@ -20,7 +20,7 @@ export const WORKSPACE_CREATE_ENTRIES: ReadonlyArray<{
   requiresCanvas?: boolean;
 }> = [
   { name: '常规项目', text: '场景、分镜到成片', icon: 'film', href: '/projects/new' },
-  { name: '一键成片', text: '功能开发中，敬请期待', icon: 'grid' },
+  { name: '一键成片', text: '从素材到成片一次做完', icon: 'grid', href: '/one-click-film/new' },
   { name: '实拍混剪', text: '功能开发中，敬请期待', icon: 'film' },
   { name: '创作画布', text: '连接灵感与生成流程', icon: 'sparkle', href: '/canvas', requiresCanvas: true },
 ];
@@ -143,6 +143,9 @@ export const WORKSPACE_MENU_LINKS: WorkspaceMenuLink[] = [
 const EXTRA_PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/projects\/new$/, '新建项目'],
   [/^\/projects\/[^/]+$/, '项目工作台'],
+  [/^\/one-click-film\/new$/, '一键成片'],
+  [/^\/one-click-film\/[^/]+$/, '一键成片'],
+  [/^\/one-click-film\/[^/]+\/exports$/, '已导出成片'],
   [/^\/canvas\/[^/]+$/, '创作画布'],
   [/^\/team\/recycle-bin$/, '回收站'],
   [/^\/team\/account$/, '修改密码'],
