@@ -100,6 +100,11 @@ interface ShotSetDetail {
   sceneRefImageUrl?: string | null;
 }
 
+interface ShotSetRead {
+  detail?: ShotSetDetail;
+  error?: string;
+}
+
 const STATUS_LABELS: Record<string, string> = {
   draft: '草稿',
   generating: '生成中',
@@ -162,9 +167,9 @@ export default function ShotSetStep({
   const [sets, setSets] = useState<ShotSet[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedSetId, setSelectedSetId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<ShotSetDetail | null>(null);
-  const [detailSetId, setDetailSetId] = useState<string | null>(null);
-  const [loadingShots, setLoadingShots] = useState(false);
+  const [shotReads, setShotReads] = useState(() => new Map<string, ShotSetRead>());
+  const shotRequests = useRef(new Map<string, { controller: AbortController; promise: Promise<void> }>());
+  const setsRequest = useRef<{ controller: AbortController; promise: Promise<void> } | null>(null);
   const [shotIndex, setShotIndex] = useState(0);
   const [view, setView] = useState<SceneViewMode>('compare');
   const [versionBusy, setVersionBusy] = useState(false);
@@ -193,12 +198,20 @@ export default function ShotSetStep({
   const unifiedSelection = selectedProvider?.type === 'unified-image'
     && selectedProvider.model === UNIFIED_IMAGE_MODEL_KEY;
 
-  const loadSets = useCallback(async () => {
-    try {
-      const response = await fetch(`/api/projects/${projectId}/shot-sets`);
-      const data = await response.json();
-      if (Array.isArray(data)) setSets((data as ShotSet[]).filter((set) => set.kind !== 'free'));
-    } catch { /* 列表读不到就保持现状，等下一次刷新 */ }
+  const loadSets = useCallback((afterWrite = false) => {
+    if (setsRequest.current && !afterWrite) return setsRequest.current.promise;
+    setsRequest.current?.controller.abort();
+    const controller = new AbortController();
+    const promise = (async () => {
+      try {
+        const response = await fetch(`/api/projects/${projectId}/shot-sets`, { signal: controller.signal });
+        const data = await response.json();
+        if (!controller.signal.aborted && Array.isArray(data)) setSets((data as ShotSet[]).filter((set) => set.kind !== 'free'));
+      } catch { /* 列表读不到就保持现状，等下一次刷新 */ }
+      finally { if (setsRequest.current?.controller === controller) setsRequest.current = null; }
+    })();
+    setsRequest.current = { controller, promise };
+    return promise;
   }, [projectId]);
 
   useEffect(() => {
@@ -207,7 +220,11 @@ export default function ShotSetStep({
       await loadSets();
       if (active) setLoading(false);
     })();
-    return () => { active = false; };
+    return () => {
+      active = false;
+      setsRequest.current?.controller.abort();
+      setsRequest.current = null;
+    };
   }, [loadSets]);
 
   // 当前分镜组是**派生**的：用户点过哪个就记哪个，它被删掉时自动回到第一组。
@@ -216,45 +233,61 @@ export default function ShotSetStep({
     ? selectedSetId
     : (sets[0]?.id ?? null);
 
-  const loadShots = useCallback(async (setId: string) => {
-    setLoadingShots(true);
-    try {
-      const response = await fetch(`/api/shot-sets/${setId}`);
-      const data = (await response.json()) as ShotSetDetail & { error?: string };
-      if (!response.ok) {
-        setError(data.error || '分镜组读取失败');
-        return;
+  const loadShots = useCallback((setId: string, afterWrite = false) => {
+    const requests = shotRequests.current;
+    const pending = requests.get(setId);
+    if (pending && !afterWrite) return pending.promise;
+    pending?.controller.abort();
+    const controller = new AbortController();
+    const promise = (async () => {
+      try {
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]);
+        const response = await fetch(`/api/shot-sets/${encodeURIComponent(setId)}`, { signal });
+        const data = (await response.json()) as ShotSetDetail & { error?: string };
+        if (!response.ok) throw new Error(data.error || '分镜组读取失败');
+        if (!controller.signal.aborted) setShotReads((reads) => new Map(reads).set(setId, {
+          detail: { status: data.status, shots: data.shots || [], sceneRefName: data.sceneRefName, sceneRefImageUrl: data.sceneRefImageUrl },
+        }));
+      } catch (cause) {
+        if (!controller.signal.aborted) setShotReads((reads) => new Map(reads).set(setId, {
+          ...reads.get(setId), error: cause instanceof Error && cause.name === 'TimeoutError' ? '读取超时，请重试。'
+            : cause instanceof Error ? cause.message : '分镜组读取失败',
+        }));
+      } finally {
+        if (requests.get(setId)?.controller === controller) requests.delete(setId);
       }
-      setDetail({ status: data.status, shots: data.shots || [], sceneRefName: data.sceneRefName, sceneRefImageUrl: data.sceneRefImageUrl });
-      setDetailSetId(setId);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '分镜组读取失败');
-    } finally {
-      setLoadingShots(false);
-    }
+    })();
+    requests.set(setId, { controller, promise });
+    return promise;
   }, []);
 
-  // 换组时才清空并重新取分镜；detail 还没对上当前组时按「加载中」处理。
-  // 用 setTimeout(0) 推迟首帧同步 setState（与页面里 loadProject 的写法一致）。
+  // 每组独立保留上次读取结果。切换和轮询共用读取，旧组回包只能更新自己的分镜。
   useEffect(() => {
-    if (!activeSetId) return;
-    const timer = window.setTimeout(() => { void loadShots(activeSetId); }, 0);
-    return () => window.clearTimeout(timer);
+    if (activeSetId) void loadShots(activeSetId);
   }, [activeSetId, loadShots]);
+  useEffect(() => {
+    const requests = shotRequests.current;
+    return () => {
+      for (const request of requests.values()) request.controller.abort();
+      requests.clear();
+    };
+  }, []);
 
-  const currentDetail = detailSetId === activeSetId ? detail : null;
+  const currentRead = activeSetId ? shotReads.get(activeSetId) : undefined;
+  const currentDetail = currentRead?.detail;
 
   // 任务完成/失败时刷新组列表与当前组，生成图会自己出现。
   const jobsFingerprint = useMemo(
     () => jobs.map((job) => `${job.id}:${job.status}:${job.outputImageId || ''}`).join(','),
     [jobs],
   );
+  const lastJobsFingerprint = useRef(jobsFingerprint);
   useEffect(() => {
-    (async () => {
-      await loadSets();
-      if (activeSetId) await loadShots(activeSetId);
-    })();
-  }, [jobsFingerprint]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (lastJobsFingerprint.current === jobsFingerprint) return;
+    lastJobsFingerprint.current = jobsFingerprint;
+    void loadSets();
+    if (activeSetId) void loadShots(activeSetId);
+  }, [jobsFingerprint, activeSetId, loadSets, loadShots]);
 
   // 生成中的分镜自动轮询，直到全部出结果。
   const hasActiveShot = (currentDetail?.shots || []).some((shot) => ['pending', 'running', 'retrying', 'needs_check'].includes(shot.jobStatus || ''));
@@ -351,8 +384,8 @@ export default function ShotSetStep({
         return;
       }
       // 只有服务端确认成功后才重新读取，不用本地临时选中冒充切换成功。
-      await loadShots(activeSetId);
-      await loadSets();
+      await loadShots(activeSetId, true);
+      await loadSets(true);
     } catch (cause) {
       setVersionError({
         shotId: currentShot.id,
@@ -376,8 +409,8 @@ export default function ShotSetStep({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ shotId: currentShot.id, reviewMark: mark }),
     });
-    await loadShots(activeSetId);
-    await loadSets();
+    await loadShots(activeSetId, true);
+    await loadSets(true);
   };
 
   /** 重做的唯一提交口：新建一个任务（会多出一版，旧版保留）。 */
@@ -419,7 +452,7 @@ export default function ShotSetStep({
         return;
       }
       await onShotChanged();
-      await loadShots(activeSetId);
+      await loadShots(activeSetId, true);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '重做失败');
     } finally {
@@ -443,7 +476,7 @@ export default function ShotSetStep({
         return;
       }
       await onShotChanged();
-      if (activeSetId) await loadShots(activeSetId);
+      if (activeSetId) await loadShots(activeSetId, true);
       return;
     }
     if (currentJobUnified || providerSelectionChanged) {
@@ -457,7 +490,7 @@ export default function ShotSetStep({
       return;
     }
     await onShotChanged();
-    if (activeSetId) await loadShots(activeSetId);
+    if (activeSetId) await loadShots(activeSetId, true);
   };
 
   const confirmDelete = async () => {
@@ -472,8 +505,14 @@ export default function ShotSetStep({
       }
       setDeleteTarget(null);
       selectSet(null);
-      setDetail(null);
-      await loadSets();
+      shotRequests.current.get(deleteTarget.id)?.controller.abort();
+      shotRequests.current.delete(deleteTarget.id);
+      setShotReads((reads) => {
+        const next = new Map(reads);
+        next.delete(deleteTarget.id);
+        return next;
+      });
+      await loadSets(true);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '删除失败');
     } finally {
@@ -537,7 +576,7 @@ export default function ShotSetStep({
             label="上传原始分镜图"
             hint="拖入或点击，可多选"
             maxFiles={MAX_SHOTS_PER_SET}
-            onUploaded={async () => { await onUploaded(); await loadSets(); }}
+            onUploaded={async () => { await onUploaded(); await loadSets(true); }}
           />
           <button type="button" className={`${s.drop} ${s.dropSolid}`} onClick={() => setCreateOpen(true)}>
             新建分镜组
@@ -569,10 +608,13 @@ export default function ShotSetStep({
                 title="还没有分镜组"
                 description={`先上传原始分镜图，再按顺序选 1 到 ${MAX_SHOTS_PER_SET} 张创建分镜组，配合场景参考图批量生成。`}
                 icon="film"
-                action={<UploadDrop projectId={projectId} usage="shot_source" label="上传原始分镜图" hint="支持多选" onUploaded={async () => { await onUploaded(); await loadSets(); }} solid />}
+                action={<UploadDrop projectId={projectId} usage="shot_source" label="上传原始分镜图" hint="支持多选" onUploaded={async () => { await onUploaded(); await loadSets(true); }} solid />}
               />
             </div>
-          ) : loadingShots && shots.length === 0 ? (
+          ) : !currentDetail && currentRead?.error ? (
+            <div className={s.emptyWrap}><StepEmpty title="分镜组读取失败" description={currentRead.error} icon="logs"
+              action={<button type="button" className="cap" onClick={() => void loadShots(activeSet.id)}>重新读取</button>} /></div>
+          ) : !currentDetail ? (
             <div className={s.emptyWrap}><StepEmpty title="正在读取分镜" description="稍等一下，正在取这一组的分镜列表。" icon="logs" /></div>
           ) : shots.length === 0 ? (
             <div className={s.emptyWrap}>
@@ -923,11 +965,11 @@ export default function ShotSetStep({
           projectId={projectId}
           assets={shotSourceImages}
           onClose={() => setCreateOpen(false)}
-          onUploaded={async () => { await onUploaded(); await loadSets(); }}
+          onUploaded={async () => { await onUploaded(); await loadSets(true); }}
           onDeleteAsset={onDeleteAsset}
           onCreated={async (setId) => {
             setCreateOpen(false);
-            await loadSets();
+            await loadSets(true);
             selectSet(setId);
             await onShotChanged();
           }}

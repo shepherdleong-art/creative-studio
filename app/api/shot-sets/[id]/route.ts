@@ -27,6 +27,8 @@ async function __teamRouteGET(
       SELECT s.*,
         sia.filename as sourceFilename,
         gia.filename as generatedFilename,
+        sia.path as sourcePath,
+        gia.path as generatedPath,
         j.status as jobStatus,
         j.errorMessage as jobErrorMessage,
         j.outputImageId,
@@ -71,6 +73,7 @@ async function __teamRouteGET(
         c.imageAssetId,
         c.createdAt,
         ia.filename,
+        ia.path as candidatePath,
         j.status as jobStatus,
         j.prompt as jobPrompt,
         j.referenceImageIds,
@@ -87,31 +90,23 @@ async function __teamRouteGET(
     `).all(...(shots as Array<Record<string, unknown>>).map((s) => s.id)) as Array<Record<string, unknown>>;
 
     const candidatesByShotId = new Map<string, Array<Record<string, unknown>>>();
-    for (const row of candidateRows) {
+    for (const { candidatePath, ...row } of candidateRows) {
       const shotId = String(row.shotId || '');
       if (!shotId) continue;
       const list = candidatesByShotId.get(shotId) || [];
       list.push({
         ...row,
-        imageUrl: toImageUrl(storageRoot, (db.prepare('SELECT path FROM image_assets WHERE id = ?')
-          .get(row.imageAssetId) as { path?: string } | undefined)?.path),
+        imageUrl: toImageUrl(storageRoot, typeof candidatePath === 'string' ? candidatePath : null),
       });
       candidatesByShotId.set(shotId, list);
     }
 
-    const shotsWithUrls = (shots as Array<Record<string, unknown>>).map((s) => {
-      const sourcePath = (db.prepare('SELECT path FROM image_assets WHERE id = ?')
-        .get(s.sourceImageId) as { path?: string } | undefined)?.path;
-      const sourceUrl = toImageUrl(storageRoot, sourcePath);
-      const genAsset = db.prepare(`SELECT path FROM image_assets WHERE id = ?`).get(s.latestGeneratedImageId) as { path?: string } | undefined;
-      const generatedUrl = toImageUrl(storageRoot, genAsset?.path);
-      return {
-        ...s,
-        sourceImageUrl: sourceUrl,
-        generatedImageUrl: generatedUrl,
-        resultCandidates: candidatesByShotId.get(String(s.id)) || [],
-      };
-    });
+    const shotsWithUrls = shots.map(({ sourcePath, generatedPath, ...shot }) => ({
+      ...shot,
+      sourceImageUrl: toImageUrl(storageRoot, typeof sourcePath === 'string' ? sourcePath : null),
+      generatedImageUrl: toImageUrl(storageRoot, typeof generatedPath === 'string' ? generatedPath : null),
+      resultCandidates: candidatesByShotId.get(String(shot.id)) || [],
+    }));
 
     return NextResponse.json({ ...set, status: resolveShotSetStatus(set, shots), shots: shotsWithUrls, sceneRefName, sceneRefImageUrl });
   } catch (err) {
