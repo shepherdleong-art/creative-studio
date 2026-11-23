@@ -206,49 +206,83 @@ interface BackupBarrierOwner {
   nonce: string;
 }
 
+type RecoveredBackup = BackupBarrierOwner & { success?: TeamBackupSuccess };
+
 function acquireBackupLock(dataRoot: string) {
   const lockDatabasePath = path.join(dataRoot, 'data', 'team-backup.lock.db');
   assertNoSymlinkPath(lockDatabasePath);
   return acquireSchemaUpgradeLock({ lockDatabasePath, timeoutMs: 0 });
 }
 
-async function releaseInterruptedBackupBarrier(options: BackupContext): Promise<BackupBarrierOwner | null> {
+async function recoverBackupUnderLock(options: BackupContext): Promise<RecoveredBackup | null> {
   const { db, dataRoot, backupRoot, deploymentId } = options;
-  const row = db.prepare("SELECT id, metadataJson FROM team_lifecycle_barriers WHERE kind = 'backup' AND releasedAt IS NULL")
-    .get() as { id: string; metadataJson: string } | undefined;
-  if (!row) return null;
-  let owner: BackupBarrierOwner;
-  try {
-    owner = JSON.parse(row.metadataJson).backupOwner as BackupBarrierOwner;
+  const rows = db.prepare(`SELECT id, ownerUserId, metadataJson, releasedAt FROM team_lifecycle_barriers
+    WHERE kind = 'backup' AND CASE WHEN json_valid(metadataJson)
+      THEN json_type(metadataJson) = 'object' AND (releasedAt IS NULL OR json_type(metadataJson, '$.pendingPublication') = 'object') ELSE 0 END`)
+    .all() as Array<{ id: string; ownerUserId: string; metadataJson: string; releasedAt: string | null }>;
+  for (const row of rows) {
+    const { backupOwner: owner, pendingPublication } = JSON.parse(row.metadataJson) as {
+      backupOwner?: BackupBarrierOwner; pendingPublication?: { pinId: string | null };
+    };
     if (!owner || owner.deploymentId !== deploymentId || owner.dataRootIdentity !== dataRootIdentity(dataRoot)
-      || typeof owner.nonce !== 'string' || !owner.nonce || typeof owner.backupId !== 'string') return null;
-    const markerPath = path.join(backupPaths(backupRoot, owner.type, owner.backupId).staging, 'maintenance-staging.json');
-    assertNoSymlinkPath(markerPath);
-    const marker = await readJsonFile<Partial<BackupBarrierOwner> & { schemaVersion?: number }>(markerPath);
-    if (marker.schemaVersion !== 1 || marker.backupId !== owner.backupId || marker.type !== owner.type
-      || marker.deploymentId !== deploymentId || marker.dataRootIdentity !== owner.dataRootIdentity || marker.nonce !== owner.nonce) return null;
-  } catch {
-    return null;
+      || typeof owner.nonce !== 'string' || !owner.nonce || typeof owner.backupId !== 'string'
+      || !TEAM_BACKUP_TYPES.includes(owner.type)) continue;
+    const paths = backupPaths(backupRoot, owner.type, owner.backupId);
+    const published = fs.existsSync(paths.published);
+    const markerPath = path.join(published ? paths.published : paths.staging, 'maintenance-staging.json');
+    const matches = await (async () => {
+      assertNoSymlinkPath(markerPath);
+      const marker = await readJsonFile<Partial<BackupBarrierOwner> & { schemaVersion?: number }>(markerPath);
+      return marker.schemaVersion === 1 && marker.backupId === owner.backupId && marker.type === owner.type
+        && marker.deploymentId === deploymentId && marker.dataRootIdentity === owner.dataRootIdentity && marker.nonce === owner.nonce;
+    })().catch(() => false);
+    if (!matches) {
+      if (pendingPublication) throw new Error('无法核对中断备份的发布归属，保留素材 pin');
+      continue;
+    }
+    let success: TeamBackupSuccess | undefined;
+    const pinId = pendingPublication?.pinId;
+    if (published) {
+      const verification = await verifyTeamBackup(paths.published);
+      if (!pendingPublication || !verification.verified || verification.manifest.deploymentId !== deploymentId
+        || verification.manifest.dataRootIdentity !== owner.dataRootIdentity || verification.manifest.type !== owner.type
+        || (verification.manifest.pin?.id ?? null) !== pinId) throw new Error('无法核对已发布备份，保留素材 pin');
+      success = await readJsonFile<TeamBackupSuccess>(path.join(paths.published, 'success.json'));
+    }
+    const recovered = db.transaction(() => {
+      const at = new Date().toISOString();
+      const updated = db.prepare(`UPDATE team_lifecycle_barriers
+        SET releasedAt = COALESCE(releasedAt, ?), metadataJson = json_remove(metadataJson, '$.pendingPublication')
+        WHERE id = ? AND kind = 'backup' AND metadataJson = ? AND releasedAt IS ?`)
+        .run(at, row.id, row.metadataJson, row.releasedAt).changes === 1;
+      if (updated && pinId && !success) {
+        const pin = db.prepare('SELECT ownerUserId FROM team_backup_pins WHERE id = ?').get(pinId) as { ownerUserId: string } | undefined;
+        if (pin?.ownerUserId !== row.ownerUserId) throw new Error('中断备份的素材 pin 归属不匹配');
+        releaseBackupPin(db, { userId: row.ownerUserId, role: 'admin' }, pinId);
+      }
+      return updated;
+    }).immediate();
+    if (!recovered) continue;
+    if (success) await fsPromises.rm(markerPath).catch(() => undefined);
+    appendMaintenanceReceipt({
+      backupRoot, deploymentId, kind: 'backup', operationId: owner.backupId, phase: success ? 'finished' : 'failed',
+      details: { backupId: owner.backupId, backupType: owner.type,
+        ...(success ? { durationMs: success.durationMs, totalBytes: success.totalBytes } : { code: 'backup_interrupted' }) },
+    });
+    return { ...owner, success };
   }
-  const released = db.prepare("UPDATE team_lifecycle_barriers SET releasedAt = ? WHERE id = ? AND kind = 'backup' AND metadataJson = ? AND releasedAt IS NULL")
-    .run(new Date().toISOString(), row.id, row.metadataJson).changes === 1;
-  if (!released) return null;
-  appendMaintenanceReceipt({
-    backupRoot, deploymentId, kind: 'backup', operationId: owner.backupId, phase: 'failed',
-    details: { backupId: owner.backupId, backupType: owner.type, code: 'backup_interrupted' },
-  });
-  return owner;
+  return null;
 }
 
 /** An acquired OS-backed lock proves that the process running this backup has left. */
-export async function recoverInterruptedTeamBackup(options: BackupContext): Promise<BackupBarrierOwner | null> {
+export async function recoverInterruptedTeamBackup(options: BackupContext): Promise<RecoveredBackup | null> {
   const lock = await acquireBackupLock(options.dataRoot).catch((error: unknown) => {
     if (error instanceof SchemaUpgradeLockTimeoutError) return null;
     throw error;
   });
   if (!lock) return null;
   try {
-    return await releaseInterruptedBackupBarrier(options);
+    return await recoverBackupUnderLock(options);
   } finally {
     lock.release();
   }
@@ -288,7 +322,7 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
   if (options.principal.role !== 'admin') throw new Error('仅管理员可执行团队备份');
   const lock = await acquireBackupLock(options.dataRoot);
   try {
-    await releaseInterruptedBackupBarrier(options);
+    await recoverBackupUnderLock(options);
     const mediaLock = options.type === 'daily' ? await lockDailyMedia(options.backupRoot) : null;
     try { return await runTeamBackup(options); }
     finally { mediaLock?.release(); }
@@ -352,6 +386,7 @@ async function runTeamBackup(options: CreateTeamBackupOptions): Promise<TeamBack
   options.onStage?.('snapshotting');
 
   let barrierId: string | null = null;
+  let publicationBarrierId: string | null = null;
   let pinId: string | null = null;
   let newMediaBytes = 0;
   try {
@@ -434,10 +469,15 @@ async function runTeamBackup(options: CreateTeamBackupOptions): Promise<TeamBack
         if (!releaseLifecycleBarrier(options.db, options.principal, barrier.id)) {
           throw new Error('备份屏障已失效，拒绝发布该备份');
         }
-        return files.length ? createBackupPin(options.db, options.principal, {
+        const newPinId = files.length ? createBackupPin(options.db, options.principal, {
           releaseId: release.releaseId, configVersion, fileIds: files.map((file) => file.fileId),
         }).id : null;
+        options.db.prepare(`UPDATE team_lifecycle_barriers
+          SET metadataJson = json_set(metadataJson, '$.pendingPublication', json_object('pinId', ?)) WHERE id = ?`)
+          .run(newPinId, barrier.id);
+        return newPinId;
       }).immediate();
+      publicationBarrierId = barrier.id;
       barrierId = null;
     } finally {
       if (barrierId) releaseLifecycleBarrier(options.db, options.principal, barrierId);
@@ -517,6 +557,8 @@ async function runTeamBackup(options: CreateTeamBackupOptions): Promise<TeamBack
     if (!stagingVerification.verified) throw new Error(`完整备份发布前校验失败：${stagingVerification.code}`);
     await publishBackupDirectory(paths.staging, paths.published);
     pinId = null; // 从此由已发布的还原点持有，清理出错也必须保留。
+    clearPendingPublication(options.db, publicationBarrierId);
+    publicationBarrierId = null;
     await fsPromises.rm(path.join(paths.published, 'maintenance-staging.json')).catch(() => undefined);
     appendMaintenanceReceipt({
       backupRoot: options.backupRoot, deploymentId: options.deploymentId, kind: 'backup', operationId: backupId,
@@ -537,7 +579,10 @@ async function runTeamBackup(options: CreateTeamBackupOptions): Promise<TeamBack
     return { directory: paths.published, manifest, success, ...(rotation ? { rotation } : {}) };
   } catch (error) {
     if (barrierId) releaseLifecycleBarrier(options.db, options.principal, barrierId);
-    if (pinId) releaseBackupPin(options.db, options.principal, pinId);
+    if (!fs.existsSync(paths.published)) options.db.transaction(() => {
+      if (pinId) releaseBackupPin(options.db, options.principal, pinId);
+      if (publicationBarrierId) clearPendingPublication(options.db, publicationBarrierId);
+    }).immediate();
     appendMaintenanceReceipt({
       backupRoot: options.backupRoot, deploymentId: options.deploymentId, kind: 'backup', operationId: backupId,
       phase: 'failed', at: now().toISOString(),
@@ -552,6 +597,11 @@ async function runTeamBackup(options: CreateTeamBackupOptions): Promise<TeamBack
     }
     throw error;
   }
+}
+
+function clearPendingPublication(db: Database.Database, barrierId: string): void {
+  db.prepare(`UPDATE team_lifecycle_barriers
+    SET metadataJson = json_remove(metadataJson, '$.pendingPublication') WHERE id = ?`).run(barrierId);
 }
 
 type BackupVerification = { verified: true; manifest: TeamBackupManifest } | { verified: false; code: string };

@@ -7,6 +7,7 @@ import { createExecutionJournal } from '../../media-core/execution/journal.ts';
 import { recoverExecution, reconcileAttempt } from '../../media-core/execution/reconciliation.ts';
 import type { ReconcileEvidence } from '../../media-core/execution/context.ts';
 import { backupMediaPath } from './daily-media.ts';
+import { publishBackupDirectory } from '../../schema-upgrade/backup.ts';
 import { lockDailyMedia, verifyTeamBackup } from './backup.ts';
 import { appendMaintenanceReceipt } from './receipts.ts';
 import {
@@ -273,7 +274,7 @@ async function restoreSnapshot(options: RestoreTeamBackupOptions) {
       remoteCalls,
     };
     await writeJsonAtomic(path.join(staging, 'storage', 'maintenance', 'reconciliation.json'), report);
-    await fsPromises.rename(staging, restoreRoot);
+    await publishBackupDirectory(staging, restoreRoot);
     appendMaintenanceReceipt({
       backupRoot, deploymentId: options.deploymentId, kind: 'restore', operationId, phase: 'finished',
       at: now().toISOString(), details: { backupId: manifest.backupId, evidenceStatus, unknownCount: unknownAttemptIds.length },

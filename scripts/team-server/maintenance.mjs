@@ -7,7 +7,7 @@ import { resolveDeploymentConfig } from './generate-config.mjs';
 import { sha256File, verifyReleaseManifest } from './distribution.mjs';
 import { runControlledServiceAction } from './service-control.mjs';
 import { createTeamBackup, createTeamBackupId, recoverInterruptedTeamBackup, TeamBackupSnapshotTimeoutError, verifyTeamBackup } from '../../lib/team-service/maintenance/backup.ts';
-import { MaintenanceJobStore } from '../../lib/team-service/maintenance/jobs.ts';
+import { dataRootIdentity } from '../../lib/team-service/maintenance/paths.ts';
 import { runMaintenanceWorker, maintenanceGlobalLockPath } from '../../lib/team-service/maintenance/worker.ts';
 import { acquireSchemaUpgradeLock, SchemaUpgradeLockTimeoutError } from '../../lib/schema-upgrade/lock.ts';
 import { restoreTeamBackup } from '../../lib/team-service/maintenance/restore.ts';
@@ -331,15 +331,30 @@ try {
         const activeConfig = resolveDeploymentConfig(readJson(configPath));
         const db = openDatabase(activeConfig.dataRoot);
         try {
-          const interrupted = await recoverInterruptedTeamBackup({ ...activeConfig, db });
+          const recovered = await recoverInterruptedTeamBackup({ ...activeConfig, db });
           const dailyJobPath = path.join(activeConfig.backupRoot, 'daily-job.json');
-          if (interrupted?.type === 'daily' && fs.existsSync(dailyJobPath)) {
-            const state = readJson(dailyJobPath);
-            if (state.status === 'running' && state.backupId === interrupted.backupId) {
-              writeDailyJob(activeConfig, { status: 'failed', backupId: state.backupId, startedAt: state.startedAt,
-                finishedAt: new Date().toISOString(), code: 'backup_interrupted' });
-            }
+          if (!fs.existsSync(dailyJobPath)) return;
+          const state = readJson(dailyJobPath);
+          if (state.status !== 'running') return;
+          let success = recovered?.type === 'daily' && recovered.backupId === state.backupId ? recovered.success : undefined;
+          if (recovered?.type === 'daily' && recovered.backupId === state.backupId && !success) {
+            writeDailyJob(activeConfig, { status: 'failed', backupId: state.backupId, startedAt: state.startedAt,
+              finishedAt: new Date().toISOString(), code: 'backup_interrupted' });
+            return;
           }
+          // 进程可能在完成数据库收尾之后、更新计划任务状态之前退出。
+          if (!success) {
+            const directory = backupDirectory(activeConfig, 'daily', state.backupId);
+            const marker = path.join(directory, 'success.json');
+            if (!fs.existsSync(marker)) return;
+            const result = await verifyTeamBackup(directory);
+            if (!result.verified || result.manifest.deploymentId !== activeConfig.deploymentId
+              || result.manifest.dataRootIdentity !== dataRootIdentity(activeConfig.dataRoot)) return;
+            success = readJson(marker);
+          }
+          writeDailyJob(activeConfig, { status: 'success', backupId: state.backupId, startedAt: state.startedAt,
+            finishedAt: success.verifiedAt, durationMs: success.durationMs, totalBytes: success.totalBytes,
+            ...(success.newMediaBytes !== undefined ? { newMediaBytes: success.newMediaBytes } : {}) });
         } finally {
           db.close();
         }

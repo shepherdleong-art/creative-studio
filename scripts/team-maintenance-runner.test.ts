@@ -259,6 +259,87 @@ try {
   assert.equal(restartedBackup.status, 0, restartedBackup.stderr);
   assert.equal((await verifyTeamBackup(path.join(backupRoot, 'daily', interruptedId))).verified, true);
 
+  const mediaName = 'interrupted-copy-fixture.bin';
+  const mediaFile = path.join(dataRoot, 'storage', mediaName);
+  fs.writeFileSync(mediaFile, 'managed backup media');
+  db.prepare(`INSERT INTO team_files (id, seriesId, version, ownerUserId, relativePath, mimeType, byteSize, sha256, state, readySeq, readyAt, createdAt)
+    VALUES ('interrupted-media', 'interrupted-media', 1, 'admin', ?, 'application/octet-stream', ?, ?, 'ready', 1, ?, ?)`)
+    .run(mediaName, fs.statSync(mediaFile).size, sha256(mediaFile), at, at);
+  const pausedCopy = path.join(fixture, 'pause-inside-media-copy.mjs');
+  fs.writeFileSync(pausedCopy, `
+    import fs from 'node:fs';
+    import promises from 'node:fs/promises';
+    import path from 'node:path';
+    const originalCopy = promises.copyFile;
+    promises.copyFile = (source, ...args) => {
+      if (path.basename(source) === ${JSON.stringify(mediaName)}) {
+        fs.writeSync(1, 'copying-media\\n');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+      }
+      return originalCopy(source, ...args);
+    };
+  `);
+  const copiedBackupId = 'daily-interrupted-media';
+  const copyingChild = spawn(process.execPath, ['--import', pathToFileURL(pausedCopy).href, runner, 'backup', '--config', configPath,
+    '--type', 'daily', '--backup-id', copiedBackupId, '--allow-fixture-release'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const copyingExited = once(copyingChild, 'exit');
+  const activeMediaPins = db.prepare("SELECT count(*) FROM team_file_references WHERE fileId = 'interrupted-media' AND pinKind = 'backup' AND releasedAt IS NULL").pluck();
+  try {
+    const [message] = await Promise.race([
+      once(copyingChild.stdout!, 'data', { signal: AbortSignal.timeout(15_000) }),
+      copyingExited.then(([code]) => { throw new Error(`备份在复制素材前退出 ${code}`); }),
+    ]);
+    assert.match(String(message), /copying-media/);
+    assert.equal(activeBarriers.get(), 0);
+    assert.equal(activeMediaPins.get(), 1);
+    assert.equal(await recoverInterruptedTeamBackup({ db, dataRoot, backupRoot, deploymentId }), null);
+    assert.equal(activeMediaPins.get(), 1, '活跃备份必须继续锁定素材');
+  } finally {
+    if (copyingChild.exitCode === null) copyingChild.kill('SIGKILL');
+    await copyingExited;
+  }
+  const recoverCopy = invoke('worker', '--config', configPath, '--once', '--allow-fixture-release');
+  assert.equal(recoverCopy.status, 0, recoverCopy.stderr);
+  assert.equal(activeMediaPins.get(), 0, '复制中断后，后台维护必须释放该备份拥有的素材 pin');
+  assert.equal(readDailyJob().code, 'backup_interrupted');
+  assert.equal(fs.existsSync(path.join(backupRoot, 'daily', copiedBackupId)), false);
+
+  const publishedBackupId = 'daily-interrupted-after-publish';
+  const publishedDirectory = path.join(backupRoot, 'daily', publishedBackupId);
+  const pausedPublish = path.join(fixture, 'pause-after-publish.mjs');
+  fs.writeFileSync(pausedPublish, `
+    import fs from 'node:fs';
+    import promises from 'node:fs/promises';
+    const rename = promises.rename;
+    promises.rename = async (source, destination) => {
+      await rename(source, destination);
+      if (destination === ${JSON.stringify(publishedDirectory)}) {
+        fs.writeSync(1, 'backup-published\\n');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+      }
+    };
+  `);
+  const publishingChild = spawn(process.execPath, ['--import', pathToFileURL(pausedPublish).href, runner, 'backup', '--config', configPath,
+    '--type', 'daily', '--backup-id', publishedBackupId, '--allow-fixture-release'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const publishingExited = once(publishingChild, 'exit');
+  try {
+    const [message] = await Promise.race([
+      once(publishingChild.stdout!, 'data', { signal: AbortSignal.timeout(15_000) }),
+      publishingExited.then(([code]) => { throw new Error(`备份在发布前退出 ${code}`); }),
+    ]);
+    assert.match(String(message), /backup-published/);
+    assert.equal((await verifyTeamBackup(publishedDirectory)).verified, true);
+    assert.equal(readDailyJob().status, 'running');
+  } finally {
+    if (publishingChild.exitCode === null) publishingChild.kill('SIGKILL');
+    await publishingExited;
+  }
+  const recoverPublication = invoke('worker', '--config', configPath, '--once', '--allow-fixture-release');
+  assert.equal(recoverPublication.status, 0, recoverPublication.stderr);
+  assert.equal(activeMediaPins.get(), 1, '已发布还原点必须保留素材 pin');
+  assert.equal(readDailyJob().backupId, publishedBackupId);
+  assert.equal(readDailyJob().status, 'success');
+
   const restoreJobs = new MaintenanceJobStore({ backupRoot, deploymentId });
   jobStores.add(restoreJobs);
   const restoreSubmission = restoreJobs.submit({
