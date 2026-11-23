@@ -49,6 +49,7 @@ export class PackagingOverlaySync {
     if (!iframe) return;
     this.bindVisibility();
     iframe.addEventListener('load', this.handleLoad);
+    if (iframe.contentDocument?.readyState === 'complete' && this.timeline()) this.handleLoad();
   }
 
   /** 播放头位置：存最新值（播放态由步进器消费；暂停态去抖 seek）。 */

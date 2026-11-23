@@ -519,13 +519,14 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     pointId: string;
     rect: { left: number; top: number; width: number; height: number };
     frame: { left: number; top: number };
+    initialText: string;
+    defaultText?: string;
   } | null>(null);
   const packagingTextEditRef = useRef<typeof packagingTextEdit>(null);
-  const packagingPreviewRef = useRef(packagingPreview);
-  useEffect(() => { packagingPreviewRef.current = packagingPreview; }, [packagingPreview]);
-  const openPackagingTextEdit = (edit: typeof packagingTextEdit) => {
-    packagingTextEditRef.current = edit;
-    setPackagingTextEdit(edit);
+  const openPackagingTextEdit = (edit: Omit<NonNullable<typeof packagingTextEdit>, 'initialText' | 'defaultText'> | null) => {
+    const next = edit ? { ...edit, ...resolvePackagingTextEditValues(edit.pointId) } : null;
+    packagingTextEditRef.current = next;
+    setPackagingTextEdit(next);
   };
 
   const packagingIframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -636,16 +637,16 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   // §B 画面内文字直改提交：cover:* → varsOverrides（与默认值相同删键）；cue:* → pointCues 文本替换
   // （空文本拒绝，与时间线改字同规则）。提交后叠加层经既有重载键刷新，模板 refitAll 自动重排。
   const commitPackagingTextEdit = (pointId: string, rawText: string) => {
+    const edit = packagingTextEditRef.current;
     openPackagingTextEdit(null);
+    if (rawText === edit?.initialText) return;
     const value = rawText.trim().slice(0, 40);
     if (pointId.startsWith('cover:')) {
       const key = pointId.slice('cover:'.length);
       if (!['title', 'subtitle', 'point1', 'point2', 'point3'].includes(key)) return;
       void applyGroupRef.current((current): GroupCommandInput => {
-        const defaults = packagingPreviewRef.current?.defaults;
-        const defaultValue = defaults && typeof defaults[key as keyof PackagingVars] === 'string' ? String(defaults[key as keyof PackagingVars]) : null;
         const nextOverrides = packagingVarsOverridesRecord(current.packaging.varsOverrides);
-        if (defaultValue !== null && value === defaultValue) delete nextOverrides[key];
+        if (value === edit?.defaultText) delete nextOverrides[key];
         else nextOverrides[key] = value;
         return {
           type: 'set_packaging_config',
@@ -669,14 +670,20 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     }
   };
 
-  // §B 浮框预填文案：父页自有数据（封面 ← preview.vars，正片 ← pointCues），桥不传文本
-  const resolvePackagingTextEditInitial = (pointId: string): string => {
+  const resolvePackagingTextEditValues = (pointId: string) => {
     if (pointId.startsWith('cover:')) {
-      const value = (packagingPreview?.vars as Record<string, unknown> | undefined)?.[pointId.slice('cover:'.length)];
-      return typeof value === 'string' ? value : '';
+      const key = pointId.slice('cover:'.length) as keyof PackagingVars;
+      const frame = packagingIframeRef.current?.contentWindow as (Window & {
+        __hyperframes?: { getVariables?: () => Partial<PackagingVars> };
+        __packagingPreviewDefaults?: PackagingVars;
+      }) | null;
+      return {
+        initialText: frame?.__hyperframes?.getVariables?.()?.[key] ?? packagingPreview?.vars[key] ?? '',
+        defaultText: frame?.__packagingPreviewDefaults?.[key] ?? packagingPreview?.defaults[key],
+      };
     }
     const cueId = pointId.slice('cue:'.length);
-    return group.packaging.pointCues?.find((item) => item.id === cueId)?.text ?? '';
+    return { initialText: group.packaging.pointCues?.find((item) => item.id === cueId)?.text ?? '' };
   };
 
   const previewNarrationPlaybackRate = (playbackRate: number) => {
@@ -1105,9 +1112,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       }
     });
   };
-  // 叠加层同步控制器：构造函数无副作用（visibilitychange 监听首次 attach 才绑定），可安全惰性初始化
   const packagingSyncRef = useRef<PackagingOverlaySync | null>(null);
-  packagingSyncRef.current ??= new PackagingOverlaySync();
   // §6 编辑模式：iframe 元素引用（写 __editMode 用）；布局提交防抖队列（瞬态值入 ref，不新增渲染订阅）
   const packagingLayoutPendingRef = useRef<Map<string, PackagingPointLayout | null> | null>(null);
   const packagingLayoutTimerRef = useRef(0);
@@ -1115,10 +1120,12 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [overlayMounted, setOverlayMounted] = useState(false);
 
   useEffect(() => {
-    const sync = packagingSyncRef.current;
+    const sync = new PackagingOverlaySync();
+    packagingSyncRef.current = sync;
+    sync.attach(packagingIframeRef.current);
     return () => {
-      sync?.destroy();
-      if (packagingSyncRef.current === sync) packagingSyncRef.current = null;
+      sync.destroy();
+      packagingSyncRef.current = null;
     };
   }, []);
 
@@ -1211,13 +1218,13 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     }));
   }, []);
 
-  // 预览 JSON：进入/换模板/换草稿/重新提取后拉取（供包装卡表单默认值、「跳到封面」coverSec 与叠加层加载闸门）
+  // 包装设置和卖点补提取与画面加载并行。
   useEffect(() => {
     if (!active || !packagingEnabled || !previewVariantId) return;
     const controller = new AbortController();
     void (async () => {
       try {
-        const query = new URLSearchParams({ variantId: previewVariantId, template: packagingTemplate });
+        const query = new URLSearchParams({ variantId: previewVariantId, template: packagingTemplate, metadata: '1' });
         const next = await responseBody<PackagingPreviewData>(
           await fetch(`/api/final-edit-groups/${encodeURIComponent(group.id)}/packaging-preview?${query}`, { signal: controller.signal }),
         );
@@ -1229,8 +1236,12 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           // 覆盖重新生成、异步重新提取等所有静默落库路径（屏幕有、时间轴无的断链实锤）。
           const cueKey = (cues: Array<{ id?: string; text: string; startSec: number; endSec: number }>) =>
             cues.map((cue) => `${cue.id ?? ''}${cue.text}${cue.startSec}${cue.endSec}`).join('~');
-          if (cueKey(next.timeline?.pointCues ?? []) !== cueKey(groupRef.current.packaging.pointCues ?? [])) {
-            void reloadGroupRef.current(groupRef.current.id).catch(() => undefined);
+          const current = groupRef.current;
+          const currentLayout = current.packaging.layoutResolution;
+          if (cueKey(next.timeline?.pointCues ?? []) !== cueKey(current.packaging.pointCues ?? [])
+            || next.layoutResolution?.status !== currentLayout?.status
+            || next.layoutResolution?.geometryManifestHash !== currentLayout?.geometryManifestHash) {
+            void reloadGroupRef.current(current.id).catch(() => undefined);
           }
         }
       } catch (error) {
@@ -1269,7 +1280,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   // 与批量共用 PR #14 的原地同步，布局保存和撤销不重建 iframe。
   const overlayStructureKey = JSON.stringify([previewVariantId, packagingDocumentConfig(packagingConfig)]);
   const packagingOverlayKey = usePackagingPreviewGeometry(packagingIframeRef, packagingConfig, overlayStructureKey, busy, overlayMounted);
-  const packagingOverlaySrc = packagingEnabled && previewVariantId && packagingPreview
+  const packagingOverlaySrc = active && packagingEnabled && previewVariantId
     ? `/api/final-edit-groups/${encodeURIComponent(group.id)}/packaging-preview?variantId=${encodeURIComponent(previewVariantId)}&template=${encodeURIComponent(packagingTemplate)}&format=html&sync=1&edit=1`
     : '';
 
@@ -1635,7 +1646,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           {packagingTextEdit && (
             <PackagingTextEditPopover
               textEdit={packagingTextEdit}
-              initialText={resolvePackagingTextEditInitial(packagingTextEdit.pointId)}
+              initialText={packagingTextEdit.initialText}
               onCommit={(value) => commitPackagingTextEdit(packagingTextEdit.pointId, value)}
               onCancel={() => openPackagingTextEdit(null)}
             />

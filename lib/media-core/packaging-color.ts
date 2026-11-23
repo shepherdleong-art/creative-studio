@@ -49,7 +49,19 @@ export async function extractAccentColors(videoAbsolutePath: string, seekSec: nu
     ], { encoding: 'buffer', maxBuffer: 32 * 1024 * 1024, timeout: 60_000, windowsHide: true });
     if (grab.status !== 0 || !grab.stdout?.length) return [];
 
-    const { data, info } = await sharp(grab.stdout)
+    const result = await extractAccentColorsFromImage(grab.stdout);
+    if (options.projectId) {
+      writeLog({ jobId: options.jobId, projectId: options.projectId, level: 'info', message: `包装吸色：${result.join(' ') || '无合适主色（模板默认配色）'}` });
+    }
+    return result;
+  } catch {
+    return [];
+  }
+}
+
+export async function extractAccentColorsFromImage(image: string | Buffer): Promise<string[]> {
+  try {
+    const { data, info } = await sharp(image)
       .resize(SAMPLE_WIDTH, SAMPLE_HEIGHT, { fit: 'fill' })
       .raw()
       .toBuffer({ resolveWithObject: true });
@@ -84,11 +96,7 @@ export async function extractAccentColors(videoAbsolutePath: string, seekSec: nu
       });
       if (!clash) chosen.push({ index: candidate.index, hex: toHex(candidate.r / candidate.weight, candidate.g / candidate.weight, candidate.b / candidate.weight) });
     }
-    const result = chosen.map((item) => item.hex);
-    if (options.projectId) {
-      writeLog({ jobId: options.jobId, projectId: options.projectId, level: 'info', message: `包装吸色：${result.join(' ') || '无合适主色（模板默认配色）'}` });
-    }
-    return result;
+    return chosen.map((item) => item.hex);
   } catch {
     return [];
   }

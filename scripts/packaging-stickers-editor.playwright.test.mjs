@@ -8,6 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium } from '@playwright/test';
+import Database from 'better-sqlite3';
+import { ensureDevApiRoutes } from './runtime/dev-route-readiness.mjs';
 import { stickerTestServerLaunch, setupStickerTeamBrowser, verifySingleStickerProductionExport } from './packaging-sticker-production-test.mjs';
 
 const fixturePath = 'scripts/final-edit-mixcut-real-project.fixture.ts';
@@ -50,7 +52,10 @@ async function startServer() {
       ready = response.status < 500;
     } catch { /* 等待启动 */ }
     if (ready) {
-      try { return { child, baseUrl, output: () => output, browserOptions: await setupStickerTeamBrowser(baseUrl, launch) }; }
+      try {
+        if (!process.env.STICKER_TEST_STANDALONE) await ensureDevApiRoutes(process.cwd());
+        return { child, baseUrl, output: () => output, browserOptions: await setupStickerTeamBrowser(baseUrl, launch) };
+      }
       catch (error) { await stopServer(child); throw error; }
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -91,15 +96,66 @@ try {
   browser = await chromium.launch({ headless: true, executablePath: chrome });
   page = await browser.newPage({ ...server.browserOptions, viewport: { width: 1600, height: 1100 }, deviceScaleFactor: 1 });
   page.setDefaultTimeout(30_000);
+  const groupPath = `/api/final-edit-groups/${fixture.groupId}`;
+  const groupUrl = new URL(groupPath, server.baseUrl).href;
+  const overlayUrl = `${groupUrl}/packaging-preview?variantId=${encodeURIComponent(fixture.variantId)}&format=html&sync=1&edit=1`;
+  // Simulate a narration edit while the saved v2 layout still looks resolved.
+  const db = new Database(fixture.dbPath);
+  const readNarration = db.prepare('SELECT editedNarrationText FROM final_edit_groups WHERE id=?');
+  const writeNarration = db.prepare('UPDATE final_edit_groups SET editedNarrationText=? WHERE id=?');
+  const { editedNarrationText } = readNarration.get(fixture.groupId);
+  try {
+    writeNarration.run(`${editedNarrationText} 新版口播校验`, fixture.groupId);
+    const pendingLayout = await page.request.get(overlayUrl);
+    assert.equal(pendingLayout.status(), 200);
+    assert.match(await pendingLayout.text(), /data-packaging-layout-pending/, '卖点过期时不得交付旧版冻结布局');
+  } finally {
+    writeNarration.run(editedNarrationText, fixture.groupId);
+    db.close();
+  }
   await page.goto(`${server.baseUrl}/projects/${fixture.projectId}?tab=final-edit`, { waitUntil: 'networkidle' });
   await page.getByRole('heading', { name: '确认本次混剪要用的素材' }).waitFor();
   await page.getByLabel('选择分镜组').selectOption(fixture.shotSetA);
   await page.locator(`[data-mixcut-shot-set-id="${fixture.shotSetA}"]`).waitFor();
-  await page.getByRole('button', { name: /预览调整/ }).click();
+  const settingsPending = Promise.withResolvers();
+  const delaySettings = async (route) => {
+    if (new URL(route.request().url()).searchParams.get('format') !== 'html') await settingsPending.promise;
+    await route.continue().catch(() => {});
+  };
+  const overlay = page.frameLocator('iframe[data-packaging-overlay]');
+  await page.route('**/packaging-preview?**', delaySettings);
+  try {
+    const settingsRequest = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return url.pathname.endsWith('/packaging-preview') && url.searchParams.get('format') !== 'html';
+    });
+    await page.getByRole('button', { name: /预览调整/ }).click();
+    await settingsRequest;
+    const title = overlay.locator('[data-point-id="cover:title"]');
+    await title.waitFor({ state: 'visible' });
+    await overlay.locator('.packaging-sticker').first().waitFor({ state: 'attached' });
+    await page.getByRole('button', { name: '跳到封面', exact: true }).click();
+    const position = page.getByRole('slider', { name: '播放位置' });
+    const frame = 1 / 24;
+    await eventually(async () => Math.abs(Number(await position.inputValue()) - 10 * frame) < frame, '设置等待时也能跳到封面中点');
+    const automaticTitle = (await title.innerText()).trim();
+    await title.dblclick();
+    const editor = page.getByPlaceholder('留空则该元素不显示');
+    assert.equal(await editor.inputValue(), automaticTitle);
+    const noTitleWrite = page.waitForRequest((request) => request.method() === 'PATCH'
+      && new URL(request.url()).pathname === groupPath
+      && (request.postData() || '').includes('"set_packaging_config"'), { timeout: 500 })
+      .then(() => false, (error) => error.name === 'TimeoutError');
+    await editor.press('Enter');
+    await editor.waitFor({ state: 'hidden' });
+    assert.equal(await noTitleWrite, true, '确认原文应关闭输入框，无需保存包装配置');
+  } finally {
+    settingsPending.resolve();
+    await page.unroute('**/packaging-preview?**', delaySettings);
+  }
   await page.locator('[data-track="video"]').waitFor();
 
   const readPatch = async (action, requireStickers = true) => {
-    const groupPath = `/api/final-edit-groups/${fixture.groupId}`;
     const pending = page.waitForResponse((response) => {
       if (response.request().method() !== 'PATCH' || new URL(response.url()).pathname !== groupPath) return false;
       return !requireStickers || (response.request().postData() || '').includes('"stickers"');
@@ -128,11 +184,9 @@ try {
     assert.equal(body.status, 'resolved', body.message || '自动布局命令必须成功');
     return { request, view: body.view, result: body };
   };
-  const overlay = page.frameLocator('iframe[data-packaging-overlay]');
   const panel = page.locator('#packaging-stickers-panel');
   const assetButtons = panel.getByRole('button', { name: /^添加贴纸 / });
 
-  const groupUrl = new URL(`/api/final-edit-groups/${fixture.groupId}`, server.baseUrl).href;
   const initialGroup = await (await page.request.get(groupUrl)).json();
   assert.equal(initialGroup.packaging.enabled, true);
   const warning = '未检测到可靠口播气口，本次未吸附切点';
@@ -162,6 +216,7 @@ try {
   await eventually(async () => overlay.locator(`[data-sticker-id="${firstAuto.id}"]`).evaluate((element) => (
     Number(getComputedStyle(element).opacity) > 0.9 && element.querySelector('img').naturalWidth > 0
   )), '播放头进入自动贴纸区间时，贴纸应直接显示在成片画面上');
+  console.log('包装首屏通过：设置延迟时显示封面、跳转并确认原文，拒绝过期布局，播放头同步。');
   // 清空初始布置，以便继续验证手动添加和一键布置的交互。
   const cleared = await page.request.patch(groupUrl, { data: {
     type: 'set_packaging_config', expectedRevision: initialGroup.revision, variantId: fixture.variantId,
@@ -321,7 +376,6 @@ try {
   const cancelFrameBox = await iframe.boundingBox();
   assert.ok(cancelFrameBox);
   const cancelRequests = [];
-  const groupPath = `/api/final-edit-groups/${fixture.groupId}`;
   const watchCancelRequests = (request) => {
     if (request.method() === 'PATCH' && new URL(request.url()).pathname === groupPath && (request.postData() || '').includes('"stickers"')) cancelRequests.push(request);
   };
