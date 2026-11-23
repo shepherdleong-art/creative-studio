@@ -22,7 +22,7 @@ export class TextOverflowError extends Error {
       subtitleCount ? `${subtitleCount} 条字幕` : '',
       titleCount ? `${titleCount} 处封面标题` : '',
     ].filter(Boolean);
-    super(`有 ${parts.join('、')}超出单行安全宽度，请点击提示定位并调整文字或样式`);
+    super(`有 ${parts.join('、')}超出单行安全宽度，请返回「预览调整」修改文字或样式`);
     this.name = 'TextOverflowError';
     this.details = details;
     this.cueIds = details.flatMap((detail) => detail.cueId ? [detail.cueId] : []);
@@ -110,12 +110,33 @@ function renderedAlphaWidth(canvas: HTMLCanvasElement): number {
   return maxX < minX ? 0 : maxX - minX + 1;
 }
 
-function renderSingleTextWidth(preset: OutputPresetId, text: string, style: TextStyle): number {
-  const canvas = canvasFor(preset);
+function renderSingleTextWidth(canvas: HTMLCanvasElement, text: string, style: TextStyle): number {
   const context = canvas.getContext('2d');
-  if (!context) return 0;
+  if (!context) throw new Error('浏览器 Canvas 不可用');
+  context.clearRect(0, 0, canvas.width, canvas.height);
   drawText(context, text, style);
   return renderedAlphaWidth(canvas);
+}
+
+/** 使用与导出 PNG 相同的画布尺寸、字体和 alpha 边界，分批读像素以免阻塞时间轴。 */
+export async function measureSubtitleOverflowWidths(cues: readonly SubtitleCue[], preset: OutputPresetId, style: TextStyle, signal: AbortSignal) {
+  const overflow = new Map<string, number>();
+  if (!cues.length) return overflow;
+  await ensureServerFontLoaded(style.fontFamily);
+  await document.fonts.ready;
+  signal.throwIfAborted();
+  const canvas = canvasFor(preset);
+  let started = performance.now();
+  for (const cue of cues) {
+    signal.throwIfAborted();
+    const width = renderSingleTextWidth(canvas, cue.text, style);
+    if (width > style.boxWidthPx) overflow.set(cue.id, width);
+    if (performance.now() - started >= 12) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      started = performance.now();
+    }
+  }
+  return overflow;
 }
 
 export function measureSingleLineText(ctx: CanvasRenderingContext2D, text: string, style: TextStyle): number {
@@ -249,8 +270,8 @@ export async function createOverlayBundlePayload(group: FinalEditGroupView, pres
     drawText(titleContext, group.coverTitle.primary.text, style.coverPrimary);
     drawText(titleContext, group.coverTitle.secondary.text, style.coverSecondary);
   }
-  const titlePrimaryWidth = titleEnabled ? renderSingleTextWidth(preset, group.coverTitle.primary.text, style.coverPrimary) : 0;
-  const titleSecondaryWidth = titleEnabled ? renderSingleTextWidth(preset, group.coverTitle.secondary.text, style.coverSecondary) : 0;
+  const titlePrimaryWidth = titleEnabled ? renderSingleTextWidth(canvasFor(preset), group.coverTitle.primary.text, style.coverPrimary) : 0;
+  const titleSecondaryWidth = titleEnabled ? renderSingleTextWidth(canvasFor(preset), group.coverTitle.secondary.text, style.coverSecondary) : 0;
   const titleCompositeWidth = renderedAlphaWidth(titleCanvas);
   const overflowDetails: TextOverflowDetail[] = [];
   if (titlePrimaryWidth > style.coverPrimary.boxWidthPx) overflowDetails.push({ target: 'coverPrimary', measuredWidthPx: titlePrimaryWidth, safeWidthPx: style.coverPrimary.boxWidthPx });
@@ -258,15 +279,12 @@ export async function createOverlayBundlePayload(group: FinalEditGroupView, pres
 
   const subtitles: Record<string, string> = {};
   const subtitleWidths: Record<string, number> = {};
+  const subtitleCanvas = canvasFor(preset);
   for (const cue of group.subtitleCues) {
-    const canvas = canvasFor(preset);
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('浏览器 Canvas 不可用');
-    drawText(context, cue.text, style.subtitle);
-    const measured = renderedAlphaWidth(canvas);
+    const measured = renderSingleTextWidth(subtitleCanvas, cue.text, style.subtitle);
     subtitleWidths[cue.id] = measured;
     if (measured > style.subtitle.boxWidthPx) overflowDetails.push({ target: 'subtitle', cueId: cue.id, measuredWidthPx: measured, safeWidthPx: style.subtitle.boxWidthPx });
-    subtitles[cue.id] = toBase64(canvas);
+    subtitles[cue.id] = toBase64(subtitleCanvas);
   }
   if (overflowDetails.length) throw new TextOverflowError(overflowDetails);
   return {

@@ -63,6 +63,7 @@ try {
   // 视频：公司可灵 3.0 / 公司即梦 Fast / 公司即梦 2.5，均为 openai-video 且配置完整
   for (const [id, model, name] of [
     ['company-gateway-seedream-5-0-pro', 'doubao-seedream-5-0-pro-image', '公司 Seedream 5.0 Pro'],
+    ['company-gateway-seedream-5-5', 'doubao-seedream-5-5-261028', '公司 Seedream 5.5'],
     ['company-gateway-nano-banana-pro', 'nano-banana-3.0', '公司 Nano Banana Pro'],
     ['company-gateway-nano-banana-2', 'nano-banana-3.1', '公司 Nano Banana 2'],
   ]) {
@@ -82,6 +83,7 @@ try {
     ['company-wan-3-0', 'wan-3.0'],
     ['company-kling-2-5', 'kling-2.5'],
     ['company-kling-3-0', 'kling-3.0'],
+    ['company-qiniuyun-kling-4-0', 'qiniuyun/kling-4.0'],
     ['company-qiniuyun-kling-3-0', 'qiniuyun/kling-3.0'],
     ['company-seedance-2-0', 'doubao-seedance-2-0-260128'],
     ['company-seedance-2-0-fast', 'doubao-seedance-2-0-fast-260128'],

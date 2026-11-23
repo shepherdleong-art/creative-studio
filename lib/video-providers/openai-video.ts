@@ -19,6 +19,9 @@ import { shouldInjectCompanyKlingMultiShot } from '../video-multi-shot.ts';
 import { videoDurationError } from '../video-duration.ts';
 import { providerHttpError } from '../media-core/submission-evidence.ts';
 import { companyNativeVideoModel } from '../company-gateway-video-models.ts';
+import {
+  QINIU_KLING_4_MODEL, qiniuKling4FirstFrameFields, qiniuKling4ReferenceFields, validateQiniuKling4MiddleFrames,
+} from '../company-qiniu-kling-4.ts';
 import { validateVideoReferenceRequest, videoReferenceCapability } from '../video-reference-contract.ts';
 import { createCompanySeedanceVideoAdapter } from './company-seedance-video.ts';
 import type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';
@@ -125,9 +128,10 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     const cleanBase = baseUrl.replace(/\/$/, '');
     const url = `${cleanBase}/v1/videos`;
     const isQiniuKling = request.model === 'qiniuyun/kling-3.0';
+    const isQiniuKling4 = request.model === QINIU_KLING_4_MODEL;
     const isCompanyKling25 = request.model === 'kling-2.5';
     const nativeModel = companyNativeVideoModel(request.model);
-    const requiresCos = isQiniuKling || nativeModel !== null;
+    const requiresCos = isQiniuKling || isQiniuKling4 || nativeModel !== null;
     const durationError = videoDurationError('openai-video', request.model, request.durationSec);
     if (durationError) throw new Error(durationError);
     let nativeAspectRatio: string | null = null;
@@ -139,6 +143,11 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
       });
     }
 
+    if (request.middleFrames?.length) {
+      if (!isQiniuKling4) throw new Error('当前模型不支持中间帧');
+      const issue = validateQiniuKling4MiddleFrames(request.middleFrames);
+      if (issue) throw new Error(issue);
+    }
     const hasTailImagePath = request.tailImagePath !== undefined;
     const hasTailMimeType = request.tailMimeType !== undefined;
     if (hasTailImagePath !== hasTailMimeType) {
@@ -212,6 +221,16 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
       seconds: String(request.durationSec),
       images: tailProtocol === 'company-gateway-seedance' ? [imageRef, tailImageRef] : [imageRef],
     };
+    if (isQiniuKling4) {
+      const middleUrls: string[] = [];
+      for (const frame of request.middleFrames ?? []) {
+        signal?.throwIfAborted();
+        const url = await tryUploadToCosAndSign(frame.path, frame.mimeType, { compress: false });
+        if (!url) throw new Error('中间帧上传 COS 未返回可用地址，任务未提交');
+        middleUrls.push(url);
+      }
+      Object.assign(body, qiniuKling4FirstFrameFields(imageRef, request.durationSec, middleUrls, request.resolution));
+    }
     if (nativeModel) {
       // Native roles avoid treating a second image as a reference. Pixel size is
       // deliberately omitted. Wan requires an explicit ratio derived from the frame.
@@ -260,6 +279,7 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
       }
       const sourceDims = await probeImageDimensions(request.sourceImagePath);
       if (isQiniuKling && !sourceDims) throw new Error('无法读取七牛可灵首帧尺寸，不能确定 1080P 输出比例，任务未提交');
+      if (isQiniuKling4 && !sourceDims) throw new Error('无法读取七牛可灵 4.0 首帧尺寸，任务未提交');
       if (tailProtocol === 'company-gateway-kling') {
         const requestedAspect = request.aspectRatio && companyCaps.ratios.includes(request.aspectRatio)
           ? request.aspectRatio
@@ -364,13 +384,15 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     // URLs are delivered by the caller. The company gate still fails closed before POST;
     // this adapter never uploads reference media or falls back to a local URL.
     await assertCompanyTailFrameTransport(cleanBase);
-    if (!nativeModel) {
+    const isQiniuKling4 = request.model === QINIU_KLING_4_MODEL;
+    if (!nativeModel && !isQiniuKling4) {
       return createCompanySeedanceVideoAdapter().submitReference!(request, apiKey, cleanBase, signal);
     }
 
     const body = {
       model: request.model,
       prompt: request.prompt || 'gentle camera movement, stable product detail',
+      ...(isQiniuKling4 ? qiniuKling4ReferenceFields(request.references, request.durationSec, request.aspectRatio ?? '16:9', request.resolution) : {
       seconds: String(request.durationSec),
       FileInfos: request.references.map((reference) => ({
         Type: 'Url',
@@ -383,6 +405,7 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
         Resolution: request.resolution ?? capability.defaultResolution,
         AspectRatio: request.aspectRatio,
       },
+      }),
     };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);

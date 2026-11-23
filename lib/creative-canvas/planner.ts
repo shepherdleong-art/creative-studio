@@ -498,12 +498,13 @@ function buildTaskPlan(
 
   // 图生视频的帧角色按图片接入顺序推断：第一张为首帧，其余为尾帧（能力表上限 2 张，
   // 超出由能力校验报错）。界面不再手标用途后，两图场景仍能命中严格首尾帧合同。
-  if (node.data.generationMode === 'image-to-video') {
-    let frameIndex = 0;
-    for (const input of inputs) {
-      if (input.kind === 'text' || inputKindOfInput(context, input) !== 'image') continue;
-      input.role = frameIndex === 0 ? 'first-frame' : 'last-frame';
-      frameIndex += 1;
+  const orderedKeyframes = node.data.generationMode === 'frames-to-video'
+    && capability.inputs.some(rule => rule.roles.includes('middle-frame'));
+  if (orderedKeyframes || node.data.generationMode === 'image-to-video') {
+    const frames = inputs.filter(input => input.kind !== 'text' && inputKindOfInput(context, input) === 'image');
+    for (const [index, frame] of frames.entries()) {
+      frame.role = index === 0 ? 'first-frame'
+        : orderedKeyframes && index < frames.length - 1 ? 'middle-frame' : 'last-frame';
     }
   }
 

@@ -1,14 +1,18 @@
 import type Database from 'better-sqlite3';
 import { companyImageCapsForModel } from '../../company-gateway-size.ts';
+import { QINIU_IMAGE_26_MODELS, QINIU_IMAGE_MEDIUM_MODEL, QINIU_IMAGE_MEDIUM_PROVIDER_ID } from '../../company-qiniu-image-models.ts';
+import { COMPANY_SEEDREAM_55 } from '../../company-seedream-image.ts';
 import type { CanvasModelCapability } from '../capabilities.ts';
 import { COMPANY_CANVAS_IMAGE2_CAPABILITY, COMPANY_CANVAS_QINIUYUN_IMAGE_CAPABILITY } from './company-capabilities.ts';
 
 // 精确协议白名单；设置里的未知别名不能套用其他模型的提交合同。
 const SPECS = [
   { model: 'image2-medium', id: 'company-gateway-image2-medium', key: 'company-image2-medium', max: 6 },
-  { model: 'qiniuyun/gpt-image-2-medium', id: 'company-gateway-qiniuyun-gpt-image-2-medium', key: 'company-qiniuyun-image-2', max: 6 },
+  { model: QINIU_IMAGE_MEDIUM_MODEL, id: QINIU_IMAGE_MEDIUM_PROVIDER_ID, key: 'company-qiniuyun-image-2', max: 6 },
+  ...QINIU_IMAGE_26_MODELS.map((entry) => ({ ...entry, max: 6 })),
   { model: 'doubao-seedream-5-0-pro-image', id: 'company-gateway-seedream-5-0-pro', key: 'company-seedream-5-0-pro', max: 14 },
   { model: 'nano-banana-3.0', id: 'company-gateway-nano-banana-pro', key: 'company-nano-banana-pro', max: 14 },
+  { ...COMPANY_SEEDREAM_55, key: COMPANY_SEEDREAM_55.id, max: COMPANY_SEEDREAM_55.maxImages },
   { model: 'nano-banana-3.1', id: 'company-gateway-nano-banana-2', key: 'company-nano-banana-2', max: 14 },
 ] as const;
 
@@ -21,7 +25,7 @@ export function configuredCanvasImages(db: Database.Database): CanvasModelCapabi
     const spec = SPECS.find((entry) => entry.model === row.model);
     if (!spec) return [];
     const caps = companyImageCapsForModel(row.model)!;
-    const template = row.model === 'qiniuyun/gpt-image-2-medium'
+    const template = row.model === QINIU_IMAGE_MEDIUM_MODEL || QINIU_IMAGE_26_MODELS.some((entry) => entry.model === row.model)
       ? COMPANY_CANVAS_QINIUYUN_IMAGE_CAPABILITY : COMPANY_CANVAS_IMAGE2_CAPABILITY;
     return [{
       ...template,

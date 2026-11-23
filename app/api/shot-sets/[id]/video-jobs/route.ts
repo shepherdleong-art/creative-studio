@@ -74,9 +74,25 @@ async function __teamRouteGET(
     // 播放与下载按登记路径生成 URL，filename 仅表示文件名。
     // 旧任务 displayName 为 NULL，由共享 helper 确定性派生，不回写数据库。
     const displayNames = resolveVideoJobDisplayNames(db, jobs.map((job) => String(job.id)));
+    const assetsByJob = new Map<string, Record<string, unknown>[]>();
+    const assetRows = db.prepare(`
+      SELECT job.id AS jobId, asset.id, asset.kind, asset.filename,
+             asset.mimeType, asset.byteSize, asset.durationSec
+      FROM video_jobs job
+      JOIN video_job_references link ON link.jobId = job.id
+      JOIN video_reference_assets asset ON asset.id = link.assetId AND asset.projectId = job.projectId
+      WHERE job.shotSetId = ?
+      ORDER BY job.id, link.orderIndex
+    `).all(shotSetId) as Array<{ jobId: string; id: string } & Record<string, unknown>>;
+    for (const { jobId, ...asset } of assetRows) {
+      const list = assetsByJob.get(jobId) ?? [];
+      list.push({ ...asset, url: `/api/video-reference-assets/${encodeURIComponent(asset.id)}` });
+      assetsByJob.set(jobId, list);
+    }
     const jobsWithPosters = jobs.map((job) => ({
       ...videoJobForClient(job),
       displayName: displayNames.get(String(job.id)) ?? null,
+      referenceAssets: assetsByJob.get(String(job.id)) ?? [],
     }));
 
     return NextResponse.json({ jobs: jobsWithPosters });

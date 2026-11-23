@@ -107,8 +107,8 @@ function validateBackupDatabase(backupPath: string): void {
   }
 }
 
-async function publishBackupDirectory(stagingDirectory: string, publishedDirectory: string): Promise<void> {
-  // Windows 会短暂拒绝刚写好的目录重命名。只重试发布同一份已验证备份；持续失败仍阻止迁移。
+export async function publishBackupDirectory(stagingDirectory: string, publishedDirectory: string): Promise<void> {
+  // Windows 会短暂拒绝刚写好的目录重命名。只重试发布同一份已验证备份。
   const retryDelaysMs = [20, 50, 100, 200];
   for (let attempt = 0; ; attempt++) {
     try {

@@ -7,6 +7,7 @@ import { mock } from 'node:test';
 import { createHash } from 'node:crypto';
 import { submitGatewayTaskImage, type GatewayTaskImageRequest } from '../lib/providers/gateway-task-image.ts';
 import { _resetCosMediaCacheForTest } from '../lib/cos-media.ts';
+import { COMPANY_SEEDREAM_55 } from '../lib/company-seedream-image.ts';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'company-image-adapters-'));
 const originalFetch = globalThis.fetch;
@@ -74,6 +75,23 @@ try {
   await submitGatewayTaskImage({ ...request, model: 'doubao-seedream-5-0-pro-image', size: '1280x720' }, 'gateway-key', 'http://127.0.0.1:4000');
   assert.equal(body.size, '1K');
   assert.match(String(body.prompt), /输出画幅为16:9，清晰度为1K/);
+
+  const seedream55 = { ...request, model: COMPANY_SEEDREAM_55.model, size: '2048x1152' };
+  const seedream55Result = await submitGatewayTaskImage(seedream55, 'gateway-key', 'http://127.0.0.1:4000');
+  assert.equal(endpoint, 'http://127.0.0.1:4000/v1/images/generations');
+  assert.equal(body.size, '1.5K');
+  assert.match(String(body.prompt), /输出画幅为16:9，清晰度为1\.5K/);
+  assert.deepEqual(imageNames(body.image), expectedImageNames);
+  assert.equal(body.n, undefined);
+  assert.ok(seedream55Result.immediateImageUrl);
+  await submitGatewayTaskImage({ ...seedream55, referenceImagePaths: [] }, 'gateway-key', 'http://127.0.0.1:4000');
+  assert.equal(path.posix.basename(new URL(String(body.image)).pathname), expectedImageNames[0]);
+  await submitGatewayTaskImage({ ...seedream55, size: 'auto', referenceImagePaths: [] }, 'gateway-key', 'http://127.0.0.1:4000');
+  assert.equal(body.size, '2K');
+  assert.equal(body.prompt, seedream55.prompt);
+  const previousPosts = posts;
+  await assert.rejects(submitGatewayTaskImage({ ...seedream55, referenceImagePaths: Array(10).fill(ref) }, 'gateway-key', 'http://127.0.0.1:4000'), /最多支持 10 张/);
+  assert.equal(posts, previousPosts);
 
   // Existing storyboard jobs use their explicit image-number prompt with no prefix.
   const storyboardPrompt = '图1是待编辑分镜图。图2是场景参考图。构图和机位景别严格参考图1。';

@@ -16,6 +16,9 @@ import {
   MINIMAX_H3_PRICING_VERSION, MINIMAX_H3_SECOND_PRICES, minimaxH3Resolution,
   type MiniMaxH3Pricing, type MiniMaxH3VideoUsage,
 } from './minimax-h3-pricing.ts';
+import { QINIU_IMAGE_26_MODELS } from './company-qiniu-image-models.ts';
+import { QINIU_KLING_4_MODEL, QINIU_KLING_4_PROVIDER_ID } from './company-qiniu-kling-4.ts';
+import { COMPANY_SEEDREAM_55 } from './company-seedream-image.ts';
 
 export const CORE_USAGE_PRICING_VERSION = 'core-usage-pricing-2026-09-30';
 export const PRICING_VERSION = CORE_USAGE_PRICING_VERSION;
@@ -31,7 +34,10 @@ export type CoreUsageCategory = 'image' | 'video' | 'llm_text' | 'llm_vision' | 
 export type CoreUsageModelKey =
   | 'company-image2-medium'
   | 'company-qiniuyun-gpt-image-2-medium'
+  | (typeof QINIU_IMAGE_26_MODELS)[number]['key']
+  | typeof COMPANY_SEEDREAM_55.id
   | 'company-kling-3-0'
+  | typeof QINIU_KLING_4_PROVIDER_ID
   | 'company-qiniuyun-kling-3-0'
   | 'company-seedance-fast'
   | 'company-seedance-2-5'
@@ -187,6 +193,12 @@ function cloneComponents(components: readonly CoreUsagePriceComponentV1[]): read
 
 /** 普通模型与历史快照的账单均价；H3 新任务带输出档位时使用腾讯分项价。 */
 export const BILLING_MODEL_PRICES = [
+  // 720p 无输入视频按 ¥1/秒估算（实测 3.042 秒合计约 ¥3.04）。
+  { key: QINIU_KLING_4_PROVIDER_ID, id: QINIU_KLING_4_PROVIDER_ID, model: QINIU_KLING_4_MODEL, category: 'video', micros: 5_000_000 },
+  // 七牛 2.6 实际按 token 结算；每张估算取 2K 方图样本退款后的净额（¥0.486864）。
+  ...QINIU_IMAGE_26_MODELS.map(({ id, key, model }) => ({ id, key, model, category: 'image' as const, micros: 490_000 })),
+  // 公司网关 2026-11-19 默认分组按次定价：0.01857143 × 7 CNY，四舍五入为 ¥0.13/张。
+  { key: COMPANY_SEEDREAM_55.id, id: COMPANY_SEEDREAM_55.id, model: COMPANY_SEEDREAM_55.model, category: 'image', micros: 130_000 },
   // 用户于 2026-11-10 提供并确认按 5 秒折算的账单均价。
   { key: 'company-minimax-h3', id: 'company-minimax-h3', model: 'minimax-h3', category: 'video', micros: 4_000_000 },
   { key: 'company-wan-3-0', id: 'company-wan-3-0', model: 'wan-3.0', category: 'video', micros: 6_000_000 },

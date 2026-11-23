@@ -10,7 +10,10 @@
  * 之后任何编辑都是相对基线的差异，还原就是把基线写回草稿。
  */
 
-export type VideoJobGenerationMode = 'image-to-video' | 'reference-to-video';
+import type { VideoGenerationMode } from './video-tail-frame-state.ts';
+import { QINIU_KLING_4_DEFAULT_RESOLUTION, QINIU_KLING_4_MODEL } from '../lib/company-qiniu-kling-4.ts';
+
+export type VideoJobGenerationMode = VideoGenerationMode;
 
 /** `video_jobs` 里与「这条视频怎么生成的」相关、且界面会展示/还原的字段。 */
 export interface VideoJobRowSettingsSource {
@@ -18,6 +21,7 @@ export interface VideoJobRowSettingsSource {
   providerId: string;
   model: string;
   durationSec: number;
+  resolution?: string | null;
   templateId: string | null;
   multiShot?: number | null;
   generationMode?: string | null;
@@ -30,6 +34,7 @@ export interface VideoJobSavedSettings {
   providerId: string;
   model: string;
   durationSec: number;
+  resolution?: string;
   templateId: string;
   multiShot: boolean;
   generationMode: VideoJobGenerationMode;
@@ -39,14 +44,15 @@ export interface VideoJobSavedSettings {
 
 /** 从保存的任务行读出设置。`multiShot` 在库里是 0/1/NULL（未记录=关），永远按布尔归一。 */
 export function savedSettingsFromJob(job: VideoJobRowSettingsSource): VideoJobSavedSettings {
-  const generationMode: VideoJobGenerationMode = job.generationMode === 'reference-to-video'
-    ? 'reference-to-video'
-    : 'image-to-video';
+  const generationMode: VideoJobGenerationMode =
+    job.generationMode === 'reference-to-video' || job.generationMode === 'frames-to-video'
+      ? job.generationMode : 'image-to-video';
   return {
     prompt: job.prompt ?? '',
     providerId: job.providerId ?? '',
     model: job.model ?? '',
     durationSec: job.durationSec,
+    ...(job.model === QINIU_KLING_4_MODEL ? { resolution: job.resolution ?? QINIU_KLING_4_DEFAULT_RESOLUTION } : {}),
     templateId: job.templateId ?? '',
     multiShot: Number(job.multiShot ?? 0) === 1,
     generationMode,
@@ -60,6 +66,7 @@ export interface VideoSettingsDraft {
   prompt: string;
   providerId: string;
   durationSec: number;
+  resolution?: string;
   templateId: string | null;
   multiShot: boolean;
   generationMode: VideoJobGenerationMode;
@@ -86,14 +93,12 @@ export function videoSettingsDiffer(
   if (saved.prompt.trim() !== draft.prompt.trim()) return true;
   if (saved.providerId !== draft.providerId) return true;
   if (saved.durationSec !== draft.durationSec) return true;
+  if (saved.resolution !== draft.resolution) return true;
   if (saved.templateId !== (draft.templateId ?? '')) return true;
   if (saved.multiShot !== draft.multiShot) return true;
   if (saved.generationMode !== draft.generationMode) return true;
-  if (saved.generationMode === 'image-to-video') {
-    if (saved.tailImageId !== draft.tailImageId) return true;
-  } else if (!sameIdList(saved.referenceAssetIds, draft.referenceAssetIds ?? [])) {
-    return true;
-  }
+  if (saved.generationMode !== 'reference-to-video' && saved.tailImageId !== draft.tailImageId) return true;
+  if (saved.generationMode !== 'image-to-video' && !sameIdList(saved.referenceAssetIds, draft.referenceAssetIds ?? [])) return true;
   return false;
 }
 
@@ -105,7 +110,12 @@ export function describeSavedSettings(saved: VideoJobSavedSettings): Array<{ lab
   return [
     { label: '模型', value: saved.model || '未记录' },
     { label: '秒数', value: `${saved.durationSec} 秒` },
-    { label: '首尾帧', value: saved.generationMode === 'reference-to-video' ? '全能参考（当前分镜图）' : (saved.tailImageId ? '带尾帧' : '仅首帧') },
+    ...(saved.resolution ? [{ label: '分辨率', value: saved.resolution }] : []),
+    { label: '首尾帧', value: saved.generationMode === 'frames-to-video'
+      ? `多关键帧（${saved.referenceAssetIds.length} 张中间帧）`
+      : saved.generationMode === 'reference-to-video'
+        ? (saved.referenceAssetIds.length ? `全能参考（${saved.referenceAssetIds.length} 份素材）` : '全能参考（当前分镜图）')
+        : saved.tailImageId ? '带尾帧' : '仅首帧' },
     { label: '智能分镜', value: saved.multiShot ? '开' : '关' },
   ];
 }

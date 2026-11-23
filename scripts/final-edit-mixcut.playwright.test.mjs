@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
+import { parsePackagingConfig } from '../lib/media-core/packaging-vars.ts';
 import { planVideoClipSplit } from '../lib/final-edit/clip-split.ts';
 import { alphaBoundsWidth, overlayMeasurementLimit } from '../lib/final-edit/overlay-measurement.ts';
 
@@ -96,6 +97,7 @@ function createFormalGroup() {
       relativePath: 'bgm/e2e.mp3',
       durationUs: 20_000_000,
     }],
+    packaging: parsePackagingConfig(null),
     coverCandidates: [{ coverKey: 'cover-e2e', sourceUrl: transparentPixel, kind: 'storyboard_image' }],
     jobs: [{ id: 'job-e2e', variantId: null, kind: 'prepare', status: 'succeeded', phase: 'ready', progress: 1, estimatedCost: null, costCurrency: 'CNY', errorCode: null, errorMessage: null, startedAt: '2026-07-24T00:00:00.000Z', finishedAt: '2026-07-24T00:00:10.000Z', createdAt: '2026-07-24T00:00:00.000Z' }],
   };
@@ -484,6 +486,9 @@ try {
             { ...cue, id: cue.id + '-right', text: body.rightText, startUs: body.splitUs, textSource: 'manual', timingSource: 'manual' },
           );
           savedGroup = { ...savedGroup, revision: savedGroup.revision + 1, subtitleCues };
+        } else if (body.type === 'set_subtitle_cue_text') {
+          savedGroup = { ...savedGroup, revision: savedGroup.revision + 1, subtitleCues: savedGroup.subtitleCues.map(cue =>
+            cue.id === body.cueId ? { ...cue, text: body.text, textSource: 'manual' } : cue) };
         } else if (body.type === 'delete_subtitle_cue') {
           const cueIndex = savedGroup.subtitleCues.findIndex((cue) => cue.id === body.cueId);
           assert.ok(cueIndex >= 0, 'delete command cue must exist');
@@ -778,9 +783,42 @@ try {
       window.queryLocalFonts = async () => (window.__e2eLocalFonts || []).map((family) => ({ family }));
     });
     const formalUrl = `${server.baseUrl}/projects/e2e-project?tab=final-edit`;
-    // 独立运行视频分割路径，避免被无关字体/导出流程的环境断言阻断：
-    // node scripts/final-edit-mixcut.playwright.test.mjs --video-split-only
-    if (process.argv.includes('--video-split-only')) {
+    // 覆盖旧草稿、非当前字幕的定位，以及修正后的自动复检。
+    if (process.argv.includes('--subtitle-width-only')) {
+      const pageErrors = [];
+      page.on('pageerror', error => pageErrors.push(error.message));
+      savedGroup.subtitleCues[1].text = '这是一条会超出单行安全宽度的旧字幕'.repeat(3);
+      savedGroup.script.narrationConfig.playbackRate = 2;
+      await page.goto(formalUrl, { waitUntil: 'networkidle' });
+      await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /预览调整/ }).click();
+      const locate = page.getByRole('combobox', { name: '定位超宽字幕' });
+      await locate.waitFor().catch(error => { throw new Error([...pageErrors, error.message].join('\n')); });
+      assert.equal(await locate.locator('option').first().textContent(), '1 条字幕超宽 · 定位');
+      const wideCue = page.locator('[data-cue-id="cue-b"][data-overflow="true"]');
+      await wideCue.waitFor();
+      await locate.selectOption('cue-b');
+      assert.equal(await wideCue.getAttribute('data-selected'), 'true');
+      const playhead = page.getByRole('button', { name: '拖动播放头' });
+      const zoom = Number(await page.getByRole('slider', { name: '时间轴缩放' }).inputValue());
+      await expectEventually(async () => {
+        const left = await playhead.evaluate(element => Number.parseFloat(element.style.left));
+        return Math.abs(left / zoom - (20 / 24 + 5 / 2)) <= 1 / 24;
+      }, '定位必须计入片头和口播倍速');
+      await wideCue.dblclick();
+      const edit = wideCue.getByRole('textbox');
+      const shortened = '这是改短后的字幕';
+      await edit.fill(shortened);
+      await edit.press('Enter');
+      await locate.waitFor({ state: 'detached' });
+      assert.equal(await page.locator('[data-cue-id][data-overflow]').count(), 0);
+      assert.equal(savedGroup.subtitleCues[1].text, shortened);
+      const lineWidth = page.getByText('单行宽度', { exact: true }).locator('..').getByRole('slider');
+      await lineWidth.fill('200');
+      await wideCue.waitFor();
+      await lineWidth.fill('800');
+      await locate.waitFor({ state: 'detached' });
+      console.log('单条字幕超宽提示、定位及编辑后复检通过');
+    } else if (process.argv.includes('--video-split-only')) {
       savedGroup.variants[0].timeline.clips[1].sourceInFrame = 24;
       savedGroup.variants[0].timeline.clips[1].sourceOutFrame = 144;
       const originalGroup = structuredClone(savedGroup);
@@ -1779,8 +1817,7 @@ try {
     assert.equal(c2OldVideoResponse.ok, true, '旧导出 URL 必须仍然可读取');
     assert.equal(c2OldVideoResponse.size > 0, true, '旧导出 URL 响应不得为空');
 
-    // 回归：匹配诊断必须在第 3 步可见；真实缺口显示红色 blocking，语义/短素材
-    // 兜底显示黄色 warning，不再只等到第 4 步导出才第一次露面。
+    // 第 3 步显示诊断数量，明细在弹窗内按严重程度展示。
     savedGroup = { ...savedGroup, variants: savedGroup.variants.map((item) => item.id === savedGroup.variants[0].id ? { ...item, issues: [
       { code: 'timeline_gap', severity: 'blocking', message: '正文 0–536 帧缺少画面' },
       { code: 'material_gap', severity: 'blocking', message: '句段 segment-1 素材不足，保留时间线缺口', targetId: 'segment-1' },
@@ -1789,9 +1826,11 @@ try {
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /预览调整/ }).click();
     await page.locator('[data-track="video"]').waitFor();
-    await page.getByText('正文 0–536 帧缺少画面', { exact: true }).waitFor();
-    await page.getByText('句段 segment-1 素材不足，保留时间线缺口', { exact: true }).waitFor();
-    await page.getByText('语义评分不可用，本次已使用确定性关键词降级匹配', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '2 项需处理 · 1 条提醒' }).click();
+    const previewDiagnostics = page.getByRole('dialog', { name: '预览诊断' });
+    await previewDiagnostics.getByText('正文 0–536 帧缺少画面', { exact: true }).waitFor();
+    await previewDiagnostics.getByText('句段 segment-1 素材不足，保留时间线缺口', { exact: true }).waitFor();
+    await previewDiagnostics.getByText('语义评分不可用，本次已使用确定性关键词降级匹配', { exact: true }).waitFor();
 
     // prepare job 已 succeeded、但 group 尚未到 ready/partial 时，不得开放一个会进入空白页的
     // 「去预览调整」按钮；完整草稿到达前明确保持加载态。
@@ -1850,7 +1889,9 @@ try {
     assert.equal(await page.getByRole('button', { name: '按实际时长继续' }).count(), 0, '不应再显示人工继续按钮');
     await page.getByRole('button', { name: '去预览调整' }).click();
     const overrideWarning = '实际总时长 25.60 秒与目标 15.00 秒不一致，已自动按实际时长继续';
-    await page.getByText(overrideWarning, { exact: true }).waitFor();
+    await page.getByRole('button', { name: /\d+ 条提醒/ }).click();
+    await previewDiagnostics.getByText(overrideWarning, { exact: true }).waitFor();
+    await previewDiagnostics.getByRole('button', { name: '关闭' }).click();
     await page.getByRole('button', { name: '下一步：导出' }).click();
     await page.getByRole('heading', { name: '导出并写回项目' }).waitFor();
     await page.getByText(overrideWarning, { exact: true }).waitFor();

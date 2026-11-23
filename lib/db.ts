@@ -39,13 +39,15 @@ export function getDb(): Database.Database {
       console.error('[usage-schema] disabled; usage accounting is unavailable');
     }
     initFinalEditSchema(db);
+    ensureCompanySeedream55Provider(db);
+    ensureCompanyQiniuImage26Providers(db);
     seedAllVideo();
     seedBundledMotionPresets(db);
   }
   return db;
 }
 
-import { seedAllVideo } from './seed.ts';
+import { ensureCompanyQiniuImage26Providers, ensureCompanySeedream55Provider, seedAllVideo } from './seed.ts';
 
 function initTables(db: Database.Database) {
   db.exec(`

@@ -3,6 +3,9 @@ import { resolveCoreUsagePlan } from './usage-pricing.ts';
 import { getDb } from './db.ts';
 import { isPlaceholderValue } from './video-auth.ts';
 import { defaultScriptProviderConfigs } from './script-providers/config.ts';
+import { QINIU_IMAGE_26_MODELS, QINIU_IMAGE_MEDIUM_MODEL, QINIU_IMAGE_MEDIUM_PROVIDER_ID } from './company-qiniu-image-models.ts';
+import { COMPANY_SEEDREAM_50_PRO_MODEL, COMPANY_SEEDREAM_55 } from './company-seedream-image.ts';
+import { QINIU_KLING_4_MODEL, QINIU_KLING_4_PROVIDER_ID, QINIU_KLING_4_PROVIDER_NAME } from './company-qiniu-kling-4.ts';
 import {
   UNIFIED_IMAGE_ANCHOR_ID,
   UNIFIED_IMAGE_DISPLAY_NAME,
@@ -23,6 +26,8 @@ export function seedProviders() {
   const db = getDb();
   cleanPlaceholderKeys(db);
   ensureCompanyImageProviders(db);
+  ensureCompanySeedream55Provider(db);
+  ensureCompanyQiniuImage26Providers(db);
   ensureUnifiedImageAnchor(db);
 }
 
@@ -54,15 +59,15 @@ function ensureCompanyImageProviders(db: ReturnType<typeof getDb>) {
       defaultCostPerImage: 1.58,
     },
     {
-      id: 'company-gateway-qiniuyun-gpt-image-2-medium',
+      id: QINIU_IMAGE_MEDIUM_PROVIDER_ID,
       name: '公司网关 七牛云 GPT Image 2 Medium',
-      model: 'qiniuyun/gpt-image-2-medium',
+      model: QINIU_IMAGE_MEDIUM_MODEL,
       defaultCostPerImage: 0.25,
     },
     {
       id: 'company-gateway-seedream-5-0-pro',
       name: '公司 Seedream 5.0 Pro',
-      model: 'doubao-seedream-5-0-pro-image',
+      model: COMPANY_SEEDREAM_50_PRO_MODEL,
       defaultCostPerImage: 0.61,
     },
     {
@@ -100,6 +105,49 @@ function ensureCompanyImageProviders(db: ReturnType<typeof getDb>) {
     );
     const plan = resolveCoreUsagePlan({ providerTable: 'providers', providerId: provider.id, providerName: provider.name, providerType: 'gateway-task-image', configuredModel: provider.model, requestModel: provider.model });
     if (plan) db.prepare(`UPDATE providers SET defaultCostPerImage = ? WHERE id = ? AND type = 'gateway-task-image' AND model = ?`).run(plan.unitPriceMicros / 1_000_000, provider.id, provider.model);
+  }
+}
+
+export function ensureCompanySeedream55Provider(db: ReturnType<typeof getDb>) {
+  const { id, name, model } = COMPANY_SEEDREAM_55;
+  const type = 'gateway-task-image';
+  const plan = resolveCoreUsagePlan({
+    providerTable: 'providers', providerId: id, providerName: name,
+    providerType: type, configuredModel: model, requestModel: model,
+  });
+  if (!plan) return;
+  const cost = plan.unitPriceMicros / 1_000_000;
+  db.prepare(`
+    INSERT INTO providers
+      (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
+    SELECT ?, ?, baseUrl, apiKeyEnv, apiKey, ?, type, enabled, ?
+    FROM providers
+    WHERE id = 'company-gateway-seedream-5-0-pro' AND model = ? AND type = ?
+      AND length(trim(baseUrl)) > 0 AND length(trim(apiKey)) > 0
+    ON CONFLICT (id) DO NOTHING
+  `).run(id, name, model, cost, COMPANY_SEEDREAM_50_PRO_MODEL, type);
+  db.prepare(`UPDATE providers SET defaultCostPerImage = ?
+    WHERE id = ? AND type = ? AND model = ? AND defaultCostPerImage IS NOT ?`).run(cost, id, type, model, cost);
+}
+
+export function ensureCompanyQiniuImage26Providers(db: ReturnType<typeof getDb>) {
+  // 受控名额按地址＋凭据映射。继承 Medium 的现有连接以加入同一个七牛池，
+  // 包括服务器上已有的专用端口和七牛账号标识。
+  const insert = db.prepare(`
+    INSERT INTO providers
+      (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
+    SELECT ?, ?, baseUrl, apiKeyEnv, apiKey, ?, type, enabled, ?
+    FROM providers
+    WHERE id = ? AND model = ? AND type = 'gateway-task-image'
+      AND length(trim(baseUrl)) > 0 AND length(trim(apiKey)) > 0
+    ON CONFLICT (id) DO NOTHING
+  `);
+  for (const { id, name, model } of QINIU_IMAGE_26_MODELS) {
+    const plan = resolveCoreUsagePlan({
+      providerTable: 'providers', providerId: id, providerName: name,
+      providerType: 'gateway-task-image', configuredModel: model, requestModel: model,
+    });
+    if (plan) insert.run(id, name, model, plan.unitPriceMicros / 1_000_000, QINIU_IMAGE_MEDIUM_PROVIDER_ID, QINIU_IMAGE_MEDIUM_MODEL);
   }
 }
 
@@ -255,6 +303,20 @@ function ensureCompanyVideoProviders(db: ReturnType<typeof getDb>) {
   for (const p of companyProviders) {
     insert.run(p.id, p.name, p.modelEnv, p.defaultModel, COMPANY_LITELLM_BASE_URL, COMPANY_LITELLM_PLACEHOLDER_KEY, p.id);
   }
+  ensureCompanyQiniuKling4Provider(db);
+}
+
+export function ensureCompanyQiniuKling4Provider(db: ReturnType<typeof getDb>) {
+  // 七牛可灵的现有地址与账号标识映射到同一名额池。
+  db.prepare(`
+    INSERT INTO video_providers
+      (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec, baseUrl, apiKey, accessKey, secretKey)
+    SELECT ?, ?, type, baseUrlEnv, apiKeyEnv, 'COMPANY_QINIUYUN_KLING_4_0_VIDEO_MODEL', ?, enabled, 5, baseUrl, apiKey, '', ''
+    FROM video_providers
+    WHERE id = 'company-qiniuyun-kling-3-0' AND type = 'openai-video' AND defaultModel = 'qiniuyun/kling-3.0'
+      AND length(trim(baseUrl)) > 0 AND length(trim(apiKey)) > 0
+    ON CONFLICT (id) DO NOTHING
+  `).run(QINIU_KLING_4_PROVIDER_ID, QINIU_KLING_4_PROVIDER_NAME, QINIU_KLING_4_MODEL);
 }
 
 export function seedScriptProviders() {

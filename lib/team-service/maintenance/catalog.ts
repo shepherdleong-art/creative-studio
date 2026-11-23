@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { verifyTeamBackup, TEAM_BACKUP_TYPES, type TeamBackupManifest, type TeamBackupSuccess } from './backup.ts';
+import { createTeamBackupVerifier, TEAM_BACKUP_TYPES, type TeamBackupManifest, type TeamBackupSuccess } from './backup.ts';
 import { assertPathInside, safeMaintenanceId } from './paths.ts';
 
 export interface TeamBackupListItem {
@@ -10,6 +10,7 @@ export interface TeamBackupListItem {
   type: TeamBackupManifest['type'];
   createdAt: string;
   totalBytes: number;
+  newMediaBytes?: number;
   verification: 'verified' | 'invalid' | 'pending';
   verifiedAt: string | null;
   restorable: boolean;
@@ -28,6 +29,7 @@ export function backupDirectory(backupRoot: string, type: TeamBackupManifest['ty
 
 export async function listTeamBackups(backupRoot: string, deploymentId: string, currentRelease?: { releaseId: string; packageSha256: string }): Promise<{ backups: TeamBackupListItem[] }> {
   const backups: TeamBackupListItem[] = [];
+  const verify = createTeamBackupVerifier();
   for (const type of TEAM_BACKUP_TYPES) {
     const typeRoot = path.join(backupRoot, type);
     if (!fs.existsSync(typeRoot)) continue;
@@ -36,7 +38,7 @@ export async function listTeamBackups(backupRoot: string, deploymentId: string, 
       try { safeMaintenanceId(entry.name, 'backupId'); } catch { continue; }
       const directory = backupDirectory(backupRoot, type, entry.name);
       try {
-        const verification = await verifyTeamBackup(directory);
+        const verification = await verify(directory);
         if (!verification.verified) {
           backups.push({ id: entry.name, type, createdAt: '', totalBytes: 0, verification: 'invalid', verifiedAt: null, restorable: false,
             compatible: false, releaseId: null, scope: '整套项目、资源、任务、文件与执行引用', newerDataPolicy: '不会自动合并；保留在还原前备份及受保护旧数据根' });
@@ -58,6 +60,7 @@ export async function listTeamBackups(backupRoot: string, deploymentId: string, 
           && manifest.release.packageSha256 === currentRelease.packageSha256);
         backups.push({
           id: entry.name, type, createdAt: manifest.createdAt, totalBytes: success.totalBytes,
+          ...(success.newMediaBytes !== undefined ? { newMediaBytes: success.newMediaBytes } : {}),
           verification: 'verified', verifiedAt: success.verifiedAt, restorable: compatible,
           compatible, releaseId: manifest.release.releaseId,
           scope: '整套项目、资源、任务、文件与执行引用', newerDataPolicy: '不会自动合并；保留在还原前备份及受保护旧数据根',

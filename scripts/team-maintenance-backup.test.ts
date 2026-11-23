@@ -11,6 +11,7 @@ const backupRoot = path.join(fixtureRoot, 'backups');
 fs.mkdirSync(path.join(dataRoot, 'data'), { recursive: true });
 fs.mkdirSync(storageRoot, { recursive: true });
 const db = new Database(path.join(dataRoot, 'data', 'workbench.db'));
+db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 db.exec(`
   CREATE TABLE team_users (id TEXT PRIMARY KEY, role TEXT NOT NULL);
@@ -69,7 +70,7 @@ db.prepare(`INSERT INTO team_resource_scopes (
 
 const { registerReadyTeamFile, teamFileResponse } = await import('../lib/team-service/files/index.ts');
 const { acquireLifecycleBarrier, releaseLifecycleBarrier } = await import('../lib/team-service/lifecycle/index.ts');
-const { createTeamBackup, verifyTeamBackup } = await import('../lib/team-service/maintenance/backup.ts');
+const { createTeamBackup, TeamBackupSnapshotTimeoutError, verifyTeamBackup } = await import('../lib/team-service/maintenance/backup.ts');
 const admin = { userId: 'admin', role: 'admin' as const };
 
 function media(name: string, contents: string): string {
@@ -162,6 +163,55 @@ try {
   assert.equal(deferredCleanup.manifest.files.find((file) => file.fileId === fileA.id)?.state, 'purge_pending');
   assert.ok(deferredCleanup.manifest.pin?.id, '延期清理文件也必须在解冻前完成 pin');
   assert.equal((await verifyTeamBackup(deferredCleanup.directory)).verified, true);
+
+  db.exec(`
+    CREATE TABLE concurrent_backup_revision (revision INTEGER);
+    INSERT INTO concurrent_backup_revision VALUES (0);
+    CREATE TABLE concurrent_backup_payload (data BLOB);
+    WITH RECURSIVE pages(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM pages WHERE n < 250)
+    INSERT INTO concurrent_backup_payload SELECT zeroblob(4000) FROM pages;
+  `);
+  const writer = new Database(db.name, { fileMustExist: true });
+  const commit = writer.prepare('UPDATE concurrent_backup_revision SET revision = revision + 1');
+  const originalBackup = Database.prototype.backup;
+  let committed = 0;
+  const snapshotInput = {
+    db, principal: admin, dataRoot, storageRoot, backupRoot, deploymentId: 'deployment-b01', type: 'manual' as const,
+    release: { releaseId: 'release-1', packageSha256: 'a'.repeat(64) }, config: { filePath: configPath },
+  };
+  try {
+    Database.prototype.backup = function (destination, options) {
+      return originalBackup.call(this, destination, {
+        ...options,
+        progress(progress) {
+          commit.run();
+          committed += 1;
+          assert.ok(committed < 50, '写入一直发生时仍必须在固定视图完成快照');
+          return options?.progress?.(progress) ?? 100;
+        },
+      });
+    };
+    const concurrent = await createTeamBackup({ ...snapshotInput, backupId: 'concurrent-writes' });
+    assert.ok(committed >= 3, '同一数据库必须在拷贝过程中通过第二连接真实提交');
+    assert.equal(db.prepare('SELECT revision FROM concurrent_backup_revision').pluck().get(), committed);
+    const snapshot = new Database(path.join(concurrent.directory, 'data', 'workbench.db'), { readonly: true });
+    try {
+      assert.equal(snapshot.prepare('SELECT revision FROM concurrent_backup_revision').pluck().get(), 0);
+      assert.equal(snapshot.prepare('SELECT COUNT(*) FROM concurrent_backup_payload').pluck().get(), 250);
+    } finally { snapshot.close(); }
+    assert.equal((await verifyTeamBackup(concurrent.directory)).verified, true);
+    await assert.rejects(() => createTeamBackup({ ...snapshotInput, backupId: 'snapshot-timeout', snapshotTimeoutMs: 0 }), TeamBackupSnapshotTimeoutError);
+    assert.equal(db.prepare('SELECT COUNT(*) FROM team_lifecycle_barriers WHERE releasedAt IS NULL').pluck().get(), 0);
+    assert.equal(fs.existsSync(path.join(backupRoot, 'manual', 'snapshot-timeout')), false);
+    assert.equal(fs.existsSync(path.join(backupRoot, 'manual', '.snapshot-timeout.staging')), false);
+    const receipts = fs.readFileSync(path.join(backupRoot, 'maintenance-receipts', 'deployment-b01.jsonl'), 'utf8')
+      .trim().split('\n').map((line) => JSON.parse(line));
+    assert.ok(receipts.some((receipt) => receipt.operationId === 'snapshot-timeout'
+      && receipt.phase === 'failed' && receipt.code === 'backup_snapshot_timeout'));
+  } finally {
+    Database.prototype.backup = originalBackup;
+    writer.close();
+  }
 
   const { createMaintenancePreviewReader } = await import('../lib/team-service/maintenance/preview.ts');
   const preview = createMaintenancePreviewReader({ cacheMs: 0 });

@@ -11,6 +11,10 @@ import { countVideoJobsForShot, planVideoJobDisplayName } from './video-output-f
 import { validateVideoReferenceRequest, videoReferenceCapability, type VideoReferenceKind } from './video-reference-contract.ts';
 import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
+import {
+  QINIU_KLING_4_DEFAULT_RESOLUTION, QINIU_KLING_4_RESOLUTIONS,
+  supportsQiniuKling4Modes, validateQiniuKling4MiddleFrames,
+} from './company-qiniu-kling-4.ts';
 import { requireAccessContext } from './media-core/access-context.ts';
 import {
   UNIFIED_KLING3_MODEL_KEY,
@@ -26,7 +30,7 @@ import {
 } from './media-core/unified-media/video-requests.ts';
 import { unifiedKlingProviderAvailability } from './media-core/unified-media/video-execution.ts';
 
-export type VideoJobGenerationMode = 'image-to-video' | 'reference-to-video';
+export type VideoJobGenerationMode = 'image-to-video' | 'reference-to-video' | 'frames-to-video';
 
 export interface VideoJobCreationItem {
   prompt: string;
@@ -50,8 +54,8 @@ export type VideoJobCreationItemParse =
 export function parseVideoJobCreationItem(value: unknown): VideoJobCreationItemParse {
   const body = (value ?? {}) as Record<string, unknown>;
   const generationMode = body.generationMode ?? 'image-to-video';
-  if (generationMode !== 'image-to-video' && generationMode !== 'reference-to-video') {
-    return { ok: false, error: 'generationMode 必须是 image-to-video 或 reference-to-video' };
+  if (generationMode !== 'image-to-video' && generationMode !== 'reference-to-video' && generationMode !== 'frames-to-video') {
+    return { ok: false, error: '不支持该视频生成模式' };
   }
   const rawReferenceIds = body.referenceAssetIds ?? [];
   if (!Array.isArray(rawReferenceIds) || rawReferenceIds.some((id) => typeof id !== 'string' || !id.trim())) {
@@ -273,11 +277,22 @@ export async function createVideoJobsForShot(input: {
         frozen,
       };
     }
-    if (item.generationMode === 'image-to-video') {
-      if (item.referenceAssetIds.length > 0) return { error: itemError(index, '首尾帧模式不得携带全能参考素材') };
+    if (item.generationMode !== 'reference-to-video') {
+      const isKling4 = supportsQiniuKling4Modes(provider.type, provider.model);
+      if (item.generationMode === 'image-to-video' && item.referenceAssetIds.length > 0) {
+        return { error: itemError(index, '首尾帧模式不得携带全能参考素材') };
+      }
+      if (item.generationMode === 'frames-to-video' && !isKling4) {
+        return { error: itemError(index, '所选模型不支持多关键帧') };
+      }
+      const resolution = isKling4 ? item.resolution ?? QINIU_KLING_4_DEFAULT_RESOLUTION
+        : item.filmGenerationStage ? item.resolution : null;
+      if (isKling4 && resolution && !QINIU_KLING_4_RESOLUTIONS.some(tier => tier === resolution)) {
+        return { error: itemError(index, `输出清晰度 ${resolution} 不受支持`) };
+      }
       return { item, provider,
         aspectRatio: item.filmGenerationStage ? item.aspectRatio : null,
-        resolution: item.filmGenerationStage ? item.resolution : null,
+        resolution,
         frozen: null };
     }
     if (item.tailImageId) return { error: itemError(index, '全能参考模式不能携带尾帧图') };
@@ -313,7 +328,7 @@ export async function createVideoJobsForShot(input: {
     for (const [index, entry] of prepared.entries()) {
       if ('error' in entry) return { ok: false as const, error: entry.error! };
       const { item, provider, aspectRatio, resolution } = entry;
-      if (item.generationMode === 'image-to-video') {
+      if (item.generationMode !== 'reference-to-video') {
         const tail = validateVideoTailFrameAsset({
           db,
           tailImageId: item.tailImageId,
@@ -322,11 +337,13 @@ export async function createVideoJobsForShot(input: {
           model: provider.model,
         });
         if (!tail.ok) return { ok: false as const, error: tail.error };
-        referencesByItem.push([]);
-        continue;
+        if (item.generationMode === 'image-to-video') {
+          referencesByItem.push([]);
+          continue;
+        }
       }
       if (new Set(item.referenceAssetIds).size !== item.referenceAssetIds.length) {
-        return { ok: false as const, error: itemError(index, '全能参考素材不能重复') };
+        return { ok: false as const, error: itemError(index, '素材不能重复') };
       }
       const references = item.referenceAssetIds.map((assetId) => {
         const asset = db.prepare(`
@@ -336,6 +353,12 @@ export async function createVideoJobsForShot(input: {
         if (!asset) throw new VideoReferenceCreationError(itemError(index, `参考素材 ${assetId} 不存在或不属于当前项目`));
         return asset;
       });
+      if (item.generationMode === 'frames-to-video') {
+        const problem = validateQiniuKling4MiddleFrames(references);
+        if (problem) return { ok: false as const, error: itemError(index, problem) };
+        referencesByItem.push(references);
+        continue;
+      }
       const effectiveReferences = references.length ? references : [sourceReference!];
       const problems = validateVideoReferenceRequest({
         providerType: provider.type,

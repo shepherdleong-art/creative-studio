@@ -8,6 +8,7 @@ export interface VideoModelCapabilities {
   tailFrame: TailFrameCapability;
   multiShot: { supported: boolean; defaultEnabled: boolean };
   reference: VideoReferenceCapability;
+  keyframes?: boolean;
 }
 
 export interface VideoGenerationProvider {
@@ -24,8 +25,9 @@ export interface VideoGenerationProvider {
 interface VideoGenerationDraft {
   providerId: string;
   durationSec?: number;
+  resolution?: string;
   multiShot?: boolean;
-  generationMode?: 'image-to-video' | 'reference-to-video';
+  generationMode?: 'image-to-video' | 'reference-to-video' | 'frames-to-video';
   tailImageId?: string | null;
 }
 
@@ -71,8 +73,12 @@ export function resolveVideoGenerationSelection(
     && ['minimax-h3', 'wan-3.0'].includes(provider.defaultModel);
   // This workbench uses the current shot as the reference. A tail image switches
   // H3/Wan to first/last-frame generation, including drafts saved by older UIs.
-  const generationMode = usesReferenceDefault && capabilities.reference.supported && !draft.tailImageId
+  const defaultMode = usesReferenceDefault && capabilities.reference.supported && !draft.tailImageId
     ? 'reference-to-video' as const : 'image-to-video' as const;
+  const generationMode = capabilities.keyframes ? draft.generationMode ?? 'image-to-video' : defaultMode;
+  const resolution = capabilities.keyframes && capabilities.reference.supported
+    ? capabilities.reference.resolutions.find(tier => tier === draft.resolution) ?? capabilities.reference.defaultResolution
+    : undefined;
   return {
     providerId,
     generationMode,
@@ -80,6 +86,7 @@ export function resolveVideoGenerationSelection(
     durationSec,
     requestOptions: {
       durationSec,
+      ...(resolution ? { resolution } : {}),
       ...(capabilities.multiShot.supported ? { multiShot } : {}),
     },
   };

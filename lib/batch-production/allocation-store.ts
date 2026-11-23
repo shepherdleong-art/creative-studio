@@ -491,10 +491,13 @@ function persistResult(
   db: Database.Database,
   batchVersionId: string,
   result: AllocationResult,
-  now?: () => Date,
-  onlyPlanId?: string,
-  writeOutputVersions = true,
+  options: {
+    now?: () => Date;
+    onlyPlanId?: string;
+    writeOutputVersions?: boolean;
+  },
 ): PersistedAllocationRun {
+  const { now, onlyPlanId, writeOutputVersions = true } = options;
   const createdAt = nowIso(now);
   const runId = randomUUID();
   db.prepare(`
@@ -521,25 +524,24 @@ function persistResult(
     `).get(output.planId) as { maxVersion: number | null };
     const versionNumber = (existing.maxVersion ?? 0) + 1;
     const id = randomUUID();
+    const scope = db.prepare(`SELECT b.projectId FROM batch_production_versions v
+      JOIN batch_productions b ON b.id=v.batchId WHERE v.id=?`).get(batchVersionId) as { projectId: string };
+    const view = { planId: output.planId, coverTitle: null, coverTitleOverride: false,
+      subtitleCues: output.arrangement.subtitle.cues, narration: output.arrangement.narration,
+      visualDurationUs: Math.max(0, ...output.arrangement.clips.map(clip => clip.timelineEndUs)) };
+    const previous = plan.previousArrangementJson ? asRecord(parseJson(plan.previousArrangementJson)).packaging : undefined;
+    const packaging = initialBatchPackagingConfig(db, scope.projectId, view, previous);
     db.prepare(`
       INSERT INTO batch_output_versions
         (id, planId, versionNumber, arrangementJson, createdAt, allocationRunId)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(id, output.planId, versionNumber, JSON.stringify(output.arrangement), createdAt, runId);
+    `).run(id, output.planId, versionNumber, JSON.stringify({ ...output.arrangement, packaging }), createdAt, runId);
     access.registerInheritedScope({
       resourceType: 'batch_output_version', resourceId: id,
       parent: { resourceType: 'batch_plan', resourceId: output.planId },
     });
     // 这里只更新“当前候选”指针;不接触 currentArtifactId,旧正式产物保持可见。
     db.prepare(`UPDATE batch_output_plans SET currentVersionId = ? WHERE id = ? AND batchVersionId = ?`).run(id, output.planId, batchVersionId);
-    const scope = db.prepare(`SELECT b.id AS batchId, b.projectId FROM batch_production_versions v
-      JOIN batch_productions b ON b.id=v.batchId WHERE v.id=?`).get(batchVersionId) as { batchId: string; projectId: string };
-    const view = { planId: output.planId, coverTitle: null, coverTitleOverride: false,
-      subtitleCues: output.arrangement.subtitle.cues, narration: output.arrangement.narration,
-      visualDurationUs: Math.max(0, ...output.arrangement.clips.map(clip => clip.timelineEndUs)) };
-    const previous = plan.previousArrangementJson ? asRecord(parseJson(plan.previousArrangementJson)).packaging : undefined;
-    const packaging = initialBatchPackagingConfig(db, scope.projectId, view, previous);
-    db.prepare(`UPDATE batch_output_versions SET arrangementJson=? WHERE id=?`).run(JSON.stringify({ ...output.arrangement, packaging }), id);
     outputVersionIds[output.planId] = id;
   }
   activateAllocationRun(db, batchVersionId, runId);
@@ -579,7 +581,7 @@ export function persistBatchAllocation(
       activateAllocationRun(db, batchVersionId, existing.runId);
       return existing;
     }
-    return persistResult(db, batchVersionId, result, options.now);
+    return persistResult(db, batchVersionId, result, { now: options.now });
   })();
 }
 
@@ -601,6 +603,7 @@ export function persistOutputReallocation(
   reason = 'manual',
   options: AllocationStoreOptions = {},
 ): PersistedAllocationRun {
+  const persistOptions = { now: options.now, onlyPlanId: targetPlanId };
   return db.transaction(() => {
     const { input } = buildFrozenInput(db, projectId, batchVersionId, options);
     const currentRunRow = db.prepare(`
@@ -640,7 +643,7 @@ export function persistOutputReallocation(
     const currentArrangement = currentArrangementRow?.arrangementJson ? parseJson(currentArrangementRow.arrangementJson) : null;
     const targetOutput = result.outputs.find((output) => output.planId === targetPlanId);
     if (!targetOutput || targetOutput.status !== 'available') {
-      return persistResult(db, batchVersionId, result, options.now, targetPlanId);
+      return persistResult(db, batchVersionId, result, persistOptions);
     }
     if (currentArrangement && canonicalJson(currentArrangement) === canonicalJson(targetOutput.arrangement)) {
       const noBetterOutput: AllocationOutput = {
@@ -657,9 +660,9 @@ export function persistOutputReallocation(
         outputs: result.outputs.map((output) => output.planId === targetPlanId ? noBetterOutput : output),
       };
       noBetterResult.plans = noBetterResult.outputs;
-      return persistResult(db, batchVersionId, noBetterResult, options.now, targetPlanId, false);
+      return persistResult(db, batchVersionId, noBetterResult, { ...persistOptions, writeOutputVersions: false });
     }
-    return persistResult(db, batchVersionId, result, options.now, targetPlanId);
+    return persistResult(db, batchVersionId, result, persistOptions);
   })();
 }
 

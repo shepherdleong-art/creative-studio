@@ -6,15 +6,17 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { PackagingStickerInstance } from '../lib/media-core/packaging-stickers.ts';
 
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-stickers-workspace-'));
+process.env.CREATIVE_STUDIO_DATA_ROOT = root;
 const { createFinalEditWorkspace, FinalEditError } = await import('../lib/final-edit/workspace.ts');
 const { initFinalEditSchema } = await import('../lib/final-edit/schema.ts');
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-stickers-workspace-'));
+const { packagingAutoLayoutInputHash } = await import('../lib/media-core/packaging-auto-layout-service.ts');
 const storageRoot = path.join(root, 'storage');
 fs.mkdirSync(path.join(storageRoot, 'videos'), { recursive: true });
 const db = new Database(':memory:');
 db.pragma('foreign_keys = ON');
 db.exec(`
-  CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL, exportDirName TEXT NOT NULL DEFAULT '', finalEditAutoUseLimit INTEGER DEFAULT 2);
+  CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productName TEXT, model TEXT NOT NULL DEFAULT '', productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL, exportDirName TEXT NOT NULL DEFAULT '', finalEditAutoUseLimit INTEGER DEFAULT 2, sellingPointsJson TEXT);
   CREATE TABLE shot_sets (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL);
   CREATE TABLE shots (id TEXT PRIMARY KEY, shotSetId TEXT NOT NULL, indexNum INTEGER NOT NULL, sourceImageId TEXT NOT NULL, latestGeneratedImageId TEXT);
   CREATE TABLE image_assets (id TEXT PRIMARY KEY, projectId TEXT, filename TEXT NOT NULL, path TEXT NOT NULL, mimeType TEXT NOT NULL DEFAULT 'image/png');
@@ -22,7 +24,7 @@ db.exec(`
   CREATE TABLE video_jobs (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT, shotId TEXT, sourceImageId TEXT, templateId TEXT, status TEXT NOT NULL, localVideoPath TEXT, filename TEXT, displayName TEXT, durationSec INTEGER, createdAt TEXT, prompt TEXT NOT NULL DEFAULT '');
 `);
 initFinalEditSchema(db);
-db.prepare(`INSERT INTO projects (id, name, productCode, createdAt) VALUES ('p1', '贴纸测试', 'ST-1', '2026-10-27 10:00:00')`).run();
+db.prepare(`INSERT INTO projects (id, name, productCode, createdAt, sellingPointsJson) VALUES ('p1', '贴纸测试', 'ST-1', '2026-10-27 10:00:00', ?)`).run(JSON.stringify([{ title: '第一段' }]));
 db.prepare(`INSERT INTO shot_sets (id, projectId, name) VALUES ('set-a', 'p1', '场景')`).run();
 const imagePath = path.join(storageRoot, 's1.png');
 fs.writeFileSync(imagePath, 'image');
@@ -43,6 +45,11 @@ const workspace = createFinalEditWorkspace({
   db,
   storageRoot,
   runJobsInline: true,
+  resolvePackagingLayout: async (input) => ({
+    schemaVersion: 1, status: 'resolved', runtimeBundleVersion: 2, inputHash: packagingAutoLayoutInputHash(input),
+    geometryManifestHash: 'a'.repeat(64), outputWidth: input.outputWidth, outputHeight: input.outputHeight,
+    elements: {}, validation: { frameCount: 1, digest: 'fixture' },
+  }),
   probeVideo: async () => ({ durationUs: 12_000_000, width: 720, height: 960, fps: 24 }),
   analyzeVideo: async () => ({
     summary: '测试素材', sellingPoints: [], semanticTags: [],
@@ -78,6 +85,14 @@ try {
   assert.equal(job.status, 'succeeded');
   const group = workspace.load(job.groupId);
   const variant = group.variants[0];
+  assert.equal(group.packaging.stickers?.length, 6, '第二步生成成功时应已保存六张基础贴纸');
+  assert.equal(group.packaging.layoutResolution?.status, 'resolved', '贴纸与已验证布局一同落库');
+  assert.deepEqual(group.packaging.pointCues?.map((cue) => cue.text), ['第一段'], '自动布置贴纸时应同时保存卖点');
+  assert.ok(group.packaging.stickers?.every((item) => item.origin.kind === 'auto'
+    && item.startFrame >= variant.timeline.introFrames
+    && item.endFrame <= variant.timeline.introFrames + variant.timeline.bodyFrames));
+  await workspace.resumePrepareJob(job.id);
+  assert.deepEqual(workspace.load(job.groupId).packaging.stickers, group.packaging.stickers, '重复恢复不得重生成贴纸');
   const withStickers = workspace.apply({
     scope: 'group', groupId: group.id, expectedRevision: group.revision,
     type: 'set_packaging_config', variantId: variant.id,
@@ -91,7 +106,7 @@ try {
     type: 'set_packaging_config', variantId: variant.id,
     config: { enabled: false, template: 'overlay-poster', varsOverrides: {}, stickers: [], stickerDefaults: { animation: 'none' } },
   }).view as typeof withStickers;
-  assert.deepEqual(cleared.packaging.stickers ?? [], []);
+  assert.deepEqual(cleared.packaging.stickers, []);
 
   const restored = workspace.apply({
     scope: 'group', groupId: cleared.id, expectedRevision: cleared.revision,
@@ -162,6 +177,14 @@ try {
   }));
   assert.deepEqual(workspace.load(stale.id).packaging, beforeFlagged.packaging, 'Invalid derived writes must leave user content unchanged');
   assert.equal((db.prepare("SELECT count(*) AS n FROM final_edit_revisions WHERE scopeKind='group' AND scopeId=?").get(stale.id) as { n: number }).n, historyBeforeFlagged);
+  workspace.apply({
+    scope: 'group', groupId: beforeFlagged.id, expectedRevision: beforeFlagged.revision,
+    type: 'set_packaging_config', variantId: variant.id,
+    config: { enabled: false, template: 'overlay-poster', varsOverrides: {}, pointCues: [] },
+  });
+  const clearedPoints = workspace.load(beforeFlagged.id).packaging;
+  assert.deepEqual(clearedPoints.pointCues, [], '清空卖点需要保留显式空数组');
+  assert.equal(clearedPoints.pointCuesEdited, true);
   console.log('贴纸 workspace 测试通过：持久化、清空、独立历史恢复和正文边界。');
 } finally {
   db.close();

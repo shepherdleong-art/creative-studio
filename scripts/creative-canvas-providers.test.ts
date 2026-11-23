@@ -11,6 +11,8 @@ import sharp from 'sharp';
 import { ensureCreativeCanvasSchemaReady } from '../lib/creative-canvas/schema.ts';
 import { clearCanvasCapabilities, registerCanvasCapability } from '../lib/creative-canvas/capabilities.ts';
 import { COMPANY_CANVAS_CAPABILITIES, COMPANY_CANVAS_QINIUYUN_KLING_CAPABILITY } from '../lib/creative-canvas/adapters/company-capabilities.ts';
+import { configuredCanvasVideos } from '../lib/creative-canvas/adapters/configured-videos.ts';
+import { QINIU_KLING_4_MODEL, QINIU_KLING_4_PROVIDER_ID } from '../lib/company-qiniu-kling-4.ts';
 import { createCanvasExecutorAdapter } from '../lib/creative-canvas/adapters/index.ts';
 import { registerExternalCanvasCapabilities } from '../lib/creative-canvas/adapters/external-capabilities.ts';
 import { ensureCanvasCapabilitiesRegistered } from '../lib/creative-canvas/capabilities-bootstrap.ts';
@@ -127,7 +129,8 @@ const server = http.createServer((request, response) => {
     // 外部图片供应商：OpenAI 风格同步出图
     if (request.method === 'POST' && (request.url === '/v1/images/generations' || request.url === '/v1/images/edits')) {
       response.writeHead(200, { 'content-type': 'application/json' });
-      const seedream = request.url === '/v1/images/generations' && JSON.parse(body).model === 'doubao-seedream-5-0-pro-image';
+      const seedream = request.url === '/v1/images/generations'
+        && ['doubao-seedream-5-0-pro-image', 'doubao-seedream-5-5-261028'].includes(JSON.parse(body).model);
       response.end(JSON.stringify({ created: 1, data: [seedream ? { url: '/files/result' } : { b64_json: resultPng.toString('base64') }] }));
       return;
     }
@@ -422,6 +425,29 @@ async function runOnce(
   assert.equal(multiShotResult.phase, 'succeeded');
   assert.equal(multiShotResult.body?.multi_shot, true);
   assert.equal(multiShotResult.body?.shot_type, 'intelligence');
+}
+
+{
+  insertVideoProvider.run(QINIU_KLING_4_PROVIDER_ID, '公司七牛可灵 4.0', QINIU_KLING_4_MODEL, 'https://fixture.invalid', 'fixture-key');
+  const capability = configuredCanvasVideos(db).find((model) => model.key === QINIU_KLING_4_PROVIDER_ID);
+  assert.ok(capability);
+  registerCanvasCapability(capability);
+  save([
+    material('m-first', firstFrameAsset),
+    material('m-last', lastFrameAsset),
+    videoNode('v-kling4', capability.key, { durationSec: 3 }),
+  ], [edge('e-first', 'm-first', 'v-kling4'), edge('e-last', 'm-last', 'v-kling4')]);
+  let deliveries = 0;
+  const result = await runOnce('v-kling4', companyAdapter({
+    name: 'blocked-transport',
+    async deliver() {
+      deliveries++;
+      throw new Error('unexpected delivery');
+    },
+  }));
+  assert.match(result.errorMessage ?? '', /必须通过本机 LiteLLM 地址/);
+  assert.equal(deliveries, 0, '公司尾帧必须在交付素材前拒绝非回环网关');
+  assert.equal(result.posts, 0);
 }
 
 // --- 2. Seedance 2.5：双图参考 + 1080p size -----------------------------------
@@ -1206,6 +1232,7 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
 for (const [id, model] of [
   ['company-gateway-qiniuyun-gpt-image-2-medium', 'qiniuyun/gpt-image-2-medium'],
   ['company-gateway-seedream-5-0-pro', 'doubao-seedream-5-0-pro-image'],
+  ['company-gateway-seedream-5-5', 'doubao-seedream-5-5-261028'],
   ['company-gateway-nano-banana-pro', 'nano-banana-3.0'],
   ['company-gateway-nano-banana-2', 'nano-banana-3.1'],
 ]) {
@@ -1214,19 +1241,22 @@ for (const [id, model] of [
   assert.ok(capability);
   for (const withImages of [false, true]) {
     const nodeId = 'configured-image';
-    const seedream = model === 'doubao-seedream-5-0-pro-image';
+    const seedream55 = model === 'doubao-seedream-5-5-261028';
+    const seedream = seedream55 || model === 'doubao-seedream-5-0-pro-image';
+    const resolution = seedream55 ? '1.5K' : seedream ? '1K' : '4K';
     save([
       ...(withImages ? [material('cfg-ref-1', firstFrameAsset), material('cfg-ref-2', lastFrameAsset)] : []),
-      imageNode(nodeId, capability.key, { aspectRatio: '16:9', resolution: seedream ? '1K' : '4K' }),
+      imageNode(nodeId, capability.key, { aspectRatio: '16:9', resolution }),
     ], withImages ? [edge('cfg-e1', 'cfg-ref-1', nodeId), edge('cfg-e2', 'cfg-ref-2', nodeId)] : []);
     const result = await runOnce(nodeId);
     assert.equal(result.phase, 'succeeded', `${model}: ${result.errorMessage}`);
     assert.equal(result.posts, 1);
     assert.equal(result.body?.model, model);
     if (seedream) {
-      assert.equal(result.body?.size, '1K');
+      assert.equal(result.body?.size, resolution);
       assert.equal(result.body?.response_format, 'url');
-      assert.match(String(result.body?.prompt), /输出画幅为16:9，清晰度为1K/);
+      assert.ok(String(result.body?.prompt).includes(`输出画幅为16:9，清晰度为${resolution}`));
+      assert.equal(result.body?.n, seedream55 ? undefined : 1);
       assert.equal((result.body?.image as string[] | undefined)?.length ?? 0, withImages ? 2 : 0);
     } else if (model.startsWith('nano-banana')) {
       assert.deepEqual(result.body?.OutputConfig, { Resolution: '4K', AspectRatio: '16:9' });

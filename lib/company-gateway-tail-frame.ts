@@ -11,6 +11,7 @@ import type {
   InspectCompanyProviderRuntimeOptions,
 } from './company-provider-runtime.ts';
 import type { TailFrameCapability, TailFrameProtocol } from './video-providers/types.ts';
+import { QINIU_KLING_4_MODEL } from './company-qiniu-kling-4.ts';
 
 /**
  * 公司网关（本机 LiteLLM → 公司中转站 → 腾讯云 CreateAigcVideoTask）视频模型的
@@ -56,6 +57,8 @@ const COMPANY_TAIL_FRAME_MODEL_PROTOCOLS: Record<string, TailFrameProtocol> = {
   'kling-3.0': 'company-gateway-kling',
   // 2026-09-10 真实任务：images[0] 首帧 + end_image_url 尾帧；见当日验证记录。
   'qiniuyun/kling-3.0': 'company-gateway-qiniuyun-kling',
+  // 2026-11-19 实测 720p 首尾帧使用 start_image_url / end_image_url。
+  [QINIU_KLING_4_MODEL]: 'company-gateway-qiniuyun-kling',
   'doubao-seedance-2-0-260128': 'company-gateway-seedance',
   'doubao-seedance-2-0-fast-260128': 'company-gateway-seedance',
   'doubao-seedance-2-5-260628': 'company-gateway-seedance',

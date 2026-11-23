@@ -132,11 +132,48 @@ try {
   const panel = page.locator('#packaging-stickers-panel');
   const assetButtons = panel.getByRole('button', { name: /^添加贴纸 / });
 
-  const packagingSwitch = page.getByRole('switch', { name: '启用视频包装' });
-  let enabledView = await page.evaluate(async (groupId) => (await (await fetch(`/api/final-edit-groups/${groupId}`)).json()).packaging, fixture.groupId);
-  if (!enabledView.enabled) enabledView = (await readPatch(() => packagingSwitch.click(), false)).view.packaging;
-  assert.equal(enabledView.enabled, true);
-  assert.equal((enabledView.stickers ?? []).length, 0, '旧项目必须保持空贴纸数组');
+  const groupUrl = new URL(`/api/final-edit-groups/${fixture.groupId}`, server.baseUrl).href;
+  const initialGroup = await (await page.request.get(groupUrl)).json();
+  assert.equal(initialGroup.packaging.enabled, true);
+  const warning = '未检测到可靠口播气口，本次未吸附切点';
+  assert.equal(await page.getByText(warning, { exact: true }).isVisible(), false, '预览默认收起告警明细');
+  const preview = page.locator('[data-output-preset]').first();
+  const previewBox = await preview.boundingBox();
+  assert.ok(previewBox);
+  await page.getByRole('button', { name: /\d+ 条提醒/ }).click();
+  const diagnostics = page.getByRole('dialog', { name: '预览诊断' });
+  await diagnostics.getByText(warning, { exact: true }).waitFor();
+  assert.deepEqual(await preview.boundingBox(), previewBox, '打开告警明细不得压缩或移动画面');
+  await page.keyboard.press('Escape');
+  await diagnostics.waitFor({ state: 'hidden' });
+
+  assert.equal(initialGroup.packaging.stickers?.length, 6, '生成好的草稿应自动保存六张贴纸');
+  assert.equal(initialGroup.packaging.layoutResolution?.status, 'resolved', '首次读取必须已经保存可重放的规范布局');
+  assert.equal(await page.locator('[data-sticker-clip-id]').count(), 6, '首次进预览应已有六个贴纸片段');
+  await overlay.locator('.packaging-sticker').first().waitFor({ state: 'attached' });
+  assert.equal(await overlay.locator('.packaging-sticker').count(), 6, '首次进预览应自动挂载包装贴纸');
+  const firstAuto = initialGroup.packaging.stickers[0];
+  const { bodyFrames, introFrames } = initialGroup.variants[0].timeline;
+  const playhead = page.getByRole('slider', { name: '播放位置' });
+  const playheadBox = await playhead.boundingBox();
+  assert.ok(playheadBox);
+  const progress = (firstAuto.startFrame + firstAuto.endFrame) / 2 / (bodyFrames + introFrames);
+  await playhead.click({ position: { x: playheadBox.width * progress, y: playheadBox.height / 2 } });
+  await eventually(async () => overlay.locator(`[data-sticker-id="${firstAuto.id}"]`).evaluate((element) => (
+    Number(getComputedStyle(element).opacity) > 0.9 && element.querySelector('img').naturalWidth > 0
+  )), '播放头进入自动贴纸区间时，贴纸应直接显示在成片画面上');
+  // 清空初始布置，以便继续验证手动添加和一键布置的交互。
+  const cleared = await page.request.patch(groupUrl, { data: {
+    type: 'set_packaging_config', expectedRevision: initialGroup.revision, variantId: fixture.variantId,
+    config: { enabled: true, stickers: [] },
+  } });
+  assert.equal(cleared.status(), 200);
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.getByLabel('选择分镜组').selectOption(fixture.shotSetA);
+  await page.locator(`[data-mixcut-shot-set-id="${fixture.shotSetA}"]`).waitFor();
+  await page.getByRole('button', { name: /预览调整/ }).click();
+  await page.locator('[data-track="video"]').waitFor();
+  assert.equal(await page.locator('[data-sticker-clip-id]').count(), 0, '刷新不得重新补上已清空的贴纸');
   await page.getByRole('tab', { name: '贴纸', exact: true }).click();
   await assetButtons.first().waitFor();
   assert.equal(await assetButtons.count(), 28, '默认只显示当前 comic 模板的 28 张素材');

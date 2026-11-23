@@ -55,20 +55,31 @@ export function splitSubtitleTextOnHardWhitespace(text: string): string[] {
   return parts;
 }
 
-function splitLongPart(sourceText: string, maxContentCharacters: number): string[] {
-  if (countScriptContentCharacters(sourceText) <= maxContentCharacters) return [sourceText];
+function splitLongPart(sourceText: string, maxContentCharacters: number, balance: boolean): string[] {
+  const total = countScriptContentCharacters(sourceText);
+  if (total <= maxContentCharacters) return [sourceText];
+  // 避免 15 个汉字拆成 14 + 1 的闪字幕。优先保留型号、数值和单位，如 3.5cm、9:16。
+  const target = balance ? Math.ceil(total / Math.ceil(total / maxContentCharacters)) : maxContentCharacters;
+  const tokens = balance
+    ? sourceText.match(/[\p{Script=Latin}\p{N}]+(?:[.:-][\p{Script=Latin}\p{N}]+)*[%°]?|./gu) ?? []
+    : Array.from(sourceText);
+  const units = balance
+    ? tokens.flatMap(token => countScriptContentCharacters(token) > maxContentCharacters
+      ? token.match(/\p{N}(?:[.:]\p{N})+|./gu) ?? []
+      : [token])
+    : tokens;
   const parts: string[] = [];
   let current = '';
   let contentCount = 0;
-  for (const character of Array.from(sourceText)) {
-    const isContent = /[\p{L}\p{N}]/u.test(character);
-    if (isContent && contentCount >= maxContentCharacters && current.trim()) {
+  for (const unit of units) {
+    const weight = countScriptContentCharacters(unit);
+    if (weight > 0 && contentCount > 0 && contentCount + weight > target) {
       parts.push(current.trim());
       current = '';
       contentCount = 0;
     }
-    current += character;
-    if (isContent) contentCount += 1;
+    current += unit;
+    contentCount += weight;
   }
   if (current.trim()) parts.push(current.trim());
   return parts;
@@ -94,7 +105,7 @@ export function normalizeAutomaticSubtitleText(text: string): string {
 
 export function splitNarrationForDisplay(
   narration: string,
-  options: { maxContentCharacters?: number } = {},
+  options: { maxContentCharacters?: number; balanceLongParts?: boolean } = {},
 ): SubtitleDisplayPart[] {
   const maxContentCharacters = Math.max(1, Math.trunc(options.maxContentCharacters || 22));
   const normalizedNarration = narration.replace(/\r\n?/gu, '\n').trim();
@@ -114,7 +125,7 @@ export function splitNarrationForDisplay(
   }
 
   return candidates
-    .flatMap((candidate) => splitLongPart(candidate, maxContentCharacters))
+    .flatMap((candidate) => splitLongPart(candidate, maxContentCharacters, options.balanceLongParts === true))
     .map((sourceText) => ({ sourceText, displayText: normalizeAutomaticSubtitleText(sourceText) }))
     .filter((part) => part.displayText.length > 0);
 }

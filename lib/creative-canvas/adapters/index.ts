@@ -8,6 +8,7 @@ import { registerFixtureCanvasCapabilities } from './fixture-capabilities.ts';
 import { createCompanyCanvasAdapter } from './company.ts';
 import { createDefaultCanvasDeliverer, type CanvasMediaDeliverer } from './media-delivery.ts';
 import { createExternalCanvasAdapter } from './external.ts';
+import { isCompanySeedreamImageModel } from '../../company-seedream-image.ts';
 import type { CanvasTaskAdapter } from './types.ts';
 
 export interface CanvasAdapterDeps {
@@ -64,7 +65,7 @@ export function createCanvasExecutorAdapter(
   const companySeedance = createExternalCanvasAdapter({ db: deps.db, storageRoot: deps.storageRoot, deliverer, companySeedance: true });
   const pick = (context: { capabilityKey: string; modelAlias: string }) => context.capabilityKey.endsWith(':ark-v1') ? companySeedance : (
     // Seedream 是同步图片协议，复用同步结果持久化/补下载，不伪造远端轮询。
-    context.modelAlias === 'doubao-seedream-5-0-pro-image'
+    isCompanySeedreamImageModel(context.modelAlias)
       || findCanvasCapability(context.capabilityKey)?.providerKind === 'external' ? external : company
   );
   return {

@@ -146,7 +146,7 @@ export function mergePointCuesIntoPackagingJson(packagingJsonText: string | null
     ...(config.layoutRuntimeBundleVersion !== undefined ? { layoutRuntimeBundleVersion: config.layoutRuntimeBundleVersion } : {}),
     ...(config.layoutResolution ? { layoutResolution: { ...config.layoutResolution, status: 'stale' as const } } : {}),
     ...(config.layouts && Object.keys(config.layouts).length > 0 ? { layouts: config.layouts } : {}),
-    ...(config.stickers && config.stickers.length > 0 ? { stickers: config.stickers } : {}),
+    ...(config.stickers ? { stickers: config.stickers } : {}),
     ...(config.stickerDefaults ? { stickerDefaults: config.stickerDefaults } : {}),
   };
   return { pointCues, packagingJson: JSON.stringify(next) };

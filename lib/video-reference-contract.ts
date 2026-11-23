@@ -1,4 +1,8 @@
 import { companyNativeVideoModel } from './company-gateway-video-models.ts';
+import {
+  QINIU_KLING_4_ASPECT_RATIOS, QINIU_KLING_4_IMAGE_MAX_BYTES, QINIU_KLING_4_IMAGE_MIME_TYPES,
+  QINIU_KLING_4_DEFAULT_RESOLUTION, QINIU_KLING_4_RESOLUTIONS, supportsQiniuKling4Modes,
+} from './company-qiniu-kling-4.ts';
 import { videoDurationError } from './video-duration.ts';
 import {
   SEEDANCE_20,
@@ -133,6 +137,19 @@ function seedanceReferenceCapability(model: string): SupportedVideoReferenceCapa
 
 /** Browser-safe exact model decision; callers must not infer reference support from aliases. */
 export function videoReferenceCapability(providerType: string, model: string): VideoReferenceCapability {
+  if (supportsQiniuKling4Modes(providerType, model)) {
+    return {
+      supported: true,
+      image: { maxCount: 10, mimeTypes: QINIU_KLING_4_IMAGE_MIME_TYPES, maxBytes: QINIU_KLING_4_IMAGE_MAX_BYTES },
+      video: { maxCount: 5, mimeTypes: ['video/mp4', 'video/quicktime'], maxBytes: 200 * MIB,
+        minDurationSec: 2, maxDurationSec: 30, maxTotalDurationSec: 30 },
+      audio: { maxCount: 0, mimeTypes: [], maxBytes: 0 },
+      allowsAudioOnly: false,
+      aspectRatios: QINIU_KLING_4_ASPECT_RATIOS,
+      resolutions: QINIU_KLING_4_RESOLUTIONS,
+      defaultResolution: QINIU_KLING_4_DEFAULT_RESOLUTION,
+    };
+  }
   const capability = providerType === 'openai-video'
     ? companyReferenceCapability(model) ?? seedanceReferenceCapability(model)
     : providerType === 'jimeng' ? seedanceReferenceCapability(model) : null;
@@ -143,8 +160,11 @@ export function videoReferenceCapability(providerType: string, model: string): V
   };
 }
 
-/** Pure preflight shared by future API/queue callers; null byteSize means delivery already checked it. */
-export function validateVideoReferenceRequest(request: VideoReferenceValidationRequest): string[] {
+/** Defer the image byte limit only when delivery prepares and checks a compressed copy. */
+export function validateVideoReferenceRequest(
+  request: VideoReferenceValidationRequest,
+  options: { deferImageByteLimit?: boolean } = {},
+): string[] {
   const capability = videoReferenceCapability(request.providerType, request.model);
   if (!capability.supported) return [`模型 ${request.model} 不支持全能参考`];
   const problems: string[] = [];
@@ -171,7 +191,7 @@ export function validateVideoReferenceRequest(request: VideoReferenceValidationR
       if (reference.byteSize !== null) {
         if (!Number.isFinite(reference.byteSize) || reference.byteSize < 0) {
           problems.push(`参考 ${reference.id} 的文件大小无效`);
-        } else if (reference.byteSize > rule.maxBytes) {
+        } else if (reference.byteSize > rule.maxBytes && !(kind === 'image' && options.deferImageByteLimit)) {
           problems.push(`参考 ${reference.id} 超过 ${Math.round(rule.maxBytes / MIB)} MiB 上限`);
         }
       }

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PackagingError } from './packaging-runtime.ts';
+import type { PackagingStickerPlanningAsset } from './packaging-sticker-planner.ts';
 import { resolveStickerAssetFile, STICKER_STYLE_BY_TEMPLATE, type PackagingStickerInstance } from './packaging-stickers.ts';
 import type { PackagingTemplateId } from './packaging-vars.ts';
 
@@ -37,6 +38,10 @@ function readCatalog(root: string): unknown[] {
   }
   if (!isRecord(parsed) || !Array.isArray(parsed.assets)) throw catalogError('缺少 assets 数组');
   return parsed.assets;
+}
+
+export function readPackagingStickerPlanningAssets(packagingDir: string): PackagingStickerPlanningAsset[] {
+  return readCatalog(path.join(packagingDir, 'stickers')) as PackagingStickerPlanningAsset[];
 }
 
 function parseAsset(raw: unknown, expectedFile: string): ResolvedPackagingStickerAsset {

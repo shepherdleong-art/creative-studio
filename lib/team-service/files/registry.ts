@@ -8,7 +8,7 @@ import {
   fileIdentityMatches,
   inspectFileContent,
 } from '../../media-core/file-identity.ts';
-import { assertTeamPublicationAllowed } from '../lifecycle/barrier.ts';
+import { assertTeamPublicationAllowed, hasTeamPublicationBarrier } from '../lifecycle/barrier.ts';
 
 export type TeamFileState = 'staged' | 'ready' | 'purge_pending';
 export type TeamFileRole = 'input' | 'output' | 'derivative' | 'export' | 'delivery' | 'backup';
@@ -70,7 +70,7 @@ export function registerReadyTeamFile(
   input: RegisterReadyTeamFileInput,
 ): TeamFileRecord {
   if (!input.ownerUserId.trim() || !input.mimeType.trim()) throw new Error('文件登记字段不完整');
-  assertTeamPublicationAllowed(db);
+  if (!input.derivedFromFileId) assertTeamPublicationAllowed(db);
   const absolutePath = assertNoStorageSymlink(input.storageRoot, input.absolutePath, { allowAbsolute: true });
   const stat = fs.statSync(absolutePath);
   if (!stat.isFile()) throw new Error('只能登记普通文件');
@@ -117,12 +117,26 @@ export function registerReadyTeamFile(
     if (existing.sha256 !== sha256) {
       throw new Error('文件身份与既有不可变登记不一致');
     }
+    let referencesRegistered = false;
+    if (input.derivedFromFileId) {
+      const findReference = db.prepare(`
+        SELECT 1 FROM team_file_references WHERE fileId = ? AND resourceType = ? AND resourceId = ?
+          AND role = 'derivative' AND pinKind = ? AND releasedAt IS NULL
+      `);
+      referencesRegistered = references.every((reference) => Boolean(
+        findReference.get(existing.id, reference.resourceType, reference.resourceId, reference.pinKind ?? 'entity'),
+      ));
+      // 完整登记且已核验的衍生物可以只读复用，备份期间延后更新身份见证。
+      if (referencesRegistered && (refreshedIdentity === null || hasTeamPublicationBarrier(db))) return existing;
+    }
     const attach = db.prepare(`
       INSERT OR IGNORE INTO team_file_references (fileId, resourceType, resourceId, role, pinKind, createdAt)
       VALUES (?, ?, ?, ?, ?, ?)
     `);
     const at = (input.now?.() ?? new Date()).toISOString();
-    db.transaction(() => {
+    return db.transaction(() => {
+      // 维护屏障也可能在开始事务前被另一进程取得。
+      if (referencesRegistered && hasTeamPublicationBarrier(db)) return existing;
       assertTeamPublicationAllowed(db);
       if (refreshedIdentity !== null) {
         // 首次登记遗留的旧行缺少见证，或文件身份/见证变化但内容哈希相同：刷新身份记录。
@@ -132,12 +146,11 @@ export function registerReadyTeamFile(
         attach.run(existing.id, reference.resourceType, reference.resourceId,
           reference.role ?? (input.derivedFromFileId ? 'derivative' : 'input'), reference.pinKind ?? 'entity', at);
       }
+      return refreshedIdentity !== null ? { ...existing, verifiedIdentityJson: refreshedIdentity } : existing;
     }).immediate();
-    return refreshedIdentity !== null
-      ? { ...existing, verifiedIdentityJson: refreshedIdentity }
-      : existing;
   }
 
+  if (input.derivedFromFileId) assertTeamPublicationAllowed(db);
   const inspection = inspectFileContent(absolutePath, stat.size, true);
   const sha256 = inspection.sha256!;
   const id = randomUUID();

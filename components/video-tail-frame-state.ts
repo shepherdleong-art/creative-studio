@@ -1,4 +1,5 @@
 import type { VideoReferenceCapability } from '@/lib/video-reference-contract';
+import { validateQiniuKling4MiddleFrames } from '../lib/company-qiniu-kling-4.ts';
 
 export interface VideoTailFrameCapability {
   supported: boolean;
@@ -11,7 +12,7 @@ export type TailFrameUploadState = 'idle' | 'uploading' | 'failed' | 'deleting';
 export type ReferenceUploadState = TailFrameUploadState;
 
 /** 运镜行的生成模式：首尾帧（图生视频）或全能参考。 */
-export type VideoGenerationMode = 'image-to-video' | 'reference-to-video';
+export type VideoGenerationMode = 'image-to-video' | 'reference-to-video' | 'frames-to-video';
 
 export type VideoReferenceAssetKind = 'image' | 'video' | 'audio';
 
@@ -32,6 +33,7 @@ export interface VideoMotionRow {
   templateId: string;
   providerId: string;
   durationSec: number;
+  resolution?: string;
   multiShot: boolean;
   /** 两套草稿互不清空；提交时只带当前模式的字段。旧 fixture 缺省为首尾帧。 */
   generationMode?: VideoGenerationMode;
@@ -42,6 +44,7 @@ export interface VideoMotionRow {
   tailUploadError: string | null;
   /** 全能参考素材，顺序即提交顺序。 */
   referenceAssets?: VideoReferenceAsset[];
+  middleFrames?: VideoReferenceAsset[];
   referenceUploadState?: ReferenceUploadState;
   referenceUploadError?: string | null;
 }
@@ -69,7 +72,7 @@ export function createVideoMotionRow(key: string, durationSec: number): VideoMot
 export function getVideoMotionGenerationMode(
   row: { generationMode?: VideoGenerationMode },
 ): VideoGenerationMode {
-  return row.generationMode === 'reference-to-video' ? 'reference-to-video' : 'image-to-video';
+  return row.generationMode ?? 'image-to-video';
 }
 
 export function reorderVideoReferenceAssets(
@@ -118,6 +121,7 @@ export function collectVideoMotionReferenceAssetIds(rowGroups: Iterable<VideoMot
   for (const rows of rowGroups) {
     for (const row of rows) {
       for (const asset of row.referenceAssets ?? []) ids.add(asset.id);
+      for (const asset of row.middleFrames ?? []) ids.add(asset.id);
     }
   }
   return [...ids];
@@ -217,6 +221,12 @@ export function getVideoMotionRowIssue(
   }
   if (row.tailUploadState === 'failed') {
     return row.tailUploadError || '尾帧上传失败，请重试';
+  }
+  if (getVideoMotionGenerationMode(row) === 'frames-to-video') {
+    if (row.referenceUploadState === 'uploading' || row.referenceUploadState === 'deleting') return '请等待中间帧处理完成';
+    if (row.referenceUploadState === 'failed') return row.referenceUploadError || '中间帧上传失败';
+    const issue = validateQiniuKling4MiddleFrames(row.middleFrames ?? []);
+    if (issue) return issue;
   }
   if (!row.tailImageId) return null;
   if (!capability?.supported) {

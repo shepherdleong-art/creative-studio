@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import type { BatchTaskExecutor } from './executors.ts';
 import { registerManagedFile, requireAccessContext } from '../media-core/access-context.ts';
 import { withMediaResource } from '../media-core/media-resource-gate.ts';
+import { initializeBatchOutputStickers } from './packaging.ts';
 import {
   discardBatchCoverRenderResult,
   discardBatchRenderResult,
@@ -84,7 +85,15 @@ export function createBatchRenderExecutor(options: BatchRenderExecutorOptions = 
         };
         const result = await withMediaResource(
           { taskId: claim.task.id, step: 'render-cover', wait: false, signal },
-          () => renderBatchOutputCover(coverInput),
+          async () => {
+            try {
+              await initializeBatchOutputStickers({ db, outputVersionId: lineage.outputVersionId, signal });
+            } catch {
+              signal?.throwIfAborted();
+              console.warn('[batch-packaging] 基础贴纸布置未完成，可在审片中重试');
+            }
+            return renderBatchOutputCover(coverInput);
+          },
         );
         registerManagedFile({
           absolutePath: result.coverAbsolutePath,

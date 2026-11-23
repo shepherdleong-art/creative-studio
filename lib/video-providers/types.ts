@@ -23,6 +23,8 @@ export interface SubmitVideoRequest extends SeedanceOutputOptions {
   tailImagePath?: string;
   tailMimeType?: 'image/png' | 'image/jpeg' | 'image/webp';
   tailImageUrl?: string;
+  /** Ordered local images frozen by the multi-keyframe job. */
+  middleFrames?: readonly { id: string; kind: 'image'; path: string; mimeType: string; byteSize: number }[];
   durationSec: number;
   /** Explicit output aspect ratio for adapters that can preserve it independently of the source frame. */
   aspectRatio?: string;

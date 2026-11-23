@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -56,7 +57,12 @@ db.exec(`
   );
   INSERT INTO team_users VALUES ('admin', 'admin');
 `);
-const { createTeamBackup, rotateDailyTeamBackups } = await import('../lib/team-service/maintenance/backup.ts');
+const { checkExecutionReadiness } = await import('../lib/media-core/execution/readiness.ts');
+const { schemaUpgradeRuntimePaths } = await import('../lib/schema-upgrade/runtime.ts');
+const { restoreTeamBackup } = await import('../lib/team-service/maintenance/restore.ts');
+const { createTeamBackup, rotateDailyTeamBackups, verifyTeamBackup } = await import('../lib/team-service/maintenance/backup.ts');
+const { backupMediaPath } = await import('../lib/team-service/maintenance/daily-media.ts');
+const { resumeDailyRetirements } = await import('../lib/team-service/maintenance/daily-retirement.ts');
 const { registerReadyTeamFile } = await import('../lib/team-service/files/registry.ts');
 const admin = { userId: 'admin', role: 'admin' as const };
 const at = new Date().toISOString();
@@ -72,7 +78,7 @@ const release = { releaseId: 'release-1', packageSha256: 'b'.repeat(64) };
 let sequence = 0;
 function input(type: 'daily' | 'manual' | 'pre-upgrade' | 'pre-restore', backupId: string) {
   sequence += 1;
-  const at = new Date(Date.UTC(2026, 0, 1, 0, 0, sequence));
+  const at = new Date(2026, 0, sequence, 12);
   return {
     db, principal: admin, dataRoot, storageRoot, backupRoot, deploymentId: 'deployment-rotation', type,
     release, config: { version: 'config-1', filePath: configPath }, backupId, now: () => at,
@@ -84,17 +90,94 @@ function publishedIds(type: string): string[] {
 }
 
 try {
+  assert.equal((await checkExecutionReadiness({ db, ...schemaUpgradeRuntimePaths(dataRoot) })).available, true);
+  db.exec('CREATE TABLE daily_value(day INTEGER); INSERT INTO daily_value VALUES (0)');
+  const changingPath = path.join(storageRoot, 'media', 'version.bin');
+  const addFile = (name: string, contents: string) => {
+    const absolutePath = path.join(storageRoot, 'media', name);
+    fs.writeFileSync(absolutePath, contents);
+    return registerReadyTeamFile(db, { storageRoot, absolutePath, mimeType: 'application/octet-stream', ownerUserId: 'admin',
+      references: [{ resourceType: 'project', resourceId: 'project-1' }] });
+  };
+  const changing = addFile('version.bin', 'A');
+  // 同长度、同路径的新内容，以及后来才出现的素材，各自只在首次出现时写入。
+  let firstOnlyObject = '';
+  let mutableObject = '';
   for (let index = 1; index <= 15; index += 1) {
+    db.prepare('UPDATE daily_value SET day = ?').run(index);
+    fs.writeFileSync(configPath, JSON.stringify({ day: index }));
+    if (index === 2 || index === 7) {
+      const contents = index === 2 ? 'B' : 'C';
+      fs.writeFileSync(changingPath, contents);
+      db.prepare('UPDATE team_files SET sha256 = ? WHERE id = ?').run(createHash('sha256').update(contents).digest('hex'), changing.id);
+    }
+    if (index === 6) addFile('new.bin', 'added-on-six');
+    if (index === 10) {
+      fs.renameSync(path.join(storageRoot, 'media', 'new.bin'), path.join(storageRoot, 'media', 'renamed.bin'));
+      db.prepare("UPDATE team_files SET relativePath='media/renamed.bin' WHERE relativePath='media/new.bin'").run();
+    }
     const backupId = `daily-${String(index).padStart(2, '0')}`;
     const result = await createTeamBackup(input('daily', backupId));
-    if (index === 15) assert.deepEqual(result.rotation?.deletedBackupIds, ['daily-01']);
+    const written = index === 1 ? Buffer.byteLength('shared-production-object') + 1
+      : index === 6 ? Buffer.byteLength('added-on-six') : index === 2 || index === 7 ? 1 : 0;
+    assert.equal(result.success.newMediaBytes, written);
+    const changingEntry = result.manifest.files.find(file => file.fileId === changing.id)!;
+    mutableObject = backupMediaPath(result.directory, result.manifest, changingEntry);
+    if (index === 1) firstOnlyObject = mutableObject;
+    if (index === 15) {
+      assert.deepEqual(result.rotation?.deletedBackupIds, ['daily-01']);
+      assert.equal(fs.readFileSync(backupMediaPath(result.directory, result.manifest, result.manifest.files.find(file => file.relativePath === 'media/shared.bin')!), 'utf8'), 'shared-production-object');
+    }
   }
   assert.equal(publishedIds('daily').length, 14);
   assert.equal(fs.existsSync(path.join(backupRoot, 'daily', 'daily-01')), false);
   assert.equal(fs.readFileSync(path.join(storageRoot, 'media', 'shared.bin'), 'utf8'), 'shared-production-object');
-  assert.equal(fs.readFileSync(path.join(backupRoot, 'daily', 'daily-15', 'files', 'media', 'shared.bin'), 'utf8'), 'shared-production-object');
 
-  await createTeamBackup(input('manual', 'manual-keep'));
+  assert.equal(fs.existsSync(firstOnlyObject), false, '最后一个引用过期后才回收媒体内容');
+  const dailyInput = input('daily', 'same-day');
+  const replayTime = new Date(2026, 0, 15, 19);
+  const rerun = await createTeamBackup({ ...dailyInput, now: () => replayTime,
+    copyFile: async () => assert.fail('内容全部相同的日备不应再复制媒体字节'),
+  });
+  assert.deepEqual(rerun.rotation?.deletedBackupIds, ['daily-15']);
+  assert.equal(rerun.success.newMediaBytes, 0);
+  assert.equal(publishedIds('daily').length, 14);
+
+  for (let day = 2; day <= 15; day++) {
+    const id = day === 15 ? 'same-day' : `daily-${String(day).padStart(2, '0')}`;
+    const restoreRoot = path.join(fixtureRoot, `restore-day-${day}`);
+    await restoreTeamBackup({ backupDirectory: path.join(backupRoot, 'daily', id), restoreRoot,
+      deploymentId: dailyInput.deploymentId, expectedReleaseId: release.releaseId });
+    const snapshot = new Database(path.join(restoreRoot, 'data', 'workbench.db'), { readonly: true });
+    try { assert.equal(snapshot.prepare('SELECT day FROM daily_value').pluck().get(), day); }
+    finally { snapshot.close(); }
+    assert.equal(JSON.parse(fs.readFileSync(path.join(restoreRoot, 'config', 'deployment.json'), 'utf8')).day, day);
+    const mediaDir = path.join(restoreRoot, 'storage', 'media');
+    assert.equal(fs.readFileSync(path.join(mediaDir, 'shared.bin'), 'utf8'), 'shared-production-object');
+    assert.equal(fs.readFileSync(path.join(mediaDir, 'version.bin'), 'utf8'), day < 7 ? 'B' : 'C');
+    assert.equal(fs.existsSync(path.join(mediaDir, 'new.bin')), day >= 6 && day < 10);
+    assert.equal(fs.existsSync(path.join(mediaDir, 'renamed.bin')), day >= 10);
+  }
+
+  // 相同大小的损坏也必须检出；修复共享对象后历史还原点一并恢复可读。
+  fs.writeFileSync(mutableObject, '!');
+  assert.equal((await verifyTeamBackup(rerun.directory)).verified, false);
+  const repair = await createTeamBackup({ ...dailyInput, backupId: 'repair', now: () => new Date(2026, 0, 15, 20) });
+  assert.equal(repair.success.newMediaBytes, 1);
+  assert.equal((await verifyTeamBackup(path.join(backupRoot, 'daily', 'daily-07'))).verified, true);
+  // 日备 v1 与手动备份的目录格式相同。模拟升级前的 daily，走真实校验和还原入口。
+  const manual = await createTeamBackup(input('manual', 'manual-keep'));
+  const legacyDir = path.join(fixtureRoot, 'legacy-backups', 'daily', manual.manifest.backupId);
+  fs.cpSync(manual.directory, legacyDir, { recursive: true });
+  const legacyManifest = JSON.stringify({ ...manual.manifest, type: 'daily' });
+  fs.writeFileSync(path.join(legacyDir, 'manifest.json'), legacyManifest);
+  fs.writeFileSync(path.join(legacyDir, 'success.json'), JSON.stringify({
+    ...manual.success, type: 'daily', manifestSha256: createHash('sha256').update(legacyManifest).digest('hex'),
+  }));
+  const legacyRoot = path.join(fixtureRoot, 'legacy-restore');
+  await restoreTeamBackup({ backupDirectory: legacyDir, restoreRoot: legacyRoot, deploymentId: dailyInput.deploymentId,
+    expectedReleaseId: release.releaseId });
+  assert.equal(fs.readFileSync(path.join(legacyRoot, 'storage', 'media', 'version.bin'), 'utf8'), 'C');
   await createTeamBackup(input('pre-upgrade', 'pre-upgrade-keep'));
   await createTeamBackup(input('pre-restore', 'pre-restore-keep'));
   await assert.rejects(() => createTeamBackup({
@@ -119,10 +202,67 @@ try {
   assert.deepEqual(publishedIds('pre-restore'), ['pre-restore-keep']);
   assert.equal(fs.existsSync(path.join(backupRoot, 'daily', 'daily-16', 'success.json')), true);
   assert.equal(fs.existsSync(path.join(fixtureRoot, 'data', 'backups')), false, 'schema-upgrade 区域不属于 daily 轮换');
+  // 模拟日备选中到期项后，进程分别在移出前、移出后和删除内容后中断。
+  const retryRoot = path.join(fixtureRoot, 'retirement-retry');
+  const retryId = 'repair-fixture';
+  const retryJob = path.join(retryRoot, 'daily-retired-v1', 'deployment-rotation', retryId);
+  const visible = path.join(retryRoot, 'daily', retryId);
+  fs.mkdirSync(retryJob, { recursive: true });
+  fs.mkdirSync(path.join(visible, 'config'), { recursive: true });
+  const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+  const intent = { version: 1, backupId: retryId, deploymentId: 'deployment-rotation',
+    manifestSha256: digest('{}'), configSha256: digest('fixture'), pinId: 'expired-pin' };
+  fs.writeFileSync(path.join(retryJob, 'intent.json'), JSON.stringify(intent));
+  fs.writeFileSync(path.join(visible, 'manifest.json'), '{}');
+  fs.writeFileSync(path.join(visible, 'config', 'deployment.json'), 'changed');
+  const released: string[] = [];
+  const resume = () => resumeDailyRetirements(retryRoot, 'deployment-rotation', id => { released.push(id); });
+  await resume();
+  assert.ok(fs.existsSync(visible));
+  assert.deepEqual(released, []);
+  const detached = path.join(retryJob, 'snapshot');
+  fs.renameSync(visible, detached);
+  await assert.rejects(resume, /到期配置/);
+  assert.deepEqual(released, []);
+  fs.writeFileSync(path.join(detached, 'config', 'deployment.json'), 'fixture');
+  await resumeDailyRetirements(retryRoot, 'deployment-rotation', undefined);
+  assert.equal(fs.existsSync(detached), false);
+  assert.ok(fs.existsSync(path.join(retryJob, 'intent.json')));
+  await resume();
+  await resume();
+  assert.deepEqual(released, ['expired-pin']);
+  assert.equal(fs.existsSync(retryJob), false);
   const receipt = fs.readFileSync(path.join(backupRoot, 'maintenance-receipts', 'deployment-rotation.jsonl'), 'utf8');
   assert.match(receipt, /"phase":"failed"/);
   assert.match(receipt, /"backupId":"daily-16"/);
   assert.doesNotMatch(receipt, /fixtureSecret|apiKey|token/i);
+
+  const priorIds = publishedIds('daily');
+  const uncommitted = addFile('a-first.bin', 'new-uncommitted');
+  addFile('b-fail.bin', 'read-error');
+  await assert.rejects(() => createTeamBackup({ ...input('daily', 'partial'), async copyFile(source, destination) {
+    if (source.endsWith('b-fail.bin')) throw new Error('injected copy failure');
+    fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+  } }), /injected copy failure/);
+  assert.deepEqual(publishedIds('daily'), priorIds, '失败不能淘汰任何成功日');
+  const orphan = path.join(backupRoot, 'daily-media-v1', dailyInput.deploymentId, uncommitted.sha256.slice(0, 2), uncommitted.sha256);
+  assert.equal(fs.existsSync(orphan), false, '部分写入失败后回收无引用对象');
+  assert.equal((await verifyTeamBackup(path.join(backupRoot, 'daily', 'daily-07'))).verified, true);
+
+  const interrupted = path.join(backupRoot, 'daily', '.interrupted-v2.staging');
+  fs.mkdirSync(interrupted);
+  fs.writeFileSync(path.join(interrupted, 'maintenance-staging.json'), JSON.stringify({
+    schemaVersion: 1, mediaStoreVersion: 1, type: 'daily', backupId: 'interrupted-v2', nonce: 'fixture-nonce',
+    deploymentId: dailyInput.deploymentId, dataRootIdentity: createHash('sha256').update(path.resolve(dataRoot)).digest('hex'),
+  }));
+  fs.writeFileSync(path.join(interrupted, 'media-object.tmp'), 'partial');
+  fs.writeFileSync(orphan, 'new-uncommitted');
+  await assert.rejects(() => createTeamBackup({ ...input('daily', 'after-crash'), diskSpaceProbe: async () => {
+    assert.equal(fs.existsSync(interrupted), false);
+    assert.equal(fs.existsSync(orphan), false);
+    return 0;
+  } }), /空间不足/);
+  assert.deepEqual(publishedIds('daily'), priorIds);
 
   const crashStaging = path.join(backupRoot, 'daily', '.daily-crash.staging');
   fs.mkdirSync(crashStaging);

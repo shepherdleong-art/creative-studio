@@ -8,6 +8,7 @@ import {
   snapCompanyVideoAspectRatio,
   snapCompanyVideoSize,
 } from '../lib/company-gateway-size.ts';
+import { QINIU_IMAGE_26_MODELS } from '../lib/company-qiniu-image-models.ts';
 
 // ── 模型能力识别 ──
 assert.ok(companyImageCapsForModel('image2-medium'));
@@ -16,6 +17,13 @@ assert.ok(companyImageCapsForModel('doubao-seedream-5-0-image'));
 assert.ok(companyImageCapsForModel('doubao-seedream-5-0-pro-image'));
 assert.equal(companyImageCapsForModel('gpt-image-2'), null);
 assert.equal(companyImageCapsForModel('nano-banana-2.5'), null);
+for (const { model } of QINIU_IMAGE_26_MODELS) {
+  const caps = companyImageCapsForModel(model);
+  assert.ok(caps);
+  assert.equal(companyImageCellExecutable(model, '1K', '1:1'), false);
+  assert.equal(snapCompanyImageSize('2048x2048', caps), '1440x1440');
+  assert.equal(snapCompanyImageSize('2448x3264', caps), '2160x2880');
+}
 
 assert.ok(companyVideoCapsForModel('kling-3.0'));
 assert.ok(companyVideoCapsForModel('kling-3.0-Omni'));

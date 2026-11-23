@@ -640,6 +640,47 @@ try {
   assert.equal(capturedBody?.shot_type, 'intelligence', '七牛可灵智能分镜必须使用上游接受的枚举值');
   assert.equal(capturedBody?.multi_prompt, undefined);
   await openaiVideoAdapter.submit({
+    model: 'qiniuyun/kling-4.0', prompt: '首尾帧',
+    sourceImagePath: imagePath, sourceMimeType: 'image/png', durationSec: 3,
+    tailImagePath, tailMimeType: 'image/png', multiShot: true,
+  }, 'gateway-key', 'http://127.0.0.1:4000');
+  const kling4Body = capturedBody as Record<string, unknown>;
+  assert.equal(kling4Body.seconds, '3');
+  assert.equal(kling4Body.duration, 3);
+  assert.equal(kling4Body.resolution, '720p');
+  assert.equal(kling4Body.size, '960x720');
+  assert.deepEqual(kling4Body.images, [kling4Body.start_image_url]);
+  assert.match(String(kling4Body.start_image_url), /^https:\/\/cos\.example\.com\//);
+  assert.match(String(kling4Body.end_image_url), /^https:\/\/cos\.example\.com\//);
+  assert.notEqual(kling4Body.start_image_url, kling4Body.end_image_url);
+  assert.equal(kling4Body.multi_shot, undefined);
+
+  const middleFrame = { id: 'middle', kind: 'image', path: tailImagePath, mimeType: 'image/png', byteSize: 256 } as const;
+  await openaiVideoAdapter.submit({
+    model: 'qiniuyun/kling-4.0', prompt: '多关键帧', durationSec: 3,
+    sourceImagePath: imagePath, sourceMimeType: 'image/png', tailImagePath, tailMimeType: 'image/png',
+    middleFrames: [middleFrame], resolution: '1080p',
+  }, 'gateway-key', 'http://127.0.0.1:4000');
+  const framesBody = capturedBody as Record<string, unknown>;
+  assert.equal(framesBody.resolution, '1080p');
+  assert.equal(framesBody.size, '1440x1080');
+  assert.deepEqual(framesBody.middle_image_urls, [framesBody.end_image_url], '中间帧走独立字段');
+  assert.deepEqual(framesBody.images, [framesBody.start_image_url]);
+  const imageUrl = String(framesBody.start_image_url);
+  const videoUrl = 'https://cos.example.com/reference.mp4';
+  await openaiVideoAdapter.submitReference!({
+    model: 'qiniuyun/kling-4.0', prompt: '参考图片和视频', durationSec: 3, aspectRatio: '16:9', resolution: '1080p',
+    references: [
+      { kind: 'image', url: imageUrl, mimeType: 'image/png' },
+      { kind: 'video', url: videoUrl, mimeType: 'video/mp4', durationSec: 3 },
+    ],
+  }, 'gateway-key', 'http://127.0.0.1:4000');
+  assert.deepEqual({ ...capturedBody }, {
+    model: 'qiniuyun/kling-4.0', prompt: '参考图片和视频', seconds: '3', duration: 3, resolution: '1080p',
+    aspect_ratio: '16:9', image_urls: [imageUrl], video_urls: [videoUrl],
+  });
+
+  await openaiVideoAdapter.submit({
     model: 'qiniuyun/kling-3.0', prompt: '单镜头',
     sourceImagePath: imagePath, sourceMimeType: 'image/png', durationSec: 5, multiShot: false,
   }, 'gateway-key', 'http://127.0.0.1:4000');

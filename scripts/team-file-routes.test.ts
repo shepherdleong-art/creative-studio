@@ -150,7 +150,7 @@ try {
   registerInheritedScope(db, { resourceType: 'video_job', resourceId: 'video-a', parent: { resourceType: 'project', resourceId: 'project-a' } });
   const videoFile = registerReadyTeamFile(db, { storageRoot, absolutePath: videoPath, mimeType: 'video/mp4', ownerUserId: userA.principal.userId,
     references: [{ resourceType: 'video_job', resourceId: 'video-a' }] });
-  const { createBackupPin } = await import('../lib/team-service/lifecycle/index.ts');
+  const { acquireLifecycleBarrier, createBackupPin, releaseLifecycleBarrier } = await import('../lib/team-service/lifecycle/index.ts');
   const backupPin = createBackupPin(db, admin, { releaseId: 'test-release', configVersion: 'test-config', fileIds: [videoFile.id] });
   const thumbnailUrl = 'https://studio.example.test/api/projects/project-a/final-edit/shot-sets/set-a/module4-assets/video-a/thumbnail';
   const thumbnailParams = () => ({ params: Promise.resolve({ id: 'project-a', shotSetId: 'set-a', videoJobId: 'video-a' }) });
@@ -159,6 +159,28 @@ try {
     assert.equal(thumbnail.status, 200, `${iteration}: ${thumbnail.status === 200 ? '' : await thumbnail.text()}`);
     assert.equal(thumbnail.headers.get('Content-Type'), 'image/jpeg');
     assert.ok((await thumbnail.arrayBuffer()).byteLength > 100);
+  }
+  const thumbnailFile = db.prepare('SELECT id, relativePath FROM team_files WHERE derivedFromFileId = ?').get(videoFile.id) as { id: string; relativePath: string };
+  const thumbnailBytes = fs.readFileSync(path.join(storageRoot, thumbnailFile.relativePath));
+  // Older derivative records may need a fresh identity witness even when the bytes still match.
+  db.prepare('UPDATE team_files SET verifiedIdentityJson = NULL WHERE id = ?').run(thumbnailFile.id);
+  const barrier = acquireLifecycleBarrier(db, admin, 'backup');
+  try {
+    const cached = await thumbnailRoute.GET(get(thumbnailUrl, userA.cookie), thumbnailParams());
+    assert.equal(cached.status, 200, `cached frame during backup: ${cached.status === 200 ? '' : await cached.text()}`);
+    assert.equal(cached.headers.get('Content-Type'), 'image/jpeg');
+    assert.deepEqual(Buffer.from(await cached.arrayBuffer()), thumbnailBytes);
+    assert.equal(db.prepare('SELECT verifiedIdentityJson FROM team_files WHERE id = ?').pluck().get(thumbnailFile.id), null);
+    assert.equal((await thumbnailRoute.GET(get(thumbnailUrl, userB.cookie), thumbnailParams())).status, 403);
+
+    const newDerivative = path.join(storageRoot, 'videos', 'unpublished-thumbnail.jpg');
+    fs.writeFileSync(newDerivative, thumbnailBytes);
+    assert.throws(() => registerReadyTeamFile(db, {
+      storageRoot, absolutePath: newDerivative, mimeType: 'image/jpeg', ownerUserId: userA.principal.userId, derivedFromFileId: videoFile.id,
+    }), /维护屏障/);
+    assert.equal(db.prepare('SELECT COUNT(*) FROM team_files WHERE derivedFromFileId = ?').pluck().get(videoFile.id), 1);
+  } finally {
+    releaseLifecycleBarrier(db, admin, barrier.id);
   }
   assert.equal((await thumbnailRoute.GET(get(thumbnailUrl, userB.cookie), thumbnailParams())).status, 403);
   assert.equal(db.prepare("SELECT COUNT(*) FROM team_file_references WHERE fileId = ? AND resourceId = ? AND pinKind = 'backup' AND releasedAt IS NULL").pluck().get(videoFile.id, backupPin.id), 1, '备份对原件的保护必须保留');

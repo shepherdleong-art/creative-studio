@@ -114,6 +114,7 @@ const sceneReferences = [
 ];
 let queueStatus = 'idle';
 let groupGenerationState = 'normal';
+let delayedShotSet;
 // 票 01：第 1 镜保留 3 个有效候选，服务端选用的 asset 会随 PATCH 变化（刷新后必须保持）。
 let shot1SelectedImageId = 'shot-1-v3';
 // 设成字符串时，下一次切换版本的 PATCH 返回 500，用来验「失败不假切换」。
@@ -236,9 +237,19 @@ async function installRoutes(page) {
         createdShotSets.push(body);
         return json({ id: 'set-created', name: body.name, kind: 'storyboard' });
       }
-      return json([{ id: 'set-1', name: '验收分镜组', shotCount: 2, generatedCount: 1, approvedCount: 0, status: 'draft', createdAt: '2026-11-01T00:00:00Z' }]);
+      return json([
+        { id: 'set-1', name: '验收分镜组', shotCount: 2, generatedCount: 1, approvedCount: 0, status: 'draft', createdAt: '2026-11-01T00:00:00Z' },
+        { id: 'set-2', name: '第二分镜组', shotCount: 1, generatedCount: 0, approvedCount: 0, status: 'draft', createdAt: '2026-11-01T00:00:00Z' },
+      ]);
     }
-    if (pathname === '/api/shot-sets/set-1' && method === 'GET') return json({ id: 'set-1', name: '验收分镜组', ...shotDetail() });
+    if (pathname === '/api/shot-sets/set-1' && method === 'GET') {
+      if (delayedShotSet) await delayedShotSet;
+      return json({ id: 'set-1', name: '验收分镜组', ...shotDetail() });
+    }
+    if (pathname === '/api/shot-sets/set-2' && method === 'GET') {
+      const asset = uploads.find((item) => item.filename === NAMES.c);
+      return json({ id: 'set-2', shots: [{ id: 'second-group-shot', indexNum: 1, sourceImageId: asset.id, sourceFilename: asset.filename, sourceImageUrl: asset.imageUrl }] });
+    }
     if (pathname === '/api/shot-sets/set-1/apply-scene' && method === 'POST') {
       appliedScenes.push(body);
       return json({ success: true, jobCount: 2 });
@@ -438,6 +449,33 @@ try {
   const versionBar = page.getByTestId('shot-version');
   await versionBar.waitFor({ timeout: 30_000 });
   assert.match(await versionBar.innerText(), /当前使用 V3 · 共 3 版/, '大图必须显示「当前使用 V3 · 共 3 版」');
+  const firstGroup = page.getByRole('button', { name: /^验收分镜组/ });
+  const secondGroup = page.getByRole('button', { name: /^第二分镜组/ });
+  const firstGroupVersion = versionBar.getByText(/当前使用 V3/);
+  await secondGroup.click();
+  await firstGroupVersion.waitFor({ state: 'hidden' });
+  await page.getByRole('button', { name: '分镜 1，暂无结果', exact: true }).waitFor();
+  const delayedRead = Promise.withResolvers();
+  delayedShotSet = delayedRead.promise;
+  try {
+    await Promise.all([
+      page.waitForRequest((request) => request.method() === 'GET' && request.url().endsWith('/api/shot-sets/set-1')),
+      firstGroup.click(),
+    ]);
+    await firstGroupVersion.waitFor({ timeout: 1500 });
+    await secondGroup.click();
+    await page.getByRole('button', { name: '分镜 1，暂无结果', exact: true }).waitFor({ timeout: 1500 });
+    const lateResponse = page.waitForResponse((response) => response.request().method() === 'GET' && response.url().endsWith('/api/shot-sets/set-1'));
+    delayedRead.resolve();
+    await lateResponse;
+    await page.getByRole('button', { name: '分镜 1，暂无结果', exact: true }).waitFor({ timeout: 1500 });
+  } finally {
+    delayedShotSet = undefined;
+    delayedRead.resolve();
+  }
+  assert.equal(await secondGroup.getAttribute('aria-current'), 'true');
+  await firstGroup.click();
+  await firstGroupVersion.waitFor();
   assert.equal(await page.getByTestId('shot-version-latest').count(), 0, '已是最新版时不再另示「最新」');
   // 屏幕阅读器名称包含分镜编号、当前版本、总版本；缩略图与网格共用同一份版本计算。
   assert.equal(

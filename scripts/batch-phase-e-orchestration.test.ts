@@ -27,9 +27,9 @@ const storageRoot = path.join(root, 'storage');
 fs.mkdirSync(storageRoot, { recursive: true });
 const previousDataRoot = process.env.CREATIVE_STUDIO_DATA_ROOT;
 process.env.CREATIVE_STUDIO_DATA_ROOT = root;
+const db = new Database(path.join(root, 'workbench.db'));
 
 try {
-  const db = new Database(path.join(root, 'workbench.db'));
   db.pragma('foreign_keys = ON');
   db.exec(`
     CREATE TABLE projects (id TEXT PRIMARY KEY, productName TEXT, sellingPointsJson TEXT, name TEXT NOT NULL, productCode TEXT DEFAULT '', exportDirName TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL DEFAULT (datetime('now')), storeCode TEXT NOT NULL DEFAULT '', productSubmodel TEXT NOT NULL DEFAULT '', productionType TEXT NOT NULL DEFAULT '', editorName TEXT NOT NULL DEFAULT '', namingDate TEXT NOT NULL DEFAULT '', currentExportIdentityId TEXT);
@@ -286,10 +286,10 @@ try {
   );
 
   // 编排器按 arrangement.narration 判口播就绪;fixture 把口播已就绪写回 arrangement,
-  // 对齐真实口播执行器行为(真实流里口播先于分配,渲染契约天然包含口播)。
+  // 这里复用模拟渲染结果来验证发布幂等。关闭包装，真实布局由 batch-export-layout.test.ts 覆盖。
   db.prepare(`
     UPDATE batch_output_versions
-    SET arrangementJson = json_set(arrangementJson, '$.narration.productionReady', json('true'))
+    SET arrangementJson = json_set(arrangementJson, '$.narration.productionReady', json('true'), '$.packaging.enabled', json('false'))
     WHERE id = ?
   `).run(output.outputVersionId);
 
@@ -538,9 +538,9 @@ try {
   assert.equal(readBatchPlanReview(db, 'project-1', batchId, publishPlanId).decision, null, '撤销审核后回到未审核态');
   setBatchPlanReviews(db, 'project-1', batchId, { planIds: [publishPlanId], decision: 'approved' });
 
-  db.close();
   console.log('batch Phase E orchestration tests passed');
 } finally {
+  db.close();
   if (previousDataRoot === undefined) delete process.env.CREATIVE_STUDIO_DATA_ROOT;
   else process.env.CREATIVE_STUDIO_DATA_ROOT = previousDataRoot;
   fs.rmSync(root, { recursive: true, force: true });

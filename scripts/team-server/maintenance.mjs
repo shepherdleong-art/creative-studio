@@ -6,10 +6,10 @@ import Database from 'better-sqlite3';
 import { resolveDeploymentConfig } from './generate-config.mjs';
 import { sha256File, verifyReleaseManifest } from './distribution.mjs';
 import { runControlledServiceAction } from './service-control.mjs';
-import { createTeamBackup, verifyTeamBackup } from '../../lib/team-service/maintenance/backup.ts';
-import { MaintenanceJobStore } from '../../lib/team-service/maintenance/jobs.ts';
+import { createTeamBackup, createTeamBackupId, recoverInterruptedTeamBackup, TeamBackupSnapshotTimeoutError, verifyTeamBackup } from '../../lib/team-service/maintenance/backup.ts';
+import { dataRootIdentity } from '../../lib/team-service/maintenance/paths.ts';
 import { runMaintenanceWorker, maintenanceGlobalLockPath } from '../../lib/team-service/maintenance/worker.ts';
-import { acquireSchemaUpgradeLock } from '../../lib/schema-upgrade/lock.ts';
+import { acquireSchemaUpgradeLock, SchemaUpgradeLockTimeoutError } from '../../lib/schema-upgrade/lock.ts';
 import { restoreTeamBackup } from '../../lib/team-service/maintenance/restore.ts';
 import { runTeamRelease, rollbackTeamRelease, readTeamReleasePointer, switchTeamReleasePointerIdempotent } from '../../lib/team-service/maintenance/release.ts';
 import { acquireLifecycleBarrier, releaseLifecycleBarrier } from '../../lib/team-service/lifecycle/index.ts';
@@ -155,32 +155,30 @@ function backupDirectory(config, type, backupId) {
   if (path.dirname(directory).toLowerCase() !== root.toLowerCase()) throw new Error('备份路径越界');
   return directory;
 }
-function acquireDailyLock(config) {
+async function acquireDailyLock(config) {
   const directory = path.join(config.backupRoot, 'locks');
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const file = path.join(directory, 'daily.lock');
-  const staleBefore = Date.now() - 12 * 60 * 60 * 1000;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const fd = fs.openSync(file, 'wx', 0o600);
-      try {
-        fs.writeFileSync(fd, `${JSON.stringify({ schemaVersion: 1, pid: process.pid, startedAt: new Date().toISOString() })}\n`);
-      } finally {
-        fs.closeSync(fd);
+  const lock = await acquireSchemaUpgradeLock({lockDatabasePath: path.join(directory, 'daily.lock.db'), timeoutMs: 0})
+    .catch((error) => {
+      if (error instanceof SchemaUpgradeLockTimeoutError) return null;
+      throw error;
+    });
+  if (!lock) return null;
+  try {
+    // A runner from the previous release may still own a legacy lock file.
+    const legacy = path.join(directory, 'daily.lock');
+    const stat = fs.statSync(legacy, { throwIfNoEntry: false });
+    if (stat) {
+      if (stat.mtimeMs >= Date.now() - 12 * 60 * 60 * 1000) {
+        lock.release();
+        return null;
       }
-      return () => fs.rmSync(file, { force: true });
-    } catch (error) {
-      if (error?.code !== 'EEXIST') throw error;
-      let stale = false;
-      try {
-        const stat = fs.statSync(file);
-        stale = stat.mtimeMs < staleBefore;
-      } catch {}
-      if (!stale || attempt > 0) return null;
-      fs.rmSync(file, { force: true });
+      fs.rmSync(legacy, { force: true });
     }
+    return lock;
+  } catch (error) {
+    lock.release();
+    throw error;
   }
-  return null;
 }
 function compatibilityReport(file) {
   if (!file) throw new Error('更新/兼容回切必须提供隔离验证兼容性报告');
@@ -292,7 +290,7 @@ async function makeBackup(config, db, principal, type, backupId, configPath, reu
       };
     }
   }
-  return createTeamBackup({
+  return await createTeamBackup({
     db, principal, dataRoot: config.dataRoot, storageRoot: path.join(config.dataRoot, 'storage'),
     backupRoot: config.backupRoot, deploymentId: config.deploymentId, type,
     release: async () => {
@@ -329,6 +327,38 @@ try {
       configPath,
       once: args.includes('--once'),
       jobId: argument('--job-id') || undefined,
+      recoverInterruptedBackups: async () => {
+        const activeConfig = resolveDeploymentConfig(readJson(configPath));
+        const db = openDatabase(activeConfig.dataRoot);
+        try {
+          const recovered = await recoverInterruptedTeamBackup({ ...activeConfig, db });
+          const dailyJobPath = path.join(activeConfig.backupRoot, 'daily-job.json');
+          if (!fs.existsSync(dailyJobPath)) return;
+          const state = readJson(dailyJobPath);
+          if (state.status !== 'running') return;
+          let success = recovered?.type === 'daily' && recovered.backupId === state.backupId ? recovered.success : undefined;
+          if (recovered?.type === 'daily' && recovered.backupId === state.backupId && !success) {
+            writeDailyJob(activeConfig, { status: 'failed', backupId: state.backupId, startedAt: state.startedAt,
+              finishedAt: new Date().toISOString(), code: 'backup_interrupted' });
+            return;
+          }
+          // 进程可能在完成数据库收尾之后、更新计划任务状态之前退出。
+          if (!success) {
+            const directory = backupDirectory(activeConfig, 'daily', state.backupId);
+            const marker = path.join(directory, 'success.json');
+            if (!fs.existsSync(marker)) return;
+            const result = await verifyTeamBackup(directory);
+            if (!result.verified || result.manifest.deploymentId !== activeConfig.deploymentId
+              || result.manifest.dataRootIdentity !== dataRootIdentity(activeConfig.dataRoot)) return;
+            success = readJson(marker);
+          }
+          writeDailyJob(activeConfig, { status: 'success', backupId: state.backupId, startedAt: state.startedAt,
+            finishedAt: success.verifiedAt, durationMs: success.durationMs, totalBytes: success.totalBytes,
+            ...(success.newMediaBytes !== undefined ? { newMediaBytes: success.newMediaBytes } : {}) });
+        } finally {
+          db.close();
+        }
+      },
       executeRelease: async ({ job, onStage }) => {
         if (job.target.kind !== 'release') throw new Error('升级目标无效');
         const operationId = job.id;
@@ -491,15 +521,15 @@ try {
     const principal = adminPrincipal(db);
     if (command === 'backup') {
       const type = required('--type');
-      const backupId = argument('--backup-id');
-      const releaseLock = type === 'daily' ? acquireDailyLock(config) : null;
-      if (type === 'daily' && !releaseLock) {
+      const backupId = argument('--backup-id') || createTeamBackupId();
+      const dailyLock = type === 'daily' ? await acquireDailyLock(config) : null;
+      if (type === 'daily' && !dailyLock) {
         process.stdout.write(`${JSON.stringify({ status: 'skipped', reason: 'backup_in_progress' })}\n`);
         process.exit(0);
       }
       const startedAt = new Date().toISOString();
       try {
-        if (type === 'daily') writeDailyJob(config, { status: 'running', backupId: backupId || null, startedAt });
+        if (type === 'daily') writeDailyJob(config, { status: 'running', backupId, startedAt });
         try {
           const result = await makeBackup(config, db, principal, type, backupId, configPath);
           if (type === 'daily') {
@@ -507,23 +537,24 @@ try {
             writeDailyJob(config, {
               status: 'success', backupId: result.manifest.backupId, startedAt,
               finishedAt: result.success.verifiedAt, durationMs: result.success.durationMs,
-              totalBytes: result.success.totalBytes, availableBytes: space.bavail * space.bsize,
+              totalBytes: result.success.totalBytes, newMediaBytes: result.success.newMediaBytes, availableBytes: space.bavail * space.bsize,
+              rotation: result.rotation,
             });
           }
           process.stdout.write(`${JSON.stringify({
             status: 'success', backupId: result.manifest.backupId, backupType: type,
-            durationMs: result.success.durationMs, totalBytes: result.success.totalBytes,
+            durationMs: result.success.durationMs, totalBytes: result.success.totalBytes, newMediaBytes: result.success.newMediaBytes,
             rotation: result.rotation ?? null,
           })}\n`);
         } catch (error) {
           if (type === 'daily') writeDailyJob(config, {
-            status: 'failed', backupId: backupId || null, startedAt,
-            finishedAt: new Date().toISOString(), code: 'backup_failed',
+            status: 'failed', backupId, startedAt, finishedAt: new Date().toISOString(),
+            code: error instanceof TeamBackupSnapshotTimeoutError ? error.code : 'backup_failed',
           });
           throw error;
         }
       } finally {
-        releaseLock?.();
+        dailyLock?.release();
       }
     } else if (command === 'restore') {
       const type = required('--backup-type');

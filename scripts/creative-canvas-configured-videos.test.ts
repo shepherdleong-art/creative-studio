@@ -27,5 +27,11 @@ try {
   assert.ok(!JSON.stringify(models).includes('fixture.invalid'));
   db.prepare("UPDATE video_providers SET enabled = 0 WHERE id = 'company-seedance-2-0-fast'").run();
   assert.equal(configuredCanvasVideos(db).find(model => model.providerIdentity === 'jimeng-2-0')?.selectionAliasOf, undefined);
+  insert.run('company-qiniuyun-kling-4-0', '七牛可灵 4.0', 'qiniuyun/kling-4.0', 'http://127.0.0.1:4300', 'fixture-key');
+  const kling4 = configuredCanvasVideos(db).find(model => model.modelAlias === 'qiniuyun/kling-4.0')!;
+  assert.deepEqual(kling4.modes, ['image-to-video', 'frames-to-video', 'reference-to-video']);
+  assert.deepEqual(kling4.inputs.filter(rule => rule.kind === 'image' && rule.modes?.includes('image-to-video')).map(rule => [rule.roles, rule.min, rule.max]), [
+    [['first-frame'], 1, 1], [['last-frame'], 0, 1],
+  ]);
   console.log('PASS: duplicate video configuration options and historical canvas selection');
 } finally { db.close(); }
