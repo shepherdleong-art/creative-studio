@@ -637,15 +637,16 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   // §B 画面内文字直改提交：cover:* → varsOverrides（与默认值相同删键）；cue:* → pointCues 文本替换
   // （空文本拒绝，与时间线改字同规则）。提交后叠加层经既有重载键刷新，模板 refitAll 自动重排。
   const commitPackagingTextEdit = (pointId: string, rawText: string) => {
-    const defaultText = packagingTextEditRef.current?.defaultText;
+    const edit = packagingTextEditRef.current;
     openPackagingTextEdit(null);
+    if (rawText === edit?.initialText) return;
     const value = rawText.trim().slice(0, 40);
     if (pointId.startsWith('cover:')) {
       const key = pointId.slice('cover:'.length);
       if (!['title', 'subtitle', 'point1', 'point2', 'point3'].includes(key)) return;
       void applyGroupRef.current((current): GroupCommandInput => {
         const nextOverrides = packagingVarsOverridesRecord(current.packaging.varsOverrides);
-        if (value === defaultText) delete nextOverrides[key];
+        if (value === edit?.defaultText) delete nextOverrides[key];
         else nextOverrides[key] = value;
         return {
           type: 'set_packaging_config',

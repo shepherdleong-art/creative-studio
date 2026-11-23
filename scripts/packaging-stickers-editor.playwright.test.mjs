@@ -142,13 +142,13 @@ try {
     await title.dblclick();
     const editor = page.getByPlaceholder('留空则该元素不显示');
     assert.equal(await editor.inputValue(), automaticTitle);
-    const saveTitle = page.waitForResponse((response) => response.request().method() === 'PATCH'
-      && new URL(response.url()).pathname === groupPath
-      && (response.request().postData() || '').includes('"set_packaging_config"'));
+    const noTitleWrite = page.waitForRequest((request) => request.method() === 'PATCH'
+      && new URL(request.url()).pathname === groupPath
+      && (request.postData() || '').includes('"set_packaging_config"'), { timeout: 500 })
+      .then(() => false, (error) => error.name === 'TimeoutError');
     await editor.press('Enter');
-    const saved = await saveTitle;
-    assert.equal(saved.status(), 200);
-    assert.equal((await saved.json()).view.packaging.varsOverrides.title, undefined, '确认自动标题不得写入手动覆盖');
+    await editor.waitFor({ state: 'hidden' });
+    assert.equal(await noTitleWrite, true, '确认原文应关闭输入框，无需保存包装配置');
   } finally {
     settingsPending.resolve();
     await page.unroute('**/packaging-preview?**', delaySettings);
@@ -216,6 +216,7 @@ try {
   await eventually(async () => overlay.locator(`[data-sticker-id="${firstAuto.id}"]`).evaluate((element) => (
     Number(getComputedStyle(element).opacity) > 0.9 && element.querySelector('img').naturalWidth > 0
   )), '播放头进入自动贴纸区间时，贴纸应直接显示在成片画面上');
+  console.log('包装首屏通过：设置延迟时显示封面、跳转并确认原文，拒绝过期布局，播放头同步。');
   // 清空初始布置，以便继续验证手动添加和一键布置的交互。
   const cleared = await page.request.patch(groupUrl, { data: {
     type: 'set_packaging_config', expectedRevision: initialGroup.revision, variantId: fixture.variantId,
