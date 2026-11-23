@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium } from '@playwright/test';
+import { ensureDevApiRoutes } from './runtime/dev-route-readiness.mjs';
 import { stickerTestServerLaunch, setupStickerTeamBrowser, verifySingleStickerProductionExport } from './packaging-sticker-production-test.mjs';
 
 const fixturePath = 'scripts/final-edit-mixcut-real-project.fixture.ts';
@@ -50,7 +51,10 @@ async function startServer() {
       ready = response.status < 500;
     } catch { /* 等待启动 */ }
     if (ready) {
-      try { return { child, baseUrl, output: () => output, browserOptions: await setupStickerTeamBrowser(baseUrl, launch) }; }
+      try {
+        if (!process.env.STICKER_TEST_STANDALONE) await ensureDevApiRoutes(process.cwd());
+        return { child, baseUrl, output: () => output, browserOptions: await setupStickerTeamBrowser(baseUrl, launch) };
+      }
       catch (error) { await stopServer(child); throw error; }
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -95,7 +99,26 @@ try {
   await page.getByRole('heading', { name: '确认本次混剪要用的素材' }).waitFor();
   await page.getByLabel('选择分镜组').selectOption(fixture.shotSetA);
   await page.locator(`[data-mixcut-shot-set-id="${fixture.shotSetA}"]`).waitFor();
-  await page.getByRole('button', { name: /预览调整/ }).click();
+  const settingsPending = Promise.withResolvers();
+  const delaySettings = async (route) => {
+    if (new URL(route.request().url()).searchParams.get('format') !== 'html') await settingsPending.promise;
+    await route.continue().catch(() => {});
+  };
+  const overlay = page.frameLocator('iframe[data-packaging-overlay]');
+  await page.route('**/packaging-preview?**', delaySettings);
+  try {
+    const settingsRequest = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return url.pathname.endsWith('/packaging-preview') && url.searchParams.get('format') !== 'html';
+    });
+    await page.getByRole('button', { name: /预览调整/ }).click();
+    await settingsRequest;
+    await overlay.locator('[data-point-id="cover:title"]').waitFor({ state: 'visible' });
+    await overlay.locator('.packaging-sticker').first().waitFor({ state: 'attached' });
+  } finally {
+    settingsPending.resolve();
+    await page.unroute('**/packaging-preview?**', delaySettings);
+  }
   await page.locator('[data-track="video"]').waitFor();
 
   const readPatch = async (action, requireStickers = true) => {
@@ -128,7 +151,6 @@ try {
     assert.equal(body.status, 'resolved', body.message || '自动布局命令必须成功');
     return { request, view: body.view, result: body };
   };
-  const overlay = page.frameLocator('iframe[data-packaging-overlay]');
   const panel = page.locator('#packaging-stickers-panel');
   const assetButtons = panel.getByRole('button', { name: /^添加贴纸 / });
 

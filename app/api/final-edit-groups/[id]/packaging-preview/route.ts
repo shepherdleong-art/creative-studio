@@ -1,9 +1,9 @@
 import { PACKAGING_EDIT_BRIDGE_JS } from '@/lib/media-core/packaging-edit-bridge';
 import { PACKAGING_STICKER_EDIT_BRIDGE_JS } from '@/lib/media-core/packaging-sticker-edit-bridge';
 // 包装 v2/v3 实时预览端点（配置前置：预览发生在导出渲染之前）
-// GET ?variantId=&template=&format=json|html[&t=<秒>][&sync=1][&edit=1]
+// GET ?variantId=&template=&format=json|html[&t=<秒>][&sync=1][&edit=1][&metadata=1]
 //   json → { vars, defaults, frameUrl, template, timeline:{coverSec,totalSec,pointCues,pointCuesMode},
-//            layouts, pointCuesStale, pointCuesEdited }
+//            layouts, pointCuesStale, pointCuesEdited }（metadata=1 跳过封面吸色）
 //   html → 模板 index.html 注入变量（含 v3 时序 + §7 layouts）+ 封面帧底图 + <base> 静态资源；
 //          t 提供时 seek 到该时间点（暂停），否则自动循环播放（近似效果）；
 //          sync=1 → 不注入任何 autoplay/seek 脚本（时间轴由父页面经 window.__timelines['overlay'] 全权驱动，§3，优先级高于 t）；
@@ -18,7 +18,7 @@ import { dataRoot } from '@/lib/data-root';
 import { FinalEditError } from '@/lib/final-edit/errors';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { materializeCoverFrame } from '@/lib/final-edit/cover-frame';
-import { extractAccentColors } from '@/lib/final-edit/packaging-color';
+import { extractAccentColorsFromImage } from '@/lib/final-edit/packaging-color';
 import { buildPackagingVars, DEFAULT_PACKAGING_TEMPLATE, type PackagingVars } from '@/lib/final-edit/packaging-vars';
 import { computePointCuesKey, ensurePackagingPointCues, loadGroupNarrationText, type PointCue } from '@/lib/final-edit/packaging-cues';
 import { buildTimelineVars, loadProjectPackagingData, resolvePackagingDir, resolvePackagingTemplateDir } from '@/lib/final-edit/packaging';
@@ -40,11 +40,13 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
     const variantId = query.get('variantId') || '';
     const template = query.get('template') || DEFAULT_PACKAGING_TEMPLATE;
     const format = query.get('format') === 'html' ? 'html' : 'json';
+    const metadataOnly = format === 'json' && query.get('metadata') === '1';
     const seekT = Number(query.get('t'));
     const hasSeek = query.has('t') && Number.isFinite(seekT) && seekT >= 0;
     // §3：sync=1 时间轴完全由父页面驱动（优先级高于 t）；§6：edit=1 注入编辑桥
     const syncMode = query.get('sync') === '1';
     const editMode = query.get('edit') === '1';
+    const editorOverlay = format === 'html' && syncMode && editMode;
     const db = getDb();
     let group = getFinalEditWorkspace().load(groupId);
     const variant = group.variants.find((item) => item.id === variantId) || group.variants[0] || null;
@@ -63,7 +65,7 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
     let accents: string[] = [];
     // v4 四模板吸色注入（§11 同算法）：预览与成片共用 window.__palette，失败降级模板兜底色
     let palette: PackagingPalette | null = null;
-    if (variant.cover.sourceKey) {
+    if (!metadataOnly && variant.cover.sourceKey) {
       try {
         const frame = await materializeCoverFrame({
           db,
@@ -74,10 +76,10 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
           preset: variant.outputPreset,
         });
         const frameAbs = path.join(storageRoot, frame.relativePath);
-        accents = template === 'overlay-poster'
-          ? await extractAccentColors(frameAbs, 0, { projectId: group.projectId })
-          : [];
-        palette = await extractPackagingPalette(frameAbs, resolveTemplateHueMode(templateDir));
+        [accents, palette] = await Promise.all([
+          template === 'overlay-poster' ? extractAccentColorsFromImage(frameAbs) : [],
+          format === 'html' ? extractPackagingPalette(frameAbs, resolveTemplateHueMode(templateDir)) : null,
+        ]);
       } catch { /* 预览降级：无底图/无吸色，模板回退默认配色 */ }
     }
 
@@ -88,23 +90,26 @@ async function __teamRouteGET(request: Request, { params }: { params: Promise<{ 
     let pointCues: PointCue[] = group.packaging.pointCues ?? [];
     let pointCuesMode: 'timed' | 'even' | 'none' = group.packaging.pointCuesMode ?? 'none';
     let pointCuesKey: string | undefined = group.packaging.pointCuesKey;
-    try {
-      const ensured = await ensurePackagingPointCues(db, groupId);
-      pointCues = ensured.pointCues;
-      pointCuesMode = ensured.mode;
-      // 用提取后的最新键做过期比对：刚重提取完的组不会误报 stale（§7 手动编辑保护组保留旧键 → stale）
-      pointCuesKey = ensured.pointCuesKey;
-      if (group.packaging.layoutRuntimeBundleVersion === 2) group = getFinalEditWorkspace().load(groupId);
-    } catch (error) { if (group.packaging.layoutRuntimeBundleVersion === 2) throw error; /* 旧配置提取失败沿用已存/空 */ }
-    // §7：比对已存 pointCuesKey 与当前口播内容哈希（v2: 前缀口径，与 ensurePackagingPointCues 一致）
-    const pointCuesStale = pointCuesKey !== computePointCuesKey(loadGroupNarrationText(db, groupId));
-    const pointCuesEdited = group.packaging.pointCuesEdited === true;
+    // 编辑叠加层先使用保存的卖点，设置请求负责补提取和同步时间线。
+    if (!editorOverlay) {
+      try {
+        const ensured = await ensurePackagingPointCues(db, groupId);
+        pointCues = ensured.pointCues;
+        pointCuesMode = ensured.mode;
+        pointCuesKey = ensured.pointCuesKey;
+        if (group.packaging.layoutRuntimeBundleVersion === 2) group = getFinalEditWorkspace().load(groupId);
+      } catch (error) { if (group.packaging.layoutRuntimeBundleVersion === 2) throw error; /* 旧配置提取失败沿用已存/空 */ }
+    }
     const layouts = group.packaging.layouts ?? {};
     const coverSec = FINAL_EDIT_INTRO_DURATION_US / 1e6;
     const totalSec = Math.max(group.totalDurationUs / 1e6, coverSec + 0.2);
     const timeline = { coverSec, totalSec, pointCues, pointCuesMode };
 
-    if (format === 'json') return NextResponse.json({ vars, defaults, frameUrl, template, timeline, layouts, stickers: group.packaging.stickers ?? [], stickerDefaults: group.packaging.stickerDefaults ?? { animation: 'follow-template' }, layoutResolution: group.packaging.layoutResolution, pointCuesStale, pointCuesEdited }, { headers: { 'Cache-Control': 'no-store' } });
+    if (format === 'json') {
+      const pointCuesStale = pointCuesKey !== computePointCuesKey(loadGroupNarrationText(db, groupId));
+      const pointCuesEdited = group.packaging.pointCuesEdited === true;
+      return NextResponse.json({ vars, defaults, frameUrl, template, timeline, layouts, stickers: group.packaging.stickers ?? [], stickerDefaults: group.packaging.stickerDefaults ?? { animation: 'follow-template' }, layoutResolution: group.packaging.layoutResolution, pointCuesStale, pointCuesEdited }, { headers: { 'Cache-Control': 'no-store' } });
+    }
     if (group.packaging.layoutRuntimeBundleVersion === 2 && (group.packaging.layoutResolution?.status !== 'resolved'
       || group.packaging.layoutResolution.outputWidth !== OUTPUT_PRESETS[variant.outputPreset].width
       || group.packaging.layoutResolution.outputHeight !== OUTPUT_PRESETS[variant.outputPreset].height)) {

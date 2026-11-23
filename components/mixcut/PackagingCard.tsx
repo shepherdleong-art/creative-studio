@@ -38,6 +38,7 @@ export interface PackagingPreviewData {
     pointCuesMode: 'timed' | 'even' | 'none';
   };
   layouts?: PackagingLayouts;
+  layoutResolution?: FinalEditGroupView['packaging']['layoutResolution'];
   stickers: PackagingStickerInstance[];
   stickerDefaults: PackagingStickerDefaults;
   pointCuesStale?: boolean;
