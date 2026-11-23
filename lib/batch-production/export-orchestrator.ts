@@ -9,7 +9,7 @@ import { createBatchTask, type BatchTaskStatus } from './tasks.ts';
 import { buildPackagingVars, parsePackagingConfig } from '../media-core/packaging-vars.ts';
 import { assertPackagingLayoutExportReady } from '../media-core/packaging-layout-manifest.ts';
 import { packagingAutoLayoutInputHash, resolvePackagingAutoLayout } from '../media-core/packaging-auto-layout-service.ts';
-import { FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
+import { batchPackagingLayoutInput } from './packaging.ts';
 import { resolveBatchOutputSize } from './output-presets.ts';
 import {
   buildFullRenderTaskRequestKey,
@@ -128,20 +128,7 @@ async function prepareExportLayout(
   const outputSize = resolveBatchOutputSize(arrangement.preset);
   let prepared = arrangement;
   if (config.enabled && config.layoutRuntimeBundleVersion === 2) {
-    const narration = asRecord(arrangement.narration);
-    // 与整片 renderer 一致：正式口播决定正文时长，不取画面与口播的最大值。
-    const durationUs = narration?.productionReady === true ? narration.durationUs
-      : Math.max(0, ...(Array.isArray(arrangement.clips)
-        ? arrangement.clips.map(clip => Number(asRecord(clip)?.timelineEndUs) || 0) : []));
-    if (typeof durationUs !== 'number' || !Number.isSafeInteger(durationUs) || durationUs <= 0) {
-      throw new BatchDomainError('invalid_input', '自动布局的成片时长无效');
-    }
-    const input = {
-      config, vars: buildPackagingVars({ subtitleCues: [], overrides: config.varsOverrides }),
-      totalSec: durationUs / 1e6 + FINAL_EDIT_INTRO_DURATION_US / 1e6,
-      coverSec: FINAL_EDIT_INTRO_DURATION_US / 1e6,
-      outputWidth: outputSize.width, outputHeight: outputSize.height,
-    };
+    const input = batchPackagingLayoutInput(arrangement, config);
     const inputHash = packagingAutoLayoutInputHash(input);
     if (config.layoutResolution?.status !== 'resolved' || config.layoutResolution.inputHash !== inputHash) {
       const resolution = await resolveLayout(input);

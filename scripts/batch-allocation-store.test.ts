@@ -10,6 +10,8 @@ import { createProjectScript, snapshotScriptIntoBatch } from '../lib/batch-produ
 import { createOutputPlansForSnapshot } from '../lib/batch-production/plans.ts';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '../lib/media-core/render-contract.ts';
 import type { FinalEditPackagingConfig } from '../lib/media-core/packaging-vars.ts';
+import { initializeBatchOutputStickers } from '../lib/batch-production/packaging.ts';
+import { packagingAutoLayoutInputHash, type resolvePackagingAutoLayout } from '../lib/media-core/packaging-auto-layout-service.ts';
 import {
   clearBatchAssetExclusion,
   listBatchAssetExclusions,
@@ -56,15 +58,43 @@ try {
     const row = db.prepare('SELECT arrangementJson FROM batch_output_versions WHERE id=?').get(outputVersionId) as { arrangementJson: string };
     return JSON.parse(row.arrangementJson).packaging;
   };
-  const packaged = readPackaging(first.outputVersionIds[plans[0]]);
-  assert.equal(packaged.enabled, true, '新分配成片默认开启包装');
-  assert.equal(packaged.varsOverrides.title, '稳定', '包装封面读取冻结脚本主标题');
-  assert.equal(packaged.varsOverrides.subtitle, '标题', '包装副标题联动');
-  assert.ok(Array.isArray(packaged.pointCues), '默认包装卖点已持久化，预览和导出共用');
+  const firstVersion = first.outputVersionIds[plans[0]];
+  const initial = readPackaging(firstVersion);
+  assert.equal(initial.enabled, true, '新分配成片默认开启包装');
+  assert.equal(initial.varsOverrides.title, '稳定', '包装封面读取冻结脚本主标题');
+  assert.equal(initial.varsOverrides.subtitle, '标题', '包装副标题联动');
+  assert.ok(Array.isArray(initial.pointCues), '默认包装卖点已持久化，预览和导出共用');
+  assert.equal(initial.stickers, undefined, '求解完成前不能写入自动贴纸');
+  await assert.rejects(initializeBatchOutputStickers({ db, outputVersionId: firstVersion,
+    resolveLayout: async () => ({ status: 'infeasible' }), }), /基础贴纸自动布置未完成/);
+  assert.deepEqual(readPackaging(firstVersion), initial, '求解失败时保留基础包装配置');
+  const resolveLayout: typeof resolvePackagingAutoLayout = async (input) => ({
+    schemaVersion: 1, status: 'resolved', runtimeBundleVersion: 2,
+    inputHash: packagingAutoLayoutInputHash(input), geometryManifestHash: 'a'.repeat(64),
+    outputWidth: input.outputWidth, outputHeight: input.outputHeight, elements: {},
+    validation: { frameCount: 1, digest: 'fixture' },
+  });
+  const secondVersion = first.outputVersionIds[plans[1]];
+  assert.equal(await initializeBatchOutputStickers({ db, outputVersionId: secondVersion, async resolveLayout(input) {
+    db.prepare(`UPDATE batch_output_versions SET arrangementJson=json_set(arrangementJson, '$.review', json('{"decision":"approved"}')) WHERE id=?`)
+      .run(secondVersion);
+    return resolveLayout(input);
+  } }), false, '审核先提交时不得写入迟到的贴纸');
+  assert.equal(readPackaging(secondVersion).stickers, undefined);
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson=json_remove(arrangementJson, '$.review') WHERE id=?`).run(secondVersion);
   const stickerIds = new Set<string>();
   for (const plan of plans) {
-    const { stickers } = readPackaging(first.outputVersionIds[plan]);
-    assert.equal(stickers?.length, 6, '首次分配时，每条成片应已保存六张基础贴纸');
+    const outputVersionId = first.outputVersionIds[plan];
+    assert.equal(await initializeBatchOutputStickers({ db, outputVersionId, async resolveLayout(input) {
+      const resolution = await resolveLayout(input);
+      db.prepare(`UPDATE batch_output_versions SET arrangementJson=json_set(arrangementJson, '$.packaging.layoutResolution', json(?)) WHERE id=?`)
+        .run(JSON.stringify({ ...resolution, status: 'stale' }), outputVersionId);
+      return resolution;
+    } }), true, '同内容的派生缓存更新不得拒绝已验证贴纸');
+    const { stickers, layoutResolution } = readPackaging(outputVersionId);
+    assert.equal(layoutResolution?.status, 'resolved');
+    assert.equal(stickers?.length, 6, '首次封面任务应原子保存六张贴纸与规范布局');
+    assert.equal(await initializeBatchOutputStickers({ db, outputVersionId, resolveLayout }), false);
     const output = first.result.outputs.find((item) => item.planId === plan)!;
     const bodyFrames = Math.floor(output.arrangement.targetDurationUs / 1e6 * FINAL_EDIT_FPS + 1e-6);
     for (const sticker of stickers) {
@@ -74,6 +104,7 @@ try {
       stickerIds.add(sticker.id);
     }
   }
+  const packaged = readPackaging(firstVersion);
   assert.equal(Object.keys(first.outputVersionIds).length, 2);
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM batch_output_versions`).get() as { n: number }).n, 2);
   assert.equal((db.prepare(`SELECT currentArtifactId FROM batch_output_plans WHERE id = ?`).get(plans[0]) as { currentArtifactId: string }).currentArtifactId, 'artifact-sentinel');

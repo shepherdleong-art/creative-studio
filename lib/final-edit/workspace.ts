@@ -53,11 +53,8 @@ import {
 import { assertNarrationPlaybackRate, assertTtsSpeed } from './tts-speed.ts';
 import { buildPackagingVars, DEFAULT_PACKAGING_TEMPLATE, loadProjectPackagingData, mergePackagingLayouts, PACKAGING_TEMPLATE_IDS, parsePackagingConfig, sanitizePackagingVarsOverrides, sanitizePointCues, type PackagingLayouts, type PackagingLayoutsPatch, type PackagingPointLayout, type PackagingTemplateId } from './packaging-vars.ts';
 import { assertPackagingLayoutExportReady } from '../media-core/packaging-layout-manifest.ts';
-import { packagingAutoLayoutInputHash, resolvePackagingAutoLayout } from '../media-core/packaging-auto-layout-service.ts';
-import { assertPackagingStickerFrames, DEFAULT_PACKAGING_STICKER_DEFAULTS, PackagingStickerError, STICKER_AUTO_MIN_BODY_FRAMES, validatePackagingStickerDefaults, validatePackagingStickers, type PackagingStickerDefaults, type PackagingStickerInstance } from '../media-core/packaging-stickers.ts';
-import { planPackagingStickerAutoLayout, type PackagingStickerPlanningAsset } from '../media-core/packaging-sticker-planner.ts';
-import { readPackagingStickerPlanningAssets } from '../media-core/packaging-sticker-assets.ts';
-import { resolvePackagingDir } from '../media-core/packaging-runtime.ts';
+import { packagingAutoLayoutInputHash, resolveInitialPackagingStickers, resolvePackagingAutoLayout } from '../media-core/packaging-auto-layout-service.ts';
+import { assertPackagingStickerFrames, PackagingStickerError, STICKER_AUTO_MIN_BODY_FRAMES, validatePackagingStickerDefaults, validatePackagingStickers, type PackagingStickerDefaults, type PackagingStickerInstance } from '../media-core/packaging-stickers.ts';
 import { buildPointCues, computePointCuesKey, ensurePackagingPointCues, extractSellingPointsWithLLM, loadProjectSellingPoints, mergePointCuesIntoPackagingJson, type PointCue } from './packaging-cues.ts';
 import { resolveLayoutRuntimeBundleVersion, type PackagingLayoutResolution } from '../media-core/packaging-auto-layout.ts';
 import { preparePreviewCacheKey } from './prepare-preview.ts';
@@ -174,6 +171,7 @@ export interface FinalEditWorkspaceDependencies {
   semanticRetrySleep?(delayMs: number): Promise<void>;
   log?(input: { jobId: string; projectId: string; level: 'warn' | 'error'; message: string; attempt: number }): void;
   detectBeatPoints?(input: { audioPath: string; durationUs: number }): Promise<BeatDetectionResult>;
+  resolvePackagingLayout?: typeof resolvePackagingAutoLayout;
   materializeCoverFrame?(input: { sourcePath: string; cacheNamespace: string; cacheKey: string; frameUs: number }): Promise<void>;
   synthesize(input: {
     projectId: string;
@@ -1578,15 +1576,45 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         }
       } catch { /* 卖点预提取失败不阻塞生成：预览/导出端点会按需重提取 */ }
       const bodyFrames = converted.timeline.bodyFrames;
-      let stickerAssets: PackagingStickerPlanningAsset[] | undefined;
-      let stickerCatalogUnavailable = false;
+      const readPackaging = db.prepare('SELECT packagingJson, revision FROM final_edit_groups WHERE id=?');
+      type PackagingState = { packagingJson: string | null; revision: number };
+      const withPreparedPoints = (packagingJson: string | null) => {
+        const config = parsePackagingConfig(packagingJson);
+        const pointsAlreadySaved = config.pointCues !== undefined
+          && (config.pointCuesEdited || config.pointCuesKey === pointCuesKey);
+        return config.enabled && preparedPoints && !pointsAlreadySaved
+          ? mergePointCuesIntoPackagingJson(packagingJson, preparedPoints.pointCues, pointCuesKey, preparedPoints.mode).packagingJson
+          : packagingJson;
+      };
+      const initialPackaging = readPackaging.get(groupId) as PackagingState;
+      let resolvedPackagingJson: string | undefined;
       if (nextIndex === 1 && bodyFrames >= STICKER_AUTO_MIN_BODY_FRAMES) {
         try {
-          stickerAssets = readPackagingStickerPlanningAssets(resolvePackagingDir());
-        } catch {
-          stickerCatalogUnavailable = true;
+          const config = parsePackagingConfig(withPreparedPoints(initialPackaging.packagingJson));
+          if (config.enabled && config.stickers === undefined) {
+            const current = load(groupId);
+            const dimensions = OUTPUT_PRESETS[input.outputPreset];
+            const coverSec = FINAL_EDIT_INTRO_DURATION_US / 1e6;
+            pushDetail(null, '正在布置包装贴纸…');
+            const resolved = await resolveInitialPackagingStickers({
+              config, bodyFrames, coverSec, signal,
+              vars: buildPackagingVars({
+                coverTitle: { primary: current.coverTitle.primary.text, secondary: current.coverTitle.secondary.text },
+                subtitleCues: cues, project: loadProjectPackagingData(db, input.projectId), overrides: config.varsOverrides,
+              }),
+              totalSec: (FINAL_EDIT_INTRO_DURATION_US + narration.durationUs / current.script.narrationConfig.playbackRate) / 1e6,
+              outputWidth: dimensions.width, outputHeight: dimensions.height,
+            }, deps.resolvePackagingLayout);
+            if (resolved) resolvedPackagingJson = JSON.stringify(resolved);
+          }
+        } catch (error) {
+          if (signal?.aborted || isAbortError(error)) throw error;
+          for (const variant of variants) {
+            variant.issues.push({ code: 'sticker_auto_layout_failed', severity: 'warning', message: '基础贴纸自动布置失败，可在「贴纸」中重试' });
+          }
         }
       }
+      assertNotAborted(signal);
       const transaction = db.transaction(() => {
         if (requireAccessContext().kind === 'team') {
           registerManagedFile({
@@ -1595,41 +1623,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             references: [{ resourceType: 'final_group', resourceId: groupId, role: 'output' }],
           });
         }
-        db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, durationGateJson=?, status=?, phase='ready', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, serializeNarrationTimings(narration), JSON.stringify(cues), JSON.stringify(durationGateForRun), variants.some((variant) => variant.issues.some((issue) => issue.severity === 'blocking')) ? 'partial' : 'ready', now(), groupId);
-        const { packagingJson } = db.prepare(`SELECT packagingJson FROM final_edit_groups WHERE id=?`).get(groupId) as { packagingJson: string | null };
-        const packagingConfig = parsePackagingConfig(packagingJson);
-        let nextPackagingJson = packagingJson;
-        if (packagingConfig.enabled) {
-          const pointsAlreadySaved = packagingConfig.pointCues !== undefined
-            && (packagingConfig.pointCuesEdited || packagingConfig.pointCuesKey === pointCuesKey);
-          if (preparedPoints && !pointsAlreadySaved) {
-            nextPackagingJson = mergePointCuesIntoPackagingJson(packagingJson, preparedPoints.pointCues, pointCuesKey, preparedPoints.mode).packagingJson;
-          }
-          if (packagingConfig.stickers === undefined && (stickerAssets || stickerCatalogUnavailable)) {
-            try {
-              const stickers = stickerAssets && planPackagingStickerAutoLayout({
-                bodyFrames,
-                template: packagingConfig.template,
-                assets: stickerAssets,
-                animation: (packagingConfig.stickerDefaults ?? DEFAULT_PACKAGING_STICKER_DEFAULTS).animation,
-                autoGroupId: `auto_${uuidv4()}`,
-                random: Math.random,
-                createId: () => `s_${uuidv4()}`,
-              });
-              if (stickers) {
-                nextPackagingJson = JSON.stringify({ ...parsePackagingConfig(nextPackagingJson), stickers });
-              }
-            } catch {
-              stickerCatalogUnavailable = true;
-            }
-            if (stickerCatalogUnavailable) {
-              for (const variant of variants) {
-                variant.issues.push({ code: 'sticker_auto_layout_failed', severity: 'warning', message: '基础贴纸自动布置失败，可在「贴纸」中重试' });
-              }
-            }
-          }
-        }
-        if (nextPackagingJson !== packagingJson) db.prepare(`UPDATE final_edit_groups SET packagingJson=? WHERE id=?`).run(nextPackagingJson, groupId);
+        const currentPackaging = readPackaging.get(groupId) as PackagingState;
+        const nextPackagingJson = resolvedPackagingJson && currentPackaging.revision === initialPackaging.revision
+          && currentPackaging.packagingJson === initialPackaging.packagingJson
+          ? resolvedPackagingJson : withPreparedPoints(currentPackaging.packagingJson);
+        db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, durationGateJson=?, packagingJson=?, status=?, phase='ready', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, serializeNarrationTimings(narration), JSON.stringify(cues), JSON.stringify(durationGateForRun), nextPackagingJson, variants.some((variant) => variant.issues.some((issue) => issue.severity === 'blocking')) ? 'partial' : 'ready', now(), groupId);
         for (let index = 0; index < variants.length; index += 1) {
           const variant = variants[index];
           db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, issuesJson, matchDiagnosticsJson, overlapJson, revision, previewRelativePath, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, ?, ?, ?)`).run(variant.id, groupId, variant.indexNum, variant.outputPreset, JSON.stringify(variant.timeline), JSON.stringify(variant.bgm), JSON.stringify(variant.cover), JSON.stringify(variant.issues), JSON.stringify(variant.matchDiagnostics || {}), previewPaths.get(variant.id) || null, now(), now());

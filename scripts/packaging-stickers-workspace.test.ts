@@ -6,15 +6,17 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { PackagingStickerInstance } from '../lib/media-core/packaging-stickers.ts';
 
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-stickers-workspace-'));
+process.env.CREATIVE_STUDIO_DATA_ROOT = root;
 const { createFinalEditWorkspace, FinalEditError } = await import('../lib/final-edit/workspace.ts');
 const { initFinalEditSchema } = await import('../lib/final-edit/schema.ts');
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-stickers-workspace-'));
+const { packagingAutoLayoutInputHash } = await import('../lib/media-core/packaging-auto-layout-service.ts');
 const storageRoot = path.join(root, 'storage');
 fs.mkdirSync(path.join(storageRoot, 'videos'), { recursive: true });
 const db = new Database(':memory:');
 db.pragma('foreign_keys = ON');
 db.exec(`
-  CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL, exportDirName TEXT NOT NULL DEFAULT '', finalEditAutoUseLimit INTEGER DEFAULT 2, sellingPointsJson TEXT);
+  CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productName TEXT, model TEXT NOT NULL DEFAULT '', productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL, exportDirName TEXT NOT NULL DEFAULT '', finalEditAutoUseLimit INTEGER DEFAULT 2, sellingPointsJson TEXT);
   CREATE TABLE shot_sets (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL);
   CREATE TABLE shots (id TEXT PRIMARY KEY, shotSetId TEXT NOT NULL, indexNum INTEGER NOT NULL, sourceImageId TEXT NOT NULL, latestGeneratedImageId TEXT);
   CREATE TABLE image_assets (id TEXT PRIMARY KEY, projectId TEXT, filename TEXT NOT NULL, path TEXT NOT NULL, mimeType TEXT NOT NULL DEFAULT 'image/png');
@@ -43,6 +45,11 @@ const workspace = createFinalEditWorkspace({
   db,
   storageRoot,
   runJobsInline: true,
+  resolvePackagingLayout: async (input) => ({
+    schemaVersion: 1, status: 'resolved', runtimeBundleVersion: 2, inputHash: packagingAutoLayoutInputHash(input),
+    geometryManifestHash: 'a'.repeat(64), outputWidth: input.outputWidth, outputHeight: input.outputHeight,
+    elements: {}, validation: { frameCount: 1, digest: 'fixture' },
+  }),
   probeVideo: async () => ({ durationUs: 12_000_000, width: 720, height: 960, fps: 24 }),
   analyzeVideo: async () => ({
     summary: '测试素材', sellingPoints: [], semanticTags: [],
@@ -79,6 +86,7 @@ try {
   const group = workspace.load(job.groupId);
   const variant = group.variants[0];
   assert.equal(group.packaging.stickers?.length, 6, '第二步生成成功时应已保存六张基础贴纸');
+  assert.equal(group.packaging.layoutResolution?.status, 'resolved', '贴纸与已验证布局一同落库');
   assert.deepEqual(group.packaging.pointCues?.map((cue) => cue.text), ['第一段'], '自动布置贴纸时应同时保存卖点');
   assert.ok(group.packaging.stickers?.every((item) => item.origin.kind === 'auto'
     && item.startFrame >= variant.timeline.introFrames

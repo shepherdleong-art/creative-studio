@@ -24,9 +24,6 @@ import {
   type BatchSemanticMatrixRecord,
 } from './semantic-match.ts';
 import { resolveModule4AssetGroupKeys } from './media-catalog.ts';
-import { readPackagingStickerPlanningAssets } from '../media-core/packaging-sticker-assets.ts';
-import { resolvePackagingDir } from '../media-core/packaging-runtime.ts';
-import type { PackagingStickerPlanningAsset } from '../media-core/packaging-sticker-planner.ts';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -490,14 +487,6 @@ function activateAllocationRun(
   if (updated.changes !== 1) throw new BatchDomainError('not_found', '批次版本不存在');
 }
 
-function loadAllocationStickerAssets(): PackagingStickerPlanningAsset[] | undefined {
-  try {
-    return readPackagingStickerPlanningAssets(resolvePackagingDir());
-  } catch {
-    return undefined;
-  }
-}
-
 function persistResult(
   db: Database.Database,
   batchVersionId: string,
@@ -506,10 +495,9 @@ function persistResult(
     now?: () => Date;
     onlyPlanId?: string;
     writeOutputVersions?: boolean;
-    stickerAssets?: PackagingStickerPlanningAsset[];
   },
 ): PersistedAllocationRun {
-  const { now, onlyPlanId, writeOutputVersions = true, stickerAssets } = options;
+  const { now, onlyPlanId, writeOutputVersions = true } = options;
   const createdAt = nowIso(now);
   const runId = randomUUID();
   db.prepare(`
@@ -542,7 +530,7 @@ function persistResult(
       subtitleCues: output.arrangement.subtitle.cues, narration: output.arrangement.narration,
       visualDurationUs: Math.max(0, ...output.arrangement.clips.map(clip => clip.timelineEndUs)) };
     const previous = plan.previousArrangementJson ? asRecord(parseJson(plan.previousArrangementJson)).packaging : undefined;
-    const packaging = initialBatchPackagingConfig(db, scope.projectId, view, previous, versionNumber === 1 ? stickerAssets : undefined);
+    const packaging = initialBatchPackagingConfig(db, scope.projectId, view, previous);
     db.prepare(`
       INSERT INTO batch_output_versions
         (id, planId, versionNumber, arrangementJson, createdAt, allocationRunId)
@@ -567,7 +555,6 @@ export function persistBatchAllocation(
   batchVersionId: string,
   options: AllocationStoreOptions = {},
 ): PersistedAllocationRun {
-  const stickerAssets = loadAllocationStickerAssets();
   return db.transaction(() => {
     const { input } = buildFrozenInput(db, projectId, batchVersionId, options);
     const result = allocateBatch(input);
@@ -594,7 +581,7 @@ export function persistBatchAllocation(
       activateAllocationRun(db, batchVersionId, existing.runId);
       return existing;
     }
-    return persistResult(db, batchVersionId, result, { now: options.now, stickerAssets });
+    return persistResult(db, batchVersionId, result, { now: options.now });
   })();
 }
 
@@ -616,8 +603,7 @@ export function persistOutputReallocation(
   reason = 'manual',
   options: AllocationStoreOptions = {},
 ): PersistedAllocationRun {
-  const stickerAssets = loadAllocationStickerAssets();
-  const persistOptions = { now: options.now, onlyPlanId: targetPlanId, stickerAssets };
+  const persistOptions = { now: options.now, onlyPlanId: targetPlanId };
   return db.transaction(() => {
     const { input } = buildFrozenInput(db, projectId, batchVersionId, options);
     const currentRunRow = db.prepare(`

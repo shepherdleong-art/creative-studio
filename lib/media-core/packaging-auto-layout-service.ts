@@ -1,15 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { dataRoot } from '../data-root.ts';
 import { spawnHidden, spawnSyncHidden } from '../spawn-hidden.ts';
 import type { FinalEditPackagingConfig, PackagingVars } from './packaging-vars.ts';
 import { assertSupportedPackagingConfigLayoutVersions } from './packaging-vars.ts';
-import { assertSupportedPackagingStickerLayoutVersions } from './packaging-stickers.ts';
+import { assertSupportedPackagingStickerLayoutVersions, STICKER_AUTO_MIN_BODY_FRAMES } from './packaging-stickers.ts';
 import type { PackagingLayoutResolution } from './packaging-auto-layout.ts';
 import { buildTimelineVars, PackagingError, resolvePackagingDir, resolvePackagingNode } from './packaging-runtime.ts';
 import { buildConfigFontFacesCss } from './packaging-font.ts';
-import { resolvePackagingStickerAssets } from './packaging-sticker-assets.ts';
+import { readPackagingStickerPlanningAssets, resolvePackagingStickerAssets } from './packaging-sticker-assets.ts';
+import { planPackagingStickerAutoLayout } from './packaging-sticker-planner.ts';
 import type { PackagingPalette } from './packaging-palette.ts';
 import { materializePackagingLayoutBundle, packagingLayoutDependenciesRoot, packagingLayoutEngineExecutable } from './packaging-layout-manifest.ts';
 
@@ -19,6 +20,31 @@ export type PackagingAutoLayoutFailure = {
   conflicts?: unknown;
 };
 export type PackagingAutoLayoutResult = PackagingLayoutResolution | PackagingAutoLayoutFailure;
+
+export async function resolveInitialPackagingStickers(
+  input: Parameters<typeof resolvePackagingAutoLayout>[0] & { bodyFrames: number },
+  resolveLayout = resolvePackagingAutoLayout,
+): Promise<FinalEditPackagingConfig | undefined> {
+  if (!input.config.enabled || input.config.stickers !== undefined || input.bodyFrames < STICKER_AUTO_MIN_BODY_FRAMES) return undefined;
+  const stickers = planPackagingStickerAutoLayout({
+    bodyFrames: input.bodyFrames,
+    template: input.config.template,
+    assets: readPackagingStickerPlanningAssets(resolvePackagingDir()),
+    animation: input.config.stickerDefaults?.animation ?? 'follow-template',
+    autoGroupId: `auto_${randomUUID()}`,
+    random: Math.random,
+    createId: () => `s_${randomUUID()}`,
+    outputWidth: input.outputWidth,
+    outputHeight: input.outputHeight,
+  });
+  if (!stickers) throw new PackagingError('sticker_auto_pool_invalid', '当前正文或画幅无法生成基础贴纸', 409);
+  const config = { ...input.config, stickers, layoutRuntimeBundleVersion: 2 as const, layoutResolution: undefined };
+  const resolution = await resolveLayout({ ...input, config });
+  if (resolution.status !== 'resolved') {
+    throw new PackagingError('layout_unresolved', ('message' in resolution && resolution.message) || '基础贴纸自动布置未完成', 409);
+  }
+  return { ...config, layoutResolution: resolution };
+}
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);

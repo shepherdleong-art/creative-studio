@@ -148,6 +148,7 @@ try {
   await diagnostics.waitFor({ state: 'hidden' });
 
   assert.equal(initialGroup.packaging.stickers?.length, 6, '生成好的草稿应自动保存六张贴纸');
+  assert.equal(initialGroup.packaging.layoutResolution?.status, 'resolved', '首次读取必须已经保存可重放的规范布局');
   assert.equal(await page.locator('[data-sticker-clip-id]').count(), 6, '首次进预览应已有六个贴纸片段');
   await overlay.locator('.packaging-sticker').first().waitFor({ state: 'attached' });
   assert.equal(await overlay.locator('.packaging-sticker').count(), 6, '首次进预览应自动挂载包装贴纸');
