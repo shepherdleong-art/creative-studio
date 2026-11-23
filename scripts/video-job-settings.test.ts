@@ -122,7 +122,13 @@ assert.deepEqual(summaryA.map((item) => item.label), ['模型', '秒数', '首�
 assert.deepEqual(summaryA.map((item) => item.value), ['kling-2.5', '5 秒', '带尾帧', '开']);
 assert.deepEqual(
   describeSavedSettings(savedB).map((item) => item.value),
-  ['doubao-seedance-2-5', '12 秒', '全能参考（当前分镜图）', '关'],
+  ['doubao-seedance-2-5', '12 秒', '全能参考（2 份素材）', '关'],
 );
+
+const kling4 = { ...jobA, model: 'qiniuyun/kling-4.0' };
+assert.equal(savedSettingsFromJob(kling4).resolution, '720p');
+const savedHd = savedSettingsFromJob({ ...kling4, resolution: '1080p' });
+assert.equal(videoSettingsDiffer(savedHd, { ...unchanged, resolution: '1080p' }), false);
+assert.equal(videoSettingsDiffer(savedHd, { ...unchanged, resolution: '720p' }), true);
 
 console.log('video-job-settings tests passed');

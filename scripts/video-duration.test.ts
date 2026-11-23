@@ -11,6 +11,7 @@ for (const [type, model, min, max] of [
   ['openai-video', 'sora-2', 2, 15],
   ['openai-video', 'minimax-h3', 4, 15],
   ['openai-video', 'wan-3.0', 2, 30],
+  ['openai-video', 'qiniuyun/kling-4.0', 3, 30],
   ['openai-video', 'minimax-h3-max', 2, 15],
   ['openai-video', 'wan-3.0-prime', 2, 15],
   ['kling', 'wan-3.0', 2, 15],

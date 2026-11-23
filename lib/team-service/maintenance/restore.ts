@@ -6,7 +6,8 @@ import Database from 'better-sqlite3';
 import { createExecutionJournal } from '../../media-core/execution/journal.ts';
 import { recoverExecution, reconcileAttempt } from '../../media-core/execution/reconciliation.ts';
 import type { ReconcileEvidence } from '../../media-core/execution/context.ts';
-import { verifyTeamBackup } from './backup.ts';
+import { backupMediaPath } from './daily-media.ts';
+import { lockDailyMedia, verifyTeamBackup } from './backup.ts';
 import { appendMaintenanceReceipt } from './receipts.ts';
 import {
   assertNoSymlinkPath,
@@ -108,6 +109,16 @@ function copyJournalEvidence(source: string | undefined, destination: string, de
 }
 
 export async function restoreTeamBackup(options: RestoreTeamBackupOptions) {
+  const directory = path.resolve(options.backupDirectory);
+  assertNoSymlinkPath(directory);
+  // 同日重跑和过期轮换都可能删除所选清单，复制到隔离根之前须与写入方互斥。
+  const lock = path.basename(path.dirname(directory)) === 'daily' && fs.existsSync(directory)
+    ? await lockDailyMedia(backupRootFor(directory)) : null;
+  try { return await restoreSnapshot(options); }
+  finally { lock?.release(); }
+}
+
+async function restoreSnapshot(options: RestoreTeamBackupOptions) {
   const now = options.now ?? (() => new Date());
   safeMaintenanceId(options.deploymentId, 'deploymentId');
   safeMaintenanceId(options.expectedReleaseId, 'releaseId');
@@ -171,7 +182,7 @@ export async function restoreTeamBackup(options: RestoreTeamBackupOptions) {
     );
     for (const file of manifest.files) {
       await copyVerified(
-        path.join(backupDirectory, 'files', ...file.relativePath.split('/')),
+        backupMediaPath(backupDirectory, manifest, file),
         path.join(staging, 'storage', ...file.relativePath.split('/')),
         file.sha256,
       );
@@ -201,6 +212,13 @@ export async function restoreTeamBackup(options: RestoreTeamBackupOptions) {
     `).all() as Array<{ id: string }>;
     try {
       restoredDb.pragma('foreign_keys = ON');
+      // The verified snapshot was taken while this backup's own barrier was active.
+      // A restored data root has no process holding that barrier.
+      restoredDb.prepare(`
+        UPDATE team_lifecycle_barriers SET releasedAt = ?
+        WHERE kind = 'backup' AND releasedAt IS NULL
+          AND CASE WHEN json_valid(metadataJson) THEN json_extract(metadataJson, '$.backupId') END = ?
+      `).run(now().toISOString(), manifest.backupId);
       const journal = createExecutionJournal({ deploymentId: options.deploymentId, directory: restoredJournalDirectory });
       const executionOptions = {
         db: restoredDb,

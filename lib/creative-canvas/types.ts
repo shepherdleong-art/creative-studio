@@ -49,6 +49,7 @@ export type CanvasReferenceRole =
   | 'scene'
   | 'first-frame'
   | 'last-frame'
+  | 'middle-frame'
   | 'reference'
   | 'camera'
   | 'audio';
@@ -60,6 +61,7 @@ export const CANVAS_REFERENCE_ROLES: ReadonlyArray<CanvasReferenceRole> = [
   'scene',
   'first-frame',
   'last-frame',
+  'middle-frame',
   'reference',
   'camera',
   'audio',

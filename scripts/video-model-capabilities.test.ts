@@ -203,7 +203,7 @@ try {
     registerHooks({ resolve(specifier, context, nextResolve) {
       if (!specifier.endsWith('/video-generation-options.ts')
         && !specifier.endsWith('/video-reference-contract.ts')
-        && !['./video-duration.ts', './company-gateway-video-models.ts', './video-providers/seedance-contract.ts'].includes(specifier)) {
+        && !['./video-duration.ts', './company-gateway-video-models.ts', './company-qiniu-kling-4.ts', './video-providers/seedance-contract.ts'].includes(specifier)) {
         throw new Error('Unexpected client runtime dependency: ' + specifier);
       }
       return nextResolve(specifier, context);

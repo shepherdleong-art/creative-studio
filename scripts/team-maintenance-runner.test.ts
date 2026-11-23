@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { writeReleaseManifest } from './team-server/distribution.mjs';
 
@@ -189,6 +191,74 @@ try {
   }).job.id, failedSubmission.job.id);
   failedJobs.close();
 
+  const interruptedId = 'daily-interrupted-snapshot';
+  const pausedBackup = path.join(fixture, 'pause-inside-snapshot.mjs');
+  fs.writeFileSync(pausedBackup, `
+    import fs from 'node:fs';
+    import path from 'node:path';
+    import { createRequire } from 'node:module';
+    const Database = createRequire(path.resolve('package.json'))('better-sqlite3');
+    const originalBackup = Database.prototype.backup;
+    Database.prototype.backup = function (destination, options) {
+      return originalBackup.call(this, destination, {
+        ...options,
+        progress() {
+          fs.writeSync(1, 'snapshot-barrier-active\\n');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+          return 100;
+        },
+      });
+    };
+  `);
+  const child = spawn(process.execPath, ['--import', pathToFileURL(pausedBackup).href, runner, 'backup', '--config', configPath,
+    '--type', 'daily', '--backup-id', interruptedId, '--allow-fixture-release'], {
+    cwd: path.resolve('.'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let childError = '';
+  child.stderr!.on('data', (chunk) => { childError = (childError + String(chunk)).slice(-2000); });
+  const childExited = once(child, 'exit');
+  const activeBarriers = db.prepare('SELECT COUNT(*) FROM team_lifecycle_barriers WHERE releasedAt IS NULL').pluck();
+  const { recoverInterruptedTeamBackup } = await import('../lib/team-service/maintenance/backup.ts');
+  const readDailyJob = () => JSON.parse(fs.readFileSync(path.join(backupRoot, 'daily-job.json'), 'utf8'));
+  try {
+    const signal = AbortSignal.timeout(15_000);
+    const [message] = await Promise.race([
+      once(child.stdout!, 'data', { signal }),
+      childExited.then(([code]) => { throw new Error(`备份进程提前退出 ${code}：${childError}`); }),
+    ]);
+    assert.match(String(message), /snapshot-barrier-active/);
+    assert.equal(activeBarriers.get(), 1);
+    assert.equal(readDailyJob().backupId, interruptedId);
+    assert.equal(readDailyJob().status, 'running');
+    const liveOwner = invoke('worker', '--config', configPath, '--once', '--allow-fixture-release');
+    assert.notEqual(liveOwner.status, 0, '定时备份在快照期间仍持有全局维护锁');
+    assert.equal(await recoverInterruptedTeamBackup({ db, dataRoot, backupRoot, deploymentId }), null);
+    assert.equal(activeBarriers.get(), 1, '备份进程仍持锁时必须保留屏障');
+  } finally {
+    if (child.exitCode === null) child.kill('SIGKILL');
+    await childExited;
+  }
+  const recoveredOwner = invoke('worker', '--config', configPath, '--once', '--allow-fixture-release');
+  assert.equal(recoveredOwner.status, 0, recoveredOwner.stderr);
+  assert.equal(activeBarriers.get(), 0, '后台维护进程必须回收被强停备份的屏障');
+  assert.equal(readDailyJob().status, 'failed');
+  assert.equal(readDailyJob().code, 'backup_interrupted');
+  assert.equal(fs.existsSync(path.join(backupRoot, 'daily', `.${interruptedId}.staging`, 'maintenance-staging.json')), true);
+  assert.equal(fs.existsSync(path.join(backupRoot, 'daily', interruptedId)), false, '中断副本不能作为可还原备份');
+  const receipts = fs.readFileSync(path.join(backupRoot, 'maintenance-receipts', `${deploymentId}.jsonl`), 'utf8')
+    .trim().split('\n').map((line) => JSON.parse(line));
+  assert.ok(receipts.some((receipt) => receipt.operationId === interruptedId
+    && receipt.phase === 'failed' && receipt.code === 'backup_interrupted'));
+  const { acquireLifecycleBarrier, releaseLifecycleBarrier } = await import('../lib/team-service/lifecycle/index.ts');
+  const admin = { userId: 'admin', role: 'admin' as const };
+  const manualBarrier = acquireLifecycleBarrier(db, admin, 'backup', { backupId: interruptedId });
+  assert.equal(await recoverInterruptedTeamBackup({ db, dataRoot, backupRoot, deploymentId }), null);
+  assert.equal(activeBarriers.get(), 1, '单凭 backupId 或创建时间不能清理手动屏障');
+  releaseLifecycleBarrier(db, admin, manualBarrier.id);
+  const restartedBackup = invoke('backup', '--config', configPath, '--type', 'daily', '--backup-id', interruptedId, '--allow-fixture-release');
+  assert.equal(restartedBackup.status, 0, restartedBackup.stderr);
+  assert.equal((await verifyTeamBackup(path.join(backupRoot, 'daily', interruptedId))).verified, true);
+
   const restoreJobs = new MaintenanceJobStore({ backupRoot, deploymentId });
   jobStores.add(restoreJobs);
   const restoreSubmission = restoreJobs.submit({
@@ -251,7 +321,7 @@ try {
   fs.writeFileSync(configPath, JSON.stringify(staleConfig));
 
   const restoreRoot = path.join(fixture, 'restored');
-  const restored = invoke('restore', '--config', configPath, '--backup-type', 'daily', '--backup-id', 'daily-1',
+  const restored = invoke('restore', '--config', configPath, '--backup-type', 'daily', '--backup-id', 'daily-stale',
     '--restore-root', restoreRoot, '--allow-fixture-release');
   assert.equal(restored.status, 0, `${restored.stdout}${restored.stderr}`);
   const restoreResult = JSON.parse(restored.stdout.trim());
@@ -259,6 +329,9 @@ try {
   assert.equal(restoreResult.scheduling, false);
   assert.equal(restoreResult.automaticRetries, 0);
   assert.equal(fs.existsSync(path.join(restoreRoot, 'storage', 'maintenance', 'restore-hold.json')), true);
+  const restoredDb = new Database(path.join(restoreRoot, 'data', 'workbench.db'), { readonly: true });
+  databases.add(restoredDb);
+  assert.equal(restoredDb.prepare('SELECT COUNT(*) FROM team_lifecycle_barriers WHERE releasedAt IS NULL').pluck().get(), 0);
 
   const second = invoke('backup', '--config', configPath, '--type', 'daily', '--backup-id', 'daily-2', '--allow-fixture-release');
   assert.equal(second.status, 0, `${second.stdout}${second.stderr}`);
@@ -266,7 +339,7 @@ try {
   assert.equal(secondManifest.release.releaseId, 'release-1', '备份必须固定 current release，而非过期配置 releaseId');
   dailyJob = JSON.parse(fs.readFileSync(dailyJobPath, 'utf8'));
   assert.equal(dailyJob.backupId, 'daily-2');
-  assert.equal(dailyJob.latestRecoveryEvidence.backupId, 'daily-1');
+  assert.equal(dailyJob.latestRecoveryEvidence.backupId, 'daily-stale');
   assert.equal(dailyJob.latestRecoveryEvidence.evidenceStatus, 'complete');
   assert.doesNotMatch(first.stdout + first.stderr + restored.stdout + restored.stderr + second.stdout + second.stderr,
     /fixtureSecret|apiKey|Bearer\s+/i);

@@ -12,6 +12,7 @@ process.env.CREATIVE_STUDIO_DATA_ROOT = root;
 register('./typescript-extension-loader.mjs', import.meta.url);
 const { registerCanvasCapability } = await import('../lib/creative-canvas/capabilities.ts');
 const { COMPANY_CANVAS_NATIVE_VIDEO_CAPABILITIES } = await import('../lib/creative-canvas/adapters/company-capabilities.ts');
+const { configuredCanvasVideos } = await import('../lib/creative-canvas/adapters/configured-videos.ts');
 const { createCompanyCanvasAdapter } = await import('../lib/creative-canvas/adapters/company.ts');
 const { createDefaultCanvasDeliverer } = await import('../lib/creative-canvas/adapters/media-delivery.ts');
 const { CanvasAdapterError } = await import('../lib/creative-canvas/adapters/types.ts');
@@ -80,6 +81,91 @@ try {
   assert.ok(small.length > 2 * 1024 * 1024 && small.length < 10 * 1024 * 1024);
   const smallPath = path.join(root, 'small-alpha.png');
   fs.writeFileSync(smallPath, small);
+
+  const kling4Model = 'qiniuyun/kling-4.0';
+  db.prepare('INSERT INTO video_providers VALUES (?, ?, ?, ?, ?, 1, ?)').run(
+    'company-qiniuyun-kling-4-0', kling4Model, 'openai-video', 'http://127.0.0.1:4000', 'test-key', kling4Model,
+  );
+  const kling4 = configuredCanvasVideos(db).find(capability => capability.modelAlias === kling4Model)!;
+  assert.ok(kling4);
+  registerCanvasCapability(kling4);
+  let kling4Body: Record<string, unknown> = {};
+  const kling4Adapter = createCompanyCanvasAdapter({
+    db,
+    deliverer: { name: 'fixture-cos', async deliver(request) {
+      assert.equal(request.requireCos, true);
+      const name = path.basename(request.absolutePath);
+      return 'https://canvas-cos.test/' + name;
+    } },
+    fetchImpl: async (_input, init) => {
+      assert.equal(init?.method, 'POST');
+      kling4Body = JSON.parse(String(init.body));
+      return Response.json({ id: 'test-kling4' });
+    },
+  });
+  const fixtureBytes = await sharp({ create: { width: 1280, height: 720, channels: 3, background: '#aa7755' } }).png().toBuffer();
+  const frames = context(kling4, smallPath, fixtureBytes, 'image/png');
+  frames.generationMode = 'frames-to-video';
+  frames.parameters = { durationSec: 3, resolution: '1080p' };
+  const roles = ['first-frame', 'middle-frame', 'middle-frame', 'last-frame'] as const;
+  frames.inputs = roles.map((role, orderIndex) => {
+    const file = path.join(root, 'frame-' + orderIndex + '.png');
+    fs.writeFileSync(file, fixtureBytes);
+    return { ...frames.inputs[0], absolutePath: file, refId: 'frame-' + orderIndex, role, orderIndex };
+  });
+  await kling4Adapter.prepare(frames);
+  await kling4Adapter.submit(frames);
+  assert.deepEqual(kling4Body.middle_image_urls, ['https://canvas-cos.test/frame-1.png', 'https://canvas-cos.test/frame-2.png']);
+  assert.deepEqual(kling4Body.images, ['https://canvas-cos.test/frame-0.png']);
+  assert.equal(kling4Body.end_image_url, 'https://canvas-cos.test/frame-3.png');
+  assert.equal(kling4Body.resolution, '1080p');
+  assert.equal(kling4Body.size, '1920x1080');
+
+  const reference = context(kling4, smallPath, fixtureBytes, 'image/png');
+  reference.parameters = { durationSec: 3, resolution: '720p', aspectRatio: '16:9' };
+  // A delivery double stands in for the already tested upstream video upload.
+  const referenceVideo = path.join(root, 'reference.mp4');
+  fs.writeFileSync(referenceVideo, 'fixture');
+  reference.inputs = [
+    { ...reference.inputs[0], absolutePath: frames.inputs[0].absolutePath },
+    { ...reference.inputs[0], refId: 'ref2', orderIndex: 1, kind: 'video', role: 'camera', mimeType: 'video/mp4',
+      absolutePath: referenceVideo, byteSize: 7, durationSec: 3 },
+  ];
+  await kling4Adapter.prepare(reference);
+  await kling4Adapter.submit(reference);
+  assert.deepEqual(kling4Body.image_urls, ['https://canvas-cos.test/frame-0.png']);
+  assert.deepEqual(kling4Body.video_urls, ['https://canvas-cos.test/reference.mp4']);
+  assert.equal(kling4Body.images, undefined);
+  assert.equal(kling4Body.aspect_ratio, '16:9');
+  await assert.rejects(kling4Adapter.prepare({ ...reference, inputs: [] }), /至少/);
+
+  const referenceImage = fixtures[0];
+  const referenceImagePath = path.join(root, referenceImage.name);
+  const largeKling4Reference = context(kling4, referenceImagePath, referenceImage.bytes, referenceImage.mime);
+  largeKling4Reference.parameters = { ...reference.parameters, resolution: '1080p' };
+  const kling4CosAdapter = createCompanyCanvasAdapter({
+    db, deliverer: createDefaultCanvasDeliverer(),
+    fetchImpl: async (_input, init) => {
+      assert.equal(init?.method, 'POST');
+      kling4Body = JSON.parse(String(init.body));
+      return Response.json({ id: 'test-large-kling4' });
+    },
+  });
+  uploads.length = 0;
+  await kling4CosAdapter.prepare(largeKling4Reference);
+  assert.equal(uploads.length, 1);
+  assert.ok(uploads[0].bytes.length <= 10 * 1024 * 1024);
+  assert.equal(largeKling4Reference.inputs[0].byteSize, referenceImage.bytes.length);
+  assert.deepEqual(fs.readFileSync(referenceImagePath), referenceImage.bytes);
+  assert.deepEqual(uploadCopies(), []);
+  await kling4CosAdapter.submit(largeKling4Reference);
+  assert.equal(kling4Body.resolution, '1080p');
+  assert.deepEqual(kling4Body.image_urls, [largeKling4Reference.inputs[0].deliveryRef]);
+  const uploadCount = uploads.length;
+  await assert.rejects(kling4CosAdapter.prepare({
+    ...reference, inputs: [{ ...reference.inputs[1], byteSize: 201 * 1024 * 1024 }],
+  }), /超过 200 MiB 上限/);
+  assert.equal(uploads.length, uploadCount);
 
   for (const capability of COMPANY_CANVAS_NATIVE_VIDEO_CAPABILITIES) {
     process.env.CREATIVE_STUDIO_COS_PREFIX = capability.modelAlias + '/';

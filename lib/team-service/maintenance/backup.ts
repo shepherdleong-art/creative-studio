@@ -5,12 +5,16 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { AccessActor } from '../../media-core/access-context.ts';
 import { createExecutionJournal } from '../../media-core/execution/journal.ts';
+import { publishBackupDirectory } from '../../schema-upgrade/backup.ts';
+import { acquireSchemaUpgradeLock, SchemaUpgradeLockTimeoutError } from '../../schema-upgrade/lock.ts';
 import {
   acquireLifecycleBarrier,
   createBackupPin,
   releaseBackupPin,
   releaseLifecycleBarrier,
 } from '../lifecycle/index.ts';
+import { backupMediaPath, pruneDailyMedia, storeDailyMedia } from './daily-media.ts';
+import { resumeDailyRetirements, retireVerifiedDaily } from './daily-retirement.ts';
 import { appendMaintenanceReceipt } from './receipts.ts';
 import {
   assertNoSymlinkPath,
@@ -28,6 +32,16 @@ import {
 
 export const TEAM_BACKUP_TYPES = ['daily', 'manual', 'pre-upgrade', 'pre-restore'] as const;
 export type TeamBackupType = typeof TEAM_BACKUP_TYPES[number];
+const SNAPSHOT_TIMEOUT_MS = 120_000;
+
+export class TeamBackupSnapshotTimeoutError extends Error {
+  readonly code = 'backup_snapshot_timeout';
+
+  constructor() {
+    super('SQLite 快照超时，未生成可还原备份');
+    this.name = 'TeamBackupSnapshotTimeoutError';
+  }
+}
 
 export interface TeamBackupFileEntry {
   fileId: string;
@@ -46,8 +60,8 @@ export interface TeamBackupFileEntry {
 }
 
 export interface TeamBackupManifest {
-  schemaVersion: 1;
-  kind: 'team-full-backup';
+  schemaVersion: 1 | 2;
+  kind: 'team-full-backup' | 'team-daily-snapshot';
   backupId: string;
   type: TeamBackupType;
   createdAt: string;
@@ -89,6 +103,7 @@ export interface TeamBackupSuccess {
   verifiedAt: string;
   durationMs: number;
   totalBytes: number;
+  newMediaBytes?: number;
   manifestSha256: string;
 }
 
@@ -111,6 +126,7 @@ export interface CreateTeamBackupOptions {
   protectConfig?: (filePath: string) => Promise<void>;
   removeDirectory?: (root: string, target: string) => Promise<void>;
   onStage?: (stage: 'snapshotting' | 'copying_media' | 'verifying') => void;
+  snapshotTimeoutMs?: number;
 }
 
 export interface TeamBackupResult {
@@ -124,7 +140,7 @@ export interface TeamBackupRotationReport {
   deletedBackupIds: string[];
   retainedBackupIds: string[];
   retainedInvalid: string[];
-  errors: Array<{ backupId: string; code: string }>;
+  errors: Array<{ backupId?: string; deploymentId?: string; code: string }>;
 }
 
 function validateDatabase(filePath: string): void {
@@ -180,10 +196,130 @@ function backupPaths(backupRoot: string, type: TeamBackupType, backupId: string)
   };
 }
 
+type BackupContext = Pick<CreateTeamBackupOptions, 'db' | 'dataRoot' | 'backupRoot' | 'deploymentId'>;
+
+interface BackupBarrierOwner {
+  backupId: string;
+  type: TeamBackupType;
+  deploymentId: string;
+  dataRootIdentity: string;
+  nonce: string;
+}
+
+function acquireBackupLock(dataRoot: string) {
+  const lockDatabasePath = path.join(dataRoot, 'data', 'team-backup.lock.db');
+  assertNoSymlinkPath(lockDatabasePath);
+  return acquireSchemaUpgradeLock({ lockDatabasePath, timeoutMs: 0 });
+}
+
+async function releaseInterruptedBackupBarrier(options: BackupContext): Promise<BackupBarrierOwner | null> {
+  const { db, dataRoot, backupRoot, deploymentId } = options;
+  const row = db.prepare("SELECT id, metadataJson FROM team_lifecycle_barriers WHERE kind = 'backup' AND releasedAt IS NULL")
+    .get() as { id: string; metadataJson: string } | undefined;
+  if (!row) return null;
+  let owner: BackupBarrierOwner;
+  try {
+    owner = JSON.parse(row.metadataJson).backupOwner as BackupBarrierOwner;
+    if (!owner || owner.deploymentId !== deploymentId || owner.dataRootIdentity !== dataRootIdentity(dataRoot)
+      || typeof owner.nonce !== 'string' || !owner.nonce || typeof owner.backupId !== 'string') return null;
+    const markerPath = path.join(backupPaths(backupRoot, owner.type, owner.backupId).staging, 'maintenance-staging.json');
+    assertNoSymlinkPath(markerPath);
+    const marker = await readJsonFile<Partial<BackupBarrierOwner> & { schemaVersion?: number }>(markerPath);
+    if (marker.schemaVersion !== 1 || marker.backupId !== owner.backupId || marker.type !== owner.type
+      || marker.deploymentId !== deploymentId || marker.dataRootIdentity !== owner.dataRootIdentity || marker.nonce !== owner.nonce) return null;
+  } catch {
+    return null;
+  }
+  const released = db.prepare("UPDATE team_lifecycle_barriers SET releasedAt = ? WHERE id = ? AND kind = 'backup' AND metadataJson = ? AND releasedAt IS NULL")
+    .run(new Date().toISOString(), row.id, row.metadataJson).changes === 1;
+  if (!released) return null;
+  appendMaintenanceReceipt({
+    backupRoot, deploymentId, kind: 'backup', operationId: owner.backupId, phase: 'failed',
+    details: { backupId: owner.backupId, backupType: owner.type, code: 'backup_interrupted' },
+  });
+  return owner;
+}
+
+/** An acquired OS-backed lock proves that the process running this backup has left. */
+export async function recoverInterruptedTeamBackup(options: BackupContext): Promise<BackupBarrierOwner | null> {
+  const lock = await acquireBackupLock(options.dataRoot).catch((error: unknown) => {
+    if (error instanceof SchemaUpgradeLockTimeoutError) return null;
+    throw error;
+  });
+  if (!lock) return null;
+  try {
+    return await releaseInterruptedBackupBarrier(options);
+  } finally {
+    lock.release();
+  }
+}
+
+export function createTeamBackupId(now = new Date()): string {
+  return `${now.toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
+}
+
+async function copyTeamDatabase(db: Database.Database, destination: string, timeoutMs: number): Promise<void> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw new RangeError('SQLite 快照期限无效');
+  const started = performance.now();
+  const checkTimeout = () => {
+    if (performance.now() - started >= timeoutMs) throw new TeamBackupSnapshotTimeoutError();
+  };
+  const reader = db.memory ? db : new Database(db.name, { readonly: true, fileMustExist: true, timeout: 1000 });
+  try {
+    if (reader !== db) {
+      reader.exec('BEGIN');
+      // Establish the WAL read view before the first backup step. Other writers can still commit.
+      reader.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get();
+    }
+    await reader.backup(destination, { progress() { checkTimeout(); return 100; } });
+    checkTimeout();
+  } finally {
+    if (reader !== db) reader.close();
+  }
+}
+
+export async function lockDailyMedia(backupRoot: string) {
+  const lockDatabasePath = path.join(backupRoot, 'maintenance-control', 'daily-media.lock.db');
+  assertNoSymlinkPath(lockDatabasePath);
+  return acquireSchemaUpgradeLock({ lockDatabasePath, timeoutMs: 0 });
+}
+
 export async function createTeamBackup(options: CreateTeamBackupOptions): Promise<TeamBackupResult> {
+  if (options.principal.role !== 'admin') throw new Error('仅管理员可执行团队备份');
+  const lock = await acquireBackupLock(options.dataRoot);
+  try {
+    await releaseInterruptedBackupBarrier(options);
+    const mediaLock = options.type === 'daily' ? await lockDailyMedia(options.backupRoot) : null;
+    try { return await runTeamBackup(options); }
+    finally { mediaLock?.release(); }
+  } finally {
+    lock.release();
+  }
+}
+
+/** 两把写锁都已取得。只清理由新版日备写入且归属匹配的未发布目录。 */
+async function clearInterruptedDailyStaging(dailyRoot: string, deploymentId: string, identity: string) {
+  let interrupted = false;
+  for (const entry of await fsPromises.readdir(dailyRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('.') || !entry.name.endsWith('.staging')) continue;
+    const directory = path.join(dailyRoot, entry.name);
+    const markerPath = path.join(directory, 'maintenance-staging.json');
+    assertNoSymlinkPath(markerPath);
+    const owner = await readJsonFile<BackupBarrierOwner & { schemaVersion: number; mediaStoreVersion?: number }>(markerPath)
+      .catch(() => null);
+    if (!owner || owner.schemaVersion !== 1 || owner.mediaStoreVersion !== 1 || owner.type !== 'daily'
+      || owner.deploymentId !== deploymentId || owner.dataRootIdentity !== identity
+      || !owner.nonce || entry.name !== `.${owner.backupId}.staging`) continue;
+    await removeDirectorySafely(dailyRoot, directory);
+    interrupted = true;
+  }
+  return interrupted;
+}
+
+async function runTeamBackup(options: CreateTeamBackupOptions): Promise<TeamBackupResult> {
   const started = Date.now();
   const now = options.now ?? (() => new Date());
-  const backupId = options.backupId ?? `${now().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
+  const backupId = options.backupId ?? createTeamBackupId(now());
   safeMaintenanceId(options.deploymentId, 'deploymentId');
   let configVersion = options.config.version?.trim() ?? '';
   if (options.config.version !== undefined && !configVersion) throw new Error('配置版本不能为空');
@@ -193,6 +329,10 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
   assertNoSymlinkPath(options.dataRoot);
   assertNoSymlinkPath(options.storageRoot);
   if (fs.existsSync(paths.published)) throw new Error('备份 ID 已存在，拒绝覆盖');
+  if (options.type === 'daily' && await clearInterruptedDailyStaging(paths.typeRoot, options.deploymentId, dataRootIdentity(options.dataRoot))) {
+    // 即使上一次写满了磁盘，也先回收未发布媒体，再预检新备份的可用空间。
+    await rotateLockedDailyTeamBackups({ backupRoot: options.backupRoot, deploymentId: options.deploymentId }, false);
+  }
   if (fs.existsSync(paths.staging)) {
     try {
       const owner = await readJsonFile<{
@@ -213,6 +353,7 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
 
   let barrierId: string | null = null;
   let pinId: string | null = null;
+  let newMediaBytes = 0;
   try {
     const requiredBytes = (options.db.pragma('page_count', { simple: true }) as number)
       * (options.db.pragma('page_size', { simple: true }) as number)
@@ -223,11 +364,16 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
     await fsPromises.mkdir(path.join(paths.staging, 'data'), { recursive: true, mode: 0o700 });
     await fsPromises.mkdir(path.join(paths.staging, 'config'), { recursive: true, mode: 0o700 });
     await fsPromises.mkdir(path.join(paths.staging, 'evidence'), { recursive: true, mode: 0o700 });
+    const backupOwner: BackupBarrierOwner = {
+      backupId, deploymentId: options.deploymentId, type: options.type,
+      dataRootIdentity: dataRootIdentity(options.dataRoot), nonce: randomUUID(),
+    };
     await writeJsonAtomic(path.join(paths.staging, 'maintenance-staging.json'), {
-      schemaVersion: 1, backupId, deploymentId: options.deploymentId, type: options.type,
+      schemaVersion: 1, ...backupOwner, ...(options.type === 'daily' ? { mediaStoreVersion: 1 } : {}),
     });
     const barrier = acquireLifecycleBarrier(options.db, options.principal, 'backup', {
       backupId,
+      backupOwner,
       releaseId: typeof options.release === 'function' ? 'snapshot-pending' : options.release.releaseId,
       configVersion: configVersion || 'snapshot-pending',
     });
@@ -237,12 +383,14 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
     let configHash: string;
     let configBytes: number;
     let journal: TeamBackupManifest['journal'];
+    let snapshotAt: string;
     try {
       release = typeof options.release === 'function' ? await options.release() : options.release;
       safeMaintenanceId(release.releaseId, 'releaseId');
       if (!/^[0-9a-f]{64}$/.test(release.packageSha256)) throw new Error('release 包哈希无效');
       const databasePath = path.join(paths.staging, 'data', 'workbench.db');
-      await options.db.backup(databasePath);
+      snapshotAt = now().toISOString();
+      await copyTeamDatabase(options.db, databasePath, options.snapshotTimeoutMs ?? SNAPSHOT_TIMEOUT_MS);
       validateDatabase(databasePath);
       const backupDb = new Database(databasePath, { readonly: true, fileMustExist: true });
       try {
@@ -282,14 +430,15 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
         sha256: sha256Text(evidence),
       };
 
-      if (files.length > 0) {
-        const pin = createBackupPin(options.db, options.principal, {
-          releaseId: release.releaseId,
-          configVersion,
-          fileIds: files.map((file) => file.fileId),
-        });
-        pinId = pin.id;
-      }
+      pinId = options.db.transaction(() => {
+        if (!releaseLifecycleBarrier(options.db, options.principal, barrier.id)) {
+          throw new Error('备份屏障已失效，拒绝发布该备份');
+        }
+        return files.length ? createBackupPin(options.db, options.principal, {
+          releaseId: release.releaseId, configVersion, fileIds: files.map((file) => file.fileId),
+        }).id : null;
+      }).immediate();
+      barrierId = null;
     } finally {
       if (barrierId) releaseLifecycleBarrier(options.db, options.principal, barrierId);
       barrierId = null;
@@ -306,6 +455,11 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
         throw new Error('媒体来源越出 storage 根');
       }
       assertNoSymlinkPath(source);
+      if (options.type === 'daily') {
+        newMediaBytes += await storeDailyMedia({ backupRoot: options.backupRoot, deploymentId: options.deploymentId,
+          staging: paths.staging, source, file, copy });
+        continue;
+      }
       const destination = path.join(paths.staging, 'files', ...file.relativePath.split('/'));
       await copy(source, destination);
       const stat = await fsPromises.stat(destination);
@@ -318,11 +472,11 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
     const databasePath = path.join(paths.staging, 'data', 'workbench.db');
     validateDatabase(databasePath);
     const manifest: TeamBackupManifest = {
-      schemaVersion: 1,
-      kind: 'team-full-backup',
+      schemaVersion: options.type === 'daily' ? 2 : 1,
+      kind: options.type === 'daily' ? 'team-daily-snapshot' : 'team-full-backup',
       backupId,
       type: options.type,
-      createdAt: now().toISOString(),
+      createdAt: snapshotAt,
       deploymentId: options.deploymentId,
       dataRootIdentity: dataRootIdentity(options.dataRoot),
       release: { ...release },
@@ -348,7 +502,7 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
     const stagingVerification = await verifyTeamBackup(paths.staging, { requireSuccess: false });
     if (!stagingVerification.verified) throw new Error(`完整备份发布前校验失败：${stagingVerification.code}`);
     await fsPromises.rm(path.join(paths.staging, 'maintenance-staging.json'));
-    await fsPromises.rename(paths.staging, paths.published);
+    await publishBackupDirectory(paths.staging, paths.published);
     const success: TeamBackupSuccess = {
       schemaVersion: 1,
       status: 'success',
@@ -356,24 +510,29 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
       type: options.type,
       verifiedAt: now().toISOString(),
       durationMs: Date.now() - started,
-      totalBytes: await directoryBytes(paths.published),
+      totalBytes: await directoryBytes(paths.published) + (options.type === 'daily' ? files.reduce((sum, file) => sum + file.byteSize, 0) : 0),
+      ...(options.type === 'daily' ? { newMediaBytes } : {}),
       manifestSha256: sha256Text(await fsPromises.readFile(path.join(paths.published, 'manifest.json'), 'utf8')),
     };
     await writeJsonAtomic(path.join(paths.published, 'success.json'), success);
     const finalVerification = await verifyTeamBackup(paths.published);
     if (!finalVerification.verified) throw new Error(`完整备份发布后校验失败：${finalVerification.code}`);
+    pinId = null; // 从此由已发布的还原点持有，清理出错也必须保留。
     appendMaintenanceReceipt({
       backupRoot: options.backupRoot, deploymentId: options.deploymentId, kind: 'backup', operationId: backupId,
       phase: 'finished', at: now().toISOString(),
       details: { backupId, backupType: options.type, durationMs: success.durationMs, totalBytes: success.totalBytes },
     });
     const rotation = options.type === 'daily'
-      ? await rotateDailyTeamBackups({
+      ? await rotateLockedDailyTeamBackups({
+        deploymentId: options.deploymentId,
+        latestBackupId: backupId,
         backupRoot: options.backupRoot,
         removeDirectory: options.removeDirectory,
         db: options.db,
         principal: options.principal,
-      })
+      }).catch(() => ({ retainedBackupIds: [backupId], deletedBackupIds: [], retainedInvalid: [],
+        errors: [{ backupId, code: 'rotation_failed' }] }))
       : undefined;
     return { directory: paths.published, manifest, success, ...(rotation ? { rotation } : {}) };
   } catch (error) {
@@ -382,23 +541,41 @@ export async function createTeamBackup(options: CreateTeamBackupOptions): Promis
     appendMaintenanceReceipt({
       backupRoot: options.backupRoot, deploymentId: options.deploymentId, kind: 'backup', operationId: backupId,
       phase: 'failed', at: now().toISOString(),
-      details: { backupId, backupType: options.type, code: error instanceof Error ? error.name : 'Error' },
+      details: { backupId, backupType: options.type, code: error instanceof TeamBackupSnapshotTimeoutError ? error.code
+        : error instanceof Error ? error.name : 'Error' },
     });
     if (fs.existsSync(paths.staging)) await removeDirectorySafely(paths.typeRoot, paths.staging);
+    if (options.type === 'daily' && newMediaBytes > 0) {
+      // 释放失败写入占用的空间；失败备份绝不触发还原点轮换。
+      await rotateLockedDailyTeamBackups({ backupRoot: options.backupRoot, deploymentId: options.deploymentId }, false)
+        .catch(() => undefined); // 文件仍在，下一次成功轮换重试。
+    }
     throw error;
   }
 }
 
-export async function verifyTeamBackup(
-  directory: string,
-  options: { requireSuccess?: boolean } = {},
-): Promise<{ verified: true; manifest: TeamBackupManifest } | { verified: false; code: string }> {
+type BackupVerification = { verified: true; manifest: TeamBackupManifest } | { verified: false; code: string };
+type VerifyOptions = { requireSuccess?: boolean };
+
+/** 一次列表或轮换扫描内，相同的共享对象仅做一次全文件 SHA-256；下一次扫描重新检查。 */
+export function createTeamBackupVerifier() {
+  const checkedObjects = new Map<string, string>();
+  return (directory: string, options: VerifyOptions = {}) => verifyDirectory(directory, options, checkedObjects);
+}
+
+export function verifyTeamBackup(directory: string, options: VerifyOptions = {}): Promise<BackupVerification> {
+  return createTeamBackupVerifier()(directory, options);
+}
+
+async function verifyDirectory(directory: string, options: VerifyOptions, checkedObjects: Map<string, string>): Promise<BackupVerification> {
   try {
     assertNoSymlinkPath(directory);
     const manifestPath = path.join(directory, 'manifest.json');
     const manifest = await readJsonFile<TeamBackupManifest>(manifestPath);
-    if (manifest.schemaVersion !== 1 || manifest.kind !== 'team-full-backup'
-      || !TEAM_BACKUP_TYPES.includes(manifest.type) || manifest.backupId !== path.basename(directory).replace(/^\.|\.staging$/g, '')) {
+    const supported = (manifest.schemaVersion === 1 && manifest.kind === 'team-full-backup')
+      || (manifest.schemaVersion === 2 && manifest.kind === 'team-daily-snapshot' && manifest.type === 'daily'
+        && path.basename(path.dirname(directory)) === 'daily');
+    if (!supported || !Number.isFinite(Date.parse(manifest.createdAt)) || !TEAM_BACKUP_TYPES.includes(manifest.type) || manifest.backupId !== path.basename(directory).replace(/^\.|\.staging$/g, '')) {
       return { verified: false, code: 'manifest_invalid' };
     }
     if (options.requireSuccess !== false) {
@@ -420,11 +597,13 @@ export async function verifyTeamBackup(
     const evidencePath = path.join(directory, 'evidence', 'execution-journal.jsonl');
     if (await sha256File(evidencePath) !== manifest.journal.sha256) return { verified: false, code: 'journal_hash_mismatch' };
     for (const file of manifest.files) {
-      const relative = assertSafeRelativePath(file.relativePath);
-      const filePath = path.join(directory, 'files', ...relative.split('/'));
-      if ((await fsPromises.stat(filePath)).size !== file.byteSize || await sha256File(filePath) !== file.sha256) {
-        return { verified: false, code: 'file_hash_mismatch' };
-      }
+      const filePath = backupMediaPath(directory, manifest, file);
+      const stat = await fsPromises.lstat(filePath, { bigint: true });
+      if (!stat.isFile() || Number(stat.size) !== file.byteSize) return { verified: false, code: 'file_hash_mismatch' };
+      const identity = `${stat.dev}/${stat.ino}/${stat.size}/${stat.ctimeNs}/${stat.mtimeNs}`;
+      if (manifest.schemaVersion === 2 && checkedObjects.get(filePath) === identity) continue;
+      if (await sha256File(filePath) !== file.sha256) return { verified: false, code: 'file_hash_mismatch' };
+      if (manifest.schemaVersion === 2) checkedObjects.set(filePath, identity);
     }
     return { verified: true, manifest };
   } catch (error) {
@@ -432,12 +611,21 @@ export async function verifyTeamBackup(
   }
 }
 
-export async function rotateDailyTeamBackups(options: {
+interface RotateDailyOptions {
   backupRoot: string;
+  deploymentId?: string;
   removeDirectory?: (root: string, target: string) => Promise<void>;
   db?: Database.Database;
   principal?: AccessActor;
-}): Promise<TeamBackupRotationReport> {
+}
+
+export async function rotateDailyTeamBackups(options: RotateDailyOptions): Promise<TeamBackupRotationReport> {
+  const lock = await lockDailyMedia(options.backupRoot);
+  try { return await rotateLockedDailyTeamBackups(options); }
+  finally { lock.release(); }
+}
+
+async function rotateLockedDailyTeamBackups(options: RotateDailyOptions & { latestBackupId?: string }, expireSnapshots = true): Promise<TeamBackupRotationReport> {
   const dailyRoot = path.join(options.backupRoot, 'daily');
   const report: TeamBackupRotationReport = {
     deletedBackupIds: [], retainedBackupIds: [], retainedInvalid: [], errors: [],
@@ -445,33 +633,68 @@ export async function rotateDailyTeamBackups(options: {
   if (!fs.existsSync(dailyRoot)) return report;
   const entries = await fsPromises.readdir(dailyRoot, { withFileTypes: true });
   const valid: Array<{ directory: string; manifest: TeamBackupManifest }> = [];
+  const verify = createTeamBackupVerifier();
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith('.')) {
-      if (entry.name.startsWith('.')) report.retainedInvalid.push(entry.name);
+      if (entry.name.startsWith('.') || entry.isSymbolicLink()) report.retainedInvalid.push(entry.name);
       continue;
     }
     const directory = path.join(dailyRoot, entry.name);
-    const verification = await verifyTeamBackup(directory);
-    if (verification.verified) valid.push({ directory, manifest: verification.manifest });
-    else report.retainedInvalid.push(entry.name);
+    const verification = await verify(directory);
+    if (!verification.verified || verification.manifest.type !== 'daily') report.retainedInvalid.push(entry.name);
+    else if (!options.deploymentId || options.deploymentId === verification.manifest.deploymentId) {
+      valid.push({ directory, manifest: verification.manifest });
+    }
   }
   valid.sort((left, right) => right.manifest.createdAt.localeCompare(left.manifest.createdAt)
+    || Number(right.manifest.backupId === options.latestBackupId) - Number(left.manifest.backupId === options.latestBackupId)
     || right.manifest.backupId.localeCompare(left.manifest.backupId));
-  const remove = options.removeDirectory ?? removeDirectorySafely;
-  for (const [index, candidate] of valid.entries()) {
-    if (index < 14) {
-      report.retainedBackupIds.push(candidate.manifest.backupId);
+  const { db, principal } = options;
+  const releasePin = db && principal ? (id: string) => { releaseBackupPin(db, principal, id); } : undefined;
+  if (expireSnapshots && !options.removeDirectory) {
+    const deployments = options.deploymentId ? [options.deploymentId] : new Set(valid.map(item => item.manifest.deploymentId));
+    for (const deploymentId of deployments) {
+      try { await resumeDailyRetirements(options.backupRoot, deploymentId, releasePin); }
+      catch { report.errors.push({ deploymentId, code: 'cleanup_failed' }); }
+    }
+  }
+  const keptDays = new Map<string, Set<string>>();
+  const retainedObjects = new Map<string, Set<string>>();
+  if (options.deploymentId) retainedObjects.set(options.deploymentId, new Set());
+  for (const candidate of valid) {
+    const { deploymentId, createdAt, backupId } = candidate.manifest;
+    const days = keptDays.get(deploymentId) ?? new Set<string>();
+    keptDays.set(deploymentId, days);
+    const hashes = retainedObjects.get(deploymentId) ?? new Set<string>();
+    retainedObjects.set(deploymentId, hashes);
+    // 计划任务使用服务器本地时区。同一天只保留最新的成功快照。
+    const day = new Date(createdAt).toDateString();
+    if (!expireSnapshots || (days.size < 14 && !days.has(day))) {
+      days.add(day);
+      report.retainedBackupIds.push(backupId);
+      if (candidate.manifest.schemaVersion === 2) {
+        for (const file of candidate.manifest.files) hashes.add(file.sha256);
+      }
       continue;
     }
     try {
-      await remove(dailyRoot, candidate.directory);
-      if (candidate.manifest.pin && options.db && options.principal) {
-        releaseBackupPin(options.db, options.principal, candidate.manifest.pin.id);
+      if (options.removeDirectory) {
+        await options.removeDirectory(dailyRoot, candidate.directory);
+        if (candidate.manifest.pin) releasePin?.(candidate.manifest.pin.id);
+      } else {
+        await retireVerifiedDaily(options.backupRoot, candidate.manifest, releasePin);
       }
       report.deletedBackupIds.push(candidate.manifest.backupId);
     } catch {
       report.errors.push({ backupId: candidate.manifest.backupId, code: 'cleanup_failed' });
-      report.retainedBackupIds.push(candidate.manifest.backupId);
+      if (fs.existsSync(candidate.directory)) report.retainedBackupIds.push(candidate.manifest.backupId);
+    }
+  }
+  // 任何未核清的发布目录或删除失败都可能持有唯一引用，留待下一轮重试。
+  if (report.errors.length === 0 && !report.retainedInvalid.some(id => !id.startsWith('.'))) {
+    for (const [deploymentId, hashes] of retainedObjects) {
+      try { await pruneDailyMedia(options.backupRoot, deploymentId, hashes); }
+      catch { report.errors.push({ deploymentId, code: 'media_cleanup_failed' }); }
     }
   }
   return report;

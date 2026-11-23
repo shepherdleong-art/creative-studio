@@ -1,3 +1,5 @@
+import { COMPANY_SEEDREAM_55 } from './company-seedream-image.ts';
+
 export interface ImageModelCapabilities {
   model: string;
   label: string;
@@ -50,6 +52,7 @@ export function getImageModelCapabilities(model: string): ImageModelCapabilities
     'nano-banana-3.0': 'Nano Banana Pro',
     'nano-banana-3.1': 'Nano Banana 2',
     'doubao-seedream-5-0-pro-image': 'Seedream 5.0 Pro',
+    [COMPANY_SEEDREAM_55.model]: 'Seedream 5.5',
     'doubao-seedream-5-0-pro-260628': 'Seedream 5.0 Pro（方舟直连）',
   };
   if (companyLabels[model]) {

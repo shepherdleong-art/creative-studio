@@ -277,6 +277,12 @@
 /* ===== 第 3 步：工具行 + 大纸 ===== */
 .t3Toolbar { display: flex; min-height: 36px; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 10px; padding: 0 2px; }
 .t3Title { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.diagnosticsTrigger { background: var(--color-warn-tint); color: var(--color-warn); cursor: pointer; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.diagnosticsTrigger[data-blocking='true'] { background: var(--color-fail-tint); color: var(--color-fail); }
+.diagnosticsTrigger:hover { box-shadow: inset 0 0 0 1px currentColor; }
+.diagnosticsSection { flex-direction: column; align-items: stretch; margin-bottom: 8px; }
+.diagnosticsSection h3 { margin: 0; font-weight: 600; }
+.diagnosticsSection ul { display: grid; gap: 4px; margin: 0; padding-left: 1.25em; list-style: disc; overflow-wrap: anywhere; }
 .bigPaper { display: flex; flex: 1 0 auto; min-height: 0; flex-direction: column; padding: 14px; border-radius: 16px; background: var(--paper); box-shadow: var(--sh-md); }
 .previewModeHeader { display: flex; min-width: 0; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .previewModeTabs { display: flex; flex-shrink: 0; gap: 2px; padding: 3px; border-radius: 9px; background: var(--seg); }
@@ -348,6 +354,9 @@
 .clip[data-reorder-active='true'] { opacity: .72; outline: 2px dashed var(--blue); outline-offset: 1px; }
 .videoFreezeTail { position: absolute; top: 5px; bottom: 5px; display: grid; min-width: 36px; place-items: center; overflow: hidden; border: 1px dashed rgba(0, 113, 227, .4); border-radius: 8px; background: repeating-linear-gradient(135deg, rgba(0, 113, 227, .06) 0 7px, rgba(0, 113, 227, .12) 7px 14px); color: var(--blue); font-size: 10px; white-space: nowrap; pointer-events: none; }
 .subclip { position: absolute; top: 3px; display: flex; height: 22px; align-items: center; overflow: hidden; padding: 0 8px; border: .5px solid var(--line); border-radius: 6px; background: var(--color-card); box-shadow: var(--sh-sm); color: var(--ink); font-size: 11px; white-space: nowrap; cursor: grab; touch-action: none; }
+.subtitleWidthWarning { max-width: min(100%, 15em); height: 34px; padding: 0 8px; border: 1px solid var(--color-fail); border-radius: var(--radius-control); color: var(--color-fail); background: var(--color-fail-tint); font-size: var(--text-label); cursor: pointer; }
+.subclip[data-overflow] { border-color: var(--color-fail); gap: 3px; opacity: 1; }
+.subclip[data-overflow] > svg { flex-shrink: 0; color: var(--color-fail); }
 .subclipDim { opacity: .5; }
 .subclipSel { border-color: var(--blue); background: var(--blue-wash); color: var(--blue); font-weight: 500; }
 .subclipHandle { position: absolute; z-index: 3; top: 0; bottom: 0; width: 7px; cursor: ew-resize; }

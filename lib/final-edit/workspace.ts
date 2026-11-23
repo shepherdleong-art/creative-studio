@@ -51,7 +51,10 @@ import {
 } from './material-import.ts';
 import { assertNarrationPlaybackRate, assertTtsSpeed } from './tts-speed.ts';
 import { buildPackagingVars, DEFAULT_PACKAGING_TEMPLATE, loadProjectPackagingData, mergePackagingLayouts, PACKAGING_TEMPLATE_IDS, parsePackagingConfig, sanitizePackagingVarsOverrides, sanitizePointCues, type PackagingLayouts, type PackagingLayoutsPatch, type PackagingPointLayout, type PackagingTemplateId } from './packaging-vars.ts';
-import { assertPackagingStickerFrames, PackagingStickerError, validatePackagingStickerDefaults, validatePackagingStickers, type PackagingStickerDefaults, type PackagingStickerInstance } from '../media-core/packaging-stickers.ts';
+import { assertPackagingStickerFrames, DEFAULT_PACKAGING_STICKER_DEFAULTS, PackagingStickerError, STICKER_AUTO_MIN_BODY_FRAMES, validatePackagingStickerDefaults, validatePackagingStickers, type PackagingStickerDefaults, type PackagingStickerInstance } from '../media-core/packaging-stickers.ts';
+import { planPackagingStickerAutoLayout, type PackagingStickerPlanningAsset } from '../media-core/packaging-sticker-planner.ts';
+import { readPackagingStickerPlanningAssets } from '../media-core/packaging-sticker-assets.ts';
+import { resolvePackagingDir } from '../media-core/packaging-runtime.ts';
 import { buildPointCues, computePointCuesKey, ensurePackagingPointCues, extractSellingPointsWithLLM, loadProjectSellingPoints, mergePointCuesIntoPackagingJson, type PointCue } from './packaging-cues.ts';
 import { preparePreviewCacheKey } from './prepare-preview.ts';
 import { normalizeCoverPreset } from './title-presets.ts';
@@ -881,7 +884,7 @@ export function buildAlignedSubtitleCues(script: ScriptSnapshot, narration: Narr
     if (!timing || timing.startUs < 0 || timing.endUs > narration.durationUs || timing.endUs <= timing.startUs) {
       throw new FinalEditError('alignment_failed', `缺少 ${segmentId} 的可靠时间范围`);
     }
-    const parts = splitNarrationForDisplay(segment.narration, { maxContentCharacters: 16 });
+    const parts = splitNarrationForDisplay(segment.narration, { maxContentCharacters: 14, balanceLongParts: true });
     if (parts.length === 0) continue;
     const weights = parts.map((part) => Math.max(1, contentChars(part.sourceText).length));
     const totalWeight = weights.reduce((sum, value) => sum + value, 0);
@@ -1540,13 +1543,12 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       // 生成收尾即备好对时卖点：与 ensurePackagingPointCues 同规则（口播哈希一致复用 / §7 编辑保护跳过），
       // 但直接用内存中的词级时间戳一次算清并随收尾事务原子落库——用户进入预览时时间轴即有卖点，
       // 不再依赖预览端点事后静默补提取（前端组视图感知不到，曾导致屏幕有卖点、时间轴空）。
-      let packagingJsonWithPoints: string | null = null;
-      let extractedPointCount = 0;
+      const pointCuesKey = computePointCuesKey(script.editedNarrationText);
+      let preparedPoints: Awaited<ReturnType<typeof buildPointCues>> | undefined;
       try {
         const packagingRow = db.prepare(`SELECT packagingJson, narrationConfigJson FROM final_edit_groups WHERE id=?`).get(groupId) as { packagingJson: string | null; narrationConfigJson: string | null } | undefined;
         const packagingConfig = parsePackagingConfig(packagingRow?.packagingJson ?? '');
         if (packagingConfig.enabled) {
-          const pointCuesKey = computePointCuesKey(script.editedNarrationText);
           const upToDate = Boolean(packagingConfig.pointCues?.length && packagingConfig.pointCuesKey === pointCuesKey);
           const editProtected = Boolean(packagingConfig.pointCues?.length && packagingConfig.pointCuesEdited === true);
           if (!upToDate && !editProtected) {
@@ -1554,7 +1556,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             const playbackRate = Number.isFinite(rawRate) ? Math.max(0.5, Math.min(2, rawRate)) : 1;
             const coverSec = FINAL_EDIT_INTRO_DURATION_US / 1e6;
             pushDetail(null, '正在提取卖点…');
-            const built = await buildPointCues({
+            preparedPoints = await buildPointCues({
               narrationText: script.editedNarrationText,
               words: narration.wordTimings,
               subtitleCues: cues,
@@ -1567,12 +1569,20 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
                 scope: { resourceType: 'project', resourceId: input.projectId },
               }),
             });
-            packagingJsonWithPoints = mergePointCuesIntoPackagingJson(packagingRow?.packagingJson, built.pointCues, pointCuesKey, built.mode).packagingJson;
-            extractedPointCount = built.pointCues.length;
-            pushDetail(`卖点提取完成：${extractedPointCount} 条`);
+            pushDetail(`卖点提取完成：${preparedPoints.pointCues.length} 条`);
           }
         }
       } catch { /* 卖点预提取失败不阻塞生成：预览/导出端点会按需重提取 */ }
+      const bodyFrames = converted.timeline.bodyFrames;
+      let stickerAssets: PackagingStickerPlanningAsset[] | undefined;
+      let stickerCatalogUnavailable = false;
+      if (nextIndex === 1 && bodyFrames >= STICKER_AUTO_MIN_BODY_FRAMES) {
+        try {
+          stickerAssets = readPackagingStickerPlanningAssets(resolvePackagingDir());
+        } catch {
+          stickerCatalogUnavailable = true;
+        }
+      }
       const transaction = db.transaction(() => {
         if (requireAccessContext().kind === 'team') {
           registerManagedFile({
@@ -1582,7 +1592,38 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           });
         }
         db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, durationGateJson=?, status=?, phase='ready', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, serializeNarrationTimings(narration), JSON.stringify(cues), JSON.stringify(durationGateForRun), variants.some((variant) => variant.issues.some((issue) => issue.severity === 'blocking')) ? 'partial' : 'ready', now(), groupId);
-        if (packagingJsonWithPoints) db.prepare(`UPDATE final_edit_groups SET packagingJson=? WHERE id=?`).run(packagingJsonWithPoints, groupId);
+        const { packagingJson } = db.prepare(`SELECT packagingJson FROM final_edit_groups WHERE id=?`).get(groupId) as { packagingJson: string | null };
+        const packagingConfig = parsePackagingConfig(packagingJson);
+        let nextPackagingJson = packagingJson;
+        if (packagingConfig.enabled) {
+          if (preparedPoints && !(packagingConfig.pointCues?.length && (packagingConfig.pointCuesEdited || packagingConfig.pointCuesKey === pointCuesKey))) {
+            nextPackagingJson = mergePointCuesIntoPackagingJson(packagingJson, preparedPoints.pointCues, pointCuesKey, preparedPoints.mode).packagingJson;
+          }
+          if (packagingConfig.stickers === undefined && (stickerAssets || stickerCatalogUnavailable)) {
+            try {
+              const stickers = stickerAssets && planPackagingStickerAutoLayout({
+                bodyFrames,
+                template: packagingConfig.template,
+                assets: stickerAssets,
+                animation: (packagingConfig.stickerDefaults ?? DEFAULT_PACKAGING_STICKER_DEFAULTS).animation,
+                autoGroupId: `auto_${uuidv4()}`,
+                random: Math.random,
+                createId: () => `s_${uuidv4()}`,
+              });
+              if (stickers) {
+                nextPackagingJson = JSON.stringify({ ...parsePackagingConfig(nextPackagingJson), stickers });
+              }
+            } catch {
+              stickerCatalogUnavailable = true;
+            }
+            if (stickerCatalogUnavailable) {
+              for (const variant of variants) {
+                variant.issues.push({ code: 'sticker_auto_layout_failed', severity: 'warning', message: '基础贴纸自动布置失败，可在「贴纸」中重试' });
+              }
+            }
+          }
+        }
+        if (nextPackagingJson !== packagingJson) db.prepare(`UPDATE final_edit_groups SET packagingJson=? WHERE id=?`).run(nextPackagingJson, groupId);
         for (let index = 0; index < variants.length; index += 1) {
           const variant = variants[index];
           db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, issuesJson, matchDiagnosticsJson, overlapJson, revision, previewRelativePath, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, ?, ?, ?)`).run(variant.id, groupId, variant.indexNum, variant.outputPreset, JSON.stringify(variant.timeline), JSON.stringify(variant.bgm), JSON.stringify(variant.cover), JSON.stringify(variant.issues), JSON.stringify(variant.matchDiagnostics || {}), previewPaths.get(variant.id) || null, now(), now());
@@ -2451,7 +2492,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         pointCuesMode: packagingConfig.pointCuesMode ?? 'timed',
         ...(pointCuesEdited ? { pointCuesEdited: true } : {}),
         ...(Object.keys(layouts).length > 0 ? { layouts } : {}),
-        ...(stickers && stickers.length > 0 ? { stickers } : {}),
+        ...(stickers ? { stickers } : {}),
         ...(stickerDefaults ? { stickerDefaults } : {}),
         ...fontSlot('titleFont'),
         ...fontSlot('subtitleFont'),

@@ -1,10 +1,12 @@
 import { extractSellingPointsWithLLM } from '../media-core/packaging-extraction.ts';
 import { splitCoverTitle } from '../media-core/cover-domain.ts';
+import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { buildPointCues, buildLocalPointCues, generatePointCueId, parseStoredWordTimings, extractHeuristicPoints, dedupeCandidates } from '../media-core/packaging-cues.ts';
 import { buildPackagingVars, loadProjectPackagingData, parsePackagingConfig, type FinalEditPackagingConfig } from '../media-core/packaging-vars.ts';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
-import { PackagingStickerError, validatePackagingStickerDefaults, validatePackagingStickers } from '../media-core/packaging-stickers.ts';
+import { DEFAULT_PACKAGING_STICKER_DEFAULTS, PackagingStickerError, validatePackagingStickerDefaults, validatePackagingStickers } from '../media-core/packaging-stickers.ts';
+import { planPackagingStickerAutoLayout, type PackagingStickerPlanningAsset } from '../media-core/packaging-sticker-planner.ts';
 import type { BatchOutputClipEditView } from './output-arrangement.ts';
 import { BatchDomainError } from './errors.ts';
 import { safeFontFilename, userFontDir } from '../media-core/packaging-font.ts';
@@ -89,15 +91,36 @@ export async function prepareBatchPackagingConfig(db: Database.Database, project
 }
 
 /** Freeze packaging in new output versions; historical arrangements remain unchanged. */
-export function initialBatchPackagingConfig(db: Database.Database, projectId: string, view: PackagingSource, previous?: unknown): FinalEditPackagingConfig {
+export function initialBatchPackagingConfig(
+  db: Database.Database,
+  projectId: string,
+  view: PackagingSource,
+  previous?: unknown,
+  stickerAssets?: PackagingStickerPlanningAsset[],
+): FinalEditPackagingConfig {
   const config = previous ? parsePackagingConfig(previous) : parsePackagingConfig({ enabled: true });
   const explicitlyEmpty = config.pointCuesEdited && config.pointCues?.length === 0;
   const narration = batchNarrationPackaging(db, view);
   const projectPoints = loadProjectPackagingData(db, projectId).sellingPoints ?? [];
+  const bodyDurationUs = Math.max(view.visualDurationUs, view.narration.durationUs ?? 0);
   const built = buildLocalPointCues({ narrationText: view.subtitleCues.map(cue => cue.text).join('，'),
     words: narration.words, subtitleCues: view.subtitleCues, sellingPoints: projectPoints.length ? projectPoints : narration.points,
-    totalSec: (Math.max(view.visualDurationUs, view.narration.durationUs ?? 0) + FINAL_EDIT_INTRO_DURATION_US) / 1e6,
+    totalSec: (bodyDurationUs + FINAL_EDIT_INTRO_DURATION_US) / 1e6,
     coverSec: FINAL_EDIT_INTRO_DURATION_US / 1e6, narrationPlaybackRate: 1 });
+  if (stickerAssets && config.enabled && config.stickers === undefined) {
+    try {
+      const stickers = planPackagingStickerAutoLayout({
+        bodyFrames: Math.floor(bodyDurationUs / 1e6 * FINAL_EDIT_FPS + 1e-6),
+        template: config.template,
+        assets: stickerAssets,
+        animation: (config.stickerDefaults ?? DEFAULT_PACKAGING_STICKER_DEFAULTS).animation,
+        autoGroupId: `auto_${randomUUID()}`,
+        random: Math.random,
+        createId: () => `s_${randomUUID()}`,
+      });
+      if (stickers) config.stickers = stickers;
+    } catch { /* The optional sticker catalog must not block footage allocation. */ }
+  }
   return { ...config, varsOverrides: { ...batchPackagingDefaults(db, projectId, view), ...config.varsOverrides },
     pointCues: explicitlyEmpty ? [] : built.pointCues.map(cue => ({ ...cue, id: generatePointCueId() })), pointCuesMode: explicitlyEmpty ? 'none' : built.mode,
     pointCuesEdited: explicitlyEmpty === true, layouts: Object.fromEntries(Object.entries(config.layouts ?? {}).map(([key, layout]) => [key, { cover: layout.cover }])) };

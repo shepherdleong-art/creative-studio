@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { syncShotPromptFromScene } from '@/lib/furniture-prompt';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
-import { resolveGptImage2Size, isValidGptImage2Size } from '@/lib/gpt-image-2-size-presets';
-import { validateImageAspectRatio, validateImageResolution, validateImagePresetSize } from '@/lib/image-generation-settings';
+import { isValidImageGenerationSize, resolveImageGenerationSize, validateImageAspectRatio, validateImageResolution, validateImagePresetSize } from '@/lib/image-generation-settings';
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { toStorageImageUrl } from '@/lib/storage-url';
 import { normalizeShotImageIds } from '@/lib/shot-set-domain';
@@ -203,9 +202,9 @@ async function __teamRoutePOST(request: NextRequest) {
       if (body.aspectRatio) {
         const resolutionError = validateImageResolution(model, body.aspectRatio, body.resolution || '1k');
         if (resolutionError) return NextResponse.json({ error: resolutionError }, { status: 400 });
-        try { resolvedSize = resolveGptImage2Size(body.aspectRatio, body.resolution || '1k'); }
+        try { resolvedSize = resolveImageGenerationSize(model, body.aspectRatio, body.resolution || '1k'); }
         catch (err) { return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 }); }
-      } else if (body.size && isValidGptImage2Size(body.size)) {
+      } else if (body.size && isValidImageGenerationSize(model, body.size)) {
         resolvedSize = body.size;
       } else {
         return NextResponse.json({ error: `Invalid size: "${body.size || '(missing)'}"` }, { status: 400 });

@@ -1,4 +1,5 @@
 import { companyNativeVideoModel } from './company-gateway-video-models.ts';
+import { QINIU_KLING_4_MODEL } from './company-qiniu-kling-4.ts';
 
 // 界面、单条/批量提交接口与各视频适配器共用的整数秒约束；非法值一律拒绝，不静默截断。
 const durationsBetween = (min: number, max: number) => Array.from({ length: max - min + 1 }, (_, index) => min + index);
@@ -7,6 +8,7 @@ const durationsBetween = (min: number, max: number) => Array.from({ length: max 
 const KLING_25_GATEWAY_DURATIONS = [5, 10] as const;
 const KLING_3_MODELS = ['kling-3.0', 'kling-v3', 'kling-v3-0', 'kling-v3.0', 'qiniuyun/kling-3.0'];
 const KLING_3_DURATIONS = durationsBetween(3, 15);
+const KLING_4_DURATIONS = durationsBetween(3, 30);
 // Seedance 2.x 生成下限 4 秒；2.5 的 30 秒在方舟直连与公司网关都已实测。
 const SEEDANCE_25_DURATIONS = durationsBetween(4, 30);
 const SEEDANCE_20_DURATIONS = durationsBetween(4, 15);
@@ -19,6 +21,7 @@ function isGatewayKling25(providerType: string, model: string): boolean {
 /** 按供应商类型与实际模型给出允许的整数秒（升序）；未知模型保留历史 2–15 秒。 */
 export function videoDurationOptions(providerType: string, model: string): readonly number[] {
   if (isGatewayKling25(providerType, model)) return KLING_25_GATEWAY_DURATIONS;
+  if (providerType === 'openai-video' && model === QINIU_KLING_4_MODEL) return KLING_4_DURATIONS;
   const nativeModel = providerType === 'openai-video' ? companyNativeVideoModel(model) : null;
   if (nativeModel) return durationsBetween(nativeModel.minDurationSec, nativeModel.maxDurationSec);
   const m = model.trim().toLowerCase();

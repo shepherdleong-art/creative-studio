@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { MaintenanceControlError, MaintenanceJobStore, type MaintenanceJob } from './jobs.ts';
+import { TeamBackupSnapshotTimeoutError } from './backup.ts';
 import { safeMaintenanceId } from './paths.ts';
 import { acquireSchemaUpgradeLock, SchemaUpgradeLockTimeoutError } from '../../schema-upgrade/lock.ts';
 
@@ -47,9 +48,11 @@ export async function executeClaimedBackupJob(options: {
   } catch (error) {
     const current = options.store.get(options.job.id).job;
     if (current.leaseOwner === options.workerId && current.status === 'running') {
+      const snapshotTimedOut = error instanceof TeamBackupSnapshotTimeoutError;
       options.store.fail({
-        jobId: options.job.id, workerId: options.workerId, code: 'backup_failed',
-        message: error instanceof Error && error.message.includes('空间不足') ? '备份空间不足，未生成可还原备份。' : '备份或完整性校验失败，未生成可还原备份。',
+        jobId: options.job.id, workerId: options.workerId, code: snapshotTimedOut ? error.code : 'backup_failed',
+        message: snapshotTimedOut ? error.message
+          : error instanceof Error && error.message.includes('空间不足') ? '备份空间不足，未生成可还原备份。' : '备份或完整性校验失败，未生成可还原备份。',
       });
     }
     throw error;
@@ -67,6 +70,7 @@ export async function runMaintenanceWorker(options: {
   makeRestore?: (params: { job: MaintenanceJob; onStage: (stage: import('./restore-operation.ts').RestoreStage) => void }) =>
     Promise<{ awaitingConfirmation: boolean; [key: string]: unknown }>;
   executeCleanup?: (job: MaintenanceJob) => Promise<Record<string, unknown>>;
+  recoverInterruptedBackups?: () => Promise<void>;
   once?: boolean; pollIntervalMs?: number;
 }): Promise<void> {
   // deployment config 已在应用外解析，worker 不接受任意配置、路径或命令。
@@ -76,6 +80,7 @@ export async function runMaintenanceWorker(options: {
   const store = new MaintenanceJobStore({ backupRoot: config.backupRoot, deploymentId: config.deploymentId });
   const workerId = `maintenance-${process.pid}`;
   let lock: { release(): void } | null = null;
+  let nextBackupRecovery = 0;
   try {
     while (true) {
       try {
@@ -88,6 +93,11 @@ export async function runMaintenanceWorker(options: {
       }
       let claimed: { job: MaintenanceJob } | null;
       try {
+        if (options.recoverInterruptedBackups && Date.now() >= nextBackupRecovery) {
+          nextBackupRecovery = Date.now() + 5_000;
+          try { await options.recoverInterruptedBackups(); }
+          catch { console.error('[team-maintenance] 备份屏障复核失败，稍后重试'); }
+        }
         claimed = store.claimNext({ workerId, ...(options.jobId ? { jobId: options.jobId } : {}) })
           ?? store.resumeRelease({ workerId });
       } catch (error) {

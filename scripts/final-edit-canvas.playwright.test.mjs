@@ -16,18 +16,21 @@ const framingSource = fs.readFileSync('lib/media-core/cover-framing.ts', 'utf8')
 const framingTranspiled = ts.transpileModule(framingSource, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
 }).outputText.replace(/^import .*$/gm, '').replace(/\bexport\s+/g, '');
-const browserBundle = `${transpiled}\n${framingTranspiled}\nwindow.__finalEditCanvas = { drawText, drawEditorOverlay, createOverlayBundlePayload, measureSingleLineText, fitTextStyleToSingleLine, isTextStyleWithinSafeArea, drawFramedImage, coverSafeAreaRect };`;
+const fontLoader = ts.transpileModule(fs.readFileSync('components/system-fonts.ts', 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
+}).outputText.replace(/\bexport\s+/g, '');
+const browserBundle = `${fontLoader}\n${transpiled}\n${framingTranspiled}\nwindow.__finalEditCanvas = { measureSubtitleOverflowWidths, drawText, drawEditorOverlay, createOverlayBundlePayload, measureSingleLineText, fitTextStyleToSingleLine, isTextStyleWithinSafeArea, drawFramedImage, coverSafeAreaRect };`;
 
 const fixedFont = fs.readFileSync('node_modules/next/dist/next-devtools/server/font/geist-latin.woff2').toString('base64');
 const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 });
   await page.setContent(`<style>@font-face{font-family:FinalEditGolden;src:url(data:font/woff2;base64,${fixedFont}) format('woff2')}</style><canvas id="golden" width="320" height="240"></canvas>`);
-  await page.evaluate(async () => { await document.fonts.load('32px FinalEditGolden'); await document.fonts.ready; });
+  await page.evaluate(async () => { window.fetch = async () => Response.json({ fonts: [] }); await document.fonts.load('32px FinalEditGolden'); await document.fonts.ready; });
   await page.addScriptTag({ content: `const OUTPUT_PRESETS={"3x4":{width:1080,height:1440,fps:24},"9x16":{width:1080,height:1920,fps:24},"16x9":{width:1920,height:1080,fps:24}};${browserBundle}` });
 
   const result = await page.evaluate(async () => {
-    const { drawText, drawEditorOverlay, createOverlayBundlePayload, measureSingleLineText, fitTextStyleToSingleLine, isTextStyleWithinSafeArea, drawFramedImage, coverSafeAreaRect } = window.__finalEditCanvas;
+    const { measureSubtitleOverflowWidths, drawText, drawEditorOverlay, createOverlayBundlePayload, measureSingleLineText, fitTextStyleToSingleLine, isTextStyleWithinSafeArea, drawFramedImage, coverSafeAreaRect } = window.__finalEditCanvas;
     const primary = {
       fontFamily: 'FinalEditGolden', fontSizePx: 42, italic: false, x: 0.5, y: 0.38, scale: 1,
       color: '#f4df74', align: 'center', boxWidthPx: 900, lineHeight: 1,
@@ -52,6 +55,12 @@ try {
     const preview = document.createElement('canvas');
     drawEditorOverlay(preview, group, '3x4', null, true);
     const bundle = await createOverlayBundlePayload(group, '3x4');
+    const exactWidth = bundle.manifest.measurements.subtitleWidths['cue-1'];
+    const widthCheck = async limit => [...await measureSubtitleOverflowWidths(group.subtitleCues, '3x4', {
+      ...group.textStyles['3x4'].subtitle, boxWidthPx: limit,
+    }, new AbortController().signal)];
+    const atLimit = await widthCheck(exactWidth);
+    const overLimit = await widthCheck(exactWidth - 1);
     const disabledTitles = await createOverlayBundlePayload({
       ...group,
       coverTitle: { enabled: false, primary: { text: 'LONG TITLE '.repeat(100) }, secondary: { text: 'LONG SUBTITLE '.repeat(100) } },
@@ -97,7 +106,7 @@ try {
     drawFramedImage(framedCover.getContext('2d'), sourceFrame, coverFraming);
 
     return {
-      golden,
+      golden, exactWidth, atLimit, overLimit,
       disabledTitleWidths: disabledTitles.manifest.measurements,
       enabledTitleOverflowRejected,
       previewMatchesBundle: preview.toDataURL('image/png').split(',')[1] === bundle.titlePngBase64,
@@ -115,6 +124,8 @@ try {
     };
   });
 
+  assert.deepEqual(result.atLimit, [], '等于导出安全宽度应通过编辑检查');
+  assert.deepEqual(result.overLimit, [['cue-1', result.exactWidth]], '超出 1 像素必须在编辑时定位到同一条字幕');
   const goldenHash = crypto.createHash('sha256').update(Buffer.from(result.golden, 'base64')).digest('hex');
   if (!process.argv.includes('--export-only')) {
     assert.equal(goldenHash, '154731d3be726f13137feace024ecb0f16fb251ee476874ccc46a88a7c2b7d30', 'Canvas 像素输出与 golden 不一致');

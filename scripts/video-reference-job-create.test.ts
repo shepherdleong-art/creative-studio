@@ -23,6 +23,7 @@ for (const [id, type, model] of [
   ['sd25', 'jimeng', 'doubao-seedance-2-5-260628'],
   ['sd20', 'jimeng', 'doubao-seedance-2-0-260128'],
   ['wan', 'openai-video', 'wan-3.0'],
+  ['kling4', 'openai-video', 'qiniuyun/kling-4.0'],
 ] as const) {
   db.prepare(`INSERT INTO video_providers
     (id, name, type, defaultModel, baseUrlEnv, apiKeyEnv, modelEnv, baseUrl, apiKey, enabled)
@@ -31,6 +32,7 @@ for (const [id, type, model] of [
 const insertAsset = db.prepare(`INSERT INTO video_reference_assets
   (id, projectId, kind, filename, path, mimeType, byteSize, durationSec) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
 insertAsset.run('image', 'project', 'image', 'image.png', sourcePath, 'image/png', 100, null);
+insertAsset.run('image-2', 'project', 'image', 'middle.png', sourcePath, 'image/png', 100, null);
 insertAsset.run('video', 'project', 'video', 'video.mp4', sourcePath, 'video/mp4', 100, 4);
 insertAsset.run('audio', 'project', 'audio', 'audio.mp3', sourcePath, 'audio/mpeg', 100, 3);
 insertAsset.run('long-video', 'project', 'video', 'long.mp4', sourcePath, 'video/mp4', 100, 15);
@@ -173,6 +175,29 @@ try {
   assert.equal(oldRow.aspectRatio, null);
   assert.equal(oldRow.resolution, null);
   assert.deepEqual(links(oldRow.id), []);
+
+  const multiFrame = { providerId: 'kling4', generationMode: 'frames-to-video', durationSec: 3, resolution: '1080p', referenceAssetIds: ['image-2', 'image'] };
+  const klingReference = { providerId: 'kling4', durationSec: 3, referenceAssetIds: ['video', 'image'] };
+  const kling = await create([item(multiFrame), item(klingReference)], true);
+  assert.ok(kling.ok);
+  const [framesId, referenceId] = kling.videoJobIds;
+  assert.deepEqual(links(framesId), ['image-2', 'image']);
+  assert.deepEqual(links(referenceId), ['video', 'image']);
+  assert.equal(stored().find(row => row.id === framesId)?.generationMode, 'frames-to-video');
+  assert.equal(stored().find(row => row.id === framesId)?.resolution, '1080p');
+  assert.equal(stored().find(row => row.id === referenceId)?.resolution, '720p');
+  for (const invalid of [
+    { ...multiFrame, referenceAssetIds: [] },
+    { ...multiFrame, referenceAssetIds: ['video'] },
+    { ...multiFrame, referenceAssetIds: ['foreign'] },
+    { ...multiFrame, referenceAssetIds: ['image', 'image'] },
+    { ...multiFrame, providerId: 'wan' },
+    { ...multiFrame, resolution: '4K' },
+    { ...klingReference, referenceAssetIds: ['audio'] },
+  ]) {
+    assert.equal((await create([item(multiFrame), item(invalid)], true)).ok, false);
+  }
+  assert.equal(stored().length, 3, '非法批次不得写入部分任务');
 
   console.log('video reference job creation tests passed');
 } finally {

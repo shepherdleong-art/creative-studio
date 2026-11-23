@@ -54,7 +54,7 @@ export function resolveImageJobProvider(
   if (!hasUsableKey(provider)) throw new Error('供应商 API Key 未配置');
 
   const model = provider.model || defaults.model;
-  const sizeError = defaults.size ? validateImagePresetSize(model, defaults.size) : null;
+  const sizeError = defaults.size ? validateImagePresetSize(model, defaults.size, defaults.model) : null;
   if (sizeError) throw new Error(sizeError);
   return { providerId: provider.id, model };
 }

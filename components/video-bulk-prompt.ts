@@ -20,6 +20,7 @@ export interface BulkPromptRow {
   tailImageId?: string | null;
   generationMode?: VideoGenerationMode;
   referenceAssets?: readonly VideoReferenceAsset[];
+  middleFrames?: readonly VideoReferenceAsset[];
   referenceUploadState?: ReferenceUploadState;
   referenceUploadError?: string | null;
 }
@@ -35,10 +36,9 @@ export function serializeVideoGenerationFields(row: BulkPromptRow): SerializedVi
   const generationMode = getVideoMotionGenerationMode(row);
   return {
     generationMode,
-    referenceAssetIds: generationMode === 'reference-to-video'
-      ? (row.referenceAssets ?? []).map((asset) => asset.id)
-      : [],
-    tailImageId: generationMode === 'image-to-video' ? row.tailImageId ?? null : null,
+    referenceAssetIds: (generationMode === 'reference-to-video' ? row.referenceAssets
+      : generationMode === 'frames-to-video' ? row.middleFrames : undefined)?.map((asset) => asset.id) ?? [],
+    tailImageId: generationMode === 'reference-to-video' ? null : row.tailImageId ?? null,
   };
 }
 

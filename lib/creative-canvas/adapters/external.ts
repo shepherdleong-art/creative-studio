@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import { extractPackyGeminiImageSource } from '../../providers/packy-gemini-image.ts';
 import { buildArkImageBody } from '../../providers/ark-images.ts';
 import { SEEDREAM_5_PRO, seedreamImageEndpoint } from '../../seedream-image.ts';
+import { companySeedreamImageBody, isCompanySeedreamImageModel } from '../../company-seedream-image.ts';
 import { fetchSeedreamImage } from '../../seedream-image-fetch.ts';
 import sharp from 'sharp';
 import path from 'node:path';
@@ -342,7 +343,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
     modelAlias: context.modelAlias,
     mediaKind: context.mediaKind,
     ...(options.companySeedance ? { expectedType: 'openai-video', exactModel: true } : {}),
-    ...(context.modelAlias === 'doubao-seedream-5-0-pro-image' ? { expectedType: 'gateway-task-image', exactModel: true } : {}),
+    ...(isCompanySeedreamImageModel(context.modelAlias) ? { expectedType: 'gateway-task-image', exactModel: true } : {}),
   });
 
   return {
@@ -520,18 +521,15 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
               body: JSON.stringify(arkBody),
               signal: linkedTimeoutSignal(signal, options.submitTimeoutMs ?? 600_000),
             }, fetchImpl);
-          } else if (capability.providerKind === 'company' && capability.modelAlias === 'doubao-seedream-5-0-pro-image') {
+          } else if (capability.providerKind === 'company' && isCompanySeedreamImageModel(capability.modelAlias)) {
             const resolution = String(context.parameters.resolution ?? '2K');
             const ratio = String(context.parameters.aspectRatio ?? '1:1');
             response = await fetchSeedreamImage(`${route.baseUrl}/v1/images/generations`, {
               method: 'POST',
               headers: { 'content-type': 'application/json', authorization: `Bearer ${route.apiKey}` },
-              body: JSON.stringify({
-                model: capability.modelAlias,
-                prompt: `${context.prompt}\n输出画幅为${ratio}，清晰度为${resolution}。`,
-                ...(imageInputs.length ? { image: imageInputs.map(localFileDataUrl) } : {}),
-                size: resolution, n: 1, response_format: 'url',
-              }),
+              body: JSON.stringify(companySeedreamImageBody(
+                capability.modelAlias, context.prompt, imageInputs.map(localFileDataUrl), ratio, resolution,
+              )),
               signal: linkedTimeoutSignal(signal, options.submitTimeoutMs ?? 600_000),
             }, fetchImpl);
           } else if (route.type === 'packy-gemini-image') {
@@ -757,7 +755,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
     async download(context, signal) {
       if (context.providerTaskId.startsWith('external-image:')) {
         const tempPath = syncImageTempPath(storageRoot, context.task.canvasId, context.task.id);
-        const companyImage = context.modelAlias === 'doubao-seedream-5-0-pro-image';
+        const companyImage = isCompanySeedreamImageModel(context.modelAlias);
         const imageResult = async (bytes: Buffer) => {
           return companyImage ? companyCanvasImageOutput(bytes, context.modelAlias, context.parameters) : { bytes, mimeType: 'image/png' };
         };

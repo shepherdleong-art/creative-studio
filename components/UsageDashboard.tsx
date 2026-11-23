@@ -3,6 +3,8 @@
 import { Fragment, useEffect, useMemo, useState, type PointerEvent } from 'react';
 import { addUsageDays, usagePresetRange, USAGE_DATE_PRESETS, type UsageDatePreset } from '@/lib/usage-date-range';
 import { BILLING_MODEL_PRICES } from '@/lib/usage-pricing';
+import { QINIU_KLING_4_PROVIDER_ID } from '@/lib/company-qiniu-kling-4';
+import { COMPANY_SEEDREAM_55 } from '@/lib/company-seedream-image';
 import type { CoreUsageCategory, CoreUsageModelKey } from '@/lib/usage-pricing';
 import { EmptyState, GroupHeading, Segmented, ToolbarButton } from '@/components/ui/Appearance';
 import type {
@@ -24,6 +26,8 @@ const MODEL_KEYS: readonly CoreUsageModelKey[] = [
 ];
 
 const MODEL_LABELS: Record<CoreUsageModelKey, string> = {
+  [COMPANY_SEEDREAM_55.id]: 'Seedream 5.5',
+  [QINIU_KLING_4_PROVIDER_ID]: '七牛可灵 4.0',
   'company-minimax-h3': 'minimax-h3',
   'company-wan-3-0': 'wan-3.0',
   'company-seedream-5-0-pro': 'doubao-seedream-5-0-pro-image',
@@ -34,6 +38,8 @@ const MODEL_LABELS: Record<CoreUsageModelKey, string> = {
 
   'company-image2-medium': 'image2-medium',
   'company-qiniuyun-gpt-image-2-medium': 'qiniuyun/gpt-image-2-medium',
+  'company-qiniuyun-gpt-image-2-6-flare': '七牛 Image 2.6 Flare',
+  'company-qiniuyun-gpt-image-2-6-sunburst': '七牛 Image 2.6 Sunburst',
   'company-kling-3-0': 'kling-3.0',
   'company-qiniuyun-kling-3-0': 'qiniuyun/kling-3.0',
   'company-seedance-fast': 'Seedance 2.0 Fast',
@@ -43,6 +49,8 @@ const MODEL_LABELS: Record<CoreUsageModelKey, string> = {
 };
 
 const MODEL_COLORS: Record<CoreUsageModelKey, string> = {
+  [COMPANY_SEEDREAM_55.id]: 'var(--color-review-2)',
+  [QINIU_KLING_4_PROVIDER_ID]: 'var(--color-review-5)',
   'company-minimax-h3': 'var(--color-run)',
   'company-wan-3-0': 'var(--color-dot-warn)',
   'company-seedream-5-0-pro': 'var(--color-accent)',
@@ -54,6 +62,8 @@ const MODEL_COLORS: Record<CoreUsageModelKey, string> = {
   // 14 号票：序列色一律引用令牌，深色随主题自动提亮（原来写死 #0071e3 等浅色值）。
   'company-image2-medium': 'var(--color-accent)',
   'company-qiniuyun-gpt-image-2-medium': 'var(--color-dot-run)',
+  'company-qiniuyun-gpt-image-2-6-flare': 'var(--color-review-4)',
+  'company-qiniuyun-gpt-image-2-6-sunburst': 'var(--color-review-6)',
   'company-kling-3-0': 'var(--color-check)',
   'company-qiniuyun-kling-3-0': 'var(--color-check-tint)',
   'company-seedance-fast': 'var(--color-ok)',

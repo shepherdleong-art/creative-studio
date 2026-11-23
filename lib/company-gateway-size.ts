@@ -10,12 +10,17 @@
  */
 
 import { GPT_IMAGE_2_SIZE_MAP } from './gpt-image-2-size-presets.ts';
+import { QINIU_KLING_4_MODEL } from './company-qiniu-kling-4.ts';
+import { QINIU_IMAGE_26_MODELS, QINIU_IMAGE_MEDIUM_MODEL } from './company-qiniu-image-models.ts';
+import { COMPANY_SEEDREAM_50_PRO_MODEL, COMPANY_SEEDREAM_55, COMPANY_SEEDREAM_55_SIZES } from './company-seedream-image.ts';
 
 export interface CompanyModelCaps {
   tiers: string[];
   ratios: string[];
   /** 固定视频档位的模型专用像素表，避免套用其他供应商同名档位的尺寸。 */
   videoSizes?: Record<string, string>;
+  /** 模型专用视频像素表，按可选清晰度查找。 */
+  videoSizeTable?: Record<string, Record<string, string>>;
   /** 矩阵中单独坏掉的格子（'档位:比例'）；吸附命中坏格时优先在同档位找能居中裁切覆盖目标框的跨比例好格（真分辨率裁切映射），没有可裁格才同比例就近换档 */
   exclude?: string[];
   /**
@@ -47,7 +52,7 @@ const VIDEO_SIZE_TABLE: Record<string, Record<string, string>> = {
   '1080P': { '16:9': '1920x1080', '4:3': '1664x1248', '1:1': '1440x1440', '3:4': '1248x1664', '9:16': '1080x1920', '21:9': '2206x946' },
 };
 
-const IMAGE_TIER_ORDER = ['1K', '2K', '3K', '4K'];
+const IMAGE_TIER_ORDER = ['1K', '1.5K', '2K', '3K', '4K'];
 
 /** 视频档位偏好：1K 兼顾质量与成本，其次 720P，最后 4K */
 const VIDEO_TIER_PREFERENCE = ['1K', '720P', '4K'];
@@ -113,6 +118,11 @@ const SEEDREAM_5_PRO_CAPS: CompanyModelCaps = {
     '2K': { '1:1': '2048x2048', '3:4': '1728x2304', '4:3': '2304x1728', '16:9': '2848x1600', '9:16': '1600x2848', '3:2': '2496x1664', '2:3': '1664x2496', '21:9': '3136x1344' },
   },
 };
+const SEEDREAM_55_CAPS: CompanyModelCaps = {
+  ...SEEDREAM_5_PRO_CAPS,
+  tiers: Object.keys(COMPANY_SEEDREAM_55_SIZES),
+  imageSizeTable: COMPANY_SEEDREAM_55_SIZES,
+};
 // 腾讯 VOD GG 3.0/3.1 均支持 1K/2K/4K。画幅取官方与公司 size 表的交集。
 const NANO_BANANA_CAPS: CompanyModelCaps = {
   tiers: ['1K', '2K', '4K'],
@@ -144,10 +154,14 @@ const SEEDANCE_2_0_FAST_CAPS: CompanyModelCaps = {
 
 /** 返回图片模型在公司网关的能力约束；非公司图片模型返回 null */
 export function companyImageCapsForModel(model: string): CompanyModelCaps | null {
-  if (model === 'doubao-seedream-5-0-pro-image' || model === 'doubao-seedream-5-0-pro-260628') return SEEDREAM_5_PRO_CAPS;
+  if (model === COMPANY_SEEDREAM_55.model) return SEEDREAM_55_CAPS;
+  if (model === COMPANY_SEEDREAM_50_PRO_MODEL || model === 'doubao-seedream-5-0-pro-260628') return SEEDREAM_5_PRO_CAPS;
   if (model === 'nano-banana-3.0' || model === 'nano-banana-3.1') return NANO_BANANA_CAPS;
   const m = model.toLowerCase();
-  if (m === 'qiniuyun/gpt-image-2-medium') return QINIUYUN_GPT_IMAGE_2_MEDIUM_CAPS;
+  // 2.6 沿用七牛 2K/4K 档；两款 1K 方图都被上游改成非法的 1080x1080。
+  if (m === QINIU_IMAGE_MEDIUM_MODEL || QINIU_IMAGE_26_MODELS.some((entry) => entry.model === m)) {
+    return QINIUYUN_GPT_IMAGE_2_MEDIUM_CAPS;
+  }
   if (m.startsWith('qiniuyun/gpt-image-2')) return QINIUYUN_GPT_IMAGE_2_CAPS;
   if (m === 'image2-medium') return IMAGE2_MEDIUM_CAPS;
   if (m.startsWith('image2-')) return IMAGE2_CAPS;
@@ -185,6 +199,16 @@ export function companyVideoCapsForModel(model: string): CompanyModelCaps | null
   // 七牛普通 v3：2026-09-10 公司通道实测 size=1024x1366 → 1244x1660，
   // 不带 size 仅出 828x1108；固定 1K 名义档映射到上游 1080P，不套用腾讯尾帧字段。
   if (model === 'qiniuyun/kling-3.0') return { tiers: ['1K'], ratios: ['3:4', '4:3', '16:9', '9:16'] };
+  if (model === QINIU_KLING_4_MODEL) {
+    return {
+      tiers: ['720P', '1080P'],
+      ratios: ['3:4', '4:3', '16:9', '9:16', '1:1', '21:9'],
+      videoSizeTable: {
+        '720P': { ...VIDEO_SIZE_TABLE['720P'], '1:1': '960x960', '21:9': '1680x720' },
+        '1080P': { '16:9': '1920x1080', '9:16': '1080x1920', '4:3': '1440x1080', '3:4': '1080x1440', '1:1': '1440x1440', '21:9': '2520x1080' },
+      },
+    };
+  }
   const m = model.toLowerCase();
   if (m.includes('kling') && m.includes('omni')) return KLING_OMNI_CAPS;
   // 文档只列了 Kling 3.0 系列的尺寸组合；其余 kling 型号按同一表做最大努力
@@ -314,6 +338,7 @@ function snapCompanyImageCell(size: string | null | undefined, caps: CompanyMode
  * 本尺寸居中裁回（如 4K 3:4 的 2160x2880），全程零放大。
  */
 export function companyImageDeliverySize(size: string | null | undefined, caps: CompanyModelCaps): string {
+  if (caps === SEEDREAM_55_CAPS && size === 'auto') return 'auto';
   const cell = snapCompanyImageCell(size, caps);
   return (caps.imageSizeTable ?? IMAGE_SIZE_TABLE)[cell.tier][cell.ratio];
 }
@@ -386,5 +411,5 @@ export function snapCompanyVideoSize(
   const tier = requested && caps.tiers.includes(requested)
     ? requested
     : VIDEO_TIER_PREFERENCE.find((t) => caps.tiers.includes(t)) ?? caps.tiers[0];
-  return caps.videoSizes?.[ratio] ?? VIDEO_SIZE_TABLE[tier]?.[ratio] ?? null;
+  return caps.videoSizeTable?.[tier]?.[ratio] ?? caps.videoSizes?.[ratio] ?? VIDEO_SIZE_TABLE[tier]?.[ratio] ?? null;
 }

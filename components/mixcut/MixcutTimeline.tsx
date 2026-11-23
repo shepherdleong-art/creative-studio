@@ -13,7 +13,8 @@ import { planVideoClipSplit } from '@/lib/final-edit/clip-split';
 import { constrainClipDrag, planClipReorder, timelineAbsoluteFrameFromPointer, timelineContentWidthPx, type ClipDragMode, type ClipDraft } from '@/components/final-edit/timeline-edit';
 import { snapMovingClip } from '@/lib/media-core/timeline-snap';
 import { audioClips, videoPlaybackRate } from '@/lib/final-edit/clip-edit';
-import type { AudioClip, AudioTrackKind } from '@/lib/final-edit/types';
+import { measureSubtitleOverflowWidths } from '@/components/final-edit/text-canvas-renderer';
+import type { AudioClip, AudioTrackKind, TextStyle } from '@/lib/final-edit/types';
 import type { PackagingStickerInstance } from '@/lib/media-core/packaging-stickers';
 import { layoutPackagingStickerTracks } from '@/lib/media-core/packaging-sticker-timeline';
 import { NarrationPlaybackRateControl } from './NarrationPlaybackRateControl';
@@ -76,6 +77,7 @@ function Waveform({ tone, seed, playedWidthPx }: { tone: 'tts' | 'bgm'; seed: nu
 export function MixcutTimeline({
   variant,
   cues,
+  subtitleStyle,
   assets,
   selectedClipId,
   selectedCueId,
@@ -112,6 +114,7 @@ export function MixcutTimeline({
 }: {
   variant: FinalEditVariantView;
   cues: SubtitleCue[];
+  subtitleStyle: TextStyle | null;
   assets: FinalEditAssetView[];
   selectedClipId: string;
   selectedCueId: string;
@@ -120,7 +123,7 @@ export function MixcutTimeline({
   active?: boolean; onTogglePlay?: () => void; onUndo?: () => void; onRedo?: () => void; canUndo?: boolean; canRedo?: boolean;
   onSeek: (seconds: number) => void;
   onSelectClip: (clipId: string) => void;
-  onSelectCue: (cueId: string) => void;
+  onSelectCue: (cueId: string, seekSec?: number) => void;
   onVariantCommand: (command: VariantCommandInput) => Promise<boolean>;
   onGroupCommand: (command: GroupCommandInput) => Promise<boolean>;
   onTrimClip: (clip: TimelineClip) => void;
@@ -163,6 +166,37 @@ export function MixcutTimeline({
     scrollRef, playheadSec, minimum: 40, maximum: 240, step: 20,
     shortcutsEnabled: active && !shortcutsOpen && !contextMenu,
   });
+  const [widthReport, setWidthReport] = useState<Map<string, number> | Error>(() => new Map());
+  const [widthRetry, setWidthRetry] = useState(0);
+  const preset = variant.outputPreset;
+  useEffect(() => {
+    if (!subtitleStyle) return;
+    const controller = new AbortController();
+    // 字号滑杆会连续更新；停下后再读取全部字幕的实际像素。
+    const timer = window.setTimeout(async () => {
+      try {
+        const widths = await measureSubtitleOverflowWidths(cues, preset, subtitleStyle, controller.signal);
+        if (!controller.signal.aborted) setWidthReport(widths);
+      } catch (error) {
+        if (!controller.signal.aborted) setWidthReport(error instanceof Error ? error : new Error(String(error)));
+      }
+    }, 100);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [cues, preset, subtitleStyle, widthRetry]);
+
+  const overflowWidths = subtitleStyle && widthReport instanceof Map ? widthReport : null;
+  const locateOverflow = (cueId: string) => {
+    const cue = cues.find(item => item.id === cueId);
+    if (!cue) return;
+    setSelectedAudio(null);
+    setTool('select');
+    // 落在该句开头的帧内，避开边界舍入，也给字幕块中央留出双击编辑的位置。
+    const timeUs = cue.startUs + Math.min(FRAME_US, cue.endUs - cue.startUs) / 2;
+    onSelectCue(cue.id, INTRO_FRAMES / FPS + timeUs / 1_000_000 / narrationPlaybackRate);
+    scrollRef.current?.querySelector(`[data-cue-id="${CSS.escape(cue.id)}"]`)
+      ?.scrollIntoView({ block: 'nearest', inline: 'center' });
+  };
+
   const videoBodySec = variant.timeline.bodyFrames / FPS;
   const bodySec = narrationDurationSec;
   const totalSec = INTRO_FRAMES / FPS + bodySec;
@@ -368,6 +402,19 @@ export function MixcutTimeline({
         <button type="button" className={styles.tlToolButton} aria-pressed={snapEnabled} onClick={() => onSnapEnabledChange(!snapEnabled)} title="时间轴与贴纸磁吸 (N)，视频拖动可按 Alt 临时关闭">磁吸{snapEnabled ? '开' : '关'}</button>
         <label>缩放 <input ref={zoomInputRef} aria-label="时间轴缩放" type="range" min={40} max={240} step={10} value={pxPerSecond} onChange={event => changeZoom(Number(event.target.value))} /></label>
         <button type="button" className={styles.tlToolButton} onClick={() => setShortcutsOpen(true)} aria-haspopup="dialog" aria-expanded={shortcutsOpen}>快捷键说明</button>
+        {overflowWidths && overflowWidths.size > 0 && (
+          <select className={styles.subtitleWidthWarning} aria-label="定位超宽字幕" value=""
+            onChange={(event) => locateOverflow(event.target.value)}>
+            <option value="" disabled>{overflowWidths.size} 条字幕超宽 · 定位</option>
+            {cues.map((cue, index) => overflowWidths.has(cue.id) && (
+              <option key={cue.id} value={cue.id}>第 {index + 1} 条 · {cue.text}</option>
+            ))}
+          </select>
+        )}
+        {subtitleStyle && widthReport instanceof Error && (
+          <button type="button" className={styles.subtitleWidthWarning} title={widthReport.message}
+            onClick={() => setWidthRetry(value => value + 1)}>字幕宽度检查失败 · 重试</button>
+        )}
         <span role="status" className={styles.tlToolHint} data-testid="mixcut-timeline-tool-hint">{tool === 'split' ? splitMessage || '点击视频、音频或字幕的目标位置切开；视频两侧至少保留 0.5 秒，右键删除' : '拖动字幕块移动，拖两侧修剪，双击改字；选中视频可在右侧调整倍速和画面，音频用分割工具裁切，右键删除'}</span>
       </div>
       {shortcutsOpen && <TimelineShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
@@ -415,6 +462,7 @@ export function MixcutTimeline({
                 bodyUs={narrationDurationSec * narrationPlaybackRate * 1_000_000}
                 playbackRate={narrationPlaybackRate}
                 pxPerSecond={pxPerSecond}
+                overflowPx={Math.max(0, (overflowWidths?.get(cue.id) ?? 0) - (subtitleStyle?.boxWidthPx ?? 0))}
                 selected={cue.id === selectedCueId}
                 anySelected={Boolean(selectedCueId)}
                 disabled={disabled}
@@ -796,8 +844,9 @@ function VideoBlock({ snapEnabled, snapPoints, clip, index, clips, sourceFrames,
   );
 }
 
-function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerSecond, selected, anySelected, disabled, tool, onSelect, onCommand, onEditText, onOpenContextMenu }: {
+function SubtitleBlock({ cue, overflowPx, previousCue, nextCue, bodyUs, playbackRate, pxPerSecond, selected, anySelected, disabled, tool, onSelect, onCommand, onEditText, onOpenContextMenu }: {
   cue: SubtitleCue;
+  overflowPx: number;
   previousCue: SubtitleCue | null;
   nextCue: SubtitleCue | null;
   bodyUs: number;
@@ -878,6 +927,7 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerS
   return (
     <article
       data-cue-id={cue.id}
+      data-overflow={overflowPx > 0 || undefined}
       data-selected={selected ? 'true' : undefined}
       data-dimmed={!selected && anySelected ? 'true' : undefined}
       className={`${styles.subclip} ${selected ? styles.subclipSel : anySelected ? styles.subclipDim : ''}`}
@@ -908,7 +958,7 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerS
         onOpenContextMenu(event.clientX, event.clientY);
       }}
       onDoubleClick={() => { if (!disabled && tool === 'select') { onSelect(cue.id); setEditing(true); } }}
-      title={tool === 'split' ? '点击此处切开字幕' : '双击编辑文案'}
+      title={overflowPx > 0 ? `超出单行安全宽度 ${Math.ceil(overflowPx)} px，可分割字幕、双击改字或减小字号` : tool === 'split' ? '点击此处切开字幕' : '双击编辑文案'}
     >
       {editing ? (
         <input
@@ -934,6 +984,7 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerS
             />
           )}
           <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="裁剪字幕开头" onPointerDown={tool === 'select' ? (event) => begin('start', event) : undefined} />
+          {overflowPx > 0 && <Icon name="alert" size={12} />}
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{cue.text}</span>
           <i className={`${styles.clipHandle} ${styles.clipHandleR}`} aria-label="裁剪字幕结尾" onPointerDown={tool === 'select' ? (event) => begin('end', event) : undefined} />
         </>

@@ -62,4 +62,10 @@ const longParts = splitNarrationForDisplay('这是一段没有自然停顿但需
 assert.ok(longParts.length > 1);
 assert.ok(longParts.every((part) => part.displayText.length <= 12));
 
+const technicalLine = '这款产品支持切换9:16画面并有3.5cm支架';
+const technicalParts = splitNarrationForDisplay(technicalLine, { maxContentCharacters: 14, balanceLongParts: true });
+assert.equal(technicalParts.map(part => part.displayText).join(''), technicalLine);
+assert.ok(technicalParts.some(part => part.displayText.includes('9:16')));
+assert.ok(technicalParts.some(part => part.displayText.includes('3.5cm')));
+
 console.log('subtitle display tests passed');

@@ -8,8 +8,13 @@ import {
   getSupportedImageAspectRatios,
   validateImageAspectRatio,
   getSupportedImageResolutions,
+  isValidImageGenerationSize,
+  resolveImageGenerationSize,
+  validateImagePresetSize,
   validateImageResolution,
 } from '../lib/image-generation-settings.ts';
+import { COMPANY_SEEDREAM_55 } from '../lib/company-seedream-image.ts';
+import { companyImageCapsForModel, companyImageDeliverySize } from '../lib/company-gateway-size.ts';
 
 // 比例选择必须落成目标尺寸，不能退回默认 1:1。
 assert.equal(resolveGptImage2Size('3:4', '1k'), '864x1152');
@@ -38,6 +43,14 @@ for (const ratio of ['2:1', '1:2', '9:21']) {
 assert.equal(validateImageAspectRatio('custom-image-model', '9:16'), null);
 assert.deepEqual(getSupportedImageResolutions('doubao-seedream-5-0-pro-image', '3:4'), ['1k', '2k']);
 assert.match(validateImageResolution('doubao-seedream-5-0-pro-image', '3:4', '4k') || '', /不支持/);
+assert.deepEqual(getSupportedImageResolutions(COMPANY_SEEDREAM_55.model, '16:9'), ['1k', '1.5k', '2k']);
+assert.equal(resolveImageGenerationSize(COMPANY_SEEDREAM_55.model, '16:9', '1.5k'), '2048x1152');
+assert.equal(isValidImageGenerationSize(COMPANY_SEEDREAM_55.model, '2048x1152'), true);
+assert.equal(validateImagePresetSize(COMPANY_SEEDREAM_55.model, '2048x1152'), null);
+assert.equal(validateImagePresetSize('doubao-seedream-5-0-pro-image', '2048x1152'), null);
+assert.match(validateImagePresetSize('doubao-seedream-5-0-pro-image', '2048x1152', COMPANY_SEEDREAM_55.model) || '', /不支持/);
+assert.match(validateImageResolution(COMPANY_SEEDREAM_55.model, '16:9', '4k') || '', /不支持/);
+assert.equal(companyImageDeliverySize('auto', companyImageCapsForModel(COMPANY_SEEDREAM_55.model)!), 'auto');
 assert.deepEqual(getSupportedImageResolutions('nano-banana-3.0', '9:16'), ['1k', '2k', '4k']);
 assert.deepEqual(getSupportedImageResolutions('nano-banana-3.1', '16:9'), ['1k', '2k', '4k']);
 assert.deepEqual(getSupportedImageResolutions('qiniuyun/gpt-image-2-medium', '3:4'), ['2k', '4k']);

@@ -7,9 +7,8 @@ import ProviderSettings from '@/components/ProviderSettings';
 import PageToolbar from '@/components/team/PageToolbar';
 import { GroupList, GroupRow } from '@/components/ui/Appearance';
 import { getImageModelCapabilities } from '@/lib/image-model-capabilities';
-import { GPT_IMAGE_2_SIZE_MAP, resolveGptImage2Size } from '@/lib/gpt-image-2-size-presets';
 import { companyImageCapsForModel } from '@/lib/company-gateway-size';
-import { getSupportedImageAspectRatios, getSupportedImageResolutions } from '@/lib/image-generation-settings';
+import { getSupportedImageAspectRatios, getSupportedImageResolutions, resolveImageGenerationSize } from '@/lib/image-generation-settings';
 import {
   UNIFIED_IMAGE_MODEL_KEY,
   unifiedImageAspectRatios,
@@ -113,10 +112,10 @@ export default function NewProjectPage() {
     try {
       return unifiedSelected
         ? resolveUnifiedImageOutput(selectedResolution, selectedAspectRatio).size
-        : resolveGptImage2Size(selectedAspectRatio, selectedResolution);
+        : resolveImageGenerationSize(model, selectedAspectRatio, selectedResolution);
     }
     catch { return ''; }
-  }, [selectedAspectRatio, selectedResolution, unifiedSelected]);
+  }, [model, selectedAspectRatio, selectedResolution, unifiedSelected]);
 
   const [creating, setCreating] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -290,11 +289,11 @@ export default function NewProjectPage() {
               onChange={(event) => setResolution(event.target.value)}
               className="input-field w-52"
             >
-              {availableResolutions.map((value) => {
-                const presetSize = GPT_IMAGE_2_SIZE_MAP[selectedAspectRatio]?.[value];
-                const label = !presetSize ? `${value} — 不支持` : (nativePixelUi ? value : `${value} → ${presetSize}`);
-                return <option key={value} value={value} disabled={!presetSize}>{label}</option>;
-              })}
+              {availableResolutions.map((value) => (
+                <option key={value} value={value}>
+                  {nativePixelUi ? value : `${value} → ${resolveImageGenerationSize(model, selectedAspectRatio, value)}`}
+                </option>
+              ))}
             </select>
           </GroupRow>}
           {supportsQuality && <GroupRow label="质量">

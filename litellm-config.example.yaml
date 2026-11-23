@@ -58,8 +58,28 @@ model_list:
       api_base: https://your-company-gateway.com/v1
       api_key: your-company-key
 
+  # 2.6 两条路由复用 qiniuyun/gpt-image-2-medium 的网关地址和 Key。
+  - model_name: qiniuyun/gpt-image-2.6-flare
+    litellm_params:
+      model: openai/qiniuyun/gpt-image-2.6-flare
+      api_base: https://your-company-gateway.com/v1
+      api_key: your-qiniu-image-key
+
+  - model_name: qiniuyun/gpt-image-2.6-sunburst
+    litellm_params:
+      model: openai/qiniuyun/gpt-image-2.6-sunburst
+      api_base: https://your-company-gateway.com/v1
+      api_key: your-qiniu-image-key
+
   # ── 聊天模型同理，例如 ──
   # 新增公司模型仍使用公司 Key，由网关转接 VOD / 方舟，不用云厂商密钥替换。
+  # 七牛可灵 4.0 复用七牛可灵 3.0 的公司网关连接。
+  - model_name: qiniuyun/kling-4.0
+    litellm_params:
+      model: openai/qiniuyun/kling-4.0
+      api_base: https://your-company-gateway.com/v1
+      api_key: your-company-key
+
   - model_name: kling-2.5
     litellm_params:
       model: openai/kling-2.5
@@ -69,6 +89,12 @@ model_list:
   - model_name: doubao-seedream-5-0-pro-image
     litellm_params:
       model: openai/doubao-seedream-5-0-pro-image
+      api_base: https://your-company-gateway.com/v1
+      api_key: your-company-key
+
+  - model_name: doubao-seedream-5-5-261028
+    litellm_params:
+      model: openai/doubao-seedream-5-5-261028
       api_base: https://your-company-gateway.com/v1
       api_key: your-company-key
 

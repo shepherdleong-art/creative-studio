@@ -32,6 +32,7 @@ import {
 } from './video-providers/reference-media.ts';
 import { SEEDANCE_25 } from './video-providers/seedance-contract.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
+import { supportsQiniuKling4Modes, validateQiniuKling4MiddleFrames } from './company-qiniu-kling-4.ts';
 import { registerManagedFile } from './media-core/access-context.ts';
 import {
   assertLegacyMediaProviderRecovery,
@@ -390,6 +391,16 @@ interface VideoJobReferenceAsset {
   durationSec: number | null;
 }
 
+function readVideoJobReferenceAssets(db: ReturnType<typeof getDb>, job: Pick<VideoJobRecord, 'id' | 'projectId'>): VideoJobReferenceAsset[] {
+  return db.prepare(`
+    SELECT asset.id, asset.kind, asset.path, asset.mimeType, asset.byteSize, asset.durationSec
+    FROM video_job_references link
+    JOIN video_reference_assets asset ON asset.id = link.assetId
+    WHERE link.jobId = ? AND asset.projectId = ?
+    ORDER BY link.orderIndex ASC
+  `).all(job.id, job.projectId) as VideoJobReferenceAsset[];
+}
+
 async function prepareReferenceSubmitRequest(
   db: ReturnType<typeof getDb>,
   job: VideoJobRecord,
@@ -398,13 +409,7 @@ async function prepareReferenceSubmitRequest(
   signal: AbortSignal,
 ): Promise<SubmitReferenceVideoRequest> {
   if (!job.aspectRatio || !job.resolution) throw new Error('全能参考任务缺少冻结的输出比例或清晰度');
-  const assets = db.prepare(`
-    SELECT asset.id, asset.kind, asset.path, asset.mimeType, asset.byteSize, asset.durationSec
-    FROM video_job_references link
-    JOIN video_reference_assets asset ON asset.id = link.assetId
-    WHERE link.jobId = ?
-    ORDER BY link.orderIndex ASC
-  `).all(job.id) as VideoJobReferenceAsset[];
+  const assets = readVideoJobReferenceAssets(db, job);
   if (assets.length === 0) assets.push(await readVideoSourceReference(db, job.sourceImageId, job.projectId));
   if (new Set(assets.map((asset) => asset.id)).size !== assets.length) throw new Error('全能参考素材不能重复');
 
@@ -933,6 +938,14 @@ async function runAuthorizedVideoJob(
           ? (tailImage.originalPath || tailImage.processedPath || tailImage.path)
           : undefined;
         const tailMimeType = tailPath ? videoFrameMimeFromPath(tailPath, tailImage?.mimeType) : undefined;
+        let middleFrames: SubmitVideoRequest['middleFrames'];
+        if (job.generationMode === 'frames-to-video') {
+          if (!supportsQiniuKling4Modes(provider.type, job.model)) throw new Error('所选模型不支持多关键帧');
+          const assets = readVideoJobReferenceAssets(db, job);
+          const issue = validateQiniuKling4MiddleFrames(assets);
+          if (issue) throw new Error(issue);
+          middleFrames = assets.filter((asset): asset is VideoJobReferenceAsset & { kind: 'image' } => asset.kind === 'image');
+        }
         const submitRequest: SubmitVideoRequest = {
           model: job.model,
           prompt: job.prompt,
@@ -940,6 +953,7 @@ async function runAuthorizedVideoJob(
           sourceMimeType: mimeType,
           tailImagePath: tailPath,
           tailMimeType,
+          ...(middleFrames ? { middleFrames } : {}),
           durationSec: job.durationSec,
           ...(job.aspectRatio ? { aspectRatio: job.aspectRatio } : {}),
           ...(job.resolution ? { resolution: job.resolution } : {}),

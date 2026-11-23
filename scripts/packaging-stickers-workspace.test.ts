@@ -14,7 +14,7 @@ fs.mkdirSync(path.join(storageRoot, 'videos'), { recursive: true });
 const db = new Database(':memory:');
 db.pragma('foreign_keys = ON');
 db.exec(`
-  CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL, exportDirName TEXT NOT NULL DEFAULT '', finalEditAutoUseLimit INTEGER DEFAULT 2);
+  CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL, exportDirName TEXT NOT NULL DEFAULT '', finalEditAutoUseLimit INTEGER DEFAULT 2, sellingPointsJson TEXT);
   CREATE TABLE shot_sets (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL);
   CREATE TABLE shots (id TEXT PRIMARY KEY, shotSetId TEXT NOT NULL, indexNum INTEGER NOT NULL, sourceImageId TEXT NOT NULL, latestGeneratedImageId TEXT);
   CREATE TABLE image_assets (id TEXT PRIMARY KEY, projectId TEXT, filename TEXT NOT NULL, path TEXT NOT NULL, mimeType TEXT NOT NULL DEFAULT 'image/png');
@@ -22,7 +22,7 @@ db.exec(`
   CREATE TABLE video_jobs (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT, shotId TEXT, sourceImageId TEXT, templateId TEXT, status TEXT NOT NULL, localVideoPath TEXT, filename TEXT, displayName TEXT, durationSec INTEGER, createdAt TEXT, prompt TEXT NOT NULL DEFAULT '');
 `);
 initFinalEditSchema(db);
-db.prepare(`INSERT INTO projects (id, name, productCode, createdAt) VALUES ('p1', '贴纸测试', 'ST-1', '2026-10-27 10:00:00')`).run();
+db.prepare(`INSERT INTO projects (id, name, productCode, createdAt, sellingPointsJson) VALUES ('p1', '贴纸测试', 'ST-1', '2026-10-27 10:00:00', ?)`).run(JSON.stringify([{ title: '第一段' }]));
 db.prepare(`INSERT INTO shot_sets (id, projectId, name) VALUES ('set-a', 'p1', '场景')`).run();
 const imagePath = path.join(storageRoot, 's1.png');
 fs.writeFileSync(imagePath, 'image');
@@ -78,6 +78,13 @@ try {
   assert.equal(job.status, 'succeeded');
   const group = workspace.load(job.groupId);
   const variant = group.variants[0];
+  assert.equal(group.packaging.stickers?.length, 6, '第二步生成成功时应已保存六张基础贴纸');
+  assert.deepEqual(group.packaging.pointCues?.map((cue) => cue.text), ['第一段'], '自动布置贴纸时应同时保存卖点');
+  assert.ok(group.packaging.stickers?.every((item) => item.origin.kind === 'auto'
+    && item.startFrame >= variant.timeline.introFrames
+    && item.endFrame <= variant.timeline.introFrames + variant.timeline.bodyFrames));
+  await workspace.resumePrepareJob(job.id);
+  assert.deepEqual(workspace.load(job.groupId).packaging.stickers, group.packaging.stickers, '重复恢复不得重生成贴纸');
   const withStickers = workspace.apply({
     scope: 'group', groupId: group.id, expectedRevision: group.revision,
     type: 'set_packaging_config', variantId: variant.id,
@@ -91,7 +98,7 @@ try {
     type: 'set_packaging_config', variantId: variant.id,
     config: { enabled: false, template: 'overlay-poster', varsOverrides: {}, stickers: [], stickerDefaults: { animation: 'none' } },
   }).view as typeof withStickers;
-  assert.deepEqual(cleared.packaging.stickers ?? [], []);
+  assert.deepEqual(cleared.packaging.stickers, []);
 
   const restored = workspace.apply({
     scope: 'group', groupId: cleared.id, expectedRevision: cleared.revision,

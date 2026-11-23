@@ -14,6 +14,8 @@ import { videoDurationError } from '../../video-duration.ts';
 import sharp from 'sharp';
 import type Database from 'better-sqlite3';
 import { snapCompanyImageSize, companyImageCapsForModel, companyImageCellExecutable, companyVideoCapsForModel, snapCompanyVideoSize, snapCompanyVideoAspectRatio } from '../../company-gateway-size.ts';
+import { QINIU_KLING_4_MODEL, qiniuKling4FirstFrameFields, qiniuKling4ReferenceFields } from '../../company-qiniu-kling-4.ts';
+import { validateVideoReferenceRequest } from '../../video-reference-contract.ts';
 import { companyNativeVideoModel } from '../../company-gateway-video-models.ts';
 import { isLoopbackLiteLlmUrl } from '../../provider-execution-gate.ts';
 import { downloadGatewayMedia, normalizeGatewayResultUrl } from '../../gateway-media-url.ts';
@@ -149,10 +151,29 @@ function inputRuleFor(capability: CanvasModelCapability, input: CanvasResolvedIn
 }
 
 function isFrameRole(role: string): boolean {
-  return role === 'first-frame' || role === 'last-frame';
+  return role === 'first-frame' || role === 'last-frame' || role === 'middle-frame';
 }
 
 /** Recheck frozen inputs before delivery and POST; never silently discard unsupported inputs. */
+function validateKling4CanvasInputs(capability: CanvasModelCapability, context: CanvasTaskContext): void {
+  const problems = validateCapabilityInputs({
+    capability, mode: context.generationMode, refs: context.inputs, parameters: context.parameters,
+  }).map(problem => problem.message);
+  if (context.generationMode === 'reference-to-video') {
+    const references = context.inputs.flatMap(input => input.kind === 'text' ? [] : [{
+      id: input.refId, kind: input.kind, mimeType: input.mimeType ?? '',
+      byteSize: input.byteSize, durationSec: input.durationSec,
+    }]);
+    problems.push(...validateVideoReferenceRequest({
+      providerType: 'openai-video', model: QINIU_KLING_4_MODEL, references,
+      durationSec: Number(context.parameters.durationSec ?? 5),
+      aspectRatio: String(context.parameters.aspectRatio ?? '16:9'),
+      resolution: typeof context.parameters.resolution === 'string' ? context.parameters.resolution : undefined,
+    }, { deferImageByteLimit: true }));
+  }
+  if (problems.length) throw new CanvasAdapterError('prepare', problems.join('；'), { code: 'input_not_supported' });
+}
+
 async function nativeVideoOutputConfig(capability: CanvasModelCapability, context: CanvasTaskContext, route: CanvasProviderRoute) {
   const contract = companyNativeVideoModel(capability.modelAlias);
   if (!contract) return null;
@@ -230,6 +251,7 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
     async prepare(context, signal) {
       const capability = findGatewayCapability(context.capabilityKey);
       const route = routeFor(context);
+      if (capability.modelAlias === QINIU_KLING_4_MODEL) validateKling4CanvasInputs(capability, context);
       await nativeVideoOutputConfig(capability, context, route);
       if (capability.mediaKind === 'image' && companyImageCapsForModel(capability.modelAlias)) {
         const resolution = String(context.parameters.resolution ?? '2K');
@@ -312,7 +334,8 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
       const mediaInputs = context.inputs.filter((input) => input.kind !== 'text');
       const imageInputs = mediaInputs.filter((input) => input.kind === 'image');
       const imageRefs = imageInputs.map((input) => input.deliveryRef ?? '');
-      if ((nativeOutput ? mediaInputs : imageInputs).some((input) => !input.deliveryRef)) {
+      const isQiniuKling4 = capability.modelAlias === QINIU_KLING_4_MODEL;
+      if ((nativeOutput || isQiniuKling4 ? mediaInputs : imageInputs).some((input) => !input.deliveryRef)) {
         throw new CanvasAdapterError('submit', '素材交付地址缺失，任务未提交。', { code: 'delivery_ref_missing' });
       }
       const lastFrameInput = imageInputs.find((input) => input.role === 'last-frame') ?? null;
@@ -347,6 +370,24 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         }
         // 无图输入时不发送 images：文生图不伪造占位底图
         if (bodyImageRefs.length > 0) body.images = bodyImageRefs;
+      } else if (isQiniuKling4) {
+        validateKling4CanvasInputs(capability, context);
+        const durationSec = Number(context.parameters.durationSec ?? 5);
+        const resolution = typeof context.parameters.resolution === 'string' ? context.parameters.resolution : undefined;
+        if (context.generationMode === 'reference-to-video') {
+          Object.assign(body, qiniuKling4ReferenceFields(mediaInputs.flatMap(input => input.kind === 'text' ? [] : [{
+            kind: input.kind, url: input.deliveryRef!,
+          }]), durationSec, String(context.parameters.aspectRatio ?? '16:9'), resolution));
+        } else {
+          const firstFrame = imageInputs.find(input => input.role === 'first-frame')!;
+          const size = firstFrame.absolutePath ? await probeImageDimensions(firstFrame.absolutePath) : null;
+          if (!size) throw new CanvasAdapterError('prepare', '无法读取七牛可灵 4.0 首帧尺寸', { code: 'missing_output_ratio' });
+          const middleFrames = imageInputs.filter(input => input.role === 'middle-frame').map(input => input.deliveryRef!);
+          Object.assign(body, qiniuKling4FirstFrameFields(firstFrame.deliveryRef!, durationSec, middleFrames, resolution));
+          if (lastFrameRef) body.end_image_url = lastFrameRef;
+          const outputSize = snapCompanyVideoSize(size.width, size.height, companyVideoCapsForModel(QINIU_KLING_4_MODEL)!, resolution);
+          if (outputSize) body.size = outputSize;
+        }
       } else {
         if (bodyImageRefs.length > 0) body.images = bodyImageRefs;
         body.seconds = String(context.parameters.durationSec ?? 5);
@@ -373,6 +414,7 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         const durationSec = Number(context.parameters.durationSec ?? 5);
         const durationProblem = videoDurationError('openai-video', capability.modelAlias, durationSec);
         if (durationProblem) throw new CanvasAdapterError('prepare', durationProblem, { code: 'invalid_duration' });
+        const firstFrame = imageInputs[0];
         if (isSeedance) {
           const problem = videoDurationError('openai-video', capability.modelAlias, durationSec);
           if (problem) throw new CanvasAdapterError('prepare', problem, { code: 'invalid_duration' });
@@ -388,8 +430,8 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
           throw new CanvasAdapterError('submit', '七牛可灵 3.0 时长必须为 3–15 秒，任务未提交。', { code: 'invalid_duration' });
         }
 
-        const sourceDims = imageInputs[0]?.absolutePath
-          ? await probeImageDimensions(imageInputs[0].absolutePath)
+        const sourceDims = firstFrame?.absolutePath
+          ? await probeImageDimensions(firstFrame.absolutePath)
           : ratioToSnapDims(context.parameters.aspectRatio ? String(context.parameters.aspectRatio) : undefined);
         if (isQiniuKling && !sourceDims) {
           throw new CanvasAdapterError(

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { Dialog } from '@/components/ui/Dialog';
 import { FinalEditPreview } from '@/components/final-edit/FinalEditPreview';
 import { StyleEditor } from '@/components/final-edit/FinalEditInspector';
 import { drawText, textStyleFont } from '@/components/final-edit/text-canvas-renderer';
@@ -95,6 +96,12 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [playheadSec, setPlayheadSec] = useState(0);
   const [seekRequestId, setSeekRequestId] = useState(0);
   const [message, setMessage] = useState('已从本地草稿恢复');
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const diagnosticsTriggerRef = useRef<HTMLButtonElement>(null);
+  const closeDiagnostics = useCallback(() => {
+    setDiagnosticsOpen(false);
+    diagnosticsTriggerRef.current?.focus();
+  }, []);
   const [busy, setBusy] = useState(false);
   const [narrationGainPreview, setNarrationGainPreview] = useState<{ groupId: string; gainDb: number } | null>(null);
   const [bgmGainPreview, setBgmGainPreview] = useState<{ variantId: string; gainDb: number } | null>(null);
@@ -512,7 +519,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   // 桥内 Esc 只覆盖 iframe 聚焦场景，这里兜底；blur 一并放下输入框焦点。
   // 包装文字浮框打开时 Esc 归浮框自己（取消编辑），不清卖点选中。
   useEffect(() => {
-    if (!timelineSelectedPointId) return;
+    if (!timelineSelectedPointId || diagnosticsOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (packagingTextEditRef.current) return;
@@ -521,7 +528,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [timelineSelectedPointId]);
+  }, [diagnosticsOpen, timelineSelectedPointId]);
   // 卖点块单击（含拖动手势起始）：选中；新选中时 seek 到弹出中点（自动暂停，§5）
   const handleSelectPoint = (pointId: string) => {
     const previous = selectedPointIdRef.current;
@@ -1170,10 +1177,12 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     return group.subtitleCues.find((cue) => bodyTimeUs >= cue.startUs && bodyTimeUs < cue.endUs)?.text ?? '';
   }, [effectivePlayheadSec, packagingCoverSec, playbackRateForCueLookup, group.subtitleCues]);
 
-  // 匹配诊断必须在第 3 步第一眼可见：blocking 解释真实缺口，warning
-  // 解释语义或短素材兜底，避免用户把降级结果误认为预览故障。
   const blockingIssues = variant.issues.filter((issue) => issue.severity === 'blocking');
   const warningIssues = variant.issues.filter((issue) => issue.severity === 'warning');
+  const diagnosticsSummary = [
+    blockingIssues.length > 0 ? `${blockingIssues.length} 项需处理` : '',
+    warningIssues.length > 0 ? `${warningIssues.length} 条提醒` : '',
+  ].filter(Boolean).join(' · ');
   const selectedAssetKey = selectedClip ? group.assets.find((asset) => asset.videoJobId === selectedClip.videoJobId)?.assetKey : null;
   const selectedMatchReason = selectedClip && selectedAssetKey
     ? variant.matchDiagnostics?.selectionReasons.find((reason) => reason.sentenceId === selectedClip.boundSegmentId && reason.assetKey === selectedAssetKey)
@@ -1291,6 +1300,19 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           <span className={`${styles.chip} ${styles.chipGrey}`}>{orderedClips.length} 片段</span>
           <span className={`${styles.chip} ${styles.chipBlue}`}>总时长 {totalSec.toFixed(1)}s</span>
           <span className={`${styles.chip} ${narrationMatch ? styles.chipGreen : styles.chipGrey}`}>口播 {narrationSec.toFixed(1)}s {narrationMatch ? '✓' : '⚠'}</span>
+          {diagnosticsSummary && (
+            <button
+              ref={diagnosticsTriggerRef}
+              type="button"
+              className={`${styles.chip} ${styles.diagnosticsTrigger}`}
+              data-blocking={blockingIssues.length > 0}
+              aria-haspopup="dialog"
+              title="查看预览诊断"
+              onClick={() => setDiagnosticsOpen(true)}
+            >
+              <Icon name="alert" size={13} />{diagnosticsSummary}
+            </button>
+          )}
           <span className={`${styles.chip} ${styles.chipGrey}`} title="单击选中 | 拖拽排序 | 双击片段重选时段 | 右键视频/字幕删除 | 右键口播调速 | 双击字幕编辑">单击选中 · 拖拽排序 · 双击编辑 · 右键视频/字幕删除、口播调速</span>
           {selectedMatchReason && selectedMatchReasonLabel && (
             <span className={`${styles.chip} ${styles.chipBlue}`}>匹配：{selectedMatchReasonLabel} · {selectedMatchReason.score.toFixed(2)}</span>
@@ -1305,25 +1327,19 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           <button type="button" className={`${styles.btn} ${styles.primary}`} disabled={busy} onClick={() => onExport(variant.id)}>下一步：导出</button>
         </div>
 
-        {blockingIssues.length > 0 && (
-          <div className={styles.errorBanner} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
-            {blockingIssues.map((issue, index) => (
-              <span key={`${issue.code}-${issue.targetId ?? index}`} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                <Icon name="alert" size={13} />{issue.message}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {warningIssues.length > 0 && (
-          <div className={styles.warningNotice} style={{ marginBottom: 8, flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
-            {warningIssues.map((issue, index) => (
-              <span key={`${issue.code}-${issue.targetId ?? index}`} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                <Icon name="alert" size={13} />{issue.message}
-              </span>
-            ))}
-          </div>
-        )}
+        <Dialog open={active && diagnosticsOpen} title="预览诊断" onClose={closeDiagnostics}>
+          {[
+            { title: '需处理', issues: blockingIssues, style: styles.errorBanner },
+            { title: '提醒', issues: warningIssues, style: styles.warningNotice },
+          ].map(({ title, issues, style }) => issues.length > 0 && (
+            <section key={title} className={`${style} ${styles.diagnosticsSection}`}>
+              <h3>{title}</h3>
+              <ul>
+                {issues.map((issue, index) => <li key={`${issue.code}-${index}`}>{issue.message}</li>)}
+              </ul>
+            </section>
+          ))}
+        </Dialog>
 
         <div className={styles.bigPaper} data-preview-preset={variant.outputPreset}>
           <div className={styles.previewModeHeader}>
@@ -1492,6 +1508,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             key={variant.id}
             variant={variant}
             cues={group.subtitleCues}
+            subtitleStyle={active && !group.reassembled ? group.textStyles[variant.outputPreset].subtitle : null}
             assets={group.assets}
             selectedClipId={selectedClipId}
             selectedCueId={timelineSelectedCueId}
@@ -1510,7 +1527,17 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
               const clip = variant.timeline.clips.find((item) => item.id === clipId);
               if (clip) { setPreviewMode('output'); seek((20 + clip.timelineInFrame) / FPS); }
             }}
-            onSelectCue={(cueId) => { setSelectedCueId(cueId); setSelectedClipId(''); }}
+            onSelectCue={(cueId, seekSec) => {
+              setSelectedCueId(cueId);
+              setSelectedClipId('');
+              if (seekSec !== undefined) {
+                setPointSelection('');
+                setStickerSelection('');
+                setTrimClip(null);
+                setPreviewMode('output');
+                seek(seekSec);
+              }
+            }}
             onVariantCommand={(command) => applyVariant(command)}
             onGroupCommand={applyGroup}
             onTrimClip={openTrim}

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { ExecutionJournal } from '../lib/media-core/execution/context.ts';
+import { QINIU_IMAGE_26_MODELS, QINIU_IMAGE_MEDIUM_MODEL, QINIU_IMAGE_MEDIUM_PROVIDER_ID } from '../lib/company-qiniu-image-models.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-pool-config-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = root;
@@ -14,6 +15,10 @@ const { createExecutionFacade } = await import('../lib/media-core/execution/oper
 const { registerExecutionInstance } = await import('../lib/media-core/execution/schema.ts');
 const { listExecutionPools, updateActorPolicy } = await import('../lib/media-core/execution/pools.ts');
 const { applyPoolChanges, previewPoolChanges, readPoolAdminState, TeamPoolError } = await import('../lib/team-service/pools.ts');
+const { ensureCompanyQiniuImage26Providers } = await import('../lib/seed.ts');
+const { ensureMediaProviderPool } = await import('../lib/media-core/execution/media-provider-pool.ts');
+const { configuredCanvasImages } = await import('../lib/creative-canvas/adapters/configured-images.ts');
+const { projectTeamImageModels } = await import('../lib/media-core/unified-media/model-list.ts');
 
 const EMPTY_JOURNAL: ExecutionJournal = {
   appendIntent: () => { throw new Error('测试不发送真实提交'); },
@@ -172,6 +177,34 @@ try {
   const blocked = runtime.facade.admit({ instanceId: 'instance-pool', fence: 1 });
   assert.equal(blocked.kind, 'deferred');
   assert.ok(blocked.kind === 'deferred' && blocked.reasons.includes('pool_missing'));
+
+  const qiniuBaseUrl = 'http://127.0.0.1:4300';
+  const qiniuLocalCredential = 'fixture-qiniu-local';
+  db.prepare(`INSERT INTO providers (id, name, baseUrl, apiKey, model, type)
+    VALUES (?, '七牛 Image 2 Medium', ?, ?, ?, 'gateway-task-image')`)
+    .run(QINIU_IMAGE_MEDIUM_PROVIDER_ID, qiniuBaseUrl, qiniuLocalCredential, QINIU_IMAGE_MEDIUM_MODEL);
+  applyPoolChanges(db, admin, [{
+    action: 'bind-media-upstream', entityType: 'image', entityId: QINIU_IMAGE_MEDIUM_PROVIDER_ID,
+    poolKey: 'company:qiniuyun', capacity: 100, expectedVersion: 0,
+  }]);
+  ensureCompanyQiniuImage26Providers(db);
+  ensureCompanyQiniuImage26Providers(db);
+  const qiniuPoolState = readPoolAdminState(db, admin);
+  assert.equal(qiniuPoolState.pools.find((pool) => pool.poolKey === 'company:qiniuyun')?.capacity, 100);
+  const providerRows = db.prepare(`SELECT id, name, model, type, enabled, baseUrl, apiKey FROM providers`).all() as
+    Parameters<typeof projectTeamImageModels>[0];
+  const teamModels = projectTeamImageModels(providerRows, { mode: 'server', unifiedAvailable: true });
+  const canvasModels = configuredCanvasImages(db);
+  for (const { id, model, key } of QINIU_IMAGE_26_MODELS) {
+    const rows = providerRows.filter((provider) => provider.id === id);
+    assert.equal(rows.length, 1);
+    assert.equal(ensureMediaProviderPool(db, rows[0].baseUrl, rows[0].apiKey), 'company:qiniuyun');
+    const requirement = qiniuPoolState.requirements.find((entry) => entry.key === `image:${id}`);
+    assert.equal(requirement?.poolKey, 'company:qiniuyun');
+    assert.equal(requirement?.status, 'ready');
+    assert.ok(teamModels.some((entry) => entry.id === id && entry.model === model));
+    assert.ok(canvasModels.some((entry) => entry.key === key && entry.modelAlias === model));
+  }
 
   // 配置重启后保留。
   db.close();

@@ -5,6 +5,13 @@ import { companyVideoCapsForModel } from '../../company-gateway-size.ts';
 import { SEEDANCE_20, SEEDANCE_25, SEEDANCE_FAST } from '../../video-providers/seedance-contract.ts';
 import { directSeedanceCapability } from './seedance-capabilities.ts';
 import { UNIFIED_KLING3_ANCHOR_ID } from '../../media-core/unified-media/catalog.ts';
+import {
+  QINIU_KLING_4_ASPECT_RATIOS, QINIU_KLING_4_IMAGE_MAX_BYTES, QINIU_KLING_4_IMAGE_MIME_TYPES,
+  QINIU_KLING_4_MAX_MIDDLE_FRAMES, QINIU_KLING_4_MODEL, QINIU_KLING_4_PROVIDER_ID,
+  QINIU_KLING_4_PROVIDER_NAME, QINIU_KLING_4_DEFAULT_RESOLUTION, QINIU_KLING_4_RESOLUTIONS,
+} from '../../company-qiniu-kling-4.ts';
+import { videoReferenceCapability, type SupportedVideoReferenceCapability } from '../../video-reference-contract.ts';
+import { videoDurationOptions } from '../../video-duration.ts';
 
 const kling25: CanvasModelCapability = {
   ...COMPANY_CANVAS_KLING_3_0_CAPABILITY,
@@ -18,7 +25,42 @@ const kling25: CanvasModelCapability = {
   evidenceNote: '沿用主工作台 Kling 2.5 的 OutputConfig 1080P、5/10 秒与 LastFrameUrl 合同；画布本地请求回归通过，首尾帧真实生成仍待验证。',
 };
 
-const SPECS = [...COMPANY_CANVAS_CAPABILITIES.filter((capability) => capability.mediaKind === 'video'), COMPANY_CANVAS_SEEDANCE_2_0_CANDIDATE, kling25];
+const kling4Reference = videoReferenceCapability('openai-video', QINIU_KLING_4_MODEL) as SupportedVideoReferenceCapability;
+
+const kling4: CanvasModelCapability = {
+  key: QINIU_KLING_4_PROVIDER_ID,
+  providerIdentity: QINIU_KLING_4_PROVIDER_ID,
+  displayName: QINIU_KLING_4_PROVIDER_NAME,
+  providerKind: 'company',
+  modelAlias: QINIU_KLING_4_MODEL,
+  mediaKind: 'video',
+  modes: ['image-to-video', 'frames-to-video', 'reference-to-video'],
+  mediaInputMinimums: [{ modes: ['reference-to-video'], min: 1 }],
+  modeLabels: { 'frames-to-video': '多关键帧', 'reference-to-video': '全能参考' },
+  modeHints: {
+    'frames-to-video': '按顺序接入 3–10 张图片。第一张为首帧，最后一张为尾帧，中间图片可排序。',
+    'reference-to-video': '接入参考图片或视频，可在同一任务中混用。',
+  },
+  inputs: [
+    { kind: 'image', roles: ['first-frame'], min: 1, max: 1, modes: ['image-to-video', 'frames-to-video'] },
+    { kind: 'image', roles: ['middle-frame'], min: 1, max: QINIU_KLING_4_MAX_MIDDLE_FRAMES,
+      mimeTypes: QINIU_KLING_4_IMAGE_MIME_TYPES, maxBytes: QINIU_KLING_4_IMAGE_MAX_BYTES, modes: ['frames-to-video'] },
+    { kind: 'image', roles: ['last-frame'], min: 0, max: 1, modes: ['image-to-video', 'frames-to-video'] },
+    { kind: 'image', roles: ['reference', 'subject', 'product', 'style', 'scene'], min: 0, max: kling4Reference.image.maxCount, mimeTypes: kling4Reference.image.mimeTypes, maxBytes: kling4Reference.image.maxBytes, modes: ['reference-to-video'] },
+    { kind: 'video', roles: ['reference', 'camera'], min: 0, max: kling4Reference.video.maxCount, mimeTypes: kling4Reference.video.mimeTypes, maxBytes: kling4Reference.video.maxBytes, maxDurationSec: kling4Reference.video.maxDurationSec, modes: ['reference-to-video'] },
+    { kind: 'text', roles: ['reference'], min: 0, max: 1 },
+  ],
+  parameters: [
+    { key: 'durationSec', label: '时长（秒）', type: 'enum', options: videoDurationOptions('openai-video', QINIU_KLING_4_MODEL).map(String), default: '5' },
+    { key: 'resolution', label: '分辨率', type: 'enum', options: [...QINIU_KLING_4_RESOLUTIONS], default: QINIU_KLING_4_DEFAULT_RESOLUTION },
+    { key: 'aspectRatio', label: '比例', type: 'enum', options: QINIU_KLING_4_ASPECT_RATIOS, default: '16:9', modes: ['reference-to-video'] },
+  ],
+  cancellation: false,
+  evidence: 'mapped',
+  evidenceNote: '七牛可灵 4.0 已在公司网关验证 720p 单首帧、首尾帧、多关键帧和图加视频参考。',
+};
+
+const SPECS = [...COMPANY_CANVAS_CAPABILITIES.filter((capability) => capability.mediaKind === 'video'), COMPANY_CANVAS_SEEDANCE_2_0_CANDIDATE, kling25, kling4];
 
 export function configuredCanvasVideos(db: Database.Database): CanvasModelCapability[] {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'video_providers'").get()) return [];

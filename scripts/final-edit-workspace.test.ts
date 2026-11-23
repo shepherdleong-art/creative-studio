@@ -54,6 +54,21 @@ assert.deepEqual(alignedBoundaryFixture.map((cue) => [cue.text, cue.startUs, cue
   ['第二句很快', 3_000_000, 4_000_000],
 ], '非降级字幕必须使用词级对齐边界，而不是按字符比例平分');
 
+const longLine = '甲乙丙丁戊己庚辛壬癸子丑寅卯辰';
+const longLineCues = buildAlignedSubtitleCues({
+  version: 2, source: 'module3', sourceDraftId: 'fixture', sourceScriptUpdatedAt: null,
+  sourceScriptVersion: 3, title: '', targetDurationSec: 15, shotSetId: 'set-a',
+  sourceNarrationText: longLine, sourceSegments: [], editedNarrationText: longLine, scriptSyncState: 'synced',
+  fullScript: longLine, segments: [{ id: 's', shotId: '', narration: longLine, subtitle: '' }],
+}, {
+  relativePath: 'fixture.wav', durationUs: 3_000_000,
+  segmentTimings: [{ segmentId: 's', startUs: 0, endUs: 3_000_000 }],
+  wordTimings: [{ text: longLine, startUs: 0, endUs: 3_000_000 }],
+});
+assert.deepEqual(longLineCues.map(cue => cue.text.length), [8, 7]);
+assert.equal(longLineCues.map(cue => cue.text).join(''), longLine);
+assert.deepEqual(longLineCues.map(cue => [cue.startUs, cue.endUs]), [[0, 1_600_000], [1_600_000, 3_000_000]]);
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-final-edit-'));
 const storageRoot = path.join(root, 'storage');
 fs.mkdirSync(path.join(storageRoot, 'videos'), { recursive: true });

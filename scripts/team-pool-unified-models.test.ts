@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { QINIU_KLING_4_PROVIDER_ID } from '../lib/company-qiniu-kling-4.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-unified-pools-'));
 Object.assign(process.env, {
@@ -18,7 +19,7 @@ const runtime = readRuntimeConfig();
 assert.equal(runtime.mode, 'server');
 if (runtime.mode === 'server') ensureServerDeploymentMarker(runtime);
 const { getDb, closeDb } = await import('../lib/db.ts');
-const { seedProviders } = await import('../lib/seed.ts');
+const { ensureCompanyQiniuKling4Provider, seedProviders } = await import('../lib/seed.ts');
 const { schemaUpgradeRuntimePaths } = await import('../lib/schema-upgrade/runtime.ts');
 const { checkExecutionReadiness } = await import('../lib/media-core/execution/readiness.ts');
 const { readPoolAdminState, applyPoolChanges } = await import('../lib/team-service/pools.ts');
@@ -56,7 +57,17 @@ try {
       versions.set(poolKey, (versions.get(poolKey) ?? 0) + 1);
     }
   }
+  // 模拟在七牛 3.0 已完成绑定的团队工作台添加 4.0。
+  db.prepare('DELETE FROM video_providers WHERE id=?').run(QINIU_KLING_4_PROVIDER_ID);
+  ensureCompanyQiniuKling4Provider(db);
+  const qiniuChannel = UNIFIED_KLING3_CHANNELS.find(channel => channel.model === 'qiniuyun/kling-3.0')!;
   const state = readPoolAdminState(db, admin);
+  for (const entityType of ['video', 'canvas']) {
+    const requirement = state.requirements.find(item => item.entityType === entityType
+      && item.entityId === QINIU_KLING_4_PROVIDER_ID);
+    assert.equal(requirement?.poolKey, 'test:' + qiniuChannel.channelKey);
+    assert.equal(requirement?.status, 'ready');
+  }
   const anchors = new Set<string>([UNIFIED_IMAGE_ANCHOR_ID, UNIFIED_KLING3_ANCHOR_ID]);
   const phantom = state.requirements.filter(item => anchors.has(item.entityId));
   assert.deepEqual(phantom.map(item => ({ label: item.label, status: item.status })), [],

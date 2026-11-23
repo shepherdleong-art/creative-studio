@@ -16,7 +16,7 @@ export type Job = RestoreJob & {
     failures?: Array<{ id: string; label?: string; reasonCode: string; reason: string; error?: string }> }) | null;
   integrity?: 'ok' | 'audit_corrupt'; message?: string;
 };
-type Backup = { id: string; type: string; createdAt: string; totalBytes: number; verification: string; verifiedAt: string | null; restorable: boolean;
+type Backup = { id: string; type: string; createdAt: string; totalBytes: number; newMediaBytes?: number; verification: string; verifiedAt: string | null; restorable: boolean;
   compatible: boolean; releaseId: string | null; scope: string; newerDataPolicy: string };
 const activeStatuses = new Set(['queued', 'running']);
 const stageLabels: Record<string, string> = {
@@ -139,11 +139,12 @@ export default function TeamMaintenancePanel() {
       {backupLoading && <p role="status" className="mt-3 text-[13px] text-ink-secondary">正在读取并校验备份文件，素材较多时可能需要一些时间。</p>}
       {backupError && <p role="alert" className="mt-3 text-[13px] text-fail">{backupError}</p>}
       <div className="mt-4 overflow-x-auto"><table className="data-table min-w-[650px]">
-        <thead><tr><th>类型</th><th>备份时间</th><th>大小</th><th>校验状态</th><th>可用于还原</th></tr></thead>
+        <thead><tr><th>类型</th><th>备份时间</th><th>还原点大小</th><th>校验状态</th><th>可用于还原</th></tr></thead>
         <tbody>{backups.map((backup) => <tr key={`${backup.type}/${backup.id}`}>
           <td className="text-ink">{backupTypeLabels[backup.type] ?? backup.type}</td>
           <td className="text-ink-secondary">{time(backup.createdAt)}<div className="mt-1 break-all font-mono text-[11px] text-ink-tertiary">{backup.id}</div></td>
-          <td className="tnum text-ink-secondary">{backup.totalBytes > 0 ? bytes(backup.totalBytes) : '—'}</td>
+          <td className="tnum text-ink-secondary">{backup.totalBytes > 0 ? bytes(backup.totalBytes) : '—'}
+            {backup.newMediaBytes !== undefined && <div className="text-ink-tertiary">本次新写入媒体 {bytes(backup.newMediaBytes)}</div>}</td>
           <td><Tag tone={backup.verification === 'verified' ? 'ok' : 'warn'}>{backup.verification === 'verified' ? `已校验 · ${time(backup.verifiedAt)}` : '未通过，待核查'}</Tag></td>
           <td className="text-ink-secondary">{backup.restorable ? <a className="text-accent underline" href="#team-restore">可用 · 前往还原</a> : backup.verification === 'verified' && !backup.compatible ? `程序版本不匹配（${backup.releaseId}）` : '校验未通过'}</td>
         </tr>)}</tbody>

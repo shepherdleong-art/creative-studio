@@ -127,7 +127,8 @@ const server = http.createServer((request, response) => {
     // 外部图片供应商：OpenAI 风格同步出图
     if (request.method === 'POST' && (request.url === '/v1/images/generations' || request.url === '/v1/images/edits')) {
       response.writeHead(200, { 'content-type': 'application/json' });
-      const seedream = request.url === '/v1/images/generations' && JSON.parse(body).model === 'doubao-seedream-5-0-pro-image';
+      const seedream = request.url === '/v1/images/generations'
+        && ['doubao-seedream-5-0-pro-image', 'doubao-seedream-5-5-261028'].includes(JSON.parse(body).model);
       response.end(JSON.stringify({ created: 1, data: [seedream ? { url: '/files/result' } : { b64_json: resultPng.toString('base64') }] }));
       return;
     }
@@ -1206,6 +1207,7 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
 for (const [id, model] of [
   ['company-gateway-qiniuyun-gpt-image-2-medium', 'qiniuyun/gpt-image-2-medium'],
   ['company-gateway-seedream-5-0-pro', 'doubao-seedream-5-0-pro-image'],
+  ['company-gateway-seedream-5-5', 'doubao-seedream-5-5-261028'],
   ['company-gateway-nano-banana-pro', 'nano-banana-3.0'],
   ['company-gateway-nano-banana-2', 'nano-banana-3.1'],
 ]) {
@@ -1214,19 +1216,22 @@ for (const [id, model] of [
   assert.ok(capability);
   for (const withImages of [false, true]) {
     const nodeId = 'configured-image';
-    const seedream = model === 'doubao-seedream-5-0-pro-image';
+    const seedream55 = model === 'doubao-seedream-5-5-261028';
+    const seedream = seedream55 || model === 'doubao-seedream-5-0-pro-image';
+    const resolution = seedream55 ? '1.5K' : seedream ? '1K' : '4K';
     save([
       ...(withImages ? [material('cfg-ref-1', firstFrameAsset), material('cfg-ref-2', lastFrameAsset)] : []),
-      imageNode(nodeId, capability.key, { aspectRatio: '16:9', resolution: seedream ? '1K' : '4K' }),
+      imageNode(nodeId, capability.key, { aspectRatio: '16:9', resolution }),
     ], withImages ? [edge('cfg-e1', 'cfg-ref-1', nodeId), edge('cfg-e2', 'cfg-ref-2', nodeId)] : []);
     const result = await runOnce(nodeId);
     assert.equal(result.phase, 'succeeded', `${model}: ${result.errorMessage}`);
     assert.equal(result.posts, 1);
     assert.equal(result.body?.model, model);
     if (seedream) {
-      assert.equal(result.body?.size, '1K');
+      assert.equal(result.body?.size, resolution);
       assert.equal(result.body?.response_format, 'url');
-      assert.match(String(result.body?.prompt), /输出画幅为16:9，清晰度为1K/);
+      assert.ok(String(result.body?.prompt).includes(`输出画幅为16:9，清晰度为${resolution}`));
+      assert.equal(result.body?.n, seedream55 ? undefined : 1);
       assert.equal((result.body?.image as string[] | undefined)?.length ?? 0, withImages ? 2 : 0);
     } else if (model.startsWith('nano-banana')) {
       assert.deepEqual(result.body?.OutputConfig, { Resolution: '4K', AspectRatio: '16:9' });
