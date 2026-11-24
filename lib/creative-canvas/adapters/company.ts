@@ -302,6 +302,7 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
             durationSec: input.durationSec,
             role: input.role,
             requireCos,
+            preferCosOrigin: capability.modelAlias === 'qiniuyun/gpt-image-2.6-sunburst' && input.kind === 'image',
             isFrameImage: input.kind === 'image' && isFrameRole(input.role),
           }, {
             ...(rule.mimeTypes ? { mimeTypes: rule.mimeTypes } : {}),

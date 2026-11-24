@@ -72,6 +72,7 @@ export interface CanvasNodeCandidateDto {
   assetId: string;
   variantIndex: number;
   createdAt: string;
+  completedAt?: string;
 }
 
 export interface CanvasAssetDto {

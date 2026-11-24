@@ -300,6 +300,36 @@ function buildSignedGetUrl(config: CosConfig, pathname: string, startTs: number,
   return `https://${config.domain}${pathname}?${query}`;
 }
 
+/** 对已按 COS 源站 Host 签名的 CDN 链接，检查同一对象是否也允许直接读取。 */
+export async function preferReadableCosOrigin(signedUrl: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const config = loadCosConfig();
+  if (!config || config.signHost === config.domain
+    || !/^[a-z0-9-]+-\d+\.cos\.[a-z0-9-]+\.myqcloud\.com$/i.test(config.signHost)) return signedUrl;
+
+  const originUrl = new URL(signedUrl);
+  if (originUrl.origin !== `https://${config.domain}` || !originUrl.searchParams.has('q-signature')) return signedUrl;
+  originUrl.hostname = config.signHost;
+  const timeout = AbortSignal.timeout(3000);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const response = await fetch(originUrl, {
+      headers: { Range: 'bytes=0-0' }, redirect: 'error',
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    });
+    reader = response.body?.getReader();
+    if (reader && (response.status === 206 || response.status === 200)) {
+      const first = await reader.read();
+      if (first.value?.byteLength) return originUrl.href;
+    }
+  } catch {
+    signal?.throwIfAborted();
+  } finally {
+    await reader?.cancel().catch(() => undefined);
+  }
+  return signedUrl;
+}
+
 // ── 上传与签名 URL ─────────────────────────────────────────────────────
 
 const signedUrlCache = new Map<string, { url: string; expiresAtMs: number }>();

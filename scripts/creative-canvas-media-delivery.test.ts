@@ -13,6 +13,9 @@ register('./typescript-extension-loader.mjs', import.meta.url);
 const { registerCanvasCapability } = await import('../lib/creative-canvas/capabilities.ts');
 const { COMPANY_CANVAS_NATIVE_VIDEO_CAPABILITIES } = await import('../lib/creative-canvas/adapters/company-capabilities.ts');
 const { configuredCanvasVideos } = await import('../lib/creative-canvas/adapters/configured-videos.ts');
+const { configuredCanvasImages } = await import('../lib/creative-canvas/adapters/configured-images.ts');
+const { QINIU_IMAGE_26_MODELS } = await import('../lib/company-qiniu-image-models.ts');
+const { _setCompanyTailFrameRuntimeInspectorForTest } = await import('../lib/company-gateway-tail-frame.ts');
 const { createCompanyCanvasAdapter } = await import('../lib/creative-canvas/adapters/company.ts');
 const { createDefaultCanvasDeliverer } = await import('../lib/creative-canvas/adapters/media-delivery.ts');
 const { CanvasAdapterError } = await import('../lib/creative-canvas/adapters/types.ts');
@@ -23,8 +26,19 @@ const originalFetch = globalThis.fetch;
 const uploads: Array<{ bytes: Buffer; mime: string }> = [];
 let posts = 0;
 let cosUnavailable = false;
+const originHost = 'fixture-12345.cos.ap-guangzhou.myqcloud.com';
+let originStatus = 206;
+let originReads = 0;
 globalThis.fetch = async (input, init) => {
   const url = new URL(String(input));
+  if (url.hostname === originHost) {
+    originReads++;
+    assert.equal(init?.method ?? 'GET', 'GET');
+    assert.equal(new Headers(init?.headers).get('range'), 'bytes=0-0');
+    assert.equal(init?.redirect, 'error');
+    assert.ok(url.searchParams.has('q-signature'));
+    return new Response(new Uint8Array([0xff]), { status: originStatus });
+  }
   assert.equal(url.hostname, 'canvas-cos.test', 'No real network requests');
   if (cosUnavailable) return new Response('', { status: 503 });
   if (init?.method === 'PUT') {
@@ -82,7 +96,40 @@ try {
   const smallPath = path.join(root, 'small-alpha.png');
   fs.writeFileSync(smallPath, small);
 
+  db.exec('CREATE TABLE providers (id TEXT, name TEXT, type TEXT, baseUrl TEXT, apiKey TEXT, enabled INTEGER, model TEXT)');
+  for (const spec of QINIU_IMAGE_26_MODELS) {
+    db.prepare('INSERT INTO providers VALUES (?, ?, ?, ?, ?, 1, ?)').run(
+      spec.id, spec.name, 'gateway-task-image', 'http://127.0.0.1:4300', 'fixture-key', spec.model,
+    );
+  }
+  const images = configuredCanvasImages(db);
+  for (const image of images) registerCanvasCapability(image);
+  process.env.CREATIVE_STUDIO_COS_SIGN_HOST = originHost;
+  const submitted: URL[] = [];
+  const imageAdapter = createCompanyCanvasAdapter({ db, deliverer: createDefaultCanvasDeliverer(),
+    fetchImpl: async (_url, init) => {
+      submitted.push(new URL(JSON.parse(String(init?.body)).images[0]));
+      return Response.json({ id: 'fixture-image' });
+    },
+  });
+  for (const [alias, status] of [['sunburst', 206], ['flare', 206], ['sunburst', 403]] as const) {
+    originStatus = status;
+    const image = images.find(entry => entry.modelAlias === 'qiniuyun/gpt-image-2.6-' + alias)!;
+    const request = context(image, smallPath, small, 'image/png');
+    Object.assign(request, { mediaKind: 'image', generationMode: 'image-to-image', parameters: { aspectRatio: '16:9', resolution: '4K' } });
+    await imageAdapter.prepare(request);
+    await imageAdapter.submit(request);
+  }
+  assert.deepEqual(submitted.map(url => url.hostname), [originHost, 'canvas-cos.test', 'canvas-cos.test']);
+  assert.equal(originReads, 2, '仅 Sunburst 探测源站，每次生成最多一次 POST');
+  assert.equal(submitted[0].pathname + submitted[0].search, submitted[1].pathname + submitted[1].search,
+    '缓存命中时只换下载域名，保留原对象和签名');
+  delete process.env.CREATIVE_STUDIO_COS_SIGN_HOST;
+
   const kling4Model = 'qiniuyun/kling-4.0';
+  _setCompanyTailFrameRuntimeInspectorForTest(async () => ({
+    status: 'ready', reason: '', proxyAvailable: true, cosConfigured: true, startedAt: null,
+  }));
   db.prepare('INSERT INTO video_providers VALUES (?, ?, ?, ?, ?, 1, ?)').run(
     'company-qiniuyun-kling-4-0', kling4Model, 'openai-video', 'http://127.0.0.1:4000', 'test-key', kling4Model,
   );
@@ -270,6 +317,7 @@ try {
     console.log(capability.modelAlias + ': oversized PNG/JPEG/alpha, compliant image, invalid media, cancellation and cleanup passed');
   }
 } finally {
+  _setCompanyTailFrameRuntimeInspectorForTest(null);
   globalThis.fetch = originalFetch;
   db.close();
   fs.rmSync(root, { recursive: true, force: true });

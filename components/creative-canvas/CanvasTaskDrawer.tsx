@@ -7,9 +7,9 @@
  */
 
 import { useEffect, useState } from 'react';
-import { canvasApi, canvasAssetUrl, type CanvasTaskDto } from './api';
+import { canvasApi, type CanvasTaskDto } from './api';
 import type { CanvasTaskPhase } from '@/lib/creative-canvas/types';
-import { AssetLightbox } from './AssetLightbox';
+import { formatTaskElapsed, TaskResultThumbnail } from './TaskResultThumbnail';
 
 const PHASE_LABELS: Record<CanvasTaskPhase, string> = {
   waiting_input: '等待上游',
@@ -42,63 +42,20 @@ function formatClock(iso: string): string {
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function formatDuration(createdAt: string, updatedAt: string): string | null {
-  const ms = new Date(updatedAt).getTime() - new Date(createdAt).getTime();
-  if (Number.isNaN(ms) || ms < 0) return null;
-  if (ms < 1_000) return '<1s';
-  const sec = Math.round(ms / 1_000);
-  if (sec < 60) return `${sec}s`;
-  return `${Math.floor(sec / 60)}m${sec % 60}s`;
-}
-
-function TaskThumb({
-  task,
-  onPreview,
-}: {
-  task: CanvasTaskDto;
-  onPreview: (assetId: string, mediaKind: 'image' | 'video') => void;
-}) {
-  const assetId = task.outputAssetId;
-  if (!assetId) return null;
-  const url = canvasAssetUrl(assetId);
-  return (
-    <button
-      type="button"
-      className="sc-canvas-task-thumb"
-      data-testid={`task-thumb-${task.id}`}
-      aria-label="预览产物"
-      onClick={(event) => {
-        event.stopPropagation();
-        onPreview(assetId, task.mediaKind);
-      }}
-    >
-      {task.mediaKind === 'image' ? (
-        <img src={url} alt="" loading="lazy" />
-      ) : (
-        <>
-          <video src={url} muted playsInline preload="metadata" />
-          <span className="sc-canvas-task-thumb-badge" aria-hidden>▶</span>
-        </>
-      )}
-    </button>
-  );
-}
-
 export function CanvasTaskDrawer({
   canvasId,
-  knownNodeIds,
+  nodeTitles,
   onLocate,
   onShowLogs,
 }: {
   canvasId: string;
   /** 当前画布图里仍然存在的节点；不在其中的任务说明节点已被删除。 */
-  knownNodeIds: ReadonlySet<string>;
+  nodeTitles: ReadonlyMap<string, string>;
   onLocate: (nodeId: string) => void;
   onShowLogs: (task: CanvasTaskDto) => void;
 }) {
   const [tasks, setTasks] = useState<CanvasTaskDto[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<{ assetId: string; mediaKind: 'image' | 'video' } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,12 +88,13 @@ export function CanvasTaskDrawer({
         <ul className="mt-2 space-y-1">
           {tasks.map((task) => {
             const duration = TERMINAL_PHASES.has(task.phase)
-              ? formatDuration(task.createdAt, task.updatedAt)
+              ? formatTaskElapsed(task.createdAt, task.updatedAt)
               : null;
             return (
               <li key={task.id} className="sc-canvas-task-row" data-task-phase={task.phase}>
                 <div className="flex items-start gap-2">
-                  <TaskThumb task={task} onPreview={(assetId, mediaKind) => setPreview({ assetId, mediaKind })} />
+                  {task.outputAssetId && <TaskResultThumbnail assetId={task.outputAssetId} mediaKind={task.mediaKind}
+                    label="预览产物" testId={`task-thumb-${task.id}`} />}
                   <button
                     type="button"
                     className="min-w-0 flex-1 text-left"
@@ -164,12 +122,12 @@ export function CanvasTaskDrawer({
                       </span>
                     </div>
                     <div className="text-[11px] text-ink-tertiary">
-                      {task.mediaKind === 'image' ? '图片' : '视频'} · {task.nodeId}
+                      {task.mediaKind === 'image' ? '图片' : '视频'} · {(task.canvasId === canvasId && nodeTitles.get(task.nodeId)) || task.nodeId}
                     </div>
                     <div className="text-[10px] text-ink-tertiary" data-testid={`task-time-${task.id}`}>
                       {formatClock(task.createdAt)}{duration ? ` · 耗时 ${duration}` : ''}
                     </div>
-                    {task.canvasId === canvasId && !knownNodeIds.has(task.nodeId) ? (
+                    {task.canvasId === canvasId && !nodeTitles.has(task.nodeId) ? (
                       <div className="text-[11px] text-ink-tertiary" data-testid={`task-node-deleted-${task.id}`}>
                         对应节点已删除，结果与任务记录仍保留。
                       </div>
@@ -198,14 +156,6 @@ export function CanvasTaskDrawer({
           })}
         </ul>
       )}
-      {preview ? (
-        <AssetLightbox
-          assetId={preview.assetId}
-          mediaKind={preview.mediaKind}
-          onClose={() => setPreview(null)}
-          testId="task-lightbox"
-        />
-      ) : null}
     </aside>
   );
 }

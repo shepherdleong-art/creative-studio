@@ -8,6 +8,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { dataRoot } from '../../data-root.ts';
+import { preferReadableCosOrigin } from '../../cos-media.ts';
 import {
   deliverVideoReferenceMedia,
   precheckVideoReferenceDeliveryMedia,
@@ -28,6 +29,7 @@ export interface CanvasDeliveryRequest {
   role: CanvasReferenceRole;
   /** true：必须走 COS 预签名 URL，禁止回退本机／公网地址。 */
   requireCos: boolean;
+  preferCosOrigin?: boolean;
   /** 视频首帧／尾帧图：走视频压缩阈值，避免起点画质被压糊。 */
   isFrameImage: boolean;
   /** 已按模型限制生成的上传副本，禁止 COS 再次转码成模型不支持的格式。 */
@@ -146,7 +148,8 @@ export function createDefaultCanvasDeliverer(): CanvasMediaDeliverer {
     name: 'cos-or-local-url',
     async deliver(request, signal) {
       try {
-        return await deliverVideoReferenceMedia(request, signal);
+        const url = await deliverVideoReferenceMedia(request, signal);
+        return request.preferCosOrigin && request.requireCos ? await preferReadableCosOrigin(url, signal) : url;
       } catch (error) {
         if (error instanceof VideoReferenceMediaError) {
           throw new CanvasAdapterError('prepare', error.message, { code: error.code });

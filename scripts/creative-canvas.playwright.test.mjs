@@ -150,7 +150,10 @@ async function waitForServer() {
       const response = await fetch(`${baseUrl}/api/canvas`);
       if (response.ok) return;
       if (response.status === 503) {
-        throw new Error(`画布 API 不可用：${await response.text()}\n${serverOutput.join('')}`);
+        const body = await response.json().catch(() => null);
+        if (body?.reason !== 'upgrade_in_progress') {
+          throw new Error(`画布 API 不可用：${JSON.stringify(body)}\n${serverOutput.join('')}`);
+        }
       }
     } catch (error) {
       if (error instanceof Error && error.message.includes('画布 API')) throw error;
@@ -1458,7 +1461,8 @@ async function exportSuite(page) {
   await waitSaved(page);
 
   await page.click(`.react-flow__node[data-id="${imageId}"] [data-testid="run-node"]`);
-  await waitForResult(page, imageId, 'image');
+  // 此夹具在第 3 次查询返回结果，生产调度每 30 秒查询一次。
+  await waitForResult(page, imageId, 'image', 120_000);
 
   // 单个成品下载：物化素材节点上的链接指向 ?download=1，响应带 attachment 与真实成品字节
   const resultAssetId = await nodeAttribute(page, imageId, 'data-canvas-result');
@@ -1484,12 +1488,32 @@ async function exportSuite(page) {
   assert.deepEqual(single.head, [0x89, 0x50, 0x4e, 0x47], '下载的应是真实 PNG 成品');
   assert.ok(single.size > 0);
 
-  // 图片放大：物化素材节点上点击打开、点击关闭
-  const zoomAssetId = await nodeAttribute(page, imageId, 'data-canvas-result');
-  await page.click(`.react-flow__node:has([data-node-kind="material"]) img[src*="${zoomAssetId}"]`);
-  await page.waitForSelector('[data-testid="material-lightbox"]');
-  await page.click('[data-testid="material-lightbox"]');
-  await page.waitForSelector('[data-testid="material-lightbox"]', { state: 'detached' });
+  const notice = page.getByRole('region', { name: '已完成任务' });
+  await notice.getByText('1 项任务').waitFor();
+  await notice.getByText(/图片 · 耗时 \d+S/).waitFor();
+  await page.getByRole('button', { name: '关闭生成成功提醒' }).click();
+
+  // React Flow 的节点包含 transform；预览必须占满窗口，并隔离画布快捷键。
+  const resultNode = page.locator(`.react-flow__node:has(img[src*="${resultAssetId}"])`);
+  const thumbnail = resultNode.getByTestId('material-image');
+  const lightbox = page.getByRole('dialog', { name: '图片全屏预览' });
+  const viewportBefore = await readViewportTransform(page);
+  await thumbnail.click();
+  await lightbox.waitFor();
+  assert.deepEqual(await lightbox.boundingBox(), { x: 0, y: 0, ...page.viewportSize() });
+  assert.equal(await lightbox.locator('img').getAttribute('src'), await thumbnail.getAttribute('src'));
+  const selectedBefore = await resultNode.evaluate(node => node.classList.contains('selected'));
+  await page.keyboard.press('Delete');
+  await page.keyboard.press('Escape');
+  await lightbox.waitFor({ state: 'detached' });
+  assert.equal(await resultNode.evaluate(node => node.classList.contains('selected')), selectedBefore);
+  assertViewportClose(await readViewportTransform(page), viewportBefore, '退出预览回到原画布视口');
+  await thumbnail.click();
+  await lightbox.getByRole('button', { name: '关闭全屏预览' }).click();
+  await lightbox.waitFor({ state: 'detached' });
+  await thumbnail.click();
+  await lightbox.click({ position: { x: 4, y: 4 } });
+  await lightbox.waitFor({ state: 'detached' });
 
   // 框选打包：选中节点 → 打包选中 → 拿到 ZIP
   await selectNode(page, imageId);

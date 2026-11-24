@@ -416,13 +416,19 @@ export const MaterialNode = memo(function MaterialNode({ id, data, selected, pos
         <div className="mt-2">
           {assetId ? (
             mediaKind === 'image' ? (
-              <img
-                src={canvasAssetUrl(assetId)}
-                alt="素材"
-                className="nodrag mx-auto block h-auto max-h-80 w-auto max-w-full cursor-zoom-in rounded-lg"
-                data-testid="material-image"
+              <button
+                type="button"
+                aria-label="全屏查看图片"
+                className="nodrag mx-auto block max-w-full cursor-zoom-in rounded-lg"
                 onClick={() => setZoomed(true)}
-              />
+              >
+                <img
+                  src={canvasAssetUrl(assetId)}
+                  alt="素材"
+                  className="block h-auto max-h-80 w-auto max-w-full rounded-lg"
+                  data-testid="material-image"
+                />
+              </button>
             ) : mediaKind === 'video' ? (
               <RegisteredVideo
                 nodeId={id}
