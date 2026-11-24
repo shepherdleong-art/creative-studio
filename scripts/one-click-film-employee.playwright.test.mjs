@@ -221,7 +221,7 @@ function assertContinuousAudio(file, offset, bgm = false) {
   }
 }
 
-function assertPackagedVisuals(file, code) {
+function assertPackagedVisuals(file, code, firstPoint) {
   const width = 90;
   const height = 120;
   const gray = ff(['-i', file, '-an', '-vf', `scale=${width}:${height}`, '-pix_fmt', 'gray', '-f', 'rawvideo', 'pipe:1']);
@@ -237,9 +237,15 @@ function assertPackagedVisuals(file, code) {
   assert.ok(coverPixels > 250, `${code} 第 19 帧有封面，第 20 帧切回正文，变化像素 ${coverPixels}`);
   const captionPixels = changed(42, 52, 90, 116);
   assert.ok(captionPixels > 12, `${code} 对时后的字幕没有烧进画面，变化像素 ${captionPixels}`);
-  const decorationPixels = code === 'F02' ? changed(113, 122, 19, 70) : changed(21, 38, 19, 70);
+  assert.ok(firstPoint, `${code} 没有已保存的花字`);
+  // 花字时间以正文为起点。导出加了 20 帧封面，极简模板的入场动画为 0.3 秒。
+  const beforePointFrame = 20 + Math.max(0, Math.ceil(firstPoint.startSec * 24) - 1);
+  const visiblePointSec = Math.max(firstPoint.startSec, 0.15) + 0.45;
+  assert.ok(visiblePointSec < firstPoint.endSec, `${code} 的第一条花字区间过短，无法取样`);
+  const visiblePointFrame = 20 + Math.round(visiblePointSec * 24);
+  const decorationPixels = changed(beforePointFrame, visiblePointFrame, 19, 70);
   if (code === 'F02') {
-    assert.ok(changed(107, 113, 19, 70) < 10, 'F02 的第一条花字在 4 秒之前出现');
+    assert.ok(changed(20, beforePointFrame, 19, 70) < 10, 'F02 的第一条花字早于保存的入点出现');
   }
   assert.ok(decorationPixels > 25, `${code} 的包装没有花字，变化像素 ${decorationPixels}`);
   return { coverPixels, captionPixels, decorationPixels };
@@ -814,7 +820,8 @@ try {
     assert.equal(Number(video.nb_read_frames), 380);
     assert.ok(streams.some((stream) => stream.codec_type === 'audio'));
     assertContinuousAudio(file, 20 / 24, true);
-    const visual = assertPackagedVisuals(file, delivery.entryCode);
+    const expectedPackaging = delivery.entryCode === 'F02' ? f02Draft : autoCaption;
+    const visual = assertPackagedVisuals(file, delivery.entryCode, expectedPackaging.pointCues[0]);
     checked.push({ entry: delivery.entryCode, filename: path.basename(file), fps: video.avg_frame_rate,
       frames: Number(video.nb_read_frames), sha256: delivery.checksum, ...visual });
     files.push(file);
