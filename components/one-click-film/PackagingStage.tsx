@@ -4,12 +4,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { EmptyState, GroupHeading, GroupList, GroupRow, Segmented, Tag, ToolbarButton } from '@/components/ui/Appearance';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
-import { splitSubtitleCues } from '@/lib/one-click-film/packaging-edit';
 import type { PackagingRecord } from '@/lib/one-click-film/packaging';
 import { ONE_CLICK_FILM_TEMPLATE_IDS, ONE_CLICK_FILM_TEMPLATE_LABELS } from '@/lib/one-click-film/packaging-constants';
 import type { FilmState } from './types';
 import { PackagingDraftEditor, type PackagingMedia } from './PackagingDraftEditor';
-import { ReviewStage } from './ReviewStage';
 import { useShotThumbnails } from './useShotThumbnails';
 import styles from './one-click-film.module.css';
 
@@ -25,6 +23,8 @@ interface ExportRecord {
 type PreviewSource = { entryCode: string; url: string; startSec: number };
 type ResponseBody = {
   packaging?: PackagingRecord[];
+  subtitleWarning?: string;
+  subtitleWaiting?: boolean;
   record?: PackagingRecord;
   media?: PackagingMedia;
   previews?: PreviewSource[];
@@ -68,7 +68,7 @@ async function readResponse(response: Response): Promise<ResponseBody> {
   return body;
 }
 
-export function PackagingStage({ state, onAdjustSound }: { state: FilmState; onAdjustSound?: (code: string) => void }) {
+export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmState; focus?: { code: string; shotId?: string }; onAdjustSound: (code: string) => void }) {
   const base = `/api/one-click-film/${state.project.id}`;
   const [records, setRecords] = useState<PackagingRecord[]>([]);
   const [exportsList, setExportsList] = useState<ExportRecord[]>([]);
@@ -89,8 +89,9 @@ export function PackagingStage({ state, onAdjustSound }: { state: FilmState; onA
   const [working, setWorking] = useState('');
   const [draft, setDraft] = useState<PackagingRecord | null>(null);
   const [baseline, setBaseline] = useState<PackagingRecord | null>(null);
+  const [subtitleWaiting, setSubtitleWaiting] = useState('');
   const [media, setMedia] = useState<PackagingMedia | null>(null);
-  const [editMode, setEditMode] = useState<'packaging' | 'rework'>('packaging');
+  const [initialShot, setInitialShot] = useState<string>();
   const [confirm, setConfirm] = useState(false);
   const closeConfirm = useCallback(() => setConfirm(false), []);
   const exportList = useRef<HTMLDivElement>(null);
@@ -127,28 +128,86 @@ export function PackagingStage({ state, onAdjustSound }: { state: FilmState; onA
     finally { setWorking(''); }
   };
 
-  const openEditor = async (entryCode: string) => {
+  const openEditor = useCallback(async (entryCode: string, shotId?: string, signal?: AbortSignal) => {
     setWorking(`open:${entryCode}`);
     setError('');
     setNotice('');
     try {
-      const result = await post('packaging', { action: 'open', entryCode, options: defaults });
+      const result = await fetch(`${base}/packaging`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'open', entryCode, prepareSubtitles: true }), signal }).then(readResponse);
       if (!result.record || !result.media) throw new Error('这条成片的包装草稿不可用');
-      const record = { ...result.record, subtitleCues: splitSubtitleCues(result.record.subtitleCues) };
-      setBaseline(record);
-      setDraft(record);
+      if (signal?.aborted) return;
+      setBaseline(result.record);
+      setDraft(result.record);
       setMedia(result.media);
-      setEditMode('packaging');
-    } catch (cause) { setError(message(cause)); }
-    finally { setWorking(''); }
-  };
+      setNotice(result.subtitleWarning || '');
+      setSubtitleWaiting(result.subtitleWaiting ? entryCode : '');
+      setInitialShot(shotId);
+    } catch (cause) { if (!signal?.aborted) setError(message(cause)); }
+    finally { if (!signal?.aborted) setWorking(''); }
+  }, [base]);
+
+  useEffect(() => {
+    if (!focus) return;
+    const abort = new AbortController();
+    const timer = setTimeout(() => void openEditor(focus.code, focus.shotId, abort.signal), 0);
+    return () => { clearTimeout(timer); abort.abort(); };
+  }, [openEditor, focus]);
+
+  const canPrepareSubtitles = Boolean(draft && baseline && draft.entryCode === subtitleWaiting && draft.options.subtitles
+    && draftValues(draft) === draftValues(baseline));
+  const subtitleRevision = draft?.revision;
+  useEffect(() => {
+    if (!canPrepareSubtitles || working) return;
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const check = async () => {
+      try {
+        const result = await fetch(`${base}/packaging`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: abort.signal,
+          body: JSON.stringify({ action: 'recognize-subtitles', entryCode: subtitleWaiting, revision: subtitleRevision }) }).then(readResponse);
+        if (abort.signal.aborted) return;
+        if (result.subtitleWaiting) { timer = setTimeout(() => void check(), 5000); return; }
+        const updated = result.packaging?.find(item => item.entryCode === subtitleWaiting);
+        if (!updated) throw new Error('未能读取字幕识别结果');
+        setRecords(result.packaging!);
+        setBaseline(updated);
+        setDraft(updated);
+        setSelected(current => Object.hasOwn(current, updated.entryCode) ? { ...current, [updated.entryCode]: updated.revision } : current);
+        setSubtitleWaiting('');
+        setNotice(updated.subtitleCues.length ? '口播字幕已对时。' : '未识别到口播。');
+      } catch (cause) {
+        if (abort.signal.aborted) return;
+        setSubtitleWaiting('');
+        setNotice('');
+        setError(message(cause));
+      }
+    };
+    timer = setTimeout(() => void check(), 4000);
+    return () => { clearTimeout(timer); abort.abort(); };
+  }, [base, canPrepareSubtitles, subtitleRevision, subtitleWaiting, working]);
+
+  const refreshSequence = useRef(0);
+  const activeCode = draft?.entryCode;
+  const refreshReview = useCallback(async () => {
+    if (!activeCode) return;
+    const sequence = ++refreshSequence.current;
+    const result = await fetch(`${base}/packaging`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'open', entryCode: activeCode }) }).then(readResponse);
+    if (sequence !== refreshSequence.current) return;
+    if (!result.media || !result.record) throw new Error('无法刷新审片预览');
+    const refreshedMedia = result.media;
+    setMedia(current => current?.review.entryCode === activeCode ? refreshedMedia : current);
+    const { canExport, reason, subtitlesPrepared } = result.record;
+    setDraft(current => current?.entryCode === activeCode ? { ...current, canExport, reason, subtitlesPrepared } : current);
+  }, [activeCode, base]);
 
   const save = async (record: PackagingRecord) => {
     if (baseline && draftValues(baseline) === draftValues(record)) return record;
     const changedSubtitles = JSON.stringify(record.subtitleCues) !== JSON.stringify(baseline?.subtitleCues);
     const result = await post('packaging', {
       action: 'edit', entryCode: record.entryCode, revision: record.revision, title: record.title,
-      template: record.template, options: record.options, pointCues: record.pointCues,
+      template: record.template, options: { ...record.options, titleFont: record.options.titleFont ?? null,
+        subtitleFont: record.options.subtitleFont ?? null, pointFont: record.options.pointFont ?? null, bgmId: record.options.bgmId ?? null }, pointCues: record.pointCues,
       subtitleCues: changedSubtitles ? record.subtitleCues : undefined,
     });
     const updated = result.packaging?.find((item) => item.entryCode === record.entryCode);
@@ -161,13 +220,21 @@ export function PackagingStage({ state, onAdjustSound }: { state: FilmState; onA
     return updated;
   };
 
-  const finishEditing = async (action: 'back' | 'save' | 'select') => {
+  const finishEditing = async (action: 'back' | 'save' | 'select' | 'approve' | 'sound') => {
     if (!draft || working) return;
     setError('');
     setNotice('');
     setWorking('save');
     try {
       const record = await save(draft);
+      if (action === 'sound') { onAdjustSound(record.entryCode); return; }
+      if (action === 'approve' && media) {
+        await fetch(`${base}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'approve', jobId: media.review.jobId, sourceSignature: media.signature, packagingRevision: record.revision }) }).then(readResponse);
+        await refreshReview();
+        setNotice('已通过审片。');
+        return;
+      }
       if (action === 'select') {
         if (!record.canExport) throw new Error(record.reason || '请先完成审片与复核');
         setSelected((current) => ({ ...current, [record.entryCode]: record.revision }));
@@ -175,6 +242,7 @@ export function PackagingStage({ state, onAdjustSound }: { state: FilmState; onA
       if (action !== 'save') {
         setDraft(null);
         setMedia(null);
+        setBaseline(null);
         await load();
       } else setNotice('已保存草稿。');
     } catch (cause) { setError(message(cause)); }
@@ -189,10 +257,16 @@ export function PackagingStage({ state, onAdjustSound }: { state: FilmState; onA
     try {
       const record = await save(draft);
       const result = await post('packaging', { action: 'recognize-subtitles', entryCode: record.entryCode, revision: record.revision });
+      if (result.subtitleWaiting) {
+        setSubtitleWaiting(record.entryCode);
+        setNotice('口播识别正在等待名额，空出后自动对时。');
+        return;
+      }
       const updated = result.packaging?.find((item) => item.entryCode === record.entryCode);
       if (!updated) throw new Error('未能读取字幕识别结果');
       setDraft(updated);
       setBaseline(updated);
+      setSubtitleWaiting('');
       setRecords(result.packaging!);
       setSelected((current) => Object.hasOwn(current, updated.entryCode)
         ? { ...current, [updated.entryCode]: updated.revision } : current);
@@ -238,30 +312,22 @@ export function PackagingStage({ state, onAdjustSound }: { state: FilmState; onA
     <div className={styles.draftToolbar}>
       <ToolbarButton icon="chevron-left" disabled={busy} onClick={() => void finishEditing('back')}>返回成片卡片</ToolbarButton>
       <b>{draft.entryCode} · {draft.title}</b>
-      <Segmented value={editMode} label="成片编辑方式" onChange={(mode) => {
-        if (busy) return;
-        setEditMode(mode);
-        if (mode === 'packaging') {
-          setWorking('preview');
-          void post('packaging', { action: 'open', entryCode: draft.entryCode }).then((result) => {
-            if (result.media) setMedia(result.media);
-            if (result.record) setDraft((current) => current && { ...current, canExport: result.record!.canExport, reason: result.record!.reason });
-          }).catch((cause: Error) => setError(cause.message)).finally(() => setWorking(''));
-        }
-      }} options={[{ value: 'packaging', label: '包装调整' }, { value: 'rework', label: '镜头返工' }]} />
-      <ToolbarButton disabled={busy || editMode === 'rework'} onClick={() => void finishEditing('save')}>{working === 'save' ? '保存中…' : '保存草稿'}</ToolbarButton>
+      <ToolbarButton disabled={busy} onClick={() => void finishEditing('save')}>{working === 'save' ? '保存中…' : '保存草稿'}</ToolbarButton>
+      <ToolbarButton variant="primary" disabled={busy || media.review.approved} onClick={() => void finishEditing('approve')}
+        data-testid="one-click-film-approve">{media.review.approved ? '已通过审片' : '标记审片通过'}</ToolbarButton>
       {Object.hasOwn(selected, draft.entryCode)
         ? <ToolbarButton disabled={busy} onClick={() => setSelected((current) => Object.fromEntries(Object.entries(current)
           .filter(([code]) => code !== draft.entryCode)))}>移出导出选择</ToolbarButton>
-        : <ToolbarButton variant="primary" disabled={busy || !draft.canExport || editMode === 'rework'}
+        : <ToolbarButton variant="primary" disabled={busy || !draft.canExport}
           onClick={() => void finishEditing('select')}>选入导出</ToolbarButton>}
     </div>
     {!draft.canExport ? <p className={styles.hintWarn}>{draft.reason || '待审片复核'}</p> : null}
     {notice ? <p className={styles.hint} role="status">{notice}</p> : null}
     {error ? <p className={styles.hintFail} role="alert">{error}</p> : null}
-    {editMode === 'packaging' ? <PackagingDraftEditor key={media.url} projectId={state.project.id}
+    <PackagingDraftEditor key={media.review.jobId} projectId={state.project.id} images={state.images}
+      entry={state.entries.find(entry => entry.code === draft.entryCode)!} initialShot={initialShot}
+      onRefresh={refreshReview} onAdjustSound={() => void finishEditing('sound')}
       draft={draft} media={media} tracks={bgmTracks} busy={busy} onChange={setDraft} onRecognize={() => void recognize()} />
-      : <ReviewStage state={state} onlyEntry focus={{ code: draft.entryCode }} onAdjustSound={onAdjustSound} />}
   </div>;
 
   const exportCount = Object.keys(selected).length;

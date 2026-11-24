@@ -9,7 +9,6 @@ import { UploadStage } from './UploadStage';
 import { AnalysisStage } from './AnalysisStage';
 import { ScriptStage } from './ScriptStage';
 import { GenerationStage } from './GenerationStage';
-import { ReviewStage } from './ReviewStage';
 import { PackagingStage } from './PackagingStage';
 import {
   analysisSourceIds,
@@ -150,10 +149,7 @@ export function OneClickFilmWorkspace({ projectId }: { projectId: string }) {
       onReview={(code, shotId) => { setFocus({ code, shotId }); setStage('review'); }}
       onAdjustSound={(code) => { setFocus({ code }); setStage('scripts'); }} /> : null}
 
-    {stage === 'review' ? <ReviewStage state={state} focus={focus}
-      onAdjustSound={(code) => { setFocus({ code }); setStage('scripts'); }} /> : null}
-
-    {stage === 'packaging' ? <PackagingStage state={state}
+    {stage === 'review' ? <PackagingStage state={state} focus={focus}
       onAdjustSound={(code) => { setFocus({ code }); setStage('scripts'); }} /> : null}
   </div>;
 }

@@ -31,6 +31,7 @@ export interface FilmBody {
   originalVideoJobId: string;
   originalPath: string;
   frames: number;
+  reviewDurationUs?: number;
   draft: boolean;
   snapshot: { soundMode?: 'native' | 'tts' | 'none'; narration?: string; narrationPath?: string; scriptRevision?: number; promptText?: string };
   edits: Array<{ id: string; videoJobId: string; file: string; start: number; end: number; trim: number; whole: boolean }>;
@@ -66,10 +67,48 @@ export function readFilmBody(db: Database.Database, run: OneClickFilmRun, entryC
   const signature = createHash('sha256').update(JSON.stringify([row.videoJobId, row.durationUs, edits])).digest('hex');
   return {
     entryId: row.entryId, entryCode, jobId: row.id, originalVideoJobId: row.videoJobId,
-    originalPath: filmStoragePath(row.localVideoPath), frames: bodyFrame(row.durationUs),
+    originalPath: filmStoragePath(row.localVideoPath), frames: bodyFrame(row.durationUs), reviewDurationUs: row.durationUs,
     approved: Boolean(row.approvedAt), snapshot, edits, signature,
     draft: row.filmGenerationStage === 'draft', hdApproved: row.hdApprovedSignature === signature,
   };
+}
+
+// Earlier reviews stored the container duration, including any extra audio at the end.
+// Keep the stored edit/approval signature, but resolve playback against the original pictures.
+const originalLengths = new Map<string, Promise<number>>();
+
+async function playableFrames(file: string, reviewDurationUs: number): Promise<number> {
+  const requested = bodyFrame(reviewDurationUs);
+  const media = await probeVideoMedia(file);
+  if (!media.hasAudio || !media.videoDurationUs || media.durationUs !== reviewDurationUs
+      || bodyFrame(media.videoDurationUs) >= requested) return requested;
+  const decoded = await countFilmFrames(file);
+  // A truncated or undecodable source must still fail validation.
+  return decoded > 0 && decoded === bodyFrame(media.videoDurationUs) ? decoded : requested;
+}
+
+export async function playableFilmBody(body: FilmBody): Promise<FilmBody> {
+  if (body.reviewDurationUs === undefined) return body;
+  const original = await fs.stat(body.originalPath).catch(error => {
+    // A whole-film replacement can still play if the original has since been removed.
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!original) return body;
+  const { size, mtimeMs } = original;
+  const key = JSON.stringify([body.originalPath, size, mtimeMs, body.reviewDurationUs]);
+  let length = originalLengths.get(key);
+  if (!length) {
+    if (originalLengths.size >= 128) originalLengths.delete(originalLengths.keys().next().value!);
+    length = playableFrames(body.originalPath, body.reviewDurationUs).catch(error => {
+      originalLengths.delete(key);
+      throw error;
+    });
+    originalLengths.set(key, length);
+  }
+  const frames = await length;
+  const edits = body.edits.map(edit => edit.end === body.frames ? { ...edit, end: frames } : edit);
+  return { ...body, frames, edits, reviewDurationUs: undefined };
 }
 
 export function sourceIdsForBody(body: FilmBody): string[] {
@@ -127,6 +166,7 @@ export function readyHdPaths(db: Database.Database, run: OneClickFilmRun, body: 
 
 /** Use 24 fps source frames for every cut. Audio comes from one continuous input. */
 export async function renderFilmBody(body: FilmBody, output: string, hd?: Map<string, string>): Promise<void> {
+  body = await playableFilmBody(body);
   const availablePath = (id: string, draftPath: string) => {
     if (!hd) return draftPath;
     const source = hd.get(id);
@@ -191,8 +231,9 @@ const pending = new Map<string, Promise<string>>();
 
 export async function getFilmPreview(db: Database.Database, run: OneClickFilmRun, body: FilmBody, highDefinition = false): Promise<string> {
   if (!body.edits.length && !body.snapshot.narrationPath && !highDefinition) return videoJobFileUrl(body.originalPath)!;
+  body = await playableFilmBody(body);
   const hd = highDefinition ? readyHdPaths(db, run, body) : undefined;
-  const signature = createHash('sha256').update(JSON.stringify(['verified-frames-v1', body.signature, hd ? [...hd] : null])).digest('hex');
+  const signature = createHash('sha256').update(JSON.stringify(['verified-frames-v1', body.signature, body.frames, hd ? [...hd] : null])).digest('hex');
   const directory = filmStoragePath(path.join('one-click-film', 'previews', run.id));
   const output = path.join(directory, `${signature}.mp4`);
   let work = pending.get(output);

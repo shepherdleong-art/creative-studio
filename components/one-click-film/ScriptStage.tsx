@@ -21,6 +21,51 @@ import styles from './one-click-film.module.css';
 
 type ScriptDraft = Pick<FilmEntry, 'title' | 'outline' | 'narration' | 'promptText'>;
 
+function savedStructureMode(entries: FilmEntry[]): StructurePlanMode {
+  const first = entries[0];
+  if (!first) return 'auto';
+  return entries.every(entry => entry.structureSource === first.structureSource
+    && (entry.structureSource !== 'batch' || entry.structure === first.structure)) ? first.structureSource : 'individual';
+}
+
+function savedChoices(entries: FilmEntry[]): Array<StoryStructure | 'auto'> {
+  return entries.map(entry => entry.structureSource === 'auto' ? 'auto' : entry.structure);
+}
+
+function ScriptText({ script }: { script: ScriptDraft }) {
+  return <div className={styles.savedScript}>
+    {([['outline', '内容大纲'], ['narration', '口播文案'], ['promptText', '分镜提示词']] as const)
+      .map(([field, label]) => script[field] ? <section key={field}><b>{label}</b><p>{script[field]}</p></section> : null)}
+  </div>;
+}
+
+type ScriptSnapshot = ScriptDraft & { id: string; revisionNumber: number; createdAt: string };
+
+function ScriptHistory({ projectId, code, onUse }: { projectId: string; code: string; onUse: (script: ScriptDraft) => void }) {
+  const [records, setRecords] = useState<ScriptSnapshot[] | null>(null);
+  const [error, setError] = useState('');
+  const load = async () => {
+    setError('');
+    try {
+      const response = await fetch(`/api/one-click-film/${projectId}/scripts?history=${encodeURIComponent(code)}`);
+      if (!response.ok) throw new Error('读取历史稿件失败，请重新展开重试。');
+      const data = await response.json() as { revisions: ScriptSnapshot[] };
+      setRecords(data.revisions);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+  };
+  return <details className={styles.scriptArchive} onToggle={event => {
+    if (event.target === event.currentTarget && event.currentTarget.open) void load();
+  }}>
+    <summary>历史稿件</summary>
+    {error ? <p role="alert">{error}</p> : !records ? <p>读取中…</p> : records.length ? records.map(record =>
+      <details key={record.id}>
+        <summary>记录 {record.revisionNumber} · {record.title || '未命名脚本'} · {new Date(record.createdAt).toLocaleString('zh-CN')}</summary>
+        <ScriptText script={record} />
+        <button type="button" className="cap" onClick={() => onUse(record)}>载入编辑区</button>
+      </details>) : <p>还没有历史稿件。</p>}
+  </details>;
+}
+
 /**
  * 第二步 · 生成脚本：整批设置（数量、结构、声音）与逐条编辑分开。
  * 「重新生成本条」在本条卡片内，「重新生成全部」在整批设置区。
@@ -43,9 +88,11 @@ export function ScriptStage({
   const analysis = state.analysis;
   const entries = state.entries;
   const [count, setCount] = useState(entries.length || 2);
-  const [structureMode, setStructureMode] = useState<StructurePlanMode>('auto');
-  const [batchStructure, setBatchStructure] = useState<StoryStructure>('scene');
-  const [individualEdits, setIndividualEdits] = useState<Array<StoryStructure | 'auto'>>([]);
+  const retired = state.retiredEntries ?? [];
+  const [structureMode, setStructureMode] = useState<StructurePlanMode>(() => savedStructureMode(entries));
+  const [batchStructure, setBatchStructure] = useState<StoryStructure>(entries[0]?.structure ?? 'scene');
+  const [individualEdits, setIndividualEdits] = useState<Array<StoryStructure | 'auto'>>(() =>
+    savedChoices([...entries, ...retired]));
   const [soundMode, setSoundMode] = useState<SoundMode>(entries[0]?.soundMode ?? 'native');
   const [activeCode, setActiveCode] = useState(focusCode ?? entries[0]?.code ?? '');
   const [error, setError] = useState('');
@@ -83,7 +130,7 @@ export function ScriptStage({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const payload = await response.json() as { message?: string; error?: string };
+    const payload = await response.json() as { entries?: FilmEntry[]; message?: string; error?: string };
     if (!response.ok) throw new Error(payload.message || payload.error || '操作失败');
     await onReload();
     return payload;
@@ -92,6 +139,7 @@ export function ScriptStage({
   const applyPlan = async () => {
     setWorking('apply');
     try {
+      await savePendingEdits();
       await post(`/api/one-click-film/${state.project.id}/scripts`, {
         action: 'apply',
         count,
@@ -112,6 +160,7 @@ export function ScriptStage({
   const entryAction = async (entry: FilmEntry, action: 'save' | 'confirm' | 'redraft', patch?: Record<string, unknown>) => {
     setWorking(`${action}:${entry.code}`);
     try {
+      if (action === 'redraft') await savePendingEdits();
       await post(`/api/one-click-film/${state.project.id}/scripts/${entry.code}`, { action, revision: entry.scriptRevision, ...(patch ?? {}) });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -123,7 +172,35 @@ export function ScriptStage({
   const redraftAll = async () => {
     setWorking('redraft-all');
     try {
+      await savePendingEdits();
       await post(`/api/one-click-film/${state.project.id}/scripts`, { action: 'redraft-all' });
+    } catch (cause) {
+      await onReload();
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setWorking('');
+    }
+  };
+
+  const savePendingEdits = async () => {
+    if (active && edits?.key === draftKey && (Object.keys(draft) as Array<keyof ScriptDraft>).some(key => draft[key] !== active[key])) {
+      await post(`/api/one-click-film/${state.project.id}/scripts/${active.code}`, { action: 'save', ...draft });
+    }
+  };
+
+  const restore = async (entry: FilmEntry) => {
+    setWorking('restore');
+    try {
+      const { entries: restored } = await post(`/api/one-click-film/${state.project.id}/scripts`,
+        { action: 'restore-retired', code: entry.code });
+      if (restored?.length) {
+        setCount(restored.length);
+        setStructureMode(savedStructureMode(restored));
+        setBatchStructure(restored[0].structure);
+        setIndividualEdits(savedChoices([...restored, ...retired.filter(item => item.ordinal > entry.ordinal)]));
+        setSoundMode(restored[0].soundMode);
+        if (edits?.key !== draftKey) setActiveCode(entry.code);
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -206,7 +283,9 @@ export function ScriptStage({
         ))}
       </div> : null}
       <div className={styles.scriptSettingsFoot}>
-        {entries.length > 0 ? <p className={styles.hint}>适用的手稿、配音及确认记录会随条目保留。</p> : null}
+        {entries.length > 0 ? <p className={styles.hint}>{count < entries.length
+          ? `应用后，${entries.slice(count).map(entry => entry.code).join('、')} 将移出本批，原稿仍可查看。`
+          : '重新生成会保留旧稿，可在每条脚本的「历史稿件」中查看。'}</p> : null}
         <div className={styles.inlineActions}>
           {entries.length > 0 ? <ToolbarButton icon="retry" disabled={busy || Boolean(working)} onClick={() => void redraftAll()}>
             {working === 'redraft-all' ? '重写中…' : '重新生成全部'}
@@ -240,6 +319,16 @@ export function ScriptStage({
             </Tag>
           </button>)}
         </div>
+        {retired.length > 0 ? <details className={styles.scriptArchive}>
+          <summary>已移出本批（{retired.length} 条）</summary>
+          {retired.map(entry => <details key={entry.id}>
+            <summary>{entry.code} · {entry.title}</summary>
+            <p className={styles.hint}>恢复后本批共 {entry.ordinal} 条，沿用各条原稿。</p>
+            <button type="button" className="cap" disabled={busy || Boolean(working)}
+              onClick={() => void restore(entry)}>恢复原稿到本批</button>
+            <ScriptText script={entry} />
+          </details>)}
+        </details> : null}
       </nav>
       <section className={styles.scriptEditor} aria-label={`${active.code} 脚本编辑`}>
         <div className={styles.editorHead}>
@@ -286,6 +375,8 @@ export function ScriptStage({
             {working === `confirm:${active.code}` ? '确认中…' : '确认本条'}
           </button>
         </div>
+        <ScriptHistory key={draftKey} projectId={state.project.id} code={active.code}
+          onUse={record => setDraft(() => ({ ...record, title: record.title || active.title }))} />
       </section>
     </div> : <EmptyState icon="logs" title="还没有脚本" description="应用上方设置后，可逐条编辑大纲、口播和分镜提示词。" />}
     {ttsEntries.length ? <section className={styles.scriptSettings} aria-label="统一旁白">

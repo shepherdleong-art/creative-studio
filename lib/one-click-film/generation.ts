@@ -1,3 +1,4 @@
+import { preparePackaging } from './packaging.ts';
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
 import { getDb } from '../db.ts';
@@ -392,6 +393,11 @@ export async function syncGenerationStatus(db: Database.Database, run: OneClickF
           detectionError: (error instanceof Error ? error.message : String(error)).slice(0, 300),
         });
       }
+    }
+    // 原片就绪即准备包装。轮询和重试保留已有草稿。
+    const entryCode = db.prepare('SELECT entryCode FROM one_click_film_video_jobs WHERE id=?').pluck().get(row.id) as string;
+    if (!db.prepare('SELECT 1 FROM one_click_film_packaging WHERE runId=? AND entryCode=?').get(run.id, entryCode)) {
+      preparePackaging(db, { run, codes: [entryCode], options: {}, allowPreview: true });
     }
   }
 }

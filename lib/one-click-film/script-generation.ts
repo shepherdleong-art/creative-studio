@@ -54,12 +54,13 @@ export async function generatePlanCopies(db: Database.Database, input: {
   const plan = parseStructurePlan(input.plan.plan);
   const sound = parseSoundMode(input.plan.soundMode);
   const points = input.points.filter((point) => point.selected).map((point) => point.text);
-  const existing = new Map(listEntries(db, input.run.id).map((entry) => [entry.ordinal, entry]));
+  const existing = new Map(listEntries(db, input.run.id, 'all').map((entry) => [entry.ordinal, entry]));
   const copies = new Map<number, ScriptCopy>();
   for (let ordinal = 1; ordinal <= count; ordinal++) {
     const entry = existing.get(ordinal);
     const structure = structureAt(plan, ordinal - 1);
     if (entry?.structure === structure && entry.analysisId === input.analysis.id
+      && entry.productNameSnapshot === (input.analysis.confirmedProductName || input.analysis.productName)
       && JSON.stringify(entry.sellingPointsSnapshot) === JSON.stringify(points)) continue;
     const code = `F${String(ordinal).padStart(2, '0')}`;
     copies.set(ordinal, await generateCopy({

@@ -6,14 +6,17 @@ import { getRunForProject } from '@/lib/one-click-film/store';
 import {
   approveReview,
   listReviews,
+  reviewForPlayback,
   markShotReview,
   mergeShots,
   splitShot,
   undoableMergeId,
   undoMerge,
 } from '@/lib/one-click-film/review';
+import { listPackaging } from '@/lib/one-click-film/packaging';
 import { syncGenerationStatus } from '@/lib/one-click-film/generation';
-import { getFilmPreview, readFilmBody, readyHdPaths, sourceIdsForBody } from '@/lib/one-click-film/composition';
+import { getFilmPreview, playableFilmBody, readFilmBody, readyHdPaths, sourceIdsForBody } from '@/lib/one-click-film/composition';
+import { FINAL_EDIT_FPS } from '@/lib/media-core/render-contract';
 import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-click-film/http';
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
 
@@ -32,12 +35,14 @@ async function __teamRouteGET(
     if (!run) return NextResponse.json({ reviews: [] });
     await syncGenerationStatus(db, run);
     const reviews = await Promise.all(listReviews(db, run).map(async (review) => {
-      const body = readFilmBody(db, run, review.entryCode);
-      if (!body) return null;
+      const saved = readFilmBody(db, run, review.entryCode);
+      if (!saved) return null;
+      const body = await playableFilmBody(saved);
       const hdReady = body.draft && readyHdPaths(db, run, body).size === sourceIdsForBody(body).length;
       const videoUrl = await getFilmPreview(db, run, body);
       return {
-        ...review, entryId: body.entryId, videoUrl, draft: body.draft, hdApproved: body.hdApproved,
+        ...reviewForPlayback(review, Math.round(body.frames * 1e6 / FINAL_EDIT_FPS)),
+        entryId: body.entryId, videoUrl, draft: body.draft, hdApproved: body.hdApproved,
         undoMergeId: undoableMergeId(db, review),
         hdVideoUrl: hdReady ? await getFilmPreview(db, run, body, true) : null,
       };
@@ -86,7 +91,17 @@ async function __teamRoutePOST(
       });
     }
     if (action === 'approve') {
-      approveReview(db, { run, jobId });
+      db.transaction(() => {
+        if (typeof body.sourceSignature === 'string') {
+          const review = listReviews(db, run).find(item => item.jobId === jobId);
+          const record = listPackaging(db, run).find(item => item.entryCode === review?.entryCode);
+          if (!review || readFilmBody(db, run, review.entryCode)?.signature !== body.sourceSignature
+            || record?.revision !== body.packagingRevision) {
+            throw new OneClickFilmError('conflict', '成片或包装已更新，请重新打开后审片', 409);
+          }
+        }
+        approveReview(db, { run, jobId });
+      }).immediate();
       return NextResponse.json({ reviews: listReviews(db, run) });
     }
     throw new OneClickFilmError('invalid_input', '不支持的审片操作');

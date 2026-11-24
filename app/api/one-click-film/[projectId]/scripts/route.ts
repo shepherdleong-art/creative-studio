@@ -9,6 +9,8 @@ import {
   getAnalysis,
   getRunForProject,
   listEntries,
+  listScriptRevisions,
+  restoreRetiredScripts,
   listSellingPoints,
   reviewPrompt,
 } from '@/lib/one-click-film/store';
@@ -33,6 +35,10 @@ async function __teamRoutePOST(
     if (!run) throw new OneClickFilmError('not_found', '项目还没有一键成片记录', 404);
     const body = await readJsonBody(request);
     const action = String(body.action ?? 'apply');
+
+    if (action === 'restore-retired') {
+      return NextResponse.json({ entries: restoreRetiredScripts(db, run, String(body.code ?? '')) });
+    }
 
     if (action === 'redraft-all') {
       for (const entry of listEntries(db, run.id)) await generateRedraft(db, run, entry.code);
@@ -96,7 +102,7 @@ async function __teamRoutePOST(
 }
 
 async function __teamRouteGET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
   try {
@@ -106,6 +112,8 @@ async function __teamRouteGET(
     const access = requireAccessContext();
     if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
     const run = getRunForProject(db, projectId);
+    const history = request.nextUrl.searchParams.get('history');
+    if (history) return NextResponse.json({ revisions: run ? listScriptRevisions(db, run.id, history) : [] });
     if (!run) return NextResponse.json({ entries: [] });
     return NextResponse.json({ entries: listEntries(db, run.id) });
   } catch (error) {

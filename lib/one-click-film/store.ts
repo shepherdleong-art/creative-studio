@@ -379,9 +379,32 @@ export function confirmAnalysis(db: Database.Database, input: {
   }).immediate();
 }
 
-export function listEntries(db: Database.Database, runId: string): OneClickFilmEntry[] {
-  return (db.prepare(`SELECT * FROM one_click_film_entries WHERE runId = ? AND retired = 0 ORDER BY ordinal ASC`)
+export function listEntries(db: Database.Database, runId: string, scope: 'active' | 'retired' | 'all' = 'active'): OneClickFilmEntry[] {
+  const filter = scope === 'all' ? '' : scope === 'retired' ? 'AND retired = 1' : 'AND retired = 0';
+  return (db.prepare(`SELECT * FROM one_click_film_entries WHERE runId = ? ${filter} ORDER BY ordinal ASC`)
     .all(runId) as EntryRow[]).map(toEntry);
+}
+
+export function listScriptRevisions(db: Database.Database, runId: string, code: string) {
+  return db.prepare(`SELECT r.id, r.revisionNumber, r.title, r.outline, r.narration, r.promptText, r.createdAt
+    FROM one_click_film_script_revisions r JOIN one_click_film_entries e ON e.id = r.entryId
+    WHERE e.runId = ? AND e.code = ? ORDER BY r.revisionNumber DESC`).all(runId, code) as Array<{
+      id: string; revisionNumber: number; title: string; outline: string; narration: string; promptText: string; createdAt: string;
+    }>;
+}
+
+export function restoreRetiredScripts(db: Database.Database, run: OneClickFilmRun, code: string) {
+  return db.transaction(() => {
+    const target = db.prepare('SELECT ordinal FROM one_click_film_entries WHERE runId=? AND code=?')
+      .pluck().get(run.id, code) as number | undefined;
+    if (!target) throw new OneClickFilmError('not_found', '未找到要恢复的脚本', 404);
+    const outdated = db.prepare(`SELECT code FROM one_click_film_entries WHERE runId=? AND retired=1 AND ordinal<=?
+      AND analysisId IS NOT (SELECT currentAnalysisId FROM one_click_film_runs WHERE id=?) LIMIT 1`).pluck().get(run.id, target, run.id);
+    if (outdated) throw new OneClickFilmError('invalid_input', `${outdated} 使用了旧版分析。可查看原稿，或调高成片数量并应用当前分析。`);
+    db.prepare('UPDATE one_click_film_entries SET retired=0 WHERE runId=? AND retired=1 AND ordinal<=?')
+      .run(run.id, target);
+    return listEntries(db, run.id);
+  }).immediate();
 }
 
 export function getEntry(db: Database.Database, runId: string, code: string): OneClickFilmEntry {
@@ -575,25 +598,29 @@ export function applyScriptPlan(db: Database.Database, input: {
           input.analysis.id, subject.product, JSON.stringify(subject.points),
           tts.providerId ?? '', tts.voice ?? '', Number(tts.speed) || 1, now, now,
         );
+        saveRevision(db, getEntry(db, input.run.id, code), 'generated');
         added.push(code);
         continue;
       }
 
       if (structureChanged || subjectChanged) {
+        preserveCurrentScript(db, previous);
         const copy = input.copies?.get(ordinal) ?? scriptCopy({ structure, subject, index: ordinal - 1, revision: previous.scriptRevision });
         const prompt = promptFor({ subject, structure, sound, copy, durationSec, aspectRatio });
         update.run(
           structure, structureSource, sound, 'pending', copy.title, copy.story, copy.narration, prompt.text,
-          JSON.stringify(prompt.baseline), durationSec, aspectRatio, previous.scriptRevision,
+          JSON.stringify(prompt.baseline), durationSec, aspectRatio, previous.scriptRevision + 1,
           null, input.analysis.id, subject.product, JSON.stringify(subject.points),
           tts.providerId ?? previous.ttsProviderId, tts.voice ?? previous.ttsVoice,
           Number(tts.speed) || previous.ttsSpeed, now, previous.id,
         );
         if (!restored) rewritten.push(previous.code);
+        saveRevision(db, getEntry(db, input.run.id, previous.code), 'structure_change');
         continue;
       }
 
       if (soundChanged) {
+        preserveCurrentScript(db, previous);
         // 只替换声音段：手改的分镜与叙事原样保留。
         const promptText = replaceVoiceSection(previous.promptText, {
           sound,
@@ -608,7 +635,7 @@ export function applyScriptPlan(db: Database.Database, input: {
         update.run(
           structure, structureSource, sound, 'pending', previous.title, previous.outline, previous.narration, promptText,
           JSON.stringify(baseline), previous.promptDurationSec, previous.promptAspectRatio,
-          previous.scriptRevision, null, input.analysis.id, subject.product, JSON.stringify(subject.points),
+          previous.scriptRevision + 1, null, input.analysis.id, subject.product, JSON.stringify(subject.points),
           tts.providerId ?? previous.ttsProviderId, tts.voice ?? previous.ttsVoice,
           Number(tts.speed) || previous.ttsSpeed, now, previous.id,
         );
@@ -624,6 +651,14 @@ export function applyScriptPlan(db: Database.Database, input: {
   }).immediate();
 
   return { entries: listEntries(db, input.run.id), added, rewritten, removed, kept };
+}
+
+function preserveCurrentScript(db: Database.Database, entry: OneClickFilmEntry): void {
+  const last = db.prepare(`SELECT title, outline, narration, promptText FROM one_click_film_script_revisions
+    WHERE entryId = ? ORDER BY revisionNumber DESC LIMIT 1`).get(entry.id) as Pick<OneClickFilmEntry, 'title' | 'outline' | 'narration' | 'promptText'> | undefined;
+  if (last?.title === entry.title && last.outline === entry.outline && last.narration === entry.narration
+      && last.promptText === entry.promptText) return;
+  saveRevision(db, entry, entry.status === 'pending' ? 'generated' : 'manual');
 }
 
 function saveRevision(db: Database.Database, entry: OneClickFilmEntry, origin: 'generated' | 'redraft' | 'manual' | 'structure_change'): void {
@@ -742,6 +777,7 @@ export function redraftEntry(db: Database.Database, input: {
   });
   const now = new Date().toISOString();
   db.transaction(() => {
+    preserveCurrentScript(db, entry);
     db.prepare(`
       UPDATE one_click_film_entries
       SET title = ?, outline = ?, narration = ?, promptText = ?, promptBaselineJson = ?, scriptRevision = ?,

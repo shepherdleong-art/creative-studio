@@ -209,6 +209,31 @@ const failed = listReviews(db, run).find((review) => review.jobId === 'job-2')!;
 assert.equal(failed.detection, 'failed');
 assert.deepEqual(failed.shots.map((shot) => [shot.startUs, shot.endUs]), [[0, 12_000_000]]);
 
+// Legacy reviews used the container duration: 25 pictures with audio through frame 26.
+const { runFfmpeg, probeVideoMedia } = await import('../lib/ffmpeg.ts');
+const { bodyFrame, playableFilmBody, renderFilmBody } = await import('../lib/one-click-film/composition.ts');
+const { countFilmFrames } = await import('../lib/one-click-film/frames.ts');
+const original = path.join(dataRoot, 'audio-tail.mp4');
+await runFfmpeg(['-f', 'lavfi', '-i', 'color=s=64x64:r=24:d=1.04', '-f', 'lavfi', '-i', 'anullsrc=r=48000:d=1.072',
+  '-c:v', 'libx264', '-c:a', 'aac', original]);
+const reviewDurationUs = (await probeVideoMedia(original)).durationUs;
+const frames = bodyFrame(reviewDurationUs);
+assert.equal(frames, 26);
+const tail = { id: 'take', videoJobId: 'take', file: original, start: 20, end: frames, trim: 0, whole: false };
+const saved = { entryCode: 'F01', entryId: 'entry', jobId: 'job', originalVideoJobId: 'original',
+  originalPath: original, reviewDurationUs, frames, snapshot: {}, draft: true, approved: true, hdApproved: false,
+  signature: 'reviewed-edit', edits: [tail] };
+const playable = await playableFilmBody(saved);
+assert.equal(playable.frames, 25);
+assert.equal(playable.edits[0]!.end, 25);
+assert.equal(playable.signature, saved.signature);
+assert.equal(saved.edits[0]!.end, 26);
+const preview = path.join(dataRoot, 'preview.mp4');
+await renderFilmBody(saved, preview);
+assert.equal(await countFilmFrames(preview), 25);
+assert.ok((await probeVideoMedia(preview)).hasAudio);
+await assert.rejects(renderFilmBody({ ...saved, edits: [{ ...tail, trim: 24 }] }, preview), /校验失败/);
+
 db.close();
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log('one-click-film generation tests passed');

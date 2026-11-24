@@ -66,7 +66,7 @@ function Clip({ clip, track, duration, active, onPick, onRange }: {
   return <div className={styles.draftClip} data-active={active} data-editable={clip.editable}
     style={{ left: `${clip.start / duration * 100}%`, width: `${Math.max(0, clip.end - clip.start) / duration * 100}%` }}
     onPointerMove={drag} onPointerUp={() => { gesture.current = null; }} onPointerCancel={cancel}>
-    <button type="button" title={clip.text} onPointerDown={(event) => startDrag(event, 'move')}
+    <button type="button" title={clip.text} aria-current={track.kind === 'picture' ? active : undefined} onPointerDown={(event) => startDrag(event, 'move')}
       onClick={(event) => { if (event.detail === 0 || !clip.editable) onPick(); }}>
       {clip.image ? (
         // eslint-disable-next-line @next/next/no-img-element -- 从成片取出的本地视频帧
@@ -90,14 +90,14 @@ export function PackagingTimeline({ tracks, duration, position, selected, onSeek
   onPick: (track: TrackKind, clip: TimelineClip) => void;
   onRange: (track: TrackKind, clip: TimelineClip, range: Range, at: number) => void;
 }) {
-  return <section className={styles.draftTimeline} aria-label="包装时间轴">
-    <div className={styles.draftTimelineHead}><b>包装时间轴</b><span className="tnum">{position.toFixed(2)} / {duration.toFixed(2)} 秒</span></div>
+  return <section className={styles.draftTimeline} aria-label="审片时间轴">
+    <div className={styles.draftTimelineHead}><b>审片时间轴</b><span className="tnum">{position.toFixed(2)} / {duration.toFixed(2)} 秒</span></div>
     <div className={styles.draftTracks}>
       <span className={styles.trackName}>时间</span>
       <div className={styles.draftRuler}>
         <div className={styles.rulerLabels} aria-hidden="true">{Array.from({ length: 6 }, (_, index) =>
           <span key={index}>{(duration * index / 5).toFixed(1)}s</span>)}</div>
-        <input type="range" aria-label="包装时间轴播放头" className={styles.timelineScrubber}
+        <input type="range" aria-label="审片时间轴播放头" className={styles.timelineScrubber}
           min={0} max={Math.round(duration * FINAL_EDIT_FPS)} value={Math.round(position * FINAL_EDIT_FPS)}
           onChange={(event) => onSeek(Number(event.currentTarget.value) / FINAL_EDIT_FPS)} />
       </div>
